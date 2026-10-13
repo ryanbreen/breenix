@@ -849,7 +849,7 @@ pub(crate) fn enqueue_process_reclaim(reclaim: PendingProcessReclaim) {
 /// PTY refcounting, TCP close, etc.
 ///
 /// CRITICAL: No PM lock is held when this runs.
-pub(crate) fn close_extracted_fds(entries: alloc::vec::Vec<(usize, FileDescriptor)>) {
+pub(crate) fn close_extracted_fds(entries: impl IntoIterator<Item = (usize, FileDescriptor)>) {
     use crate::ipc::FdKind;
 
     for (_fd, fd_entry) in entries {

@@ -1,24 +1,25 @@
-//! Unix names are reserved at bind, independently of listen. Path bindings
-//! retain the resolved inode so unlink/recreate cannot redirect an old socket.
-//! Namespace locks cover only the fixed table, never filesystem or PM work.
-
+//! Hash-bucketed Unix names. Bind allocates before filesystem mutation and
+//! retains the inode created under the mount write guard; names are raw bytes.
 use super::addr::UnixName;
 use super::object::Socket;
 use crate::fs::{
-    ext2::live_inode::FileHandle, ext2::FileType, namei::Target, permissions::Credentials,
+    ext2::live_inode::FileHandle,
+    ext2::FileType,
+    namei::{Last, Target},
+    permissions::Credentials,
 };
 use crate::irq_safe_mutex::IrqSafeMutex;
-use crate::syscall::{at_path::AT_FDCWD, errno::*, SyscallResult};
+use crate::syscall::errno::*;
+use alloc::boxed::Box;
 use alloc::sync::{Arc, Weak};
+use alloc::vec::Vec;
 
-const MAX_BINDINGS: usize = 4096;
+const BUCKETS: usize = 256;
 const NAME_BYTES: usize = 108;
-
 enum Key {
     Abstract { bytes: [u8; NAME_BYTES], len: usize },
     Path(FileHandle),
 }
-
 impl Key {
     fn matches(&self, other: &Self) -> bool {
         match (self, other) {
@@ -31,36 +32,81 @@ impl Key {
             _ => false,
         }
     }
+    fn bucket(&self) -> usize {
+        let mut hash = 0xcbf29ce484222325u64;
+        let mut feed = |b: u8| {
+            hash = (hash ^ b as u64).wrapping_mul(0x100000001b3);
+        };
+        match self {
+            Self::Abstract { bytes, len } => {
+                feed(0);
+                for b in &bytes[..*len] {
+                    feed(*b);
+                }
+            }
+            Self::Path(handle) => {
+                feed(1);
+                for b in handle
+                    .object
+                    .mount
+                    .mount_id
+                    .to_ne_bytes()
+                    .into_iter()
+                    .chain(handle.object.key.inode.to_ne_bytes())
+                {
+                    feed(b);
+                }
+            }
+        }
+        hash as usize % BUCKETS
+    }
 }
-
-enum Slot {
-    Reserved,
-    Bound { key: Key, socket: Weak<Socket> },
+const PER_UID_BINDINGS: usize = 4096;
+static OWNERS: IrqSafeMutex<Vec<(u32, usize)>> = IrqSafeMutex::new(Vec::new());
+struct OwnerLease(u32);
+impl OwnerLease {
+    fn reserve(uid: u32) -> Result<Self, i32> {
+        let mut owners = OWNERS.lock();
+        if let Some((_, count)) = owners.iter_mut().find(|(owner, _)| *owner == uid) {
+            if *count == PER_UID_BINDINGS {
+                return Err(ENOBUFS);
+            }
+            *count += 1;
+        } else {
+            owners.try_reserve(1).map_err(|_| ENOMEM)?;
+            owners.push((uid, 1));
+        }
+        Ok(Self(uid))
+    }
 }
-
+impl Drop for OwnerLease {
+    fn drop(&mut self) {
+        let mut owners = OWNERS.lock();
+        if let Some(index) = owners.iter().position(|(owner, _)| *owner == self.0) {
+            owners[index].1 -= 1;
+            if owners[index].1 == 0 {
+                owners.swap_remove(index);
+            }
+        }
+    }
+}
+struct Binding {
+    _owner: OwnerLease,
+    key: Key,
+    socket: Weak<Socket>,
+    next: Option<Box<Binding>>,
+}
 pub struct UnixSocketRegistry {
-    slots: IrqSafeMutex<[Option<Slot>; MAX_BINDINGS]>,
+    buckets: [IrqSafeMutex<Option<Box<Binding>>>; BUCKETS],
 }
-
 impl UnixSocketRegistry {
     pub const fn new() -> Self {
         Self {
-            slots: IrqSafeMutex::new([const { None }; MAX_BINDINGS]),
+            buckets: [const { IrqSafeMutex::new(None) }; BUCKETS],
         }
     }
 }
-
 pub static UNIX_SOCKET_REGISTRY: UnixSocketRegistry = UnixSocketRegistry::new();
-
-struct Reservation(usize);
-impl Drop for Reservation {
-    fn drop(&mut self) {
-        let mut slots = UNIX_SOCKET_REGISTRY.slots.lock();
-        if matches!(slots[self.0], Some(Slot::Reserved)) {
-            slots[self.0] = None;
-        }
-    }
-}
 
 fn abstract_key(bytes: &[u8]) -> Result<Key, i32> {
     if bytes.len() > NAME_BYTES - 1 {
@@ -73,12 +119,10 @@ fn abstract_key(bytes: &[u8]) -> Result<Key, i32> {
         len: bytes.len(),
     })
 }
-
-fn path_key(bytes: &[u8], writing: bool) -> Result<Key, i32> {
-    let path = core::str::from_utf8(bytes).map_err(|_| EINVAL)?;
+fn path_key(bytes: &[u8]) -> Result<Key, i32> {
     let cred = Credentials::current(false);
     let resolved =
-        crate::syscall::metadata::resolve_at(AT_FDCWD, path, true, &cred).map_err(|e| e as i32)?;
+        crate::fs::namei::resolve_socket_path(bytes, false, &cred).map_err(|e| e as i32)?;
     if matches!(resolved.target, Target::Absent { .. }) || resolved.virtual_absent {
         return Err(ENOENT);
     }
@@ -91,118 +135,125 @@ fn path_key(bytes: &[u8], writing: bool) -> Result<Key, i32> {
         return Err(ECONNREFUSED);
     };
     let handle = resolved.handle().ok_or(EIO)?.clone();
-    if writing {
-        let guard = mount.read().map_err(|e| e as i32)?;
-        let fs = guard.as_ref().ok_or(EIO)?;
-        let inode = fs
-            .read_inode(handle.verify(fs).map_err(|_| ENOENT)?)
-            .map_err(|e| crate::fs::namei::fs_errno(e) as i32)?;
-        if !cred.permits(&inode, 2) {
-            return Err(EACCES);
-        }
+    let guard = mount.read().map_err(|e| e as i32)?;
+    let fs = guard.as_ref().ok_or(EIO)?;
+    let inode = fs
+        .read_inode(handle.verify(fs).map_err(|_| ENOENT)?)
+        .map_err(|e| crate::fs::namei::fs_errno(e) as i32)?;
+    if !cred.permits(&inode, 2) {
+        return Err(EACCES);
     }
     Ok(Key::Path(handle))
 }
-
-pub fn bind_name(name: &UnixName, socket: Weak<Socket>) -> Result<(), i32> {
-    let key = match name {
-        UnixName::Abstract(bytes) => Some(abstract_key(bytes)?),
-        UnixName::Path(bytes) => {
-            if bytes.is_empty() || bytes.len() > NAME_BYTES {
-                return Err(EINVAL);
-            }
-            None
-        }
-        UnixName::Unnamed => return Err(EINVAL),
-    };
-    // Reserve space before any filesystem mutation. Published entries never
-    // allocate, and concurrent bind calls cannot steal this slot.
-    let reservation = {
-        let mut slots = UNIX_SOCKET_REGISTRY.slots.lock();
-        if let Some(key) = &key {
-            if slots.iter().flatten().any(|s| {
-                matches!(s,
-                Slot::Bound { key: old, socket } if old.matches(key) && socket.strong_count() != 0)
-            }) {
-                return Err(EADDRINUSE);
-            }
-        }
-        let index = slots.iter().position(Option::is_none).ok_or(ENOBUFS)?;
-        slots[index] = Some(Slot::Reserved);
-        Reservation(index)
-    };
-    let key = match (key, name) {
-        (Some(key), _) => key,
-        (None, UnixName::Path(bytes)) => {
-            let path = core::str::from_utf8(bytes).map_err(|_| EINVAL)?;
-            let mode = crate::syscall::fs::S_IFSOCK | (0o777 & !Credentials::current(false).umask);
-            match crate::syscall::fifo::mknodat_path(AT_FDCWD, path, mode, 0) {
-                SyscallResult::Ok(_) => {}
-                SyscallResult::Err(e) => {
-                    return Err(if e as i32 == EEXIST {
-                        EADDRINUSE
-                    } else {
-                        e as i32
-                    })
-                }
-            }
-            path_key(bytes, false)?
-        }
-        _ => return Err(EINVAL),
-    };
-    let mut slots = UNIX_SOCKET_REGISTRY.slots.lock();
-    // Two abstract reservations can be made before either publishes.
-    if slots.iter().flatten().any(|s| {
-        matches!(s,
-        Slot::Bound { key: old, socket } if old.matches(&key) && socket.strong_count() != 0)
-    }) {
-        drop(slots);
+fn create_path(bytes: &[u8]) -> Result<Key, i32> {
+    if bytes.is_empty() || bytes.len() > NAME_BYTES {
+        return Err(EINVAL);
+    }
+    let cred = Credentials::current(false);
+    let resolved =
+        crate::fs::namei::resolve_socket_path(bytes, true, &cred).map_err(|e| e as i32)?;
+    if resolved.last != Last::Name || matches!(resolved.target, Target::Inode { .. }) {
         return Err(EADDRINUSE);
     }
-    slots[reservation.0] = Some(Slot::Bound { key, socket });
-    drop(slots);
+    let Target::Absent { mount, .. } = resolved.target else {
+        return Err(EPERM);
+    };
+    if resolved.trailing_slash {
+        return Err(ENOENT);
+    }
+    let parent = resolved.entry_dir().ok_or(EIO)?;
+    let name = resolved.path.rsplit(|b| *b == b'/').next().ok_or(EINVAL)?;
+    let mut guard = mount.write().map_err(|e| e as i32)?;
+    let fs = guard.as_mut().ok_or(EIO)?;
+    let parent = parent.verify(fs).map_err(|_| ENOENT)?;
+    let inode = fs
+        .read_inode(parent)
+        .map_err(|e| crate::fs::namei::fs_errno(e) as i32)?;
+    let gid = crate::syscall::fifo_policy::check_parent_access(&inode, &cred, None)
+        .map_err(|e| e as i32)?;
+    let mode = 0o140000 | crate::syscall::fifo_policy::creation_mode(0o777, &cred, gid, false);
+    fs.create_node_prepared(parent, name, mode, cred.euid, gid, 0, |fs, ino| {
+        fs.pin_loaded_inode(ino, 0)
+    })
+    .map(Key::Path)
+    .map_err(|error| {
+        if error.contains("already exists") {
+            EADDRINUSE
+        } else if error.contains("not found") {
+            ENOENT
+        } else if error.contains("No free") || error.contains("No space") {
+            ENOSPC
+        } else {
+            crate::fs::namei::fs_errno(error) as i32
+        }
+    })
+}
+pub fn bind_name(name: &UnixName, socket: Weak<Socket>) -> Result<(), i32> {
+    // Allocate the complete binding before creating any on-disk node. Publication
+    // cannot fail for a freshly created inode and does not allocate.
+    let mut binding = Box::try_new(Binding {
+        _owner: OwnerLease::reserve(Credentials::current(false).euid)?,
+        key: abstract_key(&[])?,
+        socket,
+        next: None,
+    })
+    .map_err(|_| ENOMEM)?;
+    binding.key = match name {
+        UnixName::Abstract(bytes) => abstract_key(bytes)?,
+        UnixName::Path(bytes) => create_path(bytes)?,
+        UnixName::Unnamed => return Err(EINVAL),
+    };
+    let bucket = binding.key.bucket();
+    let mut head = UNIX_SOCKET_REGISTRY.buckets[bucket].lock();
+    let mut cursor = head.as_deref();
+    while let Some(old) = cursor {
+        if old.key.matches(&binding.key) && old.socket.strong_count() != 0 {
+            return Err(EADDRINUSE);
+        }
+        cursor = old.next.as_deref();
+    }
+    binding.next = head.take();
+    *head = Some(binding);
     Ok(())
 }
-
 pub fn lookup(name: &UnixName) -> Result<Arc<Socket>, i32> {
     let key = match name {
         UnixName::Abstract(bytes) => abstract_key(bytes)?,
-        UnixName::Path(bytes) => path_key(bytes, true)?,
+        UnixName::Path(bytes) => path_key(bytes)?,
         UnixName::Unnamed => return Err(EINVAL),
     };
-    let slots = UNIX_SOCKET_REGISTRY.slots.lock();
-    slots
-        .iter()
-        .flatten()
-        .find_map(|s| match s {
-            Slot::Bound { key: old, socket } if old.matches(&key) => socket.upgrade(),
-            _ => None,
-        })
-        .ok_or(ECONNREFUSED)
+    let head = UNIX_SOCKET_REGISTRY.buckets[key.bucket()].lock();
+    let mut cursor = head.as_deref();
+    while let Some(binding) = cursor {
+        if binding.key.matches(&key) {
+            if let Some(socket) = binding.socket.upgrade() {
+                return Ok(socket);
+            }
+        }
+        cursor = binding.next.as_deref();
+    }
+    Err(ECONNREFUSED)
 }
-
-/// Remove by socket identity, not by a pathname that may have been unlinked.
 pub fn unbind(socket: &Socket) {
     unbind_id(socket as *const Socket as usize);
 }
-
-/// A deferred release moves protocol state to a carcass. The registry Weak
-/// retains the original allocation's identity until this unbind.
 pub fn unbind_id(socket_id: usize) {
-    // Move inode handles out before dropping them: their finalizer does not
-    // run with the namespace lock held.
-    loop {
+    for bucket in &UNIX_SOCKET_REGISTRY.buckets {
         let removed = {
-            let mut slots = UNIX_SOCKET_REGISTRY.slots.lock();
-            let index = slots.iter().position(|s| {
-                matches!(s,
-                Some(Slot::Bound { socket: weak, .. }) if weak.as_ptr() as usize == socket_id)
-            });
-            index.and_then(|i| slots[i].take())
+            let mut head = bucket.lock();
+            let mut cursor = &mut *head;
+            loop {
+                match cursor {
+                    Some(binding) if binding.socket.as_ptr() as usize == socket_id => {
+                        let mut removed = cursor.take().unwrap();
+                        *cursor = removed.next.take();
+                        break Some(removed);
+                    }
+                    Some(binding) => cursor = &mut binding.next,
+                    None => break None,
+                }
+            }
         };
-        if removed.is_none() {
-            break;
-        }
-        drop(removed);
+        drop(removed); // Inode pins are dropped with IRQs restored.
     }
 }

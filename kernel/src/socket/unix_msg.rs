@@ -3,14 +3,92 @@
 
 use super::addr::UnixName;
 use super::object::UCred;
-use crate::ipc::fd::FileDescriptor;
+use crate::ipc::fd::{FdKind, FileDescriptor};
+use crate::irq_safe_mutex::IrqSafeMutex;
 use crate::syscall::errno::{EAGAIN, EMSGSIZE, ENOMEM};
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 pub const MAX_RIGHTS: usize = 253; // Linux SCM_MAX_FD.
 pub const MAX_DATA: usize = 4 * 1024 * 1024;
 const MAX_MESSAGES: usize = 1024;
+
+// A bounded in-flight graph, including unnamed sockets. Checking all roots
+// prevents a later send into a child from growing an existing chain past four.
+const MAX_INFLIGHT: usize = 16384;
+const ETOOMANYREFS: i32 = 109;
+static INFLIGHT: AtomicUsize = AtomicUsize::new(0);
+static NEXT_MESSAGE: AtomicUsize = AtomicUsize::new(1);
+struct Edge {
+    message: usize,
+    from: usize,
+    to: usize,
+    weight: u8,
+}
+static RIGHTS_GRAPH: IrqSafeMutex<Vec<Edge>> = IrqSafeMutex::new(Vec::new());
+
+fn validate_graph(edges: &[Edge]) -> Result<(), i32> {
+    let mut nodes = Vec::new();
+    nodes
+        .try_reserve_exact(edges.len() * 2)
+        .map_err(|_| ENOMEM)?;
+    for edge in edges {
+        nodes.push((edge.from, 0u8));
+        nodes.push((edge.to, 0));
+    }
+    nodes.sort_unstable_by_key(|n| n.0);
+    nodes.dedup_by_key(|n| n.0);
+    for _ in 0..10 {
+        let mut changed = false;
+        for edge in edges {
+            let from = nodes.binary_search_by_key(&edge.from, |n| n.0).unwrap();
+            let to = nodes.binary_search_by_key(&edge.to, |n| n.0).unwrap();
+            let depth = nodes[to].1 + edge.weight;
+            if depth > 4 {
+                return Err(ETOOMANYREFS);
+            }
+            if depth > nodes[from].1 {
+                nodes[from].1 = depth;
+                changed = true;
+            }
+        }
+        if !changed {
+            return Ok(());
+        }
+    }
+    Err(ETOOMANYREFS)
+}
+
+/// A queued accept owns its server endpoint too. Include that zero-cost edge
+/// so rights sent to an unaccepted endpoint cannot hide a longer release chain.
+pub struct PendingLink(usize);
+impl PendingLink {
+    pub fn new(listener: usize, server: usize) -> Result<Self, i32> {
+        let id = NEXT_MESSAGE.fetch_add(1, Ordering::Relaxed);
+        let mut graph = RIGHTS_GRAPH.lock();
+        if graph.len() == MAX_INFLIGHT {
+            return Err(ETOOMANYREFS);
+        }
+        graph.try_reserve(1).map_err(|_| ENOMEM)?;
+        graph.push(Edge {
+            message: id,
+            from: listener,
+            to: server,
+            weight: 0,
+        });
+        if let Err(e) = validate_graph(&graph) {
+            graph.pop();
+            return Err(e);
+        }
+        Ok(Self(id))
+    }
+}
+impl Drop for PendingLink {
+    fn drop(&mut self) {
+        RIGHTS_GRAPH.lock().retain(|edge| edge.message != self.0);
+    }
+}
 
 pub struct UnixMsg {
     pub data: Vec<u8>,
@@ -18,6 +96,8 @@ pub struct UnixMsg {
     pub cred: UCred,
     pub from: UnixName,
     offset: usize,
+    flight_charge: usize,
+    graph_id: usize,
 }
 
 impl UnixMsg {
@@ -33,15 +113,62 @@ impl UnixMsg {
             cred,
             from,
             offset: 0,
+            flight_charge: 0,
+            graph_id: 0,
         };
         if msg.rights.len() > MAX_RIGHTS || data.len() > MAX_DATA {
             return Err(EMSGSIZE);
         }
+        let charge = msg.rights.len();
+        INFLIGHT
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                n.checked_add(charge).filter(|n| *n <= MAX_INFLIGHT)
+            })
+            .map_err(|_| ETOOMANYREFS)?;
+        msg.flight_charge = charge;
         msg.data.try_reserve_exact(data.len()).map_err(|_| ENOMEM)?;
         msg.data.extend_from_slice(data);
         Ok(msg)
     }
 
+    pub fn register_rights(&mut self, receiver: usize) -> Result<(), i32> {
+        if self.graph_id != 0 || self.rights.is_empty() {
+            return Ok(());
+        }
+        let id = NEXT_MESSAGE.fetch_add(1, Ordering::Relaxed);
+        let mut graph = RIGHTS_GRAPH.lock();
+        if graph.len().saturating_add(self.rights.len()) > MAX_INFLIGHT {
+            return Err(ETOOMANYREFS);
+        }
+        graph.try_reserve(self.rights.len()).map_err(|_| ENOMEM)?;
+        for right in &self.rights {
+            if let FdKind::Socket(socket) = &right.kind {
+                if socket.family == 1 {
+                    graph.push(Edge {
+                        message: id,
+                        from: receiver,
+                        to: alloc::sync::Arc::as_ptr(socket) as usize,
+                        weight: 1,
+                    });
+                }
+            }
+        }
+        if let Err(e) = validate_graph(&graph) {
+            graph.retain(|edge| edge.message != id);
+            return Err(e);
+        }
+        self.graph_id = id;
+        Ok(())
+    }
+    fn leave_flight(&mut self) {
+        if self.graph_id != 0 {
+            RIGHTS_GRAPH
+                .lock()
+                .retain(|edge| edge.message != self.graph_id);
+            self.graph_id = 0;
+        }
+        INFLIGHT.fetch_sub(core::mem::take(&mut self.flight_charge), Ordering::AcqRel);
+    }
     pub fn bytes(&self) -> &[u8] {
         &self.data[self.offset..]
     }
@@ -55,12 +182,11 @@ impl UnixMsg {
 
 impl Drop for UnixMsg {
     fn drop(&mut self) {
+        self.leave_flight();
         let rights = core::mem::take(&mut self.rights);
         if !rights.is_empty() {
             // Bounded by SCM_MAX_FD, including error/close paths.
-            crate::task::process_task::close_extracted_fds(
-                rights.into_iter().enumerate().collect(),
-            );
+            crate::task::process_task::close_extracted_fds(rights.into_iter().enumerate());
         }
     }
 }
@@ -173,6 +299,7 @@ impl UnixQueue {
             return Vec::new();
         };
         let before = msg.charge();
+        msg.leave_flight();
         let rights = core::mem::take(&mut msg.rights);
         self.bytes -= before - msg.charge();
         rights

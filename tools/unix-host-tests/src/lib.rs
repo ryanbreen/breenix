@@ -1,6 +1,7 @@
 //! Host execution of the production Unix message queue with counted-descriptor
 //! shims. Filesystem and scheduler behaviour still require guest validation.
 #![cfg(test)]
+#![feature(allocator_api)]
 extern crate alloc;
 
 #[path = "../../../kernel/src/socket/addr.rs"]
@@ -21,11 +22,21 @@ pub mod socket {
 }
 pub mod ipc {
     pub mod fd {
-        #[derive(Debug)]
-        pub struct FileDescriptor(pub std::sync::Arc<()>);
+        pub enum FdKind {
+            Socket(std::sync::Arc<crate::object::Socket>),
+            File(std::sync::Arc<()>),
+        }
+        pub struct FileDescriptor {
+            pub kind: FdKind,
+        }
         impl FileDescriptor {
             pub fn counted_clone(&self) -> Self {
-                Self(self.0.clone())
+                Self {
+                    kind: match &self.kind {
+                        FdKind::Socket(s) => FdKind::Socket(s.clone()),
+                        FdKind::File(f) => FdKind::File(f.clone()),
+                    },
+                }
             }
         }
     }
@@ -35,7 +46,7 @@ pub mod syscall {
         Ok(u64),
         Err(u64),
     }
-    pub use crate::namespace_support::{at_path, fifo, metadata};
+    pub use crate::namespace_support::{at_path, fifo, fifo_policy, metadata};
     pub mod fs {
         pub const S_IFSOCK: u32 = 0o140000;
     }
@@ -77,13 +88,19 @@ pub mod syscall {
         pub const EDESTADDRREQ: i32 = 89;
         pub const EPERM: i32 = 1;
         pub const ENOTCONN: i32 = 107;
+        pub const ENOSPC: i32 = 28;
+        pub const ECONNRESET: i32 = 104;
         pub const ENOPROTOOPT: i32 = 92;
     }
 }
 pub mod task {
     pub mod process_task {
-        pub fn close_extracted_fds(entries: Vec<(usize, crate::ipc::fd::FileDescriptor)>) {
-            drop(entries);
+        pub fn close_extracted_fds(
+            entries: impl IntoIterator<Item = (usize, crate::ipc::fd::FileDescriptor)>,
+        ) {
+            for entry in entries {
+                drop(entry);
+            }
         }
     }
 }
@@ -189,7 +206,9 @@ fn rights_live_in_flight_and_transfer_once_to_receiver() {
     let mut q = UnixQueue::new();
     let msg = UnixMsg::new(
         b"F",
-        vec![ipc::fd::FileDescriptor(file.clone())],
+        vec![ipc::fd::FileDescriptor {
+            kind: ipc::fd::FdKind::File(file.clone()),
+        }],
         UCred {
             pid: 1,
             uid: 2,
@@ -217,7 +236,9 @@ fn discarded_messages_close_rights_including_rejected_sends() {
     let mut q = UnixQueue::new();
     let msg = UnixMsg::new(
         b"F",
-        vec![ipc::fd::FileDescriptor(file.clone())],
+        vec![ipc::fd::FileDescriptor {
+            kind: ipc::fd::FdKind::File(file.clone()),
+        }],
         UCred {
             pid: 1,
             uid: 2,
@@ -230,7 +251,9 @@ fn discarded_messages_close_rights_including_rejected_sends() {
     drop(q);
     assert_eq!(std::sync::Arc::strong_count(&file), 1);
     let rights = (0..MAX_RIGHTS + 1)
-        .map(|_| ipc::fd::FileDescriptor(file.clone()))
+        .map(|_| ipc::fd::FileDescriptor {
+            kind: ipc::fd::FdKind::File(file.clone()),
+        })
         .collect();
     assert!(matches!(
         UnixMsg::new(
