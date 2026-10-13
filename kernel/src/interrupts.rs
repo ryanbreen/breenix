@@ -527,6 +527,9 @@ extern "x86-interrupt" fn serial_interrupt_handler(stack_frame: InterruptStackFr
         crate::serial::add_serial_byte(byte);
     }
 
+    // Send the next burst of queued output if the transmitter has emptied.
+    crate::serial::transmitter_interrupt();
+
     crate::arch_impl::x86_64::irq::eoi(InterruptIndex::Serial.as_u8());
 
     // Exit hardware IRQ context
