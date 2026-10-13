@@ -1022,6 +1022,9 @@ pub unsafe extern "C" fn execve(
         return -1;
     }
 
+    // The message queue notification helper is stopped first: exec fails
+    // while another thread shares the address space.
+    let stopped = mqueue::before_exec();
     let result = libbreenix::raw::syscall3(
         libbreenix::syscall::nr::EXEC,
         path as u64,
@@ -1029,6 +1032,7 @@ pub unsafe extern "C" fn execve(
         envp as u64,
     ) as i64;
     // execve should not return on success
+    mqueue::after_failed_exec(stopped);
     syscall_result_to_c_int(result)
 }
 
