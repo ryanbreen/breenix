@@ -52,6 +52,8 @@ pub struct LineDiscipline {
 
     /// Remaining bytes in each completed line; zero is an out-of-band EOF.
     line_records: VecDeque<usize>,
+    /// EOF records consume input capacity without carrying a byte.
+    eof_records: usize,
 
     /// Queue for raw mode (characters available immediately)
     raw_queue: VecDeque<u8>,
@@ -85,7 +87,7 @@ impl LineDiscipline {
         raw_queue.try_reserve_exact(MAX_CANON).map_err(|_| 12)?;
         Ok(Self {
             termios: Termios::default(), line_buffer, cooked_queue,
-            line_records, raw_queue,
+            line_records, raw_queue, eof_records: 0,
             input_epoch: Arc::try_new(AtomicU64::new(0)).map_err(|_| 12)?,
             column: 0, flow_stopped: false,
         })
@@ -99,7 +101,7 @@ impl LineDiscipline {
 
     fn input_used(&self) -> usize {
         self.line_buffer.len() + self.cooked_queue.len() + self.raw_queue.len()
-            + self.line_records.iter().filter(|&&n| n == 0).count()
+            + self.eof_records
     }
 
     /// Canonical overflow still accepts editing and a delimiter when no
@@ -135,6 +137,7 @@ impl LineDiscipline {
             self.raw_queue.append(&mut self.cooked_queue);
             self.raw_queue.extend(self.line_buffer.drain(..));
             self.line_records.clear();
+            self.eof_records = 0;
         } else if !self.termios.is_canonical() && termios.is_canonical() {
             // Linux makes previously received raw input readable as one record,
             // without requiring an additional newline or adding an EOF byte.
@@ -393,6 +396,7 @@ impl LineDiscipline {
             // Keep EOF distinct from every possible input byte.
             if self.input_used() < MAX_INPUT && self.line_records.len() < MAX_CANON {
                 self.line_records.push_back(0);
+                self.eof_records += 1;
             }
         } else {
             // Non-empty line - complete it without adding newline
@@ -439,6 +443,7 @@ impl LineDiscipline {
             let Some(remaining) = self.line_records.front_mut() else { return Ok(0); };
             if *remaining == 0 {
                 self.line_records.pop_front();
+                self.eof_records -= 1;
                 return Err(EOF_MARKER);
             }
             let count = buf.len().min(*remaining);
@@ -462,7 +467,7 @@ impl LineDiscipline {
     pub fn read_user(&mut self, buf_ptr: u64, scratch: &mut [u8]) -> Result<usize, i32> {
         let n = if self.termios.is_canonical() {
             match self.line_records.front() {
-                Some(&0) => { self.line_records.pop_front(); return Err(EOF_MARKER); }
+                Some(&0) => { self.line_records.pop_front(); self.eof_records -= 1; return Err(EOF_MARKER); }
                 Some(&n) => n.min(scratch.len()),
                 None => 0,
             }
@@ -492,6 +497,7 @@ impl LineDiscipline {
         self.line_buffer.clear();
         self.cooked_queue.clear();
         self.line_records.clear();
+        self.eof_records = 0;
         self.raw_queue.clear();
         self.column = 0;
     }
