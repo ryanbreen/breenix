@@ -398,6 +398,23 @@ setup_mmu:
     dsb ish
     isb
 
+    // MMU-off writes bypassed the cache. Discard stale cache lines before
+    // table walks and Rust accesses become WBWA; finish maintenance at PoC.
+    dsb sy
+    ldr x0, =ttbr0_l0
+    ldr x1, =__boot_stack_top
+    bl invalidate_boot_range
+    ldr x0, =__bss_start
+    ldr x1, =__bss_end
+    ldr x2, =KERNEL_VIRT_BASE
+    sub x0, x0, x2
+    sub x1, x1, x2
+    bl invalidate_boot_range
+    dsb sy
+    ic iallu
+    dsb sy
+    isb
+
     // Enable MMU
     mrs x0, sctlr_el1
     // Clear WXN (bit 19)
@@ -414,6 +431,24 @@ setup_mmu:
     isb
 
     ldr x30, [sp], #16      // Restore link register
+    ret
+
+// Invalidate [x0, x1) while MMU and caches are off. The range was written
+// non-cacheably, so invalidate (not clean) any stale copy left by firmware.
+invalidate_boot_range:
+    mrs x2, ctr_el0
+    ubfx x2, x2, #16, #4
+    mov x3, #4
+    lsl x2, x3, x2
+    sub x3, x2, #1
+    bic x0, x0, x3
+1:
+    cmp x0, x1
+    b.hs 2f
+    dc ivac, x0
+    add x0, x0, x2
+    b 1b
+2:
     ret
 
 // Zero a 4KB table at x0
@@ -522,6 +557,9 @@ sync_exception_handler:
     // with the idle thread's boot stack, just like the IRQ handler does.
     // PERCPU_USER_RSP_SCRATCH_OFFSET = 40
     mrs x2, tpidr_el1
+    // Runtime vectors are installed before per-CPU initialization. An early
+    // fault must preserve ESR/ELR/FAR for GDB, never touch storage at address 0.
+    cbz x2, unhandled_exception
     // Preserve the outer return SP across nested exceptions while
     // PREEMPT_ACTIVE is set. In that window, user_rsp_scratch already holds
     // the dispatched thread's target SP; overwriting it with this transient
