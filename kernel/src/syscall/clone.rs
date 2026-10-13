@@ -490,7 +490,7 @@ pub fn sys_clone_thread(
     })
     .flatten();
     if let Some(code) = child_ended {
-        crate::syscall::signal::kill_process_now(child_pid, code);
+        crate::syscall::signal::kill_process_now(child_pid, code, None);
     }
 
     log::debug!(
