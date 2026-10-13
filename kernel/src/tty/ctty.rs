@@ -115,20 +115,30 @@ pub fn hangup(_t: TtyId) {}
 /// A terminal was opened. Called with no locks held, after the fd is installed.
 pub fn acquire_on_open(_t: TtyId, _open_flags: u32) {}
 
-/// The caller's process id, session, process group and thread group.
+/// The caller's session, process group, thread group and privilege.
 struct Caller {
     sid: ProcessId,
     pgid: ProcessId,
     group: u64,
+    privileged: bool,
 }
 
-fn caller(pm: &ProcessManager) -> Result<Caller, i32> {
-    let tid = crate::task::scheduler::current_thread_id().ok_or(ESRCH)?;
+impl Caller {
+    /// A session leader is the thread group whose id is the session's.
+    fn leads_session(&self) -> bool {
+        self.group == self.sid.as_u64()
+    }
+}
+
+/// The calling thread `tid`'s process. `tid` is read before the process
+/// manager is taken: the scheduler lock comes first in the lock order.
+fn caller(pm: &ProcessManager, tid: u64) -> Result<Caller, i32> {
     let (pid, process) = pm.find_process_by_thread(tid).ok_or(ESRCH)?;
     Ok(Caller {
         sid: process.sid,
         pgid: process.pgid,
         group: process.thread_group_id.unwrap_or(pid.as_u64()),
+        privileged: process.cred.privileged(),
     })
 }
 
@@ -139,12 +149,23 @@ pub fn ioctl(t: &TtyRef, _side: Side, request: u64, arg: u64) -> Result<i32, i32
     };
     match request {
         TIOCSCTTY => {
+            let tid = crate::task::scheduler::current_thread_id().ok_or(ESRCH)?;
             let mut guard = crate::process::manager();
             let pm = guard.as_mut().ok_or(ESRCH)?;
-            let me = caller(pm)?;
+            let me = caller(pm, tid)?;
+            // Linux tiocsctty: only a session leader may acquire a terminal,
+            // and the terminal of its own session is already its own.
+            if !me.leads_session() {
+                return Err(EPERM);
+            }
             {
                 let mut ctl = pair.ctl.lock();
-                if ctl.session.is_some_and(|sid| sid != me.sid) && arg == 0 {
+                if ctl.session == Some(me.sid) {
+                    return Ok(0);
+                }
+                // Another session's terminal is taken only by a privileged
+                // caller asking to steal it (arg 1).
+                if ctl.session.is_some() && !(arg == 1 && me.privileged) {
                     return Err(EPERM);
                 }
                 ctl.attach(me.sid, me.pgid);
@@ -153,9 +174,10 @@ pub fn ioctl(t: &TtyRef, _side: Side, request: u64, arg: u64) -> Result<i32, i32
             Ok(0)
         }
         TIOCNOTTY => {
+            let tid = crate::task::scheduler::current_thread_id().ok_or(ESRCH)?;
             let mut guard = crate::process::manager();
             let pm = guard.as_mut().ok_or(ESRCH)?;
-            let me = caller(pm)?;
+            let me = caller(pm, tid)?;
             {
                 let mut ctl = pair.ctl.lock();
                 if ctl.session.is_some_and(|sid| sid != me.sid) {
