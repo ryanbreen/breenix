@@ -170,7 +170,7 @@ echo ""
 
 # Start QEMU in background (180s total timeout — 84 tests, the exec smoke, and the soak)
 qemu_host_lock_acquire
-timeout 180 qemu-system-aarch64 \
+timeout 180 "$QEMU_UI" qemu-system-aarch64 \
     -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
     -kernel "$KERNEL" \
     -display none -no-reboot \

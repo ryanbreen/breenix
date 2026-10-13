@@ -181,7 +181,7 @@ run_single_test() {
         DISK_DEVICE_OPTS="-device virtio-blk-device,drive=ext2"
     fi
     qemu_host_lock_acquire
-    timeout 30 qemu-system-aarch64 \
+    timeout 30 "$QEMU_UI" qemu-system-aarch64 \
         -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
         -kernel "$KERNEL" \
         -display none -no-reboot \

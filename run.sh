@@ -1372,7 +1372,7 @@ if [ "$ARCH" = "arm64" ]; then
     host_slot_acquire mac-boot
     qemu_host_lock_acquire
     host_slot_quiet
-    qemu-system-aarch64 \
+    "$QEMU_UI" qemu-system-aarch64 \
         -M virt,gic-version=3 -cpu max -smp 4 \
         -m 512M \
         -kernel "$KERNEL" \

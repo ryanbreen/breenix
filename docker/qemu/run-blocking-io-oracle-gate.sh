@@ -176,7 +176,7 @@ for ((boot=1; boot<=BOOTS; boot++)); do
     CURRENT_SERIAL="$RUN_DIR/serial.txt"
     : >"$CURRENT_SERIAL"
     if [ "$ARCH" = aarch64 ]; then
-        qemu_host_lock_acquire qemu-system-aarch64
+        qemu_host_lock_acquire "$QEMU_UI" qemu-system-aarch64
         qemu-system-aarch64 -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
             -kernel "$KERNEL" -display none -no-reboot \
             -device virtio-gpu-device -device virtio-keyboard-device -device virtio-tablet-device \

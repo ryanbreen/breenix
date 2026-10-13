@@ -16,6 +16,14 @@ import sys
 import time
 
 BREENIX_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def qemu_ui_launcher():
+    """The launcher scripts/qemu-ui-launch.sh prints: it runs QEMU's vCPU threads in macOS's
+    user-interactive priority band (`env`, which runs QEMU unchanged, off a Mac or with
+    BREENIX_QEMU_UI=0)."""
+    return subprocess.run([os.path.join(BREENIX_ROOT, "scripts", "qemu-ui-launch.sh")],
+                          capture_output=True, text=True, check=True).stdout.strip()
 KERNEL = os.path.join(BREENIX_ROOT, "target/aarch64-breenix-kernel/release/kernel-aarch64")
 EXT2_DISK = os.path.join(BREENIX_ROOT, "target/ext2-aarch64.img")
 MONITOR_SOCK = "/tmp/breenix_debug_monitor.sock"
@@ -50,6 +58,7 @@ def main():
 
     # Start QEMU with serial to file and monitor on UNIX socket
     qemu_cmd = [
+        qemu_ui_launcher(),
         "qemu-system-aarch64",
         "-M", "virt", "-cpu", "cortex-a72", "-m", "512", "-smp", "4",
         "-kernel", KERNEL,

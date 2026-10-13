@@ -31,6 +31,26 @@ impl Arch {
     }
 }
 
+/// `qemu-system-aarch64`, started through `scripts/qemu-ui-launch.sh`'s launcher so that its
+/// vCPU threads run in macOS's user-interactive priority band; the script prints `env`
+/// (QEMU unchanged) off a Mac or with `BREENIX_QEMU_UI=0`.
+fn aarch64_qemu_command() -> Result<Command> {
+    let output = Command::new("./scripts/qemu-ui-launch.sh")
+        .stderr(Stdio::inherit())
+        .output()
+        .context("Failed to run scripts/qemu-ui-launch.sh")?;
+    if !output.status.success() {
+        bail!("scripts/qemu-ui-launch.sh failed: {}", output.status);
+    }
+    let launcher = String::from_utf8(output.stdout)
+        .context("scripts/qemu-ui-launch.sh printed a non-UTF-8 path")?
+        .trim()
+        .to_string();
+    let mut command = Command::new(launcher);
+    command.arg("qemu-system-aarch64");
+    Ok(command)
+}
+
 /// Configuration for a QEMU test run, encapsulating all platform differences
 /// for building the kernel and launching QEMU.
 pub struct QemuConfig {
@@ -153,7 +173,7 @@ impl QemuConfig {
                 // Add extra args
                 args.extend(self.extra_qemu_args.iter().cloned());
 
-                Command::new("qemu-system-aarch64")
+                aarch64_qemu_command()?
                     .args(&args)
                     .stdin(Stdio::null())
                     .stdout(Stdio::null())

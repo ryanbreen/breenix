@@ -271,7 +271,7 @@ boot_once() {
     cp "$EXT2_DISK" "$ext2"
 
     qemu_host_lock_acquire
-    timeout 40 qemu-system-aarch64 \
+    timeout 40 "$QEMU_UI" qemu-system-aarch64 \
         -M virt,gic-version=3 -cpu "$profile" -m 512 -smp 4 \
         -kernel "$KERNEL" \
         -display none -no-reboot \

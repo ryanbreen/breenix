@@ -238,7 +238,7 @@ for i in $(seq 1 "$ITERATIONS"); do
     # PID makes it trackable the same way each other native launch in this
     # lock's family already is.
     INSPECTOR_START_MS="$(date +%s)000" || INSPECTOR_START_MS=""
-    timeout "$BOOT_SECONDS" qemu-system-aarch64 \
+    timeout "$BOOT_SECONDS" "$QEMU_UI" qemu-system-aarch64 \
         -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
         -kernel "$KERNEL" \
         -display none -no-reboot \

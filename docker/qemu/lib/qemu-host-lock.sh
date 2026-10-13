@@ -103,6 +103,11 @@
 
 _QHL_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 source "$_QHL_REPO/scripts/host-slots.sh"
+# Every native qemu-system-aarch64 launch is written `"$QEMU_UI" qemu-system-aarch64 ...`: on a Mac
+# the launcher runs QEMU's vCPU threads in the user-interactive priority band, so the operator's other
+# work does not push them onto the slower cluster or leave them waiting; elsewhere, and with
+# BREENIX_QEMU_UI=0, it is `env` (scripts/qemu-ui-launch.sh). x86 launches do not use it.
+QEMU_UI="$("$_QHL_REPO/scripts/qemu-ui-launch.sh")"
 # Entries capture argv before parsing. Already-supervised interactive runners
 # share their existing session; shell-only helper tests need no supervisor.
 _QHL_SLOT_ENROLLED=0

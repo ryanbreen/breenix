@@ -258,7 +258,7 @@ launch_qemu() {
             -netdev user,id=net0 \
             -serial file:"$serial_file" &
     else
-        qemu-system-aarch64 \
+        "$QEMU_UI" qemu-system-aarch64 \
             -M virt,gic-version=3 -cpu "$PROFILE" -m 512 -smp 4 \
             -kernel "$KERNEL" \
             -display none -no-reboot \
