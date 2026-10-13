@@ -383,9 +383,16 @@ fn send_signal(target: ProcessId, sig: u32, sender: Sender, info: SigInfo, to: R
             }
             drop(manager_guard);
             if scratch_hold {
-                let until = crate::signal::monotonic_nanos() + 10_000_000;
-                while crate::signal::monotonic_nanos() < until {
-                    core::hint::spin_loop();
+                // Hold until the victim's threads have retired, or 200 ms.
+                let until = crate::signal::monotonic_nanos() + 200_000_000;
+                while crate::signal::monotonic_nanos() < until
+                    && crate::task::scheduler::with_scheduler(|s| s.scratch_has_threads_of(target.as_u64()))
+                        .unwrap_or(false)
+                {
+                    let pause = crate::signal::monotonic_nanos() + 100_000;
+                    while crate::signal::monotonic_nanos() < pause {
+                        core::hint::spin_loop();
+                    }
                 }
                 crate::tracing::providers::scratch1413::rec(target.as_u64(), crate::tracing::providers::scratch1413::HOLD_END, 0);
             }

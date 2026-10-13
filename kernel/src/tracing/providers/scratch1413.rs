@@ -77,7 +77,7 @@ fn name(kind: u64) -> &'static str {
         DECLINE => "decline",
         OBSERVED => "OBSERVED",
         RETIRE => "retire",
-        PURGED => "PURGED_UNOBSERVED",
+        PURGED => "thread_reclaimed(arg=token_queued)",
         KICK_PUBLISHER_CLAIM_IN_SEND => "claim_in_send",
         _ => "?",
     }

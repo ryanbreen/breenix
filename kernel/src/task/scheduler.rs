@@ -2683,9 +2683,8 @@ impl Scheduler {
         }
         for thread in reclaimed_threads.iter() {
             if let Some(pid) = thread.owner_pid {
-                if self.per_cpu_queues.iter().any(|q| q.contains(&thread.id())) {
-                    crate::tracing::providers::scratch1413::rec(pid, crate::tracing::providers::scratch1413::PURGED, thread.id());
-                }
+                let queued = self.per_cpu_queues.iter().any(|q| q.contains(&thread.id()));
+                crate::tracing::providers::scratch1413::rec(pid, crate::tracing::providers::scratch1413::PURGED, queued as u64);
             }
         }
         self.threads = retained_threads;
@@ -5903,6 +5902,11 @@ impl Scheduler {
                 ThreadState::Running | ThreadState::Ready | ThreadState::Terminated => {}
             }
         }
+    }
+
+    /// SCRATCH: whether any scheduler thread still belongs to `pid`.
+    pub fn scratch_has_threads_of(&self, pid: u64) -> bool {
+        self.threads.iter().any(|thread| thread.owner_pid == Some(pid))
     }
 
     /// Make every scheduler-owned thread for a process non-runnable.
