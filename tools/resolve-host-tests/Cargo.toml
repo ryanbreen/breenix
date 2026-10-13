@@ -1,0 +1,9 @@
+[package]
+name = "resolve-host-tests"
+version = "0.1.0"
+edition = "2021"
+[workspace]
+[dependencies]
+libbreenix = { path = "../../libs/libbreenix" }
+[lib]
+doctest = false

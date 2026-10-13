@@ -248,6 +248,8 @@ if [[ "$(uname)" == "Darwin" ]]; then
 
             # Create /etc with passwd and group for musl getpwuid/getgrgid
             mkdir -p /mnt/ext2/etc
+            printf "127.0.0.1 localhost\n" > /mnt/ext2/etc/hosts
+            printf "nameserver 10.0.2.3\n" > /mnt/ext2/etc/resolv.conf
             cat > /mnt/ext2/etc/passwd << PASSWD
 root:x:0:0:root:/root:/bin/bsh
 nobody:x:65534:65534:nobody:/nonexistent:/bin/false
@@ -548,6 +550,8 @@ else
 
     # Create /etc with passwd and group for musl getpwuid/getgrgid
     mkdir -p "$MOUNT_DIR/etc"
+    printf '127.0.0.1 localhost\n' > "$MOUNT_DIR/etc/hosts"
+    printf 'nameserver 10.0.2.3\n' > "$MOUNT_DIR/etc/resolv.conf"
     cat > "$MOUNT_DIR/etc/passwd" << PASSWD
 root:x:0:0:root:/root:/bin/bsh
 nobody:x:65534:65534:nobody:/nonexistent:/bin/false
