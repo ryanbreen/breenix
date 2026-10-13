@@ -4838,10 +4838,20 @@ impl Scheduler {
     /// receive the same bounded promotion as an already-expired sleep deadline.
     pub(crate) fn expedite_signal_recipient(&mut self, thread_id: u64) {
         if let Some(cpu) = self.cpu_state.iter().position(|s| s.current_thread == Some(thread_id)) {
-            if cpu == Self::current_cpu_id() {
-                set_need_resched();
-            } else {
-                self.send_resched_ipi_to_cpu(cpu);
+            // On x86 the interrupt return (or the syscall's own return)
+            // delivers pending signals. A recipient already on its CPU only
+            // needs that CPU out of a halt. Asking it to reschedule instead
+            // sends the recipient behind unrelated work, even when a second
+            // wake arrives just after an interrupted sleep resumed (#1264).
+            #[cfg(target_arch = "x86_64")]
+            self.wake_cpu_for_current_thread(cpu);
+            #[cfg(target_arch = "aarch64")]
+            {
+                if cpu == Self::current_cpu_id() {
+                    set_need_resched();
+                } else {
+                    self.send_resched_ipi_to_cpu(cpu);
+                }
             }
             return;
         }
