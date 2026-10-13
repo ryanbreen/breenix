@@ -110,3 +110,41 @@ pub fn dump() {
         }
     }
 }
+
+/// x86 forcing v4: the victim whose quarantine token goes on the sender's queue.
+pub static TOKEN_TO_SENDER: AtomicU64 = AtomicU64::new(0);
+
+pub fn token_target(pid: u64, chosen: usize) -> usize {
+    if cfg!(target_arch = "x86_64") && pid != 0 && TOKEN_TO_SENDER.load(Ordering::Acquire) == pid {
+        crate::task::scheduler::current_cpu() as usize
+    } else {
+        chosen
+    }
+}
+
+/// x86 forcing v4: every CPU but the sender's runs a kernel thread for 30 ms,
+/// so no peer's scheduling pass finds its own queue empty and steals.
+pub fn start_busy_peers(pid: u64) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        TOKEN_TO_SENDER.store(pid, Ordering::Release);
+        let me = crate::task::scheduler::current_cpu() as usize;
+        for cpu in 0..16 {
+            if cpu != me && crate::arch_impl::x86_64::smp::is_cpu_online(cpu) {
+                let _ = crate::task::kthread::kthread_run_on_cpu(
+                    move || {
+                        let until = crate::signal::monotonic_nanos() + 30_000_000;
+                        while crate::signal::monotonic_nanos() < until {
+                            crate::task::scheduler::yield_current();
+                            core::hint::spin_loop();
+                        }
+                    },
+                    "s1413_busy",
+                    cpu,
+                );
+            }
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = pid;
+}

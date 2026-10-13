@@ -5969,6 +5969,7 @@ impl Scheduler {
                         self.per_cpu_queues[cpu].len() < self.per_cpu_queues[cpu].capacity()
                     })
                     .min_by_key(|&cpu| self.per_cpu_queues[cpu].len())
+                    .map(|cpu| crate::tracing::providers::scratch1413::token_target(owner_pid, cpu))
                 {
                     crate::tracing::providers::scratch1413::rec(
                         owner_pid,

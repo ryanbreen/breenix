@@ -397,6 +397,7 @@ fn send_signal(target: ProcessId, sig: u32, sender: Sender, info: SigInfo, to: R
                     }
                 }
                 crate::tracing::providers::scratch1413::rec(target.as_u64(), crate::tracing::providers::scratch1413::HOLD_END, 0);
+                crate::tracing::providers::scratch1413::start_busy_peers(target.as_u64());
             }
             crate::signal::delivery::terminate_thread_group_peers(target, -(SIGKILL as i32));
             kill_process_now(target, -(SIGKILL as i32));
