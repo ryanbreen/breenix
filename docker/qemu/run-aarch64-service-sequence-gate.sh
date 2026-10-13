@@ -1156,7 +1156,7 @@ run_profile() {
         fi
 
         qemu_host_lock_acquire
-        qemu-system-aarch64 \
+        "$QEMU_UI" qemu-system-aarch64 \
             -M virt,gic-version=3 -cpu "$cpu_profile" -m 512 -smp 4 \
             -kernel "$KERNEL" \
             -qmp unix:"$QMP_SOCK",server=on,wait=off \

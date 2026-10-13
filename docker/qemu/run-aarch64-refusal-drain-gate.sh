@@ -84,7 +84,7 @@ EXT2_WRITABLE="$OUTPUT_DIR/ext2-writable.img"
 cp "$EXT2_DISK" "$EXT2_WRITABLE"
 
 qemu_host_lock_acquire
-timeout 200 qemu-system-aarch64 \
+timeout 200 "$QEMU_UI" qemu-system-aarch64 \
     -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
     -kernel "$KERNEL" \
     -display none -no-reboot \

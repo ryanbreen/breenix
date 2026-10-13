@@ -185,7 +185,7 @@ while [ "$boot" -le "$BOOTS" ]; do
 
     echo "Booting the ARM64 production profile (boot $boot/$BOOTS)..."
     qemu_host_lock_acquire
-    timeout 120 qemu-system-aarch64 \
+    timeout 120 "$QEMU_UI" qemu-system-aarch64 \
         -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
         -kernel "$KERNEL" \
         -display none -no-reboot \
