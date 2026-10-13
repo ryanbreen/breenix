@@ -45,7 +45,7 @@ use super::wait::{wait_on, IpcDeadline, WaitEnd};
 use crate::fs::permissions::Credentials;
 use crate::irq_safe_mutex::IrqSafeMutex;
 use crate::process::ProcessId;
-use crate::syscall::errno::{EACCES, EAGAIN, EBUSY, EEXIST, EINTR, EINVAL, ENOENT, ENOMEM, EPERM, ETIMEDOUT};
+use crate::syscall::errno::{EACCES, EAGAIN, EBUSY, EEXIST, EINVAL, ENOENT, ENOMEM, EPERM, ETIMEDOUT};
 use crate::task::waitqueue::WaitQueueHead;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -221,14 +221,6 @@ fn realtime_ns() -> i64 {
     sec.saturating_mul(1_000_000_000).saturating_add(nsec)
 }
 
-/// The errno for a wait a signal ended: ERESTARTSYS, which the syscall
-/// return path turns into a restart, unless the signal runs a handler
-/// installed without SA_RESTART (EINTR). The signal is still pending here,
-/// so this decides as the wait did.
-fn interrupted() -> u64 {
-    crate::syscall::check_signals_for_restartable_wait().unwrap_or(EINTR) as u64
-}
-
 impl MessageQueue {
     fn new(maxmsg: usize, msgsize: usize, mode: u32, uid: u32, gid: u32, charge: (u32, u64)) -> Self {
         Self {
@@ -393,8 +385,9 @@ impl MessageQueue {
 
     /// Wait on `q` until the entry of thread `tid` in the `side` list is
     /// completed, and remove it: the completed entry, or
-    /// ETIMEDOUT at `deadline`, or the errno of a signal that ended the wait
-    /// (`interrupted`). An entry completed by the time the wait ends is
+    /// ETIMEDOUT at `deadline`, or the errno that ended the wait otherwise
+    /// (`WaitEnd::Interrupted`: ERESTARTSYS or EINTR for a signal, as the
+    /// wait decided, or ENOMEM). An entry completed by the time the wait ends is
     /// taken as completed, whatever ended it.
     fn wait_done(
         &self,
@@ -425,7 +418,7 @@ impl MessageQueue {
             let failed = match end {
                 WaitEnd::Woken => continue,
                 WaitEnd::TimedOut => ETIMEDOUT as u64,
-                WaitEnd::Interrupted => interrupted(),
+                WaitEnd::Interrupted(errno) => errno,
             };
             let mut inner = self.inner.lock();
             let entry = inner.waiters(side).remove(tid);
