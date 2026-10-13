@@ -10,10 +10,8 @@ fn main() {
         ));
     println!("cargo:rerun-if-changed={}", archive.display());
 
-    // `libc_has = "<name>"` for each thread, scheduling, signal, IPC and terminal function
-    // libc.a defines (and the few others suite-threads, suite-ipc and suite-terminals call),
-    // from the archive's symbol index, so a suite can call a function the library has and
-    // fail a case naming one it lacks, or make its system call, instead of failing to link.
+    // Discover the thread, IPC, terminal, socket and resolver C ABI from libc.a,
+    // so every suite calls available library functions and reports missing ones.
     const PREFIXES: &[&str] = &["pthread_", "sched_", "sig", "mq_", "sem", "shm", "msg"];
     const OTHERS: &[&str] = &[
         "raise", "sysconf", "__errno_location", "exit", "getpid", "close", "pipe", "read", "write", "kill",
@@ -21,6 +19,10 @@ fn main() {
         "mkfifo", "ftok", "ioctl", "isatty", "posix_openpt", "grantpt", "unlockpt", "ptsname", "tcgetattr",
         "tcsetattr", "tcflush", "tcdrain", "tcflow", "tcsendbreak", "tcgetpgrp", "tcsetpgrp", "tcgetsid",
         "cfgetispeed", "cfgetospeed", "cfsetispeed", "cfsetospeed", "setsid", "getsid", "setpgid", "getpgid",
+        "socket", "socketpair", "bind", "listen", "accept", "accept4", "connect", "send", "recv",
+        "sendto", "recvfrom", "sendmsg", "recvmsg", "shutdown", "setsockopt", "getsockopt", "getsockname",
+        "getpeername", "fcntl", "epoll_create1", "epoll_ctl", "epoll_wait", "getaddrinfo", "freeaddrinfo",
+        "getnameinfo", "gai_strerror", "inet_pton", "inet_ntop",
     ];
     println!("cargo:rustc-check-cfg=cfg(libc_has, values(any()))");
     if let Ok(bytes) = fs::read(&archive) {
