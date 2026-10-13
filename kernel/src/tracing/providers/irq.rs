@@ -121,7 +121,7 @@ pub const HEARTBEAT_MARKER: u16 = ((PROVIDER_ID as u16) << 8) | (PROBE_HEARTBEAT
 /// open question on this constant's exact value in section 8 (Q1) -- still
 /// open; 16 is the nearest power of two to the original 20, not a new,
 /// independently re-derived target.
-pub const TICK_SAMPLE: u64 = 16;
+pub const TICK_SAMPLE: u64 = 1;
 
 const _: () = assert!(
     TICK_SAMPLE.is_power_of_two(),

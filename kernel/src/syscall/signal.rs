@@ -34,6 +34,8 @@ const USER_SPACE_END: u64 = 0x0000_8000_0000_0000;
 /// * -ESRCH (3) if no such process or process group
 /// * -EPERM (1) if the caller may signal none of its targets (`Sender::may_signal`)
 pub fn sys_kill(pid: i64, sig: i32) -> SyscallResult {
+    #[cfg(target_arch="x86_64")]
+    if sig==10 { crate::scratch_force::trace(7,crate::per_cpu::current_thread_id_lock_free().unwrap_or(0),pid as u64,crate::signal::monotonic_nanos()); }
     let sig = sig as u32;
     if sig != 0 && !is_valid_signal(sig) {
         return SyscallResult::Err(EINVAL as u64);

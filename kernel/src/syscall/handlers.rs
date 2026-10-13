@@ -446,6 +446,8 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
         }
     };
 
+    #[cfg(target_arch="x86_64")]
+    crate::scratch_force::observe_write(&buffer);
     // Get current process to look up fd
     let thread_id = match crate::task::scheduler::current_thread_id() {
         Some(id) => id,

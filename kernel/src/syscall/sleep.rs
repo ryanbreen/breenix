@@ -41,6 +41,8 @@ pub fn clock_nanosleep(clock: u32, flags: u64, req_ptr: u64, rem_ptr: u64) -> Sy
     if req.tv_sec < 0 || req.tv_nsec < 0 || req.tv_nsec >= 1_000_000_000 {
         return SyscallResult::Err(22);
     }
+    #[cfg(target_arch="x86_64")]
+    crate::scratch_force::trace(22,crate::per_cpu::current_thread_id_lock_free().unwrap_or(0),0,crate::signal::monotonic_nanos());
     let requested = i128::from(req.tv_sec) * 1_000_000_000 + i128::from(req.tv_nsec);
     let absolute = flags as u32 & 1 != 0;
     let realtime = absolute && clock == 0;
@@ -58,6 +60,8 @@ pub fn clock_nanosleep(clock: u32, flags: u64, req_ptr: u64, rem_ptr: u64) -> Sy
     if now >= deadline {
         return SyscallResult::Ok(0);
     }
+    #[cfg(target_arch="x86_64")]
+    crate::scratch_force::trace(1,crate::per_cpu::current_thread_id_lock_free().unwrap_or(0),deadline as u64,crate::signal::monotonic_nanos());
     let interrupted = loop {
         if super::check_signals_for_wait().is_some() {
             break true;
@@ -89,6 +93,8 @@ pub fn clock_nanosleep(clock: u32, flags: u64, req_ptr: u64, rem_ptr: u64) -> Sy
         if super::check_signals_for_wait().is_some() {
             break true;
         }
+        #[cfg(target_arch="x86_64")]
+        crate::scratch_force::published(requested as u64);
         crate::per_cpu::preempt_enable();
         crate::task::scheduler::yield_current();
         crate::arch_halt_while_blocked();
@@ -104,6 +110,8 @@ pub fn clock_nanosleep(clock: u32, flags: u64, req_ptr: u64, rem_ptr: u64) -> Sy
     });
     #[cfg(target_arch = "aarch64")]
     ensure_current_address_space();
+    #[cfg(target_arch="x86_64")]
+    crate::scratch_force::trace(5,crate::per_cpu::current_thread_id_lock_free().unwrap_or(0),deadline as u64,crate::signal::monotonic_nanos());
     if interrupted {
         if !absolute && rem_ptr != 0 {
             let left = (deadline - i128::from(crate::signal::monotonic_nanos())).max(0);
