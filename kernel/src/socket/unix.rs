@@ -15,6 +15,7 @@ use alloc::vec::Vec;
 use spin::{Mutex, MutexGuard};
 
 const AF_UNIX: u16 = 1;
+const SOCK_STREAM: u16 = 1;
 const SOL_SOCKET: i32 = 1;
 const SO_PEERCRED: i32 = 17;
 
@@ -559,6 +560,12 @@ fn name_of_key(key: &[u8]) -> SockAddr {
 }
 
 impl UnixSock {
+    /// Whether AF_UNIX sockets of this type can be created: socket() and
+    /// socketpair() refuse the rest with EINVAL.
+    pub fn supports_kind(kind: u16) -> bool {
+        kind == SOCK_STREAM
+    }
+
     pub fn new(kind: u16) -> UnixSock {
         UnixSock {
             kind,
