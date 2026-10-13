@@ -64,15 +64,17 @@ pub mod fs {
         }
         pub enum Target {
             Inode { mount: Mount, file_type: FileType },
+            Absent,
             Virtual,
         }
         pub struct Resolved {
             pub target: Target,
-            pub pin: FileHandle,
+            pub pin: Option<FileHandle>,
+            pub virtual_absent: bool,
         }
         impl Resolved {
             pub fn handle(&self) -> Option<&FileHandle> {
-                Some(&self.pin)
+                self.pin.as_ref()
             }
         }
         pub fn fs_errno(_error: &'static str) -> u64 {
@@ -121,7 +123,13 @@ pub mod metadata {
         _cred: &fs::permissions::Credentials,
     ) -> Result<fs::namei::Resolved, u64> {
         let fs = FS.lock().unwrap();
-        let node = fs.paths.get(path).ok_or(2u64)?;
+        let Some(node) = fs.paths.get(path) else {
+            return Ok(fs::namei::Resolved {
+                target: fs::namei::Target::Absent,
+                pin: None,
+                virtual_absent: false,
+            });
+        };
         Ok(fs::namei::Resolved {
             target: fs::namei::Target::Inode {
                 mount: fs::namei::Mount,
@@ -131,7 +139,8 @@ pub mod metadata {
                     fs::ext2::FileType::Regular
                 },
             },
-            pin: node.handle.clone(),
+            pin: Some(node.handle.clone()),
+            virtual_absent: false,
         })
     }
 }
@@ -251,4 +260,13 @@ fn relocated_release_removes_the_original_inode_pin() {
     assert!(matches!(carcass.proto, SocketProto::Unix(_)));
     drop(carcass);
     assert_eq!(Arc::strong_count(&inode), 2); // binding released by original identity
+}
+
+#[test]
+fn an_absent_final_component_is_enoent() {
+    use crate::{addr::UnixName, unix_ns::lookup};
+    assert!(matches!(
+        lookup(&UnixName::Path(b"/tmp/ns-missing-final".to_vec())),
+        Err(2)
+    ));
 }

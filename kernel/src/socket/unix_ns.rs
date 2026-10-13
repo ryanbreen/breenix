@@ -79,6 +79,9 @@ fn path_key(bytes: &[u8], writing: bool) -> Result<Key, i32> {
     let cred = Credentials::current(false);
     let resolved =
         crate::syscall::metadata::resolve_at(AT_FDCWD, path, true, &cred).map_err(|e| e as i32)?;
+    if matches!(resolved.target, Target::Absent { .. }) || resolved.virtual_absent {
+        return Err(ENOENT);
+    }
     let Target::Inode {
         mount,
         file_type: FileType::Socket,
