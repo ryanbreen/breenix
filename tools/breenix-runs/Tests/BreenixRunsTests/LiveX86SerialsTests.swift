@@ -16,13 +16,16 @@ final class LiveX86SerialsTests: XCTestCase {
             XCTAssertEqual(fixture.stream.stops, 1)
             let events = fixture.runner.events
             XCTAssertLessThan(events.firstIndex(of: "start")!, events.firstIndex(of: "gate.end")!)
-            XCTAssertLessThan(events.firstIndex(of: "stream.stop")!, events.firstIndex(of: "harvest")!)
-            XCTAssertLessThan(events.firstIndex(of: "harvest")!, events.firstIndex(of: "finish")!)
+            if status != 255 {
+                XCTAssertLessThan(events.firstIndex(of: "stream.stop")!, events.firstIndex(of: "harvest")!)
+                XCTAssertLessThan(events.firstIndex(of: "harvest")!, events.firstIndex(of: "finish")!)
+            }
             if status == 255 {
-                XCTAssertLessThan(events.firstIndex(of: "quiesce")!, events.firstIndex(of: "harvest")!)
+                XCTAssertFalse(events.contains("quiesce"))
+                XCTAssertFalse(events.contains("harvest"))
             }
             let directory = try XCTUnwrap(result.runDirectory)
-            for stream in ["user", "kernel"] {
+            for stream in status == 255 ? [] : ["user", "kernel"] {
                 let expected = "==== breenix-runs boot 1: breenix_gate_1/serial_\(stream).log ====\nfinal \(stream)\n\n"
                 XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("serial_\(stream).txt")), Data(expected.utf8))
             }
@@ -35,7 +38,67 @@ final class LiveX86SerialsTests: XCTestCase {
         }
     }
 
-    func testDisconnectedLiveGateIsNeverHarvestedOrRemovedWithoutQuiescence() throws {
+    func testDroppedFollowResumesWithTheRemoteVerdictAndOnlyOneLaunch() throws {
+        for finalStatus: Int32 in [0, 1] {
+            let fixture = try Fixture(status: finalStatus)
+            defer { fixture.remove() }
+            fixture.runner.followStatuses = [9, 75, finalStatus]
+            fixture.runner.followChunks = ["GATE: ", "PASS ", "(1/1 boot tests passed)\n"].map { Data($0.utf8) }
+            let result = try fixture.launcher.runX86(options: fixture.options)
+            XCTAssertEqual(result.manifest.verdict.isFailure, finalStatus != 0)
+            XCTAssertEqual(fixture.runner.events.filter { $0 == "launch" }.count, 1)
+            XCTAssertEqual(fixture.runner.events.filter { $0 == "gate.end" }.count, 3)
+            XCTAssertFalse(fixture.runner.events.contains("quiesce"))
+            XCTAssertTrue(fixture.runner.events.contains("harvest"))
+            let directory = try XCTUnwrap(result.runDirectory)
+            let records = try String(contentsOf: directory.appendingPathComponent("reconnects.jsonl"), encoding: .utf8)
+            XCTAssertTrue(records.contains("\"operation\":\"gate\""))
+            XCTAssertTrue(records.contains("\"exit_code\":9"))
+            let output = try String(contentsOf: directory.appendingPathComponent("gate-stdout.txt"), encoding: .utf8)
+            XCTAssertEqual(output, "GATE: PASS (1/1 boot tests passed)\n")
+            XCTAssertEqual(fixture.runner.followOffsets, [0, 6, 11])
+        }
+    }
+
+    func testSerialOnlyDisconnectReopensReaderAndKeepsOneRemoteGate() throws {
+        let fixture = try Fixture(status: 0)
+        defer { fixture.remove() }
+        fixture.runner.followStatuses = [75, 0]
+        fixture.runner.dropFirstStream = true
+        let result = try fixture.launcher.runX86(options: fixture.options)
+        XCTAssertFalse(result.manifest.verdict.isFailure)
+        XCTAssertEqual(fixture.stream.starts, 2)
+        XCTAssertEqual(fixture.stream.stops, 2)
+        XCTAssertEqual(fixture.runner.events.filter { $0 == "launch" }.count, 1)
+        XCTAssertFalse(fixture.runner.events.contains("quiesce"))
+    }
+
+    func testLostLaunchAcknowledgementRetriesTheSameClaim() throws {
+        let fixture = try Fixture(status: 0)
+        defer { fixture.remove() }
+        fixture.runner.launchStatuses = [255, 0]
+        let result = try fixture.launcher.runX86(options: fixture.options)
+        XCTAssertFalse(result.manifest.verdict.isFailure)
+        XCTAssertEqual(fixture.runner.launchRequests.count, 2)
+        XCTAssertEqual(fixture.runner.launchRequests.first, fixture.runner.launchRequests.last)
+        XCTAssertFalse(fixture.runner.events.contains("quiesce"))
+    }
+
+    func testFinishedRemoteStatusIsNeverTreatedAsSSHFailure() throws {
+        for status: Int32 in [9, 75, 124, 255] {
+            let fixture = try Fixture(status: status)
+            defer { fixture.remove() }
+            fixture.runner.finalOwnerStatus = true
+            let result = try fixture.launcher.runX86(options: fixture.options)
+            XCTAssertTrue(result.manifest.verdict.isFailure)
+            XCTAssertEqual(fixture.runner.finishStatus, String(status))
+            XCTAssertEqual(fixture.runner.events.filter { $0 == "gate.end" }.count, 1)
+            XCTAssertTrue(fixture.runner.events.contains("harvest"))
+            XCTAssertFalse(fixture.runner.events.contains("quiesce"))
+        }
+    }
+
+    func testExhaustedReconnectsLeaveRemoteGateAndEvidenceAlone() throws {
         let fixture = try Fixture(status: 255)
         defer { fixture.remove() }
         fixture.runner.quiesceStatus = 1
@@ -61,16 +124,17 @@ final class LiveX86SerialsTests: XCTestCase {
         XCTAssertTrue(try String(contentsOf: file, encoding: .utf8).contains("live user"))
     }
 
-    func testThrownGateStillStopsStreamQuiescesAndFinishesOnce() throws {
+    func testThrownFollowRetriesWithoutCancellingRemoteGate() throws {
         let fixture = try Fixture(status: 1)
         defer { fixture.remove() }
         fixture.runner.throwGate = true
-        XCTAssertThrowsError(try fixture.launcher.runX86(options: fixture.options))
+        let result = try fixture.launcher.runX86(options: fixture.options)
+        XCTAssertTrue(result.manifest.verdict.isFailure)
         XCTAssertEqual(fixture.stream.stops, 1)
         XCTAssertEqual(fixture.runner.events.filter { $0 == "finish" }.count, 1)
-        XCTAssertTrue(fixture.runner.events.contains("quiesce"))
+        XCTAssertFalse(fixture.runner.events.contains("quiesce"))
         XCTAssertFalse(fixture.runner.events.contains("remove"))
-        XCTAssertTrue(fixture.runner.events.contains("harvest"))
+        XCTAssertFalse(fixture.runner.events.contains("harvest"))
     }
 
     func testInterruptUnwindsOwnedStreamAndRetainsFailureStatus() throws {
@@ -278,17 +342,30 @@ private func frame(boot: Int, stream: String, data: Data) -> Data {
 private final class FakeStream: X86SerialStreaming, X86SerialStream {
     var receive: (@Sendable (Data) -> Void)?
     var stops = 0
+    var starts = 0
+    var isReading = true
+    private var stopped = false
     var onStop: (() -> Void)?
     func start(_ request: ProcessRequest, receive: @escaping @Sendable (Data) -> Void) throws -> X86SerialStream {
         self.receive = receive
+        starts += 1
+        stopped = false
+        isReading = true
         return self
     }
-    func stop() { if stops == 0 { stops = 1; onStop?() }; receive = nil }
+    func stop() { if !stopped { stops += 1; stopped = true; onStop?() }; receive = nil }
 }
 
 private final class LaunchRunner: ProcessRunner {
     var events: [String] = []
     var status: Int32
+    var followStatuses: [Int32] = []
+    var followChunks: [Data] = []
+    var launchStatuses: [Int32] = []
+    var launchRequests: [ProcessRequest] = []
+    var dropFirstStream = false
+    var finalOwnerStatus = false
+    var followOffsets: [UInt64] = []
     var quiesceStatus: Int32 = 0
     var extractionStatus: Int32 = 0
     var throwGate = false
@@ -337,7 +414,22 @@ private final class LaunchRunner: ProcessRunner {
             return ProcessResult(exitCode: 0)
         }
         let remote = request.arguments.last ?? ""
-        if remote.contains("run-x86-gate.sh") {
+        if remote.hasSuffix("# gate-start") {
+            events.append("launch")
+            launchRequests.append(request)
+            return ProcessResult(exitCode: launchStatuses.isEmpty ? 0 : launchStatuses.removeFirst())
+        }
+        if remote.hasSuffix("# gate-follow") {
+            let offset = UInt64(remote.split(separator: " ").dropLast(2).last ?? "0") ?? 0
+            followOffsets.append(offset)
+            let next = followStatuses.isEmpty ? status : followStatuses.removeFirst()
+            let chunk = followChunks.isEmpty ? Data("GATE: PASS (1/1 boot tests passed)\n".utf8) : followChunks.removeFirst()
+            if !finalOwnerStatus && (next == 9 || next == 75) {
+                if dropFirstStream { stream.isReading = false; dropFirstStream = false }
+                outputHandler?(chunk)
+                events.append("gate.end")
+                return ProcessResult(stdout: chunk, exitCode: next)
+            }
             for serial in sendsFrames ? ["user", "kernel"] : [] {
                 stream.receive?(frame(boot: 1, stream: serial, data: Data("live \(serial)".utf8)))
             }
@@ -348,10 +440,10 @@ private final class LaunchRunner: ProcessRunner {
                 onInterruptGate?()
                 XCTAssertTrue(interrupted)
             }
-            outputHandler?(Data("GATE: PASS (1/1 boot tests passed)\n".utf8))
+            outputHandler?(chunk)
             events.append("gate.end")
             if throwGate { throw NSError(domain: "fake gate", code: 1) }
-            return ProcessResult(stdout: Data("GATE: PASS (1/1 boot tests passed)\n".utf8), exitCode: status)
+            return ProcessResult(stdout: chunk, stderr: next == 255 && !finalOwnerStatus ? Data() : Data("BREENIX_GATE_FINISHED=\(next)\n".utf8), exitCode: next == 255 && !finalOwnerStatus ? 255 : 0)
         }
         if remote.contains("python3 -c 'import base64") { events.append("quiesce"); return ProcessResult(exitCode: quiesceStatus) }
         if remote.contains("tar -czf -") { events.append("harvest"); return ProcessResult(stdout: Data([1]), exitCode: pullStatus) }
@@ -373,6 +465,8 @@ private struct Fixture {
         runner = LaunchRunner(status: status, stream: stream)
         stream.onStop = { [runner] in runner.events.append("stream.stop") }
         launcher = BeastLauncher(store: RunStore(root: root), runner: runner, vigilScript: URL(fileURLWithPath: "/fake-vigil"), serialStreaming: stream)
+        launcher.reconnectLimit = 2
+        launcher.reconnectDelay = { _ in }
         launcher.makeSignals = { [runner] _ in
             let signals = X86LaunchSignals(runner: runner, installHandlers: false)
             runner.onInterruptGate = { [weak signals] in signals?.receive(SIGINT) }

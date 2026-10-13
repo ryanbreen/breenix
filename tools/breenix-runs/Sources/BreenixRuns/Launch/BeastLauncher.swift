@@ -11,7 +11,7 @@ public enum BeastLauncherError: Error, Equatable, CustomStringConvertible {
     public var description: String {
         switch self {
         case .unsupportedHost(let host):
-            return "unsupported x86 host \(host); PR-5 supports only beast and does not fall back to local TCG on this Mac"
+            return "unsupported x86 host \(host); supported transports are beast and beast-lan"
         case .prepareCloneFailed(let exitCode, let output):
             return "prepare clone failed with exit \(exitCode): \(output)"
         case .missingLocalSHA:
@@ -106,6 +106,8 @@ public struct BeastLauncher {
     var makeSignals: (ProcessRunner) -> X86LaunchSignals = { X86LaunchSignals(runner: $0) }
     public var quietOverride: String?
     public var serialStreaming: X86SerialStreaming
+    var reconnectLimit = 12
+    var reconnectDelay: (Int) -> Void = { attempt in Thread.sleep(forTimeInterval: Double(min(attempt, 10))) }
 
     public init(
         store: RunStore,
@@ -243,7 +245,7 @@ public struct BeastLauncher {
         defer { withExtendedLifetime(signals) {} }
         let live = try LiveX86Serials(directory: runDirectory, id: id, options: options, script: vigilScript, runner: runner)
         live.start()
-        let stream = try? serialStreaming.start(RemoteCommand.streamSerialsRequest(paths: planResult.paths, boots: options.boots)) { data in
+        var stream = try? serialStreaming.start(RemoteCommand.streamSerialsRequest(paths: planResult.paths, boots: options.boots)) { data in
             live.receive(data)
         }
         var finishStatus: Int32 = 1
@@ -252,29 +254,86 @@ public struct BeastLauncher {
         let gateStdoutURL = runDirectory.appendingPathComponent("gate-stdout.txt")
         FileManager.default.createFile(atPath: gateStdoutURL.path, contents: nil)
         let gateOutputHandle = try FileHandle(forWritingTo: gateStdoutURL)
-        let gateResult: ProcessResult
+        let reconnectURL = runDirectory.appendingPathComponent("reconnects.jsonl")
+        FileManager.default.createFile(atPath: reconnectURL.path, contents: nil)
+        let reconnectHandle = try FileHandle(forWritingTo: reconnectURL)
+        defer { try? reconnectHandle.close() }
+        var reconnects = 0
+        func reconnect(_ operation: String, _ status: Int32) -> Bool {
+            guard signals.signalNumber == nil, reconnects < reconnectLimit else { return false }
+            reconnects += 1
+            let record: [String: Any] = ["time": ISO8601DateFormatter().string(from: Date()), "operation": operation,
+                                       "attempt": reconnects, "exit_code": status]
+            if let data = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]) {
+                reconnectHandle.write(data + Data([10]))
+            }
+            FileHandle.standardError.write(Data("[reconnect] \(operation) attempt=\(reconnects)/\(reconnectLimit) ssh_exit=\(status); following the same remote run\n".utf8))
+            reconnectDelay(reconnects)
+            return signals.signalNumber == nil
+        }
+        func transportLost(_ result: ProcessResult) -> Bool {
+            [Int32(255), 9, 15, 76, 124, 137, 143].contains(result.exitCode)
+        }
+        var gateResult = ProcessResult(exitCode: 1)
         var gateError: Error?
-        do {
-            gateResult = try runner.run(
-                planResult.runGate,
-                outputHandler: { data in
-                    gateOutputHandle.write(data)
-                    FileHandle.standardOutput.write(data)
+        var completed = false
+        let startRequest = RemoteCommand.startGateRequest(gate: planResult.runGate, paths: planResult.paths)
+        // Retry an uncertain acknowledgement against the same exclusive remote claim.
+        while signals.signalNumber == nil {
+            do {
+                gateResult = try runner.run(startRequest)
+                if !transportLost(gateResult) { break }
+            } catch { gateResult = ProcessResult(exitCode: 255) }
+            if !reconnect("launch", gateResult.exitCode) { break }
+        }
+        if gateResult.exitCode == 0 && signals.signalNumber == nil {
+            while signals.signalNumber == nil {
+                if stream == nil || stream?.isReading == false {
+                    stream?.stop()
+                    live.resetConnection()
+                    if !reconnect("serial", 255) { break }
+                    stream = try? serialStreaming.start(RemoteCommand.streamSerialsRequest(paths: planResult.paths, boots: options.boots)) { live.receive($0) }
                 }
-            )
-        } catch {
-            gateError = error
-            gateResult = ProcessResult(exitCode: 1)
+                do {
+                    gateResult = try runner.run(
+                        RemoteCommand.followGateRequest(paths: planResult.paths, offset: UInt64(fileSize(gateStdoutURL))),
+                        outputHandler: { data in
+                            gateOutputHandle.write(data)
+                            FileHandle.standardOutput.write(data)
+                        })
+                } catch { gateResult = ProcessResult(exitCode: 255) }
+                if gateResult.exitCode == 0,
+                   let statusLine = gateResult.stderrString.split(separator: "\n").first(where: { $0.hasPrefix("BREENIX_GATE_FINISHED=") }),
+                   let status = Int32(statusLine.dropFirst("BREENIX_GATE_FINISHED=".count)) {
+                    gateResult.exitCode = status
+                    completed = true
+                    break
+                }
+                if gateResult.exitCode == 75 { continue }
+                if transportLost(gateResult) {
+                    if !reconnect("gate", gateResult.exitCode) { break }
+                    continue
+                }
+                break
+            }
         }
         stream?.stop()
-        finishStatus = signals.signalNumber.map { 128 + $0 } ?? gateResult.exitCode
+        finishStatus = signals.signalNumber.map { 128 + $0 } ?? (completed ? gateResult.exitCode : 255)
         try gateOutputHandle.close()
-        let interrupted = gateError != nil || gateResult.exitCode == 255 || signals.signalNumber != nil
-        let quiesced = !interrupted || (try? runner.run(RemoteCommand.stopGateRequest(paths: planResult.paths)).exitCode) == 0
+        // Only an explicit local signal stops the detached gate. Exhausted reconnects
+        // preserve the remote owner and evidence; a transport failure is never cancellation.
+        let quiesced = signals.signalNumber != nil
+            ? (try? runner.run(RemoteCommand.stopGateRequest(paths: planResult.paths)).exitCode) == 0
+            : completed
 
         let endedAt = Date()
         let endFacts = parseHostFactsSample(runner: runner, paths: planResult.paths, wallTime: endedAt)
-        let pullResult = quiesced ? ((try? runner.run(planResult.pullEvidence)) ?? ProcessResult(exitCode: 127)) : ProcessResult(exitCode: 127)
+        var pullResult = ProcessResult(exitCode: 127)
+        if quiesced {
+            repeat {
+                pullResult = (try? runner.run(planResult.pullEvidence)) ?? ProcessResult(exitCode: 255)
+            } while transportLost(pullResult) && reconnect("evidence", pullResult.exitCode)
+        }
         if pullResult.exitCode != 0 || pullResult.stdout.isEmpty {
             if finishStatus == 0 { finishStatus = 1 }
         }
@@ -295,7 +354,8 @@ public struct BeastLauncher {
         let gateStdoutBytes = fileSize(gateStdoutURL)
         let command = readableGateCommand(paths: planResult.paths, boots: options.boots, mode: options.mode)
         var env = gateEnvironment(paths: planResult.paths, timeoutSecs: timeoutSecs, qemuProfile: options.qemuProfile, suite: options.suite)
-        var captures = [CaptureRef(name: "gate-stdout.txt", path: "gate-stdout.txt", bytes: gateStdoutBytes)]
+        var captures = [CaptureRef(name: "gate-stdout.txt", path: "gate-stdout.txt", bytes: gateStdoutBytes),
+                        CaptureRef(name: "reconnects.jsonl", path: "reconnects.jsonl", bytes: fileSize(reconnectURL))]
         for screen in screenNames(in: runDirectory) {
             let url = runDirectory.appendingPathComponent(screen)
             captures.append(CaptureRef(name: screen, path: screen, bytes: fileSize(url)))
@@ -362,7 +422,7 @@ public struct BeastLauncher {
         }
         // Only remove evidence after a completed gate and successful harvest.
         // A disconnected SSH session leaves its remote supervisor and evidence alone.
-        if gateError == nil && pullResult.exitCode == 0 && !pullResult.stdout.isEmpty {
+        if quiesced && gateError == nil && pullResult.exitCode == 0 && !pullResult.stdout.isEmpty {
             _ = try? runner.run(planResult.removeClone)
         }
         if let gateError { throw gateError }
@@ -378,7 +438,7 @@ public struct BeastLauncher {
         guard options.boots > 0 else {
             throw BeastLauncherError.invalidBootCount(options.boots)
         }
-        guard pathsTemplate.host == "beast" else {
+        guard ["beast", "beast-lan"].contains(pathsTemplate.host) else {
             throw BeastLauncherError.unsupportedHost(pathsTemplate.host)
         }
         guard !options.sha.isEmpty else {

@@ -85,6 +85,7 @@ final class BeastLauncherTests: XCTestCase {
             "BatchMode=yes",
             "-o",
             "ConnectTimeout=15",
+            "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=2",
             "beast",
             "sudo -n incus exec breenix-x86 -- bash -lc 'git -C /root/breenix fetch --no-tags --no-write-fetch-head --no-auto-gc origin abc123def && rm -rf /root/breenix-testclone && git clone --shared /root/breenix /root/breenix-testclone && git -C /root/breenix-testclone checkout --detach abc123def'"
         ])
@@ -154,7 +155,7 @@ final class BeastLauncherTests: XCTestCase {
 
         XCTAssertEqual(request.executable, "/usr/bin/ssh")
         XCTAssertEqual(request.arguments, [
-            "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "beast",
+            "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=2", "beast",
             #"sudo -n incus exec breenix-x86 -- bash -lc 'mkdir -p /root/breenix-testclone/gate-tmp && python3 -c "import json,pathlib,sys;pid=int(sys.argv[1]);birth=pathlib.Path(\"/proc/%d/stat\"%pid).read_text().rsplit(\")\",1)[1].split()[19];pathlib.Path(sys.argv[2]).write_text(json.dumps([pid,birth,sys.argv[3]]))" "$$" /root/breenix-testclone/gate-tmp/launcher-gate.json /root/breenix/scripts/host-slots.py && source /root/.cargo/env && exec env BREENIX_GATE_TMP=/root/breenix-testclone/gate-tmp BREENIX_REPO_DIR=/root/breenix-testclone BREENIX_RUST_FORK=/root/breenix/rust-fork-real BREENIX_GATE_TIMEOUT=900 BREENIX_FULL_BACKSTOP=1800 CARGO_BUILD_JOBS=6 python3 /root/breenix/scripts/host-slots.py supervise -- bash -c "if [ ! -f /root/breenix-testclone/scripts/host-slots.py ]; then python3 /root/breenix/scripts/host-slots.py acquire x86-build && python3 /root/breenix/scripts/host-slots.py acquire x86-boot || exit 1; fi; exec /root/breenix-testclone/docker/qemu/run-x86-gate.sh 3 kthread"'"#
         ])
         XCTAssertTrue(request.combineOutput)
@@ -430,7 +431,8 @@ final class BeastLauncherTests: XCTestCase {
         _ = try launcher.runX86(options: launchOptions)
 
         XCTAssertTrue(runner.calls.contains(plan.prepareClone))
-        XCTAssertTrue(runner.calls.contains(plan.runGate))
+        XCTAssertTrue(runner.calls.contains(RemoteCommand.startGateRequest(gate: plan.runGate, paths: plan.paths)))
+        XCTAssertTrue(runner.calls.contains(RemoteCommand.followGateRequest(paths: plan.paths, offset: 0)))
         XCTAssertTrue(runner.calls.contains(plan.pullEvidence))
         XCTAssertTrue(runner.calls.contains(plan.removeClone))
     }
@@ -559,11 +561,10 @@ private final class BeastScriptedProcessRunner: ProcessRunner {
         if remote.contains("git clone --shared") {
             return prepareResult
         }
-        if remote.contains("run-x86-gate.sh") {
-            if request.combineOutput {
-                outputHandler?(gateResult.stdout)
-            }
-            return gateResult
+        if remote.hasSuffix("# gate-start") { return ProcessResult(exitCode: 0) }
+        if remote.hasSuffix("# gate-follow") {
+            outputHandler?(gateResult.stdout)
+            return ProcessResult(stdout: gateResult.stdout, stderr: Data("BREENIX_GATE_FINISHED=\(gateResult.exitCode)\n".utf8), exitCode: 0)
         }
         if remote.contains("tar -czf -") {
             return pullResult
@@ -579,6 +580,10 @@ private final class BeastScriptedProcessRunner: ProcessRunner {
 
 private struct NoSerialStreaming: X86SerialStreaming {
     func start(_ request: ProcessRequest, receive: @escaping @Sendable (Data) -> Void) throws -> X86SerialStream {
-        throw NSError(domain: "fake stream unavailable", code: 1)
+        NoSerialStream()
     }
+}
+
+private final class NoSerialStream: X86SerialStream {
+    func stop() {}
 }

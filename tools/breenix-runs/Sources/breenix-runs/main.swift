@@ -327,7 +327,8 @@ func printDryRun(plan: RemoteCommand.Plan) {
     print("  host: \(plan.paths.host)")
     print("  clone: \(plan.paths.clonePath)")
     print("  prepareClone: \(commandLine(plan.prepareClone))")
-    print("  runGate: \(commandLine(plan.runGate))")
+    print("  startGate: \(commandLine(RemoteCommand.startGateRequest(gate: plan.runGate, paths: plan.paths)))")
+    print("  followGate: \(commandLine(RemoteCommand.followGateRequest(paths: plan.paths, offset: 0)))")
     print("  pullEvidence: \(commandLine(plan.pullEvidence))")
     print("  removeClone: \(commandLine(plan.removeClone))")
 }
@@ -444,8 +445,8 @@ func main() -> Int32 {
                 }
             case "x86":
                 let runArgs = try parseRunX86(args.dropFirst(2))
-                guard runArgs.host == "beast" else {
-                    throw CLIError(description: "unsupported x86 host \(runArgs.host); this command supports only beast and does not fall back to local TCG on this Mac")
+                guard ["beast", "beast-lan"].contains(runArgs.host) else {
+                    throw CLIError(description: "unsupported x86 host \(runArgs.host); this command supports beast and beast-lan and does not fall back to local TCG on this Mac")
                 }
                 let root = try repoRoot(startingAt: URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true))
                 let runner = RealProcessRunner()

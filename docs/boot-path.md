@@ -243,8 +243,13 @@ FD_CLOEXEC descriptors, while /tmp, PID allocation and the page cache persist, s
 case equivalence must be verified against separate boots on the same commit.
 Run Inspector streams both beast serial logs into its local run directory over a separate
 owned SSH connection. It registers the gate with Vigil at launch, before building or receiving
-serial bytes, with the launcher's PID and links to the local files. After the gate ends it
-stops the stream and pulls the remote evidence before finishing Vigil. Interrupted gates,
+serial bytes, with the launcher's PID and links to the local files. The gate runs in a detached remote session with an exclusive per-run launch claim,
+so losing either SSH connection cannot cancel it or start a second gate. The Mac
+reconnects with bounded retries, resumes build/boot output at its byte offset and
+deduplicates serial replay; `reconnects.jsonl` records each attempt. `--host beast-lan`
+selects the LAN SSH alias to the same execution environment. Only an explicit local
+signal requests cancellation; exhausted transport retries leave the remote run intact.
+After the remote owner records its final result it stops the stream and pulls the remote evidence before finishing Vigil. Interrupted gates,
 failed builds and failed evidence pulls finish with nonzero status; captured remote evidence
 is harvested after the supervisor has stopped. Runs with no boot directories still receive a
 finished record. Multi-suite sequences keep an overall gate record and file each started

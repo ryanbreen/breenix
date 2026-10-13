@@ -207,6 +207,99 @@ public enum RemoteCommand {
         return sshRequest(paths: paths, remote: incusBashLC(paths: paths, script: script))
     }
 
+    /// The exclusive claim is permanent for this run, including after completion.
+    /// A lost launch acknowledgement can safely repeat this request without rerunning it.
+    static let detachedOwner = #"""
+import base64, fcntl, json, os, pathlib, subprocess, sys, time
+root = pathlib.Path(sys.argv[1])
+root.mkdir(parents=True, exist_ok=True)
+record = root / "gate-owner.json"
+def publish(value):
+    temporary = record.with_suffix(".tmp")
+    temporary.write_text(json.dumps(value))
+    temporary.replace(record)
+if sys.argv[2] == "worker":
+    owner = dict(pid=os.getpid(), birth=pathlib.Path("/proc/self/stat").read_text().rsplit(")",1)[1].split()[19], state="running")
+    publish(owner)
+    try:
+        with (root / "gate-output.log").open("wb") as output:
+            child = subprocess.Popen(["bash", "-lc", base64.b64decode(sys.argv[3]).decode()], stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT)
+            status = child.wait()
+        owner.update(state="finished", exit_code=status if status >= 0 else 128 - status)
+    except BaseException as error:
+        owner.update(state="finished", exit_code=1, error=str(error))
+    publish(owner)
+else:
+    with (root / "gate-launch.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if not record.exists():
+            # Claim before spawn: a failed/uncertain spawn never permits a second gate.
+            publish(dict(state="starting"))
+            child = subprocess.Popen([sys.executable, "-c", base64.b64decode(sys.argv[3]).decode(), str(root), "worker", sys.argv[2]], start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
+        else:
+            child = None
+    deadline = time.monotonic() + 10
+    while json.loads(record.read_text())["state"] == "starting":
+        if (child is not None and child.poll() is not None) or time.monotonic() >= deadline:
+            sys.exit(1)
+        time.sleep(.05)
+"""#
+
+    public static func startGateRequest(gate: ProcessRequest, paths: BeastPaths) -> ProcessRequest {
+        guard let remote = gate.arguments.last,
+              let begin = remote.range(of: "-- bash -lc '") else { return gate }
+        let script = String(remote[begin.upperBound...].dropLast())
+        let owner = Data(detachedOwner.utf8).base64EncodedString()
+        let command = Data(script.utf8).base64EncodedString()
+        var request = sshRequest(paths: paths, remote: "sudo -n incus exec \(paths.container) -- python3 -c 'import base64;exec(base64.b64decode(\"\(owner)\"))' \(paths.gateTmpPath) \(command) \(owner) # gate-start")
+        request.timeoutSecs = 30
+        return request
+    }
+
+    /// Follow only; there is no launch operation on the reconnect path.
+    /// Exit 75 means a healthy, still-running owner, not a transport failure.
+    static let gateFollower = #"""
+import json, pathlib, sys, time
+root = pathlib.Path(sys.argv[1])
+offset = int(sys.argv[2])
+deadline = time.monotonic() + 5
+while True:
+    try:
+        owner = json.loads((root / "gate-owner.json").read_text())
+    except FileNotFoundError:
+        sys.exit(76)
+    try:
+        with (root / "gate-output.log").open("rb") as output:
+            output.seek(offset)
+            data = output.read(1024 * 1024)
+        sys.stdout.buffer.write(data)
+        sys.stdout.buffer.flush()
+        offset += len(data)
+    except FileNotFoundError:
+        data = b""
+    if owner["state"] == "finished" and not data:
+        # Gate stderr is stored in gate-output.log; this channel is owner protocol only.
+        print("BREENIX_GATE_FINISHED=" + str(owner["exit_code"]), file=sys.stderr, flush=True)
+        sys.exit(0)
+    if owner["state"] == "running":
+        try:
+            fields = pathlib.Path("/proc/%d/stat" % owner["pid"]).read_text().rsplit(")",1)[1].split()
+            if fields[19] != owner["birth"] or fields[0] == "Z":
+                sys.exit(76)
+        except FileNotFoundError:
+            sys.exit(76)
+    if time.monotonic() >= deadline:
+        sys.exit(75)
+    time.sleep(.1)
+"""#
+
+    public static func followGateRequest(paths: BeastPaths, offset: UInt64) -> ProcessRequest {
+        let encoded = Data(gateFollower.utf8).base64EncodedString()
+        var request = sshRequest(paths: paths, remote: "sudo -n incus exec \(paths.container) -- python3 -c 'import base64;exec(base64.b64decode(\"\(encoded)\"))' \(paths.gateTmpPath) \(offset) # gate-follow", combineOutput: false, liveStream: true)
+        request.timeoutSecs = 30
+        return request
+    }
+
     /// Nonblocking output keeps the heartbeat deadline active under backpressure.
     /// Catch up in bounded bursts; the final evidence is harvested independently.
     static let serialReader = #"""
@@ -237,7 +330,7 @@ while time.monotonic() - last < 5:
                         data = log.read(1024 * 1024)
                         if key not in offsets or data:
                             offsets[key] = log.tell()
-                            pending.extend((json.dumps(dict(boot=boot, stream=stream, data=base64.b64encode(data).decode())) + "\n").encode())
+                            pending.extend((json.dumps(dict(boot=boot, stream=stream, offset=offsets[key] - len(data), data=base64.b64encode(data).decode())) + "\n").encode())
                 except FileNotFoundError:
                     pass
     if pending:
@@ -387,7 +480,7 @@ if __name__ == "__main__":
     private static func sshRequest(paths: BeastPaths, remote: String, combineOutput: Bool = true, liveStream: Bool = false) -> ProcessRequest {
         ProcessRequest(
             executable: "/usr/bin/ssh",
-            arguments: ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=\(sshTimeoutSecs)"] + (liveStream ? ["-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=2"] : []) + [paths.host, remote],
+            arguments: ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=\(sshTimeoutSecs)", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=2"] + [paths.host, remote],
             combineOutput: combineOutput
         )
     }
