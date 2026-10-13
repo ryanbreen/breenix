@@ -65,7 +65,13 @@ RUSTC_BIN="$(command -v rustc || true)"
 if [[ -z "$RUSTC_BIN" ]]; then
     RUSTC_BIN="${CARGO_HOME:-$HOME/.cargo}/bin/rustc"
 fi
-CARGO_MANIFEST_DIR="${REPO_ROOT}" "$RUSTC_BIN" --edition=2021 --test "${SOURCE}" -o "${BINARY}"
+# Match the root Cargo test optimization for the source-analysis-heavy target.
+# This runner deliberately bypasses Cargo, so it cannot inherit that profile.
+RUSTC_FLAGS=()
+if [[ "$STEM" == context_restore_structure ]]; then
+    RUSTC_FLAGS=(-C opt-level=2 -C debug-assertions=yes -C overflow-checks=yes)
+fi
+CARGO_MANIFEST_DIR="${REPO_ROOT}" "$RUSTC_BIN" --edition=2021 --test "${SOURCE}" "${RUSTC_FLAGS[@]}" -o "${BINARY}"
 
 echo "== running ${STEM} ${FILTER} =="
 if [[ -n "${FILTER}" ]]; then
