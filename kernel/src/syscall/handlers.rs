@@ -664,6 +664,7 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
             use crate::fs::devfs::DeviceType;
             match device_type {
                 DeviceType::Rtc => SyscallResult::Err(13),
+                DeviceType::Ptmx => SyscallResult::Err(6), // ENXIO: open gives a master.
                 DeviceType::Null | DeviceType::Zero => {
                     // /dev/null, /dev/zero - discard all data
                     SyscallResult::Ok(buffer.len() as u64)

@@ -508,50 +508,82 @@ fn arm_winsize(master: Fd, slave: Fd) -> Result<(), Failure> {
     Ok(())
 }
 
-/// Arm 11 -- the foreground process group round-trips through the PTY.
-fn arm_pgrp(master: Fd, slave: Fd) -> Result<(), Failure> {
-    const ARM: &str = "foreground_pgrp";
-    let pid = match process::getpid() {
-        Ok(p) => p.raw() as u32,
-        Err(e) => return Err(fail(ARM, format!("getpid_failed:{}", e))),
-    };
-    if let Err(e) = termios::tcsetpgrp(master, pid as i32) {
-        return Err(fail(ARM, format!("tcsetpgrp_failed:{}", e)));
+/// After the last slave fd closes, a master read fails with EIO (Linux).
+fn expect_hangup(master: Fd, arm: &'static str) -> Result<(), Failure> {
+    let mut buf = [0u8; 32];
+    match io::read(master, &mut buf) {
+        Err(Error::Os(Errno::EIO)) => Ok(()),
+        Ok(n) => Err(fail(
+            arm,
+            format!("expected_eio_got_data:n={}:bytes={}", n, show(&buf[..n])),
+        )),
+        Err(e) => Err(fail(arm, format!("expected_eio_got_error:{}", e))),
     }
-    match termios::tcgetpgrp(slave) {
-        Ok(got) if got as u32 == pid => {}
-        Ok(got) => {
-            return Err(fail(ARM, format!("readback_mismatch:want={}:got={}", pid, got)))
-        }
-        Err(e) => return Err(fail(ARM, format!("tcgetpgrp_failed:{}", e))),
-    }
-    pass(ARM, &format!("pgrp={}:crossed_ends=1", pid));
-    Ok(())
 }
 
-/// Arm 12 -- closing the last slave fd hangs the master up (read returns EOF).
+/// Arm 11 -- the foreground process group round-trips through the PTY.
+///
+/// tcsetpgrp needs the terminal to be the caller's controlling terminal
+/// (POSIX), so a forked child makes its own session, takes the slave as its
+/// controlling terminal, sets the foreground group through the master and
+/// reads it back through the slave. Its exit status names the step that failed.
+fn arm_pgrp(master: Fd, slave: Fd) -> Result<(), Failure> {
+    const ARM: &str = "foreground_pgrp";
+    let child = match process::fork() {
+        Ok(ForkResult::Child) => {
+            let code = (|| {
+                let pid = process::getpid().map_err(|_| 2)?.raw() as i32;
+                process::setsid().map_err(|_| 3)?;
+                termios::set_controlling_terminal(slave).map_err(|_| 4)?;
+                termios::tcsetpgrp(master, pid).map_err(|_| 5)?;
+                match termios::tcgetpgrp(slave) {
+                    Ok(got) if got == pid => Ok(()),
+                    Ok(_) => Err(6),
+                    Err(_) => Err(7),
+                }
+            })();
+            process::exit(code.err().unwrap_or(0));
+        }
+        Ok(ForkResult::Parent(pid)) => pid,
+        Err(e) => return Err(fail(ARM, format!("fork_failed:{}", e))),
+    };
+    let mut status: i32 = 0;
+    if let Err(e) = process::waitpid(child.raw() as i32, &mut status, 0) {
+        return Err(fail(ARM, format!("waitpid_failed:{}", e)));
+    }
+    if !process::wifexited(status) {
+        return Err(fail(ARM, format!("child_did_not_exit:status={:#x}", status)));
+    }
+    let step = match process::wexitstatus(status) {
+        0 => {
+            pass(ARM, "own_session=1:set_on_master=1:read_on_slave=1");
+            return Ok(());
+        }
+        2 => "getpid_failed",
+        3 => "setsid_failed",
+        4 => "tiocsctty_failed",
+        5 => "tcsetpgrp_failed",
+        6 => "readback_mismatch",
+        7 => "tcgetpgrp_failed",
+        _ => "child_failed",
+    };
+    Err(fail(ARM, format!("{}:status={:#x}", step, status)))
+}
+
+/// Arm 12 -- closing the last slave fd hangs the master up (read fails with
+/// EIO, as on Linux).
 fn arm_hangup(master: Fd, slave: Fd) -> Result<(), Failure> {
     const ARM: &str = "hangup";
     drain(master);
-    // While the slave is open an idle master reports EAGAIN, never EOF.
+    // While the slave is open an idle master reports EAGAIN, never a hangup.
     expect_empty(master, ARM, "pre_close_read")?;
 
     if io::close(slave).is_err() {
         return Err(fail(ARM, "slave_close_failed".to_string()));
     }
 
-    let mut buf = [0u8; 32];
-    match io::read(master, &mut buf) {
-        Ok(0) => {}
-        Ok(n) => {
-            return Err(fail(
-                ARM,
-                format!("expected_eof_got_data:n={}:bytes={}", n, show(&buf[..n])),
-            ))
-        }
-        Err(e) => return Err(fail(ARM, format!("expected_eof_got_error:{}", e))),
-    }
-    pass(ARM, "eagain_while_open=1:eof_after_close=1");
+    expect_hangup(master, ARM)?;
+    pass(ARM, "eagain_while_open=1:eio_after_close=1");
     Ok(())
 }
 
@@ -576,14 +608,14 @@ fn arm_hangup(master: Fd, slave: Fd) -> Result<(), Failure> {
 ///    so this close's unconditional `slave_close()` drops the shared count
 ///    to zero while the original `/dev/pts/N` fd is still open.
 /// 4. An IDLE master read, with nothing written and nothing pending, must
-///    report EAGAIN rather than EOF. This is the assertion that actually
+///    report EAGAIN rather than EIO. This is the assertion that actually
 ///    distinguishes fixed from broken: `master_read()` drains any buffered
 ///    data ahead of its hangup check, so a write-then-read alone would pass
 ///    on the broken kernel too -- the bytes still arrive even after the
 ///    refcount has wrongly hit zero.
 /// 5. A functional write/read round trip confirms the survivor is not
 ///    merely "not yet flagged hung up" but genuinely live.
-/// 6. Close the one remaining slave fd and require EOF now, not before.
+/// 6. Close the one remaining slave fd and require EIO now, not before.
 fn arm_ctty() -> Result<(), Failure> {
     const ARM: &str = "ctty";
 
@@ -650,7 +682,7 @@ fn arm_ctty() -> Result<(), Failure> {
 
     // #704's assertion. Checked with nothing written and nothing pending, so
     // the only way this sees data instead of EAGAIN is a bug; the only way
-    // it sees EOF (Ok(0)) is the pair having been wrongly hung up already.
+    // it sees EIO is the pair having been wrongly hung up already.
     if let Err(f) = expect_empty(master, ARM, "post_alias_close_idle_read") {
         return Err(fail(
             ARM,
@@ -667,22 +699,12 @@ fn arm_ctty() -> Result<(), Failure> {
         return Err(fail(ARM, "slave_close_failed".to_string()));
     }
 
-    let mut buf = [0u8; 32];
-    match io::read(master, &mut buf) {
-        Ok(0) => {}
-        Ok(n) => {
-            return Err(fail(
-                ARM,
-                format!("expected_eof_got_data:n={}:bytes={}", n, show(&buf[..n])),
-            ))
-        }
-        Err(e) => return Err(fail(ARM, format!("expected_eof_got_error:{}", e))),
-    }
+    expect_hangup(master, ARM)?;
 
     let _ = io::close(master);
     pass(
         ARM,
-        "dev_tty_aliased_slave=1:survived_alias_close=1:eof_after_last_slave_close=1",
+        "dev_tty_aliased_slave=1:survived_alias_close=1:eio_after_last_slave_close=1",
     );
     Ok(())
 }
@@ -707,7 +729,7 @@ fn arm_ctty() -> Result<(), Failure> {
 /// that does nothing but `exit(0)` -- so the only kernel-side event that can
 /// retire the child's cloned slave fd is `close_cloexec()` itself, not
 /// anything the child does. The parent reaps the child, closes its OWN slave
-/// fd, and then requires the master to see EOF: if `close_cloexec()` did its
+/// fd, and then requires the master to see EIO: if `close_cloexec()` did its
 /// job, the parent's close is the last live slave reference; if it did not,
 /// the child's fork-cloned fd was never decremented and the master is stuck
 /// reporting EAGAIN forever. Checked with an IDLE read, same framing as arm
@@ -783,35 +805,35 @@ fn arm_cloexec_exec() -> Result<(), Failure> {
 
     // Close the parent's OWN slave fd. If close_cloexec() correctly retired
     // the child's fork-cloned copy during exec(), this is the last live
-    // slave reference and the master must now see EOF.
+    // slave reference and the master must now see EIO.
     if io::close(slave).is_err() {
         return Err(fail(ARM, "slave_close_failed".to_string()));
     }
 
     // #704-class idle read: nothing written, nothing pending, so the only
     // way this sees data is a real bug and the only way it sees EAGAIN
-    // instead of EOF is close_cloexec() having leaked the child's
+    // instead of EIO is close_cloexec() having leaked the child's
     // fork-cloned slave reference across exec().
     let mut buf = [0u8; 32];
     match io::read(master, &mut buf) {
-        Ok(0) => {}
+        Err(Error::Os(Errno::EIO)) => {}
         Ok(n) => {
             return Err(fail(
                 ARM,
-                format!("expected_eof_got_data:n={}:bytes={}", n, show(&buf[..n])),
+                format!("expected_eio_got_data:n={}:bytes={}", n, show(&buf[..n])),
             ))
         }
         Err(Error::Os(Errno::EAGAIN)) => {
             return Err(fail(
                 ARM,
-                "leaked_refcount_across_exec:post_parent_close_read=EAGAIN_not_EOF".to_string(),
+                "leaked_refcount_across_exec:post_parent_close_read=EAGAIN_not_EIO".to_string(),
             ))
         }
-        Err(e) => return Err(fail(ARM, format!("expected_eof_got_error:{}", e))),
+        Err(e) => return Err(fail(ARM, format!("expected_eio_got_error:{}", e))),
     }
 
     let _ = io::close(master);
-    pass(ARM, "cloexec_survived_fork=1:eof_after_parent_close=1");
+    pass(ARM, "cloexec_survived_fork=1:eio_after_parent_close=1");
     Ok(())
 }
 
