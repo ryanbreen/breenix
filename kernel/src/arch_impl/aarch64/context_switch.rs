@@ -7329,10 +7329,23 @@ pub(crate) fn check_and_deliver_signals_for_current_thread_arm64(frame: &mut Aar
         return;
     }
 
-    // Try to acquire process manager lock
+    // This returns to EL0 with IRQs masked, so a busy process manager is not
+    // waited for. When the thread has signal work pending, a wake SGI to this
+    // CPU is taken as soon as EL0 unmasks IRQs and repeats this check, rather
+    // than leaving delivery to the next tick or syscall.
     let mut manager_guard = match crate::process::try_manager() {
         Some(guard) => guard,
-        None => return, // Lock held, skip signal check this time
+        None => {
+            if crate::per_cpu_aarch64::current_thread()
+                .is_some_and(|thread| thread.needs_user_return_check())
+            {
+                crate::arch_impl::aarch64::gic::send_sgi(
+                    crate::arch_impl::aarch64::constants::SGI_WAKE as u8,
+                    Aarch64PerCpu::cpu_id() as u8,
+                );
+            }
+            return;
+        }
     };
 
     // Track if signal termination happened (for parent notification after borrow ends)
