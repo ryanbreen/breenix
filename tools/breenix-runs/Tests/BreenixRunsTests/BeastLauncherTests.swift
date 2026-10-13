@@ -133,7 +133,7 @@ final class BeastLauncherTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let runner = BeastScriptedProcessRunner()
         let launcher = BeastLauncher(store: RunStore(root: root.appendingPathComponent("store")),
-                                     runner: runner, timeoutSecs: 180, serialStreaming: NoSerialStreaming())
+                                     runner: runner, timeoutSecs: 180, serialStreaming: NoSerialStreaming(), quietOverride: nil)
         var selected = options(runID: "q35-run")
         selected.qemuProfile = .q35
         let plan = try launcher.plan(options: selected)
@@ -141,6 +141,31 @@ final class BeastLauncherTests: XCTestCase {
         let result = try launcher.runX86(options: selected)
         XCTAssertEqual(result.manifest.env["BREENIX_QEMU_PROFILE"], "q35")
         XCTAssertEqual(result.manifest.env["BREENIX_GATE_TIMEOUT"], "180")
+    }
+
+    func testQuietOverrideForwardingAndRejection() throws {
+        let paths = BeastPaths(clonePath: "/root/run")
+        for value in [nil, "", "0", "1"] as [String?] {
+            let plan = RemoteCommand.plan(sha: "abc123", boots: 1, mode: .full,
+                timeoutSecs: 300, paths: paths, quietOverride: value)
+            let command = try XCTUnwrap(plan.runGate.arguments.last)
+            switch value {
+            case "0": XCTAssertTrue(command.contains(" BREENIX_QUIET=0 "))
+            case "1": XCTAssertTrue(command.contains(" BREENIX_QUIET=1 "))
+            default: XCTAssertFalse(command.contains("BREENIX_QUIET="))
+            }
+        }
+        for value in ["2", "0;exit 0", "1\n"] {
+            let request = RemoteCommand.runGateRequest(boots: 1, mode: .full,
+                timeoutSecs: 300, paths: paths, quietOverride: value)
+            XCTAssertEqual(request.arguments.last, "exit 2")
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = ["-c", try XCTUnwrap(request.arguments.last)]
+            try process.run()
+            process.waitUntilExit()
+            XCTAssertEqual(process.terminationStatus, 2)
+        }
     }
 
     func testPullEvidenceRequestArgvAndDoesNotCombineOutput() {

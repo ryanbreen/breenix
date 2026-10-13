@@ -75,21 +75,14 @@ sleep 15  # wait for boot + tests
 ```
 
 ### Testing and Test Infrastructure
-- Most tests use a shared QEMU instance for speed (~45s total).
+- Host tests validate code and tooling; guest gates validate kernel execution.
 - Standard test entry point:
 ```bash
 cargo test
 ```
 
-Test categories include (non-exhaustive):
-- `boot_post_test.rs`, `interrupt_tests.rs`, `memory_tests.rs`, `logging_tests.rs`, `timer_tests.rs`, `simple_kernel_test.rs`, `kernel_build_test.rs`, `system_tests.rs`
-
-Special tests (ignored by default):
-```bash
-cargo test test_bios_boot -- --ignored
-cargo test test_runtime_testing_feature -- --ignored
-cargo run --features testing --bin qemu-uefi -- -serial stdio
-```
+- Host tests run without ignored cases; architecture-specific tests use cfg scoping.
+- Required boot-path gates and guest suites cover boot and subsystem behavior.
 
 Visual testing:
 ```bash

@@ -352,6 +352,8 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         for i in 0..10 {
             vec.push(i);
         }
+        assert_eq!(vec.len(), 10, "heap vector length");
+        assert_eq!(vec.iter().sum::<i32>(), 45, "heap vector contents");
         log::info!("Heap test: created vector with {} elements", vec.len());
         log::info!("Heap test: sum of elements = {}", vec.iter().sum::<i32>());
     }
@@ -2711,32 +2713,6 @@ fn panic(info: &PanicInfo) -> ! {
     loop {
         x86_64::instructions::hlt();
     }
-}
-
-// Test function for exception handlers
-#[cfg(all(target_arch = "x86_64", feature = "test_all_exceptions"))]
-fn test_exception_handlers() {
-    log::info!("🧪 EXCEPTION_HANDLER_TESTS_START 🧪");
-
-    // Test divide by zero
-    log::info!("Testing divide by zero exception (simulated)...");
-    // We can't actually trigger it without halting, so we just verify the handler is installed
-    log::info!("EXCEPTION_TEST: DIVIDE_BY_ZERO handler installed ✓");
-
-    // Test invalid opcode
-    log::info!("Testing invalid opcode exception (simulated)...");
-    log::info!("EXCEPTION_TEST: INVALID_OPCODE handler installed ✓");
-
-    // Test page fault
-    log::info!("Testing page fault exception (simulated)...");
-    log::info!("EXCEPTION_TEST: PAGE_FAULT handler installed ✓");
-
-    // Test that we can read from a valid address (shouldn't page fault)
-    let test_addr = 0x1000 as *const u8;
-    let _ = unsafe { core::ptr::read_volatile(test_addr) };
-    log::info!("EXCEPTION_TEST: Valid memory access succeeded ✓");
-
-    log::info!("🧪 EXCEPTION_HANDLER_TESTS_COMPLETE 🧪");
 }
 
 // test_kthread_lifecycle and test_kthread_join moved to task/kthread_tests.rs

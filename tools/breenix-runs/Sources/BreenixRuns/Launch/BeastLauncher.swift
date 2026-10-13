@@ -103,6 +103,7 @@ public struct BeastLauncher {
     public var vigilScript: URL?
     public var treeHelperBase64: String?
     var makeSignals: (ProcessRunner) -> X86LaunchSignals = { X86LaunchSignals(runner: $0) }
+    public var quietOverride: String?
     public var serialStreaming: X86SerialStreaming
 
     public init(
@@ -113,7 +114,8 @@ public struct BeastLauncher {
         slotHelperBase64: String? = nil,
         treeHelperBase64: String? = nil,
         vigilScript: URL? = nil,
-        serialStreaming: X86SerialStreaming = SSHSerialStreaming()
+        serialStreaming: X86SerialStreaming = SSHSerialStreaming(),
+        quietOverride: String? = ProcessInfo.processInfo.environment["BREENIX_QUIET"]
     ) {
         self.store = store
         self.runner = runner
@@ -125,6 +127,7 @@ public struct BeastLauncher {
         self.treeHelperBase64 = treeHelperBase64
         self.vigilScript = vigilScript
         self.serialStreaming = serialStreaming
+        self.quietOverride = quietOverride
     }
 
     public static func localGitIdentity(repoRoot: URL, runner: ProcessRunner) throws -> (sha: String?, dirty: Bool?) {
@@ -151,7 +154,8 @@ public struct BeastLauncher {
             suite: options.suite,
             fullBackstopSecs: fullBackstopSecs,
             slotHelperBase64: slotHelperBase64,
-            treeHelperBase64: treeHelperBase64
+            treeHelperBase64: treeHelperBase64,
+            quietOverride: quietOverride
         )
     }
 

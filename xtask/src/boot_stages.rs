@@ -97,6 +97,36 @@ fn x86_64_kernel_stages() -> Vec<BootStage> {
             check_hint: "kernel/src/main.rs keyboard queue initialization",
         },
         BootStage {
+            name: "Frame allocator initialized",
+            marker: "Frame allocator initialized with",
+            failure_meaning: "The subsystem did not complete initialization",
+            check_hint: "memory::frame_allocator::init()",
+        },
+        BootStage {
+            name: "Paging initialized",
+            marker: "Page table initialized",
+            failure_meaning: "The subsystem did not complete initialization",
+            check_hint: "memory::paging::init()",
+        },
+        BootStage {
+            name: "Kernel heap initialized",
+            marker: "Heap initialized",
+            failure_meaning: "The subsystem did not complete initialization",
+            check_hint: "memory::heap::init()",
+        },
+        BootStage {
+            name: "Kernel stack allocator initialized",
+            marker: "Stack allocation system initialized",
+            failure_meaning: "The subsystem did not complete initialization",
+            check_hint: "memory::stack::init()",
+        },
+        BootStage {
+            name: "procfs initialized",
+            marker: "procfs initialized at /proc",
+            failure_meaning: "The subsystem did not complete initialization",
+            check_hint: "main.rs after fs::procfs::init()",
+        },
+        BootStage {
             name: "FD slab cache initialized",
             marker: "Slab cache 'fd_table' initialized: 64 slots",
             failure_meaning: "Initialization did not reach its own ready marker",
@@ -616,6 +646,12 @@ fn arm64_kernel_stages() -> Vec<BootStage> {
 /// (same source code compiled for aarch64 emits identical markers).
 fn shared_userspace_stages() -> Vec<BootStage> {
     vec![
+        BootStage {
+            name: "Unknown syscall returns ENOSYS",
+            marker: "ENOSYS OK",
+            failure_meaning: "The guest did not observe -ENOSYS from undefined syscall 999",
+            check_hint: "userspace/programs/src/syscall_enosys.rs must execute and print its result",
+        },
         // Basic execution tests
         BootStage {
             name: "Userspace hello printed",

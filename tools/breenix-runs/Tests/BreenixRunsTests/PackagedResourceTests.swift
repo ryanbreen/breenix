@@ -13,7 +13,8 @@ final class PackagedResourceTests: XCTestCase {
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let app = package.appendingPathComponent("Breenix Run Inspector.app").standardizedFileURL
         guard FileManager.default.fileExists(atPath: app.path) else {
-            throw XCTSkip("Packaged app absent; run make app to exercise shipped resource resolution")
+            XCTFail("Packaged app absent; run make unit-test to build and test resource resolution")
+            return
         }
         let process = Process()
         process.executableURL = app.appendingPathComponent("Contents/MacOS/BreenixRunInspector")

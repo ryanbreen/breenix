@@ -141,6 +141,12 @@
       "checkHint": "Check that testing feature is enabled and device_count > 0"
     },
     {
+      "name": "Unknown syscall returns ENOSYS",
+      "marker": "ENOSYS OK",
+      "failureMeaning": "The guest did not observe -ENOSYS from undefined syscall 999",
+      "checkHint": "userspace/programs/src/syscall_enosys.rs must execute and print its result"
+    },
+    {
       "name": "Userspace hello printed",
       "marker": "Hello from userspace",
       "failureMeaning": "hello_time.elf did not print output",

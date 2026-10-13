@@ -262,10 +262,10 @@ with no claim-lint line is itself a review finding. What the tool reaches and
 what it measurably does not: `docs/planning/green-program/claim-linting.md`.
 
 ### Testing
-- Most tests use shared QEMU (`tests/shared_qemu.rs`)
-- Special tests marked `#[ignore]` require specific configs
-- Tests wait for: `🎯 KERNEL_POST_TESTS_COMPLETE 🎯`
-- BIOS test: `cargo test test_bios_boot -- --ignored`
+- Host tests validate code and tooling; guest boot-path gates validate kernel execution.
+- Host tests run without ignored cases; architecture-specific tests use cfg scoping.
+- Guest testing boots require `USERSPACE TEST REPORT DONE` and the required producer stages.
+- UEFI boot coverage runs through the required boot-path gate; the retired BIOS harness is removed.
 
 ### Commits
 All commits co-authored by Ryan Breen and Claude Code.

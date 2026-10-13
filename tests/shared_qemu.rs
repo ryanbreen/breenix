@@ -180,23 +180,3 @@ fn capture_kernel_output() -> String {
 
     output
 }
-
-/// Extract timestamps from kernel log lines for timer-related tests
-#[allow(dead_code)] // Shared API: only timer/interrupt integration crates consume it.
-pub fn extract_timestamps(output: &str) -> Vec<f64> {
-    output
-        .lines()
-        .filter_map(|line| {
-            if line.contains("[ INFO]") && line.contains(" - ") {
-                // Split on " - " and take the first part which should be the timestamp
-                if let Some(timestamp_part) = line.split(" - ").next() {
-                    timestamp_part.trim().parse::<f64>().ok()
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        })
-        .collect()
-}

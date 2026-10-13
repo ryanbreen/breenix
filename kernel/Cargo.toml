@@ -167,7 +167,6 @@ test_divide_by_zero = []
 test_invalid_opcode = []
 test_page_fault = []
 test_userspace = []
-test_all_exceptions = []
 external_test_bins = []
 ec0_fault_inject = []  # Inject one EL1 UDF on CPU 0 after about 10 seconds
 receipt_drop_test = ["boot_tests"]  # Deliberately exercise RetirementReceipt::drop

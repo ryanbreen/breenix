@@ -319,6 +319,7 @@ STD_BINARIES=(
 
     # Effort suites, installed as /sbin/suite-<id>
     "suite-smoke"
+    "suite-crypto"
     "suite-files-io"
     "suite-directories"
     "suite-processes"

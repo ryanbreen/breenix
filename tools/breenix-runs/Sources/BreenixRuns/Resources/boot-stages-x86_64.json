@@ -9,6 +9,36 @@
       "checkHint": "kernel/src/main.rs keyboard queue initialization"
     },
     {
+      "name": "Frame allocator initialized",
+      "marker": "Frame allocator initialized with",
+      "failureMeaning": "The subsystem did not complete initialization",
+      "checkHint": "memory::frame_allocator::init()"
+    },
+    {
+      "name": "Paging initialized",
+      "marker": "Page table initialized",
+      "failureMeaning": "The subsystem did not complete initialization",
+      "checkHint": "memory::paging::init()"
+    },
+    {
+      "name": "Kernel heap initialized",
+      "marker": "Heap initialized",
+      "failureMeaning": "The subsystem did not complete initialization",
+      "checkHint": "memory::heap::init()"
+    },
+    {
+      "name": "Kernel stack allocator initialized",
+      "marker": "Stack allocation system initialized",
+      "failureMeaning": "The subsystem did not complete initialization",
+      "checkHint": "memory::stack::init()"
+    },
+    {
+      "name": "procfs initialized",
+      "marker": "procfs initialized at /proc",
+      "failureMeaning": "The subsystem did not complete initialization",
+      "checkHint": "main.rs after fs::procfs::init()"
+    },
+    {
       "name": "FD slab cache initialized",
       "marker": "Slab cache 'fd_table' initialized: 64 slots",
       "failureMeaning": "Initialization did not reach its own ready marker",
@@ -367,6 +397,12 @@
       "marker": "RING3_SYSCALL: First syscall from userspace",
       "failureMeaning": "IRETQ may have succeeded but userspace did not execute or trigger a syscall",
       "checkHint": "syscall/handler.rs - emit_ring3_syscall_marker() emits on first Ring 3 syscall"
+    },
+    {
+      "name": "Unknown syscall returns ENOSYS",
+      "marker": "ENOSYS OK",
+      "failureMeaning": "The guest did not observe -ENOSYS from undefined syscall 999",
+      "checkHint": "userspace/programs/src/syscall_enosys.rs must execute and print its result"
     },
     {
       "name": "Userspace hello printed",

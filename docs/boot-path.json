@@ -67,6 +67,10 @@
           "Per-CPU data initialized",
           "HAL per-CPU initialized",
           "Physical memory available",
+          "Frame allocator initialized",
+          "Paging initialized",
+          "Kernel heap initialized",
+          "Kernel stack allocator initialized",
           "Heap allocation working",
           "TLS initialized",
           "SWAPGS support enabled",
@@ -141,6 +145,7 @@
           "TTY subsystem initialized"
         ],
         "x86_64": [
+          "procfs initialized",
           "Contract tests passed"
         ]
       }
@@ -297,7 +302,8 @@
           "Userspace hello printed",
           "Userspace clock_gettime validated",
           "Userspace brk syscall validated",
-          "Userspace mmap/munmap syscalls validated"
+          "Userspace mmap/munmap syscalls validated",
+          "Unknown syscall returns ENOSYS"
         ],
         "x86_64": [
           "First userspace process scheduled",
@@ -312,7 +318,8 @@
           "Diagnostic: Multiple sys_write calls",
           "Diagnostic: Single clock_gettime",
           "Diagnostic: Register preservation",
-          "Diagnostic: Second clock_gettime"
+          "Diagnostic: Second clock_gettime",
+          "Unknown syscall returns ENOSYS"
         ],
         "shell": [
           {
