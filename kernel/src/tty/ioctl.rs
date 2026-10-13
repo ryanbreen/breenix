@@ -303,6 +303,7 @@ fn pty_termios_ioctl(
                 if request == TCSETSF { ldisc.flush_input(); }
                 ldisc.set_termios(termios);
             }
+            pair.update_input_flow();
             pair.slave_readers.wake_up();
             Ok(0)
         }
@@ -321,10 +322,18 @@ fn pty_termios_ioctl(
             if side != Side::Master { super::jobctl::check(t, JobOp::Change)?; }
             if arg > 3 { return Err(EINVAL); }
             match arg {
-                0 => pair.set_output_stopped(true),
-                1 => pair.set_output_stopped(false),
-                // POSIX permits PTYs to omit START/STOP transmission.
-                2 | 3 => {},
+                0 | 1 if side == Side::Master => pair.set_master_output_stopped(arg == 0),
+                0 | 1 => pair.set_output_stopped(arg == 0),
+                2 | 3 => {
+                    let attrs = pair.termios_snapshot();
+                    let c = attrs.c_cc[if arg == 2 { super::termios::VSTOP } else { super::termios::VSTART }];
+                    if c != 0 {
+                        // Linux tty_send_xchar returns success even when its
+                        // driver cannot enqueue this priority byte.
+                        if side == Side::Master { pair.send_flow_char_to_slave(c); }
+                        else { pair.send_flow_char_to_master(c); }
+                    }
+                },
                 _ => unreachable!(),
             }
             Ok(0)
@@ -1058,7 +1067,7 @@ mod tests {
     }
     #[test]
     fn pty_flush_discards_selected_queues_and_tcsetsf_discards_input() {
-        let pair = Arc::new(PtyPair::new(0));
+        let pair = Arc::new(PtyPair::try_new(0, 0, 0).unwrap());
         let t = TtyRef::Pty(pair.clone());
         let mut attrs = pair.termios_snapshot();
         attrs.set_raw();
@@ -1085,7 +1094,7 @@ mod tests {
 
     #[test]
     fn pty_control_validates_selectors_and_drain_preserves_peer_output() {
-        let pair = Arc::new(PtyPair::new(0));
+        let pair = Arc::new(PtyPair::try_new(0, 0, 0).unwrap());
         let t = TtyRef::Pty(pair.clone());
         assert_eq!(dispatch(&t, Side::Slave, TCXONC, 0), Ok(0));
         assert!(pair.output_stopped());
@@ -1104,7 +1113,7 @@ mod tests {
     #[test]
     fn isig_flushes_input_and_output_but_noflsh_preserves_them() {
         use super::super::termios::{ISIG, ECHO, NOFLSH};
-        let pair = Arc::new(PtyPair::new(0));
+        let pair = Arc::new(PtyPair::try_new(0, 0, 0).unwrap());
         let mut attrs = pair.termios_snapshot();
         attrs.set_raw();
         attrs.c_lflag |= ISIG | ECHO;
@@ -1128,7 +1137,7 @@ mod tests {
 
     #[test]
     fn master_flush_selectors_follow_the_master_direction() {
-        let pair = Arc::new(PtyPair::new(0));
+        let pair = Arc::new(PtyPair::try_new(0, 0, 0).unwrap());
         let terminal = TtyRef::Pty(pair.clone());
         let mut attrs = pair.termios_snapshot();
         attrs.set_raw();
@@ -1156,6 +1165,90 @@ mod tests {
         let attrs: Termios = buffer.wire.into();
         assert_eq!(attrs.c_ospeed, super::super::termios::B38400);
         assert_eq!(attrs.c_ispeed, attrs.c_ospeed);
+    }
+
+    #[test]
+    fn master_flow_controls_do_not_stop_slave_output_and_send_peer_characters() {
+        let pair = Arc::new(PtyPair::try_new(0, 0, 0).unwrap());
+        let terminal = TtyRef::Pty(pair.clone());
+        let mut attrs = pair.termios_snapshot();
+        attrs.set_raw();
+        pair.ldisc.lock().set_termios(attrs);
+        assert_eq!(dispatch(&terminal, Side::Master, TCXONC, 0), Ok(0));
+        assert!(pair.master_output_stopped());
+        assert!(!pair.output_stopped());
+        assert_eq!(pair.master_write(b"x"), 0);
+        assert_eq!(dispatch(&terminal, Side::Master, TCXONC, 1), Ok(0));
+        assert_eq!(pair.master_write(b"x"), 1);
+        for action in [2, 3] { assert_eq!(dispatch(&terminal, Side::Master, TCXONC, action), Ok(0)); }
+        let mut buf = [0; 8];
+        let n = pair.ldisc.lock().read(&mut buf).unwrap();
+        assert_eq!(&buf[..n], &[b'x', attrs.c_cc[super::super::termios::VSTOP], attrs.c_cc[super::super::termios::VSTART]]);
+        for action in [2, 3] { assert_eq!(dispatch(&terminal, Side::Slave, TCXONC, action), Ok(0)); }
+        let n = pair.slave_to_master.lock().read(&mut buf);
+        assert_eq!(&buf[..n], &[attrs.c_cc[super::super::termios::VSTOP], attrs.c_cc[super::super::termios::VSTART]]);
+    }
+
+    #[test]
+    fn stopped_output_retains_more_than_256_bytes_of_translated_echo() {
+        let pair = Arc::new(PtyPair::try_new(0, 0, 0).unwrap());
+        let input = [b'x'; 600];
+        pair.set_output_stopped(true);
+        assert_eq!(pair.master_write(&input), 600);
+        assert_eq!(pair.master_write(b"\n"), 1);
+        assert!(pair.slave_to_master.lock().is_empty());
+        pair.set_output_stopped(false);
+        let mut buf = [0; 700];
+        let n = pair.master_read(&mut buf).unwrap();
+        assert_eq!(n, 602);
+        assert_eq!(&buf[..600], &input);
+        assert_eq!(&buf[600..n], b"\r\n");
+    }
+
+    #[test]
+    fn ixon_stops_output_until_start_or_ixany_and_disabled_ixon_resumes_it() {
+        use super::super::termios::{IXON, IXANY};
+        let pair = Arc::new(PtyPair::try_new(0, 0, 0).unwrap());
+        let terminal = TtyRef::Pty(pair.clone());
+        let mut attrs = pair.termios_snapshot();
+        attrs.set_raw();
+        attrs.c_iflag |= IXON;
+        pair.ldisc.lock().set_termios(attrs);
+        assert_eq!(pair.master_write(&[attrs.c_cc[super::super::termios::VSTOP]]), 1);
+        assert!(pair.output_stopped());
+        assert_eq!(pair.master_write(&[attrs.c_cc[super::super::termios::VSTART]]), 1);
+        assert!(!pair.output_stopped());
+        attrs.c_iflag |= IXANY;
+        let wire = IoctlTermios::from(attrs);
+        assert_eq!(dispatch(&terminal, Side::Slave, TCSETS, &wire as *const _ as u64), Ok(0));
+        pair.master_write(&[attrs.c_cc[super::super::termios::VSTOP]]);
+        assert!(pair.output_stopped());
+        pair.master_write(b"x");
+        assert!(!pair.output_stopped());
+        pair.master_write(&[attrs.c_cc[super::super::termios::VSTOP]]);
+        attrs.c_iflag &= !IXON;
+        let wire = IoctlTermios::from(attrs);
+        assert_eq!(dispatch(&terminal, Side::Slave, TCSETS, &wire as *const _ as u64), Ok(0));
+        assert!(!pair.output_stopped());
+    }
+
+    #[test]
+    fn full_raw_input_still_accepts_flow_controls_without_losing_payload() {
+        use super::super::termios::IXON;
+        let pair = Arc::new(PtyPair::try_new(0, 0, 0).unwrap());
+        let mut attrs = pair.termios_snapshot();
+        attrs.set_raw();
+        attrs.c_iflag |= IXON;
+        pair.ldisc.lock().set_termios(attrs);
+        let payload = [b'x'; 4095];
+        assert_eq!(pair.master_write(&payload), payload.len());
+        assert_eq!(pair.master_write(&[attrs.c_cc[super::super::termios::VSTOP]]), 1);
+        assert!(pair.output_stopped());
+        assert_eq!(pair.master_write(&[attrs.c_cc[super::super::termios::VSTART]]), 1);
+        assert!(!pair.output_stopped());
+        let mut received = [0; 4096];
+        let n = pair.ldisc.lock().read(&mut received).unwrap();
+        assert_eq!(&received[..n], &payload);
     }
 
 }

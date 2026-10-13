@@ -8401,21 +8401,12 @@ fn test_arm64_pty_ioctl_path() -> TestResult {
             (pid, fd, pair, original_main_thread)
         };
 
-        // The answer goes through copy_to_user, which refuses a kernel
-        // address. EFAULT therefore shows the request reached the PTY
-        // handler (a misrouted one fails with ENOTTY or EBADF) and that the
-        // handler validated the pointer.
         let mut pty_num_out: u32 = 0xFFFF_FFFF;
         let arg = &mut pty_num_out as *mut u32 as u64;
 
         let result = match sys_ioctl(fd as u64, TIOCGPTN, arg) {
-            SyscallResult::Err(errno) if errno == crate::syscall::errno::EFAULT as u64 => {
-                if pty_num_out == 0xFFFF_FFFF {
-                    TestResult::Pass
-                } else {
-                    TestResult::Fail("pty ioctl wrote through a kernel pointer")
-                }
-            }
+            SyscallResult::Err(e) if e == crate::syscall::errno::EFAULT as u64
+                && pty_num_out == 0xFFFF_FFFF => TestResult::Pass,
             SyscallResult::Ok(_) => TestResult::Fail("pty ioctl accepted a kernel pointer"),
             SyscallResult::Err(errno) => {
                 if errno == crate::syscall::ioctl::ENOTTY {
@@ -8738,6 +8729,7 @@ fn test_filesystem_syscalls_aarch64() -> TestResult {
 fn test_pty_support_aarch64() -> TestResult {
     use crate::tty::ioctl::{Side, TIOCGPTLCK, TIOCGPTN, TIOCSPTLCK};
     use crate::tty::pty;
+    pty::init();
     let pair = match pty::allocate() {
         Ok(pair) => pair,
         Err(_) => return TestResult::Fail("pty allocation failed"),
@@ -8800,31 +8792,20 @@ fn test_telnetd_dependencies_aarch64() -> TestResult {
         _ => return TestResult::Fail("FdKind::TcpSocket not matching correctly"),
     }
 
-    // Step 2: Verify PTY allocation infrastructure exists
-    // Try to allocate a PTY - this tests the allocator, not syscalls
-    match pty::allocate() {
-        Ok(pair) => {
-            // PTY allocation succeeded
-            if pair.pty_num > 255 {
-                return TestResult::Fail("PTY number out of range on ARM64");
-            }
-            log::info!("PTY allocation succeeded: PTY #{}", pair.pty_num);
-        }
-        Err(e) => {
-            // PTY allocation may fail in boot context (no tty subsystem fully init)
-            // Just verify the FdKind variants exist
-            log::info!(
-                "PTY allocate returned error {} - verifying FdKind variants",
-                e
-            );
-        }
-    }
-
-    // Step 3: Verify FdKind variants exist for telnetd (compile-time check)
-    // These checks ensure the ARM64 build has all required variants
+    // Allocate a real pair for the Arc-valued descriptor variants.
+    pty::init();
+    let pair = match pty::allocate() {
+        Ok(pair) => pair,
+        Err(_) => return TestResult::Fail("PTY allocation failed on ARM64"),
+    };
+    let valid_number = pair.pty_num <= 255;
     let _ = FdKind::TcpSocket(0);
-    let _: fn(alloc::sync::Arc<crate::tty::pty::PtyPair>) -> FdKind = FdKind::PtyMaster;
-    let _: fn(alloc::sync::Arc<crate::tty::pty::PtyPair>) -> FdKind = FdKind::PtySlave;
+    let _ = FdKind::PtyMaster(pair.clone());
+    let _ = FdKind::PtySlave(pair.clone());
+    pty::close_master_ref(&pair);
+    if !valid_number {
+        return TestResult::Fail("PTY number out of range on ARM64");
+    }
 
     // Step 4: Verify socket types are available
     use crate::socket::types::{AF_INET, SOCK_STREAM};
@@ -10287,7 +10268,7 @@ static IPC_TESTS: &[TestDef] = &[
         timeout_ms: 2000,
         stage: TestStage::EarlyBoot,
     },
-    // ARM64 parity test - verifies PTY ioctls work on ARM64
+    // ARM64 PTY ioctl kernel-pointer and side rejection
     TestDef {
         name: "pty_support_aarch64",
         func: test_pty_support_aarch64,
