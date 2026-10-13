@@ -23,6 +23,7 @@
 #   ./run.sh --btrt            # ARM64 BTRT structured boot test
 #   ./run.sh --btrt --x86      # x86_64 BTRT structured boot test
 #   ./run.sh --no-audio        # Disable audio entirely (default: coreaudio output on)
+#   ./run.sh --accel tcg       # Select ARM64 software emulation explicitly
 #
 # Display:
 #   ARM64:  Native window (cocoa) - no VNC needed
@@ -88,6 +89,10 @@ while [[ $# -gt 0 ]]; do
         --clean)
             CLEAN=true
             shift
+            ;;
+        --accel)
+            export BREENIX_ARM64_QEMU_ACCEL="${2:?--accel needs hvf or tcg}"
+            shift 2
             ;;
         --no-build)
             NO_BUILD=true
@@ -186,6 +191,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --vmware                   Build and boot on VMware Fusion VM"
             echo "  --vm NAME                  Parallels VM name (default: breenix-dev)"
             echo "  --headless, --serial       Run without display (serial only)"
+            echo "  --accel hvf|tcg            ARM64 accelerator (default hvf on Apple Silicon, tcg elsewhere)"
             echo "  --graphics, --vnc          Run with VNC display (default)"
             echo "  --btrt                     Run BTRT structured boot test"
             echo "  --ahci                     Use AHCI (SATA) disk instead of virtio-blk (ARM64)"
@@ -1372,7 +1378,7 @@ if [ "$ARCH" = "arm64" ]; then
     host_slot_acquire mac-boot
     qemu_host_lock_acquire
     host_slot_quiet
-    "$QEMU_UI" qemu-system-aarch64 \
+    python3 "$BREENIX_ROOT/scripts/qemu-arm64.py" qemu-system-aarch64 \
         -M virt,gic-version=3 -cpu max -smp 4 \
         -m 512M \
         -kernel "$KERNEL" \

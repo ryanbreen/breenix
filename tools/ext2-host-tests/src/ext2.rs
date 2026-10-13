@@ -4,12 +4,19 @@ pub mod block_group;
 pub mod file;
 #[path = "../../../kernel/src/fs/ext2/inode.rs"]
 pub mod inode;
+#[path = "../../../kernel/src/fs/ext2/dir.rs"]
+pub mod dir;
+#[path = "../../../kernel/src/fs/ext2/create_node.rs"]
+pub mod create_node;
+#[path = "../../../kernel/src/fs/ext2/directory_io.rs"]
+mod directory_io;
 #[path = "../../../kernel/src/fs/ext2/reclaim.rs"]
 pub mod reclaim;
 #[path = "../../../kernel/src/fs/ext2/superblock.rs"]
 pub mod superblock;
 pub use block_group::*;
 pub use inode::*;
+pub use dir::*;
 pub use superblock::*;
 pub struct Ext2Fs {
     pub device: Box<dyn crate::block::BlockDevice>,
@@ -18,6 +25,20 @@ pub struct Ext2Fs {
     durable_epoch: core::sync::atomic::AtomicU64,
 }
 impl Ext2Fs {
+    pub fn host_new(device: Box<dyn crate::block::BlockDevice>, superblock: Ext2Superblock, block_groups: Vec<Ext2BlockGroupDesc>) -> Self {
+        Self { device, superblock, block_groups, durable_epoch: core::sync::atomic::AtomicU64::new(0) }
+    }
+    pub fn write_directory_for_host(&self, ino:u32, data:&[u8]) -> Result<(), &'static str> { self.write_directory_data(ino,data) }
+    pub fn read_directory(&self, inode: &Ext2Inode) -> Result<Vec<u8>, &'static str> {
+        if !inode.is_dir() { return Err("Not a directory"); }
+        file::read_file(self.device.as_ref(),inode,&self.superblock).map_err(|e| if e == crate::block::BlockError::OutOfMemory { "No memory for directory data" } else { "read directory" })
+    }
+    fn write_directory_data(&self, ino: u32, data: &[u8]) -> Result<(), &'static str> {
+        let inode = self.read_inode(ino)?;
+        let blocks=directory_io::prepare(self.device.as_ref(),&inode,&self.superblock,data.len())?;
+        directory_io::write(self.device.as_ref(),self.superblock.block_size(),&blocks,data)
+
+    }
     pub fn sync(&self) -> Result<(), &'static str> {
         self.device.flush().map_err(|_| "flush")?;
         self.durable_epoch.fetch_add(1, core::sync::atomic::Ordering::Release);

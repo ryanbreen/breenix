@@ -163,18 +163,19 @@ pub fn handle_tcsets(tty: &Arc<TtyDevice>, arg: u64) -> Result<(), i32> {
 
 /// Handle TCSETSW - set termios after draining output
 ///
-/// Same as TCSETS for now since we don't buffer output.
+/// Waits for the output already written to leave the UART, then applies the
+/// settings as TCSETS does.
 pub fn handle_tcsetsw(tty: &Arc<TtyDevice>, arg: u64) -> Result<(), i32> {
-    // For now, we don't buffer output, so this is the same as TCSETS
-    // In a full implementation, we would wait for output to drain first
+    crate::serial::drain_output();
     handle_tcsets(tty, arg)
 }
 
 /// Handle TCSETSF - set termios after flushing input and draining output
 ///
-/// Flushes input queue before applying settings.
+/// Waits for the output already written to leave the UART and flushes the
+/// input queue before applying the settings.
 pub fn handle_tcsetsf(tty: &Arc<TtyDevice>, arg: u64) -> Result<(), i32> {
-    // Flush input first
+    crate::serial::drain_output();
     tty.flush_input();
 
     // Then apply the settings (same as TCSETS)

@@ -11,7 +11,7 @@ use crate::arch_impl::aarch64::gic;
 use crate::arch_impl::traits::{CpuOps, InterruptController};
 use crate::task::completion::Completion;
 use crate::task::waitqueue::WaitQueueHead;
-use core::ptr::{read_volatile, write_volatile};
+use core::ptr::read_volatile;
 use core::sync::atomic::{fence, AtomicBool, AtomicU32, Ordering};
 
 const VIRTIO_IRQ_BASE: u32 = 48;
@@ -850,13 +850,13 @@ pub fn handle_interrupt() {
     };
 
     let base = sound_mmio_virt_base(state);
-    let interrupt_status = unsafe { read_volatile((base + 0x60) as *const u32) };
+    let interrupt_status = unsafe { crate::arch_impl::aarch64::mmio::read32((base + 0x60) as *const u32) };
     if interrupt_status == 0 {
         return;
     }
 
     unsafe {
-        write_volatile((base + 0x64) as *mut u32, interrupt_status);
+        crate::arch_impl::aarch64::mmio::write32((base + 0x64) as *mut u32, interrupt_status);
     }
     dsb_sy();
 

@@ -3,6 +3,13 @@ import Foundation
 import XCTest
 
 final class HostFactsTests: XCTestCase {
+    func testEffectiveQemuConfigurationUsesWrapperRecord() {
+        let config = HostFacts.qemuConfiguration("Profile cortex-a72\nBREENIX_QEMU_CONFIG accel=hvf cpu=host\n")
+        XCTAssertEqual(config?.accelerator, "hvf")
+        XCTAssertEqual(config?.cpu, "host")
+        XCTAssertNil(HostFacts.qemuConfiguration("Profile cortex-a72"))
+    }
+
     func testPeerQueryRejectsFailureInsteadOfReportingZero() throws {
         for result in [ProcessResult(stderr: Data("unsupported option".utf8), exitCode: 2),
                        ProcessResult(stdout: Data("not a PID".utf8), exitCode: 0)] {

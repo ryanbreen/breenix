@@ -78,7 +78,7 @@ echo ""
 
 # Start QEMU in background (60s total timeout)
 qemu_host_lock_acquire
-timeout 60 "$QEMU_UI" qemu-system-aarch64 \
+timeout 60 python3 "$BREENIX_ROOT/scripts/qemu-arm64.py" qemu-system-aarch64 \
     -M virt -cpu cortex-a72 -m 512 -smp 4 \
     -kernel "$KERNEL" \
     -display none -no-reboot \

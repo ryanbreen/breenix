@@ -772,10 +772,10 @@ pub fn handle_interrupt() {
         let base = *(&raw const DEVICE_BASE_VIRT);
         if base != 0 {
             let status_addr = (base + 0x60) as *const u32;
-            let status = core::ptr::read_volatile(status_addr);
+            let status = crate::arch_impl::aarch64::mmio::read32(status_addr);
             if status != 0 {
                 let ack_addr = (base + 0x64) as *mut u32;
-                core::ptr::write_volatile(ack_addr, status);
+                crate::arch_impl::aarch64::mmio::write32(ack_addr, status);
             }
         }
     }

@@ -39,6 +39,7 @@ pub const TEST_BINARIES: &[&str] = &[
     "ctrl_c_test",
     // IPC tests
     "pipe_test",
+    "fifo_fs_test",
     "unix_socket_test",
     "dup_test",
     "fcntl_test",

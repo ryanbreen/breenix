@@ -116,6 +116,9 @@ struct Attr {
     policy: i32,
     priority: i32,
 }
+/// The bytes of a pthread_attr_t this library reads, for a copy of one
+/// kept past the caller's (`mqueue`'s SIGEV_THREAD registrations).
+pub(crate) const ATTR_SIZE: usize = core::mem::size_of::<Attr>();
 impl Attr {
     const fn new() -> Self {
         Self {
@@ -439,6 +442,7 @@ pub unsafe extern "C" fn __breenix_after_fork() {
         );
     }
     PROCESS.store(process, Release);
+    crate::mqueue::after_fork();
 }
 unsafe fn current_id() -> u32 {
     let p = current();

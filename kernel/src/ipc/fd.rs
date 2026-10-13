@@ -600,7 +600,7 @@ impl FdTableInner {
             }
             unsafe { SlabBox::from_slab(arr, &FD_TABLE_SLAB) }
         } else {
-            SlabBox::from_box(alloc::boxed::Box::new(core::array::from_fn(|_| None)))
+            SlabBox::heap_from_fn(|_| None)
         };
 
         FdTableInner {

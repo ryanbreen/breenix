@@ -114,7 +114,7 @@ docker run --rm \
     -v "$OUTPUT_DIR:/output" \
     breenix-qemu-aarch64 \
     qemu-system-aarch64 \
-        -M virt \
+        -M virt,accel=tcg \
         -cpu cortex-a72 \
         -m 512 \
         -kernel /breenix/kernel \

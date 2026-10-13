@@ -73,7 +73,7 @@ docker run --rm \
     -v "$OUTPUT_DIR:/output" \
     breenix-qemu-aarch64 \
     timeout 30 qemu-system-aarch64 \
-        -machine virt \
+        -machine virt,accel=tcg \
         -cpu cortex-a72 \
         -m 512 \
         -kernel /breenix/kernel.elf \

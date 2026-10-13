@@ -1282,6 +1282,12 @@ fn shared_userspace_stages() -> Vec<BootStage> {
 
         // Filesystem tests
         BootStage {
+            name: "FIFO filesystem test passed",
+            marker: "FIFO_FS PASS",
+            failure_meaning: "native FIFO directory descriptors or inode lifecycle failed",
+            check_hint: "Read fifo_fs_test output; require its own completion marker",
+        },
+        BootStage {
             name: "File read test passed",
             marker: "FILE_READ_TEST_PASSED",
             failure_meaning: "ext2 file read test failed",

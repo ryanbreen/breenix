@@ -35,7 +35,6 @@ use libbreenix::error::Error;
 use core::slice;
 
 /// AT_FDCWD as raw u64 for direct syscall use (-100 as u64)
-#[cfg(target_arch = "aarch64")]
 const AT_FDCWD_RAW: u64 = (-100i32) as u32 as u64;
 /// AT_REMOVEDIR flag for unlinkat
 #[cfg(target_arch = "aarch64")]
@@ -357,6 +356,30 @@ pub unsafe extern "C" fn fstat(fd: i32, buf: *mut u8) -> i32 {
 #[no_mangle]
 pub unsafe extern "C" fn stat(path: *const u8, buf: *mut u8) -> i32 {
     stat_by_path(path, buf, 0)
+}
+
+/// Create a FIFO with permissions filtered by the kernel's creation mask.
+#[no_mangle]
+pub unsafe extern "C" fn mkfifo(path: *const u8, mode: u32) -> i32 {
+    mkfifoat(AT_FDCWD_RAW as i32, path, mode)
+}
+
+/// Create a FIFO using the Linux mknodat interface (AT_FDCWD selects cwd).
+#[no_mangle]
+pub unsafe extern "C" fn mkfifoat(dirfd: i32, path: *const u8, mode: u32) -> i32 {
+    if path.is_null() {
+        *__errno_location() = EFAULT;
+        return -1;
+    }
+    const S_IFIFO: u32 = 0o010000;
+    let result = libbreenix::raw::syscall4(
+        libbreenix::syscall::nr::MKNODAT,
+        dirfd as u64,
+        path as u64,
+        (S_IFIFO | (mode & 0o7777)) as u64,
+        0,
+    ) as i64;
+    syscall_result_to_c_int(result)
 }
 
 unsafe fn stat_by_path(path: *const u8, buf: *mut u8, flags: u64) -> i32 {
@@ -1022,6 +1045,9 @@ pub unsafe extern "C" fn execve(
         return -1;
     }
 
+    // The message queue notification helper is stopped first: exec fails
+    // while another thread shares the address space.
+    let stopped = mqueue::before_exec();
     let result = libbreenix::raw::syscall3(
         libbreenix::syscall::nr::EXEC,
         path as u64,
@@ -1029,6 +1055,7 @@ pub unsafe extern "C" fn execve(
         envp as u64,
     ) as i64;
     // execve should not return on success
+    mqueue::after_failed_exec(stopped);
     syscall_result_to_c_int(result)
 }
 

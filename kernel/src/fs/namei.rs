@@ -194,7 +194,11 @@ fn top(stack: &[Frame]) -> Node {
 }
 
 pub(crate) fn fs_errno(error: &'static str) -> u64 {
-    if error.contains("memory") { 12 } else { EIO as u64 }
+    if error.contains("memory") {
+        12
+    } else {
+        EIO as u64
+    }
 }
 fn copy_string(text: &str) -> Result<String, u64> {
     let mut copy = String::new();
@@ -203,12 +207,24 @@ fn copy_string(text: &str) -> Result<String, u64> {
     Ok(copy)
 }
 fn join(stack: &[Frame]) -> Result<String, u64> {
-    let length = stack.iter().fold(0usize, |size, frame| size.saturating_add(frame.name.len()+1)).max(1);
-    if length >= PATH_MAX { return Err(ENAMETOOLONG as u64); }
+    let length = stack
+        .iter()
+        .fold(0usize, |size, frame| {
+            size.saturating_add(frame.name.len() + 1)
+        })
+        .max(1);
+    if length >= PATH_MAX {
+        return Err(ENAMETOOLONG as u64);
+    }
     let mut path = String::new();
     path.try_reserve_exact(length).map_err(|_| 12u64)?;
-    if stack.is_empty() { path.push('/'); }
-    for frame in stack { path.push('/'); path.push_str(&frame.name); }
+    if stack.is_empty() {
+        path.push('/');
+    }
+    for frame in stack {
+        path.push('/');
+        path.push_str(&frame.name);
+    }
     Ok(path)
 }
 
@@ -262,11 +278,18 @@ fn read_dir_inode(fs: &ext2::Ext2Fs, ino: u32) -> Result<ext2::Ext2Inode, u64> {
 /// Whether a devfs or procfs pathname names a directory (`Some(true)`),
 /// another entry (`Some(false)`) or nothing.
 fn virtual_entry(path: &str) -> Option<bool> {
-    if let Some(entry) = crate::ipc::mqueue::dev::virtual_entry(path) { return entry; }
+    if let Some(entry) = crate::ipc::mqueue::dev::virtual_entry(path) {
+        return entry;
+    }
     if let Some(entry) = crate::ipc::shmem::virtual_entry(path) {
         return entry;
     }
-    if path == "/dev" || path == "/proc" || path == "/dev/pts" || path == "/dev/shm" || path == "/dev/mqueue" {
+    if path == "/dev"
+        || path == "/proc"
+        || path == "/dev/pts"
+        || path == "/dev/shm"
+        || path == "/dev/mqueue"
+    {
         return Some(true);
     }
     if let Some(pty) = path.strip_prefix("/dev/pts/") {
@@ -326,17 +349,35 @@ pub fn resolve_create(path: &str) -> Result<Resolved, u64> {
 /// Resolve with the caller's chosen credentials (access uses real IDs) and
 /// optionally a directory descriptor, using the same component walk.
 pub(crate) fn resolve_from(
-    path: &str, follow: bool, start: Option<WorkingDir>,
+    path: &str,
+    follow: bool,
+    start: Option<WorkingDir>,
     cred: &super::permissions::Credentials,
 ) -> Result<Resolved, u64> {
     walk_with(path, Mode::Lookup { follow }, start, cred)
 }
 
-pub(crate) fn resolve_create_from(path: &str, start: Option<WorkingDir>, cred: &super::permissions::Credentials) -> Result<Resolved, u64> {
+pub(crate) fn resolve_create_from(
+    path: &str,
+    start: Option<WorkingDir>,
+    cred: &super::permissions::Credentials,
+) -> Result<Resolved, u64> {
     walk_with(path, Mode::Create, start, cred)
 }
-pub(crate) fn resolve_entry_from(path: &str, start: Option<WorkingDir>, cred: &super::permissions::Credentials) -> Result<Resolved, u64> {
+pub(crate) fn resolve_entry_from(
+    path: &str,
+    start: Option<WorkingDir>,
+    cred: &super::permissions::Credentials,
+) -> Result<Resolved, u64> {
     walk_with(path, Mode::Entry, start, cred)
+}
+
+pub(crate) fn resolve_rename_from(
+    path: &str,
+    start: Option<WorkingDir>,
+    cred: &super::permissions::Credentials,
+) -> Result<Resolved, u64> {
+    walk_with(path, Mode::Rename, start, cred)
 }
 
 fn walk(path: &str, mode: Mode) -> Result<Resolved, u64> {
@@ -345,7 +386,9 @@ fn walk(path: &str, mode: Mode) -> Result<Resolved, u64> {
 }
 
 fn walk_with(
-    path: &str, mode: Mode, start: Option<WorkingDir>,
+    path: &str,
+    mode: Mode,
+    start: Option<WorkingDir>,
     cred: &super::permissions::Credentials,
 ) -> Result<Resolved, u64> {
     if path.is_empty() {
@@ -359,7 +402,10 @@ fn walk_with(
     let start = if path.starts_with('/') {
         WorkingDir::Root
     } else {
-        match start { Some(dir) => dir, None => try_current_working_dir()? }
+        match start {
+            Some(dir) => dir,
+            None => try_current_working_dir()?,
+        }
     };
     let mut held = Held(None);
     let mut stack = frames(&start, &mut held)?;
@@ -395,7 +441,9 @@ fn walk_with(
                 return Err(crate::syscall::errno::EACCES as u64);
             }
             Some(inode)
-        } else { None };
+        } else {
+            None
+        };
         match name.as_str() {
             "." => {
                 last = Last::Dot;
@@ -437,23 +485,18 @@ fn walk_with(
                     };
                     if let Some(node) = entered {
                         stack.try_reserve(1).map_err(|_| 12u64)?;
-                stack.push(Frame { name, node });
+                        stack.push(Frame { name, node });
                         continue;
                     }
                 }
                 let fs = held.fs(mount)?;
                 let dir_inode = searched_inode.ok_or(ENOTDIR as u64)?;
-                let found = fs
-                    .lookup_in_dir(&dir_inode, &name)
-                    .map_err(fs_errno)?;
+                let found = fs.lookup_in_dir(&dir_inode, &name).map_err(fs_errno)?;
                 let Some(ino) = found else {
                     if !is_final {
                         return Err(ENOENT as u64);
                     }
-                    let dir_pin = || {
-                        fs.pin_loaded_inode(dir, dir_inode.size())
-                            .map_err(fs_errno)
-                    };
+                    let dir_pin = || fs.pin_loaded_inode(dir, dir_inode.size()).map_err(fs_errno);
                     let (pin, entry_dir) = match mode {
                         Mode::Lookup { .. } => (Some(dir_pin()?), None),
                         Mode::Rename => (None, Some(dir_pin()?)),
@@ -461,17 +504,14 @@ fn walk_with(
                         Mode::Entry => (None, Some(dir_pin()?)),
                     };
                     let mut absent = join(&stack)?;
-                    absent.try_reserve(name.len()+1).map_err(|_| 12u64)?;
+                    absent.try_reserve(name.len() + 1).map_err(|_| 12u64)?;
                     if !stack.is_empty() {
                         absent.push('/');
                     }
                     absent.push_str(&name);
                     return Ok(Resolved {
                         path: absent,
-                        target: Target::Absent {
-                            mount,
-                            parent: dir,
-                        },
+                        target: Target::Absent { mount, parent: dir },
                         last,
                         trailing_slash,
                         virtual_absent,
@@ -526,17 +566,18 @@ fn walk_with(
             let fs = held.fs(mount)?;
             let inode = fs.read_inode(ino).map_err(fs_errno)?;
             let pin = match mode {
-                Mode::Lookup { .. } => Some(
-                    fs.pin_loaded_inode(ino, inode.size())
-                        .map_err(fs_errno)?,
-                ),
+                Mode::Lookup { .. } => {
+                    Some(fs.pin_loaded_inode(ino, inode.size()).map_err(fs_errno)?)
+                }
                 Mode::Entry | Mode::Rename | Mode::Create => None,
             };
             // The final name's directory is the frame below it, on the same
             // filesystem unless the name is a filesystem root.
             let below = stack.len().checked_sub(2).map_or(ROOT, |i| stack[i].node);
             let entry_dir = match (mode, last, below) {
-                (Mode::Rename | Mode::Entry, Last::Name, Node::Ext2(dir_mount, dir)) if dir_mount == mount => {
+                (Mode::Rename | Mode::Entry, Last::Name, Node::Ext2(dir_mount, dir))
+                    if dir_mount == mount =>
+                {
                     let dir_inode = fs.read_inode(dir).map_err(fs_errno)?;
                     Some(
                         fs.pin_loaded_inode(dir, dir_inode.size())
@@ -571,10 +612,9 @@ fn walk_with(
 pub fn resolve_file(path: &str) -> Result<(Mount, u32, FileHandle), u64> {
     let resolved = resolve(path, true)?;
     match resolved.target {
-        Target::Inode { mount, ino, .. } => resolved
-            .pin
-            .map(|pin| (mount, ino, pin))
-            .ok_or(EIO as u64),
+        Target::Inode { mount, ino, .. } => {
+            resolved.pin.map(|pin| (mount, ino, pin)).ok_or(EIO as u64)
+        }
         Target::Absent { .. } => Err(ENOENT as u64),
         Target::Virtual => Err(crate::syscall::errno::EACCES as u64),
     }
@@ -631,14 +671,21 @@ impl SharedWorkingDir {
     }
 }
 
-fn try_current_working_dir() -> Result<WorkingDir,u64> {
-    let Some(tid) = crate::task::scheduler::current_thread_id() else { return Ok(WorkingDir::Root); };
+fn try_current_working_dir() -> Result<WorkingDir, u64> {
+    let Some(tid) = crate::task::scheduler::current_thread_id() else {
+        return Ok(WorkingDir::Root);
+    };
     let guard = crate::process::manager();
-    let Some((_,process)) = guard.as_ref().and_then(|m| m.find_process_by_thread(tid)) else { return Ok(WorkingDir::Root); };
+    let Some((_, process)) = guard.as_ref().and_then(|m| m.find_process_by_thread(tid)) else {
+        return Ok(WorkingDir::Root);
+    };
     let dir = process.cwd.0.lock();
     Ok(match &*dir {
         WorkingDir::Root => WorkingDir::Root,
-        WorkingDir::Ext2 { mount, dir } => WorkingDir::Ext2 { mount: *mount, dir: dir.clone() },
+        WorkingDir::Ext2 { mount, dir } => WorkingDir::Ext2 {
+            mount: *mount,
+            dir: dir.clone(),
+        },
         WorkingDir::Virtual(path) => WorkingDir::Virtual(copy_string(path)?),
     })
 }
@@ -667,9 +714,7 @@ pub fn working_dir(resolved: &Resolved) -> Result<WorkingDir, u64> {
             Some(false) => Err(ENOTDIR as u64),
             None => Err(ENOENT as u64),
         },
-        Target::Inode { file_type, .. } if file_type != FileType::Directory => {
-            Err(ENOTDIR as u64)
-        }
+        Target::Inode { file_type, .. } if file_type != FileType::Directory => Err(ENOTDIR as u64),
         Target::Inode {
             mount: Mount::Root,
             ino: EXT2_ROOT_INO,
@@ -730,7 +775,10 @@ fn frames(dir: &WorkingDir, held: &mut Held) -> Result<Vec<Frame>, u64> {
             let mut frames = Vec::new();
             for name in path.split('/').filter(|name| !name.is_empty()) {
                 frames.try_reserve(1).map_err(|_| 12u64)?;
-                frames.push(Frame { name: copy_string(name)?, node: Node::Virtual });
+                frames.push(Frame {
+                    name: copy_string(name)?,
+                    node: Node::Virtual,
+                });
             }
             Ok(frames)
         }
@@ -753,14 +801,17 @@ fn ancestry(fs: &ext2::Ext2Fs, mount: Mount, mut ino: u32) -> Result<Vec<Frame>,
         let data = fs.read_directory(&inode).map_err(fs_errno)?;
         let parent = ext2::dir::find_inode(&data, "..").ok_or(ENOENT as u64)?;
         let parent_inode = read_dir_inode(fs, parent)?;
-        let parent_data = fs
-            .read_directory(&parent_inode)
-            .map_err(fs_errno)?;
+        let parent_data = fs.read_directory(&parent_inode).map_err(fs_errno)?;
         // Only an exact name can have been looked up, so a directory is
         // never entered through one that is not.
-        let entry = ext2::dir::raw_entries(&parent_data).find(|entry| {
-            entry.inode == ino && entry.name != b"." && entry.name != b".." && core::str::from_utf8(entry.name).is_ok()
-        }).ok_or(ENOENT as u64)?;
+        let entry = ext2::dir::raw_entries(&parent_data)
+            .find(|entry| {
+                entry.inode == ino
+                    && entry.name != b"."
+                    && entry.name != b".."
+                    && core::str::from_utf8(entry.name).is_ok()
+            })
+            .ok_or(ENOENT as u64)?;
         frames.try_reserve(1).map_err(|_| 12u64)?;
         frames.push(Frame {
             name: copy_string(core::str::from_utf8(entry.name).map_err(|_| ENOENT as u64)?)?,
