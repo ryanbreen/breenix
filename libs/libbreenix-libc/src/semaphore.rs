@@ -336,9 +336,6 @@ unsafe fn named_open(name: *const u8, oflag: i32, mode: u32, value: u32) -> Resu
     use core::ptr::null_mut;
     let mut path = [0u8; 265];
     crate::shm::name_with_prefix(name, b"/dev/shm/sem.", &mut path)?;
-    if oflag & O_CREAT != 0 && value > SEM_VALUE_MAX {
-        return Err(EINVAL);
-    }
     loop {
         // First use an existing initialized object, except for O_EXCL creators.
         let existing = if oflag & (O_CREAT | O_EXCL) == O_CREAT | O_EXCL {
@@ -352,6 +349,9 @@ unsafe fn named_open(name: *const u8, oflag: i32, mode: u32, value: u32) -> Resu
         }
         if created && oflag & O_EXCL == 0 && *crate::__errno_location() != 2 {
             return Err(i64::from(*crate::__errno_location()));
+        }
+        if created && value > SEM_VALUE_MAX {
+            return Err(EINVAL);
         }
         #[cfg(target_arch = "x86_64")]
         const O_TMPFILE: i32 = 0x410000;

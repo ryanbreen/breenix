@@ -566,18 +566,13 @@ fn vma_split_preserves_object_offset_and_counts_live_tokens() {
         Protection::READ,
         MmapFlags::SHARED,
     );
-    v.shm = Some(object::ShmMapping::new(&obj).unwrap());
+    v.shm = Some(object::ShmMapping::new(&obj));
     v.shm_offset = 4096;
     let piece = v.piece(VirtAddr::new(0x101000), v.end);
     assert_eq!(piece.shm_offset, 8192);
-    assert!(v
-        .shm
-        .as_ref()
-        .unwrap()
-        .shares_attachment(piece.shm.as_ref().unwrap()));
-    assert_eq!(obj.attachments(), 1);
-    let fork = piece.shm.as_ref().unwrap().fork(77).unwrap();
     assert_eq!(obj.attachments(), 2);
+    let fork = piece.shm.as_ref().unwrap().fork(77);
+    assert_eq!(obj.attachments(), 3);
     drop(v);
     drop(piece);
     assert_eq!(obj.attachments(), 1);
@@ -1131,11 +1126,11 @@ fn growing_zeroes_bytes_written_through_a_mapping_beyond_eof() {
 fn mapping_origin_offset_and_maximum_permission_survive_splits() {
     use object::{MappingOrigin, ShmMapping};
     let obj = object::ShmObject::new(8192, 0o644, 7, 8).unwrap();
-    let ro = ShmMapping::with_origin(&obj, MappingOrigin::Mmap, false).unwrap();
+    let ro = ShmMapping::with_origin(&obj, MappingOrigin::Mmap, false);
     assert!(!ro.may_write());
     assert!(!ro.clone().may_write());
     assert!(!ro.matches_attachment(0x10000, 0, 0x10000));
-    let sysv = ShmMapping::with_origin(&obj, MappingOrigin::SysV, false).unwrap();
+    let sysv = ShmMapping::with_origin(&obj, MappingOrigin::SysV, false);
     assert!(sysv.matches_attachment(0x11000, 4096, 0x10000));
     assert!(!sysv.matches_attachment(0x11000, 4096, 0x11000));
     assert!(!sysv.clone().may_write());
@@ -1502,10 +1497,10 @@ fn shared_api_records_attach_detach_and_fixed_noreplace_preserves_existing_mappi
     let _lock = kernel_fixture();
     let obj = object::ShmObject::new(8192, 0o600, 0, 0).unwrap();
     ACTIVITY_TIME.with(|t| t.set(100));
-    let mapping = object::ShmMapping::new(&obj).unwrap();
+    let mapping = object::ShmMapping::new(&obj);
     assert_eq!(obj.activity(), (100, 0, 77));
     ACTIVITY_TIME.with(|t| t.set(101));
-    let cloned = mapping.fork(77).unwrap();
+    let cloned = mapping.fork(77);
     assert_eq!(obj.activity(), (101, 0, 77));
     ACTIVITY_TIME.with(|t| t.set(102));
     drop(cloned);
@@ -1828,7 +1823,8 @@ fn shrinking_above_lowered_fsize_limit_and_offset_overflow() {
 }
 
 thread_local! { static SLOW_CREATOR:std::cell::Cell<bool>=const{std::cell::Cell::new(false)}; }
-static SLOW_CREATOR_STARTED:std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
+static SLOW_CREATOR_STARTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 #[test]
 fn slow_named_creator_cannot_poison_or_remove_a_replacement() {
     use semaphore::*;
@@ -1839,15 +1835,20 @@ fn slow_named_creator_cannot_poison_or_remove_a_replacement() {
         SLOW_CREATOR.with(|f| f.set(true));
         sem_open(name.as_ptr(), 0x40, 0o600u32, 4u32) as usize
     });
-    while !SLOW_CREATOR_STARTED.load(Ordering::Acquire) { std::thread::yield_now(); }
+    while !SLOW_CREATOR_STARTED.load(Ordering::Acquire) {
+        std::thread::yield_now();
+    }
     unsafe {
         // The slow creator has no public name. Another creator may publish.
         let replacement = sem_open(name.as_ptr(), 0xc0, 0o600u32, 7u32);
         assert!(!replacement.is_null());
         let first = creator.join().unwrap() as *mut Sem;
         assert_eq!(first, replacement);
-        let mut value = 0; assert_eq!(sem_getvalue(first, &mut value), 0); assert_eq!(value, 7);
-        assert_eq!(sem_close(first), 0); assert_eq!(sem_close(replacement), 0);
+        let mut value = 0;
+        assert_eq!(sem_getvalue(first, &mut value), 0);
+        assert_eq!(value, 7);
+        assert_eq!(sem_close(first), 0);
+        assert_eq!(sem_close(replacement), 0);
         assert_eq!(sem_unlink(name.as_ptr()), 0);
     }
 }
@@ -1855,10 +1856,14 @@ fn slow_named_creator_cannot_poison_or_remove_a_replacement() {
 fn closing_an_unpublished_creator_leaves_the_public_name_available() {
     unsafe {
         let fd = open(b"/dev/shm\0".as_ptr(), 2 | 0x400000, 0o600);
-        assert!(fd >= 0); ftruncate(fd, 32); close(fd);
+        assert!(fd >= 0);
+        ftruncate(fd, 32);
+        close(fd);
         let name = b"/creator-died-private\0";
         let sem = semaphore::sem_open(name.as_ptr(), 0xc0, 0o600u32, 2u32);
-        assert!(!sem.is_null()); assert_eq!(semaphore::sem_close(sem), 0); assert_eq!(semaphore::sem_unlink(name.as_ptr()), 0);
+        assert!(!sem.is_null());
+        assert_eq!(semaphore::sem_close(sem), 0);
+        assert_eq!(semaphore::sem_unlink(name.as_ptr()), 0);
     }
 }
 
@@ -1867,8 +1872,67 @@ fn shm_open_accepts_linux_writeonly_access_and_rejects_invalid_access_mode() {
     let name = b"/linux-writeonly-shm\0";
     unsafe {
         let fd = shm::shm_open(name.as_ptr(), 0xc1, 0o600);
-        assert!(fd >= 0); assert_eq!(ftruncate(fd, 4096), 0); close(fd);
+        assert!(fd >= 0);
+        assert_eq!(ftruncate(fd, 4096), 0);
+        close(fd);
         assert_eq!(shm::shm_unlink(name.as_ptr()), 0);
-        assert_eq!(shm::shm_open(name.as_ptr(), 3, 0), -1); assert_eq!(ERRNO.with(|e| e.get()), 22);
+        assert_eq!(shm::shm_open(name.as_ptr(), 3, 0), -1);
+        assert_eq!(ERRNO.with(|e| e.get()), 22);
     }
+}
+
+#[test]
+fn opening_an_existing_named_semaphore_ignores_the_creation_value() {
+    use semaphore::*;
+    let name = b"/existing-ignores-value\0";
+    unsafe {
+        let first = sem_open(name.as_ptr(), 0xc0, 0o600u32, 3u32);
+        assert!(!first.is_null());
+        let again = sem_open(name.as_ptr(), 0x40, 0o600u32, SEM_VALUE_MAX + 1);
+        assert_eq!(first, again);
+        let mut value = 0;
+        assert_eq!(sem_getvalue(again, &mut value), 0);
+        assert_eq!(value, 3);
+        assert_eq!(sem_close(first), 0);
+        assert_eq!(sem_close(again), 0);
+        assert_eq!(sem_unlink(name.as_ptr()), 0);
+    }
+}
+
+#[test]
+fn protection_replacement_preserves_activity_and_split_counts_vm_opens() {
+    use memory::{
+        vma::{MmapFlags, Protection, Vma},
+        Addr,
+    };
+    let _lock = kernel_fixture();
+    let obj = object::ShmObject::new(3 * 4096, 0o600, 0, 0).unwrap();
+    ACTIVITY_TIME.with(|t| t.set(100));
+    let mut original = Vma::new(
+        Addr::new(0x100000),
+        Addr::new(0x103000),
+        Protection::READ,
+        MmapFlags::SHARED,
+    );
+    original.shm = Some(object::ShmMapping::new(&obj));
+    ACTIVITY_TIME.with(|t| t.set(101));
+    let whole = original.replacement_piece(original.start, original.end);
+    drop(original);
+    assert_eq!(obj.attachments(), 1);
+    assert_eq!(obj.activity(), (100, 0, 77));
+    let mut original = whole;
+    let prefix = original.piece(Addr::new(0x100000), Addr::new(0x101000));
+    let suffix = original.piece(Addr::new(0x102000), Addr::new(0x103000));
+    let middle = original.replacement_piece(Addr::new(0x101000), Addr::new(0x102000));
+    assert_eq!(obj.attachments(), 3);
+    drop(original);
+    assert_eq!(obj.attachments(), 3);
+    assert_eq!(obj.activity(), (101, 0, 77));
+    ACTIVITY_TIME.with(|t| t.set(102));
+    drop(prefix);
+    assert_eq!(obj.attachments(), 2);
+    assert_eq!(obj.activity(), (101, 102, 77));
+    drop(middle);
+    drop(suffix);
+    assert_eq!(obj.attachments(), 0);
 }
