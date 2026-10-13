@@ -486,24 +486,18 @@ impl LineDiscipline {
         }
     }
 
-    /// Copy while the input lock is held; consume only after a successful
-    /// fault-protected user copy. A failed copy leaves the record intact.
-    pub fn read_user(&mut self, buf_ptr: u64, scratch: &mut [u8]) -> Result<usize, i32> {
+    /// Read up to `max` bytes, at most the rest of one canonical record, to
+    /// the user address `buf_ptr` while the input lock is held, with Linux's
+    /// handling of a bad address (`tty::read_to_user`).
+    pub fn read_user(&mut self, buf_ptr: u64, max: usize) -> Result<usize, i32> {
         let n = if self.termios.is_canonical() {
             match self.line_records.front() {
                 Some(&0) => { self.line_records.pop_front(); self.eof_records -= 1; return Err(EOF_MARKER); }
-                Some(&n) => n.min(scratch.len()),
+                Some(&n) => n.min(max),
                 None => 0,
             }
-        } else { self.raw_queue.len().min(scratch.len()) };
-        let queue = if self.termios.is_canonical() { &self.cooked_queue } else { &self.raw_queue };
-        for (dst, &src) in scratch[..n].iter_mut().zip(queue.iter()) { *dst = src; }
-        if n > 0 {
-            crate::syscall::userptr::write_user_bytes(buf_ptr, scratch.as_ptr(), n)
-                .map_err(|e| e as i32)?;
-            self.read(&mut scratch[..n])?;
-        }
-        Ok(n)
+        } else { self.raw_queue.len().min(max) };
+        super::read_to_user(buf_ptr, n, |chunk| self.read(chunk).unwrap_or(0))
     }
 
     /// Check if there is data available for reading
@@ -1333,17 +1327,17 @@ mod tests {
     }
 
     #[test]
-    fn failed_user_copy_preserves_canonical_and_raw_input() {
+    fn a_read_to_an_address_outside_user_space_takes_no_input() {
         let mut ld = LineDiscipline::new();
         for &c in b"record\n" { ld.input_char(c, &mut null_echo); }
         let mut scratch = [0; 16];
-        assert_eq!(ld.read_user(0, &mut scratch), Err(14));
+        assert_eq!(ld.read_user(0, 16), Err(14));
         assert_eq!(ld.bytes_available(), 7);
         assert_eq!(ld.read(&mut scratch), Ok(7));
         assert_eq!(&scratch[..7], b"record\n");
         ld.termios_mut().set_raw();
         ld.input_char(b'x', &mut null_echo);
-        assert_eq!(ld.read_user(0, &mut scratch), Err(14));
+        assert_eq!(ld.read_user(0, 16), Err(14));
         assert_eq!(ld.read(&mut scratch), Ok(1));
         assert_eq!(scratch[0], b'x');
     }

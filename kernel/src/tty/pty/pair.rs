@@ -78,17 +78,11 @@ impl PtyBuffer {
         self.read_pos = (self.write_pos + PTY_BUFFER_SIZE - n) % PTY_BUFFER_SIZE;
     }
 
-    /// Copy before advancing the ring so EFAULT leaves all bytes available.
-    pub fn read_user(&mut self, ptr: u64, scratch: &mut [u8]) -> Result<usize, i32> {
-        let n = scratch.len().min(self.available());
-        for (i, dst) in scratch[..n].iter_mut().enumerate() {
-            *dst = self.data[(self.read_pos + i) % PTY_BUFFER_SIZE];
-        }
-        if n > 0 {
-            crate::syscall::userptr::write_user_bytes(ptr, scratch.as_ptr(), n).map_err(|e| e as i32)?;
-            self.read_pos = (self.read_pos + n) % PTY_BUFFER_SIZE;
-        }
-        Ok(n)
+    /// Read up to `max` bytes to the user address `ptr`, with Linux's
+    /// handling of a bad address (`tty::read_to_user`).
+    pub fn read_user(&mut self, ptr: u64, max: usize) -> Result<usize, i32> {
+        let n = max.min(self.available());
+        crate::tty::read_to_user(ptr, n, |chunk| self.read(chunk))
     }
 
     /// Bytes that can still be written before the ring is full.

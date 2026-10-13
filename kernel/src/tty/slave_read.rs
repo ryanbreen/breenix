@@ -6,7 +6,6 @@ use super::pty::PtyPair;
 use crate::ipc::wait::{wait_on, IpcDeadline, WaitEnd};
 use crate::syscall::{errno, SyscallResult};
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
 fn now_ns() -> u64 {
@@ -24,11 +23,6 @@ pub fn read(pair: &Arc<PtyPair>, buf_ptr: u64, count: u64, nonblocking: bool) ->
         return SyscallResult::Err(e as u64);
     }
     let count = count.min(MAX_CANON as u64) as usize;
-    let mut buf = Vec::new();
-    if buf.try_reserve_exact(count).is_err() {
-        return SyscallResult::Err(errno::ENOMEM as u64);
-    }
-    buf.resize(count, 0);
     let input_epoch = pair.ldisc.lock().input_epoch();
     let mut configuration = None;
     let mut seen = 0;
@@ -42,7 +36,7 @@ pub fn read(pair: &Arc<PtyPair>, buf_ptr: u64, count: u64, nonblocking: bool) ->
         if pair.master_closed() { return SyscallResult::Ok(0); }
         let attrs = ldisc.termios();
         let canonical = attrs.is_canonical();
-        let minimum = usize::from(attrs.vmin()).min(buf.len());
+        let minimum = usize::from(attrs.vmin()).min(count);
         let timeout = u64::from(attrs.vtime()) * 100_000_000;
         let current = (canonical, minimum, timeout);
         if configuration != Some(current) {
@@ -76,7 +70,7 @@ pub fn read(pair: &Arc<PtyPair>, buf_ptr: u64, count: u64, nonblocking: bool) ->
                 || expired
         };
         if ready || hungup || (nonblocking && available > 0) {
-            let result = ldisc.read_user(buf_ptr, &mut buf);
+            let result = ldisc.read_user(buf_ptr, count);
             drop(ldisc);
             if result.is_ok() || matches!(result, Err(EOF_MARKER)) { pair.master_writers.wake_up(); }
             return match result {

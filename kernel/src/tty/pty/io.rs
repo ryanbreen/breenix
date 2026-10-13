@@ -2,39 +2,23 @@
 
 use super::PtyPair;
 use crate::syscall::blocking_io::wait_prepared;
-use crate::syscall::errno::{EAGAIN, EIO, ENOMEM};
+use crate::syscall::errno::{EAGAIN, EIO};
 use crate::syscall::SyscallResult;
 use crate::task::thread::ThreadState;
 use crate::tty::ctty::TtyRef;
 use crate::tty::jobctl::{self, JobOp};
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 
-/// The most a terminal read returns: more than a master's ring (4095 bytes)
-/// or a slave's input queue (including a canonical delimiter) ever holds.
+/// The most a master read returns: more than its ring (4095 bytes) ever holds.
 const READ_MAX: u64 = super::pair::PTY_BUFFER_SIZE as u64;
-
-/// A kernel buffer for a read of `count` bytes, bounded by `READ_MAX`.
-pub(crate) fn read_buffer(count: u64) -> Result<Vec<u8>, SyscallResult> {
-    let len = count.min(READ_MAX) as usize;
-    let mut buf = Vec::new();
-    if buf.try_reserve_exact(len).is_err() {
-        return Err(SyscallResult::Err(ENOMEM as u64));
-    }
-    buf.resize(len, 0);
-    Ok(buf)
-}
 
 /// read(2) on a master: the slave's output.
 pub fn read_master(pair: &Arc<PtyPair>, buf_ptr: u64, count: u64, nonblocking: bool) -> SyscallResult {
-    let mut buf = match read_buffer(count) {
-        Ok(buf) => buf,
-        Err(result) => return result,
-    };
+    let count = count.min(READ_MAX) as usize;
     loop {
         let outcome = {
             let mut ring = pair.slave_to_master.lock();
-            let n = match ring.read_user(buf_ptr, &mut buf) {
+            let n = match ring.read_user(buf_ptr, count) {
                 Ok(n) => n, Err(e) => return SyscallResult::Err(e as u64),
             };
             if n > 0 {

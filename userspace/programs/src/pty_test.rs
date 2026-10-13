@@ -130,7 +130,8 @@ fn main() {
         }
     };
 
-    // A failed copy must leave the canonical input intact, including for NULL.
+    // A read to an address outside user space takes no input (Linux checks
+    // the range before the terminal is touched), including for NULL.
     for bad in [0, u64::MAX] {
         let ret = unsafe { libbreenix::syscall::raw::syscall3(
             libbreenix::syscall::nr::READ, slave_fd.raw(), bad, 64,
