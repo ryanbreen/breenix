@@ -122,6 +122,10 @@ pub struct PtyPair {
 
     /// Threads blocked writing the slave (waiting for space in slave_to_master)
     pub slave_writers: WaitQueueHead,
+
+    /// Threads blocked writing the master (waiting for room in the slave's
+    /// input queue, `line_discipline::MAX_INPUT`)
+    pub master_writers: WaitQueueHead,
 }
 
 impl PtyPair {
@@ -141,6 +145,7 @@ impl PtyPair {
             master_readers: WaitQueueHead::new(),
             slave_readers: WaitQueueHead::new(),
             slave_writers: WaitQueueHead::new(),
+            master_writers: WaitQueueHead::new(),
         }
     }
 

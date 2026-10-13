@@ -10,13 +10,18 @@ use crate::tty::jobctl::{self, JobOp};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-/// A kernel buffer for a read of `count` bytes.
+/// The most a terminal read returns: more than a master's ring (4095 bytes)
+/// or a slave's input queues (`MAX_INPUT` plus one line) ever hold.
+const READ_MAX: u64 = 8192;
+
+/// A kernel buffer for a read of `count` bytes, bounded by `READ_MAX`.
 pub(crate) fn read_buffer(count: u64) -> Result<Vec<u8>, SyscallResult> {
+    let len = count.min(READ_MAX) as usize;
     let mut buf = Vec::new();
-    if buf.try_reserve_exact(count as usize).is_err() {
+    if buf.try_reserve_exact(len).is_err() {
         return Err(SyscallResult::Err(ENOMEM as u64));
     }
-    buf.resize(count as usize, 0);
+    buf.resize(len, 0);
     Ok(buf)
 }
 

@@ -6,7 +6,6 @@ use super::ioctl::{Side, TIOCGPGRP, TIOCSPGRP};
 use crate::process::ProcessId;
 use crate::syscall::errno::{EFAULT, EINVAL, ENOTTY};
 use crate::syscall::userptr::{copy_from_user, copy_to_user};
-use alloc::vec::Vec;
 
 /// What a process is doing to its terminal.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -58,83 +57,74 @@ pub fn ioctl(t: &TtyRef, side: Side, request: u64, arg: u64) -> Result<i32, i32>
 
 /// Send `sig` to the terminal's foreground process group (a signal character
 /// typed at the terminal, or a window size change).
+///
+/// It allocates nothing: a user can make it run (a signal character written
+/// to a master, TIOCSWINSZ), so the group is walked in pid order a batch at a
+/// time, each batch signalled under the process manager and its threads
+/// woken after the manager is released.
 pub fn signal_foreground(t: &TtyRef, sig: u32) {
-    let pgid_as_pid = match t.fg_pgrp() {
-        Some(pgid) => pgid,
-        None => {
-            log::debug!("{:?}: Signal {} but no foreground pgid", t.id(), sig);
-            return;
-        }
-    };
-
-    // Collect target PIDs and thread IDs for all non-terminated processes
-    // in the foreground group (collect first, then deliver, to avoid
-    // holding the manager lock while waking threads)
-    let targets: Vec<(crate::process::ProcessId, Option<u64>)> = {
-        let manager_guard = crate::process::manager();
-        if let Some(ref manager) = *manager_guard {
-            manager
-                .all_processes()
-                .iter()
-                .filter(|p| p.pgid == pgid_as_pid && !p.is_terminated())
-                .map(|p| (p.id, p.main_thread.as_ref().map(|t| t.id)))
-                .collect()
-        } else {
-            return;
-        }
-    };
-
-    if targets.is_empty() {
-        log::debug!(
-            "{:?}: No processes in foreground group {} for signal {}",
-            t.id(),
-            pgid_as_pid.as_u64(),
-            sig
-        );
+    const BATCH: usize = 16;
+    let Some(pgid) = t.fg_pgrp() else {
+        log::debug!("{:?}: Signal {} but no foreground pgid", t.id(), sig);
         return;
-    }
-
-    // Set signal pending on each process. A stop signal is taken, or
-    // discarded, as kill() takes it, and a stopped process is not woken.
-    let mut woken: Vec<u64> = Vec::new();
-    {
-        let caller_tid = crate::task::scheduler::current_thread_id();
-        let mut manager_guard = crate::process::manager();
-        if let Some(ref mut pm) = *manager_guard {
-            for &(pid, _) in &targets {
-                if crate::signal::constants::sig_mask(sig) & crate::signal::constants::STOP_SIGNALS
-                    != 0
-                    && crate::signal::delivery::generate_stop_locked(pm, pid, sig, caller_tid)
-                {
+    };
+    let caller_tid = crate::task::scheduler::current_thread_id();
+    let stop = crate::signal::constants::sig_mask(sig) & crate::signal::constants::STOP_SIGNALS != 0;
+    // Members with a pid above `after` are still to be signalled.
+    let mut after = 0u64;
+    loop {
+        let mut members = [ProcessId::new(0); BATCH];
+        let mut found = 0;
+        let mut woken = [0u64; BATCH];
+        let mut wake = 0;
+        {
+            let mut manager_guard = crate::process::manager();
+            let Some(pm) = manager_guard.as_mut() else {
+                return;
+            };
+            for (pid, process) in pm.iter_processes() {
+                if pid.as_u64() <= after || process.pgid != pgid || process.is_terminated() {
+                    continue;
+                }
+                members[found] = pid;
+                found += 1;
+                if found == BATCH {
+                    break;
+                }
+            }
+            for &pid in &members[..found] {
+                // A stop signal is taken, or discarded, as kill() takes it,
+                // and a stopped process is not woken.
+                if stop && crate::signal::delivery::generate_stop_locked(pm, pid, sig, caller_tid) {
                     continue;
                 }
                 let recipient = pm.signal_recipient(pid, sig);
                 if let Some(proc) = pm.get_process_mut(recipient) {
                     proc.signals.set_process_pending(sig);
                     if proc.job.stopped.is_none() {
-                        woken.extend(proc.main_thread.as_ref().map(|thread| thread.id));
+                        if let Some(thread) = proc.main_thread.as_ref() {
+                            woken[wake] = thread.id;
+                            wake += 1;
+                        }
                     }
                     if matches!(proc.state, crate::process::ProcessState::Blocked) {
                         proc.set_ready();
                     }
-                    log::info!(
-                        "{:?}: Sent signal {} to process {} (PID {})",
-                        t.id(),
-                        sig,
-                        proc.name,
-                        pid.as_u64()
-                    );
                 }
             }
         }
-    }
 
-    // Wake threads that may be blocked on signals or waitpid
-    for tid in woken {
-        crate::task::scheduler::with_scheduler(|sched| {
-            sched.unblock_for_signal(tid);
-            sched.unblock_for_child_exit(tid);
-        });
+        // Wake threads that may be blocked on signals or waitpid
+        for &tid in &woken[..wake] {
+            crate::task::scheduler::with_scheduler(|sched| {
+                sched.unblock_for_signal(tid);
+                sched.unblock_for_child_exit(tid);
+            });
+        }
+        if found < BATCH {
+            break;
+        }
+        after = members[BATCH - 1].as_u64();
     }
     crate::task::scheduler::set_need_resched();
 }

@@ -33,6 +33,7 @@ pub fn read(pair: &Arc<PtyPair>, buf_ptr: u64, count: u64, nonblocking: bool) ->
             if let Ok(n) = ldisc.read(&mut buf) {
                 if n > 0 {
                     drop(ldisc);
+                    pair.master_writers.wake_up();
                     return copy_out(buf_ptr, &buf, n);
                 }
             }
