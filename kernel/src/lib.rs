@@ -57,6 +57,8 @@ pub mod syscall;
 // Socket module - enabled for both architectures
 // Unix domain sockets are fully arch-independent
 pub mod net;
+#[cfg(all(target_arch = "x86_64", feature = "testing"))]
+pub mod force1442;
 pub mod socket;
 #[cfg(target_arch = "x86_64")]
 pub mod test_exec;

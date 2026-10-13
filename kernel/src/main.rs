@@ -600,6 +600,8 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     // zero-feature production profile. idle_loop and the pump both emit only
     // when the rest of the kernel gives them a reason to run.
     task::start_dispatch_strand_census_kthread();
+    #[cfg(feature = "testing")]
+    kernel::force1442::start();
     // Deferred user-fault process exits run in their own kernel thread (#511).
     task::process_task::start_fault_exit_daemon();
     #[cfg(feature = "btrt")]

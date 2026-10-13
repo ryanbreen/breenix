@@ -7468,6 +7468,41 @@ pub struct ThreadPlacementFacts {
     pub idle_cpu_bitmap: u32,
 }
 
+/// SCRATCH #1442: a thread's state, the CPU whose ready queue holds it, and
+/// its accumulated CPU ticks.
+#[cfg(feature = "testing")]
+pub fn force1442_thread_facts(tid: u64) -> Option<(ThreadState, Option<usize>, u64)> {
+    with_scheduler(|scheduler| {
+        let thread = scheduler.get_thread(tid)?;
+        let queued = (0..MAX_CPUS).find(|&cpu| {
+            scheduler.per_cpu_queues[cpu].iter().any(|&queued_tid| queued_tid == tid)
+        });
+        Some((thread.state, queued, thread.cpu_ticks_total))
+    })
+    .flatten()
+}
+
+/// SCRATCH #1442: the same facts plus each CPU's current thread, or None when
+/// the scheduler lock is held. Never spins.
+#[cfg(feature = "testing")]
+pub fn force1442_try_facts(
+    tid: u64,
+) -> Option<(Option<(ThreadState, Option<usize>, u64)>, [Option<u64>; 4])> {
+    let guard = try_lock_scheduler()?;
+    let scheduler = guard.as_ref()?;
+    let facts = scheduler.get_thread(tid).map(|thread| {
+        let queued = (0..MAX_CPUS).find(|&cpu| {
+            scheduler.per_cpu_queues[cpu].iter().any(|&queued_tid| queued_tid == tid)
+        });
+        (thread.state, queued, thread.cpu_ticks_total)
+    });
+    let mut current = [None; 4];
+    for (cpu, slot) in current.iter_mut().enumerate().take(MAX_CPUS) {
+        *slot = scheduler.cpu_state[cpu].current_thread;
+    }
+    Some((facts, current))
+}
+
 /// Read-only placement facts for one thread (#586 wake-budget marker).
 ///
 /// Returns `None` when `with_scheduler` declined -- the caller cannot tell

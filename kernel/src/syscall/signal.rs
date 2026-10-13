@@ -35,6 +35,8 @@ const USER_SPACE_END: u64 = 0x0000_8000_0000_0000;
 /// * -EPERM (1) if the caller may signal none of its targets (`Sender::may_signal`)
 pub fn sys_kill(pid: i64, sig: i32) -> SyscallResult {
     let sig = sig as u32;
+    #[cfg(all(target_arch = "x86_64", feature = "testing"))]
+    crate::force1442::note_kill(sig);
     if sig != 0 && !is_valid_signal(sig) {
         return SyscallResult::Err(EINVAL as u64);
     }

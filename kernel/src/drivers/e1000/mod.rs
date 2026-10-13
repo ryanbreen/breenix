@@ -539,10 +539,16 @@ impl E1000 {
         // Advance tail pointer
         self.tx_cur = (self.tx_cur + 1) % TX_RING_SIZE;
         self.write_reg(REG_TDT, self.tx_cur as u32);
+        #[cfg(all(target_arch = "x86_64", feature = "testing"))]
+        crate::force1442::step(5);
+        #[cfg(all(target_arch = "x86_64", feature = "testing"))]
+        crate::force1442::hold_window();
 
         // Wait for transmit to complete (polling for now)
         for _ in 0..100000 {
             if self.tx_ring[idx].is_done() {
+                #[cfg(all(target_arch = "x86_64", feature = "testing"))]
+                crate::force1442::step(6);
                 // Buffer remains allocated in tx_buffers[idx] for reuse
                 return Ok(());
             }
@@ -654,6 +660,19 @@ static IRQ_MMIO_BASE: AtomicUsize = AtomicUsize::new(0);
 /// interrupt routed to it undelivered (#1442).
 fn with_driver<R>(f: impl FnOnce(&mut E1000) -> R) -> Option<R> {
     crate::arch_without_interrupts(|| E1000_DRIVER.lock().as_mut().map(f))
+}
+
+#[cfg(all(target_arch = "x86_64", feature = "testing"))]
+fn traced<R>(site: u8, f: impl FnOnce() -> R) -> R {
+    crate::force1442::holder_enter(site);
+    let result = f();
+    crate::force1442::holder_exit();
+    result
+}
+
+#[cfg(not(all(target_arch = "x86_64", feature = "testing")))]
+fn traced<R>(_site: u8, f: impl FnOnce() -> R) -> R {
+    f()
 }
 
 /// Initialize the E1000 driver
@@ -828,31 +847,38 @@ pub fn is_initialized() -> bool {
 /// Get the MAC address
 #[allow(dead_code)] // Public API for network stack
 pub fn mac_address() -> Option<[u8; 6]> {
-    with_driver(|d| *d.mac_address())
+    with_driver(|d| traced(1, || *d.mac_address()))
 }
 
 /// Check if link is up
 #[allow(dead_code)] // Public API for network stack
 pub fn link_up() -> bool {
-    with_driver(|d| d.link_up()).unwrap_or(false)
+    with_driver(|d| traced(2, || d.link_up())).unwrap_or(false)
 }
 
 /// Transmit a packet
 #[allow(dead_code)] // Public API for network stack
 pub fn transmit(data: &[u8]) -> Result<(), &'static str> {
-    with_driver(|d| d.transmit(data)).unwrap_or(Err("E1000 not initialized"))
+    with_driver(|d| {
+        traced(3, || {
+            #[cfg(all(target_arch = "x86_64", feature = "testing"))]
+            crate::force1442::step(4);
+            d.transmit(data)
+        })
+    })
+    .unwrap_or(Err("E1000 not initialized"))
 }
 
 /// Receive a packet
 #[allow(dead_code)] // Public API for network stack
 pub fn receive(buffer: &mut [u8]) -> Result<usize, &'static str> {
-    with_driver(|d| d.receive(buffer)).unwrap_or(Err("E1000 not initialized"))
+    with_driver(|d| traced(4, || d.receive(buffer))).unwrap_or(Err("E1000 not initialized"))
 }
 
 /// Check if a packet is available to receive
 #[allow(dead_code)] // Public API for network stack
 pub fn can_receive() -> bool {
-    with_driver(|d| d.can_receive()).unwrap_or(false)
+    with_driver(|d| traced(5, || d.can_receive())).unwrap_or(false)
 }
 
 /// Handle E1000 interrupt (called from the IRQ 10 and IRQ 11 handlers)
@@ -862,6 +888,8 @@ pub fn can_receive() -> bool {
 /// another CPU may hold `E1000_DRIVER` across a transmit's completion poll.
 #[cfg(target_arch = "x86_64")]
 pub fn handle_interrupt() {
+    #[cfg(feature = "testing")]
+    crate::force1442::irq_entered();
     if E1000_INITIALIZED.load(Ordering::Acquire) {
         let icr = IRQ_MMIO_BASE.load(Ordering::Relaxed) + REG_ICR as usize;
         // SAFETY: the device's own interrupt cause register, mapped at init.

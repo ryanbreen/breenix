@@ -408,7 +408,7 @@ fn census_thread_fn() {
 /// claim-lint:ok: the 4 boots and the fault signature are recorded in the
 /// round-4 notes and in
 /// docs/planning/green-program/sockets/775-CENSUS-EQUIVALENCE-2026-09-04.md.
-fn sleep_one_interval(interval_ns: u64) {
+pub(crate) fn sleep_one_interval(interval_ns: u64) {
     use super::thread::ThreadState;
 
     let Some(tid) = super::scheduler::current_thread_id() else {

@@ -63,6 +63,15 @@ pub(crate) const PM_LOCK_OWNER_TID_UNKNOWN: u64 = u64::MAX - 1;
 static PROCESS_MANAGER_OWNER_CPU: AtomicU64 = AtomicU64::new(PM_LOCK_OWNER_NONE);
 static PROCESS_MANAGER_OWNER_TID: AtomicU64 = AtomicU64::new(PM_LOCK_OWNER_NONE);
 
+/// SCRATCH #1442: the process-manager lock owner's CPU and thread.
+#[cfg(feature = "testing")]
+pub fn force1442_pm_owner() -> (u64, u64) {
+    (
+        PROCESS_MANAGER_OWNER_CPU.load(Ordering::Acquire),
+        PROCESS_MANAGER_OWNER_TID.load(Ordering::Relaxed),
+    )
+}
+
 /// Wrapper that holds the process manager lock and restores interrupt state on drop.
 ///
 /// On ARM64, acquiring PROCESS_MANAGER must disable interrupts to prevent

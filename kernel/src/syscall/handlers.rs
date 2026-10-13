@@ -432,6 +432,10 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
             return SyscallResult::Err(14); // EFAULT
         }
     };
+    #[cfg(all(target_arch = "x86_64", feature = "testing"))]
+    if buffer.len() == 1 {
+        crate::force1442::note_spin_release_write(buffer[0]);
+    }
 
     // Get current process to look up fd
     let thread_id = match crate::task::scheduler::current_thread_id() {
@@ -2343,6 +2347,10 @@ pub fn sys_execv_with_frame(
 
     #[cfg(feature = "testing")]
     {
+        #[cfg(target_arch = "x86_64")]
+        if !crate::force1442::arm_and_wait(program_name) {
+            return SyscallResult::Err(super::errno::EAGAIN as u64);
+        }
         // Load ELF binary WITH interrupts enabled - ext2 I/O needs timer interrupts
         // for proper VirtIO operation
         let (elf_vec, image_identity) = match super::exec::read_image(program_name, &mut arguments, |path| {
