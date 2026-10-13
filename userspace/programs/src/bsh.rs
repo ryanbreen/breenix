@@ -429,9 +429,7 @@ fn native_exec(
             let _ = libbreenix::process::setpgid(0, 0);
 
             // Ensure default signal handling so Ctrl+C can kill the child
-            let dfl = libbreenix::signal::Sigaction::default_action();
-            let _ = libbreenix::signal::sigaction(libbreenix::signal::SIGINT, Some(&dfl), None);
-            let _ = libbreenix::signal::sigaction(libbreenix::signal::SIGQUIT, Some(&dfl), None);
+            default_job_signals();
 
             // Child: redirect stdout/stderr to pipes, close read ends
             let _ = libbreenix::io::close(stdout_r);
@@ -754,9 +752,7 @@ fn native_pipe(
                 let _ = libbreenix::process::setpgid(0, target_pgid);
 
                 // Ensure default signal handling
-                let dfl = libbreenix::signal::Sigaction::default_action();
-                let _ = libbreenix::signal::sigaction(libbreenix::signal::SIGINT, Some(&dfl), None);
-                let _ = libbreenix::signal::sigaction(libbreenix::signal::SIGQUIT, Some(&dfl), None);
+                default_job_signals();
 
                 // Set up stdin: first child keeps original stdin,
                 // others read from previous pipe
@@ -1181,9 +1177,7 @@ fn command_executor_fn(
             let _ = libbreenix::process::setpgid(0, 0);
 
             // Ensure default signal handling so Ctrl+C can kill the child
-            let dfl = libbreenix::signal::Sigaction::default_action();
-            let _ = libbreenix::signal::sigaction(libbreenix::signal::SIGINT, Some(&dfl), None);
-            let _ = libbreenix::signal::sigaction(libbreenix::signal::SIGQUIT, Some(&dfl), None);
+            default_job_signals();
 
             // Build argv pointer array from stack-buffered data (no heap access)
             let mut argv_ptrs = [core::ptr::null::<u8>(); MAX_ARGS];
@@ -2564,7 +2558,28 @@ fn run_file(path: &str) {
     }
 }
 
+/// The signals a job-control shell ignores for itself, so that it is not stopped when it
+/// reads, writes or takes the terminal back while another group is in the foreground.
+const JOB_STOP_SIGNALS: [i32; 3] =
+    [libbreenix::signal::SIGTSTP, libbreenix::signal::SIGTTIN, libbreenix::signal::SIGTTOU];
+
+/// Restore the default disposition of the signals a job takes from the terminal, in a
+/// forked child before it runs the job: an ignored disposition would survive exec.
+fn default_job_signals() {
+    let dfl = libbreenix::signal::Sigaction::default_action();
+    let _ = libbreenix::signal::sigaction(libbreenix::signal::SIGINT, Some(&dfl), None);
+    let _ = libbreenix::signal::sigaction(libbreenix::signal::SIGQUIT, Some(&dfl), None);
+    for sig in JOB_STOP_SIGNALS {
+        let _ = libbreenix::signal::sigaction(sig, Some(&dfl), None);
+    }
+}
+
 fn main() {
+    let ign = libbreenix::signal::Sigaction::ignore();
+    for sig in JOB_STOP_SIGNALS {
+        let _ = libbreenix::signal::sigaction(sig, Some(&ign), None);
+    }
+
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() == 1 {

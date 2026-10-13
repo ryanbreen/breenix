@@ -30,7 +30,7 @@ use libbreenix::process::{
     wifexited, wexitstatus, wifsignaled, wifstopped,
     ForkResult, WNOHANG, WUNTRACED,
 };
-use libbreenix::signal::{sigaction, Sigaction, SIGINT, SIGCHLD, SIGCONT};
+use libbreenix::signal::{sigaction, Sigaction, SIGINT, SIGCHLD, SIGCONT, SIGTSTP, SIGTTIN, SIGTTOU};
 use libbreenix::termios::{
     self, Termios, tcgetattr, tcsetattr, tcsetpgrp, TCSANOW,
     lflag, iflag, oflag,
@@ -530,6 +530,7 @@ fn try_execute_external(cmd_name: &str, args: &str, background: bool) -> Result<
             // Child process
             // Put ourselves in our own process group BEFORE exec.
             let _ = setpgid(0, 0);
+            default_job_signals();
 
             let args = args.trim();
 
@@ -854,6 +855,7 @@ fn execute_pipeline(input: &str) -> bool {
             Ok(ForkResult::Child) => {
                 // ========== CHILD PROCESS ==========
                 let _ = setpgid(0, pipeline_pgrp);
+                default_job_signals();
 
                 if let Some(fd) = prev_read_fd {
                     let _ = dup2(fd, STDIN);
@@ -1481,6 +1483,25 @@ fn setup_signal_handlers() {
     let sigchld_action = Sigaction::new(sigchld_handler);
     if sigaction(SIGCHLD, Some(&sigchld_action), None).is_err() {
         println!("Warning: Could not set up SIGCHLD handler");
+    }
+
+    // A job-control shell ignores the terminal's stop signals for itself, so that it is
+    // not stopped when it takes the terminal back while another group is in the foreground.
+    let ignore = Sigaction::ignore();
+    for sig in JOB_STOP_SIGNALS {
+        let _ = sigaction(sig, Some(&ignore), None);
+    }
+}
+
+/// The signals a job takes from the terminal that the shell ignores for itself.
+const JOB_STOP_SIGNALS: [i32; 3] = [SIGTSTP, SIGTTIN, SIGTTOU];
+
+/// Restore the default disposition of the signals the shell ignores, in a forked child
+/// before it runs a job: an ignored disposition would survive exec.
+fn default_job_signals() {
+    let default = Sigaction::default_action();
+    for sig in JOB_STOP_SIGNALS {
+        let _ = sigaction(sig, Some(&default), None);
     }
 }
 
