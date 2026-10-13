@@ -26,7 +26,30 @@
 //! | 0x0fc | ConfigGeneration | R |
 //! | 0x100+ | Config | RW |
 
-use core::ptr::{read_volatile, write_volatile};
+// Keep MMIO accesses in the plain register-indirect form, as Linux ARM64's
+// raw I/O helpers do. LLVM can give a volatile access address writeback;
+// those instructions have ESR.ISV=0 and QEMU HVF cannot emulate them.
+#[inline]
+unsafe fn read_mmio32(address: *const u32) -> u32 {
+    let value: u32;
+    core::arch::asm!("ldr {value:w}, [{address}]", value = out(reg) value,
+                     address = in(reg) address, options(nostack, preserves_flags));
+    value
+}
+
+#[inline]
+unsafe fn read_mmio8(address: *const u8) -> u8 {
+    let value: u32;
+    core::arch::asm!("ldrb {value:w}, [{address}]", value = out(reg) value,
+                     address = in(reg) address, options(nostack, preserves_flags));
+    value as u8
+}
+
+#[inline]
+unsafe fn write_mmio32(address: *mut u32, value: u32) {
+    core::arch::asm!("str {value:w}, [{address}]", value = in(reg) value,
+                     address = in(reg) address, options(nostack, preserves_flags));
+}
 
 /// VirtIO MMIO magic value ("virt" in little-endian)
 pub const VIRTIO_MMIO_MAGIC: u32 = 0x74726976;
@@ -121,13 +144,13 @@ impl VirtioMmioDevice {
     /// Read a 32-bit register
     #[inline]
     fn read32(&self, offset: usize) -> u32 {
-        unsafe { read_volatile((self.base + offset as u64) as *const u32) }
+        unsafe { read_mmio32((self.base + offset as u64) as *const u32) }
     }
 
     /// Write a 32-bit register
     #[inline]
     fn write32(&self, offset: usize, value: u32) {
-        unsafe { write_volatile((self.base + offset as u64) as *mut u32, value) }
+        unsafe { write_mmio32((self.base + offset as u64) as *mut u32, value) }
     }
 
     /// Probe a VirtIO MMIO device at the given base address
@@ -317,12 +340,12 @@ impl VirtioMmioDevice {
 
     /// Read a byte from device config space
     pub fn read_config_u8(&self, offset: usize) -> u8 {
-        unsafe { read_volatile((self.base + regs::CONFIG as u64 + offset as u64) as *const u8) }
+        unsafe { read_mmio8((self.base + regs::CONFIG as u64 + offset as u64) as *const u8) }
     }
 
     /// Read a u32 from device config space
     pub fn read_config_u32(&self, offset: usize) -> u32 {
-        unsafe { read_volatile((self.base + regs::CONFIG as u64 + offset as u64) as *const u32) }
+        unsafe { read_mmio32((self.base + regs::CONFIG as u64 + offset as u64) as *const u32) }
     }
 
     /// Read a u64 from device config space
