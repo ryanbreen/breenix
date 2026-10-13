@@ -52,12 +52,19 @@ pub fn read_program_image(
     let cred = crate::fs::permissions::Credentials::current(false);
 
     // The handle holds the inode until its content is read.
+    let diag_t0: u64 = { let (s_, n_) = crate::time::get_monotonic_time_ns(); s_ * 1000 + n_ / 1_000_000 };
     let (mount, inode_num, _held) =
         crate::fs::namei::resolve_file(path).map_err(|errno| errno as i32)?;
+    let diag_t1: u64 = { let (s_, n_) = crate::time::get_monotonic_time_ns(); s_ * 1000 + n_ / 1_000_000 };
     let fs_guard = mount.read();
+    let diag_t2: u64 = { let (s_, n_) = crate::time::get_monotonic_time_ns(); s_ * 1000 + n_ / 1_000_000 };
     let fs = fs_guard.as_ref().ok_or(EIO)?;
 
     let inode = fs.read_inode(inode_num).map_err(|_| EIO)?;
+    let diag_t3: u64 = { let (s_, n_) = crate::time::get_monotonic_time_ns(); s_ * 1000 + n_ / 1_000_000 };
+    if diag_t3 - diag_t0 > 100 {
+        log::info!("EXECDIAG image t0={} resolve={} lockwait={} inode={}", diag_t0, diag_t1 - diag_t0, diag_t2 - diag_t1, diag_t3 - diag_t2);
+    }
 
     if inode.is_dir() {
         return Err(EISDIR);

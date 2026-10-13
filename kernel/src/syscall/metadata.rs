@@ -153,11 +153,18 @@ fn pathname(fd: i32, pathname: u64, follow: bool, empty: bool, change: Change) -
         namei::Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
         namei::Target::Virtual => return SyscallResult::Err(EOPNOTSUPP as u64),
     };
+    let diag_t0: u64 = { let (s_, n_) = crate::time::get_monotonic_time_ns(); s_ * 1000 + n_ / 1_000_000 };
     let mut guard = mount.write();
-    match guard.as_mut() {
+    let diag_t1: u64 = { let (s_, n_) = crate::time::get_monotonic_time_ns(); s_ * 1000 + n_ / 1_000_000 };
+    let diag_r = match guard.as_mut() {
         Some(fs) => update(fs, ino, change, &cred),
         None => SyscallResult::Err(EIO as u64),
+    };
+    let diag_t2: u64 = { let (s_, n_) = crate::time::get_monotonic_time_ns(); s_ * 1000 + n_ / 1_000_000 };
+    if diag_t2 - diag_t0 > 100 {
+        log::info!("EXECDIAG metadata ino={} t0={} lockwait={} update={}", ino, diag_t0, diag_t1 - diag_t0, diag_t2 - diag_t1);
     }
+    diag_r
 }
 
 // AT_EMPTY_PATH selects the held object, without searching a pathname.

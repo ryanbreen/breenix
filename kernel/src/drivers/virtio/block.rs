@@ -530,6 +530,10 @@ impl VirtioBlockDevice {
                 .completion
                 .wait_timeout_uninterruptible(token, BLOCK_WAIT_SLICE_NS)
             {
+                let diag_ms = monotonic_now_ns().saturating_sub(started_ns) / 1_000_000;
+                if diag_ms > 200 {
+                    log::info!("EXECDIAG blk request={} ms={} done_at={}", request, diag_ms, monotonic_now_ns() / 1_000_000);
+                }
                 return Ok(());
             }
             if self.device.has_failed() {
