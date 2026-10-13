@@ -6,8 +6,6 @@
 
 use crate::task::waitqueue::{PrepareOutcome, WaitQueueHead};
 use alloc::collections::VecDeque;
-#[cfg(target_arch = "x86_64")]
-use alloc::vec::Vec;
 use spin::Mutex;
 
 /// Console/Tty readers share the live input ring, but not the legacy stdin registry.
@@ -91,9 +89,9 @@ pub fn flush_input() {
 /// Try to wake blocked readers without blocking (for interrupt context)
 #[cfg(target_arch = "x86_64")]
 fn wake_blocked_readers_try() {
-    let readers: alloc::vec::Vec<u64> = {
+    let readers: VecDeque<u64> = {
         if let Some(mut blocked) = BLOCKED_READERS.try_lock() {
-            blocked.drain(..).collect()
+            core::mem::take(&mut *blocked)
         } else {
             return; // Can't get lock, readers will be woken when they retry
         }
@@ -120,9 +118,9 @@ fn wake_blocked_readers_try() {
 /// Wake blocked readers on ARM64 (non-blocking version for interrupt context)
 #[cfg(target_arch = "aarch64")]
 fn wake_blocked_readers_try() {
-    let readers: alloc::vec::Vec<u64> = {
+    let readers: VecDeque<u64> = {
         if let Some(mut blocked) = BLOCKED_READERS.try_lock() {
-            blocked.drain(..).collect()
+            core::mem::take(&mut *blocked)
         } else {
             return; // Can't get lock, readers will be woken when they retry
         }
@@ -166,12 +164,14 @@ pub fn has_data() -> bool {
 ///
 /// Used by sys_read when blocking on stdin. When data becomes available
 /// via push_byte_from_irq, the blocked readers are woken.
-pub fn register_blocked_reader(thread_id: u64) {
+pub fn register_blocked_reader(thread_id: u64) -> Result<(), i32> {
     let mut blocked = BLOCKED_READERS.lock();
     if !blocked.contains(&thread_id) {
+        blocked.try_reserve(1).map_err(|_| 12)?;
         blocked.push_back(thread_id);
         log::trace!("stdin: Thread {} blocked waiting for input", thread_id);
     }
+    Ok(())
 }
 
 /// Unregister a thread from waiting for stdin (e.g., on signal or timeout)
@@ -187,9 +187,9 @@ pub fn unregister_blocked_reader(thread_id: u64) {
 #[cfg(target_arch = "x86_64")]
 #[allow(dead_code)]
 fn wake_blocked_readers() {
-    let readers: Vec<u64> = {
+    let readers: VecDeque<u64> = {
         let mut blocked = BLOCKED_READERS.lock();
-        blocked.drain(..).collect()
+        core::mem::take(&mut *blocked)
     };
 
     if readers.is_empty() {
@@ -214,11 +214,9 @@ fn wake_blocked_readers() {
 #[cfg(target_arch = "aarch64")]
 #[allow(dead_code)]
 fn wake_blocked_readers() {
-    use alloc::vec::Vec;
-
-    let readers: Vec<u64> = {
+    let readers: VecDeque<u64> = {
         let mut blocked = BLOCKED_READERS.lock();
-        blocked.drain(..).collect()
+        core::mem::take(&mut *blocked)
     };
 
     if readers.is_empty() {

@@ -942,11 +942,13 @@ impl TtyDevice {
     /// Currently unused because keyboard input bypasses TTY (uses stdin directly).
     /// Will be used when termios ioctls are fully implemented.
     #[allow(dead_code)]
-    pub fn register_blocked_reader(thread_id: u64) {
+    pub fn register_blocked_reader(thread_id: u64) -> Result<(), i32> {
         let mut readers = BLOCKED_READERS.lock();
         if !readers.contains(&thread_id) {
+            readers.try_reserve(1).map_err(|_| 12)?;
             readers.push_back(thread_id);
         }
+        Ok(())
     }
 
     /// Unregister a thread from blocked readers
@@ -982,7 +984,7 @@ impl TtyDevice {
     #[allow(dead_code)]
     fn wake_blocked_readers_nonblock() {
         if let Some(mut readers) = BLOCKED_READERS.try_lock() {
-            let thread_ids: VecDeque<u64> = readers.drain(..).collect();
+            let thread_ids = core::mem::take(&mut *readers);
             drop(readers);
 
             if thread_ids.is_empty() {
@@ -1254,7 +1256,7 @@ mod tests {
         }
 
         // Register a reader
-        TtyDevice::register_blocked_reader(100);
+        TtyDevice::register_blocked_reader(100).unwrap();
 
         // Verify it's in the list
         {
@@ -1278,9 +1280,9 @@ mod tests {
         }
 
         // Register same reader multiple times
-        TtyDevice::register_blocked_reader(200);
-        TtyDevice::register_blocked_reader(200);
-        TtyDevice::register_blocked_reader(200);
+        TtyDevice::register_blocked_reader(200).unwrap();
+        TtyDevice::register_blocked_reader(200).unwrap();
+        TtyDevice::register_blocked_reader(200).unwrap();
 
         // Should only appear once
         {
@@ -1305,9 +1307,9 @@ mod tests {
         }
 
         // Register multiple readers
-        TtyDevice::register_blocked_reader(301);
-        TtyDevice::register_blocked_reader(302);
-        TtyDevice::register_blocked_reader(303);
+        TtyDevice::register_blocked_reader(301).unwrap();
+        TtyDevice::register_blocked_reader(302).unwrap();
+        TtyDevice::register_blocked_reader(303).unwrap();
 
         // All should be in the list
         {
@@ -1668,7 +1670,7 @@ mod tests {
 
         // Register many readers
         for i in 1000..1100 {
-            TtyDevice::register_blocked_reader(i);
+            TtyDevice::register_blocked_reader(i).unwrap();
         }
 
         // All should be present
