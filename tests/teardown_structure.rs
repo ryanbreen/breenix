@@ -14935,29 +14935,20 @@ fn validate_run_deferred_reclamation_census(context_switch: &str) -> Result<(), 
             ));
         }
     }
-    // These drains are unconditional task-context work. Counting a call
-    // nested in a branch or closure would accept a helper that does nothing.
-    for reclamation_call in REQUIRED_DEFERRED_RECLAMATION_CALLS
-        .into_iter()
-        .chain(["drain_asm_resume_pc_refusals", "emit_resume_pc_census_if_due"])
-    {
-        let offsets = call_offsets(reclamation, &reclamation_mask, reclamation_call);
-        if offsets.len() != 1 {
-            return Err(format!("missing unconditional drain {reclamation_call}"));
-        }
-        let mut depth = 0;
-        for (offset, byte) in reclamation.bytes().enumerate().take(offsets[0]) {
-            if reclamation_mask[offset] {
-                match byte {
-                    b'{' => depth += 1,
-                    b'}' => depth -= 1,
-                    _ => {}
-                }
-            }
-        }
-        if depth != 1 {
-            return Err(format!("{reclamation_call} must be an unconditional function-body statement"));
-        }
+    // Accept only the direct statement sequence, ignoring comments and spacing.
+    // Brace depth alone misses expression closures and early returns.
+    let code: String = reclamation.char_indices()
+        .filter(|(offset, character)| reclamation_mask[*offset] && !character.is_whitespace())
+        .map(|(_, character)| character)
+        .collect();
+    let expected = concat!(
+        "{drain_asm_resume_pc_refusals();emit_resume_pc_census_if_due();",
+        "crate::task::process_task::drain_deferred_fault_sigsegv_exits();",
+        "crate::task::process_task::reclaim_deferred_process_resources();",
+        "crate::task::scheduler::reclaim_terminated_threads();}",
+    );
+    if code.get(code.find('{').unwrap_or(code.len())..) != Some(expected) {
+        return Err("reclamation must be the direct, unconditional drain sequence".into());
     }
     let statements = reclamation
         .char_indices()
@@ -15066,52 +15057,81 @@ fn deferred_reclamation_census_rejects_an_added_operation() {
     );
 }
 
-#[test]
-fn external_schedule_from_kernel_calls_keep_reclamation_off_blocked_handoffs() {
-    let sources = rust_sources_below("kernel/src");
+fn validate_external_schedule_reclamation(sources: &[(String, String)]) -> Result<(), String> {
     let mut schedule_sites = 0usize;
     let mut paired_sites = 0usize;
+    let mut blocked_sites = 0usize;
     for (path, source) in sources {
         if path == "kernel/src/arch_impl/aarch64/context_switch.rs" {
             continue;
         }
         let mask = code_mask(source);
         for call_offset in call_offsets(source, &mask, "schedule_from_kernel") {
-            // A blocked waiter must save its continuation before teardown can
-            // disable preemption. This handoff deliberately leaves reclamation
-            // to the existing idle and scheduler task-context callers.
+            // The blocked handoff saves its continuation before teardown can
+            // disable preemption; existing idle and task callers reclaim.
             if path == "kernel/src/lib.rs" {
                 let blocked = function_body(source, "arch_halt_while_blocked");
                 let blocked_start = source.find(blocked).expect("blocked handoff body");
-                assert!(
-                    (blocked_start..blocked_start + blocked.len()).contains(&call_offset),
-                    "only the blocked-wait handoff may omit pre-schedule reclamation"
-                );
-                assert!(
-                    call_offsets(blocked, &code_mask(blocked), "run_deferred_reclamation").is_empty(),
-                    "blocked waits must not run teardown before saving their continuation"
-                );
+                if !(blocked_start..blocked_start + blocked.len()).contains(&call_offset) {
+                    return Err("only the blocked handoff may omit reclamation".into());
+                }
+                if !call_offsets(blocked, &code_mask(blocked), "run_deferred_reclamation").is_empty() {
+                    return Err("blocked waits must save before teardown".into());
+                }
+                blocked_sites += 1;
                 continue;
             }
             schedule_sites += 1;
-            if call_is_immediately_preceded_by(
-                source,
-                &mask,
-                call_offset,
-                "run_deferred_reclamation",
-            ) {
+            if call_is_immediately_preceded_by(source, &mask, call_offset, "run_deferred_reclamation") {
                 paired_sites += 1;
             }
         }
     }
-    assert!(
-        schedule_sites > 0,
-        "external schedule_from_kernel coverage must be non-vacuous"
-    );
-    assert_eq!(
-        schedule_sites, paired_sites,
-        "every external schedule_from_kernel caller must immediately run deferred reclamation"
-    );
+    if blocked_sites != 1 {
+        return Err(format!("expected one blocked handoff, found {blocked_sites}"));
+    }
+    if schedule_sites == 0 || schedule_sites != paired_sites {
+        return Err("external scheduler callers must immediately reclaim".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn external_schedule_from_kernel_calls_keep_reclamation_off_blocked_handoffs() {
+    assert_eq!(validate_external_schedule_reclamation(rust_sources_below("kernel/src")), Ok(()));
+}
+
+#[test]
+fn deferred_reclamation_rejects_conditional_drains_and_early_returns() {
+    let source = repo_text("kernel/src/arch_impl/aarch64/context_switch.rs");
+    let body = function_body(&source, "run_deferred_reclamation");
+    let start = source.find(body).expect("reclamation body");
+    let mutations = [
+        format!("{} }}", body.replacen('{', "{ if false {", 1)),
+        body.replacen("drain_asm_resume_pc_refusals()", "flag.then(|| drain_asm_resume_pc_refusals())", 1),
+        body.replacen('{', "{ if c { return }", 1),
+    ];
+    for mutation in mutations {
+        let mut mutant = source.clone();
+        mutant.replace_range(start..start + body.len(), &mutation);
+        assert!(validate_run_deferred_reclamation_census(&mutant).is_err(), "accepted {mutation}");
+    }
+}
+
+#[test]
+fn blocked_handoff_validation_rejects_removal_movement_and_teardown() {
+    let sources = rust_sources_below("kernel/src");
+    let source = repo_text("kernel/src/lib.rs");
+    let call = "arch_impl::aarch64::context_switch::schedule_from_kernel();";
+    let mutations = [
+        source.replacen(call, "", 1),
+        format!("{}\nfn moved_handoff() {{ {call} }}", source.replacen(call, "", 1)),
+        source.replacen(call, &format!("arch_impl::aarch64::context_switch::run_deferred_reclamation(); {call}"), 1),
+    ];
+    for mutant in mutations {
+        let sources = with_replaced_source(sources, "kernel/src/lib.rs", mutant);
+        assert!(validate_external_schedule_reclamation(&sources).is_err());
+    }
 }
 
 /// DEBT-4 (ii). The removal routes through the two-event join on **both**

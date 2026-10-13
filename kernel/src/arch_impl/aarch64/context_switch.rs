@@ -6636,8 +6636,11 @@ fn cpu0_breadcrumb(cpu_id: usize, id: u64) {
 
 /// Run teardown that may invoke destructors, allocate, or take locks.
 ///
-/// Callers must invoke this before entering any interrupt-masked scheduling
-/// window; `schedule_from_kernel` deliberately contains no reclamation work.
+/// Ordinary task-context scheduling callers invoke this before entering the
+/// interrupt-masked window. `arch_halt_while_blocked` deliberately omits it:
+/// teardown could disable preemption before the waiter saves its continuation,
+/// pinning its wake to the parking CPU. Existing idle and task-context callers
+/// drain the deferred work. `schedule_from_kernel` contains no reclamation.
 #[inline]
 pub fn run_deferred_reclamation() {
     drain_asm_resume_pc_refusals();
