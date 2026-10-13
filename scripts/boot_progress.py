@@ -20,7 +20,18 @@ DIAGNOSTIC = re.compile(
     r"|BP (?:handler|from_userspace)|BP_HANDLER_ENTRY|(?:About to call|Called) preempt_disable"
     r"|breenix>\s*$)", re.I)
 ANNOUNCEMENT = re.compile(r"(?:kernel::test_exec:|Userspace will emit|will (?:print|emit)|expected marker|Missing marker|checkHint)", re.I)
-USER = re.compile(r"^(?:SUITE |SUITE_SEQUENCE |PROBE |RUN \S+ |TEST_TALLY:|[A-Z][A-Z0-9_]*(?:_TEST|_PASSED|_START|_COMPLETE)\b|\[(?:[a-z][a-z0-9_]*|(?i:parent|child))\])")
+USER = re.compile(r"^(?:SUITE |SUITE_SEQUENCE |PROBE |RUN \S+ |TEST_TALLY:|[A-Z][A-Z0-9_]*(?:_TEST|_PASSED|_START|_COMPLETE)\b)")
+TAG = re.compile(r"^\[([A-Za-z][A-Za-z0-9_-]*)\]")
+
+def userspace_tags(root=ROOT):
+    staged = root / "docs/boot-progress-userspace.json"
+    if staged.exists():
+        return set(json.loads(staged.read_text()))
+    tags = {"parent", "child"}
+    for source in (root / "userspace/programs/src").rglob("*.rs"):
+        tags.add(source.stem.lower())
+        tags.update(tag.lower() for tag in re.findall(r'"\[([A-Za-z][A-Za-z0-9_-]*)\]', source.read_text()))
+    return tags
 DONE = re.compile(r"^(?:SUITE \S+ DONE passed=\d+ failed=\d+ skipped=\d+ total=\d+|PROBE DONE passed=\d+ failed=\d+|USERSPACE TEST REPORT DONE|RUN \S+ DONE .+)$")
 
 
@@ -31,6 +42,7 @@ def stamp(epoch):
 class BootProgress:
     def __init__(self, serial, *, now=None, epoch=None, timeout=STALL_SECONDS, track_completion=False):
         self.track_completion = track_completion
+        self.user_tags = userspace_tags()
         self.serial = Path(serial)
         self.timeout = timeout
         self.last_at = time.monotonic() if now is None else now
@@ -66,7 +78,9 @@ class BootProgress:
             ("serial_kernel.log", "serial-kernel.txt", "serial_kernel.txt"))
         # Accept producer-tagged userspace records on either UART. Unlabelled
         # output has no trustworthy producer, even on COM1 (kernel debug uses it).
-        user = not kernel and bool(USER.match(line))
+        tag = TAG.match(line)
+        user = not kernel and (bool(USER.match(line)) or
+                               bool(tag and tag[1].lower() in self.user_tags))
         stages = set()
         for marker in self.markers - self.stages:
             if marker not in line:

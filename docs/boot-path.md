@@ -281,14 +281,17 @@ Nothing else tracks regressions.
 
 Vigil's Breenix page reads this file, runs boots, and shows the ladder live.
 
-Finite test, probe, program and suite launchers stop an unfinished boot after
+`boot-interactive.sh`, native `run.sh` gates and x86 gate runners stop
+an unfinished boot after
 120 seconds without classified test progress, independently of the hard deadline
 or raw-serial idle exit. Shell and desktop sessions keep their interactive idle
 policy (`--idle-exit 0` disables idle shutdown). GDB-halted sessions are excluded
-from historical supervision. Queue and build time do not start the watchdog. xtask BTRT retains a completed
-VM while its caller extracts results from guest memory through QMP, then the
-caller stops it.
-Progress on a mixed UART requires a userspace record/tag or a first-seen
+from historical supervision. Queue and build time do not start the watchdog. xtask keeps its existing
+launch policy: #1450 tracks its BTRT caller accepting partial startup KTAP after
+a failed boot. Its watchdog integration requires that caller to propagate
+failure and complete guest-memory extraction before stopping a successful VM.
+Progress on a mixed UART requires a userspace record, a tag found in the
+userspace program sources, or a first-seen
 boot-stage marker. Unlabelled lines have no trustworthy producer even on COM1,
 which also carries kernel debug output.
 Loader announcements and diagnostic records do not extend the deadline.

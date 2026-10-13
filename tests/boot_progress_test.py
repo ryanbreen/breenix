@@ -134,6 +134,7 @@ class ProgressTest(unittest.TestCase):
     def test_unknown_unlabelled_kernel_print_is_not_progress(self):
         self.feed('SUITE smoke START cases=5\n', 0)
         self.feed('new periodic scheduler status\n', 119, 'mixed')
+        self.feed('[new_kernel_component] periodic status\n[timer] periodic timer status\n', 119, 'kernel-tags')
         self.feed('new periodic kernel message\n', 119, 'serial_user.log', userspace=True)
         self.assertTrue(self.progress.stalled(now=120))
 
@@ -145,6 +146,7 @@ class ProgressTest(unittest.TestCase):
         result = self.progress.record(now=140, epoch=140)
         self.assertEqual(result['last_userspace_progress_line'], '[bterm] completed request')
         self.assertEqual(result['last_userspace_progress_at'], '1970-01-01T00:00:10+00:00')
+        self.assertNotIn('timer', self.progress.user_tags)
 
     def test_case_override_detection_covers_public_field_and_builder(self):
         for source in ('Suite { case_limit_ms: 121_000, ..suite }',

@@ -127,28 +127,6 @@ sweep_vmware_bundles() { sleep 10; }
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertFalse(Path(str(serial)+'.stall.json').exists())
 
-    def test_xtask_watcher_done_reaps_a_guest_that_stays_running(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            serial = Path(tmp)/'serial'; stopped = Path(tmp)/'stopped'
-            replay = REPLAY.replace("SIGKILL_TEARDOWN_TEST: FAIL", "PROBE DONE passed=16 failed=0")
-            guest = [sys.executable, '-c', replay, str(serial), str(serial), str(stopped)]
-            result = subprocess.run([sys.executable, str(ROOT/'scripts/watch-boot.py'),
-                                     '--serial', str(serial), '--']+guest,
-                                    capture_output=True, text=True, timeout=4)
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertTrue(stopped.exists())
-
-    def test_memory_harvest_caller_can_retain_completed_vm(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            serial = Path(tmp)/'serial'; harvested = Path(tmp)/'harvested'
-            code = 'from pathlib import Path;import sys,time;Path(sys.argv[1]).write_text("PROBE DONE passed=16 failed=0\\n");time.sleep(.7);Path(sys.argv[2]).write_text("harvested")'
-            result = subprocess.run([sys.executable, str(ROOT/'scripts/watch-boot.py'),
-                                     '--serial', str(serial), '--retain-completed-vm', '--',
-                                     sys.executable, '-c', code, str(serial), str(harvested)],
-                                    capture_output=True, text=True, timeout=4)
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertTrue(harvested.exists())
-
     def test_qemu_summary_preserves_nonzero_status(self):
         source = (ROOT/'run.sh').read_text().split('# Wait for QEMU to finish\n', 1)[1]
         with tempfile.TemporaryDirectory() as tmp:
@@ -160,7 +138,7 @@ sweep_vmware_bundles() { sleep 10; }
             self.assertIn('Serial output saved to:', result.stdout)
 
     def test_all_monitors_record_stall_despite_census(self):
-        for name in ('watch-qemu.py', 'x86-gate-boot.py', 'x86-suite-boot.py', 'watch-boot.py', 'wait-boot-done.py'):
+        for name in ('watch-qemu.py', 'x86-gate-boot.py', 'x86-suite-boot.py', 'wait-boot-done.py'):
             with self.subTest(monitor=name), tempfile.TemporaryDirectory() as tmp:
                 out = Path(tmp)
                 user, kernel, stopped = (out / n for n in ('serial_user.log','serial_kernel.log','stopped'))
@@ -173,8 +151,6 @@ sweep_vmware_bundles() { sleep 10; }
                     args = [str(kernel),str(user)] + replay
                 elif name == 'x86-suite-boot.py':
                     args = [str(ROOT),str(out),'smoke','10'] + replay
-                elif name == 'watch-boot.py':
-                    args = ['--serial',str(user),'--serial',str(kernel),'--'] + replay
                 else:
                     user.write_text('SIGKILL_TEARDOWN_TEST: FAIL\n')
                     args = [str(user),'tests','--timeout','10']

@@ -46,6 +46,9 @@ final class BeastLauncherTests: XCTestCase {
         p=runpy.run_path(str(root/'scripts/boot_progress.py'))['BootProgress'](root/'serial')
         assert 'EXEC_ARGV_TEST_PASSED' in p.markers
         assert 'Kernel initialization complete!' in p.markers
+        assert 'ntp' in p.user_tags
+        assert 'http_fetch_test' in p.user_tags
+        assert 'timer' not in p.user_tags
         """
         let result = try RealProcessRunner().run(ProcessRequest(executable: "/usr/bin/python3", arguments: ["-c", code, try XCTUnwrap(request.arguments.last), root.path]))
         XCTAssertEqual(result.exitCode, 0, String(decoding: result.stderr, as: UTF8.self))

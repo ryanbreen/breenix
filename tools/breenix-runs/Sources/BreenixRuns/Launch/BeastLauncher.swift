@@ -141,7 +141,7 @@ public struct BeastLauncher {
         let paths = ["scripts/boot_progress.py", "docs/boot-path.json",
                      "tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-aarch64.json",
                      "tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json"]
-        let files = try Dictionary(uniqueKeysWithValues: paths.map { path in
+        var files = try Dictionary(uniqueKeysWithValues: paths.map { path in
             var data = try Data(contentsOf: repoRoot.appendingPathComponent(path))
             if path.hasSuffix(".json") {
                 guard let source = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -167,6 +167,19 @@ public struct BeastLauncher {
             }
             return (path, data.base64EncodedString())
         })
+        let programRoot = repoRoot.appendingPathComponent("userspace/programs/src")
+        let enumerator = FileManager.default.enumerator(at: programRoot, includingPropertiesForKeys: nil)
+        let tagExpression = try NSRegularExpression(pattern: #""\[([A-Za-z][A-Za-z0-9_-]*)\]"#)
+        var tags: Set<String> = ["parent", "child"]
+        while let source = enumerator?.nextObject() as? URL {
+            guard source.pathExtension == "rs" else { continue }
+            tags.insert(source.deletingPathExtension().lastPathComponent.lowercased())
+            let text = try String(contentsOf: source, encoding: .utf8)
+            for match in tagExpression.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+                if let range = Range(match.range(at: 1), in: text) { tags.insert(String(text[range]).lowercased()) }
+            }
+        }
+        files["docs/boot-progress-userspace.json"] = try JSONSerialization.data(withJSONObject: tags.sorted()).base64EncodedString()
         return try JSONSerialization.data(withJSONObject: files, options: [.sortedKeys]).base64EncodedString()
     }
 
