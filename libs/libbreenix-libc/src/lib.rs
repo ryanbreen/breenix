@@ -29,6 +29,7 @@ mod mqueue;
 mod shm;
 mod semaphore;
 mod sysv;
+mod termios;
 
 use libbreenix::types::Fd;
 use libbreenix::error::Error;

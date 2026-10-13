@@ -12,6 +12,10 @@ use crate::syscall::nr;
 
 /// ioctl request codes
 pub mod request {
+    pub const TCSBRK: u64 = 0x5409;
+    pub const TCXONC: u64 = 0x540a;
+    pub const TCFLSH: u64 = 0x540b;
+    pub const TIOCGSID: u64 = 0x5429;
     pub const TCGETS: u64 = 0x5401;
     pub const TCSETS: u64 = 0x5402;
     pub const TCSETSW: u64 = 0x5403;
@@ -46,11 +50,16 @@ pub mod lflag {
     pub const ECHOE: u32 = 0x0010;
     pub const ECHOK: u32 = 0x0020;
     pub const ECHONL: u32 = 0x0040;
+    pub const NOFLSH: u32 = 0x0080;
+    pub const TOSTOP: u32 = 0x0100;
     pub const IEXTEN: u32 = 0x8000;
 }
 
 /// Input mode flags
 pub mod iflag {
+    pub const ISTRIP: u32 = 0x0020;
+    pub const INLCR: u32 = 0x0040;
+    pub const IGNCR: u32 = 0x0080;
     pub const ICRNL: u32 = 0x0100;
     pub const IXON: u32 = 0x0400;
 }
@@ -71,6 +80,8 @@ pub mod cc {
     pub const VMIN: usize = 6;
     pub const VTIME: usize = 5;
     pub const VSUSP: usize = 10;
+    pub const VEOL: usize = 11;
+    pub const VEOL2: usize = 16;
     pub const NCCS: usize = 32;
 }
 
@@ -126,6 +137,42 @@ pub fn tcsetattr(fd: Fd, action: i32, termios: &Termios) -> Result<(), Error> {
     };
 
     Error::from_syscall(ret as i64).map(|_| ())
+}
+
+/// Input/output queue selectors for tcflush.
+pub const TCIFLUSH: i32 = 0;
+pub const TCOFLUSH: i32 = 1;
+pub const TCIOFLUSH: i32 = 2;
+/// Output/input flow actions for tcflow.
+pub const TCOOFF: i32 = 0;
+pub const TCOON: i32 = 1;
+pub const TCIOFF: i32 = 2;
+pub const TCION: i32 = 3;
+
+fn scalar_ioctl(fd: Fd, request: u64, arg: i32) -> Result<(), Error> {
+    let ret = unsafe { raw::syscall3(nr::IOCTL, fd.raw(), request, arg as u64) };
+    Error::from_syscall(ret as i64).map(|_| ())
+}
+
+/// Discard queued terminal input, output, or both.
+pub fn tcflush(fd: Fd, selector: i32) -> Result<(), Error> {
+    scalar_ioctl(fd, request::TCFLSH, selector)
+}
+/// Wait until terminal output has been transmitted.
+pub fn tcdrain(fd: Fd) -> Result<(), Error> { scalar_ioctl(fd, request::TCSBRK, 1) }
+/// Suspend or resume terminal transmission.
+pub fn tcflow(fd: Fd, action: i32) -> Result<(), Error> {
+    scalar_ioctl(fd, request::TCXONC, action)
+}
+/// Send a break; pseudo-terminals have no physical break signal.
+pub fn tcsendbreak(fd: Fd, duration: i32) -> Result<(), Error> {
+    scalar_ioctl(fd, request::TCSBRK, duration)
+}
+/// Get the session that owns the caller's controlling terminal.
+pub fn tcgetsid(fd: Fd) -> Result<i32, Error> {
+    let mut sid = 0i32;
+    let ret = unsafe { raw::syscall3(nr::IOCTL, fd.raw(), request::TIOCGSID, &mut sid as *mut i32 as u64) };
+    Error::from_syscall(ret as i64).map(|_| sid)
 }
 
 /// Set terminal window size (TIOCSWINSZ)
