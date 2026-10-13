@@ -67,7 +67,7 @@ impl PtyBuffer {
         self.read_pos == self.write_pos
     }
 
-    /// Put `bytes`, just read, back at the front, as many as there is room
+    /// Discard everything unread.
     pub fn clear(&mut self) {
         self.read_pos = self.write_pos;
     }
