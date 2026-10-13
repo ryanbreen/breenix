@@ -112,6 +112,12 @@ pub const ENOTEMPTY: i32 = 39;
 /// Too many levels of symbolic links
 pub const ELOOP: i32 = 40;
 
+/// No message of the desired type (msgrcv with IPC_NOWAIT)
+pub const ENOMSG: i32 = 42;
+
+/// Identifier removed (a System V IPC object removed while a call waited on it)
+pub const EIDRM: i32 = 43;
+
 /// Value too large for its type (a record lock range past the largest offset)
 pub const EOVERFLOW: i32 = 75;
 

@@ -529,9 +529,14 @@ fn validate_reader_takes_the_adoption(handlers: &str) -> Result<(), String> {
             "sys_read does not hand the adoption the reading process's own pid".to_string(),
         );
     }
+    // Other descriptor arms drop the guard too; the release that counts is the
+    // stdin arm's own, the first one after that arm opens.
+    let stdin_arm = read
+        .find("FdKind::StdIo(0)")
+        .ok_or_else(|| "sys_read has no stdin arm".to_string())?;
     let released = identifier_offsets(read, &mask, "manager_guard")
         .into_iter()
-        .filter(|offset| read[*offset..].starts_with("manager_guard)"))
+        .filter(|offset| *offset > stdin_arm && read[*offset..].starts_with("manager_guard)"))
         .next()
         .ok_or_else(|| "sys_read no longer drops its process-manager guard".to_string())?;
     if call < released {

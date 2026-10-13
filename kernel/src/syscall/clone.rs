@@ -18,6 +18,7 @@ const CLONE_THREAD: u64 = 0x00010000;
 const CLONE_SIGHAND: u64 = 0x00000800;
 const CLONE_FS: u64 = 0x00000200;
 const CLONE_FILES: u64 = 0x00000400;
+const CLONE_SYSVSEM: u64 = 0x00040000;
 const CLONE_SETTLS: u64 = 0x00080000;
 const CLONE_CHILD_CLEARTID: u64 = 0x00200000;
 const CLONE_CHILD_SETTID: u64 = 0x01000000;
@@ -172,11 +173,22 @@ pub fn sys_clone_thread(
     // Allocate child process ID
     let child_pid = manager.allocate_pid();
 
+    // CLONE_SYSVSEM: the child shares its creator's SEM_UNDO adjustments,
+    // from before the row is published until it exits. Without it the child
+    // starts with none, as after fork.
+    let shares_undo = flags & CLONE_SYSVSEM != 0;
+    if shares_undo && crate::ipc::sysv::share_undo(parent_pid, child_pid).is_err() {
+        return SyscallResult::Err(super::errno::ENOMEM as u64);
+    }
+
     // Allocate a kernel stack for the child thread
     let kernel_stack = match crate::memory::alloc_kernel_stack(16 * 1024) {
         Some(stack) => stack,
         None => {
             log::error!("clone: failed to allocate kernel stack");
+            if shares_undo {
+                crate::ipc::sysv::unshare_undo(child_pid);
+            }
             return SyscallResult::Err(super::errno::ENOMEM as u64);
         }
     };
