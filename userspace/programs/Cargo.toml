@@ -723,6 +723,10 @@ name = "suite-ipc"
 path = "src/suite_ipc.rs"
 
 [[bin]]
+name = "suite-terminals"
+path = "src/suite_terminals.rs"
+
+[[bin]]
 name = "suite-networking"
 path = "src/suite_networking.rs"
 

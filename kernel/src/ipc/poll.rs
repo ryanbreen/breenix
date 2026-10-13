@@ -151,6 +151,7 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
             use crate::fs::devfs::DeviceType;
             match device_type {
                 DeviceType::Rtc => {} // Only RTC_RD_TIME is implemented.
+                DeviceType::Ptmx => {} // Never an open descriptor: open gives a master.
                 DeviceType::Null => {
                     // /dev/null: always readable (returns EOF), always writable
                     if (events & events::POLLIN) != 0 {
@@ -192,46 +193,45 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                 revents |= events::POLLIN;
             }
         }
-        FdKind::PtyMaster(pty_num) => {
+        FdKind::PtyMaster(pair) => {
             // PTY master - check slave_to_master buffer for readable data
-            if let Some(pair) = crate::tty::pty::get(*pty_num) {
-                if (events & events::POLLIN) != 0 {
-                    let buffer = pair.slave_to_master.lock();
-                    if !buffer.is_empty() {
-                        revents |= events::POLLIN;
-                    }
+            if (events & events::POLLIN) != 0 {
+                let buffer = pair.slave_to_master.lock();
+                if !buffer.is_empty() {
+                    revents |= events::POLLIN;
                 }
-                if (events & events::POLLOUT) != 0 {
-                    // Master can always write (goes through line discipline)
-                    revents |= events::POLLOUT;
-                }
-                // POLLHUP only when slave was opened and then all slave FDs closed.
-                // If slave was never opened (child hasn't connected yet), no hangup.
-                if pair.has_slave_hung_up() {
-                    revents |= events::POLLHUP;
-                }
-            } else {
-                revents |= events::POLLERR;
+            }
+            if (events & events::POLLOUT) != 0 {
+                // Master can always write (goes through line discipline)
+                revents |= events::POLLOUT;
+            }
+            // POLLHUP only when slave was opened and then all slave FDs closed.
+            // If slave was never opened (child hasn't connected yet), no hangup.
+            if pair.has_slave_hung_up() {
+                revents |= events::POLLHUP;
             }
         }
-        FdKind::PtySlave(pty_num) => {
-            // PTY slave - check line discipline for readable data
-            if let Some(pair) = crate::tty::pty::get(*pty_num) {
+        FdKind::PtySlave(pair) => {
+            if pair.master_closed() {
+                // A hung-up terminal is readable (end of file) and writable
+                // (EIO), with POLLERR and POLLHUP, as Linux reports it.
+                revents |= (events & (events::POLLIN | events::POLLOUT))
+                    | events::POLLERR
+                    | events::POLLHUP;
+            } else {
                 if (events & events::POLLIN) != 0 {
                     let ldisc = pair.ldisc.lock();
                     if ldisc.has_data() {
                         revents |= events::POLLIN;
                     }
                 }
-                if (events & events::POLLOUT) != 0 {
+                // Writable while output runs and the ring has room.
+                if (events & events::POLLOUT) != 0 && !pair.output_stopped() {
                     let buffer = pair.slave_to_master.lock();
-                    // Can write if buffer not full
-                    if buffer.available() < 4096 {
+                    if buffer.space() > 0 {
                         revents |= events::POLLOUT;
                     }
                 }
-            } else {
-                revents |= events::POLLERR;
             }
         }
         FdKind::ProcfsFile { content, position } => {

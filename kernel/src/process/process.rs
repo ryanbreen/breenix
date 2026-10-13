@@ -235,6 +235,10 @@ pub struct Process {
     /// a controlling terminal. Initially set to pid on process creation.
     pub sid: ProcessId,
 
+    /// Controlling terminal of the process's session, held on every row of a
+    /// thread group. Fork and clone copy it with the session (`ctty::inherit`).
+    pub ctty: Option<crate::tty::ctty::TtyId>,
+
     /// User and group IDs and supplementary groups.
     pub cred: super::credentials::ProcessCredentials,
     /// Nice value, -20 (most favoured) to 19. Reported and inherited; the
@@ -456,6 +460,7 @@ impl Process {
             // fork, spawn and clone give a child its parent's instead.
             pgid: ProcessId(super::RESERVED_INIT_PID),
             sid: ProcessId(super::RESERVED_INIT_PID),
+            ctty: Some(crate::tty::ctty::TtyId::Console),
             cred: super::credentials::ProcessCredentials::root(),
             nice: 0,
             cpu: alloc::sync::Arc::new(crate::task::thread::CpuAccount::new(id.as_u64())),
@@ -802,21 +807,8 @@ impl Process {
                         // unaffected and stays inline.
                         let _should_notify = buffer.lock().close_write();
                     }
-                    FdKind::PtyMaster(pty_num) => {
-                        if let Some(pair) = crate::tty::pty::get(pty_num) {
-                            let old_count = pair
-                                .master_refcount
-                                .fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
-                            if old_count == 1 {
-                                crate::tty::pty::release(pty_num);
-                            }
-                        }
-                    }
-                    FdKind::PtySlave(pty_num) => {
-                        if let Some(pair) = crate::tty::pty::get(pty_num) {
-                            pair.slave_close();
-                        }
-                    }
+                    FdKind::PtyMaster(pair) => crate::tty::pty::close_master_ref(&pair),
+                    FdKind::PtySlave(pair) => crate::tty::pty::close_slave_ref(&pair),
                     FdKind::FifoRead(_, buffer, entry) => {
                         crate::ipc::fifo::close_fifo_read(&entry);
                         // #919/P-2: deliver via the PM-safe deferred path
@@ -889,21 +881,8 @@ impl Process {
                         // unaffected and stays inline.
                         let _should_notify = buffer.lock().close_write();
                     }
-                    FdKind::PtyMaster(pty_num) => {
-                        if let Some(pair) = crate::tty::pty::get(pty_num) {
-                            let old_count = pair
-                                .master_refcount
-                                .fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
-                            if old_count == 1 {
-                                crate::tty::pty::release(pty_num);
-                            }
-                        }
-                    }
-                    FdKind::PtySlave(pty_num) => {
-                        if let Some(pair) = crate::tty::pty::get(pty_num) {
-                            pair.slave_close();
-                        }
-                    }
+                    FdKind::PtyMaster(pair) => crate::tty::pty::close_master_ref(&pair),
+                    FdKind::PtySlave(pair) => crate::tty::pty::close_slave_ref(&pair),
                     FdKind::FifoRead(_, buffer, entry) => {
                         crate::ipc::fifo::close_fifo_read(&entry);
                         // #919/P-2: deliver via the PM-safe deferred path

@@ -1,0 +1,638 @@
+{
+  "id": "terminals",
+  "title": "Terminals & job control",
+  "area": "Terminals & job control",
+  "summary": "Programs drive terminals through termios, open and use pseudo-terminals, take a controlling terminal in a session of their own and run shell job control, as POSIX requires on Linux's ABI, through Breenix's own C library, on every target.",
+  "binary": "/sbin/suite-terminals",
+  "timingSensitive": true,
+  "categories": [
+    {
+      "id": "termios",
+      "title": "termios modes & attributes",
+      "cases": [
+        {
+          "id": "tcgetattr",
+          "title": "tcgetattr on a pseudo-terminal slave returns 0 and fills in its attributes"
+        },
+        {
+          "id": "tcgetattr-enotty",
+          "title": "tcgetattr on /dev/null fails with ENOTTY"
+        },
+        {
+          "id": "tcgetattr-ebadf",
+          "title": "tcgetattr on a closed descriptor fails with EBADF"
+        },
+        {
+          "id": "tcsanow",
+          "title": "tcsetattr(TCSANOW) changes the attributes tcgetattr reports"
+        },
+        {
+          "id": "tcsadrain",
+          "title": "tcsetattr(TCSADRAIN) applies the change and keeps the output written before it"
+        },
+        {
+          "id": "tcsaflush",
+          "title": "tcsetattr(TCSAFLUSH) applies the change and discards input received but not read"
+        },
+        {
+          "id": "tcsetattr-einval",
+          "title": "tcsetattr with an unknown optional_actions fails with EINVAL"
+        },
+        {
+          "id": "tcsetattr-enotty",
+          "title": "tcsetattr on /dev/null fails with ENOTTY"
+        },
+        {
+          "id": "canonical-line",
+          "title": "In canonical mode a read returns nothing until the line ends, then the whole line"
+        },
+        {
+          "id": "canonical-one-line",
+          "title": "A canonical read returns at most one line"
+        },
+        {
+          "id": "canonical-short-read",
+          "title": "A canonical read asking for less than the line returns that much, and the rest comes next"
+        },
+        {
+          "id": "verase",
+          "title": "The ERASE character deletes the character before it"
+        },
+        {
+          "id": "vkill",
+          "title": "The KILL character deletes the line before it"
+        },
+        {
+          "id": "veof",
+          "title": "The EOF character at the start of a line makes a read return 0"
+        },
+        {
+          "id": "veof-mid-line",
+          "title": "The EOF character after text passes the text on without a newline"
+        },
+        {
+          "id": "veol",
+          "title": "The EOL character ends a line, and the read returns it"
+        },
+        {
+          "id": "noncanonical",
+          "title": "With ICANON clear and VMIN 1, a read returns a byte without waiting for a newline"
+        },
+        {
+          "id": "vmin-blocks",
+          "title": "With VMIN 3 and VTIME 0, a read waits until 3 bytes have arrived"
+        },
+        {
+          "id": "vmin-zero",
+          "title": "With VMIN 0 and VTIME 0 and nothing written, a read returns 0 at once"
+        },
+        {
+          "id": "vtime-timeout",
+          "title": "With VMIN 0 and VTIME 2 and nothing written, a read returns 0 after 0.2 seconds"
+        },
+        {
+          "id": "vtime-interbyte",
+          "title": "With VMIN 5 and VTIME 2, a read returns the 2 bytes waiting once the inter-byte timer expires"
+        },
+        {
+          "id": "echo",
+          "title": "With ECHO set, input is echoed to the master"
+        },
+        {
+          "id": "echo-off",
+          "title": "With ECHO clear, input is read but not echoed"
+        },
+        {
+          "id": "echonl",
+          "title": "With ECHONL set and ECHO clear, only the newline is echoed"
+        },
+        {
+          "id": "isig-off",
+          "title": "With ISIG clear, the INTR, SUSP and QUIT characters are read as data"
+        },
+        {
+          "id": "icrnl",
+          "title": "ICRNL maps a carriage return in input to a newline"
+        },
+        {
+          "id": "igncr",
+          "title": "IGNCR discards carriage returns in input"
+        },
+        {
+          "id": "istrip",
+          "title": "ISTRIP clears the eighth bit of input bytes"
+        },
+        {
+          "id": "onlcr",
+          "title": "OPOST with ONLCR writes a newline as carriage return and newline"
+        },
+        {
+          "id": "opost-off",
+          "title": "With OPOST clear, output is written unchanged"
+        },
+        {
+          "id": "cfospeed",
+          "title": "cfgetospeed returns the speed cfsetospeed set"
+        },
+        {
+          "id": "cfispeed",
+          "title": "cfgetispeed returns the speed cfsetispeed set"
+        },
+        {
+          "id": "cfspeed-einval",
+          "title": "cfsetospeed with a speed that is not a B constant fails with EINVAL"
+        },
+        {
+          "id": "speed-round-trip",
+          "title": "An output speed set by tcsetattr is reported by tcgetattr"
+        },
+        {
+          "id": "tcflush-input",
+          "title": "tcflush(TCIFLUSH) discards input received but not read"
+        },
+        {
+          "id": "tcflush-einval",
+          "title": "tcflush with an unknown queue_selector fails with EINVAL"
+        },
+        {
+          "id": "tcflush-enotty",
+          "title": "tcflush on /dev/null fails with ENOTTY"
+        },
+        {
+          "id": "tcdrain",
+          "title": "tcdrain returns 0 once the output written has been sent"
+        },
+        {
+          "id": "tcflow",
+          "title": "tcflow(TCOOFF) suspends output and tcflow(TCOON) restarts it"
+        },
+        {
+          "id": "tcsendbreak",
+          "title": "tcsendbreak on a pseudo-terminal returns 0"
+        }
+      ]
+    },
+    {
+      "id": "pty",
+      "title": "pseudo-terminals",
+      "cases": [
+        {
+          "id": "openpt",
+          "title": "posix_openpt(O_RDWR | O_NOCTTY) opens a master"
+        },
+        {
+          "id": "openpt-distinct",
+          "title": "Two masters have different slaves"
+        },
+        {
+          "id": "ptmx",
+          "title": "Linux ABI: opening /dev/ptmx gives a master with a /dev/pts slave"
+        },
+        {
+          "id": "grantpt",
+          "title": "grantpt on a master returns 0"
+        },
+        {
+          "id": "grantpt-ebadf",
+          "title": "grantpt on a closed descriptor fails with EBADF"
+        },
+        {
+          "id": "grantpt-einval",
+          "title": "grantpt on a descriptor that is not a master fails with EINVAL"
+        },
+        {
+          "id": "unlockpt",
+          "title": "After grantpt and unlockpt the slave opens"
+        },
+        {
+          "id": "unlockpt-einval",
+          "title": "unlockpt on a descriptor that is not a master fails with EINVAL"
+        },
+        {
+          "id": "locked",
+          "title": "Linux ABI: opening the slave before unlockpt fails with EIO"
+        },
+        {
+          "id": "ptsname",
+          "title": "ptsname names /dev/pts/<n>, and that path opens the master's slave"
+        },
+        {
+          "id": "ptsname-enotty",
+          "title": "ptsname on a descriptor that is not a master fails with ENOTTY"
+        },
+        {
+          "id": "slave-isatty",
+          "title": "isatty is true for the slave"
+        },
+        {
+          "id": "master-to-slave",
+          "title": "Bytes written to the master are read from the slave"
+        },
+        {
+          "id": "slave-to-master",
+          "title": "Bytes written to the slave are read from the master"
+        },
+        {
+          "id": "bulk-down",
+          "title": "16 KiB written to the master by another process are read from the slave in order"
+        },
+        {
+          "id": "bulk-up",
+          "title": "16 KiB written to the slave by another process are read from the master in order"
+        },
+        {
+          "id": "read-fault-partial-down",
+          "title": "Linux ABI: a slave read whose buffer runs into an unmapped page returns the bytes copied before it"
+        },
+        {
+          "id": "read-fault-partial-up",
+          "title": "Linux ABI: a master read whose buffer runs into an unmapped page returns the bytes copied before it"
+        },
+        {
+          "id": "read-fault-room-down",
+          "title": "A slave read that fails with EFAULT frees the input it took, so a master writer blocked on a full queue resumes"
+        },
+        {
+          "id": "read-fault-room-up",
+          "title": "A master read that fails with EFAULT frees the output it took, so a slave writer blocked on a full buffer resumes"
+        },
+        {
+          "id": "master-poll",
+          "title": "poll on the master reports POLLIN once the slave writes, and not before"
+        },
+        {
+          "id": "slave-poll",
+          "title": "poll on the slave reports POLLIN once the master writes, and not before"
+        },
+        {
+          "id": "master-nonblock",
+          "title": "A non-blocking read on the master with nothing written fails with EAGAIN"
+        },
+        {
+          "id": "slave-close-eio",
+          "title": "Linux ABI: once the slave closes, a read on the master fails with EIO"
+        },
+        {
+          "id": "slave-close-data",
+          "title": "Linux ABI: the master reads what the slave wrote before it closed, then EIO"
+        },
+        {
+          "id": "slave-close-pollhup",
+          "title": "Linux ABI: once the slave closes, poll on the master reports POLLHUP"
+        },
+        {
+          "id": "master-close-eof",
+          "title": "Once the master closes, a read on the slave returns end of file"
+        },
+        {
+          "id": "master-close-eio",
+          "title": "Once the master closes, a write on the slave fails with EIO"
+        },
+        {
+          "id": "master-close-sighup",
+          "title": "Closing the master sends SIGHUP to the controlling process of the slave"
+        },
+        {
+          "id": "winsize-get",
+          "title": "TIOCGWINSZ on the slave returns 0"
+        },
+        {
+          "id": "winsize-set",
+          "title": "A size set with TIOCSWINSZ on the master is read back with TIOCGWINSZ on the slave"
+        },
+        {
+          "id": "winsize-slave",
+          "title": "A size set with TIOCSWINSZ on the slave is read back with TIOCGWINSZ on the master"
+        },
+        {
+          "id": "winsize-enotty",
+          "title": "TIOCGWINSZ on /dev/null fails with ENOTTY"
+        },
+        {
+          "id": "sigwinch",
+          "title": "Changing the size sends SIGWINCH to the foreground process group"
+        },
+        {
+          "id": "sigwinch-same",
+          "title": "Setting the size the terminal already has sends no SIGWINCH"
+        },
+        {
+          "id": "master-tcsetattr",
+          "title": "Linux ABI: tcsetattr on the master sets the slave's attributes"
+        },
+        {
+          "id": "pts-listed",
+          "title": "Linux ABI: /dev/pts lists the slave's number while the pair is open"
+        },
+        {
+          "id": "pts-removed",
+          "title": "Linux ABI: /dev/pts stops listing the slave's number once both ends close"
+        }
+      ]
+    },
+    {
+      "id": "controlling",
+      "title": "controlling terminal & sessions",
+      "cases": [
+        {
+          "id": "setsid",
+          "title": "setsid in a process that is not a group leader returns its PID"
+        },
+        {
+          "id": "setsid-ids",
+          "title": "After setsid the process's group and session IDs are its PID"
+        },
+        {
+          "id": "setsid-no-ctty",
+          "title": "Linux ABI: after setsid there is no controlling terminal, and opening /dev/tty fails with ENXIO"
+        },
+        {
+          "id": "setsid-eperm",
+          "title": "setsid in a process group leader fails with EPERM"
+        },
+        {
+          "id": "setsid-leaves",
+          "title": "A process that calls setsid no longer has its old controlling terminal"
+        },
+        {
+          "id": "open-acquires",
+          "title": "A session leader without a controlling terminal acquires a terminal it opens without O_NOCTTY"
+        },
+        {
+          "id": "open-noctty",
+          "title": "A session leader that opens a terminal with O_NOCTTY does not acquire it"
+        },
+        {
+          "id": "open-not-leader",
+          "title": "A process that is not a session leader does not acquire a terminal it opens"
+        },
+        {
+          "id": "open-taken",
+          "title": "A session leader does not acquire a terminal that is another session's controlling terminal"
+        },
+        {
+          "id": "tiocsctty",
+          "title": "TIOCSCTTY makes a terminal the controlling terminal of a session leader without one"
+        },
+        {
+          "id": "tiocsctty-not-leader",
+          "title": "TIOCSCTTY in a process that is not a session leader fails with EPERM"
+        },
+        {
+          "id": "tiocsctty-has",
+          "title": "TIOCSCTTY in a session leader that has a controlling terminal fails with EPERM"
+        },
+        {
+          "id": "tiocsctty-taken",
+          "title": "TIOCSCTTY with argument 0 on another session's controlling terminal fails with EPERM"
+        },
+        {
+          "id": "tiocsctty-steal",
+          "title": "Linux ABI: root's TIOCSCTTY with argument 1 takes a terminal from another session"
+        },
+        {
+          "id": "tiocnotty",
+          "title": "TIOCNOTTY in a session member gives up its controlling terminal and leaves the leader's"
+        },
+        {
+          "id": "tiocnotty-enotty",
+          "title": "TIOCNOTTY on a terminal that is not the caller's controlling terminal fails with ENOTTY"
+        },
+        {
+          "id": "tiocnotty-leader",
+          "title": "Linux ABI: TIOCNOTTY in the session leader sends SIGHUP to the foreground group and frees the terminal"
+        },
+        {
+          "id": "tcgetsid",
+          "title": "tcgetsid on the controlling terminal returns the session leader's PID"
+        },
+        {
+          "id": "tcgetsid-other",
+          "title": "tcgetsid on another session's controlling terminal fails with ENOTTY"
+        },
+        {
+          "id": "tcgetsid-enotty",
+          "title": "tcgetsid on /dev/null fails with ENOTTY"
+        },
+        {
+          "id": "getsid",
+          "title": "getsid(0) in a session member returns the session leader's PID"
+        },
+        {
+          "id": "getsid-other",
+          "title": "getsid of another process returns its session ID"
+        },
+        {
+          "id": "getsid-esrch",
+          "title": "getsid of a process that has ended fails with ESRCH"
+        },
+        {
+          "id": "getpgid",
+          "title": "getpgid(0) and getpgid(getpid()) return the group a forked child inherited"
+        },
+        {
+          "id": "getpgid-other",
+          "title": "getpgid of another process returns its process group"
+        },
+        {
+          "id": "getpgid-esrch",
+          "title": "getpgid of a process that has ended fails with ESRCH"
+        },
+        {
+          "id": "setpgid",
+          "title": "setpgid(0, 0) makes the caller the leader of a new process group"
+        },
+        {
+          "id": "setpgid-child",
+          "title": "setpgid moves a child into a process group of its own"
+        },
+        {
+          "id": "setpgid-join",
+          "title": "setpgid moves a process into an existing group in its session"
+        },
+        {
+          "id": "setpgid-other-session",
+          "title": "setpgid into a group in another session fails with EPERM"
+        },
+        {
+          "id": "setpgid-leader",
+          "title": "setpgid on a session leader fails with EPERM"
+        },
+        {
+          "id": "setpgid-child-session",
+          "title": "setpgid on a child in another session fails with EPERM"
+        },
+        {
+          "id": "setpgid-esrch",
+          "title": "setpgid of a process that has ended fails with ESRCH"
+        },
+        {
+          "id": "setpgid-einval",
+          "title": "setpgid with a negative process group fails with EINVAL"
+        },
+        {
+          "id": "dev-tty",
+          "title": "/dev/tty opened by a process with a controlling terminal writes to that terminal"
+        },
+        {
+          "id": "ctty-inherited",
+          "title": "A forked child shares its parent's controlling terminal"
+        },
+        {
+          "id": "exit-sighup",
+          "title": "When the controlling process exits, its foreground process group gets SIGHUP"
+        },
+        {
+          "id": "exit-fg-only",
+          "title": "When the controlling process exits, a background process group gets no SIGHUP"
+        },
+        {
+          "id": "exit-frees",
+          "title": "Once the controlling process exits, another session leader can acquire the terminal"
+        }
+      ]
+    },
+    {
+      "id": "job-control",
+      "title": "foreground, background & SIGTTOU",
+      "cases": [
+        {
+          "id": "tcgetpgrp",
+          "title": "tcgetpgrp returns the session leader's group once it acquires the terminal"
+        },
+        {
+          "id": "tcsetpgrp",
+          "title": "tcsetpgrp makes another group in the session the foreground group"
+        },
+        {
+          "id": "tcsetpgrp-eperm",
+          "title": "tcsetpgrp to a group in another session fails with EPERM"
+        },
+        {
+          "id": "tcsetpgrp-einval",
+          "title": "tcsetpgrp with a negative group fails with EINVAL"
+        },
+        {
+          "id": "tcsetpgrp-enotty",
+          "title": "tcsetpgrp on a terminal that is not the caller's controlling terminal fails with ENOTTY"
+        },
+        {
+          "id": "tcgetpgrp-enotty",
+          "title": "tcgetpgrp on a terminal that is not the caller's controlling terminal fails with ENOTTY"
+        },
+        {
+          "id": "bg-tcsetpgrp",
+          "title": "tcsetpgrp in a background process stops it with SIGTTOU"
+        },
+        {
+          "id": "bg-tcsetpgrp-blocked",
+          "title": "tcsetpgrp in a background process with SIGTTOU blocked succeeds"
+        },
+        {
+          "id": "bg-tcsetpgrp-ignored",
+          "title": "tcsetpgrp in a background process ignoring SIGTTOU succeeds"
+        },
+        {
+          "id": "fg-read",
+          "title": "The foreground process group reads the terminal"
+        },
+        {
+          "id": "bg-read",
+          "title": "A read from the terminal in a background process stops it with SIGTTIN"
+        },
+        {
+          "id": "bg-read-ignored",
+          "title": "A background read with SIGTTIN ignored fails with EIO"
+        },
+        {
+          "id": "bg-read-blocked",
+          "title": "A background read with SIGTTIN blocked fails with EIO"
+        },
+        {
+          "id": "bg-read-orphan",
+          "title": "A read in an orphaned background process group fails with EIO"
+        },
+        {
+          "id": "fg-write",
+          "title": "The foreground process group writes the terminal with TOSTOP set"
+        },
+        {
+          "id": "bg-write",
+          "title": "A background process writes the terminal when TOSTOP is clear"
+        },
+        {
+          "id": "bg-write-tostop",
+          "title": "With TOSTOP set, a write in a background process stops it with SIGTTOU"
+        },
+        {
+          "id": "bg-write-tostop-ignored",
+          "title": "With TOSTOP set, a background process ignoring SIGTTOU writes"
+        },
+        {
+          "id": "bg-write-tostop-blocked",
+          "title": "With TOSTOP set, a background process blocking SIGTTOU writes"
+        },
+        {
+          "id": "bg-write-orphan",
+          "title": "With TOSTOP set, a write in an orphaned background process group fails with EIO"
+        },
+        {
+          "id": "bg-tcsetattr",
+          "title": "tcsetattr in a background process stops it with SIGTTOU"
+        },
+        {
+          "id": "vintr",
+          "title": "Typing ^C sends SIGINT to the foreground process group"
+        },
+        {
+          "id": "vquit",
+          "title": "Typing ^\\ sends SIGQUIT to the foreground process group"
+        },
+        {
+          "id": "vsusp",
+          "title": "Typing ^Z sends SIGTSTP to the foreground process group"
+        },
+        {
+          "id": "vsusp-stops",
+          "title": "Typing ^Z stops a foreground job, as its parent sees with WUNTRACED"
+        },
+        {
+          "id": "vintr-group",
+          "title": "^C reaches every process in the foreground group"
+        },
+        {
+          "id": "vintr-bg",
+          "title": "^C does not reach a background process group"
+        },
+        {
+          "id": "vintr-custom",
+          "title": "A changed VINTR character sends SIGINT"
+        },
+        {
+          "id": "isig-off",
+          "title": "With ISIG clear, ^C sends no SIGINT and is read as data"
+        },
+        {
+          "id": "intr-flush",
+          "title": "^C discards the unread input before it"
+        },
+        {
+          "id": "noflsh",
+          "title": "With NOFLSH set, ^C keeps the unread input"
+        },
+        {
+          "id": "orphan-stopped",
+          "title": "A group orphaned with a stopped member gets SIGHUP and SIGCONT"
+        },
+        {
+          "id": "orphan-running",
+          "title": "A group orphaned with no stopped member gets no SIGHUP"
+        },
+        {
+          "id": "orphan-sigtstp",
+          "title": "SIGTSTP does not stop a process in an orphaned process group"
+        }
+      ]
+    }
+  ]
+}

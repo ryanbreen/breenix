@@ -1,17 +1,24 @@
 //! PTY pair (master/slave) implementation
 
-use crate::tty::termios::Termios;
-use alloc::vec::Vec;
+use crate::task::waitqueue::WaitQueueHead;
+use crate::tty::ctty::TermCtl;
+use crate::tty::termios::{Termios, NOFLSH};
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 /// Global counter: total bytes written through PTY slave_write (diagnostic)
 pub static PTY_SLAVE_BYTES_WRITTEN: AtomicU64 = AtomicU64::new(0);
-use crate::syscall::errno::EAGAIN;
+use crate::syscall::errno::{EAGAIN, EIO};
 use crate::tty::ioctl::Winsize;
+use crate::tty::ctty::TtyRef;
 use crate::tty::line_discipline::LineDiscipline;
+use alloc::sync::Arc;
 
 /// Ring buffer size for PTY data transfer
-const PTY_BUFFER_SIZE: usize = 4096;
+pub(crate) const PTY_BUFFER_SIZE: usize = 4096;
+
+/// A slave's permission bits after allocation and grantpt: owner read and
+/// write, group write (POSIX grantpt).
+const SLAVE_MODE: u32 = 0o620;
 
 /// Simple ring buffer for PTY I/O
 pub struct PtyBuffer {
@@ -60,7 +67,30 @@ impl PtyBuffer {
         self.read_pos == self.write_pos
     }
 
-    #[allow(dead_code)]
+    /// Discard everything unread.
+    pub fn clear(&mut self) {
+        self.read_pos = self.write_pos;
+    }
+
+    /// Discard everything unread except the last `n` bytes written.
+    pub fn keep_last(&mut self, n: usize) {
+        let n = n.min(self.available());
+        self.read_pos = (self.write_pos + PTY_BUFFER_SIZE - n) % PTY_BUFFER_SIZE;
+    }
+
+    /// Read up to `max` bytes to the user address `ptr`, with Linux's
+    /// handling of a bad address: the bytes taken, and the read's result
+    /// (`tty::read_to_user`).
+    pub fn read_user(&mut self, ptr: u64, max: usize) -> (usize, Result<usize, i32>) {
+        let n = max.min(self.available());
+        crate::tty::read_to_user(ptr, n, |chunk| self.read(chunk))
+    }
+
+    /// Bytes that can still be written before the ring is full.
+    pub fn space(&self) -> usize {
+        PTY_BUFFER_SIZE - 1 - self.available()
+    }
+
     pub fn available(&self) -> usize {
         if self.write_pos >= self.read_pos {
             self.write_pos - self.read_pos
@@ -75,17 +105,11 @@ pub struct PtyPair {
     /// PTY number (0, 1, 2, ...)
     pub pty_num: u32,
 
-    /// Buffer for data from master to slave (master writes, slave reads)
-    pub master_to_slave: spin::Mutex<PtyBuffer>,
-
     /// Buffer for data from slave to master (slave writes, master reads)
     pub slave_to_master: spin::Mutex<PtyBuffer>,
 
-    /// Line discipline for the slave side
+    /// Line discipline for the slave side. Its termios is the pair's only copy.
     pub ldisc: spin::Mutex<LineDiscipline>,
-
-    /// Terminal attributes
-    pub termios: spin::Mutex<Termios>,
 
     /// Window size (rows, columns, pixels)
     pub winsize: spin::Mutex<Winsize>,
@@ -104,99 +128,96 @@ pub struct PtyPair {
     /// disconnected — not when it was never connected.
     pub slave_was_opened: AtomicBool,
 
-    /// Foreground process group ID
-    pub foreground_pgid: spin::Mutex<Option<u32>>,
+    /// Set once the last master reference is gone.
+    master_gone: AtomicBool,
 
-    /// Controlling process ID (for TIOCSCTTY/TIOCNOTTY)
-    pub controlling_pid: spin::Mutex<Option<u32>>,
+    /// The last master close's hangup has not finished; the pair keeps its
+    /// number until it has.
+    pub(super) hangup_pending: AtomicBool,
 
-    /// Threads blocked reading from master (waiting for slave to write)
-    pub master_waiters: spin::Mutex<Vec<u64>>,
+    /// Slave output suspended by TCXONC(TCOOFF).
+    output_stopped: AtomicBool,
+    input_flow_stopped: AtomicBool,
+    pending_echo: spin::Mutex<alloc::boxed::Box<PtyBuffer>>,
 
-    /// Threads blocked reading from slave (waiting for master to write)
-    pub slave_waiters: spin::Mutex<Vec<u64>>,
+    /// Master output (input to the slave) suspended by TCXONC(TCOOFF) on
+    /// the master.
+    master_output_stopped: AtomicBool,
+
+    /// The slave device's owner, group and permission bits: set from the
+    /// opener of the master, changed by grantpt, checked by a slave open.
+    slave_uid: AtomicU32,
+    slave_gid: AtomicU32,
+    slave_mode: AtomicU32,
+
+    /// The terminal's session and foreground process group.
+    pub ctl: spin::Mutex<TermCtl>,
+
+    /// Threads blocked reading the master (waiting for slave output)
+    pub master_readers: WaitQueueHead,
+
+    /// Threads blocked reading the slave (waiting for master input)
+    pub slave_readers: WaitQueueHead,
+
+    /// Threads blocked writing the slave (waiting for space in slave_to_master)
+    pub slave_writers: WaitQueueHead,
+
+    /// Threads blocked writing the master (waiting for room in the slave's
+    /// input queue, `line_discipline::MAX_INPUT`)
+    pub master_writers: WaitQueueHead,
 }
 
 impl PtyPair {
-    pub fn new(pty_num: u32) -> Self {
-        Self {
+    /// A new pair whose slave belongs to `uid` and `gid`, mode 0620 (owner
+    /// read and write, group write, as grantpt leaves it). Fails with ENOMEM
+    /// instead of panicking when the line discipline's queues cannot be
+    /// allocated.
+    pub fn try_new(pty_num: u32, uid: u32, gid: u32) -> Result<Self, i32> {
+        Ok(Self {
             pty_num,
-            master_to_slave: spin::Mutex::new(PtyBuffer::new()),
             slave_to_master: spin::Mutex::new(PtyBuffer::new()),
-            ldisc: spin::Mutex::new(LineDiscipline::new()),
-            termios: spin::Mutex::new(Termios::default()),
+            ldisc: spin::Mutex::new(LineDiscipline::try_new()?),
             winsize: spin::Mutex::new(Winsize::default_pty()),
             locked: AtomicBool::new(true), // Locked until unlockpt()
             master_refcount: AtomicU32::new(1),
             slave_refcount: AtomicU32::new(0), // No slave FDs open initially
             slave_was_opened: AtomicBool::new(false),
-            foreground_pgid: spin::Mutex::new(None),
-            controlling_pid: spin::Mutex::new(None),
-            master_waiters: spin::Mutex::new(Vec::new()),
-            slave_waiters: spin::Mutex::new(Vec::new()),
-        }
+            master_gone: AtomicBool::new(false),
+            hangup_pending: AtomicBool::new(false),
+            output_stopped: AtomicBool::new(false),
+            input_flow_stopped: AtomicBool::new(false),
+            pending_echo: spin::Mutex::new(alloc::boxed::Box::try_new(PtyBuffer::new())
+                .map_err(|_| crate::syscall::errno::ENOMEM)?),
+            master_output_stopped: AtomicBool::new(false),
+            slave_uid: AtomicU32::new(uid),
+            slave_gid: AtomicU32::new(gid),
+            slave_mode: AtomicU32::new(SLAVE_MODE),
+            ctl: spin::Mutex::new(TermCtl::new()),
+            master_readers: WaitQueueHead::new(),
+            slave_readers: WaitQueueHead::new(),
+            slave_writers: WaitQueueHead::new(),
+            master_writers: WaitQueueHead::new(),
+        })
     }
 
-    /// Register a thread as waiting for data on the master side
-    pub fn register_master_waiter(&self, thread_id: u64) {
-        let mut waiters = self.master_waiters.lock();
-        if !waiters.contains(&thread_id) {
-            waiters.push(thread_id);
-        }
+    /// The slave device's (uid, gid, mode), mode without the file type.
+    pub fn slave_owner(&self) -> (u32, u32, u32) {
+        (
+            self.slave_uid.load(Ordering::SeqCst),
+            self.slave_gid.load(Ordering::SeqCst),
+            self.slave_mode.load(Ordering::SeqCst),
+        )
     }
 
-    /// Unregister a thread from the master wait queue
-    pub fn unregister_master_waiter(&self, thread_id: u64) {
-        let mut waiters = self.master_waiters.lock();
-        waiters.retain(|&id| id != thread_id);
+    /// grantpt: the slave belongs to `uid`, with mode 0620.
+    pub fn grant(&self, uid: u32) {
+        self.slave_uid.store(uid, Ordering::SeqCst);
+        self.slave_mode.store(SLAVE_MODE, Ordering::SeqCst);
     }
 
-    /// Wake all threads waiting for data on the master side
-    pub fn wake_master_waiters(&self) {
-        let readers: Vec<u64> = {
-            let mut waiters = self.master_waiters.lock();
-            waiters.drain(..).collect()
-        };
-
-        if !readers.is_empty() {
-            crate::task::scheduler::with_scheduler(|sched| {
-                for thread_id in &readers {
-                    sched.unblock(*thread_id);
-                }
-            });
-            crate::task::scheduler::set_need_resched();
-        }
-    }
-
-    /// Register a thread as waiting for data on the slave side
-    pub fn register_slave_waiter(&self, thread_id: u64) {
-        let mut waiters = self.slave_waiters.lock();
-        if !waiters.contains(&thread_id) {
-            waiters.push(thread_id);
-        }
-    }
-
-    /// Unregister a thread from the slave wait queue
-    pub fn unregister_slave_waiter(&self, thread_id: u64) {
-        let mut waiters = self.slave_waiters.lock();
-        waiters.retain(|&id| id != thread_id);
-    }
-
-    /// Wake all threads waiting for data on the slave side
-    pub fn wake_slave_waiters(&self) {
-        let readers: Vec<u64> = {
-            let mut waiters = self.slave_waiters.lock();
-            waiters.drain(..).collect()
-        };
-
-        if !readers.is_empty() {
-            crate::task::scheduler::with_scheduler(|sched| {
-                for thread_id in &readers {
-                    sched.unblock(*thread_id);
-                }
-            });
-            crate::task::scheduler::set_need_resched();
-        }
+    /// The pair's termios (the line discipline's copy).
+    pub fn termios_snapshot(&self) -> Termios {
+        *self.ldisc.lock().termios()
     }
 
     /// Increment slave reference count (called when a slave FD is created)
@@ -205,17 +226,49 @@ impl PtyPair {
         self.slave_refcount.fetch_add(1, Ordering::SeqCst);
     }
 
+    /// Take a slave reference for an open that has not installed its
+    /// descriptor yet. The slave counts as opened (for the master's EIO and
+    /// POLLHUP) only once `mark_slave_opened` follows, so an open that fails
+    /// and gives the reference back leaves the pair as it found it.
+    pub(super) fn take_slave_ref(&self) {
+        self.slave_refcount.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// The open that took a slave reference installed its descriptor.
+    pub fn mark_slave_opened(&self) {
+        self.slave_was_opened.store(true, Ordering::SeqCst);
+    }
+
     /// Decrement slave reference count. Returns true if this was the last slave.
-    /// When the last slave closes, wakes master waiters so they can detect hangup.
+    /// When the last slave closes, wakes master readers so they can detect
+    /// hangup. The wake is deferred: close paths can hold the process manager.
     pub fn slave_close(&self) -> bool {
         let old = self.slave_refcount.fetch_sub(1, Ordering::SeqCst);
         if old == 1 {
-            // Last slave closed — wake master readers so they see EOF/POLLHUP
-            self.wake_master_waiters();
+            self.master_readers.wake_up_deferred();
+            self.master_writers.wake_up_deferred();
             true
         } else {
             false
         }
+    }
+
+    /// Record that the last master reference is gone. The PTY table lock is
+    /// held, so `open_slave` cannot see the master count at zero without it.
+    pub(super) fn mark_master_closed(&self) {
+        self.master_gone.store(true, Ordering::SeqCst);
+    }
+
+    /// Wake the slave side after the master closed. Deferred wakes, for the
+    /// same reason as `slave_close`.
+    pub(super) fn wake_slave_side(&self) {
+        self.slave_readers.wake_up_deferred();
+        self.slave_writers.wake_up_deferred();
+    }
+
+    /// True once every master reference has been closed.
+    pub fn master_closed(&self) -> bool {
+        self.master_gone.load(Ordering::SeqCst)
     }
 
     /// Check if any slave FDs are still open
@@ -230,250 +283,188 @@ impl PtyPair {
         self.slave_was_opened.load(Ordering::SeqCst) && !self.has_slave_open()
     }
 
-    /// Check if there is data available for the master to read
-    pub fn has_master_data(&self) -> bool {
-        !self.slave_to_master.lock().is_empty()
-    }
-
-    /// Check if master should be woken (data available OR slave hung up)
-    pub fn should_wake_master(&self) -> bool {
-        self.has_master_data() || self.has_slave_hung_up()
-    }
-
-    /// Check if there is data available for the slave to read
-    pub fn has_slave_data(&self) -> bool {
-        let ldisc = self.ldisc.lock();
-        if ldisc.has_data() {
-            return true;
+    /// Suspend or resume slave output (TCXONC). Resuming wakes blocked writers.
+    pub fn set_output_stopped(&self, stopped: bool) {
+        self.output_stopped.store(stopped, Ordering::SeqCst);
+        if !stopped {
+            self.drain_echo();
+            self.slave_writers.wake_up();
         }
-        drop(ldisc);
-        !self.master_to_slave.lock().is_empty()
     }
 
-    /// Write data to master (goes to slave's input via line discipline)
+    /// Discard the slave output the master has not read (TCOFLUSH), and
+    /// wake writers waiting for room.
+    pub fn flush_output(&self) {
+        let mut echo = self.pending_echo.lock();
+        let mut out = self.slave_to_master.lock();
+        echo.clear();
+        out.clear();
+        drop(out);
+        drop(echo);
+        self.slave_writers.wake_up();
+    }
+
+    /// True while slave output is suspended.
+    pub fn output_stopped(&self) -> bool {
+        self.output_stopped.load(Ordering::SeqCst)
+            || self.input_flow_stopped.load(Ordering::SeqCst)
+    }
+
+    /// Publish an input/settings flow change under ldisc, then wake outside it.
+    pub fn update_input_flow(&self) {
+        let ld = self.ldisc.lock();
+        let stopped = ld.flow_stopped();
+        self.input_flow_stopped.store(stopped, Ordering::SeqCst);
+        drop(ld);
+        if !stopped { self.drain_echo(); self.slave_writers.wake_up(); }
+    }
+
+    /// The fixed echo FIFO retains output while stopped and drains as the
+    /// master frees room. No input lock is acquired below the output lock.
+    pub fn drain_echo(&self) {
+        if self.output_stopped() { return; }
+        let mut echo = self.pending_echo.lock();
+        let mut out = self.slave_to_master.lock();
+        let mut byte = [0];
+        while out.space() > 0 && echo.read(&mut byte) != 0 { out.write(&byte); }
+        drop(out);
+        drop(echo);
+        self.master_readers.wake_up();
+    }
+
+    fn append_echo(echo: &mut PtyBuffer, c: u8, onlcr: bool) -> usize {
+        let crlf = [b'\r', c];
+        let unit = if onlcr && c == b'\n' { &crlf[..] } else { &crlf[1..] };
+        // Like Linux's bounded echo FIFO, retain the most recent output on
+        // overflow; input must not wait for its own echo to be read.
+        let mut discard = [0];
+        while echo.space() < unit.len() { echo.read(&mut discard); }
+        echo.write(unit)
+    }
+
+    /// Suspend or resume master output, the slave's input (TCXONC on the
+    /// master). Resuming wakes blocked master writers.
+    pub fn set_master_output_stopped(&self, stopped: bool) {
+        self.master_output_stopped.store(stopped, Ordering::SeqCst);
+        if !stopped {
+            self.master_writers.wake_up();
+        }
+    }
+
+    /// True while master output is suspended.
+    pub fn master_output_stopped(&self) -> bool {
+        self.master_output_stopped.load(Ordering::SeqCst)
+    }
+
+    /// TCIOFF/TCION on the slave: send the STOP or START character `c` to
+    /// the master, ahead of stopped output, as Linux sends it out of band.
+    /// False when the master's buffer is full.
+    pub fn send_flow_char_to_master(&self, c: u8) -> bool {
+        let sent = self.slave_to_master.lock().write(core::slice::from_ref(&c)) == 1;
+        if sent {
+            self.master_readers.wake_up();
+        }
+        sent
+    }
+
+    /// Feed `data` from the master to the slave's line discipline. Stops
+    /// when the input queue has no room (`LineDiscipline::input_room`), or
+    /// just after a signal character, so that each signal character's signal
+    /// is sent before the input after it is processed. Returns how many bytes
+    /// were consumed; the caller waits on `master_writers` for room.
     ///
-    /// Echo output from the line discipline (e.g., ^C when ISIG+ECHO are set)
-    /// is written to the slave_to_master buffer so the terminal emulator can
-    /// display it. Echo bytes are collected during line discipline processing
-    /// and flushed after releasing the ldisc lock to avoid nested locking.
-    ///
-    /// If the line discipline generates a signal (e.g., SIGINT from Ctrl+C),
-    /// it is delivered to the foreground process group.
-    pub fn master_write(&self, data: &[u8]) -> Result<usize, i32> {
+    /// Echo goes straight into the output ring while the line discipline is
+    /// held (ldisc, then slave_to_master, is the lock order), so it keeps its
+    /// place among other writers' echo. A signal character without NOFLSH
+    /// discards the unread output first (POSIX 11.1.9), under the same
+    /// locks, keeping only that character's own echo, as Linux echoes it
+    /// after the flush. Signals and wakes follow after both locks are
+    /// released.
+    pub fn master_write(self: &Arc<Self>, data: &[u8]) -> usize {
+        self.feed_slave(data, false)
+    }
+
+    /// TCIOFF/TCION on the master: send the STOP or START character `c` to
+    /// the slave's input, even while master output is stopped. False when
+    /// the slave's input queue has no room.
+    pub fn send_flow_char_to_slave(self: &Arc<Self>, c: u8) -> bool {
+        self.feed_slave(core::slice::from_ref(&c), true) == 1
+    }
+
+    /// `master_write`, ignoring a TCOOFF on the master when `ignore_stop`.
+    fn feed_slave(self: &Arc<Self>, data: &[u8], ignore_stop: bool) -> usize {
         let mut signal_to_deliver = None;
-        let mut echo_buf = [0u8; 256];
-        let mut echo_len = 0usize;
-        let written;
-
+        let mut count = 0;
+        let mut flushed = false;
+        let stopped;
         {
-            let mut ldisc = self.ldisc.lock();
-            let _termios = self.termios.lock();
-
-            let mut count = 0;
+            let mut ld = self.ldisc.lock();
+            let mut echo = self.pending_echo.lock();
+            let onlcr = ld.termios().is_opost() && ld.termios().is_onlcr();
             for &byte in data {
-                // Process through line discipline, collecting echo output
-                let signal = ldisc.input_char(byte, &mut |echo_byte| {
-                    if echo_len < echo_buf.len() {
-                        echo_buf[echo_len] = echo_byte;
-                        echo_len += 1;
-                    }
+                if !ld.can_receive(byte) || (!ignore_stop && self.master_output_stopped()) { break; }
+                let mut echo_len = 0;
+                let signal = ld.input_char(byte, &mut |c| {
+                    echo_len += Self::append_echo(&mut echo, c, onlcr);
                 });
-                if signal.is_some() {
-                    signal_to_deliver = signal;
-                }
                 count += 1;
-            }
-            written = count;
-            // ldisc and termios locks dropped here
-        }
-
-        // Write echo bytes to slave_to_master so the terminal emulator can
-        // display them (e.g., ^C echo). Done after releasing ldisc lock.
-        if echo_len > 0 {
-            let mut buffer = self.slave_to_master.lock();
-            buffer.write(&echo_buf[..echo_len]);
-        }
-
-        // Deliver signal to foreground process group if one was generated
-        // (must be done after releasing ldisc/termios locks to avoid deadlock)
-        if let Some(sig) = signal_to_deliver {
-            self.send_signal_to_foreground(sig);
-        }
-
-        if written > 0 {
-            // Wake threads blocked on slave_read
-            self.wake_slave_waiters();
-        }
-
-        // Also wake master readers if echo was produced (they need to see echo output)
-        if echo_len > 0 {
-            self.wake_master_waiters();
-        }
-
-        Ok(written)
-    }
-
-    /// Send a signal to the foreground process group
-    ///
-    /// Called when the line discipline generates a signal character
-    /// (e.g., Ctrl+C -> SIGINT, Ctrl+\ -> SIGQUIT, Ctrl+Z -> SIGTSTP).
-    fn send_signal_to_foreground(&self, sig: u32) {
-        let pgid = match *self.foreground_pgid.lock() {
-            Some(pgid) => pgid,
-            None => {
-                log::debug!("PTY{}: Signal {} but no foreground pgid", self.pty_num, sig);
-                return;
-            }
-        };
-
-        let pgid_as_pid = crate::process::ProcessId::new(pgid as u64);
-
-        // Collect target PIDs and thread IDs for all non-terminated processes
-        // in the foreground group (collect first, then deliver, to avoid
-        // holding the manager lock while waking threads)
-        let targets: Vec<(crate::process::ProcessId, Option<u64>)> = {
-            let manager_guard = crate::process::manager();
-            if let Some(ref manager) = *manager_guard {
-                manager
-                    .all_processes()
-                    .iter()
-                    .filter(|p| p.pgid == pgid_as_pid && !p.is_terminated())
-                    .map(|p| (p.id, p.main_thread.as_ref().map(|t| t.id)))
-                    .collect()
-            } else {
-                return;
-            }
-        };
-
-        if targets.is_empty() {
-            log::debug!(
-                "PTY{}: No processes in foreground group {} for signal {}",
-                self.pty_num,
-                pgid,
-                sig
-            );
-            return;
-        }
-
-        // Set signal pending on each process. A stop signal is taken, or
-        // discarded, as kill() takes it, and a stopped process is not woken.
-        let mut woken: Vec<u64> = Vec::new();
-        {
-            let caller_tid = crate::task::scheduler::current_thread_id();
-            let mut manager_guard = crate::process::manager();
-            if let Some(ref mut pm) = *manager_guard {
-                for &(pid, _) in &targets {
-                    if crate::signal::constants::sig_mask(sig)
-                        & crate::signal::constants::STOP_SIGNALS
-                        != 0
-                        && crate::signal::delivery::generate_stop_locked(pm, pid, sig, caller_tid)
-                    {
-                        continue;
+                if let Some(signal) = signal {
+                    if ld.termios().c_lflag & NOFLSH == 0 {
+                        echo.keep_last(echo_len);
+                        self.slave_to_master.lock().clear();
+                        flushed = true;
                     }
-                    let recipient = pm.signal_recipient(pid, sig);
-                    if let Some(proc) = pm.get_process_mut(recipient) {
-                        proc.signals.set_process_pending(sig);
-                        if proc.job.stopped.is_none() {
-                            woken.extend(proc.main_thread.as_ref().map(|thread| thread.id));
-                        }
-                        if matches!(proc.state, crate::process::ProcessState::Blocked) {
-                            proc.set_ready();
-                        }
-                        log::info!(
-                            "PTY{}: Sent signal {} to process {} (PID {})",
-                            self.pty_num,
-                            sig,
-                            proc.name,
-                            pid.as_u64()
-                        );
-                    }
+                    signal_to_deliver = Some(signal);
+                    break;
                 }
             }
+            stopped = ld.flow_stopped();
+            self.input_flow_stopped.store(stopped, Ordering::SeqCst);
         }
-
-        // Wake threads that may be blocked on signals or waitpid
-        for tid in woken {
-            crate::task::scheduler::with_scheduler(|sched| {
-                sched.unblock_for_signal(tid);
-                sched.unblock_for_child_exit(tid);
-            });
+        self.drain_echo();
+        if flushed || !stopped { self.slave_writers.wake_up(); }
+        if let Some(sig) = signal_to_deliver {
+            crate::tty::jobctl::signal_foreground(&TtyRef::Pty(self.clone()), sig);
         }
-        crate::task::scheduler::set_need_resched();
+        if count > 0 { self.slave_readers.wake_up(); }
+        count
     }
 
     /// Read data from master (slave's output)
     ///
     /// Returns Ok(n) if data was read, Err(EAGAIN) if no data available but
-    /// slave is still connected (or never connected), or Ok(0) (EOF) if slave
-    /// was connected and then all slave FDs were closed (hangup).
+    /// slave is still connected (or never connected), or Err(EIO) once the
+    /// slave was connected and then all slave FDs were closed (Linux).
     pub fn master_read(&self, buf: &mut [u8]) -> Result<usize, i32> {
-        let mut buffer = self.slave_to_master.lock();
-        let n = buffer.read(buf);
+        let n = self.slave_to_master.lock().read(buf);
         if n == 0 {
-            // No data — check if slave hung up (was opened then closed)
             if self.has_slave_hung_up() {
-                return Ok(0); // EOF — slave hung up
+                return Err(EIO);
             }
             return Err(EAGAIN);
         }
+        self.drain_echo();
+        self.slave_writers.wake_up();
         Ok(n)
     }
 
-    /// Write data from slave (goes to master's read buffer)
-    ///
-    /// Performs output processing (OPOST) if enabled in termios:
-    /// - ONLCR: translates \n to \r\n for proper terminal display
-    pub fn slave_write(&self, data: &[u8]) -> Result<usize, i32> {
-        let termios = self.termios.lock();
-        let do_onlcr = termios.is_opost() && termios.is_onlcr();
-        drop(termios);
-
-        let mut buffer = self.slave_to_master.lock();
-        let n = if do_onlcr {
-            // Output processing: translate \n → \r\n
-            let mut written = 0;
-            for &byte in data {
-                if byte == b'\n' {
-                    if buffer.write(&[b'\r', b'\n']) < 2 {
-                        break;
-                    }
-                } else {
-                    if buffer.write(&[byte]) < 1 {
-                        break;
-                    }
-                }
-                written += 1;
+    /// Copy slave output into `ring` (the slave_to_master buffer) until it is
+    /// full, translating \n to \r\n when `onlcr` (OPOST|ONLCR) is set.
+    /// Returns how many bytes of `data` were consumed.
+    pub fn put_output(ring: &mut PtyBuffer, data: &[u8], onlcr: bool) -> usize {
+        let mut written = 0;
+        for &byte in data {
+            let out: &[u8] = if onlcr && byte == b'\n' { b"\r\n" } else { core::slice::from_ref(&byte) };
+            if ring.space() < out.len() {
+                break;
             }
-            written
-        } else {
-            buffer.write(data)
-        };
-        drop(buffer);
-        if n == 0 {
-            return Err(EAGAIN);
+            ring.write(out);
+            written += 1;
         }
-        PTY_SLAVE_BYTES_WRITTEN.fetch_add(n as u64, Ordering::Relaxed);
-        // Wake threads blocked on master_read
-        self.wake_master_waiters();
-        Ok(n)
-    }
-
-    /// Read data for slave (from line discipline output)
-    pub fn slave_read(&self, buf: &mut [u8]) -> Result<usize, i32> {
-        let mut ldisc = self.ldisc.lock();
-        let read_result = ldisc.read(buf);
-        match read_result {
-            Ok(n) if n > 0 => return Ok(n),
-            _ => {}
+        if written > 0 {
+            PTY_SLAVE_BYTES_WRITTEN.fetch_add(written as u64, Ordering::Relaxed);
         }
-
-        // Also try the direct buffer if line discipline has no data
-        let mut buffer = self.master_to_slave.lock();
-        let n = buffer.read(buf);
-        if n == 0 {
-            return Err(EAGAIN);
-        }
-        Ok(n)
+        written
     }
 
     /// Check if PTY is unlocked (slave can be opened)
@@ -487,7 +478,11 @@ impl PtyPair {
     }
 
     /// Get the slave device path
-    pub fn slave_path(&self) -> alloc::string::String {
-        alloc::format!("/dev/pts/{}", self.pty_num)
+    pub fn slave_path(&self) -> Result<alloc::string::String, i32> {
+        use core::fmt::Write;
+        let mut path = alloc::string::String::new();
+        path.try_reserve_exact(20).map_err(|_| crate::syscall::errno::ENOMEM)?;
+        write!(&mut path, "/dev/pts/{}", self.pty_num).map_err(|_| crate::syscall::errno::ENOMEM)?;
+        Ok(path)
     }
 }

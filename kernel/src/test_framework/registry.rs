@@ -8334,9 +8334,9 @@ fn test_syscall_dispatch() -> TestResult {
     TestResult::Pass
 }
 
-/// RIGOROUS ARM64 test: verify PTY ioctls are routed via sys_ioctl.
-///
-/// This test will FAIL if PTY handling is gated to x86_64 in sys_ioctl.
+/// Verify sys_ioctl routes a master request to the guarded PTY handler.
+/// This security test requires EFAULT and an unchanged kernel sentinel;
+/// successful ioctl results are covered with real pointers by pty_test.
 fn test_arm64_pty_ioctl_path() -> TestResult {
     #[cfg(not(target_arch = "aarch64"))]
     {
@@ -8363,7 +8363,7 @@ fn test_arm64_pty_ioctl_path() -> TestResult {
                 None => return TestResult::Fail("scheduler not initialized"),
             };
 
-        let (pid, fd, pty_num, original_main_thread) = {
+        let (pid, fd, pair, original_main_thread) = {
             let mut manager_guard = crate::process::manager();
             let manager = match manager_guard.as_mut() {
                 Some(m) => m,
@@ -8393,22 +8393,21 @@ fn test_arm64_pty_ioctl_path() -> TestResult {
                 Err(_) => return TestResult::Fail("pty allocate failed"),
             };
 
-            let pty_num = pair.pty_num;
-
-            let fd = match process.fd_table.alloc(FdKind::PtyMaster(pty_num)) {
+            let fd = match process.fd_table.alloc(FdKind::PtyMaster(pair.clone())) {
                 Ok(fd) => fd,
                 Err(_) => return TestResult::Fail("pty fd alloc failed"),
             };
 
-            (pid, fd, pty_num, original_main_thread)
+            (pid, fd, pair, original_main_thread)
         };
 
         let mut pty_num_out: u32 = 0xFFFF_FFFF;
         let arg = &mut pty_num_out as *mut u32 as u64;
 
-        let mut result = match sys_ioctl(fd as u64, TIOCGPTN, arg) {
-            SyscallResult::Ok(0) => TestResult::Pass,
-            SyscallResult::Ok(_) => TestResult::Fail("pty ioctl returned nonzero"),
+        let result = match sys_ioctl(fd as u64, TIOCGPTN, arg) {
+            SyscallResult::Err(e) if e == crate::syscall::errno::EFAULT as u64
+                && pty_num_out == 0xFFFF_FFFF => TestResult::Pass,
+            SyscallResult::Ok(_) => TestResult::Fail("pty ioctl accepted a kernel pointer"),
             SyscallResult::Err(errno) => {
                 if errno == crate::syscall::ioctl::ENOTTY {
                     TestResult::Fail("pty ioctl returned ENOTTY")
@@ -8417,10 +8416,6 @@ fn test_arm64_pty_ioctl_path() -> TestResult {
                 }
             }
         };
-
-        if result.is_pass() && pty_num_out != pty_num {
-            result = TestResult::Fail("pty ioctl wrong pty number");
-        }
 
         {
             let mut manager_guard = crate::process::manager();
@@ -8434,7 +8429,7 @@ fn test_arm64_pty_ioctl_path() -> TestResult {
             }
         }
 
-        pty::release(pty_num);
+        pty::close_master_ref(&pair);
 
         result
     }
@@ -8727,98 +8722,29 @@ fn test_filesystem_syscalls_aarch64() -> TestResult {
     TestResult::Pass
 }
 
-/// Verify PTY ioctl support works on ARM64.
-///
-/// **RIGOROUS TEST**: This test verifies that PTY ioctls (TIOCGPTN, TIOCSPTLCK,
-/// etc.) are functional on ARM64. It will FAIL if the ioctl handlers are
-/// gated behind x86_64-only compilation.
-///
-/// The test:
-/// 1. Creates a PTY pair
-/// 2. Exercises TIOCGPTN (get PTY number) - core PTY functionality
-/// 3. Exercises TIOCSPTLCK (unlock slave) - required for slave access
-/// 4. Verifies the ioctl code paths execute without ENOTTY/ENOSYS
+/// Reject kernel addresses at the ARM64 PTY ioctl boundary. Successful
+/// number/lock/unlock requests are exercised with real userspace pointers by
+/// pty_test, which must emit its own PTY_TEST_PASSED marker.
 #[cfg(target_arch = "aarch64")]
 fn test_pty_support_aarch64() -> TestResult {
-    use crate::tty::ioctl::{TIOCGPTLCK, TIOCGPTN, TIOCSPTLCK};
+    use crate::tty::ioctl::{Side, TIOCGPTLCK, TIOCGPTN, TIOCSPTLCK};
     use crate::tty::pty;
-
-    // Step 1: Create a PTY pair
+    pty::init();
     let pair = match pty::allocate() {
         Ok(pair) => pair,
-        Err(e) => {
-            // Can't create PTY - might not have process context
-            // ENOMEM or ENOSPC are acceptable in boot test context
-            log::info!(
-                "PTY allocate failed with error {} - acceptable in boot test",
-                e
-            );
-            return TestResult::Pass;
-        }
+        Err(_) => return TestResult::Fail("pty allocation failed"),
     };
-
-    // Step 2: Test TIOCGPTN - get PTY number
-    // This exercises the pty_ioctl() path
-    let mut pty_num: u32 = 0xFFFF_FFFF; // Sentinel value
-    let result = crate::tty::ioctl::pty_ioctl(
-        &pair,
-        TIOCGPTN,
-        &mut pty_num as *mut u32 as u64,
-        0, // pid not relevant for this ioctl
-    );
-
-    match result {
-        Ok(_) => {
-            // TIOCGPTN should return 0 for the first PTY
-            if pty_num == 0xFFFF_FFFF {
-                return TestResult::Fail("TIOCGPTN did not write PTY number");
-            }
-        }
-        Err(25) => {
-            // ENOTTY - ioctl not supported, ARM64 gating issue
-            return TestResult::Fail("TIOCGPTN returned ENOTTY - PTY ioctl gated on ARM64");
-        }
-        Err(38) => {
-            // ENOSYS - syscall not implemented
-            return TestResult::Fail("TIOCGPTN returned ENOSYS - ioctl stubbed on ARM64");
-        }
-        Err(e) => {
-            // Other error - might be acceptable
-            log::warn!("TIOCGPTN returned error {}", e);
-        }
-    }
-
-    // Step 3: Test TIOCGPTLCK - get lock status
-    let mut lock_status: u32 = 0xFFFF_FFFF;
-    let result =
-        crate::tty::ioctl::pty_ioctl(&pair, TIOCGPTLCK, &mut lock_status as *mut u32 as u64, 0);
-
-    match result {
-        Ok(_) => {
-            // New PTYs start locked (lock_status = 1)
-            if lock_status == 0xFFFF_FFFF {
-                return TestResult::Fail("TIOCGPTLCK did not write lock status");
-            }
-        }
-        Err(25) | Err(38) => {
-            return TestResult::Fail("TIOCGPTLCK not available on ARM64");
-        }
-        Err(_) => {}
-    }
-
-    // Step 4: Test TIOCSPTLCK - unlock the slave
-    let unlock: u32 = 0; // 0 = unlock
-    let result = crate::tty::ioctl::pty_ioctl(&pair, TIOCSPTLCK, &unlock as *const u32 as u64, 0);
-
-    match result {
-        Ok(_) => {}
-        Err(25) | Err(38) => {
-            return TestResult::Fail("TIOCSPTLCK not available on ARM64");
-        }
-        Err(_) => {}
-    }
-
-    TestResult::Pass
+    let mut sentinel = 0xFFFF_FFFFu32;
+    let arg = &mut sentinel as *mut u32 as u64;
+    let result = [TIOCGPTN, TIOCGPTLCK, TIOCSPTLCK].iter().all(|&request| {
+        pty::ioctl::ioctl(&pair, Side::Master, request, arg)
+            == Err(crate::syscall::errno::EFAULT)
+            && sentinel == 0xFFFF_FFFF && !pair.is_unlocked()
+            && pty::ioctl::ioctl(&pair, Side::Slave, request, arg)
+                == Err(crate::syscall::errno::ENOTTY)
+    });
+    pty::close_master_ref(&pair);
+    if result { TestResult::Pass } else { TestResult::Fail("PTY ioctl pointer/side validation failed") }
 }
 
 /// Stub for x86_64 - this test is ARM64-specific.
@@ -8868,30 +8794,19 @@ fn test_telnetd_dependencies_aarch64() -> TestResult {
         return TestResult::Fail("FdKind::Socket not matching correctly");
     }
 
-    // Step 2: Verify PTY allocation infrastructure exists
-    // Try to allocate a PTY - this tests the allocator, not syscalls
-    match pty::allocate() {
-        Ok(pair) => {
-            // PTY allocation succeeded
-            if pair.pty_num > 255 {
-                return TestResult::Fail("PTY number out of range on ARM64");
-            }
-            log::info!("PTY allocation succeeded: PTY #{}", pair.pty_num);
-        }
-        Err(e) => {
-            // PTY allocation may fail in boot context (no tty subsystem fully init)
-            // Just verify the FdKind variants exist
-            log::info!(
-                "PTY allocate returned error {} - verifying FdKind variants",
-                e
-            );
-        }
+    // Allocate a real pair for the Arc-valued descriptor variants.
+    pty::init();
+    let pair = match pty::allocate() {
+        Ok(pair) => pair,
+        Err(_) => return TestResult::Fail("PTY allocation failed on ARM64"),
+    };
+    let valid_number = pair.pty_num <= 255;
+    let _ = FdKind::PtyMaster(pair.clone());
+    let _ = FdKind::PtySlave(pair.clone());
+    pty::close_master_ref(&pair);
+    if !valid_number {
+        return TestResult::Fail("PTY number out of range on ARM64");
     }
-
-    // Step 3: Verify FdKind variants exist for telnetd (compile-time check)
-    // These checks ensure the ARM64 build has all required variants
-    let _ = FdKind::PtyMaster(0);
-    let _ = FdKind::PtySlave(0);
 
     // Step 4: Verify socket types are available
     use crate::socket::types::{AF_INET, SOCK_STREAM};
@@ -10354,7 +10269,7 @@ static IPC_TESTS: &[TestDef] = &[
         timeout_ms: 2000,
         stage: TestStage::EarlyBoot,
     },
-    // ARM64 parity test - verifies PTY ioctls work on ARM64
+    // ARM64 PTY ioctl kernel-pointer and side rejection
     TestDef {
         name: "pty_support_aarch64",
         func: test_pty_support_aarch64,

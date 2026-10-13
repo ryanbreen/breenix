@@ -864,21 +864,8 @@ pub(crate) fn close_extracted_fds(entries: alloc::vec::Vec<(usize, FileDescripto
                 let notifications = buffer.lock().close_write();
                 notifications.deliver();
             }
-            FdKind::PtyMaster(pty_num) => {
-                if let Some(pair) = crate::tty::pty::get(pty_num) {
-                    let old_count = pair
-                        .master_refcount
-                        .fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
-                    if old_count == 1 {
-                        crate::tty::pty::release(pty_num);
-                    }
-                }
-            }
-            FdKind::PtySlave(pty_num) => {
-                if let Some(pair) = crate::tty::pty::get(pty_num) {
-                    pair.slave_close();
-                }
-            }
+            FdKind::PtyMaster(pair) => crate::tty::pty::close_master_ref(&pair),
+            FdKind::PtySlave(pair) => crate::tty::pty::close_slave_ref(&pair),
             FdKind::FifoRead(_, buffer, entry) => {
                 crate::ipc::fifo::close_fifo_read(&entry);
                 let notifications = buffer.lock().close_read();
@@ -954,6 +941,9 @@ impl ProcessScheduler {
                 let sigchld_withheld = manager
                     .find_process_by_thread(thread_id)
                     .is_some_and(|(pid, _)| manager.leader_waits_for_group(pid));
+                let terminal_exit = manager.find_process_by_thread(thread_id)
+                    .map(|(pid, _)| pid)
+                    .and_then(|pid| crate::tty::ctty::on_exit_locked(manager, pid));
                 if let Some((pid, process)) = manager.find_process_by_thread_mut(thread_id) {
                     let already_terminated = process.is_terminated();
                     // `terminate` left this row's address space for this hook
@@ -1081,6 +1071,7 @@ impl ProcessScheduler {
                         orphaned_groups,
                         auto_reaped,
                         group_exited,
+                        terminal_exit,
                     ))
                 } else {
                     None
@@ -1103,6 +1094,7 @@ impl ProcessScheduler {
             orphaned_groups,
             auto_reaped,
             group_exited,
+            terminal_exit,
         )) = phase1_result
         {
             // Condition C8: a row the auto-reap removed is destroyed outside PM.
@@ -1116,8 +1108,11 @@ impl ProcessScheduler {
                 }
             }
 
-            // Close FDs outside PM lock (pipe close_write wakes readers, etc.)
+            // Linux closes descriptors before disassociating the terminal.
             close_extracted_fds(fd_entries);
+            if let Some(exit) = terminal_exit {
+                crate::tty::ctty::finish_exit(exit);
+            }
 
             // Clean up window buffers so the compositor stops reading freed pages
             #[cfg(target_arch = "aarch64")]

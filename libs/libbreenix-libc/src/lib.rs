@@ -29,6 +29,7 @@ mod mqueue;
 mod shm;
 mod semaphore;
 mod sysv;
+mod termios;
 
 use libbreenix::types::Fd;
 use libbreenix::error::Error;
@@ -2792,12 +2793,23 @@ pub unsafe extern "C" fn posix_openpt(flags: i32) -> i32 {
     result_fd_to_c_int(libbreenix::pty::posix_openpt(flags))
 }
 
+/// grantpt and unlockpt fail with EINVAL when `fd` is open but is not a
+/// master (POSIX); the kernel reports that case as ENOTTY.
+fn master_result(result: Result<(), Error>) -> i32 {
+    match result {
+        Err(Error::Os(libbreenix::errno::Errno::ENOTTY)) => {
+            set_errno_from_error(Error::Os(libbreenix::errno::Errno::EINVAL))
+        }
+        result => result_unit_to_c_int(result),
+    }
+}
+
 /// grantpt - grant access to slave PTY
 ///
 /// Returns 0 on success, -1 on error (errno set).
 #[no_mangle]
 pub unsafe extern "C" fn grantpt(fd: i32) -> i32 {
-    result_unit_to_c_int(libbreenix::pty::grantpt(Fd::from_raw(fd as u64)))
+    master_result(libbreenix::pty::grantpt(Fd::from_raw(fd as u64)))
 }
 
 /// unlockpt - unlock the slave PTY for opening
@@ -2805,7 +2817,7 @@ pub unsafe extern "C" fn grantpt(fd: i32) -> i32 {
 /// Returns 0 on success, -1 on error (errno set).
 #[no_mangle]
 pub unsafe extern "C" fn unlockpt(fd: i32) -> i32 {
-    result_unit_to_c_int(libbreenix::pty::unlockpt(Fd::from_raw(fd as u64)))
+    master_result(libbreenix::pty::unlockpt(Fd::from_raw(fd as u64)))
 }
 
 /// ptsname_r - get the path to the slave PTY device (reentrant)
