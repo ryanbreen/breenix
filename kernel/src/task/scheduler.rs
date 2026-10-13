@@ -5956,9 +5956,8 @@ impl Scheduler {
         }
     }
 
-    /// x86_64: whether this CPU has a thread queued to run, or a pinned wake
-    /// held for it.
-    #[cfg(target_arch = "x86_64")]
+    /// Whether this CPU has a thread queued to run, or a pinned wake held for
+    /// it.
     pub fn has_queued_work_here(&self) -> bool {
         let cpu = Self::current_cpu_id();
         cpu < MAX_CPUS
