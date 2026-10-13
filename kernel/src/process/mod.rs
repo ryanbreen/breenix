@@ -207,8 +207,21 @@ fn note_process_manager_lock_acquired() {
 
 #[inline(always)]
 fn note_process_manager_lock_released() {
+    PROCESS_MANAGER_RELEASES.fetch_add(1, Ordering::Release);
     PROCESS_MANAGER_OWNER_TID.store(PM_LOCK_OWNER_NONE, Ordering::Relaxed);
     PROCESS_MANAGER_OWNER_CPU.store(PM_LOCK_OWNER_NONE, Ordering::Release);
+}
+
+/// How many times PROCESS_MANAGER has been released. Every change to the
+/// process table is made while it is held, and each holder adds one here
+/// before it lets go, so a reader that finds the count where a scan of its
+/// own left it knows the table has not changed since that scan.
+static PROCESS_MANAGER_RELEASES: AtomicU64 = AtomicU64::new(0);
+
+/// `PROCESS_MANAGER_RELEASES` as it stands. Read under the lock, the release
+/// that ends the reader's own hold makes it one more.
+pub fn process_manager_releases() -> u64 {
+    PROCESS_MANAGER_RELEASES.load(Ordering::Acquire)
 }
 
 #[cfg(target_arch = "aarch64")]

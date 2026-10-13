@@ -1264,6 +1264,11 @@ impl Drop for TrapTime {
     }
 }
 
+/// The calling thread's lock-free signal words. None from a kernel thread.
+pub fn current_thread_signals() -> Option<&'static crate::signal::ThreadSignals> {
+    current_cpu_thread().map(|thread| &*thread.signals)
+}
+
 /// The calling thread's own user and system nanoseconds, charged up to now
 /// first. None from a kernel thread.
 pub fn current_thread_cpu_split_ns() -> Option<(u64, u64)> {
