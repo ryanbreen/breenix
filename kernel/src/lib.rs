@@ -467,6 +467,9 @@ pub fn arch_halt() {
 /// count a thread carries while parked already includes the park it is sitting
 /// in.
 ///
+/// On ARM64, a blocked-wait park includes a native schedule-out as well as
+/// a halt; that architecture records the count but has no reader yet.
+///
 /// What is counted, and what is not. The park census is
 /// `grep -rn "arch_halt()\|arch_halt_with_interrupts()\|enable_and_hlt\|wfi()"
 /// kernel/src --include=*.rs`, minus the primitive definitions themselves and
@@ -553,8 +556,9 @@ pub fn arch_halt_with_interrupts() {
     }
 }
 
-/// Halt a waiting thread until its wake: return at once if the current thread
-/// has left its blocked state, else wait for the next interrupt.
+/// Park a waiting thread until its wake: return at once if the current thread
+/// has left its blocked state. Preemptible ARM64 callers schedule out; other
+/// callers halt until the next interrupt.
 ///
 /// A syscall wait loop checks its blocked state and then halts. With
 /// interrupts enabled between the two, the wake IPI a waker sends while the
@@ -563,9 +567,11 @@ pub fn arch_halt_with_interrupts() {
 /// state is read again here with interrupts masked; an interrupt arriving after
 /// that read ends the halt, through `sti; hlt` on x86 and, on ARM64, a WFI with
 /// IRQs masked, which ends when one is pending and takes it as they unmask.
+/// Preemptible ARM64 waiters instead save their continuation through the native
+/// scheduler; the WFI fallback below is for callers retaining their CPU.
 ///
-/// A waiting thread switches only on an interrupt return, on x86 and ARM64
-/// alike, so a waiter that halted here with another thread queued on its CPU
+/// On x86, a waiting thread previously switched only on an interrupt return, so a
+/// waiter that halted here with another thread queued on its CPU
 /// held the CPU until the next interrupt: the next tick, up to 5 ms on x86, or
 /// an IPI meant for someone else. In the threads suite's barrier that made one
 /// cross-CPU handoff in four cost 1-10 ms on x86, a woken worker queued behind
@@ -574,10 +580,10 @@ pub fn arch_halt_with_interrupts() {
 /// wakes, the CPU's tick is re-armed 1 ms after it is taken, and once the tick
 /// fell just after each nap's deadline no interrupt arrived inside a nap. Each
 /// tick then found the napper awake and ranked above the thread queued
-/// behind it, which never ran (#1467). With a thread queued here, the waiter
-/// enters the reschedule gate at once instead, which switches it out exactly
-/// as a tick taken in the halt would: on x86 through a software interrupt, on
-/// ARM64 through a reschedule SGI to its own CPU, pending before the WFI.
+/// behind it (#1467). With a thread queued here, the waiter
+/// releases its CPU at once: x86 enters the reschedule gate through a software
+/// interrupt, while ARM64 saves a preemptible blocked continuation through
+/// the native scheduler, including when no other work is queued locally.
 pub fn arch_halt_while_blocked() {
     // SAFETY: interrupts are masked only for the state read, and every path
     // below unmasks them before returning.
@@ -587,22 +593,34 @@ pub fn arch_halt_while_blocked() {
             .current_thread_mut()
             .is_some_and(|thread| thread.state.is_blocked())
     };
-    let (blocked, queued) = task::scheduler::with_scheduler(|scheduler| {
+    let wait_state = task::scheduler::with_scheduler(|scheduler| {
         let blocked = current_blocked(scheduler);
-        (blocked, blocked && scheduler.has_queued_work_here())
+        #[cfg(target_arch = "x86_64")]
+        let queued_work = blocked && scheduler.has_queued_work_here();
+        (blocked, #[cfg(target_arch = "x86_64")] queued_work)
     })
-    .unwrap_or((false, false));
-    if !blocked {
+    .unwrap_or((false, #[cfg(target_arch = "x86_64")] false));
+    if !wait_state.0 {
         // SAFETY: every caller would have halted with interrupts enabled.
         unsafe { arch_enable_interrupts() };
         return;
     }
-    // Counted only when the halt happens: a wake that already ended the wait
+    // Counted only when the wait parks: a wake that already ended the wait
     // is not a park.
     per_cpu::note_wait_loop_park();
+    #[cfg(target_arch = "aarch64")]
+    if per_cpu::preempt_count() == 0 {
+        // Save the blocked continuation now. Otherwise its timer can make it
+        // ready on a peer CPU, but cannot dispatch it until this CPU takes an
+        // interrupt and saves the still-current stack. Do not reclaim here:
+        // teardown can disable preemption and delay this wait before its save.
+        unsafe { arch_enable_interrupts() };
+        arch_impl::aarch64::context_switch::schedule_from_kernel();
+        return;
+    }
     #[cfg(target_arch = "x86_64")]
     {
-        if queued && per_cpu::preempt_count() == 0 {
+        if wait_state.1 && per_cpu::preempt_count() == 0 {
             task::scheduler::set_need_resched();
             // SAFETY: the reschedule vector's gate is the timer entry, which
             // saves and restores every register; a software interrupt enters
@@ -617,19 +635,10 @@ pub fn arch_halt_while_blocked() {
         x86_64::instructions::interrupts::enable_and_hlt();
     }
     #[cfg(target_arch = "aarch64")]
-    {
-        if queued && per_cpu::preempt_count() == 0 {
-            task::scheduler::set_need_resched();
-            arch_impl::aarch64::gic::send_sgi(
-                arch_impl::aarch64::constants::SGI_RESCHEDULE as u8,
-                arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as u8,
-            );
-        }
-        // SAFETY: WFI with IRQs masked wakes on a pending interrupt, which the
-        // unmask then takes.
-        unsafe {
-            core::arch::asm!("wfi", "msr daifclr, #3", options(nomem, nostack));
-        }
+    // SAFETY: a non-preemptible caller keeps its CPU. A pending IRQ wakes
+    // the masked WFI and is taken by the following unmask.
+    unsafe {
+        core::arch::asm!("wfi", "msr daifclr, #3", options(nomem, nostack));
     }
 }
 
