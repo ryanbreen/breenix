@@ -1943,6 +1943,13 @@ pub fn sys_yield() -> SyscallResult {
     // log::trace!("sys_yield called");
 
     #[cfg(target_arch = "x86_64")]
+    if crate::arch_impl::x86_64::smp::cpus_online() > 1
+        && !crate::task::scheduler::thread_queued_anywhere()
+    {
+        crate::scratch_force::fast_path();
+        return SyscallResult::Ok(0);
+    }
+    #[cfg(target_arch = "x86_64")]
     crate::scratch_force::note_yield();
 
     // Behind the other threads of its priority, then to the scheduler.
