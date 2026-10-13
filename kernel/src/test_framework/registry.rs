@@ -8740,7 +8740,7 @@ fn test_filesystem_syscalls_aarch64() -> TestResult {
 /// 4. Verifies the ioctl code paths execute without ENOTTY/ENOSYS
 #[cfg(target_arch = "aarch64")]
 fn test_pty_support_aarch64() -> TestResult {
-    use crate::tty::ioctl::{TIOCGPTLCK, TIOCGPTN, TIOCSPTLCK};
+    use crate::tty::ioctl::{Side, TIOCGPTLCK, TIOCGPTN, TIOCSPTLCK};
     use crate::tty::pty;
 
     // Step 1: Create a PTY pair
@@ -8758,14 +8758,9 @@ fn test_pty_support_aarch64() -> TestResult {
     };
 
     // Step 2: Test TIOCGPTN - get PTY number
-    // This exercises the pty_ioctl() path
+    // This exercises the pty::ioctl::ioctl() path
     let mut pty_num: u32 = 0xFFFF_FFFF; // Sentinel value
-    let result = crate::tty::ioctl::pty_ioctl(
-        &pair,
-        TIOCGPTN,
-        &mut pty_num as *mut u32 as u64,
-        0, // pid not relevant for this ioctl
-    );
+    let result = pty::ioctl::ioctl(&pair, Side::Master, TIOCGPTN, &mut pty_num as *mut u32 as u64);
 
     match result {
         Ok(_) => {
@@ -8790,8 +8785,7 @@ fn test_pty_support_aarch64() -> TestResult {
 
     // Step 3: Test TIOCGPTLCK - get lock status
     let mut lock_status: u32 = 0xFFFF_FFFF;
-    let result =
-        crate::tty::ioctl::pty_ioctl(&pair, TIOCGPTLCK, &mut lock_status as *mut u32 as u64, 0);
+    let result = pty::ioctl::ioctl(&pair, Side::Master, TIOCGPTLCK, &mut lock_status as *mut u32 as u64);
 
     match result {
         Ok(_) => {
@@ -8808,7 +8802,7 @@ fn test_pty_support_aarch64() -> TestResult {
 
     // Step 4: Test TIOCSPTLCK - unlock the slave
     let unlock: u32 = 0; // 0 = unlock
-    let result = crate::tty::ioctl::pty_ioctl(&pair, TIOCSPTLCK, &unlock as *const u32 as u64, 0);
+    let result = pty::ioctl::ioctl(&pair, Side::Master, TIOCSPTLCK, &unlock as *const u32 as u64);
 
     match result {
         Ok(_) => {}

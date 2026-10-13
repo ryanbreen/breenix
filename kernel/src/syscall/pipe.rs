@@ -222,35 +222,8 @@ pub fn sys_close(fd: i32) -> SyscallResult {
                     let _ = crate::net::tcp::tcp_close(&conn_id);
                     log::debug!("sys_close: Closed TCP connection fd={}", fd);
                 }
-                FdKind::PtyMaster(pty_num) => {
-                    // PTY master cleanup - decrement refcount, only release when all masters closed
-                    if let Some(pair) = crate::tty::pty::get(pty_num) {
-                        let old_count = pair
-                            .master_refcount
-                            .fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
-                        log::debug!(
-                            "sys_close: PTY master fd={} (pty {}) refcount {} -> {}",
-                            fd,
-                            pty_num,
-                            old_count,
-                            old_count - 1
-                        );
-                        if old_count == 1 {
-                            // Last reference - release the PTY pair
-                            crate::tty::pty::release(pty_num);
-                            log::debug!("sys_close: Released PTY {} (last master closed)", pty_num);
-                        }
-                    } else {
-                        log::warn!("sys_close: PTY {} not found for master fd={}", pty_num, fd);
-                    }
-                }
-                FdKind::PtySlave(pty_num) => {
-                    // Decrement slave refcount — master will see POLLHUP when last slave closes
-                    if let Some(pair) = crate::tty::pty::get(pty_num) {
-                        pair.slave_close();
-                    }
-                    log::debug!("sys_close: Closed PTY slave fd={} (pty {})", fd, pty_num);
-                }
+                FdKind::PtyMaster(pty_num) => crate::tty::pty::close_master_ref(pty_num),
+                FdKind::PtySlave(pty_num) => crate::tty::pty::close_slave_ref(pty_num),
                 FdKind::UnixStream(socket) => {
                     // Close Unix socket endpoint
                     let notifications = socket.lock().close();

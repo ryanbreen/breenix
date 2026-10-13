@@ -5,8 +5,12 @@
 //! - TIOCGPGRP/TIOCSPGRP: Get/set foreground process group
 //! - TIOCGWINSZ: Get window size (stub for now)
 
+use super::ctty::TtyRef;
+use super::jobctl::JobOp;
+use super::pty::PtyPair;
 use super::termios::Termios;
 use super::TtyDevice;
+use crate::syscall::userptr::{copy_from_user, copy_to_user};
 use alloc::sync::Arc;
 
 // =============================================================================
@@ -43,6 +47,9 @@ pub const TIOCSCTTY: u64 = 0x540E;
 /// Release controlling terminal
 pub const TIOCNOTTY: u64 = 0x5422;
 
+/// Get the session of the terminal
+pub const TIOCGSID: u64 = 0x5429;
+
 // =============================================================================
 // PTY-Specific ioctl Request Codes
 // =============================================================================
@@ -68,9 +75,6 @@ const ENOTTY: i32 = 25;
 
 /// Bad address
 const EFAULT: i32 = 14;
-
-/// Operation not permitted
-const EPERM: i32 = 1;
 
 // =============================================================================
 // Window Size Structure
@@ -258,328 +262,69 @@ pub fn handle_tiocgwinsz(tty: &Arc<TtyDevice>, arg: u64) -> Result<(), i32> {
 }
 
 // =============================================================================
-// PTY-Specific ioctl Handler Functions
+// Dispatch
 // =============================================================================
 
-use crate::tty::pty::PtyPair;
-
-/// Handle TIOCGWINSZ for PTY devices - get window size
-///
-/// Returns the PTY's window size (stored in PtyPair).
-pub fn handle_pty_tiocgwinsz(pair: &Arc<PtyPair>, arg: u64) -> Result<(), i32> {
-    if arg == 0 {
-        return Err(EFAULT);
-    }
-
-    let winsize = *pair.winsize.lock();
-
-    // Write to userspace
-    unsafe {
-        let user_winsize = arg as *mut Winsize;
-        core::ptr::write_volatile(user_winsize, winsize);
-    }
-
-    Ok(())
+/// Which side of a terminal an ioctl was made on.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Side {
+    Master,
+    Slave,
+    Console,
 }
 
-/// Handle TIOCSWINSZ for PTY devices - set window size
-///
-/// Sets the PTY's window size. In a full implementation, this would also
-/// generate SIGWINCH to the foreground process group.
-pub fn handle_pty_tiocswinsz(pair: &Arc<PtyPair>, arg: u64) -> Result<(), i32> {
-    if arg == 0 {
-        return Err(EFAULT);
-    }
-
-    // Read from userspace
-    let winsize = unsafe {
-        let user_winsize = arg as *const Winsize;
-        core::ptr::read_volatile(user_winsize)
-    };
-
-    *pair.winsize.lock() = winsize;
-
-    // TODO: Generate SIGWINCH to foreground process group when signals are implemented
-    log::debug!(
-        "PTY{}: Window size set to {}x{}",
-        pair.pty_num,
-        winsize.ws_row,
-        winsize.ws_col
-    );
-
-    Ok(())
-}
-
-/// Handle TIOCGPTN - get PTY number
-///
-/// Returns the PTY number (0, 1, 2, ...) for the master fd.
-pub fn handle_tiocgptn(pair: &Arc<PtyPair>, arg: u64) -> Result<(), i32> {
-    if arg == 0 {
-        return Err(EFAULT);
-    }
-
-    let pty_num = pair.pty_num;
-
-    // Write to userspace (as unsigned int, 4 bytes)
-    unsafe {
-        let user_ptn = arg as *mut u32;
-        core::ptr::write_volatile(user_ptn, pty_num);
-    }
-
-    Ok(())
-}
-
-/// Handle TIOCSPTLCK - lock/unlock PTY slave
-///
-/// When locked, the slave device cannot be opened.
-pub fn handle_tiocsptlck(pair: &Arc<PtyPair>, arg: u64) -> Result<(), i32> {
-    if arg == 0 {
-        return Err(EFAULT);
-    }
-
-    // Read lock value from userspace
-    let lock = unsafe {
-        let user_lock = arg as *const i32;
-        core::ptr::read_volatile(user_lock)
-    };
-
-    if lock != 0 {
-        pair.locked
-            .store(true, core::sync::atomic::Ordering::SeqCst);
-    } else {
-        pair.locked
-            .store(false, core::sync::atomic::Ordering::SeqCst);
-    }
-
-    log::debug!("PTY{}: Lock state set to {}", pair.pty_num, lock != 0);
-
-    Ok(())
-}
-
-/// Handle TIOCGPTLCK - get PTY lock status
-///
-/// Returns whether the slave device is locked.
-pub fn handle_tiocgptlck(pair: &Arc<PtyPair>, arg: u64) -> Result<(), i32> {
-    if arg == 0 {
-        return Err(EFAULT);
-    }
-
-    let locked = pair.locked.load(core::sync::atomic::Ordering::SeqCst) as i32;
-
-    // Write to userspace
-    unsafe {
-        let user_lock = arg as *mut i32;
-        core::ptr::write_volatile(user_lock, locked);
-    }
-
-    Ok(())
-}
-
-/// Handle TIOCSCTTY - set controlling terminal
-///
-/// Makes this PTY the controlling terminal for the calling process's session.
-/// The arg parameter is a flag: if non-zero and the caller is root, steal
-/// the terminal from any existing session.
-pub fn handle_tiocsctty(pair: &Arc<PtyPair>, arg: u64, pid: u32) -> Result<(), i32> {
-    let mut controlling = pair.controlling_pid.lock();
-
-    // If already controlled by another process, check permissions
-    if let Some(existing_pid) = *controlling {
-        if existing_pid != pid {
-            // Only allow stealing if arg is non-zero (and we'd check root, but skip for now)
-            if arg == 0 {
-                return Err(EPERM);
-            }
-            // For now, allow stealing since we don't have full privilege checks
-        }
-    }
-
-    *controlling = Some(pid);
-
-    // Also set the foreground process group to the caller's PGID.
-    // On Linux, TIOCSCTTY auto-sets the foreground pgrp so that tcgetpgrp()
-    // returns a valid value. Without this, shells like ash fail job control
-    // setup because tcgetpgrp() returns 0.
-    *pair.foreground_pgid.lock() = Some(pid);
-
-    log::debug!(
-        "PTY{}: Set controlling process to {}, foreground pgid to {}",
-        pair.pty_num,
-        pid,
-        pid
-    );
-
-    Ok(())
-}
-
-/// Handle TIOCNOTTY - release controlling terminal
-///
-/// Gives up the controlling terminal. Only works if the caller is the
-/// controlling process.
-pub fn handle_tiocnotty(pair: &Arc<PtyPair>, pid: u32) -> Result<(), i32> {
-    let mut controlling = pair.controlling_pid.lock();
-
-    // Only allow release if caller is the controlling process
-    if let Some(existing_pid) = *controlling {
-        if existing_pid != pid {
-            return Err(EPERM);
-        }
-    }
-
-    *controlling = None;
-    log::debug!(
-        "PTY{}: Released controlling terminal (was pid {})",
-        pair.pty_num,
-        pid
-    );
-
-    Ok(())
-}
-
-/// Handle TIOCGPGRP for PTY devices - get foreground process group
-pub fn handle_pty_tiocgpgrp(pair: &Arc<PtyPair>, arg: u64) -> Result<(), i32> {
-    if arg == 0 {
-        return Err(EFAULT);
-    }
-
-    let pgrp = pair.foreground_pgid.lock().unwrap_or(0);
-
-    // Write to userspace
-    unsafe {
-        let user_pgrp = arg as *mut i32;
-        core::ptr::write_volatile(user_pgrp, pgrp as i32);
-    }
-
-    Ok(())
-}
-
-/// Handle TIOCSPGRP for PTY devices - set foreground process group
-pub fn handle_pty_tiocspgrp(pair: &Arc<PtyPair>, arg: u64) -> Result<(), i32> {
-    if arg == 0 {
-        return Err(EFAULT);
-    }
-
-    // Read from userspace
-    let pgrp = unsafe {
-        let user_pgrp = arg as *const i32;
-        core::ptr::read_volatile(user_pgrp)
-    };
-
-    if pgrp < 0 {
-        return Err(EINVAL);
-    }
-
-    *pair.foreground_pgid.lock() = Some(pgrp as u32);
-    log::debug!("PTY{}: Set foreground pgrp to {}", pair.pty_num, pgrp);
-
-    Ok(())
-}
-
-/// Handle TCGETS for PTY devices - get termios
-pub fn handle_pty_tcgets(pair: &Arc<PtyPair>, arg: u64) -> Result<(), i32> {
-    if arg == 0 {
-        return Err(EFAULT);
-    }
-
-    let termios = *pair.termios.lock();
-
-    // Write to userspace
-    unsafe {
-        let user_termios = arg as *mut super::termios::Termios;
-        core::ptr::write_volatile(user_termios, termios);
-    }
-
-    Ok(())
-}
-
-/// Handle TCSETS for PTY devices - set termios
-pub fn handle_pty_tcsets(pair: &Arc<PtyPair>, arg: u64) -> Result<(), i32> {
-    if arg == 0 {
-        return Err(EFAULT);
-    }
-
-    // Read from userspace
-    let termios = unsafe {
-        let user_termios = arg as *const super::termios::Termios;
-        core::ptr::read_volatile(user_termios)
-    };
-
-    *pair.termios.lock() = termios;
-    // Also update the line discipline so input processing matches the new settings
-    pair.ldisc.lock().set_termios(termios);
-    log::debug!(
-        "PTY{}: TCSETS applied - lflag={:#x}",
-        pair.pty_num,
-        termios.c_lflag
-    );
-
-    Ok(())
-}
-
-/// Dispatch a PTY ioctl request to the appropriate handler
-///
-/// # Arguments
-/// * `pair` - Reference to the PTY pair
-/// * `request` - The ioctl request code
-/// * `arg` - The argument (typically a pointer to a structure)
-/// * `pid` - The calling process ID (needed for TIOCSCTTY/TIOCNOTTY)
-///
-/// # Returns
-/// * `Ok(0)` on success
-/// * `Err(errno)` on failure
-pub fn pty_ioctl(pair: &Arc<PtyPair>, request: u64, arg: u64, pid: u32) -> Result<i32, i32> {
+/// Dispatch an ioctl on terminal `t`, made on `side`.
+pub fn dispatch(t: &TtyRef, side: Side, request: u64, arg: u64) -> Result<i32, i32> {
     match request {
-        // Standard terminal ioctls
+        TIOCSCTTY | TIOCNOTTY | TIOCGSID => super::ctty::ioctl(t, side, request, arg),
+        TIOCGPGRP | TIOCSPGRP => super::jobctl::ioctl(t, side, request, arg),
+        TIOCGWINSZ | TIOCSWINSZ | TIOCGPTN | TIOCSPTLCK | TIOCGPTLCK => match t {
+            TtyRef::Pty(pair) => super::pty::ioctl::ioctl(pair, side, request, arg),
+            TtyRef::Console(tty) => tty_ioctl(tty, request, arg),
+        },
+        _ => match t {
+            TtyRef::Console(tty) => {
+                if matches!(request, TCSETS | TCSETSW | TCSETSF) {
+                    super::jobctl::check(t, JobOp::Change)?;
+                }
+                tty_ioctl(tty, request, arg)
+            }
+            TtyRef::Pty(pair) => pty_termios_ioctl(t, pair, side, request, arg),
+        },
+    }
+}
+
+/// TCGETS and TCSETS* on a pseudo-terminal (either side).
+fn pty_termios_ioctl(
+    t: &TtyRef,
+    pair: &Arc<PtyPair>,
+    side: Side,
+    request: u64,
+    arg: u64,
+) -> Result<i32, i32> {
+    match request {
         TCGETS => {
-            handle_pty_tcgets(pair, arg)?;
+            if arg == 0 {
+                return Err(EFAULT);
+            }
+            let termios = pair.termios_snapshot();
+            copy_to_user(arg as *mut Termios, &termios).map_err(|_| EFAULT)?;
             Ok(0)
         }
         TCSETS | TCSETSW | TCSETSF => {
-            // TCSETSW and TCSETSF are same as TCSETS for PTY (no hardware to drain)
-            handle_pty_tcsets(pair, arg)?;
+            if arg == 0 {
+                return Err(EFAULT);
+            }
+            let termios: Termios = copy_from_user(arg as *const Termios).map_err(|_| EFAULT)?;
+            if side != Side::Master {
+                super::jobctl::check(t, JobOp::Change)?;
+            }
+            // TCSETSW and TCSETSF are the same as TCSETS here: a PTY has no
+            // hardware output to drain.
+            pair.ldisc.lock().set_termios(termios);
             Ok(0)
         }
-        TIOCGPGRP => {
-            handle_pty_tiocgpgrp(pair, arg)?;
-            Ok(0)
-        }
-        TIOCSPGRP => {
-            handle_pty_tiocspgrp(pair, arg)?;
-            Ok(0)
-        }
-        TIOCGWINSZ => {
-            handle_pty_tiocgwinsz(pair, arg)?;
-            Ok(0)
-        }
-        TIOCSWINSZ => {
-            handle_pty_tiocswinsz(pair, arg)?;
-            Ok(0)
-        }
-        TIOCSCTTY => {
-            handle_tiocsctty(pair, arg, pid)?;
-            Ok(0)
-        }
-        TIOCNOTTY => {
-            handle_tiocnotty(pair, pid)?;
-            Ok(0)
-        }
-        // PTY-specific ioctls
-        TIOCGPTN => {
-            handle_tiocgptn(pair, arg)?;
-            Ok(0)
-        }
-        TIOCSPTLCK => {
-            handle_tiocsptlck(pair, arg)?;
-            Ok(0)
-        }
-        TIOCGPTLCK => {
-            handle_tiocgptlck(pair, arg)?;
-            Ok(0)
-        }
-        _ => {
-            log::warn!("PTY{}: Unknown ioctl request {:#x}", pair.pty_num, request);
-            Err(ENOTTY)
-        }
+        _ => Err(ENOTTY),
     }
 }
 

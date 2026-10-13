@@ -2,6 +2,8 @@
 //!
 //! Provides pseudo-terminal support for remote shell access.
 
+pub mod io;
+pub mod ioctl;
 pub mod pair;
 
 // Re-export PtyPair for external use
@@ -75,6 +77,41 @@ pub fn release(pty_num: u32) {
         if alloc.pairs.remove(&pty_num).is_some() {
             alloc.free_list.push(pty_num);
         }
+    }
+}
+
+/// Retire one master reference (a closed or discarded master fd).
+///
+/// Every master fd retire goes through here. The last reference marks the
+/// master closed, releases the pair's number and hangs up the terminal.
+pub fn close_master_ref(pty_num: u32) {
+    let Some(pair) = get(pty_num) else {
+        return;
+    };
+    if pair.master_refcount.fetch_sub(1, core::sync::atomic::Ordering::SeqCst) != 1 {
+        return;
+    }
+    pair.mark_master_closed();
+    release(pty_num);
+    hangup(pty_num);
+}
+
+/// Retire one slave reference (a closed or discarded slave fd).
+pub fn close_slave_ref(pty_num: u32) {
+    if let Some(pair) = get(pty_num) {
+        pair.slave_close();
+    }
+}
+
+/// `ctty::hangup` takes the process manager, and some close paths hold it
+/// (process teardown closes descriptors under it). Those hand the hangup to
+/// the system workqueue.
+fn hangup(pty_num: u32) {
+    let id = crate::tty::ctty::TtyId::Pty(pty_num);
+    if crate::process::process_manager_held_on_current_cpu() {
+        crate::task::workqueue::schedule_work_fn(move || crate::tty::ctty::hangup(id), "pty_hangup");
+    } else {
+        crate::tty::ctty::hangup(id);
     }
 }
 

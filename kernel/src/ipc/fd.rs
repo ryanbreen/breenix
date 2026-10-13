@@ -1011,35 +1011,8 @@ impl Drop for FdTableInner {
                         // Devpts directory doesn't need cleanup
                         log::debug!("FdTable::drop() - releasing devpts directory fd {}", i);
                     }
-                    FdKind::PtyMaster(pty_num) => {
-                        // PTY master cleanup - decrement refcount, only release when all masters closed
-                        if let Some(pair) = crate::tty::pty::get(pty_num) {
-                            let old_count = pair
-                                .master_refcount
-                                .fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
-                            log::debug!(
-                                "FdTable::drop() - PTY master fd {} (pty {}) refcount {} -> {}",
-                                i,
-                                pty_num,
-                                old_count,
-                                old_count - 1
-                            );
-                            if old_count == 1 {
-                                crate::tty::pty::release(pty_num);
-                                log::debug!(
-                                    "FdTable::drop() - released PTY {} (last master closed)",
-                                    pty_num
-                                );
-                            }
-                        }
-                    }
-                    FdKind::PtySlave(pty_num) => {
-                        // Decrement slave refcount — master sees POLLHUP when last slave closes
-                        if let Some(pair) = crate::tty::pty::get(pty_num) {
-                            pair.slave_close();
-                        }
-                        log::debug!("FdTable::drop() - released PTY slave fd {}", i);
-                    }
+                    FdKind::PtyMaster(pty_num) => crate::tty::pty::close_master_ref(pty_num),
+                    FdKind::PtySlave(pty_num) => crate::tty::pty::close_slave_ref(pty_num),
                     FdKind::UnixStream(socket) => {
                         // Close the Unix socket endpoint
                         let notifications = socket.lock().close();
