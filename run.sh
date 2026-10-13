@@ -671,15 +671,20 @@ if [ "$PARALLELS" = true ]; then
     prlctl set "$PARALLELS_VM" --efi-boot on 2>/dev/null || true
 
     # VirtIO GPU with 3D acceleration (required for VirGL)
-    prlctl set "$PARALLELS_VM" --3d-accelerate highest 2>/dev/null || true
-    prlctl set "$PARALLELS_VM" --videosize 2048 2>/dev/null || true
-    # Scaled by default: each guest pixel is two Retina pixels, so the boot screen is readable.
+    prlctl set "$PARALLELS_VM" --3d-accelerate highest
+    prlctl set "$PARALLELS_VM" --videosize 2048
+    # Select host and guest Retina policy explicitly before starting the VM. A new VM
+    # defaults to high-resolution-in-guest=on, which makes Parallels show the guest at
+    # one guest pixel per Retina pixel even with host high resolution off: the 1280x960
+    # guest then opens in a 640x480-point window. The scaled default needs both off.
     if [ "${RETINA:-false}" = true ]; then
-        prlctl set "$PARALLELS_VM" --high-resolution on 2>/dev/null || true
+        RETINA_POLICY="high-resolution=on high-resolution-in-guest=on"
+        prlctl set "$PARALLELS_VM" --high-resolution on --high-resolution-in-guest on
     else
-        prlctl set "$PARALLELS_VM" --high-resolution off 2>/dev/null || true
+        RETINA_POLICY="high-resolution=off high-resolution-in-guest=off"
+        prlctl set "$PARALLELS_VM" --high-resolution off --high-resolution-in-guest off
     fi
-    prlctl set "$PARALLELS_VM" --vertical-sync on 2>/dev/null || true
+    prlctl set "$PARALLELS_VM" --vertical-sync on
 
     # Remove any default devices Parallels created (cdrom, hdd, serial) to avoid conflicts
     for dev in hdd0 hdd1 hdd2 cdrom0 cdrom1 serial0 serial1; do
@@ -719,10 +724,14 @@ if [ "$PARALLELS" = true ]; then
     # Open the VM in its own window, as VMware's `gui` start does, so a boot can be watched;
     # BREENIX_PARALLELS_NOGUI=1 keeps unattended automation off the operator's desktop.
     if [ -n "${BREENIX_PARALLELS_NOGUI:-}" ]; then
-        prlctl set "$PARALLELS_VM" --startup-view headless 2>/dev/null || true
+        prlctl set "$PARALLELS_VM" --startup-view headless
     else
-        prlctl set "$PARALLELS_VM" --startup-view window 2>/dev/null || true
+        prlctl set "$PARALLELS_VM" --startup-view window
     fi
+    VM_INFO=$(prlctl list -i "$PARALLELS_VM") || { echo "ERROR: cannot query configured Parallels VM"; exit 1; }
+    VM_HOME=$(sed -n 's/^Home: //p' <<< "$VM_INFO")
+    [ -d "$VM_HOME" ] || { echo "ERROR: cannot locate configured Parallels VM"; exit 1; }
+    grep -q "$RETINA_POLICY" <<< "$VM_INFO" || { echo "ERROR: Parallels VM does not report $RETINA_POLICY"; exit 1; }
     CLOCK_STARTED=$(python3 -c 'import time; print(time.time())')
     prlctl start "$PARALLELS_VM"
     echo ""
@@ -791,8 +800,7 @@ if [ "$PARALLELS" = true ]; then
         echo ""
 
         # Monitor Parallels VM log for VCPU exceptions in background
-        VM_DIR="$HOME/Parallels/${PARALLELS_VM}.pvm"
-        VM_LOG="$VM_DIR/parallels.log"
+        VM_LOG="$VM_HOME/parallels.log"
         if [ -f "$VM_LOG" ]; then
             python3 -u "$BREENIX_ROOT/scripts/vm-log-monitor.py" parallels "$VM_LOG" "$$" &
             LOGMON_PID=$!
@@ -1063,6 +1071,18 @@ usb_xhci:6.deviceType = "mouse"
 usb_xhci:6.port = "6"
 
 svga.vramSize = "268435456"
+VMXEOF
+
+    # Keep the default scaled viewport bounded; --retina retains GOP autodetection.
+    if [ "${RETINA:-false}" != true ]; then
+        cat >> "$VMX_FILE" <<VMXEOF
+svga.autodetect = "FALSE"
+svga.maxWidth = "1280"
+svga.maxHeight = "960"
+VMXEOF
+    fi
+
+    cat >> "$VMX_FILE" <<VMXEOF
 gui.fitGuestUsingNativeDisplayResolution = "${VMWARE_NATIVE_RESOLUTION}"
 mks.enable3d = "TRUE"
 
