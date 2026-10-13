@@ -107,18 +107,9 @@ pub enum FdKind {
     PipeRead(Arc<Mutex<super::pipe::PipeBuffer>>),
     /// Write end of a pipe
     PipeWrite(Arc<Mutex<super::pipe::PipeBuffer>>),
-    /// UDP socket (wrapped in Arc<Mutex<>> for sharing and dup/fork)
-    /// Available on both x86_64 and ARM64 (driver abstraction handles hardware differences)
-    UdpSocket(Arc<Mutex<crate::socket::udp::UdpSocket>>),
-    /// TCP socket (unbound, or bound but not connected/listening)
-    /// The u16 is the bound local port (0 if unbound)
-    TcpSocket(u16),
-    /// TCP listener (bound and listening socket)
-    /// The u16 is the listening port
-    TcpListener(u16),
-    /// TCP connection (established connection)
-    /// Contains the connection ID for lookup in the global TCP connection table
-    TcpConnection(crate::net::tcp::ConnectionId),
+    /// A socket of any family and type. dup and fork clone the Arc; the
+    /// protocol releases the socket when the last reference goes.
+    Socket(Arc<crate::socket::object::Socket>),
     /// Regular file descriptor
     #[allow(dead_code)] // Will be constructed when open() is fully implemented
     RegularFile(Arc<Mutex<RegularFile>>),
@@ -138,15 +129,6 @@ pub enum FdKind {
     /// Allow unused - constructed when opening /dev/pts/N in Phase 2
     #[allow(dead_code)]
     PtySlave(u32),
-    /// Unix stream socket (AF_UNIX, SOCK_STREAM) - for socketpair IPC
-    /// Fully architecture-independent - uses in-memory buffers
-    UnixStream(alloc::sync::Arc<spin::Mutex<crate::socket::unix::UnixStreamSocket>>),
-    /// Unix socket (AF_UNIX, SOCK_STREAM) - unbound or bound but not connected/listening
-    /// Fully architecture-independent
-    UnixSocket(alloc::sync::Arc<spin::Mutex<crate::socket::unix::UnixSocket>>),
-    /// Unix listener socket (AF_UNIX, SOCK_STREAM) - listening for connections
-    /// Fully architecture-independent
-    UnixListener(alloc::sync::Arc<spin::Mutex<crate::socket::unix::UnixListener>>),
     /// FIFO (named pipe) read end - path is stored for cleanup on close
     FifoRead(alloc::string::String, Arc<Mutex<super::pipe::PipeBuffer>>, Arc<Mutex<super::fifo::FifoEntry>>),
     /// FIFO (named pipe) write end - path is stored for cleanup on close
@@ -174,10 +156,11 @@ impl core::fmt::Debug for FdKind {
             FdKind::StdIo(n) => write!(f, "StdIo({})", n),
             FdKind::PipeRead(_) => write!(f, "PipeRead"),
             FdKind::PipeWrite(_) => write!(f, "PipeWrite"),
-            FdKind::UdpSocket(_) => write!(f, "UdpSocket"),
-            FdKind::TcpSocket(port) => write!(f, "TcpSocket(port={})", port),
-            FdKind::TcpListener(port) => write!(f, "TcpListener(port={})", port),
-            FdKind::TcpConnection(id) => write!(f, "TcpConnection({:?})", id),
+            FdKind::Socket(socket) => write!(
+                f,
+                "Socket(family={}, type={})",
+                socket.family, socket.kind
+            ),
             FdKind::RegularFile(_) => write!(f, "RegularFile"),
             FdKind::Directory(_) => write!(f, "Directory"),
             FdKind::Device(dt) => write!(f, "Device({:?})", dt),
@@ -185,18 +168,6 @@ impl core::fmt::Debug for FdKind {
             FdKind::DevptsDirectory { position } => write!(f, "DevptsDirectory(pos={})", position),
             FdKind::PtyMaster(n) => write!(f, "PtyMaster({})", n),
             FdKind::PtySlave(n) => write!(f, "PtySlave({})", n),
-            FdKind::UnixStream(s) => {
-                let sock = s.lock();
-                write!(f, "UnixStream({:?})", sock.endpoint)
-            }
-            FdKind::UnixSocket(s) => {
-                let sock = s.lock();
-                write!(f, "UnixSocket({:?})", sock.state)
-            }
-            FdKind::UnixListener(l) => {
-                let listener = l.lock();
-                write!(f, "UnixListener(pending={})", listener.pending_count())
-            }
             FdKind::FifoRead(path, _, _) => write!(f, "FifoRead({})", path),
             FdKind::FifoWrite(path, _, _) => write!(f, "FifoWrite({})", path),
             FdKind::FifoReadWrite(path, _, _) => write!(f, "FifoReadWrite({})", path),
@@ -499,6 +470,62 @@ impl FdTable {
     }
 }
 
+/// Count one more descriptor entry for the object `kind` names, as dup, dup2,
+/// fork and SCM_RIGHTS do when they create a second entry for it. Pipes,
+/// FIFOs and PTYs keep their own counts; everything else (sockets included)
+/// is counted by its `Arc`.
+pub(crate) fn add_reference(kind: &FdKind) {
+    match kind {
+        FdKind::PipeRead(buffer) => buffer.lock().add_reader(),
+        FdKind::PipeWrite(buffer) => buffer.lock().add_writer(),
+        FdKind::FifoRead(_, buffer, entry) => {
+            // Increment both FIFO entry reader count and pipe buffer reader count
+            entry.lock().readers += 1;
+            buffer.lock().add_reader();
+        }
+        FdKind::FifoReadWrite(_, buffer, entry) => {
+            {
+                let mut e = entry.lock();
+                e.readers += 1;
+                e.writers += 1;
+            }
+            {
+                let mut p = buffer.lock();
+                p.add_reader();
+                p.add_writer();
+            }
+        }
+        FdKind::FifoWrite(_, buffer, entry) => {
+            // Increment both FIFO entry writer count and pipe buffer writer count
+            entry.lock().writers += 1;
+            buffer.lock().add_writer();
+        }
+        FdKind::PtyMaster(pty_num) => {
+            // No logging - this runs during fork()
+            if let Some(pair) = crate::tty::pty::get(*pty_num) {
+                pair.master_refcount
+                    .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        FdKind::PtySlave(pty_num) => {
+            if let Some(pair) = crate::tty::pty::get(*pty_num) {
+                pair.slave_open();
+            }
+        }
+        _ => {}
+    }
+}
+
+impl FileDescriptor {
+    /// A second entry for the same open file description, counted as dup
+    /// counts it. SCM_RIGHTS carries descriptors this way; one that is never
+    /// installed is closed through `process_task::close_extracted_fds`.
+    pub fn counted_clone(&self) -> FileDescriptor {
+        add_reference(&self.kind);
+        self.clone()
+    }
+}
+
 /// The descriptors of an `FdTable`.
 pub struct FdTableInner {
     /// The file descriptors (None = unused slot)
@@ -518,47 +545,7 @@ impl Clone for FdTableInner {
         // Increment reference counts for all cloned fds that need it
         for fd_opt in cloned_fds.iter() {
             if let Some(fd_entry) = fd_opt {
-                match &fd_entry.kind {
-                    FdKind::PipeRead(buffer) => buffer.lock().add_reader(),
-                    FdKind::PipeWrite(buffer) => buffer.lock().add_writer(),
-                    FdKind::FifoRead(_, buffer, entry) => {
-                        // Increment both FIFO entry reader count and pipe buffer reader count
-                        entry.lock().readers += 1;
-                        buffer.lock().add_reader();
-                    }
-                    FdKind::FifoReadWrite(_, buffer, entry) => {
-                        { let mut e = entry.lock(); e.readers += 1; e.writers += 1; }
-                        { let mut p = buffer.lock(); p.add_reader(); p.add_writer(); }
-                    }
-                    FdKind::FifoWrite(_, buffer, entry) => {
-                        // Increment both FIFO entry writer count and pipe buffer writer count
-                        entry.lock().writers += 1;
-                        buffer.lock().add_writer();
-                    }
-                    FdKind::PtyMaster(pty_num) => {
-                        // Increment PTY master reference count for the clone
-                        // No logging - this runs during fork()
-                        if let Some(pair) = crate::tty::pty::get(*pty_num) {
-                            pair.master_refcount
-                                .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
-                        }
-                    }
-                    FdKind::PtySlave(pty_num) => {
-                        // Increment PTY slave reference count for the clone
-                        if let Some(pair) = crate::tty::pty::get(*pty_num) {
-                            pair.slave_open();
-                        }
-                    }
-                    FdKind::TcpConnection(conn_id) => {
-                        // Increment TCP connection reference count for the clone
-                        crate::net::tcp::tcp_add_ref(conn_id);
-                    }
-                    FdKind::TcpListener(port) => {
-                        // Increment TCP listener reference count for the clone
-                        crate::net::tcp::tcp_listener_ref_inc(*port);
-                    }
-                    _ => {}
-                }
+                add_reference(&fd_entry.kind);
             }
         }
 
@@ -765,50 +752,12 @@ impl FdTableInner {
         // after releasing PM, after the replacement reference is established.
         let overwritten = self.fds[new_fd as usize].take();
 
-        // Increment ref counts for the duplicated fd. TcpListener/
-        // TcpConnection mirror clone_for_fork's arms (this file, above):
-        // the whole ref-counted-fd protocol is "every path that creates a
-        // second FdEntry pointing at the same underlying listener/
-        // connection increments; every path that removes an FdEntry
-        // pointing at it decrements (sys_close, FdTable::drop,
-        // close_cloexec, and this function's own close-old-new_fd arm
-        // above)". #724 review finding M1: this dup2 inc side was missing,
-        // so a dup'd listener could be retired by sys_close's dec while a
-        // surviving fd still held FdKind::TcpListener(port).
-        match &fd_entry.kind {
-            FdKind::PipeRead(buffer) => buffer.lock().add_reader(),
-            FdKind::PipeWrite(buffer) => buffer.lock().add_writer(),
-            FdKind::FifoRead(_, buffer, entry) => {
-                entry.lock().readers += 1;
-                buffer.lock().add_reader();
-            }
-            FdKind::FifoReadWrite(_, buffer, entry) => {
-                { let mut e = entry.lock(); e.readers += 1; e.writers += 1; }
-                { let mut p = buffer.lock(); p.add_reader(); p.add_writer(); }
-            }
-            FdKind::FifoWrite(_, buffer, entry) => {
-                entry.lock().writers += 1;
-                buffer.lock().add_writer();
-            }
-            FdKind::PtyMaster(pty_num) => {
-                if let Some(pair) = crate::tty::pty::get(*pty_num) {
-                    pair.master_refcount
-                        .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
-                }
-            }
-            FdKind::PtySlave(pty_num) => {
-                if let Some(pair) = crate::tty::pty::get(*pty_num) {
-                    pair.slave_open();
-                }
-            }
-            FdKind::TcpConnection(conn_id) => {
-                crate::net::tcp::tcp_add_ref(conn_id);
-            }
-            FdKind::TcpListener(port) => {
-                crate::net::tcp::tcp_listener_ref_inc(*port);
-            }
-            _ => {}
-        }
+        // Every path that creates a second entry for the same pipe, FIFO or
+        // PTY increments its count here; every path that removes one
+        // decrements (sys_close, FdTable::drop, close_cloexec, and the
+        // caller's close of the overwritten entry). #724 review finding M1
+        // was this dup2 side missing. Sockets are counted by their Arc.
+        add_reference(&fd_entry.kind);
 
         self.fds[new_fd as usize] = Some(fd_entry);
         Ok((new_fd, overwritten))
@@ -845,48 +794,10 @@ impl FdTableInner {
         // no rollback close or notification while the caller holds PM.
         let free_slot = self.free_slot(min_fd as usize)?;
 
-        // Increment reference counts for the duplicated fd. Same protocol as
-        // dup2()'s increment block above and clone_for_fork's arms: every
-        // path that hands out a second FdEntry for the same underlying
-        // listener/connection must increment, so sys_close's decrement
-        // (syscall/pipe.rs) never retires it while a live fd still refers
-        // to it (#724 review finding M1 -- this dup()/F_DUPFD path was
-        // missing the TcpListener/TcpConnection arms other kinds already
-        // had here).
-        match &fd_entry.kind {
-            FdKind::PipeRead(buffer) => buffer.lock().add_reader(),
-            FdKind::PipeWrite(buffer) => buffer.lock().add_writer(),
-            FdKind::FifoRead(_, buffer, entry) => {
-                entry.lock().readers += 1;
-                buffer.lock().add_reader();
-            }
-            FdKind::FifoReadWrite(_, buffer, entry) => {
-                { let mut e = entry.lock(); e.readers += 1; e.writers += 1; }
-                { let mut p = buffer.lock(); p.add_reader(); p.add_writer(); }
-            }
-            FdKind::FifoWrite(_, buffer, entry) => {
-                entry.lock().writers += 1;
-                buffer.lock().add_writer();
-            }
-            FdKind::PtyMaster(pty_num) => {
-                if let Some(pair) = crate::tty::pty::get(*pty_num) {
-                    pair.master_refcount
-                        .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
-                }
-            }
-            FdKind::PtySlave(pty_num) => {
-                if let Some(pair) = crate::tty::pty::get(*pty_num) {
-                    pair.slave_open();
-                }
-            }
-            FdKind::TcpConnection(conn_id) => {
-                crate::net::tcp::tcp_add_ref(conn_id);
-            }
-            FdKind::TcpListener(port) => {
-                crate::net::tcp::tcp_listener_ref_inc(*port);
-            }
-            _ => {}
-        }
+        // Same protocol as dup2() above and fork's table clone: the second
+        // entry is counted before it exists, so sys_close's decrement never
+        // retires the object while a live descriptor still refers to it.
+        add_reference(&fd_entry.kind);
 
         self.fds[free_slot] = Some(fd_entry);
         Ok(free_slot as i32)
@@ -947,8 +858,7 @@ impl FdTableInner {
 /// decrement pipe reader/writer counts for any open pipe fds. This ensures
 /// that when all writers close, readers get EOF instead of EAGAIN.
 ///
-/// Note: UdpSocket cleanup is handled by UdpSocket's own Drop impl when the
-/// Arc reference count goes to zero.
+/// Sockets are released by their own Drop when the last Arc reference goes.
 impl Drop for FdTableInner {
     fn drop(&mut self) {
         log::debug!("FdTable::drop() - closing all fds and decrementing pipe counts");
@@ -966,27 +876,9 @@ impl Drop for FdTableInner {
                         notifications.deliver();
                         log::debug!("FdTable::drop() - closed pipe write fd {}", i);
                     }
-                    FdKind::UdpSocket(_) => {
-                        // Socket cleanup handled by UdpSocket::Drop when Arc refcount reaches 0
-                        log::debug!("FdTable::drop() - releasing UDP socket fd {}", i);
-                    }
-                    FdKind::TcpSocket(_) => {
-                        // Unbound TCP socket doesn't need cleanup
-                        log::debug!("FdTable::drop() - releasing TCP socket fd {}", i);
-                    }
-                    FdKind::TcpListener(port) => {
-                        // Decrement ref count, remove only if it reaches 0
-                        crate::net::tcp::tcp_listener_ref_dec(port);
-                        log::debug!(
-                            "FdTable::drop() - released TCP listener fd {} on port {}",
-                            i,
-                            port
-                        );
-                    }
-                    FdKind::TcpConnection(conn_id) => {
-                        // Close the TCP connection
-                        let _ = crate::net::tcp::tcp_close(&conn_id);
-                        log::debug!("FdTable::drop() - closed TCP connection fd {}", i);
+                    FdKind::Socket(_) => {
+                        // The last reference releases the socket; under PM
+                        // the release waits for the reclamation boundary.
                     }
                     FdKind::StdIo(_) => {
                         // StdIo doesn't need cleanup
@@ -1039,28 +931,6 @@ impl Drop for FdTableInner {
                             pair.slave_close();
                         }
                         log::debug!("FdTable::drop() - released PTY slave fd {}", i);
-                    }
-                    FdKind::UnixStream(socket) => {
-                        // Close the Unix socket endpoint
-                        let notifications = socket.lock().close();
-                        notifications.deliver_deferred();
-                        log::debug!("FdTable::drop() - closed Unix stream socket fd {}", i);
-                    }
-                    FdKind::UnixSocket(socket) => {
-                        // Unbind from registry if bound
-                        let sock = socket.lock();
-                        if let Some(path) = &sock.bound_path {
-                            crate::socket::UNIX_SOCKET_REGISTRY.unbind(path);
-                            log::debug!("FdTable::drop() - unbound Unix socket fd {} from path", i);
-                        }
-                        log::debug!("FdTable::drop() - closed Unix socket fd {}", i);
-                    }
-                    FdKind::UnixListener(listener) => {
-                        // Unbind from registry and wake any pending accept waiters
-                        let l = listener.lock();
-                        crate::socket::UNIX_SOCKET_REGISTRY.unbind(&l.path);
-                        l.wake_waiters();
-                        log::debug!("FdTable::drop() - closed Unix listener fd {}", i);
                     }
                     FdKind::FifoRead(path, buffer, entry) => {
                         // Decrement FIFO reader count and pipe buffer reader count

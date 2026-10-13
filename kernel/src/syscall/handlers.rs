@@ -472,8 +472,8 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
             pipe_buffer: alloc::sync::Arc<spin::Mutex<crate::ipc::pipe::PipeBuffer>>,
             is_nonblocking: bool,
         },
-        UnixStream {
-            socket: alloc::sync::Arc<spin::Mutex<crate::socket::unix::UnixStreamSocket>>,
+        Socket {
+            socket: alloc::sync::Arc<crate::socket::object::Socket>,
             is_nonblocking: bool,
         },
         RegularFile {
@@ -482,18 +482,13 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
             unprivileged: bool,
             size_limit: u64,
         },
-        TcpConnection {
-            conn_id: crate::net::tcp::ConnectionId,
-        },
         Device {
             device_type: crate::fs::devfs::DeviceType,
         },
         PtyMaster(u32),
         PtySlave(u32),
         Ebadf,
-        Enotconn,   // Socket not connected
         Eisdir,     // Is a directory
-        Eopnotsupp, // Operation not supported
     }
 
     let mut fifo_to_touch = None;
@@ -551,18 +546,12 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
                 }
             }
             FdKind::FifoRead(_, _, _) => WriteOperation::Ebadf,
-            FdKind::TcpSocket(_) => WriteOperation::Enotconn,
-            FdKind::TcpListener(_) => WriteOperation::Enotconn,
-            FdKind::TcpConnection(conn_id) => WriteOperation::TcpConnection { conn_id: *conn_id },
-            FdKind::UdpSocket(_) => WriteOperation::Eopnotsupp, // UDP must use sendto
-            FdKind::UnixStream(socket) => WriteOperation::UnixStream {
+            FdKind::Socket(socket) => WriteOperation::Socket {
                 socket: socket.clone(),
                 is_nonblocking: (fd_entry.status_flags()
                     & crate::ipc::fd::status_flags::O_NONBLOCK)
                     != 0,
             },
-            FdKind::UnixSocket(_) => WriteOperation::Enotconn, // Unconnected Unix socket
-            FdKind::UnixListener(_) => WriteOperation::Enotconn, // Listener can't write
             // A description opened O_RDONLY is not writable (EBADF).
             FdKind::RegularFile(_) if !fd_entry.writable() => WriteOperation::Ebadf,
             FdKind::RegularFile(file) => WriteOperation::RegularFile {
@@ -594,9 +583,7 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
         },
         WriteOperation::StdIo => write_to_stdio(fd, &buffer),
         WriteOperation::Ebadf => SyscallResult::Err(9), // EBADF
-        WriteOperation::Enotconn => SyscallResult::Err(super::errno::ENOTCONN as u64),
         WriteOperation::Eisdir => SyscallResult::Err(super::errno::EISDIR as u64),
-        WriteOperation::Eopnotsupp => SyscallResult::Err(95), // EOPNOTSUPP
         WriteOperation::PtyMaster(pty_num) => {
             if let Some(pair) = crate::tty::pty::get(pty_num) {
                 match pair.master_write(&buffer) {
@@ -625,39 +612,10 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
             pipe_buffer,
             is_nonblocking,
         } => super::blocking_io::write_pipe(&pipe_buffer, &buffer, is_nonblocking),
-        WriteOperation::UnixStream {
+        WriteOperation::Socket {
             socket,
             is_nonblocking,
-        } => {
-            let writer = socket.lock().writer();
-            super::blocking_io::write_unix(writer, &buffer, is_nonblocking)
-        }
-        WriteOperation::TcpConnection { conn_id } => {
-            // Write to established TCP connection
-            match crate::net::tcp::tcp_send(&conn_id, &buffer) {
-                Ok(n) => {
-                    crate::net::drain_loopback_queue();
-                    log::debug!("sys_write: Wrote {} bytes to TCP connection", n);
-                    SyscallResult::Ok(n as u64)
-                }
-                Err(e) => {
-                    log::warn!("sys_write: TCP write error: {}", e);
-                    // Map error string to specific errno
-                    if e.contains("shutdown") {
-                        super::signal::raise_sigpipe();
-                        SyscallResult::Err(super::errno::EPIPE as u64)
-                    } else if e.contains("not found") {
-                        SyscallResult::Err(super::errno::EBADF as u64)
-                    } else if e.contains("not established") {
-                        // Connection exists but state is not Established
-                        // (RST received -> Closed, or FIN received -> CloseWait)
-                        SyscallResult::Err(super::errno::ENOTCONN as u64)
-                    } else {
-                        SyscallResult::Err(super::errno::EIO as u64)
-                    }
-                }
-            }
-        }
+        } => super::socket::socket_write(&socket, &buffer, is_nonblocking),
         WriteOperation::Device { device_type } => {
             use crate::fs::devfs::DeviceType;
             match device_type {
@@ -1338,10 +1296,13 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             // Can't read from write end of FIFO
             SyscallResult::Err(9) // EBADF
         }
-        FdKind::UdpSocket(_) => {
-            // Can't read from UDP socket - must use recvfrom
-            log::error!("sys_read: Cannot read from UDP socket, use recvfrom instead");
-            SyscallResult::Err(95) // EOPNOTSUPP
+        FdKind::Socket(socket) => {
+            // read(2) on a socket is a receive with no flags.
+            let socket = socket.clone();
+            let is_nonblocking =
+                (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
+            drop(manager_guard);
+            super::socket::socket_read(&socket, buf_ptr, count as usize, is_nonblocking)
         }
         // A description opened O_WRONLY is not readable (EBADF).
         FdKind::RegularFile(_) if !fd_entry.readable() => SyscallResult::Err(9),
@@ -1495,156 +1456,6 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             // Cannot read from directory with read() - must use getdents
             log::debug!("sys_read: Cannot read from /dev/pts directory, use getdents instead");
             SyscallResult::Err(super::errno::EISDIR as u64)
-        }
-        FdKind::TcpSocket(_) | FdKind::TcpListener(_) => {
-            // Cannot read from unconnected TCP socket
-            log::error!("sys_read: Cannot read from unconnected TCP socket");
-            SyscallResult::Err(super::errno::ENOTCONN as u64)
-        }
-        FdKind::TcpConnection(conn_id) => {
-            // Read from TCP connection with blocking/non-blocking support
-            // Clone conn_id and capture flags before dropping manager_guard
-            let conn_id = *conn_id;
-            let is_nonblocking =
-                (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
-            drop(manager_guard);
-
-            let mut user_buf = alloc::vec::Vec::new();
-            if user_buf.try_reserve_exact(count as usize).is_err() {
-                return SyscallResult::Err(12);
-            }
-            user_buf.resize(count as usize, 0);
-
-            // Read loop (may block if O_NONBLOCK not set)
-            loop {
-                // Register as waiter FIRST to avoid race condition
-                crate::net::tcp::tcp_register_recv_waiter(&conn_id, thread_id);
-
-                // Try to receive
-                match crate::net::tcp::tcp_recv(&conn_id, &mut user_buf) {
-                    Ok(n) if n > 0 => {
-                        // Data received - unregister and return
-                        crate::net::tcp::tcp_unregister_recv_waiter(&conn_id, thread_id);
-                        if copy_to_user(buf_ptr, user_buf.as_ptr() as u64, n).is_err() {
-                            return SyscallResult::Err(14); // EFAULT
-                        }
-                        log::debug!("sys_read: Received {} bytes from TCP connection", n);
-                        return SyscallResult::Ok(n as u64);
-                    }
-                    Ok(0) => {
-                        // EOF (connection closed)
-                        crate::net::tcp::tcp_unregister_recv_waiter(&conn_id, thread_id);
-                        return SyscallResult::Ok(0);
-                    }
-                    Err(_) => {
-                        // No data available
-                        if is_nonblocking {
-                            // O_NONBLOCK set: return EAGAIN immediately
-                            crate::net::tcp::tcp_unregister_recv_waiter(&conn_id, thread_id);
-                            log::debug!("sys_read: TCP no data, O_NONBLOCK set - returning EAGAIN");
-                            return SyscallResult::Err(super::errno::EAGAIN as u64);
-                        }
-                        // Will block below
-                    }
-                    _ => unreachable!(),
-                }
-
-                // No data - block the thread
-                log::debug!("TCP recv: entering blocking path, thread={}", thread_id);
-
-                crate::task::scheduler::with_scheduler(|sched| {
-                    sched.block_current_in_syscall();
-                });
-
-                // Double-check for data after setting Blocked state
-                if crate::net::tcp::tcp_has_data(&conn_id) {
-                    log::debug!(
-                        "TCP: Thread {} caught race - data arrived during block setup",
-                        thread_id
-                    );
-                    crate::task::scheduler::with_scheduler(|sched| {
-                        if let Some(thread) = sched.current_thread_mut() {
-                            thread.blocked_in_syscall = false;
-                            thread.set_ready();
-                        }
-                    });
-                    crate::net::tcp::tcp_unregister_recv_waiter(&conn_id, thread_id);
-                    continue;
-                }
-
-                // Preemption stays disabled until the signal check below has run (#1230):
-                // see `blocking_io::wait_prepared`.
-
-                log::debug!(
-                    "TCP_BLOCK: Thread {} entering blocked state for recv",
-                    thread_id
-                );
-
-                // HLT loop - wait for data to arrive
-                loop {
-                    // Check for pending signals that should interrupt this syscall
-                    if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
-                        // Signal pending - clean up and return EINTR
-                        crate::net::tcp::tcp_unregister_recv_waiter(&conn_id, thread_id);
-                        crate::task::scheduler::with_scheduler(|sched| {
-                            if let Some(thread) = sched.current_thread_mut() {
-                                thread.blocked_in_syscall = false;
-                                thread.set_ready();
-                            }
-                        });
-                        log::debug!(
-                            "sys_read: TCP thread {} interrupted by signal (EINTR)",
-                            thread_id
-                        );
-                        return SyscallResult::Err(e as u64);
-                    }
-
-                    crate::per_cpu::preempt_enable();
-                    crate::task::scheduler::yield_current();
-                    crate::arch_halt_while_blocked();
-                    crate::per_cpu::preempt_disable();
-
-                    let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
-                        if let Some(thread) = sched.current_thread_mut() {
-                            thread.state == crate::task::thread::ThreadState::Blocked
-                        } else {
-                            false
-                        }
-                    })
-                    .unwrap_or(false);
-
-                    // #772 instrumentation (experiment lane, counters only): distinguish
-                    // a wasted turn (loop re-observes Blocked and sleeps again) from a
-                    // turn that actually consumed the wake. See
-                    // kernel/src/tracing/providers/counters.rs for the counter docs and
-                    // docs/planning/green-program/sockets/764-RCA-2026-09-03.md for the
-                    // RCA context these are meant to distinguish.
-                    if still_blocked {
-                        crate::trace_count!(
-                            crate::tracing::providers::counters::RECV_WAIT_STILL_BLOCKED_TRUE
-                        );
-                    } else {
-                        crate::trace_count!(
-                            crate::tracing::providers::counters::RECV_WAIT_STILL_BLOCKED_FALSE
-                        );
-                    }
-
-                    if !still_blocked {
-                        log::debug!("TCP_BLOCK: Thread {} woken from recv blocking", thread_id);
-                        break;
-                    }
-                }
-
-                // Clear blocked_in_syscall
-                crate::task::scheduler::with_scheduler(|sched| {
-                    if let Some(thread) = sched.current_thread_mut() {
-                        thread.blocked_in_syscall = false;
-                    }
-                });
-
-                // Unregister from wait queue (will re-register at top of loop)
-                crate::net::tcp::tcp_unregister_recv_waiter(&conn_id, thread_id);
-            }
         }
         FdKind::PtyMaster(pty_num) => {
             // Read from PTY master (slave's output) with blocking support
@@ -1851,152 +1662,6 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
                 pair.unregister_slave_waiter(thread_id);
             }
-        }
-        FdKind::UnixStream(socket_ref) => {
-            // Read from Unix stream socket
-            let is_nonblocking =
-                (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
-            let socket_clone = socket_ref.clone();
-
-            // Drop manager guard before potentially blocking
-            drop(manager_guard);
-
-            let mut user_buf = alloc::vec::Vec::new();
-            if user_buf.try_reserve_exact(count as usize).is_err() {
-                return SyscallResult::Err(12);
-            }
-            user_buf.resize(count as usize, 0);
-
-            loop {
-                // Register as waiter FIRST to avoid race condition
-                let socket = socket_clone.lock();
-                socket.register_waiter(thread_id);
-                drop(socket);
-
-                // Try to read
-                let socket = socket_clone.lock();
-                match socket.read(&mut user_buf) {
-                    Ok(n) => {
-                        socket.unregister_waiter(thread_id);
-                        drop(socket);
-
-                        if n > 0 {
-                            // Copy to userspace
-                            if copy_to_user(buf_ptr, user_buf.as_ptr() as u64, n).is_err() {
-                                return SyscallResult::Err(14); // EFAULT
-                            }
-                        }
-                        log::debug!("sys_read: Read {} bytes from Unix socket", n);
-                        return SyscallResult::Ok(n as u64);
-                    }
-                    Err(11) => {
-                        // EAGAIN - no data available
-                        if is_nonblocking {
-                            socket.unregister_waiter(thread_id);
-                            drop(socket);
-                            return SyscallResult::Err(11); // EAGAIN
-                        }
-
-                        // Check if peer closed (EOF case)
-                        if socket.peer_closed() {
-                            socket.unregister_waiter(thread_id);
-                            drop(socket);
-                            return SyscallResult::Ok(0); // EOF
-                        }
-
-                        drop(socket);
-
-                        // Block the thread
-                        crate::task::scheduler::with_scheduler(|sched| {
-                            sched.block_current_in_syscall();
-                        });
-
-                        // Double-check for data after setting Blocked state
-                        let socket = socket_clone.lock();
-                        if socket.has_data() || socket.peer_closed() {
-                            socket.unregister_waiter(thread_id);
-                            drop(socket);
-                            crate::task::scheduler::with_scheduler(|sched| {
-                                if let Some(thread) = sched.current_thread_mut() {
-                                    thread.blocked_in_syscall = false;
-                                    thread.set_ready();
-                                }
-                            });
-                            continue;
-                        }
-                        drop(socket);
-
-                        // Preemption stays disabled until the signal check below has run (#1230):
-                        // see `blocking_io::wait_prepared`.
-
-                        // HLT loop
-                        loop {
-                            // Check for pending signals that should interrupt this syscall
-                            if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
-                                // Signal pending - clean up and return EINTR
-                                let socket = socket_clone.lock();
-                                socket.unregister_waiter(thread_id);
-                                drop(socket);
-                                crate::task::scheduler::with_scheduler(|sched| {
-                                    if let Some(thread) = sched.current_thread_mut() {
-                                        thread.blocked_in_syscall = false;
-                                        thread.set_ready();
-                                    }
-                                });
-                                log::debug!(
-                                    "sys_read: Unix socket thread {} interrupted by signal (EINTR)",
-                                    thread_id
-                                );
-                                return SyscallResult::Err(e as u64);
-                            }
-
-                            crate::per_cpu::preempt_enable();
-                            crate::task::scheduler::yield_current();
-                            crate::arch_halt_while_blocked();
-                            crate::per_cpu::preempt_disable();
-
-                            let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
-                                if let Some(thread) = sched.current_thread_mut() {
-                                    thread.state == crate::task::thread::ThreadState::Blocked
-                                } else {
-                                    false
-                                }
-                            })
-                            .unwrap_or(false);
-
-                            if !still_blocked {
-                                break;
-                            }
-                        }
-
-                        // Clear blocked_in_syscall
-                        crate::task::scheduler::with_scheduler(|sched| {
-                            if let Some(thread) = sched.current_thread_mut() {
-                                thread.blocked_in_syscall = false;
-                            }
-                        });
-                        reset_quantum();
-                        crate::task::scheduler::check_and_clear_need_resched();
-
-                        // Unregister and retry
-                        let socket = socket_clone.lock();
-                        socket.unregister_waiter(thread_id);
-                        drop(socket);
-                        continue;
-                    }
-                    Err(e) => {
-                        socket.unregister_waiter(thread_id);
-                        drop(socket);
-                        log::debug!("sys_read: Unix socket read error: {}", e);
-                        return SyscallResult::Err(e as u64);
-                    }
-                }
-            }
-        }
-        FdKind::UnixSocket(_) | FdKind::UnixListener(_) => {
-            // Cannot read from unconnected Unix socket
-            log::error!("sys_read: Cannot read from unconnected Unix socket");
-            SyscallResult::Err(super::errno::ENOTCONN as u64)
         }
         FdKind::ProcfsFile {
             ref content,

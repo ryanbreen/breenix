@@ -1111,7 +1111,7 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
     enum FstatKind {
         StdIo(i32),
         Pipe,
-        UdpSocket,
+        Socket(u64),
         RegularFile {
             inode_num: u64,
             mount_id: usize,
@@ -1127,11 +1127,9 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
         },
         DevfsDirectory,
         DevptsDirectory,
-        TcpSocket,
         PtyDevice {
             pty_num: u32,
         },
-        UnixSocket,
         Fifo(alloc::sync::Arc<spin::Mutex<crate::ipc::fifo::FifoEntry>>),
         ProcfsFile {
             size: i64,
@@ -1170,7 +1168,7 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
                 FdKind::Ipc(object) => FstatKind::Ipc(object.clone()),
                 FdKind::StdIo(io_fd) => FstatKind::StdIo(*io_fd),
                 FdKind::PipeRead(_) | FdKind::PipeWrite(_) => FstatKind::Pipe,
-                FdKind::UdpSocket(_) => FstatKind::UdpSocket,
+                FdKind::Socket(socket) => FstatKind::Socket(socket.common.ino()),
                 FdKind::RegularFile(file) => {
                     let file_guard = file.lock();
                     FstatKind::RegularFile {
@@ -1196,14 +1194,8 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
                 }
                 FdKind::DevfsDirectory { .. } => FstatKind::DevfsDirectory,
                 FdKind::DevptsDirectory { .. } => FstatKind::DevptsDirectory,
-                FdKind::TcpSocket(_) | FdKind::TcpListener(_) | FdKind::TcpConnection(_) => {
-                    FstatKind::TcpSocket
-                }
                 FdKind::PtyMaster(pty_num) | FdKind::PtySlave(pty_num) => {
                     FstatKind::PtyDevice { pty_num: *pty_num }
-                }
-                FdKind::UnixStream(_) | FdKind::UnixSocket(_) | FdKind::UnixListener(_) => {
-                    FstatKind::UnixSocket
                 }
                 FdKind::FifoRead(_, _, entry)
                 | FdKind::FifoWrite(_, _, entry)
@@ -1247,12 +1239,11 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
             stat.st_nlink = 1;
             stat.st_size = 0;
         }
-        FstatKind::UdpSocket => {
-            static SOCKET_INODE_COUNTER: core::sync::atomic::AtomicU64 =
-                core::sync::atomic::AtomicU64::new(2000);
+        FstatKind::Socket(ino) => {
+            // One number per socket, the same through every descriptor for it.
             stat.st_dev = 0xffff0005;
-            stat.st_ino = SOCKET_INODE_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            stat.st_mode = S_IFSOCK | 0o755;
+            stat.st_ino = ino;
+            stat.st_mode = S_IFSOCK | 0o777;
             stat.st_nlink = 1;
         }
         FstatKind::RegularFile {
@@ -1323,15 +1314,6 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
             stat.st_mode = S_IFDIR | 0o755;
             stat.st_nlink = 2;
         }
-        FstatKind::TcpSocket => {
-            static TCP_SOCKET_INODE_COUNTER: core::sync::atomic::AtomicU64 =
-                core::sync::atomic::AtomicU64::new(3000);
-            stat.st_dev = 0xffff0005;
-            stat.st_ino =
-                TCP_SOCKET_INODE_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            stat.st_mode = S_IFSOCK | 0o755;
-            stat.st_nlink = 1;
-        }
         FstatKind::PtyDevice { pty_num } => {
             static PTY_INODE_COUNTER: core::sync::atomic::AtomicU64 =
                 core::sync::atomic::AtomicU64::new(4000);
@@ -1340,15 +1322,6 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
             stat.st_mode = S_IFCHR | 0o620;
             stat.st_nlink = 1;
             stat.st_rdev = make_dev(136, pty_num as u64);
-        }
-        FstatKind::UnixSocket => {
-            static UNIX_SOCKET_INODE_COUNTER: core::sync::atomic::AtomicU64 =
-                core::sync::atomic::AtomicU64::new(5000);
-            stat.st_dev = 0xffff0005;
-            stat.st_ino =
-                UNIX_SOCKET_INODE_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            stat.st_mode = S_IFSOCK | 0o755;
-            stat.st_nlink = 1;
         }
         FstatKind::Fifo(entry) => {
             if let Err(e) = fill_fifo_stat(&mut stat, &entry) {
@@ -4669,13 +4642,7 @@ pub fn sys_fstatfs(fd: i32, buf: u64) -> SyscallResult {
                 Ok(virtual_statfs(0x1cd1))
             }
             FdKind::Epoll(_) => Ok(virtual_statfs(0x09041934)),
-            FdKind::UdpSocket(_)
-            | FdKind::TcpSocket(_)
-            | FdKind::TcpListener(_)
-            | FdKind::TcpConnection(_)
-            | FdKind::UnixStream(_)
-            | FdKind::UnixSocket(_)
-            | FdKind::UnixListener(_) => Ok(virtual_statfs(0x534f434b)),
+            FdKind::Socket(_) => Ok(virtual_statfs(0x534f434b)),
         }
     };
     match stat.and_then(|s| super::userptr::copy_to_user(buf as *mut Statfs, &s)) {

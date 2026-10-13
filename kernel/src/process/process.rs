@@ -802,12 +802,6 @@ impl Process {
                         // unaffected and stays inline.
                         let _should_notify = buffer.lock().close_write();
                     }
-                    FdKind::TcpListener(port) => {
-                        crate::net::tcp::tcp_listener_ref_dec(port);
-                    }
-                    FdKind::TcpConnection(conn_id) => {
-                        let _ = crate::net::tcp::tcp_close(&conn_id);
-                    }
                     FdKind::PtyMaster(pty_num) => {
                         if let Some(pair) = crate::tty::pty::get(pty_num) {
                             let old_count = pair
@@ -822,10 +816,6 @@ impl Process {
                         if let Some(pair) = crate::tty::pty::get(pty_num) {
                             pair.slave_close();
                         }
-                    }
-                    FdKind::UnixStream(socket) => {
-                        let notifications = socket.lock().close();
-                        notifications.deliver_deferred();
                     }
                     FdKind::FifoRead(_, buffer, entry) => {
                         crate::ipc::fifo::close_fifo_read(&entry);
@@ -899,12 +889,6 @@ impl Process {
                         // unaffected and stays inline.
                         let _should_notify = buffer.lock().close_write();
                     }
-                    FdKind::TcpListener(port) => {
-                        crate::net::tcp::tcp_listener_ref_dec(port);
-                    }
-                    FdKind::TcpConnection(conn_id) => {
-                        let _ = crate::net::tcp::tcp_close(&conn_id);
-                    }
                     FdKind::PtyMaster(pty_num) => {
                         if let Some(pair) = crate::tty::pty::get(pty_num) {
                             let old_count = pair
@@ -919,10 +903,6 @@ impl Process {
                         if let Some(pair) = crate::tty::pty::get(pty_num) {
                             pair.slave_close();
                         }
-                    }
-                    FdKind::UnixStream(socket) => {
-                        let notifications = socket.lock().close();
-                        notifications.deliver_deferred();
                     }
                     FdKind::FifoRead(_, buffer, entry) => {
                         crate::ipc::fifo::close_fifo_read(&entry);
