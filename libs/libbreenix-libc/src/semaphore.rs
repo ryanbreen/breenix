@@ -162,9 +162,18 @@ unsafe fn wait(sem: *mut Sem, timeout: *const i64, timed: bool) -> i32 {
     if timed && (timeout.is_null() || !(0..1_000_000_000).contains(&*timeout.add(1))) {
         return fail(EINVAL);
     }
-    sem.waiters.fetch_add(1, Ordering::SeqCst);
-    let _waiting = Waiting(sem);
     loop {
+        // Short critical sections normally release on another CPU before a
+        // futex sleep can return. Bound this work, then use the same SeqCst
+        // registration/recheck protocol; an idle semaphore still parks.
+        for _ in 0..128 {
+            if sem.take() {
+                return 0;
+            }
+            core::hint::spin_loop();
+        }
+        sem.waiters.fetch_add(1, Ordering::SeqCst);
+        let waiting = Waiting(sem);
         if sem.take() {
             return 0;
         }
@@ -174,6 +183,7 @@ unsafe fn wait(sem: *mut Sem, timeout: *const i64, timed: bool) -> i32 {
             FUTEX_WAIT
         };
         let result = futex(&sem.value, op | sem.private(), 0, timeout);
+        drop(waiting);
         if result < 0 && result != -EAGAIN {
             return crate::syscall_result_to_c_int(result);
         }

@@ -1861,3 +1861,14 @@ fn closing_an_unpublished_creator_leaves_the_public_name_available() {
         assert!(!sem.is_null()); assert_eq!(semaphore::sem_close(sem), 0); assert_eq!(semaphore::sem_unlink(name.as_ptr()), 0);
     }
 }
+
+#[test]
+fn shm_open_accepts_linux_writeonly_access_and_rejects_invalid_access_mode() {
+    let name = b"/linux-writeonly-shm\0";
+    unsafe {
+        let fd = shm::shm_open(name.as_ptr(), 0xc1, 0o600);
+        assert!(fd >= 0); assert_eq!(ftruncate(fd, 4096), 0); close(fd);
+        assert_eq!(shm::shm_unlink(name.as_ptr()), 0);
+        assert_eq!(shm::shm_open(name.as_ptr(), 3, 0), -1); assert_eq!(ERRNO.with(|e| e.get()), 22);
+    }
+}

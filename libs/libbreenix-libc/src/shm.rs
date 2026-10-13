@@ -47,8 +47,8 @@ pub unsafe extern "C" fn shm_open(name: *const u8, oflag: i32, mode: u32) -> i32
     if let Err(e) = name_with_prefix(name, b"/dev/shm/", &mut path) {
         return crate::syscall_result_to_c_int(-e);
     }
-    // POSIX specifies only these two access modes for shared memory.
-    if oflag & 3 != 0 && oflag & 3 != 2 {
+    // Linux also permits O_WRONLY, which POSIX leaves unspecified for shm.
+    if oflag & 3 == 3 {
         return crate::syscall_result_to_c_int(-EINVAL);
     }
     crate::open(path.as_ptr(), oflag | O_NOFOLLOW | O_CLOEXEC, mode)
