@@ -10,15 +10,17 @@ fn main() {
         ));
     println!("cargo:rerun-if-changed={}", archive.display());
 
-    // `libc_has = "<name>"` for each thread, scheduling, signal and IPC function libc.a
-    // defines (and the few others suite-threads and suite-ipc call), from the archive's
-    // symbol index, so a suite can call a function the library has and fail a case
-    // naming one it lacks, or make its system call, instead of failing to link.
+    // `libc_has = "<name>"` for each thread, scheduling, signal, IPC and terminal function
+    // libc.a defines (and the few others suite-threads, suite-ipc and suite-terminals call),
+    // from the archive's symbol index, so a suite can call a function the library has and
+    // fail a case naming one it lacks, or make its system call, instead of failing to link.
     const PREFIXES: &[&str] = &["pthread_", "sched_", "sig", "mq_", "sem", "shm", "msg"];
     const OTHERS: &[&str] = &[
         "raise", "sysconf", "__errno_location", "exit", "getpid", "close", "pipe", "read", "write", "kill",
         "open", "unlink", "stat", "fstat", "lseek", "ftruncate", "mmap", "munmap", "umask", "poll", "select",
-        "mkfifo", "ftok",
+        "mkfifo", "ftok", "ioctl", "isatty", "posix_openpt", "grantpt", "unlockpt", "ptsname", "tcgetattr",
+        "tcsetattr", "tcflush", "tcdrain", "tcflow", "tcsendbreak", "tcgetpgrp", "tcsetpgrp", "tcgetsid",
+        "cfgetispeed", "cfgetospeed", "cfsetispeed", "cfsetospeed", "setsid", "getsid", "setpgid", "getpgid",
     ];
     println!("cargo:rustc-check-cfg=cfg(libc_has, values(any()))");
     if let Ok(bytes) = fs::read(&archive) {
