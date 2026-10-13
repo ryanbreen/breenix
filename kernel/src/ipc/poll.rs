@@ -154,6 +154,7 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
             use crate::fs::devfs::DeviceType;
             match device_type {
                 DeviceType::Rtc => {} // Only RTC_RD_TIME is implemented.
+                DeviceType::Ptmx => {} // Never an open descriptor: open gives a master.
                 DeviceType::Null => {
                     // /dev/null: always readable (returns EOF), always writable
                     if (events & events::POLLIN) != 0 {
@@ -269,10 +270,10 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                         revents |= events::POLLIN;
                     }
                 }
-                if (events & events::POLLOUT) != 0 {
+                // Writable while output runs and the ring has room.
+                if (events & events::POLLOUT) != 0 && !pair.output_stopped() {
                     let buffer = pair.slave_to_master.lock();
-                    // Can write if buffer not full
-                    if buffer.available() < 4096 {
+                    if buffer.space() > 0 {
                         revents |= events::POLLOUT;
                     }
                 }
