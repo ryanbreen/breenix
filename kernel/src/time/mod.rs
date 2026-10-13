@@ -87,6 +87,30 @@ pub fn current_unix_time() -> i64 {
     get_real_time_ns().0
 }
 
+/// Seconds-resolution wall time using only atomic snapshots. Lifecycle hooks
+/// under PM must not read a hardware clock or acquire a time/device lock.
+pub fn current_unix_time_coarse() -> i64 {
+    loop {
+        let seq = WALL_SEQUENCE.load(Ordering::Acquire);
+        if seq & 1 != 0 {
+            core::hint::spin_loop();
+            continue;
+        }
+        let offset_secs = WALL_OFFSET_SECS.load(Ordering::Relaxed);
+        let offset_nanos = WALL_OFFSET_NANOS.load(Ordering::Relaxed);
+        let ms = get_monotonic_time();
+        let boot = rtc::get_boot_wall_time();
+        core::sync::atomic::fence(Ordering::Acquire);
+        if WALL_SEQUENCE.load(Ordering::Relaxed) == seq {
+            return (i128::from(boot)
+                + i128::from(ms / 1000)
+                + i128::from(offset_secs)
+                + i128::from(((ms % 1000) * 1_000_000 + offset_nanos) / 1_000_000_000))
+                as i64;
+        }
+    }
+}
+
 /// Display comprehensive time debug information
 #[allow(dead_code)] // Used in keyboard_task (conditionally compiled)
 pub fn debug_time_info() {

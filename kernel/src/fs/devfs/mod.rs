@@ -63,11 +63,11 @@ impl DeviceType {
     /// Using fixed inode numbers for devices
     pub fn inode(&self) -> u64 {
         match self {
-            DeviceType::Null => 1,
-            DeviceType::Zero => 2,
-            DeviceType::Console => 3,
-            DeviceType::Tty => 4,
-            DeviceType::Rtc => 5,
+            DeviceType::Null => 2,
+            DeviceType::Zero => 3,
+            DeviceType::Console => 4,
+            DeviceType::Tty => 5,
+            DeviceType::Rtc => 6,
         }
     }
 
@@ -187,11 +187,14 @@ pub fn lookup_by_inode(inode: u64) -> Option<DeviceNode> {
 /// List all device names (for /dev directory listing)
 pub fn list_devices() -> Vec<String> {
     let devfs = DEVFS.lock();
-    devfs
+    let mut names: Vec<String> = devfs
         .devices
         .iter()
         .map(|d| String::from(d.device_type.name()))
-        .collect()
+        .collect();
+    names.push(String::from("shm"));
+    names.push(String::from("mqueue"));
+    names
 }
 
 /// Snapshot directory metadata without allocating per-name strings.

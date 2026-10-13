@@ -792,6 +792,26 @@ pub fn sys_lseek(fd: i32, offset: i64, whence: i32) -> SyscallResult {
         }
     };
 
+    let ipc = {
+        let guard = crate::process::manager();
+        guard
+            .as_ref()
+            .and_then(|m| m.find_process_by_thread(thread_id))
+            .and_then(|(_, p)| p.fd_table.get(fd))
+            .and_then(|d| {
+                if let FdKind::Ipc(file) = &d.kind {
+                    Some(file.clone())
+                } else {
+                    None
+                }
+            })
+    };
+    if let Some(file) = ipc {
+        return match file.seek(offset, whence) {
+            Ok(p) => SyscallResult::Ok(p),
+            Err(e) => SyscallResult::Err(e),
+        };
+    }
     // SEEK_END requires a disk read to get the file size.  We MUST NOT hold the
     // process manager lock (manager_guard) or the file lock during that I/O,
     // because the dispatch path calls set_next_ttbr0_for_thread() which tries
@@ -1129,8 +1149,8 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
             stat.st_rdev = rdev;
         }
         FstatKind::DevfsDirectory => {
-            stat.st_dev = 0;
-            stat.st_ino = 0;
+            stat.st_dev = crate::fs::vfs::mount::find_mount("/dev").unwrap_or(0) as u64;
+            stat.st_ino = 1;
             stat.st_mode = S_IFDIR | 0o755;
             stat.st_nlink = 2;
         }
@@ -1711,6 +1731,9 @@ pub fn sys_rename(oldpath: u64, newpath: u64) -> SyscallResult {
         Err(e) => return e,
     };
 
+    if let Some(result) = crate::ipc::shmem::rename_path(&old.path, &new.path) {
+        return result;
+    }
     log::debug!("sys_rename: old={:?}, new={:?}", old.path, new.path);
 
     for operand in [&old, &new] {
@@ -1904,6 +1927,9 @@ pub fn sys_link(oldpath: u64, newpath: u64) -> SyscallResult {
         Err(e) => return e,
     };
 
+    if let Some(result) = crate::ipc::shmem::link_path(&old.path, &new.path) {
+        return result;
+    }
     log::debug!("sys_link: oldpath={:?}, newpath={:?}", old.path, new.path);
 
     let mount = match old.target {
@@ -3716,8 +3742,23 @@ pub fn sys_linkat(
     oldpath: u64,
     newdirfd: i32,
     newpath: u64,
-    _flags: i32,
+    flags: i32,
 ) -> SyscallResult {
+    if flags == 0x1000 && newdirfd == AT_FDCWD {
+        let old = match crate::syscall::userptr::copy_cstr_from_user(oldpath) {
+            Ok(s) => s,
+            Err(_) => return SyscallResult::Err(super::errno::EFAULT as u64),
+        };
+        if old.is_empty() {
+            let new = match resolve_user_create(newpath) {
+                Ok(r) => r,
+                Err(e) => return e,
+            };
+            if let Some(result) = crate::ipc::shmem::link_fd(olddirfd, &new.path) {
+                return result;
+            }
+        }
+    }
     if olddirfd != AT_FDCWD || newdirfd != AT_FDCWD {
         return SyscallResult::Err(super::errno::ENOSYS as u64);
     }

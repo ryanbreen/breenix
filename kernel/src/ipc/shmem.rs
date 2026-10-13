@@ -27,11 +27,19 @@ pub fn mmap_fd(
 
 /// The SHMSEM namespace supplies object ownership/mode using the caller's
 /// chosen credentials (real IDs for access, effective IDs for AT_EACCESS).
-pub fn access_path(path: &str, mode: u32, cred: &crate::fs::permissions::Credentials) -> Option<SyscallResult> {
+pub fn access_path(
+    path: &str,
+    mode: u32,
+    cred: &crate::fs::permissions::Credentials,
+) -> Option<SyscallResult> {
     if path == "/dev/shm" {
-        return Some(if cred.permits_mode(0, 0, crate::fs::devfs::SHM_DIRECTORY_MODE, mode) {
-            SyscallResult::Ok(0)
-        } else { SyscallResult::Err(13) });
+        return Some(
+            if cred.permits_mode(0, 0, crate::fs::devfs::SHM_DIRECTORY_MODE, mode) {
+                SyscallResult::Ok(0)
+            } else {
+                SyscallResult::Err(13)
+            },
+        );
     }
     None
 }
@@ -56,6 +64,22 @@ pub fn prepare_population(_thread: u64, _address: u64) -> Result<(), u64> {
 }
 /// Called under PM; Some(false) retries a changed/reserved mapping and
 /// Some(true) denotes a resident object page. An absent result selects ordinary memory.
-pub fn populate_page(_process: &mut crate::process::Process, _address: u64) -> Option<Result<bool, u64>> {
+pub fn populate_page(
+    _process: &mut crate::process::Process,
+    _address: u64,
+) -> Option<Result<bool, u64>> {
     None
 }
+
+/// SHMSEM supplies namespace bodies; no other path is claimed here.
+pub fn link_path(_old: &str, _new: &str) -> Option<SyscallResult> {
+    None
+}
+pub fn rename_path(_old: &str, _new: &str) -> Option<SyscallResult> {
+    None
+}
+pub fn link_fd(_fd: i32, _new: &str) -> Option<SyscallResult> {
+    None
+}
+/// Called from task context, outside the process manager guard.
+pub(crate) fn drain_signal_pages() {}
