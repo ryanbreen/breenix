@@ -104,6 +104,7 @@ static TX_STATE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::ne
 const TX_IDLE: u8 = 0;
 const TX_ARMED: u8 = 1;
 const TX_RUNNING: u8 = 2;
+static TX_STOPPED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 const IER_RECEIVED: u8 = 0x01;
 const IER_TRANSMITTER_EMPTY: u8 = 0x02;
@@ -168,7 +169,7 @@ enum Sent {
 /// data write, and a status read once per FIFO. Called with SERIAL1 held and
 /// interrupts masked.
 fn send_byte(queue: &mut TxQueue) -> Sent {
-    if queue.len == 0 {
+    if queue.len == 0 || TX_STOPPED.load(core::sync::atomic::Ordering::Acquire) {
         return Sent::Empty;
     }
     if !refill_room(queue) {
@@ -270,7 +271,12 @@ fn com1_transmitter() {
                     Sent::Byte => true,
                     Sent::Empty => {
                         TX_STATE.store(TX_IDLE, Ordering::Release);
-                        false
+                        // Resume can race the stopped check in send_byte.
+                        // Recheck after publishing IDLE so its wake is not lost.
+                        if serial.queue.len != 0 && !TX_STOPPED.load(Ordering::Acquire) {
+                            TX_STATE.store(TX_RUNNING, Ordering::Release);
+                            true
+                        } else { false }
                     }
                     Sent::Full => {
                         TX_STATE.store(TX_ARMED, Ordering::Release);
@@ -304,7 +310,7 @@ pub fn drain_output() {
             let mut serial = SERIAL1.lock();
             match send_byte(&mut serial.queue) {
                 Sent::Byte | Sent::Full => false,
-                Sent::Empty => true,
+                Sent::Empty => serial.queue.len == 0,
             }
         });
         if !done {
@@ -314,6 +320,26 @@ pub fn drain_output() {
     while com1_status() & LSR_TRANSMITTER_IDLE == 0 {
         core::hint::spin_loop();
     }
+}
+
+/// Change COM1 flow without taking a lock in the input interrupt path.
+pub fn set_output_stopped(stopped: bool) {
+    let was_stopped = TX_STOPPED.swap(stopped, core::sync::atomic::Ordering::AcqRel);
+    if was_stopped && !stopped {
+        TX_STATE.store(TX_RUNNING, core::sync::atomic::Ordering::Release);
+        if let Some(thread) = TX_THREAD.get() {
+            crate::task::scheduler::wake_thread_any_context(thread.tid());
+        }
+    }
+}
+
+/// Discard bytes still owned by the COM1 software transmit queue.
+pub fn flush_output() {
+    crate::arch_without_interrupts(|| {
+        let mut serial = SERIAL1.lock();
+        serial.queue.head = 0;
+        serial.queue.len = 0;
+    });
 }
 
 /// Write out the COM1 output still queued, from a context about to stop the

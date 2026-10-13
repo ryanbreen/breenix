@@ -207,6 +207,10 @@ pub struct TtyDevice {
     /// runs in interrupt context.
     adopt_pending: AtomicBool,
 
+    output_stopped: AtomicBool,
+    input_flow_stopped: AtomicBool,
+    pending_echo: Mutex<super::pty::pair::PtyBuffer>,
+
     /// #822: `foreground_pgrp`'s value, published for interrupt-context
     /// readers, so that the 2 of them take 0 acquisitions of that mutex.
     ///
@@ -236,6 +240,9 @@ impl TtyDevice {
             foreground_pgrp: Mutex::new(None),
             session: Mutex::new(None),
             adopt_pending: AtomicBool::new(false),
+            output_stopped: AtomicBool::new(false),
+            input_flow_stopped: AtomicBool::new(false),
+            pending_echo: Mutex::new(super::pty::pair::PtyBuffer::new()),
             foreground_pgrp_snapshot: AtomicU64::new(FOREGROUND_PGRP_UNSET),
         }
     }
@@ -256,9 +263,12 @@ impl TtyDevice {
 
         // Process the character through the line discipline
         // The echo callback writes to serial output
+        let attrs = *ldisc.termios();
         let signal = ldisc.input_char(c, &mut |echo_c| {
-            self.output_char(echo_c);
+            self.echo_char(echo_c, &attrs);
         });
+        self.input_flow_stopped.store(ldisc.flow_stopped(), Ordering::Release);
+        crate::serial::set_output_stopped(self.transmission_stopped());
 
         // If a signal was generated, send it to the foreground process group
         if let Some(sig) = signal {
@@ -334,9 +344,12 @@ impl TtyDevice {
         };
 
         // Process the character through line discipline (echo, signals, line editing)
+        let attrs = *ldisc.termios();
         let signal = ldisc.input_char(c, &mut |echo_c| {
-            self.output_char_nonblock(echo_c);
+            self.echo_char(echo_c, &attrs);
         });
+        self.input_flow_stopped.store(ldisc.flow_stopped(), Ordering::Release);
+        crate::serial::set_output_stopped(self.transmission_stopped());
 
         // Transfer data from line discipline to stdin buffer when available
         // This bridges the TTY layer (which handles line editing, echo, signals)
@@ -362,6 +375,7 @@ impl TtyDevice {
             }
         }
         drop(ldisc);
+        self.drain_echo();
 
         // Send signal if generated (non-blocking)
         if let Some(sig) = signal {
@@ -595,6 +609,60 @@ impl TtyDevice {
         crate::ipc::stdin::flush_input();
     }
 
+    fn transmission_stopped(&self) -> bool {
+        self.output_stopped.load(Ordering::Acquire)
+            || self.input_flow_stopped.load(Ordering::Acquire)
+    }
+
+    pub fn set_output_stopped(&self, stopped: bool) {
+        self.output_stopped.store(stopped, Ordering::Release);
+        crate::serial::set_output_stopped(self.transmission_stopped());
+        if !stopped { self.drain_echo(); }
+    }
+
+    pub fn output_flow_character(&self, stop: bool) {
+        let attrs = self.get_termios();
+        let c = attrs.c_cc[if stop { super::termios::VSTOP } else { super::termios::VSTART }];
+        if c != 0 { crate::serial::write_byte(crate::serial::Writer::Tty, c); }
+    }
+
+    pub fn flush_output(&self) {
+        let mut pending = self.pending_echo.lock();
+        let mut scratch = [0; 256];
+        while pending.read(&mut scratch) != 0 {}
+        crate::serial::flush_output();
+    }
+
+    /// Echo has fixed storage and never allocates in interrupt context.
+    /// On overflow, excess echo is discarded, as a bounded tty echo buffer must.
+    fn echo_char(&self, c: u8, attrs: &Termios) {
+        let crlf = [b'\r', c];
+        let unit = if c == b'\n' && attrs.is_opost() && attrs.is_onlcr() {
+            &crlf[..]
+        } else { &crlf[1..] };
+        if self.transmission_stopped() {
+            if let Some(mut pending) = self.pending_echo.try_lock() { pending.write(unit); }
+            return;
+        }
+        crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, unit);
+        #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
+        for &byte in unit { let _ = crate::graphics::render_queue::queue_byte(byte); }
+    }
+
+    fn drain_echo(&self) {
+        if self.transmission_stopped() { return; }
+        let Some(mut pending) = self.pending_echo.try_lock() else { return; };
+        let mut scratch = [0; 256];
+        // At most the fixed echo ring is drained; no allocation or input lock.
+        loop {
+            let n = pending.read(&mut scratch);
+            if n == 0 { break; }
+            crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, &scratch[..n]);
+            #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
+            for &byte in &scratch[..n] { let _ = crate::graphics::render_queue::queue_byte(byte); }
+        }
+    }
+
     /// Write a character to the terminal output
     ///
     /// This writes to serial immediately and queues for deferred framebuffer rendering.
@@ -629,6 +697,8 @@ impl TtyDevice {
     /// # Arguments
     /// * `buf` - Buffer of bytes to write
     pub fn write_bytes(&self, buf: &[u8]) {
+        while self.transmission_stopped() { crate::arch_halt(); }
+        self.drain_echo();
         // Get termios settings once for the entire buffer
         let termios = self.ldisc.lock().termios().clone();
         let do_onlcr = termios.is_opost() && termios.is_onlcr();
@@ -646,6 +716,7 @@ impl TtyDevice {
                 for &c in line {
                     let output_len = if do_onlcr && c == b'\n' { 2 } else { 1 };
                     if expanded_len + output_len > expanded.len() {
+                        while self.transmission_stopped() { crate::arch_halt(); }
                         crate::serial::write_bytes_atomic(
                             crate::serial::Writer::Tty,
                             &expanded[..expanded_len],
@@ -661,6 +732,7 @@ impl TtyDevice {
                 }
 
                 if expanded_len != 0 {
+                    while self.transmission_stopped() { crate::arch_halt(); }
                     crate::serial::write_bytes_atomic(
                         crate::serial::Writer::Tty,
                         &expanded[..expanded_len],

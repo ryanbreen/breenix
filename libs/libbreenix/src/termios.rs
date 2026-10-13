@@ -13,6 +13,7 @@ use crate::syscall::nr;
 /// ioctl request codes
 pub mod request {
     pub const TCSBRK: u64 = 0x5409;
+    pub const TCSBRKP: u64 = 0x5425;
     pub const TCXONC: u64 = 0x540a;
     pub const TCFLSH: u64 = 0x540b;
     pub const TIOCGSID: u64 = 0x5429;
@@ -99,6 +100,38 @@ pub struct Termios {
     pub c_ospeed: u32,
 }
 
+/// Linux TCGETS/TCSETS wire layout (NCCS=19), on both supported arches.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct IoctlTermios {
+    pub c_iflag: u32,
+    pub c_oflag: u32,
+    pub c_cflag: u32,
+    pub c_lflag: u32,
+    pub c_line: u8,
+    pub c_cc: [u8; 19],
+}
+
+impl From<Termios> for IoctlTermios {
+    fn from(t: Termios) -> Self {
+        let mut cc = [0; 19];
+        cc.copy_from_slice(&t.c_cc[..19]);
+        Self { c_iflag: t.c_iflag, c_oflag: t.c_oflag, c_cflag: t.c_cflag,
+            c_lflag: t.c_lflag, c_line: t.c_line, c_cc: cc }
+    }
+}
+impl From<IoctlTermios> for Termios {
+    fn from(t: IoctlTermios) -> Self {
+        let mut cc = [0; 32];
+        cc[..19].copy_from_slice(&t.c_cc);
+        let output = t.c_cflag & 0x100f;
+        let input = (t.c_cflag >> 16) & 0x100f;
+        Self { c_iflag: t.c_iflag, c_oflag: t.c_oflag, c_cflag: t.c_cflag,
+            c_lflag: t.c_lflag, c_line: t.c_line, c_cc: cc,
+            c_ispeed: if input == 0 { output } else { input }, c_ospeed: output }
+    }
+}
+
 impl Default for Termios {
     fn default() -> Self {
         Termios {
@@ -116,11 +149,11 @@ impl Default for Termios {
 
 /// Get terminal attributes
 pub fn tcgetattr(fd: Fd, termios: &mut Termios) -> Result<(), Error> {
+    let mut wire = IoctlTermios::default();
     let ret = unsafe {
-        raw::syscall3(nr::IOCTL, fd.raw(), request::TCGETS, termios as *mut _ as u64)
+        raw::syscall3(nr::IOCTL, fd.raw(), request::TCGETS, &mut wire as *mut _ as u64)
     };
-
-    Error::from_syscall(ret as i64).map(|_| ())
+    Error::from_syscall(ret as i64).map(|_| { *termios = wire.into(); })
 }
 
 /// Set terminal attributes
@@ -132,8 +165,9 @@ pub fn tcsetattr(fd: Fd, action: i32, termios: &Termios) -> Result<(), Error> {
         _ => return Err(Error::from_syscall(-22).unwrap_err()), // EINVAL
     };
 
+    let wire = IoctlTermios::from(*termios);
     let ret = unsafe {
-        raw::syscall3(nr::IOCTL, fd.raw(), request, termios as *const _ as u64)
+        raw::syscall3(nr::IOCTL, fd.raw(), request, &wire as *const _ as u64)
     };
 
     Error::from_syscall(ret as i64).map(|_| ())
@@ -166,7 +200,8 @@ pub fn tcflow(fd: Fd, action: i32) -> Result<(), Error> {
 }
 /// Send a break; pseudo-terminals have no physical break signal.
 pub fn tcsendbreak(fd: Fd, duration: i32) -> Result<(), Error> {
-    scalar_ioctl(fd, request::TCSBRK, duration)
+    if duration <= 0 { scalar_ioctl(fd, request::TCSBRK, 0) }
+    else { scalar_ioctl(fd, request::TCSBRKP, duration) }
 }
 /// Get the session that owns the caller's controlling terminal.
 pub fn tcgetsid(fd: Fd) -> Result<i32, Error> {
