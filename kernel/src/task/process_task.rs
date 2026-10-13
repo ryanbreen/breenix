@@ -44,6 +44,7 @@ impl DeferredFaultExitBuffer {
         false
     }
 
+    #[cfg(target_arch = "x86_64")]
     fn is_empty(&self) -> bool {
         self.slots
             .iter()
@@ -80,6 +81,7 @@ fn spill_fault_exit(thread_id: u64) -> bool {
     })
 }
 
+#[cfg(target_arch = "x86_64")]
 fn fault_exits_pending() -> bool {
     !DEFERRED_FAULT_EXIT_BUFFERS.iter().all(|buf| buf.is_empty())
         || crate::arch_without_interrupts(|| !DEFERRED_FAULT_EXIT_OVERFLOW.lock().is_empty())
@@ -96,6 +98,7 @@ static UNQUEUED_FATAL_EXITS: core::sync::atomic::AtomicBool =
 /// for it. Takes no lock and allocates nothing.
 pub fn note_unqueued_fatal_exit() {
     UNQUEUED_FATAL_EXITS.store(true, Ordering::Release);
+    #[cfg(target_arch = "x86_64")]
     if let Some(daemon) = FAULT_EXIT_DAEMON.get() {
         crate::task::kthread::kthread_unpark(daemon);
     }
@@ -357,14 +360,23 @@ static PENDING_PROCESS_RECLAIMS: crate::irq_safe_mutex::IrqSafeMutex<
 static PARKED_PROCESS_RECLAIMS: crate::irq_safe_mutex::IrqSafeMutex<
     alloc::vec::Vec<PendingProcessReclaim>,
 > = crate::irq_safe_mutex::IrqSafeMutex::new(alloc::vec::Vec::new());
-/// A reclaim queue for publishing into or sweeping. Every guard masks local
-/// interrupts and queues are never held together, so contention is another
-/// CPU's short critical section. Wait for its holder: treating contention as
-/// allocation failure abandons a valid receipt and leaks its address space.
+/// A reclaim queue for publishing into or sweeping. x86_64 waits for a holder
+/// on another CPU: every hold is short and masks interrupts, so it always
+/// finishes, and the try-lock's `None` -- park nothing, sweep nothing, abandon
+/// the reclaim and leak its address space -- was the answer for nesting on one
+/// CPU, not for contention between CPUs, which with four CPUs leaked a dead
+/// process's page tables at a time. aarch64 keeps its try-lock.
 fn reclaim_queue<T>(
     queue: &crate::irq_safe_mutex::IrqSafeMutex<T>,
 ) -> Option<crate::irq_safe_mutex::IrqSafeMutexGuard<'_, T>> {
-    Some(queue.lock())
+    #[cfg(target_arch = "x86_64")]
+    {
+        Some(queue.lock())
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        queue.try_lock()
+    }
 }
 
 static RECLAIM_PASS_ID: AtomicU32 = AtomicU32::new(0);
@@ -1236,6 +1248,7 @@ pub fn defer_fault_exit(thread_id: u64, exit_code: i32) -> bool {
 
     let idx = cpu.min(DEFERRED_FAULT_EXIT_BUFFERS.len().saturating_sub(1));
     let queued = DEFERRED_FAULT_EXIT_BUFFERS[idx].push(thread_id) || spill_fault_exit(thread_id);
+    #[cfg(target_arch = "x86_64")]
     if let Some(daemon) = FAULT_EXIT_DAEMON.get() {
         crate::task::kthread::kthread_unpark(daemon);
         // Publishing a fatal signal's status cannot wait a busy CPU's quantum.
@@ -1285,17 +1298,19 @@ pub fn drain_deferred_fault_sigsegv_exits() {
     }
 }
 
-/// The kernel thread that runs deferred fault exits (#511).
+/// x86_64: the kernel thread that runs deferred fault exits (#511).
 ///
 /// An exit can block and takes locks other CPUs hold, so it runs in a thread
-/// of its own, which a dispatch saves and resumes. Both architectures restart
-/// idle with a clean continuation on dispatch. Draining an exit from idle can
-/// discard a claimed exit half done when the next tick dispatches another task.
-/// IRQ-return drains are also excluded: teardown belongs in resumable task context.
+/// of its own, which a dispatch saves and resumes. x86 restarts its idle
+/// thread at the top of `idle_loop` on every dispatch, abandoning whatever it
+/// was doing, so an exit drained from the idle loop could be cut off half
+/// done by the next tick.
+#[cfg(target_arch = "x86_64")]
 static FAULT_EXIT_DAEMON: spin::Once<crate::task::kthread::KthreadHandle> = spin::Once::new();
 
-/// Start the fault-exit kernel thread. Called once during boot,
+/// x86_64: start the fault-exit kernel thread. Called once during boot,
 /// before any user process exists.
+#[cfg(target_arch = "x86_64")]
 pub fn start_fault_exit_daemon() {
     let daemon = FAULT_EXIT_DAEMON.call_once(|| {
         crate::task::kthread::kthread_run(fault_exit_daemon, "kfaultexit")
@@ -1310,6 +1325,7 @@ pub fn start_fault_exit_daemon() {
     );
 }
 
+#[cfg(target_arch = "x86_64")]
 fn fault_exit_daemon() {
     loop {
         drain_deferred_fault_sigsegv_exits();

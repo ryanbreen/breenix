@@ -13582,9 +13582,10 @@ fn gate_producer_validator_rejects_arch_any_double_registration() {
 
 /// Each non-owning reclaim-queue path acquires its queue through
 /// `reclaim_queue` and handles its `None` by abandoning or returning. That
-/// helper is the one place the acquisition policy lives: both architectures
-/// wait for a holder on another CPU. Every hold masks interrupts and is short;
-/// queue contention must not be treated as allocation failure and leak a root.
+/// helper is the one place the acquisition policy lives: aarch64 try-locks,
+/// x86_64 waits for a holder on another CPU (every hold masks interrupts and
+/// is short, and abandoning a reclaim for contention leaked its address space
+/// with four CPUs online).
 fn validate_nonowning_reclaim_queue_acquisitions(process_task: &str) -> Result<(), ()> {
     for name in [
         "push_pending_or_abandon",
@@ -13601,8 +13602,15 @@ fn validate_nonowning_reclaim_queue_acquisitions(process_task: &str) -> Result<(
         }
     }
     let helper = function_body(process_task, "reclaim_queue");
-    let helper_code = normalized_code(helper);
-    if !helper_code.contains("Some(queue.lock())") || helper_code.contains("queue.try_lock()") {
+    let x86 = helper.find("#[cfg(target_arch = \"x86_64\")]").ok_or(())?;
+    let other = helper
+        .find("#[cfg(not(target_arch = \"x86_64\"))]")
+        .ok_or(())?;
+    if !(x86 < other
+        && helper[x86..other].contains("queue.lock()")
+        && helper[other..].contains("queue.try_lock()")
+        && !helper[other..].contains("queue.lock()"))
+    {
         return Err(());
     }
     let push = function_body(process_task, "push_pending_or_abandon");
@@ -14900,22 +14908,21 @@ fn drop_body_static_locks_are_irqsafe_by_derived_census() {
     );
 }
 
-const REQUIRED_DEFERRED_RECLAMATION_CALLS: [&str; 2] = [
+const REQUIRED_DEFERRED_RECLAMATION_CALLS: [&str; 3] = [
+    "drain_deferred_fault_sigsegv_exits",
     "reclaim_deferred_process_resources",
     "reclaim_terminated_threads",
 ];
 
 /// Count anchor for the total number of operations in `run_deferred_reclamation`.
 ///
-/// The named census below proves the two reclamation operations are each present
-/// exactly once; this anchor also bounds the remaining idle-path operations.
-/// Fatal exit publication now runs only in the resumable fault-exit daemon.
-/// Additional operations must not be added
+/// The named census below proves the three teardown operations are each present
+/// exactly once; this anchor is what stops a FOURTH operation from being added
 /// to the idle-path reclamation sequence without anyone deciding to. Bumping it
 /// is the deliberate act of adding work to that sequence — review note N3, whose
 /// defect was that the round-1 rewrite of this test dropped the total bound and
 /// let two new calls in silently.
-const EXPECTED_DEFERRED_RECLAMATION_STATEMENTS: usize = 4;
+const EXPECTED_DEFERRED_RECLAMATION_STATEMENTS: usize = 5;
 
 fn validate_run_deferred_reclamation_census(context_switch: &str) -> Result<(), String> {
     let reclamation = function_body(context_switch, "run_deferred_reclamation");

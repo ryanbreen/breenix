@@ -9,18 +9,6 @@
       "checkHint": "kernel/src/main.rs keyboard queue initialization"
     },
     {
-      "name": "Keyboard task ready",
-      "marker": "Keyboard ready! Type to see characters",
-      "failureMeaning": "The console executor never polled the keyboard task",
-      "checkHint": "keyboard::keyboard_task() after ScancodeStream initialization"
-    },
-    {
-      "name": "Console executor primed",
-      "marker": "Console executor primed",
-      "failureMeaning": "The console executor did not complete its initial task polls",
-      "checkHint": "task::executor::Executor::start() before boot releases preemption"
-    },
-    {
       "name": "Frame allocator initialized",
       "marker": "Frame allocator initialized with",
       "failureMeaning": "The subsystem did not complete initialization",

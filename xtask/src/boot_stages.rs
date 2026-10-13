@@ -97,18 +97,6 @@ fn x86_64_kernel_stages() -> Vec<BootStage> {
             check_hint: "kernel/src/main.rs keyboard queue initialization",
         },
         BootStage {
-            name: "Keyboard task ready",
-            marker: "Keyboard ready! Type to see characters",
-            failure_meaning: "The console executor never polled the keyboard task",
-            check_hint: "keyboard::keyboard_task() after ScancodeStream initialization",
-        },
-        BootStage {
-            name: "Console executor primed",
-            marker: "Console executor primed",
-            failure_meaning: "The console executor did not complete its initial task polls",
-            check_hint: "task::executor::Executor::start() before boot releases preemption",
-        },
-        BootStage {
             name: "Frame allocator initialized",
             marker: "Frame allocator initialized with",
             failure_meaning: "The subsystem did not complete initialization",

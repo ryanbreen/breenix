@@ -71,7 +71,6 @@
           "Paging initialized",
           "Kernel heap initialized",
           "Kernel stack allocator initialized",
-
           "Heap allocation working",
           "TLS initialized",
           "SWAPGS support enabled",
@@ -128,9 +127,7 @@
           "VirtIO disk read successful",
           "E1000 driver initialized",
           "Network stack initialized",
-          "Keyboard queue initialized",
-          "Keyboard task ready",
-          "Console executor primed"
+          "Keyboard queue initialized"
         ]
       }
     },

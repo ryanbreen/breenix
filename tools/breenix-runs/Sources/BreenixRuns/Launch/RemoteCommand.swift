@@ -86,7 +86,7 @@ public enum RemoteCommand {
         return ids.allSatisfy(isSuiteID) && Set(ids).count == ids.count
     }
 
-    public static func plan(sha: String, boots: Int, mode: RemoteGateMode, timeoutSecs: Int, paths: BeastPaths, qemuProfile: X86HardwareProfile? = nil, suite: String? = nil, fullBackstopSecs: Int? = nil, slotHelperBase64: String? = nil, treeHelperBase64: String? = nil) -> Plan {
+    public static func plan(sha: String, boots: Int, mode: RemoteGateMode, timeoutSecs: Int, paths: BeastPaths, qemuProfile: X86HardwareProfile? = nil, suite: String? = nil, fullBackstopSecs: Int? = nil, slotHelperBase64: String? = nil, treeHelperBase64: String? = nil, quietOverride: String? = nil) -> Plan {
         Plan(
             sha: sha,
             boots: boots,
@@ -94,7 +94,7 @@ public enum RemoteCommand {
             timeoutSecs: timeoutSecs,
             paths: paths,
             prepareClone: prepareCloneRequest(sha: sha, paths: paths, treeHelperBase64: treeHelperBase64),
-            runGate: runGateRequest(boots: boots, mode: mode, timeoutSecs: timeoutSecs, paths: paths, qemuProfile: qemuProfile, suite: suite, fullBackstopSecs: fullBackstopSecs, slotHelperBase64: slotHelperBase64),
+            runGate: runGateRequest(boots: boots, mode: mode, timeoutSecs: timeoutSecs, paths: paths, qemuProfile: qemuProfile, suite: suite, fullBackstopSecs: fullBackstopSecs, slotHelperBase64: slotHelperBase64, quietOverride: quietOverride),
             pullEvidence: pullEvidenceRequest(paths: paths),
             removeClone: removeCloneRequest(paths: paths)
         )
@@ -130,14 +130,14 @@ public enum RemoteCommand {
     // production kernel running /sbin/suite-<id>, with a QMP socket in gate-tmp for its screen.
     // An id that is not one never reaches the shell: the request fails the gate instead of
     // quietly running the ordinary one (BeastLauncher refuses such an id before this).
-    public static func runGateRequest(boots: Int, mode: RemoteGateMode, timeoutSecs: Int, paths: BeastPaths, qemuProfile: X86HardwareProfile? = nil, suite: String? = nil, fullBackstopSecs: Int? = nil, slotHelperBase64: String? = nil) -> ProcessRequest {
+    public static func runGateRequest(boots: Int, mode: RemoteGateMode, timeoutSecs: Int, paths: BeastPaths, qemuProfile: X86HardwareProfile? = nil, suite: String? = nil, fullBackstopSecs: Int? = nil, slotHelperBase64: String? = nil, quietOverride: String? = nil) -> ProcessRequest {
         // Explicit opt-in test/profile features; never interpolate unchecked shell text.
         let features = ProcessInfo.processInfo.environment["BREENIX_GATE_KERNEL_FEATURES"] ?? ""
         guard features.isEmpty || features.range(of: "^[a-zA-Z0-9_-]+(,[a-zA-Z0-9_-]+)*$", options: .regularExpression) != nil else {
             return sshRequest(paths: paths, remote: "exit 2")
         }
         let featureEnv = features.isEmpty ? "" : " BREENIX_GATE_KERNEL_FEATURES=\(features)"
-        let quiet = ProcessInfo.processInfo.environment["BREENIX_QUIET"] ?? ""
+        let quiet = quietOverride ?? ""
         guard quiet.isEmpty || quiet == "0" || quiet == "1" else {
             return sshRequest(paths: paths, remote: "exit 2")
         }

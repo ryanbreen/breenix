@@ -2390,22 +2390,6 @@ fn kernel_main_continue() -> ! {
     #[cfg(all(feature = "btrt", not(feature = "testing")))]
     kernel::test_framework::btrt::finalize();
 
-    // Initialize and run the async executor.
-    // Prime non-production console tasks while the boot continuation is still
-    // protected: releasing preemption may abandon the idle context permanently.
-    #[cfg(any(
-        feature = "testing",
-        feature = "interactive",
-        feature = "disable_x86_prod_init"
-    ))]
-    let mut executor = {
-        let mut executor = task::executor::Executor::new();
-        executor.spawn(task::Task::new(keyboard::keyboard_task()));
-        executor.spawn(task::Task::new(serial::command::serial_command_task()));
-        executor.start();
-        executor
-    };
-
     // Release the scheduling brake taken in the first RING3_SMOKE block
     // above (see its preempt_disable() comment) - this is the true,
     // intended start of preemption for userspace processes registered
@@ -2459,6 +2443,24 @@ fn kernel_main_continue() -> ! {
         "[PREEMPT_BRACKET_CENSUS:underflow={}]",
         kernel::per_cpu::preempt_underflow_count()
     );
+
+    // Initialize and run the async executor.
+    log::info!("Starting async executor...");
+
+    // Non-production profiles drive the console executor directly from the
+    // boot thread's own tail, exactly as they always have -- unaffected by
+    // the #673 B1 fix below.
+    #[cfg(any(
+        feature = "testing",
+        feature = "interactive",
+        feature = "disable_x86_prod_init"
+    ))]
+    let mut executor = {
+        let mut executor = task::executor::Executor::new();
+        executor.spawn(task::Task::new(keyboard::keyboard_task()));
+        executor.spawn(task::Task::new(serial::command::serial_command_task()));
+        executor
+    };
 
     // Release the SECOND, dedicated brake taken above (#673 review, B3) by
     // handing the console its OWN kernel thread instead of ever driving it

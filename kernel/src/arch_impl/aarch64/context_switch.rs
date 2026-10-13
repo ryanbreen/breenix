@@ -5260,6 +5260,8 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     frame: &mut Aarch64ExceptionFrame,
     from_el0: bool,
 ) {
+    crate::task::process_task::drain_deferred_fault_sigsegv_exits();
+
     // ── Lock-free pre-checks ──────────────────────────────────────
     let preempt_count = Aarch64PerCpu::preempt_count();
     let cpu_id_early = Aarch64PerCpu::cpu_id() as usize;
@@ -6640,6 +6642,7 @@ fn cpu0_breadcrumb(cpu_id: usize, id: u64) {
 pub fn run_deferred_reclamation() {
     drain_asm_resume_pc_refusals();
     emit_resume_pc_census_if_due();
+    crate::task::process_task::drain_deferred_fault_sigsegv_exits();
     crate::task::process_task::reclaim_deferred_process_resources();
     crate::task::scheduler::reclaim_terminated_threads();
 }
@@ -7391,8 +7394,7 @@ pub(crate) fn check_and_deliver_signals_for_current_thread_arm64(frame: &mut Aar
                         setup_idle_return_arm64(frame);
                         crate::task::scheduler::switch_to_idle();
                     }
-                    crate::signal::delivery::SignalDeliveryResult::FrameFault
-                    | crate::signal::delivery::SignalDeliveryResult::DeferredExit => {
+                    crate::signal::delivery::SignalDeliveryResult::FrameFault => {
                         crate::task::scheduler::set_need_resched();
                         setup_idle_return_arm64(frame);
                         crate::task::scheduler::switch_to_idle();
