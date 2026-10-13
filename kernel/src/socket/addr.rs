@@ -1,7 +1,7 @@
 //! Linux socket address ABI, copied through the fault-tolerant userptr boundary.
 
 use crate::syscall::errno::{EAFNOSUPPORT, EINVAL, ENOMEM};
-use crate::syscall::userptr::{copy_from_user, copy_to_user};
+use crate::syscall::userptr::{copy_from_user, copy_to_user, read_user_bytes, write_user_prefix};
 use alloc::vec::Vec;
 
 const AF_UNIX: u16 = 1;
@@ -37,6 +37,9 @@ fn decode(bytes: &[u8], family: u16) -> Result<SockAddr, i32> {
     let supplied = u16::from_ne_bytes([bytes[0], bytes[1]]);
     match family {
         AF_INET => {
+            if supplied == 0 && bytes.len() < 16 {
+                return Ok(SockAddr::Unspec);
+            }
             if bytes.len() < 16 {
                 return Err(EINVAL);
             }
@@ -53,7 +56,13 @@ fn decode(bytes: &[u8], family: u16) -> Result<SockAddr, i32> {
             }
         }
         AF_UNIX => {
-            if bytes.len() > UNIX_LEN || supplied != AF_UNIX {
+            if bytes.len() > UNIX_LEN {
+                return Err(EINVAL);
+            }
+            if supplied == 0 {
+                return Ok(SockAddr::Unspec);
+            }
+            if supplied != AF_UNIX {
                 return Err(EINVAL);
             }
             let path = &bytes[2..];
@@ -73,19 +82,12 @@ fn decode(bytes: &[u8], family: u16) -> Result<SockAddr, i32> {
 
 /// Read a socket address for `family`; no user address is dereferenced directly.
 pub fn read_sockaddr(ptr: u64, len: u32, family: u16) -> Result<SockAddr, i32> {
-    let count = match family {
-        AF_INET if len >= 16 => 16,
-        AF_UNIX if (2..=UNIX_LEN as u32).contains(&len) => len as usize,
-        AF_INET | AF_UNIX => return Err(EINVAL),
-        _ => return Err(EAFNOSUPPORT),
-    };
-    let mut bytes = [0u8; UNIX_LEN];
-    for (i, byte) in bytes[..count].iter_mut().enumerate() {
-        let source = ptr
-            .checked_add(i as u64)
-            .ok_or(crate::syscall::errno::EFAULT)?;
-        *byte = copy_from_user(source as *const u8).map_err(|e| e as i32)?;
+    if !(2..=128).contains(&len) {
+        return Err(EINVAL);
     }
+    let count = len as usize;
+    let mut bytes = [0u8; 128];
+    read_user_bytes(bytes.as_mut_ptr(), ptr, count).map_err(|e| e as i32)?;
     decode(&bytes[..count], family)
 }
 
@@ -131,13 +133,14 @@ fn encode(addr: &SockAddr) -> Result<([u8; UNIX_LEN + 1], usize), i32> {
 
 /// Write the caller's available prefix, then the complete address length.
 pub fn write_sockaddr(addr: &SockAddr, ptr: u64, len_ptr: u64) -> Result<(), i32> {
-    let available = copy_from_user(len_ptr as *const u32).map_err(|e| e as i32)? as usize;
+    let available = copy_from_user(len_ptr as *const i32).map_err(|e| e as i32)?;
+    if available < 0 {
+        return Err(EINVAL);
+    }
     let (bytes, real) = encode(addr)?;
-    for (i, byte) in bytes[..available.min(real)].iter().enumerate() {
-        let dest = ptr
-            .checked_add(i as u64)
-            .ok_or(crate::syscall::errno::EFAULT)?;
-        copy_to_user(dest as *mut u8, byte).map_err(|e| e as i32)?;
+    let count = (available as usize).min(real);
+    if count != 0 && write_user_prefix(ptr, bytes.as_ptr(), count) != count {
+        return Err(crate::syscall::errno::EFAULT);
     }
     copy_to_user(len_ptr as *mut u32, &(real as u32)).map_err(|e| e as i32)
 }

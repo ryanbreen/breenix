@@ -19,8 +19,8 @@
 //!
 //! Cases use the loopback address 127.0.0.1, Unix paths under /tmp and abstract Unix
 //! names, so they need no outside network. The two resolve cases whose ids begin
-//! `gateway-` reach the QEMU user network's DNS server at 10.0.2.3; on a target without
-//! that network they fail within a few seconds, saying so. Each case process takes its
+//! `gateway-` reach the nameserver in /etc/resolv.conf and require outside networking;
+//! failures are bounded to a few seconds. Each case process takes its
 //! TCP and UDP ports from 20000-29999, below Linux's ephemeral range, numbered from its
 //! process ID so no two cases share one.
 //!
@@ -245,7 +245,6 @@ const LOOPBACK: u32 = 0x7f00_0001;
 const TEST_NET: u32 = 0xc000_0201;
 const BROADCAST: u32 = 0xffff_ffff;
 /// The QEMU user network's DNS server.
-const QEMU_DNS: u32 = 0x0a00_0203;
 
 const CLOCK_MONOTONIC: i32 = 1;
 const NS: i64 = 1_000_000_000;
@@ -2866,84 +2865,18 @@ fn res_hosts_localhost() -> CaseResult {
     check(maps, &format!("{HOSTS} has no line mapping 127.0.0.1 to localhost"))
 }
 
-/// A DNS query for the A records of `name`, with ID `id` and recursion desired.
-fn dns_query(id: u16, name: &str) -> Vec<u8> {
-    let mut q = Vec::new();
-    q.extend_from_slice(&id.to_be_bytes());
-    q.extend_from_slice(&[0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0]);
-    for label in name.split('.') {
-        q.push(label.len() as u8);
-        q.extend_from_slice(label.as_bytes());
-    }
-    q.extend_from_slice(&[0, 0, 1, 0, 1]);
-    q
-}
-
-/// Skip a possibly compressed DNS name at `at`: the offset after it.
-fn dns_skip_name(msg: &[u8], mut at: usize) -> Option<usize> {
-    loop {
-        let len = *msg.get(at)? as usize;
-        if len == 0 { return Some(at + 1); }
-        if len & 0xc0 == 0xc0 { return Some(at + 2); }
-        at += 1 + len;
-    }
-}
-
-/// The IPv4 addresses in the A records of a DNS answer.
-fn dns_a_records(msg: &[u8]) -> Vec<u32> {
-    let mut out = Vec::new();
-    if msg.len() < 12 { return out; }
-    let qd = u16::from_be_bytes([msg[4], msg[5]]);
-    let an = u16::from_be_bytes([msg[6], msg[7]]);
-    let mut at = 12;
-    for _ in 0..qd {
-        let Some(next) = dns_skip_name(msg, at) else { return out };
-        at = next + 4;
-    }
-    for _ in 0..an {
-        let Some(next) = dns_skip_name(msg, at) else { return out };
-        let Some(rr) = msg.get(next..next + 10) else { return out };
-        let (kind, rdlen) = (u16::from_be_bytes([rr[0], rr[1]]), u16::from_be_bytes([rr[8], rr[9]]) as usize);
-        if kind == 1 && rdlen == 4 {
-            if let Some(a) = msg.get(next + 10..next + 14) { out.push(u32::from_be_bytes([a[0], a[1], a[2], a[3]])); }
-        }
-        at = next + 10 + rdlen;
-    }
-    out
-}
-
-/// A DNS query for example.com sent over UDP to the QEMU user network's DNS server at
-/// 10.0.2.3, which forwards it to the host's resolver. It needs that network and an
-/// outside one.
+/// Query the target's configured nameserver with the production DNS client.
 fn res_gateway_dns_query() -> CaseResult {
-    let s = udp()?;
-    let id = 0x4200 | (pid() as u16 & 0xff);
-    let q = dns_query(id, "example.com");
-    let ms = bounded(5000, CLEANUP_MS);
-    let start = now_ms();
-    let mut sent_at = None;
-    let mut buf = [0u8; 1500];
-    loop {
-        let elapsed = now_ms().saturating_sub(start);
-        if sent_at.is_none_or(|t: u64| elapsed.saturating_sub(t) >= 1500) {
-            let n = sendto_in(&s, &q, QEMU_DNS, 53)?;
-            if n != q.len() as i64 {
-                return fail(format!("sendto 10.0.2.3:53 returned {} (the target may have no QEMU user network)", shown(n)));
-            }
-            sent_at = Some(elapsed);
-        }
-        let n = recv(s.0, buf.as_mut_ptr(), buf.len(), MSG_DONTWAIT)?;
-        if n > 0 {
-            let msg = &buf[..n as usize];
-            if msg.len() < 12 || u16::from_be_bytes([msg[0], msg[1]]) != id { continue; }
-            check(msg[2] & 0x80 != 0 && msg[3] & 0x0f == 0, &format!("the DNS reply has flags {:#04x}{:02x}, not a successful response", msg[2], msg[3]))?;
-            let a = dns_a_records(msg);
-            return check(!a.is_empty(), "the DNS reply for example.com carries no A record");
-        }
-        if n != -EAGAIN { return fail(format!("recv of the DNS reply failed with {}", shown(n))); }
-        if elapsed >= ms { return fail(format!("no DNS reply from 10.0.2.3 within {ms} ms (the target may have no QEMU user network or outside network)")); }
-        nap();
-    }
+    let configuration = std::fs::read_to_string("/etc/resolv.conf")
+        .map_err(|e| format!("reading /etc/resolv.conf: {e}"))?;
+    let server = configuration.lines().find_map(|line| {
+        let mut fields = line.split('#').next()?.split_whitespace();
+        if fields.next()? != "nameserver" { return None; }
+        fields.next()?.parse::<std::net::Ipv4Addr>().ok()
+    }).ok_or("/etc/resolv.conf has no IPv4 nameserver")?;
+    let answer = libbreenix::dns::resolve_all("example.com", server.octets())
+        .map_err(|e| format!("DNS query to {server}:53 failed: {e:?}"))?;
+    check(answer.len != 0, "the DNS reply for example.com carries no A record")
 }
 
 /// getaddrinfo of example.com, which the C library resolves through the DNS server the
@@ -3160,8 +3093,8 @@ static SUITE: Suite = suite("networking", "Networking & sockets", &[
         case("inet-ntop", "inet_ntop formats 127.0.0.1", || resolved(res_inet_ntop)),
         case("inet-ntop-enospc", "inet_ntop into a buffer too small fails with ENOSPC", || resolved(res_inet_ntop_enospc)),
         case("hosts-localhost", "/etc/hosts maps localhost to 127.0.0.1", || resolved(res_hosts_localhost)),
-        case("gateway-dns-query", "A DNS query to the QEMU gateway's 10.0.2.3 is answered with an A record (needs the QEMU user network)", || resolved(res_gateway_dns_query)),
-        case("gateway-getaddrinfo", "getaddrinfo of example.com resolves through the QEMU gateway's DNS (needs the QEMU user network)", || resolved(res_gateway_getaddrinfo)),
+        case("gateway-dns-query", "A DNS query to the configured nameserver is answered with an A record", || resolved(res_gateway_dns_query)),
+        case("gateway-getaddrinfo", "getaddrinfo of example.com resolves through the configured nameserver", || resolved(res_gateway_getaddrinfo)),
     ]),
 ]);
 

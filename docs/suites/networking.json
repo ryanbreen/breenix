@@ -806,11 +806,11 @@
         },
         {
           "id": "gateway-dns-query",
-          "title": "A DNS query to the QEMU gateway's 10.0.2.3 is answered with an A record (needs the QEMU user network)"
+          "title": "A DNS query to the configured nameserver is answered with an A record"
         },
         {
           "id": "gateway-getaddrinfo",
-          "title": "getaddrinfo of example.com resolves through the QEMU gateway's DNS (needs the QEMU user network)"
+          "title": "getaddrinfo of example.com resolves through the configured nameserver"
         }
       ]
     }
