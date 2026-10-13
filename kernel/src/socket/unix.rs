@@ -614,6 +614,15 @@ impl UnixSock {
         }
     }
 
+    /// Read-only writer witness. The legacy adapter owns its queue in the
+    /// stream pair; `sk` is reserved for adapters that use the common queue.
+    #[cfg(feature = "boot_tests")]
+    pub(crate) fn write_witness(&self, _sk: &Socket, tid: u64) -> (u64, u64, u64) {
+        let stream = self.stream_of().expect("writer witness requires a connected stream");
+        let writer = stream.lock().writer();
+        writer.witness(tid)
+    }
+
     /// The state for a deferred release, leaving this one unbound.
     pub(super) fn detach(&mut self) -> UnixSock {
         UnixSock {
