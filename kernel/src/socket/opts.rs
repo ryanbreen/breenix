@@ -47,6 +47,7 @@ const NS_PER_SEC: u64 = 1_000_000_000;
 const US_PER_SEC: i64 = 1_000_000;
 
 /// The options a socket has set.
+#[derive(Clone)]
 pub struct SockOpts {
     pub reuseaddr: bool,
     pub broadcast: bool,
@@ -132,13 +133,46 @@ fn put_timeout(out: &mut OptBuf, timeout: Option<u64>) {
     out.put(&bytes);
 }
 
-/// setsockopt(sk, level, name, val).
+/// The bytes of optval setsockopt reads for `level` and `name`, given
+/// `optlen`: as on Linux, none when optlen is below an int's 4, the int alone
+/// when optlen is below the option's own size (the option then fails with
+/// EINVAL), and otherwise exactly the option's size, so a value that ends at
+/// a page boundary is never read past. A level this module leaves to the
+/// protocol reads up to 16 bytes.
+pub fn value_len(level: i32, name: i32, optlen: usize) -> usize {
+    let size = match (level, name) {
+        (SOL_SOCKET, SO_RCVTIMEO | SO_SNDTIMEO) => 16,
+        (SOL_SOCKET, SO_LINGER) => 8,
+        (SOL_SOCKET, _) | (IPPROTO_TCP, _) => 4,
+        _ => return optlen.min(16),
+    };
+    if optlen < 4 {
+        0
+    } else if optlen < size {
+        4
+    } else {
+        size
+    }
+}
+
+/// setsockopt(sk, level, name, val). An option stored here is then handed
+/// to the protocol's `option_set`, so it reaches state the protocol already
+/// has.
 pub fn setsockopt(sk: &Socket, level: i32, name: i32, val: &[u8]) -> Result<(), i32> {
+    if store(sk, level, name, val)? {
+        sk.ops().option_set(sk, level, name);
+    }
+    Ok(())
+}
+
+/// Store a shared option: true when stored here, false when the protocol
+/// took it.
+fn store(sk: &Socket, level: i32, name: i32, val: &[u8]) -> Result<bool, i32> {
     if level == IPPROTO_TCP {
         return set_tcp(sk, name, val);
     }
     if level != SOL_SOCKET {
-        return sk.ops().setsockopt(sk, level, name, val);
+        return sk.ops().setsockopt(sk, level, name, val).map(|()| false);
     }
     let common = &sk.common;
     match name {
@@ -149,17 +183,17 @@ pub fn setsockopt(sk: &Socket, level: i32, name: i32, val: &[u8]) -> Result<(), 
                 SO_BROADCAST => o.broadcast = on,
                 _ => o.keepalive = on,
             });
-            Ok(())
+            Ok(true)
         }
         SO_RCVBUF => {
             let size = doubled(int_value(val)?, RCVBUF_MIN);
             common.with_opts(|o| o.rcvbuf = size);
-            Ok(())
+            Ok(true)
         }
         SO_SNDBUF => {
             let size = doubled(int_value(val)?, SNDBUF_MIN);
             common.with_opts(|o| o.sndbuf = size);
-            Ok(())
+            Ok(true)
         }
         SO_RCVTIMEO | SO_SNDTIMEO => {
             let timeout = timeout_value(val)?;
@@ -170,17 +204,19 @@ pub fn setsockopt(sk: &Socket, level: i32, name: i32, val: &[u8]) -> Result<(), 
                     o.sndtimeo_ns = timeout;
                 }
             });
-            Ok(())
+            Ok(true)
         }
         SO_LINGER => {
             if val.len() < 8 {
                 return Err(EINVAL);
             }
             let onoff = i32::from_ne_bytes([val[0], val[1], val[2], val[3]]);
-            let seconds = i32::from_ne_bytes([val[4], val[5], val[6], val[7]]);
-            let linger = (onoff != 0).then_some(seconds.max(0) as u32);
+            // Linux reads l_linger as unsigned: a negative one is a long
+            // linger, never the abortive close that zero asks for.
+            let seconds = u32::from_ne_bytes([val[4], val[5], val[6], val[7]]);
+            let linger = (onoff != 0).then_some(seconds);
             common.with_opts(|o| o.linger = linger);
-            Ok(())
+            Ok(true)
         }
         // Read-only options.
         SO_TYPE | SO_PROTOCOL | SO_DOMAIN | SO_ERROR | SO_ACCEPTCONN | SO_PEERCRED => {
@@ -189,12 +225,12 @@ pub fn setsockopt(sk: &Socket, level: i32, name: i32, val: &[u8]) -> Result<(), 
         }
         _ => {
             int_value(val)?;
-            sk.ops().setsockopt(sk, level, name, val)
+            sk.ops().setsockopt(sk, level, name, val).map(|()| false)
         }
     }
 }
 
-fn set_tcp(sk: &Socket, name: i32, val: &[u8]) -> Result<(), i32> {
+fn set_tcp(sk: &Socket, name: i32, val: &[u8]) -> Result<bool, i32> {
     if !is_tcp(sk) {
         return Err(if sk.family == AF_UNIX {
             EOPNOTSUPP
@@ -206,9 +242,9 @@ fn set_tcp(sk: &Socket, name: i32, val: &[u8]) -> Result<(), i32> {
         TCP_NODELAY => {
             let on = int_value(val)? != 0;
             sk.common.with_opts(|o| o.nodelay = on);
-            Ok(())
+            Ok(true)
         }
-        _ => sk.ops().setsockopt(sk, IPPROTO_TCP, name, val),
+        _ => sk.ops().setsockopt(sk, IPPROTO_TCP, name, val).map(|()| false),
     }
 }
 
@@ -284,5 +320,17 @@ mod tests {
         assert_eq!(timeout_value(&tv(0, 0)), Ok(None));
         assert_eq!(timeout_value(&tv(-1, 0)), Ok(Some(0)));
         assert_eq!(timeout_value(&tv(0, 1)[..15]), Err(EINVAL));
+    }
+
+    #[test]
+    fn setsockopt_reads_only_the_option() {
+        assert_eq!(value_len(SOL_SOCKET, SO_REUSEADDR, 64), 4);
+        assert_eq!(value_len(SOL_SOCKET, SO_REUSEADDR, 3), 0);
+        assert_eq!(value_len(SOL_SOCKET, SO_RCVTIMEO, 64), 16);
+        assert_eq!(value_len(SOL_SOCKET, SO_RCVTIMEO, 8), 4);
+        assert_eq!(value_len(SOL_SOCKET, SO_LINGER, 8), 8);
+        assert_eq!(value_len(IPPROTO_TCP, TCP_NODELAY, 64), 4);
+        assert_eq!(value_len(0, 1, 64), 16);
+        assert_eq!(value_len(0, 1, 2), 2);
     }
 }

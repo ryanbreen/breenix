@@ -12,10 +12,11 @@ use alloc::vec::Vec;
 
 use super::errno::{
     EAFNOSUPPORT, EBADF, EFAULT, EINVAL, EMSGSIZE, ENOBUFS, ENOMEM, EOPNOTSUPP, EPIPE,
-    EPROTONOSUPPORT, ESRCH,
+    EPROTONOSUPPORT, ESOCKTNOSUPPORT, ESRCH,
 };
 use super::{userptr, SyscallResult};
-use crate::ipc::fd::{flags, status_flags, FdKind, FileDescriptor};
+use crate::ipc::fd::{flags, status_flags, FdKind, FdTableInner, FileDescriptor};
+use crate::task::process_task::close_extracted_fd;
 use crate::socket::addr::{read_sockaddr, write_sockaddr, SockAddr};
 use crate::socket::object::{
     caller_ucred, socket_from_fd, OptBuf, RecvMsg, SendMsg, Socket, SocketProto, UCred,
@@ -24,16 +25,26 @@ use crate::socket::{opts, tcp::TcpSock, udp::UdpSock, unix::UnixSock};
 
 const AF_UNIX: u16 = 1;
 const AF_INET: u16 = 2;
+/// Linux's AF_MAX (NPROTO): a family at or past it is EAFNOSUPPORT.
+const AF_MAX: i32 = 46;
 const SOCK_STREAM: u16 = 1;
 const SOCK_DGRAM: u16 = 2;
-const SOCK_TYPE_MASK: u64 = 0xf;
-const SOCK_NONBLOCK: u64 = 0o4000;
-const SOCK_CLOEXEC: u64 = 0o2000000;
-const IPPROTO_TCP: u64 = 6;
-const IPPROTO_UDP: u64 = 17;
+const SOCK_RAW: u16 = 3;
+/// Linux's SOCK_MAX: a type at or past it is EINVAL.
+const SOCK_MAX: u16 = 11;
+const SOCK_TYPE_MASK: u32 = 0xf;
+const SOCK_NONBLOCK: u32 = 0o4000;
+const SOCK_CLOEXEC: u32 = 0o2000000;
+const IPPROTO_TCP: i32 = 6;
+const IPPROTO_UDP: i32 = 17;
+/// Linux's IPPROTO_MAX: an AF_INET protocol outside 0..IPPROTO_MAX is EINVAL.
+const IPPROTO_MAX: i32 = 263;
 /// PF_UNIX, which Linux accepts as AF_UNIX's protocol.
-const PROTO_UNIX: u64 = 1;
+const PROTO_UNIX: i32 = 1;
+/// Linux's sizeof(struct sockaddr_storage): sendmsg clamps msg_namelen to it.
+const SOCKADDR_STORAGE: u32 = 128;
 
+const MSG_PEEK: u32 = 0x2;
 const MSG_CTRUNC: u32 = 0x8;
 const MSG_DONTWAIT: u32 = 0x40;
 const MSG_NOSIGNAL: u32 = 0x4000;
@@ -49,8 +60,10 @@ const CONTROL_MAX: usize = 20_480;
 const IOV_MAX: u64 = 1024;
 /// Linux's net.core.somaxconn: the cap on a listen backlog.
 const SOMAXCONN: i32 = 4096;
-/// The most bytes one send or receive moves through the kernel. Streams
-/// return a short count; a datagram this long is too long for UDP anyway.
+/// The most bytes one protocol send or receive moves through the kernel. A
+/// stream send moves a longer buffer in pieces of this size and a stream
+/// receive returns a short count; a datagram or record longer than this is
+/// EMSGSIZE (longer than UDP's limit, and than an AF_UNIX send buffer).
 const MAX_IO: usize = 256 * 1024;
 
 const CMSG_HDR: usize = 16;
@@ -86,31 +99,74 @@ pub fn test_reset_quantum_hook() {
     reset_quantum();
 }
 
-/// Put `entries` in the caller's descriptor table, all or none: their
-/// numbers, in order.
-fn install_all(entries: Vec<FileDescriptor>) -> Result<Vec<i32>, i32> {
-    let mut fds = Vec::new();
-    fds.try_reserve_exact(entries.len()).map_err(|_| ENOMEM)?;
+/// Run `f` on the caller's descriptor table, under PROCESS_MANAGER.
+fn with_table<R>(f: impl FnOnce(&mut FdTableInner) -> R) -> Result<R, i32> {
     let tid = crate::task::scheduler::current_thread_id().ok_or(ESRCH)?;
     let mut guard = crate::process::manager();
     let manager = guard.as_mut().ok_or(ESRCH)?;
     let (_, process) = manager.find_process_by_thread_mut(tid).ok_or(ESRCH)?;
-    for entry in entries {
-        match process.fd_table.alloc_with_entry(entry) {
-            Ok(fd) => fds.push(fd),
-            Err(errno) => {
-                for fd in &fds {
-                    let _ = process.fd_table.close(*fd);
-                }
-                return Err(errno);
-            }
-        }
-    }
-    Ok(fds)
+    Ok(f(&mut process.fd_table))
 }
 
-fn socket_entry(socket: Arc<Socket>, cloexec: bool, nonblock: bool) -> FileDescriptor {
-    FileDescriptor::with_flags(
+/// Hold up to `count` free descriptor slots, stopping at the first that
+/// cannot be held. A call holds its slots before anything it cannot undo,
+/// and installs into them once nothing else can fail. The second value is
+/// why the slots stopped short (EMFILE, ENOMEM), 0 when all were held.
+fn hold_prefix(count: usize) -> Result<(Vec<i32>, i32), i32> {
+    let mut slots = Vec::new();
+    slots.try_reserve_exact(count).map_err(|_| ENOMEM)?;
+    let stopped = with_table(|table| {
+        while slots.len() < count {
+            match table.try_reserve_slot() {
+                Ok(fd) => slots.push(fd),
+                Err(errno) => return errno,
+            }
+        }
+        0
+    })?;
+    Ok((slots, stopped))
+}
+
+/// Hold `count` slots, all or none.
+fn hold(count: usize) -> Result<Vec<i32>, i32> {
+    let (slots, stopped) = hold_prefix(count)?;
+    if stopped != 0 {
+        unhold(&slots);
+        return Err(stopped);
+    }
+    Ok(slots)
+}
+
+/// Give back held slots a call no longer needs.
+fn unhold(slots: &[i32]) {
+    let _ = with_table(|table| {
+        for fd in slots {
+            table.release_reserved(*fd);
+        }
+    });
+}
+
+/// Install `entries` in held `slots`, pairwise. A held slot is this call's
+/// alone, so installing into it cannot fail; an entry left over (the
+/// process is gone) is closed.
+fn install(slots: &[i32], entries: impl IntoIterator<Item = FileDescriptor>) {
+    let mut entries = entries.into_iter();
+    let _ = with_table(|table| {
+        for fd in slots {
+            let Some(entry) = entries.next() else {
+                break;
+            };
+            if let Err(entry) = table.install_held(*fd, entry) {
+                // Not reachable while the slot is held; keep the entry.
+                let _ = table.install_reserved(*fd, entry);
+            }
+        }
+    });
+    discard_rights(entries);
+}
+
+fn socket_entry(socket: Arc<Socket>, cloexec: bool, nonblock: bool) -> Result<FileDescriptor, i32> {
+    FileDescriptor::try_with_flags(
         FdKind::Socket(socket),
         if cloexec { flags::FD_CLOEXEC } else { 0 },
         if nonblock {
@@ -123,61 +179,68 @@ fn socket_entry(socket: Arc<Socket>, cloexec: bool, nonblock: bool) -> FileDescr
 
 /// Close descriptors that never reached a table (SCM_RIGHTS that were not
 /// delivered) the way a close of an extracted descriptor closes them, so
-/// pipe, FIFO and PTY reference counts drop with them.
-fn discard_rights(rights: Vec<FileDescriptor>) {
-    if rights.is_empty() {
-        return;
+/// pipe, FIFO and PTY reference counts drop with them. Allocates nothing.
+fn discard_rights(rights: impl IntoIterator<Item = FileDescriptor>) {
+    for right in rights {
+        close_extracted_fd(right);
     }
-    let mut entries = Vec::new();
-    if entries.try_reserve_exact(rights.len()).is_err() {
-        // Without room to pair them with numbers, close them one at a time.
-        for right in rights {
-            let mut single = Vec::new();
-            if single.try_reserve_exact(1).is_ok() {
-                single.push((0usize, right));
-                crate::task::process_task::close_extracted_fds(single);
-            }
-        }
-        return;
-    }
-    entries.extend(rights.into_iter().map(|right| (0usize, right)));
-    crate::task::process_task::close_extracted_fds(entries);
 }
 
-/// The socket a new descriptor gets for `family`, `kind` and `protocol`.
-fn create(family: u64, kind: u16, protocol: u64) -> Result<Arc<Socket>, i32> {
+/// The family, type and protocol a new socket gets, with Linux's checks in
+/// Linux's order: the family's range (EAFNOSUPPORT), the type's (EINVAL),
+/// then the family's own checks. AF_UNIX takes SOCK_RAW as SOCK_DGRAM.
+fn check_kind(family: i32, kind: u16, protocol: i32) -> Result<(u16, u16, u16), i32> {
+    if !(0..AF_MAX).contains(&family) {
+        return Err(EAFNOSUPPORT);
+    }
+    if kind >= SOCK_MAX {
+        return Err(EINVAL);
+    }
     match family as u16 {
-        AF_INET => match kind {
-            SOCK_STREAM => {
-                if protocol != 0 && protocol != IPPROTO_TCP {
-                    return Err(EPROTONOSUPPORT);
-                }
-                Socket::new(AF_INET, SOCK_STREAM, 6, SocketProto::Tcp(TcpSock::new()))
+        AF_INET => {
+            if !(0..IPPROTO_MAX).contains(&protocol) {
+                return Err(EINVAL);
             }
-            SOCK_DGRAM => {
-                if protocol != 0 && protocol != IPPROTO_UDP {
-                    return Err(EPROTONOSUPPORT);
-                }
-                Socket::new(AF_INET, SOCK_DGRAM, 17, SocketProto::Udp(UdpSock::new()?))
+            let (want, number) = match kind {
+                SOCK_STREAM => (IPPROTO_TCP, 6),
+                SOCK_DGRAM => (IPPROTO_UDP, 17),
+                _ => return Err(ESOCKTNOSUPPORT),
+            };
+            if protocol != 0 && protocol != want {
+                return Err(EPROTONOSUPPORT);
             }
-            _ => Err(EINVAL),
-        },
+            Ok((AF_INET, kind, number))
+        }
         AF_UNIX => {
             if protocol != 0 && protocol != PROTO_UNIX {
                 return Err(EPROTONOSUPPORT);
             }
+            let kind = if kind == SOCK_RAW { SOCK_DGRAM } else { kind };
             if !UnixSock::supports_kind(kind) {
-                return Err(EINVAL);
+                return Err(ESOCKTNOSUPPORT);
             }
-            Socket::new(AF_UNIX, kind, 0, SocketProto::Unix(UnixSock::new(kind)))
+            Ok((AF_UNIX, kind, 0))
         }
         _ => Err(EAFNOSUPPORT),
     }
 }
 
-/// Split socket()'s type argument into the type and the SOCK_NONBLOCK and
-/// SOCK_CLOEXEC flags; any other flag is EINVAL.
+/// The socket a new descriptor gets for `family`, `kind` and `protocol`.
+fn create(family: i32, kind: u16, protocol: i32) -> Result<Arc<Socket>, i32> {
+    let (family, kind, protocol) = check_kind(family, kind, protocol)?;
+    match (family, kind) {
+        (AF_INET, SOCK_STREAM) => {
+            Socket::new(AF_INET, SOCK_STREAM, protocol, SocketProto::Tcp(TcpSock::new()))
+        }
+        (AF_INET, _) => Socket::new(AF_INET, SOCK_DGRAM, protocol, SocketProto::Udp(UdpSock::new()?)),
+        _ => Socket::new(AF_UNIX, kind, 0, SocketProto::Unix(UnixSock::new(kind))),
+    }
+}
+
+/// Split socket()'s type argument, an int, into the type and the
+/// SOCK_NONBLOCK and SOCK_CLOEXEC flags; any other flag is EINVAL.
 fn split_type(sock_type: u64) -> Result<(u16, bool, bool), i32> {
+    let sock_type = sock_type as u32;
     let extra = sock_type & !SOCK_TYPE_MASK;
     if extra & !(SOCK_NONBLOCK | SOCK_CLOEXEC) != 0 {
         return Err(EINVAL);
@@ -189,78 +252,89 @@ fn split_type(sock_type: u64) -> Result<(u16, bool, bool), i32> {
     ))
 }
 
+/// An int argument: the low 32 bits of the register, as Linux reads it.
+fn int_arg(value: u64) -> i32 {
+    value as u32 as i32
+}
+
 /// socket(domain, type, protocol)
 pub fn sys_socket(domain: u64, sock_type: u64, protocol: u64) -> SyscallResult {
     to_result((|| {
         let (kind, nonblock, cloexec) = split_type(sock_type)?;
-        let socket = create(domain, kind, protocol)?;
-        let fds = install_all(alloc::vec![socket_entry(socket, cloexec, nonblock)])?;
-        Ok(fds[0] as u64)
+        let socket = create(int_arg(domain), kind, int_arg(protocol))?;
+        let entry = socket_entry(socket, cloexec, nonblock)?;
+        let slots = hold(1)?;
+        install(&slots, [entry]);
+        Ok(slots[0] as u64)
     })())
 }
 
 /// socketpair(domain, type, protocol, sv). Only AF_UNIX makes pairs; Linux
-/// gives AF_INET EOPNOTSUPP once its type and protocol check out.
+/// gives AF_INET EOPNOTSUPP once its type and protocol check out. The
+/// descriptors are installed only once sv holds their numbers.
 pub fn sys_socketpair(domain: u64, sock_type: u64, protocol: u64, sv_ptr: u64) -> SyscallResult {
     to_result((|| {
         let (kind, nonblock, cloexec) = split_type(sock_type)?;
-        match domain as u16 {
-            AF_UNIX => {}
-            AF_INET => {
-                create(domain, kind, protocol)?;
-                return Err(EOPNOTSUPP);
-            }
-            _ => return Err(EAFNOSUPPORT),
-        }
-        if protocol != 0 && protocol != PROTO_UNIX {
-            return Err(EPROTONOSUPPORT);
-        }
-        if !UnixSock::supports_kind(kind) {
-            return Err(EINVAL);
+        let (family, kind, _) = check_kind(int_arg(domain), kind, int_arg(protocol))?;
+        if family != AF_UNIX {
+            return Err(EOPNOTSUPP);
         }
         if sv_ptr == 0 {
             return Err(EFAULT);
         }
         let (a, b) = UnixSock::new_pair(kind, caller_ucred())?;
-        let fds = install_all(alloc::vec![
-            socket_entry(a, cloexec, nonblock),
-            socket_entry(b, cloexec, nonblock),
-        ])?;
-        let sv = [fds[0], fds[1]];
+        let first = socket_entry(a, cloexec, nonblock)?;
+        let second = socket_entry(b, cloexec, nonblock)?;
+        let slots = hold(2)?;
+        let sv = [slots[0], slots[1]];
         // sv may be a copy-on-write page: write it with PM released.
         if let Err(errno) = userptr::copy_to_user(sv_ptr as *mut [i32; 2], &sv) {
-            close_own(&sv);
+            unhold(&slots);
             return Err(errno as i32);
         }
+        install(&slots, [first, second]);
         Ok(0)
     })())
 }
 
-/// Close descriptors this call installed before it failed.
+/// Close descriptors this call installed before a later step failed, as
+/// close(2) closes them: record locks, IPC close hooks, and pipe, FIFO and
+/// PTY counts. Allocates nothing.
 fn close_own(fds: &[i32]) {
-    let Some(tid) = crate::task::scheduler::current_thread_id() else {
-        return;
-    };
-    let closed: Vec<FileDescriptor> = {
-        let mut guard = crate::process::manager();
-        let Some(process) = guard
-            .as_mut()
-            .and_then(|manager| manager.find_process_by_thread_mut(tid))
-            .map(|(_, process)| process)
-        else {
-            return;
+    for fd in fds {
+        let closed = with_table(|table| table.close(*fd).ok());
+        let Ok(Some(entry)) = closed else {
+            continue;
         };
-        fds.iter()
-            .filter_map(|fd| process.fd_table.close(*fd).ok())
-            .collect()
-    };
-    // The sockets are released here, with PM dropped.
-    drop(closed);
+        let owner = {
+            let tid = crate::task::scheduler::current_thread_id();
+            let guard = crate::process::manager();
+            guard
+                .as_ref()
+                .zip(tid)
+                .and_then(|(manager, tid)| manager.find_process_by_thread(tid))
+                .map(|(_, process)| {
+                    (
+                        crate::ipc::object::close_owner(process.id, process.thread_group_id),
+                        process.lock_owner.id(),
+                    )
+                })
+        };
+        if let Some((close_pid, lock_owner)) = owner {
+            crate::fs::locks::release_closed(lock_owner, &entry.kind);
+            if let FdKind::Ipc(object) = &entry.kind {
+                object.on_close(close_pid);
+            }
+        }
+        close_extracted_fd(entry);
+    }
 }
 
-/// The length argument of bind and connect: Linux reads it as an int.
+/// The length argument of bind, connect and sendto: Linux reads it as an
+/// int, and a negative one is EINVAL.
 fn addr_len(len: u64) -> Result<u32, i32> {
-    if len > i32::MAX as u64 {
+    let len = int_arg(len);
+    if len < 0 {
         return Err(EINVAL);
     }
     Ok(len as u32)
@@ -302,23 +376,38 @@ pub fn sys_accept(fd: u64, addr_ptr: u64, addrlen_ptr: u64) -> SyscallResult {
 /// the new descriptor, which inherits neither from the listener (Linux).
 pub fn sys_accept4(fd: u64, addr_ptr: u64, addrlen_ptr: u64, accept_flags: u64) -> SyscallResult {
     to_result((|| {
-        if accept_flags & !(SOCK_NONBLOCK | SOCK_CLOEXEC) != 0 {
+        if (accept_flags as u32) & !(SOCK_NONBLOCK | SOCK_CLOEXEC) != 0 {
             return Err(EINVAL);
         }
+        let accept_flags = accept_flags as u32;
         let (sk, status) = socket_from_fd(fd as i32)?;
         let nonblock = status & status_flags::O_NONBLOCK != 0;
-        let (socket, peer) = sk.ops().accept(&sk, nonblock)?;
-        if addr_ptr != 0 {
-            // A peer address the caller cannot take fails the call, and the
-            // new socket goes with it.
-            write_sockaddr(&peer, addr_ptr, addrlen_ptr)?;
+        // The slot is held before a connection is taken off the queue, so
+        // EMFILE leaves the connection queued, as on Linux.
+        let slots = hold(1)?;
+        let accepted = sk.ops().accept(&sk, nonblock).and_then(|(socket, peer)| {
+            let entry = socket_entry(
+                socket,
+                accept_flags & SOCK_CLOEXEC != 0,
+                accept_flags & SOCK_NONBLOCK != 0,
+            )?;
+            if addr_ptr != 0 {
+                // A peer address the caller cannot take fails the call, and
+                // the new socket goes with it.
+                write_sockaddr(&peer, addr_ptr, addrlen_ptr)?;
+            }
+            Ok(entry)
+        });
+        match accepted {
+            Ok(entry) => {
+                install(&slots, [entry]);
+                Ok(slots[0] as u64)
+            }
+            Err(errno) => {
+                unhold(&slots);
+                Err(errno)
+            }
         }
-        let fds = install_all(alloc::vec![socket_entry(
-            socket,
-            accept_flags & SOCK_CLOEXEC != 0,
-            accept_flags & SOCK_NONBLOCK != 0,
-        )])?;
-        Ok(fds[0] as u64)
     })())
 }
 
@@ -351,7 +440,7 @@ pub fn sys_shutdown(fd: u64, how: u64) -> SyscallResult {
 pub fn sys_getsockname(fd: u64, addr_ptr: u64, addrlen_ptr: u64) -> SyscallResult {
     to_result((|| {
         let (sk, _) = socket_from_fd(fd as i32)?;
-        write_sockaddr(&sk.ops().local_name(&sk), addr_ptr, addrlen_ptr)?;
+        write_sockaddr(&sk.ops().try_local_name(&sk)?, addr_ptr, addrlen_ptr)?;
         Ok(0)
     })())
 }
@@ -374,9 +463,10 @@ pub fn sys_setsockopt(fd: u64, level: u64, name: u64, optval: u64, optlen: u64) 
         if len < 0 {
             return Err(EINVAL);
         }
-        // No option this kernel knows is longer than 16 bytes.
-        let mut value = [0u8; 64];
-        let n = (len as usize).min(value.len());
+        // Only the option's own bytes are read, so a value that ends at the
+        // end of a page is never read past.
+        let mut value = [0u8; 16];
+        let n = opts::value_len(level as i32, name as i32, len as usize).min(value.len());
         user(userptr::read_user_bytes(value.as_mut_ptr(), optval, n))?;
         opts::setsockopt(&sk, level as i32, name as i32, &value[..n])?;
         Ok(0)
@@ -410,9 +500,9 @@ fn copy_in(ptr: u64, len: usize) -> Result<Vec<u8>, i32> {
     Ok(data)
 }
 
-/// Send `msg` on `sk`: report a pending error first, close any descriptors
-/// the protocol did not take, and raise SIGPIPE for EPIPE unless MSG_NOSIGNAL.
-fn send(sk: &Arc<Socket>, msg: &mut SendMsg) -> Result<usize, i32> {
+/// One protocol send: a pending error first; the descriptors the protocol
+/// did not take are closed.
+fn send_once(sk: &Arc<Socket>, msg: &mut SendMsg) -> Result<usize, i32> {
     let pending = sk.common.take_error();
     let result = if pending != 0 {
         Err(pending)
@@ -420,19 +510,107 @@ fn send(sk: &Arc<Socket>, msg: &mut SendMsg) -> Result<usize, i32> {
         sk.ops().sendmsg(sk, msg)
     };
     discard_rights(core::mem::take(&mut msg.rights));
-    if result == Err(EPIPE) && msg.flags & MSG_NOSIGNAL == 0 {
+    result
+}
+
+/// SIGPIPE for a send that failed with EPIPE, unless MSG_NOSIGNAL.
+fn sigpipe(result: Result<usize, i32>, flags: u32) -> Result<usize, i32> {
+    if result == Err(EPIPE) && flags & MSG_NOSIGNAL == 0 {
         super::signal::raise_sigpipe();
     }
     result
 }
 
-/// Receive into `msg` on `sk`, reporting a pending error first.
-fn receive(sk: &Arc<Socket>, msg: &mut RecvMsg) -> Result<usize, i32> {
+/// A send of `len` bytes that `fill(offset, piece)` copies in. A stream
+/// moves them in pieces of at most MAX_IO and returns the bytes sent once a
+/// piece goes short or fails after earlier pieces went (Linux returns the
+/// count, and raises no SIGPIPE, once anything was sent). A datagram or
+/// record goes whole, and one longer than MAX_IO is EMSGSIZE. `rights` and
+/// `dest` go with the first piece.
+fn send_all(
+    sk: &Arc<Socket>,
+    len: usize,
+    flags: u32,
+    nonblock: bool,
+    mut dest: Option<SockAddr>,
+    mut rights: Vec<FileDescriptor>,
+    mut fill: impl FnMut(usize, &mut [u8]) -> Result<(), i32>,
+) -> Result<usize, i32> {
+    if sk.kind != SOCK_STREAM && len > MAX_IO {
+        discard_rights(rights);
+        return Err(EMSGSIZE);
+    }
+    let mut piece = Vec::new();
+    if piece.try_reserve_exact(len.min(MAX_IO)).is_err() {
+        discard_rights(rights);
+        return Err(ENOMEM);
+    }
+    let cred = send_cred(sk);
+    let mut sent = 0;
+    loop {
+        let take = (len - sent).min(MAX_IO);
+        piece.clear();
+        piece.resize(take, 0);
+        let result = fill(sent, &mut piece).and_then(|()| {
+            let mut msg = SendMsg {
+                data: &piece,
+                dest: dest.take(),
+                flags,
+                nonblock,
+                rights: core::mem::take(&mut rights),
+                cred,
+            };
+            send_once(sk, &mut msg)
+        });
+        discard_rights(core::mem::take(&mut rights));
+        match result {
+            Ok(n) => {
+                sent += n;
+                if n < take || sent == len {
+                    return Ok(sent);
+                }
+            }
+            Err(_) if sent > 0 => return Ok(sent),
+            Err(errno) => return sigpipe(Err(errno), flags),
+        }
+    }
+}
+
+/// A receive into `msg` on `sk` that hands the message to `deliver`, the
+/// copy to the caller. Stream bytes an earlier receive could not copy come
+/// first, from the stash; bytes this one cannot copy go back there.
+fn receive(
+    sk: &Arc<Socket>,
+    msg: &mut RecvMsg,
+    deliver: &mut dyn FnMut(&mut RecvMsg) -> Result<(), i32>,
+) -> Result<usize, i32> {
+    if sk.kind == SOCK_STREAM {
+        let peek = msg.flags & MSG_PEEK != 0;
+        if let Some(part) = sk.common.take_stash(msg.cap, peek) {
+            let (data, rights) = part?;
+            msg.data = data;
+            msg.rights = rights;
+            let received = msg.data.len();
+            if let Err(errno) = deliver(msg) {
+                if !peek {
+                    let data = core::mem::take(&mut msg.data);
+                    let rights = core::mem::take(&mut msg.rights);
+                    if let Err((_, rights)) = sk.common.put_back(data, rights) {
+                        // Without memory to rejoin them, the bytes are lost
+                        // and the descriptors closed.
+                        discard_rights(rights);
+                    }
+                }
+                return Err(errno);
+            }
+            return Ok(received);
+        }
+    }
     let pending = sk.common.take_error();
     if pending != 0 {
         return Err(pending);
     }
-    sk.ops().recvmsg(sk, msg)
+    sk.ops().recvmsg_with(sk, msg, deliver)
 }
 
 /// The identity a send carries: AF_UNIX's peers can ask for it.
@@ -448,51 +626,58 @@ fn is_nonblocking(status: u32, msg_flags: u32) -> bool {
     status & status_flags::O_NONBLOCK != 0 || msg_flags & MSG_DONTWAIT != 0
 }
 
+fn new_recv(cap: usize, flags: u32, nonblock: bool) -> RecvMsg {
+    RecvMsg {
+        cap: cap.min(MAX_IO),
+        data: Vec::new(),
+        flags,
+        nonblock,
+        out_flags: 0,
+        from: None,
+        rights: Vec::new(),
+    }
+}
+
 /// write(2) on a socket: a send with no flags, which always raises SIGPIPE
 /// for EPIPE. Called with PM released.
 pub(crate) fn socket_write(sk: &Arc<Socket>, data: &[u8], nonblock: bool) -> SyscallResult {
-    let mut msg = SendMsg {
-        data,
-        dest: None,
-        flags: 0,
-        nonblock,
-        rights: Vec::new(),
-        cred: send_cred(sk),
-    };
-    to_result(send(sk, &mut msg).map(|n| n as u64))
+    to_result(
+        send_all(sk, data.len(), 0, nonblock, None, Vec::new(), |at, piece| {
+            piece.copy_from_slice(&data[at..at + piece.len()]);
+            Ok(())
+        })
+        .map(|n| n as u64),
+    )
 }
 
 /// read(2) on a socket: a receive with no flags. Called with PM released.
+/// A read of zero bytes returns 0 at once, as Linux's sock_read_iter does.
 pub(crate) fn socket_read(
     sk: &Arc<Socket>,
     buf_ptr: u64,
     count: usize,
     nonblock: bool,
 ) -> SyscallResult {
+    if count == 0 {
+        return SyscallResult::Ok(0);
+    }
     to_result((|| {
-        let mut msg = RecvMsg {
-            cap: count.min(MAX_IO),
-            data: Vec::new(),
-            flags: 0,
-            nonblock,
-            out_flags: 0,
-            from: None,
-            rights: Vec::new(),
-        };
-        let received = receive(sk, &mut msg);
+        let mut msg = new_recv(count, 0, nonblock);
+        let received = receive(sk, &mut msg, &mut |msg| {
+            user(userptr::write_user_bytes(
+                buf_ptr,
+                msg.data.as_ptr(),
+                msg.data.len(),
+            ))
+        });
         discard_rights(core::mem::take(&mut msg.rights));
-        let received = received?;
-        user(userptr::write_user_bytes(
-            buf_ptr,
-            msg.data.as_ptr(),
-            msg.data.len(),
-        ))?;
-        Ok(received as u64)
+        Ok(received? as u64)
     })())
 }
 
 /// sendto(fd, buf, len, flags, dest_addr, addrlen); send is sendto with no
-/// address.
+/// address. A destination with addrlen 0 is no destination, except on a UDP
+/// socket, where Linux's udp_sendmsg finds it too short (EINVAL).
 pub fn sys_sendto(
     fd: u64,
     buf_ptr: u64,
@@ -504,21 +689,29 @@ pub fn sys_sendto(
     to_result((|| {
         let (sk, status) = socket_from_fd(fd as i32)?;
         let flags = msg_flags as u32;
-        let dest = if dest_addr_ptr != 0 {
-            Some(read_sockaddr(dest_addr_ptr, addr_len(addrlen)?, sk.family)?)
-        } else {
-            None
+        let dest = match (dest_addr_ptr, addr_len(addrlen)?) {
+            (0, _) => None,
+            (_, 0) if sk.family == AF_INET && sk.kind == SOCK_DGRAM => return Err(EINVAL),
+            (_, 0) => None,
+            (ptr, len) => Some(read_sockaddr(ptr, len, sk.family)?),
         };
-        let data = copy_in(buf_ptr, (len as usize).min(MAX_IO))?;
-        let mut msg = SendMsg {
-            data: &data,
-            dest,
+        let len = len as usize;
+        let sent = send_all(
+            &sk,
+            len,
             flags,
-            nonblock: is_nonblocking(status, flags),
-            rights: Vec::new(),
-            cred: send_cred(&sk),
-        };
-        Ok(send(&sk, &mut msg)? as u64)
+            is_nonblocking(status, flags),
+            dest,
+            Vec::new(),
+            |at, piece| {
+                user(userptr::read_user_bytes(
+                    piece.as_mut_ptr(),
+                    buf_ptr + at as u64,
+                    piece.len(),
+                ))
+            },
+        )?;
+        Ok(sent as u64)
     })())
 }
 
@@ -547,23 +740,16 @@ pub fn sys_recvfrom(
         if len > 0 && !crate::memory::layout::is_valid_user_range(buf_ptr, len.min(MAX_IO)) {
             return Err(EFAULT);
         }
-        let mut msg = RecvMsg {
-            cap: len.min(MAX_IO),
-            data: Vec::new(),
-            flags,
-            nonblock: is_nonblocking(status, flags),
-            out_flags: 0,
-            from: None,
-            rights: Vec::new(),
-        };
-        let received = receive(&sk, &mut msg);
+        let mut msg = new_recv(len, flags, is_nonblocking(status, flags));
+        let received = receive(&sk, &mut msg, &mut |msg| {
+            user(userptr::write_user_bytes(
+                buf_ptr,
+                msg.data.as_ptr(),
+                msg.data.len(),
+            ))
+        });
         discard_rights(core::mem::take(&mut msg.rights));
         let received = received?;
-        user(userptr::write_user_bytes(
-            buf_ptr,
-            msg.data.as_ptr(),
-            msg.data.len(),
-        ))?;
         if src_addr_ptr != 0 {
             write_from(msg.from.as_ref(), src_addr_ptr, addrlen_ptr)?;
         }
@@ -621,26 +807,29 @@ fn read_iovecs(ptr: u64, count: u64) -> Result<(Vec<IoVec>, usize), i32> {
     Ok((iovs, total))
 }
 
-/// Gather up to MAX_IO bytes from the iovecs.
-fn gather(iovs: &[IoVec], total: usize) -> Result<Vec<u8>, i32> {
-    let len = total.min(MAX_IO);
-    let mut data = Vec::new();
-    data.try_reserve_exact(len).map_err(|_| ENOMEM)?;
+/// Copy the bytes of the iovecs from byte `skip` on into `out`.
+fn gather(iovs: &[IoVec], skip: usize, out: &mut [u8]) -> Result<(), i32> {
+    let mut skip = skip;
+    let mut at = 0;
     for iov in iovs {
-        let room = len - data.len();
-        if room == 0 {
+        if at == out.len() {
             break;
         }
-        let take = (iov.len as usize).min(room);
-        let at = data.len();
-        data.resize(at + take, 0);
+        let len = iov.len as usize;
+        if skip >= len {
+            skip -= len;
+            continue;
+        }
+        let take = (len - skip).min(out.len() - at);
         user(userptr::read_user_bytes(
-            data[at..].as_mut_ptr(),
-            iov.base,
+            out[at..].as_mut_ptr(),
+            iov.base + skip as u64,
             take,
         ))?;
+        at += take;
+        skip = 0;
     }
-    Ok(data)
+    Ok(())
 }
 
 /// Scatter `data` over the iovecs.
@@ -729,83 +918,110 @@ fn read_rights(sk: &Socket, control: u64, controllen: u64) -> Result<Vec<FileDes
     Ok(rights)
 }
 
-/// sendmsg(fd, msg, flags)
+/// sendmsg(fd, msg, flags). A msg_namelen of 0 is no destination and one
+/// past sockaddr_storage is clamped to it, as Linux's copy_msghdr_from_user
+/// does; a negative one is EINVAL.
 pub fn sys_sendmsg(fd: u64, msg_ptr: u64, msg_flags: u64) -> SyscallResult {
     to_result((|| {
         let (sk, status) = socket_from_fd(fd as i32)?;
         let flags = msg_flags as u32;
         let hdr: MsgHdr =
             userptr::copy_from_user(msg_ptr as *const MsgHdr).map_err(|e| e as i32)?;
+        if (hdr.namelen as i32) < 0 {
+            return Err(EINVAL);
+        }
         let (iovs, total) = read_iovecs(hdr.iov, hdr.iovlen)?;
         let dest = if hdr.name != 0 && hdr.namelen != 0 {
-            Some(read_sockaddr(hdr.name, hdr.namelen, sk.family)?)
+            Some(read_sockaddr(
+                hdr.name,
+                hdr.namelen.min(SOCKADDR_STORAGE),
+                sk.family,
+            )?)
         } else {
             None
         };
-        let data = gather(&iovs, total)?;
         let rights = read_rights(&sk, hdr.control, hdr.controllen)?;
-        let mut msg = SendMsg {
-            data: &data,
-            dest,
+        let sent = send_all(
+            &sk,
+            total,
             flags,
-            nonblock: is_nonblocking(status, flags),
+            is_nonblocking(status, flags),
+            dest,
             rights,
-            cred: send_cred(&sk),
-        };
-        Ok(send(&sk, &mut msg)? as u64)
+            |at, piece| gather(&iovs, at, piece),
+        )?;
+        Ok(sent as u64)
     })())
 }
 
-/// Install received descriptors and describe them in the caller's control
-/// buffer, as many as fit. Returns the control bytes used and whether some
-/// were left out (MSG_CTRUNC); those are closed.
+/// Install received descriptors and describe them in one SCM_RIGHTS message
+/// in the caller's control buffer: as many as the buffer holds and the
+/// descriptor limit allows. As on Linux this never fails the receive: what
+/// cannot be installed or described is closed and the message is truncated
+/// (MSG_CTRUNC). Returns the control bytes used, whether it was truncated,
+/// and the descriptors installed. The numbers are written before anything
+/// is installed, so a control buffer the caller cannot take installs none.
 fn deliver_rights(
     rights: Vec<FileDescriptor>,
     control: u64,
     controllen: u64,
     cloexec: bool,
-) -> Result<(usize, bool), i32> {
+) -> (usize, bool, Vec<i32>) {
     if rights.is_empty() {
-        return Ok((0, false));
+        return (0, false, Vec::new());
     }
     let room = if control == 0 || (controllen as usize) < CMSG_HDR {
         0
     } else {
         (controllen as usize - CMSG_HDR) / 4
     };
-    let mut rights = rights;
-    let fit = room.min(rights.len());
-    let rest = rights.split_off(fit);
-    let truncated = !rest.is_empty();
-    discard_rights(rest);
-    if fit == 0 {
-        return Ok((0, truncated));
+    let want = room.min(rights.len());
+    let slots = match hold_prefix(want) {
+        Ok((slots, _)) if !slots.is_empty() => slots,
+        Ok((slots, _)) => {
+            discard_rights(rights);
+            return (0, true, slots);
+        }
+        Err(_) => {
+            discard_rights(rights);
+            return (0, true, Vec::new());
+        }
+    };
+    let fit = slots.len();
+    let len = CMSG_HDR + fit * 4;
+    let mut header = [0u8; CMSG_HDR];
+    header[..8].copy_from_slice(&(len as u64).to_ne_bytes());
+    header[8..12].copy_from_slice(&SOL_SOCKET.to_ne_bytes());
+    header[12..16].copy_from_slice(&SCM_RIGHTS.to_ne_bytes());
+    let written = user(userptr::write_user_bytes(control, header.as_ptr(), CMSG_HDR)).and_then(
+        |()| {
+            user(userptr::write_user_bytes(
+                control + CMSG_HDR as u64,
+                slots.as_ptr() as *const u8,
+                fit * 4,
+            ))
+        },
+    );
+    if written.is_err() {
+        unhold(&slots);
+        discard_rights(rights);
+        return (0, true, Vec::new());
     }
-    let entries: Vec<FileDescriptor> = rights
-        .into_iter()
-        .map(|mut entry| {
+    let truncated = fit < rights.len();
+    let mut rights = rights.into_iter();
+    install(
+        &slots,
+        rights.by_ref().take(fit).map(|mut entry| {
             entry.flags = if cloexec { flags::FD_CLOEXEC } else { 0 };
             entry
-        })
-        .collect();
-    let fds = install_all(entries)?;
-    let len = CMSG_HDR + fds.len() * 4;
-    let mut cmsg = Vec::new();
-    cmsg.try_reserve_exact(len).map_err(|_| ENOMEM)?;
-    cmsg.extend_from_slice(&(len as u64).to_ne_bytes());
-    cmsg.extend_from_slice(&SOL_SOCKET.to_ne_bytes());
-    cmsg.extend_from_slice(&SCM_RIGHTS.to_ne_bytes());
-    for fd in &fds {
-        cmsg.extend_from_slice(&fd.to_ne_bytes());
-    }
-    if let Err(errno) = user(userptr::write_user_bytes(control, cmsg.as_ptr(), len)) {
-        close_own(&fds);
-        return Err(errno);
-    }
-    Ok((cmsg_align(len).min(controllen as usize), truncated))
+        }),
+    );
+    discard_rights(rights);
+    (cmsg_align(len).min(controllen as usize), truncated, slots)
 }
 
-/// recvmsg(fd, msg, flags)
+/// recvmsg(fd, msg, flags). The returned msg_flags carry MSG_CMSG_CLOEXEC
+/// when it was asked for, as Linux's do.
 pub fn sys_recvmsg(fd: u64, msg_ptr: u64, msg_flags: u64) -> SyscallResult {
     to_result((|| {
         let (sk, status) = socket_from_fd(fd as i32)?;
@@ -820,16 +1036,8 @@ pub fn sys_recvmsg(fd: u64, msg_ptr: u64, msg_flags: u64) -> SyscallResult {
                 return Err(EFAULT);
             }
         }
-        let mut msg = RecvMsg {
-            cap: total.min(MAX_IO),
-            data: Vec::new(),
-            flags,
-            nonblock: is_nonblocking(status, flags),
-            out_flags: 0,
-            from: None,
-            rights: Vec::new(),
-        };
-        let received = receive(&sk, &mut msg);
+        let mut msg = new_recv(total, flags, is_nonblocking(status, flags));
+        let received = receive(&sk, &mut msg, &mut |msg| scatter(&iovs, &msg.data));
         let rights = core::mem::take(&mut msg.rights);
         let received = match received {
             Ok(n) => n,
@@ -838,31 +1046,41 @@ pub fn sys_recvmsg(fd: u64, msg_ptr: u64, msg_flags: u64) -> SyscallResult {
                 return Err(errno);
             }
         };
-        scatter(&iovs, &msg.data)?;
         let namelen_ptr = msg_ptr + MSGHDR_NAMELEN;
-        if hdr.name != 0 {
-            write_from(msg.from.as_ref(), hdr.name, namelen_ptr)?;
+        let named = if hdr.name != 0 {
+            write_from(msg.from.as_ref(), hdr.name, namelen_ptr)
         } else {
-            user(userptr::copy_to_user(namelen_ptr as *mut u32, &0u32))?;
+            user(userptr::copy_to_user(namelen_ptr as *mut u32, &0u32))
+        };
+        if let Err(errno) = named {
+            discard_rights(rights);
+            return Err(errno);
         }
-        let (used, truncated) = deliver_rights(
+        let (used, truncated, installed) = deliver_rights(
             rights,
             hdr.control,
             hdr.controllen,
             flags & MSG_CMSG_CLOEXEC != 0,
-        )?;
-        let mut out_flags = msg.out_flags;
+        );
+        let mut out_flags = msg.out_flags | (flags & MSG_CMSG_CLOEXEC);
         if truncated {
             out_flags |= MSG_CTRUNC;
         }
-        user(userptr::copy_to_user(
+        let header = user(userptr::copy_to_user(
             (msg_ptr + MSGHDR_CONTROLLEN) as *mut u64,
             &(used as u64),
-        ))?;
-        user(userptr::copy_to_user(
-            (msg_ptr + MSGHDR_FLAGS) as *mut i32,
-            &(out_flags as i32),
-        ))?;
+        ))
+        .and_then(|()| {
+            user(userptr::copy_to_user(
+                (msg_ptr + MSGHDR_FLAGS) as *mut i32,
+                &(out_flags as i32),
+            ))
+        });
+        if let Err(errno) = header {
+            // The caller cannot learn which descriptors arrived: close them.
+            close_own(&installed);
+            return Err(errno);
+        }
         Ok(received as u64)
     })())
 }

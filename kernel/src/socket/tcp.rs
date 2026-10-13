@@ -16,10 +16,6 @@ use super::wait::{now_ns, wait_until};
 use crate::net::tcp::{self, ConnectionId, TcpState};
 use crate::syscall::errno;
 
-const AF_INET: u16 = 2;
-const SOCK_STREAM: u16 = 1;
-const IPPROTO_TCP: u16 = 6;
-
 const POLLIN: u16 = crate::ipc::poll::events::POLLIN as u16;
 const POLLOUT: u16 = crate::ipc::poll::events::POLLOUT as u16;
 const POLLERR: u16 = crate::ipc::poll::events::POLLERR as u16;
@@ -145,12 +141,8 @@ impl ProtoOps for TcpSock {
             addr: conn.remote_ip,
             port: conn.remote_port,
         };
-        match Socket::new(
-            AF_INET,
-            SOCK_STREAM,
-            IPPROTO_TCP,
-            SocketProto::Tcp(TcpSock::connected(conn)),
-        ) {
+        // The connection starts with the listener's options, as on Linux.
+        match Socket::new_child(sk, SocketProto::Tcp(TcpSock::connected(conn))) {
             Ok(socket) => Ok((socket, peer)),
             Err(error) => {
                 let _ = tcp::tcp_close(&conn);

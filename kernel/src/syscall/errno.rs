@@ -171,6 +171,9 @@ pub const ENOPROTOOPT: i32 = 92;
 /// Protocol not supported
 pub const EPROTONOSUPPORT: i32 = 93;
 
+/// Socket type not supported
+pub const ESOCKTNOSUPPORT: i32 = 94;
+
 /// Cannot assign requested address
 pub const EADDRNOTAVAIL: i32 = 99;
 
