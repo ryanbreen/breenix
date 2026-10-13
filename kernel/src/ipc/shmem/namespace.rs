@@ -548,6 +548,11 @@ pub fn mmap_fd(
         if kind == 3 && flags.bits() & !KNOWN != 0 {
             return Err(errno::EOPNOTSUPP as u64);
         }
+        // Linux recognizes MAP_GROWSDOWN as a legacy flag but refuses it
+        // for file mappings, including tmpfs: EINVAL, not EOPNOTSUPP.
+        if flags.bits() & 0x100 != 0 {
+            return Err(errno::EINVAL as u64);
+        }
         let flags = if kind == 3 {
             MmapFlags::from_bits_truncate((flags.bits() & !3) | 1)
         } else {

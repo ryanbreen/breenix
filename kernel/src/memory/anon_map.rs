@@ -343,7 +343,7 @@ pub(crate) fn prepare_write(
         if table.translate(VirtAddr::new(address)).is_none() {
             if is_shm {
                 crate::ipc::shmem::request_signal_page(owner, address)
-                    .map_err(|_| PrepareWriteError::Fault)?;
+                    .map_err(|e| if e == crate::syscall::errno::EAGAIN as u64 { PrepareWriteError::Retry } else { PrepareWriteError::Fault })?;
             }
             let table = owner
                 .page_table

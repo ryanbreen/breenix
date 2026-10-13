@@ -1288,11 +1288,107 @@ fn appends_from_distinct_descriptions_are_serialized() {
     let b = ipc_file(fd_number(object::open_path(path, 2, 0)));
     std::thread::scope(|scope| {
         for (file, byte) in [(a.clone(), b'a'), (b, b'b')] {
-            scope.spawn(move || for _ in 0..1000 { assert_eq!(file.write(&[byte], true), Ok(1)); });
+            scope.spawn(move || {
+                for _ in 0..1000 {
+                    assert_eq!(file.write(&[byte], true), Ok(1));
+                }
+            });
         }
     });
-    let mut st = syscall::fs::Stat::zeroed(); a.fill_stat(&mut st); assert_eq!(st.st_size, 2000);
-    a.seek(0, 0).unwrap(); let mut bytes = [0u8; 2000]; assert_eq!(a.read(bytes.as_mut_ptr() as u64, bytes.len()), Ok(2000));
-    assert_eq!(bytes.iter().filter(|b| **b == b'a').count(), 1000); assert_eq!(bytes.iter().filter(|b| **b == b'b').count(), 1000);
+    let mut st = syscall::fs::Stat::zeroed();
+    a.fill_stat(&mut st);
+    assert_eq!(st.st_size, 2000);
+    a.seek(0, 0).unwrap();
+    let mut bytes = [0u8; 2000];
+    assert_eq!(a.read(bytes.as_mut_ptr() as u64, bytes.len()), Ok(2000));
+    assert_eq!(bytes.iter().filter(|b| **b == b'a').count(), 1000);
+    assert_eq!(bytes.iter().filter(|b| **b == b'b').count(), 1000);
     object::unlink_path(path);
+}
+
+#[test]
+fn validated_shared_mappings_recognize_legacy_hints_and_refuse_file_growth() {
+    use memory::vma::{MmapFlags, Protection};
+    let _lock = kernel_fixture();
+    let fd = fd_number(object::open_path("/dev/shm/map-flags", 0xc2, 0o600));
+    ipc_file(fd).truncate(4096).unwrap();
+    for hint in [0x800, 0x1000, 0x10000, 0x20000] {
+        assert!(matches!(
+            object::mmap_fd(
+                fd,
+                0,
+                4096,
+                Protection::READ,
+                MmapFlags::from_bits_truncate(3 | hint),
+                0
+            ),
+            Some(syscall::SyscallResult::Ok(_))
+        ));
+    }
+    assert_eq!(
+        object::mmap_fd(
+            fd,
+            0,
+            4096,
+            Protection::READ,
+            MmapFlags::from_bits_truncate(3 | 0x100),
+            0
+        ),
+        Some(syscall::SyscallResult::Err(22))
+    );
+    assert_eq!(
+        object::mmap_fd(
+            fd,
+            0,
+            4096,
+            Protection::READ,
+            MmapFlags::from_bits_truncate(3 | 0x80000),
+            0
+        ),
+        Some(syscall::SyscallResult::Err(95))
+    );
+    let mapped = match object::mmap_fd(
+        fd,
+        0,
+        4096,
+        Protection::READ,
+        MmapFlags::from_bits_truncate(3 | 0x2000),
+        0,
+    ) {
+        Some(syscall::SyscallResult::Ok(a)) => a,
+        r => panic!("{r:?}"),
+    };
+    let guard = process::manager();
+    assert!(guard.as_ref().unwrap().rows[&1]
+        .page_table
+        .as_deref()
+        .unwrap()
+        .translate(memory::Addr::new(mapped))
+        .is_some());
+    drop(guard);
+    object::unlink_path("/dev/shm/map-flags");
+}
+
+#[test]
+fn a_full_signal_population_queue_can_make_progress_after_draining() {
+    use memory::vma::Protection;
+    let _lock = kernel_fixture();
+    let obj = object::ShmObject::new(65 * 4096, 0o600, 0, 0).unwrap();
+    let base =
+        object::map_object(&obj, 0, 65 * 4096, Protection::from_bits(3).unwrap(), false).unwrap();
+    {
+        let guard = process::manager();
+        let p = &guard.as_ref().unwrap().rows[&1];
+        for page in 0..64 {
+            object::request_signal_page(p, base + page * 4096).unwrap();
+        }
+        assert_eq!(object::request_signal_page(p, base + 64 * 4096), Err(11));
+    }
+    object::drain_signal_pages();
+    {
+        let guard = process::manager();
+        object::request_signal_page(&guard.as_ref().unwrap().rows[&1], base + 64 * 4096).unwrap();
+    }
+    object::drain_signal_pages();
+    assert_eq!(obj.allocated_pages(), 65);
 }

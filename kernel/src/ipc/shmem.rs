@@ -396,7 +396,7 @@ pub(crate) fn request_signal_page(
     let slot = pages
         .iter_mut()
         .find(|p| p.is_none())
-        .ok_or(ENOMEM as u64)?;
+        .ok_or(EAGAIN as u64)?;
     *slot = Some(SignalPage {
         object,
         offset,
