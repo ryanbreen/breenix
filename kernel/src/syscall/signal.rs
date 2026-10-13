@@ -358,8 +358,17 @@ fn send_signal(target: ProcessId, sig: u32, sender: Sender, info: SigInfo, to: R
         };
 
         // SIGKILL cannot be caught or blocked, and ends every thread of the
-        // process, whichever of them its sender named.
+        // process, whichever of them its sender named. It is made pending
+        // here, in the acquisition that checked the target (for
+        // `Sender::KernelToImage`, its program image), before the lock is
+        // released for the kill: an exec that commits after that finds it
+        // pending, as a signal generated before an exec stays pending
+        // across it, and one that committed before failed the check.
         if sig == SIGKILL {
+            if let Some(row) = manager.get_process_mut(target) {
+                row.signals.set_pending(SIGKILL);
+                row.group_exit_code.get_or_insert(-(SIGKILL as i32));
+            }
             drop(manager_guard);
             crate::signal::delivery::terminate_thread_group_peers(target, -(SIGKILL as i32));
             kill_process_now(target, -(SIGKILL as i32));
