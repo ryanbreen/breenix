@@ -110,13 +110,23 @@ const IER_TRANSMITTER_EMPTY: u8 = 0x02;
 const LSR_TRANSMITTER_EMPTY: u8 = 0x20;
 const LSR_TRANSMITTER_IDLE: u8 = 0x40;
 
+/// SCRATCH forcing: every COM1 port access costs 200 us more, a slow trap.
+fn trap_cost() {
+    let hz = crate::time::tsc::frequency_hz();
+    if hz == 0 { return; }
+    let start = crate::time::tsc::read_tsc();
+    while crate::time::tsc::read_tsc().wrapping_sub(start) < hz / 5000 { core::hint::spin_loop(); }
+}
+
 fn com1_burst() -> usize {
     if SERIAL1_FIFO.load(core::sync::atomic::Ordering::Relaxed) { 16 } else { 1 }
 }
 
 fn com1_status() -> u8 {
     // SAFETY: COM1's line status register.
-    unsafe { x86_64::instructions::port::Port::<u8>::new(COM1_PORT + 5).read() }
+    let status = unsafe { x86_64::instructions::port::Port::<u8>::new(COM1_PORT + 5).read() };
+    trap_cost();
+    status
 }
 
 fn write_com1_data(bytes: &[u8]) {
@@ -124,6 +134,7 @@ fn write_com1_data(bytes: &[u8]) {
     for &byte in bytes {
         // SAFETY: COM1's data port, written with SERIAL1 held.
         unsafe { data.write(byte) };
+        trap_cost();
     }
 }
 
@@ -132,6 +143,7 @@ fn write_com1_ier(armed: bool) {
     // SAFETY: COM1's interrupt enable register, written with SERIAL1 held or,
     // disarming only, from its interrupt (`transmitter_interrupt`).
     unsafe { x86_64::instructions::port::Port::<u8>::new(COM1_PORT + 1).write(ier) };
+    trap_cost();
 }
 
 /// Make room in the UART's FIFO if the status register shows the transmitter
