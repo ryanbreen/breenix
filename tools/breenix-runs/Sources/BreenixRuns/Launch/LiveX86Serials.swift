@@ -4,7 +4,9 @@ import Darwin
 /// A stream is an owned child: stop returns only after it has exited and callbacks drained.
 public protocol X86SerialStream: AnyObject {
     func stop()
+    var isReading: Bool { get }
 }
+public extension X86SerialStream { var isReading: Bool { true } }
 public protocol X86SerialStreaming {
     func start(_ request: ProcessRequest, receive: @escaping @Sendable (Data) -> Void) throws -> X86SerialStream
 }
@@ -94,9 +96,10 @@ final class SSHSerialStream: X86SerialStream, @unchecked Sendable {
 /// JSON/base64 framing keeps the two serial byte streams separate, including partial lines.
 /// The gate never consumes these files: harvest replaces them after the stream is stopped.
 final class LiveX86Serials: @unchecked Sendable {
-    private struct Frame: Decodable { var boot: Int; var stream: String; var data: String }
+    private struct Frame: Decodable { var boot: Int; var stream: String; var data: String; var offset: Int? }
     private let lock = NSLock()
     private var pending = Data()
+    private var offsets: [String: Int] = [:]
     private var bootByStream: [String: Int] = [:]
     private var handles: [String: FileHandle] = [:]
     private var registeredID: String?
@@ -147,13 +150,31 @@ final class LiveX86Serials: @unchecked Sendable {
             pending.removeSubrange(...newline)
             guard let frame = try? JSONDecoder().decode(Frame.self, from: line), frame.boot > 0,
                   let handle = handles[frame.stream], let data = Data(base64Encoded: frame.data) else { continue }
+            let key = "\(frame.boot):\(frame.stream)"
+            let offset = frame.offset ?? offsets[key, default: 0]
+            let known = offsets[key] != nil
+            let received = offsets[key, default: 0]
+            guard offset <= received, offset + data.count >= received else { continue }
+            let fresh = data.dropFirst(received - offset)
+            offsets[key] = offset + data.count
+            if fresh.isEmpty && known { continue }
             if bootByStream[frame.stream] != frame.boot {
                 if bootByStream[frame.stream] != nil { handle.write(Data("\n".utf8)) }
                 handle.write(Data("==== breenix-runs boot \(frame.boot): breenix_gate_\(frame.boot)/serial_\(frame.stream).log ====\n".utf8))
                 bootByStream[frame.stream] = frame.boot
             }
-            handle.write(data)
+            handle.write(fresh)
         }
+    }
+
+    var resumeOffsets: [String: Int] {
+        lock.lock(); defer { lock.unlock() }
+        return offsets
+    }
+
+    func resetConnection() {
+        lock.lock(); defer { lock.unlock() }
+        pending.removeAll()
     }
 
     func finish(status: Int32) {
@@ -179,8 +200,12 @@ final class X86LaunchSignals: @unchecked Sendable {
     var signalNumber: Int32? { lock.lock(); defer { lock.unlock() }; return received }
 
     func receive(_ number: Int32) {
-        lock.lock(); received = number; lock.unlock()
-        runner.interrupt()
+        lock.lock()
+        let first = received == nil
+        if first { received = number }
+        lock.unlock()
+        // Further signals must not kill cancellation or evidence recovery.
+        if first { runner.interrupt() }
     }
 
     init(runner: ProcessRunner, installHandlers: Bool = true) {
