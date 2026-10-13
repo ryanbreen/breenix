@@ -11,6 +11,12 @@ use libbreenix::io;
 use libbreenix::pty::{self, O_RDWR, O_NOCTTY};
 use libbreenix::types::Fd;
 
+fn ioctl_u32(fd: Fd, request: u64, value: &mut u32) -> i64 {
+    unsafe { libbreenix::syscall::raw::syscall3(
+        libbreenix::syscall::nr::IOCTL, fd.raw(), request, value as *mut u32 as u64,
+    ) as i64 }
+}
+
 fn main() {
     println!("=== PTY Integration Test ===");
 
@@ -34,6 +40,36 @@ fn main() {
         }
     };
     println!("  posix_openpt returned fd");
+
+    // Positive ioctl checks use the caller's mapped userspace stack.
+    let mut number = u32::MAX;
+    let mut locked = u32::MAX;
+    if ioctl_u32(master_fd, 0x80045430, &mut number) != 0 || number >= 256
+        || ioctl_u32(master_fd, 0x80045439, &mut locked) != 0 || locked != 1 {
+        println!("FAIL: PTY number or initial lock ioctl");
+        std::process::exit(101);
+    }
+    let mut unlock = 0;
+    if ioctl_u32(master_fd, 0x40045431, &mut unlock) != 0
+        || ioctl_u32(master_fd, 0x80045439, &mut locked) != 0 || locked != 0 {
+        println!("FAIL: PTY unlock ioctl did not change lock state");
+        std::process::exit(102);
+    }
+    let mut lock = 1;
+    if ioctl_u32(master_fd, 0x40045431, &mut lock) != 0
+        || ioctl_u32(master_fd, 0x80045439, &mut locked) != 0 || locked != 1 {
+        println!("FAIL: PTY relock ioctl did not change lock state");
+        std::process::exit(103);
+    }
+    for request in [0x80045430, 0x80045439, 0x40045431, 0x5413, 0x5414] {
+        let ret = unsafe { libbreenix::syscall::raw::syscall3(
+            libbreenix::syscall::nr::IOCTL, master_fd.raw(), request, u64::MAX,
+        ) as i64 };
+        if ret != -14 {
+            println!("FAIL: PTY ioctl accepted an invalid user pointer");
+            std::process::exit(104);
+        }
+    }
 
     // Test 2: grantpt
     println!("Test 2: grantpt()...");
@@ -74,6 +110,14 @@ fn main() {
         }
     };
     println!("  open slave OK");
+
+    for request in [0x80045430, 0x80045439, 0x40045431] {
+        let mut value = u32::MAX;
+        if ioctl_u32(slave_fd, request, &mut value) != -25 || value != u32::MAX {
+            println!("FAIL: master-only PTY ioctl accepted on slave");
+            std::process::exit(105);
+        }
+    }
 
     // Test 6: Write to master, read from slave - with data verification
     println!("Test 6: master -> slave data flow...");

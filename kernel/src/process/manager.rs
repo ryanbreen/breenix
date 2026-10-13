@@ -762,9 +762,10 @@ impl ProcessManager {
         elf_data: &[u8],
         argv: &[&[u8]],
         cred: &super::credentials::ProcessCredentials,
+        parent_pid: Option<ProcessId>,
     ) -> Result<ProcessId, &'static str> {
         let pid = self.allocate_ordinary_pid();
-        self.build_process_with_argv_at(pid, name, elf_data, argv, cred)?;
+        self.build_process_with_argv_at(pid, name, elf_data, argv, cred, parent_pid)?;
         self.ready_queue.push(pid);
         Ok(pid)
     }
@@ -777,6 +778,7 @@ impl ProcessManager {
         elf_data: &[u8],
         argv: &[&[u8]],
         cred: &super::credentials::ProcessCredentials,
+        parent_pid: Option<ProcessId>,
     ) -> Result<(), &'static str> {
         // --- Page table + ELF load (build_process_at's block) ---
         let mut page_table = crate::memory::process_memory::UnpublishedPageTable::new(
@@ -836,6 +838,12 @@ impl ProcessManager {
         }
 
         let mut process = Process::new(pid, name.clone(), loaded_elf.entry_point);
+        if let Some(parent_pid) = parent_pid {
+            crate::tty::ctty::inherit(
+                &mut process,
+                self.processes.live_row(&parent_pid).ok_or("Parent process not found")?,
+            );
+        }
         process.cred = cred.clone();
         process.page_table = Some(page_table.publish());
         // Unpublished-construction ownership boundary (issue 588). From here
@@ -952,14 +960,13 @@ impl ProcessManager {
         if !crate::process::limits::fork_allowed(self, parent_pid) {
             return Err("Process limit exceeded");
         }
-        let (parent_pgid, (parent_sid, parent_ctty), parent_cwd, (cred, nice), umask, limits) = {
+        let (parent_pgid, parent_cwd, (cred, nice), umask, limits) = {
             let parent = self
                 .processes
                 .live_row(&parent_pid)
                 .ok_or("Parent process not found")?;
             (
                 parent.pgid,
-                (parent.sid, parent.ctty),
                 parent.cwd.copy(),
                 (parent.cred.clone(), parent.nice),
                 parent.umask,
@@ -968,14 +975,12 @@ impl ProcessManager {
         };
 
         // Create the child process (allocates PID, page table, loads ELF, argv stack).
-        let child_pid = self.create_process_with_argv(name, elf_data, argv, &cred)?;
+        let child_pid = self.create_process_with_argv(name, elf_data, argv, &cred, Some(parent_pid))?;
 
         // Set up the parent-child relationship and inherit attributes.
         if let Some(child) = self.processes.live_row_mut(&child_pid) {
             child.parent = Some(parent_pid);
             child.pgid = parent_pgid;
-            child.sid = parent_sid;
-            child.ctty = parent_ctty;
             child.cwd = parent_cwd;
             child.nice = nice;
             child.umask = umask;
@@ -1267,9 +1272,10 @@ impl ProcessManager {
         elf_data: &[u8],
         argv: &[&[u8]],
         cred: &super::credentials::ProcessCredentials,
+        parent_pid: Option<ProcessId>,
     ) -> Result<ProcessId, &'static str> {
         let pid = self.allocate_ordinary_pid();
-        self.build_process_with_argv_at(pid, name, elf_data, argv, cred)?;
+        self.build_process_with_argv_at(pid, name, elf_data, argv, cred, parent_pid)?;
         self.ready_queue.push(pid);
         Ok(pid)
     }
@@ -1282,6 +1288,7 @@ impl ProcessManager {
         elf_data: &[u8],
         argv: &[&[u8]],
         cred: &super::credentials::ProcessCredentials,
+        parent_pid: Option<ProcessId>,
     ) -> Result<(), &'static str> {
         // For ARM64, stack allocation uses arch_stub::ThreadPrivilege
         use crate::memory::arch_stub::ThreadPrivilege as StackPrivilege;
@@ -1331,6 +1338,12 @@ impl ProcessManager {
         // Create the process
         let entry_point = VirtAddr::new(loaded_elf.entry_point);
         let mut process = Process::new(pid, name.clone(), entry_point);
+        if let Some(parent_pid) = parent_pid {
+            crate::tty::ctty::inherit(
+                &mut process,
+                self.processes.live_row(&parent_pid).ok_or("Parent process not found")?,
+            );
+        }
         process.cred = cred.clone();
         process.page_table = Some(page_table.publish());
         // Unpublished-construction ownership boundary (issue 588). From here
@@ -1472,6 +1485,7 @@ impl ProcessManager {
             elf_data,
             argv,
             &super::credentials::ProcessCredentials::root(),
+            None,
         )?;
         self.hold_init_publication(provisional_pid)
     }
@@ -1510,14 +1524,13 @@ impl ProcessManager {
         if !crate::process::limits::fork_allowed(self, parent_pid) {
             return Err("Process limit exceeded");
         }
-        let (parent_pgid, (parent_sid, parent_ctty), parent_cwd, (cred, nice), umask, limits) = {
+        let (parent_pgid, parent_cwd, (cred, nice), umask, limits) = {
             let parent = self
                 .processes
                 .live_row(&parent_pid)
                 .ok_or("Parent process not found")?;
             (
                 parent.pgid,
-                (parent.sid, parent.ctty),
                 parent.cwd.copy(),
                 (parent.cred.clone(), parent.nice),
                 parent.umask,
@@ -1526,14 +1539,12 @@ impl ProcessManager {
         };
 
         // Create the child process (allocates PID, page table, loads ELF, etc.)
-        let child_pid = self.create_process_with_argv(name, elf_data, argv, &cred)?;
+        let child_pid = self.create_process_with_argv(name, elf_data, argv, &cred, Some(parent_pid))?;
 
         // Set up parent-child relationship and inherit attributes
         if let Some(child) = self.processes.live_row_mut(&child_pid) {
             child.parent = Some(parent_pid);
             child.pgid = parent_pgid;
-            child.sid = parent_sid;
-            child.ctty = parent_ctty;
             child.cwd = parent_cwd;
             child.nice = nice;
             child.umask = umask;
@@ -2823,7 +2834,6 @@ impl ProcessManager {
             parent_name,
             parent_entry_point,
             parent_pgid,
-            (parent_sid, parent_ctty),
             parent_cwd,
             parent_thread_info,
             parent_heap_start,
@@ -2850,7 +2860,6 @@ impl ProcessManager {
                 parent.name.clone(),
                 parent.entry_point,
                 parent.pgid,
-                (parent.sid, parent.ctty),
                 parent.cwd.copy(),
                 _parent_thread.clone(),
                 parent.heap_start,
@@ -2893,8 +2902,10 @@ impl ProcessManager {
         child_process.parent = Some(parent_pid);
         // POSIX: Child inherits parent's process group, session, and working directory
         child_process.pgid = parent_pgid;
-        child_process.sid = parent_sid;
-        child_process.ctty = parent_ctty;
+        crate::tty::ctty::inherit(
+            &mut child_process,
+            self.processes.live_row(&parent_pid).ok_or("Parent process not found")?,
+        );
         child_process.cwd = parent_cwd;
 
         // COPY-ON-WRITE FORK: Share pages between parent and child
@@ -3583,8 +3594,6 @@ impl ProcessManager {
 
         // Capture parent's pgid, sid, and cwd before borrowing page_table
         let parent_pgid = parent.pgid;
-        let parent_sid = parent.sid;
-        let parent_ctty = parent.ctty;
         let parent_cwd = parent.cwd.copy();
 
         // Create the child process with the same entry point
@@ -3592,8 +3601,7 @@ impl ProcessManager {
         child_process.parent = Some(parent_pid);
         // POSIX: Child inherits parent's process group, session, and working directory
         child_process.pgid = parent_pgid;
-        child_process.sid = parent_sid;
-        child_process.ctty = parent_ctty;
+        crate::tty::ctty::inherit(&mut child_process, parent);
         child_process.cwd = parent_cwd;
 
         // Extract parent heap/mmap bounds and memory usage before we drop the parent borrow

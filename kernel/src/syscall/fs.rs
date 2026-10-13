@@ -2874,62 +2874,33 @@ fn handle_devfs_open(
         }
     };
 
-    // For /dev/tty, redirect to the controlling PTY if one exists.
-    // On Linux, /dev/tty is a magic device that refers to the calling process's
-    // controlling terminal. The controlling terminal belongs to the SESSION,
-    // not a single process. Any process in the session can open /dev/tty.
+    // /dev/tty names this process's controlling terminal, including a member
+    // that explicitly detached while other members of its session retained it.
     if matches!(device.device_type, devfs::DeviceType::Tty) {
-        let sid = process.sid;
-        // Drop manager lock before accessing PTY subsystem to avoid lock ordering issues
-        drop(manager_guard);
-
-        // Search active PTYs for one controlled by this session.
-        // The pair's `ctl.session` is the session it is the controlling terminal of.
-        let mut after = None;
-        while let Some(pty_num) = crate::tty::pty::next_active(after) {
-            after = Some(pty_num);
-            if let Some(pair) = crate::tty::pty::get(pty_num) {
-                if pair.ctl.lock().session == Some(sid) {
-                    // Found the controlling PTY: open its slave, on this
-                    // very pair (the descriptor holds the pair it charged).
-                    return open_tty_slave(&pair, flags, native_inode, reserved);
+        use crate::tty::ctty::{TtyId, TtyRef};
+        let Some(id) = process.ctty else {
+            return SyscallResult::Err(6); // ENXIO
+        };
+        let Some(tty) = TtyRef::resolve(id) else {
+            return SyscallResult::Err(6); // ENXIO
+        };
+        return match (id, tty) {
+            (TtyId::Pty(_), TtyRef::Pty(pair)) => {
+                // open_tty_slave takes the process manager itself.
+                drop(manager_guard);
+                open_tty_slave(&pair, flags, native_inode, reserved)
+            }
+            (TtyId::Console, TtyRef::Console(_)) => {
+                let fd_kind = match FileDescriptor::try_opened(FdKind::Device(device.device_type), flags) {
+                    Ok(entry) => entry.with_inode(native_inode),
+                    Err(e) => return SyscallResult::Err(e),
+                };
+                match install_descriptor(&mut process.fd_table, reserved, fd_kind) {
+                    Ok(fd) => SyscallResult::Ok(fd as u64),
+                    Err(_) => SyscallResult::Err(EMFILE as u64),
                 }
             }
-        }
-        // No controlling terminal found — fall through to generic device
-        // Re-acquire manager lock for the generic path. Same NB6 shape as the
-        // ctty-found arm above: graceful ESRCH returns instead of unwrap().
-        let thread_id2 = match crate::task::scheduler::current_thread_id() {
-            Some(id) => id,
-            None => {
-                log::error!("handle_devfs_open: /dev/tty (no ctty): no current thread");
-                return SyscallResult::Err(3); // ESRCH
-            }
-        };
-        let mut manager_guard = crate::process::manager();
-        let process = match manager_guard
-            .as_mut()
-            .and_then(|manager| manager.find_process_by_thread_mut(thread_id2))
-        {
-            Some((_, p)) => p,
-            None => {
-                log::error!(
-                    "handle_devfs_open: /dev/tty (no ctty): process not found for thread {}",
-                    thread_id2
-                );
-                return SyscallResult::Err(3); // ESRCH
-            }
-        };
-        let fd_kind = match FileDescriptor::try_opened(FdKind::Device(device.device_type), flags) {
-            Ok(entry) => entry.with_inode(native_inode),
-            Err(e) => return SyscallResult::Err(e),
-        };
-        return match install_descriptor(&mut process.fd_table, reserved, fd_kind) {
-            Ok(fd) => {
-                log::info!("handle_devfs_open: /dev/tty (no ctty) as fd {}", fd);
-                SyscallResult::Ok(fd as u64)
-            }
-            Err(_) => SyscallResult::Err(EMFILE as u64),
+            _ => SyscallResult::Err(6), // ENXIO
         };
     }
 

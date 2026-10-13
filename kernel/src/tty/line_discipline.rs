@@ -14,9 +14,11 @@
 #![allow(dead_code)]
 
 use alloc::collections::VecDeque;
+use alloc::sync::Arc;
+use core::sync::atomic::{AtomicU64, Ordering};
 use alloc::vec::Vec;
 
-use super::termios::{Termios, ECHO, ECHOE, ECHOK, ICRNL, ISIG, VWERASE};
+use super::termios::{Termios, ECHO, ECHOE, ECHOK, ICRNL, ISIG, VWERASE, ECHONL, IGNCR, INLCR, ISTRIP, IEXTEN, NOFLSH, VEOL, VEOL2, IXON, IXANY, VSTART, VSTOP};
 
 // Signal numbers from kernel/src/signal/constants.rs
 const SIGINT: u32 = 2;
@@ -25,11 +27,6 @@ const SIGTSTP: u32 = 20;
 
 /// Maximum line buffer size for canonical mode
 pub const MAX_CANON: usize = 4096;
-
-/// Most input bytes queued for reading, as Linux's N_TTY_BUF_SIZE - 1.
-/// Input arriving while the queue is full is dropped, so the queue (filled
-/// from interrupt context and by writes to a pseudo-terminal master) stays
-/// bounded; a master writer waits for room instead (`input_room`).
 pub const MAX_INPUT: usize = MAX_CANON - 1;
 
 /// Special marker returned when EOF is detected on empty line
@@ -53,56 +50,73 @@ pub struct LineDiscipline {
     /// Completed lines ready for reading (canonical mode)
     cooked_queue: VecDeque<u8>,
 
+    /// Remaining bytes in each completed line; zero is an out-of-band EOF.
+    line_records: VecDeque<usize>,
+    /// EOF records consume input capacity without carrying a byte.
+    eof_records: usize,
+
     /// Queue for raw mode (characters available immediately)
     raw_queue: VecDeque<u8>,
 
+    /// Input/settings mutation sequence for lock-free waitqueue rechecks.
+    input_epoch: Arc<AtomicU64>,
+
     /// Current column position for echo handling
     column: usize,
+
+    /// Output flow controlled by received START/STOP characters.
+    flow_stopped: bool,
 }
 
 impl LineDiscipline {
     /// Create a new line discipline with default termios settings
     pub fn new() -> Self {
-        Self {
-            termios: Termios::default(),
-            line_buffer: Vec::with_capacity(MAX_CANON),
-            cooked_queue: VecDeque::new(),
-            raw_queue: VecDeque::new(),
-            column: 0,
-        }
+        Self::try_new().expect("boot console line discipline allocation")
     }
 
-    /// `new`, with every queue's full size reserved up front, failing
-    /// instead of panicking when the memory is not there. Input never grows
-    /// a queue past its reserve, so nothing allocates after this.
+    /// Reserve every input queue before the discipline can reach an IRQ.
+    /// User-created terminals propagate allocation failure as ENOMEM.
     pub fn try_new() -> Result<Self, i32> {
-        const ENOMEM: i32 = 12;
         let mut line_buffer = Vec::new();
-        line_buffer.try_reserve_exact(MAX_CANON).map_err(|_| ENOMEM)?;
         let mut cooked_queue = VecDeque::new();
-        cooked_queue
-            .try_reserve_exact(MAX_INPUT + MAX_CANON)
-            .map_err(|_| ENOMEM)?;
+        let mut line_records = VecDeque::new();
         let mut raw_queue = VecDeque::new();
-        raw_queue.try_reserve_exact(MAX_INPUT).map_err(|_| ENOMEM)?;
+        line_buffer.try_reserve_exact(MAX_CANON).map_err(|_| 12)?;
+        cooked_queue.try_reserve_exact(MAX_CANON).map_err(|_| 12)?;
+        line_records.try_reserve_exact(MAX_CANON).map_err(|_| 12)?;
+        raw_queue.try_reserve_exact(MAX_CANON).map_err(|_| 12)?;
         Ok(Self {
-            termios: Termios::default(),
-            line_buffer,
-            cooked_queue,
-            raw_queue,
-            column: 0,
+            termios: Termios::default(), line_buffer, cooked_queue,
+            line_records, raw_queue, eof_records: 0,
+            input_epoch: Arc::try_new(AtomicU64::new(0)).map_err(|_| 12)?,
+            column: 0, flow_stopped: false,
         })
     }
 
-    /// Create a new line discipline with custom termios settings
     pub fn with_termios(termios: Termios) -> Self {
-        Self {
-            termios,
-            line_buffer: Vec::with_capacity(MAX_CANON),
-            cooked_queue: VecDeque::new(),
-            raw_queue: VecDeque::new(),
-            column: 0,
-        }
+        let mut discipline = Self::new();
+        discipline.set_termios(termios);
+        discipline
+    }
+
+    fn input_used(&self) -> usize {
+        self.line_buffer.len() + self.cooked_queue.len() + self.raw_queue.len()
+            + self.eof_records
+    }
+
+    /// Canonical overflow still accepts editing and a delimiter when no
+    /// completed record can be read. Raw input is backpressured at 4095.
+    pub fn input_room(&self) -> bool {
+        self.input_used() < MAX_INPUT
+            || (self.termios.is_canonical() && self.line_records.is_empty())
+    }
+
+    pub fn flow_stopped(&self) -> bool { self.flow_stopped }
+
+    /// Capture this discipline's sequence while holding its object lock. A
+    /// waiter compares it after registration without taking that lock again.
+    pub(super) fn input_epoch(&self) -> Arc<AtomicU64> {
+        self.input_epoch.clone()
     }
 
     /// Get a reference to the current termios settings
@@ -112,11 +126,26 @@ impl LineDiscipline {
 
     /// Get a mutable reference to the termios settings
     pub fn termios_mut(&mut self) -> &mut Termios {
+        self.input_epoch.fetch_add(1, Ordering::Release);
         &mut self.termios
     }
 
     /// Set new termios settings
     pub fn set_termios(&mut self, termios: Termios) {
+        self.input_epoch.fetch_add(1, Ordering::Release);
+        if self.termios.is_canonical() && !termios.is_canonical() {
+            self.raw_queue.append(&mut self.cooked_queue);
+            self.raw_queue.extend(self.line_buffer.drain(..));
+            self.line_records.clear();
+            self.eof_records = 0;
+        } else if !self.termios.is_canonical() && termios.is_canonical() {
+            // Linux makes previously received raw input readable as one record,
+            // without requiring an additional newline or adding an EOF byte.
+            let pending = self.raw_queue.len();
+            self.cooked_queue.append(&mut self.raw_queue);
+            if pending > 0 { self.line_records.push_back(pending); }
+        }
+        if termios.c_iflag & IXON == 0 { self.flow_stopped = false; }
         self.termios = termios;
     }
 
@@ -133,32 +162,49 @@ impl LineDiscipline {
     /// * `Some(signal)` - If the character generated a signal (SIGINT, SIGQUIT, SIGTSTP)
     /// * `None` - If no signal was generated
     pub fn input_char(&mut self, c: u8, echo_fn: &mut dyn FnMut(u8)) -> Option<u32> {
-        // Map CR to NL if ICRNL is set
-        let c = if (self.termios.c_iflag & ICRNL) != 0 && c == b'\r' {
-            b'\n'
-        } else {
-            c
-        };
+        self.input_epoch.fetch_add(1, Ordering::Release);
+        let mut c = if self.termios.c_iflag & ISTRIP != 0 { c & 0x7f } else { c };
+        if c == b'\r' {
+            if self.termios.c_iflag & IGNCR != 0 { return None; }
+            if self.termios.c_iflag & ICRNL != 0 { c = b'\n'; }
+        } else if c == b'\n' && self.termios.c_iflag & INLCR != 0 {
+            c = b'\r';
+        }
+
+        if self.termios.c_iflag & IXON != 0 {
+            if c != 0 && c == self.termios.c_cc[VSTOP] {
+                self.flow_stopped = true;
+                return None;
+            }
+            if c != 0 && c == self.termios.c_cc[VSTART] {
+                self.flow_stopped = false;
+                return None;
+            }
+            if self.termios.c_iflag & IXANY != 0 { self.flow_stopped = false; }
+        }
 
         // Check for signal characters first (if ISIG enabled)
         if (self.termios.c_lflag & ISIG) != 0 {
-            if c == self.termios.intr_char() {
+            if c != 0 && c == self.termios.intr_char() {
                 // Ctrl+C -> SIGINT
                 self.echo_control_char(c, echo_fn);
-                echo_fn(b'\n');
+                if self.termios.c_lflag & ECHO != 0 { echo_fn(b'\n'); }
                 self.column = 0;
+                if self.termios.c_lflag & NOFLSH == 0 { self.flush_input(); }
                 return Some(SIGINT);
-            } else if c == self.termios.quit_char() {
+            } else if c != 0 && c == self.termios.quit_char() {
                 // Ctrl+\ -> SIGQUIT
                 self.echo_control_char(c, echo_fn);
-                echo_fn(b'\n');
+                if self.termios.c_lflag & ECHO != 0 { echo_fn(b'\n'); }
                 self.column = 0;
+                if self.termios.c_lflag & NOFLSH == 0 { self.flush_input(); }
                 return Some(SIGQUIT);
-            } else if c == self.termios.susp_char() {
+            } else if c != 0 && c == self.termios.susp_char() {
                 // Ctrl+Z -> SIGTSTP
                 self.echo_control_char(c, echo_fn);
-                echo_fn(b'\n');
+                if self.termios.c_lflag & ECHO != 0 { echo_fn(b'\n'); }
                 self.column = 0;
+                if self.termios.c_lflag & NOFLSH == 0 { self.flush_input(); }
                 return Some(SIGTSTP);
             }
         }
@@ -180,51 +226,50 @@ impl LineDiscipline {
     /// - Line editing characters (ERASE, KILL, WERASE) are interpreted
     /// - Lines are completed on newline or EOF
     fn process_canonical(&mut self, c: u8, echo_fn: &mut dyn FnMut(u8)) {
-        // Handle ERASE - accept both configured erase_char (typically DEL 0x7F) AND
-        // backspace (0x08). Keyboards typically send 0x08 for the backspace key,
-        // but POSIX termios defaults VERASE to DEL. Accepting both ensures backspace
-        // works out of the box regardless of keyboard mapping.
-        if c == self.termios.erase_char() || c == 0x08 {
+        // A disabled (NUL) control character is ordinary input.
+        if c != 0 && c == self.termios.erase_char() {
             self.handle_erase(echo_fn);
             return;
         }
 
         // Handle KILL (erase entire line)
-        if c == self.termios.kill_char() {
+        if c != 0 && c == self.termios.kill_char() {
             self.handle_kill(echo_fn);
             return;
         }
 
         // Handle WERASE (word erase, Ctrl+W)
-        if c == self.termios.c_cc[VWERASE] {
+        if c != 0 && self.termios.c_lflag & IEXTEN != 0 && c == self.termios.c_cc[VWERASE] {
             self.handle_word_erase(echo_fn);
             return;
         }
 
         // Handle EOF (Ctrl+D)
-        if c == self.termios.eof_char() {
-            self.handle_eof(echo_fn);
+        if c != 0 && c == self.termios.eof_char() {
+            self.handle_eof();
             return;
         }
 
         // Handle newline - complete the line
-        if c == b'\n' {
-            // Add newline to buffer and move to cooked queue
-            if self.line_buffer.len() < MAX_CANON {
+        if c == b'\n' || (c != 0 && (c == self.termios.c_cc[VEOL]
+            || (self.termios.c_lflag & IEXTEN != 0 && c == self.termios.c_cc[VEOL2]))) {
+            // Add delimiter to buffer and move to cooked queue
+            if self.input_used() < MAX_CANON && self.line_records.len() < MAX_CANON {
                 self.line_buffer.push(c);
+                self.complete_line();
             }
-            self.complete_line();
 
             // Echo newline
-            if (self.termios.c_lflag & ECHO) != 0 {
-                echo_fn(b'\n');
+            if self.termios.c_lflag & ECHO != 0
+                || (c == b'\n' && self.termios.c_lflag & ECHONL != 0) {
+                echo_fn(c);
             }
             self.column = 0;
             return;
         }
 
         // Regular character - add to line buffer
-        if self.line_buffer.len() < MAX_CANON {
+        if self.input_used() < MAX_INPUT {
             self.line_buffer.push(c);
 
             // Echo if enabled
@@ -250,10 +295,8 @@ impl LineDiscipline {
     /// In raw mode, characters are passed through immediately without
     /// any special processing.
     fn process_raw(&mut self, c: u8, echo_fn: &mut dyn FnMut(u8)) {
-        // Add to raw queue immediately, unless it is full
-        if self.raw_queue.len() >= MAX_INPUT {
-            return;
-        }
+        // Add to raw queue immediately
+        if self.input_used() >= MAX_INPUT { return; }
         self.raw_queue.push_back(c);
 
         // Echo if enabled
@@ -278,7 +321,7 @@ impl LineDiscipline {
     fn handle_erase(&mut self, echo_fn: &mut dyn FnMut(u8)) {
         if let Some(deleted) = self.line_buffer.pop() {
             // Echo backspace-space-backspace if ECHOE is set
-            if (self.termios.c_lflag & ECHOE) != 0 {
+            if self.termios.c_lflag & (ECHO | ECHOE) == (ECHO | ECHOE) {
                 if deleted < 0x20 {
                     // Was a control character displayed as ^X, need to erase 2 chars
                     echo_fn(0x08); // BS
@@ -311,11 +354,11 @@ impl LineDiscipline {
         }
 
         // Echo kill if ECHOK or ECHOE is set
-        if (self.termios.c_lflag & ECHOK) != 0 {
+        if self.termios.c_lflag & (ECHO | ECHOK) == (ECHO | ECHOK) {
             // Echo newline to move to new line
             echo_fn(b'\n');
             self.column = 0;
-        } else if (self.termios.c_lflag & ECHOE) != 0 {
+        } else if self.termios.c_lflag & (ECHO | ECHOE) == (ECHO | ECHOE) {
             // Erase each character visually
             while !self.line_buffer.is_empty() {
                 self.handle_erase(echo_fn);
@@ -347,17 +390,13 @@ impl LineDiscipline {
     }
 
     /// Handle EOF character (Ctrl+D)
-    fn handle_eof(&mut self, echo_fn: &mut dyn FnMut(u8)) {
-        // Echo ^D if echo enabled
-        if (self.termios.c_lflag & ECHO) != 0 {
-            self.echo_control_char(0x04, echo_fn);
-        }
-
+    fn handle_eof(&mut self) {
         if self.line_buffer.is_empty() {
             // Empty line with EOF - signal end of input
-            // We add a special marker that read() will interpret as EOF
-            if self.cooked_queue.len() < MAX_INPUT {
-                self.cooked_queue.push_back(0xFF); // Internal EOF marker
+            // Keep EOF distinct from every possible input byte.
+            if self.input_used() < MAX_INPUT && self.line_records.len() < MAX_CANON {
+                self.line_records.push_back(0);
+                self.eof_records += 1;
             }
         } else {
             // Non-empty line - complete it without adding newline
@@ -366,12 +405,8 @@ impl LineDiscipline {
     }
 
     /// Move the line buffer contents to the cooked queue
-    /// A line completed while the queue is full is dropped whole.
     fn complete_line(&mut self) {
-        if self.cooked_queue.len() >= MAX_INPUT {
-            self.line_buffer.clear();
-            return;
-        }
+        self.line_records.push_back(self.line_buffer.len());
         for byte in self.line_buffer.drain(..) {
             self.cooked_queue.push_back(byte);
         }
@@ -399,62 +434,58 @@ impl LineDiscipline {
     /// * `Err(-1)` - EOF (Ctrl+D on empty line)
     /// * `Err(errno)` - Error code
     pub fn read(&mut self, buf: &mut [u8]) -> Result<usize, i32> {
+        self.input_epoch.fetch_add(1, Ordering::Release);
         if buf.is_empty() {
             return Ok(0);
         }
 
-        let queue = if self.termios.is_canonical() {
-            &mut self.cooked_queue
-        } else {
-            &mut self.raw_queue
-        };
-
-        if queue.is_empty() {
-            return Ok(0);
-        }
-
-        // Check for EOF marker in canonical mode
         if self.termios.is_canonical() {
-            if let Some(&0xFF) = queue.front() {
-                queue.pop_front();
+            let Some(remaining) = self.line_records.front_mut() else { return Ok(0); };
+            if *remaining == 0 {
+                self.line_records.pop_front();
+                self.eof_records -= 1;
                 return Err(EOF_MARKER);
             }
-        }
-
-        let mut count = 0;
-        for byte in buf.iter_mut() {
-            if let Some(c) = queue.pop_front() {
-                // Stop at EOF marker
-                if self.termios.is_canonical() && c == 0xFF {
-                    return Err(EOF_MARKER);
-                }
-                *byte = c;
-                count += 1;
-
-                // In canonical mode, stop at newline
-                if self.termios.is_canonical() && c == b'\n' {
-                    break;
-                }
-            } else {
-                break;
+            let count = buf.len().min(*remaining);
+            for byte in &mut buf[..count] {
+                *byte = self.cooked_queue.pop_front().expect("canonical record length");
             }
+            *remaining -= count;
+            if *remaining == 0 { self.line_records.pop_front(); }
+            Ok(count)
+        } else {
+            let count = buf.len().min(self.raw_queue.len());
+            for byte in &mut buf[..count] {
+                *byte = self.raw_queue.pop_front().expect("raw queue length");
+            }
+            Ok(count)
         }
-
-        Ok(count)
     }
 
-    /// Whether input written now would be queued rather than dropped: fewer
-    /// than MAX_INPUT bytes are waiting to be read, or, in canonical mode,
-    /// no complete line is, so the line being edited can still end.
-    pub fn input_room(&self) -> bool {
-        self.cooked_queue.len() + self.raw_queue.len() < MAX_INPUT
-            || (self.termios.is_canonical() && self.cooked_queue.is_empty())
+    /// Copy while the input lock is held; consume only after a successful
+    /// fault-protected user copy. A failed copy leaves the record intact.
+    pub fn read_user(&mut self, buf_ptr: u64, scratch: &mut [u8]) -> Result<usize, i32> {
+        let n = if self.termios.is_canonical() {
+            match self.line_records.front() {
+                Some(&0) => { self.line_records.pop_front(); self.eof_records -= 1; return Err(EOF_MARKER); }
+                Some(&n) => n.min(scratch.len()),
+                None => 0,
+            }
+        } else { self.raw_queue.len().min(scratch.len()) };
+        let queue = if self.termios.is_canonical() { &self.cooked_queue } else { &self.raw_queue };
+        for (dst, &src) in scratch[..n].iter_mut().zip(queue.iter()) { *dst = src; }
+        if n > 0 {
+            crate::syscall::userptr::write_user_bytes(buf_ptr, scratch.as_ptr(), n)
+                .map_err(|e| e as i32)?;
+            self.read(&mut scratch[..n])?;
+        }
+        Ok(n)
     }
 
     /// Check if there is data available for reading
     pub fn has_data(&self) -> bool {
         if self.termios.is_canonical() {
-            !self.cooked_queue.is_empty()
+            !self.line_records.is_empty()
         } else {
             !self.raw_queue.is_empty()
         }
@@ -462,8 +493,11 @@ impl LineDiscipline {
 
     /// Flush all input queues
     pub fn flush_input(&mut self) {
+        self.input_epoch.fetch_add(1, Ordering::Release);
         self.line_buffer.clear();
         self.cooked_queue.clear();
+        self.line_records.clear();
+        self.eof_records = 0;
         self.raw_queue.clear();
         self.column = 0;
     }
@@ -553,13 +587,13 @@ mod tests {
     fn test_backspace() {
         let mut ld = LineDiscipline::new();
 
-        // Type "helo", backspace, "l\n"
-        for c in b"helo" {
+        // Type "helX", erase twice, then "llo\n"
+        for c in b"helX" {
             ld.input_char(*c, &mut null_echo);
         }
         ld.input_char(0x7F, &mut null_echo); // DEL (erase)
         ld.input_char(0x7F, &mut null_echo); // DEL (erase)
-        for c in b"lo\n" {
+        for c in b"llo\n" {
             ld.input_char(*c, &mut null_echo);
         }
 
@@ -1112,4 +1146,182 @@ mod tests {
         assert_eq!(ld.bytes_available(), 0);
         assert_eq!(ld.column(), 0);
     }
+    #[test]
+    fn eof_records_preserve_ff_and_partial_lines() {
+        let mut ld = LineDiscipline::new();
+        ld.termios_mut().c_lflag &= !ECHO;
+        for c in [0xff, b'x', 4, 4, b'y', b'\n'] { ld.input_char(c, &mut null_echo); }
+        let mut buf = [0; 8];
+        assert_eq!(ld.read(&mut buf[..1]), Ok(1));
+        assert_eq!(buf[0], 0xff);
+        assert_eq!(ld.read(&mut buf), Ok(1));
+        assert_eq!(buf[0], b'x');
+        assert!(ld.has_data());
+        assert_eq!(ld.read(&mut buf), Err(EOF_MARKER));
+        assert_eq!(ld.read(&mut buf), Ok(2));
+        assert_eq!(&buf[..2], b"y\n");
+    }
+
+    #[test]
+    fn eol2_requires_iexten_and_echonl_only_echoes_newline() {
+        let mut ld = LineDiscipline::new();
+        ld.termios_mut().c_lflag = super::super::termios::ICANON | ECHONL;
+        ld.termios_mut().c_cc[VEOL2] = b'!';
+        let mut echo = Vec::new();
+        for c in b"a!" { ld.input_char(*c, &mut |c| echo.push(c)); }
+        assert!(!ld.has_data());
+        ld.termios_mut().c_lflag |= IEXTEN;
+        ld.input_char(b'!', &mut |c| echo.push(c));
+        let mut buf = [0; 8];
+        assert_eq!(ld.read(&mut buf), Ok(3));
+        assert_eq!(&buf[..3], b"a!!");
+        assert!(echo.is_empty());
+        ld.input_char(b'\n', &mut |c| echo.push(c));
+        assert_eq!(echo, b"\n");
+    }
+
+    #[test]
+    fn input_transform_order_and_signal_flush() {
+        let mut ld = LineDiscipline::new();
+        ld.termios_mut().c_iflag = ISTRIP | IGNCR | ICRNL | INLCR;
+        for c in [0xc1, b'\r', b'\n'] { ld.input_char(c, &mut null_echo); }
+        assert!(!ld.has_data());
+        ld.termios_mut().c_cc[VEOL] = b'!';
+        ld.input_char(b'!', &mut null_echo);
+        let mut buf = [0; 8];
+        assert_eq!(ld.read(&mut buf), Ok(3));
+        assert_eq!(&buf[..3], b"A\r!");
+        for c in b"old!pending" { ld.input_char(*c, &mut null_echo); }
+        assert_eq!(ld.input_char(3, &mut null_echo), Some(SIGINT));
+        assert!(!ld.has_data());
+        assert!(ld.line_buffer.is_empty());
+        ld.termios_mut().c_lflag |= NOFLSH;
+        for c in b"kept!" { ld.input_char(*c, &mut null_echo); }
+        assert_eq!(ld.input_char(3, &mut null_echo), Some(SIGINT));
+        assert_eq!(ld.read(&mut buf), Ok(5));
+        assert_eq!(&buf[..5], b"kept!");
+    }
+
+    #[test]
+    fn canonical_transitions_preserve_queued_and_unfinished_input() {
+        let mut ld = LineDiscipline::new();
+        for c in b"one\nunfinished" { ld.input_char(*c, &mut null_echo); }
+        let mut attrs = *ld.termios();
+        attrs.set_raw();
+        ld.set_termios(attrs);
+        let mut buf = [0; 32];
+        assert_eq!(ld.read(&mut buf), Ok(14));
+        assert_eq!(&buf[..14], b"one\nunfinished");
+        for c in b"raw\ndata" { ld.input_char(*c, &mut null_echo); }
+        attrs.set_canonical(true);
+        ld.set_termios(attrs);
+        assert!(ld.has_data());
+        assert_eq!(ld.read(&mut buf[..2]), Ok(2));
+        assert_eq!(&buf[..2], b"ra");
+        assert_eq!(ld.read(&mut buf), Ok(6));
+        assert_eq!(&buf[..6], b"w\ndata");
+        assert!(!ld.has_data());
+    }
+
+    #[test]
+    fn signal_characters_do_not_echo_when_echo_is_disabled() {
+        let mut ld = LineDiscipline::new();
+        ld.termios_mut().c_lflag &= !ECHO;
+        let mut echo = Vec::new();
+        for c in [3, 28, 26] {
+            assert!(ld.input_char(c, &mut |c| echo.push(c)).is_some());
+        }
+        assert!(echo.is_empty());
+    }
+
+    #[test]
+    fn input_change_sequence_covers_settings_input_reads_and_flushes() {
+        let mut ld = LineDiscipline::new();
+        let epoch = ld.input_epoch();
+        let mut previous = epoch.load(Ordering::Acquire);
+        ld.set_termios(Termios::default());
+        assert_ne!(epoch.load(Ordering::Acquire), previous);
+        previous = epoch.load(Ordering::Acquire);
+        ld.input_char(4, &mut null_echo);
+        assert_ne!(epoch.load(Ordering::Acquire), previous);
+        previous = epoch.load(Ordering::Acquire);
+        assert_eq!(ld.read(&mut [0; 1]), Err(EOF_MARKER));
+        assert_ne!(epoch.load(Ordering::Acquire), previous);
+        previous = epoch.load(Ordering::Acquire);
+        ld.flush_input();
+        assert_ne!(epoch.load(Ordering::Acquire), previous);
+    }
+
+    #[test]
+    fn input_storage_stays_bounded_and_reserves_the_canonical_delimiter() {
+        let mut ld = LineDiscipline::new();
+        let capacities = (ld.line_buffer.capacity(), ld.cooked_queue.capacity(), ld.raw_queue.capacity(), ld.line_records.capacity());
+        for _ in 0..MAX_CANON * 3 { ld.input_char(b'x', &mut null_echo); }
+        assert_eq!(ld.line_buffer.len(), MAX_INPUT);
+        ld.input_char(b'\n', &mut null_echo);
+        let mut data = vec![0; MAX_CANON];
+        assert_eq!(ld.read(&mut data), Ok(MAX_CANON));
+        assert_eq!(data[MAX_INPUT], b'\n');
+        for _ in 0..MAX_CANON * 3 { ld.input_char(4, &mut null_echo); }
+        assert!(ld.line_records.len() <= MAX_INPUT);
+        ld.flush_input();
+        let mut attrs = *ld.termios();
+        attrs.set_raw();
+        ld.set_termios(attrs);
+        for _ in 0..MAX_CANON * 3 { ld.input_char(b'r', &mut null_echo); }
+        assert_eq!(ld.bytes_available(), MAX_INPUT);
+        assert!(!ld.input_room());
+        attrs.set_canonical(true);
+        ld.set_termios(attrs);
+        attrs.set_raw();
+        ld.set_termios(attrs);
+        assert_eq!(capacities, (ld.line_buffer.capacity(), ld.cooked_queue.capacity(), ld.raw_queue.capacity(), ld.line_records.capacity()));
+    }
+
+    #[test]
+    fn erase_kill_and_word_erase_do_not_echo_without_echo() {
+        let mut ld = LineDiscipline::new();
+        ld.termios_mut().c_lflag &= !ECHO;
+        let mut echo = Vec::new();
+        for &c in b"abc\x7fdef\x17ghi\x15\n" { ld.input_char(c, &mut |c| echo.push(c)); }
+        assert!(echo.is_empty());
+        assert_eq!(ld.read(&mut [0; 8]), Ok(1));
+    }
+
+    #[test]
+    fn xon_xoff_consumes_control_characters_and_ixany_resumes() {
+        let mut ld = LineDiscipline::new();
+        ld.termios_mut().set_raw();
+        ld.termios_mut().c_iflag |= IXON;
+        for c in [19, b'x'] { ld.input_char(c, &mut null_echo); }
+        assert!(ld.flow_stopped());
+        ld.input_char(17, &mut null_echo);
+        assert!(!ld.flow_stopped());
+        let mut buf = [0; 8];
+        assert_eq!(ld.read(&mut buf), Ok(1));
+        assert_eq!(buf[0], b'x');
+        ld.termios_mut().c_iflag |= IXANY;
+        ld.input_char(19, &mut null_echo);
+        ld.input_char(b'y', &mut null_echo);
+        assert!(!ld.flow_stopped());
+        assert_eq!(ld.read(&mut buf), Ok(1));
+        assert_eq!(buf[0], b'y');
+    }
+
+    #[test]
+    fn failed_user_copy_preserves_canonical_and_raw_input() {
+        let mut ld = LineDiscipline::new();
+        for &c in b"record\n" { ld.input_char(c, &mut null_echo); }
+        let mut scratch = [0; 16];
+        assert_eq!(ld.read_user(0, &mut scratch), Err(14));
+        assert_eq!(ld.bytes_available(), 7);
+        assert_eq!(ld.read(&mut scratch), Ok(7));
+        assert_eq!(&scratch[..7], b"record\n");
+        ld.termios_mut().set_raw();
+        ld.input_char(b'x', &mut null_echo);
+        assert_eq!(ld.read_user(0, &mut scratch), Err(14));
+        assert_eq!(ld.read(&mut scratch), Ok(1));
+        assert_eq!(scratch[0], b'x');
+    }
+
 }
