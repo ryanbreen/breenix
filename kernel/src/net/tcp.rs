@@ -846,6 +846,8 @@ pub struct TcpConnection {
     rtx_deadline_ms: u64,
     /// Consecutive timeouts without progress.
     retries: u32,
+    /// Window probes sent since the peer's window shut, for their backoff.
+    probes: u32,
     /// The peer's FIN arrived: after the queued bytes, the stream is at its end.
     peer_fin: bool,
     /// No descriptor refers to the connection any more.
@@ -961,6 +963,7 @@ impl TcpConnection {
             rtt_probe: None,
             rtx_deadline_ms: 0,
             retries: 0,
+            probes: 0,
             peer_fin: false,
             orphaned: false,
             timer_since_ms: 0,
@@ -1220,8 +1223,26 @@ impl TcpConnection {
             self.close_now();
             return;
         }
-        self.rto_ms = (self.rto_ms * 2).min(RTO_MAX_MS);
         self.rtt_probe = None;
+        let established = !matches!(self.state, TcpState::SynSent | TcpState::SynReceived);
+        if established && self.send_window == 0 && !self.tx_buffer.is_empty() {
+            // The peer's window is shut (RFC 9293 3.8.6.1). Probe it as Linux's
+            // tcp_xmit_probe_skb does, with a segment that carries no data at
+            // send_unack - 1, which the peer must answer with an ACK carrying
+            // its window. Whatever went past the shut window is sent again from
+            // send_unack once it opens. Probes back off on their own count and
+            // leave the retransmission timeout as the round trips set it.
+            self.send_next = self.send_unack;
+            self.tx_sent = 0;
+            self.probes = self.probes.saturating_add(1);
+            let backoff = self.rto_ms.saturating_mul(1 << self.probes.min(10));
+            self.rtx_deadline_ms = now + backoff.min(RTO_MAX_MS);
+            note_timer_deadline(self.rtx_deadline_ms);
+            let seg = self.segment(self.send_unack.wrapping_sub(1), TcpFlags::ack());
+            transmit(&seg, &[], [&[], &[]]);
+            return;
+        }
+        self.rto_ms = (self.rto_ms * 2).min(RTO_MAX_MS);
         self.rtx_deadline_ms = now + self.rto_ms;
         note_timer_deadline(self.rtx_deadline_ms);
         match self.state {
@@ -1232,19 +1253,6 @@ impl TcpConnection {
             TcpState::SynReceived => {
                 let seg = self.segment(self.send_initial, TcpFlags::syn_ack());
                 transmit(&seg, &mss_option(local_mss(self.id.remote_ip)), [&[], &[]]);
-            }
-            _ if self.send_window == 0 && !self.tx_buffer.is_empty() => {
-                // The peer's window is shut: probe it with the oldest unacknowledged
-                // byte (RFC 9293 3.8.6.1). Its answer carries the window.
-                self.send_next = self.send_unack;
-                self.tx_sent = 0;
-                if self.send_data(0, 1) {
-                    self.tx_sent = 1;
-                    self.send_next = self.send_unack.wrapping_add(1);
-                    if seq_lt(self.send_max, self.send_next) {
-                        self.send_max = self.send_next;
-                    }
-                }
             }
             _ if self.send_unack != self.send_max => {
                 // Go back to the oldest unacknowledged byte and send again what
@@ -1302,6 +1310,15 @@ impl TcpConnection {
             self.restart_retransmit();
         } else if self.send_window != window_was {
             self.arm_retransmit();
+        }
+        if self.send_window > 0 {
+            self.probes = 0;
+            if window_was == 0 && self.send_unack != self.send_max {
+                // The shut window dropped whatever was sent past it: send it
+                // again from the oldest unacknowledged byte now that it opened.
+                self.send_next = self.send_unack;
+                self.tx_sent = 0;
+            }
         }
         if self.fin_acked {
             match self.state {
@@ -1965,6 +1982,13 @@ fn handle_tcp_for_connection(
             // restart the wait (RFC 9293 3.10.7.4).
             conn.timer_since_ms = now_ms();
         }
+    }
+
+    // A segment without data or FIN from before recv_next is a window probe or
+    // a stale ACK: answer it with an ACK carrying the window (RFC 9293
+    // 3.10.7.4, an unacceptable segment is acknowledged).
+    if payload.is_empty() && !header.flags.fin && seq_lt(header.seq_num, conn.recv_next) {
+        need_ack = true;
     }
 
     if need_ack {
