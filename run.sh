@@ -1252,6 +1252,14 @@ elif [ "$CLEAN" = true ]; then
     eval $BUILD_CMD
     echo ""
 else
+    # x86 userspace preparation belongs to the launcher, never kernel/build.rs.
+    # Refresh the disk too so an incremental run boots the binaries just built.
+    if [ "$ARCH" = "x86_64" ]; then
+        echo "Building userspace binaries (x86_64)..."
+        "$BREENIX_ROOT/userspace/programs/build.sh"
+        echo "Creating system ext2 disk image..."
+        "$BREENIX_ROOT/scripts/create_ext2_disk.sh"
+    fi
     # Always rebuild to ensure correct features (boot_tests, etc.)
     # Cargo is incremental — this is fast if nothing changed
     echo "Building kernel..."

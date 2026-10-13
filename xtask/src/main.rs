@@ -101,58 +101,17 @@ fn save_qemu_pid(pid: u32) {
 }
 
 fn build_std_test_binaries() -> Result<()> {
+    // Gates prepare and validate their userspace artifacts before calling xtask.
+    if std::env::var("BREENIX_USERSPACE_PREBUILT").as_deref() == Ok("1") {
+        return Ok(());
+    }
     const RUST_FORK_LIBRARY_ENV: &str = "BREENIX_RUST_FORK_LIBRARY";
-
-    println!("Building Rust std test binaries...\n");
-
-    // Step 1: Build libbreenix-libc (produces libc.a)
-    println!("  [1/2] Building libbreenix-libc...");
-    let libc_dir = Path::new("libs/libbreenix-libc");
-
-    if !libc_dir.exists() {
-        println!("    Note: libs/libbreenix-libc not found, skipping std test binaries");
-        return Ok(());
-    }
-
-    // Clear environment variables that might interfere with the standalone build
-    // The rust-toolchain.toml in libbreenix-libc specifies the nightly version
-    let status = Command::new("cargo")
-        .args(&["build", "--release"])
-        .current_dir(libc_dir)
-        .env_remove("CARGO_ENCODED_RUSTFLAGS")
-        .env_remove("RUSTFLAGS")
-        .env_remove("CARGO_TARGET_DIR")
-        .env_remove("CARGO_BUILD_TARGET")
-        .env_remove("CARGO_MANIFEST_DIR")
-        .env_remove("CARGO_PKG_NAME")
-        .env_remove("OUT_DIR")
-        .status()
-        .map_err(|e| anyhow::anyhow!("Failed to run cargo build for libbreenix-libc: {}", e))?;
-
-    if !status.success() {
-        bail!("Failed to build libbreenix-libc");
-    }
-    println!("    libbreenix-libc built successfully");
-
-    // Step 2: Build userspace tests (produces hello_std_real)
-    println!("  [2/2] Building userspace tests...");
-    let tests_std_dir = Path::new("userspace/programs");
-
-    if !tests_std_dir.exists() {
-        println!("    Note: userspace/programs not found, skipping");
-        return Ok(());
-    }
-
-    // The rust-toolchain.toml in tests specifies the nightly version
-    // __CARGO_TESTS_ONLY_SRC_ROOT must point to the forked Rust library so that
-    // -Z build-std compiles std from our patched sources (with target_os = "breenix")
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask has a workspace parent");
     let rust_fork_library = std::env::var_os(RUST_FORK_LIBRARY_ENV)
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::current_dir()
-                .unwrap_or_default()
-                .join("rust-fork/library")
-        });
+        .unwrap_or_else(|| workspace_root.join("rust-fork/library"));
     if !rust_fork_library.is_dir() {
         bail!(
             "Forked Rust library not found at {}. Set {} to the forked Rust library path.",
@@ -160,10 +119,14 @@ fn build_std_test_binaries() -> Result<()> {
             RUST_FORK_LIBRARY_ENV,
         );
     }
-    let status = Command::new("cargo")
-        .args(&["build", "--release"])
-        .current_dir(tests_std_dir)
-        .env("__CARGO_TESTS_ONLY_SRC_ROOT", &rust_fork_library)
+
+    // Use the standalone builder for both compilation and ELF installation.
+    // xtask runs after Cargo has released its compilation locks, unlike build.rs.
+    println!("Building and installing Rust std test binaries...\n");
+    let status = Command::new("bash")
+        .arg(workspace_root.join("userspace/programs/build.sh"))
+        .current_dir(workspace_root)
+        .env(RUST_FORK_LIBRARY_ENV, &rust_fork_library)
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .env_remove("RUSTFLAGS")
         .env_remove("CARGO_TARGET_DIR")
@@ -172,28 +135,10 @@ fn build_std_test_binaries() -> Result<()> {
         .env_remove("CARGO_PKG_NAME")
         .env_remove("OUT_DIR")
         .status()
-        .map_err(|e| anyhow::anyhow!("Failed to run cargo build for userspace tests: {}", e))?;
-
+        .context("Failed to run the userspace build script")?;
     if !status.success() {
-        bail!("Failed to build userspace tests");
+        bail!("Userspace build failed: {status}");
     }
-    println!("    userspace tests built successfully");
-
-    // Verify the binary exists
-    let binary_path = tests_std_dir.join("target/x86_64-breenix/release/hello_std_real");
-    if binary_path.exists() {
-        println!(
-            "\n  hello_std_real binary ready at: {}",
-            binary_path.display()
-        );
-    } else {
-        bail!(
-            "Build succeeded but binary not found at: {}",
-            binary_path.display()
-        );
-    }
-
-    println!();
     Ok(())
 }
 
@@ -283,7 +228,10 @@ fn main() -> Result<()> {
         Cmd::Ring3Smoke => ring3_smoke(),
         Cmd::Ring3Enosys => ring3_enosys(),
         Cmd::BootStages => run_boot_stages(&qemu_config::Arch::X86_64),
-        Cmd::CreateTestDisk => test_disk::create_test_disk(),
+        Cmd::CreateTestDisk => {
+            build_std_test_binaries()?;
+            test_disk::create_test_disk()
+        }
         Cmd::CreateTestDiskAarch64 => test_disk::create_test_disk_aarch64(),
         Cmd::Interactive => interactive(),
         Cmd::InteractiveTest => interactive_test(),

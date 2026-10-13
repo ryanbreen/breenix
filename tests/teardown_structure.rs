@@ -14120,7 +14120,7 @@ fn validate_rust_fork_library_override(build_script: &str, xtask: &str) -> Resul
         || !xtask.contains(&rust_env_lookup)
         || !xtask.contains(".map(PathBuf::from)")
         || !xtask.contains(".join(\"rust-fork/library\")")
-        || !xtask.contains(".env(\"__CARGO_TESTS_ONLY_SRC_ROOT\", &rust_fork_library)")
+        || !xtask.contains(".env(RUST_FORK_LIBRARY_ENV, &rust_fork_library)")
         || !xtask.contains("Forked Rust library not found at {}. Set {}")
         || !xtask.contains("RUST_FORK_LIBRARY_ENV")
     {
