@@ -92,7 +92,7 @@ static DUMP: AtomicBool = AtomicBool::new(false);
 static LONG_SLEEP: [AtomicU64; 4096] = [const { AtomicU64::new(0) }; 4096];
 static SEEN: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
 static BUSY_UNTIL: AtomicU64 = AtomicU64::new(0);
-pub const OLD_DISCOVERY: bool = false;
+pub const OLD_DISCOVERY: bool = true;
 pub fn busy() -> bool { BUSY_UNTIL.load(Ordering::Relaxed) > now_ns() }
 pub fn phase(deadline: u64) {
     if BUSY_UNTIL.load(Ordering::Relaxed) > now_ns() && SEEN[cpu()].swap(deadline, Ordering::Relaxed) != deadline {
