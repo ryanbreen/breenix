@@ -13,6 +13,7 @@ pub const NOFILE: usize = 7;
 pub const MEMLOCK: usize = 8;
 pub const AS: usize = 9;
 pub const SIGPENDING: usize = 11;
+pub const MSGQUEUE: usize = 12;
 pub const RTPRIO: usize = 14;
 pub const COUNT: usize = 16;
 pub const INFINITY: u64 = u64::MAX;
@@ -40,6 +41,12 @@ fn defaults() -> [Rlimit; COUNT] {
     limits[SIGPENDING] = Rlimit {
         soft: DEFAULT_SIGPENDING,
         hard: DEFAULT_SIGPENDING,
+    };
+    // The bytes one real user's POSIX message queues may hold, charged when
+    // each is created (`ipc::mqueue::store::queue_bytes`).
+    limits[MSGQUEUE] = Rlimit {
+        soft: crate::ipc::mqueue::store::DEFAULT_MSGQUEUE_BYTES,
+        hard: crate::ipc::mqueue::store::DEFAULT_MSGQUEUE_BYTES,
     };
     limits
 }

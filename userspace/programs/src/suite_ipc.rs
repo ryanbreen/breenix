@@ -35,6 +35,7 @@ use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, AtomicU8, Ordering::Rel
 
 #[cfg(target_arch = "x86_64")]
 mod nr {
+    #[cfg(not(libc_has = "mq_close"))]
     pub const CLOSE: u64 = 3;
     pub const MMAP: u64 = 9;
     pub const RT_SIGPROCMASK: u64 = 14;
@@ -61,11 +62,17 @@ mod nr {
     pub const SEMTIMEDOP: u64 = 220;
     pub const CLOCK_GETTIME: u64 = 228;
     pub const EXIT_GROUP: u64 = 231;
+    #[cfg(not(libc_has = "mq_open"))]
     pub const MQ_OPEN: u64 = 240;
+    #[cfg(not(libc_has = "mq_unlink"))]
     pub const MQ_UNLINK: u64 = 241;
+    #[cfg(not(all(libc_has = "mq_send", libc_has = "mq_timedsend")))]
     pub const MQ_TIMEDSEND: u64 = 242;
+    #[cfg(not(all(libc_has = "mq_receive", libc_has = "mq_timedreceive")))]
     pub const MQ_TIMEDRECEIVE: u64 = 243;
+    #[cfg(not(libc_has = "mq_notify"))]
     pub const MQ_NOTIFY: u64 = 244;
+    #[cfg(not(all(libc_has = "mq_getattr", libc_has = "mq_setattr")))]
     pub const MQ_GETSETATTR: u64 = 245;
     #[cfg(not(libc_has = "mkfifo"))]
     pub const MKNODAT: u64 = 259;
@@ -73,6 +80,7 @@ mod nr {
 }
 #[cfg(target_arch = "aarch64")]
 mod nr {
+    #[cfg(not(libc_has = "mq_close"))]
     pub const CLOSE: u64 = 57;
     pub const MMAP: u64 = 222;
     pub const RT_SIGPROCMASK: u64 = 135;
@@ -99,11 +107,17 @@ mod nr {
     pub const SEMTIMEDOP: u64 = 192;
     pub const CLOCK_GETTIME: u64 = 113;
     pub const EXIT_GROUP: u64 = 94;
+    #[cfg(not(libc_has = "mq_open"))]
     pub const MQ_OPEN: u64 = 180;
+    #[cfg(not(libc_has = "mq_unlink"))]
     pub const MQ_UNLINK: u64 = 181;
+    #[cfg(not(all(libc_has = "mq_send", libc_has = "mq_timedsend")))]
     pub const MQ_TIMEDSEND: u64 = 182;
+    #[cfg(not(all(libc_has = "mq_receive", libc_has = "mq_timedreceive")))]
     pub const MQ_TIMEDRECEIVE: u64 = 183;
+    #[cfg(not(libc_has = "mq_notify"))]
     pub const MQ_NOTIFY: u64 = 184;
+    #[cfg(not(all(libc_has = "mq_getattr", libc_has = "mq_setattr")))]
     pub const MQ_GETSETATTR: u64 = 185;
     #[cfg(not(libc_has = "mkfifo"))]
     pub const MKNODAT: u64 = 33;

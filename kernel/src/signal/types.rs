@@ -237,6 +237,13 @@ impl SigInfo {
         Self { fields: [id as u32 as u64, value], ..Self::with_code(super::timers::SI_TIMER) }
     }
 
+    /// A message queue's notification (SI_MESGQ): the PID and real user ID of
+    /// the process whose message arrived on the empty queue, then the
+    /// registration's sigev_value.
+    pub const fn mesgq(pid: u32, uid: u32, value: u64) -> Self {
+        Self { fields: [pid as u64 | (uid as u64) << 32, value], ..Self::with_code(super::constants::SI_MESGQ) }
+    }
+
     /// This timer siginfo with `overrun` as its si_overrun.
     fn with_overrun(self, overrun: i32) -> Self {
         Self { fields: [self.fields[0] & 0xffff_ffff | (overrun as u32 as u64) << 32, self.fields[1]], ..self }

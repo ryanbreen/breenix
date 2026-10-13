@@ -42,6 +42,10 @@ pub trait IpcFile: Send + Sync + core::fmt::Debug {
     fn getdents(&self, _dirp: u64, _count: usize) -> Result<u64, u64> {
         Err(20)
     }
+    /// read(2) into user memory at `buf`, called after PM is released.
+    fn read(&self, _buf: u64, _count: usize) -> Result<u64, u64> {
+        Err(EINVAL as u64)
+    }
     fn on_close(&self, _pid: crate::process::ProcessId) {}
 }
 
