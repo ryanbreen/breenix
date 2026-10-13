@@ -175,6 +175,48 @@ final class DetachedGateTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("breenix-recent").path))
     }
 
+    func testMissingOwnerStopsPreIdentityWorkerAndSupervisorWithoutTouchingPeer() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = #"""
+        import json, pathlib, sys
+        base = pathlib.Path(sys.argv[1])
+        root, owners, proc = base / "evidence", base / "owners", base / "proc"
+        (proc / "sys/kernel/random").mkdir(parents=True)
+        (proc / "sys/kernel/random/boot_id").write_text("boot")
+        root.mkdir()
+        (root / "run-owner.json").write_text(json.dumps(dict(state="running")))
+        if sys.argv[3] == "dead":
+            owners.mkdir()
+            (owners / "gate-owner.json").write_text(json.dumps(dict(state="running", pid=105, birth="42", boot_id="boot")))
+        for pid, argv in [(101, ["python3", str(root), "worker"]),
+                          (102, ["bash", "-lc", "exec env BREENIX_GATE_TMP=" + str(root) + " something"]),
+                          (103, ["python3", str(root / "host-slots.py"), "supervise"]),
+                          (104, ["python3", "/other/host-slots.py", "supervise"])]:
+            entry = proc / str(pid)
+            entry.mkdir()
+            (entry / "stat").write_text(str(pid) + " (worker) S " + " ".join(["0"] * 18) + " 42")
+            (entry / "cmdline").write_bytes(b"\0".join(arg.encode() for arg in argv))
+        namespace = dict(__name__="fixture")
+        exec(sys.argv[2], namespace)
+        killed = []
+        def kill(pid, number):
+            killed.append(pid)
+            (proc / str(pid) / "stat").unlink()
+        namespace["os"].kill = kill
+        assert namespace["cancel"](root, owners, proc) == 0
+        assert sorted(killed) == [101, 102, 103], killed
+        assert (proc / "104/stat").exists()
+        assert json.loads((root / "run-owner.json").read_text())["state"] == "finished"
+        assert json.loads((owners / "gate-owner.json").read_text())["state"] == "finished"
+        """#
+        for mode in ["missing", "dead"] {
+            let result = try RealProcessRunner().run(ProcessRequest(executable: "/usr/bin/python3",
+                arguments: ["-c", fixture, root.appendingPathComponent(mode).path, RemoteCommand.gateStopper, mode], timeoutSecs: 5))
+            XCTAssertEqual(result.exitCode, 0, result.stderrString)
+        }
+    }
+
     func testRunnerWaitsForSlowLastCallbackBeforeReturning() throws {
         let output = CallbackCapture()
         let result = try RealProcessRunner().run(ProcessRequest(executable: "/bin/sh", arguments: ["-c", "printf chunk; exit 75"])) { data in

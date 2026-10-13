@@ -398,14 +398,15 @@ def stop_gate(record, proc):
         saved = json.loads(record.read_text())
         pid, birth = saved[:2]
     except (FileNotFoundError, ValueError):
-        return 1
+        saved = [None, None, str(record.parent / "host-slots.py")]
+        pid, birth = saved[:2]
     def identity(pid):
         try:
             fields = (proc / str(pid) / "stat").read_text().rsplit(")", 1)[1].split()
             return fields[19] if fields[0] != "Z" else None
         except (FileNotFoundError, ProcessLookupError):
             return None
-    targets = {pid: birth}
+    targets = {pid: birth} if pid is not None else {}
     helper = (saved[2] if len(saved) > 2 else str(record.parent / "host-slots.py")).encode()
     for entry in proc.iterdir():
         if not entry.name.isdigit():
@@ -440,9 +441,11 @@ def cancel(root, owners, proc):
         fcntl.flock(lock, fcntl.LOCK_EX)
         # The marker closes the pre-owner/pre-identity race, including delayed bootstraps.
         (owners / "cancel").touch()
+        missing = False
         try:
             owner = json.loads(record.read_text())
         except FileNotFoundError:
+            missing = True
             owner = dict(state="finished", exit_code=130)
             record.write_text(json.dumps(owner))
         same_boot = owner.get("boot_id") == (proc / "sys/kernel/random/boot_id").read_text().strip()
@@ -454,6 +457,35 @@ def cancel(root, owners, proc):
             return fields[19] == birth and fields[0] != "Z"
         except FileNotFoundError:
             return False
+    if missing or (owner.get("state") != "finished" and same_boot and not alive(owner.get("pid"), owner.get("birth"))):
+        # Missing ownership metadata is not proof that the gate stopped. Find
+        # this run's detached worker / pre-install shell by its exact run path,
+        # then stop its supervisor even if launcher identity was never written.
+        targets = {}
+        for entry in proc.iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                argv = (entry / "cmdline").read_bytes().split(b"\0")
+                fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
+                worker = str(root).encode() in argv and b"worker" in argv
+                shell = any(("BREENIX_GATE_TMP=" + str(root) + " ").encode() in arg for arg in argv)
+                if (worker or shell) and fields[0] != "Z":
+                    targets[int(entry.name)] = fields[19]
+            except FileNotFoundError:
+                pass
+        same_boot = True  # These identities were sampled from the current /proc.
+        for pid, token in targets.items():
+            if alive(pid, token):
+                try: os.kill(pid, signal.SIGTERM)
+                except ProcessLookupError: pass
+        deadline = time.monotonic() + 130
+        while any(alive(pid, token) for pid, token in targets.items()) and time.monotonic() < deadline:
+            time.sleep(.2)
+        if any(alive(pid, token) for pid, token in targets.items()):
+            return 1
+        if stop_gate(root / "launcher-gate.json", proc) != 0:
+            return 1
     if owner.get("state") != "finished":
         pid, token = owner.get("pid"), owner.get("birth")
         if alive(pid, token):
@@ -490,7 +522,9 @@ if __name__ == "__main__":
 
     public static func stopGateRequest(paths: BeastPaths) -> ProcessRequest {
         let encoded = Data(gateStopper.utf8).base64EncodedString()
-        return sshRequest(paths: paths, remote: "sudo -n incus exec \(paths.container) -- python3 -c 'import base64;exec(base64.b64decode(\"\(encoded)\"))' \(paths.gateTmpPath) \(paths.ownerPath)")
+        var request = sshRequest(paths: paths, remote: "sudo -n incus exec \(paths.container) -- python3 -c 'import base64;exec(base64.b64decode(\"\(encoded)\"))' \(paths.gateTmpPath) \(paths.ownerPath)")
+        request.timeoutSecs = 300
+        return request
     }
 
     // No `bash -lc` needed: a single command, no env sourcing, no shell
