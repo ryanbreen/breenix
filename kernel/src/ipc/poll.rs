@@ -237,31 +237,32 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                 }
             });
         }
-        FdKind::PtyMaster(pty_num) => {
+        FdKind::PtyMaster(pair) => {
             // PTY master - check slave_to_master buffer for readable data
-            if let Some(pair) = crate::tty::pty::get(*pty_num) {
-                if (events & events::POLLIN) != 0 {
-                    let buffer = pair.slave_to_master.lock();
-                    if !buffer.is_empty() {
-                        revents |= events::POLLIN;
-                    }
+            if (events & events::POLLIN) != 0 {
+                let buffer = pair.slave_to_master.lock();
+                if !buffer.is_empty() {
+                    revents |= events::POLLIN;
                 }
-                if (events & events::POLLOUT) != 0 {
-                    // Master can always write (goes through line discipline)
-                    revents |= events::POLLOUT;
-                }
-                // POLLHUP only when slave was opened and then all slave FDs closed.
-                // If slave was never opened (child hasn't connected yet), no hangup.
-                if pair.has_slave_hung_up() {
-                    revents |= events::POLLHUP;
-                }
-            } else {
-                revents |= events::POLLERR;
+            }
+            if (events & events::POLLOUT) != 0 {
+                // Master can always write (goes through line discipline)
+                revents |= events::POLLOUT;
+            }
+            // POLLHUP only when slave was opened and then all slave FDs closed.
+            // If slave was never opened (child hasn't connected yet), no hangup.
+            if pair.has_slave_hung_up() {
+                revents |= events::POLLHUP;
             }
         }
-        FdKind::PtySlave(pty_num) => {
-            // PTY slave - check line discipline for readable data
-            if let Some(pair) = crate::tty::pty::get(*pty_num) {
+        FdKind::PtySlave(pair) => {
+            if pair.master_closed() {
+                // A hung-up terminal is readable (end of file) and writable
+                // (EIO), with POLLERR and POLLHUP, as Linux reports it.
+                revents |= (events & (events::POLLIN | events::POLLOUT))
+                    | events::POLLERR
+                    | events::POLLHUP;
+            } else {
                 if (events & events::POLLIN) != 0 {
                     let ldisc = pair.ldisc.lock();
                     if ldisc.has_data() {
@@ -275,8 +276,6 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                         revents |= events::POLLOUT;
                     }
                 }
-            } else {
-                revents |= events::POLLERR;
             }
         }
         FdKind::UnixStream(socket_ref) => {

@@ -1199,8 +1199,8 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
                 FdKind::TcpSocket(_) | FdKind::TcpListener(_) | FdKind::TcpConnection(_) => {
                     FstatKind::TcpSocket
                 }
-                FdKind::PtyMaster(pty_num) | FdKind::PtySlave(pty_num) => {
-                    FstatKind::PtyDevice { pty_num: *pty_num }
+                FdKind::PtyMaster(pair) | FdKind::PtySlave(pair) => {
+                    FstatKind::PtyDevice { pty_num: pair.pty_num }
                 }
                 FdKind::UnixStream(_) | FdKind::UnixSocket(_) | FdKind::UnixListener(_) => {
                     FstatKind::UnixSocket
@@ -2877,18 +2877,18 @@ fn handle_devfs_open(
     // controlling terminal. The controlling terminal belongs to the SESSION,
     // not a single process. Any process in the session can open /dev/tty.
     if matches!(device.device_type, devfs::DeviceType::Tty) {
-        let sid = process.sid.as_u64() as u32;
+        let sid = process.sid;
         // Drop manager lock before accessing PTY subsystem to avoid lock ordering issues
         drop(manager_guard);
 
         // Search active PTYs for one controlled by this session.
-        // controlling_pid stores the session leader's PID (== SID).
+        // The pair's `ctl.session` is the session it is the controlling terminal of.
         for pty_num in match crate::tty::pty::try_list_active() {
             Ok(numbers) => numbers,
             Err(e) => return SyscallResult::Err(e),
         } {
             if let Some(pair) = crate::tty::pty::get(pty_num) {
-                if pair.controlling_pid.lock().map_or(false, |p| p == sid) {
+                if pair.ctl.lock().session == Some(sid) {
                     // Found the controlling PTY — open as PtySlave
                     //
                     // NB6: these three lookups used to be `.unwrap()`-chained
@@ -2924,7 +2924,7 @@ fn handle_devfs_open(
                     // /dev/tty opened O_NONBLOCK must read non-blocking too.
                     // Exercised on every production boot by the TTY oracle's
                     // `ctty` arm (arm 13), which drives exactly this branch.
-                    let entry = match FileDescriptor::try_opened(FdKind::PtySlave(pty_num), flags) {
+                    let entry = match FileDescriptor::try_opened(FdKind::PtySlave(pair.clone()), flags) {
                         Ok(entry) => entry.with_inode(native_inode),
                         Err(e) => return SyscallResult::Err(e),
                     };
@@ -3062,19 +3062,23 @@ fn handle_devpts_open(pty_name: &str, flags: u32) -> SyscallResult {
         }
     };
 
+    let Some(pair) = crate::tty::pty::get(pty_num) else {
+        return SyscallResult::Err(ENOENT as u64);
+    };
     // Allocate file descriptor with PtySlave kind, carrying the caller's
     // status flags so a slave opened O_NONBLOCK actually reads non-blocking.
-    let entry = FileDescriptor::opened(FdKind::PtySlave(pty_num), flags);
-    match process.fd_table.alloc_with_entry(entry) {
+    let entry = FileDescriptor::opened(FdKind::PtySlave(pair.clone()), flags);
+    let fd = match process.fd_table.alloc_with_entry(entry) {
         Ok(fd) => {
             // Increment slave reference count so master can detect hangup
-            if let Some(pair) = crate::tty::pty::get(pty_num) {
-                pair.slave_open();
-            }
-            SyscallResult::Ok(fd as u64)
+            pair.slave_open();
+            fd
         }
-        Err(_) => SyscallResult::Err(EMFILE as u64),
-    }
+        Err(_) => return SyscallResult::Err(EMFILE as u64),
+    };
+    drop(manager_guard);
+    crate::tty::ctty::acquire_on_open(crate::tty::ctty::TtyId::Pty(pty_num), flags);
+    SyscallResult::Ok(fd as u64)
 }
 
 /// Handle opening the /dev/pts directory itself

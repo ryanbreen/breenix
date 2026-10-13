@@ -465,9 +465,7 @@ pub fn copy_process_state(
     if child_process.pgid != parent_process.pgid {
         child_process.pgid = parent_process.pgid;
     }
-    if child_process.sid != parent_process.sid {
-        child_process.sid = parent_process.sid;
-    }
+    crate::tty::ctty::inherit(child_process, parent_process);
 
     // 4. Copy the credentials, nice value and umask. CPU time is not
     // inherited: the child's account and its children's time start at zero.

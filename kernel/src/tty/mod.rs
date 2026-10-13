@@ -6,10 +6,13 @@
 //! - Terminal attributes (termios)
 //! - Echo and line editing
 
+pub mod ctty;
 pub mod driver;
 pub mod ioctl;
+pub mod jobctl;
 pub mod line_discipline;
 pub mod pty;
+pub mod slave_read;
 pub mod termios;
 
 // Re-export for external use

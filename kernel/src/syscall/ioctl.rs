@@ -60,92 +60,73 @@ pub fn sys_ioctl(fd: u64, request: u64, arg: u64) -> SyscallResult {
         return super::blocking_io_oracle::dispatch(fd, request, arg);
     }
 
-    // First, try to look up the fd in the process's fd table
-    // to check if it's a PTY device
-    if let Some((fd_kind, pid)) = get_fd_kind_and_pid(fd as i32) {
-        match fd_kind {
-            FdKind::PtyMaster(pty_num) | FdKind::PtySlave(pty_num) => {
-                // Dispatch to PTY ioctl handler
-                let pair = match crate::tty::pty::get(pty_num) {
-                    Some(p) => p,
-                    None => {
-                        log::warn!("sys_ioctl: PTY {} not found", pty_num);
-                        return SyscallResult::Err(EBADF);
-                    }
-                };
+    use crate::tty::ctty::TtyRef;
+    use crate::tty::ioctl::Side;
 
-                match crate::tty::ioctl::pty_ioctl(&pair, request, arg, pid) {
-                    Ok(ret) => return SyscallResult::Ok(ret as u64),
-                    Err(errno) => return SyscallResult::Err(errno as u64),
-                }
-            }
-            FdKind::Device(crate::fs::devfs::DeviceType::Rtc) => {
-                if request != 0x8024_7009 { return SyscallResult::Err(ENOTTY); }
-                let stamp = match crate::time::rtc::read_rtc_time() {
-                    Ok(stamp) => stamp,
-                    Err(_) => return SyscallResult::Err(5),
-                };
-                let dt = crate::time::DateTime::from_unix_timestamp(stamp);
-                let jan1 = crate::time::DateTime { year: dt.year, month: 1, day: 1, hour: 0, minute: 0, second: 0 }.to_unix_timestamp();
-                // Linux struct rtc_time, with struct tm's month/year origins.
-                let tm = [i32::from(dt.second), i32::from(dt.minute), i32::from(dt.hour),
-                    i32::from(dt.day), i32::from(dt.month) - 1, i32::from(dt.year) - 1900,
-                    ((stamp / 86400 + 4) % 7) as i32, ((stamp - jan1) / 86400) as i32, 0];
-                return match super::userptr::copy_to_user(arg as *mut [i32; 9], &tm) {
-                    Ok(()) => SyscallResult::Ok(0), Err(e) => SyscallResult::Err(e),
-                };
-            }
-            FdKind::StdIo(_) => {
-                // Fall through to console TTY handling
-            }
-            _ => {
-                // Not a TTY or PTY device
-                log::debug!("sys_ioctl: fd {} is not a TTY/PTY device", fd);
-                return SyscallResult::Err(ENOTTY);
-            }
+    // Resolve the fd to a terminal and the side the ioctl is made on.
+    let resolved = match get_fd_kind(fd as i32) {
+        Some(FdKind::PtyMaster(pair)) => Ok((TtyRef::Pty(pair), Side::Master)),
+        Some(FdKind::PtySlave(pair)) => Ok((TtyRef::Pty(pair), Side::Slave)),
+        Some(FdKind::Device(crate::fs::devfs::DeviceType::Rtc)) => return rtc_ioctl(request, arg),
+        Some(FdKind::StdIo(_)) => console().map(|tty| (tty, Side::Console)),
+        Some(_) => {
+            log::debug!("sys_ioctl: fd {} is not a TTY/PTY device", fd);
+            return SyscallResult::Err(ENOTTY);
         }
-    }
-
-    // Check if this fd is a TTY (stdin/stdout/stderr)
-    if !is_tty_fd(fd) {
-        log::debug!("sys_ioctl: fd {} is not a TTY", fd);
-        return SyscallResult::Err(ENOTTY);
-    }
-
-    // Get the console TTY device
-    let tty = match crate::tty::console() {
-        Some(tty) => tty,
+        // Check if this fd is a TTY (stdin/stdout/stderr)
+        None if is_tty_fd(fd) => console().map(|tty| (tty, Side::Console)),
         None => {
-            log::warn!("sys_ioctl: TTY subsystem not initialized");
-            return SyscallResult::Err(EBADF);
+            log::debug!("sys_ioctl: fd {} is not a TTY", fd);
+            return SyscallResult::Err(ENOTTY);
         }
     };
+    let (tty, side) = match resolved {
+        Ok(resolved) => resolved,
+        Err(result) => return result,
+    };
 
-    // Dispatch to TTY ioctl handler
-    match crate::tty::ioctl::tty_ioctl(&tty, request, arg) {
+    match crate::tty::ioctl::dispatch(&tty, side, request, arg) {
         Ok(ret) => SyscallResult::Ok(ret as u64),
         Err(errno) => SyscallResult::Err(errno as u64),
     }
 }
 
-/// Get the FdKind for a file descriptor and the calling process's PID
-///
-/// Returns None if the process or fd is not found.
-fn get_fd_kind_and_pid(fd: i32) -> Option<(FdKind, u32)> {
-    // Get current thread ID
-    let thread_id = crate::task::scheduler::current_thread_id()?;
+/// The console terminal.
+fn console() -> Result<crate::tty::ctty::TtyRef, SyscallResult> {
+    match crate::tty::console() {
+        Some(tty) => Ok(crate::tty::ctty::TtyRef::Console(tty)),
+        None => {
+            log::warn!("sys_ioctl: TTY subsystem not initialized");
+            Err(SyscallResult::Err(EBADF))
+        }
+    }
+}
 
-    // Get the process manager
+/// RTC_RD_TIME on /dev/rtc.
+fn rtc_ioctl(request: u64, arg: u64) -> SyscallResult {
+    if request != 0x8024_7009 { return SyscallResult::Err(ENOTTY); }
+    let stamp = match crate::time::rtc::read_rtc_time() {
+        Ok(stamp) => stamp,
+        Err(_) => return SyscallResult::Err(5),
+    };
+    let dt = crate::time::DateTime::from_unix_timestamp(stamp);
+    let jan1 = crate::time::DateTime { year: dt.year, month: 1, day: 1, hour: 0, minute: 0, second: 0 }.to_unix_timestamp();
+    // Linux struct rtc_time, with struct tm's month/year origins.
+    let tm = [i32::from(dt.second), i32::from(dt.minute), i32::from(dt.hour),
+        i32::from(dt.day), i32::from(dt.month) - 1, i32::from(dt.year) - 1900,
+        ((stamp / 86400 + 4) % 7) as i32, ((stamp - jan1) / 86400) as i32, 0];
+    match super::userptr::copy_to_user(arg as *mut [i32; 9], &tm) {
+        Ok(()) => SyscallResult::Ok(0), Err(e) => SyscallResult::Err(e),
+    }
+}
+
+/// The FdKind of the caller's file descriptor `fd`, or None if it is not open.
+fn get_fd_kind(fd: i32) -> Option<FdKind> {
+    let thread_id = crate::task::scheduler::current_thread_id()?;
     let manager_guard = crate::process::manager();
     let manager = manager_guard.as_ref()?;
-
-    // Find process by thread
-    let (pid, process) = manager.find_process_by_thread(thread_id)?;
-
-    // Look up the fd
-    let fd_entry = process.fd_table.get(fd)?;
-
-    Some((fd_entry.kind.clone(), pid.as_u64() as u32))
+    let (_, process) = manager.find_process_by_thread(thread_id)?;
+    Some(process.fd_table.get(fd)?.kind.clone())
 }
 
 /// Check if a file descriptor is a TTY

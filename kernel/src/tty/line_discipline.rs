@@ -24,7 +24,13 @@ const SIGQUIT: u32 = 3;
 const SIGTSTP: u32 = 20;
 
 /// Maximum line buffer size for canonical mode
-const MAX_CANON: usize = 4096;
+pub const MAX_CANON: usize = 4096;
+
+/// Most input bytes queued for reading, as Linux's N_TTY_BUF_SIZE - 1.
+/// Input arriving while the queue is full is dropped, so the queue (filled
+/// from interrupt context and by writes to a pseudo-terminal master) stays
+/// bounded; a master writer waits for room instead (`input_room`).
+pub const MAX_INPUT: usize = MAX_CANON - 1;
 
 /// Special marker returned when EOF is detected on empty line
 pub const EOF_MARKER: i32 = -1;
@@ -64,6 +70,28 @@ impl LineDiscipline {
             raw_queue: VecDeque::new(),
             column: 0,
         }
+    }
+
+    /// `new`, with every queue's full size reserved up front, failing
+    /// instead of panicking when the memory is not there. Input never grows
+    /// a queue past its reserve, so nothing allocates after this.
+    pub fn try_new() -> Result<Self, i32> {
+        const ENOMEM: i32 = 12;
+        let mut line_buffer = Vec::new();
+        line_buffer.try_reserve_exact(MAX_CANON).map_err(|_| ENOMEM)?;
+        let mut cooked_queue = VecDeque::new();
+        cooked_queue
+            .try_reserve_exact(MAX_INPUT + MAX_CANON)
+            .map_err(|_| ENOMEM)?;
+        let mut raw_queue = VecDeque::new();
+        raw_queue.try_reserve_exact(MAX_INPUT).map_err(|_| ENOMEM)?;
+        Ok(Self {
+            termios: Termios::default(),
+            line_buffer,
+            cooked_queue,
+            raw_queue,
+            column: 0,
+        })
     }
 
     /// Create a new line discipline with custom termios settings
@@ -222,7 +250,10 @@ impl LineDiscipline {
     /// In raw mode, characters are passed through immediately without
     /// any special processing.
     fn process_raw(&mut self, c: u8, echo_fn: &mut dyn FnMut(u8)) {
-        // Add to raw queue immediately
+        // Add to raw queue immediately, unless it is full
+        if self.raw_queue.len() >= MAX_INPUT {
+            return;
+        }
         self.raw_queue.push_back(c);
 
         // Echo if enabled
@@ -325,7 +356,9 @@ impl LineDiscipline {
         if self.line_buffer.is_empty() {
             // Empty line with EOF - signal end of input
             // We add a special marker that read() will interpret as EOF
-            self.cooked_queue.push_back(0xFF); // Internal EOF marker
+            if self.cooked_queue.len() < MAX_INPUT {
+                self.cooked_queue.push_back(0xFF); // Internal EOF marker
+            }
         } else {
             // Non-empty line - complete it without adding newline
             self.complete_line();
@@ -333,7 +366,12 @@ impl LineDiscipline {
     }
 
     /// Move the line buffer contents to the cooked queue
+    /// A line completed while the queue is full is dropped whole.
     fn complete_line(&mut self) {
+        if self.cooked_queue.len() >= MAX_INPUT {
+            self.line_buffer.clear();
+            return;
+        }
         for byte in self.line_buffer.drain(..) {
             self.cooked_queue.push_back(byte);
         }
@@ -403,6 +441,14 @@ impl LineDiscipline {
         }
 
         Ok(count)
+    }
+
+    /// Whether input written now would be queued rather than dropped: fewer
+    /// than MAX_INPUT bytes are waiting to be read, or, in canonical mode,
+    /// no complete line is, so the line being edited can still end.
+    pub fn input_room(&self) -> bool {
+        self.cooked_queue.len() + self.raw_queue.len() < MAX_INPUT
+            || (self.termios.is_canonical() && self.cooked_queue.is_empty())
     }
 
     /// Check if there is data available for reading

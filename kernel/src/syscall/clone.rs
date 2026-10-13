@@ -358,7 +358,7 @@ pub fn sys_clone_thread(
     child_process.umask = parent.umask;
     // A thread is in its process's process group and session.
     child_process.pgid = parent.pgid;
-    child_process.sid = parent.sid;
+    crate::tty::ctty::inherit(&mut child_process, parent);
     child_process.parent = Some(parent_pid);
     child_process.inherited_cr3 = Some(parent_cr3);
     child_process.address_space_lifetime = parent.address_space_lifetime.clone();

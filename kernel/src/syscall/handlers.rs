@@ -488,8 +488,14 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
         Device {
             device_type: crate::fs::devfs::DeviceType,
         },
-        PtyMaster(u32),
-        PtySlave(u32),
+        PtyMaster {
+            hold: crate::tty::pty::PtyHold,
+            is_nonblocking: bool,
+        },
+        PtySlave {
+            hold: crate::tty::pty::PtyHold,
+            is_nonblocking: bool,
+        },
         Ebadf,
         Enotconn,   // Socket not connected
         Eisdir,     // Is a directory
@@ -577,8 +583,18 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
             },
             FdKind::DevfsDirectory { .. } => WriteOperation::Eisdir,
             FdKind::DevptsDirectory { .. } => WriteOperation::Eisdir,
-            FdKind::PtyMaster(pty_num) => WriteOperation::PtyMaster(*pty_num),
-            FdKind::PtySlave(pty_num) => WriteOperation::PtySlave(*pty_num),
+            FdKind::PtyMaster(pair) => WriteOperation::PtyMaster {
+                hold: crate::tty::pty::PtyHold::master(pair),
+                is_nonblocking: (fd_entry.status_flags()
+                    & crate::ipc::fd::status_flags::O_NONBLOCK)
+                    != 0,
+            },
+            FdKind::PtySlave(pair) => WriteOperation::PtySlave {
+                hold: crate::tty::pty::PtyHold::slave(pair),
+                is_nonblocking: (fd_entry.status_flags()
+                    & crate::ipc::fd::status_flags::O_NONBLOCK)
+                    != 0,
+            },
             FdKind::ProcfsFile { .. } => WriteOperation::Ebadf,
             FdKind::ProcfsDirectory { .. } => WriteOperation::Eisdir,
             FdKind::Epoll(_) => WriteOperation::Ebadf,
@@ -597,25 +613,11 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
         WriteOperation::Enotconn => SyscallResult::Err(super::errno::ENOTCONN as u64),
         WriteOperation::Eisdir => SyscallResult::Err(super::errno::EISDIR as u64),
         WriteOperation::Eopnotsupp => SyscallResult::Err(95), // EOPNOTSUPP
-        WriteOperation::PtyMaster(pty_num) => {
-            if let Some(pair) = crate::tty::pty::get(pty_num) {
-                match pair.master_write(&buffer) {
-                    Ok(n) => SyscallResult::Ok(n as u64),
-                    Err(e) => SyscallResult::Err(e as u64),
-                }
-            } else {
-                SyscallResult::Err(5) // EIO
-            }
+        WriteOperation::PtyMaster { hold, is_nonblocking } => {
+            crate::tty::pty::io::write_master(hold.pair(), &buffer, is_nonblocking)
         }
-        WriteOperation::PtySlave(pty_num) => {
-            if let Some(pair) = crate::tty::pty::get(pty_num) {
-                match pair.slave_write(&buffer) {
-                    Ok(n) => SyscallResult::Ok(n as u64),
-                    Err(e) => SyscallResult::Err(e as u64),
-                }
-            } else {
-                SyscallResult::Err(5) // EIO
-            }
+        WriteOperation::PtySlave { hold, is_nonblocking } => {
+            crate::tty::pty::io::write_slave(hold.pair(), &buffer, is_nonblocking)
         }
         WriteOperation::Pipe {
             pipe_buffer,
@@ -1646,210 +1648,19 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 crate::net::tcp::tcp_unregister_recv_waiter(&conn_id, thread_id);
             }
         }
-        FdKind::PtyMaster(pty_num) => {
-            // Read from PTY master (slave's output) with blocking support
-            let pty_num = *pty_num;
+        FdKind::PtyMaster(pair) | FdKind::PtySlave(pair) => {
             let is_nonblocking =
                 (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
-            let pair = match crate::tty::pty::get(pty_num) {
-                Some(p) => p,
-                None => {
-                    log::error!("sys_read: PTY {} not found", pty_num);
-                    return SyscallResult::Err(super::errno::EIO as u64);
-                }
+            let hold = if matches!(fd_entry.kind, FdKind::PtyMaster(_)) {
+                crate::tty::pty::PtyHold::master(pair)
+            } else {
+                crate::tty::pty::PtyHold::slave(pair)
             };
             drop(manager_guard);
-
-            let mut user_buf = alloc::vec::Vec::new();
-            if user_buf.try_reserve_exact(count as usize).is_err() {
-                return SyscallResult::Err(12);
-            }
-            user_buf.resize(count as usize, 0);
-
-            loop {
-                pair.register_master_waiter(thread_id);
-
-                match pair.master_read(&mut user_buf) {
-                    Ok(n) => {
-                        pair.unregister_master_waiter(thread_id);
-                        if n > 0 {
-                            if copy_to_user(buf_ptr, user_buf.as_ptr() as u64, n).is_err() {
-                                return SyscallResult::Err(14); // EFAULT
-                            }
-                        }
-                        return SyscallResult::Ok(n as u64);
-                    }
-                    Err(_) => {
-                        if is_nonblocking {
-                            pair.unregister_master_waiter(thread_id);
-                            return SyscallResult::Err(super::errno::EAGAIN as u64);
-                        }
-                    }
-                }
-
-                // Block the thread
-                crate::task::scheduler::with_scheduler(|sched| {
-                    sched.block_current_in_syscall();
-                });
-
-                // Double-check for data or hangup after setting Blocked state
-                if pair.should_wake_master() {
-                    crate::task::scheduler::with_scheduler(|sched| {
-                        if let Some(thread) = sched.current_thread_mut() {
-                            thread.blocked_in_syscall = false;
-                            thread.set_ready();
-                        }
-                    });
-                    pair.unregister_master_waiter(thread_id);
-                    continue;
-                }
-
-                // Preemption stays disabled until the signal check below has run (#1230):
-                // see `blocking_io::wait_prepared`.
-
-                // HLT loop - wait for data to arrive
-                loop {
-                    if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
-                        pair.unregister_master_waiter(thread_id);
-                        crate::task::scheduler::with_scheduler(|sched| {
-                            if let Some(thread) = sched.current_thread_mut() {
-                                thread.blocked_in_syscall = false;
-                                thread.set_ready();
-                            }
-                        });
-                        return SyscallResult::Err(e as u64);
-                    }
-
-                    crate::per_cpu::preempt_enable();
-                    crate::task::scheduler::yield_current();
-                    crate::arch_halt_while_blocked();
-                    crate::per_cpu::preempt_disable();
-
-                    let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
-                        if let Some(thread) = sched.current_thread_mut() {
-                            thread.state == crate::task::thread::ThreadState::Blocked
-                        } else {
-                            false
-                        }
-                    })
-                    .unwrap_or(false);
-
-                    if !still_blocked {
-                        break;
-                    }
-                }
-
-                // Clear blocked_in_syscall
-                crate::task::scheduler::with_scheduler(|sched| {
-                    if let Some(thread) = sched.current_thread_mut() {
-                        thread.blocked_in_syscall = false;
-                    }
-                });
-
-                pair.unregister_master_waiter(thread_id);
-            }
-        }
-        FdKind::PtySlave(pty_num) => {
-            // Read from PTY slave (from line discipline output) with blocking support
-            let pty_num = *pty_num;
-            let is_nonblocking =
-                (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
-            let pair = match crate::tty::pty::get(pty_num) {
-                Some(p) => p,
-                None => {
-                    log::error!("sys_read: PTY {} not found", pty_num);
-                    return SyscallResult::Err(super::errno::EIO as u64);
-                }
-            };
-            drop(manager_guard);
-
-            let mut user_buf = alloc::vec::Vec::new();
-            if user_buf.try_reserve_exact(count as usize).is_err() {
-                return SyscallResult::Err(12);
-            }
-            user_buf.resize(count as usize, 0);
-
-            loop {
-                pair.register_slave_waiter(thread_id);
-
-                match pair.slave_read(&mut user_buf) {
-                    Ok(n) => {
-                        pair.unregister_slave_waiter(thread_id);
-                        if n > 0 {
-                            if copy_to_user(buf_ptr, user_buf.as_ptr() as u64, n).is_err() {
-                                return SyscallResult::Err(14); // EFAULT
-                            }
-                        }
-                        return SyscallResult::Ok(n as u64);
-                    }
-                    Err(_) => {
-                        if is_nonblocking {
-                            pair.unregister_slave_waiter(thread_id);
-                            return SyscallResult::Err(super::errno::EAGAIN as u64);
-                        }
-                    }
-                }
-
-                // Block the thread
-                crate::task::scheduler::with_scheduler(|sched| {
-                    sched.block_current_in_syscall();
-                });
-
-                // Double-check for data after setting Blocked state
-                if pair.has_slave_data() {
-                    crate::task::scheduler::with_scheduler(|sched| {
-                        if let Some(thread) = sched.current_thread_mut() {
-                            thread.blocked_in_syscall = false;
-                            thread.set_ready();
-                        }
-                    });
-                    pair.unregister_slave_waiter(thread_id);
-                    continue;
-                }
-
-                // Preemption stays disabled until the signal check below has run (#1230):
-                // see `blocking_io::wait_prepared`.
-
-                // HLT loop - wait for data to arrive
-                loop {
-                    if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
-                        pair.unregister_slave_waiter(thread_id);
-                        crate::task::scheduler::with_scheduler(|sched| {
-                            if let Some(thread) = sched.current_thread_mut() {
-                                thread.blocked_in_syscall = false;
-                                thread.set_ready();
-                            }
-                        });
-                        return SyscallResult::Err(e as u64);
-                    }
-
-                    crate::per_cpu::preempt_enable();
-                    crate::task::scheduler::yield_current();
-                    crate::arch_halt_while_blocked();
-                    crate::per_cpu::preempt_disable();
-
-                    let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
-                        if let Some(thread) = sched.current_thread_mut() {
-                            thread.state == crate::task::thread::ThreadState::Blocked
-                        } else {
-                            false
-                        }
-                    })
-                    .unwrap_or(false);
-
-                    if !still_blocked {
-                        break;
-                    }
-                }
-
-                // Clear blocked_in_syscall
-                crate::task::scheduler::with_scheduler(|sched| {
-                    if let Some(thread) = sched.current_thread_mut() {
-                        thread.blocked_in_syscall = false;
-                    }
-                });
-
-                pair.unregister_slave_waiter(thread_id);
+            if hold.is_master() {
+                crate::tty::pty::io::read_master(hold.pair(), buf_ptr, count, is_nonblocking)
+            } else {
+                crate::tty::slave_read::read(hold.pair(), buf_ptr, count, is_nonblocking)
             }
         }
         FdKind::UnixStream(socket_ref) => {
