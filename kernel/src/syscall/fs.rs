@@ -2740,7 +2740,10 @@ fn handle_procfs_open(path: &str, flags: u32) -> SyscallResult {
             path: dir_path,
             position: 0,
         };
-        let fd_entry = FileDescriptor::opened(fd_kind, flags);
+        let fd_entry = match FileDescriptor::try_opened(fd_kind, flags) {
+            Ok(entry) => entry,
+            Err(e) => return SyscallResult::Err(e),
+        };
 
         let thread_id = match crate::task::scheduler::current_thread_id() {
             Some(id) => id,
@@ -2778,7 +2781,10 @@ fn handle_procfs_open(path: &str, flags: u32) -> SyscallResult {
         content,
         position: 0,
     };
-    let fd_entry = FileDescriptor::opened(fd_kind, flags);
+    let fd_entry = match FileDescriptor::try_opened(fd_kind, flags) {
+        Ok(entry) => entry,
+        Err(e) => return SyscallResult::Err(e),
+    };
 
     // Get current process
     let thread_id = match crate::task::scheduler::current_thread_id() {
@@ -3160,7 +3166,10 @@ fn handle_devpts_directory_open(flags: u32) -> SyscallResult {
     };
 
     // Allocate file descriptor with DevptsDirectory kind
-    let fd_entry = FileDescriptor::opened(FdKind::DevptsDirectory { position: 0 }, flags);
+    let fd_entry = match FileDescriptor::try_opened(FdKind::DevptsDirectory { position: 0 }, flags) {
+        Ok(entry) => entry,
+        Err(e) => return SyscallResult::Err(e),
+    };
     match process.fd_table.alloc_with_entry(fd_entry) {
         Ok(fd) => {
             log::info!("handle_devpts_directory_open: opened /dev/pts as fd {}", fd);
@@ -3213,7 +3222,10 @@ fn handle_devfs_directory_open(flags: u32) -> SyscallResult {
     };
 
     // Allocate file descriptor with DevfsDirectory kind
-    let fd_entry = FileDescriptor::opened(FdKind::DevfsDirectory { position: 0 }, flags);
+    let fd_entry = match FileDescriptor::try_opened(FdKind::DevfsDirectory { position: 0 }, flags) {
+        Ok(entry) => entry,
+        Err(e) => return SyscallResult::Err(e),
+    };
     match process.fd_table.alloc_with_entry(fd_entry) {
         Ok(fd) => {
             log::info!("handle_devfs_directory_open: opened /dev as fd {}", fd);

@@ -276,23 +276,8 @@ impl FileDescriptor {
 
     /// Create the descriptor for a new open file description from an open(2)
     /// flags word: its access mode and status flags, and FD_CLOEXEC from
-    /// O_CLOEXEC.
-    pub fn opened(kind: FdKind, open_flags: u32) -> Self {
-        let fd_flags = if open_flags & status_flags::O_CLOEXEC != 0 {
-            flags::FD_CLOEXEC
-        } else {
-            0
-        };
-        let word = (open_flags & status_flags::O_ACCMODE) | (open_flags & SETTABLE_STATUS_FLAGS);
-        FileDescriptor {
-            kind,
-            flags: fd_flags,
-            description: Arc::new(AtomicU32::new(word)),
-            native_inode: None,
-        }
-    }
-
-    /// Create an open description without panicking on user-triggered OOM.
+    /// O_CLOEXEC. ENOMEM, rather than a panic, when the description cannot be
+    /// allocated.
     pub fn try_opened(kind: FdKind, open_flags: u32) -> Result<Self, u64> {
         let flags = if open_flags & status_flags::O_CLOEXEC != 0 { flags::FD_CLOEXEC } else { 0 };
         let word = (open_flags & status_flags::O_ACCMODE) | (open_flags & SETTABLE_STATUS_FLAGS);
