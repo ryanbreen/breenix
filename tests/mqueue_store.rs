@@ -243,6 +243,7 @@ fn a_reserved_place_takes_a_message_past_maxmsg_without_allocating() {
     assert_eq!((q.len(), q.reserved()), (expected_len, 0));
     // A sent message still finds the queue full.
     assert_eq!(q.push(0, b"more".to_vec()), Err(Refused::Full(b"more".to_vec())));
+    assert_eq!(q.bytes(), 4 + 8 + 8);
     assert_eq!(q.pop(), Some((b"sent".to_vec(), 0)));
     assert_eq!(q.pop(), Some((b"cookie-1".to_vec(), 0)));
 }
@@ -282,6 +283,16 @@ fn a_send_behind_a_queued_delivery_keeps_the_order() {
     assert_eq!(c.send(0, b"newer".to_vec(), &ranks(UNRANKED)), Sent::Queued { notify: None, served: true });
     assert_eq!(c.receivers.get(50).and_then(|w| w.msg.clone()), Some((b"older".to_vec(), 0)));
     assert_eq!(c.receive(&ranks(UNRANKED)), Some(((b"newer".to_vec(), 0), false)));
+}
+
+#[test]
+fn the_name_table_lists_in_name_order() {
+    let mut table: NameTable<u32> = NameTable::new();
+    for (name, v) in [(&b"b"[..], 2), (b"a", 1), (b"c", 3)] {
+        table.insert(name, v).unwrap();
+    }
+    let listed: Vec<_> = table.iter().map(|(n, v)| (n.to_vec(), *v)).collect();
+    assert_eq!(listed, [(b"a".to_vec(), 1), (b"b".to_vec(), 2), (b"c".to_vec(), 3)]);
 }
 
 #[test]

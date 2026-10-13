@@ -67,8 +67,8 @@ const O_CREAT: u32 = 0o100;
 const O_EXCL: u32 = 0o200;
 
 /// What fstat reports as a queue's size: Linux's fixed size for the text
-/// a queue's file in its mqueue filesystem reads as.
-const QUEUE_FILE_SIZE: i64 = 80;
+/// a queue's file in its mqueue filesystem reads as (`MqFile::read`).
+const QUEUE_FILE_SIZE: usize = 80;
 
 /// The length of a SIGEV_THREAD cookie (Linux's NOTIFY_COOKIE_LEN).
 pub const NOTIFY_COOKIE_LEN: usize = 32;
@@ -592,12 +592,61 @@ pub(crate) fn unlink(name: &[u8], cred: &Credentials) -> Result<(), u64> {
     Ok(())
 }
 
-/// A descriptor's reference to a queue.
-pub struct MqFile(pub Arc<MessageQueue>);
+/// An open file description's reference to a queue, and its read position
+/// in the queue's status text.
+pub struct MqFile(pub Arc<MessageQueue>, AtomicU64);
+
+impl MqFile {
+    pub fn new(queue: Arc<MessageQueue>) -> Self {
+        Self(queue, AtomicU64::new(0))
+    }
+}
 
 impl core::fmt::Debug for MqFile {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "MqFile(ino={})", self.0.ino)
+    }
+}
+
+/// A queue's status text, as a read of its file in Linux's mqueue
+/// filesystem gives it.
+struct StatusText {
+    bytes: [u8; QUEUE_FILE_SIZE],
+    len: usize,
+}
+
+impl core::fmt::Write for StatusText {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        let end = self.len.checked_add(s.len()).filter(|&end| end <= self.bytes.len()).ok_or(core::fmt::Error)?;
+        self.bytes[self.len..end].copy_from_slice(s.as_bytes());
+        self.len = end;
+        Ok(())
+    }
+}
+
+impl MessageQueue {
+    /// The status text: the bytes of the messages queued, and the
+    /// registration's notification method (sigev_notify), signal and
+    /// process, each 0 with no registration (Linux's format).
+    fn status_text(&self) -> StatusText {
+        use crate::signal::timers::{SIGEV_NONE, SIGEV_SIGNAL, SIGEV_THREAD};
+        let inner = self.inner.lock();
+        let bytes = inner.chan.msgs.bytes();
+        let (notify, signo, pid) = match &inner.chan.notify {
+            None => (0, 0, 0),
+            Some(n) => match n.kind {
+                NotifyKind::Nothing => (SIGEV_NONE, 0, n.pid),
+                NotifyKind::Signal(signo) => (SIGEV_SIGNAL, signo, n.pid),
+                NotifyKind::Thread(_) => (SIGEV_THREAD, 0, n.pid),
+            },
+        };
+        drop(inner);
+        let mut text = StatusText { bytes: [0; QUEUE_FILE_SIZE], len: 0 };
+        let _ = core::fmt::Write::write_fmt(
+            &mut text,
+            format_args!("QSIZE:{bytes:<10} NOTIFY:{notify:<5} SIGNO:{signo:<5} NOTIFY_PID:{pid:<6}\n"),
+        );
+        text
     }
 }
 
@@ -613,7 +662,7 @@ impl IpcFile for MqFile {
         st.st_nlink = self.0.linked.load(Ordering::Acquire).into();
         st.st_uid = inner.uid;
         st.st_gid = inner.gid;
-        st.st_size = QUEUE_FILE_SIZE;
+        st.st_size = QUEUE_FILE_SIZE as i64;
         st.st_blksize = 4096;
         let changed = self.0.changed_ns.load(Ordering::Relaxed);
         let (sec, nsec) = (changed.div_euclid(1_000_000_000), changed.rem_euclid(1_000_000_000));
@@ -628,6 +677,17 @@ impl IpcFile for MqFile {
     /// Linux's MQUEUE_MAGIC, the filesystem its queues live in.
     fn statfs_magic(&self) -> u64 {
         0x19800202
+    }
+
+    /// read(2) gives the queue's status text from this description's
+    /// position, which the read advances.
+    fn read(&self, buf: u64, count: usize) -> Result<u64, u64> {
+        let text = self.0.status_text();
+        let at = (self.1.load(Ordering::Acquire) as usize).min(text.len);
+        let n = count.min(text.len - at);
+        crate::syscall::userptr::write_user_bytes(buf, text.bytes[at..].as_ptr(), n)?;
+        self.1.fetch_add(n as u64, Ordering::AcqRel);
+        Ok(n as u64)
     }
 
     fn poll_events(&self) -> i16 {

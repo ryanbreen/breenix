@@ -110,6 +110,19 @@ fn mq_open(name: u64, oflag: u32, mode: u32, attr: u64) -> Result<u64, u64> {
     };
     let attr = attr.filter(|_| oflag & O_CREAT != 0);
     let name = read_name(name)?;
+    open_descriptor(name.as_bytes(), oflag, mode, attr, oflag | status_flags::O_CLOEXEC)
+}
+
+/// Open the queue `name` (checked) as mq_open does with `oflag`, `mode` and
+/// `attr`, and install a descriptor for it in the calling process, opened
+/// with `fd_oflag` (its access mode, status flags and O_CLOEXEC).
+pub(super) fn open_descriptor(
+    name: &[u8],
+    oflag: u32,
+    mode: u32,
+    attr: Option<MqAttr>,
+    fd_oflag: u32,
+) -> Result<u64, u64> {
     let cred = Credentials::current(false);
     let tid = crate::task::scheduler::current_thread_id().ok_or(ESRCH as u64)?;
 
@@ -133,11 +146,11 @@ fn mq_open(name: u64, oflag: u32, mode: u32, attr: u64) -> Result<u64, u64> {
             }
         });
     };
-    let entry = super::open(name.as_bytes(), oflag, mode, attr, &cred, creator)
-        .and_then(|queue| Arc::try_new(MqFile(queue)).map_err(|_| ENOMEM as u64))
+    let entry = super::open(name, oflag, mode, attr, &cred, creator)
+        .and_then(|queue| Arc::try_new(MqFile::new(queue)).map_err(|_| ENOMEM as u64))
         .and_then(|file| {
             let file: Arc<dyn IpcFile> = file;
-            FileDescriptor::try_opened(FdKind::Ipc(file), oflag | status_flags::O_CLOEXEC)
+            FileDescriptor::try_opened(FdKind::Ipc(file), fd_oflag)
         });
     let entry = match entry {
         Ok(entry) => entry,

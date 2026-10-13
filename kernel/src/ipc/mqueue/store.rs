@@ -256,6 +256,11 @@ impl MessageStore {
         self.queue(prio, msg);
     }
 
+    /// The bytes of the messages queued.
+    pub fn bytes(&self) -> usize {
+        self.heap.iter().map(|s| s.msg.len()).sum()
+    }
+
     /// The places reserved and not yet used.
     pub fn reserved(&self) -> usize {
         self.reserved
@@ -535,5 +540,10 @@ impl<T> NameTable<T> {
 
     pub fn remove(&mut self, name: &[u8]) -> Option<T> {
         self.find(name).ok().map(|i| self.entries.remove(i).1)
+    }
+
+    /// The names and their values, in name order.
+    pub fn iter(&self) -> impl Iterator<Item = (&[u8], &T)> {
+        self.entries.iter().map(|(name, value)| (name.as_slice(), value))
     }
 }
