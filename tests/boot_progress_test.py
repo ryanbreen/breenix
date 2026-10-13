@@ -9,6 +9,12 @@ ROOT = Path(__file__).resolve().parents[1]
 Progress = runpy.run_path(str(ROOT / 'scripts/boot_progress.py'))['BootProgress']
 
 
+def has_case_override(source):
+    import re
+    source = re.sub(r"//[^\n]*|/\*.*?\*/", "", source, flags=re.S)
+    return bool(re.search(r"\bcase_limit_ms\s*(?:[:=(])", source))
+
+
 class ProgressTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -67,8 +73,8 @@ class ProgressTest(unittest.TestCase):
     def test_userspace_suite_probe_stage_and_plain_output_count(self):
         for line in ('SUITE threads CASE lifecycle/create-join PASS ms=1',
                      'PROBE memory OK', 'FILE_READ_TEST_PASSED',
-                     'Step 3: child completed', '[init] Starting boot script'):
-            self.feed(line + '\n', 110, line)
+                     '[init] Starting boot script'):
+            self.feed(line + '\n', 110, line, userspace=True)
             self.assertFalse(self.progress.stalled(now=229))
 
     def test_kernel_diagnostics_do_not_count_on_either_serial(self):
@@ -118,12 +124,32 @@ class ProgressTest(unittest.TestCase):
         # runner and none overrides its limit. A 121 s silent case is a stall.
         self.feed('SUITE threads START cases=141\n', 0)
         self.assertTrue(self.progress.stalled(now=121))
-        for manifest in sorted((ROOT / 'docs/suites').glob('*.json')):
-            spec = json.loads(manifest.read_text())
-            source = ROOT / ('userspace/programs/src/suite_' + spec['id'].replace('-', '_') + '.rs')
-            self.assertNotIn('.case_limit_ms(', source.read_text(), spec['id'])
+        # Inspect both builder calls and public-field overrides in the program
+        # tree, including helpers imported by suite entry points.
+        for source in (ROOT / 'userspace/programs/src').rglob('*.rs'):
+            self.assertFalse(has_case_override(source.read_text()), str(source))
         runner = (ROOT / 'libs/libbreenix/src/suite.rs').read_text()
         self.assertIn('pub const DEFAULT_CASE_LIMIT_MS: u64 = 10_000;', runner)
+
+    def test_unknown_unlabelled_kernel_print_is_not_progress(self):
+        self.feed('SUITE smoke START cases=5\n', 0)
+        self.feed('new periodic scheduler status\n', 119, 'mixed')
+        self.feed('new periodic kernel message\n', 119, 'serial_user.log', userspace=True)
+        self.assertTrue(self.progress.stalled(now=120))
+
+    def test_userspace_tags_and_last_userspace_survive_kernel_stage(self):
+        for tag in ('ntp', 'http_fetch_test', 'net_test', 'bwm', 'bterm'):
+            self.feed(f'[{tag}] completed request\n', 10, tag)
+            self.assertFalse(self.progress.stalled(now=129))
+        self.feed('[ INFO] kernel: Kernel initialization complete!\n', 20, 'kernel')
+        result = self.progress.record(now=140, epoch=140)
+        self.assertEqual(result['last_userspace_progress_line'], '[bterm] completed request')
+        self.assertEqual(result['last_userspace_progress_at'], '1970-01-01T00:00:10+00:00')
+
+    def test_case_override_detection_covers_public_field_and_builder(self):
+        for source in ('Suite { case_limit_ms: 121_000, ..suite }',
+                       'suite.case_limit_ms = 121000;', 'suite.case_limit_ms (121000)'):
+            self.assertTrue(has_case_override(source), source)
 
     def test_done_only_disarms_when_monitor_explicitly_tracks_completion(self):
         self.feed('PROBE DONE passed=16 failed=0\n', 0)

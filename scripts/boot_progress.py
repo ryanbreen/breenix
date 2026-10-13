@@ -20,8 +20,8 @@ DIAGNOSTIC = re.compile(
     r"|BP (?:handler|from_userspace)|BP_HANDLER_ENTRY|(?:About to call|Called) preempt_disable"
     r"|breenix>\s*$)", re.I)
 ANNOUNCEMENT = re.compile(r"(?:kernel::test_exec:|Userspace will emit|will (?:print|emit)|expected marker|Missing marker|checkHint)", re.I)
-USER = re.compile(r"^(?:SUITE |SUITE_SEQUENCE |PROBE |RUN PATH |TEST_TALLY:|[A-Z][A-Z0-9_]*(?:_TEST|_PASSED|_START|_COMPLETE)\b|\[(?i:init|bsh|probe|parent|child)\])")
-DONE = re.compile(r"^(?:SUITE \S+ DONE passed=\d+ failed=\d+ skipped=\d+ total=\d+|PROBE DONE passed=\d+ failed=\d+|USERSPACE TEST REPORT DONE|RUN PATH DONE .+)$")
+USER = re.compile(r"^(?:SUITE |SUITE_SEQUENCE |PROBE |RUN \S+ |TEST_TALLY:|[A-Z][A-Z0-9_]*(?:_TEST|_PASSED|_START|_COMPLETE)\b|\[(?:[a-z][a-z0-9_]*|(?i:parent|child))\])")
+DONE = re.compile(r"^(?:SUITE \S+ DONE passed=\d+ failed=\d+ skipped=\d+ total=\d+|PROBE DONE passed=\d+ failed=\d+|USERSPACE TEST REPORT DONE|RUN \S+ DONE .+)$")
 
 
 def stamp(epoch):
@@ -37,6 +37,9 @@ class BootProgress:
         self.last_epoch = time.time() if epoch is None else epoch
         self.last_line = "<no progress line>"
         self.last_source = None
+        self.last_user_line = None
+        self.last_user_source = None
+        self.last_user_epoch = None
         self.stages = set()
         self.streams = {}
         self.file_streams = {}
@@ -61,10 +64,9 @@ class BootProgress:
         kernel = bool(KERNEL.search(line)) or (
             not userspace and Path(source).name in
             ("serial_kernel.log", "serial-kernel.txt", "serial_kernel.txt"))
-        # Raw bracketed lines belong to kernel diagnostics unless their producer
-        # is a known userspace program. Dedicated COM1 is userspace on x86.
-        user = not kernel and (bool(USER.match(line)) or
-                               not line.startswith(("[", "===", "BdsDxe:", "INFO :", "TRACE:")))
+        # Accept producer-tagged userspace records on either UART. Unlabelled
+        # output has no trustworthy producer, even on COM1 (kernel debug uses it).
+        user = not kernel and bool(USER.match(line))
         stages = set()
         for marker in self.markers - self.stages:
             if marker not in line:
@@ -84,7 +86,10 @@ class BootProgress:
         self.last_line, self.last_source = line, str(source)
         self.last_at = time.monotonic() if now is None else now
         self.last_epoch = time.time() if epoch is None else epoch
-        if user and re.match(r"^(?:SUITE \S+ START |PROBE (?!DONE)|RUN PATH START)", line):
+        if user:
+            self.last_user_line, self.last_user_source = line, str(source)
+            self.last_user_epoch = self.last_epoch
+        if user and re.match(r"^(?:SUITE \S+ START |PROBE (?!DONE)|RUN \S+ START)", line):
             self.completed = False
         if self.track_completion:
             if terminal or line == "[init] Boot script completed":
@@ -132,6 +137,9 @@ class BootProgress:
         self.recorded = dict(status="stalled", stopped_at=stamp(epoch), stopped_epoch=epoch,
                              last_progress_line=self.last_line, last_progress_source=self.last_source,
                              last_progress_at=stamp(self.last_epoch),
+                             last_userspace_progress_line=self.last_user_line,
+                             last_userspace_progress_source=self.last_user_source,
+                             last_userspace_progress_at=stamp(self.last_user_epoch) if self.last_user_epoch is not None else None,
                              inactivity_seconds=now - self.last_at, limit_seconds=self.timeout)
         sidecar = Path(str(self.serial) + ".stall.json")
         sidecar.parent.mkdir(parents=True, exist_ok=True)

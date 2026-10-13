@@ -29,6 +29,11 @@ def completion(serial, mode, suite):
     for line in serial.split("\n"):
         if any(re.search(pattern, line) for pattern in FATAL):
             return False, f"fatal kernel output: {line}"
+    if mode == "program":
+        for line in lines:
+            if re.match(r"^RUN /\S+ DONE ", line):
+                return bool(re.match(r"^RUN /\S+ DONE PASS ", line)), line
+        return None
     if mode == "tests":
         if not any(line == TESTS_DONE for line in lines):
             return None

@@ -3,6 +3,7 @@ from pathlib import Path
 import socket
 import tempfile
 import threading
+import warnings
 
 
 class SerialRelay:
@@ -80,11 +81,13 @@ def live_serial_command(command, outputs):
             raise ValueError("x86 gate still has a buffered file serial channel")
         return command, relays
     except BaseException:
-        for relay in relays:
-            relay.close()
+        close_relays(relays)
         raise
 
 
 def close_relays(relays):
     for relay in relays:
-        relay.close()
+        try:
+            relay.close()
+        except (OSError, RuntimeError) as error:
+            warnings.warn(str(error), RuntimeWarning)

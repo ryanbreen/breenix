@@ -130,6 +130,14 @@ public enum RemoteCommand {
     // production kernel running /sbin/suite-<id>, with a QMP socket in gate-tmp for its screen.
     // An id that is not one never reaches the shell: the request fails the gate instead of
     // quietly running the ordinary one (BeastLauncher refuses such an id before this).
+    // Apple's zlib compressor emits a raw DEFLATE stream. Bound the inline
+    // transport size rather than letting catalog growth approach ARG_MAX.
+    private static func compressedPayload(_ encoded: String) -> String? {
+        guard let data = Data(base64Encoded: encoded),
+              let compressed = try? (data as NSData).compressed(using: .zlib) else { return nil }
+        return (compressed as Data).base64EncodedString()
+    }
+
     public static func runGateRequest(boots: Int, mode: RemoteGateMode, timeoutSecs: Int, paths: BeastPaths, qemuProfile: X86HardwareProfile? = nil, suite: String? = nil, fullBackstopSecs: Int? = nil, slotHelperBase64: String? = nil, progressBundleBase64: String? = nil, quietOverride: String? = nil) -> ProcessRequest {
         // Explicit opt-in test/profile features; never interpolate unchecked shell text.
         let features = ProcessInfo.processInfo.environment["BREENIX_GATE_KERNEL_FEATURES"] ?? ""
@@ -157,14 +165,22 @@ public enum RemoteCommand {
             slotIdentity = " BREENIX_SLOT_WORKTREE=\"\(worktree)\" BREENIX_SLOT_COMMIT=\(sha)"
         }
         let helper = slotHelperBase64 == nil ? paths.canonicalRepoDir + "/scripts/host-slots.py" : paths.gateTmpPath + "/host-slots.py"
-        let installHelper = slotHelperBase64.map {
-            " && printf %s \($0) | base64 -d > \(helper)"
+        let packedHelper = slotHelperBase64.flatMap(compressedPayload)
+        let packedProgress = progressBundleBase64.flatMap(compressedPayload)
+        guard (slotHelperBase64 == nil || packedHelper != nil),
+              (progressBundleBase64 == nil || packedProgress != nil) else {
+            return sshRequest(paths: paths, remote: "exit 2")
+        }
+        let installHelper = packedHelper.map {
+            " && python3 -c \"import base64,pathlib,sys,zlib; pathlib.Path(sys.argv[1]).write_bytes(zlib.decompress(base64.b64decode(sys.argv[2]),-15))\" \(helper) \($0)"
         } ?? ""
         let progressRoot = paths.gateTmpPath + "/watchdog"
-        let installProgress = progressBundleBase64.map {
-            " && python3 -c \"import base64,json,pathlib,sys; root=pathlib.Path(sys.argv[1]); [( (root/k).parent.mkdir(parents=True,exist_ok=True), (root/k).write_bytes(base64.b64decode(v))) for k,v in json.loads(base64.b64decode(sys.argv[2])).items()]\" \(progressRoot) \($0)"
+        let installProgress = packedProgress.map {
+            " && python3 -c \"import base64,json,pathlib,sys,zlib; root=pathlib.Path(sys.argv[1]); [( (root/k).parent.mkdir(parents=True,exist_ok=True), (root/k).write_bytes(base64.b64decode(v))) for k,v in json.loads(zlib.decompress(base64.b64decode(sys.argv[2]),-15)).items()]\" \(progressRoot) \($0)"
         } ?? ""
-        let progressEnv = progressBundleBase64 == nil ? "" : " BREENIX_SLOT_PROGRESS_HELPER=\(progressRoot)/scripts/boot_progress.py"
+        // Historical source retains its original watchdog policy by default.
+        let historicalWatch = ProcessInfo.processInfo.environment["BREENIX_WATCH_HISTORICAL"] == "1"
+        let progressEnv = progressBundleBase64 == nil ? "" : " BREENIX_SLOT_PROGRESS_HELPER=\(progressRoot)/scripts/boot_progress.py BREENIX_WATCH_HISTORICAL=\(historicalWatch ? 1 : 0)"
         let gate: String
         if let laneKey = paths.laneKey, let sha = paths.requestedSHA {
             gate = "python3 \(paths.gateTmpPath)/gate-tree.py \(paths.canonicalRepoDir) \(laneKey) \(sha) \(paths.gateTmpPath) \(boots) \(mode.rawValue)"

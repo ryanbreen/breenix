@@ -7,7 +7,7 @@
 #                               [--idle-exit SECONDS] [--gate-timeout SECONDS] [--display | --no-display]
 #                               [--qmp SOCKET] [--fbconsole log] [--no-build]
 #
-#   Suite mode observes DONE, holds the scored panel, then exits with the suite verdict.
+#   Suite mode observes DONE, holds the panel briefly, then exits with its verdict.
 #   --mode MODE          tests (default): the testing kernel and its test loader
 #                        probe | shell | desktop | program | suite: the production kernel, told the mode
 #                        via -fw_cfg name=opt/breenix/mode (see "Boot modes" in docs/boot-path.md)

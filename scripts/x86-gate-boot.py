@@ -38,6 +38,27 @@ def stop(process):
     process.wait()
 
 
+def diagnose(user_log, kernel_log, text):
+    # Existing strand records name the threads still saved in waits.
+    subprocess.run([str(pathlib.Path(__file__).with_name('x86-strand-census.sh')),
+                    str(user_log), str(kernel_log)], check=False)
+    print('[gate] last kernel progress:', flush=True)
+    print('\n'.join(text.splitlines()[-20:]), flush=True)
+    print('[gate] last userspace progress (program output, not loader announcements):', flush=True)
+    if user_log.exists():
+        user_text = user_log.read_text(errors='replace')
+        # These are contracts with a userspace START but no terminal
+        # marker, not an assertion that the loader ever ran them.
+        pending = set()
+        for name, state in re.findall(r'\b([A-Z][A-Z0-9_]*_TEST)_(START|PASSED|FAILED)\b', user_text):
+            if state == 'START':
+                pending.add(name)
+            else:
+                pending.discard(name)
+        print('[gate] unfinished started program contracts: ' +
+              (', '.join(sorted(pending)) or '<none with a START/terminal marker pair>'), flush=True)
+        print('\n'.join(user_text.splitlines()[-20:]), flush=True)
+
 def main():
     kernel_log = pathlib.Path(sys.argv[1])
     user_log = pathlib.Path(sys.argv[2])
@@ -70,31 +91,14 @@ def main():
                 return 0 if clock_ok else 3
             if progress.stalled():
                 progress.record()
+                diagnose(user_log, kernel_log, text)
                 return 124
             if process.poll() is not None:
                 print(f'GATE: FAIL (full boot exited before USERSPACE TEST COMPLETE; status={process.returncode})', flush=True)
                 return 1
             if time.monotonic() - started >= backstop:
                 print(f'GATE: FAIL (full boot reached {backstop:g}s hang backstop; completion report still unfinished)', flush=True)
-                # Existing strand records name the threads still saved in waits.
-                subprocess.run([str(pathlib.Path(__file__).with_name('x86-strand-census.sh')),
-                                str(user_log), str(kernel_log)], check=False)
-                print('[gate] last kernel progress:', flush=True)
-                print('\n'.join(text.splitlines()[-20:]), flush=True)
-                print('[gate] last userspace progress (program output, not loader announcements):', flush=True)
-                if user_log.exists():
-                    user_text = user_log.read_text(errors='replace')
-                    # These are contracts with a userspace START but no terminal
-                    # marker, not an assertion that the loader ever ran them.
-                    pending = set()
-                    for name, state in re.findall(r'\b([A-Z][A-Z0-9_]*_TEST)_(START|PASSED|FAILED)\b', user_text):
-                        if state == 'START':
-                            pending.add(name)
-                        else:
-                            pending.discard(name)
-                    print('[gate] unfinished started program contracts: ' +
-                          (', '.join(sorted(pending)) or '<none with a START/terminal marker pair>'), flush=True)
-                    print('\n'.join(user_text.splitlines()[-20:]), flush=True)
+                diagnose(user_log, kernel_log, text)
                 return 1
             time.sleep(0.25)
     finally:

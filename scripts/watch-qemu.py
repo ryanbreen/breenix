@@ -31,7 +31,7 @@ def stop(process):
 
 # Modes that print a completion record. Their kernels keep logging after it (the
 # periodic census), so the idle timer alone would leave a finished VM running.
-COMPLETING_MODES = ("suite", "probe", "tests")
+COMPLETING_MODES = ("suite", "probe", "tests", "program")
 
 
 def label(mode, suite):
@@ -79,7 +79,7 @@ def watch(process, serial, mode, suite, idle_exit, gate_timeout, suite_hold, clo
             if now - done_at >= 2 + suite_hold:
                 print(f"==> {label(mode, suite)} completed; stopping the VM", flush=True)
                 return "done"
-        elif progress.stalled():
+        elif mode in COMPLETING_MODES and progress.stalled():
             progress.record()
             return "stalled"
         elif mode == "suite" and gate_timeout > 0 and now - started >= gate_timeout:
@@ -130,7 +130,7 @@ def main():
         return 124
     if reason == "fatal":
         return 1
-    if args.mode in ("probe", "tests"):
+    if args.mode in ("probe", "tests", "program"):
         serial = args.serial.read_bytes().decode("utf-8", errors="replace") if args.serial.exists() else ""
         result = DONE["completion"](serial, args.mode, args.suite)
         print(f"{'PASS' if result and result[0] else 'FAIL'}: {result[1] if result else 'no completion record'}", flush=True)

@@ -43,19 +43,31 @@ for i in range(100):
     with p.open('a') as stream: stream.write('[CPU_CENSUS:seq=%d]\\n' % i)
     time.sleep(.05)
 '''
-        script = (f'{sys.executable} {HELPER} acquire mac-boot; '
-                  f'{sys.executable} {HELPER} serial {serial}; '
-                  f'{sys.executable} {HELPER} quiet; '
-                  f'exec {sys.executable} -c {shlex.quote(replay)}')
-        with mock.patch.dict(os.environ, BREENIX_SLOT_WORKTREE=str(historical),
-                             BREENIX_SLOT_PROGRESS_HELPER=str(bundle / 'scripts/boot_progress.py'),
-                             BREENIX_QUIET='0'):
-            process = self.launch(script)
-        output = process.communicate(timeout=10)[0].decode()
-        self.assertEqual(process.returncode, 124, output)
-        record = json.loads(Path(str(serial) + '.stall.json').read_text())
-        self.assertEqual(record['status'], 'stalled')
-        self.assertEqual(record['last_progress_line'], 'SIGKILL_TEARDOWN_TEST: FAIL')
+        fake = self.root / 'qemu-system-fake'
+        fake.symlink_to(sys.executable)
+        for enabled, halted in ((False, False), (True, True), (True, False)):
+            with self.subTest(enabled=enabled, halted=halted):
+                serial.unlink(missing_ok=True)
+                Path(str(serial) + '.stall.json').unlink(missing_ok=True)
+                bounded_replay = replay.replace('range(100)', 'range(40)')
+                script = (f'{sys.executable} {HELPER} acquire mac-boot; '
+                          f'{sys.executable} {HELPER} serial {serial}; '
+                          f'{sys.executable} {HELPER} quiet; '
+                          f'sleep 1; exec {fake} -c {shlex.quote(bounded_replay)} '
+                          f'-serial file:{serial}' + (' -S' if halted else ''))
+                with mock.patch.dict(os.environ, BREENIX_SLOT_WORKTREE=str(historical),
+                                     BREENIX_SLOT_PROGRESS_HELPER=str(bundle / 'scripts/boot_progress.py'),
+                                     BREENIX_QUIET='0', BREENIX_WATCH_HISTORICAL=str(int(enabled))):
+                    process = self.launch(script, qemu_alias=str(fake))
+                output = process.communicate(timeout=10)[0].decode()
+                if enabled and not halted:
+                    self.assertEqual(process.returncode, 124, output)
+                    record = json.loads(Path(str(serial) + '.stall.json').read_text())
+                    self.assertEqual(record['status'], 'stalled')
+                    self.assertEqual(record['last_progress_line'], 'SIGKILL_TEARDOWN_TEST: FAIL')
+                else:
+                    self.assertEqual(process.returncode, 0, output)
+                    self.assertFalse(Path(str(serial) + '.stall.json').exists(), output)
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -73,7 +85,7 @@ for i in range(100):
                 process.communicate()
         self.temporary.cleanup()
 
-    def launch(self, script, bypass=False, miss_first_snapshot=False, temporary_directory=None, settings=None):
+    def launch(self, script, bypass=False, miss_first_snapshot=False, temporary_directory=None, settings=None, qemu_alias=None):
         # Only tests inject a directory and disable observational VM discovery and
         # the Linux vCPU gap sampler, so the host's own guests and load can't decide them.
         # Production's fixed directory has no environment override.
@@ -85,6 +97,13 @@ m.mac_vms = lambda: []
 m.x86_vms = lambda: []
 m.vcpu_gap_ms = lambda seconds: 0.0
 m.WAIT_MESSAGE_SECONDS = 0.2
+if {qemu_alias!r}:
+    original_table = m.process_table
+    def with_qemu_alias():
+        return {{pid: (*row[:3], {qemu_alias!r} + ' ' + row[3])
+                 if ' -c from pathlib import Path' in row[3] and '-serial file:' in row[3]
+                 else row for pid, row in original_table().items()}}
+    m.process_table = with_qemu_alias
 for name, value in {settings or {}!r}.items():
     setattr(m, name, value)
 if {miss_first_snapshot!r}:

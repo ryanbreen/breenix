@@ -927,7 +927,7 @@ if [ "$VMWARE" = true ]; then
     # Delete earlier boots' VM bundles, which nothing else removes (one per boot, about 100 MB each): only
     # breenix-<epoch> bundles that are not running and were created more than 30 minutes ago, so a caller still
     # scoring a just-stopped VM's data disk keeps it. Age comes from the epoch in the name, because VMware Fusion
-    # rewrites files in every bundle its library lists, so file times never age. Never a named VM. Sweep
+    # rewrites listed bundle files, so their modification times are unsuitable. Sweep
     # before VM startup, so housekeeping cannot delay recording a completed boot or releasing its slot.
     sweep_vmware_bundles() {
         local now old_bundle old_name old_vmx VM_BUNDLE_LIST
@@ -1371,8 +1371,6 @@ if [ "$ARCH" = "arm64" ]; then
     # blocking.
     host_slot_acquire mac-boot
     qemu_host_lock_acquire
-    : > "$OUTPUT_DIR/serial.txt"
-    host_slot_serial "$OUTPUT_DIR/serial.txt"
     host_slot_quiet
     qemu-system-aarch64 \
         -M virt,gic-version=3 -cpu max -smp 4 \
@@ -1388,8 +1386,7 @@ if [ "$ARCH" = "arm64" ]; then
         $QMP_OPTS \
         $GDB_OPTS \
         $FW_CFG_OPTS \
-        -chardev "stdio,id=console,mux=on,logfile=$OUTPUT_DIR/serial.txt" \
-        -serial chardev:console -mon chardev=console,mode=readline \
+        -serial mon:stdio \
         -no-reboot \
         &
 else
@@ -1411,10 +1408,6 @@ else
     # with a concurrent arm64 session.
     host_slot_acquire mac-boot
     qemu_host_lock_acquire qemu-system-x86_64
-    : > "$OUTPUT_DIR/serial.txt"
-    : > "$OUTPUT_DIR/serial-kernel.txt"
-    host_slot_serial "$OUTPUT_DIR/serial.txt"
-    host_slot_serial "$OUTPUT_DIR/serial-kernel.txt"
     host_slot_quiet
     qemu-system-x86_64 \
         -pflash "$OUTPUT_DIR/OVMF_CODE.fd" \
@@ -1437,9 +1430,7 @@ else
         -monitor tcp:127.0.0.1:4444,server,nowait \
         $QMP_OPTS \
         $GDB_OPTS \
-        -chardev "stdio,id=console,mux=on,logfile=$OUTPUT_DIR/serial.txt" \
-        -serial chardev:console -mon chardev=console,mode=readline \
-        -serial "file:$OUTPUT_DIR/serial-kernel.txt" \
+        -serial mon:stdio \
         &
 fi
 
@@ -1473,7 +1464,8 @@ if [ "$ARCH" = "x86_64" ] && [ "$HEADLESS" = false ] && [ "$(uname)" = "Darwin" 
 fi
 
 # Wait for QEMU to finish
-wait "$QEMU_PID" 2>/dev/null || exit $?
+QEMU_STATUS=0
+wait "$QEMU_PID" 2>/dev/null || QEMU_STATUS=$?
 
 echo ""
 echo "========================================="
@@ -1487,3 +1479,5 @@ if [ -f "$HOME_SESSION" ]; then
     echo "Home session disk: $HOME_SESSION"
     echo "Extract saved files: ./scripts/extract-saves.sh"
 fi
+
+exit "$QEMU_STATUS"

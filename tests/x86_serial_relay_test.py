@@ -7,6 +7,7 @@ import socket
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 relay_api = runpy.run_path(str(ROOT / "scripts/x86_serial_relay.py"))
@@ -36,6 +37,14 @@ class SerialRelayTest(unittest.TestCase):
                     process.terminate()
                     process.communicate(timeout=5)
                 relay_api["close_relays"](relays)
+
+    def test_close_error_does_not_prevent_other_relays_or_override_verdict(self):
+        broken = mock.Mock()
+        broken.close.side_effect = RuntimeError('late relay error')
+        healthy = mock.Mock()
+        with self.assertWarnsRegex(RuntimeWarning, 'late relay error'):
+            relay_api['close_relays']([broken, healthy])
+        healthy.close.assert_called_once_with()
 
     def test_short_userspace_line_arrives_while_connection_is_open(self):
         with tempfile.TemporaryDirectory() as directory:

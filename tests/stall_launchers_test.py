@@ -111,6 +111,43 @@ sweep_vmware_bundles() { sleep 10; }
                         guest.kill()
                     guest.wait()
 
+    def test_interactive_modes_do_not_stall_and_program_done_stops_guest(self):
+        for mode in ('shell', 'desktop', 'program'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
+                out = Path(tmp); serial = out / 'serial'
+                text = ('[clock] UTC epoch=%d source=UEFI\n' % time.time() +
+                        'RUN /usr/bin/true DONE PASS exit 0; no FAIL output\n') if mode == 'program' else '[init] Starting shell\n'
+                guest = [sys.executable, '-c',
+                         'from pathlib import Path;import sys,time;Path(sys.argv[1]).write_text(sys.argv[2]);time.sleep(4 if sys.argv[3] == "program" else 1.5)',
+                         str(serial), text, mode]
+                result = subprocess.run([sys.executable, '-c', INJECT, str(ROOT/'scripts/watch-qemu.py'),
+                                         '--serial', str(serial), '--mode', mode, '--idle-exit', '0',
+                                         '--suite-hold', '0', '--'] + guest,
+                                        capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertFalse(Path(str(serial)+'.stall.json').exists())
+
+    def test_xtask_watcher_done_reaps_a_guest_that_stays_running(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            serial = Path(tmp)/'serial'; stopped = Path(tmp)/'stopped'
+            replay = REPLAY.replace("SIGKILL_TEARDOWN_TEST: FAIL", "PROBE DONE passed=16 failed=0")
+            guest = [sys.executable, '-c', replay, str(serial), str(serial), str(stopped)]
+            result = subprocess.run([sys.executable, str(ROOT/'scripts/watch-boot.py'),
+                                     '--serial', str(serial), '--']+guest,
+                                    capture_output=True, text=True, timeout=4)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertTrue(stopped.exists())
+
+    def test_qemu_summary_preserves_nonzero_status(self):
+        source = (ROOT/'run.sh').read_text().split('# Wait for QEMU to finish\n', 1)[1]
+        with tempfile.TemporaryDirectory() as tmp:
+            env = dict(os.environ, OUTPUT_DIR=tmp, EXT2_SESSION=tmp+'/disk', HOME_SESSION=tmp+'/home')
+            result = subprocess.run(['bash', '-c', 'set -e; (exit 124) & QEMU_PID=$!; '+source],
+                                    env=env, capture_output=True, text=True, timeout=3)
+            self.assertEqual(result.returncode, 124)
+            self.assertIn('Breenix stopped', result.stdout)
+            self.assertIn('Serial output saved to:', result.stdout)
+
     def test_all_monitors_record_stall_despite_census(self):
         for name in ('watch-qemu.py', 'x86-gate-boot.py', 'x86-suite-boot.py', 'watch-boot.py', 'wait-boot-done.py'):
             with self.subTest(monitor=name), tempfile.TemporaryDirectory() as tmp:
@@ -141,6 +178,9 @@ sweep_vmware_bundles() { sleep 10; }
                 if name != 'wait-boot-done.py':
                     self.assertTrue(stopped.exists(), result.stdout + result.stderr)
                     self.assertIn('CENSUS',kernel.read_text() if kernel.exists() else user.read_text())
+                if name == 'x86-gate-boot.py':
+                    self.assertIn('unfinished started program contracts:', result.stdout)
+                    self.assertIn('last userspace progress', result.stdout)
                 if name == 'x86-suite-boot.py':
                     self.assertEqual(json.loads((out/'suite-results.json').read_text())[0]['verdict'],'STALLED')
 

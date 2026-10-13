@@ -43,6 +43,8 @@ def main():
             if os.getppid() != parent:
                 return 129
             progress.poll([(path, path == args.user_serial) for path in args.serial])
+            if progress.completed:
+                return 0
             if progress.stalled():
                 progress.record()
                 return 124

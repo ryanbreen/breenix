@@ -31,14 +31,14 @@ final class BeastLauncherTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let helper = try Data(contentsOf: repo.appendingPathComponent("scripts/host-slots.py")).base64EncodedString()
         let request = RemoteCommand.runGateRequest(boots: 1, mode: .full, timeoutSecs: 300, paths: BeastPaths(clonePath: "/root/run"), slotHelperBase64: helper, progressBundleBase64: bundle)
-        XCTAssertLessThan(try XCTUnwrap(request.arguments.last).utf8.count, 131_072)
+        XCTAssertLessThan(try XCTUnwrap(request.arguments.last).utf8.count, 65_536)
         let syntax = try RealProcessRunner().run(ProcessRequest(executable: "/bin/bash", arguments: ["-n", "-c", try XCTUnwrap(request.arguments.last)]))
         XCTAssertEqual(syntax.exitCode, 0)
         let code = """
         import pathlib,runpy,shlex,subprocess,sys
         script=shlex.split(sys.argv[1])[-1]
         subprocess.run(['/bin/bash','-n','-c',script],check=True)
-        installer=script.partition(' && python3 -c ')[2].partition(' && python3 -c ')[0]
+        installer=script.split(' && python3 -c ')[2]
         command=[sys.executable,'-c']+shlex.split(installer)
         command[3]=sys.argv[2]
         subprocess.run(command,check=True)
@@ -63,7 +63,7 @@ final class BeastLauncherTests: XCTestCase {
         XCTAssertTrue(gate.arguments.last!.contains("BREENIX_SLOT_WORKTREE=\"${BREENIX_GATE_CACHE_DIR:-/root/breenix-gate-cache}/trees/" + paths.laneKey!))
         XCTAssertTrue(gate.arguments.last!.contains("BREENIX_SLOT_COMMIT=" + paths.requestedSHA!))
         XCTAssertTrue(gate.arguments.last!.contains("BREENIX_SLOT_PROGRESS_HELPER=/root/run/gate-tmp/watchdog/scripts/boot_progress.py"))
-        XCTAssertTrue(gate.arguments.last!.contains("json.loads(base64.b64decode(sys.argv[2]))"))
+        XCTAssertTrue(gate.arguments.last!.contains("json.loads(zlib.decompress(base64.b64decode(sys.argv[2]),-15))"))
         XCTAssertFalse(gate.arguments.last!.contains("acquire x86-boot"), "current gates acquire and release their own distinct build/boot leases")
         XCTAssertEqual(RemoteCommand.removeCloneRequest(paths: paths).arguments.last,
             "sudo -n incus exec breenix-x86 -- python3 /root/run/gate-tmp/gate-tree.py remove-evidence /root/run")

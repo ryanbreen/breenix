@@ -281,29 +281,29 @@ Nothing else tracks regressions.
 
 Vigil's Breenix page reads this file, runs boots, and shows the ladder live.
 
-Every launcher stops an unfinished boot after 120 seconds without test progress,
-independently of its existing hard deadline or raw-serial idle exit. Progress is a
-complete new userspace line or a first-seen boot-stage marker. Loader announcements,
-periodic kernel census and diagnostics do not extend that deadline. The launcher
-exits nonzero and keeps its serial and a neighboring `*.stall.json` record with
-`status: stalled`, the last progress line and its source, the last progress time,
-and the UTC stop time. Default Mac serial paths are unique per launcher run, so
-a later boot cannot overwrite that evidence. The x86 gate relays QEMU's Unix
-socket serial channels into those files as bytes arrive; `-serial file:` can
-delay a short userspace line past the watchdog's poll. Run Inspector preserves
-the gate's stop time and last progress line in a `stalled` verdict. Run Inspector
-stages its current classifier and compact marker catalogs outside the tested
-checkout, so historical revisions without watchdog files are covered too.
-The shared host-slot supervisor also watches older QEMU
-launchers once their owned VM starts; build and queue time do not count. A completed
-suite's retained panel is outside the stall deadline; suite sequences resume the
-watch when the next suite prints START.
+Finite test, probe, program and suite launchers stop an unfinished boot after
+120 seconds without classified test progress, independently of the hard deadline
+or raw-serial idle exit. Shell and desktop sessions keep their interactive idle
+policy (`--idle-exit 0` disables idle shutdown). GDB-halted sessions are excluded
+from historical supervision. Queue and build time do not start the watchdog.
+Progress on a mixed UART requires a userspace record/tag or a first-seen
+boot-stage marker. Unlabelled lines have no trustworthy producer even on COM1,
+which also carries kernel debug output.
+Loader announcements and diagnostic records do not extend the deadline.
+A stall exits nonzero and retains serial plus a neighboring `*.stall.json`
+record containing the last progress line, last userspace progress line, their
+sources and timestamps, and the UTC stop time. x86 gate watchers use the userspace
+serial as the sidecar's stable location. Mac serial defaults include run identity.
+The x86 gate relays Unix socket serial channels into files as bytes arrive.
+Run Inspector retains a typed `stalled` verdict and installs a compressed helper
+bundle outside the tested checkout. Historical source keeps its original policy
+unless the caller sets `BREENIX_WATCH_HISTORICAL=1`; that option enrolls owned
+file-serial QEMU processes at launch. Generic qemu-host-lock launchers are otherwise
+unchanged. A completed panel is outside the stall deadline; a suite sequence
+resumes monitoring when the next suite prints START.
 
-All eight current suite manifests use the runner's default 10-second case limit;
-none grants a longer silent case. The full testing boot's canonical programs have
-no intentional silent interval exceeding 120 seconds (the external HTTP receive
-limit is 20 seconds, DNS child startup is 30 seconds, and probe program mode is
-bounded at 60 seconds). An unbounded wait for a signal, child, pipe or socket is
-not a legitimate silent allowance: its supervising program must make progress.
-Any future legitimately longer operation must print meaningful userspace progress
-before two minutes elapse; periodic kernel output cannot satisfy that requirement.
+The suite runner's default case deadline is 10 seconds. The host source check
+looks for builder calls, public-field struct literals and assignments throughout
+`userspace/programs/src`, including helper modules. Silent operations that exceed
+the watchdog window require meaningful userspace progress before the deadline;
+periodic kernel output cannot provide that allowance.

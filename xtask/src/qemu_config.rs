@@ -100,7 +100,7 @@ impl QemuConfig {
     }
 
     /// Spawn QEMU with this configuration, returning the child process handle.
-    fn watched_command(&self, executable: &str) -> Command {
+    fn watched_command(&self, executable: impl AsRef<std::ffi::OsStr>) -> Command {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let mut command = Command::new("python3");
         command.arg(root.join("scripts/watch-boot.py"));
@@ -200,7 +200,12 @@ impl QemuConfig {
                 // Add extra args
                 args.extend(self.extra_qemu_args.iter().cloned());
 
-                self.watched_command("target/release/qemu-uefi")
+                self.watched_command(
+                    std::env::var_os("CARGO_TARGET_DIR")
+                        .map(PathBuf::from)
+                        .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("target"))
+                        .join("release/qemu-uefi"),
+                )
                     .args(&args)
                     .stdin(Stdio::null())
                     .stdout(Stdio::null())
