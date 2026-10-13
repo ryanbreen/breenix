@@ -2810,7 +2810,7 @@ fn handle_devfs_getdents64(
 
     // Helper entries
     let special_entries: [(&str, u64); 2] = [
-        (".", 0),  // inode 0 for /dev directory itself
+        (".", 1),  // matches the stable /dev directory stat inode
         ("..", 2), // inode 2 = root directory
     ];
 
