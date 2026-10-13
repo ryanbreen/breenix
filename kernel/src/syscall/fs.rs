@@ -1128,9 +1128,7 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
         DevfsDirectory,
         DevptsDirectory,
         TcpSocket,
-        PtyDevice {
-            pty_num: u32,
-        },
+        PtySlave(alloc::sync::Arc<crate::tty::pty::PtyPair>),
         UnixSocket,
         Fifo(alloc::sync::Arc<spin::Mutex<crate::ipc::fifo::FifoEntry>>),
         ProcfsFile {
@@ -1199,9 +1197,18 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
                 FdKind::TcpSocket(_) | FdKind::TcpListener(_) | FdKind::TcpConnection(_) => {
                     FstatKind::TcpSocket
                 }
-                FdKind::PtyMaster(pair) | FdKind::PtySlave(pair) => {
-                    FstatKind::PtyDevice { pty_num: pair.pty_num }
+                // A master is an open of /dev/ptmx (Linux reports the
+                // ptmx node), a slave its /dev/pts entry.
+                FdKind::PtyMaster(_) => {
+                    let ptmx = crate::fs::devfs::DeviceType::Ptmx;
+                    FstatKind::Device {
+                        inode: ptmx.inode(),
+                        rdev: crate::fs::devfs::lookup_by_inode(ptmx.inode())
+                            .map(|d| d.rdev())
+                            .unwrap_or(0),
+                    }
                 }
+                FdKind::PtySlave(pair) => FstatKind::PtySlave(pair.clone()),
                 FdKind::UnixStream(_) | FdKind::UnixSocket(_) | FdKind::UnixListener(_) => {
                     FstatKind::UnixSocket
                 }
@@ -1332,15 +1339,7 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
             stat.st_mode = S_IFSOCK | 0o755;
             stat.st_nlink = 1;
         }
-        FstatKind::PtyDevice { pty_num } => {
-            static PTY_INODE_COUNTER: core::sync::atomic::AtomicU64 =
-                core::sync::atomic::AtomicU64::new(4000);
-            stat.st_dev = 0xffff0003;
-            stat.st_ino = PTY_INODE_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            stat.st_mode = S_IFCHR | 0o620;
-            stat.st_nlink = 1;
-            stat.st_rdev = make_dev(136, pty_num as u64);
-        }
+        FstatKind::PtySlave(pair) => fill_pty_slave_stat(&mut stat, &pair),
         FstatKind::UnixSocket => {
             static UNIX_SOCKET_INODE_COUNTER: core::sync::atomic::AtomicU64 =
                 core::sync::atomic::AtomicU64::new(5000);
@@ -2824,7 +2823,7 @@ fn handle_devfs_open(
     // Check for /dev/pts/* paths - route to devptsfs
     if device_name.starts_with("pts/") {
         let pty_name = &device_name[4..]; // Remove "pts/" prefix
-        return handle_devpts_open(pty_name, flags);
+        return handle_devpts_open(pty_name, flags, reserved);
     }
 
     // Check for /dev/pts directory itself
@@ -2845,7 +2844,7 @@ fn handle_devfs_open(
         return SyscallResult::Err(13); // EACCES
     }
     if device.device_type == devfs::DeviceType::Ptmx {
-        return crate::tty::pty::open_master(flags);
+        return open_ptmx(flags, native_inode, reserved);
     }
 
     // Get current process and allocate fd
@@ -2887,25 +2886,8 @@ fn handle_devfs_open(
         };
         return match (id, tty) {
             (TtyId::Pty(_), TtyRef::Pty(pair)) => {
-                let entry = match FileDescriptor::try_opened(FdKind::PtySlave(pair.clone()), flags) {
-                    Ok(entry) => entry.with_inode(native_inode),
-                    Err(e) => return SyscallResult::Err(e),
-                };
-                if pair.master_closed() {
-                    return SyscallResult::Err(5); // EIO, Linux hung-up tty open
-                }
-                pair.slave_open();
-                if pair.master_closed() {
-                    crate::tty::pty::close_slave_ref(&pair);
-                    return SyscallResult::Err(5);
-                }
-                match install_descriptor(&mut process.fd_table, reserved, entry) {
-                    Ok(fd) => SyscallResult::Ok(fd as u64),
-                    Err(_) => {
-                        crate::tty::pty::close_slave_ref(&pair);
-                        SyscallResult::Err(EMFILE as u64)
-                    }
-                }
+                drop(manager_guard);
+                open_tty_slave(&pair, flags, native_inode, reserved)
             }
             (TtyId::Console, TtyRef::Console(_)) => {
                 let fd_kind = match FileDescriptor::try_opened(FdKind::Device(device.device_type), flags) {
@@ -2943,6 +2925,19 @@ fn handle_devfs_open(
     }
 }
 
+/// A pseudo-terminal slave's stat: its /dev/pts entry, owned as grantpt
+/// left it.
+fn fill_pty_slave_stat(stat: &mut Stat, pair: &crate::tty::pty::PtyPair) {
+    let (uid, gid, mode) = pair.slave_owner();
+    stat.st_dev = 0xffff0003;
+    stat.st_ino = crate::fs::devptsfs::get_inode(pair.pty_num);
+    stat.st_mode = S_IFCHR | mode;
+    stat.st_uid = uid;
+    stat.st_gid = gid;
+    stat.st_nlink = 1;
+    stat.st_rdev = make_dev(136, pair.pty_num as u64);
+}
+
 /// Handle opening a PTY slave device from /dev/pts/*
 ///
 /// # Arguments
@@ -2955,7 +2950,7 @@ fn handle_devfs_open(
 ///
 /// # Returns
 /// File descriptor on success, negative errno on failure
-fn handle_devpts_open(pty_name: &str, flags: u32) -> SyscallResult {
+fn handle_devpts_open(pty_name: &str, flags: u32, reserved: Option<ReservedSlot>) -> SyscallResult {
     use super::errno::{EMFILE, ENOENT};
     use crate::fs::devptsfs;
     use crate::ipc::fd::FileDescriptor;
@@ -2967,46 +2962,169 @@ fn handle_devpts_open(pty_name: &str, flags: u32) -> SyscallResult {
             return SyscallResult::Err(ENOENT as u64);
         }
     };
-
-    // Get current process and allocate fd
-    let thread_id = match crate::task::scheduler::current_thread_id() {
-        Some(id) => id,
-        None => {
-            return SyscallResult::Err(3); // ESRCH
-        }
+    // Read before the process manager is taken: Credentials::current takes it.
+    let cred = current_file_credentials();
+    let Some(thread_id) = crate::task::scheduler::current_thread_id() else {
+        return SyscallResult::Err(3); // ESRCH
     };
 
     let mut manager_guard = crate::process::manager();
-    let process = match &mut *manager_guard {
-        Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
-            Some((_, p)) => p,
-            None => {
-                return SyscallResult::Err(3); // ESRCH
-            }
-        },
-        None => {
-            return SyscallResult::Err(3); // ESRCH
-        }
+    let Some((_, process)) = manager_guard
+        .as_mut()
+        .and_then(|manager| manager.find_process_by_thread_mut(thread_id))
+    else {
+        return SyscallResult::Err(3); // ESRCH
     };
 
-    // Take the slave reference first (EIO for a locked pair or a closed
-    // master), then allocate the fd with the caller's status flags so a slave
-    // opened O_NONBLOCK actually reads non-blocking.
-    let pair = match crate::tty::pty::open_slave(pty_num) {
-        Ok(pair) => pair,
-        Err(e) => return SyscallResult::Err(e as u64),
+    // Hold a descriptor slot first, so that once the slave reference is
+    // taken the install cannot fail. Then take the reference (EACCES for the
+    // owner and mode grantpt set, EIO for a locked pair or a closed master),
+    // and build the entry with the caller's status flags, so a slave opened
+    // O_NONBLOCK reads non-blocking.
+    let slot = match reserved {
+        Some(slot) => Slot::Held(slot),
+        None => match process.fd_table.reserve_slot() {
+            Some(fd) => Slot::Taken(fd),
+            None => return SyscallResult::Err(EMFILE as u64),
+        },
     };
-    let entry = FileDescriptor::opened(FdKind::PtySlave(pair.clone()), flags);
-    let fd = match process.fd_table.alloc_with_entry(entry) {
-        Ok(fd) => fd,
-        Err(_) => {
-            drop(manager_guard);
-            crate::tty::pty::close_slave_ref(&pair);
-            return SyscallResult::Err(EMFILE as u64);
+    let pair = match crate::tty::pty::open_slave(pty_num, flags, &cred) {
+        Ok(pair) => pair,
+        Err(e) => {
+            slot.give_back(&mut process.fd_table);
+            return SyscallResult::Err(e as u64);
         }
     };
+    let entry = match FileDescriptor::try_opened(FdKind::PtySlave(pair.clone()), flags) {
+        Ok(entry) => entry,
+        Err(e) => {
+            slot.give_back(&mut process.fd_table);
+            drop(manager_guard);
+            crate::tty::pty::close_slave_ref(&pair);
+            return SyscallResult::Err(e);
+        }
+    };
+    let fd = slot.install(&mut process.fd_table, entry);
+    pair.mark_slave_opened();
     drop(manager_guard);
     crate::tty::ctty::acquire_on_open(crate::tty::ctty::TtyId::Pty(pty_num), flags);
+    SyscallResult::Ok(fd as u64)
+}
+
+/// A descriptor slot held for a terminal open: the caller's (O_CREAT), or
+/// one taken from the table. Either way the install cannot fail.
+enum Slot {
+    Held(ReservedSlot),
+    Taken(i32),
+}
+
+impl Slot {
+    /// Install `entry` in the held slot, under PROCESS_MANAGER.
+    fn install(self, table: &mut crate::ipc::fd::FdTable, entry: crate::ipc::fd::FileDescriptor) -> i32 {
+        let fd = match &self {
+            Slot::Held(slot) => slot.fd,
+            Slot::Taken(fd) => *fd,
+        };
+        match self {
+            Slot::Held(slot) => {
+                let _ = slot.install(table, entry);
+            }
+            Slot::Taken(fd) => {
+                let _ = table.install_reserved(fd, entry);
+            }
+        }
+        fd
+    }
+
+    /// Give the slot back, under PROCESS_MANAGER, for an open that failed.
+    fn give_back(self, table: &mut crate::ipc::fd::FdTable) {
+        let fd = match self {
+            Slot::Held(slot) => {
+                let fd = slot.fd;
+                core::mem::forget(slot);
+                fd
+            }
+            Slot::Taken(fd) => fd,
+        };
+        table.release_reserved(fd);
+    }
+}
+
+/// Open /dev/ptmx: a new master. The pair and the descriptor entry are made
+/// before the process manager is taken; the descriptor goes in the slot an
+/// O_CREAT open holds, and keeps the device node's inode, so fstat reports
+/// /dev/ptmx.
+fn open_ptmx(
+    flags: u32,
+    native_inode: Option<crate::fs::ext2::live_inode::FileHandle>,
+    reserved: Option<ReservedSlot>,
+) -> SyscallResult {
+    let (pair, entry) = match crate::tty::pty::new_master(flags) {
+        Ok(made) => made,
+        Err(e) => return SyscallResult::Err(e as u64),
+    };
+    let entry = entry.with_inode(native_inode);
+    let installed = match crate::task::scheduler::current_thread_id() {
+        Some(thread_id) => {
+            let mut manager_guard = crate::process::manager();
+            match manager_guard
+                .as_mut()
+                .and_then(|manager| manager.find_process_by_thread_mut(thread_id))
+            {
+                Some((_, process)) => install_descriptor(&mut process.fd_table, reserved, entry),
+                None => Err(3), // ESRCH
+            }
+        }
+        None => Err(3), // ESRCH
+    };
+    match installed {
+        Ok(fd) => SyscallResult::Ok(fd as u64),
+        Err(e) => {
+            crate::tty::pty::close_master_ref(&pair);
+            SyscallResult::Err(e as u64)
+        }
+    }
+}
+
+/// Open the slave of `pair`, the caller's controlling terminal, for
+/// /dev/tty. The descriptor is installed in a slot held before the slave
+/// reference is taken; EIO once the master has closed.
+fn open_tty_slave(
+    pair: &alloc::sync::Arc<crate::tty::pty::PtyPair>,
+    flags: u32,
+    native_inode: Option<crate::fs::ext2::live_inode::FileHandle>,
+    reserved: Option<ReservedSlot>,
+) -> SyscallResult {
+    use super::errno::EMFILE;
+    use crate::ipc::fd::FileDescriptor;
+
+    let entry = match FileDescriptor::try_opened(FdKind::PtySlave(pair.clone()), flags) {
+        Ok(entry) => entry.with_inode(native_inode),
+        Err(e) => return SyscallResult::Err(e),
+    };
+    let Some(thread_id) = crate::task::scheduler::current_thread_id() else {
+        return SyscallResult::Err(3); // ESRCH
+    };
+    let mut manager_guard = crate::process::manager();
+    let Some((_, process)) = manager_guard
+        .as_mut()
+        .and_then(|manager| manager.find_process_by_thread_mut(thread_id))
+    else {
+        return SyscallResult::Err(3); // ESRCH
+    };
+    let slot = match reserved {
+        Some(slot) => Slot::Held(slot),
+        None => match process.fd_table.reserve_slot() {
+            Some(fd) => Slot::Taken(fd),
+            None => return SyscallResult::Err(EMFILE as u64),
+        },
+    };
+    if let Err(e) = crate::tty::pty::reopen_slave(pair) {
+        slot.give_back(&mut process.fd_table);
+        return SyscallResult::Err(e as u64);
+    }
+    let fd = slot.install(&mut process.fd_table, entry);
+    pair.mark_slave_opened();
     SyscallResult::Ok(fd as u64)
 }
 
@@ -3242,9 +3360,6 @@ fn handle_devpts_getdents64(
 ) -> SyscallResult {
     use crate::fs::devptsfs;
 
-    // Get the list of PTY slave entries
-    let entries = devptsfs::list_entries();
-
     // Build entries: ".", "..", then each PTY slave
     let mut records = alloc::vec::Vec::new();
     let mut bytes_written = 0usize;
@@ -3285,13 +3400,16 @@ fn handle_devpts_getdents64(
     }
 
     // Now iterate through PTY slave entries
-    for entry in entries.iter() {
+    let mut after = None;
+    while let Some(entry) = devptsfs::next_entry(after) {
+        after = Some(entry.pty_num);
         if entry_index < start_position {
             entry_index += 1;
             continue;
         }
 
-        let name = entry.name();
+        let mut name_buf = [0u8; 10];
+        let name = entry.name(&mut name_buf);
         let name_len = name.len();
         let reclen = align_up_8(DIRENT64_HEADER_SIZE + name_len + 1);
 
@@ -3304,7 +3422,7 @@ fn handle_devpts_getdents64(
             entry.inode,
             (entry_index + 1) as i64,
             DT_CHR,
-            name.as_bytes(),
+            name,
         );
 
         bytes_written += reclen;
@@ -4045,6 +4163,22 @@ pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, flags: u32) -> Sy
     }
     if let Some(result) = crate::ipc::shmem::stat_path(full_path, statbuf) {
         return result;
+    }
+    // A /dev/pts entry is stat'ed from its pair: opening it to fstat would
+    // need the access its mode grants and could acquire it as a
+    // controlling terminal.
+    if let Some(pair) = full_path
+        .strip_prefix("/dev/pts/")
+        .and_then(crate::fs::devptsfs::lookup)
+        .and_then(crate::tty::pty::get)
+    {
+        let mut stat = Stat::zeroed();
+        stat.st_blksize = 4096;
+        fill_pty_slave_stat(&mut stat, &pair);
+        return match copy_to_user(statbuf as *mut Stat, &stat) {
+            Ok(()) => SyscallResult::Ok(0),
+            Err(errno) => SyscallResult::Err(errno),
+        };
     }
 
     let (mount, inode_num) = match resolved.target {

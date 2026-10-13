@@ -9,102 +9,91 @@ pub mod pair;
 // Re-export PtyPair for external use
 pub use pair::PtyPair;
 
-use crate::syscall::errno::{EIO, ENOENT, ENOMEM, ENOSPC, ESRCH};
+use crate::ipc::fd::{FdKind, FileDescriptor};
+use crate::syscall::errno::{EACCES, EIO, ENOENT, ENOMEM, ENOSPC, ESRCH};
 use crate::syscall::SyscallResult;
 use crate::task::completion::Completion;
 use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
-use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
-use alloc::vec::Vec;
-use spin::{Mutex, Once};
+use spin::Mutex;
 
 /// Maximum number of PTY pairs
 pub const MAX_PTYS: u32 = 256;
 
-/// Global PTY allocator
-static PTY_ALLOCATOR: Once<Mutex<PtyAllocator>> = Once::new();
-
-struct PtyAllocator {
-    next_pty_num: u32,
-    /// Released PTY numbers available for reuse
-    free_list: Vec<u32>,
-    pairs: BTreeMap<u32, Arc<PtyPair>>,
-}
-
-impl PtyAllocator {
-    fn new() -> Self {
-        Self {
-            next_pty_num: 0,
-            free_list: Vec::new(),
-            pairs: BTreeMap::new(),
-        }
-    }
-}
+/// The live pairs, by number. A fixed table, so taking or freeing a number
+/// never allocates.
+static PTY_TABLE: Mutex<[Option<Arc<PtyPair>>; MAX_PTYS as usize]> =
+    Mutex::new([const { None }; MAX_PTYS as usize]);
 
 /// Initialize the PTY subsystem
 pub fn init() {
-    PTY_ALLOCATOR.call_once(|| Mutex::new(PtyAllocator::new()));
     log::info!("PTY subsystem initialized");
 }
 
-/// Allocate a new PTY pair
+/// Allocate a new pair whose slave belongs to root, for the kernel's own use.
 pub fn allocate() -> Result<Arc<PtyPair>, i32> {
-    let mut alloc = PTY_ALLOCATOR.get().ok_or(ENOMEM)?.lock();
+    allocate_for(0, 0)
+}
 
-    // Prefer recycling a released PTY number
-    let pty_num = if let Some(recycled) = alloc.free_list.pop() {
-        recycled
-    } else if alloc.next_pty_num < MAX_PTYS {
-        let num = alloc.next_pty_num;
-        alloc.next_pty_num += 1;
-        num
-    } else {
-        return Err(ENOSPC);
-    };
-
-    let pair = Arc::new(PtyPair::new(pty_num));
-    alloc.pairs.insert(pty_num, pair.clone());
-
+/// Allocate a new pair with the lowest free number (as devpts does), its
+/// slave belonging to `uid` and `gid`. ENOSPC when every number is taken,
+/// ENOMEM when the pair cannot be allocated.
+pub fn allocate_for(uid: u32, gid: u32) -> Result<Arc<PtyPair>, i32> {
+    let mut table = PTY_TABLE.lock();
+    let slot = table.iter().position(Option::is_none).ok_or(ENOSPC)?;
+    let pair = Arc::try_new(PtyPair::try_new(slot as u32, uid, gid)?).map_err(|_| ENOMEM)?;
+    table[slot] = Some(pair.clone());
     Ok(pair)
 }
 
 /// Get an existing PTY pair by number
 pub fn get(pty_num: u32) -> Option<Arc<PtyPair>> {
-    PTY_ALLOCATOR.get()?.lock().pairs.get(&pty_num).cloned()
+    PTY_TABLE.lock().get(pty_num as usize)?.clone()
 }
 
-/// Open a new master: posix_openpt(3) and open("/dev/ptmx"). `flags` are
-/// open(2) flags; O_CLOEXEC and O_NONBLOCK are kept on the descriptor.
-pub fn open_master(flags: u32) -> SyscallResult {
-    use crate::ipc::fd::{FdKind, FileDescriptor};
-
+/// A new master's pair, for the caller, with its descriptor entry built:
+/// everything that can fail for want of memory is done before the entry is
+/// installed. On error nothing is left allocated.
+pub fn new_master(flags: u32) -> Result<(Arc<PtyPair>, FileDescriptor), i32> {
     // A master's last close may need the hangup thread; make no master
     // without it.
-    if let Err(e) = ensure_hangup_daemon() {
-        return SyscallResult::Err(e as u64);
+    ensure_hangup_daemon()?;
+    let cred = crate::fs::permissions::Credentials::current(false);
+    let pair = allocate_for(cred.euid, cred.egid)?;
+    match FileDescriptor::try_opened(FdKind::PtyMaster(pair.clone()), flags) {
+        Ok(entry) => Ok((pair, entry)),
+        Err(e) => {
+            close_master_ref(&pair);
+            Err(e as i32)
+        }
     }
-    let Some(thread_id) = crate::task::scheduler::current_thread_id() else {
-        return SyscallResult::Err(ESRCH as u64);
-    };
-    let mut manager_guard = crate::process::manager();
-    let Some((_, process)) = manager_guard
-        .as_mut()
-        .and_then(|manager| manager.find_process_by_thread_mut(thread_id))
-    else {
-        return SyscallResult::Err(ESRCH as u64);
-    };
-    let pair = match allocate() {
-        Ok(pair) => pair,
+}
+
+/// posix_openpt(3): open a new master. `flags` are open(2) flags; O_CLOEXEC
+/// and O_NONBLOCK are kept on the descriptor.
+pub fn open_master(flags: u32) -> SyscallResult {
+    let (pair, entry) = match new_master(flags) {
+        Ok(made) => made,
         Err(e) => return SyscallResult::Err(e as u64),
     };
-    let installed = FileDescriptor::try_opened(FdKind::PtyMaster(pair.clone()), flags)
-        .and_then(|entry| process.fd_table.alloc_with_entry(entry).map_err(|e| e as u64));
-    drop(manager_guard);
+    let installed = match crate::task::scheduler::current_thread_id() {
+        Some(thread_id) => {
+            let mut manager_guard = crate::process::manager();
+            match manager_guard
+                .as_mut()
+                .and_then(|manager| manager.find_process_by_thread_mut(thread_id))
+            {
+                Some((_, process)) => process.fd_table.alloc_with_entry(entry),
+                None => Err(ESRCH),
+            }
+        }
+        None => Err(ESRCH),
+    };
     match installed {
         Ok(fd) => SyscallResult::Ok(fd as u64),
         Err(e) => {
             close_master_ref(&pair);
-            SyscallResult::Err(e)
+            SyscallResult::Err(e as u64)
         }
     }
 }
@@ -121,10 +110,7 @@ pub fn close_master_ref(pair: &Arc<PtyPair>) {
     // reservation, and an open of the slave never sees the master count at
     // zero without the closed mark.
     let last = {
-        let Some(alloc) = PTY_ALLOCATOR.get() else {
-            return;
-        };
-        let _table = alloc.lock();
+        let _table = PTY_TABLE.lock();
         let last = pair.master_refcount.fetch_sub(1, Ordering::SeqCst) == 1;
         if last {
             pair.hangup_pending.store(true, Ordering::SeqCst);
@@ -172,43 +158,67 @@ fn finish_hangup(pair: &Arc<PtyPair>) {
 /// Release `pair`'s number once no master and no slave reference remains
 /// and no hangup is pending, so a hangup always finds its own pair.
 fn release_if_unused(pair: &Arc<PtyPair>) {
-    let Some(alloc) = PTY_ALLOCATOR.get() else {
-        return;
-    };
-    let mut alloc = alloc.lock();
+    let mut table = PTY_TABLE.lock();
     if pair.master_refcount.load(Ordering::SeqCst) != 0
         || pair.slave_refcount.load(Ordering::SeqCst) != 0
         || pair.hangup_pending.load(Ordering::SeqCst)
     {
         return;
     }
-    if alloc
-        .pairs
-        .get(&pair.pty_num)
-        .is_some_and(|current| Arc::ptr_eq(current, pair))
-    {
-        alloc.pairs.remove(&pair.pty_num);
-        alloc.free_list.push(pair.pty_num);
+    let slot = &mut table[pair.pty_num as usize];
+    if slot.as_ref().is_some_and(|current| Arc::ptr_eq(current, pair)) {
+        *slot = None;
     }
 }
 
-/// Take a new slave reference on pair `pty_num` for an open of its slave.
+/// Take a new slave reference on pair `pty_num` for an open of its slave
+/// with open(2) `flags` by a caller with credentials `cred`.
 ///
-/// Fails with EIO while the pair is locked or once its master has closed,
-/// and with ENOENT when no such pair exists.
-pub fn open_slave(pty_num: u32) -> Result<Arc<PtyPair>, i32> {
-    let alloc = PTY_ALLOCATOR.get().ok_or(ENOENT)?;
-    let table = alloc.lock();
-    let pair = table.pairs.get(&pty_num).cloned().ok_or(ENOENT)?;
+/// Fails with ENOENT when no such pair exists, EACCES when the slave's
+/// owner, group and mode (set by grantpt) do not grant the access mode, and
+/// EIO while the pair is locked or once its master has closed. The caller
+/// calls `PtyPair::mark_slave_opened` once its descriptor is installed, or
+/// gives the reference back with `close_slave_ref`.
+pub fn open_slave(
+    pty_num: u32,
+    flags: u32,
+    cred: &crate::fs::permissions::Credentials,
+) -> Result<Arc<PtyPair>, i32> {
+    let table = PTY_TABLE.lock();
+    let pair = table.get(pty_num as usize).cloned().flatten().ok_or(ENOENT)?;
+    let wanted = match flags & 3 {
+        0 => 0o4,
+        1 => 0o2,
+        _ => 0o6,
+    };
+    let (uid, gid, mode) = pair.slave_owner();
+    if !cred.permits_mode(uid, gid, mode, wanted) {
+        return Err(EACCES);
+    }
     // Under the table lock the closed mark and the master count agree, and
     // the pair cannot be released, so the reference taken here is either on
     // a live master's pair or not taken at all.
     if !pair.is_unlocked() || pair.master_closed() {
         return Err(EIO);
     }
-    pair.slave_open();
+    pair.take_slave_ref();
     drop(table);
     Ok(pair)
+}
+
+/// Take a new slave reference on `pair` for an open of /dev/tty naming it:
+/// EIO once its master has closed (or it is no longer the table's pair). As
+/// with `open_slave`, the caller marks the slave opened after installing.
+pub fn reopen_slave(pair: &Arc<PtyPair>) -> Result<(), i32> {
+    let table = PTY_TABLE.lock();
+    let current = table[pair.pty_num as usize]
+        .as_ref()
+        .is_some_and(|current| Arc::ptr_eq(current, pair));
+    if !current || pair.master_closed() {
+        return Err(EIO);
+    }
+    pair.take_slave_ref();
+    Ok(())
 }
 
 /// Last master closes made with the process manager held, one bit per pair.
@@ -325,22 +335,12 @@ impl Drop for PtyHold {
     }
 }
 
-/// Fallible snapshot for userspace directory and device operations.
-pub fn try_list_active() -> Result<alloc::vec::Vec<u32>, u64> {
-    let mut numbers = alloc::vec::Vec::new();
-    if let Some(alloc) = PTY_ALLOCATOR.get() {
-        let alloc = alloc.lock();
-        numbers.try_reserve_exact(alloc.pairs.len()).map_err(|_| 12u64)?;
-        numbers.extend(alloc.pairs.keys().copied());
-    }
-    Ok(numbers)
-}
-
-/// List all active (allocated) PTY numbers
-/// Used by devpts filesystem for directory listing
-pub fn list_active() -> alloc::vec::Vec<u32> {
-    match PTY_ALLOCATOR.get() {
-        Some(alloc) => alloc.lock().pairs.keys().copied().collect(),
-        None => alloc::vec::Vec::new(),
-    }
+/// The numbers of the live pairs, in order, without allocating: the first
+/// live number above `after` (or the lowest, for None).
+pub fn next_active(after: Option<u32>) -> Option<u32> {
+    let start = after.map_or(0, |n| n as usize + 1);
+    let table = PTY_TABLE.lock();
+    (start..MAX_PTYS as usize)
+        .find(|&n| table[n].is_some())
+        .map(|n| n as u32)
 }

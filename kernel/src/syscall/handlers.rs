@@ -583,6 +583,8 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
             },
             FdKind::DevfsDirectory { .. } => WriteOperation::Eisdir,
             FdKind::DevptsDirectory { .. } => WriteOperation::Eisdir,
+            // A description opened O_RDONLY is not writable (EBADF).
+            FdKind::PtyMaster(_) | FdKind::PtySlave(_) if !fd_entry.writable() => WriteOperation::Ebadf,
             FdKind::PtyMaster(pair) => WriteOperation::PtyMaster {
                 hold: crate::tty::pty::PtyHold::master(pair),
                 is_nonblocking: (fd_entry.status_flags()
@@ -1650,6 +1652,10 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 // Unregister from wait queue (will re-register at top of loop)
                 crate::net::tcp::tcp_unregister_recv_waiter(&conn_id, thread_id);
             }
+        }
+        // A description opened O_WRONLY is not readable (EBADF).
+        FdKind::PtyMaster(_) | FdKind::PtySlave(_) if !fd_entry.readable() => {
+            SyscallResult::Err(super::errno::EBADF as u64)
         }
         FdKind::PtyMaster(pair) | FdKind::PtySlave(pair) => {
             let is_nonblocking =
