@@ -175,7 +175,7 @@ unsafe fn wait(sem: *mut Sem, timeout: *const i64, timed: bool) -> i32 {
         // Short critical sections normally release on another CPU before a
         // futex sleep can return. Bound this work, then use the same SeqCst
         // registration/recheck protocol; an idle semaphore still parks.
-        for _ in 0..128 {
+        for _ in 0..65536 {
             if sem.take() {
                 return 0;
             }
@@ -186,7 +186,21 @@ unsafe fn wait(sem: *mut Sem, timeout: *const i64, timed: bool) -> i32 {
         // The expected futex word includes this marker. A post clears it,
         // so a waiter arriving after that wake gets EAGAIN instead of losing
         // the notification. Recheck tokens only after publishing the marker.
-        sem.value.fetch_or(WAITERS_BIT, Ordering::SeqCst);
+        // Publish sleep intent only at zero. An unconditional fetch_or
+        // dirties the token cache line even if a poster has already made a
+        // token available, making that post needlessly enter the kernel.
+        let mut observed = sem.value.load(Ordering::SeqCst);
+        while observed == 0 {
+            match sem.value.compare_exchange_weak(
+                0,
+                WAITERS_BIT,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => break,
+                Err(seen) => observed = seen,
+            }
+        }
         if sem.take() {
             return 0;
         }
