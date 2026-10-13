@@ -99,6 +99,8 @@ pub struct DirectoryFile {
 /// and cannot be cloned (they contain unique socket handles and rx queues).
 #[derive(Clone)]
 pub enum FdKind {
+    /// An IPC object with shared open-description status flags.
+    Ipc(Arc<dyn super::object::IpcFile>),
     /// Standard I/O (stdin, stdout, stderr)
     StdIo(i32),
     /// Read end of a pipe
@@ -149,6 +151,8 @@ pub enum FdKind {
     FifoRead(alloc::string::String, Arc<Mutex<super::pipe::PipeBuffer>>, Arc<Mutex<super::fifo::FifoEntry>>),
     /// FIFO (named pipe) write end - path is stored for cleanup on close
     FifoWrite(alloc::string::String, Arc<Mutex<super::pipe::PipeBuffer>>, Arc<Mutex<super::fifo::FifoEntry>>),
+    /// Linux O_RDWR FIFO endpoint: one reader and one writer reference.
+    FifoReadWrite(alloc::string::String, Arc<Mutex<super::pipe::PipeBuffer>>, Arc<Mutex<super::fifo::FifoEntry>>),
     /// Procfs virtual file (content generated at open time)
     ProcfsFile {
         content: alloc::string::String,
@@ -166,6 +170,7 @@ pub enum FdKind {
 impl core::fmt::Debug for FdKind {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            FdKind::Ipc(object) => write!(f, "Ipc({:?})", object),
             FdKind::StdIo(n) => write!(f, "StdIo({})", n),
             FdKind::PipeRead(_) => write!(f, "PipeRead"),
             FdKind::PipeWrite(_) => write!(f, "PipeWrite"),
@@ -194,6 +199,7 @@ impl core::fmt::Debug for FdKind {
             }
             FdKind::FifoRead(path, _, _) => write!(f, "FifoRead({})", path),
             FdKind::FifoWrite(path, _, _) => write!(f, "FifoWrite({})", path),
+            FdKind::FifoReadWrite(path, _, _) => write!(f, "FifoReadWrite({})", path),
             FdKind::ProcfsFile { content, position } => {
                 write!(f, "ProcfsFile(len={}, pos={})", content.len(), position)
             }
@@ -217,6 +223,8 @@ pub struct FileDescriptor {
     /// entry (dup, dup2, dup3, F_DUPFD, fork) shares the word, so F_SETFL on
     /// one descriptor is seen through every descriptor for the description.
     description: Arc<AtomicU32>,
+    /// Mounted inode metadata retained when the stream is served by a driver.
+    pub(crate) native_inode: Option<crate::fs::ext2::live_inode::FileHandle>,
 }
 
 impl core::fmt::Debug for FileDescriptor {
@@ -265,6 +273,7 @@ impl FileDescriptor {
             kind,
             flags,
             description: Arc::new(AtomicU32::new(word)),
+            native_inode: None,
         }
     }
 
@@ -282,7 +291,21 @@ impl FileDescriptor {
             kind,
             flags: fd_flags,
             description: Arc::new(AtomicU32::new(word)),
+            native_inode: None,
         }
+    }
+
+    /// Create an open description without panicking on user-triggered OOM.
+    pub fn try_opened(kind: FdKind, open_flags: u32) -> Result<Self, u64> {
+        let flags = if open_flags & status_flags::O_CLOEXEC != 0 { flags::FD_CLOEXEC } else { 0 };
+        let word = (open_flags & status_flags::O_ACCMODE) | (open_flags & SETTABLE_STATUS_FLAGS);
+        Ok(Self { kind, flags, description: Arc::try_new(AtomicU32::new(word)).map_err(|_| 12u64)?, native_inode: None })
+    }
+
+    /// Attach the native namespace inode without changing driver operations.
+    pub fn with_inode(mut self, inode: Option<crate::fs::ext2::live_inode::FileHandle>) -> Self {
+        self.native_inode = inode;
+        self
     }
 
     /// The open file description's flags word (F_GETFL): access mode and
@@ -310,6 +333,17 @@ impl FileDescriptor {
     /// F_SETFL: replace the settable status flags (O_APPEND, O_NONBLOCK) of the
     /// open file description. The access mode and any other bit in `flags` are
     /// ignored.
+    /// Atomically replace mutable status flags and return the previous word.
+    pub fn replace_status_flags(&self, flags: u32) -> u32 {
+        super::fd_flags::replace(&self.description, flags, SETTABLE_STATUS_FLAGS)
+    }
+
+    /// Atomically replace only the settable status flags in `mask` and
+    /// return the previous word.
+    pub fn update_status_flags(&self, mask: u32, flags: u32) -> u32 {
+        super::fd_flags::replace(&self.description, flags, mask & SETTABLE_STATUS_FLAGS)
+    }
+
     pub fn set_status_flags(&self, flags: u32) {
         let _ = self
             .description
@@ -492,6 +526,10 @@ impl Clone for FdTableInner {
                         entry.lock().readers += 1;
                         buffer.lock().add_reader();
                     }
+                    FdKind::FifoReadWrite(_, buffer, entry) => {
+                        { let mut e = entry.lock(); e.readers += 1; e.writers += 1; }
+                        { let mut p = buffer.lock(); p.add_reader(); p.add_writer(); }
+                    }
                     FdKind::FifoWrite(_, buffer, entry) => {
                         // Increment both FIFO entry writer count and pipe buffer writer count
                         entry.lock().writers += 1;
@@ -562,7 +600,7 @@ impl FdTableInner {
             }
             unsafe { SlabBox::from_slab(arr, &FD_TABLE_SLAB) }
         } else {
-            SlabBox::from_box(alloc::boxed::Box::new(core::array::from_fn(|_| None)))
+            SlabBox::heap_from_fn(|_| None)
         };
 
         FdTableInner {
@@ -744,6 +782,10 @@ impl FdTableInner {
                 entry.lock().readers += 1;
                 buffer.lock().add_reader();
             }
+            FdKind::FifoReadWrite(_, buffer, entry) => {
+                { let mut e = entry.lock(); e.readers += 1; e.writers += 1; }
+                { let mut p = buffer.lock(); p.add_reader(); p.add_writer(); }
+            }
             FdKind::FifoWrite(_, buffer, entry) => {
                 entry.lock().writers += 1;
                 buffer.lock().add_writer();
@@ -818,6 +860,10 @@ impl FdTableInner {
                 entry.lock().readers += 1;
                 buffer.lock().add_reader();
             }
+            FdKind::FifoReadWrite(_, buffer, entry) => {
+                { let mut e = entry.lock(); e.readers += 1; e.writers += 1; }
+                { let mut p = buffer.lock(); p.add_reader(); p.add_writer(); }
+            }
             FdKind::FifoWrite(_, buffer, entry) => {
                 entry.lock().writers += 1;
                 buffer.lock().add_writer();
@@ -869,7 +915,7 @@ impl FdTableInner {
     /// Close all file descriptors marked with FD_CLOEXEC.
     /// Called during exec() per POSIX semantics.
     /// Properly decrements pipe/fifo reference counts.
-    pub fn close_cloexec(&mut self, closes: &mut DeferredFdCloses) {
+    pub fn close_cloexec(&mut self, pid: crate::process::ProcessId, closes: &mut DeferredFdCloses) {
         for i in 0..self.fds.len() {
             let should_close = self.fds[i]
                 .as_ref()
@@ -877,6 +923,9 @@ impl FdTableInner {
                 .unwrap_or(false);
             if should_close {
                 if let Some(entry) = self.fds[i].take() {
+                    if let FdKind::Ipc(object) = &entry.kind {
+                        object.on_close(pid);
+                    }
                     closes.entries.push((i, entry));
                 }
             }
@@ -906,6 +955,7 @@ impl Drop for FdTableInner {
         for i in 0..self.fds.len() {
             if let Some(fd_entry) = self.fds[i].take() {
                 match fd_entry.kind {
+                    FdKind::Ipc(_) => {}
                     FdKind::PipeRead(buffer) => {
                         let notifications = buffer.lock().close_read();
                         notifications.deliver();
@@ -1019,6 +1069,14 @@ impl Drop for FdTableInner {
                         notifications.deliver();
                         log::debug!("FdTable::drop() - closed FIFO read fd {} ({})", i, path);
                     }
+                    FdKind::FifoReadWrite(_, buffer, entry) => {
+                        super::fifo::close_fifo_read(&entry);
+                        super::fifo::close_fifo_write(&entry);
+                        let read = buffer.lock().close_read();
+                        read.deliver();
+                        let write = buffer.lock().close_write();
+                        write.deliver();
+                    }
                     FdKind::FifoWrite(path, buffer, entry) => {
                         // Decrement FIFO writer count and pipe buffer writer count
                         super::fifo::close_fifo_write(&entry);
@@ -1052,6 +1110,10 @@ pub struct DeferredFdCloses {
 }
 
 impl DeferredFdCloses {
+    pub fn reserve(&mut self, count: usize) -> Result<(), &'static str> {
+        self.entries.try_reserve(count).map_err(|_| "Out of memory for exec descriptor closes")
+    }
+
     /// Drop the record locks `owner` holds on the files these descriptors
     /// referred to: closing any descriptor for a file releases them.
     pub fn release_record_locks(&self, owner: u64) {

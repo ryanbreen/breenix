@@ -144,7 +144,8 @@ fn wait(fds: &mut [PollFd], timeout: Option<u64>, select: bool) -> Result<u64, u
             }
             match entry.as_ref().map(|e| &e.kind) {
                 Some(crate::ipc::fd::FdKind::PipeRead(pipe))
-                | Some(crate::ipc::fd::FdKind::FifoRead(_, pipe, _)) => {
+                | Some(crate::ipc::fd::FdKind::FifoRead(_, pipe, _))
+                | Some(crate::ipc::fd::FdKind::FifoReadWrite(_, pipe, _)) => {
                     pipe.lock().add_read_waiter(tid);
                     readers.push(pipe.clone());
                 }

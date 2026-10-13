@@ -147,6 +147,9 @@ fn populate_page(
     address: u64,
     prepared: &mut Option<OwnedPopulationFrame>,
 ) -> Result<Population, u64> {
+    if let Some(result) = crate::ipc::shmem::populate_page(process, address) {
+        return result.map(|resident| if resident { Population::Resident } else { Population::Retry });
+    }
     let table = process.page_table.as_deref_mut().ok_or(ENOMEM as u64)?;
     let page = Page::<Size4KiB>::containing_address(VirtAddr::new(address));
     let vma = process
@@ -221,6 +224,7 @@ pub(crate) fn populate(thread: u64, start: u64, end: u64) -> Result<(), u64> {
     while address < end {
         let mut prepared = None;
         loop {
+            crate::ipc::shmem::prepare_population(thread, address)?;
             let outcome = {
                 let mut guard = crate::process::manager_for_address_space(thread);
                 let (_, process) = guard

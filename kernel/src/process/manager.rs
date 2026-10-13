@@ -3816,6 +3816,8 @@ impl ProcessManager {
         program_name: Option<&str>,
         closes: &mut crate::ipc::fd::DeferredFdCloses,
     ) -> Result<u64, &'static str> {
+        let closing_capacity = self.processes.live_row(&pid).ok_or("Process not found")?.fd_table.open_fd_count();
+        closes.reserve(closing_capacity)?;
         log::info!(
             "exec_process: Replacing process {} with new program",
             pid.as_u64()
@@ -4060,7 +4062,8 @@ impl ProcessManager {
         // descriptors alone.
         process.fd_table.unshare();
         // Close FD_CLOEXEC file descriptors per POSIX
-        process.fd_table.close_cloexec(closes);
+        let ipc_close_pid = crate::ipc::object::close_owner(process.id, process.thread_group_id);
+        process.fd_table.close_cloexec(ipc_close_pid, closes);
         closes.release_record_locks(process.lock_owner.id());
         log::debug!(
             "exec_process: Reset signal/heap/mmap for process {}, heap_start={:#x}",
@@ -4377,6 +4380,8 @@ impl ProcessManager {
         prepared: &mut Option<PreparedExecImage>,
         closes: &mut crate::ipc::fd::DeferredFdCloses,
     ) -> Result<(u64, u64, crate::task::scheduler::ExecSchedCommit), &'static str> {
+        let closing_capacity = self.processes.live_row(&pid).ok_or("Process not found")?.fd_table.open_fd_count();
+        closes.reserve(closing_capacity)?;
         let is_current_process = self.current_pid == Some(pid);
         if is_current_process {
             log::info!(
@@ -4519,7 +4524,8 @@ impl ProcessManager {
         // descriptors alone.
         process.fd_table.unshare();
         // Close FD_CLOEXEC file descriptors per POSIX
-        process.fd_table.close_cloexec(closes);
+        let ipc_close_pid = crate::ipc::object::close_owner(process.id, process.thread_group_id);
+        process.fd_table.close_cloexec(ipc_close_pid, closes);
         closes.release_record_locks(process.lock_owner.id());
 
         // Replace the page table with the new one
@@ -4781,6 +4787,8 @@ impl ProcessManager {
         prepared: &mut Option<PreparedExecImage>,
         closes: &mut crate::ipc::fd::DeferredFdCloses,
     ) -> Result<(u64, u64, crate::task::scheduler::ExecSchedCommit), &'static str> {
+        let closing_capacity = self.processes.live_row(&pid).ok_or("Process not found")?.fd_table.open_fd_count();
+        closes.reserve(closing_capacity)?;
         crate::tracing::providers::process::trace_exec_entry(pid.as_u64() as u32);
         let is_current_process = self.current_pid == Some(pid);
         if is_current_process {
@@ -4917,7 +4925,8 @@ impl ProcessManager {
         // descriptors alone.
         process.fd_table.unshare();
         // Close FD_CLOEXEC file descriptors per POSIX
-        process.fd_table.close_cloexec(closes);
+        let ipc_close_pid = crate::ipc::object::close_owner(process.id, process.thread_group_id);
+        process.fd_table.close_cloexec(ipc_close_pid, closes);
         closes.release_record_locks(process.lock_owner.id());
 
         process.page_table = Some(new_page_table.publish());
@@ -5060,6 +5069,8 @@ impl ProcessManager {
         program_name: Option<&str>,
         closes: &mut crate::ipc::fd::DeferredFdCloses,
     ) -> Result<(u64, crate::task::scheduler::ExecSchedCommit), &'static str> {
+        let closing_capacity = self.processes.live_row(&pid).ok_or("Process not found")?.fd_table.open_fd_count();
+        closes.reserve(closing_capacity)?;
         use crate::arch_impl::aarch64::constants::USER_STACK_REGION_START;
         use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB};
 
@@ -5272,7 +5283,8 @@ impl ProcessManager {
         // descriptors alone.
         process.fd_table.unshare();
         // Close FD_CLOEXEC file descriptors per POSIX
-        process.fd_table.close_cloexec(closes);
+        let ipc_close_pid = crate::ipc::object::close_owner(process.id, process.thread_group_id);
+        process.fd_table.close_cloexec(ipc_close_pid, closes);
         closes.release_record_locks(process.lock_owner.id());
         log::debug!(
             "exec_process [ARM64]: Reset signal/heap/mmap for process {}, heap_start={:#x}",

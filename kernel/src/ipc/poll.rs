@@ -40,6 +40,9 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
     let mut revents: i16 = 0;
 
     match &fd_entry.kind {
+        FdKind::Ipc(object) => {
+            revents = object.poll_events() & (events | events::POLLERR | events::POLLHUP);
+        }
         FdKind::StdIo(n) => {
             match *n {
                 0 => {
@@ -99,6 +102,11 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
             if pipe.has_hung_up() {
                 revents |= events::POLLHUP;
             }
+        }
+        FdKind::FifoReadWrite(_, buffer, _) => {
+            let pipe = buffer.lock();
+            if events & events::POLLIN != 0 && pipe.available() > 0 { revents |= events::POLLIN; }
+            if events & events::POLLOUT != 0 && pipe.space() >= super::pipe::PIPE_BUF { revents |= events::POLLOUT; }
         }
         FdKind::FifoWrite(_, buffer, _) => {
             let pipe = buffer.lock();

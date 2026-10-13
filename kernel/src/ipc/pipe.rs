@@ -87,9 +87,15 @@ impl PipeBuffer {
 
     /// FIFO buffers acquire their first references through open, not creation.
     pub fn new_zero_refs() -> Self {
-        let mut buffer = Vec::with_capacity(PIPE_BUF_SIZE);
+        Self::try_new_zero_refs().expect("pipe buffer allocation")
+    }
+
+    /// Allocate a FIFO buffer and its writer queue with ENOMEM on exhaustion.
+    pub fn try_new_zero_refs() -> Result<Self, i32> {
+        let mut buffer = Vec::new();
+        buffer.try_reserve_exact(PIPE_BUF_SIZE).map_err(|_| 12)?;
         buffer.resize(PIPE_BUF_SIZE, 0);
-        PipeBuffer {
+        Ok(PipeBuffer {
             buffer,
             read_pos: 0,
             write_pos: 0,
@@ -98,8 +104,8 @@ impl PipeBuffer {
             writers: 0,
             hangup: false,
             read_waiters: Vec::new(),
-            write_waiters: Arc::new(WaitQueueHead::new()),
-        }
+            write_waiters: Arc::try_new(WaitQueueHead::new()).map_err(|_| 12)?,
+        })
     }
 
     /// Read from the pipe buffer
@@ -189,8 +195,7 @@ impl PipeBuffer {
 
     /// Wake all threads waiting to read from this pipe
     fn wake_read_waiters(&mut self) {
-        let waiters: Vec<u64> = self.read_waiters.drain(..).collect();
-        for tid in waiters {
+        for tid in self.read_waiters.drain(..) {
             crate::task::scheduler::with_scheduler(|sched| {
                 sched.unblock(tid);
             });
@@ -259,6 +264,14 @@ impl PipeBuffer {
         if !self.read_waiters.contains(&tid) {
             self.read_waiters.push(tid);
         }
+    }
+
+    pub fn try_add_read_waiter(&mut self, tid: u64) -> Result<(), i32> {
+        if !self.read_waiters.contains(&tid) {
+            self.read_waiters.try_reserve(1).map_err(|_| 12)?;
+            self.read_waiters.push(tid);
+        }
+        Ok(())
     }
 
     /// Unregister a thread from the read wait list

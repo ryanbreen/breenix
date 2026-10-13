@@ -8,6 +8,7 @@
 //! - Poll (poll.rs) - Poll file descriptors for I/O readiness
 
 pub mod fd;
+pub(crate) mod fd_flags;
 pub mod fifo;
 pub mod pipe;
 pub mod poll;
@@ -16,3 +17,9 @@ pub mod stdin;
 // Re-export public API - some of these are not used yet but are part of the public API
 pub use fd::{FdKind, FdTable, MAX_FDS};
 pub use pipe::create_pipe;
+
+pub mod object;
+pub mod wait;
+pub mod mqueue;
+pub mod shmem;
+pub mod sysv;

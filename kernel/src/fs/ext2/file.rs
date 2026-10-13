@@ -331,11 +331,13 @@ pub fn read_file_range<B: BlockDevice + ?Sized>(
         get_block_num(device, inode, superblock, logical)
     };
 
-    let mut result = Vec::with_capacity(actual_length);
+    let mut result = Vec::new();
+    result.try_reserve_exact(actual_length).map_err(|_| BlockError::OutOfMemory)?;
     // Use stack-based buffer to avoid heap allocation (bump allocator doesn't reclaim)
     let mut block_buf = [0u8; 4096]; // Max block size
     let max_run_blocks = core::cmp::max(1, 65536 / block_size);
-    let mut run_buf = Vec::with_capacity(max_run_blocks * block_size);
+    let mut run_buf = Vec::new();
+    run_buf.try_reserve_exact(max_run_blocks * block_size).map_err(|_| BlockError::OutOfMemory)?;
 
     let mut logical_block = start_block;
     while logical_block < end_block {
@@ -427,7 +429,8 @@ fn read_indirect_block<B: BlockDevice + ?Sized>(
 
     // Parse as array of little-endian u32 pointers
     let num_pointers = block_size / 4;
-    let mut pointers = Vec::with_capacity(num_pointers);
+    let mut pointers = Vec::new();
+    pointers.try_reserve_exact(num_pointers).map_err(|_| BlockError::OutOfMemory)?;
 
     for i in 0..num_pointers {
         let offset = i * 4;

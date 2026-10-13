@@ -721,6 +721,11 @@ impl Process {
             return alloc::vec::Vec::new();
         }
         let entries = self.fd_table.take_all();
+        for (_, entry) in &entries {
+            if let crate::ipc::FdKind::Ipc(object) = &entry.kind {
+                object.on_close(crate::ipc::object::close_owner(self.id, self.thread_group_id));
+            }
+        }
         if crate::process::process_manager_held_on_current_cpu() {
             crate::tracing::providers::teardown::FD_CLOSES_UNDER_PM.add(entries.len() as u64);
         }
@@ -750,6 +755,7 @@ impl Process {
                     crate::trace_count!(crate::tracing::providers::teardown::FD_CLOSES_UNDER_PM);
                 }
                 match fd_entry.kind {
+                    FdKind::Ipc(object) => object.on_close(crate::ipc::object::close_owner(self.id, self.thread_group_id)),
                     FdKind::PipeRead(buffer) => {
                         // #919/P-2: deliver the reader-closed notification now,
                         // via the PM-safe deferred path. Process::terminate()
@@ -806,6 +812,13 @@ impl Process {
                         // (see the PipeRead arm above).
                         let notifications = buffer.lock().close_read();
                         notifications.deliver_deferred();
+                    }
+                    FdKind::FifoReadWrite(_, buffer, entry) => {
+                        crate::ipc::fifo::close_fifo_read(&entry);
+                        crate::ipc::fifo::close_fifo_write(&entry);
+                        let read = buffer.lock().close_read();
+                        read.deliver_deferred();
+                        let _should_notify = buffer.lock().close_write();
                     }
                     FdKind::FifoWrite(_, buffer, entry) => {
                         crate::ipc::fifo::close_fifo_write(&entry);
@@ -839,6 +852,7 @@ impl Process {
                     crate::trace_count!(crate::tracing::providers::teardown::FD_CLOSES_UNDER_PM);
                 }
                 match fd_entry.kind {
+                    FdKind::Ipc(object) => object.on_close(crate::ipc::object::close_owner(self.id, self.thread_group_id)),
                     FdKind::PipeRead(buffer) => {
                         // #919/P-2: deliver the reader-closed notification now,
                         // via the PM-safe deferred path. Process::terminate()
@@ -895,6 +909,13 @@ impl Process {
                         // (see the PipeRead arm above).
                         let notifications = buffer.lock().close_read();
                         notifications.deliver_deferred();
+                    }
+                    FdKind::FifoReadWrite(_, buffer, entry) => {
+                        crate::ipc::fifo::close_fifo_read(&entry);
+                        crate::ipc::fifo::close_fifo_write(&entry);
+                        let read = buffer.lock().close_read();
+                        read.deliver_deferred();
+                        let _should_notify = buffer.lock().close_write();
                     }
                     FdKind::FifoWrite(_, buffer, entry) => {
                         crate::ipc::fifo::close_fifo_write(&entry);

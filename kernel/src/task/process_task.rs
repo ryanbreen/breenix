@@ -854,6 +854,8 @@ pub(crate) fn close_extracted_fds(entries: alloc::vec::Vec<(usize, FileDescripto
 
     for (_fd, fd_entry) in entries {
         match fd_entry.kind {
+            // IPC hooks ran at extraction while the process identity was held.
+            FdKind::Ipc(_) => {}
             FdKind::PipeRead(buffer) => {
                 let notifications = buffer.lock().close_read();
                 notifications.deliver();
@@ -891,6 +893,14 @@ pub(crate) fn close_extracted_fds(entries: alloc::vec::Vec<(usize, FileDescripto
                 crate::ipc::fifo::close_fifo_read(&entry);
                 let notifications = buffer.lock().close_read();
                 notifications.deliver();
+            }
+            FdKind::FifoReadWrite(_, buffer, entry) => {
+                crate::ipc::fifo::close_fifo_read(&entry);
+                crate::ipc::fifo::close_fifo_write(&entry);
+                let read = buffer.lock().close_read();
+                read.deliver();
+                let write = buffer.lock().close_write();
+                write.deliver();
             }
             FdKind::FifoWrite(_, buffer, entry) => {
                 crate::ipc::fifo::close_fifo_write(&entry);
@@ -1259,6 +1269,10 @@ pub fn defer_fault_exit(thread_id: u64, exit_code: i32) -> bool {
 
 /// Drain deferred kernel-fault exits from a normal scheduling context.
 pub fn drain_deferred_fault_sigsegv_exits() {
+    // ARM also reaches this drain from exception return; backing allocation
+    // belongs to task-context reclamation there. x86 calls it from its daemon.
+    #[cfg(target_arch = "x86_64")]
+    crate::ipc::shmem::drain_signal_pages();
     let mut tids = alloc::vec::Vec::new();
     for buf in &DEFERRED_FAULT_EXIT_BUFFERS {
         buf.drain(&mut tids);
@@ -1551,6 +1565,7 @@ pub fn reclaim_deferred_process_resources() {
         crate::trace_count!(crate::tracing::providers::teardown::RECLAIM_CONTEXT_VIOLATIONS);
         return;
     }
+    crate::ipc::shmem::drain_signal_pages();
     #[cfg(feature = "boot_tests")]
     if BOOT_RECLAIM_TEST_OWNER.load(Ordering::Acquire) != 0 {
         return;

@@ -86,6 +86,9 @@ pub fn sys_mmap(
     let file = if flags.contains(MmapFlags::ANONYMOUS) {
         None
     } else {
+        if let Some(r) = crate::ipc::shmem::mmap_fd(fd as i32, addr, length, prot, flags, offset) {
+            return r;
+        }
         match file_mapping(fd as i32, length, prot, flags, offset) {
             Ok(handle) => Some(handle),
             Err(errno) => return SyscallResult::Err(errno),
@@ -685,6 +688,9 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u32) -> SyscallResult {
         else {
             return SyscallResult::Err(super::errno::ENOMEM as u64);
         };
+        if !crate::ipc::shmem::mprotect_allowed(vma, new_prot) {
+            return SyscallResult::Err(super::errno::EACCES as u64);
+        }
         let next = vma.end.as_u64().min(end_addr);
         if vma.flags.contains(MmapFlags::PRIVATE)
             && !vma.prot.contains(Protection::WRITE)
@@ -736,6 +742,19 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u32) -> SyscallResult {
         let mut from = cursor;
         while let Some(page) = page_table.next_mapped_page(from, next) {
             from = page.start_address().as_u64() + PAGE_SIZE;
+            match crate::ipc::shmem::protect_page(
+                page_table,
+                &process.vmas[index],
+                page.start_address().as_u64(),
+                new_prot,
+            ) {
+                Ok(true) => {
+                    flush_tlb(page.start_address());
+                    continue;
+                }
+                Ok(false) => {}
+                Err(errno) => return SyscallResult::Err(errno),
+            }
             let Some((_, old_flags)) = page_table.get_page_info(page) else {
                 continue;
             };
@@ -757,8 +776,7 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u32) -> SyscallResult {
             .then(|| process.vmas[index].piece(VirtAddr::new(start), VirtAddr::new(cursor)));
         let suffix = (next < end)
             .then(|| process.vmas[index].piece(VirtAddr::new(next), VirtAddr::new(end)));
-        process.vmas[index].start = VirtAddr::new(cursor);
-        process.vmas[index].end = VirtAddr::new(next);
+        process.vmas[index] = process.vmas[index].replacement_piece(VirtAddr::new(cursor), VirtAddr::new(next));
         process.vmas[index].prot = new_prot;
         process.vmas.extend(prefix.into_iter().chain(suffix));
         cursor = next;

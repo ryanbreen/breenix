@@ -151,6 +151,7 @@ pub fn sys_close(fd: i32) -> SyscallResult {
     );
 
     // Close the file descriptor
+    let close_pid = crate::ipc::object::close_owner(process.id, process.thread_group_id);
     let closed = process.fd_table.close(fd);
     let lock_owner = process.lock_owner.id();
     // #813: descriptor ownership escapes PM before any endpoint cleanup.
@@ -162,6 +163,7 @@ pub fn sys_close(fd: i32) -> SyscallResult {
             crate::fs::locks::release_closed(lock_owner, &fd_entry.kind);
             // Handle cleanup for specific fd types
             match fd_entry.kind {
+                FdKind::Ipc(object) => object.on_close(close_pid),
                 FdKind::PipeRead(buffer) => {
                     // Mark reader as closed
                     let notifications = buffer.lock().close_read();
@@ -269,6 +271,14 @@ pub fn sys_close(fd: i32) -> SyscallResult {
                     let notifications = buffer.lock().close_read();
                     notifications.deliver();
                     log::debug!("sys_close: Closed FIFO read end fd={} ({})", fd, path);
+                }
+                FdKind::FifoReadWrite(_, buffer, entry) => {
+                    crate::ipc::fifo::close_fifo_read(&entry);
+                    crate::ipc::fifo::close_fifo_write(&entry);
+                    let read = buffer.lock().close_read();
+                    read.deliver();
+                    let write = buffer.lock().close_write();
+                    write.deliver();
                 }
                 FdKind::FifoWrite(path, buffer, entry) => {
                     // Close FIFO write end - decrement both FIFO entry and pipe buffer counts

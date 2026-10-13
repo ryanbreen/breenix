@@ -65,7 +65,8 @@ fn copy_from_user(user_ptr: u64, len: usize) -> Result<Vec<u8>, &'static str> {
         return Err("invalid userspace address");
     }
 
-    let mut buffer = Vec::with_capacity(len);
+    let mut buffer = Vec::new();
+    buffer.try_reserve_exact(len).map_err(|_| "out of memory")?;
     // An unmapped or unreadable user page is a failed copy, not a kernel fault.
     super::userptr::read_user_bytes(buffer.as_mut_ptr(), user_ptr, len)
         .map_err(|_| "unmapped userspace address")?;
@@ -428,8 +429,8 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
     // Copy data from userspace
     let buffer = match copy_from_user(buf_ptr, count as usize) {
         Ok(buf) => buf,
-        Err(_e) => {
-            return SyscallResult::Err(14); // EFAULT
+        Err(e) => {
+            return SyscallResult::Err(if e == "out of memory" { 12 } else { 14 });
         }
     };
 
@@ -447,6 +448,10 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
     // to other processes while we're doing serial writes.
     enum WriteOperation {
         StdIo,
+        Ipc {
+            file: alloc::sync::Arc<dyn crate::ipc::object::IpcFile>,
+            append: bool,
+        },
         Pipe {
             pipe_buffer: alloc::sync::Arc<spin::Mutex<crate::ipc::pipe::PipeBuffer>>,
             is_nonblocking: bool,
@@ -504,6 +509,15 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
         };
 
         match &fd_entry.kind {
+            FdKind::Ipc(file) => {
+                if !fd_entry.writable() {
+                    return SyscallResult::Err(super::errno::EBADF as u64);
+                }
+                WriteOperation::Ipc {
+                    file: file.clone(),
+                    append: fd_entry.status_flags() & crate::ipc::fd::status_flags::O_APPEND != 0,
+                }
+            }
             FdKind::StdIo(n) if *n == 1 || *n == 2 => WriteOperation::StdIo,
             FdKind::StdIo(_) => WriteOperation::Ebadf, // stdin - can't write
             FdKind::PipeWrite(pipe_buffer) => WriteOperation::Pipe {
@@ -512,7 +526,7 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
                     != 0,
             },
             FdKind::PipeRead(_) => WriteOperation::Ebadf,
-            FdKind::FifoWrite(_path, pipe_buffer, _) => WriteOperation::Fifo {
+            FdKind::FifoWrite(_path, pipe_buffer, _) | FdKind::FifoReadWrite(_path, pipe_buffer, _) => WriteOperation::Fifo {
                 pipe_buffer: pipe_buffer.clone(),
                 is_nonblocking: (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK)
                     != 0,
@@ -554,6 +568,10 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
 
     // Now perform the actual I/O operation without holding the manager lock
     match write_op {
+        WriteOperation::Ipc { file, append } => match file.write(&buffer, append) {
+            Ok(n) => SyscallResult::Ok(n),
+            Err(e) => SyscallResult::Err(e),
+        },
         WriteOperation::StdIo => write_to_stdio(fd, &buffer),
         WriteOperation::Ebadf => SyscallResult::Err(9), // EBADF
         WriteOperation::Enotconn => SyscallResult::Err(super::errno::ENOTCONN as u64),
@@ -829,6 +847,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
     };
 
     match &fd_entry.kind {
+        FdKind::Ipc(_) => SyscallResult::Err(super::errno::EINVAL as u64),
         FdKind::StdIo(0) => {
             // stdin - read from stdin ring buffer
             //
@@ -1111,7 +1130,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             // Can't read from write end of pipe
             SyscallResult::Err(9) // EBADF
         }
-        FdKind::FifoRead(_path, pipe_buffer, _) => {
+        FdKind::FifoRead(_path, pipe_buffer, _) | FdKind::FifoReadWrite(_path, pipe_buffer, _) => {
             // FIFO read - with blocking support
             let is_nonblocking =
                 (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
@@ -3108,6 +3127,7 @@ fn dup_to(old_fd: u32, new_fd: u32, set_cloexec: bool) -> SyscallResult {
     };
 
     // Call the fd_table's dup2 implementation
+    let close_pid = crate::ipc::object::close_owner(process.id, process.thread_group_id);
     let duplicated = process
         .fd_table
         .dup2(old_fd as i32, new_fd as i32, set_cloexec);
@@ -3116,6 +3136,9 @@ fn dup_to(old_fd: u32, new_fd: u32, set_cloexec: bool) -> SyscallResult {
     match duplicated {
         Ok((fd, overwritten)) => {
             if let Some(entry) = overwritten {
+                if let crate::ipc::FdKind::Ipc(object) = &entry.kind {
+                    object.on_close(close_pid);
+                }
                 // dup2 closes new_fd first, and that close drops record locks.
                 crate::fs::locks::release_closed(lock_owner, &entry.kind);
                 crate::task::process_task::close_extracted_fds(alloc::vec![(
@@ -3299,6 +3322,21 @@ pub fn sys_fcntl(fd: u64, cmd: u64, arg: u64) -> SyscallResult {
         }
     };
 
+    if cmd == F_SETFL {
+        let entry = match process.fd_table.get(fd) {
+            Some(entry) => entry.clone(),
+            None => return SyscallResult::Err(9),
+        };
+        drop(manager_guard);
+        let mut update = || entry.set_status_flags(arg as u32);
+        if let crate::ipc::fd::FdKind::Ipc(file) = &entry.kind {
+            file.update_status_flags(&mut update);
+        } else {
+            update();
+        }
+        return SyscallResult::Ok(0);
+    }
+
     match cmd {
         F_DUPFD => match process.fd_table.dup_at_least(fd, arg, false) {
             Ok(new_fd) => {
@@ -3332,13 +3370,6 @@ pub fn sys_fcntl(fd: u64, cmd: u64, arg: u64) -> SyscallResult {
             Ok(flags) => {
                 log::debug!("sys_fcntl F_GETFL: fd={} flags={:#x}", fd, flags);
                 SyscallResult::Ok(flags as u64)
-            }
-            Err(e) => SyscallResult::Err(e as u64),
-        },
-        F_SETFL => match process.fd_table.set_status_flags(fd, arg as u32) {
-            Ok(()) => {
-                log::debug!("sys_fcntl F_SETFL: fd={} flags={:#x}", fd, arg);
-                SyscallResult::Ok(0)
             }
             Err(e) => SyscallResult::Err(e as u64),
         },

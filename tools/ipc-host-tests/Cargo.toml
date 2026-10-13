@@ -1,0 +1,13 @@
+[package]
+name = "ipc-host-tests"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+spin = "0.9"
+log = "0.4"
+
+[lib]
+doctest = false

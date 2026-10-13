@@ -17,7 +17,10 @@ pub const O_TRUNC: u32 = 0x200;
 #[allow(dead_code)] // Part of POSIX open() API
 pub const O_APPEND: u32 = 0x400;
 /// O_DIRECTORY - must be a directory
+#[cfg(target_arch = "x86_64")]
 pub const O_DIRECTORY: u32 = 0x10000;
+#[cfg(target_arch = "aarch64")]
+pub const O_DIRECTORY: u32 = 0x4000;
 /// O_NOFOLLOW - fail with ELOOP rather than follow a final symlink. The Linux
 /// value differs by architecture.
 #[cfg(target_arch = "x86_64")]
@@ -262,9 +265,12 @@ fn resolve_user(pathname: u64, follow: bool) -> Result<crate::fs::namei::Resolve
 
 /// Copy a pathname from userspace and resolve it to the directory entry an
 /// unlink, rmdir or rename acts on.
-fn resolve_user_entry(pathname: u64) -> Result<crate::fs::namei::Resolved, SyscallResult> {
-    let path = super::userptr::copy_cstr_from_user(pathname).map_err(SyscallResult::Err)?;
-    crate::fs::namei::resolve_entry(&path).map_err(SyscallResult::Err)
+
+fn resolve_user_entry_at(dirfd: i32, pathname: u64) -> Result<crate::fs::namei::Resolved, SyscallResult> {
+    let raw = super::userptr::copy_cstr_from_user(pathname).map_err(SyscallResult::Err)?;
+    let start = super::at_path::directory_start(dirfd, raw.starts_with('/'), super::metadata::directory)
+        .map_err(SyscallResult::Err)?;
+    crate::fs::namei::resolve_entry_from(&raw, start, &current_file_credentials()).map_err(SyscallResult::Err)
 }
 
 /// Copy a pathname from userspace and resolve it to the directory entry a
@@ -508,6 +514,9 @@ fn sys_open_read_path(
 /// # Returns
 /// File descriptor on success, negative errno on failure
 pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
+    sys_open_from(AT_FDCWD, pathname, flags, mode)
+}
+fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallResult {
     use super::errno::{EACCES, EEXIST, EISDIR, ELOOP, EMFILE, ENOENT, ENOTDIR};
     use crate::fs::ext2::FileType as Ext2FileType;
     use crate::fs::namei::Target;
@@ -519,9 +528,12 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
     let want_excl = (flags & O_EXCL) != 0;
     // O_NOFOLLOW, and O_CREAT with O_EXCL, act on a final symlink itself.
     let follow = (flags & O_NOFOLLOW) == 0 && !(want_creat && want_excl);
-    let resolved = match resolve_user(pathname, follow) {
-        Ok(r) => r,
-        Err(e) => return e,
+    let raw = match super::userptr::copy_cstr_from_user(pathname) {
+        Ok(path) => path, Err(e) => return SyscallResult::Err(e),
+    };
+    let cred = current_file_credentials();
+    let resolved = match super::metadata::resolve_at(dirfd, &raw, follow, &cred) {
+        Ok(r) => r, Err(e) => return SyscallResult::Err(e),
     };
     let path = resolved.path.as_str();
 
@@ -533,6 +545,10 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
     );
 
     if resolved.target == Target::Virtual {
+        if let Some(result) = crate::ipc::mqueue::dev::open_path(path, flags, mode) { return result; }
+        if let Some(result) = crate::ipc::shmem::open_path(path, flags, mode) {
+            return result;
+        }
         if path == "/dev" {
             return handle_devfs_directory_open(flags);
         }
@@ -776,6 +792,26 @@ pub fn sys_lseek(fd: i32, offset: i64, whence: i32) -> SyscallResult {
         }
     };
 
+    let ipc = {
+        let guard = crate::process::manager();
+        guard
+            .as_ref()
+            .and_then(|m| m.find_process_by_thread(thread_id))
+            .and_then(|(_, p)| p.fd_table.get(fd))
+            .and_then(|d| {
+                if let FdKind::Ipc(file) = &d.kind {
+                    Some(file.clone())
+                } else {
+                    None
+                }
+            })
+    };
+    if let Some(file) = ipc {
+        return match file.seek(offset, whence) {
+            Ok(p) => SyscallResult::Ok(p),
+            Err(e) => SyscallResult::Err(e),
+        };
+    }
     // SEEK_END requires a disk read to get the file size.  We MUST NOT hold the
     // process manager lock (manager_guard) or the file lock during that I/O,
     // because the dispatch path calls set_next_ttbr0_for_thread() which tries
@@ -953,6 +989,7 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
         ProcfsFile { size: i64 },
         ProcfsDirectory,
         Epoll,
+        Ipc(alloc::sync::Arc<dyn crate::ipc::object::IpcFile>),
     }
 
     let kind = {
@@ -977,6 +1014,7 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
         };
 
         match &fd_entry.kind {
+            FdKind::Ipc(object) => FstatKind::Ipc(object.clone()),
             FdKind::StdIo(io_fd) => FstatKind::StdIo(*io_fd),
             FdKind::PipeRead(_) | FdKind::PipeWrite(_) => FstatKind::Pipe,
             FdKind::UdpSocket(_) => FstatKind::UdpSocket,
@@ -1014,7 +1052,7 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
             FdKind::UnixStream(_) | FdKind::UnixSocket(_) | FdKind::UnixListener(_) => {
                 FstatKind::UnixSocket
             }
-            FdKind::FifoRead(_, _, entry) | FdKind::FifoWrite(_, _, entry) => FstatKind::Fifo(entry.clone()),
+            FdKind::FifoRead(_, _, entry) | FdKind::FifoWrite(_, _, entry) | FdKind::FifoReadWrite(_, _, entry) => FstatKind::Fifo(entry.clone()),
             FdKind::ProcfsFile { ref content, .. } => FstatKind::ProcfsFile {
                 size: content.len() as i64,
             },
@@ -1030,6 +1068,7 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
     stat.st_blksize = 4096; // Standard block size
 
     match kind {
+        FstatKind::Ipc(object) => object.fill_stat(&mut stat),
         FstatKind::StdIo(io_fd) => {
             // stdin/stdout/stderr are character devices (TTY)
             stat.st_dev = 0;
@@ -1041,7 +1080,7 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
         FstatKind::Pipe => {
             static PIPE_INODE_COUNTER: core::sync::atomic::AtomicU64 =
                 core::sync::atomic::AtomicU64::new(1000);
-            stat.st_dev = 0;
+            stat.st_dev = 0xffff0001; // anonymous pipefs, separate from ext2 mounts
             stat.st_ino = PIPE_INODE_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             stat.st_mode = S_IFIFO | 0o600; // FIFO with rw-------
             stat.st_nlink = 1;
@@ -1110,8 +1149,8 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
             stat.st_rdev = rdev;
         }
         FstatKind::DevfsDirectory => {
-            stat.st_dev = 0;
-            stat.st_ino = 0;
+            stat.st_dev = crate::fs::vfs::mount::find_mount("/dev").unwrap_or(0) as u64;
+            stat.st_ino = 1;
             stat.st_mode = S_IFDIR | 0o755;
             stat.st_nlink = 2;
         }
@@ -1332,7 +1371,7 @@ fn copy_dirents_to_user(dirp: u64, records: &[u8]) -> Result<(), u64> {
 /// * On error: Negative errno
 pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
     use super::errno::{EBADF, EFAULT, EINVAL, EIO, ENOTDIR};
-    use crate::fs::ext2::{self, dir::DirReader};
+    use crate::fs::ext2;
 
     log::debug!(
         "sys_getdents64: fd={}, dirp={:#x}, count={}",
@@ -1380,6 +1419,14 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
         Some(entry) => entry,
         None => return SyscallResult::Err(EBADF as u64),
     };
+
+    if let FdKind::Ipc(object) = &fd_entry.kind {
+        let object = object.clone();
+        drop(manager_guard);
+        return match object.getdents(dirp, count as usize) {
+            Ok(n) => SyscallResult::Ok(n), Err(e) => SyscallResult::Err(e),
+        };
+    }
 
     // Handle DevfsDirectory specially
     if let FdKind::DevfsDirectory { position } = &fd_entry.kind {
@@ -1455,7 +1502,7 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
             Ok(data) => data,
             Err(e) => {
                 log::error!("sys_getdents64: failed to read directory: {}", e);
-                return SyscallResult::Err(EIO as u64);
+                return SyscallResult::Err(crate::fs::namei::fs_errno(e));
             }
         }
     };
@@ -1481,14 +1528,15 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
     // rewind replays `.` and `..`.
     let mut records = alloc::vec::Vec::new();
     let buffer_size = count as usize;
+    if records.try_reserve(buffer_size.min(dir_data.len().saturating_mul(3))).is_err() { return SyscallResult::Err(12); }
     let mut bytes_written = 0usize;
     let mut new_position = start_position;
 
-    for positioned in DirReader::new(&dir_data).positioned() {
+    for positioned in ext2::dir::raw_entries(&dir_data) {
         if (positioned.offset as u64) < start_position {
             continue;
         }
-        let entry = &positioned.entry;
+        let entry = &positioned;
 
         let name_len = entry.name.len();
         // d_reclen = header + name + null terminator, aligned to 8 bytes
@@ -1504,7 +1552,7 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
             break;
         }
 
-        push_dirent64(&mut records, entry.inode as u64, positioned.next as i64, ext2_file_type_to_dt(entry.file_type), entry.name.as_bytes());
+        push_dirent64(&mut records, entry.inode as u64, positioned.next as i64, ext2_file_type_to_dt(entry.file_type), entry.name);
 
         bytes_written += reclen;
         new_position = positioned.next as u64;
@@ -1551,17 +1599,27 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
 /// * EACCES - Permission denied
 /// * EIO - I/O error
 pub fn sys_unlink(pathname: u64) -> SyscallResult {
+    sys_unlink_from(AT_FDCWD, pathname)
+}
+fn sys_unlink_from(dirfd: i32, pathname: u64) -> SyscallResult {
     use super::errno::{EACCES, EIO, EISDIR, ENOENT, EPERM};
     use crate::fs::ext2::FileType;
     use crate::fs::namei::{Last, Target};
 
-    let resolved = match resolve_user_entry(pathname) {
+    let resolved = match resolve_user_entry_at(dirfd, pathname) {
         Ok(r) => r,
         Err(e) => return e,
     };
     let path = resolved.path.as_str();
 
     log::debug!("sys_unlink: path={:?}", path);
+
+    if let Some(result) = crate::ipc::mqueue::dev::unlink_path(path) { return result; }
+    if let Some(result) = crate::ipc::shmem::unlink_path(path) {
+
+        return result;
+
+    }
 
     // Check if this is a FIFO - if so, remove from registry
     {
@@ -1673,6 +1731,9 @@ pub fn sys_rename(oldpath: u64, newpath: u64) -> SyscallResult {
         Err(e) => return e,
     };
 
+    if let Some(result) = crate::ipc::shmem::rename_path(&old.path, &new.path) {
+        return result;
+    }
     log::debug!("sys_rename: old={:?}, new={:?}", old.path, new.path);
 
     for operand in [&old, &new] {
@@ -1753,12 +1814,15 @@ pub fn sys_rename(oldpath: u64, newpath: u64) -> SyscallResult {
 /// * EINVAL - pathname is "." or ends with "/."
 /// * EIO - I/O error
 pub fn sys_rmdir(pathname: u64) -> SyscallResult {
+    sys_rmdir_from(AT_FDCWD, pathname)
+}
+fn sys_rmdir_from(dirfd: i32, pathname: u64) -> SyscallResult {
     use super::errno::{EACCES, EBUSY, EINVAL, EIO, ENOENT, ENOTDIR, ENOTEMPTY};
     use crate::fs::ext2::FileType;
     use crate::fs::namei::{Last, Target};
 
     // rmdir removes the name itself: a final symlink is not followed.
-    let resolved = match resolve_user_entry(pathname) {
+    let resolved = match resolve_user_entry_at(dirfd, pathname) {
         Ok(r) => r,
         Err(e) => return e,
     };
@@ -1863,6 +1927,9 @@ pub fn sys_link(oldpath: u64, newpath: u64) -> SyscallResult {
         Err(e) => return e,
     };
 
+    if let Some(result) = crate::ipc::shmem::link_path(&old.path, &new.path) {
+        return result;
+    }
     log::debug!("sys_link: oldpath={:?}, newpath={:?}", old.path, new.path);
 
     let mount = match old.target {
@@ -2242,6 +2309,8 @@ fn access_resolved(resolved: &crate::fs::namei::Resolved, mode: u32, cred: &File
         Target::Inode { mount, ino, .. } => (mount, ino),
         Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
         Target::Virtual => {
+            if let Some(result) = crate::ipc::mqueue::dev::access_path(&resolved.path, mode, cred) { return result; }
+            if let Some(result) = crate::ipc::shmem::access_path(&resolved.path, mode, cred) { return result; }
             if resolved.is_mount_point() { return SyscallResult::Ok(0); }
             if let Some(device) = resolved.path.strip_prefix("/dev/") {
                 if crate::fs::devfs::lookup(device).is_none() {
@@ -2726,18 +2795,22 @@ fn handle_devfs_getdents64(
     use crate::fs::devfs;
 
     // Get the list of device names
-    let devices = devfs::list_devices();
+    let devices = match devfs::directory_entries() {
+        Ok(entries) => entries,
+        Err(e) => return SyscallResult::Err(e),
+    };
 
     // Build entries: ".", "..", then each device
     // We treat position as entry index (0 = ".", 1 = "..", 2+ = devices)
     let mut records = alloc::vec::Vec::new();
+    if records.try_reserve((devices.len() + 2) * align_up_8(DIRENT64_HEADER_SIZE + 256)).is_err() { return SyscallResult::Err(12); }
     let mut bytes_written = 0usize;
     let mut entry_index = 0u64;
     let mut new_position = start_position;
 
     // Helper entries
     let special_entries: [(&str, u64); 2] = [
-        (".", 0),  // inode 0 for /dev directory itself
+        (".", 1),  // matches the stable /dev directory inode
         ("..", 2), // inode 2 = root directory
     ];
 
@@ -2763,7 +2836,8 @@ fn handle_devfs_getdents64(
     }
 
     // Now iterate through device entries
-    for device_name in devices.iter() {
+    for device in devices.iter() {
+        let device_name = device.name;
         if entry_index < start_position {
             entry_index += 1;
             continue;
@@ -2776,12 +2850,7 @@ fn handle_devfs_getdents64(
             break;
         }
 
-        // Get device inode
-        let inode = devfs::lookup(device_name)
-            .map(|d| d.device_type.inode())
-            .unwrap_or(0);
-
-        push_dirent64(&mut records, inode, (entry_index + 1) as i64, DT_CHR, device_name.as_bytes());
+        push_dirent64(&mut records, device.ino, (entry_index + 1) as i64, device.kind, device_name.as_bytes());
 
         bytes_written += reclen;
         entry_index += 1;
@@ -3535,6 +3604,13 @@ pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, flags: u32) -> Sy
     };
     let full_path = resolved.path.as_str();
 
+    if let Some(result) = crate::ipc::mqueue::dev::stat_path(full_path, statbuf) { return result; }
+    if let Some(result) = crate::ipc::shmem::stat_path(full_path, statbuf) {
+
+        return result;
+
+    }
+
     // Paths outside ext2 have no inode to read. A FIFO is described without
     // opening it, since an open could block or release a waiting writer.
     // devfs and procfs paths are described by the descriptor an open of them
@@ -3608,10 +3684,7 @@ const AT_REMOVEDIR: i32 = 0x200;
 
 /// openat(dirfd, pathname, flags, mode) - replacement for open
 pub fn sys_openat(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallResult {
-    if dirfd != AT_FDCWD {
-        return SyscallResult::Err(super::errno::ENOSYS as u64);
-    }
-    sys_open(pathname, flags, mode)
+    sys_open_from(dirfd, pathname, flags, mode)
 }
 
 /// faccessat(dirfd, pathname, mode, flags) - replacement for access
@@ -3651,14 +3724,8 @@ pub fn sys_mknodat(dirfd: i32, pathname: u64, mode: u32, dev: u64) -> SyscallRes
 /// If flags contains AT_REMOVEDIR, behaves like rmdir.
 /// Otherwise behaves like unlink.
 pub fn sys_unlinkat(dirfd: i32, pathname: u64, flags: i32) -> SyscallResult {
-    if dirfd != AT_FDCWD {
-        return SyscallResult::Err(super::errno::ENOSYS as u64);
-    }
-    if (flags & AT_REMOVEDIR) != 0 {
-        sys_rmdir(pathname)
-    } else {
-        sys_unlink(pathname)
-    }
+    if flags & !AT_REMOVEDIR != 0 { return SyscallResult::Err(super::errno::EINVAL as u64); }
+    if flags & AT_REMOVEDIR != 0 { sys_rmdir_from(dirfd, pathname) } else { sys_unlink_from(dirfd, pathname) }
 }
 
 /// symlinkat(target, newdirfd, linkpath) - replacement for symlink
@@ -3675,8 +3742,23 @@ pub fn sys_linkat(
     oldpath: u64,
     newdirfd: i32,
     newpath: u64,
-    _flags: i32,
+    flags: i32,
 ) -> SyscallResult {
+    if flags == 0x1000 && newdirfd == AT_FDCWD {
+        let old = match crate::syscall::userptr::copy_cstr_from_user(oldpath) {
+            Ok(s) => s,
+            Err(_) => return SyscallResult::Err(super::errno::EFAULT as u64),
+        };
+        if old.is_empty() {
+            let new = match resolve_user_create(newpath) {
+                Ok(r) => r,
+                Err(e) => return e,
+            };
+            if let Some(result) = crate::ipc::shmem::link_fd(olddirfd, &new.path) {
+                return result;
+            }
+        }
+    }
     if olddirfd != AT_FDCWD || newdirfd != AT_FDCWD {
         return SyscallResult::Err(super::errno::ENOSYS as u64);
     }
@@ -4002,6 +4084,8 @@ fn resolved_statfs(resolved: &crate::fs::namei::Resolved) -> Result<Statfs, u64>
             0x9fa0
         } else if resolved.path == "/dev/pts" || resolved.path.starts_with("/dev/pts/") {
             0x1cd1
+        } else if resolved.path == "/dev/mqueue" || resolved.path.starts_with("/dev/mqueue/") { 0x19800202
+        } else if resolved.path == "/dev/shm" || resolved.path.starts_with("/dev/shm/") { 0x01021994
         } else { 0x1373 })),
     }
 }
@@ -4026,6 +4110,7 @@ pub fn sys_fstatfs(fd: i32, buf: u64) -> SyscallResult {
         match entry { Some(e) => e.kind.clone(), None => return SyscallResult::Err(9) }
     };
     let stat = match kind {
+        FdKind::Ipc(object) => Ok(virtual_statfs(object.statfs_magic())),
         FdKind::RegularFile(file) => {
             let pin = file.lock().handle.clone();
             statfs_pin(&pin)
@@ -4035,7 +4120,7 @@ pub fn sys_fstatfs(fd: i32, buf: u64) -> SyscallResult {
             statfs_pin(&pin)
         }
         // FIFOs currently live in the in-memory FIFO registry, not ext2.
-        FdKind::FifoRead(_, _, _) | FdKind::FifoWrite(_, _, _) => Ok(virtual_statfs(0x50495045)),
+        FdKind::FifoRead(_, _, _) | FdKind::FifoWrite(_, _, _) | FdKind::FifoReadWrite(_, _, _) => Ok(virtual_statfs(0x50495045)),
         FdKind::ProcfsFile { .. } | FdKind::ProcfsDirectory { .. } => Ok(virtual_statfs(0x9fa0)),
         FdKind::PipeRead(_) | FdKind::PipeWrite(_) => Ok(virtual_statfs(0x50495045)),
         FdKind::Device(_) | FdKind::StdIo(_) | FdKind::DevfsDirectory { .. } => Ok(virtual_statfs(0x1373)),
@@ -4125,6 +4210,33 @@ pub fn sys_ftruncate(fd: i32, length: i64) -> SyscallResult {
     use crate::fs::ext2;
     if length < 0 {
         return SyscallResult::Err(super::errno::EINVAL as u64);
+    }
+    let ipc = {
+        let Some(tid) = crate::task::scheduler::current_thread_id() else {
+            return SyscallResult::Err(super::errno::ESRCH as u64);
+        };
+        let guard = crate::process::manager();
+        let Some((_, process)) = guard.as_ref().and_then(|m| m.find_process_by_thread(tid)) else {
+            return SyscallResult::Err(super::errno::ESRCH as u64);
+        };
+        let Some(entry) = process.fd_table.get(fd) else {
+            return SyscallResult::Err(super::errno::EBADF as u64);
+        };
+        match &entry.kind {
+            FdKind::Ipc(object) => {
+                if !entry.writable() {
+                    return SyscallResult::Err(super::errno::EINVAL as u64);
+                }
+                Some(object.clone())
+            }
+            _ => None,
+        }
+    };
+    if let Some(object) = ipc {
+        return match object.truncate(length as u64) {
+            Ok(()) => SyscallResult::Ok(0),
+            Err(errno) => SyscallResult::Err(errno),
+        };
     }
     let (ino, _, handle) = match ext2_fd_info(fd, true) {
         Ok(info) => info,

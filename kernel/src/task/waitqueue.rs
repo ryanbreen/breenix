@@ -25,6 +25,8 @@ pub enum PrepareOutcome {
     Queued,
     /// The waiter could not be published and was removed again.
     PublishFailed,
+    /// Capacity could not be reserved before enqueue/publication.
+    OutOfMemory,
 }
 
 impl Waiter {
@@ -69,6 +71,7 @@ impl WaitQueueHead {
 
         let published = self.with_waiters(|waiters| {
             if !waiters.iter().any(|waiter| waiter.tid == tid) {
+                if !super::waitqueue_alloc::reserve_one(waiters) { return false; }
                 waiters.push_back(Waiter::new(tid));
             }
 
@@ -113,6 +116,7 @@ impl WaitQueueHead {
             }
 
             if !waiters.iter().any(|waiter| waiter.tid == tid) {
+                if !super::waitqueue_alloc::reserve_one(waiters) { return PrepareOutcome::OutOfMemory; }
                 waiters.push_back(Waiter::new(tid));
             }
 

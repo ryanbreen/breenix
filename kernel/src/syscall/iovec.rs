@@ -36,7 +36,8 @@ pub fn sys_writev(fd: u64, iov_ptr: u64, iovcnt: u64) -> SyscallResult {
 
     // Snapshot the vector metadata once so the atomicity decision and copies
     // describe the same request even if another userspace thread edits it.
-    let mut vectors = alloc::vec::Vec::with_capacity(iovcnt as usize);
+    let mut vectors = alloc::vec::Vec::new();
+    if vectors.try_reserve_exact(iovcnt as usize).is_err() { return SyscallResult::Err(errno::ENOMEM as u64); }
     let mut length = 0u64;
     for i in 0..iovcnt {
         let Some(address) = iov_ptr.checked_add(i * core::mem::size_of::<IoVec>() as u64) else {
@@ -60,7 +61,8 @@ pub fn sys_writev(fd: u64, iov_ptr: u64, iovcnt: u64) -> SyscallResult {
             let entry = process.fd_table.get(fd as i32)?;
             match &entry.kind {
                 crate::ipc::FdKind::PipeWrite(buffer)
-                | crate::ipc::FdKind::FifoWrite(_, buffer, _) => Some((
+                | crate::ipc::FdKind::FifoWrite(_, buffer, _)
+                | crate::ipc::FdKind::FifoReadWrite(_, buffer, _) => Some((
                     buffer.clone(),
                     entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK != 0,
                 )),
@@ -71,7 +73,8 @@ pub fn sys_writev(fd: u64, iov_ptr: u64, iovcnt: u64) -> SyscallResult {
             // Gather before taking the pipe lock. One adapter call preserves
             // aggregate PIPE_BUF atomicity without faulting on userspace under
             // the buffer lock or retaining a lock across a prepared wait.
-            let mut gathered = alloc::vec::Vec::with_capacity(length as usize);
+            let mut gathered = alloc::vec::Vec::new();
+            if gathered.try_reserve_exact(length as usize).is_err() { return SyscallResult::Err(errno::ENOMEM as u64); }
             for vector in &vectors {
                 for offset in 0..vector.iov_len {
                     let Some(address) = vector.iov_base.checked_add(offset) else {

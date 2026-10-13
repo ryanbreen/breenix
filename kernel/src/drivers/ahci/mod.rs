@@ -389,6 +389,7 @@ fn begin_port_io(port: usize) -> Result<MutexGuard<'static, ()>, BlockError> {
                 PORT_IO_WAITERS[port].finish_wait();
             }
             crate::task::waitqueue::PrepareOutcome::Mismatch => {}
+            crate::task::waitqueue::PrepareOutcome::OutOfMemory => return Err(BlockError::OutOfMemory),
             crate::task::waitqueue::PrepareOutcome::PublishFailed => {
                 return Err(BlockError::DeviceNotReady)
             }

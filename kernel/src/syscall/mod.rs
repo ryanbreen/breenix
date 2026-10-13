@@ -47,6 +47,7 @@ pub mod resource;
 pub mod ioctl;
 pub mod iovec;
 pub mod metadata;
+pub(crate) mod at_path;
 mod multiplex;
 pub mod pipe;
 pub mod priority;
@@ -865,7 +866,10 @@ pub const MINCORE_SYSCALL_NUMBER: u64 = 232;
 
 /// The calls dispatched by number above that are not dispatched by enum, on
 /// both architectures: None for any other number.
-pub fn dispatch_numbered(number: u64, a: [u64; 4]) -> Option<SyscallResult> {
+pub fn dispatch_numbered(number: u64, a: [u64; 6]) -> Option<SyscallResult> {
+    if let Some(r) = ipc::dispatch(number, a) {
+        return Some(r);
+    }
     Some(match number {
         MLOCK_SYSCALL_NUMBER => memory_advice::sys_mlock(a[0], a[1]),
         MUNLOCK_SYSCALL_NUMBER => memory_advice::sys_munlock(a[0], a[1]),
@@ -891,3 +895,82 @@ pub fn dispatch_numbered(number: u64, a: [u64; 4]) -> Option<SyscallResult> {
         _ => return None,
     })
 }
+
+pub mod ipc;
+pub mod mqueue;
+pub mod sysv;
+
+// Linux IPC number constants.
+#[cfg(target_arch = "x86_64")]
+pub const MQ_OPEN_SYSCALL_NUMBER: u64 = 240;
+#[cfg(target_arch = "aarch64")]
+pub const MQ_OPEN_SYSCALL_NUMBER: u64 = 180;
+#[cfg(target_arch = "x86_64")]
+pub const MQ_UNLINK_SYSCALL_NUMBER: u64 = 241;
+#[cfg(target_arch = "aarch64")]
+pub const MQ_UNLINK_SYSCALL_NUMBER: u64 = 181;
+#[cfg(target_arch = "x86_64")]
+pub const MQ_TIMEDSEND_SYSCALL_NUMBER: u64 = 242;
+#[cfg(target_arch = "aarch64")]
+pub const MQ_TIMEDSEND_SYSCALL_NUMBER: u64 = 182;
+#[cfg(target_arch = "x86_64")]
+pub const MQ_TIMEDRECEIVE_SYSCALL_NUMBER: u64 = 243;
+#[cfg(target_arch = "aarch64")]
+pub const MQ_TIMEDRECEIVE_SYSCALL_NUMBER: u64 = 183;
+#[cfg(target_arch = "x86_64")]
+pub const MQ_NOTIFY_SYSCALL_NUMBER: u64 = 244;
+#[cfg(target_arch = "aarch64")]
+pub const MQ_NOTIFY_SYSCALL_NUMBER: u64 = 184;
+#[cfg(target_arch = "x86_64")]
+pub const MQ_GETSETATTR_SYSCALL_NUMBER: u64 = 245;
+#[cfg(target_arch = "aarch64")]
+pub const MQ_GETSETATTR_SYSCALL_NUMBER: u64 = 185;
+#[cfg(target_arch = "x86_64")]
+pub const MSGGET_SYSCALL_NUMBER: u64 = 68;
+#[cfg(target_arch = "aarch64")]
+pub const MSGGET_SYSCALL_NUMBER: u64 = 186;
+#[cfg(target_arch = "x86_64")]
+pub const MSGSND_SYSCALL_NUMBER: u64 = 69;
+#[cfg(target_arch = "aarch64")]
+pub const MSGSND_SYSCALL_NUMBER: u64 = 189;
+#[cfg(target_arch = "x86_64")]
+pub const MSGRCV_SYSCALL_NUMBER: u64 = 70;
+#[cfg(target_arch = "aarch64")]
+pub const MSGRCV_SYSCALL_NUMBER: u64 = 188;
+#[cfg(target_arch = "x86_64")]
+pub const MSGCTL_SYSCALL_NUMBER: u64 = 71;
+#[cfg(target_arch = "aarch64")]
+pub const MSGCTL_SYSCALL_NUMBER: u64 = 187;
+#[cfg(target_arch = "x86_64")]
+pub const SEMGET_SYSCALL_NUMBER: u64 = 64;
+#[cfg(target_arch = "aarch64")]
+pub const SEMGET_SYSCALL_NUMBER: u64 = 190;
+#[cfg(target_arch = "x86_64")]
+pub const SEMOP_SYSCALL_NUMBER: u64 = 65;
+#[cfg(target_arch = "aarch64")]
+pub const SEMOP_SYSCALL_NUMBER: u64 = 193;
+#[cfg(target_arch = "x86_64")]
+pub const SEMCTL_SYSCALL_NUMBER: u64 = 66;
+#[cfg(target_arch = "aarch64")]
+pub const SEMCTL_SYSCALL_NUMBER: u64 = 191;
+#[cfg(target_arch = "x86_64")]
+pub const SEMTIMEDOP_SYSCALL_NUMBER: u64 = 220;
+#[cfg(target_arch = "aarch64")]
+pub const SEMTIMEDOP_SYSCALL_NUMBER: u64 = 192;
+#[cfg(target_arch = "x86_64")]
+pub const SHMGET_SYSCALL_NUMBER: u64 = 29;
+#[cfg(target_arch = "aarch64")]
+pub const SHMGET_SYSCALL_NUMBER: u64 = 194;
+#[cfg(target_arch = "x86_64")]
+pub const SHMAT_SYSCALL_NUMBER: u64 = 30;
+#[cfg(target_arch = "aarch64")]
+pub const SHMAT_SYSCALL_NUMBER: u64 = 196;
+#[cfg(target_arch = "x86_64")]
+pub const SHMDT_SYSCALL_NUMBER: u64 = 67;
+#[cfg(target_arch = "aarch64")]
+pub const SHMDT_SYSCALL_NUMBER: u64 = 197;
+#[cfg(target_arch = "x86_64")]
+pub const SHMCTL_SYSCALL_NUMBER: u64 = 31;
+#[cfg(target_arch = "aarch64")]
+pub const SHMCTL_SYSCALL_NUMBER: u64 = 195;
+// End Linux IPC number constants.
