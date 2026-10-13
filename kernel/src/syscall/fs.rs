@@ -1199,8 +1199,8 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
                 FdKind::TcpSocket(_) | FdKind::TcpListener(_) | FdKind::TcpConnection(_) => {
                     FstatKind::TcpSocket
                 }
-                FdKind::PtyMaster(pty_num) | FdKind::PtySlave(pty_num) => {
-                    FstatKind::PtyDevice { pty_num: *pty_num }
+                FdKind::PtyMaster(pair) | FdKind::PtySlave(pair) => {
+                    FstatKind::PtyDevice { pty_num: pair.pty_num }
                 }
                 FdKind::UnixStream(_) | FdKind::UnixSocket(_) | FdKind::UnixListener(_) => {
                     FstatKind::UnixSocket
@@ -2924,7 +2924,7 @@ fn handle_devfs_open(
                     // /dev/tty opened O_NONBLOCK must read non-blocking too.
                     // Exercised on every production boot by the TTY oracle's
                     // `ctty` arm (arm 13), which drives exactly this branch.
-                    let entry = match FileDescriptor::try_opened(FdKind::PtySlave(pty_num), flags) {
+                    let entry = match FileDescriptor::try_opened(FdKind::PtySlave(pair.clone()), flags) {
                         Ok(entry) => entry.with_inode(native_inode),
                         Err(e) => return SyscallResult::Err(e),
                     };
@@ -3062,15 +3062,16 @@ fn handle_devpts_open(pty_name: &str, flags: u32) -> SyscallResult {
         }
     };
 
+    let Some(pair) = crate::tty::pty::get(pty_num) else {
+        return SyscallResult::Err(ENOENT as u64);
+    };
     // Allocate file descriptor with PtySlave kind, carrying the caller's
     // status flags so a slave opened O_NONBLOCK actually reads non-blocking.
-    let entry = FileDescriptor::opened(FdKind::PtySlave(pty_num), flags);
+    let entry = FileDescriptor::opened(FdKind::PtySlave(pair.clone()), flags);
     let fd = match process.fd_table.alloc_with_entry(entry) {
         Ok(fd) => {
             // Increment slave reference count so master can detect hangup
-            if let Some(pair) = crate::tty::pty::get(pty_num) {
-                pair.slave_open();
-            }
+            pair.slave_open();
             fd
         }
         Err(_) => return SyscallResult::Err(EMFILE as u64),

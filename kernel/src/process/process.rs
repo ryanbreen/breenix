@@ -813,8 +813,8 @@ impl Process {
                     FdKind::TcpConnection(conn_id) => {
                         let _ = crate::net::tcp::tcp_close(&conn_id);
                     }
-                    FdKind::PtyMaster(pty_num) => crate::tty::pty::close_master_ref(pty_num),
-                    FdKind::PtySlave(pty_num) => crate::tty::pty::close_slave_ref(pty_num),
+                    FdKind::PtyMaster(pair) => crate::tty::pty::close_master_ref(&pair),
+                    FdKind::PtySlave(pair) => crate::tty::pty::close_slave_ref(&pair),
                     FdKind::UnixStream(socket) => {
                         let notifications = socket.lock().close();
                         notifications.deliver_deferred();
@@ -897,8 +897,8 @@ impl Process {
                     FdKind::TcpConnection(conn_id) => {
                         let _ = crate::net::tcp::tcp_close(&conn_id);
                     }
-                    FdKind::PtyMaster(pty_num) => crate::tty::pty::close_master_ref(pty_num),
-                    FdKind::PtySlave(pty_num) => crate::tty::pty::close_slave_ref(pty_num),
+                    FdKind::PtyMaster(pair) => crate::tty::pty::close_master_ref(&pair),
+                    FdKind::PtySlave(pair) => crate::tty::pty::close_slave_ref(&pair),
                     FdKind::UnixStream(socket) => {
                         let notifications = socket.lock().close();
                         notifications.deliver_deferred();

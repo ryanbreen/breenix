@@ -73,7 +73,7 @@ fn device_modes_poll_and_non_sleeping_device_api() {
             .matches("FileDescriptor::try_opened(FdKind::Device(device.device_type),flags)")
             .count()
             + opens
-                .matches("FileDescriptor::try_opened(FdKind::PtySlave(pty_num),flags)")
+                .matches("FileDescriptor::try_opened(FdKind::PtySlave(pair.clone()),flags)")
                 .count(),
         3
     );

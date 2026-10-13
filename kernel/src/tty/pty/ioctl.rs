@@ -3,33 +3,34 @@
 use super::PtyPair;
 use crate::syscall::errno::{EFAULT, ENOTTY};
 use crate::tty::ioctl::{Side, Winsize, TIOCGPTLCK, TIOCGPTN, TIOCGWINSZ, TIOCSPTLCK, TIOCSWINSZ};
+use crate::syscall::userptr::{copy_from_user, copy_to_user};
 use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
 
 fn put<T: Copy>(arg: u64, value: T) -> Result<i32, i32> {
-    if arg == 0 {
-        return Err(EFAULT);
-    }
-    unsafe { core::ptr::write_volatile(arg as *mut T, value) };
+    copy_to_user(arg as *mut T, &value).map_err(|_| EFAULT)?;
     Ok(0)
 }
 
 fn get<T: Copy>(arg: u64) -> Result<T, i32> {
-    if arg == 0 {
-        return Err(EFAULT);
-    }
-    Ok(unsafe { core::ptr::read_volatile(arg as *const T) })
+    copy_from_user(arg as *const T).map_err(|_| EFAULT)
 }
 
 /// TIOCGWINSZ, TIOCSWINSZ, TIOCGPTN, TIOCSPTLCK and TIOCGPTLCK.
-pub fn ioctl(pair: &Arc<PtyPair>, _side: Side, request: u64, arg: u64) -> Result<i32, i32> {
+pub fn ioctl(pair: &Arc<PtyPair>, side: Side, request: u64, arg: u64) -> Result<i32, i32> {
     match request {
-        TIOCGWINSZ => put(arg, *pair.winsize.lock()),
+        TIOCGWINSZ => {
+            let winsize = *pair.winsize.lock();
+            put(arg, winsize)
+        }
         TIOCSWINSZ => {
             let winsize: Winsize = get(arg)?;
             *pair.winsize.lock() = winsize;
             Ok(0)
         }
+        // The TIOC*PT* requests are the master's (Linux's ptm driver); a
+        // slave fails them with ENOTTY.
+        TIOCGPTN | TIOCSPTLCK | TIOCGPTLCK if side != Side::Master => Err(ENOTTY),
         TIOCGPTN => put(arg, pair.pty_num),
         TIOCSPTLCK => {
             let lock: i32 = get(arg)?;

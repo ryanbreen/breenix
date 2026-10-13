@@ -85,6 +85,7 @@ pub fn sys_posix_openpt(flags: u64) -> SyscallResult {
     };
 
     let pty_num = pair.pty_num;
+    let master = pair.clone();
 
     // Determine fd_flags based on O_CLOEXEC
     let fd_flags = if (flags_u32 & O_CLOEXEC) != 0 {
@@ -100,14 +101,14 @@ pub fn sys_posix_openpt(flags: u64) -> SyscallResult {
     let status_flags = flags_u32 & O_NONBLOCK;
 
     // Create file descriptor with appropriate flags
-    let fd_entry = FileDescriptor::with_flags(FdKind::PtyMaster(pty_num), fd_flags, status_flags);
+    let fd_entry = FileDescriptor::with_flags(FdKind::PtyMaster(pair), fd_flags, status_flags);
 
     // Allocate file descriptor
     let fd = match process.fd_table.alloc_with_entry(fd_entry) {
         Ok(fd) => fd,
         Err(e) => {
             // Clean up PTY on failure
-            pty::release(pty_num);
+            pty::close_master_ref(&master);
             log::error!("sys_posix_openpt: Failed to allocate fd: {}", e);
             return SyscallResult::Err(e as u64);
         }
@@ -169,8 +170,8 @@ pub fn sys_grantpt(fd: u64) -> SyscallResult {
 
     // Verify it's a PTY master
     match &fd_entry.kind {
-        FdKind::PtyMaster(pty_num) => {
-            log::debug!("sys_grantpt: fd {} is PTY master (pty {})", fd_i32, pty_num);
+        FdKind::PtyMaster(pair) => {
+            log::debug!("sys_grantpt: fd {} is PTY master (pty {})", fd_i32, pair.pty_num);
             // In a real system: chown slave to current user, chmod 0620
             // For now, just succeed
             SyscallResult::Ok(0)
@@ -233,19 +234,10 @@ pub fn sys_unlockpt(fd: u64) -> SyscallResult {
 
     // Verify it's a PTY master and unlock
     match &fd_entry.kind {
-        FdKind::PtyMaster(pty_num) => {
-            // Get the PTY pair and unlock it
-            match pty::get(*pty_num) {
-                Some(pair) => {
-                    pair.unlock();
-                    crate::serial_println!("[pty] Unlocked PTY {} (fd {})", pty_num, fd_i32);
-                    SyscallResult::Ok(0)
-                }
-                None => {
-                    log::error!("sys_unlockpt: PTY {} not found", pty_num);
-                    SyscallResult::Err(5) // EIO
-                }
-            }
+        FdKind::PtyMaster(pair) => {
+            pair.unlock();
+            crate::serial_println!("[pty] Unlocked PTY {} (fd {})", pair.pty_num, fd_i32);
+            SyscallResult::Ok(0)
         }
         _ => {
             log::error!("sys_unlockpt: fd {} is not a PTY master", fd_i32);
@@ -297,7 +289,7 @@ pub fn sys_ptsname(fd: u64, buf: u64, buflen: u64) -> SyscallResult {
             return SyscallResult::Err(3); // ESRCH
         }
     };
-    let pty_num = {
+    let pair = {
         let manager_guard = manager();
         let process = match &*manager_guard {
             Some(manager) => match manager.find_process_by_thread(thread_id) {
@@ -315,7 +307,7 @@ pub fn sys_ptsname(fd: u64, buf: u64, buflen: u64) -> SyscallResult {
 
         match process.fd_table.get(fd_i32) {
             Some(entry) => match &entry.kind {
-                FdKind::PtyMaster(pty_num) => *pty_num,
+                FdKind::PtyMaster(pair) => pair.clone(),
                 _ => {
                     log::error!("sys_ptsname: fd {} is not a PTY master", fd_i32);
                     return SyscallResult::Err(ENOTTY as u64);
@@ -328,13 +320,6 @@ pub fn sys_ptsname(fd: u64, buf: u64, buflen: u64) -> SyscallResult {
         }
     };
 
-    let pair = match pty::get(pty_num) {
-        Some(pair) => pair,
-        None => {
-            log::error!("sys_ptsname: PTY {} not found", pty_num);
-            return SyscallResult::Err(5); // EIO
-        }
-    };
     let path = pair.slave_path();
     let path_bytes = path.as_bytes();
 
@@ -359,6 +344,6 @@ pub fn sys_ptsname(fd: u64, buf: u64, buflen: u64) -> SyscallResult {
         return SyscallResult::Err(errno);
     }
 
-    log::debug!("sys_ptsname: fd {} -> '{}' (pty {})", fd_i32, path, pty_num);
+    log::debug!("sys_ptsname: fd {} -> '{}' (pty {})", fd_i32, path, pair.pty_num);
     SyscallResult::Ok(0)
 }

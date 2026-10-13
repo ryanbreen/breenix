@@ -70,12 +70,17 @@ pub fn get(pty_num: u32) -> Option<Arc<PtyPair>> {
     PTY_ALLOCATOR.get()?.lock().pairs.get(&pty_num).cloned()
 }
 
-/// Release a PTY pair, returning its number to the free list for reuse
-pub fn release(pty_num: u32) {
+/// Release `pair`'s number for reuse, if the table still holds this pair.
+fn release(pair: &Arc<PtyPair>) {
     if let Some(alloc) = PTY_ALLOCATOR.get() {
         let mut alloc = alloc.lock();
-        if alloc.pairs.remove(&pty_num).is_some() {
-            alloc.free_list.push(pty_num);
+        if alloc
+            .pairs
+            .get(&pair.pty_num)
+            .is_some_and(|current| Arc::ptr_eq(current, pair))
+        {
+            alloc.pairs.remove(&pair.pty_num);
+            alloc.free_list.push(pair.pty_num);
         }
     }
 }
@@ -84,22 +89,60 @@ pub fn release(pty_num: u32) {
 ///
 /// Every master fd retire goes through here. The last reference marks the
 /// master closed, releases the pair's number and hangs up the terminal.
-pub fn close_master_ref(pty_num: u32) {
-    let Some(pair) = get(pty_num) else {
-        return;
-    };
+pub fn close_master_ref(pair: &Arc<PtyPair>) {
     if pair.master_refcount.fetch_sub(1, core::sync::atomic::Ordering::SeqCst) != 1 {
         return;
     }
     pair.mark_master_closed();
-    release(pty_num);
-    hangup(pty_num);
+    release(pair);
+    hangup(pair.pty_num);
 }
 
 /// Retire one slave reference (a closed or discarded slave fd).
-pub fn close_slave_ref(pty_num: u32) {
-    if let Some(pair) = get(pty_num) {
-        pair.slave_close();
+pub fn close_slave_ref(pair: &Arc<PtyPair>) {
+    pair.slave_close();
+}
+
+/// A reference to one side of a pair held for the length of a read or a
+/// write, as an open file is held by a system call using it: a close of the
+/// descriptor meanwhile is not the last close, so it neither hangs the
+/// terminal up nor reports the slave gone while the call is still using it.
+pub struct PtyHold {
+    pair: Arc<PtyPair>,
+    master: bool,
+}
+
+impl PtyHold {
+    /// Take a master reference. Called with the process manager held and a
+    /// master descriptor of `pair` still in the caller's table, so the count
+    /// is at least one and this is not a reopen of a closed master.
+    pub fn master(pair: &Arc<PtyPair>) -> Self {
+        pair.master_refcount.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+        Self { pair: pair.clone(), master: true }
+    }
+
+    /// Take a slave reference, under the same conditions as `master`.
+    pub fn slave(pair: &Arc<PtyPair>) -> Self {
+        pair.slave_refcount.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+        Self { pair: pair.clone(), master: false }
+    }
+
+    pub fn pair(&self) -> &Arc<PtyPair> {
+        &self.pair
+    }
+
+    pub fn is_master(&self) -> bool {
+        self.master
+    }
+}
+
+impl Drop for PtyHold {
+    fn drop(&mut self) {
+        if self.master {
+            close_master_ref(&self.pair);
+        } else {
+            close_slave_ref(&self.pair);
+        }
     }
 }
 

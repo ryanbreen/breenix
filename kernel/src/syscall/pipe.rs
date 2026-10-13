@@ -222,8 +222,8 @@ pub fn sys_close(fd: i32) -> SyscallResult {
                     let _ = crate::net::tcp::tcp_close(&conn_id);
                     log::debug!("sys_close: Closed TCP connection fd={}", fd);
                 }
-                FdKind::PtyMaster(pty_num) => crate::tty::pty::close_master_ref(pty_num),
-                FdKind::PtySlave(pty_num) => crate::tty::pty::close_slave_ref(pty_num),
+                FdKind::PtyMaster(pair) => crate::tty::pty::close_master_ref(&pair),
+                FdKind::PtySlave(pair) => crate::tty::pty::close_slave_ref(&pair),
                 FdKind::UnixStream(socket) => {
                     // Close Unix socket endpoint
                     let notifications = socket.lock().close();

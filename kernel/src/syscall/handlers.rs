@@ -488,9 +488,9 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
         Device {
             device_type: crate::fs::devfs::DeviceType,
         },
-        PtyMaster(u32),
+        PtyMaster(crate::tty::pty::PtyHold),
         PtySlave {
-            pty_num: u32,
+            hold: crate::tty::pty::PtyHold,
             is_nonblocking: bool,
         },
         Ebadf,
@@ -580,9 +580,9 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
             },
             FdKind::DevfsDirectory { .. } => WriteOperation::Eisdir,
             FdKind::DevptsDirectory { .. } => WriteOperation::Eisdir,
-            FdKind::PtyMaster(pty_num) => WriteOperation::PtyMaster(*pty_num),
-            FdKind::PtySlave(pty_num) => WriteOperation::PtySlave {
-                pty_num: *pty_num,
+            FdKind::PtyMaster(pair) => WriteOperation::PtyMaster(crate::tty::pty::PtyHold::master(pair)),
+            FdKind::PtySlave(pair) => WriteOperation::PtySlave {
+                hold: crate::tty::pty::PtyHold::slave(pair),
                 is_nonblocking: (fd_entry.status_flags()
                     & crate::ipc::fd::status_flags::O_NONBLOCK)
                     != 0,
@@ -605,14 +605,10 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
         WriteOperation::Enotconn => SyscallResult::Err(super::errno::ENOTCONN as u64),
         WriteOperation::Eisdir => SyscallResult::Err(super::errno::EISDIR as u64),
         WriteOperation::Eopnotsupp => SyscallResult::Err(95), // EOPNOTSUPP
-        WriteOperation::PtyMaster(pty_num) => match crate::tty::pty::get(pty_num) {
-            Some(pair) => crate::tty::pty::io::write_master(&pair, &buffer),
-            None => SyscallResult::Err(5), // EIO
-        },
-        WriteOperation::PtySlave { pty_num, is_nonblocking } => match crate::tty::pty::get(pty_num) {
-            Some(pair) => crate::tty::pty::io::write_slave(&pair, &buffer, is_nonblocking),
-            None => SyscallResult::Err(5), // EIO
-        },
+        WriteOperation::PtyMaster(hold) => crate::tty::pty::io::write_master(hold.pair(), &buffer),
+        WriteOperation::PtySlave { hold, is_nonblocking } => {
+            crate::tty::pty::io::write_slave(hold.pair(), &buffer, is_nonblocking)
+        }
         WriteOperation::Pipe {
             pipe_buffer,
             is_nonblocking,
@@ -1642,22 +1638,19 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 crate::net::tcp::tcp_unregister_recv_waiter(&conn_id, thread_id);
             }
         }
-        FdKind::PtyMaster(pty_num) | FdKind::PtySlave(pty_num) => {
+        FdKind::PtyMaster(pair) | FdKind::PtySlave(pair) => {
             let is_nonblocking =
                 (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
-            let is_master = matches!(fd_entry.kind, FdKind::PtyMaster(_));
-            let pair = match crate::tty::pty::get(*pty_num) {
-                Some(p) => p,
-                None => {
-                    log::error!("sys_read: PTY {} not found", pty_num);
-                    return SyscallResult::Err(super::errno::EIO as u64);
-                }
+            let hold = if matches!(fd_entry.kind, FdKind::PtyMaster(_)) {
+                crate::tty::pty::PtyHold::master(pair)
+            } else {
+                crate::tty::pty::PtyHold::slave(pair)
             };
             drop(manager_guard);
-            if is_master {
-                crate::tty::pty::io::read_master(&pair, buf_ptr, count, is_nonblocking)
+            if hold.is_master() {
+                crate::tty::pty::io::read_master(hold.pair(), buf_ptr, count, is_nonblocking)
             } else {
-                crate::tty::slave_read::read(&pair, buf_ptr, count, is_nonblocking)
+                crate::tty::slave_read::read(hold.pair(), buf_ptr, count, is_nonblocking)
             }
         }
         FdKind::UnixStream(socket_ref) => {

@@ -119,49 +119,32 @@ impl Winsize {
 ///
 /// Copies the current termios structure to the userspace buffer.
 pub fn handle_tcgets(tty: &Arc<TtyDevice>, arg: u64) -> Result<(), i32> {
-    if arg == 0 {
-        return Err(EFAULT);
-    }
-
-    // Get the termios from the TTY
     let termios = tty.get_termios();
+    copy_to_user(arg as *mut Termios, &termios).map_err(|_| EFAULT)
+}
 
-    // Copy to userspace
-    // SAFETY: We validate that arg is non-null above. The caller is responsible
-    // for ensuring the pointer is valid in the current address space.
-    unsafe {
-        let user_termios = arg as *mut Termios;
-        core::ptr::write_volatile(user_termios, termios);
-    }
+/// The termios a TCSETS* request carries, copied in before anything else
+/// happens, as Linux does.
+fn termios_arg(arg: u64) -> Result<Termios, i32> {
+    copy_from_user(arg as *const Termios).map_err(|_| EFAULT)
+}
 
-    Ok(())
+/// Apply `termios` to the console.
+fn apply_termios(tty: &Arc<TtyDevice>, termios: &Termios) {
+    tty.set_termios(termios);
+    log::debug!(
+        "TTY{}: TCSETS applied - lflag={:#x}",
+        tty.num,
+        termios.c_lflag
+    );
 }
 
 /// Handle TCSETS - set termios attributes immediately
 ///
 /// Copies the termios structure from userspace and applies it immediately.
 pub fn handle_tcsets(tty: &Arc<TtyDevice>, arg: u64) -> Result<(), i32> {
-    if arg == 0 {
-        return Err(EFAULT);
-    }
-
-    // Read from userspace
-    // SAFETY: We validate that arg is non-null above. The caller is responsible
-    // for ensuring the pointer is valid in the current address space.
-    let termios = unsafe {
-        let user_termios = arg as *const Termios;
-        core::ptr::read_volatile(user_termios)
-    };
-
-    // Apply the termios settings
-    tty.set_termios(&termios);
-
-    log::debug!(
-        "TTY{}: TCSETS applied - lflag={:#x}",
-        tty.num,
-        termios.c_lflag
-    );
-
+    let termios = termios_arg(arg)?;
+    apply_termios(tty, &termios);
     Ok(())
 }
 
@@ -170,8 +153,10 @@ pub fn handle_tcsets(tty: &Arc<TtyDevice>, arg: u64) -> Result<(), i32> {
 /// Waits for the output already written to leave the UART, then applies the
 /// settings as TCSETS does.
 pub fn handle_tcsetsw(tty: &Arc<TtyDevice>, arg: u64) -> Result<(), i32> {
+    let termios = termios_arg(arg)?;
     crate::serial::drain_output();
-    handle_tcsets(tty, arg)
+    apply_termios(tty, &termios);
+    Ok(())
 }
 
 /// Handle TCSETSF - set termios after flushing input and draining output
@@ -179,48 +164,26 @@ pub fn handle_tcsetsw(tty: &Arc<TtyDevice>, arg: u64) -> Result<(), i32> {
 /// Waits for the output already written to leave the UART and flushes the
 /// input queue before applying the settings.
 pub fn handle_tcsetsf(tty: &Arc<TtyDevice>, arg: u64) -> Result<(), i32> {
+    let termios = termios_arg(arg)?;
     crate::serial::drain_output();
     tty.flush_input();
-
-    // Then apply the settings (same as TCSETS)
-    handle_tcsets(tty, arg)
+    apply_termios(tty, &termios);
+    Ok(())
 }
 
 /// Handle TIOCGPGRP - get foreground process group
 ///
 /// Returns the foreground process group ID for the terminal.
 pub fn handle_tiocgpgrp(tty: &Arc<TtyDevice>, arg: u64) -> Result<(), i32> {
-    if arg == 0 {
-        return Err(EFAULT);
-    }
-
-    let pgrp = tty.get_foreground_pgrp().unwrap_or(0);
-
-    // Write to userspace
-    // SAFETY: We validate that arg is non-null above.
-    unsafe {
-        let user_pgrp = arg as *mut i32;
-        core::ptr::write_volatile(user_pgrp, pgrp as i32);
-    }
-
-    Ok(())
+    let pgrp = tty.get_foreground_pgrp().unwrap_or(0) as i32;
+    copy_to_user(arg as *mut i32, &pgrp).map_err(|_| EFAULT)
 }
 
 /// Handle TIOCSPGRP - set foreground process group
 ///
 /// Sets the foreground process group ID for the terminal.
 pub fn handle_tiocspgrp(tty: &Arc<TtyDevice>, arg: u64) -> Result<(), i32> {
-    if arg == 0 {
-        return Err(EFAULT);
-    }
-
-    // Read from userspace
-    // SAFETY: We validate that arg is non-null above.
-    let pgrp = unsafe {
-        let user_pgrp = arg as *const i32;
-        core::ptr::read_volatile(user_pgrp)
-    };
-
+    let pgrp: i32 = copy_from_user(arg as *const i32).map_err(|_| EFAULT)?;
     if pgrp < 0 {
         return Err(EINVAL);
     }
@@ -235,11 +198,7 @@ pub fn handle_tiocspgrp(tty: &Arc<TtyDevice>, arg: u64) -> Result<(), i32> {
 /// Handle TIOCGWINSZ - get window size
 ///
 /// Returns a default window size (80x25) for console.
-pub fn handle_tiocgwinsz(tty: &Arc<TtyDevice>, arg: u64) -> Result<(), i32> {
-    if arg == 0 {
-        return Err(EFAULT);
-    }
-
+pub fn handle_tiocgwinsz(_tty: &Arc<TtyDevice>, arg: u64) -> Result<(), i32> {
     // Default console window size
     let winsize = Winsize {
         ws_row: 25,
@@ -247,18 +206,7 @@ pub fn handle_tiocgwinsz(tty: &Arc<TtyDevice>, arg: u64) -> Result<(), i32> {
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
-
-    // Write to userspace
-    // SAFETY: We validate that arg is non-null above.
-    unsafe {
-        let user_winsize = arg as *mut Winsize;
-        core::ptr::write_volatile(user_winsize, winsize);
-    }
-
-    // Suppress unused warning - num is used for identification
-    let _ = tty.num;
-
-    Ok(())
+    copy_to_user(arg as *mut Winsize, &winsize).map_err(|_| EFAULT)
 }
 
 // =============================================================================

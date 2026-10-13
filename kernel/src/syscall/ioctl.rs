@@ -64,16 +64,9 @@ pub fn sys_ioctl(fd: u64, request: u64, arg: u64) -> SyscallResult {
     use crate::tty::ioctl::Side;
 
     // Resolve the fd to a terminal and the side the ioctl is made on.
-    let pty = |pty_num: u32, side: Side| match crate::tty::pty::get(pty_num) {
-        Some(pair) => Ok((TtyRef::Pty(pair), side)),
-        None => {
-            log::warn!("sys_ioctl: PTY {} not found", pty_num);
-            Err(SyscallResult::Err(EBADF))
-        }
-    };
     let resolved = match get_fd_kind(fd as i32) {
-        Some(FdKind::PtyMaster(pty_num)) => pty(pty_num, Side::Master),
-        Some(FdKind::PtySlave(pty_num)) => pty(pty_num, Side::Slave),
+        Some(FdKind::PtyMaster(pair)) => Ok((TtyRef::Pty(pair), Side::Master)),
+        Some(FdKind::PtySlave(pair)) => Ok((TtyRef::Pty(pair), Side::Slave)),
         Some(FdKind::Device(crate::fs::devfs::DeviceType::Rtc)) => return rtc_ioctl(request, arg),
         Some(FdKind::StdIo(_)) => console().map(|tty| (tty, Side::Console)),
         Some(_) => {
