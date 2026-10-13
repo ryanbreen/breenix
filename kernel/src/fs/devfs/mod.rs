@@ -45,6 +45,8 @@ pub enum DeviceType {
     Tty,
     /// /dev/rtc0 - read-only platform real-time clock
     Rtc,
+    /// /dev/ptmx - pseudo-terminal multiplexor: each open makes a new master
+    Ptmx,
 }
 
 impl DeviceType {
@@ -56,6 +58,7 @@ impl DeviceType {
             DeviceType::Console => "console",
             DeviceType::Tty => "tty",
             DeviceType::Rtc => "rtc0",
+            DeviceType::Ptmx => "ptmx",
         }
     }
 
@@ -68,6 +71,7 @@ impl DeviceType {
             DeviceType::Console => 4,
             DeviceType::Tty => 5,
             DeviceType::Rtc => 6,
+            DeviceType::Ptmx => 7,
         }
     }
 
@@ -146,6 +150,7 @@ pub fn init() {
         .devices
         .push(DeviceNode::new(DeviceType::Console, 5, 1)); // /dev/console
     devfs.devices.push(DeviceNode::new(DeviceType::Tty, 5, 0)); // /dev/tty
+    devfs.devices.push(DeviceNode::new(DeviceType::Ptmx, 5, 2)); // /dev/ptmx
 
     #[cfg(target_arch = "aarch64")]
     let has_rtc = crate::platform_config::is_qemu() || crate::time::firmware_rtc::available();
@@ -227,6 +232,7 @@ pub fn is_initialized() -> bool {
 pub fn device_read(device_type: DeviceType, buf: &mut [u8]) -> Result<usize, i32> {
     match device_type {
         DeviceType::Rtc => Err(-22), // RTC data is read through RTC_RD_TIME.
+        DeviceType::Ptmx => Err(-6), // Opening /dev/ptmx gives a master, never this device.
         DeviceType::Null => {
             // /dev/null always returns EOF (0 bytes read)
             Ok(0)
@@ -249,6 +255,7 @@ pub fn device_read(device_type: DeviceType, buf: &mut [u8]) -> Result<usize, i32
 pub fn device_write(device_type: DeviceType, buf: &[u8]) -> Result<usize, i32> {
     match device_type {
         DeviceType::Rtc => Err(13), // EACCES: no clock writes through this device.
+        DeviceType::Ptmx => Err(6), // ENXIO: opening /dev/ptmx gives a master.
         DeviceType::Null | DeviceType::Zero => {
             // /dev/null and /dev/zero discard all writes
             Ok(buf.len())

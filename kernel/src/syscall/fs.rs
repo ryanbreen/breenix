@@ -2844,6 +2844,9 @@ fn handle_devfs_open(
     if !device.device_type.is_writable() && flags & 3 != 0 {
         return SyscallResult::Err(13); // EACCES
     }
+    if device.device_type == devfs::DeviceType::Ptmx {
+        return crate::tty::pty::open_master(flags);
+    }
 
     // Get current process and allocate fd
     let thread_id = match crate::task::scheduler::current_thread_id() {
@@ -2986,19 +2989,21 @@ fn handle_devpts_open(pty_name: &str, flags: u32) -> SyscallResult {
         }
     };
 
-    let Some(pair) = crate::tty::pty::get(pty_num) else {
-        return SyscallResult::Err(ENOENT as u64);
+    // Take the slave reference first (EIO for a locked pair or a closed
+    // master), then allocate the fd with the caller's status flags so a slave
+    // opened O_NONBLOCK actually reads non-blocking.
+    let pair = match crate::tty::pty::open_slave(pty_num) {
+        Ok(pair) => pair,
+        Err(e) => return SyscallResult::Err(e as u64),
     };
-    // Allocate file descriptor with PtySlave kind, carrying the caller's
-    // status flags so a slave opened O_NONBLOCK actually reads non-blocking.
     let entry = FileDescriptor::opened(FdKind::PtySlave(pair.clone()), flags);
     let fd = match process.fd_table.alloc_with_entry(entry) {
-        Ok(fd) => {
-            // Increment slave reference count so master can detect hangup
-            pair.slave_open();
-            fd
+        Ok(fd) => fd,
+        Err(_) => {
+            drop(manager_guard);
+            crate::tty::pty::close_slave_ref(&pair);
+            return SyscallResult::Err(EMFILE as u64);
         }
-        Err(_) => return SyscallResult::Err(EMFILE as u64),
     };
     drop(manager_guard);
     crate::tty::ctty::acquire_on_open(crate::tty::ctty::TtyId::Pty(pty_num), flags);

@@ -9,7 +9,8 @@ pub mod pair;
 // Re-export PtyPair for external use
 pub use pair::PtyPair;
 
-use crate::syscall::errno::{ENOMEM, ENOSPC};
+use crate::syscall::errno::{EIO, ENOENT, ENOMEM, ENOSPC, ESRCH};
+use crate::syscall::SyscallResult;
 use crate::task::completion::Completion;
 use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use alloc::collections::BTreeMap;
@@ -72,17 +73,38 @@ pub fn get(pty_num: u32) -> Option<Arc<PtyPair>> {
     PTY_ALLOCATOR.get()?.lock().pairs.get(&pty_num).cloned()
 }
 
-/// Release `pair`'s number for reuse, if the table still holds this pair.
-fn release(pair: &Arc<PtyPair>) {
-    if let Some(alloc) = PTY_ALLOCATOR.get() {
-        let mut alloc = alloc.lock();
-        if alloc
-            .pairs
-            .get(&pair.pty_num)
-            .is_some_and(|current| Arc::ptr_eq(current, pair))
-        {
-            alloc.pairs.remove(&pair.pty_num);
-            alloc.free_list.push(pair.pty_num);
+/// Open a new master: posix_openpt(3) and open("/dev/ptmx"). `flags` are
+/// open(2) flags; O_CLOEXEC and O_NONBLOCK are kept on the descriptor.
+pub fn open_master(flags: u32) -> SyscallResult {
+    use crate::ipc::fd::{FdKind, FileDescriptor};
+
+    // A master's last close may need the hangup thread; make no master
+    // without it.
+    if let Err(e) = ensure_hangup_daemon() {
+        return SyscallResult::Err(e as u64);
+    }
+    let Some(thread_id) = crate::task::scheduler::current_thread_id() else {
+        return SyscallResult::Err(ESRCH as u64);
+    };
+    let mut manager_guard = crate::process::manager();
+    let Some((_, process)) = manager_guard
+        .as_mut()
+        .and_then(|manager| manager.find_process_by_thread_mut(thread_id))
+    else {
+        return SyscallResult::Err(ESRCH as u64);
+    };
+    let pair = match allocate() {
+        Ok(pair) => pair,
+        Err(e) => return SyscallResult::Err(e as u64),
+    };
+    let installed = FileDescriptor::try_opened(FdKind::PtyMaster(pair.clone()), flags)
+        .and_then(|entry| process.fd_table.alloc_with_entry(entry).map_err(|e| e as u64));
+    drop(manager_guard);
+    match installed {
+        Ok(fd) => SyscallResult::Ok(fd as u64),
+        Err(e) => {
+            close_master_ref(&pair);
+            SyscallResult::Err(e)
         }
     }
 }
@@ -91,12 +113,29 @@ fn release(pair: &Arc<PtyPair>) {
 ///
 /// Every master fd retire goes through here. The last reference marks the
 /// master closed and hangs up the terminal; the pair keeps its number until
-/// the hangup has run, so a deferred hangup always finds its own pair.
+/// the hangup has finished, and is released once the slave side is gone too.
 pub fn close_master_ref(pair: &Arc<PtyPair>) {
-    if pair.master_refcount.fetch_sub(1, Ordering::SeqCst) != 1 {
+    // The last reference's decrement, the hangup reservation and the closed
+    // mark are one step under the table lock, which `release_if_unused` holds
+    // while it decides: it never sees the master gone without the
+    // reservation, and an open of the slave never sees the master count at
+    // zero without the closed mark.
+    let last = {
+        let Some(alloc) = PTY_ALLOCATOR.get() else {
+            return;
+        };
+        let _table = alloc.lock();
+        let last = pair.master_refcount.fetch_sub(1, Ordering::SeqCst) == 1;
+        if last {
+            pair.hangup_pending.store(true, Ordering::SeqCst);
+            pair.mark_master_closed();
+        }
+        last
+    };
+    if !last {
         return;
     }
-    pair.mark_master_closed();
+    pair.wake_slave_side();
     // `ctty::hangup` takes the process manager, and teardown closes a dying
     // process's descriptors with it held. Those closes leave the hangup to
     // the hangup thread, which they wake without taking a lock.
@@ -108,7 +147,8 @@ pub fn close_master_ref(pair: &Arc<PtyPair>) {
         } else {
             // Only a pair the kernel allocated for itself, never a master
             // descriptor (open_master refuses without the thread), gets here.
-            release(pair);
+            pair.hangup_pending.store(false, Ordering::SeqCst);
+            release_if_unused(pair);
         }
     } else {
         finish_hangup(pair);
@@ -117,13 +157,58 @@ pub fn close_master_ref(pair: &Arc<PtyPair>) {
 
 /// Retire one slave reference (a closed or discarded slave fd).
 pub fn close_slave_ref(pair: &Arc<PtyPair>) {
-    pair.slave_close();
+    if pair.slave_close() {
+        release_if_unused(pair);
+    }
 }
 
-/// Run the last master close's hangup, then let the number go.
+/// Run the last master close's hangup, then let the pair go.
 fn finish_hangup(pair: &Arc<PtyPair>) {
     crate::tty::ctty::hangup(crate::tty::ctty::TtyId::Pty(pair.pty_num));
-    release(pair);
+    pair.hangup_pending.store(false, Ordering::SeqCst);
+    release_if_unused(pair);
+}
+
+/// Release `pair`'s number once no master and no slave reference remains
+/// and no hangup is pending, so a hangup always finds its own pair.
+fn release_if_unused(pair: &Arc<PtyPair>) {
+    let Some(alloc) = PTY_ALLOCATOR.get() else {
+        return;
+    };
+    let mut alloc = alloc.lock();
+    if pair.master_refcount.load(Ordering::SeqCst) != 0
+        || pair.slave_refcount.load(Ordering::SeqCst) != 0
+        || pair.hangup_pending.load(Ordering::SeqCst)
+    {
+        return;
+    }
+    if alloc
+        .pairs
+        .get(&pair.pty_num)
+        .is_some_and(|current| Arc::ptr_eq(current, pair))
+    {
+        alloc.pairs.remove(&pair.pty_num);
+        alloc.free_list.push(pair.pty_num);
+    }
+}
+
+/// Take a new slave reference on pair `pty_num` for an open of its slave.
+///
+/// Fails with EIO while the pair is locked or once its master has closed,
+/// and with ENOENT when no such pair exists.
+pub fn open_slave(pty_num: u32) -> Result<Arc<PtyPair>, i32> {
+    let alloc = PTY_ALLOCATOR.get().ok_or(ENOENT)?;
+    let table = alloc.lock();
+    let pair = table.pairs.get(&pty_num).cloned().ok_or(ENOENT)?;
+    // Under the table lock the closed mark and the master count agree, and
+    // the pair cannot be released, so the reference taken here is either on
+    // a live master's pair or not taken at all.
+    if !pair.is_unlocked() || pair.master_closed() {
+        return Err(EIO);
+    }
+    pair.slave_open();
+    drop(table);
+    Ok(pair)
 }
 
 /// Last master closes made with the process manager held, one bit per pair.

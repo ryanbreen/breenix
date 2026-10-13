@@ -5,23 +5,12 @@
 use super::errno::ENOTTY;
 use super::userptr::{copy_to_user, validate_user_buffer};
 use super::SyscallResult;
-use crate::ipc::fd::{flags, FdKind, FileDescriptor};
+use crate::ipc::fd::FdKind;
 use crate::process::manager;
 use crate::tty::pty;
 
 /// Open flags
 const O_RDWR: u32 = 0x02;
-const O_CLOEXEC: u32 = 0x80000;
-/// O_NONBLOCK. POSIX lists this among the flags `posix_openpt()` accepts, and
-/// the master read path already honours it (`handlers.rs`, `FdKind::PtyMaster`
-/// checks `status_flags & O_NONBLOCK`) -- but the bit never reached the fd,
-/// so that branch was unreachable through `open`. Mirrors
-/// `crate::ipc::fd::status_flags::O_NONBLOCK`.
-const O_NONBLOCK: u32 = 0x800;
-/// The two definitions must not drift: the read path tests the fd's
-/// `status_flags` against the `ipc::fd` constant, so a mismatch here would
-/// silently re-open the same hole this constant closes.
-const _: () = assert!(O_NONBLOCK == crate::ipc::fd::status_flags::O_NONBLOCK);
 
 /// sys_posix_openpt - Open a new PTY master device
 ///
@@ -41,88 +30,13 @@ const _: () = assert!(O_NONBLOCK == crate::ipc::fd::status_flags::O_NONBLOCK);
 pub fn sys_posix_openpt(flags: u64) -> SyscallResult {
     let flags_u32 = flags as u32;
 
-    crate::serial_println!("[pty] sys_posix_openpt(flags={:#x})", flags_u32);
-
     // Validate flags - O_RDWR must be set
     if (flags_u32 & O_RDWR) != O_RDWR {
         log::error!("sys_posix_openpt: O_RDWR not set in flags {:#x}", flags_u32);
         return SyscallResult::Err(22); // EINVAL
     }
 
-    // A master's last close may need the hangup thread; make no master
-    // without it.
-    if let Err(e) = pty::ensure_hangup_daemon() {
-        return SyscallResult::Err(e as u64);
-    }
-
-    // Get current process
-    let thread_id = match crate::task::scheduler::current_thread_id() {
-        Some(id) => id,
-        None => {
-            log::error!("sys_posix_openpt: No current thread");
-            return SyscallResult::Err(3); // ESRCH
-        }
-    };
-    let mut manager_guard = manager();
-    let process = match &mut *manager_guard {
-        Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
-            Some((_pid, p)) => p,
-            None => {
-                log::error!(
-                    "sys_posix_openpt: Process not found for thread {}",
-                    thread_id
-                );
-                return SyscallResult::Err(3); // ESRCH
-            }
-        },
-        None => {
-            log::error!("sys_posix_openpt: Process manager not initialized");
-            return SyscallResult::Err(3); // ESRCH
-        }
-    };
-
-    // Allocate new PTY pair
-    let pair = match pty::allocate() {
-        Ok(pair) => pair,
-        Err(e) => {
-            log::error!("sys_posix_openpt: Failed to allocate PTY: {}", e);
-            return SyscallResult::Err(e as u64);
-        }
-    };
-
-    let pty_num = pair.pty_num;
-    let master = pair.clone();
-
-    // Determine fd_flags based on O_CLOEXEC
-    let fd_flags = if (flags_u32 & O_CLOEXEC) != 0 {
-        flags::FD_CLOEXEC
-    } else {
-        0
-    };
-
-    // Carry O_NONBLOCK through as a file status flag. Dropping it here made
-    // an fd that reports blocking semantics no matter what the caller asked
-    // for; `fcntl(F_SETFL)` was the only way to reach the non-blocking read
-    // path.
-    let status_flags = flags_u32 & O_NONBLOCK;
-
-    // Create file descriptor with appropriate flags
-    let fd_entry = FileDescriptor::with_flags(FdKind::PtyMaster(pair), fd_flags, status_flags);
-
-    // Allocate file descriptor
-    let fd = match process.fd_table.alloc_with_entry(fd_entry) {
-        Ok(fd) => fd,
-        Err(e) => {
-            // Clean up PTY on failure
-            pty::close_master_ref(&master);
-            log::error!("sys_posix_openpt: Failed to allocate fd: {}", e);
-            return SyscallResult::Err(e as u64);
-        }
-    };
-
-    crate::serial_println!("[pty] Created master fd={} (pty {})", fd, pty_num);
-
-    SyscallResult::Ok(fd as u64)
+    pty::open_master(flags_u32)
 }
 
 /// sys_grantpt - Grant access to the slave PTY
