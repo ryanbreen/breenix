@@ -1,869 +1,621 @@
-//! UDP socket implementation
-//!
-//! Provides datagram socket functionality for UDP protocol.
-
-use alloc::collections::VecDeque;
-use alloc::sync::Arc;
+//! UDP endpoints and a bounded address/port registry, independent of fd tables.
+use alloc::collections::{BTreeMap, VecDeque};
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use spin::Mutex;
 
 use super::addr::SockAddr;
-use super::object::{ProtoOps, RecvMsg, SendMsg, Socket};
-use super::types::SockAddrIn;
-use super::{alloc_socket_handle, SocketHandle, SOCKET_REGISTRY};
-use crate::process::process::ProcessId;
-use crate::syscall::errno;
+use super::object::{ProtoOps, RecvMsg, SendMsg, Socket, SocketProto};
+use super::wait::wait_until;
+use crate::syscall::errno::{EAFNOSUPPORT, EAGAIN, EINVAL, EMSGSIZE, ENOTCONN, EPIPE};
 
-const POLLIN: u16 = crate::ipc::poll::events::POLLIN as u16;
-const POLLOUT: u16 = crate::ipc::poll::events::POLLOUT as u16;
+const ANY: [u8; 4] = [0; 4];
+const MSG_OOB: u32 = 1;
+const MSG_PEEK: u32 = 2;
+const MSG_TRUNC: u32 = 0x20;
+const MSG_DONTWAIT: u32 = 0x40;
+const MSG_DONTROUTE: u32 = 4;
+const MSG_MORE: u32 = 0x8000;
+const MAX_BINDINGS: usize = 4096;
+const FIRST_EPHEMERAL: u16 = 49152;
+const LAST_EPHEMERAL: u16 = 65535;
+const DATAGRAM_OVERHEAD: usize = core::mem::size_of::<UdpPacket>();
 
-/// Maximum number of packets to queue per socket
-const MAX_RX_QUEUE_SIZE: usize = 32;
+pub struct UdpPacket {
+    pub src_addr: [u8; 4],
+    pub src_port: u16,
+    pub data: Vec<u8>,
+}
 
-/// Acquire `socket`'s outer `Arc<Mutex<UdpSocket>>` -- the lock the fd table
-/// holds, and the one `net/udp.rs::handle_udp` (the NetRx IRQ route)
-/// locks from inside `with_process_manager`, which masks interrupts on both
-/// architectures -- with interrupts masked for the WHOLE hold, and run `f`
-/// under it.
-///
-/// #823: a thread-side hold of this Mutex taken without masking can be
-/// interrupted. aarch64 runs `do_softirq()` unconditionally on IRQ return
-/// regardless of preempt_count (see `net_rx_softirq_handler` and #812's own
-/// finding, which named this exact lock as an open item it did not touch), so
-/// an interrupted holder's own CPU reenters this same lock inside
-/// `handle_udp` and spins forever -- the CPU is suspended in the
-/// exception it took and cannot execute the lock-release instruction until
-/// the exception returns; that return waits for the softirq's spin to end.
-/// claim-lint:ok: this round's red-boot mutation leg,
-/// [UDP_LOCK_ORACLE:...masked_in_hold=0:stalled=1:hold_done=0:joined=0...FAIL]
-///
-/// This is the one masked-hold primitive every thread-side holder of this
-/// lock uses: the UDP adapter's methods (`UdpSock` below: poll, bind,
-/// sendmsg, recvmsg, local_name); `boot_tests`' `udp_socket_lock_oracle`
-/// calls it directly, so removing the mask here mutates the exact code those
-/// production callers run, not a test-only stand-in for it.
-pub fn with_locked_masked<F, R>(udp: &UdpSock, f: F) -> R
-where
-    F: FnOnce(&mut UdpSocket) -> R,
-{
+struct UdpCork {
+    src: [u8; 4],
+    dst: [u8; 4],
+    src_port: u16,
+    dst_port: u16,
+    data: Vec<u8>,
+}
+enum SendPlan {
+    Immediate {
+        src: [u8; 4],
+        dst: [u8; 4],
+        src_port: u16,
+        dst_port: u16,
+    },
+    Buffered,
+    Flush(UdpCork),
+}
+
+pub struct UdpState {
+    local: Option<([u8; 4], u16)>,
+    peer: Option<([u8; 4], u16)>,
+    source: Option<[u8; 4]>,
+    // Holds the original allocation identity across deferred Socket release.
+    owner: Weak<Socket>,
+    rx: VecDeque<UdpPacket>,
+    rx_bytes: usize,
+    cork: Option<UdpCork>,
+}
+impl UdpState {
+    const fn new() -> Self {
+        Self {
+            local: None,
+            peer: None,
+            source: None,
+            owner: Weak::new(),
+            rx: VecDeque::new(),
+            rx_bytes: 0,
+            cork: None,
+        }
+    }
+    fn local_ip(&self) -> [u8; 4] {
+        let addr = self.local.map_or(ANY, |(addr, _)| addr);
+        if addr == ANY {
+            self.source.unwrap_or(ANY)
+        } else {
+            addr
+        }
+    }
+    fn matches(&self, dst: [u8; 4], src: [u8; 4], src_port: u16) -> bool {
+        let local = self.local_ip();
+        (local == ANY || local == dst || crate::net::is_broadcast_addr(dst))
+            && self.peer.is_none_or(|peer| peer == (src, src_port))
+    }
+}
+
+pub struct UdpSock {
+    state: Mutex<UdpState>,
+}
+
+/// Protect every per-endpoint hold against ARM64 IRQ-return softirq and the
+/// x86 preemptible loopback pump. Registry precedes this lock; opts is a leaf.
+pub fn with_locked_masked<R>(udp: &UdpSock, f: impl FnOnce(&mut UdpState) -> R) -> R {
     #[cfg(target_arch = "x86_64")]
     type Cpu = crate::arch_impl::x86_64::X86Cpu;
     #[cfg(target_arch = "aarch64")]
     type Cpu = crate::arch_impl::aarch64::Aarch64Cpu;
     use crate::arch_impl::traits::CpuOps;
-
-    Cpu::without_interrupts(|| f(&mut udp.inner.lock()))
+    Cpu::without_interrupts(|| f(&mut udp.state.lock()))
 }
 
-/// Boot-oracle accessor: how many datagrams with exactly `payload` wait in
-/// the receive queue, counted under the same masked hold.
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 pub(crate) fn queued_matching(udp: &UdpSock, payload: &[u8]) -> u64 {
-    with_locked_masked(udp, |socket| {
-        socket
-            .rx_queue
-            .lock()
-            .iter()
-            .filter(|packet| packet.data.as_slice() == payload)
-            .count() as u64
+    crate::socket::udp::with_locked_masked(udp, |state| {
+        state.rx.iter().filter(|p| p.data == payload).count() as u64
     })
 }
-
-/// Boot-oracle accessor: empty the receive queue under the masked hold.
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 pub(crate) fn clear_queue(udp: &UdpSock) {
-    with_locked_masked(udp, |socket| socket.rx_queue.lock().clear());
+    crate::socket::udp::with_locked_masked(udp, |state| {
+        state.rx.clear();
+        state.rx_bytes = 0;
+    });
 }
-
-/// Boot-oracle accessor: run `f` holding the UDP port registry's lock through
-/// its production masked primitive (#908).
 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
 pub(crate) fn with_ports_masked<R>(f: impl FnOnce() -> R) -> R {
-    SOCKET_REGISTRY.with_udp_ports_masked(|_ports| f())
-}
-
-/// A received UDP packet
-#[derive(Debug)]
-pub struct UdpPacket {
-    /// Source IP address
-    pub src_addr: [u8; 4],
-    /// Source port
-    pub src_port: u16,
-    /// Packet payload data
-    pub data: Vec<u8>,
-}
-
-/// UDP socket state
-pub struct UdpSocket {
-    /// Unique handle for this socket
-    pub handle: SocketHandle,
-    /// Local address (if bound)
-    pub local_addr: Option<[u8; 4]>,
-    /// Local port (if bound)
-    pub local_port: Option<u16>,
-    /// Whether the socket is bound
-    pub bound: bool,
-    /// Receive queue for incoming packets (protected for interrupt-safe access)
-    pub rx_queue: Mutex<VecDeque<UdpPacket>>,
-    /// Thread IDs blocked waiting for data on this socket
-    pub waiting_threads: Mutex<Vec<u64>>,
-    /// The line reporting this socket's first delivered datagram, posted by
-    /// the delivering code (`net::udp::handle_udp`), which may run on the
-    /// NetRx softirq and so may not log.
-    pub delivery_notice: crate::log_notice::Notice,
-}
-
-impl core::fmt::Debug for UdpSocket {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("UdpSocket")
-            .field("handle", &self.handle)
-            .field("local_addr", &self.local_addr)
-            .field("local_port", &self.local_port)
-            .field("bound", &self.bound)
-            .finish()
-    }
-}
-
-impl UdpSocket {
-    /// Create a new UDP socket
-    pub fn new() -> Self {
-        UdpSocket {
-            handle: alloc_socket_handle(),
-            local_addr: None,
-            local_port: None,
-            bound: false,
-            rx_queue: Mutex::new(VecDeque::new()),
-            waiting_threads: Mutex::new(Vec::new()),
-            delivery_notice: crate::log_notice::Notice::new(),
-        }
-    }
-
-    /// Bind the socket to a local address and port
-    /// If port is 0, an ephemeral port will be allocated
-    pub fn bind(&mut self, pid: ProcessId, addr: [u8; 4], port: u16) -> Result<u16, i32> {
-        if self.bound {
-            return Err(crate::syscall::errno::EINVAL); // Already bound
-        }
-
-        // Register in global socket registry (returns allocated port if port was 0)
-        let actual_port = SOCKET_REGISTRY.bind_udp(port, pid, self.handle)?;
-
-        self.local_addr = Some(addr);
-        self.local_port = Some(actual_port);
-        self.bound = true;
-
-        log::debug!(
-            "UDP: Socket {:?} bound to {}.{}.{}.{}:{} (requested: {})",
-            self.handle,
-            addr[0],
-            addr[1],
-            addr[2],
-            addr[3],
-            actual_port,
-            port
-        );
-
-        Ok(actual_port)
-    }
-
-    /// Receive a packet from the queue
-    pub fn recv_from(&mut self) -> Option<UdpPacket> {
-        self.rx_queue.lock().pop_front()
-    }
-
-    /// Enqueue a received packet (called from softirq context)
-    ///
-    /// After enqueuing, wakes all blocked threads so they can receive the packet.
-    ///
-    /// CRITICAL: This is called from softirq context which runs in irq_exit() BEFORE
-    /// returning to the preempted code. If syscall code holds waiting_threads lock
-    /// and we try to acquire it here, we would deadlock. The syscall code MUST
-    /// disable interrupts while holding waiting_threads lock to prevent this.
-    pub fn enqueue_packet(&self, packet: UdpPacket) {
-        // Enqueue the packet
-        {
-            let mut queue = self.rx_queue.lock();
-            // Drop oldest if queue is full
-            if queue.len() >= MAX_RX_QUEUE_SIZE {
-                queue.pop_front();
-                log::warn!("UDP: RX queue full, dropped oldest packet");
-            }
-            queue.push_back(packet);
-        }
-
-        // Wake ALL blocked threads (they'll race to receive)
-        // We MUST wake threads reliably - use regular lock, not try_lock.
-        // Softirq context is safe for blocking since interrupts are enabled.
-        let readers: alloc::vec::Vec<u64> = {
-            let mut waiting = self.waiting_threads.lock();
-            waiting.drain(..).collect()
-        };
-
-        if !readers.is_empty() {
-            crate::task::scheduler::with_scheduler(|sched| {
-                for thread_id in &readers {
-                    sched.unblock(*thread_id);
-                }
-            });
-            // Trigger reschedule so woken threads run soon
-            crate::task::scheduler::set_need_resched();
-        }
-    }
-
-    /// Check if there are packets available to receive.
-    pub fn has_data(&self) -> bool {
-        !self.rx_queue.lock().is_empty()
-    }
-
-    /// Get the socket's local address (part of API)
-    #[allow(dead_code)]
-    pub fn local_addr(&self) -> Option<SockAddrIn> {
-        if let (Some(addr), Some(port)) = (self.local_addr, self.local_port) {
-            Some(SockAddrIn::new(addr, port))
-        } else {
-            None
-        }
-    }
-
-    /// Get the local port (if bound)
-    pub fn local_port(&self) -> Option<u16> {
-        self.local_port
-    }
-
-    /// Register a thread as waiting for data on this socket
-    pub fn register_waiter(&self, thread_id: u64) {
-        let mut waiting = self.waiting_threads.lock();
-        if !waiting.contains(&thread_id) {
-            waiting.push(thread_id);
-            log::trace!("UDP: Thread {} registered as waiter", thread_id);
-        }
-    }
-
-    /// Unregister a thread from waiting for data
-    pub fn unregister_waiter(&self, thread_id: u64) {
-        let mut waiting = self.waiting_threads.lock();
-        waiting.retain(|&id| id != thread_id);
-    }
-}
-
-impl Default for UdpSocket {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Drop for UdpSocket {
-    fn drop(&mut self) {
-        // Unbind from registry when socket is dropped
-        if let Some(port) = self.local_port {
-            SOCKET_REGISTRY.unbind_udp(port);
-            log::debug!("UDP: Socket {:?} unbound from port {}", self.handle, port);
-        }
-    }
-}
-
-/// The largest UDP payload an IPv4 datagram carries: 65535 less the IPv4 and
-/// UDP headers.
-const UDP_MAX_PAYLOAD: usize = 65_507;
-
-/// The UDP half of a socket. The fd-table walk in `net::udp::handle_udp` finds
-/// the socket by its registry handle and enqueues under `with_locked_masked`;
-/// every thread-side hold below goes through the same masked primitive (#823).
-pub struct UdpSock {
-    pub inner: Arc<Mutex<UdpSocket>>,
+    with_registry(|_registry| f())
 }
 
 impl UdpSock {
-    pub fn new() -> Result<UdpSock, i32> {
-        let inner = Arc::try_new(Mutex::new(UdpSocket::new()))
-            .map_err(|_| crate::syscall::errno::ENOMEM)?;
-        Ok(UdpSock { inner })
+    pub fn new() -> Result<Self, i32> {
+        Ok(Self {
+            state: Mutex::new(UdpState::new()),
+        })
     }
+    pub(crate) fn detach(&mut self) -> Self {
+        Self {
+            state: Mutex::new(core::mem::replace(self.state.get_mut(), UdpState::new())),
+        }
+    }
+    fn ensure_bound(&self, sk: &Arc<Socket>) -> Result<u16, i32> {
+        if let Some(port) =
+            crate::socket::udp::with_locked_masked(self, |s| s.local.map(|(_, p)| p))
+        {
+            return Ok(port);
+        }
+        self.reserve(sk, ANY, 0, true)
+    }
+    fn reserve(
+        &self,
+        sk: &Arc<Socket>,
+        addr: [u8; 4],
+        port: u16,
+        automatic: bool,
+    ) -> Result<u16, i32> {
+        // Any upgrades acquired under the registry survive until it is released:
+        // last-Arc Drop may unbind and must never run holding the registry.
+        let mut held = Vec::new();
+        let result = with_registry(|registry| {
+            crate::socket::udp::with_locked_masked(self, |state| {
+                if let Some((_, p)) = state.local {
+                    return if automatic { Ok(p) } else { Err(EINVAL) };
+                }
+                registry.ports.retain(|_, holders| {
+                    holders.retain(|holder| holder.strong_count() != 0);
+                    !holders.is_empty()
+                });
+                let count: usize = registry.ports.values().map(Vec::len).sum();
+                if count >= MAX_BINDINGS {
+                    return Err(105);
+                } // ENOBUFS
+                held.try_reserve(count).map_err(|_| 105)?;
+                let available = |candidate: u16, held: &mut Vec<Arc<Socket>>| {
+                    for ((bound_addr, bound_port), holders) in &registry.ports {
+                        if *bound_port != candidate
+                            || !(addr == ANY || *bound_addr == ANY || *bound_addr == addr)
+                        {
+                            continue;
+                        }
+                        for holder in holders {
+                            if let Some(socket) = holder.upgrade() {
+                                let reusable = sk.common.reuseaddr() && socket.common.reuseaddr();
+                                held.push(socket);
+                                if !reusable {
+                                    return false;
+                                }
+                            }
+                        }
+                    }
+                    true
+                };
+                let actual_port = if port == 0 {
+                    let mut found = None;
+                    for _ in FIRST_EPHEMERAL..=LAST_EPHEMERAL {
+                        let candidate = registry.next;
+                        registry.next = if candidate == LAST_EPHEMERAL {
+                            FIRST_EPHEMERAL
+                        } else {
+                            candidate + 1
+                        };
+                        // Ephemeral allocation never shares a port, even with reuse.
+                        if !registry.ports.keys().any(|(_, p)| *p == candidate) {
+                            found = Some(candidate);
+                            break;
+                        }
+                    }
+                    found.ok_or(EAGAIN)?
+                } else {
+                    if !available(port, &mut held) {
+                        return Err(98);
+                    } // EADDRINUSE
+                    port
+                };
+                let mut first = Vec::new();
+                if !registry.ports.contains_key(&(addr, actual_port)) {
+                    first.try_reserve(1).map_err(|_| 105)?;
+                    registry.ports.insert((addr, actual_port), first);
+                }
+                let holders = registry
+                    .ports
+                    .get_mut(&(addr, actual_port))
+                    .expect("binding inserted");
+                holders.try_reserve(1).map_err(|_| 105)?;
+                let owner = Arc::downgrade(sk);
+                holders.push(owner.clone());
+                state.local = Some((addr, actual_port));
+                state.owner = owner;
+                Ok(actual_port)
+            })
+        });
+        drop(held);
+        result
+    }
+    fn enqueue(&self, sk: &Socket, dst: [u8; 4], src: [u8; 4], src_port: u16, data: &[u8]) -> bool {
+        let accepted = crate::socket::udp::with_locked_masked(self, |state| {
+            let charge = data.len() + DATAGRAM_OVERHEAD;
+            if !state.matches(dst, src, src_port)
+                || sk.common.shut_rd()
+                || charge > sk.common.rcvbuf().saturating_sub(state.rx_bytes)
+            {
+                return false;
+            }
+            let mut owned = Vec::new();
+            if owned.try_reserve_exact(data.len()).is_err() || state.rx.try_reserve(1).is_err() {
+                return false;
+            }
+            owned.extend_from_slice(data);
+            state.rx.push_back(UdpPacket {
+                src_addr: src,
+                src_port,
+                data: owned,
+            });
+            state.rx_bytes += charge;
+            true
+        });
+        if accepted {
+            static DELIVERY_NOTICE: crate::log_notice::Node = crate::log_notice::Node::new();
+            DELIVERY_NOTICE.post_again("UDP: Delivered packet to socket on port");
+            sk.common.notify();
+        }
+        accepted
+    }
+}
+impl Default for UdpSock {
+    fn default() -> Self {
+        Self {
+            state: Mutex::new(UdpState::new()),
+        }
+    }
+}
 
-    /// The state for a deferred release: a second handle on the same socket.
-    pub(super) fn detach(&mut self) -> UdpSock {
-        UdpSock {
-            inner: self.inner.clone(),
+pub struct SocketRegistry {
+    ports: BTreeMap<([u8; 4], u16), Vec<Weak<Socket>>>,
+    next: u16,
+}
+pub static SOCKET_REGISTRY: Mutex<SocketRegistry> = Mutex::new(SocketRegistry {
+    ports: BTreeMap::new(),
+    next: FIRST_EPHEMERAL,
+});
+/// Registry insertions and remove operations may allocate/deallocate; memory/heap.rs
+/// masks its allocator lock. The outer IRQ mask covers the entire map hold.
+fn with_registry<R>(f: impl FnOnce(&mut SocketRegistry) -> R) -> R {
+    crate::arch_without_interrupts(|| f(&mut SOCKET_REGISTRY.lock()))
+}
+
+// Existing mask fixtures count refused fast acquisitions. A contended receive
+// now serializes under IRQ exclusion instead of dropping its datagram.
+static UDP_PORTS_LOOKUP_REFUSED: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+pub fn udp_ports_lookup_refused() -> u64 {
+    UDP_PORTS_LOOKUP_REFUSED.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+fn receivers(dst: [u8; 4], port: u16) -> Result<Vec<Weak<Socket>>, i32> {
+    crate::arch_without_interrupts(|| {
+        let registry = match SOCKET_REGISTRY.try_lock() {
+            Some(registry) => registry,
+            None => {
+                UDP_PORTS_LOOKUP_REFUSED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                SOCKET_REGISTRY.lock()
+            }
+        };
+        let mut out = Vec::new();
+        for ((addr, bound_port), sockets) in &registry.ports {
+            if *bound_port == port
+                && (*addr == ANY || *addr == dst || crate::net::is_broadcast_addr(dst))
+            {
+                out.try_reserve(sockets.len()).map_err(|_| 105)?;
+                out.extend(sockets.iter().cloned());
+            }
+        }
+        Ok(out)
+    })
+}
+
+/// Unicast selects the most specific (peer, local address) binding, and the
+/// most recently bound among equal reuse bindings, matching Linux. Broadcast
+/// fans out. A full receive queue drops this input, not a previously queued one.
+pub fn deliver(dst: [u8; 4], port: u16, src: [u8; 4], src_port: u16, data: &[u8]) -> bool {
+    let Ok(sockets) = receivers(dst, port) else {
+        return true;
+    }; // No ICMP under resource pressure.
+    let broadcast = crate::net::is_broadcast_addr(dst);
+    let mut selected: Option<(Arc<Socket>, u8)> = None;
+    let mut found = false;
+    for weak in sockets.into_iter().rev() {
+        let Some(sk) = weak.upgrade() else {
+            continue;
+        };
+        let SocketProto::Udp(udp) = &sk.proto else {
+            continue;
+        };
+        let score = crate::socket::udp::with_locked_masked(udp, |s| {
+            if s.local.is_none() || !s.matches(dst, src, src_port) {
+                None
+            } else {
+                Some(u8::from(s.peer.is_some()) * 2 + u8::from(s.local_ip() != ANY))
+            }
+        });
+        let Some(score) = score else {
+            continue;
+        };
+        found = true;
+        if broadcast {
+            udp.enqueue(&sk, dst, src, src_port, data);
+        } else if selected.as_ref().is_none_or(|(_, old)| score > *old) {
+            selected = Some((sk, score));
+        }
+    }
+    if let Some((sk, _)) = selected {
+        if let SocketProto::Udp(udp) = &sk.proto {
+            udp.enqueue(&sk, dst, src, src_port, data);
+        }
+    }
+    found
+}
+
+pub fn udp_icmp_error(src: [u8; 4], src_port: u16, dst: [u8; 4], dst_port: u16, errno: i32) {
+    let Ok(sockets) = receivers(src, src_port) else {
+        return;
+    };
+    for weak in sockets {
+        let Some(sk) = weak.upgrade() else {
+            continue;
+        };
+        let SocketProto::Udp(udp) = &sk.proto else {
+            continue;
+        };
+        let matches = crate::socket::udp::with_locked_masked(udp, |s| {
+            s.peer == Some((dst, dst_port)) && (s.local_ip() == src || s.local_ip() == ANY)
+        });
+        if matches {
+            sk.common.set_error(errno);
+            sk.common.notify();
         }
     }
 }
 
 impl ProtoOps for UdpSock {
-    fn bind(&self, _sk: &Arc<Socket>, addr: &SockAddr) -> Result<(), i32> {
-        let SockAddr::Inet { addr, port } = *addr else {
-            return Err(errno::EAFNOSUPPORT);
-        };
-        let pid = super::object::caller_pid();
-        crate::socket::udp::with_locked_masked(self, |socket| socket.bind(pid, addr, port))
-            .map(|_| ())
-    }
-
-    fn connect(&self, _sk: &Arc<Socket>, _addr: &SockAddr, _nonblock: bool) -> Result<(), i32> {
-        Err(errno::EOPNOTSUPP)
-    }
-
-    fn sendmsg(&self, _sk: &Arc<Socket>, msg: &mut SendMsg) -> Result<usize, i32> {
-        let (dst_addr, dst_port) = match msg.dest {
-            Some(SockAddr::Inet { addr, port }) => (addr, port),
-            Some(_) => return Err(errno::EAFNOSUPPORT),
-            None => return Err(errno::EDESTADDRREQ),
-        };
-        if msg.data.len() > UDP_MAX_PAYLOAD {
-            return Err(errno::EMSGSIZE);
-        }
-        let src_port =
-            crate::socket::udp::with_locked_masked(self, |socket| socket.local_port().unwrap_or(0));
-        let udp_packet = crate::net::udp::build_udp_packet(src_port, dst_port, msg.data);
-        let result = crate::net::send_ipv4(dst_addr, crate::net::ipv4::PROTOCOL_UDP, &udp_packet);
-        // Loopback delivery runs here, with no socket lock held.
-        crate::net::drain_loopback_queue();
-        result
-            .map(|()| msg.data.len())
-            .map_err(|_| errno::ENETUNREACH)
-    }
-
-    fn recvmsg(&self, sk: &Arc<Socket>, msg: &mut RecvMsg) -> Result<usize, i32> {
-        let packet = super::wait::wait_until(sk, msg.nonblock, sk.common.rcv_deadline(), || {
-            crate::socket::udp::with_locked_masked(self, |socket| socket.recv_from()).map(Ok)
-        })?;
-        let copied = packet.data.len().min(msg.cap);
-        msg.data = packet.data;
-        msg.data.truncate(copied);
-        msg.from = Some(SockAddr::Inet {
-            addr: packet.src_addr,
-            port: packet.src_port,
-        });
-        Ok(copied)
-    }
-
-    fn shutdown(&self, _sk: &Arc<Socket>, _how: u8) -> Result<(), i32> {
-        Err(errno::ENOTCONN)
-    }
-
-    fn local_name(&self, _sk: &Socket) -> SockAddr {
-        crate::socket::udp::with_locked_masked(self, |socket| SockAddr::Inet {
-            addr: socket.local_addr.unwrap_or([0; 4]),
-            port: socket.local_port.unwrap_or(0),
-        })
-    }
-
-    fn peer_name(&self, _sk: &Socket) -> Result<SockAddr, i32> {
-        Err(errno::ENOTCONN)
-    }
-
-    fn poll(&self, _sk: &Socket) -> u16 {
-        let has_data = crate::socket::udp::with_locked_masked(self, |socket| socket.has_data());
-        let mut bits = POLLOUT;
-        if has_data {
-            bits |= POLLIN;
-        }
-        bits
-    }
-
-    /// Delivery (`net::udp::handle_udp`) calls `notify_deferred` for every
-    /// datagram it queues.
     fn notifies(&self) -> bool {
         true
     }
-
-    /// `UdpSocket`'s Drop unbinds the port when the last handle goes.
-    fn release(&self, _sk: &Socket) {}
-}
-
-#[cfg(test)]
-/// Unit tests here validate local UDP socket behavior but cannot exercise the
-/// syscall-level blocking path (requires multi-threaded execution). We
-/// simulate blocked threads by manually setting thread state; integration
-/// tests via telnetd and DNS in Docker provide full path coverage.
-pub mod tests {
-    use super::*;
-    use crate::task::scheduler;
-    use crate::task::thread::{Thread, ThreadPrivilege, ThreadState};
-    use alloc::boxed::Box;
-    use alloc::string::String;
-    use x86_64::VirtAddr;
-
-    fn dummy_entry() {}
-
-    fn make_thread(id: u64, state: ThreadState) -> Box<Thread> {
-        let mut thread = Thread::new_with_id(
-            id,
-            String::from("udp-test-thread"),
-            dummy_entry,
-            VirtAddr::new(0x1000),
-            VirtAddr::new(0x800),
-            VirtAddr::new(0),
-            ThreadPrivilege::Kernel,
-        );
-        thread.state = state;
-        Box::new(thread)
-    }
-
-    pub fn test_register_waiter_adds_thread() {
-        log::info!("=== TEST: register_waiter adds thread ID ===");
-
-        let socket = UdpSocket::new();
-        let thread_id = 42;
-
-        socket.register_waiter(thread_id);
-
-        let waiting = socket.waiting_threads.lock();
-        assert_eq!(waiting.contains(&thread_id), true);
-        assert_eq!(waiting.len(), 1);
-
-        log::info!("=== TEST PASSED: register_waiter adds thread ID ===");
-    }
-
-    pub fn test_register_waiter_duplicate_prevention() {
-        log::info!("=== TEST: register_waiter prevents duplicates ===");
-
-        let socket = UdpSocket::new();
-        let thread_id = 42;
-
-        socket.register_waiter(thread_id);
-        socket.register_waiter(thread_id);
-
-        let waiting = socket.waiting_threads.lock();
-        assert_eq!(waiting.len(), 1);
-
-        log::info!("=== TEST PASSED: register_waiter prevents duplicates ===");
-    }
-
-    pub fn test_unregister_waiter_removes_thread() {
-        log::info!("=== TEST: unregister_waiter removes thread ID ===");
-
-        let socket = UdpSocket::new();
-        let thread_id = 42;
-        let other_thread_id = 7;
-
-        socket.register_waiter(thread_id);
-        socket.register_waiter(other_thread_id);
-        socket.unregister_waiter(thread_id);
-
-        let waiting = socket.waiting_threads.lock();
-        assert_eq!(waiting.contains(&thread_id), false);
-        assert_eq!(waiting.contains(&other_thread_id), true);
-        assert_eq!(waiting.len(), 1);
-
-        log::info!("=== TEST PASSED: unregister_waiter removes thread ID ===");
-    }
-
-    pub fn test_unregister_nonexistent_waiter() {
-        log::info!("=== TEST: unregister_waiter ignores missing thread ID ===");
-
-        let socket = UdpSocket::new();
-
-        socket.unregister_waiter(999);
-
-        let waiting = socket.waiting_threads.lock();
-        assert_eq!(waiting.len(), 0);
-
-        log::info!("=== TEST PASSED: unregister_waiter ignores missing thread ID ===");
-    }
-
-    pub fn test_has_data_after_enqueue_packet() {
-        log::info!("=== TEST: has_data reflects enqueue_packet ===");
-
-        let socket = UdpSocket::new();
-        assert_eq!(socket.has_data(), false);
-
-        let packet = UdpPacket {
-            src_addr: [127, 0, 0, 1],
-            src_port: 1234,
-            data: alloc::vec![1, 2, 3],
+    fn bind(&self, sk: &Arc<Socket>, addr: &SockAddr) -> Result<(), i32> {
+        let SockAddr::Inet { addr, port } = addr else {
+            return Err(EAFNOSUPPORT);
         };
-        socket.enqueue_packet(packet);
-
-        assert_eq!(socket.has_data(), true);
-
-        log::info!("=== TEST PASSED: has_data reflects enqueue_packet ===");
+        if crate::socket::udp::with_locked_masked(self, |s| s.local.is_some()) {
+            return Err(EINVAL);
+        }
+        if *addr != ANY && !crate::net::is_local_addr(*addr) {
+            return Err(99);
+        } // EADDRNOTAVAIL
+        self.reserve(sk, *addr, *port, false)?;
+        sk.common.notify();
+        Ok(())
     }
-
-    pub fn test_enqueue_packet_wakes_blocked_threads() {
-        log::info!("=== TEST: enqueue_packet wakes blocked threads ===");
-
-        let socket = UdpSocket::new();
-        let idle_thread = make_thread(1, ThreadState::Ready);
-        scheduler::init(idle_thread);
-
-        let blocked_thread_id = 2;
-        let blocked_thread = make_thread(blocked_thread_id, ThreadState::Blocked);
-        let added = scheduler::with_scheduler(|sched| {
-            sched.add_thread(blocked_thread);
-            if let Some(thread) = sched.get_thread_mut(blocked_thread_id) {
-                thread.state = ThreadState::Blocked;
+    fn connect(&self, sk: &Arc<Socket>, addr: &SockAddr, _nonblock: bool) -> Result<(), i32> {
+        match addr {
+            SockAddr::Unspec => {
+                crate::socket::udp::with_locked_masked(self, |s| {
+                    s.peer = None;
+                    s.source = None;
+                });
             }
-            sched.remove_from_ready_queue(blocked_thread_id);
-        });
-        assert_eq!(added.is_some(), true);
-
-        socket.register_waiter(blocked_thread_id);
-
-        let packet = UdpPacket {
-            src_addr: [10, 0, 2, 15],
-            src_port: 4321,
-            data: alloc::vec![0xaa],
-        };
-        socket.enqueue_packet(packet);
-
-        assert_eq!(socket.waiting_threads.lock().is_empty(), true);
-
-        let state_ready = scheduler::with_scheduler(|sched| {
-            sched
-                .get_thread(blocked_thread_id)
-                .map(|thread| thread.state == ThreadState::Ready)
-                .unwrap_or(false)
-        });
-        assert_eq!(state_ready, Some(true));
-
-        log::info!("=== TEST PASSED: enqueue_packet wakes blocked threads ===");
-    }
-
-    pub fn test_blocking_recvfrom_blocks_and_wakes() {
-        log::info!("=== TEST: blocking recvfrom blocks and wakes ===");
-
-        let socket = UdpSocket::new();
-        let idle_thread = make_thread(1, ThreadState::Ready);
-        scheduler::init(idle_thread);
-
-        // This test simulates blocking by manually marking a thread as blocked.
-        // True syscall-level blocking needs multi-threaded execution and is
-        // covered by telnetd and DNS integration tests in Docker. This test
-        // verifies the WAKE path, not the BLOCK path.
-        let blocked_thread_id = 2;
-        let blocked_thread = make_thread(blocked_thread_id, ThreadState::Blocked);
-        let added = scheduler::with_scheduler(|sched| {
-            sched.add_thread(blocked_thread);
-            if let Some(thread) = sched.get_thread_mut(blocked_thread_id) {
-                thread.state = ThreadState::Blocked;
-                thread.blocked_in_syscall = true;
+            SockAddr::Inet { addr, port } => {
+                let dst = if *addr == ANY { [127, 0, 0, 1] } else { *addr };
+                if crate::net::is_broadcast_addr(dst) && !sk.common.broadcast() {
+                    return Err(13);
+                }
+                self.ensure_bound(sk)?;
+                let source = crate::net::source_ip_in(&crate::net::config(), dst);
+                crate::socket::udp::with_locked_masked(self, |s| {
+                    s.peer = Some((dst, *port));
+                    s.source = Some(source);
+                });
             }
-            sched.remove_from_ready_queue(blocked_thread_id);
-        });
-        assert_eq!(added.is_some(), true);
-
-        socket.register_waiter(blocked_thread_id);
-
-        let state_blocked = scheduler::with_scheduler(|sched| {
-            sched
-                .get_thread(blocked_thread_id)
-                .map(|thread| thread.state == ThreadState::Blocked && thread.blocked_in_syscall)
-        });
-        assert_eq!(state_blocked, Some(Some(true)));
-
-        let packet = UdpPacket {
-            src_addr: [10, 0, 2, 15],
-            src_port: 4321,
-            data: alloc::vec![0xaa],
-        };
-        socket.enqueue_packet(packet);
-
-        assert_eq!(socket.waiting_threads.lock().is_empty(), true);
-
-        let state_ready = scheduler::with_scheduler(|sched| {
-            sched
-                .get_thread(blocked_thread_id)
-                .map(|thread| thread.state == ThreadState::Ready)
-        });
-        assert_eq!(state_ready, Some(Some(true)));
-
-        log::info!("=== TEST PASSED: blocking recvfrom blocks and wakes ===");
+            _ => return Err(EAFNOSUPPORT),
+        }
+        sk.common.notify();
+        Ok(())
     }
-
-    /// Test that multiple blocked threads are all woken when packet arrives
-    pub fn test_enqueue_packet_wakes_multiple_waiters() {
-        log::info!("=== TEST: enqueue_packet wakes multiple waiters ===");
-
-        let socket = UdpSocket::new();
-        let idle_thread = make_thread(1, ThreadState::Ready);
-        scheduler::init(idle_thread);
-
-        // Create multiple blocked threads
-        let thread_ids = [10u64, 11, 12];
-        for &tid in &thread_ids {
-            let thread = make_thread(tid, ThreadState::Blocked);
-            scheduler::with_scheduler(|sched| {
-                sched.add_thread(thread);
-                if let Some(t) = sched.get_thread_mut(tid) {
-                    t.state = ThreadState::Blocked;
+    fn sendmsg(&self, sk: &Arc<Socket>, msg: &mut SendMsg) -> Result<usize, i32> {
+        if msg.flags & MSG_OOB != 0 {
+            return Err(95);
+        }
+        if msg.data.len() > 65507 {
+            return Err(EMSGSIZE);
+        }
+        if sk.common.shut_wr() {
+            return Err(EPIPE);
+        }
+        let pending = sk.common.take_error();
+        if pending != 0 {
+            return Err(pending);
+        }
+        self.ensure_bound(sk)?;
+        let config = crate::net::config();
+        // Resolve the peer, route and any existing cork in one state hold so
+        // concurrent send/connect calls cannot append using a stale destination.
+        let plan = crate::socket::udp::with_locked_masked(self, |s| {
+            let dest = if let Some(cork) = &s.cork {
+                (cork.dst, cork.dst_port)
+            } else {
+                match &msg.dest {
+                    Some(SockAddr::Inet { addr, port }) => {
+                        if *port == 0 {
+                            return Err(EINVAL);
+                        }
+                        (*addr, *port)
+                    }
+                    Some(_) => return Err(EAFNOSUPPORT),
+                    None => s.peer.ok_or(89)?, // EDESTADDRREQ
                 }
-                sched.remove_from_ready_queue(tid);
-            });
-            socket.register_waiter(tid);
-        }
-
-        // Verify all are registered
-        assert_eq!(socket.waiting_threads.lock().len(), 3);
-
-        // Enqueue packet - should wake all
-        let packet = UdpPacket {
-            src_addr: [10, 0, 2, 15],
-            src_port: 4321,
-            data: alloc::vec![0xaa, 0xbb],
-        };
-        socket.enqueue_packet(packet);
-
-        // Verify wait queue is empty (all unregistered during wake)
-        assert_eq!(socket.waiting_threads.lock().is_empty(), true);
-
-        // Verify all threads are now Ready
-        for &tid in &thread_ids {
-            let is_ready = scheduler::with_scheduler(|sched| {
-                sched.get_thread(tid).map(|t| t.state == ThreadState::Ready)
-            });
-            assert_eq!(is_ready, Some(Some(true)), "Thread {} should be Ready", tid);
-        }
-
-        log::info!("=== TEST PASSED: enqueue_packet wakes multiple waiters ===");
-    }
-
-    /// Test recv_from properly dequeues packets
-    pub fn test_recv_from_dequeues_packets() {
-        log::info!("=== TEST: recv_from dequeues packets in FIFO order ===");
-
-        let socket = UdpSocket::new();
-
-        // Enqueue multiple packets
-        for i in 0..3u8 {
-            let packet = UdpPacket {
-                src_addr: [192, 168, 1, i],
-                src_port: 1000 + i as u16,
-                data: alloc::vec![i, i + 1],
             };
-            socket.enqueue_packet(packet);
-        }
-
-        assert_eq!(socket.rx_queue.lock().len(), 3);
-
-        // Receive first packet
-        let pkt1 = socket.recv_from();
-        assert!(pkt1.is_some());
-        let pkt1 = pkt1.unwrap();
-        assert_eq!(pkt1.src_addr, [192, 168, 1, 0]);
-        assert_eq!(pkt1.src_port, 1000);
-        assert_eq!(pkt1.data, alloc::vec![0, 1]);
-
-        // Receive second packet
-        let pkt2 = socket.recv_from();
-        assert!(pkt2.is_some());
-        let pkt2 = pkt2.unwrap();
-        assert_eq!(pkt2.src_addr, [192, 168, 1, 1]);
-        assert_eq!(pkt2.src_port, 1001);
-
-        // Receive third packet
-        let pkt3 = socket.recv_from();
-        assert!(pkt3.is_some());
-        assert_eq!(pkt3.unwrap().src_addr, [192, 168, 1, 2]);
-
-        // Queue should be empty now
-        assert!(!socket.has_data());
-        assert!(socket.recv_from().is_none());
-
-        log::info!("=== TEST PASSED: recv_from dequeues packets in FIFO order ===");
-    }
-
-    /// Test has_data() reflects receive queue state.
-    ///
-    /// This checks has_data() tracks queue state for the blocking recvfrom path.
-    /// True concurrent race testing would require multi-threaded execution, which
-    /// is not feasible in kernel unit tests. The actual race protection relies on
-    /// sys_recvfrom implementing the double-check pattern correctly.
-    pub fn test_has_data_reflects_queue_state() {
-        log::info!("=== TEST: has_data reflects queue state ===");
-
-        let socket = UdpSocket::new();
-
-        // Simulate the blocking path: first check shows no data
-        assert!(!socket.has_data());
-
-        // Simulate: we would set thread to Blocked here (in actual syscall)
-        // Then a packet arrives during the race window
-        let packet = UdpPacket {
-            src_addr: [127, 0, 0, 1],
-            src_port: 53,
-            data: alloc::vec![0xDE, 0xAD, 0xBE, 0xEF],
-        };
-        socket.enqueue_packet(packet);
-
-        // The double-check: has_data() should now return true
-        // This is the check that prevents the race condition
-        assert!(socket.has_data());
-
-        // The fix: if has_data() returns true in double-check,
-        // thread unblocks itself and retries receive
-        let received = socket.recv_from();
-        assert!(received.is_some());
-        assert_eq!(received.unwrap().data, alloc::vec![0xDE, 0xAD, 0xBE, 0xEF]);
-
-        log::info!("=== TEST PASSED: has_data reflects queue state ===");
-    }
-
-    /// Test RX queue overflow behavior (drops oldest packet)
-    pub fn test_rx_queue_overflow() {
-        log::info!("=== TEST: RX queue overflow drops oldest ===");
-
-        let socket = UdpSocket::new();
-
-        // Fill queue to MAX_RX_QUEUE_SIZE (32)
-        for i in 0..MAX_RX_QUEUE_SIZE {
-            let i = i as u8;
-            let packet = UdpPacket {
-                src_addr: [10, 0, 0, i],
-                src_port: i as u16,
-                data: alloc::vec![i],
+            let dst = if dest.0 == ANY {
+                [127, 0, 0, 1]
+            } else {
+                dest.0
             };
-            socket.enqueue_packet(packet);
-        }
-
-        assert_eq!(socket.rx_queue.lock().len(), MAX_RX_QUEUE_SIZE);
-
-        // Add one more - should drop oldest (i=0)
-        let packet = UdpPacket {
-            src_addr: [10, 0, 0, 99],
-            src_port: 99,
-            data: alloc::vec![99],
+            if msg.flags & MSG_DONTROUTE != 0
+                && !crate::net::is_local_addr(dst)
+                && !crate::net::is_broadcast_addr(dst)
+                && !(0..4).all(|i| {
+                    dst[i] & config.subnet_mask[i] == config.ip_addr[i] & config.subnet_mask[i]
+                })
+            {
+                return Err(101); // ENETUNREACH: no directly connected route.
+            }
+            if crate::net::is_broadcast_addr(dst) && !sk.common.broadcast() {
+                return Err(13);
+            }
+            let port = s.local.expect("autobound before send").1;
+            let local = s.local_ip();
+            let src = if local == ANY {
+                crate::net::source_ip_in(&config, dst)
+            } else {
+                local
+            };
+            if s.cork.is_none() && msg.flags & MSG_MORE == 0 {
+                return Ok(SendPlan::Immediate {
+                    src,
+                    dst,
+                    src_port: port,
+                    dst_port: dest.1,
+                });
+            }
+            let mut cork = s.cork.take().unwrap_or(UdpCork {
+                src,
+                dst,
+                src_port: port,
+                dst_port: dest.1,
+                data: Vec::new(),
+            });
+            // Linux discards an unfinished cork if the combined datagram overflows.
+            if msg.data.len() > 65507 - cork.data.len() {
+                return Err(EMSGSIZE);
+            }
+            cork.data.try_reserve(msg.data.len()).map_err(|_| 105)?;
+            cork.data.extend_from_slice(msg.data);
+            if msg.flags & MSG_MORE != 0 {
+                s.cork = Some(cork);
+                Ok(SendPlan::Buffered)
+            } else {
+                Ok(SendPlan::Flush(cork))
+            }
+        })?;
+        let (src, dst, src_port, dst_port, data) = match &plan {
+            SendPlan::Buffered => return Ok(msg.data.len()),
+            SendPlan::Immediate {
+                src,
+                dst,
+                src_port,
+                dst_port,
+            } => (*src, *dst, *src_port, *dst_port, msg.data),
+            SendPlan::Flush(cork) => (
+                cork.src,
+                cork.dst,
+                cork.src_port,
+                cork.dst_port,
+                cork.data.as_slice(),
+            ),
         };
-        socket.enqueue_packet(packet);
-
-        // Still MAX_RX_QUEUE_SIZE packets
-        assert_eq!(socket.rx_queue.lock().len(), MAX_RX_QUEUE_SIZE);
-
-        // First packet should now be i=1 (i=0 was dropped)
-        let first = socket.recv_from().unwrap();
-        assert_eq!(first.src_addr, [10, 0, 0, 1]);
-        assert_eq!(first.data, alloc::vec![1]);
-
-        log::info!("=== TEST PASSED: RX queue overflow drops oldest ===");
+        let packet = crate::net::udp::try_build_udp_packet(src, dst, src_port, dst_port, data)
+            .map_err(crate::net::TxError::errno)?;
+        crate::net::ip_output(src, dst, crate::net::ipv4::PROTOCOL_UDP, &packet)
+            .map_err(crate::net::TxError::errno)?;
+        crate::net::drain_loopback_queue();
+        Ok(msg.data.len())
     }
-
-    /// Test spurious wakeup handling: thread woken but packet consumed by another thread.
-    ///
-    /// This tests the scenario where:
-    /// 1. Multiple threads (A, B) are waiting on the same socket
-    /// 2. A packet arrives, waking both threads
-    /// 3. Thread A wins the race and consumes the packet
-    /// 4. Thread B wakes but finds no packet - must handle gracefully
-    ///
-    /// In the real sys_recvfrom implementation, thread B would re-register as waiter
-    /// and re-block. This test verifies the socket state is consistent after such a race.
-    pub fn test_spurious_wakeup_handling() {
-        log::info!("=== TEST: spurious wakeup handling ===");
-
-        let socket = UdpSocket::new();
-        let idle_thread = make_thread(1, ThreadState::Ready);
-        scheduler::init(idle_thread);
-
-        // Create two blocked threads waiting on same socket
-        let thread_a = 10u64;
-        let thread_b = 11u64;
-
-        for &tid in &[thread_a, thread_b] {
-            let thread = make_thread(tid, ThreadState::Blocked);
-            scheduler::with_scheduler(|sched| {
-                sched.add_thread(thread);
-                if let Some(t) = sched.get_thread_mut(tid) {
-                    t.state = ThreadState::Blocked;
-                    t.blocked_in_syscall = true;
+    fn recvmsg(&self, sk: &Arc<Socket>, msg: &mut RecvMsg) -> Result<usize, i32> {
+        if msg.flags & MSG_OOB != 0 {
+            return Err(95);
+        }
+        let deadline = sk.common.rcv_deadline();
+        wait_until(
+            sk,
+            msg.nonblock || msg.flags & MSG_DONTWAIT != 0,
+            deadline,
+            || {
+                let pending = sk.common.take_error();
+                if pending != 0 {
+                    return Some(Err(pending));
                 }
-                sched.remove_from_ready_queue(tid);
-            });
-            socket.register_waiter(tid);
-        }
-
-        // Verify both are registered
-        assert_eq!(socket.waiting_threads.lock().len(), 2);
-
-        // Enqueue ONE packet - both threads will be woken
-        let packet = UdpPacket {
-            src_addr: [10, 0, 2, 15],
-            src_port: 4321,
-            data: alloc::vec![0xaa],
-        };
-        socket.enqueue_packet(packet);
-
-        // Both threads are now Ready (woken)
-        for &tid in &[thread_a, thread_b] {
-            let is_ready = scheduler::with_scheduler(|sched| {
-                sched.get_thread(tid).map(|t| t.state == ThreadState::Ready)
-            });
-            assert_eq!(is_ready, Some(Some(true)), "Thread {} should be Ready", tid);
-        }
-
-        // Thread A wins the race and consumes the packet
-        let received = socket.recv_from();
-        assert!(received.is_some());
-        assert_eq!(received.unwrap().data, alloc::vec![0xaa]);
-
-        // Thread B tries to receive - no packet available (spurious wakeup)
-        let spurious = socket.recv_from();
-        assert!(
-            spurious.is_none(),
-            "Thread B should find no packet (spurious wakeup)"
-        );
-
-        // Socket should have no data and no waiters at this point
-        assert!(!socket.has_data());
-        assert!(socket.waiting_threads.lock().is_empty());
-
-        // In real syscall, thread B would re-register and re-block here.
-        // Simulate that: thread B re-registers as waiter
-        socket.register_waiter(thread_b);
-        assert_eq!(socket.waiting_threads.lock().len(), 1);
-        assert!(socket.waiting_threads.lock().contains(&thread_b));
-
-        log::info!("=== TEST PASSED: spurious wakeup handling ===");
+                let result = crate::socket::udp::with_locked_masked(self, |s| {
+                    let Some(packet) = s.rx.front() else {
+                        return if sk.common.shut_rd() {
+                            Some(Ok(0))
+                        } else {
+                            None
+                        };
+                    };
+                    let len = packet.data.len();
+                    let n = len.min(msg.cap);
+                    if msg.data.try_reserve(n).is_err() {
+                        return Some(Err(12));
+                    }
+                    msg.data.extend_from_slice(&packet.data[..n]);
+                    msg.from = Some(SockAddr::Inet {
+                        addr: packet.src_addr,
+                        port: packet.src_port,
+                    });
+                    if n < len {
+                        msg.out_flags |= MSG_TRUNC;
+                    }
+                    if msg.flags & MSG_PEEK == 0 {
+                        s.rx.pop_front();
+                        s.rx_bytes -= len + DATAGRAM_OVERHEAD;
+                    }
+                    Some(Ok(if msg.flags & MSG_TRUNC != 0 { len } else { n }))
+                });
+                result
+            },
+        )
     }
-
-    /// Test interrupt-disable pattern documentation.
-    ///
-    /// This test documents (via assertions on code structure) that the blocking
-    /// recvfrom implementation uses interrupt-disable to prevent deadlock with
-    /// softirq context. The actual interrupt behavior cannot be unit tested, but
-    /// we can verify the expected patterns exist in the implementation.
-    ///
-    /// CRITICAL INVARIANTS (verified by code review, documented here):
-    /// 1. sys_recvfrom disables interrupts when acquiring socket locks
-    /// 2. enqueue_packet (called from softirq) uses regular lock, not try_lock
-    /// 3. The deadlock scenario is prevented by #1: syscall cannot be interrupted
-    ///    while holding locks that softirq needs
-    ///
-    /// See kernel/src/syscall/socket.rs lines 391-406 for implementation.
-    pub fn test_interrupt_safety_documentation() {
-        log::info!("=== TEST: interrupt safety pattern documentation ===");
-
-        // This test serves as executable documentation.
-        // The actual interrupt safety relies on:
-        //
-        // SYSCALL PATH (sys_recvfrom):
-        //   x86_64::instructions::interrupts::without_interrupts(|| {
-        //       socket_ref.lock().register_waiter(thread_id);
-        //   });
-        //
-        // SOFTIRQ PATH (enqueue_packet):
-        //   let mut waiting = self.waiting_threads.lock();  // Regular lock
-        //   waiting.drain(..).collect()
-        //
-        // Why this is safe:
-        // - Syscall disables interrupts before acquiring lock
-        // - While interrupts disabled, softirq CANNOT run
-        // - Therefore no deadlock between syscall and softirq
-        //
-        // The test verifies the socket API allows both patterns:
-        let socket = UdpSocket::new();
-
-        // Pattern 1: Can acquire lock normally (softirq path)
-        {
-            let _guard = socket.waiting_threads.lock();
-            // Lock acquired successfully
+    fn shutdown(&self, sk: &Arc<Socket>, how: u8) -> Result<(), i32> {
+        if how > 2 {
+            return Err(EINVAL);
         }
-
-        // Pattern 2: Can acquire lock after simulated interrupt-disable (syscall path)
-        // (In real code this would be without_interrupts)
-        {
-            let _guard = socket.waiting_threads.lock();
-            // Lock acquired successfully
+        sk.common.set_shut(how);
+        let connected = crate::socket::udp::with_locked_masked(self, |s| s.peer.is_some());
+        sk.common.notify();
+        if connected {
+            Ok(())
+        } else {
+            Err(ENOTCONN)
         }
-
-        log::info!("=== TEST PASSED: interrupt safety pattern documentation ===");
+    }
+    fn local_name(&self, _sk: &Socket) -> SockAddr {
+        crate::socket::udp::with_locked_masked(self, |s| SockAddr::Inet {
+            addr: s.local_ip(),
+            port: s.local.map_or(0, |(_, p)| p),
+        })
+    }
+    fn peer_name(&self, _sk: &Socket) -> Result<SockAddr, i32> {
+        crate::socket::udp::with_locked_masked(self, |s| {
+            s.peer
+                .map(|(addr, port)| SockAddr::Inet { addr, port })
+                .ok_or(ENOTCONN)
+        })
+    }
+    fn poll(&self, sk: &Socket) -> u16 {
+        let readable = crate::socket::udp::with_locked_masked(self, |s| !s.rx.is_empty());
+        let mut bits = 4; // POLLOUT
+        if readable || sk.common.shut_rd() {
+            bits |= 1;
+        }
+        if sk.common.peek_error() != 0 {
+            bits |= 8;
+        }
+        if sk.common.shut_rd() && sk.common.shut_wr() {
+            bits |= 16;
+        }
+        bits
+    }
+    fn release(&self, _sk: &Socket) {
+        with_registry(|registry| {
+            crate::socket::udp::with_locked_masked(self, |s| {
+                registry.ports.retain(|_, holders| {
+                    holders.retain(|holder| {
+                        !Weak::ptr_eq(holder, &s.owner) && holder.strong_count() != 0
+                    });
+                    !holders.is_empty()
+                });
+                s.local = None;
+                s.peer = None;
+                s.source = None;
+                s.cork = None;
+                s.rx.clear();
+                s.rx_bytes = 0;
+            });
+        });
     }
 }

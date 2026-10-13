@@ -114,15 +114,17 @@ pub fn handle_icmp(ip: &Ipv4Packet, icmp: &IcmpPacket) {
                 ECHO_REPLY_NOTICE.post_again("NET: ICMP echo reply received from gateway");
             }
         }
-        // UDP's post-F0 error handler consumes the validated quoted tuple.
-        ICMP_DEST_UNREACHABLE => {}
+        ICMP_DEST_UNREACHABLE => {
+            if let Some((src, src_port, dst, dst_port, errno)) = udp_error_quote(icmp) {
+                super::udp::udp_icmp_error(src, src_port, dst, dst_port, errno);
+            }
+        }
         _ => {}
     }
 }
 
 /// Send RFC 792 type 3/code 3 with the original IP header and first eight L4 bytes.
 /// Broadcasts, multicast, noninitial fragments and invalid sources never draw errors.
-#[allow(dead_code)] // Public receive-path API consumed by UDP after F0.
 pub fn send_port_unreachable(ip: &Ipv4Packet, l4: &[u8]) {
     if l4.len() < 8
         || ip.flags_fragment & 0x1fff != 0
@@ -148,7 +150,6 @@ pub fn send_port_unreachable(ip: &Ipv4Packet, l4: &[u8]) {
 
 /// Extract an original UDP flow from an ICMP error. RFC 792 quotations may be
 /// shorter than the original IP total length, so a full IPv4 parse is inappropriate.
-#[allow(dead_code)] // Public ICMP input API consumed by UDP after F0.
 pub fn udp_error_quote(icmp: &IcmpPacket) -> Option<([u8; 4], u16, [u8; 4], u16, i32)> {
     if icmp.icmp_type != ICMP_DEST_UNREACHABLE {
         return None;
@@ -163,6 +164,11 @@ pub fn udp_error_quote(icmp: &IcmpPacket) -> Option<([u8; 4], u16, [u8; 4], u16,
         || u16::from_be_bytes([data[6], data[7]]) & 0x1fff != 0
         || ipv4::internet_checksum(&data[..header_len]) != 0
     {
+        return None;
+    }
+    let udp_len = u16::from_be_bytes([data[header_len + 4], data[header_len + 5]]) as usize;
+    let ip_len = u16::from_be_bytes([data[2], data[3]]) as usize;
+    if udp_len < 8 || udp_len > ip_len - header_len {
         return None;
     }
     let errno = match icmp.code {

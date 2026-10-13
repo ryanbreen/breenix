@@ -45,6 +45,7 @@ pub mod tcp {
     }
 }
 pub mod udp {
+    pub fn udp_icmp_error(_: [u8; 4], _: u16, _: [u8; 4], _: u16, _: i32) {}
     pub fn handle_udp(_: &crate::ipv4::Ipv4Packet, _: &[u8]) {
         unreachable!("wire tests never deliver UDP")
     }
