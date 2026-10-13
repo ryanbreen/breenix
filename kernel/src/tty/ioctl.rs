@@ -247,7 +247,7 @@ pub fn dispatch(t: &TtyRef, side: Side, request: u64, arg: u64) -> Result<i32, i
                 }
                 tty_ioctl(tty, request, arg)
             }
-            TtyRef::Pty(pair) => pty_termios_ioctl(t, pair, side, request, arg),
+            TtyRef::Pty(pair) => pty_termios_ioctl(t, pair, request, arg),
         },
     }
 }
@@ -256,7 +256,6 @@ pub fn dispatch(t: &TtyRef, side: Side, request: u64, arg: u64) -> Result<i32, i
 fn pty_termios_ioctl(
     t: &TtyRef,
     pair: &Arc<PtyPair>,
-    side: Side,
     request: u64,
     arg: u64,
 ) -> Result<i32, i32> {
@@ -270,13 +269,15 @@ fn pty_termios_ioctl(
             Ok(0)
         }
         TCSETS | TCSETSW | TCSETSF => {
+            // Linux `set_termios` checks the slave (`real_tty`) whichever
+            // side the request came through, and before it reads the new
+            // attributes, so a background caller meets SIGTTOU or EIO
+            // even with a bad pointer.
+            super::jobctl::check(t, JobOp::Change)?;
             if arg == 0 {
                 return Err(EFAULT);
             }
             let termios: Termios = copy_from_user(arg as *const Termios).map_err(|_| EFAULT)?;
-            if side != Side::Master {
-                super::jobctl::check(t, JobOp::Change)?;
-            }
             // TCSETSW and TCSETSF are the same as TCSETS here: a PTY has no
             // hardware output to drain.
             pair.ldisc.lock().set_termios(termios);

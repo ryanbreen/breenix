@@ -17,14 +17,18 @@ pub fn read(pair: &Arc<PtyPair>, buf_ptr: u64, count: u64, nonblocking: bool) ->
     if pair.master_closed() {
         return SyscallResult::Ok(0);
     }
-    if let Err(e) = jobctl::check(&TtyRef::Pty(pair.clone()), JobOp::Read) {
-        return SyscallResult::Err(e as u64);
-    }
+    let terminal = TtyRef::Pty(pair.clone());
     let mut buf = match read_buffer(count) {
         Ok(buf) => buf,
         Err(result) => return result,
     };
     loop {
+        // POSIX 11.1.4: the background check is made before every attempt,
+        // not only on entry, so a reader moved to the background while it
+        // slept meets SIGTTIN (or EIO) instead of consuming the input.
+        if let Err(e) = jobctl::check(&terminal, JobOp::Read) {
+            return SyscallResult::Err(e as u64);
+        }
         let outcome = {
             let mut ldisc = pair.ldisc.lock();
             if pair.master_closed() {

@@ -43,10 +43,12 @@ pub enum JobOp {
 ///   restarted once the group continues (ERESTARTSYS), or fails with EINTR
 ///   when a handler installed without SA_RESTART runs first.
 ///
-/// Called with no locks held: for reads, writes and attribute changes on the
-/// slave side of a PTY, and for tcsetpgrp on either side, which Linux checks
-/// against the slave behind a master too. The console keeps its own
-/// foreground handling in this effort and is always allowed.
+/// Called with no locks held: for reads (before every attempt, so a sleeping
+/// reader moved to the background is caught), writes, flushes, flow control
+/// and breaks on the slave side of a PTY, and for attribute changes and
+/// tcsetpgrp on either side, which Linux checks against the slave behind a
+/// master (`real_tty`). The console keeps its own foreground handling in this
+/// effort and is always allowed.
 pub fn check(t: &TtyRef, op: JobOp) -> Result<(), i32> {
     if let TtyRef::Console(_) = t {
         return Ok(());
