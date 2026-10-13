@@ -280,6 +280,8 @@ fn pty_termios_ioctl(
             // TCSETSW and TCSETSF are the same as TCSETS here: a PTY has no
             // hardware output to drain.
             pair.ldisc.lock().set_termios(termios);
+            // A mode change can make room for a waiting master writer.
+            pair.master_writers.wake_up();
             Ok(0)
         }
         _ => Err(ENOTTY),

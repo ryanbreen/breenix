@@ -167,6 +167,7 @@ impl PtyPair {
         let old = self.slave_refcount.fetch_sub(1, Ordering::SeqCst);
         if old == 1 {
             self.master_readers.wake_up_deferred();
+            self.master_writers.wake_up_deferred();
             true
         } else {
             false
@@ -211,66 +212,48 @@ impl PtyPair {
         self.output_stopped.load(Ordering::SeqCst)
     }
 
-    /// Write data to master (goes to slave's input via line discipline)
+    /// Feed `data` from the master to the slave's line discipline. Stops
+    /// when the input queue has no room (`LineDiscipline::input_room`), or
+    /// just after a signal character, so that each signal character's signal
+    /// is sent before the input after it is processed. Returns how many bytes
+    /// were consumed; the caller waits on `master_writers` for room.
     ///
-    /// Echo output from the line discipline (e.g., ^C when ISIG+ECHO are set)
-    /// is written to the slave_to_master buffer so the terminal emulator can
-    /// display it. Echo bytes are collected during line discipline processing
-    /// and flushed after releasing the ldisc lock to avoid nested locking.
-    ///
-    /// If the line discipline generates a signal (e.g., SIGINT from Ctrl+C),
-    /// it is delivered to the foreground process group.
-    pub fn master_write(self: &Arc<Self>, data: &[u8]) -> Result<usize, i32> {
+    /// Echo goes straight into the output ring while the line discipline is
+    /// held (ldisc, then slave_to_master, is the lock order), so it keeps its
+    /// place among other writers' echo. Signals and wakes follow after both
+    /// locks are released.
+    pub fn master_write(self: &Arc<Self>, data: &[u8]) -> usize {
         let mut signal_to_deliver = None;
-        let mut echo_buf = [0u8; 256];
-        let mut echo_len = 0usize;
-        let written;
-
+        let mut echoed = false;
+        let mut count = 0;
         {
             let mut ldisc = self.ldisc.lock();
-
-            let mut count = 0;
+            let mut ring = self.slave_to_master.lock();
             for &byte in data {
-                // Process through line discipline, collecting echo output
+                if !ldisc.input_room() {
+                    break;
+                }
                 let signal = ldisc.input_char(byte, &mut |echo_byte| {
-                    if echo_len < echo_buf.len() {
-                        echo_buf[echo_len] = echo_byte;
-                        echo_len += 1;
-                    }
+                    echoed |= ring.write(core::slice::from_ref(&echo_byte)) > 0;
                 });
+                count += 1;
                 if signal.is_some() {
                     signal_to_deliver = signal;
+                    break;
                 }
-                count += 1;
             }
-            written = count;
-            // ldisc lock dropped here
         }
 
-        // Write echo bytes to slave_to_master so the terminal emulator can
-        // display them (e.g., ^C echo). Done after releasing ldisc lock.
-        if echo_len > 0 {
-            let mut buffer = self.slave_to_master.lock();
-            buffer.write(&echo_buf[..echo_len]);
-        }
-
-        // Deliver signal to foreground process group if one was generated
-        // (must be done after releasing the ldisc lock to avoid deadlock)
         if let Some(sig) = signal_to_deliver {
             crate::tty::jobctl::signal_foreground(&TtyRef::Pty(self.clone()), sig);
         }
-
-        if written > 0 {
-            // Wake threads blocked on slave_read
+        if count > 0 {
             self.slave_readers.wake_up();
         }
-
-        // Also wake master readers if echo was produced (they need to see echo output)
-        if echo_len > 0 {
+        if echoed {
             self.master_readers.wake_up();
         }
-
-        Ok(written)
+        count
     }
 
     /// Read data from master (slave's output)

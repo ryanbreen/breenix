@@ -488,7 +488,10 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
         Device {
             device_type: crate::fs::devfs::DeviceType,
         },
-        PtyMaster(crate::tty::pty::PtyHold),
+        PtyMaster {
+            hold: crate::tty::pty::PtyHold,
+            is_nonblocking: bool,
+        },
         PtySlave {
             hold: crate::tty::pty::PtyHold,
             is_nonblocking: bool,
@@ -580,7 +583,12 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
             },
             FdKind::DevfsDirectory { .. } => WriteOperation::Eisdir,
             FdKind::DevptsDirectory { .. } => WriteOperation::Eisdir,
-            FdKind::PtyMaster(pair) => WriteOperation::PtyMaster(crate::tty::pty::PtyHold::master(pair)),
+            FdKind::PtyMaster(pair) => WriteOperation::PtyMaster {
+                hold: crate::tty::pty::PtyHold::master(pair),
+                is_nonblocking: (fd_entry.status_flags()
+                    & crate::ipc::fd::status_flags::O_NONBLOCK)
+                    != 0,
+            },
             FdKind::PtySlave(pair) => WriteOperation::PtySlave {
                 hold: crate::tty::pty::PtyHold::slave(pair),
                 is_nonblocking: (fd_entry.status_flags()
@@ -605,7 +613,9 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
         WriteOperation::Enotconn => SyscallResult::Err(super::errno::ENOTCONN as u64),
         WriteOperation::Eisdir => SyscallResult::Err(super::errno::EISDIR as u64),
         WriteOperation::Eopnotsupp => SyscallResult::Err(95), // EOPNOTSUPP
-        WriteOperation::PtyMaster(hold) => crate::tty::pty::io::write_master(hold.pair(), &buffer),
+        WriteOperation::PtyMaster { hold, is_nonblocking } => {
+            crate::tty::pty::io::write_master(hold.pair(), &buffer, is_nonblocking)
+        }
         WriteOperation::PtySlave { hold, is_nonblocking } => {
             crate::tty::pty::io::write_slave(hold.pair(), &buffer, is_nonblocking)
         }

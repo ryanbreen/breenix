@@ -65,12 +65,45 @@ pub fn read_master(pair: &Arc<PtyPair>, buf_ptr: u64, count: u64, nonblocking: b
     }
 }
 
-/// write(2) on a master: input to the slave, through the line discipline.
-pub fn write_master(pair: &Arc<PtyPair>, data: &[u8]) -> SyscallResult {
-    match pair.master_write(data) {
-        Ok(n) => SyscallResult::Ok(n as u64),
-        Err(e) => SyscallResult::Err(e as u64),
+/// A write that made progress reports it; otherwise the error.
+fn progress_or(done: usize, error: i32) -> SyscallResult {
+    if done > 0 {
+        SyscallResult::Ok(done as u64)
+    } else {
+        SyscallResult::Err(error as u64)
     }
+}
+
+/// write(2) on a master: input to the slave, through the line discipline.
+/// A blocking write waits for room in the slave's input queue until all of
+/// `data` is consumed. Once the slave has hung up nothing will make room, so
+/// a write that finds no room then fails with EIO, as on Linux.
+pub fn write_master(pair: &Arc<PtyPair>, data: &[u8], nonblocking: bool) -> SyscallResult {
+    let mut done = 0;
+    while done < data.len() {
+        let n = pair.master_write(&data[done..]);
+        if n > 0 {
+            done += n;
+            continue;
+        }
+        if pair.has_slave_hung_up() {
+            return progress_or(done, EIO);
+        }
+        if nonblocking {
+            return progress_or(done, EAGAIN);
+        }
+        let outcome = {
+            let ldisc = pair.ldisc.lock();
+            pair.master_writers
+                .prepare_to_wait_checked(ThreadState::BlockedOnIO, None, || {
+                    !ldisc.input_room() && !pair.has_slave_hung_up()
+                })
+        };
+        if let Err(error) = wait_prepared(&pair.master_writers, outcome) {
+            return progress_or(done, error);
+        }
+    }
+    SyscallResult::Ok(done as u64)
 }
 
 /// write(2) on a slave: output to the master.
