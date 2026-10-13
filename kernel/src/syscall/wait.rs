@@ -79,7 +79,7 @@ enum Selector {
     /// Children in this process group.
     Group(ProcessId),
     /// Children in the caller's process group, as it was when the wait
-    /// began: `bind_caller_group` makes it a `Group` before the first scan.
+    /// began: the first scan makes it a `Group` under its own hold.
     CallerGroup,
     /// Any child.
     Any,
@@ -109,9 +109,17 @@ struct Found {
 /// Look once through the calling thread's process's children for a state
 /// change `options` asks for. A stop or continue it reports is consumed here,
 /// unless WNOWAIT; an exit is left for `reap` to claim. ECHILD when no child
-/// matches the selector. `releases` is set to
-/// `process::process_manager_releases()` as the scan's own hold ends.
-fn scan(thread_id: u64, selector: Selector, options: u32, releases: &mut u64) -> Result<Option<Found>, u64> {
+/// matches the selector. A `CallerGroup` selector is bound here to the
+/// caller's group, so a later setpgid by the caller does not change which
+/// children the wait selects, and the group read and the scan share one hold.
+/// `releases` is set to `process::process_manager_releases()` as that hold
+/// ends.
+fn scan(
+    thread_id: u64,
+    selector: &mut Selector,
+    options: u32,
+    releases: &mut u64,
+) -> Result<Option<Found>, u64> {
     crate::process::with_process_manager(|manager| {
         // Read under the lock: the release ending this hold adds one.
         *releases = crate::process::process_manager_releases() + 1;
@@ -119,6 +127,10 @@ fn scan(thread_id: u64, selector: Selector, options: u32, releases: &mut u64) ->
             Some((pid, caller)) => (pid, caller.pgid, caller.children.clone()),
             None => return Err(EINVAL as u64),
         };
+        if let Selector::CallerGroup = *selector {
+            *selector = Selector::Group(caller_pgid);
+        }
+        let selector = *selector;
         let clone_only = options & WCLONE != 0 && options & WALL == 0;
         let mut any = false;
         for child_pid in children {
@@ -177,21 +189,6 @@ fn scan(thread_id: u64, selector: Selector, options: u32, releases: &mut u64) ->
     .unwrap_or(Err(ECHILD as u64))
 }
 
-/// The caller's process group, read once when the wait begins: a later
-/// setpgid by the caller does not change which children the wait selects.
-fn bind_caller_group(thread_id: u64, selector: Selector) -> Result<Selector, u64> {
-    let Selector::CallerGroup = selector else {
-        return Ok(selector);
-    };
-    crate::process::with_process_manager(|manager| {
-        manager
-            .find_process_by_thread(thread_id)
-            .map(|(_, caller)| Selector::Group(caller.pgid))
-    })
-    .flatten()
-    .ok_or(EINVAL as u64)
-}
-
 /// Let the calling thread run on after `block_current_for_child_exit`.
 fn unblock_self() {
     crate::task::scheduler::with_scheduler(|sched| {
@@ -230,7 +227,7 @@ fn quiet_wait_query(selector: Selector, options: u32) -> Option<u64> {
 /// Blocking marks the thread BlockedOnChildExit first and scans again after,
 /// so a change landing between the two is seen by the scan or wakes the thread
 /// (`unblock_for_child_exit`); the scheduler lock orders the two.
-fn wait_for_child(selector: Selector, options: u32) -> Result<Option<Found>, u64> {
+fn wait_for_child(mut selector: Selector, options: u32) -> Result<Option<Found>, u64> {
     let quiet = if options & WNOHANG != 0 {
         quiet_wait_query(selector, options).zip(crate::task::thread::current_thread_signals())
     } else {
@@ -245,9 +242,8 @@ fn wait_for_child(selector: Selector, options: u32) -> Result<Option<Found>, u64
         }
     }
     let thread_id = crate::task::scheduler::current_thread_id().ok_or(EINVAL as u64)?;
-    let selector = bind_caller_group(thread_id, selector)?;
     let mut releases = 0;
-    if let Some(found) = scan(thread_id, selector, options, &mut releases)? {
+    if let Some(found) = scan(thread_id, &mut selector, options, &mut releases)? {
         return Ok(Some(found));
     }
     if options & WNOHANG != 0 {
@@ -260,7 +256,7 @@ fn wait_for_child(selector: Selector, options: u32) -> Result<Option<Found>, u64
     loop {
         crate::task::scheduler::with_scheduler(|sched| sched.block_current_for_child_exit());
         crate::tracing::providers::process::trace_waitpid_block(thread_id as u16, 0);
-        match scan(thread_id, selector, options, &mut releases) {
+        match scan(thread_id, &mut selector, options, &mut releases) {
             Ok(None) => {}
             done => {
                 unblock_self();
@@ -273,7 +269,7 @@ fn wait_for_child(selector: Selector, options: u32) -> Result<Option<Found>, u64
             // wait whose child is now reportable: wait/interrupted's second
             // waitpid returned EINTR once on x86. Report the child instead;
             // the signal stays pending for the return to user mode.
-            let found = scan(thread_id, selector, options, &mut releases);
+            let found = scan(thread_id, &mut selector, options, &mut releases);
             unblock_self();
             return match found {
                 Ok(None) => Err(e as u64),
