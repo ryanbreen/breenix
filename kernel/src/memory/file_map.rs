@@ -1362,23 +1362,7 @@ pub(crate) fn fork_vmas(
             return Err("Shared mapping still being installed");
         }
         let mut child = Vma::new(parent.start, parent.end, parent.prot, parent.flags);
-        child.shm = if let Some(mapping) = &parent.shm {
-            let existing = vmas.iter().zip(&result).find_map(|(source, copied)| {
-                source
-                    .shm
-                    .as_ref()
-                    .filter(|m| m.shares_attachment(mapping))
-                    .and_then(|_| copied.shm.clone())
-            });
-            Some(match existing {
-                Some(m) => m,
-                None => mapping
-                    .fork(pid.as_u64() as i32)
-                    .map_err(|_| "Out of memory for shm attachment")?,
-            })
-        } else {
-            None
-        };
+        child.shm = parent.shm.as_ref().map(|mapping| mapping.fork(pid.as_u64() as i32));
         child.shm_offset = parent.shm_offset;
         if let Some(binding) = &parent.backing {
             child.backing = Some(binding.fork(pid, pt)?);

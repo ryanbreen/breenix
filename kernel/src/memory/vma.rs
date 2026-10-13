@@ -141,6 +141,17 @@ impl Vma {
         }
     }
 
+    /// Rebind an existing VMA without manufacturing a close/open event.
+    /// Extra pieces of a split continue to use `piece`'s normal open accounting.
+    pub fn replacement_piece(&mut self, start: VirtAddr, end: VirtAddr) -> Self {
+        Self {
+            reservation: self.reservation,
+            shm: self.shm.as_mut().map(|mapping| mapping.replacement()),
+            shm_offset: self.shm_offset + start.as_u64() - self.start.as_u64(),
+            ..Self::new(start, end, self.prot, self.flags)
+        }
+    }
+
     /// Check if this VMA contains the given address
     #[allow(dead_code)]
     pub fn contains(&self, addr: VirtAddr) -> bool {

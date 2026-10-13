@@ -168,7 +168,7 @@ fn map_range(
             prot,
             flags,
         );
-        vma.shm = Some(ShmMapping::with_origin(obj, origin, may_write)?);
+        vma.shm = Some(ShmMapping::with_origin(obj, origin, may_write));
         vma.shm_offset = offset;
         process.vmas.push(vma);
         crate::syscall::memory_advice::record_future(process, start, start + len);

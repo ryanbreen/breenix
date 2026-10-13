@@ -438,74 +438,76 @@ pub enum MappingOrigin {
     Mmap,
     SysV,
 }
+/// Linux VM-open accounting is per VMA, including splits and fork.
 #[derive(Debug)]
-struct Attachment {
+pub struct ShmMapping {
     object: Arc<ShmObject>,
     origin: MappingOrigin,
-    pid: i32,
-}
-impl Drop for Attachment {
-    fn drop(&mut self) {
-        self.object.maps.fetch_sub(1, Ordering::AcqRel);
-        if self.origin == MappingOrigin::SysV {
-            self.object.record_activity(false, self.pid);
-        }
-    }
-}
-/// VMA pieces share one attachment; fork creates a separate attachment.
-#[derive(Clone, Debug)]
-pub struct ShmMapping {
-    attachment: Arc<Attachment>,
     may_write: bool,
+    pid: i32,
+    counted: bool,
 }
 impl ShmMapping {
-    pub fn new(object: &Arc<ShmObject>) -> Result<Self, u64> {
+    pub fn new(object: &Arc<ShmObject>) -> Self {
         Self::with_origin(object, MappingOrigin::SysV, true)
     }
-    pub fn with_origin(
-        object: &Arc<ShmObject>,
-        origin: MappingOrigin,
-        may_write: bool,
-    ) -> Result<Self, u64> {
+    pub fn with_origin(object: &Arc<ShmObject>, origin: MappingOrigin, may_write: bool) -> Self {
         Self::for_pid(object, origin, may_write, current_pid())
     }
-    fn for_pid(
-        object: &Arc<ShmObject>,
-        origin: MappingOrigin,
-        may_write: bool,
-        pid: i32,
-    ) -> Result<Self, u64> {
-        let attachment = Arc::try_new(Attachment {
-            object: object.clone(),
-            origin,
-            pid,
-        })
-        .map_err(|_| ENOMEM as u64)?;
+    fn for_pid(object: &Arc<ShmObject>, origin: MappingOrigin, may_write: bool, pid: i32) -> Self {
         object.maps.fetch_add(1, Ordering::AcqRel);
         if origin == MappingOrigin::SysV {
             object.record_activity(true, pid);
         }
-        Ok(Self {
-            attachment,
+        Self {
+            object: object.clone(),
+            origin,
             may_write,
-        })
+            pid,
+            counted: true,
+        }
     }
-    pub fn shares_attachment(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.attachment, &other.attachment)
+    pub fn fork(&self, pid: i32) -> Self {
+        Self::for_pid(&self.object, self.origin, self.may_write, pid)
     }
-    pub fn fork(&self, pid: i32) -> Result<Self, u64> {
-        Self::for_pid(self.object(), self.origin(), self.may_write, pid)
+    /// Transfer the original VMA's lifetime to its replacement. Extra split
+    /// pieces use ordinary clone/open accounting; this row is still open.
+    pub fn replacement(&mut self) -> Self {
+        debug_assert!(self.counted);
+        self.counted = false;
+        Self {
+            object: self.object.clone(),
+            origin: self.origin,
+            may_write: self.may_write,
+            pid: self.pid,
+            counted: true,
+        }
     }
     pub fn object(&self) -> &Arc<ShmObject> {
-        &self.attachment.object
+        &self.object
     }
     pub fn may_write(&self) -> bool {
         self.may_write
     }
     pub fn origin(&self) -> MappingOrigin {
-        self.attachment.origin
+        self.origin
     }
     pub fn matches_attachment(&self, start: u64, offset: u64, addr: u64) -> bool {
-        self.origin() == MappingOrigin::SysV && start.checked_sub(offset) == Some(addr)
+        self.origin == MappingOrigin::SysV && start.checked_sub(offset) == Some(addr)
+    }
+}
+impl Clone for ShmMapping {
+    fn clone(&self) -> Self {
+        Self::for_pid(&self.object, self.origin, self.may_write, self.pid)
+    }
+}
+impl Drop for ShmMapping {
+    fn drop(&mut self) {
+        if self.counted {
+            self.object.maps.fetch_sub(1, Ordering::AcqRel);
+            if self.origin == MappingOrigin::SysV {
+                self.object.record_activity(false, self.pid);
+            }
+        }
     }
 }
