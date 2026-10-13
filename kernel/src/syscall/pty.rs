@@ -216,7 +216,7 @@ pub fn sys_ptsname(fd: u64, buf: u64, buflen: u64) -> SyscallResult {
         }
     };
 
-    let path = pair.slave_path();
+    let path = match pair.slave_path() { Ok(path) => path, Err(e) => return SyscallResult::Err(e as u64) };
     let path_bytes = path.as_bytes();
 
     // Check if buffer is large enough (need space for null terminator)
