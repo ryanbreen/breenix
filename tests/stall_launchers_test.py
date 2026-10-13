@@ -138,6 +138,17 @@ sweep_vmware_bundles() { sleep 10; }
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertTrue(stopped.exists())
 
+    def test_memory_harvest_caller_can_retain_completed_vm(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            serial = Path(tmp)/'serial'; harvested = Path(tmp)/'harvested'
+            code = 'from pathlib import Path;import sys,time;Path(sys.argv[1]).write_text("PROBE DONE passed=16 failed=0\\n");time.sleep(.7);Path(sys.argv[2]).write_text("harvested")'
+            result = subprocess.run([sys.executable, str(ROOT/'scripts/watch-boot.py'),
+                                     '--serial', str(serial), '--retain-completed-vm', '--',
+                                     sys.executable, '-c', code, str(serial), str(harvested)],
+                                    capture_output=True, text=True, timeout=4)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertTrue(harvested.exists())
+
     def test_qemu_summary_preserves_nonzero_status(self):
         source = (ROOT/'run.sh').read_text().split('# Wait for QEMU to finish\n', 1)[1]
         with tempfile.TemporaryDirectory() as tmp:

@@ -285,7 +285,9 @@ Finite test, probe, program and suite launchers stop an unfinished boot after
 120 seconds without classified test progress, independently of the hard deadline
 or raw-serial idle exit. Shell and desktop sessions keep their interactive idle
 policy (`--idle-exit 0` disables idle shutdown). GDB-halted sessions are excluded
-from historical supervision. Queue and build time do not start the watchdog.
+from historical supervision. Queue and build time do not start the watchdog. xtask BTRT retains a completed
+VM while its caller extracts results from guest memory through QMP, then the
+caller stops it.
 Progress on a mixed UART requires a userspace record/tag or a first-seen
 boot-stage marker. Unlabelled lines have no trustworthy producer even on COM1,
 which also carries kernel debug output.

@@ -13,7 +13,7 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 STALL_SECONDS = 120
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-KERNEL = re.compile(r"^(?:\[\s*(?:INFO|WARN|ERROR|DEBUG|TRACE)\]|.*\bkernel(?:::|:))")
+KERNEL = re.compile(r"^(?:\[\s*(?:INFO|WARN|ERROR|DEBUG|TRACE)\]|\[(?:clock|boot|test|smp)\]|.*\bkernel(?:::|:))")
 DIAGNOSTIC = re.compile(
     r"^(?:T\d+)?(?:\[[^]\n]*(?:CENSUS|diagnostic|BXCAP|FATAL_REGS|TIMER_SCALE_ORACLE)"
     r"|\[smp\] user-thread dispatches|(?:BXCAP|FATAL_REGS)\b"

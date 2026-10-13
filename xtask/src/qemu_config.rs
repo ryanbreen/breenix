@@ -104,6 +104,11 @@ impl QemuConfig {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let mut command = Command::new("python3");
         command.arg(root.join("scripts/watch-boot.py"));
+        if self.features.iter().any(|feature| feature == "btrt") {
+            // BTRT is extracted through QMP from guest memory after DONE.
+            // The caller stops the VM after that extraction.
+            command.arg("--retain-completed-vm");
+        }
         for path in &self.serial_files {
             command.arg("--serial").arg(path);
         }

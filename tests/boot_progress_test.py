@@ -82,7 +82,7 @@ class ProgressTest(unittest.TestCase):
             self.feed('[ INFO] kernel::task: thread count=100\n[CPU_CENSUS:seq=23]\n'
                       'T0[RESUME_PC_CENSUS:cpu=0:seq=24]\n'
                       '[smp] user-thread dispatches per CPU: cpu0=4\n'
-                      '[diagnostic] still running\n', 119, source, userspace=source=='user')
+                      '[diagnostic] still running\n[clock] UTC epoch=123 source=UEFI\n', 119, source, userspace=source=='user')
         self.assertTrue(self.progress.stalled(now=120))
 
     def test_census_records_are_not_userspace_output(self):

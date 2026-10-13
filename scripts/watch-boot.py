@@ -19,6 +19,8 @@ def main():
     parser.add_argument('--worker', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--serial', type=Path, action='append', required=True)
     parser.add_argument('--user-serial', type=Path)
+    parser.add_argument('--retain-completed-vm', action='store_true',
+                        help='caller must harvest guest memory before stopping the VM')
     parser.add_argument('command', nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ['--'] else args.command
@@ -43,7 +45,7 @@ def main():
             if os.getppid() != parent:
                 return 129
             progress.poll([(path, path == args.user_serial) for path in args.serial])
-            if progress.completed:
+            if progress.completed and not args.retain_completed_vm:
                 return 0
             if progress.stalled():
                 progress.record()
