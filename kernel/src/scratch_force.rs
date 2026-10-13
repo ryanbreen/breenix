@@ -117,10 +117,7 @@ pub fn trace(kind: u64, tid: u64, deadline: u64, at: u64) {
 }
 pub fn observe_write(bytes: &[u8]) {
     if bytes.windows(b"SUITE time WAIT sleep/nanosleep-sa-restart ".len()).any(|s| s==b"SUITE time WAIT sleep/nanosleep-sa-restart ") {
-        BUSY_UNTIL.store(now_ns()+1_000_000_000, Ordering::Relaxed);
-        for c in 0..crate::arch_impl::x86_64::smp::cpus_online() as usize {
-            crate::task::kthread::kthread_run_on_cpu(|| { while now_ns()<BUSY_UNTIL.load(Ordering::Relaxed) { core::hint::spin_loop(); } }, "sleep_busy", c).expect("scratch busy worker");
-        }
+        WANTED.store(true, Ordering::Release);
     }
     if bytes.windows(b"SUITE time DONE ".len()).any(|s| s == b"SUITE time DONE ") { DUMP.store(true, Ordering::Release); }
 }
@@ -130,5 +127,29 @@ pub fn report() {
     for e in &EVENTS {
         let k=e.kind.load(Ordering::Acquire);
         if k!=0 { log::info!("[SLEEP_TRACE kind={} tid={} cpu={} deadline={} at={}]", k, e.tid.load(Ordering::Relaxed), e.cpu.load(Ordering::Relaxed), e.deadline.load(Ordering::Relaxed), e.at.load(Ordering::Relaxed)); }
+    }
+}
+
+static WORKERS: spin::Mutex<alloc::vec::Vec<crate::task::kthread::KthreadHandle>> = spin::Mutex::new(alloc::vec::Vec::new());
+static WANTED: AtomicBool = AtomicBool::new(false);
+static RECEIVER_WAITING: AtomicBool = AtomicBool::new(false);
+static SENDER_WAITING: AtomicBool = AtomicBool::new(false);
+pub fn init_workers() {
+    for c in 0..crate::arch_impl::x86_64::smp::cpus_online() as usize {
+        let handle = crate::task::kthread::kthread_run_on_cpu(|| {
+            crate::task::kthread::kthread_park_if(|| !busy());
+            while busy() { core::hint::spin_loop(); }
+        }, "sleep_busy", c).expect("scratch busy worker");
+        WORKERS.lock().push(handle);
+    }
+}
+pub fn published(requested: u64) {
+    if !WANTED.load(Ordering::Acquire) { return; }
+    if requested == 2_000_000_000 { RECEIVER_WAITING.store(true, Ordering::Release); }
+    if requested <= 10_000_000 { SENDER_WAITING.store(true, Ordering::Release); }
+    if RECEIVER_WAITING.load(Ordering::Acquire) && SENDER_WAITING.load(Ordering::Acquire) && WANTED.swap(false, Ordering::AcqRel) {
+        BUSY_UNTIL.store(now_ns()+1_000_000_000, Ordering::Release);
+        trace(13, crate::per_cpu::current_thread_id_lock_free().unwrap_or(0), requested, now_ns());
+        for h in WORKERS.lock().iter() { crate::task::kthread::kthread_unpark(h); }
     }
 }

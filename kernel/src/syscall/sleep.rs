@@ -89,6 +89,8 @@ pub fn clock_nanosleep(clock: u32, flags: u64, req_ptr: u64, rem_ptr: u64) -> Sy
         if expired {
             break false;
         }
+        #[cfg(target_arch = "x86_64")]
+        crate::scratch_force::published(requested as u64);
         // A signal generated before publication has already spent its wake.
         if super::check_signals_for_wait().is_some() {
             break true;
