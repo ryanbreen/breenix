@@ -733,13 +733,16 @@ fn arm_ctty() -> Result<(), Failure> {
 /// `FD_CLOEXEC` via `fcntl(F_SETFD)` (the route that predates round one's
 /// `O_CLOEXEC`-on-open plumbing), `fork()`, and have the child `exec()` a
 /// fresh copy of this very program with a marker argv (`--cloexec-child`)
-/// that does nothing but `exit(0)` -- so the only kernel-side event that can
-/// retire the child's cloned slave fd is `close_cloexec()` itself, not
-/// anything the child does. The parent reaps the child, closes its OWN slave
-/// fd, and then requires the master to see EIO: if `close_cloexec()` did its
-/// job, the parent's close is the last live slave reference; if it did not,
-/// the child's fork-cloned fd was never decremented and the master is stuck
-/// reporting EAGAIN forever. Checked with an IDLE read, same framing as arm
+/// that only waits, alive, for the parent to release it -- so the only
+/// kernel-side event that can retire the child's cloned slave fd is
+/// `close_cloexec()` itself, not anything the child does, and not its exit.
+/// The parent learns the exec happened when a close-on-exec pipe reaches end
+/// of file with nothing written (the child writes a byte there if exec
+/// fails), closes its OWN slave fd while the child still runs, and then
+/// requires the master to see EIO: if `close_cloexec()` did its job, the
+/// parent's close is the last live slave reference; if it did not, the
+/// child's fork-cloned fd is still open and the master reports EAGAIN. Only
+/// then does it release and reap the child. Checked with an IDLE read, same framing as arm
 /// 13 (`ctty`) and for the same reason: `master_read()` drains any buffered
 /// data ahead of its hangup check, so a write-then-read would not discriminate.
 fn arm_cloexec_exec() -> Result<(), Failure> {
@@ -782,32 +785,50 @@ fn arm_cloexec_exec() -> Result<(), Failure> {
         Err(e) => return Err(fail(ARM, format!("fcntl_getfd_failed:{}", e))),
     }
 
+    // `exec_done` reaches end of file when the child's exec closes its
+    // close-on-exec write end; `release` keeps the exec'd child alive until
+    // the parent has looked at the master.
+    let (exec_done_r, exec_done_w) = match io::pipe2(io::status_flags::O_CLOEXEC) {
+        Ok(fds) => fds,
+        Err(e) => return Err(fail(ARM, format!("pipe2_failed:{}", e))),
+    };
+    let (release_r, release_w) = match io::pipe() {
+        Ok(fds) => fds,
+        Err(e) => return Err(fail(ARM, format!("pipe_failed:{}", e))),
+    };
+    let release_arg = format!("{}\0", release_r.raw());
+
     let child_pid = match process::fork() {
         Ok(ForkResult::Child) => {
             // Child: exec a fresh copy of this program in marker mode. This
             // is the event under test -- close_cloexec() runs as part of
             // THIS exec(), on the child's fork-cloned slave fd.
+            let _ = io::close(exec_done_r);
+            let _ = io::close(release_w);
+            let _ = io::close(master);
             let path = b"/bin/tty_oracle\0";
             let arg0 = b"tty_oracle\0".as_ptr();
             let arg1 = b"--cloexec-child\0".as_ptr();
-            let argv: [*const u8; 3] = [arg0, arg1, core::ptr::null()];
+            let argv: [*const u8; 4] = [arg0, arg1, release_arg.as_ptr(), core::ptr::null()];
             let _ = process::execv(path, argv.as_ptr());
-            // exec() only returns on failure.
+            // exec() only returns on failure: say so before exiting, which
+            // would otherwise close the slave the way exec should have.
+            let _ = io::write(exec_done_w, b"x");
             process::exit(127);
         }
         Ok(ForkResult::Parent(pid)) => pid,
         Err(e) => return Err(fail(ARM, format!("fork_failed:{}", e))),
     };
+    let _ = io::close(exec_done_w);
+    let _ = io::close(release_r);
 
-    let mut status: i32 = 0;
-    if let Err(e) = process::waitpid(child_pid.raw() as i32, &mut status, 0) {
-        return Err(fail(ARM, format!("waitpid_failed:{}", e)));
-    }
-    if !process::wifexited(status) || process::wexitstatus(status) != 0 {
-        return Err(fail(
-            ARM,
-            format!("child_did_not_exit_cleanly:status={:#x}", status),
-        ));
+    let mut exec_report = [0u8; 1];
+    let exec_failed = io::read(exec_done_r, &mut exec_report);
+    let _ = io::close(exec_done_r);
+    match exec_failed {
+        Ok(0) => {}
+        Ok(_) => return Err(fail(ARM, "child_exec_failed".to_string())),
+        Err(e) => return Err(fail(ARM, format!("exec_done_read_failed:{}", e))),
     }
 
     // Close the parent's OWN slave fd. If close_cloexec() correctly retired
@@ -839,8 +860,21 @@ fn arm_cloexec_exec() -> Result<(), Failure> {
         Err(e) => return Err(fail(ARM, format!("expected_eio_got_error:{}", e))),
     }
 
+    // Release the exec'd child, which has been alive throughout, and reap it.
+    let _ = io::close(release_w);
+    let mut status: i32 = 0;
+    if let Err(e) = process::waitpid(child_pid.raw() as i32, &mut status, 0) {
+        return Err(fail(ARM, format!("waitpid_failed:{}", e)));
+    }
+    if !process::wifexited(status) || process::wexitstatus(status) != 0 {
+        return Err(fail(
+            ARM,
+            format!("child_did_not_exit_cleanly:status={:#x}", status),
+        ));
+    }
+
     let _ = io::close(master);
-    pass(ARM, "cloexec_survived_fork=1:eio_after_parent_close=1");
+    pass(ARM, "cloexec_survived_fork=1:eio_after_parent_close=1:child_alive_at_check=1");
     Ok(())
 }
 
@@ -896,9 +930,19 @@ fn main() {
     // what the KERNEL does to an FD_CLOEXEC-marked fd during exec() --
     // close_cloexec() runs before main() is ever reached. This marker mode
     // must do nothing else: touching any TTY state here would test what the
-    // child does, not what the kernel already did.
+    // child does, not what the kernel already did. It stays alive until the
+    // parent closes the release pipe (argv[2]), so its exit cannot be what
+    // closes the slave.
     let args: Vec<String> = env::args().collect();
     if args.len() >= 2 && args[1] == "--cloexec-child" {
+        if let Some(fd) = args.get(2).and_then(|arg| arg.parse::<u64>().ok()) {
+            let mut byte = [0u8; 1];
+            while let Ok(n) = io::read(Fd::from_raw(fd), &mut byte) {
+                if n == 0 {
+                    break;
+                }
+            }
+        }
         process::exit(0);
     }
 
