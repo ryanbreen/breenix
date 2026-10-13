@@ -10,6 +10,8 @@ pub mod pair;
 pub use pair::PtyPair;
 
 use crate::syscall::errno::{ENOMEM, ENOSPC};
+use crate::task::completion::Completion;
+use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -88,19 +90,111 @@ fn release(pair: &Arc<PtyPair>) {
 /// Retire one master reference (a closed or discarded master fd).
 ///
 /// Every master fd retire goes through here. The last reference marks the
-/// master closed, releases the pair's number and hangs up the terminal.
+/// master closed and hangs up the terminal; the pair keeps its number until
+/// the hangup has run, so a deferred hangup always finds its own pair.
 pub fn close_master_ref(pair: &Arc<PtyPair>) {
-    if pair.master_refcount.fetch_sub(1, core::sync::atomic::Ordering::SeqCst) != 1 {
+    if pair.master_refcount.fetch_sub(1, Ordering::SeqCst) != 1 {
         return;
     }
     pair.mark_master_closed();
-    release(pair);
-    hangup(pair.pty_num);
+    // `ctty::hangup` takes the process manager, and teardown closes a dying
+    // process's descriptors with it held. Those closes leave the hangup to
+    // the hangup thread, which they wake without taking a lock.
+    if crate::process::process_manager_held_on_current_cpu() {
+        if HANGUP_DAEMON_STATE.load(Ordering::Acquire) == DAEMON_RUNNING {
+            PENDING_HANGUPS[pair.pty_num as usize / 64]
+                .fetch_or(1 << (pair.pty_num % 64), Ordering::SeqCst);
+            HANGUP_KICK.complete(1);
+        } else {
+            // Only a pair the kernel allocated for itself, never a master
+            // descriptor (open_master refuses without the thread), gets here.
+            release(pair);
+        }
+    } else {
+        finish_hangup(pair);
+    }
 }
 
 /// Retire one slave reference (a closed or discarded slave fd).
 pub fn close_slave_ref(pair: &Arc<PtyPair>) {
     pair.slave_close();
+}
+
+/// Run the last master close's hangup, then let the number go.
+fn finish_hangup(pair: &Arc<PtyPair>) {
+    crate::tty::ctty::hangup(crate::tty::ctty::TtyId::Pty(pair.pty_num));
+    release(pair);
+}
+
+/// Last master closes made with the process manager held, one bit per pair.
+static PENDING_HANGUPS: [AtomicU64; (MAX_PTYS as usize).div_ceil(64)] =
+    [const { AtomicU64::new(0) }; (MAX_PTYS as usize).div_ceil(64)];
+
+/// Wakes the hangup thread; completed lock-free from any context.
+static HANGUP_KICK: Completion = Completion::new();
+
+const DAEMON_STOPPED: u8 = 0;
+const DAEMON_STARTING: u8 = 1;
+const DAEMON_RUNNING: u8 = 2;
+static HANGUP_DAEMON_STATE: AtomicU8 = AtomicU8::new(DAEMON_STOPPED);
+
+/// How long the idle hangup thread sleeps before looking again unprompted.
+const HANGUP_DAEMON_IDLE_NS: u64 = 10_000_000_000;
+
+/// Make sure the hangup thread runs, starting it if need be. Called with no
+/// locks held, before a master descriptor is made. A start that fails is
+/// tried again by the next caller; until one succeeds, no master is made
+/// (`open_master` fails with ENOMEM), so no last close can need the thread
+/// and find it missing.
+pub fn ensure_hangup_daemon() -> Result<(), i32> {
+    loop {
+        match HANGUP_DAEMON_STATE.compare_exchange(
+            DAEMON_STOPPED,
+            DAEMON_STARTING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => {
+                return match crate::task::kthread::kthread_run(hangup_daemon, "kptyhup") {
+                    Ok(_) => {
+                        HANGUP_DAEMON_STATE.store(DAEMON_RUNNING, Ordering::Release);
+                        Ok(())
+                    }
+                    Err(_) => {
+                        HANGUP_DAEMON_STATE.store(DAEMON_STOPPED, Ordering::Release);
+                        Err(ENOMEM)
+                    }
+                };
+            }
+            Err(DAEMON_RUNNING) => return Ok(()),
+            // Another caller is starting it.
+            Err(_) => crate::task::scheduler::yield_current(),
+        }
+    }
+}
+
+/// Runs the hangups `close_master_ref` could not run itself.
+fn hangup_daemon() {
+    loop {
+        HANGUP_KICK.reset();
+        for (word, pending) in PENDING_HANGUPS.iter().enumerate() {
+            let mut bits = pending.swap(0, Ordering::SeqCst);
+            while bits != 0 {
+                let pty_num = (word * 64) as u32 + bits.trailing_zeros();
+                bits &= bits - 1;
+                if let Some(pair) = get(pty_num) {
+                    finish_hangup(&pair);
+                }
+            }
+        }
+        if PENDING_HANGUPS.iter().any(|pending| pending.load(Ordering::SeqCst) != 0) {
+            continue;
+        }
+        // The brake selects the completion's sleeping wait, as in a syscall.
+        crate::per_cpu::preempt_disable();
+        let _ = HANGUP_KICK.wait_timeout_uninterruptible(1, HANGUP_DAEMON_IDLE_NS);
+        crate::per_cpu::preempt_enable();
+    }
 }
 
 /// A reference to one side of a pair held for the length of a read or a
@@ -117,13 +211,13 @@ impl PtyHold {
     /// master descriptor of `pair` still in the caller's table, so the count
     /// is at least one and this is not a reopen of a closed master.
     pub fn master(pair: &Arc<PtyPair>) -> Self {
-        pair.master_refcount.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+        pair.master_refcount.fetch_add(1, Ordering::SeqCst);
         Self { pair: pair.clone(), master: true }
     }
 
     /// Take a slave reference, under the same conditions as `master`.
     pub fn slave(pair: &Arc<PtyPair>) -> Self {
-        pair.slave_refcount.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+        pair.slave_refcount.fetch_add(1, Ordering::SeqCst);
         Self { pair: pair.clone(), master: false }
     }
 
@@ -143,18 +237,6 @@ impl Drop for PtyHold {
         } else {
             close_slave_ref(&self.pair);
         }
-    }
-}
-
-/// `ctty::hangup` takes the process manager, and some close paths hold it
-/// (process teardown closes descriptors under it). Those hand the hangup to
-/// the system workqueue.
-fn hangup(pty_num: u32) {
-    let id = crate::tty::ctty::TtyId::Pty(pty_num);
-    if crate::process::process_manager_held_on_current_cpu() {
-        crate::task::workqueue::schedule_work_fn(move || crate::tty::ctty::hangup(id), "pty_hangup");
-    } else {
-        crate::tty::ctty::hangup(id);
     }
 }
 

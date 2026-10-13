@@ -49,6 +49,12 @@ pub fn sys_posix_openpt(flags: u64) -> SyscallResult {
         return SyscallResult::Err(22); // EINVAL
     }
 
+    // A master's last close may need the hangup thread; make no master
+    // without it.
+    if let Err(e) = pty::ensure_hangup_daemon() {
+        return SyscallResult::Err(e as u64);
+    }
+
     // Get current process
     let thread_id = match crate::task::scheduler::current_thread_id() {
         Some(id) => id,
