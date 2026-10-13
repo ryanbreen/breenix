@@ -286,16 +286,12 @@ fn main() {
             qemu.args([
                 "-drive",
                 &format!(
-                    "if=none,id=ext2disk,format=raw,file={}{}",
-                    ext2_disk_path.display(),
-                    // Gates discard this private image. Writes still reach the
-                    // raw file (and its disk checks); host power-loss durability
-                    // is outside that test. Avoid an unbounded host fsync.
-                    if env::var_os("BREENIX_GATE_TMP").is_some() {
-                        ",cache=unsafe,aio=threads"
-                    } else {
-                        ""
-                    }
+                    // This copy is replaced from its source at every launch, so
+                    // host power-loss durability buys nothing. Writes still reach
+                    // the raw file (and its disk checks); guest barriers no longer
+                    // wait on an unbounded host fsync.
+                    "if=none,id=ext2disk,format=raw,cache=unsafe,aio=threads,file={}",
+                    ext2_disk_path.display()
                 ),
                 "-device",
                 &profile.disk_device("ext2disk", 2, false),
