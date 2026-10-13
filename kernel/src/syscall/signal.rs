@@ -206,6 +206,20 @@ pub(crate) fn signal_orphaned_group(pgid: ProcessId) {
     let _ = send_signal_to_process_group(pgid, SIGCONT, Sender::Kernel, SigInfo::kernel());
 }
 
+/// Send `sig` from the kernel to every member of process group `pgid`, as a
+/// terminal does for its job-control and hangup signals: no permission check,
+/// and SI_KERNEL in the siginfo. A stop signal is discarded for an orphaned
+/// group, as kill() takes it. Must be called with no process-manager lock held.
+pub(crate) fn signal_pgrp_from_kernel(pgid: ProcessId, sig: u32) {
+    let _ = send_signal_to_process_group(pgid, sig, Sender::Kernel, SigInfo::kernel());
+}
+
+/// Send `sig` from the kernel to process `pid`, with no permission check and
+/// SI_KERNEL in the siginfo. Must be called with no process-manager lock held.
+pub(crate) fn signal_process_from_kernel(pid: ProcessId, sig: u32) {
+    let _ = send_signal_to_process(pid, sig, Sender::Kernel, SigInfo::kernel());
+}
+
 /// Who sends a signal: a process, whose permission to signal each target is
 /// checked and whose identity the siginfo reports, or the kernel.
 #[derive(Clone, Copy)]
