@@ -198,7 +198,6 @@ const SEM_MAP_LEN: usize = 4096;
 const PROT_READ: i32 = 1;
 const PROT_WRITE: i32 = 2;
 const MAP_SHARED: i32 = 1;
-const INIT_TIMEOUT_NS: u64 = 1_000_000_000;
 
 // Published Linux ABI: inode at 8, size at 48 on both 64-bit arches. Opaque
 // metadata surrounds the fields used here; storage covers either stat layout.
@@ -224,15 +223,6 @@ impl NamedStat {
 const _: () = assert!(core::mem::offset_of!(NamedStat, ino) == 8);
 const _: () = assert!(core::mem::offset_of!(NamedStat, size) == 48);
 const _: () = assert!(core::mem::size_of::<NamedStat>() == 144);
-unsafe fn monotonic_ns() -> Result<u64, i64> {
-    let mut ts = [0i64; 2];
-    if crate::clock_gettime(1, ts.as_mut_ptr() as *mut u8) != 0 {
-        return Err(i64::from(*crate::__errno_location()));
-    }
-    Ok((ts[0] as u64)
-        .saturating_mul(1_000_000_000)
-        .saturating_add(ts[1] as u64))
-}
 
 #[derive(Clone, Copy)]
 struct NamedEntry {
@@ -334,131 +324,97 @@ impl NamedTable {
 
 unsafe fn named_open(name: *const u8, oflag: i32, mode: u32, value: u32) -> Result<*mut Sem, i64> {
     use core::ptr::null_mut;
-    let mut shm_name = [0u8; 257];
-    crate::shm::name_with_prefix(name, b"/sem.", &mut shm_name)?;
+    let mut path = [0u8; 265];
+    crate::shm::name_with_prefix(name, b"/dev/shm/sem.", &mut path)?;
     if oflag & O_CREAT != 0 && value > SEM_VALUE_MAX {
         return Err(EINVAL);
     }
-    let (fd, created) = loop {
-        if oflag & O_CREAT == 0 {
-            let fd = crate::shm::shm_open(shm_name.as_ptr(), O_RDWR, 0);
-            if fd < 0 {
-                return Err(i64::from(*crate::__errno_location()));
-            }
-            break (fd, false);
-        }
-        let fd = crate::shm::shm_open(shm_name.as_ptr(), O_RDWR | O_CREAT | O_EXCL, mode);
-        if fd >= 0 {
-            break (fd, true);
-        }
-        let error = i64::from(*crate::__errno_location());
-        if oflag & O_EXCL != 0 || error != EEXIST {
-            return Err(error);
-        }
-        let fd = crate::shm::shm_open(shm_name.as_ptr(), O_RDWR, 0);
-        if fd >= 0 {
-            break (fd, false);
-        }
-        let error = i64::from(*crate::__errno_location());
-        // The name may disappear between the two opens. O_CREAT retries the
-        // create/open transaction instead of exposing this internal ENOENT.
-        if error != 2 {
-            return Err(error);
-        }
-    };
-    let result = (|| {
-        if created && crate::ftruncate(fd, core::mem::size_of::<Sem>() as i64) != 0 {
+    loop {
+        // First use an existing initialized object, except for O_EXCL creators.
+        let existing = if oflag & (O_CREAT | O_EXCL) == O_CREAT | O_EXCL {
+            -1
+        } else {
+            crate::open(path.as_ptr(), O_RDWR | 0x80000, 0)
+        };
+        let created = existing < 0;
+        if created && oflag & O_CREAT == 0 {
             return Err(i64::from(*crate::__errno_location()));
         }
-        // The kernel publishes the name before the creator's truncate. A
-        // bounded monotonic deadline handles abandoned or non-semaphore shm
-        // files without spinning or waiting forever. Such objects are invalid.
-        let deadline = monotonic_ns()?.saturating_add(INIT_TIMEOUT_NS);
-        let ino = loop {
+        if created && oflag & O_EXCL == 0 && *crate::__errno_location() != 2 {
+            return Err(i64::from(*crate::__errno_location()));
+        }
+        #[cfg(target_arch = "x86_64")]
+        const O_TMPFILE: i32 = 0x410000;
+        #[cfg(target_arch = "aarch64")]
+        const O_TMPFILE: i32 = 0x404000;
+        let fd = if created {
+            crate::open(b"/dev/shm\0".as_ptr(), O_RDWR | O_TMPFILE | 0x80000, mode)
+        } else {
+            existing
+        };
+        if fd < 0 {
+            return Err(i64::from(*crate::__errno_location()));
+        }
+        let result = (|| {
+            if created && crate::ftruncate(fd, core::mem::size_of::<Sem>() as i64) != 0 {
+                return Err(i64::from(*crate::__errno_location()));
+            }
             let mut stat = NamedStat::zeroed();
             if crate::fstat(fd, &mut stat as *mut NamedStat as *mut u8) != 0 {
                 return Err(i64::from(*crate::__errno_location()));
             }
-            if stat.size >= core::mem::size_of::<Sem>() as i64 {
-                break stat.ino;
-            }
-            if monotonic_ns()? >= deadline {
+            if stat.size < core::mem::size_of::<Sem>() as i64 {
                 return Err(EINVAL);
             }
-            let delay = [0i64, 1_000_000];
-            if crate::nanosleep(delay.as_ptr() as *const u8, null_mut()) != 0 {
+            let addr = crate::mmap(
+                null_mut(),
+                SEM_MAP_LEN,
+                PROT_READ | PROT_WRITE,
+                MAP_SHARED,
+                fd,
+                0,
+            ) as *mut Sem;
+            if addr as usize == usize::MAX {
                 return Err(i64::from(*crate::__errno_location()));
             }
-        };
-        let addr = crate::mmap(
-            null_mut(),
-            SEM_MAP_LEN,
-            PROT_READ | PROT_WRITE,
-            MAP_SHARED,
-            fd,
-            0,
-        ) as *mut Sem;
-        if addr as usize == usize::MAX {
-            return Err(i64::from(*crate::__errno_location()));
-        }
-        let initialize = (|| {
-            if created {
-                // Each field an opener can observe uses atomic access. The
-                // zeroed kernel page already supplies ready=0 and padding.
-                (*addr).value.store(value, Ordering::Relaxed);
-                (*addr).waiters.store(0, Ordering::Relaxed);
-                (*addr).pshared.store(1, Ordering::Relaxed);
-                (*addr).ready.store(1, Ordering::Release);
-                futex(&(*addr).ready, FUTEX_WAKE, i32::MAX as u32, null());
-            } else {
-                loop {
-                    match (*addr).ready.load(Ordering::Acquire) {
-                        1 => break,
-                        0 => {}
-                        _ => return Err(EINVAL),
+            let initialize = (|| {
+                if created {
+                    sem_init(addr, 1, value);
+                    // Atomically publish the fully initialized unnamed file.
+                    // Closing a failed/dead creator releases it without an
+                    // unlink by name, so no replacement can be removed.
+                    if crate::linkat(fd, b"\0".as_ptr(), -100, path.as_ptr(), 0x1000) != 0 {
+                        return Err(i64::from(*crate::__errno_location()));
                     }
-                    let remaining = deadline.saturating_sub(monotonic_ns()?);
-                    if remaining == 0 {
-                        return Err(EINVAL);
-                    }
-                    let timeout = [
-                        (remaining / 1_000_000_000) as i64,
-                        (remaining % 1_000_000_000) as i64,
-                    ];
-                    let result = futex(&(*addr).ready, FUTEX_WAIT, 0, timeout.as_ptr());
-                    if result == -110 {
-                        return Err(EINVAL);
-                    }
-                    if result < 0 && result != -EAGAIN {
-                        return Err(-result);
-                    }
+                } else if (*addr).ready.load(Ordering::Acquire) != 1 {
+                    return Err(EINVAL);
                 }
-            }
-            Ok(())
-        })();
-        if let Err(error) = initialize {
-            crate::munmap(addr as *mut u8, SEM_MAP_LEN);
-            return Err(error);
-        }
-        let _guard = TableGuard::lock();
-        match (&mut *TABLE.0.get()).retain(ino, addr) {
-            Ok(existing) => {
-                if existing != addr {
-                    crate::munmap(addr as *mut u8, SEM_MAP_LEN);
-                }
-                Ok(existing)
-            }
-            Err(e) => {
+                Ok(())
+            })();
+            if let Err(e) = initialize {
                 crate::munmap(addr as *mut u8, SEM_MAP_LEN);
-                Err(e)
+                return Err(e);
             }
+            let _guard = TableGuard::lock();
+            match (&mut *TABLE.0.get()).retain(stat.ino, addr) {
+                Ok(existing) => {
+                    if existing != addr {
+                        crate::munmap(addr as *mut u8, SEM_MAP_LEN);
+                    }
+                    Ok(existing)
+                }
+                Err(e) => {
+                    crate::munmap(addr as *mut u8, SEM_MAP_LEN);
+                    Err(e)
+                }
+            }
+        })();
+        crate::close(fd);
+        if result == Err(EEXIST) && oflag & O_EXCL == 0 {
+            continue;
         }
-    })();
-    crate::close(fd);
-    if result.is_err() && created {
-        crate::shm::shm_unlink(shm_name.as_ptr());
+        return result;
     }
-    result
 }
 
 #[no_mangle]

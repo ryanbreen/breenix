@@ -5,6 +5,7 @@
 extern crate alloc;
 
 pub mod irq_safe_mutex {
+    #[derive(Debug)]
     pub struct IrqSafeMutex<T>(std::sync::Mutex<T>);
     impl<T> IrqSafeMutex<T> {
         pub const fn new(value: T) -> Self {
@@ -59,7 +60,7 @@ pub fn arch_without_interrupts<R>(f: impl FnOnce() -> R) -> R {
     f()
 }
 pub mod time {
-    pub fn current_unix_time() -> i64 {
+    pub fn current_unix_time_coarse() -> i64 {
         crate::ACTIVITY_TIME.with(|t| t.get())
     }
 }
@@ -99,6 +100,7 @@ pub mod task {
     }
     pub mod scheduler {
         pub const MAX_CPUS: usize = 4;
+        pub fn set_need_resched() {}
         pub fn current_cpu() -> usize {
             0
         }
@@ -115,6 +117,12 @@ pub mod syscall {
     }
     pub mod errno {
         pub const EAGAIN: i32 = 11;
+        pub const EIO: i32 = 5;
+        pub const EOVERFLOW: i32 = 75;
+        pub const EMLINK: i32 = 31;
+        pub const EXDEV: i32 = 18;
+        pub const EBUSY: i32 = 16;
+        pub const EBADF: i32 = 9;
         pub const EPERM: i32 = 1;
         pub const EINVAL: i32 = 22;
         pub const ENOMEM: i32 = 12;
@@ -188,6 +196,9 @@ pub mod syscall {
         }
     }
     pub mod mmap {
+        pub fn sys_munmap(_a: u64, _l: u64) -> super::SyscallResult {
+            super::SyscallResult::Ok(0)
+        }
         pub fn clear_for_mapping(
             p: &mut crate::process::Process,
             start: u64,
@@ -215,6 +226,12 @@ pub mod syscall {
         }
     }
     pub mod memory_advice {
+        pub fn sys_mlock(addr: u64, len: u64) -> super::SyscallResult {
+            match populate(crate::CURRENT.with(|c| c.get()), addr, addr + len) {
+                Ok(()) => super::SyscallResult::Ok(0),
+                Err(e) => super::SyscallResult::Err(e),
+            }
+        }
         pub fn record_future(_p: &mut crate::process::Process, _start: u64, _end: u64) {}
         pub fn populate(thread: u64, start: u64, end: u64) -> Result<(), u64> {
             for a in (start..end).step_by(4096) {
@@ -276,6 +293,14 @@ pub mod syscall {
     }
 }
 pub mod signal {
+    pub mod types {
+        pub struct SigInfo;
+        impl SigInfo {
+            pub fn kernel() -> Self {
+                Self
+            }
+        }
+    }
     pub mod constants {
         pub const SIGBUS: u32 = 7;
         pub const SIGSEGV: u32 = 11;
@@ -541,13 +566,18 @@ fn vma_split_preserves_object_offset_and_counts_live_tokens() {
         Protection::READ,
         MmapFlags::SHARED,
     );
-    v.shm = Some(object::ShmMapping::new(&obj));
+    v.shm = Some(object::ShmMapping::new(&obj).unwrap());
     v.shm_offset = 4096;
     let piece = v.piece(VirtAddr::new(0x101000), v.end);
     assert_eq!(piece.shm_offset, 8192);
+    assert!(v
+        .shm
+        .as_ref()
+        .unwrap()
+        .shares_attachment(piece.shm.as_ref().unwrap()));
+    assert_eq!(obj.attachments(), 1);
+    let fork = piece.shm.as_ref().unwrap().fork(77).unwrap();
     assert_eq!(obj.attachments(), 2);
-    let fork = piece.shm.clone();
-    assert_eq!(obj.attachments(), 3);
     drop(v);
     drop(piece);
     assert_eq!(obj.attachments(), 1);
@@ -817,6 +847,7 @@ mod host_fs {
     }
     pub unsafe fn open(path: *const u8, flags: i32, _mode: u32) -> i32 {
         let name = text(path);
+        let temporary = flags & 0x400000 != 0;
         let mut fs = FS.lock().unwrap();
         if flags & 0x40 == 0 && crate::UNLINK_OPEN_RACE.with(|c| c.replace(false)) {
             fs.names.remove(&name);
@@ -828,7 +859,7 @@ mod host_fs {
             }
             obj.clone()
         } else {
-            if flags & 0x40 == 0 {
+            if flags & 0x40 == 0 && !temporary {
                 return super::syscall_result_to_c_int(-2);
             }
             let ino = fs.next_ino;
@@ -843,13 +874,33 @@ mod host_fs {
                 .unwrap();
             std::fs::remove_file(path).unwrap();
             let obj = Arc::new(Object { ino, file });
-            fs.names.insert(name, obj.clone());
+            if !temporary {
+                fs.names.insert(name, obj.clone());
+            }
             obj
         };
         let fd = fs.next_fd;
         fs.next_fd += 1;
         fs.fds.insert(fd, obj);
         fd
+    }
+    pub unsafe fn linkat(
+        fd: i32,
+        old: *const u8,
+        _newdir: i32,
+        path: *const u8,
+        flags: i32,
+    ) -> i32 {
+        assert_eq!(flags, 0x1000);
+        assert_eq!(*old, 0);
+        let mut fs = FS.lock().unwrap();
+        let name = text(path);
+        if fs.names.contains_key(&name) {
+            return super::syscall_result_to_c_int(-17);
+        }
+        let obj = fs.fds.get(&fd).unwrap().clone();
+        fs.names.insert(name, obj);
+        0
     }
     pub unsafe fn unlink(path: *const u8) -> i32 {
         if FS.lock().unwrap().names.remove(&text(path)).is_some() {
@@ -859,6 +910,10 @@ mod host_fs {
         }
     }
     pub unsafe fn ftruncate(fd: i32, len: i64) -> i32 {
+        if crate::SLOW_CREATOR.with(|f| f.get()) {
+            crate::SLOW_CREATOR_STARTED.store(true, std::sync::atomic::Ordering::Release);
+            std::thread::sleep(std::time::Duration::from_millis(1200));
+        }
         let fs = FS.lock().unwrap();
         let obj = fs.fds.get(&fd).unwrap();
         obj.file.set_len(len as u64).unwrap();
@@ -905,20 +960,7 @@ mod host_fs {
         0
     }
 }
-use host_fs::{close, fstat, ftruncate, mmap, munmap, open, unlink};
-unsafe fn clock_gettime(_clock: i32, out: *mut u8) -> i32 {
-    use std::sync::LazyLock;
-    static START: LazyLock<std::time::Instant> = LazyLock::new(std::time::Instant::now);
-    let ns = START.elapsed().as_nanos();
-    (out as *mut i64).write((ns / 1_000_000_000) as i64);
-    (out as *mut i64).add(1).write((ns % 1_000_000_000) as i64);
-    0
-}
-unsafe fn nanosleep(req: *const u8, _remaining: *mut u8) -> i32 {
-    let ts = req as *const i64;
-    std::thread::sleep(std::time::Duration::new(*ts as u64, *ts.add(1) as u32));
-    0
-}
+use host_fs::{close, fstat, ftruncate, linkat, mmap, munmap, open, unlink};
 unsafe fn realloc(p: *mut u8, size: usize) -> *mut u8 {
     use std::alloc::{alloc, realloc, Layout};
     use std::{
@@ -1089,11 +1131,11 @@ fn growing_zeroes_bytes_written_through_a_mapping_beyond_eof() {
 fn mapping_origin_offset_and_maximum_permission_survive_splits() {
     use object::{MappingOrigin, ShmMapping};
     let obj = object::ShmObject::new(8192, 0o644, 7, 8).unwrap();
-    let ro = ShmMapping::with_origin(&obj, MappingOrigin::Mmap, false);
+    let ro = ShmMapping::with_origin(&obj, MappingOrigin::Mmap, false).unwrap();
     assert!(!ro.may_write());
     assert!(!ro.clone().may_write());
     assert!(!ro.matches_attachment(0x10000, 0, 0x10000));
-    let sysv = ShmMapping::with_origin(&obj, MappingOrigin::SysV, false);
+    let sysv = ShmMapping::with_origin(&obj, MappingOrigin::SysV, false).unwrap();
     assert!(sysv.matches_attachment(0x11000, 4096, 0x10000));
     assert!(!sysv.matches_attachment(0x11000, 4096, 0x11000));
     assert!(!sysv.clone().may_write());
@@ -1460,10 +1502,10 @@ fn shared_api_records_attach_detach_and_fixed_noreplace_preserves_existing_mappi
     let _lock = kernel_fixture();
     let obj = object::ShmObject::new(8192, 0o600, 0, 0).unwrap();
     ACTIVITY_TIME.with(|t| t.set(100));
-    let mapping = object::ShmMapping::new(&obj);
+    let mapping = object::ShmMapping::new(&obj).unwrap();
     assert_eq!(obj.activity(), (100, 0, 77));
     ACTIVITY_TIME.with(|t| t.set(101));
-    let cloned = mapping.clone();
+    let cloned = mapping.fork(77).unwrap();
     assert_eq!(obj.activity(), (101, 0, 77));
     ACTIVITY_TIME.with(|t| t.set(102));
     drop(cloned);
@@ -1628,3 +1670,194 @@ fn private_readonly_pages_require_an_upgrade_before_lazy_cow() {
 }
 
 thread_local! {static FAIL_COW_ALLOC:std::cell::Cell<bool>=const{std::cell::Cell::new(false)};}
+
+#[test]
+fn deferred_signal_backing_and_repeated_user_copy_resolve() {
+    use memory::{
+        file_map::{Access, FaultOutcome},
+        vma::Protection,
+    };
+    let _lock = kernel_fixture();
+    let obj = object::ShmObject::new(8192, 0o600, 0, 0).unwrap();
+    let base = object::map_object(&obj, 0, 8192, Protection::from_bits(3).unwrap(), false).unwrap();
+    {
+        let g = process::manager();
+        let p = &g.as_ref().unwrap().rows[&1];
+        object::request_signal_page(p, base).unwrap();
+        object::request_signal_page(p, base + 4096).unwrap();
+    }
+    assert_eq!(obj.allocated_pages(), 0);
+    object::drain_signal_pages();
+    assert_eq!(obj.allocated_pages(), 2);
+    let mut g = process::manager();
+    let p = g.as_mut().unwrap().rows.get_mut(&1).unwrap();
+    let table = p.page_table.as_deref_mut().unwrap();
+    for addr in [base, base + 4096] {
+        for _ in 0..2 {
+            assert_eq!(
+                object::resolve_page(table, &p.vmas, addr, Access::Write),
+                FaultOutcome::Resolved
+            );
+        }
+    }
+}
+
+#[test]
+fn adversarial_sparse_indices_cannot_exhaust_tree_depth() {
+    // Increasing index/priority subsequence of the old public SplitMix treap.
+    fn old_priority(mut x: u64) -> u64 {
+        x = x.wrapping_add(0x9e3779b97f4a7c15);
+        x = (x ^ (x >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+        x = (x ^ (x >> 27)).wrapping_mul(0x94d049bb133111eb);
+        x ^ (x >> 31)
+    }
+    let obj = object::ShmObject::new(16384 * 4096, 0o600, 0, 0).unwrap();
+    let mut tails: Vec<(u64, usize)> = Vec::new();
+    let mut previous = vec![None; 16384];
+    for index in 0..16384 {
+        let p = old_priority(index as u64);
+        let at = tails.partition_point(|(v, _)| *v < p);
+        previous[index] = at.checked_sub(1).map(|k| tails[k].1);
+        if at == tails.len() {
+            tails.push((p, index));
+        } else {
+            tails[at] = (p, index);
+        }
+    }
+    let mut indices = Vec::new();
+    let mut at = Some(tails.last().unwrap().1);
+    while let Some(i) = at {
+        indices.push(i);
+        at = previous[i];
+    }
+    indices.reverse();
+    assert!(indices.len() > 63);
+    for &i in &indices {
+        obj.ensure_page(i as u64 * 4096).unwrap();
+    }
+    assert_eq!(obj.allocated_pages(), indices.len() as u64);
+    obj.resize(8192 * 4096).unwrap();
+    assert_eq!(
+        obj.allocated_pages(),
+        indices.iter().filter(|i| **i < 8192).count() as u64
+    );
+}
+
+#[test]
+fn tmpfile_publication_links_seek_and_io_use_the_same_object() {
+    use syscall::SyscallResult::{Err as Failure, Ok as Success};
+    let _lock = kernel_fixture();
+    let tmp = fd_number(object::open_path(
+        "/dev/shm",
+        2 | 0x400000 | syscall::fs::O_DIRECTORY,
+        0o600,
+    ));
+    let file = ipc_file(tmp);
+    let mut stat = syscall::fs::Stat::zeroed();
+    file.fill_stat(&mut stat);
+    assert_eq!(stat.st_nlink, 0);
+    assert_eq!(file.write(b"initialized", false), Ok(11));
+    assert_eq!(
+        object::open_path("/dev/shm/published", 2, 0),
+        Some(Failure(2))
+    );
+    assert_eq!(object::link_fd(tmp, "/dev/shm/published"), Some(Success(0)));
+    assert_eq!(
+        object::link_fd(tmp, "/dev/shm/published"),
+        Some(Failure(17))
+    );
+    file.fill_stat(&mut stat);
+    assert_eq!(stat.st_nlink, 1);
+    assert_eq!(
+        object::link_path("/dev/shm/published", "/dev/shm/alias"),
+        Some(Success(0))
+    );
+    file.fill_stat(&mut stat);
+    assert_eq!(stat.st_nlink, 2);
+    assert_eq!(
+        object::rename_path("/dev/shm/alias", "/dev/shm/renamed"),
+        Some(Success(0))
+    );
+    assert_eq!(file.seek(0, 0), Ok(0));
+    let mut bytes = [0; 11];
+    assert_eq!(file.read(bytes.as_mut_ptr() as u64, 11), Ok(11));
+    assert_eq!(&bytes, b"initialized");
+    assert_eq!(file.seek(4096, 0), Ok(4096));
+    assert_eq!(file.write(b"x", false), Ok(1));
+    assert_eq!(file.seek(11, 0), Ok(11));
+    let mut hole = [1u8; 16];
+    file.read(hole.as_mut_ptr() as u64, 16).unwrap();
+    assert_eq!(hole, [0; 16]);
+    let dir = ipc_file(fd_number(object::open_path(
+        "/dev/shm",
+        syscall::fs::O_DIRECTORY,
+        0,
+    )));
+    assert_eq!(dir.seek(0, 0), Ok(0));
+    assert_eq!(dir.seek(0, 2), Err(22));
+    object::unlink_path("/dev/shm/published");
+    object::unlink_path("/dev/shm/renamed");
+    file.fill_stat(&mut stat);
+    assert_eq!(stat.st_nlink, 0);
+}
+
+#[test]
+fn shrinking_above_lowered_fsize_limit_and_offset_overflow() {
+    use memory::vma::{MmapFlags, Protection};
+    let _lock = kernel_fixture();
+    let fd = fd_number(object::open_path("/dev/shm/limit-shrink", 0xc2, 0o600));
+    let file = ipc_file(fd);
+    file.truncate(8192).unwrap();
+    FSIZE_LIMIT.with(|f| f.set(1));
+    FSIZE_SIGNAL.with(|f| f.set(false));
+    assert_eq!(file.truncate(4096), Ok(()));
+    assert!(!FSIZE_SIGNAL.with(|f| f.get()));
+    FSIZE_LIMIT.with(|f| f.set(u64::MAX));
+    assert_eq!(
+        object::mmap_fd(
+            fd,
+            0,
+            4096,
+            Protection::READ,
+            MmapFlags::SHARED,
+            u64::MAX & !4095
+        ),
+        Some(syscall::SyscallResult::Err(75))
+    );
+    object::unlink_path("/dev/shm/limit-shrink");
+}
+
+thread_local! { static SLOW_CREATOR:std::cell::Cell<bool>=const{std::cell::Cell::new(false)}; }
+static SLOW_CREATOR_STARTED:std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
+#[test]
+fn slow_named_creator_cannot_poison_or_remove_a_replacement() {
+    use semaphore::*;
+    use std::sync::atomic::Ordering;
+    let name = b"/slow-private-creator\0";
+    SLOW_CREATOR_STARTED.store(false, Ordering::Release);
+    let creator = std::thread::spawn(move || unsafe {
+        SLOW_CREATOR.with(|f| f.set(true));
+        sem_open(name.as_ptr(), 0x40, 0o600u32, 4u32) as usize
+    });
+    while !SLOW_CREATOR_STARTED.load(Ordering::Acquire) { std::thread::yield_now(); }
+    unsafe {
+        // The slow creator has no public name. Another creator may publish.
+        let replacement = sem_open(name.as_ptr(), 0xc0, 0o600u32, 7u32);
+        assert!(!replacement.is_null());
+        let first = creator.join().unwrap() as *mut Sem;
+        assert_eq!(first, replacement);
+        let mut value = 0; assert_eq!(sem_getvalue(first, &mut value), 0); assert_eq!(value, 7);
+        assert_eq!(sem_close(first), 0); assert_eq!(sem_close(replacement), 0);
+        assert_eq!(sem_unlink(name.as_ptr()), 0);
+    }
+}
+#[test]
+fn closing_an_unpublished_creator_leaves_the_public_name_available() {
+    unsafe {
+        let fd = open(b"/dev/shm\0".as_ptr(), 2 | 0x400000, 0o600);
+        assert!(fd >= 0); ftruncate(fd, 32); close(fd);
+        let name = b"/creator-died-private\0";
+        let sem = semaphore::sem_open(name.as_ptr(), 0xc0, 0o600u32, 2u32);
+        assert!(!sem.is_null()); assert_eq!(semaphore::sem_close(sem), 0); assert_eq!(semaphore::sem_unlink(name.as_ptr()), 0);
+    }
+}
