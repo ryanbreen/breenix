@@ -258,13 +258,14 @@ pub const PARALLELS_CONFIG: NetConfig = NetConfig {
     gateway: [10, 211, 55, 1], // Parallels shared network gateway
 };
 
-/// Network configuration for VMware Fusion NAT networking
-/// VMware NAT (vmnet8) uses 172.16.45.x with gateway at 172.16.45.2
+/// Network configuration for VMware Fusion's Apple vmnet shared networking.
+/// vmnet8 uses 172.16.45.x; the vmnet host interface at .1 is the NAT gateway.
+/// The legacy vmware-natd gateway at .2 is absent on this backend.
 #[allow(dead_code)] // Used conditionally when e1000 is active on VMware
 pub const VMWARE_CONFIG: NetConfig = NetConfig {
     ip_addr: [172, 16, 45, 100], // Static guest IP (avoiding DHCP conflicts)
     subnet_mask: [255, 255, 255, 0],
-    gateway: [172, 16, 45, 2], // VMware NAT gateway
+    gateway: [172, 16, 45, 1], // Apple vmnet shared-network gateway
 };
 
 /// Select network config based on compile-time feature or default to SLIRP
