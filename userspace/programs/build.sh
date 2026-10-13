@@ -49,6 +49,11 @@ else
     LIBC_RELEASE_DIR="$PROJECT_ROOT/libs/libbreenix-libc/target/x86_64-breenix/release"
 fi
 
+# LIBC_RELEASE_DIR and RELEASE_DIR name each workspace's own target directory. An
+# inherited target directory would send fresh binaries elsewhere while the
+# installer below copied the old ones.
+unset CARGO_TARGET_DIR CARGO_BUILD_TARGET_DIR
+
 # Gate cache builds use a stable source name across private lane trees/Cargo homes.
 REMAP_FLAGS=""
 if [ "${BREENIX_USERSPACE_REMAP:-0}" = 1 ]; then
@@ -362,13 +367,19 @@ FAILED=0
 
 mkdir -p "$TESTS_DIR"
 
-# Binaries no longer built. An incremental build would otherwise keep their ELFs from
-# an earlier build, and the disk image would still install them.
-RETIRED_BINARIES=(
-    "suite-waitpid"
-)
-for name in "${RETIRED_BINARIES[@]}"; do
-    rm -f "$TESTS_DIR/$name.elf"
+# Remove every ELF this build does not install, so a removed or renamed program
+# never reaches a disk image. busybox.elf belongs to scripts/install-busybox.py.
+INSTALL_NAMES=" busybox "
+for entry in "${STD_BINARIES[@]}"; do
+    INSTALL_NAMES+="${entry##*:} "
+done
+for elf in "$TESTS_DIR"/*.elf; do
+    [ -e "$elf" ] || continue
+    name="$(basename "$elf" .elf)"
+    if [[ "$INSTALL_NAMES" != *" $name "* ]]; then
+        rm -f "$elf"
+        echo "  Removed stale ${name}.elf"
+    fi
 done
 
 if [ -d "$TESTS_DIR" ]; then
@@ -408,3 +419,5 @@ if [ $FAILED -gt 0 ]; then
     exit 1
 fi
 echo "========================================"
+# Prebuilt consumers verify the installed ELFs against this record.
+python3 "$PROJECT_ROOT/scripts/userspace-manifest.py" write --arch "$ARCH"
