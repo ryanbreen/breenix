@@ -42,6 +42,67 @@ where
         if super::fork_copy::copying(root) {
             return FaultOutcome::Resolved;
         }
+        // Object allocation/zeroing must run after releasing PM. The second
+        // section revalidates the VMA, its protection, and the current EOF.
+        let shm = guard
+            .as_ref()
+            .and_then(|m| m.find_process_by_cr3(root))
+            .and_then(|(_, owner)| crate::ipc::shmem::population_snapshot(&owner.vmas, address));
+        if let Some((object, offset, prot)) = shm {
+            drop(guard);
+            let prepared = if permitted(prot, access) {
+                object.ensure_page(offset)
+            } else {
+                Ok(())
+            };
+            let Some(mut guard) = acquire() else {
+                return FaultOutcome::Resolved;
+            };
+            if super::fork_copy::copying(root) {
+                return FaultOutcome::Resolved;
+            }
+            let Some(manager) = guard.as_mut() else {
+                return FaultOutcome::NotFile;
+            };
+            let outcome = if let Some((_, owner)) = manager.find_process_by_cr3_mut(root) {
+                match owner.page_table.as_deref_mut() {
+                    Some(table) if !reserved_and_absent(table, &owner.vmas, address) => {
+                        let same_mapping = owner.vmas.iter().any(|v| {
+                            v.contains(VirtAddr::new(address))
+                                && v.shm
+                                    .as_ref()
+                                    .is_some_and(|m| alloc::sync::Arc::ptr_eq(m.object(), &object))
+                                && permitted(v.prot, access)
+                        });
+                        if same_mapping && prepared == Err(crate::syscall::errno::ENOMEM as u64) {
+                            FaultOutcome::Signal(crate::signal::constants::SIGKILL)
+                        } else {
+                            resolve_shm_page(table, &owner.vmas, address, access)
+                        }
+                    }
+                    _ => FaultOutcome::Resolved,
+                }
+            } else {
+                FaultOutcome::NotFile
+            };
+            if let (FaultOutcome::Signal(signal), Some(tid)) = (outcome, user_thread) {
+                if let Some((_, process)) = manager.find_process_by_thread_mut(tid) {
+                    let info = match signal {
+                        crate::signal::constants::SIGBUS => crate::signal::types::SigInfo::fault(
+                            crate::signal::constants::BUS_ADRERR,
+                            address,
+                        ),
+                        crate::signal::constants::SIGSEGV => crate::signal::types::SigInfo::fault(
+                            crate::signal::constants::SEGV_ACCERR,
+                            address,
+                        ),
+                        _ => crate::signal::types::SigInfo::kernel(),
+                    };
+                    process.signals.force_signal(signal, info);
+                }
+            }
+            return outcome;
+        }
         let Some((pid, owner)) = guard.as_ref().and_then(|m| m.find_process_by_cr3(root)) else {
             return FaultOutcome::NotFile;
         };
@@ -159,6 +220,8 @@ fn anonymous_protection(vmas: &[super::vma::Vma], address: u64) -> Option<Protec
         .map(|v| v.prot)
 }
 
+pub(crate) use crate::ipc::shmem::resolve_page as resolve_shm_page;
+
 fn permitted(prot: Protection, access: Access) -> bool {
     match access {
         Access::Read => prot.contains(Protection::READ) || prot.contains(Protection::WRITE),
@@ -189,6 +252,10 @@ fn resolve_page(
     address: u64,
     access: Access,
 ) -> FaultOutcome {
+    let outcome = resolve_shm_page(table, vmas, address, access);
+    if !matches!(outcome, FaultOutcome::NotFile) {
+        return outcome;
+    }
     let Some(vma) = vmas.iter().find(|v| {
         v.contains(VirtAddr::new(address))
             && v.flags.contains(MmapFlags::ANONYMOUS)
@@ -265,6 +332,8 @@ pub(crate) fn prepare_write(
             .vmas
             .iter()
             .find(|v| v.contains(VirtAddr::new(address)));
+        let has_vma = vma.is_some();
+        let is_shm = vma.is_some_and(|v| v.shm.is_some());
         if vma.is_some_and(|v| !v.prot.contains(Protection::WRITE)) {
             return Err(PrepareWriteError::Fault);
         }
@@ -272,7 +341,15 @@ pub(crate) fn prepare_write(
             return Err(PrepareWriteError::Retry);
         }
         if table.translate(VirtAddr::new(address)).is_none() {
-            if vma.is_none() {
+            if is_shm {
+                crate::ipc::shmem::request_signal_page(owner, address)
+                    .map_err(|e| if e == crate::syscall::errno::EAGAIN as u64 { PrepareWriteError::Retry } else { PrepareWriteError::Fault })?;
+            }
+            let table = owner
+                .page_table
+                .as_deref_mut()
+                .ok_or(PrepareWriteError::Fault)?;
+            if !has_vma {
                 // Only grow below the recorded bottom. An absent page above
                 // it may have been unmapped and must not be resurrected.
                 if address >= owner.user_stack_bottom || !owner.grow_user_stack(address) {

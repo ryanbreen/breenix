@@ -106,6 +106,10 @@ pub struct Vma {
     pub flags: MmapFlags,
     /// The file side of a file-backed mapping.
     pub backing: Option<super::file_map::Binding>,
+    /// Object reference and attachment token, retained across fork and splits.
+    pub shm: Option<crate::ipc::shmem::ShmMapping>,
+    /// Object byte offset corresponding to `start`.
+    pub shm_offset: u64,
     /// Nonzero while `map_prepared_frames` is still installing this VMA's
     /// pages: the token of that call. Faults and kernel copies into a page it
     /// has not installed yet retry, and the pieces a split leaves keep it.
@@ -121,6 +125,8 @@ impl Vma {
             prot,
             flags,
             backing: None,
+            shm: None,
+            shm_offset: 0,
             reservation: 0,
         }
     }
@@ -129,14 +135,21 @@ impl Vma {
     pub fn piece(&self, start: VirtAddr, end: VirtAddr) -> Self {
         Self {
             reservation: self.reservation,
+            shm: self.shm.clone(),
+            shm_offset: self.shm_offset + start.as_u64() - self.start.as_u64(),
             ..Self::new(start, end, self.prot, self.flags)
         }
     }
 
-    /// Transfer the original row; object backends preserve attachment activity
-    /// here while extra split pieces use ordinary piece() accounting.
+    /// Rebind an existing VMA without manufacturing a close/open event.
+    /// Extra pieces of a split continue to use `piece`'s normal open accounting.
     pub fn replacement_piece(&mut self, start: VirtAddr, end: VirtAddr) -> Self {
-        self.piece(start, end)
+        Self {
+            reservation: self.reservation,
+            shm: self.shm.as_mut().map(|mapping| mapping.replacement()),
+            shm_offset: self.shm_offset + start.as_u64() - self.start.as_u64(),
+            ..Self::new(start, end, self.prot, self.flags)
+        }
     }
 
     /// Check if this VMA contains the given address
@@ -297,22 +310,12 @@ impl VmaList {
 
             // If VMA extends before removal range, keep that part
             if removed_vma.start < start {
-                to_insert.push(Vma::new(
-                    removed_vma.start,
-                    start,
-                    removed_vma.prot,
-                    removed_vma.flags,
-                ));
+                to_insert.push(removed_vma.piece(removed_vma.start, start));
             }
 
             // If VMA extends after removal range, keep that part
             if removed_vma.end > end {
-                to_insert.push(Vma::new(
-                    end,
-                    removed_vma.end,
-                    removed_vma.prot,
-                    removed_vma.flags,
-                ));
+                to_insert.push(removed_vma.piece(end, removed_vma.end));
             }
 
             removed.push(removed_vma);
@@ -422,16 +425,26 @@ mod tests {
 
         let vma1 = Vma::new(
             VirtAddr::new(0x1000),
-            VirtAddr::new(0x2000),
+            VirtAddr::new(0x3000),
             Protection::READ,
             MmapFlags::PRIVATE,
         );
         assert!(list.insert(vma1).is_ok());
 
-        // Try to insert overlapping VMA
-        let vma2 = Vma::new(
+        // Aligned partial overlap must be rejected, as must unaligned ranges.
+        let unaligned = Vma::new(
             VirtAddr::new(0x1500),
             VirtAddr::new(0x2500),
+            Protection::READ,
+            MmapFlags::PRIVATE,
+        );
+        assert!(matches!(
+            list.insert(unaligned),
+            Err(VmaError::InvalidRange)
+        ));
+        let vma2 = Vma::new(
+            VirtAddr::new(0x2000),
+            VirtAddr::new(0x4000),
             Protection::READ,
             MmapFlags::PRIVATE,
         );
@@ -439,8 +452,8 @@ mod tests {
 
         // Insert non-overlapping VMA
         let vma3 = Vma::new(
-            VirtAddr::new(0x3000),
             VirtAddr::new(0x4000),
+            VirtAddr::new(0x5000),
             Protection::READ,
             MmapFlags::PRIVATE,
         );

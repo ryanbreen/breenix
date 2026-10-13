@@ -1349,7 +1349,7 @@ pub(crate) fn fork_vmas(
     pid: ProcessId,
     pt: &ProcessPageTable,
 ) -> Result<Vec<Vma>, &'static str> {
-    let mut result = Vec::new();
+    let mut result: Vec<Vma> = Vec::new();
     result
         .try_reserve(vmas.len())
         .map_err(|_| "Out of memory for child VMAs")?;
@@ -1362,6 +1362,8 @@ pub(crate) fn fork_vmas(
             return Err("Shared mapping still being installed");
         }
         let mut child = Vma::new(parent.start, parent.end, parent.prot, parent.flags);
+        child.shm = parent.shm.as_ref().map(|mapping| mapping.fork(pid.as_u64() as i32));
+        child.shm_offset = parent.shm_offset;
         if let Some(binding) = &parent.backing {
             child.backing = Some(binding.fork(pid, pt)?);
         }
