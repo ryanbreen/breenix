@@ -762,9 +762,10 @@ impl ProcessManager {
         elf_data: &[u8],
         argv: &[&[u8]],
         cred: &super::credentials::ProcessCredentials,
+        parent_pid: Option<ProcessId>,
     ) -> Result<ProcessId, &'static str> {
         let pid = self.allocate_ordinary_pid();
-        self.build_process_with_argv_at(pid, name, elf_data, argv, cred)?;
+        self.build_process_with_argv_at(pid, name, elf_data, argv, cred, parent_pid)?;
         self.ready_queue.push(pid);
         Ok(pid)
     }
@@ -777,6 +778,7 @@ impl ProcessManager {
         elf_data: &[u8],
         argv: &[&[u8]],
         cred: &super::credentials::ProcessCredentials,
+        parent_pid: Option<ProcessId>,
     ) -> Result<(), &'static str> {
         // --- Page table + ELF load (build_process_at's block) ---
         let mut page_table = crate::memory::process_memory::UnpublishedPageTable::new(
@@ -836,6 +838,12 @@ impl ProcessManager {
         }
 
         let mut process = Process::new(pid, name.clone(), loaded_elf.entry_point);
+        if let Some(parent_pid) = parent_pid {
+            crate::tty::ctty::inherit(
+                &mut process,
+                self.processes.live_row(&parent_pid).ok_or("Parent process not found")?,
+            );
+        }
         process.cred = cred.clone();
         process.page_table = Some(page_table.publish());
         // Unpublished-construction ownership boundary (issue 588). From here
@@ -967,23 +975,9 @@ impl ProcessManager {
         };
 
         // Create the child process (allocates PID, page table, loads ELF, argv stack).
-        let child_pid = self.create_process_with_argv(name, elf_data, argv, &cred)?;
+        let child_pid = self.create_process_with_argv(name, elf_data, argv, &cred, Some(parent_pid))?;
 
         // Set up the parent-child relationship and inherit attributes.
-        {
-            let mut rows = self.processes.range_mut(
-                parent_pid.min(child_pid)..=parent_pid.max(child_pid),
-            );
-            let (_, first) = rows.next().ok_or("Parent process not found")?;
-            let (_, last) = rows.next_back().ok_or("Child process not found")?;
-            let (parent, child) = if parent_pid < child_pid {
-                (first, last)
-            } else {
-                (last, first)
-            };
-            crate::tty::ctty::inherit(child, parent);
-        }
-
         if let Some(child) = self.processes.live_row_mut(&child_pid) {
             child.parent = Some(parent_pid);
             child.pgid = parent_pgid;
@@ -1278,9 +1272,10 @@ impl ProcessManager {
         elf_data: &[u8],
         argv: &[&[u8]],
         cred: &super::credentials::ProcessCredentials,
+        parent_pid: Option<ProcessId>,
     ) -> Result<ProcessId, &'static str> {
         let pid = self.allocate_ordinary_pid();
-        self.build_process_with_argv_at(pid, name, elf_data, argv, cred)?;
+        self.build_process_with_argv_at(pid, name, elf_data, argv, cred, parent_pid)?;
         self.ready_queue.push(pid);
         Ok(pid)
     }
@@ -1293,6 +1288,7 @@ impl ProcessManager {
         elf_data: &[u8],
         argv: &[&[u8]],
         cred: &super::credentials::ProcessCredentials,
+        parent_pid: Option<ProcessId>,
     ) -> Result<(), &'static str> {
         // For ARM64, stack allocation uses arch_stub::ThreadPrivilege
         use crate::memory::arch_stub::ThreadPrivilege as StackPrivilege;
@@ -1342,6 +1338,12 @@ impl ProcessManager {
         // Create the process
         let entry_point = VirtAddr::new(loaded_elf.entry_point);
         let mut process = Process::new(pid, name.clone(), entry_point);
+        if let Some(parent_pid) = parent_pid {
+            crate::tty::ctty::inherit(
+                &mut process,
+                self.processes.live_row(&parent_pid).ok_or("Parent process not found")?,
+            );
+        }
         process.cred = cred.clone();
         process.page_table = Some(page_table.publish());
         // Unpublished-construction ownership boundary (issue 588). From here
@@ -1483,6 +1485,7 @@ impl ProcessManager {
             elf_data,
             argv,
             &super::credentials::ProcessCredentials::root(),
+            None,
         )?;
         self.hold_init_publication(provisional_pid)
     }
@@ -1536,23 +1539,9 @@ impl ProcessManager {
         };
 
         // Create the child process (allocates PID, page table, loads ELF, etc.)
-        let child_pid = self.create_process_with_argv(name, elf_data, argv, &cred)?;
+        let child_pid = self.create_process_with_argv(name, elf_data, argv, &cred, Some(parent_pid))?;
 
         // Set up parent-child relationship and inherit attributes
-        {
-            let mut rows = self.processes.range_mut(
-                parent_pid.min(child_pid)..=parent_pid.max(child_pid),
-            );
-            let (_, first) = rows.next().ok_or("Parent process not found")?;
-            let (_, last) = rows.next_back().ok_or("Child process not found")?;
-            let (parent, child) = if parent_pid < child_pid {
-                (first, last)
-            } else {
-                (last, first)
-            };
-            crate::tty::ctty::inherit(child, parent);
-        }
-
         if let Some(child) = self.processes.live_row_mut(&child_pid) {
             child.parent = Some(parent_pid);
             child.pgid = parent_pgid;
