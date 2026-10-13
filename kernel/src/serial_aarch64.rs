@@ -356,6 +356,12 @@ pub fn emergency_print(args: fmt::Arguments) -> Result<(), ()> {
 /// so there is nothing to wait for.
 pub fn drain_output() {}
 
+/// ARM64 UART output is synchronous; no software transmit queue remains.
+pub fn flush_output() {}
+
+/// The TTY driver gates synchronous ARM64 writes before they reach the UART.
+pub fn set_output_stopped(_stopped: bool) {}
+
 /// Write out the lines posted on paths that may not log (`log_notice`).
 pub fn write_notices() {
     crate::serial_line::write_notices();

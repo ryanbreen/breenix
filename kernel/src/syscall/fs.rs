@@ -2844,6 +2844,9 @@ fn handle_devfs_open(
     if !device.device_type.is_writable() && flags & 3 != 0 {
         return SyscallResult::Err(13); // EACCES
     }
+    if device.device_type == devfs::DeviceType::Ptmx {
+        return crate::syscall::pty::sys_posix_openpt(flags as u64);
+    }
 
     // Get current process and allocate fd
     let thread_id = match crate::task::scheduler::current_thread_id() {
@@ -2872,125 +2875,44 @@ fn handle_devfs_open(
         }
     };
 
-    // For /dev/tty, redirect to the controlling PTY if one exists.
-    // On Linux, /dev/tty is a magic device that refers to the calling process's
-    // controlling terminal. The controlling terminal belongs to the SESSION,
-    // not a single process. Any process in the session can open /dev/tty.
+    // /dev/tty names this process's controlling terminal, including a member
+    // that explicitly detached while other members of its session retained it.
     if matches!(device.device_type, devfs::DeviceType::Tty) {
-        let sid = process.sid;
-        // Drop manager lock before accessing PTY subsystem to avoid lock ordering issues
-        drop(manager_guard);
-
-        // Search active PTYs for one controlled by this session.
-        // The pair's `ctl.session` is the session it is the controlling terminal of.
-        for pty_num in match crate::tty::pty::try_list_active() {
-            Ok(numbers) => numbers,
-            Err(e) => return SyscallResult::Err(e),
-        } {
-            if let Some(pair) = crate::tty::pty::get(pty_num) {
-                if pair.ctl.lock().session == Some(sid) {
-                    // Found the controlling PTY — open as PtySlave
-                    //
-                    // NB6: these three lookups used to be `.unwrap()`-chained
-                    // and would panic the kernel on a racing thread/process
-                    // teardown. This arm runs on every production boot (the
-                    // TTY oracle's `ctty` arm, arm 13, drives it), so a panic
-                    // here is a live production risk, not a theoretical one.
-                    // Graceful ESRCH returns, mirroring the pattern already
-                    // used above in this same function.
-                    let thread_id2 = match crate::task::scheduler::current_thread_id() {
-                        Some(id) => id,
-                        None => {
-                            log::error!("handle_devfs_open: /dev/tty: no current thread");
-                            return SyscallResult::Err(3); // ESRCH
-                        }
-                    };
-                    let mut mg = crate::process::manager();
-                    let proc2 = match mg
-                        .as_mut()
-                        .and_then(|manager| manager.find_process_by_thread_mut(thread_id2))
-                    {
-                        Some((_, p)) => p,
-                        None => {
-                            log::error!(
-                                "handle_devfs_open: /dev/tty: process not found for thread {}",
-                                thread_id2
-                            );
-                            return SyscallResult::Err(3); // ESRCH
-                        }
-                    };
-                    // Same status-flag plumbing as handle_devpts_open: this is
-                    // the third site that hands out a PtySlave fd, and a
-                    // /dev/tty opened O_NONBLOCK must read non-blocking too.
-                    // Exercised on every production boot by the TTY oracle's
-                    // `ctty` arm (arm 13), which drives exactly this branch.
-                    let entry = match FileDescriptor::try_opened(FdKind::PtySlave(pair.clone()), flags) {
-                        Ok(entry) => entry.with_inode(native_inode),
-                        Err(e) => return SyscallResult::Err(e),
-                    };
-                    return match install_descriptor(&mut proc2.fd_table, reserved, entry) {
-                        Ok(fd) => {
-                            // #704 (found and fixed on feat/green-tty): this
-                            // site handed out an FdKind::PtySlave fd without a
-                            // matching slave_open(), while every retire path
-                            // decrements on the assumption every handout path
-                            // incremented. As of this round every retire path
-                            // does its matching half -- including
-                            // close_cloexec() (kernel/src/ipc/fd.rs), which
-                            // was found to have the identical asymmetry (the
-                            // exec-time close-on-exec path, unfiled, same
-                            // round) and was fixed alongside this site rather
-                            // than left as a sibling defect. Mirror
-                            // handle_devpts_open exactly: the open and close
-                            // accounting must be symmetric regardless of which
-                            // path produced the fd.
-                            pair.slave_open();
-                            log::info!(
-                                "handle_devfs_open: /dev/tty -> PTY slave {} as fd {}",
-                                pty_num,
-                                fd
-                            );
-                            SyscallResult::Ok(fd as u64)
-                        }
-                        Err(_) => SyscallResult::Err(EMFILE as u64),
-                    };
+        use crate::tty::ctty::{TtyId, TtyRef};
+        let Some(id) = process.ctty else {
+            return SyscallResult::Err(6); // ENXIO
+        };
+        let Some(tty) = TtyRef::resolve(id) else {
+            return SyscallResult::Err(6); // ENXIO
+        };
+        return match (id, tty) {
+            (TtyId::Pty(pty_num), TtyRef::Pty(_)) => {
+                let entry = match FileDescriptor::try_opened(FdKind::PtySlave(pair.clone()), flags) {
+                    Ok(entry) => entry.with_inode(native_inode),
+                    Err(e) => return SyscallResult::Err(e),
+                };
+                if let Err(e) = crate::tty::pty::open_slave(pty_num) {
+                    return SyscallResult::Err(e as u64);
+                }
+                match install_descriptor(&mut process.fd_table, reserved, entry) {
+                    Ok(fd) => SyscallResult::Ok(fd as u64),
+                    Err(_) => {
+                        crate::tty::pty::close_slave_ref(&pair);
+                        SyscallResult::Err(EMFILE as u64)
+                    }
                 }
             }
-        }
-        // No controlling terminal found — fall through to generic device
-        // Re-acquire manager lock for the generic path. Same NB6 shape as the
-        // ctty-found arm above: graceful ESRCH returns instead of unwrap().
-        let thread_id2 = match crate::task::scheduler::current_thread_id() {
-            Some(id) => id,
-            None => {
-                log::error!("handle_devfs_open: /dev/tty (no ctty): no current thread");
-                return SyscallResult::Err(3); // ESRCH
+            (TtyId::Console, TtyRef::Console(_)) => {
+                let fd_kind = match FileDescriptor::try_opened(FdKind::Device(device.device_type), flags) {
+                    Ok(entry) => entry.with_inode(native_inode),
+                    Err(e) => return SyscallResult::Err(e),
+                };
+                match install_descriptor(&mut process.fd_table, reserved, fd_kind) {
+                    Ok(fd) => SyscallResult::Ok(fd as u64),
+                    Err(_) => SyscallResult::Err(EMFILE as u64),
+                }
             }
-        };
-        let mut manager_guard = crate::process::manager();
-        let process = match manager_guard
-            .as_mut()
-            .and_then(|manager| manager.find_process_by_thread_mut(thread_id2))
-        {
-            Some((_, p)) => p,
-            None => {
-                log::error!(
-                    "handle_devfs_open: /dev/tty (no ctty): process not found for thread {}",
-                    thread_id2
-                );
-                return SyscallResult::Err(3); // ESRCH
-            }
-        };
-        let fd_kind = match FileDescriptor::try_opened(FdKind::Device(device.device_type), flags) {
-            Ok(entry) => entry.with_inode(native_inode),
-            Err(e) => return SyscallResult::Err(e),
-        };
-        return match install_descriptor(&mut process.fd_table, reserved, fd_kind) {
-            Ok(fd) => {
-                log::info!("handle_devfs_open: /dev/tty (no ctty) as fd {}", fd);
-                SyscallResult::Ok(fd as u64)
-            }
-            Err(_) => SyscallResult::Err(EMFILE as u64),
+            _ => SyscallResult::Err(6), // ENXIO
         };
     }
 
@@ -3062,19 +2984,20 @@ fn handle_devpts_open(pty_name: &str, flags: u32) -> SyscallResult {
         }
     };
 
-    let Some(pair) = crate::tty::pty::get(pty_num) else {
-        return SyscallResult::Err(ENOENT as u64);
+    // Take the slave reference first (EIO for a locked pair or a closed
+    // master), then allocate the fd with the caller's status flags so a slave
+    // opened O_NONBLOCK actually reads non-blocking.
+    let pair = match crate::tty::pty::open_slave(pty_num) {
+        Ok(pair) => pair, Err(e) => return SyscallResult::Err(e as u64),
     };
-    // Allocate file descriptor with PtySlave kind, carrying the caller's
-    // status flags so a slave opened O_NONBLOCK actually reads non-blocking.
     let entry = FileDescriptor::opened(FdKind::PtySlave(pair.clone()), flags);
     let fd = match process.fd_table.alloc_with_entry(entry) {
-        Ok(fd) => {
-            // Increment slave reference count so master can detect hangup
-            pair.slave_open();
-            fd
+        Ok(fd) => fd,
+        Err(_) => {
+            drop(manager_guard);
+            crate::tty::pty::close_slave_ref(&pair);
+            return SyscallResult::Err(EMFILE as u64);
         }
-        Err(_) => return SyscallResult::Err(EMFILE as u64),
     };
     drop(manager_guard);
     crate::tty::ctty::acquire_on_open(crate::tty::ctty::TtyId::Pty(pty_num), flags);

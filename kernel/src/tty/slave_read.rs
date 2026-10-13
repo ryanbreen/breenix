@@ -1,52 +1,104 @@
-//! read(2) on a pseudo-terminal slave: input the line discipline has
-//! processed.
-
-use crate::syscall::blocking_io::wait_prepared;
-use crate::syscall::errno::EAGAIN;
-use crate::syscall::SyscallResult;
-use crate::task::thread::ThreadState;
-use crate::tty::ctty::TtyRef;
-use crate::tty::jobctl::{self, JobOp};
-use crate::tty::pty::io::{copy_out, read_buffer};
-use crate::tty::pty::PtyPair;
+//! Slave-side terminal reads with POSIX canonical and MIN/TIME semantics.
+use super::ctty::TtyRef;
+use super::jobctl::{self, JobOp};
+use super::line_discipline::{EOF_MARKER, MAX_CANON};
+use super::pty::PtyPair;
+use crate::ipc::wait::{wait_on, IpcDeadline, WaitEnd};
+use crate::syscall::{errno, SyscallResult};
 use alloc::sync::Arc;
+use alloc::vec::Vec;
+use core::sync::atomic::Ordering;
 
-/// A read of a hung-up slave (its master has closed) returns end of file at
-/// once, whatever input is still queued, as Linux's hung-up file does.
+fn now_ns() -> u64 {
+    let (s, ns) = crate::time::get_monotonic_time_ns();
+    s.saturating_mul(1_000_000_000).saturating_add(ns)
+}
+
 pub fn read(pair: &Arc<PtyPair>, buf_ptr: u64, count: u64, nonblocking: bool) -> SyscallResult {
-    if pair.master_closed() {
+    if count == 0 {
         return SyscallResult::Ok(0);
     }
-    if let Err(e) = jobctl::check(&TtyRef::Pty(pair.clone()), JobOp::Read) {
+    if pair.master_closed() { return SyscallResult::Ok(0); }
+    let terminal = TtyRef::Pty(pair.clone());
+    if let Err(e) = jobctl::check(&terminal, JobOp::Read) {
         return SyscallResult::Err(e as u64);
     }
-    let mut buf = match read_buffer(count) {
-        Ok(buf) => buf,
-        Err(result) => return result,
-    };
+    let count = count.min(MAX_CANON as u64) as usize;
+    let mut buf = Vec::new();
+    if buf.try_reserve_exact(count).is_err() {
+        return SyscallResult::Err(errno::ENOMEM as u64);
+    }
+    buf.resize(count, 0);
+    let input_epoch = pair.ldisc.lock().input_epoch();
+    let mut configuration = None;
+    let mut seen = 0;
+    let mut deadline = IpcDeadline::Never;
+    let mut expired = false;
     loop {
-        let outcome = {
-            let mut ldisc = pair.ldisc.lock();
-            if pair.master_closed() {
-                return SyscallResult::Ok(0);
+        if let Err(e) = jobctl::check(&terminal, JobOp::Read) {
+            return SyscallResult::Err(e as u64);
+        }
+        let mut ldisc = pair.ldisc.lock();
+        if pair.master_closed() { return SyscallResult::Ok(0); }
+        let attrs = ldisc.termios();
+        let canonical = attrs.is_canonical();
+        let minimum = usize::from(attrs.vmin()).min(buf.len());
+        let timeout = u64::from(attrs.vtime()) * 100_000_000;
+        let current = (canonical, minimum, timeout);
+        if configuration != Some(current) {
+            configuration = Some(current);
+            seen = 0;
+            expired = false;
+            deadline = if !canonical && minimum == 0 && timeout != 0 {
+                IpcDeadline::Monotonic(now_ns().saturating_add(timeout))
+            } else {
+                IpcDeadline::Never
+            };
+        }
+        let available = ldisc.bytes_available();
+        if !canonical && minimum > 0 && timeout > 0 {
+            if available == 0 {
+                // A flush or another reader can remove the first byte while
+                // waiting. An inter-byte timeout must never return zero bytes.
+                deadline = IpcDeadline::Never;
+                expired = false;
+            } else if available > seen {
+                deadline = IpcDeadline::Monotonic(now_ns().saturating_add(timeout));
             }
-            if let Ok(n) = ldisc.read(&mut buf) {
-                if n > 0 {
-                    drop(ldisc);
-                    pair.master_writers.wake_up();
-                    return copy_out(buf_ptr, &buf, n);
-                }
-            }
-            if nonblocking {
-                return SyscallResult::Err(EAGAIN as u64);
-            }
-            pair.slave_readers
-                .prepare_to_wait_checked(ThreadState::BlockedOnIO, None, || {
-                    !ldisc.has_data() && !pair.master_closed()
-                })
+        }
+        seen = available;
+        let hungup = pair.master_closed();
+        let ready = if canonical {
+            ldisc.has_data()
+        } else {
+            available >= minimum && (minimum > 0 || timeout == 0)
+                || (minimum == 0 && available > 0)
+                || expired
         };
-        if let Err(error) = wait_prepared(&pair.slave_readers, outcome) {
-            return SyscallResult::Err(error as u64);
+        if ready || hungup || (nonblocking && available > 0) {
+            let result = ldisc.read_user(buf_ptr, &mut buf);
+            drop(ldisc);
+            if result.is_ok() || matches!(result, Err(EOF_MARKER)) { pair.master_writers.wake_up(); }
+            return match result {
+                Ok(n) => SyscallResult::Ok(n as u64),
+                Err(EOF_MARKER) => SyscallResult::Ok(0),
+                Err(e) => SyscallResult::Err(e as u64),
+            };
+        }
+        let observed = input_epoch.load(Ordering::Acquire);
+        drop(ldisc);
+        if nonblocking {
+            return SyscallResult::Err(errno::EAGAIN as u64);
+        }
+        // Capture the sequence under ldisc, release it, then register under
+        // the waitqueue lock. An intervening input/settings change prevents
+        // sleep; producers release their object lock before waking this queue.
+        match wait_on(&pair.slave_readers, &deadline, || {
+            !pair.master_closed() && input_epoch.load(Ordering::Acquire) == observed
+        }) {
+            WaitEnd::Woken => {}
+            WaitEnd::TimedOut => expired = true,
+            WaitEnd::Interrupted(e) => return SyscallResult::Err(e),
         }
     }
 }

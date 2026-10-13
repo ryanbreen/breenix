@@ -45,7 +45,7 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
             crate::serial_println!("create_user_process: Calling manager.create_process_with_argv");
             let root = super::credentials::ProcessCredentials::root();
             let result =
-                manager.create_process_with_argv(name.clone(), elf_data, argv_slices, &root);
+                manager.create_process_with_argv(name.clone(), elf_data, argv_slices, &root, None);
             crate::serial_println!(
                 "create_user_process: manager.create_process_with_argv returned: {:?}",
                 result.is_ok()
@@ -193,7 +193,7 @@ pub fn create_user_process_before_run(
             crate::serial_println!("create_user_process: Calling manager.create_process_with_argv");
             let root = super::credentials::ProcessCredentials::root();
             let result =
-                manager.create_process_with_argv(name.clone(), elf_data, argv_slices, &root);
+                manager.create_process_with_argv(name.clone(), elf_data, argv_slices, &root, None);
             crate::serial_println!(
                 "create_user_process: manager.create_process_with_argv returned: {:?}",
                 result.is_ok()
