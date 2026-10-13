@@ -49,18 +49,18 @@ pub enum Mount {
 }
 
 impl Mount {
-    pub fn read(self) -> ext2::Ext2ReadGuard {
+    pub fn read(self) -> Result<ext2::Ext2ReadGuard, u64> {
         match self {
             Mount::Root => ext2::root_fs_read(),
             Mount::Home => ext2::home_fs_read(),
-        }
+        }.map_err(|_| crate::syscall::errno::EINTR as u64)
     }
 
-    pub fn write(self) -> ext2::Ext2WriteGuard {
+    pub fn write(self) -> Result<ext2::Ext2WriteGuard, u64> {
         match self {
             Mount::Root => ext2::root_fs_write(),
             Mount::Home => ext2::home_fs_write(),
-        }
+        }.map_err(|_| crate::syscall::errno::EINTR as u64)
     }
 }
 
@@ -250,7 +250,7 @@ impl Held {
     fn fs(&mut self, mount: Mount) -> Result<&ext2::Ext2Fs, u64> {
         if self.0.as_ref().map_or(true, |(held, _)| *held != mount) {
             self.0 = None;
-            self.0 = Some((mount, mount.read()));
+            self.0 = Some((mount, mount.read()?));
         }
         self.0
             .as_ref()
