@@ -22,6 +22,24 @@ pub mod syscall {
     }
     pub mod userptr {
         // These shims validate the copy boundary's results, not kernel page permissions.
+        pub fn read_user_bytes(dst: *mut u8, src: u64, len: usize) -> Result<(), u64> {
+            if src == 0 {
+                return Err(14);
+            }
+            unsafe {
+                core::ptr::copy_nonoverlapping(src as *const u8, dst, len);
+            }
+            Ok(())
+        }
+        pub fn write_user_prefix(dst: u64, src: *const u8, len: usize) -> usize {
+            if dst == 0 {
+                return 0;
+            }
+            unsafe {
+                core::ptr::copy_nonoverlapping(src, dst as *mut u8, len);
+            }
+            len
+        }
         pub fn copy_from_user<T: Copy>(ptr: *const T) -> Result<T, u64> {
             if ptr.is_null() {
                 Err(14)
@@ -44,13 +62,16 @@ pub mod syscall {
 struct State {
     errno: i32,
     hosts: Vec<u8>,
+    services: Vec<u8>,
+    hosts_errno: Option<i32>,
+    service_opens: usize,
     files: BTreeMap<i32, (Vec<u8>, usize)>,
     allocations: BTreeMap<usize, Layout>,
     fail_after: Option<usize>,
 }
 impl Default for State {
     fn default() -> Self {
-        Self { errno: 0, hosts: b"127.0.0.1 localhost\n192.0.2.7 canonical.test alias.test # comment\n192.0.2.8 canonical.test alias.test\n".to_vec(), files: BTreeMap::new(), allocations: BTreeMap::new(), fail_after: None }
+        Self { services: b"http 80/tcp www\ndomain 53/udp\n".to_vec(), hosts_errno: None, service_opens: 0, errno: 0, hosts: b"127.0.0.1 localhost\n192.0.2.7 canonical.test alias.test # comment\n192.0.2.8 canonical.test alias.test\n".to_vec(), files: BTreeMap::new(), allocations: BTreeMap::new(), fail_after: None }
     }
 }
 thread_local! { static STATE: RefCell<State> = RefCell::new(State::default()); }
@@ -72,14 +93,23 @@ pub fn __errno_location() -> *mut i32 {
     STATE.with(|s| &mut s.borrow_mut().errno as *mut i32)
 }
 pub unsafe fn open(path: *const u8, flags: i32, mode: u32) -> i32 {
-    assert_eq!(flags, 0);
+    assert_eq!(flags, 0x80000);
     assert_eq!(mode, 0);
     let text = std::ffi::CStr::from_ptr(path.cast()).to_bytes();
     STATE.with(|s| {
         let mut s = s.borrow_mut();
         let data = match text {
-            b"/etc/hosts" => s.hosts.clone(),
-            b"/etc/services" => b"http 80/tcp www\ndomain 53/udp\n".to_vec(),
+            b"/etc/hosts" => {
+                if let Some(e) = s.hosts_errno {
+                    s.errno = e;
+                    return -1;
+                }
+                s.hosts.clone()
+            }
+            b"/etc/services" => {
+                s.service_opens += 1;
+                s.services.clone()
+            }
             b"/etc/resolv.conf" => b"nameserver 10.0.2.3\n".to_vec(),
             _ => {
                 s.errno = 2;
@@ -203,7 +233,7 @@ fn validation_and_reserved_names_return_errors_without_results() {
         assert_eq!(lookup(b"127.0.0.1\0", b"", &h).0, -6);
         h.family = 2;
         h.protocol = 17;
-        assert_eq!(lookup(b"127.0.0.1\0", b"", &h).0, -8);
+        assert_eq!(lookup(b"127.0.0.1\0", b"", &h).0, -7);
     }
 }
 #[test]
@@ -410,6 +440,138 @@ fn nofqdn_only_shortens_the_local_domain_and_hosts_are_not_cached() {
             std::slice::from_raw_parts((*p).addr.add(4), 4),
             &[192, 0, 2, 99]
         );
+        netdb::freeaddrinfo(p);
+    }
+}
+
+#[test]
+fn legacy_numeric_forms_keep_inet_pton_strict() {
+    for (name, ip) in [
+        (b"127.1\0".as_slice(), [127, 0, 0, 1]),
+        (b"0x7f.0.0.1\0", [127, 0, 0, 1]),
+        (b"010.0.0.1\0", [8, 0, 0, 1]),
+    ] {
+        unsafe {
+            let (code, p) = lookup(name, b"80\0", &hints(1, 4));
+            assert_eq!(code, 0);
+            assert_eq!(std::slice::from_raw_parts((*p).addr.add(4), 4), ip);
+            netdb::freeaddrinfo(p);
+            let mut addr = [0; 4];
+            assert_eq!(inet::inet_pton(2, name.as_ptr(), addr.as_mut_ptr()), 0);
+        }
+    }
+}
+#[test]
+fn validation_precedence_protocols_and_address_bounds() {
+    unsafe {
+        let mut p = std::ptr::null_mut();
+        assert_eq!(
+            netdb::getaddrinfo(
+                std::ptr::null(),
+                std::ptr::null(),
+                &hints(1, 0x8000),
+                &mut p
+            ),
+            -2
+        );
+        let mut h = hints(1, 0);
+        h.protocol = 17;
+        assert_eq!(lookup(b"127.0.0.1\0", b"80\0", &h).0, -7);
+        h.protocol = 132;
+        let (code, p) = lookup(b"127.0.0.1\0", b"80\0", &h);
+        assert_eq!(code, 0);
+        assert_eq!((*p).protocol, 132);
+        netdb::freeaddrinfo(p);
+    }
+    let bytes = [0u8; 128];
+    assert_eq!(addr::read_sockaddr(bytes.as_ptr() as u64, 129, 2), Err(22));
+    for len in 2..16 {
+        assert_eq!(
+            addr::read_sockaddr(bytes.as_ptr() as u64, len, 2),
+            Ok(addr::SockAddr::Unspec)
+        );
+    }
+    assert_eq!(
+        addr::read_sockaddr(bytes.as_ptr() as u64, 2, 1),
+        Ok(addr::SockAddr::Unspec)
+    );
+    let mut out = [0u8; 16];
+    let mut len = -1i32;
+    assert_eq!(
+        addr::write_sockaddr(
+            &addr::SockAddr::Inet {
+                addr: [0; 4],
+                port: 80
+            },
+            out.as_mut_ptr() as u64,
+            &mut len as *mut i32 as u64
+        ),
+        Err(22)
+    );
+}
+
+#[test]
+fn services_are_first_match_and_read_once_for_multiple_addresses() {
+    STATE.with(|s| {
+        let mut s = s.borrow_mut();
+        s.services = b"http 80/tcp www\nhttp 81/tcp\nhttp bad/tcp\nhttp 82/udp\n".to_vec();
+        s.service_opens = 0;
+    });
+    unsafe {
+        let (code, p) = lookup(b"alias.test\0", b"http\0", &hints(0, 0));
+        assert_eq!(code, 0);
+        let mut at = p;
+        let mut count = 0;
+        while !at.is_null() {
+            let bytes = std::slice::from_raw_parts((*at).addr.add(2), 2);
+            assert_eq!(
+                u16::from_be_bytes([bytes[0], bytes[1]]),
+                if (*at).socktype == 1 { 80 } else { 82 }
+            );
+            count += 1;
+            at = (*at).next;
+        }
+        assert_eq!(count, 4);
+        netdb::freeaddrinfo(p);
+    }
+    STATE.with(|s| assert_eq!(s.borrow().service_opens, 1));
+}
+#[test]
+fn oversized_hosts_name_falls_back_and_unreadable_hosts_do_not_fail() {
+    STATE.with(|s| {
+        let mut s = s.borrow_mut();
+        s.hosts = b"192.0.2.7 ".to_vec();
+        s.hosts.extend_from_slice(&[b'a'; 256]);
+        s.hosts.extend_from_slice(b" short.test\n");
+    });
+    unsafe {
+        let (code, p) = lookup(b"short.test\0", b"80\0", &hints(1, 2));
+        assert_eq!(code, 0);
+        assert_eq!(
+            std::ffi::CStr::from_ptr((*p).canonname.cast()).to_bytes(),
+            b"short.test"
+        );
+        let mut text = [0u8; 32];
+        assert_eq!(
+            netdb::getnameinfo(
+                (*p).addr,
+                16,
+                text.as_mut_ptr(),
+                32,
+                std::ptr::null_mut(),
+                0,
+                0
+            ),
+            0
+        );
+        assert_eq!(
+            std::ffi::CStr::from_ptr(text.as_ptr().cast()).to_bytes(),
+            b"192.0.2.7"
+        );
+        netdb::freeaddrinfo(p);
+        STATE.with(|s| s.borrow_mut().hosts_errno = Some(13));
+        let (code, p) = lookup(b"localhost\0", b"80\0", &hints(1, 0));
+        assert_eq!(code, 0);
         netdb::freeaddrinfo(p);
     }
 }

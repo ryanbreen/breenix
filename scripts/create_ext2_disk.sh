@@ -30,11 +30,16 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TARGET_DIR="$PROJECT_ROOT/target"
 SIZE_MB=256
 
+DNS_SERVER="10.0.2.3"
 ARCH="x86_64"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --arch)
             ARCH="$2"
+            shift 2
+            ;;
+        --dns-server)
+            DNS_SERVER="$2"
             shift 2
             ;;
         --size)
@@ -153,6 +158,7 @@ if [[ "$(uname)" == "Darwin" ]]; then
         -e "BREENIX_WAIT_STRESS=${BREENIX_WAIT_STRESS:-0}" \
         -e "BREENIX_BSSH_AUTORUN=${BREENIX_BSSH_AUTORUN:-0}" \
         -e "BREENIX_ARCH=$ARCH" \
+        -e "DNS_SERVER=$DNS_SERVER" \
         alpine:latest \
         sh -c '
             set -e
@@ -249,7 +255,8 @@ if [[ "$(uname)" == "Darwin" ]]; then
             # Create /etc with passwd and group for musl getpwuid/getgrgid
             mkdir -p /mnt/ext2/etc
             printf "127.0.0.1 localhost\n" > /mnt/ext2/etc/hosts
-            printf "nameserver 10.0.2.3\n" > /mnt/ext2/etc/resolv.conf
+            printf "nameserver %s\n" "$DNS_SERVER" > /mnt/ext2/etc/resolv.conf
+            printf "http 80/tcp www\nhttps 443/tcp\ndomain 53/tcp\ndomain 53/udp\nssh 22/tcp\n" > /mnt/ext2/etc/services
             cat > /mnt/ext2/etc/passwd << PASSWD
 root:x:0:0:root:/root:/bin/bsh
 nobody:x:65534:65534:nobody:/nonexistent:/bin/false
@@ -551,7 +558,8 @@ else
     # Create /etc with passwd and group for musl getpwuid/getgrgid
     mkdir -p "$MOUNT_DIR/etc"
     printf '127.0.0.1 localhost\n' > "$MOUNT_DIR/etc/hosts"
-    printf 'nameserver 10.0.2.3\n' > "$MOUNT_DIR/etc/resolv.conf"
+    printf 'nameserver %s\n' "$DNS_SERVER" > "$MOUNT_DIR/etc/resolv.conf"
+    printf 'http 80/tcp www\nhttps 443/tcp\ndomain 53/tcp\ndomain 53/udp\nssh 22/tcp\n' > "$MOUNT_DIR/etc/services"
     cat > "$MOUNT_DIR/etc/passwd" << PASSWD
 root:x:0:0:root:/root:/bin/bsh
 nobody:x:65534:65534:nobody:/nonexistent:/bin/false

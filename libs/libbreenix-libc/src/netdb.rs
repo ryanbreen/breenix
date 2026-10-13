@@ -1,8 +1,10 @@
 //! Clean-room IPv4 name and service translation (POSIX, RFC 3493 and RFC 6761).
 //! EAI/AI/NI values and addrinfo layout follow the Linux ABI.
 
-use crate::inet::{c_bytes, decimal, format_ipv4, parse_ipv4, AF_INET};
+use crate::inet::{c_bytes, decimal, format_ipv4, parse_inet_addr, parse_ipv4, AF_INET};
 use core::{mem, ptr};
+use libbreenix::errno::Errno;
+const O_CLOEXEC: i32 = 0x80000;
 
 const EAI_BADFLAGS: i32 = -1;
 const EAI_NONAME: i32 = -2;
@@ -70,9 +72,10 @@ impl Name {
 /// Oversized lines are discarded whole, never parsed as partial records.
 fn lines(path: &[u8], mut visit: impl FnMut(&[u8]) -> Result<(), i32>) -> Result<(), i32> {
     unsafe {
-        let fd = crate::open(path.as_ptr(), 0, 0);
+        let fd = crate::open(path.as_ptr(), O_CLOEXEC, 0);
         if fd < 0 {
-            return if *crate::__errno_location() == 2 {
+            return if matches!(*crate::__errno_location(), e if e == Errno::ENOENT as i32 || e == Errno::EACCES as i32)
+            {
                 Ok(())
             } else {
                 Err(EAI_SYSTEM)
@@ -85,7 +88,7 @@ fn lines(path: &[u8], mut visit: impl FnMut(&[u8]) -> Result<(), i32>) -> Result
         let result = (|| loop {
             let n = crate::read(fd, chunk.as_mut_ptr(), chunk.len());
             if n < 0 {
-                if *crate::__errno_location() == 4 {
+                if *crate::__errno_location() == Errno::EINTR as i32 {
                     continue;
                 }
                 return Err(EAI_SYSTEM);
@@ -170,7 +173,9 @@ fn hosts_forward(name: &[u8], out: &mut Addresses) -> Result<(), i32> {
         if let Some((addr, canon)) = hosts_line(line) {
             if fields(line).skip(1).any(|alias| equal_name(alias, name)) {
                 if out.len == 0 {
-                    out.canon = Name::new(canon)?;
+                    if let Ok(valid) = Name::new(canon) {
+                        out.canon = valid;
+                    }
                 }
                 out.add(addr)?;
             }
@@ -184,7 +189,7 @@ fn hosts_reverse(addr: [u8; 4]) -> Result<Option<Name>, i32> {
         if found.is_none() {
             if let Some((ip, canon)) = hosts_line(line) {
                 if ip == addr {
-                    found = Some(Name::new(canon)?);
+                    found = Name::new(canon).ok();
                 }
             }
         }
@@ -217,9 +222,12 @@ fn dns_lookup(name: &[u8], out: &mut Addresses) -> Result<(), i32> {
     let mut failure = EAI_AGAIN;
     for server in &servers[..count] {
         use libbreenix::dns::DnsError;
-        match libbreenix::dns::resolve(hostname, *server) {
+        match libbreenix::dns::resolve_all(hostname, *server) {
             Ok(answer) => {
-                out.add(answer.addr)?;
+                for record in &answer.answers[..answer.len] {
+                    out.add(record.addr)?;
+                }
+                out.canon = Name::new(&answer.canonical[..answer.canonical_len])?;
                 return Ok(());
             }
             Err(
@@ -250,7 +258,7 @@ fn node_addresses(node: Option<&[u8]>, flags: i32) -> Result<Addresses, i32> {
             [127, 0, 0, 1]
         })?,
         Some(name) => {
-            if let Some(addr) = parse_ipv4(name) {
+            if let Some(addr) = parse_inet_addr(name) {
                 out.add(addr)?;
             } else {
                 if flags & AI_NUMERICHOST != 0 || name.is_empty() || reserved(name, b"invalid") {
@@ -284,8 +292,9 @@ fn numeric_port(text: &[u8]) -> Option<u16> {
     }
     Some(port)
 }
-fn service_port(name: &[u8], protocol: i32) -> Result<Option<u16>, i32> {
-    let mut found = None;
+// Snapshot both protocols in one read, independent of the number of addresses.
+fn service_ports(name: &[u8]) -> Result<[Option<u16>; 3], i32> {
+    let mut found = [None; 3];
     lines(b"/etc/services\0", |line| {
         let mut f = fields(line);
         let Some(canon) = f.next() else {
@@ -295,13 +304,20 @@ fn service_port(name: &[u8], protocol: i32) -> Result<Option<u16>, i32> {
             return Ok(());
         };
         let mut parts = spec.split(|b| *b == b'/');
-        let port = parts.next().and_then(numeric_port);
-        let proto = parts.next();
+        let Some(port) = parts.next().and_then(numeric_port) else {
+            return Ok(());
+        };
+        let index = match parts.next() {
+            Some(b"tcp") => 0,
+            Some(b"udp") => 1,
+            Some(b"sctp") => 2,
+            _ => return Ok(()),
+        };
         if parts.next().is_none()
-            && proto == Some(if protocol == 17 { b"udp" } else { b"tcp" })
+            && found[index].is_none()
             && (canon == name || f.any(|a| a == name))
         {
-            found = port;
+            found[index] = Some(port);
         }
         Ok(())
     })?;
@@ -322,7 +338,7 @@ fn service_name(port: u16, protocol: i32) -> Result<Option<Name>, i32> {
             && parts.next() == Some(if protocol == 17 { b"udp" } else { b"tcp" })
             && found.is_none()
         {
-            found = Some(Name::new(canon)?);
+            found = Name::new(canon).ok();
         }
         Ok(())
     })?;
@@ -353,23 +369,26 @@ unsafe fn lookup(
             (*hints).protocol,
         )
     };
+    if node.is_null() && service.is_null() {
+        return Err(EAI_NONAME);
+    }
     if flags & !AI_KNOWN != 0 || (flags & AI_CANONNAME != 0 && node.is_null()) {
         return Err(EAI_BADFLAGS);
     }
     if family != 0 && family != AF_INET {
         return Err(EAI_FAMILY);
     }
-    if kind != 0 && kind != 1 && kind != 2 {
+    if kind != 0 && kind != 1 && kind != 2 && kind != 5 {
         return Err(EAI_SOCKTYPE);
     }
-    if protocol != 0 && protocol != 6 && protocol != 17 {
-        return Err(EAI_SERVICE);
+    if protocol != 0 && protocol != 6 && protocol != 17 && protocol != 132 {
+        return Err(if kind != 0 { EAI_SOCKTYPE } else { EAI_SERVICE });
     }
-    if (kind == 1 && protocol == 17) || (kind == 2 && protocol == 6) {
-        return Err(EAI_SERVICE);
-    }
-    if node.is_null() && service.is_null() {
-        return Err(EAI_NONAME);
+    if (kind == 1 && protocol == 17)
+        || (kind == 2 && protocol != 0 && protocol != 17)
+        || (kind == 5 && protocol != 0 && protocol != 132)
+    {
+        return Err(EAI_SOCKTYPE);
     }
     let node = if node.is_null() {
         None
@@ -385,27 +404,32 @@ unsafe fn lookup(
     if flags & AI_NUMERICSERV != 0 && service.is_some() && numeric.is_none() {
         return Err(EAI_NONAME);
     }
+    let ports = match (service, numeric) {
+        (Some(name), None) => service_ports(name)?,
+        _ => [numeric; 3],
+    };
     let addresses = node_addresses(node, flags)?;
     let mut head: *mut AddrInfo = ptr::null_mut();
     let mut tail: *mut AddrInfo = ptr::null_mut();
     for addr in &addresses.bytes[..addresses.len] {
-        for (ty, proto) in [(1, 6), (2, 17)] {
+        for (ty, proto) in [(1, 6), (2, 17), (1, 132), (5, 132)] {
+            if protocol == 0 && kind != 5 && proto == 132 {
+                continue;
+            }
             if (kind != 0 && kind != ty) || (protocol != 0 && protocol != proto) {
                 continue;
             }
-            let port = match service {
-                None => 0,
-                Some(name) => match numeric {
+            let port = if service.is_none() {
+                0
+            } else {
+                match ports[match proto {
+                    6 => 0,
+                    17 => 1,
+                    _ => 2,
+                }] {
                     Some(port) => port,
-                    None => match service_port(name, proto) {
-                        Ok(Some(port)) => port,
-                        Ok(None) => continue,
-                        Err(e) => {
-                            freeaddrinfo(head);
-                            return Err(e);
-                        }
-                    },
-                },
+                    None => continue,
+                }
             };
             let entry = crate::calloc(1, mem::size_of::<Entry>()) as *mut Entry;
             if entry.is_null() {
@@ -454,7 +478,7 @@ pub unsafe extern "C" fn getaddrinfo(
     result: *mut *mut AddrInfo,
 ) -> i32 {
     if result.is_null() {
-        *crate::__errno_location() = 14;
+        *crate::__errno_location() = Errno::EFAULT as i32;
         return EAI_SYSTEM;
     }
     *result = ptr::null_mut();

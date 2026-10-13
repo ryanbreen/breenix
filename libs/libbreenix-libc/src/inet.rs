@@ -1,5 +1,7 @@
 //! Address conversion written from the POSIX interface and RFC 3493.
 
+use libbreenix::errno::Errno;
+
 pub(crate) const AF_INET: i32 = 2;
 
 /// Strict dotted decimal: four octets, no whitespace, signs, or octal forms.
@@ -28,6 +30,62 @@ pub(crate) fn parse_ipv4(text: &[u8]) -> Option<[u8; 4]> {
     } else {
         Some(addr)
     }
+}
+
+/// inet_addr forms used by getaddrinfo: one to four parts, decimal/octal/hex.
+pub(crate) fn parse_inet_addr(text: &[u8]) -> Option<[u8; 4]> {
+    let mut parts = [0u32; 4];
+    let mut count = 0;
+    for part in text.split(|b| *b == b'.') {
+        if count == 4 || part.is_empty() {
+            return None;
+        }
+        let (base, digits) = if part.starts_with(b"0x") || part.starts_with(b"0X") {
+            (16, &part[2..])
+        } else if part.len() > 1 && part[0] == b'0' {
+            (8, &part[1..])
+        } else {
+            (10, part)
+        };
+        if digits.is_empty() {
+            return None;
+        }
+        let mut n = 0u32;
+        for &b in digits {
+            let d = match b {
+                b'0'..=b'9' => (b - b'0') as u32,
+                b'a'..=b'f' => (b - b'a' + 10) as u32,
+                b'A'..=b'F' => (b - b'A' + 10) as u32,
+                _ => return None,
+            };
+            if d >= base {
+                return None;
+            }
+            n = n.checked_mul(base)?.checked_add(d)?;
+        }
+        parts[count] = n;
+        count += 1;
+    }
+    let mut value = 0;
+    for &part in &parts[..count - 1] {
+        if part > 255 {
+            return None;
+        }
+        value = (value << 8) | part;
+    }
+    let bits = 8 * (5 - count);
+    let last = parts[count - 1];
+    if bits < 32 && last >= 1u32 << bits {
+        return None;
+    }
+    Some(
+        if bits == 32 {
+            last
+        } else {
+            (value << bits) | last
+        }
+        .to_be_bytes(),
+    )
 }
 
 pub(crate) fn decimal(mut n: u16, out: &mut [u8; 5]) -> &[u8] {
@@ -70,7 +128,7 @@ pub(crate) unsafe fn c_bytes<'a>(ptr: *const u8, max: usize) -> Option<&'a [u8]>
 #[no_mangle]
 pub unsafe extern "C" fn inet_pton(family: i32, src: *const u8, dst: *mut u8) -> i32 {
     if family != AF_INET {
-        *crate::__errno_location() = 97;
+        *crate::__errno_location() = Errno::EAFNOSUPPORT as i32;
         return -1;
     }
     let Some(text) = c_bytes(src, 15) else {
@@ -91,13 +149,13 @@ pub unsafe extern "C" fn inet_ntop(
     size: u32,
 ) -> *const u8 {
     if family != AF_INET {
-        *crate::__errno_location() = 97;
+        *crate::__errno_location() = Errno::EAFNOSUPPORT as i32;
         return core::ptr::null();
     }
     let mut text = [0; 16];
     let n = format_ipv4(core::ptr::read_unaligned(src as *const [u8; 4]), &mut text);
     if size as usize <= n {
-        *crate::__errno_location() = 28;
+        *crate::__errno_location() = Errno::ENOSPC as i32;
         return core::ptr::null();
     }
     core::ptr::copy_nonoverlapping(text.as_ptr(), dst, n + 1);

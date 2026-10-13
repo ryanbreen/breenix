@@ -15,14 +15,32 @@ SCRIPT = ROOT / 'scripts/create_ext2_disk.sh'
 
 class ResolverImageTests(unittest.TestCase):
     def check_seeds(self, source, destination, directory):
-        commands = re.findall(r'^\s*(printf .*) > "?' + re.escape(destination) + r'/(hosts|resolv.conf)"?$', source, re.M)
-        self.assertEqual(len(commands), 2)
+        commands = re.findall(r'^\s*(printf .*) > "?' + re.escape(destination) + r'/(hosts|resolv.conf|services)"?$', source, re.M)
+        self.assertEqual(len(commands), 3)
         etc = directory / 'etc'
         etc.mkdir()
         script = '\n'.join(command + ' > ' + shlex.quote(str(etc / filename)) for command, filename in commands)
-        subprocess.run(['/bin/bash', '-e', '-c', script], check=True)
+        subprocess.run(['/bin/bash', '-e', '-c', script], check=True, env=dict(os.environ, DNS_SERVER='10.211.55.1'))
         self.assertEqual((etc / 'hosts').read_bytes(), b'127.0.0.1 localhost\n')
-        self.assertEqual((etc / 'resolv.conf').read_bytes(), b'nameserver 10.0.2.3\n')
+        self.assertEqual((etc / 'resolv.conf').read_bytes(), b'nameserver 10.211.55.1\n')
+
+        self.assertIn(b'http 80/tcp www\n', (etc / 'services').read_bytes())
+
+    def test_private_target_disk_nameservers_read_back(self):
+        debugfs = '/opt/homebrew/opt/e2fsprogs/sbin/debugfs'
+        mke2fs = '/opt/homebrew/opt/e2fsprogs/sbin/mke2fs'
+        if not Path(debugfs).exists():
+            debugfs = shutil.which('debugfs')
+            mke2fs = shutil.which('mke2fs')
+        self.assertTrue(debugfs and mke2fs, 'e2fsprogs required for disk verification')
+        with tempfile.TemporaryDirectory() as temporary:
+            disk = Path(temporary) / 'target.img'
+            subprocess.run([mke2fs, '-q', '-t', 'ext2', '-F', str(disk), '8192'], check=True)
+            subprocess.run([debugfs, '-w', '-R', 'mkdir /etc', str(disk)], check=True, capture_output=True)
+            for server in ['10.0.2.3', '10.211.55.1', '172.16.45.2']:
+                subprocess.run(['/bin/bash', str(ROOT / 'scripts/write-resolv-conf.sh'), str(disk), server], check=True)
+                result = subprocess.run([debugfs, '-R', 'cat /etc/resolv.conf', str(disk)], check=True, capture_output=True)
+                self.assertEqual(result.stdout, f'nameserver {server}\n'.encode())
 
     def test_native_path_seeds(self):
         with tempfile.TemporaryDirectory() as temporary:
