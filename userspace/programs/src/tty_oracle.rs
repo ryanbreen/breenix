@@ -27,6 +27,7 @@ use libbreenix::io::fd_flags::FD_CLOEXEC;
 use libbreenix::process;
 use libbreenix::process::ForkResult;
 use libbreenix::pty;
+use libbreenix::signal;
 use libbreenix::termios::{self, cc, iflag, lflag, oflag, Termios, Winsize, TCSANOW};
 use libbreenix::types::Fd;
 use libbreenix::Errno;
@@ -701,6 +702,12 @@ fn arm_ctty() -> Result<(), Failure> {
 
     expect_hangup(master, ARM)?;
 
+    // This pair is the oracle's controlling terminal, so closing its master
+    // hangs it up and sends the session leader (the oracle) SIGHUP. The
+    // oracle has more arms to run, so it ignores SIGHUP from here on.
+    if let Err(e) = signal::sigaction(signal::SIGHUP, Some(&signal::Sigaction::ignore()), None) {
+        return Err(fail(ARM, format!("ignore_sighup_failed:{}", e)));
+    }
     let _ = io::close(master);
     pass(
         ARM,
