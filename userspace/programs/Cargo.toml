@@ -723,5 +723,9 @@ name = "suite-ipc"
 path = "src/suite_ipc.rs"
 
 [[bin]]
+name = "suite-networking"
+path = "src/suite_networking.rs"
+
+[[bin]]
 name = "fifo_fs_test"
 path = "src/fifo_fs_test.rs"

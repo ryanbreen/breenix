@@ -666,3 +666,55 @@ scripts/boot-interactive.sh --mode suite --suite ipc
 # From tools/breenix-runs:
 swift run breenix-runs run x86 --mode full --boots 1 --suite ipc --gate-timeout 420 --sha <pushed-sha>
 ```
+
+## Networking & sockets
+
+`networking` measures the networking effort in `docs/efforts/path.json`: one category per
+suite milestone, `udp`, `tcp`, `unix`, `options`, `multiplex` and `resolve`. The boot-path
+networking stage and the system-interface milestone are separate measures.
+
+Sockets are measured through the interface a portable C program uses, as IPC is: a function
+`libs/libbreenix-libc` defines is called there (`userspace/programs/build.rs` sets
+`libc_has = "<name>"` for the socket and resolver functions it has), a function the library
+lacks that Linux implements as a system call (socket, bind, accept4, sendmsg, recvmsg, the
+epoll calls, fcntl and the rest) is made by its Linux number, and a function a C library
+builds from other calls (getaddrinfo, freeaddrinfo, getnameinfo, gai_strerror, inet_pton,
+inet_ntop) fails each case that needs it with `the C library has no <name>` while the
+library lacks it. Structures use the Linux ABI's 64-bit layouts (msghdr, cmsghdr, ucred,
+linger, timeval, addrinfo, and epoll_event, packed on x86-64).
+
+Cases use 127.0.0.1, Unix paths under /tmp and abstract Unix names, so they need no
+outside network. The two `resolve/gateway-*` cases are the exception: they ask the QEMU user
+network's DNS server at 10.0.2.3 for example.com, once over raw UDP and once through
+getaddrinfo, and on a target without that network (or without an outside one) they fail
+within a few seconds, saying so. Each case process takes sixteen TCP and UDP ports from
+20000-29999, below Linux's ephemeral range, numbered from its process ID.
+
+Where POSIX leaves a value open or Linux departs from it, the case follows Linux and its
+source comment says so: an unbound listener is bound to an ephemeral port by listen, the
+socket accept returns does not inherit O_NONBLOCK, MSG_TRUNC on input returns a datagram's
+full length, SO_RCVBUF and SO_SNDBUF read back doubled, a timeval of a million microseconds
+fails with EDOM, a refused loopback nonblocking connect reports EINPROGRESS and leaves
+ECONNREFUSED in SO_ERROR, a Unix connect to a path that is not a socket fails with
+ECONNREFUSED, and abstract Unix addresses and POLLRDHUP exist. `resolve/gai-invalid-tld`
+follows RFC 6761: a name under `.invalid` gets a negative answer without asking a server.
+
+Waits for data receive with MSG_DONTWAIT and nap between looks, bounded at 3 seconds and
+stopping 1.5 seconds before the case's 10-second deadline, so a case whose data never comes
+fails saying what is missing. A call whose point is that it blocks (a receive or send
+timeout, a refused blocking connect, recv after SHUT_RD, MSG_WAITALL) runs in a process of
+its own the case waits on and kills. Timeouts (SO_RCVTIMEO, SO_SNDTIMEO, poll, select and
+epoll_wait) are checked as the time suite checks sleeps, never early and late by at most two
+timer ticks and 20 ms, and a poll blocked on a socket must come back within 100 ms of another
+process writing or connecting. Every Unix path a case binds is unlinked when the case ends.
+The /etc/hosts cases append a line naming the case's process ID and put the file back when
+they end; a copy saved in `/tmp/net-hosts-saved` lets the next resolve case put it back if
+the runner killed the case first.
+
+```bash
+scripts/boot-interactive.sh --mode suite --suite networking
+./run.sh --parallels --suite networking
+./run.sh --vmware --suite networking
+# From tools/breenix-runs:
+swift run breenix-runs run x86 --mode suite --boots 1 --suite networking --sha <pushed-sha>
+```
