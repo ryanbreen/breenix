@@ -75,16 +75,19 @@ fn device_modes_poll_and_non_sleeping_device_api() {
             .count(),
         2
     );
-    // The /dev/tty arm opens the controlling terminal's slave through
-    // open_tty_slave, which builds the entry the same way and installs it in
-    // the reserved slot, or in one it holds before taking the reference.
-    assert!(opens.contains("returnopen_tty_slave(&pair,flags,native_inode,reserved);"));
+    // The /dev/tty arm opens a PTY controlling terminal's slave through
+    // open_tty_slave, after releasing the process manager it takes itself;
+    // open_tty_slave builds the entry the same way and installs it in the
+    // reserved slot, or in one it holds before taking the reference.
+    assert!(opens.contains(
+        "(TtyId::Pty(_),TtyRef::Pty(pair))=>{drop(manager_guard);open_tty_slave(&pair,flags,native_inode,reserved)}"
+    ));
     let tty = f.split("fnopen_tty_slave(").nth(1).unwrap();
     assert!(tty.contains("FileDescriptor::try_opened(FdKind::PtySlave(pair.clone()),flags)"));
     assert!(tty.contains("Some(slot)=>Slot::Held(slot),"));
     assert_eq!(
         opens
-            .matches("install_descriptor(&mutprocess.fd_table,reserved,fd_kind)")
+            .matches("install_descriptor(&mutprocess.fd_table,reserved,")
             .count(),
         2
     );
