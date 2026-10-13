@@ -2845,7 +2845,7 @@ fn handle_devfs_open(
         return SyscallResult::Err(13); // EACCES
     }
     if device.device_type == devfs::DeviceType::Ptmx {
-        return crate::syscall::pty::sys_posix_openpt(flags as u64);
+        return crate::tty::pty::open_master(flags);
     }
 
     // Get current process and allocate fd
@@ -2887,13 +2887,13 @@ fn handle_devfs_open(
         };
         return match (id, tty) {
             (TtyId::Pty(pty_num), TtyRef::Pty(_)) => {
+                let pair = match crate::tty::pty::open_slave(pty_num) {
+                    Ok(pair) => pair, Err(e) => return SyscallResult::Err(e as u64),
+                };
                 let entry = match FileDescriptor::try_opened(FdKind::PtySlave(pair.clone()), flags) {
                     Ok(entry) => entry.with_inode(native_inode),
-                    Err(e) => return SyscallResult::Err(e),
+                    Err(e) => { crate::tty::pty::close_slave_ref(&pair); return SyscallResult::Err(e); }
                 };
-                if let Err(e) = crate::tty::pty::open_slave(pty_num) {
-                    return SyscallResult::Err(e as u64);
-                }
                 match install_descriptor(&mut process.fd_table, reserved, entry) {
                     Ok(fd) => SyscallResult::Ok(fd as u64),
                     Err(_) => {
@@ -2988,7 +2988,8 @@ fn handle_devpts_open(pty_name: &str, flags: u32) -> SyscallResult {
     // master), then allocate the fd with the caller's status flags so a slave
     // opened O_NONBLOCK actually reads non-blocking.
     let pair = match crate::tty::pty::open_slave(pty_num) {
-        Ok(pair) => pair, Err(e) => return SyscallResult::Err(e as u64),
+        Ok(pair) => pair,
+        Err(e) => return SyscallResult::Err(e as u64),
     };
     let entry = FileDescriptor::opened(FdKind::PtySlave(pair.clone()), flags);
     let fd = match process.fd_table.alloc_with_entry(entry) {

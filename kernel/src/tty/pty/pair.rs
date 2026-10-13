@@ -2,12 +2,12 @@
 
 use crate::task::waitqueue::WaitQueueHead;
 use crate::tty::ctty::TermCtl;
-use crate::tty::termios::Termios;
+use crate::tty::termios::{Termios, NOFLSH};
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 /// Global counter: total bytes written through PTY slave_write (diagnostic)
 pub static PTY_SLAVE_BYTES_WRITTEN: AtomicU64 = AtomicU64::new(0);
-use crate::syscall::errno::EAGAIN;
+use crate::syscall::errno::{EAGAIN, EIO};
 use crate::tty::ioctl::Winsize;
 use crate::tty::ctty::TtyRef;
 use crate::tty::line_discipline::LineDiscipline;
@@ -63,6 +63,17 @@ impl PtyBuffer {
         self.read_pos == self.write_pos
     }
 
+    /// Discard everything unread.
+    pub fn clear(&mut self) {
+        self.read_pos = self.write_pos;
+    }
+
+    /// Discard everything unread except the last `n` bytes written.
+    pub fn keep_last(&mut self, n: usize) {
+        let n = n.min(self.available());
+        self.read_pos = (self.write_pos + PTY_BUFFER_SIZE - n) % PTY_BUFFER_SIZE;
+    }
+
     /// Bytes that can still be written before the ring is full.
     pub fn space(&self) -> usize {
         PTY_BUFFER_SIZE - 1 - self.available()
@@ -108,6 +119,10 @@ pub struct PtyPair {
     /// Set once the last master reference is gone.
     master_gone: AtomicBool,
 
+    /// The last master close's hangup has not finished; the pair keeps its
+    /// number until it has.
+    pub(super) hangup_pending: AtomicBool,
+
     /// Slave output suspended by TCXONC(TCOOFF).
     output_stopped: AtomicBool,
 
@@ -140,6 +155,7 @@ impl PtyPair {
             slave_refcount: AtomicU32::new(0), // No slave FDs open initially
             slave_was_opened: AtomicBool::new(false),
             master_gone: AtomicBool::new(false),
+            hangup_pending: AtomicBool::new(false),
             output_stopped: AtomicBool::new(false),
             ctl: spin::Mutex::new(TermCtl::new()),
             master_readers: WaitQueueHead::new(),
@@ -174,10 +190,15 @@ impl PtyPair {
         }
     }
 
-    /// Record that the last master reference is gone and wake the slave side.
-    /// Deferred wakes, for the same reason as `slave_close`.
+    /// Record that the last master reference is gone. The PTY table lock is
+    /// held, so `open_slave` cannot see the master count at zero without it.
     pub(super) fn mark_master_closed(&self) {
         self.master_gone.store(true, Ordering::SeqCst);
+    }
+
+    /// Wake the slave side after the master closed. Deferred wakes, for the
+    /// same reason as `slave_close`.
+    pub(super) fn wake_slave_side(&self) {
         self.slave_readers.wake_up_deferred();
         self.slave_writers.wake_up_deferred();
     }
@@ -207,6 +228,13 @@ impl PtyPair {
         }
     }
 
+    /// Discard the slave output the master has not read (TCOFLUSH), and
+    /// wake writers waiting for room.
+    pub fn flush_output(&self) {
+        self.slave_to_master.lock().clear();
+        self.slave_writers.wake_up();
+    }
+
     /// True while slave output is suspended.
     pub fn output_stopped(&self) -> bool {
         self.output_stopped.load(Ordering::SeqCst)
@@ -220,28 +248,47 @@ impl PtyPair {
     ///
     /// Echo goes straight into the output ring while the line discipline is
     /// held (ldisc, then slave_to_master, is the lock order), so it keeps its
-    /// place among other writers' echo. Signals and wakes follow after both
-    /// locks are released.
+    /// place among other writers' echo. A signal character without NOFLSH
+    /// discards the unread output first (POSIX 11.1.9), under the same
+    /// locks, keeping only that character's own echo, as Linux echoes it
+    /// after the flush. Signals and wakes follow after both locks are
+    /// released.
     pub fn master_write(self: &Arc<Self>, data: &[u8]) -> usize {
         let mut signal_to_deliver = None;
         let mut echoed = false;
+        let mut flushed = false;
         let mut count = 0;
         {
             let mut ldisc = self.ldisc.lock();
             let mut ring = self.slave_to_master.lock();
+            // Echo is output, so OPOST|ONLCR translate it as they do output.
+            let onlcr = ldisc.termios().is_opost() && ldisc.termios().is_onlcr();
             for &byte in data {
                 if !ldisc.input_room() {
                     break;
                 }
+                let mut echo_len = 0;
                 let signal = ldisc.input_char(byte, &mut |echo_byte| {
-                    echoed |= ring.write(core::slice::from_ref(&echo_byte)) > 0;
+                    if onlcr && echo_byte == b'\n' {
+                        echo_len += ring.write(b"\r\n");
+                    } else {
+                        echo_len += ring.write(core::slice::from_ref(&echo_byte));
+                    }
                 });
+                echoed |= echo_len > 0;
                 count += 1;
                 if signal.is_some() {
+                    if ldisc.termios().c_lflag & NOFLSH == 0 {
+                        ring.keep_last(echo_len);
+                        flushed = true;
+                    }
                     signal_to_deliver = signal;
                     break;
                 }
             }
+        }
+        if flushed {
+            self.slave_writers.wake_up();
         }
 
         if let Some(sig) = signal_to_deliver {
@@ -259,14 +306,13 @@ impl PtyPair {
     /// Read data from master (slave's output)
     ///
     /// Returns Ok(n) if data was read, Err(EAGAIN) if no data available but
-    /// slave is still connected (or never connected), or Ok(0) (EOF) if slave
-    /// was connected and then all slave FDs were closed (hangup).
+    /// slave is still connected (or never connected), or Err(EIO) once the
+    /// slave was connected and then all slave FDs were closed (Linux).
     pub fn master_read(&self, buf: &mut [u8]) -> Result<usize, i32> {
         let n = self.slave_to_master.lock().read(buf);
         if n == 0 {
-            // No data — check if slave hung up (was opened then closed)
             if self.has_slave_hung_up() {
-                return Ok(0); // EOF — slave hung up
+                return Err(EIO);
             }
             return Err(EAGAIN);
         }
@@ -274,42 +320,23 @@ impl PtyPair {
         Ok(n)
     }
 
-    /// Write data from slave (goes to master's read buffer)
-    ///
-    /// Performs output processing (OPOST) if enabled in termios:
-    /// - ONLCR: translates \n to \r\n for proper terminal display
-    pub fn slave_write(&self, data: &[u8]) -> Result<usize, i32> {
-        let termios = self.termios_snapshot();
-        let do_onlcr = termios.is_opost() && termios.is_onlcr();
-
-        let mut buffer = self.slave_to_master.lock();
-        let n = if do_onlcr {
-            // Output processing: translate \n → \r\n
-            let mut written = 0;
-            for &byte in data {
-                if byte == b'\n' {
-                    if buffer.write(&[b'\r', b'\n']) < 2 {
-                        break;
-                    }
-                } else {
-                    if buffer.write(&[byte]) < 1 {
-                        break;
-                    }
-                }
-                written += 1;
+    /// Copy slave output into `ring` (the slave_to_master buffer) until it is
+    /// full, translating \n to \r\n when `onlcr` (OPOST|ONLCR) is set.
+    /// Returns how many bytes of `data` were consumed.
+    pub fn put_output(ring: &mut PtyBuffer, data: &[u8], onlcr: bool) -> usize {
+        let mut written = 0;
+        for &byte in data {
+            let out: &[u8] = if onlcr && byte == b'\n' { b"\r\n" } else { core::slice::from_ref(&byte) };
+            if ring.space() < out.len() {
+                break;
             }
-            written
-        } else {
-            buffer.write(data)
-        };
-        drop(buffer);
-        if n == 0 {
-            return Err(EAGAIN);
+            ring.write(out);
+            written += 1;
         }
-        PTY_SLAVE_BYTES_WRITTEN.fetch_add(n as u64, Ordering::Relaxed);
-        // Wake threads blocked on master_read
-        self.master_readers.wake_up();
-        Ok(n)
+        if written > 0 {
+            PTY_SLAVE_BYTES_WRITTEN.fetch_add(written as u64, Ordering::Relaxed);
+        }
+        written
     }
 
     /// Check if PTY is unlocked (slave can be opened)
