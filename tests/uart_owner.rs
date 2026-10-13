@@ -3,7 +3,9 @@
 //! Threads stand in for CPUs and a vector for the UART. A thread "stalls" by
 //! sleeping inside the UART-ready wait, which is after its byte's ownership
 //! check and before the byte, as a descheduled vCPU would. Time is scaled so
-//! a waiter skips an owner after 10 ms rather than 100 ms.
+//! a waiter skips an owner after 10 ms rather than 100 ms. A race orders its
+//! two CPUs by what each has written, not by how long each sleeps, so a host
+//! that runs one thread late does not change which bytes interleave.
 
 // uart_owner uses only the scanner's `contains`.
 #[allow(dead_code)]
@@ -13,7 +15,7 @@ mod stage_lines;
 mod uart_owner;
 
 use std::cell::Cell;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -28,6 +30,17 @@ static STATE: State = State::new();
 static WIRE: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 static OPEN: AtomicU8 = AtomicU8::new(0);
 static NEXT_CPU: AtomicU32 = AtomicU32::new(1);
+/// Bytes the second CPU of a race has written.
+static SECOND_WROTE: AtomicUsize = AtomicUsize::new(0);
+/// The second CPU's byte count that ends the first CPU's stall.
+static WAKE_AFTER: AtomicUsize = AtomicUsize::new(0);
+/// The second CPU waits before this byte of its own (1-based) until the first
+/// CPU has written again; 0 for no wait.
+static HOLD_AT: AtomicUsize = AtomicUsize::new(0);
+/// The first CPU has written a byte since its stall ended.
+static FIRST_RESUMED: AtomicBool = AtomicBool::new(false);
+/// No race step waits longer than this for the other CPU.
+const STEP_BOUND: Duration = Duration::from_secs(2);
 
 thread_local! {
     static CPU: u32 = NEXT_CPU.fetch_add(1, Ordering::Relaxed);
@@ -39,6 +52,19 @@ thread_local! {
     /// How long the UART takes to accept each of this thread's bytes.
     static PER_BYTE: Cell<Duration> = const { Cell::new(Duration::ZERO) };
     static STALLED: Cell<Option<&'static AtomicBool>> = const { Cell::new(None) };
+    /// This thread is a race's second CPU.
+    static SECOND: Cell<bool> = const { Cell::new(false) };
+    /// This thread's stall has ended and it has not written since.
+    static RESUMING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Sleep in 1 ms steps until `done` holds or `STEP_BOUND` passes.
+fn wait_for(done: impl Fn() -> bool) {
+    let deadline = Instant::now() + STEP_BOUND;
+    while !done() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(1));
+    }
+    assert!(done(), "race coordination timed out");
 }
 
 enum Test {}
@@ -79,7 +105,14 @@ impl Port for Test {
                 flag.store(true, Ordering::Release);
             }
             thread::sleep(STALL.with(Cell::get));
+            // Stay stalled until the other CPU has skipped this one and
+            // written its share.
+            wait_for(|| SECOND_WROTE.load(Ordering::Acquire) >= WAKE_AFTER.load(Ordering::Acquire));
+            RESUMING.with(|resuming| resuming.set(true));
         } else {
+            if SECOND.with(Cell::get) && n == HOLD_AT.load(Ordering::Acquire) {
+                wait_for(|| FIRST_RESUMED.load(Ordering::Acquire));
+            }
             thread::sleep(PER_BYTE.with(Cell::get));
         }
         true
@@ -87,6 +120,12 @@ impl Port for Test {
 
     fn write(byte: u8, _: &Ownership<Self>) {
         WIRE.lock().unwrap().push(byte);
+        if SECOND.with(Cell::get) {
+            SECOND_WROTE.fetch_add(1, Ordering::Release);
+        }
+        if RESUMING.with(|resuming| resuming.replace(false)) {
+            FIRST_RESUMED.store(true, Ordering::Release);
+        }
     }
 
     fn capture(_: u8) {}
@@ -121,12 +160,25 @@ fn record(writer: u8, bytes: &[u8], kind: Kind) {
     uart_owner::write::<Test, false>(writer, bytes, kind, &mut Ownership::acquire());
 }
 
-/// CPU 1 writes `first`, stalling for 60 ms before its byte number `stall_at`.
-/// Once it has stalled, CPU 2 writes `second`, 2 ms a byte, so CPU 2 skips
-/// CPU 1 and is part way through `second` when CPU 1 wakes. Returns the wire's lines.
-fn race(first: (&'static [u8], Kind), stall_at: usize, second: (&'static [u8], Kind)) -> Vec<String> {
+/// CPU 1 writes `first`, stalling before its byte number `stall_at`. Once it
+/// has stalled, CPU 2 writes `second` without per-byte sleeps. CPU 1 stays stalled for
+/// at least 60 ms and until CPU 2 has skipped it and written `wake_after`
+/// bytes, so CPU 2 is part way through `second` when CPU 1 wakes. With
+/// `hold_at` nonzero, CPU 2 waits before its byte with that number until
+/// CPU 1 has written again. Returns the wire's lines.
+fn race(
+    first: (&'static [u8], Kind),
+    stall_at: usize,
+    second: (&'static [u8], Kind),
+    wake_after: usize,
+    hold_at: usize,
+) -> Vec<String> {
     WIRE.lock().unwrap().clear();
     OPEN.store(0, Ordering::Relaxed);
+    SECOND_WROTE.store(0, Ordering::Release);
+    WAKE_AFTER.store(wake_after, Ordering::Release);
+    HOLD_AT.store(hold_at, Ordering::Release);
+    FIRST_RESUMED.store(false, Ordering::Release);
     let stalled: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
     let one = thread::spawn(move || {
         STALL_AT.with(|at| at.set(stall_at));
@@ -134,11 +186,10 @@ fn race(first: (&'static [u8], Kind), stall_at: usize, second: (&'static [u8], K
         STALLED.with(|flag| flag.set(Some(stalled)));
         record(1, first.0, first.1);
     });
-    while !stalled.load(Ordering::Acquire) {
-        thread::yield_now();
-    }
+    wait_for(|| stalled.load(Ordering::Acquire));
     let two = thread::spawn(move || {
-        PER_BYTE.with(|per| per.set(Duration::from_millis(2)));
+        SECOND.with(|second| second.set(true));
+        PER_BYTE.with(|per| per.set(Duration::ZERO));
         record(2, second.0, second.1);
     });
     one.join().unwrap();
@@ -159,10 +210,14 @@ fn stage_line() -> &'static [u8] {
 fn a_stale_byte_from_a_skipped_owner_does_not_leave_a_stage_line_broken() {
     let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let line = format!("[ INFO] kernel: {STAGE}");
+    // CPU 1 wakes once CPU 2 is past "[ INFO] kernel: " (and the line break it
+    // writes first), and CPU 2 waits a little later in its line for CPU 1's byte.
     let lines = race(
         (b"aaaaaaaaaaaaaaaaaaaa\n", Kind::Plain),
         5,
         (stage_line(), Kind::Plain),
+        20,
+        22,
     );
     // CPU 1's fifth byte, checked before CPU 2 skipped it, landed inside CPU 2's
     // line, including its prefix. Removing exactly that one byte must recover
@@ -186,6 +241,8 @@ fn a_stage_line_that_loses_its_ownership_is_written_again_whole() {
         (stage_line(), Kind::Plain),
         12,
         (b"bbbbbbbbbbbbbbbbbbbb\n", Kind::Plain),
+        5,
+        0,
     );
     assert!(lines.contains(&line), "no whole stage line: {lines:?}");
 }
@@ -196,7 +253,7 @@ fn a_notice_stays_one_whole_line_when_its_owner_stalls_before_the_newline() {
     let notice: &'static [u8] = Box::leak(format!("{UDP}\n").into_bytes().into_boxed_slice());
     // Stall before the newline, the notice's last byte, while CPU 2 writes an
     // unterminated record.
-    let lines = race((notice, Kind::Line), notice.len(), (b"bbbbbbbbbb", Kind::Plain));
+    let lines = race((notice, Kind::Line), notice.len(), (b"bbbbbbbbbb", Kind::Plain), 5, 0);
     assert!(
         lines.iter().any(|l| l == UDP),
         "the notice is not a whole line of its own: {lines:?}"
