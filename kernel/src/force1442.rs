@@ -26,7 +26,7 @@ enum Face {
     CloneVmExec,
     LoadChild,
 }
-const FACE: Face = Face::CloneVmExec;
+const FACE: Face = Face::LoadChild;
 
 const NO_CPU: u64 = u64::MAX;
 static TARGET_CPU: AtomicU64 = AtomicU64::new(NO_CPU);
