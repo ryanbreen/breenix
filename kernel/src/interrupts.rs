@@ -527,6 +527,9 @@ extern "x86-interrupt" fn serial_interrupt_handler(stack_frame: InterruptStackFr
         crate::serial::add_serial_byte(byte);
     }
 
+    // Wake the COM1 transmit thread if it waits for the transmitter to empty.
+    crate::serial::transmitter_interrupt();
+
     crate::arch_impl::x86_64::irq::eoi(InterruptIndex::Serial.as_u8());
 
     // Exit hardware IRQ context

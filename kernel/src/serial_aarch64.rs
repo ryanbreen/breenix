@@ -351,6 +351,11 @@ pub fn emergency_print(args: fmt::Arguments) -> Result<(), ()> {
     try_print(args)
 }
 
+/// Wait until the output written so far has left for the UART (TCSETSW,
+/// TCSETSF). Aarch64 writers give the UART their output before they return,
+/// so there is nothing to wait for.
+pub fn drain_output() {}
+
 /// Write out the lines posted on paths that may not log (`log_notice`).
 pub fn write_notices() {
     crate::serial_line::write_notices();
