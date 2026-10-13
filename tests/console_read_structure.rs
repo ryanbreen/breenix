@@ -23,16 +23,17 @@ fn same_guard_check_prepare_and_common_enqueue_wake() {
     assert!(adapter.contains("INPUT_READERS.prepare_to_wait_checked("));
     assert!(adapter.contains("||buffer.is_empty()"));
     assert!(!adapter.contains("drop(buffer)"));
-    let push = s
-        .split("fnpush_byte(&mutself")
-        .nth(1)
-        .unwrap()
-        .split("fnread_bytes")
-        .next()
-        .unwrap();
+    let storage = compact(&read("kernel/src/ipc/stdin_buffer.rs"));
+    let push = storage.split("fnpush_byte(&mutself").nth(1).unwrap()
+        .split("fnread_bytes").next().unwrap();
     assert!(push.contains("self.len+=1;"));
-    assert!(push.contains("INPUT_READERS.wake_up_deferred();"));
-    assert!(push.find("self.len+=1;").unwrap() < push.find("wake_up_deferred()").unwrap());
+    for producer in ["pubfnpush_byte(byte", "pubfnpush_byte_from_irq(byte"] {
+        let body = s.split(producer).nth(1).unwrap().split("pubfn").next().unwrap();
+        let publish = body.find("buffer.push_byte(byte)").unwrap();
+        let wake = body.find("INPUT_READERS.wake_up_deferred();").unwrap();
+        let unlock = body.find("drop(buffer)").unwrap();
+        assert!(publish < wake && wake < unlock);
+    }
     let helper = compact(&read("kernel/src/syscall/blocking_io.rs"));
     assert!(helper.contains("wait_prepared(&crate::ipc::stdin::INPUT_READERS,outcome)?"));
 }
@@ -67,16 +68,20 @@ fn device_modes_poll_and_non_sleeping_device_api() {
         .split("fnhandle_devpts_open(")
         .next()
         .unwrap();
-    assert_eq!(opens.matches("FileDescriptor::try_opened(").count(), 3);
+    assert_eq!(opens.matches("FileDescriptor::try_opened(").count(), 2);
     assert_eq!(
         opens
             .matches("FileDescriptor::try_opened(FdKind::Device(device.device_type),flags)")
-            .count()
-            + opens
-                .matches("FileDescriptor::try_opened(FdKind::PtySlave(pty_num),flags)")
-                .count(),
-        3
+            .count(),
+        2
     );
+    // The /dev/tty arm opens the controlling terminal's slave through
+    // open_tty_slave, which builds the entry the same way and installs it in
+    // the reserved slot, or in one it holds before taking the reference.
+    assert!(opens.contains("returnopen_tty_slave(&pair,flags,native_inode,reserved);"));
+    let tty = f.split("fnopen_tty_slave(").nth(1).unwrap();
+    assert!(tty.contains("FileDescriptor::try_opened(FdKind::PtySlave(pair.clone()),flags)"));
+    assert!(tty.contains("Some(slot)=>Slot::Held(slot),"));
     assert_eq!(
         opens
             .matches("install_descriptor(&mutprocess.fd_table,reserved,fd_kind)")
@@ -152,7 +157,7 @@ fn both_architectures_score_all_console_arms() {
 }
 #[test]
 fn data_signal_and_immediate_controls_remain_observable() {
-    let stdin = compact(&read("kernel/src/ipc/stdin.rs"));
+    let stdin = compact(&read("kernel/src/ipc/stdin_buffer.rs"));
     assert!(stdin.contains("buf[read]=self.buffer[self.read_pos]"));
     assert!(stdin.contains("letto_read=buf.len().min(self.len)"));
     let helper = compact(&read("kernel/src/syscall/blocking_io.rs"));

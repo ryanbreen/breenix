@@ -719,3 +719,85 @@ scripts/boot-interactive.sh --mode suite --suite networking
 # From tools/breenix-runs:
 swift run breenix-runs run x86 --mode suite --boots 1 --suite networking --sha <pushed-sha>
 ```
+
+## Terminals & job control
+
+`terminals` measures the Terminals & job control effort in `docs/efforts/path.json`: one
+category per suite milestone, `termios`, `pty`, `controlling` and `job-control`. The TTY &
+shell milestone is measured on the boot path, and the interfaces milestone separately.
+Vigil's syscall page has no terminal area (ioctl is under Files & I/O, and setsid, getsid,
+setpgid and getpgid under Processes), so the manifest's `area` is the effort's title.
+
+The contract is POSIX.1-2024 chapter 11, the General Terminal Interface, and the termios.h,
+tcgetattr, tcsetattr, tcdrain, tcflush, tcflow, tcsendbreak, tcgetpgrp, tcsetpgrp, tcgetsid,
+setsid, setpgid, getpgid, getsid, posix_openpt, grantpt, unlockpt and ptsname pages, on
+Linux's ABI on both architectures: the 60-byte struct termios a C library declares (the
+kernel's TCGETS and TCSETS use its first 36 bytes), Linux's flag values and c_cc indexes, the
+ioctl numbers, struct winsize, /dev/ptmx and /dev/pts.
+
+Terminals are measured through the interface a portable C program uses. A function
+Breenix's own C library, `libs/libbreenix-libc`, defines is called there:
+`userspace/programs/build.rs` reads libc.a's symbol index and sets `libc_has = "<name>"` for
+the terminal functions it has. A function the library lacks that Linux implements as an
+ioctl or a system call is made by its Linux number, as a C library makes it: tcgetattr
+through TCGETS, tcsetattr through TCSETS, TCSETSW and TCSETSF, tcflush through TCFLSH,
+tcdrain and tcsendbreak through TCSBRK, tcflow through TCXONC, tcgetpgrp, tcsetpgrp and
+tcgetsid through TIOCGPGRP, TIOCSPGRP and TIOCGSID, posix_openpt by opening /dev/ptmx,
+unlockpt through TIOCSPTLCK, ptsname through TIOCGPTN, and setsid, getsid, setpgid and
+getpgid directly, so a kernel that lacks one fails the case with its error. A function a C
+library builds without the kernel (cfgetispeed, cfgetospeed, cfsetispeed, cfsetospeed and
+grantpt) fails each case that needs it with `the C library has no <name>` while the library
+lacks it, and so does `termios/tcsetattr-einval`, since refusing an unknown optional_actions
+is the library's job.
+
+Every case uses pseudo-terminals, so none needs a console. A case opens a pair with
+posix_openpt(O_RDWR | O_NOCTTY), grantpt, unlockpt and ptsname, and opens the slave with
+O_NOCTTY. Cases that set modes start from line mode (ICANON, no echo, no signals, no input
+mapping, OPOST clear) or raw mode (ICANON clear, VMIN 1, VTIME 0) and add only what the case
+tests, so the bytes compared are exact. A read the case expects to return, or to find
+nothing, is a non-blocking read retried until its bound, 200 ms to 4 seconds, so a terminal
+that never delivers fails the case instead of hanging it. Blocking reads (`vmin-blocks` and
+the VTIME cases) run in a child the case waits on. `vtime-timeout` accepts a return 180 to
+500 ms into a 200 ms VTIME, and `vtime-interbyte` 150 to 1000 ms; both report the time as a
+VALUE.
+
+A case that expects a call to fail first makes the same call where it must succeed (on a
+pseudo-terminal slave, a master, its own controlling terminal) and fails if that does not
+work, so a call that is missing, and fails everywhere with ENOTTY or EINVAL, fails the case
+instead of passing it. `controlling/open-noctty`, `open-not-leader`, `open-taken`,
+`setsid-leaves`, `tcgetsid-other` and `tcgetsid-enotty` show tcgetsid returning the session
+ID on a controlling terminal before they trust its ENOTTY, `setsid-no-ctty` opens /dev/tty
+once the session has a controlling terminal, and `job-control/isig-off` sets ISIG and checks
+that ^C then sends SIGINT.
+
+A process that needs a controlling terminal first calls setsid, so no case touches the
+runner's session or process group, and then takes the slave with TIOCSCTTY; its process
+group is then the terminal's foreground group. Background jobs are put in a group of their
+own by both the job and its parent, as a shell does. Job-control cases give the signal under
+test its default action, or ignore or block it, explicitly, whatever the runner left. A stop
+is observed by the job's parent with waitpid(WUNTRACED). Signals the case expects (SIGHUP,
+SIGINT, SIGQUIT, SIGTSTP, SIGWINCH) are blocked and taken with sigtimedwait within 3
+seconds; a signal that must not come is waited for 300 to 500 ms. A process in an orphaned
+group is made by starting it from a process that then exits, so its parent becomes PID 1,
+outside the session; such a process reports on the case's page.
+
+Linux's choices the suite follows, each titled `Linux ABI:` where POSIX leaves the behaviour
+open: opening /dev/ptmx gives a master, opening the slave before unlockpt fails with EIO, a
+read on the master after the slave closes returns any data left and then fails with EIO, and
+poll on that master reports POLLHUP; tcsetattr on the master sets the slave's attributes;
+/dev/pts lists a slave's number while the pair is open and stops once it closes; opening
+/dev/tty with no controlling terminal fails with ENXIO; root's TIOCSCTTY with argument 1
+takes a terminal from another session; and TIOCNOTTY in the session leader sends SIGHUP to
+the foreground group. `controlling/open-acquires` follows Linux's choice where POSIX leaves
+it implementation-defined: a session leader acquires a terminal it opens without O_NOCTTY.
+`job-control/tcsetpgrp-eperm` uses a group that exists in another session, where Linux and
+POSIX agree on EPERM; for a group that does not exist Linux returns ESRCH, and the suite does
+not test it.
+
+```bash
+scripts/boot-interactive.sh --mode suite --suite terminals
+./run.sh --parallels --suite terminals
+./run.sh --vmware --suite terminals
+# From tools/breenix-runs:
+swift run breenix-runs run x86 --mode suite --boots 1 --suite terminals --gate-timeout 420 --sha <pushed-sha>
+```

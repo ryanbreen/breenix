@@ -25,8 +25,6 @@
 //!     Return PtySlave file descriptor
 //! ```
 
-use alloc::string::String;
-use alloc::vec::Vec;
 use spin::Mutex;
 
 use crate::tty::pty;
@@ -41,9 +39,19 @@ pub struct PtsEntry {
 }
 
 impl PtsEntry {
-    /// Get the entry name (just the number as string)
-    pub fn name(&self) -> String {
-        alloc::format!("{}", self.pty_num)
+    /// The entry name (the number in decimal), written into `buf`.
+    pub fn name<'a>(&self, buf: &'a mut [u8; 10]) -> &'a [u8] {
+        let mut n = self.pty_num;
+        let mut start = buf.len();
+        loop {
+            start -= 1;
+            buf[start] = b'0' + (n % 10) as u8;
+            n /= 10;
+            if n == 0 {
+                break;
+            }
+        }
+        &buf[start..]
     }
 }
 
@@ -76,40 +84,20 @@ pub fn init() {
     crate::fs::vfs::mount::mount("/dev/pts", "devpts");
 }
 
+/// Whether `/dev/pts` shows pair `pty_num`. As on Linux, a pair is listed
+/// from allocation, locked or not, until its master closes.
+fn visible(pty_num: u32) -> bool {
+    pty::get(pty_num).is_some_and(|pair| !pair.master_closed())
+}
+
 /// Look up a PTY slave device by name (the number as string, e.g., "0", "1")
 ///
-/// Returns the PTY number if:
-/// 1. The name is a valid number
-/// 2. A PTY with that number exists
-/// 3. The PTY is unlocked (unlockpt was called)
-///
-/// # Arguments
-/// * `name` - The PTY number as a string (without /dev/pts/ prefix)
-///
-/// # Returns
-/// * `Some(pty_num)` if the PTY exists and is unlocked
-/// * `None` if the PTY doesn't exist or is still locked
+/// Returns the PTY number if the name is a valid number and that pair is
+/// visible. Opening a locked pair's slave fails with EIO (see
+/// `pty::open_slave`), not ENOENT.
 pub fn lookup(name: &str) -> Option<u32> {
-    // Parse the PTY number from name
-    let pty_num: u32 = match name.parse() {
-        Ok(n) => n,
-        Err(_) => {
-            return None;
-        }
-    };
-
-    // Check if PTY exists and is unlocked
-    let pair = match pty::get(pty_num) {
-        Some(p) => p,
-        None => {
-            return None;
-        }
-    };
-    if !pair.is_unlocked() {
-        return None;
-    }
-
-    Some(pty_num)
+    let pty_num: u32 = name.parse().ok()?;
+    visible(pty_num).then_some(pty_num)
 }
 
 /// Look up a PTY slave by inode number
@@ -125,14 +113,7 @@ pub fn lookup_by_inode(inode: u64) -> Option<u32> {
     }
 
     let pty_num = (inode - PTY_INODE_BASE) as u32;
-
-    // Verify the PTY exists and is unlocked
-    let pair = pty::get(pty_num)?;
-    if !pair.is_unlocked() {
-        return None;
-    }
-
-    Some(pty_num)
+    visible(pty_num).then_some(pty_num)
 }
 
 /// Get inode number for a PTY slave
@@ -141,31 +122,20 @@ pub fn get_inode(pty_num: u32) -> u64 {
     PTY_INODE_BASE + pty_num as u64
 }
 
-/// List all active and unlocked PTY slave entries
-///
-/// Returns entries for all PTYs that:
-/// 1. Have been allocated
-/// 2. Have been unlocked (unlockpt called)
-pub fn list_entries() -> Vec<PtsEntry> {
-    pty::list_active()
-        .into_iter()
-        .filter_map(|pty_num| {
-            // Only include unlocked PTYs
-            let pair = pty::get(pty_num)?;
-            if !pair.is_unlocked() {
-                return None;
-            }
-            Some(PtsEntry {
+/// The first visible PTY slave entry numbered above `after` (or the lowest,
+/// for None). Listing walks these without allocating.
+pub fn next_entry(after: Option<u32>) -> Option<PtsEntry> {
+    let mut after = after;
+    while let Some(pty_num) = pty::next_active(after) {
+        if visible(pty_num) {
+            return Some(PtsEntry {
                 pty_num,
                 inode: get_inode(pty_num),
-            })
-        })
-        .collect()
-}
-
-/// List all PTY slave names (for directory listing)
-pub fn list_names() -> Vec<String> {
-    list_entries().into_iter().map(|e| e.name()).collect()
+            });
+        }
+        after = Some(pty_num);
+    }
+    None
 }
 
 /// Check if devpts is initialized

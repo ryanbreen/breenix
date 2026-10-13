@@ -6,8 +6,6 @@
 
 use crate::task::waitqueue::{PrepareOutcome, WaitQueueHead};
 use alloc::collections::VecDeque;
-#[cfg(target_arch = "x86_64")]
-use alloc::vec::Vec;
 use spin::Mutex;
 
 /// Console/Tty readers share the live input ring, but not the legacy stdin registry.
@@ -22,72 +20,9 @@ static BLOCKED_READERS: Mutex<VecDeque<u64>> = Mutex::new(VecDeque::new());
 /// The global stdin buffer
 static STDIN_BUFFER: Mutex<StdinBuffer> = Mutex::new(StdinBuffer::new());
 
-/// Stdin ring buffer
-pub struct StdinBuffer {
-    /// Circular buffer storage
-    buffer: [u8; STDIN_BUF_SIZE],
-    /// Read position
-    read_pos: usize,
-    /// Write position
-    write_pos: usize,
-    /// Number of bytes in buffer
-    len: usize,
-}
-
-impl StdinBuffer {
-    /// Create a new empty stdin buffer
-    pub const fn new() -> Self {
-        StdinBuffer {
-            buffer: [0; STDIN_BUF_SIZE],
-            read_pos: 0,
-            write_pos: 0,
-            len: 0,
-        }
-    }
-
-    /// Push a single byte to the buffer
-    /// Returns true if the byte was added, false if buffer is full
-    fn push_byte(&mut self, byte: u8) -> bool {
-        if self.len >= STDIN_BUF_SIZE {
-            return false;
-        }
-
-        self.buffer[self.write_pos] = byte;
-        self.write_pos = (self.write_pos + 1) % STDIN_BUF_SIZE;
-        self.len += 1;
-        // Buffer -> queue order matches checked publication. Deferred delivery
-        // avoids acquiring the scheduler in the input producer.
-        INPUT_READERS.wake_up_deferred();
-        true
-    }
-
-    /// Read bytes from the buffer into the provided slice
-    /// Returns the number of bytes actually read
-    fn read_bytes(&mut self, buf: &mut [u8]) -> usize {
-        let to_read = buf.len().min(self.len);
-        let mut read = 0;
-
-        while read < to_read {
-            buf[read] = self.buffer[self.read_pos];
-            self.read_pos = (self.read_pos + 1) % STDIN_BUF_SIZE;
-            read += 1;
-        }
-
-        self.len -= read;
-        read
-    }
-
-    /// Check if buffer is empty
-    fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
-    /// Get number of bytes available to read
-    #[allow(dead_code)]
-    fn available(&self) -> usize {
-        self.len
-    }
-}
+#[path = "stdin_buffer.rs"]
+mod buffer;
+use buffer::StdinBuffer;
 
 /// Push a byte to the stdin buffer
 /// Called from keyboard task when a character is typed
@@ -99,6 +34,7 @@ impl StdinBuffer {
 pub fn push_byte(byte: u8) {
     let mut buffer = STDIN_BUFFER.lock();
     if buffer.push_byte(byte) {
+        INPUT_READERS.wake_up_deferred();
         // Echo character to serial output for now
         crate::serial::write_byte(crate::serial::Writer::Tty, byte);
 
@@ -121,6 +57,7 @@ pub fn push_byte_from_irq(byte: u8) -> bool {
     // Try to acquire the buffer lock - don't block in interrupt context
     if let Some(mut buffer) = STDIN_BUFFER.try_lock() {
         if buffer.push_byte(byte) {
+            INPUT_READERS.wake_up_deferred();
             drop(buffer);
 
             // Try to wake blocked readers (may fail if scheduler lock is held)
@@ -131,12 +68,30 @@ pub fn push_byte_from_irq(byte: u8) -> bool {
     false
 }
 
+/// Publish a canonical EOF boundary without inserting a userspace byte.
+pub fn push_eof_from_irq() -> bool {
+    if let Some(mut buffer) = STDIN_BUFFER.try_lock() {
+        if buffer.push_eof() {
+            INPUT_READERS.wake_up_deferred();
+            drop(buffer);
+            wake_blocked_readers_try();
+            return true;
+        }
+    }
+    false
+}
+
+/// Flush type-ahead already transferred from the console line discipline.
+pub fn flush_input() {
+    crate::arch_without_interrupts(|| STDIN_BUFFER.lock().flush());
+}
+
 /// Try to wake blocked readers without blocking (for interrupt context)
 #[cfg(target_arch = "x86_64")]
 fn wake_blocked_readers_try() {
-    let readers: alloc::vec::Vec<u64> = {
+    let readers: VecDeque<u64> = {
         if let Some(mut blocked) = BLOCKED_READERS.try_lock() {
-            blocked.drain(..).collect()
+            core::mem::take(&mut *blocked)
         } else {
             return; // Can't get lock, readers will be woken when they retry
         }
@@ -163,9 +118,9 @@ fn wake_blocked_readers_try() {
 /// Wake blocked readers on ARM64 (non-blocking version for interrupt context)
 #[cfg(target_arch = "aarch64")]
 fn wake_blocked_readers_try() {
-    let readers: alloc::vec::Vec<u64> = {
+    let readers: VecDeque<u64> = {
         if let Some(mut blocked) = BLOCKED_READERS.try_lock() {
-            blocked.drain(..).collect()
+            core::mem::take(&mut *blocked)
         } else {
             return; // Can't get lock, readers will be woken when they retry
         }
@@ -209,12 +164,14 @@ pub fn has_data() -> bool {
 ///
 /// Used by sys_read when blocking on stdin. When data becomes available
 /// via push_byte_from_irq, the blocked readers are woken.
-pub fn register_blocked_reader(thread_id: u64) {
+pub fn register_blocked_reader(thread_id: u64) -> Result<(), i32> {
     let mut blocked = BLOCKED_READERS.lock();
     if !blocked.contains(&thread_id) {
+        blocked.try_reserve(1).map_err(|_| 12)?;
         blocked.push_back(thread_id);
         log::trace!("stdin: Thread {} blocked waiting for input", thread_id);
     }
+    Ok(())
 }
 
 /// Unregister a thread from waiting for stdin (e.g., on signal or timeout)
@@ -230,9 +187,9 @@ pub fn unregister_blocked_reader(thread_id: u64) {
 #[cfg(target_arch = "x86_64")]
 #[allow(dead_code)]
 fn wake_blocked_readers() {
-    let readers: Vec<u64> = {
+    let readers: VecDeque<u64> = {
         let mut blocked = BLOCKED_READERS.lock();
-        blocked.drain(..).collect()
+        core::mem::take(&mut *blocked)
     };
 
     if readers.is_empty() {
@@ -257,11 +214,9 @@ fn wake_blocked_readers() {
 #[cfg(target_arch = "aarch64")]
 #[allow(dead_code)]
 fn wake_blocked_readers() {
-    use alloc::vec::Vec;
-
-    let readers: Vec<u64> = {
+    let readers: VecDeque<u64> = {
         let mut blocked = BLOCKED_READERS.lock();
-        blocked.drain(..).collect()
+        core::mem::take(&mut *blocked)
     };
 
     if readers.is_empty() {
@@ -282,7 +237,7 @@ fn wake_blocked_readers() {
 /// Get the number of bytes available in the stdin buffer
 #[allow(dead_code)]
 pub fn available() -> usize {
-    STDIN_BUFFER.lock().len
+    STDIN_BUFFER.lock().available()
 }
 
 /// Debug helper: inject a character into stdin as if typed on the keyboard.

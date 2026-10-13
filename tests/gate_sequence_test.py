@@ -37,7 +37,6 @@ class SequenceTests(unittest.TestCase):
                     handle.write(b'KERNEL PANIC: third suite\n' if suite == 'third' else b'healthy\n')
             class Child:
                 stopped = False
-                def __init__(self, command): output('first')
                 def poll(self): return 1 if self.stopped else None
                 def terminate(self): self.stopped = True
                 def wait(self, timeout=None): return 0
@@ -49,9 +48,14 @@ class SequenceTests(unittest.TestCase):
                         output(('first', 'second', 'third')[self.index])
                         if self.index == 2: child.stopped = True
                 def close(self): pass
-            (out / 'serial_user.log').write_text(f'[clock] UTC epoch={int(time.time())} source=CMOS\n')
-            child = Child([])
-            with patch.object(sequence.subprocess, 'Popen', return_value=child), patch.object(sequence, 'QMP', QMP), \
+            def launch(command):
+                # A guest reads its clock after launch, so its epoch cannot predate the
+                # launch time main() records; write it here, not before main() runs.
+                (out / 'serial_user.log').write_text(f'[clock] UTC epoch={int(time.time())} source=CMOS\n')
+                output('first')
+                return child
+            child = Child()
+            with patch.object(sequence.subprocess, 'Popen', side_effect=launch), patch.object(sequence, 'QMP', QMP), \
                  patch.object(sequence.time, 'sleep'), patch.dict(os.environ, BREENIX_QMP_SOCKET='/fake', BREENIX_SUITE_HOLD='0'), \
                  patch.object(sys, 'argv', ['boot', str(repo), str(out), 'first,second,third,fourth', '300', 'qemu']):
                 self.assertEqual(sequence.main(), 1)

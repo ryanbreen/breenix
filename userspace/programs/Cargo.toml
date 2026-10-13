@@ -727,5 +727,9 @@ name = "suite-networking"
 path = "src/suite_networking.rs"
 
 [[bin]]
+name = "suite-terminals"
+path = "src/suite_terminals.rs"
+
+[[bin]]
 name = "fifo_fs_test"
 path = "src/fifo_fs_test.rs"
