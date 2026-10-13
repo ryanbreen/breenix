@@ -1,18 +1,42 @@
 #[path = "shared_coreproof/mutation_leg_mask.rs"]
 mod mutation_leg_mask;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
+
+// Key by the complete text, not its address or filename: mutations and fragments
+// must get their own analysis, while identical repository snapshots can share it.
+type SourceCache<T> = OnceLock<Mutex<HashMap<String, Arc<T>>>>;
+
+fn cached_source<T>(cache: &SourceCache<T>, source: &str, build: impl FnOnce() -> T) -> Arc<T> {
+    let entries = cache.get_or_init(Mutex::default);
+    if let Some(value) = entries.lock().unwrap().get(source).cloned() {
+        return value;
+    }
+    // Build without the cache lock: analysis may panic or consult other caches.
+    let value = Arc::new(build());
+    Arc::clone(entries.lock().unwrap().entry(source.to_owned()).or_insert(value))
+}
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
 fn repo_text(relative: &str) -> String {
-    fs::read_to_string(repo_root().join(relative))
+    read_source(&repo_root().join(relative))
         .unwrap_or_else(|_| panic!("read repository file {relative}"))
+}
+
+fn read_source(path: &std::path::Path) -> std::io::Result<String> {
+    static SOURCES: OnceLock<Mutex<HashMap<PathBuf, String>>> = OnceLock::new();
+    let sources = SOURCES.get_or_init(Mutex::default);
+    if let Some(source) = sources.lock().unwrap().get(path).cloned() {
+        return Ok(source);
+    }
+    let source = fs::read_to_string(path)?;
+    Ok(sources.lock().unwrap().entry(path.to_path_buf()).or_insert(source).clone())
 }
 
 fn rust_sources_below(relative: &str) -> &'static Vec<(PathBuf, String)> {
@@ -24,7 +48,7 @@ fn rust_sources_below(relative: &str) -> &'static Vec<(PathBuf, String)> {
         } else if path.extension().is_some_and(|extension| extension == "rs") {
             sources.push((
                 path.to_path_buf(),
-                fs::read_to_string(path).expect("read Rust source"),
+                read_source(path).expect("read Rust source"),
             ));
         }
     }
@@ -50,7 +74,7 @@ fn text_sources_below(relative: &str) -> &'static Vec<(String, String)> {
             for entry in fs::read_dir(path).expect("read source directory") {
                 visit(root, &entry.expect("read source entry").path(), sources);
             }
-        } else if let Ok(source) = fs::read_to_string(path) {
+        } else if let Ok(source) = read_source(path) {
             let relative = path
                 .strip_prefix(root)
                 .expect("source below repository root")
@@ -79,13 +103,21 @@ fn text_sources_below(relative: &str) -> &'static Vec<(String, String)> {
 /// "not a comment and not a string literal", and it now also means "not a leg no
 /// production build compiles". See `shared_coreproof/mutation_leg_mask.rs` for
 /// how narrow the exemption is and what proves it stays that way.
-fn code_mask(source: &str) -> Vec<bool> {
-    let mut mask = raw_code_mask(source);
-    mutation_leg_mask::apply(source, &mut mask);
-    mask
+fn code_mask(source: &str) -> Arc<Vec<bool>> {
+    static MASKS: SourceCache<Vec<bool>> = OnceLock::new();
+    cached_source(&MASKS, source, || {
+        let mut mask = raw_code_mask(source).as_ref().clone();
+        mutation_leg_mask::apply(source, &mut mask);
+        mask
+    })
 }
 
-fn raw_code_mask(source: &str) -> Vec<bool> {
+fn raw_code_mask(source: &str) -> Arc<Vec<bool>> {
+    static MASKS: SourceCache<Vec<bool>> = OnceLock::new();
+    cached_source(&MASKS, source, || build_raw_code_mask(source))
+}
+
+fn build_raw_code_mask(source: &str) -> Vec<bool> {
     let bytes = source.as_bytes();
     let mut mask = vec![true; bytes.len()];
     let mut line_comment = false;
@@ -316,7 +348,7 @@ fn normalized_code(fragment: &str) -> String {
     let mask = code_mask(fragment);
     let kept: Vec<u8> = fragment
         .bytes()
-        .zip(mask)
+        .zip(mask.iter().copied())
         .filter_map(|(byte, code)| code.then_some(byte))
         .collect();
     String::from_utf8_lossy(&kept)
@@ -5742,19 +5774,65 @@ fn source_functions(source: &str, mask: &[bool], blocks: &[LexicalBlock]) -> Vec
     functions
 }
 
+struct FatalSourceAnalysis {
+    mask: Arc<Vec<bool>>,
+    blocks: Vec<LexicalBlock>,
+    functions: Vec<SourceFunction>,
+    definition_names: BTreeSet<usize>,
+    module_names: BTreeSet<String>,
+    calls: Mutex<BTreeMap<String, Arc<Vec<usize>>>>,
+}
+
+fn fatal_source_analysis(source: &str) -> Arc<FatalSourceAnalysis> {
+    static SOURCES: SourceCache<FatalSourceAnalysis> = OnceLock::new();
+    cached_source(&SOURCES, source, || {
+        let mask = code_mask(source);
+        let blocks = lexical_blocks(source, &mask);
+        let functions = source_functions(source, &mask, &blocks);
+        let definition_names = functions
+            .iter()
+            .map(|function| function.name_offset)
+            .collect();
+        let module_names = module_function_bodies(source).into_keys().collect();
+        FatalSourceAnalysis {
+            mask,
+            blocks,
+            functions,
+            definition_names,
+            module_names,
+            calls: Mutex::default(),
+        }
+    })
+}
+
+impl FatalSourceAnalysis {
+    fn call_offsets(&self, source: &str, name: &str) -> Arc<Vec<usize>> {
+        if let Some(calls) = self.calls.lock().unwrap().get(name).cloned() {
+            return calls;
+        }
+        // Keep the original matcher, including its byte boundaries and
+        // treatment of comments, strings and compiled-out mutation legs.
+        let calls = Arc::new(call_offsets(source, &self.mask, name));
+        debug_assert!(calls.windows(2).all(|pair| pair[0] < pair[1]));
+        Arc::clone(self.calls.lock().unwrap().entry(name.to_owned()).or_insert(calls))
+    }
+}
+
 fn derived_blocking_scheduler_accessors(
     scheduler_source: &str,
 ) -> Result<BTreeSet<String>, String> {
-    let mask = code_mask(scheduler_source);
-    let blocks = lexical_blocks(scheduler_source, &mask);
-    let functions = source_functions(scheduler_source, &mask, &blocks);
+    let analysis = fatal_source_analysis(scheduler_source);
     let bodies = module_function_bodies(scheduler_source);
     let mut blocking = BTreeSet::new();
 
     if bodies.contains_key("lock_scheduler") {
         blocking.insert("lock_scheduler".to_string());
     }
-    for function in functions.iter().filter(|function| function.is_public) {
+    for function in analysis
+        .functions
+        .iter()
+        .filter(|function| function.is_public)
+    {
         if bodies.get(&function.name).is_some_and(|definitions| {
             definitions.iter().any(|body| {
                 let body_mask = code_mask(body);
@@ -5888,27 +5966,28 @@ fn scanned_fatal_sources(
 }
 
 fn resolved_callees_in_range(
-    source: &str,
-    mask: &[bool],
+    call_sites: &BTreeMap<String, Arc<Vec<usize>>>,
     definition_names: &BTreeSet<usize>,
-    resolved_names: &BTreeSet<String>,
     open: usize,
     close: usize,
 ) -> BTreeSet<String> {
-    resolved_names
+    call_sites
         .iter()
-        .filter(|name| {
-            call_offsets(source, mask, name).into_iter().any(|offset| {
-                open < offset && offset < close && !definition_names.contains(&offset)
-            })
+        .filter(|(_, calls)| {
+            // match_indices produces sorted offsets. Restrict the cached
+            // results to the exact open interval the original scan checked.
+            let start = calls.partition_point(|offset| *offset <= open);
+            calls[start..]
+                .iter()
+                .take_while(|offset| **offset < close)
+                .any(|offset| !definition_names.contains(offset))
         })
-        .cloned()
+        .map(|(name, _)| name.clone())
         .collect()
 }
 
 fn derived_fatal_callees(
     exception_source: &str,
-    exception_mask: &[bool],
     exception_blocks: &[LexicalBlock],
     exception_functions: &[SourceFunction],
     el0_only: &BTreeSet<String>,
@@ -5916,20 +5995,29 @@ fn derived_fatal_callees(
 ) -> Result<BTreeSet<String>, String> {
     let resolved_names: BTreeSet<_> = scanned_sources
         .iter()
-        .flat_map(|(_, source)| module_function_bodies(source).into_keys())
+        .flat_map(|(_, source)| {
+            fatal_source_analysis(source)
+                .module_names
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+        })
         .collect();
     let exception_definition_names: BTreeSet<_> = exception_functions
         .iter()
         .map(|function| function.name_offset)
         .collect();
+    let exception_analysis = fatal_source_analysis(exception_source);
 
     // Seeds are derived from every resolved call site that the existing
     // exception-region analysis says an EL1 exception can reach.
     let mut fatal_callees: BTreeSet<_> = resolved_names
         .iter()
         .filter(|name| {
-            call_offsets(exception_source, exception_mask, name)
-                .into_iter()
+            exception_analysis
+                .call_offsets(exception_source, name)
+                .iter()
+                .copied()
                 .filter(|offset| !exception_definition_names.contains(offset))
                 .any(|offset| {
                     !call_is_el0_guarded(exception_blocks, offset)
@@ -5940,31 +6028,37 @@ fn derived_fatal_callees(
         .cloned()
         .collect();
 
+    // Build each definition's outgoing edges once, using the same source-wide
+    // call matcher and definition exclusion as the original closure loop.
+    // Union same-named definitions, including definitions in different files.
+    let mut edges: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for (_, source) in scanned_sources {
+        let analysis = fatal_source_analysis(source);
+        let call_sites = resolved_names
+            .iter()
+            .map(|name| (name.clone(), analysis.call_offsets(source, name)))
+            .collect();
+        for function in &analysis.functions {
+            edges
+                .entry(function.name.clone())
+                .or_default()
+                .extend(resolved_callees_in_range(
+                    &call_sites,
+                    &analysis.definition_names,
+                    function.open,
+                    function.close,
+                ));
+        }
+    }
+
     // Follow only callees whose definitions are inside the bounded source
     // domain. This is deliberately a downward closure: callers of a fatal
     // emitter do not become fatal merely because they can invoke it.
     loop {
         let mut newly_reached = BTreeSet::new();
-        for (_, source) in scanned_sources {
-            let mask = code_mask(source);
-            let blocks = lexical_blocks(source, &mask);
-            let functions = source_functions(source, &mask, &blocks);
-            let definition_names: BTreeSet<_> = functions
-                .iter()
-                .map(|function| function.name_offset)
-                .collect();
-            for function in functions
-                .iter()
-                .filter(|function| fatal_callees.contains(&function.name))
-            {
-                newly_reached.extend(resolved_callees_in_range(
-                    source,
-                    &mask,
-                    &definition_names,
-                    &resolved_names,
-                    function.open,
-                    function.close,
-                ));
+        for name in &fatal_callees {
+            if let Some(callees) = edges.get(name) {
+                newly_reached.extend(callees.iter().cloned());
             }
         }
         newly_reached.retain(|name| !fatal_callees.contains(name));
@@ -6029,22 +6123,22 @@ fn validate_fatal_scheduler_accessor_census(
         return Err("exception.rs blocking-accessor call-site census is empty".to_string());
     }
 
-    let exception_mask = code_mask(exception_source);
-    let exception_blocks = lexical_blocks(exception_source, &exception_mask);
-    let exception_functions =
-        source_functions(exception_source, &exception_mask, &exception_blocks);
+    let exception_analysis = fatal_source_analysis(exception_source);
+    let exception_mask = &exception_analysis.mask;
+    let exception_blocks = &exception_analysis.blocks;
+    let exception_functions = &exception_analysis.functions;
     let el0_only = el0_only_functions(
         exception_source,
-        &exception_mask,
-        &exception_blocks,
-        &exception_functions,
+        exception_mask,
+        exception_blocks,
+        exception_functions,
     );
     let mut violations = census_tagged(&exception_sources, |source, mask| {
         blocking_calls(source, mask, &blocking)
             .into_iter()
             .filter(|(offset, _)| {
-                !call_is_el0_guarded(&exception_blocks, *offset)
-                    && !enclosing_function(&exception_functions, *offset)
+                !call_is_el0_guarded(exception_blocks, *offset)
+                    && !enclosing_function(exception_functions, *offset)
                         .is_some_and(|function| el0_only.contains(&function.name))
             })
             .collect()
@@ -6054,9 +6148,8 @@ fn validate_fatal_scheduler_accessor_census(
         scanned_fatal_sources(exception_source, scheduler_source, aarch64_sources);
     let fatal_callees = derived_fatal_callees(
         exception_source,
-        &exception_mask,
-        &exception_blocks,
-        &exception_functions,
+        exception_blocks,
+        exception_functions,
         &el0_only,
         &scanned_sources,
     )?;
@@ -6065,11 +6158,11 @@ fn validate_fatal_scheduler_accessor_census(
         .filter(|(path, _)| path != FATAL_EXCEPTION_PATH)
         .cloned()
         .collect();
-    let external_violations = census_tagged(&external_sources, |source, mask| {
-        let blocks = lexical_blocks(source, mask);
-        let functions = source_functions(source, mask, &blocks);
+    let external_violations = census_tagged(&external_sources, |source, _| {
+        let analysis = fatal_source_analysis(source);
         let mut calls = BTreeSet::new();
-        for function in functions
+        for function in analysis
+            .functions
             .iter()
             .filter(|function| fatal_callees.contains(&function.name))
         {
