@@ -16,9 +16,9 @@ pub struct UdpHeader {
     pub src_port: u16,
     /// Destination port
     pub dst_port: u16,
-    /// Length (header + data) - stored but not used after parsing
+    /// Length (header + data), bounds the received datagram.
     pub length: u16,
-    /// Checksum - stored but not used after parsing
+    /// Checksum, validated on receive unless zero (IPv4 checksum disabled).
     pub checksum: u16,
 }
 
