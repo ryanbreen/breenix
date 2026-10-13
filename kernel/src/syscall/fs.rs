@@ -358,7 +358,7 @@ fn sys_open_write_path(
             // Lookup mode holds an absent name's parent in pin; entry_dir
             // belongs to entry/create resolution instead.
             let parent = resolved
-                .handle()
+                .lookup_parent()
                 .ok_or(SyscallResult::Err(5))?
                 .verify(fs)
                 .map_err(|_| SyscallResult::Err(2))?;
