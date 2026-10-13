@@ -1447,7 +1447,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             if device_type == crate::fs::devfs::DeviceType::Null {
                 return SyscallResult::Ok(0);
             }
-            let mut user_buf = alloc::vec::Vec::new();
+            let mut user_buf = alloc::vec![];
             if user_buf.try_reserve_exact(count as usize).is_err() {
                 return SyscallResult::Err(12);
             }
