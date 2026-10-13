@@ -335,6 +335,12 @@ impl ProtoOps for UdpSock {
         bits
     }
 
+    /// Delivery (`net::udp::handle_udp`) calls `notify_deferred` for every
+    /// datagram it queues.
+    fn notifies(&self) -> bool {
+        true
+    }
+
     /// `UdpSocket`'s Drop unbinds the port when the last handle goes.
     fn release(&self, _sk: &Socket) {}
 }
