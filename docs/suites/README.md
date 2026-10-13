@@ -700,8 +700,9 @@ ECONNREFUSED, and abstract Unix addresses and POLLRDHUP exist. `resolve/gai-inva
 follows RFC 6761: a name under `.invalid` gets a negative answer without asking a server.
 
 Waits for data receive with MSG_DONTWAIT and nap between looks, bounded at 3 seconds and
-stopping 1.5 seconds before the case's 10-second deadline, so a case whose data never comes
-fails saying what is missing. A call whose point is that it blocks (a receive or send
+stopping 1.5 seconds before the case's 10-second deadline, so on a kernel that honours
+MSG_DONTWAIT a case whose data never comes fails saying what is missing; on one that
+ignores it the receive blocks and the runner fails the case at its deadline. A call whose point is that it blocks (a receive or send
 timeout, a refused blocking connect, recv after SHUT_RD, MSG_WAITALL) runs in a process of
 its own the case waits on and kills. Timeouts (SO_RCVTIMEO, SO_SNDTIMEO, poll, select and
 epoll_wait) are checked as the time suite checks sleeps, never early and late by at most two
