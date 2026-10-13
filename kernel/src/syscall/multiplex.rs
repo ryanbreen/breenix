@@ -131,12 +131,14 @@ fn wait(fds: &mut [PollFd], timeout: Option<u64>, select: bool) -> Result<u64, u
         if super::check_signals_for_wait().is_some() {
             return Err(4);
         }
-        // Register pipe readers before publishing the blocked state. The
-        // post-publication scan in park handles data/EOF arriving during setup.
-        // Keep the wait blocked until an event or its actual deadline instead
-        // of repeatedly making an indefinite pipe wait runnable every 1 ms.
+        // Register pipe readers and socket waiters before publishing the
+        // blocked state. The post-publication scan in park handles data/EOF
+        // arriving during setup. Keep the wait blocked until an event or its
+        // actual deadline instead of repeatedly making an indefinite wait
+        // runnable every 1 ms.
         let tid = crate::task::scheduler::current_thread_id().ok_or(3u64)?;
         let mut readers = Vec::new();
+        let mut sockets = Vec::new();
         let mut notified = true;
         for (f, entry) in fds.iter().zip(&entries) {
             if f.fd < 0 {
@@ -148,6 +150,19 @@ fn wait(fds: &mut [PollFd], timeout: Option<u64>, select: bool) -> Result<u64, u
                 | Some(crate::ipc::fd::FdKind::FifoReadWrite(_, pipe, _)) => {
                     pipe.lock().add_read_waiter(tid);
                     readers.push(pipe.clone());
+                }
+                // A socket whose protocol publishes through notify() wakes
+                // the wait; one that still wakes by thread id keeps the
+                // short rescan.
+                Some(crate::ipc::fd::FdKind::Socket(socket)) => {
+                    if socket.notifies()
+                        && sockets.try_reserve(1).is_ok()
+                        && socket.common.wq.add_waiter(tid)
+                    {
+                        sockets.push(socket.clone());
+                    } else {
+                        notified = false;
+                    }
                 }
                 _ => notified = false,
             }
@@ -176,6 +191,9 @@ fn wait(fds: &mut [PollFd], timeout: Option<u64>, select: bool) -> Result<u64, u
         });
         for pipe in readers {
             pipe.lock().remove_read_waiter(tid);
+        }
+        for socket in sockets {
+            socket.common.wq.take_waiter(tid);
         }
         ret?;
     }

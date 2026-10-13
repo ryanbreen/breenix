@@ -2434,76 +2434,53 @@ fn test_socket_creation() -> TestResult {
 ///
 /// Verifies that TCP sockets can be created on both x86_64 and ARM64.
 /// This ensures the cfg gates have been properly removed from TCP support.
-/// Tests: socket(AF_INET, SOCK_STREAM, 0), FdKind::TcpSocket handling.
+/// Tests: socket(AF_INET, SOCK_STREAM, 0) as an FdKind::Socket, and the TCP
+/// adapter's names for an unbound and a connected socket.
 fn test_tcp_socket_creation() -> TestResult {
     use crate::ipc::fd::FdKind;
+    use crate::socket::addr::SockAddr;
+    use crate::socket::object::{ProtoOps, Socket, SocketProto};
+    use crate::socket::tcp::{TcpSock, TcpSockState};
     use crate::socket::types::{AF_INET, SOCK_STREAM};
 
     log::info!("testing TCP socket creation on current architecture");
 
-    // Create a TCP socket FdKind directly (tests FdKind::TcpSocket variant)
-    // Port 0 means unbound
-    let tcp_socket = FdKind::TcpSocket(0);
-
-    // Verify it's the right type
-    match tcp_socket {
-        FdKind::TcpSocket(port) => {
-            if port != 0 {
-                return TestResult::Fail("unbound TCP socket should have port 0");
-            }
-            log::info!("created FdKind::TcpSocket(0) - unbound TCP socket");
-        }
-        _ => {
-            return TestResult::Fail("expected FdKind::TcpSocket variant");
-        }
+    let Ok(unbound) = Socket::new(AF_INET, SOCK_STREAM, 6, SocketProto::Tcp(TcpSock::new())) else {
+        return TestResult::Fail("Socket::new failed for an unbound TCP socket");
+    };
+    let kind = FdKind::Socket(unbound.clone());
+    if !matches!(kind, FdKind::Socket(_)) {
+        return TestResult::Fail("expected FdKind::Socket variant");
     }
-
-    // Test that we can create bound and listening variants too
-    let tcp_bound = FdKind::TcpSocket(8080);
-    match tcp_bound {
-        FdKind::TcpSocket(port) => {
-            if port != 8080 {
-                return TestResult::Fail("bound TCP socket should have port 8080");
-            }
-            log::info!("created FdKind::TcpSocket(8080) - bound TCP socket");
-        }
-        _ => {
-            return TestResult::Fail("expected FdKind::TcpSocket variant");
-        }
+    match &unbound.proto {
+        SocketProto::Tcp(tcp) if matches!(tcp.state(), TcpSockState::Unbound) => {}
+        _ => return TestResult::Fail("a new TCP socket should be unbound"),
     }
-
-    let tcp_listener = FdKind::TcpListener(8080);
-    match tcp_listener {
-        FdKind::TcpListener(port) => {
-            if port != 8080 {
-                return TestResult::Fail("TCP listener should have port 8080");
-            }
-            log::info!("created FdKind::TcpListener(8080) - listening TCP socket");
-        }
-        _ => {
-            return TestResult::Fail("expected FdKind::TcpListener variant");
-        }
+    if unbound.ops().local_name(&unbound) != (SockAddr::Inet { addr: [0; 4], port: 0 }) {
+        return TestResult::Fail("an unbound TCP socket's name should be 0.0.0.0:0");
     }
+    if unbound.ops().peer_name(&unbound) != Err(crate::syscall::errno::ENOTCONN) {
+        return TestResult::Fail("an unbound TCP socket should have no peer");
+    }
+    log::info!("created FdKind::Socket - unbound TCP socket");
 
-    // Verify TCP connection variant compiles (doesn't require active connection)
+    // A connected socket names both ends of its connection.
     let conn_id = crate::net::tcp::ConnectionId {
         local_ip: [127, 0, 0, 1],
         local_port: 8080,
         remote_ip: [127, 0, 0, 1],
         remote_port: 12345,
     };
-    let tcp_connection = FdKind::TcpConnection(conn_id);
-    match tcp_connection {
-        FdKind::TcpConnection(id) => {
-            log::info!("created FdKind::TcpConnection - connection ID works");
-            if id.local_port != 8080 {
-                return TestResult::Fail("connection ID local port mismatch");
-            }
-        }
-        _ => {
-            return TestResult::Fail("expected FdKind::TcpConnection variant");
-        }
+    let connected = TcpSock::connected(conn_id);
+    if connected.connection().map(|id| id.local_port) != Some(8080) {
+        return TestResult::Fail("connection ID local port mismatch");
     }
+    if connected.peer_name(&unbound)
+        != Ok(SockAddr::Inet { addr: [127, 0, 0, 1], port: 12345 })
+    {
+        return TestResult::Fail("a connected TCP socket should name its peer");
+    }
+    log::info!("TcpSock::connected - connection ID works");
 
     // Verify socket constants match expected POSIX values
     if AF_INET != 2 {
@@ -5483,6 +5460,23 @@ static UDP_LOCK_MEASURED_US: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_arch = "aarch64")]
 static UDP_LOCK_NETRX_PENDING: AtomicU64 = AtomicU64::new(0);
 
+/// The socket object a descriptor for this oracle's UDP socket refers to; the
+/// oracle keeps its own handle on the same `UdpSocket`.
+#[cfg(target_arch = "aarch64")]
+fn udp_socket_object(
+    socket: &alloc::sync::Arc<spin::Mutex<crate::socket::udp::UdpSocket>>,
+) -> Option<alloc::sync::Arc<crate::socket::object::Socket>> {
+    crate::socket::object::Socket::new(
+        crate::socket::types::AF_INET,
+        crate::socket::types::SOCK_DGRAM,
+        17,
+        crate::socket::object::SocketProto::Udp(crate::socket::udp::UdpSock {
+            inner: socket.clone(),
+        }),
+    )
+    .ok()
+}
+
 #[cfg(target_arch = "aarch64")]
 struct UdpLockSocket {
     socket: alloc::sync::Arc<spin::Mutex<crate::socket::udp::UdpSocket>>,
@@ -5503,7 +5497,7 @@ fn udp_lock_open_socket() -> Option<UdpLockSocket> {
         .bind(pid, [127, 0, 0, 1], UDP_LOCK_PORT)
         .ok()?;
 
-    let entry = FileDescriptor::with_flags(FdKind::UdpSocket(socket.clone()), 0, 0);
+    let entry = FileDescriptor::with_flags(FdKind::Socket(udp_socket_object(&socket)?), 0, 0);
     let fd = crate::process::with_process_manager(|manager| {
         manager
             .get_process_mut(pid)
@@ -5523,11 +5517,13 @@ fn udp_lock_open_socket() -> Option<UdpLockSocket> {
 fn udp_lock_close_socket(open: &UdpLockSocket) {
     let pid = open.pid;
     let fd = open.fd;
-    let _ = crate::process::with_process_manager(|manager| {
-        if let Some(process) = manager.get_process_mut(pid) {
-            let _ = process.fd_table.close(fd);
-        }
+    // The entry drops after PM is released, so the socket releases inline.
+    let closed = crate::process::with_process_manager(|manager| {
+        manager
+            .get_process_mut(pid)
+            .and_then(|process| process.fd_table.close(fd).ok())
     });
+    drop(closed);
     crate::socket::SOCKET_REGISTRY.unbind_udp(UDP_LOCK_PORT);
 }
 
@@ -5860,7 +5856,7 @@ fn udp_ports_lock_open_socket() -> Option<UdpPortsLockSocket> {
         .bind(pid, [127, 0, 0, 1], UDP_PORTS_LOCK_PORT)
         .ok()?;
 
-    let entry = FileDescriptor::with_flags(FdKind::UdpSocket(socket.clone()), 0, 0);
+    let entry = FileDescriptor::with_flags(FdKind::Socket(udp_socket_object(&socket)?), 0, 0);
     let fd = crate::process::with_process_manager(|manager| {
         manager
             .get_process_mut(pid)
@@ -5880,11 +5876,13 @@ fn udp_ports_lock_open_socket() -> Option<UdpPortsLockSocket> {
 fn udp_ports_lock_close_socket(open: &UdpPortsLockSocket) {
     let pid = open.pid;
     let fd = open.fd;
-    let _ = crate::process::with_process_manager(|manager| {
-        if let Some(process) = manager.get_process_mut(pid) {
-            let _ = process.fd_table.close(fd);
-        }
+    // The entry drops after PM is released, so the socket releases inline.
+    let closed = crate::process::with_process_manager(|manager| {
+        manager
+            .get_process_mut(pid)
+            .and_then(|process| process.fd_table.close(fd).ok())
     });
+    drop(closed);
     crate::socket::SOCKET_REGISTRY.unbind_udp(UDP_PORTS_LOCK_PORT);
 }
 
@@ -6305,7 +6303,7 @@ fn irq_hold_open_socket() -> Option<IrqHoldSocket> {
         .bind(pid, [127, 0, 0, 1], IRQ_HOLD_PORT)
         .ok()?;
 
-    let entry = FileDescriptor::with_flags(FdKind::UdpSocket(socket.clone()), 0, 0);
+    let entry = FileDescriptor::with_flags(FdKind::Socket(udp_socket_object(&socket)?), 0, 0);
     let fd = crate::process::with_process_manager(|manager| {
         manager
             .get_process_mut(pid)
@@ -6325,11 +6323,13 @@ fn irq_hold_open_socket() -> Option<IrqHoldSocket> {
 fn irq_hold_close_socket(open: &IrqHoldSocket) {
     let pid = open.pid;
     let fd = open.fd;
-    let _ = crate::process::with_process_manager(|manager| {
-        if let Some(process) = manager.get_process_mut(pid) {
-            let _ = process.fd_table.close(fd);
-        }
+    // The entry drops after PM is released, so the socket releases inline.
+    let closed = crate::process::with_process_manager(|manager| {
+        manager
+            .get_process_mut(pid)
+            .and_then(|process| process.fd_table.close(fd).ok())
     });
+    drop(closed);
     crate::socket::SOCKET_REGISTRY.unbind_udp(IRQ_HOLD_PORT);
 }
 
@@ -8766,7 +8766,7 @@ fn test_pty_support_aarch64() -> TestResult {
 /// - Socket and PTY infrastructure should be ready
 ///
 /// The test verifies:
-/// 1. FdKind::TcpSocket variant exists (compile-time and runtime check)
+/// 1. A TCP socket can be created as an FdKind::Socket
 /// 2. PTY pair can be allocated (tests the pty allocator)
 /// 3. Socket constants (AF_INET, SOCK_STREAM) are properly defined
 /// 4. No architecture-specific gating blocks telnetd operation
@@ -8780,16 +8780,18 @@ fn test_telnetd_dependencies_aarch64() -> TestResult {
     use crate::ipc::fd::FdKind;
     use crate::tty::pty;
 
-    // Step 1: Verify FdKind::TcpSocket variant exists (compile-time check)
-    // This ensures the ARM64 build includes TCP socket support
-    let tcp_fd_kind = FdKind::TcpSocket(0);
-    match tcp_fd_kind {
-        FdKind::TcpSocket(sock_id) => {
-            if sock_id != 0 {
-                return TestResult::Fail("FdKind::TcpSocket construction failed");
-            }
-        }
-        _ => return TestResult::Fail("FdKind::TcpSocket not matching correctly"),
+    // Step 1: A TCP socket can be created on ARM64 (telnetd listens on one)
+    let tcp = match crate::socket::object::Socket::new(
+        crate::socket::types::AF_INET,
+        crate::socket::types::SOCK_STREAM,
+        6,
+        crate::socket::object::SocketProto::Tcp(crate::socket::tcp::TcpSock::new()),
+    ) {
+        Ok(socket) => socket,
+        Err(_) => return TestResult::Fail("TCP Socket::new failed on ARM64"),
+    };
+    if !matches!(FdKind::Socket(tcp), FdKind::Socket(_)) {
+        return TestResult::Fail("FdKind::Socket not matching correctly");
     }
 
     // Allocate a real pair for the Arc-valued descriptor variants.
@@ -8799,7 +8801,6 @@ fn test_telnetd_dependencies_aarch64() -> TestResult {
         Err(_) => return TestResult::Fail("PTY allocation failed on ARM64"),
     };
     let valid_number = pair.pty_num <= 255;
-    let _ = FdKind::TcpSocket(0);
     let _ = FdKind::PtyMaster(pair.clone());
     let _ = FdKind::PtySlave(pair.clone());
     pty::close_master_ref(&pair);

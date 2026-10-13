@@ -864,18 +864,8 @@ pub(crate) fn close_extracted_fds(entries: alloc::vec::Vec<(usize, FileDescripto
                 let notifications = buffer.lock().close_write();
                 notifications.deliver();
             }
-            FdKind::TcpListener(port) => {
-                crate::net::tcp::tcp_listener_ref_dec(port);
-            }
-            FdKind::TcpConnection(conn_id) => {
-                let _ = crate::net::tcp::tcp_close(&conn_id);
-            }
             FdKind::PtyMaster(pair) => crate::tty::pty::close_master_ref(&pair),
             FdKind::PtySlave(pair) => crate::tty::pty::close_slave_ref(&pair),
-            FdKind::UnixStream(socket) => {
-                let notifications = socket.lock().close();
-                notifications.deliver();
-            }
             FdKind::FifoRead(_, buffer, entry) => {
                 crate::ipc::fifo::close_fifo_read(&entry);
                 let notifications = buffer.lock().close_read();
@@ -1592,9 +1582,11 @@ pub fn reclaim_deferred_process_resources() {
     #[cfg(feature = "coreproof_mut_reclaim_bracket")]
     reclaim_preempt_disable();
 
-    // Keep detached Unix close work inside the existing preemption/ownership
-    // bracket, after PM and scheduler-scope refusal.
+    // Keep detached Unix close work and deferred socket releases inside the
+    // existing preemption/ownership bracket, after PM and scheduler-scope
+    // refusal.
     crate::socket::unix::drain_close_notifications();
+    crate::socket::object::drain_release_queue();
     reclaim_deferred_process_resources_for_pass(my_pass, false);
     RECLAIM_DRAIN_ACTIVE.store(false, Ordering::Release);
     reclaim_preempt_enable();

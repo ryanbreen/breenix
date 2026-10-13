@@ -215,6 +215,23 @@ impl WaitQueueHead {
         woken
     }
 
+    /// Enqueue `tid` without publishing a blocked state, for a caller that
+    /// watches several queues and publishes its own wait (poll, select). It
+    /// rechecks its condition after publishing, and removes itself with
+    /// `take_waiter`. False when no room could be reserved.
+    pub(crate) fn add_waiter(&self, tid: u64) -> bool {
+        self.with_waiters(|waiters| {
+            if waiters.iter().any(|waiter| waiter.tid == tid) {
+                return true;
+            }
+            if !super::waitqueue_alloc::reserve_one(waiters) {
+                return false;
+            }
+            waiters.push_back(Waiter::new(tid));
+            true
+        })
+    }
+
     /// Remove a specific waiter under the waitqueue lock.
     pub fn take_waiter(&self, tid: u64) -> bool {
         let mut removed = false;
