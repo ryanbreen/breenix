@@ -12,8 +12,8 @@
 #     qemu-ui-launch.sh qemu-system-aarch64 ...   prepares the launcher and execs it with the command
 #     qemu-ui-launch.sh                           prepares the launcher and prints its path
 #
-# Shell launchers write `"$QEMU_UI" qemu-system-aarch64 ...` (docker/qemu/lib/qemu-host-lock.sh sets
-# QEMU_UI to this script), so nothing is built until an ARM64 QEMU launch runs. Each exec keeps the
+# Shell launchers use qemu-arm64.py; the host-lock library exports this script as
+# BREENIX_QEMU_UI_LAUNCHER, so preparation waits until QEMU launches. Each exec keeps the
 # process ID, so QEMU keeps the one a watcher or `timeout` started.
 set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

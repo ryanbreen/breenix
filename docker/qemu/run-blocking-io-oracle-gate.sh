@@ -177,7 +177,7 @@ for ((boot=1; boot<=BOOTS; boot++)); do
     : >"$CURRENT_SERIAL"
     if [ "$ARCH" = aarch64 ]; then
         qemu_host_lock_acquire qemu-system-aarch64
-        "$QEMU_UI" qemu-system-aarch64 -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
+        python3 "$BREENIX_ROOT/scripts/qemu-arm64.py" qemu-system-aarch64 -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
             -kernel "$KERNEL" -display none -no-reboot \
             -device virtio-gpu-device -device virtio-keyboard-device -device virtio-tablet-device \
             -device virtio-blk-device,drive=ext2 \

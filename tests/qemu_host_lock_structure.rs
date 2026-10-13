@@ -190,6 +190,33 @@ fn calls_qemu_host_lock_acquire(script: &str) -> bool {
     })
 }
 
+fn native_arm64_launches_use_wrapper(script: &str) -> bool {
+    let lines: Vec<&str> = script.lines().collect();
+    for (index, line) in lines.iter().enumerate() {
+        if !is_qemu_aarch64_launch_line(line) { continue; }
+        let launch = line.trim();
+        if launch.starts_with("QEMU_BIN=") || launch.starts_with("QEMU=")
+            || launch.starts_with("qemu_host_lock_") { continue; }
+        let mut start = index;
+        while start > 0 && lines[start - 1].trim_end().ends_with('\\') { start -= 1; }
+        let command = lines[start..=index].join(" ");
+        // QEMU inside Linux containers cannot use Apple's Hypervisor framework.
+        if command.contains("docker run ") || command.contains("docker exec ") { continue; }
+        if !command.contains("qemu-arm64.py") { return false; }
+    }
+    true
+}
+
+#[test]
+fn native_arm64_launchers_use_the_accelerator_wrapper() {
+    assert!(!native_arm64_launches_use_wrapper("\"$QEMU_UI\" qemu-system-aarch64 \\\n"));
+    assert!(native_arm64_launches_use_wrapper("python3 \"$ROOT/scripts/qemu-arm64.py\" qemu-system-aarch64 \\\n"));
+    for (path, text) in all_shell_scripts() {
+        assert!(native_arm64_launches_use_wrapper(&text),
+                "{path}: native ARM64 QEMU launch bypasses the accelerator wrapper");
+    }
+}
+
 #[test]
 fn every_aarch64_qemu_launch_script_sources_and_acquires_the_host_lock() {
     let scripts = all_shell_scripts();

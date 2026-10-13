@@ -170,7 +170,7 @@ public struct LocalGateLauncher {
             try? FileManager.default.removeItem(at: gateTmp)
         }
 
-        let startFacts = try HostFacts.sample(runner: runner, repoRoot: repoRoot, wallTime: startedAt)
+        var startFacts = try HostFacts.sample(runner: runner, repoRoot: repoRoot, wallTime: startedAt)
         let scriptURL = repoRoot.appendingPathComponent("docker/qemu/\(options.profile.scriptName)")
         let command = [scriptURL.path, "\(options.boots)"]
         let env = ["BREENIX_GATE_TMP": gateTmp.path, "BREENIX_RUNS_NO_IMPORT": "1"]
@@ -200,11 +200,17 @@ public struct LocalGateLauncher {
         try gateOutputHandle.close()
 
         let endedAt = Date()
-        let endFacts = try HostFacts.sample(runner: runner, repoRoot: repoRoot, wallTime: endedAt)
+        var endFacts = try HostFacts.sample(runner: runner, repoRoot: repoRoot, wallTime: endedAt)
         let serialURL = runDirectory.appendingPathComponent("serial.txt")
         let serialBytes = try harvestSerials(from: gateTmp, to: serialURL)
         let buildID = try extractBuildID(from: serialURL)
         let gateStdoutText = String(decoding: try Data(contentsOf: gateStdoutURL), as: UTF8.self)
+        if let config = HostFacts.qemuConfiguration(gateStdoutText) {
+            startFacts.qemuAccelerator = config.accelerator
+            startFacts.qemuCPU = config.cpu
+            endFacts.qemuAccelerator = config.accelerator
+            endFacts.qemuCPU = config.cpu
+        }
         let gateStdoutBytes = fileSize(gateStdoutURL)
         let qemuLogURL = runDirectory.appendingPathComponent("qemu.log")
         FileManager.default.createFile(atPath: qemuLogURL.path, contents: nil)

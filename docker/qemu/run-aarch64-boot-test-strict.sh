@@ -947,7 +947,7 @@ run_single_test() {
     HOST_MS_START="$(gbf_host_ms_now)"
     QEMU_AT_START="$(qemu_host_lock_count)"
     LOAD_AT_START="$(gbf_load_1m)"
-    timeout "${BREENIX_STRICT_TIMEOUT_SECONDS:-90}" "$QEMU_UI" qemu-system-aarch64 \
+    timeout "${BREENIX_STRICT_TIMEOUT_SECONDS:-90}" python3 "$BREENIX_ROOT/scripts/qemu-arm64.py" qemu-system-aarch64 \
         -M virt,gic-version=3 -cpu cortex-a72 -m 512 -smp 4 \
         -kernel "$KERNEL" \
         -qmp unix:"$QMP_SOCK",server=on,wait=off \

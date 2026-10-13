@@ -80,7 +80,7 @@ echo "[1/5] Starting QEMU..."
 # Use file output for reliable logging + TCP for input
 # The TCP serial allows bidirectional I/O - we'll connect and send input
 qemu_host_lock_acquire
-"$QEMU_UI" qemu-system-aarch64 \
+python3 "$BREENIX_ROOT/scripts/qemu-arm64.py" qemu-system-aarch64 \
     -M virt -cpu cortex-a72 -m 512M \
     -kernel "$KERNEL" \
     -display none -no-reboot \
