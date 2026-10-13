@@ -106,12 +106,12 @@ impl TerminalEmulator {
 
     /// Send input to the PTY master (from keyboard).
     pub fn send_input(&self, data: &[u8]) -> Result<usize, i32> {
-        self.pty.master_write(data)
+        Ok(self.pty.master_write(data))
     }
 
     /// Send a single character to the PTY master.
     pub fn send_char(&self, c: u8) -> Result<usize, i32> {
-        self.pty.master_write(&[c])
+        Ok(self.pty.master_write(&[c]))
     }
 
     /// Write directly to the terminal pane (bypassing PTY).

@@ -207,6 +207,10 @@ pub struct TtyDevice {
     /// runs in interrupt context.
     adopt_pending: AtomicBool,
 
+    output_stopped: AtomicBool,
+    input_flow_stopped: AtomicBool,
+    pending_echo: Mutex<super::pty::pair::PtyBuffer>,
+
     /// #822: `foreground_pgrp`'s value, published for interrupt-context
     /// readers, so that the 2 of them take 0 acquisitions of that mutex.
     ///
@@ -236,6 +240,9 @@ impl TtyDevice {
             foreground_pgrp: Mutex::new(None),
             session: Mutex::new(None),
             adopt_pending: AtomicBool::new(false),
+            output_stopped: AtomicBool::new(false),
+            input_flow_stopped: AtomicBool::new(false),
+            pending_echo: Mutex::new(super::pty::pair::PtyBuffer::new()),
             foreground_pgrp_snapshot: AtomicU64::new(FOREGROUND_PGRP_UNSET),
         }
     }
@@ -256,9 +263,12 @@ impl TtyDevice {
 
         // Process the character through the line discipline
         // The echo callback writes to serial output
+        let attrs = *ldisc.termios();
         let signal = ldisc.input_char(c, &mut |echo_c| {
-            self.output_char(echo_c);
+            self.echo_char(echo_c, &attrs);
         });
+        self.input_flow_stopped.store(ldisc.flow_stopped(), Ordering::Release);
+        crate::serial::set_output_stopped(self.transmission_stopped());
 
         // If a signal was generated, send it to the foreground process group
         if let Some(sig) = signal {
@@ -280,7 +290,7 @@ impl TtyDevice {
                         }
                     }
                     Err(super::line_discipline::EOF_MARKER) => {
-                        // EOF on empty line - don't push anything, read() will return 0
+                        crate::ipc::stdin::push_eof_from_irq();
                         break;
                     }
                     Err(_) => break, // Other error, stop reading
@@ -334,9 +344,12 @@ impl TtyDevice {
         };
 
         // Process the character through line discipline (echo, signals, line editing)
+        let attrs = *ldisc.termios();
         let signal = ldisc.input_char(c, &mut |echo_c| {
-            self.output_char_nonblock(echo_c);
+            self.echo_char(echo_c, &attrs);
         });
+        self.input_flow_stopped.store(ldisc.flow_stopped(), Ordering::Release);
+        crate::serial::set_output_stopped(self.transmission_stopped());
 
         // Transfer data from line discipline to stdin buffer when available
         // This bridges the TTY layer (which handles line editing, echo, signals)
@@ -354,7 +367,7 @@ impl TtyDevice {
                         }
                     }
                     Err(super::line_discipline::EOF_MARKER) => {
-                        // EOF on empty line - don't push anything, read() will return 0
+                        crate::ipc::stdin::push_eof_from_irq();
                         break;
                     }
                     Err(_) => break, // Other error, stop reading
@@ -362,6 +375,7 @@ impl TtyDevice {
             }
         }
         drop(ldisc);
+        self.drain_echo();
 
         // Send signal if generated (non-blocking)
         if let Some(sig) = signal {
@@ -568,13 +582,20 @@ impl TtyDevice {
     }
 
     /// Set the session leader
-    #[allow(dead_code)]
-    pub fn set_session(&self, pid: ProcessId) {
-        *self.session.lock() = Some(pid);
+    pub fn set_session(&self, session: Option<ProcessId>) {
+        *self.session.lock() = session;
+    }
+
+    /// Detach the console foreground group while keeping its IRQ snapshot current.
+    pub fn clear_foreground_pgrp(&self) -> Option<ProcessId> {
+        note_foreground_pgrp_acquisition(true);
+        let mut guard = self.foreground_pgrp.lock();
+        let old = guard.take().map(ProcessId::new);
+        self.foreground_pgrp_snapshot.store(FOREGROUND_PGRP_UNSET, Ordering::Release);
+        old
     }
 
     /// Get the session leader
-    #[allow(dead_code)]
     pub fn get_session(&self) -> Option<ProcessId> {
         *self.session.lock()
     }
@@ -585,6 +606,61 @@ impl TtyDevice {
     #[allow(dead_code)]
     pub fn flush_input(&self) {
         self.ldisc.lock().flush_input();
+        crate::ipc::stdin::flush_input();
+    }
+
+    fn transmission_stopped(&self) -> bool {
+        self.output_stopped.load(Ordering::Acquire)
+            || self.input_flow_stopped.load(Ordering::Acquire)
+    }
+
+    pub fn set_output_stopped(&self, stopped: bool) {
+        self.output_stopped.store(stopped, Ordering::Release);
+        crate::serial::set_output_stopped(self.transmission_stopped());
+        if !stopped { self.drain_echo(); }
+    }
+
+    pub fn output_flow_character(&self, stop: bool) {
+        let attrs = self.get_termios();
+        let c = attrs.c_cc[if stop { super::termios::VSTOP } else { super::termios::VSTART }];
+        if c != 0 { crate::serial::write_byte(crate::serial::Writer::Tty, c); }
+    }
+
+    pub fn flush_output(&self) {
+        let mut pending = self.pending_echo.lock();
+        let mut scratch = [0; 256];
+        while pending.read(&mut scratch) != 0 {}
+        crate::serial::flush_output();
+    }
+
+    /// Echo has fixed storage and never allocates in interrupt context.
+    /// On overflow, excess echo is discarded, as a bounded tty echo buffer must.
+    fn echo_char(&self, c: u8, attrs: &Termios) {
+        let crlf = [b'\r', c];
+        let unit = if c == b'\n' && attrs.is_opost() && attrs.is_onlcr() {
+            &crlf[..]
+        } else { &crlf[1..] };
+        if self.transmission_stopped() {
+            if let Some(mut pending) = self.pending_echo.try_lock() { pending.write(unit); }
+            return;
+        }
+        crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, unit);
+        #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
+        for &byte in unit { let _ = crate::graphics::render_queue::queue_byte(byte); }
+    }
+
+    fn drain_echo(&self) {
+        if self.transmission_stopped() { return; }
+        let Some(mut pending) = self.pending_echo.try_lock() else { return; };
+        let mut scratch = [0; 256];
+        // At most the fixed echo ring is drained; no allocation or input lock.
+        loop {
+            let n = pending.read(&mut scratch);
+            if n == 0 { break; }
+            crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, &scratch[..n]);
+            #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
+            for &byte in &scratch[..n] { let _ = crate::graphics::render_queue::queue_byte(byte); }
+        }
     }
 
     /// Write a character to the terminal output
@@ -621,6 +697,8 @@ impl TtyDevice {
     /// # Arguments
     /// * `buf` - Buffer of bytes to write
     pub fn write_bytes(&self, buf: &[u8]) {
+        while self.transmission_stopped() { crate::arch_halt(); }
+        self.drain_echo();
         // Get termios settings once for the entire buffer
         let termios = self.ldisc.lock().termios().clone();
         let do_onlcr = termios.is_opost() && termios.is_onlcr();
@@ -638,6 +716,7 @@ impl TtyDevice {
                 for &c in line {
                     let output_len = if do_onlcr && c == b'\n' { 2 } else { 1 };
                     if expanded_len + output_len > expanded.len() {
+                        while self.transmission_stopped() { crate::arch_halt(); }
                         crate::serial::write_bytes_atomic(
                             crate::serial::Writer::Tty,
                             &expanded[..expanded_len],
@@ -653,6 +732,7 @@ impl TtyDevice {
                 }
 
                 if expanded_len != 0 {
+                    while self.transmission_stopped() { crate::arch_halt(); }
                     crate::serial::write_bytes_atomic(
                         crate::serial::Writer::Tty,
                         &expanded[..expanded_len],
@@ -934,11 +1014,13 @@ impl TtyDevice {
     /// Currently unused because keyboard input bypasses TTY (uses stdin directly).
     /// Will be used when termios ioctls are fully implemented.
     #[allow(dead_code)]
-    pub fn register_blocked_reader(thread_id: u64) {
+    pub fn register_blocked_reader(thread_id: u64) -> Result<(), i32> {
         let mut readers = BLOCKED_READERS.lock();
         if !readers.contains(&thread_id) {
+            readers.try_reserve(1).map_err(|_| 12)?;
             readers.push_back(thread_id);
         }
+        Ok(())
     }
 
     /// Unregister a thread from blocked readers
@@ -974,7 +1056,7 @@ impl TtyDevice {
     #[allow(dead_code)]
     fn wake_blocked_readers_nonblock() {
         if let Some(mut readers) = BLOCKED_READERS.try_lock() {
-            let thread_ids: VecDeque<u64> = readers.drain(..).collect();
+            let thread_ids = core::mem::take(&mut *readers);
             drop(readers);
 
             if thread_ids.is_empty() {
@@ -1087,6 +1169,7 @@ pub fn adopt_foreground_pgrp_from_reader(pid: ProcessId) {
 /// Initialize the console TTY device
 pub fn init_console() {
     let tty = Arc::new(TtyDevice::new(0));
+    tty.set_session(Some(ProcessId::new(crate::process::RESERVED_INIT_PID)));
     *CONSOLE_TTY.lock() = Some(tty);
     log::info!("Console TTY initialized");
 }
@@ -1168,12 +1251,12 @@ mod tests {
 
         // Set session
         let pid = ProcessId::new(42);
-        tty.set_session(pid);
+        tty.set_session(Some(pid));
         assert_eq!(tty.get_session(), Some(ProcessId::new(42)));
 
         // Can change session
         let new_pid = ProcessId::new(99);
-        tty.set_session(new_pid);
+        tty.set_session(Some(new_pid));
         assert_eq!(tty.get_session(), Some(ProcessId::new(99)));
     }
 
@@ -1245,7 +1328,7 @@ mod tests {
         }
 
         // Register a reader
-        TtyDevice::register_blocked_reader(100);
+        TtyDevice::register_blocked_reader(100).unwrap();
 
         // Verify it's in the list
         {
@@ -1269,9 +1352,9 @@ mod tests {
         }
 
         // Register same reader multiple times
-        TtyDevice::register_blocked_reader(200);
-        TtyDevice::register_blocked_reader(200);
-        TtyDevice::register_blocked_reader(200);
+        TtyDevice::register_blocked_reader(200).unwrap();
+        TtyDevice::register_blocked_reader(200).unwrap();
+        TtyDevice::register_blocked_reader(200).unwrap();
 
         // Should only appear once
         {
@@ -1296,9 +1379,9 @@ mod tests {
         }
 
         // Register multiple readers
-        TtyDevice::register_blocked_reader(301);
-        TtyDevice::register_blocked_reader(302);
-        TtyDevice::register_blocked_reader(303);
+        TtyDevice::register_blocked_reader(301).unwrap();
+        TtyDevice::register_blocked_reader(302).unwrap();
+        TtyDevice::register_blocked_reader(303).unwrap();
 
         // All should be in the list
         {
@@ -1659,7 +1742,7 @@ mod tests {
 
         // Register many readers
         for i in 1000..1100 {
-            TtyDevice::register_blocked_reader(i);
+            TtyDevice::register_blocked_reader(i).unwrap();
         }
 
         // All should be present

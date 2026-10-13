@@ -16,6 +16,15 @@ use core::default::Default;
 /// Number of control characters in the c_cc array
 pub const NCCS: usize = 32;
 
+/// Linux baud and character format bits.
+pub const CBAUD: u32 = 0x100f;
+pub const CIBAUD: u32 = CBAUD << 16;
+pub const B38400: u32 = 15;
+pub const CS8: u32 = 0x30;
+pub const CREAD: u32 = 0x80;
+pub const VEOL: usize = 11;
+pub const VEOL2: usize = 16;
+
 // =============================================================================
 // Input Flags (c_iflag)
 // =============================================================================
@@ -195,6 +204,38 @@ pub struct Termios {
     pub c_ospeed: u32,
 }
 
+/// Linux TCGETS/TCSETS wire layout (NCCS=19), on both supported arches.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct IoctlTermios {
+    pub c_iflag: u32,
+    pub c_oflag: u32,
+    pub c_cflag: u32,
+    pub c_lflag: u32,
+    pub c_line: u8,
+    pub c_cc: [u8; 19],
+}
+
+impl From<Termios> for IoctlTermios {
+    fn from(t: Termios) -> Self {
+        let mut cc = [0; 19];
+        cc.copy_from_slice(&t.c_cc[..19]);
+        Self { c_iflag: t.c_iflag, c_oflag: t.c_oflag, c_cflag: t.c_cflag,
+            c_lflag: t.c_lflag, c_line: t.c_line, c_cc: cc }
+    }
+}
+impl From<IoctlTermios> for Termios {
+    fn from(t: IoctlTermios) -> Self {
+        let mut cc = [0; 32];
+        cc[..19].copy_from_slice(&t.c_cc);
+        let output = t.c_cflag & 0x100f;
+        let input = (t.c_cflag >> 16) & 0x100f;
+        Self { c_iflag: t.c_iflag, c_oflag: t.c_oflag, c_cflag: t.c_cflag,
+            c_lflag: t.c_lflag, c_line: t.c_line, c_cc: cc,
+            c_ispeed: if input == 0 { output } else { input }, c_ospeed: output }
+    }
+}
+
 impl Default for Termios {
     /// Create termios with sane defaults
     ///
@@ -230,7 +271,7 @@ impl Default for Termios {
             c_oflag: OPOST | ONLCR,
 
             // Control: no special settings needed for basic operation
-            c_cflag: 0,
+            c_cflag: B38400 | CS8 | CREAD,
 
             // Local: canonical mode, echo, signals, extended processing
             c_lflag: ISIG | ICANON | ECHO | ECHOE | ECHOK | IEXTEN,
@@ -241,8 +282,8 @@ impl Default for Termios {
             c_cc,
 
             // Default baud rates (not really relevant for virtual terminals)
-            c_ispeed: 38400,
-            c_ospeed: 38400,
+            c_ispeed: B38400,
+            c_ospeed: B38400,
         }
     }
 }
@@ -607,4 +648,13 @@ mod tests {
         termios.set_canonical(false);
         assert!(!termios.is_canonical());
     }
+    #[test]
+    fn linux_userspace_layout_and_default_baud() {
+        assert_eq!(core::mem::size_of::<Termios>(), 60);
+        assert_eq!(core::mem::offset_of!(Termios, c_cc), 17);
+        assert_eq!(core::mem::offset_of!(Termios, c_ispeed), 52);
+        assert_eq!(core::mem::offset_of!(Termios, c_ospeed), 56);
+        assert_eq!(Termios::default().c_cflag, B38400 | CS8 | CREAD);
+    }
+
 }

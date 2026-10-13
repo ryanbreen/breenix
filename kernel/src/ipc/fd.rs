@@ -130,14 +130,11 @@ pub enum FdKind {
     DevfsDirectory { position: u64 },
     /// /dev/pts directory (virtual directory for listing PTY slaves)
     DevptsDirectory { position: u64 },
-    /// PTY master file descriptor
-    /// Allow unused - constructed by posix_openpt syscall in Phase 2
-    #[allow(dead_code)]
-    PtyMaster(u32),
-    /// PTY slave file descriptor
-    /// Allow unused - constructed when opening /dev/pts/N in Phase 2
-    #[allow(dead_code)]
-    PtySlave(u32),
+    /// PTY master file descriptor. The descriptor names the pair itself, not
+    /// its number, so it can never reach a pair that later took the number.
+    PtyMaster(Arc<crate::tty::pty::PtyPair>),
+    /// PTY slave file descriptor (see `PtyMaster`).
+    PtySlave(Arc<crate::tty::pty::PtyPair>),
     /// Unix stream socket (AF_UNIX, SOCK_STREAM) - for socketpair IPC
     /// Fully architecture-independent - uses in-memory buffers
     UnixStream(alloc::sync::Arc<spin::Mutex<crate::socket::unix::UnixStreamSocket>>),
@@ -183,8 +180,8 @@ impl core::fmt::Debug for FdKind {
             FdKind::Device(dt) => write!(f, "Device({:?})", dt),
             FdKind::DevfsDirectory { position } => write!(f, "DevfsDirectory(pos={})", position),
             FdKind::DevptsDirectory { position } => write!(f, "DevptsDirectory(pos={})", position),
-            FdKind::PtyMaster(n) => write!(f, "PtyMaster({})", n),
-            FdKind::PtySlave(n) => write!(f, "PtySlave({})", n),
+            FdKind::PtyMaster(pair) => write!(f, "PtyMaster({})", pair.pty_num),
+            FdKind::PtySlave(pair) => write!(f, "PtySlave({})", pair.pty_num),
             FdKind::UnixStream(s) => {
                 let sock = s.lock();
                 write!(f, "UnixStream({:?})", sock.endpoint)
@@ -279,23 +276,8 @@ impl FileDescriptor {
 
     /// Create the descriptor for a new open file description from an open(2)
     /// flags word: its access mode and status flags, and FD_CLOEXEC from
-    /// O_CLOEXEC.
-    pub fn opened(kind: FdKind, open_flags: u32) -> Self {
-        let fd_flags = if open_flags & status_flags::O_CLOEXEC != 0 {
-            flags::FD_CLOEXEC
-        } else {
-            0
-        };
-        let word = (open_flags & status_flags::O_ACCMODE) | (open_flags & SETTABLE_STATUS_FLAGS);
-        FileDescriptor {
-            kind,
-            flags: fd_flags,
-            description: Arc::new(AtomicU32::new(word)),
-            native_inode: None,
-        }
-    }
-
-    /// Create an open description without panicking on user-triggered OOM.
+    /// O_CLOEXEC. ENOMEM, rather than a panic, when the description cannot be
+    /// allocated.
     pub fn try_opened(kind: FdKind, open_flags: u32) -> Result<Self, u64> {
         let flags = if open_flags & status_flags::O_CLOEXEC != 0 { flags::FD_CLOEXEC } else { 0 };
         let word = (open_flags & status_flags::O_ACCMODE) | (open_flags & SETTABLE_STATUS_FLAGS);
@@ -535,19 +517,15 @@ impl Clone for FdTableInner {
                         entry.lock().writers += 1;
                         buffer.lock().add_writer();
                     }
-                    FdKind::PtyMaster(pty_num) => {
+                    FdKind::PtyMaster(pair) => {
                         // Increment PTY master reference count for the clone
                         // No logging - this runs during fork()
-                        if let Some(pair) = crate::tty::pty::get(*pty_num) {
-                            pair.master_refcount
-                                .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
-                        }
+                        pair.master_refcount
+                            .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
                     }
-                    FdKind::PtySlave(pty_num) => {
+                    FdKind::PtySlave(pair) => {
                         // Increment PTY slave reference count for the clone
-                        if let Some(pair) = crate::tty::pty::get(*pty_num) {
-                            pair.slave_open();
-                        }
+                        pair.slave_open();
                     }
                     FdKind::TcpConnection(conn_id) => {
                         // Increment TCP connection reference count for the clone
@@ -790,16 +768,12 @@ impl FdTableInner {
                 entry.lock().writers += 1;
                 buffer.lock().add_writer();
             }
-            FdKind::PtyMaster(pty_num) => {
-                if let Some(pair) = crate::tty::pty::get(*pty_num) {
-                    pair.master_refcount
-                        .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
-                }
+            FdKind::PtyMaster(pair) => {
+                pair.master_refcount
+                    .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
             }
-            FdKind::PtySlave(pty_num) => {
-                if let Some(pair) = crate::tty::pty::get(*pty_num) {
-                    pair.slave_open();
-                }
+            FdKind::PtySlave(pair) => {
+                pair.slave_open();
             }
             FdKind::TcpConnection(conn_id) => {
                 crate::net::tcp::tcp_add_ref(conn_id);
@@ -868,16 +842,12 @@ impl FdTableInner {
                 entry.lock().writers += 1;
                 buffer.lock().add_writer();
             }
-            FdKind::PtyMaster(pty_num) => {
-                if let Some(pair) = crate::tty::pty::get(*pty_num) {
-                    pair.master_refcount
-                        .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
-                }
+            FdKind::PtyMaster(pair) => {
+                pair.master_refcount
+                    .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
             }
-            FdKind::PtySlave(pty_num) => {
-                if let Some(pair) = crate::tty::pty::get(*pty_num) {
-                    pair.slave_open();
-                }
+            FdKind::PtySlave(pair) => {
+                pair.slave_open();
             }
             FdKind::TcpConnection(conn_id) => {
                 crate::net::tcp::tcp_add_ref(conn_id);
@@ -1011,35 +981,8 @@ impl Drop for FdTableInner {
                         // Devpts directory doesn't need cleanup
                         log::debug!("FdTable::drop() - releasing devpts directory fd {}", i);
                     }
-                    FdKind::PtyMaster(pty_num) => {
-                        // PTY master cleanup - decrement refcount, only release when all masters closed
-                        if let Some(pair) = crate::tty::pty::get(pty_num) {
-                            let old_count = pair
-                                .master_refcount
-                                .fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
-                            log::debug!(
-                                "FdTable::drop() - PTY master fd {} (pty {}) refcount {} -> {}",
-                                i,
-                                pty_num,
-                                old_count,
-                                old_count - 1
-                            );
-                            if old_count == 1 {
-                                crate::tty::pty::release(pty_num);
-                                log::debug!(
-                                    "FdTable::drop() - released PTY {} (last master closed)",
-                                    pty_num
-                                );
-                            }
-                        }
-                    }
-                    FdKind::PtySlave(pty_num) => {
-                        // Decrement slave refcount — master sees POLLHUP when last slave closes
-                        if let Some(pair) = crate::tty::pty::get(pty_num) {
-                            pair.slave_close();
-                        }
-                        log::debug!("FdTable::drop() - released PTY slave fd {}", i);
-                    }
+                    FdKind::PtyMaster(pair) => crate::tty::pty::close_master_ref(&pair),
+                    FdKind::PtySlave(pair) => crate::tty::pty::close_slave_ref(&pair),
                     FdKind::UnixStream(socket) => {
                         // Close the Unix socket endpoint
                         let notifications = socket.lock().close();

@@ -335,6 +335,7 @@ STD_BINARIES=(
     "suite-threads"
     "suite-ipc"
     "suite-networking"
+    "suite-terminals"
     "files-io-exec_test"
     "processes-exec_test"
     "signals-exec_test"
