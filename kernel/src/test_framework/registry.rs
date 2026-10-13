@@ -2466,7 +2466,9 @@ fn test_tcp_socket_creation() -> TestResult {
     }
     log::info!("created FdKind::Socket - unbound TCP socket");
 
-    // A connected socket names both ends of its connection.
+    // A socket carrying a connection names its own end of it, and names a
+    // peer only while the connection is open: this one was never opened, so,
+    // as on Linux for a socket in TCP_CLOSE, it has none.
     let conn_id = crate::net::tcp::ConnectionId {
         local_ip: [127, 0, 0, 1],
         local_port: 8080,
@@ -2477,10 +2479,11 @@ fn test_tcp_socket_creation() -> TestResult {
     if connected.connection().map(|id| id.local_port) != Some(8080) {
         return TestResult::Fail("connection ID local port mismatch");
     }
-    if connected.peer_name(&unbound)
-        != Ok(SockAddr::Inet { addr: [127, 0, 0, 1], port: 12345 })
-    {
-        return TestResult::Fail("a connected TCP socket should name its peer");
+    if connected.local_name(&unbound) != (SockAddr::Inet { addr: [127, 0, 0, 1], port: 8080 }) {
+        return TestResult::Fail("a TCP socket with a connection should name its own end");
+    }
+    if connected.peer_name(&unbound) != Err(crate::syscall::errno::ENOTCONN) {
+        return TestResult::Fail("a TCP socket whose connection is not open should have no peer");
     }
     log::info!("TcpSock::connected - connection ID works");
 
@@ -2626,15 +2629,21 @@ fn setup_loopback_tcp_pair(
     use crate::net::tcp;
     use crate::process::process::ProcessId;
 
-    if tcp::tcp_listen(listen_port, 4, ProcessId::new(0)).is_err() {
+    let Ok(listener) = tcp::tcp_listen([0; 4], listen_port, 4, ProcessId::new(0), false, None)
+    else {
         return Err("tcp_listen failed during loopback setup");
-    }
+    };
 
-    let client = match tcp::tcp_connect(client_port, [127, 0, 0, 1], listen_port, ProcessId::new(0))
-    {
+    let client = match tcp::tcp_connect(
+        [0; 4],
+        client_port,
+        [127, 0, 0, 1],
+        listen_port,
+        ProcessId::new(0),
+    ) {
         Ok(connection) => connection,
         Err(_) => {
-            tcp::tcp_listener_ref_dec(listen_port);
+            tcp::tcp_unlisten(listener);
             return Err("tcp_connect failed during loopback setup");
         }
     };
@@ -2644,10 +2653,12 @@ fn setup_loopback_tcp_pair(
     loop {
         crate::net::drain_loopback_queue();
         if server.is_none() {
-            server = tcp::tcp_accept(listen_port);
+            server = tcp::tcp_accept(listener);
         }
         if let Some(server_connection) = server.as_ref() {
             if tcp::tcp_is_established(&client) && tcp::tcp_is_established(server_connection) {
+                // The accepted connection no longer belongs to the listener.
+                tcp::tcp_unlisten(listener);
                 return Ok((client, *server_connection));
             }
         }
@@ -2669,7 +2680,7 @@ fn setup_loopback_tcp_pair(
         server_state,
         server_established,
         listen_port,
-        tcp::tcp_pending_accept_depth(listen_port),
+        tcp::tcp_pending_accept_depth(listener),
     );
 
     let Some(server) = server else {
@@ -2679,7 +2690,7 @@ fn setup_loopback_tcp_pair(
             "kloopbackd",
         );
         let _ = tcp::tcp_close(&client);
-        tcp::tcp_listener_ref_dec(listen_port);
+        tcp::tcp_unlisten(listener);
         return Err("tcp_accept failed during loopback setup");
     };
 
@@ -2687,7 +2698,7 @@ fn setup_loopback_tcp_pair(
     crate::task::scheduler::dump_thread_placement(crate::net::loopback_pump_tid(), "kloopbackd");
     let _ = tcp::tcp_close(&client);
     let _ = tcp::tcp_close(&server);
-    tcp::tcp_listener_ref_dec(listen_port);
+    tcp::tcp_unlisten(listener);
     Err("loopback TCP handshake did not establish both peers")
 }
 
@@ -2852,7 +2863,6 @@ fn run_loopback_recv_wake_test_inner(
         Err(_) => {
             let _ = tcp::tcp_close(&client);
             let _ = tcp::tcp_close(&server);
-            tcp::tcp_listener_ref_dec(listen_port);
             return TestResult::Fail("failed to spawn loopback reader kthread");
         }
     };
@@ -2869,7 +2879,6 @@ fn run_loopback_recv_wake_test_inner(
             let _ = kthread::kthread_join(&reader);
             let _ = tcp::tcp_close(&client);
             let _ = tcp::tcp_close(&server);
-            tcp::tcp_listener_ref_dec(listen_port);
             return TestResult::Fail("reader did not publish its thread id");
         }
         scheduler::yield_current();
@@ -2882,7 +2891,6 @@ fn run_loopback_recv_wake_test_inner(
         tcp::tcp_unregister_recv_waiter(&client, reader_tid);
         let _ = tcp::tcp_close(&client);
         let _ = tcp::tcp_close(&server);
-        tcp::tcp_listener_ref_dec(listen_port);
         return TestResult::Fail("reader did not reach Blocked state");
     }
 
@@ -2905,7 +2913,6 @@ fn run_loopback_recv_wake_test_inner(
                 tcp::tcp_unregister_recv_waiter(&client, reader_tid);
                 let _ = tcp::tcp_close(&client);
                 let _ = tcp::tcp_close(&server);
-                tcp::tcp_listener_ref_dec(listen_port);
                 return TestResult::Fail("failed to spawn loopback load kthread");
             }
         }
@@ -2927,7 +2934,6 @@ fn run_loopback_recv_wake_test_inner(
                 tcp::tcp_unregister_recv_waiter(&client, reader_tid);
                 let _ = tcp::tcp_close(&client);
                 let _ = tcp::tcp_close(&server);
-                tcp::tcp_listener_ref_dec(listen_port);
                 return TestResult::Fail("loopback load kthread did not start");
             }
             scheduler::yield_current();
@@ -2945,7 +2951,6 @@ fn run_loopback_recv_wake_test_inner(
         tcp::tcp_unregister_recv_waiter(&client, reader_tid);
         let _ = tcp::tcp_close(&client);
         let _ = tcp::tcp_close(&server);
-        tcp::tcp_listener_ref_dec(listen_port);
         return TestResult::Fail("tcp_send failed in loopback wake test");
     }
 
@@ -3022,7 +3027,6 @@ fn run_loopback_recv_wake_test_inner(
     tcp::tcp_unregister_recv_waiter(&client, reader_tid);
     let _ = tcp::tcp_close(&client);
     let _ = tcp::tcp_close(&server);
-    tcp::tcp_listener_ref_dec(listen_port);
 
     // #586: the classification is selected from TWO independent facts. The
     // delivery fact (`queue_depth`, `client_has_data`) says what happened to
@@ -3324,113 +3328,95 @@ fn loopback_wake_loss_counters_are_zero() -> TestResult {
     TestResult::Pass
 }
 
-fn tcp_final_ack_survives_accept_publish_race() -> TestResult {
+/// A listener's child stays out of accept's reach until the final ACK of its
+/// handshake: a SYN alone leaves nothing to accept, a reset at the child's
+/// next expected sequence number removes it, an ACK whose checksum does not
+/// hold changes nothing, and the final ACK makes it the one accept returns.
+///
+/// The synthetic peer is 192.0.2.1 (TEST-NET-1, RFC 5737), so the SYN+ACKs
+/// the children send leave through the interface to an address nobody
+/// answers, and no reply races the fixture.
+fn tcp_accept_waits_for_final_ack() -> TestResult {
     use crate::net::{ipv4, tcp};
     use crate::process::process::ProcessId;
 
     const LISTEN_PORT: u16 = 54_530;
     const CLIENT_PORT: u16 = 54_531;
     const CLIENT_ISN: u32 = 0x5453_0000;
-    const LOOPBACK_QUIESCE_ATTEMPTS: usize = 8;
 
-    let mut loopback_quiescent = false;
-    for _ in 0..LOOPBACK_QUIESCE_ATTEMPTS {
-        crate::net::drain_loopback_queue();
-        crate::task::scheduler::yield_current();
-        if crate::net::loopback_queue_depth_for_test() == 0 {
-            loopback_quiescent = true;
-            break;
+    let Ok(listener) = tcp::tcp_listen([0; 4], LISTEN_PORT, 4, ProcessId::new(0), false, None)
+    else {
+        return TestResult::Fail("tcp_listen failed in the accept handshake fixture");
+    };
+    let server_ip = crate::net::config().ip_addr;
+    let client_ip = [192, 0, 2, 1];
+    let child_id = tcp::ConnectionId {
+        local_ip: server_ip,
+        local_port: LISTEN_PORT,
+        remote_ip: client_ip,
+        remote_port: CLIENT_PORT,
+    };
+    let inject = |seq: u32, ack: u32, flags: tcp::TcpFlags, corrupt: bool| {
+        let mut segment = tcp::build_tcp_packet_with_checksum(
+            client_ip,
+            server_ip,
+            CLIENT_PORT,
+            LISTEN_PORT,
+            seq,
+            ack,
+            flags,
+            65_535,
+            &[],
+        );
+        if corrupt {
+            segment[16] ^= 0xff;
         }
-    }
-    if !loopback_quiescent {
-        return TestResult::Fail("loopback queue did not quiesce before the final-ACK race oracle");
-    }
+        let packet = ipv4::Ipv4Packet::build(client_ip, server_ip, ipv4::PROTOCOL_TCP, &segment);
+        if let Some(ip) = ipv4::Ipv4Packet::parse(&packet) {
+            tcp::handle_tcp(&ip, ip.payload);
+        }
+    };
+    let syn_ack_seq = || {
+        tcp::with_tcp_connections(|connections| {
+            connections.get(&child_id).map(|connection| connection.send_next)
+        })
+    };
 
-    if tcp::tcp_listen(LISTEN_PORT, 4, ProcessId::new(0)).is_err() {
-        return TestResult::Fail("tcp_listen failed in final-ACK race oracle");
-    }
-
-    let mut child = None;
     let result = (|| {
-        let server_ip = crate::net::config().ip_addr;
-        let client_ip = [127, 0, 0, 1];
-        let syn_segment = tcp::build_tcp_packet_with_checksum(
-            client_ip,
-            server_ip,
-            CLIENT_PORT,
-            LISTEN_PORT,
-            CLIENT_ISN,
-            0,
-            tcp::TcpFlags::syn(),
-            65_535,
-            &[],
-        );
-        let syn_packet =
-            ipv4::Ipv4Packet::build(client_ip, server_ip, ipv4::PROTOCOL_TCP, &syn_segment);
-        let Some(syn_ip) = ipv4::Ipv4Packet::parse(&syn_packet) else {
-            return TestResult::Fail("failed to parse synthetic SYN IPv4 packet");
+        inject(CLIENT_ISN, 0, tcp::TcpFlags::syn(), false);
+        if tcp::tcp_get_state(&child_id) != Some(tcp::TcpState::SynReceived) {
+            return TestResult::Fail("a SYN did not make a child in SYN_RECEIVED");
+        }
+        if tcp::tcp_pending_accept_depth(listener) != 0 || tcp::tcp_accept(listener).is_some() {
+            return TestResult::Fail("accept took a child whose handshake had not finished");
+        }
+
+        inject(CLIENT_ISN.wrapping_add(1), 0, tcp::TcpFlags::rst(), false);
+        if tcp::tcp_get_state(&child_id).is_some() {
+            return TestResult::Fail("a reset left the half-open child in the table");
+        }
+
+        inject(CLIENT_ISN, 0, tcp::TcpFlags::syn(), false);
+        let Some(server_ack) = syn_ack_seq() else {
+            return TestResult::Fail("a second SYN did not make a child");
         };
-        tcp::handle_tcp(&syn_ip, syn_ip.payload);
-        if tcp::tcp_pending_accept_depth(LISTEN_PORT) != 1 {
-            return TestResult::Fail("synthetic SYN did not create one pending connection");
+        inject(CLIENT_ISN.wrapping_add(1), server_ack, tcp::TcpFlags::ack(), true);
+        if tcp::tcp_get_state(&child_id) != Some(tcp::TcpState::SynReceived) {
+            return TestResult::Fail("an ACK with a bad checksum changed the child");
         }
 
-        let Some(server) = tcp::tcp_accept(LISTEN_PORT) else {
-            return TestResult::Fail("tcp_accept failed in final-ACK race oracle");
-        };
-        child = Some(server);
-        if tcp::tcp_pending_accept_depth(LISTEN_PORT) != 0 {
-            return TestResult::Fail("tcp_accept did not remove the pending connection");
+        inject(CLIENT_ISN.wrapping_add(1), server_ack, tcp::TcpFlags::ack(), false);
+        if tcp::tcp_get_state(&child_id) != Some(tcp::TcpState::Established) {
+            return TestResult::Fail("the final ACK did not establish the child");
         }
-        if tcp::tcp_get_state(&server) != Some(tcp::TcpState::SynReceived) {
-            return TestResult::Fail("accepted child was not waiting for the final ACK");
+        if tcp::tcp_accept(listener) != Some(child_id) {
+            return TestResult::Fail("accept did not return the established child");
         }
-
-        let Some(server_ack) = tcp::with_tcp_connections(|connections| {
-            connections
-                .get(&server)
-                .map(|connection| connection.send_next)
-        }) else {
-            return TestResult::Fail("accepted child was not published");
-        };
-        let recovered_before = tcp::tcp_accept_publish_race_recovered();
-        tcp::arm_forced_connection_lookup_miss(LISTEN_PORT, CLIENT_PORT, 1);
-
-        let ack_segment = tcp::build_tcp_packet_with_checksum(
-            client_ip,
-            server_ip,
-            CLIENT_PORT,
-            LISTEN_PORT,
-            CLIENT_ISN.wrapping_add(1),
-            server_ack,
-            tcp::TcpFlags::ack(),
-            65_535,
-            &[],
-        );
-        let ack_packet =
-            ipv4::Ipv4Packet::build(client_ip, server_ip, ipv4::PROTOCOL_TCP, &ack_segment);
-        let Some(ack_ip) = ipv4::Ipv4Packet::parse(&ack_packet) else {
-            tcp::arm_forced_connection_lookup_miss(LISTEN_PORT, CLIENT_PORT, 0);
-            return TestResult::Fail("failed to parse synthetic ACK IPv4 packet");
-        };
-        tcp::handle_tcp(&ack_ip, ack_ip.payload);
-        tcp::arm_forced_connection_lookup_miss(LISTEN_PORT, CLIENT_PORT, 0);
-
-        if tcp::tcp_get_state(&server) != Some(tcp::TcpState::Established) {
-            return TestResult::Fail("final ACK did not establish the accepted child");
-        }
-        if tcp::tcp_accept_publish_race_recovered() != recovered_before.wrapping_add(1) {
-            return TestResult::Fail("final ACK did not take exactly one recovery path");
-        }
-
         TestResult::Pass
     })();
 
-    tcp::arm_forced_connection_lookup_miss(LISTEN_PORT, CLIENT_PORT, 0);
-    if let Some(server) = child {
-        let _ = tcp::tcp_close(&server);
-    }
-    tcp::tcp_listener_ref_dec(LISTEN_PORT);
+    let _ = tcp::tcp_close_connection(&child_id, true, false);
+    tcp::tcp_unlisten(listener);
     tcp::drain_deferred_tx();
     crate::net::drain_loopback_queue();
     result
@@ -3445,8 +3431,9 @@ fn tcp_final_ack_survives_accept_publish_race() -> TestResult {
 /// - `loopback_recv_wake_under_load` page-faults on a write to `0x100002590aa`.
 /// - `loopback_pump_does_not_busy_spin` page-faults while fetching an instruction
 ///   from a data address.
-/// - `tcp_final_ack_survives_accept_publish_race` resumes at poison-filled RIP
-///   `0x4444446053e6`.
+/// - `tcp_accept_waits_for_final_ack` replaced
+///   `tcp_final_ack_survives_accept_publish_race`, which resumed at
+///   poison-filled RIP `0x4444446053e6`; it stays out until it has run here.
 ///
 /// Any test that schedules in this window currently poisons the x86 boot, so this
 /// path runs only `loopback_wake_loss_counters_are_zero`, which does no scheduling.
@@ -10099,7 +10086,7 @@ static FILESYSTEM_TESTS: &[TestDef] = &[
 /// - loopback_recv_wake_when_idle: Verify blocked TCP recv wakes with only idle runnable
 /// - loopback_recv_wake_under_load: Verify the pump delivers while idle never runs
 /// - loopback_pump_does_not_busy_spin: Verify an empty pump blocks instead of polling
-/// - tcp_final_ack_survives_accept_publish_race: Prove accept cannot lose the final ACK
+/// - tcp_accept_waits_for_final_ack: Accept takes a child only after its final ACK
 /// - net_lock_guard_masks_interrupt_source: Prove per-arch network exclusion
 static NETWORK_TESTS: &[TestDef] = &[
     TestDef {
@@ -10166,8 +10153,8 @@ static NETWORK_TESTS: &[TestDef] = &[
         stage: TestStage::EarlyBoot,
     },
     TestDef {
-        name: "tcp_final_ack_survives_accept_publish_race",
-        func: tcp_final_ack_survives_accept_publish_race,
+        name: "tcp_accept_waits_for_final_ack",
+        func: tcp_accept_waits_for_final_ack,
         arch: Arch::Any,
         timeout_ms: 5000,
         stage: TestStage::EarlyBoot,

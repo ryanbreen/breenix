@@ -596,54 +596,25 @@ fn validate_wake_waiting_threads_is_arch_neutral(source: &str) -> Result<(), Str
     Ok(())
 }
 
+fn validate_tcp_accept_takes_only_established_children(source: &str) -> Result<(), String> {
+    let accept =
+        function_body(source, "tcp_accept").ok_or_else(|| "missing tcp_accept".to_string())?;
+    if !compact_code(accept).contains("conn.parent==Some(id)&&conn.acceptable()") {
+        return Err("tcp_accept no longer requires a finished handshake".to_string());
+    }
+    let acceptable = function_body(source, "acceptable")
+        .ok_or_else(|| "missing TcpConnection::acceptable".to_string())?;
+    if !compact_code(acceptable).contains("TcpState::SynReceived") {
+        return Err("acceptable() no longer excludes SYN_RECEIVED children".to_string());
+    }
+    Ok(())
+}
+
 fn validate_waiter_lists_are_not_drained_before_the_wake(source: &str) -> Result<(), String> {
-    for name in ["wake_connection_waiters", "wake_accept_waiters"] {
+    for name in ["wake_connection_waiters"] {
         let body = function_body(source, name).ok_or_else(|| format!("missing {name}"))?;
         if normalized_code(body).contains(".drain(") {
             return Err(format!("{name} drains its waiter list before wake"));
-        }
-    }
-    Ok(())
-}
-
-fn validate_tcp_accept_inserts_before_pending_removal(source: &str) -> Result<(), String> {
-    let accept =
-        function_body(source, "tcp_accept").ok_or_else(|| "missing tcp_accept".to_string())?;
-    let insert = code_text_offset(accept, "connections.insert(conn_id, conn)")
-        .ok_or_else(|| "tcp_accept does not insert the accepted connection".to_string())?;
-    let removal = code_text_offset(accept, "listener.pending.remove(position)")
-        .ok_or_else(|| "tcp_accept does not remove the matched pending entry".to_string())?;
-
-    if insert >= removal {
-        return Err("tcp_accept removes the pending entry before connection insertion".to_string());
-    }
-    if code_text_offset(&accept[..insert], ".pop_front()").is_some() {
-        return Err("tcp_accept pops a pending entry before connection insertion".to_string());
-    }
-    Ok(())
-}
-
-fn validate_tcp_accept_claims_pending_in_peek_closure(source: &str) -> Result<(), String> {
-    let accept =
-        function_body(source, "tcp_accept").ok_or_else(|| "missing tcp_accept".to_string())?;
-    let selection_start = code_text_offset(accept, "let pending = with_tcp_listeners(|listeners|")
-        .ok_or_else(|| "tcp_accept does not peek under the listeners lock".to_string())?;
-    let mask = code_mask(&accept);
-    let (selection_open, selection_close) = braced_block_span(&accept, &mask, selection_start)
-        .ok_or_else(|| "cannot parse tcp_accept pending-selection closure".to_string())?;
-    let selection = &accept[selection_open..=selection_close];
-    let normalized = compact_code(selection);
-
-    for required in [
-        "listener.pending.iter_mut()",
-        ".find(|pending|!pending.claimed)",
-        "pending.claimed=true",
-        "pending.clone()",
-    ] {
-        if !normalized.contains(required) {
-            return Err(format!(
-                "tcp_accept pending-selection closure is missing {required}"
-            ));
         }
     }
     Ok(())
@@ -916,7 +887,7 @@ fn validate_loopback_regression_tests_are_arch_neutral(source: &str) -> Result<(
         "loopback_recv_wake_under_load",
         "loopback_pump_does_not_busy_spin",
         "loopback_wake_loss_counters_are_zero",
-        "tcp_final_ack_survives_accept_publish_race",
+        "tcp_accept_waits_for_final_ack",
     ] {
         let definition =
             test_def_block(source, name).ok_or_else(|| format!("missing TestDef for {name}"))?;
@@ -1005,7 +976,7 @@ fn validate_x86_gate_requires_the_loopback_regression_tests(source: &str) -> Res
         "loopback_recv_wake_when_idle",
         "loopback_recv_wake_under_load",
         "loopback_pump_does_not_busy_spin",
-        "tcp_final_ack_survives_accept_publish_race",
+        "tcp_accept_waits_for_final_ack",
     ] {
         let marker = format!("\\[TEST:network:{name}:PASS\\]");
         if source.contains(&marker) {
@@ -1016,7 +987,7 @@ fn validate_x86_gate_requires_the_loopback_regression_tests(source: &str) -> Res
         "loopback_recv_wake_when_idle",
         "loopback_recv_wake_under_load",
         "loopback_pump_does_not_busy_spin",
-        "tcp_final_ack_survives_accept_publish_race",
+        "tcp_accept_waits_for_final_ack",
         "#567",
     ] {
         if !source.contains(explanation) {
@@ -1116,7 +1087,7 @@ fn validate_x86_direct_loopback_gates(main: &str, registry: &str) -> Result<(), 
         "loopback_recv_wake_when_idle",
         "loopback_recv_wake_under_load",
         "loopback_pump_does_not_busy_spin",
-        "tcp_final_ack_survives_accept_publish_race",
+        "tcp_accept_waits_for_final_ack",
     ] {
         if wrapper.contains(&format!("{name}()"))
             || wrapper.contains(&format!("[TEST:network:{name}:"))
@@ -1135,6 +1106,7 @@ fn validate_x86_direct_loopback_gates(main: &str, registry: &str) -> Result<(), 
         "0x100002590aa",
         "loopback_pump_does_not_busy_spin",
         "data address",
+        "tcp_accept_waits_for_final_ack",
         "tcp_final_ack_survives_accept_publish_race",
         "0x4444446053e6",
         "Any test that schedules in this window currently poisons the x86 boot",
@@ -1712,74 +1684,21 @@ fn waiter_list_validator_rejects_pre_wake_drain() {
 }
 
 #[test]
-fn tcp_accept_inserts_before_pending_removal() {
-    validate_tcp_accept_inserts_before_pending_removal(&repo_text("kernel/src/net/tcp.rs"))
-        .expect("accepted connection is visible before its pending entry is removed");
+fn tcp_accept_takes_only_established_children() {
+    validate_tcp_accept_takes_only_established_children(&repo_text("kernel/src/net/tcp.rs"))
+        .expect("accept returns a child only once its handshake has finished");
 }
 
 #[test]
-fn tcp_accept_order_validator_rejects_remove_before_insert() {
+fn tcp_accept_validator_rejects_half_open_children() {
     let source = repo_text("kernel/src/net/tcp.rs");
-    let accept = function_body(&source, "tcp_accept").expect("find tcp_accept fixture");
-    let mask = code_mask(accept);
-
-    let insert_start = code_text_offset(accept, "with_tcp_connections(|connections|")
-        .expect("find connection insertion fixture");
-    let (_, insert_close) =
-        braced_block_span(accept, &mask, insert_start).expect("parse connection insertion fixture");
-    let insert_end = insert_close
-        + accept[insert_close..]
-            .find(';')
-            .expect("find connection insertion terminator")
-        + 1;
-
-    let removal_start = code_text_offset(accept, "let final_pending = with_tcp_listeners")
-        .expect("find pending removal fixture");
-    let (_, removal_close) =
-        braced_block_span(accept, &mask, removal_start).expect("parse pending removal fixture");
-    let removal_end = removal_close
-        + accept[removal_close..]
-            .find(';')
-            .expect("find pending removal terminator")
-        + 1;
-
-    assert!(
-        insert_end <= removal_start,
-        "fixture must insert before removing"
-    );
-    let mutated_accept = format!(
-        "{}{}{}{}{}",
-        &accept[..insert_start],
-        &accept[removal_start..removal_end],
-        &accept[insert_end..removal_start],
-        &accept[insert_start..insert_end],
-        &accept[removal_end..]
-    );
-    let mutated = source.replacen(accept, &mutated_accept, 1);
-    assert_ne!(mutated, source, "fixture mutation must apply");
-    assert!(validate_tcp_accept_inserts_before_pending_removal(&mutated).is_err());
-}
-
-#[test]
-fn tcp_accept_claims_pending_in_peek_closure() {
-    validate_tcp_accept_claims_pending_in_peek_closure(&repo_text("kernel/src/net/tcp.rs")).expect(
-        "tcp_accept claims an unclaimed pending entry while peeking under the listener lock",
-    );
-}
-
-#[test]
-fn tcp_accept_claim_validator_rejects_claim_outside_listener_lock() {
-    let source = repo_text("kernel/src/net/tcp.rs");
-    let without_claim = source.replacen("pending.claimed = true;", "", 1);
-    assert_ne!(without_claim, source, "fixture mutation must apply");
-    let marker = "let copied_early_data_len = pending.early_data.len();";
-    let moved_claim = without_claim.replacen(
-        marker,
-        "let mut pending = pending;\n    pending.claimed = true;\n    let copied_early_data_len = pending.early_data.len();",
+    let mutated = source.replacen(
+        "conn.parent == Some(id) && conn.acceptable()",
+        "conn.parent == Some(id)",
         1,
     );
-    assert_ne!(moved_claim, without_claim, "fixture mutation must apply");
-    assert!(validate_tcp_accept_claims_pending_in_peek_closure(&moved_claim).is_err());
+    assert_ne!(mutated, source, "fixture mutation must apply");
+    assert!(validate_tcp_accept_takes_only_established_children(&mutated).is_err());
 }
 
 #[test]
