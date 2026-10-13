@@ -167,6 +167,7 @@ pub fn copy_to_user(user_ptr: u64, kernel_ptr: u64, len: usize) -> Result<(), &'
 /// sys_exit - Terminate the current process
 pub fn sys_exit(exit_code: i32) -> SyscallResult {
     log::debug!("USERSPACE: sys_exit called with code: {}", exit_code);
+    let diag_t0: u64 = { let (s_, n_) = crate::time::get_monotonic_time_ns(); s_ * 1000 + n_ / 1_000_000 };
 
     // Get current thread ID from scheduler
     if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
@@ -204,8 +205,13 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
             super::futex::futex_wake_cleared_tid(tg_id, tid_addr);
         }
 
+        let diag_t1: u64 = { let (s_, n_) = crate::time::get_monotonic_time_ns(); s_ * 1000 + n_ / 1_000_000 };
         // Handle thread exit through ProcessScheduler
         crate::task::process_task::ProcessScheduler::handle_thread_exit(thread_id, exit_code);
+        let diag_t2: u64 = { let (s_, n_) = crate::time::get_monotonic_time_ns(); s_ * 1000 + n_ / 1_000_000 };
+        if diag_t2 - diag_t0 > 50 {
+            log::info!("EXECDIAG sys_exit tid={} t0={} before={} handle={}", thread_id, diag_t0, diag_t1 - diag_t0, diag_t2 - diag_t1);
+        }
 
         // Mark current thread as terminated
         crate::task::scheduler::with_scheduler(|scheduler| {
@@ -2437,14 +2443,20 @@ pub fn sys_execv_with_frame(
         // section 2.1, #713 anti-vacuity / precheck section 4.6). This read happens with
         // interrupts enabled, before any lock is taken — see this function's own
         // top-of-file comment; do not move it inside the masked section below (X2).
-        let (elf_vec, image_identity) =
-            match super::exec::read_image(program_name, &mut arguments, |path| {
+        let diag_t0: u64 = { let (s_, n_) = crate::time::get_monotonic_time_ns(); s_ * 1000 + n_ / 1_000_000 };
+        let diag_read = super::exec::read_image(program_name, &mut arguments, |path| {
                 if path.contains('/') {
                     crate::boot::init_image::read_program_image(path)
                 } else {
                     crate::boot::init_image::read_program_image(&alloc::format!("/bin/{}", path))
                 }
-            }) {
+            });
+        let diag_t1: u64 = { let (s_, n_) = crate::time::get_monotonic_time_ns(); s_ * 1000 + n_ / 1_000_000 };
+        if diag_t1 - diag_t0 > 50 || diag_read.is_err() {
+            log::info!("EXECDIAG exec read tid={} t0={} ms={} err={:?}", current_thread_id, diag_t0, diag_t1 - diag_t0, diag_read.as_ref().err());
+        }
+        let (elf_vec, image_identity) =
+            match diag_read {
                 Ok(data) => data,
                 Err(errno) => return SyscallResult::Err(errno),
             };
@@ -2939,7 +2951,12 @@ pub fn sys_getppid() -> SyscallResult {
 /// (#1033). The other threads of the group are killed first, each with the
 /// group's status, then the calling thread exits.
 pub fn sys_exit_group(exit_code: i32) -> SyscallResult {
+    let diag_t0: u64 = { let (s_, n_) = crate::time::get_monotonic_time_ns(); s_ * 1000 + n_ / 1_000_000 };
     end_thread_group_peers(exit_code);
+    let diag_t1: u64 = { let (s_, n_) = crate::time::get_monotonic_time_ns(); s_ * 1000 + n_ / 1_000_000 };
+    if diag_t1 - diag_t0 > 50 {
+        log::info!("EXECDIAG exit_group peers t0={} ms={}", diag_t0, diag_t1 - diag_t0);
+    }
     sys_exit(exit_code)
 }
 

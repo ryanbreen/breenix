@@ -918,6 +918,7 @@ impl ProcessScheduler {
     /// with interrupts disabled on all CPUs) combined with logging (which acquires
     /// SERIAL and framebuffer locks) creates an unbreakable deadlock.
     pub fn handle_thread_exit(thread_id: u64, exit_code: i32) {
+        let diag_t0: u64 = { let (s_, n_) = crate::time::get_monotonic_time_ns(); s_ * 1000 + n_ / 1_000_000 };
         crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_EXIT);
         // The priority-inheritance futexes it owns pass to their waiters, and
         // one it is blocked on stops counting it. Before PM: the futex table
@@ -934,6 +935,7 @@ impl ProcessScheduler {
         if report_claimer == thread_id {
             scheduler::charge_current_cpu();
         }
+        let diag_t_pre: u64 = { let (s_, n_) = crate::time::get_monotonic_time_ns(); s_ * 1000 + n_ / 1_000_000 };
         // Phase 1: Under PM lock — minimal work only
         let phase1_result = {
             if let Some(ref mut manager) = *crate::process::manager() {
@@ -1107,6 +1109,7 @@ impl ProcessScheduler {
             terminal_exit,
         )) = phase1_result
         {
+            let diag_t1: u64 = { let (s_, n_) = crate::time::get_monotonic_time_ns(); s_ * 1000 + n_ / 1_000_000 };
             // Condition C8: a row the auto-reap removed is destroyed outside PM.
             drop(auto_reaped);
             if let Some(exited) = group_exited {
@@ -1118,10 +1121,16 @@ impl ProcessScheduler {
                 }
             }
 
+            let diag_t2: u64 = { let (s_, n_) = crate::time::get_monotonic_time_ns(); s_ * 1000 + n_ / 1_000_000 };
             // Linux closes descriptors before disassociating the terminal.
             close_extracted_fds(fd_entries);
+            let diag_t3: u64 = { let (s_, n_) = crate::time::get_monotonic_time_ns(); s_ * 1000 + n_ / 1_000_000 };
             if let Some(exit) = terminal_exit {
                 crate::tty::ctty::finish_exit(exit);
+            }
+            let diag_t4: u64 = { let (s_, n_) = crate::time::get_monotonic_time_ns(); s_ * 1000 + n_ / 1_000_000 };
+            if diag_t4 - diag_t0 > 50 {
+                log::info!("EXECDIAG exit tid={} pid={} t0={} pre={} p1={} reclaim={} close={} ctty={}", thread_id, pid.as_u64(), diag_t0, diag_t_pre - diag_t0, diag_t1 - diag_t_pre, diag_t2 - diag_t1, diag_t3 - diag_t2, diag_t4 - diag_t3);
             }
 
             // Clean up window buffers so the compositor stops reading freed pages
