@@ -10,8 +10,8 @@
 //! 7. Shutdown connected socket (SHUT_RDWR) - MUST succeed
 //! 8. Shutdown unconnected socket - MUST return ENOTCONN
 //! 9. Bind same port - MUST return EADDRINUSE
-//! 10. Listen on unbound socket - MUST return EINVAL
-//! 11. Accept on non-listening socket - MUST return EOPNOTSUPP
+//! 10. Listen on unbound socket - MUST bind an ephemeral port (Linux)
+//! 11. Accept on non-listening socket - MUST return EINVAL (Linux)
 //! 12-25. Various data transfer and edge case tests
 //!
 //! This validates the TCP syscall path from userspace to kernel.
@@ -245,18 +245,27 @@ fn main() {
         }
     }
 
-    // Test 10: listen on unbound socket
+    // Test 10: listen on unbound socket. Linux binds it to an ephemeral port
+    // (POSIX would also allow EDESTADDRREQ), so listen succeeds and getsockname
+    // then reports AF_INET with a nonzero port.
     match socket::socket(AF_INET, SOCK_STREAM, 0) {
         Ok(unbound_fd) => {
-            match socket::listen(unbound_fd, 128) {
-                Err(Error::Os(Errno::EINVAL)) => {
-                    println!("TCP_TEST: listen_unbound OK");
-                    _passed += 1;
-                }
-                _ => {
-                    println!("TCP_TEST: listen_unbound FAILED");
-                    failed += 1;
-                }
+            let mut name = SockAddrIn::new([0, 0, 0, 0], 0);
+            let mut name_len: u32 = core::mem::size_of::<SockAddrIn>() as u32;
+            let named = socket::listen(unbound_fd, 128).is_ok() && unsafe {
+                libbreenix::syscall::raw::syscall3(
+                    libbreenix::syscall::nr::GETSOCKNAME,
+                    unbound_fd.raw(),
+                    &mut name as *mut SockAddrIn as u64,
+                    &mut name_len as *mut u32 as u64,
+                ) == 0
+            };
+            if named && i32::from(name.family) == AF_INET && name.port_host() != 0 {
+                println!("TCP_TEST: listen_unbound OK");
+                _passed += 1;
+            } else {
+                println!("TCP_TEST: listen_unbound FAILED");
+                failed += 1;
             }
         }
         Err(_) => {
@@ -271,7 +280,7 @@ fn main() {
             let nonlisten_addr = SockAddrIn::new([0, 0, 0, 0], 8083);
             if socket::bind_inet(nonlisten_fd, &nonlisten_addr).is_ok() {
                 match socket::accept(nonlisten_fd, None) {
-                    Err(Error::Os(Errno::EOPNOTSUPP)) => {
+                    Err(Error::Os(Errno::EINVAL)) => {
                         println!("TCP_TEST: accept_nonlisten OK");
                         _passed += 1;
                     }

@@ -851,14 +851,14 @@ fn shared_userspace_stages() -> Vec<BootStage> {
         BootStage {
             name: "TCP listen unbound rejected",
             marker: "TCP_TEST: listen_unbound OK",
-            failure_meaning: "listen() on unbound socket did not return EINVAL",
-            check_hint: "Check sys_listen() validates socket is bound first",
+            failure_meaning: "listen() on an unbound socket did not bind it to an ephemeral port (Linux autobinds)",
+            check_hint: "Check TcpSock::listen autobinds an Unbound socket and getsockname reports the port",
         },
         BootStage {
             name: "TCP accept nonlisten rejected",
             marker: "TCP_TEST: accept_nonlisten OK",
-            failure_meaning: "accept() on non-listening socket did not return error",
-            check_hint: "Check sys_accept() validates socket is in listen state",
+            failure_meaning: "accept() on a non-listening socket did not return EINVAL (Linux)",
+            check_hint: "Check TcpSock::accept returns EINVAL unless the socket is listening",
         },
         // TCP Data Transfer tests
         BootStage {
