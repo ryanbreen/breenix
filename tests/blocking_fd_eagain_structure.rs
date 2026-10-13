@@ -728,7 +728,8 @@ fn unix_wait_contract(unix: &str, wait: &str) -> bool {
     }
     let send = compact(&function(unix, "sendmsg"));
     let retry = send.split("Err((EAGAIN,message))=>{").nth(1).unwrap_or("");
-    send.contains("wait_until(sk,msg.nonblock,sk.common.snd_deadline(),||")
+    send.contains("letdeadline=sk.common.snd_deadline();")
+        && send.contains("wait_until(sk,msg.nonblock,deadline,||")
         && !send.contains("Some(Err(EAGAIN))")
         && !send.contains("Some(Err(11))")
         && !send.contains("returnErr(EAGAIN)")
@@ -754,7 +755,8 @@ fn socket_mode_reaches_unix_writer(sockets: &str, unix: &str) -> bool {
         && all.contains("flags,nonblock,rights:")
         && all.contains("send_once(sk,&mutmsg)")
         && once.contains("sk.ops().sendmsg(sk,msg)")
-        && adapter.contains("wait_until(sk,msg.nonblock,sk.common.snd_deadline(),||")
+        && adapter.contains("letdeadline=sk.common.snd_deadline();")
+        && adapter.contains("wait_until(sk,msg.nonblock,deadline,||")
 }
 
 #[test]
@@ -765,8 +767,8 @@ fn socket_mode_route_rejects_a_dropped_mode() {
     assert!(!socket_mode_reaches_unix_writer(
         &sockets,
         &unix.replace(
-            "wait_until(sk, msg.nonblock, sk.common.snd_deadline()",
-            "wait_until(sk, false, sk.common.snd_deadline()"
+            "wait_until(sk, msg.nonblock, deadline",
+            "wait_until(sk, false, deadline"
         )
     ));
     for (from, to) in [

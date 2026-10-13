@@ -10,9 +10,9 @@ fn mode_ok(handlers: &str) -> bool {
     })
 }
 fn drain_ok(unix: &str) -> bool {
-    let receive = compact(&function(unix, "recvmsg"));
+    let receive = compact(&function(unix, "receive_with"));
     let notify = compact(&function(unix, "notify_writers"));
-    receive.contains("if!peek{sk.common.notify();self.notify_writers();")
+    receive.contains("sk.common.notify();self.notify_writers();")
         && receive.contains("peer.common.notify()")
         && receive.find("wait_until(") < receive.find("self.notify_writers()")
         && notify.contains("letwriters=core::mem::take(&mutself.inner.lock().writers);")
@@ -70,7 +70,9 @@ fn mode_drain_and_poll_mutations_are_rejected_singly() {
 fn transmit_predicate_ok(unix: &str) -> bool {
     let send = compact(&function(unix, "sendmsg"));
     send.contains("ifsk.common.shut_wr()")
-        && send.contains("ifstate.released||peer.common.shut_rd()")
+        && send.contains(
+            "letmutstate=Self::of(&peer).inner.lock();ifpeer.common.shut_rd(){returnSome(Err(EPIPE));}ifstate.released{",
+        )
         && send.contains("ifroom<=rights_charge")
         && send.contains("message.data.len().min(room-rights_charge)")
 }
@@ -79,7 +81,11 @@ fn transmit_predicate_and_single_mutations() {
     let unix = read("kernel/src/socket/unix.rs");
     assert!(transmit_predicate_ok(&unix));
     for (from, to) in [
-        ("state.released || peer.common.shut_rd()", "state.released"),
+        (
+            "if peer.common.shut_rd() {\n                    return Some(Err(EPIPE));\n                }\n                if state.released {",
+            "if state.released {",
+        ),
+        ("if state.released {", "if false {"),
         ("room <= rights_charge", "room < rights_charge"),
         (
             "message.data.len().min(room - rights_charge)",
@@ -100,7 +106,8 @@ fn guarded_state_defines_transmit_space_and_publication() {
         .find("letmutstate=Self::of(&peer).inner.lock()")
         .expect("receiver guard");
     assert!(lock < send.find("state.rx.push_stream(").expect("guarded enqueue"));
-    assert!(send.contains("wait_until(sk,msg.nonblock,sk.common.snd_deadline(),||"));
+    assert!(send.contains("letdeadline=sk.common.snd_deadline();"));
+    assert!(send.contains("wait_until(sk,msg.nonblock,deadline,||"));
     assert!(
         send.find("drop(peer)").expect("temporary peer release")
             < send.find("wait_until(").unwrap()
