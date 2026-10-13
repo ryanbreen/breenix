@@ -622,8 +622,7 @@ pub fn resolve(hostname: &str, dns_server: [u8; 4]) -> Result<DnsResult, DnsErro
 
 /// Resolve a hostname by trying multiple DNS servers automatically.
 ///
-/// Tries Google (8.8.8.8) first since it's reachable from all platforms
-/// (QEMU SLIRP, Parallels, VMware all NAT/bridge to host networking).
+/// Tries Google (8.8.8.8) first; reachability depends on host networking.
 /// Falls back to hypervisor-specific DNS servers if Google fails.
 pub fn resolve_auto(hostname: &str) -> Result<DnsResult, DnsError> {
     let servers: [([u8; 4], &str); 4] = [
