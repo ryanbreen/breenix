@@ -117,9 +117,14 @@ fn observe_exit_kick(thread_pid: u64) -> bool {
     if let Some(observation) = slot.observe_from_peer(thread_pid) {
         let interval = crate::tracing::trace_timestamp().wrapping_sub(observation.at);
         crate::tracing::providers::teardown::record_exit_kick_observed(thread_pid, interval);
+        crate::tracing::providers::scratch1413::rec(thread_pid, crate::tracing::providers::scratch1413::OBSERVED, 0);
         true
     } else {
-        slot.is_observed_for(thread_pid)
+        let observed = slot.is_observed_for(thread_pid);
+        if !observed {
+            crate::tracing::providers::scratch1413::rec(thread_pid, crate::tracing::providers::scratch1413::DECLINE, 0);
+        }
+        observed
     }
 }
 
@@ -2676,6 +2681,13 @@ impl Scheduler {
             reclaimed_ids.push(thread.id());
             reclaimed_threads.push(thread);
         }
+        for thread in reclaimed_threads.iter() {
+            if let Some(pid) = thread.owner_pid {
+                if self.per_cpu_queues.iter().any(|q| q.contains(&thread.id())) {
+                    crate::tracing::providers::scratch1413::rec(pid, crate::tracing::providers::scratch1413::PURGED, thread.id());
+                }
+            }
+        }
         self.threads = retained_threads;
         self.retirement_grace
             .retain(|grace| !reclaimed_ids.contains(&grace.thread_id));
@@ -4664,6 +4676,7 @@ impl Scheduler {
         // One request may send to several peers; account only after the sends.
         crate::trace_count!(crate::tracing::providers::teardown::EXIT_SGI_SENT);
         crate::tracing::providers::teardown::record_exit_sgi_sent(victim_pid, batch.as_u64());
+        crate::tracing::providers::scratch1413::rec(victim_pid, crate::tracing::providers::scratch1413::KICK_PUBLISH, 0);
     }
 
     /// Block current thread until a signal is delivered
@@ -5917,6 +5930,26 @@ impl Scheduler {
                 thread.set_terminated();
                 thread.id()
             };
+            {
+                let running_on = self
+                    .cpu_state
+                    .iter()
+                    .position(|state| state.current_thread == Some(thread_id))
+                    .map_or(0xff, |cpu| cpu as u64);
+                let queued_on = self
+                    .per_cpu_queues
+                    .iter()
+                    .position(|queue| queue.contains(&thread_id))
+                    .map_or(0xff, |cpu| cpu as u64);
+                let lens = (0..4).fold(0u64, |acc, cpu| {
+                    acc | ((self.per_cpu_queues.get(cpu).map_or(0, |q| q.len()).min(15) as u64) << (4 * cpu))
+                });
+                crate::tracing::providers::scratch1413::rec(
+                    owner_pid,
+                    crate::tracing::providers::scratch1413::QUARANTINE,
+                    running_on | (queued_on << 8) | (lens << 16),
+                );
+            }
             if !self
                 .per_cpu_queues
                 .iter()
@@ -5933,6 +5966,11 @@ impl Scheduler {
                     })
                     .min_by_key(|&cpu| self.per_cpu_queues[cpu].len())
                 {
+                    crate::tracing::providers::scratch1413::rec(
+                        owner_pid,
+                        crate::tracing::providers::scratch1413::QUARANTINE,
+                        0x1000 | target as u64,
+                    );
                     // Slice 3e: the pin is consulted here as at the other 10
                     // sites, and its answer is "no constraint" on 1 of 1 arm
                     // reachable from this loop -- the loop above has just
