@@ -460,7 +460,7 @@ impl Process {
             // fork, spawn and clone give a child its parent's instead.
             pgid: ProcessId(super::RESERVED_INIT_PID),
             sid: ProcessId(super::RESERVED_INIT_PID),
-            ctty: None,
+            ctty: Some(crate::tty::ctty::TtyId::Console),
             cred: super::credentials::ProcessCredentials::root(),
             nice: 0,
             cpu: alloc::sync::Arc::new(crate::task::thread::CpuAccount::new(id.as_u64())),
