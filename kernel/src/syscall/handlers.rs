@@ -2369,7 +2369,11 @@ pub fn sys_execv_with_frame(
                 }
             }
         }) {
-            Ok(data) => data,
+            Ok(data) => {
+                #[cfg(target_arch = "x86_64")]
+                crate::force1442::exec_image_read_returned();
+                data
+            }
             Err(errno) => return SyscallResult::Err(errno),
         };
         let elf_data = elf_vec.as_slice();

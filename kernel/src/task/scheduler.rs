@@ -7482,6 +7482,44 @@ pub fn force1442_thread_facts(tid: u64) -> Option<(ThreadState, Option<usize>, u
     .flatten()
 }
 
+/// SCRATCH #1442: write each named thread's state, queue and ticks, and each
+/// CPU's current thread and its name, to COM1 without a lock; false when the
+/// scheduler lock is held. Never spins.
+#[cfg(all(feature = "testing", target_arch = "x86_64"))]
+pub fn force1442_try_dump(n: u32, tids: &[u64]) -> bool {
+    let Some(guard) = try_lock_scheduler() else {
+        return false;
+    };
+    let Some(scheduler) = guard.as_ref() else {
+        return false;
+    };
+    for &tid in tids {
+        let facts = scheduler.get_thread(tid).map(|thread| {
+            let queued = (0..MAX_CPUS).find(|&cpu| {
+                scheduler.per_cpu_queues[cpu].iter().any(|&queued_tid| queued_tid == tid)
+            });
+            (thread.state, queued, thread.cpu_ticks_total, thread.name.as_str())
+        });
+        let _ = crate::serial::emergency_print(format_args!(
+            "[FORCE1442:sched_thread:n={}:tid={}:facts={:?}]\n",
+            n, tid as i64, facts
+        ));
+    }
+    let online = (crate::arch_impl::x86_64::smp::cpus_online() as usize).min(MAX_CPUS);
+    for cpu in 0..online {
+        let current = scheduler.cpu_state[cpu].current_thread;
+        let name = current
+            .and_then(|tid| scheduler.get_thread(tid))
+            .map(|thread| thread.name.as_str());
+        let queue_len = scheduler.per_cpu_queues[cpu].len();
+        let _ = crate::serial::emergency_print(format_args!(
+            "[FORCE1442:sched_cpu:n={}:cpu={}:current={:?}:name={:?}:queue_len={}]\n",
+            n, cpu, current, name, queue_len
+        ));
+    }
+    true
+}
+
 /// SCRATCH #1442: the same facts plus each CPU's current thread, or None when
 /// the scheduler lock is held. Never spins.
 #[cfg(feature = "testing")]

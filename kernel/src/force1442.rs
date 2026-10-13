@@ -63,6 +63,14 @@ static HOLDER_SITE: AtomicU8 = AtomicU8::new(0);
 static HOLDER_CPU: AtomicU64 = AtomicU64::new(NO_CPU);
 static HOLDER_IF: AtomicU8 = AtomicU8::new(0);
 static DUMPER: AtomicBool = AtomicBool::new(false);
+/// The exec that armed the forcing, and how far it got: 1 waiting for the
+/// forcing, 2 reading its image, 3 image read returned.
+static EXEC_TID: AtomicU64 = AtomicU64::new(u64::MAX);
+static EXEC_PHASE: AtomicU8 = AtomicU8::new(0);
+/// NMI sampling: a dumper sets SAMPLE_REQ[cpu] and sends that CPU an NMI; the
+/// shootdown NMI handler stores the interrupted RIP.
+static SAMPLE_REQ: [AtomicBool; 4] = [const { AtomicBool::new(false) }; 4];
+static SAMPLE_RIP: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 /// How long the forcing thread keeps the driver lock after its tail write.
 const HOLD_WINDOW_US: u64 = 50_000;
 const EXEC_WAIT_US: u64 = 30_000_000;
@@ -160,17 +168,62 @@ pub fn irq_lock<T>(lock: &spin::Mutex<T>) -> spin::MutexGuard<'_, T> {
     guard
 }
 
+/// Called from the shootdown NMI handler on `cpu`, before its own work.
+pub fn nmi_sample(cpu: usize, rip: u64) {
+    if cpu < SAMPLE_REQ.len() && SAMPLE_REQ[cpu].load(Ordering::Acquire) {
+        SAMPLE_RIP[cpu].store(rip, Ordering::Relaxed);
+        SAMPLE_REQ[cpu].store(false, Ordering::Release);
+    }
+}
+
+pub fn exec_image_read_returned() {
+    if crate::task::scheduler::current_thread_id() == Some(EXEC_TID.load(Ordering::Relaxed)) {
+        EXEC_PHASE.store(3, Ordering::Release);
+        crate::serial_println!("[FORCE1442:exec_image_read_returned]");
+    }
+}
+
+/// NMI every other online CPU and collect its interrupted RIP; 0 when a CPU
+/// did not answer within 20 ms.
+fn sample_rips(cpus: usize, me: usize) -> [u64; 4] {
+    for cpu in 0..cpus {
+        SAMPLE_RIP[cpu].store(0, Ordering::Relaxed);
+        if cpu == me {
+            continue;
+        }
+        SAMPLE_REQ[cpu].store(true, Ordering::Release);
+        if let Some(apic_id) = crate::arch_impl::x86_64::smp::cpu_apic_id(cpu) {
+            let _ = crate::arch_impl::x86_64::apic::send_ipi(apic_id, crate::arch_impl::x86_64::apic::Ipi::Nmi);
+        }
+    }
+    let begin = now_us();
+    while now_us().saturating_sub(begin) < 20_000
+        && (0..cpus).any(|cpu| cpu != me && SAMPLE_REQ[cpu].load(Ordering::Acquire))
+    {
+        core::hint::spin_loop();
+    }
+    let mut rips = [0u64; 4];
+    for cpu in 0..cpus {
+        SAMPLE_REQ[cpu].store(false, Ordering::Release);
+        rips[cpu] = SAMPLE_RIP[cpu].load(Ordering::Relaxed);
+    }
+    rips
+}
+
 fn stuck_dump(n: u32, waited_us: u64) {
     let cpus = (crate::arch_impl::x86_64::smp::cpus_online() as usize).min(4);
+    let me = crate::per_cpu::cpu_id();
+    let rips = sample_rips(cpus, me);
     let mut ticks = [0u64; 4];
     for (cpu, tick) in ticks.iter_mut().enumerate().take(cpus) {
         *tick = crate::arch_impl::x86_64::smp::credited_to_tick(cpu);
     }
     let load_tid = LOAD_TID.load(Ordering::Relaxed);
+    let exec_tid = EXEC_TID.load(Ordering::Relaxed);
     let sched = crate::task::scheduler::force1442_try_facts(load_tid);
     let (pm_cpu, pm_tid) = crate::process::force1442_pm_owner();
     let _ = crate::serial::emergency_print(format_args!(
-        "\n[FORCE1442:stuck:n={}:irq_cpu={}:waited_us={}:state={}:step={}:force_tid={}:holder_tid={}:holder_site={}:holder_cpu={}:holder_if={}:ticks={:?}:global_tick={}:sched={:?}:load_tid={}:pm_locked={}:pm_owner_cpu={}:pm_owner_tid={}:serial_locked={}:kills_after_tx={}]\n",
+        "\n[FORCE1442:stuck:n={}:irq_cpu={}:waited_us={}:state={}:step={}:force_tid={}:holder_tid={}:holder_site={}:holder_cpu={}:holder_if={}:ticks={:?}:global_tick={}:sched={:?}:load_tid={}:pm_locked={}:pm_owner_cpu={}:pm_owner_tid={}:serial_locked={}:kills_after_tx={}:exec_tid={}:exec_phase={}:rips={:x?}]\n",
         n,
         crate::per_cpu::cpu_id(),
         waited_us,
@@ -190,7 +243,14 @@ fn stuck_dump(n: u32, waited_us: u64) {
         pm_tid as i64,
         crate::serial::SERIAL1.is_locked(),
         KILLS_AFTER_TX.load(Ordering::Relaxed),
+        exec_tid as i64,
+        EXEC_PHASE.load(Ordering::Acquire),
+        &rips[..cpus],
     ));
+    let tids = [load_tid, exec_tid, FORCE_TID.load(Ordering::Relaxed)];
+    if !crate::task::scheduler::force1442_try_dump(n, &tids) {
+        let _ = crate::serial::emergency_print(format_args!("[FORCE1442:sched_held:n={}]\n", n));
+    }
 }
 
 pub fn start() {
@@ -348,10 +408,15 @@ pub fn arm_and_wait(program: &str) -> bool {
     if !arm(target) {
         return true;
     }
+    if let Some(tid) = crate::task::scheduler::current_thread_id() {
+        EXEC_TID.store(tid, Ordering::Relaxed);
+    }
+    EXEC_PHASE.store(1, Ordering::Release);
     crate::arch_impl::x86_64::ioapic::set_destination(apic_id);
     crate::serial_println!(
-        "[FORCE1442:armed:face=clonevm_exec:exec_cpu={}:target_cpu={}:apic_id={}]",
+        "[FORCE1442:armed:face=clonevm_exec:exec_cpu={}:exec_tid={}:target_cpu={}:apic_id={}]",
         here,
+        EXEC_TID.load(Ordering::Relaxed) as i64,
         target,
         apic_id
     );
@@ -362,6 +427,7 @@ pub fn arm_and_wait(program: &str) -> bool {
         ok = exercised();
     }
     if ok {
+        EXEC_PHASE.store(2, Ordering::Release);
         report("exec_proceeds");
     } else {
         report("exec_unexercised");

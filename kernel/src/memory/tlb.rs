@@ -317,6 +317,10 @@ mod shootdown {
         } else {
             None
         };
+        #[cfg(feature = "testing")]
+        if let Some(cpu) = cpu {
+            crate::force1442::nmi_sample(cpu, _frame.instruction_pointer.as_u64());
+        }
         let Some(cpu) = cpu.filter(|&cpu| PENDING[cpu].load(Ordering::Acquire)) else {
             UNCLAIMED_NMIS.fetch_add(1, Ordering::Relaxed);
             return;
