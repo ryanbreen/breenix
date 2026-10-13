@@ -536,17 +536,18 @@ fn main() {
     // Phase 8: Test error handling
     println!("Phase 8: Testing error handling (invalid domain/type)...");
 
+    // AF_INET has sockets but no socketpair operation: Linux's EOPNOTSUPP.
     match do_socketpair(AF_INET, SOCK_STREAM, 0) {
         Ok(_) => fail("socketpair(AF_INET) should fail"),
         Err(e) => {
             println!("  socketpair(AF_INET) returned: {:?}", e);
-            if e != Errno::EAFNOSUPPORT {
-                println!("  Expected EAFNOSUPPORT");
-                fail("socketpair(AF_INET) should return EAFNOSUPPORT");
+            if e != Errno::EOPNOTSUPP {
+                println!("  Expected EOPNOTSUPP");
+                fail("socketpair(AF_INET) should return EOPNOTSUPP");
             }
         }
     }
-    println!("  AF_INET correctly rejected with EAFNOSUPPORT");
+    println!("  AF_INET correctly rejected with EOPNOTSUPP");
 
     match do_socketpair(AF_UNIX, SOCK_DGRAM, 0) {
         Ok(_) => fail("socketpair(SOCK_DGRAM) should fail"),
@@ -620,20 +621,22 @@ fn main() {
     }
     println!("  NULL sv_ptr correctly rejected with EFAULT");
 
-    // Phase 11: Test non-zero protocol (EINVAL)
-    println!("Phase 11: Testing non-zero protocol (EINVAL)...");
+    // Phase 11: Test an unknown protocol (EPROTONOSUPPORT)
+    println!("Phase 11: Testing an unknown protocol (EPROTONOSUPPORT)...");
+    // AF_UNIX takes protocol 0 or PF_UNIX (1); Linux refuses any other
+    // with EPROTONOSUPPORT.
     let mut sv_proto = [0i32; 2];
-    match do_socketpair_raw(AF_UNIX, SOCK_STREAM, 1, sv_proto.as_mut_ptr() as u64) {
-        Ok(_) => fail("socketpair(protocol=1) should fail"),
+    match do_socketpair_raw(AF_UNIX, SOCK_STREAM, 2, sv_proto.as_mut_ptr() as u64) {
+        Ok(_) => fail("socketpair(protocol=2) should fail"),
         Err(e) => {
-            println!("  socketpair(protocol=1) returned: {:?}", e);
-            if e != Errno::EINVAL {
-                println!("  Expected EINVAL");
-                fail("socketpair(protocol!=0) should return EINVAL");
+            println!("  socketpair(protocol=2) returned: {:?}", e);
+            if e != Errno::EPROTONOSUPPORT {
+                println!("  Expected EPROTONOSUPPORT");
+                fail("socketpair(protocol=2) should return EPROTONOSUPPORT");
             }
         }
     }
-    println!("  Non-zero protocol correctly rejected with EINVAL");
+    println!("  Unknown protocol correctly rejected with EPROTONOSUPPORT");
 
     // Phase 12: Test SOCK_CLOEXEC flag
     println!("Phase 12: Testing SOCK_CLOEXEC flag...");

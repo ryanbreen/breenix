@@ -5,7 +5,7 @@ use census::{compact, function, lex, match_arms, read};
 
 fn mode_ok(handlers: &str) -> bool {
     match_arms(&lex(handlers), "FdKind").iter().any(|(names, body)| {
-        names.iter().any(|n| n == "UnixStream")
+        names.iter().any(|n| n == "Socket")
             && compact(body).contains("is_nonblocking:(fd_entry.status_flags()&crate::ipc::fd::status_flags::O_NONBLOCK)!=0")
     })
 }
@@ -16,20 +16,20 @@ fn drain_ok(unix: &str) -> bool {
         && body.contains("writers.wake_up()")
         && matches!((body.find("drop(rx_buf)"), body.find("writers.wake_up()")), (Some(drop_at), Some(wake_at)) if drop_at < wake_at)
 }
-fn poll_ok(poll: &str) -> bool {
-    match_arms(&lex(poll), "FdKind")
-        .iter()
-        .any(|(names, body)| {
-            names.iter().any(|n| n == "UnixStream")
-                && compact(body).contains("if socket.has_write_space()".replace(' ', "").as_str())
-                && compact(body).contains("POLLHUP")
-        })
+/// A connected Unix socket's readiness: UnixSock::poll's Connected arm.
+fn poll_ok(unix: &str) -> bool {
+    let body = function(unix, "poll");
+    match_arms(&body, "UnixState").iter().any(|(names, arm)| {
+        names.iter().any(|n| n == "Connected")
+            && compact(arm).contains("if socket.has_write_space()".replace(' ', "").as_str())
+            && compact(arm).contains("POLLHUP")
+    })
 }
 #[test]
 fn descriptor_mode_drain_and_poll_are_connected() {
     assert!(mode_ok(&read("kernel/src/syscall/handlers.rs")));
     assert!(drain_ok(&read("kernel/src/socket/unix.rs")));
-    assert!(poll_ok(&read("kernel/src/ipc/poll.rs")));
+    assert!(poll_ok(&read("kernel/src/socket/unix.rs")));
 }
 #[test]
 fn mode_drain_and_poll_mutations_are_rejected_singly() {
@@ -45,11 +45,13 @@ fn mode_drain_and_poll_mutations_are_rejected_singly() {
     ] {
         assert!(!drain_ok(&changed));
     }
-    let poll = read("kernel/src/ipc/poll.rs");
+    assert!(mode_ok(&handlers));
+    let unix = read("kernel/src/socket/unix.rs");
+    assert!(poll_ok(&unix));
     for replacement in ["!socket.peer_closed()", "socket.has_data()"] {
-        assert!(!poll_ok(
-            &poll.replace("socket.has_write_space()", replacement)
-        ));
+        let changed = unix.replace("if socket.has_write_space()", &format!("if {replacement}"));
+        assert_ne!(changed, unix, "poll mutation did not apply");
+        assert!(!poll_ok(&changed));
     }
 }
 fn transmit_predicate_ok(unix: &str) -> bool {
@@ -97,14 +99,11 @@ fn guarded_state_defines_transmit_space_and_publication() {
     assert!(unix.contains("peer_closed: MutexGuard<'a, bool>"));
     assert!(unix.contains("buffer: MutexGuard<'a, VecDeque<u8>>"));
     assert!(compact(&function(&unix, "copy")).contains("self.has_write_space()"));
-    let helper = compact(&function(
-        &read("kernel/src/syscall/blocking_io.rs"),
-        "write_unix",
-    ));
+    let helper = compact(&function(&unix, "write_unix"));
     assert!(helper.contains("queue.prepare_to_wait_checked(ThreadState::BlockedOnIO,None,||{!state.peer_closed()&&!state.has_write_space()})"));
-    assert!(helper.contains("wait_prepared(&queue,outcome)"));
+    assert!(helper.contains("blocking_io::wait_prepared(&queue,outcome)"));
     assert!(!helper.contains("PIPE_BUF"));
-    assert!(helper.contains("returnSyscallResult::Ok(countasu64)"));
+    assert!(helper.contains("returnOk(count)"));
 }
 #[test]
 fn driver_and_gate_have_six_scored_legs() {
@@ -153,46 +152,82 @@ fn close_notifications_leave_pm_without_the_isr_buffer() {
     assert!(drain.contains("next.take()"));
     assert!(drain.contains("queued=false"));
     assert!(drain.contains("UnixCloseNotifications{pair}.deliver()"));
-    let process = compact(&lex(&read("kernel/src/process/process.rs")));
-    assert_eq!(process.matches("FdKind::UnixStream(socket)=>{letnotifications=socket.lock().close();notifications.deliver_deferred();}").count(), 2);
-    let drop_fd = compact(&lex(&read("kernel/src/ipc/fd.rs")));
-    assert!(drop_fd
-        .contains("letnotifications=socket.lock().close();notifications.deliver_deferred();"));
-    let boundary = compact(&function(
-        &read("kernel/src/task/process_task.rs"),
-        "reclaim_deferred_process_resources",
-    ));
-    let drain_at = boundary
-        .find("drain_close_notifications()")
-        .expect("drain call");
-    for guard in [
-        "process_manager_held_on_current_cpu()",
-        "scheduler_scope_active()",
-    ] {
-        assert!(boundary.find(guard).expect("context guard") < drain_at);
-    }
-    assert!(
-        boundary
-            .find("reclaim_preempt_disable()")
-            .expect("preemption guard")
-            < drain_at
-    );
-    assert!(boundary.find("compare_exchange(").expect("drain ownership") < drain_at);
-    assert!(
-        drain_at
-            < boundary
-                .find("reclaim_deferred_process_resources_for_pass(")
-                .expect("reclaim pass")
-    );
+    // A connected socket's endpoint closes in UnixSock::release, which runs
+    // once, for the last descriptor: inline in thread context without PM, or
+    // from the release queue that the reclamation boundary drains.
+    let release = compact(&function(&unix, "release"));
+    assert!(release.contains("letnotifications=stream.lock().close();notifications.deliver();"));
+    let object = read("kernel/src/socket/object.rs");
+    assert!(socket_release_leaves_pm(&object));
     for path in [
+        "kernel/src/process/process.rs",
+        "kernel/src/ipc/fd.rs",
         "kernel/src/task/process_task.rs",
         "kernel/src/syscall/pipe.rs",
     ] {
         assert!(
-            compact(&lex(&read(path)))
-                .contains("letnotifications=socket.lock().close();notifications.deliver();"),
-            "{path}"
+            !compact(&lex(&read(path))).contains(".close();notifications"),
+            "{path} closes a Unix endpoint by hand again"
         );
+    }
+    let boundary = compact(&function(
+        &read("kernel/src/task/process_task.rs"),
+        "reclaim_deferred_process_resources",
+    ));
+    for drain in ["drain_close_notifications()", "drain_release_queue()"] {
+        let drain_at = boundary.find(drain).expect("drain call");
+        for guard in [
+            "process_manager_held_on_current_cpu()",
+            "scheduler_scope_active()",
+        ] {
+            assert!(boundary.find(guard).expect("context guard") < drain_at);
+        }
+        assert!(
+            boundary
+                .find("reclaim_preempt_disable()")
+                .expect("preemption guard")
+                < drain_at
+        );
+        assert!(boundary.find("compare_exchange(").expect("drain ownership") < drain_at);
+        assert!(
+            drain_at
+                < boundary
+                    .find("reclaim_deferred_process_resources_for_pass(")
+                    .expect("reclaim pass")
+        );
+    }
+}
+
+/// The last reference to a socket releases it inline only where a release
+/// may run (no PM held, not in interrupt context, not in a scheduler scope);
+/// otherwise it queues the socket, and the drain checks the same context.
+fn socket_release_leaves_pm(object: &str) -> bool {
+    let context = compact(&function(object, "release_may_run_here"));
+    let drop_body = compact(&function(object, "drop"));
+    let drain = compact(&function(object, "drain_release_queue"));
+    context.contains("in_interrupt()")
+        && context.contains("process_manager_held_on_current_cpu()")
+        && context.contains("scheduler_scope_active()")
+        && drop_body.contains(
+            "ifrelease_may_run_here(){LIVE_SOCKETS.fetch_sub(1,Ordering::Relaxed);self.ops().release(self);return;}",
+        )
+        && drop_body.contains("queue.push(carcass)")
+        && drain.contains("if!release_may_run_here(){return;}")
+        && drain.contains("carcass.ops().release(&carcass)")
+}
+
+#[test]
+fn socket_release_rule_rejects_an_unguarded_release() {
+    let object = read("kernel/src/socket/object.rs");
+    assert!(socket_release_leaves_pm(&object));
+    for (from, to) in [
+        ("|| crate::process::process_manager_held_on_current_cpu()", ""),
+        ("if release_may_run_here() {", "if true {"),
+        ("if !release_may_run_here() {\n        return;\n    }", ""),
+    ] {
+        let changed = object.replace(from, to);
+        assert_ne!(changed, object, "release mutation did not apply: {from}");
+        assert!(!socket_release_leaves_pm(&changed), "accepted {from} -> {to}");
     }
 }
 

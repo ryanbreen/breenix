@@ -179,11 +179,10 @@ pub fn sys_close(fd: i32) -> SyscallResult {
                 FdKind::StdIo(_) => {
                     log::debug!("sys_close: Closed stdio fd={}", fd);
                 }
-                FdKind::UdpSocket(_) => {
-                    // Socket unbinding is handled by UdpSocket::Drop when the last
-                    // Arc reference is released, allowing shared sockets (via dup/fork)
-                    // to remain bound until all references are closed.
-                    log::debug!("sys_close: Closed UDP socket fd={}", fd);
+                FdKind::Socket(_) => {
+                    // Dropping the entry here, with PM released, releases the
+                    // socket when this was its last reference (dup/fork share it).
+                    log::debug!("sys_close: Closed socket fd={}", fd);
                 }
                 FdKind::RegularFile(_) => {
                     // Regular file cleanup handled by Arc refcount
@@ -205,39 +204,8 @@ pub fn sys_close(fd: i32) -> SyscallResult {
                     // Devpts directory doesn't need cleanup
                     log::debug!("sys_close: Closed devpts directory fd={}", fd);
                 }
-                FdKind::TcpSocket(_) => {
-                    // Unbound TCP socket doesn't need special cleanup
-                    log::debug!("sys_close: Closed TCP socket fd={}", fd);
-                }
-                FdKind::TcpListener(port) => {
-                    // Decrement listener ref count, releasing the port binding
-                    // only once the last fd referencing it is closed. Mirrors
-                    // close_all_fds() (both arches), FdTable::drop, and
-                    // close_extracted_fds() (#724, fourth sibling of #707).
-                    crate::net::tcp::tcp_listener_ref_dec(port);
-                    log::debug!("sys_close: Closed TCP listener fd={} port={}", fd, port);
-                }
-                FdKind::TcpConnection(conn_id) => {
-                    // Close the TCP connection
-                    let _ = crate::net::tcp::tcp_close(&conn_id);
-                    log::debug!("sys_close: Closed TCP connection fd={}", fd);
-                }
                 FdKind::PtyMaster(pair) => crate::tty::pty::close_master_ref(&pair),
                 FdKind::PtySlave(pair) => crate::tty::pty::close_slave_ref(&pair),
-                FdKind::UnixStream(socket) => {
-                    // Close Unix socket endpoint
-                    let notifications = socket.lock().close();
-                    notifications.deliver();
-                    log::debug!("sys_close: Closed Unix stream socket fd={}", fd);
-                }
-                FdKind::UnixSocket(_) => {
-                    // Unbound/bound Unix socket doesn't need cleanup
-                    log::debug!("sys_close: Closed Unix socket fd={}", fd);
-                }
-                FdKind::UnixListener(_) => {
-                    // Unix listener socket cleanup handled by Arc refcount
-                    log::debug!("sys_close: Closed Unix listener fd={}", fd);
-                }
                 FdKind::FifoRead(path, buffer, entry) => {
                     // Close FIFO read end - decrement both FIFO entry and pipe buffer counts
                     crate::ipc::fifo::close_fifo_read(&entry);

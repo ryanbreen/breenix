@@ -2069,16 +2069,23 @@ pub unsafe extern "C" fn accept(sockfd: i32, addr: *mut u8, addrlen: *mut u32) -
     syscall_result_to_c_int(result)
 }
 
-/// accept4 - accept a connection with flags
+/// accept4 - accept a connection, with SOCK_NONBLOCK and SOCK_CLOEXEC
+/// applied to the new descriptor
 #[no_mangle]
 pub unsafe extern "C" fn accept4(
     sockfd: i32,
     addr: *mut u8,
     addrlen: *mut u32,
-    _flags: i32,
+    flags: i32,
 ) -> i32 {
-    // Ignore flags for now, delegate to accept
-    accept(sockfd, addr, addrlen)
+    let result = libbreenix::raw::syscall4(
+        libbreenix::syscall::nr::ACCEPT4,
+        sockfd as u64,
+        addr as u64,
+        addrlen as u64,
+        flags as u32 as u64,
+    ) as i64;
+    syscall_result_to_c_int(result)
 }
 
 /// connect - connect a socket to an address
@@ -2156,18 +2163,30 @@ pub unsafe extern "C" fn recvfrom(
     syscall_result_to_c_ssize(result)
 }
 
-/// sendmsg - send a message on a socket
+/// sendmsg - send a message, gathered from msg's iovecs, with its address
+/// and control messages
 #[no_mangle]
-pub unsafe extern "C" fn sendmsg(_sockfd: i32, _msg: *const u8, _flags: i32) -> isize {
-    *__errno_location() = ENOSYS;
-    -1
+pub unsafe extern "C" fn sendmsg(sockfd: i32, msg: *const u8, flags: i32) -> isize {
+    let result = libbreenix::raw::syscall3(
+        libbreenix::syscall::nr::SENDMSG,
+        sockfd as u64,
+        msg as u64,
+        flags as u32 as u64,
+    ) as i64;
+    syscall_result_to_c_ssize(result)
 }
 
-/// recvmsg - receive a message from a socket
+/// recvmsg - receive a message, scattered over msg's iovecs, with its source
+/// address, control messages and flags
 #[no_mangle]
-pub unsafe extern "C" fn recvmsg(_sockfd: i32, _msg: *mut u8, _flags: i32) -> isize {
-    *__errno_location() = ENOSYS;
-    -1
+pub unsafe extern "C" fn recvmsg(sockfd: i32, msg: *mut u8, flags: i32) -> isize {
+    let result = libbreenix::raw::syscall3(
+        libbreenix::syscall::nr::RECVMSG,
+        sockfd as u64,
+        msg as u64,
+        flags as u32 as u64,
+    ) as i64;
+    syscall_result_to_c_ssize(result)
 }
 
 /// setsockopt - set socket options

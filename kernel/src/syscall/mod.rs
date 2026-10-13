@@ -893,6 +893,9 @@ pub fn dispatch_numbered(number: u64, a: [u64; 6]) -> Option<SyscallResult> {
         SCHED_GET_PRIORITY_MIN_SYSCALL_NUMBER => sched::sys_sched_get_priority_min(a[0]),
         SCHED_RR_GET_INTERVAL_SYSCALL_NUMBER => sched::sys_sched_rr_get_interval(a[0], a[1]),
         BREENIX_PRIO_CEILING_SYSCALL_NUMBER => sched::sys_breenix_prio_ceiling(a[0], a[1]),
+        SENDMSG_SYSCALL_NUMBER => socket::sys_sendmsg(a[0], a[1], a[2]),
+        RECVMSG_SYSCALL_NUMBER => socket::sys_recvmsg(a[0], a[1], a[2]),
+        ACCEPT4_SYSCALL_NUMBER => socket::sys_accept4(a[0], a[1], a[2], a[3]),
         _ => return None,
     })
 }
@@ -900,6 +903,20 @@ pub fn dispatch_numbered(number: u64, a: [u64; 6]) -> Option<SyscallResult> {
 pub mod ipc;
 pub mod mqueue;
 pub mod sysv;
+
+// Socket calls the SyscallNumber tables do not name (Linux numbers).
+#[cfg(target_arch = "x86_64")]
+pub const SENDMSG_SYSCALL_NUMBER: u64 = 46;
+#[cfg(target_arch = "aarch64")]
+pub const SENDMSG_SYSCALL_NUMBER: u64 = 211;
+#[cfg(target_arch = "x86_64")]
+pub const RECVMSG_SYSCALL_NUMBER: u64 = 47;
+#[cfg(target_arch = "aarch64")]
+pub const RECVMSG_SYSCALL_NUMBER: u64 = 212;
+#[cfg(target_arch = "x86_64")]
+pub const ACCEPT4_SYSCALL_NUMBER: u64 = 288;
+#[cfg(target_arch = "aarch64")]
+pub const ACCEPT4_SYSCALL_NUMBER: u64 = 242;
 
 // Linux IPC number constants.
 #[cfg(target_arch = "x86_64")]
