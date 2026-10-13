@@ -111,6 +111,30 @@ impl LineDiscipline {
             || (self.termios.is_canonical() && self.line_records.is_empty())
     }
 
+    /// Flow and editing controls can make progress without storing a byte,
+    /// even at capacity; otherwise a full input queue could prevent START.
+    pub fn can_receive(&self, c: u8) -> bool {
+        if self.input_room() { return true; }
+        let mut c = if self.termios.c_iflag & ISTRIP != 0 { c & 0x7f } else { c };
+        if c == b'\r' {
+            if self.termios.c_iflag & IGNCR != 0 { return true; }
+            if self.termios.c_iflag & ICRNL != 0 { c = b'\n'; }
+        } else if c == b'\n' && self.termios.c_iflag & INLCR != 0 { c = b'\r'; }
+        if c != 0 {
+            if self.termios.c_iflag & IXON != 0
+                && (c == self.termios.c_cc[VSTART] || c == self.termios.c_cc[VSTOP]) { return true; }
+            if self.termios.c_lflag & ISIG != 0
+                && [self.termios.intr_char(), self.termios.quit_char(), self.termios.susp_char()].contains(&c) { return true; }
+            if self.termios.is_canonical()
+                && (c == self.termios.erase_char() || c == self.termios.kill_char()
+                    || (self.termios.c_lflag & IEXTEN != 0 && c == self.termios.c_cc[VWERASE])
+                    || (c == self.termios.eof_char() && !self.line_buffer.is_empty())) { return true; }
+        }
+        self.termios.is_canonical() && self.input_used() < MAX_CANON
+            && (c == b'\n' || (c != 0 && (c == self.termios.c_cc[VEOL]
+                || (self.termios.c_lflag & IEXTEN != 0 && c == self.termios.c_cc[VEOL2]))))
+    }
+
     pub fn flow_stopped(&self) -> bool { self.flow_stopped }
 
     /// Capture this discipline's sequence while holding its object lock. A

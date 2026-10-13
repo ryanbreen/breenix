@@ -2874,32 +2874,27 @@ fn handle_devfs_open(
         }
     };
 
-    // /dev/tty names this process's controlling terminal, including a member
-    // that explicitly detached while other members of its session retained it.
+    // /dev/tty resolves the caller's retained controlling-terminal identity.
     if matches!(device.device_type, devfs::DeviceType::Tty) {
         use crate::tty::ctty::{TtyId, TtyRef};
-        let Some(id) = process.ctty else {
-            return SyscallResult::Err(6); // ENXIO
-        };
-        let Some(tty) = TtyRef::resolve(id) else {
-            return SyscallResult::Err(6); // ENXIO
-        };
+        let Some(id) = process.ctty else { return SyscallResult::Err(6); };
+        let Some(tty) = TtyRef::resolve(id) else { return SyscallResult::Err(6); };
         return match (id, tty) {
             (TtyId::Pty(_), TtyRef::Pty(pair)) => {
                 drop(manager_guard);
                 open_tty_slave(&pair, flags, native_inode, reserved)
             }
             (TtyId::Console, TtyRef::Console(_)) => {
-                let fd_kind = match FileDescriptor::try_opened(FdKind::Device(device.device_type), flags) {
+                let entry = match FileDescriptor::try_opened(FdKind::Device(device.device_type), flags) {
                     Ok(entry) => entry.with_inode(native_inode),
                     Err(e) => return SyscallResult::Err(e),
                 };
-                match install_descriptor(&mut process.fd_table, reserved, fd_kind) {
+                match install_descriptor(&mut process.fd_table, reserved, entry) {
                     Ok(fd) => SyscallResult::Ok(fd as u64),
                     Err(_) => SyscallResult::Err(EMFILE as u64),
                 }
             }
-            _ => SyscallResult::Err(6), // ENXIO
+            _ => SyscallResult::Err(6),
         };
     }
 

@@ -272,8 +272,8 @@ fn compact_code(fragment: &str) -> String {
 }
 
 
-/// The degenerate-transfer guard, as it is written in every handler.
-const DEGENERATE_GUARD: &str = "buf_ptr == 0 || count == 0";
+/// The zero-count condition, including guards that also handle a null pointer.
+const DEGENERATE_GUARD: &str = "count == 0";
 
 /// The descriptor check the guard must perform first.
 const VALIDATOR: &str = "validate_fd_for_degenerate_transfer(";
