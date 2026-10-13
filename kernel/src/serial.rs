@@ -50,7 +50,7 @@ static SERIAL2_FIFO: core::sync::atomic::AtomicBool = core::sync::atomic::Atomic
 /// queue under SERIAL1, and the COM1 transmit thread (`com1_transmitter`) gives
 /// it to the UART one byte at a time, with interrupts masked for that byte
 /// only. When the UART's FIFO is full the thread enables the
-/// transmitter-empty interrupt and parks, and that interrupt wakes it again
+/// transmitter-empty interrupt and blocks, and that interrupt wakes it again
 /// (`transmitter_interrupt`). A writer with output for an idle thread starts
 /// it the same way, with one port write. A writer gives the UART its output
 /// itself only when the queue is full, and before the thread exists
@@ -96,8 +96,8 @@ impl TxQueue {
 /// The COM1 transmit thread sends queued output (`start_transmitter`).
 static TX_THREAD: spin::Once<crate::task::kthread::KthreadHandle> = spin::Once::new();
 
-/// Where the transmit thread is. IDLE: parked with nothing to send, the
-/// transmitter-empty interrupt disabled. ARMED: parked, the interrupt enabled
+/// Where the transmit thread is. IDLE: blocked with nothing to send, the
+/// transmitter-empty interrupt disabled. ARMED: blocked, the interrupt enabled
 /// to wake it. RUNNING: woken, sending. Writers move IDLE to ARMED and the
 /// interrupt ARMED to RUNNING. Only the thread leaves RUNNING, under SERIAL1.
 static TX_STATE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(TX_IDLE);
@@ -217,7 +217,8 @@ fn start_queued(queue: &mut TxQueue) {
 /// COM1's interrupt, transmitter side: wake the transmit thread. One port
 /// write, disabling the transmitter-empty interrupt so its request line drops
 /// and receive interrupts still arrive, and only when the thread is waiting
-/// for that interrupt. Takes no lock but the scheduler's, to unpark.
+/// for that interrupt. Takes no lock: the wake goes into the scheduler's
+/// interrupt wake buffer (`wake_thread_any_context`).
 pub fn transmitter_interrupt() {
     use core::sync::atomic::Ordering;
     if TX_STATE.load(Ordering::Acquire) != TX_ARMED {
@@ -229,19 +230,38 @@ pub fn transmitter_interrupt() {
         .is_ok()
     {
         if let Some(thread) = TX_THREAD.get() {
-            crate::task::kthread::kthread_unpark(thread);
+            crate::task::scheduler::wake_thread_any_context(thread.tid());
         }
+    }
+}
+
+/// Block the transmit thread until the transmitter-empty interrupt hands it
+/// output (TX_RUNNING). The state is checked under the scheduler lock, which
+/// the interrupt wake buffer is drained under, so a wake sent after the check
+/// finds the thread blocked.
+fn wait_for_output() {
+    use core::sync::atomic::Ordering;
+    let running = || TX_STATE.load(Ordering::Acquire) == TX_RUNNING;
+    while !running() {
+        crate::arch_without_interrupts(|| {
+            crate::task::scheduler::with_scheduler(|sched| {
+                if !running() {
+                    sched.block_current();
+                }
+            });
+        });
+        crate::task::waitqueue::halt_blocked_current();
     }
 }
 
 /// The COM1 transmit thread: give the UART queued output one byte at a time,
 /// each with interrupts masked for its one data write, until the queue is
-/// empty or the UART's FIFO is full, then park until a writer or the
-/// transmitter-empty interrupt wakes it.
+/// empty or the UART's FIFO is full, then block until the transmitter-empty
+/// interrupt wakes it.
 fn com1_transmitter() {
     use core::sync::atomic::Ordering;
     loop {
-        crate::task::kthread::kthread_park_if(|| TX_STATE.load(Ordering::Acquire) != TX_RUNNING);
+        wait_for_output();
         let mut sending = true;
         while sending {
             sending = crate::arch_without_interrupts(|| {
