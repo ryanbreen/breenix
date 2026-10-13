@@ -602,6 +602,8 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     task::start_dispatch_strand_census_kthread();
     // Deferred user-fault process exits run in their own kernel thread (#511).
     task::process_task::start_fault_exit_daemon();
+    // Queued COM1 output goes to the UART from its own kernel thread (#1415).
+    serial::start_transmitter();
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::KTHREAD_SUBSYSTEM);
 

@@ -47,25 +47,30 @@ static SERIAL2_FIFO: core::sync::atomic::AtomicBool = core::sync::atomic::Atomic
 /// virtualization one access takes about 75 us, so one 75-byte suite record
 /// kept its writer in write(2) for 6 ms and more, with interrupts masked and
 /// charged to the writing thread's CPU clock (#1415). Output now goes into this
-/// queue under SERIAL1, and the transmitter-empty interrupt gives it to the
-/// UART (`transmitter_interrupt`). A writer starts that interrupt with one
-/// port write when it is not already running (`arm_transmitter`). A writer
-/// gives the UART its output itself only when the queue is full, and before
-/// that interrupt is in use (`enable_serial_input`).
+/// queue under SERIAL1, and the COM1 transmit thread (`com1_transmitter`) gives
+/// it to the UART one byte at a time, with interrupts masked for that byte
+/// only. When the UART's FIFO is full the thread enables the
+/// transmitter-empty interrupt and parks, and that interrupt wakes it again
+/// (`transmitter_interrupt`). A writer with output for an idle thread starts
+/// it the same way, with one port write. A writer gives the UART its output
+/// itself only when the queue is full, and before the thread exists
+/// (`start_transmitter`).
 const TX_QUEUE_BYTES: usize = 16 * 1024;
 
 struct TxQueue {
     bytes: [u8; TX_QUEUE_BYTES],
     head: usize,
     len: usize,
-    /// The transmitter-empty interrupt is enabled at the UART, so the queue
-    /// is being sent.
-    armed: bool,
+    /// Bytes the UART's FIFO can still take without a status read: set to the
+    /// FIFO's depth when the status register shows the transmitter empty, and
+    /// counted down by every byte written under SERIAL1, so writers taking
+    /// turns byte by byte never overrun it.
+    room: usize,
 }
 
 impl TxQueue {
     const fn new() -> Self {
-        Self { bytes: [0; TX_QUEUE_BYTES], head: 0, len: 0, armed: false }
+        Self { bytes: [0; TX_QUEUE_BYTES], head: 0, len: 0, room: 0 }
     }
 
     fn push(&mut self, byte: u8) -> bool {
@@ -88,33 +93,35 @@ impl TxQueue {
     }
 }
 
-/// The transmitter-empty interrupt sends queued COM1 output.
-static TX_INTERRUPT: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// The COM1 transmit thread sends queued output (`start_transmitter`).
+static TX_THREAD: spin::Once<crate::task::kthread::KthreadHandle> = spin::Once::new();
 
-/// A transmitter-empty interrupt found SERIAL1 held and disabled itself at the
-/// UART. Whoever releases SERIAL1 next sends the burst it could not, and
-/// enables it again while output remains (`release_com1`).
-static TX_KICK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// Where the transmit thread is. IDLE: parked with nothing to send, the
+/// transmitter-empty interrupt disabled. ARMED: parked, the interrupt enabled
+/// to wake it. RUNNING: woken, sending. Writers move IDLE to ARMED and the
+/// interrupt ARMED to RUNNING. Only the thread leaves RUNNING, under SERIAL1.
+static TX_STATE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(TX_IDLE);
+const TX_IDLE: u8 = 0;
+const TX_ARMED: u8 = 1;
+const TX_RUNNING: u8 = 2;
 
 const IER_RECEIVED: u8 = 0x01;
 const IER_TRANSMITTER_EMPTY: u8 = 0x02;
 const LSR_TRANSMITTER_EMPTY: u8 = 0x20;
+const LSR_TRANSMITTER_IDLE: u8 = 0x40;
 
 fn com1_burst() -> usize {
     if SERIAL1_FIFO.load(core::sync::atomic::Ordering::Relaxed) { 16 } else { 1 }
 }
 
-fn com1_ready() -> bool {
+fn com1_status() -> u8 {
     // SAFETY: COM1's line status register.
-    unsafe { x86_64::instructions::port::Port::<u8>::new(COM1_PORT + 5).read() & LSR_TRANSMITTER_EMPTY != 0 }
+    unsafe { x86_64::instructions::port::Port::<u8>::new(COM1_PORT + 5).read() }
 }
 
-/// Write the next burst of `queue` to COM1's transmitter, which is empty.
-fn write_com1_burst(queue: &mut TxQueue) {
-    let mut chunk = [0u8; 16];
-    let n = queue.pop(&mut chunk[..com1_burst()]);
+fn write_com1_data(bytes: &[u8]) {
     let mut data = x86_64::instructions::port::Port::<u8>::new(COM1_PORT);
-    for &byte in &chunk[..n] {
+    for &byte in bytes {
         // SAFETY: COM1's data port, written with SERIAL1 held.
         unsafe { data.write(byte) };
     }
@@ -127,39 +134,57 @@ fn write_com1_ier(armed: bool) {
     unsafe { x86_64::instructions::port::Port::<u8>::new(COM1_PORT + 1).write(ier) };
 }
 
-/// The transmitter-empty interrupt's work: give COM1 the next burst if its
-/// transmitter is empty, and keep the interrupt enabled while output remains.
-/// `resync` writes the interrupt enable register even when `armed` says it is
-/// already right, after the interrupt disabled itself without SERIAL1. Never
-/// waits. Called with SERIAL1 held, once that interrupt is in use.
-fn send_queued(queue: &mut TxQueue, resync: bool) {
-    if com1_ready() {
-        write_com1_burst(queue);
+/// Make room in the UART's FIFO if the status register shows the transmitter
+/// empty. Called with SERIAL1 held.
+fn refill_room(queue: &mut TxQueue) -> bool {
+    if queue.room == 0 && com1_status() & LSR_TRANSMITTER_EMPTY != 0 {
+        queue.room = com1_burst();
     }
-    let armed = queue.len != 0;
-    if resync || armed != queue.armed {
-        write_com1_ier(armed);
-        queue.armed = armed;
-    }
+    queue.room != 0
 }
 
-/// Start the transmitter-empty interrupt for what a writer just queued, unless
-/// it is already running: one port write, after which the interrupt arrives
-/// at once if the transmitter is empty. Called with SERIAL1 held.
-fn arm_transmitter(queue: &mut TxQueue) {
-    if !queue.armed && queue.len != 0 {
-        write_com1_ier(true);
-        queue.armed = true;
+/// Give the UART the next FIFO's worth of `queue`, waiting for room. Called
+/// with SERIAL1 held and interrupts masked.
+fn write_com1_burst(queue: &mut TxQueue) {
+    while !refill_room(queue) {
+        core::hint::spin_loop();
     }
+    let mut chunk = [0u8; 16];
+    let n = queue.pop(&mut chunk[..queue.room]);
+    write_com1_data(&chunk[..n]);
+    queue.room -= n;
+}
+
+enum Sent {
+    /// One byte went to the UART.
+    Byte,
+    /// The queue is empty.
+    Empty,
+    /// The UART's FIFO is full.
+    Full,
+}
+
+/// Give the UART the next queued byte if its FIFO has room. Never waits: one
+/// data write, and a status read once per FIFO. Called with SERIAL1 held and
+/// interrupts masked.
+fn send_byte(queue: &mut TxQueue) -> Sent {
+    if queue.len == 0 {
+        return Sent::Empty;
+    }
+    if !refill_room(queue) {
+        return Sent::Full;
+    }
+    let mut byte = [0u8];
+    queue.pop(&mut byte);
+    write_com1_data(&byte);
+    queue.room -= 1;
+    Sent::Byte
 }
 
 /// Write `queue` out, waiting on the UART between bursts. Called with SERIAL1
 /// held and interrupts masked.
 fn drain_com1(queue: &mut TxQueue) {
     while queue.len != 0 {
-        while !com1_ready() {
-            core::hint::spin_loop();
-        }
         write_com1_burst(queue);
     }
 }
@@ -171,59 +196,104 @@ fn queue_byte(queue: &mut TxQueue, byte: u8) {
     let wire: &[u8] = if byte == 0x08 || byte == 0x7f { &[0x08, b' ', 0x08] } else { core::slice::from_ref(&byte) };
     for &transmitted in wire {
         while !queue.push(transmitted) {
-            while !com1_ready() {
-                core::hint::spin_loop();
-            }
             write_com1_burst(queue);
         }
     }
 }
 
-/// Hand what was just queued on: to the transmitter-empty interrupt once it is
-/// in use, else to the UART now. Called with SERIAL1 held and interrupts masked.
+/// Hand what was just queued on: to the transmit thread once it exists, with
+/// at most one port write, else to the UART now. Called with SERIAL1 held and
+/// interrupts masked.
 fn start_queued(queue: &mut TxQueue) {
-    if TX_INTERRUPT.load(core::sync::atomic::Ordering::Acquire) {
-        arm_transmitter(queue);
-    } else {
-        drain_com1(queue);
-    }
-}
-
-/// Run by every SERIAL1 holder after releasing it: a transmitter-empty
-/// interrupt that found SERIAL1 held left its burst to the holder. If SERIAL1
-/// is held again, its new holder runs this in turn.
-fn release_com1() {
     use core::sync::atomic::Ordering;
-    while TX_KICK.load(Ordering::SeqCst) {
-        let Some(mut serial) = SERIAL1.try_lock() else {
-            return;
-        };
-        if TX_KICK.swap(false, Ordering::SeqCst) {
-            send_queued(&mut serial.queue, true);
-        }
-        drop(serial);
+    if TX_THREAD.get().is_none() {
+        drain_com1(queue);
+    } else if queue.len != 0 && TX_STATE.load(Ordering::Acquire) == TX_IDLE {
+        TX_STATE.store(TX_ARMED, Ordering::Release);
+        write_com1_ier(true);
     }
 }
 
-/// COM1's interrupt, transmitter side: send the next burst of queued output.
-/// Interrupt context, so SERIAL1 is only tried. If it is held, the interrupt is
-/// disabled at the UART, so its request line drops and receive interrupts
-/// still arrive, and the holder sends the burst when it releases SERIAL1.
-/// The disable is written before TX_KICK is set, so the send that clears
-/// TX_KICK writes the register after it.
+/// COM1's interrupt, transmitter side: wake the transmit thread. One port
+/// write, disabling the transmitter-empty interrupt so its request line drops
+/// and receive interrupts still arrive, and only when the thread is waiting
+/// for that interrupt. Takes no lock but the scheduler's, to unpark.
 pub fn transmitter_interrupt() {
     use core::sync::atomic::Ordering;
-    if !TX_INTERRUPT.load(Ordering::Acquire) {
+    if TX_STATE.load(Ordering::Acquire) != TX_ARMED {
         return;
     }
-    if let Some(mut serial) = SERIAL1.try_lock() {
-        send_queued(&mut serial.queue, false);
-        drop(serial);
-    } else {
-        write_com1_ier(false);
-        TX_KICK.store(true, Ordering::SeqCst);
+    write_com1_ier(false);
+    if TX_STATE
+        .compare_exchange(TX_ARMED, TX_RUNNING, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
+        if let Some(thread) = TX_THREAD.get() {
+            crate::task::kthread::kthread_unpark(thread);
+        }
     }
-    release_com1();
+}
+
+/// The COM1 transmit thread: give the UART queued output one byte at a time,
+/// each with interrupts masked for its one data write, until the queue is
+/// empty or the UART's FIFO is full, then park until a writer or the
+/// transmitter-empty interrupt wakes it.
+fn com1_transmitter() {
+    use core::sync::atomic::Ordering;
+    loop {
+        crate::task::kthread::kthread_park_if(|| TX_STATE.load(Ordering::Acquire) != TX_RUNNING);
+        let mut sending = true;
+        while sending {
+            sending = crate::arch_without_interrupts(|| {
+                let mut serial = SERIAL1.lock();
+                match send_byte(&mut serial.queue) {
+                    Sent::Byte => true,
+                    Sent::Empty => {
+                        TX_STATE.store(TX_IDLE, Ordering::Release);
+                        false
+                    }
+                    Sent::Full => {
+                        TX_STATE.store(TX_ARMED, Ordering::Release);
+                        write_com1_ier(true);
+                        false
+                    }
+                }
+            });
+        }
+    }
+}
+
+/// Start the COM1 transmit thread; from here writers queue their output for
+/// it rather than give it to the UART themselves. Called once, when kernel
+/// threads can run.
+pub fn start_transmitter() {
+    TX_THREAD.call_once(|| {
+        crate::task::kthread::kthread_run(com1_transmitter, "kcom1tx")
+            .expect("could not spawn the COM1 transmit thread")
+    });
+}
+
+/// Wait until the COM1 output queued so far has left the UART, for a caller
+/// that must not return before it has (TCSETSW, TCSETSF). It gives the UART
+/// the queue itself, a byte at a time with interrupts masked for each, and
+/// waits for room with interrupts as the caller has them.
+pub fn drain_output() {
+    let mut done = false;
+    while !done {
+        done = crate::arch_without_interrupts(|| {
+            let mut serial = SERIAL1.lock();
+            match send_byte(&mut serial.queue) {
+                Sent::Byte | Sent::Full => false,
+                Sent::Empty => true,
+            }
+        });
+        if !done {
+            core::hint::spin_loop();
+        }
+    }
+    while com1_status() & LSR_TRANSMITTER_IDLE == 0 {
+        core::hint::spin_loop();
+    }
 }
 
 /// Write out the COM1 output still queued, from a context about to stop the
@@ -239,8 +309,7 @@ fn flush_com1(attempts: u32) {
         core::hint::spin_loop();
     }
     for _ in 0..attempts {
-        // SAFETY: COM1's line status register; 0x40 is transmitter empty.
-        if unsafe { x86_64::instructions::port::Port::<u8>::new(COM1_PORT + 5).read() } & 0x40 != 0 {
+        if com1_status() & LSR_TRANSMITTER_IDLE != 0 {
             break;
         }
         core::hint::spin_loop();
@@ -459,17 +528,14 @@ pub fn enable_serial_input() {
         .try_init_once(|| ArrayQueue::new(256))
         .expect("Serial input queue already initialized");
 
-    // Enable receive interrupts, and from here send queued COM1 output from
-    // the transmitter-empty interrupt.
+    // Enable receive interrupts (when data is available).
     crate::arch_without_interrupts(|| {
-        let mut serial = SERIAL1.lock();
-        TX_INTERRUPT.store(true, core::sync::atomic::Ordering::Release);
-        send_queued(&mut serial.queue, true);
+        let serial = SERIAL1.lock();
+        write_com1_ier(false);
         drop(serial);
     });
-    release_com1();
 
-    log::info!("Serial input and output interrupts enabled");
+    log::info!("Serial input interrupts enabled");
 }
 
 /// Called by the serial interrupt handler
@@ -516,7 +582,6 @@ pub fn write_bytes_atomic(writer: Writer, bytes: &[u8]) {
     }
     start_queued(queue);
     drop(serial);
-    release_com1();
 
     // Only re-enable if they were enabled before
     // This prevents race condition in syscall handler where interrupts must stay disabled
@@ -571,7 +636,6 @@ pub fn _print(args: fmt::Arguments) {
     .expect("Printing to serial failed");
     start_queued(&mut serial.queue);
     drop(serial);
-    release_com1();
 
     // Only re-enable if they were enabled before
     // This prevents race condition in syscall handler where interrupts must stay disabled
@@ -605,7 +669,6 @@ pub fn try_print(args: fmt::Arguments) -> Result<(), ()> {
             .map_err(|_| ());
             start_queued(&mut serial.queue);
             drop(serial);
-            release_com1();
             written
         }
         None => Err(()), // Lock is held
@@ -652,7 +715,6 @@ pub fn write_str_bounded(s: &str) {
             .write_str(s);
             start_queued(&mut serial.queue);
             drop(serial);
-            release_com1();
             true
         })
     });
