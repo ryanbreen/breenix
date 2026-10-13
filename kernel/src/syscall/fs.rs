@@ -2886,7 +2886,6 @@ fn handle_devfs_open(
         };
         return match (id, tty) {
             (TtyId::Pty(_), TtyRef::Pty(pair)) => {
-                // open_tty_slave takes the process manager itself.
                 drop(manager_guard);
                 open_tty_slave(&pair, flags, native_inode, reserved)
             }

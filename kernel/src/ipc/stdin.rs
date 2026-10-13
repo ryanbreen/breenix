@@ -237,7 +237,7 @@ fn wake_blocked_readers() {
 /// Get the number of bytes available in the stdin buffer
 #[allow(dead_code)]
 pub fn available() -> usize {
-    STDIN_BUFFER.lock().len
+    STDIN_BUFFER.lock().available()
 }
 
 /// Debug helper: inject a character into stdin as if typed on the keyboard.

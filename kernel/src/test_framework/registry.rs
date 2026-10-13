@@ -8334,9 +8334,9 @@ fn test_syscall_dispatch() -> TestResult {
     TestResult::Pass
 }
 
-/// RIGOROUS ARM64 test: verify PTY ioctls are routed via sys_ioctl.
-///
-/// This test will FAIL if PTY handling is gated to x86_64 in sys_ioctl.
+/// Verify sys_ioctl routes a master request to the guarded PTY handler.
+/// This security test requires EFAULT and an unchanged kernel sentinel;
+/// successful ioctl results are covered with real pointers by pty_test.
 fn test_arm64_pty_ioctl_path() -> TestResult {
     #[cfg(not(target_arch = "aarch64"))]
     {
@@ -8731,60 +8731,28 @@ fn test_filesystem_syscalls_aarch64() -> TestResult {
     TestResult::Pass
 }
 
-/// Verify PTY ioctl support works on ARM64.
-///
-/// **RIGOROUS TEST**: This test verifies that PTY ioctls (TIOCGPTN, TIOCSPTLCK,
-/// etc.) are functional on ARM64. It will FAIL if the ioctl handlers are
-/// gated behind x86_64-only compilation.
-///
-/// The test:
-/// 1. Creates a PTY pair
-/// 2. Exercises TIOCGPTN (get PTY number) - core PTY functionality
-/// 3. Exercises TIOCSPTLCK (unlock slave) - required for slave access
-/// 4. Verifies the ioctl code paths execute without ENOTTY/ENOSYS
+/// Reject kernel addresses at the ARM64 PTY ioctl boundary. Successful
+/// number/lock/unlock requests are exercised with real userspace pointers by
+/// pty_test, which must emit its own PTY_TEST_PASSED marker.
 #[cfg(target_arch = "aarch64")]
 fn test_pty_support_aarch64() -> TestResult {
     use crate::tty::ioctl::{Side, TIOCGPTLCK, TIOCGPTN, TIOCSPTLCK};
     use crate::tty::pty;
-
-    // Step 1: Create a PTY pair
     let pair = match pty::allocate() {
         Ok(pair) => pair,
-        Err(e) => {
-            // Can't create PTY - might not have process context
-            // ENOMEM or ENOSPC are acceptable in boot test context
-            log::info!(
-                "PTY allocate failed with error {} - acceptable in boot test",
-                e
-            );
-            return TestResult::Pass;
-        }
+        Err(_) => return TestResult::Fail("pty allocation failed"),
     };
-
-    // Steps 2-4: TIOCGPTN, TIOCGPTLCK and TIOCSPTLCK reach the PTY handler.
-    // Their argument goes through copy_to_user or copy_from_user, which
-    // refuses a kernel address, so each must fail with EFAULT and leave the
-    // kernel buffer alone: ENOTTY or ENOSYS would mean the request is gated.
-    let mut out: u32 = 0xFFFF_FFFF;
-    let mut result = TestResult::Pass;
-    for request in [TIOCGPTN, TIOCGPTLCK, TIOCSPTLCK] {
-        match pty::ioctl::ioctl(&pair, Side::Master, request, &mut out as *mut u32 as u64) {
-            Err(e) if e == crate::syscall::errno::EFAULT => {}
-            Err(25) | Err(38) => {
-                result = TestResult::Fail("PTY ioctl not available on ARM64");
-                break;
-            }
-            _ => {
-                result = TestResult::Fail("PTY ioctl accepted a kernel pointer");
-                break;
-            }
-        }
-    }
-    if result.is_pass() && out != 0xFFFF_FFFF {
-        result = TestResult::Fail("PTY ioctl wrote through a kernel pointer");
-    }
+    let mut sentinel = 0xFFFF_FFFFu32;
+    let arg = &mut sentinel as *mut u32 as u64;
+    let result = [TIOCGPTN, TIOCGPTLCK, TIOCSPTLCK].iter().all(|&request| {
+        pty::ioctl::ioctl(&pair, Side::Master, request, arg)
+            == Err(crate::syscall::errno::EFAULT)
+            && sentinel == 0xFFFF_FFFF && !pair.is_unlocked()
+            && pty::ioctl::ioctl(&pair, Side::Slave, request, arg)
+                == Err(crate::syscall::errno::ENOTTY)
+    });
     pty::close_master_ref(&pair);
-    result
+    if result { TestResult::Pass } else { TestResult::Fail("PTY ioctl pointer/side validation failed") }
 }
 
 /// Stub for x86_64 - this test is ARM64-specific.
