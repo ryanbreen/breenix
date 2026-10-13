@@ -89,7 +89,22 @@ struct Event { kind: AtomicU64, tid: AtomicU64, cpu: AtomicU64, deadline: Atomic
 static EVENTS: [Event; 2048] = [const { Event { kind: AtomicU64::new(0), tid: AtomicU64::new(0), cpu: AtomicU64::new(0), deadline: AtomicU64::new(0), at: AtomicU64::new(0) } }; 2048];
 static INDEX: AtomicU64 = AtomicU64::new(0);
 static DUMP: AtomicBool = AtomicBool::new(false);
+static LONG_SLEEP: [AtomicU64; 4096] = [const { AtomicU64::new(0) }; 4096];
+static SEEN: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+static BUSY_UNTIL: AtomicU64 = AtomicU64::new(0);
+pub const OLD_DISCOVERY: bool = true;
+pub fn phase(deadline: u64) {
+    if BUSY_UNTIL.load(Ordering::Relaxed) > now_ns() && SEEN[cpu()].swap(deadline, Ordering::Relaxed) != deadline {
+        crate::per_cpu::set_quantum(10);
+        trace(6, crate::per_cpu::current_thread_id_lock_free().unwrap_or(0), deadline, now_ns());
+    }
+}
 pub fn trace(kind: u64, tid: u64, deadline: u64, at: u64) {
+    let slot = &LONG_SLEEP[tid as usize % LONG_SLEEP.len()];
+    if kind == 1 {
+        slot.store(if deadline.saturating_sub(at) >= 100_000_000 { deadline } else { 0 }, Ordering::Relaxed);
+    }
+    if matches!(kind, 1 | 2 | 5) && slot.load(Ordering::Relaxed) != deadline { return; }
     let i = INDEX.fetch_add(1, Ordering::Relaxed) as usize;
     if let Some(e) = EVENTS.get(i) {
         e.tid.store(tid, Ordering::Relaxed);
@@ -100,6 +115,12 @@ pub fn trace(kind: u64, tid: u64, deadline: u64, at: u64) {
     }
 }
 pub fn observe_write(bytes: &[u8]) {
+    if bytes.windows(b"SUITE time WAIT sleep/nanosleep-sa-restart ".len()).any(|s| s==b"SUITE time WAIT sleep/nanosleep-sa-restart ") {
+        BUSY_UNTIL.store(now_ns()+1_000_000_000, Ordering::Relaxed);
+        for c in 0..crate::arch_impl::x86_64::smp::cpus_online() as usize {
+            crate::task::kthread::kthread_run_on_cpu(|| { while now_ns()<BUSY_UNTIL.load(Ordering::Relaxed) { core::hint::spin_loop(); } }, "sleep_busy", c).expect("scratch busy worker");
+        }
+    }
     if bytes.windows(b"SUITE time DONE ".len()).any(|s| s == b"SUITE time DONE ") { DUMP.store(true, Ordering::Release); }
 }
 pub fn report() {

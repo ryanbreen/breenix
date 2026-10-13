@@ -84,6 +84,11 @@ pub fn timer_deadline_due() -> bool {
     if now < deadline {
         return false;
     }
+    #[cfg(target_arch = "x86_64")]
+    {
+        crate::scratch_force::phase(deadline);
+        if crate::scratch_force::OLD_DISCOVERY { return false; }
+    }
     let retry = now.saturating_add(crate::time::timer::MS_PER_TICK * 1_000_000);
     NEXT_TIMER_CHECK_NS
         .compare_exchange(deadline, retry, Ordering::AcqRel, Ordering::Acquire)
