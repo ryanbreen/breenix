@@ -51,11 +51,12 @@ fn device_modes_poll_and_non_sleeping_device_api() {
         arm.find("drop(manager_guard)").unwrap() < arm.find("blocking_io::read_console").unwrap()
     );
     // Every devfs descriptor is built from the caller's open flags, and the
-    // constructor keeps O_NONBLOCK on the description and O_CLOEXEC as
-    // FD_CLOEXEC.
+    // fallible constructor keeps O_NONBLOCK on the description and O_CLOEXEC
+    // as FD_CLOEXEC. The descriptor is installed as built: into the slot
+    // reserved before the open, or a newly allocated one.
     let f = compact(&read("kernel/src/syscall/fs.rs"));
     assert_eq!(
-        f.matches("FileDescriptor::opened(FdKind::Device(device.device_type),flags)")
+        f.matches("FileDescriptor::try_opened(FdKind::Device(device.device_type),flags)")
             .count(),
         2
     );
@@ -66,23 +67,34 @@ fn device_modes_poll_and_non_sleeping_device_api() {
         .split("fnhandle_devpts_open(")
         .next()
         .unwrap();
-    assert_eq!(opens.matches("FileDescriptor::opened(").count(), 3);
+    assert_eq!(opens.matches("FileDescriptor::try_opened(").count(), 3);
     assert_eq!(
         opens
-            .matches("FileDescriptor::opened(FdKind::Device(device.device_type),flags)")
+            .matches("FileDescriptor::try_opened(FdKind::Device(device.device_type),flags)")
             .count()
             + opens
-                .matches("FileDescriptor::opened(FdKind::PtySlave(pty_num),flags)")
+                .matches("FileDescriptor::try_opened(FdKind::PtySlave(pty_num),flags)")
                 .count(),
         3
     );
     assert_eq!(
-        opens.matches("fd_table.alloc_with_entry(fd_kind)").count(),
+        opens
+            .matches("install_descriptor(&mutprocess.fd_table,reserved,fd_kind)")
+            .count(),
         2
     );
+    let install = f
+        .split("fninstall_descriptor(")
+        .nth(1)
+        .unwrap()
+        .split("///Helper:sys_open")
+        .next()
+        .unwrap();
+    assert!(install.contains("Some(slot)=>slot.install(table,entry),"));
+    assert!(install.contains("None=>table.alloc_with_entry(entry),"));
     let fd = compact(&read("kernel/src/ipc/fd.rs"));
     let opened = fd
-        .split("pubfnopened(kind:FdKind,open_flags:u32)->Self{")
+        .split("pubfntry_opened(kind:FdKind,open_flags:u32)->Result<Self,u64>{")
         .nth(1)
         .unwrap()
         .split("pubfnstatus_flags(")
