@@ -166,12 +166,10 @@ fn create(family: u64, kind: u16, protocol: u64) -> Result<Arc<Socket>, i32> {
             if protocol != 0 && protocol != PROTO_UNIX {
                 return Err(EPROTONOSUPPORT);
             }
-            match kind {
-                SOCK_STREAM => {
-                    Socket::new(AF_UNIX, kind, 0, SocketProto::Unix(UnixSock::new(kind)))
-                }
-                _ => Err(EINVAL),
+            if !UnixSock::supports_kind(kind) {
+                return Err(EINVAL);
             }
+            Socket::new(AF_UNIX, kind, 0, SocketProto::Unix(UnixSock::new(kind)))
         }
         _ => Err(EAFNOSUPPORT),
     }
@@ -217,7 +215,7 @@ pub fn sys_socketpair(domain: u64, sock_type: u64, protocol: u64, sv_ptr: u64) -
         if protocol != 0 && protocol != PROTO_UNIX {
             return Err(EPROTONOSUPPORT);
         }
-        if kind != SOCK_STREAM {
+        if !UnixSock::supports_kind(kind) {
             return Err(EINVAL);
         }
         if sv_ptr == 0 {

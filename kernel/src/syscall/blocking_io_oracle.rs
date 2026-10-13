@@ -100,18 +100,18 @@ fn query(fd: u64, arg: u64) -> Result<(), u64> {
         _ => None,
     };
     match (streams, buffer, kind) {
-        (Some((own, other)), _, _) => {
+        (Some((own, other)), _, FdKind::Socket(other_socket)) => {
             let own_pair = own.lock().pair.clone();
-            let (other_pair, writer) = {
-                let socket = other.lock();
-                (socket.pair.clone(), socket.writer())
-            };
+            let other_pair = other.lock().pair.clone();
             if !Arc::ptr_eq(&own_pair, &other_pair) {
                 return Err(errno::EPERM as u64);
             }
             witness.kind = 3;
             witness.identity = Arc::as_ptr(&own_pair) as u64;
-            let (queued, occupancy, capacity) = writer.witness(witness.tid);
+            let SocketProto::Unix(adapter) = &other_socket.proto else {
+                unreachable!("stream snapshot requires a Unix adapter");
+            };
+            let (queued, occupancy, capacity) = adapter.write_witness(&other_socket, witness.tid);
             witness.queued = queued;
             witness.occupancy = occupancy;
             witness.capacity = capacity;
@@ -140,6 +140,7 @@ fn query(fd: u64, arg: u64) -> Result<(), u64> {
             witness.capacity = crate::ipc::pipe::PIPE_BUF_SIZE as u64;
             witness.atomic_limit = crate::ipc::pipe::PIPE_BUF as u64;
         }
+        (Some(_), _, _) => unreachable!("stream snapshot requires a socket descriptor"),
     }
     let (blocked, in_syscall) = crate::task::scheduler::with_thread_mut(witness.tid, |thread| {
         (

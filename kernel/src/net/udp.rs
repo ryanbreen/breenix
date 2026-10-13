@@ -127,8 +127,7 @@ pub fn handle_udp(ip: &Ipv4Packet, data: &[u8]) {
                     let Some(entry) = process.fd_table.get(fd as i32) else { continue };
                     let crate::ipc::fd::FdKind::Socket(sk) = &entry.kind else { continue };
                     if let crate::socket::object::SocketProto::Udp(udp) = &sk.proto {
-                        let endpoint = &udp.inner;
-                        let delivered = crate::socket::udp::with_locked_masked(endpoint, |socket| {
+                        let delivered = crate::socket::udp::with_locked_masked(udp, |socket| {
                             if socket.handle == handle {
                                 socket.enqueue_packet(crate::socket::udp::UdpPacket {
                                     src_addr: ip.src_ip,

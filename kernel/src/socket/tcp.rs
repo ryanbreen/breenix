@@ -363,6 +363,10 @@ impl ProtoOps for TcpSock {
         matches!(self.state(), TcpSockState::Listening { .. })
     }
 
+    fn notifies(&self) -> bool {
+        true
+    }
+
     fn release(&self, sk: &Socket) {
         match self.state() {
             TcpSockState::Listening { port, .. } => {

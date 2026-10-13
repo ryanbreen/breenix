@@ -15,6 +15,7 @@ use alloc::vec::Vec;
 use spin::{Mutex, MutexGuard};
 
 const AF_UNIX: u16 = 1;
+const SOCK_STREAM: u16 = 1;
 const SOL_SOCKET: i32 = 1;
 const SO_PEERCRED: i32 = 17;
 
@@ -559,6 +560,12 @@ fn name_of_key(key: &[u8]) -> SockAddr {
 }
 
 impl UnixSock {
+    /// Whether AF_UNIX sockets of this type can be created: socket() and
+    /// socketpair() refuse the rest with EINVAL.
+    pub fn supports_kind(kind: u16) -> bool {
+        kind == SOCK_STREAM
+    }
+
     pub fn new(kind: u16) -> UnixSock {
         UnixSock {
             kind,
@@ -605,6 +612,15 @@ impl UnixSock {
             UnixState::Connected(stream) => Some(stream.clone()),
             _ => None,
         }
+    }
+
+    /// Read-only writer witness. The legacy adapter owns its queue in the
+    /// stream pair; `sk` is reserved for adapters that use the common queue.
+    #[cfg(feature = "boot_tests")]
+    pub(crate) fn write_witness(&self, _sk: &Socket, tid: u64) -> (u64, u64, u64) {
+        let stream = self.stream_of().expect("writer witness requires a connected stream");
+        let writer = stream.lock().writer();
+        writer.witness(tid)
     }
 
     /// The state for a deferred release, leaving this one unbound.
