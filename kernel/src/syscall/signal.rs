@@ -375,7 +375,9 @@ fn send_signal(target: ProcessId, sig: u32, sender: Sender, info: SigInfo, to: R
             if let Some(row) = manager.get_process_mut(target) {
                 row.signals.set_pending(SIGKILL);
                 row.group_exit_code.get_or_insert(-(SIGKILL as i32));
-                if row.name.starts_with("sigkill_teardown_test_child") {
+                if row.name.starts_with("sigkill_teardown_test_child")
+                    && row.main_thread.as_ref().map(|thread| thread.id) != caller_tid
+                {
                     crate::tracing::providers::scratch1413::track(target.as_u64());
                     crate::tracing::providers::scratch1413::rec(target.as_u64(), crate::tracing::providers::scratch1413::SEND_PUBLISH, 0);
                     scratch_hold = true;
