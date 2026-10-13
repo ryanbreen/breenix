@@ -70,9 +70,10 @@ pub fn read(pair: &Arc<PtyPair>, buf_ptr: u64, count: u64, nonblocking: bool) ->
                 || expired
         };
         if ready || hungup || (nonblocking && available > 0) {
-            let result = ldisc.read_user(buf_ptr, count);
+            let (taken, result) = ldisc.read_user(buf_ptr, count);
             drop(ldisc);
-            if result.is_ok() || matches!(result, Err(EOF_MARKER)) { pair.master_writers.wake_up(); }
+            // Taken bytes made room even when their copy faulted.
+            if taken > 0 || matches!(result, Err(EOF_MARKER)) { pair.master_writers.wake_up(); }
             return match result {
                 Ok(n) => SyscallResult::Ok(n as u64),
                 Err(EOF_MARKER) => SyscallResult::Ok(0),

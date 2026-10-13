@@ -241,6 +241,22 @@
           "title": "16 KiB written to the slave by another process are read from the master in order"
         },
         {
+          "id": "read-fault-partial-down",
+          "title": "Linux ABI: a slave read whose buffer runs into an unmapped page returns the bytes copied before it"
+        },
+        {
+          "id": "read-fault-partial-up",
+          "title": "Linux ABI: a master read whose buffer runs into an unmapped page returns the bytes copied before it"
+        },
+        {
+          "id": "read-fault-room-down",
+          "title": "A slave read that fails with EFAULT frees the input it took, so a master writer blocked on a full queue resumes"
+        },
+        {
+          "id": "read-fault-room-up",
+          "title": "A master read that fails with EFAULT frees the output it took, so a slave writer blocked on a full buffer resumes"
+        },
+        {
           "id": "master-poll",
           "title": "poll on the master reports POLLIN once the slave writes, and not before"
         },

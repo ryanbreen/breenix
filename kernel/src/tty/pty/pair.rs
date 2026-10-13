@@ -79,8 +79,9 @@ impl PtyBuffer {
     }
 
     /// Read up to `max` bytes to the user address `ptr`, with Linux's
-    /// handling of a bad address (`tty::read_to_user`).
-    pub fn read_user(&mut self, ptr: u64, max: usize) -> Result<usize, i32> {
+    /// handling of a bad address: the bytes taken, and the read's result
+    /// (`tty::read_to_user`).
+    pub fn read_user(&mut self, ptr: u64, max: usize) -> (usize, Result<usize, i32>) {
         let n = max.min(self.available());
         crate::tty::read_to_user(ptr, n, |chunk| self.read(chunk))
     }

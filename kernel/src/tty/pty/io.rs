@@ -18,14 +18,19 @@ pub fn read_master(pair: &Arc<PtyPair>, buf_ptr: u64, count: u64, nonblocking: b
     loop {
         let outcome = {
             let mut ring = pair.slave_to_master.lock();
-            let n = match ring.read_user(buf_ptr, count) {
-                Ok(n) => n, Err(e) => return SyscallResult::Err(e as u64),
-            };
-            if n > 0 {
+            let (taken, result) = ring.read_user(buf_ptr, count);
+            // Taken bytes made room even when their copy faulted.
+            if taken > 0 {
                 drop(ring);
                 pair.drain_echo();
                 pair.slave_writers.wake_up();
-                return SyscallResult::Ok(n as u64);
+                return match result {
+                    Ok(n) => SyscallResult::Ok(n as u64),
+                    Err(e) => SyscallResult::Err(e as u64),
+                };
+            }
+            if let Err(e) = result {
+                return SyscallResult::Err(e as u64);
             }
             // Linux: once the slave has been opened and every slave fd is
             // closed, the master reads the buffered output and then EIO.

@@ -488,11 +488,12 @@ impl LineDiscipline {
 
     /// Read up to `max` bytes, at most the rest of one canonical record, to
     /// the user address `buf_ptr` while the input lock is held, with Linux's
-    /// handling of a bad address (`tty::read_to_user`).
-    pub fn read_user(&mut self, buf_ptr: u64, max: usize) -> Result<usize, i32> {
+    /// handling of a bad address: the bytes taken, and the read's result
+    /// (`tty::read_to_user`). An end-of-file record takes no bytes.
+    pub fn read_user(&mut self, buf_ptr: u64, max: usize) -> (usize, Result<usize, i32>) {
         let n = if self.termios.is_canonical() {
             match self.line_records.front() {
-                Some(&0) => { self.line_records.pop_front(); self.eof_records -= 1; return Err(EOF_MARKER); }
+                Some(&0) => { self.line_records.pop_front(); self.eof_records -= 1; return (0, Err(EOF_MARKER)); }
                 Some(&n) => n.min(max),
                 None => 0,
             }
@@ -1331,13 +1332,13 @@ mod tests {
         let mut ld = LineDiscipline::new();
         for &c in b"record\n" { ld.input_char(c, &mut null_echo); }
         let mut scratch = [0; 16];
-        assert_eq!(ld.read_user(0, 16), Err(14));
+        assert_eq!(ld.read_user(0, 16), (0, Err(14)));
         assert_eq!(ld.bytes_available(), 7);
         assert_eq!(ld.read(&mut scratch), Ok(7));
         assert_eq!(&scratch[..7], b"record\n");
         ld.termios_mut().set_raw();
         ld.input_char(b'x', &mut null_echo);
-        assert_eq!(ld.read_user(0, 16), Err(14));
+        assert_eq!(ld.read_user(0, 16), (0, Err(14)));
         assert_eq!(ld.read(&mut scratch), Ok(1));
         assert_eq!(scratch[0], b'x');
     }
