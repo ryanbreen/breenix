@@ -130,14 +130,24 @@ fn main() {
         }
     };
 
-    // Read from slave and verify data matches
-    let mut buf = [0u8; 64];
-    let read_len = match io::read(slave_fd, &mut buf) {
-        Ok(n) if n > 0 => n,
-        _ => {
-            println!("  FAIL: read from slave failed");
-            std::process::exit(7);
+    // A failed copy must leave the canonical input intact, including for NULL.
+    for bad in [0, u64::MAX] {
+        let ret = unsafe { libbreenix::syscall::raw::syscall3(
+            libbreenix::syscall::nr::READ, slave_fd.raw(), bad, 64,
+        ) as i64 };
+        if ret != -14 {
+            println!("FAIL: bad slave read did not return EFAULT");
+            std::process::exit(106);
         }
+    }
+    // A huge requested count must return available bytes using bounded storage.
+    let mut buf = [0u8; 64];
+    let ret = unsafe { libbreenix::syscall::raw::syscall3(
+        libbreenix::syscall::nr::READ, slave_fd.raw(), buf.as_mut_ptr() as u64, u64::MAX,
+    ) as i64 };
+    let read_len = if ret > 0 && ret <= buf.len() as i64 { ret as usize } else {
+        println!("FAIL: SIZE_MAX slave read did not return available input");
+        std::process::exit(107);
     };
 
     // Verify data integrity: compare what we wrote with what we read
@@ -153,6 +163,14 @@ fn main() {
     }
     println!("  master -> slave OK (data verified)");
 
+    // Default ECHO and OPOST|ONLCR produce this output from the input above.
+    let mut echo = [0u8; 64];
+    let echoed = io::read(master_fd, &mut echo).unwrap_or(0);
+    if &echo[..echoed] != b"PTY test message\r\n" {
+        println!("FAIL: default echo was not CRLF-translated");
+        std::process::exit(108);
+    }
+
     // Test 7: Write to slave, read from master - with data verification
     println!("Test 7: slave -> master data flow...");
     let test_msg2 = b"Response from slave\n";
@@ -164,26 +182,25 @@ fn main() {
         }
     };
 
-    // Read from master and verify data matches
+    // The default output mode translates the slave's newline to CRLF.
+    let expected = b"Response from slave\r\n";
     let mut buf2 = [0u8; 64];
-    let read_len2 = match io::read(master_fd, &mut buf2) {
-        Ok(n) if n > 0 => n,
-        _ => {
-            println!("  FAIL: read from master failed");
-            std::process::exit(9);
+    for bad in [0, u64::MAX] {
+        let ret = unsafe { libbreenix::syscall::raw::syscall3(
+            libbreenix::syscall::nr::READ, master_fd.raw(), bad, 64,
+        ) as i64 };
+        if ret != -14 {
+            println!("FAIL: bad master read did not return EFAULT");
+            std::process::exit(109);
         }
-    };
-
-    // Verify data integrity: compare what we wrote with what we read
-    if read_len2 != write_len2 {
-        println!("  FAIL: read length != write length (slave->master)");
-        std::process::exit(12);
     }
-    for i in 0..read_len2 {
-        if buf2[i] != test_msg2[i] {
-            println!("  FAIL: data mismatch (slave->master)");
-            std::process::exit(13);
-        }
+    let ret = unsafe { libbreenix::syscall::raw::syscall3(
+        libbreenix::syscall::nr::READ, master_fd.raw(), buf2.as_mut_ptr() as u64, u64::MAX,
+    ) as i64 };
+    if write_len2 != test_msg2.len() || ret != expected.len() as i64
+        || &buf2[..expected.len()] != expected {
+        println!("FAIL: slave output lost data or did not apply ONLCR");
+        std::process::exit(12);
     }
     println!("  slave -> master OK (data verified)");
 
