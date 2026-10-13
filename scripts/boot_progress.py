@@ -12,9 +12,6 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 STALL_SECONDS = 120
-# Explicit case limits in libbreenix's runner. These fit inside the inactivity
-# deadline; naming one never exempts an unfinished boot from stall detection.
-NAMED_CASE_ALLOWANCES = {("time", "clocks/rate-counter"): 25_000}
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 KERNEL = re.compile(r"^(?:\[\s*(?:INFO|WARN|ERROR|DEBUG|TRACE)\]|\[(?:clock|boot|test|smp)\]|.*\bkernel(?:::|:))")
 DIAGNOSTIC = re.compile(

@@ -132,10 +132,13 @@ class ProgressTest(unittest.TestCase):
         runner = (ROOT / 'libs/libbreenix/src/suite.rs').read_text()
         self.assertIn('pub const DEFAULT_CASE_LIMIT_MS: u64 = 10_000;', runner)
         table = runner.split('pub const NAMED_CASE_ALLOWANCES:', 1)[1].split(';', 1)[0]
+        table = re.sub(r'//[^\n]*|/\*.*?\*/', '', table.split('= &[', 1)[1], flags=re.S)
+        entries = re.findall(r'\(\s*"([^"]+)"\s*,\s*"([^"]+)"\s*,\s*([\d_]+)\s*\)', table)
+        self.assertEqual(table.count('('), len(entries), 'every allowance must be parsed')
         allowances = {(suite, case): int(limit.replace('_', '')) for suite, case, limit
-                      in re.findall(r'\("([^"]+)", "([^"]+)", ([\d_]+)\)', table)}
+                      in entries}
+        self.assertEqual(len(entries), len(allowances), 'allowance names must be unique')
         monitor = runpy.run_path(str(ROOT / 'scripts/boot_progress.py'))
-        self.assertEqual(allowances, monitor['NAMED_CASE_ALLOWANCES'])
         self.assertEqual(allowances, {('time', 'clocks/rate-counter'): 25_000})
         for (suite, case), limit in allowances.items():
             manifest = json.loads((ROOT / f'docs/suites/{suite}.json').read_text())

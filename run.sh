@@ -364,7 +364,7 @@ score_vm_suite_disk() {
             temporary=$(mktemp -d) || exit $?
             trap 'rm -rf "$temporary"' EXIT
             disk="$temporary/ext2.raw"
-            qemu-img convert -f vmdk -O raw "$EXT2_VMDK_ARG" "$disk" || exit $?
+            bounded_vm_command qemu-img convert -f vmdk -O raw "$EXT2_VMDK_ARG" "$disk" || exit $?
         fi
         python3 "$BREENIX_ROOT/scripts/suite-verdict.py" "$manifest" "$SERIAL_LOG" --disk "$disk"
     )

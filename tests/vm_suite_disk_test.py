@@ -15,7 +15,7 @@ class VmSuiteDiskTest(unittest.TestCase):
     def test_stopped_written_disk_controls_exit_and_vigil_status(self):
         functions = dict(re.findall(r'(?ms)^(\w+)\(\) \{\n(.*?)^\}', (ROOT / 'run.sh').read_text()))
         definitions = '\n'.join(f'{name}() {{\n{functions[name]}\n}}' for name in
-                                ('score_vm_suite_disk', 'finish_vm_boot', 'install_vm_boot_traps'))
+                                ('bounded_vm_command', 'score_vm_suite_disk', 'finish_vm_boot', 'install_vm_boot_traps'))
         mke2fs = shutil.which('mke2fs') or '/opt/homebrew/opt/e2fsprogs/sbin/mke2fs'
         for platform in ('parallels', 'vmware'):
             for outcome in ('pass', 'wrong-bytes', 'stop-failed', 'convert-failed'):
@@ -26,6 +26,7 @@ class VmSuiteDiskTest(unittest.TestCase):
                     (root / 'scripts').mkdir()
                     (root / 'docs/suites').mkdir(parents=True)
                     (root / 'scripts/suite-verdict.py').symlink_to(ROOT / 'scripts/suite-verdict.py')
+                    (root / 'scripts/bounded-vm-command.py').symlink_to(ROOT / 'scripts/bounded-vm-command.py')
                     recorder = root / 'scripts/vigil-record.sh'
                     recorder.write_text('#!/bin/sh\nprintf "%s" "$3" > "$RECORD"\n')
                     recorder.chmod(0o755)
@@ -46,7 +47,19 @@ class VmSuiteDiskTest(unittest.TestCase):
                     subprocess.run([mke2fs, '-q', '-F', '-t', 'ext2', '-d', str(files), str(disk)],
                                    check=True, capture_output=True)
                     vmdk = root / 'written.vmdk'
-                    subprocess.run(['qemu-img', 'convert', '-f', 'raw', '-O', 'vmdk', str(disk), str(vmdk)],
+                    # Keep the unused platform's disk invalid so pass cases
+                    # detect a scorer reading the wrong disk.
+                    (files / 'written').write_bytes((b'B' if platform == 'parallels' or outcome == 'wrong-bytes' else b'A') * 64)
+                    vmware_raw = root / 'vmware.raw'
+                    with vmware_raw.open('wb') as stream:
+                        stream.truncate(4 * 1024 * 1024)
+                    subprocess.run([mke2fs, '-q', '-F', '-t', 'ext2', '-d', str(files), str(vmware_raw)],
+                                   check=True, capture_output=True)
+                    if platform == 'vmware':
+                        (files / 'written').write_bytes(b'B' * 64)
+                        subprocess.run([mke2fs, '-q', '-F', '-t', 'ext2', '-d', str(files), str(disk)],
+                                       check=True, capture_output=True)
+                    subprocess.run(['qemu-img', 'convert', '-f', 'raw', '-O', 'vmdk', str(vmware_raw), str(vmdk)],
                                    check=True, capture_output=True)
                     if outcome == 'convert-failed':
                         vmdk.write_text('invalid VMDK')

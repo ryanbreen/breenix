@@ -160,9 +160,10 @@ pub const fn category(id: &'static str, title: &'static str, cases: &'static [Ca
 }
 
 /// How long a case may run before it is killed and fails, unless the suite sets its own.
+/// A named allowance overrides both this default and the suite's own limit.
 pub const DEFAULT_CASE_LIMIT_MS: u64 = 10_000;
 
-/// Named exceptions to the default, also checked by the host progress monitor.
+/// Named exceptions to case limits, checked by host tests against the stall deadline.
 /// RTC edge selection can span sixteen seconds plus three starting edges;
 /// allow reporter headroom without extending any other time-suite case.
 pub const NAMED_CASE_ALLOWANCES: &[(&str, &str, u64)] = &[

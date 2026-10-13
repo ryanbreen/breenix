@@ -1,8 +1,9 @@
 //! Time & timers: clocks and their resolution, nanosleep and clock_nanosleep, POSIX
 //! per-process timers, and alarm with the interval timers, as POSIX specifies them.
 //!
-//! Each case runs in its own forked child under a 25-second limit, allowing the
-//! x86 counter measurement to span up to sixteen RTC seconds plus edge selection.
+//! Each case runs in its own forked child under the default 10-second limit.
+//! Only clocks/rate-counter has a 25-second allowance, letting the x86 counter
+//! measurement span up to sixteen RTC seconds plus edge selection.
 //! Every wait inside a case is bounded and stops early enough to leave the case time to
 //! clean up and report. The processes a case starts are killed when it ends, and the
 //! runner, which a suite runs as PID 1, kills and reaps any that remain before the next
