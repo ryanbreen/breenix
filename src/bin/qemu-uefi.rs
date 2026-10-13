@@ -286,7 +286,11 @@ fn main() {
             qemu.args([
                 "-drive",
                 &format!(
-                    "if=none,id=ext2disk,format=raw,file={}",
+                    // This copy is replaced from its source at every launch, so
+                    // host power-loss durability buys nothing. Writes still reach
+                    // the raw file (and its disk checks); guest barriers no longer
+                    // wait on an unbounded host fsync.
+                    "if=none,id=ext2disk,format=raw,cache=unsafe,aio=threads,file={}",
                     ext2_disk_path.display()
                 ),
                 "-device",

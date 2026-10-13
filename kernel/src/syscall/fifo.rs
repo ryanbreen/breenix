@@ -46,7 +46,7 @@ pub(crate) fn mknodat_path(dirfd: i32, raw: &str, mode: u32, dev: u64) -> Syscal
     let Some(parent) = resolved.entry_dir() else {
         return SyscallResult::Err(EIO as u64);
     };
-    let mut guard = mount.write();
+    let mut guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
     let Some(fs) = guard.as_mut() else {
         return SyscallResult::Err(EIO as u64);
     };

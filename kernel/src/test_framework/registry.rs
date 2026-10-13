@@ -8556,7 +8556,7 @@ fn test_filesystem_syscalls_aarch64() -> TestResult {
     }
 
     // Access the root filesystem
-    let fs_guard = ext2::root_fs_read();
+    let Ok(fs_guard) = ext2::root_fs_read() else { return TestResult::Fail("ext2 acquisition interrupted"); };
     let fs = match fs_guard.as_ref() {
         Some(fs) => fs,
         None => return TestResult::Fail("ext2 root_fs_read() returned None"),

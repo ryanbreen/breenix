@@ -42,7 +42,7 @@ extern crate kernel;
     allow(dead_code)
 )]
 fn read_init_from_ext2(path: &str) -> Result<alloc::vec::Vec<u8>, &'static str> {
-    let fs_guard = kernel::fs::ext2::root_fs_read();
+    let fs_guard = kernel::fs::ext2::root_fs_read()?;
     let fs = fs_guard
         .as_ref()
         .ok_or("ext2 root filesystem not mounted")?;
@@ -2065,7 +2065,7 @@ fn load_test_binaries_from_ext2() {
         ));
         // Load ELF from ext2 - acquire and release lock for each binary
         let elf_data = {
-            let fs_guard = kernel::fs::ext2::root_fs_read();
+            let Ok(fs_guard) = kernel::fs::ext2::root_fs_read() else { return; };
             let fs = match fs_guard.as_ref() {
                 Some(fs) => fs,
                 None => {

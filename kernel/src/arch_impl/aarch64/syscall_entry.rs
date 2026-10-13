@@ -1590,7 +1590,7 @@ fn load_elf_from_ext2(
         super::trace::trace_exec(b'!');
         errno as i32
     })?;
-    let fs_guard = mount.read();
+    let fs_guard = mount.read().map_err(|errno| errno as i32)?;
     super::trace::trace_exec(b'2');
     let fs = fs_guard.as_ref().ok_or(EIO)?;
     super::trace::trace_exec(b'3');
