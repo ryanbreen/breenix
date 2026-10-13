@@ -707,6 +707,15 @@ the VTIME cases) run in a child the case waits on. `vtime-timeout` accepts a ret
 500 ms into a 200 ms VTIME, and `vtime-interbyte` 150 to 1000 ms; both report the time as a
 VALUE.
 
+A case that expects a call to fail first makes the same call where it must succeed (on a
+pseudo-terminal slave, a master, its own controlling terminal) and fails if that does not
+work, so a call that is missing, and fails everywhere with ENOTTY or EINVAL, fails the case
+instead of passing it. `controlling/open-noctty`, `open-not-leader`, `open-taken`,
+`setsid-leaves`, `tcgetsid-other` and `tcgetsid-enotty` show tcgetsid returning the session
+ID on a controlling terminal before they trust its ENOTTY, `setsid-no-ctty` opens /dev/tty
+once the session has a controlling terminal, and `job-control/isig-off` sets ISIG and checks
+that ^C then sends SIGINT.
+
 A process that needs a controlling terminal first calls setsid, so no case touches the
 runner's session or process group, and then takes the slave with TIOCSCTTY; its process
 group is then the terminal's foreground group. Background jobs are put in a group of their

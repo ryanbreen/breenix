@@ -398,6 +398,13 @@ fn want(what: &str, ret: i64, errno: i64) -> CaseResult {
     check(ret == -errno, &format!("{what} returned {}, expected {}", shown(ret), errname(errno)))
 }
 
+/// The call a case expects to fail somewhere, made where it must succeed. An error the
+/// case looks for shows something only when the call works where it should, so a call
+/// that fails everywhere fails the case here rather than passing it.
+fn control(what: &str, ret: i64) -> CaseResult {
+    check(ret >= 0, &format!("{what} returned {}, so the error the case looks for would show nothing", shown(ret)))
+}
+
 /// A call that must return `expected`.
 fn equal(what: &str, ret: i64, expected: i64) -> CaseResult {
     check(ret == expected, &format!("{what} returned {}, expected {expected}", shown(ret)))
@@ -909,14 +916,27 @@ fn leader(pty: &Pty, body: impl FnOnce() -> CaseResult) -> Result<Child, CaseErr
 /// Start the leader of another session, with `tty` as its controlling terminal when one
 /// is given, and wait until it has it. It stays until the case drops it.
 fn holder(tty: Option<i32>) -> Result<Child, CaseError> {
+    holding(tty, false)
+}
+
+/// As holder, and with `checked` the leader first shows that tcgetsid on its controlling
+/// terminal returns its session ID, so a case can trust tcgetsid's ENOTTY elsewhere.
+fn holding(tty: Option<i32>, checked: bool) -> Result<Child, CaseError> {
     let pg = page()?;
     let child = spawn(move || {
-        match tty { Some(fd) => take_terminal(fd)?, None => new_session()? }
-        pg.set(0, 1);
+        let ready = (|| -> CaseResult {
+            match tty { Some(fd) => take_terminal(fd)?, None => new_session()? }
+            if let (Some(fd), true) = (tty, checked) {
+                equal("tcgetsid on the other session's controlling terminal, in its leader", tcgetsid(fd)?, i64::from(pid()))?;
+            }
+            Ok(())
+        })();
+        report(pg, 0, ready);
         idle(9000);
         Ok(())
     })?;
     flag(pg, 0, 2000, "the other session's leader")?;
+    if pg.get(0) != 1 { return err(format!("the other session's leader: {}", pg.said())); }
     Ok(child)
 }
 
@@ -1030,14 +1050,18 @@ fn t_tcgetattr() -> CaseResult {
 }
 
 fn t_tcgetattr_enotty() -> CaseResult {
-    let fd = null()?;
+    let pty = open_pty()?;
     let mut t = Termios::default();
+    control("tcgetattr on a pseudo-terminal slave", tcgetattr(pty.slave, &mut t)?)?;
+    let fd = null()?;
     want("tcgetattr on /dev/null", tcgetattr(fd.0, &mut t)?, ENOTTY)
 }
 
 fn t_tcgetattr_ebadf() -> CaseResult {
-    let fd = closed_fd()?;
+    let pty = open_pty()?;
     let mut t = Termios::default();
+    control("tcgetattr on a pseudo-terminal slave", tcgetattr(pty.slave, &mut t)?)?;
+    let fd = closed_fd()?;
     want("tcgetattr on a closed descriptor", tcgetattr(fd, &mut t)?, EBADF)
 }
 
@@ -1087,12 +1111,15 @@ fn t_tcsaflush() -> CaseResult {
 fn t_tcsetattr_einval() -> CaseResult {
     let pty = open_pty()?;
     let t = attrs(pty.slave, "the slave")?;
+    control("tcsetattr(TCSANOW) with the attributes tcgetattr returned", tcsetattr(pty.slave, TCSANOW, &t)?)?;
     want("tcsetattr with optional_actions 99", tcsetattr(pty.slave, 99, &t)?, EINVAL)
 }
 
 fn t_tcsetattr_enotty() -> CaseResult {
+    let pty = open_pty()?;
+    let t = attrs(pty.slave, "the slave")?;
+    control("tcsetattr(TCSANOW) on a pseudo-terminal slave", tcsetattr(pty.slave, TCSANOW, &t)?)?;
     let fd = null()?;
-    let t = Termios::default();
     want("tcsetattr(TCSANOW) on /dev/null", tcsetattr(fd.0, TCSANOW, &t)?, ENOTTY)
 }
 
@@ -1281,6 +1308,7 @@ fn t_cfispeed() -> CaseResult {
 
 fn t_cfspeed_einval() -> CaseResult {
     let mut t = Termios::default();
+    control("cfsetospeed(B9600)", cfsetospeed(&mut t, B9600)?)?;
     want("cfsetospeed(12345)", cfsetospeed(&mut t, 12345)?, EINVAL)
 }
 
@@ -1306,10 +1334,13 @@ fn t_tcflush_input() -> CaseResult {
 
 fn t_tcflush_einval() -> CaseResult {
     let pty = open_pty()?;
+    control("tcflush(TCIFLUSH) on the slave", tcflush(pty.slave, TCIFLUSH)?)?;
     want("tcflush with queue_selector 7", tcflush(pty.slave, 7)?, EINVAL)
 }
 
 fn t_tcflush_enotty() -> CaseResult {
+    let pty = open_pty()?;
+    control("tcflush(TCIFLUSH) on a pseudo-terminal slave", tcflush(pty.slave, TCIFLUSH)?)?;
     let fd = null()?;
     want("tcflush(TCIFLUSH) on /dev/null", tcflush(fd.0, TCIFLUSH)?, ENOTTY)
 }
@@ -1365,11 +1396,15 @@ fn p_grantpt() -> CaseResult {
 }
 
 fn p_grantpt_ebadf() -> CaseResult {
+    let m = open_master()?;
+    control("grantpt on a master", grantpt(m.0)?)?;
     let fd = closed_fd()?;
     want("grantpt on a closed descriptor", grantpt(fd)?, EBADF)
 }
 
 fn p_grantpt_einval() -> CaseResult {
+    let m = open_master()?;
+    control("grantpt on a master", grantpt(m.0)?)?;
     let fd = null()?;
     want("grantpt on /dev/null", grantpt(fd.0)?, EINVAL)
 }
@@ -1383,6 +1418,9 @@ fn p_unlockpt() -> CaseResult {
 }
 
 fn p_unlockpt_einval() -> CaseResult {
+    let m = open_master()?;
+    control("grantpt on a master", grantpt(m.0)?)?;
+    control("unlockpt on a master", unlockpt(m.0)?)?;
     let fd = null()?;
     want("unlockpt on /dev/null", unlockpt(fd.0)?, EINVAL)
 }
@@ -1402,6 +1440,10 @@ fn p_ptsname() -> CaseResult {
 }
 
 fn p_ptsname_enotty() -> CaseResult {
+    let m = open_master()?;
+    if let Err(e) = ptsname(m.0)? {
+        return fail(format!("ptsname on a master failed with {}, so the error the case looks for would show nothing", errname(e)));
+    }
     let fd = null()?;
     match ptsname(fd.0)? {
         Ok(name) => fail(format!("ptsname on /dev/null returned {name}, expected ENOTTY")),
@@ -1532,8 +1574,10 @@ fn p_winsize_set() -> CaseResult { size_across(Winsize { row: 24, col: 80, xpixe
 fn p_winsize_slave() -> CaseResult { size_across(Winsize { row: 50, col: 132, xpixel: 0, ypixel: 0 }, false) }
 
 fn p_winsize_enotty() -> CaseResult {
-    let fd = null()?;
+    let pty = open_pty()?;
     let mut ws = Winsize::default();
+    control("ioctl(TIOCGWINSZ) on a pseudo-terminal slave", ioctl(pty.slave, TIOCGWINSZ, &mut ws as *mut Winsize as u64)?)?;
+    let fd = null()?;
     want("ioctl(TIOCGWINSZ) on /dev/null", ioctl(fd.0, TIOCGWINSZ, &mut ws as *mut Winsize as u64)?, ENOTTY)
 }
 
@@ -1616,9 +1660,15 @@ fn c_setsid_ids() -> CaseResult {
 }
 
 fn c_setsid_no_ctty() -> CaseResult {
+    let pty = open_pty()?;
+    let slave = pty.slave;
     spawn(|| {
         new_session()?;
-        want_open("/dev/tty", O_RDWR, ENXIO, "opening /dev/tty after setsid")
+        want_open("/dev/tty", O_RDWR, ENXIO, "opening /dev/tty after setsid")?;
+        zero("ioctl(TIOCSCTTY)", ioctl(slave, TIOCSCTTY, 0)?)?;
+        let r = open(c("/dev/tty").as_ptr(), O_RDWR, 0)?;
+        if r >= 0 { let _ = close(r as i32); }
+        control("opening /dev/tty once TIOCSCTTY gave the session a controlling terminal", r)
     })?
     .finish(3000, "the new session's leader")
 }
@@ -1635,6 +1685,7 @@ fn c_setsid_leaves() -> CaseResult {
     let pty = open_pty()?;
     let slave = pty.slave;
     leader(&pty, || {
+        control("tcgetsid on the session leader's controlling terminal", tcgetsid(slave)?)?;
         spawn(|| {
             new_session()?;
             want("tcgetsid on the old controlling terminal after setsid", tcgetsid(slave)?, ENOTTY)
@@ -1661,7 +1712,9 @@ fn c_open_noctty() -> CaseResult {
     spawn(|| {
         new_session()?;
         let fd = open_fd(&path, O_RDWR | O_NOCTTY)?;
-        want("tcgetsid on the terminal the session leader opened with O_NOCTTY", tcgetsid(fd.0)?, ENOTTY)
+        want("tcgetsid on the terminal the session leader opened with O_NOCTTY", tcgetsid(fd.0)?, ENOTTY)?;
+        zero("ioctl(TIOCSCTTY) on that terminal", ioctl(fd.0, TIOCSCTTY, 0)?)?;
+        control("tcgetsid once TIOCSCTTY made it the controlling terminal", tcgetsid(fd.0)?)
     })?
     .finish(3000, "the new session's leader")
 }
@@ -1675,14 +1728,17 @@ fn c_open_not_leader() -> CaseResult {
             let fd = open_fd(&path, O_RDWR)?;
             want("tcgetsid on the terminal a session member that is not its leader opened", tcgetsid(fd.0)?, ENOTTY)
         })?
-        .finish(3000, "the session member")
+        .finish(3000, "the session member")?;
+        let fd = open_fd(&path, O_RDWR | O_NOCTTY)?;
+        zero("ioctl(TIOCSCTTY) in the session leader", ioctl(fd.0, TIOCSCTTY, 0)?)?;
+        control("tcgetsid in the session leader once TIOCSCTTY made it the controlling terminal", tcgetsid(fd.0)?)
     })?
     .finish(5000, "the new session's leader")
 }
 
 fn c_open_taken() -> CaseResult {
     let pty = open_pty()?;
-    let _other = holder(Some(pty.slave))?;
+    let _other = holding(Some(pty.slave), true)?;
     let path = pty.path.clone();
     spawn(|| {
         new_session()?;
@@ -1763,9 +1819,12 @@ fn c_tiocnotty_enotty() -> CaseResult {
     let slave = pty.slave;
     spawn(|| {
         new_session()?;
-        want("ioctl(TIOCNOTTY) on a terminal that is not the caller's controlling terminal", ioctl(slave, TIOCNOTTY, 0)?, ENOTTY)
+        want("ioctl(TIOCNOTTY) on a terminal that is not the caller's controlling terminal", ioctl(slave, TIOCNOTTY, 0)?, ENOTTY)?;
+        zero("ioctl(TIOCSCTTY)", ioctl(slave, TIOCSCTTY, 0)?)?;
+        spawn(|| control("ioctl(TIOCNOTTY) in a session member, on its controlling terminal", ioctl(slave, TIOCNOTTY, 0)?))?
+            .finish(3000, "the session member")
     })?
-    .finish(3000, "the new session's leader")
+    .finish(5000, "the new session's leader")
 }
 
 fn c_tiocnotty_leader() -> CaseResult {
@@ -1798,11 +1857,15 @@ fn c_tcgetsid() -> CaseResult {
 
 fn c_tcgetsid_other() -> CaseResult {
     let pty = open_pty()?;
-    let _other = holder(Some(pty.slave))?;
+    let _other = holding(Some(pty.slave), true)?;
     want("tcgetsid on another session's controlling terminal", tcgetsid(pty.slave)?, ENOTTY)
 }
 
 fn c_tcgetsid_enotty() -> CaseResult {
+    let pty = open_pty()?;
+    let slave = pty.slave;
+    leader(&pty, || control("tcgetsid on the session leader's controlling terminal", tcgetsid(slave)?))?
+        .finish(3000, "the session leader")?;
     let fd = null()?;
     want("tcgetsid on /dev/null", tcgetsid(fd.0)?, ENOTTY)
 }
@@ -2038,12 +2101,17 @@ fn j_tcsetpgrp_einval() -> CaseResult {
 
 fn j_tcsetpgrp_enotty() -> CaseResult {
     let pty = open_pty()?;
+    let slave = pty.slave;
+    leader(&pty, || control("tcsetpgrp to its own group, in the session leader", tcsetpgrp(slave, pid())?))?
+        .finish(3000, "the session leader")?;
     let mine = ok("getpgid(0)", getpgid(0)?)? as i32;
     want("tcsetpgrp on a terminal that is not the caller's controlling terminal", tcsetpgrp(pty.slave, mine)?, ENOTTY)
 }
 
 fn j_tcgetpgrp_enotty() -> CaseResult {
     let pty = open_pty()?;
+    let slave = pty.slave;
+    leader(&pty, || control("tcgetpgrp in the session leader", tcgetpgrp(slave)?))?.finish(3000, "the session leader")?;
     want("tcgetpgrp on a terminal that is not the caller's controlling terminal", tcgetpgrp(pty.slave)?, ENOTTY)
 }
 
@@ -2348,11 +2416,16 @@ fn j_isig_off() -> CaseResult {
         mask_only(&[SIGINT])?;
         pg.set(0, 1);
         gets_none(SIGINT, 500, "the foreground process", "from ^C with ISIG clear")?;
-        expect_read(slave, 64, b"\x03\n", 2000, "the foreground process")
+        expect_read(slave, 64, b"\x03\n", 2000, "the foreground process")?;
+        modes(slave, |t| { t.lflag |= ISIG; t.cc[VINTR] = CTRL_C })?;
+        pg.set(1, 1);
+        gets(SIGINT, 3000, "the foreground process, once ISIG was set and ^C typed again,")
     })?;
     flag(pg, 0, 2000, "the session leader")?;
     put(pty.master, b"\x03\n", "the master")?;
-    l.finish(4000, "the session leader")
+    flag(pg, 1, 3000, "the session leader")?;
+    put(pty.master, &[CTRL_C], "the master")?;
+    l.finish(5000, "the session leader")
 }
 
 /// The master writes "abc", ^C and "d\n" in one write to a slave in line mode with ISIG
