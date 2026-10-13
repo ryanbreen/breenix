@@ -1269,6 +1269,7 @@ pub fn defer_fault_exit(thread_id: u64, exit_code: i32) -> bool {
 
 /// Drain deferred kernel-fault exits from a normal scheduling context.
 pub fn drain_deferred_fault_sigsegv_exits() {
+    crate::ipc::shmem::drain_signal_pages();
     let mut tids = alloc::vec::Vec::new();
     for buf in &DEFERRED_FAULT_EXIT_BUFFERS {
         buf.drain(&mut tids);
@@ -1550,6 +1551,7 @@ fn boot_finish_reclaim_pass(boot_test_owned: bool) {
 
 /// Reclaim process frames whose cross-CPU TTBR0 retention has quiesced.
 pub fn reclaim_deferred_process_resources() {
+    crate::ipc::shmem::drain_signal_pages();
     let my_pass = next_reclaim_pass_id(
         RECLAIM_PASS_ID
             .fetch_add(1, Ordering::Relaxed)

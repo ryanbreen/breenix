@@ -9,10 +9,13 @@ mod object;
 #[cfg(target_arch = "aarch64")]
 use crate::memory::arch_stub::VirtAddr;
 use crate::memory::vma::{MmapFlags, Protection, Vma};
-use crate::syscall::errno::{EAGAIN, EINVAL, ENOMEM, ESRCH};
+use crate::syscall::errno::{EAGAIN, EINVAL, ENOMEM, EOVERFLOW, ESRCH};
 use crate::syscall::memory_common::{self, PAGE_SIZE};
 use alloc::sync::Arc;
-pub use namespace::{access_path, mmap_fd, open_path, stat_path, unlink_path, virtual_entry};
+pub use namespace::{
+    access_path, link_fd, link_path, mmap_fd, open_path, rename_path, stat_path, unlink_path,
+    virtual_entry,
+};
 pub(crate) use object::release_frame;
 pub use object::{page_count, MappingOrigin, ShmMapping, ShmObject};
 #[cfg(target_arch = "x86_64")]
@@ -79,7 +82,7 @@ fn map_range(
     offset
         .checked_add(len)
         .filter(|end| *end <= i64::MAX as u64)
-        .ok_or(EINVAL as u64)?;
+        .ok_or(EOVERFLOW as u64)?;
     let tid = memory_common::get_current_thread_id().ok_or(ESRCH as u64)?;
     // Select and publish the sparse VMA in the SAME PM section. No page
     // allocation separates placement from reservation; a racing mmap cannot
@@ -91,9 +94,23 @@ fn map_range(
             .and_then(|m| m.find_address_space_by_thread_mut(tid))
             .ok_or(ESRCH as u64)?;
         let fixed = flags.contains(MmapFlags::FIXED) || flags.contains(MmapFlags::FIXED_NOREPLACE);
+        #[cfg(target_arch = "x86_64")]
+        let low = flags.bits() & 0x40 != 0 && !fixed;
+        #[cfg(target_arch = "aarch64")]
+        let low = false;
+        let floor = if low {
+            0x4000_0000
+        } else {
+            crate::memory::vma::MMAP_REGION_START
+        };
+        let ceiling = if low {
+            0x8000_0000
+        } else {
+            crate::memory::vma::MMAP_REGION_END
+        };
         let in_range = |start: u64| {
             memory_common::is_page_aligned(start)
-                && start >= crate::memory::vma::MMAP_REGION_START
+                && start >= floor
                 && start
                     .checked_add(len)
                     .is_some_and(|end| end <= crate::memory::vma::MMAP_REGION_END)
@@ -117,7 +134,26 @@ fn map_range(
             {
                 requested
             } else {
-                memory_common::place_below_hint(process, len).ok_or(ENOMEM as u64)?
+                if low {
+                    let mut end = ceiling;
+                    loop {
+                        let start = end
+                            .checked_sub(len)
+                            .filter(|a| *a >= floor)
+                            .ok_or(ENOMEM as u64)?;
+                        if let Some(vma) = process
+                            .vmas
+                            .iter()
+                            .find(|v| v.start.as_u64() < end && start < v.end.as_u64())
+                        {
+                            end = vma.start.as_u64();
+                        } else {
+                            break start;
+                        }
+                    }
+                } else {
+                    memory_common::place_below_hint(process, len).ok_or(ENOMEM as u64)?
+                }
             }
         };
         if let Err(e) =
@@ -132,7 +168,7 @@ fn map_range(
             prot,
             flags,
         );
-        vma.shm = Some(ShmMapping::with_origin(obj, origin, may_write));
+        vma.shm = Some(ShmMapping::with_origin(obj, origin, may_write)?);
         vma.shm_offset = offset;
         process.vmas.push(vma);
         crate::syscall::memory_advice::record_future(process, start, start + len);
@@ -141,7 +177,16 @@ fn map_range(
             process.memory_locks.future && !process.memory_locks.onfault,
         )
     };
-    if populate || flags.contains(MmapFlags::POPULATE) {
+    if flags.bits() & 0x2000 != 0 {
+        match crate::syscall::memory_advice::sys_mlock(start, len) {
+            crate::syscall::SyscallResult::Err(e) => {
+                let _ = crate::syscall::mmap::sys_munmap(start, len);
+                return Err(e);
+            }
+            crate::syscall::SyscallResult::Ok(_) => {}
+        }
+    }
+    if populate || (flags.contains(MmapFlags::POPULATE) && flags.bits() & 0x10000 == 0) {
         // MAP_POPULATE is best effort, as for ordinary mmap; mlockall's
         // reservation is retained even if part of the mapping hits EOF/OOM.
         let _ = crate::syscall::memory_advice::populate(tid, start, start + len);
@@ -321,4 +366,79 @@ pub fn protect_page(
         .update_page_flags(page, flags)
         .map_err(|_| ENOMEM as u64)?;
     Ok(true)
+}
+
+// Signal delivery holds PM. Publish a bounded, allocation-free request there;
+// the existing task-context deferred drain prepares backing after PM drops.
+struct SignalPage {
+    object: Arc<ShmObject>,
+    offset: u64,
+    pid: crate::process::ProcessId,
+}
+static SIGNAL_PENDING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static SIGNAL_PAGES: crate::irq_safe_mutex::IrqSafeMutex<[Option<SignalPage>; 64]> =
+    crate::irq_safe_mutex::IrqSafeMutex::new([const { None }; 64]);
+pub(crate) fn request_signal_page(
+    owner: &crate::process::Process,
+    address: u64,
+) -> Result<(), u64> {
+    let Some((object, offset, _)) = population_snapshot(&owner.vmas, address) else {
+        return Ok(());
+    };
+    let mut pages = SIGNAL_PAGES.lock();
+    if pages
+        .iter()
+        .flatten()
+        .any(|p| p.pid == owner.id && p.offset == offset && Arc::ptr_eq(&p.object, &object))
+    {
+        return Ok(());
+    }
+    let slot = pages
+        .iter_mut()
+        .find(|p| p.is_none())
+        .ok_or(ENOMEM as u64)?;
+    *slot = Some(SignalPage {
+        object,
+        offset,
+        pid: owner.id,
+    });
+    SIGNAL_PENDING.store(true, core::sync::atomic::Ordering::Release);
+    // Lock-free hint only: never wake a scheduler queue under PM.
+    crate::task::scheduler::set_need_resched();
+    Ok(())
+}
+pub(crate) fn drain_signal_pages() {
+    if crate::process::process_manager_held_on_current_cpu() {
+        return;
+    }
+    if !SIGNAL_PENDING.swap(false, core::sync::atomic::Ordering::AcqRel) {
+        return;
+    }
+    let mut batch = [const { None }; 64];
+    core::mem::swap(&mut batch, &mut *SIGNAL_PAGES.lock());
+    // Take one batch. EAGAIN remains pending for the next task-context pass.
+    for request in batch {
+        let Some(request) = request else {
+            continue;
+        };
+        match request.object.ensure_page(request.offset) {
+            Err(e) if e == EAGAIN as u64 => {
+                let mut pages = SIGNAL_PAGES.lock();
+                if let Some(slot) = pages.iter_mut().find(|p| p.is_none()) {
+                    *slot = Some(request);
+                    SIGNAL_PENDING.store(true, core::sync::atomic::Ordering::Release);
+                }
+            }
+            Err(_) => {
+                let mut guard = crate::process::manager();
+                if let Some(process) = guard.as_mut().and_then(|m| m.get_process_mut(request.pid)) {
+                    process.signals.force_signal(
+                        crate::signal::constants::SIGKILL,
+                        crate::signal::types::SigInfo::kernel(),
+                    );
+                }
+            }
+            Ok(()) => {}
+        }
+    }
 }
