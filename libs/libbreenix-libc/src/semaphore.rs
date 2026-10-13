@@ -7,6 +7,7 @@ const EAGAIN: i64 = 11;
 const EINVAL: i64 = 22;
 const EOVERFLOW: i64 = 75;
 pub const SEM_VALUE_MAX: u32 = 0x7fff_ffff;
+const WAITERS_BIT: u32 = 0x8000_0000;
 const FUTEX_WAIT: u64 = 0;
 const FUTEX_WAKE: u64 = 1;
 const FUTEX_WAIT_BITSET: u64 = 9;
@@ -57,7 +58,7 @@ impl Sem {
     }
     fn take(&self) -> bool {
         let mut value = self.value.load(Ordering::SeqCst);
-        while value != 0 {
+        while value & SEM_VALUE_MAX != 0 {
             match self.value.compare_exchange_weak(
                 value,
                 value - 1,
@@ -114,22 +115,30 @@ pub unsafe extern "C" fn sem_post(sem: *mut Sem) -> i32 {
         Err(e) => return fail(e),
     };
     let mut value = sem.value.load(Ordering::SeqCst);
-    loop {
-        if value == SEM_VALUE_MAX {
+    let wake = loop {
+        let tokens = value & SEM_VALUE_MAX;
+        if tokens == SEM_VALUE_MAX {
             return fail(EOVERFLOW);
         }
+        // Clear the marker with publication. Already-woken registrations
+        // must not make every subsequent post pay for an empty kernel queue.
         match sem
             .value
-            .compare_exchange_weak(value, value + 1, Ordering::SeqCst, Ordering::SeqCst)
+            .compare_exchange_weak(value, tokens + 1, Ordering::SeqCst, Ordering::SeqCst)
         {
-            Ok(_) => break,
+            Ok(_) => break value & WAITERS_BIT != 0,
             Err(seen) => value = seen,
         }
-    }
-    // SeqCst pairs registration and the slow-path recheck with publication:
-    // either the recheck sees the token or post sees a registered waiter.
-    if sem.waiters.load(Ordering::SeqCst) != 0 {
-        futex(&sem.value, FUTEX_WAKE | sem.private(), 1, null());
+    };
+    if wake {
+        // Clearing a shared marker requires waking the entire old cohort.
+        // Each waiter still needs its own successful atomic token decrement.
+        futex(
+            &sem.value,
+            FUTEX_WAKE | sem.private(),
+            i32::MAX as u32,
+            null(),
+        );
     }
     0
 }
@@ -142,7 +151,7 @@ pub unsafe extern "C" fn sem_getvalue(sem: *mut Sem, value: *mut i32) -> i32 {
     if value.is_null() {
         return fail(EINVAL);
     }
-    value.write(sem.value.load(Ordering::Relaxed) as i32);
+    value.write((sem.value.load(Ordering::Relaxed) & SEM_VALUE_MAX) as i32);
     0
 }
 struct Waiting<'a>(&'a Sem);
@@ -166,7 +175,7 @@ unsafe fn wait(sem: *mut Sem, timeout: *const i64, timed: bool) -> i32 {
         // Short critical sections normally release on another CPU before a
         // futex sleep can return. Bound this work, then use the same SeqCst
         // registration/recheck protocol; an idle semaphore still parks.
-        for _ in 0..4096 {
+        for _ in 0..128 {
             if sem.take() {
                 return 0;
             }
@@ -174,6 +183,10 @@ unsafe fn wait(sem: *mut Sem, timeout: *const i64, timed: bool) -> i32 {
         }
         sem.waiters.fetch_add(1, Ordering::SeqCst);
         let waiting = Waiting(sem);
+        // The expected futex word includes this marker. A post clears it,
+        // so a waiter arriving after that wake gets EAGAIN instead of losing
+        // the notification. Recheck tokens only after publishing the marker.
+        sem.value.fetch_or(WAITERS_BIT, Ordering::SeqCst);
         if sem.take() {
             return 0;
         }
@@ -182,7 +195,7 @@ unsafe fn wait(sem: *mut Sem, timeout: *const i64, timed: bool) -> i32 {
         } else {
             FUTEX_WAIT
         };
-        let result = futex(&sem.value, op | sem.private(), 0, timeout);
+        let result = futex(&sem.value, op | sem.private(), WAITERS_BIT, timeout);
         drop(waiting);
         if result < 0 && result != -EAGAIN {
             return crate::syscall_result_to_c_int(result);

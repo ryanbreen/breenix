@@ -605,6 +605,10 @@ pub mod raw {
     static QUEUES: LazyLock<Mutex<BTreeMap<u64, Queue>>> =
         LazyLock::new(|| Mutex::new(BTreeMap::new()));
     thread_local! { static INTERRUPT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+    thread_local! { static WAKE_CALLS: std::cell::RefCell<BTreeMap<u64, usize>> = const { std::cell::RefCell::new(BTreeMap::new()) }; }
+    pub fn wake_calls(addr: u64) -> usize {
+        WAKE_CALLS.with(|c| *c.borrow().get(&addr).unwrap_or(&0))
+    }
     pub fn interrupt_next() {
         INTERRUPT.with(|i| i.set(true));
     }
@@ -642,6 +646,7 @@ pub mod raw {
         let guard = queue.0.lock().unwrap();
         match op & 127 {
             1 => {
+                WAKE_CALLS.with(|c| *c.borrow_mut().entry(addr).or_default() += 1);
                 if value == i32::MAX as u64 {
                     queue.1.notify_all();
                 } else {
@@ -1935,4 +1940,78 @@ fn protection_replacement_preserves_activity_and_split_counts_vm_opens() {
     drop(middle);
     drop(suffix);
     assert_eq!(obj.attachments(), 0);
+}
+
+#[test]
+fn an_abandoned_registration_does_not_make_every_post_wake_an_empty_queue() {
+    use semaphore::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    unsafe {
+        let mut storage = std::mem::MaybeUninit::<Sem>::uninit();
+        let s = storage.as_mut_ptr();
+        assert_eq!(sem_init(s, 1, 0), 0);
+        // A killed waiter's user-space registration need not run its cleanup.
+        (&*((s as *const u8).add(4) as *const AtomicU32)).store(1, Ordering::SeqCst);
+        (&*(s as *const AtomicU32)).store(0x80000000, Ordering::SeqCst);
+        let before = raw::wake_calls(s as u64);
+        for _ in 0..1000 {
+            assert_eq!(sem_post(s), 0);
+            assert_eq!(sem_trywait(s), 0);
+        }
+        assert_eq!(raw::wake_calls(s as u64) - before, 1);
+        let mut value = -1;
+        assert_eq!(sem_getvalue(s, &mut value), 0);
+        assert_eq!(value, 0);
+    }
+}
+#[test]
+fn a_woken_cohort_still_requires_one_post_for_each_successful_wait() {
+    use semaphore::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    unsafe {
+        let mut storage = std::mem::MaybeUninit::<Sem>::uninit();
+        let s = storage.as_mut_ptr();
+        assert_eq!(sem_init(s, 1, 0), 0);
+        let address = s as usize;
+        std::thread::scope(|scope| {
+            let threads: Vec<_> = (0..16)
+                .map(|_| scope.spawn(move || assert_eq!(sem_wait(address as *mut Sem), 0)))
+                .collect();
+            let waiters = &*((s as *const u8).add(4) as *const AtomicU32);
+            while waiters.load(Ordering::SeqCst) != 16 {
+                std::thread::yield_now();
+            }
+            assert_eq!(sem_post(s), 0);
+            for _ in 1..16 {
+                assert_eq!(sem_post(s), 0);
+            }
+            for thread in threads {
+                thread.join().unwrap();
+            }
+        });
+        let mut value = -1;
+        assert_eq!(sem_getvalue(s, &mut value), 0);
+        assert_eq!(value, 0);
+        assert_eq!(sem_trywait(s), -1);
+    }
+}
+
+#[test]
+fn waiter_metadata_does_not_change_public_value_or_overflow_capacity() {
+    use semaphore::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    unsafe {
+        let mut storage = std::mem::MaybeUninit::<Sem>::uninit();
+        let s = storage.as_mut_ptr();
+        assert_eq!(sem_init(s, 1, 0), 0);
+        (&*(s as *const AtomicU32)).store(u32::MAX, Ordering::SeqCst);
+        let mut value = -1;
+        assert_eq!(sem_getvalue(s, &mut value), 0);
+        assert_eq!(value, SEM_VALUE_MAX as i32);
+        assert_eq!(sem_post(s), -1);
+        assert_eq!(ERRNO.with(|e| e.get()), 75);
+        assert_eq!(sem_trywait(s), 0);
+        assert_eq!(sem_getvalue(s, &mut value), 0);
+        assert_eq!(value, (SEM_VALUE_MAX - 1) as i32);
+    }
 }
