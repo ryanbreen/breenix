@@ -2407,26 +2407,28 @@ fn test_virtio_net_probe() -> TestResult {
 /// Creates a UDP socket, verifies the handle is valid, then closes it.
 /// This tests the socket allocation path without requiring network hardware.
 fn test_socket_creation() -> TestResult {
-    use crate::socket::udp::UdpSocket;
+    use crate::socket::addr::SockAddr;
+    use crate::socket::object::{Socket, SocketProto};
+    use crate::socket::types::{AF_INET, SOCK_DGRAM};
 
-    // Create a new UDP socket
-    let socket = UdpSocket::new();
+    // Create a new UDP socket, as socket(AF_INET, SOCK_DGRAM, 0) does
+    let Ok(udp) = crate::socket::udp::UdpSock::new() else {
+        return TestResult::Fail("UdpSock::new failed");
+    };
+    let Ok(socket) = Socket::new(AF_INET, SOCK_DGRAM, 17, SocketProto::Udp(udp)) else {
+        return TestResult::Fail("Socket::new failed for a UDP socket");
+    };
+    log::info!("created UDP socket");
 
-    // Verify handle is valid (non-zero after first allocation)
-    // The handle ID should be assigned
-    let handle_id = socket.handle.as_u64();
-    log::info!("created UDP socket with handle {}", handle_id);
-
-    // Verify socket is in expected initial state
-    if socket.bound {
+    // A new socket is unbound and has no peer
+    if socket.ops().local_name(&socket) != (SockAddr::Inet { addr: [0; 4], port: 0 }) {
         return TestResult::Fail("newly created socket should not be bound");
     }
-
-    if socket.local_port.is_some() {
-        return TestResult::Fail("newly created socket should not have local port");
+    if socket.ops().peer_name(&socket) != Err(crate::syscall::errno::ENOTCONN) {
+        return TestResult::Fail("newly created socket should have no peer");
     }
 
-    // Socket is dropped here, which cleans up resources
+    // Socket is dropped here, which releases it
     TestResult::Pass
 }
 
@@ -5460,26 +5462,42 @@ static UDP_LOCK_MEASURED_US: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_arch = "aarch64")]
 static UDP_LOCK_NETRX_PENDING: AtomicU64 = AtomicU64::new(0);
 
-/// The socket object a descriptor for this oracle's UDP socket refers to; the
-/// oracle keeps its own handle on the same `UdpSocket`.
+/// A UDP socket object bound to 127.0.0.1:`port`, as socket() and bind()
+/// make one.
 #[cfg(target_arch = "aarch64")]
-fn udp_socket_object(
-    socket: &alloc::sync::Arc<spin::Mutex<crate::socket::udp::UdpSocket>>,
-) -> Option<alloc::sync::Arc<crate::socket::object::Socket>> {
-    crate::socket::object::Socket::new(
+fn udp_open(port: u16) -> Option<alloc::sync::Arc<crate::socket::object::Socket>> {
+    let socket = crate::socket::object::Socket::new(
         crate::socket::types::AF_INET,
         crate::socket::types::SOCK_DGRAM,
         17,
-        crate::socket::object::SocketProto::Udp(crate::socket::udp::UdpSock {
-            inner: socket.clone(),
-        }),
+        crate::socket::object::SocketProto::Udp(crate::socket::udp::UdpSock::new().ok()?),
     )
-    .ok()
+    .ok()?;
+    socket
+        .ops()
+        .bind(
+            &socket,
+            &crate::socket::addr::SockAddr::Inet {
+                addr: [127, 0, 0, 1],
+                port,
+            },
+        )
+        .ok()?;
+    Some(socket)
+}
+
+/// The UDP half of an oracle's socket.
+#[cfg(target_arch = "aarch64")]
+fn udp_of(socket: &crate::socket::object::Socket) -> &crate::socket::udp::UdpSock {
+    match &socket.proto {
+        crate::socket::object::SocketProto::Udp(udp) => udp,
+        _ => unreachable!("udp_open makes only UDP sockets"),
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
 struct UdpLockSocket {
-    socket: alloc::sync::Arc<spin::Mutex<crate::socket::udp::UdpSocket>>,
+    socket: alloc::sync::Arc<crate::socket::object::Socket>,
     pid: crate::process::process::ProcessId,
     fd: i32,
 }
@@ -5491,13 +5509,9 @@ fn udp_lock_open_socket() -> Option<UdpLockSocket> {
     let pid = crate::process::with_process_manager(|manager| manager.all_pids().first().copied())
         .flatten()?;
 
-    let socket = alloc::sync::Arc::new(spin::Mutex::new(crate::socket::udp::UdpSocket::new()));
-    socket
-        .lock()
-        .bind(pid, [127, 0, 0, 1], UDP_LOCK_PORT)
-        .ok()?;
+    let socket = udp_open(UDP_LOCK_PORT)?;
 
-    let entry = FileDescriptor::with_flags(FdKind::Socket(udp_socket_object(&socket)?), 0, 0);
+    let entry = FileDescriptor::with_flags(FdKind::Socket(socket.clone()), 0, 0);
     let fd = crate::process::with_process_manager(|manager| {
         manager
             .get_process_mut(pid)
@@ -5505,10 +5519,9 @@ fn udp_lock_open_socket() -> Option<UdpLockSocket> {
     })
     .flatten();
 
-    let Some(fd) = fd else {
-        crate::socket::SOCKET_REGISTRY.unbind_udp(UDP_LOCK_PORT);
-        return None;
-    };
+    // Without a descriptor the socket goes here, and its release unbinds the
+    // port.
+    let fd = fd?;
 
     Some(UdpLockSocket { socket, pid, fd })
 }
@@ -5524,19 +5537,12 @@ fn udp_lock_close_socket(open: &UdpLockSocket) {
             .and_then(|process| process.fd_table.close(fd).ok())
     });
     drop(closed);
-    crate::socket::SOCKET_REGISTRY.unbind_udp(UDP_LOCK_PORT);
 }
 
 // #823-review finding 1: the oracle checker also masks the lock under test.
 #[cfg(target_arch = "aarch64")]
 fn udp_lock_received(open: &UdpLockSocket) -> u64 {
-    crate::socket::udp::with_locked_masked(&open.socket, |socket| {
-        let queue = socket.rx_queue.lock();
-        queue
-            .iter()
-            .filter(|packet| packet.data.as_slice() == UDP_LOCK_PAYLOAD)
-            .count() as u64
-    })
+    crate::socket::udp::queued_matching(udp_of(&open.socket), UDP_LOCK_PAYLOAD)
 }
 
 /// The holder: calls the PRODUCTION `with_locked_masked` primitive directly,
@@ -5547,7 +5553,7 @@ fn udp_lock_received(open: &UdpLockSocket) -> u64 {
 #[cfg(target_arch = "aarch64")]
 fn udp_lock_holder_body(
     packet: alloc::vec::Vec<u8>,
-    socket: alloc::sync::Arc<spin::Mutex<crate::socket::udp::UdpSocket>>,
+    socket: alloc::sync::Arc<crate::socket::object::Socket>,
 ) {
     UDP_LOCK_IRQS_ENABLED_BEFORE.store(
         u64::from(crate::arch_interrupts_enabled()),
@@ -5556,7 +5562,7 @@ fn udp_lock_holder_body(
 
     crate::per_cpu::preempt_disable();
 
-    crate::socket::udp::with_locked_masked(&socket, |_locked| {
+    crate::socket::udp::with_locked_masked(udp_of(&socket), |_locked| {
         UDP_LOCK_CPU.store(
             crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id(),
             AtomicOrdering::Relaxed,
@@ -5838,7 +5844,7 @@ static UDP_PORTS_LOCK_MEASURED_US: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(target_arch = "aarch64")]
 struct UdpPortsLockSocket {
-    socket: alloc::sync::Arc<spin::Mutex<crate::socket::udp::UdpSocket>>,
+    socket: alloc::sync::Arc<crate::socket::object::Socket>,
     pid: crate::process::process::ProcessId,
     fd: i32,
 }
@@ -5850,13 +5856,9 @@ fn udp_ports_lock_open_socket() -> Option<UdpPortsLockSocket> {
     let pid = crate::process::with_process_manager(|manager| manager.all_pids().first().copied())
         .flatten()?;
 
-    let socket = alloc::sync::Arc::new(spin::Mutex::new(crate::socket::udp::UdpSocket::new()));
-    socket
-        .lock()
-        .bind(pid, [127, 0, 0, 1], UDP_PORTS_LOCK_PORT)
-        .ok()?;
+    let socket = udp_open(UDP_PORTS_LOCK_PORT)?;
 
-    let entry = FileDescriptor::with_flags(FdKind::Socket(udp_socket_object(&socket)?), 0, 0);
+    let entry = FileDescriptor::with_flags(FdKind::Socket(socket.clone()), 0, 0);
     let fd = crate::process::with_process_manager(|manager| {
         manager
             .get_process_mut(pid)
@@ -5864,10 +5866,9 @@ fn udp_ports_lock_open_socket() -> Option<UdpPortsLockSocket> {
     })
     .flatten();
 
-    let Some(fd) = fd else {
-        crate::socket::SOCKET_REGISTRY.unbind_udp(UDP_PORTS_LOCK_PORT);
-        return None;
-    };
+    // Without a descriptor the socket goes here, and its release unbinds the
+    // port.
+    let fd = fd?;
 
     Some(UdpPortsLockSocket { socket, pid, fd })
 }
@@ -5883,19 +5884,12 @@ fn udp_ports_lock_close_socket(open: &UdpPortsLockSocket) {
             .and_then(|process| process.fd_table.close(fd).ok())
     });
     drop(closed);
-    crate::socket::SOCKET_REGISTRY.unbind_udp(UDP_PORTS_LOCK_PORT);
 }
 
 // The checker must also mask its separate outer per-socket mutex.
 #[cfg(target_arch = "aarch64")]
 fn udp_ports_lock_received(open: &UdpPortsLockSocket) -> u64 {
-    crate::socket::udp::with_locked_masked(&open.socket, |socket| {
-        let queue = socket.rx_queue.lock();
-        queue
-            .iter()
-            .filter(|packet| packet.data.as_slice() == UDP_PORTS_LOCK_PAYLOAD)
-            .count() as u64
-    })
+    crate::socket::udp::queued_matching(udp_of(&open.socket), UDP_PORTS_LOCK_PAYLOAD)
 }
 
 /// #908: peer holder of the exact production registry primitive. The driver
@@ -5908,7 +5902,7 @@ fn udp_ports_lock_holder_body() {
         AtomicOrdering::Release,
     );
     crate::per_cpu::preempt_disable();
-    crate::socket::SOCKET_REGISTRY.with_udp_ports_masked(|_ports| {
+    crate::socket::udp::with_ports_masked(|| {
         UDP_PORTS_LOCK_CPU.store(
             crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id(),
             AtomicOrdering::Relaxed,
@@ -5994,9 +5988,7 @@ pub fn run_udp_ports_lock_oracle() -> bool {
                 UDP_PORTS_LOCK_MEASURED_US.store(0, AtomicOrdering::Relaxed);
 
                 // Fresh delivery evidence for each attempt, under the outer mask.
-                crate::socket::udp::with_locked_masked(&open.socket, |socket| {
-                    socket.rx_queue.lock().clear();
-                });
+                crate::socket::udp::clear_queue(udp_of(&open.socket));
                 let refused_before = crate::socket::udp_ports_lookup_refused();
                 let Ok(handle) =
                     kthread_run_on_cpu_for_test(udp_ports_lock_holder_body, "udp-ports-908", peer)
@@ -6283,7 +6275,7 @@ fn irq_hold_holder_body(packet: alloc::vec::Vec<u8>) {
 /// A loopback UDP socket owned by a live process row, plus the fd it occupies.
 #[cfg(target_arch = "aarch64")]
 struct IrqHoldSocket {
-    socket: alloc::sync::Arc<spin::Mutex<crate::socket::udp::UdpSocket>>,
+    socket: alloc::sync::Arc<crate::socket::object::Socket>,
     pid: crate::process::process::ProcessId,
     fd: i32,
 }
@@ -6297,13 +6289,9 @@ fn irq_hold_open_socket() -> Option<IrqHoldSocket> {
     let pid = crate::process::with_process_manager(|manager| manager.all_pids().first().copied())
         .flatten()?;
 
-    let socket = alloc::sync::Arc::new(spin::Mutex::new(crate::socket::udp::UdpSocket::new()));
-    socket
-        .lock()
-        .bind(pid, [127, 0, 0, 1], IRQ_HOLD_PORT)
-        .ok()?;
+    let socket = udp_open(IRQ_HOLD_PORT)?;
 
-    let entry = FileDescriptor::with_flags(FdKind::Socket(udp_socket_object(&socket)?), 0, 0);
+    let entry = FileDescriptor::with_flags(FdKind::Socket(socket.clone()), 0, 0);
     let fd = crate::process::with_process_manager(|manager| {
         manager
             .get_process_mut(pid)
@@ -6311,10 +6299,9 @@ fn irq_hold_open_socket() -> Option<IrqHoldSocket> {
     })
     .flatten();
 
-    let Some(fd) = fd else {
-        crate::socket::SOCKET_REGISTRY.unbind_udp(IRQ_HOLD_PORT);
-        return None;
-    };
+    // Without a descriptor the socket goes here, and its release unbinds the
+    // port.
+    let fd = fd?;
 
     Some(IrqHoldSocket { socket, pid, fd })
 }
@@ -6330,18 +6317,12 @@ fn irq_hold_close_socket(open: &IrqHoldSocket) {
             .and_then(|process| process.fd_table.close(fd).ok())
     });
     drop(closed);
-    crate::socket::SOCKET_REGISTRY.unbind_udp(IRQ_HOLD_PORT);
 }
 
 /// Count the oracle's own datagrams sitting in the socket's receive queue.
 #[cfg(target_arch = "aarch64")]
 fn irq_hold_received(open: &IrqHoldSocket) -> u64 {
-    let socket = open.socket.lock();
-    let queue = socket.rx_queue.lock();
-    queue
-        .iter()
-        .filter(|packet| packet.data.as_slice() == IRQ_HOLD_PAYLOAD)
-        .count() as u64
+    crate::socket::udp::queued_matching(udp_of(&open.socket), IRQ_HOLD_PAYLOAD)
 }
 
 /// Force a NetRx softirq to land inside a `try_manager()` hold and require the

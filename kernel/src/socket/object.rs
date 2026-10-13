@@ -109,10 +109,10 @@ impl Socket {
     }
 
     /// Whether the protocol reports every state change through
-    /// `common.notify()`. TCP (T2) and Unix (X2) still wake waiters by thread
-    /// id; poll and select keep a short rescan for them until they move over.
+    /// `common.notify()`; poll and select keep a short rescan for one that
+    /// does not.
     pub(crate) fn notifies(&self) -> bool {
-        matches!(self.proto, SocketProto::Udp(_))
+        self.ops().notifies()
     }
 }
 
@@ -224,6 +224,13 @@ pub trait ProtoOps: Send + Sync {
     /// POLLIN, POLLOUT, POLLERR, POLLHUP and POLLRDHUP bits.
     fn poll(&self, sk: &Socket) -> u16;
     fn is_listening(&self, _sk: &Socket) -> bool {
+        false
+    }
+    /// True when every change `poll` can see is published through
+    /// `sk.common.notify()`, so a poll or select may sleep on `sk.common.wq`
+    /// until its deadline. A protocol that still wakes waiters by thread id
+    /// leaves this false and is rescanned every millisecond.
+    fn notifies(&self) -> bool {
         false
     }
     fn getsockopt(
