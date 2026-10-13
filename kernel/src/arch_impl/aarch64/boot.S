@@ -405,6 +405,11 @@ setup_mmu:
     bic x0, x0, x1
     // Set M (bit 0)
     orr x0, x0, #1
+    // Rust uses exclusive accesses for atomics. With C clear, real ARM CPUs
+    // can reject those accesses to otherwise cacheable RAM (DFSC 0x35).
+    // Enable both caches, as the secondary CPU boot path already does.
+    orr x0, x0, #(1 << 2)
+    orr x0, x0, #(1 << 12)
     msr sctlr_el1, x0
     isb
 
