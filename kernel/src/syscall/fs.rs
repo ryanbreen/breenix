@@ -355,8 +355,10 @@ fn sys_open_write_path(
             if resolved.trailing_slash {
                 return Err(SyscallResult::Err(EISDIR as u64));
             }
+            // Lookup mode holds an absent name's parent in pin; entry_dir
+            // belongs to entry/create resolution instead.
             let parent = resolved
-                .entry_dir()
+                .handle()
                 .ok_or(SyscallResult::Err(5))?
                 .verify(fs)
                 .map_err(|_| SyscallResult::Err(2))?;
@@ -4080,7 +4082,7 @@ pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, flags: u32) -> Sy
         Target::Inode { mount, ino, .. } => (mount, ino as u64),
         Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
         Target::Virtual => {
-            let fd = match sys_open(pathname, O_RDONLY, 0) {
+            let fd = match sys_open_from(dirfd, pathname, O_RDONLY, 0) {
                 SyscallResult::Ok(fd) => fd as i32,
                 error => return error,
             };
