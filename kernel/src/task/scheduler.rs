@@ -4622,13 +4622,19 @@ impl Scheduler {
         request_resched_x86(target_cpu);
     }
 
-    /// x86_64: a thread woken while it is still current on `cpu` resumes from
-    /// that CPU's halt loop once the CPU takes an interrupt; give it one. The
-    /// CPU's running thread is not asked to give way.
-    #[cfg(target_arch = "x86_64")]
+    /// Interrupt a remote current thread so it leaves HLT/WFI or reaches
+    /// the return-to-user signal check even while computing. This wake does
+    /// not ask the running thread to give way; a local caller already returns
+    /// through its own signal check.
     fn wake_cpu_for_current_thread(&self, cpu: usize) {
         if cpu != Self::current_cpu_id() && cpu < self.online_cpu_count() {
+            #[cfg(target_arch = "x86_64")]
             send_reschedule_vector_x86(cpu);
+            #[cfg(target_arch = "aarch64")]
+            crate::arch_impl::aarch64::gic::send_sgi(
+                crate::arch_impl::aarch64::constants::SGI_WAKE as u8,
+                cpu as u8,
+            );
         }
     }
 
@@ -4838,11 +4844,11 @@ impl Scheduler {
     /// receive the same bounded promotion as an already-expired sleep deadline.
     pub(crate) fn expedite_signal_recipient(&mut self, thread_id: u64) {
         if let Some(cpu) = self.cpu_state.iter().position(|s| s.current_thread == Some(thread_id)) {
-            if cpu == Self::current_cpu_id() {
-                set_need_resched();
-            } else {
-                self.send_resched_ipi_to_cpu(cpu);
-            }
+            // Both architectures deliver pending signals on interrupt or
+            // syscall return without a scheduling pass. Use a wake-only
+            // interrupt: rescheduling puts a current recipient behind other
+            // work, including after an interrupted sleep resumed (#1264).
+            self.wake_cpu_for_current_thread(cpu);
             return;
         }
         if let Some(cpu) = self.per_cpu_queues.iter().position(|q| q.contains(&thread_id)) {
