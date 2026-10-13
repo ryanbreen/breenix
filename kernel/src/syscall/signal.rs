@@ -536,14 +536,7 @@ fn send_signal_to_caller_process_group(sig: u32, sender: Sender, info: SigInfo) 
 /// * -EPERM (1) if the sender may signal no member
 /// * -ESRCH (3) if no process is in the group
 fn send_signal_to_process_group(pgid: ProcessId, sig: u32, sender: Sender, info: SigInfo) -> SyscallResult {
-    let targets = {
-        let manager_guard = manager();
-        let Some(ref manager) = *manager_guard else {
-            return SyscallResult::Err(ESRCH as u64);
-        };
-        one_row_per_process(manager, |p| p.pgid == pgid)
-    };
-    send_signal_to_each(targets, sig, sender, info)
+    send_signal_to_each(|p| p.pgid == pgid, sig, sender, info)
 }
 
 /// Send a signal to all processes the caller can signal (except the designated init)
@@ -552,47 +545,74 @@ fn send_signal_to_process_group(pgid: ProcessId, sig: u32, sender: Sender, info:
 /// except the designated init process. If no init is designated, no process
 /// is excluded by identity.
 fn send_signal_to_all_processes(sig: u32, sender: Sender, info: SigInfo) -> SyscallResult {
-    let targets = {
-        let manager_guard = manager();
-        let Some(ref manager) = *manager_guard else {
-            return SyscallResult::Err(ESRCH as u64);
-        };
-        let designated_init = manager.designated_init();
-        one_row_per_process(manager, |p| {
+    let designated_init = match manager().as_ref() {
+        Some(manager) => manager.designated_init(),
+        None => return SyscallResult::Err(ESRCH as u64),
+    };
+    send_signal_to_each(
+        |p| {
             Some(p.id) != designated_init
                 && p.thread_group_id.map_or(true, |group| Some(ProcessId::new(group)) != designated_init)
                 && !p.is_terminated()
-        })
-    };
-    send_signal_to_each(targets, sig, sender, info)
+        },
+        sig,
+        sender,
+        info,
+    )
 }
 
-/// One row of each thread group with a row `member` selects, so that a
-/// process-directed signal is sent to each process once however many threads
-/// it has: the first such row, or a live one where that row has exited.
-fn one_row_per_process(
+/// The process after thread group `after` (in thread-group ID order) with a
+/// row `member` selects, as (its thread-group ID, the row to signal): the
+/// first such row, or a live one where that row has exited.
+fn next_process_after(
     manager: &crate::process::ProcessManager,
-    member: impl Fn(&crate::process::Process) -> bool,
-) -> alloc::vec::Vec<ProcessId> {
-    let mut targets: alloc::vec::Vec<(u64, ProcessId, bool)> = alloc::vec::Vec::new();
-    for p in manager.all_processes().into_iter().filter(|p| member(p)) {
-        let group = p.thread_group_id.unwrap_or(p.id.as_u64());
+    after: Option<u64>,
+    member: &impl Fn(&crate::process::Process) -> bool,
+) -> Option<(u64, ProcessId)> {
+    let mut best: Option<(u64, ProcessId, bool)> = None;
+    for (pid, p) in manager.iter_processes() {
+        let group = p.thread_group_id.unwrap_or(pid.as_u64());
+        if after.is_some_and(|after| group <= after) || !member(p) {
+            continue;
+        }
         let live = !p.is_terminated();
-        match targets.iter_mut().find(|t| t.0 == group) {
-            Some(t) if live && !t.2 => *t = (group, p.id, live),
-            Some(_) => {}
-            None => targets.push((group, p.id, live)),
+        let better = match best {
+            None => true,
+            Some((best_group, _, best_live)) => {
+                group < best_group || (group == best_group && live && !best_live)
+            }
+        };
+        if better {
+            best = Some((group, pid, live));
         }
     }
-    targets.into_iter().map(|(_, pid, _)| pid).collect()
+    best.map(|(group, pid, _)| (group, pid))
 }
 
-/// Send to each of `targets`: success if any was sent the signal, else EPERM
-/// if the sender may signal none of them, else ESRCH (POSIX kill).
-fn send_signal_to_each(targets: alloc::vec::Vec<ProcessId>, sig: u32, sender: Sender, info: SigInfo) -> SyscallResult {
+/// Send to each process with a row `member` selects, once however many
+/// threads it has: success if any was sent the signal, else EPERM if the
+/// sender may signal none of them, else ESRCH (POSIX kill).
+///
+/// The processes are visited in thread-group ID order, each found afresh
+/// under the process manager, which is released to signal it: nothing is
+/// allocated, so a group signal (a terminal's SIGINT or SIGHUP among them)
+/// cannot fail or be dropped for want of memory.
+fn send_signal_to_each(
+    member: impl Fn(&crate::process::Process) -> bool,
+    sig: u32,
+    sender: Sender,
+    info: SigInfo,
+) -> SyscallResult {
     let mut sent = false;
     let mut refused = false;
-    for pid in targets {
+    let mut cursor = None;
+    loop {
+        let next = match manager().as_ref() {
+            Some(manager) => next_process_after(manager, cursor, &member),
+            None => None,
+        };
+        let Some((group, pid)) = next else { break };
+        cursor = Some(group);
         match send_signal_to_process(pid, sig, sender, info) {
             SyscallResult::Ok(_) => sent = true,
             SyscallResult::Err(e) => refused |= e == EPERM as u64,
