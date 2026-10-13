@@ -420,7 +420,7 @@ private final class LaunchRunner: ProcessRunner {
             return ProcessResult(exitCode: launchStatuses.isEmpty ? 0 : launchStatuses.removeFirst())
         }
         if remote.hasSuffix("# gate-follow") {
-            let offset = UInt64(remote.split(separator: " ").dropLast(2).last ?? "0") ?? 0
+            let offset = UInt64(remote.split(separator: " ").dropLast(3).last ?? "0") ?? 0
             followOffsets.append(offset)
             let next = followStatuses.isEmpty ? status : followStatuses.removeFirst()
             let chunk = followChunks.isEmpty ? Data("GATE: PASS (1/1 boot tests passed)\n".utf8) : followChunks.removeFirst()

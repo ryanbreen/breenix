@@ -49,6 +49,13 @@ public struct BeastPaths: Equatable, Sendable {
     public var gateTmpPath: String {
         clonePath + "/gate-tmp"
     }
+
+    /// Completion tombstones outlive evidence cleanup and delayed launch bootstraps.
+    public var ownerPath: String {
+        URL(fileURLWithPath: canonicalRepoDir).deletingLastPathComponent()
+            .appendingPathComponent("breenix-run-owners")
+            .appendingPathComponent(URL(fileURLWithPath: clonePath).lastPathComponent).path
+    }
 }
 
 /// Pure builders for the beast x86 launcher's remote-facing commands.
@@ -212,16 +219,22 @@ public enum RemoteCommand {
     static let detachedOwner = #"""
 import base64, fcntl, json, os, pathlib, subprocess, sys, time
 root = pathlib.Path(sys.argv[1])
-root.mkdir(parents=True, exist_ok=True)
-record = root / "gate-owner.json"
+owners = pathlib.Path(sys.argv[4]) if len(sys.argv) > 4 else root
+owners.mkdir(parents=True, exist_ok=True)
+record = owners / "gate-owner.json"
 def publish(value):
     temporary = record.with_suffix(".tmp")
     temporary.write_text(json.dumps(value))
     temporary.replace(record)
 if sys.argv[2] == "worker":
-    owner = dict(pid=os.getpid(), birth=pathlib.Path("/proc/self/stat").read_text().rsplit(")",1)[1].split()[19], state="running")
-    publish(owner)
+    with (owners / "gate-launch.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if record.exists():
+            sys.exit(0)
+        owner = dict(pid=os.getpid(), birth=pathlib.Path("/proc/self/stat").read_text().rsplit(")",1)[1].split()[19], state="running")
+        publish(owner)
     try:
+        root.mkdir(parents=True, exist_ok=True)
         with (root / "gate-output.log").open("wb") as output:
             child = subprocess.Popen(["bash", "-lc", base64.b64decode(sys.argv[3]).decode()], stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT)
             status = child.wait()
@@ -230,19 +243,15 @@ if sys.argv[2] == "worker":
         owner.update(state="finished", exit_code=1, error=str(error))
     publish(owner)
 else:
-    with (root / "gate-launch.lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        if not record.exists():
-            # Claim before spawn: a failed/uncertain spawn never permits a second gate.
-            publish(dict(state="starting"))
-            child = subprocess.Popen([sys.executable, "-c", base64.b64decode(sys.argv[3]).decode(), str(root), "worker", sys.argv[2]], start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
-        else:
-            child = None
+    # Detach before claiming. Losing SSH before spawn leaves no claim; losing it
+    # after spawn can create another bootstrap, but only one detached owner wins.
+    child = subprocess.Popen([sys.executable, "-c", base64.b64decode(sys.argv[3]).decode(), str(root), "worker", sys.argv[2], str(owners)], start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
     deadline = time.monotonic() + 10
-    while json.loads(record.read_text())["state"] == "starting":
-        if (child is not None and child.poll() is not None) or time.monotonic() >= deadline:
+    while not record.exists():
+        if child.poll() is not None or time.monotonic() >= deadline:
             sys.exit(1)
         time.sleep(.05)
+
 """#
 
     public static func startGateRequest(gate: ProcessRequest, paths: BeastPaths) -> ProcessRequest {
@@ -251,7 +260,7 @@ else:
         let script = String(remote[begin.upperBound...].dropLast())
         let owner = Data(detachedOwner.utf8).base64EncodedString()
         let command = Data(script.utf8).base64EncodedString()
-        var request = sshRequest(paths: paths, remote: "sudo -n incus exec \(paths.container) -- python3 -c 'import base64;exec(base64.b64decode(\"\(owner)\"))' \(paths.gateTmpPath) \(command) \(owner) # gate-start")
+        var request = sshRequest(paths: paths, remote: "sudo -n incus exec \(paths.container) -- python3 -c 'import base64;exec(base64.b64decode(\"\(owner)\"))' \(paths.gateTmpPath) \(command) \(owner) \(paths.ownerPath) # gate-start")
         request.timeoutSecs = 30
         return request
     }
@@ -262,10 +271,11 @@ else:
 import json, pathlib, sys, time
 root = pathlib.Path(sys.argv[1])
 offset = int(sys.argv[2])
+owners = pathlib.Path(sys.argv[3]) if len(sys.argv) > 3 else root
 deadline = time.monotonic() + 5
 while True:
     try:
-        owner = json.loads((root / "gate-owner.json").read_text())
+        owner = json.loads((owners / "gate-owner.json").read_text())
     except FileNotFoundError:
         sys.exit(76)
     try:
@@ -295,7 +305,7 @@ while True:
 
     public static func followGateRequest(paths: BeastPaths, offset: UInt64) -> ProcessRequest {
         let encoded = Data(gateFollower.utf8).base64EncodedString()
-        var request = sshRequest(paths: paths, remote: "sudo -n incus exec \(paths.container) -- python3 -c 'import base64;exec(base64.b64decode(\"\(encoded)\"))' \(paths.gateTmpPath) \(offset) # gate-follow", combineOutput: false, liveStream: true)
+        var request = sshRequest(paths: paths, remote: "sudo -n incus exec \(paths.container) -- python3 -c 'import base64;exec(base64.b64decode(\"\(encoded)\"))' \(paths.gateTmpPath) \(offset) \(paths.ownerPath) # gate-follow", combineOutput: false, liveStream: true)
         request.timeoutSecs = 30
         return request
     }
