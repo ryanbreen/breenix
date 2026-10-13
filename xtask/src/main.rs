@@ -100,59 +100,50 @@ fn save_qemu_pid(pid: u32) {
     let _ = fs::write(&pid_file, pid.to_string());
 }
 
-fn build_std_test_binaries() -> Result<()> {
-    const RUST_FORK_LIBRARY_ENV: &str = "BREENIX_RUST_FORK_LIBRARY";
+/// The repository root, independent of the directory xtask was started from.
+fn workspace_root() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask has a workspace parent")
+}
 
-    println!("Building Rust std test binaries...\n");
+/// Gates that prepared userspace themselves set this, and xtask then verifies
+/// their artifacts instead of rebuilding them.
+fn userspace_prebuilt() -> bool {
+    std::env::var("BREENIX_USERSPACE_PREBUILT").as_deref() == Ok("1")
+}
 
-    // Step 1: Build libbreenix-libc (produces libc.a)
-    println!("  [1/2] Building libbreenix-libc...");
-    let libc_dir = Path::new("libs/libbreenix-libc");
-
-    if !libc_dir.exists() {
-        println!("    Note: libs/libbreenix-libc not found, skipping std test binaries");
-        return Ok(());
+/// Refuse installed ELFs (and `disk`, when given) that the standalone builder
+/// did not produce from the current sources.
+fn check_prebuilt_userspace(arch: &str, disk: Option<&Path>) -> Result<()> {
+    let mut command = Command::new("python3");
+    command
+        .arg(workspace_root().join("scripts/userspace-manifest.py"))
+        .args(["check", "--arch", arch])
+        .current_dir(workspace_root());
+    if let Some(disk) = disk {
+        command.arg("--disk").arg(disk);
     }
-
-    // Clear environment variables that might interfere with the standalone build
-    // The rust-toolchain.toml in libbreenix-libc specifies the nightly version
-    let status = Command::new("cargo")
-        .args(&["build", "--release"])
-        .current_dir(libc_dir)
-        .env_remove("CARGO_ENCODED_RUSTFLAGS")
-        .env_remove("RUSTFLAGS")
-        .env_remove("CARGO_TARGET_DIR")
-        .env_remove("CARGO_BUILD_TARGET")
-        .env_remove("CARGO_MANIFEST_DIR")
-        .env_remove("CARGO_PKG_NAME")
-        .env_remove("OUT_DIR")
+    let status = command
         .status()
-        .map_err(|e| anyhow::anyhow!("Failed to run cargo build for libbreenix-libc: {}", e))?;
-
+        .context("Failed to run the userspace manifest check")?;
     if !status.success() {
-        bail!("Failed to build libbreenix-libc");
+        bail!("Prebuilt {arch} userspace does not match its sources; see the error above");
     }
-    println!("    libbreenix-libc built successfully");
+    Ok(())
+}
 
-    // Step 2: Build userspace tests (produces hello_std_real)
-    println!("  [2/2] Building userspace tests...");
-    let tests_std_dir = Path::new("userspace/programs");
-
-    if !tests_std_dir.exists() {
-        println!("    Note: userspace/programs not found, skipping");
-        return Ok(());
+/// Build and install userspace for `arch` with the standalone builder, or
+/// verify prebuilt userspace under BREENIX_USERSPACE_PREBUILT=1.
+fn prepare_userspace(arch: &str) -> Result<()> {
+    if userspace_prebuilt() {
+        return check_prebuilt_userspace(arch, None);
     }
-
-    // The rust-toolchain.toml in tests specifies the nightly version
-    // __CARGO_TESTS_ONLY_SRC_ROOT must point to the forked Rust library so that
-    // -Z build-std compiles std from our patched sources (with target_os = "breenix")
+    const RUST_FORK_LIBRARY_ENV: &str = "BREENIX_RUST_FORK_LIBRARY";
+    let workspace_root = workspace_root();
     let rust_fork_library = std::env::var_os(RUST_FORK_LIBRARY_ENV)
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::current_dir()
-                .unwrap_or_default()
-                .join("rust-fork/library")
-        });
+        .unwrap_or_else(|| workspace_root.join("rust-fork/library"));
     if !rust_fork_library.is_dir() {
         bail!(
             "Forked Rust library not found at {}. Set {} to the forked Rust library path.",
@@ -160,10 +151,15 @@ fn build_std_test_binaries() -> Result<()> {
             RUST_FORK_LIBRARY_ENV,
         );
     }
-    let status = Command::new("cargo")
-        .args(&["build", "--release"])
-        .current_dir(tests_std_dir)
-        .env("__CARGO_TESTS_ONLY_SRC_ROOT", &rust_fork_library)
+
+    // Use the standalone builder for both compilation and ELF installation.
+    // xtask runs after Cargo has released its compilation locks, unlike build.rs.
+    println!("Building and installing {arch} userspace binaries...\n");
+    let status = Command::new("bash")
+        .arg(workspace_root.join("userspace/programs/build.sh"))
+        .args(["--arch", arch])
+        .current_dir(workspace_root)
+        .env(RUST_FORK_LIBRARY_ENV, &rust_fork_library)
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .env_remove("RUSTFLAGS")
         .env_remove("CARGO_TARGET_DIR")
@@ -172,29 +168,61 @@ fn build_std_test_binaries() -> Result<()> {
         .env_remove("CARGO_PKG_NAME")
         .env_remove("OUT_DIR")
         .status()
-        .map_err(|e| anyhow::anyhow!("Failed to run cargo build for userspace tests: {}", e))?;
-
+        .context("Failed to run the userspace build script")?;
     if !status.success() {
-        bail!("Failed to build userspace tests");
+        bail!("Userspace build failed: {status}");
     }
-    println!("    userspace tests built successfully");
-
-    // Verify the binary exists
-    let binary_path = tests_std_dir.join("target/x86_64-breenix/release/hello_std_real");
-    if binary_path.exists() {
-        println!(
-            "\n  hello_std_real binary ready at: {}",
-            binary_path.display()
-        );
-    } else {
-        bail!(
-            "Build succeeded but binary not found at: {}",
-            binary_path.display()
-        );
-    }
-
-    println!();
     Ok(())
+}
+
+/// Pack target/ext2-aarch64.img from freshly built userspace, or verify a
+/// prebuilt disk under BREENIX_USERSPACE_PREBUILT=1.
+fn prepare_aarch64_ext2_disk() -> Result<PathBuf> {
+    let root = workspace_root();
+    let disk = root.join("target/ext2-aarch64.img");
+    if userspace_prebuilt() {
+        check_prebuilt_userspace("aarch64", Some(&disk))?;
+        return Ok(disk);
+    }
+    prepare_userspace("aarch64")?;
+
+    println!("Creating ARM64 ext2 disk image...");
+    let script = root.join("scripts/create_ext2_disk.sh");
+    let use_sudo = cfg!(target_os = "linux") && std::env::var("CI").is_ok();
+    let mut command = if use_sudo {
+        let mut command = Command::new("sudo");
+        command.arg(&script);
+        command
+    } else {
+        Command::new(&script)
+    };
+    let status = command
+        .args(["--arch", "aarch64"])
+        .current_dir(root)
+        .status()
+        .context("Failed to run create_ext2_disk.sh --arch aarch64")?;
+    if !status.success() {
+        bail!("Failed to create the ARM64 ext2 disk image");
+    }
+    if use_sudo {
+        let _ = Command::new("sudo")
+            .args([
+                "chown",
+                "-R",
+                &format!(
+                    "{}:{}",
+                    std::env::var("UID").unwrap_or_else(|_| "1000".to_string()),
+                    std::env::var("GID").unwrap_or_else(|_| "1000".to_string())
+                ),
+            ])
+            .args(["target/", "testdata/"])
+            .current_dir(root)
+            .status();
+    }
+    if !disk.is_file() {
+        bail!("ext2 disk image not found at {}", disk.display());
+    }
+    Ok(disk)
 }
 
 /// Simple developer utility tasks.
@@ -283,8 +311,14 @@ fn main() -> Result<()> {
         Cmd::Ring3Smoke => ring3_smoke(),
         Cmd::Ring3Enosys => ring3_enosys(),
         Cmd::BootStages => run_boot_stages(&qemu_config::Arch::X86_64),
-        Cmd::CreateTestDisk => test_disk::create_test_disk(),
-        Cmd::CreateTestDiskAarch64 => test_disk::create_test_disk_aarch64(),
+        Cmd::CreateTestDisk => {
+            prepare_userspace("x86_64")?;
+            test_disk::create_test_disk()
+        }
+        Cmd::CreateTestDiskAarch64 => {
+            prepare_userspace("aarch64")?;
+            test_disk::create_test_disk_aarch64()
+        }
         Cmd::Interactive => interactive(),
         Cmd::InteractiveTest => interactive_test(),
         Cmd::KthreadStress => kthread_stress(),
@@ -368,7 +402,7 @@ fn dns_test() -> Result<()> {
     println!("=========================================\n");
 
     // Build std test binaries BEFORE creating the test disk
-    build_std_test_binaries()?;
+    prepare_userspace("x86_64")?;
 
     // Create the test disk with all userspace binaries
     test_disk::create_test_disk()?;
@@ -568,79 +602,14 @@ fn prepare_boot_test_artifacts(arch: &qemu_config::Arch) -> Result<()> {
     match arch {
         qemu_config::Arch::X86_64 => {
             // Build std test binaries BEFORE creating the test disk
-            build_std_test_binaries()?;
+            prepare_userspace("x86_64")?;
             // Create the test disk with all userspace binaries
             test_disk::create_test_disk()?;
             println!();
             Ok(())
         }
         qemu_config::Arch::Arm64 => {
-            // Skip if ext2 disk already exists (CI pre-builds userspace and disk separately)
-            let ext2_img = Path::new("target/ext2-aarch64.img");
-            if ext2_img.exists() {
-                println!("ext2 disk image already exists at target/ext2-aarch64.img, skipping build steps");
-            } else {
-                println!("Building userspace test binaries for aarch64...");
-                let userspace_dir = Path::new("userspace/programs");
-                if userspace_dir.exists() {
-                    let _ = fs::create_dir_all("userspace/programs/aarch64");
-                    let status = Command::new("./build.sh")
-                        .args(&["--arch", "aarch64"])
-                        .current_dir(userspace_dir)
-                        .status()
-                        .map_err(|e| {
-                            anyhow::anyhow!("Failed to run build.sh --arch aarch64: {}", e)
-                        })?;
-                    if !status.success() {
-                        bail!("Failed to build userspace test binaries for aarch64");
-                    }
-                    println!("  aarch64 userspace binaries built successfully");
-                } else {
-                    println!("  Note: userspace/programs not found, skipping userspace build");
-                }
-
-                println!("\nCreating ext2 disk image for aarch64...");
-                let create_disk_script = Path::new("scripts/create_ext2_disk.sh");
-                if create_disk_script.exists() {
-                    let use_sudo = cfg!(target_os = "linux") && std::env::var("CI").is_ok();
-                    let status = if use_sudo {
-                        Command::new("sudo")
-                            .args(&["./scripts/create_ext2_disk.sh", "--arch", "aarch64"])
-                            .status()
-                    } else {
-                        Command::new("./scripts/create_ext2_disk.sh")
-                            .args(&["--arch", "aarch64"])
-                            .status()
-                    }
-                    .map_err(|e| anyhow::anyhow!("Failed to run create_ext2_disk.sh: {}", e))?;
-
-                    if !status.success() {
-                        bail!("Failed to create ext2 disk image for aarch64");
-                    }
-
-                    if use_sudo {
-                        let _ = Command::new("sudo")
-                            .args(&[
-                                "chown",
-                                "-R",
-                                &format!(
-                                    "{}:{}",
-                                    std::env::var("UID").unwrap_or_else(|_| "1000".to_string()),
-                                    std::env::var("GID").unwrap_or_else(|_| "1000".to_string())
-                                ),
-                            ])
-                            .args(&["target/", "testdata/"])
-                            .status();
-                    }
-                    println!("  ext2 disk image created successfully");
-                } else {
-                    bail!("scripts/create_ext2_disk.sh not found and no ext2 disk exists");
-                }
-            }
-
-            if !ext2_img.exists() {
-                bail!("ext2 disk image not found at target/ext2-aarch64.img");
-            }
+            let ext2_img = prepare_aarch64_ext2_disk()?;
 
             // Create writable copy of ext2 disk (filesystem write tests modify it)
             let writable_ext2 = "target/arm64_boot_stages_ext2.img";
@@ -2206,70 +2175,14 @@ fn boot_test_btrt(arch: &str) -> Result<()> {
     if config.arch.is_arm64() {
         println!("Building ARM64 kernel with btrt feature...");
 
-        // Build ARM64 userspace and ext2 disk image if not already present
-        let ext2_img = Path::new("target/ext2-aarch64.img");
-        if !ext2_img.exists() {
-            // Build ARM64 userspace binaries
-            println!("  Building ARM64 userspace binaries...");
-            let userspace_dir = Path::new("userspace/programs");
-            if userspace_dir.exists() {
-                let _ = fs::create_dir_all("userspace/programs/aarch64");
-                let status = Command::new("./build.sh")
-                    .args(["--arch", "aarch64"])
-                    .current_dir(userspace_dir)
-                    .status()
-                    .context("Failed to run build.sh --arch aarch64")?;
-                if !status.success() {
-                    bail!("Failed to build ARM64 userspace binaries");
-                }
-                println!("  ARM64 userspace binaries built successfully");
-            } else {
-                bail!("userspace/programs directory not found");
-            }
-
-            // Create ARM64 ext2 disk image
-            println!("  Creating ARM64 ext2 disk image...");
-            let create_disk_script = Path::new("scripts/create_ext2_disk.sh");
-            if create_disk_script.exists() {
-                let use_sudo = cfg!(target_os = "linux") && std::env::var("CI").is_ok();
-                let status = if use_sudo {
-                    Command::new("sudo")
-                        .args(["./scripts/create_ext2_disk.sh", "--arch", "aarch64"])
-                        .status()
-                } else {
-                    Command::new("./scripts/create_ext2_disk.sh")
-                        .args(["--arch", "aarch64"])
-                        .status()
-                }
-                .context("Failed to run create_ext2_disk.sh --arch aarch64")?;
-                if !status.success() {
-                    bail!("Failed to create ARM64 ext2 disk image");
-                }
-                if use_sudo {
-                    let _ = Command::new("sudo")
-                        .args([
-                            "chown",
-                            "-R",
-                            &format!(
-                                "{}:{}",
-                                std::env::var("UID").unwrap_or_else(|_| "1000".to_string()),
-                                std::env::var("GID").unwrap_or_else(|_| "1000".to_string())
-                            ),
-                        ])
-                        .args(["target/", "testdata/"])
-                        .status();
-                }
-                println!("  ARM64 ext2 disk image created successfully");
-            } else {
-                bail!("scripts/create_ext2_disk.sh not found and no ext2 disk exists");
-            }
-        }
+        let ext2_img = prepare_aarch64_ext2_disk()?;
 
         // Copy ext2 image to writable location before QEMU launch
-        let _ = fs::copy("target/ext2-aarch64.img", "target/btrt_arm64_ext2.img");
+        fs::copy(&ext2_img, "target/btrt_arm64_ext2.img")
+            .context("Failed to create writable ext2 copy")?;
     } else {
         println!("Building x86_64 kernel with btrt feature...");
-        build_std_test_binaries()?;
+        prepare_userspace("x86_64")?;
         test_disk::create_test_disk()?;
     }
 

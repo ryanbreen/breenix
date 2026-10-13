@@ -514,18 +514,17 @@ if [ "$PARALLELS" = true ]; then
         # Build userspace binaries and create ext2 data disk
         echo ""
         echo "[3/4] Building userspace binaries (aarch64)..."
-        if "$BREENIX_ROOT/userspace/programs/build.sh" --arch aarch64; then
-            echo "  Userspace build successful"
-        else
-            echo "  WARNING: Userspace build failed (rust-fork may not be set up)"
-            echo "  Continuing without userspace binaries — ext2 will still have test files"
+        # A failure here is fatal: packing older ELFs under a new kernel is never a boot of this tree.
+        if ! "$BREENIX_ROOT/userspace/programs/build.sh" --arch aarch64; then
+            echo "ERROR: Userspace build failed"
+            exit 1
         fi
 
         echo ""
         echo "[4/4] Creating ext2 data disk image..."
         if ! "$BREENIX_ROOT/scripts/create_ext2_disk.sh" --arch aarch64; then
-            echo "  WARNING: ext2 disk creation failed (Docker may not be running)"
-            echo "  Continuing without ext2 disk"
+            echo "ERROR: ext2 disk creation failed"
+            exit 1
         fi
     fi
 
@@ -887,18 +886,18 @@ if [ "$VMWARE" = true ]; then
         # Build userspace
         echo ""
         echo "[3/6] Building userspace binaries (aarch64)..."
-        if "$BREENIX_ROOT/userspace/programs/build.sh" --arch aarch64; then
-            echo "  Userspace build successful"
-        else
-            echo "  WARNING: Userspace build failed"
-            echo "  Continuing without userspace binaries"
+        # A failure here is fatal: packing older ELFs under a new kernel is never a boot of this tree.
+        if ! "$BREENIX_ROOT/userspace/programs/build.sh" --arch aarch64; then
+            echo "ERROR: Userspace build failed"
+            exit 1
         fi
 
         # Create ext2 data disk
         echo ""
         echo "[4/6] Creating ext2 data disk image..."
         if ! "$BREENIX_ROOT/scripts/create_ext2_disk.sh" --arch aarch64; then
-            echo "  WARNING: ext2 disk creation failed"
+            echo "ERROR: ext2 disk creation failed"
+            exit 1
         fi
 
     fi
@@ -1239,8 +1238,9 @@ elif [ "$CLEAN" = true ]; then
         echo ""
         echo "[3/3] Building kernel..."
     else
-        echo "[1/3] Building userspace binaries (x86_64)..."
-        "$BREENIX_ROOT/userspace/programs/build.sh"
+        # create-test-disk builds userspace, then packs target/test_binaries.img.
+        echo "[1/3] Building userspace binaries and test disk (x86_64)..."
+        (cd "$BREENIX_ROOT" && cargo run -p xtask -- create-test-disk)
 
         echo ""
         echo "[2/3] Creating system ext2 disk image..."
@@ -1252,6 +1252,30 @@ elif [ "$CLEAN" = true ]; then
     eval $BUILD_CMD
     echo ""
 else
+    # Userspace preparation belongs to the launcher, never kernel/build.rs.
+    if [ "$ARCH" = "arm64" ]; then
+        echo "Building userspace binaries (aarch64)..."
+        "$BREENIX_ROOT/userspace/programs/build.sh" --arch aarch64
+        USERSPACE_MANIFEST="$BREENIX_ROOT/userspace/programs/aarch64/.userspace-manifest.json"
+        EXT2_ARGS=(--arch aarch64)
+    else
+        # create-test-disk builds userspace, then packs target/test_binaries.img.
+        echo "Building userspace binaries and test disk (x86_64)..."
+        (cd "$BREENIX_ROOT" && cargo run -p xtask -- create-test-disk)
+        USERSPACE_MANIFEST="$BREENIX_ROOT/userspace/programs/.userspace-manifest.json"
+        EXT2_ARGS=()
+    fi
+    # build.sh rewrites its manifest only when the installed ELFs or their
+    # sources change, so an unchanged system disk (and the session disk cloned
+    # from it below) survives an incremental run.
+    if [ ! -f "$EXT2_DISK" ] || [ -n "$(find "$USERSPACE_MANIFEST" \
+            "$BREENIX_ROOT/scripts/create_ext2_disk.sh" "$BREENIX_ROOT/scripts/install-busybox.py" \
+            "$BREENIX_ROOT/fonts" "$BREENIX_ROOT/vendor/busybox" -newer "$EXT2_DISK" -print -quit)" ]; then
+        echo "Creating system ext2 disk image..."
+        "$BREENIX_ROOT/scripts/create_ext2_disk.sh" ${EXT2_ARGS[@]+"${EXT2_ARGS[@]}"}
+    else
+        echo "System ext2 disk image is current"
+    fi
     # Always rebuild to ensure correct features (boot_tests, etc.)
     # Cargo is incremental — this is fast if nothing changed
     echo "Building kernel..."
@@ -1292,9 +1316,14 @@ EXT2_SESSION="$BREENIX_ROOT/target/ext2-session.img"
 if [ -f "$EXT2_DISK" ]; then
     echo "Disk image: $EXT2_DISK"
     EXT2_WRITABLE="$EXT2_SESSION"
-    if [ "$CLEAN" = true ] || [ ! -f "$EXT2_WRITABLE" ]; then
+    # The stamp names the system disk the session was cloned from. A session from
+    # the other architecture, or from a system disk rebuilt since, is replaced.
+    EXT2_SESSION_BASE="$EXT2_SESSION.base"
+    if [ "$CLEAN" = true ] || [ ! -f "$EXT2_WRITABLE" ] || [ ! -f "$EXT2_SESSION_BASE" ] \
+            || [ "$(cat "$EXT2_SESSION_BASE")" != "$EXT2_DISK" ] || [ "$EXT2_DISK" -nt "$EXT2_SESSION_BASE" ]; then
         echo "Creating fresh session disk from $EXT2_DISK"
         cp "$EXT2_DISK" "$EXT2_WRITABLE"
+        echo "$EXT2_DISK" > "$EXT2_SESSION_BASE"
     else
         echo "Reusing existing session disk (use --clean to reset)"
     fi

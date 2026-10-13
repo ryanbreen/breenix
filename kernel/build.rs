@@ -4,22 +4,6 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Last `MAX_CAPTURED_OUTPUT_BYTES` bytes of a captured child stream, decoded
-/// lossily. The tail is what matters: cargo prints the error that stopped the
-/// build last, and an unbounded paste of a full userspace build would bury it.
-fn tail_of(stream: &[u8]) -> String {
-    const MAX_CAPTURED_OUTPUT_BYTES: usize = 8192;
-    let start = stream.len().saturating_sub(MAX_CAPTURED_OUTPUT_BYTES);
-    let mut text = String::from_utf8_lossy(&stream[start..]).into_owned();
-    if start > 0 {
-        text.insert_str(0, "<truncated>\n");
-    }
-    if text.trim().is_empty() {
-        text = "<empty>".to_owned();
-    }
-    text
-}
-
 #[path = "stage_markers.rs"]
 mod stage_markers;
 
@@ -204,115 +188,7 @@ fn main() {
     println!("cargo:rerun-if-changed=linker.ld");
     println!("cargo:rerun-if-changed=src/arch_impl/aarch64/linker.ld");
 
-    // Build userspace test programs with libbreenix
-    // Use absolute path derived from CARGO_MANIFEST_DIR (kernel/)
-    // NOTE: Skipped for aarch64 targets - ARM64 userspace binaries are built
-    // separately via `userspace/programs/build.sh --arch aarch64` and the xtask
-    // arm64-boot-stages command handles this.
-    let userspace_test_dir = repo_root.join("userspace/programs");
-
-    if userspace_test_dir.exists() && !target.contains("aarch64") {
-        let build_script = userspace_test_dir.join("build.sh");
-        if build_script.exists() {
-            println!("cargo:rerun-if-env-changed=BREENIX_USERSPACE_PREBUILT");
-            if std::env::var("BREENIX_USERSPACE_PREBUILT").as_deref() != Ok("1") {
-                let output = Command::new("bash")
-                    .arg(&build_script)
-                    .current_dir(&userspace_test_dir)
-                    .output()
-                    .expect("Failed to run userspace build script");
-
-                if !output.status.success() {
-                    // `output()` captured the child's streams, so the failure's real
-                    // cause - a missing toolchain, a userspace compile error, an
-                    // unresolvable forked-Rust library path - lives in `output` and
-                    // nowhere else. Dropping them here left the panic naming nothing
-                    // and forced a manual re-run of build.sh to learn anything (#679).
-                    // build.sh reports its own errors on stdout, so both streams are
-                    // reproduced.
-                    panic!(
-                        "Failed to build userspace test programs with libbreenix: {}\n\
-                         --- {} stdout ---\n{}\n\
-                         --- {} stderr ---\n{}",
-                        output.status,
-                        build_script.display(),
-                        tail_of(&output.stdout),
-                        build_script.display(),
-                        tail_of(&output.stderr),
-                    );
-                }
-            }
-
-            // Tell cargo to rerun if userspace sources change
-            let userspace_tests = userspace_test_dir.to_str().unwrap();
-            let libbreenix_dir = repo_root.join("libs/libbreenix/src");
-            println!("cargo:rerun-if-changed={}/build.sh", userspace_tests);
-            println!("cargo:rerun-if-changed={}/hello_world.rs", userspace_tests);
-            println!("cargo:rerun-if-changed={}/hello_time.rs", userspace_tests);
-            println!("cargo:rerun-if-changed={}/fork_test.rs", userspace_tests);
-            println!(
-                "cargo:rerun-if-changed={}/clock_gettime_test.rs",
-                userspace_tests
-            );
-            println!(
-                "cargo:rerun-if-changed={}/udp_socket_test.rs",
-                userspace_tests
-            );
-            println!(
-                "cargo:rerun-if-changed={}/unix_socket_test.rs",
-                userspace_tests
-            );
-            println!(
-                "cargo:rerun-if-changed={}/unix_named_socket_test.rs",
-                userspace_tests
-            );
-            println!("cargo:rerun-if-changed={}/tty_test.rs", userspace_tests);
-            println!(
-                "cargo:rerun-if-changed={}/job_control_test.rs",
-                userspace_tests
-            );
-            println!("cargo:rerun-if-changed={}/session_test.rs", userspace_tests);
-            println!(
-                "cargo:rerun-if-changed={}/job_table_test.rs",
-                userspace_tests
-            );
-            println!("cargo:rerun-if-changed={}/http_test.rs", userspace_tests);
-            println!(
-                "cargo:rerun-if-changed={}/pipeline_test.rs",
-                userspace_tests
-            );
-            println!(
-                "cargo:rerun-if-changed={}/sigchld_job_test.rs",
-                userspace_tests
-            );
-            println!("cargo:rerun-if-changed={}/cwd_test.rs", userspace_tests);
-            println!("cargo:rerun-if-changed={}/demo.rs", userspace_tests);
-            println!(
-                "cargo:rerun-if-changed={}/lib.rs",
-                libbreenix_dir.to_str().unwrap()
-            );
-
-            // Also watch std build files
-            let std_tests_dir = repo_root.join("userspace/programs");
-            println!(
-                "cargo:rerun-if-changed={}",
-                std_tests_dir.join("build.sh").display()
-            );
-            println!(
-                "cargo:rerun-if-changed={}",
-                std_tests_dir.join("Cargo.toml").display()
-            );
-            let libbreenix_libc_dir = repo_root.join("libs/libbreenix-libc/src");
-            println!(
-                "cargo:rerun-if-changed={}",
-                libbreenix_libc_dir.join("lib.rs").display()
-            );
-        }
-    } else if !userspace_test_dir.exists() {
-        panic!(
-            "Userspace programs directory not found at {:?}. Build userspace first: bash userspace/programs/build.sh",
-            userspace_test_dir
-        );
-    }
-    // For aarch64 targets, userspace is built externally via build.sh --arch aarch64
+    // Userspace is built by the launchers and xtask before packing their disks.
+    // Never invoke Cargo (including through build.sh) from a build script: the
+    // parent may hold the package-cache mutation lock for the entire build.
 }
