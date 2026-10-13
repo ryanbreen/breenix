@@ -45,11 +45,20 @@ pub fn read_master(pair: &Arc<PtyPair>, buf_ptr: u64, count: u64, nonblocking: b
             let n = ring.read(&mut buf);
             if n > 0 {
                 drop(ring);
+                let result = copy_out(buf_ptr, &buf, n);
+                if matches!(result, SyscallResult::Err(_)) {
+                    // EFAULT: the output was not delivered, so it goes back
+                    // to the front of the ring (all of it, unless a writer
+                    // filled the room meanwhile).
+                    pair.slave_to_master.lock().unread(&buf[..n]);
+                }
                 pair.slave_writers.wake_up();
-                return copy_out(buf_ptr, &buf, n);
+                return result;
             }
+            // Linux: once the slave has been opened and every slave fd is
+            // closed, the master reads the buffered output and then EIO.
             if pair.has_slave_hung_up() {
-                return SyscallResult::Ok(0);
+                return SyscallResult::Err(EIO as u64);
             }
             if nonblocking {
                 return SyscallResult::Err(EAGAIN as u64);
@@ -75,7 +84,8 @@ fn progress_or(done: usize, error: i32) -> SyscallResult {
 }
 
 /// write(2) on a master: input to the slave, through the line discipline.
-/// A blocking write waits for room in the slave's input queue until all of
+/// A blocking write waits for room in the slave's input queue, and while
+/// master output is stopped (TCXONC on the master), until all of
 /// `data` is consumed. Once the slave has hung up nothing will make room, so
 /// a write that finds no room then fails with EIO, as on Linux.
 pub fn write_master(pair: &Arc<PtyPair>, data: &[u8], nonblocking: bool) -> SyscallResult {
@@ -96,7 +106,7 @@ pub fn write_master(pair: &Arc<PtyPair>, data: &[u8], nonblocking: bool) -> Sysc
             let ldisc = pair.ldisc.lock();
             pair.master_writers
                 .prepare_to_wait_checked(ThreadState::BlockedOnIO, None, || {
-                    !ldisc.input_room() && !pair.has_slave_hung_up()
+                    (!ldisc.input_room() || pair.master_output_stopped()) && !pair.has_slave_hung_up()
                 })
         };
         if let Err(error) = wait_prepared(&pair.master_writers, outcome) {
@@ -106,8 +116,10 @@ pub fn write_master(pair: &Arc<PtyPair>, data: &[u8], nonblocking: bool) -> Sysc
     SyscallResult::Ok(done as u64)
 }
 
-/// write(2) on a slave: output to the master.
-pub fn write_slave(pair: &Arc<PtyPair>, data: &[u8], _nonblocking: bool) -> SyscallResult {
+/// write(2) on a slave: output to the master. A blocking write waits for
+/// room in the master's buffer, and while output is stopped (TCXONC), until
+/// all of `data` is written.
+pub fn write_slave(pair: &Arc<PtyPair>, data: &[u8], nonblocking: bool) -> SyscallResult {
     // A hung-up slave fails writes with EIO before any job-control check.
     if pair.master_closed() {
         return SyscallResult::Err(EIO as u64);
@@ -115,8 +127,39 @@ pub fn write_slave(pair: &Arc<PtyPair>, data: &[u8], _nonblocking: bool) -> Sysc
     if let Err(e) = jobctl::check(&TtyRef::Pty(pair.clone()), JobOp::Write) {
         return SyscallResult::Err(e as u64);
     }
-    match pair.slave_write(data) {
-        Ok(n) => SyscallResult::Ok(n as u64),
-        Err(e) => SyscallResult::Err(e as u64),
+    let mut done = 0;
+    while done < data.len() {
+        if pair.master_closed() {
+            return progress_or(done, EIO);
+        }
+        // The output settings are read on every pass, so a writer that
+        // waited writes with the settings in force when it resumes.
+        let termios = pair.termios_snapshot();
+        let onlcr = termios.is_opost() && termios.is_onlcr();
+        let outcome = {
+            let mut ring = pair.slave_to_master.lock();
+            if !pair.output_stopped() {
+                let n = PtyPair::put_output(&mut ring, &data[done..], onlcr);
+                if n > 0 {
+                    drop(ring);
+                    done += n;
+                    pair.master_readers.wake_up();
+                    continue;
+                }
+            }
+            if nonblocking {
+                return progress_or(done, EAGAIN);
+            }
+            // Nothing fit: the ring has less room than the next byte needs
+            // (two for a translated newline), or output is stopped.
+            pair.slave_writers
+                .prepare_to_wait_checked(ThreadState::BlockedOnIO, None, || {
+                    (pair.output_stopped() || ring.space() < 2) && !pair.master_closed()
+                })
+        };
+        if let Err(error) = wait_prepared(&pair.slave_writers, outcome) {
+            return progress_or(done, error);
+        }
     }
+    SyscallResult::Ok(done as u64)
 }
