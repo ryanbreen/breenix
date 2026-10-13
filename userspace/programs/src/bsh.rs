@@ -414,19 +414,23 @@ fn native_exec(
         argv_pos += 1;
     }
 
+    // Save shell's process group for terminal reclaim after child exits
+    let shell_pgid = libbreenix::process::getpgrp().map(|p| p.raw() as i32).unwrap_or(0);
+    let foreground = shell_owns_terminal();
+
     // Fork
     let fork_result = match libbreenix::process::fork() {
         Ok(r) => r,
         Err(_) => return Err(JsError::runtime("exec: fork() failed")),
     };
 
-    // Save shell's process group for terminal reclaim after child exits
-    let shell_pgid = libbreenix::process::getpgrp().map(|p| p.raw() as i32).unwrap_or(0);
-
     match fork_result {
         libbreenix::process::ForkResult::Child => {
             // Put child in its own process group (for signal delivery)
             let _ = libbreenix::process::setpgid(0, 0);
+            if foreground {
+                take_terminal_in_child();
+            }
 
             // Ensure default signal handling so Ctrl+C can kill the child
             default_job_signals();
@@ -459,41 +463,30 @@ fn native_exec(
             let _ = libbreenix::process::setpgid(child_pid_raw, child_pid_raw);
 
             // Give the terminal to the child's process group so Ctrl+C sends
-            // SIGINT to the child, not the shell
-            let stdin_fd = libbreenix::types::Fd::STDIN;
-            let _ = libbreenix::termios::tcsetpgrp(stdin_fd, child_pid_raw);
+            // SIGINT to the child, not the shell (the child does the same)
+            if foreground {
+                let _ = libbreenix::termios::tcsetpgrp(Fd::STDIN, child_pid_raw);
+            }
 
             // Parent: close write ends, read from pipes
             let _ = libbreenix::io::close(stdout_w);
             let _ = libbreenix::io::close(stderr_w);
 
-            // Read stdout (blocks until child closes stdout / exits)
-            let stdout_str = read_fd_to_string(stdout_r);
-            let _ = libbreenix::io::close(stdout_r);
-
-            // Read stderr
-            let stderr_str = read_fd_to_string(stderr_r);
-            let _ = libbreenix::io::close(stderr_r);
-
-            // Wait for child
-            let mut status: i32 = 0;
-            let _ = libbreenix::process::waitpid(
-                child_pid_raw,
-                &mut status as *mut i32,
-                0,
-            );
-
-            // Reclaim the terminal for the shell
-            if shell_pgid > 0 {
-                let _ = libbreenix::termios::tcsetpgrp(stdin_fd, shell_pgid);
+            // Read stdout and stderr until the child exits, or until it stops
+            let mut outputs = [Output::captured(stdout_r), Output::captured(stderr_r)];
+            let mut pids = vec![child_pid_raw];
+            let end = wait_foreground(child_pid_raw, &mut pids, child_pid_raw, &mut outputs);
+            if foreground {
+                reclaim_terminal(shell_pgid);
             }
-
-            let exit_code = if libbreenix::process::wifexited(status) {
-                libbreenix::process::wexitstatus(status)
-            } else if libbreenix::process::wifsignaled(status) {
-                128 + libbreenix::process::wtermsig(status)
-            } else {
-                -1
+            let stdout_str = String::from_utf8_lossy(&core::mem::take(&mut outputs[0].data)).into_owned();
+            let stderr_str = String::from_utf8_lossy(&core::mem::take(&mut outputs[1].data)).into_owned();
+            let exit_code = match end {
+                JobEnd::Done(status) => exit_code_of(status),
+                JobEnd::Stopped(sig) => {
+                    let [out, err] = outputs;
+                    stop_job(child_pid_raw, pids, child_pid_raw, vec![out, err], cmd_args.join(" "), sig)
+                }
             };
 
             // Build result object: { exitCode, stdout, stderr, pid }
@@ -721,6 +714,10 @@ fn native_pipe(
         }
     };
 
+    // Save shell's process group for terminal reclaim
+    let shell_pgid = libbreenix::process::getpgrp().map(|p| p.raw() as i32).unwrap_or(0);
+    let foreground = shell_owns_terminal();
+
     // Fork each child in the pipeline, all in the same process group
     let mut child_pids: Vec<i32> = Vec::new();
     let mut pipeline_pgid: i32 = 0; // First child's pid becomes the pipeline group
@@ -736,9 +733,15 @@ fn native_pipe(
                 let _ = libbreenix::io::close(last_stdout_w);
                 let _ = libbreenix::io::close(last_stderr_r);
                 let _ = libbreenix::io::close(last_stderr_w);
-                for pid in &child_pids {
+                // The commands already started are half a pipeline, and may hold the
+                // terminal: end them, reap them and take the terminal back.
+                if pipeline_pgid > 0 {
+                    let _ = libbreenix::signal::kill(-pipeline_pgid, libbreenix::signal::SIGKILL);
                     let mut status: i32 = 0;
-                    let _ = libbreenix::process::waitpid(*pid, &mut status as *mut i32, 0);
+                    while libbreenix::process::waitpid(-pipeline_pgid, &mut status as *mut i32, 0).is_ok() {}
+                }
+                if foreground {
+                    reclaim_terminal(shell_pgid);
                 }
                 return Err(JsError::runtime("pipe: fork() failed"));
             }
@@ -750,6 +753,10 @@ fn native_pipe(
                 // (first child creates the group, others join it)
                 let target_pgid = if pipeline_pgid == 0 { 0 } else { pipeline_pgid };
                 let _ = libbreenix::process::setpgid(0, target_pgid);
+                // Before stdin is redirected: it is still the shell's terminal.
+                if foreground {
+                    take_terminal_in_child();
+                }
 
                 // Ensure default signal handling
                 default_job_signals();
@@ -811,13 +818,9 @@ fn native_pipe(
         }
     }
 
-    // Save shell's process group for terminal reclaim
-    let shell_pgid = libbreenix::process::getpgrp().map(|p| p.raw() as i32).unwrap_or(0);
-
-    // Give the terminal to the pipeline's process group
-    let stdin_fd = libbreenix::types::Fd::STDIN;
-    if pipeline_pgid > 0 {
-        let _ = libbreenix::termios::tcsetpgrp(stdin_fd, pipeline_pgid);
+    // Give the terminal to the pipeline's process group (its children do the same)
+    if foreground && pipeline_pgid > 0 {
+        let _ = libbreenix::termios::tcsetpgrp(Fd::STDIN, pipeline_pgid);
     }
 
     // Parent: close all inter-process pipe ends
@@ -828,34 +831,27 @@ fn native_pipe(
     let _ = libbreenix::io::close(last_stdout_w);
     let _ = libbreenix::io::close(last_stderr_w);
 
-    // Read stdout and stderr of the last command
-    let stdout_str = read_fd_to_string(last_stdout_r);
-    let _ = libbreenix::io::close(last_stdout_r);
-
-    let stderr_str = read_fd_to_string(last_stderr_r);
-    let _ = libbreenix::io::close(last_stderr_r);
-
-    // Wait for all children, capturing the exit code of the last one
+    // Read stdout and stderr of the last command while waiting for every member,
+    // capturing the exit code of the last one, until they finish or one stops
     let last_pid = *child_pids.last().unwrap();
-    let mut last_exit_code: i32 = -1;
-    for pid in &child_pids {
-        let mut status: i32 = 0;
-        let _ = libbreenix::process::waitpid(*pid, &mut status as *mut i32, 0);
-        if *pid == last_pid {
-            last_exit_code = if libbreenix::process::wifexited(status) {
-                libbreenix::process::wexitstatus(status)
-            } else if libbreenix::process::wifsignaled(status) {
-                128 + libbreenix::process::wtermsig(status)
-            } else {
-                -1
-            };
-        }
-    }
+    let mut outputs = [Output::captured(last_stdout_r), Output::captured(last_stderr_r)];
+    let mut pids = child_pids.clone();
+    let end = wait_foreground(pipeline_pgid, &mut pids, last_pid, &mut outputs);
 
     // Reclaim the terminal for the shell
-    if shell_pgid > 0 {
-        let _ = libbreenix::termios::tcsetpgrp(stdin_fd, shell_pgid);
+    if foreground {
+        reclaim_terminal(shell_pgid);
     }
+    let stdout_str = String::from_utf8_lossy(&core::mem::take(&mut outputs[0].data)).into_owned();
+    let stderr_str = String::from_utf8_lossy(&core::mem::take(&mut outputs[1].data)).into_owned();
+    let last_exit_code = match end {
+        JobEnd::Done(status) => exit_code_of(status),
+        JobEnd::Stopped(sig) => {
+            let command = commands.iter().map(|c| c.join(" ")).collect::<Vec<_>>().join(" | ");
+            let [out, err] = outputs;
+            stop_job(pipeline_pgid, pids, last_pid, vec![out, err], command, sig)
+        }
+    };
 
     // Build result object: { exitCode, stdout, stderr }
     let mut obj = JsObject::new();
@@ -1044,20 +1040,6 @@ fn native_env(
 // Helper functions
 // ---------------------------------------------------------------------------
 
-/// Read all data from a file descriptor into a String.
-fn read_fd_to_string(fd: libbreenix::types::Fd) -> String {
-    let mut buf = [0u8; 4096];
-    let mut result = Vec::new();
-    loop {
-        match libbreenix::io::read(fd, &mut buf) {
-            Ok(0) => break,
-            Ok(n) => result.extend_from_slice(&buf[..n]),
-            Err(_) => break,
-        }
-    }
-    String::from_utf8_lossy(&result).into_owned()
-}
-
 /// Return the default PATH, including /usr/local/test/bin if the kernel
 /// is built with the `testing` feature (detected via /proc/breenix/testing).
 fn default_path() -> String {
@@ -1162,19 +1144,23 @@ fn command_executor_fn(
         argv_pos += 1;
     }
 
+    // Save the shell's process group so we can reclaim the terminal after the child exits
+    let shell_pgid = libbreenix::process::getpgrp().map(|p| p.raw() as i32).unwrap_or(0);
+    let foreground = shell_owns_terminal();
+
     // Fork
     let fork_result = match libbreenix::process::fork() {
         Ok(r) => r,
         Err(_) => return Err(JsError::runtime("command exec: fork() failed")),
     };
 
-    // Save the shell's process group so we can reclaim the terminal after the child exits
-    let shell_pgid = libbreenix::process::getpgrp().map(|p| p.raw() as i32).unwrap_or(0);
-
     match fork_result {
         libbreenix::process::ForkResult::Child => {
             // Put child in its own process group (for job control / signal delivery)
             let _ = libbreenix::process::setpgid(0, 0);
+            if foreground {
+                take_terminal_in_child();
+            }
 
             // Ensure default signal handling so Ctrl+C can kill the child
             default_job_signals();
@@ -1199,29 +1185,26 @@ fn command_executor_fn(
             let _ = libbreenix::process::setpgid(child_pid_raw, child_pid_raw);
 
             // Give the terminal to the child's process group so Ctrl+C sends
-            // SIGINT to the child, not the shell
-            let stdin_fd = libbreenix::types::Fd::STDIN;
-            let _ = libbreenix::termios::tcsetpgrp(stdin_fd, child_pid_raw);
-
-            let mut status: i32 = 0;
-            let _ = libbreenix::process::waitpid(
-                child_pid_raw,
-                &mut status as *mut i32,
-                0,
-            );
-
-            // Reclaim the terminal for the shell
-            if shell_pgid > 0 {
-                let _ = libbreenix::termios::tcsetpgrp(stdin_fd, shell_pgid);
+            // SIGINT to the child, not the shell (the child does the same)
+            if foreground {
+                let _ = libbreenix::termios::tcsetpgrp(Fd::STDIN, child_pid_raw);
             }
 
-            let exit_code = if libbreenix::process::wifexited(status) {
-                libbreenix::process::wexitstatus(status)
-            } else if libbreenix::process::wifsignaled(status) {
-                // Process was killed by a signal — return 128 + signal number
-                128 + libbreenix::process::wtermsig(status)
-            } else {
-                -1
+            // Wait until the child exits, or until it stops (Ctrl+Z)
+            let mut pids = vec![child_pid_raw];
+            let end = wait_foreground(child_pid_raw, &mut pids, child_pid_raw, &mut []);
+
+            // Reclaim the terminal for the shell
+            if foreground {
+                reclaim_terminal(shell_pgid);
+            }
+
+            // A child killed by a signal gives 128 + signal number
+            let exit_code = match end {
+                JobEnd::Done(status) => exit_code_of(status),
+                JobEnd::Stopped(sig) => {
+                    stop_job(child_pid_raw, pids, child_pid_raw, Vec::new(), cmd_args.join(" "), sig)
+                }
             };
 
             Ok(JsValue::number(exit_code as f64))
@@ -1438,6 +1421,9 @@ fn create_shell_context() -> Context {
     ctx.register_native("pipe", native_pipe);
     ctx.register_native("glob", native_glob);
     ctx.register_native("env", native_env);
+    ctx.register_native("fg", native_fg);
+    ctx.register_native("bg", native_bg);
+    ctx.register_native("jobs", native_jobs);
 
     // Register console object (console.log, console.error, console.warn, console.info)
     ctx.register_native_object("console", &[
@@ -2572,6 +2558,293 @@ fn default_job_signals() {
     for sig in JOB_STOP_SIGNALS {
         let _ = libbreenix::signal::sigaction(sig, Some(&dfl), None);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Job control: terminal handoff, foreground waits and stopped jobs
+// ---------------------------------------------------------------------------
+
+use libbreenix::types::Fd;
+
+/// Whether the shell may hand the terminal on its standard input to the foreground jobs it
+/// starts: stdin is a terminal and no other group is in its foreground (the console's
+/// foreground group starts unset, which reads as 0).
+fn shell_owns_terminal() -> bool {
+    let Ok(me) = libbreenix::process::getpgrp() else {
+        return false;
+    };
+    matches!(libbreenix::termios::tcgetpgrp(Fd::STDIN), Ok(pgrp) if pgrp == 0 || pgrp == me.raw() as i32)
+}
+
+/// In a forked foreground job child, once it is in the job's process group: give the
+/// terminal to that group before exec. POSIX shells hand the terminal over from both
+/// sides of the fork, so the job owns it before it can read from it, whichever of parent
+/// and child runs first; otherwise a quick child meets SIGTTIN. SIGTTOU is still ignored
+/// here (inherited from the shell), so the call cannot stop the child.
+fn take_terminal_in_child() {
+    if let Ok(pgrp) = libbreenix::process::getpgrp() {
+        let _ = libbreenix::termios::tcsetpgrp(Fd::STDIN, pgrp.raw() as i32);
+    }
+}
+
+/// Give the terminal back to the shell's process group after a foreground job.
+fn reclaim_terminal(shell_pgid: i32) {
+    if shell_pgid > 0 {
+        let _ = libbreenix::termios::tcsetpgrp(Fd::STDIN, shell_pgid);
+    }
+}
+
+/// The read end of a pipe carrying a job's output to the shell.
+struct Output {
+    fd: Fd,
+    /// What has been read, when the output is captured.
+    data: Vec<u8>,
+    /// Copy what is read to the shell's standard output instead of keeping it.
+    forward: bool,
+    open: bool,
+}
+
+impl Output {
+    fn captured(fd: Fd) -> Self {
+        Output { fd, data: Vec::new(), forward: false, open: true }
+    }
+
+    fn close(&mut self) {
+        if self.open {
+            let _ = libbreenix::io::close(self.fd);
+            self.open = false;
+        }
+    }
+}
+
+/// How a foreground job came back to the shell.
+enum JobEnd {
+    /// Every member exited; the wait status of the job's last command, if the shell reaped it.
+    Done(Option<i32>),
+    /// A member stopped, with this signal.
+    Stopped(i32),
+}
+
+/// Read whatever the open `outputs` have, waiting at most `timeout_ms` (-1: until one has
+/// data or reaches end of file). An output closes at end of file.
+fn drain_outputs(outputs: &mut [Output], timeout_ms: i32) {
+    use libbreenix::io::poll_events::{POLLERR, POLLHUP, POLLIN, POLLNVAL};
+    let mut fds: Vec<libbreenix::io::PollFd> = outputs
+        .iter()
+        .filter(|o| o.open)
+        .map(|o| libbreenix::io::PollFd::new(o.fd, POLLIN))
+        .collect();
+    if fds.is_empty() || libbreenix::io::poll(&mut fds, timeout_ms).is_err() {
+        return;
+    }
+    let mut buf = [0u8; 4096];
+    for pfd in &fds {
+        if pfd.revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL) == 0 {
+            continue;
+        }
+        let Some(output) = outputs.iter_mut().find(|o| o.open && o.fd.raw() as i32 == pfd.fd) else {
+            continue;
+        };
+        match libbreenix::io::read(output.fd, &mut buf) {
+            Ok(0) | Err(_) => output.close(),
+            Ok(n) if output.forward => {
+                let _ = io::stdout().write_all(&buf[..n]);
+                let _ = io::stdout().flush();
+            }
+            Ok(n) => output.data.extend_from_slice(&buf[..n]),
+        }
+    }
+}
+
+/// Wait for the foreground job in process group `pgid`, whose unreaped members are `pids`,
+/// while reading its `outputs`. Returns once every member has exited and every output has
+/// reached end of file, or as soon as a member stops: a stopped member keeps its pipes'
+/// write ends open, so a shell that waited for end of file would wait forever.
+fn wait_foreground(pgid: i32, pids: &mut Vec<i32>, last_pid: i32, outputs: &mut [Output]) -> JobEnd {
+    use libbreenix::process::{waitpid, wifstopped, wstopsig, WNOHANG, WUNTRACED};
+    let mut last_status = None;
+    loop {
+        let draining = outputs.iter().any(|o| o.open);
+        if pids.is_empty() && !draining {
+            return JobEnd::Done(last_status);
+        }
+        if draining {
+            // While members run, look at them every 50 ms so a stop is noticed.
+            drain_outputs(outputs, if pids.is_empty() { -1 } else { 50 });
+        }
+        while !pids.is_empty() {
+            let mut status: i32 = 0;
+            let options = WUNTRACED | if draining { WNOHANG } else { 0 };
+            match waitpid(-pgid, &mut status as *mut i32, options) {
+                Ok(pid) if pid.raw() > 0 => {
+                    if wifstopped(status) {
+                        return JobEnd::Stopped(wstopsig(status));
+                    }
+                    let pid = pid.raw() as i32;
+                    pids.retain(|&p| p != pid);
+                    if pid == last_pid {
+                        last_status = Some(status);
+                    }
+                }
+                Ok(_) => break,
+                Err(libbreenix::error::Error::Os(libbreenix::Errno::EINTR)) => {}
+                // No member of the group is left to wait for.
+                Err(_) => pids.clear(),
+            }
+        }
+    }
+}
+
+/// The exit code a finished foreground job gives the script: its last command's exit
+/// status, or 128 plus the signal that killed it.
+fn exit_code_of(status: Option<i32>) -> i32 {
+    match status {
+        Some(s) if libbreenix::process::wifexited(s) => libbreenix::process::wexitstatus(s),
+        Some(s) if libbreenix::process::wifsignaled(s) => 128 + libbreenix::process::wtermsig(s),
+        _ => -1,
+    }
+}
+
+/// A job that stopped in the foreground, or was continued in the background with bg().
+struct Job {
+    id: u32,
+    pgid: i32,
+    /// Members not yet reaped.
+    pids: Vec<i32>,
+    last_pid: i32,
+    /// Output pipes the shell was reading when the job stopped. fg() copies what they
+    /// carry to the terminal, since the call that captured them has already returned.
+    outputs: Vec<Output>,
+    command: String,
+    stopped: bool,
+}
+
+static JOBS: std::sync::Mutex<Vec<Job>> = std::sync::Mutex::new(Vec::new());
+
+/// Keep a job that stopped in the foreground, report it, and return the exit code the
+/// stopping call gives: 128 plus the stop signal, as POSIX shells report it.
+fn stop_job(pgid: i32, pids: Vec<i32>, last_pid: i32, outputs: Vec<Output>, command: String, sig: i32) -> i32 {
+    let mut jobs = JOBS.lock().unwrap();
+    let id = jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
+    let msg = format!("\n[{}]+  Stopped\t\t{}\n", id, command);
+    let _ = io::stderr().write_all(msg.as_bytes());
+    let mut outputs = outputs;
+    for output in &mut outputs {
+        output.forward = true;
+    }
+    jobs.push(Job { id, pgid, pids, last_pid, outputs, command, stopped: true });
+    128 + sig
+}
+
+/// Reap background jobs' members that have finished, without waiting, and drop the
+/// jobs that have none left.
+fn reap_jobs(jobs: &mut Vec<Job>) {
+    use libbreenix::process::{waitpid, wifstopped, WNOHANG, WUNTRACED};
+    for job in jobs.iter_mut() {
+        loop {
+            let mut status: i32 = 0;
+            match waitpid(-job.pgid, &mut status as *mut i32, WNOHANG | WUNTRACED) {
+                Ok(pid) if pid.raw() > 0 => {
+                    if wifstopped(status) {
+                        job.stopped = true;
+                    } else {
+                        let pid = pid.raw() as i32;
+                        job.pids.retain(|&p| p != pid);
+                    }
+                }
+                Ok(_) => break,
+                Err(libbreenix::error::Error::Os(libbreenix::Errno::EINTR)) => {}
+                Err(_) => {
+                    job.pids.clear();
+                    break;
+                }
+            }
+        }
+    }
+    jobs.retain_mut(|job| {
+        if job.pids.is_empty() {
+            for output in &mut job.outputs {
+                output.close();
+            }
+            let msg = format!("[{}]   Done\t\t{}\n", job.id, job.command);
+            let _ = io::stderr().write_all(msg.as_bytes());
+            false
+        } else {
+            true
+        }
+    });
+}
+
+/// The job a fg()/bg() argument names: its number, or the most recent job when absent.
+fn job_index(jobs: &[Job], args: &[JsValue], name: &str) -> JsResult<usize> {
+    let wanted = match args.first() {
+        Some(v) if v.is_number() => Some(v.to_number() as u32),
+        Some(_) => return Err(JsError::type_error(format!("{}: job number must be a number", name))),
+        None => None,
+    };
+    let found = match wanted {
+        Some(id) => jobs.iter().position(|j| j.id == id),
+        None => jobs.iter().enumerate().max_by_key(|(_, j)| j.id).map(|(i, _)| i),
+    };
+    found.ok_or_else(|| JsError::runtime(format!("{}: no such job", name)))
+}
+
+/// fg([job]) -> exitCode
+///
+/// Continue a stopped or background job in the foreground and wait for it, as the shell
+/// waits for any foreground job. Returns its exit code, or 128 plus the signal if it stops
+/// again.
+fn native_fg(args: &[JsValue], _strings: &mut StringPool, _heap: &mut ObjectHeap) -> JsResult<JsValue> {
+    let mut job = {
+        let mut jobs = JOBS.lock().unwrap();
+        reap_jobs(&mut jobs);
+        let index = job_index(&jobs, args, "fg")?;
+        jobs.remove(index)
+    };
+    let _ = io::stderr().write_all(format!("{}\n", job.command).as_bytes());
+    let shell_pgid = libbreenix::process::getpgrp().map(|p| p.raw() as i32).unwrap_or(0);
+    let owns = shell_owns_terminal();
+    if owns {
+        let _ = libbreenix::termios::tcsetpgrp(Fd::STDIN, job.pgid);
+    }
+    let _ = libbreenix::signal::kill(-job.pgid, libbreenix::signal::SIGCONT);
+    let end = wait_foreground(job.pgid, &mut job.pids, job.last_pid, &mut job.outputs);
+    if owns {
+        reclaim_terminal(shell_pgid);
+    }
+    let code = match end {
+        JobEnd::Stopped(sig) => stop_job(job.pgid, job.pids, job.last_pid, job.outputs, job.command, sig),
+        JobEnd::Done(status) => exit_code_of(status),
+    };
+    Ok(JsValue::number(code as f64))
+}
+
+/// bg([job]) -> undefined
+///
+/// Continue a stopped job in the background. A background job that reads the terminal
+/// stops again (SIGTTIN).
+fn native_bg(args: &[JsValue], _strings: &mut StringPool, _heap: &mut ObjectHeap) -> JsResult<JsValue> {
+    let mut jobs = JOBS.lock().unwrap();
+    reap_jobs(&mut jobs);
+    let index = job_index(&jobs, args, "bg")?;
+    let job = &mut jobs[index];
+    job.stopped = false;
+    let _ = libbreenix::signal::kill(-job.pgid, libbreenix::signal::SIGCONT);
+    let _ = io::stderr().write_all(format!("[{}]+ {} &\n", job.id, job.command).as_bytes());
+    Ok(JsValue::undefined())
+}
+
+/// jobs() -> undefined
+///
+/// List the stopped and background jobs.
+fn native_jobs(_args: &[JsValue], _strings: &mut StringPool, _heap: &mut ObjectHeap) -> JsResult<JsValue> {
+    let mut jobs = JOBS.lock().unwrap();
+    reap_jobs(&mut jobs);
+    for job in jobs.iter() {
+        let state = if job.stopped { "Stopped" } else { "Running" };
+        let _ = io::stdout().write_all(format!("[{}]  {}\t\t{}\n", job.id, state, job.command).as_bytes());
+    }
+    Ok(JsValue::undefined())
 }
 
 fn main() {

@@ -109,6 +109,22 @@ fn getpgrp() -> i32 {
     }
 }
 
+/// Whether the shell may hand the terminal on its standard input to the foreground jobs it
+/// starts: stdin is a terminal and no other group is in its foreground (the console's
+/// foreground group starts unset, which reads as 0).
+fn shell_owns_terminal() -> bool {
+    matches!(termios::tcgetpgrp(STDIN), Ok(pgrp) if pgrp == 0 || pgrp == getpgrp())
+}
+
+/// In a forked foreground job child, once it is in the job's process group: give the
+/// terminal to that group before exec. POSIX shells hand the terminal over from both
+/// sides of the fork, so the job owns it before it can read from it, whichever of parent
+/// and child runs first. SIGTTOU is still ignored here (inherited from the shell), so
+/// the call cannot stop the child.
+fn take_terminal_in_child() {
+    let _ = tcsetpgrp(STDIN, getpgrp());
+}
+
 fn shell_cfmakeraw(t: &mut Termios) {
     t.c_iflag &= !(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | iflag::ICRNL | iflag::IXON);
     t.c_oflag &= !oflag::OPOST;
@@ -394,9 +410,16 @@ fn builtin_fg(arg: &str) {
         }
     }
 
-    // Wait for the job (with WUNTRACED to catch if it stops again)
+    // Wait for the job's group until its recorded process exits (with WUNTRACED to
+    // catch any member stopping again, as a pipeline's members can)
     let mut status: i32 = 0;
-    let wait_result = waitpid(pid, &mut status as *mut i32, WUNTRACED);
+    let wait_result = loop {
+        match waitpid(-pgid, &mut status as *mut i32, WUNTRACED) {
+            Ok(reaped) if reaped.raw() as i32 == pid || wifstopped(status) => break Ok(reaped),
+            Ok(_) | Err(libbreenix::error::Error::Os(libbreenix::Errno::EINTR)) => {}
+            Err(e) => break Err(e),
+        }
+    };
 
     // Take terminal back
     let shell_pgrp = getpgrp();
@@ -524,12 +547,16 @@ fn try_execute_external(cmd_name: &str, args: &str, background: bool) -> Result<
     if !background {
         println!("Running: {}", cmd_name);
     }
+    let foreground = !background && shell_owns_terminal();
 
     match fork() {
         Ok(ForkResult::Child) => {
             // Child process
             // Put ourselves in our own process group BEFORE exec.
             let _ = setpgid(0, 0);
+            if foreground {
+                take_terminal_in_child();
+            }
             default_job_signals();
 
             let args = args.trim();
@@ -595,16 +622,21 @@ fn try_execute_external(cmd_name: &str, args: &str, background: bool) -> Result<
                 return Ok(0);
             }
 
-            // Foreground execution - give terminal to child, then wait
+            // Foreground execution - give terminal to child (the child does the
+            // same), then wait
             let shell_pgrp = getpgrp();
             let child_pgrp = pid;
-            let _ = tcsetpgrp(STDIN, child_pgrp);
+            if foreground {
+                let _ = tcsetpgrp(STDIN, child_pgrp);
+            }
 
             let mut status: i32 = 0;
             let wait_result = waitpid(pid, &mut status as *mut i32, WUNTRACED);
 
             // Take terminal back from child
-            let _ = tcsetpgrp(STDIN, shell_pgrp);
+            if foreground {
+                let _ = tcsetpgrp(STDIN, shell_pgrp);
+            }
 
             match wait_result {
                 Err(_) => {
@@ -832,6 +864,8 @@ fn execute_pipeline(input: &str) -> bool {
     let mut child_pids: [i32; MAX_PIPELINE_COMMANDS] = [0; MAX_PIPELINE_COMMANDS];
     let mut pipeline_pgrp: i32 = 0;
     let mut prev_read_fd: Option<Fd> = None;
+    let shell_pgrp = getpgrp();
+    let foreground = shell_owns_terminal();
 
     for i in 0..cmd_count {
         let is_last = i == cmd_count - 1;
@@ -855,6 +889,10 @@ fn execute_pipeline(input: &str) -> bool {
             Ok(ForkResult::Child) => {
                 // ========== CHILD PROCESS ==========
                 let _ = setpgid(0, pipeline_pgrp);
+                // Before stdin is redirected: it is still the shell's terminal.
+                if foreground {
+                    take_terminal_in_child();
+                }
                 default_job_signals();
 
                 if let Some(fd) = prev_read_fd {
@@ -905,22 +943,45 @@ fn execute_pipeline(input: &str) -> bool {
         }
     }
 
-    // Give terminal to the pipeline's process group
-    let shell_pgrp = getpgrp();
-    if pipeline_pgrp > 0 {
+    // Give terminal to the pipeline's process group (its children do the same)
+    if foreground && pipeline_pgrp > 0 {
         let _ = tcsetpgrp(STDIN, pipeline_pgrp);
     }
 
-    // Wait for all children
-    for i in 0..cmd_count {
-        if child_pids[i] > 0 {
-            let mut status: i32 = 0;
-            let _ = waitpid(child_pids[i], &mut status as *mut i32, 0);
+    // Wait for every member, or until one stops (Ctrl+Z): a stopped member would
+    // never exit, so the shell takes the terminal back and keeps the pipeline as a
+    // stopped job for fg/bg.
+    let last_pid = child_pids[cmd_count - 1];
+    let mut remaining = child_pids[..cmd_count].iter().filter(|&&pid| pid > 0).count();
+    let mut stopped = false;
+    while remaining > 0 {
+        let mut status: i32 = 0;
+        match waitpid(-pipeline_pgrp, &mut status as *mut i32, WUNTRACED) {
+            Ok(pid) if pid.raw() > 0 => {
+                if wifstopped(status) {
+                    stopped = true;
+                    break;
+                }
+                remaining -= 1;
+            }
+            Err(libbreenix::error::Error::Os(libbreenix::Errno::EINTR)) => {}
+            _ => break,
         }
     }
 
     // Take terminal back
-    let _ = tcsetpgrp(STDIN, shell_pgrp);
+    if foreground {
+        let _ = tcsetpgrp(STDIN, shell_pgrp);
+    }
+
+    if stopped {
+        let job_id = job_table().add(last_pid, pipeline_pgrp, input);
+        if let Some(job) = job_table().find_by_id_mut(job_id) {
+            job.status = JobStatus::Stopped;
+        }
+        println!();
+        println!("[{}]+ Stopped                 {}", job_id, input);
+    }
 
     true
 }
