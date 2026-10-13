@@ -8,6 +8,9 @@ use crate::syscall::errno::{EAGAIN, EPIPE};
 use crate::task::waitqueue::WaitQueueHead;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_PIPE_INODE: AtomicU64 = AtomicU64::new(1000);
 
 /// Writes at or below this limit are indivisible; this is not the capacity.
 pub const PIPE_BUF: usize = 4096;
@@ -55,6 +58,8 @@ pub const PIPE_BUF_SIZE: usize = 65536;
 
 /// Pipe buffer - a circular buffer with reader/writer tracking
 pub struct PipeBuffer {
+    /// One opaque pipefs identity shared by both ends, dup, fork and SCM_RIGHTS.
+    inode: u64,
     /// The buffer storage
     buffer: Vec<u8>,
     /// Read position in the circular buffer
@@ -77,6 +82,10 @@ pub struct PipeBuffer {
 }
 
 impl PipeBuffer {
+    pub(crate) fn inode(&self) -> u64 {
+        self.inode
+    }
+
     /// Create a new pipe buffer
     pub fn new() -> Self {
         let mut pipe = Self::new_zero_refs();
@@ -96,6 +105,7 @@ impl PipeBuffer {
         buffer.try_reserve_exact(PIPE_BUF_SIZE).map_err(|_| 12)?;
         buffer.resize(PIPE_BUF_SIZE, 0);
         Ok(PipeBuffer {
+            inode: NEXT_PIPE_INODE.fetch_add(1, Ordering::Relaxed),
             buffer,
             read_pos: 0,
             write_pos: 0,

@@ -1110,7 +1110,7 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
     // as interrupts — holding the lock during disk I/O deadlocks the system.
     enum FstatKind {
         StdIo(i32),
-        Pipe,
+        Pipe(alloc::sync::Arc<spin::Mutex<crate::ipc::pipe::PipeBuffer>>),
         Socket(u64),
         RegularFile {
             inode_num: u64,
@@ -1165,7 +1165,7 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
             match &fd_entry.kind {
                 FdKind::Ipc(object) => FstatKind::Ipc(object.clone()),
                 FdKind::StdIo(io_fd) => FstatKind::StdIo(*io_fd),
-                FdKind::PipeRead(_) | FdKind::PipeWrite(_) => FstatKind::Pipe,
+                FdKind::PipeRead(pipe) | FdKind::PipeWrite(pipe) => FstatKind::Pipe(pipe.clone()),
                 FdKind::Socket(socket) => FstatKind::Socket(socket.common.ino()),
                 FdKind::RegularFile(file) => {
                     let file_guard = file.lock();
@@ -1237,11 +1237,9 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
             stat.st_nlink = 1;
             stat.st_rdev = make_dev(5, io_fd as u64); // Major 5 (TTY), minor = fd number
         }
-        FstatKind::Pipe => {
-            static PIPE_INODE_COUNTER: core::sync::atomic::AtomicU64 =
-                core::sync::atomic::AtomicU64::new(1000);
+        FstatKind::Pipe(pipe) => {
             stat.st_dev = 0xffff0001; // anonymous pipefs, separate from ext2 mounts
-            stat.st_ino = PIPE_INODE_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            stat.st_ino = pipe.lock().inode();
             stat.st_mode = S_IFIFO | 0o600; // FIFO with rw-------
             stat.st_nlink = 1;
             stat.st_size = 0;
