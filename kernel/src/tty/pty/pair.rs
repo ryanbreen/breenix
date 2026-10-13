@@ -14,7 +14,7 @@ use crate::tty::line_discipline::LineDiscipline;
 use alloc::sync::Arc;
 
 /// Ring buffer size for PTY data transfer
-const PTY_BUFFER_SIZE: usize = 4096;
+pub(crate) const PTY_BUFFER_SIZE: usize = 4096;
 
 /// A slave's permission bits after allocation and grantpt: owner read and
 /// write, group write (POSIX grantpt).
@@ -67,17 +67,6 @@ impl PtyBuffer {
         self.read_pos == self.write_pos
     }
 
-    /// Put `bytes`, just read, back at the front, as many as there is room
-    /// for, first bytes first. Returns how many went back.
-    pub fn unread(&mut self, bytes: &[u8]) -> usize {
-        let n = bytes.len().min(self.space());
-        for &byte in bytes[..n].iter().rev() {
-            self.read_pos = (self.read_pos + PTY_BUFFER_SIZE - 1) % PTY_BUFFER_SIZE;
-            self.data[self.read_pos] = byte;
-        }
-        n
-    }
-
     /// Discard everything unread.
     pub fn clear(&mut self) {
         self.read_pos = self.write_pos;
@@ -87,6 +76,14 @@ impl PtyBuffer {
     pub fn keep_last(&mut self, n: usize) {
         let n = n.min(self.available());
         self.read_pos = (self.write_pos + PTY_BUFFER_SIZE - n) % PTY_BUFFER_SIZE;
+    }
+
+    /// Read up to `max` bytes to the user address `ptr`, with Linux's
+    /// handling of a bad address: the bytes taken, and the read's result
+    /// (`tty::read_to_user`).
+    pub fn read_user(&mut self, ptr: u64, max: usize) -> (usize, Result<usize, i32>) {
+        let n = max.min(self.available());
+        crate::tty::read_to_user(ptr, n, |chunk| self.read(chunk))
     }
 
     /// Bytes that can still be written before the ring is full.
@@ -140,6 +137,8 @@ pub struct PtyPair {
 
     /// Slave output suspended by TCXONC(TCOOFF).
     output_stopped: AtomicBool,
+    input_flow_stopped: AtomicBool,
+    pending_echo: spin::Mutex<alloc::boxed::Box<PtyBuffer>>,
 
     /// Master output (input to the slave) suspended by TCXONC(TCOOFF) on
     /// the master.
@@ -186,6 +185,9 @@ impl PtyPair {
             master_gone: AtomicBool::new(false),
             hangup_pending: AtomicBool::new(false),
             output_stopped: AtomicBool::new(false),
+            input_flow_stopped: AtomicBool::new(false),
+            pending_echo: spin::Mutex::new(alloc::boxed::Box::try_new(PtyBuffer::new())
+                .map_err(|_| crate::syscall::errno::ENOMEM)?),
             master_output_stopped: AtomicBool::new(false),
             slave_uid: AtomicU32::new(uid),
             slave_gid: AtomicU32::new(gid),
@@ -285,6 +287,7 @@ impl PtyPair {
     pub fn set_output_stopped(&self, stopped: bool) {
         self.output_stopped.store(stopped, Ordering::SeqCst);
         if !stopped {
+            self.drain_echo();
             self.slave_writers.wake_up();
         }
     }
@@ -292,13 +295,51 @@ impl PtyPair {
     /// Discard the slave output the master has not read (TCOFLUSH), and
     /// wake writers waiting for room.
     pub fn flush_output(&self) {
-        self.slave_to_master.lock().clear();
+        let mut echo = self.pending_echo.lock();
+        let mut out = self.slave_to_master.lock();
+        echo.clear();
+        out.clear();
+        drop(out);
+        drop(echo);
         self.slave_writers.wake_up();
     }
 
     /// True while slave output is suspended.
     pub fn output_stopped(&self) -> bool {
         self.output_stopped.load(Ordering::SeqCst)
+            || self.input_flow_stopped.load(Ordering::SeqCst)
+    }
+
+    /// Publish an input/settings flow change under ldisc, then wake outside it.
+    pub fn update_input_flow(&self) {
+        let ld = self.ldisc.lock();
+        let stopped = ld.flow_stopped();
+        self.input_flow_stopped.store(stopped, Ordering::SeqCst);
+        drop(ld);
+        if !stopped { self.drain_echo(); self.slave_writers.wake_up(); }
+    }
+
+    /// The fixed echo FIFO retains output while stopped and drains as the
+    /// master frees room. No input lock is acquired below the output lock.
+    pub fn drain_echo(&self) {
+        if self.output_stopped() { return; }
+        let mut echo = self.pending_echo.lock();
+        let mut out = self.slave_to_master.lock();
+        let mut byte = [0];
+        while out.space() > 0 && echo.read(&mut byte) != 0 { out.write(&byte); }
+        drop(out);
+        drop(echo);
+        self.master_readers.wake_up();
+    }
+
+    fn append_echo(echo: &mut PtyBuffer, c: u8, onlcr: bool) -> usize {
+        let crlf = [b'\r', c];
+        let unit = if onlcr && c == b'\n' { &crlf[..] } else { &crlf[1..] };
+        // Like Linux's bounded echo FIFO, retain the most recent output on
+        // overflow; input must not wait for its own echo to be read.
+        let mut discard = [0];
+        while echo.space() < unit.len() { echo.read(&mut discard); }
+        echo.write(unit)
     }
 
     /// Suspend or resume master output, the slave's input (TCXONC on the
@@ -353,51 +394,39 @@ impl PtyPair {
     /// `master_write`, ignoring a TCOOFF on the master when `ignore_stop`.
     fn feed_slave(self: &Arc<Self>, data: &[u8], ignore_stop: bool) -> usize {
         let mut signal_to_deliver = None;
-        let mut echoed = false;
-        let mut flushed = false;
         let mut count = 0;
+        let mut flushed = false;
+        let stopped;
         {
-            let mut ldisc = self.ldisc.lock();
-            let mut ring = self.slave_to_master.lock();
-            // Echo is output, so OPOST|ONLCR translate it as they do output.
-            let onlcr = ldisc.termios().is_opost() && ldisc.termios().is_onlcr();
+            let mut ld = self.ldisc.lock();
+            let mut echo = self.pending_echo.lock();
+            let onlcr = ld.termios().is_opost() && ld.termios().is_onlcr();
             for &byte in data {
-                if !ldisc.input_room() || (!ignore_stop && self.master_output_stopped()) {
-                    break;
-                }
+                if !ld.can_receive(byte) || (!ignore_stop && self.master_output_stopped()) { break; }
                 let mut echo_len = 0;
-                let signal = ldisc.input_char(byte, &mut |echo_byte| {
-                    if onlcr && echo_byte == b'\n' {
-                        echo_len += ring.write(b"\r\n");
-                    } else {
-                        echo_len += ring.write(core::slice::from_ref(&echo_byte));
-                    }
+                let signal = ld.input_char(byte, &mut |c| {
+                    echo_len += Self::append_echo(&mut echo, c, onlcr);
                 });
-                echoed |= echo_len > 0;
                 count += 1;
-                if signal.is_some() {
-                    if ldisc.termios().c_lflag & NOFLSH == 0 {
-                        ring.keep_last(echo_len);
+                if let Some(signal) = signal {
+                    if ld.termios().c_lflag & NOFLSH == 0 {
+                        echo.keep_last(echo_len);
+                        self.slave_to_master.lock().clear();
                         flushed = true;
                     }
-                    signal_to_deliver = signal;
+                    signal_to_deliver = Some(signal);
                     break;
                 }
             }
+            stopped = ld.flow_stopped();
+            self.input_flow_stopped.store(stopped, Ordering::SeqCst);
         }
-        if flushed {
-            self.slave_writers.wake_up();
-        }
-
+        self.drain_echo();
+        if flushed || !stopped { self.slave_writers.wake_up(); }
         if let Some(sig) = signal_to_deliver {
             crate::tty::jobctl::signal_foreground(&TtyRef::Pty(self.clone()), sig);
         }
-        if count > 0 {
-            self.slave_readers.wake_up();
-        }
-        if echoed {
-            self.master_readers.wake_up();
-        }
+        if count > 0 { self.slave_readers.wake_up(); }
         count
     }
 
@@ -414,6 +443,7 @@ impl PtyPair {
             }
             return Err(EAGAIN);
         }
+        self.drain_echo();
         self.slave_writers.wake_up();
         Ok(n)
     }
@@ -448,7 +478,11 @@ impl PtyPair {
     }
 
     /// Get the slave device path
-    pub fn slave_path(&self) -> alloc::string::String {
-        alloc::format!("/dev/pts/{}", self.pty_num)
+    pub fn slave_path(&self) -> Result<alloc::string::String, i32> {
+        use core::fmt::Write;
+        let mut path = alloc::string::String::new();
+        path.try_reserve_exact(20).map_err(|_| crate::syscall::errno::ENOMEM)?;
+        write!(&mut path, "/dev/pts/{}", self.pty_num).map_err(|_| crate::syscall::errno::ENOMEM)?;
+        Ok(path)
     }
 }

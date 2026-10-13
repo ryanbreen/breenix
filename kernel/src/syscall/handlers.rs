@@ -837,7 +837,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
     }
 
     // Validate buffer pointer and count
-    if buf_ptr == 0 || count == 0 {
+    if count == 0 {
         // Linux checks the descriptor before honouring a degenerate transfer
         // (#670): a zero-length operation on a bad descriptor is EBADF, not 0.
         if let Err(e) = validate_fd_for_degenerate_transfer(fd as i32, false) {
@@ -919,7 +919,9 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             loop {
                 // Register as blocked reader FIRST to avoid race condition
                 // where data arrives between checking and blocking
-                crate::ipc::stdin::register_blocked_reader(thread_id);
+                if let Err(e) = crate::ipc::stdin::register_blocked_reader(thread_id) {
+                    return SyscallResult::Err(e as u64);
+                }
 
                 // Read from stdin buffer
                 let read_result = crate::ipc::stdin::read_bytes(&mut user_buf);

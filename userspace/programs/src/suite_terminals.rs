@@ -37,6 +37,7 @@ use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU8, Ordering::Relaxed, Order
 #[cfg(target_arch = "x86_64")]
 mod nr {
     pub const MMAP: u64 = 9;
+    pub const MUNMAP: u64 = 11;
     pub const RT_SIGPROCMASK: u64 = 14;
     #[cfg(not(libc_has = "ioctl"))]
     pub const IOCTL: u64 = 16;
@@ -61,6 +62,7 @@ mod nr {
 #[cfg(target_arch = "aarch64")]
 mod nr {
     pub const MMAP: u64 = 222;
+    pub const MUNMAP: u64 = 215;
     pub const RT_SIGPROCMASK: u64 = 135;
     #[cfg(not(libc_has = "ioctl"))]
     pub const IOCTL: u64 = 29;
@@ -90,6 +92,7 @@ const EIO: i64 = 5;
 const ENXIO: i64 = 6;
 const EBADF: i64 = 9;
 const EAGAIN: i64 = 11;
+const EFAULT: i64 = 14;
 const EINVAL: i64 = 22;
 const ENOTTY: i64 = 25;
 
@@ -105,6 +108,7 @@ const POLLHUP: i16 = 0x10;
 const PROT_READ: u64 = 1;
 const PROT_WRITE: u64 = 2;
 const MAP_SHARED_ANON: u64 = 0x21;
+const MAP_PRIVATE_ANON: u64 = 0x22;
 const SIG_SETMASK: u64 = 2;
 const WNOHANG: u64 = 1;
 const WUNTRACED: u64 = 2;
@@ -132,6 +136,7 @@ const TIOCNOTTY: u64 = 0x5422;
 const TIOCGSID: u64 = 0x5429;
 #[cfg(not(libc_has = "ptsname"))]
 const TIOCGPTN: u64 = 0x8004_5430;
+const FIONREAD: u64 = 0x541b;
 #[cfg(not(libc_has = "unlockpt"))]
 const TIOCSPTLCK: u64 = 0x4004_5431;
 #[cfg(not(libc_has = "posix_openpt"))]
@@ -789,6 +794,57 @@ fn poll1(fd: i32, events: i16, timeout_ms: i32) -> Result<(i64, i16), CaseError>
 
 /// `n` bytes of a pattern that runs through every byte value.
 fn pattern(n: usize) -> Vec<u8> { (0..n).map(|i| (i * 7 + i / 256) as u8).collect() }
+
+/// The address of an unmapped page that follows a mapped, writable one.
+fn hole() -> Result<u64, CaseError> {
+    let base = sc(nr::MMAP, &[0, 8192, PROT_READ | PROT_WRITE, MAP_PRIVATE_ANON, u64::MAX, 0]);
+    if (-4095..0).contains(&base) { return err(format!("setting up: mmap of two pages failed with {}", errname(-base))); }
+    let hole = base as u64 + 4096;
+    zero("setting up: munmap of the second page", sc(nr::MUNMAP, &[hole, 4096]))?;
+    // SAFETY: the first page is mapped and writable, and nothing else uses it.
+    unsafe { core::ptr::write_bytes(base as *mut u8, 0, 4096) };
+    Ok(hole)
+}
+
+/// The bytes `fd` has to read, by FIONREAD.
+fn queued(fd: i32) -> Result<i64, CaseError> {
+    let mut n = 0i32;
+    let r = ioctl(fd, FIONREAD, &mut n as *mut i32 as u64)?;
+    Ok(if r < 0 { r } else { i64::from(n) })
+}
+
+/// One non-blocking read of `len` bytes from `fd` to the address `at`, retried while it
+/// finds nothing, for up to `ms`: its result.
+fn read_at(fd: i32, at: u64, len: usize, ms: u64) -> Result<i64, CaseError> {
+    let flags = ok("fcntl(F_GETFL)", sc(nr::FCNTL, &[fd as u64, F_GETFL]))? as u64;
+    zero("fcntl(F_SETFL, O_NONBLOCK)", sc(nr::FCNTL, &[fd as u64, F_SETFL, flags | O_NONBLOCK]))?;
+    let ms = bounded(ms, CLEANUP_MS);
+    let start = now_ms();
+    let r = loop {
+        let r = read(fd, at as *mut u8, len)?;
+        if (r != -EAGAIN && r != -EINTR) || now_ms().saturating_sub(start) >= ms { break r; }
+        nap();
+    };
+    let _ = sc(nr::FCNTL, &[fd as u64, F_SETFL, flags]);
+    Ok(r)
+}
+
+/// Write to `fd` without blocking until it takes no more: the bytes written.
+fn fill(fd: i32, what: &str) -> Result<usize, CaseError> {
+    let flags = ok("fcntl(F_GETFL)", sc(nr::FCNTL, &[fd as u64, F_GETFL]))? as u64;
+    zero("fcntl(F_SETFL, O_NONBLOCK)", sc(nr::FCNTL, &[fd as u64, F_SETFL, flags | O_NONBLOCK]))?;
+    let chunk = pattern(256);
+    let mut total = 0;
+    let end = loop {
+        let r = write(fd, chunk.as_ptr(), chunk.len())?;
+        if r <= 0 { break r; }
+        total += r as usize;
+        if total > 1 << 20 { break 0; }
+    };
+    let _ = sc(nr::FCNTL, &[fd as u64, F_SETFL, flags]);
+    check(end == -EAGAIN, &format!("setting up: filling {what} ended with {} after {total} bytes, expected EAGAIN", shown(end)))?;
+    Ok(total)
+}
 
 // ---------------------------------------------------------------------------
 // Shared pages and the processes a case starts.
@@ -1480,6 +1536,45 @@ fn bulk(down: bool) -> CaseResult {
 
 fn p_bulk_down() -> CaseResult { bulk(true) }
 fn p_bulk_up() -> CaseResult { bulk(false) }
+
+/// A read of 64 bytes whose buffer has 32 writable bytes before an unmapped page returns
+/// the 32 it copied, as Linux's read does (tty_io.c, iterate_tty_read).
+fn read_fault_partial(down: bool) -> CaseResult {
+    let pty = raw_pty(|_| {})?;
+    let data = pattern(64);
+    let (from, to, names) = if down { (pty.master, pty.slave, ("the master", "the slave")) } else { (pty.slave, pty.master, ("the slave", "the master")) };
+    put(from, &data, names.0)?;
+    let mut last = 0;
+    check(until(1000, || { last = queued(to).unwrap_or(-1); last >= 64 }), &format!("setting up: FIONREAD on {} reported {} of the 64 bytes written", names.1, shown(last)))?;
+    let at = hole()? - 32;
+    let r = read_at(to, at, 64, 1000)?;
+    check(r == 32, &format!("a 64-byte read on {} whose last 32 bytes are unmapped returned {}, expected 32", names.1, shown(r)))?;
+    // SAFETY: the 32 bytes before the hole are mapped and were just written.
+    let got = unsafe { core::slice::from_raw_parts(at as *const u8, 32) };
+    same(got, &data[..32], names.1)
+}
+
+fn p_read_fault_partial_down() -> CaseResult { read_fault_partial(true) }
+fn p_read_fault_partial_up() -> CaseResult { read_fault_partial(false) }
+
+/// A read whose copy faults still frees the room it took, so a writer blocked on the full
+/// queue resumes.
+fn read_fault_room(down: bool) -> CaseResult {
+    let pty = raw_pty(|_| {})?;
+    let (from, to, names) = if down { (pty.master, pty.slave, ("the master", "the slave")) } else { (pty.slave, pty.master, ("the slave", "the master")) };
+    fill(from, names.0)?;
+    let mut writer = spawn(|| put(from, b"z", names.0))?;
+    idle(200);
+    if let Some(status) = writer.change(false) {
+        return err(format!("setting up: a write to the full {} did not block: the writer {}", names.0, writer.reason(status)));
+    }
+    let r = read_at(to, hole()?, 64, 1000)?;
+    check(r == -EFAULT, &format!("a 64-byte read on {} to an unmapped page returned {}, expected EFAULT", names.1, shown(r)))?;
+    writer.finish(2000, &format!("the writer blocked on {} once the read freed room", names.0))
+}
+
+fn p_read_fault_room_down() -> CaseResult { read_fault_room(true) }
+fn p_read_fault_room_up() -> CaseResult { read_fault_room(false) }
 
 fn p_master_poll() -> CaseResult {
     let pty = raw_pty(|_| {})?;
@@ -2595,6 +2690,10 @@ static SUITE: Suite = suite("terminals", "Terminals & job control", &[
         case("slave-to-master", "Bytes written to the slave are read from the master", p_slave_to_master),
         case("bulk-down", "16 KiB written to the master by another process are read from the slave in order", p_bulk_down),
         case("bulk-up", "16 KiB written to the slave by another process are read from the master in order", p_bulk_up),
+        case("read-fault-partial-down", "Linux ABI: a slave read whose buffer runs into an unmapped page returns the bytes copied before it", p_read_fault_partial_down),
+        case("read-fault-partial-up", "Linux ABI: a master read whose buffer runs into an unmapped page returns the bytes copied before it", p_read_fault_partial_up),
+        case("read-fault-room-down", "A slave read that fails with EFAULT frees the input it took, so a master writer blocked on a full queue resumes", p_read_fault_room_down),
+        case("read-fault-room-up", "A master read that fails with EFAULT frees the output it took, so a slave writer blocked on a full buffer resumes", p_read_fault_room_up),
         case("master-poll", "poll on the master reports POLLIN once the slave writes, and not before", p_master_poll),
         case("slave-poll", "poll on the slave reports POLLIN once the master writes, and not before", p_slave_poll),
         case("master-nonblock", "A non-blocking read on the master with nothing written fails with EAGAIN", p_master_nonblock),

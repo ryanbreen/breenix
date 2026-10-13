@@ -77,19 +77,22 @@ pub fn sys_setsid() -> SyscallResult {
     // A process group whose ID is the caller's PID exists: the caller leads
     // it, or it outlived the caller's leadership. Zombies are still members.
     if manager
-        .all_processes()
-        .iter()
-        .any(|process| process.pgid == pid)
+        .iter_processes()
+        .any(|(_, process)| process.pgid == pid)
     {
         return SyscallResult::Err(EPERM);
     }
 
+    crate::tty::ctty::set_group_ctty(manager, group, None);
+
     // Create new session: set sid = pgid = pid, for every thread of the
     // process.
     let new_sid = pid;
-    for row in manager.group_rows_mut(group) {
-        row.sid = new_sid;
-        row.pgid = new_sid;
+    for (_, row) in manager.iter_processes_mut() {
+        if row.thread_group_id.unwrap_or(row.id.as_u64()) == group {
+            row.sid = new_sid;
+            row.pgid = new_sid;
+        }
     }
 
     log::info!(
@@ -160,12 +163,7 @@ pub fn sys_getsid(pid: i32) -> SyscallResult {
             }
         };
 
-        // Check if process is terminated
-        if process.is_terminated() {
-            log::debug!("sys_getsid: process {} is terminated", pid);
-            return SyscallResult::Err(ESRCH);
-        }
-
+        // A zombie retains its PID and IDs until it is reaped, as on Linux.
         log::debug!(
             "sys_getsid({}): returning sid={}",
             pid,
@@ -218,9 +216,6 @@ pub fn sys_getpgid(pid: i32) -> SyscallResult {
                 return SyscallResult::Err(ESRCH);
             }
         };
-        if process.is_terminated() {
-            return SyscallResult::Err(ESRCH);
-        }
         SyscallResult::Ok(process.pgid.as_u64())
     }
 }
@@ -290,7 +285,7 @@ pub fn sys_setpgid(pid: i32, pgid: i32) -> SyscallResult {
     };
 
     let (target_sid, target_parent, target_exec) = match manager.get_process(target_pid) {
-        Some(p) if !p.is_terminated() => (p.sid, p.parent, p.has_exec),
+        Some(p) => (p.sid, p.parent, p.has_exec),
         _ => return SyscallResult::Err(ESRCH),
     };
     // The process the target's parent row belongs to: a child forked by one
@@ -320,16 +315,17 @@ pub fn sys_setpgid(pid: i32, pgid: i32) -> SyscallResult {
     // are still members of their group.
     if new_pgid != target_pid
         && !manager
-            .all_processes()
-            .iter()
-            .any(|process| process.pgid == new_pgid && process.sid == caller_sid)
+            .iter_processes()
+            .any(|(_, process)| process.pgid == new_pgid && process.sid == caller_sid)
     {
         return SyscallResult::Err(EPERM);
     }
 
     // Every thread of the target process joins the group.
-    for row in manager.group_rows_mut(target_pid.as_u64()) {
-        row.pgid = new_pgid;
+    for (_, row) in manager.iter_processes_mut() {
+        if row.thread_group_id.unwrap_or(row.id.as_u64()) == target_pid.as_u64() {
+            row.pgid = new_pgid;
+        }
     }
 
     log::debug!(

@@ -2,58 +2,35 @@
 
 use super::PtyPair;
 use crate::syscall::blocking_io::wait_prepared;
-use crate::syscall::errno::{EAGAIN, EFAULT, EIO, ENOMEM};
+use crate::syscall::errno::{EAGAIN, EIO};
 use crate::syscall::SyscallResult;
 use crate::task::thread::ThreadState;
 use crate::tty::ctty::TtyRef;
 use crate::tty::jobctl::{self, JobOp};
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 
-/// The most a terminal read returns: more than a master's ring (4095 bytes)
-/// or a slave's input queues (`MAX_INPUT` plus one line) ever hold.
-const READ_MAX: u64 = 8192;
-
-/// A kernel buffer for a read of `count` bytes, bounded by `READ_MAX`.
-pub(crate) fn read_buffer(count: u64) -> Result<Vec<u8>, SyscallResult> {
-    let len = count.min(READ_MAX) as usize;
-    let mut buf = Vec::new();
-    if buf.try_reserve_exact(len).is_err() {
-        return Err(SyscallResult::Err(ENOMEM as u64));
-    }
-    buf.resize(len, 0);
-    Ok(buf)
-}
-
-/// Copy `n` bytes read into `buf` out to the caller's `buf_ptr`.
-pub(crate) fn copy_out(buf_ptr: u64, buf: &[u8], n: usize) -> SyscallResult {
-    if n > 0 && crate::syscall::handlers::copy_to_user(buf_ptr, buf.as_ptr() as u64, n).is_err() {
-        return SyscallResult::Err(EFAULT as u64);
-    }
-    SyscallResult::Ok(n as u64)
-}
+/// The most a master read returns: more than its ring (4095 bytes) ever holds.
+const READ_MAX: u64 = super::pair::PTY_BUFFER_SIZE as u64;
 
 /// read(2) on a master: the slave's output.
 pub fn read_master(pair: &Arc<PtyPair>, buf_ptr: u64, count: u64, nonblocking: bool) -> SyscallResult {
-    let mut buf = match read_buffer(count) {
-        Ok(buf) => buf,
-        Err(result) => return result,
-    };
+    let count = count.min(READ_MAX) as usize;
     loop {
         let outcome = {
             let mut ring = pair.slave_to_master.lock();
-            let n = ring.read(&mut buf);
-            if n > 0 {
+            let (taken, result) = ring.read_user(buf_ptr, count);
+            // Taken bytes made room even when their copy faulted.
+            if taken > 0 {
                 drop(ring);
-                let result = copy_out(buf_ptr, &buf, n);
-                if matches!(result, SyscallResult::Err(_)) {
-                    // EFAULT: the output was not delivered, so it goes back
-                    // to the front of the ring (all of it, unless a writer
-                    // filled the room meanwhile).
-                    pair.slave_to_master.lock().unread(&buf[..n]);
-                }
+                pair.drain_echo();
                 pair.slave_writers.wake_up();
-                return result;
+                return match result {
+                    Ok(n) => SyscallResult::Ok(n as u64),
+                    Err(e) => SyscallResult::Err(e as u64),
+                };
+            }
+            if let Err(e) = result {
+                return SyscallResult::Err(e as u64);
             }
             // Linux: once the slave has been opened and every slave fd is
             // closed, the master reads the buffered output and then EIO.
@@ -127,6 +104,7 @@ pub fn write_slave(pair: &Arc<PtyPair>, data: &[u8], nonblocking: bool) -> Sysca
     if let Err(e) = jobctl::check(&TtyRef::Pty(pair.clone()), JobOp::Write) {
         return SyscallResult::Err(e as u64);
     }
+    pair.drain_echo();
     let mut done = 0;
     while done < data.len() {
         if pair.master_closed() {
