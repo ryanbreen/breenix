@@ -2,7 +2,6 @@
 //!
 //! Implements RFC 826 for IPv4-to-Ethernet address resolution.
 
-use alloc::vec::Vec;
 use spin::Mutex;
 
 use super::ethernet::{self, EthernetFrame, BROADCAST_MAC, ETHERTYPE_ARP};
@@ -135,28 +134,17 @@ impl ArpPacket {
         sender_ip: &[u8; 4],
         target_mac: &[u8; 6],
         target_ip: &[u8; 4],
-    ) -> Vec<u8> {
-        let mut packet = Vec::with_capacity(ARP_PACKET_SIZE);
-
-        // Hardware type (Ethernet = 1)
-        packet.extend_from_slice(&ARP_HTYPE_ETHERNET.to_be_bytes());
-        // Protocol type (IPv4 = 0x0800)
-        packet.extend_from_slice(&ARP_PTYPE_IPV4.to_be_bytes());
-        // Hardware address length (6)
-        packet.push(6);
-        // Protocol address length (4)
-        packet.push(4);
-        // Operation
-        packet.extend_from_slice(&operation.to_be_bytes());
-        // Sender MAC
-        packet.extend_from_slice(sender_mac);
-        // Sender IP
-        packet.extend_from_slice(sender_ip);
-        // Target MAC
-        packet.extend_from_slice(target_mac);
-        // Target IP
-        packet.extend_from_slice(target_ip);
-
+    ) -> [u8; ARP_PACKET_SIZE] {
+        let mut packet = [0; ARP_PACKET_SIZE];
+        packet[0..2].copy_from_slice(&ARP_HTYPE_ETHERNET.to_be_bytes());
+        packet[2..4].copy_from_slice(&ARP_PTYPE_IPV4.to_be_bytes());
+        packet[4] = 6;
+        packet[5] = 4;
+        packet[6..8].copy_from_slice(&operation.to_be_bytes());
+        packet[8..14].copy_from_slice(sender_mac);
+        packet[14..18].copy_from_slice(sender_ip);
+        packet[18..24].copy_from_slice(target_mac);
+        packet[24..28].copy_from_slice(target_ip);
         packet
     }
 }
@@ -193,7 +181,9 @@ pub fn handle_arp(eth_frame: &EthernetFrame, arp: &ArpPacket) {
             let frame =
                 ethernet::EthernetFrame::build(&our_mac, &eth_frame.src_mac, ETHERTYPE_ARP, &reply);
 
-            let _ = driver_transmit(&frame);
+            if let Ok(frame) = frame {
+                let _ = driver_transmit(&frame);
+            }
         }
         ARP_OP_REPLY => {
             if arp.sender_ip == config.gateway {
@@ -278,7 +268,7 @@ pub fn request(target_ip: &[u8; 4]) -> Result<(), &'static str> {
     );
 
     let frame =
-        ethernet::EthernetFrame::build(&our_mac, &BROADCAST_MAC, ETHERTYPE_ARP, &arp_packet);
+        ethernet::EthernetFrame::build(&our_mac, &BROADCAST_MAC, ETHERTYPE_ARP, &arp_packet)?;
 
     driver_transmit(&frame)?;
 

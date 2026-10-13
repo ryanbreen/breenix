@@ -1238,7 +1238,7 @@ pub fn send_ethernet(
     }
     let src_mac = get_mac_address().ok_or("Network device not initialized")?;
 
-    let frame = ethernet::EthernetFrame::build(&src_mac, dst_mac, ethertype, payload);
+    let frame = ethernet::EthernetFrame::build(&src_mac, dst_mac, ethertype, payload)?;
     driver_transmit(&frame)
 }
 

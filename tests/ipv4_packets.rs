@@ -155,3 +155,31 @@ fn icmp_quote_uses_linux_fatal_codes_without_quoted_checksum_validation() {
         );
     }
 }
+
+#[test]
+fn ethernet_build_preserves_header_and_minimum_padding() {
+    let bytes = ethernet::EthernetFrame::build(&[1; 6], &[2; 6], ethernet::ETHERTYPE_IPV4, &[3; 8])
+        .unwrap();
+    assert_eq!(bytes.len(), ethernet::ETHERNET_MIN_SIZE);
+    let frame = ethernet::EthernetFrame::parse(&bytes).unwrap();
+    assert_eq!(frame.src_mac, [1; 6]);
+    assert_eq!(frame.dst_mac, [2; 6]);
+    assert_eq!(frame.ethertype, ethernet::ETHERTYPE_IPV4);
+    assert_eq!(&frame.payload[..8], &[3; 8]);
+    assert!(frame.payload[8..].iter().all(|b| *b == 0));
+}
+#[test]
+fn broadcast_ipv4_is_not_dispatched_to_tcp_or_icmp() {
+    for protocol in [ipv4::PROTOCOL_ICMP, ipv4::PROTOCOL_TCP] {
+        let payload = icmp::IcmpPacket::echo_request(1, 1, b"broadcast");
+        let packet = Ipv4Packet::try_build([10, 0, 2, 2], [255; 4], protocol, &payload).unwrap();
+        let frame = ethernet::EthernetFrame {
+            src_mac: [1; 6],
+            dst_mac: [255; 6],
+            ethertype: ethernet::ETHERTYPE_IPV4,
+            payload: &packet,
+        };
+        // Harness protocol output/dispatch panics if either forbidden path runs.
+        ipv4::handle_ipv4(&frame, &Ipv4Packet::parse(&packet).unwrap());
+    }
+}
