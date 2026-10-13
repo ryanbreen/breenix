@@ -69,7 +69,7 @@ fn service() {
         let mut retry = false;
         if PENDING.swap(false, Ordering::AcqRel) {
             for home in [false, true] {
-                let mut guard = super::fs_write_raw(home);
+                let Ok(mut guard) = super::fs_write_raw(home) else { retry = true; continue; };
                 if let Some(fs) = guard.as_mut() {
                     match fs.finalize_writeback() {
                         super::Finalize::Idle => {}
@@ -86,7 +86,7 @@ fn service() {
                 ORPHANS.store(false, Ordering::Release);
             }
             for home in [false, true] {
-                let mut guard = super::fs_write_raw(home);
+                let Ok(mut guard) = super::fs_write_raw(home) else { retry = true; continue; };
                 if let Some(fs) = guard.as_mut() {
                     match fs.finalize_pending_orphans() {
                         super::Finalize::Idle => {}

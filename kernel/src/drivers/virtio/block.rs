@@ -39,84 +39,77 @@ const BLOCK_SLOW_REPORT_INTERVAL_NS: u64 = 10_000_000_000;
 const BLOCK_BOOTSTRAP_WAIT_LIMIT_NS: u64 = 30_000_000_000;
 /// When a slow request was last reported, so reports stay rate-limited.
 static LAST_SLOW_REPORT_NS: AtomicU64 = AtomicU64::new(0);
+const BLOCK_KILLED_ERROR: &str = "Block request interrupted by SIGKILL";
 const NO_COMPLETED_DESC: u32 = u32::MAX;
 const NO_COMPLETED_STATUS: u32 = u32::MAX;
 
 struct BlockRequestGate {
-    locked: AtomicBool,
-    wedged: AtomicBool,
+    state: super::request_state::RequestState,
     waiters: crate::task::waitqueue::WaitQueueHead,
 }
 
 struct BlockRequestGuard<'a> {
     gate: &'a BlockRequestGate,
     release_on_drop: bool,
+    reaped: bool,
 }
 
 impl BlockRequestGate {
     const fn new() -> Self {
         Self {
-            locked: AtomicBool::new(false),
-            wedged: AtomicBool::new(false),
+            state: super::request_state::RequestState::new(),
             waiters: crate::task::waitqueue::WaitQueueHead::new(),
         }
     }
 
-    fn lock(&self) -> Result<BlockRequestGuard<'_>, &'static str> {
-        if self.wedged.load(Ordering::Acquire) {
-            return Err("Block device wedged after an abandoned request");
-        }
-
+    fn lock(&self, completed: impl Fn() -> bool) -> Result<BlockRequestGuard<'_>, &'static str> {
         loop {
-            if self
-                .locked
-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-            {
-                return Ok(BlockRequestGuard {
-                    gate: self,
-                    release_on_drop: true,
-                });
+            if self.state.is_wedged() { return Err("Block device wedged after an abandoned request"); }
+            if crate::task::thread::current_kill_pending() { return Err(BLOCK_KILLED_ERROR); }
+            let acquired = self.state.try_acquire();
+            let reaped = !acquired && self.state.try_reap(completed());
+            if acquired || reaped {
+                return Ok(BlockRequestGuard { gate: self, release_on_drop: true, reaped });
             }
-
-            if !block_request_gate_can_sleep() {
-                return Err("Block request already in progress");
-            }
-
-            if self
-                .waiters
-                .prepare_to_wait(crate::task::thread::ThreadState::BlockedOnIO)
-                .is_none()
-            {
-                return Err("Block request already in progress");
-            }
-
-            if self.wedged.load(Ordering::Acquire) {
-                self.waiters.finish_wait();
-                return Err("Block device wedged after an abandoned request");
-            }
-
-            if self.locked.load(Ordering::Acquire) {
-                crate::task::waitqueue::schedule_current_wait();
-            }
-            self.waiters.finish_wait();
-
-            if self.wedged.load(Ordering::Acquire) {
-                return Err("Block device wedged after an abandoned request");
+            if !block_request_gate_can_sleep() { return Err("Block request already in progress"); }
+            // A detached request has no completion waiter. Bound the park so
+            // its next owner can reap without doing queue cleanup in the ISR.
+            let outcome = self.waiters.prepare_to_wait_checked(
+                crate::task::thread::ThreadState::BlockedOnIO,
+                Some(monotonic_now_ns().saturating_add(BLOCK_WAIT_SLICE_NS)),
+                || !crate::task::thread::current_kill_pending() && !self.state.available(completed()),
+            );
+            match outcome {
+                crate::task::waitqueue::PrepareOutcome::Queued => {
+                    crate::task::waitqueue::schedule_current_wait();
+                    self.waiters.finish_wait();
+                }
+                crate::task::waitqueue::PrepareOutcome::Mismatch => continue,
+                _ => return Err("Block request wait unavailable"),
             }
         }
     }
 
     fn unlock(&self) {
-        self.locked.store(false, Ordering::Release);
+        self.state.release();
         self.waiters.wake_up_one();
     }
 }
 
 impl BlockRequestGuard<'_> {
+    fn fail(mut self, error: &'static str) {
+        if error == BLOCK_KILLED_ERROR {
+            self.release_on_drop = false;
+            self.gate.state.detach();
+            self.gate.waiters.wake_up();
+        } else {
+            self.wedge();
+        }
+    }
+
     fn wedge(mut self) {
         self.release_on_drop = false;
-        self.gate.wedged.store(true, Ordering::Release);
+        self.gate.state.wedge();
         self.gate.waiters.wake_up();
     }
 }
@@ -480,6 +473,17 @@ impl VirtioBlockDevice {
         Ok((phys, virt))
     }
 
+    fn lock_request(&self) -> Result<BlockRequestGuard<'_>, &'static str> {
+        let guard = self.request_gate.lock(|| self.completion.is_complete(self.pending_token.load(Ordering::Acquire)))?;
+        if guard.reaped {
+            let (desc, _) = self.take_completed_request()?;
+            self.with_queue(|queue| queue.free_chain(desc));
+            self.clear_completion_state();
+            // Keep writes_pending set: a killed flush never certifies durability.
+        }
+        Ok(guard)
+    }
+
     fn next_completion_token(&self) -> u32 {
         let mut token = self
             .next_token
@@ -518,19 +522,22 @@ impl VirtioBlockDevice {
     /// The device owns the descriptors and DMA buffers until it completes the
     /// request, and a slow device is not a failed one, so, as in Linux's
     /// virtio-blk, there is no timeout: the wait ends when the device
-    /// completes the request. It sleeps in slices only to notice a device
-    /// that has failed, the one case where the request is abandoned. A wait
+    /// completes the request. SIGKILL detaches only the waiter: the gate keeps
+    /// custody of the request until a later caller consumes its completion.
+    /// Device failure still wedges the slot. A wait
     /// that cannot sleep spins instead, and is abandoned past the bootstrap
     /// limit rather than spinning the boot CPU forever.
     fn wait_for_completion(&self, token: u32, request: u32) -> Result<(), &'static str> {
         let started_ns = monotonic_now_ns();
         let sleeps = crate::task::completion::wait_sleeps();
         loop {
-            if let Ok(true) = self
+            match self
                 .completion
-                .wait_timeout_uninterruptible(token, BLOCK_WAIT_SLICE_NS)
+                .wait_timeout_killable(token, BLOCK_WAIT_SLICE_NS)
             {
-                return Ok(());
+                Ok(true) => return Ok(()),
+                Err(_) => return Err(BLOCK_KILLED_ERROR),
+                Ok(false) => {}
             }
             if self.device.has_failed() {
                 return Err("Block device failed with a request outstanding");
@@ -627,7 +634,7 @@ impl VirtioBlockDevice {
 
         // The DMA header/data/status buffers are shared across callers. Keep
         // one request in flight, but do not make the IRQ handler take this gate.
-        let request_guard = self.request_gate.lock()?;
+        let request_guard = self.lock_request()?;
         let completion_token = self.prepare_completion_wait();
 
         // Use cached DMA buffers (protected by queue mutex)
@@ -663,7 +670,7 @@ impl VirtioBlockDevice {
         self.device.notify_queue(0);
 
         if let Err(e) = self.wait_for_completion(completion_token, request_type::IN) {
-            request_guard.wedge();
+            request_guard.fail(e);
             return Err(e);
         }
 
@@ -721,7 +728,7 @@ impl VirtioBlockDevice {
             return Err("Block IRQ completion unavailable before interrupts are enabled");
         }
 
-        let request_guard = self.request_gate.lock()?;
+        let request_guard = self.lock_request()?;
         let completion_token = self.prepare_completion_wait();
 
         // Use cached DMA buffers (protected by queue mutex)
@@ -757,7 +764,7 @@ impl VirtioBlockDevice {
         self.device.notify_queue(0);
 
         if let Err(e) = self.wait_for_completion(completion_token, request_type::OUT) {
-            request_guard.wedge();
+            request_guard.fail(e);
             return Err(e);
         }
 
@@ -792,7 +799,7 @@ impl VirtioBlockDevice {
         if !self.irq_completion_available() {
             return Err("Block IRQ completion unavailable before interrupts are enabled");
         }
-        let request_guard = self.request_gate.lock()?;
+        let request_guard = self.lock_request()?;
         // This check uses the request gate shared by write and flush submission.
         if !self.writes_pending.load(Ordering::Acquire) { return Ok(()); }
         let token = self.prepare_completion_wait();
@@ -820,7 +827,7 @@ impl VirtioBlockDevice {
         core::sync::atomic::fence(Ordering::SeqCst);
         self.device.notify_queue(0);
         if let Err(error) = self.wait_for_completion(token, request_type::FLUSH) {
-            request_guard.wedge();
+            request_guard.fail(error);
             return Err(error);
         }
         let (desc, status) = match self.take_completed_request() {

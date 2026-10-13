@@ -641,7 +641,7 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
             return SyscallResult::Err(ENOTDIR as u64);
         }
         let handle = {
-            let guard = mount.read();
+            let guard = match mount.read() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
             let Some(fs) = guard.as_ref() else {
                 return SyscallResult::Err(5);
             };
@@ -713,7 +713,7 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
 
     let result = if needs_write {
         // === WRITE PATH: O_CREAT or O_TRUNC requires exclusive filesystem access ===
-        let mut fs_guard = mount.write();
+        let mut fs_guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
         match fs_guard.as_mut() {
             Some(fs) => sys_open_write_path(fs, &resolved, flags, mode, &cred),
             None => {
@@ -723,7 +723,7 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
         }
     } else {
         // === READ PATH: No filesystem modification needed, use shared read lock ===
-        let fs_guard = mount.read();
+        let fs_guard = match mount.read() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
         match fs_guard.as_ref() {
             Some(fs) => sys_open_read_path(fs, &resolved, flags, &cred),
             None => {
@@ -818,7 +818,7 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
         file_type,
         Ext2FileType::CharDevice | Ext2FileType::BlockDevice | Ext2FileType::Socket
     ) {
-        let guard = mount.read();
+        let guard = match mount.read() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
         let Some(fs) = guard.as_ref() else {
             return SyscallResult::Err(5);
         };
@@ -1486,7 +1486,7 @@ fn load_ext2_inode_stat_for_mount(inode_num: u64, mount_id: usize) -> Option<Ino
     // Dispatch to home or root filesystem based on mount_id
     let is_home = ext2::home_mount_id().map_or(false, |id| id == mount_id);
     if is_home {
-        let fs_guard = ext2::home_fs_read();
+        let fs_guard = ext2::home_fs_read().ok()?;
         let fs = fs_guard.as_ref()?;
         if fs.mount_id != mount_id {
             return None;
@@ -1495,7 +1495,7 @@ fn load_ext2_inode_stat_for_mount(inode_num: u64, mount_id: usize) -> Option<Ino
         return load_inode_stat_from_inode(&inode);
     }
 
-    let fs_guard = ext2::root_fs_read();
+    let fs_guard = ext2::root_fs_read().ok()?;
     let fs = fs_guard.as_ref()?;
     if fs.mount_id != mount_id {
         return None;
@@ -1843,7 +1843,7 @@ fn sys_unlink_from(dirfd: i32, pathname: u64) -> SyscallResult {
         let Some(parent) = resolved.entry_dir() else {
             return SyscallResult::Err(EIO as u64);
         };
-        let mut guard = mount.write();
+        let mut guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
         let Some(fs) = guard.as_mut() else {
             return SyscallResult::Err(EIO as u64);
         };
@@ -1981,7 +1981,7 @@ fn sys_rename_from(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64) -> 
 
     let cred = current_file_credentials();
     let result = {
-        let mut fs_guard = mount.write();
+        let mut fs_guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
         match fs_guard.as_mut() {
             Some(fs) => {
                 let (Ok(old_parent), Ok(new_parent)) = (old_dir.verify(fs), new_dir.verify(fs))
@@ -2109,7 +2109,7 @@ fn sys_rmdir_from(dirfd: i32, pathname: u64) -> SyscallResult {
         let Some(parent) = resolved.entry_dir() else {
             return SyscallResult::Err(EIO as u64);
         };
-        let mut guard = mount.write();
+        let mut guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
         let Some(fs) = guard.as_mut() else {
             return SyscallResult::Err(EIO as u64);
         };
@@ -2246,7 +2246,7 @@ fn sys_link_from(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64) -> Sy
         let (Some(source), Some(parent)) = (old.handle(), new.entry_dir()) else {
             return SyscallResult::Err(EIO as u64);
         };
-        let mut guard = mount.write();
+        let mut guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
         let Some(fs) = guard.as_mut() else {
             return SyscallResult::Err(EIO as u64);
         };
@@ -2369,7 +2369,7 @@ fn sys_mkdir_from(dirfd: i32, pathname: u64, mode: u32) -> SyscallResult {
     // Create the directory on the correct filesystem
     let cred = current_file_credentials();
     let mkdir_result = {
-        let mut fs_guard = mount.write();
+        let mut fs_guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
         match fs_guard.as_mut() {
             Some(fs) => {
                 let parent = match creation_parent(fs, &resolved, &cred) {
@@ -2489,7 +2489,7 @@ fn sys_symlink_from(target: u64, dirfd: i32, linkpath: u64) -> SyscallResult {
     let cred = current_file_credentials();
     // Create the symbolic link on the correct filesystem
     let symlink_result = {
-        let mut fs_guard = mount.write();
+        let mut fs_guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
         match fs_guard.as_mut() {
             Some(fs) => {
                 let parent = match creation_parent(fs, &link, &cred) {
@@ -2601,7 +2601,7 @@ fn sys_readlink_from(dirfd: i32, pathname: u64, buf: u64, bufsize: u64) -> Sysca
         Target::Inode { .. } | Target::Virtual => return SyscallResult::Err(EINVAL as u64),
     };
     let target = {
-        let fs_guard = mount.read();
+        let fs_guard = match mount.read() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
         let fs = match fs_guard.as_ref() {
             Some(fs) => fs,
             None => {
@@ -2697,7 +2697,7 @@ fn access_resolved(
             };
         }
     };
-    let guard = mount.read();
+    let guard = match mount.read() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
     let Some(fs) = guard.as_ref() else {
         return SyscallResult::Err(EIO as u64);
     };
@@ -4127,7 +4127,8 @@ pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, flags: u32) -> Sy
             return result;
         }
     };
-    let mount_id = match mount.read().as_ref() {
+    let guard = match mount.read() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
+    let mount_id = match guard.as_ref() {
         Some(fs) => fs.mount_id,
         None => return SyscallResult::Err(ENOENT as u64),
     };
@@ -4506,6 +4507,7 @@ pub fn sys_fsync(fd: i32) -> SyscallResult {
     } else {
         ext2::root_fs_read()
     };
+    let guard = match guard { Ok(guard) => guard, Err(_) => return SyscallResult::Err(super::errno::EINTR as u64) };
     if guard.as_ref().is_none_or(|fs| fs.mount_id != mount_id) {
         return SyscallResult::Err(super::errno::EIO as u64);
     }
@@ -4543,7 +4545,7 @@ struct Statfs {
 }
 
 fn ext2_statfs(mount: crate::fs::namei::Mount) -> Result<Statfs, u64> {
-    let guard = mount.read();
+    let guard = mount.read()?;
     let fs = guard.as_ref().ok_or(super::errno::EIO as u64)?;
     let stats = fs.statfs();
     Ok(Statfs {
@@ -4687,7 +4689,7 @@ fn statfs_pin(pin: &crate::fs::ext2::live_inode::FileHandle) -> Result<Statfs, u
         Mount::Root
     };
     {
-        let guard = mount.read();
+        let guard = mount.read()?;
         pin.verify(guard.as_ref().ok_or(5u64)?).map_err(|_| 5u64)?;
     }
     ext2_statfs(mount)
@@ -4700,7 +4702,7 @@ pub fn sys_sync() -> SyscallResult {
     let mut bytes = crate::memory::file_map::writeback_buffer().ok();
     for mount in [Mount::Root, Mount::Home] {
         let handles = {
-            let guard = mount.read();
+            let guard = match mount.read() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
             guard.as_ref().map(|fs| fs.dirty_handles()).transpose()
         };
         let _sync = handles
@@ -4715,7 +4717,7 @@ pub fn sys_sync() -> SyscallResult {
             }
         }
         // Exclude snapshots between the barrier and dirty-custody completion.
-        let guard = mount.write();
+        let guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
         if let Some(fs) = guard.as_ref() {
             if fs.sync().is_ok() {
                 if let Ok(Some(handles)) = &handles {
@@ -4859,7 +4861,7 @@ pub fn sys_truncate(pathname: u64, length: i64) -> SyscallResult {
     let cred = current_file_credentials();
     let size_limit = super::resource::current_fsize();
     let mut exceeded = false;
-    let mut guard = mount.write();
+    let mut guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
     let fs = match guard.as_mut() {
         Some(fs) => fs,
         None => return SyscallResult::Err(EIO as u64),
@@ -4896,7 +4898,7 @@ pub(super) fn update_read_atime(ino: u32, mount_id: usize) -> Result<(), u64> {
         ext2::home_fs_write()
     } else {
         ext2::root_fs_write()
-    };
+    }.map_err(|_| super::errno::EINTR as u64)?;
     let fs = guard.as_mut().ok_or(super::errno::EIO as u64)?;
     fs.update_atime(ino).map_err(|_| super::errno::EIO as u64)
 }

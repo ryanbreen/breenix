@@ -582,8 +582,8 @@ pub fn run_fs_fault_leg() {
         .read_directory(&root_inode)
         .map(|b| b.len() == baseline_dir.len())
         .unwrap_or(false);
-    let root_ok = match super::ext2::root_fs_read().as_ref() {
-        Some(root) => root.read_inode(EXT2_ROOT_INO).is_ok(),
+    let root_ok = match super::ext2::root_fs_read().ok().as_deref() {
+        Some(Some(root)) => root.read_inode(EXT2_ROOT_INO).is_ok(),
         None => false,
     };
     if shadow_ok && root_ok {

@@ -39,7 +39,7 @@ pub(crate) fn directory_of(kind: FdKind) -> Result<namei::WorkingDir, u64> {
     } else {
         namei::Mount::Root
     };
-    let guard = mount.read();
+    let guard = mount.read()?;
     let fs = guard.as_ref().ok_or(EIO as u64)?;
     let ino = handle.verify(fs).map_err(|_| EIO as u64)?;
     if !fs.read_inode(ino).map_err(|_| EIO as u64)?.is_dir() {
@@ -153,7 +153,7 @@ fn pathname(fd: i32, pathname: u64, follow: bool, empty: bool, change: Change) -
         namei::Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
         namei::Target::Virtual => return SyscallResult::Err(EOPNOTSUPP as u64),
     };
-    let mut guard = mount.write();
+    let mut guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
     match guard.as_mut() {
         Some(fs) => update(fs, ino, change, &cred),
         None => SyscallResult::Err(EIO as u64),
@@ -168,7 +168,7 @@ fn by_cwd(change: Change) -> SyscallResult {
         namei::WorkingDir::Ext2 { mount, dir } => (mount, Some(dir)),
         namei::WorkingDir::Virtual(_) => return SyscallResult::Err(EOPNOTSUPP as u64),
     };
-    let mut guard = mount.write();
+    let mut guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
     let Some(fs) = guard.as_mut() else {
         return SyscallResult::Err(EIO as u64);
     };

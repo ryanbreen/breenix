@@ -54,7 +54,7 @@ pub fn read_program_image(
     // The handle holds the inode until its content is read.
     let (mount, inode_num, _held) =
         crate::fs::namei::resolve_file(path).map_err(|errno| errno as i32)?;
-    let fs_guard = mount.read();
+    let fs_guard = mount.read().map_err(|errno| errno as i32)?;
     let fs = fs_guard.as_ref().ok_or(EIO)?;
 
     let inode = fs.read_inode(inode_num).map_err(|_| EIO)?;

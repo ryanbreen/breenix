@@ -118,11 +118,11 @@ fn sleep_ms(ms: u64) {
 fn holder_fn(is_home: bool) {
     preempt_disable();
     if is_home {
-        let guard = crate::fs::ext2::home_fs_read();
+        let guard = crate::fs::ext2::home_fs_read().expect("unkilled ext2 lock test worker");
         let _ = HOLDER_SCRATCH.wait_timeout_uninterruptible(1, HOLD_TIMEOUT_NS);
         drop(guard);
     } else {
-        let guard = crate::fs::ext2::root_fs_read();
+        let guard = crate::fs::ext2::root_fs_read().expect("unkilled ext2 lock test worker");
         let _ = HOLDER_SCRATCH.wait_timeout_uninterruptible(1, HOLD_TIMEOUT_NS);
         drop(guard);
     }
@@ -134,12 +134,12 @@ fn contender_fn(is_home: bool, index: usize) {
     let prefix = if is_home { "home" } else { "root" };
     let path = alloc::format!("/lockrace_{}_{}", prefix, index);
     if is_home {
-        let mut guard = crate::fs::ext2::home_fs_write();
+        let mut guard = crate::fs::ext2::home_fs_write().expect("unkilled ext2 lock test worker");
         if let Some(fs) = guard.as_mut() {
             let _ = fs.create_directory(&path, 0o755);
         }
     } else {
-        let mut guard = crate::fs::ext2::root_fs_write();
+        let mut guard = crate::fs::ext2::root_fs_write().expect("unkilled ext2 lock test worker");
         if let Some(fs) = guard.as_mut() {
             let _ = fs.create_directory(&path, 0o755);
         }
