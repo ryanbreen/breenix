@@ -371,7 +371,10 @@ pub fn add_directory_entry(
     name: &str,
     file_type: u8,
 ) -> Result<usize, &'static str> {
-    let name_bytes = name.as_bytes();
+    add_directory_entry_bytes(dir_data, new_inode, name.as_bytes(), file_type)
+}
+
+pub fn add_directory_entry_bytes(dir_data: &mut Vec<u8>, new_inode: u32, name_bytes: &[u8], file_type: u8) -> Result<usize, &'static str> {
     if name_bytes.is_empty() || name_bytes.len() > 255 {
         return Err("Invalid name length");
     }
@@ -679,4 +682,8 @@ fn raw_location(data:&[u8],name:&str)->Option<RawLocation>{
         }
         prev_offset=Some(offset);prev_rec_len=Some(len);offset+=len as usize;
     }None
+}
+
+pub fn find_inode_bytes(data: &[u8], name: &[u8]) -> Option<u32> {
+    raw_entries(data).find(|entry| entry.name == name).map(|entry| entry.inode)
 }

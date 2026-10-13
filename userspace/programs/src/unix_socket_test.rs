@@ -549,17 +549,18 @@ fn main() {
     }
     println!("  AF_INET correctly rejected with EOPNOTSUPP");
 
-    match do_socketpair(AF_UNIX, SOCK_DGRAM, 0) {
-        Ok(_) => fail("socketpair(SOCK_DGRAM) should fail"),
-        Err(e) => {
-            println!("  socketpair(SOCK_DGRAM) returned: {:?}", e);
-            if e != Errno::EINVAL {
-                println!("  Expected EINVAL");
-                fail("socketpair(SOCK_DGRAM) should return EINVAL");
-            }
-        }
+    // Datagram pairs are supported: verify both content and record boundaries.
+    let (dg0, dg1) = do_socketpair(AF_UNIX, SOCK_DGRAM, 0)
+        .unwrap_or_else(|_| fail("socketpair(SOCK_DGRAM) failed"));
+    write_fd(dg0, b"one").unwrap_or_else(|_| fail("first datagram write failed"));
+    write_fd(dg0, b"seven!!").unwrap_or_else(|_| fail("second datagram write failed"));
+    let mut datagram = [0u8; 32];
+    for expected in [&b"one"[..], &b"seven!!"[..]] {
+        let n = read_fd(dg1, &mut datagram).unwrap_or_else(|_| fail("datagram read failed"));
+        if n != expected.len() || &datagram[..n] != expected { fail("datagram record boundary or data mismatch"); }
     }
-    println!("  SOCK_DGRAM correctly rejected with EINVAL");
+    do_close(dg0); do_close(dg1);
+    println!("  SOCK_DGRAM preserves records");
 
     println!("  Error handling works correctly!");
 
@@ -569,6 +570,11 @@ fn main() {
         Ok(pair) => pair,
         Err(_) => fail("socketpair() for buffer-full test failed"),
     };
+    // Request the capacity this fixture measures; the default is configurable.
+    let sndbuf = (UNIX_SOCKET_BUFFER_SIZE / 2) as i32;
+    let result = unsafe { libbreenix::raw::syscall5(libbreenix::syscall::nr::SETSOCKOPT,
+        sv_buf0.raw(), 1, 7, &sndbuf as *const i32 as u64, 4) } as i64;
+    if result != 0 { fail("setting buffer-test SO_SNDBUF failed"); }
     println!("  Created non-blocking socket pair for buffer test");
 
     let chunk = [0x42u8; 4096];

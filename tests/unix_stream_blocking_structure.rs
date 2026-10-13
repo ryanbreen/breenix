@@ -10,20 +10,23 @@ fn mode_ok(handlers: &str) -> bool {
     })
 }
 fn drain_ok(unix: &str) -> bool {
-    let body = compact(&function(unix, "read"));
-    body.contains("UnixEndpoint::A=>&self.pair.write_waiters_b")
-        && body.contains("UnixEndpoint::B=>&self.pair.write_waiters_a")
-        && body.contains("writers.wake_up()")
-        && matches!((body.find("drop(rx_buf)"), body.find("writers.wake_up()")), (Some(drop_at), Some(wake_at)) if drop_at < wake_at)
+    let receive = compact(&function(unix, "recvmsg"));
+    let notify = compact(&function(unix, "notify_writers"));
+    receive.contains("if!peek{sk.common.notify();self.notify_writers();")
+        && receive.contains("peer.common.notify()")
+        && receive.find("wait_until(") < receive.find("self.notify_writers()")
+        && notify.contains("letwriters=core::mem::take(&mutself.inner.lock().writers);")
+        && notify.contains("forweakinwriters")
+        && notify.find("letwriters=") < notify.find("writer.common.notify()")
 }
-/// A connected Unix socket's readiness: UnixSock::poll's Connected arm.
 fn poll_ok(unix: &str) -> bool {
-    let body = function(unix, "poll");
-    match_arms(&body, "UnixState").iter().any(|(names, arm)| {
-        names.iter().any(|n| n == "Connected")
-            && compact(arm).contains("if socket.has_write_space()".replace(' ', "").as_str())
-            && compact(arm).contains("POLLHUP")
-    })
+    let poll = compact(&function(unix, "poll"));
+    poll.contains("!peer.common.shut_rd()&&!sk.common.shut_wr()")
+        && poll.contains("stream_room(sk.common.sndbuf().min(MAX_QUEUE_BYTES))")
+        && poll.contains("room(sk.common.sndbuf().min(MAX_QUEUE_BYTES))")
+        && poll.contains(")>0{events|=4;")
+        && poll.contains("peer_gone")
+        && poll.contains("events|=0x10;")
 }
 #[test]
 fn descriptor_mode_drain_and_poll_are_connected() {
@@ -39,71 +42,75 @@ fn mode_drain_and_poll_mutations_are_rejected_singly() {
     ));
     let unix = read("kernel/src/socket/unix.rs");
     for changed in [
-        unix.replace("writers.wake_up();", ""),
-        unix.replace("drop(rx_buf);", ""),
-        unix.replace("&self.pair.write_waiters_b", "&self.pair.write_waiters_a"),
+        unix.replace("self.notify_writers();", ""),
+        unix.replace("peer.common.notify();", ""),
+        unix.replace(
+            "core::mem::take(&mut self.inner.lock().writers)",
+            "Vec::new()",
+        ),
     ] {
         assert!(!drain_ok(&changed));
     }
     assert!(mode_ok(&handlers));
     let unix = read("kernel/src/socket/unix.rs");
     assert!(poll_ok(&unix));
-    for replacement in ["!socket.peer_closed()", "socket.has_data()"] {
-        let changed = unix.replace("if socket.has_write_space()", &format!("if {replacement}"));
+    for (from, to) in [
+        ("!peer.common.shut_rd()", "true"),
+        (
+            "stream_room(sk.common.sndbuf().min(MAX_QUEUE_BYTES))",
+            "room(usize::MAX)",
+        ),
+    ] {
+        let changed = unix.replace(from, to);
         assert_ne!(changed, unix, "poll mutation did not apply");
         assert!(!poll_ok(&changed));
     }
 }
-fn transmit_predicate_ok(unix: &str) -> bool {
-    let state_impl = unix.split("impl UnixWriteState<'_>").nth(1).unwrap_or("");
-    compact(&function(state_impl, "has_write_space"))
-        == "!*self.peer_closed&&self.buffer.len()<UNIX_SOCKET_BUFFER_SIZE"
-        && compact(&function(
-            unix.split("impl UnixWriteState").next().unwrap(),
-            "has_write_space",
-        )) == "self.writer().state().has_write_space()"
-}
 
+fn transmit_predicate_ok(unix: &str) -> bool {
+    let send = compact(&function(unix, "sendmsg"));
+    send.contains("ifsk.common.shut_wr()")
+        && send.contains("ifstate.released||peer.common.shut_rd()")
+        && send.contains("ifroom<=rights_charge")
+        && send.contains("message.data.len().min(room-rights_charge)")
+}
 #[test]
 fn transmit_predicate_and_single_mutations() {
     let unix = read("kernel/src/socket/unix.rs");
     assert!(transmit_predicate_ok(&unix));
-    for changed in [
-        unix.replace(
-            "!*self.peer_closed && self.buffer.len() < UNIX_SOCKET_BUFFER_SIZE",
-            "!*self.peer_closed",
-        ),
-        unix.replace(
-            "self.buffer.len() < UNIX_SOCKET_BUFFER_SIZE",
-            "self.buffer.len() <= UNIX_SOCKET_BUFFER_SIZE",
-        ),
-        unix.replace(
-            "self.writer().state().has_write_space()",
-            "!self.peer_closed()",
+    for (from, to) in [
+        ("state.released || peer.common.shut_rd()", "state.released"),
+        ("room <= rights_charge", "room < rights_charge"),
+        (
+            "message.data.len().min(room - rights_charge)",
+            "message.data.len()",
         ),
     ] {
+        let changed = unix.replace(from, to);
+        assert_ne!(changed, unix, "transmit mutation did not apply");
         assert!(!transmit_predicate_ok(&changed));
     }
 }
-
 #[test]
 fn guarded_state_defines_transmit_space_and_publication() {
     let unix = read("kernel/src/socket/unix.rs");
-    let state = compact(&function(&unix, "state"));
-    assert!(state.contains("UnixEndpoint::A=>(&self.pair.buffer_a_to_b,&self.pair.closed_b)"));
-    assert!(state.contains("UnixEndpoint::B=>(&self.pair.buffer_b_to_a,&self.pair.closed_a)"));
+    assert!(compact(&lex(&unix)).contains("inner:IrqSafeMutex<UnixState>"));
+    let send = compact(&function(&unix, "sendmsg"));
+    let lock = send
+        .find("letmutstate=Self::of(&peer).inner.lock()")
+        .expect("receiver guard");
+    assert!(lock < send.find("state.rx.push_stream(").expect("guarded enqueue"));
+    assert!(send.contains("wait_until(sk,msg.nonblock,sk.common.snd_deadline(),||"));
     assert!(
-        state.find("buffer.lock()").expect("buffer guard")
-            < state.find("closed.lock()").expect("closed guard")
+        send.find("drop(peer)").expect("temporary peer release")
+            < send.find("wait_until(").unwrap()
     );
-    assert!(unix.contains("peer_closed: MutexGuard<'a, bool>"));
-    assert!(unix.contains("buffer: MutexGuard<'a, VecDeque<u8>>"));
-    assert!(compact(&function(&unix, "copy")).contains("self.has_write_space()"));
-    let helper = compact(&function(&unix, "write_unix"));
-    assert!(helper.contains("queue.prepare_to_wait_checked(ThreadState::BlockedOnIO,None,||{!state.peer_closed()&&!state.has_write_space()})"));
-    assert!(helper.contains("blocking_io::wait_prepared(&queue,outcome)"));
-    assert!(!helper.contains("PIPE_BUF"));
-    assert!(helper.contains("returnOk(count)"));
+    assert!(!send.contains("PIPE_BUF"));
+    let wait = compact(&function(&read("kernel/src/socket/wait.rs"), "wait_until"));
+    assert!(wait.contains("letseq=sk.common.seq()"));
+    assert!(wait.contains("queue.prepare_to_wait_checked(ThreadState::BlockedOnIO,deadline_ns,||{sk.common.seq()==seq})"));
+    assert!(wait.contains("queue.finish_wait_for(tid)"));
+    assert!(wait.contains("check_signals_for_restartable_wait()"));
 }
 #[test]
 fn driver_and_gate_have_six_scored_legs() {
@@ -137,26 +144,14 @@ fn driver_and_gate_have_six_scored_legs() {
 #[test]
 fn close_notifications_leave_pm_without_the_isr_buffer() {
     let unix = read("kernel/src/socket/unix.rs");
-    let close = compact(&function(&unix, "close"));
-    assert!(close.contains("UnixCloseNotifications{pair:self.pair.clone(),}"));
-    assert!(!close.contains("with_scheduler"));
-    assert!(!close.contains("wake_up"));
-    let deferred = compact(&function(&unix, "deliver_deferred"));
-    assert!(deferred.contains("PENDING_CLOSES.lock()"));
-    assert!(!deferred.contains("isr_unblock"));
-    assert!(!deferred.contains("wake_up_deferred"));
-    assert!(!deferred.contains("with_scheduler"));
-    assert!(!deferred.contains("Vec::"));
-    let drain = compact(&function(&unix, "drain_close_notifications"));
-    assert!(drain.contains("head.take()"));
-    assert!(drain.contains("next.take()"));
-    assert!(drain.contains("queued=false"));
-    assert!(drain.contains("UnixCloseNotifications{pair}.deliver()"));
-    // A connected socket's endpoint closes in UnixSock::release, which runs
-    // once, for the last descriptor: inline in thread context without PM, or
-    // from the release queue that the reclamation boundary drains.
     let release = compact(&function(&unix, "release"));
-    assert!(release.contains("letnotifications=stream.lock().close();notifications.deliver();"));
+    assert!(release.contains("core::mem::replace(&mut*s,UnixState::new())"));
+    assert!(release.contains("drop(state);peer.common.notify()"));
+    assert!(release.contains("forweakin&old.writers"));
+    assert!(release.contains("drop(old)"));
+    assert!(!release.contains("with_scheduler"));
+    assert!(!release.contains("Vec::"));
+    assert!(!unix.contains("PENDING_CLOSES"));
     let object = read("kernel/src/socket/object.rs");
     assert!(socket_release_leaves_pm(&object));
     for path in [
@@ -174,7 +169,7 @@ fn close_notifications_leave_pm_without_the_isr_buffer() {
         &read("kernel/src/task/process_task.rs"),
         "reclaim_deferred_process_resources",
     ));
-    for drain in ["drain_close_notifications()", "drain_release_queue()"] {
+    for drain in ["drain_release_queue()"] {
         let drain_at = boundary.find(drain).expect("drain call");
         for guard in [
             "process_manager_held_on_current_cpu()",
@@ -231,7 +226,10 @@ fn socket_release_rule_rejects_an_unguarded_release() {
     ] {
         let changed = object.replace(from, to);
         assert_ne!(changed, object, "release mutation did not apply: {from}");
-        assert!(!socket_release_leaves_pm(&changed), "accepted {from} -> {to}");
+        assert!(
+            !socket_release_leaves_pm(&changed),
+            "accepted {from} -> {to}"
+        );
     }
 }
 

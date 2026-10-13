@@ -774,3 +774,15 @@ mod namespace_alloc;
 
 #[path = "../../../kernel/src/fs/ext2/fifo_times.rs"]
 mod fifo_times;
+
+#[test]
+fn anonymous_pipe_inode_is_stable_for_all_references_and_distinct_per_pipe() {
+    let pipe = std::sync::Arc::new(spin::Mutex::new(pipe::PipeBuffer::new()));
+    let sent = pipe.clone();
+    let received = sent.clone();
+    let inode = pipe.lock().inode();
+    assert_ne!(inode, 0);
+    assert_eq!(pipe.lock().inode(), inode);
+    assert_eq!(received.lock().inode(), inode);
+    assert_ne!(pipe::PipeBuffer::new().inode(), inode);
+}
