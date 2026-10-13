@@ -52,6 +52,17 @@ pub const SHM_RND: u32 = 0o20000;
 pub const SHM_EXEC: u32 = 0o100000;
 /// The mode bit that marks a segment removed while still attached.
 pub const SHM_DEST: u32 = 0o1000;
+/// The mode bit that marks a segment SHM_LOCK locked.
+pub const SHM_LOCKED: u32 = 0o2000;
+/// Linux's shmat flag: attach over whatever is mapped at the address.
+pub const SHM_REMAP: u32 = 0o40000;
+
+/// Linux's shmctl commands beyond POSIX's.
+pub const SHM_LOCK: u32 = 11;
+pub const SHM_UNLOCK: u32 = 12;
+pub const SHM_STAT: u32 = 13;
+pub const SHM_INFO: u32 = 14;
+pub const SHM_STAT_ANY: u32 = 15;
 
 /// Linux's limits.
 pub const MSGMAX: usize = 8192;
@@ -72,6 +83,8 @@ pub const SHMMNI: usize = 4096;
 pub const SHMMIN: u64 = 1;
 pub const SHMMAX: u64 = u64::MAX - (1 << 24);
 pub const SHMLBA: u64 = 4096;
+/// Linux's limit on the pages of all segments, which IPC_INFO reports.
+pub const SHMALL: u64 = u64::MAX - (1 << 24);
 
 /// Permission bits, as in a mode's low three.
 pub const READ: u32 = 4;
@@ -341,6 +354,11 @@ impl<T> IpcIds<T> {
     /// Linux's IPC_INFO and xxx_INFO commands return.
     pub fn highest_index(&self) -> usize {
         self.slots.iter().rposition(Option::is_some).unwrap_or(0)
+    }
+
+    /// The highest index an object `keep` accepts holds, or 0.
+    pub fn highest_index_where(&self, keep: impl Fn(&Entry<T>) -> bool) -> usize {
+        self.slots.iter().rposition(|slot| slot.as_ref().is_some_and(&keep)).unwrap_or(0)
     }
 
     /// The object at index `index`, as Linux's xxx_STAT commands take it
@@ -744,6 +762,8 @@ pub const MSQID_DS_SIZE: usize = 120;
 pub const SHMID_DS_SIZE: usize = 112;
 pub const MSGINFO_SIZE: usize = 32;
 pub const SEMINFO_SIZE: usize = 40;
+pub const SHMINFO_SIZE: usize = 72;
+pub const SHM_INFO_SIZE: usize = 48;
 
 fn int(n: usize) -> i32 {
     i32::try_from(n).unwrap_or(i32::MAX)
@@ -864,6 +884,26 @@ pub struct ShmStat {
     pub cpid: i32,
     pub lpid: i32,
     pub nattch: u64,
+}
+
+/// struct shminfo64, IPC_INFO's limits for shared memory.
+pub fn shminfo() -> [u8; SHMINFO_SIZE] {
+    let mut buf = [0u8; SHMINFO_SIZE];
+    for (at, v) in [(0, SHMMAX), (8, SHMMIN), (16, SHMMNI as u64), (24, SHMMNI as u64), (32, SHMALL)] {
+        put(&mut buf, at, &v.to_ne_bytes());
+    }
+    buf
+}
+
+/// struct shm_info, SHM_INFO's use: the segments in use, and their pages
+/// allocated and resident (the same here, where a segment's pages are made
+/// with it); nothing is swapped.
+pub fn shm_info(used_ids: usize, pages: u64) -> [u8; SHM_INFO_SIZE] {
+    let mut buf = [0u8; SHM_INFO_SIZE];
+    put(&mut buf, 0, &int(used_ids).to_ne_bytes());
+    put(&mut buf, 8, &pages.to_ne_bytes());
+    put(&mut buf, 16, &pages.to_ne_bytes());
+    buf
 }
 
 pub fn shmid_ds(perm: &IpcPerm, s: &ShmStat) -> [u8; SHMID_DS_SIZE] {

@@ -1,6 +1,6 @@
-//! System V IPC: ftok and the msg and sem calls.
+//! System V IPC: ftok and the msg, sem and shm calls.
 //!
-//! Written from POSIX.1-2024 (sys/ipc.h, sys/msg.h, sys/sem.h)
+//! Written from POSIX.1-2024 (sys/ipc.h, sys/msg.h, sys/sem.h, sys/shm.h)
 //! and Linux's system call ABI: each call but ftok is one system call, and
 //! the kernel's structures are Linux's 64-bit ones.
 
@@ -77,4 +77,33 @@ pub unsafe extern "C" fn semtimedop(semid: i32, sops: *mut u8, nsops: usize, tim
 #[no_mangle]
 pub extern "C" fn semctl(semid: i32, semnum: i32, cmd: i32, arg: u64) -> i32 {
     syscall_result_to_c_int(unsafe { raw::syscall4(nr::SEMCTL, semid as u64, semnum as u64, cmd as u64, arg) } as i64)
+}
+
+/// shmget: the identifier of the shared memory segment `key` names.
+#[no_mangle]
+pub extern "C" fn shmget(key: i32, size: usize, shmflg: i32) -> i32 {
+    syscall_result_to_c_int(unsafe { raw::syscall3(nr::SHMGET, key as u64, size as u64, shmflg as u64) } as i64)
+}
+
+/// shmat: attach a segment: its address, or (void *)-1 with errno set.
+#[no_mangle]
+pub unsafe extern "C" fn shmat(shmid: i32, shmaddr: *const u8, shmflg: i32) -> *mut u8 {
+    let result = raw::syscall3(nr::SHMAT, shmid as u64, shmaddr as u64, shmflg as u64) as i64;
+    if (-4095..0).contains(&result) {
+        crate::set_errno_from_result(result);
+        return usize::MAX as *mut u8;
+    }
+    result as usize as *mut u8
+}
+
+/// shmdt: detach the segment attached at `shmaddr`.
+#[no_mangle]
+pub unsafe extern "C" fn shmdt(shmaddr: *const u8) -> i32 {
+    syscall_result_to_c_int(raw::syscall1(nr::SHMDT, shmaddr as u64) as i64)
+}
+
+/// shmctl: IPC_STAT, IPC_SET or IPC_RMID on a shared memory segment.
+#[no_mangle]
+pub unsafe extern "C" fn shmctl(shmid: i32, cmd: i32, buf: *mut u8) -> i32 {
+    syscall_result_to_c_int(raw::syscall3(nr::SHMCTL, shmid as u64, cmd as u64, buf as u64) as i64)
 }

@@ -1362,6 +1362,8 @@ pub(crate) fn fork_vmas(
             return Err("Shared mapping still being installed");
         }
         let mut child = Vma::new(parent.start, parent.end, parent.prot, parent.flags);
+        child.shm = parent.shm.clone();
+        child.shm_offset = parent.shm_offset;
         if let Some(binding) = &parent.backing {
             child.backing = Some(binding.fork(pid, pt)?);
         }
