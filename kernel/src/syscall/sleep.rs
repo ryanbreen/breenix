@@ -58,6 +58,8 @@ pub fn clock_nanosleep(clock: u32, flags: u64, req_ptr: u64, rem_ptr: u64) -> Sy
     if now >= deadline {
         return SyscallResult::Ok(0);
     }
+    #[cfg(target_arch = "x86_64")]
+    crate::scratch_force::trace(1, crate::per_cpu::current_thread_id_lock_free().unwrap_or(0), deadline as u64, crate::signal::monotonic_nanos());
     let interrupted = loop {
         if super::check_signals_for_wait().is_some() {
             break true;
@@ -80,6 +82,8 @@ pub fn clock_nanosleep(clock: u32, flags: u64, req_ptr: u64, rem_ptr: u64) -> Sy
                 thread.realtime_sleep = realtime;
             }
             sched.block_current_for_timer(wake);
+            #[cfg(target_arch = "x86_64")]
+            crate::scratch_force::arm(wake);
             false
         }).unwrap_or(true);
         if expired {
@@ -104,6 +108,8 @@ pub fn clock_nanosleep(clock: u32, flags: u64, req_ptr: u64, rem_ptr: u64) -> Sy
     });
     #[cfg(target_arch = "aarch64")]
     ensure_current_address_space();
+    #[cfg(target_arch = "x86_64")]
+    crate::scratch_force::trace(5, crate::per_cpu::current_thread_id_lock_free().unwrap_or(0), deadline as u64, crate::signal::monotonic_nanos());
     if interrupted {
         if !absolute && rem_ptr != 0 {
             let left = (deadline - i128::from(crate::signal::monotonic_nanos())).max(0);

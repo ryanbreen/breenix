@@ -2976,6 +2976,8 @@ impl Scheduler {
     /// Schedule the next thread to run
     /// Returns (old_thread, new_thread) for context switching
     pub fn schedule(&mut self) -> Option<(&mut Thread, &Thread)> {
+        #[cfg(target_arch = "x86_64")]
+        let yield_pass = crate::scratch_force::take_yield_pass();
         let current_cpu = Self::current_cpu_id();
         self.cpu_state[current_cpu].last_schedule_ticks = crate::time::get_ticks();
         self.reclaim_unschedulable_cpu_queues();
@@ -3386,6 +3388,7 @@ impl Scheduler {
                     if let Some(t) = self.get_thread_mut(next_thread_id) {
                         t.set_running();
                     }
+                    if yield_pass { crate::scratch_force::stall_if_due(); }
                     return None;
                 }
                 // On ARM64, don't switch userspace threads to idle. Idle runs in kernel
@@ -5594,6 +5597,9 @@ impl Scheduler {
             if !self.timer_entry_live(wake_time, tid) {
                 continue; // Stale entry — thread already woken or terminated
             }
+
+            #[cfg(target_arch = "x86_64")]
+            crate::scratch_force::trace(2, tid, wake_time, now_ns);
 
             // SMP safety: Don't add to ready_queue if thread is currently
             // running on any CPU. Same protection as unblock() — a thread

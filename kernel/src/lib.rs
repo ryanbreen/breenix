@@ -8,6 +8,8 @@
 #![reexport_test_harness_main = "test_main"]
 
 extern crate alloc;
+#[cfg(target_arch = "x86_64")]
+pub mod scratch_force;
 
 #[cfg(target_arch = "x86_64")]
 pub mod serial;

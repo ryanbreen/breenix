@@ -378,6 +378,7 @@ pub(crate) fn report_heartbeat_if_due() {
 /// they share one `AtomicU64` compare-exchange.
 fn census_thread_fn() {
     loop {
+        crate::scratch_force::report();
         report_heartbeat_if_due();
         let pending = crate::serial::drain_log_once();
         sleep_one_interval(if pending {
