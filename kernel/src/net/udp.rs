@@ -118,10 +118,11 @@ pub fn handle_udp(ip: &Ipv4Packet, data: &[u8]) {
     );
 
     // The registry identifies the socket, rather than a descriptor's original
-    // PID: fork/dup may leave the only descriptor in another process. Borrow
-    // under PM so close cannot drop the last reference on this IRQ path.
+    // PID: fork/dup may leave the only descriptor in another process. The
+    // socket is found under PM and kept by a reference; if a close drops the
+    // others meanwhile, its release is deferred off this path.
     if let Some(Some((_, handle))) = crate::socket::SOCKET_REGISTRY.try_lookup_udp(header.dst_port) {
-        crate::process::with_process_manager(|manager| {
+        let receiver = crate::process::with_process_manager(|manager| {
             for (_, process) in manager.iter_processes() {
                 for fd in 0..crate::ipc::fd::MAX_FDS {
                     let Some(entry) = process.fd_table.get(fd as i32) else { continue };
@@ -147,13 +148,17 @@ pub fn handle_udp(ip: &Ipv4Packet, data: &[u8]) {
                             }
                         });
                         if delivered {
-                            // PM is held: the wake goes through the deferred path.
-                            sk.common.notify_deferred();
-                            return;
+                            return Some(sk.clone());
                         }
                     }
                 }
             }
+            None
         });
+        // The wake runs with PM released: the scheduler is never taken under
+        // it, and no waiter is popped before its wake can be applied.
+        if let Some(Some(sk)) = receiver {
+            sk.common.notify();
+        }
     }
 }

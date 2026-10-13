@@ -360,8 +360,8 @@ impl ProtoOps for UdpSock {
         bits
     }
 
-    /// Delivery (`net::udp::handle_udp`) calls `notify_deferred` for every
-    /// datagram it queues.
+    /// Delivery (`net::udp::handle_udp`) calls `notify` for every datagram it
+    /// queues, once PROCESS_MANAGER is released.
     fn notifies(&self) -> bool {
         true
     }

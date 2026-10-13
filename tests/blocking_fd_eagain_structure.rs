@@ -718,18 +718,21 @@ fn unix_writer_source(unix: &str, helper: &str) -> String {
 }
 
 /// The descriptor mode crosses the protocol's trait object in SendMsg: write(2)
-/// sets SendMsg.nonblock from it, the send passes the message on whole, and
-/// the Unix stream adapter gives msg.nonblock to write_unix as its mode.
+/// hands it to send_all, which sets SendMsg.nonblock from it for each piece,
+/// send_once passes the message on whole, and the Unix stream adapter gives
+/// msg.nonblock to write_unix as its mode.
 fn socket_mode_reaches_unix_writer(sockets: &str, unix: &str) -> bool {
     let signature = compact(&lex(sockets))
         .contains("fnsocket_write(sk:&Arc<Socket>,data:&[u8],nonblock:bool)");
     let write = compact(&function(sockets, "socket_write"));
-    let send = compact(&function(sockets, "send"));
+    let all = compact(&function(sockets, "send_all"));
+    let once = compact(&function(sockets, "send_once"));
     let adapter = compact(&function(unix, "sendmsg"));
     signature
-        && write.contains("nonblock,")
-        && write.contains("send(sk,&mutmsg)")
-        && send.contains("sk.ops().sendmsg(sk,msg)")
+        && write.contains("send_all(sk,data.len(),0,nonblock,")
+        && all.contains("flags,nonblock,rights:")
+        && all.contains("send_once(sk,&mutmsg)")
+        && once.contains("sk.ops().sendmsg(sk,msg)")
         && adapter.contains("write_unix(writer,msg.data,msg.nonblock)")
 }
 
@@ -742,10 +745,14 @@ fn socket_mode_route_rejects_a_dropped_mode() {
         &sockets,
         &unix.replace("write_unix(writer, msg.data, msg.nonblock)", "write_unix(writer, msg.data, false)")
     ));
-    assert!(!socket_mode_reaches_unix_writer(
-        &sockets.replace("        nonblock,\n        rights: Vec::new(),\n        cred: send_cred(sk),", "        nonblock: false,\n        rights: Vec::new(),\n        cred: send_cred(sk),"),
-        &unix
-    ));
+    for (from, to) in [
+        ("                nonblock,\n", "                nonblock: false,\n"),
+        ("send_all(sk, data.len(), 0, nonblock,", "send_all(sk, data.len(), 0, false,"),
+    ] {
+        let dropped = sockets.replace(from, to);
+        assert_ne!(dropped, sockets, "socket mode mutation did not apply");
+        assert!(!socket_mode_reaches_unix_writer(&dropped, &unix));
+    }
     let helper = read("kernel/src/syscall/blocking_io.rs");
     let blocking = unix.replace("if is_nonblocking {\n                return Err(errno::EAGAIN);", "if !is_nonblocking {\n                return Err(errno::EAGAIN);");
     assert_ne!(blocking, unix, "write_unix mutation did not apply");

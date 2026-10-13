@@ -205,15 +205,18 @@ fn socket_release_leaves_pm(object: &str) -> bool {
     let context = compact(&function(object, "release_may_run_here"));
     let drop_body = compact(&function(object, "drop"));
     let drain = compact(&function(object, "drain_release_queue"));
+    let finish = compact(&function(object, "finish"));
     context.contains("in_interrupt()")
         && context.contains("process_manager_held_on_current_cpu()")
         && context.contains("scheduler_scope_active()")
+        && context.contains("DEFER_RELEASE_DEPTH[defer_slot()].load(Ordering::Relaxed)!=0")
         && drop_body.contains(
-            "ifrelease_may_run_here(){LIVE_SOCKETS.fetch_sub(1,Ordering::Relaxed);self.ops().release(self);return;}",
+            "ifrelease_may_run_here(){LIVE_SOCKETS.fetch_sub(1,Ordering::Relaxed);self.finish();return;}",
         )
         && drop_body.contains("queue.push(carcass)")
         && drain.contains("if!release_may_run_here(){return;}")
-        && drain.contains("carcass.ops().release(&carcass)")
+        && drain.contains("carcass.finish()")
+        && finish.contains("self.ops().release(self)")
 }
 
 #[test]
@@ -222,6 +225,7 @@ fn socket_release_rule_rejects_an_unguarded_release() {
     assert!(socket_release_leaves_pm(&object));
     for (from, to) in [
         ("|| crate::process::process_manager_held_on_current_cpu()", ""),
+        ("\n        || DEFER_RELEASE_DEPTH[defer_slot()].load(Ordering::Relaxed) != 0", ""),
         ("if release_may_run_here() {", "if true {"),
         ("if !release_may_run_here() {\n        return;\n    }", ""),
     ] {

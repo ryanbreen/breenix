@@ -849,43 +849,50 @@ pub(crate) fn enqueue_process_reclaim(reclaim: PendingProcessReclaim) {
 /// PTY refcounting, TCP close, etc.
 ///
 /// CRITICAL: No PM lock is held when this runs.
-pub(crate) fn close_extracted_fds(entries: alloc::vec::Vec<(usize, FileDescriptor)>) {
+pub(crate) fn close_extracted_fds(entries: impl IntoIterator<Item = (usize, FileDescriptor)>) {
+    for (_fd, fd_entry) in entries {
+        close_extracted_fd(fd_entry);
+    }
+}
+
+/// Close one descriptor that is in no table (extracted, or an SCM_RIGHTS
+/// reference that was never installed), as `close_extracted_fds` does. It
+/// allocates nothing. No PM lock may be held.
+pub(crate) fn close_extracted_fd(fd_entry: FileDescriptor) {
     use crate::ipc::FdKind;
 
-    for (_fd, fd_entry) in entries {
-        match fd_entry.kind {
-            // IPC hooks ran at extraction while the process identity was held.
-            FdKind::Ipc(_) => {}
-            FdKind::PipeRead(buffer) => {
-                let notifications = buffer.lock().close_read();
-                notifications.deliver();
-            }
-            FdKind::PipeWrite(buffer) => {
-                let notifications = buffer.lock().close_write();
-                notifications.deliver();
-            }
-            FdKind::PtyMaster(pair) => crate::tty::pty::close_master_ref(&pair),
-            FdKind::PtySlave(pair) => crate::tty::pty::close_slave_ref(&pair),
-            FdKind::FifoRead(_, buffer, entry) => {
-                crate::ipc::fifo::close_fifo_read(&entry);
-                let notifications = buffer.lock().close_read();
-                notifications.deliver();
-            }
-            FdKind::FifoReadWrite(_, buffer, entry) => {
-                crate::ipc::fifo::close_fifo_read(&entry);
-                crate::ipc::fifo::close_fifo_write(&entry);
-                let read = buffer.lock().close_read();
-                read.deliver();
-                let write = buffer.lock().close_write();
-                write.deliver();
-            }
-            FdKind::FifoWrite(_, buffer, entry) => {
-                crate::ipc::fifo::close_fifo_write(&entry);
-                let notifications = buffer.lock().close_write();
-                notifications.deliver();
-            }
-            _ => {} // StdIo, RegularFile, Directory, Device, etc. — no action needed
+    match fd_entry.kind {
+        // IPC hooks ran at extraction while the process identity was held.
+        FdKind::Ipc(_) => {}
+        FdKind::PipeRead(buffer) => {
+            let notifications = buffer.lock().close_read();
+            notifications.deliver();
         }
+        FdKind::PipeWrite(buffer) => {
+            let notifications = buffer.lock().close_write();
+            notifications.deliver();
+        }
+        FdKind::PtyMaster(pair) => crate::tty::pty::close_master_ref(&pair),
+        FdKind::PtySlave(pair) => crate::tty::pty::close_slave_ref(&pair),
+        FdKind::FifoRead(_, buffer, entry) => {
+            crate::ipc::fifo::close_fifo_read(&entry);
+            let notifications = buffer.lock().close_read();
+            notifications.deliver();
+        }
+        FdKind::FifoReadWrite(_, buffer, entry) => {
+            crate::ipc::fifo::close_fifo_read(&entry);
+            crate::ipc::fifo::close_fifo_write(&entry);
+            let read = buffer.lock().close_read();
+            read.deliver();
+            let write = buffer.lock().close_write();
+            write.deliver();
+        }
+        FdKind::FifoWrite(_, buffer, entry) => {
+            crate::ipc::fifo::close_fifo_write(&entry);
+            let notifications = buffer.lock().close_write();
+            notifications.deliver();
+        }
+        _ => {} // StdIo, RegularFile, Directory, Device, etc. — no action needed
     }
 }
 
