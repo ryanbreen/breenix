@@ -31,6 +31,7 @@ pub mod irq;
 pub mod net_rx;
 pub mod process;
 pub mod sched;
+pub mod scratch1413;
 pub mod syscall;
 pub mod teardown;
 pub mod virtgpu;

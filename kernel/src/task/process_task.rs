@@ -1174,6 +1174,9 @@ impl ProcessScheduler {
                 });
             }
 
+            if process_name == "sigkill_teardown_test" {
+                crate::tracing::providers::scratch1413::dump();
+            }
             #[cfg(target_arch = "x86_64")]
             crate::task::dispatch_strand_census::note_exit(thread_id);
             log::debug!(
