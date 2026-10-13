@@ -2,6 +2,7 @@
 //!
 //! Provides socket management and networking infrastructure.
 
+pub mod addr;
 pub mod types;
 pub mod udp;
 pub mod unix;
