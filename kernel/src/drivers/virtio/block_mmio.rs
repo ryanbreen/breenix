@@ -12,7 +12,7 @@ use crate::arch_impl::traits::{CpuOps, InterruptController};
 use crate::task::completion::Completion;
 use crate::task::waitqueue::WaitQueueHead;
 use core::ptr::read_volatile;
-use core::sync::atomic::{fence, AtomicU32, Ordering};
+use core::sync::atomic::{fence, AtomicBool, AtomicU32, Ordering};
 
 /// Maximum number of block devices supported
 pub const MAX_BLOCK_DEVICES: usize = 2;
@@ -31,77 +31,84 @@ const BLOCK_MMIO_BOOTSTRAP_WAIT_LIMIT_NS: u64 = 30_000_000_000;
 const BLOCK_MMIO_WEDGED_ERROR: &str = "Block MMIO device wedged after an abandoned request";
 /// When a slow request was last reported, so reports stay rate-limited.
 static LAST_SLOW_REPORT_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-const BLOCK_KILLED_ERROR: &str = "Block request interrupted by SIGKILL";
 const NO_COMPLETED_DESC: u32 = u32::MAX;
 const NO_COMPLETED_STATUS: u32 = u32::MAX;
 
 struct BlockMmioRequestGate {
-    state: super::request_state::RequestState,
+    locked: AtomicBool,
+    wedged: AtomicBool,
     waiters: WaitQueueHead,
 }
 
 struct BlockMmioRequestGuard<'a> {
     gate: &'a BlockMmioRequestGate,
     release_on_drop: bool,
-    reaped: bool,
 }
 
 impl BlockMmioRequestGate {
     const fn new() -> Self {
         Self {
-            state: super::request_state::RequestState::new(),
+            locked: AtomicBool::new(false),
+            wedged: AtomicBool::new(false),
             waiters: WaitQueueHead::new(),
         }
     }
 
-    fn lock(&self, completed: impl Fn() -> bool) -> Result<BlockMmioRequestGuard<'_>, &'static str> {
+    fn lock(&self) -> Result<BlockMmioRequestGuard<'_>, &'static str> {
+        if self.wedged.load(Ordering::Acquire) {
+            return Err(BLOCK_MMIO_WEDGED_ERROR);
+        }
+
         loop {
-            if self.state.is_wedged() { return Err(BLOCK_MMIO_WEDGED_ERROR); }
-            if crate::task::thread::current_kill_pending() { return Err(BLOCK_KILLED_ERROR); }
-            let acquired = self.state.try_acquire();
-            let reaped = !acquired && self.state.try_reap(completed());
-            if acquired || reaped {
-                return Ok(BlockMmioRequestGuard { gate: self, release_on_drop: true, reaped });
+            if self
+                .locked
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return Ok(BlockMmioRequestGuard {
+                    gate: self,
+                    release_on_drop: true,
+                });
             }
-            if !block_mmio_request_gate_can_sleep() { return Err("Block request already in progress"); }
-            // A detached request has no completion waiter. Bound the park so
-            // its next owner can reap without doing queue cleanup in the ISR.
-            let outcome = self.waiters.prepare_to_wait_checked(
-                crate::task::thread::ThreadState::BlockedOnIO,
-                Some(monotonic_now_ns().saturating_add(BLOCK_MMIO_WAIT_SLICE_NS)),
-                || !crate::task::thread::current_kill_pending() && !self.state.available(completed()),
-            );
-            match outcome {
-                crate::task::waitqueue::PrepareOutcome::Queued => {
-                    crate::task::waitqueue::schedule_current_wait();
-                    self.waiters.finish_wait();
-                }
-                crate::task::waitqueue::PrepareOutcome::Mismatch => continue,
-                _ => return Err("Block request wait unavailable"),
+
+            if !block_mmio_request_gate_can_sleep() {
+                return Err("Block MMIO request already in progress");
+            }
+
+            if self
+                .waiters
+                .prepare_to_wait(crate::task::thread::ThreadState::BlockedOnIO)
+                .is_none()
+            {
+                return Err("Block MMIO request already in progress");
+            }
+
+            if self.wedged.load(Ordering::Acquire) {
+                self.waiters.finish_wait();
+                return Err(BLOCK_MMIO_WEDGED_ERROR);
+            }
+
+            if self.locked.load(Ordering::Acquire) {
+                crate::task::waitqueue::schedule_current_wait();
+            }
+            self.waiters.finish_wait();
+
+            if self.wedged.load(Ordering::Acquire) {
+                return Err(BLOCK_MMIO_WEDGED_ERROR);
             }
         }
     }
 
     fn unlock(&self) {
-        self.state.release();
+        self.locked.store(false, Ordering::Release);
         self.waiters.wake_up_one();
     }
 }
 
 impl BlockMmioRequestGuard<'_> {
-    fn fail(mut self, error: &'static str) {
-        if error == BLOCK_KILLED_ERROR {
-            self.release_on_drop = false;
-            self.gate.state.detach();
-            self.gate.waiters.wake_up();
-        } else {
-            self.wedge();
-        }
-    }
-
     fn wedge(mut self) {
         self.release_on_drop = false;
-        self.gate.state.wedge();
+        self.gate.wedged.store(true, Ordering::Release);
         self.gate.waiters.wake_up();
     }
 }
@@ -202,7 +209,7 @@ pub(crate) fn block_wedge_oracle_test() -> crate::test_framework::registry::Test
     BLOCK_WEDGE_ORACLE_REFUSE_START_NS.store(0, Ordering::Release);
     BLOCK_WEDGE_ORACLE_REFUSE_ELAPSED_NS.store(0, Ordering::Release);
 
-    let request_guard = match BLOCK_WEDGE_ORACLE_GATE.lock(|| false) {
+    let request_guard = match BLOCK_WEDGE_ORACLE_GATE.lock() {
         Ok(guard) => guard,
         Err(_) => return TestResult::Fail("block wedge oracle could not take the initial lock"),
     };
@@ -216,7 +223,7 @@ pub(crate) fn block_wedge_oracle_test() -> crate::test_framework::registry::Test
             };
             BLOCK_WEDGE_ORACLE_PARKED_STATE
                 .store(BLOCK_WEDGE_ORACLE_SLEEP_PERMITTED, Ordering::Release);
-            match BLOCK_WEDGE_ORACLE_GATE.lock(|| false) {
+            match BLOCK_WEDGE_ORACLE_GATE.lock() {
                 Err(BLOCK_MMIO_WEDGED_ERROR) => BLOCK_WEDGE_ORACLE_PARKED_STATE
                     .store(BLOCK_WEDGE_ORACLE_REFUSED, Ordering::Release),
                 Err(_) | Ok(_) => BLOCK_WEDGE_ORACLE_PARKED_STATE
@@ -272,7 +279,7 @@ pub(crate) fn block_wedge_oracle_test() -> crate::test_framework::registry::Test
             BLOCK_WEDGE_ORACLE_REFUSE_START_NS.store(started_at, Ordering::Release);
             BLOCK_WEDGE_ORACLE_REFUSE_STATE
                 .store(BLOCK_WEDGE_ORACLE_SLEEP_PERMITTED, Ordering::Release);
-            let result = BLOCK_WEDGE_ORACLE_GATE.lock(|| false);
+            let result = BLOCK_WEDGE_ORACLE_GATE.lock();
             let elapsed_ns = block_wedge_oracle_now_ns().saturating_sub(started_at);
             BLOCK_WEDGE_ORACLE_REFUSE_ELAPSED_NS.store(elapsed_ns, Ordering::Release);
             match result {
@@ -391,9 +398,8 @@ impl BlockMmioCompletion {
     /// The device owns the descriptors and DMA buffers until it completes the
     /// request, and a slow device is not a failed one, so, as in Linux's
     /// virtio-blk, there is no timeout: the wait ends when the device
-    /// completes the request. SIGKILL detaches only the waiter: the gate keeps
-    /// custody of the request until a later caller consumes its completion.
-    /// Device failure still wedges the slot. A wait
+    /// completes the request. It sleeps in slices only to notice a device
+    /// that has failed, the one case where the request is abandoned. A wait
     /// that cannot sleep spins instead, and is abandoned past the bootstrap
     /// limit rather than spinning the boot CPU forever.
     fn wait_for_completion(
@@ -405,13 +411,11 @@ impl BlockMmioCompletion {
         let started_ns = monotonic_now_ns();
         let sleeps = crate::task::completion::wait_sleeps();
         loop {
-            match self
+            if let Ok(true) = self
                 .completion
-                .wait_timeout_killable(token, BLOCK_MMIO_WAIT_SLICE_NS)
+                .wait_timeout_uninterruptible(token, BLOCK_MMIO_WAIT_SLICE_NS)
             {
-                Ok(true) => return Ok(()),
-                Err(_) => return Err(BLOCK_KILLED_ERROR),
-                Ok(false) => {}
+                return Ok(());
             }
             if device_has_failed(state) {
                 return Err("Block MMIO device failed with a request outstanding");
@@ -997,18 +1001,6 @@ fn finish_read_sector(
     Ok(())
 }
 
-fn lock_request(device_index: usize) -> Result<BlockMmioRequestGuard<'static>, &'static str> {
-    let completion = &COMPLETIONS[device_index];
-    let guard = REQUEST_GATES[device_index].lock(|| completion.completion.is_complete(completion.pending_token()))?;
-    if guard.reaped {
-        // The ISR consumed the used ring; the fixed descriptor/DMA slot is
-        // reusable only now, after the detached command has completed.
-        let _ = completion.take_completed_request()?;
-        completion.clear();
-    }
-    Ok(guard)
-}
-
 /// Read a sector from the block device at given device_index.
 pub fn read_sector(
     device_index: usize,
@@ -1023,7 +1015,7 @@ pub fn read_sector(
         return Err("Block MMIO IRQ completion unavailable before interrupts are enabled");
     }
 
-    let request_guard = lock_request(device_index)?;
+    let request_guard = REQUEST_GATES[device_index].lock()?;
     let completion = &COMPLETIONS[device_index];
     let completion_token = completion.prepare_wait();
 
@@ -1033,7 +1025,7 @@ pub fn read_sector(
     }
 
     if let Err(e) = completion.wait_for_completion(completion_token, state, request_type::IN) {
-        request_guard.fail(e);
+        request_guard.wedge();
         return Err(e);
     }
 
@@ -1149,7 +1141,7 @@ pub fn write_sector(
         return Err("Block MMIO IRQ completion unavailable before interrupts are enabled");
     }
 
-    let request_guard = lock_request(device_index)?;
+    let request_guard = REQUEST_GATES[device_index].lock()?;
     let completion = &COMPLETIONS[device_index];
     let completion_token = completion.prepare_wait();
 
@@ -1159,7 +1151,7 @@ pub fn write_sector(
     }
 
     if let Err(e) = completion.wait_for_completion(completion_token, state, request_type::OUT) {
-        request_guard.fail(e);
+        request_guard.wedge();
         return Err(e);
     }
 
