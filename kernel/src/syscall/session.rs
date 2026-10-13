@@ -9,7 +9,8 @@
 //! the session (via setsid()).
 
 use super::SyscallResult;
-use crate::process::{manager, ProcessId};
+use crate::process::{manager, ProcessId, ProcessManager};
+use alloc::vec::Vec;
 
 /// EPERM - Operation not permitted
 const EPERM: u64 = 1;
@@ -22,6 +23,16 @@ const EACCES: u64 = 13;
 
 /// EINVAL - Invalid argument
 const EINVAL: u64 = 22;
+
+/// Every retained row of the process, including an exited leader while its
+/// other threads run. Session and group IDs are process-wide metadata.
+fn group_row_ids(pm: &ProcessManager, group: u64) -> Vec<ProcessId> {
+    pm.all_processes()
+        .iter()
+        .filter(|row| row.thread_group_id.unwrap_or(row.id.as_u64()) == group)
+        .map(|row| row.id)
+        .collect()
+}
 
 /// setsid() - Create a new session
 ///
@@ -89,9 +100,11 @@ pub fn sys_setsid() -> SyscallResult {
     // Create new session: set sid = pgid = pid, for every thread of the
     // process.
     let new_sid = pid;
-    for row in manager.group_rows_mut(group) {
-        row.sid = new_sid;
-        row.pgid = new_sid;
+    for pid in group_row_ids(manager, group) {
+        if let Some(row) = manager.get_process_mut(pid) {
+            row.sid = new_sid;
+            row.pgid = new_sid;
+        }
     }
 
     log::info!(
@@ -162,12 +175,7 @@ pub fn sys_getsid(pid: i32) -> SyscallResult {
             }
         };
 
-        // Check if process is terminated
-        if process.is_terminated() {
-            log::debug!("sys_getsid: process {} is terminated", pid);
-            return SyscallResult::Err(ESRCH);
-        }
-
+        // A zombie retains its PID and IDs until it is reaped, as on Linux.
         log::debug!(
             "sys_getsid({}): returning sid={}",
             pid,
@@ -220,9 +228,6 @@ pub fn sys_getpgid(pid: i32) -> SyscallResult {
                 return SyscallResult::Err(ESRCH);
             }
         };
-        if process.is_terminated() {
-            return SyscallResult::Err(ESRCH);
-        }
         SyscallResult::Ok(process.pgid.as_u64())
     }
 }
@@ -292,7 +297,7 @@ pub fn sys_setpgid(pid: i32, pgid: i32) -> SyscallResult {
     };
 
     let (target_sid, target_parent, target_exec) = match manager.get_process(target_pid) {
-        Some(p) if !p.is_terminated() => (p.sid, p.parent, p.has_exec),
+        Some(p) => (p.sid, p.parent, p.has_exec),
         _ => return SyscallResult::Err(ESRCH),
     };
     // The process the target's parent row belongs to: a child forked by one
@@ -330,8 +335,10 @@ pub fn sys_setpgid(pid: i32, pgid: i32) -> SyscallResult {
     }
 
     // Every thread of the target process joins the group.
-    for row in manager.group_rows_mut(target_pid.as_u64()) {
-        row.pgid = new_pgid;
+    for pid in group_row_ids(manager, target_pid.as_u64()) {
+        if let Some(row) = manager.get_process_mut(pid) {
+            row.pgid = new_pgid;
+        }
     }
 
     log::debug!(
