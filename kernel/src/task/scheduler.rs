@@ -6928,6 +6928,13 @@ pub(crate) fn spawn_on_cpu_for_test(thread: Box<Thread>, cpu: usize) {
 }
 
 /// Release a forced-placement probe and make it runnable on this CPU.
+///
+/// A Ready probe that a CPU still names as current, as being switched in or
+/// as being switched out, or whose requeue that CPU has deferred, is left to
+/// that CPU: it queues the probe once the switch has finished, and with the
+/// pin cleared any CPU may then take it. A switched-out thread is Ready while
+/// its CPU is still on its kernel stack, so queueing it here let this CPU run
+/// it on that stack (#1454).
 #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
 pub fn release_cpu_affine_thread_for_test(thread_id: u64) -> bool {
     without_interrupts(|| {
@@ -6941,6 +6948,14 @@ pub fn release_cpu_affine_thread_for_test(thread_id: u64) -> bool {
             .is_some_and(|thread| thread.state == ThreadState::Ready)
         {
             return false;
+        }
+        if scheduler.cpu_state.iter().any(|state| {
+            state.current_thread == Some(thread_id)
+                || state.pending_next == Some(thread_id)
+                || state.previous_thread == Some(thread_id)
+        }) || crate::arch_impl::aarch64::context_switch::deferred_requeue_contains(thread_id)
+        {
+            return true;
         }
 
         for queue in scheduler.per_cpu_queues.iter_mut() {
