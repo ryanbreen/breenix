@@ -1,14 +1,30 @@
 //! TCP (Transmission Control Protocol) implementation
 //!
 //! Implements TCP packet parsing, construction, and connection state machine (RFC 793).
+//!
+//! Each connection keeps every byte it has not seen acknowledged in a bounded send
+//! buffer and transmits against the peer's advertised window. Bytes IP output could
+//! not take stay queued and go out again from `drain_deferred_tx`. Received bytes go
+//! into a bounded receive buffer whose free space is the advertised window.
+//!
+//! A reset leaves an errno on the connection the way Linux's `tcp_reset` does:
+//! ECONNREFUSED in SYN_SENT, EPIPE in CLOSE_WAIT, ECONNRESET otherwise. A close
+//! with unread data sends RST instead of FIN (RFC 2525 2.17, as Linux does), and so
+//! does data that arrives for a connection whose owner has closed it.
+//!
+//! The active closer waits in TIME_WAIT for 60 s (Linux's `TCP_TIMEWAIT_LEN`).
+//! Expired TIME_WAIT entries, orphaned FIN_WAIT_2 entries past 60 s and closed
+//! orphans are reaped from the connection table whenever the table is consulted for
+//! a port or a new segment, at most once a second.
 
 use alloc::collections::BTreeMap;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
 
-use super::ipv4::{internet_checksum, Ipv4Packet, PROTOCOL_TCP};
+use super::ipv4::{Ipv4Packet, PROTOCOL_TCP};
+use crate::syscall::errno::{EAGAIN, ECONNREFUSED, ECONNRESET, EPIPE};
 
 // ============================================================================
 // Deferred TX queue: packets queued during RX processing for later sending.
@@ -26,6 +42,11 @@ struct DeferredTx {
 static DEFERRED_TX_QUEUE: Mutex<Vec<DeferredTx>> = Mutex::new(Vec::new());
 static TCP_WAKE_REJECTED: AtomicU64 = AtomicU64::new(0);
 static TCP_ACCEPT_PUBLISH_RACE_RECOVERED: AtomicU64 = AtomicU64::new(0);
+
+/// Set when some connection holds output it could not send: data or a FIN that IP
+/// output refused, or data a newly opened peer window lets out. `drain_deferred_tx`
+/// takes it and runs every connection's output again.
+static TX_RETRY: AtomicBool = AtomicBool::new(false);
 
 #[cfg(feature = "boot_tests")]
 static FORCED_CONNECTION_LOOKUP_MISSES: AtomicU64 = AtomicU64::new(0);
@@ -98,8 +119,9 @@ pub fn deferred_tx_queue_len() -> usize {
     len
 }
 
-/// Drain the deferred TX queue, sending all queued packets.
-/// Called after process_rx() completes.
+/// Drain the deferred TX queue, sending all queued packets, then run the output of
+/// every connection that holds unsent data or an unsent FIN.
+/// Called after process_rx() completes and after each round of loopback delivery.
 /// The queue is filled from thread context and NetRx, so guard only the queue take.
 pub fn drain_deferred_tx() {
     let packets: Vec<DeferredTx> = {
@@ -113,7 +135,9 @@ pub fn drain_deferred_tx() {
     for pkt in packets {
         let config = super::config();
         let is_loopback = pkt.dst_ip == config.ip_addr || pkt.dst_ip[0] == 127;
-        let result = if is_loopback {
+        // A segment that fails here was a SYN+ACK; the peer's SYN retransmission
+        // brings another.
+        let _ = if is_loopback {
             super::send_ipv4_from(pkt.src_ip, pkt.dst_ip, PROTOCOL_TCP, &pkt.tcp_segment)
         } else if let Some(mac) = pkt.dst_mac {
             // Send directly to the known MAC (bypasses ARP, which can't work
@@ -128,15 +152,70 @@ pub fn drain_deferred_tx() {
         } else {
             super::send_ipv4_from(pkt.src_ip, pkt.dst_ip, PROTOCOL_TCP, &pkt.tcp_segment)
         };
-        match result {
-            Ok(()) => {}
-            Err(e) => crate::serial_println!("[TCP] deferred TX FAILED: {}", e),
+    }
+
+    if TX_RETRY.swap(false, Ordering::AcqRel) {
+        let stalled = with_tcp_connections(|connections| {
+            let mut stalled = false;
+            for conn in connections.values_mut() {
+                if conn.has_output() && !conn.output() {
+                    stalled = true;
+                }
+            }
+            stalled
+        });
+        if stalled {
+            TX_RETRY.store(true, Ordering::Release);
         }
     }
 }
 
 /// TCP header minimum size (without options)
 pub const TCP_HEADER_MIN_SIZE: usize = 20;
+
+/// TCP option kinds (RFC 793, RFC 9293 3.2).
+const TCP_OPT_END: u8 = 0;
+const TCP_OPT_NOP: u8 = 1;
+const TCP_OPT_MSS: u8 = 2;
+
+/// Maximum segment size over Ethernet: a 1500-byte MTU less the IPv4 and TCP headers.
+pub const ETHERNET_MSS: u16 = 1460;
+/// Maximum segment size on loopback. Loopback carries IPv4 packets of any size, so
+/// this only balances per-segment cost against the window: four full segments fit
+/// in the largest window a connection advertises.
+pub const LOOPBACK_MSS: u16 = 16384;
+/// The peer's MSS when its SYN carries no MSS option (RFC 9293 3.7.1).
+const DEFAULT_PEER_MSS: u16 = 536;
+
+/// Receive buffer of a connection: the largest window a 16-bit window field can
+/// advertise without window scaling.
+pub const DEFAULT_RCVBUF: usize = 65535;
+/// Send buffer of a connection: unacknowledged and unsent bytes together.
+pub const DEFAULT_SNDBUF: usize = 65536;
+
+/// How long the active closer waits in TIME_WAIT: Linux's `TCP_TIMEWAIT_LEN`, 60 s.
+pub const TIME_WAIT_MS: u64 = 60_000;
+/// How long a connection whose owner has closed it may wait in FIN_WAIT_2 for the
+/// peer's FIN: Linux's default `tcp_fin_timeout`, 60 s.
+const ORPHAN_FIN_WAIT2_MS: u64 = 60_000;
+/// The connection table is swept for expired entries at most this often.
+const REAP_INTERVAL_MS: u64 = 1_000;
+
+/// Linux's SOMAXCONN, the largest backlog a listener takes.
+const MAX_BACKLOG: usize = 4096;
+
+static LAST_REAP_MS: AtomicU64 = AtomicU64::new(0);
+
+/// `a` precedes `b` in sequence space (RFC 9293 3.4).
+#[inline]
+fn seq_lt(a: u32, b: u32) -> bool {
+    (a.wrapping_sub(b) as i32) < 0
+}
+
+#[inline]
+fn now_ms() -> u64 {
+    crate::time::get_monotonic_time()
+}
 
 /// TCP flags
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -257,6 +336,18 @@ impl TcpFlags {
             urg: false,
         }
     }
+
+    /// Create RST+ACK flag set: the reset a synchronized connection sends.
+    pub fn rst_ack() -> Self {
+        TcpFlags {
+            fin: false,
+            syn: false,
+            rst: true,
+            psh: false,
+            ack: true,
+            urg: false,
+        }
+    }
 }
 
 /// Parsed TCP header
@@ -283,6 +374,8 @@ pub struct TcpHeader {
     pub checksum: u16,
     /// Urgent pointer
     pub urgent_ptr: u16,
+    /// The MSS option's value, when the segment carries one.
+    pub mss_option: Option<u16>,
 }
 
 impl TcpHeader {
@@ -309,6 +402,7 @@ impl TcpHeader {
         let window_size = u16::from_be_bytes([data[14], data[15]]);
         let checksum = u16::from_be_bytes([data[16], data[17]]);
         let urgent_ptr = u16::from_be_bytes([data[18], data[19]]);
+        let mss_option = parse_mss_option(&data[TCP_HEADER_MIN_SIZE..header_len]);
 
         let payload = &data[header_len..];
 
@@ -323,10 +417,32 @@ impl TcpHeader {
                 window_size,
                 checksum,
                 urgent_ptr,
+                mss_option,
             },
             payload,
         ))
     }
+}
+
+/// The MSS option among a header's options, if present and well formed.
+fn parse_mss_option(mut options: &[u8]) -> Option<u16> {
+    while let Some(&kind) = options.first() {
+        match kind {
+            TCP_OPT_END => return None,
+            TCP_OPT_NOP => options = &options[1..],
+            _ => {
+                let len = *options.get(1)? as usize;
+                if len < 2 || len > options.len() {
+                    return None;
+                }
+                if kind == TCP_OPT_MSS && len == 4 {
+                    return Some(u16::from_be_bytes([options[2], options[3]]));
+                }
+                options = &options[len..];
+            }
+        }
+    }
+    None
 }
 
 /// Build a TCP packet (header + payload)
@@ -353,7 +469,7 @@ pub fn build_tcp_packet(
     // Acknowledgment number
     packet.extend_from_slice(&ack_num.to_be_bytes());
     // Data offset (4 bits) + reserved (4 bits)
-    packet.push((data_offset << 4) | 0);
+    packet.push(data_offset << 4);
     // Flags
     packet.push(flags.to_byte());
     // Window size
@@ -369,25 +485,29 @@ pub fn build_tcp_packet(
     packet
 }
 
+/// Add `data` to a ones'-complement sum as big-endian 16-bit words (RFC 1071).
+fn checksum_words(mut sum: u64, data: &[u8]) -> u64 {
+    let mut words = data.chunks_exact(2);
+    for word in &mut words {
+        sum += u16::from_be_bytes([word[0], word[1]]) as u64;
+    }
+    if let [last] = words.remainder() {
+        sum += (*last as u64) << 8;
+    }
+    sum
+}
+
 /// Calculate TCP checksum with pseudo-header
 pub fn tcp_checksum(src_ip: [u8; 4], dst_ip: [u8; 4], tcp_packet: &[u8]) -> u16 {
-    // Build pseudo-header for checksum calculation
-    let mut pseudo_header = Vec::with_capacity(12 + tcp_packet.len());
-
-    // Source IP
-    pseudo_header.extend_from_slice(&src_ip);
-    // Destination IP
-    pseudo_header.extend_from_slice(&dst_ip);
-    // Zero
-    pseudo_header.push(0);
-    // Protocol (TCP = 6)
-    pseudo_header.push(PROTOCOL_TCP);
-    // TCP length
-    pseudo_header.extend_from_slice(&(tcp_packet.len() as u16).to_be_bytes());
-    // TCP header + data
-    pseudo_header.extend_from_slice(tcp_packet);
-
-    internet_checksum(&pseudo_header)
+    let mut sum = checksum_words(0, &src_ip);
+    sum = checksum_words(sum, &dst_ip);
+    sum += PROTOCOL_TCP as u64;
+    sum += tcp_packet.len() as u64 & 0xFFFF;
+    sum = checksum_words(sum, tcp_packet);
+    while sum >> 16 != 0 {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+    !(sum as u16)
 }
 
 /// Build a TCP packet with correct checksum
@@ -420,6 +540,78 @@ pub fn build_tcp_packet_with_checksum(
     packet[17] = (checksum & 0xFF) as u8;
 
     packet
+}
+
+/// The addressing and control fields of one outgoing segment.
+#[derive(Clone, Copy)]
+struct Segment {
+    src_ip: [u8; 4],
+    dst_ip: [u8; 4],
+    src_port: u16,
+    dst_port: u16,
+    seq: u32,
+    ack: u32,
+    flags: TcpFlags,
+    window: u16,
+}
+
+/// Build `seg` with `options` (a multiple of four bytes) and the payload `parts`
+/// joined, checksummed. None when the memory for it cannot be had: data segments
+/// are built on paths a user drives, so their allocation is fallible.
+fn try_build_segment(seg: &Segment, options: &[u8], parts: [&[u8]; 2]) -> Option<Vec<u8>> {
+    let header_len = TCP_HEADER_MIN_SIZE + options.len();
+    let mut packet = Vec::new();
+    packet
+        .try_reserve_exact(header_len + parts[0].len() + parts[1].len())
+        .ok()?;
+    packet.extend_from_slice(&seg.src_port.to_be_bytes());
+    packet.extend_from_slice(&seg.dst_port.to_be_bytes());
+    packet.extend_from_slice(&seg.seq.to_be_bytes());
+    packet.extend_from_slice(&seg.ack.to_be_bytes());
+    packet.push(((header_len / 4) as u8) << 4);
+    packet.push(seg.flags.to_byte());
+    packet.extend_from_slice(&seg.window.to_be_bytes());
+    packet.extend_from_slice(&[0, 0, 0, 0]);
+    packet.extend_from_slice(options);
+    packet.extend_from_slice(parts[0]);
+    packet.extend_from_slice(parts[1]);
+    let checksum = tcp_checksum(seg.src_ip, seg.dst_ip, &packet);
+    packet[16..18].copy_from_slice(&checksum.to_be_bytes());
+    Some(packet)
+}
+
+/// Hand `seg` to IP output. False when it was not sent: no memory for it, or IP
+/// output refused it.
+fn transmit(seg: &Segment, options: &[u8], parts: [&[u8]; 2]) -> bool {
+    match try_build_segment(seg, options, parts) {
+        Some(packet) => {
+            super::send_ipv4_from(seg.src_ip, seg.dst_ip, PROTOCOL_TCP, &packet).is_ok()
+        }
+        None => false,
+    }
+}
+
+/// The MSS option bytes advertising `mss`.
+fn mss_option(mss: u16) -> [u8; 4] {
+    let [hi, lo] = mss.to_be_bytes();
+    [TCP_OPT_MSS, 4, hi, lo]
+}
+
+/// The MSS this host offers for a connection with `remote_ip`.
+fn local_mss(remote_ip: [u8; 4]) -> u16 {
+    let config = super::config();
+    if remote_ip[0] == 127 || remote_ip == config.ip_addr {
+        LOOPBACK_MSS
+    } else {
+        ETHERNET_MSS
+    }
+}
+
+/// The MSS to send with: this host's, capped by what the peer's SYN offered.
+fn effective_mss(remote_ip: [u8; 4], peer_mss: Option<u16>) -> u16 {
+    local_mss(remote_ip)
+        .min(peer_mss.unwrap_or(DEFAULT_PEER_MSS))
+        .max(1)
 }
 
 /// TCP connection state (RFC 793)
@@ -467,7 +659,7 @@ pub struct TcpConnection {
     pub recv_next: u32,
     /// Initial receive sequence number
     pub recv_initial: u32,
-    /// Our window size
+    /// The window this end last advertised.
     pub recv_window: u16,
     /// Remote's window size
     pub send_window: u16,
@@ -483,9 +675,11 @@ pub struct TcpConnection {
     /// Monotonic nanoseconds at which `publish_rx` last put bytes into
     /// `rx_buffer`; `0` before the first publication on this connection.
     rx_publish_ns: u64,
-    /// Pending data to send (for future send buffering/retransmission)
-    #[allow(dead_code)] // Part of TCP API, needed for send buffering when window is full
-    pub tx_buffer: VecDeque<u8>,
+    /// Every byte from `send_unack` on: the first `tx_sent` are on the wire
+    /// unacknowledged, the rest are not yet sent.
+    tx_buffer: VecDeque<u8>,
+    /// Bytes at the front of `tx_buffer` that have been sent.
+    tx_sent: usize,
     /// Maximum segment size
     pub mss: u16,
     /// Process ID that owns this connection (for cleanup on process exit)
@@ -499,6 +693,25 @@ pub struct TcpConnection {
     pub refcount: core::sync::atomic::AtomicUsize,
     /// Threads waiting for recv data or connection state change (connect/recv blocking)
     pub waiting_threads: Mutex<Vec<u64>>,
+    /// The errno a reset left, reported once by the next operation that fails on it.
+    pub error: Option<i32>,
+    /// Bytes the receive buffer holds at most.
+    rcv_cap: usize,
+    /// Bytes the send buffer holds at most.
+    snd_cap: usize,
+    /// The owner has finished sending: a FIN follows the queued data.
+    fin_queued: bool,
+    /// The FIN is on the wire; it occupies the sequence number before `send_next`.
+    fin_sent: bool,
+    /// The peer acknowledged the FIN.
+    fin_acked: bool,
+    /// The peer's FIN arrived: after the queued bytes, the stream is at its end.
+    peer_fin: bool,
+    /// No descriptor refers to the connection any more.
+    orphaned: bool,
+    /// Monotonic ms at which the connection entered TIME_WAIT, or at which an
+    /// orphan began waiting in FIN_WAIT_2.
+    timer_since_ms: u64,
 }
 
 impl TcpConnection {
@@ -515,13 +728,18 @@ impl TcpConnection {
     /// An empty payload is not a publication and does not move the stamp: TCP
     /// segments carrying only flags reach several of the call sites, and a
     /// stamp moved by one of those would report a readiness no byte created.
-    pub fn publish_rx(&mut self, bytes: &[u8]) {
-        if bytes.is_empty() {
-            return;
+    ///
+    /// Returns how many bytes went in: at most the free receive space, and fewer
+    /// when memory for them cannot be had.
+    pub fn publish_rx(&mut self, bytes: &[u8]) -> usize {
+        let take = bytes.len().min(self.rcv_space());
+        if take == 0 || self.rx_buffer.try_reserve(take).is_err() {
+            return 0;
         }
-        self.rx_buffer.extend(bytes);
+        self.rx_buffer.extend(&bytes[..take]);
         let (secs, nanos) = crate::time::get_monotonic_time_ns();
         self.rx_publish_ns = secs.saturating_mul(1_000_000_000).saturating_add(nanos);
+        take
     }
 
     /// True when the receive buffer holds no bytes. This is the predicate
@@ -541,6 +759,27 @@ impl TcpConnection {
         self.rx_publish_ns
     }
 
+    /// True once the peer's FIN has arrived.
+    pub fn peer_fin(&self) -> bool {
+        self.peer_fin
+    }
+
+    /// Bytes the send buffer can take now.
+    pub fn tx_space(&self) -> usize {
+        self.snd_cap.saturating_sub(self.tx_buffer.len())
+    }
+
+    /// Bytes queued in the send buffer, sent or not.
+    pub fn tx_len(&self) -> usize {
+        self.tx_buffer.len()
+    }
+
+    /// Set the receive and send buffer sizes, as SO_RCVBUF and SO_SNDBUF do.
+    pub fn set_buffer_sizes(&mut self, rcvbuf: usize, sndbuf: usize) {
+        self.rcv_cap = rcvbuf.max(1);
+        self.snd_cap = sndbuf.max(1);
+    }
+
     /// Create a new connection in SYN_SENT state (for connect)
     pub fn new_outgoing(
         id: ConnectionId,
@@ -555,51 +794,251 @@ impl TcpConnection {
             send_unack: initial_seq,
             recv_next: 0,
             recv_initial: 0,
-            recv_window: 65535,
+            recv_window: DEFAULT_RCVBUF.min(u16::MAX as usize) as u16,
             send_window: 0,
             rx_buffer: VecDeque::new(),
             rx_publish_ns: 0,
             tx_buffer: VecDeque::new(),
-            mss: 1460, // Default MSS for Ethernet
+            tx_sent: 0,
+            mss: ETHERNET_MSS,
             owner_pid,
             send_shutdown: false,
             recv_shutdown: false,
             refcount: core::sync::atomic::AtomicUsize::new(1),
             waiting_threads: Mutex::new(Vec::new()),
+            error: None,
+            rcv_cap: DEFAULT_RCVBUF,
+            snd_cap: DEFAULT_SNDBUF,
+            fin_queued: false,
+            fin_sent: false,
+            fin_acked: false,
+            peer_fin: false,
+            orphaned: false,
+            timer_since_ms: 0,
         }
     }
 
-    /// Create a new connection in LISTEN state (for accept)
-    #[allow(dead_code)] // Part of TCP server API, used when implementing server-side accept
-    pub fn new_listening(
-        local_ip: [u8; 4],
-        local_port: u16,
-        owner_pid: crate::process::process::ProcessId,
-    ) -> Self {
-        TcpConnection {
-            id: ConnectionId {
-                local_ip,
-                local_port,
-                remote_ip: [0; 4],
-                remote_port: 0,
-            },
-            state: TcpState::Listen,
-            send_next: 0,
-            send_initial: 0,
-            send_unack: 0,
-            recv_next: 0,
-            recv_initial: 0,
-            recv_window: 65535,
-            send_window: 0,
-            rx_buffer: VecDeque::new(),
-            rx_publish_ns: 0,
-            tx_buffer: VecDeque::new(),
-            mss: 1460,
-            owner_pid,
-            send_shutdown: false,
-            recv_shutdown: false,
-            refcount: core::sync::atomic::AtomicUsize::new(1),
-            waiting_threads: Mutex::new(Vec::new()),
+    /// Free space in the receive buffer.
+    fn rcv_space(&self) -> usize {
+        self.rcv_cap.saturating_sub(self.rx_buffer.len())
+    }
+
+    /// The window to advertise now: the free receive space, as far as 16 bits carry it.
+    fn rcv_window(&self) -> u16 {
+        self.rcv_space().min(u16::MAX as usize) as u16
+    }
+
+    /// A segment of this connection carrying `flags` at `seq`, acknowledging
+    /// `recv_next` and advertising the current window.
+    fn segment(&mut self, seq: u32, flags: TcpFlags) -> Segment {
+        self.recv_window = self.rcv_window();
+        Segment {
+            src_ip: self.id.local_ip,
+            dst_ip: self.id.remote_ip,
+            src_port: self.id.local_port,
+            dst_port: self.id.remote_port,
+            seq,
+            ack: self.recv_next,
+            flags,
+            window: self.recv_window,
+        }
+    }
+
+    /// Acknowledge everything received so far.
+    fn send_ack(&mut self) {
+        let seg = self.segment(self.send_next, TcpFlags::ack());
+        transmit(&seg, &[], [&[], &[]]);
+    }
+
+    /// Reset the connection from this end (RFC 9293 3.5.2): RST at `send_next`.
+    fn send_reset(&mut self) {
+        let seg = self.segment(self.send_next, TcpFlags::rst_ack());
+        transmit(&seg, &[], [&[], &[]]);
+    }
+
+    /// True in the states in which this end may still send data.
+    fn may_send_data(&self) -> bool {
+        matches!(self.state, TcpState::Established | TcpState::CloseWait) && !self.fin_queued
+    }
+
+    /// True in the states in which the peer may still send data.
+    fn may_receive_data(&self) -> bool {
+        matches!(
+            self.state,
+            TcpState::Established | TcpState::FinWait1 | TcpState::FinWait2
+        )
+    }
+
+    /// True when queued data or a queued FIN has not been sent.
+    fn has_output(&self) -> bool {
+        let sending = matches!(
+            self.state,
+            TcpState::Established
+                | TcpState::CloseWait
+                | TcpState::FinWait1
+                | TcpState::Closing
+                | TcpState::LastAck
+        );
+        sending && (self.tx_buffer.len() > self.tx_sent || (self.fin_queued && !self.fin_sent))
+    }
+
+    /// Queue as much of `data` as the send buffer takes and memory allows.
+    fn queue_tx(&mut self, data: &[u8]) -> usize {
+        let take = data.len().min(self.tx_space());
+        if take == 0 || self.tx_buffer.try_reserve(take).is_err() {
+            return 0;
+        }
+        self.tx_buffer.extend(&data[..take]);
+        take
+    }
+
+    /// Send what the peer's window allows of the unsent data, then the FIN once
+    /// every byte before it is out. False when IP output refused a segment: the
+    /// bytes stay queued and `drain_deferred_tx` sends them later.
+    fn output(&mut self) -> bool {
+        if !self.has_output() {
+            return true;
+        }
+        while self.tx_sent < self.tx_buffer.len() {
+            let room = (self.send_window as usize).saturating_sub(self.tx_sent);
+            if room == 0 {
+                // The peer's window is full. Its next ACK opens it and sets TX_RETRY.
+                return true;
+            }
+            let len = (self.tx_buffer.len() - self.tx_sent)
+                .min(room)
+                .min(self.mss as usize);
+            let seq = self.send_next;
+            let seg = self.segment(seq, TcpFlags::ack_psh());
+            let (front, back) = self.tx_buffer.as_slices();
+            let start = self.tx_sent;
+            let end = start + len;
+            let parts: [&[u8]; 2] = if end <= front.len() {
+                [&front[start..end], &[]]
+            } else if start >= front.len() {
+                [&back[start - front.len()..end - front.len()], &[]]
+            } else {
+                [&front[start..], &back[..end - front.len()]]
+            };
+            if !transmit(&seg, &[], parts) {
+                return false;
+            }
+            self.tx_sent = end;
+            self.send_next = self.send_next.wrapping_add(len as u32);
+        }
+        if self.fin_queued && !self.fin_sent {
+            let seg = self.segment(self.send_next, TcpFlags::fin_ack());
+            if !transmit(&seg, &[], [&[], &[]]) {
+                return false;
+            }
+            self.fin_sent = true;
+            self.send_next = self.send_next.wrapping_add(1);
+        }
+        true
+    }
+
+    /// Run `output`, asking `drain_deferred_tx` to finish what it could not send.
+    fn push_output(&mut self) {
+        if !self.output() {
+            TX_RETRY.store(true, Ordering::Release);
+        }
+    }
+
+    /// Stop sending: queue a FIN after the buffered data and move to the state
+    /// that waits for its acknowledgement.
+    fn queue_fin(&mut self) {
+        self.send_shutdown = true;
+        match self.state {
+            TcpState::Established => self.state = TcpState::FinWait1,
+            TcpState::CloseWait => self.state = TcpState::LastAck,
+            _ => return,
+        }
+        self.fin_queued = true;
+        self.push_output();
+    }
+
+    /// A valid RST arrived: record the errno Linux's `tcp_reset` leaves and close.
+    fn reset_by_peer(&mut self) {
+        self.error = match self.state {
+            TcpState::SynSent => Some(ECONNREFUSED),
+            TcpState::CloseWait => Some(EPIPE),
+            TcpState::TimeWait | TcpState::Closed => None,
+            _ => Some(ECONNRESET),
+        };
+        self.close_now();
+    }
+
+    /// Enter CLOSED, dropping whatever was waiting to be sent.
+    fn close_now(&mut self) {
+        self.state = TcpState::Closed;
+        self.tx_buffer.clear();
+        self.tx_sent = 0;
+        self.send_shutdown = true;
+        wake_connection_waiters(self);
+    }
+
+    fn enter_time_wait(&mut self) {
+        self.state = TcpState::TimeWait;
+        self.timer_since_ms = now_ms();
+    }
+
+    /// Process the acknowledgement field of a segment in a synchronized state.
+    fn process_ack(&mut self, header: &TcpHeader) {
+        let ack = header.ack_num;
+        if seq_lt(self.send_next, ack) {
+            // Acknowledges something never sent (RFC 9293 3.10.7.4): answer with
+            // an ACK and otherwise ignore it.
+            self.send_ack();
+            return;
+        }
+        if seq_lt(ack, self.send_unack) {
+            // An old duplicate: it carries no window information worth taking.
+            return;
+        }
+        let window_was = self.send_window;
+        self.send_window = header.window_size;
+        let acked = ack.wrapping_sub(self.send_unack) as usize;
+        let mut freed = false;
+        if acked > 0 {
+            let data = acked.min(self.tx_sent);
+            self.tx_buffer.drain(..data);
+            self.tx_sent -= data;
+            self.send_unack = ack;
+            freed = data > 0;
+            if self.fin_sent && ack == self.send_next {
+                self.fin_acked = true;
+            }
+        }
+        if self.fin_acked {
+            match self.state {
+                TcpState::FinWait1 => {
+                    self.state = TcpState::FinWait2;
+                    self.timer_since_ms = now_ms();
+                }
+                TcpState::Closing => self.enter_time_wait(),
+                TcpState::LastAck => self.close_now(),
+                _ => {}
+            }
+        }
+        if (freed || self.send_window > window_was) && self.has_output() {
+            TX_RETRY.store(true, Ordering::Release);
+        }
+        if freed {
+            wake_connection_waiters(self);
+        }
+    }
+
+    /// True when the connection has served its purpose and can leave the table.
+    fn expired(&self, now: u64) -> bool {
+        match self.state {
+            TcpState::Closed => self.orphaned,
+            TcpState::TimeWait => {
+                self.orphaned && now.saturating_sub(self.timer_since_ms) >= TIME_WAIT_MS
+            }
+            TcpState::FinWait2 => {
+                self.orphaned && now.saturating_sub(self.timer_since_ms) >= ORPHAN_FIN_WAIT2_MS
+            }
+            _ => false,
         }
     }
 }
@@ -621,6 +1060,10 @@ pub struct PendingConnection {
     pub early_data: Vec<u8>,
     /// Next expected sequence number for early data
     pub recv_next: u32,
+    /// The MSS option of the peer's SYN.
+    pub peer_mss: Option<u16>,
+    /// The peer's window as of its last segment.
+    pub peer_window: u16,
 }
 
 /// Listening socket info
@@ -666,6 +1109,37 @@ pub(crate) fn with_tcp_listeners<R>(f: impl FnOnce(&mut BTreeMap<u16, ListenSock
     result
 }
 
+/// Remove the connections whose time is up. `force` sweeps even if the last
+/// sweep was less than a second ago.
+fn reap_expired(connections: &mut BTreeMap<ConnectionId, TcpConnection>, force: bool) {
+    let now = now_ms();
+    if !force && now.saturating_sub(LAST_REAP_MS.load(Ordering::Relaxed)) < REAP_INTERVAL_MS {
+        return;
+    }
+    LAST_REAP_MS.store(now, Ordering::Relaxed);
+    connections.retain(|_, conn| !conn.expired(now));
+}
+
+/// True when a socket may not bind `port`: a listener holds it, or a connection
+/// on it is in any state but TIME_WAIT. A connection in TIME_WAIT holds the port
+/// only against a socket without SO_REUSEADDR (`reuse` false), as on Linux.
+pub fn tcp_port_in_use(port: u16, reuse: bool) -> bool {
+    if with_tcp_listeners(|listeners| listeners.contains_key(&port)) {
+        return true;
+    }
+    with_tcp_connections(|connections| {
+        reap_expired(connections, true);
+        connections.values().any(|conn| {
+            conn.id.local_port == port
+                && match conn.state {
+                    TcpState::TimeWait => !reuse,
+                    TcpState::Closed => !conn.orphaned,
+                    _ => true,
+                }
+        })
+    })
+}
+
 /// Generate a new initial sequence number
 pub fn generate_isn() -> u32 {
     let _guard = super::net_lock_guard();
@@ -676,20 +1150,26 @@ pub fn generate_isn() -> u32 {
     isn
 }
 
+/// Process a segment for an existing connection, then drop the connection from
+/// the table if that left it closed with no owner. True if a connection matched.
+fn deliver_to_connection(conn_id: &ConnectionId, header: &TcpHeader, payload: &[u8]) -> bool {
+    with_tcp_connections(|connections| {
+        reap_expired(connections, false);
+        let Some(conn) = connections.get_mut(conn_id) else {
+            return false;
+        };
+        handle_tcp_for_connection(conn, header, payload);
+        if conn.expired(now_ms()) {
+            connections.remove(conn_id);
+        }
+        true
+    })
+}
+
 /// Handle an incoming TCP packet
 pub fn handle_tcp(ip: &Ipv4Packet, data: &[u8]) {
-    let (header, payload) = match TcpHeader::parse(data) {
-        Some(h) => h,
-        None => {
-            log::warn!(
-                "TCP: Failed to parse header from {}.{}.{}.{}",
-                ip.src_ip[0],
-                ip.src_ip[1],
-                ip.src_ip[2],
-                ip.src_ip[3]
-            );
-            return;
-        }
+    let Some((header, payload)) = TcpHeader::parse(data) else {
+        return;
     };
 
     let config = super::config();
@@ -703,14 +1183,7 @@ pub fn handle_tcp(ip: &Ipv4Packet, data: &[u8]) {
 
     // First, check for an existing connection
     if !take_forced_connection_lookup_miss(&conn_id)
-        && with_tcp_connections(|connections| {
-            if let Some(conn) = connections.get_mut(&conn_id) {
-                handle_tcp_for_connection(conn, &header, payload);
-                true
-            } else {
-                false
-            }
-        })
+        && deliver_to_connection(&conn_id, &header, payload)
     {
         return;
     }
@@ -733,22 +1206,19 @@ pub fn handle_tcp(ip: &Ipv4Packet, data: &[u8]) {
                         // Verify ACK number matches our SYN+ACK (send_initial + 1)
                         if header.ack_num == pending.send_initial.wrapping_add(1) {
                             pending.ack_received = true;
-                            log::debug!(
-                                "TCP: ACK received, handshake complete for pending connection"
-                            );
+                            pending.peer_window = header.window_size;
                         }
-                        // Buffer any data that arrived with this packet
+                        // Buffer any data that arrived with this packet, as far as
+                        // the window the SYN+ACK offered reaches.
                         if !payload.is_empty() && header.seq_num == pending.recv_next {
-                            pending.early_data.extend_from_slice(payload);
-                            pending.recv_next =
-                                pending.recv_next.wrapping_add(payload.len() as u32);
-                            log::debug!(
-                                "TCP: Buffered {} bytes of early data for pending connection",
-                                payload.len()
-                            );
+                            let room = DEFAULT_RCVBUF.saturating_sub(pending.early_data.len());
+                            let take = payload.len().min(room);
+                            if pending.early_data.try_reserve(take).is_ok() {
+                                pending.early_data.extend_from_slice(&payload[..take]);
+                                pending.recv_next =
+                                    pending.recv_next.wrapping_add(take as u32);
+                            }
                         }
-                    } else {
-                        log::debug!("TCP: Ignoring packet on listening socket");
                     }
 
                     (true, false)
@@ -756,7 +1226,6 @@ pub fn handle_tcp(ip: &Ipv4Packet, data: &[u8]) {
                     (true, true)
                 }
             } else {
-                log::debug!("TCP: Ignoring packet on listening socket");
                 (true, false)
             }
         } else {
@@ -770,15 +1239,7 @@ pub fn handle_tcp(ip: &Ipv4Packet, data: &[u8]) {
         // pending entry gone after acquiring TCP_LISTENERS therefore makes the
         // child publication visible to this subsequent TCP_CONNECTIONS acquire.
         // One re-check is sufficient; no polling or retransmit delay is needed.
-        let recovered = with_tcp_connections(|connections| {
-            if let Some(conn) = connections.get_mut(&conn_id) {
-                handle_tcp_for_connection(conn, &header, payload);
-                true
-            } else {
-                false
-            }
-        });
-        if recovered {
+        if deliver_to_connection(&conn_id, &header, payload) {
             TCP_ACCEPT_PUBLISH_RACE_RECOVERED.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -794,8 +1255,33 @@ pub fn handle_tcp(ip: &Ipv4Packet, data: &[u8]) {
     }
 
     // No connection and no listener - send RST
-    log::debug!("TCP: No socket for port {}, sending RST", header.dst_port);
-    send_rst(local_ip, ip.src_ip, &header);
+    send_rst(local_ip, ip.src_ip, &header, payload.len());
+}
+
+/// Handle a segment that arrived in SYN_SENT.
+fn handle_syn_sent(conn: &mut TcpConnection, header: &TcpHeader) {
+    let acceptable_ack = header.flags.ack && header.ack_num == conn.send_next;
+    if header.flags.rst {
+        // RFC 9293 3.10.7.3: a reset in SYN_SENT counts only with an
+        // acceptable ACK.
+        if acceptable_ack {
+            conn.reset_by_peer();
+        }
+        return;
+    }
+    if !(header.flags.syn && acceptable_ack) {
+        return;
+    }
+    conn.recv_initial = header.seq_num;
+    conn.recv_next = header.seq_num.wrapping_add(1);
+    conn.send_window = header.window_size;
+    conn.send_unack = header.ack_num;
+    conn.mss = effective_mss(conn.id.remote_ip, header.mss_option);
+    conn.state = TcpState::Established;
+    conn.send_ack();
+
+    // Wake threads blocked in connect()
+    wake_connection_waiters(conn);
 }
 
 /// Handle TCP packet for an established connection
@@ -806,317 +1292,115 @@ fn handle_tcp_for_connection(
 ) {
     match conn.state {
         TcpState::SynSent => {
-            // We sent SYN, expecting SYN+ACK
-            if header.flags.syn && header.flags.ack {
-                // Verify ACK is for our SYN
-                if header.ack_num == conn.send_next {
-                    conn.recv_initial = header.seq_num;
-                    conn.recv_next = header.seq_num.wrapping_add(1);
-                    conn.send_window = header.window_size;
-                    conn.send_unack = header.ack_num;
-                    conn.state = TcpState::Established;
-
-                    log::debug!(
-                        "TCP: Connection established (client) conn_id={{local={}:{}, remote={}:{}}}",
-                        conn.id.local_ip[3], conn.id.local_port,
-                        conn.id.remote_ip[3], conn.id.remote_port
-                    );
-
-                    // Send ACK
-                    send_tcp_packet(
-                        conn.id.local_ip,
-                        conn.id.remote_ip,
-                        conn.id.local_port,
-                        conn.id.remote_port,
-                        conn.send_next,
-                        conn.recv_next,
-                        TcpFlags::ack(),
-                        conn.recv_window,
-                        &[],
-                    );
-
-                    // Wake threads blocked in connect()
-                    wake_connection_waiters(conn);
-                }
-            } else if header.flags.rst {
-                log::debug!("TCP: Connection refused (RST received)");
-                conn.state = TcpState::Closed;
-                // Wake threads blocked in connect() so they see the failure
-                wake_connection_waiters(conn);
-            }
+            handle_syn_sent(conn, header);
+            return;
         }
+        TcpState::Closed | TcpState::Listen => return,
         TcpState::SynReceived => {
-            // We sent SYN+ACK, expecting ACK
-            if header.flags.ack && !header.flags.syn {
-                if header.ack_num == conn.send_next {
-                    conn.state = TcpState::Established;
-                    conn.send_unack = header.ack_num;
-                    log::debug!("TCP: Connection established (server)");
-
-                    if !payload.is_empty() && header.seq_num == conn.recv_next {
-                        conn.publish_rx(payload);
-                        conn.recv_next = conn.recv_next.wrapping_add(payload.len() as u32);
-                        send_tcp_packet(
-                            conn.id.local_ip,
-                            conn.id.remote_ip,
-                            conn.id.local_port,
-                            conn.id.remote_port,
-                            conn.send_next,
-                            conn.recv_next,
-                            TcpFlags::ack(),
-                            conn.recv_window,
-                            &[],
-                        );
-                    }
-
-                    if header.flags.fin
-                        && header.seq_num.wrapping_add(payload.len() as u32) == conn.recv_next
-                    {
-                        conn.recv_next = conn.recv_next.wrapping_add(1);
-                        conn.state = TcpState::CloseWait;
-                        send_tcp_packet(
-                            conn.id.local_ip,
-                            conn.id.remote_ip,
-                            conn.id.local_port,
-                            conn.id.remote_port,
-                            conn.send_next,
-                            conn.recv_next,
-                            TcpFlags::ack(),
-                            conn.recv_window,
-                            &[],
-                        );
-                    }
-
-                    wake_connection_waiters(conn);
-                }
-            } else if header.flags.syn && !header.flags.ack {
-                send_tcp_packet(
-                    conn.id.local_ip,
-                    conn.id.remote_ip,
-                    conn.id.local_port,
-                    conn.id.remote_port,
-                    conn.send_initial,
-                    header.seq_num.wrapping_add(1),
-                    TcpFlags::syn_ack(),
-                    conn.recv_window,
-                    &[],
-                );
-            } else if header.flags.rst {
-                conn.state = TcpState::Closed;
-                wake_connection_waiters(conn);
-            }
-        }
-        TcpState::Established => {
-            // Handle incoming data
-            if header.flags.ack {
-                // Update send window
-                conn.send_unack = header.ack_num;
-                conn.send_window = header.window_size;
-            }
-
-            // Process incoming data
-            if !payload.is_empty() && header.seq_num == conn.recv_next {
-                conn.publish_rx(payload);
-                conn.recv_next = conn.recv_next.wrapping_add(payload.len() as u32);
-
-                log::debug!("TCP: Received {} bytes of data", payload.len());
-
-                // Send ACK
-                send_tcp_packet(
-                    conn.id.local_ip,
-                    conn.id.remote_ip,
-                    conn.id.local_port,
-                    conn.id.remote_port,
-                    conn.send_next,
-                    conn.recv_next,
-                    TcpFlags::ack(),
-                    conn.recv_window,
-                    &[],
-                );
-
-                // Wake threads blocked in recv()
-                wake_connection_waiters(conn);
-            }
-
-            // Handle FIN — only process when the FIN is in sequence.
-            // FIN occupies one byte of sequence space AFTER any payload.
-            // A retransmitted or out-of-order packet with FIN must be ignored
-            // to prevent premature CloseWait transition.
-            if header.flags.fin {
-                let fin_seq = header.seq_num.wrapping_add(payload.len() as u32);
-                if fin_seq != conn.recv_next {
-                    log::debug!(
-                        "TCP: Ignoring out-of-order FIN (fin_seq={}, recv_next={})",
-                        fin_seq,
-                        conn.recv_next
-                    );
-                } else {
-                    conn.recv_next = conn.recv_next.wrapping_add(1); // FIN consumes sequence
-                    conn.state = TcpState::CloseWait;
-
-                    log::warn!("TCP: Received FIN in Established, moving to CLOSE_WAIT (local={}:{}, remote={}:{}, rx_buf={})",
-                    conn.id.local_ip[3], conn.id.local_port,
-                    conn.id.remote_ip[3], conn.id.remote_port,
-                    conn.rx_buffer.len());
-
-                    // Send ACK for FIN
-                    send_tcp_packet(
-                        conn.id.local_ip,
-                        conn.id.remote_ip,
-                        conn.id.local_port,
-                        conn.id.remote_port,
-                        conn.send_next,
-                        conn.recv_next,
-                        TcpFlags::ack(),
-                        conn.recv_window,
-                        &[],
-                    );
-
-                    // Wake threads blocked in recv() so they see EOF
-                    wake_connection_waiters(conn);
-                }
-            }
-
-            // Handle RST — validate seq_num is within receive window
-            // to prevent spoofed or stale RST from killing the connection.
             if header.flags.rst {
-                let seq_delta = header.seq_num.wrapping_sub(conn.recv_next);
-                if seq_delta == 0 || seq_delta < conn.recv_window as u32 {
-                    log::warn!("TCP: Connection reset by peer (local={}:{}, remote={}:{}, rx_buf={}, seq={}, recv_next={})",
-                        conn.id.local_ip[3], conn.id.local_port,
-                        conn.id.remote_ip[3], conn.id.remote_port,
-                        conn.rx_buffer.len(), header.seq_num, conn.recv_next);
-                    conn.state = TcpState::Closed;
-                    // Wake threads blocked in recv() so they see the error
-                    wake_connection_waiters(conn);
-                } else {
-                    log::debug!(
-                        "TCP: Ignoring out-of-window RST (seq={}, recv_next={}, window={})",
-                        header.seq_num,
-                        conn.recv_next,
-                        conn.recv_window
-                    );
-                }
+                conn.reset_by_peer();
+                return;
             }
-        }
-        TcpState::FinWait1 => {
-            // In FinWait1, we've sent FIN but can still receive data
-            if header.flags.ack {
-                conn.send_unack = header.ack_num;
-                // Our FIN was ACKed, move to FinWait2
-                if !header.flags.fin {
-                    conn.state = TcpState::FinWait2;
-                }
+            if header.flags.syn && !header.flags.ack {
+                // The peer did not see our SYN+ACK: send it again.
+                let seg = Segment {
+                    src_ip: conn.id.local_ip,
+                    dst_ip: conn.id.remote_ip,
+                    src_port: conn.id.local_port,
+                    dst_port: conn.id.remote_port,
+                    seq: conn.send_initial,
+                    ack: header.seq_num.wrapping_add(1),
+                    flags: TcpFlags::syn_ack(),
+                    window: conn.rcv_window(),
+                };
+                transmit(&seg, &mss_option(local_mss(conn.id.remote_ip)), [&[], &[]]);
+                return;
             }
-
-            // Process incoming data (half-close: we can still receive)
-            if !payload.is_empty() && header.seq_num == conn.recv_next {
-                conn.publish_rx(payload);
-                conn.recv_next = conn.recv_next.wrapping_add(payload.len() as u32);
-
-                log::debug!("TCP: Received {} bytes of data in FinWait1", payload.len());
-
-                // Send ACK for data
-                send_tcp_packet(
-                    conn.id.local_ip,
-                    conn.id.remote_ip,
-                    conn.id.local_port,
-                    conn.id.remote_port,
-                    conn.send_next,
-                    conn.recv_next,
-                    TcpFlags::ack(),
-                    conn.recv_window,
-                    &[],
-                );
-
-                // Wake threads blocked in recv()
-                wake_connection_waiters(conn);
+            if !header.flags.ack || header.ack_num != conn.send_next {
+                return;
             }
-
-            // Handle FIN from peer (simultaneous close or peer closing after we did)
-            if header.flags.fin {
-                conn.recv_next = conn.recv_next.wrapping_add(1);
-                conn.state = TcpState::TimeWait;
-
-                // Send ACK for FIN
-                send_tcp_packet(
-                    conn.id.local_ip,
-                    conn.id.remote_ip,
-                    conn.id.local_port,
-                    conn.id.remote_port,
-                    conn.send_next,
-                    conn.recv_next,
-                    TcpFlags::ack(),
-                    conn.recv_window,
-                    &[],
-                );
-
-                // Wake threads blocked in recv() so they see EOF
-                wake_connection_waiters(conn);
-            }
-        }
-        TcpState::FinWait2 => {
-            // In FinWait2, our FIN was ACKed but peer hasn't sent FIN yet
-            // We can still receive data (half-close)
-            if !payload.is_empty() && header.seq_num == conn.recv_next {
-                conn.publish_rx(payload);
-                conn.recv_next = conn.recv_next.wrapping_add(payload.len() as u32);
-
-                log::debug!("TCP: Received {} bytes of data in FinWait2", payload.len());
-
-                // Send ACK for data
-                send_tcp_packet(
-                    conn.id.local_ip,
-                    conn.id.remote_ip,
-                    conn.id.local_port,
-                    conn.id.remote_port,
-                    conn.send_next,
-                    conn.recv_next,
-                    TcpFlags::ack(),
-                    conn.recv_window,
-                    &[],
-                );
-
-                // Wake threads blocked in recv()
-                wake_connection_waiters(conn);
-            }
-
-            // Handle FIN from peer
-            if header.flags.fin {
-                conn.recv_next = conn.recv_next.wrapping_add(1);
-                conn.state = TcpState::TimeWait;
-
-                // Send ACK for FIN
-                send_tcp_packet(
-                    conn.id.local_ip,
-                    conn.id.remote_ip,
-                    conn.id.local_port,
-                    conn.id.remote_port,
-                    conn.send_next,
-                    conn.recv_next,
-                    TcpFlags::ack(),
-                    conn.recv_window,
-                    &[],
-                );
-
-                // Wake threads blocked in recv() so they see EOF
-                wake_connection_waiters(conn);
-            }
-        }
-        TcpState::CloseWait => {
-            // Waiting for application to close
-        }
-        TcpState::LastAck => {
-            if header.flags.ack {
-                conn.state = TcpState::Closed;
-                log::debug!("TCP: Connection closed");
-            }
-        }
-        TcpState::TimeWait => {
-            // Wait for 2MSL then close (simplified: just mark as closed)
-            conn.state = TcpState::Closed;
+            conn.state = TcpState::Established;
+            conn.send_unack = header.ack_num;
+            conn.send_window = header.window_size;
+            wake_connection_waiters(conn);
+            // The ACK that completes the handshake may carry data or a FIN.
         }
         _ => {}
+    }
+
+    // A synchronized state.
+    if header.flags.rst {
+        // Accept the reset only inside the receive window, so that a stale or
+        // spoofed one cannot end the connection (RFC 9293 3.10.7.4).
+        let seq_delta = header.seq_num.wrapping_sub(conn.recv_next);
+        if seq_delta == 0 || seq_delta < conn.recv_window as u32 {
+            conn.reset_by_peer();
+        }
+        return;
+    }
+    if header.flags.syn {
+        return;
+    }
+
+    if header.flags.ack {
+        conn.process_ack(header);
+        if conn.state == TcpState::Closed {
+            return;
+        }
+    }
+
+    let mut need_ack = false;
+    let mut in_sequence = payload.is_empty();
+    if !payload.is_empty() {
+        need_ack = true;
+        if conn.may_receive_data() && header.seq_num == conn.recv_next {
+            if conn.recv_shutdown
+                && matches!(conn.state, TcpState::FinWait1 | TcpState::FinWait2)
+            {
+                // Data for an end that will never read it: reset, as Linux
+                // does for a socket that has shut down both directions.
+                conn.send_reset();
+                conn.close_now();
+                return;
+            }
+            let taken = conn.publish_rx(payload);
+            conn.recv_next = conn.recv_next.wrapping_add(taken as u32);
+            in_sequence = taken == payload.len();
+            if taken > 0 {
+                wake_connection_waiters(conn);
+            }
+        }
+    }
+
+    if header.flags.fin {
+        need_ack = true;
+        let fin_seq = header.seq_num.wrapping_add(payload.len() as u32);
+        if in_sequence && fin_seq == conn.recv_next && !conn.peer_fin {
+            conn.recv_next = conn.recv_next.wrapping_add(1); // FIN consumes sequence
+            conn.peer_fin = true;
+            match conn.state {
+                TcpState::Established => conn.state = TcpState::CloseWait,
+                TcpState::FinWait1 => {
+                    if conn.fin_acked {
+                        conn.enter_time_wait();
+                    } else {
+                        conn.state = TcpState::Closing;
+                    }
+                }
+                TcpState::FinWait2 => conn.enter_time_wait(),
+                _ => {}
+            }
+            // Wake threads blocked in recv() so they see EOF
+            wake_connection_waiters(conn);
+        } else if conn.state == TcpState::TimeWait {
+            // The peer did not see our ACK of its FIN: acknowledge it again and
+            // restart the wait (RFC 9293 3.10.7.4).
+            conn.timer_since_ms = now_ms();
+        }
+    }
+
+    if need_ack {
+        conn.send_ack();
     }
 }
 
@@ -1127,36 +1411,45 @@ fn handle_syn_for_listener(
     src_ip: [u8; 4],
     header: &TcpHeader,
 ) {
+    let local_port = listener.local_port;
+    let syn_ack = |send_isn: u32| {
+        try_build_segment(
+            &Segment {
+                src_ip: local_ip,
+                dst_ip: src_ip,
+                src_port: local_port,
+                dst_port: header.src_port,
+                seq: send_isn,
+                ack: header.seq_num.wrapping_add(1),
+                flags: TcpFlags::syn_ack(),
+                window: DEFAULT_RCVBUF.min(u16::MAX as usize) as u16,
+            },
+            &mss_option(local_mss(src_ip)),
+            [&[], &[]],
+        )
+    };
+
     if let Some(pending) = listener.pending.iter().find(|p| {
         p.local_ip == local_ip && p.remote_ip == src_ip && p.remote_port == header.src_port
     }) {
-        let syn_ack = build_tcp_packet_with_checksum(
-            local_ip,
-            src_ip,
-            listener.local_port,
-            header.src_port,
-            pending.send_initial,
-            header.seq_num.wrapping_add(1),
-            TcpFlags::syn_ack(),
-            65535,
-            &[],
-        );
-        let src_mac = super::current_packet_src_mac();
-        queue_deferred_tx_with_mac(local_ip, src_ip, Some(src_mac), syn_ack);
+        if let Some(segment) = syn_ack(pending.send_initial) {
+            let src_mac = super::current_packet_src_mac();
+            queue_deferred_tx_with_mac(local_ip, src_ip, Some(src_mac), segment);
+        }
         return;
     }
 
     if listener.pending.len() >= listener.backlog {
-        log::warn!(
-            "TCP: Backlog full, sending RST for port {}",
-            header.dst_port
-        );
         // Send RST to tell client the connection was refused
-        send_rst(local_ip, src_ip, header);
+        send_rst(local_ip, src_ip, header, 0);
         return;
     }
 
     let send_isn = generate_isn();
+    let Some(segment) = syn_ack(send_isn) else {
+        // No memory to answer: the peer's SYN retransmission tries again.
+        return;
+    };
 
     // Add to pending queue
     listener.pending.push_back(PendingConnection {
@@ -1169,39 +1462,30 @@ fn handle_syn_for_listener(
         ack_received: false,
         early_data: Vec::new(),
         recv_next: header.seq_num.wrapping_add(1), // +1 for SYN
+        peer_mss: header.mss_option,
+        peer_window: header.window_size,
     });
 
     // Queue the SYN+ACK for deferred sending AFTER RX processing completes.
     // Sending TX packets during RX processing on Parallels' VirtIO causes the
     // TX packet to be silently dropped (the device doesn't process the TX ring
     // while the RX ring is being consumed).
-    let syn_ack = build_tcp_packet_with_checksum(
-        local_ip,
-        src_ip,
-        listener.local_port,
-        header.src_port,
-        send_isn,
-        header.seq_num.wrapping_add(1),
-        TcpFlags::syn_ack(),
-        65535,
-        &[],
-    );
     let src_mac = super::current_packet_src_mac();
-    queue_deferred_tx_with_mac(local_ip, src_ip, Some(src_mac), syn_ack);
+    queue_deferred_tx_with_mac(local_ip, src_ip, Some(src_mac), segment);
 
     // Wake threads blocked in accept() - connection is now pending
     wake_accept_waiters(listener);
 }
 
-/// Send a RST packet
-fn send_rst(src_ip: [u8; 4], dst_ip: [u8; 4], header: &TcpHeader) {
-    let seq = if header.flags.ack { header.ack_num } else { 0 };
-    let ack = header.seq_num.wrapping_add(1);
-
-    let mut flags = TcpFlags::rst();
-    if !header.flags.ack {
-        flags.ack = true;
-    }
+/// Answer a segment no connection or listener takes with a reset
+/// (RFC 9293 3.10.7.1): `payload_len` is the segment's data length.
+fn send_rst(src_ip: [u8; 4], dst_ip: [u8; 4], header: &TcpHeader, payload_len: usize) {
+    let (seq, ack, flags) = if header.flags.ack {
+        (header.ack_num, 0, TcpFlags::rst())
+    } else {
+        let length = payload_len as u32 + header.flags.syn as u32 + header.flags.fin as u32;
+        (0, header.seq_num.wrapping_add(length), TcpFlags::rst_ack())
+    };
 
     send_tcp_packet(
         src_ip,
@@ -1229,21 +1513,19 @@ pub fn send_tcp_packet(
     window_size: u16,
     payload: &[u8],
 ) {
-    let packet = build_tcp_packet_with_checksum(
+    let seg = Segment {
         src_ip,
         dst_ip,
         src_port,
         dst_port,
-        seq_num,
-        ack_num,
+        seq: seq_num,
+        ack: ack_num,
         flags,
-        window_size,
-        payload,
-    );
-
-    if let Err(e) = super::send_ipv4_from(src_ip, dst_ip, PROTOCOL_TCP, &packet) {
-        log::warn!("TCP: Failed to send packet: {}", e);
-    }
+        window: window_size,
+    };
+    // A control segment that cannot be sent is recovered by the peer's
+    // retransmission; there is no caller to report it to.
+    transmit(&seg, &[], [payload, &[]]);
 }
 
 /// Initiate a TCP connection (called from connect syscall)
@@ -1266,42 +1548,29 @@ pub fn tcp_connect(
     };
 
     let isn = generate_isn();
-    let conn = TcpConnection::new_outgoing(conn_id, isn, owner_pid);
+    let mut conn = TcpConnection::new_outgoing(conn_id, isn, owner_pid);
+    conn.mss = local_mss(remote_ip);
+    let syn = conn.segment(isn, TcpFlags::syn());
 
-    // Add connection to table
+    // Add connection to table. An earlier incarnation of the same four-tuple
+    // that only waits out TIME_WAIT with no owner gives way to the new one.
     let inserted = with_tcp_connections(|connections| {
-        if connections.contains_key(&conn_id) {
-            false
-        } else {
-            connections.insert(conn_id, conn);
-            true
+        reap_expired(connections, true);
+        if let Some(old) = connections.get(&conn_id) {
+            if !(old.orphaned && matches!(old.state, TcpState::TimeWait | TcpState::Closed)) {
+                return false;
+            }
         }
+        connections.insert(conn_id, conn);
+        true
     });
     if !inserted {
         return Err("Connection already exists");
     }
 
-    // Send SYN
-    send_tcp_packet(
-        conn_id.local_ip,
-        remote_ip,
-        local_port,
-        remote_port,
-        isn,
-        0,
-        TcpFlags::syn(),
-        65535,
-        &[],
-    );
-
-    log::debug!(
-        "TCP: Connecting to {}.{}.{}.{}:{}",
-        remote_ip[0],
-        remote_ip[1],
-        remote_ip[2],
-        remote_ip[3],
-        remote_port
-    );
+    // Send SYN. One lost here leaves the connection in SYN_SENT until connect's
+    // own timeout.
+    transmit(&syn, &mss_option(local_mss(remote_ip)), [&[], &[]]);
 
     Ok(conn_id)
 }
@@ -1324,7 +1593,9 @@ pub fn tcp_listen(
             ListenSocket {
                 local_ip: config.ip_addr,
                 local_port,
-                backlog,
+                // Linux takes one connection on a listener whose backlog is 0, and
+                // caps a backlog at SOMAXCONN.
+                backlog: backlog.clamp(1, MAX_BACKLOG),
                 pending: VecDeque::new(),
                 owner_pid,
                 waiting_threads: Mutex::new(Vec::new()),
@@ -1336,12 +1607,6 @@ pub fn tcp_listen(
     if !inserted {
         return Err("Port already in use");
     }
-
-    log::debug!(
-        "TCP: Listening on port {} (backlog={})",
-        local_port,
-        backlog
-    );
 
     Ok(())
 }
@@ -1375,32 +1640,24 @@ pub fn tcp_accept(local_port: u16) -> Option<ConnectionId> {
 
     // Create connection - state depends on whether ACK was already received
     let mut conn = TcpConnection::new_outgoing(conn_id, pending.send_initial, owner_pid);
+    conn.mss = effective_mss(pending.remote_ip, pending.peer_mss);
+    conn.send_window = pending.peer_window;
+    // send_next is past our SYN+ACK either way, so the ACK check in
+    // handle_tcp_for_connection (SynReceived branch) matches:
+    //   header.ack_num == conn.send_next  <-  ISN+1 == ISN+1
+    conn.send_next = pending.send_initial.wrapping_add(1);
     if pending.ack_received {
         // 3-way handshake complete, connection is established
         conn.state = TcpState::Established;
-        // send_next should be incremented past our SYN+ACK
-        conn.send_next = pending.send_initial.wrapping_add(1);
         conn.send_unack = conn.send_next;
-        log::debug!("TCP: Connection established (server, ACK already received)");
     } else {
-        // Still waiting for ACK — set send_next past our SYN so the ACK
-        // check in handle_tcp_for_connection (SynReceived branch) matches:
-        //   header.ack_num == conn.send_next  ←  ISN+1 == ISN+1  ✓
-        // Without this, send_next stays at ISN and the ACK is silently dropped.
         conn.state = TcpState::SynReceived;
-        conn.send_next = pending.send_initial.wrapping_add(1);
     }
     conn.recv_initial = pending.recv_initial;
     // Use the recv_next from pending, which accounts for any early data
     conn.recv_next = pending.recv_next;
     // Copy any early data that arrived before accept()
-    if !pending.early_data.is_empty() {
-        conn.publish_rx(&pending.early_data);
-        log::debug!(
-            "TCP: Copied {} bytes of early data to connection rx_buffer",
-            pending.early_data.len()
-        );
-    }
+    conn.publish_rx(&pending.early_data);
 
     // MUST precede pending removal: handle_tcp's final-ACK recovery relies on
     // the child being published before the listener entry disappears.
@@ -1424,15 +1681,11 @@ pub fn tcp_accept(local_port: u16) -> Option<ConnectionId> {
                 if final_pending.ack_received && conn.state == TcpState::SynReceived {
                     conn.state = TcpState::Established;
                     conn.send_unack = conn.send_next;
-                    log::debug!("TCP: Connection established (server)");
+                    conn.send_window = final_pending.peer_window;
                 }
 
                 if final_pending.early_data.len() > copied_early_data_len {
                     conn.publish_rx(&final_pending.early_data[copied_early_data_len..]);
-                    log::debug!(
-                        "TCP: Copied {} bytes of early data to connection rx_buffer",
-                        final_pending.early_data.len() - copied_early_data_len
-                    );
                 }
 
                 let pending_advance = final_pending.recv_next.wrapping_sub(pending.recv_next);
@@ -1444,16 +1697,32 @@ pub fn tcp_accept(local_port: u16) -> Option<ConnectionId> {
         });
     }
 
-    log::debug!(
-        "TCP: Accepted connection from {}.{}.{}.{}:{}",
-        pending.remote_ip[0],
-        pending.remote_ip[1],
-        pending.remote_ip[2],
-        pending.remote_ip[3],
-        pending.remote_port
-    );
-
     Some(conn_id)
+}
+
+/// Queue `data` on a connection and send what the peer's window allows. Never
+/// blocks: Ok with the count queued, which is short when the send buffer fills;
+/// EAGAIN when it takes nothing; the pending reset errno once, then EPIPE, after a
+/// reset or once sending has shut down (Linux's `sk_stream_error`); ENOTCONN before
+/// the handshake has finished.
+pub fn tcp_sendmsg(conn_id: &ConnectionId, data: &[u8]) -> Result<usize, i32> {
+    with_tcp_connections(|connections| {
+        let Some(conn) = connections.get_mut(conn_id) else {
+            return Err(EPIPE);
+        };
+        if conn.send_shutdown || conn.state == TcpState::Closed {
+            return Err(conn.error.take().unwrap_or(EPIPE));
+        }
+        if !conn.may_send_data() {
+            return Err(crate::syscall::errno::ENOTCONN);
+        }
+        let queued = conn.queue_tx(data);
+        if queued == 0 && !data.is_empty() {
+            return Err(EAGAIN);
+        }
+        conn.push_output();
+        Ok(queued)
+    })
 }
 
 /// Send data on a connection
@@ -1504,93 +1773,78 @@ pub fn tcp_send(conn_id: &ConnectionId, data: &[u8]) -> Result<usize, &'static s
         tcp_unregister_recv_waiter(conn_id, thread_id);
     }
 
+    match tcp_sendmsg(conn_id, data) {
+        Ok(n) => Ok(n),
+        Err(EPIPE) => Err("Connection shutdown for writing"),
+        Err(EAGAIN) => Err("Send buffer full"),
+        Err(_) => Err("Connection not established"),
+    }
+}
+
+/// Take up to `buf.len()` received bytes, leaving them queued when `peek`. Never
+/// blocks. Ok(0) at end of file: after the peer's FIN, after SHUT_RD, or once the
+/// connection is closed with no error to report. A reset's errno is reported once,
+/// after any bytes that arrived before it. EAGAIN when nothing is queued yet.
+pub fn tcp_recvmsg(conn_id: &ConnectionId, buf: &mut [u8], peek: bool) -> Result<usize, i32> {
     with_tcp_connections(|connections| {
-        let conn = match connections.get_mut(conn_id) {
-            Some(c) => c,
-            None => {
-                return Err("Connection not found");
-            }
+        let Some(conn) = connections.get_mut(conn_id) else {
+            return Ok(0);
         };
-
-        if conn.send_shutdown {
-            return Err("Connection shutdown for writing");
+        if !conn.rx_buffer.is_empty() {
+            let len = buf.len().min(conn.rx_buffer.len());
+            let (front, back) = conn.rx_buffer.as_slices();
+            let first = len.min(front.len());
+            buf[..first].copy_from_slice(&front[..first]);
+            buf[first..len].copy_from_slice(&back[..len - first]);
+            if !peek {
+                conn.rx_buffer.drain(..len);
+                update_window(conn);
+            }
+            return Ok(len);
         }
-
-        if !matches!(conn.state, TcpState::Established | TcpState::CloseWait) {
-            crate::serial_println!(
-                "[tcp_send] FAIL: state={:?} after wait (local={}:{}, remote={}:{})",
-                conn.state,
-                conn.id.local_ip[3],
-                conn.id.local_port,
-                conn.id.remote_ip[3],
-                conn.id.remote_port
-            );
-            return Err("Connection not established");
+        if conn.peer_fin || conn.recv_shutdown {
+            return Ok(0);
         }
-
-        // For simplicity, send all data in one segment (up to MSS)
-        let send_len = data.len().min(conn.mss as usize);
-
-        send_tcp_packet(
-            conn.id.local_ip,
-            conn.id.remote_ip,
-            conn.id.local_port,
-            conn.id.remote_port,
-            conn.send_next,
-            conn.recv_next,
-            TcpFlags::ack_psh(),
-            conn.recv_window,
-            &data[..send_len],
-        );
-
-        conn.send_next = conn.send_next.wrapping_add(send_len as u32);
-
-        Ok(send_len)
+        if let Some(error) = conn.error.take() {
+            return Err(error);
+        }
+        if conn.state == TcpState::Closed {
+            return Ok(0);
+        }
+        Err(EAGAIN)
     })
-    .map_err(|e| {
-        if e == "Connection not found" {
-            log::warn!(
-                "tcp_send: Connection not found (local={}:{}, remote={}:{})",
-                conn_id.local_ip[3],
-                conn_id.local_port,
-                conn_id.remote_ip[3],
-                conn_id.remote_port
-            );
-        } else if e == "Connection shutdown for writing" {
-            log::warn!("tcp_send: Connection shutdown for writing");
-        }
-        e
-    })
+}
+
+/// After the reader freed receive space, tell the peer once the window has grown
+/// by a full segment or by half the buffer (receiver-side silly-window avoidance,
+/// RFC 9293 3.8.6.2.2).
+fn update_window(conn: &mut TcpConnection) {
+    if !conn.may_receive_data() {
+        return;
+    }
+    let threshold = (conn.mss as usize).min(conn.rcv_cap / 2).max(1);
+    if conn.rcv_window() as usize >= conn.recv_window as usize + threshold {
+        conn.send_ack();
+    }
 }
 
 /// Receive data from a connection
 pub fn tcp_recv(conn_id: &ConnectionId, buf: &mut [u8]) -> Result<usize, &'static str> {
-    with_tcp_connections(|connections| {
-        let conn = connections.get_mut(conn_id).ok_or("Connection not found")?;
-
-        // Check recv_shutdown flag - if set, return EOF immediately
-        if conn.recv_shutdown {
-            return Ok(0); // EOF - user called SHUT_RD
-        }
-
-        if conn.rx_buffer.is_empty() {
-            // Return EOF if connection is closing/closed
-            if matches!(
-                conn.state,
-                TcpState::CloseWait | TcpState::Closed | TcpState::TimeWait
-            ) {
-                return Ok(0); // EOF
-            }
-            return Err("No data available");
-        }
-
-        let read_len = buf.len().min(conn.rx_buffer.len());
-        for slot in buf.iter_mut().take(read_len) {
-            *slot = conn.rx_buffer.pop_front().unwrap();
-        }
-
-        Ok(read_len)
-    })
+    let exists = with_tcp_connections(|connections| connections.contains_key(conn_id));
+    if !exists {
+        return Err("Connection not found");
+    }
+    if with_tcp_connections(|connections| {
+        connections.get(conn_id).is_some_and(|conn| conn.recv_shutdown)
+    }) {
+        return Ok(0); // EOF - user called SHUT_RD
+    }
+    match tcp_recvmsg(conn_id, buf, false) {
+        Ok(n) => Ok(n),
+        Err(EAGAIN) => Err("No data available"),
+        // A reset reads as end of file on this path.
+        Err(_) => Ok(0),
+    }
 }
 
 /// Check if a connection is established (or was established before remote close)
@@ -1607,10 +1861,10 @@ pub fn tcp_recv(conn_id: &ConnectionId, buf: &mut [u8]) -> Result<usize, &'stati
 /// - Closed/Listen: Not connected
 pub fn tcp_is_established(conn_id: &ConnectionId) -> bool {
     with_tcp_connections(|connections| {
-        if let Some(conn) = connections.get(conn_id) {
+        connections.get(conn_id).is_some_and(|conn| {
             // Connection is "established" for connect() purposes if handshake completed.
             // This includes states where one or both sides have initiated close.
-            let is_connected = matches!(
+            matches!(
                 conn.state,
                 TcpState::Established
                     | TcpState::CloseWait
@@ -1619,39 +1873,8 @@ pub fn tcp_is_established(conn_id: &ConnectionId) -> bool {
                     | TcpState::Closing
                     | TcpState::LastAck
                     | TcpState::TimeWait
-            );
-            if !is_connected {
-                log::debug!(
-                "TCP_IS_ESTABLISHED: conn_id={{local={}:{}, remote={}:{}}} found but state={:?}",
-                conn_id.local_ip[3],
-                conn_id.local_port,
-                conn_id.remote_ip[3],
-                conn_id.remote_port,
-                conn.state
-            );
-            }
-            is_connected
-        } else {
-            // Log the conn_id we're looking for and what's actually in the map
-            log::warn!(
-                "TCP_IS_ESTABLISHED: conn_id={{local={}:{}, remote={}:{}}} NOT FOUND (total connections: {})",
-                conn_id.local_ip[3], conn_id.local_port,
-                conn_id.remote_ip[3], conn_id.remote_port,
-                connections.len()
-            );
-            // Also log what connections DO exist for debugging
-            for (k, v) in connections.iter() {
-                log::warn!(
-                    "  existing: local={}:{}, remote={}:{}, state={:?}",
-                    k.local_ip[3],
-                    k.local_port,
-                    k.remote_ip[3],
-                    k.remote_port,
-                    v.state
-                );
-            }
-            false
-        }
+            )
+        })
     })
 }
 
@@ -1666,6 +1889,11 @@ pub fn tcp_is_failed(conn_id: &ConnectionId) -> bool {
     })
 }
 
+/// The errno a reset left on a connection, cleared by reading it.
+pub fn tcp_take_error(conn_id: &ConnectionId) -> Option<i32> {
+    with_tcp_connections(|connections| connections.get_mut(conn_id)?.error.take())
+}
+
 /// Shutdown part of a full-duplex connection
 /// shut_rd: stop receiving
 /// shut_wr: stop sending (also sends FIN to remote)
@@ -1676,24 +1904,10 @@ pub fn tcp_shutdown(conn_id: &ConnectionId, shut_rd: bool, shut_wr: bool) {
                 conn.recv_shutdown = true;
             }
             if shut_wr && !conn.send_shutdown {
-                conn.send_shutdown = true;
-                // Send FIN to signal we're done sending
-                if conn.state == TcpState::Established {
-                    send_tcp_packet(
-                        conn.id.local_ip,
-                        conn.id.remote_ip,
-                        conn.id.local_port,
-                        conn.id.remote_port,
-                        conn.send_next,
-                        conn.recv_next,
-                        TcpFlags::fin_ack(),
-                        conn.recv_window,
-                        &[],
-                    );
-                    conn.send_next = conn.send_next.wrapping_add(1);
-                    conn.state = TcpState::FinWait1;
-                }
+                // Send FIN, after the queued data, to signal we're done sending
+                conn.queue_fin();
             }
+            wake_connection_waiters(conn);
         }
     });
 }
@@ -1709,6 +1923,10 @@ pub fn tcp_add_ref(conn_id: &ConnectionId) {
 }
 
 /// Close a connection (decrement refcount, only actually close when last reference dropped)
+///
+/// The last close sends a FIN after the queued data, unless bytes the owner never
+/// read are still queued: then it resets the connection, as Linux does (RFC 2525
+/// 2.17), and the peer's next operation fails with ECONNRESET.
 pub fn tcp_close(conn_id: &ConnectionId) -> Result<(), &'static str> {
     with_tcp_connections(|connections| {
         let conn = connections.get_mut(conn_id).ok_or("Connection not found")?;
@@ -1724,48 +1942,34 @@ pub fn tcp_close(conn_id: &ConnectionId) -> Result<(), &'static str> {
         }
 
         // Last reference - actually close the connection
+        conn.orphaned = true;
+        conn.recv_shutdown = true;
+        let unread = !conn.rx_buffer.is_empty();
         match conn.state {
-            TcpState::Established => {
-                // Send FIN
-                send_tcp_packet(
-                    conn.id.local_ip,
-                    conn.id.remote_ip,
-                    conn.id.local_port,
-                    conn.id.remote_port,
-                    conn.send_next,
-                    conn.recv_next,
-                    TcpFlags::fin_ack(),
-                    conn.recv_window,
-                    &[],
-                );
-                conn.send_next = conn.send_next.wrapping_add(1); // FIN consumes sequence
-                conn.state = TcpState::FinWait1;
+            TcpState::Established | TcpState::CloseWait if unread => {
+                conn.send_reset();
+                conn.close_now();
             }
-            TcpState::CloseWait => {
-                // Send FIN
-                send_tcp_packet(
-                    conn.id.local_ip,
-                    conn.id.remote_ip,
-                    conn.id.local_port,
-                    conn.id.remote_port,
-                    conn.send_next,
-                    conn.recv_next,
-                    TcpFlags::fin_ack(),
-                    conn.recv_window,
-                    &[],
-                );
-                conn.send_next = conn.send_next.wrapping_add(1);
-                conn.state = TcpState::LastAck;
+            TcpState::FinWait1 | TcpState::FinWait2 | TcpState::Closing | TcpState::LastAck
+                if unread =>
+            {
+                conn.send_reset();
+                conn.close_now();
             }
-            TcpState::Closed => {
-                // Already closed, remove from table
-                connections.remove(conn_id);
+            TcpState::Established | TcpState::CloseWait => conn.queue_fin(),
+            TcpState::FinWait2 => conn.timer_since_ms = now_ms(),
+            TcpState::SynReceived => {
+                conn.send_reset();
+                conn.close_now();
             }
-            _ => {
-                // Other states - just mark as closed
-                conn.state = TcpState::Closed;
-            }
+            TcpState::SynSent | TcpState::Listen => conn.close_now(),
+            TcpState::FinWait1
+            | TcpState::Closing
+            | TcpState::LastAck
+            | TcpState::TimeWait
+            | TcpState::Closed => {}
         }
+        reap_expired(connections, true);
 
         Ok(())
     })
@@ -1807,11 +2011,6 @@ pub fn tcp_register_accept_waiter(local_port: u16, thread_id: u64) {
             let mut waiting = listener.waiting_threads.lock();
             if !waiting.contains(&thread_id) {
                 waiting.push(thread_id);
-                log::trace!(
-                    "TCP: Thread {} registered as accept waiter on port {}",
-                    thread_id,
-                    local_port
-                );
             }
         }
     });
@@ -1834,7 +2033,6 @@ pub fn tcp_register_recv_waiter(conn_id: &ConnectionId, thread_id: u64) {
             let mut waiting = conn.waiting_threads.lock();
             if !waiting.contains(&thread_id) {
                 waiting.push(thread_id);
-                log::trace!("TCP: Thread {} registered as recv waiter", thread_id);
             }
         }
     });
@@ -1869,14 +2067,8 @@ fn wake_accept_waiters(listener: &ListenSocket) {
 
     if !readers.is_empty() {
         let rejected = wake_waiting_threads(&readers);
-        let accepted: Vec<u64> = readers
-            .iter()
-            .copied()
-            .filter(|tid| !rejected.contains(tid))
-            .collect();
         let mut waiting = listener.waiting_threads.lock();
-        waiting.retain(|tid| !accepted.contains(tid));
-        log::debug!("TCP: Woke {} accept waiters", accepted.len());
+        waiting.retain(|tid| !readers.contains(tid) || rejected.contains(tid));
     }
 }
 
@@ -1889,14 +2081,8 @@ fn wake_connection_waiters(conn: &TcpConnection) {
 
     if !readers.is_empty() {
         let rejected = wake_waiting_threads(&readers);
-        let accepted: Vec<u64> = readers
-            .iter()
-            .copied()
-            .filter(|tid| !rejected.contains(tid))
-            .collect();
         let mut waiting = conn.waiting_threads.lock();
-        waiting.retain(|tid| !accepted.contains(tid));
-        log::debug!("TCP: Woke {} connection waiters", accepted.len());
+        waiting.retain(|tid| !readers.contains(tid) || rejected.contains(tid));
     }
 }
 
@@ -1917,43 +2103,45 @@ fn wake_waiting_threads(readers: &[u64]) -> Vec<u64> {
 pub fn tcp_listener_ref_inc(port: u16) {
     with_tcp_listeners(|listeners| {
         if let Some(listener) = listeners.get(&port) {
-            let old = listener
+            listener
                 .ref_count
                 .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
-            log::debug!(
-                "TCP: Listener port {} ref_count {} -> {}",
-                port,
-                old,
-                old + 1
-            );
         }
     });
 }
 
 /// Decrement the reference count for a TCP listener and remove if it reaches 0
 /// Returns true if the listener was removed, false otherwise
+///
+/// Removing a listener resets the connections still waiting to be accepted, so
+/// that their peers learn of it rather than wait on a connection nobody owns.
 pub fn tcp_listener_ref_dec(port: u16) -> bool {
-    with_tcp_listeners(|listeners| {
-        if let Some(listener) = listeners.get(&port) {
-            let old = listener
-                .ref_count
-                .fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
-            log::debug!(
-                "TCP: Listener port {} ref_count {} -> {}",
-                port,
-                old,
-                old - 1
-            );
-            if old == 1 {
-                // Reference count reached 0, remove the listener
-                listeners.remove(&port);
-                log::debug!(
-                    "TCP: Removed listener on port {} (ref_count reached 0)",
-                    port
-                );
-                return true;
-            }
+    let removed = with_tcp_listeners(|listeners| {
+        let listener = listeners.get(&port)?;
+        let old = listener
+            .ref_count
+            .fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
+        if old == 1 {
+            // Reference count reached 0, remove the listener
+            return listeners.remove(&port);
         }
-        false
-    })
+        None
+    });
+    let Some(listener) = removed else {
+        return false;
+    };
+    for pending in &listener.pending {
+        send_tcp_packet(
+            pending.local_ip,
+            pending.remote_ip,
+            port,
+            pending.remote_port,
+            pending.send_initial.wrapping_add(1),
+            pending.recv_next,
+            TcpFlags::rst_ack(),
+            0,
+            &[],
+        );
+    }
+    true
 }

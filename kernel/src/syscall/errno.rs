@@ -137,6 +137,9 @@ pub const EADDRINUSE: i32 = 98;
 #[allow(dead_code)]
 pub const ENETUNREACH: i32 = 101;
 
+/// Connection reset by peer
+pub const ECONNRESET: i32 = 104;
+
 /// Connection refused
 pub const ECONNREFUSED: i32 = 111;
 
