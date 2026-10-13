@@ -386,7 +386,7 @@ fn udp_delivery_locks_the_socket_under_process_manager() {
         .find("with_process_manager(")
         .expect("#823 shape failure: handle_udp no longer delivers under with_process_manager");
     let lock = body
-        .find("with_locked_masked(endpoint")
+        .find("with_locked_masked(udp,")
         .expect("#823 shape failure: handle_udp no longer locks the socket through with_locked_masked");
     let enqueue = body
         .find("enqueue_packet(")

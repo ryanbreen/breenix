@@ -7,9 +7,15 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spin::Mutex;
 
+use super::addr::SockAddr;
+use super::object::{ProtoOps, RecvMsg, SendMsg, Socket};
 use super::types::SockAddrIn;
 use super::{alloc_socket_handle, SocketHandle, SOCKET_REGISTRY};
 use crate::process::process::ProcessId;
+use crate::syscall::errno;
+
+const POLLIN: u16 = crate::ipc::poll::events::POLLIN as u16;
+const POLLOUT: u16 = crate::ipc::poll::events::POLLOUT as u16;
 
 /// Maximum number of packets to queue per socket
 const MAX_RX_QUEUE_SIZE: usize = 32;
@@ -31,12 +37,12 @@ const MAX_RX_QUEUE_SIZE: usize = 32;
 /// claim-lint:ok: this round's red-boot mutation leg,
 /// [UDP_LOCK_ORACLE:...masked_in_hold=0:stalled=1:hold_done=0:joined=0...FAIL]
 ///
-/// This is the one masked-hold primitive the 4 thread-side callers of this
-/// lock use (`ipc/poll.rs`'s `poll_fd`, and `syscall/socket.rs`'s `sys_bind`,
-/// `sys_sendto` and `sys_recvfrom`); `boot_tests`' `udp_socket_lock_oracle`
-/// calls it directly, so removing the mask here mutates the exact code these
-/// 4 production callers run, not a test-only stand-in for it.
-pub fn with_locked_masked<F, R>(socket: &Arc<Mutex<UdpSocket>>, f: F) -> R
+/// This is the one masked-hold primitive every thread-side holder of this
+/// lock uses: the UDP adapter's methods (`UdpSock` below: poll, bind,
+/// sendmsg, recvmsg, local_name); `boot_tests`' `udp_socket_lock_oracle`
+/// calls it directly, so removing the mask here mutates the exact code those
+/// production callers run, not a test-only stand-in for it.
+pub fn with_locked_masked<F, R>(udp: &UdpSock, f: F) -> R
 where
     F: FnOnce(&mut UdpSocket) -> R,
 {
@@ -46,7 +52,34 @@ where
     type Cpu = crate::arch_impl::aarch64::Aarch64Cpu;
     use crate::arch_impl::traits::CpuOps;
 
-    Cpu::without_interrupts(|| f(&mut socket.lock()))
+    Cpu::without_interrupts(|| f(&mut udp.inner.lock()))
+}
+
+/// Boot-oracle accessor: how many datagrams with exactly `payload` wait in
+/// the receive queue, counted under the same masked hold.
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+pub(crate) fn queued_matching(udp: &UdpSock, payload: &[u8]) -> u64 {
+    with_locked_masked(udp, |socket| {
+        socket
+            .rx_queue
+            .lock()
+            .iter()
+            .filter(|packet| packet.data.as_slice() == payload)
+            .count() as u64
+    })
+}
+
+/// Boot-oracle accessor: empty the receive queue under the masked hold.
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+pub(crate) fn clear_queue(udp: &UdpSock) {
+    with_locked_masked(udp, |socket| socket.rx_queue.lock().clear());
+}
+
+/// Boot-oracle accessor: run `f` holding the UDP port registry's lock through
+/// its production masked primitive (#908).
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+pub(crate) fn with_ports_masked<R>(f: impl FnOnce() -> R) -> R {
+    SOCKET_REGISTRY.with_udp_ports_masked(|_ports| f())
 }
 
 /// A received UDP packet
@@ -74,8 +107,6 @@ pub struct UdpSocket {
     pub rx_queue: Mutex<VecDeque<UdpPacket>>,
     /// Thread IDs blocked waiting for data on this socket
     pub waiting_threads: Mutex<Vec<u64>>,
-    /// Non-blocking mode flag (default false = blocking)
-    pub nonblocking: bool,
     /// The line reporting this socket's first delivered datagram, posted by
     /// the delivering code (`net::udp::handle_udp`), which may run on the
     /// NetRx softirq and so may not log.
@@ -89,7 +120,6 @@ impl core::fmt::Debug for UdpSocket {
             .field("local_addr", &self.local_addr)
             .field("local_port", &self.local_port)
             .field("bound", &self.bound)
-            .field("nonblocking", &self.nonblocking)
             .finish()
     }
 }
@@ -104,7 +134,6 @@ impl UdpSocket {
             bound: false,
             rx_queue: Mutex::new(VecDeque::new()),
             waiting_threads: Mutex::new(Vec::new()),
-            nonblocking: false, // Default to blocking (POSIX standard)
             delivery_notice: crate::log_notice::Notice::new(),
         }
     }
@@ -215,12 +244,6 @@ impl UdpSocket {
         let mut waiting = self.waiting_threads.lock();
         waiting.retain(|&id| id != thread_id);
     }
-
-    /// Set non-blocking mode for this socket
-    #[allow(dead_code)] // Public API for future fcntl O_NONBLOCK support
-    pub fn set_nonblocking(&mut self, nonblocking: bool) {
-        self.nonblocking = nonblocking;
-    }
 }
 
 impl Default for UdpSocket {
@@ -237,6 +260,114 @@ impl Drop for UdpSocket {
             log::debug!("UDP: Socket {:?} unbound from port {}", self.handle, port);
         }
     }
+}
+
+/// The largest UDP payload an IPv4 datagram carries: 65535 less the IPv4 and
+/// UDP headers.
+const UDP_MAX_PAYLOAD: usize = 65_507;
+
+/// The UDP half of a socket. The fd-table walk in `net::udp::handle_udp` finds
+/// the socket by its registry handle and enqueues under `with_locked_masked`;
+/// every thread-side hold below goes through the same masked primitive (#823).
+pub struct UdpSock {
+    pub inner: Arc<Mutex<UdpSocket>>,
+}
+
+impl UdpSock {
+    pub fn new() -> Result<UdpSock, i32> {
+        let inner = Arc::try_new(Mutex::new(UdpSocket::new()))
+            .map_err(|_| crate::syscall::errno::ENOMEM)?;
+        Ok(UdpSock { inner })
+    }
+
+    /// The state for a deferred release: a second handle on the same socket.
+    pub(super) fn detach(&mut self) -> UdpSock {
+        UdpSock {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+impl ProtoOps for UdpSock {
+    fn bind(&self, _sk: &Arc<Socket>, addr: &SockAddr) -> Result<(), i32> {
+        let SockAddr::Inet { addr, port } = *addr else {
+            return Err(errno::EAFNOSUPPORT);
+        };
+        let pid = super::object::caller_pid();
+        crate::socket::udp::with_locked_masked(self, |socket| socket.bind(pid, addr, port))
+            .map(|_| ())
+    }
+
+    fn connect(&self, _sk: &Arc<Socket>, _addr: &SockAddr, _nonblock: bool) -> Result<(), i32> {
+        Err(errno::EOPNOTSUPP)
+    }
+
+    fn sendmsg(&self, _sk: &Arc<Socket>, msg: &mut SendMsg) -> Result<usize, i32> {
+        let (dst_addr, dst_port) = match msg.dest {
+            Some(SockAddr::Inet { addr, port }) => (addr, port),
+            Some(_) => return Err(errno::EAFNOSUPPORT),
+            None => return Err(errno::EDESTADDRREQ),
+        };
+        if msg.data.len() > UDP_MAX_PAYLOAD {
+            return Err(errno::EMSGSIZE);
+        }
+        let src_port =
+            crate::socket::udp::with_locked_masked(self, |socket| socket.local_port().unwrap_or(0));
+        let udp_packet = crate::net::udp::build_udp_packet(src_port, dst_port, msg.data);
+        let result = crate::net::send_ipv4(dst_addr, crate::net::ipv4::PROTOCOL_UDP, &udp_packet);
+        // Loopback delivery runs here, with no socket lock held.
+        crate::net::drain_loopback_queue();
+        result
+            .map(|()| msg.data.len())
+            .map_err(|_| errno::ENETUNREACH)
+    }
+
+    fn recvmsg(&self, sk: &Arc<Socket>, msg: &mut RecvMsg) -> Result<usize, i32> {
+        let packet = super::wait::wait_until(sk, msg.nonblock, sk.common.rcv_deadline(), || {
+            crate::socket::udp::with_locked_masked(self, |socket| socket.recv_from()).map(Ok)
+        })?;
+        let copied = packet.data.len().min(msg.cap);
+        msg.data = packet.data;
+        msg.data.truncate(copied);
+        msg.from = Some(SockAddr::Inet {
+            addr: packet.src_addr,
+            port: packet.src_port,
+        });
+        Ok(copied)
+    }
+
+    fn shutdown(&self, _sk: &Arc<Socket>, _how: u8) -> Result<(), i32> {
+        Err(errno::ENOTCONN)
+    }
+
+    fn local_name(&self, _sk: &Socket) -> SockAddr {
+        crate::socket::udp::with_locked_masked(self, |socket| SockAddr::Inet {
+            addr: socket.local_addr.unwrap_or([0; 4]),
+            port: socket.local_port.unwrap_or(0),
+        })
+    }
+
+    fn peer_name(&self, _sk: &Socket) -> Result<SockAddr, i32> {
+        Err(errno::ENOTCONN)
+    }
+
+    fn poll(&self, _sk: &Socket) -> u16 {
+        let has_data = crate::socket::udp::with_locked_masked(self, |socket| socket.has_data());
+        let mut bits = POLLOUT;
+        if has_data {
+            bits |= POLLIN;
+        }
+        bits
+    }
+
+    /// Delivery (`net::udp::handle_udp`) calls `notify_deferred` for every
+    /// datagram it queues.
+    fn notifies(&self) -> bool {
+        true
+    }
+
+    /// `UdpSocket`'s Drop unbinds the port when the last handle goes.
+    fn release(&self, _sk: &Socket) {}
 }
 
 #[cfg(test)]
@@ -484,27 +615,6 @@ pub mod tests {
         }
 
         log::info!("=== TEST PASSED: enqueue_packet wakes multiple waiters ===");
-    }
-
-    /// Test nonblocking mode flag behavior
-    pub fn test_nonblocking_mode_flag() {
-        log::info!("=== TEST: nonblocking mode flag ===");
-
-        let mut socket = UdpSocket::new();
-
-        // Default should be blocking
-        assert_eq!(socket.nonblocking, false);
-
-        // Set to nonblocking
-        socket.set_nonblocking(true);
-        assert_eq!(socket.nonblocking, true);
-        assert!(socket.recv_from().is_none());
-
-        // Set back to blocking
-        socket.set_nonblocking(false);
-        assert_eq!(socket.nonblocking, false);
-
-        log::info!("=== TEST PASSED: nonblocking mode flag ===");
     }
 
     /// Test recv_from properly dequeues packets

@@ -27,9 +27,16 @@ const EPOLL_CTL_MOD: i32 = 3;
 
 /// epoll event flags
 const EPOLLIN: u32 = 0x001;
+const EPOLLPRI: u32 = 0x002;
 const EPOLLOUT: u32 = 0x004;
 const EPOLLERR: u32 = 0x008;
 const EPOLLHUP: u32 = 0x010;
+const EPOLLRDHUP: u32 = 0x2000;
+const EPOLLONESHOT: u32 = 1 << 30;
+const EPOLLET: u32 = 1 << 31;
+
+/// `last_seq` of an entry that has never reported.
+const NEVER_REPORTED: u64 = u64::MAX;
 
 // =============================================================================
 // Data structures
@@ -50,6 +57,27 @@ struct EpollEntry {
     fd: i32,
     events: u32,
     data: u64,
+    /// EPOLLET on a socket: the socket's `common.seq()` when this entry last
+    /// reported, so it reports again only after a new state change.
+    last_seq: u64,
+    /// EPOLLET on a descriptor that is not a socket: the readiness last seen,
+    /// so it reports again only when a condition newly appears.
+    last_revents: u32,
+    /// EPOLLONESHOT: the entry reported and waits for EPOLL_CTL_MOD.
+    disabled: bool,
+}
+
+impl EpollEntry {
+    fn new(fd: i32, events: u32, data: u64) -> Self {
+        EpollEntry {
+            fd,
+            events,
+            data,
+            last_seq: NEVER_REPORTED,
+            last_revents: 0,
+            disabled: false,
+        }
+    }
 }
 
 /// An epoll instance containing registered file descriptors
@@ -69,15 +97,16 @@ impl EpollInstance {
         if self.entries.iter().any(|e| e.fd == fd) {
             return Err(errno::EEXIST);
         }
-        self.entries.push(EpollEntry { fd, events, data });
+        self.entries.try_reserve(1).map_err(|_| errno::ENOMEM)?;
+        self.entries.push(EpollEntry::new(fd, events, data));
         Ok(())
     }
 
     fn modify(&mut self, fd: i32, events: u32, data: u64) -> Result<(), i32> {
         for entry in self.entries.iter_mut() {
             if entry.fd == fd {
-                entry.events = events;
-                entry.data = data;
+                // Modifying an entry re-arms it, one-shot or edge-triggered.
+                *entry = EpollEntry::new(fd, events, data);
                 return Ok(());
             }
         }
@@ -343,23 +372,77 @@ pub fn sys_epoll_pwait(
 
         // Check readiness for each registered fd
         let mut ready_events: Vec<EpollEvent> = Vec::new();
+        let mut updates: Vec<EpollEntry> = Vec::new();
         for (entry, fd_entry) in fd_snapshots.iter() {
-            if let Some(ref fd) = fd_entry {
-                // Convert epoll event mask to poll events
-                let poll_events = epoll_to_poll_events(entry.events);
-                let revents = poll::poll_fd(fd, poll_events);
-                let epoll_revents = poll_to_epoll_events(revents);
+            if entry.disabled {
+                continue;
+            }
+            let Some(ref fd) = fd_entry else {
+                continue;
+            };
+            // The sequence number is read before readiness: a change that
+            // lands after the read moves it, and the next wait reports again.
+            let seq = match &fd.kind {
+                FdKind::Socket(socket) => Some(socket.common.seq()),
+                _ => None,
+            };
+            let poll_events = epoll_to_poll_events(entry.events);
+            let revents = poll::poll_fd(fd, poll_events);
+            let epoll_revents = poll_to_epoll_events(revents);
 
-                if epoll_revents != 0 {
-                    ready_events.push(EpollEvent {
-                        events: epoll_revents,
-                        data: entry.data,
+            let report = epoll_revents != 0
+                && (entry.events & EPOLLET == 0
+                    || match seq {
+                        Some(seq) => seq != entry.last_seq,
+                        None => epoll_revents & !entry.last_revents != 0,
                     });
-                    if ready_events.len() >= maxevents {
-                        break;
-                    }
+            let mut updated = entry.clone();
+            if entry.events & EPOLLET != 0 {
+                updated.last_revents = epoll_revents;
+                if report {
+                    updated.last_seq = seq.unwrap_or(NEVER_REPORTED);
                 }
             }
+            if report && entry.events & EPOLLONESHOT != 0 {
+                updated.disabled = true;
+            }
+            if entry.events & (EPOLLET | EPOLLONESHOT) != 0 {
+                if updates.try_reserve(1).is_err() {
+                    return SyscallResult::Err(errno::ENOMEM as u64);
+                }
+                updates.push(updated);
+            }
+            if report {
+                if ready_events.try_reserve(1).is_err() {
+                    return SyscallResult::Err(errno::ENOMEM as u64);
+                }
+                ready_events.push(EpollEvent {
+                    events: epoll_revents,
+                    data: entry.data,
+                });
+                if ready_events.len() >= maxevents {
+                    break;
+                }
+            }
+        }
+
+        // Record what edge-triggered and one-shot entries reported, unless
+        // EPOLL_CTL_MOD or DEL changed the entry while this wait looked.
+        if !updates.is_empty() {
+            let _ = with_instance(epoll_id, |inst| {
+                for update in &updates {
+                    if let Some(entry) = inst.entries.iter_mut().find(|e| {
+                        e.fd == update.fd && e.events == update.events && e.data == update.data
+                    }) {
+                        if !entry.disabled {
+                            entry.last_seq = update.last_seq;
+                            entry.last_revents = update.last_revents;
+                            entry.disabled = update.disabled;
+                        }
+                    }
+                }
+                Ok(())
+            });
         }
 
         // If events are ready, copy to userspace and return
@@ -407,8 +490,14 @@ fn epoll_to_poll_events(epoll_events: u32) -> i16 {
     if epoll_events & EPOLLIN != 0 {
         poll_events |= poll::events::POLLIN;
     }
+    if epoll_events & EPOLLPRI != 0 {
+        poll_events |= poll::events::POLLPRI;
+    }
     if epoll_events & EPOLLOUT != 0 {
         poll_events |= poll::events::POLLOUT;
+    }
+    if epoll_events & EPOLLRDHUP != 0 {
+        poll_events |= poll::events::POLLRDHUP;
     }
     // EPOLLERR and EPOLLHUP are always reported (output-only in poll)
     poll_events
@@ -419,6 +508,12 @@ fn poll_to_epoll_events(revents: i16) -> u32 {
     let mut epoll_events: u32 = 0;
     if revents & poll::events::POLLIN != 0 {
         epoll_events |= EPOLLIN;
+    }
+    if revents & poll::events::POLLPRI != 0 {
+        epoll_events |= EPOLLPRI;
+    }
+    if revents & poll::events::POLLRDHUP != 0 {
+        epoll_events |= EPOLLRDHUP;
     }
     if revents & poll::events::POLLOUT != 0 {
         epoll_events |= EPOLLOUT;

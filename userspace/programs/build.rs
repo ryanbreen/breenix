@@ -10,22 +10,21 @@ fn main() {
         ));
     println!("cargo:rerun-if-changed={}", archive.display());
 
-    // `libc_has = "<name>"` for each thread, scheduling, signal, IPC and terminal function
-    // libc.a defines (and the socket, resolver and few other functions suite-threads,
-    // suite-ipc, suite-networking and suite-terminals call), from the archive's symbol index,
-    // so a suite can call a function the library has and fail a case naming one it lacks, or
-    // make its system call, instead of failing to link.
+    // `libc_has = "<name>"` covers thread, scheduling, signal, IPC, terminal,
+    // socket and resolver functions defined by libc.a, from its symbol index.
+    // Suites call available functions and name missing ones in failing cases
+    // instead of failing to link or substituting a raw syscall for the interface.
     const PREFIXES: &[&str] = &["pthread_", "sched_", "sig", "mq_", "sem", "shm", "msg"];
     const OTHERS: &[&str] = &[
         "raise", "sysconf", "__errno_location", "exit", "getpid", "close", "pipe", "read", "write", "kill",
         "open", "unlink", "stat", "fstat", "lseek", "ftruncate", "mmap", "munmap", "umask", "poll", "select",
-        "mkfifo", "ftok", "socket", "socketpair", "bind", "listen", "accept", "accept4", "connect", "send", "recv",
+        "mkfifo", "ftok", "ioctl", "isatty", "posix_openpt", "grantpt", "unlockpt", "ptsname", "tcgetattr",
+        "tcsetattr", "tcflush", "tcdrain", "tcflow", "tcsendbreak", "tcgetpgrp", "tcsetpgrp", "tcgetsid",
+        "cfgetispeed", "cfgetospeed", "cfsetispeed", "cfsetospeed", "setsid", "getsid", "setpgid", "getpgid",
+        "socket", "socketpair", "bind", "listen", "accept", "accept4", "connect", "send", "recv",
         "sendto", "recvfrom", "sendmsg", "recvmsg", "shutdown", "setsockopt", "getsockopt", "getsockname",
         "getpeername", "fcntl", "epoll_create1", "epoll_ctl", "epoll_wait", "getaddrinfo", "freeaddrinfo",
-        "getnameinfo", "gai_strerror", "inet_pton", "inet_ntop", "ioctl", "isatty", "posix_openpt", "grantpt",
-        "unlockpt", "ptsname", "tcgetattr", "tcsetattr", "tcflush", "tcdrain", "tcflow", "tcsendbreak",
-        "tcgetpgrp", "tcsetpgrp", "tcgetsid", "cfgetispeed", "cfgetospeed", "cfsetispeed", "cfsetospeed",
-        "setsid", "getsid", "setpgid", "getpgid",
+        "getnameinfo", "gai_strerror", "inet_pton", "inet_ntop",
     ];
     println!("cargo:rustc-check-cfg=cfg(libc_has, values(any()))");
     if let Ok(bytes) = fs::read(&archive) {
