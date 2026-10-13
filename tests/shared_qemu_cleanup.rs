@@ -133,6 +133,9 @@ fn killed_owner_is_recovered_before_next_boot() {
             .args(["-c", "sleep 30 & echo $! > \"$1\"; wait", "sh"])
             .arg(std::env::var_os("BREENIX_STALE_CHILD").unwrap());
         let _group = lock.spawn(&mut command).unwrap();
+        // Publish readiness only after BootLock has saved the group identity.
+        // The child's PID file can appear before spawn() finishes registration.
+        fs::write(std::env::var_os("BREENIX_STALE_READY").unwrap(), b"registered\n").unwrap();
         loop {
             thread::sleep(Duration::from_millis(20));
         }
@@ -141,13 +144,20 @@ fn killed_owner_is_recovered_before_next_boot() {
     fs::create_dir_all(&root).unwrap();
     let lock_path = root.join("lock");
     let child_path = root.join("pid");
+    let ready_path = root.join("ready");
     let mut helper = Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "killed_owner_is_recovered_before_next_boot"])
         .env(HELPER, &lock_path)
         .env("BREENIX_STALE_CHILD", &child_path)
+        .env("BREENIX_STALE_READY", &ready_path)
         .spawn()
         .unwrap();
     let pid = read_pid(&child_path);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !matches!(fs::read(&ready_path).as_deref(), Ok(b"registered\n")) {
+        assert!(Instant::now() < deadline, "owner did not register its group");
+        thread::sleep(Duration::from_millis(1));
+    }
     helper.kill().unwrap();
     helper.wait().unwrap();
     assert_eq!(
