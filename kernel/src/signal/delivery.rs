@@ -1476,7 +1476,7 @@ pub fn terminate_thread_group_peers(pid: crate::process::ProcessId, exit_code: i
     })
     .unwrap_or_default();
     for peer in peers {
-        crate::syscall::signal::kill_process_now(peer, exit_code);
+        crate::syscall::signal::kill_process_now(peer, exit_code, None);
     }
 }
 
