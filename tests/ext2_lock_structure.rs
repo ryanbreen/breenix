@@ -391,12 +391,11 @@ fn validate_checked_wait_used_exclusively(body: &str) -> Result<(), String> {
     }
 }
 
-/// M1: `is_mounted`/`is_home_mounted`/`home_mount_id` must be routed
-/// through the park-capable accessor, not a raw `spin::RwLock::read()` on
-/// `ROOT_EXT2`/`HOME_EXT2` — a raw `.read()` spins non-yieldingly whenever
-/// a writer holds the upgradeable slot (`spin`'s `try_read()` rejects new
-/// readers while UPGRADED is set), invisibly to the gate because it
-/// bypasses `ext2_spin_wait` entirely.
+/// M1: a function must make `accessor_call` and must not take a raw
+/// `spin::RwLock::read()` on `ROOT_EXT2`/`HOME_EXT2` — a raw `.read()` spins
+/// non-yieldingly whenever a writer holds the upgradeable slot (`spin`'s
+/// `try_read()` rejects new readers while UPGRADED is set), invisibly to the
+/// gate because it bypasses `ext2_spin_wait` entirely.
 fn validate_routed_through_accessor(body: &str, accessor_call: &str) -> Result<(), String> {
     let mask = code_mask(body);
     if code_offsets(body, &mask, accessor_call).is_empty() {
@@ -591,18 +590,24 @@ fn acquisition_paths_use_only_the_checked_timed_wait() {
     validate_checked_wait_used_exclusively(&combined).unwrap();
 }
 
+/// The mount queries read the published mount IDs and take no guard, so they
+/// can neither spin behind a writer nor report "not mounted" to a caller
+/// whose acquisition a SIGKILL ended.
 #[test]
-fn is_mounted_is_home_mounted_and_home_mount_id_route_through_the_accessor() {
+fn is_mounted_is_home_mounted_and_home_mount_id_read_the_published_mount_id() {
     let source = repo_text("kernel/src/fs/ext2/mod.rs");
-    validate_routed_through_accessor(function_body(&source, "is_mounted"), "root_fs_read()")
+    validate_routed_through_accessor(function_body(&source, "is_mounted"), "ROOT_MOUNT_ID.load(")
         .unwrap();
     validate_routed_through_accessor(
         function_body(&source, "is_home_mounted"),
-        "home_fs_read()",
+        "home_mount_id()",
     )
     .unwrap();
-    validate_routed_through_accessor(function_body(&source, "home_mount_id"), "home_fs_read()")
-        .unwrap();
+    validate_routed_through_accessor(
+        function_body(&source, "home_mount_id"),
+        "HOME_MOUNT_ID.load(",
+    )
+    .unwrap();
 }
 
 #[test]

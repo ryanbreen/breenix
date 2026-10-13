@@ -179,6 +179,9 @@ mkdir -p "$(dirname "$SERIAL_LOG")"
 : > "$SERIAL_LOG"
 WRITABLE="$(dirname "$SERIAL_LOG")/ext2-writable.img"
 cp "$DISK" "$WRITABLE"
+# This disposable image is checked as a raw host file after the suite. Keep
+# writes to that file, but do not make each guest barrier wait for APFS's
+# power-loss durability. The test never crashes or restarts the host.
 
 # shellcheck source=../docker/qemu/lib/qemu-host-lock.sh
 source "$ROOT/docker/qemu/lib/qemu-host-lock.sh"
@@ -215,7 +218,7 @@ python3 "$ROOT/scripts/watch-qemu.py" --serial "$SERIAL_LOG" --mode "$MODE" \
     -device virtio-keyboard-device \
     -device virtio-tablet-device \
     -device virtio-blk-device,drive=ext2 \
-    -drive if=none,id=ext2,format=raw,file="$WRITABLE" \
+    -drive if=none,id=ext2,format=raw,cache=unsafe,aio=threads,file="$WRITABLE" \
     -device virtio-net-device,netdev=net0 \
     -netdev user,id=net0 \
     -chardev stdio,id=con,mux=on,signal=off,logfile="$SERIAL_LOG" \

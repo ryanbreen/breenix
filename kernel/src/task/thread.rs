@@ -1144,7 +1144,6 @@ impl Thread {
 
     /// Whether a SIGKILL was left pending for this thread while it was inside
     /// a section (`mark_kill_pending`).
-    #[cfg(target_arch = "x86_64")]
     pub(crate) fn kill_pending(&self) -> bool {
         self.kill_custody.load(Ordering::Acquire) & KILL_PENDING != 0
     }
@@ -1976,4 +1975,9 @@ fn current_cpu_thread() -> Option<&'static Thread> {
     #[cfg(target_arch = "aarch64")]
     let thread = crate::per_cpu_aarch64::current_thread();
     thread.map(|t| &*t)
+}
+
+/// Fatal cancellation check for waits that must unwind their kernel owners.
+pub(crate) fn current_kill_pending() -> bool {
+    current_cpu_thread().is_some_and(Thread::kill_pending)
 }

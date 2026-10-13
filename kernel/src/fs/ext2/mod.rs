@@ -2129,12 +2129,19 @@ impl Ext2SpinStallTracker {
 /// after the #728 fix: pre-fix it is the *only* path (this function's
 /// behavior on unfixed code, unchanged from the plain spin), post-fix it is
 /// reached only when parking is unsafe (`ext2_lock_can_sleep()` false) or
-/// the scheduler refuses to publish the wait.
-fn ext2_spin_wait<T>(lock_name: &str, mut try_acquire: impl FnMut() -> Option<T>) -> T {
+/// the scheduler refuses to publish the wait. A pending SIGKILL ends the spin
+/// as it ends a park: nothing is owned yet, so the syscall can unwind.
+fn ext2_spin_wait<T>(
+    lock_name: &str,
+    mut try_acquire: impl FnMut() -> Option<T>,
+) -> Result<T, &'static str> {
     let mut tracker = Ext2SpinStallTracker::new();
     loop {
         if let Some(v) = try_acquire() {
-            return v;
+            return Ok(v);
+        }
+        if crate::task::thread::current_kill_pending() {
+            return Err(EXT2_ACQUIRE_KILLED);
         }
         tracker.tick(lock_name);
         core::hint::spin_loop();
@@ -2148,26 +2155,34 @@ fn ext2_spin_wait<T>(lock_name: &str, mut try_acquire: impl FnMut() -> Option<T>
 /// Same behavioral contract as `ext2_spin_wait`: unchanged spin, now observed.
 fn ext2_spin_wait_write(
     lock: &'static RwLock<Option<Ext2Fs>>,
+    waiters: &'static crate::task::waitqueue::WaitQueueHead,
     lock_name: &str,
-) -> spin::RwLockWriteGuard<'static, Option<Ext2Fs>> {
-    let upgradeable = ext2_spin_wait(lock_name, || lock.try_upgradeable_read());
-    ext2_spin_wait_upgrade(upgradeable, lock_name)
+) -> Result<spin::RwLockWriteGuard<'static, Option<Ext2Fs>>, &'static str> {
+    let upgradeable = ext2_spin_wait(lock_name, || lock.try_upgradeable_read())?;
+    ext2_spin_wait_upgrade(upgradeable, waiters, lock_name)
 }
 
 /// Phase 2 of the write spin: busy-spin `try_upgrade()` starting from an
 /// already-held upgradeable guard, until every existing reader has drained.
 /// Factored out so the park path (`ext2_acquire_write`, below) can fall back
 /// to spinning on an upgrade it already holds the slot for, without
-/// releasing and re-racing for the upgradeable slot itself.
+/// releasing and re-racing for the upgradeable slot itself. A pending SIGKILL
+/// gives the slot back and wakes the contenders it was holding off.
 fn ext2_spin_wait_upgrade(
     mut upgradeable: spin::RwLockUpgradableGuard<'static, Option<Ext2Fs>>,
+    waiters: &'static crate::task::waitqueue::WaitQueueHead,
     lock_name: &str,
-) -> spin::RwLockWriteGuard<'static, Option<Ext2Fs>> {
+) -> Result<spin::RwLockWriteGuard<'static, Option<Ext2Fs>>, &'static str> {
     let mut tracker = Ext2SpinStallTracker::new();
     loop {
         match upgradeable.try_upgrade() {
-            Ok(write_guard) => return write_guard,
+            Ok(write_guard) => return Ok(write_guard),
             Err(back) => upgradeable = back,
+        }
+        if crate::task::thread::current_kill_pending() {
+            drop(upgradeable);
+            waiters.wake_up();
+            return Err(EXT2_ACQUIRE_KILLED);
         }
         tracker.tick(lock_name);
         core::hint::spin_loop();
@@ -2419,7 +2434,9 @@ fn ext2_schedule_current_wait() {
 }
 
 /// Try the fast (uncontended) path, then park until acquired when it's safe
-/// to, otherwise fall back to the unchanged spin. Shared by the read and
+/// to, otherwise fall back to the unchanged spin. A pending SIGKILL ends
+/// acquisition before any mount state is owned, so the syscall can unwind.
+/// Shared by the read and
 /// write acquisition paths below via the closures they pass.
 /// `lock_name` is used only for the `ext2_record_park()` marker below (the
 /// same name each caller already passes to its own `ext2_spin_wait*` spin
@@ -2428,16 +2445,18 @@ fn ext2_acquire<T>(
     waiters: &'static crate::task::waitqueue::WaitQueueHead,
     lock_name: &str,
     mut try_acquire: impl FnMut() -> Option<T>,
-    spin_fallback: impl FnOnce() -> T,
-) -> T {
+    spin_fallback: impl FnOnce() -> Result<T, &'static str>,
+) -> Result<T, &'static str> {
+    if crate::task::thread::current_kill_pending() { return Err(EXT2_ACQUIRE_KILLED); }
     if let Some(v) = try_acquire() {
-        return v;
+        return Ok(v);
     }
 
     if ext2_lock_can_sleep() {
         loop {
+            if crate::task::thread::current_kill_pending() { return Err(EXT2_ACQUIRE_KILLED); }
             if let Some(v) = try_acquire() {
-                return v;
+                return Ok(v);
             }
 
             let deadline = ext2_now_ns() + EXT2_LOCK_PARK_TIMEOUT_NS;
@@ -2474,6 +2493,8 @@ fn ext2_acquire<T>(
 
     spin_fallback()
 }
+
+const EXT2_ACQUIRE_KILLED: &str = "ext2 acquisition interrupted by SIGKILL";
 
 /// How long a thread a kill has claimed parks between checks of its claim.
 const EXT2_KILL_CLAIM_RECHECK_NS: u64 = 1_000_000;
@@ -2520,25 +2541,30 @@ fn ext2_acquire_write(
     lock: &'static RwLock<Option<Ext2Fs>>,
     waiters: &'static crate::task::waitqueue::WaitQueueHead,
     lock_name: &str,
-) -> spin::RwLockWriteGuard<'static, Option<Ext2Fs>> {
+) -> Result<spin::RwLockWriteGuard<'static, Option<Ext2Fs>>, &'static str> {
     let mut upgradeable = ext2_acquire(
         waiters,
         lock_name,
         || lock.try_upgradeable_read(),
         || ext2_spin_wait(lock_name, || lock.try_upgradeable_read()),
-    );
+    )?;
 
     // Fast path: no readers in the way at all.
     upgradeable = match upgradeable.try_upgrade() {
-        Ok(w) => return w,
+        Ok(w) => return Ok(w),
         Err(back) => back,
     };
 
     if !ext2_lock_can_sleep() {
-        return ext2_spin_wait_upgrade(upgradeable, lock_name);
+        return ext2_spin_wait_upgrade(upgradeable, waiters, lock_name);
     }
 
     loop {
+        if crate::task::thread::current_kill_pending() {
+            drop(upgradeable);
+            waiters.wake_up();
+            return Err(EXT2_ACQUIRE_KILLED);
+        }
         // `slot` lets the `FnOnce` recheck closure below hand the
         // upgradeable guard back out (its own signature can only return
         // `bool`) via a captured-by-reference `Option`, so we never drop it
@@ -2565,7 +2591,7 @@ fn ext2_acquire_write(
         );
 
         if let Some(w) = upgraded {
-            return w;
+            return Ok(w);
         }
         upgradeable = slot
             .take()
@@ -2575,7 +2601,7 @@ fn ext2_acquire_write(
             crate::task::waitqueue::PrepareOutcome::Mismatch => continue,
             crate::task::waitqueue::PrepareOutcome::PublishFailed
             | crate::task::waitqueue::PrepareOutcome::OutOfMemory => {
-                return ext2_spin_wait_upgrade(upgradeable, lock_name);
+                return ext2_spin_wait_upgrade(upgradeable, waiters, lock_name);
             }
             crate::task::waitqueue::PrepareOutcome::Queued => {
                 ext2_record_park(lock_name);
@@ -2728,7 +2754,7 @@ pub fn read_mount(pin: live_inode::MountPin) -> Result<Ext2ReadGuard, &'static s
         home_fs_read()
     } else {
         root_fs_read()
-    };
+    }?;
     pin.verify(guard.as_ref().ok_or("ext2 mount unavailable")?)?;
     Ok(guard)
 }
@@ -2738,7 +2764,7 @@ pub fn write_mount(pin: live_inode::MountPin) -> Result<Ext2WriteGuard, &'static
         home_fs_write()
     } else {
         root_fs_write()
-    };
+    }?;
     pin.verify(guard.as_ref().ok_or("ext2 mount unavailable")?)?;
     Ok(guard)
 }
@@ -2869,19 +2895,19 @@ pub fn init_root_fs() -> Result<(), &'static str> {
 ///
 /// Multiple readers can hold this lock concurrently, allowing parallel
 /// exec, file reads, getdents, and stat operations without contention.
-pub fn root_fs_read() -> Ext2ReadGuard {
+pub fn root_fs_read() -> Result<Ext2ReadGuard, &'static str> {
     let custody = ext2_kill_custody(&ROOT_EXT2_WAITERS);
     let inner = ext2_acquire(
         &ROOT_EXT2_WAITERS,
         "ROOT_EXT2_read",
         || ROOT_EXT2.try_read(),
         || ext2_spin_wait("ROOT_EXT2_read", || ROOT_EXT2.try_read()),
-    );
-    Ext2ReadGuard {
+    )?;
+    Ok(Ext2ReadGuard {
         inner: Some(inner),
         waiters: &ROOT_EXT2_WAITERS,
         _custody: custody,
-    }
+    })
 }
 
 /// Access the root ext2 filesystem for write operations
@@ -2895,28 +2921,28 @@ pub fn root_fs_read() -> Ext2ReadGuard {
 /// but new readers can keep arriving indefinitely. The upgradeable guard sets
 /// the UPGRADED bit, which causes try_read() to reject new readers. The writer
 /// then only waits for existing readers to drain, guaranteeing forward progress.
-pub fn root_fs_write() -> Ext2WriteGuard {
+pub fn root_fs_write() -> Result<Ext2WriteGuard, &'static str> {
     fs_write(false)
 }
 
 /// Acquire exclusive access without performing another inode's reclamation.
-fn fs_write_raw(home: bool) -> Ext2WriteGuard {
+fn fs_write_raw(home: bool) -> Result<Ext2WriteGuard, &'static str> {
     let (lock, waiters, name) = if home {
         (&HOME_EXT2, &HOME_EXT2_WAITERS, "HOME_EXT2_write")
     } else {
         (&ROOT_EXT2, &ROOT_EXT2_WAITERS, "ROOT_EXT2_write")
     };
     let custody = ext2_kill_custody(waiters);
-    let inner = ext2_acquire_write(lock, waiters, name);
-    Ext2WriteGuard {
+    let inner = ext2_acquire_write(lock, waiters, name)?;
+    Ok(Ext2WriteGuard {
         inner: Some(inner),
         waiters,
         _custody: custody,
-    }
+    })
 }
 
-fn fs_write(home: bool) -> Ext2WriteGuard {
-    let guard = fs_write_raw(home);
+fn fs_write(home: bool) -> Result<Ext2WriteGuard, &'static str> {
+    let guard = fs_write_raw(home)?;
     let pressure = guard.as_ref().is_some_and(|fs| {
         let stats = fs.statfs();
         stats.free_blocks <= (stats.blocks / 16).max(RECLAIM_BUDGET as u64)
@@ -2927,13 +2953,13 @@ fn fs_write(home: bool) -> Ext2WriteGuard {
         // Last-observer reclamation must not turn rm followed by allocation
         // into ENOSPC solely because the background service has not run yet.
         if let Ok(guard) = accounting_fs_write(home) {
-            return guard;
+            return Ok(guard);
         }
         // Failed I/O keeps allocations quarantined; normal operations report
         // their own errors rather than exposing those allocations for reuse.
         fs_write_raw(home)
     } else {
-        guard
+        Ok(guard)
     }
 }
 
@@ -2943,7 +2969,7 @@ fn fs_write(home: bool) -> Ext2WriteGuard {
 /// The returned guard excludes reclamation while counters and their disk
 /// counterparts are read. I/O errors retain custody and reach the reader.
 pub(crate) fn accounting_fs_write(home: bool) -> Result<Ext2WriteGuard, &'static str> {
-    let mut guard = fs_write_raw(home);
+    let mut guard = fs_write_raw(home)?;
     let pin = guard.as_ref().map(|fs| fs.mount_pin);
     let objects = guard
         .as_ref()
@@ -2971,7 +2997,7 @@ pub(crate) fn accounting_fs_write(home: bool) -> Result<Ext2WriteGuard, &'static
                 cohort_at = cohort_end;
                 drop(guard);
                 writeback::pause(1_000_000);
-                guard = fs_write_raw(home);
+                guard = fs_write_raw(home)?;
             }
             Finalize::Retry => {
                 writeback::request();
@@ -2980,7 +3006,7 @@ pub(crate) fn accounting_fs_write(home: bool) -> Result<Ext2WriteGuard, &'static
             Finalize::More => {
                 drop(guard);
                 writeback::pause(1_000_000);
-                guard = fs_write_raw(home);
+                guard = fs_write_raw(home)?;
             }
         }
     }
@@ -2988,19 +3014,11 @@ pub(crate) fn accounting_fs_write(home: bool) -> Result<Ext2WriteGuard, &'static
 
 /// Check if the root filesystem is mounted
 ///
-/// Routed through `root_fs_read()` (M1 of the #728 fix round), not a plain
-/// `ROOT_EXT2.read()`: `spin`'s `try_read()` rejects new readers while
-/// UPGRADED is set, so a plain blocking `.read()` here spins
-/// non-yieldingly with `preempt_count() == 1` whenever a writer holds the
-/// upgradeable slot — the #728 shape, invisible to the gate because it
-/// bypasses `ext2_spin_wait` entirely. This is called on syscall-hot paths
-/// (`sys_write`/`sys_read`/`sys_fstat`/etc. via `home_mount_id()` below, and
-/// this function itself from `ext2_lock_race`), so it needs the same
-/// park-then-spin-fallback discipline the four accessors get, not a
-/// bespoke one — reusing the guard means it also gets the observability and
-/// the release-before-wake ordering for free.
+/// Read from the published mount ID, not through `root_fs_read()`: it takes
+/// no guard, so it can neither spin behind a writer (the #728 shape) nor
+/// report "not mounted" to a caller whose acquisition a SIGKILL ended.
 pub fn is_mounted() -> bool {
-    root_fs_read().is_some()
+    ROOT_MOUNT_ID.load(Ordering::Acquire) != usize::MAX
 }
 
 /// Global mounted ext2 home filesystem (/home)
@@ -3065,47 +3083,41 @@ pub fn init_home_fs() -> Result<(), &'static str> {
 }
 
 /// Access the home ext2 filesystem for read-only operations
-pub fn home_fs_read() -> Ext2ReadGuard {
+pub fn home_fs_read() -> Result<Ext2ReadGuard, &'static str> {
     let custody = ext2_kill_custody(&HOME_EXT2_WAITERS);
     let inner = ext2_acquire(
         &HOME_EXT2_WAITERS,
         "HOME_EXT2_read",
         || HOME_EXT2.try_read(),
         || ext2_spin_wait("HOME_EXT2_read", || HOME_EXT2.try_read()),
-    );
-    Ext2ReadGuard {
+    )?;
+    Ok(Ext2ReadGuard {
         inner: Some(inner),
         waiters: &HOME_EXT2_WAITERS,
         _custody: custody,
-    }
+    })
 }
 
 /// Access the home ext2 filesystem for write operations
 ///
 /// Uses upgradeable_read() + upgrade() to prevent writer starvation (same as root_fs_write).
-pub fn home_fs_write() -> Ext2WriteGuard {
+pub fn home_fs_write() -> Result<Ext2WriteGuard, &'static str> {
     fs_write(true)
 }
 
-/// Check if the home filesystem is mounted
-///
-/// Routed through `home_fs_read()` — see `is_mounted()`'s doc comment (M1
-/// of the #728 fix round); the same blocking-spin hazard applies here.
+/// Check if the home filesystem is mounted. Lock-free, as `is_mounted()`.
 pub fn is_home_mounted() -> bool {
-    home_fs_read().is_some()
+    home_mount_id().is_some()
 }
 
 /// Get the mount_id of the home filesystem, if mounted.
 ///
-/// Used by FD-based syscall dispatch to determine which filesystem
-/// a file descriptor belongs to. Routed through `home_fs_read()` — see
-/// `is_mounted()`'s doc comment (M1 of the #728 fix round). This is the
-/// highest-traffic of the three M1 sites: called from `sys_write`,
-/// `sys_read`, `sys_pread64`, `sys_pwrite64`, `sys_fstat`,
-/// `sys_getdents64` and `sys_utimensat`, immediately ahead of the very
-/// accessor calls this fix repaired.
+/// Used by FD-based syscall dispatch to determine which filesystem a file
+/// descriptor belongs to, ahead of the guard the syscall then takes. Read
+/// from the published mount ID, as `is_mounted()`.
 pub fn home_mount_id() -> Option<usize> {
-    home_fs_read().as_ref().map(|fs| fs.mount_id)
+    let id = HOME_MOUNT_ID.load(Ordering::Acquire);
+    (id != usize::MAX).then_some(id)
 }
 
 /// Strip the /home prefix from a path, returning the path within the home filesystem.
