@@ -133,6 +133,12 @@ impl Vma {
         }
     }
 
+    /// Transfer the original row; object backends preserve attachment activity
+    /// here while extra split pieces use ordinary piece() accounting.
+    pub fn replacement_piece(&mut self, start: VirtAddr, end: VirtAddr) -> Self {
+        self.piece(start, end)
+    }
+
     /// Check if this VMA contains the given address
     #[allow(dead_code)]
     pub fn contains(&self, addr: VirtAddr) -> bool {

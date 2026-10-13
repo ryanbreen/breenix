@@ -1554,7 +1554,6 @@ fn boot_finish_reclaim_pass(boot_test_owned: bool) {
 
 /// Reclaim process frames whose cross-CPU TTBR0 retention has quiesced.
 pub fn reclaim_deferred_process_resources() {
-    crate::ipc::shmem::drain_signal_pages();
     let my_pass = next_reclaim_pass_id(
         RECLAIM_PASS_ID
             .fetch_add(1, Ordering::Relaxed)
@@ -1566,6 +1565,7 @@ pub fn reclaim_deferred_process_resources() {
         crate::trace_count!(crate::tracing::providers::teardown::RECLAIM_CONTEXT_VIOLATIONS);
         return;
     }
+    crate::ipc::shmem::drain_signal_pages();
     #[cfg(feature = "boot_tests")]
     if BOOT_RECLAIM_TEST_OWNER.load(Ordering::Acquire) != 0 {
         return;
