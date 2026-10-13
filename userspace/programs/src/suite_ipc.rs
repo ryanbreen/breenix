@@ -1213,10 +1213,16 @@ fn fifo_eof_blocked_reader() -> CaseResult {
     let mut reader = spawn(|| {
         let _ = close(w as i32)?;
         let r = open_fifo(&f, O_RDONLY, "O_RDONLY in the reader")?;
+        pg.set(1, 1);
         let (n, _) = get(r, 64)?;
         pg.set(0, mono());
         check(n == 0, &format!("the blocked read returned {}, expected end of file", shown(n)))
     })?;
+    // The reader's open looks the FIFO up in the filesystem, and can block there
+    // first. Closing the last writer before that open returns would leave the
+    // open waiting for a writer, so the reader is checked as blocked only once
+    // it has opened the FIFO and can block nowhere but in the read.
+    check(until(3000, || pg.get(1) == 1 || reader.reap().is_some()), "the reader did not open the FIFO within 3 s")?;
     reader.blocks("the read of the empty FIFO")?;
     let t0 = mono();
     zero("close of the last writer", close(w as i32)?)?;
