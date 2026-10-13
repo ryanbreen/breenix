@@ -3031,7 +3031,7 @@ impl Scheduler {
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
             if current_id != self.cpu_state[Self::current_cpu_id()].idle_thread {
                 // Check the state and determine what to do
-                let (is_terminated, is_blocked, published_ready) =
+                let (is_terminated, is_blocked, published_ready, terminated_owner_pid) =
                     if let Some(current) = self.get_thread_mut(current_id) {
                         let was_terminated = current.state == ThreadState::Terminated;
                         // Check for any blocked state
@@ -3055,10 +3055,26 @@ impl Scheduler {
                             false
                         };
 
-                        (was_terminated, was_blocked, published_ready)
+                        (
+                            was_terminated,
+                            was_blocked,
+                            published_ready,
+                            was_terminated.then_some(current.owner_pid).flatten(),
+                        )
                     } else {
-                        (true, false, false)
+                        (true, false, false, None)
                     };
+
+                // This pass switches away from a thread a kill quarantined
+                // (`terminate_process_threads`): the kill's kick has reached
+                // the CPU that ran it. Consume the kick here, as
+                // `schedule_deferred_requeue` does, rather than leave it to
+                // whichever pass reaches the quarantine token: a peer with
+                // threads of its own queued never looks at another CPU's
+                // queue, and the sender never observes its own kick (#1413).
+                if let Some(owner_pid) = terminated_owner_pid {
+                    observe_exit_kick(owner_pid);
+                }
 
                 // Put non-terminated, non-blocked threads back in ready queue
                 // CRITICAL: Check for duplicates! If unblock() already added this thread
