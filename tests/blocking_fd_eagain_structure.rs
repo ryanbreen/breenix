@@ -565,7 +565,7 @@ fn repaired_families_have_no_blocking_eagain_exit() {
     let unix = read("kernel/src/socket/unix.rs");
     // The socket write route: handlers.rs hands the descriptor mode to
     // socket_write, which carries it in SendMsg.nonblock across the protocol's
-    // trait object; the Unix stream adapter hands msg.nonblock to write_unix.
+    // trait object; Unix gives that mode and its optional deadline to wait_until.
     let mut defs = functions(&lex(&helper));
     defs.insert(
         "socket_write".into(),
@@ -685,44 +685,63 @@ fn repaired_families_have_no_blocking_eagain_exit() {
         .unwrap_or_else(|e| panic!("Pipe/FIFO blocking route rejected: {e}"));
     assert!(
         socket_mode_reaches_unix_writer(&sockets, &unix),
-        "socket_write's mode no longer reaches write_unix"
+        "socket_write's mode no longer reaches the socket wait"
     );
-    audit_helper(&unix_writer_source(&unix, &helper), "write_unix")
-        .unwrap_or_else(|e| panic!("Unix blocking route rejected: {e}"));
+    assert!(
+        unix_wait_contract(&unix, &read("kernel/src/socket/wait.rs")),
+        "Unix send can expose full-queue EAGAIN outside nonblock or an expired deadline"
+    );
     audit_helper(&helper, "read_console").expect("Console/Tty blocking route");
     audit_console_route(&handlers, &helper).expect("Console/Tty syscall result route");
     println!("Pipe/FIFO/Unix writes and Console/Tty reads: bounded blocking EAGAIN census");
 }
 
-/// write_unix as an audit sees it: its own text, with the prepared-wait
-/// helpers it calls (blocking_io.rs) as the only other definitions.
-fn unix_writer_source(unix: &str, helper: &str) -> String {
-    let start = unix.find("fn write_unix(").expect("write_unix in socket/unix.rs");
-    let open = start + unix[start..].find('{').expect("write_unix body");
-    let mut depth = 0usize;
-    let mut end = open;
-    for (i, c) in unix[open..].char_indices() {
-        match c {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    end = open + i + 1;
-                    break;
+/// Validate the actual shared wait boundary: EAGAIN is legal for nonblock
+/// or an expired configured timeout. Full-queue Unix check results retry.
+fn unix_wait_contract(unix: &str, wait: &str) -> bool {
+    fn guarded(nodes: &[Node], allowed: bool) -> bool {
+        let mut i = 0;
+        while i < nodes.len() {
+            if nodes[i].token() == "if" {
+                if let Some(open) = (i + 1..nodes.len()).find(|j| nodes[*j].group('{').is_some()) {
+                    let condition = compact(&nodes[i + 1..open]);
+                    let permit = condition == "nonblock"
+                        || condition == "deadline_ns.is_some_and(|deadline|now_ns()>=deadline)";
+                    if !guarded(nodes[open].group('{').unwrap(), allowed || permit) {
+                        return false;
+                    }
+                    i = open + 1;
+                    continue;
                 }
             }
-            _ => {}
+            if matches!(nodes[i].token(), "EAGAIN" | "11") && !allowed {
+                return false;
+            }
+            if let Node::Group(_, inner) = &nodes[i] {
+                if !guarded(inner, allowed) {
+                    return false;
+                }
+            }
+            i += 1;
         }
+        true
     }
-    format!("{}\n{helper}", &unix[start..end])
+    let send = compact(&function(unix, "sendmsg"));
+    let retry = send.split("Err((EAGAIN,message))=>{").nth(1).unwrap_or("");
+    send.contains("wait_until(sk,msg.nonblock,sk.common.snd_deadline(),||")
+        && !send.contains("Some(Err(EAGAIN))")
+        && !send.contains("Some(Err(11))")
+        && !send.contains("returnErr(EAGAIN)")
+        && !send.contains("returnErr(11)")
+        && retry.contains("None")
+        && !retry.contains("Some(Err(EAGAIN))")
+        && guarded(&function(wait, "wait_until"), false)
 }
 
-/// The descriptor mode crosses the protocol's trait object in SendMsg: write(2)
-/// sets SendMsg.nonblock from it, the send passes the message on whole, and
-/// the Unix stream adapter gives msg.nonblock to write_unix as its mode.
+/// Descriptor mode reaches SendMsg, and then the real socket wait, intact.
 fn socket_mode_reaches_unix_writer(sockets: &str, unix: &str) -> bool {
-    let signature = compact(&lex(sockets))
-        .contains("fnsocket_write(sk:&Arc<Socket>,data:&[u8],nonblock:bool)");
+    let signature =
+        compact(&lex(sockets)).contains("fnsocket_write(sk:&Arc<Socket>,data:&[u8],nonblock:bool)");
     let write = compact(&function(sockets, "socket_write"));
     let send = compact(&function(sockets, "send"));
     let adapter = compact(&function(unix, "sendmsg"));
@@ -730,7 +749,7 @@ fn socket_mode_reaches_unix_writer(sockets: &str, unix: &str) -> bool {
         && write.contains("nonblock,")
         && write.contains("send(sk,&mutmsg)")
         && send.contains("sk.ops().sendmsg(sk,msg)")
-        && adapter.contains("write_unix(writer,msg.data,msg.nonblock)")
+        && adapter.contains("wait_until(sk,msg.nonblock,sk.common.snd_deadline(),||")
 }
 
 #[test]
@@ -740,16 +759,23 @@ fn socket_mode_route_rejects_a_dropped_mode() {
     assert!(socket_mode_reaches_unix_writer(&sockets, &unix));
     assert!(!socket_mode_reaches_unix_writer(
         &sockets,
-        &unix.replace("write_unix(writer, msg.data, msg.nonblock)", "write_unix(writer, msg.data, false)")
+        &unix.replace(
+            "wait_until(sk, msg.nonblock, sk.common.snd_deadline()",
+            "wait_until(sk, false, sk.common.snd_deadline()"
+        )
     ));
     assert!(!socket_mode_reaches_unix_writer(
-        &sockets.replace("        nonblock,\n        rights: Vec::new(),\n        cred: send_cred(sk),", "        nonblock: false,\n        rights: Vec::new(),\n        cred: send_cred(sk),"),
+        &sockets.replace(
+            "        nonblock,\n        rights: Vec::new(),\n        cred: send_cred(sk),",
+            "        nonblock: false,\n        rights: Vec::new(),\n        cred: send_cred(sk),"
+        ),
         &unix
     ));
-    let helper = read("kernel/src/syscall/blocking_io.rs");
-    let blocking = unix.replace("if is_nonblocking {\n                return Err(errno::EAGAIN);", "if !is_nonblocking {\n                return Err(errno::EAGAIN);");
-    assert_ne!(blocking, unix, "write_unix mutation did not apply");
-    assert!(audit_helper(&unix_writer_source(&blocking, &helper), "write_unix").is_err());
+    let wait = read("kernel/src/socket/wait.rs");
+    assert!(unix_wait_contract(&unix, &wait));
+    let blocking = wait.replace("if nonblock {", "if !nonblock {");
+    assert_ne!(blocking, wait, "wait mutation did not apply");
+    assert!(!unix_wait_contract(&unix, &blocking));
 }
 
 #[test]

@@ -1,835 +1,799 @@
-//! Unix domain socket implementation
-//!
-//! Provides AF_UNIX socket support for local inter-process communication.
-//! Currently supports SOCK_STREAM, through socketpair() and through abstract
-//! names that a listener binds.
-
+//! Unix stream, datagram and sequenced-packet sockets with inode and abstract names.
+//! Queued rights retain their counted descriptions; weak peer links preserve EOF.
+// The Unix protocol keeps all queues and state behind one masked mutex per
+// socket. Peer links are weak; pending accepts retain the server endpoint.
+// No wake, filesystem lookup, user copy or descriptor close runs under it.
 use super::addr::{SockAddr, UnixName};
 use super::object::{OptBuf, ProtoOps, RecvMsg, SendMsg, Socket, SocketProto, UCred};
-use crate::syscall::errno;
-use crate::task::thread::ThreadState;
-use crate::task::waitqueue::WaitQueueHead;
+use super::unix_msg::{UnixMsg, UnixQueue};
+use super::unix_ns;
+use super::wait::wait_until;
+use crate::irq_safe_mutex::IrqSafeMutex;
+use crate::syscall::errno::*;
 use alloc::collections::VecDeque;
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use spin::{Mutex, MutexGuard};
+use core::sync::atomic::{AtomicU32, Ordering};
 
-const AF_UNIX: u16 = 1;
-const SOCK_STREAM: u16 = 1;
-const SOL_SOCKET: i32 = 1;
-const SO_PEERCRED: i32 = 17;
+const ESOCKTNOSUPPORT: i32 = 94;
+const STREAM: u16 = 1;
+const DGRAM: u16 = 2;
+const SEQPACKET: u16 = 5;
+const PEEK: u32 = 2;
+const TRUNC: u32 = 0x20;
+const WAITALL: u32 = 0x100;
+const OOB: u32 = 1;
+const MAX_BACKLOG: usize = 4096;
+const MAX_QUEUE_BYTES: usize = super::unix_msg::MAX_DATA;
+static NEXT_AUTOBIND: AtomicU32 = AtomicU32::new(0);
 
-const POLLIN: u16 = crate::ipc::poll::events::POLLIN as u16;
-const POLLOUT: u16 = crate::ipc::poll::events::POLLOUT as u16;
-const POLLHUP: u16 = crate::ipc::poll::events::POLLHUP as u16;
-
-/// Default buffer size for Unix stream sockets (64 KB)
-const UNIX_SOCKET_BUFFER_SIZE: usize = 65536;
-
-/// Shared state for a Unix stream socket pair
-///
-/// This structure is shared between both endpoints of a socketpair.
-/// Each endpoint writes to one buffer and reads from the other.
-pub struct UnixStreamPair {
-    /// Buffer A→B (endpoint A writes here, endpoint B reads from here)
-    buffer_a_to_b: Mutex<VecDeque<u8>>,
-    /// Buffer B→A (endpoint B writes here, endpoint A reads from here)
-    buffer_b_to_a: Mutex<VecDeque<u8>>,
-    /// Threads waiting to read on endpoint A (waiting for data in buffer_b_to_a)
-    waiters_a: Mutex<Vec<u64>>,
-    /// Threads waiting to read on endpoint B (waiting for data in buffer_a_to_b)
-    waiters_b: Mutex<Vec<u64>>,
-    /// Writers on each endpoint, independent of the legacy read waiters.
-    write_waiters_a: Arc<WaitQueueHead>,
-    write_waiters_b: Arc<WaitQueueHead>,
-    /// Endpoint A closed
-    closed_a: Mutex<bool>,
-    /// Endpoint B closed
-    closed_b: Mutex<bool>,
-    /// Intrusive owned close work; no allocation or fixed-capacity wake buffer.
-    pending_close: Mutex<PendingClose>,
+struct UnixState {
+    name: UnixName,
+    bound: bool,
+    namespace_id: usize,
+    listening: bool,
+    backlog: usize,
+    pending: VecDeque<Arc<Socket>>,
+    writers: Vec<Weak<Socket>>,
+    peer: Option<Weak<Socket>>,
+    peer_name: UnixName,
+    peer_cred: UCred,
+    listen_cred: UCred,
+    connected: bool,
+    peer_write_closed: bool,
+    peer_read_closed: bool,
+    released: bool,
+    rx: UnixQueue,
 }
-
-impl UnixStreamPair {
-    /// Create a new Unix stream socket pair
-    pub fn new() -> Self {
-        UnixStreamPair {
-            buffer_a_to_b: Mutex::new(VecDeque::with_capacity(UNIX_SOCKET_BUFFER_SIZE)),
-            buffer_b_to_a: Mutex::new(VecDeque::with_capacity(UNIX_SOCKET_BUFFER_SIZE)),
-            waiters_a: Mutex::new(Vec::new()),
-            waiters_b: Mutex::new(Vec::new()),
-            write_waiters_a: Arc::new(WaitQueueHead::new()),
-            write_waiters_b: Arc::new(WaitQueueHead::new()),
-            closed_a: Mutex::new(false),
-            closed_b: Mutex::new(false),
-            pending_close: Mutex::new(PendingClose {
-                queued: false,
-                next: None,
-            }),
+impl UnixState {
+    fn new() -> Self {
+        Self {
+            name: UnixName::Unnamed,
+            bound: false,
+            namespace_id: 0,
+            listening: false,
+            backlog: 1,
+            pending: VecDeque::new(),
+            writers: Vec::new(),
+            peer: None,
+            peer_name: UnixName::Unnamed,
+            peer_cred: UCred {
+                pid: 0,
+                uid: u32::MAX,
+                gid: u32::MAX,
+            },
+            listen_cred: UCred {
+                pid: 0,
+                uid: u32::MAX,
+                gid: u32::MAX,
+            },
+            connected: false,
+            peer_write_closed: false,
+            peer_read_closed: false,
+            released: false,
+            rx: UnixQueue::new(),
         }
     }
-}
-
-impl Default for UnixStreamPair {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Which endpoint of the socket pair this is
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum UnixEndpoint {
-    A,
-    B,
-}
-
-/// A Unix stream socket endpoint
-///
-/// This is a file descriptor wrapper around one end of a UnixStreamPair.
-pub struct UnixStreamSocket {
-    /// The shared socket pair state
-    pub pair: Arc<UnixStreamPair>,
-    /// Which endpoint this socket represents
-    pub endpoint: UnixEndpoint,
-}
-
-impl UnixStreamSocket {
-    /// Create a new pair of connected Unix stream sockets
-    pub fn new_pair() -> Result<(Arc<Mutex<Self>>, Arc<Mutex<Self>>), i32> {
-        let pair = Arc::try_new(UnixStreamPair::new()).map_err(|_| errno::ENOMEM)?;
-
-        let socket_a = Arc::try_new(Mutex::new(UnixStreamSocket {
-            pair: pair.clone(),
-            endpoint: UnixEndpoint::A,
-        }))
-        .map_err(|_| errno::ENOMEM)?;
-
-        let socket_b = Arc::try_new(Mutex::new(UnixStreamSocket {
-            pair,
-            endpoint: UnixEndpoint::B,
-        }))
-        .map_err(|_| errno::ENOMEM)?;
-
-        Ok((socket_a, socket_b))
-    }
-
-    /// Snapshot the direction without retaining the endpoint mutex while asleep.
-    pub(crate) fn writer(&self) -> UnixWriter {
-        UnixWriter {
-            pair: self.pair.clone(),
-            endpoint: self.endpoint,
-        }
-    }
-
-    /// Readiness and transfer share the guarded transmit-space definition.
-    pub fn has_write_space(&self) -> bool {
-        self.writer().state().has_write_space()
-    }
-
-    /// Read data from the socket (receives from peer)
-    ///
-    /// Returns the number of bytes read, or an error code.
-    pub fn read(&self, buf: &mut [u8]) -> Result<usize, i32> {
-        // Get the buffer to read from
-        let buffer = match self.endpoint {
-            UnixEndpoint::A => &self.pair.buffer_b_to_a,
-            UnixEndpoint::B => &self.pair.buffer_a_to_b,
-        };
-
-        let mut rx_buf = buffer.lock();
-
-        if rx_buf.is_empty() {
-            // Check if peer is closed
-            let peer_closed = match self.endpoint {
-                UnixEndpoint::A => *self.pair.closed_b.lock(),
-                UnixEndpoint::B => *self.pair.closed_a.lock(),
-            };
-
-            if peer_closed {
-                // EOF - peer closed and no more data
-                return Ok(0);
-            }
-
-            // No data yet: the caller decides whether to wait.
-            return Err(crate::syscall::errno::EAGAIN);
-        }
-
-        // Read available data
-        let to_read = buf.len().min(rx_buf.len());
-        for i in 0..to_read {
-            buf[i] = rx_buf.pop_front().unwrap();
-        }
-
-        drop(rx_buf);
-        if to_read > 0 {
-            let writers = match self.endpoint {
-                UnixEndpoint::A => &self.pair.write_waiters_b,
-                UnixEndpoint::B => &self.pair.write_waiters_a,
-            };
-            writers.wake_up();
-        }
-        Ok(to_read)
-    }
-
-    /// Check if data is available for reading
-    pub fn has_data(&self) -> bool {
-        let buffer = match self.endpoint {
-            UnixEndpoint::A => &self.pair.buffer_b_to_a,
-            UnixEndpoint::B => &self.pair.buffer_a_to_b,
-        };
-        !buffer.lock().is_empty()
-    }
-
-    /// Check if peer has closed
-    pub fn peer_closed(&self) -> bool {
-        match self.endpoint {
-            UnixEndpoint::A => *self.pair.closed_b.lock(),
-            UnixEndpoint::B => *self.pair.closed_a.lock(),
-        }
-    }
-
-    /// Register a thread as waiting for data
-    pub fn register_waiter(&self, thread_id: u64) {
-        let waiters = match self.endpoint {
-            UnixEndpoint::A => &self.pair.waiters_a,
-            UnixEndpoint::B => &self.pair.waiters_b,
-        };
-        let mut w = waiters.lock();
-        if !w.contains(&thread_id) {
-            w.push(thread_id);
-        }
-    }
-
-    /// Unregister a thread from waiting
-    pub fn unregister_waiter(&self, thread_id: u64) {
-        let waiters = match self.endpoint {
-            UnixEndpoint::A => &self.pair.waiters_a,
-            UnixEndpoint::B => &self.pair.waiters_b,
-        };
-        waiters.lock().retain(|&id| id != thread_id);
-    }
-
-    /// Mark this endpoint as closed and wake any waiters on peer
-    pub fn close(&self) -> UnixCloseNotifications {
-        // Mark ourselves as closed
-        match self.endpoint {
-            UnixEndpoint::A => *self.pair.closed_a.lock() = true,
-            UnixEndpoint::B => *self.pair.closed_b.lock() = true,
-        }
-
-        UnixCloseNotifications {
-            pair: self.pair.clone(),
-        }
-    }
-}
-
-struct PendingClose {
-    queued: bool,
-    next: Option<Arc<UnixStreamPair>>,
-}
-
-// Queue lock precedes the embedded link lock. Neither is held while delivering
-// wakes, acquiring closed flags, or calling the scheduler. IRQ masking prevents
-// a same-CPU fault/termination publisher from interrupting a queue operation.
-static PENDING_CLOSES: Mutex<Option<Arc<UnixStreamPair>>> = Mutex::new(None);
-
-/// Both peer-reader EOF and peer-writer EPIPE notifications own the pair until
-/// delivery. Callers release the endpoint and PM guards first.
-#[must_use = "deliver Unix close notifications after releasing object guards"]
-pub struct UnixCloseNotifications {
-    pair: Arc<UnixStreamPair>,
-}
-
-impl UnixCloseNotifications {
-    pub fn deliver(self) {
-        // FdTable destruction may run under PM or from fault cleanup.
-        if crate::process::process_manager_held_on_current_cpu()
-            || crate::per_cpu::in_interrupt()
-            || crate::tracing::providers::teardown::scheduler_scope_active()
-        {
-            self.deliver_deferred();
-            return;
-        }
-        let closed_a = *self.pair.closed_a.lock();
-        let closed_b = *self.pair.closed_b.lock();
-        for (closed, readers, writers) in [
-            (closed_a, &self.pair.waiters_b, &self.pair.write_waiters_b),
-            (closed_b, &self.pair.waiters_a, &self.pair.write_waiters_a),
-        ] {
-            if closed {
-                let ids = core::mem::take(&mut *readers.lock());
-                for tid in ids {
-                    crate::task::scheduler::with_scheduler(|sched| {
-                        sched.unblock(tid);
-                    });
-                }
-                writers.wake_up();
-            }
-        }
-    }
-
-    /// Retain the pair in an intrusive queue for the existing thread-context
-    /// reclamation boundary. Duplicate closes coalesce; no capacity can overflow.
-    pub fn deliver_deferred(self) {
-        crate::arch_without_interrupts(|| {
-            let mut head = PENDING_CLOSES.lock();
-            let mut pending = self.pair.pending_close.lock();
-            if !pending.queued {
-                pending.next = head.take();
-                pending.queued = true;
-                *head = Some(self.pair.clone());
-            }
-        });
-    }
-}
-
-/// Called from the existing PM-free reclamation entry on both architectures.
-/// A bounded pass leaves remaining pairs owned by the queue for the next pass.
-pub(crate) fn drain_close_notifications() {
-    if crate::process::process_manager_held_on_current_cpu()
-        || crate::per_cpu::in_interrupt()
-        || crate::tracing::providers::teardown::scheduler_scope_active()
-    {
-        return;
-    }
-    for _ in 0..64 {
-        let pair = crate::arch_without_interrupts(|| {
-            let mut head = PENDING_CLOSES.lock();
-            let pair = head.take()?;
-            {
-                let mut pending = pair.pending_close.lock();
-                *head = pending.next.take();
-                pending.queued = false;
-            }
-            Some(pair)
-        });
-        let Some(pair) = pair else {
-            break;
-        };
-        UnixCloseNotifications { pair }.deliver();
-    }
-}
-
-/// Owned direction handle used after the descriptor and endpoint locks drop.
-pub(crate) struct UnixWriter {
-    pair: Arc<UnixStreamPair>,
-    endpoint: UnixEndpoint,
-}
-
-/// Lock order: transmit buffer -> peer closed flag -> wait queue -> scheduler.
-/// Keep both guards through publication so neither drain nor close loses a wake.
-pub(crate) struct UnixWriteState<'a> {
-    buffer: MutexGuard<'a, VecDeque<u8>>,
-    peer_closed: MutexGuard<'a, bool>,
-}
-
-impl UnixWriteState<'_> {
-    pub(crate) fn has_write_space(&self) -> bool {
-        !*self.peer_closed && self.buffer.len() < UNIX_SOCKET_BUFFER_SIZE
-    }
-
-    pub(crate) fn peer_closed(&self) -> bool {
-        *self.peer_closed
-    }
-
-    pub(crate) fn copy(&mut self, data: &[u8]) -> usize {
-        if !self.has_write_space() {
-            return 0;
-        }
-        let count = data.len().min(UNIX_SOCKET_BUFFER_SIZE - self.buffer.len());
-        self.buffer.extend(&data[..count]);
-        count
-    }
-}
-
-impl UnixWriter {
-    pub(crate) fn state(&self) -> UnixWriteState<'_> {
-        let (buffer, closed) = match self.endpoint {
-            UnixEndpoint::A => (&self.pair.buffer_a_to_b, &self.pair.closed_b),
-            UnixEndpoint::B => (&self.pair.buffer_b_to_a, &self.pair.closed_a),
-        };
-        let buffer = buffer.lock();
-        let peer_closed = closed.lock();
-        UnixWriteState {
-            buffer,
-            peer_closed,
-        }
-    }
-
-    pub(crate) fn queue(&self) -> Arc<WaitQueueHead> {
-        match self.endpoint {
-            UnixEndpoint::A => self.pair.write_waiters_a.clone(),
-            UnixEndpoint::B => self.pair.write_waiters_b.clone(),
-        }
-    }
-
-    #[cfg(feature = "boot_tests")]
-    pub(crate) fn witness(&self, tid: u64) -> (u64, u64, u64) {
-        let state = self.state();
-        (
-            self.queue().contains_waiter(tid) as u64,
-            state.buffer.len() as u64,
-            UNIX_SOCKET_BUFFER_SIZE as u64,
-        )
-    }
-
-    pub(crate) fn wake_readers(&self) {
-        let waiters = match self.endpoint {
-            UnixEndpoint::A => &self.pair.waiters_b,
-            UnixEndpoint::B => &self.pair.waiters_a,
-        };
-        let ids = waiters.lock().clone();
-        for tid in ids {
-            crate::task::scheduler::with_scheduler(|sched| {
-                sched.unblock(tid);
-            });
-        }
-    }
-}
-
-impl core::fmt::Debug for UnixStreamSocket {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("UnixStreamSocket")
-            .field("endpoint", &self.endpoint)
-            .finish()
-    }
-}
-
-// ============================================================================
-// Named Unix Domain Socket Support
-// ============================================================================
-
-/// A listening Unix domain socket
-///
-/// This represents a socket that has called listen() and is ready
-/// to accept incoming connections.
-///
-/// Note: Non-blocking mode is tracked via status_flags on the FileDescriptor,
-/// not on this struct. Use fd_entry.status_flags() & O_NONBLOCK to check.
-pub struct UnixListener {
-    /// Path this listener is bound to
-    pub path: Vec<u8>,
-    /// Maximum pending connections
-    pub backlog: usize,
-    /// Queue of pending connections (server-side of connected pairs)
-    pub pending: VecDeque<Arc<Mutex<UnixStreamSocket>>>,
-    /// Threads waiting in accept()
-    pub waiting_threads: Mutex<Vec<u64>>,
-}
-
-impl UnixListener {
-    /// Create a new listener from a bound socket
-    pub fn new(path: Vec<u8>, backlog: usize) -> Self {
-        UnixListener {
-            path,
-            backlog,
-            pending: VecDeque::with_capacity(backlog.min(128)),
-            waiting_threads: Mutex::new(Vec::new()),
-        }
-    }
-
-    /// Check if there are pending connections
-    pub fn has_pending(&self) -> bool {
-        !self.pending.is_empty()
-    }
-
-    /// Get the number of pending connections
-    pub fn pending_count(&self) -> usize {
-        self.pending.len()
-    }
-
-    /// Push a new pending connection (server-side socket)
-    /// Returns Err if backlog is full
-    pub fn push_pending(&mut self, socket: Arc<Mutex<UnixStreamSocket>>) -> Result<(), i32> {
-        if self.pending.len() >= self.backlog {
-            return Err(crate::syscall::errno::ECONNREFUSED);
-        }
-        self.pending.push_back(socket);
-        Ok(())
-    }
-
-    /// Pop a pending connection
-    pub fn pop_pending(&mut self) -> Option<Arc<Mutex<UnixStreamSocket>>> {
-        self.pending.pop_front()
-    }
-
-    /// Register a thread as waiting for a connection
-    pub fn register_waiter(&self, thread_id: u64) {
-        let mut waiters = self.waiting_threads.lock();
-        if !waiters.contains(&thread_id) {
-            waiters.push(thread_id);
-        }
-    }
-
-    /// Unregister a thread from waiting
-    pub fn unregister_waiter(&self, thread_id: u64) {
-        self.waiting_threads.lock().retain(|&id| id != thread_id);
-    }
-
-    /// Wake all threads waiting for connections
-    pub fn wake_waiters(&self) {
-        let waiter_ids: Vec<u64> = self.waiting_threads.lock().clone();
-        for thread_id in waiter_ids {
-            crate::task::scheduler::with_scheduler(|sched| {
-                sched.unblock(thread_id);
-            });
-        }
-    }
-}
-
-impl core::fmt::Debug for UnixListener {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("UnixListener")
-            .field("path_len", &self.path.len())
-            .field("backlog", &self.backlog)
-            .field("pending", &self.pending.len())
-            .finish()
-    }
-}
-
-/// Stream writes return a positive partial count immediately; 4096 is not an
-/// atomicity threshold. No guard survives entry to the prepared-wait helper.
-/// A closed peer is EPIPE; the syscall layer raises SIGPIPE.
-pub(crate) fn write_unix(
-    writer: UnixWriter,
-    data: &[u8],
-    is_nonblocking: bool,
-) -> Result<usize, i32> {
-    let queue = writer.queue();
-    loop {
-        let outcome = {
-            let mut state = writer.state();
-            if state.peer_closed() {
-                return Err(errno::EPIPE);
-            }
-            let count = state.copy(data);
-            if count > 0 || data.is_empty() {
-                drop(state);
-                writer.wake_readers();
-                // A later close cannot replace already copied progress with EPIPE.
-                return Ok(count);
-            }
-            if is_nonblocking {
-                return Err(errno::EAGAIN);
-            }
-            queue.prepare_to_wait_checked(ThreadState::BlockedOnIO, None, || {
-                !state.peer_closed() && !state.has_write_space()
-            })
-        };
-        crate::syscall::blocking_io::wait_prepared(&queue, outcome)?;
-    }
-}
-
-// ============================================================================
-// The AF_UNIX half of a socket
-// ============================================================================
-
-/// Where a Unix socket is in its life. A bound name is the registry key: a
-/// NUL and then the abstract name.
-enum UnixState {
-    Unbound,
-    Bound(Vec<u8>),
-    Listening(Arc<Mutex<UnixListener>>),
-    Connected(Arc<Mutex<UnixStreamSocket>>),
 }
 
 pub struct UnixSock {
     kind: u16,
-    state: Mutex<UnixState>,
-    /// The peer's identity, when it is known (socketpair).
-    peer_cred: Option<UCred>,
+    inner: IrqSafeMutex<UnixState>,
 }
-
-/// The registry key for an abstract name.
-fn abstract_key(name: &[u8]) -> Result<Vec<u8>, i32> {
-    let mut key = Vec::new();
-    key.try_reserve_exact(name.len() + 1)
-        .map_err(|_| errno::ENOMEM)?;
-    key.push(0);
-    key.extend_from_slice(name);
-    Ok(key)
-}
-
-fn name_of_key(key: &[u8]) -> SockAddr {
-    let mut name = Vec::new();
-    if name.try_reserve_exact(key.len().saturating_sub(1)).is_err() {
-        return SockAddr::Unix(UnixName::Unnamed);
-    }
-    name.extend_from_slice(key.get(1..).unwrap_or(&[]));
-    SockAddr::Unix(UnixName::Abstract(name))
-}
-
 impl UnixSock {
-    /// Whether AF_UNIX sockets of this type can be created: socket() and
-    /// socketpair() refuse the rest with EINVAL.
     pub fn supports_kind(kind: u16) -> bool {
-        kind == SOCK_STREAM
+        matches!(kind, STREAM | DGRAM | SEQPACKET)
     }
 
-    pub fn new(kind: u16) -> UnixSock {
-        UnixSock {
+    pub fn new(kind: u16) -> Self {
+        Self {
             kind,
-            state: Mutex::new(UnixState::Unbound),
-            peer_cred: None,
+            inner: IrqSafeMutex::new(UnixState::new()),
         }
     }
 
-    fn connected(
-        kind: u16,
-        stream: Arc<Mutex<UnixStreamSocket>>,
-        peer_cred: Option<UCred>,
-    ) -> UnixSock {
-        UnixSock {
-            kind,
-            state: Mutex::new(UnixState::Connected(stream)),
-            peer_cred,
-        }
-    }
-
-    /// A connected pair, as socketpair makes it. Each end's peer is the
-    /// creating process.
     pub fn new_pair(kind: u16, cred: UCred) -> Result<(Arc<Socket>, Arc<Socket>), i32> {
-        let (a, b) = UnixStreamSocket::new_pair()?;
-        let first = Socket::new(
-            AF_UNIX,
-            kind,
-            0,
-            SocketProto::Unix(UnixSock::connected(kind, a, Some(cred))),
-        )?;
-        let second = Socket::new(
-            AF_UNIX,
-            kind,
-            0,
-            SocketProto::Unix(UnixSock::connected(kind, b, Some(cred))),
-        )?;
-        Ok((first, second))
-    }
-
-    /// The connected stream endpoint, for the blocking I/O oracle.
-    #[cfg(feature = "boot_tests")]
-    pub(crate) fn stream(&self) -> Option<Arc<Mutex<UnixStreamSocket>>> {
-        match &*self.state.lock() {
-            UnixState::Connected(stream) => Some(stream.clone()),
-            _ => None,
+        if !Self::supports_kind(kind) {
+            return Err(ESOCKTNOSUPPORT);
         }
+        let a = Socket::new(1, kind, 0, SocketProto::Unix(Self::new(kind)))?;
+        let b = Socket::new(1, kind, 0, SocketProto::Unix(Self::new(kind)))?;
+        Self::link(&a, &b, UnixName::Unnamed, UnixName::Unnamed, &cred, &cred);
+        Ok((a, b))
     }
 
-    /// The state for a deferred release, leaving this one unbound.
-    pub(super) fn detach(&mut self) -> UnixSock {
-        UnixSock {
+    pub(crate) fn detach(&mut self) -> Self {
+        let state = core::mem::replace(&mut *self.inner.lock(), UnixState::new());
+        Self {
             kind: self.kind,
-            state: Mutex::new(core::mem::replace(self.state.get_mut(), UnixState::Unbound)),
-            peer_cred: self.peer_cred,
+            inner: IrqSafeMutex::new(state),
         }
     }
 
-    fn stream_of(&self) -> Option<Arc<Mutex<UnixStreamSocket>>> {
-        match &*self.state.lock() {
-            UnixState::Connected(stream) => Some(stream.clone()),
-            _ => None,
+    fn of(sk: &Socket) -> &Self {
+        match &sk.proto {
+            SocketProto::Unix(unix) => unix,
+            _ => unreachable!(),
         }
+    }
+    fn link(
+        a: &Arc<Socket>,
+        b: &Arc<Socket>,
+        aname: UnixName,
+        bname: UnixName,
+        ac: &UCred,
+        bc: &UCred,
+    ) {
+        {
+            let mut s = Self::of(a).inner.lock();
+            s.peer = Some(Arc::downgrade(b));
+            s.peer_name = bname;
+            s.peer_cred = copy_cred(bc);
+            s.connected = true;
+            s.peer_read_closed = false;
+            s.peer_write_closed = false;
+        }
+        {
+            let mut s = Self::of(b).inner.lock();
+            s.peer = Some(Arc::downgrade(a));
+            s.peer_name = aname;
+            s.peer_cred = copy_cred(ac);
+            s.connected = true;
+            s.peer_read_closed = false;
+            s.peer_write_closed = false;
+        }
+    }
+    fn peer(&self) -> Option<Arc<Socket>> {
+        self.inner.lock().peer.as_ref().and_then(Weak::upgrade)
+    }
+    fn register_writer(state: &mut UnixState, sk: &Arc<Socket>) -> Result<(), i32> {
+        state.writers.retain(|weak| weak.strong_count() != 0);
+        if state
+            .writers
+            .iter()
+            .any(|weak| weak.as_ptr() == Arc::as_ptr(sk))
+        {
+            return Ok(());
+        }
+        if state.writers.len() == MAX_BACKLOG {
+            return Err(ENOBUFS);
+        }
+        state.writers.try_reserve(1).map_err(|_| ENOMEM)?;
+        state.writers.push(Arc::downgrade(sk));
+        Ok(())
+    }
+    fn notify_writers(&self) {
+        let writers = core::mem::take(&mut self.inner.lock().writers);
+        for weak in writers {
+            if let Some(writer) = weak.upgrade() {
+                writer.common.notify();
+            }
+        }
+    }
+    #[cfg(feature = "boot_tests")]
+    pub(crate) fn is_peer(&self, other: &Arc<Socket>) -> bool {
+        self.inner
+            .lock()
+            .peer
+            .as_ref()
+            .is_some_and(|peer| peer.as_ptr() == Arc::as_ptr(other))
+    }
+
+    #[cfg(feature = "boot_tests")]
+    pub(crate) fn write_witness(&self, sk: &Socket, tid: u64) -> (u64, u64, u64) {
+        let queued = sk.common.wq.contains_waiter(tid) as u64;
+        let occupancy = if let Some(peer) = self.peer() {
+            let state = Self::of(&peer).inner.lock();
+            let bytes = state.rx.charged_bytes() as u64;
+            drop(state);
+            bytes
+        } else {
+            0
+        };
+        (
+            queued,
+            occupancy,
+            sk.common.sndbuf().min(MAX_QUEUE_BYTES) as u64,
+        )
+    }
+    fn autobind(&self, sk: &Arc<Socket>) -> Result<UnixName, i32> {
+        for _ in 0..(1 << 20) {
+            let id = NEXT_AUTOBIND.fetch_add(1, Ordering::Relaxed) & 0xfffff;
+            let mut name = Vec::new();
+            name.try_reserve_exact(5).map_err(|_| ENOMEM)?;
+            for shift in [16, 12, 8, 4, 0] {
+                name.push(b"0123456789abcdef"[((id >> shift) & 15) as usize]);
+            }
+            let name = UnixName::Abstract(name);
+            match unix_ns::bind_name(&name, Arc::downgrade(sk)) {
+                Ok(()) => return Ok(name),
+                Err(EADDRINUSE) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Err(EADDRINUSE)
+    }
+}
+fn copy_cred(c: &UCred) -> UCred {
+    UCred {
+        pid: c.pid,
+        uid: c.uid,
+        gid: c.gid,
     }
 }
 
 impl ProtoOps for UnixSock {
-    fn bind(&self, _sk: &Arc<Socket>, addr: &SockAddr) -> Result<(), i32> {
-        let key = match addr {
-            SockAddr::Unix(UnixName::Abstract(name)) => abstract_key(name)?,
-            _ => return Err(errno::EINVAL),
+    fn bind(&self, sk: &Arc<Socket>, addr: &SockAddr) -> Result<(), i32> {
+        let SockAddr::Unix(name) = addr else {
+            return Err(EINVAL);
         };
-        let mut state = self.state.lock();
-        if !matches!(*state, UnixState::Unbound) {
-            return Err(errno::EINVAL);
-        }
-        if super::UNIX_SOCKET_REGISTRY.is_bound(&key) {
-            return Err(errno::EADDRINUSE);
-        }
-        *state = UnixState::Bound(key);
-        Ok(())
-    }
-
-    fn listen(&self, _sk: &Arc<Socket>, backlog: i32) -> Result<(), i32> {
-        let mut state = self.state.lock();
-        let UnixState::Bound(key) = &*state else {
-            return Err(errno::EINVAL);
-        };
-        let listener = Arc::try_new(Mutex::new(UnixListener::new(
-            key.clone(),
-            backlog.max(0) as usize,
-        )))
-        .map_err(|_| errno::ENOMEM)?;
-        super::UNIX_SOCKET_REGISTRY.bind(key.clone(), listener.clone())?;
-        *state = UnixState::Listening(listener);
-        Ok(())
-    }
-
-    fn accept(&self, sk: &Arc<Socket>, nonblock: bool) -> Result<(Arc<Socket>, SockAddr), i32> {
-        let listener = match &*self.state.lock() {
-            UnixState::Listening(listener) => listener.clone(),
-            _ => return Err(errno::EOPNOTSUPP),
-        };
-        let tid = crate::task::scheduler::current_thread_id().ok_or(errno::ESRCH)?;
-        let accepted = super::wait::wait_until(sk, nonblock, None, || {
-            let mut listener = listener.lock();
-            listener.register_waiter(tid);
-            listener.pop_pending().map(Ok)
-        });
-        listener.lock().unregister_waiter(tid);
-        let stream = accepted?;
-        match Socket::new(
-            AF_UNIX,
-            self.kind,
-            0,
-            SocketProto::Unix(UnixSock::connected(self.kind, stream.clone(), None)),
-        ) {
-            Ok(socket) => Ok((socket, SockAddr::Unix(UnixName::Unnamed))),
-            Err(error) => {
-                let notifications = stream.lock().close();
-                notifications.deliver();
-                Err(error)
-            }
-        }
-    }
-
-    fn connect(&self, _sk: &Arc<Socket>, addr: &SockAddr, _nonblock: bool) -> Result<(), i32> {
-        let key = match addr {
-            SockAddr::Unix(UnixName::Abstract(name)) => abstract_key(name)?,
-            SockAddr::Unix(UnixName::Path(_)) => return Err(errno::ENOENT),
-            _ => return Err(errno::EINVAL),
-        };
-        let mut state = self.state.lock();
-        match *state {
-            UnixState::Connected(_) => return Err(errno::EISCONN),
-            UnixState::Listening(_) => return Err(errno::EOPNOTSUPP),
-            UnixState::Unbound | UnixState::Bound(_) => {}
-        }
-        let listener = super::UNIX_SOCKET_REGISTRY
-            .lookup(&key)
-            .ok_or(errno::ECONNREFUSED)?;
-        let (client, server) = UnixStreamSocket::new_pair()?;
+        // Claim this socket before dropping its mutex to create the node.
         {
-            let mut listener = listener.lock();
-            listener.push_pending(server)?;
-            listener.wake_waiters();
-        }
-        *state = UnixState::Connected(client);
-        Ok(())
-    }
-
-    fn sendmsg(&self, _sk: &Arc<Socket>, msg: &mut SendMsg) -> Result<usize, i32> {
-        let stream = self.stream_of().ok_or(errno::ENOTCONN)?;
-        let writer = stream.lock().writer();
-        write_unix(writer, msg.data, msg.nonblock)
-    }
-
-    fn recvmsg(&self, sk: &Arc<Socket>, msg: &mut RecvMsg) -> Result<usize, i32> {
-        let stream = self.stream_of().ok_or(errno::ENOTCONN)?;
-        if msg.data.try_reserve_exact(msg.cap).is_err() {
-            return Err(errno::ENOMEM);
-        }
-        msg.data.resize(msg.cap, 0);
-        let tid = crate::task::scheduler::current_thread_id().ok_or(errno::ESRCH)?;
-        let data = &mut msg.data;
-        let result = super::wait::wait_until(sk, msg.nonblock, sk.common.rcv_deadline(), || {
-            let socket = stream.lock();
-            socket.register_waiter(tid);
-            match socket.read(data) {
-                Ok(n) => Some(Ok(n)),
-                Err(errno::EAGAIN) => None,
-                Err(error) => Some(Err(error)),
+            let mut s = self.inner.lock();
+            if s.bound || s.listening {
+                return Err(EINVAL);
             }
-        });
-        stream.lock().unregister_waiter(tid);
-        let received = result?;
-        msg.data.truncate(received);
-        Ok(received)
-    }
-
-    fn shutdown(&self, _sk: &Arc<Socket>, _how: u8) -> Result<(), i32> {
-        Err(errno::EOPNOTSUPP)
-    }
-
-    fn local_name(&self, _sk: &Socket) -> SockAddr {
-        match &*self.state.lock() {
-            UnixState::Bound(key) => name_of_key(key),
-            UnixState::Listening(listener) => name_of_key(&listener.lock().path),
-            UnixState::Unbound | UnixState::Connected(_) => SockAddr::Unix(UnixName::Unnamed),
+            s.bound = true;
         }
-    }
-
-    fn peer_name(&self, _sk: &Socket) -> Result<SockAddr, i32> {
-        match &*self.state.lock() {
-            UnixState::Connected(_) => Ok(SockAddr::Unix(UnixName::Unnamed)),
-            _ => Err(errno::ENOTCONN),
-        }
-    }
-
-    fn poll(&self, _sk: &Socket) -> u16 {
-        match &*self.state.lock() {
-            UnixState::Connected(stream) => {
-                let socket = stream.lock();
-                let mut bits = 0;
-                if socket.has_data() {
-                    bits |= POLLIN;
-                }
-                if socket.has_write_space() {
-                    bits |= POLLOUT;
-                }
-                if socket.peer_closed() && !socket.has_data() {
-                    bits |= POLLHUP;
-                }
-                bits
-            }
-            UnixState::Listening(listener) => {
-                if listener.lock().has_pending() {
-                    POLLIN
-                } else {
-                    0
-                }
-            }
-            // An unconnected socket can start a connect at once.
-            UnixState::Unbound | UnixState::Bound(_) => POLLOUT,
-        }
-    }
-
-    fn is_listening(&self, _sk: &Socket) -> bool {
-        matches!(*self.state.lock(), UnixState::Listening(_))
-    }
-
-    fn getsockopt(&self, _sk: &Socket, level: i32, name: i32, out: &mut OptBuf) -> Result<(), i32> {
-        match (level, name, self.peer_cred) {
-            (SOL_SOCKET, SO_PEERCRED, Some(cred)) => {
-                let mut bytes = [0u8; 12];
-                bytes[..4].copy_from_slice(&cred.pid.to_ne_bytes());
-                bytes[4..8].copy_from_slice(&cred.uid.to_ne_bytes());
-                bytes[8..].copy_from_slice(&cred.gid.to_ne_bytes());
-                out.put(&bytes);
+        let result = if matches!(name, UnixName::Unnamed) {
+            self.autobind(sk)
+        } else {
+            unix_ns::bind_name(name, Arc::downgrade(sk)).map(|()| name.clone())
+        };
+        let mut s = self.inner.lock();
+        match result {
+            Ok(name) => {
+                s.name = name;
+                s.namespace_id = Arc::as_ptr(sk) as usize;
                 Ok(())
             }
-            _ => Err(errno::ENOPROTOOPT),
+            Err(e) => {
+                s.bound = false;
+                Err(e)
+            }
         }
     }
-
-    fn release(&self, _sk: &Socket) {
-        let state = core::mem::replace(&mut *self.state.lock(), UnixState::Unbound);
-        match state {
-            UnixState::Connected(stream) => {
-                let notifications = stream.lock().close();
-                notifications.deliver();
+    fn listen(&self, sk: &Arc<Socket>, backlog: i32) -> Result<(), i32> {
+        if self.kind == DGRAM {
+            return Err(EOPNOTSUPP);
+        }
+        let cred = super::object::caller_ucred();
+        let mut s = self.inner.lock();
+        if !s.bound {
+            return Err(EINVAL);
+        }
+        if s.connected {
+            return Err(EINVAL);
+        }
+        s.listening = true;
+        s.listen_cred = cred;
+        s.backlog = if backlog < 0 {
+            MAX_BACKLOG
+        } else {
+            (backlog as usize).min(MAX_BACKLOG - 1) + 1
+        };
+        drop(s);
+        sk.common.notify();
+        Ok(())
+    }
+    fn connect(&self, sk: &Arc<Socket>, addr: &SockAddr, nonblock: bool) -> Result<(), i32> {
+        if matches!(addr, SockAddr::Unspec) && self.kind == DGRAM {
+            let mut s = self.inner.lock();
+            s.peer = None;
+            s.connected = false;
+            s.peer_name = UnixName::Unnamed;
+            drop(s);
+            sk.common.notify();
+            return Ok(());
+        }
+        let SockAddr::Unix(name) = addr else {
+            return Err(EINVAL);
+        };
+        let cred = super::object::caller_ucred();
+        let listener = unix_ns::lookup(name)?;
+        let proto = Self::of(&listener);
+        if listener.kind != self.kind {
+            return Err(EPROTOTYPE);
+        }
+        let local_name = {
+            let s = self.inner.lock();
+            if s.listening {
+                return Err(EINVAL);
             }
-            UnixState::Listening(listener) => {
-                super::UNIX_SOCKET_REGISTRY.unbind(&listener.lock().path);
-                // Connections nobody accepted see their peer close.
-                loop {
-                    let Some(pending) = listener.lock().pop_pending() else {
-                        break;
-                    };
-                    let notifications = pending.lock().close();
-                    notifications.deliver();
+            if s.connected && self.kind != DGRAM {
+                return Err(EISCONN);
+            }
+            s.name.clone()
+        };
+        if self.kind == DGRAM {
+            let remote_name = proto.inner.lock().name.clone();
+            let mut s = self.inner.lock();
+            s.peer = Some(Arc::downgrade(&listener));
+            s.peer_name = remote_name;
+            s.peer_cred = cred;
+            s.connected = true;
+            s.peer_read_closed = false;
+            s.peer_write_closed = false;
+            drop(s);
+            sk.common.notify();
+            return Ok(());
+        }
+        let server = Socket::new(1, self.kind, 0, SocketProto::Unix(Self::new(self.kind)))?;
+        let listener_ref = Arc::downgrade(&listener);
+        drop(listener);
+        wait_until(sk, nonblock, sk.common.snd_deadline(), || {
+            let Some(listener) = listener_ref.upgrade() else {
+                return Some(Err(ECONNREFUSED));
+            };
+            let proto = Self::of(&listener);
+            let mut state = proto.inner.lock();
+            if !state.listening || state.released {
+                return Some(Err(ECONNREFUSED));
+            }
+            if state.pending.len() >= state.backlog {
+                if !nonblock {
+                    if let Err(e) = Self::register_writer(&mut state, sk) {
+                        return Some(Err(e));
+                    }
                 }
-                listener.lock().wake_waiters();
+                return None;
             }
-            UnixState::Unbound | UnixState::Bound(_) => {}
+            if state.pending.try_reserve(1).is_err() {
+                return Some(Err(ENOMEM));
+            }
+            let server_name = state.name.clone();
+            let server_cred = copy_cred(&state.listen_cred);
+            // Fully link both private endpoints before accept can see the
+            // server. Only connect nests endpoint locks below a listener.
+            // Other operations release their local lock before peer access.
+            {
+                let mut endpoint = Self::of(&server).inner.lock();
+                endpoint.name = server_name.clone();
+                endpoint.bound = true;
+            }
+            Self::link(
+                sk,
+                &server,
+                local_name.clone(),
+                server_name,
+                &cred,
+                &server_cred,
+            );
+            state.pending.push_back(server.clone());
+            drop(state);
+            Some(Ok(()))
+        })?;
+        if let Some(listener) = listener_ref.upgrade() {
+            listener.common.notify();
+        }
+        sk.common.notify();
+        server.common.notify();
+        Ok(())
+    }
+    fn accept(&self, sk: &Arc<Socket>, nonblock: bool) -> Result<(Arc<Socket>, SockAddr), i32> {
+        let accepted = wait_until(sk, nonblock, sk.common.rcv_deadline(), || {
+            let mut state = self.inner.lock();
+            if !state.listening {
+                return Some(Err(EINVAL));
+            }
+            state.pending.pop_front().map(Ok)
+        })?;
+        sk.common.notify();
+        self.notify_writers();
+        let name = Self::of(&accepted).inner.lock().peer_name.clone();
+        Ok((accepted, SockAddr::Unix(name)))
+    }
+    fn sendmsg(&self, sk: &Arc<Socket>, msg: &mut SendMsg) -> Result<usize, i32> {
+        if msg.flags & OOB != 0 {
+            return Err(EOPNOTSUPP);
+        }
+        if sk.common.shut_wr() {
+            return Err(EPIPE);
+        }
+        let peer = if let Some(addr) = &msg.dest {
+            if self.kind != DGRAM {
+                return Err(EISCONN);
+            }
+            let SockAddr::Unix(name) = addr else {
+                return Err(EINVAL);
+            };
+            unix_ns::lookup(name)?
+        } else {
+            let state = self.inner.lock();
+            state
+                .peer
+                .as_ref()
+                .and_then(Weak::upgrade)
+                .ok_or(if self.kind == DGRAM {
+                    if state.connected {
+                        ECONNREFUSED
+                    } else {
+                        EDESTADDRREQ
+                    }
+                } else {
+                    EPIPE
+                })?
+        };
+        if peer.kind != self.kind {
+            return Err(EPROTOTYPE);
+        }
+        if self.kind == STREAM && msg.data.is_empty() {
+            return if peer.common.shut_rd() {
+                Err(EPIPE)
+            } else {
+                Ok(0)
+            };
+        }
+        let peer_ref = Arc::downgrade(&peer);
+        drop(peer);
+        let limit = sk.common.sndbuf().min(MAX_QUEUE_BYTES);
+        if self.kind != STREAM && msg.data.len().max(1) > limit.saturating_sub(32) {
+            return Err(EMSGSIZE);
+        }
+        let from = self.inner.lock().name.clone();
+        let payload = if self.kind == STREAM {
+            &msg.data[..msg.data.len().min(limit)]
+        } else {
+            msg.data
+        };
+        let mut pending = Some(UnixMsg::new(
+            payload,
+            core::mem::take(&mut msg.rights),
+            copy_cred(&msg.cred),
+            from,
+        )?);
+        let n = wait_until(sk, msg.nonblock, sk.common.snd_deadline(), || {
+            if sk.common.shut_wr() {
+                return Some(Err(EPIPE));
+            }
+            let Some(peer) = peer_ref.upgrade() else {
+                return Some(Err(if self.kind == DGRAM {
+                    ECONNREFUSED
+                } else {
+                    EPIPE
+                }));
+            };
+            let mut state = Self::of(&peer).inner.lock();
+            if state.released || peer.common.shut_rd() {
+                return Some(Err(if self.kind == DGRAM {
+                    ECONNREFUSED
+                } else {
+                    EPIPE
+                }));
+            }
+            if self.kind == DGRAM {
+                if let Some(connected) = &state.peer {
+                    if connected.as_ptr() != Arc::as_ptr(sk) {
+                        return Some(Err(EPERM));
+                    }
+                }
+            }
+            let message = pending.as_ref().unwrap();
+            let room = if self.kind == STREAM && message.rights.is_empty() {
+                state.rx.stream_room(limit)
+            } else {
+                state.rx.room(limit)
+            };
+            let rights_charge =
+                message.rights.len() * core::mem::size_of::<crate::ipc::fd::FileDescriptor>();
+            if room <= rights_charge {
+                if !msg.nonblock {
+                    if let Err(e) = Self::register_writer(&mut state, sk) {
+                        return Some(Err(e));
+                    }
+                }
+                return None;
+            }
+            let mut message = pending.take().unwrap();
+            let n = if self.kind == STREAM {
+                message.data.len().min(room - rights_charge)
+            } else {
+                msg.data.len()
+            };
+            if self.kind == STREAM {
+                message.data.truncate(n);
+            }
+            let result = if self.kind == STREAM {
+                state.rx.push_stream(message, limit)
+            } else {
+                state.rx.push(message, limit)
+            };
+            match result {
+                Ok(()) => Some(Ok(n)),
+                Err((EAGAIN, message)) => {
+                    pending = Some(message);
+                    if !msg.nonblock {
+                        if let Err(e) = Self::register_writer(&mut state, sk) {
+                            return Some(Err(e));
+                        }
+                    }
+                    None
+                }
+                Err((e, message)) => {
+                    pending = Some(message);
+                    Some(Err(e))
+                }
+            }
+        });
+        // A failed send's rights close outside both protocol locks.
+        drop(pending);
+        let n = n?;
+        if let Some(peer) = peer_ref.upgrade() {
+            peer.common.notify();
+        }
+        Ok(n)
+    }
+    fn recvmsg(&self, sk: &Arc<Socket>, msg: &mut RecvMsg) -> Result<usize, i32> {
+        if msg.flags & OOB != 0 {
+            return Err(EOPNOTSUPP);
+        }
+        if self.kind == STREAM && msg.cap == 0 {
+            return Ok(0);
+        }
+        let peek = msg.flags & PEEK != 0;
+        let deadline = sk.common.rcv_deadline();
+        let mut copied = 0;
+        loop {
+            let result = wait_until(sk, msg.nonblock, deadline, || {
+                let mut state = self.inner.lock();
+                if sk.common.shut_rd() {
+                    return Some(Ok((0, true)));
+                }
+                if state.rx.is_empty() {
+                    if self.kind != DGRAM && !state.connected {
+                        return Some(Err(ENOTCONN));
+                    }
+                    if self.kind != DGRAM
+                        && (state.peer_write_closed
+                            || state.peer.as_ref().is_some_and(|p| p.strong_count() == 0))
+                    {
+                        return Some(Ok((0, true)));
+                    }
+                    return None;
+                }
+                let mut n = 0;
+                let mut length = 0;
+                if peek {
+                    for front in state.rx.iter() {
+                        length = front.bytes().len();
+                        let take = length.min(msg.cap - copied - n);
+                        if msg.data.try_reserve(take).is_err() {
+                            return Some(Err(ENOMEM));
+                        }
+                        if !front.rights.is_empty() {
+                            match clone_rights(&front.rights) {
+                                Ok(rights) => msg.rights = rights,
+                                Err(e) => return Some(Err(e)),
+                            }
+                        }
+                        if n == 0 {
+                            msg.from = Some(SockAddr::Unix(front.from.clone()));
+                        }
+                        msg.data.extend_from_slice(&front.bytes()[..take]);
+                        n += take;
+                        if self.kind != STREAM {
+                            if take < length {
+                                msg.out_flags |= TRUNC;
+                            }
+                            break;
+                        }
+                        if copied + n == msg.cap || !msg.rights.is_empty() {
+                            break;
+                        }
+                    }
+                } else {
+                    while let Some(front) = state.rx.front() {
+                        length = front.bytes().len();
+                        let take = length.min(msg.cap - copied - n);
+                        if msg.data.try_reserve(take).is_err() {
+                            return Some(if n == 0 { Err(ENOMEM) } else { Ok((n, false)) });
+                        }
+                        if n == 0 {
+                            msg.from = Some(SockAddr::Unix(front.from.clone()));
+                        }
+                        msg.data.extend_from_slice(&front.bytes()[..take]);
+                        let rights = state.rx.take_rights();
+                        if !rights.is_empty() {
+                            msg.rights = rights;
+                        }
+                        n += take;
+                        if self.kind != STREAM {
+                            if take < length {
+                                msg.out_flags |= TRUNC;
+                            }
+                            state.rx.pop();
+                            break;
+                        }
+                        state.rx.consume(take);
+                        if state.rx.front().is_some_and(|m| m.bytes().is_empty()) {
+                            state.rx.pop();
+                        }
+                        if copied + n == msg.cap || !msg.rights.is_empty() {
+                            break;
+                        }
+                    }
+                }
+                Some(Ok((
+                    if self.kind != STREAM && msg.flags & TRUNC != 0 {
+                        length
+                    } else {
+                        n
+                    },
+                    false,
+                )))
+            });
+            match result {
+                Ok((n, eof)) => {
+                    copied += n;
+                    if !peek {
+                        sk.common.notify();
+                        self.notify_writers();
+                        if let Some(peer) = self.peer() {
+                            peer.common.notify();
+                        }
+                    }
+                    if eof
+                        || self.kind != STREAM
+                        || peek
+                        || msg.flags & WAITALL == 0
+                        || copied == msg.cap
+                        || !msg.rights.is_empty()
+                    {
+                        return Ok(copied);
+                    }
+                }
+                Err(e) => return if copied > 0 { Ok(copied) } else { Err(e) },
+            }
         }
     }
+    fn shutdown(&self, sk: &Arc<Socket>, how: u8) -> Result<(), i32> {
+        if how > 2 {
+            return Err(EINVAL);
+        }
+        if !self.inner.lock().connected {
+            return Err(ENOTCONN);
+        }
+        sk.common.set_shut(how);
+        let discarded = if how == 0 || how == 2 {
+            Some(core::mem::replace(
+                &mut self.inner.lock().rx,
+                UnixQueue::new(),
+            ))
+        } else {
+            None
+        };
+        drop(discarded);
+        self.notify_writers();
+        if let Some(peer) = self.peer() {
+            let mut state = Self::of(&peer).inner.lock();
+            if how == 0 || how == 2 {
+                state.peer_read_closed = true;
+            }
+            if how == 1 || how == 2 {
+                state.peer_write_closed = true;
+            }
+            drop(state);
+            peer.common.notify();
+        }
+        sk.common.notify();
+        Ok(())
+    }
+    fn local_name(&self, _sk: &Socket) -> SockAddr {
+        SockAddr::Unix(self.inner.lock().name.clone())
+    }
+    fn peer_name(&self, _sk: &Socket) -> Result<SockAddr, i32> {
+        let state = self.inner.lock();
+        if !state.connected {
+            return Err(ENOTCONN);
+        }
+        Ok(SockAddr::Unix(state.peer_name.clone()))
+    }
+    fn poll(&self, sk: &Socket) -> u16 {
+        let (listening, queued, connected, read_closed, write_closed, peer) = {
+            let s = self.inner.lock();
+            (
+                s.listening,
+                if s.listening {
+                    !s.pending.is_empty()
+                } else {
+                    !s.rx.is_empty()
+                },
+                s.connected,
+                s.peer_write_closed,
+                s.peer_read_closed,
+                s.peer.as_ref().and_then(Weak::upgrade),
+            )
+        };
+        if listening {
+            return if queued { 1 } else { 0 };
+        }
+        let peer_gone = connected && peer.is_none();
+        let eof = self.kind != DGRAM && (read_closed || peer_gone || sk.common.shut_rd());
+        let mut events = if queued || eof { 1 } else { 0 };
+        if eof {
+            events |= 0x2000;
+        }
+        if self.kind != DGRAM
+            && (peer_gone
+                || ((read_closed || sk.common.shut_rd()) && (write_closed || sk.common.shut_wr())))
+        {
+            events |= 0x10;
+        }
+        if self.kind == DGRAM && !connected {
+            events |= 4;
+        } else if let Some(peer) = peer {
+            if !peer.common.shut_rd()
+                && !sk.common.shut_wr()
+                && (if self.kind == STREAM {
+                    Self::of(&peer)
+                        .inner
+                        .lock()
+                        .rx
+                        .stream_room(sk.common.sndbuf().min(MAX_QUEUE_BYTES))
+                } else {
+                    Self::of(&peer)
+                        .inner
+                        .lock()
+                        .rx
+                        .room(sk.common.sndbuf().min(MAX_QUEUE_BYTES))
+                }) > 0
+            {
+                events |= 4;
+            }
+        }
+        events
+    }
+    fn notifies(&self) -> bool {
+        true
+    }
+    fn is_listening(&self, _sk: &Socket) -> bool {
+        self.inner.lock().listening
+    }
+    fn getsockopt(&self, _sk: &Socket, level: i32, name: i32, out: &mut OptBuf) -> Result<(), i32> {
+        if level != 1 || name != 17 {
+            return Err(ENOPROTOOPT);
+        }
+        let s = self.inner.lock();
+        out.bytes[..4].copy_from_slice(&s.peer_cred.pid.to_ne_bytes());
+        out.bytes[4..8].copy_from_slice(&s.peer_cred.uid.to_ne_bytes());
+        out.bytes[8..12].copy_from_slice(&s.peer_cred.gid.to_ne_bytes());
+        out.len = 12;
+        Ok(())
+    }
+    fn release(&self, _sk: &Socket) {
+        let namespace_id = self.inner.lock().namespace_id;
+        if namespace_id != 0 {
+            unix_ns::unbind_id(namespace_id);
+        }
+        let old = {
+            let mut s = self.inner.lock();
+            let old = core::mem::replace(&mut *s, UnixState::new());
+            s.released = true;
+            old
+        };
+        if let Some(peer) = old.peer.as_ref().and_then(Weak::upgrade) {
+            let mut state = Self::of(&peer).inner.lock();
+            state.peer_write_closed = true;
+            state.peer_read_closed = true;
+            drop(state);
+            peer.common.notify();
+        }
+        for weak in &old.writers {
+            if let Some(writer) = weak.upgrade() {
+                writer.common.notify();
+            }
+        }
+        drop(old);
+    }
+}
+
+fn clone_rights(
+    rights: &[crate::ipc::fd::FileDescriptor],
+) -> Result<Vec<crate::ipc::fd::FileDescriptor>, i32> {
+    let mut result = Vec::new();
+    result.try_reserve_exact(rights.len()).map_err(|_| ENOMEM)?;
+    for fd in rights {
+        result.push(fd.counted_clone());
+    }
+    Ok(result)
 }

@@ -162,9 +162,9 @@ pub mod fifo {
 
 #[test]
 fn abstract_bind_uses_every_byte_and_releases_by_socket_identity() {
-    use crate::{addr::UnixName, socket::object::Socket, unix_ns::*};
-    let a = Arc::new(Socket);
-    let b = Arc::new(Socket);
+    use crate::{addr::UnixName, unix_ns::*};
+    let a = crate::protocol_support::make_socket(1);
+    let b = crate::protocol_support::make_socket(1);
     let short = UnixName::Abstract(b"ns-test-a".to_vec());
     let long = UnixName::Abstract(b"ns-test-a\0".to_vec());
     bind_name(&short, Arc::downgrade(&a)).unwrap();
@@ -181,9 +181,9 @@ fn abstract_bind_uses_every_byte_and_releases_by_socket_identity() {
 
 #[test]
 fn pathname_nodes_are_exclusive_persist_on_close_and_unlink_hides_binding() {
-    use crate::{addr::UnixName, socket::object::Socket, unix_ns::*};
-    let a = Arc::new(Socket);
-    let b = Arc::new(Socket);
+    use crate::{addr::UnixName, unix_ns::*};
+    let a = crate::protocol_support::make_socket(1);
+    let b = crate::protocol_support::make_socket(1);
     let path = UnixName::Path(b"/tmp/ns-test-path".to_vec());
     bind_name(&path, Arc::downgrade(&a)).unwrap();
     assert_eq!(bind_name(&path, Arc::downgrade(&b)), Err(98));
@@ -207,11 +207,11 @@ fn pathname_nodes_are_exclusive_persist_on_close_and_unlink_hides_binding() {
 
 #[test]
 fn ordinary_files_are_refused_and_socket_write_permission_is_checked() {
-    use crate::{addr::UnixName, socket::object::Socket, unix_ns::*};
+    use crate::{addr::UnixName, unix_ns::*};
     let path = UnixName::Path(b"/tmp/ns-test-regular".to_vec());
     fifo::mknodat_path(-100, "/tmp/ns-test-regular", 0o100666, 0);
     assert!(matches!(lookup(&path), Err(111)));
-    let a = Arc::new(Socket);
+    let a = crate::protocol_support::make_socket(1);
     let path = UnixName::Path(b"/tmp/ns-test-readonly".to_vec());
     bind_name(&path, Arc::downgrade(&a)).unwrap();
     FS.lock()
@@ -222,4 +222,33 @@ fn ordinary_files_are_refused_and_socket_write_permission_is_checked() {
         .mode = 0o140444;
     assert!(matches!(lookup(&path), Err(13)));
     unbind(&a);
+}
+
+#[test]
+fn relocated_release_removes_the_original_inode_pin() {
+    use crate::{
+        addr::{SockAddr, UnixName},
+        object::{Socket, SocketProto},
+    };
+    let socket = crate::protocol_support::make_socket(1);
+    let name = SockAddr::Unix(UnixName::Path(b"/tmp/ns-relocated".to_vec()));
+    socket.ops().bind(&socket, &name).unwrap();
+    let inode = FS
+        .lock()
+        .unwrap()
+        .paths
+        .get("/tmp/ns-relocated")
+        .unwrap()
+        .handle
+        .object
+        .clone();
+    assert_eq!(Arc::strong_count(&inode), 3); // filesystem, binding, observer
+    let mut moved = Arc::try_unwrap(socket).ok().unwrap();
+    let protocol = moved.proto.detach();
+    drop(moved);
+    assert_eq!(Arc::strong_count(&inode), 3);
+    let carcass = Socket::new(1, 1, 0, protocol).unwrap();
+    assert!(matches!(carcass.proto, SocketProto::Unix(_)));
+    drop(carcass);
+    assert_eq!(Arc::strong_count(&inode), 2); // binding released by original identity
 }

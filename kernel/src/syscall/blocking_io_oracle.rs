@@ -92,32 +92,24 @@ fn query(fd: u64, arg: u64) -> Result<(), u64> {
             .ok_or(errno::EBADF as u64)?;
         (own.kind.clone(), other.kind.clone())
     };
-    let streams = match (&buffer, &kind) {
-        (FdKind::Socket(own), FdKind::Socket(other)) => match (&own.proto, &other.proto) {
-            (SocketProto::Unix(own), SocketProto::Unix(other)) => own.stream().zip(other.stream()),
-            _ => None,
-        },
-        _ => None,
-    };
-    match (streams, buffer, kind) {
-        (Some((own, other)), _, _) => {
-            let own_pair = own.lock().pair.clone();
-            let (other_pair, writer) = {
-                let socket = other.lock();
-                (socket.pair.clone(), socket.writer())
+    match (buffer, kind) {
+        (FdKind::Socket(own), FdKind::Socket(other)) => {
+            let (SocketProto::Unix(local), SocketProto::Unix(writer)) = (&own.proto, &other.proto)
+            else {
+                return Err(errno::EINVAL as u64);
             };
-            if !Arc::ptr_eq(&own_pair, &other_pair) {
+            if !local.is_peer(&other) {
                 return Err(errno::EPERM as u64);
             }
             witness.kind = 3;
-            witness.identity = Arc::as_ptr(&own_pair) as u64;
-            let (queued, occupancy, capacity) = writer.witness(witness.tid);
+            witness.identity = Arc::as_ptr(&own) as u64;
+            let (queued, occupancy, capacity) = writer.write_witness(&other, witness.tid);
             witness.queued = queued;
             witness.occupancy = occupancy;
             witness.capacity = capacity;
             witness.atomic_limit = 0;
         }
-        (None, own, other) => {
+        (own, other) => {
             let (buffer, kind) = match own {
                 FdKind::PipeWrite(buffer) => (buffer, 1),
                 FdKind::FifoWrite(_, buffer, _) => (buffer, 2),

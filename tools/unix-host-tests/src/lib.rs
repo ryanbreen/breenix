@@ -11,26 +11,23 @@ pub mod unix_msg;
 #[path = "../../../kernel/src/socket/unix_ns.rs"]
 pub mod unix_ns;
 pub use namespace_support::{fs, irq_safe_mutex};
-pub use socket::object;
 
+#[path = "../../../kernel/src/socket/unix.rs"]
+pub mod proto;
+mod protocol_support;
+pub use protocol_support::{object, wait};
 pub mod socket {
-    pub use crate::addr;
-    pub mod object {
-        #[derive(Debug, PartialEq)]
-        pub struct UCred {
-            pub pid: u32,
-            pub uid: u32,
-            pub gid: u32,
-        }
-        pub struct Socket;
-    }
-    pub use crate::unix_msg;
-    pub use crate::unix_ns;
+    pub use crate::{addr, object, proto as unix, unix_msg, unix_ns, wait};
 }
 pub mod ipc {
     pub mod fd {
         #[derive(Debug)]
         pub struct FileDescriptor(pub std::sync::Arc<()>);
+        impl FileDescriptor {
+            pub fn counted_clone(&self) -> Self {
+                Self(self.0.clone())
+            }
+        }
     }
 }
 pub mod syscall {
@@ -73,6 +70,14 @@ pub mod syscall {
         pub const EEXIST: i32 = 17;
         pub const EADDRINUSE: i32 = 98;
         pub const ENOBUFS: i32 = 105;
+        pub const EOPNOTSUPP: i32 = 95;
+        pub const EPROTOTYPE: i32 = 91;
+        pub const EISCONN: i32 = 106;
+        pub const EPIPE: i32 = 32;
+        pub const EDESTADDRREQ: i32 = 89;
+        pub const EPERM: i32 = 1;
+        pub const ENOTCONN: i32 = 107;
+        pub const ENOPROTOOPT: i32 = 92;
     }
 }
 pub mod task {
@@ -242,3 +247,5 @@ fn discarded_messages_close_rights_including_rejected_sends() {
     ));
     assert_eq!(std::sync::Arc::strong_count(&file), 1);
 }
+
+mod protocol_tests;

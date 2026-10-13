@@ -10,3 +10,6 @@ spin = "0.9"
 
 [lib]
 doctest = false
+
+[features]
+boot_tests = []
