@@ -16,10 +16,10 @@ pub struct UdpHeader {
     pub src_port: u16,
     /// Destination port
     pub dst_port: u16,
-    /// Length (header + data) - stored but not used after parsing
-    pub _length: u16,
-    /// Checksum - stored but not used after parsing
-    pub _checksum: u16,
+    /// Length (header + data), bounds the received datagram.
+    pub length: u16,
+    /// Checksum, validated on receive unless zero (IPv4 checksum disabled).
+    pub checksum: u16,
 }
 
 impl UdpHeader {
@@ -45,120 +45,88 @@ impl UdpHeader {
             UdpHeader {
                 src_port,
                 dst_port,
-                _length: length,
-                _checksum: checksum,
+                length: length,
+                checksum: checksum,
             },
             payload,
         ))
     }
 }
 
-/// Build a UDP packet (header + payload)
+/// Legacy builder for packet fixtures that supply IP addresses separately.
+/// Zero checksum is valid for IPv4 UDP; refused construction is an empty Vec.
 pub fn build_udp_packet(src_port: u16, dst_port: u16, payload: &[u8]) -> Vec<u8> {
-    let length = (UDP_HEADER_SIZE + payload.len()) as u16;
-
-    let mut packet = Vec::with_capacity(length as usize);
-
-    // Source port
-    packet.extend_from_slice(&src_port.to_be_bytes());
-    // Destination port
-    packet.extend_from_slice(&dst_port.to_be_bytes());
-    // Length
-    packet.extend_from_slice(&length.to_be_bytes());
-    // Checksum (0 = disabled for now, valid per RFC 768)
-    packet.extend_from_slice(&0u16.to_be_bytes());
-
-    // Payload
-    packet.extend_from_slice(payload);
-
-    packet
-}
-
-/// Calculate UDP checksum with pseudo-header
-#[allow(dead_code)]
-pub fn udp_checksum(src_ip: [u8; 4], dst_ip: [u8; 4], udp_packet: &[u8]) -> u16 {
-    // Build pseudo-header for checksum calculation
-    let mut pseudo_header = Vec::with_capacity(12 + udp_packet.len());
-
-    // Source IP
-    pseudo_header.extend_from_slice(&src_ip);
-    // Destination IP
-    pseudo_header.extend_from_slice(&dst_ip);
-    // Zero
-    pseudo_header.push(0);
-    // Protocol (UDP = 17)
-    pseudo_header.push(17);
-    // UDP length
-    pseudo_header.extend_from_slice(&(udp_packet.len() as u16).to_be_bytes());
-    // UDP header + data
-    pseudo_header.extend_from_slice(udp_packet);
-
-    internet_checksum(&pseudo_header)
-}
-
-/// Handle an incoming UDP packet
-pub fn handle_udp(ip: &Ipv4Packet, data: &[u8]) {
-    let (header, payload) = match UdpHeader::parse(data) {
-        Some(h) => h,
-        None => {
-            log::warn!("UDP: Failed to parse header");
-            return;
+    match try_build_udp_packet([0; 4], [0; 4], src_port, dst_port, payload) {
+        Ok(mut packet) => {
+            packet[6..8].fill(0);
+            packet
         }
-    };
-
-    log::debug!(
-        "UDP driver received packet from {}.{}.{}.{}:{} -> port {} ({} bytes)",
-        ip.src_ip[0],
-        ip.src_ip[1],
-        ip.src_ip[2],
-        ip.src_ip[3],
-        header.src_port,
-        header.dst_port,
-        payload.len()
-    );
-
-    // The registry identifies the socket, rather than a descriptor's original
-    // PID: fork/dup may leave the only descriptor in another process. The
-    // socket is found under PM and kept by a reference; if a close drops the
-    // others meanwhile, its release is deferred off this path.
-    if let Some(Some((_, handle))) = crate::socket::SOCKET_REGISTRY.try_lookup_udp(header.dst_port) {
-        let receiver = crate::process::with_process_manager(|manager| {
-            for (_, process) in manager.iter_processes() {
-                for fd in 0..crate::ipc::fd::MAX_FDS {
-                    let Some(entry) = process.fd_table.get(fd as i32) else { continue };
-                    let crate::ipc::fd::FdKind::Socket(sk) = &entry.kind else { continue };
-                    if let crate::socket::object::SocketProto::Udp(udp) = &sk.proto {
-                        let delivered = crate::socket::udp::with_locked_masked(udp, |socket| {
-                            if socket.handle == handle {
-                                socket.enqueue_packet(crate::socket::udp::UdpPacket {
-                                    src_addr: ip.src_ip,
-                                    src_port: header.src_port,
-                                    data: payload.to_vec(),
-                                });
-                                // The datagram is on the socket's RX queue. This
-                                // path may be the NetRx softirq, so the line is a
-                                // lock-free notice, once per socket, not a log call.
-                                socket.delivery_notice.post(
-                                    "UDP: Delivered packet to socket on port ",
-                                    u64::from(header.dst_port),
-                                );
-                                true
-                            } else {
-                                false
-                            }
-                        });
-                        if delivered {
-                            return Some(sk.clone());
-                        }
-                    }
-                }
-            }
-            None
-        });
-        // The wake runs with PM released: the scheduler is never taken under
-        // it, and no waiter is popped before its wake can be applied.
-        if let Some(Some(sk)) = receiver {
-            sk.common.notify();
-        }
+        Err(_) => Vec::new(),
     }
+}
+
+/// Build a whole datagram fallibly, before any user length can narrow to u16.
+pub fn try_build_udp_packet(
+    src: [u8; 4],
+    dst: [u8; 4],
+    src_port: u16,
+    dst_port: u16,
+    payload: &[u8],
+) -> Result<Vec<u8>, super::TxError> {
+    if payload.len() > 65507 {
+        return Err(super::TxError::MsgSize);
+    }
+    let len = UDP_HEADER_SIZE + payload.len();
+    let mut packet = Vec::new();
+    packet
+        .try_reserve_exact(len)
+        .map_err(|_| super::TxError::NoBufs)?;
+    packet.extend_from_slice(&src_port.to_be_bytes());
+    packet.extend_from_slice(&dst_port.to_be_bytes());
+    packet.extend_from_slice(&(len as u16).to_be_bytes());
+    packet.extend_from_slice(&[0; 2]);
+    packet.extend_from_slice(payload);
+    let checksum = udp_checksum(src, dst, &packet);
+    // RFC 768 transmits a computed zero as all ones; zero disables checksums.
+    packet[6..8].copy_from_slice(&(if checksum == 0 { 0xffff } else { checksum }).to_be_bytes());
+    Ok(packet)
+}
+
+/// RFC 768 pseudo-header checksum. No receive-path allocation is required.
+pub fn udp_checksum(src: [u8; 4], dst: [u8; 4], packet: &[u8]) -> u16 {
+    let mut pseudo = [0u8; 12];
+    pseudo[..4].copy_from_slice(&src);
+    pseudo[4..8].copy_from_slice(&dst);
+    pseudo[9] = super::ipv4::PROTOCOL_UDP;
+    pseudo[10..12].copy_from_slice(&(packet.len() as u16).to_be_bytes());
+    let mut sum = u32::from(!internet_checksum(&pseudo)) + u32::from(!internet_checksum(packet));
+    while sum > 0xffff {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    !(sum as u16)
+}
+
+/// Deliver through Weak socket bindings; no descriptor lookup or PM hold.
+pub fn handle_udp(ip: &Ipv4Packet, data: &[u8]) {
+    let Some((header, payload)) = UdpHeader::parse(data) else {
+        return;
+    };
+    let l4 = &data[..header.length as usize];
+    if header.checksum != 0 && udp_checksum(ip.src_ip, ip.dst_ip, l4) != 0 {
+        return;
+    }
+    if !crate::socket::udp::deliver(
+        ip.dst_ip,
+        header.dst_port,
+        ip.src_ip,
+        header.src_port,
+        payload,
+    ) {
+        super::icmp::send_port_unreachable(ip, l4);
+    }
+}
+
+/// ICMP's original UDP four-tuple identifies the socket whose error is pending.
+pub fn udp_icmp_error(src: [u8; 4], src_port: u16, dst: [u8; 4], dst_port: u16, errno: i32) {
+    crate::socket::udp::udp_icmp_error(src, src_port, dst, dst_port, errno);
 }

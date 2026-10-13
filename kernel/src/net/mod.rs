@@ -134,30 +134,6 @@ macro_rules! net_log {
     ($($arg:tt)*) => { crate::serial_println!($($arg)*) };
 }
 
-#[cfg(target_arch = "x86_64")]
-macro_rules! net_warn {
-    ($($arg:tt)*) => { log::warn!($($arg)*) };
-}
-
-#[cfg(target_arch = "aarch64")]
-macro_rules! net_warn {
-    ($($arg:tt)*) => { crate::serial_println!($($arg)*) };
-}
-
-#[cfg(target_arch = "x86_64")]
-macro_rules! net_debug {
-    ($($arg:tt)*) => { log::debug!($($arg)*) };
-}
-
-#[cfg(target_arch = "aarch64")]
-macro_rules! net_debug {
-    ($($arg:tt)*) => {
-        if false {
-            let _ = core::format_args!($($arg)*);
-        }
-    };
-}
-
 // Driver abstraction functions
 
 /// Get the MAC address from the network device
@@ -223,8 +199,7 @@ fn active_tx_driver_is_e1000() -> bool {
 pub struct NetConfig {
     /// Our IPv4 address
     pub ip_addr: [u8; 4],
-    /// Subnet mask (for routing decisions - not yet used but required for complete config)
-    #[allow(dead_code)] // Part of complete network config API
+    /// Subnet mask for routing and directed broadcast addresses.
     pub subnet_mask: [u8; 4],
     /// Default gateway
     pub gateway: [u8; 4],
@@ -277,9 +252,8 @@ pub const DEFAULT_CONFIG: NetConfig = SLIRP_CONFIG;
 
 static NET_CONFIG: Mutex<NetConfig> = Mutex::new(DEFAULT_CONFIG);
 
-/// Maximum number of packets to queue in loopback queue
-/// Prevents unbounded memory growth if drain_loopback_queue() is not called
-const MAX_LOOPBACK_QUEUE_SIZE: usize = 32;
+/// Bound both payload storage and metadata, including minimum-size IP packets.
+const MAX_LOOPBACK_QUEUE_BYTES: usize = 1024 * 1024;
 const MAX_DRAIN_ROUNDS: usize = 16;
 const LOOPBACK_TAKE_ATTEMPTS: usize = 64;
 const MAX_ARP_PENDING_QUEUE_SIZE: usize = 16;
@@ -324,6 +298,7 @@ struct LoopbackPacket {
 static LOOPBACK_QUEUE: Mutex<Vec<LoopbackPacket>> = Mutex::new(Vec::new());
 /// Single-writer-under-lock atomic mirror of `LOOPBACK_QUEUE.len()`.
 /// Writers publish the new length immediately after each queue mutation.
+static LOOPBACK_QUEUE_BYTES: AtomicUsize = AtomicUsize::new(0);
 static LOOPBACK_QUEUE_DEPTH: AtomicUsize = AtomicUsize::new(0);
 static LOOPBACK_DRAIN_TICKET: AtomicU64 = AtomicU64::new(0);
 static LOOPBACK_DRAIN_OWNER: AtomicU64 = AtomicU64::new(0);
@@ -508,7 +483,7 @@ struct PendingArpPacket {
 
 static ARP_PENDING_QUEUE: Mutex<Vec<PendingArpPacket>> = Mutex::new(Vec::new());
 
-fn enqueue_arp_pending_packet(next_hop: [u8; 4], ip_packet: Vec<u8>) {
+fn enqueue_arp_pending_packet(next_hop: [u8; 4], ip_packet: Vec<u8>) -> Result<(), TxError> {
     let now_ms = crate::time::get_monotonic_time();
     let _guard = net_lock_guard();
     let mut queue = ARP_PENDING_QUEUE.lock();
@@ -516,8 +491,9 @@ fn enqueue_arp_pending_packet(next_hop: [u8; 4], ip_packet: Vec<u8>) {
     let cutoff_ms = now_ms.saturating_sub(ARP_PENDING_TTL_MS);
     queue.retain(|packet| packet.queued_at_ms >= cutoff_ms);
     if queue.len() >= MAX_ARP_PENDING_QUEUE_SIZE {
-        queue.remove(0);
+        return Err(TxError::NoBufs);
     }
+    queue.try_reserve(1).map_err(|_| TxError::NoBufs)?;
     queue.push(PendingArpPacket {
         next_hop,
         queued_at_ms: now_ms,
@@ -525,6 +501,7 @@ fn enqueue_arp_pending_packet(next_hop: [u8; 4], ip_packet: Vec<u8>) {
     });
 
     drop(queue);
+    Ok(())
 }
 
 /// Send packets queued while `next_hop` was unresolved.
@@ -538,6 +515,7 @@ pub(crate) fn flush_arp_pending_packets(next_hop: &[u8; 4], mac: &[u8; 6]) {
         let _guard = net_lock_guard();
         let mut queue = ARP_PENDING_QUEUE.lock();
         let packets = core::mem::take(&mut *queue);
+        LOOPBACK_QUEUE_BYTES.store(0, Ordering::Relaxed);
         drop(queue);
         packets
     };
@@ -547,18 +525,18 @@ pub(crate) fn flush_arp_pending_packets(next_hop: &[u8; 4], mac: &[u8; 6]) {
     }
 
     let cutoff_ms = now_ms.saturating_sub(ARP_PENDING_TTL_MS);
-    let mut remaining = Vec::new();
-    for packet in packets {
+    // Partition in place: RX needs no extra allocation to retain other hops.
+    let mut remaining = packets;
+    remaining.retain(|packet| {
         if packet.queued_at_ms < cutoff_ms {
-            continue;
+            return false;
         }
-
         if packet.next_hop == *next_hop {
-            let _ = send_ethernet(mac, ethernet::ETHERTYPE_IPV4, &packet.ip_packet);
+            send_ethernet(mac, ethernet::ETHERTYPE_IPV4, &packet.ip_packet).is_err()
         } else {
-            remaining.push(packet);
+            true
         }
-    }
+    });
 
     if remaining.is_empty() {
         return;
@@ -567,19 +545,8 @@ pub(crate) fn flush_arp_pending_packets(next_hop: &[u8; 4], mac: &[u8; 6]) {
     let _guard = net_lock_guard();
     let mut queue = ARP_PENDING_QUEUE.lock();
     for packet in remaining {
-        if queue.len() >= MAX_ARP_PENDING_QUEUE_SIZE {
-            let mut oldest_idx = 0;
-            for (idx, queued) in queue.iter().enumerate().skip(1) {
-                if queued.queued_at_ms < queue[oldest_idx].queued_at_ms {
-                    oldest_idx = idx;
-                }
-            }
-
-            if queue[oldest_idx].queued_at_ms <= packet.queued_at_ms {
-                queue.remove(oldest_idx);
-            } else {
-                continue;
-            }
+        if queue.len() >= MAX_ARP_PENDING_QUEUE_SIZE || queue.try_reserve(1).is_err() {
+            break;
         }
         queue.push(packet);
     }
@@ -601,6 +568,7 @@ fn take_queued_loopback_packets() -> LoopbackTake {
             let net_guard = net_lock_guard();
             let mut queue = LOOPBACK_QUEUE.lock();
             let packets = core::mem::take(&mut *queue);
+            LOOPBACK_QUEUE_BYTES.store(0, Ordering::Relaxed);
             LOOPBACK_QUEUE_DEPTH.store(queue.len(), Ordering::Release);
             drop(queue);
             drop(drain_guard);
@@ -1262,9 +1230,15 @@ pub fn send_ethernet(
     ethertype: u16,
     payload: &[u8],
 ) -> Result<(), &'static str> {
+    if ethertype == ethernet::ETHERTYPE_IPV4 && ipv4::Ipv4Packet::parse(payload).is_none() {
+        return Err("Invalid IPv4 packet");
+    }
+    if payload.len() > ethernet::ETHERNET_MTU {
+        return Err("Message too large");
+    }
     let src_mac = get_mac_address().ok_or("Network device not initialized")?;
 
-    let frame = ethernet::EthernetFrame::build(&src_mac, dst_mac, ethertype, payload);
+    let frame = ethernet::EthernetFrame::build(&src_mac, dst_mac, ethertype, payload)?;
     driver_transmit(&frame)
 }
 
@@ -1303,89 +1277,108 @@ pub fn send_ipv4_from(
     protocol: u8,
     payload: &[u8],
 ) -> Result<(), &'static str> {
-    let config = config();
+    ip_output(src_ip, dst_ip, protocol, payload).map_err(TxError::description)
+}
 
-    // Check for loopback - sending to ourselves or to 127.x.x.x network
-    if dst_ip == config.ip_addr || dst_ip[0] == 127 {
-        net_debug!("NET: Loopback detected, queueing packet for deferred delivery");
-
-        // Build IP packet
-        let ip_packet = ipv4::Ipv4Packet::build(src_ip, dst_ip, protocol, payload);
-
-        // Queue for deferred delivery (to avoid deadlock with process manager lock)
-        // The caller must call drain_loopback_queue() after releasing locks
-        let (queue_len, dropped_oldest) = {
-            let _guard = net_lock_guard();
-            let mut queue = LOOPBACK_QUEUE.lock();
-
-            // Drop oldest packet if queue is full to prevent unbounded memory growth
-            let dropped_oldest = if queue.len() >= MAX_LOOPBACK_QUEUE_SIZE {
-                queue.remove(0);
-                LOOPBACK_DROPPED_FULL.fetch_add(1, Ordering::Relaxed);
-                true
-            } else {
-                false
-            };
-
-            queue.push(LoopbackPacket {
-                data: ip_packet,
-                queued_at_tick: crate::time::get_ticks(),
-            });
-            let queue_len = queue.len();
-            LOOPBACK_QUEUE_DEPTH.store(queue_len, Ordering::Release);
-            drop(queue);
-            (queue_len, dropped_oldest)
-        };
-
-        if dropped_oldest {
-            net_warn!("NET: Loopback queue full, dropped oldest packet");
+/// IP output failures, with Linux ABI errno values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TxError {
+    NoRoute,
+    NoBufs,
+    MsgSize,
+}
+impl TxError {
+    pub fn errno(self) -> i32 {
+        match self {
+            Self::NoRoute => crate::syscall::errno::ENETUNREACH,
+            Self::NoBufs => 105, // ENOBUFS (Linux).
+            Self::MsgSize => crate::syscall::errno::EMSGSIZE,
         }
-        net_debug!("NET: Loopback packet queued (queue size: {})", queue_len);
-        // Two kicks, deliberately: the softirq is the owner (it runs on the way
-        // out of the next interrupt, needing no scheduling decision at all),
-        // and kloopbackd remains the thread-context backstop for contexts the
-        // softirq cannot reach.
-        kick_loopback_delivery();
-        crate::net::loopback_pump::wake_loopback_pump();
-
-        return Ok(());
     }
-
-    // Determine the next-hop MAC address.
-    // If the destination is on the same /24 subnet, ARP for it directly.
-    // Otherwise, route through the gateway (standard IP routing).
-    let same_subnet = dst_ip[0] == config.ip_addr[0]
-        && dst_ip[1] == config.ip_addr[1]
-        && dst_ip[2] == config.ip_addr[2];
-    let next_hop = if same_subnet { dst_ip } else { config.gateway };
-    let dst_mac = match arp::lookup(&next_hop) {
-        Some(mac) => mac,
-        None => {
-            let ip_packet = ipv4::Ipv4Packet::build(config.ip_addr, dst_ip, protocol, payload);
-            enqueue_arp_pending_packet(next_hop, ip_packet);
-
-            // ARP resolution is asynchronous: request the next-hop MAC and let
-            // IRQ-driven NetRx populate the cache. The ARP handler flushes
-            // packets queued above once the next-hop MAC is known.
-            net_log!(
-                "NET: ARP cache miss for {}.{}.{}.{}, sending ARP request",
-                next_hop[0],
-                next_hop[1],
-                next_hop[2],
-                next_hop[3]
-            );
-            if let Err(e) = arp::request(&next_hop) {
-                net_warn!("NET: ARP request failed after cache miss: {}", e);
-                return Err("ARP request failed");
-            }
-            return Err("ArpMiss: reply will populate cache via IRQ");
+    fn description(self) -> &'static str {
+        match self {
+            Self::NoRoute => "No route to host",
+            Self::NoBufs => "No buffer space available",
+            Self::MsgSize => "Message too large",
         }
+    }
+}
+
+pub fn is_local_addr(addr: [u8; 4]) -> bool {
+    is_local_addr_in(&config(), addr)
+}
+
+pub fn is_broadcast_addr(addr: [u8; 4]) -> bool {
+    is_broadcast_addr_in(&config(), addr)
+}
+
+pub fn is_local_addr_in(cfg: &NetConfig, addr: [u8; 4]) -> bool {
+    addr[0] == 127 || addr == cfg.ip_addr
+}
+pub fn is_broadcast_addr_in(cfg: &NetConfig, addr: [u8; 4]) -> bool {
+    addr == [255; 4] || (0..4).all(|i| addr[i] == (cfg.ip_addr[i] | !cfg.subnet_mask[i]))
+}
+
+fn enqueue_local_packet(ip_packet: Vec<u8>) -> Result<(), TxError> {
+    {
+        let _guard = net_lock_guard();
+        let mut queue = LOOPBACK_QUEUE.lock();
+        let charge = ip_packet.len() + core::mem::size_of::<LoopbackPacket>();
+        let bytes = LOOPBACK_QUEUE_BYTES.load(Ordering::Relaxed);
+        if charge > MAX_LOOPBACK_QUEUE_BYTES.saturating_sub(bytes) {
+            LOOPBACK_DROPPED_FULL.fetch_add(1, Ordering::Relaxed);
+            return Err(TxError::NoBufs);
+        }
+        queue.try_reserve(1).map_err(|_| TxError::NoBufs)?;
+        queue.push(LoopbackPacket {
+            data: ip_packet,
+            queued_at_tick: crate::time::get_ticks(),
+        });
+        LOOPBACK_QUEUE_BYTES.store(bytes + charge, Ordering::Relaxed);
+        LOOPBACK_QUEUE_DEPTH.store(queue.len(), Ordering::Release);
+    }
+    kick_loopback_delivery();
+    crate::net::loopback_pump::wake_loopback_pump();
+    Ok(())
+}
+
+/// Never evict loopback packets. Accepted ARP misses are asynchronous success.
+/// Callers drain loopback only after releasing their protocol locks.
+pub fn ip_output(src: [u8; 4], dst: [u8; 4], protocol: u8, payload: &[u8]) -> Result<(), TxError> {
+    if payload.len() > u16::MAX as usize - ipv4::IPV4_HEADER_MIN_SIZE {
+        return Err(TxError::MsgSize);
+    }
+    let cfg = config();
+    if is_local_addr_in(&cfg, dst) {
+        return enqueue_local_packet(ipv4::Ipv4Packet::try_build(src, dst, protocol, payload)?);
+    }
+    let broadcast = is_broadcast_addr_in(&cfg, dst);
+    // No fragmentation: use the interface MTU and return EMSGSIZE.
+    if payload.len() > ethernet::ETHERNET_MTU - ipv4::IPV4_HEADER_MIN_SIZE {
+        return Err(TxError::MsgSize);
+    }
+    let same_subnet =
+        (0..4).all(|i| dst[i] & cfg.subnet_mask[i] == cfg.ip_addr[i] & cfg.subnet_mask[i]);
+    let next_hop = if same_subnet { dst } else { cfg.gateway };
+    let ip_packet = ipv4::Ipv4Packet::try_build(src, dst, protocol, payload)?;
+    if broadcast {
+        enqueue_local_packet(ipv4::Ipv4Packet::try_build(src, dst, protocol, payload)?)?;
+    }
+    let mac = if broadcast {
+        ethernet::BROADCAST_MAC
+    } else if let Some(mac) = arp::lookup(&next_hop) {
+        mac
+    } else {
+        if get_mac_address().is_none() || next_hop == [0; 4] {
+            return Err(TxError::NoRoute);
+        }
+        enqueue_arp_pending_packet(next_hop, ip_packet)?;
+        // The queued packet is accepted even if this initial request encounters
+        // device backpressure. A later ARP response will flush it.
+        let _ = arp::request(&next_hop);
+        return Ok(());
     };
-
-    // Build IP packet
-    let ip_packet = ipv4::Ipv4Packet::build(config.ip_addr, dst_ip, protocol, payload);
-
-    send_ethernet(&dst_mac, ethernet::ETHERTYPE_IPV4, &ip_packet)
+    send_ethernet(&mac, ethernet::ETHERTYPE_IPV4, &ip_packet).map_err(|_| TxError::NoBufs)
 }
 
 /// Send an ICMP echo request (ping)

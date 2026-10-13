@@ -190,7 +190,7 @@ fn with_locked_masked_masks_the_whole_hold() {
          the mask on the shared UDP-socket-lock primitive is gone"
     );
     assert!(
-        body.contains("f(&mut udp.inner.lock())"),
+        body.contains("f(&mut udp.state.lock())"),
         "#823 shape failure: with_locked_masked no longer runs f() under the \
          acquired lock inside the masked closure"
     );
@@ -202,8 +202,8 @@ fn with_locked_masked_masks_the_whole_hold() {
 fn with_locked_masked_rule_is_not_vacuous() {
     let source = repo_text(UDP_MODULE);
     let mutated = source.replacen(
-        "Cpu::without_interrupts(|| f(&mut udp.inner.lock()))",
-        "f(&mut udp.inner.lock())",
+        "Cpu::without_interrupts(|| f(&mut udp.state.lock()))",
+        "f(&mut udp.state.lock())",
         1,
     );
     assert_ne!(
@@ -255,7 +255,13 @@ fn adapter_hold_is_masked(source: &str, name: &str) -> bool {
 /// and say whether the rule still holds on the result.
 fn mutated_rule_holds(name: &str, from: &str, to: &str) -> bool {
     let source = repo_text(UDP_MODULE);
-    let mutated = source.replacen(from, to, 1);
+    let code = masked_text(&source);
+    let method = adapter_method(&code, name).expect("adapter method");
+    let start = code.find(&method).expect("method body in masked source");
+    let range = start..start + method.len();
+    let changed = source[range.clone()].replacen(from, to, 1);
+    let mut mutated = source.clone();
+    mutated.replace_range(range, &changed);
     assert_ne!(
         source, mutated,
         "mutation text not found in kernel/src/socket/udp.rs -- update this test's \
@@ -283,8 +289,8 @@ fn poll_fd_udp_arm_uses_the_masked_primitive() {
 fn poll_fd_udp_arm_rule_is_not_vacuous() {
     assert!(!mutated_rule_holds(
         "poll",
-        "crate::socket::udp::with_locked_masked(self, |socket| socket.has_data())",
-        "self.inner.lock().has_data()",
+        "crate::socket::udp::with_locked_masked(self, |s| !s.rx.is_empty())",
+        "self.state.lock().has_data()",
     ));
 }
 
@@ -302,8 +308,8 @@ fn sys_bind_udp_arm_uses_the_masked_primitive() {
 fn sys_bind_udp_arm_rule_is_not_vacuous() {
     assert!(!mutated_rule_holds(
         "bind",
-        "crate::socket::udp::with_locked_masked(self, |socket| socket.bind(pid, addr, port))",
-        "self.inner.lock().bind(pid, addr, port)",
+        "crate::socket::udp::with_locked_masked(self, |s| s.local.is_some())",
+        "self.state.lock().bind(pid, addr, port)",
     ));
 }
 
@@ -321,8 +327,8 @@ fn sys_sendto_udp_arm_uses_the_masked_primitive() {
 fn sys_sendto_udp_arm_rule_is_not_vacuous() {
     assert!(!mutated_rule_holds(
         "sendmsg",
-        "crate::socket::udp::with_locked_masked(self, |socket| socket.local_port().unwrap_or(0));",
-        "self.inner.lock().local_port().unwrap_or(0);",
+        "crate::socket::udp::with_locked_masked(self, |s| {",
+        "self.state.lock().local_port().unwrap_or(0);",
     ));
 }
 
@@ -350,42 +356,29 @@ fn sys_recvfrom_nonblocking_read_uses_the_masked_primitive() {
 fn sys_recvfrom_nonblocking_read_rule_is_not_vacuous() {
     assert!(!mutated_rule_holds(
         "recvmsg",
-        "crate::socket::udp::with_locked_masked(self, |socket| socket.recv_from())",
-        "self.inner.lock().recv_from()",
+        "crate::socket::udp::with_locked_masked(self, |s| {",
+        "self.state.lock().recv_from()",
     ));
 }
 
-/// #823 rule 6 (regression guard): NetRx delivery, inlined into `handle_udp`
-/// by #1384, still locks the socket inside `with_process_manager`'s masked
-/// closure, through the masked primitive, before it enqueues -- so a future
-/// edit cannot move the IRQ-side lock out from under the mask while the
-/// thread side is being kept honest.
+/// Receive now resolves Weak<Socket> entries directly, outside PM. The actual
+/// enqueue still holds the per-endpoint mutex only inside the IRQ mask.
 #[test]
-fn udp_delivery_locks_the_socket_under_process_manager() {
-    let code = masked_text(&repo_text(NET_UDP));
-    let start = code
-        .find("pub fn handle_udp(")
-        .expect("#823 shape failure: net/udp.rs::handle_udp was renamed or removed");
-    let end = code[start..].find("\n}\n").map_or(code.len(), |i| start + i);
-    let body = &code[start..end];
-    let pm = body
-        .find("with_process_manager(")
-        .expect("#823 shape failure: handle_udp no longer delivers under with_process_manager");
-    let lock = body
-        .find("with_locked_masked(udp,")
-        .expect("#823 shape failure: handle_udp no longer locks the socket through with_locked_masked");
-    let enqueue = body
-        .find("enqueue_packet(")
-        .expect("#823 shape failure: handle_udp no longer enqueues the packet");
-    assert!(
-        pm < lock && lock < enqueue,
-        "#823 shape failure: handle_udp must lock the socket inside the process-manager \
-         closure and enqueue while holding it"
-    );
-    assert!(
-        !body.contains(".lock()"),
-        "#823 shape failure: handle_udp takes a lock outside the masked primitive"
-    );
+fn udp_delivery_uses_weak_sockets_with_masked_state() {
+    let wire = masked_text(&repo_text(NET_UDP));
+    assert!(wire.contains("crate::socket::udp::deliver("));
+    assert!(!wire.contains("with_process_manager("));
+    let udp = masked_text(&repo_text(UDP_MODULE));
+    assert!(udp.contains("weak.upgrade()"));
+    assert!(!udp.contains("with_process_manager("));
+    let start = udp.find("fn enqueue(").expect("enqueue");
+    let end = udp[start..]
+        .find("\n    }\n")
+        .map_or(udp.len(), |n| start + n);
+    let enqueue = &udp[start..end];
+    assert!(enqueue.contains("with_locked_masked(self,"));
+    assert!(enqueue.contains("state.rx.push_back("));
+    assert!(!enqueue.contains(".lock()"));
 }
 
 /// #823 rule 7: the oracle's own receive checker uses the masked primitive:
@@ -428,7 +421,11 @@ fn udp_lock_received_uses_the_masked_primitive() {
 fn udp_lock_received_rule_is_not_vacuous() {
     let registry = repo_text(TEST_REGISTRY);
     let udp = repo_text(UDP_MODULE);
-    let unmasked = udp.replacen("    with_locked_masked(udp, |socket| {\n        socket\n            .rx_queue", "    (|socket: &mut UdpSocket| {\n        socket\n            .rx_queue", 1);
+    let unmasked = udp.replacen(
+        "crate::socket::udp::with_locked_masked(udp, |state|",
+        "(|state: &mut UdpState|",
+        1,
+    );
     assert_ne!(
         udp, unmasked,
         "mutation text not found in kernel/src/socket/udp.rs -- update this test's literal before trusting rule 7"
@@ -436,7 +433,7 @@ fn udp_lock_received_rule_is_not_vacuous() {
     assert!(!checker_is_masked(&registry, &unmasked));
     let direct = registry.replacen(
         "crate::socket::udp::queued_matching(udp_of(&open.socket), UDP_LOCK_PAYLOAD)",
-        "udp_of(&open.socket).inner.lock().rx_queue.lock().len() as u64",
+        "udp_of(&open.socket).state.lock().rx.len() as u64",
         1,
     );
     assert_ne!(
@@ -456,7 +453,7 @@ fn green_control_all_rules_hold_at_head() {
     sys_bind_udp_arm_uses_the_masked_primitive();
     sys_sendto_udp_arm_uses_the_masked_primitive();
     sys_recvfrom_nonblocking_read_uses_the_masked_primitive();
-    udp_delivery_locks_the_socket_under_process_manager();
+    udp_delivery_uses_weak_sockets_with_masked_state();
     udp_lock_received_uses_the_masked_primitive();
 }
 

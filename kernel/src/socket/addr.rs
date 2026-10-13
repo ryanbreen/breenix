@@ -11,6 +11,7 @@ const UNIX_LEN: usize = 110;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SockAddr {
     Unspec,
+    UnspecInet { addr: [u8; 4], port: u16 },
     Inet { addr: [u8; 4], port: u16 },
     Unix(UnixName),
 }
@@ -40,7 +41,10 @@ fn decode(bytes: &[u8], family: u16) -> Result<SockAddr, i32> {
                 return Err(EINVAL);
             }
             match supplied {
-                0 => Ok(SockAddr::Unspec),
+                0 => Ok(SockAddr::UnspecInet {
+                    addr: [bytes[4], bytes[5], bytes[6], bytes[7]],
+                    port: u16::from_be_bytes([bytes[2], bytes[3]]),
+                }),
                 AF_INET => Ok(SockAddr::Inet {
                     addr: [bytes[4], bytes[5], bytes[6], bytes[7]],
                     port: u16::from_be_bytes([bytes[2], bytes[3]]),
@@ -87,10 +91,15 @@ pub fn read_sockaddr(ptr: u64, len: u32, family: u16) -> Result<SockAddr, i32> {
 
 fn encode(addr: &SockAddr) -> Result<([u8; UNIX_LEN + 1], usize), i32> {
     let mut bytes = [0u8; UNIX_LEN + 1];
+    let family = if matches!(addr, SockAddr::UnspecInet { .. }) {
+        0u16
+    } else {
+        AF_INET
+    };
     let len = match addr {
         SockAddr::Unspec => 2,
-        SockAddr::Inet { addr, port } => {
-            bytes[..2].copy_from_slice(&AF_INET.to_ne_bytes());
+        SockAddr::Inet { addr, port } | SockAddr::UnspecInet { addr, port } => {
+            bytes[..2].copy_from_slice(&family.to_ne_bytes());
             bytes[2..4].copy_from_slice(&port.to_be_bytes());
             bytes[4..8].copy_from_slice(addr);
             16
@@ -150,7 +159,13 @@ mod tests {
         bytes[..2].copy_from_slice(&AF_UNIX.to_ne_bytes());
         assert_eq!(decode(&bytes[..n], AF_INET), Err(EAFNOSUPPORT));
         bytes[..2].fill(0);
-        assert_eq!(decode(&bytes[..n], AF_INET), Ok(SockAddr::Unspec));
+        assert_eq!(
+            decode(&bytes[..n], AF_INET),
+            Ok(SockAddr::UnspecInet {
+                addr: [192, 0, 2, 7],
+                port: 8080
+            })
+        );
     }
     #[test]
     fn unix_names_preserve_abstract_length() {
