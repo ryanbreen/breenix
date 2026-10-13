@@ -103,7 +103,19 @@ pub fn handle_icmp(ip: &Ipv4Packet, icmp: &IcmpPacket) {
     }
     match icmp.icmp_type {
         ICMP_ECHO_REQUEST => {
-            let reply = IcmpPacket::echo_reply(icmp.identifier, icmp.sequence, icmp.payload);
+            let mut reply = Vec::new();
+            if reply
+                .try_reserve_exact(ICMP_HEADER_SIZE + icmp.payload.len())
+                .is_err()
+            {
+                return;
+            }
+            reply.extend_from_slice(&[ICMP_ECHO_REPLY, 0, 0, 0]);
+            reply.extend_from_slice(&icmp.identifier.to_be_bytes());
+            reply.extend_from_slice(&icmp.sequence.to_be_bytes());
+            reply.extend_from_slice(icmp.payload);
+            let checksum = ipv4::internet_checksum(&reply);
+            reply[2..4].copy_from_slice(&checksum.to_be_bytes());
             let _ = super::ip_output(ip.dst_ip, ip.src_ip, PROTOCOL_ICMP, &reply);
         }
         ICMP_ECHO_REPLY => {
@@ -114,15 +126,17 @@ pub fn handle_icmp(ip: &Ipv4Packet, icmp: &IcmpPacket) {
                 ECHO_REPLY_NOTICE.post_again("NET: ICMP echo reply received from gateway");
             }
         }
-        // UDP's post-F0 error handler consumes the validated quoted tuple.
-        ICMP_DEST_UNREACHABLE => {}
+        ICMP_DEST_UNREACHABLE => {
+            if let Some((src, src_port, dst, dst_port, errno)) = udp_error_quote(icmp) {
+                super::udp::udp_icmp_error(src, src_port, dst, dst_port, errno);
+            }
+        }
         _ => {}
     }
 }
 
 /// Send RFC 792 type 3/code 3 with the original IP header and first eight L4 bytes.
 /// Broadcasts, multicast, noninitial fragments and invalid sources never draw errors.
-#[allow(dead_code)] // Public receive-path API consumed by UDP after F0.
 pub fn send_port_unreachable(ip: &Ipv4Packet, l4: &[u8]) {
     if l4.len() < 8
         || ip.flags_fragment & 0x1fff != 0
@@ -133,6 +147,24 @@ pub fn send_port_unreachable(ip: &Ipv4Packet, l4: &[u8]) {
         || ip.src_ip[0] >= 224
     {
         return;
+    }
+    // Bound error output globally to ten packets per second. Linux exempts loopback.
+    if ip.src_ip[0] != 127 {
+        static NEXT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+        let now = crate::time::get_ticks();
+        let next = NEXT.load(core::sync::atomic::Ordering::Relaxed);
+        if now < next
+            || NEXT
+                .compare_exchange(
+                    next,
+                    now.saturating_add(100),
+                    core::sync::atomic::Ordering::Relaxed,
+                    core::sync::atomic::Ordering::Relaxed,
+                )
+                .is_err()
+        {
+            return;
+        }
     }
     // IHL is at most 60, so this error packet has a fixed stack bound.
     let mut packet = [0u8; ICMP_HEADER_SIZE + 60 + 8];
@@ -148,7 +180,6 @@ pub fn send_port_unreachable(ip: &Ipv4Packet, l4: &[u8]) {
 
 /// Extract an original UDP flow from an ICMP error. RFC 792 quotations may be
 /// shorter than the original IP total length, so a full IPv4 parse is inappropriate.
-#[allow(dead_code)] // Public ICMP input API consumed by UDP after F0.
 pub fn udp_error_quote(icmp: &IcmpPacket) -> Option<([u8; 4], u16, [u8; 4], u16, i32)> {
     if icmp.icmp_type != ICMP_DEST_UNREACHABLE {
         return None;
@@ -161,17 +192,24 @@ pub fn udp_error_quote(icmp: &IcmpPacket) -> Option<([u8; 4], u16, [u8; 4], u16,
     if data.len() < header_len + 8
         || (u16::from_be_bytes([data[2], data[3]]) as usize) < header_len + 8
         || u16::from_be_bytes([data[6], data[7]]) & 0x1fff != 0
-        || ipv4::internet_checksum(&data[..header_len]) != 0
     {
         return None;
     }
+    let udp_len = u16::from_be_bytes([data[header_len + 4], data[header_len + 5]]) as usize;
+    let ip_len = u16::from_be_bytes([data[2], data[3]]) as usize;
+    if udp_len < 8 || udp_len > ip_len - header_len {
+        return None;
+    }
+    use crate::syscall::errno::*;
     let errno = match icmp.code {
-        3 => crate::syscall::errno::ECONNREFUSED,
-        0 => crate::syscall::errno::ENETUNREACH,
-        1 => 113, // EHOSTUNREACH (Linux)
-        4 => crate::syscall::errno::EMSGSIZE,
-        9 | 10 | 13 => crate::syscall::errno::EACCES,
-        _ => return None,
+        2 => ENOPROTOOPT,
+        3 => ECONNREFUSED,
+        4 => EMSGSIZE,
+        6 | 9 => ENETUNREACH,
+        7 => EHOSTDOWN,
+        8 => ENONET,
+        10 | 13 | 14 | 15 => EHOSTUNREACH,
+        _ => return None, // Linux ignores transient errors without IP_RECVERR.
     };
     Some((
         [data[12], data[13], data[14], data[15]],

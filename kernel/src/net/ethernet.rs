@@ -61,8 +61,19 @@ impl<'a> EthernetFrame<'a> {
     }
 
     /// Build an Ethernet frame
-    pub fn build(src_mac: &[u8; 6], dst_mac: &[u8; 6], ethertype: u16, payload: &[u8]) -> Vec<u8> {
-        let mut frame = Vec::with_capacity(ETHERNET_HEADER_SIZE + payload.len());
+    pub fn build(
+        src_mac: &[u8; 6],
+        dst_mac: &[u8; 6],
+        ethertype: u16,
+        payload: &[u8],
+    ) -> Result<Vec<u8>, &'static str> {
+        let size = ETHERNET_HEADER_SIZE
+            .checked_add(payload.len())
+            .ok_or("Message too large")?;
+        let mut frame = Vec::new();
+        frame
+            .try_reserve_exact(size.max(ETHERNET_MIN_SIZE))
+            .map_err(|_| "No buffer space available")?;
 
         // Destination MAC
         frame.extend_from_slice(dst_mac);
@@ -78,7 +89,7 @@ impl<'a> EthernetFrame<'a> {
             frame.push(0);
         }
 
-        frame
+        Ok(frame)
     }
 }
 

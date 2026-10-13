@@ -1,5 +1,5 @@
-//! #908: private UDP registry holders mask once at the API boundary;
-//! NetRx lookup refuses contention instead of blocking. Each defect rule has
+//! #908: UDP registry holders mask at the API boundary. Receivers resolve
+//! Weak socket bindings outside PM and refuse input across contention. Each rule has
 //! an in-memory mutation of real source, with a checked replacement.
 
 use std::fs;
@@ -14,7 +14,7 @@ fn repo_text(relative: &str) -> String {
         .unwrap_or_else(|_| panic!("read repository file {relative}"))
 }
 
-const REGISTRY: &str = "kernel/src/socket/mod.rs";
+const REGISTRY: &str = "kernel/src/socket/udp.rs";
 const NET_UDP: &str = "kernel/src/net/udp.rs";
 
 /// Strip line comments, block comments, and the contents of string/char
@@ -153,7 +153,9 @@ fn body(source: &str, name: &str) -> String {
             b'{' => depth += 1,
             b'}' => {
                 depth -= 1;
-                if depth == 0 { return code[start..=start + offset].to_owned(); }
+                if depth == 0 {
+                    return code[start..=start + offset].to_owned();
+                }
             }
             _ => {}
         }
@@ -162,123 +164,186 @@ fn body(source: &str, name: &str) -> String {
 }
 
 fn check_with_udp_ports_masked_masks_the_whole_hold(source: &str) -> bool {
-    let body = body(source, "with_udp_ports_masked");
-    body.contains("Cpu::without_interrupts(|| f(&mut self.udp_ports.lock()))")
+    let body = body(source, "with_registry");
+    body.contains("crate::arch_without_interrupts(|| f(&mut SOCKET_REGISTRY.lock()))")
 }
 
 #[test]
-fn with_udp_ports_masked_masks_the_whole_hold() {
-    assert!(check_with_udp_ports_masked_masks_the_whole_hold(&repo_text(REGISTRY)), "#908: with_udp_ports_masked_masks_the_whole_hold");
+fn with_registry_masks_the_whole_hold() {
+    assert!(
+        check_with_udp_ports_masked_masks_the_whole_hold(&repo_text(REGISTRY)),
+        "#908: with_udp_ports_masked_masks_the_whole_hold"
+    );
 }
 
 #[test]
-fn with_udp_ports_masked_masks_the_whole_hold_rule_is_not_vacuous() {
+fn with_registry_masks_the_whole_hold_rule_is_not_vacuous() {
     let source = repo_text(REGISTRY);
     // Anchor the replacement to with_udp_ports_masked's body so the mutation targets this function specifically.
-    let start = source.find("fn with_udp_ports_masked").unwrap();
-    let mutated = format!("{}{}", &source[..start], source[start..].replacen(
-        "Cpu::without_interrupts(|| f(&mut self.udp_ports.lock()))", "f(&mut self.udp_ports.lock())", 1,
-    ));
+    let start = source.find("fn with_registry").unwrap();
+    let mutated = format!(
+        "{}{}",
+        &source[..start],
+        source[start..].replacen(
+            "crate::arch_without_interrupts(|| f(&mut SOCKET_REGISTRY.lock()))",
+            "f(&mut SOCKET_REGISTRY.lock())",
+            1,
+        )
+    );
     assert_ne!(source, mutated, "mutation text must match real source");
-    assert!(!check_with_udp_ports_masked_masks_the_whole_hold(&mutated), "mutation must redden the same rule");
+    assert!(
+        !check_with_udp_ports_masked_masks_the_whole_hold(&mutated),
+        "mutation must redden the same rule"
+    );
 }
 
 fn check_bind_udp_uses_the_masked_primitive(source: &str) -> bool {
-    let body = body(source, "bind_udp");
-    body.contains("self.with_udp_ports_masked(") && !body.contains("self.udp_ports.lock()")
+    let body = body(source, "reserve");
+    body.contains("with_registry(") && !body.contains("SOCKET_REGISTRY.lock()")
 }
 
 #[test]
-fn bind_udp_uses_the_masked_primitive() {
-    assert!(check_bind_udp_uses_the_masked_primitive(&repo_text(REGISTRY)), "#908: bind_udp_uses_the_masked_primitive");
+fn reserve_uses_the_masked_primitive() {
+    assert!(
+        check_bind_udp_uses_the_masked_primitive(&repo_text(REGISTRY)),
+        "#908: bind_udp_uses_the_masked_primitive"
+    );
 }
 
 #[test]
-fn bind_udp_uses_the_masked_primitive_rule_is_not_vacuous() {
+fn reserve_uses_the_masked_primitive_rule_is_not_vacuous() {
     let source = repo_text(REGISTRY);
     // Limit replacement to this function so bind and unbind cannot mutate each other.
-    let start = source.find("fn bind_udp").unwrap();
-    let mutated = format!("{}{}", &source[..start], source[start..].replacen(
-        "self.with_udp_ports_masked(|ports| {", "{ let ports = &mut self.udp_ports.lock();", 1,
-    ));
+    let start = source.find("fn reserve").unwrap();
+    let mutated = format!(
+        "{}{}",
+        &source[..start],
+        source[start..].replacen(
+            "with_registry(|registry| {",
+            "{ let registry = &mut SOCKET_REGISTRY.lock();",
+            1,
+        )
+    );
     assert_ne!(source, mutated, "mutation text must match real source");
-    assert!(!check_bind_udp_uses_the_masked_primitive(&mutated), "mutation must redden the same rule");
+    assert!(
+        !check_bind_udp_uses_the_masked_primitive(&mutated),
+        "mutation must redden the same rule"
+    );
 }
 
 fn check_unbind_udp_uses_the_masked_primitive(source: &str) -> bool {
-    let body = body(source, "unbind_udp");
-    body.contains("self.with_udp_ports_masked(") && !body.contains("self.udp_ports.lock()")
+    let body = body(source, "release");
+    body.contains("with_registry(") && !body.contains("SOCKET_REGISTRY.lock()")
 }
 
 #[test]
-fn unbind_udp_uses_the_masked_primitive() {
-    assert!(check_unbind_udp_uses_the_masked_primitive(&repo_text(REGISTRY)), "#908: unbind_udp_uses_the_masked_primitive");
+fn release_uses_the_masked_primitive() {
+    assert!(
+        check_unbind_udp_uses_the_masked_primitive(&repo_text(REGISTRY)),
+        "#908: unbind_udp_uses_the_masked_primitive"
+    );
 }
 
 #[test]
-fn unbind_udp_uses_the_masked_primitive_rule_is_not_vacuous() {
+fn release_uses_the_masked_primitive_rule_is_not_vacuous() {
     let source = repo_text(REGISTRY);
     // Limit replacement to this function so bind and unbind cannot mutate each other.
-    let start = source.find("fn unbind_udp").unwrap();
-    let mutated = format!("{}{}", &source[..start], source[start..].replacen(
-        "self.with_udp_ports_masked(|ports| {", "{ let ports = &mut self.udp_ports.lock();", 1,
-    ));
+    let start = source.find("fn release").unwrap();
+    let mutated = format!(
+        "{}{}",
+        &source[..start],
+        source[start..].replacen(
+            "with_registry(|registry| {",
+            "{ let registry = &mut SOCKET_REGISTRY.lock();",
+            1,
+        )
+    );
     assert_ne!(source, mutated, "mutation text must match real source");
-    assert!(!check_unbind_udp_uses_the_masked_primitive(&mutated), "mutation must redden the same rule");
+    assert!(
+        !check_unbind_udp_uses_the_masked_primitive(&mutated),
+        "mutation must redden the same rule"
+    );
 }
 
 fn check_try_lookup_udp_uses_try_lock_not_blocking_lock(source: &str) -> bool {
-    let body = body(source, "try_lookup_udp");
-    body.contains("self.udp_ports.try_lock()") && !body.contains("self.udp_ports.lock()")
+    let body = body(source, "receivers");
+    body.contains("crate::arch_without_interrupts(||")
+        && body.contains("SOCKET_REGISTRY.try_lock()")
+        && !body.contains("SOCKET_REGISTRY.lock()")
 }
 
 #[test]
-fn try_lookup_udp_uses_try_lock_not_blocking_lock() {
-    assert!(check_try_lookup_udp_uses_try_lock_not_blocking_lock(&repo_text(REGISTRY)), "#908: try_lookup_udp_uses_try_lock_not_blocking_lock");
+fn receivers_refuses_contention_under_the_mask() {
+    assert!(
+        check_try_lookup_udp_uses_try_lock_not_blocking_lock(&repo_text(REGISTRY)),
+        "#908: try_lookup_udp_uses_try_lock_not_blocking_lock"
+    );
 }
 
 #[test]
-fn try_lookup_udp_uses_try_lock_not_blocking_lock_rule_is_not_vacuous() {
+fn receivers_refuses_contention_under_the_mask_rule_is_not_vacuous() {
     let source = repo_text(REGISTRY);
     // Anchor the replacement to try_lookup_udp's body so the mutation targets this function specifically.
-    let start = source.find("fn try_lookup_udp").unwrap();
-    let mutated = format!("{}{}", &source[..start], source[start..].replacen(
-        "self.udp_ports.try_lock()", "self.udp_ports.lock()", 1,
-    ));
+    let start = source.find("fn receivers").unwrap();
+    let mutated = format!(
+        "{}{}",
+        &source[..start],
+        source[start..].replacen("crate::arch_without_interrupts(||", "(||", 1,)
+    );
     assert_ne!(source, mutated, "mutation text must match real source");
-    assert!(!check_try_lookup_udp_uses_try_lock_not_blocking_lock(&mutated), "mutation must redden the same rule");
+    assert!(
+        !check_try_lookup_udp_uses_try_lock_not_blocking_lock(&mutated),
+        "mutation must redden the same rule"
+    );
 }
 
 fn check_try_lookup_udp_counts_refusals(source: &str) -> bool {
-    let body = body(source, "try_lookup_udp");
-    body.split("None => {").nth(1).is_some_and(|arm| arm.contains("UDP_PORTS_LOOKUP_REFUSED.fetch_add(1, Ordering::Relaxed)"))
+    let body = body(source, "receivers");
+    body.split("None => {").nth(1).is_some_and(|arm| {
+        arm.contains("UDP_PORTS_LOOKUP_REFUSED.fetch_add(1, core::sync::atomic::Ordering::Relaxed)")
+    })
 }
 
 #[test]
-fn try_lookup_udp_counts_refusals() {
-    assert!(check_try_lookup_udp_counts_refusals(&repo_text(REGISTRY)), "#908: try_lookup_udp_counts_refusals");
+fn receivers_counts_refusals() {
+    assert!(
+        check_try_lookup_udp_counts_refusals(&repo_text(REGISTRY)),
+        "#908: try_lookup_udp_counts_refusals"
+    );
 }
 
 #[test]
-fn try_lookup_udp_counts_refusals_rule_is_not_vacuous() {
+fn receivers_counts_refusals_rule_is_not_vacuous() {
     let source = repo_text(REGISTRY);
     // Anchor the replacement to try_lookup_udp's body so the mutation targets this function specifically.
-    let start = source.find("fn try_lookup_udp").unwrap();
-    let mutated = format!("{}{}", &source[..start], source[start..].replacen(
-        "UDP_PORTS_LOOKUP_REFUSED.fetch_add(1, Ordering::Relaxed);", "", 1,
-    ));
+    let start = source.find("fn receivers").unwrap();
+    let mutated = format!(
+        "{}{}",
+        &source[..start],
+        source[start..].replacen(
+            "UDP_PORTS_LOOKUP_REFUSED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);",
+            "",
+            1,
+        )
+    );
     assert_ne!(source, mutated, "mutation text must match real source");
-    assert!(!check_try_lookup_udp_counts_refusals(&mutated), "mutation must redden the same rule");
+    assert!(
+        !check_try_lookup_udp_counts_refusals(&mutated),
+        "mutation must redden the same rule"
+    );
 }
 
 fn check_handle_udp_uses_try_lookup_udp_not_lookup_udp(source: &str) -> bool {
     let body = body(source, "handle_udp");
-    body.contains("try_lookup_udp(") && !body.replace("try_lookup_udp(", "").contains("lookup_udp(")
+    body.contains("crate::socket::udp::deliver(") && !body.contains("with_process_manager(")
 }
 
 #[test]
 fn handle_udp_uses_try_lookup_udp_not_lookup_udp() {
-    assert!(check_handle_udp_uses_try_lookup_udp_not_lookup_udp(&repo_text(NET_UDP)), "#908: handle_udp_uses_try_lookup_udp_not_lookup_udp");
+    assert!(
+        check_handle_udp_uses_try_lookup_udp_not_lookup_udp(&repo_text(NET_UDP)),
+        "#908: handle_udp_uses_try_lookup_udp_not_lookup_udp"
+    );
 }
 
 #[test]
@@ -286,26 +351,38 @@ fn handle_udp_uses_try_lookup_udp_not_lookup_udp_rule_is_not_vacuous() {
     let source = repo_text(NET_UDP);
     // Anchor the replacement to handle_udp's body so the mutation targets this function specifically.
     let start = source.find("fn handle_udp").unwrap();
-    let mutated = format!("{}{}", &source[..start], source[start..].replacen(
-        "try_lookup_udp(header.dst_port)", "lookup_udp(header.dst_port)", 1,
-    ));
+    let mutated = format!(
+        "{}{}",
+        &source[..start],
+        source[start..].replacen("crate::socket::udp::deliver(", "with_process_manager(", 1,)
+    );
     assert_ne!(source, mutated, "mutation text must match real source");
-    assert!(!check_handle_udp_uses_try_lookup_udp_not_lookup_udp(&mutated), "mutation must redden the same rule");
+    assert!(
+        !check_handle_udp_uses_try_lookup_udp_not_lookup_udp(&mutated),
+        "mutation must redden the same rule"
+    );
 }
 
 fn check_handle_udp_contended_arm_has_no_logging(source: &str) -> bool {
-    // Since #1384 a contended lookup (`try_lookup_udp` returning None) falls
-    // past the delivery `if let`, so nothing after the lookup may log.
     let body = body(source, "handle_udp");
-    body.split_once("try_lookup_udp(").is_some_and(|(_, after)| {
-        ["log::debug!", "log::warn!", "log::info!", "log::error!", "log::trace!", "serial_println!"]
-            .iter().all(|logging| !after.contains(logging))
-    })
+    [
+        "log::debug!",
+        "log::warn!",
+        "log::info!",
+        "log::error!",
+        "log::trace!",
+        "serial_println!",
+    ]
+    .iter()
+    .all(|logging| !body.contains(logging))
 }
 
 #[test]
 fn handle_udp_contended_arm_has_no_logging() {
-    assert!(check_handle_udp_contended_arm_has_no_logging(&repo_text(NET_UDP)), "#908: handle_udp_contended_arm_has_no_logging");
+    assert!(
+        check_handle_udp_contended_arm_has_no_logging(&repo_text(NET_UDP)),
+        "#908: handle_udp_contended_arm_has_no_logging"
+    );
 }
 
 #[test]
@@ -313,17 +390,20 @@ fn handle_udp_contended_arm_has_no_logging_rule_is_not_vacuous() {
     let source = repo_text(NET_UDP);
     let start = source.find("pub fn handle_udp(").unwrap();
     let mutated = format!("{}{}", &source[..start], source[start..].replacen(
-        "try_lookup_udp(header.dst_port) {",
-        "try_lookup_udp(header.dst_port) {\n        log::debug!(\"UDP: udp_ports lock contended\");",
+        "pub fn handle_udp(ip: &Ipv4Packet, data: &[u8]) {",
+        "pub fn handle_udp(ip: &Ipv4Packet, data: &[u8]) {\n        log::debug!(\"UDP: contended\");",
         1,
     ));
     assert_ne!(source, mutated, "mutation text must match real source");
-    assert!(!check_handle_udp_contended_arm_has_no_logging(&mutated), "mutation must redden the same rule");
+    assert!(
+        !check_handle_udp_contended_arm_has_no_logging(&mutated),
+        "mutation must redden the same rule"
+    );
 }
 
 /// Return only the contiguous doc lines immediately above the primitive.
 fn udp_ports_masked_doc(source: &str) -> &str {
-    let function = source.find("fn with_udp_ports_masked").expect("function missing");
+    let function = source.find("fn with_registry").expect("function missing");
     let end = source[..function].rfind('\n').map_or(0, |index| index + 1);
     let mut start = end;
     while start > 0 {
@@ -342,79 +422,64 @@ fn check_with_udp_ports_masked_documents_removal_allocator_work(source: &str) ->
 }
 
 #[test]
-fn with_udp_ports_masked_documents_removal_allocator_work() {
-    assert!(check_with_udp_ports_masked_documents_removal_allocator_work(&repo_text(REGISTRY)), "#908: with_udp_ports_masked_documents_removal_allocator_work");
+fn with_registry_documents_removal_allocator_work() {
+    assert!(
+        check_with_udp_ports_masked_documents_removal_allocator_work(&repo_text(REGISTRY)),
+        "#908: with_udp_ports_masked_documents_removal_allocator_work"
+    );
 }
 
 #[test]
-fn with_udp_ports_masked_documents_removal_allocator_work_rule_is_not_vacuous() {
+fn with_registry_documents_removal_allocator_work_rule_is_not_vacuous() {
     let source = repo_text(REGISTRY);
     let doc = udp_ports_masked_doc(&source);
-    let disclosure = concat!(
-        "    /// `unbind_udp`'s map removal can also allocate/deallocate --\n",
-        "    /// `BTreeMap::remove` may rebalance or merge nodes back to the\n",
-        "    /// allocator. Neither is a deadlock risk: the global heap allocator\n",
-        "    /// (`kernel/src/memory/heap.rs`) masks interrupts around its own lock\n",
-        "    /// during alloc/dealloc, the same nested-mask pattern this\n",
-        "    /// primitive already relies on.\n",
-    );
+    let disclosure = "/// Registry insertions and remove operations may allocate/deallocate; memory/heap.rs\n/// masks its allocator lock. The outer IRQ mask covers the entire map hold.\n";
     // An on-disk deletion already violates the production rule.
     if !doc.contains(disclosure) {
-        assert!(!check_with_udp_ports_masked_documents_removal_allocator_work(&source), "missing disclosure must already redden production rule");
+        assert!(
+            !check_with_udp_ports_masked_documents_removal_allocator_work(&source),
+            "missing disclosure must already redden production rule"
+        );
         return;
     }
     let start = source.find(doc).unwrap();
-    let mutated = format!("{}{}{}", &source[..start], doc.replacen(disclosure, "", 1), &source[start + doc.len()..]);
+    let mutated = format!(
+        "{}{}{}",
+        &source[..start],
+        doc.replacen(disclosure, "", 1),
+        &source[start + doc.len()..]
+    );
     assert_ne!(source, mutated, "mutation text must match real source");
-    assert!(!check_with_udp_ports_masked_documents_removal_allocator_work(&mutated), "mutation must redden the same rule");
+    assert!(
+        !check_with_udp_ports_masked_documents_removal_allocator_work(&mutated),
+        "mutation must redden the same rule"
+    );
 }
 
-/// #823 rule 6 (regression guard): NetRx delivery, inlined into `handle_udp`
-/// by #1384, still locks the socket inside `with_process_manager`'s masked
-/// closure, through the masked primitive, before it enqueues -- so a future
-/// edit cannot move the IRQ-side lock out from under the mask while the
-/// thread side is being kept honest.
 #[test]
-fn udp_delivery_locks_the_socket_under_process_manager() {
-    let code = masked_text(&repo_text(NET_UDP));
-    let start = code
-        .find("pub fn handle_udp(")
-        .expect("#823 shape failure: net/udp.rs::handle_udp was renamed or removed");
-    let end = code[start..].find("\n}\n").map_or(code.len(), |i| start + i);
-    let body = &code[start..end];
-    let pm = body
-        .find("with_process_manager(")
-        .expect("#823 shape failure: handle_udp no longer delivers under with_process_manager");
-    let lock = body
-        .find("with_locked_masked(udp,")
-        .expect("#823 shape failure: handle_udp no longer locks the socket through with_locked_masked");
-    let enqueue = body
-        .find("enqueue_packet(")
-        .expect("#823 shape failure: handle_udp no longer enqueues the packet");
-    assert!(
-        pm < lock && lock < enqueue,
-        "#823 shape failure: handle_udp must lock the socket inside the process-manager \
-         closure and enqueue while holding it"
-    );
-    assert!(
-        !body.contains(".lock()"),
-        "#823 shape failure: handle_udp takes a lock outside the masked primitive"
-    );
+fn udp_delivery_uses_weak_sockets_with_masked_state() {
+    let wire = masked_text(&repo_text(NET_UDP));
+    assert!(wire.contains("crate::socket::udp::deliver("));
+    assert!(!wire.contains("with_process_manager("));
+    let registry = masked_text(&repo_text(REGISTRY));
+    assert!(registry.contains("weak.upgrade()"));
+    assert!(registry.contains("crate::socket::udp::with_locked_masked(udp,"));
+    assert!(!registry.contains("with_process_manager("));
 }
 
 #[test]
 fn green_control_all_rules_hold_at_head() {
-    with_udp_ports_masked_masks_the_whole_hold();
-    bind_udp_uses_the_masked_primitive();
-    unbind_udp_uses_the_masked_primitive();
-    try_lookup_udp_uses_try_lock_not_blocking_lock();
-    try_lookup_udp_counts_refusals();
+    with_registry_masks_the_whole_hold();
+    reserve_uses_the_masked_primitive();
+    release_uses_the_masked_primitive();
+    receivers_refuses_contention_under_the_mask();
+    receivers_counts_refusals();
     handle_udp_uses_try_lookup_udp_not_lookup_udp();
     handle_udp_contended_arm_has_no_logging();
     handle_udp_contended_arm_has_no_logging_rule_is_not_vacuous();
-    with_udp_ports_masked_documents_removal_allocator_work();
-    with_udp_ports_masked_documents_removal_allocator_work_rule_is_not_vacuous();
-    udp_delivery_locks_the_socket_under_process_manager();
+    with_registry_documents_removal_allocator_work();
+    with_registry_documents_removal_allocator_work_rule_is_not_vacuous();
+    udp_delivery_uses_weak_sockets_with_masked_state();
 }
 
 #[test]

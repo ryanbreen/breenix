@@ -9,13 +9,10 @@ pub mod serial {
     }
 }
 
+#[path = "../kernel/src/syscall/errno.rs"]
+pub mod errno;
 pub mod syscall {
-    pub mod errno {
-        pub const ENETUNREACH: i32 = 101;
-        pub const ECONNREFUSED: i32 = 111;
-        pub const EMSGSIZE: i32 = 90;
-        pub const EACCES: i32 = 13;
-    }
+    pub use crate::errno;
 }
 
 #[derive(Debug, PartialEq)]
@@ -45,6 +42,7 @@ pub mod tcp {
     }
 }
 pub mod udp {
+    pub fn udp_icmp_error(_: [u8; 4], _: u16, _: [u8; 4], _: u16, _: i32) {}
     pub fn handle_udp(_: &crate::ipv4::Ipv4Packet, _: &[u8]) {
         unreachable!("wire tests never deliver UDP")
     }
@@ -111,4 +109,77 @@ fn truncated_icmp_quote_identifies_original_flow_and_rejects_malformed_headers()
     }
     error[8] = 0x4f;
     assert!(icmp::udp_error_quote(&icmp::IcmpPacket::parse(&error).unwrap()).is_none());
+}
+
+pub mod time {
+    pub fn get_ticks() -> u64 {
+        0
+    }
+}
+pub fn is_broadcast_addr_in(_: &Config, addr: [u8; 4]) -> bool {
+    is_broadcast_addr(addr)
+}
+
+#[test]
+fn icmp_quote_uses_linux_fatal_codes_without_quoted_checksum_validation() {
+    let mut udp = [0; 8];
+    udp[..2].copy_from_slice(&49152u16.to_be_bytes());
+    udp[2..4].copy_from_slice(&53u16.to_be_bytes());
+    udp[4..6].copy_from_slice(&8u16.to_be_bytes());
+    let ip = Ipv4Packet::try_build([127, 0, 0, 1], [127, 0, 0, 2], PROTOCOL_UDP, &udp).unwrap();
+    let mut error = vec![3, 3, 0, 0, 0, 0, 0, 0];
+    error.extend_from_slice(&ip);
+    error[18] ^= 1; // A quoted IP checksum is not validated by Linux.
+    for (code, expected) in [
+        (0, None),
+        (1, None),
+        (2, Some(92)),
+        (3, Some(111)),
+        (4, Some(90)),
+        (5, None),
+        (6, Some(101)),
+        (7, Some(112)),
+        (8, Some(64)),
+        (9, Some(101)),
+        (10, Some(113)),
+        (11, None),
+        (12, None),
+        (13, Some(113)),
+        (14, Some(113)),
+        (15, Some(113)),
+    ] {
+        error[1] = code;
+        assert_eq!(
+            icmp::udp_error_quote(&icmp::IcmpPacket::parse(&error).unwrap()).map(|quote| quote.4),
+            expected
+        );
+    }
+}
+
+#[test]
+fn ethernet_build_preserves_header_and_minimum_padding() {
+    let bytes = ethernet::EthernetFrame::build(&[1; 6], &[2; 6], ethernet::ETHERTYPE_IPV4, &[3; 8])
+        .unwrap();
+    assert_eq!(bytes.len(), ethernet::ETHERNET_MIN_SIZE);
+    let frame = ethernet::EthernetFrame::parse(&bytes).unwrap();
+    assert_eq!(frame.src_mac, [1; 6]);
+    assert_eq!(frame.dst_mac, [2; 6]);
+    assert_eq!(frame.ethertype, ethernet::ETHERTYPE_IPV4);
+    assert_eq!(&frame.payload[..8], &[3; 8]);
+    assert!(frame.payload[8..].iter().all(|b| *b == 0));
+}
+#[test]
+fn broadcast_ipv4_is_not_dispatched_to_tcp_or_icmp() {
+    for protocol in [ipv4::PROTOCOL_ICMP, ipv4::PROTOCOL_TCP] {
+        let payload = icmp::IcmpPacket::echo_request(1, 1, b"broadcast");
+        let packet = Ipv4Packet::try_build([10, 0, 2, 2], [255; 4], protocol, &payload).unwrap();
+        let frame = ethernet::EthernetFrame {
+            src_mac: [1; 6],
+            dst_mac: [255; 6],
+            ethertype: ethernet::ETHERTYPE_IPV4,
+            payload: &packet,
+        };
+        // Harness protocol output/dispatch panics if either forbidden path runs.
+        ipv4::handle_ipv4(&frame, &Ipv4Packet::parse(&packet).unwrap());
+    }
 }

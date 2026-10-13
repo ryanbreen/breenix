@@ -10,10 +10,8 @@ fn main() {
         ));
     println!("cargo:rerun-if-changed={}", archive.display());
 
-    // `libc_has = "<name>"` covers thread, scheduling, signal, IPC, terminal,
-    // socket and resolver functions defined by libc.a, from its symbol index.
-    // Suites call available functions and name missing ones in failing cases
-    // instead of failing to link or substituting a raw syscall for the interface.
+    // Discover C-library functions used by the thread, IPC, terminal and networking
+    // suites so each can call the functions present, or report those it lacks.
     const PREFIXES: &[&str] = &["pthread_", "sched_", "sig", "mq_", "sem", "shm", "msg"];
     const OTHERS: &[&str] = &[
         "raise", "sysconf", "__errno_location", "exit", "getpid", "close", "pipe", "read", "write", "kill",

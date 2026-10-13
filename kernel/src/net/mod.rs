@@ -298,6 +298,7 @@ struct LoopbackPacket {
 static LOOPBACK_QUEUE: Mutex<Vec<LoopbackPacket>> = Mutex::new(Vec::new());
 /// Single-writer-under-lock atomic mirror of `LOOPBACK_QUEUE.len()`.
 /// Writers publish the new length immediately after each queue mutation.
+static LOOPBACK_QUEUE_BYTES: AtomicUsize = AtomicUsize::new(0);
 static LOOPBACK_QUEUE_DEPTH: AtomicUsize = AtomicUsize::new(0);
 static LOOPBACK_DRAIN_TICKET: AtomicU64 = AtomicU64::new(0);
 static LOOPBACK_DRAIN_OWNER: AtomicU64 = AtomicU64::new(0);
@@ -514,6 +515,7 @@ pub(crate) fn flush_arp_pending_packets(next_hop: &[u8; 4], mac: &[u8; 6]) {
         let _guard = net_lock_guard();
         let mut queue = ARP_PENDING_QUEUE.lock();
         let packets = core::mem::take(&mut *queue);
+        LOOPBACK_QUEUE_BYTES.store(0, Ordering::Relaxed);
         drop(queue);
         packets
     };
@@ -566,6 +568,7 @@ fn take_queued_loopback_packets() -> LoopbackTake {
             let net_guard = net_lock_guard();
             let mut queue = LOOPBACK_QUEUE.lock();
             let packets = core::mem::take(&mut *queue);
+            LOOPBACK_QUEUE_BYTES.store(0, Ordering::Relaxed);
             LOOPBACK_QUEUE_DEPTH.store(queue.len(), Ordering::Release);
             drop(queue);
             drop(drain_guard);
@@ -1235,7 +1238,7 @@ pub fn send_ethernet(
     }
     let src_mac = get_mac_address().ok_or("Network device not initialized")?;
 
-    let frame = ethernet::EthernetFrame::build(&src_mac, dst_mac, ethertype, payload);
+    let frame = ethernet::EthernetFrame::build(&src_mac, dst_mac, ethertype, payload)?;
     driver_transmit(&frame)
 }
 
@@ -1285,7 +1288,6 @@ pub enum TxError {
     MsgSize,
 }
 impl TxError {
-    #[allow(dead_code)] // Public TxError API used by the post-F0 protocol adapters.
     pub fn errno(self) -> i32 {
         match self {
             Self::NoRoute => crate::syscall::errno::ENETUNREACH,
@@ -1303,12 +1305,41 @@ impl TxError {
 }
 
 pub fn is_local_addr(addr: [u8; 4]) -> bool {
-    addr[0] == 127 || addr == config().ip_addr
+    is_local_addr_in(&config(), addr)
 }
 
 pub fn is_broadcast_addr(addr: [u8; 4]) -> bool {
-    let cfg = config();
+    is_broadcast_addr_in(&config(), addr)
+}
+
+pub fn is_local_addr_in(cfg: &NetConfig, addr: [u8; 4]) -> bool {
+    addr[0] == 127 || addr == cfg.ip_addr
+}
+pub fn is_broadcast_addr_in(cfg: &NetConfig, addr: [u8; 4]) -> bool {
     addr == [255; 4] || (0..4).all(|i| addr[i] == (cfg.ip_addr[i] | !cfg.subnet_mask[i]))
+}
+
+fn enqueue_local_packet(ip_packet: Vec<u8>) -> Result<(), TxError> {
+    {
+        let _guard = net_lock_guard();
+        let mut queue = LOOPBACK_QUEUE.lock();
+        let charge = ip_packet.len() + core::mem::size_of::<LoopbackPacket>();
+        let bytes = LOOPBACK_QUEUE_BYTES.load(Ordering::Relaxed);
+        if charge > MAX_LOOPBACK_QUEUE_BYTES.saturating_sub(bytes) {
+            LOOPBACK_DROPPED_FULL.fetch_add(1, Ordering::Relaxed);
+            return Err(TxError::NoBufs);
+        }
+        queue.try_reserve(1).map_err(|_| TxError::NoBufs)?;
+        queue.push(LoopbackPacket {
+            data: ip_packet,
+            queued_at_tick: crate::time::get_ticks(),
+        });
+        LOOPBACK_QUEUE_BYTES.store(bytes + charge, Ordering::Relaxed);
+        LOOPBACK_QUEUE_DEPTH.store(queue.len(), Ordering::Release);
+    }
+    kick_loopback_delivery();
+    crate::net::loopback_pump::wake_loopback_pump();
+    Ok(())
 }
 
 /// Never evict loopback packets. Accepted ARP misses are asynchronous success.
@@ -1317,38 +1348,23 @@ pub fn ip_output(src: [u8; 4], dst: [u8; 4], protocol: u8, payload: &[u8]) -> Re
     if payload.len() > u16::MAX as usize - ipv4::IPV4_HEADER_MIN_SIZE {
         return Err(TxError::MsgSize);
     }
-    if is_local_addr(dst) {
-        let ip_packet = ipv4::Ipv4Packet::try_build(src, dst, protocol, payload)?;
-        {
-            let _guard = net_lock_guard();
-            let mut queue = LOOPBACK_QUEUE.lock();
-            let queued_bytes: usize = queue.iter().map(|packet| packet.data.len()).sum();
-            if ip_packet.len() > MAX_LOOPBACK_QUEUE_BYTES.saturating_sub(queued_bytes) {
-                LOOPBACK_DROPPED_FULL.fetch_add(1, Ordering::Relaxed);
-                return Err(TxError::NoBufs);
-            }
-            queue.try_reserve(1).map_err(|_| TxError::NoBufs)?;
-            queue.push(LoopbackPacket {
-                data: ip_packet,
-                queued_at_tick: crate::time::get_ticks(),
-            });
-            LOOPBACK_QUEUE_DEPTH.store(queue.len(), Ordering::Release);
-            drop(queue);
-        }
-        kick_loopback_delivery();
-        crate::net::loopback_pump::wake_loopback_pump();
-        return Ok(());
+    let cfg = config();
+    if is_local_addr_in(&cfg, dst) {
+        return enqueue_local_packet(ipv4::Ipv4Packet::try_build(src, dst, protocol, payload)?);
     }
+    let broadcast = is_broadcast_addr_in(&cfg, dst);
     // No fragmentation: use the interface MTU and return EMSGSIZE.
     if payload.len() > ethernet::ETHERNET_MTU - ipv4::IPV4_HEADER_MIN_SIZE {
         return Err(TxError::MsgSize);
     }
-    let cfg = config();
     let same_subnet =
         (0..4).all(|i| dst[i] & cfg.subnet_mask[i] == cfg.ip_addr[i] & cfg.subnet_mask[i]);
     let next_hop = if same_subnet { dst } else { cfg.gateway };
     let ip_packet = ipv4::Ipv4Packet::try_build(src, dst, protocol, payload)?;
-    let mac = if is_broadcast_addr(dst) {
+    if broadcast {
+        enqueue_local_packet(ipv4::Ipv4Packet::try_build(src, dst, protocol, payload)?)?;
+    }
+    let mac = if broadcast {
         ethernet::BROADCAST_MAC
     } else if let Some(mac) = arp::lookup(&next_hop) {
         mac
