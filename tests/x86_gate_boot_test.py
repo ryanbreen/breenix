@@ -20,8 +20,9 @@ class BootOutcomes(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             kernel = Path(directory) / 'kernel'
             user = Path(directory) / 'user'
+            host_epoch = time.time()
             kernel.write_text(serial)
-            user.write_text((f'[clock] UTC epoch={int(time.time()) + offset} source=CMOS\n' if report_clock else '') + user_output)
+            user.write_text((f'[clock] UTC epoch={int(host_epoch) + offset} source=CMOS\n' if report_clock else '') + user_output)
             process = Mock(returncode=7)
             if isinstance(poll, list):
                 process.poll.side_effect = poll
@@ -36,6 +37,7 @@ class BootOutcomes(unittest.TestCase):
                  patch.object(gate.subprocess, 'run'), \
                  patch.object(gate, 'stop') as stop, \
                  patch.object(gate.time, 'monotonic', side_effect=monotonic), \
+                 patch.object(gate.time, 'time', return_value=host_epoch), \
                  patch.dict(os.environ, {'BREENIX_GATE_TIMEOUT': deadline, 'BREENIX_FULL_BACKSTOP': backstop}):
                 status = gate.main()
                 stop.assert_called_once_with(process)
