@@ -125,8 +125,9 @@ pub fn handle_udp(ip: &Ipv4Packet, data: &[u8]) {
             for (_, process) in manager.iter_processes() {
                 for fd in 0..crate::ipc::fd::MAX_FDS {
                     let Some(entry) = process.fd_table.get(fd as i32) else { continue };
-                    if let crate::ipc::fd::FdKind::UdpSocket(endpoint) = &entry.kind {
-                        let delivered = crate::socket::udp::with_locked_masked(endpoint, |socket| {
+                    let crate::ipc::fd::FdKind::Socket(sk) = &entry.kind else { continue };
+                    if let crate::socket::object::SocketProto::Udp(udp) = &sk.proto {
+                        let delivered = crate::socket::udp::with_locked_masked(udp, |socket| {
                             if socket.handle == handle {
                                 socket.enqueue_packet(crate::socket::udp::UdpPacket {
                                     src_addr: ip.src_ip,
@@ -146,6 +147,8 @@ pub fn handle_udp(ip: &Ipv4Packet, data: &[u8]) {
                             }
                         });
                         if delivered {
+                            // PM is held: the wake goes through the deferred path.
+                            sk.common.notify_deferred();
                             return;
                         }
                     }

@@ -557,11 +557,22 @@ fn repaired_families_have_no_blocking_eagain_exit() {
         }
     }
     census(&nodes, &mut discovered);
-    for family in ["PipeWrite", "FifoWrite", "UnixStream", "Device"] {
+    for family in ["PipeWrite", "FifoWrite", "Socket", "Device"] {
         assert!(discovered.contains(family), "census lost {family}");
     }
     let helper = read("kernel/src/syscall/blocking_io.rs");
-    let defs = functions(&lex(&helper));
+    let sockets = read("kernel/src/syscall/socket.rs");
+    let unix = read("kernel/src/socket/unix.rs");
+    // The socket write route: handlers.rs hands the descriptor mode to
+    // socket_write, which carries it in SendMsg.nonblock across the protocol's
+    // trait object; the Unix stream adapter hands msg.nonblock to write_unix.
+    let mut defs = functions(&lex(&helper));
+    defs.insert(
+        "socket_write".into(),
+        functions(&lex(&sockets))
+            .remove("socket_write")
+            .expect("socket_write route"),
+    );
     let roots: Vec<_> = defs
         .keys()
         .filter(|name| {
@@ -570,8 +581,8 @@ fn repaired_families_have_no_blocking_eagain_exit() {
         .collect();
     assert_eq!(
         roots.len(),
-        2,
-        "pipe/FIFO and Unix must reach their recognized writer adapters"
+        1,
+        "pipe/FIFO must reach their recognized writer adapter"
     );
     assert_eq!(
         compacted
@@ -581,7 +592,7 @@ fn repaired_families_have_no_blocking_eagain_exit() {
         "shared Pipe/Fifo match must delegate together"
     );
     let routes = match_arms(&nodes, "WriteOperation");
-    for family in ["Pipe", "Fifo", "UnixStream"] {
+    for family in ["Pipe", "Fifo", "Socket"] {
         let arms: Vec<_> = routes
             .iter()
             .filter(|(names, _)| names.iter().any(|name| name == family))
@@ -592,7 +603,7 @@ fn repaired_families_have_no_blocking_eagain_exit() {
         } else if family == "Fifo" {
             "FifoWrite"
         } else {
-            "UnixStream"
+            "Socket"
         };
         let snapshots = match_arms(&nodes, "FdKind");
         let snapshot = snapshots
@@ -654,8 +665,17 @@ fn repaired_families_have_no_blocking_eagain_exit() {
             .expect("snapshotted mode destructured into adapter");
         let mut mode = BTreeMap::new();
         mode.insert(binding.clone(), false);
-        inspect(&arms[0].1, mode, &defs, &mut BTreeSet::new())
-            .unwrap_or_else(|e| panic!("{family} adapter: {e}"));
+        if family == "Socket" {
+            // The arm hands the mode to socket_write, whose result is the
+            // send's, converted without adding an errno of its own.
+            assert!(
+                contains(&arms[0].1, "socket::socket_write("),
+                "Socket write route no longer reaches socket_write"
+            );
+        } else {
+            inspect(&arms[0].1, mode, &defs, &mut BTreeSet::new())
+                .unwrap_or_else(|e| panic!("{family} adapter: {e}"));
+        }
         assert!(
             contains(&arms[0].1, &format!(",{binding})")),
             "{family} lost owned handle or mode forwarding"
@@ -663,11 +683,73 @@ fn repaired_families_have_no_blocking_eagain_exit() {
     }
     audit_helper(&helper, roots[0])
         .unwrap_or_else(|e| panic!("Pipe/FIFO blocking route rejected: {e}"));
-    audit_helper(&helper, "write_unix")
+    assert!(
+        socket_mode_reaches_unix_writer(&sockets, &unix),
+        "socket_write's mode no longer reaches write_unix"
+    );
+    audit_helper(&unix_writer_source(&unix, &helper), "write_unix")
         .unwrap_or_else(|e| panic!("Unix blocking route rejected: {e}"));
     audit_helper(&helper, "read_console").expect("Console/Tty blocking route");
     audit_console_route(&handlers, &helper).expect("Console/Tty syscall result route");
     println!("Pipe/FIFO/Unix writes and Console/Tty reads: bounded blocking EAGAIN census");
+}
+
+/// write_unix as an audit sees it: its own text, with the prepared-wait
+/// helpers it calls (blocking_io.rs) as the only other definitions.
+fn unix_writer_source(unix: &str, helper: &str) -> String {
+    let start = unix.find("fn write_unix(").expect("write_unix in socket/unix.rs");
+    let open = start + unix[start..].find('{').expect("write_unix body");
+    let mut depth = 0usize;
+    let mut end = open;
+    for (i, c) in unix[open..].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = open + i + 1;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    format!("{}\n{helper}", &unix[start..end])
+}
+
+/// The descriptor mode crosses the protocol's trait object in SendMsg: write(2)
+/// sets SendMsg.nonblock from it, the send passes the message on whole, and
+/// the Unix stream adapter gives msg.nonblock to write_unix as its mode.
+fn socket_mode_reaches_unix_writer(sockets: &str, unix: &str) -> bool {
+    let signature = compact(&lex(sockets))
+        .contains("fnsocket_write(sk:&Arc<Socket>,data:&[u8],nonblock:bool)");
+    let write = compact(&function(sockets, "socket_write"));
+    let send = compact(&function(sockets, "send"));
+    let adapter = compact(&function(unix, "sendmsg"));
+    signature
+        && write.contains("nonblock,")
+        && write.contains("send(sk,&mutmsg)")
+        && send.contains("sk.ops().sendmsg(sk,msg)")
+        && adapter.contains("write_unix(writer,msg.data,msg.nonblock)")
+}
+
+#[test]
+fn socket_mode_route_rejects_a_dropped_mode() {
+    let sockets = read("kernel/src/syscall/socket.rs");
+    let unix = read("kernel/src/socket/unix.rs");
+    assert!(socket_mode_reaches_unix_writer(&sockets, &unix));
+    assert!(!socket_mode_reaches_unix_writer(
+        &sockets,
+        &unix.replace("write_unix(writer, msg.data, msg.nonblock)", "write_unix(writer, msg.data, false)")
+    ));
+    assert!(!socket_mode_reaches_unix_writer(
+        &sockets.replace("        nonblock,\n        rights: Vec::new(),\n        cred: send_cred(sk),", "        nonblock: false,\n        rights: Vec::new(),\n        cred: send_cred(sk),"),
+        &unix
+    ));
+    let helper = read("kernel/src/syscall/blocking_io.rs");
+    let blocking = unix.replace("if is_nonblocking {\n                return Err(errno::EAGAIN);", "if !is_nonblocking {\n                return Err(errno::EAGAIN);");
+    assert_ne!(blocking, unix, "write_unix mutation did not apply");
+    assert!(audit_helper(&unix_writer_source(&blocking, &helper), "write_unix").is_err());
 }
 
 #[test]
