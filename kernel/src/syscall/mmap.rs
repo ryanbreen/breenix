@@ -776,7 +776,7 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u32) -> SyscallResult {
             .then(|| process.vmas[index].piece(VirtAddr::new(start), VirtAddr::new(cursor)));
         let suffix = (next < end)
             .then(|| process.vmas[index].piece(VirtAddr::new(next), VirtAddr::new(end)));
-        process.vmas[index] = process.vmas[index].piece(VirtAddr::new(cursor), VirtAddr::new(next));
+        process.vmas[index] = process.vmas[index].replacement_piece(VirtAddr::new(cursor), VirtAddr::new(next));
         process.vmas[index].prot = new_prot;
         process.vmas.extend(prefix.into_iter().chain(suffix));
         cursor = next;

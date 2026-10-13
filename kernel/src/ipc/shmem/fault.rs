@@ -4,6 +4,7 @@ use crate::memory::anon_map::page_flags;
 use crate::memory::arch_stub::{Page, Size4KiB, VirtAddr};
 use crate::memory::file_map::{Access, FaultOutcome};
 use crate::memory::vma::{MmapFlags, Protection};
+use crate::syscall::memory_common::PAGE_SIZE;
 #[cfg(target_arch = "x86_64")]
 use x86_64::{
     structures::paging::{Page, Size4KiB},
@@ -30,7 +31,7 @@ pub(crate) fn resolve_page(
         return FaultOutcome::Resolved;
     }
     let offset = vma.shm_offset + page.start_address().as_u64() - vma.start.as_u64();
-    if offset / 4096 >= mapping.object().size().div_ceil(4096) {
+    if offset / PAGE_SIZE >= mapping.object().size().div_ceil(PAGE_SIZE) {
         return FaultOutcome::Signal(crate::signal::constants::SIGBUS);
     }
     if let Some((_, flags)) = table.get_page_info(page) {
@@ -44,7 +45,7 @@ pub(crate) fn resolve_page(
                 FaultOutcome::Signal(crate::signal::constants::SIGKILL)
             };
         }
-        return FaultOutcome::NotFile;
+        return FaultOutcome::Resolved;
     }
     let Some(frame) = mapping.object().frame_at(offset) else {
         // First-touch backing is prepared outside PM by handle_fault/populate.

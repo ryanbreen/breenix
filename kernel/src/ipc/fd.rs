@@ -223,6 +223,8 @@ pub struct FileDescriptor {
     /// entry (dup, dup2, dup3, F_DUPFD, fork) shares the word, so F_SETFL on
     /// one descriptor is seen through every descriptor for the description.
     description: Arc<AtomicU32>,
+    /// Mounted inode metadata retained when the stream is served by a driver.
+    pub(crate) native_inode: Option<crate::fs::ext2::live_inode::FileHandle>,
 }
 
 impl core::fmt::Debug for FileDescriptor {
@@ -271,6 +273,7 @@ impl FileDescriptor {
             kind,
             flags,
             description: Arc::new(AtomicU32::new(word)),
+            native_inode: None,
         }
     }
 
@@ -288,6 +291,7 @@ impl FileDescriptor {
             kind,
             flags: fd_flags,
             description: Arc::new(AtomicU32::new(word)),
+            native_inode: None,
         }
     }
 
@@ -295,7 +299,13 @@ impl FileDescriptor {
     pub fn try_opened(kind: FdKind, open_flags: u32) -> Result<Self, u64> {
         let flags = if open_flags & status_flags::O_CLOEXEC != 0 { flags::FD_CLOEXEC } else { 0 };
         let word = (open_flags & status_flags::O_ACCMODE) | (open_flags & SETTABLE_STATUS_FLAGS);
-        Ok(Self { kind, flags, description: Arc::try_new(AtomicU32::new(word)).map_err(|_| 12u64)? })
+        Ok(Self { kind, flags, description: Arc::try_new(AtomicU32::new(word)).map_err(|_| 12u64)?, native_inode: None })
+    }
+
+    /// Attach the native namespace inode without changing driver operations.
+    pub fn with_inode(mut self, inode: Option<crate::fs::ext2::live_inode::FileHandle>) -> Self {
+        self.native_inode = inode;
+        self
     }
 
     /// The open file description's flags word (F_GETFL): access mode and
@@ -326,6 +336,12 @@ impl FileDescriptor {
     /// Atomically replace mutable status flags and return the previous word.
     pub fn replace_status_flags(&self, flags: u32) -> u32 {
         super::fd_flags::replace(&self.description, flags, SETTABLE_STATUS_FLAGS)
+    }
+
+    /// Atomically replace only the settable status flags in `mask` and
+    /// return the previous word.
+    pub fn update_status_flags(&self, mask: u32, flags: u32) -> u32 {
+        super::fd_flags::replace(&self.description, flags, mask & SETTABLE_STATUS_FLAGS)
     }
 
     pub fn set_status_flags(&self, flags: u32) {

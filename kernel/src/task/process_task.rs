@@ -1272,6 +1272,10 @@ pub fn defer_fault_exit(thread_id: u64, exit_code: i32) -> bool {
 
 /// Drain deferred kernel-fault exits from a normal scheduling context.
 pub fn drain_deferred_fault_sigsegv_exits() {
+    // ARM also reaches this drain from exception return; backing allocation
+    // belongs to task-context reclamation there. x86 calls it from its daemon.
+    #[cfg(target_arch = "x86_64")]
+    crate::ipc::shmem::drain_signal_pages();
     let mut tids = alloc::vec::Vec::new();
     for buf in &DEFERRED_FAULT_EXIT_BUFFERS {
         buf.drain(&mut tids);
@@ -1564,6 +1568,7 @@ pub fn reclaim_deferred_process_resources() {
         crate::trace_count!(crate::tracing::providers::teardown::RECLAIM_CONTEXT_VIOLATIONS);
         return;
     }
+    crate::ipc::shmem::drain_signal_pages();
     #[cfg(feature = "boot_tests")]
     if BOOT_RECLAIM_TEST_OWNER.load(Ordering::Acquire) != 0 {
         return;

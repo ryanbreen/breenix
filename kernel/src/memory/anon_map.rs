@@ -58,6 +58,9 @@ where
             let Some(mut guard) = acquire() else {
                 return FaultOutcome::Resolved;
             };
+            if super::fork_copy::copying(root) {
+                return FaultOutcome::Resolved;
+            }
             let Some(manager) = guard.as_mut() else {
                 return FaultOutcome::NotFile;
             };
@@ -329,6 +332,8 @@ pub(crate) fn prepare_write(
             .vmas
             .iter()
             .find(|v| v.contains(VirtAddr::new(address)));
+        let has_vma = vma.is_some();
+        let is_shm = vma.is_some_and(|v| v.shm.is_some());
         if vma.is_some_and(|v| !v.prot.contains(Protection::WRITE)) {
             return Err(PrepareWriteError::Fault);
         }
@@ -336,7 +341,15 @@ pub(crate) fn prepare_write(
             return Err(PrepareWriteError::Retry);
         }
         if table.translate(VirtAddr::new(address)).is_none() {
-            if vma.is_none() {
+            if is_shm {
+                crate::ipc::shmem::request_signal_page(owner, address)
+                    .map_err(|e| if e == crate::syscall::errno::EAGAIN as u64 { PrepareWriteError::Retry } else { PrepareWriteError::Fault })?;
+            }
+            let table = owner
+                .page_table
+                .as_deref_mut()
+                .ok_or(PrepareWriteError::Fault)?;
+            if !has_vma {
                 // Only grow below the recorded bottom. An absent page above
                 // it may have been unmapped and must not be resurrected.
                 if address >= owner.user_stack_bottom || !owner.grow_user_stack(address) {

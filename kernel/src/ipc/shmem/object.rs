@@ -5,41 +5,37 @@ use crate::memory::arch_stub::{PhysFrame, Size4KiB};
 use crate::syscall::errno::{EAGAIN, EINVAL, ENOMEM, EPERM};
 use crate::syscall::memory_common::{self, PAGE_SIZE};
 use alloc::{boxed::Box, sync::Arc};
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 #[cfg(target_arch = "x86_64")]
 use x86_64::structures::paging::{PhysFrame, Size4KiB};
 
 static NEXT_INO: AtomicU64 = AtomicU64::new(0x100000);
 
-// Intrusive treap: one fallibly allocated node per resident page, prepared
-// before taking inner. Resizing a sparse object allocates no page-index array.
+// Compressed binary radix tree: two fallible nodes per resident page at most.
+// Branch bits strictly decrease, bounding find/insert/split/drop to 51 levels
+// for the page indices of an i64-sized object, independent of touch order.
 struct PageNode {
     index: u64,
-    priority: u64,
-    height: u8,
+    bit: u64,
     count: u64,
-    frame: PhysFrame<Size4KiB>,
+    frame: Option<PhysFrame<Size4KiB>>,
     left: Option<Box<PageNode>>,
     right: Option<Box<PageNode>>,
 }
 impl Drop for PageNode {
     fn drop(&mut self) {
-        release_frame(self.frame);
+        if let Some(frame) = self.frame {
+            release_frame(frame);
+        }
     }
-}
-fn priority(mut x: u64) -> u64 {
-    x = x.wrapping_add(0x9e3779b97f4a7c15);
-    x = (x ^ (x >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
-    x = (x ^ (x >> 27)).wrapping_mul(0x94d049bb133111eb);
-    x ^ (x >> 31)
 }
 fn find(root: &Option<Box<PageNode>>, index: u64) -> Option<PhysFrame<Size4KiB>> {
     let mut node = root.as_deref();
     while let Some(n) = node {
-        if index == n.index {
-            return Some(n.frame);
+        if n.bit == 0 {
+            return (n.index == index).then_some(n.frame).flatten();
         }
-        node = if index < n.index {
+        node = if index & n.bit == 0 {
             n.left.as_deref()
         } else {
             n.right.as_deref()
@@ -48,47 +44,44 @@ fn find(root: &Option<Box<PageNode>>, index: u64) -> Option<PhysFrame<Size4KiB>>
     None
 }
 fn refresh(node: &mut PageNode) {
-    node.height = 1 + node
-        .left
-        .as_ref()
-        .map_or(0, |n| n.height)
-        .max(node.right.as_ref().map_or(0, |n| n.height));
+    node.index = node.left.as_ref().map_or(node.index, |n| n.index);
     node.count =
-        1 + node.left.as_ref().map_or(0, |n| n.count) + node.right.as_ref().map_or(0, |n| n.count);
+        node.left.as_ref().map_or(0, |n| n.count) + node.right.as_ref().map_or(0, |n| n.count);
 }
-fn insert(root: &mut Option<Box<PageNode>>, node: Box<PageNode>) {
-    let Some(mut top) = root.take() else {
+fn insert(root: &mut Option<Box<PageNode>>, node: Box<PageNode>, mut branch: Box<PageNode>) {
+    let Some(top) = root.as_ref() else {
         *root = Some(node);
         return;
     };
-    if node.index < top.index {
-        insert(&mut top.left, node);
-        if top.left.as_ref().is_some_and(|n| n.priority < top.priority) {
-            let mut left = top.left.take().unwrap();
-            top.left = left.right.take();
-            refresh(&mut top);
-            left.right = Some(top);
-            top = left;
-        }
+    let diff = top.index ^ node.index;
+    let bit = if diff == 0 {
+        0
     } else {
-        insert(&mut top.right, node);
-        if top
-            .right
-            .as_ref()
-            .is_some_and(|n| n.priority < top.priority)
-        {
-            let mut right = top.right.take().unwrap();
-            top.right = right.left.take();
-            refresh(&mut top);
-            right.left = Some(top);
-            top = right;
+        1u64 << (63 - diff.leading_zeros())
+    };
+    if top.bit > bit {
+        let top = root.as_mut().unwrap();
+        if node.index & top.bit == 0 {
+            insert(&mut top.left, node, branch);
+        } else {
+            insert(&mut top.right, node, branch);
         }
+        refresh(top);
+    } else {
+        branch.bit = bit;
+        if node.index & bit == 0 {
+            branch.left = Some(node);
+            branch.right = root.take();
+        } else {
+            branch.left = root.take();
+            branch.right = Some(node);
+        }
+        refresh(&mut branch);
+        *root = Some(branch);
     }
-    refresh(&mut top);
-    *root = Some(top);
 }
-// Detach pages >= first without walking or freeing the detached pages
-// while interrupts are masked. Treap height bounds the locked section.
+// Only one branch per level straddles first. Detached subtrees are freed
+// after releasing inner, never while interrupts are masked.
 fn split(
     root: Option<Box<PageNode>>,
     first: u64,
@@ -96,16 +89,38 @@ fn split(
     let Some(mut node) = root else {
         return (None, None);
     };
-    if node.index < first {
-        let (keep, remove) = split(node.right.take(), first);
-        node.right = keep;
-        refresh(&mut node);
-        (Some(node), remove)
-    } else {
+    if node.bit == 0 {
+        return if node.index < first {
+            (Some(node), None)
+        } else {
+            (None, Some(node))
+        };
+    }
+    let low = node.index & !(node.bit | (node.bit - 1));
+    if first <= low {
+        return (None, Some(node));
+    }
+    if first > low | node.bit | (node.bit - 1) {
+        return (Some(node), None);
+    }
+    if first <= low | node.bit {
         let (keep, remove) = split(node.left.take(), first);
-        node.left = remove;
-        refresh(&mut node);
-        (keep, Some(node))
+        if remove.is_some() {
+            node.left = remove;
+            refresh(&mut node);
+            (keep, Some(node))
+        } else {
+            (keep, node.right.take())
+        }
+    } else {
+        let (keep, remove) = split(node.right.take(), first);
+        if keep.is_some() {
+            node.right = keep;
+            refresh(&mut node);
+            (Some(node), remove)
+        } else {
+            (node.left.take(), remove)
+        }
     }
 }
 
@@ -115,19 +130,28 @@ struct ShmInner {
     mode: u32,
     uid: u32,
     gid: u32,
-    linked: bool,
+    links: u32,
     resizing: bool,
     generation: u64,
-    atime: i64,
-    dtime: i64,
-    lpid: i32,
 }
 
 /// Anonymous backing also used by System V segments.
 pub struct ShmObject {
     ino: u64,
     inner: IrqSafeMutex<ShmInner>,
+    io_busy: AtomicBool,
     maps: AtomicUsize,
+    atime: AtomicI64,
+    dtime: AtomicI64,
+    lpid: AtomicI32,
+}
+/// Serialize descriptor I/O and truncate without retaining an IRQ-masking
+/// lock across allocation, user copy or PM acquisition.
+pub(crate) struct ObjectIo<'a>(&'a ShmObject);
+impl Drop for ObjectIo<'_> {
+    fn drop(&mut self) {
+        self.0.io_busy.store(false, Ordering::Release);
+    }
 }
 impl core::fmt::Debug for ShmObject {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -157,14 +181,15 @@ impl ShmObject {
                 mode: mode & 0o7777,
                 uid,
                 gid,
-                linked: true,
+                links: 1,
                 resizing: false,
                 generation: 0,
-                atime: 0,
-                dtime: 0,
-                lpid: 0,
             }),
+            io_busy: AtomicBool::new(false),
             maps: AtomicUsize::new(0),
+            atime: AtomicI64::new(0),
+            dtime: AtomicI64::new(0),
+            lpid: AtomicI32::new(0),
         })
         .map_err(|_| ENOMEM as u64)
     }
@@ -179,49 +204,42 @@ impl ShmObject {
     }
     /// System V attachment activity, including implicit detach at exec/exit.
     pub fn activity(&self) -> (i64, i64, i32) {
-        let inner = self.inner.lock();
-        (inner.atime, inner.dtime, inner.lpid)
+        (
+            self.atime.load(Ordering::Acquire),
+            self.dtime.load(Ordering::Acquire),
+            self.lpid.load(Ordering::Acquire),
+        )
     }
-    fn record_activity(&self, attach: bool) {
-        let now = crate::time::current_unix_time();
-        let pid = crate::arch_without_interrupts(|| {
-            #[cfg(target_arch = "x86_64")]
-            let ptr = {
-                use crate::arch_impl::PerCpuOps;
-                crate::arch_impl::x86_64::percpu::X86PerCpu::current_thread_ptr()
-            };
-            #[cfg(target_arch = "aarch64")]
-            let ptr = crate::per_cpu_aarch64::current_thread_ptr();
-            let ptr = ptr as *const crate::task::thread::Thread;
-            if ptr.is_null() {
-                return 0;
-            }
-            // IRQ masking stabilizes the current thread; its group identity is
-            // immutable. Do not call getpid's PM-taking fallback from drop.
-            unsafe {
-                (*ptr)
-                    .cpu_account
-                    .as_ref()
-                    .map_or(0, |a| a.process_id as i32)
-            }
-        });
-        let mut inner = self.inner.lock();
+    fn record_activity(&self, attach: bool, pid: i32) {
+        let now = crate::time::current_unix_time_coarse();
         if attach {
-            inner.atime = now;
+            self.atime.store(now, Ordering::Release);
         } else {
-            inner.dtime = now;
+            self.dtime.store(now, Ordering::Release);
         }
-        inner.lpid = pid;
+        self.lpid.store(pid, Ordering::Release);
     }
     pub fn allocated_pages(&self) -> u64 {
         self.inner.lock().pages.as_ref().map_or(0, |n| n.count)
     }
     pub fn metadata(&self) -> (u32, u32, u32, bool) {
         let i = self.inner.lock();
-        (i.mode, i.uid, i.gid, i.linked)
+        (i.mode, i.uid, i.gid, i.links != 0)
     }
     pub fn unlink(&self) {
-        self.inner.lock().linked = false;
+        let mut inner = self.inner.lock();
+        inner.links = inner.links.saturating_sub(1);
+    }
+    pub fn links(&self) -> u32 {
+        self.inner.lock().links
+    }
+    pub fn link(&self) -> Result<(), u64> {
+        let mut inner = self.inner.lock();
+        inner.links = inner
+            .links
+            .checked_add(1)
+            .ok_or(crate::syscall::errno::EMLINK as u64)?;
+        Ok(())
     }
     pub fn chmod(&self, mode: u32, cred: &crate::fs::permissions::Credentials) -> Result<(), u64> {
         let mut i = self.inner.lock();
@@ -257,7 +275,21 @@ impl ShmObject {
         i.mode &= !0o6000;
         Ok(())
     }
+    pub(crate) fn io_guard(&self) -> ObjectIo<'_> {
+        while self
+            .io_busy
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            crate::task::scheduler::yield_current();
+        }
+        ObjectIo(self)
+    }
     pub fn resize(&self, len: u64) -> Result<(), u64> {
+        let _io = self.io_guard();
+        self.resize_locked(len)
+    }
+    pub(crate) fn resize_locked(&self, len: u64) -> Result<(), u64> {
         page_count(len)?;
         let old = loop {
             let mut inner = self.inner.lock();
@@ -331,14 +363,22 @@ impl ShmObject {
         // The node owns the registered frame, including allocation failure.
         let node = PageNode {
             index,
-            priority: priority(index),
-            height: 1,
+            bit: 0,
             count: 1,
-            frame,
+            frame: Some(frame),
             left: None,
             right: None,
         };
         let node = Box::try_new(node).map_err(|_| ENOMEM as u64)?;
+        let branch = Box::try_new(PageNode {
+            index,
+            bit: 0,
+            count: 0,
+            frame: None,
+            left: None,
+            right: None,
+        })
+        .map_err(|_| ENOMEM as u64)?;
         let mut inner = self.inner.lock();
         if inner.resizing || inner.generation != generation {
             drop(inner);
@@ -350,15 +390,7 @@ impl ShmObject {
             drop(node);
             return Ok(());
         }
-        // A malicious sparse access pattern cannot drive recursive tree
-        // operations past a bounded kernel-stack depth. A normal tree grows
-        // logarithmically; the rare degenerate case fails fallibly.
-        if inner.pages.as_ref().is_some_and(|n| n.height >= 63) {
-            drop(inner);
-            drop(node);
-            return Err(ENOMEM as u64);
-        }
-        insert(&mut inner.pages, node);
+        insert(&mut inner.pages, node, branch);
         Ok(())
     }
     pub(crate) fn resizing(&self) -> bool {
@@ -375,31 +407,80 @@ impl ShmObject {
     }
 }
 
+fn current_pid() -> i32 {
+    let pid = crate::arch_without_interrupts(|| {
+        #[cfg(target_arch = "x86_64")]
+        let ptr = {
+            use crate::arch_impl::PerCpuOps;
+            crate::arch_impl::x86_64::percpu::X86PerCpu::current_thread_ptr()
+        };
+        #[cfg(target_arch = "aarch64")]
+        let ptr = crate::per_cpu_aarch64::current_thread_ptr();
+        let ptr = ptr as *const crate::task::thread::Thread;
+        if ptr.is_null() {
+            return 0;
+        }
+        // IRQ masking stabilizes the current thread; its group identity is
+        // immutable. Do not call getpid's PM-taking fallback from drop.
+        unsafe {
+            (*ptr)
+                .cpu_account
+                .as_ref()
+                .map_or(0, |a| a.process_id as i32)
+        }
+    });
+    pid
+}
+
 /// Origin and the original maximum permission survive VMA splits and fork.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MappingOrigin {
     Mmap,
     SysV,
 }
+/// Linux VM-open accounting is per VMA, including splits and fork.
 #[derive(Debug)]
 pub struct ShmMapping {
     object: Arc<ShmObject>,
     origin: MappingOrigin,
     may_write: bool,
+    pid: i32,
+    counted: bool,
 }
 impl ShmMapping {
     pub fn new(object: &Arc<ShmObject>) -> Self {
         Self::with_origin(object, MappingOrigin::SysV, true)
     }
     pub fn with_origin(object: &Arc<ShmObject>, origin: MappingOrigin, may_write: bool) -> Self {
+        Self::for_pid(object, origin, may_write, current_pid())
+    }
+    fn for_pid(object: &Arc<ShmObject>, origin: MappingOrigin, may_write: bool, pid: i32) -> Self {
         object.maps.fetch_add(1, Ordering::AcqRel);
         if origin == MappingOrigin::SysV {
-            object.record_activity(true);
+            object.record_activity(true, pid);
         }
         Self {
             object: object.clone(),
             origin,
             may_write,
+            pid,
+            counted: true,
+        }
+    }
+    pub fn fork(&self, pid: i32) -> Self {
+        Self::for_pid(&self.object, self.origin, self.may_write, pid)
+    }
+    /// Transfer the original VMA's lifetime to its replacement. Extra split
+    /// pieces use ordinary clone/open accounting; this row is still open.
+    pub fn replacement(&mut self) -> Self {
+        debug_assert!(self.counted);
+        self.counted = false;
+        Self {
+            object: self.object.clone(),
+            origin: self.origin,
+            may_write: self.may_write,
+            pid: self.pid,
+            counted: true,
         }
     }
     pub fn object(&self) -> &Arc<ShmObject> {
@@ -417,14 +498,16 @@ impl ShmMapping {
 }
 impl Clone for ShmMapping {
     fn clone(&self) -> Self {
-        Self::with_origin(&self.object, self.origin, self.may_write)
+        Self::for_pid(&self.object, self.origin, self.may_write, self.pid)
     }
 }
 impl Drop for ShmMapping {
     fn drop(&mut self) {
-        self.object.maps.fetch_sub(1, Ordering::AcqRel);
-        if self.origin == MappingOrigin::SysV {
-            self.object.record_activity(false);
+        if self.counted {
+            self.object.maps.fetch_sub(1, Ordering::AcqRel);
+            if self.origin == MappingOrigin::SysV {
+                self.object.record_activity(false, self.pid);
+            }
         }
     }
 }

@@ -7,7 +7,7 @@ use std::{
 
 pub mod process {
     use super::*;
-    #[derive(Clone, Copy)]
+    #[derive(Clone, Copy, PartialEq, Eq)]
     pub struct ProcessId(u64);
     impl ProcessId {
         pub fn new(v: u64) -> Self {
@@ -22,8 +22,13 @@ pub mod process {
         pub future: bool,
         pub onfault: bool,
     }
+    pub struct Signals;
+    impl Signals {
+        pub fn force_signal(&mut self, _s: u32, _i: crate::signal::types::SigInfo) {}
+    }
     pub struct Process {
         pub id: ProcessId,
+        pub signals: Signals,
         pub vmas: Vec<crate::memory::vma::Vma>,
         pub mmap_hint: u64,
         pub page_table: Option<Box<super::ProcessPageTable>>,
@@ -34,6 +39,7 @@ pub mod process {
         pub fn new(id: u64) -> Self {
             Self {
                 id: ProcessId(id),
+                signals: Signals,
                 vmas: Vec::new(),
                 mmap_hint: crate::memory::layout::MMAP_REGION_END,
                 page_table: Some(Box::default()),
@@ -47,6 +53,9 @@ pub mod process {
         pub rows: BTreeMap<u64, Process>,
     }
     impl ProcessManager {
+        pub fn get_process_mut(&mut self, pid: ProcessId) -> Option<&mut Process> {
+            self.rows.get_mut(&pid.as_u64())
+        }
         pub fn find_address_space_by_thread_mut(
             &mut self,
             tid: u64,
@@ -69,6 +78,9 @@ pub mod process {
     static MANAGER: Mutex<Option<ProcessManager>> = Mutex::new(None);
     pub fn manager() -> MutexGuard<'static, Option<ProcessManager>> {
         MANAGER.lock().unwrap()
+    }
+    pub fn process_manager_held_on_current_cpu() -> bool {
+        false
     }
     pub fn manager_for_address_space(_tid: u64) -> MutexGuard<'static, Option<ProcessManager>> {
         manager()

@@ -71,6 +71,7 @@ impl WaitQueueHead {
 
         let published = self.with_waiters(|waiters| {
             if !waiters.iter().any(|waiter| waiter.tid == tid) {
+                if !super::waitqueue_alloc::reserve_one(waiters) { return false; }
                 waiters.push_back(Waiter::new(tid));
             }
 

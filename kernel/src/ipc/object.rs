@@ -18,13 +18,33 @@ pub trait IpcFile: Send + Sync + core::fmt::Debug {
     fn chmod(&self, _mode: u32, _cred: &crate::fs::permissions::Credentials) -> Result<(), u64> {
         Err(EINVAL as u64)
     }
-    fn chown(&self, _uid: u32, _gid: u32, _cred: &crate::fs::permissions::Credentials) -> Result<(), u64> {
+    fn chown(
+        &self,
+        _uid: u32,
+        _gid: u32,
+        _cred: &crate::fs::permissions::Credentials,
+    ) -> Result<(), u64> {
         Err(EINVAL as u64)
+    }
+    fn write(&self, _bytes: &[u8], _append: bool) -> Result<u64, u64> {
+        Err(EINVAL as u64)
+    }
+    fn seek(&self, _offset: i64, _whence: i32) -> Result<u64, u64> {
+        Err(29)
+    }
+    /// Serialize F_SETFL with object attribute changes. Called after releasing
+    /// PROCESS_MANAGER; queues hold their attribute lock while invoking update.
+    fn update_status_flags(&self, update: &mut dyn FnMut()) {
+        update();
     }
     /// Called after PM is released; the implementation owns its shared
     /// directory cookie and advances it only after copying records succeeds.
     fn getdents(&self, _dirp: u64, _count: usize) -> Result<u64, u64> {
         Err(20)
+    }
+    /// read(2) into user memory at `buf`, called after PM is released.
+    fn read(&self, _buf: u64, _count: usize) -> Result<u64, u64> {
+        Err(EINVAL as u64)
     }
     fn on_close(&self, _pid: crate::process::ProcessId) {}
 }
