@@ -170,9 +170,24 @@ pub(crate) fn kill_process_now(victim: ProcessId, exit_code: i32, claimed: Optio
         return;
     }
     crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_SIGNAL);
+    let scratch_forced = crate::tracing::providers::scratch1413::tracked(victim.as_u64());
+    if scratch_forced {
+        crate::tracing::providers::scratch1413::TOKEN_TO_SENDER
+            .store(victim.as_u64(), core::sync::atomic::Ordering::Release);
+    }
     crate::task::scheduler::with_scheduler(|scheduler| {
         scheduler.terminate_process_threads(victim.as_u64());
     });
+    if scratch_forced {
+        // Forcing v6: every peer busy, then 10 ms between quarantine and the
+        // kick's publication, so the victim leaves its CPU before the kick.
+        crate::tracing::providers::scratch1413::start_busy_peers();
+        let until = crate::signal::monotonic_nanos() + 10_000_000;
+        while crate::signal::monotonic_nanos() < until {
+            core::hint::spin_loop();
+        }
+        crate::tracing::providers::scratch1413::rec(victim.as_u64(), crate::tracing::providers::scratch1413::HOLD_END, 0);
+    }
 
     let batch = crate::task::scheduler::GroupBatchId::for_single_victim(victim.as_u64());
     crate::task::scheduler::Scheduler::send_exit_expedite_sgi(victim.as_u64(), batch);
@@ -405,22 +420,7 @@ fn send_signal(target: ProcessId, sig: u32, sender: Sender, info: SigInfo, to: R
             let claimed = claim_kill_locked(manager, target, -(SIGKILL as i32));
             crate::tracing::providers::scratch1413::rec(target.as_u64(), crate::tracing::providers::scratch1413::CLAIM_IN_SEND, claimed as u64);
             drop(manager_guard);
-            if scratch_hold {
-                // Hold until the victim's threads have retired, or 200 ms (x86: 10 ms).
-                let until = crate::signal::monotonic_nanos()
-                    + if cfg!(target_arch = "x86_64") { 10_000_000 } else { 200_000_000 };
-                while crate::signal::monotonic_nanos() < until
-                    && crate::task::scheduler::with_scheduler(|s| s.scratch_has_threads_of(target.as_u64()))
-                        .unwrap_or(false)
-                {
-                    let pause = crate::signal::monotonic_nanos() + 100_000;
-                    while crate::signal::monotonic_nanos() < pause {
-                        core::hint::spin_loop();
-                    }
-                }
-                crate::tracing::providers::scratch1413::rec(target.as_u64(), crate::tracing::providers::scratch1413::HOLD_END, 0);
-                crate::tracing::providers::scratch1413::start_busy_peers(target.as_u64());
-            }
+            let _ = scratch_hold;
             crate::signal::delivery::terminate_thread_group_peers(target, -(SIGKILL as i32));
             kill_process_now(target, -(SIGKILL as i32), Some(claimed));
             return SyscallResult::Ok(0);
