@@ -23,6 +23,7 @@ pub(crate) fn wait_prepared(queue: &WaitQueueHead, outcome: PrepareOutcome) -> R
             queue.finish_wait();
             return Err(errno::ESRCH);
         }
+        PrepareOutcome::OutOfMemory => return Err(errno::ENOMEM),
         PrepareOutcome::Queued => {}
     }
 

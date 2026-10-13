@@ -8,6 +8,7 @@
 //! - Poll (poll.rs) - Poll file descriptors for I/O readiness
 
 pub mod fd;
+pub(crate) mod fd_flags;
 pub mod fifo;
 pub mod pipe;
 pub mod poll;

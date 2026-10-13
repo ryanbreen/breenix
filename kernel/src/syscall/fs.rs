@@ -17,7 +17,10 @@ pub const O_TRUNC: u32 = 0x200;
 #[allow(dead_code)] // Part of POSIX open() API
 pub const O_APPEND: u32 = 0x400;
 /// O_DIRECTORY - must be a directory
+#[cfg(target_arch = "x86_64")]
 pub const O_DIRECTORY: u32 = 0x10000;
+#[cfg(target_arch = "aarch64")]
+pub const O_DIRECTORY: u32 = 0x4000;
 /// O_NOFOLLOW - fail with ELOOP rather than follow a final symlink. The Linux
 /// value differs by architecture.
 #[cfg(target_arch = "x86_64")]
@@ -542,6 +545,7 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
     );
 
     if resolved.target == Target::Virtual {
+        if let Some(result) = crate::ipc::mqueue::dev::open_path(path, flags, mode) { return result; }
         if let Some(result) = crate::ipc::shmem::open_path(path, flags, mode) {
             return result;
         }
@@ -1347,7 +1351,7 @@ fn copy_dirents_to_user(dirp: u64, records: &[u8]) -> Result<(), u64> {
 /// * On error: Negative errno
 pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
     use super::errno::{EBADF, EFAULT, EINVAL, EIO, ENOTDIR};
-    use crate::fs::ext2::{self, dir::DirReader};
+    use crate::fs::ext2;
 
     log::debug!(
         "sys_getdents64: fd={}, dirp={:#x}, count={}",
@@ -1478,7 +1482,7 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
             Ok(data) => data,
             Err(e) => {
                 log::error!("sys_getdents64: failed to read directory: {}", e);
-                return SyscallResult::Err(EIO as u64);
+                return SyscallResult::Err(crate::fs::namei::fs_errno(e));
             }
         }
     };
@@ -1504,14 +1508,15 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
     // rewind replays `.` and `..`.
     let mut records = alloc::vec::Vec::new();
     let buffer_size = count as usize;
+    if records.try_reserve(buffer_size.min(dir_data.len().saturating_mul(3))).is_err() { return SyscallResult::Err(12); }
     let mut bytes_written = 0usize;
     let mut new_position = start_position;
 
-    for positioned in DirReader::new(&dir_data).positioned() {
+    for positioned in ext2::dir::raw_entries(&dir_data) {
         if (positioned.offset as u64) < start_position {
             continue;
         }
-        let entry = &positioned.entry;
+        let entry = &positioned;
 
         let name_len = entry.name.len();
         // d_reclen = header + name + null terminator, aligned to 8 bytes
@@ -1527,7 +1532,7 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
             break;
         }
 
-        push_dirent64(&mut records, entry.inode as u64, positioned.next as i64, ext2_file_type_to_dt(entry.file_type), entry.name.as_bytes());
+        push_dirent64(&mut records, entry.inode as u64, positioned.next as i64, ext2_file_type_to_dt(entry.file_type), entry.name);
 
         bytes_written += reclen;
         new_position = positioned.next as u64;
@@ -1589,6 +1594,7 @@ fn sys_unlink_from(dirfd: i32, pathname: u64) -> SyscallResult {
 
     log::debug!("sys_unlink: path={:?}", path);
 
+    if let Some(result) = crate::ipc::mqueue::dev::unlink_path(path) { return result; }
     if let Some(result) = crate::ipc::shmem::unlink_path(path) {
 
         return result;
@@ -2277,6 +2283,7 @@ fn access_resolved(resolved: &crate::fs::namei::Resolved, mode: u32, cred: &File
         Target::Inode { mount, ino, .. } => (mount, ino),
         Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
         Target::Virtual => {
+            if let Some(result) = crate::ipc::mqueue::dev::access_path(&resolved.path, mode, cred) { return result; }
             if let Some(result) = crate::ipc::shmem::access_path(&resolved.path, mode, cred) { return result; }
             if resolved.is_mount_point() { return SyscallResult::Ok(0); }
             if let Some(device) = resolved.path.strip_prefix("/dev/") {
@@ -3571,6 +3578,7 @@ pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, flags: u32) -> Sy
     };
     let full_path = resolved.path.as_str();
 
+    if let Some(result) = crate::ipc::mqueue::dev::stat_path(full_path, statbuf) { return result; }
     if let Some(result) = crate::ipc::shmem::stat_path(full_path, statbuf) {
 
         return result;
@@ -4035,6 +4043,8 @@ fn resolved_statfs(resolved: &crate::fs::namei::Resolved) -> Result<Statfs, u64>
             0x9fa0
         } else if resolved.path == "/dev/pts" || resolved.path.starts_with("/dev/pts/") {
             0x1cd1
+        } else if resolved.path == "/dev/mqueue" || resolved.path.starts_with("/dev/mqueue/") { 0x19800202
+        } else if resolved.path == "/dev/shm" || resolved.path.starts_with("/dev/shm/") { 0x01021994
         } else { 0x1373 })),
     }
 }

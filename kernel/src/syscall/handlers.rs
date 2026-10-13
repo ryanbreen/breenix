@@ -65,7 +65,8 @@ fn copy_from_user(user_ptr: u64, len: usize) -> Result<Vec<u8>, &'static str> {
         return Err("invalid userspace address");
     }
 
-    let mut buffer = Vec::with_capacity(len);
+    let mut buffer = Vec::new();
+    buffer.try_reserve_exact(len).map_err(|_| "out of memory")?;
     // An unmapped or unreadable user page is a failed copy, not a kernel fault.
     super::userptr::read_user_bytes(buffer.as_mut_ptr(), user_ptr, len)
         .map_err(|_| "unmapped userspace address")?;
@@ -428,8 +429,8 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
     // Copy data from userspace
     let buffer = match copy_from_user(buf_ptr, count as usize) {
         Ok(buf) => buf,
-        Err(_e) => {
-            return SyscallResult::Err(14); // EFAULT
+        Err(e) => {
+            return SyscallResult::Err(if e == "out of memory" { 12 } else { 14 });
         }
     };
 

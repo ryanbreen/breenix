@@ -9,6 +9,7 @@ mod mount_device;
 pub mod file;
 pub mod inode;
 pub mod live_inode;
+mod inode_index;
 mod reclaim;
 mod rename;
 pub mod superblock;
@@ -394,7 +395,7 @@ impl Ext2Fs {
             return Err("Not a directory");
         }
         read_file(self.device.as_ref(), inode, &self.superblock)
-            .map_err(|_| "Failed to read directory data")
+            .map_err(|e| if e == crate::block::BlockError::OutOfMemory { "No memory for directory data" } else { "Failed to read directory data" })
     }
 
     /// Look up a path component in a directory
@@ -406,7 +407,7 @@ impl Ext2Fs {
         name: &str,
     ) -> Result<Option<u32>, &'static str> {
         let dir_data = self.read_directory(dir_inode)?;
-        Ok(find_entry(&dir_data, name).map(|entry| entry.inode))
+        Ok(dir::find_inode(&dir_data, name))
     }
 
     /// Resolve a path to an inode number, following symlinks
@@ -1734,7 +1735,12 @@ impl Ext2Fs {
 
             // Extract the target string
             let target_bytes = &block_bytes[..target_len];
-            String::from_utf8(target_bytes.to_vec()).map_err(|_| "Invalid UTF-8 in symlink target")
+            {
+                let mut bytes = Vec::new();
+                bytes.try_reserve_exact(target_bytes.len()).map_err(|_| "No memory for symlink target")?;
+                bytes.extend_from_slice(target_bytes);
+                String::from_utf8(bytes).map_err(|_| "Invalid UTF-8 in symlink target")
+            }
         } else {
             // Regular symlink: target is stored in a data block
             let i_block = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_block)) };
@@ -2261,7 +2267,7 @@ fn ext2_acquire<T>(
 
             match outcome {
                 crate::task::waitqueue::PrepareOutcome::Mismatch => continue,
-                crate::task::waitqueue::PrepareOutcome::PublishFailed => break,
+                crate::task::waitqueue::PrepareOutcome::PublishFailed | crate::task::waitqueue::PrepareOutcome::OutOfMemory => break,
                 crate::task::waitqueue::PrepareOutcome::Queued => {
                     ext2_record_park(lock_name);
                     ext2_schedule_current_wait();
@@ -2372,7 +2378,7 @@ fn ext2_acquire_write(
 
         match outcome {
             crate::task::waitqueue::PrepareOutcome::Mismatch => continue,
-            crate::task::waitqueue::PrepareOutcome::PublishFailed => {
+            crate::task::waitqueue::PrepareOutcome::PublishFailed | crate::task::waitqueue::PrepareOutcome::OutOfMemory => {
                 return ext2_spin_wait_upgrade(upgradeable, lock_name);
             }
             crate::task::waitqueue::PrepareOutcome::Queued => {

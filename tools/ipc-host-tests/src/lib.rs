@@ -106,7 +106,7 @@ pub mod syscall {
                 q.resume();
             }
             if q.interrupted.get() {
-                Err(4)
+                Err(if q.error.get() == 0 { 4 } else { q.error.get() })
             } else {
                 Ok(())
             }
@@ -204,6 +204,7 @@ pub mod task {
         #[derive(Default)]
         pub struct WaitQueueHead {
             pub interrupted: Cell<bool>,
+            pub error: Cell<i32>,
             pub wake: Cell<Option<u64>>,
             pub realtime_after: Cell<Option<u64>>,
         }
@@ -289,7 +290,7 @@ fn deadline_waits_distinguish_readiness_timeout_and_interrupt() {
     q.interrupted.set(true);
     assert_eq!(
         wait::wait_on(&q, &IpcDeadline::Never, || true),
-        WaitEnd::Interrupted
+        WaitEnd::Interrupted(4)
     );
     q.interrupted.set(false);
     time::MONO.set(0);
@@ -347,3 +348,24 @@ mod devfs_entries;
 
 #[path = "../../../kernel/src/syscall/at_path.rs"]
 mod at_path;
+
+#[path = "../../../kernel/src/fs/ext2/inode_index.rs"]
+mod inode_index;
+
+#[path = "../../../kernel/src/fs/ext2/dir.rs"]
+pub mod dir_entries;
+
+#[path = "../../../kernel/src/ipc/fd_flags.rs"]
+mod fd_flags;
+#[test]
+fn interrupted_wait_preserves_the_original_restart_or_exit_errno() {
+    let q = task::waitqueue::WaitQueueHead::new();
+    q.interrupted.set(true);
+    for error in [4,512,3,12] {
+        q.error.set(error);
+        assert_eq!(wait::wait_on(&q,&wait::IpcDeadline::Never,||true),wait::WaitEnd::Interrupted(error as u64));
+    }
+}
+
+#[path = "../../../kernel/src/task/waitqueue_alloc.rs"]
+mod waitqueue_alloc;

@@ -3816,6 +3816,8 @@ impl ProcessManager {
         program_name: Option<&str>,
         closes: &mut crate::ipc::fd::DeferredFdCloses,
     ) -> Result<u64, &'static str> {
+        let closing_capacity = self.processes.live_row(&pid).ok_or("Process not found")?.fd_table.open_fd_count();
+        closes.reserve(closing_capacity)?;
         log::info!(
             "exec_process: Replacing process {} with new program",
             pid.as_u64()
@@ -4378,6 +4380,8 @@ impl ProcessManager {
         prepared: &mut Option<PreparedExecImage>,
         closes: &mut crate::ipc::fd::DeferredFdCloses,
     ) -> Result<(u64, u64, crate::task::scheduler::ExecSchedCommit), &'static str> {
+        let closing_capacity = self.processes.live_row(&pid).ok_or("Process not found")?.fd_table.open_fd_count();
+        closes.reserve(closing_capacity)?;
         let is_current_process = self.current_pid == Some(pid);
         if is_current_process {
             log::info!(
@@ -4783,6 +4787,8 @@ impl ProcessManager {
         prepared: &mut Option<PreparedExecImage>,
         closes: &mut crate::ipc::fd::DeferredFdCloses,
     ) -> Result<(u64, u64, crate::task::scheduler::ExecSchedCommit), &'static str> {
+        let closing_capacity = self.processes.live_row(&pid).ok_or("Process not found")?.fd_table.open_fd_count();
+        closes.reserve(closing_capacity)?;
         crate::tracing::providers::process::trace_exec_entry(pid.as_u64() as u32);
         let is_current_process = self.current_pid == Some(pid);
         if is_current_process {
@@ -5063,6 +5069,8 @@ impl ProcessManager {
         program_name: Option<&str>,
         closes: &mut crate::ipc::fd::DeferredFdCloses,
     ) -> Result<(u64, crate::task::scheduler::ExecSchedCommit), &'static str> {
+        let closing_capacity = self.processes.live_row(&pid).ok_or("Process not found")?.fd_table.open_fd_count();
+        closes.reserve(closing_capacity)?;
         use crate::arch_impl::aarch64::constants::USER_STACK_REGION_START;
         use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB};
 

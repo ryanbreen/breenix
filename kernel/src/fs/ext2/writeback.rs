@@ -36,6 +36,7 @@ fn wait(waiters: &WaitQueueHead, deadline: Option<u64>, condition: impl FnOnce()
     match waiters.prepare_to_wait_checked(ThreadState::BlockedOnIO, deadline, condition) {
         PrepareOutcome::Mismatch => return,
         PrepareOutcome::PublishFailed => panic!("Ext2 wait could not publish its scheduler thread"),
+        PrepareOutcome::OutOfMemory => { crate::task::scheduler::yield_current(); return; }
         PrepareOutcome::Queued => {}
     }
     #[cfg(target_arch = "x86_64")]

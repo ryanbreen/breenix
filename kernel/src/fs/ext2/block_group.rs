@@ -125,29 +125,21 @@ impl Ext2BlockGroupDesc {
         // Calculate which ext2 block contains the BGDT
         let bgdt_block = if block_size == 1024 { 2 } else { 1 };
 
-        // Calculate how many ext2 blocks we need
-        let bytes_needed = descriptors.len() * descriptor_size;
-        let ext2_blocks_needed = (bytes_needed + block_size - 1) / block_size;
-
-        // Build the buffer with all descriptors
+        // Stream one descriptor-table block through a bounded stack buffer.
+        // Creation can publish allocation counts without a late heap allocation.
+        if block_size > 4096 || block_size % descriptor_size != 0 { return Err(BlockError::IoError); }
         let device_block_size = device.block_size();
-        let mut buffer = alloc::vec![0u8; ext2_blocks_needed * block_size];
-
-        for (i, desc) in descriptors.iter().enumerate() {
-            let offset = i * descriptor_size;
-
-            // SAFETY: Writing packed struct as raw bytes
-            let desc_bytes = unsafe {
-                core::slice::from_raw_parts(
-                    desc as *const Ext2BlockGroupDesc as *const u8,
-                    descriptor_size,
-                )
-            };
-            buffer[offset..offset + descriptor_size].copy_from_slice(desc_bytes);
+        if device_block_size == 0 || block_size % device_block_size != 0 { return Err(BlockError::IoError); }
+        for (block_index, descriptors) in descriptors.chunks(block_size / descriptor_size).enumerate() {
+            let mut buffer = [0u8; 4096];
+            for (index, desc) in descriptors.iter().enumerate() {
+                // SAFETY: ext2 descriptors have a packed on-disk representation.
+                let bytes = unsafe { core::slice::from_raw_parts(desc as *const Self as *const u8, descriptor_size) };
+                buffer[index*descriptor_size..(index+1)*descriptor_size].copy_from_slice(bytes);
+            }
+            device.write_blocks(((bgdt_block + block_index) * block_size / device_block_size) as u64,
+                block_size / device_block_size, &buffer[..block_size])?;
         }
-
-        let sectors = buffer.len() / device_block_size;
-        device.write_blocks((bgdt_block * block_size / device_block_size) as u64, sectors, &buffer)?;
 
         Ok(())
     }

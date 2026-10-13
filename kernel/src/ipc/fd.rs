@@ -323,6 +323,11 @@ impl FileDescriptor {
     /// F_SETFL: replace the settable status flags (O_APPEND, O_NONBLOCK) of the
     /// open file description. The access mode and any other bit in `flags` are
     /// ignored.
+    /// Atomically replace mutable status flags and return the previous word.
+    pub fn replace_status_flags(&self, flags: u32) -> u32 {
+        super::fd_flags::replace(&self.description, flags, SETTABLE_STATUS_FLAGS)
+    }
+
     pub fn set_status_flags(&self, flags: u32) {
         let _ = self
             .description
@@ -1089,6 +1094,10 @@ pub struct DeferredFdCloses {
 }
 
 impl DeferredFdCloses {
+    pub fn reserve(&mut self, count: usize) -> Result<(), &'static str> {
+        self.entries.try_reserve(count).map_err(|_| "Out of memory for exec descriptor closes")
+    }
+
     /// Drop the record locks `owner` holds on the files these descriptors
     /// referred to: closing any descriptor for a file releases them.
     pub fn release_record_locks(&self, owner: u64) {
