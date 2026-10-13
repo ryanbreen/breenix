@@ -188,3 +188,8 @@ pub const EHOSTUNREACH: i32 = 113;
 
 /// Operation already in progress
 pub const EALREADY: i32 = 114;
+
+/// Linux: remote host is down.
+pub const EHOSTDOWN: i32 = 112;
+/// Linux: machine is not on the network.
+pub const ENONET: i32 = 64;

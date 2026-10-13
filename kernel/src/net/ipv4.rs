@@ -176,7 +176,10 @@ pub fn handle_ipv4(_eth_frame: &EthernetFrame, ip: &Ipv4Packet) {
     let config = super::config();
 
     // Check if this packet is for us (accept our IP or loopback addresses)
-    if ip.dst_ip != config.ip_addr && ip.dst_ip[0] != 127 && !super::is_broadcast_addr(ip.dst_ip) {
+    if ip.dst_ip != config.ip_addr
+        && ip.dst_ip[0] != 127
+        && !super::is_broadcast_addr_in(&config, ip.dst_ip)
+    {
         // Not for us, ignore (we don't do routing)
         return;
     }
@@ -187,6 +190,9 @@ pub fn handle_ipv4(_eth_frame: &EthernetFrame, ip: &Ipv4Packet) {
         return;
     }
 
+    if super::is_broadcast_addr_in(&config, ip.dst_ip) && ip.protocol != PROTOCOL_UDP {
+        return;
+    }
     match ip.protocol {
         PROTOCOL_ICMP => {
             if let Some(icmp_packet) = icmp::IcmpPacket::parse(ip.payload) {

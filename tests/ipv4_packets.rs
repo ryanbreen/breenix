@@ -9,13 +9,10 @@ pub mod serial {
     }
 }
 
+#[path = "../kernel/src/syscall/errno.rs"]
+pub mod errno;
 pub mod syscall {
-    pub mod errno {
-        pub const ENETUNREACH: i32 = 101;
-        pub const ECONNREFUSED: i32 = 111;
-        pub const EMSGSIZE: i32 = 90;
-        pub const EACCES: i32 = 13;
-    }
+    pub use crate::errno;
 }
 
 #[derive(Debug, PartialEq)]
@@ -112,4 +109,49 @@ fn truncated_icmp_quote_identifies_original_flow_and_rejects_malformed_headers()
     }
     error[8] = 0x4f;
     assert!(icmp::udp_error_quote(&icmp::IcmpPacket::parse(&error).unwrap()).is_none());
+}
+
+pub mod time {
+    pub fn get_ticks() -> u64 {
+        0
+    }
+}
+pub fn is_broadcast_addr_in(_: &Config, addr: [u8; 4]) -> bool {
+    is_broadcast_addr(addr)
+}
+
+#[test]
+fn icmp_quote_uses_linux_fatal_codes_without_quoted_checksum_validation() {
+    let mut udp = [0; 8];
+    udp[..2].copy_from_slice(&49152u16.to_be_bytes());
+    udp[2..4].copy_from_slice(&53u16.to_be_bytes());
+    udp[4..6].copy_from_slice(&8u16.to_be_bytes());
+    let ip = Ipv4Packet::try_build([127, 0, 0, 1], [127, 0, 0, 2], PROTOCOL_UDP, &udp).unwrap();
+    let mut error = vec![3, 3, 0, 0, 0, 0, 0, 0];
+    error.extend_from_slice(&ip);
+    error[18] ^= 1; // A quoted IP checksum is not validated by Linux.
+    for (code, expected) in [
+        (0, None),
+        (1, None),
+        (2, Some(92)),
+        (3, Some(111)),
+        (4, Some(90)),
+        (5, None),
+        (6, Some(101)),
+        (7, Some(112)),
+        (8, Some(64)),
+        (9, Some(101)),
+        (10, Some(113)),
+        (11, None),
+        (12, None),
+        (13, Some(113)),
+        (14, Some(113)),
+        (15, Some(113)),
+    ] {
+        error[1] = code;
+        assert_eq!(
+            icmp::udp_error_quote(&icmp::IcmpPacket::parse(&error).unwrap()).map(|quote| quote.4),
+            expected
+        );
+    }
 }

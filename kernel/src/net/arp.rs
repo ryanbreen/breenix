@@ -195,7 +195,24 @@ pub fn handle_arp(eth_frame: &EthernetFrame, arp: &ArpPacket) {
 
             let _ = driver_transmit(&frame);
         }
-        ARP_OP_REPLY => {} // The sender was learned above.
+        ARP_OP_REPLY => {
+            if arp.sender_ip == config.gateway {
+                static NOTICE: crate::log_notice::Node = crate::log_notice::Node::new();
+                static POSTED: core::sync::atomic::AtomicBool =
+                    core::sync::atomic::AtomicBool::new(false);
+                if !POSTED.swap(true, core::sync::atomic::Ordering::Relaxed) {
+                    let mut line = *b"NET: ARP resolved gateway MAC: 00:00:00:00:00:00";
+                    let hex = b"0123456789abcdef";
+                    for (i, byte) in arp.sender_mac.iter().enumerate() {
+                        line[31 + i * 3] = hex[(byte >> 4) as usize];
+                        line[32 + i * 3] = hex[(byte & 15) as usize];
+                    }
+                    if let Ok(text) = core::str::from_utf8(&line) {
+                        NOTICE.post_again(text);
+                    }
+                }
+            }
+        }
         _ => {}
     }
 }

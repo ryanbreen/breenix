@@ -11,17 +11,17 @@ pub mod serial {
         panic!("no heap notices in endpoint checks")
     }
 }
+#[path = "../../../kernel/src/syscall/errno.rs"]
+pub mod errno;
 pub mod syscall {
-    pub mod errno {
-        pub const EAGAIN: i32 = 11;
-        pub const EAFNOSUPPORT: i32 = 97;
-        pub const EINVAL: i32 = 22;
-        pub const EMSGSIZE: i32 = 90;
-        pub const ENOTCONN: i32 = 107;
-        pub const EPIPE: i32 = 32;
-        pub const ENETUNREACH: i32 = 101;
-        pub const ECONNREFUSED: i32 = 111;
-        pub const EACCES: i32 = 13;
+    pub use crate::errno;
+    pub enum SyscallResult {
+        Ok(u64),
+    }
+    pub mod handlers {
+        pub fn sys_geteuid() -> super::SyscallResult {
+            super::SyscallResult::Ok(0)
+        }
     }
 }
 pub mod net;
@@ -379,13 +379,166 @@ mod tests {
         b.common.rcvbuf.store(45, Ordering::Release);
         send(&a, b"first", Some(address(45211))).unwrap();
         send(&a, b"second", Some(address(45211))).unwrap();
+        send(&a, b"dropped", Some(address(45211))).unwrap();
         assert_eq!(recv(&b, 16, 0).1.data, b"first");
+        assert_eq!(recv(&b, 16, 0).1.data, b"second");
         assert_eq!(recv(&b, 16, 0).0, Err(11));
         for _ in 0..100 {
             send(&a, b"", Some(address(45211))).unwrap();
         }
         assert_eq!(recv(&b, 0, 0).0, Ok(0));
+        assert_eq!(recv(&b, 0, 0).0, Ok(0));
         assert_eq!(recv(&b, 0, 0).0, Err(11));
+    }
+    #[test]
+    fn shutdown_read_keeps_later_messages_and_reports_rdhup() {
+        let a = endpoint();
+        let b = endpoint();
+        b.ops().bind(&b, &address(45301)).unwrap();
+        assert_eq!(b.ops().shutdown(&b, 0), Err(107));
+        assert_ne!(b.ops().poll(&b) & 0x2000, 0);
+        assert_eq!(recv(&b, 8, 0).0, Ok(0));
+        send(&a, b"late", Some(address(45301))).unwrap();
+        assert_eq!(recv(&b, 8, 0).1.data, b"late");
+        assert_eq!(recv(&b, 8, 0).0, Ok(0));
+    }
+    #[test]
+    fn disconnect_releases_autobound_port() {
+        let a = endpoint();
+        a.ops().connect(&a, &address(45302), false).unwrap();
+        let old = a.ops().local_name(&a);
+        assert!(matches!(old, SockAddr::Inet { port, .. } if port != 0));
+        a.ops().connect(&a, &SockAddr::Unspec, false).unwrap();
+        assert_eq!(
+            a.ops().local_name(&a),
+            SockAddr::Inet {
+                addr: [0; 4],
+                port: 0
+            }
+        );
+        let b = endpoint();
+        b.ops().bind(&b, &old).unwrap();
+    }
+    #[test]
+    fn errqueue_does_not_consume_normal_messages() {
+        let a = endpoint();
+        let b = endpoint();
+        b.ops().bind(&b, &address(45303)).unwrap();
+        send(&a, b"data", Some(address(45303))).unwrap();
+        assert_eq!(recv(&b, 8, 0x2000).0, Err(11));
+        assert_eq!(recv(&b, 8, 0).1.data, b"data");
+    }
+    #[test]
+    fn broadcast_loopback_only_wildcard_and_broadcast_bindings_receive() {
+        let a = endpoint();
+        let b = endpoint();
+        let c = endpoint();
+        let d = endpoint();
+        for sk in [&b, &c, &d] {
+            sk.common.reuse.store(true, Ordering::Release);
+        }
+        b.ops()
+            .bind(
+                &b,
+                &SockAddr::Inet {
+                    addr: [0; 4],
+                    port: 45304,
+                },
+            )
+            .unwrap();
+        c.ops()
+            .bind(
+                &c,
+                &SockAddr::Inet {
+                    addr: [10, 0, 2, 15],
+                    port: 45304,
+                },
+            )
+            .unwrap();
+        let dst = SockAddr::Inet {
+            addr: [255; 4],
+            port: 45304,
+        };
+        d.ops().bind(&d, &dst).unwrap();
+        a.common.broadcast.store(true, Ordering::Release);
+        send(&a, b"broadcast", Some(dst)).unwrap();
+        assert_eq!(recv(&b, 16, 0).1.data, b"broadcast");
+        assert_eq!(recv(&d, 16, 0).1.data, b"broadcast");
+        assert_eq!(recv(&c, 16, 0).0, Err(11));
+    }
+    #[test]
+    fn small_receive_buffer_admits_one_oversized_packet() {
+        let a = endpoint();
+        let b = endpoint();
+        b.ops().bind(&b, &address(45305)).unwrap();
+        b.common.rcvbuf.store(2272, Ordering::Release);
+        send(&a, &vec![7; 3000], Some(address(45305))).unwrap();
+        send(&a, b"drop", Some(address(45305))).unwrap();
+        assert_eq!(recv(&b, 4096, 0).0, Ok(3000));
+        assert_eq!(recv(&b, 8, 0).0, Err(11));
+    }
+    #[test]
+    fn unspec_send_and_bind_keep_address_and_port() {
+        let a = endpoint();
+        let b = endpoint();
+        b.ops()
+            .bind(
+                &b,
+                &SockAddr::UnspecInet {
+                    addr: [0; 4],
+                    port: 45306,
+                },
+            )
+            .unwrap();
+        send(
+            &a,
+            b"unspec",
+            Some(SockAddr::UnspecInet {
+                addr: [127, 0, 0, 1],
+                port: 45306,
+            }),
+        )
+        .unwrap();
+        assert_eq!(recv(&b, 8, 0).1.data, b"unspec");
+        assert_eq!(
+            a.ops().bind(
+                &a,
+                &SockAddr::Inet {
+                    addr: [192, 0, 2, 1],
+                    port: 45307
+                }
+            ),
+            Err(99)
+        );
+    }
+    #[test]
+    fn loopback_source_cannot_leave_host() {
+        let a = endpoint();
+        a.ops().bind(&a, &address(45308)).unwrap();
+        assert_eq!(
+            send(
+                &a,
+                b"x",
+                Some(SockAddr::Inet {
+                    addr: [8, 8, 8, 8],
+                    port: 53
+                })
+            ),
+            Err(22)
+        );
+    }
+    #[test]
+    fn icmp_error_selects_one_reuse_socket() {
+        let a = endpoint();
+        let b = endpoint();
+        for sk in [&a, &b] {
+            sk.common.reuse.store(true, Ordering::Release);
+            sk.ops().bind(sk, &address(45309)).unwrap();
+            sk.ops().connect(sk, &address(45310), false).unwrap();
+        }
+        crate::socket::udp::udp_icmp_error([127, 0, 0, 1], 45309, [127, 0, 0, 1], 45310, 111);
+        assert_eq!(a.common.peek_error(), 0);
+        assert_eq!(b.common.peek_error(), 111);
     }
 }
 
@@ -413,5 +566,11 @@ pub mod arch_impl {
                 f()
             }
         }
+    }
+}
+
+pub mod time {
+    pub fn get_ticks() -> u64 {
+        0
     }
 }

@@ -1,5 +1,5 @@
 //! UDP endpoints and a bounded address/port registry, independent of fd tables.
-use alloc::collections::{BTreeMap, VecDeque};
+use alloc::collections::VecDeque;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use spin::Mutex;
@@ -7,7 +7,10 @@ use spin::Mutex;
 use super::addr::SockAddr;
 use super::object::{ProtoOps, RecvMsg, SendMsg, Socket, SocketProto};
 use super::wait::wait_until;
-use crate::syscall::errno::{EAFNOSUPPORT, EAGAIN, EINVAL, EMSGSIZE, ENOTCONN, EPIPE};
+use crate::syscall::errno::{
+    EACCES, EADDRINUSE, EADDRNOTAVAIL, EAFNOSUPPORT, EAGAIN, EDESTADDRREQ, EINVAL, EMSGSIZE,
+    ENETUNREACH, ENOBUFS, ENOTCONN, EOPNOTSUPP, EPIPE,
+};
 
 const ANY: [u8; 4] = [0; 4];
 const MSG_OOB: u32 = 1;
@@ -16,9 +19,7 @@ const MSG_TRUNC: u32 = 0x20;
 const MSG_DONTWAIT: u32 = 0x40;
 const MSG_DONTROUTE: u32 = 4;
 const MSG_MORE: u32 = 0x8000;
-const MAX_BINDINGS: usize = 4096;
 const FIRST_EPHEMERAL: u16 = 49152;
-const LAST_EPHEMERAL: u16 = 65535;
 const DATAGRAM_OVERHEAD: usize = core::mem::size_of::<UdpPacket>();
 
 pub struct UdpPacket {
@@ -49,6 +50,7 @@ pub struct UdpState {
     local: Option<([u8; 4], u16)>,
     peer: Option<([u8; 4], u16)>,
     source: Option<[u8; 4]>,
+    autobound: bool,
     // Holds the original allocation identity across deferred Socket release.
     owner: Weak<Socket>,
     rx: VecDeque<UdpPacket>,
@@ -61,6 +63,7 @@ impl UdpState {
             local: None,
             peer: None,
             source: None,
+            autobound: false,
             owner: Weak::new(),
             rx: VecDeque::new(),
             rx_bytes: 0,
@@ -77,8 +80,7 @@ impl UdpState {
     }
     fn matches(&self, dst: [u8; 4], src: [u8; 4], src_port: u16) -> bool {
         let local = self.local_ip();
-        (local == ANY || local == dst || crate::net::is_broadcast_addr(dst))
-            && self.peer.is_none_or(|peer| peer == (src, src_port))
+        (local == ANY || local == dst) && self.peer.is_none_or(|peer| peer == (src, src_port))
     }
 }
 
@@ -149,68 +151,52 @@ impl UdpSock {
                 if let Some((_, p)) = state.local {
                     return if automatic { Ok(p) } else { Err(EINVAL) };
                 }
-                registry.ports.retain(|_, holders| {
-                    holders.retain(|holder| holder.strong_count() != 0);
-                    !holders.is_empty()
-                });
-                let count: usize = registry.ports.values().map(Vec::len).sum();
-                if count >= MAX_BINDINGS {
-                    return Err(105);
-                } // ENOBUFS
-                held.try_reserve(count).map_err(|_| 105)?;
-                let available = |candidate: u16, held: &mut Vec<Arc<Socket>>| {
-                    for ((bound_addr, bound_port), holders) in &registry.ports {
-                        if *bound_port != candidate
-                            || !(addr == ANY || *bound_addr == ANY || *bound_addr == addr)
-                        {
-                            continue;
-                        }
-                        for holder in holders {
-                            if let Some(socket) = holder.upgrade() {
-                                let reusable = sk.common.reuseaddr() && socket.common.reuseaddr();
-                                held.push(socket);
-                                if !reusable {
-                                    return false;
-                                }
-                            }
-                        }
-                    }
-                    true
-                };
+                registry.prune();
                 let actual_port = if port == 0 {
+                    // Randomized start and odd stride visit every ephemeral port once.
+                    let random = ephemeral_random();
+                    let start = random as u16 & 16383;
+                    let stride = ((random >> 16) as u16 & 16383) | 1;
                     let mut found = None;
-                    for _ in FIRST_EPHEMERAL..=LAST_EPHEMERAL {
-                        let candidate = registry.next;
-                        registry.next = if candidate == LAST_EPHEMERAL {
-                            FIRST_EPHEMERAL
-                        } else {
-                            candidate + 1
-                        };
-                        // Ephemeral allocation never shares a port, even with reuse.
-                        if !registry.ports.keys().any(|(_, p)| *p == candidate) {
+                    for n in 0..=16383u16 {
+                        let candidate =
+                            FIRST_EPHEMERAL + start.wrapping_add(n.wrapping_mul(stride)) % 16384;
+                        if !registry.occupied(candidate) {
                             found = Some(candidate);
                             break;
                         }
                     }
-                    found.ok_or(EAGAIN)?
+                    found.ok_or(if automatic { EAGAIN } else { EADDRINUSE })?
                 } else {
-                    if !available(port, &mut held) {
-                        return Err(98);
-                    } // EADDRINUSE
+                    let range = registry.range(port);
+                    held.try_reserve(range.len()).map_err(|_| ENOBUFS)?;
+                    for binding in &registry.ports[range] {
+                        if !(addr == ANY || binding.addr == ANY || binding.addr == addr) {
+                            continue;
+                        }
+                        if let Some(socket) = binding.owner.upgrade() {
+                            let reusable = sk.common.reuseaddr() && socket.common.reuseaddr();
+                            held.push(socket);
+                            if !reusable {
+                                return Err(EADDRINUSE);
+                            }
+                        }
+                    }
                     port
                 };
-                let mut first = Vec::new();
-                if !registry.ports.contains_key(&(addr, actual_port)) {
-                    first.try_reserve(1).map_err(|_| 105)?;
-                    registry.ports.insert((addr, actual_port), first);
-                }
-                let holders = registry
-                    .ports
-                    .get_mut(&(addr, actual_port))
-                    .expect("binding inserted");
-                holders.try_reserve(1).map_err(|_| 105)?;
+                registry.ports.try_reserve(1).map_err(|_| ENOBUFS)?;
                 let owner = Arc::downgrade(sk);
-                holders.push(owner.clone());
+                let index = registry.ports.partition_point(|b| b.port <= actual_port);
+                registry.ports.insert(
+                    index,
+                    Binding {
+                        addr,
+                        port: actual_port,
+                        owner: owner.clone(),
+                    },
+                );
+                registry.mark(actual_port, true);
+                state.autobound = automatic;
                 state.local = Some((addr, actual_port));
                 state.owner = owner;
                 Ok(actual_port)
@@ -222,10 +208,7 @@ impl UdpSock {
     fn enqueue(&self, sk: &Socket, dst: [u8; 4], src: [u8; 4], src_port: u16, data: &[u8]) -> bool {
         let accepted = crate::socket::udp::with_locked_masked(self, |state| {
             let charge = data.len() + DATAGRAM_OVERHEAD;
-            if !state.matches(dst, src, src_port)
-                || sk.common.shut_rd()
-                || charge > sk.common.rcvbuf().saturating_sub(state.rx_bytes)
-            {
+            if !state.matches(dst, src, src_port) || state.rx_bytes > sk.common.rcvbuf() {
                 return false;
             }
             let mut owned = Vec::new();
@@ -243,7 +226,12 @@ impl UdpSock {
         });
         if accepted {
             static DELIVERY_NOTICE: crate::log_notice::Node = crate::log_notice::Node::new();
-            DELIVERY_NOTICE.post_again("UDP: Delivered packet to socket on port");
+            static NOTICED: core::sync::atomic::AtomicBool =
+                core::sync::atomic::AtomicBool::new(false);
+            let stage_port = with_locked_masked(self, |s| s.local.is_some_and(|(_, p)| p == 54321));
+            if stage_port && !NOTICED.swap(true, core::sync::atomic::Ordering::Relaxed) {
+                DELIVERY_NOTICE.post_again("UDP: Delivered packet to socket on port 54321");
+            }
             sk.common.notify();
         }
         accepted
@@ -257,22 +245,72 @@ impl Default for UdpSock {
     }
 }
 
+struct Binding {
+    addr: [u8; 4],
+    port: u16,
+    owner: Weak<Socket>,
+}
 pub struct SocketRegistry {
-    ports: BTreeMap<([u8; 4], u16), Vec<Weak<Socket>>>,
-    next: u16,
+    // Sorted by port: RX visits only this destination's bindings.
+    ports: Vec<Binding>,
+    used: [u64; 1024],
+}
+impl SocketRegistry {
+    fn range(&self, port: u16) -> core::ops::Range<usize> {
+        self.ports.partition_point(|b| b.port < port)
+            ..self.ports.partition_point(|b| b.port <= port)
+    }
+    fn occupied(&self, port: u16) -> bool {
+        self.used[port as usize / 64] & (1 << (port % 64)) != 0
+    }
+    fn mark(&mut self, port: u16, used: bool) {
+        let mask = 1 << (port % 64);
+        if used {
+            self.used[port as usize / 64] |= mask;
+        } else {
+            self.used[port as usize / 64] &= !mask;
+        }
+    }
+    fn prune(&mut self) {
+        self.ports.retain(|b| b.owner.strong_count() != 0);
+        self.used.fill(0);
+        for b in &self.ports {
+            self.used[b.port as usize / 64] |= 1 << (b.port % 64);
+        }
+    }
 }
 pub static SOCKET_REGISTRY: Mutex<SocketRegistry> = Mutex::new(SocketRegistry {
-    ports: BTreeMap::new(),
-    next: FIRST_EPHEMERAL,
+    ports: Vec::new(),
+    used: [0; 1024],
 });
+/// Counter-seeded PRNG, matching the entropy available to getrandom today.
+/// This prevents sequential allocation; it is not cryptographic entropy.
+fn ephemeral_random() -> u64 {
+    static SEQUENCE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+    #[cfg(target_arch = "x86_64")]
+    let clock = unsafe { core::arch::x86_64::_rdtsc() };
+    #[cfg(target_arch = "aarch64")]
+    let clock: u64 = {
+        let value;
+        unsafe {
+            core::arch::asm!("mrs {}, cntvct_el0", out(reg) value);
+        }
+        value
+    };
+    let mut x =
+        clock ^ SEQUENCE.fetch_add(0x9e3779b97f4a7c15, core::sync::atomic::Ordering::Relaxed);
+    x ^= x >> 12;
+    x ^= x << 25;
+    x ^= x >> 27;
+    x.wrapping_mul(0x2545f4914f6cdd1d)
+}
 /// Registry insertions and remove operations may allocate/deallocate; memory/heap.rs
 /// masks its allocator lock. The outer IRQ mask covers the entire map hold.
 fn with_registry<R>(f: impl FnOnce(&mut SocketRegistry) -> R) -> R {
     crate::arch_without_interrupts(|| f(&mut SOCKET_REGISTRY.lock()))
 }
 
-// Existing mask fixtures count refused fast acquisitions. A contended receive
-// now serializes under IRQ exclusion instead of dropping its datagram.
+// A contended receive never blocks an interrupt or softirq.
 static UDP_PORTS_LOOKUP_REFUSED: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
 pub fn udp_ports_lookup_refused() -> u64 {
@@ -285,16 +323,15 @@ fn receivers(dst: [u8; 4], port: u16) -> Result<Vec<Weak<Socket>>, i32> {
             Some(registry) => registry,
             None => {
                 UDP_PORTS_LOOKUP_REFUSED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                SOCKET_REGISTRY.lock()
+                return Err(ENOBUFS);
             }
         };
         let mut out = Vec::new();
-        for ((addr, bound_port), sockets) in &registry.ports {
-            if *bound_port == port
-                && (*addr == ANY || *addr == dst || crate::net::is_broadcast_addr(dst))
-            {
-                out.try_reserve(sockets.len()).map_err(|_| 105)?;
-                out.extend(sockets.iter().cloned());
+        let range = registry.range(port);
+        out.try_reserve(range.len()).map_err(|_| ENOBUFS)?;
+        for binding in &registry.ports[range] {
+            if binding.addr == ANY || binding.addr == dst {
+                out.push(binding.owner.clone());
             }
         }
         Ok(out)
@@ -308,7 +345,8 @@ pub fn deliver(dst: [u8; 4], port: u16, src: [u8; 4], src_port: u16, data: &[u8]
     let Ok(sockets) = receivers(dst, port) else {
         return true;
     }; // No ICMP under resource pressure.
-    let broadcast = crate::net::is_broadcast_addr(dst);
+    let config = crate::net::config();
+    let broadcast = crate::net::is_broadcast_addr_in(&config, dst);
     let mut selected: Option<(Arc<Socket>, u8)> = None;
     let mut found = false;
     for weak in sockets.into_iter().rev() {
@@ -347,20 +385,30 @@ pub fn udp_icmp_error(src: [u8; 4], src_port: u16, dst: [u8; 4], dst_port: u16, 
     let Ok(sockets) = receivers(src, src_port) else {
         return;
     };
-    for weak in sockets {
+    let mut selected: Option<(Arc<Socket>, bool)> = None;
+    for weak in sockets.into_iter().rev() {
         let Some(sk) = weak.upgrade() else {
             continue;
         };
         let SocketProto::Udp(udp) = &sk.proto else {
             continue;
         };
-        let matches = crate::socket::udp::with_locked_masked(udp, |s| {
-            s.peer == Some((dst, dst_port)) && (s.local_ip() == src || s.local_ip() == ANY)
+        let score = with_locked_masked(udp, |s| {
+            if s.peer == Some((dst, dst_port)) && (s.local_ip() == src || s.local_ip() == ANY) {
+                Some(s.local.is_some_and(|(addr, _)| addr != ANY))
+            } else {
+                None
+            }
         });
-        if matches {
-            sk.common.set_error(errno);
-            sk.common.notify();
+        if let Some(score) = score {
+            if selected.as_ref().is_none_or(|(_, old)| score > *old) {
+                selected = Some((sk, score));
+            }
         }
+    }
+    if let Some((sk, _)) = selected {
+        sk.common.set_error(errno);
+        sk.common.notify();
     }
 }
 
@@ -369,22 +417,51 @@ impl ProtoOps for UdpSock {
         true
     }
     fn bind(&self, sk: &Arc<Socket>, addr: &SockAddr) -> Result<(), i32> {
-        let SockAddr::Inet { addr, port } = addr else {
+        if matches!(addr, SockAddr::UnspecInet { addr, .. } if *addr != ANY) {
+            return Err(EAFNOSUPPORT);
+        }
+        let (SockAddr::Inet { addr, port } | SockAddr::UnspecInet { addr, port }) = addr else {
             return Err(EAFNOSUPPORT);
         };
+        let config = crate::net::config();
+        if *addr != ANY
+            && !crate::net::is_local_addr_in(&config, *addr)
+            && !crate::net::is_broadcast_addr_in(&config, *addr)
+        {
+            return Err(EADDRNOTAVAIL);
+        } // EADDRNOTAVAIL
+        if *port != 0
+            && *port < 1024
+            && !matches!(
+                crate::syscall::handlers::sys_geteuid(),
+                crate::syscall::SyscallResult::Ok(0)
+            )
+        {
+            return Err(EACCES);
+        }
         if crate::socket::udp::with_locked_masked(self, |s| s.local.is_some()) {
             return Err(EINVAL);
         }
-        if *addr != ANY && !crate::net::is_local_addr(*addr) {
-            return Err(99);
-        } // EADDRNOTAVAIL
         self.reserve(sk, *addr, *port, false)?;
         sk.common.notify();
         Ok(())
     }
     fn connect(&self, sk: &Arc<Socket>, addr: &SockAddr, _nonblock: bool) -> Result<(), i32> {
+        let config = crate::net::config();
         match addr {
-            SockAddr::Unspec => {
+            SockAddr::Unspec | SockAddr::UnspecInet { .. } => {
+                let automatic = with_locked_masked(self, |s| s.autobound);
+                if automatic {
+                    with_registry(|registry| {
+                        with_locked_masked(self, |s| {
+                            registry.ports.retain(|b| !Weak::ptr_eq(&b.owner, &s.owner));
+                            registry.prune();
+                            s.local = None;
+                            s.autobound = false;
+                            s.cork = None;
+                        });
+                    });
+                }
                 crate::socket::udp::with_locked_masked(self, |s| {
                     s.peer = None;
                     s.source = None;
@@ -392,11 +469,11 @@ impl ProtoOps for UdpSock {
             }
             SockAddr::Inet { addr, port } => {
                 let dst = if *addr == ANY { [127, 0, 0, 1] } else { *addr };
-                if crate::net::is_broadcast_addr(dst) && !sk.common.broadcast() {
-                    return Err(13);
+                if crate::net::is_broadcast_addr_in(&config, dst) && !sk.common.broadcast() {
+                    return Err(EACCES);
                 }
                 self.ensure_bound(sk)?;
-                let source = crate::net::source_ip_in(&crate::net::config(), dst);
+                let source = crate::net::source_ip_in(&config, dst);
                 crate::socket::udp::with_locked_masked(self, |s| {
                     s.peer = Some((dst, *port));
                     s.source = Some(source);
@@ -409,7 +486,7 @@ impl ProtoOps for UdpSock {
     }
     fn sendmsg(&self, sk: &Arc<Socket>, msg: &mut SendMsg) -> Result<usize, i32> {
         if msg.flags & MSG_OOB != 0 {
-            return Err(95);
+            return Err(EOPNOTSUPP);
         }
         if msg.data.len() > 65507 {
             return Err(EMSGSIZE);
@@ -430,14 +507,14 @@ impl ProtoOps for UdpSock {
                 (cork.dst, cork.dst_port)
             } else {
                 match &msg.dest {
-                    Some(SockAddr::Inet { addr, port }) => {
+                    Some(SockAddr::Inet { addr, port } | SockAddr::UnspecInet { addr, port }) => {
                         if *port == 0 {
                             return Err(EINVAL);
                         }
                         (*addr, *port)
                     }
                     Some(_) => return Err(EAFNOSUPPORT),
-                    None => s.peer.ok_or(89)?, // EDESTADDRREQ
+                    None => s.peer.ok_or(EDESTADDRREQ)?, // EDESTADDRREQ
                 }
             };
             let dst = if dest.0 == ANY {
@@ -446,16 +523,16 @@ impl ProtoOps for UdpSock {
                 dest.0
             };
             if msg.flags & MSG_DONTROUTE != 0
-                && !crate::net::is_local_addr(dst)
-                && !crate::net::is_broadcast_addr(dst)
+                && !crate::net::is_local_addr_in(&config, dst)
+                && !crate::net::is_broadcast_addr_in(&config, dst)
                 && !(0..4).all(|i| {
                     dst[i] & config.subnet_mask[i] == config.ip_addr[i] & config.subnet_mask[i]
                 })
             {
-                return Err(101); // ENETUNREACH: no directly connected route.
+                return Err(ENETUNREACH); // ENETUNREACH: no directly connected route.
             }
-            if crate::net::is_broadcast_addr(dst) && !sk.common.broadcast() {
-                return Err(13);
+            if crate::net::is_broadcast_addr_in(&config, dst) && !sk.common.broadcast() {
+                return Err(EACCES);
             }
             let port = s.local.expect("autobound before send").1;
             let local = s.local_ip();
@@ -464,6 +541,9 @@ impl ProtoOps for UdpSock {
             } else {
                 local
             };
+            if src[0] == 127 && dst[0] != 127 && dst != config.ip_addr {
+                return Err(EINVAL);
+            }
             if s.cork.is_none() && msg.flags & MSG_MORE == 0 {
                 return Ok(SendPlan::Immediate {
                     src,
@@ -483,7 +563,7 @@ impl ProtoOps for UdpSock {
             if msg.data.len() > 65507 - cork.data.len() {
                 return Err(EMSGSIZE);
             }
-            cork.data.try_reserve(msg.data.len()).map_err(|_| 105)?;
+            cork.data.try_reserve(msg.data.len()).map_err(|_| ENOBUFS)?;
             cork.data.extend_from_slice(msg.data);
             if msg.flags & MSG_MORE != 0 {
                 s.cork = Some(cork);
@@ -517,8 +597,11 @@ impl ProtoOps for UdpSock {
     }
     fn recvmsg(&self, sk: &Arc<Socket>, msg: &mut RecvMsg) -> Result<usize, i32> {
         if msg.flags & MSG_OOB != 0 {
-            return Err(95);
+            return Err(EOPNOTSUPP);
         }
+        if msg.flags & 0x2000 != 0 {
+            return Err(EAGAIN);
+        } // MSG_ERRQUEUE: no extended error queue.
         let deadline = sk.common.rcv_deadline();
         wait_until(
             sk,
@@ -540,7 +623,7 @@ impl ProtoOps for UdpSock {
                     let len = packet.data.len();
                     let n = len.min(msg.cap);
                     if msg.data.try_reserve(n).is_err() {
-                        return Some(Err(12));
+                        return Some(Err(crate::syscall::errno::ENOMEM));
                     }
                     msg.data.extend_from_slice(&packet.data[..n]);
                     msg.from = Some(SockAddr::Inet {
@@ -591,6 +674,9 @@ impl ProtoOps for UdpSock {
         let mut bits = 4; // POLLOUT
         if readable || sk.common.shut_rd() {
             bits |= 1;
+            if sk.common.shut_rd() {
+                bits |= 0x2000;
+            }
         }
         if sk.common.peek_error() != 0 {
             bits |= 8;
@@ -603,13 +689,10 @@ impl ProtoOps for UdpSock {
     fn release(&self, _sk: &Socket) {
         with_registry(|registry| {
             crate::socket::udp::with_locked_masked(self, |s| {
-                registry.ports.retain(|_, holders| {
-                    holders.retain(|holder| {
-                        !Weak::ptr_eq(holder, &s.owner) && holder.strong_count() != 0
-                    });
-                    !holders.is_empty()
-                });
+                registry.ports.retain(|b| !Weak::ptr_eq(&b.owner, &s.owner));
+                registry.prune();
                 s.local = None;
+                s.autobound = false;
                 s.peer = None;
                 s.source = None;
                 s.cork = None;

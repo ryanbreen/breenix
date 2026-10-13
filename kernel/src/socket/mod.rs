@@ -16,34 +16,6 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spin::Mutex;
 
-/// Socket handle - unique identifier for a socket in the global registry
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SocketHandle(u64);
-
-impl SocketHandle {
-    /// Create a new socket handle
-    pub fn new(id: u64) -> Self {
-        SocketHandle(id)
-    }
-
-    /// Get the raw ID (not yet used, but part of API)
-    #[allow(dead_code)]
-    pub fn as_u64(self) -> u64 {
-        self.0
-    }
-}
-
-/// Counter for generating unique socket handles
-static NEXT_SOCKET_HANDLE: Mutex<u64> = Mutex::new(0);
-
-/// Allocate a new unique socket handle
-pub fn alloc_socket_handle() -> SocketHandle {
-    let mut next = NEXT_SOCKET_HANDLE.lock();
-    let handle = SocketHandle::new(*next);
-    *next += 1;
-    handle
-}
-
 pub use udp::{udp_ports_lookup_refused, SOCKET_REGISTRY};
 
 // ============================================================================

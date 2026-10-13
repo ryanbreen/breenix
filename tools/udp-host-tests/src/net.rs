@@ -27,10 +27,16 @@ pub fn config() -> Config {
     }
 }
 pub fn is_local_addr(addr: [u8; 4]) -> bool {
-    addr[0] == 127 || addr == config().ip_addr
+    is_local_addr_in(&config(), addr)
 }
 pub fn is_broadcast_addr(addr: [u8; 4]) -> bool {
-    addr == [255; 4] || addr == [10, 0, 2, 255]
+    is_broadcast_addr_in(&config(), addr)
+}
+pub fn is_local_addr_in(cfg: &Config, addr: [u8; 4]) -> bool {
+    addr[0] == 127 || addr == cfg.ip_addr
+}
+pub fn is_broadcast_addr_in(cfg: &Config, addr: [u8; 4]) -> bool {
+    addr == [255; 4] || (0..4).all(|i| addr[i] == cfg.ip_addr[i] | !cfg.subnet_mask[i])
 }
 pub fn source_ip_in(config: &Config, dst: [u8; 4]) -> [u8; 4] {
     if dst[0] == 127 {
@@ -54,7 +60,7 @@ pub mod tcp {
 }
 pub fn ip_output(src: [u8; 4], dst: [u8; 4], protocol: u8, data: &[u8]) -> Result<(), TxError> {
     let packet = ipv4::Ipv4Packet::try_build(src, dst, protocol, data)?;
-    if is_local_addr(dst) {
+    if is_local_addr(dst) || is_broadcast_addr(dst) {
         let ip = ipv4::Ipv4Packet::parse(&packet).unwrap();
         let frame = ethernet::EthernetFrame {
             src_mac: [0; 6],

@@ -1,5 +1,5 @@
 //! #908: UDP registry holders mask at the API boundary. Receivers resolve
-//! Weak socket bindings outside PM and preserve input across contention. Each rule has
+//! Weak socket bindings outside PM and refuse input across contention. Each rule has
 //! an in-memory mutation of real source, with a checked replacement.
 
 use std::fs;
@@ -269,11 +269,11 @@ fn check_try_lookup_udp_uses_try_lock_not_blocking_lock(source: &str) -> bool {
     let body = body(source, "receivers");
     body.contains("crate::arch_without_interrupts(||")
         && body.contains("SOCKET_REGISTRY.try_lock()")
-        && body.contains("SOCKET_REGISTRY.lock()")
+        && !body.contains("SOCKET_REGISTRY.lock()")
 }
 
 #[test]
-fn receivers_serializes_contention_under_the_mask() {
+fn receivers_refuses_contention_under_the_mask() {
     assert!(
         check_try_lookup_udp_uses_try_lock_not_blocking_lock(&repo_text(REGISTRY)),
         "#908: try_lookup_udp_uses_try_lock_not_blocking_lock"
@@ -281,7 +281,7 @@ fn receivers_serializes_contention_under_the_mask() {
 }
 
 #[test]
-fn receivers_serializes_contention_under_the_mask_rule_is_not_vacuous() {
+fn receivers_refuses_contention_under_the_mask_rule_is_not_vacuous() {
     let source = repo_text(REGISTRY);
     // Anchor the replacement to try_lookup_udp's body so the mutation targets this function specifically.
     let start = source.find("fn receivers").unwrap();
@@ -472,7 +472,7 @@ fn green_control_all_rules_hold_at_head() {
     with_registry_masks_the_whole_hold();
     reserve_uses_the_masked_primitive();
     release_uses_the_masked_primitive();
-    receivers_serializes_contention_under_the_mask();
+    receivers_refuses_contention_under_the_mask();
     receivers_counts_refusals();
     handle_udp_uses_try_lookup_udp_not_lookup_udp();
     handle_udp_contended_arm_has_no_logging();

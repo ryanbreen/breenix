@@ -17,9 +17,9 @@ pub struct UdpHeader {
     /// Destination port
     pub dst_port: u16,
     /// Length (header + data) - stored but not used after parsing
-    pub _length: u16,
+    pub length: u16,
     /// Checksum - stored but not used after parsing
-    pub _checksum: u16,
+    pub checksum: u16,
 }
 
 impl UdpHeader {
@@ -45,8 +45,8 @@ impl UdpHeader {
             UdpHeader {
                 src_port,
                 dst_port,
-                _length: length,
-                _checksum: checksum,
+                length: length,
+                checksum: checksum,
             },
             payload,
         ))
@@ -111,8 +111,8 @@ pub fn handle_udp(ip: &Ipv4Packet, data: &[u8]) {
     let Some((header, payload)) = UdpHeader::parse(data) else {
         return;
     };
-    let l4 = &data[..header._length as usize];
-    if header._checksum != 0 && udp_checksum(ip.src_ip, ip.dst_ip, l4) != 0 {
+    let l4 = &data[..header.length as usize];
+    if header.checksum != 0 && udp_checksum(ip.src_ip, ip.dst_ip, l4) != 0 {
         return;
     }
     if !crate::socket::udp::deliver(

@@ -2,6 +2,7 @@ pub mod addr {
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum SockAddr {
         Unspec,
+        UnspecInet { addr: [u8; 4], port: u16 },
         Inet { addr: [u8; 4], port: u16 },
         Unix,
     }
