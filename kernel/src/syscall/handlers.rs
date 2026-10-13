@@ -3332,6 +3332,21 @@ pub fn sys_fcntl(fd: u64, cmd: u64, arg: u64) -> SyscallResult {
         }
     };
 
+    if cmd == F_SETFL {
+        let entry = match process.fd_table.get(fd) {
+            Some(entry) => entry.clone(),
+            None => return SyscallResult::Err(9),
+        };
+        drop(manager_guard);
+        let mut update = || entry.set_status_flags(arg as u32);
+        if let crate::ipc::fd::FdKind::Ipc(file) = &entry.kind {
+            file.update_status_flags(&mut update);
+        } else {
+            update();
+        }
+        return SyscallResult::Ok(0);
+    }
+
     match cmd {
         F_DUPFD => match process.fd_table.dup_at_least(fd, arg, false) {
             Ok(new_fd) => {
@@ -3365,13 +3380,6 @@ pub fn sys_fcntl(fd: u64, cmd: u64, arg: u64) -> SyscallResult {
             Ok(flags) => {
                 log::debug!("sys_fcntl F_GETFL: fd={} flags={:#x}", fd, flags);
                 SyscallResult::Ok(flags as u64)
-            }
-            Err(e) => SyscallResult::Err(e as u64),
-        },
-        F_SETFL => match process.fd_table.set_status_flags(fd, arg as u32) {
-            Ok(()) => {
-                log::debug!("sys_fcntl F_SETFL: fd={} flags={:#x}", fd, arg);
-                SyscallResult::Ok(0)
             }
             Err(e) => SyscallResult::Err(e as u64),
         },

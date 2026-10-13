@@ -259,8 +259,16 @@ fn open_is_access_checked(is_reg: bool, is_dir: bool, flags: u32) -> bool {
 /// Copy a pathname from userspace and resolve it; `follow` says whether a
 /// final symlink is followed.
 fn resolve_user(pathname: u64, follow: bool) -> Result<crate::fs::namei::Resolved, SyscallResult> {
+    resolve_user_at(AT_FDCWD, pathname, follow)
+}
+fn resolve_user_at(
+    dirfd: i32,
+    pathname: u64,
+    follow: bool,
+) -> Result<crate::fs::namei::Resolved, SyscallResult> {
     let path = super::userptr::copy_cstr_from_user(pathname).map_err(SyscallResult::Err)?;
-    crate::fs::namei::resolve(&path, follow).map_err(SyscallResult::Err)
+    super::metadata::resolve_at(dirfd, &path, follow, &current_file_credentials())
+        .map_err(SyscallResult::Err)
 }
 
 /// Copy a pathname from userspace and resolve it to the directory entry an
@@ -283,8 +291,15 @@ fn resolve_user_rename(pathname: u64) -> Result<crate::fs::namei::Resolved, Sysc
 /// Copy a pathname from userspace and resolve it to the name a mkdir,
 /// symlink or link creates.
 fn resolve_user_create(pathname: u64) -> Result<crate::fs::namei::Resolved, SyscallResult> {
+    resolve_user_create_at(AT_FDCWD, pathname)
+}
+fn resolve_user_create_at(
+    dirfd: i32,
+    pathname: u64,
+) -> Result<crate::fs::namei::Resolved, SyscallResult> {
     let path = super::userptr::copy_cstr_from_user(pathname).map_err(SyscallResult::Err)?;
-    crate::fs::namei::resolve_create(&path).map_err(SyscallResult::Err)
+    super::metadata::resolve_create_at(dirfd, &path, &current_file_credentials())
+        .map_err(SyscallResult::Err)
 }
 
 /// sys_open - Open a file or directory
@@ -1149,7 +1164,7 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
             stat.st_rdev = rdev;
         }
         FstatKind::DevfsDirectory => {
-            stat.st_dev = crate::fs::vfs::mount::find_mount("/dev").unwrap_or(0) as u64;
+            stat.st_dev = 0xffff0002;
             stat.st_ino = 1;
             stat.st_mode = S_IFDIR | 0o755;
             stat.st_nlink = 2;
@@ -1913,16 +1928,19 @@ fn sys_rmdir_from(dirfd: i32, pathname: u64) -> SyscallResult {
 /// * EMLINK - oldpath has the most links ext2 allows
 /// * EIO - I/O error
 pub fn sys_link(oldpath: u64, newpath: u64) -> SyscallResult {
+    sys_link_from(AT_FDCWD, oldpath, AT_FDCWD, newpath)
+}
+fn sys_link_from(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64) -> SyscallResult {
     use super::errno::{EACCES, EEXIST, EIO, ENOENT, ENOTDIR, EPERM, EXDEV};
     use crate::fs::ext2::FileType;
     use crate::fs::namei::{Last, Target};
 
     // As on Linux, link() names a final symlink in oldpath itself.
-    let old = match resolve_user(oldpath, false) {
+    let old = match resolve_user_at(olddirfd, oldpath, false) {
         Ok(r) => r,
         Err(e) => return e,
     };
-    let new = match resolve_user_create(newpath) {
+    let new = match resolve_user_create_at(newdirfd, newpath) {
         Ok(r) => r,
         Err(e) => return e,
     };
@@ -2810,7 +2828,7 @@ fn handle_devfs_getdents64(
 
     // Helper entries
     let special_entries: [(&str, u64); 2] = [
-        (".", 1),  // matches the stable /dev directory stat inode
+        (".", 1),  // matches the stable /dev directory inode
         ("..", 2), // inode 2 = root directory
     ];
 
@@ -3744,13 +3762,13 @@ pub fn sys_linkat(
     newpath: u64,
     flags: i32,
 ) -> SyscallResult {
-    if flags == 0x1000 && newdirfd == AT_FDCWD {
-        let old = match crate::syscall::userptr::copy_cstr_from_user(oldpath) {
+    if flags == 0x1000 {
+        let old = match super::userptr::copy_cstr_from_user(oldpath) {
             Ok(s) => s,
-            Err(_) => return SyscallResult::Err(super::errno::EFAULT as u64),
+            Err(e) => return SyscallResult::Err(e),
         };
         if old.is_empty() {
-            let new = match resolve_user_create(newpath) {
+            let new = match resolve_user_create_at(newdirfd, newpath) {
                 Ok(r) => r,
                 Err(e) => return e,
             };
@@ -3759,10 +3777,7 @@ pub fn sys_linkat(
             }
         }
     }
-    if olddirfd != AT_FDCWD || newdirfd != AT_FDCWD {
-        return SyscallResult::Err(super::errno::ENOSYS as u64);
-    }
-    sys_link(oldpath, newpath)
+    sys_link_from(olddirfd, oldpath, newdirfd, newpath)
 }
 
 /// renameat(olddirfd, oldpath, newdirfd, newpath) - replacement for rename

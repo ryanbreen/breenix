@@ -10,13 +10,17 @@ const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
 const AT_EMPTY_PATH: u32 = 0x1000;
 
 pub(crate) fn descriptor(fd: i32) -> Result<FdKind, u64> {
+    descriptor_entry(fd).map(|entry| entry.kind)
+}
+
+pub(crate) fn descriptor_entry(fd: i32) -> Result<crate::ipc::fd::FileDescriptor, u64> {
     let tid = crate::task::scheduler::current_thread_id().ok_or(ESRCH as u64)?;
     let guard = crate::process::manager();
     guard
         .as_ref()
         .and_then(|m| m.find_process_by_thread(tid))
         .and_then(|(_, p)| p.fd_table.get(fd))
-        .map(|entry| entry.kind.clone())
+        .cloned()
         .ok_or(EBADF as u64)
 }
 
@@ -193,10 +197,14 @@ fn by_cwd(change: Change) -> SyscallResult {
 
 fn by_fd(fd: i32, change: Change) -> SyscallResult {
     let cred = Credentials::current(false);
-    let kind = match descriptor(fd) {
-        Ok(kind) => kind,
-        Err(e) => return SyscallResult::Err(e),
-    };
+    let entry = match descriptor_entry(fd) { Ok(entry) => entry, Err(e) => return SyscallResult::Err(e) };
+    if let Some(handle) = &entry.native_inode {
+        let mut guard = match ext2::write_mount(handle.object.mount) { Ok(g) => g, Err(_) => return SyscallResult::Err(EIO as u64) };
+        let Some(fs) = guard.as_mut() else { return SyscallResult::Err(EIO as u64); };
+        let ino = match handle.verify(fs) { Ok(ino) => ino, Err(_) => return SyscallResult::Err(EIO as u64) };
+        return update(fs, ino, change, &cred);
+    }
+    let kind = entry.kind;
     match kind {
         FdKind::Ipc(object) => {
             let result = match change {
