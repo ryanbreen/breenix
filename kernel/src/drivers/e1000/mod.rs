@@ -646,11 +646,12 @@ static E1000_INITIALIZED: AtomicBool = AtomicBool::new(false);
 #[cfg(target_arch = "x86_64")]
 static IRQ_MMIO_BASE: AtomicUsize = AtomicUsize::new(0);
 
-/// Run `f` on the driver with interrupts masked. On x86 the NetRx softirq
-/// takes this lock at interrupt exit, on whichever CPU took the interrupt, so
-/// a holder that an interrupt reached on its own CPU would leave that CPU
-/// spinning on the lock with interrupts off for good, and every device
-/// interrupt routed to it with nowhere to run (#1442).
+/// Run `f` on the driver with interrupts masked, so no interrupt or preemption
+/// reaches a holder. On x86 the NetRx softirq takes this lock at interrupt
+/// exit on the CPU that took the interrupt. A holder preempted there that can
+/// run only on that CPU (a pinned kernel thread such as ksoftirqd) would leave
+/// the CPU spinning on the lock with interrupts off for good, and every device
+/// interrupt routed to it undelivered (#1442).
 fn with_driver<R>(f: impl FnOnce(&mut E1000) -> R) -> Option<R> {
     crate::arch_without_interrupts(|| E1000_DRIVER.lock().as_mut().map(f))
 }
