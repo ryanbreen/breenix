@@ -87,6 +87,51 @@ impl UnixQueue {
             limit.saturating_sub(self.bytes)
         }
     }
+    pub fn charged_bytes(&self) -> usize {
+        self.bytes
+    }
+    pub fn stream_room(&self, limit: usize) -> usize {
+        if self.messages.back().is_some_and(|m| m.rights.is_empty()) {
+            limit.saturating_sub(self.bytes)
+        } else {
+            self.room(limit)
+        }
+    }
+    /// Adjacent plain stream writes share storage; record sockets always use
+    /// push instead. Ancillary data and credential boundaries are retained.
+    pub fn push_stream(&mut self, msg: UnixMsg, limit: usize) -> Result<(), (i32, UnixMsg)> {
+        if msg.rights.is_empty() {
+            if let Some(last) = self.messages.back_mut() {
+                if last.rights.is_empty()
+                    && last.from == msg.from
+                    && last.cred.pid == msg.cred.pid
+                    && last.cred.uid == msg.cred.uid
+                    && last.cred.gid == msg.cred.gid
+                {
+                    let before = last.charge();
+                    let additional = msg.bytes().len();
+                    if additional > limit.saturating_sub(self.bytes) {
+                        return Err((EAGAIN, msg));
+                    }
+                    // Consumed prefixes cannot make physical storage grow
+                    // beyond the byte budget as readers and writers alternate.
+                    if last.offset != 0 {
+                        let remaining = last.bytes().len();
+                        last.data.copy_within(last.offset.., 0);
+                        last.data.truncate(remaining);
+                        last.offset = 0;
+                    }
+                    if last.data.try_reserve(additional).is_err() {
+                        return Err((ENOMEM, msg));
+                    }
+                    last.data.extend_from_slice(msg.bytes());
+                    self.bytes += last.charge() - before;
+                    return Ok(());
+                }
+            }
+        }
+        self.push(msg, limit)
+    }
     pub fn push(&mut self, msg: UnixMsg, limit: usize) -> Result<(), (i32, UnixMsg)> {
         let charge = msg.charge();
         if charge > limit {

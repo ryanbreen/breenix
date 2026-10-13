@@ -125,6 +125,7 @@ fn partial_stream_reads_release_only_consumed_capacity() {
     q.consume(2);
     assert_eq!(q.front().unwrap().bytes(), b"cdef");
     assert_eq!(q.room(8), 4);
+    assert_eq!(q.charged_bytes(), 4);
     assert!(q.push(message(b"ghij"), 8).is_ok());
     assert_eq!(q.room(8), 0);
     assert_eq!(q.pop().unwrap().bytes(), b"cdef");
@@ -132,6 +133,26 @@ fn partial_stream_reads_release_only_consumed_capacity() {
     q.consume(100);
     assert_eq!(q.pop().unwrap().bytes(), b"");
     assert_eq!(q.room(8), 8);
+}
+
+#[test]
+fn stream_writes_coalesce_and_reclaim_consumed_prefixes() {
+    let mut q = UnixQueue::new();
+    for _ in 0..2048 {
+        assert!(q.push_stream(message(b"a"), 2048).is_ok());
+    }
+    assert_eq!(q.stream_room(2048), 0);
+    assert_eq!(q.iter().count(), 1);
+    q.consume(1024);
+    assert_eq!(q.stream_room(2048), 1024);
+    for _ in 0..1024 {
+        assert!(q.push_stream(message(b"b"), 2048).is_ok());
+    }
+    assert_eq!(q.charged_bytes(), 2048);
+    let msg = q.pop().unwrap();
+    assert_eq!(msg.bytes().len(), 2048);
+    assert!(msg.bytes()[..1024].iter().all(|b| *b == b'a'));
+    assert!(msg.bytes()[1024..].iter().all(|b| *b == b'b'));
 }
 
 #[test]
