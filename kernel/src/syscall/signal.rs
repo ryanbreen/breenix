@@ -149,35 +149,16 @@ pub(crate) fn raise_sigpipe() {
 /// dying would leave held for every other thread (#1025). Then the kill is
 /// left pending as SIGKILL instead and the victim's waits are woken: the
 /// thread finishes its syscall, and its return to user mode ends the process.
-pub(crate) fn kill_process_now(victim: ProcessId, exit_code: i32) {
-    // Publish, claim, and withdraw the publication when the claim succeeds,
-    // all under one process-manager hold (#1413). Publishing before checking
-    // custody means a thread that leaves its section while the claim is
-    // refused finds SIGKILL at its syscall return, whose lock-free check reads
-    // the publication's hint. A claimed thread must never act on SIGKILL
-    // itself: ARM64's interrupt return ends the row in place, without the
-    // retirement receipt and report this kill's exit makes. That return needs
-    // this lock (`try_manager`), so it cannot see the publication before the
-    // withdrawal. A claimed victim dies only here, so the withdrawal loses no
-    // earlier SIGKILL.
-    let claimed = crate::process::with_process_manager(|manager| {
-        if let Some(process) = manager.get_process_mut(victim) {
-            // A deferred kill reports this status, not SIGKILL's own.
-            process.group_exit_code.get_or_insert(exit_code);
-            process.signals.set_pending(SIGKILL);
-        }
-        let claimed = crate::task::scheduler::with_scheduler(|scheduler| {
-            scheduler.claim_process_threads_for_kill(victim.as_u64())
+///
+/// `claimed` is what `claim_kill_locked` returned when the caller published
+/// and claimed under its own process-manager hold; `None` does both here.
+pub(crate) fn kill_process_now(victim: ProcessId, exit_code: i32, claimed: Option<bool>) {
+    let claimed = claimed.unwrap_or_else(|| {
+        crate::process::with_process_manager(|manager| {
+            claim_kill_locked(manager, victim, exit_code)
         })
-        .unwrap_or(true);
-        if claimed {
-            if let Some(process) = manager.get_process_mut(victim) {
-                process.signals.clear_pending(SIGKILL);
-            }
-        }
-        claimed
-    })
-    .unwrap_or(true);
+        .unwrap_or(true)
+    });
     if !claimed {
         // Deferred: wake. A thread that has blocked is woken here, and one
         // about to block refuses to (`Thread::mark_kill_pending`), so its
@@ -196,6 +177,43 @@ pub(crate) fn kill_process_now(victim: ProcessId, exit_code: i32) {
     crate::task::scheduler::Scheduler::send_exit_expedite_sgi(victim.as_u64(), batch);
     let _ = crate::process::exit_process_and_retire(victim, exit_code);
     crate::task::scheduler::set_need_resched();
+}
+
+/// Publish SIGKILL on `victim`, claim its threads, and withdraw the
+/// publication when the claim succeeds, all under the caller's one
+/// process-manager hold (#1413). Returns whether the threads were claimed.
+///
+/// Publishing before checking custody means a thread that leaves its section
+/// while the claim is refused finds SIGKILL at its syscall return, whose
+/// lock-free check reads the publication's hint. A claimed thread must never
+/// act on SIGKILL itself: ARM64's interrupt return ends the row in place,
+/// without the retirement receipt and report the kill's exit makes, and on
+/// both architectures the thread leaves its CPU before the kill sends its
+/// kick. That return needs this lock (`try_manager`), so it cannot see the
+/// publication before the withdrawal. A claimed victim dies only in
+/// `kill_process_now`, so the withdrawal loses no earlier SIGKILL. A caller
+/// that publishes SIGKILL must therefore claim in the same hold (#1414):
+/// released in between, the publication is the victim's to act on.
+fn claim_kill_locked(
+    manager: &mut crate::process::ProcessManager,
+    victim: ProcessId,
+    exit_code: i32,
+) -> bool {
+    if let Some(process) = manager.get_process_mut(victim) {
+        // A deferred kill reports this status, not SIGKILL's own.
+        process.group_exit_code.get_or_insert(exit_code);
+        process.signals.set_pending(SIGKILL);
+    }
+    let claimed = crate::task::scheduler::with_scheduler(|scheduler| {
+        scheduler.claim_process_threads_for_kill(victim.as_u64())
+    })
+    .unwrap_or(true);
+    if claimed {
+        if let Some(process) = manager.get_process_mut(victim) {
+            process.signals.clear_pending(SIGKILL);
+        }
+    }
+    claimed
 }
 
 /// Send SIGHUP and then SIGCONT to every member of `pgid`, a process group an
@@ -358,20 +376,20 @@ fn send_signal(target: ProcessId, sig: u32, sender: Sender, info: SigInfo, to: R
         };
 
         // SIGKILL cannot be caught or blocked, and ends every thread of the
-        // process, whichever of them its sender named. It is made pending
-        // here, in the acquisition that checked the target (for
+        // process, whichever of them its sender named. The target is claimed
+        // here, in the acquisition that checked it (for
         // `Sender::KernelToImage`, its program image), before the lock is
-        // released for the kill: an exec that commits after that finds it
-        // pending, as a signal generated before an exec stays pending
-        // across it, and one that committed before failed the check.
+        // released for the kill. A claimed target enters no syscall, so no
+        // exec can commit before it dies; a target the claim is refused for,
+        // inside a syscall that may be an exec, keeps SIGKILL pending, as a
+        // signal generated before an exec stays pending across it. Publishing
+        // here and claiming only after the release let the target take
+        // SIGKILL itself at an interrupt return in between (#1414).
         if sig == SIGKILL {
-            if let Some(row) = manager.get_process_mut(target) {
-                row.signals.set_pending(SIGKILL);
-                row.group_exit_code.get_or_insert(-(SIGKILL as i32));
-            }
+            let claimed = claim_kill_locked(manager, target, -(SIGKILL as i32));
             drop(manager_guard);
             crate::signal::delivery::terminate_thread_group_peers(target, -(SIGKILL as i32));
-            kill_process_now(target, -(SIGKILL as i32));
+            kill_process_now(target, -(SIGKILL as i32), Some(claimed));
             return SyscallResult::Ok(0);
         }
 
