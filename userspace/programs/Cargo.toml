@@ -731,6 +731,14 @@ name = "suite-networking"
 path = "src/suite_networking.rs"
 
 [[bin]]
+name = "suite-rust-std"
+path = "src/suite_rust_std.rs"
+
+[[bin]]
+name = "rust-std-child_test"
+path = "src/rust_std_child.rs"
+
+[[bin]]
 name = "suite-libc"
 path = "src/suite_libc.rs"
 

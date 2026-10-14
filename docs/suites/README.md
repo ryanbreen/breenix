@@ -802,6 +802,41 @@ scripts/boot-interactive.sh --mode suite --suite networking
 swift run breenix-runs run x86 --mode suite --boots 1 --suite networking --sha <pushed-sha>
 ```
 
+## Rust std
+
+`rust-std` measures the Rust std effort in `docs/efforts/path.json`: one category per suite
+milestone, `fs-io` (std::fs and std::io), `process` (std::process), `thread-sync`
+(std::thread and std::sync), `net` (std::net and std::os::unix::net) and `time-env`
+(std::time and std::env). The boot-path `runtimes` milestone is a separate measure.
+
+Each case calls std's public API only, std::os::unix's extensions included, and asserts one
+behaviour Rust's documentation gives and Linux shows: a value, or the io::ErrorKind (or
+errno, where std maps none) a call fails with. std for Breenix is the forked library's
+`breenix` OS module on Breenix's own C library, so a case measures std, the C library and
+the kernel together. Where std links a C-library function the library lacks, the case is
+compiled out and fails naming it: Command's spawn path links execvp, setuid, setgid and
+chroot, fs::canonicalize links realpath, and fs::remove_dir_all links fdopendir and
+unlinkat. build.rs reports which the library has, so those cases start measuring when it
+gains them. Under the targets' panic=abort, a panic in a thread ends the process with
+SIGABRT; `thread-sync/panic-aborts` and `panic-hook` measure that in a child process.
+
+The cases that start programs run `/usr/local/test/bin/rust-std-child_test`, a std-only
+helper that reports its arguments, environment, directory, IDs and executable path on
+stdout, copies stdin to stdout, exits with a given code, or aborts. Each case uses the
+runner's default 10-second deadline. Waits for another process or thread are bounded at 3
+seconds and say what was still running; socket reads time out after 2 seconds. Sleeps and
+timeouts may never end early and may end at most 30 ms late, two of x86-64's 5 ms ticks and
+20 ms. Files live in a directory of the case's own, `/tmp/rust-std-<pid>`; TCP and UDP use
+127.0.0.1 and ports 20000-29999 numbered from the case's process ID.
+
+```bash
+scripts/boot-interactive.sh --mode suite --suite rust-std
+./run.sh --parallels --suite rust-std
+./run.sh --vmware --suite rust-std
+# From tools/breenix-runs:
+swift run breenix-runs run x86 --mode full --boots 1 --suite rust-std --gate-timeout 900 --sha <pushed-sha>
+```
+
 ## C library
 
 `libc` measures the libc effort in `docs/efforts/path.json`: Breenix's own clean-room C
