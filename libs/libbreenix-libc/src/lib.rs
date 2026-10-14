@@ -1233,32 +1233,10 @@ pub unsafe extern "C" fn getrandom(buf: *mut u8, buflen: usize, flags: u32) -> i
 // System Information
 // =============================================================================
 
-/// sysconf - get system configuration values
+/// sysconf - get system configuration values (`conf::system_value`)
 #[no_mangle]
 pub extern "C" fn sysconf(name: i32) -> i64 {
-    const _SC_ARG_MAX: i32 = 0;
-    const _SC_PAGESIZE: i32 = 30;
-    const _SC_NPROCESSORS_ONLN: i32 = 84;
-    const _SC_NPROCESSORS_CONF: i32 = 83;
-    const _SC_GETPW_R_SIZE_MAX: i32 = 70;
-    const _SC_GETGR_R_SIZE_MAX: i32 = 69;
-
-    match name {
-        // The kernel reserves a quarter of its fixed 2 MiB stack cap for exec.
-        _SC_ARG_MAX => 512 * 1024,
-        _SC_PAGESIZE => 4096,
-        28 => 32768, // _SC_MQ_PRIO_MAX
-        33 => 0x7fff_ffff, // _SC_SEM_VALUE_MAX
-        _SC_NPROCESSORS_ONLN | _SC_NPROCESSORS_CONF => pthread::processor_count(),
-        _SC_GETPW_R_SIZE_MAX | _SC_GETGR_R_SIZE_MAX => 1024,
-        67 | 77 | 78 | 133 | 153 | 164 => 200809, // threads, stack attributes, barriers, rwlocks, timeouts
-        73 => 4, // PTHREAD_DESTRUCTOR_ITERATIONS
-        74 => -1, // keys grow until allocation fails; no fixed limit
-        79 => -1, // priority-ordered mutex/condition wakeups are not provided
-        80 | 81 => 200809, // PTHREAD_PRIO_INHERIT and PTHREAD_PRIO_PROTECT mutexes
-        75 => 16384, // PTHREAD_STACK_MIN
-        _ => -1,
-    }
+    conf::system_value(name)
 }
 
 /// getauxval - get auxiliary vector value (stub)

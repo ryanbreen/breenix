@@ -98,6 +98,41 @@ fn memory(info: &mut SysInfo, text: &[u8]) -> Option<()> {
         None
     }
 }
+/// The processes now in the system: the numeric directories of /proc, one
+/// per process. None when /proc cannot be listed.
+unsafe fn process_count() -> Option<u16> {
+    let fd = crate::open(b"/proc\0".as_ptr(), 0x80000, 0);
+    if fd < 0 {
+        return None;
+    }
+    let mut count = 0u16;
+    let mut buf = [0u8; 2048];
+    let result = loop {
+        let n = crate::getdents64(fd, buf.as_mut_ptr(), buf.len());
+        if n == 0 {
+            break Some(count);
+        }
+        if n < 0 {
+            break None;
+        }
+        // struct linux_dirent64: d_ino, d_off, d_reclen (u16), d_type, d_name.
+        let mut at = 0;
+        while at + 19 < n as usize {
+            let reclen = u16::from_ne_bytes([buf[at + 16], buf[at + 17]]) as usize;
+            if reclen == 0 || at + reclen > n as usize {
+                break;
+            }
+            let name = &buf[at + 19..at + reclen];
+            let name = &name[..name.iter().position(|b| *b == 0).unwrap_or(name.len())];
+            if !name.is_empty() && name.iter().all(u8::is_ascii_digit) {
+                count = count.saturating_add(1);
+            }
+            at += reclen;
+        }
+    };
+    crate::close(fd);
+    result
+}
 #[no_mangle]
 pub unsafe extern "C" fn sysinfo(out: *mut SysInfo) -> i32 {
     if out.is_null() {
@@ -107,7 +142,7 @@ pub unsafe extern "C" fn sysinfo(out: *mut SysInfo) -> i32 {
     let saved = errno();
     let mut info: SysInfo = core::mem::zeroed();
     info.mem_unit = 1;
-    // Load averages and the process census are unavailable in these procfs files.
+    // Load averages are unavailable in these procfs files.
     let mut buf = [0u8; 4096];
     let Ok(n) = read_proc(b"/proc/meminfo\0", &mut buf) else {
         return -1;
@@ -140,6 +175,10 @@ pub unsafe extern "C" fn sysinfo(out: *mut SysInfo) -> i32 {
         return -1;
     };
     info.uptime = uptime;
+    let Some(procs) = process_count() else {
+        return -1;
+    };
+    info.procs = procs;
     out.write(info);
     set_errno(saved);
     0

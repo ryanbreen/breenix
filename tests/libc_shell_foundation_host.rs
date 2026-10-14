@@ -61,6 +61,42 @@ mod pthread {
     pub fn __h_errno_location() -> *mut i32 {
         crate::H_ERRNO.with(|e| e.get())
     }
+    pub fn processor_count() -> i64 {
+        4
+    }
+}
+#[repr(C)]
+struct rlimit {
+    rlim_cur: u64,
+    rlim_max: u64,
+}
+unsafe fn getrlimit(resource: i32, out: *mut rlimit) -> i32 {
+    // NOFILE 256; NPROC unlimited.
+    (*out).rlim_cur = if resource == 7 { 256 } else { u64::MAX };
+    (*out).rlim_max = (*out).rlim_cur;
+    0
+}
+/// One linux_dirent64 record for `name`.
+fn dirent(name: &str) -> Vec<u8> {
+    let reclen = (19 + name.len() + 1 + 7) & !7;
+    let mut d = vec![0u8; reclen];
+    d[16..18].copy_from_slice(&(reclen as u16).to_ne_bytes());
+    d[19..19 + name.len()].copy_from_slice(name.as_bytes());
+    d
+}
+unsafe fn getdents64(fd: i32, dest: *mut u8, cap: usize) -> isize {
+    OPEN.with(|o| {
+        let mut o = o.borrow_mut();
+        let (key, offset) = o.get_mut(&fd).unwrap();
+        FILES.with(|f| {
+            let f = f.borrow();
+            let bytes = &f[key];
+            let n = cap.min(bytes.len() - *offset);
+            std::ptr::copy_nonoverlapping(bytes[*offset..].as_ptr(), dest, n);
+            *offset += n;
+            n as isize
+        })
+    })
 }
 pub mod errno {
     #[repr(i32)]
@@ -123,6 +159,8 @@ pub mod dns {
     pub fn resolve_all(name: &str, _: [u8; 4]) -> Result<Reply, DnsError> {
         Err(if name == "temporary.example" {
             DnsError::Timeout
+        } else if name == "nodata.example" {
+            DnsError::NoAddress
         } else {
             DnsError::ServerError(3)
         })
@@ -154,6 +192,16 @@ unsafe fn stat(_: *const u8, _: *mut u8) -> i32 {
 }
 unsafe fn fstat(_: i32, _: *mut u8) -> i32 {
     status()
+}
+mod statfs {
+    /// struct statfs with a 1 KiB block size.
+    pub unsafe fn statfs(_: *const u8, buf: *mut u8) -> i32 {
+        *buf.cast::<[i64; 2]>() = [0xef53, 1024];
+        0
+    }
+    pub unsafe fn fstatfs(_: i32, buf: *mut u8) -> i32 {
+        statfs(std::ptr::null(), buf)
+    }
 }
 fn status() -> i32 {
     STAT_ERROR.with(|e| {
@@ -292,9 +340,29 @@ fn configuration_truncation_invalid_queries_and_bad_objects() {
         );
         assert_eq!(conf::confstr(99, bytes.as_mut_ptr(), 20), 0);
         assert_eq!(pthread::errno(), 22);
+        // The LP64 environment's flags are empty; ILP32's have no value.
+        pthread::set_errno(77);
+        assert_eq!(conf::confstr(1168, bytes.as_mut_ptr(), 20), 1);
+        assert_eq!(bytes[0], 0);
+        assert_eq!(conf::confstr(1160, bytes.as_mut_ptr(), 20), 0);
+        assert_eq!(pthread::errno(), 77);
+        assert_eq!(conf::confstr(1151, bytes.as_mut_ptr(), 20), 20);
+        assert_eq!(&bytes[..20], b"POSIX_V8_LP64_OFF64\0");
+        assert_eq!(conf::system_value(4), 256);
+        assert_eq!(conf::system_value(1), -1);
+        assert_eq!(conf::system_value(29), 202405);
+        assert_eq!(conf::system_value(7), 1);
+        assert_eq!(conf::system_value(84), 4);
+        assert_eq!(conf::system_value(252), 1);
+        assert_eq!(conf::system_value(250), -1);
+        assert_eq!(pthread::errno(), 77);
+        assert_eq!(conf::system_value(9999), -1);
+        assert_eq!(pthread::errno(), 22);
         assert_eq!(conf::pathconf(b"/\0".as_ptr(), 0), 32000);
         assert_eq!(conf::fpathconf(3, 3), 255);
         assert_eq!(conf::fpathconf(3, 5), 4096);
+        assert_eq!(conf::fpathconf(3, 19), 1023);
+        assert_eq!(conf::pathconf(b"/\0".as_ptr(), 13), 64);
         assert_eq!(conf::fpathconf(3, 99), -1);
         assert_eq!(pthread::errno(), 22);
         STAT_ERROR.with(|e| e.set(9));
@@ -311,6 +379,7 @@ fn sysinfo_units_uptime_errors_and_bounds() {
         reset();
         file("/proc/meminfo",b"MemTotal: 8192 kB\nMemFree: 1024 kB\nBuffers: 2 kB\nSwapTotal: 3 kB\nSwapFree: 1 kB\nShmem: 4 kB\n");
         file("/proc/uptime", b"123.45 10.00\n");
+        file("/proc", &[dirent("1"), dirent("self"), dirent("42"), dirent("meminfo")].concat());
         let mut info: sysinfo::SysInfo = std::mem::zeroed();
         READ_ERROR.with(|e| e.set(4));
         assert_eq!(sysinfo::sysinfo(&mut info), 0);
@@ -321,6 +390,7 @@ fn sysinfo_units_uptime_errors_and_bounds() {
         assert_eq!(info.sharedram, 4096);
         assert_eq!(info.bufferram, 2048);
         assert_eq!(info.mem_unit, 1);
+        assert_eq!(info.procs, 2);
         assert_eq!(pthread::errno(), 77);
         file("/proc/meminfo", b"MemTotal: broken kB\nMemFree: 1 kB\n");
         assert_eq!(sysinfo::sysinfo(&mut info), -1);
@@ -343,11 +413,14 @@ fn legacy_hostname_numeric_hosts_and_errors() {
         reset();
         file(
             "/etc/hosts",
-            b"192.0.2.1 server alias\n192.0.2.2 server alias\n192.0.2.1 server alias\n",
+            b"192.0.2.1 server alias other\n192.0.2.2 server alias\n192.0.2.1 server alias\n",
         );
         let host = netdb::gethostbyname(b"alias\0".as_ptr());
         assert!(!host.is_null());
         assert_eq!(CStr::from_ptr((*host).name.cast()).to_bytes(), b"server");
+        assert_eq!(CStr::from_ptr((*(*host).aliases).cast()).to_bytes(), b"alias");
+        assert_eq!(CStr::from_ptr((*(*host).aliases.add(1)).cast()).to_bytes(), b"other");
+        assert!((*(*host).aliases.add(2)).is_null());
         assert_eq!((*host).addrtype, 2);
         assert_eq!((*host).length, 4);
         assert_eq!(*(*(*host).addr_list).cast::<[u8; 4]>(), [192, 0, 2, 1]);
@@ -358,8 +431,11 @@ fn legacy_hostname_numeric_hosts_and_errors() {
         assert!((*(*host).addr_list.add(2)).is_null());
         let host = netdb::gethostbyname(b"127.0.0.1\0".as_ptr());
         assert_eq!(*(*(*host).addr_list).cast::<[u8; 4]>(), [127, 0, 0, 1]);
+        assert!((*(*host).aliases).is_null());
         assert!(netdb::gethostbyname(b"missing.invalid\0".as_ptr()).is_null());
         assert_eq!(*pthread::__h_errno_location(), 1);
+        assert!(netdb::gethostbyname(b"nodata.example\0".as_ptr()).is_null());
+        assert_eq!(*pthread::__h_errno_location(), 4);
         assert!(netdb::gethostbyname(b"temporary.example\0".as_ptr()).is_null());
         assert_eq!(*pthread::__h_errno_location(), 2);
         assert!(!CStr::from_ptr(netdb::hstrerror(2).cast())
