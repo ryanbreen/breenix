@@ -196,6 +196,7 @@ struct sigevent {
 extern "C" {
 #endif
 int kill(pid_t, int);
+int killpg(pid_t, int);
 int sigaction(int, const struct sigaction *, struct sigaction *);
 int sigprocmask(int, const sigset_t *, sigset_t *);
 int sigemptyset(sigset_t *);
