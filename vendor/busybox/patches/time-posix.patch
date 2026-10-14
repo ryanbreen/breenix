@@ -1,0 +1,24 @@
+--- a/miscutils/time.c
++++ b/miscutils/time.c
+@@ -198,7 +198,9 @@
+ 		printf("Command stopped by signal %u\n",
+ 				WSTOPSIG(resp->waitstatus));
+ 	else */
+-	if (WIFSIGNALED(resp->waitstatus))
++	if (fmt == posix_format) {
++		/* POSIX: with -p, write only the real, user and sys lines. */
++	} else if (WIFSIGNALED(resp->waitstatus))
+ 		printf("Command terminated by signal %u\n",
+ 				WTERMSIG(resp->waitstatus));
+ 	else if (WIFEXITED(resp->waitstatus) && WEXITSTATUS(resp->waitstatus))
+@@ -483,8 +485,9 @@
+ 	if (WIFSTOPPED(res.waitstatus))
+ 		ex = WSTOPSIG(res.waitstatus);
+ 	*/
++	/* A utility a signal ended exits above 128, as a shell reports it. */
+ 	if (WIFSIGNALED(res.waitstatus))
+-		ex = WTERMSIG(res.waitstatus);
++		ex = 128 + WTERMSIG(res.waitstatus);
+ 
+ 	fflush_stdout_and_exit(ex);
+ }

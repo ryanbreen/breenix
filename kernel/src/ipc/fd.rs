@@ -132,15 +132,19 @@ pub enum FdKind {
     FifoWrite(alloc::string::String, Arc<Mutex<super::pipe::PipeBuffer>>, Arc<Mutex<super::fifo::FifoEntry>>),
     /// Linux O_RDWR FIFO endpoint: one reader and one writer reference.
     FifoReadWrite(alloc::string::String, Arc<Mutex<super::pipe::PipeBuffer>>, Arc<Mutex<super::fifo::FifoEntry>>),
-    /// Procfs virtual file (content generated at open time)
+    /// Procfs virtual file (content generated at open time, shared by reads)
     ProcfsFile {
-        content: alloc::string::String,
+        content: Arc<alloc::vec::Vec<u8>>,
         position: usize,
+        /// The entry's user and group (`procfs::owner`).
+        owner: (u32, u32),
     },
     /// Procfs directory listing (for /proc and /proc/[pid])
     ProcfsDirectory {
         path: alloc::string::String,
         position: u64,
+        /// The directory's user and group (`procfs::owner`).
+        owner: (u32, u32),
     },
     /// An epoll instance. dup and fork clone the Arc; the instance goes when
     /// the last descriptor for it closes.
@@ -169,10 +173,10 @@ impl core::fmt::Debug for FdKind {
             FdKind::FifoRead(path, _, _) => write!(f, "FifoRead({})", path),
             FdKind::FifoWrite(path, _, _) => write!(f, "FifoWrite({})", path),
             FdKind::FifoReadWrite(path, _, _) => write!(f, "FifoReadWrite({})", path),
-            FdKind::ProcfsFile { content, position } => {
+            FdKind::ProcfsFile { content, position, .. } => {
                 write!(f, "ProcfsFile(len={}, pos={})", content.len(), position)
             }
-            FdKind::ProcfsDirectory { path, position } => {
+            FdKind::ProcfsDirectory { path, position, .. } => {
                 write!(f, "ProcfsDirectory(path={}, pos={})", path, position)
             }
             FdKind::Epoll(_) => write!(f, "Epoll"),
@@ -457,6 +461,11 @@ impl FdTable {
         Self {
             shared: self.shared.clone(),
         }
+    }
+
+    /// Whether `other` is a handle to this same table.
+    pub fn is_same_table(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.shared, &other.shared)
     }
 
     /// Whether another row holds a handle to this table.

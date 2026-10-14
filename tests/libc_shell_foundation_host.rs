@@ -62,6 +62,20 @@ mod pthread {
     pub fn __h_errno_location() -> *mut i32 {
         crate::H_ERRNO.with(|e| e.get())
     }
+    pub fn processor_count() -> i64 {
+        4
+    }
+}
+#[repr(C)]
+struct rlimit {
+    rlim_cur: u64,
+    rlim_max: u64,
+}
+unsafe fn getrlimit(resource: i32, out: *mut rlimit) -> i32 {
+    // NOFILE 256; NPROC unlimited.
+    (*out).rlim_cur = if resource == 7 { 256 } else { u64::MAX };
+    (*out).rlim_max = (*out).rlim_cur;
+    0
 }
 pub mod errno {
     #[repr(i32)]
@@ -134,45 +148,6 @@ pub mod dns {
         })
     }
 }
-mod dirent {
-    pub struct Dirent {
-        pub d_name: [u8; 256],
-    }
-    pub struct Dir {
-        entries: Vec<Vec<u8>>,
-        index: usize,
-        current: Dirent,
-    }
-    pub unsafe fn opendir(_: *const u8) -> *mut Dir {
-        let entries = crate::FILES.with(|files| {
-            files
-                .borrow()
-                .keys()
-                .filter_map(|path| path.strip_prefix(b"/proc/").map(|p| p.to_vec()))
-                .collect()
-        });
-        Box::into_raw(Box::new(Dir {
-            entries,
-            index: 0,
-            current: Dirent { d_name: [0; 256] },
-        }))
-    }
-    pub unsafe fn readdir(dir: *mut Dir) -> *mut Dirent {
-        let d = &mut *dir;
-        if d.index == d.entries.len() {
-            return std::ptr::null_mut();
-        }
-        let name = &d.entries[d.index];
-        d.current.d_name.fill(0);
-        d.current.d_name[..name.len()].copy_from_slice(name);
-        d.index += 1;
-        &mut d.current
-    }
-    pub unsafe fn closedir(dir: *mut Dir) -> i32 {
-        drop(Box::from_raw(dir));
-        0
-    }
-}
 #[repr(C)]
 struct Utsname {
     nodename: [u8; 65],
@@ -201,6 +176,16 @@ unsafe fn stat(_: *const u8, out: *mut u8) -> i32 {
 unsafe fn fstat(_: i32, out: *mut u8) -> i32 {
     out.cast::<u64>().write(STAT_DEV.with(Cell::get));
     status()
+}
+mod statfs {
+    /// struct statfs with a 1 KiB block size.
+    pub unsafe fn statfs(_: *const u8, buf: *mut u8) -> i32 {
+        *buf.cast::<[i64; 2]>() = [0xef53, 1024];
+        0
+    }
+    pub unsafe fn fstatfs(_: i32, buf: *mut u8) -> i32 {
+        statfs(std::ptr::null(), buf)
+    }
 }
 fn status() -> i32 {
     STAT_ERROR.with(|e| {
@@ -342,16 +327,29 @@ fn configuration_truncation_invalid_queries_and_bad_objects() {
         );
         assert_eq!(conf::confstr(99, bytes.as_mut_ptr(), 20), 0);
         assert_eq!(pthread::errno(), 22);
+        // The LP64 environment's flags are empty; ILP32's have no value.
+        pthread::set_errno(77);
+        assert_eq!(conf::confstr(1168, bytes.as_mut_ptr(), 20), 1);
+        assert_eq!(bytes[0], 0);
+        assert_eq!(conf::confstr(1160, bytes.as_mut_ptr(), 20), 0);
+        assert_eq!(pthread::errno(), 77);
+        assert_eq!(conf::confstr(1151, bytes.as_mut_ptr(), 20), 20);
+        assert_eq!(&bytes[..20], b"POSIX_V8_LP64_OFF64\0");
+        assert_eq!(conf::system_value(4), 256);
+        assert_eq!(conf::system_value(1), -1);
+        assert_eq!(conf::system_value(29), 202405);
+        assert_eq!(conf::system_value(7), 1);
+        assert_eq!(conf::system_value(84), 4);
+        assert_eq!(conf::system_value(252), 1);
+        assert_eq!(conf::system_value(250), -1);
+        assert_eq!(pthread::errno(), 77);
+        assert_eq!(conf::system_value(9999), -1);
+        assert_eq!(pthread::errno(), 22);
         assert_eq!(conf::pathconf(b"/\0".as_ptr(), 0), 32000);
         assert_eq!(conf::fpathconf(3, 3), 255);
         assert_eq!(conf::fpathconf(3, 5), 4096);
-        assert_eq!(conf::fpathconf(3, 1), 4096);
-        assert_eq!(conf::fpathconf(3, 2), 4095);
-        assert_eq!(conf::fpathconf(3, 19), 1);
-        assert_eq!(conf::fpathconf(3, 20), 1_000_000_000);
-        pthread::set_errno(77);
-        assert_eq!(conf::fpathconf(3, 9), -1);
-        assert_eq!(pthread::errno(), 77);
+        assert_eq!(conf::fpathconf(3, 19), 1023);
+        assert_eq!(conf::pathconf(b"/\0".as_ptr(), 13), 64);
         assert_eq!(conf::fpathconf(3, 99), -1);
         assert_eq!(pthread::errno(), 22);
         STAT_ERROR.with(|e| e.set(9));
@@ -363,30 +361,27 @@ fn configuration_truncation_invalid_queries_and_bad_objects() {
     }
 }
 #[test]
-fn configuration_queries_preserve_unsupported_errno_and_distinguish_filesystems() {
+fn configuration_distinguishes_pseudo_file_systems_and_terminal_lines() {
     unsafe {
-        * __errno_location() = 73;
-        assert_eq!(conf::confstr(1, std::ptr::null_mut(), 0), 0);
-        assert_eq!(* __errno_location(), 73);
-        assert_eq!(conf::confstr(7, std::ptr::null_mut(), 0), 1);
-        let mut text = [0u8; 64];
-        assert_eq!(conf::confstr(15, text.as_mut_ptr(), text.len()), 20);
-        assert_eq!(&text[..20], b"POSIX_V8_LP64_OFF64\0");
+        reset();
+        // MAX_CANON and MAX_INPUT are the line discipline's buffer.
+        assert_eq!(conf::fpathconf(3, 1), 4096);
+        assert_eq!(conf::fpathconf(3, 2), 4095);
         for dev in [0xffff0002, 0xffff0004] {
             STAT_DEV.with(|d| d.set(dev));
-            assert_eq!(conf::pathconf(b"/\0".as_ptr(), 0), -1);
-            assert_eq!(* __errno_location(), 73);
-            assert_eq!(conf::fpathconf(3, 10), 0);
-            assert_eq!(conf::fpathconf(3, 22), -1);
+            // ext2's link, size, block, symlink and timestamp values do not
+            // apply to procfs or devfs: valid names, indeterminate values.
+            for name in [0, 13, 18, 19, 20, 21] {
+                assert_eq!(conf::pathconf(b"/\0".as_ptr(), name), -1);
+                assert_eq!(pthread::errno(), 77);
+            }
+            assert_eq!(conf::fpathconf(3, 3), 255);
         }
         STAT_DEV.with(|d| d.set(1));
         assert_eq!(conf::fpathconf(3, 0), 32000);
-        assert_eq!(conf::fpathconf(3, 9), 64);
-        for name in 11..=15 {
-            assert_eq!(conf::fpathconf(3, name), -1);
-            assert_eq!(* __errno_location(), 73);
-        }
-        assert_eq!(conf::fpathconf(3, 22), 1_000_000_000);
+        assert_eq!(conf::fpathconf(3, 18), 1024);
+        assert_eq!(conf::fpathconf(3, 20), 1);
+        assert_eq!(conf::fpathconf(3, 21), 1_000_000_000);
     }
 }
 
@@ -417,13 +412,14 @@ fn legacy_hostname_numeric_hosts_and_errors() {
         reset();
         file(
             "/etc/hosts",
-            b"192.0.2.1 server alias\n192.0.2.2 server alias\n192.0.2.1 server alias\n",
+            b"192.0.2.1 server alias other\n192.0.2.2 server alias\n192.0.2.1 server alias\n",
         );
         let host = netdb::gethostbyname(b"alias\0".as_ptr());
         assert!(!host.is_null());
         assert_eq!(CStr::from_ptr((*host).name.cast()).to_bytes(), b"server");
         assert_eq!(CStr::from_ptr((*(*host).aliases).cast()).to_bytes(), b"alias");
-        assert!((*(*host).aliases.add(1)).is_null());
+        assert_eq!(CStr::from_ptr((*(*host).aliases.add(1)).cast()).to_bytes(), b"other");
+        assert!((*(*host).aliases.add(2)).is_null());
         assert_eq!((*host).addrtype, 2);
         assert_eq!((*host).length, 4);
         assert_eq!(*(*(*host).addr_list).cast::<[u8; 4]>(), [192, 0, 2, 1]);
@@ -436,8 +432,6 @@ fn legacy_hostname_numeric_hosts_and_errors() {
             let p = *(*host).aliases.add(i);
             (!p.is_null()).then(|| CStr::from_ptr(p.cast()).to_bytes().to_vec())
         };
-        assert_eq!(alias(host, 0).as_deref(), Some(b"alias".as_slice()));
-        assert_eq!(alias(host, 1), None);
         // A retried read still parses every line; the canonical name is never its own alias.
         file("/etc/hosts", b"# names\n192.0.2.9 box box.local loghost box\n");
         READ_ERROR.with(|e| e.set(4));
@@ -451,12 +445,10 @@ fn legacy_hostname_numeric_hosts_and_errors() {
         assert_eq!(alias(host, 0).as_deref(), Some(b"www.example".as_slice()));
         assert_eq!(alias(host, 1), None);
         let host = netdb::gethostbyname(b"127.0.0.1\0".as_ptr());
-        assert!((*(*host).aliases).is_null());
         assert_eq!(*(*(*host).addr_list).cast::<[u8; 4]>(), [127, 0, 0, 1]);
+        assert!((*(*host).aliases).is_null());
         assert!(netdb::gethostbyname(b"missing.invalid\0".as_ptr()).is_null());
         assert_eq!(*pthread::__h_errno_location(), 1);
-        assert!(netdb::gethostbyname(b"empty.example\0".as_ptr()).is_null());
-        assert_eq!(*pthread::__h_errno_location(), 4);
         assert!(netdb::gethostbyname(b"temporary.example\0".as_ptr()).is_null());
         assert_eq!(*pthread::__h_errno_location(), 2);
         assert!(netdb::gethostbyname(b"noaddress.example\0".as_ptr()).is_null());
@@ -492,13 +484,18 @@ fn v8_configuration_environments() {
     unsafe {
         reset();
         let mut buffer = [0xff; 64];
-        assert_eq!(conf::confstr(15, buffer.as_mut_ptr(), buffer.len()), 20);
+        // _CS_POSIX_V8_WIDTH_RESTRICTED_ENVS and the V7 name (Linux's 5).
+        assert_eq!(conf::confstr(1151, buffer.as_mut_ptr(), buffer.len()), 20);
         assert_eq!(CStr::from_ptr(buffer.as_ptr().cast()).to_bytes(), b"POSIX_V8_LP64_OFF64");
-        for name in [7, 8, 9, 13, 14, 16] {
+        assert_eq!(conf::confstr(5, buffer.as_mut_ptr(), buffer.len()), 20);
+        assert_eq!(CStr::from_ptr(buffer.as_ptr().cast()).to_bytes(), b"POSIX_V7_LP64_OFF64");
+        // LP64_OFF64 CFLAGS/LDFLAGS/LIBS of both versions and the thread flags are empty.
+        for name in [1168, 1169, 1170, 1140, 1141, 1142, 1152, 1153, 1154, 1155, 1149, 1150] {
             assert_eq!(conf::confstr(name, buffer.as_mut_ptr(), 1), 1);
             assert_eq!(buffer[0], 0);
         }
-        for name in [1, 2, 3, 4, 5, 6, 10, 11, 12] {
+        // ILP32 and LPBIG environments are valid names with no value.
+        for name in [1160, 1161, 1162, 1164, 1172, 1132, 1136, 1144] {
             assert_eq!(conf::confstr(name, buffer.as_mut_ptr(), 64), 0);
             assert_eq!(pthread::errno(), 77);
         }

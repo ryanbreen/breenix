@@ -443,6 +443,9 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::GetRandom) => {
             super::random::sys_getrandom(args.0, args.1, args.2 as u32)
         }
+        Some(SyscallNumber::Clone) if super::clone::is_fork_style(args.0, args.1) => {
+            super::handlers::sys_clone_fork_with_frame(frame, args.0, args.1, args.2, args.3, args.4)
+        }
         Some(SyscallNumber::Clone) => {
             super::clone::sys_clone_thread(args.0, args.1, args.2, args.3, args.4, args.5)
         }

@@ -453,7 +453,10 @@ pub fn copy_process_state(
     }
     child_process.image_size = parent_process.image_size;
     child_process.image_data_size = parent_process.image_data_size;
-    child_process.fd_table = parent_process.fd_table.clone();
+    // A CLONE_FILES child already holds the parent's own table.
+    if !child_process.fd_table.is_same_table(&parent_process.fd_table) {
+        child_process.fd_table = parent_process.fd_table.clone();
+    }
 
     // 2. Copy signal state (handlers and mask, NOT pending signals)
     child_process.signals = parent_process.signals.fork();
