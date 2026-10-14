@@ -178,8 +178,8 @@ export CARGO_HOME=/run/breenix-gate/cargo
             command = [str(repo / 'userspace/programs/build.sh')]
         checked(command, repo, logs / f'{label}-userspace.log')
     with tree_cache.timing('disk-repack', f'build={label}'):
-        checked(['python3', str(repo / 'scripts/install-libc-busybox.sh'), 'x86_64'], repo, logs / f'{label}-busybox.log')
-        # The preceding standalone build installed these ELFs; pack them unchanged.
+        # The preceding standalone build installed these ELFs, libc-busybox.elf
+        # included, and create_ext2_disk.sh links BusyBox; pack them unchanged.
         checked(['cargo', 'run', '-p', 'xtask', '--', 'create-test-disk'], repo,
                 logs / f'{label}-test-disk.log', userspace_prebuilt=True)
         checked([str(repo / 'scripts/create_ext2_disk.sh')], repo, logs / f'{label}-ext2.log')
