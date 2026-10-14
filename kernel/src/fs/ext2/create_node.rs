@@ -83,17 +83,7 @@ impl Ext2Fs {
             return Err("File already exists");
         }
         self.make_directory_room(parent, &mut parent_inode, &mut data, name.len())?;
-        let blocks = directory_io::prepare(
-            self.device.as_ref(),
-            &parent_inode,
-            &self.superblock,
-            data.len(),
-        )?;
-        let mut before = alloc::vec::Vec::new();
-        before
-            .try_reserve_exact(data.len())
-            .map_err(|_| "No memory for directory rollback")?;
-        before.extend_from_slice(&data);
+        let before = directory_io::snapshot(&data)?;
         // Stage insertion before inode allocation; a full directory leaves
         // allocation bitmaps untouched. Replace the temporary inode before I/O.
         let offset = dir::add_directory_entry_bytes(
@@ -101,6 +91,14 @@ impl Ext2Fs {
             u32::MAX,
             name,
             dir_entry_type(&node_inode(mode, uid, gid, dev)),
+        )?;
+        // Map the blocks the entry changed while nothing on disk has changed.
+        let blocks = directory_io::plan(
+            self.device.as_ref(),
+            &parent_inode,
+            &self.superblock,
+            &before,
+            &data,
         )?;
         let ino = allocate_inode(
             self.device.as_ref(),

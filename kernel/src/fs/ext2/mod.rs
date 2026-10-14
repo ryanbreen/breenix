@@ -948,6 +948,8 @@ impl Ext2Fs {
             return Err("File already exists");
         }
         self.make_directory_room(parent_inode_num, &mut parent_inode, &mut dir_data, name.len())?;
+        // The records as on disk, so that only the block the entry lands in is written.
+        let before = directory_io::snapshot(&dir_data)?;
 
         // Allocate a new inode
         let new_inode_num = allocate_inode(
@@ -978,7 +980,7 @@ impl Ext2Fs {
         parent_inode_mut.update_timestamps(false, true, true);
 
         // Write the modified directory data back
-        self.write_directory_data(parent_inode_num, &dir_data)?;
+        self.write_directory_data(parent_inode_num, &before, &dir_data)?;
 
         // Write the updated parent directory inode
         parent_inode_mut
@@ -1204,6 +1206,8 @@ impl Ext2Fs {
         // Pin before dropping the directory entry; an open/mapped orphan
         // keeps its allocation and incarnation until its last observer leaves.
         let handle = self.pin_loaded_inode(target_inode_num, target_inode.size())?;
+        // The records as on disk, so that only the block the entry leaves is written.
+        let before = directory_io::snapshot(&dir_data)?;
 
         // Remove the directory entry
         remove_entry(&mut dir_data, filename, self.superblock.block_size())?;
@@ -1213,7 +1217,7 @@ impl Ext2Fs {
         parent_inode_mut.update_timestamps(false, true, true);
 
         // Write the modified directory data back
-        self.write_directory_data(parent_inode_num, &dir_data)?;
+        self.write_directory_data(parent_inode_num, &before, &dir_data)?;
 
         // Write the updated parent directory inode
         parent_inode_mut
@@ -1327,6 +1331,8 @@ impl Ext2Fs {
             return Err("Directory already exists");
         }
         self.make_directory_room(parent_inode_num, &mut parent_inode, &mut parent_dir_data, dirname.len())?;
+        // The records as on disk, so that only the block the entry lands in is written.
+        let before = directory_io::snapshot(&parent_dir_data)?;
 
         // Allocate a new inode for the directory
         let new_inode_num = allocate_inode(
@@ -1414,7 +1420,7 @@ impl Ext2Fs {
         parent_inode_mut.update_timestamps(false, true, true);
 
         // Write the modified parent directory data back
-        self.write_directory_data(parent_inode_num, &parent_dir_data)?;
+        self.write_directory_data(parent_inode_num, &before, &parent_dir_data)?;
 
         // Write the updated parent directory inode
         parent_inode_mut
@@ -1695,6 +1701,8 @@ impl Ext2Fs {
             return Err("Destination already exists");
         }
         self.make_directory_room(new_parent_inode_num, &mut new_parent_inode, &mut dir_data, new_filename.len())?;
+        // The records as on disk, so that only the block the entry lands in is written.
+        let before = directory_io::snapshot(&dir_data)?;
 
         // Add a new directory entry pointing to the source inode
         add_directory_entry(
@@ -1709,7 +1717,7 @@ impl Ext2Fs {
         parent_inode_mut.update_timestamps(false, true, true);
 
         // Write the modified directory data back
-        self.write_directory_data(new_parent_inode_num, &dir_data)?;
+        self.write_directory_data(new_parent_inode_num, &before, &dir_data)?;
 
         // Write the updated parent directory inode
         parent_inode_mut
@@ -1844,6 +1852,8 @@ impl Ext2Fs {
         // failed read or allocation leaves no inode without an entry.
         let mut dir_data = self.read_directory(&parent_inode)?;
         self.make_directory_room(parent_inode_num, &mut parent_inode, &mut dir_data, link_name.len())?;
+        // The records as on disk, so that only the block the entry lands in is written.
+        let before = directory_io::snapshot(&dir_data)?;
 
         // Allocate a new inode
         let new_inode_num = allocate_inode(
@@ -1904,7 +1914,7 @@ impl Ext2Fs {
         parent_inode_mut.update_timestamps(false, true, true);
 
         // Write the modified directory data back
-        self.write_directory_data(parent_inode_num, &dir_data)?;
+        self.write_directory_data(parent_inode_num, &before, &dir_data)?;
 
         // Write the updated parent directory inode
         parent_inode_mut
@@ -2011,16 +2021,11 @@ impl Ext2Fs {
         }
     }
 
-    fn write_directory_data(&self, dir_inode_num: u32, data: &[u8]) -> Result<(), &'static str> {
+    /// Write the blocks of directory `dir_inode_num` whose records differ
+    /// between `before`, as on disk, and `data`.
+    fn write_directory_data(&self, dir_inode_num: u32, before: &[u8], data: &[u8]) -> Result<(), &'static str> {
         let inode = self.read_inode(dir_inode_num)?;
-        let blocks =
-            directory_io::prepare(self.device.as_ref(), &inode, &self.superblock, data.len())?;
-        directory_io::write(
-            self.device.as_ref(),
-            self.superblock.block_size(),
-            &blocks,
-            data,
-        )
+        directory_io::write_changes(self.device.as_ref(), &inode, &self.superblock, before, data)
     }
 }
 

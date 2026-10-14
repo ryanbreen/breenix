@@ -1,56 +1,128 @@
-//! Prepare allocated directory blocks before publishing namespace bytes, and grow a
+//! Write back the directory blocks an added or removed entry changed, and grow a
 //! directory that has no room for a new entry.
 use super::{block_group, dir, file, Ext2BlockGroupDesc, Ext2Fs, Ext2Inode, Ext2Superblock};
 use crate::block::{BlockDevice, BlockError};
 use alloc::vec::Vec;
 use super::directory_extension::Extension;
-pub(super) fn prepare<B: BlockDevice + ?Sized>(
+/// A copy of a directory's records, taken before an entry is added or removed,
+/// so that only the blocks the change reaches are written back.
+pub(super) fn snapshot(data: &[u8]) -> Result<Vec<u8>, &'static str> {
+    let mut copy = Vec::new();
+    copy.try_reserve_exact(data.len())
+        .map_err(|_| "No memory for directory data")?;
+    copy.extend_from_slice(data);
+    Ok(copy)
+}
+
+/// The device block of each block of directory `inode` whose records differ
+/// between `before`, as on disk, and `after`, with the block's index. Adding or
+/// removing an entry changes one block, so this is what a creation or removal
+/// writes instead of the whole directory.
+pub(super) fn plan<B: BlockDevice + ?Sized>(
     device: &B,
     inode: &Ext2Inode,
     sb: &Ext2Superblock,
-    len: usize,
-) -> Result<Vec<u32>, &'static str> {
-    if !inode.is_dir() {
-        return Err("Not a directory");
-    }
-    if len as u64 > inode.size() {
-        return Err("No space for directory data");
-    }
-    let count = len.div_ceil(sb.block_size());
+    before: &[u8],
+    after: &[u8],
+) -> Result<Vec<(usize, u32)>, &'static str> {
+    let size = check(inode, sb, before, after)?;
     let mut blocks = Vec::new();
-    blocks
-        .try_reserve_exact(count)
-        .map_err(|_| "No memory for directory write plan")?;
-    for logical in 0..count {
-        let block = file::get_block_num(device, inode, sb, logical as u32)
-            .map_err(|e| {
-                if e == BlockError::OutOfMemory {
-                    "No memory for directory addressing"
-                } else {
-                    "Failed to read directory addressing"
-                }
-            })?
-            .ok_or("No space for directory data")?;
-        blocks.push(block);
+    for (logical, _) in changed(size, before, after) {
+        blocks.try_reserve(1)
+            .map_err(|_| "No memory for directory write plan")?;
+        blocks.push((logical, block_of(device, inode, sb, logical)?));
     }
     Ok(blocks)
 }
+
+/// Write `data`'s records for each block of `blocks`.
 pub(super) fn write<B: BlockDevice + ?Sized>(
     device: &B,
     size: usize,
-    blocks: &[u32],
+    blocks: &[(usize, u32)],
     data: &[u8],
 ) -> Result<(), &'static str> {
-    if size == 0 || size > 4096 || blocks.len() != data.len().div_ceil(size) {
+    if size == 0 || size > 4096 {
         return Err("Invalid directory write plan");
     }
-    for (&block, chunk) in blocks.iter().zip(data.chunks(size)) {
-        let mut bytes = [0u8; 4096];
-        bytes[..chunk.len()].copy_from_slice(chunk);
-        file::write_ext2_block(device, block, size, &bytes[..size])
-            .map_err(|_| "Failed to write directory block")?;
+    for &(logical, block) in blocks {
+        let records = data
+            .get(logical * size..)
+            .map(|rest| &rest[..rest.len().min(size)])
+            .filter(|records| !records.is_empty())
+            .ok_or("Invalid directory write plan")?;
+        write_block(device, size, block, records)?;
     }
     Ok(())
+}
+
+/// Write each block of directory `inode` whose records differ between `before`,
+/// as on disk, and `after`, mapping each as it goes, so it allocates nothing.
+pub(super) fn write_changes<B: BlockDevice + ?Sized>(
+    device: &B,
+    inode: &Ext2Inode,
+    sb: &Ext2Superblock,
+    before: &[u8],
+    after: &[u8],
+) -> Result<(), &'static str> {
+    let size = check(inode, sb, before, after)?;
+    for (logical, records) in changed(size, before, after) {
+        write_block(device, size, block_of(device, inode, sb, logical)?, records)?;
+    }
+    Ok(())
+}
+
+fn check(inode: &Ext2Inode, sb: &Ext2Superblock, before: &[u8], after: &[u8]) -> Result<usize, &'static str> {
+    if !inode.is_dir() {
+        return Err("Not a directory");
+    }
+    let size = sb.block_size();
+    if size == 0 || size > 4096 || before.len() != after.len() {
+        return Err("Invalid directory write plan");
+    }
+    if after.len() as u64 > inode.size() {
+        return Err("No space for directory data");
+    }
+    Ok(size)
+}
+
+/// Each block of `after` whose records differ from `before`, with its index.
+fn changed<'a>(size: usize, before: &'a [u8], after: &'a [u8]) -> impl Iterator<Item = (usize, &'a [u8])> {
+    before
+        .chunks(size)
+        .zip(after.chunks(size))
+        .enumerate()
+        .filter(|(_, (old, new))| old != new)
+        .map(|(logical, (_, new))| (logical, new))
+}
+
+fn block_of<B: BlockDevice + ?Sized>(
+    device: &B,
+    inode: &Ext2Inode,
+    sb: &Ext2Superblock,
+    logical: usize,
+) -> Result<u32, &'static str> {
+    file::get_block_num(device, inode, sb, logical as u32)
+        .map_err(|e| {
+            if e == BlockError::OutOfMemory {
+                "No memory for directory addressing"
+            } else {
+                "Failed to read directory addressing"
+            }
+        })?
+        .ok_or("No space for directory data")
+}
+
+fn write_block<B: BlockDevice + ?Sized>(
+    device: &B,
+    size: usize,
+    block: u32,
+    records: &[u8],
+) -> Result<(), &'static str> {
+    let mut bytes = [0u8; 4096];
+    bytes[..records.len()].copy_from_slice(records);
+    file::write_ext2_block(device, block, size, &bytes[..size])
+        .map_err(|_| "Failed to write directory block")
 }
 
 impl Ext2Fs {
