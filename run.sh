@@ -720,6 +720,15 @@ if [ "$PARALLELS" = true ]; then
     prlctl create "$PARALLELS_VM" --ostype linux --distribution linux --no-hdd
     prlctl set "$PARALLELS_VM" --memsize 8192
     prlctl set "$PARALLELS_VM" --cpus 8
+    # Run the vCPU threads in macOS's user-interactive QoS class, as the ARM64 QEMU launcher
+    # does (scripts/qemu-ui-launch.sh). Parallels otherwise starts them in the default class,
+    # priority 31, below the host's interactive work, and on a loaded Mac guest timer ticks
+    # were taken milliseconds after they were due on most vCPUs at once (#1562). prl_vm_app
+    # reads vm.vcpuprio as it starts each vCPU thread and maps 0-6 to a QoS class, 6 to
+    # user-interactive (priority 46); with the flag set it also declines later requests to
+    # change the class.
+    PARALLELS_SYSTEM_FLAGS="vm.vcpuprio=6"
+    prlctl set "$PARALLELS_VM" --system-flags "$PARALLELS_SYSTEM_FLAGS"
     # Parallels UEFI supplies UTC by default with an unspecified TimeZone.
     # Tools synchronization settings do not determine that firmware default.
     prlctl set "$PARALLELS_VM" --time-sync on --disable-timezone-sync on
@@ -793,6 +802,8 @@ if [ "$PARALLELS" = true ]; then
     VM_HOME=$(sed -n 's/^Home: //p' <<< "$VM_INFO")
     [ -d "$VM_HOME" ] || { echo "ERROR: cannot locate configured Parallels VM"; exit 1; }
     grep -q "$RETINA_POLICY" <<< "$VM_INFO" || { echo "ERROR: Parallels VM does not report $RETINA_POLICY"; exit 1; }
+    grep -q "<SystemFlags>$PARALLELS_SYSTEM_FLAGS</SystemFlags>" "$VM_HOME/config.pvs" ||
+        { echo "ERROR: Parallels VM config does not carry system flags $PARALLELS_SYSTEM_FLAGS"; exit 1; }
     CLOCK_STARTED=$(python3 -c 'import time; print(time.time())')
     prlctl start "$PARALLELS_VM"
     echo ""

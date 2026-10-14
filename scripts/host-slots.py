@@ -383,7 +383,7 @@ def send_request(request):
         return result
 
 
-def signal_process_group(group, number):
+def signal_process_group(group, number, timeouts):
     try:
         os.killpg(group, number)
     except ProcessLookupError:
@@ -392,7 +392,7 @@ def signal_process_group(group, number):
         # Darwin's killpg skips zombies and can return EPERM for a group
         # containing only zombies. Verify that no live member remains;
         # a real permission failure must still fail cleanup.
-        table = subprocess.check_output(['ps', '-axo', 'pgid=,stat='], text=True, timeout=10)
+        table = ps_output(['ps', '-axo', 'pgid=,stat='], timeouts)
         for row in table.splitlines():
             fields = row.split()
             if len(fields) != 2:
@@ -401,11 +401,29 @@ def signal_process_group(group, number):
                 raise
 
 
-def process_table():
+# One ps normally takes a tenth of a second, but a loaded Mac has held one past
+# 10 s. While the supervisor loop runs, every ps gets one 10 s bound and a timed-out
+# read, forward or QEMU stop is retried on the next turn, so cancellation and the
+# stall watchdog are never more than one bound late. Cleanup after the loop has
+# nothing left to watch and must not abandon a running VM over one slow ps, so it
+# retries with longer bounds.
+LOOP_PS_TIMEOUTS = (10,)
+CLEANUP_PS_TIMEOUTS = (10, 30, 120)
+
+
+def ps_output(argv, timeouts):
+    for timeout in timeouts[:-1]:
+        try:
+            return subprocess.check_output(argv, text=True, errors='replace', timeout=timeout)
+        except subprocess.TimeoutExpired:
+            pass
+    return subprocess.check_output(argv, text=True, errors='replace', timeout=timeouts[-1])
+
+
+def process_table(timeouts):
     # Environment ownership survives double-fork and setsid on Darwin as well
     # as Linux; never print the process environment.
-    rows = subprocess.check_output(['ps', 'axeww', '-o', 'pid=,ppid=,pgid=,stat=,command='],
-                                   text=True, errors='replace', timeout=10)
+    rows = ps_output(['ps', 'axeww', '-o', 'pid=,ppid=,pgid=,stat=,command='], timeouts)
     result = {}
     for row in rows.splitlines():
         fields = row.split(None, 4)
@@ -453,8 +471,8 @@ def supervise_worker(argv, parent):
     known = set()
     cargo_homes = []
 
-    def refresh():
-        table = process_table()
+    def refresh(timeouts=LOOP_PS_TIMEOUTS):
+        table = process_table(timeouts)
         known.update(pid for pid, row in table.items() if f'BREENIX_SLOT_SESSION={session}' in row[3].split())
         if child is not None:
             known.add(child.pid)
@@ -466,12 +484,14 @@ def supervise_worker(argv, parent):
         known.intersection_update(table)
         return {pid: row for pid, row in table.items() if pid in known and not row[2].startswith('Z')}
 
-    def signal_tree(number):
-        for group in {row[1] for row in refresh().values()}:
-            signal_process_group(group, number)
+    def signal_tree(number, timeouts=LOOP_PS_TIMEOUTS, done=None):
+        done = set() if done is None else done
+        for group in {row[1] for row in refresh(timeouts).values()} - done:
+            signal_process_group(group, number, timeouts)
+            done.add(group)
 
-    def stop_qemu():
-        targets = {pid for pid, row in refresh().items() if Path(row[3].split()[0]).name.startswith('qemu-system')}
+    def stop_qemu(timeouts=LOOP_PS_TIMEOUTS):
+        targets = {pid for pid, row in refresh(timeouts).items() if Path(row[3].split()[0]).name.startswith('qemu-system')}
         for number in (signal.SIGTERM, signal.SIGKILL):
             for pid in targets:
                 try:
@@ -479,9 +499,9 @@ def supervise_worker(argv, parent):
                 except ProcessLookupError:
                     pass
             deadline = time.monotonic() + 5
-            while targets.intersection(refresh()) and time.monotonic() < deadline:
+            while targets.intersection(refresh(timeouts)) and time.monotonic() < deadline:
                 time.sleep(0.05)
-        if targets.intersection(refresh()):
+        if targets.intersection(refresh(timeouts)):
             raise RuntimeError('QEMU did not stop; keeping boot lease until cleanup')
 
     records = []
@@ -635,11 +655,33 @@ def supervise_worker(argv, parent):
             env = dict(os.environ, BREENIX_SLOT_SESSION=session, BREENIX_SLOT_RECORD=record,
                        BREENIX_SLOT_OPERATIONS='quiet')
             child = subprocess.Popen(argv, env=env, start_new_session=True)
+            deferred = []
             try:
-                forwarded_signal = None
+                forwarding = forwarded_signal = None
+                signaled = set()
                 stop_deadline = None
+                owned = {}
+
+                def requests():
+                    # A release or quiesce whose QEMU stop met a slow ps waits here for the next turn.
+                    retry, deferred[:] = list(deferred), []
+                    yield from retry
+                    for key, _ in selector.select(timeout=0.5):
+                        client, _ = key.fileobj.accept()
+                        client.settimeout(10)
+                        data = b''
+                        while not data.endswith(b'\n'):
+                            chunk = client.recv(65536)
+                            if not chunk:
+                                raise RuntimeError('incomplete host-slot request')
+                            data += chunk
+                        yield client, json.loads(data)
+
                 while child.poll() is None:
-                    owned = refresh()
+                    try:
+                        owned = refresh()
+                    except subprocess.TimeoutExpired:
+                        pass
                     # Older QEMU launchers use the shared lease but do not send
                     # boot-start or serial requests. Enroll their owned VM's
                     # file-backed serials at launch when the caller opts in.
@@ -669,22 +711,28 @@ def supervise_worker(argv, parent):
                     if os.getppid() != parent and received_signal is None:
                         received_signal = signal.SIGHUP
                     if received_signal is not None and received_signal != forwarded_signal:
-                        signal_tree(received_signal)
-                        forwarded_signal = received_signal
-                        stop_deadline = time.monotonic() + 120
+                        if received_signal != forwarding:
+                            forwarding, signaled = received_signal, set()
+                            stop_deadline = time.monotonic() + 120
+                        try:
+                            signal_tree(received_signal, done=signaled)
+                            forwarded_signal = received_signal
+                        except subprocess.TimeoutExpired:
+                            # The launcher's own group needs no ps: signal it now, and the
+                            # rest of the tree, once each, on a later turn.
+                            if child.pid not in signaled:
+                                try:
+                                    os.killpg(child.pid, received_signal)
+                                except (ProcessLookupError, PermissionError):
+                                    pass
+                                signaled.add(child.pid)
                     if stop_deadline is not None and time.monotonic() >= stop_deadline:
-                        signal_tree(signal.SIGKILL)
+                        try:
+                            signal_tree(signal.SIGKILL)
+                        except subprocess.TimeoutExpired:
+                            pass  # Cleanup below kills the tree with its longer bounds.
                         break
-                    for key, _ in selector.select(timeout=0.5):
-                        client, _ = key.fileobj.accept()
-                        client.settimeout(10)
-                        data = b''
-                        while not data.endswith(b'\n'):
-                            chunk = client.recv(65536)
-                            if not chunk:
-                                raise RuntimeError('incomplete host-slot request')
-                            data += chunk
-                        request = json.loads(data)
+                    for client, request in requests():
                         operation = request['operation']
                         if operation == 'acquire':
                             if pending is not None:
@@ -715,7 +763,11 @@ def supervise_worker(argv, parent):
                         else:
                             if operation == 'release':
                                 if request['resource'].endswith('boot'):
-                                    stop_qemu()
+                                    try:
+                                        stop_qemu()
+                                    except subprocess.TimeoutExpired:
+                                        deferred.append((client, request))
+                                        continue
                                     release_boot(request['resource'])
                                 bypassed.discard(request['resource'])
                                 slots.release(request['resource'])
@@ -726,7 +778,11 @@ def supervise_worker(argv, parent):
                                 client.close()
                                 continue
                             elif operation == 'quiesce':
-                                stop_qemu()
+                                try:
+                                    stop_qemu()
+                                except subprocess.TimeoutExpired:
+                                    deferred.append((client, request))
+                                    continue
                             elif operation == 'vm':
                                 stop_commands.append(request['stop'])
                                 register(request['serial'])
@@ -810,7 +866,7 @@ def supervise_worker(argv, parent):
             finally:
                 # Clean descendants before releasing any lease, even if the shell was killed.
                 if child is not None:
-                    signal_tree(signal.SIGTERM)
+                    signal_tree(signal.SIGTERM, CLEANUP_PS_TIMEOUTS)
                 for command in stop_commands:
                     try:
                         subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
@@ -821,9 +877,9 @@ def supervise_worker(argv, parent):
                         child.wait(timeout=5)
                     except subprocess.TimeoutExpired:
                         pass
-                    signal_tree(signal.SIGKILL)
+                    signal_tree(signal.SIGKILL, CLEANUP_PS_TIMEOUTS)
                     child.wait()
-                    stop_qemu()
+                    stop_qemu(CLEANUP_PS_TIMEOUTS)
                 watch_serials()
                 for resource in RESOURCES:
                     if resource.endswith('boot'):
@@ -832,6 +888,8 @@ def supervise_worker(argv, parent):
                     write_header(record, serial, context(count))
                 if pending is not None:
                     pending['client'].close()
+                for client, _ in deferred:
+                    client.close()
                 for home in cargo_homes:
                     shutil.rmtree(home, ignore_errors=True)
                 slots.close()

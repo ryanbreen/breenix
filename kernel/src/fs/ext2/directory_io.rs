@@ -1,56 +1,157 @@
-//! Prepare allocated directory blocks before publishing namespace bytes, and grow a
-//! directory that has no room for a new entry.
+//! Namespace changes as planned writes, and growing a directory that has no
+//! room for a new entry.
+//!
+//! A namespace change (a name added, removed or moved, an inode created or
+//! unlinked) is planned in full before the disk changes: every block and inode
+//! it writes, with the bytes each replaces, and every allocation the plan
+//! needs. The plan then runs in order. When a write fails, it and the writes
+//! before it are rewritten with their old bytes, last first, so a write that
+//! landed in part is undone with the rest and the tree is left as it was.
+//! When one of those rewrites fails too, the tree cannot be restored: the
+//! mount records the error in its superblock and refuses every later write.
+//!
+//! Only the directory blocks whose records change are written, so the writes
+//! of a change do not grow with the directory.
 use super::{block_group, dir, file, Ext2BlockGroupDesc, Ext2Fs, Ext2Inode, Ext2Superblock};
-use crate::block::{BlockDevice, BlockError};
+use crate::block::BlockError;
 use alloc::vec::Vec;
 use super::directory_extension::Extension;
-pub(super) fn prepare<B: BlockDevice + ?Sized>(
-    device: &B,
-    inode: &Ext2Inode,
-    sb: &Ext2Superblock,
-    len: usize,
-) -> Result<Vec<u32>, &'static str> {
-    if !inode.is_dir() {
-        return Err("Not a directory");
-    }
-    if len as u64 > inode.size() {
-        return Err("No space for directory data");
-    }
-    let count = len.div_ceil(sb.block_size());
-    let mut blocks = Vec::new();
-    blocks
-        .try_reserve_exact(count)
-        .map_err(|_| "No memory for directory write plan")?;
-    for logical in 0..count {
-        let block = file::get_block_num(device, inode, sb, logical as u32)
-            .map_err(|e| {
-                if e == BlockError::OutOfMemory {
-                    "No memory for directory addressing"
-                } else {
-                    "Failed to read directory addressing"
-                }
-            })?
-            .ok_or("No space for directory data")?;
-        blocks.push(block);
-    }
-    Ok(blocks)
+
+/// One planned write and what undoing it restores.
+pub(super) enum Write<'a> {
+    /// A block, and the bytes it held.
+    Block {
+        block: u32,
+        old: &'a [u8],
+        new: &'a [u8],
+    },
+    /// A block the plan allocated, which nothing reaches until a later write
+    /// of the plan links it. Undoing the plan clears its bitmap bit, so the
+    /// block has nothing to restore.
+    Fresh { block: u32, new: &'a [u8] },
+    /// An inode, and the inode it replaced.
+    Inode {
+        ino: u32,
+        old: Ext2Inode,
+        new: Ext2Inode,
+    },
+    /// The free counts after the plan, in the superblock and the group
+    /// descriptors. The mount's own copies change only once the whole plan
+    /// has been written, so undoing this writes those.
+    Counts {
+        superblock: &'a Ext2Superblock,
+        groups: &'a [Ext2BlockGroupDesc],
+    },
 }
-pub(super) fn write<B: BlockDevice + ?Sized>(
-    device: &B,
-    size: usize,
-    blocks: &[u32],
-    data: &[u8],
-) -> Result<(), &'static str> {
-    if size == 0 || size > 4096 || blocks.len() != data.len().div_ceil(size) {
-        return Err("Invalid directory write plan");
+
+/// A copy for a plan to edit or point at, made before the disk changes.
+pub(super) fn copy<T: Copy>(items: &[T]) -> Result<Vec<T>, &'static str> {
+    let mut copy = Vec::new();
+    copy.try_reserve_exact(items.len())
+        .map_err(|_| "No memory for namespace image")?;
+    copy.extend_from_slice(items);
+    Ok(copy)
+}
+
+impl Ext2Fs {
+    /// Perform planned writes in order. When one fails, it and the writes
+    /// before it are rewritten with their old bytes, last first, and the
+    /// result is an error. When one of those rewrites fails too, the tree is
+    /// between two states and stays so: the mount writes nothing more.
+    pub(super) fn commit_writes(&mut self, writes: &[Write]) -> Result<(), ()> {
+        for (done, write) in writes.iter().enumerate() {
+            if self.apply(write, false).is_err() {
+                // The failed write may have landed in part, so it is undone
+                // with the rest. Undoing stops at the first rewrite that
+                // fails, so what stays on disk is a prefix of the plan: the
+                // state a crash there leaves, with counts high, never low.
+                let restored = writes[..=done]
+                    .iter()
+                    .rev()
+                    .all(|undo| self.apply(undo, true).is_ok());
+                if !restored {
+                    self.fail_writes();
+                }
+                return Err(());
+            }
+        }
+        Ok(())
     }
-    for (&block, chunk) in blocks.iter().zip(data.chunks(size)) {
-        let mut bytes = [0u8; 4096];
-        bytes[..chunk.len()].copy_from_slice(chunk);
-        file::write_ext2_block(device, block, size, &bytes[..size])
-            .map_err(|_| "Failed to write directory block")?;
+
+    /// Plan the writes of the blocks of directory `dir` that differ between
+    /// `old` and `new`, the block holding byte `first` first. Mapping a block
+    /// can read and allocate, so plans are made before the disk changes.
+    pub(super) fn plan_blocks<'a>(
+        &self,
+        dir: &Ext2Inode,
+        old: &'a [u8],
+        new: &'a [u8],
+        first: usize,
+        writes: &mut Vec<Write<'a>>,
+    ) -> Result<(), &'static str> {
+        let block_size = self.superblock.block_size();
+        if block_size == 0 || old.len() != new.len() || old.len() % block_size != 0 {
+            return Err("Invalid directory write plan");
+        }
+        let blocks = old.len() / block_size;
+        let first = first / block_size;
+        let order = core::iter::once(first).chain((0..blocks).filter(|index| *index != first));
+        for index in order.filter(|index| *index < blocks) {
+            let range = index * block_size..(index + 1) * block_size;
+            if old[range.clone()] == new[range.clone()] {
+                continue;
+            }
+            let block = file::get_block_num(self.device.as_ref(), dir, &self.superblock, index as u32)
+                .map_err(|e| {
+                    if e == BlockError::OutOfMemory {
+                        "No memory for directory addressing"
+                    } else {
+                        "Failed to read directory addressing"
+                    }
+                })?
+                .ok_or("No space for directory data")?;
+            writes
+                .try_reserve(1)
+                .map_err(|_| "No memory for directory write plan")?;
+            writes.push(Write::Block {
+                block,
+                old: &old[range.clone()],
+                new: &new[range],
+            });
+        }
+        Ok(())
     }
-    Ok(())
+
+    /// Perform one planned write, or with `undo` restore what it replaced.
+    fn apply(&mut self, write: &Write, undo: bool) -> Result<(), ()> {
+        let size = self.superblock.block_size();
+        match write {
+            Write::Block { block, old, new } => {
+                file::write_ext2_block(self.device.as_ref(), *block, size, if undo { old } else { new })
+                    .map_err(|_| ())
+            }
+            Write::Fresh { .. } if undo => Ok(()),
+            Write::Fresh { block, new } => {
+                file::write_ext2_block(self.device.as_ref(), *block, size, new).map_err(|_| ())
+            }
+            Write::Inode { ino, old, new } => if undo {
+                self.write_inode_disk(*ino, old)
+            } else {
+                self.write_inode(*ino, new)
+            }
+            .map_err(|_| ()),
+            Write::Counts { superblock, groups } => {
+                let (superblock, groups) = if undo {
+                    (&self.superblock, &self.block_groups[..])
+                } else {
+                    (*superblock, *groups)
+                };
+                Ext2BlockGroupDesc::write_table(self.device.as_ref(), superblock, groups)
+                    .map_err(|_| ())?;
+                superblock.write_to(self.device.as_ref()).map_err(|_| ())
+            }
+        }
+    }
 }
 
 impl Ext2Fs {

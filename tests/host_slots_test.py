@@ -85,7 +85,8 @@ for i in range(100):
                 process.communicate()
         self.temporary.cleanup()
 
-    def launch(self, script, bypass=False, miss_first_snapshot=False, temporary_directory=None, settings=None, qemu_alias=None):
+    def launch(self, script, bypass=False, miss_first_snapshot=False, temporary_directory=None, settings=None, qemu_alias=None,
+               prelude=''):
         # Only tests inject a directory and disable observational VM discovery and
         # the Linux vCPU gap sampler, so the host's own guests and load can't decide them.
         # Production's fixed directory has no environment override.
@@ -99,10 +100,10 @@ m.vcpu_gap_ms = lambda seconds: 0.0
 m.WAIT_MESSAGE_SECONDS = 0.2
 if {qemu_alias!r}:
     original_table = m.process_table
-    def with_qemu_alias():
+    def with_qemu_alias(*args):
         return {{pid: (*row[:3], {qemu_alias!r} + ' ' + row[3])
                  if ' -c from pathlib import Path' in row[3] and '-serial file:' in row[3]
-                 else row for pid, row in original_table().items()}}
+                 else row for pid, row in original_table(*args).items()}}
     m.process_table = with_qemu_alias
 for name, value in {settings or {}!r}.items():
     setattr(m, name, value)
@@ -112,6 +113,7 @@ if {miss_first_snapshot!r}:
         m.Slots.snapshot = original_snapshot
         return []
     m.Slots.snapshot = missed_snapshot
+{prelude}
 sys.exit(m.supervise(['bash', '-c', sys.argv[1]]))'''
         process = subprocess.Popen([sys.executable, '-u', '-c', program, script],
                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -621,7 +623,7 @@ sys.stdin.readline()
                 break
             time.sleep(0.01)
         self.assertTrue(state.startswith('Z'), state)
-        slots.signal_process_group(child, signal.SIGKILL)
+        slots.signal_process_group(child, signal.SIGKILL, slots.CLEANUP_PS_TIMEOUTS)
         process.stdin.write(b'reap\n'); process.stdin.flush()
         self.assertEqual(process.wait(timeout=10), 0)
 
@@ -631,7 +633,90 @@ sys.stdin.readline()
         self.processes.append(process)
         with mock.patch.object(slots.os, 'killpg', side_effect=PermissionError(1, 'denied')):
             with self.assertRaises(PermissionError):
-                slots.signal_process_group(process.pid, signal.SIGKILL)
+                slots.signal_process_group(process.pid, signal.SIGKILL, slots.CLEANUP_PS_TIMEOUTS)
+
+    def test_process_table_survives_a_slow_ps(self):
+        real = subprocess.check_output
+        calls = []
+        def slow_once(argv, **kwargs):
+            calls.append(kwargs['timeout'])
+            if len(calls) == 1:
+                raise subprocess.TimeoutExpired(argv, kwargs['timeout'])
+            return real(argv, **kwargs)
+        with mock.patch.object(slots.subprocess, 'check_output', side_effect=slow_once):
+            table = slots.process_table(slots.CLEANUP_PS_TIMEOUTS)
+        self.assertEqual(calls, [10, 30])
+        self.assertIn(os.getpid(), table)
+
+    def slow_ps_prelude(self, log, slow_while=None):
+        # A 10 s-bound ps "times out" after 0.2 s (while the flag file exists, if one is
+        # given); the cleanup bounds take 2 s each, so a loop that used them would show.
+        return f'''real = m.subprocess.check_output
+import os as _os, time as _time
+def slow(argv, **kwargs):
+    if argv[0] == 'ps':
+        with open({str(log)!r}, 'a') as stream:
+            stream.write('%d\\n' % kwargs['timeout'])
+        if kwargs['timeout'] == 10 and ({str(slow_while)!r} == 'None' or _os.path.exists({str(slow_while)!r})):
+            _time.sleep(0.2)
+            raise m.subprocess.TimeoutExpired(argv, kwargs['timeout'])
+        if kwargs['timeout'] != 10:
+            _time.sleep(2)
+    return real(argv, **kwargs)
+m.subprocess.check_output = slow'''
+
+    def test_a_slow_ps_does_not_hold_the_supervisor_loop(self):
+        # Every ps read bounded at 10 s times out. The loop keeps turning on that one
+        # bound, forwards the interrupt to the launcher at once, and leaves the longer
+        # bounds to cleanup after the launcher has exited.
+        log = self.root / 'ps-timeouts'
+        process = self.launch(self.request('acquire', 'mac-boot') +
+                              f"; trap 'echo EXIT >> {log}; exit 0' INT; echo READY; while :; do sleep 0.1; done",
+                              prelude=self.slow_ps_prelude(log))
+        self.line_matching(process, 'READY')
+        time.sleep(1)
+        interrupted = time.monotonic()
+        process.send_signal(signal.SIGINT)
+        deadline = time.monotonic() + 5
+        while 'EXIT' not in log.read_text().split() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertLess(time.monotonic() - interrupted, 2)
+        self.assertEqual(process.wait(timeout=20), 0)
+        reads = log.read_text().split()
+        in_loop = reads[:reads.index('EXIT')]
+        self.assertGreater(len(in_loop), 2)
+        self.assertEqual(set(in_loop), {'10'})
+        self.assertIn('30', reads[reads.index('EXIT'):])
+
+    def test_a_release_waits_out_a_slow_ps(self):
+        # A release whose QEMU stop meets a slow ps is retried on later turns, not
+        # raised and not served on the cleanup bounds; it completes once ps answers.
+        log = self.root / 'ps-timeouts'
+        flag = self.root / 'ps-slow'
+        process = self.launch(self.request('acquire', 'mac-boot') + '; echo READY; read -r go; ' +
+                              self.request('release', 'mac-boot') + '; echo RELEASED; read -r done',
+                              prelude=self.slow_ps_prelude(log, slow_while=flag))
+        self.line_matching(process, 'READY')
+        flag.touch()
+        process.stdin.write(b'go\n'); process.stdin.flush()
+        time.sleep(1.5)
+        self.assertNotIn('RELEASED', self.drain(process))
+        self.assertEqual(set(log.read_text().split()), {'10'})
+        flag.unlink()
+        self.line_matching(process, 'RELEASED')
+        process.stdin.write(b'done\n'); process.stdin.flush()
+        self.assertEqual(process.wait(timeout=20), 0)
+
+    def drain(self, process):
+        collected = b''
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            while selector.select(timeout=0.1):
+                chunk = os.read(process.stdout.fileno(), 4096)
+                if not chunk:
+                    break
+                collected += chunk
+        return collected.decode()
 
     def test_parallel_observers_are_not_reported_as_running_builds(self):
         pool = slots.Slots(self.root / 'locks')
