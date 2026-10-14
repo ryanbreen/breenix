@@ -1,14 +1,21 @@
 #!/usr/bin/env python3
-"""Compile this lane's headers in strict ISO C and in POSIX mode, on both arches.
+"""Compile this lane's headers in strict ISO C and in POSIX mode for one or both arches.
 
 Strict C17: a program that includes only <wchar.h>, <wctype.h>, <ctype.h>,
 <locale.h> and <time.h> may still define names that belong to other headers
 (C17 7.1.3), so those headers must not declare them. POSIX mode: the types
 POSIX.1-2024 adds to these headers are present.
+
+  libc_locale_headers_host.py [--arch aarch64|x86_64]   (default: both)
 """
 from pathlib import Path
+import argparse
 import subprocess
 import tempfile
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--arch', choices=('aarch64', 'x86_64'), action='append')
+arches = parser.parse_args().arch or ['aarch64', 'x86_64']
 
 root = Path(__file__).resolve().parents[1]
 include = root / 'libs/libbreenix-libc/include'
@@ -56,7 +63,7 @@ with tempfile.TemporaryDirectory(prefix='breenix-locale-headers-') as directory:
     for name, text in (('strict', STRICT), ('posix', POSIX)):
         source = Path(directory) / f'{name}.c'
         source.write_text(text)
-        for arch in ('aarch64', 'x86_64'):
+        for arch in arches:
             subprocess.run(['clang', f'--target={arch}-unknown-linux-gnu', '-nostdinc', '-isystem',
                             str(include), '-isystem', f'{resource}/include', '-std=c17', '-Wall',
                             '-Werror', '-fsyntax-only', str(source)], check=True)
