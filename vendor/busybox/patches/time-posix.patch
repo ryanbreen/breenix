@@ -1,0 +1,13 @@
+--- a/miscutils/time.c
++++ b/miscutils/time.c
+@@ -198,7 +198,9 @@
+ 		printf("Command stopped by signal %u\n",
+ 				WSTOPSIG(resp->waitstatus));
+ 	else */
+-	if (WIFSIGNALED(resp->waitstatus))
++	if (fmt == posix_format) {
++		/* POSIX: with -p, write only the real, user and sys lines. */
++	} else if (WIFSIGNALED(resp->waitstatus))
+ 		printf("Command terminated by signal %u\n",
+ 				WTERMSIG(resp->waitstatus));
+ 	else if (WIFEXITED(resp->waitstatus) && WEXITSTATUS(resp->waitstatus))

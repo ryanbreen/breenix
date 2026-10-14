@@ -1,0 +1,207 @@
+--- a/coreutils/timeout.c
++++ b/coreutils/timeout.c
+@@ -47,51 +47,78 @@
+ 
+ #include "libbb.h"
+ 
+-static NOINLINE int timeout_wait(duration_t timeout, pid_t pid)
++/* POSIX timeout: this process leads its own process group, runs the
++ * utility as its child and waits for it. When the time limit is reached it
++ * sends the signal to its process group, itself ignoring it, and exits 124;
++ * otherwise it exits as the utility did, terminating itself with the
++ * utility's signal if a signal ended it.
++ */
++static smallint expired;
++
++static void alarm_handler(int sig UNUSED_PARAM)
+ {
+-	/* Just sleep(HUGE_NUM); kill(parent) may kill wrong process! */
+-	while (1) {
++	expired = 1;
++}
++
++static void arm_timer(duration_t duration)
++{
++	struct itimerval it;
++
++	memset(&it, 0, sizeof(it));
+ #if ENABLE_FLOAT_DURATION
+-		if (timeout < 1)
+-			sleep_for_duration(timeout);
+-		else
++	it.it_value.tv_sec = (time_t)duration;
++	it.it_value.tv_usec = (suseconds_t)((duration - it.it_value.tv_sec) * 1000000);
++	if (it.it_value.tv_sec == 0 && it.it_value.tv_usec == 0)
++		it.it_value.tv_usec = 1;
++#else
++	it.it_value.tv_sec = duration;
+ #endif
+-			sleep1();
+-		if (--timeout <= 0)
+-			break;
+-		if (kill(pid, 0)) {
+-			/* process is gone */
+-			return EXIT_SUCCESS;
+-		}
++	expired = 0;
++	setitimer(ITIMER_REAL, &it, NULL);
++}
++
++/* Wait for the child; 1 if the armed timer expired first. */
++static int wait_or_expire(pid_t pid, int *status)
++{
++	for (;;) {
++		if (waitpid(pid, status, 0) == pid)
++			return 0;
++		if (errno != EINTR)
++			bb_simple_perror_msg_and_die("wait");
++		if (expired)
++			return 1;
+ 	}
+-	return EXIT_FAILURE;
+ }
+ 
++static void signal_group(int signo)
++{
++	if (signo != SIGKILL && signo != SIGSTOP)
++		signal(signo, SIG_IGN);
++	kill(0, signo);
++	/* A stopped utility receives the signal once continued. */
++	if (signo != SIGKILL && signo != SIGCONT)
++		kill(0, SIGCONT);
++}
++
+ int timeout_main(int argc, char **argv) MAIN_EXTERNALLY_VISIBLE;
+ int timeout_main(int argc UNUSED_PARAM, char **argv)
+ {
+ 	int signo;
+ 	int status;
+-	int parent = 0;
+ 	duration_t timeout;
+ 	duration_t kill_timeout;
+ 	pid_t pid;
+-#if !BB_MMU
+-	char *sv1, *sv2;
+-#endif
+ 	const char *opt_s = "TERM";
+ 	char *opt_k = NULL;
+ 
+-	/* -p option is not documented, it is needed to support NOMMU. */
+-
+-	/* -t SECONDS; -p PARENT_PID */
+ 	/* '+': stop at first non-option */
+-	getopt32(argv, "+s:k:" USE_FOR_NOMMU("p:+"), &opt_s, &opt_k, &parent);
+-	/*argv += optind; - no, wait for bb_daemonize_or_rexec! */
++	getopt32(argv, "+s:k:", &opt_s, &opt_k);
+ 
+ 	signo = get_signum(opt_s);
+-	if (signo < 0)
+-		bb_error_msg_and_die("unknown signal '%s'", opt_s);
++	if (signo < 0) {
++		bb_error_msg("unknown signal '%s'", opt_s);
++		return 125;
++	}
+ 
+ 	kill_timeout = 0;
+ 	if (opt_k)
+@@ -102,57 +129,55 @@
+ 	timeout = parse_duration_str(argv[optind++]);
+ 	if (!argv[optind]) /* no PROG? */
+ 		bb_show_usage();
++	argv += optind;
+ 
+-	/* We want to create a grandchild which will watch
+-	 * and kill the grandparent. Other methods:
+-	 * making parent watch child disrupts parent<->child link
+-	 * (example: "tcpsvd 0.0.0.0 1234 timeout service_prog" -
+-	 * it's better if service_prog is a child of tcpsvd!),
+-	 * making child watch parent results in programs having
+-	 * unexpected children.	*/
++	/* Fails only for a session leader, which already leads its group. */
++	setpgid(0, 0);
+ 
+-	if (parent) /* we were re-execed, already grandchild */
+-		goto grandchild;
++	/* Without SA_RESTART, so the timer interrupts waitpid. */
++	{
++		struct sigaction sa;
++		memset(&sa, 0, sizeof(sa));
++		sa.sa_handler = alarm_handler;
++		sigaction(SIGALRM, &sa, NULL);
++	}
+ 
+-#if !BB_MMU
+-	sv1 = argv[optind];
+-	sv2 = argv[optind + 1];
+-#endif
+-	pid = xvfork();
++	pid = fork();
++	if (pid < 0) {
++		bb_simple_perror_msg("fork");
++		return 125;
++	}
+ 	if (pid == 0) {
+-		/* Child: spawn grandchild and exit */
+-		parent = getppid();
+-#if !BB_MMU
+-		argv[optind] = xasprintf("-p%u", parent);
+-		argv[optind + 1] = NULL;
+-#endif
+-		/* NB: exits with nonzero on error: */
+-		bb_daemonize_or_rexec(0, argv);
+-		/* Here we are grandchild. Sleep, then kill grandparent */
+- grandchild:
+-		if (timeout_wait(timeout, parent) == EXIT_SUCCESS)
+-			return EXIT_SUCCESS;
+-		kill(parent, signo);
++		signal(SIGALRM, SIG_DFL);
++		execvp(argv[0], argv);
++		status = (errno == ENOENT) ? 127 : 126;
++		bb_perror_msg("can't execute '%s'", argv[0]);
++		_exit(status);
++	}
+ 
+-		if (kill_timeout > 0) {
+-			if (timeout_wait(kill_timeout, parent) == EXIT_SUCCESS)
+-				return EXIT_SUCCESS;
+-			kill(parent, SIGKILL);
++	if (timeout > 0) {
++		arm_timer(timeout);
++		if (wait_or_expire(pid, &status)) {
++			signal_group(signo);
++			if (kill_timeout > 0) {
++				arm_timer(kill_timeout);
++				if (wait_or_expire(pid, &status))
++					signal_group(SIGKILL);
++				else
++					return 124;
++			}
++			wait_or_expire(pid, &status);
++			return 124;
+ 		}
+-
+-		return EXIT_SUCCESS;
++	} else {
++		wait_or_expire(pid, &status);
+ 	}
+ 
+-	/* Parent */
+-	wait(&status); /* wait for child to die */
+-	/* Did intermediate [v]fork or exec fail? */
+-	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+-		return EXIT_FAILURE;
+-	/* Ok, exec a program as requested */
+-	argv += optind;
+-#if !BB_MMU
+-	argv[0] = sv1;
+-	argv[1] = sv2;
+-#endif
+-	BB_EXECVP_or_die(argv);
++	if (WIFSIGNALED(status)) {
++		signo = WTERMSIG(status);
++		signal(signo, SIG_DFL);
++		kill(getpid(), signo);
++		return 128 + signo;
++	}
++	return WEXITSTATUS(status);
+ }

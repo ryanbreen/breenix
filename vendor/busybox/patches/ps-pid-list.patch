@@ -1,0 +1,65 @@
+--- a/procps/ps.c
++++ b/procps/ps.c
+@@ -553,10 +553,11 @@
+ {
+ 	procps_status_t *p;
+ 	llist_t* opt_o = NULL;
++	llist_t* opt_p = NULL;
++	unsigned *pids = NULL;
++	unsigned pid_cnt = 0;
+ 	char default_o[sizeof(DEFAULT_O_STR)];
+-#if ENABLE_SELINUX || ENABLE_FEATURE_SHOW_THREADS
+ 	int opt;
+-#endif
+ 	enum {
+ 		OPT_Z = (1 << 0),
+ 		OPT_o = (1 << 1),
+@@ -567,6 +568,7 @@
+ 		OPT_f = (1 << 6),
+ 		OPT_l = (1 << 7),
+ 		OPT_T = (1 << 8) * ENABLE_FEATURE_SHOW_THREADS,
++		OPT_p = (1 << (8 + ENABLE_FEATURE_SHOW_THREADS)),
+ 	};
+ 
+ 	INIT_G();
+@@ -592,10 +594,21 @@
+ 	 * procps v3.2.7 supports -T and shows tids as SPID column,
+ 	 * it also supports -L where it shows tids as LWP column.
+ 	 */
+-#if ENABLE_SELINUX || ENABLE_FEATURE_SHOW_THREADS
+-	opt =
+-#endif
+-		getopt32(argv, "Zo:*aAdefl"IF_FEATURE_SHOW_THREADS("T"), &opt_o);
++	opt = getopt32(argv, "Zo:*aAdefl"IF_FEATURE_SHOW_THREADS("T")"p:*", &opt_o, &opt_p);
++	/* POSIX: -p proclist, a blank- or comma-separated list of PIDs */
++	while (opt_p) {
++		char *list = llist_pop(&opt_p);
++		char *pid;
++		while ((pid = strsep(&list, ", \t")) != NULL) {
++			if (!pid[0])
++				continue;
++			pids = xrealloc_vector(pids, 4, pid_cnt);
++			pids[pid_cnt++] = xatou(pid);
++		}
++	}
++	/* -A and -e select every process whatever else is selected */
++	if (opt & (OPT_A | OPT_e))
++		pid_cnt = 0;
+ 
+ 	if (opt_o) {
+ 		do {
+@@ -634,6 +647,14 @@
+ 
+ 	p = NULL;
+ 	while ((p = procps_scan(p, need_flags)) != NULL) {
++		if (opt & OPT_p) {
++			unsigned i;
++			for (i = 0; i < pid_cnt; i++)
++				if (pids[i] == p->pid)
++					break;
++			if (pid_cnt && i == pid_cnt)
++				continue;
++		}
+ 		format_process(p);
+ 	}
+ 
