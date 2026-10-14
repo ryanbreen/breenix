@@ -215,7 +215,7 @@ static SUITE: Suite = suite("utilities", "Shell & POSIX utilities", &[
     category("scripts", "real shell scripts", &[
         case("wordfreq", "A tr | sort | uniq -c | sort | head pipeline lists the three most frequent words", script_wordfreq),
         case("wordfreq-n", "The word-frequency pipeline takes the number of words to list as an argument", script_wordfreq_n),
-        case("wordfreq-stdin", "The word-frequency pipeline reads standard input through /dev/stdin", script_wordfreq_stdin),
+        case("wordfreq-stdin", "The word-frequency pipeline reads standard input when its file operand is -", script_wordfreq_stdin),
         case("configure", "A configure-style probe finds tools with command -v and writes config.h", script_configure),
         case("configure-prefix", "The configure probe takes --prefix=DIR into config.h", script_configure_prefix),
         case("configure-bad-option", "The configure probe rejects an unknown option on stderr with status 1 and writes nothing", script_configure_bad_option),
@@ -1250,7 +1250,7 @@ fn proc_tty() -> CaseResult {
 
 fn script_wordfreq() -> CaseResult {
     util(&["sh", "wordfreq.sh", "text.txt"])
-        .needs(&["tr", "sort", "uniq", "head"])
+        .needs(&["cat", "tr", "sort", "uniq", "head"])
         .file("wordfreq.sh", WORDFREQ)
         .file("text.txt", r#"The cat and the hat. The end, and THE cat!
 "#)
@@ -1259,7 +1259,7 @@ fn script_wordfreq() -> CaseResult {
 
 fn script_wordfreq_n() -> CaseResult {
     util(&["sh", "wordfreq.sh", "text.txt", "5"])
-        .needs(&["tr", "sort", "uniq", "head"])
+        .needs(&["cat", "tr", "sort", "uniq", "head"])
         .file("wordfreq.sh", WORDFREQ)
         .file("text.txt", r#"The cat and the hat. The end, and THE cat!
 "#)
@@ -1267,8 +1267,8 @@ fn script_wordfreq_n() -> CaseResult {
 }
 
 fn script_wordfreq_stdin() -> CaseResult {
-    util(&["sh", "wordfreq.sh", "/dev/stdin", "2"])
-        .needs(&["tr", "sort", "uniq", "head"])
+    util(&["sh", "wordfreq.sh", "-", "2"])
+        .needs(&["cat", "tr", "sort", "uniq", "head"])
         .file("wordfreq.sh", WORDFREQ)
         .input(r#"b a b c b a
 "#)
@@ -1493,8 +1493,8 @@ fn script_source_lib_elsewhere() -> CaseResult {
 // The scripts the scripts category writes to files and runs.
 
 const WORDFREQ: &str = r#"#!/bin/sh
-# wordfreq.sh FILE [N]: the N most frequent words of FILE, most frequent first.
-tr -cs 'A-Za-z' '\n' < "$1" | tr 'A-Z' 'a-z' | sort | uniq -c | sort -k1,1nr -k2 | head -n "${2:-3}" |
+# wordfreq.sh FILE [N]: the N most frequent words of FILE (- for standard input), most frequent first.
+cat "$1" | tr -cs 'A-Za-z' '\n' | tr 'A-Z' 'a-z' | sort | uniq -c | sort -k1,1nr -k2 | head -n "${2:-3}" |
 while read count word; do
     printf '%s %s\n' "$word" "$count"
 done

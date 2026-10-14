@@ -189,7 +189,7 @@
       "cases": [
         { "id": "wordfreq", "title": "A tr | sort | uniq -c | sort | head pipeline lists the three most frequent words" },
         { "id": "wordfreq-n", "title": "The word-frequency pipeline takes the number of words to list as an argument" },
-        { "id": "wordfreq-stdin", "title": "The word-frequency pipeline reads standard input through /dev/stdin" },
+        { "id": "wordfreq-stdin", "title": "The word-frequency pipeline reads standard input when its file operand is -" },
         { "id": "configure", "title": "A configure-style probe finds tools with command -v and writes config.h" },
         { "id": "configure-prefix", "title": "The configure probe takes --prefix=DIR into config.h" },
         { "id": "configure-bad-option", "title": "The configure probe rejects an unknown option on stderr with status 1 and writes nothing" },
