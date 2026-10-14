@@ -186,6 +186,16 @@ pub fn case_ms_left() -> u64 {
     }
 }
 
+/// In a case's process, the case's `<category>/<case>`.
+static CASE_NAME: OnceLock<String> = OnceLock::new();
+
+/// In a case's process, the running case's `<category>/<case>`; `None` outside a case.
+/// Lets one function serve many cases that differ only by name, such as a case that
+/// runs the program of the same name.
+pub fn running_case() -> Option<&'static str> {
+    CASE_NAME.get().map(String::as_str)
+}
+
 /// In a case's process, a close-on-exec copy of the suite's stdout for its VALUE and
 /// WAIT records; -1 elsewhere.
 static RECORD_FD: AtomicI32 = AtomicI32::new(-1);
@@ -681,6 +691,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
             }
             let deadline = start.map_or(0, |start| (start + limit_ms as i128 * 1_000_000) as u64);
             CASE_DEADLINE_NS.store(deadline, Ordering::Relaxed);
+            let _ = CASE_NAME.set(String::from(name));
             keep_record_output(suite, name);
             let outcome = match silence_output() {
                 Ok(()) => run_inline(case),

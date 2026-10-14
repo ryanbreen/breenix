@@ -29,7 +29,10 @@ def key(repo):
     paths = subprocess.check_output(['git', '-C', str(repo), 'ls-files', '-z', '--',
         'userspace', 'libs', 'fonts', 'vendor/busybox', 'xtask',
         'scripts/gate-artifacts.py', 'scripts/create_ext2_disk.sh', 'scripts/install-busybox.py',
-        '.cargo', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'x86_64-breenix.json']).split(b'\0')
+        '.cargo', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'x86_64-breenix.json',
+        'x86_64-breenix-c.json', 'scripts/breenix-cc', 'scripts/libc-symbol-audit.py',
+        'scripts/libc-clean-archive.py',
+        'scripts/build-libc-busybox.sh']).split(b'\0')
     for name in sorted(filter(None, paths)):
         path = repo / os.fsdecode(name)
         result.update(name + b'\0' + path.read_bytes() + b'\0')
@@ -44,6 +47,10 @@ def key(repo):
             result.update(name.encode() + b'\0' + path.read_bytes())
     for command in (['rustc', '-Vv'], ['cargo', '-V'], ['mke2fs', '-V'], ['debugfs', '-V']):
         result.update(subprocess.check_output(command, cwd=repo, stderr=subprocess.STDOUT))
+    # C programs are compiled by the clang scripts/breenix-cc selects.
+    tool_dir = subprocess.check_output([str(repo / 'scripts/breenix-cc'), '--arch', 'x86_64', '--tool-dir'],
+                                       cwd=repo, text=True).strip()
+    result.update(subprocess.check_output([str(Path(tool_dir) / 'clang'), '--version'], cwd=repo))
     # Resolve every workspace's override, not only the root toolchain.
     sysroots = set()
     for workspace in (repo, repo / 'userspace/programs', repo / 'libs/libbreenix-libc'):
@@ -182,7 +189,7 @@ export CARGO_HOME=/run/breenix-gate/cargo
 
 
 def artifacts(repo):
-    return sorted((repo / 'userspace/programs').glob('*.elf')) + [repo / 'target/test_binaries.img', repo / 'testdata/ext2.img']
+    return sorted((repo / 'userspace/programs').glob('*.elf')) + sorted((repo / 'userspace/programs').glob('libc-busybox.links')) + [repo / 'target/test_binaries.img', repo / 'testdata/ext2.img']
 
 
 def inventory(directory):
@@ -191,7 +198,7 @@ def inventory(directory):
 
 def install(entry, repo, manifest):
     # Remove leftovers first; deletions in build.sh must retire stale binaries.
-    for path in (repo / 'userspace/programs').glob('*.elf'):
+    for path in list((repo / 'userspace/programs').glob('*.elf')) + list((repo / 'userspace/programs').glob('libc-busybox.links')):
         if str(path.relative_to(repo)) not in manifest:
             path.unlink()
     for name in manifest:
