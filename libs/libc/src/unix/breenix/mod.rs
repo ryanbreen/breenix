@@ -123,6 +123,12 @@ s! {
         fds_bits: [c_ulong; crate::FD_SETSIZE as usize / ULONG_SIZE],
     }
 
+    /// A CPU set: CPU_SETSIZE bits in 64-bit words on both architectures, the
+    /// 128 bytes Linux's cpu_set_t occupies.
+    pub struct cpu_set_t {
+        bits: [u64; CPU_SETSIZE as usize / 64],
+    }
+
     pub struct in_addr {
         pub s_addr: crate::in_addr_t,
     }
@@ -468,6 +474,9 @@ s! {
 
 // FD_SETSIZE for select()
 pub const FD_SETSIZE: usize = 1024;
+
+// CPU_SETSIZE for sched_getaffinity()
+pub const CPU_SETSIZE: c_int = 1024;
 const ULONG_SIZE: usize = 64;
 
 // Number of control characters in termios
@@ -1091,6 +1100,44 @@ f! {
     }
 }
 
+// cpu_set_t macros
+f! {
+    pub fn CPU_ZERO(cpuset: &mut cpu_set_t) -> () {
+        for word in cpuset.bits.iter_mut() {
+            *word = 0;
+        }
+    }
+
+    pub fn CPU_SET(cpu: usize, cpuset: &mut cpu_set_t) -> () {
+        cpuset.bits[cpu / 64] |= 1 << (cpu % 64);
+    }
+
+    pub fn CPU_CLR(cpu: usize, cpuset: &mut cpu_set_t) -> () {
+        cpuset.bits[cpu / 64] &= !(1 << (cpu % 64));
+    }
+
+    pub fn CPU_ISSET(cpu: usize, cpuset: &cpu_set_t) -> bool {
+        cpuset.bits[cpu / 64] & (1 << (cpu % 64)) != 0
+    }
+
+    pub fn CPU_COUNT_S(size: usize, cpuset: &cpu_set_t) -> c_int {
+        let words = (size / 8).min(cpuset.bits.len());
+        let mut count = 0;
+        for word in &cpuset.bits[..words] {
+            count += word.count_ones();
+        }
+        count as c_int
+    }
+
+    pub fn CPU_COUNT(cpuset: &cpu_set_t) -> c_int {
+        CPU_COUNT_S(size_of::<cpu_set_t>(), cpuset)
+    }
+
+    pub fn CPU_EQUAL(set1: &cpu_set_t, set2: &cpu_set_t) -> bool {
+        set1.bits == set2.bits
+    }
+}
+
 // External libc functions provided by libbreenix-libc
 unsafe extern "C" {
     pub fn abort() -> !;
@@ -1331,6 +1378,11 @@ unsafe extern "C" {
     pub fn pthread_rwlock_unlock(rwlock: *mut pthread_rwlock_t) -> c_int;
 
     pub fn sched_yield() -> c_int;
+    pub fn sched_getaffinity(
+        pid: crate::pid_t,
+        cpusetsize: size_t,
+        cpuset: *mut cpu_set_t,
+    ) -> c_int;
 
     pub fn readv(fd: c_int, iov: *const crate::iovec, iovcnt: c_int) -> ssize_t;
 
@@ -1395,3 +1447,5 @@ unsafe extern "C" {
 const _: () = core::assert!(core::mem::size_of::<stat>() == 144 && core::mem::size_of::<stat64>() == 144);
 #[cfg(target_arch = "aarch64")]
 const _: () = core::assert!(core::mem::size_of::<stat>() == 128 && core::mem::size_of::<stat64>() == 128);
+// The kernel's sched_getaffinity copies up to this many bytes of mask.
+const _: () = core::assert!(core::mem::size_of::<cpu_set_t>() == 128);
