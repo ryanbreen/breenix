@@ -26,6 +26,8 @@
 
 mod alloc_cache;
 mod locale;
+mod env;
+mod getopt;
 mod inet;
 mod netdb;
 mod mqueue;
@@ -1294,7 +1296,7 @@ extern "C" fn _start_rust(sp: *const u64) -> ! {
 
         // envp starts after argv NULL terminator: sp + 1 (argc) + argc + 1 (NULL)
         let envp = sp.add(1 + argc as usize + 1) as *const *const u8;
-        environ = envp as usize;
+        env::environ = envp as *mut *mut u8;
         pthread::startup(envp);
 
         extern "C" {
@@ -1505,70 +1507,6 @@ pub unsafe extern "C" fn memcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
             return a as i32 - b as i32;
         }
     }
-    0
-}
-
-/// getenv - get environment variable
-///
-/// Searches the environment for a variable matching `name` and returns
-/// a pointer to the value (the part after '='). Returns NULL if not found.
-#[no_mangle]
-pub unsafe extern "C" fn getenv(name: *const u8) -> *mut u8 {
-    if name.is_null() {
-        return core::ptr::null_mut();
-    }
-
-    let env_ptr = environ as *const *const u8;
-    if env_ptr.is_null() {
-        return core::ptr::null_mut();
-    }
-
-    // Get name length (walk until null byte)
-    let mut name_len: usize = 0;
-    while *name.add(name_len) != 0 {
-        name_len += 1;
-    }
-    if name_len == 0 {
-        return core::ptr::null_mut();
-    }
-
-    // Walk environ array entries
-    let mut i: usize = 0;
-    loop {
-        let entry = *env_ptr.add(i);
-        if entry.is_null() {
-            break;
-        }
-
-        // Check if entry starts with name followed by '='
-        let mut matches = true;
-        for j in 0..name_len {
-            if *entry.add(j) != *name.add(j) {
-                matches = false;
-                break;
-            }
-        }
-
-        if matches && *entry.add(name_len) == b'=' {
-            // Return pointer to the character after '='
-            return entry.add(name_len + 1) as *mut u8;
-        }
-
-        i += 1;
-    }
-
-    core::ptr::null_mut()
-}
-
-/// setenv - set environment variable (no-op, single-process)
-#[no_mangle]
-pub unsafe extern "C" fn setenv(_name: *const u8, _value: *const u8, _overwrite: i32) -> i32 {
-    0
-}
-
-/// unsetenv - remove environment variable (no-op, single-process)
-#[no_mangle]
-pub unsafe extern "C" fn unsetenv(_name: *const u8) -> i32 {
     0
 }
 
@@ -2927,16 +2865,6 @@ pub unsafe extern "C" fn _Unwind_Backtrace(
 pub unsafe extern "C" fn _Unwind_GetIP(_context: *mut u8) -> usize {
     0
 }
-
-// =============================================================================
-// Environment Variables
-// =============================================================================
-
-/// environ - global environment pointer required by Rust std's env module.
-/// Stored as usize (which is Sync) to avoid raw pointer Sync issues.
-/// A value of 0 means NULL, which std interprets as an empty environment.
-#[no_mangle]
-pub static mut environ: usize = 0;
 
 // =============================================================================
 // Math Functions (libm replacements for no_std targets)
