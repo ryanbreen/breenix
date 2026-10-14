@@ -117,7 +117,7 @@ class CacheTests(unittest.TestCase):
             self.assertEqual(build.call_count, 2)
 
     def test_content_key_tracks_source_script_busybox_toolchain_and_external_library(self):
-        names = ['Cargo.lock', 'userspace/programs/Cargo.lock', 'userspace/source.rs', 'scripts/create_ext2_disk.sh', 'vendor/busybox/manifest.json', 'rust-toolchain.toml']
+        names = ['Cargo.lock', 'userspace/programs/Cargo.lock', 'userspace/source.rs', 'scripts/create_ext2_disk.sh', 'scripts/libc-clean-archive.py', 'vendor/busybox/manifest.json', 'rust-toolchain.toml']
         for name in names:
             path = self.repo / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -133,7 +133,7 @@ class CacheTests(unittest.TestCase):
                 return b'\0'.join(name.encode() for name in names)
             if command[:2] == ['rustup', 'which']:
                 return str(compiler)
-            if '--print' in command:
+            if '--print' in command or '--tool-dir' in command:
                 return str(self.root)
             return version[0]
         with patch.object(artifacts.subprocess, 'check_output', side_effect=output):

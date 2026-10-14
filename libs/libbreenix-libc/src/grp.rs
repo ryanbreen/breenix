@@ -6,7 +6,6 @@ use crate::pwd::{fields, parse_id, Database, Packer};
 use core::ptr::{addr_of_mut, null_mut};
 
 const ERANGE: i32 = 34;
-const EINVAL: i32 = 22;
 
 #[repr(C)]
 pub struct Group {
@@ -173,7 +172,14 @@ pub unsafe extern "C" fn getgrouplist(user: *const u8, group: u32, groups: *mut 
         *count += 1;
     };
     add(group, &mut count);
-    if let Ok(mut db) = Database::open(b"/etc/group\0") {
+    let mut db = match Database::open(b"/etc/group\0") {
+        Ok(db) => db,
+        Err(e) => {
+            crate::pthread::set_errno(e);
+            return -1;
+        }
+    };
+    {
         while let Some(line) = db.next_line() {
             if let Some((f, gid)) = parse(line) {
                 if gid != group && members(f[3]).any(|m| m == user) {
@@ -184,17 +190,40 @@ pub unsafe extern "C" fn getgrouplist(user: *const u8, group: u32, groups: *mut 
         db.close();
     }
     *ngroups = count as i32;
-    if count > room { -1 } else { count as i32 }
+    if count > room {
+        crate::pthread::set_errno(ERANGE);
+        -1
+    } else { count as i32 }
 }
 
 /// initgroups: set the supplementary groups to those getgrouplist finds for `user`.
 #[no_mangle]
 pub unsafe extern "C" fn initgroups(user: *const u8, group: u32) -> i32 {
-    let mut list = [0u32; 64];
-    let mut n = list.len() as i32;
-    if getgrouplist(user, group, list.as_mut_ptr(), &mut n) < 0 {
-        crate::pthread::set_errno(EINVAL);
-        return -1;
+    // Match this implementation's include/limits.h NGROUPS_MAX. Grow outside
+    // the stack and never replace credentials after an incomplete database read.
+    const MAX_GROUPS: usize = 65536;
+    let mut room = 64usize;
+    loop {
+        let list = crate::malloc(room * core::mem::size_of::<u32>()) as *mut u32;
+        if list.is_null() {
+            crate::pthread::set_errno(12); // ENOMEM in Breenix's errno ABI.
+            return -1;
+        }
+        let mut n = room as i32;
+        let result = getgrouplist(user, group, list, &mut n);
+        if result >= 0 {
+            let status = crate::setgroups(n as usize, list);
+            let error = crate::pthread::errno();
+            crate::free(list as *mut u8);
+            crate::pthread::set_errno(error);
+            return status;
+        }
+        let error = crate::pthread::errno();
+        crate::free(list as *mut u8);
+        if error != ERANGE || n as usize <= room || n as usize > MAX_GROUPS {
+            crate::pthread::set_errno(error);
+            return -1;
+        }
+        room = n as usize;
     }
-    crate::setgroups(n as usize, list.as_ptr())
 }

@@ -15,6 +15,7 @@ const ENOTTY: i32 = 25;
 const ERANGE: i32 = 34;
 const ENAMETOOLONG: i32 = 36;
 const ENOENT: i32 = 2;
+const ENOTDIR: i32 = 20;
 
 const AT_FDCWD: i32 = -100;
 const AT_SYMLINK_NOFOLLOW: i32 = 0x100;
@@ -128,7 +129,8 @@ unsafe fn exec_search(file: *const u8, argv: *const *const u8, envp: *const *con
         // An empty element is the current directory.
         let dir: &[u8] = if dir.is_empty() { b"." } else { dir };
         if dir.len() + 1 + file_len + 1 > buf.len() {
-            continue;
+            set_errno(ENAMETOOLONG);
+            return -1;
         }
         buf[..dir.len()].copy_from_slice(dir);
         buf[dir.len()] = b'/';
@@ -138,7 +140,8 @@ unsafe fn exec_search(file: *const u8, argv: *const *const u8, envp: *const *con
         match crate::pthread::errno() {
             ENOEXEC => return exec_script(buf.as_ptr(), argv, envp),
             EACCES => denied = true,
-            _ => {}
+            ENOENT | ENOTDIR => {},
+            _ => return -1,
         }
     }
     set_errno(if denied { EACCES } else { ENOENT });
