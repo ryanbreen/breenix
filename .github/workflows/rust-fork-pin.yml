@@ -1,0 +1,25 @@
+# Main may only pin a ryanbreen/rust commit published on breenix-target (rust-fork.toml).
+name: Rust fork pin
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Commits only: reachability needs no trees or blobs.
+      - name: Fetch the fork's history
+        run: git clone --quiet --bare --filter=tree:0 --single-branch --branch breenix-target https://github.com/ryanbreen/rust.git "$RUNNER_TEMP/rust-fork"
+      - name: The pin is on the branch rust-fork.toml names
+        run: scripts/rust-fork.sh check-reachable
+        env:
+          BREENIX_RUST_FORK_SOURCE: ${{ runner.temp }}/rust-fork
+      - name: That branch is breenix-target
+        run: scripts/rust-fork.sh check-release
+        env:
+          BREENIX_RUST_FORK_SOURCE: ${{ runner.temp }}/rust-fork
