@@ -163,3 +163,15 @@ pub unsafe extern "C" fn aligned_alloc(alignment: usize, size: usize) -> *mut u8
 pub unsafe extern "C" fn memalign(alignment: usize, size: usize) -> *mut u8 {
     aligned_alloc(alignment, size)
 }
+
+/// realloc for n elements of `size` bytes, failing with ENOMEM when n * size overflows.
+#[no_mangle]
+pub unsafe extern "C" fn reallocarray(ptr: *mut u8, n: usize, size: usize) -> *mut u8 {
+    match n.checked_mul(size) {
+        Some(total) => realloc(ptr, total),
+        None => {
+            set_errno(ENOMEM);
+            core::ptr::null_mut()
+        }
+    }
+}
