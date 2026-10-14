@@ -131,5 +131,6 @@ tools/breenix-runs/.build/
 tools/breenix-runs/*.app/
 tools/breenix-runs/Icon/AppIcon.iconset/
 
+# All installed executables are local build products; no vendor ELF is pinned.
 # Applet list written beside libc-busybox.elf by scripts/build-libc-busybox.sh.
 libc-busybox.links

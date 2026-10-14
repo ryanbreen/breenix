@@ -22,7 +22,7 @@ class ManifestTests(unittest.TestCase):
         self.source.write_text('fn main() {}\n')
         self.elfs = self.repo / 'userspace/programs'
         (self.elfs / 'hello.elf').write_bytes(b'hello')
-        (self.elfs / 'busybox.elf').write_bytes(b'pinned')
+        (self.elfs / 'libc-busybox.elf').write_bytes(b'built')
         subprocess.run(['git', 'init', '-q', str(self.repo)], check=True)
         self.assertEqual(self.run_tool('write').returncode, 0)
 
@@ -64,9 +64,20 @@ class ManifestTests(unittest.TestCase):
         (self.elfs / 'hello.elf').unlink()
         self.assert_refused('hello.elf')
 
-    def test_foreign_busybox_is_not_part_of_the_build(self):
-        (self.elfs / 'busybox.elf').write_bytes(b'repinned')
-        self.assertEqual(self.run_tool('check').returncode, 0)
+    def test_busybox_is_part_of_the_build(self):
+        (self.elfs / 'libc-busybox.elf').write_bytes(b'changed')
+        self.assert_refused('libc-busybox.elf')
+
+    def test_unbuilt_busybox_is_refused(self):
+        (self.elfs / 'busybox.elf').write_bytes(b'foreign')
+        self.assert_refused('busybox.elf')
+
+    def test_changed_applet_links_are_refused(self):
+        links = self.elfs / 'libc-busybox.links'
+        links.write_text('sh\ncat\n')
+        self.assertEqual(self.run_tool('write').returncode, 0)
+        links.write_text('sh\n')
+        self.assert_refused('libc-busybox.links')
 
     def test_disk_packed_before_the_last_userspace_change_is_refused(self):
         disk = self.repo / 'ext2.img'
