@@ -50,6 +50,7 @@ try:
             raise RuntimeError('usage: rust-fork.sh snapshot SOURCE DESTINATION')
         source, destination = map(Path, sys.argv[3:])
         run(source, 'fetch', 'origin', pin['branch'])
+        run(source, 'fetch', 'origin', pin['commit'])
         git(source, 'cat-file', '-e', pin['commit'] + '^{commit}')
         if destination.exists():
             shutil.rmtree(destination)
@@ -79,6 +80,7 @@ try:
             raise RuntimeError('set BREENIX_RUST_FORK_SOURCE to the canonical Rust clone')
         source = Path(source).resolve()
         run(source, 'fetch', 'origin', pin['branch'])
+        run(source, 'fetch', 'origin', pin['commit'])
         git(source, 'cat-file', '-e', pin['commit'] + '^{commit}')
         if checkout.is_symlink():
             checkout.unlink()
