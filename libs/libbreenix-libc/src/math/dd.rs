@@ -35,7 +35,12 @@ fn quick_two_sum(a: f64, b: f64) -> DD {
 pub(crate) fn two_prod(a: f64, b: f64) -> DD {
     let p = a * b;
     if !p.is_finite() { return DD::from(p); }
-    DD { hi: p, lo: super::basic::fma(a, b, -p) }
+    // Residual underflow is an internal approximation detail, not a range
+    // error of the public function using this product. Keep caller errno.
+    let saved = crate::pthread::errno();
+    let lo = super::basic::fma(a, b, -p);
+    crate::pthread::set_errno(saved);
+    DD { hi: p, lo }
 }
 
 impl DD {
