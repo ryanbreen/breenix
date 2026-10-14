@@ -1290,7 +1290,7 @@ pub extern "C" fn sysconf(name: i32) -> i64 {
         _SC_PAGESIZE => 4096,
         28 => 32768, // _SC_MQ_PRIO_MAX
         33 => 0x7fff_ffff, // _SC_SEM_VALUE_MAX
-        _SC_NPROCESSORS_ONLN | _SC_NPROCESSORS_CONF => 1,
+        _SC_NPROCESSORS_ONLN | _SC_NPROCESSORS_CONF => pthread::processor_count(),
         _SC_GETPW_R_SIZE_MAX | _SC_GETGR_R_SIZE_MAX => 1024,
         67 | 77 | 78 | 133 | 153 | 164 => 200809, // threads, stack attributes, barriers, rwlocks, timeouts
         73 => 4, // PTHREAD_DESTRUCTOR_ITERATIONS
@@ -2268,4 +2268,3 @@ pub unsafe extern "C" fn _Unwind_Backtrace(
 pub unsafe extern "C" fn _Unwind_GetIP(_context: *mut u8) -> usize {
     0
 }
-
