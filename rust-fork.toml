@@ -1,4 +1,7 @@
+# The ryanbreen/rust library this checkout builds std from. `branch` names the fork branch the
+# commit is published on: rust-std/<lane> on a lane branch, breenix-target on main. Builds fetch
+# the commit itself; `scripts/rust-fork.sh check-release` refuses any pin main may not carry.
 repo = "https://github.com/ryanbreen/rust.git"
-branch = "breenix-target"
-commit = "ae7a8dee6876fa67c5199430ce70a20c158c9f50"
+branch = "rust-std/fsio"
+commit = "7b7fcbe561c0133d79d8acecef1db51f4e4805be"
 rust = "1.90.0"

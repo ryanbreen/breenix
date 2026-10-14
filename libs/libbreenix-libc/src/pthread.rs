@@ -1,10 +1,7 @@
 //! C thread interfaces using the ABI storage declared for Breenix clients.
 //! Waiters use futexes; a thread's memory is reclaimed once the kernel clears
 //! its CLONE_CHILD_CLEARTID word.
-mod affinity;
-mod cpuinfo;
 mod atfork;
-pub(crate) use affinity::processor_count;
 mod cancel;
 mod spin;
 pub(crate) use atfork::{atfork_child, atfork_parent, atfork_prepare};
