@@ -159,6 +159,12 @@ pub fn handle_arp(eth_frame: &EthernetFrame, arp: &ArpPacket) {
         None => return,
     };
 
+    super::dhcp::observe_arp(arp.sender_mac, arp.sender_ip, arp.target_ip);
+    // An unconfigured interface must not answer probes for 0.0.0.0.
+    if config.ip_addr == [0; 4] {
+        return;
+    }
+
     // Always learn from ARP packets (update cache with sender info)
     update_cache(&arp.sender_ip, &arp.sender_mac);
     super::flush_arp_pending_packets(&arp.sender_ip, &arp.sender_mac);
@@ -273,4 +279,10 @@ pub fn request(target_ip: &[u8; 4]) -> Result<(), &'static str> {
     driver_transmit(&frame)?;
 
     Ok(())
+}
+
+/// Drop stale neighbors when DHCP invalidates the uplink configuration.
+pub fn clear() {
+    let _guard = super::net_lock_guard();
+    for entry in ARP_CACHE.lock().iter_mut() { entry.valid = false; }
 }

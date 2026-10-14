@@ -47,6 +47,11 @@ pub mod udp {
         unreachable!("wire tests never deliver UDP")
     }
 }
+pub mod dhcp {
+    pub fn receive(_: &crate::ipv4::Ipv4Packet) -> bool {
+        unreachable!("wire tests never deliver UDP")
+    }
+}
 #[path = "../kernel/src/net/ethernet.rs"]
 pub mod ethernet;
 #[path = "../kernel/src/net/icmp.rs"]

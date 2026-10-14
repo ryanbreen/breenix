@@ -283,6 +283,15 @@ writes_boot_target() {
     [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = suite ]
 }
 
+# The nameserver this target's /etc/resolv.conf names. VMware's adapter is bridged
+# to the host's network, whose nameserver only the boot-time DHCP lease knows, so
+# its resolv.conf is the kernel's /proc/net/pnp.
+target_nameserver() {
+    if [ "$PARALLELS" = true ]; then echo 10.211.55.1;
+    elif [ "$VMWARE" = true ]; then echo dhcp;
+    else echo 10.0.2.3; fi
+}
+
 # The ext2 disk a Parallels or VMware VM boots: the built disk itself, or with
 # --suite or --probe a copy carrying the boot target (the built disk never gets one, so later
 # ordinary boots keep using the built disk). Sets BOOT_EXT2_DISK.
@@ -297,10 +306,7 @@ stage_boot_ext2_disk() {
     BOOT_EXT2_DISK="$staging_dir/ext2-boot-target.img"
     rm -f "$BOOT_EXT2_DISK"
     cp "$built" "$BOOT_EXT2_DISK" || { echo "ERROR: could not copy $built for the boot target"; exit 1; }
-    local server=10.0.2.3
-    if [ "$PARALLELS" = true ]; then server=10.211.55.1; fi
-    if [ "$VMWARE" = true ]; then server=172.16.45.2; fi
-    "$BREENIX_ROOT/scripts/write-resolv-conf.sh" "$BOOT_EXT2_DISK" "$server" || exit 1
+    "$BREENIX_ROOT/scripts/write-resolv-conf.sh" "$BOOT_EXT2_DISK" "$(target_nameserver)" || exit 1
     writes_boot_target || return 0
     if [ "$PROBE" = true ]; then
         "$BREENIX_ROOT/scripts/write-boot-target.sh" "$BOOT_EXT2_DISK" --probe \
@@ -312,12 +318,13 @@ stage_boot_ext2_disk() {
 }
 
 # Whether the VM's wrapped data disk (whose boot-target marker file is $1) must
-# be made again: when the built disk changed, this run selects a boot target, or
-# an earlier run's boot target must be cleared. Otherwise the wrapped
-# disk, and any changes the guest made to it, is kept.
+# be made again: when the built disk changed, this run selects a boot target,
+# an earlier run's boot target must be cleared, or the disk names another
+# nameserver. Otherwise the wrapped disk, and any changes the guest made to it, is kept.
 ext2_rewrap_needed() {
     local rebuilt="$1" marker="$2"
-    [ "$rebuilt" = true ] || writes_boot_target || [ -f "$marker" ] || [ ! -f "$marker.dns" ]
+    [ "$rebuilt" = true ] || writes_boot_target || [ -f "$marker" ] ||
+        [ "$(cat "$marker.dns" 2>/dev/null)" != "$(target_nameserver)" ]
 }
 
 # Record whether the data disk just wrapped carries a boot target.
@@ -325,8 +332,7 @@ mark_wrapped_ext2() {
     local marker="$1"
     if writes_boot_target; then echo "$BOOT_MODE $SUITE" > "$marker"; else rm -f "$marker"; fi
     # Staging verifies the nameserver before the wrapped disk is published.
-    if [ "$PARALLELS" = true ]; then echo 10.211.55.1 > "$marker.dns";
-    elif [ "$VMWARE" = true ]; then echo 172.16.45.2 > "$marker.dns"; fi
+    target_nameserver > "$marker.dns"
 }
 
 # Cargo can restore a cached profile with an older mtime. Compare the exact
@@ -377,6 +383,46 @@ score_vm_suite_disk() {
     )
 }
 
+# Only this runner's exclusively-created bundle may be deleted. Query all
+# running VMX paths inside it, rather than guessing a filename.
+vmware_bundle_stopped() {
+    local bundle="$1" running
+    running=$(bounded_vm_command "$VMRUN" list 2>/dev/null) || return 1
+    while IFS= read -r vmx; do
+        case "$vmx" in "$bundle"/*) return 1 ;; esac
+    done <<< "$running"
+}
+
+delete_vmware_bundle() {
+    local bundle="$1" vmx scratch lock output
+    [ -d "$bundle" ] && [ ! -L "$bundle" ] || return 0
+    [ "$bundle" = "${VM_BUNDLE:-}" ] && [ "${VM_BUNDLE_OWNED:-false}" = true ] || return 0
+    [ -f "$bundle/.breenix-run-owner" ] || return 0
+    [ "$(cat "$bundle/.breenix-run-owner")" = "$VM_NAME" ] || return 0
+    vmware_bundle_stopped "$bundle" || { echo "WARNING: keeping running or unqueryable VM bundle $bundle"; return 0; }
+    vmx="$bundle/$VM_NAME.vmx"
+    scratch=$(mktemp -d /tmp/breenix-vmware-delete.XXXXXX) || return 0
+    if [ -f "$vmx" ]; then
+        for lock in "$bundle"/*.lck; do
+            [ ! -e "$lock" ] || mv "$lock" "$scratch/" || true
+        done
+        if output=$(bounded_vm_command "$VMRUN" deleteVM "$vmx" 2>&1); then
+            :
+        else
+            echo "WARNING: vmrun deleteVM kept $bundle: $output"
+        fi
+    else
+        mv "$bundle" "$scratch/" || true
+    fi
+    # Fusion removes its known VM files but preserves our ownership marker.
+    # Remove only that marker and an empty directory, never unknown contents.
+    if [ -d "$bundle" ] && [ ! -e "$vmx" ]; then
+        rm -f "$bundle/.breenix-run-owner"
+        rmdir "$bundle" 2>/dev/null || echo "WARNING: keeping extra files in $bundle"
+    fi
+    rm -rf "$scratch"
+}
+
 finish_vm_boot() {
     local status=$?
     local stopped=true
@@ -390,7 +436,9 @@ finish_vm_boot() {
     if [ "$PARALLELS" = true ]; then
         prlctl stop "$PARALLELS_VM" --kill >/dev/null 2>&1 || stopped=false
     else
-        "$VMRUN" stop "$VMX_FILE" hard >/dev/null 2>&1 || stopped=false
+        bounded_vm_command "$VMRUN" stop "$VMX_FILE" hard >/dev/null 2>&1 || {
+            vmware_bundle_stopped "$VM_BUNDLE" || stopped=false
+        }
         vmware_check_network_log "$VM_BUNDLE/vmware.log"
         vmware_network_summary
     fi
@@ -404,6 +452,13 @@ finish_vm_boot() {
     fi
     host_slot_header "$SERIAL_LOG"
     "$BREENIX_ROOT/scripts/vigil-record.sh" finish "${VIGIL_ID:-}" "$status"
+    if [ "$PARALLELS" != true ] && [ "$stopped" = true ]; then
+        # Each boot's VM goes with it, after its verdict is recorded and its slot released; the VM's
+        # vmware.log stays beside the serial log.
+        cp "$VM_BUNDLE/vmware.log" "$SERIAL_LOG.vmware.log" 2>/dev/null || true
+        host_slot_release mac-boot
+        delete_vmware_bundle "$VM_BUNDLE"
+    fi
     exit "$status"
 }
 
@@ -839,11 +894,9 @@ if [ "$VMWARE" = true ]; then
         exit 1
     fi
 
-    # Fusion cannot attach NAT (vmnet8) without its host networking database.
-    # msg.autoAnswer otherwise dismisses the error and boots with Ethernet0
+    # msg.autoAnswer dismisses Fusion's adapter errors and boots with Ethernet0
     # disconnected, even when the VMX requests a connected adapter.
     source "$BREENIX_ROOT/scripts/vmware-network.sh"
-    vmware_check_nat_config "/Library/Preferences/VMware Fusion/networking"
 
     VMWARE_DIR="$BREENIX_ROOT/target/vmware"
     SERIAL_LOG="${SERIAL_LOG_OVERRIDE:-/tmp/breenix-vmware-serial-$(date -u +%Y%m%dT%H%M%SZ)-$$.log}"
@@ -972,35 +1025,19 @@ if [ "$VMWARE" = true ]; then
     echo ""
     echo "--- Configuring VMware VM ---"
 
-    # Use a unique VM name to avoid stale state
-    VM_NAME="breenix-$(date +%s)"
+    # Exclusive creation prevents clock rollback or name collisions from
+    # granting cleanup ownership of another VM. Never sweep unowned bundles.
+    VM_NAME="breenix-$(date +%s)-$(uuidgen)"
     VM_BUNDLE="$VM_MACHINES/$VM_NAME.vmwarevm"
+    VM_BUNDLE_OWNED=false
+    mkdir "$VM_BUNDLE"
+    printf '%s\n' "$VM_NAME" > "$VM_BUNDLE/.breenix-run-owner"
+    VM_BUNDLE_OWNED=true
     echo "VM name: $VM_NAME"
-    # Delete earlier boots' VM bundles, which nothing else removes (one per boot, about 100 MB each): only
-    # breenix-<epoch> bundles that are not running and were created more than 30 minutes ago, so a caller still
-    # scoring a just-stopped VM's data disk keeps it. Age comes from the epoch in the name, because VMware Fusion
-    # rewrites listed bundle files, so their modification times are unsuitable. Sweep
-    # before VM startup, so housekeeping cannot delay recording a completed boot or releasing its slot.
-    sweep_vmware_bundles() {
-        local now old_bundle old_name old_vmx VM_BUNDLE_LIST
-        VM_BUNDLE_LIST=$(mktemp)
-        now=$(date +%s)
-        for old_bundle in "$VM_MACHINES"/breenix-[0-9]*.vmwarevm; do
-            [ -d "$old_bundle" ] && [ "$old_bundle" != "$VM_BUNDLE" ] || continue
-            old_name=$(basename "$old_bundle" .vmwarevm)
-            [ $((now - ${old_name#breenix-})) -gt 1800 ] || continue
-            old_vmx="$old_bundle/$old_name.vmx"
-            bounded_vm_command "$VMRUN" list > "$VM_BUNDLE_LIST" 2>/dev/null || { rm -f "$VM_BUNDLE_LIST"; return 0; }
-            grep -qxF "$old_vmx" "$VM_BUNDLE_LIST" && continue
-            # deleteVM also drops the VM from Fusion's library; a bare rm leaves a dead library entry behind.
-            bounded_vm_command "$VMRUN" deleteVM "$old_vmx" >/dev/null 2>&1 || true
-        done
-        rm -f "$VM_BUNDLE_LIST"
-    }
-    sweep_vmware_bundles
-
-    # Create VM bundle
-    mkdir -p "$VM_BUNDLE"
+    trap 'delete_vmware_bundle "$VM_BUNDLE"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 129' HUP
+    trap 'exit 143' TERM
 
     # Copy VMDKs into the bundle
     cp "$VMWARE_DIR/boot.vmdk" "$VM_BUNDLE/boot.vmdk"
@@ -1054,6 +1091,9 @@ sata0:0.fileName = "$EXT2_VMDK_ARG"
 VMXEOF
     fi
 
+    # Ethernet0 is bridged to the host's network, and the guest takes its address from that network's DHCP
+    # server. Fusion's "nat" runs vmnet8 as a host-only segment that reaches outside only through Fusion's
+    # vmnet-natd, a root service this host does not run (#1202).
     cat >> "$VMX_FILE" <<VMXEOF
 
 serial0.present = "TRUE"
@@ -1062,7 +1102,7 @@ serial0.fileName = "$SERIAL_LOG"
 serial0.yieldOnMsrRead = "TRUE"
 
 ethernet0.present = "TRUE"
-ethernet0.connectionType = "nat"
+ethernet0.connectionType = "bridged"
 ethernet0.virtualDev = "e1000e"
 ethernet0.addressType = "generated"
 ethernet0.linkStatePropagation.enable = "TRUE"

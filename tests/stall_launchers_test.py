@@ -81,11 +81,14 @@ while True:time.sleep(.1)
                            PARALLELS_TEST='false', PARALLELS_VM='fake', VMX_FILE='fake.vmx',
                            VMRUN=str(controller), VM_BUNDLE=str(out), GUEST_PID=str(guest.pid),
                            VIGIL_ID='fake', RECORD=str(record))
-                stubs = '''prlctl() { if [ "$1" = stop ]; then kill -TERM "$GUEST_PID"; else echo running; fi; }
+                stubs = '''bounded_vm_command() { "$@"; }
+prlctl() { if [ "$1" = stop ]; then kill -TERM "$GUEST_PID"; else echo running; fi; }
 host_slot_header() { :; }
 vmware_check_network_log() { :; }
 vmware_network_summary() { :; }
 sweep_vmware_bundles() { sleep 10; }
+host_slot_release() { :; }
+delete_vmware_bundle() { :; }
 '''
                 shell = subprocess.Popen(['bash', '-c', definitions + '\n' + stubs +
                                           'install_vm_boot_traps\n' + blocks[index]],

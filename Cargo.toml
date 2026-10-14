@@ -81,6 +81,7 @@ kernel = { path = "kernel", artifact = "bin", target = "x86_64-unknown-none" }
 bootloader = { git = "https://github.com/rust-osdev/bootloader.git", rev = "707db11201b19541b7cfef84037866ee03aa0927", default-features = false, features = ["uefi"] }
 
 [dev-dependencies]
+spin = "0.9"
 libc = "0.2"
 serde_json = "1.0"
 syn = { version = "2", features = ["full"] }

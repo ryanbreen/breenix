@@ -689,25 +689,50 @@ fn validate_drain_exclusion_is_a_typed_guard(source: &str) -> Result<(), String>
     Ok(())
 }
 
-fn validate_drain_guard_scope_excludes_delivery(source: &str) -> Result<(), String> {
+/// One context delivers loopback packets at a time, holding the drain guard
+/// from the take through delivery, so a later batch cannot overtake an earlier
+/// one; TCP keeps no out-of-order queue and pays a retransmission timeout for
+/// every segment that arrives early. The guard is held with preemption off and
+/// released before the re-check that re-arms what was queued meanwhile.
+fn validate_drain_guard_spans_delivery(source: &str) -> Result<(), String> {
     let take = function_body(source, "take_queued_loopback_packets")
         .ok_or_else(|| "missing take_queued_loopback_packets".to_string())?;
-    for required in [
-        "LoopbackDrainGuard",
-        "LOOPBACK_QUEUE",
-        "LOOPBACK_QUEUE_DEPTH",
-        "take",
-    ] {
+    for required in ["LOOPBACK_QUEUE", "LOOPBACK_QUEUE_DEPTH", "take"] {
         if !has_identifier(take, required) {
-            return Err(format!("queue-take window is missing {required}"));
+            return Err(format!("queue take is missing {required}"));
         }
     }
-    for forbidden in ["handle_ipv4", "drain_deferred_tx", "tcp", "log"] {
+    for forbidden in ["LoopbackDrainGuard", "handle_ipv4", "handle_loopback_ipv4", "drain_deferred_tx", "tcp", "log"] {
         if has_identifier(take, forbidden) {
-            return Err(format!(
-                "queue-take window contains delivery/logging identifier {forbidden}"
-            ));
+            return Err(format!("queue take contains {forbidden}"));
         }
+    }
+
+    let drain = function_body(source, "drain_loopback_rounds")
+        .ok_or_else(|| "missing drain_loopback_rounds".to_string())?;
+    let code = normalized_code(drain);
+    let steps = [
+        "crate::per_cpu::preempt_disable();",
+        "LoopbackDrainGuard::acquire()",
+        "take_queued_loopback_packets()",
+        "ipv4::handle_loopback_ipv4(",
+        "drop(delivering);",
+        "crate::per_cpu::preempt_enable(); core::sync::atomic::fence(",
+        "rearm_if_work_remains()",
+    ];
+    let mut at = 0;
+    for step in steps {
+        match code[at..].find(step) {
+            Some(offset) => at += offset + step.len(),
+            None => {
+                return Err(format!(
+                    "drain_loopback_rounds does not reach `{step}` in order: the guard must span delivery"
+                ))
+            }
+        }
+    }
+    if code.matches("drop(delivering);").count() != 1 {
+        return Err("drain_loopback_rounds releases the drain guard more than once".to_string());
     }
     Ok(())
 }
@@ -1763,20 +1788,34 @@ fn drain_exclusion_validator_rejects_atomic_bool() {
 }
 
 #[test]
-fn drain_guard_scope_excludes_delivery() {
-    validate_drain_guard_scope_excludes_delivery(&repo_text("kernel/src/net/mod.rs"))
-        .expect("drain guard remains limited to queue take");
+fn drain_guard_spans_delivery() {
+    validate_drain_guard_spans_delivery(&repo_text("kernel/src/net/mod.rs"))
+        .expect("one context delivers loopback packets at a time, in queue order");
 }
 
 #[test]
-fn drain_guard_scope_validator_rejects_delivery_in_take_window() {
+fn drain_guard_validator_rejects_delivery_in_take() {
     let source = repo_text("kernel/src/net/mod.rs");
     let mutated = inject_into_function(
         &source,
         "take_queued_loopback_packets",
         "tcp::drain_deferred_tx();",
     );
-    assert!(validate_drain_guard_scope_excludes_delivery(&mutated).is_err());
+    assert!(validate_drain_guard_spans_delivery(&mutated).is_err());
+}
+
+#[test]
+fn drain_guard_validator_rejects_a_release_before_delivery() {
+    let source = repo_text("kernel/src/net/mod.rs");
+    let body = function_body(&source, "drain_loopback_rounds").expect("find the drain fixture");
+    let defer = "let defer = crate::socket::object::DeferRelease::enter();";
+    let release = "    drop(delivering);\n";
+    assert!(body.contains(defer) && body.contains(release), "fixture mutation targets must exist");
+    let mutated_body = body
+        .replacen(release, "", 1)
+        .replacen(defer, &format!("drop(delivering); {defer}"), 1);
+    let mutated = source.replacen(body, &mutated_body, 1);
+    assert!(validate_drain_guard_spans_delivery(&mutated).is_err());
 }
 
 #[test]
@@ -3597,9 +3636,10 @@ fn validate_loopback_enqueue_owns_its_delivery(source: &str) -> Result<(), Strin
 ///
 /// Census-shaped: it counts the `return` statements in `drain_loopback_rounds`
 /// and requires each one to be preceded, within its own statement group, by the
-/// deferred-TX flush; and it requires every early return that can leave packets
-/// queued to hand them back to the softirq. Adding a new early return reddens
-/// this until that return is given the same discharge.
+/// deferred-TX flush. The one early return, taken when another context holds
+/// the drain guard, leaves the queue to that context; the holder's exit flushes
+/// deferred TX and re-arms whatever is queued once it has let go. Adding a new
+/// early return reddens this until that return is given the same discharge.
 fn validate_loopback_drain_exits_own_their_leftovers(source: &str) -> Result<(), String> {
     let body = function_body(source, "drain_loopback_rounds")
         .ok_or_else(|| "drain_loopback_rounds is not defined".to_string())?;
@@ -3615,16 +3655,13 @@ fn validate_loopback_drain_exits_own_their_leftovers(source: &str) -> Result<(),
             "drain_loopback_rounds has {returns} returns but only {flushes} deferred-TX flushes"
         ));
     }
-    if !code.contains("LoopbackTake::Empty => { tcp::drain_deferred_tx(); return false; }") {
-        return Err("the empty-queue exit does not flush deferred TX".to_string());
-    }
     if !code.contains(
-        "LoopbackTake::Contended => { tcp::drain_deferred_tx(); return rearm_if_work_remains(); }",
+        "else { crate::per_cpu::preempt_enable(); tcp::drain_deferred_tx(); return false; };",
     ) {
-        return Err("the contended exit does not re-arm delivery".to_string());
+        return Err("the contended exit does not flush deferred TX".to_string());
     }
-    if !code.ends_with("rearm_if_work_remains() }") {
-        return Err("the exhausted-budget exit does not re-arm delivery".to_string());
+    if !code.ends_with("tcp::drain_deferred_tx(); rearm_if_work_remains() }") {
+        return Err("the delivering exit does not flush deferred TX and re-arm delivery".to_string());
     }
 
     let rearm = function_body(source, "rearm_if_work_remains")
@@ -3676,12 +3713,12 @@ fn loopback_drain_exits_own_their_leftovers() {
 }
 
 #[test]
-fn loopback_drain_validator_rejects_an_unflushed_empty_exit() {
+fn loopback_drain_validator_rejects_an_unflushed_contended_exit() {
     let source = repo_text("kernel/src/net/mod.rs");
     let body = function_body(&source, "drain_loopback_rounds").expect("find the drain fixture");
-    let arm = "LoopbackTake::Empty => {\n                tcp::drain_deferred_tx();\n                return false;\n            }";
+    let arm = "        tcp::drain_deferred_tx();\n        return false;";
     assert!(body.contains(arm), "fixture mutation target must exist");
-    let mutated_body = body.replacen(arm, "LoopbackTake::Empty => return false,", 1);
+    let mutated_body = body.replacen(arm, "        return false;", 1);
     let mutated = source.replacen(body, &mutated_body, 1);
     assert!(validate_loopback_drain_exits_own_their_leftovers(&mutated).is_err());
 }

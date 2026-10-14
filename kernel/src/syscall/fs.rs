@@ -2706,7 +2706,11 @@ fn handle_procfs_open(path: &str, flags: u32) -> SyscallResult {
     };
 
     if is_directory {
-        let dir_path = alloc::string::String::from(normalized);
+        let mut dir_path = alloc::string::String::new();
+        if dir_path.try_reserve_exact(normalized.len()).is_err() {
+            return SyscallResult::Err(super::errno::ENOMEM as u64);
+        }
+        dir_path.push_str(normalized);
         let fd_kind = FdKind::ProcfsDirectory {
             path: dir_path,
             position: 0,
@@ -2745,7 +2749,7 @@ fn handle_procfs_open(path: &str, flags: u32) -> SyscallResult {
     // Regular file open
     let content = match crate::fs::procfs::read_file(path) {
         Ok(c) => c,
-        Err(_) => return SyscallResult::Err(super::errno::ENOENT as u64),
+        Err(errno) => return SyscallResult::Err(errno.unsigned_abs() as u64),
     };
 
     let fd_kind = FdKind::ProcfsFile {
@@ -3442,6 +3446,7 @@ fn handle_devpts_getdents64(
 /// Returns virtual directory entries for procfs. Handles:
 /// - "/proc" - top-level directory (static entries + PID directories)
 /// - "/proc/trace" - trace subdirectory
+/// - "/proc/net" - network subdirectory
 /// - "/proc/[pid]" - per-process directory
 fn handle_procfs_getdents64(
     fd: i32,
@@ -3459,6 +3464,11 @@ fn handle_procfs_getdents64(
         crate::fs::procfs::list_entries()
     } else if dir_path == "/proc/trace" {
         crate::fs::procfs::list_trace_entries()
+    } else if dir_path == "/proc/net" {
+        match crate::fs::procfs::list_net_entries() {
+            Ok(entries) => entries,
+            Err(_) => return SyscallResult::Err(super::errno::ENOMEM as u64),
+        }
     } else if dir_path.starts_with("/proc/") {
         // Per-PID directory - only contains "status"
         let relative = dir_path.strip_prefix("/proc/").unwrap_or("");
@@ -3473,6 +3483,10 @@ fn handle_procfs_getdents64(
 
     // Build entries: ".", "..", then each entry
     let mut records = alloc::vec::Vec::new();
+    // /proc/net has three bounded records; all their growth must be fallible.
+    if dir_path == "/proc/net" && records.try_reserve_exact(96).is_err() {
+        return SyscallResult::Err(super::errno::ENOMEM as u64);
+    }
     let mut bytes_written = 0usize;
     let mut entry_index = 0u64;
     let mut new_position = start_position;
@@ -3526,8 +3540,13 @@ fn handle_procfs_getdents64(
 
         // Determine the entry type and inode
         // Look up the entry in procfs to get its type
-        let full_path = alloc::format!("{}/{}", dir_path, entry_name);
-        let (inode, dtype) = if let Some(entry) = crate::fs::procfs::lookup_by_path(&full_path) {
+        let entry = if dir_path == "/proc/net" {
+            crate::fs::procfs::lookup("net/pnp")
+        } else {
+            let full_path = alloc::format!("{}/{}", dir_path, entry_name);
+            crate::fs::procfs::lookup_by_path(&full_path)
+        };
+        let (inode, dtype) = if let Some(entry) = entry {
             let ino = entry.entry_type.inode();
             let dt = if entry.entry_type.is_directory() {
                 DT_DIR
