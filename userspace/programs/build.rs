@@ -1,6 +1,16 @@
 use std::{env, fs, path::PathBuf};
 
 fn main() {
+    let root = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("manifest directory"))
+        .join("../..");
+    println!("cargo:rerun-if-changed={}", root.join("rust-fork.toml").display());
+    println!("cargo:rerun-if-env-changed=BREENIX_RUST_FORK_LIBRARY");
+    println!("cargo:rerun-if-env-changed=BREENIX_RUST_FORK_DEV");
+    let status = std::process::Command::new(root.join("scripts/rust-fork.sh"))
+        .arg("verify")
+        .status()
+        .expect("validate the pinned Rust library");
+    assert!(status.success(), "Rust library pin validation failed");
     // libc is built separately by build.sh and linked as a native archive.
     // Cargo otherwise considers these binaries fresh when only libc changes.
     let arch = env::var("CARGO_CFG_TARGET_ARCH").expect("target architecture");
@@ -10,8 +20,8 @@ fn main() {
         ));
     println!("cargo:rerun-if-changed={}", archive.display());
 
-    // Discover C-library functions used by the thread, IPC, terminal and networking
-    // suites so each can call the functions present, or report those it lacks.
+    // Discover C-library functions used by the thread, IPC, terminal, networking and
+    // Rust std suites so each can call the functions present, or report those it lacks.
     const PREFIXES: &[&str] = &["pthread_", "sched_", "sig", "mq_", "sem", "shm", "msg"];
     const OTHERS: &[&str] = &[
         "raise", "sysconf", "__errno_location", "exit", "getpid", "close", "pipe", "read", "write", "kill",
@@ -22,7 +32,8 @@ fn main() {
         "socket", "socketpair", "bind", "listen", "accept", "accept4", "connect", "send", "recv",
         "sendto", "recvfrom", "sendmsg", "recvmsg", "shutdown", "setsockopt", "getsockopt", "getsockname",
         "getpeername", "fcntl", "epoll_create1", "epoll_ctl", "epoll_wait", "getaddrinfo", "freeaddrinfo",
-        "getnameinfo", "gai_strerror", "inet_pton", "inet_ntop",
+        "getnameinfo", "gai_strerror", "inet_pton", "inet_ntop", "execvp", "setuid", "setgid", "chroot",
+        "realpath", "fdopendir", "unlinkat",
     ];
     println!("cargo:rustc-check-cfg=cfg(libc_has, values(any()))");
     if let Ok(bytes) = fs::read(&archive) {
