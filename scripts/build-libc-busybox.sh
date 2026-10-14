@@ -58,7 +58,7 @@ if [ -f "$WORK/inputs.sha256" ] && [ "$(cat "$WORK/inputs.sha256")" = "$DIGEST" 
     echo "  libc-busybox ($ARCH): up to date"
     exit 0
 fi
-rm -f "$WORK/inputs.sha256"
+rm -f "$WORK/inputs.sha256" "$WORK/applets.json" "$ELF" "$LINKS"
 
 # Cross tools BusyBox's Kbuild finds by prefix.
 mkdir -p "$WORK/bin"
@@ -91,11 +91,14 @@ fi
 # BB_GLOBAL_CONST empty: BusyBox's "*const" globals pointers are assigned once through
 # a cast, and clang moves loads of them ahead of that store (libbb.h documents the
 # switch for toolchains that do).
+# BusyBox's disabled features leave unused upstream helpers and variables. Keep
+# those warning exceptions in third-party compiler flags, not source patches or
+# extra applets; our C programs still build with unqualified -Werror.
 # Name the compiler clang so Kbuild excludes GCC-only optimization flags.
-MAKE_ARGS=(-C "$SRC" CROSS_COMPILE="$PREFIX" CC="${PREFIX}clang" HOSTCC=cc
-           "EXTRA_CFLAGS=-std=gnu11 -Werror -DBB_GLOBAL_CONST="
+MAKE_ARGS=(-C "$SRC" CROSS_COMPILE="$PREFIX" CC="${PREFIX}clang" HOSTCC="$TOOLS/clang" "HOSTCFLAGS=-Wall -Wstrict-prototypes -O2 -fomit-frame-pointer -Wno-string-plus-int -Wno-self-assign"
+           "EXTRA_CFLAGS=-std=gnu11 -Werror -Wno-unused-variable -Wno-unused-but-set-variable -Wno-unused-function -DBB_GLOBAL_CONST="
            SKIP_STRIP=y)
-JOBS="${CARGO_BUILD_JOBS:-6}"
+JOBS="${CARGO_BUILD_JOBS:-4}"
 
 # Apply `fragment` (CONFIG_X=value lines; =n switches an option off) to .config.
 apply_config() {
@@ -146,11 +149,13 @@ archive_objects() {
 echo "  libc-busybox ($ARCH): configuring"
 configure
 echo "  libc-busybox ($ARCH): compiling"
-compile compile
+make "${MAKE_ARGS[@]}" clean > "$WORK/clean.log" 2>&1
+compile_ok=1
+compile compile || compile_ok=0
 archive_objects
 
 # Per-applet analysis.
-python3 - "$SRC" "$WORK" "$CC" "$ARCH" "$FRAGMENT" <<'PYANALYZE'
+python3 - "$SRC" "$WORK" "$CC" "$ARCH" "$FRAGMENT" "$compile_ok" <<'PYANALYZE'
 import json, os, re, subprocess, sys
 from pathlib import Path
 
@@ -208,7 +213,7 @@ if objects:
     core_links, core_missing = link('main', defsyms=mains)
 else:
     core_links, core_missing = False, ['(nothing compiled)']
-result = {'core': {'links': core_links, 'missing': core_missing}, 'objects_failed': failed_objects,
+result = {'compile_ok': sys.argv[6] == '1', 'core': {'links': core_links, 'missing': core_missing}, 'objects_failed': failed_objects,
           'compile_errors': errors[:60], 'applets': {}}
 for name in sorted(applets):
     a = applets[name]
@@ -225,15 +230,22 @@ python3 - "$WORK/applets.json" <<'PYCHECK'
 import json, sys
 result = json.load(open(sys.argv[1]))
 failed = [name for name, app in result['applets'].items() if not (app['compiles'] and app['links'])]
-if not result['core']['links'] or failed or result['objects_failed']:
-    print('libc-busybox: unresolved core: ' + ' '.join(result['core']['missing']), file=sys.stderr)
+if not result['compile_ok'] or not result['core']['links'] or failed or result['objects_failed']:
+    if not result['compile_ok']:
+        print('libc-busybox: compilation failed; see compile.log and applets.json', file=sys.stderr)
+    if not result['core']['links']:
+        print('libc-busybox: unresolved core: ' + ' '.join(result['core']['missing']), file=sys.stderr)
     for name in failed:
         print(f"  {name}: {result['applets'][name]}", file=sys.stderr)
     for error in result['compile_errors']:
         print('  ' + error, file=sys.stderr)
     sys.exit(1)
 PYCHECK
-"$CC" --arch "$ARCH" -Wl,--error-limit=0 "$WORK/objects.a" -o "$WORK/busybox.elf" > "$WORK/link.log" 2>&1
+if ! "$CC" --arch "$ARCH" -Wl,--error-limit=0 "$WORK/objects.a" -o "$WORK/busybox.elf" > "$WORK/link.log" 2>&1; then
+    echo "libc-busybox: final link failed:" >&2
+    cat "$WORK/link.log" >&2
+    exit 1
+fi
 "$TOOLS/llvm-strip" -o "$ELF" "$WORK/busybox.elf"
 python3 - "$WORK/applets.json" "$LINKS" <<'PYLINKS'
 import json, sys

@@ -13,6 +13,16 @@ while IFS= read -r name; do
         echo "Required BusyBox applet not built: $name" >&2; exit 1;
     }
 done < "$required"
+# Refuse a program that would overwrite the shared BusyBox inode at install time.
+for program in "$binaries"/*.elf; do
+    [ -f "$program" ] || continue
+    name=$(basename "$program" .elf)
+    case "$name" in busybox|libc-busybox) continue ;; esac
+    if grep -Fqx "$name" "$binaries/libc-busybox.links"; then
+        echo "Program conflicts with BusyBox applet: $name" >&2
+        exit 1
+    fi
+done
 [ "$check_only" = 0 ] || exit 0
 image=$3
 mkdir -p "$image/bin" "$image/sbin" "$image/usr/local/libc/bin"

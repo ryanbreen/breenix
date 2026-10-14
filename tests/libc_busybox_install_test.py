@@ -43,6 +43,13 @@ class BusyboxInstallTests(unittest.TestCase):
         self.assertIn('Required BusyBox applet not built: sh', result.stderr)
         self.assertFalse(self.image.exists())
 
+    def test_program_cannot_replace_shared_applet_inode(self):
+        (self.binaries / 'cat.elf').write_bytes(b'other program')
+        result = self.install()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Program conflicts with BusyBox applet: cat', result.stderr)
+        self.assertFalse(self.image.exists())
+
     def test_missing_binary_fails_before_image_creation(self):
         (self.binaries / 'libc-busybox.elf').unlink()
         self.assertNotEqual(self.install().returncode, 0)
