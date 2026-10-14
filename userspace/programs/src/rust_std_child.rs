@@ -9,6 +9,8 @@
 //! - `envall`: write `NAME=value` for every variable, one per line, sorted.
 //! - `cwd`: write env::current_dir.
 //! - `exe`: write env::current_exe.
+//! - `exe-open`: open and stat /proc/self/exe, require both to reach one regular file, then
+//!   write env::current_exe; a failed step writes its name and errno and exits 1.
 //! - `ids`: write process::id and os::unix::process::parent_id, separated by a space.
 //! - `exit CODE`: process::exit(CODE).
 //! - `abort`: process::abort.
@@ -20,12 +22,19 @@
 //! - `panic-hook`: set a panic hook that writes `hooked` to stdout, then panic.
 use std::io::{self, Write};
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
 
 fn line(bytes: &[u8]) {
     let mut out = io::stdout().lock();
     let _ = out.write_all(bytes);
     let _ = out.write_all(b"\n");
     let _ = out.flush();
+}
+
+/// Write the step that failed and its errno, then exit 1.
+fn step_failed(step: &str, error: io::Error) -> ! {
+    line(format!("{step}: {}", error.raw_os_error().unwrap_or(0)).as_bytes());
+    std::process::exit(1)
 }
 
 fn main() {
@@ -60,6 +69,18 @@ fn main() {
             Ok(path) => line(path.as_os_str().as_bytes()),
             Err(error) => std::process::exit(error.raw_os_error().unwrap_or(99).min(99) + 100),
         },
+        b"exe-open" => {
+            let opened = std::fs::File::open("/proc/self/exe")
+                .and_then(|file| file.metadata())
+                .unwrap_or_else(|error| step_failed("open", error));
+            let stated = std::fs::metadata("/proc/self/exe").unwrap_or_else(|error| step_failed("stat", error));
+            if !stated.is_file() || (opened.dev(), opened.ino()) != (stated.dev(), stated.ino()) {
+                line(b"open and stat reached different files");
+                std::process::exit(1);
+            }
+            let exe = std::env::current_exe().unwrap_or_else(|error| step_failed("current_exe", error));
+            line(exe.as_os_str().as_bytes());
+        }
         b"ids" => line(format!("{} {}", std::process::id(), std::os::unix::process::parent_id()).as_bytes()),
         b"exit" => std::process::exit(first().parse().unwrap_or(99)),
         b"abort" => std::process::abort(),

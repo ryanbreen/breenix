@@ -725,6 +725,10 @@
         {
           "id": "current-exe-child",
           "title": "env::current_exe in a spawned program is that program's path"
+        },
+        {
+          "id": "current-exe-non-utf8",
+          "title": "A program at a non-UTF-8 path opens and stats /proc/self/exe, and current_exe is its bytes"
         }
       ]
     }

@@ -257,6 +257,11 @@ if [[ "$(uname)" == "Darwin" ]]; then
             echo "  Installed $cbin_count C binaries in /usr/local/cbin"
             echo "  Installed $test_count test binaries in /usr/local/test/bin"
 
+            # The Rust std suite starts its helper through a name that is not UTF-8.
+            if [ -f /mnt/ext2/usr/local/test/bin/rust-std-child_test ]; then
+                ln /mnt/ext2/usr/local/test/bin/rust-std-child_test "/mnt/ext2/usr/local/test/bin/rust-std-child_test$(printf "\377")"
+            fi
+
             # Keep the ARM64 workaround for #1074; x86 must execute BusyBox ls.
             if [ "$BREENIX_ARCH" = aarch64 ] && [ -f /mnt/ext2/bin/bls ]; then
                 rm -f /mnt/ext2/bin/ls
@@ -572,6 +577,11 @@ else
     echo "  Installed $sbin_count binaries in /sbin"
     echo "  Installed $cbin_count C binaries in /usr/local/cbin"
     echo "  Installed $test_count test binaries in /usr/local/test/bin"
+
+    # The Rust std suite starts its helper through a name that is not UTF-8.
+    if [ -f "$MOUNT_DIR/usr/local/test/bin/rust-std-child_test" ]; then
+        ln "$MOUNT_DIR/usr/local/test/bin/rust-std-child_test" "$MOUNT_DIR/usr/local/test/bin/rust-std-child_test$(printf '\377')"
+    fi
 
     # Keep the ARM64 workaround for #1074; x86 must execute BusyBox ls.
     if [[ "$ARCH" = aarch64 ]] && [ -f "$MOUNT_DIR/bin/bls" ]; then

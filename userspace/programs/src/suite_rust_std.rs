@@ -223,6 +223,7 @@ static SUITE: Suite = suite("rust-std", "Rust std", &[
         case("home-dir-passwd", "env::home_dir with HOME unset is the user's home directory in /etc/passwd", home_dir_passwd),
         case("current-exe", "env::current_exe is /sbin/suite-rust-std", current_exe),
         case("current-exe-child", "env::current_exe in a spawned program is that program's path", current_exe_child),
+        case("current-exe-non-utf8", "A program at a non-UTF-8 path opens and stats /proc/self/exe, and current_exe is its bytes", current_exe_non_utf8),
     ]),
 ]);
 
@@ -364,6 +365,8 @@ spawn_items! {
     const CHILD: &str = "/usr/local/test/bin/rust-std-child_test";
     const CHILD_DIR: &str = "/usr/local/test/bin";
     const CHILD_NAME: &str = "rust-std-child_test";
+    /// The helper's hard link whose final name ends in a byte that is not UTF-8.
+    const NON_UTF8_CHILD: &[u8] = b"/usr/local/test/bin/rust-std-child_test\xff";
     const SIGKILL: i32 = 9;
     const SIGABRT: i32 = 6;
 
@@ -2217,5 +2220,15 @@ fn current_exe_child() -> CaseResult {
     spawning!({
         let out = run_ok(&mut helper(&["exe"]))?;
         check(out == format!("{CHILD}\n"), &format!("the program's current_exe is {out:?}"))
+    })
+}
+
+fn current_exe_non_utf8() -> CaseResult {
+    spawning!({
+        let program = std::ffi::OsStr::from_bytes(NON_UTF8_CHILD);
+        let out = run(Command::new(program).arg("exe-open"))?;
+        let want = [NON_UTF8_CHILD, b"\n"].concat();
+        check(out.status.success() && out.stdout == want,
+            &format!("the program at {program:?} ended with {} and wrote {:?}", out.status, String::from_utf8_lossy(&out.stdout)))
     })
 }
