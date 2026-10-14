@@ -26,8 +26,10 @@ pub(crate) fn charset() -> Charset {
 
 pub(crate) fn encode(wc: u32, out: &mut [u8; 4]) -> Option<usize> {
     match charset() {
+        // The C locale maps each byte to the same wide character and back
+        // (C17 7.29.6.1.2), including 0x80-0xFF.
         Charset::Byte => {
-            if wc > 0x7f { return None; }
+            if wc > 0xff { return None; }
             out[0] = wc as u8;
             Some(1)
         }

@@ -15,16 +15,29 @@ pub unsafe extern "C" fn mbsinit(st: *const MbState) -> i32 {
 
 #[no_mangle]
 pub unsafe extern "C" fn mbrtowc(wc: *mut u32, s: *const u8, n: usize, ps: *mut MbState) -> usize {
-    let st = if ps.is_null() { &mut *core::ptr::addr_of_mut!(READ_STATE) } else { &mut *ps };
-    let bytes = if s.is_null() { &[0][..] } else { core::slice::from_raw_parts(s, n) };
-    match decode(bytes, st) {
-        Decoded::Char(c, count) => {
-            if !wc.is_null() && !s.is_null() { *wc = c; }
-            if c == 0 { 0 } else { count }
+    let st = if ps.is_null() {
+        &mut *core::ptr::addr_of_mut!(READ_STATE)
+    } else {
+        &mut *ps
+    };
+    let n = if s.is_null() { 1 } else { n };
+    for i in 0..n {
+        let byte = if s.is_null() { 0 } else { *s.add(i) };
+        match decode(&[byte], st) {
+            Decoded::Char(c, count) => {
+                if !wc.is_null() && !s.is_null() {
+                    *wc = c;
+                }
+                return if c == 0 { 0 } else { i + count };
+            }
+            Decoded::Incomplete(_) => continue,
+            Decoded::Invalid => {
+                set_errno(84);
+                return usize::MAX;
+            }
         }
-        Decoded::Incomplete(_) => usize::MAX - 1,
-        Decoded::Invalid => { set_errno(84); usize::MAX }
     }
+    usize::MAX - 1
 }
 
 #[no_mangle]
@@ -133,4 +146,11 @@ pub extern "C" fn btowc(c: i32) -> u32 {
     if (0..=127).contains(&c) || (charset() == Charset::Byte && (0..=255).contains(&c)) { c as u32 } else { u32::MAX }
 }
 #[no_mangle]
-pub extern "C" fn wctob(c: u32) -> i32 { if c < 128 { c as i32 } else { -1 } }
+pub extern "C" fn wctob(c: u32) -> i32 {
+    // A single byte iff the current charset encodes c in one byte.
+    let mut b = [0; 4];
+    match encode(c, &mut b) {
+        Some(1) => b[0] as i32,
+        _ => -1,
+    }
+}
