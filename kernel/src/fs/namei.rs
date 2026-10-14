@@ -639,8 +639,15 @@ impl Default for WorkingDir {
 /// share one, so a chdir or fchdir in any of them moves all of them; fork,
 /// spawn and a clone without `CLONE_FS` start from a copy. Its lock is only
 /// taken under the process manager's, and nothing else is taken under it.
-#[derive(Debug, Default)]
-pub struct SharedWorkingDir(Arc<spin::Mutex<WorkingDir>>);
+/// An exited row holds none (`release`) and reads as `/`.
+#[derive(Debug)]
+pub struct SharedWorkingDir(Option<Arc<spin::Mutex<WorkingDir>>>);
+
+impl Default for SharedWorkingDir {
+    fn default() -> Self {
+        Self(Some(Arc::new(spin::Mutex::new(WorkingDir::Root))))
+    }
+}
 
 impl SharedWorkingDir {
     /// The same working directory, for a thread created with `CLONE_FS`.
@@ -650,22 +657,33 @@ impl SharedWorkingDir {
 
     /// Whether `other` is this same working directory, shared by `CLONE_FS`.
     pub fn same_as(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
+        matches!((&self.0, &other.0), (Some(a), Some(b)) if Arc::ptr_eq(a, b))
     }
 
     /// A separate working directory that starts where this one is.
     pub fn copy(&self) -> Self {
-        Self(Arc::new(spin::Mutex::new(self.get())))
+        Self(Some(Arc::new(spin::Mutex::new(self.get()))))
     }
 
     pub fn get(&self) -> WorkingDir {
-        self.0.lock().clone()
+        self.0.as_ref().map_or(WorkingDir::Root, |dir| dir.lock().clone())
     }
 
     /// Make `dir` the working directory. The one it replaces is returned so
-    /// the caller can release it after the process manager.
+    /// the caller can release it after the process manager; a row that has
+    /// released its working directory gets `dir` back.
     pub fn replace(&self, dir: WorkingDir) -> WorkingDir {
-        core::mem::replace(&mut *self.0.lock(), dir)
+        match &self.0 {
+            Some(shared) => core::mem::replace(&mut *shared.lock(), dir),
+            None => dir,
+        }
+    }
+
+    /// Give up this row's share of its working directory, for an exiting
+    /// row. The share is returned so the caller can drop it after the
+    /// process manager; a `CLONE_FS` thread still running keeps its own.
+    pub fn release(&mut self) -> Self {
+        Self(self.0.take())
     }
 }
 
@@ -677,7 +695,10 @@ fn try_current_working_dir() -> Result<WorkingDir, u64> {
     let Some((_, process)) = guard.as_ref().and_then(|m| m.find_process_by_thread(tid)) else {
         return Ok(WorkingDir::Root);
     };
-    let dir = process.cwd.0.lock();
+    let Some(shared) = process.cwd.0.as_ref() else {
+        return Ok(WorkingDir::Root);
+    };
+    let dir = shared.lock();
     Ok(match &*dir {
         WorkingDir::Root => WorkingDir::Root,
         WorkingDir::Ext2 { mount, dir } => WorkingDir::Ext2 {

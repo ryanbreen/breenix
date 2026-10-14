@@ -484,9 +484,11 @@ where
 /// receipt only into this function; PM is out of scope before the receipt is
 /// enqueued and before notification redemption enters scheduler/SERIAL code.
 pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
-    // SEM_UNDO adjustments are applied before the commit below makes the row
-    // a zombie its parent can reap.
+    // SEM_UNDO adjustments are applied, and the working directory released,
+    // before the commit below makes the row a zombie its parent can reap.
     crate::ipc::sysv::row_exit(pid);
+    let released = with_process_manager(|pm| pm.get_process_mut(pid).map(|process| process.cwd.release()));
+    drop(released);
     let mut fifo_opens = alloc::vec::Vec::new();
     let locked = with_process_manager(|pm| {
         // A FIFO open the row's thread was parked in when a kill terminated

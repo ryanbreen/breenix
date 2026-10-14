@@ -378,18 +378,40 @@ pub fn add_directory_entry_bytes(dir_data: &mut Vec<u8>, new_inode: u32, name_by
     if name_bytes.is_empty() || name_bytes.len() > 255 {
         return Err("Invalid name length");
     }
-
-    let new_entry_size = required_entry_size(name_bytes.len());
-    let mut offset = 0usize;
-
-    // Search for space in existing entries
-    while offset < dir_data.len() {
-        // Ensure we can read the header
-        if offset + MIN_DIR_ENTRY_SIZE > dir_data.len() {
-            break;
+    match find_room(dir_data, name_bytes.len())? {
+        Some(Room::Empty { offset, rec_len }) => {
+            // An empty record big enough: reuse it whole.
+            write_dir_entry(dir_data, offset, new_inode, rec_len as u16, name_bytes, file_type);
+            Ok(offset)
         }
+        Some(Room::Tail { offset, rec_len, used }) => {
+            // A live record's unused tail: shrink the record and use the rest.
+            dir_data[offset + 4..offset + 6].copy_from_slice(&(used as u16).to_le_bytes());
+            let new_offset = offset + used;
+            write_dir_entry(dir_data, new_offset, new_inode, (rec_len - used) as u16, name_bytes, file_type);
+            Ok(new_offset)
+        }
+        None => Err("No space in directory"),
+    }
+}
 
-        // Read existing entry header
+/// Does some record of `dir_data` have room for an entry with a `name_len`-byte name?
+/// When none does, the directory needs another block before the entry can be added.
+pub fn has_room(dir_data: &[u8], name_len: usize) -> Result<bool, &'static str> {
+    Ok(find_room(dir_data, name_len)?.is_some())
+}
+
+enum Room {
+    Empty { offset: usize, rec_len: usize },
+    Tail { offset: usize, rec_len: usize, used: usize },
+}
+
+/// The first record with room for a `name_len`-byte name: an empty record at least that big,
+/// or a live record whose unused tail is.
+fn find_room(dir_data: &[u8], name_len: usize) -> Result<Option<Room>, &'static str> {
+    let new_entry_size = required_entry_size(name_len);
+    let mut offset = 0usize;
+    while offset + MIN_DIR_ENTRY_SIZE <= dir_data.len() {
         let entry_inode = u32::from_le_bytes([
             dir_data[offset],
             dir_data[offset + 1],
@@ -399,58 +421,22 @@ pub fn add_directory_entry_bytes(dir_data: &mut Vec<u8>, new_inode: u32, name_by
         let rec_len = u16::from_le_bytes([dir_data[offset + 4], dir_data[offset + 5]]) as usize;
         let entry_name_len = dir_data[offset + 6] as usize;
 
-        if rec_len == 0 || rec_len < MIN_DIR_ENTRY_SIZE {
+        if rec_len < MIN_DIR_ENTRY_SIZE {
             return Err("Corrupt directory entry");
         }
-
         if entry_inode == 0 {
-            // Deleted entry - check if we can reuse its space
             if rec_len >= new_entry_size {
-                // Reuse this entry
-                write_dir_entry(
-                    dir_data,
-                    offset,
-                    new_inode,
-                    rec_len as u16,
-                    name_bytes,
-                    file_type,
-                );
-                return Ok(offset);
+                return Ok(Some(Room::Empty { offset, rec_len }));
             }
         } else {
-            // Active entry - check if we can split its padding
-            let actual_size = required_entry_size(entry_name_len);
-            let available_space = rec_len.saturating_sub(actual_size);
-
-            if available_space >= new_entry_size {
-                // Split this entry - shrink existing entry and use the rest
-                let existing_new_rec_len = actual_size as u16;
-                let new_entry_rec_len = (rec_len - actual_size) as u16;
-
-                // Update existing entry's rec_len
-                dir_data[offset + 4] = existing_new_rec_len as u8;
-                dir_data[offset + 5] = (existing_new_rec_len >> 8) as u8;
-
-                // Write new entry after the existing one
-                let new_offset = offset + actual_size;
-                write_dir_entry(
-                    dir_data,
-                    new_offset,
-                    new_inode,
-                    new_entry_rec_len,
-                    name_bytes,
-                    file_type,
-                );
-                return Ok(new_offset);
+            let used = required_entry_size(entry_name_len);
+            if rec_len.saturating_sub(used) >= new_entry_size {
+                return Ok(Some(Room::Tail { offset, rec_len, used }));
             }
         }
-
         offset += rec_len;
     }
-
-    // No space found in existing entries - need to extend the directory
-    // This would require allocating a new data block, which is complex
-    Err("No space in directory")
+    Ok(None)
 }
 
 /// Write a directory entry at the given offset

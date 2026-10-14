@@ -13,13 +13,19 @@ pub type wchar_t = i32;
 
 // File system types
 pub type blkcnt_t = i64;
+#[cfg(target_arch = "x86_64")]
 pub type blksize_t = i64;
+#[cfg(target_arch = "aarch64")]
+pub type blksize_t = i32;
 pub type dev_t = u64;
 pub type fsblkcnt_t = u64;
 pub type fsfilcnt_t = u64;
 pub type ino_t = u64;
 pub type mode_t = u32;
+#[cfg(target_arch = "x86_64")]
 pub type nlink_t = u64;
+#[cfg(target_arch = "aarch64")]
+pub type nlink_t = u32;
 pub type off_t = i64;
 
 // Time types
@@ -53,7 +59,6 @@ pub type rlim_t = u64;
 pub type pthread_t = c_ulong;
 pub type pthread_key_t = c_uint;
 pub type pthread_once_t = c_int;
-pub type sem_t = [u8; 32];
 
 // Directory entry type
 pub type dirent64 = dirent;
@@ -221,7 +226,8 @@ s! {
         pub sin6_scope_id: u32,
     }
 
-    // Linux-compatible stat structure for x86_64
+    // The kernel's stat on x86_64 is Linux's x86_64 layout (144 bytes).
+    #[cfg(target_arch = "x86_64")]
     pub struct stat {
         pub st_dev: crate::dev_t,
         pub st_ino: crate::ino_t,
@@ -243,6 +249,7 @@ s! {
         __unused: Padding<[c_long; 3]>,
     }
 
+    #[cfg(target_arch = "x86_64")]
     pub struct stat64 {
         pub st_dev: crate::dev_t,
         pub st_ino: crate::ino_t,
@@ -262,6 +269,54 @@ s! {
         pub st_ctime: crate::time_t,
         pub st_ctime_nsec: c_long,
         __unused: Padding<[c_long; 3]>,
+    }
+
+    // The kernel's stat on aarch64 is Linux's asm-generic layout: mode before a 32-bit
+    // nlink, a padded rdev and a 32-bit blksize (128 bytes).
+    #[cfg(target_arch = "aarch64")]
+    pub struct stat {
+        pub st_dev: crate::dev_t,
+        pub st_ino: crate::ino_t,
+        pub st_mode: mode_t,
+        pub st_nlink: crate::nlink_t,
+        pub st_uid: crate::uid_t,
+        pub st_gid: crate::gid_t,
+        pub st_rdev: crate::dev_t,
+        __pad1: Padding<crate::dev_t>,
+        pub st_size: off_t,
+        pub st_blksize: crate::blksize_t,
+        __pad2: Padding<c_int>,
+        pub st_blocks: crate::blkcnt_t,
+        pub st_atime: crate::time_t,
+        pub st_atime_nsec: c_long,
+        pub st_mtime: crate::time_t,
+        pub st_mtime_nsec: c_long,
+        pub st_ctime: crate::time_t,
+        pub st_ctime_nsec: c_long,
+        __unused: Padding<[c_int; 2]>,
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    pub struct stat64 {
+        pub st_dev: crate::dev_t,
+        pub st_ino: crate::ino_t,
+        pub st_mode: mode_t,
+        pub st_nlink: crate::nlink_t,
+        pub st_uid: crate::uid_t,
+        pub st_gid: crate::gid_t,
+        pub st_rdev: crate::dev_t,
+        __pad1: Padding<crate::dev_t>,
+        pub st_size: off_t,
+        pub st_blksize: crate::blksize_t,
+        __pad2: Padding<c_int>,
+        pub st_blocks: crate::blkcnt_t,
+        pub st_atime: crate::time_t,
+        pub st_atime_nsec: c_long,
+        pub st_mtime: crate::time_t,
+        pub st_mtime_nsec: c_long,
+        pub st_ctime: crate::time_t,
+        pub st_ctime_nsec: c_long,
+        __unused: Padding<[c_int; 2]>,
     }
 
     pub struct statvfs {
@@ -342,6 +397,14 @@ s! {
     #[repr(align(8))]
     pub struct pthread_mutex_t {
         __size: [c_char; 40],
+    }
+
+    // libbreenix-libc's semaphore keeps 32-bit atomics at its start, so a
+    // sem_t is 4-byte aligned, as its C header declares it.
+    #[repr(C)]
+    #[repr(align(4))]
+    pub struct sem_t {
+        __size: [c_char; 32],
     }
 
     #[repr(C)]
@@ -432,8 +495,12 @@ pub const O_APPEND: c_int = 0o2000;
 pub const O_NONBLOCK: c_int = 0o4000;
 pub const O_SYNC: c_int = 0o4010000;
 pub const O_ASYNC: c_int = 0o20000;
+// The Linux values of O_DIRECTORY and O_NOFOLLOW differ by architecture, and the
+// kernel tests each one (kernel/src/syscall/fs.rs).
+#[cfg(target_arch = "x86_64")]
 pub const O_DIRECTORY: c_int = 0o200000;
-// The Linux value differs by architecture, and the kernel tests each one.
+#[cfg(target_arch = "aarch64")]
+pub const O_DIRECTORY: c_int = 0o40000;
 #[cfg(target_arch = "x86_64")]
 pub const O_NOFOLLOW: c_int = 0o400000;
 #[cfg(target_arch = "aarch64")]
@@ -442,7 +509,7 @@ pub const O_CLOEXEC: c_int = 0o2000000;
 pub const O_DSYNC: c_int = 0o10000;
 pub const O_RSYNC: c_int = 0o4010000;
 pub const O_PATH: c_int = 0o10000000;
-pub const O_TMPFILE: c_int = 0o20200000;
+pub const O_TMPFILE: c_int = 0o20000000 | O_DIRECTORY;
 pub const O_ACCMODE: c_int = 3;
 
 // Seek constants
@@ -1322,3 +1389,9 @@ unsafe extern "C" {
     pub fn sched_get_priority_max(policy: c_int) -> c_int;
     pub fn sched_rr_get_interval(pid: crate::pid_t, interval: *mut crate::timespec) -> c_int;
 }
+
+// The kernel writes exactly these sizes (kernel/src/syscall/fs.rs).
+#[cfg(target_arch = "x86_64")]
+const _: () = core::assert!(core::mem::size_of::<stat>() == 144 && core::mem::size_of::<stat64>() == 144);
+#[cfg(target_arch = "aarch64")]
+const _: () = core::assert!(core::mem::size_of::<stat>() == 128 && core::mem::size_of::<stat64>() == 128);

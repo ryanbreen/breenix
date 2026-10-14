@@ -10,6 +10,8 @@ pub mod dir;
 pub mod create_node;
 #[path = "../../../kernel/src/fs/ext2/directory_io.rs"]
 mod directory_io;
+#[path = "../../../kernel/src/fs/ext2/directory_extension.rs"]
+mod directory_extension;
 #[path = "../../../kernel/src/fs/ext2/reclaim.rs"]
 pub mod reclaim;
 #[path = "../../../kernel/src/fs/ext2/superblock.rs"]
@@ -18,15 +20,33 @@ pub use block_group::*;
 pub use inode::*;
 pub use dir::*;
 pub use superblock::*;
+/// The kernel's open-inode registry, as directory_io.rs uses it. The harness
+/// opens no files, so no inode has a live page-cache object to mark.
+pub struct LiveInodes;
+impl LiveInodes {
+    pub fn get(&self, _inode: u32) -> Option<&LiveInode> {
+        None
+    }
+}
+pub struct LiveInode {
+    pub map: FileMap,
+}
+pub struct FileMap;
+impl FileMap {
+    pub fn note_disk_write(&self, _epoch: u64) -> u64 {
+        0
+    }
+}
 pub struct Ext2Fs {
     pub device: Box<dyn crate::block::BlockDevice>,
     pub superblock: Ext2Superblock,
     pub block_groups: Vec<Ext2BlockGroupDesc>,
     durable_epoch: core::sync::atomic::AtomicU64,
+    live_inodes: LiveInodes,
 }
 impl Ext2Fs {
     pub fn host_new(device: Box<dyn crate::block::BlockDevice>, superblock: Ext2Superblock, block_groups: Vec<Ext2BlockGroupDesc>) -> Self {
-        Self { device, superblock, block_groups, durable_epoch: core::sync::atomic::AtomicU64::new(0) }
+        Self { device, superblock, block_groups, durable_epoch: core::sync::atomic::AtomicU64::new(0), live_inodes: LiveInodes }
     }
     pub fn write_directory_for_host(&self, ino:u32, data:&[u8]) -> Result<(), &'static str> { self.write_directory_data(ino,data) }
     pub fn read_directory(&self, inode: &Ext2Inode) -> Result<Vec<u8>, &'static str> {
@@ -156,6 +176,7 @@ mod reclaim_checks {
             }),
             superblock: sb, block_groups: vec![group],
             durable_epoch: core::sync::atomic::AtomicU64::new(0),
+            live_inodes: LiveInodes,
         };
         for ino in 1..=2 {
             let mut inode = Ext2Inode::new_regular_file(0o600, 0, 0);
@@ -297,6 +318,7 @@ mod reclaim_checks {
             superblock: sb,
             block_groups: vec![group],
             durable_epoch: core::sync::atomic::AtomicU64::new(0),
+            live_inodes: LiveInodes,
         };
         fs.write_inode(1, &Ext2Inode::new_regular_file(0o600, 0, 0))
             .unwrap();
@@ -321,7 +343,7 @@ mod reclaim_checks {
         group.bg_used_dirs_count = 1;
         data.lock().unwrap()[4 * 4096] = 1;
         let mut fs = Ext2Fs { device: Box::new(Disk { data: data.clone(),
-            fail: Arc::new(Mutex::new(None)) }), superblock: sb, block_groups: vec![group], durable_epoch: core::sync::atomic::AtomicU64::new(0) };
+            fail: Arc::new(Mutex::new(None)) }), superblock: sb, block_groups: vec![group], durable_epoch: core::sync::atomic::AtomicU64::new(0), live_inodes: LiveInodes };
         let mut inode = Ext2Inode::new_regular_file(0o600, 0, 0);
         inode.i_mode = EXT2_S_IFDIR | 0o700;
         // remove_directory commits the namespace and zero-link inode before
@@ -361,7 +383,7 @@ mod reclaim_checks {
             bytes[20 * 4096 + 4..20 * 4096 + 8].copy_from_slice(&512u32.to_le_bytes());
         }
         let mut fs = Ext2Fs { device: Box::new(Disk { data: data.clone(),
-            fail: Arc::new(Mutex::new(None)) }), superblock: sb, block_groups: vec![group], durable_epoch: core::sync::atomic::AtomicU64::new(0) };
+            fail: Arc::new(Mutex::new(None)) }), superblock: sb, block_groups: vec![group], durable_epoch: core::sync::atomic::AtomicU64::new(0), live_inodes: LiveInodes };
         fs.write_inode(1, &inode).unwrap();
         let mut progress = reclaim::Reclaim::shrink(inode, 13);
         inode.i_links_count = 2;
@@ -418,6 +440,7 @@ mod reclaim_checks {
             superblock: sb,
             block_groups: vec![group],
             durable_epoch: core::sync::atomic::AtomicU64::new(0),
+            live_inodes: LiveInodes,
         };
         fs.write_inode(1, &inode).unwrap();
         let mut progress = reclaim::Reclaim::shrink(inode, 14);
