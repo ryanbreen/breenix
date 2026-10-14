@@ -345,16 +345,18 @@ fn test_named_accept_non_listener() {
         Err(_) => fail("socket() failed"),
     };
 
+    // A stream socket that is not listening: Linux's EINVAL. EOPNOTSUPP is
+    // for a type that never accepts, such as SOCK_DGRAM.
     match do_accept(fd) {
         Ok(_) => {
             do_close(fd);
             fail("accept() on non-listener should have failed");
         }
         Err(e) => {
-            if e != Errno::EOPNOTSUPP {
-                println!("  Expected EOPNOTSUPP, got: {:?}", e);
+            if e != Errno::EINVAL {
+                println!("  Expected EINVAL, got: {:?}", e);
                 do_close(fd);
-                fail("Expected EOPNOTSUPP");
+                fail("Expected EINVAL");
             }
         }
     }
