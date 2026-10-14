@@ -92,6 +92,7 @@ static SUITE: Suite = suite("utilities", "Shell & POSIX utilities", &[
         case("cd-pwd", "cd changes the directory and PWD, pwd agrees, and cd to a missing directory fails", shell_cd_pwd),
         case("signal-status", "A command killed by a signal has exit status 128 plus the signal number", shell_signal_status),
         case("subshell", "( ) runs in a subshell whose changes do not persist, while { } runs in the current shell", shell_subshell),
+        case("alias", "alias defines a word later commands expand, alias NAME writes it for reuse, and unalias removes it", shell_alias),
     ]),
     category("file-utils", "file utilities", &[
         case("ls", "ls lists a directory's names sorted, one per line when stdout is not a terminal, without dot files", file_ls),
@@ -122,6 +123,7 @@ static SUITE: Suite = suite("utilities", "Shell & POSIX utilities", &[
         case("find-type", "find -type d selects directories, including the starting point", file_find_type),
         case("find-mtime", "find -mtime +n selects files modified more than n days ago", file_find_mtime),
         case("find-exec", "find -exec runs a command for each file with {} replaced by its path", file_find_exec),
+        case("find-exec-plus", "find -exec ... {} + runs the command once with all the paths, and find fails when it fails", file_find_exec_plus),
         case("find-prune", "find -prune keeps find from descending into a directory", file_find_prune),
         case("du", "du writes one line per directory in the hierarchy, ending with the operand", file_du),
         case("df", "df -k -P writes the POSIX header and a line for the file system holding the operand", file_df),
@@ -165,6 +167,10 @@ static SUITE: Suite = suite("utilities", "Shell & POSIX utilities", &[
         case("grep-status", "grep exits 1 when nothing matches and more than 1 for a missing file", text_grep_status),
         case("diff-same", "diff of identical files writes nothing and exits 0", text_diff_same),
         case("diff-differ", "diff writes the default change format and exits 1 when files differ", text_diff_differ),
+        case("diff-context", "diff -c writes both file names and the context format, marking changed lines with !", text_diff_context),
+        case("diff-ed", "diff -e writes an ed script that edits from the last change back, and -f the forward form", text_diff_ed),
+        case("diff-dir", "diff -r introduces each differing file with a diff line and names files in one directory only", text_diff_dir),
+        case("diff-errors", "diff exits above 1 when its output cannot be written or an operand is missing", text_diff_errors),
         case("cmp", "cmp names the first differing byte and line and exits 1", text_cmp),
         case("comm", "comm writes lines unique to each file and common lines in three tab-indented columns", text_comm),
         case("paste", "paste joins corresponding lines with tabs, and -s -d joins one file's lines", text_paste),
@@ -211,6 +217,7 @@ static SUITE: Suite = suite("utilities", "Shell & POSIX utilities", &[
         case("command-v", "command -v writes the path of a utility, the name of a built-in or function, and fails for neither", proc_command_v),
         case("time", "time -p runs a command, writes real, user and sys times to stderr and exits with its status", proc_time),
         case("tty", "tty with standard input that is not a terminal writes not a tty and exits 1", proc_tty),
+        case("free", "free, a legacy /bin name, reports the same total memory as /proc/meminfo", proc_free),
     ]),
     category("scripts", "real shell scripts", &[
         case("wordfreq", "A tr | sort | uniq -c | sort | head pipeline lists the three most frequent words", script_wordfreq),
@@ -417,6 +424,11 @@ return 5
 echo unreachable
 "#)
         .expect("5\nfromlib\nf:x\n", 0, Empty)
+}
+
+fn shell_alias() -> CaseResult {
+    sh("alias hi='echo hello'\nhi there\nalias hi\nunalias hi\nhi 2>/dev/null || echo gone")
+        .expect("hello there\nhi='echo hello'\ngone\n", 0, Empty)
 }
 
 fn shell_cd_pwd() -> CaseResult {
@@ -653,6 +665,15 @@ fn file_find_exec() -> CaseResult {
         .file("d/s/c.txt", r#"C
 "#)
         .expect("B\n", 0, Empty)
+}
+
+fn file_find_exec_plus() -> CaseResult {
+    sh(r#"find d -type f -exec sh -c 'echo $#' sh {} +; find d/a -exec false {} +; echo $?"#)
+        .needs(&["find", "false"])
+        .dir("d")
+        .file("d/a", "")
+        .file("d/b", "")
+        .expect("2\n1\n", 0, Empty)
 }
 
 fn file_find_prune() -> CaseResult {
@@ -1007,6 +1028,48 @@ x
         .expect("2c2\n< 2\n---\n> x\n", 1, Empty)
 }
 
+fn text_diff_context() -> CaseResult {
+    // The header's timestamps are the files' own, so only the names are compared.
+    sh("diff -c a b > out; echo $?; head -n 2 out | awk '{ print $1, $2 }'; tail -n +3 out")
+        .needs(&["diff", "head", "awk", "tail"])
+        .file("a", "1\n2\n3\n")
+        .file("b", "1\nx\n3\n")
+        .expect("1\n*** a\n--- b\n***************\n*** 1,3 ****\n  1\n! 2\n  3\n--- 1,3 ----\n  1\n! x\n  3\n", 0, Empty)
+}
+
+fn text_diff_ed() -> CaseResult {
+    sh("diff -e a b; echo $?; diff -f a b")
+        .needs(&["diff"])
+        .file("a", "a\nb\nc\nd\n")
+        .file("b", "a\nB\nc\nd\ne\n")
+        .expect("4a\ne\n.\n2c\nB\n.\n1\nc2\nB\n.\na4\ne\n.\n", 1, Empty)
+}
+
+fn text_diff_dir() -> CaseResult {
+    sh("diff -r d1 d2; echo $?")
+        .needs(&["diff"])
+        .dir("d1")
+        .dir("d1/sub")
+        .dir("d2")
+        .dir("d2/sub")
+        .file("d1/f", "1\n")
+        .file("d2/f", "2\n")
+        .file("d1/only", "x\n")
+        .file("d1/same", "s\n")
+        .file("d2/same", "s\n")
+        .file("d1/sub/g", "1\n")
+        .file("d2/sub/g", "2\n")
+        .expect("diff -r d1/f d2/f\n1c1\n< 1\n---\n> 2\nOnly in d1: only\ndiff -r d1/sub/g d2/sub/g\n1c1\n< 1\n---\n> 2\n1\n", 0, Empty)
+}
+
+fn text_diff_errors() -> CaseResult {
+    sh("diff a b >&-; echo $?; diff a missing; echo $?")
+        .needs(&["diff"])
+        .file("a", "1\n")
+        .file("b", "2\n")
+        .expect("2\n2\n", 0, Written)
+}
+
 fn text_cmp() -> CaseResult {
     util(&["cmp", "a", "b"])
         .file("a", r#"abc
@@ -1184,6 +1247,14 @@ fn proc_id() -> CaseResult {
     sh(r#"u=$(id -u); case $u in ''|*[!0-9]*) echo bad;; *) echo uid;; esac; case $(id) in "uid=$u("*|"uid=$u "*) echo form;; esac"#)
         .needs(&["id"])
         .expect("uid\nform\n", 0, Empty)
+}
+
+fn proc_free() -> CaseResult {
+    // free reads its totals through sysinfo(2), which it does not check; /proc/meminfo
+    // reads the same kernel counter, so only a filled structure gives the same total.
+    sh(r#"t=$(free -k | awk '$1 == "Mem:" { print $2 }'); m=$(awk '$1 == "MemTotal:" { print $2 }' /proc/meminfo); [ -n "$t" ] && [ "$t" = "$m" ] && echo same"#)
+        .needs(&["free", "awk"])
+        .expect("same\n", 0, Empty)
 }
 
 fn proc_uname() -> CaseResult {
