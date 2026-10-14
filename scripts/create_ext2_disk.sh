@@ -66,7 +66,7 @@ fi
 
 # Both native and gate disks use the same checked-in, checksummed build.
 # A missing cross compiler must never silently remove coreutils from a disk.
-python3 "$SCRIPT_DIR/install-busybox.py" "$ARCH"
+"$SCRIPT_DIR/install-libc-busybox.sh" --check "$USERSPACE_DIR" "$PROJECT_ROOT/vendor/busybox/required-applets"
 
 echo "Creating ext2 disk image..."
 echo "  Arch: $ARCH"
@@ -154,6 +154,8 @@ if [[ "$(uname)" == "Darwin" ]]; then
         -v "$TARGET_DIR:/work" \
         -v "$USERSPACE_DIR:/binaries:ro" \
         -v "$PROJECT_ROOT/fonts:/fonts:ro" \
+        -v "$SCRIPT_DIR/install-libc-busybox.sh:/install-libc-busybox.sh:ro" \
+        -v "$PROJECT_ROOT/vendor/busybox/required-applets:/required-applets:ro" \
         -e "OUTPUT_FILENAME=$OUTPUT_FILENAME" \
         -e "BREENIX_WAIT_STRESS=${BREENIX_WAIT_STRESS:-0}" \
         -e "BREENIX_BSSH_AUTORUN=${BREENIX_BSSH_AUTORUN:-0}" \
@@ -180,42 +182,7 @@ if [[ "$(uname)" == "Darwin" ]]; then
             mkdir -p /mnt/ext2/usr/local/test/bin
             mkdir -p /mnt/ext2/usr/local/cbin
 
-            # Install BusyBox with symlinks for coreutils
-            if [ -f /binaries/busybox.elf ]; then
-                cp /binaries/busybox.elf /mnt/ext2/bin/busybox
-                chmod 755 /mnt/ext2/bin/busybox
-
-                # Create hardlinks for the 48 applets listed below in /bin
-                # (hardlinks avoid needing symlink-following in kernel exec path)
-                for cmd in cat ls head tail wc grep more cp mv rm mkdir rmdir false \
-                           echo which sh ash sed awk find sort uniq tee xargs \
-                           chmod chown chgrp df du free date sleep test expr seq \
-                           id whoami hostname basename dirname env printf cut tr \
-                           od hexdump md5sum sha256sum vi; do
-                    ln /mnt/ext2/bin/busybox /mnt/ext2/bin/$cmd
-                done
-
-                # /sbin applets (hardlinks)
-                for cmd in true false; do
-                    ln /mnt/ext2/bin/busybox /mnt/ext2/sbin/$cmd
-                done
-
-                echo "  Installed BusyBox with hardlinks in /bin and /sbin"
-            else
-                echo "  WARNING: busybox.elf not found, skipping coreutils"
-            fi
-
-            # BusyBox built against Breenix'"'"'s own C library, with a hard link per applet
-            # it was built with (scripts/build-libc-busybox.sh).
-            if [ -f /binaries/libc-busybox.elf ]; then
-                mkdir -p /mnt/ext2/usr/local/libc/bin
-                cp /binaries/libc-busybox.elf /mnt/ext2/usr/local/libc/bin/busybox
-                chmod 755 /mnt/ext2/usr/local/libc/bin/busybox
-                while read -r applet; do
-                    [ -n "$applet" ] && ln /mnt/ext2/usr/local/libc/bin/busybox "/mnt/ext2/usr/local/libc/bin/$applet"
-                done < /binaries/libc-busybox.links
-                echo "  Installed libc BusyBox with $(wc -l < /binaries/libc-busybox.links) applets in /usr/local/libc/bin"
-            fi
+            sh /install-libc-busybox.sh /binaries /required-applets /mnt/ext2
 
             # Copy remaining binaries from /binaries directory
             # Routing: musl C programs (*_musl*) -> /usr/local/cbin
@@ -501,42 +468,7 @@ else
     mkdir -p "$MOUNT_DIR/usr/local/test/bin"
     mkdir -p "$MOUNT_DIR/usr/local/cbin"
 
-    # Install BusyBox with hardlinks for coreutils
-    # The pinned artifact is verified and installed before disk creation.
-    if [[ -f "$USERSPACE_DIR/busybox.elf" ]]; then
-        cp "$USERSPACE_DIR/busybox.elf" "$MOUNT_DIR/bin/busybox"
-        chmod 755 "$MOUNT_DIR/bin/busybox"
-
-        # Create hardlinks for the 48 applets listed below in /bin
-        for cmd in cat ls head tail wc grep more cp mv rm mkdir rmdir false \
-                   echo which sh ash sed awk find sort uniq tee xargs \
-                   chmod chown chgrp df du free date sleep test expr seq \
-                   id whoami hostname basename dirname env printf cut tr \
-                   od hexdump md5sum sha256sum vi; do
-            ln "$MOUNT_DIR/bin/busybox" "$MOUNT_DIR/bin/$cmd"
-        done
-
-        # /sbin applets (hardlinks)
-        for cmd in true false; do
-            ln "$MOUNT_DIR/bin/busybox" "$MOUNT_DIR/sbin/$cmd"
-        done
-
-        echo "  Installed BusyBox with hardlinks in /bin and /sbin"
-    else
-        echo "  WARNING: busybox.elf not found, skipping coreutils"
-    fi
-
-    # BusyBox built against Breenix's own C library, with a hard link per applet it was
-    # built with (scripts/build-libc-busybox.sh).
-    if [[ -f "$USERSPACE_DIR/libc-busybox.elf" ]]; then
-        mkdir -p "$MOUNT_DIR/usr/local/libc/bin"
-        cp "$USERSPACE_DIR/libc-busybox.elf" "$MOUNT_DIR/usr/local/libc/bin/busybox"
-        chmod 755 "$MOUNT_DIR/usr/local/libc/bin/busybox"
-        while read -r applet; do
-            [[ -n "$applet" ]] && ln "$MOUNT_DIR/usr/local/libc/bin/busybox" "$MOUNT_DIR/usr/local/libc/bin/$applet"
-        done < "$USERSPACE_DIR/libc-busybox.links"
-        echo "  Installed libc BusyBox with $(wc -l < "$USERSPACE_DIR/libc-busybox.links") applets in /usr/local/libc/bin"
-    fi
+    "$SCRIPT_DIR/install-libc-busybox.sh" "$USERSPACE_DIR" "$PROJECT_ROOT/vendor/busybox/required-applets" "$MOUNT_DIR"
 
     # Copy remaining binaries from userspace directory
     # Routing: musl C programs (*_musl*) -> /usr/local/cbin
