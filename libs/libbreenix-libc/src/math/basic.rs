@@ -17,6 +17,9 @@ const SIGN: u64 = 1 << 63;
 const FRAC: u64 = (1 << 52) - 1;
 
 pub(crate) fn pow2(n: i32) -> f64 {
+    if n < -1074 { return 0.0; }
+    if n < -1022 { return f64::from_bits(1u64 << (n + 1074)); }
+    if n > 1023 { return f64::INFINITY; }
     f64::from_bits(((n + 1023) as u64) << 52)
 }
 
@@ -324,6 +327,7 @@ pub extern "C" fn ceil(x: f64) -> f64 {
 /// Halfway cases away from zero.
 #[no_mangle]
 pub extern "C" fn round(x: f64) -> f64 {
+    if !x.is_finite() { return super::quiet(x); }
     let t = trunc(x);
     if fabs(x - t) >= 0.5 { t + copysign(1.0, x) } else { t }
 }
@@ -370,19 +374,7 @@ mod round_dyn {
         unsafe { core::arch::asm!("frinti {0:s}, {1:s}", out(vreg) r, in(vreg) x, options(nomem, nostack)) };
         r
     }
-    pub(super) fn lrint(x: f64) -> i64 {
-        let r: i64;
-        unsafe {
-            core::arch::asm!("frintx {t:d}, {x:d}", "fcvtzs {r}, {t:d}", x = in(vreg) x, t = out(vreg) _,
-                r = out(reg) r, options(nomem, nostack))
-        };
-        r
-    }
-    pub(super) fn lround(x: f64) -> i64 {
-        let r: i64;
-        unsafe { core::arch::asm!("fcvtas {0}, {1:d}", out(reg) r, in(vreg) x, options(nomem, nostack)) };
-        r
-    }
+
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -419,21 +411,7 @@ mod round_dyn {
         fenv::set_flags(fenv::FE_INEXACT, before);
         r
     }
-    /// Out-of-range conversions raise invalid and give i64::MIN, as cvtsd2si does.
-    fn to_i64(r: f64) -> i64 {
-        if r >= -9223372036854775808.0 && r < 9223372036854775808.0 {
-            r as i64
-        } else {
-            fenv::raise(fenv::FE_INVALID);
-            i64::MIN
-        }
-    }
-    pub(super) fn lrint(x: f64) -> i64 {
-        to_i64(rint(x))
-    }
-    pub(super) fn lround(x: f64) -> i64 {
-        to_i64(super::round(x))
-    }
+
 }
 
 #[no_mangle]
@@ -456,45 +434,32 @@ pub extern "C" fn nearbyintf(x: f32) -> f32 {
     round_dyn::nearbyintf(x)
 }
 
-#[no_mangle]
-pub extern "C" fn lrint(x: f64) -> i64 {
-    round_dyn::lrint(x)
+// C17 7.12.9: an invalid integer conversion is a domain error. Test the
+// rounded floating result before casting; i64::MAX rounds to 2^63 in binary64.
+fn integer_result(r: f64) -> i64 {
+    if r >= -9223372036854775808.0 && r < 9223372036854775808.0 { r as i64 }
+    else {
+        crate::pthread::set_errno(crate::stdlib::EDOM);
+        fenv::raise(fenv::FE_INVALID);
+        i64::MIN
+    }
 }
-
 #[no_mangle]
-pub extern "C" fn llrint(x: f64) -> i64 {
-    round_dyn::lrint(x)
-}
-
+pub extern "C" fn lrint(x: f64) -> i64 { integer_result(round_dyn::rint(x)) }
 #[no_mangle]
-pub extern "C" fn lround(x: f64) -> i64 {
-    round_dyn::lround(x)
-}
-
+pub extern "C" fn llrint(x: f64) -> i64 { lrint(x) }
 #[no_mangle]
-pub extern "C" fn llround(x: f64) -> i64 {
-    round_dyn::lround(x)
-}
-
+pub extern "C" fn lround(x: f64) -> i64 { integer_result(round(x)) }
 #[no_mangle]
-pub extern "C" fn lrintf(x: f32) -> i64 {
-    round_dyn::lrint(x as f64)
-}
-
+pub extern "C" fn llround(x: f64) -> i64 { lround(x) }
 #[no_mangle]
-pub extern "C" fn llrintf(x: f32) -> i64 {
-    round_dyn::lrint(x as f64)
-}
-
+pub extern "C" fn lrintf(x: f32) -> i64 { integer_result(round_dyn::rintf(x) as f64) }
 #[no_mangle]
-pub extern "C" fn lroundf(x: f32) -> i64 {
-    round_dyn::lround(x as f64)
-}
-
+pub extern "C" fn llrintf(x: f32) -> i64 { lrintf(x) }
 #[no_mangle]
-pub extern "C" fn llroundf(x: f32) -> i64 {
-    round_dyn::lround(x as f64)
-}
+pub extern "C" fn lroundf(x: f32) -> i64 { lround(x as f64) }
+#[no_mangle]
+pub extern "C" fn llroundf(x: f32) -> i64 { lroundf(x) }
 
 // ----------------------------------------------------------------------------
 // Remainders
@@ -663,32 +628,58 @@ fn round_big(neg: bool, m: &Big, e: i64, f: &Format) -> u128 {
 /// The cases fma_exact does not take: NaN, infinite or zero operands, where a * b + c
 /// already rounds once (a zero product is exact; an infinity absorbs).
 fn fma_special(a: f64, b: f64, c: f64) -> Option<f64> {
-    if !a.is_finite() || !b.is_finite() || !c.is_finite() || a == 0.0 || b == 0.0 {
-        Some(a * b + c)
-    } else {
-        None
+    // C17 F.10.9.2: classify the exact product, never a separately rounded
+    // finite product (DBL_MAX*2 + -INF is -INF, with no invalid exception).
+    let signaling = |x: f64| x.is_nan() && x.to_bits() & (1u64 << 51) == 0;
+    if signaling(a) || signaling(b) || signaling(c) { return Some(domain()); }
+    let invalid_product = (a == 0.0 && b.is_infinite()) || (b == 0.0 && a.is_infinite());
+    let infinite_product = (a.is_infinite() || b.is_infinite()) && !a.is_nan() && !b.is_nan();
+    let opposite = (a.is_sign_negative() != b.is_sign_negative()) != c.is_sign_negative();
+    if invalid_product || (infinite_product && c.is_infinite() && opposite) {
+        return Some(domain());
     }
+    if a.is_nan() || b.is_nan() || c.is_nan() { return Some(a + b + c); }
+    if c.is_infinite() { return Some(c); }
+    if infinite_product { return Some(copysign(f64::INFINITY, if a.is_sign_negative() != b.is_sign_negative() { -1.0 } else { 1.0 })); }
+    if a == 0.0 || b == 0.0 { return Some(a * b + c); }
+    None
 }
 
 #[cfg(target_arch = "aarch64")]
 #[no_mangle]
 pub extern "C" fn fma(a: f64, b: f64, c: f64) -> f64 {
+    let before = fenv::flags();
+    fenv::set_flags(fenv::FE_ALL_EXCEPT, 0);
     let r: f64;
     unsafe {
         core::arch::asm!("fmadd {0:d}, {1:d}, {2:d}, {3:d}", out(vreg) r, in(vreg) a, in(vreg) b, in(vreg) c,
             options(nomem, nostack))
     };
+    let raised = fenv::flags();
+    fenv::set_flags(fenv::FE_ALL_EXCEPT, before | raised);
+    if raised & fenv::FE_INVALID != 0 { crate::pthread::set_errno(crate::stdlib::EDOM); }
+    else if raised & (fenv::FE_OVERFLOW | fenv::FE_UNDERFLOW) != 0 {
+        crate::pthread::set_errno(crate::stdlib::ERANGE);
+    }
     r
 }
 
 #[cfg(target_arch = "aarch64")]
 #[no_mangle]
 pub extern "C" fn fmaf(a: f32, b: f32, c: f32) -> f32 {
+    let before = fenv::flags();
+    fenv::set_flags(fenv::FE_ALL_EXCEPT, 0);
     let r: f32;
     unsafe {
         core::arch::asm!("fmadd {0:s}, {1:s}, {2:s}, {3:s}", out(vreg) r, in(vreg) a, in(vreg) b, in(vreg) c,
             options(nomem, nostack))
     };
+    let raised = fenv::flags();
+    fenv::set_flags(fenv::FE_ALL_EXCEPT, before | raised);
+    if raised & fenv::FE_INVALID != 0 { crate::pthread::set_errno(crate::stdlib::EDOM); }
+    else if raised & (fenv::FE_OVERFLOW | fenv::FE_UNDERFLOW) != 0 {
+        crate::pthread::set_errno(crate::stdlib::ERANGE);
+    }
     r
 }
 
@@ -701,6 +692,8 @@ pub extern "C" fn fma(a: f64, b: f64, c: f64) -> f64 {
 #[cfg(target_arch = "x86_64")]
 #[no_mangle]
 pub extern "C" fn fmaf(a: f32, b: f32, c: f32) -> f32 {
+    let signaling = |x: f32| x.is_nan() && x.to_bits() & (1u32 << 22) == 0;
+    if signaling(a) || signaling(b) || signaling(c) { return domain() as f32; }
     let (a, b, c) = (a as f64, b as f64, c as f64);
     match fma_special(a, b, c) {
         Some(r) => r as f32,
@@ -740,8 +733,12 @@ pub extern "C" fn fdim(x: f64, y: f64) -> f64 {
         return x + y;
     }
     if x > y {
-        let r = x - y;
-        if r.is_infinite() {
+        let before = fenv::flags();
+        fenv::set_flags(fenv::FE_OVERFLOW, 0);
+        let r = core::hint::black_box(x) - core::hint::black_box(y);
+        let raised = fenv::flags();
+        fenv::set_flags(fenv::FE_OVERFLOW, (before | raised) & fenv::FE_OVERFLOW);
+        if x.is_finite() && y.is_finite() && raised & fenv::FE_OVERFLOW != 0 {
             crate::pthread::set_errno(crate::stdlib::ERANGE);
         }
         r

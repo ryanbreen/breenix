@@ -29,22 +29,13 @@ impl Array<'_> {
         if i == j {
             return;
         }
-        let (mut a, mut b) = (self.at(i), self.at(j));
-        let mut n = self.width;
-        while n >= 8 {
-            let t = (a as *const u64).read_unaligned();
-            (a as *mut u64).write_unaligned((b as *const u64).read_unaligned());
-            (b as *mut u64).write_unaligned(t);
-            a = a.add(8);
-            b = b.add(8);
-            n -= 8;
-        }
-        while n > 0 {
-            core::ptr::swap(a, b);
-            a = a.add(1);
-            b = b.add(1);
-            n -= 1;
-        }
+        // Object representations may contain uninitialized padding. MaybeUninit
+        // transfers those bytes without interpreting them as initialized integers.
+        core::ptr::swap_nonoverlapping(
+            self.at(i).cast::<core::mem::MaybeUninit<u8>>(),
+            self.at(j).cast::<core::mem::MaybeUninit<u8>>(),
+            self.width,
+        );
     }
 
     /// Sorts elements [lo, lo + n).

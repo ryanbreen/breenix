@@ -559,7 +559,15 @@ pub unsafe extern "C" fn strxfrm_l(dst: *mut u8, src: *const u8, n: usize, _loc:
 
 #[no_mangle]
 pub unsafe extern "C" fn strerror_l(errnum: i32, _loc: *mut core::ffi::c_void) -> *mut u8 {
-    strerror(errnum)
+    // POSIX permits EINVAL for an unknown number; immutable text avoids the
+    // process-global scratch buffer used by strerror.
+    match errtext::error_cstr(errnum) {
+        Some(t) => t.as_ptr() as *mut u8,
+        None => {
+            crate::pthread::set_errno(crate::stdlib::EINVAL);
+            b"Unknown error\0".as_ptr() as *mut u8
+        }
+    }
 }
 
 #[no_mangle]

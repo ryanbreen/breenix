@@ -267,14 +267,17 @@ static const char *long_mixed_short(void) {
 
 static const char *getsubopt_tokens(void) {
     char *const tokens[] = { "ro", "size", NULL };
-    char opts[] = "ro,size=10,bogus";
+    char opts[] = "ro,size=10,bogus,unknown=value";
     char *p = opts, *value = (char *)1;
     EXPECT_INT("getsubopt of \"ro\"", getsubopt(&p, tokens, &value), 0);
     EXPECT_PTR("value of \"ro\"", value, NULL);
     EXPECT_INT("getsubopt of \"size=10\"", getsubopt(&p, tokens, &value), 1);
     EXPECT_STR("value of \"size=10\"", value, "10");
     EXPECT_INT("getsubopt of an unknown token", getsubopt(&p, tokens, &value), -1);
-    EXPECT_STR("value of an unknown token", value, "bogus");
+    /* POSIX.1-2024 XSH getsubopt: '=' determines valuep even for unknown names. */
+    EXPECT_PTR("unknown token without a value", value, NULL);
+    EXPECT_INT("unknown token with a value", getsubopt(&p, tokens, &value), -1);
+    EXPECT_STR("value of an unknown token", value, "value");
     EXPECT_INT("rest after the last token", *p, 0);
     return PASS;
 }

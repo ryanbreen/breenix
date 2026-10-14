@@ -5,6 +5,7 @@
 
 #include <__breenix/features.h>
 #include <stdint.h>
+#include <stddef.h>
 
 typedef struct { intmax_t quot; intmax_t rem; } imaxdiv_t;
 
@@ -169,6 +170,9 @@ intmax_t imaxabs(intmax_t x);
 imaxdiv_t imaxdiv(intmax_t a, intmax_t b);
 intmax_t strtoimax(const char *__BREENIX_RESTRICT s, char **__BREENIX_RESTRICT end, int base);
 uintmax_t strtoumax(const char *__BREENIX_RESTRICT s, char **__BREENIX_RESTRICT end, int base);
+
+intmax_t wcstoimax(const wchar_t *__BREENIX_RESTRICT s, wchar_t **__BREENIX_RESTRICT end, int base);
+uintmax_t wcstoumax(const wchar_t *__BREENIX_RESTRICT s, wchar_t **__BREENIX_RESTRICT end, int base);
 
 __BREENIX_END_DECLS
 
