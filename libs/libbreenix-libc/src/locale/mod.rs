@@ -2,7 +2,9 @@
 //! All implementation is original; encoding follows Unicode's UTF-8 definition.
 
 mod calendar;
-mod classify;
+/// Classification and case mapping for other lanes (FILES' regex and fnmatch):
+/// iswctype/wctype, towlower/towupper and wcwidth follow the thread's LC_CTYPE.
+pub(crate) mod classify;
 #[cfg(not(test))]
 mod clocks;
 #[cfg(not(test))]
