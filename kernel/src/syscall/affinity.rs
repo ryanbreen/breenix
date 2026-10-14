@@ -27,7 +27,7 @@ fn online_mask() -> u64 {
 fn target(pid: i64, setting: bool) -> Result<u64, u64> {
     let me = crate::task::scheduler::current_thread_id().ok_or(ESRCH as u64)?;
     if pid < 0 {
-        return Err(EINVAL as u64);
+        return Err(ESRCH as u64);
     }
     let tid = if pid == 0 { me } else { pid as u64 };
     let guard = crate::process::manager();
