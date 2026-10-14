@@ -158,7 +158,12 @@ echo "[gate] accel=$BREENIX_QEMU_ACCEL cpu=$BREENIX_QEMU_CPU"
 if [ -n "${BREENIX_RUST_FORK:-}" ]; then
   echo "[gate] repointing rust-fork at $BREENIX_RUST_FORK (not committed)"
   rm -f rust-fork
-  ln -s "$BREENIX_RUST_FORK" rust-fork
+  # A fork inside this tree is linked relatively: gate-artifacts.py builds the
+  # tree through a bind mount, and the fork's libc patch must resolve inside it.
+  case "$BREENIX_RUST_FORK" in
+    "$PWD"/*) ln -s "${BREENIX_RUST_FORK#"$PWD"/}" rust-fork ;;
+    *) ln -s "$BREENIX_RUST_FORK" rust-fork ;;
+  esac
 fi
 
 case "$MODE" in
