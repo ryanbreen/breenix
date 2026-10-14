@@ -601,14 +601,7 @@ pub(crate) fn drain_loopback_rounds(max_rounds: usize, source: LoopbackDrainSour
         for packet in packets {
             note_loopback_residency(packet.queued_at_tick, source);
             if let Some(parsed_ip) = ipv4::Ipv4Packet::parse(&packet.data) {
-                let src_mac = get_mac_address().unwrap_or([0; 6]);
-                let dummy_frame = ethernet::EthernetFrame {
-                    src_mac,
-                    dst_mac: src_mac,
-                    ethertype: ethernet::ETHERTYPE_IPV4,
-                    payload: &packet.data,
-                };
-                ipv4::handle_ipv4(&dummy_frame, &parsed_ip);
+                ipv4::handle_loopback_ipv4(&parsed_ip);
             }
         }
 

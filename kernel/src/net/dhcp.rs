@@ -178,7 +178,7 @@ fn lease_from_ack(ack: Reply, requested: [u8; 4], server: Option<[u8; 4]>) -> Op
     let t2 = ack
         .rebinding
         .map(|s| u64::from(s) * 1_000_000_000)
-        .unwrap_or(duration * 7 / 8);
+        .unwrap_or(duration - duration / 8);
     if !infinite && (t1 == 0 || t1 >= t2 || t2 >= duration) {
         return None;
     }

@@ -702,7 +702,7 @@ fn validate_drain_guard_spans_delivery(source: &str) -> Result<(), String> {
             return Err(format!("queue take is missing {required}"));
         }
     }
-    for forbidden in ["LoopbackDrainGuard", "handle_ipv4", "drain_deferred_tx", "tcp", "log"] {
+    for forbidden in ["LoopbackDrainGuard", "handle_ipv4", "handle_loopback_ipv4", "drain_deferred_tx", "tcp", "log"] {
         if has_identifier(take, forbidden) {
             return Err(format!("queue take contains {forbidden}"));
         }
@@ -715,7 +715,7 @@ fn validate_drain_guard_spans_delivery(source: &str) -> Result<(), String> {
         "crate::per_cpu::preempt_disable();",
         "LoopbackDrainGuard::acquire()",
         "take_queued_loopback_packets()",
-        "ipv4::handle_ipv4(",
+        "ipv4::handle_loopback_ipv4(",
         "drop(delivering);",
         "crate::per_cpu::preempt_enable(); core::sync::atomic::fence(",
         "rearm_if_work_remains()",

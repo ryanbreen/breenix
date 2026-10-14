@@ -173,6 +173,20 @@ impl<'a> Ipv4Packet<'a> {
 
 /// Handle an incoming IPv4 packet
 pub fn handle_ipv4(_eth_frame: &EthernetFrame, ip: &Ipv4Packet) {
+    handle_ipv4_packet(ip, false);
+}
+
+/// Only the kernel's local-delivery queue may supply loopback addresses.
+/// Ethernet addresses cannot establish this provenance: peers can spoof them.
+pub fn handle_loopback_ipv4(ip: &Ipv4Packet) {
+    handle_ipv4_packet(ip, true);
+}
+
+fn handle_ipv4_packet(ip: &Ipv4Packet, local_delivery: bool) {
+    // RFC 1122 3.2.1.3: 127/8 must never arrive from a physical network.
+    if !local_delivery && (ip.src_ip[0] == 127 || ip.dst_ip[0] == 127) {
+        return;
+    }
     // Reject corrupt headers and fragments before DHCP can configure an address.
     if ip.flags_fragment & 0x3fff != 0 || internet_checksum(ip.header) != 0 {
         return;

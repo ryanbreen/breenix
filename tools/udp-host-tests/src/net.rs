@@ -69,13 +69,7 @@ pub fn ip_output(src: [u8; 4], dst: [u8; 4], protocol: u8, data: &[u8]) -> Resul
     let packet = ipv4::Ipv4Packet::try_build(src, dst, protocol, data)?;
     if is_local_addr(dst) || is_broadcast_addr(dst) {
         let ip = ipv4::Ipv4Packet::parse(&packet).unwrap();
-        let frame = ethernet::EthernetFrame {
-            src_mac: [0; 6],
-            dst_mac: [0; 6],
-            ethertype: ethernet::ETHERTYPE_IPV4,
-            payload: &packet,
-        };
-        ipv4::handle_ipv4(&frame, &ip);
+        ipv4::handle_loopback_ipv4(&ip);
     }
     Ok(())
 }

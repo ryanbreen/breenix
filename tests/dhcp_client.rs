@@ -15,8 +15,11 @@ pub enum TxError {
     NoBufs,
     MsgSize,
 }
+static TCP_DELIVERIES: AtomicU64 = AtomicU64::new(0);
 pub mod tcp {
-    pub fn handle_tcp(_: &crate::ipv4::Ipv4Packet, _: &[u8]) {}
+    pub fn handle_tcp(_: &crate::ipv4::Ipv4Packet, _: &[u8]) {
+        super::TCP_DELIVERIES.fetch_add(1, super::Ordering::Relaxed);
+    }
 }
 pub mod icmp {
     pub struct IcmpPacket;
@@ -80,6 +83,7 @@ const ADDRESS: [u8; 4] = [192, 0, 2, 10];
 const SERVER: [u8; 4] = [192, 0, 2, 1];
 #[derive(Default)]
 struct Peer {
+    lease_seconds: Option<u32>,
     bad_ack: u8,
     corrupt: u8,
     overload: bool,
@@ -93,6 +97,7 @@ struct Peer {
     declines: usize,
 }
 static PEER: Mutex<Peer> = Mutex::new(Peer {
+    lease_seconds: None,
     bad_ack: 0,
     corrupt: 0,
     overload: false,
@@ -113,9 +118,11 @@ fn options(p: &Peer, kind: u8) -> Vec<u8> {
     };
     let mut o = vec![53, 1, kind, 54, 4];
     o.extend(server);
-    o.extend([
-        1, 4, 255, 255, 255, 0, 51, 4, 0, 0, 0, 120, 58, 4, 0, 0, 0, 60, 59, 4, 0, 0, 0, 105,
-    ]);
+    o.extend([1, 4, 255, 255, 255, 0, 51, 4]);
+    o.extend(p.lease_seconds.unwrap_or(120).to_be_bytes());
+    if p.lease_seconds.is_none() {
+        o.extend([58, 4, 0, 0, 0, 60, 59, 4, 0, 0, 0, 105]);
+    }
     if !p.no_router {
         o.extend([3, 4, 192, 0, 2, 1]);
     }
@@ -367,4 +374,61 @@ fn a_late_renewal_ack_cannot_resurrect_an_expired_address() {
     CLOCK_STEP.store(2_000_000_000, Ordering::Relaxed);
     dhcp::maintain(MAC, true);
     assert!(dhcp::lease().is_none());
+}
+
+#[test]
+fn long_and_infinite_leases_keep_valid_default_deadlines() {
+    let _guard = setup();
+    PEER.lock().unwrap().lease_seconds = Some(u32::MAX);
+    let lease = dhcp::acquire(MAC).unwrap();
+    assert_eq!(lease.expires_at, u64::MAX);
+    assert_eq!(lease.renew_at, u64::MAX);
+    assert_eq!(lease.rebind_at, u64::MAX);
+    PEER.lock().unwrap().lease_seconds = Some(u32::MAX - 1);
+    let lease = dhcp::acquire(MAC).unwrap();
+    assert!(lease.renew_at < lease.rebind_at && lease.rebind_at < lease.expires_at);
+    assert!(dhcp::lease().is_some());
+}
+
+#[test]
+fn physical_ingress_cannot_reach_or_spoof_loopback_services() {
+    let _guard = setup();
+    dhcp::acquire(MAC).unwrap();
+    TCP_DELIVERIES.store(0, Ordering::Relaxed);
+    for (src, dst) in [(SERVER, [127, 0, 0, 1]), ([127, 0, 0, 1], ADDRESS)] {
+        let mut syn = [0u8; 20];
+        syn[..2].copy_from_slice(&40000u16.to_be_bytes());
+        syn[2..4].copy_from_slice(&2323u16.to_be_bytes());
+        syn[12] = 0x50;
+        syn[13] = 2;
+        let mut pseudo = [0u8; 12];
+        pseudo[..4].copy_from_slice(&src);
+        pseudo[4..8].copy_from_slice(&dst);
+        pseudo[9] = 6;
+        pseudo[11] = 20;
+        let mut sum = u32::from(!ipv4::internet_checksum(&pseudo))
+            + u32::from(!ipv4::internet_checksum(&syn));
+        while sum > 0xffff {
+            sum = (sum & 0xffff) + (sum >> 16);
+        }
+        syn[16..18].copy_from_slice(&(!(sum as u16)).to_be_bytes());
+        let packet = ipv4::Ipv4Packet::try_build(src, dst, 6, &syn).unwrap();
+        let ip = ipv4::Ipv4Packet::parse(&packet).unwrap();
+        let frame = ethernet::EthernetFrame {
+            src_mac: [9; 6],
+            dst_mac: MAC,
+            ethertype: 0x800,
+            payload: &packet,
+        };
+        ipv4::handle_ipv4(&frame, &ip);
+    }
+    assert_eq!(TCP_DELIVERIES.load(Ordering::Relaxed), 0);
+    let packet = ipv4::Ipv4Packet::try_build([127, 0, 0, 1], [127, 0, 0, 2], 6, &[0; 20]).unwrap();
+    let ip = ipv4::Ipv4Packet::parse(&packet).unwrap();
+    ipv4::handle_loopback_ipv4(&ip);
+    assert_eq!(
+        TCP_DELIVERIES.load(Ordering::Relaxed),
+        1,
+        "trusted loopback remains deliverable"
+    );
 }
