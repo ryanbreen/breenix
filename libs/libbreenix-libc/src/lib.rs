@@ -28,6 +28,7 @@
 #![feature(c_variadic)]
 
 mod crt;
+mod locale;
 mod math;
 mod stdlib;
 mod string;
