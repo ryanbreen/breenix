@@ -365,3 +365,51 @@ fn getline_ignores_capacity_when_pointer_is_null() {
         super::free(p);
     }
 }
+#[test]
+fn large_general_precision_and_overflowing_width() {
+    unsafe {
+        let (s, n) = printed(c"%.2147483647g", |p, n, f| snprintf(p, n, f, 1.25f64));
+        assert_eq!(s, "1.25");
+        assert_eq!(n, 4);
+        let mut b = [0u8; 16];
+        assert_eq!(
+            snprintf(
+                b.as_mut_ptr(),
+                b.len(),
+                c"%*d".as_ptr() as *const u8,
+                i32::MIN,
+                1i32
+            ),
+            -1
+        );
+        assert_eq!(super::pthread::errno(), 75);
+    }
+}
+#[test]
+fn printf_honors_all_rounding_directions() {
+    unsafe {
+        struct RoundGuard(u64);
+        impl Drop for RoundGuard {
+            fn drop(&mut self) {
+                unsafe {
+                    core::arch::asm!("msr fpcr, {}",in(reg)self.0,options(nomem,nostack));
+                }
+            }
+        }
+        let saved: u64;
+        core::arch::asm!("mrs {}, fpcr",out(reg)saved,options(nomem,nostack));
+        let guard = RoundGuard(saved);
+        for (mode, want) in [
+            (0, "1.2|-1.2"),
+            (1, "1.3|-1.2"),
+            (2, "1.2|-1.3"),
+            (3, "1.2|-1.2"),
+        ] {
+            let setting = (saved & !(3u64 << 22)) | (mode << 22);
+            core::arch::asm!("msr fpcr, {}",in(reg)setting,options(nomem,nostack));
+            let (s, _) = printed(c"%.1f|%.1f", |p, n, f| snprintf(p, n, f, 1.25f64, -1.25f64));
+            assert_eq!(s, want);
+        }
+        drop(guard);
+    }
+}
