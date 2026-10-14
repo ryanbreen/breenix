@@ -541,3 +541,33 @@ pub unsafe extern "C" fn strsignal(sig: i32) -> *mut u8 {
         }
     }
 }
+
+// ----------------------------------------------------------------------------
+// The locale_t forms: every Breenix locale collates by code point, folds case only
+// for ASCII, and reports errors in the same text, so the locale changes nothing.
+// ----------------------------------------------------------------------------
+
+#[no_mangle]
+pub unsafe extern "C" fn strcoll_l(a: *const u8, b: *const u8, _loc: *mut core::ffi::c_void) -> i32 {
+    strcoll(a, b)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn strxfrm_l(dst: *mut u8, src: *const u8, n: usize, _loc: *mut core::ffi::c_void) -> usize {
+    strxfrm(dst, src, n)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn strerror_l(errnum: i32, _loc: *mut core::ffi::c_void) -> *mut u8 {
+    strerror(errnum)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn strcasecmp_l(a: *const u8, b: *const u8, _loc: *mut core::ffi::c_void) -> i32 {
+    strcasecmp(a, b)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn strncasecmp_l(a: *const u8, b: *const u8, n: usize, _loc: *mut core::ffi::c_void) -> i32 {
+    strncasecmp(a, b, n)
+}
