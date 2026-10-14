@@ -160,7 +160,9 @@ impl Drop for Waiting<'_> {
         self.0.waiters.fetch_sub(1, Ordering::SeqCst);
     }
 }
-unsafe fn wait(sem: *mut Sem, timeout: *const i64, timed: bool) -> i32 {
+/// `clock` is None for an untimed wait, else the clock of the absolute
+/// deadline `timeout` (0 CLOCK_REALTIME, 1 CLOCK_MONOTONIC).
+unsafe fn wait(sem: *mut Sem, timeout: *const i64, clock: Option<i32>) -> i32 {
     let sem = match checked(sem) {
         Ok(s) => s,
         Err(e) => return fail(e),
@@ -168,7 +170,7 @@ unsafe fn wait(sem: *mut Sem, timeout: *const i64, timed: bool) -> i32 {
     if sem.take() {
         return 0;
     }
-    if timed && (timeout.is_null() || !(0..1_000_000_000).contains(&*timeout.add(1))) {
+    if clock.is_some() && (timeout.is_null() || !(0..1_000_000_000).contains(&*timeout.add(1))) {
         return fail(EINVAL);
     }
     loop {
@@ -204,12 +206,20 @@ unsafe fn wait(sem: *mut Sem, timeout: *const i64, timed: bool) -> i32 {
         if sem.take() {
             return 0;
         }
-        let op = if timed {
-            FUTEX_WAIT_BITSET | FUTEX_CLOCK_REALTIME
-        } else {
-            FUTEX_WAIT
+        let op = match clock {
+            Some(0) => FUTEX_WAIT_BITSET | FUTEX_CLOCK_REALTIME,
+            Some(_) => FUTEX_WAIT_BITSET,
+            None => FUTEX_WAIT,
         };
-        let result = futex(&sem.value, op | sem.private(), WAITERS_BIT, timeout);
+        // sem_wait, sem_timedwait and sem_clockwait are cancellation points.
+        let result = crate::pthread::cancel_syscall(nr::FUTEX, [
+            &sem.value as *const AtomicU32 as u64,
+            op | sem.private(),
+            WAITERS_BIT as u64,
+            timeout as u64,
+            0,
+            u32::MAX as u64,
+        ]);
         drop(waiting);
         if result < 0 && result != -EAGAIN {
             return crate::syscall_result_to_c_int(result);
@@ -218,11 +228,19 @@ unsafe fn wait(sem: *mut Sem, timeout: *const i64, timed: bool) -> i32 {
 }
 #[no_mangle]
 pub unsafe extern "C" fn sem_wait(sem: *mut Sem) -> i32 {
-    wait(sem, null(), false)
+    wait(sem, null(), None)
 }
 #[no_mangle]
 pub unsafe extern "C" fn sem_timedwait(sem: *mut Sem, abstime: *const i64) -> i32 {
-    wait(sem, abstime, true)
+    wait(sem, abstime, Some(0))
+}
+/// POSIX.1-2024 sem_clockwait: CLOCK_REALTIME or CLOCK_MONOTONIC.
+#[no_mangle]
+pub unsafe extern "C" fn sem_clockwait(sem: *mut Sem, clock: i32, abstime: *const i64) -> i32 {
+    if !(0..=1).contains(&clock) {
+        return fail(EINVAL);
+    }
+    wait(sem, abstime, Some(clock))
 }
 
 const O_RDWR: i32 = 2;

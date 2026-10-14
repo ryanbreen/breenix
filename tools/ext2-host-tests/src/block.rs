@@ -89,6 +89,8 @@ pub trait BlockDevice: Send + Sync {
 /// Errors that can occur during block device operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockError {
+    /// The filesystem has no free block for data or addressing.
+    NoSpace,
     /// A fallible filesystem buffer allocation failed.
     OutOfMemory,
     /// I/O error occurred during operation
@@ -106,6 +108,7 @@ pub enum BlockError {
 impl fmt::Display for BlockError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            BlockError::NoSpace => write!(f, "no space left"),
             BlockError::OutOfMemory => write!(f, "out of memory"),
             BlockError::IoError => write!(f, "I/O error"),
             BlockError::OutOfBounds => write!(f, "block number out of bounds"),

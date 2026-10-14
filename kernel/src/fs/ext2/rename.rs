@@ -140,17 +140,17 @@ impl Ext2Fs {
         let old_dir = old_dir.verify(self).map_err(|_| RenameError::NotFound)?;
         let new_dir = new_dir.verify(self).map_err(|_| RenameError::NotFound)?;
         let same_dir = old_dir == new_dir;
-        let old_dir_inode = self.named_dir(old_dir)?;
-        let new_dir_inode = self.named_dir(new_dir)?;
+        let mut old_dir_inode = self.named_dir(old_dir)?;
+        let mut new_dir_inode = self.named_dir(new_dir)?;
 
-        let old_data = self.read_directory(&old_dir_inode).map_err(io)?;
+        let mut old_data = self.read_directory(&old_dir_inode).map_err(io)?;
         let source = super::dir::find_inode(&old_data, old_name).ok_or(RenameError::NotFound)?;
         let source_inode = self.read_inode(source).map_err(io)?;
         let source_is_dir = source_inode.is_dir();
         if want_dir && !source_is_dir {
             return Err(RenameError::NotDirectory);
         }
-        let new_data = if same_dir {
+        let mut new_data = if same_dir {
             None
         } else {
             Some(self.read_directory(&new_dir_inode).map_err(io)?)
@@ -199,6 +199,40 @@ impl Ext2Fs {
         let raise_parent = source_is_dir && !same_dir;
         if raise_parent && victim.is_none() && new_dir_inode.i_links_count >= EXT2_LINK_MAX {
             return Err(RenameError::TooManyLinks);
+        }
+
+        // A new name in a directory with no room for it: that directory gets
+        // another block first (a complete change of its own; see
+        // make_directory_room). In one directory the old name's record is
+        // removed before the new one is placed, so its room counts.
+        if victim.is_none() {
+            let room = match new_data.as_deref() {
+                Some(data) => super::dir::has_room(data, new_name.len()).map_err(io)?,
+                None => {
+                    let mut image = super::namespace_alloc::copy_image(&old_data).map_err(io)?;
+                    remove_entry(&mut image, old_name, self.superblock.block_size()).map_err(io)?;
+                    super::dir::has_room(&image, new_name.len()).map_err(io)?
+                }
+            };
+            if !room {
+                let grow_err = |e: &'static str| {
+                    if e.contains("No space") {
+                        RenameError::NoSpace
+                    } else {
+                        io(e)
+                    }
+                };
+                match new_data.as_mut() {
+                    Some(data) => self
+                        .make_directory_room(new_dir, &mut new_dir_inode, data, new_name.len())
+                        .map_err(grow_err)?,
+                    None => {
+                        self.make_directory_room(old_dir, &mut old_dir_inode, &mut old_data, new_name.len())
+                            .map_err(grow_err)?;
+                        new_dir_inode = old_dir_inode;
+                    }
+                }
+            }
         }
 
         // The directory images after the rename. In one directory the old
