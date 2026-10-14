@@ -22,6 +22,9 @@
 //! ```
 
 #![no_std]
+// This crate defines memcpy, strlen, strcat and the rest: LLVM must not assume their C
+// semantics inside it, or it rewrites their bodies into calls to themselves (or away).
+#![no_builtins]
 #![feature(c_variadic)]
 
 mod crt;
