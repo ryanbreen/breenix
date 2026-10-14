@@ -184,3 +184,49 @@ fn fixed_memory_preserves_full_buffer() {
         fclose(f);
     }
 }
+#[test]
+fn positional_arguments_and_long_double() {
+    unsafe {
+        let (s, n) = printed(c"%3$*1$.*2$f|%4$lld|%4$lld", |p, n, f| {
+            snprintf(p, n, f, 10i32, 3i32, -1.5f64, 123i64)
+        });
+        assert_eq!(s, "    -1.500|123|123");
+        assert_eq!(n, s.len() as i32);
+        let (s, _) = printed(c"%.18Lf|%La", |p, n, f| snprintf(p, n, f, 0.125f64, 1.5f64));
+        assert_eq!(s, "0.125000000000000000|0x1.8p+0");
+    }
+}
+struct WideOutput(Vec<u32>);
+impl super::stdio::Sink for WideOutput {
+    fn bytes(&mut self, b: &[u8]) -> bool {
+        self.0.extend(b.iter().map(|&c| c as u32));
+        true
+    }
+    fn wide(&mut self, c: u32) -> bool {
+        self.0.push(c);
+        true
+    }
+}
+unsafe extern "C" fn wide_format(output: *mut WideOutput, fmt: *const u32, mut args: ...) -> i32 {
+    match super::stdio::vformat(
+        &mut *output,
+        super::stdio::Format::Wide(fmt),
+        args.as_va_list(),
+    ) {
+        Ok(()) => (*output).0.len() as i32,
+        Err(e) => -e,
+    }
+}
+#[test]
+fn wide_printf_preserves_characters_in_c_locale() {
+    unsafe {
+        let mut out = WideOutput(Vec::new());
+        let fmt = [37, 108, 115, 45, 37, 108, 99, 0];
+        let text = [0xe9u32, 0];
+        assert_eq!(
+            wide_format(&mut out, fmt.as_ptr(), text.as_ptr(), 0x20acu32),
+            3
+        );
+        assert_eq!(out.0, vec![0xe9, 45, 0x20ac]);
+    }
+}

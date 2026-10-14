@@ -1,7 +1,7 @@
 //! Binary64 formatting using exact decimal integer arithmetic, without libc/libm code.
 //! x = significand * 2^e; for negative e, x = significand * 5^(-e) / 10^(-e).
 //! At most 1074 fractional places and 309 integer places are required.
-use super::format::Text;
+use super::{args::Binary, format::Text};
 
 fn rounding() -> u32 {
     #[cfg(target_arch = "aarch64")]
@@ -31,22 +31,16 @@ fn up(first: u8, sticky: bool, odd: bool, negative: bool, mode: u32) -> bool {
     }
 }
 struct Decimal {
-    d: [u8; 1200],
+    d: [u8; 16500],
     n: usize,
     e: i32,
 }
 impl Decimal {
-    fn new(bits: u64) -> Self {
-        let exponent = ((bits >> 52) & 2047) as i32;
-        let mut sig = bits & ((1u64 << 52) - 1);
-        let binary = if exponent == 0 {
-            -1074
-        } else {
-            sig |= 1u64 << 52;
-            exponent - 1023 - 52
-        };
+    fn new(value: Binary) -> Self {
+        let mut sig = value.significand;
+        let binary = value.exponent;
         let mut s = Self {
-            d: [0; 1200],
+            d: [0; 16500],
             n: 0,
             e: 0,
         };
@@ -73,7 +67,7 @@ impl Decimal {
         }
         s.d[..s.n].reverse();
         s.e = s.n as i32 - 1 + core::cmp::min(binary, 0);
-        if bits & 0x7fffffffffffffff == 0 {
+        if value.significand == 0 {
             s.n = 1;
             s.d[0] = 0;
             s.e = 0;
@@ -162,18 +156,16 @@ fn exponent(out: &mut Text, e: i32, letter: u8, minimum: usize) -> Result<(), i3
 }
 pub(super) fn render(
     out: &mut Text,
-    value: f64,
+    value: Binary,
     conversion: u8,
     precision: Option<usize>,
     alternate: bool,
 ) -> Result<(), i32> {
-    let bits = value.to_bits();
-    let neg = bits >> 63 != 0;
-    let abs = bits & 0x7fffffffffffffff;
+    let neg = value.negative;
     let upper = conversion.is_ascii_uppercase();
     let c = conversion.to_ascii_lowercase();
-    if abs >= 0x7ff0000000000000 {
-        return out.bytes(if abs == 0x7ff0000000000000 {
+    if value.special != 0 {
+        return out.bytes(if value.special == 1 {
             if upper {
                 b"INF"
             } else {
@@ -187,28 +179,27 @@ pub(super) fn render(
     }
     let mode = rounding();
     if c == b'a' {
-        let mut fraction = abs & ((1u64 << 52) - 1);
-        let raw = (abs >> 52) as i32;
-        let mut lead = if raw == 0 { 0 } else { 1 };
-        let e = if abs == 0 {
+        let padding = (4 - value.fraction_bits % 4) % 4;
+        let hex_digits = (value.fraction_bits as usize + 3) / 4;
+        let mut fraction = (value.significand & ((1u128 << value.fraction_bits) - 1)) << padding;
+        let mut lead = (value.significand >> value.fraction_bits) as u8;
+        let e = if value.significand == 0 {
             0
-        } else if raw == 0 {
-            -1022
         } else {
-            raw - 1023
+            value.exponent + value.fraction_bits as i32
         };
         let p = precision.unwrap_or_else(|| {
-            let mut p = 13;
-            while p > 0 && ((fraction >> ((13 - p) * 4)) & 15) == 0 {
+            let mut p = hex_digits;
+            while p > 0 && ((fraction >> ((hex_digits - p) * 4)) & 15) == 0 {
                 p -= 1;
             }
             p
         });
-        if p < 13 {
-            let shift = (13 - p) * 4;
-            let mask = (1u64 << shift) - 1;
+        if p < hex_digits {
+            let shift = (hex_digits - p) * 4;
+            let mask = (1u128 << shift) - 1;
             let rest = fraction & mask;
-            let halfway = 1u64 << (shift - 1);
+            let halfway = 1u128 << (shift - 1);
             let odd = if p == 0 {
                 lead & 1 != 0
             } else {
@@ -222,8 +213,8 @@ pub(super) fn render(
             };
             fraction &= !mask;
             if inc {
-                fraction += 1u64 << shift;
-                if fraction >> 52 != 0 {
+                fraction += 1u128 << shift;
+                if fraction >> (hex_digits * 4) != 0 {
                     lead += 1;
                     fraction = 0;
                 }
@@ -240,15 +231,15 @@ pub(super) fn render(
             b"0123456789abcdef"
         };
         for i in 0..p {
-            out.byte(if i < 13 {
-                alphabet[((fraction >> ((12 - i) * 4)) & 15) as usize]
+            out.byte(if i < hex_digits {
+                alphabet[((fraction >> ((hex_digits - 1 - i) * 4)) & 15) as usize]
             } else {
                 b'0'
             })?
         }
         return exponent(out, e, if upper { b'P' } else { b'p' }, 1);
     }
-    let mut d = Decimal::new(abs);
+    let mut d = Decimal::new(value);
     let mut p = precision.unwrap_or(6);
     let mut scientific = c == b'e';
     if c == b'g' {

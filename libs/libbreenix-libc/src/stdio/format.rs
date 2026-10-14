@@ -11,7 +11,7 @@ pub(crate) enum Format {
     Wide(*const u32),
 }
 impl Format {
-    unsafe fn at(&self, i: usize) -> u32 {
+    pub(super) unsafe fn at(&self, i: usize) -> u32 {
         match *self {
             Self::Narrow(p) => *p.add(i) as u32,
             Self::Wide(p) => *p.add(i),
@@ -79,7 +79,8 @@ fn emit(out: &mut dyn Sink, b: &[u8]) -> Result<(), i32> {
     if out.bytes(b) {
         Ok(())
     } else {
-        Err(5)
+        let e = crate::pthread::errno();
+        Err(if e == 0 { 5 } else { e })
     }
 }
 fn padding(out: &mut dyn Sink, n: usize, c: u8) -> Result<(), i32> {
@@ -92,18 +93,6 @@ fn padding(out: &mut dyn Sink, n: usize, c: u8) -> Result<(), i32> {
     }
     Ok(())
 }
-unsafe fn decimal(fmt: &Format, i: &mut usize) -> Result<usize, i32> {
-    let mut n = 0usize;
-    while (b'0' as u32..=b'9' as u32).contains(&fmt.at(*i)) {
-        n = n
-            .checked_mul(10)
-            .and_then(|n| n.checked_add((fmt.at(*i) - 48) as usize))
-            .filter(|&n| n <= i32::MAX as usize)
-            .ok_or(75)?;
-        *i += 1;
-    }
-    Ok(n)
-}
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum Length {
     None,
@@ -115,28 +104,6 @@ pub(super) enum Length {
     Z,
     T,
     BigL,
-}
-unsafe fn format_length(fmt: &Format, i: &mut usize) -> Length {
-    let c = fmt.at(*i);
-    let l = match c {
-        104 => Length::H,
-        108 => Length::L,
-        106 => Length::J,
-        122 => Length::Z,
-        116 => Length::T,
-        76 => Length::BigL,
-        _ => return Length::None,
-    };
-    *i += 1;
-    if c == 104 && fmt.at(*i) == 104 {
-        *i += 1;
-        Length::Hh
-    } else if c == 108 && fmt.at(*i) == 108 {
-        *i += 1;
-        Length::Ll
-    } else {
-        l
-    }
 }
 fn digits(
     out: &mut Text,
@@ -238,8 +205,9 @@ impl super::Sink for Counting<'_> {
 pub(crate) unsafe fn vformat(
     out: &mut dyn Sink,
     fmt: Format,
-    mut ap: VaList<'_, '_>,
+    ap: VaList<'_, '_>,
 ) -> Result<(), i32> {
+    let mut args = super::args::Arguments::new(ap, &fmt)?;
     let mut out = Counting {
         out,
         n: 0,
@@ -264,50 +232,69 @@ pub(crate) unsafe fn vformat(
             emit(&mut out, b"%")?;
             continue;
         }
-        let (mut left, mut plus, mut space, mut alternate, mut zero) =
-            (false, false, false, false, false);
-        loop {
-            match fmt.at(i) {
-                45 => left = true,
-                43 => plus = true,
-                32 => space = true,
-                35 => alternate = true,
-                48 => zero = true,
-                _ => break,
-            }
-            i += 1;
-        }
-        let width = if fmt.at(i) == 42 {
-            i += 1;
-            let w = ap.arg::<i32>();
-            if w < 0 {
-                left = true;
-                w.unsigned_abs() as usize
-            } else {
-                w as usize
-            }
-        } else {
-            decimal(&fmt, &mut i)?
-        };
-        let precision = if fmt.at(i) == 46 {
-            i += 1;
-            if fmt.at(i) == 42 {
-                i += 1;
-                let p = ap.arg::<i32>();
-                if p < 0 {
-                    None
-                } else {
-                    Some(p as usize)
+        let mut spec = super::args::Spec::parse(&fmt, &mut i)?;
+        args.widths(&mut spec);
+        let (left, plus, space, alternate, mut zero) =
+            (spec.left, spec.plus, spec.space, spec.alternate, spec.zero);
+        let width = spec.width;
+        let precision = spec.precision;
+        let l = spec.length;
+        let c = spec.conversion;
+        if fmt.is_wide() && (c == b'c' || c == b's') {
+            let mut words = Text::new();
+            if c == b'c' {
+                let mut wc = args.integer(&spec) as u32;
+                if l != Length::L {
+                    let mut state = core::mem::zeroed();
+                    wc = match crate::locale::decode(&[wc as u8], &mut state) {
+                        crate::locale::Decoded::Char(wc, _) => wc,
+                        _ => return Err(84),
+                    };
+                }
+                words.bytes(&wc.to_ne_bytes())?;
+            } else if l == Length::L {
+                let mut p = args.pointer(&spec) as *const u32;
+                while *p != 0 && words.n / 4 < precision.unwrap_or(usize::MAX) {
+                    words.bytes(&(*p).to_ne_bytes())?;
+                    p = p.add(1);
                 }
             } else {
-                Some(decimal(&fmt, &mut i)?)
+                let mut p = args.pointer(&spec) as *const u8;
+                if p.is_null() {
+                    p = c"(null)".as_ptr() as *const u8;
+                }
+                let mut state = core::mem::zeroed();
+                while *p != 0 && words.n / 4 < precision.unwrap_or(usize::MAX) {
+                    let wc = loop {
+                        if *p == 0 {
+                            return Err(84);
+                        }
+                        let byte = *p;
+                        p = p.add(1);
+                        match crate::locale::decode(&[byte], &mut state) {
+                            crate::locale::Decoded::Char(wc, _) => break wc,
+                            crate::locale::Decoded::Incomplete(_) => continue,
+                            crate::locale::Decoded::Invalid => return Err(84),
+                        }
+                    };
+                    words.bytes(&wc.to_ne_bytes())?;
+                }
             }
-        } else {
-            None
-        };
-        let l = format_length(&fmt, &mut i);
-        let c = fmt.at(i) as u8;
-        i += 1;
+            let pad = width.saturating_sub(words.n / 4);
+            if !left {
+                padding(&mut out, pad, b' ')?
+            }
+            for chunk in words.as_bytes().chunks_exact(4) {
+                let wc = u32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                if !out.wide(wc) {
+                    return Err(crate::pthread::errno());
+                }
+            }
+            if left {
+                padding(&mut out, pad, b' ')?
+            }
+            continue;
+        }
         let mut body = Text::new();
         let mut prefix = Text::new();
         let mut numeric = false;
@@ -317,25 +304,9 @@ pub(crate) unsafe fn vformat(
                 numeric = true;
                 let signed = c == b'd' || c == b'i';
                 let v = if c == b'p' {
-                    ap.arg::<*const u8>() as u64
-                } else if signed {
-                    match l {
-                        Length::Hh => ap.arg::<i32>() as i8 as i64 as u64,
-                        Length::H => ap.arg::<i32>() as i16 as i64 as u64,
-                        Length::L | Length::Ll | Length::J | Length::Z | Length::T => {
-                            ap.arg::<i64>() as u64
-                        }
-                        _ => ap.arg::<i32>() as i64 as u64,
-                    }
+                    args.pointer(&spec) as u64
                 } else {
-                    match l {
-                        Length::Hh => ap.arg::<u32>() as u8 as u64,
-                        Length::H => ap.arg::<u32>() as u16 as u64,
-                        Length::L | Length::Ll | Length::J | Length::Z | Length::T => {
-                            ap.arg::<u64>()
-                        }
-                        _ => ap.arg::<u32>() as u64,
-                    }
+                    args.integer(&spec)
                 };
                 let negative = signed && (v as i64) < 0;
                 let magnitude = if negative { v.wrapping_neg() } else { v };
@@ -365,9 +336,9 @@ pub(crate) unsafe fn vformat(
                 }
             }
             b'f' | b'F' | b'e' | b'E' | b'g' | b'G' | b'a' | b'A' => {
-                let v = ap.arg::<f64>();
+                let v = args.floating(&spec);
                 numeric = true;
-                if v.to_bits() >> 63 != 0 {
+                if v.negative {
                     prefix.byte(b'-')?
                 } else if plus {
                     prefix.byte(b'+')?
@@ -375,10 +346,10 @@ pub(crate) unsafe fn vformat(
                     prefix.byte(b' ')?
                 }
                 super::float::render(&mut body, v, c, precision, alternate)?;
-                if !v.is_finite() {
+                if v.special != 0 {
                     zero = false
                 }
-                if c.to_ascii_lowercase() == b'a' && v.is_finite() {
+                if c.to_ascii_lowercase() == b'a' && v.special == 0 {
                     prefix.bytes(&body.as_bytes()[..2])?;
                     unsafe {
                         ptr::copy(body.p.add(2), body.p, body.n - 2);
@@ -389,7 +360,7 @@ pub(crate) unsafe fn vformat(
             b'c' | b's' => {
                 let widearg = l == Length::L;
                 if c == b'c' {
-                    let wc = ap.arg::<u32>();
+                    let wc = args.integer(&spec) as u32;
                     if widearg {
                         let mut b = [0; 4];
                         let n = crate::locale::encode(wc, &mut b).ok_or(84)?;
@@ -400,7 +371,7 @@ pub(crate) unsafe fn vformat(
                         field_units = 1;
                     }
                 } else if widearg {
-                    let mut p = ap.arg::<*const u32>();
+                    let mut p = args.pointer(&spec) as *const u32;
                     let limit = precision.unwrap_or(usize::MAX);
                     while *p != 0 {
                         let mut b = [0; 4];
@@ -414,7 +385,7 @@ pub(crate) unsafe fn vformat(
                         p = p.add(1);
                     }
                 } else {
-                    let mut p = ap.arg::<*const u8>();
+                    let mut p = args.pointer(&spec) as *const u8;
                     if p.is_null() {
                         p = c"(null)".as_ptr() as *const u8;
                     }
@@ -441,7 +412,7 @@ pub(crate) unsafe fn vformat(
                 }
             }
             b'n' => {
-                store_count(ap.arg::<*mut u8>(), l, out.n);
+                store_count(args.pointer(&spec), l, out.n);
                 continue;
             }
             _ => return Err(22),
