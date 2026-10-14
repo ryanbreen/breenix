@@ -3,7 +3,7 @@
 #
 # This script creates an ext2 filesystem image (256MB default) with:
 #   - Test files for filesystem testing
-#   - BusyBox binary in /bin/busybox with symlinks for coreutils
+#   - Breenix-libc BusyBox in /bin/busybox with hard links for coreutils
 #   - hello_world binary for exec testing
 #   - Test binaries in /usr/local/test/bin
 #
@@ -64,8 +64,9 @@ else
     TESTDATA_FILE="$PROJECT_ROOT/testdata/ext2.img"
 fi
 
-# Both native and gate disks use the same checked-in, checksummed build.
+# Both native and gate disks use the exact output of the local libc build.
 # A missing cross compiler must never silently remove coreutils from a disk.
+python3 "$SCRIPT_DIR/userspace-manifest.py" check --arch "$ARCH"
 "$SCRIPT_DIR/install-libc-busybox.sh" --check "$USERSPACE_DIR" "$PROJECT_ROOT/vendor/busybox/required-applets"
 
 echo "Creating ext2 disk image..."
@@ -185,7 +186,6 @@ if [[ "$(uname)" == "Darwin" ]]; then
             sh /install-libc-busybox.sh /binaries /required-applets /mnt/ext2
 
             # Copy remaining binaries from /binaries directory
-            # Routing: musl C programs (*_musl*) -> /usr/local/cbin
             #          test binaries (*_test, test_*) -> /usr/local/test/bin
             #          system binaries (telnetd, init, probe, blogd, suite-*) -> /sbin
             #          everything else -> /bin
@@ -193,18 +193,13 @@ if [[ "$(uname)" == "Darwin" ]]; then
             bin_count=0
             sbin_count=0
             test_count=0
-            cbin_count=0
+
             for elf_file in /binaries/*.elf; do
                 if [ -f "$elf_file" ]; then
                     bin_name=$(basename "$elf_file" .elf)
-                    # Skip both BusyBoxes (already installed above)
-                    [ "$bin_name" = "busybox" ] && continue
+                    # Skip BusyBox (already installed above)
                     [ "$bin_name" = "libc-busybox" ] && continue
-                    if echo "$bin_name" | grep -qE "_musl"; then
-                        cp "$elf_file" /mnt/ext2/usr/local/cbin/${bin_name}
-                        chmod 755 /mnt/ext2/usr/local/cbin/${bin_name}
-                        cbin_count=$((cbin_count + 1))
-                    elif echo "$bin_name" | grep -qE "_test$|^test_"; then
+                    if echo "$bin_name" | grep -qE "_test$|^test_"; then
                         cp "$elf_file" /mnt/ext2/usr/local/test/bin/${bin_name}
                         chmod 755 /mnt/ext2/usr/local/test/bin/${bin_name}
                         test_count=$((test_count + 1))
@@ -221,7 +216,7 @@ if [[ "$(uname)" == "Darwin" ]]; then
             done
             echo "  Installed $bin_count binaries in /bin"
             echo "  Installed $sbin_count binaries in /sbin"
-            echo "  Installed $cbin_count C binaries in /usr/local/cbin"
+
             echo "  Installed $test_count test binaries in /usr/local/test/bin"
 
             # The Rust std suite starts its helper through a name that is not UTF-8.
@@ -229,15 +224,8 @@ if [[ "$(uname)" == "Darwin" ]]; then
                 ln /mnt/ext2/usr/local/test/bin/rust-std-child_test "/mnt/ext2/usr/local/test/bin/rust-std-child_test$(printf "\377")"
             fi
 
-            # Keep the ARM64 workaround for #1074; x86 must execute BusyBox ls.
-            if [ "$BREENIX_ARCH" = aarch64 ] && [ -f /mnt/ext2/bin/bls ]; then
-                rm -f /mnt/ext2/bin/ls
-                cp /mnt/ext2/bin/bls /mnt/ext2/bin/ls
-                chmod 755 /mnt/ext2/bin/ls
-                echo "  Installed native Breenix ls as /bin/ls"
-            fi
 
-            # Create /etc with passwd and group for musl getpwuid/getgrgid
+            # Create /etc with passwd and group for libc getpwuid/getgrgid
             mkdir -p /mnt/ext2/etc
             printf "127.0.0.1 localhost\n" > /mnt/ext2/etc/hosts
             printf "nameserver %s\n" "$DNS_SERVER" > /mnt/ext2/etc/resolv.conf
@@ -471,7 +459,6 @@ else
     "$SCRIPT_DIR/install-libc-busybox.sh" "$USERSPACE_DIR" "$PROJECT_ROOT/vendor/busybox/required-applets" "$MOUNT_DIR"
 
     # Copy remaining binaries from userspace directory
-    # Routing: musl C programs (*_musl*) -> /usr/local/cbin
     #          test binaries (*_test, test_*) -> /usr/local/test/bin
     #          system binaries (telnetd, init, probe, blogd, suite-*) -> /sbin
     #          everything else -> /bin
@@ -479,18 +466,13 @@ else
     bin_count=0
     sbin_count=0
     test_count=0
-    cbin_count=0
+
     for elf_file in "$USERSPACE_DIR"/*.elf; do
         if [ -f "$elf_file" ]; then
             bin_name=$(basename "$elf_file" .elf)
-            # Skip both BusyBoxes (already installed above)
-            [ "$bin_name" = "busybox" ] && continue
+            # Skip BusyBox (already installed above)
             [ "$bin_name" = "libc-busybox" ] && continue
-            if echo "$bin_name" | grep -qE '_musl'; then
-                cp "$elf_file" "$MOUNT_DIR/usr/local/cbin/${bin_name}"
-                chmod 755 "$MOUNT_DIR/usr/local/cbin/${bin_name}"
-                cbin_count=$((cbin_count + 1))
-            elif echo "$bin_name" | grep -qE '_test$|^test_'; then
+            if echo "$bin_name" | grep -qE '_test$|^test_'; then
                 cp "$elf_file" "$MOUNT_DIR/usr/local/test/bin/${bin_name}"
                 chmod 755 "$MOUNT_DIR/usr/local/test/bin/${bin_name}"
                 test_count=$((test_count + 1))
@@ -507,7 +489,7 @@ else
     done
     echo "  Installed $bin_count binaries in /bin"
     echo "  Installed $sbin_count binaries in /sbin"
-    echo "  Installed $cbin_count C binaries in /usr/local/cbin"
+
     echo "  Installed $test_count test binaries in /usr/local/test/bin"
 
     # The Rust std suite starts its helper through a name that is not UTF-8.
@@ -515,15 +497,8 @@ else
         ln "$MOUNT_DIR/usr/local/test/bin/rust-std-child_test" "$MOUNT_DIR/usr/local/test/bin/rust-std-child_test$(printf '\377')"
     fi
 
-    # Keep the ARM64 workaround for #1074; x86 must execute BusyBox ls.
-    if [[ "$ARCH" = aarch64 ]] && [ -f "$MOUNT_DIR/bin/bls" ]; then
-        rm -f "$MOUNT_DIR/bin/ls"
-        cp "$MOUNT_DIR/bin/bls" "$MOUNT_DIR/bin/ls"
-        chmod 755 "$MOUNT_DIR/bin/ls"
-        echo "  Installed native Breenix ls as /bin/ls"
-    fi
 
-    # Create /etc with passwd and group for musl getpwuid/getgrgid
+    # Create /etc with passwd and group for libc getpwuid/getgrgid
     mkdir -p "$MOUNT_DIR/etc"
     printf '127.0.0.1 localhost\n' > "$MOUNT_DIR/etc/hosts"
     printf 'nameserver %s\n' "$DNS_SERVER" > "$MOUNT_DIR/etc/resolv.conf"
