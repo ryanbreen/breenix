@@ -271,6 +271,7 @@ static SUITE: Suite = suite("libc", "C library", &[
         case("cancel-disabled-no-eintr", "A cancel sent while cancellation is disabled does not make nanosleep or a blocking read fail with EINTR", c_case),
         case("cancel-stdio-unlocks", "A thread cancelled while blocked in stdio output leaves the stream unlocked, and fclose and fopen still work", c_case),
         case("cancel-cond-signal", "A waiter cancelled in pthread_cond_wait does not consume a concurrent pthread_cond_signal another thread waits for", c_case),
+        case("cancel-pending-exec", "A program exec'd by a thread with cancellation disabled and a cancel request pending starts and runs", c_case),
         case("barrier-wait", "pthread_barrier_wait releases all four threads together and gives exactly one PTHREAD_BARRIER_SERIAL_THREAD", c_case),
         case("spin-lock", "pthread_spin_trylock of a held spin lock returns EBUSY and succeeds once unlocked", c_case),
         case("attr-stacksize", "pthread_attr_setstacksize refuses less than PTHREAD_STACK_MIN and a thread runs on the size set", c_case),

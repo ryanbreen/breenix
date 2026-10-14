@@ -173,9 +173,28 @@ unsafe extern "C" fn handler(_sig: i32, _info: *mut u8, context: *mut u8) {
         *pc = core::ptr::addr_of!(__breenix_cancel_return) as usize;
     }
 }
-/// The runtime starts with the cancel signal unblocked: an image exec'd by a
-/// thread that had cancellation disabled inherits it blocked.
+/// The runtime starts with the cancel signal unblocked. An image exec'd by a
+/// thread that had cancellation disabled inherits it blocked, and possibly
+/// pending: a pthread_cancel that ran between that thread's block and its
+/// DISABLED store queued the signal. Exec reset the handler to SIG_DFL, which
+/// would end this image, so a pending cancel signal is discarded first: setting
+/// SIG_IGN discards it (POSIX.1-2024 2.4.3), and the previous action is put
+/// back.
 pub(super) unsafe fn runtime_start() {
+    let mut blocked: u64 = 0;
+    raw::syscall4(nr::SIGPROCMASK, SIG_BLOCK, 0, &mut blocked as *mut u64 as u64, 8);
+    if blocked & CANCEL_MASK == 0 {
+        return;
+    }
+    let ignore = libbreenix::signal::Sigaction {
+        handler: libbreenix::signal::SIG_IGN, flags: 0, restorer: 0, mask: 0,
+    };
+    let mut previous = libbreenix::signal::Sigaction {
+        handler: libbreenix::signal::SIG_DFL, flags: 0, restorer: 0, mask: 0,
+    };
+    raw::syscall4(nr::SIGACTION, CANCEL_SIGNAL as u64, &ignore as *const _ as u64,
+        &mut previous as *mut _ as u64, 8);
+    raw::syscall4(nr::SIGACTION, CANCEL_SIGNAL as u64, &previous as *const _ as u64, 0, 8);
     mask_cancel(SIG_UNBLOCK);
 }
 
