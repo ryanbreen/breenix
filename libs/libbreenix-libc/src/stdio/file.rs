@@ -278,7 +278,7 @@ unsafe fn publish(f: *mut File) {
         *(*f).data.add((*f).data_len) = 0;
         *(*f).publish_ptr = (*f).data;
         *(*f).publish_size = core::cmp::min((*f).data_pos, (*f).data_len);
-    } else if (*f).memory && (*f).writable && (*f).data_cap > 0 {
+    } else if (*f).memory && (*f).writable && (*f).data_len < (*f).data_cap {
         *(*f)
             .data
             .add(core::cmp::min((*f).data_len, (*f).data_cap - 1)) = 0;
