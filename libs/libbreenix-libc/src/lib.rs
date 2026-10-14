@@ -25,6 +25,7 @@
 #![feature(c_variadic)]
 
 mod alloc_cache;
+mod locale;
 mod inet;
 mod netdb;
 mod mqueue;
