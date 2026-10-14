@@ -226,6 +226,10 @@ pub struct Process {
     #[allow(dead_code)]
     pub id: ProcessId,
 
+    /// Forked and has not exec'd since (Linux's PF_FORKNOEXEC). Such a child
+    /// carries its parent's name; exit accounting still tells it apart.
+    pub forked_without_exec: bool,
+
     /// Process group ID (for job control)
     /// By default, a process's pgid equals its pid when created
     pub pgid: ProcessId,
@@ -498,6 +502,7 @@ impl Process {
             // Default working directory is root
             cwd: crate::fs::namei::SharedWorkingDir::default(),
             name,
+            forked_without_exec: false,
             exe_path: None,
             cmdline: None,
             cmdline_area: None,
@@ -661,7 +666,7 @@ impl Process {
         // count too. The guard above makes this exactly once per process. This
         // is safe under PROCESS_MANAGER: record_exit allocates/logs nothing and
         // takes only its leaf spin mutex; that mutex never nests PROCESS_MANAGER.
-        crate::task::exit_tally::record_exit(&self.name, exit_code);
+        crate::task::exit_tally::record_exit(&self.name, self.forked_child_pid(), exit_code);
 
         // CRITICAL FIX: Mark the main thread as terminated so the scheduler
         // doesn't keep putting it back in the ready queue. The scheduler checks
@@ -671,6 +676,11 @@ impl Process {
         if let Some(ref mut thread) = self.main_thread {
             thread.set_terminated();
         }
+    }
+
+    /// This process's pid while it is a forked child that has not exec'd.
+    fn forked_child_pid(&self) -> Option<u64> {
+        self.forked_without_exec.then_some(self.id.as_u64())
     }
 
     /// Minimal terminate: mark process and thread as terminated without cleanup.
@@ -696,7 +706,7 @@ impl Process {
         // count too. The guard above makes this exactly once per process. This
         // is safe under PROCESS_MANAGER: record_exit allocates/logs nothing and
         // takes only its leaf spin mutex; that mutex never nests PROCESS_MANAGER.
-        crate::task::exit_tally::record_exit(&self.name, exit_code);
+        crate::task::exit_tally::record_exit(&self.name, self.forked_child_pid(), exit_code);
         if let Some(ref mut thread) = self.main_thread {
             thread.set_terminated();
         }

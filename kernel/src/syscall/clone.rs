@@ -494,6 +494,7 @@ pub fn sys_clone_thread(
         }
     };
     let mut child_process = Process::new(child_pid, child_name, entry_point);
+    child_process.forked_without_exec = flags & CLONE_THREAD == 0;
     child_process.limits = parent.limits.clone();
     child_process.cred = parent.cred.clone();
     child_process.nice = parent.nice;

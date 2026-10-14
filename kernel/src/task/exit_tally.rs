@@ -53,18 +53,44 @@ impl ExitFailure {
         exit_code: 0,
     };
 
-    fn new(name: &str, exit_code: i32) -> Self {
-        let mut name_len = name.len().min(MAX_NAME_BYTES);
+    /// `name`, or `<name>_child_<pid>` for a forked child that has not
+    /// exec'd: it shares its parent's name, but the verdict must not count
+    /// its exit as the parent program's.
+    fn new(name: &str, forked_child: Option<u64>, exit_code: i32) -> Self {
+        let mut suffix = [0u8; 27];
+        let mut suffix_len = 0;
+        if let Some(pid) = forked_child {
+            suffix[..7].copy_from_slice(b"_child_");
+            suffix_len = 7;
+            let mut digits = [0u8; 20];
+            let mut count = 0;
+            let mut value = pid;
+            loop {
+                digits[count] = b'0' + (value % 10) as u8;
+                count += 1;
+                value /= 10;
+                if value == 0 {
+                    break;
+                }
+            }
+            for digit in digits[..count].iter().rev() {
+                suffix[suffix_len] = *digit;
+                suffix_len += 1;
+            }
+        }
+
+        let mut name_len = name.len().min(MAX_NAME_BYTES - suffix_len);
         while !name.is_char_boundary(name_len) {
             name_len -= 1;
         }
 
         let mut stored_name = [0; MAX_NAME_BYTES];
         stored_name[..name_len].copy_from_slice(&name.as_bytes()[..name_len]);
+        stored_name[name_len..name_len + suffix_len].copy_from_slice(&suffix[..suffix_len]);
 
         Self {
             name: stored_name,
-            name_len: name_len as u8,
+            name_len: (name_len + suffix_len) as u8,
             exit_code,
         }
     }
@@ -98,8 +124,9 @@ pub fn started() -> u32 {
     USERSPACE_STARTED.load(Ordering::SeqCst)
 }
 
-/// Record one real userspace process exit.
-pub fn record_exit(name: &str, exit_code: i32) {
+/// Record one real userspace process exit; `forked_child` is the pid of a
+/// forked child that has not exec'd.
+pub fn record_exit(name: &str, forked_child: Option<u64>, exit_code: i32) {
     USERSPACE_EXITS.fetch_add(1, Ordering::SeqCst);
 
     if exit_code == 0 {
@@ -111,7 +138,7 @@ pub fn record_exit(name: &str, exit_code: i32) {
         let mut failures = USERSPACE_FAILURES.lock();
         if failures.len < MAX_FAILURES {
             let index = failures.len;
-            failures.failures[index] = ExitFailure::new(name, exit_code);
+            failures.failures[index] = ExitFailure::new(name, forked_child, exit_code);
             failures.len += 1;
         }
     });

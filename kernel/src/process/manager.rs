@@ -2984,6 +2984,7 @@ impl ProcessManager {
 
         // Create the child process with the same entry point
         let mut child_process = Process::new(child_pid, child_name.clone(), parent_entry_point);
+        child_process.forked_without_exec = true;
         let parent_row = self.processes.live_row(&parent_pid).ok_or("Parent process not found")?;
         child_process.exe_path = parent_row.exe_path.clone();
         child_process.cmdline = parent_row.cmdline.clone();
@@ -3114,6 +3115,7 @@ impl ProcessManager {
             crate::syscall::exec::copy_string(&parent.name).map_err(|_| "fork allocation failed")?,
             parent.entry_point,
         );
+        child_process.forked_without_exec = true;
         child_process.exe_path = parent.exe_path.clone();
         child_process.cmdline = parent.cmdline.clone();
         child_process.cmdline_area = parent.cmdline_area;
@@ -3720,6 +3722,7 @@ impl ProcessManager {
 
         // Create the child process with the same entry point
         let mut child_process = Process::new(child_pid, child_name.clone(), parent.entry_point);
+        child_process.forked_without_exec = true;
         child_process.exe_path = parent.exe_path.clone();
         child_process.cmdline = parent.cmdline.clone();
         child_process.cmdline_area = parent.cmdline_area;
@@ -4208,6 +4211,7 @@ impl ProcessManager {
         process.exe_path = None;
         process.cmdline = None;
         process.cmdline_area = None;
+        process.forked_without_exec = false;
         if let Some(name) = program_name {
             process.name = String::from(name);
             log::info!("exec_process: Updated process name to '{}'", name);
@@ -4692,6 +4696,7 @@ impl ProcessManager {
             process.name = name;
         }
         process.exe_path = exe_path;
+        process.forked_without_exec = false;
         process.cmdline = Some(cmdline);
         process.cmdline_area = Some(cmdline_area);
         process.entry_point = loaded_elf.entry_point;
@@ -5111,6 +5116,7 @@ impl ProcessManager {
             process.name = name;
         }
         process.exe_path = exe_path;
+        process.forked_without_exec = false;
         process.cmdline = Some(cmdline);
         process.cmdline_area = Some(cmdline_area);
         process.entry_point = VirtAddr::new(new_entry_point);
@@ -5471,6 +5477,7 @@ impl ProcessManager {
         process.exe_path = None;
         process.cmdline = None;
         process.cmdline_area = None;
+        process.forked_without_exec = false;
         if let Some(name) = program_name {
             process.name = String::from(name);
             log::info!("exec_process [ARM64]: Updated process name to '{}'", name);

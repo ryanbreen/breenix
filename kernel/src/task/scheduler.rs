@@ -2822,11 +2822,12 @@ impl Scheduler {
                 cpu
             );
         }
-        // Only the times-reset exec helper forks children with this prefix.
+        // A thread first dispatched under the times-reset exec helper's name is
+        // a child it forked (exec keeps the helper's own, already-run thread).
         // Keep the 80 ms masked-delay regression leg off production builds.
         #[cfg(feature = "force_cpu_accounting_delay")]
         if thread.run_start_ticks == 0
-            && thread.name.rsplit('/').next().is_some_and(|name| name.starts_with("processes-exec_test_child_"))
+            && thread.name.rsplit('/').next() == Some("processes-exec_test")
         {
             let start = crate::time::tsc::read_tsc();
             let delay = crate::time::tsc::frequency_hz() * 80 / 1000;
