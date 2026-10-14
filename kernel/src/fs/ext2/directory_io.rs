@@ -3,6 +3,7 @@
 use super::{block_group, dir, file, Ext2BlockGroupDesc, Ext2Fs, Ext2Inode, Ext2Superblock};
 use crate::block::{BlockDevice, BlockError};
 use alloc::vec::Vec;
+use super::directory_extension::Extension;
 pub(super) fn prepare<B: BlockDevice + ?Sized>(
     device: &B,
     inode: &Ext2Inode,
@@ -81,34 +82,41 @@ impl Ext2Fs {
         let mut record = [0u8; 4096];
         record[4..6].copy_from_slice(&(size as u16).to_le_bytes());
 
-        let device = self.device.as_ref();
-        let block = block_group::allocate_data_block(device, &self.superblock, &mut self.block_groups)
+        let mut groups = Vec::new();
+        groups.try_reserve_exact(self.block_groups.len()).map_err(|_| "No memory for directory transaction")?;
+        groups.extend_from_slice(&self.block_groups);
+        let transaction = Extension::new(self.device.as_ref(), &self.superblock, &groups)?;
+        let block = block_group::allocate_data_block(&transaction, &self.superblock, &mut groups)
             .map_err(|e| if e == "No free blocks available" { "No space for another directory block" } else { e })?;
         let mut grown = *inode;
-        let linked = file::write_ext2_block(device, block, size, &record[..size])
-            .map_err(|_| "Failed to write directory block")
-            .and_then(|_| {
-                file::set_block_num(device, &mut grown, &self.superblock, &mut self.block_groups, logical, block)
-                    .map_err(|_| "Failed to link directory block")
-            });
-        if let Err(error) = linked {
-            let mut attempted = false;
-            block_group::release_orphan_block(device, block, &self.superblock, &mut self.block_groups, &mut attempted)?;
-            return Err(error);
-        }
+        file::write_ext2_block(&transaction, block, size, &record[..size])
+            .map_err(|_| "Failed to write directory block")?;
+        file::set_block_num(&transaction, &mut grown, &self.superblock, &mut groups, logical, block)
+            .map_err(|e| if e == BlockError::NoSpace { "No space for directory addressing" } else { "Failed to link directory block" })?;
         grown.i_blocks += (size / 512) as u32;
         grown.i_size = new_size;
-        self.write_inode(dir_ino, &grown)?;
+        grown.write_to(&transaction, dir_ino, &self.superblock, &groups)
+            .map_err(|_| "Failed to write inode")?;
+        let mut sb = self.superblock;
+        sb.s_free_blocks_count = groups.iter().map(|group| group.bg_free_blocks_count as u32).sum();
+        sb.write_to(&transaction).map_err(|_| "Failed to write superblock")?;
+        Ext2BlockGroupDesc::write_table(&transaction, &sb, &groups)
+            .map_err(|_| "Failed to write block group descriptors")?;
+        if let Err(restored) = transaction.publish() {
+            if !restored {
+                self.block_groups = groups;
+                self.superblock = sb;
+                return Err("Failed to restore directory extension; allocations retained");
+            }
+            return Err("Failed to publish directory extension");
+        }
+        self.block_groups = groups;
+        self.superblock = sb;
+        if let Some(object) = self.live_inodes.get(dir_ino) {
+            object.map.note_disk_write(self.durable_epoch());
+        }
         *inode = grown;
         data.extend_from_slice(&record[..size]);
-
-        // The bitmap holds the allocation; publish the free count the groups now carry.
-        self.superblock.s_free_blocks_count =
-            self.block_groups.iter().map(|group| group.bg_free_blocks_count as u32).sum();
-        self.superblock
-            .write_to(self.device.as_ref())
-            .map_err(|_| "Failed to write superblock")?;
-        Ext2BlockGroupDesc::write_table(self.device.as_ref(), &self.superblock, &self.block_groups)
-            .map_err(|_| "Failed to write block group descriptors")
+        Ok(())
     }
 }

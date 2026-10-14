@@ -7,6 +7,7 @@ pub mod block_group;
 pub mod create_node;
 pub mod dir;
 mod directory_io;
+mod directory_extension;
 mod fifo_times;
 pub mod file;
 pub mod inode;
