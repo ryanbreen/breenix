@@ -35,6 +35,7 @@ mod semaphore;
 mod sysv;
 mod signal;
 mod termios;
+mod stdio;
 
 use libbreenix::types::Fd;
 use libbreenix::error::Error;
