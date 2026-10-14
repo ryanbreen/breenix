@@ -1,0 +1,91 @@
+--- a/editors/diff.c
++++ b/editors/diff.c
+@@ -100,10 +100,9 @@
+ //kbuild:lib-$(CONFIG_DIFF) += diff.o
+ 
+ //usage:#define diff_trivial_usage
+-//usage:       "[-abBdiNqrTstw] [-L LABEL] [-S FILE] [-U LINES] FILE1 FILE2"
++//usage:       "[-abBdiNqrTstuw] [-L LABEL] [-S FILE] [-U LINES] FILE1 FILE2"
+ //usage:#define diff_full_usage "\n\n"
+ //usage:       "Compare files line by line and output the differences between them.\n"
+-//usage:       "This implementation supports unified diffs only.\n"
+ //usage:     "\n	-a	Treat all files as text"
+ //usage:     "\n	-b	Ignore changes in the amount of whitespace"
+ //usage:     "\n	-B	Ignore changes whose lines are all blank"
+@@ -117,7 +116,8 @@
+ //usage:     "\n	-T	Make tabs line up by prefixing a tab when necessary"
+ //usage:     "\n	-s	Report when two files are the same"
+ //usage:     "\n	-t	Expand tabs to spaces in output"
+-//usage:     "\n	-U	Output LINES lines of context"
++//usage:     "\n	-u	Output unified format with 3 lines of context"
++//usage:     "\n	-U	Output unified format with LINES lines of context"
+ //usage:     "\n	-w	Ignore all whitespace"
+ 
+ #include "libbb.h"
+@@ -150,7 +150,7 @@
+ 	FLAG_T,
+ 	FLAG_U,         /* never used, handled by getopt32 */
+ 	FLAG_w,
+-	FLAG_u,         /* ignored, this is the default */
++	FLAG_u,         /* unified format */
+ 	FLAG_p,         /* not implemented */
+ 	FLAG_B,
+ 	FLAG_E,         /* not implemented */
+@@ -416,6 +416,8 @@
+ 		putchar(ch);
+ 		if (option_mask32 & FLAG(T))
+ 			putchar('\t');
++		else if (ch == '<' || ch == '>')
++			putchar(' ');
+ 		for (j = 0, col = 0; j < ix[i] - ix[i - 1]; j++) {
+ 			int c = fgetc(ft->ft_fp);
+ 			if (c == EOF) {
+@@ -593,6 +595,13 @@
+ 	return J;
+ }
+ 
++static void print_range(int a, int b)
++{
++	printf("%d", MIN(a, b));
++	if (a < b)
++		printf(",%d", b);
++}
++
+ static bool diff(FILE* fp[2], char *file[2])
+ {
+ 	int nlen[2];
+@@ -635,7 +644,8 @@
+ 				 * If this change is more than 'context' lines from the
+ 				 * previous change, dump the record and reset it.
+ 				 */
+-				int ct = (2 * opt_U_context) + 1;
++				int ct = (option_mask32 & (FLAG(u) | FLAG(U)))
++					? (2 * opt_U_context) + 1 : 1;
+ 				if (idx >= 0
+ 				 && v[0].a > vec[idx][0].b + ct
+ 				 && v[1].a > vec[idx][1].b + ct
+@@ -658,7 +668,23 @@
+ 		}
+ 		if (idx < 0 || ((option_mask32 & FLAG(B)) && !nonempty))
+ 			goto cont;
+-		if (!(option_mask32 & FLAG(q))) {
++		if (!(option_mask32 & (FLAG(q) | FLAG(u) | FLAG(U)))) {
++			/* POSIX default format: one command per changed range. */
++			for (k = 0; k <= idx; k++) {
++				vec_t *v = &vec[k];
++				bool oldlines = (*v)[0].a <= (*v)[0].b;
++				bool newlines = (*v)[1].a <= (*v)[1].b;
++
++				print_range((*v)[0].a, (*v)[0].b);
++				putchar(!oldlines ? 'a' : !newlines ? 'd' : 'c');
++				print_range((*v)[1].a, (*v)[1].b);
++				putchar('\n');
++				fetch(&ft[0], ix[0], (*v)[0].a, (*v)[0].b, '<');
++				if (oldlines && newlines)
++					puts("---");
++				fetch(&ft[1], ix[1], (*v)[1].a, (*v)[1].b, '>');
++			}
++		} else if (!(option_mask32 & FLAG(q))) {
+ 			int lowa;
+ 			vec_t span, *cvp = vec;
+ 
