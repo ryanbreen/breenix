@@ -102,7 +102,9 @@ impl Ext2Fs {
         sb.write_to(&transaction).map_err(|_| "Failed to write superblock")?;
         Ext2BlockGroupDesc::write_table(&transaction, &sb, &groups)
             .map_err(|_| "Failed to write block group descriptors")?;
-        if let Err(restored) = transaction.publish() {
+        let order = transaction.block_order(grown.i_block, logical, block)
+            .map_err(|_| "Failed to verify directory addressing")?;
+        if let Err(restored) = transaction.publish(&order) {
             if !restored {
                 self.block_groups = groups;
                 self.superblock = sb;

@@ -5,6 +5,8 @@
 //! real operations on values hidden from the optimizer (core::hint::black_box), so the
 //! hardware raises them and the result honours the rounding direction. Each result also
 //! passes through black_box, so the operation runs even where the caller discards it.
+//! When flags determine errno, consume the floating result through black_box before
+//! reading flags: Rust does not model arithmetic flags as dependencies of inline asm.
 
 pub(crate) mod basic;
 mod consts;
@@ -79,6 +81,7 @@ pub(crate) fn narrow(v: f64) -> f32 {
     let before = fenv::flags();
     fenv::set_flags(fenv::FE_OVERFLOW, 0);
     let r = black_box(v) as f32;
+    let r = core::hint::black_box(r);
     let raised = fenv::flags();
     fenv::set_flags(fenv::FE_OVERFLOW, (before | raised) & fenv::FE_OVERFLOW);
     if v.is_finite() && raised & fenv::FE_OVERFLOW != 0 {

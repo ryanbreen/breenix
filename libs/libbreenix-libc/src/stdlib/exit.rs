@@ -78,6 +78,7 @@ pub unsafe extern "C" fn at_quick_exit(f: extern "C" fn()) -> i32 {
 #[no_mangle]
 pub extern "C" fn exit(status: i32) -> ! {
     AT_EXIT.run();
+    unsafe { crate::stdio::flush_all(); }
     _Exit(status)
 }
 

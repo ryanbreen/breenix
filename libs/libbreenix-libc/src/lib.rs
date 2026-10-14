@@ -34,6 +34,8 @@ mod fnmatch;
 mod getopt;
 mod glob;
 mod math;
+mod locale;
+mod stdio;
 mod stdlib;
 mod string;
 mod inet;

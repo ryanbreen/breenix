@@ -6,3 +6,5 @@ string-stdlib
 math
 dirent-glob complete
 getopt-env complete
+locale-wchar complete
+stdio complete

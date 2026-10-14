@@ -173,9 +173,15 @@ unsafe fn next_record(d: &mut DirData) -> Result<Option<*const u8>, i32> {
 /// Copy a getdents64 record into a `struct dirent`.
 unsafe fn fill(entry: *mut Dirent, record: *const u8) {
     let reclen = core::ptr::read_unaligned(record.add(16) as *const u16) as usize;
-    (*entry).d_ino = core::ptr::read_unaligned(record as *const u64);
-    (*entry).d_off = core::ptr::read_unaligned(record.add(8) as *const i64);
-    (*entry).d_type = *record.add(18);
+    // readdir_r's caller may supply uninitialized storage. Initialize the entire
+    // value before indexing its array (which otherwise creates a Rust reference).
+    entry.write(Dirent {
+        d_ino: core::ptr::read_unaligned(record as *const u64),
+        d_off: core::ptr::read_unaligned(record.add(8) as *const i64),
+        d_reclen: 0,
+        d_type: *record.add(18),
+        d_name: [0; 256],
+    });
     let name = record.add(RECORD_HEADER);
     let max = (reclen - RECORD_HEADER).min(255);
     let mut n = 0;
