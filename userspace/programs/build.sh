@@ -146,6 +146,18 @@ if ! "$PROJECT_ROOT/scripts/build-libc-busybox.sh" --arch "$ARCH"; then
 fi
 echo ""
 
+# Additional POSIX C utilities are built only with Breenix's C driver.
+mkdir -p "$TESTS_DIR"
+UTILITY_NAMES=" "
+for source in "$PROJECT_ROOT/userspace/utilities"/*.c; do
+    [ -f "$source" ] || continue
+    name="$(basename "$source" .c)"
+    echo "  Building utility $name ($ARCH)"
+    "$PROJECT_ROOT/scripts/breenix-cc" --arch "$ARCH" -std=c17 -O2 -Wall -Wextra -Werror \
+        "$source" -o "$TESTS_DIR/$name.elf"
+    UTILITY_NAMES+="$name "
+done
+
 # Step 2: Build all userspace binaries
 echo "[2/3] Building userspace ($ARCH)..."
 
@@ -439,8 +451,8 @@ FAILED=0
 mkdir -p "$TESTS_DIR"
 
 # Remove every ELF this build does not install, so a removed or renamed program
-# never reaches a disk image. busybox.elf belongs to scripts/install-busybox.py.
-INSTALL_NAMES=" busybox "
+# never reaches a disk image. Every installed ELF is produced by this build.
+INSTALL_NAMES="$UTILITY_NAMES"
 for entry in "${STD_BINARIES[@]}"; do
     INSTALL_NAMES+="${entry##*:} "
 done

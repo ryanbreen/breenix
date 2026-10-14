@@ -621,3 +621,69 @@ pub extern "C" fn gai_strerror(code: i32) -> *const u8 {
     };
     text.as_ptr()
 }
+
+// gethostbyname is the obsolete, non-reentrant hostent interface. Its result is
+// overwritten by the next call; h_errno itself is per thread. Resolution shares
+// the existing bounded IPv4 resolver rather than introducing another DNS path.
+#[repr(C)]
+pub struct HostEnt {
+    pub name: *mut u8,
+    pub aliases: *mut *mut u8,
+    pub addrtype: i32,
+    pub length: i32,
+    pub addr_list: *mut *mut u8,
+}
+struct HostStorage {
+    entry: HostEnt,
+    name: [u8; 256],
+    aliases: [*mut u8; 1],
+    addresses: [[u8; 4]; 64],
+    pointers: [*mut u8; 65],
+}
+static mut HOST: HostStorage = HostStorage {
+    entry: HostEnt { name: ptr::null_mut(), aliases: ptr::null_mut(), addrtype: AF_INET,
+                     length: 4, addr_list: ptr::null_mut() },
+    name: [0; 256], aliases: [ptr::null_mut(); 1], addresses: [[0; 4]; 64],
+    pointers: [ptr::null_mut(); 65],
+};
+#[no_mangle]
+pub unsafe extern "C" fn gethostbyname(name: *const u8) -> *mut HostEnt {
+    let saved_errno = *crate::__errno_location();
+    let error = crate::pthread::__h_errno_location();
+    let result = if name.is_null() { Err(EAI_NONAME) }
+                 else { c_bytes(name, 256).ok_or(EAI_NONAME).and_then(|text| node_addresses(Some(text), 0)) };
+    match result {
+        Ok(addresses) => {
+            let storage = ptr::addr_of_mut!(HOST);
+            (*storage).name = addresses.canon.bytes;
+            (*storage).addresses = addresses.bytes;
+            for i in 0..addresses.len {
+                (*storage).pointers[i] = ptr::addr_of_mut!((*storage).addresses[i]).cast();
+            }
+            (*storage).pointers[addresses.len] = ptr::null_mut();
+            (*storage).entry.name = ptr::addr_of_mut!((*storage).name).cast();
+            (*storage).entry.aliases = ptr::addr_of_mut!((*storage).aliases).cast();
+            (*storage).entry.addr_list = ptr::addr_of_mut!((*storage).pointers).cast();
+            *error = 0;
+            *crate::__errno_location() = saved_errno;
+            ptr::addr_of_mut!((*storage).entry)
+        }
+        Err(e) => {
+            *error = match e { EAI_NONAME => 1, EAI_AGAIN => 2, _ => 3 };
+            if e == EAI_MEMORY { *crate::__errno_location() = Errno::ENOMEM as i32; }
+            else if e != EAI_SYSTEM { *crate::__errno_location() = saved_errno; }
+            ptr::null_mut()
+        }
+    }
+}
+#[no_mangle]
+pub extern "C" fn hstrerror(error: i32) -> *const u8 {
+    match error {
+        0 => b"Resolver success\0".as_ptr(),
+        1 => b"Host not found\0".as_ptr(),
+        2 => b"Temporary resolver failure\0".as_ptr(),
+        3 => b"Unrecoverable resolver failure\0".as_ptr(),
+        4 => b"No address data\0".as_ptr(),
+        _ => b"Unknown resolver error\0".as_ptr(),
+    }
+}

@@ -1,32 +1,10 @@
 #!/bin/bash
-# Build BusyBox against Breenix's own C library, applet by applet.
-#
-#   scripts/build-libc-busybox.sh --arch aarch64|x86_64
-#
-# Extracts the checksummed vendor/busybox/busybox-1.37.0.tar.bz2 under
-# target/libc-busybox/<arch>/, configures it with vendor/busybox/breenix-libc.config
-# on top of allnoconfig, and compiles it with scripts/breenix-cc, continuing past
-# objects that do not compile. Then, for each configured applet, it links the
-# applet's own code (entry <applet>_main) and BusyBox's common start-up path (entry
-# main) against libc.a and records what does not resolve:
-#
-#   target/libc-busybox/<arch>/applets.json
-#       { "core": {"links": bool, "missing": [...]},
-#         "objects_failed": [...],
-#         "applets": { "<name>": {"compiles": bool, "links": bool, "missing": [...]} } }
-#
-# Applets that do not compile or link are switched off and BusyBox is rebuilt and
-# linked with the rest, as userspace/programs/{,aarch64/}libc-busybox.elf with
-# libc-busybox.links naming its applets; the disk installs it as
-# /usr/local/libc/bin/busybox with a hard link per applet. A switched-off applet's
-# case fails with BusyBox's "applet not found", and applets.json says why. When the
-# start-up path itself does not link, there is no libc-busybox.elf and every case
-# fails saying BusyBox is not installed.
-#
-# The build is skipped when none of its inputs changed (libc.a, the headers, the
-# config fragment, the source archive, breenix-cc and this script). It fails only
-# when BusyBox cannot be built at all for reasons of its own (the archive, the
-# configuration); missing library pieces are results, not failures.
+# Build every configured BusyBox applet against Breenix libc, recording per-applet
+# compile/link results in target/libc-busybox/<arch>/applets.json. Missing applets
+# fail the build. Patches in vendor/busybox/patches/series apply after extraction;
+# every patch is part of the build digest. Outputs are libc-busybox.elf and
+# libc-busybox.links, installed in /bin and /usr/local/libc/bin as hard links.
+# Usage: scripts/build-libc-busybox.sh --arch aarch64|x86_64
 set -euo pipefail
 export LC_ALL=C
 
@@ -34,6 +12,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ARCHIVE="$ROOT/vendor/busybox/busybox-1.37.0.tar.bz2"
 SOURCE_SHA256="3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4"
 FRAGMENT="$ROOT/vendor/busybox/breenix-libc.config"
+PATCHES="$ROOT/vendor/busybox/patches"
 export SOURCE_DATE_EPOCH=1725148800
 export KBUILD_BUILD_TIMESTAMP="2024-09-01 00:00:00 UTC"
 export KBUILD_BUILD_USER=breenix KBUILD_BUILD_HOST=breenix
@@ -68,7 +47,8 @@ mkdir -p "$WORK" "$OUT"
 
 inputs_digest() {
     {
-        shasum -a 256 "$LIBC" "$ARCHIVE" "$FRAGMENT" "$CC" "${BASH_SOURCE[0]}"
+        shasum -a 256 "$LIBC" "$ARCHIVE" "$FRAGMENT" "$CC" "${BASH_SOURCE[0]}" "$ROOT/vendor/busybox/required-applets" "$ROOT/scripts/install-libc-busybox.sh"
+        find "$PATCHES" -type f | sort | xargs shasum -a 256
         find "$ROOT/libs/libbreenix-libc/include" -type f -name '*.h' | sort | xargs shasum -a 256
         "$TOOLS/clang" --version
     } | shasum -a 256 | cut -d' ' -f1
@@ -89,7 +69,9 @@ for tool in ar nm strip objcopy objdump; do
 done
 chmod +x "${PREFIX}"*
 
-if [ ! -f "$SRC/.extracted" ]; then
+# Re-extract when patches change, so removed/reordered patches never survive.
+PATCH_DIGEST="$(find "$PATCHES" -type f | sort | xargs shasum -a 256 | shasum -a 256 | cut -d' ' -f1)"
+if [ ! -f "$SRC/.extracted" ] || [ "$(cat "$SRC/.extracted")" != "$PATCH_DIGEST" ]; then
     python3 - "$ARCHIVE" "$SOURCE_SHA256" <<'PYVERIFY'
 import hashlib, pathlib, sys
 if hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest() != sys.argv[2]:
@@ -97,7 +79,13 @@ if hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest() != sys.arg
 PYVERIFY
     rm -rf "$SRC"
     tar -xjf "$ARCHIVE" -C "$WORK"
-    touch "$SRC/.extracted"
+    while IFS= read -r patch_name || [ -n "$patch_name" ]; do
+        case "$patch_name" in ''|'#'*) continue ;; esac
+        case "$patch_name" in */*|*..*|*[!a-zA-Z0-9_.-]*) echo "Invalid patch name: $patch_name" >&2; exit 1 ;; esac
+        [ -f "$PATCHES/$patch_name" ] || { echo "Missing BusyBox patch: $patch_name" >&2; exit 1; }
+        patch -d "$SRC" -p1 < "$PATCHES/$patch_name"
+    done < "$PATCHES/series"
+    echo "$PATCH_DIGEST" > "$SRC/.extracted"
 fi
 
 # BB_GLOBAL_CONST empty: BusyBox's "*const" globals pointers are assigned once through
@@ -228,45 +216,28 @@ for name in sorted(applets):
 (work / 'applets.json').write_text(json.dumps(result, indent=1, sort_keys=True) + '\n')
 PYANALYZE
 
-# Switch off what failed, rebuild, and link the rest.
-python3 - "$WORK/applets.json" "$WORK/disable.config" <<'PYDISABLE'
-import json, sys
-result = json.load(open(sys.argv[1]))
-off = sorted({a['config'] for a in result['applets'].values() if not (a['compiles'] and a['links'])})
-lines = [f'CONFIG_{c}=n' for c in off]
-# "sh" is a Kconfig choice: switching it off means choosing no shell.
-if 'SH_IS_ASH' in off:
-    lines += ['CONFIG_SH_IS_NONE=y', 'CONFIG_SHELL_ASH=n']
-open(sys.argv[2], 'w').write(''.join(l + '\n' for l in lines))
-PYDISABLE
-
+# Missing applets are build failures: /bin must never silently lose a utility.
 rm -f "$ELF" "$LINKS"
-core_links="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["core"]["links"])' "$WORK/applets.json")"
-if [ "$core_links" = True ]; then
-    if [ -s "$WORK/disable.config" ]; then
-        configure "$WORK/disable.config"
-        still_on="$(sed -n 's/^\(CONFIG_[A-Z0-9_]*\)=n$/\1/p' "$WORK/disable.config" \
-            | while read -r option; do grep -q "^$option=y" "$SRC/.config" && echo "$option"; done || true)"
-        if [ -n "$still_on" ]; then
-            echo "libc-busybox: Kconfig kept on what was switched off: $still_on" >&2
-            exit 1
-        fi
-        compile rebuild
-        archive_objects
-    fi
-    if "$CC" --arch "$ARCH" -Wl,--error-limit=0 "$WORK/objects.a" -o "$WORK/busybox.elf" > "$WORK/link.log" 2>&1; then
-        "$TOOLS/llvm-strip" -o "$ELF" "$WORK/busybox.elf"
-        python3 - "$WORK/applets.json" "$LINKS" <<'PYLINKS'
+python3 - "$WORK/applets.json" <<'PYCHECK'
 import json, sys
 result = json.load(open(sys.argv[1]))
-names = [n for n, a in sorted(result['applets'].items()) if a['compiles'] and a['links']]
-open(sys.argv[2], 'w').write(''.join(n + '\n' for n in names))
+failed = [name for name, app in result['applets'].items() if not (app['compiles'] and app['links'])]
+if not result['core']['links'] or failed or result['objects_failed']:
+    print('libc-busybox: unresolved core: ' + ' '.join(result['core']['missing']), file=sys.stderr)
+    for name in failed:
+        print(f"  {name}: {result['applets'][name]}", file=sys.stderr)
+    for error in result['compile_errors']:
+        print('  ' + error, file=sys.stderr)
+    sys.exit(1)
+PYCHECK
+"$CC" --arch "$ARCH" -Wl,--error-limit=0 "$WORK/objects.a" -o "$WORK/busybox.elf" > "$WORK/link.log" 2>&1
+"$TOOLS/llvm-strip" -o "$ELF" "$WORK/busybox.elf"
+python3 - "$WORK/applets.json" "$LINKS" <<'PYLINKS'
+import json, sys
+result = json.load(open(sys.argv[1]))
+open(sys.argv[2], 'w').write(''.join(name + '\n' for name in sorted(result['applets'])))
 PYLINKS
-    else
-        echo "  libc-busybox ($ARCH): the final link failed; see $WORK/link.log" >&2
-        tail -5 "$WORK/link.log" >&2
-    fi
-fi
+"$ROOT/scripts/install-libc-busybox.sh" --check "$OUT" "$ROOT/vendor/busybox/required-applets"
 
 python3 - "$WORK/applets.json" "$ARCH" "$ELF" <<'PYREPORT'
 import json, os, sys
