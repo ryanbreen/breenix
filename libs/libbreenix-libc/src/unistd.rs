@@ -275,7 +275,7 @@ pub unsafe extern "C" fn gettimeofday(tv: *mut u8, tz: *mut u8) -> i32 {
 // ---------------------------------------------------------------------------------
 
 /// gethostname: the node name uname reports; ENAMETOOLONG when it and its terminator
-/// do not fit (Linux's choice where POSIX leaves truncation unspecified).
+/// do not fit (our choice where POSIX.1-2024 leaves truncation unspecified).
 #[no_mangle]
 pub unsafe extern "C" fn gethostname(name: *mut u8, len: usize) -> i32 {
     let mut uts: crate::utsname = core::mem::zeroed();

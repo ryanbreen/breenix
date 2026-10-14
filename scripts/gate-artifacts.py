@@ -31,6 +31,7 @@ def key(repo):
         'scripts/gate-artifacts.py', 'scripts/create_ext2_disk.sh', 'scripts/install-busybox.py',
         '.cargo', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'x86_64-breenix.json',
         'x86_64-breenix-c.json', 'scripts/breenix-cc', 'scripts/libc-symbol-audit.py',
+        'scripts/libc-clean-archive.py',
         'scripts/build-libc-busybox.sh']).split(b'\0')
     for name in sorted(filter(None, paths)):
         path = repo / os.fsdecode(name)
