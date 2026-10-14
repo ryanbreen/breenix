@@ -191,5 +191,8 @@ pub fn sys_timer_getoverrun(id: i32) -> SyscallResult {
 
 /// timer_delete(timerid).
 pub fn sys_timer_delete(id: i32) -> SyscallResult {
-    result(caller().and_then(|caller| caller.timers.posix.delete(id)).map(|()| 0))
+    let ret = result(caller().and_then(|caller| caller.timers.posix.delete(id)).map(|()| 0));
+    #[cfg(target_arch = "x86_64")]
+    crate::periodic1540::dump();
+    ret
 }

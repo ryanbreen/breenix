@@ -181,6 +181,8 @@ fn scan(
             }));
         }
         if any {
+            #[cfg(target_arch = "x86_64")]
+            crate::periodic1540::force();
             Ok(None)
         } else {
             Err(ECHILD as u64)
@@ -228,6 +230,8 @@ fn quiet_wait_query(selector: Selector, options: u32) -> Option<u64> {
 /// so a change landing between the two is seen by the scan or wakes the thread
 /// (`unblock_for_child_exit`); the scheduler lock orders the two.
 fn wait_for_child(mut selector: Selector, options: u32) -> Result<Option<Found>, u64> {
+    #[cfg(target_arch = "x86_64")]
+    crate::periodic1540::observe();
     let quiet = if options & WNOHANG != 0 {
         quiet_wait_query(selector, options).zip(crate::task::thread::current_thread_signals())
     } else {
@@ -238,6 +242,8 @@ fn wait_for_child(mut selector: Selector, options: u32) -> Result<Option<Found>,
             && signals.quiet_wait_releases.load(Ordering::Relaxed)
                 == crate::process::process_manager_releases()
         {
+            #[cfg(target_arch = "x86_64")]
+            crate::periodic1540::force();
             return Ok(None);
         }
     }
