@@ -6,7 +6,8 @@
 //! struct timeval whose microseconds must be below a million (EDOM), an int
 //! option shorter than 4 bytes is EINVAL, and an option no layer knows is
 //! ENOPROTOOPT. An option this module does not know at SOL_SOCKET, and any
-//! other level, goes to the protocol (SO_PEERCRED is AF_UNIX's).
+//! other level, goes to the protocol (SO_PEERCRED is AF_UNIX's). AF_UNIX has
+//! no protocol options, so any level but SOL_SOCKET is EOPNOTSUPP there.
 
 use super::object::{OptBuf, Socket};
 use crate::net::ipv4::DEFAULT_TTL;
@@ -94,6 +95,12 @@ impl Default for SockOpts {
 
 fn is_tcp(sk: &Socket) -> bool {
     sk.family == AF_INET && sk.kind == SOCK_STREAM
+}
+
+/// Linux's AF_UNIX sockets have no protocol options: every level but
+/// SOL_SOCKET is EOPNOTSUPP for them, to setsockopt and getsockopt alike.
+fn unix_protocol_level(sk: &Socket, level: i32) -> bool {
+    sk.family == AF_UNIX && level != SOL_SOCKET
 }
 
 /// IP_TTL's value. As Linux's do_ip_setsockopt reads it: an int when optlen
@@ -193,6 +200,9 @@ pub fn setsockopt(sk: &Socket, level: i32, name: i32, val: &[u8]) -> Result<(), 
 /// Store a shared option: true when stored here, false when the protocol
 /// took it.
 fn store(sk: &Socket, level: i32, name: i32, val: &[u8]) -> Result<bool, i32> {
+    if unix_protocol_level(sk, level) {
+        return Err(EOPNOTSUPP);
+    }
     if level == IPPROTO_TCP {
         return set_tcp(sk, name, val);
     }
@@ -262,11 +272,7 @@ fn store(sk: &Socket, level: i32, name: i32, val: &[u8]) -> Result<bool, i32> {
 
 fn set_tcp(sk: &Socket, name: i32, val: &[u8]) -> Result<bool, i32> {
     if !is_tcp(sk) {
-        return Err(if sk.family == AF_UNIX {
-            EOPNOTSUPP
-        } else {
-            ENOPROTOOPT
-        });
+        return Err(ENOPROTOOPT);
     }
     match name {
         TCP_NODELAY => {
@@ -280,13 +286,12 @@ fn set_tcp(sk: &Socket, name: i32, val: &[u8]) -> Result<bool, i32> {
 
 /// getsockopt(sk, level, name): the value, at most 16 bytes, in `out`.
 pub fn getsockopt(sk: &Socket, level: i32, name: i32, out: &mut OptBuf) -> Result<(), i32> {
+    if unix_protocol_level(sk, level) {
+        return Err(EOPNOTSUPP);
+    }
     if level == IPPROTO_TCP {
         if !is_tcp(sk) {
-            return Err(if sk.family == AF_UNIX {
-                EOPNOTSUPP
-            } else {
-                ENOPROTOOPT
-            });
+            return Err(ENOPROTOOPT);
         }
         return match name {
             TCP_NODELAY => {
