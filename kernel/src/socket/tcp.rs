@@ -225,7 +225,15 @@ impl ProtoOps for TcpSock {
             }
             TcpSockState::Connected(_) => return Err(errno::EINVAL),
         };
-        match tcp::tcp_listen(addr, port, backlog, pid, reuse, ttl, Some(Arc::downgrade(sk))) {
+        match tcp::tcp_listen(
+            addr,
+            port,
+            backlog,
+            pid,
+            reuse,
+            ttl,
+            Some(Arc::downgrade(sk)),
+        ) {
             Ok(id) => {
                 inner.state = TcpSockState::Listening { addr, port, id };
                 Ok(())
@@ -296,16 +304,16 @@ impl ProtoOps for TcpSock {
                 TcpSockState::Listening { .. } => return Err(errno::EISCONN),
             };
             // The connection takes over the binding, or the socket keeps it.
-            let conn = match tcp::tcp_connect(bind_addr, local_port, remote_ip, remote_port, pid, ttl)
-            {
-                Ok(conn) => conn,
-                Err(error) => {
-                    if autobound {
-                        tcp::tcp_unbind_port(bind_addr, local_port);
+            let conn =
+                match tcp::tcp_connect(bind_addr, local_port, remote_ip, remote_port, pid, ttl) {
+                    Ok(conn) => conn,
+                    Err(error) => {
+                        if autobound {
+                            tcp::tcp_unbind_port(bind_addr, local_port);
+                        }
+                        return Err(error);
                     }
-                    return Err(error);
-                }
-            };
+                };
             tcp::tcp_set_owner(&conn, Arc::downgrade(sk));
             apply_options(sk, &conn);
             inner.state = TcpSockState::Connected(conn);

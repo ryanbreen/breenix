@@ -2637,8 +2637,7 @@ fn setup_loopback_tcp_pair(
         false,
         crate::net::ipv4::DEFAULT_TTL,
         None,
-    )
-    else {
+    ) else {
         return Err("tcp_listen failed during loopback setup");
     };
 
@@ -3361,8 +3360,7 @@ fn tcp_accept_waits_for_final_ack() -> TestResult {
         false,
         crate::net::ipv4::DEFAULT_TTL,
         None,
-    )
-    else {
+    ) else {
         return TestResult::Fail("tcp_listen failed in the accept handshake fixture");
     };
     let server_ip = crate::net::config().ip_addr;

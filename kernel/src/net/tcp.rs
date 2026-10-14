@@ -122,7 +122,13 @@ pub fn drain_deferred_tx() {
         // A segment that fails here was a SYN+ACK; the child's retransmission
         // timer sends it again.
         let _ = if is_loopback {
-            super::send_ipv4_from(pkt.src_ip, pkt.dst_ip, PROTOCOL_TCP, pkt.ttl, &pkt.tcp_segment)
+            super::send_ipv4_from(
+                pkt.src_ip,
+                pkt.dst_ip,
+                PROTOCOL_TCP,
+                pkt.ttl,
+                &pkt.tcp_segment,
+            )
         } else if let Some(mac) = pkt.dst_mac {
             // Send directly to the known MAC (bypasses ARP, which can't work
             // during process_rx since the re-entrancy guard is held).
@@ -136,7 +142,13 @@ pub fn drain_deferred_tx() {
             .unwrap_or_default();
             super::send_ethernet(&mac, super::ethernet::ETHERTYPE_IPV4, &ip_packet)
         } else {
-            super::send_ipv4_from(pkt.src_ip, pkt.dst_ip, PROTOCOL_TCP, pkt.ttl, &pkt.tcp_segment)
+            super::send_ipv4_from(
+                pkt.src_ip,
+                pkt.dst_ip,
+                PROTOCOL_TCP,
+                pkt.ttl,
+                &pkt.tcp_segment,
+            )
         };
     }
 

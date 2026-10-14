@@ -1397,7 +1397,9 @@ pub fn ip_output(
     }
     let cfg = config();
     if is_local_addr_in(&cfg, dst) {
-        return enqueue_local_packet(ipv4::Ipv4Packet::try_build(src, dst, protocol, ttl, payload)?);
+        return enqueue_local_packet(ipv4::Ipv4Packet::try_build(
+            src, dst, protocol, ttl, payload,
+        )?);
     }
     let broadcast = is_broadcast_addr_in(&cfg, dst);
     // No fragmentation: use the interface MTU and return EMSGSIZE.
@@ -1409,7 +1411,9 @@ pub fn ip_output(
     let next_hop = if same_subnet { dst } else { cfg.gateway };
     let ip_packet = ipv4::Ipv4Packet::try_build(src, dst, protocol, ttl, payload)?;
     if broadcast {
-        enqueue_local_packet(ipv4::Ipv4Packet::try_build(src, dst, protocol, ttl, payload)?)?;
+        enqueue_local_packet(ipv4::Ipv4Packet::try_build(
+            src, dst, protocol, ttl, payload,
+        )?)?;
     }
     let mac = if broadcast {
         ethernet::BROADCAST_MAC
