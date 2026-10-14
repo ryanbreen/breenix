@@ -401,22 +401,27 @@ def signal_process_group(group, number):
                 raise
 
 
-def ps_output(argv):
-    # One ps normally takes a tenth of a second, but a loaded Mac has held one
-    # past 10 s. The supervisor reads the table in its loop and in cleanup, so a
-    # single slow ps must not abandon the boot and leave its VM running.
-    for timeout in (10, 30):
+# One ps normally takes a tenth of a second, but a loaded Mac has held one past
+# 10 s. The supervisor loop reads once and carries on with its last table, so
+# cancellation and the stall watchdog stay at most one bound late. Cleanup must
+# not abandon a running VM over one slow ps, so it retries with longer bounds.
+LOOP_PS_TIMEOUTS = (10,)
+CLEANUP_PS_TIMEOUTS = (10, 30, 120)
+
+
+def ps_output(argv, timeouts=CLEANUP_PS_TIMEOUTS):
+    for timeout in timeouts[:-1]:
         try:
             return subprocess.check_output(argv, text=True, errors='replace', timeout=timeout)
         except subprocess.TimeoutExpired:
             pass
-    return subprocess.check_output(argv, text=True, errors='replace', timeout=120)
+    return subprocess.check_output(argv, text=True, errors='replace', timeout=timeouts[-1])
 
 
-def process_table():
+def process_table(timeouts=CLEANUP_PS_TIMEOUTS):
     # Environment ownership survives double-fork and setsid on Darwin as well
     # as Linux; never print the process environment.
-    rows = ps_output(['ps', 'axeww', '-o', 'pid=,ppid=,pgid=,stat=,command='])
+    rows = ps_output(['ps', 'axeww', '-o', 'pid=,ppid=,pgid=,stat=,command='], timeouts)
     result = {}
     for row in rows.splitlines():
         fields = row.split(None, 4)
@@ -464,8 +469,8 @@ def supervise_worker(argv, parent):
     known = set()
     cargo_homes = []
 
-    def refresh():
-        table = process_table()
+    def refresh(timeouts=CLEANUP_PS_TIMEOUTS):
+        table = process_table(timeouts)
         known.update(pid for pid, row in table.items() if f'BREENIX_SLOT_SESSION={session}' in row[3].split())
         if child is not None:
             known.add(child.pid)
@@ -649,8 +654,12 @@ def supervise_worker(argv, parent):
             try:
                 forwarded_signal = None
                 stop_deadline = None
+                owned = {}
                 while child.poll() is None:
-                    owned = refresh()
+                    try:
+                        owned = refresh(LOOP_PS_TIMEOUTS)
+                    except subprocess.TimeoutExpired:
+                        pass
                     # Older QEMU launchers use the shared lease but do not send
                     # boot-start or serial requests. Enroll their owned VM's
                     # file-backed serials at launch when the caller opts in.
