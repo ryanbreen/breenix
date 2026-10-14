@@ -252,17 +252,16 @@ pub(super) fn render(
             (p as i64 - d.e as i64 - 1).max(0) as usize
         };
         if !alternate {
-            while p > 0 {
-                let index = if scientific {
-                    p as i32
-                } else {
-                    d.e + 1 + p as i32 - 1
-                };
-                if d.digit(index) != b'0' {
-                    break;
-                }
-                p -= 1;
-            }
+            let last = d.d[..d.n]
+                .iter()
+                .rposition(|&digit| digit != 0)
+                .unwrap_or(0);
+            let needed = if scientific {
+                last
+            } else {
+                (last as i32 - d.e).max(0) as usize
+            };
+            p = p.min(needed);
         }
     } else {
         let keep = if scientific {
@@ -292,5 +291,41 @@ pub(super) fn render(
             out.byte(d.digit(d.e + i as i32))?
         }
         Ok(())
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn binary128_significand_is_not_downcast() {
+        let v = Binary {
+            negative: false,
+            significand: (1u128 << 112) + 1,
+            exponent: -112,
+            fraction_bits: 112,
+            special: 0,
+        };
+        let mut text = Text::new();
+        render(&mut text, v, b'f', Some(36), false).unwrap();
+        assert_eq!(text.as_bytes(), b"1.000000000000000000000000000000000193");
+        let mut hex = Text::new();
+        render(&mut hex, v, b'a', None, false).unwrap();
+        assert_eq!(hex.as_bytes(), b"0x1.0000000000000000000000000001p+0");
+    }
+    #[test]
+    fn binary128_subnormal_exact_digits() {
+        let v = Binary {
+            negative: false,
+            significand: 1,
+            exponent: -16494,
+            fraction_bits: 112,
+            special: 0,
+        };
+        let mut text = Text::new();
+        render(&mut text, v, b'g', Some(35), false).unwrap();
+        assert_eq!(
+            text.as_bytes(),
+            b"6.4751751194380251109244389582276466e-4966"
+        );
     }
 }
