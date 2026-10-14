@@ -26,6 +26,10 @@ pub(crate) enum Assert {
 #[derive(Clone, Copy)]
 pub(crate) enum Inst {
     Byte(u8),
+    Rune(u32),
+    Bracket(u32, u32, bool),
+    /// Locally assigned class IDs: 0 is alnum/underscore, 1 is space.
+    WideClass(u8, bool),
     Set(u32),
     Any,
     AnyButNewline,
@@ -43,6 +47,8 @@ pub(crate) enum Inst {
 pub(crate) struct Prog {
     pub(crate) insts: Buf<Inst>,
     pub(crate) sets: Buf<[u32; 8]>,
+    pub(crate) brackets: Buf<u8>,
+    pub(crate) utf8: bool,
     pub(crate) nsub: usize,
     pub(crate) icase: bool,
     pub(crate) newline: bool,
@@ -169,6 +175,12 @@ impl<'a> Parser<'a> {
     }
 
     fn literal(&mut self, c: u8) -> Result<()> {
+        if self.prog.utf8 {
+            let at = self.i - 1;
+            let (scalar, width) = crate::fnmatch::unit(self.p, at).ok_or(REG_BADPAT)?;
+            self.i = at + width;
+            return self.emit(Inst::Rune(scalar));
+        }
         if self.prog.icase && c.is_ascii_alphabetic() {
             let mut set = [0u32; 8];
             set_add(&mut set, c.to_ascii_lowercase());
@@ -513,11 +525,13 @@ impl<'a> Parser<'a> {
                 Ok(true)
             }
             b'w' | b'W' => {
-                self.class_set(is_word, c == b'W')?;
+                if self.prog.utf8 { self.emit(Inst::WideClass(0, c == b'W'))?; }
+                else { self.class_set(is_word, c == b'W')?; }
                 Ok(true)
             }
             b's' | b'S' => {
-                self.class_set(class(b"space").ok_or(REG_ECTYPE)?, c == b'S')?;
+                if self.prog.utf8 { self.emit(Inst::WideClass(1, c == b'S'))?; }
+                else { self.class_set(class(b"space").ok_or(REG_ECTYPE)?, c == b'S')?; }
                 Ok(true)
             }
             b'b' => assert(self, Assert::WordBoundary),
@@ -534,7 +548,7 @@ impl<'a> Parser<'a> {
     }
 
     /// One endpoint of a bracket range: a byte or a single-character `[.c.]` or `[=c=]`.
-    fn bracket_char(&mut self) -> Result<u8> {
+    fn bracket_char(&mut self) -> Result<u32> {
         let c = self.peek().ok_or(REG_EBRACK)?;
         if c == b'[' && matches!(self.peek2(), Some(b'.') | Some(b'=')) {
             let kind = self.p[self.i + 1];
@@ -542,17 +556,20 @@ impl<'a> Parser<'a> {
             let close = (body..self.p.len().saturating_sub(1))
                 .find(|&k| self.p[k] == kind && self.p[k + 1] == b']')
                 .ok_or(REG_EBRACK)?;
-            if close != body + 1 {
+            let (scalar, width) = crate::fnmatch::unit(self.p, body).ok_or(REG_ECOLLATE)?;
+            if close != body + width {
                 return Err(REG_ECOLLATE);
             }
             self.i = close + 2;
-            return Ok(self.p[body]);
+            return Ok(scalar);
         }
-        self.i += 1;
-        Ok(c)
+        let (scalar, width) = crate::fnmatch::unit(self.p, self.i).ok_or(REG_BADPAT)?;
+        self.i += width;
+        Ok(scalar)
     }
 
     fn bracket(&mut self) -> Result<()> {
+        let pattern_start = self.i - 1;
         let mut set = [0u32; 8];
         let negate = self.peek() == Some(b'^');
         if negate {
@@ -590,12 +607,19 @@ impl<'a> Parser<'a> {
                 if hi < lo {
                     return Err(REG_ERANGE);
                 }
-                for b in lo..=hi {
-                    set_add(&mut set, b);
+                for b in lo..=hi.min(255) {
+                    set_add(&mut set, b as u8);
                 }
             } else {
-                set_add(&mut set, lo);
+                if lo <= 255 { set_add(&mut set, lo as u8); }
             }
+        }
+        if self.prog.utf8 {
+            let start = self.prog.brackets.len() as u32;
+            for &byte in &self.p[pattern_start..self.i] {
+                if !self.prog.brackets.push(byte) { return Err(REG_ESPACE); }
+            }
+            return self.emit(Inst::Bracket(start, self.prog.brackets.len() as u32, negate && self.prog.newline));
         }
         if self.prog.icase {
             for b in 0..=255u8 {
@@ -626,6 +650,8 @@ pub(crate) fn compile(p: &[u8], cflags: i32) -> Result<Prog> {
         prog: Prog {
             insts: Buf::new(),
             sets: Buf::new(),
+            brackets: Buf::new(),
+            utf8: crate::locale::charset() == crate::locale::Charset::Utf8,
             nsub: 0,
             icase: cflags & REG_ICASE != 0,
             newline: cflags & REG_NEWLINE != 0,

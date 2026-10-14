@@ -412,6 +412,9 @@ fn diagnostic_write_failure_marks_stderr() {
 }
 
 extern "C" {
+    fn newlocale(mask: i32, name: *const u8, base: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
+    fn uselocale(locale: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
+    fn freelocale(locale: *mut core::ffi::c_void);
     fn getenv(name: *const u8) -> *mut u8;
     fn malloc(n: usize) -> *mut u8;
     fn free(p: *mut u8);
@@ -434,3 +437,28 @@ mod pthread {
 }
 #[path = "../libs/libbreenix-libc/src/locale/mod.rs"]
 mod locale;
+
+#[test]
+fn utf8_wildcards_brackets_classes_and_case() {
+    unsafe {
+        // LOCALE's implementation numbers LC_CTYPE as 2, following header order.
+        let locale = newlocale(1 << 2, b"C.UTF-8\0".as_ptr(), core::ptr::null_mut());
+        assert!(!locale.is_null());
+        let old = uselocale(locale);
+        assert!(fnmatch::matches(b"?", "é".as_bytes(), 0));
+        assert!(!fnmatch::matches(b"??", "é".as_bytes(), 0));
+        assert!(fnmatch::matches("[é-ë]".as_bytes(), "ê".as_bytes(), 0));
+        assert!(fnmatch::matches(b"[[:alpha:]]", "é".as_bytes(), 0));
+        assert!(fnmatch::matches("É".as_bytes(), "é".as_bytes(), fnmatch::FNM_CASEFOLD));
+        assert!(fnmatch::matches("*é?".as_bytes(), "🙂é界".as_bytes(), 0));
+        assert_eq!(regex_regressions::matched("^.$", "é", regex::REG_EXTENDED), [(0, 2)]);
+        assert_eq!(regex_regressions::matched("^[é-ë]$", "ê", regex::REG_EXTENDED), [(0, 2)]);
+        assert_eq!(regex_regressions::matched("^[[:alpha:]]+$", "é界", regex::REG_EXTENDED), [(0, 5)]);
+        assert_eq!(regex_regressions::matched("^É$", "é", regex::REG_EXTENDED | regex::REG_ICASE), [(0, 2)]);
+        assert_eq!(regex_regressions::matched("^[!é]$", "!", regex::REG_EXTENDED), [(0, 1)]);
+        assert_eq!(regex_regressions::matched("^(K)\\1$", "KK", regex::REG_EXTENDED | regex::REG_ICASE), [(0, 4), (0, 1)]);
+        assert_eq!(regex_regressions::matched("^é??", "é", regex::REG_EXTENDED), [(0, 0)]);
+        uselocale(old);
+        freelocale(locale);
+    }
+}
