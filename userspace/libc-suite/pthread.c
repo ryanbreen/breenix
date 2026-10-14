@@ -13,6 +13,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <pthread.h>
+#include <sched.h>
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -1034,6 +1035,34 @@ static const char *sigmask_per_thread(void) {
     return PASS;
 }
 
+/* The GNU affinity calls and CPU_* macros, with Linux's errors for a bad pid, a set
+ * shorter than the kernel's mask, and an empty set. */
+static const char *sched_affinity(void) {
+    cpu_set_t all, one, got;
+    long online = sysconf(_SC_NPROCESSORS_ONLN);
+    CHECK(online >= 1, "sysconf(_SC_NPROCESSORS_ONLN) is at least 1");
+    __builtin_memset(&all, 0xa5, sizeof all);
+    EXPECT_INT("sched_getaffinity(0)", sched_getaffinity(0, sizeof all, &all), 0);
+    EXPECT_INT("CPU_COUNT of the starting affinity", CPU_COUNT(&all), online);
+    CPU_ZERO(&one);
+    CPU_SET(0, &one);
+    EXPECT_INT("sched_setaffinity to processor 0", sched_setaffinity(0, sizeof one, &one), 0);
+    __builtin_memset(&got, 0xa5, sizeof got);
+    EXPECT_INT("sched_getaffinity after narrowing", sched_getaffinity(0, sizeof got, &got), 0);
+    CHECK(CPU_EQUAL(&got, &one), "the narrowed affinity is processor 0 alone");
+    EXPECT_INT("sched_setaffinity restoring", sched_setaffinity(0, sizeof all, &all), 0);
+    EXPECT_INT("sched_getaffinity after restoring", sched_getaffinity(0, sizeof got, &got), 0);
+    CHECK(CPU_EQUAL(&got, &all), "the restored affinity is the starting one");
+    errno = 0;
+    EXPECT_RET_ERRNO("sched_getaffinity(-1)", sched_getaffinity(-1, sizeof got, &got), -1, ESRCH);
+    errno = 0;
+    EXPECT_RET_ERRNO("sched_getaffinity with a 4-byte set", sched_getaffinity(0, 4, &got), -1, EINVAL);
+    CPU_ZERO(&one);
+    errno = 0;
+    EXPECT_RET_ERRNO("sched_setaffinity to no processor", sched_setaffinity(0, sizeof one, &one), -1, EINVAL);
+    return PASS;
+}
+
 const struct libc_case libc_cases[] = {
     { "create-join", create_join },
     { "join-self", join_self },
@@ -1073,5 +1102,6 @@ const struct libc_case libc_cases[] = {
     { "attr-stacksize", attr_stacksize },
     { "errno-per-thread", errno_per_thread },
     { "sigmask-per-thread", sigmask_per_thread },
+    { "sched-affinity", sched_affinity },
     { 0, 0 },
 };

@@ -64,7 +64,7 @@ static SUITE: Suite = suite("rust-std", "Rust std", &[
         case("read-dir-missing", "read_dir of a missing path fails with ErrorKind::NotFound", read_dir_missing),
         case("create-dir-all", "create_dir_all creates every missing parent and succeeds when the path exists", create_dir_all),
         case("remove-dir-not-empty", "remove_dir of a directory that has an entry fails with ErrorKind::DirectoryNotEmpty", remove_dir_not_empty),
-        case("remove-dir-all", "remove_dir_all removes a tree of files, directories and symlinks", remove_dir_all),
+        case("remove-dir-all", "remove_dir_all removes a tree of files, directories and symlinks, and does not follow a symlink out of it", remove_dir_all),
         case("rename", "rename moves a file, and the old path then fails with ErrorKind::NotFound", rename),
         case("rename-replace", "rename onto an existing file replaces it", rename_replace),
         case("hard-link", "hard_link names the same inode: one ino, nlink 2, and writes through one name read through the other", hard_link),
@@ -151,6 +151,7 @@ static SUITE: Suite = suite("rust-std", "Rust std", &[
         case("park-unpark", "Thread::unpark wakes a thread blocked in thread::park", park_unpark),
         case("park-timeout", "park_timeout returns by its 50 ms timeout plus 30 ms when nothing unparks the thread", park_timeout),
         case("available-parallelism", "available_parallelism is the number of processors /proc/cpuinfo lists", available_parallelism),
+        case("available-parallelism-affinity", "available_parallelism follows the thread's affinity when sched_setaffinity narrows and restores it", available_parallelism_affinity),
         case("detached", "A thread whose JoinHandle was dropped keeps running and sends its result", detached),
     ]),
     category("net", "std::net", &[
@@ -668,8 +669,14 @@ fn remove_dir_all() -> CaseResult {
         write_file(&top.join("sub/b"), b"b")?;
         write_file(&top.join("sub/deeper/c"), b"c")?;
         symlink("../a", top.join("sub/link")).ctx("symlink")?;
+        // A symlink to a directory outside the tree is removed, not followed.
+        let outside = dir.path("outside");
+        fs::create_dir(&outside).ctx("create_dir of the outside directory")?;
+        write_file(&outside.join("keep"), b"keep")?;
+        symlink(&outside, top.join("sub/escape")).ctx("symlink to the outside directory")?;
         fs::remove_dir_all(&top).ctx("remove_dir_all")?;
-        want_kind("symlink_metadata of the removed tree", fs::symlink_metadata(&top), ErrorKind::NotFound)
+        want_kind("symlink_metadata of the removed tree", fs::symlink_metadata(&top), ErrorKind::NotFound)?;
+        check(outside.join("keep").is_file(), "remove_dir_all followed sub/escape and removed outside/keep")
     })
 }
 
@@ -1542,6 +1549,33 @@ fn available_parallelism() -> CaseResult {
     let listed = processors()?;
     value("processors", n as i64, "", Some((listed as i64, listed as i64)));
     check(n == listed, &format!("available_parallelism is {n}; /proc/cpuinfo lists {listed}"))
+}
+
+unsafe extern "C" {
+    fn sched_setaffinity(pid: i32, len: usize, mask: *const u64) -> i32;
+}
+
+/// Narrow a thread's affinity below the online count, then restore it: available_parallelism
+/// follows the affinity both ways, which the /proc/cpuinfo fallback alone cannot do.
+fn available_parallelism_affinity() -> CaseResult {
+    let listed = processors()?;
+    let narrowed = (listed - 1).max(1);
+    // A thread of its own, so the narrowed affinity ends with it.
+    let handle = thread::spawn(move || -> CaseResult {
+        for (cpus, how) in [(narrowed, "narrowed"), (listed, "restored")] {
+            let mut mask = [0u64; 16];
+            for cpu in 0..cpus {
+                mask[cpu / 64] |= 1 << (cpu % 64);
+            }
+            if unsafe { sched_setaffinity(0, size_of_val(&mask), mask.as_ptr()) } != 0 {
+                return fail(format!("sched_setaffinity to {cpus} processors failed: {}", io::Error::last_os_error()));
+            }
+            let n = thread::available_parallelism().ctx("available_parallelism")?.get();
+            check(n == cpus, &format!("affinity {how} to {cpus} of {listed} processors; available_parallelism is {n}"))?;
+        }
+        Ok(())
+    });
+    finish(handle, "the affinity thread")?
 }
 
 fn detached() -> CaseResult {

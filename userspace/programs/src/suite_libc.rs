@@ -277,6 +277,7 @@ static SUITE: Suite = suite("libc", "C library", &[
         case("attr-stacksize", "pthread_attr_setstacksize refuses less than PTHREAD_STACK_MIN and a thread runs on the size set", c_case),
         case("errno-per-thread", "errno is per thread", c_case),
         case("sigmask-per-thread", "pthread_sigmask changes only the calling thread's signal mask", c_case),
+        case("sched-affinity", "sched_setaffinity narrows and restores the CPU_* set sched_getaffinity reports, with ESRCH for a negative pid and EINVAL for a short or empty set", c_case),
     ]),
     category("busybox", "BusyBox built on our libc", &[
         case("sh-arith", "sh expands $((6*7)) to 42", sh_arith),

@@ -100,7 +100,7 @@
         },
         {
           "id": "remove-dir-all",
-          "title": "remove_dir_all removes a tree of files, directories and symlinks"
+          "title": "remove_dir_all removes a tree of files, directories and symlinks, and does not follow a symlink out of it"
         },
         {
           "id": "rename",
@@ -441,6 +441,10 @@
         {
           "id": "available-parallelism",
           "title": "available_parallelism is the number of processors /proc/cpuinfo lists"
+        },
+        {
+          "id": "available-parallelism-affinity",
+          "title": "available_parallelism follows the thread's affinity when sched_setaffinity narrows and restores it"
         },
         {
           "id": "detached",
