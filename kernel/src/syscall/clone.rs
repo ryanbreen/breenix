@@ -23,6 +23,10 @@ const CLONE_SETTLS: u64 = 0x00080000;
 const CLONE_CHILD_CLEARTID: u64 = 0x00200000;
 const CLONE_CHILD_SETTID: u64 = 0x01000000;
 const CLONE_VFORK: u64 = 0x00004000;
+const CLONE_PARENT_SETTID: u64 = 0x00100000;
+/// The low byte of the flags: the signal the parent gets when the child ends.
+const CSIGNAL: u64 = 0xff;
+const SIGCHLD: u64 = 17;
 
 /// Whether a clone asks for a new process rather than a thread, and so runs as
 /// fork: without CLONE_VM (how Linux libcs fork), or with CLONE_VFORK and no
@@ -32,6 +36,136 @@ const CLONE_VFORK: u64 = 0x00004000;
 /// space instead and the parent is not suspended.
 pub fn is_fork_style(flags: u64, child_stack: u64) -> bool {
     flags & CLONE_VM == 0 || (flags & CLONE_VFORK != 0 && child_stack == 0)
+}
+
+/// What a fork-style clone asks of its child beyond a plain fork's copy
+/// (`is_fork_style`). Its arguments follow Linux's clone order: flags, stack,
+/// parent_tid, then child_tid and tls on x86-64, tls and child_tid on ARM64.
+#[derive(Clone, Copy, Default)]
+pub struct ForkClone {
+    /// CLONE_FILES: the child shares the parent's descriptor table.
+    pub share_files: bool,
+    /// CLONE_FS: the child shares the parent's working directories.
+    pub share_fs: bool,
+    /// CLONE_SYSVSEM: the child shares the parent's SEM_UNDO adjustments.
+    pub share_undo: bool,
+    /// The child's user stack pointer; the parent's when absent.
+    stack: Option<u64>,
+    /// CLONE_SETTLS: the child's thread pointer.
+    tls: Option<u64>,
+    /// CLONE_PARENT_SETTID: where the parent gets the child's thread ID.
+    parent_tid: Option<u64>,
+    /// CLONE_CHILD_SETTID: where the child's memory gets its thread ID.
+    pub child_set_tid: Option<u64>,
+    /// CLONE_CHILD_CLEARTID: the word cleared and woken when the child exits.
+    pub child_clear_tid: Option<u64>,
+}
+
+impl ForkClone {
+    /// A plain fork: a copy of everything, sharing nothing.
+    pub const FORK: Self = Self {
+        share_files: false,
+        share_fs: false,
+        share_undo: false,
+        stack: None,
+        tls: None,
+        parent_tid: None,
+        child_set_tid: None,
+        child_clear_tid: None,
+    };
+
+    /// Check a fork-style clone's flags and take its arguments. Flags that
+    /// need a shared address space (CLONE_SIGHAND, CLONE_THREAD), an exit
+    /// signal other than SIGCHLD, and flags Breenix does not implement are
+    /// refused with EINVAL rather than ignored.
+    pub fn from_args(flags: u64, stack: u64, parent_tid: u64, arg4: u64, arg5: u64) -> Result<Self, u64> {
+        const SUPPORTED: u64 = CSIGNAL
+            | CLONE_VM
+            | CLONE_VFORK
+            | CLONE_FS
+            | CLONE_FILES
+            | CLONE_SYSVSEM
+            | CLONE_SETTLS
+            | CLONE_PARENT_SETTID
+            | CLONE_CHILD_SETTID
+            | CLONE_CHILD_CLEARTID;
+        let einval = Err(super::errno::EINVAL as u64);
+        if flags & !SUPPORTED != 0 || flags & CSIGNAL != SIGCHLD {
+            return einval;
+        }
+        // CLONE_VM reaches here only as the stackless vfork (`is_fork_style`).
+        if flags & CLONE_VM != 0 && (flags & CLONE_VFORK == 0 || stack != 0) {
+            return einval;
+        }
+        #[cfg(target_arch = "x86_64")]
+        let (child_tid, tls) = (arg4, arg5);
+        #[cfg(not(target_arch = "x86_64"))]
+        let (tls, child_tid) = (arg4, arg5);
+        // An FS base must be a user address, as ARCH_SET_FS requires.
+        #[cfg(target_arch = "x86_64")]
+        if flags & CLONE_SETTLS != 0 && tls >= crate::memory::layout::USER_STACK_REGION_END {
+            return Err(super::errno::EPERM as u64);
+        }
+        let given = |flag: u64, addr: u64| (flags & flag != 0 && addr != 0).then_some(addr);
+        Ok(Self {
+            share_files: flags & CLONE_FILES != 0,
+            share_fs: flags & CLONE_FS != 0,
+            share_undo: flags & CLONE_SYSVSEM != 0,
+            stack: (stack != 0).then_some(stack),
+            tls: (flags & CLONE_SETTLS != 0).then_some(tls),
+            parent_tid: given(CLONE_PARENT_SETTID, parent_tid),
+            child_set_tid: given(CLONE_CHILD_SETTID, child_tid),
+            child_clear_tid: given(CLONE_CHILD_CLEARTID, child_tid),
+        })
+    }
+
+    /// Give the child's starting registers, copied from the parent's, the
+    /// requested stack and thread pointer.
+    pub fn apply_to_context(&self, context: &mut crate::task::thread::CpuContext) {
+        #[cfg(target_arch = "x86_64")]
+        {
+            if let Some(stack) = self.stack {
+                context.rsp = stack;
+            }
+            if let Some(tls) = self.tls {
+                context.user_fs_base = tls;
+                context.user_fs_base_set = true;
+            }
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            if let Some(stack) = self.stack {
+                context.sp_el0 = stack;
+            }
+            if let Some(tls) = self.tls {
+                context.tpidr_el0 = tls;
+            }
+        }
+    }
+
+    /// CLONE_CHILD_SETTID, under PROCESS_MANAGER before the child first runs:
+    /// store its thread ID in its own copy of the address space. Linux stores
+    /// it from the child as it starts and ignores a failure; an unaligned or
+    /// unmapped word is left alone here the same way.
+    pub fn store_child_tid(&self, manager: &mut crate::process::ProcessManager, child: crate::process::ProcessId, tid: u64) {
+        let Some(addr) = self.child_set_tid else {
+            return;
+        };
+        if let Some(table) = manager
+            .get_process_mut(child)
+            .and_then(|process| process.page_table.as_mut())
+        {
+            let _ = table.store_user_u32(addr, tid as u32, child.as_u64());
+        }
+    }
+
+    /// CLONE_PARENT_SETTID, once PROCESS_MANAGER is released: store the
+    /// child's thread ID in the parent's memory.
+    pub fn store_parent_tid(&self, tid: u64) {
+        if let Some(addr) = self.parent_tid {
+            let _ = super::userptr::copy_to_user(addr as *mut u32, &(tid as u32));
+        }
+    }
 }
 
 /// P5b: the designated init cannot acquire `CLONE_VM` siblings.

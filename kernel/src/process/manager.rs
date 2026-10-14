@@ -172,6 +172,27 @@ pub(crate) struct ForkCopy {
     /// `copy`, its only user, reads it.
     parent_page_table: *const ProcessPageTable,
     claim: crate::memory::fork_copy::CopyClaim,
+    /// The child's share of the parent's SEM_UNDO adjustments (CLONE_SYSVSEM).
+    undo: SharedUndo,
+}
+
+/// A fork child's share of its parent's SEM_UNDO adjustments, given back when
+/// the child is never published. A published child gives it back as it exits.
+pub(crate) struct SharedUndo(Option<ProcessId>);
+
+impl SharedUndo {
+    /// The child was published: its exit now gives the share back.
+    fn keep(mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for SharedUndo {
+    fn drop(&mut self) {
+        if let Some(child) = self.0.take() {
+            crate::ipc::sysv::unshare_undo(child);
+        }
+    }
 }
 
 /// A fork child's address space until its row is inserted: the table, still
@@ -3053,6 +3074,7 @@ impl ProcessManager {
         &mut self,
         parent_pid: ProcessId,
         child_page_table: crate::memory::process_memory::UnpublishedPageTable,
+        clone: &crate::syscall::clone::ForkClone,
     ) -> Result<ForkCopy, &'static str> {
         crate::tracing::providers::process::trace_fork_entry(parent_pid.as_u64() as u32);
 
@@ -3098,7 +3120,17 @@ impl ProcessManager {
         child_process.parent = Some(parent_pid);
         child_process.pgid = parent.pgid;
         crate::tty::ctty::inherit(&mut child_process, parent);
-        child_process.cwd = parent.cwd.copy();
+        // A fork-style clone can share the working directories (CLONE_FS)
+        // and the descriptor table (CLONE_FILES) instead of copying them.
+        child_process.cwd = if clone.share_fs {
+            parent.cwd.share()
+        } else {
+            parent.cwd.copy()
+        };
+        if clone.share_files {
+            child_process.fd_table = parent.fd_table.share();
+        }
+        child_process.clear_child_tid = clone.child_clear_tid;
         child_process.heap_start = parent.heap_start;
         child_process.heap_end = parent.heap_end;
         child_process.mmap_hint = parent.mmap_hint;
@@ -3111,6 +3143,12 @@ impl ProcessManager {
         // SAFETY: the table is the parent row's, read under this guard.
         let root = unsafe { (*parent_page_table).level_4_frame().start_address().as_u64() };
         let child_space = child_page_table.address_space();
+        let undo = if clone.share_undo {
+            crate::ipc::sysv::share_undo(parent_pid, child_pid).map_err(|_| "fork allocation failed")?;
+            SharedUndo(Some(child_pid))
+        } else {
+            SharedUndo(None)
+        };
         Ok(ForkCopy {
             parent_pid,
             child_pid,
@@ -3120,6 +3158,7 @@ impl ProcessManager {
             child_page_table,
             parent_page_table,
             claim: crate::memory::fork_copy::CopyClaim::take(root, child_space),
+            undo,
         })
     }
 
@@ -3227,11 +3266,12 @@ impl ProcessManager {
     #[cfg(target_arch = "x86_64")]
     pub(crate) fn finish_fork(
         &mut self,
-        fork: ForkCopy,
+        mut fork: ForkCopy,
         copied: Result<(), &'static str>,
         parent_context: crate::task::thread::CpuContext,
         abandoned: &mut Option<AbandonedFork>,
     ) -> Result<ProcessId, &'static str> {
+        let undo = core::mem::replace(&mut fork.undo, SharedUndo(None));
         let (_claim, ended) = self.end_fork_copy(fork, copied, abandoned);
         let (parent_pid, child_pid, parent_thread, child_process, memory) = ended?;
         let mut memory = Some(memory);
@@ -3246,6 +3286,9 @@ impl ProcessManager {
             &mut memory,
         );
         Self::abandon_unpublished(memory, abandoned);
+        if completed.is_ok() {
+            undo.keep();
+        }
         completed
     }
 
@@ -3255,7 +3298,7 @@ impl ProcessManager {
     #[cfg(target_arch = "aarch64")]
     pub(crate) fn finish_fork(
         &mut self,
-        fork: ForkCopy,
+        mut fork: ForkCopy,
         copied: Result<(), &'static str>,
         parent_context: crate::task::thread::CpuContext,
         abandoned: &mut Option<AbandonedFork>,
@@ -3263,6 +3306,7 @@ impl ProcessManager {
         // NOTE: No logging in this function — it runs under PM lock which disables
         // interrupts on ARM64. Acquiring the logger lock here can deadlock if another
         // thread was preempted while holding it. Use tracing events instead.
+        let undo = core::mem::replace(&mut fork.undo, SharedUndo(None));
         let (_claim, ended) = self.end_fork_copy(fork, copied, abandoned);
         let (parent_pid, child_pid, parent_thread, child_process, memory) = ended?;
         let mut memory = Some(memory);
@@ -3275,6 +3319,9 @@ impl ProcessManager {
             &mut memory,
         );
         Self::abandon_unpublished(memory, abandoned);
+        if completed.is_ok() {
+            undo.keep();
+        }
         completed
     }
 
@@ -5938,7 +5985,11 @@ impl ProcessManager {
             child_page_table,
             parent_pid.as_u64(),
         );
-        let mut fork = self.begin_fork(parent_pid, child_page_table)?;
+        let mut fork = self.begin_fork(
+            parent_pid,
+            child_page_table,
+            &crate::syscall::clone::ForkClone::FORK,
+        )?;
         let copied = fork.copy();
         let mut abandoned = None;
         self.finish_fork(fork, copied, parent_context, &mut abandoned)

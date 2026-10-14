@@ -463,6 +463,11 @@ impl FdTable {
         }
     }
 
+    /// Whether `other` is a handle to this same table.
+    pub fn is_same_table(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.shared, &other.shared)
+    }
+
     /// Whether another row holds a handle to this table.
     pub fn is_shared(&self) -> bool {
         Arc::strong_count(&self.shared) > 1
