@@ -151,6 +151,7 @@ static SUITE: Suite = suite("rust-std", "Rust std", &[
         case("park-unpark", "Thread::unpark wakes a thread blocked in thread::park", park_unpark),
         case("park-timeout", "park_timeout returns by its 50 ms timeout plus 30 ms when nothing unparks the thread", park_timeout),
         case("available-parallelism", "available_parallelism is the number of processors /proc/cpuinfo lists", available_parallelism),
+        case("available-parallelism-affinity", "available_parallelism follows the thread's affinity when sched_setaffinity narrows and restores it", available_parallelism_affinity),
         case("detached", "A thread whose JoinHandle was dropped keeps running and sends its result", detached),
     ]),
     category("net", "std::net", &[
@@ -1542,6 +1543,33 @@ fn available_parallelism() -> CaseResult {
     let listed = processors()?;
     value("processors", n as i64, "", Some((listed as i64, listed as i64)));
     check(n == listed, &format!("available_parallelism is {n}; /proc/cpuinfo lists {listed}"))
+}
+
+unsafe extern "C" {
+    fn sched_setaffinity(pid: i32, len: usize, mask: *const u64) -> i32;
+}
+
+/// Narrow a thread's affinity below the online count, then restore it: available_parallelism
+/// follows the affinity both ways, which the /proc/cpuinfo fallback alone cannot do.
+fn available_parallelism_affinity() -> CaseResult {
+    let listed = processors()?;
+    let narrowed = (listed - 1).max(1);
+    // A thread of its own, so the narrowed affinity ends with it.
+    let handle = thread::spawn(move || -> CaseResult {
+        for (cpus, how) in [(narrowed, "narrowed"), (listed, "restored")] {
+            let mut mask = [0u64; 16];
+            for cpu in 0..cpus {
+                mask[cpu / 64] |= 1 << (cpu % 64);
+            }
+            if unsafe { sched_setaffinity(0, size_of_val(&mask), mask.as_ptr()) } != 0 {
+                return fail(format!("sched_setaffinity to {cpus} processors failed: {}", io::Error::last_os_error()));
+            }
+            let n = thread::available_parallelism().ctx("available_parallelism")?.get();
+            check(n == cpus, &format!("affinity {how} to {cpus} of {listed} processors; available_parallelism is {n}"))?;
+        }
+        Ok(())
+    });
+    finish(handle, "the affinity thread")?
 }
 
 fn detached() -> CaseResult {
