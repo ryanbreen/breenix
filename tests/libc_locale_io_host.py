@@ -45,7 +45,16 @@ with tempfile.TemporaryDirectory(prefix='breenix-locale-io-') as directory:
             (tmp / module / name).write_text(text.split('#[cfg(test)]')[0])
     (tmp / 'stdlib/mod.rs').write_text(
         'pub(crate) mod floatconv; pub(crate) mod numscan; pub(crate) const EINVAL:i32=22;')
-    (tmp / 'math/mod.rs').write_text('pub(crate) mod fenv;')
+    # Compile the real STRMATH reporting service used by the shared scanner.
+    math_source = (src / 'math/mod.rs').read_text()
+    start = math_source.index('pub(crate) fn report(')
+    end = math_source.index('\n}\n', start) + 3
+    (tmp / 'math/mod.rs').write_text(
+        'pub(crate) mod fenv;\n'
+        'use crate::stdlib::floatconv::Converted;\n'
+        'use crate::pthread::set_errno;\n'
+        'const ERANGE: i32 = 34; // Breenix errno ABI, as in stdlib/mod.rs.\n'
+        + math_source[start:end])
     (tmp / 'string/mod.rs').write_text('mod errtext; pub(crate) use errtext::error_text;')
     support = (root / 'tests/stdio-host/support.rs').read_text()
     # STDIO's own cases belong to STDIO's runner.
