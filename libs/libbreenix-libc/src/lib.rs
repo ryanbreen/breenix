@@ -27,7 +27,9 @@
 mod alloc_cache;
 mod dirent;
 mod env;
+mod fnmatch;
 mod getopt;
+mod glob;
 mod inet;
 mod netdb;
 mod mqueue;
