@@ -514,6 +514,26 @@ pub unsafe extern "C" fn unlink(path: *const u8) -> i32 {
     syscall_result_to_c_int(result)
 }
 
+/// unlinkat - remove a directory entry relative to a directory descriptor.
+///
+/// The kernel implements AT_REMOVEDIR for directories and flags=0 for files
+/// and symlinks, without following the final symlink.
+#[no_mangle]
+pub unsafe extern "C" fn unlinkat(dirfd: i32, path: *const u8, flags: i32) -> i32 {
+    if path.is_null() {
+        *__errno_location() = EFAULT;
+        return -1;
+    }
+
+    let result = libbreenix::raw::syscall3(
+        libbreenix::syscall::nr::UNLINKAT,
+        dirfd as u64,
+        path as u64,
+        flags as u64,
+    ) as i64;
+    syscall_result_to_c_int(result)
+}
+
 /// rename - rename a file
 #[no_mangle]
 pub unsafe extern "C" fn rename(oldpath: *const u8, newpath: *const u8) -> i32 {
