@@ -29,9 +29,14 @@ pub unsafe extern "C" fn fwide(f: *mut File, mode: i32) -> i32 {
     file::unlock(f);
     r
 }
-unsafe fn get(f: *mut File) -> u32 {
+enum Input {
+    Char(u32),
+    Eof,
+    Error,
+}
+unsafe fn get(f: *mut File) -> Input {
     if !orient(f) {
-        return u32::MAX;
+        return Input::Error;
     }
     let mut partial = false;
     loop {
@@ -40,8 +45,13 @@ unsafe fn get(f: *mut File) -> u32 {
             if partial {
                 file::set_error(f);
                 set_errno(84);
+                return Input::Error;
             }
-            return u32::MAX;
+            return if file::feof_unlocked(f) != 0 {
+                Input::Eof
+            } else {
+                Input::Error
+            };
         }
         let enc = encoding(f);
         let st = &mut *file::mb_state(f);
@@ -49,12 +59,12 @@ unsafe fn get(f: *mut File) -> u32 {
         let decoded = decode_charset(&[byte as u8], st, enc);
         st.reserved = saved;
         match decoded {
-            Decoded::Char(c, _) => return c,
+            Decoded::Char(c, _) => return Input::Char(c),
             Decoded::Incomplete(_) => partial = true,
             Decoded::Invalid => {
                 file::set_error(f);
                 set_errno(84);
-                return u32::MAX;
+                return Input::Error;
             }
         }
     }
@@ -78,7 +88,10 @@ pub(super) unsafe fn put(c: u32, f: *mut File) -> u32 {
 #[no_mangle]
 pub unsafe extern "C" fn fgetwc(f: *mut File) -> u32 {
     file::lock(f);
-    let r = get(f);
+    let r = match get(f) {
+        Input::Char(c) => c,
+        _ => u32::MAX,
+    };
     file::unlock(f);
     r
 }
@@ -117,14 +130,18 @@ pub unsafe extern "C" fn fgetws(s: *mut u32, n: i32, f: *mut File) -> *mut u32 {
     }
     let mut i = 0;
     while i + 1 < n {
-        let c = get(f);
-        if c == u32::MAX {
-            if i == 0 || file::ferror_unlocked(f) != 0 {
+        let c = match get(f) {
+            Input::Char(c) => c,
+            Input::Error => {
                 file::unlock(f);
                 return core::ptr::null_mut();
             }
-            break;
-        }
+            Input::Eof if i == 0 => {
+                file::unlock(f);
+                return core::ptr::null_mut();
+            }
+            Input::Eof => break,
+        };
         *s.add(i as usize) = c;
         i += 1;
         if c == 10 {

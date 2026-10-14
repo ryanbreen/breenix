@@ -126,3 +126,27 @@ fn empty_wide_io_orients_and_failed_pushback_preserves_input() {
         done(l);
     }
 }
+
+#[test]
+fn prior_error_does_not_fail_a_successful_wide_read() {
+    unsafe {
+        let mut bytes = *b"abc";
+        let f = file::fmemopen(bytes.as_mut_ptr(), bytes.len(), b"r\0".as_ptr());
+        assert_eq!(streams::fputwc(88, f), u32::MAX);
+        assert_ne!(file::ferror(f), 0);
+        let mut text = [0u32; 8];
+        assert_eq!(streams::fgetws(text.as_mut_ptr(), 8, f), text.as_mut_ptr());
+        assert_eq!(&text[..4], &[97, 98, 99, 0]);
+        assert_ne!(file::ferror(f), 0);
+        assert_ne!(file::feof(f), 0);
+        file::fclose(f);
+        let l = utf8();
+        let mut bytes = *b"a\xe2\x82";
+        let f = file::fmemopen(bytes.as_mut_ptr(), bytes.len(), b"r\0".as_ptr());
+        assert!(streams::fgetws(text.as_mut_ptr(), 8, f).is_null());
+        assert_eq!(crate::pthread::errno(), 84);
+        assert_ne!(file::ferror(f), 0);
+        file::fclose(f);
+        done(l);
+    }
+}
