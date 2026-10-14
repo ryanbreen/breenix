@@ -126,6 +126,10 @@ if ! "$PROJECT_ROOT/userspace/libc-suite/build.sh" --arch "$ARCH"; then
     echo "  ERROR: libc suite C build FAILED"
     exit 1
 fi
+if ! "$PROJECT_ROOT/scripts/build-libc-busybox.sh" --arch "$ARCH"; then
+    echo "  ERROR: BusyBox build against Breenix's libc FAILED"
+    exit 1
+fi
 echo ""
 
 # Step 2: Build all userspace binaries
@@ -403,7 +407,9 @@ INSTALL_NAMES=" busybox "
 for entry in "${STD_BINARIES[@]}"; do
     INSTALL_NAMES+="${entry##*:} "
 done
-# The C programs userspace/libc-suite/build.sh installed above.
+# The C programs userspace/libc-suite/build.sh and scripts/build-libc-busybox.sh
+# installed above.
+INSTALL_NAMES+="libc-busybox "
 while read -r category _; do
     case "$category" in ''|'#'*) continue ;; esac
     INSTALL_NAMES+="libc-${category}_test "

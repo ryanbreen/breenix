@@ -205,6 +205,18 @@ if [[ "$(uname)" == "Darwin" ]]; then
                 echo "  WARNING: busybox.elf not found, skipping coreutils"
             fi
 
+            # BusyBox built against Breenix'"'"'s own C library, with a hard link per applet
+            # it was built with (scripts/build-libc-busybox.sh).
+            if [ -f /binaries/libc-busybox.elf ]; then
+                mkdir -p /mnt/ext2/usr/local/libc/bin
+                cp /binaries/libc-busybox.elf /mnt/ext2/usr/local/libc/bin/busybox
+                chmod 755 /mnt/ext2/usr/local/libc/bin/busybox
+                while read -r applet; do
+                    [ -n "$applet" ] && ln /mnt/ext2/usr/local/libc/bin/busybox "/mnt/ext2/usr/local/libc/bin/$applet"
+                done < /binaries/libc-busybox.links
+                echo "  Installed libc BusyBox with $(wc -l < /binaries/libc-busybox.links) applets in /usr/local/libc/bin"
+            fi
+
             # Copy remaining binaries from /binaries directory
             # Routing: musl C programs (*_musl*) -> /usr/local/cbin
             #          test binaries (*_test, test_*) -> /usr/local/test/bin
@@ -218,8 +230,9 @@ if [[ "$(uname)" == "Darwin" ]]; then
             for elf_file in /binaries/*.elf; do
                 if [ -f "$elf_file" ]; then
                     bin_name=$(basename "$elf_file" .elf)
-                    # Skip busybox (already installed above)
+                    # Skip both BusyBoxes (already installed above)
                     [ "$bin_name" = "busybox" ] && continue
+                    [ "$bin_name" = "libc-busybox" ] && continue
                     if echo "$bin_name" | grep -qE "_musl"; then
                         cp "$elf_file" /mnt/ext2/usr/local/cbin/${bin_name}
                         chmod 755 /mnt/ext2/usr/local/cbin/${bin_name}
@@ -508,6 +521,18 @@ else
         echo "  WARNING: busybox.elf not found, skipping coreutils"
     fi
 
+    # BusyBox built against Breenix's own C library, with a hard link per applet it was
+    # built with (scripts/build-libc-busybox.sh).
+    if [[ -f "$USERSPACE_DIR/libc-busybox.elf" ]]; then
+        mkdir -p "$MOUNT_DIR/usr/local/libc/bin"
+        cp "$USERSPACE_DIR/libc-busybox.elf" "$MOUNT_DIR/usr/local/libc/bin/busybox"
+        chmod 755 "$MOUNT_DIR/usr/local/libc/bin/busybox"
+        while read -r applet; do
+            [[ -n "$applet" ]] && ln "$MOUNT_DIR/usr/local/libc/bin/busybox" "$MOUNT_DIR/usr/local/libc/bin/$applet"
+        done < "$USERSPACE_DIR/libc-busybox.links"
+        echo "  Installed libc BusyBox with $(wc -l < "$USERSPACE_DIR/libc-busybox.links") applets in /usr/local/libc/bin"
+    fi
+
     # Copy remaining binaries from userspace directory
     # Routing: musl C programs (*_musl*) -> /usr/local/cbin
     #          test binaries (*_test, test_*) -> /usr/local/test/bin
@@ -521,8 +546,9 @@ else
     for elf_file in "$USERSPACE_DIR"/*.elf; do
         if [ -f "$elf_file" ]; then
             bin_name=$(basename "$elf_file" .elf)
-            # Skip busybox (already installed above)
+            # Skip both BusyBoxes (already installed above)
             [ "$bin_name" = "busybox" ] && continue
+            [ "$bin_name" = "libc-busybox" ] && continue
             if echo "$bin_name" | grep -qE '_musl'; then
                 cp "$elf_file" "$MOUNT_DIR/usr/local/cbin/${bin_name}"
                 chmod 755 "$MOUNT_DIR/usr/local/cbin/${bin_name}"

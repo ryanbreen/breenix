@@ -7,9 +7,9 @@
 #
 # The only C compile and link driver. It runs Homebrew clang with Breenix's headers
 # (libs/libbreenix-libc/include) and the compiler's own (stddef.h, stdarg.h, stdint.h,
-# float.h, ...), and no host headers. A command that links (no -c, -S, -E or -M*)
-# links statically with the rust toolchain's lld, userspace/programs/linker.ld and the
-# arch's libc.a, which supplies _start.
+# float.h, ...), and no host headers. A command that links (no -c, -S, -E, -M* or
+# -fsyntax-only) links statically with the rust toolchain's lld, userspace/programs/linker.ld and the
+# arch's libc.a, which supplies _start; with -r it only combines objects.
 #
 # libc.a is libs/libbreenix-libc/target/aarch64-breenix/release/libc.a on aarch64
 # and libs/libbreenix-libc/target/x86_64-breenix-c/release/libc.a (the SysV float ABI
@@ -73,9 +73,11 @@ COMPILE_FLAGS=(
 )
 
 linking=1
+relocatable=0
 for arg in "$@"; do
     case "$arg" in
         -c|-S|-E|-M|-MM|-fsyntax-only) linking=0 ;;
+        -r|-Wl,-r) relocatable=1 ;;
     esac
 done
 
@@ -87,6 +89,11 @@ SYSROOT="$(cd "$ROOT" && rustc --print sysroot)"
 HOST="$(cd "$ROOT" && rustc -vV | sed -n 's/^host: //p')"
 GCC_LD="$SYSROOT/lib/rustlib/$HOST/bin/gcc-ld"
 [ -x "$GCC_LD/ld.lld" ] || { echo "breenix-cc: no ld.lld in $GCC_LD (rustup component llvm-tools?)" >&2; exit 1; }
+
+# A relocatable link (-r) combines objects into one; the program link comes later.
+if [ "$relocatable" = 1 ]; then
+    exec "$CLANG" "${COMPILE_FLAGS[@]}" -nostdlib -fuse-ld=lld -B "$GCC_LD" "$@"
+fi
 [ -f "$LIBC" ] || { echo "breenix-cc: $LIBC is missing; build libs/libbreenix-libc for $ARCH first" >&2; exit 1; }
 
 exec "$CLANG" "${COMPILE_FLAGS[@]}" -static -nostdlib -fuse-ld=lld -B "$GCC_LD" \
