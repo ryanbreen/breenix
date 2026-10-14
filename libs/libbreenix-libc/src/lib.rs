@@ -40,6 +40,7 @@ mod env;
 mod fnmatch;
 mod getopt;
 mod glob;
+mod locale;
 mod math;
 mod stdlib;
 mod string;
@@ -51,6 +52,7 @@ mod shm;
 mod semaphore;
 mod sysv;
 mod termios;
+mod stdio;
 
 use libbreenix::types::Fd;
 use libbreenix::error::Error;

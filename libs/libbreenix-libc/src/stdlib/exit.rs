@@ -68,7 +68,10 @@ pub unsafe extern "C" fn at_quick_exit(f: extern "C" fn()) -> i32 {
 
 #[no_mangle]
 pub extern "C" fn exit(status: i32) -> ! {
-    unsafe { (*core::ptr::addr_of_mut!(AT_EXIT)).run() };
+    unsafe {
+        (*core::ptr::addr_of_mut!(AT_EXIT)).run();
+        crate::stdio::flush_all();
+    }
     _Exit(status)
 }
 

@@ -94,14 +94,21 @@ void qsort_r(void *base, size_t n, size_t size, int (*compar)(const void *, cons
              void *arg);
 char *realpath(const char *__BREENIX_RESTRICT path, char *__BREENIX_RESTRICT resolved);
 int mkstemp(char *template_);
+int mkostemp(char *template_, int flags);
 char *mkdtemp(char *template_);
 #endif
 
 #ifdef __BREENIX_EXT
 int clearenv(void);
 void *memalign(size_t alignment, size_t size);
+int mkstemps(char *template_, int suffixlen);
+int mkostemps(char *template_, int suffixlen, int flags);
 #endif
 
 __BREENIX_END_DECLS
+
+#ifdef __BREENIX_EXT
+#include <alloca.h>
+#endif
 
 #endif

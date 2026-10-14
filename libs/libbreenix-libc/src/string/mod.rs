@@ -571,3 +571,57 @@ pub unsafe extern "C" fn strcasecmp_l(a: *const u8, b: *const u8, _loc: *mut cor
 pub unsafe extern "C" fn strncasecmp_l(a: *const u8, b: *const u8, n: usize, _loc: *mut core::ffi::c_void) -> i32 {
     strncasecmp(a, b, n)
 }
+
+// ----------------------------------------------------------------------------
+// strverscmp (GNU): orders version strings, comparing digit runs by value, as the
+// Linux strverscmp(3) page describes. A run longer than one digit that starts with 0
+// reads as a fraction: such runs sort before plain numbers, more leading zeros sort
+// first, and equal zeros compare the remaining digits as text. So
+// 000 < 00 < 01 < 010 < 09 < 0 < 1 < 9 < 10.
+// ----------------------------------------------------------------------------
+
+unsafe fn digit_run(s: *const u8, from: usize) -> usize {
+    let mut n = 0;
+    while byte(s, from + n).is_ascii_digit() {
+        n += 1;
+    }
+    n
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn strverscmp(a: *const u8, b: *const u8) -> i32 {
+    let mut i = 0;
+    while byte(a, i) == byte(b, i) {
+        if byte(a, i) == 0 {
+            return 0;
+        }
+        i += 1;
+    }
+    let diff = byte(a, i) as i32 - byte(b, i) as i32;
+    // The digit runs that contain, start at or end at the first difference.
+    let mut j = i;
+    while j > 0 && byte(a, j - 1).is_ascii_digit() {
+        j -= 1;
+    }
+    let (na, nb) = (digit_run(a, j), digit_run(b, j));
+    if na == 0 || nb == 0 {
+        return diff;
+    }
+    let (ra, rb) = (core::slice::from_raw_parts(a.add(j), na), core::slice::from_raw_parts(b.add(j), nb));
+    let fraction = |r: &[u8]| r.len() > 1 && r[0] == b'0';
+    let order = match (fraction(ra), fraction(rb)) {
+        (false, false) => na.cmp(&nb).then(ra.cmp(rb)),
+        (true, false) => core::cmp::Ordering::Less,
+        (false, true) => core::cmp::Ordering::Greater,
+        (true, true) => {
+            let zeros = |r: &[u8]| r.iter().take_while(|&&c| c == b'0').count();
+            let (za, zb) = (zeros(ra), zeros(rb));
+            zb.cmp(&za).then(ra[za..].cmp(&rb[zb..]))
+        }
+    };
+    match order {
+        core::cmp::Ordering::Less => -1,
+        core::cmp::Ordering::Greater => 1,
+        core::cmp::Ordering::Equal => diff,
+    }
+}
