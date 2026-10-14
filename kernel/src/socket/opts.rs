@@ -1,5 +1,5 @@
-//! Socket options: the SOL_SOCKET options every protocol shares, and
-//! TCP_NODELAY.
+//! Socket options: the SOL_SOCKET options every protocol shares,
+//! TCP_NODELAY, and IP_TTL for IPv4 sockets.
 //!
 //! The values and errors follow Linux, which fixes what POSIX leaves open: a
 //! buffer size is stored doubled and read back doubled, a timeout is a 16-byte
@@ -9,6 +9,7 @@
 //! other level, goes to the protocol (SO_PEERCRED is AF_UNIX's).
 
 use super::object::{OptBuf, Socket};
+use crate::net::ipv4::DEFAULT_TTL;
 use crate::syscall::errno::{EDOM, EINVAL, ENOPROTOOPT, EOPNOTSUPP};
 
 pub const SOL_SOCKET: i32 = 1;
@@ -26,6 +27,9 @@ pub const SO_SNDTIMEO: i32 = 21;
 pub const SO_ACCEPTCONN: i32 = 30;
 pub const SO_PROTOCOL: i32 = 38;
 pub const SO_DOMAIN: i32 = 39;
+
+pub const IPPROTO_IP: i32 = 0;
+pub const IP_TTL: i32 = 2;
 
 pub const IPPROTO_TCP: i32 = 6;
 pub const TCP_NODELAY: i32 = 1;
@@ -61,6 +65,8 @@ pub struct SockOpts {
     /// negative tv_sec.
     pub rcvtimeo_ns: Option<u64>,
     pub sndtimeo_ns: Option<u64>,
+    /// IP_TTL: the time to live of the IPv4 packets the socket sends.
+    pub ttl: u8,
 }
 
 impl SockOpts {
@@ -75,6 +81,7 @@ impl SockOpts {
             sndbuf: BUF_DEFAULT,
             rcvtimeo_ns: None,
             sndtimeo_ns: None,
+            ttl: DEFAULT_TTL,
         }
     }
 }
@@ -87,6 +94,22 @@ impl Default for SockOpts {
 
 fn is_tcp(sk: &Socket) -> bool {
     sk.family == AF_INET && sk.kind == SOCK_STREAM
+}
+
+/// IP_TTL's value. As Linux's do_ip_setsockopt reads it: an int when optlen
+/// holds one, otherwise a single unsigned byte, and EINVAL for no bytes. -1
+/// restores the default; anything else outside 1..=255 is EINVAL.
+fn ttl_value(val: &[u8]) -> Result<u8, i32> {
+    let value = match val.len() {
+        0 => return Err(EINVAL),
+        1..=3 => i32::from(val[0]),
+        _ => int_value(val)?,
+    };
+    match value {
+        -1 => Ok(DEFAULT_TTL),
+        1..=255 => Ok(value as u8),
+        _ => Err(EINVAL),
+    }
 }
 
 fn int_value(val: &[u8]) -> Result<i32, i32> {
@@ -144,6 +167,8 @@ pub fn value_len(level: i32, name: i32, optlen: usize) -> usize {
         (SOL_SOCKET, SO_RCVTIMEO | SO_SNDTIMEO) => 16,
         (SOL_SOCKET, SO_LINGER) => 8,
         (SOL_SOCKET, _) | (IPPROTO_TCP, _) => 4,
+        // Linux takes a one-byte IP_TTL as well as an int.
+        (IPPROTO_IP, IP_TTL) => return optlen.min(4),
         _ => return optlen.min(16),
     };
     if optlen < 4 {
@@ -170,6 +195,11 @@ pub fn setsockopt(sk: &Socket, level: i32, name: i32, val: &[u8]) -> Result<(), 
 fn store(sk: &Socket, level: i32, name: i32, val: &[u8]) -> Result<bool, i32> {
     if level == IPPROTO_TCP {
         return set_tcp(sk, name, val);
+    }
+    if level == IPPROTO_IP && name == IP_TTL && sk.family == AF_INET {
+        let ttl = ttl_value(val)?;
+        sk.common.with_opts(|o| o.ttl = ttl);
+        return Ok(true);
     }
     if level != SOL_SOCKET {
         return sk.ops().setsockopt(sk, level, name, val).map(|()| false);
@@ -266,6 +296,10 @@ pub fn getsockopt(sk: &Socket, level: i32, name: i32, out: &mut OptBuf) -> Resul
             _ => sk.ops().getsockopt(sk, level, name, out),
         };
     }
+    if level == IPPROTO_IP && name == IP_TTL && sk.family == AF_INET {
+        out.put_int(i32::from(sk.common.ttl()));
+        return Ok(());
+    }
     if level != SOL_SOCKET {
         return sk.ops().getsockopt(sk, level, name, out);
     }
@@ -332,5 +366,20 @@ mod tests {
         assert_eq!(value_len(IPPROTO_TCP, TCP_NODELAY, 64), 4);
         assert_eq!(value_len(0, 1, 64), 16);
         assert_eq!(value_len(0, 1, 2), 2);
+        assert_eq!(value_len(IPPROTO_IP, IP_TTL, 64), 4);
+        assert_eq!(value_len(IPPROTO_IP, IP_TTL, 1), 1);
+    }
+
+    #[test]
+    fn ttl_follows_linux() {
+        assert_eq!(ttl_value(&42i32.to_ne_bytes()), Ok(42));
+        assert_eq!(ttl_value(&255i32.to_ne_bytes()), Ok(255));
+        assert_eq!(ttl_value(&(-1i32).to_ne_bytes()), Ok(DEFAULT_TTL));
+        assert_eq!(ttl_value(&0i32.to_ne_bytes()), Err(EINVAL));
+        assert_eq!(ttl_value(&256i32.to_ne_bytes()), Err(EINVAL));
+        assert_eq!(ttl_value(&(-2i32).to_ne_bytes()), Err(EINVAL));
+        assert_eq!(ttl_value(&[7]), Ok(7));
+        assert_eq!(ttl_value(&[0]), Err(EINVAL));
+        assert_eq!(ttl_value(&[]), Err(EINVAL));
     }
 }

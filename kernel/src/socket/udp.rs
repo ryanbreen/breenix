@@ -590,7 +590,7 @@ impl ProtoOps for UdpSock {
         };
         let packet = crate::net::udp::try_build_udp_packet(src, dst, src_port, dst_port, data)
             .map_err(crate::net::TxError::errno)?;
-        crate::net::ip_output(src, dst, crate::net::ipv4::PROTOCOL_UDP, &packet)
+        crate::net::ip_output(src, dst, crate::net::ipv4::PROTOCOL_UDP, sk.common.ttl(), &packet)
             .map_err(crate::net::TxError::errno)?;
         crate::net::drain_loopback_queue();
         Ok(msg.data.len())

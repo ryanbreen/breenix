@@ -20,7 +20,7 @@ pub const PROTOCOL_TCP: u8 = 6;
 /// IPv4 protocol number for UDP
 pub const PROTOCOL_UDP: u8 = 17;
 
-/// Default TTL for outgoing packets
+/// Default TTL for outgoing packets: Linux's net.ipv4.ip_default_ttl
 pub const DEFAULT_TTL: u8 = 64;
 
 /// Parsed IPv4 packet
@@ -114,17 +114,19 @@ impl<'a> Ipv4Packet<'a> {
         })
     }
 
-    /// Compatibility builder for existing TCP and test callers. An empty
+    /// Compatibility builder for test callers, at the default TTL. An empty
     /// result means construction was refused; send_ethernet rejects it.
     pub fn build(src_ip: [u8; 4], dst_ip: [u8; 4], protocol: u8, payload: &[u8]) -> Vec<u8> {
-        Self::try_build(src_ip, dst_ip, protocol, payload).unwrap_or_default()
+        Self::try_build(src_ip, dst_ip, protocol, DEFAULT_TTL, payload).unwrap_or_default()
     }
 
-    /// Construct without truncating lengths or using infallible allocation.
+    /// Construct without truncating lengths or using infallible allocation,
+    /// with `ttl` as the packet's time to live.
     pub fn try_build(
         src_ip: [u8; 4],
         dst_ip: [u8; 4],
         protocol: u8,
+        ttl: u8,
         payload: &[u8],
     ) -> Result<Vec<u8>, super::TxError> {
         if payload.len() > u16::MAX as usize - IPV4_HEADER_MIN_SIZE {
@@ -149,7 +151,7 @@ impl<'a> Ipv4Packet<'a> {
         // Flags (Don't Fragment) + Fragment offset (0)
         packet.extend_from_slice(&0x4000u16.to_be_bytes());
         // TTL
-        packet.push(DEFAULT_TTL);
+        packet.push(ttl);
         // Protocol
         packet.push(protocol);
         // Checksum (placeholder - will calculate after)
