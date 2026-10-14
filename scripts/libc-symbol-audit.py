@@ -85,11 +85,11 @@ def declared_functions(arch, headers):
     return walker.functions
 
 
-def definitions(arch):
+def definitions(arch, path=None):
     """name -> list of (member, weak) for every definition in libc.a."""
     tool_dir = subprocess.check_output([str(CC), '--arch', arch, '--tool-dir'], text=True).strip()
     nm = Path(tool_dir) / 'llvm-nm'
-    output = subprocess.check_output([str(nm), '-A', str(LIBC[arch])],
+    output = subprocess.check_output([str(nm), '-A', str(path or LIBC[arch])],
                                      text=True, stderr=subprocess.DEVNULL)
     found = {}
     for line in output.splitlines():
@@ -109,6 +109,7 @@ def definitions(arch):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('--arch', choices=sorted(LIBC), required=True)
+    parser.add_argument('--elf', type=Path, help='also reject foreign or weak math in a linked C ELF')
     args = parser.parse_args()
     if not LIBC[args.arch].is_file():
         sys.exit(f'libc-symbol-audit: {LIBC[args.arch]} is missing')
@@ -133,6 +134,12 @@ def main():
             where = ', '.join(sorted({f'{member}{" (weak)" if weak else ""}' for member, weak in defs}))
             problems.append(f'  {name} (declared in {Path(functions[name]).relative_to(INCLUDE.resolve())}) '
                             f'is defined only by {where}')
+    if args.elf:
+        for name, defs in sorted(definitions(args.arch, args.elf).items()):
+            if ('libm_math' in name or 'compiler_builtins4math' in name or 'compiler_builtins..math..' in name
+                    or name in functions and Path(functions[name]).name == 'math.h'
+                    and any(weak for _, weak in defs)):
+                problems.append(f'  forbidden linked math symbol {name} in {args.elf.name}')
     if problems:
         print(f'libc-symbol-audit: {args.arch} libc.a lacks Breenix definitions of functions '
               'its headers declare:', file=sys.stderr)

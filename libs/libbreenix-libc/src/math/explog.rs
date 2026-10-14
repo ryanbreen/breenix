@@ -271,6 +271,7 @@ pub extern "C" fn hypot(x: f64, y: f64) -> f64 {
         let before = super::fenv::flags();
         super::fenv::set_flags(super::fenv::FE_OVERFLOW, 0);
         let r = black_box(a) + black_box(b);
+        let r = black_box(r);
         let raised = super::fenv::flags();
         super::fenv::set_flags(super::fenv::FE_OVERFLOW, (before | raised) & super::fenv::FE_OVERFLOW);
         if raised & super::fenv::FE_OVERFLOW != 0 { crate::pthread::set_errno(crate::stdlib::ERANGE); }

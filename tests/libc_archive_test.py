@@ -60,6 +60,22 @@ _ZN17compiler_builtins4math9libm_math7table: .byte 0
         with patch.object(sys, 'argv', ['audit', '--arch', 'aarch64']):
             self.assertEqual(audit.main(), 1)
 
+    def test_linked_elf_rejects_weak_math(self):
+        cleaner.clean(self.archive, TOOLS)
+        src = self.dir / 'linked.s'
+        src.write_text('.text\n.weak sqrt\nsqrt: ret\n')
+        obj = self.dir / 'linked.o'
+        elf = self.dir / 'linked.elf'
+        subprocess.run([str(TOOLS / 'clang'), '--target=aarch64-unknown-linux-gnu', '-c', str(src), '-o', str(obj)], check=True)
+        sysroot = Path(subprocess.check_output(['rustc', '--print', 'sysroot'], text=True).strip())
+        host = next(line.split(': ', 1)[1] for line in subprocess.check_output(['rustc', '-vV'], text=True).splitlines() if line.startswith('host: '))
+        linker = sysroot / 'lib/rustlib' / host / 'bin/gcc-ld/ld.lld'
+        subprocess.run([str(linker), '-e', 'sqrt', str(obj), '-o', str(elf)], check=True)
+        import sys
+        from unittest.mock import patch
+        with patch.object(sys, 'argv', ['audit', '--arch', 'aarch64', '--elf', str(elf)]):
+            self.assertEqual(audit.main(), 1)
+
     def test_cleanup_removes_code_and_data_preserves_runtime(self):
         cleaner.clean(self.archive, TOOLS)
         found = audit.definitions('aarch64')
