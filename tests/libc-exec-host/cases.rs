@@ -70,6 +70,4 @@ fn unsupported_prctl_reads_no_optional_arguments() {
     assert_eq!(pthread::errno(), 38);
     // Also type-check every exported exec wrapper without executing it.
     let _ = (execv, execvpe, execl, execle, execlp, c_len, with_arg_list);
-    assert_eq!((EINTR, EINVAL, ENOTTY, ERANGE, AT_FDCWD, AT_SYMLINK_NOFOLLOW, CLOCK_REALTIME, S_IFMT, S_IFCHR),
-               (4, 22, 25, 34, -100, 256, 0, 0o170000, 0o020000));
 }

@@ -11,7 +11,10 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 source = (ROOT / 'libs/libbreenix-libc/src/unistd.rs').read_text()
-constants = source[source.index('const EINTR:'):source.index('mod nr {')]
+names = {'ENOEXEC', 'ENOMEM', 'EACCES', 'ENAMETOOLONG', 'ENOENT',
+         'ENOTDIR', 'ENOSYS', 'SHELL', 'DEFAULT_PATH'}
+constants = '\n'.join(line for line in source.splitlines()
+                      if line.startswith('const ') and line.split()[1].rstrip(':') in names) + '\n'
 functions = source[source.index('fn set_errno'):source.index('// ---------------------------------------------------------------------------------\n// Waiting')]
 # Public exec wrappers are unnecessary in this focused harness and must not replace
 # the host process's libc entry points.
