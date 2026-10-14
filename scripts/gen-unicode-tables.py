@@ -4,7 +4,12 @@
 Classification is a locale policy: digits and hex digits stay ASCII as required
 by ISO C, alphabetic and casing use UCD derived properties, and printable
 characters are assigned letters, marks, numbers, punctuation, symbols, spaces
-and private-use characters. No libc implementation is an input.
+and private-use characters. Case mappings keep only the pairs ISO C 7.30.3.1
+allows: towupper maps a Lowercase character to an Uppercase one and towlower the
+reverse, so titlecase letters (neither) map to themselves. Column widths for
+wcwidth follow UAX #11: East_Asian_Width W and F are two columns; nonspacing and
+enclosing marks (Mn, Me) and Default_Ignorable_Code_Point characters are zero.
+No libc implementation is an input.
 """
 from pathlib import Path
 
@@ -46,6 +51,13 @@ def generate():
             lower[cp] = int(f[13], 16)
     derived = properties('DerivedCoreProperties.txt')
     spaces = properties('PropList.txt')['White_Space']
+    upper = {cp: to for cp, to in upper.items()
+             if cp in derived['Lowercase'] and to in derived['Uppercase']}
+    lower = {cp: to for cp, to in lower.items()
+             if cp in derived['Uppercase'] and to in derived['Lowercase']}
+    east_asian = properties('EastAsianWidth.txt')
+    wide = east_asian['W'] | east_asian['F']
+    ignorable = derived['Default_Ignorable_Code_Point']
     masks = []
     for cp, cat in enumerate(category):
         alpha = cp in derived['Alphabetic']
@@ -57,7 +69,13 @@ def generate():
                       cat == 'Cc', digit, graph, cp in derived['Lowercase'],
                       printable, graph and not alpha and not digit, space,
                       cp in derived['Uppercase'], digit or 65 <= cp <= 70 or 97 <= cp <= 102)
-        masks.append(sum(1 << i for i, flag in enumerate(predicates) if flag))
+        mask = sum(1 << i for i, flag in enumerate(predicates) if flag)
+        # Bits 12-13: zero or two columns; printable characters without them are one.
+        if printable and (cat in ('Mn', 'Me') or cp in ignorable):
+            mask |= 1 << 12
+        elif printable and cp in wide:
+            mask |= 1 << 13
+        masks.append(mask)
     ranges = []
     start = 0
     for cp in range(1, len(masks) + 1):
