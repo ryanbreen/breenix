@@ -1152,7 +1152,11 @@ fn nonblock_eagain_test_main() -> ! {
         feature = "disable_x86_prod_init"
     ))
 ))]
-fn launch_x86_production_init(name: &str, elf_data: &[u8]) -> Result<(), &'static str> {
+fn launch_x86_production_init(
+    name: &str,
+    exe_path: &[u8],
+    elf_data: &[u8],
+) -> Result<(), &'static str> {
     use alloc::string::String;
 
     let (thread, designated_pid_raw, reserved_collisions) = {
@@ -1161,7 +1165,10 @@ fn launch_x86_production_init(name: &str, elf_data: &[u8]) -> Result<(), &'stati
             .as_mut()
             .ok_or("process manager not available")?;
 
-        let ticket = manager.create_init_process(String::from(name), elf_data)?;
+        let path = alloc::format!("/sbin/{}", name);
+        let ticket = manager.create_init_process_with_argv(
+            String::from(name), exe_path, elf_data, &[path.as_bytes()],
+        )?;
         let publication = manager.designate_init(ticket)?;
         let designated_pid_raw = manager
             .designated_init()
@@ -1243,8 +1250,9 @@ fn x86_boot_suite() -> Option<alloc::string::String> {
 
 /// Read the program the production kernel runs as PID 1 from the ext2 root:
 /// `/sbin/suite-<id>` when `x86_boot_suite` names a suite whose binary reads
-/// and is a loadable ELF, otherwise `/sbin/init`. Returns its process name and
-/// ELF. A suite binary that cannot be used is noted and the default init runs.
+/// and is a loadable ELF, otherwise `/sbin/init`. Returns its process name,
+/// physical pathname and ELF. A suite binary that cannot be used is noted and
+/// the default init runs.
 #[cfg(all(
     target_arch = "x86_64",
     not(any(
@@ -1253,18 +1261,18 @@ fn x86_boot_suite() -> Option<alloc::string::String> {
         feature = "disable_x86_prod_init"
     ))
 ))]
-fn read_x86_production_init() -> Result<(alloc::string::String, alloc::vec::Vec<u8>), &'static str>
-{
+fn read_x86_production_init(
+) -> Result<(alloc::string::String, alloc::vec::Vec<u8>, alloc::vec::Vec<u8>), &'static str> {
     use kernel::boot::{init_image::read_init_from_ext2, target};
 
     if let Some(id) = x86_boot_suite() {
         let path = target::suite_path(&id);
         match read_init_from_ext2(&path)
-            .and_then(|elf_data| target::check_elf(&elf_data).map(|()| elf_data))
+            .and_then(|(elf_data, exe_path)| target::check_elf(&elf_data).map(|()| (elf_data, exe_path)))
         {
-            Ok(elf_data) => {
+            Ok((elf_data, exe_path)) => {
                 log::info!("[boot] Boot mode: suite {}", id);
-                return Ok((alloc::format!("suite-{}", id), elf_data));
+                return Ok((alloc::format!("suite-{}", id), exe_path, elf_data));
             }
             Err(e) => log::warn!(
                 "[boot] Ignoring boot mode \"suite\": {} could not be loaded ({})",
@@ -1285,10 +1293,11 @@ fn read_x86_production_init() -> Result<(alloc::string::String, alloc::vec::Vec<
         feature = "disable_x86_prod_init"
     ))
 ))]
-fn read_default_x86_init() -> Result<(alloc::string::String, alloc::vec::Vec<u8>), &'static str> {
+fn read_default_x86_init(
+) -> Result<(alloc::string::String, alloc::vec::Vec<u8>, alloc::vec::Vec<u8>), &'static str> {
     log::info!("[boot] Boot mode: default");
     kernel::boot::init_image::read_init_from_ext2("/sbin/init")
-        .map(|elf_data| (alloc::string::String::from("init"), elf_data))
+        .map(|(elf_data, exe_path)| (alloc::string::String::from("init"), exe_path, elf_data))
 }
 
 /// Continue kernel initialization after setting up threading
@@ -1893,9 +1902,9 @@ fn kernel_main_continue() -> ! {
         let mut image = read_x86_production_init();
         loop {
             match image {
-                Ok((name, elf_data)) => {
+                Ok((name, exe_path, elf_data)) => {
                     let launched = x86_64::instructions::interrupts::without_interrupts(|| {
-                        launch_x86_production_init(&name, &elf_data)
+                        launch_x86_production_init(&name, &exe_path, &elf_data)
                     });
                     match launched {
                         Ok(()) => {}

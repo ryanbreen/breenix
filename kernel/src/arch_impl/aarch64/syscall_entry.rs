@@ -1367,8 +1367,8 @@ fn sys_exec_aarch64(
         Err(errno) => return (-(errno as i64)) as u64,
     };
 
-    let (elf_vec, image_identity, image_path) = match crate::syscall::exec::read_image(&program_name, &mut arguments, |path| {
-        load_elf_from_ext2(path)
+    let (elf_vec, (image_identity, exe_path)) = match crate::syscall::exec::read_image(&program_name, &mut arguments, |path| {
+        load_elf_from_ext2(path).map(|(data, identity, path)| (data, (identity, path)))
     }) {
         Ok(data) => data,
         Err(errno) => return (-(errno as i64)) as u64,
@@ -1412,10 +1412,15 @@ fn sys_exec_aarch64(
         Ok(slices) => slices,
         Err(errno) => return (-(errno as i64)) as u64,
     };
+    let process_name = match crate::syscall::exec::display_path(&program_name) {
+        Ok(name) => name,
+        Err(errno) => return (-(errno as i64)) as u64,
+    };
     let mut prepared = match crate::process::manager::ProcessManager::prepare_exec_image(
         current_pid,
         elf_data,
-        Some(&image_path),
+        Some(&process_name),
+        Some(exe_path),
         &argv_slices,
         &envp_slices,
         image_identity,
@@ -1568,10 +1573,11 @@ fn sys_exec_aarch64(
 /// Returns the file content as Vec<u8> on success, or an errno on failure.
 ///
 /// NOTE: This function intentionally has NO logging to avoid timing overhead.
-/// The program image at `path` and the identity its set-ID bits confer.
+/// The program image at `path`, the identity its set-ID bits confer, and its
+/// physical absolute pathname.
 fn load_elf_from_ext2(
     path: impl AsRef<[u8]>,
-) -> Result<(alloc::vec::Vec<u8>, crate::process::credentials::ExecIdentity), i32> {
+) -> Result<(alloc::vec::Vec<u8>, crate::process::credentials::ExecIdentity, alloc::vec::Vec<u8>), i32> {
     use crate::syscall::errno::{EACCES, EIO};
 
     // Trace: entering load_elf_from_ext2
@@ -1581,7 +1587,7 @@ fn load_elf_from_ext2(
     let cred = crate::fs::permissions::Credentials::current(false);
 
     // The handle holds the inode until its content is read.
-    let (mount, inode_num, _held) = crate::fs::namei::resolve_file_bytes(path.as_ref()).map_err(|errno| {
+    let (mount, inode_num, _held, resolved) = crate::fs::namei::resolve_file_bytes(path.as_ref()).map_err(|errno| {
         super::trace::trace_exec(b'!');
         errno as i32
     })?;
@@ -1617,7 +1623,7 @@ fn load_elf_from_ext2(
         .ok_or(crate::syscall::errno::EINTR)?;
     super::trace::trace_exec(b'7');
 
-    Ok((data, crate::process::credentials::ExecIdentity::of(&inode)))
+    Ok((data, crate::process::credentials::ExecIdentity::of(&inode), resolved))
 }
 
 // =============================================================================
@@ -1786,15 +1792,15 @@ fn sys_spawn_aarch64(path_ptr: u64, argv_ptr: u64) -> u64 {
     }
 
     // Load ELF from filesystem (with interrupts enabled for I/O)
-    let elf_vec = if program_path.contains('/') {
+    let (elf_vec, exe_path) = if program_path.contains('/') {
         match load_elf_from_ext2(&program_path) {
-            Ok((data, _)) => data,
+            Ok((data, _, path)) => (data, path),
             Err(errno) => return (-(errno as i64)) as u64,
         }
     } else {
         let bin_path = alloc::format!("/bin/{}", program_path);
         match load_elf_from_ext2(&bin_path) {
-            Ok((data, _)) => data,
+            Ok((data, _, path)) => (data, path),
             Err(errno) => {
                 crate::serial_println!("[spawn] Failed to load /bin/{}: {}", program_path, errno);
                 return (-(errno as i64)) as u64;
@@ -1838,7 +1844,7 @@ fn sys_spawn_aarch64(path_ptr: u64, argv_ptr: u64) -> u64 {
     let child_pid = {
         let mut manager_guard = crate::process::manager();
         if let Some(ref mut manager) = *manager_guard {
-            manager.spawn_process(parent_pid, process_name, elf_data, &argv_slices)
+            manager.spawn_process(parent_pid, process_name, elf_data, &argv_slices, Some(exe_path))
         } else {
             Err("Process manager not available")
         }

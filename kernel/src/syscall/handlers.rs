@@ -1835,17 +1835,18 @@ pub fn sys_fork() -> SyscallResult {
 /// NOTE: This function intentionally has NO logging to avoid timing overhead.
 /// It's called on every exec syscall, and serial I/O causes CI timing issues.
 #[cfg(all(target_arch = "x86_64", feature = "testing"))]
-/// The program image at `path` and the identity its set-ID bits confer.
+/// The program image at `path`, the identity its set-ID bits confer, and its
+/// physical absolute pathname.
 fn load_elf_from_ext2(
     path: impl AsRef<[u8]>,
-) -> Result<(Vec<u8>, crate::process::credentials::ExecIdentity), i32> {
+) -> Result<(Vec<u8>, crate::process::credentials::ExecIdentity, Vec<u8>), i32> {
     use super::errno::{EACCES, EIO};
 
     // Taken before the filesystem lock: who may execute the file.
     let cred = crate::fs::permissions::Credentials::current(false);
 
     // The handle holds the inode until its content is read.
-    let (mount, inode_num, _held) =
+    let (mount, inode_num, _held, resolved) =
         crate::fs::namei::resolve_file_bytes(path.as_ref()).map_err(|errno| errno as i32)?;
     let fs_guard = mount.read().map_err(|errno| errno as i32)?;
     let fs = fs_guard.as_ref().ok_or(EIO)?;
@@ -1864,7 +1865,7 @@ fn load_elf_from_ext2(
         .read_file_content_coherent_unless(inode_num, &inode, super::exec::caller_killed)
         .map_err(|_| EIO)?
         .ok_or(super::errno::EINTR)?;
-    Ok((data, crate::process::credentials::ExecIdentity::of(&inode)))
+    Ok((data, crate::process::credentials::ExecIdentity::of(&inode), resolved))
 }
 
 /// sys_execv_with_frame - Replace the current process with a new program (with argv support)
@@ -1937,15 +1938,17 @@ pub fn sys_execv_with_frame(
     {
         // Load ELF binary WITH interrupts enabled - ext2 I/O needs timer interrupts
         // for proper VirtIO operation
-        let (elf_vec, image_identity, image_path) =
+        let (elf_vec, (image_identity, exe_path)) =
             match super::exec::read_image(program_name, &mut arguments, |path| {
                 match load_elf_from_ext2(path) {
+                    Ok((data, identity, path)) => Ok((data, (identity, Some(path)))),
+                    // A test image has no pathname in the filesystem.
                     Err(errno) if errno == super::errno::ENOENT && !program_name.contains(&b'/') => {
                         core::str::from_utf8(program_name).ok()
                             .and_then(|name| crate::userspace_test::load_test_binary_from_disk(name).ok())
-                            .map(|data| (data, Default::default())).ok_or(errno)
+                            .map(|data| (data, (Default::default(), None))).ok_or(errno)
                     }
-                    result => result,
+                    Err(errno) => Err(errno),
                 }
             }) {
                 Ok(data) => data,
@@ -1988,10 +1991,15 @@ pub fn sys_execv_with_frame(
             Ok(slices) => slices,
             Err(errno) => return SyscallResult::Err(errno),
         };
+        let process_name = match super::exec::display_path(program_name) {
+            Ok(name) => name,
+            Err(errno) => return SyscallResult::Err(errno),
+        };
         let mut prepared = match crate::process::manager::ProcessManager::prepare_exec_image(
             current_pid,
             elf_data,
-            Some(&image_path),
+            Some(&process_name),
+            exe_path,
             &argv_slices,
             &envp_slices,
             image_identity,
@@ -2096,9 +2104,10 @@ pub fn sys_execv_with_frame(
         // section 2.1, #713 anti-vacuity / precheck section 4.6). This read happens with
         // interrupts enabled, before any lock is taken — see this function's own
         // top-of-file comment; do not move it inside the masked section below (X2).
-        let (elf_vec, image_identity, image_path) =
+        let (elf_vec, (image_identity, exe_path)) =
             match super::exec::read_image(program_name, &mut arguments, |path| {
                 crate::boot::init_image::read_program_image(path)
+                    .map(|(data, identity, path)| (data, (identity, path)))
             }) {
                 Ok(data) => data,
                 Err(errno) => return SyscallResult::Err(errno),
@@ -2154,10 +2163,15 @@ pub fn sys_execv_with_frame(
             Ok(slices) => slices,
             Err(errno) => return SyscallResult::Err(errno),
         };
+        let process_name = match super::exec::display_path(program_name) {
+            Ok(name) => name,
+            Err(errno) => return SyscallResult::Err(errno),
+        };
         let mut prepared = match crate::process::manager::ProcessManager::prepare_exec_image(
             current_pid,
             elf_data,
-            Some(&image_path),
+            Some(&process_name),
+            Some(exe_path),
             &argv_slices,
             &envp_slices,
             image_identity,
@@ -2352,8 +2366,8 @@ pub fn sys_spawn(path_ptr: u64, argv_ptr: u64) -> SyscallResult {
         alloc::format!("/bin/{}", program_path)
     };
 
-    let elf_vec = match crate::boot::init_image::read_program(&resolved_path) {
-        Ok(data) => data,
+    let (elf_vec, exe_path) = match crate::boot::init_image::read_program(&resolved_path) {
+        Ok(image) => image,
         Err(errno) => return SyscallResult::Err(errno as u64),
     };
     let elf_data = elf_vec.as_slice();
@@ -2401,7 +2415,7 @@ pub fn sys_spawn(path_ptr: u64, argv_ptr: u64) -> SyscallResult {
         let mut manager_guard = crate::process::manager();
         match *manager_guard {
             Some(ref mut manager) => {
-                manager.spawn_process(parent_pid, process_name, elf_data, &argv_slices)
+                manager.spawn_process(parent_pid, process_name, elf_data, &argv_slices, Some(exe_path))
             }
             None => Err("Process manager not available"),
         }

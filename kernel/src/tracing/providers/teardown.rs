@@ -2691,6 +2691,7 @@ pub fn exec_supersede_cohort_test() -> crate::test_framework::registry::TestResu
                     parent_pid,
                     &corrupt,
                     Some("corrupt_exec"),
+                    None,
                     &argv,
                     &[],
                     Default::default(),
@@ -3287,6 +3288,7 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
                 pid,
                 elf,
                 Some("exec_detach_oracle"),
+                None,
                 &argv,
                 &[],
                 Default::default(),
@@ -4784,6 +4786,7 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
             let argv = [b"/sbin/init".as_slice()];
             manager.create_init_process_with_argv(
                 alloc::string::String::from("init_oracle_a1"),
+                b"/sbin/init",
                 &image,
                 &argv,
             )
@@ -4822,6 +4825,7 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
             let argv = [b"/sbin/init".as_slice()];
             manager.create_init_process_with_argv(
                 alloc::string::String::from("init_oracle_a2"),
+                b"/sbin/init",
                 &image,
                 &argv,
             )

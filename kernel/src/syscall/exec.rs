@@ -235,6 +235,25 @@ pub(crate) fn caller_killed() -> bool {
         })
 }
 
+/// A pathname as display text, such as a process name: invalid UTF-8 becomes
+/// U+FFFD. The resolver and interpreter arguments keep the raw bytes.
+pub(crate) fn display_path(mut path: &[u8]) -> Result<String, u64> {
+    let mut text = String::new();
+    text.try_reserve_exact(path.len().checked_mul(3).ok_or(ENOMEM as u64)?).map_err(|_| ENOMEM as u64)?;
+    while !path.is_empty() {
+        match core::str::from_utf8(path) {
+            Ok(valid) => { text.push_str(valid); break; }
+            Err(error) => {
+                let valid = error.valid_up_to();
+                text.push_str(core::str::from_utf8(&path[..valid]).map_err(|_| EFAULT as u64)?);
+                text.push('\u{fffd}');
+                path = &path[valid + error.error_len().unwrap_or(path.len() - valid)..];
+            }
+        }
+    }
+    Ok(text)
+}
+
 /// The exec convenience ABI searches /bin for a bare name: the pathname
 /// `path` names.
 fn convenience_path(path: Vec<u8>) -> Result<Vec<u8>, u64> {
@@ -257,30 +276,12 @@ fn convenience_path(path: Vec<u8>) -> Result<Vec<u8>, u64> {
     Ok(resolved)
 }
 
-/// Display-only text; the resolver and interpreter arguments keep raw bytes.
-fn display_path(mut path: &[u8]) -> Result<String, u64> {
-    let mut text = String::new();
-    text.try_reserve_exact(path.len().checked_mul(3).ok_or(ENOMEM as u64)?).map_err(|_| ENOMEM as u64)?;
-    while !path.is_empty() {
-        match core::str::from_utf8(path) {
-            Ok(valid) => { text.push_str(valid); break; }
-            Err(error) => {
-                let valid = error.valid_up_to();
-                text.push_str(core::str::from_utf8(&path[..valid]).map_err(|_| EFAULT as u64)?);
-                text.push('\u{fffd}');
-                path = &path[valid + error.error_len().unwrap_or(path.len() - valid)..];
-            }
-        }
-    }
-    Ok(text)
-}
-
 /// Resolve scripts using byte pathnames and preserve every argument byte.
 pub(crate) fn read_image<I>(
     path: impl AsRef<[u8]>,
     args: &mut Arguments,
     mut read: impl FnMut(&[u8]) -> Result<(Vec<u8>, I), i32>,
-) -> Result<(Vec<u8>, I, String), u64> {
+) -> Result<(Vec<u8>, I), u64> {
     let input = path.as_ref();
     let mut path = Vec::new();
     path.try_reserve_exact(input.len()).map_err(|_| ENOMEM as u64)?;
@@ -290,8 +291,7 @@ pub(crate) fn read_image<I>(
         let (data, identity) = read(&path).map_err(|errno| if errno == EISDIR { EACCES as u64 } else { errno as u64 })?;
         if !data.starts_with(b"#!") {
             validate_elf(&data)?;
-            // Process names are display text; lookup and argv remain byte exact.
-            return Ok((data, identity, display_path(&path)?));
+            return Ok((data, identity));
         }
         if depth == 5 { return Err(ELOOP as u64); }
         let end = data.iter().position(|&b| b == b'\n').unwrap_or(data.len());

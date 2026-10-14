@@ -3,8 +3,9 @@
 //! `environ` starts as the array the kernel placed on the initial stack. The first change
 //! copies it into an array this module allocates, so the startup array is never written.
 //! `setenv` stores a "name=value" string it allocates; `putenv` stores the caller's own
-//! string, so later changes to that string show through `getenv`. A replaced or removed
-//! string is never freed: a pointer `getenv` returned earlier may still be in use.
+//! string, so later changes to that string show through `getenv`. A string `setenv`
+//! allocated is freed once it is replaced or removed, which invalidates a pointer `getenv`
+//! returned for it, as XSH getenv permits; a `putenv` string is never freed here.
 //!
 //! None of these functions is required to be thread-safe (XSH 2.9.1). Rust std serializes
 //! its own calls with its environment lock.
@@ -27,6 +28,11 @@ pub static mut environ: *mut *mut u8 = null_mut();
 /// The array this module allocated, and how many pointers it holds.
 static mut OWNED: *mut *mut u8 = null_mut();
 static mut OWNED_CAP: usize = 0;
+
+/// The strings `setenv` allocated that `environ` still holds, and the array's capacity.
+static mut ALLOCATED: *mut *mut u8 = null_mut();
+static mut ALLOCATED_LEN: usize = 0;
+static mut ALLOCATED_CAP: usize = 0;
 
 unsafe fn set_errno(e: i32) {
     *__errno_location() = e;
@@ -116,6 +122,46 @@ unsafe fn own(extra: usize) -> bool {
     true
 }
 
+/// Make room to record one more allocated string. Sets ENOMEM and returns false when no
+/// memory is left.
+unsafe fn reserve_allocated() -> bool {
+    if ALLOCATED_LEN < ALLOCATED_CAP {
+        return true;
+    }
+    let cap = ALLOCATED_CAP.saturating_mul(2).max(16);
+    let Some(bytes) = cap.checked_mul(core::mem::size_of::<*mut u8>()) else {
+        set_errno(ENOMEM);
+        return false;
+    };
+    let array = malloc(bytes) as *mut *mut u8;
+    if array.is_null() {
+        set_errno(ENOMEM);
+        return false;
+    }
+    for i in 0..ALLOCATED_LEN {
+        *array.add(i) = *ALLOCATED.add(i);
+    }
+    let old = ALLOCATED;
+    ALLOCATED = array;
+    ALLOCATED_CAP = cap;
+    if !old.is_null() {
+        free(old as *mut u8);
+    }
+    true
+}
+
+/// Free `entry`, which `environ` no longer holds, if `setenv` allocated it.
+unsafe fn release(entry: *mut u8) {
+    for i in 0..ALLOCATED_LEN {
+        if *ALLOCATED.add(i) == entry {
+            ALLOCATED_LEN -= 1;
+            *ALLOCATED.add(i) = *ALLOCATED.add(ALLOCATED_LEN);
+            free(entry);
+            return;
+        }
+    }
+}
+
 /// A name `setenv` and `unsetenv` accept: not null, not empty, no `=`.
 unsafe fn valid_name<'a>(name: *const u8) -> Option<&'a [u8]> {
     if name.is_null() {
@@ -135,7 +181,11 @@ unsafe fn put(name: &[u8], entry: *mut u8) -> bool {
             if !own(0) {
                 return false;
             }
+            let old = *environ.add(i);
             *environ.add(i) = entry;
+            if old != entry {
+                release(old);
+            }
         }
         None => {
             if !own(1) {
@@ -165,7 +215,9 @@ unsafe fn remove(name: &[u8]) -> bool {
         if entry.is_null() {
             break;
         }
-        if !defines(entry, name) {
+        if defines(entry, name) {
+            release(entry);
+        } else {
             *env.add(keep) = entry;
             keep += 1;
         }
@@ -223,6 +275,9 @@ pub unsafe extern "C" fn setenv(name: *const u8, value: *const u8, overwrite: i3
         set_errno(ENOMEM);
         return -1;
     };
+    if !reserve_allocated() {
+        return -1;
+    }
     let entry = malloc(size);
     if entry.is_null() {
         set_errno(ENOMEM);
@@ -236,6 +291,8 @@ pub unsafe extern "C" fn setenv(name: *const u8, value: *const u8, overwrite: i3
         free(entry);
         return -1;
     }
+    *ALLOCATED.add(ALLOCATED_LEN) = entry;
+    ALLOCATED_LEN += 1;
     0
 }
 
@@ -280,6 +337,10 @@ pub unsafe extern "C" fn putenv(string: *mut u8) -> i32 {
 /// clearenv - remove every definition (a Linux and BSD extension).
 #[no_mangle]
 pub unsafe extern "C" fn clearenv() -> i32 {
+    for i in 0..ALLOCATED_LEN {
+        free(*ALLOCATED.add(i));
+    }
+    ALLOCATED_LEN = 0;
     if !OWNED.is_null() {
         *OWNED = null_mut();
         environ = OWNED;

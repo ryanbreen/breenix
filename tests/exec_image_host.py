@@ -11,7 +11,7 @@ arguments = source[source.index("pub(crate) struct Arguments"):source.index("pub
 images = source[source.index("fn convenience_path"):source.index("/// Map enough initial stack")]
 harness = r'''
 extern crate alloc;
-use alloc::{string::String, vec::Vec};
+use alloc::vec::Vec;
 use core::ops::Range;
 const DEFAULT_STACK_LIMIT: u64 = 1024 * 1024;
 const ARG_MAX: usize = DEFAULT_STACK_LIMIT as usize / 4;
@@ -68,11 +68,10 @@ fn relative_image_path_is_absolute() {
                               (b"tools/child".as_slice(), b"/tmp/cwd/tools/child".as_slice()),
                               (b"child".as_slice(), b"/bin/child".as_slice())] {
         let mut args = Arguments::copy_from_user(input, 0, 0).unwrap();
-        let (_, _, path) = read_image(input, &mut args, |path| {
+        read_image(input, &mut args, |path| {
             assert_eq!(path, expected);
             Ok((elf(), ()))
         }).unwrap();
-        assert_eq!(path.as_bytes(), expected);
     }
 }
 #[test]
@@ -80,7 +79,7 @@ fn non_utf8_image_and_script_arguments_are_preserved() {
     let input = b"/tmp/child\xff";
     let mut args = Arguments::copy_from_user(input, 0, 0).unwrap();
     let mut reads = 0;
-    let (_, _, image) = read_image(input, &mut args, |path| {
+    read_image(input, &mut args, |path| {
         reads += 1;
         if reads == 1 {
             assert_eq!(path, input);
@@ -90,7 +89,7 @@ fn non_utf8_image_and_script_arguments_are_preserved() {
             Ok((elf(), ()))
         }
     }).unwrap();
-    assert_eq!(image, "/bin/interpreter");
+    assert_eq!(reads, 2);
     let (argv, envp) = args.slices().unwrap();
     assert_eq!(argv, [b"/bin/interpreter\0".as_slice(), b"--flag\xfe\0".as_slice(), b"/tmp/child\xff\0".as_slice()]);
     assert!(envp.is_empty());
