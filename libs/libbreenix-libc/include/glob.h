@@ -1,7 +1,6 @@
 /*
- * <glob.h>: pathname pattern expansion (POSIX.1-2024 XBD <glob.h>), with Linux's glob_t
- * layout and flag values. The five pointers after gl_flags keep Linux's size; they belong
- * to GNU's GLOB_ALTDIRFUNC, which Breenix does not offer.
+ * POSIX.1-2024 <glob.h>. Breenix assigns consecutive independent flag bits
+ * in declaration order and positive error codes starting at 1.
  */
 #ifndef _GLOB_H
 #define _GLOB_H
@@ -18,7 +17,6 @@ typedef struct {
     char **gl_pathv;
     size_t gl_offs;
     int gl_flags;
-    void *__gl_reserved[5];
 } glob_t;
 
 #define GLOB_ERR 0x01
@@ -32,7 +30,7 @@ typedef struct {
 #ifdef __BREENIX_EXT
 #define GLOB_PERIOD 0x80
 #define GLOB_MAGCHAR 0x100
-#define GLOB_NOMAGIC 0x800
+#define GLOB_NOMAGIC 0x200
 #endif
 
 #define GLOB_NOSPACE 1

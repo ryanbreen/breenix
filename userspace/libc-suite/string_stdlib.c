@@ -3,6 +3,7 @@
 #include "case.h"
 
 #include <errno.h>
+#include <fenv.h>
 #include <limits.h>
 #include <math.h>
 #include <stdint.h>
@@ -240,6 +241,12 @@ static const char *strtod_forms(void) {
 }
 
 static const char *strtod_erange(void) {
+    feclearexcept(FE_ALL_EXCEPT);
+    (void)strtod("1e999", 0);
+    CHECK(fetestexcept(FE_OVERFLOW) && fetestexcept(FE_INEXACT), "strtod overflow flags missing");
+    feclearexcept(FE_ALL_EXCEPT);
+    (void)strtod("1e-999", 0);
+    CHECK(fetestexcept(FE_UNDERFLOW) && fetestexcept(FE_INEXACT), "strtod underflow flags missing");
     char *end;
     errno = 0;
     EXPECT_DBL("strtod(\"1e999\")", strtod("1e999", &end), HUGE_VAL);
@@ -381,6 +388,11 @@ static const char *realloc_failure_keeps(void) {
 }
 
 static const char *aligned_alloc_rules(void) {
+    void *sentinel = (void *)1;
+    errno = 77;
+    EXPECT_INT("posix_memalign overflowing alignment", posix_memalign(&sentinel, (size_t)1 << (sizeof(size_t)*CHAR_BIT-1), SIZE_MAX), ENOMEM);
+    EXPECT_PTR("overflowing alignment preserves output", sentinel, (void *)1);
+    EXPECT_ERRNO("posix_memalign preserves errno", 77);
     void *p = NULL;
     EXPECT_INT("posix_memalign(64, 100)", posix_memalign(&p, 64, 100), 0);
     EXPECT_UINT("posix_memalign result modulo 64", (uintptr_t)p % 64, 0);

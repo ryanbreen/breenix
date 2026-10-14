@@ -1,5 +1,5 @@
 //! glob and globfree (POSIX.1-2024 XSH glob; patterns per XCU 2.14.3, Patterns Used for
-//! Filename Expansion), with Linux's `glob_t` layout and flag values.
+//! Filename Expansion). Flags are independent bits assigned by this implementation.
 //!
 //! The pattern is taken one `/`-separated component at a time. A component with no
 //! unescaped `*`, `?` or `[` is appended as it stands (backslashes removed unless
@@ -21,6 +21,7 @@ extern "C" {
     fn __errno_location() -> *mut i32;
 }
 
+// Independent flag bits in API declaration order; errors are successive positive codes.
 const GLOB_ERR: i32 = 1 << 0;
 const GLOB_MARK: i32 = 1 << 1;
 const GLOB_NOSORT: i32 = 1 << 2;
@@ -30,12 +31,13 @@ const GLOB_APPEND: i32 = 1 << 5;
 const GLOB_NOESCAPE: i32 = 1 << 6;
 const GLOB_PERIOD: i32 = 1 << 7;
 const GLOB_MAGCHAR: i32 = 1 << 8;
-const GLOB_NOMAGIC: i32 = 1 << 11;
+const GLOB_NOMAGIC: i32 = 1 << 9;
 
 const GLOB_NOSPACE: i32 = 1;
 const GLOB_ABORTED: i32 = 2;
 const GLOB_NOMATCH: i32 = 3;
 
+// Error numbers and stat encodings/offsets follow the Breenix kernel syscall ABI.
 const ENOENT: i32 = 2;
 const ENOTDIR: i32 = 20;
 
@@ -46,15 +48,13 @@ const ST_MODE: usize = 16;
 const S_IFMT: u32 = 0o170000;
 const S_IFDIR: u32 = 0o040000;
 
-/// Linux's `glob_t`: the POSIX members, then `gl_flags` and five function pointers used
-/// only with the GNU GLOB_ALTDIRFUNC flag, which this library does not offer.
+/// The POSIX members and our returned flags; no unused foreign-layout fields.
 #[repr(C)]
 pub struct Glob {
     gl_pathc: usize,
     gl_pathv: *mut *mut u8,
     gl_offs: usize,
     gl_flags: i32,
-    reserved: [*mut u8; 5],
 }
 
 type ErrFunc = Option<unsafe extern "C" fn(*const u8, i32) -> i32>;
@@ -68,7 +68,11 @@ struct Path {
 
 impl Path {
     fn new() -> Self {
-        Path { ptr: null_mut(), len: 0, cap: 0 }
+        Path {
+            ptr: null_mut(),
+            len: 0,
+            cap: 0,
+        }
     }
     unsafe fn push(&mut self, b: &[u8]) -> Result<(), i32> {
         let need = self.len + b.len() + 1;
@@ -118,7 +122,8 @@ impl List {
     unsafe fn push_copy(&mut self, b: &[u8]) -> Result<(), i32> {
         if self.len == self.cap {
             let cap = (self.cap * 2).max(16);
-            let grown = realloc(self.v as *mut u8, cap * core::mem::size_of::<*mut u8>()) as *mut *mut u8;
+            let grown =
+                realloc(self.v as *mut u8, cap * core::mem::size_of::<*mut u8>()) as *mut *mut u8;
             if grown.is_null() {
                 return Err(GLOB_NOSPACE);
             }
@@ -167,7 +172,11 @@ fn has_magic(p: &[u8], noescape: bool) -> bool {
 
 unsafe fn mode_of(path: *const u8, follow: bool) -> Option<u32> {
     let mut st = [0u64; 32];
-    let r = if follow { stat(path, st.as_mut_ptr() as *mut u8) } else { lstat(path, st.as_mut_ptr() as *mut u8) };
+    let r = if follow {
+        stat(path, st.as_mut_ptr() as *mut u8)
+    } else {
+        lstat(path, st.as_mut_ptr() as *mut u8)
+    };
     (r == 0).then(|| core::ptr::read((st.as_ptr() as *const u8).add(ST_MODE) as *const u32))
 }
 
@@ -188,15 +197,35 @@ unsafe fn walk(ctx: &mut Ctx, path: &mut Path, rest: &[u8], listed: bool) -> Res
         if need_dir {
             match mode_of(path.ptr, true) {
                 Some(m) if m & S_IFMT == S_IFDIR => {}
-                _ => return Ok(()),
+                Some(_) => return Ok(()),
+                None => return directory_error(ctx, path.ptr),
             }
         } else if !listed && mode_of(path.ptr, false).is_none() {
-            return Ok(());
+            return directory_error(ctx, path.ptr);
         }
         return ctx.out.push_copy(path.bytes());
     }
-    let end = rest.iter().position(|&b| b == b'/').unwrap_or(rest.len());
-    let (comp, after) = rest.split_at(end);
+    // A quoted slash is still a pathname separator, but consume its quoting byte
+    // with it so the preceding component does not acquire a trailing backslash.
+    let mut end = 0;
+    let mut quoted_slash = false;
+    while end < rest.len() {
+        if rest[end] == b'/' {
+            break;
+        }
+        if !noescape && rest[end] == b'\\' && end + 1 < rest.len() {
+            if rest[end + 1] == b'/' {
+                quoted_slash = true;
+                break;
+            }
+            end += 1;
+        }
+        end += 1;
+    }
+    let (comp, mut after) = rest.split_at(end);
+    if quoted_slash {
+        after = &after[1..];
+    }
     let mark = path.len;
     if !has_magic(comp, noescape) {
         let mut i = 0;
@@ -211,7 +240,11 @@ unsafe fn walk(ctx: &mut Ctx, path: &mut Path, rest: &[u8], listed: bool) -> Res
         path.truncate(mark);
         return r;
     }
-    let dir_name: *const u8 = if path.len == 0 { b".\0".as_ptr() } else { path.ptr };
+    let dir_name: *const u8 = if path.len == 0 {
+        b".\0".as_ptr()
+    } else {
+        path.ptr
+    };
     let d = opendir(dir_name);
     if d.is_null() {
         return directory_error(ctx, dir_name);
@@ -229,9 +262,14 @@ unsafe fn walk(ctx: &mut Ctx, path: &mut Path, rest: &[u8], listed: bool) -> Res
         let e = readdir(d);
         if e.is_null() {
             let err = *__errno_location();
-            break if err != 0 { directory_error(ctx, dir_name) } else { Ok(()) };
+            break if err != 0 {
+                directory_error(ctx, if mark == 0 { b".\0".as_ptr() } else { path.ptr })
+            } else {
+                Ok(())
+            };
         }
-        let name = core::ffi::CStr::from_ptr((*e).d_name.as_ptr() as *const core::ffi::c_char).to_bytes();
+        let name =
+            core::ffi::CStr::from_ptr((*e).d_name.as_ptr() as *const core::ffi::c_char).to_bytes();
         if !matches(comp, name, fn_flags) {
             continue;
         }
@@ -283,7 +321,9 @@ unsafe fn byte_cmp(a: *const u8, b: *const u8) -> i32 {
 unsafe fn mark_dirs(list: &mut List) -> Result<(), i32> {
     for i in 0..list.len {
         let s = *list.v.add(i);
-        let n = core::ffi::CStr::from_ptr(s as *const core::ffi::c_char).to_bytes().len();
+        let n = core::ffi::CStr::from_ptr(s as *const core::ffi::c_char)
+            .to_bytes()
+            .len();
         if n > 0 && *s.add(n - 1) == b'/' {
             continue;
         }
@@ -303,8 +343,16 @@ unsafe fn mark_dirs(list: &mut List) -> Result<(), i32> {
 
 /// Put the new paths into `pglob`, after any it holds under GLOB_APPEND.
 unsafe fn store(pglob: &mut Glob, flags: i32, new: &mut List) -> Result<(), i32> {
-    let offs = if flags & GLOB_DOOFFS != 0 { pglob.gl_offs } else { 0 };
-    let (old_v, old_c) = if flags & GLOB_APPEND != 0 { (pglob.gl_pathv, pglob.gl_pathc) } else { (null_mut(), 0) };
+    let offs = if flags & GLOB_DOOFFS != 0 {
+        pglob.gl_offs
+    } else {
+        0
+    };
+    let (old_v, old_c) = if flags & GLOB_APPEND != 0 {
+        (pglob.gl_pathv, pglob.gl_pathc)
+    } else {
+        (null_mut(), 0)
+    };
     let total = offs
         .checked_add(old_c)
         .and_then(|n| n.checked_add(new.len))
@@ -335,7 +383,12 @@ unsafe fn store(pglob: &mut Glob, flags: i32, new: &mut List) -> Result<(), i32>
 
 /// glob - the pathnames that match `pattern`.
 #[no_mangle]
-pub unsafe extern "C" fn glob(pattern: *const u8, flags: i32, errfunc: ErrFunc, pglob: *mut Glob) -> i32 {
+pub unsafe extern "C" fn glob(
+    pattern: *const u8,
+    flags: i32,
+    errfunc: ErrFunc,
+    pglob: *mut Glob,
+) -> i32 {
     let g = &mut *pglob;
     if flags & GLOB_APPEND == 0 {
         g.gl_pathc = 0;
@@ -344,14 +397,25 @@ pub unsafe extern "C" fn glob(pattern: *const u8, flags: i32, errfunc: ErrFunc, 
     let p = core::ffi::CStr::from_ptr(pattern as *const core::ffi::c_char).to_bytes();
     let noescape = flags & GLOB_NOESCAPE != 0;
     let magic = has_magic(p, noescape);
-    let mut ctx = Ctx { flags, errfunc, out: List { v: null_mut(), len: 0, cap: 0 } };
+    let mut ctx = Ctx {
+        flags,
+        errfunc,
+        out: List {
+            v: null_mut(),
+            len: 0,
+            cap: 0,
+        },
+    };
     let mut path = Path::new();
     let mut result = walk(&mut ctx, &mut path, p, false);
     drop(path);
     if result.is_ok() && ctx.flags & GLOB_MARK != 0 {
         result = mark_dirs(&mut ctx.out);
     }
-    if result.is_ok() && ctx.out.len == 0 && (flags & GLOB_NOCHECK != 0 || (flags & GLOB_NOMAGIC != 0 && !magic)) {
+    if result.is_ok()
+        && ctx.out.len == 0
+        && (flags & GLOB_NOCHECK != 0 || (flags & GLOB_NOMAGIC != 0 && !magic))
+    {
         result = ctx.out.push_copy(p);
     }
     if result.is_ok() && flags & GLOB_NOSORT == 0 {
@@ -362,9 +426,7 @@ pub unsafe extern "C" fn glob(pattern: *const u8, flags: i32, errfunc: ErrFunc, 
         Ok(()) if ctx.out.len == 0 => GLOB_NOMATCH,
         Ok(()) => 0,
     };
-    if code != 0 {
-        ctx.out.release();
-    }
+    // POSIX glob retains paths scanned before GLOB_ABORTED or GLOB_NOSPACE.
     if store(g, flags, &mut ctx.out).is_err() {
         ctx.out.release();
         g.gl_flags = flags;
@@ -382,7 +444,11 @@ pub unsafe extern "C" fn globfree(pglob: *mut Glob) {
         g.gl_pathc = 0;
         return;
     }
-    let offs = if g.gl_flags & GLOB_DOOFFS != 0 { g.gl_offs } else { 0 };
+    let offs = if g.gl_flags & GLOB_DOOFFS != 0 {
+        g.gl_offs
+    } else {
+        0
+    };
     for i in 0..g.gl_pathc {
         free(*g.gl_pathv.add(offs + i));
     }

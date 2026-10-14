@@ -1,10 +1,9 @@
 //! Command-line option parsing: getopt (POSIX.1-2024 XSH getopt), getopt_long and
-//! getopt_long_only (the Linux `struct option` ABI described in getopt(3)), and getsubopt
+//! getopt_long_only (our long-option descriptor), and getsubopt
 //! (XSH getsubopt).
 //!
 //! `getopt` follows POSIX exactly: it never reorders argv and stops at the first operand,
-//! at a lone `-`, and after `--`. `getopt_long` and `getopt_long_only` behave as getopt(3)
-//! describes for Linux: they move operands after the options unless the option string
+//! at a lone `-`, and after `--`. `getopt_long` and `getopt_long_only` are local extensions: they move operands after the options unless the option string
 //! starts with `+` or POSIXLY_CORRECT is set, and a leading `-` returns each operand as
 //! option 1. Diagnostics are formatted here and written to fd 2 with write(2), so option
 //! parsing does not depend on stdio.
@@ -27,7 +26,7 @@ pub static mut opterr: i32 = 1;
 #[no_mangle]
 pub static mut optopt: i32 = b'?' as i32;
 
-/// Linux's `struct option`.
+/// Our long-option descriptor; argument policies are consecutive enum values from 0.
 #[repr(C)]
 pub struct LongOption {
     name: *const u8,
@@ -50,7 +49,12 @@ struct Scan {
     last: i32,
 }
 
-static mut SCAN: Scan = Scan { next: 0, left_optind: 1, first: -1, last: -1 };
+static mut SCAN: Scan = Scan {
+    next: 0,
+    left_optind: 1,
+    first: -1,
+    last: -1,
+};
 
 #[derive(PartialEq, Clone, Copy)]
 enum Mode {
@@ -79,7 +83,10 @@ struct Diag {
 
 impl Diag {
     fn new() -> Self {
-        Diag { buf: [0; 512], len: 0 }
+        Diag {
+            buf: [0; 512],
+            len: 0,
+        }
     }
     fn put(&mut self, b: &[u8]) -> &mut Self {
         let room = self.buf.len() - 1 - self.len;
@@ -99,7 +106,9 @@ unsafe fn program(argv: *const *mut u8) -> &'static [u8] {
     if name.is_null() {
         b""
     } else {
-        c_bytes(name)
+        // Reserve space for the message and option even with a long argv[0].
+        let bytes = c_bytes(name);
+        &bytes[..bytes.len().min(128)]
     }
 }
 
@@ -146,7 +155,11 @@ unsafe fn parse(
         SCAN.first = -1;
         SCAN.last = -1;
     }
-    let mut spec: &[u8] = if optstring.is_null() { b"" } else { c_bytes(optstring) };
+    let mut spec: &[u8] = if optstring.is_null() {
+        b""
+    } else {
+        c_bytes(optstring)
+    };
     let mut in_order = false;
     let mut posix = mode == Mode::Short;
     match spec.first() {
@@ -214,7 +227,16 @@ unsafe fn parse(
             return finish();
         }
         if mode != Mode::Short && a[1] == b'-' {
-            return done(long_option(argc, argv, &a[2..], b"--", longopts, longindex, colon, report));
+            return done(long_option(
+                argc,
+                argv,
+                &a[2..],
+                b"--",
+                longopts,
+                longindex,
+                colon,
+                report,
+            ));
         }
         if mode == Mode::LongOnly {
             // A long option first; failing that a short one; failing both, the long error.
@@ -223,7 +245,9 @@ unsafe fn parse(
             let long = matches!(lookup(longopts, &name[..name_end]), Some(Lookup::Found(_)));
             let short = name[0] != b':' && spec.contains(&name[0]);
             if long || !short {
-                return done(long_option(argc, argv, name, b"-", longopts, longindex, colon, report));
+                return done(long_option(
+                    argc, argv, name, b"-", longopts, longindex, colon, report,
+                ));
             }
         }
         SCAN.next = 1;
@@ -233,7 +257,11 @@ unsafe fn parse(
     let c = *element.add(SCAN.next);
     SCAN.next += 1;
     let at_end = *element.add(SCAN.next) == 0;
-    let found = if c == b':' { None } else { spec.iter().position(|&b| b == c) };
+    let found = if c == b':' {
+        None
+    } else {
+        spec.iter().position(|&b| b == c)
+    };
     let Some(at) = found else {
         optopt = c as i32;
         if at_end {
@@ -241,7 +269,12 @@ unsafe fn parse(
             SCAN.next = 0;
         }
         if report {
-            Diag::new().put(program(argv)).put(b": invalid option -- '").put(&[c]).put(b"'").send();
+            Diag::new()
+                .put(program(argv))
+                .put(b": invalid option -- '")
+                .put(&[c])
+                .put(b"'")
+                .send();
         }
         return done(b'?' as i32);
     };
@@ -270,6 +303,8 @@ unsafe fn parse(
         optind += 1;
         return done(c as i32);
     }
+    // XSH getopt advances past both the option and its missing argument.
+    optind += 1;
     optopt = c as i32;
     if report {
         Diag::new()
@@ -345,7 +380,11 @@ unsafe fn long_option(
             optopt = 0;
             if report {
                 let mut d = Diag::new();
-                d.put(program(argv)).put(b": option '").put(prefix).put(name).put(b"' is ambiguous; possibilities:");
+                d.put(program(argv))
+                    .put(b": option '")
+                    .put(prefix)
+                    .put(name)
+                    .put(b"' is ambiguous; possibilities:");
                 let mut i = 0;
                 loop {
                     let o = &*longopts.add(i);
@@ -456,7 +495,7 @@ pub unsafe extern "C" fn getopt_long_only(
 
 /// getsubopt - split the next comma-separated suboption off `*optionp` and match its name
 /// against `tokens`. Returns the token's index, with `*valuep` at the text after `=` (or
-/// null); for an unknown name returns -1 with `*valuep` at the whole suboption.
+/// null), including when the name is unknown and the return value is -1.
 #[no_mangle]
 pub unsafe extern "C" fn getsubopt(
     optionp: *mut *mut u8,
@@ -498,6 +537,5 @@ pub unsafe extern "C" fn getsubopt(
         }
         i += 1;
     }
-    *valuep = start;
     -1
 }

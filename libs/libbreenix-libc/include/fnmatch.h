@@ -1,7 +1,7 @@
 /*
- * <fnmatch.h>: filename pattern matching (POSIX.1-2024 XBD <fnmatch.h>), with Linux's
- * flag values. FNM_CASEFOLD (FNM_IGNORECASE) is in POSIX.1-2024; FNM_LEADING_DIR and
- * FNM_FILE_NAME are GNU extensions.
+ * POSIX.1-2024 <fnmatch.h>. Breenix assigns consecutive independent flag
+ * bits in declaration order; FNM_NOMATCH is the first nonzero result.
+ * CASEFOLD and LEADING_DIR are locally defined optional behaviors.
  */
 #ifndef _FNMATCH_H
 #define _FNMATCH_H

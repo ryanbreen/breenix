@@ -76,8 +76,12 @@ pub(crate) fn quiet(x: f64) -> f64 {
 /// Rounds a double result to float, reporting a range error when the float overflows or
 /// underflows where the double did not.
 pub(crate) fn narrow(v: f64) -> f32 {
+    let before = fenv::flags();
+    fenv::set_flags(fenv::FE_OVERFLOW, 0);
     let r = black_box(v) as f32;
-    if r.is_infinite() && v.is_finite() {
+    let raised = fenv::flags();
+    fenv::set_flags(fenv::FE_OVERFLOW, (before | raised) & fenv::FE_OVERFLOW);
+    if v.is_finite() && raised & fenv::FE_OVERFLOW != 0 {
         set_errno(ERANGE);
     } else if v != 0.0 && basic::fabs(r as f64) < f32::MIN_POSITIVE as f64 && r as f64 != v {
         set_errno(ERANGE);

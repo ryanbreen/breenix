@@ -4,7 +4,7 @@
 //! The program is a Thompson-style instruction list. Each atom's code is one contiguous
 //! range, so a quantifier wraps the range by inserting a split in front of it (with jump
 //! targets relocated) and an interval {m,n} appends copies of it. Accepted beyond POSIX,
-//! as GNU's syntax does: `\|`, `\+` and `\?` in basic syntax; back-references in extended
+//! as locally defined extensions: `\|`, `\+` and `\?` in basic syntax; back-references in extended
 //! syntax; `\w \W \s \S` classes; `\b \B \< \> \` \'` assertions.
 
 use super::buf::Buf;
@@ -33,6 +33,8 @@ pub(crate) enum Inst {
     Split(u32, u32),
     Jmp(u32),
     Save(u32),
+    Clear(u32, u32),
+    Mark(u32),
     Assert(Assert),
     Backref(u32),
     Match,
@@ -44,12 +46,14 @@ pub(crate) struct Prog {
     pub(crate) nsub: usize,
     pub(crate) icase: bool,
     pub(crate) newline: bool,
-    pub(crate) backrefs: bool,
+    pub(crate) repeats: u32,
+    pub(crate) minimal: Buf<u32>,
+    pub(crate) default_minimal: bool,
 }
 
 /// A jump target not yet known.
 const PENDING: u32 = u32::MAX;
-/// RE_DUP_MAX.
+/// POSIX.1-2024 <limits.h> minimum _POSIX_RE_DUP_MAX is 255; our parser uses that limit.
 pub(crate) const DUP_MAX: u32 = 255;
 /// Instructions a program may hold.
 const MAX_INSTS: usize = 1 << 18;
@@ -138,7 +142,13 @@ impl<'a> Parser<'a> {
         }
         for (k, ins) in self.prog.insts.as_mut_slice().iter_mut().enumerate() {
             let moved = k as u32 >= at;
-            targets(ins, |t| if t != PENDING && (t > at || (t == at && moved)) { t + 1 } else { t });
+            targets(ins, |t| {
+                if t != PENDING && (t > at || (t == at && moved)) {
+                    t + 1
+                } else {
+                    t
+                }
+            });
         }
         if !self.prog.insts.insert(at as usize, inst) {
             return Err(REG_ESPACE);
@@ -243,7 +253,12 @@ impl<'a> Parser<'a> {
             } else if self.ere && c == Some(b'?') {
                 self.i += 1;
                 (0, Some(1))
-            } else if self.ere && c == Some(b'{') && self.peek2().is_some_and(|d| d.is_ascii_digit() || d == b',') {
+            } else if self.ere
+                && c == Some(b'{')
+                && self
+                    .peek2()
+                    .is_some_and(|d| d.is_ascii_digit() || d == b',')
+            {
                 self.i += 1;
                 self.interval()?
             } else if !self.ere && c == Some(b'\\') && self.peek2() == Some(b'{') {
@@ -261,7 +276,20 @@ impl<'a> Parser<'a> {
             if !quantifiable {
                 return Err(REG_BADRPT);
             }
+            let mut minimal = self.ere && self.prog.default_minimal;
+            if self.ere && self.peek() == Some(b'?') {
+                self.i += 1;
+                minimal = !minimal;
+            }
+            // Private repetition tags use consecutive pairs, separate from public captures.
+            let tag = self.prog.repeats;
+            self.prog.repeats += 1;
             self.repeat(start, min, max)?;
+            self.insert(start, Inst::Mark(2 * tag))?;
+            self.emit(Inst::Mark(2 * tag + 1))?;
+            if minimal && !self.prog.minimal.push(tag) {
+                return Err(REG_ESPACE);
+            }
         }
     }
 
@@ -292,7 +320,11 @@ impl<'a> Parser<'a> {
             self.peek() == Some(b'\\') && self.peek2() == Some(b'}')
         };
         if !closed {
-            return Err(if self.peek().is_none() { REG_EBRACE } else { REG_BADBR });
+            return Err(if self.peek().is_none() {
+                REG_EBRACE
+            } else {
+                REG_BADBR
+            });
         }
         self.i += if self.ere { 1 } else { 2 };
         let lo = lo.unwrap_or(0);
@@ -307,7 +339,13 @@ impl<'a> Parser<'a> {
         let base = self.len();
         for k in s..e {
             let mut inst = self.prog.insts.as_slice()[k as usize];
-            targets(&mut inst, |t| if t != PENDING && t >= s && t <= e { t - s + base } else { t });
+            targets(&mut inst, |t| {
+                if t != PENDING && t >= s && t <= e {
+                    t - s + base
+                } else {
+                    t
+                }
+            });
             self.emit(inst)?;
         }
         Ok(())
@@ -378,7 +416,11 @@ impl<'a> Parser<'a> {
         match c {
             b'(' if self.ere => self.group(),
             b'.' => {
-                let inst = if self.prog.newline { Inst::AnyButNewline } else { Inst::Any };
+                let inst = if self.prog.newline {
+                    Inst::AnyButNewline
+                } else {
+                    Inst::Any
+                };
                 self.emit(inst)?;
                 Ok(true)
             }
@@ -422,6 +464,8 @@ impl<'a> Parser<'a> {
         if !self.closed.push(false) {
             return Err(REG_ESPACE);
         }
+        let clear = self.len();
+        self.emit(Inst::Clear(n, n + 1))?;
         self.emit(Inst::Save(2 * n))?;
         self.depth += 1;
         self.alternation()?;
@@ -435,6 +479,7 @@ impl<'a> Parser<'a> {
             return Err(REG_EPAREN);
         }
         self.i += if self.ere { 1 } else { 2 };
+        self.set_inst(clear, Inst::Clear(n, self.groups + 1));
         self.emit(Inst::Save(2 * n + 1))?;
         self.closed.as_mut_slice()[(n - 1) as usize] = true;
         Ok(true)
@@ -463,7 +508,7 @@ impl<'a> Parser<'a> {
                 if n > self.groups || !self.closed.as_slice()[(n - 1) as usize] {
                     return Err(REG_ESUBREG);
                 }
-                self.prog.backrefs = true;
+
                 self.emit(Inst::Backref(n))?;
                 Ok(true)
             }
@@ -584,7 +629,9 @@ pub(crate) fn compile(p: &[u8], cflags: i32) -> Result<Prog> {
             nsub: 0,
             icase: cflags & REG_ICASE != 0,
             newline: cflags & REG_NEWLINE != 0,
-            backrefs: false,
+            repeats: 0,
+            minimal: Buf::new(),
+            default_minimal: cflags & REG_MINIMAL != 0,
         },
         groups: 0,
         closed: Buf::new(),

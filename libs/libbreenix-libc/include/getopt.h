@@ -1,6 +1,8 @@
 /*
- * <getopt.h>: getopt_long and getopt_long_only with Linux's struct option (getopt(3)),
- * plus the POSIX getopt declarations that <unistd.h> also carries.
+ * POSIX.1-2024 getopt and getsubopt, plus Breenix long-option extensions.
+ * struct option describes a name, argument policy, optional result location,
+ * and result value. Argument policies are our ordered enum: none=0, required=1,
+ * optional=2.
  */
 #ifndef _GETOPT_H
 #define _GETOPT_H
