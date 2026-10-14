@@ -15,6 +15,8 @@ mod numbers;
 mod objects;
 mod parse_time;
 #[cfg(not(test))]
+mod scan;
+#[cfg(not(test))]
 mod streams;
 mod unicode_tables;
 mod wide;

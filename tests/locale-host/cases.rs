@@ -1,4 +1,4 @@
-use super::{format, objects, streams};
+use super::{format, objects, scan, streams};
 use crate::stdio::file;
 use core::ffi::c_void;
 unsafe fn utf8() -> *mut c_void {
@@ -114,6 +114,8 @@ fn empty_wide_io_orients_and_failed_pushback_preserves_input() {
             assert_eq!(streams::ungetwc(65, f), 65);
         }
         assert_eq!(streams::ungetwc(0x1f600, f), u32::MAX);
+        // A failed push changes neither the input nor the indicators.
+        assert_eq!((file::feof(f), file::ferror(f)), (0, 0));
         for _ in 0..6 {
             assert_eq!(streams::fgetwc(f), 65);
         }
@@ -280,5 +282,41 @@ fn c_locale_wide_streams_round_trip_high_bytes_and_unterminated_precision() {
         assert_eq!(&out[..3], &[0x61, 0x62, 0]);
         munmap(region, 131072);
         munmap(region2, 131072);
+    }
+}
+
+#[test]
+fn wide_scanf_reads_wide_strings_and_streams() {
+    unsafe {
+        let l = utf8();
+        // From a wide string: numbers, %ls, %lc, and a wide scanset.
+        let text = [52, 50, 32, 104, 0xe9, 108, 32, 0x20ac, 0xe9, 0xe9, 120, 0];
+        let fmt = [37, 100, 32, 37, 108, 115, 32, 37, 108, 99, 37, 108, 91, 0xe9, 93, 0];
+        let (mut i, mut word, mut wc, mut set) = (0i32, [0u32; 8], 0u32, [0u32; 8]);
+        assert_eq!(
+            scan::swscanf(text.as_ptr(), fmt.as_ptr(), &mut i, word.as_mut_ptr(), &mut wc, set.as_mut_ptr()),
+            4
+        );
+        assert_eq!((i, &word[..4], wc, &set[..3]), (42, &[104, 0xe9, 108, 0][..], 0x20ac, &[0xe9, 0xe9, 0][..]));
+        // %s without l stores the multibyte encoding.
+        let mut bytes = [0u8; 8];
+        assert_eq!(scan::swscanf([104, 0xe9, 0].as_ptr(), [37, 115, 0].as_ptr(), bytes.as_mut_ptr()), 1);
+        assert_eq!(&bytes[..4], b"h\xc3\xa9\0");
+        // From a stream: the character after a conversion is pushed back.
+        let mut input = *b"7 \xe2\x82\xacx\0";
+        let f = file::fmemopen(input.as_mut_ptr(), 6, b"r\0".as_ptr());
+        assert_eq!(scan::fwscanf(f, [37, 100, 32, 37, 108, 99, 0].as_ptr(), &mut i, &mut wc), 2);
+        assert_eq!((i, wc), (7, 0x20ac));
+        assert_eq!(streams::fgetwc(f), b'x' as u32);
+        assert_eq!(streams::fwide(f, 0), 1);
+        file::fclose(f);
+        // An encoding error before the first conversion is an input failure.
+        let mut input = *b"\xff1\0";
+        let f = file::fmemopen(input.as_mut_ptr(), 2, b"r\0".as_ptr());
+        assert_eq!(scan::fwscanf(f, [37, 100, 0].as_ptr(), &mut i), -1);
+        assert_eq!(crate::pthread::errno(), 84);
+        assert_ne!(file::ferror(f), 0);
+        file::fclose(f);
+        done(l);
     }
 }

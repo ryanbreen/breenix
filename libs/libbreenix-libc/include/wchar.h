@@ -86,6 +86,12 @@ int fwprintf(struct __breenix_file *, const wchar_t *, ...);
 int vfwprintf(struct __breenix_file *, const wchar_t *, __gnuc_va_list);
 int wprintf(const wchar_t *, ...);
 int vwprintf(const wchar_t *, __gnuc_va_list);
+int fwscanf(struct __breenix_file *, const wchar_t *, ...);
+int swscanf(const wchar_t *, const wchar_t *, ...);
+int wscanf(const wchar_t *, ...);
+int vfwscanf(struct __breenix_file *, const wchar_t *, __gnuc_va_list);
+int vswscanf(const wchar_t *, const wchar_t *, __gnuc_va_list);
+int vwscanf(const wchar_t *, __gnuc_va_list);
 size_t wcsftime(wchar_t *, size_t, const wchar_t *, const struct tm *);
 #if defined(__BREENIX_POSIX)
 #define __need_va_list
