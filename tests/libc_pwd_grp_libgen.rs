@@ -40,6 +40,8 @@ thread_local! {
     static OPEN: RefCell<HashMap<i32, (Vec<u8>, usize)>> = RefCell::new(HashMap::new());
     static CWD: RefCell<Vec<u8>> = RefCell::new(b"/".to_vec());
     static GROUPS: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
+    static FAIL_ALLOC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FAIL_READ: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 fn reset(files: &[(&str, Node)]) {
@@ -87,6 +89,10 @@ pub unsafe fn open(path: *const u8, _flags: i32, _mode: u32) -> i32 {
 
 /// Reads at most 7 bytes at a time, so the database reader must loop and grow.
 pub unsafe fn read(fd: i32, buf: *mut u8, count: usize) -> isize {
+    if FAIL_READ.with(|f| f.get()) {
+        pthread::set_errno(5);
+        return -1;
+    }
     OPEN.with(|o| {
         let mut o = o.borrow_mut();
         let (data, pos) = o.get_mut(&fd).expect("read of an open fd");
@@ -103,6 +109,10 @@ pub fn close(fd: i32) -> i32 {
 }
 
 pub unsafe fn malloc(n: usize) -> *mut u8 {
+    if FAIL_ALLOC.with(|f| f.get()) {
+        pthread::set_errno(12);
+        return null_mut();
+    }
     libc_alloc(n)
 }
 
@@ -389,6 +399,9 @@ fn realpath_resolves_dots_and_links() {
         assert_eq!(realpath("/a/./b/../b/f"), Ok("/a/b/f".into()));
         assert_eq!(realpath("/a/abs/f"), Ok("/a/b/f".into()));
         assert_eq!(realpath("/a/rel"), Ok("/a/b/f".into()));
+        assert_eq!(realpath("/a/rel/"), Err(20));
+        assert_eq!(realpath("/a/rel//"), Err(20));
+        assert_eq!(realpath("/a/abs/"), Ok("/a/b".into()));
         assert_eq!(realpath("/a/up/a/b"), Ok("/a/b".into()));
         assert_eq!(realpath("/.."), Ok("/".into()));
         assert_eq!(realpath("//a//b/"), Ok("/a/b".into()));
@@ -399,5 +412,47 @@ fn realpath_resolves_dots_and_links() {
         assert_eq!(realpath("/a/b/f/x"), Err(20), "a file followed by a component");
         assert_eq!(realpath("/a/loop"), Err(40));
         assert_eq!(realpath(""), Err(2));
+    }
+}
+
+#[test]
+fn group_database_failure_preserves_supplementary_groups() {
+    reset(&[]);
+    GROUPS.with(|g| *g.borrow_mut() = vec![42]);
+    unsafe {
+        let user = CString::new("wrb").unwrap();
+        assert_eq!(grp::initgroups(user.as_ptr() as *const u8, 5), -1);
+        assert_eq!(pthread::errno(), ENOENT);
+        assert_eq!(GROUPS.with(|g| g.borrow().clone()), vec![42]);
+    }
+}
+
+#[test]
+fn group_database_read_and_allocation_failures_are_reported() {
+    databases();
+    unsafe {
+        let user = CString::new("wrb").unwrap();
+        let mut list = [0u32; 8];
+        let mut n = 8;
+        FAIL_READ.with(|f| f.set(true));
+        assert_eq!(grp::getgrouplist(user.as_ptr() as *const u8, 5, list.as_mut_ptr(), &mut n), -1);
+        assert_eq!(pthread::errno(), 5);
+        FAIL_READ.with(|f| f.set(false));
+        FAIL_ALLOC.with(|f| f.set(true));
+        assert_eq!(grp::getgrouplist(user.as_ptr() as *const u8, 5, list.as_mut_ptr(), &mut n), -1);
+        assert_eq!(pthread::errno(), 12);
+        FAIL_ALLOC.with(|f| f.set(false));
+    }
+}
+
+#[test]
+fn initgroups_grows_past_sixty_four_entries() {
+    let mut data = Vec::new();
+    for gid in 1..100 { data.extend_from_slice(format!("g{gid}:x:{gid}:wrb\n").as_bytes()); }
+    reset(&[("/etc/group", Node::File(data))]);
+    unsafe {
+        let user = CString::new("wrb").unwrap();
+        assert_eq!(grp::initgroups(user.as_ptr() as *const u8, 0), 0);
+        assert_eq!(GROUPS.with(|g| g.borrow().clone()), (0..100).collect::<Vec<u32>>());
     }
 }

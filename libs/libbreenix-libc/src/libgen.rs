@@ -157,7 +157,9 @@ unsafe fn resolve(path: &[u8], out: &mut [u8; PATH_MAX]) -> Result<(), i32> {
             let t = t as usize;
             let remaining = PATH_MAX - start;
             // rest = target, then "/" and what remained, if anything did.
-            let joint = (remaining > 0) as usize;
+            // Preserve the separator even when it was the final slash (POSIX
+            // pathname resolution requires its target to be a directory).
+            let joint = more as usize;
             if t + joint + remaining > PATH_MAX {
                 return Err(ENAMETOOLONG);
             }

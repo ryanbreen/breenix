@@ -15,6 +15,9 @@ const ENOTTY: i32 = 25;
 const ERANGE: i32 = 34;
 const ENAMETOOLONG: i32 = 36;
 const ENOENT: i32 = 2;
+// Breenix syscall errno ABI (kernel/src/syscall/errno.rs).
+const ENOTDIR: i32 = 20;
+const ENOSYS: i32 = 38;
 
 const AT_FDCWD: i32 = -100;
 const AT_SYMLINK_NOFOLLOW: i32 = 0x100;
@@ -128,7 +131,8 @@ unsafe fn exec_search(file: *const u8, argv: *const *const u8, envp: *const *con
         // An empty element is the current directory.
         let dir: &[u8] = if dir.is_empty() { b"." } else { dir };
         if dir.len() + 1 + file_len + 1 > buf.len() {
-            continue;
+            set_errno(ENAMETOOLONG);
+            return -1;
         }
         buf[..dir.len()].copy_from_slice(dir);
         buf[dir.len()] = b'/';
@@ -138,7 +142,8 @@ unsafe fn exec_search(file: *const u8, argv: *const *const u8, envp: *const *con
         match crate::pthread::errno() {
             ENOEXEC => return exec_script(buf.as_ptr(), argv, envp),
             EACCES => denied = true,
-            _ => {}
+            ENOENT | ENOTDIR => {}
+            _ => return -1,
         }
     }
     set_errno(if denied { EACCES } else { ENOENT });
@@ -487,10 +492,6 @@ mod nr_more {
     pub const TIMES: u64 = 153;
     #[cfg(target_arch = "x86_64")]
     pub const TIMES: u64 = 100;
-    #[cfg(target_arch = "aarch64")]
-    pub const PRCTL: u64 = 167;
-    #[cfg(target_arch = "x86_64")]
-    pub const PRCTL: u64 = 157;
 }
 
 /// times: the process's and its waited-for children's CPU times in clock ticks, and
@@ -505,12 +506,12 @@ pub unsafe extern "C" fn times(buf: *mut u8) -> i64 {
     r
 }
 
-/// prctl: the kernel's prctl, which reports ENOSYS for operations it does not provide.
+/// Breenix has no prctl syscall implementation. Reject every operation without
+/// inspecting optional arguments: C17 7.16.1.1 forbids reading absent arguments.
 #[no_mangle]
-pub unsafe extern "C" fn prctl(option: i32, mut args: ...) -> i32 {
-    let a: [u64; 4] = [args.arg::<u64>(), args.arg::<u64>(), args.arg::<u64>(), args.arg::<u64>()];
-    let r = libbreenix::raw::syscall5(nr_more::PRCTL, option as i64 as u64, a[0], a[1], a[2], a[3]);
-    crate::syscall_result_to_c_int(r as i64)
+pub unsafe extern "C" fn prctl(_option: i32, _args: ...) -> i32 {
+    set_errno(ENOSYS);
+    -1
 }
 
 extern "C" {

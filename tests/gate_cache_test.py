@@ -41,6 +41,7 @@ class CacheTests(unittest.TestCase):
 
     def build(self, repo, logs, label):
         for name, data in {'userspace/programs/example.elf': b'ELF bytes',
+                           'userspace/programs/libc-busybox.links': b'cat\nsh\n',
                            'target/test_binaries.img': b'test bytes',
                            'testdata/ext2.img': b'ext2 bytes'}.items():
             path = repo / name
@@ -60,10 +61,13 @@ class CacheTests(unittest.TestCase):
             self.assertEqual([call.args[2] for call in build.call_args_list], ['candidate', 'clean-verification'])
             elf = self.repo / 'userspace/programs/example.elf'
             elf.write_bytes(b'stale')
+            links = elf.parent / 'libc-busybox.links'
+            links.unlink()
             (elf.parent / 'obsolete.elf').write_bytes(b'obsolete')
             self.call()
             self.assertEqual(build.call_count, 2)
             self.assertEqual(elf.read_bytes(), b'ELF bytes')
+            self.assertEqual(links.read_bytes(), b'cat\nsh\n')
             self.assertFalse((elf.parent / 'obsolete.elf').exists())
 
     def test_fresh_checkout_compares_against_existing_verified_entry(self):
@@ -133,7 +137,7 @@ class CacheTests(unittest.TestCase):
                 return b'\0'.join(name.encode() for name in names)
             if command[:2] == ['rustup', 'which']:
                 return str(compiler)
-            if '--print' in command:
+            if '--print' in command or '--tool-dir' in command:
                 return str(self.root)
             return version[0]
         with patch.object(artifacts.subprocess, 'check_output', side_effect=output):

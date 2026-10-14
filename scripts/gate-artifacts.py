@@ -188,7 +188,7 @@ export CARGO_HOME=/run/breenix-gate/cargo
 
 
 def artifacts(repo):
-    return sorted((repo / 'userspace/programs').glob('*.elf')) + [repo / 'target/test_binaries.img', repo / 'testdata/ext2.img']
+    return sorted((repo / 'userspace/programs').glob('*.elf')) + sorted((repo / 'userspace/programs').glob('libc-busybox.links')) + [repo / 'target/test_binaries.img', repo / 'testdata/ext2.img']
 
 
 def inventory(directory):
@@ -197,7 +197,7 @@ def inventory(directory):
 
 def install(entry, repo, manifest):
     # Remove leftovers first; deletions in build.sh must retire stale binaries.
-    for path in (repo / 'userspace/programs').glob('*.elf'):
+    for path in list((repo / 'userspace/programs').glob('*.elf')) + list((repo / 'userspace/programs').glob('libc-busybox.links')):
         if str(path.relative_to(repo)) not in manifest:
             path.unlink()
     for name in manifest:

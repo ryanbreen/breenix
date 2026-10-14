@@ -74,7 +74,7 @@ inputs_digest() {
     } | shasum -a 256 | cut -d' ' -f1
 }
 DIGEST="$(inputs_digest)"
-if [ -f "$WORK/inputs.sha256" ] && [ "$(cat "$WORK/inputs.sha256")" = "$DIGEST" ] && [ -f "$WORK/applets.json" ]; then
+if [ -f "$WORK/inputs.sha256" ] && [ "$(cat "$WORK/inputs.sha256")" = "$DIGEST" ] && [ -f "$WORK/applets.json" ] && [ -f "$ELF" ] && [ -f "$LINKS" ]; then
     echo "  libc-busybox ($ARCH): up to date"
     exit 0
 fi
@@ -83,7 +83,7 @@ rm -f "$WORK/inputs.sha256"
 # Cross tools BusyBox's Kbuild finds by prefix.
 mkdir -p "$WORK/bin"
 PREFIX="$WORK/bin/breenix-$ARCH-"
-printf '#!/bin/sh\nexec "%s" --arch %s "$@"\n' "$CC" "$ARCH" > "${PREFIX}gcc"
+printf '#!/bin/sh\nexec "%s" --arch %s "$@"\n' "$CC" "$ARCH" > "${PREFIX}clang"
 for tool in ar nm strip objcopy objdump; do
     printf '#!/bin/sh\nexec "%s/llvm-%s" "$@"\n' "$TOOLS" "$tool" > "${PREFIX}$tool"
 done
@@ -103,7 +103,8 @@ fi
 # BB_GLOBAL_CONST empty: BusyBox's "*const" globals pointers are assigned once through
 # a cast, and clang moves loads of them ahead of that store (libbb.h documents the
 # switch for toolchains that do).
-MAKE_ARGS=(-C "$SRC" CROSS_COMPILE="$PREFIX" HOSTCC=cc
+# Name the compiler clang so Kbuild excludes GCC-only optimization flags.
+MAKE_ARGS=(-C "$SRC" CROSS_COMPILE="$PREFIX" CC="${PREFIX}clang" HOSTCC=cc
            "EXTRA_CFLAGS=-std=gnu11 -Wno-error -DBB_GLOBAL_CONST="
            SKIP_STRIP=y)
 JOBS="${CARGO_BUILD_JOBS:-6}"

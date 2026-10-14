@@ -20,7 +20,8 @@
 #define PATH_MAX 4096
 #define PIPE_BUF 4096
 #define OPEN_MAX 1024
-#define HOST_NAME_MAX 64
+/* POSIX.1-2024 requires at least _POSIX_HOST_NAME_MAX (255). */
+#define HOST_NAME_MAX 255
 #define LOGIN_NAME_MAX 256
 #define TTY_NAME_MAX 32
 #define TZNAME_MAX 6
