@@ -392,7 +392,7 @@ def signal_process_group(group, number):
         # Darwin's killpg skips zombies and can return EPERM for a group
         # containing only zombies. Verify that no live member remains;
         # a real permission failure must still fail cleanup.
-        table = subprocess.check_output(['ps', '-axo', 'pgid=,stat='], text=True, timeout=10)
+        table = ps_output(['ps', '-axo', 'pgid=,stat='])
         for row in table.splitlines():
             fields = row.split()
             if len(fields) != 2:
@@ -401,11 +401,22 @@ def signal_process_group(group, number):
                 raise
 
 
+def ps_output(argv):
+    # One ps normally takes a tenth of a second, but a loaded Mac has held one
+    # past 10 s. The supervisor reads the table in its loop and in cleanup, so a
+    # single slow ps must not abandon the boot and leave its VM running.
+    for timeout in (10, 30):
+        try:
+            return subprocess.check_output(argv, text=True, errors='replace', timeout=timeout)
+        except subprocess.TimeoutExpired:
+            pass
+    return subprocess.check_output(argv, text=True, errors='replace', timeout=120)
+
+
 def process_table():
     # Environment ownership survives double-fork and setsid on Darwin as well
     # as Linux; never print the process environment.
-    rows = subprocess.check_output(['ps', 'axeww', '-o', 'pid=,ppid=,pgid=,stat=,command='],
-                                   text=True, errors='replace', timeout=10)
+    rows = ps_output(['ps', 'axeww', '-o', 'pid=,ppid=,pgid=,stat=,command='])
     result = {}
     for row in rows.splitlines():
         fields = row.split(None, 4)

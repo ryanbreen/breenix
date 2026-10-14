@@ -633,6 +633,19 @@ sys.stdin.readline()
             with self.assertRaises(PermissionError):
                 slots.signal_process_group(process.pid, signal.SIGKILL)
 
+    def test_process_table_survives_a_slow_ps(self):
+        real = subprocess.check_output
+        calls = []
+        def slow_once(argv, **kwargs):
+            calls.append(kwargs['timeout'])
+            if len(calls) == 1:
+                raise subprocess.TimeoutExpired(argv, kwargs['timeout'])
+            return real(argv, **kwargs)
+        with mock.patch.object(slots.subprocess, 'check_output', side_effect=slow_once):
+            table = slots.process_table()
+        self.assertEqual(calls, [10, 30])
+        self.assertIn(os.getpid(), table)
+
     def test_parallel_observers_are_not_reported_as_running_builds(self):
         pool = slots.Slots(self.root / 'locks')
         # Hold the same shared probe another observer holds during snapshot().
