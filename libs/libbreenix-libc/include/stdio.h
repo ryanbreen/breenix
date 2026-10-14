@@ -7,6 +7,7 @@ typedef struct __breenix_file FILE;
 typedef struct { long long offset; unsigned char state[8]; } fpos_t;
 #define EOF (-1)
 #define BUFSIZ 1024
+#define FOPEN_MAX 16
 #define _IOFBF 0
 #define _IOLBF 1
 #define _IONBF 2
