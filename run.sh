@@ -722,11 +722,11 @@ if [ "$PARALLELS" = true ]; then
     prlctl set "$PARALLELS_VM" --cpus 8
     # Run the vCPU threads in macOS's user-interactive QoS class, as the ARM64 QEMU launcher
     # does (scripts/qemu-ui-launch.sh). Parallels otherwise starts them in the default class,
-    # priority 31, where a loaded Mac leaves the vCPUs unrun for milliseconds after their
-    # timer interrupts are due, all of them at once; a periodic timer expiry arrived 25.5 ms
-    # late that way (#1562). prl_vm_app reads vm.vcpuprio as it starts each vCPU thread and
-    # maps 0-6 to a QoS class, 6 to user-interactive (priority 46); with the flag set it also
-    # declines later requests to change the class.
+    # priority 31, below the host's interactive work, and on a loaded Mac guest timer ticks
+    # were taken milliseconds after they were due on most vCPUs at once (#1562). prl_vm_app
+    # reads vm.vcpuprio as it starts each vCPU thread and maps 0-6 to a QoS class, 6 to
+    # user-interactive (priority 46); with the flag set it also declines later requests to
+    # change the class.
     PARALLELS_SYSTEM_FLAGS="vm.vcpuprio=6"
     prlctl set "$PARALLELS_VM" --system-flags "$PARALLELS_SYSTEM_FLAGS"
     # Parallels UEFI supplies UTC by default with an unspecified TimeZone.
