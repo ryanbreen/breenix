@@ -132,7 +132,6 @@ fn query(fd: u64, arg: u64) -> Result<(), u64> {
             witness.capacity = crate::ipc::pipe::PIPE_BUF_SIZE as u64;
             witness.atomic_limit = crate::ipc::pipe::PIPE_BUF as u64;
         }
-        (Some(_), _, _) => unreachable!("stream snapshot requires a socket descriptor"),
     }
     let (blocked, in_syscall) = crate::task::scheduler::with_thread_mut(witness.tid, |thread| {
         (
