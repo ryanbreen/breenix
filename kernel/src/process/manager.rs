@@ -4317,6 +4317,18 @@ impl ProcessManager {
     ) -> Result<PreparedExecImage, &'static str> {
         let exe_path = program_name
             .map(|path| {
+                // The raw exec convenience ABI searches /bin for a bare name.
+                let mut searched = String::new();
+                let path = if path.contains('/') {
+                    path
+                } else {
+                    searched.try_reserve_exact(path.len().checked_add(5)
+                        .ok_or("exec pathname too long")?)
+                        .map_err(|_| "exec allocation failed")?;
+                    searched.push_str("/bin/");
+                    searched.push_str(path);
+                    &searched
+                };
                 let resolved = crate::fs::namei::resolve(path, true)
                     .map_err(|_| "exec pathname resolution failed")?;
                 alloc::sync::Arc::try_new(resolved.path)
@@ -4741,6 +4753,18 @@ impl ProcessManager {
         use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB};
         let exe_path = program_name
             .map(|path| {
+                // The raw exec convenience ABI searches /bin for a bare name.
+                let mut searched = String::new();
+                let path = if path.contains('/') {
+                    path
+                } else {
+                    searched.try_reserve_exact(path.len().checked_add(5)
+                        .ok_or("exec pathname too long")?)
+                        .map_err(|_| "exec allocation failed")?;
+                    searched.push_str("/bin/");
+                    searched.push_str(path);
+                    &searched
+                };
                 let resolved = crate::fs::namei::resolve(path, true)
                     .map_err(|_| "exec pathname resolution failed")?;
                 alloc::sync::Arc::try_new(resolved.path)
