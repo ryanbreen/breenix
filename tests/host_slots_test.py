@@ -625,6 +625,20 @@ sys.stdin.readline()
         process.stdin.write(b'reap\n'); process.stdin.flush()
         self.assertEqual(process.wait(timeout=10), 0)
 
+    def test_slow_process_listing_is_retried(self):
+        slow = subprocess.TimeoutExpired('ps', slots.PS_TIMEOUT_SECONDS)
+        with mock.patch.object(slots.subprocess, 'check_output',
+                               side_effect=[slow, slow, '  7  1  7 S  sleep 60\n']) as listing:
+            self.assertEqual(slots.process_table(), {7: (1, 7, 'S', 'sleep 60')})
+        self.assertEqual(listing.call_count, 3)
+
+    def test_process_listing_that_never_completes_fails(self):
+        slow = subprocess.TimeoutExpired('ps', slots.PS_TIMEOUT_SECONDS)
+        with mock.patch.object(slots.subprocess, 'check_output', side_effect=slow) as listing:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                slots.process_table()
+        self.assertEqual(listing.call_count, slots.PS_ATTEMPTS)
+
     def test_cleanup_permission_failure_with_live_group_is_not_hidden(self):
         process = subprocess.Popen(['sleep', '60'], start_new_session=True,
                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT)

@@ -392,7 +392,7 @@ def signal_process_group(group, number):
         # Darwin's killpg skips zombies and can return EPERM for a group
         # containing only zombies. Verify that no live member remains;
         # a real permission failure must still fail cleanup.
-        table = subprocess.check_output(['ps', '-axo', 'pgid=,stat='], text=True, timeout=10)
+        table = process_listing(['ps', '-axo', 'pgid=,stat='])
         for row in table.splitlines():
             fields = row.split()
             if len(fields) != 2:
@@ -401,11 +401,27 @@ def signal_process_group(group, number):
                 raise
 
 
+PS_ATTEMPTS = 6
+PS_TIMEOUT_SECONDS = 30
+
+
+def process_listing(argv):
+    # A loaded host can take more than ten seconds to list every process (with
+    # its environment, for process_table). A slow listing is retried, so the
+    # supervised build or boot is not killed by it; one that never completes
+    # still fails after PS_ATTEMPTS tries.
+    for attempt in range(PS_ATTEMPTS):
+        try:
+            return subprocess.check_output(argv, text=True, errors='replace', timeout=PS_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            if attempt == PS_ATTEMPTS - 1:
+                raise
+
+
 def process_table():
     # Environment ownership survives double-fork and setsid on Darwin as well
     # as Linux; never print the process environment.
-    rows = subprocess.check_output(['ps', 'axeww', '-o', 'pid=,ppid=,pgid=,stat=,command='],
-                                   text=True, errors='replace', timeout=10)
+    rows = process_listing(['ps', 'axeww', '-o', 'pid=,ppid=,pgid=,stat=,command='])
     result = {}
     for row in rows.splitlines():
         fields = row.split(None, 4)
