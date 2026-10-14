@@ -4,4 +4,3 @@ build-warnings.patch
 ps-pid-list.patch
 timeout-status.patch
 time-posix.patch
-ash-c-separate-environment.patch

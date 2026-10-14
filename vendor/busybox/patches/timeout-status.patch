@@ -1,23 +1,42 @@
 --- a/coreutils/timeout.c
 +++ b/coreutils/timeout.c
-@@ -47,51 +47,78 @@
+@@ -39,55 +39,75 @@
+ //kbuild:lib-$(CONFIG_TIMEOUT) += timeout.o
+ 
+ //usage:#define timeout_trivial_usage
+-//usage:       "[-s SIG] [-k KILL_SECS] SECS PROG ARGS"
++//usage:       "[-fp] [-s SIG] [-k KILL_SECS] SECS PROG ARGS"
+ //usage:#define timeout_full_usage "\n\n"
+ //usage:       "Run PROG. Send SIG to it if it is not gone in SECS seconds.\n"
+ //usage:       "Default SIG: TERM."
+ //usage:       "If it still exists in KILL_SECS seconds, send KILL.\n"
++//usage:     "\n	-f	Signal only PROG, not its process group"
++//usage:     "\n	-p	Exit as PROG did even when the time limit is reached"
  
  #include "libbb.h"
  
 -static NOINLINE int timeout_wait(duration_t timeout, pid_t pid)
-+/* POSIX timeout: this process leads its own process group, runs the
-+ * utility as its child and waits for it. When the time limit is reached it
-+ * sends the signal to its process group, itself ignoring it, and exits 124;
-+ * otherwise it exits as the utility did, terminating itself with the
-+ * utility's signal if a signal ended it.
++/* POSIX timeout. Without -f this process leads its own process group and
++ * sends the signal to the group; with -f, only to the utility. It runs the
++ * utility as its child and waits for it with every signal it handles
++ * blocked except inside sigsuspend, so none is lost between a check and the
++ * wait. On the time limit it sends the signal, and SIGKILL -k seconds
++ * later; SIGHUP, SIGINT, SIGQUIT or SIGTERM sent to it is passed on the same
++ * way. It exits 124 when the time limit was reached (unless -p), 125 on its
++ * own errors, 126 or 127 when the utility cannot be run, and otherwise as the
++ * utility did, ending itself with the utility's signal if a signal ended it.
 + */
-+static smallint expired;
++static volatile sig_atomic_t timer_expired;
++static volatile sig_atomic_t received;
 +
-+static void alarm_handler(int sig UNUSED_PARAM)
++static void catch_signal(int sig)
  {
 -	/* Just sleep(HUGE_NUM); kill(parent) may kill wrong process! */
 -	while (1) {
-+	expired = 1;
++	if (sig == SIGALRM)
++		timer_expired = 1;
++	else if (sig != SIGCHLD)
++		received = sig;
 +}
 +
 +static void arm_timer(duration_t duration)
@@ -43,40 +62,25 @@
 -			/* process is gone */
 -			return EXIT_SUCCESS;
 -		}
-+	expired = 0;
-+	setitimer(ITIMER_REAL, &it, NULL);
-+}
-+
-+/* Wait for the child; 1 if the armed timer expired first. */
-+static int wait_or_expire(pid_t pid, int *status)
-+{
-+	for (;;) {
-+		if (waitpid(pid, status, 0) == pid)
-+			return 0;
-+		if (errno != EINTR)
-+			bb_simple_perror_msg_and_die("wait");
-+		if (expired)
-+			return 1;
- 	}
+-	}
 -	return EXIT_FAILURE;
++	setitimer(ITIMER_REAL, &it, NULL);
  }
  
-+static void signal_group(int signo)
-+{
-+	if (signo != SIGKILL && signo != SIGSTOP)
-+		signal(signo, SIG_IGN);
-+	kill(0, signo);
-+	/* A stopped utility receives the signal once continued. */
-+	if (signo != SIGKILL && signo != SIGCONT)
-+		kill(0, SIGCONT);
-+}
++/* The signals this process handles while it waits. */
++static const int handled[] = { SIGALRM, SIGCHLD, SIGHUP, SIGINT, SIGQUIT, SIGTERM };
 +
  int timeout_main(int argc, char **argv) MAIN_EXTERNALLY_VISIBLE;
  int timeout_main(int argc UNUSED_PARAM, char **argv)
  {
- 	int signo;
- 	int status;
+-	int signo;
+-	int status;
 -	int parent = 0;
++	enum { OPT_f = 1 << 0, OPT_p = 1 << 1 };
++	struct sigaction sa, saved[NSIG];
++	sigset_t blocked, original_mask, wait_mask;
++	int signo, status, opt, sent = 0, limit_reached = 0;
++	unsigned i;
  	duration_t timeout;
  	duration_t kill_timeout;
  	pid_t pid;
@@ -87,24 +91,18 @@
  	char *opt_k = NULL;
  
 -	/* -p option is not documented, it is needed to support NOMMU. */
--
++	/* Errors of timeout itself, usage included, exit 125. */
++	xfunc_error_retval = 125;
+ 
 -	/* -t SECONDS; -p PARENT_PID */
  	/* '+': stop at first non-option */
 -	getopt32(argv, "+s:k:" USE_FOR_NOMMU("p:+"), &opt_s, &opt_k, &parent);
 -	/*argv += optind; - no, wait for bb_daemonize_or_rexec! */
-+	getopt32(argv, "+s:k:", &opt_s, &opt_k);
++	opt = getopt32(argv, "+fps:k:", &opt_s, &opt_k);
  
  	signo = get_signum(opt_s);
--	if (signo < 0)
--		bb_error_msg_and_die("unknown signal '%s'", opt_s);
-+	if (signo < 0) {
-+		bb_error_msg("unknown signal '%s'", opt_s);
-+		return 125;
-+	}
- 
- 	kill_timeout = 0;
- 	if (opt_k)
-@@ -102,57 +129,55 @@
+ 	if (signo < 0)
+@@ -102,57 +122,122 @@
  	timeout = parse_duration_str(argv[optind++]);
  	if (!argv[optind]) /* no PROG? */
  		bb_show_usage();
@@ -118,17 +116,37 @@
 -	 * making child watch parent results in programs having
 -	 * unexpected children.	*/
 +	/* Fails only for a session leader, which already leads its group. */
-+	setpgid(0, 0);
++	if (!(opt & OPT_f))
++		setpgid(0, 0);
  
 -	if (parent) /* we were re-execed, already grandchild */
 -		goto grandchild;
-+	/* Without SA_RESTART, so the timer interrupts waitpid. */
-+	{
-+		struct sigaction sa;
-+		memset(&sa, 0, sizeof(sa));
-+		sa.sa_handler = alarm_handler;
-+		sigaction(SIGALRM, &sa, NULL);
++	/* Handle the signals with no SA_RESTART, each blocked until the wait,
++	 * and the timeout signal too, so a group signal does not end this
++	 * process; keep each disposition to give the utility back.
++	 */
++	sigemptyset(&blocked);
++	for (i = 0; i < ARRAY_SIZE(handled); i++)
++		sigaddset(&blocked, handled[i]);
++	if (signo != SIGKILL && signo != SIGSTOP)
++		sigaddset(&blocked, signo);
++	sigprocmask(SIG_BLOCK, &blocked, &original_mask);
++	wait_mask = original_mask;
++	memset(&sa, 0, sizeof(sa));
++	sa.sa_handler = catch_signal;
++	sa.sa_mask = blocked;
++	for (i = 1; i < NSIG; i++) {
++		sigaction(i, NULL, &saved[i]);
++		if (sigismember(&blocked, i) == 1) {
++			sigaction(i, &sa, NULL);
++			sigdelset(&wait_mask, i);
++		}
 +	}
++	/* Reading the terminal from a background group must not stop this
++	 * process.
++	 */
++	signal(SIGTTIN, SIG_IGN);
++	signal(SIGTTOU, SIG_IGN);
  
 -#if !BB_MMU
 -	sv1 = argv[optind];
@@ -136,10 +154,8 @@
 -#endif
 -	pid = xvfork();
 +	pid = fork();
-+	if (pid < 0) {
-+		bb_simple_perror_msg("fork");
-+		return 125;
-+	}
++	if (pid < 0)
++		bb_simple_perror_msg_and_die("fork");
  	if (pid == 0) {
 -		/* Child: spawn grandchild and exit */
 -		parent = getppid();
@@ -154,35 +170,77 @@
 -		if (timeout_wait(timeout, parent) == EXIT_SUCCESS)
 -			return EXIT_SUCCESS;
 -		kill(parent, signo);
-+		signal(SIGALRM, SIG_DFL);
+-
+-		if (kill_timeout > 0) {
+-			if (timeout_wait(kill_timeout, parent) == EXIT_SUCCESS)
+-				return EXIT_SUCCESS;
+-			kill(parent, SIGKILL);
++		/* The utility starts with the dispositions and mask timeout
++		 * was given, except that the timeout signal is not ignored or
++		 * blocked, so it can end the utility.
++		 */
++		for (i = 1; i < NSIG; i++) {
++			if (sigismember(&blocked, i) == 1 || i == SIGTTIN || i == SIGTTOU)
++				sigaction(i, &saved[i], NULL);
+ 		}
++		if (signo != SIGKILL && signo != SIGSTOP) {
++			signal(signo, SIG_DFL);
++			sigdelset(&original_mask, signo);
++		}
++		sigprocmask(SIG_SETMASK, &original_mask, NULL);
 +		execvp(argv[0], argv);
 +		status = (errno == ENOENT) ? 127 : 126;
 +		bb_perror_msg("can't execute '%s'", argv[0]);
 +		_exit(status);
 +	}
  
--		if (kill_timeout > 0) {
--			if (timeout_wait(kill_timeout, parent) == EXIT_SUCCESS)
--				return EXIT_SUCCESS;
--			kill(parent, SIGKILL);
-+	if (timeout > 0) {
-+		arm_timer(timeout);
-+		if (wait_or_expire(pid, &status)) {
-+			signal_group(signo);
-+			if (kill_timeout > 0) {
-+				arm_timer(kill_timeout);
-+				if (wait_or_expire(pid, &status))
-+					signal_group(SIGKILL);
-+				else
-+					return 124;
-+			}
-+			wait_or_expire(pid, &status);
-+			return 124;
- 		}
--
 -		return EXIT_SUCCESS;
-+	} else {
-+		wait_or_expire(pid, &status);
++	if (timeout > 0)
++		arm_timer(timeout);
++	for (;;) {
++		int sig = 0;
++		pid_t r = waitpid(pid, &status, WNOHANG);
++		if (r == pid)
++			break;
++		if (r < 0 && errno != EINTR)
++			bb_simple_perror_msg_and_die("wait");
++		if (timer_expired) {
++			timer_expired = 0;
++			/* The time limit, then the -k limit. */
++			if (!sent) {
++				sig = signo;
++				limit_reached = 1;
++			} else {
++				sig = SIGKILL;
++			}
++		} else if (received) {
++			sig = received;
++			received = 0;
++		}
++		if (sig) {
++			if (opt & OPT_f) {
++				kill(pid, sig);
++			} else {
++				struct sigaction ignore, was;
++				kill(0, sig);
++				/* Discard the blocked copy this process sent
++				 * itself: installing SIG_IGN discards a pending
++				 * signal. Then catch it again.
++				 */
++				memset(&ignore, 0, sizeof(ignore));
++				ignore.sa_handler = SIG_IGN;
++				if (sigaction(sig, &ignore, &was) == 0)
++					sigaction(sig, &was, NULL);
++			}
++			/* A stopped utility receives the signal once continued. */
++			if (sig != SIGKILL && sig != SIGCONT)
++				kill(opt & OPT_f ? pid : 0, SIGCONT);
++			if (!sent && kill_timeout > 0)
++				arm_timer(kill_timeout);
++			sent = 1;
++			continue;
++		}
++		sigsuspend(&wait_mask);
  	}
  
 -	/* Parent */
@@ -197,9 +255,16 @@
 -	argv[1] = sv2;
 -#endif
 -	BB_EXECVP_or_die(argv);
++	if (limit_reached && !(opt & OPT_p))
++		return 124;
 +	if (WIFSIGNALED(status)) {
++		sigset_t own;
++
 +		signo = WTERMSIG(status);
 +		signal(signo, SIG_DFL);
++		sigemptyset(&own);
++		sigaddset(&own, signo);
++		sigprocmask(SIG_UNBLOCK, &own, NULL);
 +		kill(getpid(), signo);
 +		return 128 + signo;
 +	}

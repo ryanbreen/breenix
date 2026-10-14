@@ -11,3 +11,14 @@
  		printf("Command terminated by signal %u\n",
  				WTERMSIG(resp->waitstatus));
  	else if (WIFEXITED(resp->waitstatus) && WEXITSTATUS(resp->waitstatus))
+@@ -483,8 +485,9 @@
+ 	if (WIFSTOPPED(res.waitstatus))
+ 		ex = WSTOPSIG(res.waitstatus);
+ 	*/
++	/* A utility a signal ended exits above 128, as a shell reports it. */
+ 	if (WIFSIGNALED(res.waitstatus))
+-		ex = WTERMSIG(res.waitstatus);
++		ex = 128 + WTERMSIG(res.waitstatus);
+ 
+ 	fflush_stdout_and_exit(ex);
+ }

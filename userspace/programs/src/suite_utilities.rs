@@ -187,12 +187,15 @@ static SUITE: Suite = suite("utilities", "Shell & POSIX utilities", &[
         case("ps-self", "ps -o pid= -p lists the shell's own PID", proc_ps_self),
         case("ps-comm", "ps -o comm= names the command a process runs", proc_ps_comm),
         case("ps-all", "ps -A lists every process, the shell included", proc_ps_all),
+        case("ps-select", "ps rejects an empty -p list, fails when it selects nothing, selects by real user, and writes four columns by default", proc_ps_select),
         case("nohup", "nohup runs a command with SIGHUP ignored", proc_nohup),
         case("env-assign", "env NAME=value adds the variable to the environment of the command it runs", proc_env_assign),
         case("env-i", "env -i starts from an empty environment", proc_env_i),
         case("nice", "nice -n 5 runs a command at a niceness raised by 5", proc_nice),
         case("timeout", "timeout ends a command that runs too long with status 124 and passes on a quick one's status", proc_timeout),
         case("timeout-s", "timeout -s KILL sends the named signal and exits 128 plus its number", proc_timeout_s),
+        case("timeout-forward", "timeout passes SIGTERM it receives on to the command and exits with the command's status", proc_timeout_forward),
+        case("timeout-k", "timeout -k sends SIGKILL after a fractional limit even when the timeout signal is SIGALRM", proc_timeout_k),
         case("true", "true found through PATH exits 0", proc_true),
         case("false", "false found through PATH exits non-zero", proc_false),
         case("xargs", "xargs passes words from standard input as arguments", proc_xargs),
@@ -208,8 +211,10 @@ static SUITE: Suite = suite("utilities", "Shell & POSIX utilities", &[
         case("test-utility", "test found through PATH exits 1 when its integer comparison is false", proc_test_utility),
         case("umask", "umask sets the mask new files are created under, and umask -S writes it symbolically", proc_umask),
         case("getconf", "getconf writes ARG_MAX of at least 4096 and a PATH that finds the standard utilities", proc_getconf),
+        case("getconf-names", "getconf answers option, limits.h, processor and programming-environment names, and -v rejects an unsupported environment", proc_getconf_names),
         case("command-v", "command -v writes the path of a utility, the name of a built-in or function, and fails for neither", proc_command_v),
         case("time", "time -p runs a command, writes real, user and sys times to stderr and exits with its status", proc_time),
+        case("time-signal", "time -p exits 128 plus the signal number when a signal ends the command", proc_time_signal),
         case("tty", "tty with standard input that is not a terminal writes not a tty and exits 1", proc_tty),
     ]),
     category("scripts", "real shell scripts", &[
@@ -1114,13 +1119,21 @@ fn proc_ps_self() -> CaseResult {
 }
 
 fn proc_ps_comm() -> CaseResult {
-    sh("ps -o comm= -p $$").needs(&["ps"]).expect("sh\n", 0, Empty)
+    // ps is not the script's last command, so the shell runs it as a child
+    // instead of exec'ing it, and $$ is still the shell.
+    sh("ps -o comm= -p $$; :").needs(&["ps"]).expect("sh\n", 0, Empty)
 }
 
 fn proc_ps_all() -> CaseResult {
     sh(r#"ps -A -o pid= | { f=no; while read p; do [ "$p" = $$ ] && f=yes; done; echo $f; }"#)
         .needs(&["ps"])
         .expect("yes\n", 0, Empty)
+}
+
+fn proc_ps_select() -> CaseResult {
+    sh(r#"ps -o pid= -p '' 2>/dev/null || echo empty; ps -o pid= -p 99999 || echo none; ps -o pid= -U $(id -ru) | { f=no; while read p; do [ "$p" = $$ ] && f=yes; done; echo $f; }; ps | { read a b c d e; [ -n "$d" ] && [ -z "$e" ] && echo four; }"#)
+        .needs(&["ps", "id"])
+        .expect("empty\nnone\nyes\nfour\n", 0, Empty)
 }
 
 fn proc_nohup() -> CaseResult {
@@ -1147,6 +1160,18 @@ fn proc_timeout() -> CaseResult {
 
 fn proc_timeout_s() -> CaseResult {
     sh("{ timeout -s KILL 1 sleep 5; echo $?; } 2>/dev/null").needs(&["timeout", "sleep"]).expect("137\n", 0, Empty)
+}
+
+fn proc_timeout_forward() -> CaseResult {
+    sh(r#"timeout 10 sh -c 'trap "echo got; exit 7" TERM; sleep 5 & wait' & t=$!; sleep 1; kill $t; wait $t; echo $?"#)
+        .needs(&["timeout", "sleep"])
+        .expect("got\n7\n", 0, Empty)
+}
+
+fn proc_timeout_k() -> CaseResult {
+    sh(r#"{ timeout -s ALRM -k 0.5 0.5 sh -c 'trap "" ALRM; sleep 5'; echo $?; } 2>/dev/null"#)
+        .needs(&["timeout", "sleep"])
+        .expect("137\n", 0, Empty)
 }
 
 fn proc_true() -> CaseResult {
@@ -1231,6 +1256,12 @@ fn proc_getconf() -> CaseResult {
         .expect("ok\npath\n", 0, Empty)
 }
 
+fn proc_getconf_names() -> CaseResult {
+    sh(r#"[ $(getconf _POSIX_VERSION) -ge 200809 ] && echo version; getconf -v POSIX_V7_LP64_OFF64 _POSIX_V7_LP64_OFF64; getconf INT_MAX; [ $(getconf NPROCESSORS_ONLN) -ge 1 ] && echo cpus; [ $(getconf OPEN_MAX) -ge 20 ] && echo open; getconf POSIX_V7_LP64_OFF64_CFLAGS >/dev/null && echo flags; getconf -v POSIX_V7_ILP32_OFF32 PATH 2>/dev/null || echo unsupported"#)
+        .needs(&["getconf"])
+        .expect("version\n1\n2147483647\ncpus\nopen\nflags\nunsupported\n", 0, Empty)
+}
+
 fn proc_command_v() -> CaseResult {
     sh("command -v sh; command -v cd; f() { :; }; command -v f; command -v nonexistent_zz || echo none")
         .expect("/bin/sh\ncd\nf\nnone\n", 0, Empty)
@@ -1240,6 +1271,10 @@ fn proc_time() -> CaseResult {
     sh("time -p sh -c 'exit 3' 2> t; echo $?; while read a b; do echo $a; done < t")
         .needs(&["time"])
         .expect("3\nreal\nuser\nsys\n", 0, Empty)
+}
+
+fn proc_time_signal() -> CaseResult {
+    sh("time -p sh -c 'kill -9 $$' 2>/dev/null; echo $?").needs(&["time"]).expect("137\n", 0, Empty)
 }
 
 fn proc_tty() -> CaseResult {

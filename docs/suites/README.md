@@ -884,9 +884,9 @@ swift run breenix-runs run x86 --mode suite --boots 1 --suite libc --sha <pushed
 
 `utilities` measures the utilities effort in `docs/efforts/path.json`: a POSIX shell and the
 core utilities, as POSIX.1-2024's Shell and Utilities volume (XCU) specifies them in the
-Shell Command Language chapter and each utility's page. Its 182 cases cover five
+Shell Command Language chapter and each utility's page. Its 187 cases cover five
 categories, one per milestone: `shell` (40), `file-utils` (37), `text-utils` (39),
-`process-utils` (37) and `scripts` (29).
+`process-utils` (42) and `scripts` (29).
 
 Each case runs `/bin/sh -c <script>`, or a utility found by its POSIX name on `PATH`, in a
 scratch directory of its own under `/tmp` holding the case's fixed files, with fixed standard
