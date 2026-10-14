@@ -3,6 +3,10 @@
 use super::calendar::{self, Tm};
 use core::ptr::null_mut;
 
+fn space(c: u8) -> bool {
+    c == b' ' || (b'\t'..=b'\r').contains(&c)
+}
+
 #[derive(Default)]
 struct Fields {
     century: Option<i32>,
@@ -20,7 +24,7 @@ struct Fields {
     iso_year: Option<i32>,
 }
 unsafe fn number(p: &mut *const u8, width: usize, lo: i32, hi: i32) -> Option<i32> {
-    while (**p).is_ascii_whitespace() {
+    while space(**p) {
         *p = p.add(1);
     }
     let mut value = 0i32;
@@ -65,8 +69,8 @@ unsafe fn parse(p: &mut *const u8, fmt: *const u8, t: &mut Tm, f: &mut Fields) -
     while *fmt.add(i) != 0 {
         let c = *fmt.add(i);
         i += 1;
-        if c.is_ascii_whitespace() {
-            while (**p).is_ascii_whitespace() {
+        if space(c) {
+            while space(**p) {
                 *p = p.add(1);
             }
             continue;
@@ -121,7 +125,7 @@ unsafe fn parse(p: &mut *const u8, fmt: *const u8, t: &mut Tm, f: &mut Fields) -
                 *p = p.add(1);
             }
             b'n' | b't' => {
-                while (**p).is_ascii_whitespace() {
+                while space(**p) {
                     *p = p.add(1);
                 }
             }

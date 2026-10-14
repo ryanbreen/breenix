@@ -418,6 +418,10 @@ mod tests {
                 !parse_time::strptime(b"+05:45\0".as_ptr(), b"%z\0".as_ptr(), &mut t).is_null()
             );
             assert_eq!(t.gmtoff, 20700);
+            assert!(
+                !parse_time::strptime(b"\x0b12\0".as_ptr(), b"\t%H\0".as_ptr(), &mut t).is_null()
+            );
+            assert_eq!(t.hour, 12);
         }
     }
 }
