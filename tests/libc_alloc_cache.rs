@@ -1,7 +1,7 @@
 pub fn getpid() -> i32 {
     std::process::id() as i32
 }
-#[path = "../libs/libbreenix-libc/src/alloc_cache.rs"]
+#[path = "../libs/libbreenix-libc/src/stdlib/alloc_cache.rs"]
 mod alloc_cache;
 
 #[test]
