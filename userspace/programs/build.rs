@@ -10,8 +10,8 @@ fn main() {
         ));
     println!("cargo:rerun-if-changed={}", archive.display());
 
-    // Discover C-library functions used by the thread, IPC, terminal and networking
-    // suites so each can call the functions present, or report those it lacks.
+    // Discover C-library functions used by the thread, IPC, terminal, networking and
+    // Rust std suites so each can call the functions present, or report those it lacks.
     const PREFIXES: &[&str] = &["pthread_", "sched_", "sig", "mq_", "sem", "shm", "msg"];
     const OTHERS: &[&str] = &[
         "raise", "sysconf", "__errno_location", "exit", "getpid", "close", "pipe", "read", "write", "kill",
@@ -22,7 +22,8 @@ fn main() {
         "socket", "socketpair", "bind", "listen", "accept", "accept4", "connect", "send", "recv",
         "sendto", "recvfrom", "sendmsg", "recvmsg", "shutdown", "setsockopt", "getsockopt", "getsockname",
         "getpeername", "fcntl", "epoll_create1", "epoll_ctl", "epoll_wait", "getaddrinfo", "freeaddrinfo",
-        "getnameinfo", "gai_strerror", "inet_pton", "inet_ntop",
+        "getnameinfo", "gai_strerror", "inet_pton", "inet_ntop", "execvp", "setuid", "setgid", "chroot",
+        "realpath", "fdopendir", "unlinkat",
     ];
     println!("cargo:rustc-check-cfg=cfg(libc_has, values(any()))");
     if let Ok(bytes) = fs::read(&archive) {
