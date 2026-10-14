@@ -226,24 +226,32 @@ unsafe fn parse(p: &mut *const u8, fmt: *const u8, t: &mut Tm, f: &mut Fields) -
                 t.zone = b"\0".as_ptr();
             }
             b'Z' => {
-                let (offset, zone) = calendar::fixed_zone();
                 if matching(*p, b"UTC") || matching(*p, b"GMT") {
                     *p = p.add(3);
                     t.gmtoff = 0;
                     t.zone = b"UTC\0".as_ptr();
+                    t.isdst = 0;
                 } else {
-                    let mut n = 0;
-                    while *zone.add(n) != 0 {
-                        n += 1;
+                    // The local zone's standard or daylight-saving designation.
+                    let mut found = false;
+                    for (east, zone, dst) in calendar::local_designations() {
+                        let mut n = 0;
+                        while *zone.add(n) != 0 {
+                            n += 1;
+                        }
+                        if n != 0 && matching(*p, core::slice::from_raw_parts(zone, n)) {
+                            *p = p.add(n);
+                            t.gmtoff = east;
+                            t.zone = zone;
+                            t.isdst = dst;
+                            found = true;
+                            break;
+                        }
                     }
-                    if n == 0 || !matching(*p, core::slice::from_raw_parts(zone, n)) {
+                    if !found {
                         return None;
                     }
-                    *p = p.add(n);
-                    t.gmtoff = offset;
-                    t.zone = zone;
                 }
-                t.isdst = 0;
             }
             b's' => {
                 let negative = **p == b'-';
@@ -270,8 +278,7 @@ unsafe fn parse(p: &mut *const u8, fmt: *const u8, t: &mut Tm, f: &mut Fields) -
                 } else {
                     value as i64
                 };
-                let (offset, zone) = calendar::fixed_zone();
-                *t = calendar::broken(seconds, offset, zone)?;
+                *t = calendar::local_tm(seconds)?;
                 f.year = true;
                 f.month = true;
                 f.day = true;
