@@ -1385,6 +1385,11 @@ unsafe extern "C" {
         cpusetsize: size_t,
         cpuset: *mut cpu_set_t,
     ) -> c_int;
+    pub fn sched_setaffinity(
+        pid: crate::pid_t,
+        cpusetsize: size_t,
+        cpuset: *const cpu_set_t,
+    ) -> c_int;
 
     pub fn readv(fd: c_int, iov: *const crate::iovec, iovcnt: c_int) -> ssize_t;
 
@@ -1449,5 +1454,6 @@ unsafe extern "C" {
 const _: () = core::assert!(core::mem::size_of::<stat>() == 144 && core::mem::size_of::<stat64>() == 144);
 #[cfg(target_arch = "aarch64")]
 const _: () = core::assert!(core::mem::size_of::<stat>() == 128 && core::mem::size_of::<stat64>() == 128);
-// The kernel's sched_getaffinity copies up to this many bytes of mask.
+// Linux's public CPU set: the kernel's sched_getaffinity writes its first 8 bytes and
+// libbreenix-libc zero-fills the rest.
 const _: () = core::assert!(core::mem::size_of::<cpu_set_t>() == 128);
