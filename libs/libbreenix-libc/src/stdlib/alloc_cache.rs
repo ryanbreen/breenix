@@ -17,7 +17,7 @@ impl Guard {
         // A raw fork can copy a mutex held by a different thread. Identify the
         // process on acquisition, so a child can discard an inherited owner.
         // Breenix CLONE_VM members share getpid()'s thread-group identity.
-        let pid = super::getpid() as u32 as u64;
+        let pid = crate::getpid() as u32 as u64;
         loop {
             let old = OWNER.load(Ordering::Acquire);
             if old & !LOCKED != pid || old & LOCKED == 0 {
