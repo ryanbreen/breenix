@@ -1,12 +1,52 @@
-//! The executing CPU's EL0 FP/SIMD registers, for signal frames.
+//! The executing CPU's EL0 FP/SIMD registers: per-thread state across
+//! context switches, and signal frames.
 //!
 //! The kernel is built soft-float and executes no FP/SIMD instruction of its
-//! own, so v0-v31, FPSR and FPCR hold the user state of the thread that last
-//! ran at EL0 on this CPU. CPACR_EL1.FPEN permits EL1 access (boot.S), which
-//! is how these routines read and write them; the assembler is told the FP
-//! and SIMD extensions are present for these instructions only.
+//! own, so v0-v31, FPSR and FPCR hold the user state of the CPU's current
+//! thread. Every change of a CPU's current thread hands the registers over
+//! (`hand_over`): the outgoing thread stores them in its `Thread`, and the
+//! incoming one loads what it stored. CPACR_EL1.FPEN permits EL1 access
+//! (boot.S), which is how these routines read and write them; the assembler is
+//! told the FP and SIMD extensions are present for these instructions only.
 
 use crate::signal::types::FpsimdContext;
+use crate::task::thread::Thread;
+
+/// This CPU's registers, for a thread that starts as a copy of the caller
+/// (fork, clone).
+pub fn capture() -> FpsimdContext {
+    let mut ctx = FpsimdContext::initial();
+    save(&mut ctx);
+    ctx
+}
+
+/// Give this CPU's registers from the thread `outgoing` names to the one
+/// `incoming` names, as the CPU's current-thread pointer changes from one to
+/// the other: `outgoing` stores them and `incoming` loads what it stored.
+/// Either may be null, no thread (a CPU going idle, or taking its first).
+/// Without this, a thread that waits while another runs on its CPU comes back
+/// to that thread's registers (#529, #1579).
+///
+/// # Safety
+/// A non-null pointer names a live scheduler `Thread`; the caller has
+/// interrupts masked, as every change of a CPU's current thread does.
+pub unsafe fn hand_over(outgoing: *mut u8, incoming: *mut u8) {
+    if outgoing == incoming {
+        return;
+    }
+    if let Some(thread) = (outgoing as *mut Thread).as_mut() {
+        save(&mut thread.fpsimd);
+    }
+    if let Some(thread) = (incoming as *const Thread).as_ref() {
+        restore(&thread.fpsimd);
+    }
+}
+
+/// Start the calling thread's new program image from the initial FP/SIMD
+/// state, as exec does.
+pub fn reset_current() {
+    restore(&FpsimdContext::initial());
+}
 
 /// FPSR bits: the cumulative exception flags and the NZCV/QC comparison flags.
 const FPSR_MASK: u32 = 0xf800_009f;

@@ -717,6 +717,11 @@ pub struct Thread {
     #[cfg(target_arch = "x86_64")]
     pub fpu: crate::arch_impl::x86_64::fpu::FpuState,
 
+    /// FP/SIMD registers while the thread is not current on a CPU
+    /// (`arch_impl::aarch64::fpsimd::hand_over`)
+    #[cfg(target_arch = "aarch64")]
+    pub fpsimd: crate::signal::FpsimdContext,
+
     /// Stack information
     pub stack_top: VirtAddr,
     pub stack_bottom: VirtAddr,
@@ -1299,6 +1304,8 @@ impl Clone for Thread {
             kernel_stack_allocation: None,
             #[cfg(target_arch = "x86_64")]
             fpu: self.fpu,
+            #[cfg(target_arch = "aarch64")]
+            fpsimd: self.fpsimd,
             tls_block: self.tls_block,
             sched: self.sched,
             time_slice: self.time_slice,
@@ -1424,6 +1431,8 @@ impl Thread {
             kernel_stack_allocation: Some(stack), // Keep allocation alive
             #[cfg(target_arch = "x86_64")]
             fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
+            #[cfg(target_arch = "aarch64")]
+            fpsimd: crate::signal::FpsimdContext::initial(),
             tls_block,
             sched: SchedPolicy::DEFAULT,
             time_slice: 20,    // Longer time slice
@@ -1498,6 +1507,8 @@ impl Thread {
             kernel_stack_allocation: Some(stack),
             #[cfg(target_arch = "x86_64")]
             fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
+            #[cfg(target_arch = "aarch64")]
+            fpsimd: crate::signal::FpsimdContext::initial(),
             tls_block,
             sched: SchedPolicy::DEFAULT,
             time_slice: 20,
@@ -1559,6 +1570,8 @@ impl Thread {
             kernel_stack_allocation: None, // No kernel stack allocation for regular threads
             #[cfg(target_arch = "x86_64")]
             fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
+            #[cfg(target_arch = "aarch64")]
+            fpsimd: crate::signal::FpsimdContext::initial(),
             tls_block,
             sched: crate::task::thread::SchedPolicy::DEFAULT,  // Default medium priority
             time_slice: 10, // Default time slice
@@ -1619,6 +1632,8 @@ impl Thread {
             kernel_stack_allocation: None,
             #[cfg(target_arch = "x86_64")]
             fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
+            #[cfg(target_arch = "aarch64")]
+            fpsimd: crate::signal::FpsimdContext::initial(),
             tls_block,
             sched: crate::task::thread::SchedPolicy::DEFAULT,
             time_slice: 10,
@@ -1692,6 +1707,8 @@ impl Thread {
             kernel_stack_allocation: None, // Will be set separately for userspace threads
             #[cfg(target_arch = "x86_64")]
             fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
+            #[cfg(target_arch = "aarch64")]
+            fpsimd: crate::signal::FpsimdContext::initial(),
             tls_block: actual_tls_block,
             sched: crate::task::thread::SchedPolicy::DEFAULT,     // Default medium priority
             time_slice: 10,    // Default time slice
@@ -1760,6 +1777,8 @@ impl Thread {
             kernel_stack_allocation: None,
             #[cfg(target_arch = "x86_64")]
             fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
+            #[cfg(target_arch = "aarch64")]
+            fpsimd: crate::signal::FpsimdContext::initial(),
             tls_block: actual_tls_block,
             sched: crate::task::thread::SchedPolicy::DEFAULT,
             time_slice: 10,
@@ -1854,6 +1873,8 @@ impl Thread {
             kernel_stack_allocation: None, // No kernel stack allocation for regular threads
             #[cfg(target_arch = "x86_64")]
             fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
+            #[cfg(target_arch = "aarch64")]
+            fpsimd: crate::signal::FpsimdContext::initial(),
             tls_block,
             sched: crate::task::thread::SchedPolicy::DEFAULT,  // Default medium priority
             time_slice: 10, // Default time slice
@@ -1910,6 +1931,8 @@ impl Thread {
             kernel_stack_allocation: None,
             #[cfg(target_arch = "x86_64")]
             fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
+            #[cfg(target_arch = "aarch64")]
+            fpsimd: crate::signal::FpsimdContext::initial(),
             tls_block,
             sched: crate::task::thread::SchedPolicy::DEFAULT,
             time_slice: 10,

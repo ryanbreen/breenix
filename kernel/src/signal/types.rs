@@ -1156,6 +1156,12 @@ pub struct FpsimdContext {
 impl FpsimdContext {
     pub const MAGIC: u32 = 0x4650_8001;
     pub const SIZE: u32 = core::mem::size_of::<Self>() as u32;
+
+    /// The state a program starts with: every register zero, and FPCR zero
+    /// (round to nearest, no traps, no flush to zero).
+    pub const fn initial() -> Self {
+        Self { magic: Self::MAGIC, size: Self::SIZE, fpsr: 0, fpcr: 0, vregs: [0; 32] }
+    }
 }
 
 /// The ESR record in an ARM64 sigcontext's `__reserved` area, which a

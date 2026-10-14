@@ -1665,6 +1665,8 @@ impl ProcessManager {
             kernel_stack_allocation: Some(kernel_stack),
             #[cfg(target_arch = "x86_64")]
             fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
+            #[cfg(target_arch = "aarch64")]
+            fpsimd: crate::signal::FpsimdContext::initial(),
             tls_block: actual_tls_block,
             sched: crate::task::thread::SchedPolicy::DEFAULT,
             time_slice: 10,
@@ -1758,6 +1760,8 @@ impl ProcessManager {
             kernel_stack_allocation: Some(kernel_stack),
             #[cfg(target_arch = "x86_64")]
             fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
+            #[cfg(target_arch = "aarch64")]
+            fpsimd: crate::signal::FpsimdContext::initial(),
             tls_block: initial_tpidr_el0,
             sched: crate::task::thread::SchedPolicy::DEFAULT,
             time_slice: 10,
@@ -3333,6 +3337,9 @@ impl ProcessManager {
         child_thread.owner_pid = Some(child_pid.as_u64());
 
         child_thread.context = parent_context.clone();
+        // The child resumes the parent's code with the parent's FP/SIMD
+        // registers, which this CPU holds for the parent during its fork.
+        child_thread.fpsimd = crate::arch_impl::aarch64::fpsimd::capture();
 
         // CRITICAL: Fork returns 0 to child. The parent_context captured x0 at
         // SVC entry time, which is undefined (ARM64 syscall0 uses lateout("x0")).
@@ -3811,6 +3818,8 @@ impl ProcessManager {
                 kernel_stack_allocation: child_kernel_stack_allocation,
                 #[cfg(target_arch = "x86_64")]
                 fpu: crate::arch_impl::x86_64::fpu::FpuState::capture(),
+                #[cfg(target_arch = "aarch64")]
+                fpsimd: crate::arch_impl::aarch64::fpsimd::capture(),
                 tls_block: child_tls_block,
                 sched: parent_thread.sched,
                 time_slice: parent_thread.time_slice,
