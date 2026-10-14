@@ -19,6 +19,8 @@ with tempfile.TemporaryDirectory(prefix='breenix-stdio-') as tmp:
             text = text.replace('pub static mut stdin', '#[allow(non_upper_case_globals)]\npub static mut stdin').replace('pub static mut stdout', '#[allow(non_upper_case_globals)]\npub static mut stdout').replace('pub static mut stderr', '#[allow(non_upper_case_globals)]\npub static mut stderr')
             if module == 'stdio' and source.name == 'mod.rs' and '--format-only' in sys.argv:
                 text = text.replace('mod scan;', '').replace('mod misc;', '')
+            elif module == 'stdio' and source.name == 'mod.rs':
+                text = text.replace('\nmod misc;', '\npub(crate) mod misc;')
             if module == 'locale':
                 text = text.replace('mod multibyte;', '')
                 text = text.split('#[cfg(test)]')[0]

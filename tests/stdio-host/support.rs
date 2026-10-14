@@ -165,31 +165,93 @@ mod cases;
 #[allow(dead_code)]
 mod locale;
 #[allow(dead_code)]
+mod math;
+#[allow(dead_code)]
 mod stdio;
-#[allow(dead_code)] mod stdlib;
-#[allow(dead_code)] mod math;
-#[allow(dead_code)] mod string;
+#[allow(dead_code)]
+mod stdlib;
+#[allow(dead_code)]
+mod string;
 
 pub fn __errno_location() -> *mut i32 {
     pthread::location()
 }
 
 extern "C" {
-    #[link_name="pipe"] fn host_pipe(p:*mut i32)->i32;
-    #[link_name="fork"] fn host_fork()->i32;
-    #[link_name="execve"] fn host_execve(p:*const u8,a:*const *const u8,e:*const *const u8)->i32;
-    #[link_name="waitpid"] fn host_waitpid(pid:i32,s:*mut i32,o:i32)->i32;
-    #[link_name="rmdir"] fn host_rmdir(p:*const u8)->i32;
-    #[link_name="_exit"] fn host_exit(s:i32)->!;
-    #[link_name="_NSGetEnviron"] fn host_environ()->*mut *mut *mut u8;
+    #[link_name = "pipe"]
+    fn host_pipe(p: *mut i32) -> i32;
+    #[link_name = "fork"]
+    fn host_fork() -> i32;
+    #[link_name = "execve"]
+    fn host_execve(p: *const u8, a: *const *const u8, e: *const *const u8) -> i32;
+    #[link_name = "waitpid"]
+    fn host_waitpid(pid: i32, s: *mut i32, o: i32) -> i32;
+    #[link_name = "rmdir"]
+    fn host_rmdir(p: *const u8) -> i32;
+    #[link_name = "_exit"]
+    fn host_exit(s: i32) -> !;
+    #[link_name = "_NSGetEnviron"]
+    fn host_environ() -> *mut *mut *mut u8;
 }
-pub unsafe fn pipe2(p:*mut i32,flags:i32)->i32{
-    let r=capture(host_pipe(p));if r==0&&flags&0x80000!=0{host_fcntl(*p,2,1i32);host_fcntl(*p.add(1),2,1i32);}r
+pub unsafe fn pipe2(p: *mut i32, flags: i32) -> i32 {
+    let r = capture(host_pipe(p));
+    if r == 0 && flags & 0x80000 != 0 {
+        host_fcntl(*p, 2, 1i32);
+        host_fcntl(*p.add(1), 2, 1i32);
+    }
+    r
 }
-pub fn fork()->i32{unsafe{capture(host_fork())}}
-pub unsafe fn execve(p:*const u8,a:*const *const u8,e:*const *const u8)->i32{capture(host_execve(p,a,e))}
-pub unsafe fn waitpid(pid:i32,s:*mut i32,o:i32)->i32{capture(host_waitpid(pid,s,o))}
-pub unsafe fn rmdir(p:*const u8)->i32{capture(host_rmdir(p))}
-pub fn _exit(s:i32)->!{unsafe{host_exit(s)}}
+pub fn fork() -> i32 {
+    unsafe { capture(host_fork()) }
+}
+pub unsafe fn execve(p: *const u8, a: *const *const u8, e: *const *const u8) -> i32 {
+    capture(host_execve(p, a, e))
+}
+pub unsafe fn waitpid(pid: i32, s: *mut i32, o: i32) -> i32 {
+    capture(host_waitpid(pid, s, o))
+}
+pub unsafe fn rmdir(p: *const u8) -> i32 {
+    capture(host_rmdir(p))
+}
+pub fn _exit(s: i32) -> ! {
+    unsafe { host_exit(s) }
+}
 #[allow(non_upper_case_globals)]
-mod env{pub static mut environ:*mut *mut u8=std::ptr::null_mut();}
+mod env {
+    pub static mut environ: *mut *mut u8 = std::ptr::null_mut();
+}
+extern "C" {
+    #[link_name = "sched_yield"]
+    fn host_sched_yield() -> i32;
+    #[link_name = "getentropy"]
+    fn host_getentropy(p: *mut u8, n: usize) -> i32;
+    #[link_name = "lstat"]
+    fn host_lstat(p: *const u8, s: *mut u8) -> i32;
+    #[link_name = "renameat"]
+    fn host_renameat(a: i32, p: *const u8, b: i32, q: *const u8) -> i32;
+}
+pub fn sched_yield() -> i32 {
+    unsafe { host_sched_yield() }
+}
+pub unsafe fn getrandom(p: *mut u8, n: usize, _flags: u32) -> isize {
+    if capture(host_getentropy(p, n)) == 0 {
+        n as isize
+    } else {
+        -1
+    }
+}
+pub unsafe fn lstat(p: *const u8, s: *mut u8) -> i32 {
+    capture(host_lstat(p, s))
+}
+/// Only renameat goes through syscall in the stdio module; the host's AT_FDCWD
+/// differs from Linux's -100, so it is translated.
+pub unsafe fn syscall(n: i64, a: i64, b: i64, c: i64, d: i64, _: i64, _: i64) -> i64 {
+    assert_eq!(n, 38);
+    let dir = |fd: i64| if fd == -100 { -2 } else { fd as i32 };
+    capture(host_renameat(
+        dir(a),
+        b as *const u8,
+        dir(c),
+        d as *const u8,
+    )) as i64
+}
