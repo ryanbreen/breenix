@@ -880,3 +880,40 @@ scripts/boot-interactive.sh --mode suite --suite libc
 # From tools/breenix-runs:
 swift run breenix-runs run x86 --mode suite --boots 1 --suite libc --sha <pushed-sha>
 ```
+
+## Shell & POSIX utilities
+
+`utilities` measures the utilities effort in `docs/efforts/path.json`: a POSIX shell and the
+core utilities, as POSIX.1-2024's Shell and Utilities volume (XCU) specifies them in the
+Shell Command Language chapter and each utility's page. Its 182 cases cover five
+categories, one per milestone: `shell` (40), `file-utils` (37), `text-utils` (39),
+`process-utils` (37) and `scripts` (29).
+
+Each case runs `/bin/sh -c <script>`, or a utility found by its POSIX name on `PATH`, in a
+scratch directory of its own under `/tmp` holding the case's fixed files, with fixed standard
+input, umask 022 and the environment `PATH=/bin:/usr/bin`, `HOME=/tmp` and nothing else. It
+compares the exit status, the exact standard output and whether anything was written to
+standard error with what POSIX specifies; where POSIX specifies only a non-zero status, any
+non-zero status passes. Where POSIX leaves output layout to the implementation (column
+padding, dates, block counts), the case reads the fields it checks with the shell instead of
+comparing the layout. The expected values were checked against dash and GNU coreutils on
+Linux, which serve only as a behaviour oracle. Before running anything a case checks that
+every utility it uses is on `PATH`, and fails naming the ones that are not. The `scripts`
+cases write whole scripts to files and run them with `sh script.sh`: a word-frequency
+pipeline, a configure-style probe, a make-free build loop, a log rotator, an awk CSV report,
+a recursive directory walker, here-document templating, getopts argument parsing,
+trap-based cleanup and a script that sources a library.
+
+The suite runs whatever `/bin` holds. The utilities effort replaces the musl-built BusyBox
+stand-in there with BusyBox built against Breenix's own C library
+(`scripts/build-libc-busybox.sh`). Each case uses the runner's default 10-second deadline;
+the program it starts gets until 1.5 seconds before it, and one still running then is killed
+and the case fails saying it did not finish.
+
+```bash
+scripts/boot-interactive.sh --mode suite --suite utilities
+./run.sh --parallels --suite utilities
+./run.sh --vmware --suite utilities
+# From tools/breenix-runs:
+swift run breenix-runs run x86 --mode suite --boots 1 --suite utilities --sha <pushed-sha>
+```
