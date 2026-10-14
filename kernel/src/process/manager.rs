@@ -956,11 +956,16 @@ impl ProcessManager {
         name: String,
         elf_data: &[u8],
         argv: &[&[u8]],
+        exe_path: Option<String>,
     ) -> Result<ProcessId, &'static str> {
         // Capture parent attributes before creating the child.
         if !crate::process::limits::fork_allowed(self, parent_pid) {
             return Err("Process limit exceeded");
         }
+        let exe_path = exe_path
+            .map(alloc::sync::Arc::try_new)
+            .transpose()
+            .map_err(|_| "spawn allocation failed")?;
         let (parent_pgid, parent_cwd, (cred, nice), umask, limits) = {
             let parent = self
                 .processes
@@ -980,6 +985,7 @@ impl ProcessManager {
 
         // Set up the parent-child relationship and inherit attributes.
         if let Some(child) = self.processes.live_row_mut(&child_pid) {
+            child.exe_path = exe_path;
             child.parent = Some(parent_pid);
             child.pgid = parent_pgid;
             child.cwd = parent_cwd;
@@ -1472,20 +1478,21 @@ impl ProcessManager {
         Ok(())
     }
 
+    /// `exe_path` is the physical absolute pathname init was read from, which
+    /// `/proc/1/exe` reports; argv[0] is passed to init as given.
     pub fn create_init_process_with_argv_at(
         &mut self,
         provisional_pid: ProcessId,
         name: String,
+        exe_path: &str,
         elf_data: &[u8],
         argv: &[&[u8]],
     ) -> Result<InitDesignationTicket, &'static str> {
-        let path = core::str::from_utf8(argv.first().ok_or("init executable path missing")?)
-            .map_err(|_| "init executable path is not UTF-8")?;
-        if !path.starts_with('/') {
+        if !exe_path.starts_with('/') {
             return Err("init executable path must be absolute");
         }
         let exe_path = alloc::sync::Arc::try_new(
-            crate::syscall::exec::copy_string(path).map_err(|_| "init allocation failed")?,
+            crate::syscall::exec::copy_string(exe_path).map_err(|_| "init allocation failed")?,
         ).map_err(|_| "init allocation failed")?;
         self.build_process_with_argv_at(
             provisional_pid,
@@ -1503,12 +1510,14 @@ impl ProcessManager {
     pub fn create_init_process_with_argv(
         &mut self,
         name: String,
+        exe_path: &str,
         elf_data: &[u8],
         argv: &[&[u8]],
     ) -> Result<InitDesignationTicket, &'static str> {
         self.create_init_process_with_argv_at(
             ProcessId::new(RESERVED_INIT_PID),
             name,
+            exe_path,
             elf_data,
             argv,
         )
@@ -1528,11 +1537,16 @@ impl ProcessManager {
         name: String,
         elf_data: &[u8],
         argv: &[&[u8]],
+        exe_path: Option<String>,
     ) -> Result<ProcessId, &'static str> {
         // Capture parent attributes before creating child
         if !crate::process::limits::fork_allowed(self, parent_pid) {
             return Err("Process limit exceeded");
         }
+        let exe_path = exe_path
+            .map(alloc::sync::Arc::try_new)
+            .transpose()
+            .map_err(|_| "spawn allocation failed")?;
         let (parent_pgid, parent_cwd, (cred, nice), umask, limits) = {
             let parent = self
                 .processes
@@ -1552,6 +1566,7 @@ impl ProcessManager {
 
         // Set up parent-child relationship and inherit attributes
         if let Some(child) = self.processes.live_row_mut(&child_pid) {
+            child.exe_path = exe_path;
             child.parent = Some(parent_pid);
             child.pgid = parent_pgid;
             child.cwd = parent_cwd;
@@ -4310,31 +4325,16 @@ impl ProcessManager {
         pid: ProcessId,
         elf_data: &[u8],
         program_name: Option<&str>,
+        exe_path: Option<String>,
         argv: &[&[u8]],
         envp: &[&[u8]],
         image: super::credentials::ExecIdentity,
         cred: super::credentials::ProcessCredentials,
     ) -> Result<PreparedExecImage, &'static str> {
-        let exe_path = program_name
-            .map(|path| {
-                // The raw exec convenience ABI searches /bin for a bare name.
-                let mut searched = String::new();
-                let path = if path.contains('/') {
-                    path
-                } else {
-                    searched.try_reserve_exact(path.len().checked_add(5)
-                        .ok_or("exec pathname too long")?)
-                        .map_err(|_| "exec allocation failed")?;
-                    searched.push_str("/bin/");
-                    searched.push_str(path);
-                    &searched
-                };
-                let resolved = crate::fs::namei::resolve(path, true)
-                    .map_err(|_| "exec pathname resolution failed")?;
-                alloc::sync::Arc::try_new(resolved.path)
-                    .map_err(|_| "exec allocation failed")
-            })
-            .transpose()?;
+        let exe_path = exe_path
+            .map(alloc::sync::Arc::try_new)
+            .transpose()
+            .map_err(|_| "exec allocation failed")?;
         let user_stack_size = crate::syscall::exec::stack_size(argv, envp)?;
         let program_name = program_name
             .map(crate::syscall::exec::copy_string)
@@ -4742,6 +4742,7 @@ impl ProcessManager {
         pid: ProcessId,
         elf_data: &[u8],
         program_name: Option<&str>,
+        exe_path: Option<String>,
         argv: &[&[u8]],
         envp: &[&[u8]],
         image: super::credentials::ExecIdentity,
@@ -4751,26 +4752,10 @@ impl ProcessManager {
         use crate::arch_impl::aarch64::constants::USER_STACK_REGION_START;
         #[cfg(target_arch = "aarch64")]
         use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB};
-        let exe_path = program_name
-            .map(|path| {
-                // The raw exec convenience ABI searches /bin for a bare name.
-                let mut searched = String::new();
-                let path = if path.contains('/') {
-                    path
-                } else {
-                    searched.try_reserve_exact(path.len().checked_add(5)
-                        .ok_or("exec pathname too long")?)
-                        .map_err(|_| "exec allocation failed")?;
-                    searched.push_str("/bin/");
-                    searched.push_str(path);
-                    &searched
-                };
-                let resolved = crate::fs::namei::resolve(path, true)
-                    .map_err(|_| "exec pathname resolution failed")?;
-                alloc::sync::Arc::try_new(resolved.path)
-                    .map_err(|_| "exec allocation failed")
-            })
-            .transpose()?;
+        let exe_path = exe_path
+            .map(alloc::sync::Arc::try_new)
+            .transpose()
+            .map_err(|_| "exec allocation failed")?;
         let user_stack_size = crate::syscall::exec::stack_size(argv, envp)?;
         let program_name = program_name
             .map(crate::syscall::exec::copy_string)

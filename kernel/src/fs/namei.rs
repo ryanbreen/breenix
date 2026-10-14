@@ -606,13 +606,15 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
 }
 
 /// Resolve `path`, following every symlink, to an existing ext2 inode, as a
-/// program loader needs. The handle holds the inode while it is read.
-pub fn resolve_file(path: &str) -> Result<(Mount, u32, FileHandle), u64> {
+/// program loader needs. The handle holds the inode while it is read; the
+/// pathname is the inode's physical absolute pathname.
+pub fn resolve_file(path: &str) -> Result<(Mount, u32, FileHandle, String), u64> {
     let resolved = resolve(path, true)?;
     match resolved.target {
-        Target::Inode { mount, ino, .. } => {
-            resolved.pin.map(|pin| (mount, ino, pin)).ok_or(EIO as u64)
-        }
+        Target::Inode { mount, ino, .. } => resolved
+            .pin
+            .map(|pin| (mount, ino, pin, resolved.path))
+            .ok_or(EIO as u64),
         Target::Absent { .. } => Err(ENOENT as u64),
         Target::Virtual => Err(crate::syscall::errno::EACCES as u64),
     }
