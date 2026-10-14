@@ -14,6 +14,8 @@ pub mod ethernet;
 pub mod icmp;
 pub mod ipv4;
 pub(crate) mod loopback_pump;
+#[cfg(target_arch = "aarch64")]
+mod rx_poll;
 
 // TCP and UDP protocol implementations - architecture-independent
 // The socket syscall layer handles arch-specific details
@@ -24,6 +26,8 @@ pub use loopback_pump::{
     init_loopback_pump, loopback_pump_passes, loopback_pump_rearms, loopback_pump_tid,
     loopback_pump_wake_already_awake, loopback_pump_wake_rejected, loopback_pump_wakes,
 };
+#[cfg(target_arch = "aarch64")]
+pub use rx_poll::init_rx_poll;
 
 use alloc::vec::Vec;
 use core::marker::PhantomData;
