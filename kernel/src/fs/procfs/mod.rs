@@ -38,6 +38,7 @@
 //! ```
 
 mod net;
+mod pid_path;
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -1067,38 +1068,19 @@ fn pid_exists(pid: u64) -> bool {
 /// This function acquires the process manager lock, so callers must NOT hold the
 /// PROCFS lock (to avoid lock ordering issues).
 fn lookup_pid_path(path: &str) -> Option<ProcEntry> {
-    // Strip "/proc/" prefix
-    let relative = path.strip_prefix("/proc/")?;
-    let relative = relative.trim_end_matches('/');
-
-    if relative.is_empty() {
-        return None;
-    }
-
-    // Split into PID component and optional sub-path
-    let (pid_str, sub_path) = if let Some(slash_pos) = relative.find('/') {
-        (&relative[..slash_pos], Some(&relative[slash_pos + 1..]))
-    } else {
-        (relative, None)
+    let (pid, entry) = pid_path::parse(path)?;
+    let pid = match pid {
+        pid_path::Pid::Caller => current_pid()?,
+        pid_path::Pid::Number(pid) => pid,
     };
-
-    // Parse PID: must be purely numeric, no leading zeros (except "0" itself)
-    if pid_str.is_empty() || (pid_str.len() > 1 && pid_str.starts_with('0')) {
-        return None;
-    }
-    let pid: u64 = if pid_str == "self" { current_pid()? } else { pid_str.parse().ok()? };
-
-    // Verify the PID exists (acquires process manager lock)
     if !pid_exists(pid) {
         return None;
     }
-
-    match sub_path {
-        None => Some(ProcEntry::new(ProcEntryType::PidDir(pid))),
-        Some("status") => Some(ProcEntry::new(ProcEntryType::PidStatus(pid))),
-        Some("exe") => Some(ProcEntry::new(ProcEntryType::PidExe(pid))),
-        Some(_) => None, // Unknown sub-path
-    }
+    Some(ProcEntry::new(match entry {
+        pid_path::Entry::Directory => ProcEntryType::PidDir(pid),
+        pid_path::Entry::Status => ProcEntryType::PidStatus(pid),
+        pid_path::Entry::Exe => ProcEntryType::PidExe(pid),
+    }))
 }
 
 fn lookup_trace_teardown_path(path: &str) -> Option<ProcEntry> {
