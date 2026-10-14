@@ -89,16 +89,18 @@ def definitions(arch):
     """name -> list of (member, weak) for every definition in libc.a."""
     tool_dir = subprocess.check_output([str(CC), '--arch', arch, '--tool-dir'], text=True).strip()
     nm = Path(tool_dir) / 'llvm-nm'
-    output = subprocess.check_output([str(nm), '-A', '--defined-only', str(LIBC[arch])],
+    output = subprocess.check_output([str(nm), '-A', str(LIBC[arch])],
                                      text=True, stderr=subprocess.DEVNULL)
     found = {}
     for line in output.splitlines():
         # <archive>:<member>: <address> <type> <name>
         head, _, rest = line.rpartition(': ')
         fields = rest.split()
-        if len(fields) < 3:
+        if len(fields) < 2:
             continue
-        kind, name = fields[1], fields[2]
+        kind, name = fields[-2], fields[-1]
+        if kind == 'U' and not ('libm_math' in name or 'compiler_builtins4math' in name or 'compiler_builtins..math..' in name):
+            continue
         member = head.rsplit(':', 1)[-1]
         found.setdefault(name, []).append((member, kind in 'wWvV'))
     return found
@@ -114,6 +116,11 @@ def main():
     functions = declared_functions(args.arch, headers)
     defined = definitions(args.arch)
     problems = []
+    for name, defs in sorted(defined.items()):
+        if ('libm_math' in name or 'compiler_builtins4math' in name or 'compiler_builtins..math..' in name
+                or any(member.startswith('compiler_builtins') for member, _ in defs)
+                and name in {'ceil', 'floor', 'fma', 'fmod', 'fmodf', 'round', 'sqrt', 'trunc'}):
+            problems.append(f'  forbidden foreign math symbol {name}')
     for name in sorted(functions):
         defs = defined.get(name)
         if not defs:
