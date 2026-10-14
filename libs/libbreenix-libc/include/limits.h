@@ -13,7 +13,7 @@
 /* Runtime-invariant and pathname limits. */
 #define ARG_MAX 524288
 #define CHILD_MAX 1024
-#define LINK_MAX 65000
+#define LINK_MAX 32000
 #define MAX_CANON 255
 #define MAX_INPUT 255
 #define NAME_MAX 255

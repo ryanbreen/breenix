@@ -82,7 +82,6 @@ struct addrinfo {
 
 __BREENIX_BEGIN_DECLS
 
-void endhostent(void);
 void endnetent(void);
 void endprotoent(void);
 void endservent(void);
@@ -90,7 +89,6 @@ void freeaddrinfo(struct addrinfo *);
 const char *gai_strerror(int);
 int getaddrinfo(const char *__BREENIX_RESTRICT, const char *__BREENIX_RESTRICT,
                 const struct addrinfo *__BREENIX_RESTRICT, struct addrinfo **__BREENIX_RESTRICT);
-struct hostent *gethostent(void);
 int getnameinfo(const struct sockaddr *__BREENIX_RESTRICT, socklen_t, char *__BREENIX_RESTRICT, socklen_t,
                 char *__BREENIX_RESTRICT, socklen_t, int);
 struct netent *getnetbyaddr(uint32_t, int);
@@ -102,14 +100,12 @@ struct protoent *getprotoent(void);
 struct servent *getservbyname(const char *, const char *);
 struct servent *getservbyport(int, const char *);
 struct servent *getservent(void);
-void sethostent(int);
 void setnetent(int);
 void setprotoent(int);
 void setservent(int);
 
 #ifdef __BREENIX_EXT
 struct hostent *gethostbyname(const char *);
-struct hostent *gethostbyaddr(const void *, socklen_t, int);
 int *__h_errno_location(void);
 #define h_errno (*__h_errno_location())
 const char *hstrerror(int);
