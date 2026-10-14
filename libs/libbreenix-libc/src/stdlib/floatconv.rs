@@ -392,7 +392,7 @@ mod tests {
     use super::*;
 
     fn dec(s: &str, e10: i64) -> u64 {
-        let d: [u8; 64] = core::array::from_fn(|i| s.as_bytes().get(i).map_or(0, |c| c - b'0'));
+        let d: [u8; 80] = core::array::from_fn(|i| s.as_bytes().get(i).map_or(0, |c| c - b'0'));
         from_decimal(false, &d[..s.len()], e10, false, &F64, Round::Nearest).bits as u64
     }
 
@@ -403,8 +403,10 @@ mod tests {
         assert_eq!(dec("17976931348623157", 292), f64::MAX.to_bits());
         assert_eq!(dec("49406564584124654", -340), 1);
         assert_eq!(dec("22250738585072014", -324), f64::MIN_POSITIVE.to_bits());
-        // Halfway between 1 and 1 + 2^-52 rounds to even.
-        assert_eq!(dec("11102230246251565404236316680908203125", -37), 1f64.to_bits());
+        // 1 + 2^-53 lies halfway between 1 and 1 + 2^-52 and rounds to even; a digit
+        // beyond it rounds up.
+        assert_eq!(dec("100000000000000011102230246251565404236316680908203125", -53), 1f64.to_bits());
+        assert_eq!(dec("1000000000000000111022302462515654042363166809082031251", -54), (1.0 + f64::EPSILON).to_bits());
         assert_eq!(dec("9007199254740993", 0), 9007199254740992f64.to_bits());
         assert_eq!(dec("1", 999), f64::INFINITY.to_bits());
         assert_eq!(dec("1", -999), 0);

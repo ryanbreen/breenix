@@ -11,8 +11,8 @@ pub(crate) mod dd;
 pub(crate) mod explog;
 pub(crate) mod fenv;
 mod float32;
-mod special;
-mod trig;
+pub(crate) mod special;
+pub(crate) mod trig;
 
 use crate::pthread::set_errno;
 use crate::stdlib::floatconv::Converted;
