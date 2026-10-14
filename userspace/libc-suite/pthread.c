@@ -5,7 +5,7 @@
  * arrives fails the case after 2 seconds, inside the suite's 10-second case limit.
  */
 #define _POSIX_C_SOURCE 202405L
-/* syscall(), to queue the C library's reserved cancel signal directly. */
+/* syscall() and gettid(), to queue the C library's reserved cancel signal directly. */
 #define _DEFAULT_SOURCE
 #include "case.h"
 
@@ -879,7 +879,7 @@ static const char *cancel_pending_exec(void) {
         close(p[0]);
         if (pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL) != 0)
             _exit(3);
-        if (syscall(NR_TGKILL, (long)getpid(), (long)getpid(), 32L) != 0)
+        if (syscall(NR_TGKILL, (long)getpid(), (long)gettid(), 32L) != 0)
             _exit(4);
         char fd[12];
         int n = 0;
