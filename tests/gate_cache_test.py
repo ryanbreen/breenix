@@ -5,6 +5,7 @@ from contextlib import redirect_stdout
 import io
 import json
 import os
+import subprocess
 from pathlib import Path
 import tempfile
 import unittest
@@ -96,6 +97,23 @@ class CacheTests(unittest.TestCase):
         with patch.object(artifacts, 'build', side_effect=wrong), patch.dict(os.environ, BREENIX_GATE_FRESH='1'):
             with self.assertRaisesRegex(RuntimeError, 'fresh checkout artifacts differ'):
                 self.call()
+
+    def test_busybox_step_runs_the_installer_check_with_its_arguments(self):
+        commands = []
+        with patch.object(artifacts, 'checked', side_effect=lambda command, *rest, **options: commands.append(command)), \
+                patch.object(artifacts, 'canonical_ext2'), patch.object(artifacts.shutil, 'copyfile'):
+            artifacts.build(ROOT, self.logs, 'candidate')
+        command = next(command for command in commands if 'install-libc-busybox.sh' in ' '.join(command))
+        programs = self.root / 'programs'
+        programs.mkdir()
+        (programs / 'libc-busybox.elf').write_bytes(b'fixture ELF')
+        required = (ROOT / 'vendor/busybox/required-applets').read_text()
+        (programs / 'libc-busybox.links').write_text(required)
+        command = [part.replace(str(ROOT / 'userspace/programs'), str(programs)) for part in command]
+        result = subprocess.run(command, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        (programs / 'libc-busybox.links').write_text('true\n')
+        self.assertNotEqual(subprocess.run(command, capture_output=True, text=True).returncode, 0)
 
     def test_failed_build_emits_phase_duration_and_failure_status(self):
         output = io.StringIO()
