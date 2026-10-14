@@ -101,8 +101,14 @@ pub unsafe fn malloc(n: usize) -> *mut u8 {
 pub unsafe fn calloc(n: usize, s: usize) -> *mut u8 {
     host_calloc(n, s)
 }
+thread_local! {static FAIL_REALLOC:Cell<bool>=const{Cell::new(false)};}
 pub unsafe fn realloc(p: *mut u8, n: usize) -> *mut u8 {
-    host_realloc(p, n)
+    if FAIL_REALLOC.with(|f| f.replace(false)) {
+        pthread::set_errno(12);
+        std::ptr::null_mut()
+    } else {
+        host_realloc(p, n)
+    }
 }
 pub unsafe fn free(p: *mut u8) {
     host_free(p)

@@ -237,6 +237,9 @@ pub(crate) unsafe fn vformat(
         let (left, plus, space, alternate, mut zero) =
             (spec.left, spec.plus, spec.space, spec.alternate, spec.zero);
         let width = spec.width;
+        if width > i32::MAX as usize {
+            return Err(75);
+        }
         let precision = spec.precision;
         let l = spec.length;
         let c = spec.conversion;
