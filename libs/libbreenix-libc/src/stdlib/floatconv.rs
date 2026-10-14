@@ -263,15 +263,18 @@ fn divide(num: &Big, den: &Big, s: i64) -> (u128, Rem) {
     }
     let mut q = 0u128;
     if r.cmp(&d) != Ordering::Less {
+        // Shift the divisor up to the remainder, then back down one bit per quotient bit,
+        // which leaves it as it was.
         let top = r.bitlen() - d.bitlen();
-        let mut t = d.clone();
-        t.shl(top);
+        d.shl(top);
         for i in (0..=top).rev() {
-            if r.cmp(&t) != Ordering::Less {
-                r.sub(&t);
+            if r.cmp(&d) != Ordering::Less {
+                r.sub(&d);
                 q |= 1u128 << i;
             }
-            t.shr1();
+            if i > 0 {
+                d.shr1();
+            }
         }
     }
     if r.is_zero() {
