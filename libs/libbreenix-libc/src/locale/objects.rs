@@ -21,13 +21,8 @@ fn parse(name: &[u8]) -> Option<bool> {
     match name { b"C" | b"POSIX" => Some(false), b"C.UTF-8" | b"C.utf8" => Some(true), _ => None }
 }
 fn environment(cat: usize) -> Option<bool> {
-    // Use the owner's exported getenv until FILES publishes getenv_bytes.
     for name in [b"LC_ALL".as_slice(), NAMES[cat], b"LANG".as_slice()] {
-        let mut buf = [0u8; 32];
-        buf[..name.len()].copy_from_slice(name);
-        let value = unsafe { crate::getenv(buf.as_ptr()) };
-        if !value.is_null() {
-            let value = unsafe { bytes(value) };
+        if let Some(value) = crate::env::getenv_bytes(name) {
             if !value.is_empty() { return parse(value); }
         }
     }

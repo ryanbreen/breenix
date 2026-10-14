@@ -16,15 +16,19 @@ pub unsafe extern "C" fn mbsinit(st: *const MbState) -> i32 {
 #[no_mangle]
 pub unsafe extern "C" fn mbrtowc(wc: *mut u32, s: *const u8, n: usize, ps: *mut MbState) -> usize {
     let st = if ps.is_null() { &mut *core::ptr::addr_of_mut!(READ_STATE) } else { &mut *ps };
-    let bytes = if s.is_null() { &[0][..] } else { core::slice::from_raw_parts(s, n) };
-    match decode(bytes, st) {
+    let n = if s.is_null() { 1 } else { n };
+    for i in 0..n {
+    let byte = if s.is_null() { 0 } else { *s.add(i) };
+    match decode(&[byte], st) {
         Decoded::Char(c, count) => {
             if !wc.is_null() && !s.is_null() { *wc = c; }
-            if c == 0 { 0 } else { count }
+            return if c == 0 { 0 } else { i + count };
         }
-        Decoded::Incomplete(_) => usize::MAX - 1,
-        Decoded::Invalid => { set_errno(84); usize::MAX }
+        Decoded::Incomplete(_) => continue,
+        Decoded::Invalid => { set_errno(84); return usize::MAX; }
     }
+    }
+    usize::MAX - 1
 }
 
 #[no_mangle]

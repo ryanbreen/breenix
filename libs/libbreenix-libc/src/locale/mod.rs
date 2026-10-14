@@ -6,6 +6,9 @@ mod objects;
 mod classify;
 mod unicode_tables;
 mod wide;
+mod calendar;
+#[cfg(not(test))]
+mod streams;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
@@ -25,7 +28,11 @@ pub(crate) fn charset() -> Charset {
 }
 
 pub(crate) fn encode(wc: u32, out: &mut [u8; 4]) -> Option<usize> {
-    match charset() {
+    encode_charset(wc, out, charset())
+}
+
+fn encode_charset(wc: u32, out: &mut [u8; 4], encoding: Charset) -> Option<usize> {
+    match encoding {
         Charset::Byte => {
             if wc > 0x7f { return None; }
             out[0] = wc as u8;
@@ -176,6 +183,38 @@ mod tests {
             assert_eq!(wide::wcstok(words.as_mut_ptr(), sep.as_ptr(), &mut save), words.as_mut_ptr().add(1));
             assert_eq!(wide::wcstok(core::ptr::null_mut(), sep.as_ptr(), &mut save), words.as_mut_ptr().add(4));
             assert!(wide::wcstok(core::ptr::null_mut(), sep.as_ptr(), &mut save).is_null());
+        }
+    }
+
+    #[test]
+    fn calendar_known_epochs_leap_centuries_and_normalization() {
+        unsafe {
+            let mut tm = calendar::Tm::default();
+            for (epoch, date) in [(0, (1970,1,1,4)), (-1,(1969,12,31,3)),
+                (951782400,(2000,2,29,2)), (-2203977600,(1900,2,28,3)),
+                (4107542400,(2100,3,1,1))] {
+                assert!(!calendar::gmtime_r(&epoch,&mut tm).is_null());
+                assert_eq!((tm.year+1900,tm.mon+1,tm.mday,tm.wday),date);
+                assert_eq!(calendar::timegm(&mut tm),epoch);
+            }
+            tm = calendar::Tm { year: 120, mon: 12, mday: 0, hour: 25, ..Default::default() };
+            calendar::timegm(&mut tm);
+            assert_eq!((tm.year,tm.mon,tm.mday,tm.hour),(121,0,1,1));
+            let epoch = 1609459200;
+            calendar::gmtime_r(&epoch,&mut tm);
+            let mut b=[0u8;64];
+            let n=calendar::strftime(b.as_mut_ptr(),64,b"%F %T %G-W%V-%u %z\0".as_ptr(),&tm);
+            assert_eq!(&b[..n],b"2021-01-01 00:00:00 2020-W53-5 +0000");
+            assert_eq!(calendar::strftime(b.as_mut_ptr(),4,b"%F\0".as_ptr(),&tm),0);
+            assert!(!calendar::asctime_r(&tm,b.as_mut_ptr()).is_null());
+            assert_eq!(&b[..26],b"Fri Jan  1 00:00:00 2021\n\0");
+            let mut wide=[0u32;32];
+            let fmt=[0x20ac,32,37,70,0];
+            assert_eq!(calendar::wcsftime(wide.as_mut_ptr(),32,fmt.as_ptr(),&tm),12);
+            assert_eq!(wide[0],0x20ac);
+            assert_eq!(wide[2],b'2' as u32);
+            assert_eq!(wide[12],0);
+            assert!(calendar::gmtime_r(&i64::MAX,&mut tm).is_null());
         }
     }
 }
