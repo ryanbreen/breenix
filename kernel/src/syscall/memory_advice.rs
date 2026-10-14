@@ -377,7 +377,7 @@ pub fn sys_madvise(addr: u64, length: u64, advice: u64) -> SyscallResult {
     result((|| {
         let (start, end) = range(addr, length, true)?;
         let thread = get_current_thread_id().ok_or(ENOMEM as u64)?;
-        // Validate and discard one page per PM section.
+        // Validate and discard a bounded batch per PM section.
         let mut cursor = start;
         while cursor < end {
             let mut guard = crate::process::manager_for_address_space(thread);
@@ -385,53 +385,54 @@ pub fn sys_madvise(addr: u64, length: u64, advice: u64) -> SyscallResult {
                 .as_mut()
                 .and_then(|m| m.find_address_space_by_thread_mut(thread))
                 .ok_or(ENOMEM as u64)?;
-            if !covered(p, cursor, cursor + PAGE_SIZE) {
-                return Err(ENOMEM as u64);
-            }
-            if advice == 4 {
-                if p.memory_locks.overlaps(cursor, cursor + PAGE_SIZE) {
-                    return Err(EINVAL as u64);
+            let stop = end.min(cursor.saturating_add(64 * PAGE_SIZE));
+            let mut leaves = crate::memory::process_memory::LeafBatch::new();
+            while cursor < stop {
+                if !covered(p, cursor, cursor + PAGE_SIZE) {
+                    return Err(ENOMEM as u64);
                 }
-                let page = Page::<Size4KiB>::containing_address(VirtAddr::new(cursor));
-                let vma = p.vmas.iter().find(|v| v.contains(page.start_address()));
-                let anonymous = vma.is_some_and(|v| {
-                    v.flags.contains(MmapFlags::ANONYMOUS) && v.flags.contains(MmapFlags::PRIVATE)
-                });
-                let non_vma = vma.is_none();
-                let table = p.page_table.as_deref_mut().ok_or(ENOMEM as u64)?;
-                if anonymous && table.get_page_info(page).is_some() {
-                    table
-                        .unmap_page_deferred(page)
-                        .map_err(|_| ENOMEM as u64)?
-                        .flush()
-                        .release();
-                } else if non_vma {
-                    // Heap, stack and writable ELF leaves lack faultable VMAs.
-                    // Keep their mapping and supply zero bytes in private custody.
-                    if let Some((_, flags)) = table.get_page_info(page) {
-                        if flags.contains(PageTableFlags::WRITABLE)
-                            || crate::memory::process_memory::is_cow_page(flags)
-                        {
-                            if crate::memory::process_memory::is_cow_page(flags)
-                                && !table.resolve_cow_write(cursor, p.id.as_u64())
+                if advice == 4 {
+                    if p.memory_locks.overlaps(cursor, cursor + PAGE_SIZE) {
+                        return Err(EINVAL as u64);
+                    }
+                    let page = Page::<Size4KiB>::containing_address(VirtAddr::new(cursor));
+                    let vma = p.vmas.iter().find(|v| v.contains(page.start_address()));
+                    let anonymous = vma.is_some_and(|v| {
+                        v.flags.contains(MmapFlags::ANONYMOUS) && v.flags.contains(MmapFlags::PRIVATE)
+                    });
+                    let non_vma = vma.is_none();
+                    let table = p.page_table.as_deref_mut().ok_or(ENOMEM as u64)?;
+                    if anonymous && table.get_page_info(page).is_some() {
+                        leaves.push(table.unmap_page_deferred(page).map_err(|_| ENOMEM as u64)?);
+                    } else if non_vma {
+                        // Heap, stack and writable ELF leaves lack faultable VMAs.
+                        // Keep their mapping and supply zero bytes in private custody.
+                        if let Some((_, flags)) = table.get_page_info(page) {
+                            if flags.contains(PageTableFlags::WRITABLE)
+                                || crate::memory::process_memory::is_cow_page(flags)
                             {
-                                return Err(ENOMEM as u64);
-                            }
-                            let (frame, _) = table.get_page_info(page).ok_or(ENOMEM as u64)?;
-                            let offset = crate::memory::physical_memory_offset().as_u64();
-                            // SAFETY: the leaf has exclusive writable custody under PM.
-                            unsafe {
-                                core::ptr::write_bytes(
-                                    (offset + frame.start_address().as_u64()) as *mut u8,
-                                    0,
-                                    PAGE_SIZE as usize,
-                                );
+                                if crate::memory::process_memory::is_cow_page(flags)
+                                    && !table.resolve_cow_write(cursor, p.id.as_u64())
+                                {
+                                    return Err(ENOMEM as u64);
+                                }
+                                let (frame, _) = table.get_page_info(page).ok_or(ENOMEM as u64)?;
+                                let offset = crate::memory::physical_memory_offset().as_u64();
+                                // SAFETY: the leaf has exclusive writable custody under PM.
+                                unsafe {
+                                    core::ptr::write_bytes(
+                                        (offset + frame.start_address().as_u64()) as *mut u8,
+                                        0,
+                                        PAGE_SIZE as usize,
+                                    );
+                                }
                             }
                         }
                     }
                 }
+                cursor += PAGE_SIZE;
             }
-            cursor += PAGE_SIZE;
+            leaves.finish();
         }
         Ok(())
     })())

@@ -1012,6 +1012,7 @@ fn prove_parallel(n: usize, cpus: usize) -> CaseResult {
 // State of the two cases that change a page while other processors use it.
 /// The page the workers touch this round.
 static T_PAGE: AtomicU64 = AtomicU64::new(0);
+static T_PAGES: AtomicU64 = AtomicU64::new(1);
 /// The round the workers are in.
 static T_ROUND: AtomicU32 = AtomicU32::new(0);
 /// The round whose page is being unmapped or made read-only, once the call has begun:
@@ -1057,23 +1058,33 @@ fn page_worker(i: usize, write: bool, code: i32) {
         if round == done { core::hint::spin_loop(); continue; }
         let changed = T_CHANGED.load(SeqCst) == round;
         let page = T_PAGE.load(SeqCst) as *mut u8;
-        let p = if write { at(page, 64 * i) } else { page };
-        let got = if write { store(p, round as u8).map(|_| round as u8) } else { load(p) };
-        match got {
-            Ok(v) => {
-                T_OK[i].fetch_add(1, SeqCst);
-                if changed { T_STALE.fetch_add(1, SeqCst); } else if v != round as u8 { T_WRONG.fetch_add(1, SeqCst); }
-            }
-            Err(f) if T_CHANGING.load(SeqCst) == round && fault_is(f, SIGSEGV, &[code], p) => {
-                T_FAULTED[i].store(round, SeqCst);
-                done = round;
-            }
-            Err(f) => {
-                if T_BAD.fetch_add(1, SeqCst) == 0 {
-                    for (slot, v) in T_BAD_FIRST.iter().zip([i as u64, f.sig as u64, f.code as u32 as u64, f.addr, p as u64]) { slot.store(v, SeqCst); }
+        let pages = T_PAGES.load(SeqCst) as usize;
+        let mut all_faulted = changed;
+        let mut all_loaded = true;
+        for offset in 0..pages {
+            let p = at(page, offset * PAGE + if write { 64 * i } else { 0 });
+            let got = if write { store(p, round as u8).map(|_| round as u8) } else { load(p) };
+            match got {
+                Ok(v) => {
+                    all_faulted = false;
+                    if changed { T_STALE.fetch_add(1, SeqCst); } else if v != round as u8 { T_WRONG.fetch_add(1, SeqCst); }
                 }
-                return;
+                Err(f) if T_CHANGING.load(SeqCst) == round && fault_is(f, SIGSEGV, &[code], p) => {
+                    all_loaded = false;
+                }
+                Err(f) => {
+                    if T_BAD.fetch_add(1, SeqCst) == 0 {
+                        for (slot, v) in T_BAD_FIRST.iter().zip([i as u64, f.sig as u64, f.code as u32 as u64, f.addr, p as u64]) { slot.store(v, SeqCst); }
+                    }
+                    return;
+                }
             }
+        }
+        if all_loaded { T_OK[i].fetch_add(1, SeqCst); }
+        // Only a complete sweep begun after the syscall returned is acceptance.
+        if all_faulted {
+            T_FAULTED[i].store(round, SeqCst);
+            done = round;
         }
     }
 }
@@ -1089,19 +1100,25 @@ fn bad_fault_text() -> String {
 /// Run ROUNDS rounds: `prepare` gives each round's page, `change` unmaps it or makes it
 /// read-only while the workers use it. Returns the longest `change` in nanoseconds.
 fn page_rounds(n: usize, mut prepare: impl FnMut(u32) -> Result<*mut u8, CaseError>, mut change: impl FnMut(*mut u8) -> i64, what: &str) -> Result<i64, CaseError> {
+    page_range_rounds(n, 1, ROUNDS, &mut prepare, &mut change, what)
+}
+
+fn page_range_rounds(n: usize, pages: usize, rounds: u32, mut prepare: impl FnMut(u32) -> Result<*mut u8, CaseError>, mut change: impl FnMut(*mut u8) -> i64, what: &str) -> Result<i64, CaseError> {
+    T_PAGES.store(pages as u64, SeqCst);
+    let warm_sweeps = if pages == 1 { WARM } else { 2 };
     let mut longest = 0i64;
-    for round in 1..=ROUNDS {
+    for round in 1..=rounds {
         let page = prepare(round)?;
         for ok in T_OK.iter().take(n) { ok.store(0, SeqCst); }
         T_PAGE.store(page as u64, SeqCst);
         T_ROUND.store(round, SeqCst);
-        let warm = spin_until(1000, || T_BAD.load(SeqCst) != 0 || T_TIMEOUT.iter().take(n).any(|t| t.load(SeqCst) != 0) || T_OK.iter().take(n).all(|ok| ok.load(SeqCst) >= WARM));
+        let warm = spin_until(1000, || T_BAD.load(SeqCst) != 0 || T_TIMEOUT.iter().take(n).any(|t| t.load(SeqCst) != 0) || T_OK.iter().take(n).all(|ok| ok.load(SeqCst) >= warm_sweeps));
         if let Some(i) = (0..n).find(|&i| T_TIMEOUT[i].load(SeqCst) != 0) {
             return err(format!("round {round}: worker {i} exhausted its 8000 ms lifetime in round {}", T_TIMEOUT[i].load(SeqCst)));
         }
         if T_BAD.load(SeqCst) != 0 { return err(format!("round {round}, before {what}: {}", bad_fault_text())); }
         if !warm {
-            return err(format!("round {round}: the workers did not each make {WARM} accesses to the page within a second"));
+            return err(format!("round {round}: the workers did not each make {warm_sweeps} sweeps of every page within a second"));
         }
         T_CHANGING.store(round, SeqCst);
         let t0 = mono();
@@ -1129,6 +1146,18 @@ fn with_page_workers(write: bool, code: i32, body: impl FnOnce(usize) -> Result<
     catch_faults()?;
     let n = workers_for()?;
     let cpus = processors()?;
+    GO.store(0, SeqCst);
+    T_ROUND.store(0, SeqCst);
+    T_CHANGING.store(0, SeqCst);
+    T_CHANGED.store(0, SeqCst);
+    T_STALE.store(0, SeqCst);
+    T_WRONG.store(0, SeqCst);
+    T_BAD.store(0, SeqCst);
+    for i in 0..MAX_WORKERS {
+        SLOTS[i].store(0, SeqCst);
+        PINNED[i].store(0, SeqCst);
+        T_FAULTED[i].store(0, SeqCst);
+    }
     for timeout in T_TIMEOUT.iter().take(n) { timeout.store(0, SeqCst); }
     let threads: Vec<_> = (0..n).map(|i| std::thread::spawn(move || page_worker(i, write, code))).collect();
     let result = prove_parallel(n, cpus).and_then(|_| body(n));
@@ -1506,6 +1535,33 @@ fn an_unmap_cpus() -> CaseResult {
     value("maperr", MAPERR.load(SeqCst) as i64, "", None);
     check(wrong == 0, &format!("{wrong} reads from a still-mapped page returned another page's byte"))?;
     check(stale == 0, &format!("{stale} reads begun after munmap returned read the unmapped page instead of faulting"))
+}
+
+/// Warm every page on every pinned worker, then require faults after removal.
+fn batch_unmap_cpus(pages: usize, file: bool, heap: bool) -> CaseResult {
+    let len = pages * PAGE;
+    let f = if file { Some(TempFile::new("batch-unmap", &vec![1u8; len])?) } else { None };
+    let longest = with_page_workers(false, SEGV_MAPERR, |n| {
+        // Leave allocator headroom below the range explicitly managed by brk.
+        let base = if heap { page_up(cur_brk()) + MIB as u64 } else { 0 };
+        page_range_rounds(n, pages, 1, |round| {
+            let p = if heap {
+                set_brk(base + len as u64)?;
+                base as *mut u8
+            } else if let Some(f) = &f {
+                map(0, len, RW, MAP_PRIVATE, f.fd)?
+            } else { anon(len)? };
+            fill_byte(p, len, round as u8);
+            Ok(p)
+        }, |p| {
+            if heap { if brk(base) == base { 0 } else { -ENOMEM } }
+            else { munmap(p, len) }
+        }, if heap { "brk shrink" } else { "batch munmap" })
+    })?;
+    value("stale-reads", T_STALE.load(SeqCst) as i64, "", Some((0, 0)));
+    value("unmap", longest / 1000, "us", None);
+    check(T_WRONG.load(SeqCst) == 0, "a warmed page returned the wrong byte")?;
+    check(T_STALE.load(SeqCst) == 0, "a page remained readable after the range removal returned")
 }
 
 // ---------------------------------------------------------------------------
@@ -2557,6 +2613,12 @@ static SUITE: Suite = suite(
             case("churn", "Mapping, touching and unmapping 1 MiB 100 times leaves free memory within 4 MiB of where it was and the resident set no larger", an_churn),
             case("many", "1000 one-page anonymous mappings exist at once at distinct addresses, each keeping its own contents, and all unmap", an_many),
             case("unmap-cpus", "With two to four processors, worker threads pinned one to each other processor and reading a page the case's thread has just unmapped raise SIGSEGV with SEGV_MAPERR at the byte read every time and never read the old page", an_unmap_cpus),
+            case("unmap-2-cpus", "Every pinned worker warms every page of a 2-page anonymous range and faults on every page in a sweep begun after removal returns", || batch_unmap_cpus(2, false, false)),
+            case("unmap-64-cpus", "Every pinned worker warms every page of a 64-page anonymous range and faults on every page in a sweep begun after removal returns", || batch_unmap_cpus(64, false, false)),
+            case("unmap-65-cpus", "Every pinned worker warms every page of a 65-page anonymous range and faults on every page in a sweep begun after removal returns", || batch_unmap_cpus(65, false, false)),
+            case("unmap-128-cpus", "Every pinned worker warms every page of a 128-page anonymous range and faults on every page in a sweep begun after removal returns", || batch_unmap_cpus(128, false, false)),
+            case("unmap-file-cpus", "Every pinned worker warms every page of a 128-page private file range and faults on every page in a sweep begun after removal returns", || batch_unmap_cpus(128, true, false)),
+            case("shrink-cpus", "Every pinned worker warms every page of a 128-page heap range and faults on every page in a sweep begun after removal returns", || batch_unmap_cpus(128, false, true)),
         ]),
         category("protection", "mprotect & faults", &[
             case("none-read", "Reading a PROT_NONE mapping raises SIGSEGV with SEGV_ACCERR and si_addr the byte read", pr_none_read),

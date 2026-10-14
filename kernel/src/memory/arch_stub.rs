@@ -896,22 +896,37 @@ pub mod tlb {
 
     /// Flush a single page from the TLB
     ///
-    /// Uses TLBI VAE1IS instruction to invalidate by virtual address
+    /// Uses TLBI VAAE1IS instruction to invalidate by virtual address
     /// in the Inner Shareable domain.
     #[cfg(target_arch = "aarch64")]
     #[inline]
     pub fn flush(addr: VirtAddr) {
-        // The TLBI VAE1IS instruction expects the address shifted right by 12
+        // The TLBI VAAE1IS instruction expects the address shifted right by 12
         let page = addr.as_u64() >> 12;
         unsafe {
             core::arch::asm!(
                 "dsb ishst",           // Ensure stores complete
-                "tlbi vae1is, {0}",    // Invalidate by VA, EL1, Inner Shareable
+                "tlbi vaae1is, {0}",    // Invalidate by VA, EL1, Inner Shareable
                 "dsb ish",             // Ensure TLB invalidation completes
                 "isb",                 // Sync instruction stream
                 in(reg) page,
                 options(nostack)
             );
+        }
+    }
+
+    /// Broadcast a set of virtual addresses for all ASIDs, with shared barriers.
+    #[cfg(target_arch = "aarch64")]
+    pub fn flush_pages(pages: &[u64]) {
+        if pages.is_empty() {
+            return;
+        }
+        unsafe {
+            core::arch::asm!("dsb ishst", options(nostack));
+            for &page in pages {
+                core::arch::asm!("tlbi vaae1is, {0}", in(reg) (page >> 12), options(nostack));
+            }
+            core::arch::asm!("dsb ish", "isb", options(nostack));
         }
     }
 

@@ -21,7 +21,7 @@
 //! syscall-return signal path reloads the running process's own root, already
 //! announced by whichever of these put this CPU on it.
 //!
-//! A flush of one user address space (`flush_user_page`) therefore goes only to
+//! A flush of one user address space (`flush_user_page`, `flush_user_pages`) therefore goes only to
 //! the CPUs whose announced root, `next_cr3` or `saved_process_cr3` names that
 //! space; an unmap by a process running alone costs no NMI. A flush that names
 //! no address space (`flush_page`, `flush_all`: kernel mappings, or callers
@@ -73,29 +73,28 @@ pub fn flush_user_page(root: u64, addr: VirtAddr) {
     let _ = root;
 }
 
-/// Flush `pages` of the user address space whose page-table root is `root`,
-/// on every CPU that may cache a translation of that space, with one
-/// cross-CPU request for the whole set.
-///
-/// This CPU invalidates each page. On x86_64 every other CPU that may hold
-/// `root` drops all its non-global translations in one shootdown, rather
-/// than taking one round per page, each of which waits for every target to
-/// answer. aarch64 broadcasts each page's invalidation in hardware, as
-/// `flush_user_page` does. The caller has already cleared the descriptors.
+/// Invalidate removed user leaves before their frames can be released.
+/// x86 uses one root-targeted full shootdown for a multi-page set; ARM64
+/// broadcasts the addresses for all ASIDs with one pair of data barriers.
 pub fn flush_user_pages(root: u64, pages: &[u64]) {
     if let [page] = pages {
         flush_user_page(root, VirtAddr::new(*page));
         return;
     }
-    for &page in pages {
-        tlb::flush(VirtAddr::new(page));
-    }
     #[cfg(target_arch = "x86_64")]
-    if !pages.is_empty() {
-        shootdown::request_for_root(shootdown::Request::All, root);
+    {
+        for &page in pages {
+            tlb::flush(VirtAddr::new(page));
+        }
+        if !pages.is_empty() {
+            shootdown::request_for_root(shootdown::Request::All, root);
+        }
     }
-    #[cfg(not(target_arch = "x86_64"))]
-    let _ = root;
+    #[cfg(target_arch = "aarch64")]
+    {
+        tlb::flush_pages(pages);
+        let _ = root;
+    }
 }
 
 /// Announce that this CPU is about to load page-table root `root` into CR3.

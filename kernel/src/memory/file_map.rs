@@ -1184,6 +1184,7 @@ impl MapState {
                 if let Some(pt) = live_table(manager, rec) {
                     let end = rec.page(stop - 1).start_address().as_u64() + PAGE_SIZE;
                     let mut from = rec.page(low).start_address().as_u64();
+                    let mut leaves = super::process_memory::LeafBatch::new();
                     while let Some(page) = pt.next_mapped_page(from, end) {
                         from = page.start_address().as_u64() + PAGE_SIZE;
                         if aliases {
@@ -1197,7 +1198,7 @@ impl MapState {
                                 continue;
                             }
                         }
-                        revoke_entry(pt, page);
+                        revoke_entry(pt, page, &mut leaves);
                     }
                 }
             }
@@ -1225,14 +1226,17 @@ fn live_table<'a>(
 }
 
 /// Remove one entry. Returns false when its descriptor and custody record
-/// disagreed; the descriptor is cleared and flushed either way. The flush
-/// reaches every online CPU (`memory::tlb::flush_page`): ARM64 broadcasts in
-/// hardware, x86 shoots down by NMI.
-fn revoke_entry(pt: &mut ProcessPageTable, page: Page<Size4KiB>) -> bool {
+/// disagreed. Valid leaves join the caller's batch; an inconsistent descriptor
+/// is cleared and flushed immediately by `revoke_page`.
+fn revoke_entry(
+    pt: &mut ProcessPageTable,
+    page: Page<Size4KiB>,
+    leaves: &mut super::process_memory::LeafBatch,
+) -> bool {
     match pt.revoke_page(page) {
         Ok(Revoked::Absent) => true,
         Ok(Revoked::Leaf(leaf)) => {
-            leaf.flush().release();
+            leaves.push(leaf);
             true
         }
         Err(_) => false,
@@ -1565,17 +1569,17 @@ pub(crate) fn isolate(
     Ok(Some(if start > vma_start { index + 1 } else { index }))
 }
 
-/// munmap of the whole file VMA `vmas[index]`. If an entry cannot be removed,
-/// the VMA and its binding are kept, so a later shrink still covers the range.
+/// Remove the leaves of file VMA `vmas[index]`. The caller keeps its binding
+/// alive until the shared leaf batch is flushed, then removes the VMA.
 pub(crate) fn unmap(
-    vmas: &mut Vec<Vma>,
+    vmas: &[Vma],
     index: usize,
     pt: &mut ProcessPageTable,
+    leaves: &mut super::process_memory::LeafBatch,
 ) -> Result<(), &'static str> {
     let vma = &vmas[index];
     let (start, end) = (vma.start.as_u64(), vma.end.as_u64());
     let mut clean = true;
-    let mut leaves = crate::memory::process_memory::LeafBatch::new();
     let mut from = start;
     while let Some(page) = pt.next_mapped_page(from, end) {
         from = page.start_address().as_u64() + PAGE_SIZE;
@@ -1585,11 +1589,9 @@ pub(crate) fn unmap(
             Err(_) => clean = false,
         }
     }
-    leaves.finish();
     if !clean {
         return Err("File mapping entry custody disagreed");
     }
-    drop(vmas.remove(index));
     Ok(())
 }
 
@@ -1653,11 +1655,13 @@ pub(crate) fn protect(
         .rec_mut(binding.id)
         .ok_or("File binding missing from its reverse map")?;
     let mut clean = true;
+    let mut leaves = super::process_memory::LeafBatch::new();
     let mut from = start;
     while let Some(page) = pt.next_mapped_page(from, end) {
         from = page.start_address().as_u64() + PAGE_SIZE;
-        clean &= revoke_entry(pt, page);
+        clean &= revoke_entry(pt, page, &mut leaves);
     }
+    leaves.finish();
     // Every entry is gone either way, so the copies are parked for the next
     // fault to map again. A shrink may have dropped the parked copies past
     // its EOF since they were taken; those are released.

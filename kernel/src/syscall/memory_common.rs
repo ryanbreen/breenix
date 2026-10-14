@@ -106,10 +106,11 @@ pub fn cleanup_mapped_pages(
         mapped_pages.len()
     );
 
+    let mut leaves = crate::memory::process_memory::LeafBatch::new();
     for (page, _) in mapped_pages.iter() {
         match page_table.unmap_page_deferred(*page) {
             Ok(leaf) => {
-                leaf.flush().release();
+                leaves.push(leaf);
             }
             Err(e) => {
                 log::error!(
@@ -374,6 +375,7 @@ fn unmap_reservation(thread_id: u64, root: u64, token: u64, start: u64, count: u
             return;
         }
         let chunk_end = (unmapped + MAP_CHUNK_PAGES).min(count);
+        let mut leaves = crate::memory::process_memory::LeafBatch::new();
         for index in unmapped..chunk_end {
             let address = start + (index as u64) * PAGE_SIZE;
             if !vmas.iter().any(|v| {
@@ -383,7 +385,7 @@ fn unmap_reservation(thread_id: u64, root: u64, token: u64, start: u64, count: u
             }
             let page = Page::<Size4KiB>::containing_address(VirtAddr::new(address));
             if let Ok(leaf) = page_table.unmap_page_deferred(page) {
-                leaf.flush().release();
+                leaves.push(leaf);
             }
         }
         unmapped = chunk_end;

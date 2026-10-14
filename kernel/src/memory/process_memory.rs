@@ -216,9 +216,8 @@ struct LeafRecord {
 }
 
 /// A user leaf removed from its page table whose TLB entry may still be
-/// cached. Its only operation is `flush()`, so the frame reference cannot be
-/// dropped before the invalidation; dropping it keeps the reference, so the
-/// frame is never freed.
+/// cached. Pass it to `flush()` or `LeafBatch` before releasing its frame.
+/// Dropping it alone retains the frame reference.
 #[must_use = "flush and release the leaf, or its frame is never freed"]
 pub struct ReleasedLeaf {
     record: LeafRecord,
@@ -258,8 +257,8 @@ impl FlushedLeaf {
 const LEAF_BATCH_PAGES: usize = 64;
 
 /// User leaves removed from one page table and not yet invalidated, flushed
-/// together: unmapping a range costs one cross-CPU invalidation per
-/// `LEAF_BATCH_PAGES` pages instead of one per page. As with `ReleasedLeaf`,
+/// together. Full batches and explicit finishes invalidate their leaves.
+/// As with `ReleasedLeaf`,
 /// a frame's reference is dropped only after its invalidation; `finish`, and
 /// dropping the batch, do both.
 pub struct LeafBatch {
@@ -2057,6 +2056,18 @@ impl ProcessPageTable {
             frame,
             root: self.level_4_frame.start_address().as_u64(),
         })
+    }
+
+    /// Check leaf custody before a range removal starts, while its table is locked.
+    pub(crate) fn can_unmap_range(&self, start: u64, end: u64) -> bool {
+        let mut from = start;
+        while let Some(page) = self.next_mapped_page(from, end) {
+            from = page.start_address().as_u64() + 4096;
+            if self.leaves.search(page.start_address().as_u64()).is_none() {
+                return false;
+            }
+        }
+        true
     }
 
     /// Remove one user page's mapping, telling an absent page apart from one
