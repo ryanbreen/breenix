@@ -1,5 +1,13 @@
 //! Focused host tests for the FILES implementations, linked to the host allocator.
 //! Compile directly with rustc --test; no kernel or other libc modules are built.
+
+/// getopt's optind and opterr, the getdents stub's cursor below and fd 2 are
+/// one per process, and the test harness runs tests on parallel threads: each
+/// test that uses them holds this lock for its whole body.
+static SHARED_STATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+fn shared_state() -> std::sync::MutexGuard<'static, ()> {
+    SHARED_STATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 #[path = "../libs/libbreenix-libc/src/getopt.rs"]
 mod getopt;
 #[path = "../libs/libbreenix-libc/src/regex/mod.rs"]
@@ -15,6 +23,7 @@ mod env {
 }
 #[test]
 fn missing_argument_advances_two_and_unknown_suboption_value() {
+    let _shared = crate::shared_state();
     unsafe {
         let mut program = *b"test\0";
         let mut option = *b"-x\0";
@@ -91,6 +100,7 @@ unsafe extern "C" fn __errno_location() -> *mut i32 {
 }
 #[test]
 fn long_program_name_keeps_diagnostic() {
+    let _shared = crate::shared_state();
     unsafe {
         extern "C" {
             fn pipe(fds: *mut i32) -> i32;
@@ -231,6 +241,7 @@ mod dirent_regressions {
     }
     #[test]
     fn empty_sort_and_initialized_stream() {
+        let _shared = crate::shared_state();
         unsafe {
             sort_ptrs::<Dirent>(null_mut(), 0, |_, _| panic!("empty sort compared"));
             let d = opendir(b"mock\0".as_ptr());
@@ -245,6 +256,7 @@ mod dirent_regressions {
     }
     #[test]
     fn scandir_filter_errno_does_not_turn_eof_into_error() {
+        let _shared = crate::shared_state();
         unsafe extern "C" fn filter(_: *const Dirent) -> i32 {
             set_errno(123);
             1
@@ -264,6 +276,7 @@ mod dirent_regressions {
     }
     #[test]
     fn concurrent_readdir_r_serializes_stream() {
+        let _shared = crate::shared_state();
         crate::raw::NEXT.store(1, Ordering::Relaxed);
         let d = unsafe { opendir(b"mock\0".as_ptr()) } as usize;
         let mut threads = std::vec::Vec::new();
@@ -331,6 +344,7 @@ mod glob_regressions {
     }
     #[test]
     fn abort_preserves_scanned_paths_and_current_error_path() {
+        let _shared = crate::shared_state();
         unsafe {
             crate::raw::NEXT.store(1, Ordering::Relaxed);
             crate::raw::MAX.store(1, Ordering::Relaxed);
@@ -353,6 +367,7 @@ mod glob_regressions {
     }
     #[test]
     fn final_stat_errors_and_quoted_slash() {
+        let _shared = crate::shared_state();
         unsafe {
             let mut result: Glob = core::mem::zeroed();
             assert_eq!(
@@ -386,6 +401,7 @@ mod stdio {
 }
 #[test]
 fn diagnostic_write_failure_marks_stderr() {
+    let _shared = crate::shared_state();
     unsafe {
         extern "C" {
             fn pipe(fds: *mut i32) -> i32;
