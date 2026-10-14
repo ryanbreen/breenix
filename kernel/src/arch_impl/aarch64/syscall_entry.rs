@@ -154,10 +154,10 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
         }
         Some(SyscallNumber::Clone) => {
             // ARM64 has no fork syscall; libbreenix emulates fork via clone(SIGCHLD, 0, 0, 0, 0).
-            // Detect fork-style clone (no CLONE_VM) and route to sys_fork_aarch64 which
-            // needs the exception frame to snapshot parent registers.
-            const CLONE_VM: u64 = 0x00000100;
-            if arg1 & CLONE_VM == 0 {
+            // Route a fork-style clone (no CLONE_VM, or vfork's CLONE_VFORK with no
+            // stack) to sys_fork_aarch64, which needs the exception frame to
+            // snapshot parent registers.
+            if crate::syscall::clone::is_fork_style(arg1, arg2) {
                 sys_fork_aarch64(frame)
             } else {
                 result_to_u64(crate::syscall::clone::sys_clone_thread(

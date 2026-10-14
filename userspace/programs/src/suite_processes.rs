@@ -1594,6 +1594,23 @@ fn fork_kill_heap() -> CaseResult {
     kill_readers()
 }
 
+/// clone(CLONE_VM | CLONE_VFORK | SIGCHLD) with no child stack, the form vfork takes as a
+/// system call: it returns 0 in a child, whose only act is to _exit, and the child's PID in
+/// the parent, which then waits for it.
+fn fork_vfork_clone() -> CaseResult {
+    const CLONE_VM: u64 = 0x100;
+    const CLONE_VFORK: u64 = 0x4000;
+    const SIGCHLD: u64 = 17;
+    let ret = sc(libbreenix::syscall::nr::CLONE, &[CLONE_VM | CLONE_VFORK | SIGCHLD, 0, 0, 0, 0, 0]);
+    if ret == 0 {
+        sc(libbreenix::syscall::nr::EXIT, &[7]);
+        loop {}
+    }
+    check(ret > 0, &format!("clone returned {}", errname(-ret)))?;
+    let mut child = Child { pid: ret as i32, live: true };
+    child.expect_exit(7, "the vfork child")
+}
+
 fn fork_many() -> CaseResult {
     let (r, w) = io::pipe()?;
     let mut children = Vec::new();
@@ -3322,6 +3339,7 @@ static SUITE: Suite = suite(
             case("cwd-umask", "The working directory and umask are inherited", fork_cwd_umask),
             case("times-reset", "The child's times() counts start at zero", fork_times_reset),
             case("nproc-eagain", "fork fails with EAGAIN when the user is at RLIMIT_NPROC", fork_nproc),
+            case("vfork-clone", "clone with CLONE_VM, CLONE_VFORK and no child stack starts a child the parent waits for", fork_vfork_clone),
             case("many-children", "32 children are alive at once, and each exits with its own status", fork_many),
             case("kill-heap", "Children killed inside a read or an exec leave the kernel heap as it was", fork_kill_heap),
         ]),

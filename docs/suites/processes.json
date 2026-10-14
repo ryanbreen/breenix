@@ -67,6 +67,10 @@
           "title": "fork fails with EAGAIN when the user is at RLIMIT_NPROC"
         },
         {
+          "id": "vfork-clone",
+          "title": "clone with CLONE_VM, CLONE_VFORK and no child stack starts a child the parent waits for"
+        },
+        {
           "id": "many-children",
           "title": "32 children are alive at once, and each exits with its own status"
         },

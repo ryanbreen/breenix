@@ -22,6 +22,17 @@ const CLONE_SYSVSEM: u64 = 0x00040000;
 const CLONE_SETTLS: u64 = 0x00080000;
 const CLONE_CHILD_CLEARTID: u64 = 0x00200000;
 const CLONE_CHILD_SETTID: u64 = 0x01000000;
+const CLONE_VFORK: u64 = 0x00004000;
+
+/// Whether a clone asks for a new process rather than a thread, and so runs as
+/// fork: without CLONE_VM (how Linux libcs fork), or with CLONE_VFORK and no
+/// child stack, the form vfork takes as a system call. That child would run on
+/// the parent's own stack, where it may only exec or _exit; POSIX and the
+/// Linux vfork page let vfork be fork, so the child gets a copy of the address
+/// space instead and the parent is not suspended.
+pub fn is_fork_style(flags: u64, child_stack: u64) -> bool {
+    flags & CLONE_VM == 0 || (flags & CLONE_VFORK != 0 && child_stack == 0)
+}
 
 /// P5b: the designated init cannot acquire `CLONE_VM` siblings.
 ///
