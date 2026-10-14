@@ -96,6 +96,10 @@ pub enum ProcEntryType {
     XhciTrace,
     /// /proc/xhci/counters - xHCI trace counters
     XhciCounters,
+    /// /proc/net - network directory
+    NetDir,
+    /// /proc/net/pnp - boot-time autoconfiguration, in Linux ipconfig's format
+    NetPnp,
     /// /proc/[pid] - per-process directory (dynamic, not registered)
     PidDir(u64),
     /// /proc/[pid]/status - per-process status (dynamic, not registered)
@@ -133,6 +137,8 @@ impl ProcEntryType {
             ProcEntryType::XhciDir => "xhci",
             ProcEntryType::XhciTrace => "trace",
             ProcEntryType::XhciCounters => "counters",
+            ProcEntryType::NetDir => "net",
+            ProcEntryType::NetPnp => "pnp",
             ProcEntryType::PidDir(_) => "pid",
             ProcEntryType::PidStatus(_) => "status",
         }
@@ -168,6 +174,8 @@ impl ProcEntryType {
             ProcEntryType::XhciDir => "/proc/xhci",
             ProcEntryType::XhciTrace => "/proc/xhci/trace",
             ProcEntryType::XhciCounters => "/proc/xhci/counters",
+            ProcEntryType::NetDir => "/proc/net",
+            ProcEntryType::NetPnp => "/proc/net/pnp",
             // Dynamic entries don't have static paths
             ProcEntryType::PidDir(_) => "/proc/<pid>",
             ProcEntryType::PidStatus(_) => "/proc/<pid>/status",
@@ -205,6 +213,8 @@ impl ProcEntryType {
             ProcEntryType::XhciDir => 300,
             ProcEntryType::XhciTrace => 301,
             ProcEntryType::XhciCounters => 302,
+            ProcEntryType::NetDir => 400,
+            ProcEntryType::NetPnp => 401,
             ProcEntryType::PidDir(pid) => 10000 + pid,
             ProcEntryType::PidStatus(pid) => 20000 + pid,
         }
@@ -218,6 +228,7 @@ impl ProcEntryType {
                 | ProcEntryType::TraceTeardownDir
                 | ProcEntryType::BreenixDir
                 | ProcEntryType::XhciDir
+                | ProcEntryType::NetDir
                 | ProcEntryType::PidDir(_)
         )
     }
@@ -294,6 +305,10 @@ pub fn init() {
     procfs
         .entries
         .push(ProcEntry::new(ProcEntryType::XhciCounters));
+
+    // Register /proc/net directory and entries
+    procfs.entries.push(ProcEntry::new(ProcEntryType::NetDir));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::NetPnp));
 
     // Register /proc/trace directory and entries
     procfs.entries.push(ProcEntry::new(ProcEntryType::TraceDir));
@@ -405,6 +420,7 @@ pub fn list_entries() -> Vec<String> {
                         | ProcEntryType::BreenixTesting
                         | ProcEntryType::XhciTrace
                         | ProcEntryType::XhciCounters
+                        | ProcEntryType::NetPnp
                 )
             })
             .map(|e| String::from(e.entry_type.name()))
@@ -458,6 +474,17 @@ pub fn list_xhci_entries() -> Vec<String> {
                 ProcEntryType::XhciTrace | ProcEntryType::XhciCounters
             )
         })
+        .map(|e| String::from(e.entry_type.name()))
+        .collect()
+}
+
+/// List entries in the /proc/net directory
+pub fn list_net_entries() -> Vec<String> {
+    let procfs = PROCFS.lock();
+    procfs
+        .entries
+        .iter()
+        .filter(|e| matches!(e.entry_type, ProcEntryType::NetPnp))
         .map(|e| String::from(e.entry_type.name()))
         .collect()
 }
@@ -522,6 +549,11 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<String, i32> {
         #[cfg(not(target_arch = "aarch64"))]
         ProcEntryType::XhciCounters => Ok(String::from("")),
         ProcEntryType::Ext2 => generate_ext2(),
+        ProcEntryType::NetDir => {
+            let entries = list_net_entries();
+            Ok(entries.join("\n") + "\n")
+        }
+        ProcEntryType::NetPnp => Ok(generate_net_pnp()),
         ProcEntryType::BreenixDir => {
             // Directory listing
             Ok(String::from("testing\next2\n"))
@@ -591,6 +623,26 @@ fn generate_ext2() -> Result<String, i32> {
 }
 
 /// Generate /proc/uptime content
+/// Linux's `/proc/net/pnp` (net/ipv4/ipconfig.c, pnp_seq_show): the protocol
+/// that configured the interface, then its nameservers and boot server, so
+/// `/etc/resolv.conf` can be a symlink to it.
+fn generate_net_pnp() -> String {
+    use core::fmt::Write;
+    let mut text = String::new();
+    match crate::net::dhcp::lease() {
+        Some(lease) => {
+            text.push_str("#PROTO: DHCP\n");
+            if let Some([a, b, c, d]) = lease.nameserver {
+                let _ = writeln!(text, "nameserver {}.{}.{}.{}", a, b, c, d);
+            }
+            let [a, b, c, d] = lease.server;
+            let _ = writeln!(text, "bootserver {}.{}.{}.{}", a, b, c, d);
+        }
+        None => text.push_str("#MANUAL\n"),
+    }
+    text
+}
+
 fn generate_uptime() -> String {
     use alloc::format;
 

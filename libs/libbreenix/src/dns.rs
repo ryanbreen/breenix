@@ -54,9 +54,6 @@ pub const SLIRP_DNS: [u8; 4] = [10, 0, 2, 3];
 /// Parallels Desktop shared networking DNS/gateway
 pub const PARALLELS_DNS: [u8; 4] = [10, 211, 55, 1];
 
-/// VMware Fusion NAT DNS (vmnet8 gateway)
-pub const VMWARE_DNS: [u8; 4] = [172, 16, 45, 2];
-
 /// Google's public DNS server
 pub const GOOGLE_DNS: [u8; 4] = [8, 8, 8, 8];
 
@@ -620,23 +617,44 @@ pub fn resolve(hostname: &str, dns_server: [u8; 4]) -> Result<DnsResult, DnsErro
     Err(DnsError::NoAddress)
 }
 
+/// The first nameserver the kernel's boot-time DHCP lease named, read from
+/// `/proc/net/pnp` (Linux ipconfig's format, one `nameserver a.b.c.d` per line).
+/// `None` when no lease configured the interface.
+pub fn dhcp_nameserver() -> Option<[u8; 4]> {
+    let fd = crate::fs::open("/proc/net/pnp", crate::fs::O_RDONLY).ok()?;
+    let mut buf = [0u8; 256];
+    let read = crate::fs::read(fd, &mut buf);
+    close_fd(fd);
+    let text = core::str::from_utf8(&buf[..read.ok()?]).ok()?;
+    text.lines().find_map(|line| parse_ipv4(line.strip_prefix("nameserver ")?.trim()))
+}
+
+fn parse_ipv4(text: &str) -> Option<[u8; 4]> {
+    let mut address = [0u8; 4];
+    let mut octets = text.split('.');
+    for octet in &mut address {
+        *octet = octets.next()?.parse().ok()?;
+    }
+    octets.next().is_none().then_some(address)
+}
+
 /// Resolve a hostname by trying multiple DNS servers automatically.
 ///
-/// Tries Google (8.8.8.8) first since it's reachable from all platforms
-/// (QEMU SLIRP, Parallels, VMware all NAT/bridge to host networking).
-/// Falls back to hypervisor-specific DNS servers if Google fails.
+/// Tries the nameserver a DHCP lease named first (VMware, whose adapter is
+/// bridged to the host's network), then Google (8.8.8.8), reachable through
+/// every target's gateway, then the hypervisor-provided DNS servers.
 pub fn resolve_auto(hostname: &str) -> Result<DnsResult, DnsError> {
-    let servers: [([u8; 4], &str); 4] = [
-        (GOOGLE_DNS, "8.8.8.8"),
-        (PARALLELS_DNS, "10.211.55.1"),
-        (VMWARE_DNS, "172.16.45.2"),
-        (SLIRP_DNS, "10.0.2.3"),
+    let servers: [Option<([u8; 4], &str)>; 4] = [
+        dhcp_nameserver().map(|server| (server, "the DHCP nameserver")),
+        Some((GOOGLE_DNS, "8.8.8.8")),
+        Some((PARALLELS_DNS, "10.211.55.1")),
+        Some((SLIRP_DNS, "10.0.2.3")),
     ];
     #[cfg(feature = "std")]
     let total_start = now_monotonic().unwrap_or(Timespec { tv_sec: 0, tv_nsec: 0 });
 
     let mut last_err = DnsError::Timeout;
-    for (server, _name) in &servers {
+    for (server, _name) in servers.iter().flatten() {
         #[cfg(feature = "std")]
         let attempt_start = now_monotonic().unwrap_or(Timespec { tv_sec: 0, tv_nsec: 0 });
 

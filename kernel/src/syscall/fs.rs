@@ -3471,6 +3471,7 @@ fn handle_devpts_getdents64(
 /// Returns virtual directory entries for procfs. Handles:
 /// - "/proc" - top-level directory (static entries + PID directories)
 /// - "/proc/trace" - trace subdirectory
+/// - "/proc/net" - network subdirectory
 /// - "/proc/[pid]" - per-process directory
 fn handle_procfs_getdents64(
     fd: i32,
@@ -3488,6 +3489,8 @@ fn handle_procfs_getdents64(
         crate::fs::procfs::list_entries()
     } else if dir_path == "/proc/trace" {
         crate::fs::procfs::list_trace_entries()
+    } else if dir_path == "/proc/net" {
+        crate::fs::procfs::list_net_entries()
     } else if dir_path.starts_with("/proc/") {
         // Per-PID directory - only contains "status"
         let relative = dir_path.strip_prefix("/proc/").unwrap_or("");
