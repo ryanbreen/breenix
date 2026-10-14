@@ -120,6 +120,9 @@ AT(struct sigaction, sa_mask, 8);
 AT(struct sigaction, sa_flags, 16);
 AT(struct sigaction, sa_restorer, 24);
 SIZE(siginfo_t, 128); ALIGN(siginfo_t, 8);
+/* Linux siginfo layout: the sender and fault fields and SIGPOLL's band start at 16. */
+AT(siginfo_t, si_pid, 16); AT(siginfo_t, si_uid, 20); AT(siginfo_t, si_value, 24);
+AT(siginfo_t, si_addr, 16); AT(siginfo_t, si_band, 16);
 SIZE(struct sigevent, 64); ALIGN(struct sigevent, 8);
 SIZE(stack_t, 24);
 AT(stack_t, ss_flags, 8); AT(stack_t, ss_size, 16);

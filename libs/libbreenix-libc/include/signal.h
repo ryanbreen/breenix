@@ -2,7 +2,6 @@
 #define __BREENIX_SIGNAL_H
 #include <__breenix/features.h>
 typedef int sig_atomic_t;
-#include <stddef.h>
 #define SIG_DFL ((void (*)(int))0)
 #define SIG_IGN ((void (*)(int))1)
 #define SIG_ERR ((void (*)(int))-1)
@@ -13,6 +12,7 @@ typedef int sig_atomic_t;
 #define SIGSEGV 11
 #define SIGTERM 15
 #if __BREENIX_POSIX
+#include <stddef.h>
 #include <__breenix/types.h>
 #include <sys/types.h>
 #include <__breenix/timespec.h>
@@ -73,8 +73,40 @@ typedef __breenix_sigset_t sigset_t;
 #define SI_QUEUE (-1)
 #define SI_TIMER (-2)
 #define SI_MESGQ (-3)
+#define SI_ASYNCIO (-4)
 #define SI_TKILL (-6)
 #define SI_KERNEL 128
+/* si_code values for the signals the kernel raises for a fault or event: the
+ * Linux UAPI numbers, which kernel/src/signal/constants.rs uses. */
+#define ILL_ILLOPC 1
+#define ILL_ILLOPN 2
+#define ILL_ILLADR 3
+#define ILL_ILLTRP 4
+#define ILL_PRVOPC 5
+#define ILL_PRVREG 6
+#define ILL_COPROC 7
+#define ILL_BADSTK 8
+#define FPE_INTDIV 1
+#define FPE_INTOVF 2
+#define FPE_FLTDIV 3
+#define FPE_FLTOVF 4
+#define FPE_FLTUND 5
+#define FPE_FLTRES 6
+#define FPE_FLTINV 7
+#define FPE_FLTSUB 8
+#define SEGV_MAPERR 1
+#define SEGV_ACCERR 2
+#define BUS_ADRALN 1
+#define BUS_ADRERR 2
+#define BUS_OBJERR 3
+#define TRAP_BRKPT 1
+#define TRAP_TRACE 2
+#define POLL_IN 1
+#define POLL_OUT 2
+#define POLL_MSG 3
+#define POLL_ERR 4
+#define POLL_PRI 5
+#define POLL_HUP 6
 #define CLD_EXITED 1
 #define CLD_KILLED 2
 #define CLD_DUMPED 3
@@ -84,6 +116,11 @@ typedef __breenix_sigset_t sigset_t;
 #define SIGEV_SIGNAL 0
 #define SIGEV_NONE 1
 #define SIGEV_THREAD 2
+#if __BREENIX_EXT
+#define SIGEV_THREAD_ID 4
+#endif
+/* The longest name sig2str writes is RTMIN+15 (8 bytes and its NUL). */
+#define SIG2STR_MAX 16
 union sigval { int sival_int; void *sival_ptr; };
 typedef struct {
     int si_signo, si_errno, si_code;
@@ -92,6 +129,7 @@ typedef struct {
         struct { pid_t pid; unsigned int uid; union sigval value; } sender;
         struct { pid_t pid; unsigned int uid; int status; } child;
         struct { void *addr; } fault;
+        struct { long band; int fd; } poll;
         unsigned long __words[14];
     } __data;
 } siginfo_t;
@@ -100,6 +138,7 @@ typedef struct {
 #define si_value __data.sender.value
 #define si_status __data.child.status
 #define si_addr __data.fault.addr
+#define si_band __data.poll.band
 struct sigaction {
     union {
         void (*handler)(int);
@@ -115,7 +154,7 @@ typedef struct { void *ss_sp; int ss_flags; size_t ss_size; } stack_t;
 #ifdef __aarch64__
 typedef struct {
     unsigned long fault_address, regs[31], sp, pc, pstate;
-    _Alignas(16) unsigned char __reserved[4096];
+    unsigned char __reserved[4096] __attribute__((aligned(16)));
 } mcontext_t;
 typedef struct ucontext_t {
     unsigned long uc_flags;
@@ -173,6 +212,11 @@ int sigaltstack(const stack_t *, stack_t *);
 /* Avoid making <signal.h> depend on <pthread.h>. */
 int pthread_kill(__breenix_pthread_t, int);
 int pthread_sigmask(int, const sigset_t *, sigset_t *);
+int sigqueue(pid_t, int, union sigval);
+void psignal(int, const char *);
+void psiginfo(const siginfo_t *, const char *);
+int sig2str(int, char *);
+int str2sig(const char *__BREENIX_RESTRICT, int *__BREENIX_RESTRICT);
 #ifdef __cplusplus
 }
 #endif

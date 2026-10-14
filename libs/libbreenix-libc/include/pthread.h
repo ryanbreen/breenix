@@ -4,8 +4,9 @@
 #if __BREENIX_POSIX
 #include <stddef.h>
 #include <__breenix/types.h>
+/* POSIX.1-2024: <pthread.h> makes the symbols of <sched.h> and <time.h> visible. */
 #include <sched.h>
-#include <__breenix/timespec.h>
+#include <time.h>
 typedef __breenix_pthread_t pthread_t;
 typedef __breenix_pthread_key_t pthread_key_t;
 typedef __breenix_pthread_once_t pthread_once_t;
@@ -36,6 +37,9 @@ typedef __breenix_pthread_barrierattr_t pthread_barrierattr_t;
 #define PTHREAD_EXPLICIT_SCHED 1
 #define PTHREAD_SCOPE_SYSTEM 0
 #define PTHREAD_SCOPE_PROCESS 1
+/* Four pages: the thread's ARM64 signal frame (ucontext_t of 4560 bytes plus
+ * siginfo, the kernel's MINSIGSTKSZ of 5120) and the cancellation and
+ * cleanup path's frames above it; equal to libs/libc's PTHREAD_STACK_MIN. */
 #define PTHREAD_STACK_MIN 16384
 #define PTHREAD_DESTRUCTOR_ITERATIONS 4
 #define PTHREAD_BARRIER_SERIAL_THREAD (-1)
@@ -45,6 +49,8 @@ typedef __breenix_pthread_barrierattr_t pthread_barrierattr_t;
 #define PTHREAD_CANCEL_ASYNCHRONOUS 1
 #define PTHREAD_CANCELED ((void *)-1)
 #define PTHREAD_ONCE_INIT 0
+/* pthread_t is the thread descriptor's address, never 0 for a thread. */
+#define PTHREAD_NULL ((pthread_t)0)
 #define PTHREAD_MUTEX_INITIALIZER {{0}}
 #define PTHREAD_COND_INITIALIZER {{0}}
 #define PTHREAD_RWLOCK_INITIALIZER {{0}}
@@ -58,6 +64,7 @@ __BREENIX_NORETURN void pthread_exit(void *);
 pthread_t pthread_self(void);
 int pthread_equal(pthread_t, pthread_t);
 int pthread_once(pthread_once_t *, void (*)(void));
+int pthread_atfork(void (*)(void), void (*)(void), void (*)(void));
 int pthread_key_create(pthread_key_t *, void (*)(void *));
 int pthread_key_delete(pthread_key_t);
 int pthread_setspecific(pthread_key_t, const void *);
@@ -88,6 +95,7 @@ int pthread_mutex_destroy(pthread_mutex_t *);
 int pthread_mutex_lock(pthread_mutex_t *);
 int pthread_mutex_trylock(pthread_mutex_t *);
 int pthread_mutex_timedlock(pthread_mutex_t *, const struct timespec *);
+int pthread_mutex_clocklock(pthread_mutex_t *, clockid_t, const struct timespec *);
 int pthread_mutex_unlock(pthread_mutex_t *);
 int pthread_mutex_consistent(pthread_mutex_t *);
 int pthread_mutex_getprioceiling(const pthread_mutex_t *, int *);
@@ -133,6 +141,8 @@ int pthread_rwlock_tryrdlock(pthread_rwlock_t *);
 int pthread_rwlock_trywrlock(pthread_rwlock_t *);
 int pthread_rwlock_timedrdlock(pthread_rwlock_t *, const struct timespec *);
 int pthread_rwlock_timedwrlock(pthread_rwlock_t *, const struct timespec *);
+int pthread_rwlock_clockrdlock(pthread_rwlock_t *, clockid_t, const struct timespec *);
+int pthread_rwlock_clockwrlock(pthread_rwlock_t *, clockid_t, const struct timespec *);
 int pthread_rwlock_unlock(pthread_rwlock_t *);
 int pthread_barrier_init(pthread_barrier_t *, const pthread_barrierattr_t *, unsigned int);
 int pthread_barrier_wait(pthread_barrier_t *);

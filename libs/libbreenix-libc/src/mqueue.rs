@@ -95,15 +95,10 @@ pub unsafe extern "C" fn mq_timedsend(
     msg_prio: u32,
     abs_timeout: *const c_void,
 ) -> i32 {
-    let r = raw::syscall5(
-        nr::MQ_TIMEDSEND,
-        mqdes as u64,
-        msg_ptr as u64,
-        msg_len as u64,
-        u64::from(msg_prio),
-        abs_timeout as u64,
-    );
-    syscall_result_to_c_int(r as i64)
+    // A cancellation point, as are mq_send and both receives.
+    let r = crate::pthread::cancel_syscall(nr::MQ_TIMEDSEND,
+        [mqdes as u64, msg_ptr as u64, msg_len as u64, u64::from(msg_prio), abs_timeout as u64, 0]);
+    syscall_result_to_c_int(r)
 }
 
 /// mq_send - send a message, waiting for room
@@ -122,15 +117,9 @@ pub unsafe extern "C" fn mq_timedreceive(
     msg_prio: *mut u32,
     abs_timeout: *const c_void,
 ) -> isize {
-    let r = raw::syscall5(
-        nr::MQ_TIMEDRECEIVE,
-        mqdes as u64,
-        msg_ptr as u64,
-        msg_len as u64,
-        msg_prio as u64,
-        abs_timeout as u64,
-    );
-    syscall_result_to_c_ssize(r as i64)
+    let r = crate::pthread::cancel_syscall(nr::MQ_TIMEDRECEIVE,
+        [mqdes as u64, msg_ptr as u64, msg_len as u64, msg_prio as u64, abs_timeout as u64, 0]);
+    syscall_result_to_c_ssize(r)
 }
 
 /// mq_receive - receive the oldest message of the highest priority,

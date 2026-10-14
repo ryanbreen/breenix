@@ -59,7 +59,6 @@ pub type rlim_t = u64;
 pub type pthread_t = c_ulong;
 pub type pthread_key_t = c_uint;
 pub type pthread_once_t = c_int;
-pub type sem_t = [u8; 32];
 
 // Directory entry type
 pub type dirent64 = dirent;
@@ -398,6 +397,14 @@ s! {
     #[repr(align(8))]
     pub struct pthread_mutex_t {
         __size: [c_char; 40],
+    }
+
+    // libbreenix-libc's semaphore keeps 32-bit atomics at its start, so a
+    // sem_t is 4-byte aligned, as its C header declares it.
+    #[repr(C)]
+    #[repr(align(4))]
+    pub struct sem_t {
+        __size: [c_char; 32],
     }
 
     #[repr(C)]

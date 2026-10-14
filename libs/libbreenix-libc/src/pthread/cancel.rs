@@ -1,12 +1,23 @@
 //! POSIX cancellation. Deferred delivery redirects only a PC in our syscall
 //! window; async delivery is explicitly requested by the application.
+//!
+//! The cancel signal (signal 32, reserved below SIGRTMIN) is installed with
+//! SA_RESTART and is blocked in the signal mask while a thread has
+//! cancellation disabled, so a request sent then stays pending (POSIX.1-2024
+//! 2.9.5.2) instead of interrupting a wait with EINTR.
 use super::*;
 use crate::signal::{CANCEL_MASK, CANCEL_SIGNAL};
 
 const REQUESTED: u32 = 1;
 const DISABLED: u32 = 2;
 const ASYNC: u32 = 4;
+/// A new thread inherited its creator's mask with the cancel signal blocked
+/// (the creator had cancellation disabled); `thread_start` unblocks it.
+const INHERITED_BLOCK: u32 = 8;
 const CANCEL_RETURN: i64 = i64::MIN;
+/// Linux UAPI sigprocmask `how` values (also in include/signal.h).
+const SIG_BLOCK: u64 = 0;
+const SIG_UNBLOCK: u64 = 1;
 
 #[repr(C)]
 pub(super) struct Cleanup {
@@ -20,25 +31,54 @@ impl Cleanup {
     }
 }
 
+/// The calling thread's descriptor; a thread without one cannot keep any
+/// thread state, which is fatal like the other entry points.
+unsafe fn this_thread() -> *mut Thread {
+    let p = current();
+    if p.is_null() { super::super::exit_group(127); }
+    p
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn __breenix_cleanup_push(
     frame: *mut Cleanup, routine: unsafe extern "C" fn(*mut u8), arg: *mut u8,
 ) {
-    let p = current();
+    let p = this_thread();
     *frame = Cleanup { previous: (*p).cleanup, routine: Some(routine), arg };
     (*p).cleanup = frame;
 }
 #[no_mangle]
 pub unsafe extern "C" fn __breenix_cleanup_pop(frame: *mut Cleanup, execute: i32) {
-    (*current()).cleanup = (*frame).previous;
+    (*this_thread()).cleanup = (*frame).previous;
     if execute != 0 { ((*frame).routine.unwrap())((*frame).arg); }
 }
 pub(super) unsafe fn finish(p: *mut Thread) {
-    (*p).cancel.store(DISABLED, Release);
+    (*p).cancel.fetch_or(DISABLED, AcqRel);
     while !(*p).cleanup.is_null() {
         let frame = (*p).cleanup;
         (*p).cleanup = (*frame).previous;
         ((*frame).routine.unwrap())((*frame).arg);
+    }
+}
+
+unsafe fn mask_cancel(how: u64) {
+    raw::syscall4(nr::SIGPROCMASK, how, &CANCEL_MASK as *const u64 as u64, 0, 8);
+}
+/// The cancel signal's bit when the calling thread has cancellation disabled,
+/// so a mask the application installs keeps that signal blocked meanwhile.
+pub(crate) unsafe fn reserved_block() -> u64 {
+    if !RUNTIME_READY.load(Acquire) { return 0; }
+    let p = descriptor_from_tp();
+    if !p.is_null() && (*p).cancel.load(Relaxed) & DISABLED != 0 { CANCEL_MASK } else { 0 }
+}
+/// pthread_create: a creator with cancellation disabled hands its blocked
+/// cancel signal to the new thread, which starts enabled.
+pub(super) unsafe fn creating(child: *mut Thread) {
+    if reserved_block() != 0 { (*child).cancel.store(INHERITED_BLOCK, Relaxed); }
+}
+pub(super) unsafe fn thread_start(p: *mut Thread) {
+    if (*p).cancel.fetch_and(!INHERITED_BLOCK, Relaxed) & INHERITED_BLOCK != 0 {
+        mask_cancel(SIG_UNBLOCK);
     }
 }
 
@@ -48,31 +88,44 @@ pub unsafe extern "C" fn pthread_cancel(handle: usize) -> i32 {
     let p = find(handle);
     if p.is_null() { REGISTRY.unlock(); return ESRCH; }
     if (*p).clear.load(Acquire) == 0 { REGISTRY.unlock(); return 0; }
-    (*p).cancel.fetch_or(REQUESTED, Release);
+    let prior = (*p).cancel.fetch_or(REQUESTED, AcqRel);
     let id = (*p).id.load(Relaxed);
     REGISTRY.unlock();
+    // The signal only wakes a thread blocked at a cancellation point. A second
+    // request needs none, and a thread with cancellation disabled sees the
+    // request when it next enters the syscall window (its enable is ordered
+    // after this fetch_or on the same word), so neither queues a signal.
+    if prior & (REQUESTED | DISABLED) != 0 { return 0; }
     let r = raw::syscall3(nr::TGKILL, pid() as u64, id as u64, CANCEL_SIGNAL as u64) as i64;
-    if r < 0 { -r as i32 } else { 0 }
+    // ESRCH: the thread ended after the registry check, and a request to an
+    // ended thread has nothing left to do.
+    if r < 0 && r != -(ESRCH as i64) { -r as i32 } else { 0 }
 }
 #[no_mangle]
 pub unsafe extern "C" fn pthread_setcancelstate(state: i32, old: *mut i32) -> i32 {
     if !(0..=1).contains(&state) { return EINVAL; }
-    let p = current();
-    let prior = if state == 1 {
-        (*p).cancel.fetch_or(DISABLED, core::sync::atomic::Ordering::AcqRel)
-    } else { (*p).cancel.fetch_and(!DISABLED, core::sync::atomic::Ordering::AcqRel) };
-    if !old.is_null() { *old = ((prior & DISABLED) != 0) as i32; }
-    // Enabling deferred cancellation does not itself introduce a point.
-    if state == 0 && prior & ASYNC != 0 { pthread_testcancel(); }
+    let p = this_thread();
+    let was = (*p).cancel.load(Relaxed) & DISABLED != 0;
+    if state == 1 && !was {
+        // Block first: a cancel signal sent from here on stays pending.
+        mask_cancel(SIG_BLOCK);
+        (*p).cancel.fetch_or(DISABLED, AcqRel);
+    } else if state == 0 && was {
+        let prior = (*p).cancel.fetch_and(!DISABLED, AcqRel);
+        mask_cancel(SIG_UNBLOCK);
+        // Enabling deferred cancellation does not itself introduce a point.
+        if prior & ASYNC != 0 { pthread_testcancel(); }
+    }
+    if !old.is_null() { *old = was as i32; }
     0
 }
 #[no_mangle]
 pub unsafe extern "C" fn pthread_setcanceltype(kind: i32, old: *mut i32) -> i32 {
     if !(0..=1).contains(&kind) { return EINVAL; }
-    let p = current();
+    let p = this_thread();
     let prior = if kind == 1 {
-        (*p).cancel.fetch_or(ASYNC, core::sync::atomic::Ordering::AcqRel)
-    } else { (*p).cancel.fetch_and(!ASYNC, core::sync::atomic::Ordering::AcqRel) };
+        (*p).cancel.fetch_or(ASYNC, AcqRel)
+    } else { (*p).cancel.fetch_and(!ASYNC, AcqRel) };
     if !old.is_null() { *old = ((prior & ASYNC) != 0) as i32; }
     if kind == 1 { pthread_testcancel(); }
     0
@@ -105,6 +158,11 @@ unsafe extern "C" fn handler(_sig: i32, _info: *mut u8, context: *mut u8) {
     let pc = context.add(176 + 264) as *mut usize;
     #[cfg(target_arch = "x86_64")]
     let pc = context.add(40 + 128) as *mut usize;
+    // The window ends at the syscall instruction. A PC on it means the call
+    // has not run, or a restartable wait was interrupted and the kernel wound
+    // the PC back to run it again; a PC at the end label means it completed,
+    // and its result is returned (an EINTR result is acted on by
+    // cancel_syscall).
     let start = core::ptr::addr_of!(__breenix_cancel_begin) as usize;
     let end = core::ptr::addr_of!(__breenix_cancel_end) as usize;
     if *pc >= start && *pc < end {
@@ -114,14 +172,15 @@ unsafe extern "C" fn handler(_sig: i32, _info: *mut u8, context: *mut u8) {
 pub(super) unsafe fn install() {
     let action = libbreenix::signal::Sigaction {
         handler: handler as *const () as u64,
-        flags: libbreenix::signal::SA_SIGINFO | libbreenix::signal::SA_RESTORER,
+        flags: libbreenix::signal::SA_SIGINFO | libbreenix::signal::SA_RESTORER
+            | libbreenix::signal::SA_RESTART,
         restorer: libbreenix::signal::__restore_rt as *const () as u64,
         mask: 0,
     };
     if (raw::syscall4(nr::SIGACTION, CANCEL_SIGNAL as u64, &action as *const _ as u64, 0, 8) as i64) < 0 {
         super::super::exit_group(127);
     }
-    raw::syscall4(nr::SIGPROCMASK, 1, &CANCEL_MASK as *const u64 as u64, 0, 8);
+    mask_cancel(SIG_UNBLOCK);
 }
 
 /// Returns the raw negative-errno kernel result. Assembly closes the race
@@ -135,8 +194,11 @@ pub(crate) unsafe fn cancel_syscall(nr: u64, a: [u64; 6]) -> i64 {
         return raw::syscall6(nr, a[0], a[1], a[2], a[3], a[4], a[5]) as i64;
     }
     let r = syscall_window(nr, a.as_ptr(), &(*p).cancel);
-    if r == CANCEL_RETURN { pthread_testcancel(); }
-    r
+    // A wait the kernel does not restart (nanosleep, poll, futex) returns
+    // EINTR when the cancel signal interrupts it; acting then has the side
+    // effects of that EINTR return, as POSIX.1-2024 2.9.5.2 requires.
+    if r == CANCEL_RETURN || r == -(EINTR as i64) { pthread_testcancel(); }
+    if r == CANCEL_RETURN { -(EINTR as i64) } else { r }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -160,7 +222,6 @@ core::arch::global_asm!(
         "ldp x2, x3, [x9, #16]",
         "ldp x4, x5, [x9, #32]",
         "svc #0",
-        "nop",
         ".global __breenix_cancel_end",
         ".hidden __breenix_cancel_end",
         "__breenix_cancel_end:",
@@ -196,7 +257,6 @@ core::arch::global_asm!(
         "mov r8, [r11 + 32]",
         "mov r9, [r11 + 40]",
         "syscall",
-        "nop",
         ".global __breenix_cancel_end",
         ".hidden __breenix_cancel_end",
         "__breenix_cancel_end:",
