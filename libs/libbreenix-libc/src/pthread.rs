@@ -1,6 +1,10 @@
 //! C thread interfaces using the ABI storage declared for Breenix clients.
 //! Waiters use futexes; a thread's memory is reclaimed once the kernel clears
 //! its CLONE_CHILD_CLEARTID word.
+mod cancel;
+mod spin;
+pub(crate) use cancel::cancel_syscall;
+
 use super::{EBUSY, EINVAL, ENOMEM, EPERM};
 use core::ptr::{null, null_mut};
 use core::sync::atomic::{
@@ -158,6 +162,8 @@ struct Thread {
     tp: usize,
     errno: i32,
     locale: *mut core::ffi::c_void,
+    cancel: AtomicU32,
+    cleanup: *mut cancel::Cleanup,
     robust: *mut Mutex,
     // How many PTHREAD_PRIO_PROTECT mutexes with each ceiling it holds.
     ceilings: [u32; CEILINGS],
@@ -227,6 +233,8 @@ unsafe fn alloc_thread(guard: usize, stack: usize) -> *mut Thread {
             tp: 0,
             errno: 0,
             locale: null_mut(),
+            cancel: AtomicU32::new(0),
+            cleanup: null_mut(),
             robust: null_mut(),
             ceilings: [0; CEILINGS],
             values: [(null_mut(), 0); KEYS],
@@ -416,6 +424,7 @@ pub unsafe fn startup(envp: *const *const u8) {
     PROCESS.store(pid(), Relaxed);
     set_tp((*t).tp);
     RUNTIME_READY.store(true, Release);
+    cancel::install();
 }
 
 /// Repair the registry in a fork child before it enters the C runtime again.
@@ -807,11 +816,17 @@ pub unsafe extern "C" fn pthread_create(
     REGISTRY.unlock();
     0
 }
+unsafe extern "C" fn release_join(arg: *mut u8) {
+    REGISTRY.lock();
+    (*(arg as *mut Thread)).state = 0;
+    REGISTRY.unlock();
+}
 #[no_mangle]
 pub unsafe extern "C" fn pthread_join(handle: usize, value: *mut *mut u8) -> i32 {
     if handle == pthread_self() {
         return EDEADLK;
     }
+    cancel::pthread_testcancel();
     REGISTRY.lock();
     let p = find(handle);
     if p.is_null() {
@@ -824,7 +839,15 @@ pub unsafe extern "C" fn pthread_join(handle: usize, value: *mut *mut u8) -> i32
     }
     (*p).state = 2;
     REGISTRY.unlock();
-    await_end(p);
+    let mut cleanup = cancel::Cleanup::new();
+    cancel::__breenix_cleanup_push(&mut cleanup, release_join, p as *mut u8);
+    loop {
+        let id = (*p).clear.load(Acquire);
+        if id == 0 { break; }
+        cancel_syscall(nr::FUTEX, [&(*p).clear as *const AtomicU32 as u64,
+            FUTEX_WAIT, id as u64, 0, 0, 0]);
+    }
+    cancel::__breenix_cleanup_pop(&mut cleanup, 0);
     if !value.is_null() {
         *value = (*p).result;
     }
@@ -864,6 +887,7 @@ pub unsafe extern "C" fn pthread_detach(handle: usize) -> i32 {
 pub unsafe extern "C" fn pthread_exit(value: *mut u8) -> ! {
     let p = current();
     if !p.is_null() {
+        cancel::finish(p);
         destructors(p);
         while !(*p).robust.is_null() {
             let m = (*p).robust;
@@ -1817,7 +1841,7 @@ pub unsafe extern "C" fn pthread_cond_init(c: *mut u8, a: *const u8) -> i32 {
         c as *mut Cond,
         Cond {
             sequence: AtomicU32::new(0),
-            clock: if a.is_null() { 0 } else { *(a as *const i32) },
+            clock: if a.is_null() { 0 } else { *(a as *const i32) & 1 },
             waiting: AtomicU32::new(0),
         },
     );
@@ -1849,7 +1873,24 @@ pub unsafe extern "C" fn pthread_cond_signal(c: *mut u8) -> i32 {
 pub unsafe extern "C" fn pthread_cond_broadcast(c: *mut u8) -> i32 {
     cond_wake(c, u32::MAX)
 }
-unsafe fn cond_wait(c: *mut u8, m: *mut u8, t: *const i64) -> i32 {
+struct CondCleanup { cond: *const Cond, mutex: *mut u8 }
+unsafe extern "C" fn cancel_cond(arg: *mut u8) {
+    let state = &*(arg as *const CondCleanup);
+    depart(core::ptr::addr_of!((*state.cond).waiting));
+    pthread_mutex_lock(state.mutex);
+}
+unsafe fn cond_deadline_wait(p: &AtomicU32, value: u32, deadline: *const i64, clock: i32) -> i32 {
+    let op = if deadline.is_null() { FUTEX_WAIT } else {
+        FUTEX_WAIT_BITSET | if clock == 0 { FUTEX_CLOCK_REALTIME } else { 0 }
+    };
+    if !deadline.is_null() && (*deadline) < 0 { cancel::pthread_testcancel(); return ETIMEDOUT; }
+    let r = cancel_syscall(nr::FUTEX, [p as *const AtomicU32 as u64, op,
+        value as u64, deadline as u64, 0, FUTEX_BITSET_MATCH_ANY as u64]);
+    if r == -ETIMEDOUT as i64 { ETIMEDOUT }
+    else if r == -EINVAL as i64 { EINVAL }
+    else { 0 }
+}
+unsafe fn cond_wait(c: *mut u8, m: *mut u8, t: *const i64, clock: Option<i32>) -> i32 {
     if c.is_null() || m.is_null() {
         return EINVAL;
     }
@@ -1859,19 +1900,23 @@ unsafe fn cond_wait(c: *mut u8, m: *mut u8, t: *const i64) -> i32 {
     let c = &*(c as *const Cond);
     c.waiting.fetch_add(1, Acquire);
     let seq = c.sequence.load(Acquire);
-    let clock = c.clock;
+    let clock = clock.unwrap_or(c.clock);
     let r = pthread_mutex_unlock(m);
     if r != 0 {
         depart(core::ptr::addr_of!(c.waiting));
         return r;
     }
+    let mut state = CondCleanup { cond: c, mutex: m };
+    let mut cleanup = cancel::Cleanup::new();
+    cancel::__breenix_cleanup_push(&mut cleanup, cancel_cond, &mut state as *mut _ as *mut u8);
     let mut r;
     loop {
-        r = deadline_wait(&c.sequence, seq, t, clock);
+        r = cond_deadline_wait(&c.sequence, seq, t, clock);
         if r != 0 || c.sequence.load(Acquire) != seq {
             break;
         }
     }
+    cancel::__breenix_cleanup_pop(&mut cleanup, 0);
     // Destroy drains this reference count before freeing or reinitializing
     // the condition; release it before reacquiring the application mutex.
     depart(core::ptr::addr_of!(c.waiting));
@@ -1884,15 +1929,20 @@ unsafe fn cond_wait(c: *mut u8, m: *mut u8, t: *const i64) -> i32 {
 }
 #[no_mangle]
 pub unsafe extern "C" fn pthread_cond_wait(c: *mut u8, m: *mut u8) -> i32 {
-    cond_wait(c, m, null())
+    cond_wait(c, m, null(), None)
 }
 #[no_mangle]
 pub unsafe extern "C" fn pthread_cond_timedwait(c: *mut u8, m: *mut u8, t: *const i64) -> i32 {
     if t.is_null() {
         EINVAL
     } else {
-        cond_wait(c, m, t)
+        cond_wait(c, m, t, None)
     }
+}
+#[no_mangle]
+pub unsafe extern "C" fn pthread_cond_clockwait(c: *mut u8, m: *mut u8, clock: i32, t: *const i64) -> i32 {
+    if t.is_null() || !(0..=1).contains(&clock) { EINVAL }
+    else { cond_wait(c, m, t, Some(clock)) }
 }
 #[no_mangle]
 pub unsafe extern "C" fn pthread_condattr_init(a: *mut u8) -> i32 {
@@ -1915,7 +1965,7 @@ pub unsafe extern "C" fn pthread_condattr_setclock(a: *mut u8, clock: i32) -> i3
     if a.is_null() || !(0..=1).contains(&clock) {
         return EINVAL;
     }
-    *(a as *mut i32) = clock;
+    *(a as *mut i32) = (*(a as *mut i32) & !1) | clock;
     0
 }
 #[no_mangle]
@@ -1923,7 +1973,7 @@ pub unsafe extern "C" fn pthread_condattr_getclock(a: *const u8, clock: *mut i32
     if a.is_null() || clock.is_null() {
         return EINVAL;
     }
-    *clock = *(a as *const i32);
+    *clock = *(a as *const i32) & 1;
     0
 }
 
@@ -2207,8 +2257,8 @@ pub unsafe extern "C" fn pthread_barrier_init(p: *mut u8, attr: *const u8, count
     if p.is_null() || count == 0 {
         return EINVAL;
     }
-    if !attr.is_null() && *(attr as *const i32) != 0 {
-        return 95;
+    if !attr.is_null() && !(0..=1).contains(&*(attr as *const i32)) {
+        return EINVAL;
     }
     core::ptr::write(
         p as *mut Barrier,
@@ -2263,20 +2313,29 @@ pub unsafe extern "C" fn pthread_barrier_destroy(p: *mut u8) -> i32 {
         0
     }
 }
+unsafe extern "C" fn cancel_once(arg: *mut u8) {
+    let w = word(arg as *const u32);
+    w.store(0, Release);
+    wake(w, u32::MAX);
+}
 #[no_mangle]
 pub unsafe extern "C" fn pthread_once(p: *mut i32, init: extern "C" fn()) -> i32 {
     if p.is_null() {
         return EINVAL;
     }
     let w = word(p as *const u32);
-    if w.compare_exchange(0, 1, Acquire, Acquire).is_ok() {
-        init();
-        w.store(2, Release);
-        wake(w, u32::MAX);
-    } else {
-        while w.load(Acquire) != 2 {
-            wait(w, 1);
+    loop {
+        if w.compare_exchange(0, 1, Acquire, Acquire).is_ok() {
+            let mut cleanup = cancel::Cleanup::new();
+            cancel::__breenix_cleanup_push(&mut cleanup, cancel_once, p as *mut u8);
+            init();
+            cancel::__breenix_cleanup_pop(&mut cleanup, 0);
+            w.store(2, Release);
+            wake(w, u32::MAX);
+            break;
         }
+        if w.load(Acquire) == 2 { break; }
+        wait(w, 1);
     }
     0
 }
@@ -2306,7 +2365,10 @@ pub unsafe extern "C" fn pthread_kill(handle: usize, sig: i32) -> i32 {
 }
 #[no_mangle]
 pub unsafe extern "C" fn pthread_sigmask(how: i32, set: *const u64, old: *mut u64) -> i32 {
-    let r = raw::syscall4(nr::SIGPROCMASK, how as u64, set as u64, old as u64, 8) as i64;
+    let public_set = if set.is_null() { 0 } else { *set & !crate::signal::CANCEL_MASK };
+    let input = if set.is_null() { null() } else { &public_set as *const u64 };
+    let r = raw::syscall4(nr::SIGPROCMASK, how as u64, input as u64, old as u64, 8) as i64;
+    if r == 0 && !old.is_null() { *old &= !crate::signal::CANCEL_MASK; }
     if r < 0 {
         -r as i32
     } else {
@@ -2319,7 +2381,8 @@ pub unsafe extern "C" fn sigwait(set: *const u64, sig: *mut i32) -> i32 {
         return EINVAL;
     }
     loop {
-        let r = raw::syscall4(nr::SIGTIMEDWAIT, set as u64, 0, 0, 8) as i64;
+        let mask = *set & !crate::signal::CANCEL_MASK;
+        let r = cancel_syscall(nr::SIGTIMEDWAIT, [&mask as *const u64 as u64, 0, 0, 8, 0, 0]);
         if r == -4 {
             continue;
         }
@@ -2438,4 +2501,55 @@ pub unsafe extern "C" fn pthread_setschedprio(handle: usize, priority: i32) -> i
     } else {
         0
     }
+}
+
+// Attribute process sharing is encoded independently of each object's other
+// attributes. rwlocks retain per-thread read ownership, so shared rwlocks
+// explicitly report ENOTSUP rather than claiming to support that mode.
+macro_rules! sharing_attr {
+    ($set:ident, $get:ident, $mask:expr, $supported:expr) => {
+        #[no_mangle]
+        pub unsafe extern "C" fn $set(a: *mut u8, shared: i32) -> i32 {
+            if a.is_null() || !(0..=1).contains(&shared) { return EINVAL; }
+            if shared == 1 && !$supported { return 95; }
+            let w = a as *mut u32;
+            *w = (*w & !$mask) | if shared == 1 { $mask } else { 0 };
+            0
+        }
+        #[no_mangle]
+        pub unsafe extern "C" fn $get(a: *const u8, shared: *mut i32) -> i32 {
+            if a.is_null() || shared.is_null() { return EINVAL; }
+            *shared = ((*(a as *const u32) & $mask) != 0) as i32;
+            0
+        }
+    };
+}
+sharing_attr!(pthread_mutexattr_setpshared, pthread_mutexattr_getpshared, 1 << 29, true);
+sharing_attr!(pthread_condattr_setpshared, pthread_condattr_getpshared, 2, true);
+sharing_attr!(pthread_rwlockattr_setpshared, pthread_rwlockattr_getpshared, 1, false);
+sharing_attr!(pthread_barrierattr_setpshared, pthread_barrierattr_getpshared, 1, true);
+macro_rules! plain_attr {
+    ($init:ident, $destroy:ident) => {
+        #[no_mangle]
+        pub unsafe extern "C" fn $init(a: *mut u8) -> i32 {
+            if a.is_null() { return EINVAL; }
+            *(a as *mut u32) = 0;
+            0
+        }
+        #[no_mangle]
+        pub extern "C" fn $destroy(a: *mut u8) -> i32 { if a.is_null() { EINVAL } else { 0 } }
+    };
+}
+plain_attr!(pthread_rwlockattr_init, pthread_rwlockattr_destroy);
+plain_attr!(pthread_barrierattr_init, pthread_barrierattr_destroy);
+#[no_mangle]
+pub unsafe extern "C" fn pthread_attr_setscope(a: *mut u8, scope: i32) -> i32 {
+    if a.is_null() || !(0..=1).contains(&scope) { EINVAL }
+    else if scope == 1 { 95 } else { 0 }
+}
+#[no_mangle]
+pub unsafe extern "C" fn pthread_attr_getscope(a: *const u8, scope: *mut i32) -> i32 {
+    if a.is_null() || scope.is_null() { return EINVAL; }
+    *scope = 0;
+    0
 }
