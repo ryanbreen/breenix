@@ -1937,7 +1937,7 @@ pub fn sys_execv_with_frame(
     {
         // Load ELF binary WITH interrupts enabled - ext2 I/O needs timer interrupts
         // for proper VirtIO operation
-        let (elf_vec, image_identity) =
+        let (elf_vec, image_identity, image_path) =
             match super::exec::read_image(program_name, &mut arguments, |path| {
                 if path.contains('/') {
                     load_elf_from_ext2(path)
@@ -1997,7 +1997,7 @@ pub fn sys_execv_with_frame(
         let mut prepared = match crate::process::manager::ProcessManager::prepare_exec_image(
             current_pid,
             elf_data,
-            Some(program_name),
+            Some(&image_path),
             &argv_slices,
             &envp_slices,
             image_identity,
@@ -2102,7 +2102,7 @@ pub fn sys_execv_with_frame(
         // section 2.1, #713 anti-vacuity / precheck section 4.6). This read happens with
         // interrupts enabled, before any lock is taken — see this function's own
         // top-of-file comment; do not move it inside the masked section below (X2).
-        let (elf_vec, image_identity) =
+        let (elf_vec, image_identity, image_path) =
             match super::exec::read_image(program_name, &mut arguments, |path| {
                 if path.contains('/') {
                     crate::boot::init_image::read_program_image(path)
@@ -2167,7 +2167,7 @@ pub fn sys_execv_with_frame(
         let mut prepared = match crate::process::manager::ProcessManager::prepare_exec_image(
             current_pid,
             elf_data,
-            Some(program_name),
+            Some(&image_path),
             &argv_slices,
             &envp_slices,
             image_identity,
