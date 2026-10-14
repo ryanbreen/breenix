@@ -38,6 +38,9 @@ static mut RESULT: Tm = Tm {
 };
 static mut TEXT: [u8; 26] = [0; 26];
 static mut ZONE: [u8; 64] = [0; 64];
+static ZONE_LOCK: crate::pthread::RecursiveLock = crate::pthread::RecursiveLock::new();
+static mut LAST_TZ: [u8; 128] = [0; 128];
+static mut LAST_LEN: usize = usize::MAX;
 #[no_mangle]
 pub static mut timezone: i64 = 0;
 #[no_mangle]
@@ -155,8 +158,11 @@ pub unsafe extern "C" fn gmtime(t: *const i64) -> *mut Tm {
     gmtime_r(t, addr_of_mut!(RESULT))
 }
 unsafe fn fixed_zone() -> (i64, *const u8) {
-    tzset();
-    (-timezone, tzname[0])
+    ZONE_LOCK.lock();
+    update_zone();
+    let result = (-timezone, tzname[0]);
+    ZONE_LOCK.unlock();
+    result
 }
 #[no_mangle]
 pub unsafe extern "C" fn localtime_r(t: *const i64, out: *mut Tm) -> *mut Tm {
@@ -207,13 +213,26 @@ pub unsafe extern "C" fn mktime(tm: *mut Tm) -> i64 {
 }
 #[no_mangle]
 pub unsafe extern "C" fn tzset() {
+    ZONE_LOCK.lock();
+    update_zone();
+    ZONE_LOCK.unlock();
+}
+unsafe fn update_zone() {
+    let b = crate::env::getenv_bytes(b"TZ")
+        .filter(|s| s.len() <= 128)
+        .unwrap_or(b"");
+    // Reentrant calendar calls must not rewrite the zone name other threads
+    // are reading when the environment has not changed.
+    let last = &mut *addr_of_mut!(LAST_TZ);
+    if LAST_LEN == b.len() && last[..b.len()] == *b {
+        return;
+    }
+    last[..b.len()].copy_from_slice(b);
+    LAST_LEN = b.len();
     timezone = 0;
     daylight = 0;
     tzname = [b"UTC\0".as_ptr(); 2];
-    let Some(b) = crate::env::getenv_bytes(b"TZ") else {
-        return;
-    };
-    if b.len() > 128 {
+    if b.is_empty() {
         return;
     }
     let mut i = 0;
@@ -238,6 +257,7 @@ pub unsafe extern "C" fn tzset() {
         return;
     }
     let mut sign = 1;
+    let signed_offset = matches!(b.get(i), Some(b'-' | b'+'));
     if b.get(i) == Some(&b'-') {
         sign = -1;
         i += 1;
@@ -254,7 +274,7 @@ pub unsafe extern "C" fn tzset() {
                 return;
             }
         }
-        if i == begin && (field != 0 || i != b.len()) {
+        if i == begin && (field != 0 || i != b.len() || signed_offset) {
             return;
         }
         if b.get(i) != Some(&b':') {

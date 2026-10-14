@@ -322,4 +322,47 @@ mod tests {
             assert!(calendar::gmtime_r(&i64::MAX, &mut tm).is_null());
         }
     }
+
+    #[test]
+    fn fixed_offsets_round_trip_with_concurrent_calendar_calls() {
+        unsafe {
+            let old = std::env::var_os("TZ");
+            std::env::set_var("TZ", "UTC+02:30");
+            let mut tm = calendar::Tm::default();
+            calendar::localtime_r(&0, &mut tm);
+            assert_eq!(
+                (tm.year, tm.mon, tm.mday, tm.hour, tm.min, tm.gmtoff),
+                (69, 11, 31, 21, 30, -9000)
+            );
+            assert_eq!(calendar::mktime(&mut tm), 0);
+            let jobs: Vec<_> = (0..4)
+                .map(|_| {
+                    std::thread::spawn(|| {
+                        for epoch in [-86400, -1, 0, 86400, 951782400] {
+                            let mut t = calendar::Tm::default();
+                            calendar::localtime_r(&epoch, &mut t);
+                            assert_eq!(t.gmtoff, -9000);
+                            assert_eq!(calendar::mktime(&mut t), epoch);
+                        }
+                    })
+                })
+                .collect();
+            for job in jobs {
+                job.join().unwrap();
+            }
+            std::env::set_var("TZ", "GMT-05:45");
+            calendar::localtime_r(&0, &mut tm);
+            assert_eq!((tm.hour, tm.min, tm.gmtoff), (5, 45, 20700));
+            assert_eq!(calendar::mktime(&mut tm), 0);
+            std::env::set_var("TZ", "UTC+");
+            calendar::localtime_r(&0, &mut tm);
+            assert_eq!(tm.gmtoff, 0);
+            if let Some(old) = old {
+                std::env::set_var("TZ", old);
+            } else {
+                std::env::remove_var("TZ");
+            }
+            calendar::tzset();
+        }
+    }
 }

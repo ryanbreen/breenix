@@ -19,6 +19,20 @@ mod pthread {
             *crate::__errno_location() = e;
         }
     }
+    pub(crate) struct RecursiveLock(core::sync::atomic::AtomicBool);
+    impl RecursiveLock {
+        pub(crate) const fn new() -> Self {
+            Self(core::sync::atomic::AtomicBool::new(false))
+        }
+        pub(crate) fn lock(&self) {
+            while self.0.swap(true, core::sync::atomic::Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+        }
+        pub(crate) fn unlock(&self) {
+            self.0.store(false, core::sync::atomic::Ordering::Release);
+        }
+    }
 }
 mod env {
     pub(crate) fn getenv_bytes(name: &[u8]) -> Option<&'static [u8]> {
