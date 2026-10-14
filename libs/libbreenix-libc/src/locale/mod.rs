@@ -1,5 +1,8 @@
 //! ISO C17 7.22/7.29; POSIX.1-2024 locale and wide-character interfaces.
 //! All implementation is original; encoding follows Unicode's UTF-8 definition.
+//! The errno numbers this module sets (2 ENOENT, 12 ENOMEM, 22 EINVAL, 34 ERANGE,
+//! 75 EOVERFLOW, 84 EILSEQ) are the Linux UAPI values the Breenix kernel and
+//! include/errno.h use.
 
 mod calendar;
 /// Classification and case mapping for other lanes (FILES' regex and fnmatch):

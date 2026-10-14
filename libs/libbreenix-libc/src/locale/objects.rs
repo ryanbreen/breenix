@@ -267,6 +267,8 @@ pub struct Lconv {
     int_p_sign_posn: u8,
     int_n_sign_posn: u8,
 }
+// CHAR_MAX, which C17 7.11.2.1 uses for "not available in this locale": char is
+// unsigned on aarch64 and signed on x86-64 (each architecture's psABI).
 const UNSPEC: u8 = if cfg!(target_arch = "aarch64") {
     255
 } else {
