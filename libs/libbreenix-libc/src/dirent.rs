@@ -1,13 +1,14 @@
 //! Directory streams (POSIX.1-2024 XBD <dirent.h>; XSH opendir, fdopendir, readdir,
 //! readdir_r, closedir, rewinddir, telldir, seekdir, dirfd, scandir, alphasort).
 //!
-//! A DIR holds the descriptor and a buffer of records from getdents64 (Linux's
-//! `struct linux_dirent64`). readdir copies one record at a time into the stream's own
+//! A DIR holds the descriptor and a buffer of records from getdents64 (the Breenix kernel syscall ABI). readdir copies one record at a time into the stream's own
 //! `struct dirent` and refills the buffer when it runs out. A position (telldir, seekdir) is
 //! the kernel's directory offset: the `d_off` of the last entry returned, which names the
 //! entry after it, or 0 at the start. seekdir hands it back to the kernel with lseek.
 
+use core::cell::UnsafeCell;
 use core::ptr::null_mut;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 extern "C" {
     fn malloc(size: usize) -> *mut u8;
@@ -20,6 +21,7 @@ extern "C" {
     fn __errno_location() -> *mut i32;
 }
 
+// Errnos, open/stat encodings and offsets below come from Breenix kernel syscall ABI.
 const EIO: i32 = 5;
 const EBADF: i32 = 9;
 const ENOMEM: i32 = 12;
@@ -46,7 +48,7 @@ const S_IFDIR: u32 = 0o040000;
 const RECORD_HEADER: usize = 19;
 const BUF_SIZE: usize = 8192;
 
-/// `struct dirent`, Linux's layout.
+/// `struct dirent`, matching the Breenix getdents64 producer.
 #[repr(C)]
 pub struct Dirent {
     pub d_ino: u64,
@@ -59,6 +61,11 @@ pub struct Dirent {
 /// The stream behind C's opaque `DIR`.
 #[repr(C)]
 pub struct Dir {
+    lock: AtomicBool,
+    data: UnsafeCell<DirData>,
+}
+
+struct DirData {
     fd: i32,
     eof: bool,
     /// Valid bytes in `buf`, and the offset of the next record.
@@ -85,17 +92,54 @@ unsafe fn new_stream(fd: i32, pos: i64) -> *mut Dir {
         set_errno(ENOMEM);
         return null_mut();
     }
-    (*d).fd = fd;
-    (*d).eof = false;
-    (*d).len = 0;
-    (*d).at = 0;
-    (*d).pos = pos;
+    d.write(Dir {
+        lock: AtomicBool::new(false),
+        data: UnsafeCell::new(DirData {
+            fd,
+            eof: false,
+            len: 0,
+            at: 0,
+            pos,
+            entry: Dirent {
+                d_ino: 0,
+                d_off: 0,
+                d_reclen: 0,
+                d_type: 0,
+                d_name: [0; 256],
+            },
+            buf: [0; BUF_SIZE / 8],
+        }),
+    });
     d
+}
+
+// The lock is acquired before any mutable reference to stream data is formed.
+struct StreamGuard<'a>(&'a Dir);
+impl Drop for StreamGuard<'_> {
+    fn drop(&mut self) {
+        self.0.lock.store(false, Ordering::Release);
+    }
+}
+impl StreamGuard<'_> {
+    fn data(&mut self) -> &mut DirData {
+        unsafe { &mut *self.0.data.get() }
+    }
+}
+unsafe fn stream<'a>(dirp: *mut Dir) -> StreamGuard<'a> {
+    let dir = &*dirp;
+    while dir
+        .lock
+        .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        core::hint::spin_loop();
+    }
+    StreamGuard(dir)
 }
 
 /// The next record in the stream's buffer, refilling it as needed. Ok(None) at the end;
 /// Err(errno) when getdents64 fails.
-unsafe fn next_record(d: &mut Dir) -> Result<Option<*const u8>, i32> {
+unsafe fn next_record(d: &mut DirData) -> Result<Option<*const u8>, i32> {
     if d.at >= d.len {
         if d.eof {
             return Ok(None);
@@ -186,7 +230,8 @@ pub unsafe extern "C" fn readdir(dirp: *mut Dir) -> *mut Dirent {
         set_errno(EBADF);
         return null_mut();
     }
-    let d = &mut *dirp;
+    let mut guard = stream(dirp);
+    let d = guard.data();
     match next_record(d) {
         Ok(Some(record)) => {
             fill(&mut d.entry, record);
@@ -202,11 +247,16 @@ pub unsafe extern "C" fn readdir(dirp: *mut Dir) -> *mut Dirent {
 
 /// readdir_r - readdir into the caller's `entry`; returns 0 or an errno value.
 #[no_mangle]
-pub unsafe extern "C" fn readdir_r(dirp: *mut Dir, entry: *mut Dirent, result: *mut *mut Dirent) -> i32 {
+pub unsafe extern "C" fn readdir_r(
+    dirp: *mut Dir,
+    entry: *mut Dirent,
+    result: *mut *mut Dirent,
+) -> i32 {
     if dirp.is_null() || entry.is_null() || result.is_null() {
         return EINVAL;
     }
-    match next_record(&mut *dirp) {
+    let mut guard = stream(dirp);
+    match next_record(guard.data()) {
         Ok(Some(record)) => {
             fill(entry, record);
             *result = entry;
@@ -230,7 +280,7 @@ pub unsafe extern "C" fn closedir(dirp: *mut Dir) -> i32 {
         set_errno(EBADF);
         return -1;
     }
-    let r = close((*dirp).fd);
+    let r = close(stream(dirp).data().fd);
     free(dirp as *mut u8);
     r
 }
@@ -242,7 +292,7 @@ pub unsafe extern "C" fn dirfd(dirp: *mut Dir) -> i32 {
         set_errno(EINVAL);
         return -1;
     }
-    (*dirp).fd
+    stream(dirp).data().fd
 }
 
 /// seekdir - continue from a position telldir returned.
@@ -251,7 +301,8 @@ pub unsafe extern "C" fn seekdir(dirp: *mut Dir, pos: i64) {
     if dirp.is_null() {
         return;
     }
-    let d = &mut *dirp;
+    let mut guard = stream(dirp);
+    let d = guard.data();
     let saved = errno();
     if lseek(d.fd, pos, SEEK_SET) < 0 {
         set_errno(saved);
@@ -269,7 +320,7 @@ pub unsafe extern "C" fn telldir(dirp: *mut Dir) -> i64 {
         set_errno(EBADF);
         return -1;
     }
-    (*dirp).pos
+    stream(dirp).data().pos
 }
 
 /// rewinddir - restart at the first entry, seeing the directory as it is now.
@@ -297,7 +348,14 @@ pub unsafe extern "C" fn alphasort(a: *const *const Dirent, b: *const *const Dir
 }
 
 /// Heapsort `n` pointers in place, ascending by `cmp`.
-pub(crate) unsafe fn sort_ptrs<T>(v: *mut *mut T, n: usize, mut cmp: impl FnMut(*mut *mut T, *mut *mut T) -> i32) {
+pub(crate) unsafe fn sort_ptrs<T>(
+    v: *mut *mut T,
+    n: usize,
+    mut cmp: impl FnMut(*mut *mut T, *mut *mut T) -> i32,
+) {
+    if n < 2 {
+        return;
+    }
     let s = core::slice::from_raw_parts_mut(v, n);
     let mut sift = |s: &mut [*mut T], mut root: usize, end: usize| loop {
         let mut child = 2 * root + 1;
@@ -342,8 +400,8 @@ pub unsafe extern "C" fn scandir(
     let mut n = 0usize;
     let mut cap = 0usize;
     let saved = errno();
-    set_errno(0);
     let failed = loop {
+        set_errno(0);
         let e = readdir(d);
         if e.is_null() {
             let err = errno();
@@ -356,7 +414,10 @@ pub unsafe extern "C" fn scandir(
         }
         if n == cap {
             let new_cap = if cap == 0 { 16 } else { cap * 2 };
-            let grown = realloc(list as *mut u8, new_cap * core::mem::size_of::<*mut Dirent>()) as *mut *mut Dirent;
+            let grown = realloc(
+                list as *mut u8,
+                new_cap * core::mem::size_of::<*mut Dirent>(),
+            ) as *mut *mut Dirent;
             if grown.is_null() {
                 break ENOMEM;
             }
@@ -389,7 +450,9 @@ pub unsafe extern "C" fn scandir(
         }
     }
     if let Some(c) = compar {
-        sort_ptrs(list, n, |a, b| c(a as *const *const Dirent, b as *const *const Dirent));
+        sort_ptrs(list, n, |a, b| {
+            c(a as *const *const Dirent, b as *const *const Dirent)
+        });
     }
     *namelist = list;
     n as i32

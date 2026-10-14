@@ -115,11 +115,11 @@ AT(struct dirent, d_name, 19);
 
 /* glob_t, regex_t, regmatch_t and struct option, as src/glob.rs, src/regex and
    src/getopt.rs read them. */
-SIZE(glob_t, 72);
+SIZE(glob_t, 32);
 AT(glob_t, gl_pathv, 8);
 AT(glob_t, gl_offs, 16);
 AT(glob_t, gl_flags, 24);
-SIZE(regex_t, 64);
+SIZE(regex_t, 24);
 SIZE(regmatch_t, 16);
 AT(regmatch_t, rm_eo, 8);
 SIZE(struct option, 32);

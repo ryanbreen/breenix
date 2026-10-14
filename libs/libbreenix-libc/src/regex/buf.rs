@@ -15,7 +15,11 @@ pub(crate) struct Buf<T: Copy> {
 
 impl<T: Copy> Buf<T> {
     pub(crate) const fn new() -> Self {
-        Buf { ptr: null_mut(), len: 0, cap: 0 }
+        Buf {
+            ptr: null_mut(),
+            len: 0,
+            cap: 0,
+        }
     }
 
     pub(crate) fn len(&self) -> usize {

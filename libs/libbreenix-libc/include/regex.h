@@ -1,7 +1,7 @@
 /*
- * <regex.h>: regular expressions (POSIX.1-2024 XBD <regex.h>), with Linux's flag and
- * error values. regoff_t is long, wide enough for any ssize_t as POSIX.1-2024 requires.
- * REG_STARTEND is a GNU and BSD extension.
+ * POSIX.1-2024 <regex.h>. Breenix assigns consecutive independent flag
+ * bits per flag namespace and positive error codes in declaration order.
+ * REG_STARTEND is our bounded-region extension.
  */
 #ifndef _REGEX_H
 #define _REGEX_H
@@ -18,8 +18,6 @@ typedef struct {
     size_t re_nsub;
     void *__re_prog;
     int __re_cflags;
-    int __re_pad;
-    void *__re_reserved[5];
 } regex_t;
 
 typedef struct {
@@ -31,6 +29,8 @@ typedef struct {
 #define REG_ICASE 2
 #define REG_NEWLINE 4
 #define REG_NOSUB 8
+/* Next independent bit assigned by this implementation, per POSIX.1-2024. */
+#define REG_MINIMAL 16
 
 #define REG_NOTBOL 1
 #define REG_NOTEOL 2

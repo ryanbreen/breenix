@@ -1,5 +1,7 @@
 /*
- * <dirent.h>: directory streams (POSIX.1-2024 XBD <dirent.h>), with Linux's struct dirent.
+ * POSIX.1-2024 <dirent.h>. The record layout and DT_* encodings match
+ * Breenix kernel/src/syscall/fs.rs getdents64 producer; the name capacity is
+ * kernel NAME_MAX (255) plus its terminating NUL.
  */
 #ifndef _DIRENT_H
 #define _DIRENT_H

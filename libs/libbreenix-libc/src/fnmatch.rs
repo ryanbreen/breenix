@@ -1,5 +1,5 @@
 //! fnmatch (POSIX.1-2024 XSH fnmatch; the pattern language is XCU 2.14, Pattern Matching
-//! Notation), with Linux's flag values and its FNM_CASEFOLD and FNM_LEADING_DIR extensions.
+//! Notation). Flags are independent bits assigned by this implementation.
 //!
 //! Matching is byte by byte, as in the C and POSIX locales; bracket classes are the
 //! POSIX-locale classes of XBD 7.3.1. A `*` is matched by remembering the most recent star
@@ -55,7 +55,8 @@ fn endpoint(p: &[u8], i: usize, noescape: bool) -> Option<(u8, usize)> {
     if c == b'[' && matches!(p.get(i + 1), Some(b'.') | Some(b'=')) {
         let kind = p[i + 1];
         let body = i + 2;
-        let close = (body..p.len().saturating_sub(1)).find(|&k| p[k] == kind && p[k + 1] == b']')?;
+        let close =
+            (body..p.len().saturating_sub(1)).find(|&k| p[k] == kind && p[k + 1] == b']')?;
         if close != body + 1 {
             return None;
         }
@@ -89,7 +90,9 @@ fn bracket(p: &[u8], start: usize, c: u8, flags: i32) -> Bracket {
         first = false;
         if ch == b'[' && p.get(i + 1) == Some(&b':') {
             let body = i + 2;
-            let Some(close) = (body..p.len().saturating_sub(1)).find(|&k| p[k] == b':' && p[k + 1] == b']') else {
+            let Some(close) =
+                (body..p.len().saturating_sub(1)).find(|&k| p[k] == b':' && p[k + 1] == b']')
+            else {
                 return Bracket::Literal;
             };
             let name = &p[body..close];
@@ -97,7 +100,8 @@ fn bracket(p: &[u8], start: usize, c: u8, flags: i32) -> Bracket {
                 return Bracket::Literal;
             };
             let folded = fold
-                && ((name == b"upper" && c.is_ascii_lowercase()) || (name == b"lower" && c.is_ascii_uppercase()));
+                && ((name == b"upper" && c.is_ascii_lowercase())
+                    || (name == b"lower" && c.is_ascii_uppercase()));
             matched |= hit || folded;
             i = close + 2;
             continue;
@@ -124,7 +128,9 @@ fn bracket(p: &[u8], start: usize, c: u8, flags: i32) -> Bracket {
 
 /// Is string index `i` a leading position for FNM_PERIOD?
 fn leading(s: &[u8], i: usize, flags: i32) -> bool {
-    flags & FNM_PERIOD != 0 && s.get(i) == Some(&b'.') && (i == 0 || (flags & FNM_PATHNAME != 0 && s[i - 1] == b'/'))
+    flags & FNM_PERIOD != 0
+        && s.get(i) == Some(&b'.')
+        && (i == 0 || (flags & FNM_PATHNAME != 0 && s[i - 1] == b'/'))
 }
 
 /// Can a wildcard (`?`, `*` or a bracket) take the byte at string index `i`?

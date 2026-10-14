@@ -1,5 +1,6 @@
 //! Regular expressions (POSIX.1-2024 XSH regcomp, regexec, regerror, regfree; syntax per
-//! XBD 9), with Linux's flag and error values and GNU's REG_STARTEND.
+//! XBD 9). Flags and errors are assigned by this implementation: consecutive flag bits
+//! and consecutive nonzero error codes in declaration order; REG_STARTEND is our extension.
 //!
 //! Matching is byte-oriented, which is what XBD 9 specifies for the C and POSIX locales.
 //! `regoff_t` is `long`, as POSIX.1-2024 requires (it must hold any ssize_t value).
@@ -19,6 +20,8 @@ pub(crate) const REG_EXTENDED: i32 = 1;
 pub(crate) const REG_ICASE: i32 = 2;
 pub(crate) const REG_NEWLINE: i32 = 4;
 const REG_NOSUB: i32 = 8;
+// Implementation-assigned next independent compile flag bit (XBD <regex.h>).
+pub(crate) const REG_MINIMAL: i32 = 16;
 
 const REG_NOTBOL: i32 = 1;
 const REG_NOTEOL: i32 = 2;
@@ -44,8 +47,6 @@ pub struct Regex {
     re_nsub: usize,
     prog: *mut Prog,
     cflags: i32,
-    pad: i32,
-    reserved: [*mut u8; 5],
 }
 
 #[repr(C)]
@@ -88,9 +89,17 @@ pub unsafe extern "C" fn regexec(
     }
     let prog = &*re.prog;
     let (from, end) = if eflags & REG_STARTEND != 0 && !pmatch.is_null() {
-        ((*pmatch).rm_so.max(0) as usize, (*pmatch).rm_eo.max(0) as usize)
+        (
+            (*pmatch).rm_so.max(0) as usize,
+            (*pmatch).rm_eo.max(0) as usize,
+        )
     } else {
-        (0, core::ffi::CStr::from_ptr(string as *const core::ffi::c_char).to_bytes().len())
+        (
+            0,
+            core::ffi::CStr::from_ptr(string as *const core::ffi::c_char)
+                .to_bytes()
+                .len(),
+        )
     };
     if from > end {
         return REG_NOMATCH;
@@ -102,7 +111,7 @@ pub unsafe extern "C" fn regexec(
         noteol: eflags & REG_NOTEOL != 0,
     };
     let mut caps: buf::Buf<isize> = buf::Buf::new();
-    if !caps.resize(2 * (prog.nsub + 1), -1) {
+    if !caps.resize(2 * (prog.nsub + 1 + prog.repeats as usize), -1) {
         return REG_ESPACE;
     }
     match exec::search(prog, &text, caps.as_mut_slice()) {
@@ -160,7 +169,12 @@ fn message(code: i32) -> &'static [u8] {
 /// regerror - the text for `errcode`, truncated to fit `errbuf_size`; returns the size the
 /// whole text needs, terminator included.
 #[no_mangle]
-pub unsafe extern "C" fn regerror(errcode: i32, _preg: *const Regex, errbuf: *mut u8, errbuf_size: usize) -> usize {
+pub unsafe extern "C" fn regerror(
+    errcode: i32,
+    _preg: *const Regex,
+    errbuf: *mut u8,
+    errbuf_size: usize,
+) -> usize {
     let m = message(errcode);
     if errbuf_size > 0 && !errbuf.is_null() {
         let n = m.len().min(errbuf_size - 1);

@@ -46,6 +46,14 @@ class ManifestTests(unittest.TestCase):
         self.source.write_text('fn main() { loop {} }\n')
         self.assert_refused('sources changed')
 
+    def test_archive_cleaning_script_is_a_build_input(self):
+        cleaner = self.repo / 'scripts/libc-clean-archive.py'
+        cleaner.write_text('clean archive version 1')
+        self.assert_refused('sources changed')
+        self.assertEqual(self.run_tool('write').returncode, 0)
+        cleaner.write_text('clean archive version 2')
+        self.assert_refused('sources changed')
+
     def test_stale_extra_and_missing_elfs_are_refused(self):
         (self.elfs / 'hello.elf').write_bytes(b'older build')
         self.assert_refused('hello.elf')
