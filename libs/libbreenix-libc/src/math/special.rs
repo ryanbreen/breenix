@@ -56,6 +56,7 @@ pub extern "C" fn erf(x: f64) -> f64 {
     if x.is_nan() || x == 0.0 {
         return x + x;
     }
+    if x.is_infinite() { return copysign(1.0, x); }
     let a = fabs(x);
     if a > 6.0 {
         return copysign(1.0 - black_box(f64::MIN_POSITIVE), x);

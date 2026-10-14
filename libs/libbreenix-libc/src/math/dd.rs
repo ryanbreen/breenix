@@ -2,9 +2,10 @@
 //! The transcendental functions work in it so that the final rounding to double is the
 //! only significant error.
 //!
-//! The error-free transformations are Knuth's two-sum and Dekker's product with
-//! Veltkamp splitting (Dekker, "A floating-point technique for extending the available
-//! precision", Numer. Math. 18, 1971). They assume round-to-nearest and no overflow.
+//! Addition recovers the rounding residual by subtracting the rounded partial
+//! sums. Multiplication uses our own fma to recover a*b-rounded(a*b), without
+//! a splitting multiplier that can overflow. Finite intermediates and nearest
+//! rounding are required for error-free double-double arithmetic.
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct DD {
@@ -16,6 +17,7 @@ pub(crate) struct DD {
 #[inline]
 pub(crate) fn two_sum(a: f64, b: f64) -> DD {
     let s = a + b;
+    if !s.is_finite() { return DD::from(s); }
     let bb = s - a;
     DD { hi: s, lo: (a - (s - bb)) + (b - bb) }
 }
@@ -24,23 +26,16 @@ pub(crate) fn two_sum(a: f64, b: f64) -> DD {
 #[inline]
 fn quick_two_sum(a: f64, b: f64) -> DD {
     let s = a + b;
+    if !s.is_finite() { return DD::from(s); }
     DD { hi: s, lo: b - (s - a) }
 }
 
-#[inline]
-fn split(a: f64) -> (f64, f64) {
-    let c = 134217729.0 * a; // 2^27 + 1
-    let hi = c - (c - a);
-    (hi, a - hi)
-}
-
-/// p + e == a * b exactly.
+/// p + e == a * b exactly when the residual is representable.
 #[inline]
 pub(crate) fn two_prod(a: f64, b: f64) -> DD {
     let p = a * b;
-    let (ah, al) = split(a);
-    let (bh, bl) = split(b);
-    DD { hi: p, lo: ((ah * bh - p) + ah * bl + al * bh) + al * bl }
+    if !p.is_finite() { return DD::from(p); }
+    DD { hi: p, lo: super::basic::fma(a, b, -p) }
 }
 
 impl DD {
@@ -78,11 +73,13 @@ impl DD {
 
     pub(crate) fn mul(self, o: DD) -> DD {
         let p = two_prod(self.hi, o.hi);
+        if !p.hi.is_finite() { return p; }
         quick_two_sum(p.hi, p.lo + (self.hi * o.lo + self.lo * o.hi))
     }
 
     pub(crate) fn mul_f(self, b: f64) -> DD {
         let p = two_prod(self.hi, b);
+        if !p.hi.is_finite() { return p; }
         quick_two_sum(p.hi, p.lo + self.lo * b)
     }
 
@@ -119,6 +116,10 @@ impl DD {
 
     /// Multiplies by 2^n; exact while the result stays normal.
     pub(crate) fn scale(self, n: i32) -> DD {
+        // Keep each scaling factor normal, including normalization of the
+        // top binade (n=-1023); pow2(-1023) used to encode zero.
+        if n < -1022 { return self.scale(-1022).scale(n + 1022); }
+        if n > 1023 { return self.scale(1023).scale(n - 1023); }
         let f = super::basic::pow2(n);
         DD { hi: self.hi * f, lo: self.lo * f }
     }

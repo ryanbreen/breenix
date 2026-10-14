@@ -156,6 +156,8 @@ pub extern "C" fn tan(x: f64) -> f64 {
 
 /// atan t for t >= 0 (finite).
 pub(crate) fn atan_dd(t: DD) -> DD {
+    // atan(t)=t-t^3/3+...; avoid halving subnormals in the reduction.
+    if t.hi < super::basic::pow2(-27) { return t; }
     let (mut a, inv) = if t.hi > 1.0 { (t.recip(), true) } else { (t, false) };
     // atan a = 2 atan(a / (1 + sqrt(1 + a^2))), three times: |a| <= tan(pi/32).
     for _ in 0..3 {
@@ -233,9 +235,8 @@ pub extern "C" fn asin(x: f64) -> f64 {
     if a > 1.0 {
         return domain();
     }
-    if x == 0.0 {
-        return x;
-    }
+    // asin(x)=x+x^3/6+...; below 2^-27 the correction is < half an ulp.
+    if a < super::basic::pow2(-27) { return x; }
     if a == 1.0 {
         return copysign(PI_2.to_f64(), x);
     }

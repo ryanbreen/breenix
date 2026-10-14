@@ -205,3 +205,130 @@ fn sort_matches_a_reference() {
         assert_eq!(v, want);
     }
 }
+
+#[test]
+fn review_math_extremes_and_flags() {
+    use math::{basic::*, explog::*, special::*, trig::*, fenv::*};
+    let nearest = FE_TONEAREST;
+    fesetround(nearest);
+    assert!(ulps(log(1e308), 709.1962086421661) <= 1);
+    assert!(atan(1e308).is_finite());
+    assert!(atan2(1.0, 1e308) > 0.0);
+    assert_eq!(pow(2.0, 1e308), f64::INFINITY);
+    for f in [atan, asin, log1p, asinh] { assert_eq!(f(f64::from_bits(1)).to_bits(), 1); }
+    feclearexcept(FE_ALL_EXCEPT);
+    pthread::set_errno(0);
+    assert_eq!(fma(f64::MAX, 2.0, f64::NEG_INFINITY), f64::NEG_INFINITY);
+    assert_eq!(fetestexcept(FE_INVALID), 0);
+    assert_eq!(pthread::errno(), 0);
+    assert_eq!(fmaf(f32::MAX, 2.0, f32::NEG_INFINITY), f32::NEG_INFINITY);
+    feclearexcept(FE_ALL_EXCEPT);
+    assert_eq!(round(f64::INFINITY), f64::INFINITY);
+    assert_eq!(roundf(f32::NEG_INFINITY), f32::NEG_INFINITY);
+    assert_eq!(fetestexcept(FE_INVALID), 0);
+    pthread::set_errno(0);
+    assert_eq!(fdim(f64::INFINITY, 0.0), f64::INFINITY);
+    assert_eq!(pthread::errno(), 0);
+    for f in [lrint, llrint, lround, llround] {
+        pthread::set_errno(0);
+        feclearexcept(FE_ALL_EXCEPT);
+        f(f64::INFINITY);
+        assert_eq!(pthread::errno(), 33);
+        assert_ne!(fetestexcept(FE_INVALID), 0);
+    }
+    for mode in [FE_UPWARD, FE_DOWNWARD, FE_TOWARDZERO, nearest] {
+        fesetround(mode);
+        assert_eq!(tanh(f64::INFINITY), 1.0);
+        assert_eq!(erf(f64::NEG_INFINITY), -1.0);
+        assert_eq!(expm1(f64::NEG_INFINITY), -1.0);
+        assert_eq!(pow(-2.0, -1075.0).to_bits(), if mode == FE_DOWNWARD { (1u64<<63)|1 } else { 1u64<<63 });
+    }
+    fesetround(FE_DOWNWARD);
+    pthread::set_errno(0);
+    assert_eq!(fdim(f64::MAX, -f64::MAX), f64::MAX);
+    assert_eq!(pthread::errno(), 34);
+    pthread::set_errno(0);
+    assert_eq!(math::narrow(exp(90.0)), f32::MAX);
+    assert_eq!(pthread::errno(), 34);
+    fesetround(FE_UPWARD);
+    pthread::set_errno(0);
+    assert_eq!(hypot(f64::MAX, 1.0), f64::INFINITY);
+    assert_eq!(pthread::errno(), 34);
+    fesetround(nearest);
+}
+
+#[test]
+fn conversions_raise_flags() {
+    use math::fenv::*;
+    feclearexcept(FE_ALL_EXCEPT);
+    f64_of("0.1").unwrap();
+    assert_ne!(fetestexcept(FE_INEXACT), 0);
+    feclearexcept(FE_ALL_EXCEPT);
+    f64_of("1e999").unwrap();
+    assert_eq!(fetestexcept(FE_OVERFLOW | FE_INEXACT), FE_OVERFLOW | FE_INEXACT);
+    feclearexcept(FE_ALL_EXCEPT);
+    f64_of("1e-999").unwrap();
+    assert_eq!(fetestexcept(FE_UNDERFLOW | FE_INEXACT), FE_UNDERFLOW | FE_INEXACT);
+}
+
+#[test]
+fn sort_transfers_uninitialized_padding() {
+    #[repr(C)]
+    struct Padded { key: u8, value: u64 }
+    unsafe extern "C" fn cmp(a: *const core::ffi::c_void, b: *const core::ffi::c_void) -> i32 {
+        let a = &*(a as *const Padded);
+        let b = &*(b as *const Padded);
+        (a.key > b.key) as i32 - (a.key < b.key) as i32
+    }
+    let mut objects = [Padded { key: 2, value: 20 }, Padded { key: 1, value: 10 }];
+    unsafe { stdlib::sort::qsort(objects.as_mut_ptr().cast(), 2, std::mem::size_of::<Padded>(), cmp); }
+    assert_eq!((objects[0].key, objects[0].value), (1, 10));
+    assert_eq!((objects[1].key, objects[1].value), (2, 20));
+}
+
+#[test]
+fn long_double_subnormal_midpoint_uses_all_deciding_digits() {
+    #[cfg(target_arch = "aarch64")]
+    let (fmt, k) = (&stdlib::floatconv::F128, 16495usize);
+    #[cfg(target_arch = "x86_64")]
+    let (fmt, k) = (&stdlib::floatconv::X87, 16446usize);
+    // 2^-k = 5^k * 10^-k, exactly the midpoint between zero and the
+    // smallest subnormal. Generate its decimal digits independently.
+    let mut digits = vec![1u8];
+    for _ in 0..k {
+        let mut carry = 0;
+        for d in &mut digits {
+            let v = *d * 5 + carry;
+            *d = v % 10;
+            carry = v / 10;
+        }
+        if carry != 0 { digits.push(carry); }
+    }
+    let scan = |d: &[u8]| {
+        let mut text: Vec<u8> = d.iter().rev().map(|x| b'0' + x).collect();
+        text.extend_from_slice(format!("e-{k}").as_bytes());
+        text.push(0);
+        let mut chars = unsafe { CStrChars::new(text.as_ptr()) };
+        stdlib::numscan::scan_float(&mut chars, usize::MAX, fmt).unwrap().bits
+    };
+    math::fenv::fesetround(math::fenv::FE_TONEAREST);
+    assert_eq!(scan(&digits), 0);
+    digits[0] += 1;
+    assert_eq!(scan(&digits), 1);
+    digits[0] -= 2;
+    assert_eq!(scan(&digits), 0);
+}
+
+#[test]
+fn split_products_keep_the_exact_residual() {
+    let mut bits = 0x12345678abcdef01u64;
+    for _ in 0..10000 {
+        bits = bits.wrapping_mul((1u64<<32)+1).wrapping_add(1);
+        let a = f64::from_bits((bits & ((1u64<<52)-1)) | (1023u64<<52));
+        bits = bits.rotate_left(27).wrapping_add(7);
+        let b = f64::from_bits((bits & ((1u64<<52)-1)) | (1023u64<<52));
+        let got = math::dd::two_prod(a, b);
+        let residual = math::basic::fma(a, b, -got.hi);
+        assert_eq!(got.lo, residual, "a={a:?} b={b:?}");
+    }
+}

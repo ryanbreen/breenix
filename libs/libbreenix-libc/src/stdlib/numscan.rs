@@ -179,9 +179,11 @@ pub(crate) fn scan_int(s: &mut dyn Chars, base: u32, width: usize) -> Result<Int
     Ok(r)
 }
 
-/// Significant decimal digits kept; any further digit only matters through whether it
-/// is zero. 800 exceeds the 767 digits that decide any double or float rounding.
-const MAX_DIGITS: usize = 800;
+/// A binary128 midpoint has denominator at most 2^16495 and numerator below
+/// 2^114. Its terminating decimal has fewer than 16495*0.7 + 114*0.31 + 1
+/// significant digits (log10(5)<0.7, log10(2)<0.31). Keep 11600, then sticky
+/// suffices; this also covers the smaller x87, binary64 and binary32 formats.
+const MAX_DIGITS: usize = 11600;
 
 /// Matches the rest of `word` (lowercase) case-insensitively.
 fn take_word(f: &mut Field, word: &[u8]) -> bool {
@@ -387,11 +389,13 @@ fn scan_decimal(f: &mut Field, neg: bool, had_zero: bool, fmt: &Format, mode: fl
 
 pub(crate) fn scan_f64(s: &mut dyn Chars, width: usize) -> Option<FloatScan> {
     let c = scan_float(s, width, &floatconv::F64)?;
+    crate::math::report(&c);
     Some(FloatScan { value: f64::from_bits(c.bits as u64), range_error: c.overflow || c.underflow })
 }
 
 pub(crate) fn scan_f32(s: &mut dyn Chars, width: usize) -> Option<(f32, bool)> {
     let c = scan_float(s, width, &floatconv::F32)?;
+    crate::math::report(&c);
     Some((f32::from_bits(c.bits as u32), c.overflow || c.underflow))
 }
 
@@ -403,5 +407,6 @@ pub(crate) fn scan_long_double(s: &mut dyn Chars, width: usize) -> Option<(u128,
     #[cfg(target_arch = "x86_64")]
     let fmt = &floatconv::X87;
     let c = scan_float(s, width, fmt)?;
+    crate::math::report(&c);
     Some((c.bits, c.overflow || c.underflow))
 }

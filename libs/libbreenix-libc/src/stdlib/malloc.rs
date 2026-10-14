@@ -66,8 +66,9 @@ pub unsafe extern "C" fn free(ptr: *mut u8) {
             munmap(h as *mut u8, alloc_cache::capacity(class) + HEADER);
         }
     } else if tag != 0 && tag <= h as usize {
-        // An over-aligned block: the mapping starts at `tag`.
-        munmap(tag as *mut u8, ptr as usize - tag + size);
+        // An over-aligned block: `tag` holds the mapping base, whose first
+        // word records its full length, including unused trailing alignment room.
+        munmap(tag as *mut u8, *(tag as *const usize));
     } else {
         munmap(h as *mut u8, size + HEADER);
     }
@@ -118,16 +119,19 @@ unsafe fn aligned(alignment: usize, size: usize) -> *mut u8 {
     if alignment <= HEADER {
         return malloc(size);
     }
-    if size > LIMIT - alignment {
+    let Some(len) = alignment.checked_add(size).and_then(|n| n.checked_add(2 * HEADER)).filter(|&n| n <= LIMIT) else {
         set_errno(ENOMEM);
         return core::ptr::null_mut();
-    }
-    let base = map(HEADER + alignment + size);
+    };
+    let base = map(len);
     if base.is_null() {
         set_errno(ENOMEM);
         return base;
     }
-    let user = (base as usize + HEADER + alignment - 1) & !(alignment - 1);
+    // Store the full mapping length before the movable header; even the earliest
+    // aligned pointer leaves this word outside that header.
+    *(base as *mut usize) = len;
+    let user = (base as usize + 2 * HEADER + alignment - 1) & !(alignment - 1);
     let h = (user - HEADER) as *mut usize;
     *h = size;
     *h.add(1) = base as usize;

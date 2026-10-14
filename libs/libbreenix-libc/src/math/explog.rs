@@ -34,7 +34,8 @@ fn log_parts(a: DD) -> (i32, DD) {
     let (_, ex) = decompose(a.hi);
     let mut e = ex + 52;
     let mut m = a.scale(-e);
-    if m.hi > core::f64::consts::SQRT_2 {
+    // m>sqrt(2) iff m*m>2; derive the threshold without a library constant.
+    if m.hi * m.hi > 2.0 {
         m = m.scale(-1);
         e += 1;
     }
@@ -62,8 +63,8 @@ fn expm1_dd(a: f64) -> DD {
 
 /// Rounds m * 2^k, with overflow and underflow reported by scale.
 fn finish(m: DD, k: i32, neg: bool) -> f64 {
-    let v = scale(m.to_f64(), k as i64);
-    if neg { -v } else { v }
+    // Apply the sign before either rounding, as required for directed modes.
+    scale((if neg { m.neg() } else { m }).to_f64(), k as i64)
 }
 
 #[no_mangle]
@@ -109,6 +110,7 @@ pub extern "C" fn expm1(x: f64) -> f64 {
     if x > 40.0 {
         return exp(x);
     }
+    if x == f64::NEG_INFINITY { return -1.0; }
     if x < -40.0 {
         // e^x is below half an ulp of 1.
         return black_box(f64::MIN_POSITIVE) - 1.0;
@@ -182,6 +184,8 @@ pub extern "C" fn log1p(x: f64) -> f64 {
     if x.is_infinite() || x == 0.0 {
         return x;
     }
+    // |log1p(x)-x| < x^2 for |x|<2^-54, below half an ulp.
+    if fabs(x) < super::basic::pow2(-54) { return x; }
     log_dd(two_sum(1.0, x)).to_f64()
 }
 
@@ -261,7 +265,16 @@ pub extern "C" fn hypot(x: f64, y: f64) -> f64 {
     }
     let ea = decompose(a).1 + 52;
     if ea - (decompose(b).1 + 52) > 60 {
-        return a + b;
+        // The correction is positive but smaller than half an ulp. Adding a
+        // positive value below half an ulp supplies directed rounding, including
+        // overflow at DBL_MAX under FE_UPWARD, without a spurious nearest overflow.
+        let before = super::fenv::flags();
+        super::fenv::set_flags(super::fenv::FE_OVERFLOW, 0);
+        let r = black_box(a) + black_box(b);
+        let raised = super::fenv::flags();
+        super::fenv::set_flags(super::fenv::FE_OVERFLOW, (before | raised) & super::fenv::FE_OVERFLOW);
+        if raised & super::fenv::FE_OVERFLOW != 0 { crate::pthread::set_errno(crate::stdlib::ERANGE); }
+        return r;
     }
     let (sa, sb) = (scale(a, -ea as i64), scale(b, -ea as i64));
     let s = two_prod(sa, sa).add(two_prod(sb, sb)).sqrt();
@@ -280,6 +293,7 @@ pub extern "C" fn tanh(x: f64) -> f64 {
     if x == 0.0 || fabs(x) < 3.725290298461914e-9 {
         return x;
     }
+    if x.is_infinite() { return copysign(1.0, x); }
     if fabs(x) > 22.0 {
         return copysign(1.0 - black_box(f64::MIN_POSITIVE), x);
     }
@@ -333,6 +347,8 @@ pub extern "C" fn asinh(x: f64) -> f64 {
         return quiet(x);
     }
     let a = fabs(x);
+    // asinh(x)=x-x^3/6+...; below 2^-27 the correction is < half an ulp.
+    if a < super::basic::pow2(-27) { return x; }
     let r = if a > 268435456.0 {
         log_dd(DD::from(a)).add(LN2)
     } else {

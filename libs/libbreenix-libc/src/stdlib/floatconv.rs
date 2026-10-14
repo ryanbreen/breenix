@@ -7,9 +7,10 @@
 
 use core::cmp::Ordering;
 
-/// Enough 32-bit limbs for the largest scaled operand: an 800-digit long double input
-/// at the edge of its exponent range needs about 14,200 bits.
-const LIMBS: usize = 480;
+/// 11600 digits need <38600 bits. At the lowest binary128 decimal exponent,
+/// 5^(11600+4968) needs <38500 bits; division needs another 114 bits. 1280
+/// 32-bit limbs (40960 bits) cover both, including shift carry space.
+const LIMBS: usize = 1280;
 
 #[derive(Clone)]
 pub(crate) struct Big {

@@ -119,7 +119,9 @@ def main():
     for name, defs in sorted(defined.items()):
         if ('libm_math' in name or 'compiler_builtins4math' in name or 'compiler_builtins..math..' in name
                 or any(member.startswith('compiler_builtins') for member, _ in defs)
-                and name in {'ceil', 'floor', 'fma', 'fmod', 'fmodf', 'round', 'sqrt', 'trunc'}):
+                and (name in functions or any(member.startswith('compiler_builtins') and weak for member, weak in defs))
+                and not name.startswith('_')
+                and name not in {'memcpy', 'memmove', 'memset', 'memcmp', 'bcmp', 'strlen'}):
             problems.append(f'  forbidden foreign math symbol {name}')
     for name in sorted(functions):
         defs = defined.get(name)
