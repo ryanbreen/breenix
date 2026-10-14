@@ -1,4 +1,4 @@
-/* sys/mman.h: memory management, with Linux's values. */
+/* POSIX.1-2024 memory management. Bits match kernel/src/memory/vma.rs and kernel/src/syscall/memory_advice.rs. */
 #ifndef _SYS_MMAN_H
 #define _SYS_MMAN_H
 

@@ -4,10 +4,12 @@
 
 #include <__breenix/features.h>
 
-#define LITTLE_ENDIAN 1234
-#define BIG_ENDIAN 4321
-#define PDP_ENDIAN 3412
-#define BYTE_ORDER LITTLE_ENDIAN
+/* Tags and target byte order come from our compiler's predefined target
+ * metadata, independently of any libc. Both Breenix targets are little-endian. */
+#define LITTLE_ENDIAN __ORDER_LITTLE_ENDIAN__
+#define BIG_ENDIAN __ORDER_BIG_ENDIAN__
+#define PDP_ENDIAN __ORDER_PDP_ENDIAN__
+#define BYTE_ORDER __BYTE_ORDER__
 #define __BYTE_ORDER BYTE_ORDER
 #define __LITTLE_ENDIAN LITTLE_ENDIAN
 #define __BIG_ENDIAN BIG_ENDIAN

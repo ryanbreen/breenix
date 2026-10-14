@@ -1,4 +1,4 @@
-//! File system statistics: Linux's statfs and fstatfs over the kernel's statfs
+//! File system statistics: statfs and fstatfs over the Breenix kernel's statfs
 //! system calls, and POSIX.1-2024 statvfs and fstatvfs (<sys/statvfs.h>) built on them.
 
 mod nr {
@@ -44,10 +44,10 @@ struct Statvfs {
     f_fsid: u64,
     f_flag: u64,
     f_namemax: u64,
-    reserved: [i32; 6],
 }
 
-/// Linux's statfs flag saying the flags are filled in; statvfs does not report it.
+/// kernel/src/syscall/fs.rs sets bit 5 when filling statfs flags.
+/// It is kernel metadata, so the POSIX statvfs flags omit it.
 const ST_VALID: i64 = 0x20;
 
 #[no_mangle]
@@ -75,7 +75,6 @@ fn to_statvfs(s: &Statfs) -> Statvfs {
         f_fsid: (s.fsid[0] as u32 as u64) | ((s.fsid[1] as u32 as u64) << 32),
         f_flag: (s.flags & !ST_VALID) as u64,
         f_namemax: s.namelen as u64,
-        reserved: [0; 6],
     }
 }
 

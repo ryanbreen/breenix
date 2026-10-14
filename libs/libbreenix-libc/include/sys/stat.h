@@ -1,4 +1,4 @@
-/* sys/stat.h: POSIX.1-2024 file status, in the kernel's layout for each architecture. */
+/* POSIX.1-2024 file status. Mode bits and both architecture layouts match kernel/src/syscall/fs.rs. */
 #ifndef _SYS_STAT_H
 #define _SYS_STAT_H
 
@@ -17,7 +17,7 @@ typedef __breenix_off_t off_t;
 typedef __breenix_time_t time_t;
 
 #if defined(__x86_64__)
-/* Linux's x86_64 layout (144 bytes). */
+/* Kernel x86_64 Stat layout (144 bytes). */
 struct stat {
     dev_t st_dev;
     ino_t st_ino;
@@ -36,7 +36,7 @@ struct stat {
     long __unused[3];
 };
 #else
-/* Linux's asm-generic layout (128 bytes). */
+/* Kernel aarch64 Stat layout (128 bytes). */
 struct stat {
     dev_t st_dev;
     ino_t st_ino;

@@ -1,4 +1,4 @@
-/* sys/utsname.h: system name, in Linux's layout (six 65-byte fields). */
+/* POSIX.1-2024 system name. Six 65-byte fields match kernel/src/syscall/handlers.rs Utsname. */
 #ifndef _SYS_UTSNAME_H
 #define _SYS_UTSNAME_H
 

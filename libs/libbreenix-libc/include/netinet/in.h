@@ -1,4 +1,4 @@
-/* netinet/in.h: Internet address family. */
+/* POSIX.1-2024 Internet addresses. Family/protocol numbers match kernel/src/socket and kernel/src/syscall/socket.rs. */
 #ifndef _NETINET_IN_H
 #define _NETINET_IN_H
 

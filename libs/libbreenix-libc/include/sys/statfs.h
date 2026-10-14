@@ -1,4 +1,5 @@
-/* sys/statfs.h: Linux's file system statistics (a Linux header). */
+/* Breenix filesystem-statistics extension. Fields and spare words match
+ * kernel/src/syscall/fs.rs Statfs exactly; numbers/layout are not libc-derived. */
 #ifndef _SYS_STATFS_H
 #define _SYS_STATFS_H
 

@@ -1,4 +1,4 @@
-/* sys/wait.h: POSIX.1-2024 declarations for waiting, with Linux's status encoding. */
+/* POSIX.1-2024 waiting. Options and status bits match kernel/src/syscall/wait.rs. */
 #ifndef _SYS_WAIT_H
 #define _SYS_WAIT_H
 
@@ -14,7 +14,7 @@ typedef __breenix_id_t id_t;
 #define WCONTINUED 8
 #define WNOWAIT 0x1000000
 
-/* Linux status encoding: exit code in bits 8-15 with zero low bits; a terminating
+/* kernel/src/syscall/wait.rs encodes status as: exit code in bits 8-15 with zero low bits; a terminating
  * signal in bits 0-6 (bit 7 core dump); 0x7f in the low byte when stopped, with the
  * stop signal above it; 0xffff when continued. */
 #define WEXITSTATUS(s) (((s) & 0xff00) >> 8)

@@ -1,4 +1,4 @@
-/* sys/resource.h: resource limits, priorities and usage, with Linux's values. */
+/* POSIX.1-2024 resource control. Limit indices match kernel/src/process/limits.rs; selectors match kernel/src/syscall/handlers.rs. */
 #ifndef _SYS_RESOURCE_H
 #define _SYS_RESOURCE_H
 

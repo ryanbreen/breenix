@@ -18,6 +18,8 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
+#include <sys/sysmacros.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -180,3 +182,11 @@ SIZE(ucontext_t, 304); ALIGN(ucontext_t, 8);
 AT(ucontext_t, uc_mcontext, 40);
 AT(ucontext_t, uc_sigmask, 296);
 #endif
+
+/* POSIX statvfs has the eleven LP64 fields src/statfs.rs implements; no
+ * unused foreign-layout reservation. Device masks match the kernel's 12/20 bits. */
+SIZE(struct statvfs, 88);
+AT(struct statvfs, f_flag, 72);
+AT(struct statvfs, f_namemax, 80);
+_Static_assert(major(makedev(0xabc, 0xdef01)) == 0xabc, "kernel device major");
+_Static_assert(minor(makedev(0xabc, 0xdef01)) == 0xdef01, "kernel device minor");

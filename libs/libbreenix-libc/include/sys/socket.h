@@ -1,4 +1,4 @@
-/* sys/socket.h: sockets, with Linux's values. */
+/* POSIX.1-2024 sockets. Encodings match kernel/src/syscall/socket.rs and kernel/src/socket/{addr,opts}.rs. */
 #ifndef _SYS_SOCKET_H
 #define _SYS_SOCKET_H
 

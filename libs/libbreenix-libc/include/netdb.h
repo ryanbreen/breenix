@@ -1,4 +1,4 @@
-/* netdb.h: network database operations. */
+/* POSIX.1-2024 network database. Flags/error IDs match this implementation in libs/libbreenix-libc/src/netdb.rs. */
 #ifndef _NETDB_H
 #define _NETDB_H
 

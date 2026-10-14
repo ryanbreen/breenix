@@ -1,4 +1,4 @@
-/* termios.h: terminal I/O, in Linux's user layout and values. */
+/* POSIX.1-2024 terminal I/O. Layout, flag bits and control indices match kernel/src/tty/termios.rs. */
 #ifndef _TERMIOS_H
 #define _TERMIOS_H
 

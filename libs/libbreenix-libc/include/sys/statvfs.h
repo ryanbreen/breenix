@@ -1,4 +1,4 @@
-/* sys/statvfs.h: file system information. */
+/* POSIX.1-2024 filesystem information. Eleven fields are implemented in src/statfs.rs; ST bits match kernel statfs flags. */
 #ifndef _SYS_STATVFS_H
 #define _SYS_STATVFS_H
 
@@ -19,7 +19,6 @@ struct statvfs {
     unsigned long f_fsid;
     unsigned long f_flag;
     unsigned long f_namemax;
-    int __reserved[6];
 };
 
 #define ST_RDONLY 1

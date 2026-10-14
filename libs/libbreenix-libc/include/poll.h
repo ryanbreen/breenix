@@ -1,4 +1,4 @@
-/* poll.h: definitions for poll(), with Linux's event bits. */
+/* POSIX.1-2024 poll. Event bits match kernel/src/syscall/handlers.rs and kernel/src/ipc/poll.rs. */
 #ifndef _POLL_H
 #define _POLL_H
 

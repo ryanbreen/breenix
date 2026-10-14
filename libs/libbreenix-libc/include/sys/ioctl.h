@@ -1,4 +1,4 @@
-/* sys/ioctl.h: device control, with the Linux request numbers the kernel uses. */
+/* Device control. Request numbers match kernel/src/tty and kernel/src/syscall/handlers.rs. */
 #ifndef _SYS_IOCTL_H
 #define _SYS_IOCTL_H
 

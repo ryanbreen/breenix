@@ -1,4 +1,4 @@
-/* sys/param.h: system parameters (a BSD header). */
+/* Breenix system parameter aliases; limits come from this implementation in limits.h. */
 #ifndef _SYS_PARAM_H
 #define _SYS_PARAM_H
 
@@ -7,11 +7,13 @@
 #include <sys/types.h>
 
 #define MAXPATHLEN PATH_MAX
-#define MAXHOSTNAMELEN 64
-#define MAXSYMLINKS 40
-#define NOFILE 1024
+#define MAXHOSTNAMELEN HOST_NAME_MAX
+#define MAXSYMLINKS SYMLOOP_MAX
+#define NOFILE OPEN_MAX
 #define NGROUPS NGROUPS_MAX
-#define NBBY 8
+#define NBBY CHAR_BIT
+/* Kernel CPU-time accounting uses 100 ticks/s (sys_times); device blocks
+ * are 512-byte sectors (kernel/src/block); HZ is rusage.rs CLK_TCK. */
 #define HZ 100
 #define DEV_BSIZE 512
 

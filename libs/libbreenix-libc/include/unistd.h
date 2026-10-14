@@ -56,7 +56,7 @@ typedef __INTPTR_TYPE__ intptr_t;
 #define F_TLOCK 2
 #define F_TEST 3
 
-/* pathconf and fpathconf names (Linux values). */
+/* Reserved sequential query IDs selected by this implementation. */
 #define _PC_LINK_MAX 0
 #define _PC_MAX_CANON 1
 #define _PC_MAX_INPUT 2
@@ -67,7 +67,8 @@ typedef __INTPTR_TYPE__ intptr_t;
 #define _PC_NO_TRUNC 7
 #define _PC_VDISABLE 8
 
-/* sysconf names (Linux values). */
+/* Query IDs preserve this implementation's src/lib.rs sysconf dispatch ABI.
+ * Unhandled queries return -1; aliases share an identifier. */
 #define _SC_ARG_MAX 0
 #define _SC_CHILD_MAX 1
 #define _SC_CLK_TCK 2
@@ -102,7 +103,7 @@ typedef __INTPTR_TYPE__ intptr_t;
 #define _SC_HOST_NAME_MAX 180
 #define _SC_MONOTONIC_CLOCK 149
 
-/* confstr names. */
+/* Our first confstr query ID: the default search path. */
 #define _CS_PATH 0
 
 __BREENIX_BEGIN_DECLS

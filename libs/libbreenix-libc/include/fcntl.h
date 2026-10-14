@@ -1,4 +1,4 @@
-/* fcntl.h: POSIX.1-2024 file control options, with the kernel's Linux values. */
+/* POSIX.1-2024 file control. Flag/command numbers match kernel/src/syscall/fs.rs and kernel/src/ipc/fd. */
 #ifndef _FCNTL_H
 #define _FCNTL_H
 
