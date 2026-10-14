@@ -76,15 +76,17 @@ unsafe fn c_bytes<'a>(s: *const u8) -> &'a [u8] {
 }
 
 /// A diagnostic line built in a fixed buffer and written to fd 2 in one write.
+// One POSIX minimum PIPE_BUF-sized write; reserve three quarters for the message.
+const DIAG_SIZE: usize = 512;
 struct Diag {
-    buf: [u8; 512],
+    buf: [u8; DIAG_SIZE],
     len: usize,
 }
 
 impl Diag {
     fn new() -> Self {
         Diag {
-            buf: [0; 512],
+            buf: [0; DIAG_SIZE],
             len: 0,
         }
     }
@@ -97,7 +99,12 @@ impl Diag {
     }
     unsafe fn send(&mut self) {
         self.buf[self.len] = b'\n';
-        let _ = write(2, self.buf.as_ptr(), self.len + 1);
+        let count = self.len + 1;
+        if write(2, self.buf.as_ptr(), count) != count as isize {
+            // XSH getopt requires failed diagnostics to set stderr's error indicator.
+            // The diagnostic itself remains a raw write, per the FILES contract.
+            crate::stdio::file::stderr_write_failed();
+        }
     }
 }
 
@@ -108,7 +115,7 @@ unsafe fn program(argv: *const *mut u8) -> &'static [u8] {
     } else {
         // Reserve space for the message and option even with a long argv[0].
         let bytes = c_bytes(name);
-        &bytes[..bytes.len().min(128)]
+        &bytes[..bytes.len().min(DIAG_SIZE / 4)]
     }
 }
 

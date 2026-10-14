@@ -40,8 +40,9 @@ struct Ext2BlockGroupDesc {
 mod directory_extension;
 use block::{BlockDevice, BlockError};
 struct Disk {
-    bytes: Mutex<[[u8; 512]; 4]>,
+    bytes: Mutex<[[u8; 512]; 5]>,
     writes: Mutex<usize>,
+    trace: Mutex<Vec<u64>>,
     fail: usize,
     restore_fail: bool,
 }
@@ -50,7 +51,7 @@ impl BlockDevice for Disk {
         512
     }
     fn num_blocks(&self) -> u64 {
-        4
+        5
     }
     fn flush(&self) -> Result<(), BlockError> {
         Ok(())
@@ -62,6 +63,7 @@ impl BlockDevice for Disk {
     fn write_block(&self, n: u64, b: &[u8]) -> Result<(), BlockError> {
         let mut count = self.writes.lock();
         *count += 1;
+        self.trace.lock().push(n);
         if self.restore_fail && *count > self.fail && n == 1 {
             return Err(BlockError::IoError);
         }
@@ -78,8 +80,9 @@ impl BlockDevice for Disk {
 fn partial_inode_or_pointer_failure_restores_before_recycling() {
     for fail in 1..=3 {
         let disk = Disk {
-            bytes: Mutex::new([[0; 512]; 4]),
+            bytes: Mutex::new([[0; 512]; 5]),
             writes: Mutex::new(0),
+            trace: Mutex::new(Vec::new()),
             fail,
             restore_fail: false,
         };
@@ -90,21 +93,22 @@ fn partial_inode_or_pointer_failure_restores_before_recycling() {
         )
         .unwrap();
         assert_eq!(transaction.identity(), disk.identity());
-        assert_eq!(transaction.num_blocks(), 4);
+        assert_eq!(transaction.num_blocks(), 5);
         transaction.flush().unwrap();
         transaction.write_block(0, &[1; 512]).unwrap();
         transaction.write_block(1, &[2; 512]).unwrap();
         transaction.write_block(2, &[3; 512]).unwrap();
-        assert_eq!(*disk.bytes.lock(), [[0; 512]; 4]);
-        assert_eq!(transaction.publish(), Err(true));
-        assert_eq!(*disk.bytes.lock(), [[0; 512]; 4]);
+        assert_eq!(*disk.bytes.lock(), [[0; 512]; 5]);
+        assert_eq!(transaction.publish(&[]), Err(true));
+        assert_eq!(*disk.bytes.lock(), [[0; 512]; 5]);
     }
 }
 #[test]
 fn failed_reference_restore_retains_allocation() {
     let disk = Disk {
-        bytes: Mutex::new([[0; 512]; 4]),
+        bytes: Mutex::new([[0; 512]; 5]),
         writes: Mutex::new(0),
+        trace: Mutex::new(Vec::new()),
         fail: 2,
         restore_fail: true,
     };
@@ -116,6 +120,38 @@ fn failed_reference_restore_retains_allocation() {
     .unwrap();
     transaction.write_block(0, &[1; 512]).unwrap();
     transaction.write_block(1, &[2; 512]).unwrap();
-    assert_eq!(transaction.publish(), Err(false));
+    assert_eq!(transaction.publish(&[]), Err(false));
     assert_eq!(disk.bytes.lock()[0], [1; 512]);
+}
+
+#[test]
+fn publish_initializes_double_indirect_children_before_references() {
+    let disk = Disk {
+        bytes: Mutex::new([[0; 512]; 5]),
+        writes: Mutex::new(0),
+        trace: Mutex::new(Vec::new()),
+        fail: usize::MAX,
+        restore_fail: false,
+    };
+    let transaction = directory_extension::Extension::new(
+        &disk,
+        &Ext2Superblock,
+        &[Ext2BlockGroupDesc { bg_block_bitmap: 0 }],
+    )
+    .unwrap();
+    transaction.write_block(0, &[1; 512]).unwrap();
+    let mut root = [0; 512];
+    root[..4].copy_from_slice(&2u32.to_le_bytes());
+    let mut child = [0; 512];
+    child[..4].copy_from_slice(&3u32.to_le_bytes());
+    // The parent is staged first, as set_block_num does when adding a new subtree.
+    transaction.write_block(1, &root).unwrap();
+    transaction.write_block(2, &child).unwrap();
+    transaction.write_block(3, &[0x55; 512]).unwrap();
+    transaction.write_block(4, &[0x77; 512]).unwrap();
+    let mut addresses = [0; 15];
+    addresses[13] = 1;
+    let order = transaction.block_order(addresses, 12 + 128, 3).unwrap();
+    transaction.publish(&order).unwrap();
+    assert_eq!(*disk.trace.lock(), [0, 3, 2, 1, 4]);
 }

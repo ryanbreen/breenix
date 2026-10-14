@@ -2,7 +2,8 @@
 //! XBD 9). Flags and errors are assigned by this implementation: consecutive flag bits
 //! and consecutive nonzero error codes in declaration order; REG_STARTEND is our extension.
 //!
-//! Matching is byte-oriented, which is what XBD 9 specifies for the C and POSIX locales.
+//! Matching consumes bytes in C/POSIX and decoded characters in C.UTF-8; match offsets
+//! remain byte offsets. Charset and classification are supplied by LOCALE.
 //! `regoff_t` is `long`, as POSIX.1-2024 requires (it must hold any ssize_t value).
 
 mod buf;

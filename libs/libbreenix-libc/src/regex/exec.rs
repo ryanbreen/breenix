@@ -20,17 +20,18 @@ const STEP_BUDGET: u64 = 50_000_000;
 
 fn holds(prog: &Prog, t: &Text, a: Assert, pos: usize) -> bool {
     let end = t.s.len();
-    let prev = if pos > t.from {
-        Some(t.s[pos - 1])
-    } else {
-        None
-    };
-    let next = t.s.get(pos).copied();
-    let prev_word = prev.is_some_and(is_word);
-    let next_word = next.is_some_and(is_word);
+    let prev = if prog.utf8 {
+        (pos.saturating_sub(4).max(t.from)..pos).rev().find_map(|i| {
+            crate::fnmatch::unit(t.s, i).filter(|&(_, n)| i + n == pos).map(|(c, _)| c)
+        })
+    } else if pos > t.from { Some(t.s[pos - 1] as u32) } else { None };
+    let next = text_unit(prog, t.s, pos).map(|(c, _)| c);
+    let word = |c| if prog.utf8 { c == b'_' as u32 || crate::fnmatch::in_class(b"alnum", c).unwrap_or(false) } else { is_word(c as u8) };
+    let prev_word = prev.is_some_and(word);
+    let next_word = next.is_some_and(word);
     match a {
-        Assert::LineStart => (pos == t.from && !t.notbol) || (prog.newline && prev == Some(b'\n')),
-        Assert::LineEnd => (pos == end && !t.noteol) || (prog.newline && next == Some(b'\n')),
+        Assert::LineStart => (pos == t.from && !t.notbol) || (prog.newline && prev == Some(b'\n' as u32)),
+        Assert::LineEnd => (pos == end && !t.noteol) || (prog.newline && next == Some(b'\n' as u32)),
         Assert::WordBoundary => prev_word != next_word,
         Assert::NotWordBoundary => prev_word == next_word,
         Assert::WordStart => !prev_word && next_word,
@@ -40,20 +41,51 @@ fn holds(prog: &Prog, t: &Text, a: Assert, pos: usize) -> bool {
     }
 }
 
-/// Does the one-byte instruction `inst` take byte `c`?
-fn takes(prog: &Prog, inst: Inst, c: u8) -> bool {
+fn text_unit(prog: &Prog, bytes: &[u8], at: usize) -> Option<(u32, usize)> {
+    if prog.utf8 { crate::fnmatch::unit(bytes, at) } else { bytes.get(at).map(|&c| (c as u32, 1)) }
+}
+
+/// Does this consuming instruction take the decoded character?
+fn takes(prog: &Prog, inst: Inst, c: u32) -> bool {
     match inst {
-        Inst::Byte(b) => b == c,
-        Inst::Set(i) => set_has(&prog.sets.as_slice()[i as usize], c),
+        Inst::Byte(b) => b as u32 == c,
+        Inst::Rune(r) => crate::fnmatch::same(r, c, prog.icase),
+        Inst::Bracket(start, end, no_newline) => {
+            if no_newline && c == b'\n' as u32 { return false; }
+            let mut bytes = [0; 4];
+            let Some(n) = crate::locale::encode(c, &mut bytes) else { return false; };
+            crate::fnmatch::matches(&prog.brackets.as_slice()[start as usize..end as usize], &bytes[..n],
+                crate::fnmatch::FNM_NOESCAPE | crate::fnmatch::FNM_REGEX_BRACKET |
+                if prog.icase { crate::fnmatch::FNM_CASEFOLD } else { 0 })
+        }
+        Inst::WideClass(kind, negate) => {
+            let hit = if kind == 0 { c == b'_' as u32 || crate::fnmatch::in_class(b"alnum", c).unwrap_or(false) }
+                else { crate::fnmatch::in_class(b"space", c).unwrap_or(false) };
+            hit != negate && !(negate && prog.newline && c == b'\n' as u32)
+        }
+        Inst::Set(i) => c <= 255 && set_has(&prog.sets.as_slice()[i as usize], c as u8),
         Inst::Any => true,
-        Inst::AnyButNewline => c != b'\n',
+        Inst::AnyButNewline => c != b'\n' as u32,
         _ => false,
     }
 }
 
+fn match_length(prog: &Prog, t: &Text, caps: &[isize], slot: usize, absent: isize) -> isize {
+    if caps[slot] < 0 || caps[slot + 1] < 0 { return absent; }
+    if !prog.utf8 { return caps[slot + 1] - caps[slot]; }
+    let mut pos = caps[slot] as usize;
+    let mut count = 0;
+    while pos < caps[slot + 1] as usize {
+        let Some((_, width)) = text_unit(prog, t.s, pos) else { return absent; };
+        pos += width;
+        count += 1;
+    }
+    count
+}
+
 // XBD 9.1: empty participation outranks nonparticipation; earlier subexpressions
 // take precedence among equal whole matches. Minimal repetitions select shortest.
-fn better(prog: &Prog, found: bool, best: &[isize], candidate: &[isize]) -> bool {
+fn better(prog: &Prog, t: &Text, found: bool, best: &[isize], candidate: &[isize]) -> bool {
     if !found {
         return true;
     }
@@ -62,13 +94,7 @@ fn better(prog: &Prog, found: bool, best: &[isize], candidate: &[isize]) -> bool
     }
     for &tag in prog.minimal.as_slice() {
         let slot = 2 * (prog.nsub + 1) + 2 * tag as usize;
-        let len = |c: &[isize]| {
-            if c[slot] < 0 {
-                isize::MAX
-            } else {
-                c[slot + 1] - c[slot]
-            }
-        };
+        let len = |c: &[isize]| match_length(prog, t, c, slot, isize::MAX);
         if len(candidate) != len(best) {
             return len(candidate) < len(best);
         }
@@ -78,13 +104,7 @@ fn better(prog: &Prog, found: bool, best: &[isize], candidate: &[isize]) -> bool
     }
     for group in 1..=prog.nsub {
         let k = 2 * group;
-        let len = |c: &[isize]| {
-            if c[k] < 0 || c[k + 1] < 0 {
-                -1
-            } else {
-                c[k + 1] - c[k]
-            }
-        };
+        let len = |c: &[isize]| match_length(prog, t, c, k, -1);
         if len(candidate) != len(best) {
             return len(candidate) > len(best);
         }
@@ -112,6 +132,7 @@ fn backtrack(prog: &Prog, t: &Text, caps: &mut [isize]) -> Result<bool, i32> {
     let end = t.s.len();
     let mut steps: u64 = 0;
     for start in t.from..=end {
+        if start < end && text_unit(prog, t.s, start).is_none() { continue; }
         let mut found = false;
         work.as_mut_slice().fill(-1);
         stack.truncate(0);
@@ -161,7 +182,7 @@ fn backtrack(prog: &Prog, t: &Text, caps: &mut [isize]) -> Result<bool, i32> {
                 }
                 match inst {
                     Inst::Match => {
-                        if better(prog, found, caps, work.as_slice()) {
+                        if better(prog, t, found, caps, work.as_slice()) {
                             caps.copy_from_slice(work.as_slice());
                             found = true;
                         }
@@ -214,23 +235,32 @@ fn backtrack(prog: &Prog, t: &Text, caps: &mut [isize]) -> Result<bool, i32> {
                         if a < 0 || b < 0 {
                             break;
                         }
-                        let len = (b - a) as usize;
-                        if pos + len > end {
-                            break;
+                        if prog.utf8 && prog.icase {
+                            let (mut left, mut right) = (a as usize, pos);
+                            let mut equal = true;
+                            while left < b as usize {
+                                let Some((x, nx)) = text_unit(prog, t.s, left) else { equal = false; break; };
+                                let Some((y, ny)) = text_unit(prog, t.s, right) else { equal = false; break; };
+                                if !crate::fnmatch::same(x, y, true) { equal = false; break; }
+                                left += nx; right += ny;
+                            }
+                            if !equal { break; }
+                            pos = right;
+                        } else {
+                            let len = (b - a) as usize;
+                            if pos + len > end { break; }
+                            let same = (0..len).all(|i| {
+                                let (x, y) = (t.s[a as usize + i], t.s[pos + i]);
+                                x == y || (prog.icase && x.eq_ignore_ascii_case(&y))
+                            });
+                            if !same { break; }
+                            pos += len;
                         }
-                        let same = (0..len).all(|i| {
-                            let (x, y) = (t.s[a as usize + i], t.s[pos + i]);
-                            x == y || (prog.icase && x.eq_ignore_ascii_case(&y))
-                        });
-                        if !same {
-                            break;
-                        }
-                        pos += len;
                         pc += 1;
                     }
                     _ => {
-                        if pos < end && takes(prog, inst, t.s[pos]) {
-                            pos += 1;
+                        if let Some((_, width)) = text_unit(prog, t.s, pos).filter(|&(c, _)| takes(prog, inst, c)) {
+                            pos += width;
                             pc += 1;
                         } else {
                             break;

@@ -7,7 +7,6 @@ mod pthread {
     pub fn set_errno(e: i32) {
         ERRNO.with(|c| c.set(e));
     }
-    #[allow(dead_code)] // stdlib's errno re-export; these tests read errno through set_errno's effects
     pub fn errno() -> i32 {
         ERRNO.with(|c| c.get())
     }
@@ -212,7 +211,9 @@ fn review_math_extremes_and_flags() {
     let nearest = FE_TONEAREST;
     fesetround(nearest);
     assert!(ulps(log(1e308), 709.1962086421661) <= 1);
+    pthread::set_errno(0);
     assert!(atan(1e308).is_finite());
+    assert_eq!(pthread::errno(), 0);
     assert!(atan2(1.0, 1e308) > 0.0);
     assert_eq!(pow(2.0, 1e308), f64::INFINITY);
     for f in [atan, asin, log1p, asinh] { assert_eq!(f(f64::from_bits(1)).to_bits(), 1); }

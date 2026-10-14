@@ -298,6 +298,13 @@ fn wide_scanf_reads_wide_strings_and_streams() {
             4
         );
         assert_eq!((i, &word[..4], wc, &set[..3]), (42, &[104, 0xe9, 108, 0][..], 0x20ac, &[0xe9, 0xe9, 0][..]));
+        // A wide whitespace directive and conversion-leading skip both use iswspace.
+        i = 0;
+        assert_eq!(scan::swscanf([0x3000, 53, 0].as_ptr(), [32, 37, 100, 0].as_ptr(), &mut i), 1);
+        assert_eq!(i, 5);
+        i = 0;
+        assert_eq!(scan::swscanf([0x3000, 54, 0].as_ptr(), [37, 100, 0].as_ptr(), &mut i), 1);
+        assert_eq!(i, 6);
         // %s without l stores the multibyte encoding.
         let mut bytes = [0u8; 8];
         assert_eq!(scan::swscanf([104, 0xe9, 0].as_ptr(), [37, 115, 0].as_ptr(), bytes.as_mut_ptr()), 1);

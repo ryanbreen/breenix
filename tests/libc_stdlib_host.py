@@ -98,8 +98,23 @@ fn random_repeats_but_has_its_own_feedback_state() {
     let a: Vec<_> = (0..100).map(|_| random()).collect();
     srandom(17);
     assert_eq!(a, (0..100).map(|_| random()).collect::<Vec<_>>());
+    assert!(a.iter().all(|&x| (0..=i32::MAX as i64).contains(&x)));
     srand(17);
     assert_ne!(a, (0..100).map(|_| rand() as i64).collect::<Vec<_>>());
+}
+#[test]
+fn seed48_can_restore_its_returned_seed_buffer() {
+    unsafe {
+        stdlib::rand::srand48(0);
+        let mut seed = [1u16,2,3];
+        let old = stdlib::rand::seed48(seed.as_mut_ptr());
+        assert_eq!(*old.cast::<[u16;3]>(), [0x330e,0,0]);
+        stdlib::rand::srand48(17);
+        assert_eq!(*old.cast::<[u16;3]>(), [0x330e,0,0]);
+        let mut expected = [0x330eu16,0,0];
+        stdlib::rand::seed48(old);
+        assert_eq!(stdlib::rand::drand48(), stdlib::rand::erand48(expected.as_mut_ptr()));
+    }
 }
 #[test]
 fn concurrent_48bit_initialization_and_generation() {

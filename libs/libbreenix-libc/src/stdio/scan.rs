@@ -6,8 +6,10 @@ use super::{
 };
 use crate::stdlib::numscan::{scan_f32, scan_f64, scan_int, scan_long_double, Chars};
 use core::{ffi::VaList, ptr};
-fn whitespace(c: u32) -> bool {
-    c == 32 || (9..=13).contains(&c)
+fn whitespace(c: u32, wide_input: bool) -> bool {
+    // C17 7.29.2.2: wide scanf uses the locale's iswspace classification.
+    if wide_input { crate::locale::classify::iswspace(c) != 0 }
+    else { c == 32 || (9..=13).contains(&c) }
 }
 struct StringChars {
     p: *const u8,
@@ -116,8 +118,8 @@ unsafe fn in_set(fmt: &Format, start: usize, end: usize, c: u32) -> bool {
     }
     false
 }
-fn skip(s: &mut dyn Chars) {
-    while s.peek().is_some_and(whitespace) {
+fn skip(s: &mut dyn Chars, wide_input: bool) {
+    while s.peek().is_some_and(|c| whitespace(c, wide_input)) {
         s.bump();
     }
 }
@@ -160,8 +162,8 @@ pub(crate) unsafe fn vscan(
     while fmt.at(i) != 0 {
         let c = fmt.at(i);
         i += 1;
-        if whitespace(c) {
-            skip(s);
+        if whitespace(c, wide_input) {
+            skip(s, wide_input);
             continue;
         }
         if c != 37 {
@@ -175,7 +177,7 @@ pub(crate) unsafe fn vscan(
             i += 1;
             // %% is a conversion specification, so leading white space is skipped
             // (C17 7.21.6.2p8).
-            skip(s);
+            skip(s, wide_input);
             match s.peek() {
                 Some(37) => s.bump(),
                 other => return stopped(assigned, completed, other.is_none()),
@@ -268,7 +270,7 @@ pub(crate) unsafe fn vscan(
             i += 1;
         }
         if c != b'c' && c != b'[' {
-            skip(s);
+            skip(s, wide_input);
         }
         let input_missing = s.peek().is_none();
         if input_missing {
@@ -360,7 +362,7 @@ pub(crate) unsafe fn vscan(
                 while units < width {
                     let Some(k) = s.peek() else { break };
                     let matches = match c {
-                        b's' => !whitespace(k),
+                        b's' => !whitespace(k, wide_input),
                         b'[' => in_set(fmt, set_start, set_end, k) != invert,
                         _ => true,
                     };

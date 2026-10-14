@@ -10,6 +10,7 @@ pub(super) struct Extension<'a, B: BlockDevice + ?Sized> {
     device: &'a B,
     sectors: spin::Mutex<Vec<(u64, Vec<u8>, Vec<u8>)>>,
     bitmaps: Vec<(u64, u64)>,
+    sectors_per_block: u64,
 }
 impl<'a, B: BlockDevice + ?Sized> Extension<'a, B> {
     pub(super) fn new(
@@ -17,6 +18,15 @@ impl<'a, B: BlockDevice + ?Sized> Extension<'a, B> {
         sb: &Ext2Superblock,
         groups: &[Ext2BlockGroupDesc],
     ) -> Result<Self, &'static str> {
+        let unit = device.block_size();
+        if unit == 0
+            || unit > 4096
+            || unit % 4 != 0
+            || sb.block_size() < unit
+            || sb.block_size() % unit != 0
+        {
+            return Err("Invalid directory block geometry");
+        }
         let mut bitmaps = Vec::new();
         bitmaps
             .try_reserve_exact(groups.len())
@@ -30,6 +40,7 @@ impl<'a, B: BlockDevice + ?Sized> Extension<'a, B> {
             device,
             sectors: spin::Mutex::new(Vec::new()),
             bitmaps,
+            sectors_per_block: scale,
         })
     }
     fn bitmap(&self, sector: u64) -> bool {
@@ -37,8 +48,86 @@ impl<'a, B: BlockDevice + ?Sized> Extension<'a, B> {
             .iter()
             .any(|&(start, end)| sector >= start && sector < end)
     }
-    pub(super) fn publish(&self) -> Result<(), bool> {
-        let sectors = self.sectors.lock();
+    /// Resolve this append's addressing chain from staged bytes, in child-first order.
+    /// i_block has twelve direct pointers followed by single/double/triple roots.
+    pub(super) fn block_order(
+        &self,
+        addresses: [u32; 15],
+        logical: u32,
+        data: u32,
+    ) -> Result<[u32; 4], BlockError> {
+        let mut order = [data, 0, 0, 0];
+        if logical < 12 {
+            return if addresses[logical as usize] == data {
+                Ok(order)
+            } else {
+                Err(BlockError::IoError)
+            };
+        }
+        let pointers = (self.sectors_per_block * self.block_size() as u64 / 4) as u32;
+        if pointers == 0 {
+            return Err(BlockError::IoError);
+        }
+        let mut relative = logical - 12;
+        let (root, depth) = if relative < pointers {
+            (12, 1)
+        } else {
+            relative -= pointers;
+            if relative < pointers * pointers {
+                (13, 2)
+            } else {
+                relative -= pointers * pointers;
+                (14, 3)
+            }
+        };
+        let mut block = addresses[root];
+        let mut divisor = pointers.pow(depth - 1);
+        let mut sector = [0u8; 4096];
+        for level in 0..depth as usize {
+            if block == 0 || self.block_size() > sector.len() {
+                return Err(BlockError::IoError);
+            }
+            order[depth as usize - level] = block;
+            let index = relative / divisor;
+            if index >= pointers {
+                return Err(BlockError::IoError);
+            }
+            relative %= divisor;
+            let offset = index as usize * 4;
+            let number =
+                block as u64 * self.sectors_per_block + (offset / self.block_size()) as u64;
+            self.read_block(number, &mut sector[..self.block_size()])?;
+            let at = offset % self.block_size();
+            block = u32::from_le_bytes(
+                sector[at..at + 4]
+                    .try_into()
+                    .map_err(|_| BlockError::IoError)?,
+            );
+            divisor = (divisor / pointers).max(1);
+        }
+        if block != data {
+            return Err(BlockError::IoError);
+        }
+        Ok(order)
+    }
+
+    pub(super) fn publish(&self, blocks: &[u32]) -> Result<(), bool> {
+        let mut sectors = self.sectors.lock();
+        // Staged initialization writes may later be replaced by pointer writes.
+        // First-seen sector order is therefore insufficient for safe publication.
+        sectors.sort_unstable_by_key(|(sector, _, _)| {
+            let rank = if self.bitmap(*sector) {
+                0
+            } else {
+                blocks
+                    .iter()
+                    .position(|&block| {
+                        block != 0 && *sector / self.sectors_per_block == block as u64
+                    })
+                    .map_or(blocks.len() + 1, |index| index + 1)
+            };
+            (rank, *sector)
+        });
         let mut attempted = 0;
         for (sector, _, new) in sectors.iter() {
             attempted += 1;

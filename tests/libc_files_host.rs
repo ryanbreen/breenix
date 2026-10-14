@@ -5,8 +5,12 @@ mod getopt;
 #[path = "../libs/libbreenix-libc/src/regex/mod.rs"]
 mod regex;
 mod env {
-    pub fn getenv_bytes(_: &[u8]) -> Option<&'static [u8]> {
-        None
+    pub fn getenv_bytes(name: &[u8]) -> Option<&'static [u8]> {
+        let key = std::ffi::CString::new(name).unwrap();
+        unsafe {
+            let value = crate::getenv(key.as_ptr().cast());
+            if value.is_null() { None } else { Some(core::ffi::CStr::from_ptr(value.cast()).to_bytes()) }
+        }
     }
 }
 #[test]
@@ -150,7 +154,7 @@ unsafe extern "C" fn stat(path: *const u8, buf: *mut u8) -> i32 {
 mod regex_regressions {
 
     use crate::regex::*;
-    fn matched(pattern: &str, text: &str, flags: i32) -> std::vec::Vec<(isize, isize)> {
+    pub(super) fn matched(pattern: &str, text: &str, flags: i32) -> std::vec::Vec<(isize, isize)> {
         let p = std::ffi::CString::new(pattern).unwrap();
         let t = std::ffi::CString::new(text).unwrap();
         unsafe {
@@ -267,16 +271,16 @@ mod dirent_regressions {
             threads.push(std::thread::spawn(move || {
                 let mut seen = std::vec::Vec::new();
                 loop {
-                    let mut entry: Dirent = unsafe { core::mem::zeroed() };
+                    let mut entry = core::mem::MaybeUninit::<Dirent>::uninit();
                     let mut result = null_mut();
                     assert_eq!(
-                        unsafe { readdir_r(d as *mut Dir, &mut entry, &mut result) },
+                        unsafe { readdir_r(d as *mut Dir, entry.as_mut_ptr(), &mut result) },
                         0
                     );
                     if result.is_null() {
                         break;
                     }
-                    seen.push(entry.d_ino);
+                    seen.push(unsafe { entry.assume_init() }.d_ino);
                 }
                 seen
             }));
@@ -369,5 +373,92 @@ mod glob_regressions {
             );
             globfree(&mut result);
         }
+    }
+}
+
+mod stdio {
+    pub mod file {
+        pub static ERROR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        pub unsafe fn stderr_write_failed() {
+            ERROR.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+#[test]
+fn diagnostic_write_failure_marks_stderr() {
+    unsafe {
+        extern "C" {
+            fn pipe(fds: *mut i32) -> i32;
+            fn dup(fd: i32) -> i32;
+            fn dup2(fd: i32, dest: i32) -> i32;
+            fn close(fd: i32) -> i32;
+        }
+        let mut fds = [0; 2];
+        assert_eq!(pipe(fds.as_mut_ptr()), 0);
+        let saved = dup(2);
+        assert_eq!(dup2(fds[0], 2), 2); // Read-only fd: raw write must fail.
+        stdio::file::ERROR.store(false, std::sync::atomic::Ordering::Relaxed);
+        let mut program = *b"test\0";
+        let mut option = *b"-z\0";
+        let argv = [program.as_mut_ptr(), option.as_mut_ptr(), core::ptr::null_mut()];
+        getopt::optind = 0;
+        getopt::opterr = 1;
+        let result = getopt::getopt(2, argv.as_ptr(), b"x\0".as_ptr());
+        assert_eq!(dup2(saved, 2), 2);
+        close(saved); close(fds[0]); close(fds[1]);
+        assert_eq!(result, b'?' as i32);
+        assert!(stdio::file::ERROR.load(std::sync::atomic::Ordering::Relaxed));
+    }
+}
+
+extern "C" {
+    fn newlocale(mask: i32, name: *const u8, base: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
+    fn uselocale(locale: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
+    fn freelocale(locale: *mut core::ffi::c_void);
+    fn getenv(name: *const u8) -> *mut u8;
+    fn malloc(n: usize) -> *mut u8;
+    fn free(p: *mut u8);
+    fn clock_gettime(id: i32, out: *mut u8) -> i32;
+}
+mod pthread {
+    use core::cell::UnsafeCell;
+    use core::ffi::c_void;
+    std::thread_local! { static LOCALE: UnsafeCell<*mut c_void> = const { UnsafeCell::new(core::ptr::null_mut()) }; }
+    pub unsafe fn locale_slot() -> *mut *mut c_void { LOCALE.with(|slot| slot.get()) }
+    pub fn set_errno(e: i32) { unsafe { *crate::__errno_location() = e; } }
+    pub struct RecursiveLock(core::sync::atomic::AtomicBool);
+    impl RecursiveLock {
+        pub const fn new() -> Self { Self(core::sync::atomic::AtomicBool::new(false)) }
+        pub fn lock(&self) {
+            while self.0.swap(true, core::sync::atomic::Ordering::Acquire) { std::thread::yield_now(); }
+        }
+        pub fn unlock(&self) { self.0.store(false, core::sync::atomic::Ordering::Release); }
+    }
+}
+#[path = "../libs/libbreenix-libc/src/locale/mod.rs"]
+mod locale;
+
+#[test]
+fn utf8_wildcards_brackets_classes_and_case() {
+    unsafe {
+        // LOCALE's implementation numbers LC_CTYPE as 2, following header order.
+        let locale = newlocale(1 << 2, b"C.UTF-8\0".as_ptr(), core::ptr::null_mut());
+        assert!(!locale.is_null());
+        let old = uselocale(locale);
+        assert!(fnmatch::matches(b"?", "é".as_bytes(), 0));
+        assert!(!fnmatch::matches(b"??", "é".as_bytes(), 0));
+        assert!(fnmatch::matches("[é-ë]".as_bytes(), "ê".as_bytes(), 0));
+        assert!(fnmatch::matches(b"[[:alpha:]]", "é".as_bytes(), 0));
+        assert!(fnmatch::matches("É".as_bytes(), "é".as_bytes(), fnmatch::FNM_CASEFOLD));
+        assert!(fnmatch::matches("*é?".as_bytes(), "🙂é界".as_bytes(), 0));
+        assert_eq!(regex_regressions::matched("^.$", "é", regex::REG_EXTENDED), [(0, 2)]);
+        assert_eq!(regex_regressions::matched("^[é-ë]$", "ê", regex::REG_EXTENDED), [(0, 2)]);
+        assert_eq!(regex_regressions::matched("^[[:alpha:]]+$", "é界", regex::REG_EXTENDED), [(0, 5)]);
+        assert_eq!(regex_regressions::matched("^É$", "é", regex::REG_EXTENDED | regex::REG_ICASE), [(0, 2)]);
+        assert_eq!(regex_regressions::matched("^[!é]$", "!", regex::REG_EXTENDED), [(0, 1)]);
+        assert_eq!(regex_regressions::matched("^(K)\\1$", "KK", regex::REG_EXTENDED | regex::REG_ICASE), [(0, 4), (0, 1)]);
+        assert_eq!(regex_regressions::matched("^é??", "é", regex::REG_EXTENDED), [(0, 0)]);
+        uselocale(old);
+        freelocale(locale);
     }
 }
