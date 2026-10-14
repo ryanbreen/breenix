@@ -118,6 +118,7 @@ pub(crate) struct PreparedExecImage {
     new_stack: Box<crate::memory::stack::GuardedStack>,
     program_name: Option<String>,
     exe_path: Option<alloc::sync::Arc<Vec<u8>>>,
+    cmdline: alloc::sync::Arc<Vec<u8>>,
     user_stack_size: usize,
     stack_top: VirtAddr,
     stack_bottom: VirtAddr,
@@ -855,6 +856,7 @@ impl ProcessManager {
         }
 
         let mut process = Process::new(pid, name.clone(), loaded_elf.entry_point);
+        process.cmdline = Some(super::process::cmdline_of(argv)?);
         if let Some(parent_pid) = parent_pid {
             crate::tty::ctty::inherit(
                 &mut process,
@@ -1361,6 +1363,7 @@ impl ProcessManager {
         // Create the process
         let entry_point = VirtAddr::new(loaded_elf.entry_point);
         let mut process = Process::new(pid, name.clone(), entry_point);
+        process.cmdline = Some(super::process::cmdline_of(argv)?);
         if let Some(parent_pid) = parent_pid {
             crate::tty::ctty::inherit(
                 &mut process,
@@ -2955,8 +2958,9 @@ impl ProcessManager {
 
         // Create the child process with the same entry point
         let mut child_process = Process::new(child_pid, child_name.clone(), parent_entry_point);
-        child_process.exe_path = self.processes.live_row(&parent_pid)
-            .ok_or("Parent process not found")?.exe_path.clone();
+        let parent_row = self.processes.live_row(&parent_pid).ok_or("Parent process not found")?;
+        child_process.exe_path = parent_row.exe_path.clone();
+        child_process.cmdline = parent_row.cmdline.clone();
         child_process.parent = Some(parent_pid);
         // POSIX: Child inherits parent's process group, session, and working directory
         child_process.pgid = parent_pgid;
@@ -3083,6 +3087,7 @@ impl ProcessManager {
             parent.entry_point,
         );
         child_process.exe_path = parent.exe_path.clone();
+        child_process.cmdline = parent.cmdline.clone();
         child_process.parent = Some(parent_pid);
         child_process.pgid = parent.pgid;
         crate::tty::ctty::inherit(&mut child_process, parent);
@@ -3592,6 +3597,7 @@ impl ProcessManager {
         // - Verification of pgid and sid inheritance
         if let Some(parent) = self.processes.live_row(&parent_pid) {
             child_process.exe_path = parent.exe_path.clone();
+            child_process.cmdline = parent.cmdline.clone();
             super::fork::copy_process_state(parent, &mut child_process)?;
         } else {
             return Err("Parent process not found during state copy");
@@ -3659,6 +3665,7 @@ impl ProcessManager {
         // Create the child process with the same entry point
         let mut child_process = Process::new(child_pid, child_name.clone(), parent.entry_point);
         child_process.exe_path = parent.exe_path.clone();
+        child_process.cmdline = parent.cmdline.clone();
         child_process.parent = Some(parent_pid);
         // POSIX: Child inherits parent's process group, session, and working directory
         child_process.pgid = parent_pgid;
@@ -3878,6 +3885,7 @@ impl ProcessManager {
                     .live_row(&parent_pid)
                     .ok_or("Parent process not found during state copy")?;
                 child_process.exe_path = parent.exe_path.clone();
+                child_process.cmdline = parent.cmdline.clone();
                 super::fork::copy_process_state(parent, &mut child_process)?;
             }
 
@@ -4140,6 +4148,7 @@ impl ProcessManager {
         // This kernel-internal API loads bytes rather than a filesystem path.
         // Do not retain the pathname of the image it replaces.
         process.exe_path = None;
+        process.cmdline = None;
         if let Some(name) = program_name {
             process.name = String::from(name);
             log::info!("exec_process: Updated process name to '{}'", name);
@@ -4368,6 +4377,7 @@ impl ProcessManager {
             .transpose()
             .map_err(|_| "exec allocation failed")?;
         let user_stack_size = crate::syscall::exec::stack_size(argv, envp)?;
+        let cmdline = super::process::cmdline_of(argv)?;
         let program_name = program_name
             .map(crate::syscall::exec::copy_string)
             .transpose()
@@ -4481,6 +4491,7 @@ impl ProcessManager {
             new_stack,
             program_name,
             exe_path,
+            cmdline,
             user_stack_size,
             stack_top,
             stack_bottom,
@@ -4581,6 +4592,7 @@ impl ProcessManager {
             new_stack,
             program_name,
             exe_path,
+            cmdline,
             user_stack_size,
             stack_top,
             stack_bottom,
@@ -4618,6 +4630,7 @@ impl ProcessManager {
             process.name = name;
         }
         process.exe_path = exe_path;
+        process.cmdline = Some(cmdline);
         process.entry_point = loaded_elf.entry_point;
 
         // Reset heap bounds for the new program
@@ -4789,6 +4802,7 @@ impl ProcessManager {
             .transpose()
             .map_err(|_| "exec allocation failed")?;
         let user_stack_size = crate::syscall::exec::stack_size(argv, envp)?;
+        let cmdline = super::process::cmdline_of(argv)?;
         let program_name = program_name
             .map(crate::syscall::exec::copy_string)
             .transpose()
@@ -4897,6 +4911,7 @@ impl ProcessManager {
             new_stack,
             program_name,
             exe_path,
+            cmdline,
             user_stack_size,
             stack_top,
             stack_bottom,
@@ -4993,6 +5008,7 @@ impl ProcessManager {
             new_stack,
             program_name,
             exe_path,
+            cmdline,
             user_stack_size,
             stack_top,
             stack_bottom,
@@ -5029,6 +5045,7 @@ impl ProcessManager {
             process.name = name;
         }
         process.exe_path = exe_path;
+        process.cmdline = Some(cmdline);
         process.entry_point = VirtAddr::new(new_entry_point);
 
         // Reset heap bounds for the new program
@@ -5385,6 +5402,7 @@ impl ProcessManager {
         // This kernel-internal API loads bytes rather than a filesystem path.
         // Do not retain the pathname of the image it replaces.
         process.exe_path = None;
+        process.cmdline = None;
         if let Some(name) = program_name {
             process.name = String::from(name);
             log::info!("exec_process [ARM64]: Updated process name to '{}'", name);

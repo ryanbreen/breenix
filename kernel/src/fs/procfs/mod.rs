@@ -14,6 +14,9 @@
 //!
 //! ## Per-process entries (/proc/[pid]/)
 //! - `/proc/[pid]/status` - Process name, state, parent, children, memory usage
+//! - `/proc/[pid]/stat` - The same facts in Linux's one-line field layout
+//! - `/proc/[pid]/cmdline` - The arguments the program was executed with
+//! - `/proc/[pid]/exe` - Link to the executable
 //!
 //! ## Tracing entries (/proc/trace/)
 //! - `/proc/trace/enable` - Tracing enable state (0/1)
@@ -38,6 +41,7 @@
 //! ```
 
 mod net;
+mod pid_stat;
 mod pid_path;
 
 use alloc::string::String;
@@ -109,6 +113,10 @@ pub enum ProcEntryType {
     PidStatus(u64),
     /// /proc/[pid]/exe - executable pathname symlink
     PidExe(u64),
+    /// /proc/[pid]/stat - per-process status in Linux's field layout
+    PidStat(u64),
+    /// /proc/[pid]/cmdline - the arguments of the program's exec
+    PidCmdline(u64),
     /// /proc/self - symlink to the caller's process directory
     SelfLink,
 }
@@ -149,6 +157,8 @@ impl ProcEntryType {
             ProcEntryType::PidDir(_) => "pid",
             ProcEntryType::PidStatus(_) => "status",
             ProcEntryType::PidExe(_) => "exe",
+            ProcEntryType::PidStat(_) => "stat",
+            ProcEntryType::PidCmdline(_) => "cmdline",
             ProcEntryType::SelfLink => "self",
         }
     }
@@ -189,13 +199,15 @@ impl ProcEntryType {
             ProcEntryType::PidDir(_) => "/proc/<pid>",
             ProcEntryType::PidStatus(_) => "/proc/<pid>/status",
             ProcEntryType::PidExe(_) => "/proc/<pid>/exe",
+            ProcEntryType::PidStat(_) => "/proc/<pid>/stat",
+            ProcEntryType::PidCmdline(_) => "/proc/<pid>/cmdline",
             ProcEntryType::SelfLink => "/proc/self",
         }
     }
 
     /// Get the inode number for this entry
     ///
-    /// Dynamic PID entries use computed inodes above every static one, four
+    /// Dynamic PID entries use computed inodes above every static one, eight
     /// per PID, so no two entries share a number whatever the PID.
     pub fn inode(&self) -> u64 {
         match self {
@@ -228,6 +240,8 @@ impl ProcEntryType {
             ProcEntryType::PidDir(pid) => pid_inode(*pid, 0),
             ProcEntryType::PidStatus(pid) => pid_inode(*pid, 1),
             ProcEntryType::PidExe(pid) => pid_inode(*pid, 2),
+            ProcEntryType::PidStat(pid) => pid_inode(*pid, 4),
+            ProcEntryType::PidCmdline(pid) => pid_inode(*pid, 5),
             ProcEntryType::SelfLink => 11,
         }
     }
@@ -252,10 +266,13 @@ impl ProcEntryType {
 }
 
 /// The inode of a per-process entry: `slot` 0 is the directory, 1 status, 2
-/// exe and 3 the teardown trace.
+/// exe, 3 the teardown trace, 4 stat and 5 cmdline.
 pub fn pid_inode(pid: u64, slot: u64) -> u64 {
-    (1u64 << 32).wrapping_add(pid.wrapping_mul(4)).wrapping_add(slot)
+    (1u64 << 32).wrapping_add(pid.wrapping_mul(8)).wrapping_add(slot)
 }
+
+/// The names in a process directory, in listing order.
+pub const PID_DIR_ENTRIES: [&str; 4] = ["status", "stat", "cmdline", "exe"];
 
 /// A procfs entry node
 #[derive(Debug, Clone)]
@@ -422,47 +439,89 @@ pub fn lookup_by_inode(inode: u64) -> Option<ProcEntry> {
 
 /// List all entries (for /proc directory listing)
 ///
-/// Returns static entries plus dynamic PID directories from the process manager.
-pub fn list_entries() -> Vec<String> {
-    use alloc::format;
+/// Returns static entries plus a directory per process: one per thread
+/// group, named by the PID getpid reports, as Linux lists /proc. ENOMEM when
+/// the listing cannot be allocated.
+pub fn list_entries() -> Result<Vec<String>, i32> {
+    use core::fmt::Write;
+    const ENOMEM: i32 = 12;
 
     // Collect static entries under PROCFS lock
-    let mut entries: Vec<String> = {
+    let mut entries: Vec<String> = Vec::new();
+    {
         let procfs = PROCFS.lock();
-        procfs
-            .entries
-            .iter()
-            .filter(|e| {
-                !matches!(
-                    e.entry_type,
-                    ProcEntryType::TraceEnable
-                        | ProcEntryType::TraceEvents
-                        | ProcEntryType::TraceBuffer
-                        | ProcEntryType::TraceCounters
-                        | ProcEntryType::TraceProviders
-                        | ProcEntryType::TraceTeardownDir
-                        | ProcEntryType::BreenixTesting
-                        | ProcEntryType::XhciTrace
-                        | ProcEntryType::XhciCounters
-                        | ProcEntryType::NetPnp
-                )
-            })
-            .map(|e| String::from(e.entry_type.name()))
-            .collect()
-    };
+        for e in procfs.entries.iter().filter(|e| {
+            !matches!(
+                e.entry_type,
+                ProcEntryType::TraceEnable
+                    | ProcEntryType::TraceEvents
+                    | ProcEntryType::TraceBuffer
+                    | ProcEntryType::TraceCounters
+                    | ProcEntryType::TraceProviders
+                    | ProcEntryType::TraceTeardownDir
+                    | ProcEntryType::BreenixTesting
+                    | ProcEntryType::XhciTrace
+                    | ProcEntryType::XhciCounters
+                    | ProcEntryType::NetPnp
+            )
+        }) {
+            let name = e.entry_type.name();
+            let mut text = String::new();
+            text.try_reserve_exact(name.len()).map_err(|_| ENOMEM)?;
+            text.push_str(name);
+            entries.try_reserve(1).map_err(|_| ENOMEM)?;
+            entries.push(text);
+        }
+    }
     // PROCFS lock is released here before acquiring process manager lock
 
-    // Add dynamic PID directories from the process manager
+    // Add a directory per thread group from the process manager. The
+    // manager's map is ordered by PID, so the listing is too.
     let manager_guard = crate::process::manager();
     if let Some(ref manager) = *manager_guard {
-        let mut pids = manager.all_pids();
-        pids.sort();
-        for pid in pids {
-            entries.push(format!("{}", pid.as_u64()));
+        for (pid, process) in manager.iter_processes() {
+            if process.thread_group_id.is_some_and(|tgid| tgid != pid.as_u64()) {
+                continue;
+            }
+            let mut text = String::new();
+            text.try_reserve_exact(20).map_err(|_| ENOMEM)?;
+            write!(text, "{}", pid.as_u64()).map_err(|_| ENOMEM)?;
+            entries.try_reserve(1).map_err(|_| ENOMEM)?;
+            entries.push(text);
         }
     }
 
-    entries
+    Ok(entries)
+}
+
+/// The entry `name` in the procfs directory `dir`, found without allocating.
+/// Per-process entries are not checked against the process table: a listing
+/// names only what it found there.
+pub fn directory_child(dir: &str, name: &str) -> Option<ProcEntryType> {
+    if dir == "/proc" && !name.is_empty() && name.bytes().all(|b| b.is_ascii_digit()) {
+        return name.parse().ok().map(ProcEntryType::PidDir);
+    }
+    if let Some(pid) = dir.strip_prefix("/proc/").and_then(|tail| tail.parse::<u64>().ok()) {
+        return match name {
+            "status" => Some(ProcEntryType::PidStatus(pid)),
+            "stat" => Some(ProcEntryType::PidStat(pid)),
+            "cmdline" => Some(ProcEntryType::PidCmdline(pid)),
+            "exe" => Some(ProcEntryType::PidExe(pid)),
+            _ => None,
+        };
+    }
+    let procfs = PROCFS.lock();
+    procfs
+        .entries
+        .iter()
+        .find(|e| {
+            e.entry_type
+                .path()
+                .strip_prefix(dir)
+                .and_then(|rest| rest.strip_prefix('/'))
+                == Some(name)
+        })
+        .map(|e| e.entry_type)
 }
 
 /// List entries in the /proc/trace directory
@@ -530,69 +589,76 @@ pub fn is_initialized() -> bool {
 ///
 /// # Returns
 /// The content as a String, or an error code
-pub fn read_entry(entry_type: ProcEntryType) -> Result<String, i32> {
+pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
     match entry_type {
-        ProcEntryType::Uptime => Ok(generate_uptime()),
-        ProcEntryType::Version => Ok(generate_version()),
-        ProcEntryType::MemInfo => Ok(generate_meminfo()),
-        ProcEntryType::CpuInfo => Ok(generate_cpuinfo()),
+        ProcEntryType::Uptime => text(generate_uptime()),
+        ProcEntryType::Version => text(generate_version()),
+        ProcEntryType::MemInfo => text(generate_meminfo()),
+        ProcEntryType::CpuInfo => text(generate_cpuinfo()),
         ProcEntryType::TraceDir => {
             // Directory listing
             let entries = list_trace_entries();
-            Ok(entries.join("\n") + "\n")
+            text(entries.join("\n") + "\n")
         }
-        ProcEntryType::TraceEnable => Ok(trace::generate_enable()),
-        ProcEntryType::TraceEvents => Ok(trace::generate_events()),
-        ProcEntryType::TraceBuffer => Ok(trace::generate_buffer()),
-        ProcEntryType::TraceCounters => Ok(trace::generate_counters()),
-        ProcEntryType::TraceProviders => Ok(trace::generate_providers()),
-        ProcEntryType::TraceTeardownDir => Ok(String::from("<pid>\n")),
-        ProcEntryType::TraceTeardownPid(pid) => Ok(trace::generate_teardown_pid(pid)),
-        ProcEntryType::SlabInfo => Ok(generate_slabinfo()),
-        ProcEntryType::Stat => Ok(generate_stat()),
-        ProcEntryType::CowInfo => Ok(generate_cowinfo()),
-        ProcEntryType::Pids => Ok(generate_pids()),
-        ProcEntryType::Kmsg => Ok(generate_kmsg()),
-        ProcEntryType::Mounts => Ok(generate_mounts()),
+        ProcEntryType::TraceEnable => text(trace::generate_enable()),
+        ProcEntryType::TraceEvents => text(trace::generate_events()),
+        ProcEntryType::TraceBuffer => text(trace::generate_buffer()),
+        ProcEntryType::TraceCounters => text(trace::generate_counters()),
+        ProcEntryType::TraceProviders => text(trace::generate_providers()),
+        ProcEntryType::TraceTeardownDir => text(String::from("<pid>\n")),
+        ProcEntryType::TraceTeardownPid(pid) => text(trace::generate_teardown_pid(pid)),
+        ProcEntryType::SlabInfo => text(generate_slabinfo()),
+        ProcEntryType::Stat => text(generate_stat()),
+        ProcEntryType::CowInfo => text(generate_cowinfo()),
+        ProcEntryType::Pids => text(generate_pids()),
+        ProcEntryType::Kmsg => text(generate_kmsg()),
+        ProcEntryType::Mounts => text(generate_mounts()),
         ProcEntryType::XhciDir => {
             let entries = list_xhci_entries();
-            Ok(entries.join("\n") + "\n")
+            text(entries.join("\n") + "\n")
         }
         #[cfg(target_arch = "aarch64")]
-        ProcEntryType::XhciTrace => Ok(xhci::generate_xhci_trace()),
+        ProcEntryType::XhciTrace => text(xhci::generate_xhci_trace()),
         #[cfg(target_arch = "aarch64")]
-        ProcEntryType::XhciCounters => Ok(xhci::generate_xhci_counters()),
+        ProcEntryType::XhciCounters => text(xhci::generate_xhci_counters()),
         #[cfg(not(target_arch = "aarch64"))]
-        ProcEntryType::XhciTrace => Ok(String::from("")),
+        ProcEntryType::XhciTrace => text(String::from("")),
         #[cfg(not(target_arch = "aarch64"))]
-        ProcEntryType::XhciCounters => Ok(String::from("")),
-        ProcEntryType::Ext2 => generate_ext2(),
+        ProcEntryType::XhciCounters => text(String::from("")),
+        ProcEntryType::Ext2 => generate_ext2().map(String::into_bytes),
         ProcEntryType::NetDir => {
-            let mut text = String::new();
-            text.try_reserve_exact(4).map_err(|_| -12)?;
-            text.push_str("pnp\n");
-            Ok(text)
+            let mut listing = Vec::new();
+            listing.try_reserve_exact(4).map_err(|_| -12)?;
+            listing.extend_from_slice(b"pnp\n");
+            Ok(listing)
         }
-        ProcEntryType::NetPnp => net::generate_pnp(),
+        ProcEntryType::NetPnp => net::generate_pnp().map(String::into_bytes),
         ProcEntryType::BreenixDir => {
             // Directory listing
-            Ok(String::from("testing\next2\n"))
+            text(String::from("testing\next2\n"))
         }
         ProcEntryType::BreenixTesting => {
             #[cfg(feature = "testing")]
             {
-                Ok(String::from("1\n"))
+                text(String::from("1\n"))
             }
             #[cfg(not(feature = "testing"))]
             {
-                Ok(String::from("0\n"))
+                text(String::from("0\n"))
             }
         }
-        ProcEntryType::PidDir(pid) => Ok(generate_pid_dir(pid)),
-        ProcEntryType::PidStatus(pid) => Ok(generate_pid_status(pid)),
+        ProcEntryType::PidDir(pid) => text(generate_pid_dir(pid)),
+        ProcEntryType::PidStatus(pid) => text(generate_pid_status(pid)),
+        ProcEntryType::PidStat(pid) => generate_pid_stat(pid),
+        ProcEntryType::PidCmdline(pid) => generate_pid_cmdline(pid),
         // Opening a link without following it (O_NOFOLLOW), as on Linux.
         ProcEntryType::PidExe(_) | ProcEntryType::SelfLink => Err(-40),
     }
+}
+
+/// A text entry's content as bytes.
+fn text(content: String) -> Result<Vec<u8>, i32> {
+    Ok(content.into_bytes())
 }
 
 /// Read from a procfs file by path
@@ -601,8 +667,8 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<String, i32> {
 /// * `path` - Full path like "/proc/uptime" or relative like "uptime"
 ///
 /// # Returns
-/// The content as a String, or an error code
-pub fn read_file(path: &str) -> Result<String, i32> {
+/// The content's bytes, or an error code
+pub fn read_file(path: &str) -> Result<Vec<u8>, i32> {
     // Try full path first
     if let Some(entry) = lookup_by_path(path) {
         return read_entry(entry.entry_type);
@@ -648,10 +714,7 @@ fn generate_ext2() -> Result<String, i32> {
 fn generate_uptime() -> String {
     use alloc::format;
 
-    // Get uptime from timer subsystem
-    // Timer ticks at 200 Hz (5ms per tick)
-    let ticks = crate::time::get_ticks();
-    let uptime_ms = ticks * 5; // Convert ticks to milliseconds
+    let uptime_ms = crate::time::get_monotonic_time();
     let uptime_secs = uptime_ms / 1000;
     let uptime_frac = (uptime_ms % 1000) / 10; // Two decimal places
 
@@ -1097,6 +1160,8 @@ fn lookup_pid_path(path: &str) -> Option<ProcEntry> {
         pid_path::Entry::Directory => ProcEntryType::PidDir(pid),
         pid_path::Entry::Status => ProcEntryType::PidStatus(pid),
         pid_path::Entry::Exe => ProcEntryType::PidExe(pid),
+        pid_path::Entry::Stat => ProcEntryType::PidStat(pid),
+        pid_path::Entry::Cmdline => ProcEntryType::PidCmdline(pid),
     }))
 }
 
@@ -1123,7 +1188,12 @@ fn generate_pid_dir(pid: u64) -> String {
         return format!("Process {} not found\n", pid);
     }
 
-    String::from("status\nexe\n")
+    let mut listing = String::new();
+    for name in PID_DIR_ENTRIES {
+        listing.push_str(name);
+        listing.push('\n');
+    }
+    listing
 }
 
 /// Generate /proc/[pid]/status content
@@ -1263,6 +1333,142 @@ fn generate_pid_status(pid: u64) -> String {
         cpu_capacity_ticks,
         cpu_online,
     )
+}
+
+/// Generate /proc/[pid]/stat: the process in Linux's one-line layout
+/// (proc_pid_stat(5)), which `ps` reads. ENOENT once the process is gone.
+fn generate_pid_stat(pid: u64) -> Result<Vec<u8>, i32> {
+    use crate::process::{ProcessId, ProcessState};
+    const ENOENT: i32 = 2;
+    const ENOMEM: i32 = 12;
+
+    crate::task::scheduler::charge_process_cpu(pid);
+    let scheduler_state = crate::task::scheduler::get_process_display_state(pid);
+
+    // The resident-page walk reads the process's tables: wait out a fork
+    // copying them with the lock released, as /proc/[pid]/status does.
+    let manager_guard = crate::process::manager_once_copied(|manager| {
+        manager
+            .get_process(ProcessId::new(pid))
+            .and_then(|process| process.cr3_value())
+    });
+    let manager = manager_guard.as_ref().ok_or(ENOENT)?;
+    let process = manager.get_process(ProcessId::new(pid)).ok_or(ENOENT)?;
+
+    let mut comm = [0u8; 15];
+    let name = pid_path::command_name(&process.name);
+    comm[..name.len()].copy_from_slice(name.as_bytes());
+    let comm_len = name.len();
+
+    let state = if process.is_terminated() {
+        b'Z'
+    } else if process.job.stopped.is_some() {
+        b'T'
+    } else {
+        match scheduler_state {
+            Some("Running") | Some("Ready") => b'R',
+            Some("Blocked") => b'S',
+            _ => match process.state {
+                ProcessState::Blocked => b'S',
+                _ => b'R',
+            },
+        }
+    };
+    let group = process.thread_group_id.unwrap_or(pid);
+    let num_threads = manager
+        .iter_processes()
+        .filter(|(id, row)| !row.is_terminated() && row.thread_group_id.unwrap_or(id.as_u64()) == group)
+        .count() as u64;
+    let rss_pages = process.page_table.as_ref().map_or(0, |table| {
+        #[cfg(not(target_arch = "x86_64"))]
+        use crate::memory::arch_stub::PageTableFlags;
+        #[cfg(target_arch = "x86_64")]
+        use x86_64::structures::paging::PageTableFlags;
+        let mut resident = 0u64;
+        let _ = table.walk_mapped_pages(|_, _, flags| {
+            if flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+                resident += 1;
+            }
+        });
+        resident
+    });
+    let usage = &process.memory_usage;
+    let vsize = process
+        .vmas
+        .iter()
+        .map(|vma| vma.end.as_u64().saturating_sub(vma.start.as_u64()))
+        .fold((usage.code_size + usage.heap_size + usage.stack_size) as u64, u64::saturating_add);
+    let (utime_ns, stime_ns) = process.cpu.split_ns();
+    let (cutime_ns, cstime_ns) = process.cpu.children_split_ns();
+    let ctty = process.ctty;
+    let sid = process.sid;
+    let mut stat = pid_stat::PidStat {
+        pid,
+        comm: "",
+        state,
+        ppid: process.parent.map_or(0, |parent| parent.as_u64()),
+        pgrp: process.pgid.as_u64(),
+        session: sid.as_u64(),
+        tty_nr: match ctty {
+            Some(crate::tty::ctty::TtyId::Console) => pid_stat::tty_nr(5, 1),
+            Some(crate::tty::ctty::TtyId::Pty(n)) => pid_stat::tty_nr(136, n),
+            None => 0,
+        },
+        tpgid: -1,
+        utime_ns,
+        stime_ns,
+        cutime_ns,
+        cstime_ns,
+        nice: process.nice,
+        num_threads,
+        start_ms: process.start_ms,
+        vsize,
+        rss_pages,
+        exit_code: process
+            .exit_code
+            .filter(|_| process.is_terminated())
+            .map_or(0, pid_stat::exit_status),
+    };
+    drop(manager_guard);
+
+    // The terminal's foreground group, read with no process lock held.
+    stat.tpgid = ctty
+        .and_then(crate::tty::ctty::TtyRef::resolve)
+        .filter(|tty| tty.session() == Some(sid))
+        .and_then(|tty| tty.fg_pgrp())
+        .map_or(-1, |pgid| pgid.as_u64() as i64);
+    stat.comm = core::str::from_utf8(&comm[..comm_len]).map_err(|_| ENOENT)?;
+
+    let mut line = String::new();
+    line.try_reserve_exact(pid_stat::MAX_LEN).map_err(|_| ENOMEM)?;
+    pid_stat::write(&mut line, &stat).map_err(|_| ENOMEM)?;
+    Ok(line.into_bytes())
+}
+
+/// Generate /proc/[pid]/cmdline: the arguments of the program's exec, each
+/// ending in a NUL byte. Empty for a process the kernel built without an
+/// exec, as for a Linux kernel thread.
+fn generate_pid_cmdline(pid: u64) -> Result<Vec<u8>, i32> {
+    const ENOENT: i32 = 2;
+    const ENOMEM: i32 = 12;
+    let cmdline = {
+        let guard = crate::process::manager();
+        let process = guard
+            .as_ref()
+            .and_then(|manager| manager.get_process(crate::process::ProcessId::new(pid)))
+            .ok_or(ENOENT)?;
+        if process.is_terminated() {
+            // Linux's zombie has no address space to read the arguments from.
+            return Ok(Vec::new());
+        }
+        process.cmdline.clone()
+    };
+    let mut content = Vec::new();
+    if let Some(cmdline) = cmdline {
+        content.try_reserve_exact(cmdline.len()).map_err(|_| ENOMEM)?;
+        content.extend_from_slice(&cmdline);
+    }
+    Ok(content)
 }
 
 /// The caller's PID, as getpid reports it: its thread group's. Resolved before

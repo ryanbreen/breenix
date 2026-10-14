@@ -132,9 +132,9 @@ pub enum FdKind {
     FifoWrite(alloc::string::String, Arc<Mutex<super::pipe::PipeBuffer>>, Arc<Mutex<super::fifo::FifoEntry>>),
     /// Linux O_RDWR FIFO endpoint: one reader and one writer reference.
     FifoReadWrite(alloc::string::String, Arc<Mutex<super::pipe::PipeBuffer>>, Arc<Mutex<super::fifo::FifoEntry>>),
-    /// Procfs virtual file (content generated at open time)
+    /// Procfs virtual file (content generated at open time, shared by reads)
     ProcfsFile {
-        content: alloc::string::String,
+        content: Arc<alloc::vec::Vec<u8>>,
         position: usize,
     },
     /// Procfs directory listing (for /proc and /proc/[pid])

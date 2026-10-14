@@ -1492,7 +1492,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             let content = content.clone();
             let pos = *position;
             drop(manager_guard);
-            let bytes = content.as_bytes();
+            let bytes = content.as_slice();
             if pos >= bytes.len() {
                 return SyscallResult::Ok(0);
             }

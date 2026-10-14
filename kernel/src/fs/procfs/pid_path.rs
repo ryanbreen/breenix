@@ -10,6 +10,8 @@ pub(super) enum Entry {
     Directory,
     Status,
     Exe,
+    Stat,
+    Cmdline,
 }
 
 pub(super) fn parse(path: &str) -> Option<(Pid, Entry)> {
@@ -28,6 +30,8 @@ pub(super) fn parse(path: &str) -> Option<(Pid, Entry)> {
         "" => Entry::Directory,
         "status" => Entry::Status,
         "exe" => Entry::Exe,
+        "stat" => Entry::Stat,
+        "cmdline" => Entry::Cmdline,
         _ => return None,
     };
     Some((pid, entry))
@@ -62,6 +66,8 @@ mod tests {
         assert_eq!(parse("/proc/self/status"), Some((Pid::Caller, Entry::Status)));
         assert_eq!(parse("/proc/self"), Some((Pid::Caller, Entry::Directory)));
         assert_eq!(parse("/proc/123/exe"), Some((Pid::Number(123), Entry::Exe)));
+        assert_eq!(parse("/proc/123/stat"), Some((Pid::Number(123), Entry::Stat)));
+        assert_eq!(parse("/proc/self/cmdline"), Some((Pid::Caller, Entry::Cmdline)));
         assert_eq!(parse("/proc/123/"), Some((Pid::Number(123), Entry::Directory)));
         assert_eq!(parse("/proc/18446744073709551615/status"), Some((Pid::Number(u64::MAX), Entry::Status)));
     }
@@ -71,7 +77,8 @@ mod tests {
         for path in ["/proc/", "/proc//exe", "/proc/+1/exe", "/proc/-1/exe",
             "/proc/01/exe", "/proc/1x/exe", "/proc/18446744073709551616/exe",
             "/proc/1/exe/child", "/proc/1/unknown", "/proc/selfish/exe",
-            "/proc/self//exe", "proc/1/exe", "/process/1/exe"] {
+            "/proc/self//exe", "proc/1/exe", "/process/1/exe", "/proc/1/stat/x",
+            "/proc/1/statm"] {
             assert_eq!(parse(path), None, "{path}");
         }
     }

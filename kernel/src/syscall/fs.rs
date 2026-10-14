@@ -2766,6 +2766,10 @@ fn handle_procfs_open(path: &str, flags: u32) -> SyscallResult {
         Ok(c) => c,
         Err(errno) => return SyscallResult::Err(errno.unsigned_abs() as u64),
     };
+    let content = match alloc::sync::Arc::try_new(content) {
+        Ok(content) => content,
+        Err(_) => return SyscallResult::Err(super::errno::ENOMEM as u64),
+    };
 
     let fd_kind = FdKind::ProcfsFile {
         content,
@@ -3475,8 +3479,11 @@ fn handle_procfs_getdents64(
     use alloc::vec::Vec;
 
     // Get the list of entries for this directory
-    let entries: Vec<String> = if dir_path == "/proc" {
-        crate::fs::procfs::list_entries()
+    let listed: Vec<String> = if dir_path == "/proc" {
+        match crate::fs::procfs::list_entries() {
+            Ok(entries) => entries,
+            Err(_) => return SyscallResult::Err(super::errno::ENOMEM as u64),
+        }
     } else if dir_path == "/proc/trace" {
         crate::fs::procfs::list_trace_entries()
     } else if dir_path == "/proc/net" {
@@ -3484,101 +3491,45 @@ fn handle_procfs_getdents64(
             Ok(entries) => entries,
             Err(_) => return SyscallResult::Err(super::errno::ENOMEM as u64),
         }
-    } else if dir_path.starts_with("/proc/") {
-        // Per-PID directory: its status file and exe link
-        let relative = dir_path.strip_prefix("/proc/").unwrap_or("");
-        if !relative.is_empty() && relative.chars().all(|c| c.is_ascii_digit()) {
-            alloc::vec![String::from("status"), String::from("exe")]
-        } else {
-            alloc::vec![]
-        }
     } else {
-        alloc::vec![]
+        Vec::new()
     };
+    // A process directory lists its fixed entries.
+    let pid_dir = dir_path
+        .strip_prefix("/proc/")
+        .is_some_and(|pid| !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit()));
+    let fixed: &[&str] = if pid_dir { &crate::fs::procfs::PID_DIR_ENTRIES } else { &[] };
+    let names = || [".", ".."].into_iter().chain(listed.iter().map(String::as_str)).chain(fixed.iter().copied());
 
-    // Build entries: ".", "..", then each entry
+    // The records are built in one buffer, no larger than the caller's.
+    let needed: usize = names().map(|name| align_up_8(DIRENT64_HEADER_SIZE + name.len() + 1)).sum();
     let mut records = alloc::vec::Vec::new();
-    // /proc/net has three bounded records; all their growth must be fallible.
-    if dir_path == "/proc/net" && records.try_reserve_exact(96).is_err() {
+    if records.try_reserve_exact(needed.min(buffer_size)).is_err() {
         return SyscallResult::Err(super::errno::ENOMEM as u64);
     }
     let mut bytes_written = 0usize;
-    let mut entry_index = 0u64;
     let mut new_position = start_position;
 
-    // Helper entries: . and ..
-    let special_entries: [(&str, u64); 2] = [
-        (".", 0),  // inode 0 for this directory
-        ("..", 2), // inode 2 = root directory
-    ];
-
-    // Iterate through special entries first
-    for (name, inode) in special_entries.iter() {
+    for (entry_index, entry_name) in names().enumerate() {
+        let entry_index = entry_index as u64;
         if entry_index < start_position {
-            entry_index += 1;
             continue;
         }
 
-        let name_len = name.len();
-        let reclen = align_up_8(DIRENT64_HEADER_SIZE + name_len + 1);
-
+        let reclen = align_up_8(DIRENT64_HEADER_SIZE + entry_name.len() + 1);
         if bytes_written + reclen > buffer_size {
             break;
         }
 
-        push_dirent64(
-            &mut records,
-            *inode,
-            (entry_index + 1) as i64,
-            DT_DIR,
-            name.as_bytes(),
-        );
-
-        bytes_written += reclen;
-        entry_index += 1;
-        new_position = entry_index;
-    }
-
-    // Now iterate through the directory entries
-    for entry_name in entries.iter() {
-        if entry_index < start_position {
-            entry_index += 1;
-            continue;
-        }
-
-        let name_len = entry_name.len();
-        let reclen = align_up_8(DIRENT64_HEADER_SIZE + name_len + 1);
-
-        if bytes_written + reclen > buffer_size {
-            break;
-        }
-
-        // Determine the entry type and inode
-        // Look up the entry in procfs to get its type
-        let entry = if dir_path == "/proc/net" {
-            crate::fs::procfs::lookup("net/pnp")
-        } else {
-            let full_path = alloc::format!("{}/{}", dir_path, entry_name);
-            crate::fs::procfs::lookup_by_path(&full_path)
-        };
-        let (inode, dtype) = if let Some(entry) = entry {
-            let ino = entry.entry_type.inode();
-            let dt = if entry.entry_type.is_directory() {
-                DT_DIR
-            } else if entry.entry_type.is_link() {
-                DT_LNK
-            } else {
-                DT_REG
-            };
-            (ino, dt)
-        } else {
-            // Check if the entry name is a PID (numeric) - it's a directory
-            if entry_name.chars().all(|c| c.is_ascii_digit()) {
-                let pid: u64 = entry_name.parse().unwrap_or(0);
-                (crate::fs::procfs::pid_inode(pid, 0), DT_DIR)
-            } else {
-                (0, DT_REG)
-            }
+        let (inode, dtype) = match entry_name {
+            "." => (0, DT_DIR),  // inode 0 for this directory
+            ".." => (2, DT_DIR), // inode 2 = root directory
+            _ => match crate::fs::procfs::directory_child(dir_path, entry_name) {
+                Some(entry) if entry.is_directory() => (entry.inode(), DT_DIR),
+                Some(entry) if entry.is_link() => (entry.inode(), DT_LNK),
+                Some(entry) => (entry.inode(), DT_REG),
+                None => (0, DT_REG),
+            },
         };
 
         push_dirent64(
@@ -3590,8 +3541,7 @@ fn handle_procfs_getdents64(
         );
 
         bytes_written += reclen;
-        entry_index += 1;
-        new_position = entry_index;
+        new_position = entry_index + 1;
     }
 
     if let Err(errno) = copy_dirents_to_user(dirp, &records) {
