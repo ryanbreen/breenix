@@ -2561,6 +2561,18 @@ fn sys_readlink_from(dirfd: i32, pathname: u64, buf: u64, bufsize: u64) -> Sysca
         bufsize
     );
 
+    if resolved.path.starts_with("/proc/") {
+        let target = match crate::fs::procfs::readlink(&resolved.path) {
+            Ok(target) => target,
+            Err(errno) => return SyscallResult::Err(errno),
+        };
+        let len = target.len().min(bufsize as usize);
+        return match super::userptr::write_user_bytes(buf, target.as_ptr(), len) {
+            Ok(()) => SyscallResult::Ok(len as u64),
+            Err(errno) => SyscallResult::Err(errno),
+        };
+    }
+
     let (mount, ino) = match resolved.target {
         Target::Inode {
             mount,

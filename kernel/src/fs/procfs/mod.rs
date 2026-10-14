@@ -106,6 +106,8 @@ pub enum ProcEntryType {
     PidDir(u64),
     /// /proc/[pid]/status - per-process status (dynamic, not registered)
     PidStatus(u64),
+    /// /proc/[pid]/exe - executable pathname symlink
+    PidExe(u64),
 }
 
 impl ProcEntryType {
@@ -143,6 +145,7 @@ impl ProcEntryType {
             ProcEntryType::NetPnp => "pnp",
             ProcEntryType::PidDir(_) => "pid",
             ProcEntryType::PidStatus(_) => "status",
+            ProcEntryType::PidExe(_) => "exe",
         }
     }
 
@@ -181,6 +184,7 @@ impl ProcEntryType {
             // Dynamic entries don't have static paths
             ProcEntryType::PidDir(_) => "/proc/<pid>",
             ProcEntryType::PidStatus(_) => "/proc/<pid>/status",
+            ProcEntryType::PidExe(_) => "/proc/<pid>/exe",
         }
     }
 
@@ -219,6 +223,7 @@ impl ProcEntryType {
             ProcEntryType::NetPnp => 401,
             ProcEntryType::PidDir(pid) => 10000 + pid,
             ProcEntryType::PidStatus(pid) => 20000 + pid,
+            ProcEntryType::PidExe(pid) => 40000 + pid,
         }
     }
 
@@ -568,6 +573,7 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<String, i32> {
         }
         ProcEntryType::PidDir(pid) => Ok(generate_pid_dir(pid)),
         ProcEntryType::PidStatus(pid) => Ok(generate_pid_status(pid)),
+        ProcEntryType::PidExe(_) => Err(-22),
     }
 }
 
@@ -1080,7 +1086,7 @@ fn lookup_pid_path(path: &str) -> Option<ProcEntry> {
     if pid_str.is_empty() || (pid_str.len() > 1 && pid_str.starts_with('0')) {
         return None;
     }
-    let pid: u64 = pid_str.parse().ok()?;
+    let pid: u64 = if pid_str == "self" { current_pid()? } else { pid_str.parse().ok()? };
 
     // Verify the PID exists (acquires process manager lock)
     if !pid_exists(pid) {
@@ -1090,6 +1096,7 @@ fn lookup_pid_path(path: &str) -> Option<ProcEntry> {
     match sub_path {
         None => Some(ProcEntry::new(ProcEntryType::PidDir(pid))),
         Some("status") => Some(ProcEntry::new(ProcEntryType::PidStatus(pid))),
+        Some("exe") => Some(ProcEntry::new(ProcEntryType::PidExe(pid))),
         Some(_) => None, // Unknown sub-path
     }
 }
@@ -1117,7 +1124,7 @@ fn generate_pid_dir(pid: u64) -> String {
         return format!("Process {} not found\n", pid);
     }
 
-    String::from("status\n")
+    String::from("status\nexe\n")
 }
 
 /// Generate /proc/[pid]/status content
@@ -1249,4 +1256,33 @@ fn generate_pid_status(pid: u64) -> String {
         cpu_capacity_ticks,
         cpu_online,
     )
+}
+
+/// The caller's PID is resolved before taking any procfs lock.
+fn current_pid() -> Option<u64> {
+    let tid = crate::task::scheduler::current_thread_id()?;
+    let guard = crate::process::manager();
+    guard.as_ref()?.find_process_by_thread(tid).map(|(pid, _)| pid.as_u64())
+}
+
+/// Resolve procfs links without allocating a user-sized buffer. Executable paths
+/// are immutable Arc snapshots, so exec or exit can proceed after the lock drops.
+pub fn readlink(path: &str) -> Result<String, u64> {
+    use crate::syscall::errno::{EINVAL, ENOENT, ENOMEM};
+    if path == "/proc/self" {
+        use core::fmt::Write;
+        let pid = current_pid().ok_or(ENOENT as u64)?;
+        let mut target = String::new();
+        target.try_reserve_exact(26).map_err(|_| ENOMEM as u64)?;
+        write!(target, "/proc/{}", pid).map_err(|_| ENOMEM as u64)?;
+        return Ok(target);
+    }
+    let entry = lookup_by_path(path).ok_or(ENOENT as u64)?;
+    let ProcEntryType::PidExe(pid) = entry.entry_type else { return Err(EINVAL as u64); };
+    let exe_path = {
+        let guard = crate::process::manager();
+        guard.as_ref().and_then(|manager| manager.get_process(crate::process::ProcessId::new(pid)))
+            .and_then(|process| process.exe_path.clone()).ok_or(ENOENT as u64)?
+    };
+    crate::syscall::exec::copy_string(&exe_path)
 }
