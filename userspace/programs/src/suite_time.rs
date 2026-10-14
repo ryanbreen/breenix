@@ -361,15 +361,19 @@ static FIRST_NS: AtomicI64 = AtomicI64::new(0);
 const STAMPS: usize = 32;
 /// CLOCK_MONOTONIC when each of the first STAMPS handled signals arrived.
 static STAMP_NS: [AtomicI64; STAMPS] = [const { AtomicI64::new(0) }; STAMPS];
+static STAMP_EXPIRIES: [AtomicU32; STAMPS] = [const { AtomicU32::new(1) }; STAMPS];
 static STAMPED: AtomicU32 = AtomicU32::new(0);
 
-fn stamp() {
+fn stamp(expiries: u32) {
     let mut t = [0i64; 2];
     if gettime_raw(CLOCK_MONOTONIC, &mut t) == 0 {
         let now = ns_of(&t);
         let _ = FIRST_NS.compare_exchange(0, now, Ordering::SeqCst, Ordering::SeqCst);
         let i = STAMPED.fetch_add(1, Ordering::SeqCst) as usize;
-        if i < STAMPS { STAMP_NS[i].store(now, Ordering::SeqCst); }
+        if i < STAMPS {
+            STAMP_NS[i].store(now, Ordering::SeqCst);
+            STAMP_EXPIRIES[i].store(expiries, Ordering::SeqCst);
+        }
     }
 }
 
@@ -380,7 +384,16 @@ fn stamps(start: i64) -> Vec<i64> {
 }
 
 extern "C" fn on_sig(sig: i32) {
-    stamp();
+    stamp(1);
+    if (1..=64).contains(&sig) { COUNT[sig as usize].fetch_add(1, Ordering::SeqCst); }
+}
+
+extern "C" fn on_periodic(sig: i32, info: *const SigInfo, _context: *mut u8) {
+    // SAFETY: SA_SIGINFO supplies a siginfo for this handler invocation.
+    let expiries = unsafe {
+        if (*info).code == SI_TIMER { 1 + (*info).overrun().max(0) as u32 } else { 1 }
+    };
+    stamp(expiries);
     if (1..=64).contains(&sig) { COUNT[sig as usize].fetch_add(1, Ordering::SeqCst); }
 }
 
@@ -1942,19 +1955,26 @@ fn tm_oneshot() -> CaseResult {
 /// checked against its own programmed time, k periods after arming: never early, and
 /// late by at most LATE_MS. The count must be what that allows in the time the timer ran.
 fn periodic(sig: i32, period_ms: i64, ms: i64, arm: impl FnOnce() -> CaseResult, disarm: impl FnOnce()) -> CaseResult {
-    catch(sig)?;
+    set_action(sig, on_periodic as usize as u64, 4)?; // SA_SIGINFO
     wait_for(ms as u64, "expiries");
     let start = mono();
     arm()?;
     pause_ms(ms as u64);
     let ran = mono() - start;
     disarm();
-    let n = count(sig) as i64;
     let at = stamps(start);
+    let weights: Vec<i64> = (0..at.len()).map(|i| STAMP_EXPIRIES[i].load(Ordering::SeqCst) as i64).collect();
+    let n: i64 = weights.iter().sum();
+    value("notifications", count(sig) as i64, "", None);
     let period = period_ms * MS;
     let (low, high) = ((ran - LATE_MS * MS) / period, ran / period);
     value("expiries", n, "", Some((low, high)));
-    let lates: Vec<i64> = at.iter().enumerate().map(|(k, at)| at - (k as i64 + 1) * period).collect();
+    let mut represented = 0;
+    let lates: Vec<i64> = at.iter().zip(&weights).map(|(at, weight)| {
+        let late = at - (represented + 1) * period;
+        represented += weight;
+        late
+    }).collect();
     let earliest = lates.iter().copied().min().unwrap_or(0);
     let latest = lates.iter().copied().max().unwrap_or(0);
     value("worst-late", latest / 1000, "us", Some((0, LATE_MS * 1000)));
@@ -1969,6 +1989,39 @@ fn periodic(sig: i32, period_ms: i64, ms: i64, arm: impl FnOnce() -> CaseResult,
 fn tm_periodic() -> CaseResult {
     let timer = Timer::signal(CLOCK_MONOTONIC, SIGUSR1, 1)?;
     periodic(SIGUSR1, 50, 1000, || timer.arm(50 * MS, 50 * MS), || { let _ = timer.arm(0, 0); })
+}
+
+fn tm_continue_stopped() -> CaseResult {
+    let mut child = Child::start(|| {
+        let run = || -> CaseResult {
+            catch(SIGCONT)?;
+            let timer = Timer::signal(CLOCK_MONOTONIC, SIGCONT, 1)?;
+            timer.arm(200 * MS, 200 * MS)?;
+            for want in 1..=2 {
+                want_eq("self SIGSTOP", kill(pid(), SIGSTOP), 0)?;
+                check(until(1000, || count(SIGCONT) >= want), "periodic SIGCONT did not run its handler")?;
+            }
+            timer.arm(0, 0)
+        };
+        if run().is_ok() { 0 } else { 1 }
+    })?;
+    let status = child.wait_for("periodic SIGCONT child", 3000)?;
+    check(exited(status) && exit_code(status) == 0, &format!("periodic SIGCONT child: {}", status_text(status)))
+}
+
+fn tm_rearm_overrun() -> CaseResult {
+    block(bit(SIGUSR1))?;
+    let timer = Timer::signal(CLOCK_MONOTONIC, SIGUSR1, 1)?;
+    timer.arm(20 * MS, 20 * MS)?;
+    pause_ms(150);
+    timer.arm(0, 0)?;
+    timer.arm(0, 500 * MS)?;
+    let old_pending = await_signal(SIGUSR1, 100, "the old pending notification after re-arm")?;
+    check(old_pending.overrun() == 0, "re-arm kept overruns from the previous arming")?;
+    want_eq("timer_getoverrun after re-arm", timer.overrun(), 0)?;
+    let fresh = await_signal(SIGUSR1, 1000, "the new arming's first expiry")?;
+    check(fresh.overrun() == 0, "the new arming's first expiry retained old overruns")?;
+    want_eq("timer_getoverrun of new expiry", timer.overrun(), 0)
 }
 
 fn tm_gettime() -> CaseResult {
@@ -2578,6 +2631,8 @@ static SUITE: Suite = suite(
             case("create-einval", "timer_create with an unknown clock, signal 0 or 65, or an unknown sigev_notify fails with EINVAL", tm_create_einval),
             case("oneshot", "A one-shot timer fires once, on time, and then reads as disarmed", tm_oneshot),
             case("periodic", "A periodic 50 ms timer fires twenty times a second, 50 ms apart", tm_periodic),
+            case("continue-stopped", "A periodic SIGCONT timer resumes its stopped process twice", tm_continue_stopped),
+            case("rearm-overrun", "Re-arming resets si_overrun and timer_getoverrun from the previous arming", tm_rearm_overrun),
             case("gettime", "timer_gettime reports the time left, decreasing and never above the value set, and the interval", tm_gettime),
             case("settime-old", "timer_settime returns the previous setting in old_value", tm_settime_old),
             case("disarm", "timer_settime with a zero it_value disarms the timer", tm_disarm),

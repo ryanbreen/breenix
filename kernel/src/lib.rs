@@ -672,3 +672,6 @@ pub fn arch_ticks_to_nanos(ticks: u64) -> u64 {
 fn trivial_assertion() {
     assert_eq!(1, 1);
 }
+
+#[cfg(target_arch = "x86_64")]
+pub mod periodic1540;
