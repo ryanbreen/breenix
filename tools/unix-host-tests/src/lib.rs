@@ -66,6 +66,23 @@ pub mod syscall {
             }
             Ok(())
         }
+        pub fn read_user_bytes(dst: *mut u8, src: u64, len: usize) -> Result<(), u64> {
+            if len == 0 {
+                return Ok(());
+            }
+            if src == 0 {
+                return Err(14);
+            }
+            unsafe { core::ptr::copy_nonoverlapping(src as *const u8, dst, len) };
+            Ok(())
+        }
+        pub fn write_user_prefix(dst: u64, src: *const u8, len: usize) -> usize {
+            if len == 0 || dst == 0 {
+                return 0;
+            }
+            unsafe { core::ptr::copy_nonoverlapping(src, dst as *mut u8, len) };
+            len
+        }
     }
     pub mod errno {
         pub const EAGAIN: i32 = 11;
