@@ -2010,14 +2010,16 @@ fn handle_resize_window_buffer(cmd: &FbDrawCmd) -> SyscallResult {
     };
 
     let old_num_pages = old_phys_addrs.len();
+    let mut leaves = crate::memory::process_memory::LeafBatch::new();
     for i in 0..old_num_pages {
         let page_addr = old_vaddr + (i as u64) * PAGE_SIZE;
         let page = Page::<Size4KiB>::containing_address(VirtAddr::new(page_addr));
         if let Ok(leaf) = page_table.unmap_page_deferred(page) {
-            leaf.flush().release();
+            leaves.push(leaf);
         }
     }
 
+    leaves.finish();
     // Remove old VMA
     process.vmas.retain(|vma| vma.start.as_u64() != old_vaddr);
     process

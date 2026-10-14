@@ -21,7 +21,7 @@
 //! syscall-return signal path reloads the running process's own root, already
 //! announced by whichever of these put this CPU on it.
 //!
-//! A flush of one user address space (`flush_user_page`) therefore goes only to
+//! A flush of one user address space (`flush_user_page`, `flush_user_pages`) therefore goes only to
 //! the CPUs whose announced root, `next_cr3` or `saved_process_cr3` names that
 //! space; an unmap by a process running alone costs no NMI. A flush that names
 //! no address space (`flush_page`, `flush_all`: kernel mappings, or callers
@@ -71,6 +71,30 @@ pub fn flush_user_page(root: u64, addr: VirtAddr) {
     shootdown::request_for_root(shootdown::Request::Page(addr.as_u64()), root);
     #[cfg(not(target_arch = "x86_64"))]
     let _ = root;
+}
+
+/// Invalidate removed user leaves before their frames can be released.
+/// x86 uses one root-targeted full shootdown for a multi-page set; ARM64
+/// broadcasts the addresses for all ASIDs with one pair of data barriers.
+pub fn flush_user_pages(root: u64, pages: &[u64]) {
+    if let [page] = pages {
+        flush_user_page(root, VirtAddr::new(*page));
+        return;
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        for &page in pages {
+            tlb::flush(VirtAddr::new(page));
+        }
+        if !pages.is_empty() {
+            shootdown::request_for_root(shootdown::Request::All, root);
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        tlb::flush_pages(pages);
+        let _ = root;
+    }
 }
 
 /// Announce that this CPU is about to load page-table root `root` into CR3.
