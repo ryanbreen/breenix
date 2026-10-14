@@ -7,7 +7,6 @@ pub(crate) trait Sink {
     fn bytes(&mut self, b: &[u8]) -> bool;
     fn wide(&mut self, wc: u32) -> bool;
 }
-#[allow(dead_code)] // Shared wide-format API intentionally consumed by the LOCALE lane.
 pub(crate) enum Format {
     Narrow(*const u8),
     Wide(*const u32),

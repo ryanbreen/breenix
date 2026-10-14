@@ -146,7 +146,6 @@ pub(crate) unsafe fn set_error(f: *mut File) {
     (*f).error = true;
 }
 // This public internal service is consumed by the locale lane's wide-stream functions.
-#[allow(dead_code)]
 pub(crate) unsafe fn mb_state(f: *mut File) -> *mut MbState {
     ptr::addr_of_mut!((*f).state)
 }
@@ -497,7 +496,6 @@ pub(crate) unsafe fn ungetc_locked(c: i32, f: *mut File) -> i32 {
 /// Pushes all of b back, so that b[0] is read first, or nothing; clears the
 /// end-of-file indicator only when it succeeds. LOCALE's ungetwc pushes a whole
 /// multibyte character with it.
-#[allow(dead_code)] // Published cross-lane API for the locale owner.
 pub(crate) unsafe fn ungetc_bytes_locked(f: *mut File, b: &[u8]) -> bool {
     if (*f).closed || !(*f).readable || b.len() > (*f).pushed.len() - (*f).push_len {
         return false;
