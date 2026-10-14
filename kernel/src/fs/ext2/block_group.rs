@@ -209,70 +209,153 @@ fn allocate_block_inner<B: BlockDevice + ?Sized>(
         .map_err(|_| "Failed to read block bitmap")?;
 
         // Search for a free block in this group
-        // s_first_data_block is the first data block in the filesystem (usually 1 for 1KB blocks)
-        let first_data_block = superblock.s_first_data_block;
-        for local_block in 0..blocks_per_group {
-            // Calculate the global block number
-            // Bitmap bit N corresponds to block (s_first_data_block + bg_index * blocks_per_group + N)
-            let global_block = first_data_block + bg_index as u32 * blocks_per_group + local_block;
-
-            // Check if this block is free (bit = 0)
+        // Bitmap bit N corresponds to block (s_first_data_block + bg_index * blocks_per_group + N)
+        let first = superblock.s_first_data_block + bg_index as u32 * blocks_per_group;
+        if let Some(local_block) =
+            first_free_bit(device, false, &bitmap_buf[..block_size], blocks_per_group, first, 0)
+        {
+            let global_block = first + local_block;
             let byte_index = (local_block / 8) as usize;
             let bit_index = (local_block % 8) as u8;
+            // Found a free block - mark it as used
+            bitmap_buf[byte_index] |= 1 << bit_index;
 
-            if byte_index >= block_size {
-                break; // Bitmap doesn't cover this block
+            // Write the updated bitmap back to disk
+            if let Err(_) =
+                write_ext2_block(device, bitmap_block, block_size, &bitmap_buf[..block_size])
+            {
+                return Err("Failed to write block bitmap");
             }
 
-            if (bitmap_buf[byte_index] & (1 << bit_index)) == 0
-                && !super::reclaim::quarantined(device, false, global_block) {
-                // Found a free block - mark it as used
-                bitmap_buf[byte_index] |= 1 << bit_index;
+            // Update the free block count in the block group descriptor
+            // Safety: Writing to packed struct
+            unsafe {
+                core::ptr::write_unaligned(
+                    core::ptr::addr_of_mut!(bg.bg_free_blocks_count),
+                    free_blocks - 1,
+                );
+            }
 
-                // Write the updated bitmap back to disk
+            if zero {
+                // Zero out the newly allocated block. Nothing references it
+                // yet, so a failure hands the block back to the bitmap.
+                let zero_buf = [0u8; 4096]; // Max block size
                 if let Err(_) =
-                    write_ext2_block(device, bitmap_block, block_size, &bitmap_buf[..block_size])
+                    write_ext2_block(device, global_block, block_size, &zero_buf[..block_size])
                 {
-                    return Err("Failed to write block bitmap");
-                }
-
-                // Update the free block count in the block group descriptor
-                // Safety: Writing to packed struct
-                unsafe {
-                    core::ptr::write_unaligned(
-                        core::ptr::addr_of_mut!(bg.bg_free_blocks_count),
-                        free_blocks - 1,
-                    );
-                }
-
-                if zero {
-                    // Zero out the newly allocated block. Nothing references it
-                    // yet, so a failure hands the block back to the bitmap.
-                    let zero_buf = [0u8; 4096]; // Max block size
-                    if let Err(_) =
-                        write_ext2_block(device, global_block, block_size, &zero_buf[..block_size])
+                    bitmap_buf[byte_index] &= !(1 << bit_index);
+                    if write_ext2_block(device, bitmap_block, block_size, &bitmap_buf[..block_size])
+                        .is_ok()
                     {
-                        bitmap_buf[byte_index] &= !(1 << bit_index);
-                        if write_ext2_block(device, bitmap_block, block_size, &bitmap_buf[..block_size])
-                            .is_ok()
-                        {
-                            unsafe {
-                                core::ptr::write_unaligned(
-                                    core::ptr::addr_of_mut!(bg.bg_free_blocks_count),
-                                    free_blocks,
-                                );
-                            }
+                        unsafe {
+                            core::ptr::write_unaligned(
+                                core::ptr::addr_of_mut!(bg.bg_free_blocks_count),
+                                free_blocks,
+                            );
                         }
-                        return Err("Failed to zero allocated block");
                     }
+                    return Err("Failed to zero allocated block");
                 }
-
-                return Ok(global_block);
             }
+
+            return Ok(global_block);
         }
     }
 
     Err("No free blocks available")
+}
+
+/// The first clear bit of `bitmap`, below `bits`, whose inode or block
+/// (`first` plus the bit) is at least `lowest` and not quarantined.
+pub(super) fn first_free_bit<B: BlockDevice + ?Sized>(
+    device: &B,
+    inode: bool,
+    bitmap: &[u8],
+    bits: u32,
+    first: u32,
+    lowest: u32,
+) -> Option<u32> {
+    (0..bits)
+        .take_while(|bit| (*bit as usize / 8) < bitmap.len())
+        .find(|&bit| {
+            let number = first + bit;
+            number >= lowest
+                && bitmap[bit as usize / 8] & (1 << (bit % 8)) == 0
+                && !super::reclaim::quarantined(device, inode, number)
+        })
+}
+
+/// A bitmap bit a namespace plan sets: the inode or block it allocates, and
+/// the bitmap block's bytes before and after.
+pub(super) struct Claim {
+    pub(super) number: u32,
+    pub(super) bitmap: u32,
+    pub(super) old: Vec<u8>,
+    pub(super) new: Vec<u8>,
+}
+
+/// Claim the first free inode (`inode`) or block in the bitmaps of `groups`,
+/// taking it from its group's free count. Nothing is written: the claim's
+/// bitmap bytes become a write of the caller's plan.
+pub(super) fn claim<B: BlockDevice + ?Sized>(
+    device: &B,
+    superblock: &Ext2Superblock,
+    groups: &mut [Ext2BlockGroupDesc],
+    inode: bool,
+) -> Result<Claim, &'static str> {
+    let size = superblock.block_size();
+    if size == 0 || size > 4096 {
+        return Err("Invalid block size");
+    }
+    for (index, group) in groups.iter_mut().enumerate() {
+        let index = index as u32;
+        let (free, bitmap, bits, first, lowest) = if inode {
+            let lowest = if superblock.s_rev_level == 0 {
+                super::inode::EXT2_FIRST_INO
+            } else {
+                superblock.s_first_ino
+            };
+            let per_group = superblock.s_inodes_per_group;
+            (group.bg_free_inodes_count, group.bg_inode_bitmap, per_group, index * per_group + 1, lowest)
+        } else {
+            let per_group = superblock.s_blocks_per_group;
+            let first = superblock.s_first_data_block + index * per_group;
+            (group.bg_free_blocks_count, group.bg_block_bitmap, per_group, first, 0)
+        };
+        if free == 0 {
+            continue;
+        }
+        let mut old = Vec::new();
+        old.try_reserve_exact(size)
+            .map_err(|_| "No memory for allocation plan")?;
+        old.resize(size, 0);
+        read_ext2_block(device, bitmap, size, &mut old).map_err(|_| {
+            if inode {
+                "Failed to read inode bitmap"
+            } else {
+                "Failed to read block bitmap"
+            }
+        })?;
+        let Some(bit) = first_free_bit(device, inode, &old, bits, first, lowest) else {
+            continue;
+        };
+        let mut new = Vec::new();
+        new.try_reserve_exact(size)
+            .map_err(|_| "No memory for allocation plan")?;
+        new.extend_from_slice(&old);
+        new[bit as usize / 8] |= 1 << (bit % 8);
+        if inode {
+            group.bg_free_inodes_count = free - 1;
+        } else {
+            group.bg_free_blocks_count = free - 1;
+        }
+        return Ok(Claim { number: first + bit, bitmap, old, new });
+    }
+    Err(if inode {
+        "No free inodes available"
+    } else {
+        "No free blocks available"
+    })
 }
 
 /// Clear an orphan block's bitmap bit and post it to its group. Returns

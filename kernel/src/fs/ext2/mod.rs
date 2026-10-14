@@ -980,59 +980,18 @@ impl Ext2Fs {
             return Err("File already exists");
         }
         self.make_directory_room(parent_inode_num, &mut parent_inode, &mut dir_data, name.len())?;
-        // The records as on disk, so that only the block the entry lands in is written.
-        let before = directory_io::snapshot(&dir_data)?;
 
-        // Allocate a new inode
-        let new_inode_num = allocate_inode(
-            self.device.as_ref(),
-            &self.superblock,
-            &mut self.block_groups,
-        )?;
-
-        // Create the new inode structure
         let mut new_inode = Ext2Inode::new_regular_file(mode, uid as u16, gid as u16);
         new_inode.set_owner(uid, gid);
-
-        // Write the new inode to disk
-        new_inode
-            .write_to(
-                self.device.as_ref(),
-                new_inode_num,
-                &self.superblock,
-                &self.block_groups,
-            )
-            .map_err(|_| "Failed to write new inode")?;
-
-        // Add directory entry
-        add_directory_entry(&mut dir_data, new_inode_num, name, EXT2_FT_REG_FILE)?;
-
-        // Update parent directory timestamps (mtime and ctime)
-        let mut parent_inode_mut = parent_inode;
-        parent_inode_mut.update_timestamps(false, true, true);
-
-        // Write the modified directory data back
-        self.write_directory_data(parent_inode_num, &before, &dir_data)?;
-
-        // Write the updated parent directory inode
-        parent_inode_mut
-            .write_to(
-                self.device.as_ref(),
-                parent_inode_num,
-                &self.superblock,
-                &self.block_groups,
-            )
-            .map_err(|_| "Failed to write parent inode")?;
-
-        // Update superblock with new free inode count
-        self.superblock.decrement_free_inodes();
-        self.superblock
-            .write_to(self.device.as_ref())
-            .map_err(|_| "Failed to write superblock")?;
-
-        // Write updated block group descriptors
-        Ext2BlockGroupDesc::write_table(self.device.as_ref(), &self.superblock, &self.block_groups)
-            .map_err(|_| "Failed to write block group descriptors")?;
+        let new_inode_num = self.create_entry(
+            parent_inode_num,
+            &parent_inode,
+            &dir_data,
+            name.as_bytes(),
+            new_inode,
+            None,
+            |_, ino| Ok(ino),
+        )?;
 
         log::debug!("ext2: created file '{}' with inode {}", name, new_inode_num);
         Ok(new_inode_num)
@@ -1224,7 +1183,7 @@ impl Ext2Fs {
         }
 
         // Read the parent directory data
-        let mut dir_data = self.read_directory(&parent_inode)?;
+        let dir_data = self.read_directory(&parent_inode)?;
 
         // Find the entry to verify it exists and get its inode
         let target_inode_num = dir::find_inode(&dir_data, filename).ok_or("File not found")?;
@@ -1238,37 +1197,46 @@ impl Ext2Fs {
         // Pin before dropping the directory entry; an open/mapped orphan
         // keeps its allocation and incarnation until its last observer leaves.
         let handle = self.pin_loaded_inode(target_inode_num, target_inode.size())?;
-        // The records as on disk, so that only the block the entry leaves is written.
-        let before = directory_io::snapshot(&dir_data)?;
 
-        // Remove the directory entry
-        remove_entry(&mut dir_data, filename, self.superblock.block_size())?;
+        // The parent's records with the name removed, and its mtime and ctime.
+        let mut image = directory_io::copy(&dir_data)?;
+        remove_entry(&mut image, filename, self.superblock.block_size())?;
+        let mut parent_after = parent_inode;
+        parent_after.update_timestamps(false, true, true);
+        // The target loses a link, and its ctime changes.
+        let mut target_after = target_inode;
+        target_after.i_links_count = target_inode
+            .i_links_count
+            .checked_sub(1)
+            .ok_or("Inode already unlinked")?;
+        target_after.update_timestamps(false, false, true);
+        let links = target_after.i_links_count;
 
-        // Update parent directory timestamps (mtime and ctime)
-        let mut parent_inode_mut = parent_inode;
-        parent_inode_mut.update_timestamps(false, true, true);
+        // The name goes first; the count it held falls after it is gone.
+        let mut writes = Vec::new();
+        writes
+            .try_reserve_exact(3)
+            .map_err(|_| "No memory for directory write plan")?;
+        self.plan_blocks(&parent_inode, &dir_data, &image, 0, &mut writes)?;
+        writes
+            .try_reserve(2)
+            .map_err(|_| "No memory for directory write plan")?;
+        writes.push(directory_io::Write::Inode {
+            ino: parent_inode_num,
+            old: parent_inode,
+            new: parent_after,
+        });
+        writes.push(directory_io::Write::Inode {
+            ino: target_inode_num,
+            old: target_inode,
+            new: target_after,
+        });
 
-        // Write the modified directory data back
-        self.write_directory_data(parent_inode_num, &before, &dir_data)?;
-
-        // Write the updated parent directory inode
-        parent_inode_mut
-            .write_to(
-                self.device.as_ref(),
-                parent_inode_num,
-                &self.superblock,
-                &self.block_groups,
-            )
-            .map_err(|_| "Failed to write parent inode")?;
-
-        let links = fifo_times::write_metadata(&handle.object.ctime_pending, || {
-            decrement_inode_links(
-                self.device.as_ref(),
-                target_inode_num,
-                &self.superblock,
-                &mut self.block_groups,
-            )
-        })?;
+        // The disk changes from here on; nothing below allocates. After a
+        // failed write the inode is not marked an orphan, so nothing a name
+        // may still reach is freed.
+        self.commit_writes(&writes)
+            .map_err(|_| "Failed to write directory entry removal")?;
         if links == 0 {
             handle.object.orphan.store(true, Ordering::Release);
             // The last observer queues reclamation; writers settle pending
@@ -1363,132 +1331,44 @@ impl Ext2Fs {
             return Err("Directory already exists");
         }
         self.make_directory_room(parent_inode_num, &mut parent_inode, &mut parent_dir_data, dirname.len())?;
-        // The records as on disk, so that only the block the entry lands in is written.
-        let before = directory_io::snapshot(&parent_dir_data)?;
 
-        // Allocate a new inode for the directory
-        let new_inode_num = allocate_inode(
-            self.device.as_ref(),
-            &self.superblock,
-            &mut self.block_groups,
-        )?;
-
-        // Allocate a data block for the new directory's contents (. and .. entries)
-        let new_block = allocate_block(
-            self.device.as_ref(),
-            &self.superblock,
-            &mut self.block_groups,
-        )?;
-
-        // Create the new directory inode
+        // The new directory holds one block, for its "." and ".." entries.
+        let block_size = self.superblock.block_size();
         let mut new_inode = Ext2Inode::new_directory(mode);
         new_inode.set_owner(uid, gid);
-
-        // Set the data block pointer
-        new_inode.i_block[0] = new_block;
-
-        // Set size to one block (for . and .. entries)
-        let block_size = self.superblock.block_size();
         new_inode.i_size = block_size as u32;
+        let entries = |new_inode_num: u32, dir_data: &mut [u8]| {
+            // "." points to the directory itself:
+            // inode (4) + rec_len (2) + name_len (1) + file_type (1) + name (1) = 9, aligned to 12
+            let dot_rec_len = 12u16;
+            dir_data[0..4].copy_from_slice(&new_inode_num.to_le_bytes()); // inode
+            dir_data[4..6].copy_from_slice(&dot_rec_len.to_le_bytes()); // rec_len
+            dir_data[6] = 1; // name_len
+            dir_data[7] = EXT2_FT_DIR; // file_type
+            dir_data[8] = b'.'; // name
 
-        // Set block count (in 512-byte sectors)
-        new_inode.i_blocks = (block_size / 512) as u32;
-
-        // Initialize directory contents with "." and ".." entries
-        // Use stack-based buffer to avoid heap allocation (bump allocator doesn't reclaim)
-        let mut dir_data = [0u8; 4096]; // Max block size
-
-        // Write "." entry (points to self)
-        // inode (4) + rec_len (2) + name_len (1) + file_type (1) + name (1) = 9, aligned to 12
-        let dot_rec_len = 12u16;
-        dir_data[0..4].copy_from_slice(&new_inode_num.to_le_bytes()); // inode
-        dir_data[4..6].copy_from_slice(&dot_rec_len.to_le_bytes()); // rec_len
-        dir_data[6] = 1; // name_len
-        dir_data[7] = EXT2_FT_DIR; // file_type
-        dir_data[8] = b'.'; // name
-
-        // Write ".." entry (points to parent)
-        // This entry takes up the rest of the block
-        let dotdot_offset = 12usize;
-        let dotdot_rec_len = (block_size - 12) as u16;
-        dir_data[dotdot_offset..dotdot_offset + 4].copy_from_slice(&parent_inode_num.to_le_bytes()); // inode
-        dir_data[dotdot_offset + 4..dotdot_offset + 6]
-            .copy_from_slice(&dotdot_rec_len.to_le_bytes()); // rec_len
-        dir_data[dotdot_offset + 6] = 2; // name_len
-        dir_data[dotdot_offset + 7] = EXT2_FT_DIR; // file_type
-        dir_data[dotdot_offset + 8] = b'.'; // name[0]
-        dir_data[dotdot_offset + 9] = b'.'; // name[1]
-
-        // Write the directory data block
-        file::write_ext2_block(
-            self.device.as_ref(),
-            new_block,
-            block_size,
-            &dir_data[..block_size],
-        )
-        .map_err(|_| "Failed to write directory data block")?;
-
-        // Write the new inode to disk
-        new_inode
-            .write_to(
-                self.device.as_ref(),
-                new_inode_num,
-                &self.superblock,
-                &self.block_groups,
-            )
-            .map_err(|_| "Failed to write new directory inode")?;
-
-        // Add directory entry to parent directory
-        add_directory_entry(&mut parent_dir_data, new_inode_num, dirname, EXT2_FT_DIR)?;
-
-        // Increment parent's link count (for the ".." entry in the new directory)
-        let mut parent_inode_mut = parent_inode;
-        let current_links = unsafe {
-            core::ptr::read_unaligned(core::ptr::addr_of!(parent_inode_mut.i_links_count))
+            // ".." points to the parent and takes up the rest of the block
+            let dotdot_offset = 12usize;
+            let dotdot_rec_len = (block_size - 12) as u16;
+            dir_data[dotdot_offset..dotdot_offset + 4].copy_from_slice(&parent_inode_num.to_le_bytes()); // inode
+            dir_data[dotdot_offset + 4..dotdot_offset + 6]
+                .copy_from_slice(&dotdot_rec_len.to_le_bytes()); // rec_len
+            dir_data[dotdot_offset + 6] = 2; // name_len
+            dir_data[dotdot_offset + 7] = EXT2_FT_DIR; // file_type
+            dir_data[dotdot_offset + 8] = b'.'; // name[0]
+            dir_data[dotdot_offset + 9] = b'.'; // name[1]
         };
-        parent_inode_mut.i_links_count = current_links + 1;
-
-        // Update parent directory timestamps
-        parent_inode_mut.update_timestamps(false, true, true);
-
-        // Write the modified parent directory data back
-        self.write_directory_data(parent_inode_num, &before, &parent_dir_data)?;
-
-        // Write the updated parent directory inode
-        parent_inode_mut
-            .write_to(
-                self.device.as_ref(),
-                parent_inode_num,
-                &self.superblock,
-                &self.block_groups,
-            )
-            .map_err(|_| "Failed to write parent inode")?;
-
-        // Update superblock with new free inode and block counts
-        self.superblock.decrement_free_inodes();
-        self.superblock.decrement_free_blocks();
-        self.superblock
-            .write_to(self.device.as_ref())
-            .map_err(|_| "Failed to write superblock")?;
-
-        // Update block group used directories count
-        let inodes_per_group = self.superblock.s_inodes_per_group;
-        let bg_index = ((new_inode_num - 1) / inodes_per_group) as usize;
-        if bg_index < self.block_groups.len() {
-            let bg = &mut self.block_groups[bg_index];
-            let used_dirs =
-                unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(bg.bg_used_dirs_count)) };
-            unsafe {
-                core::ptr::write_unaligned(
-                    core::ptr::addr_of_mut!(bg.bg_used_dirs_count),
-                    used_dirs + 1,
-                );
-            }
-        }
-
-        // Write updated block group descriptors
-        Ext2BlockGroupDesc::write_table(self.device.as_ref(), &self.superblock, &self.block_groups)
-            .map_err(|_| "Failed to write block group descriptors")?;
+        // The parent gains the link the new ".." gives it, and the group
+        // counts the new directory.
+        let new_inode_num = self.create_entry(
+            parent_inode_num,
+            &parent_inode,
+            &parent_dir_data,
+            dirname.as_bytes(),
+            new_inode,
+            Some(&entries),
+            |_, ino| Ok(ino),
+        )?;
 
         log::debug!(
             "ext2: created directory '{}' with inode {}",
@@ -1623,14 +1503,13 @@ impl Ext2Fs {
             &parent_image,
             0,
             &mut writes,
-        )
-        .map_err(|_| "Failed to plan directory removal")?;
-        writes.push(rename::Write::Inode {
+        )?;
+        writes.push(directory_io::Write::Inode {
             ino: target_inode_num,
             old: target_inode,
             new: target_after,
         });
-        writes.push(rename::Write::Inode {
+        writes.push(directory_io::Write::Inode {
             ino: parent_inode_num,
             old: parent_inode,
             new: parent_after,
@@ -1733,49 +1612,47 @@ impl Ext2Fs {
             return Err("Destination already exists");
         }
         self.make_directory_room(new_parent_inode_num, &mut new_parent_inode, &mut dir_data, new_filename.len())?;
-        // The records as on disk, so that only the block the entry lands in is written.
-        let before = directory_io::snapshot(&dir_data)?;
 
-        // Add a new directory entry pointing to the source inode
-        add_directory_entry(
-            &mut dir_data,
+        // The parent's records with the new name, and its mtime and ctime.
+        let mut image = directory_io::copy(&dir_data)?;
+        let offset = add_directory_entry(
+            &mut image,
             source_inode_num,
             new_filename,
             dir_entry_type(&source_inode),
         )?;
+        let mut parent_after = new_parent_inode;
+        parent_after.update_timestamps(false, true, true);
+        // The source gains a link, and its ctime changes.
+        let mut source_after = source_inode;
+        source_after.i_links_count += 1;
+        source_after.update_timestamps(false, false, true);
 
-        // Update parent directory timestamps
-        let mut parent_inode_mut = new_parent_inode;
-        parent_inode_mut.update_timestamps(false, true, true);
+        // The count rises before the name it counts is written, so a crash
+        // leaves a count too high, which a check lowers, and never a name on
+        // an inode whose count could reach zero while it is named.
+        let mut writes = Vec::new();
+        writes
+            .try_reserve_exact(3)
+            .map_err(|_| "No memory for directory write plan")?;
+        writes.push(directory_io::Write::Inode {
+            ino: source_inode_num,
+            old: source_inode,
+            new: source_after,
+        });
+        self.plan_blocks(&new_parent_inode, &dir_data, &image, offset, &mut writes)?;
+        writes
+            .try_reserve(1)
+            .map_err(|_| "No memory for directory write plan")?;
+        writes.push(directory_io::Write::Inode {
+            ino: new_parent_inode_num,
+            old: new_parent_inode,
+            new: parent_after,
+        });
 
-        // Write the modified directory data back
-        self.write_directory_data(new_parent_inode_num, &before, &dir_data)?;
-
-        // Write the updated parent directory inode
-        parent_inode_mut
-            .write_to(
-                self.device.as_ref(),
-                new_parent_inode_num,
-                &self.superblock,
-                &self.block_groups,
-            )
-            .map_err(|_| "Failed to write parent inode")?;
-
-        // Increment the source inode's link count
-        let source_object = self.live_inodes.get(source_inode_num);
-        let increment = || {
-            increment_inode_links(
-                self.device.as_ref(),
-                source_inode_num,
-                &self.superblock,
-                &self.block_groups,
-            )
-        };
-        if let Some(object) = source_object {
-            fifo_times::write_metadata(&object.ctime_pending, increment)?;
-        } else {
-            increment()?;
-        }
+        // The disk changes from here on; nothing below allocates.
+        self.commit_writes(&writes)
+            .map_err(|_| "Failed to write new directory entry")?;
 
         log::debug!(
             "ext2: created hard link {} (inode {})",
@@ -1884,89 +1761,25 @@ impl Ext2Fs {
         // failed read or allocation leaves no inode without an entry.
         let mut dir_data = self.read_directory(&parent_inode)?;
         self.make_directory_room(parent_inode_num, &mut parent_inode, &mut dir_data, link_name.len())?;
-        // The records as on disk, so that only the block the entry lands in is written.
-        let before = directory_io::snapshot(&dir_data)?;
 
-        // Allocate a new inode
-        let new_inode_num = allocate_inode(
-            self.device.as_ref(),
-            &self.superblock,
-            &mut self.block_groups,
-        )?;
-
-        // Create the new symlink inode
+        // A target of more than 60 bytes is stored in a data block; a shorter
+        // one in the inode itself (a fast symlink).
         let mut new_inode = Ext2Inode::new_symlink(target);
         new_inode.set_owner(uid, gid);
-
-        // If target is > 60 bytes, we need to allocate a data block
-        if target.len() > 60 {
-            // Allocate a block for the target
-            let block_num = allocate_block(
-                self.device.as_ref(),
-                &self.superblock,
-                &mut self.block_groups,
-            )?;
-
-            // Write the target to the block
-            // Use stack-based buffer to avoid heap allocation (bump allocator doesn't reclaim)
-            let block_size = self.superblock.block_size();
-            let mut block_buf = [0u8; 4096]; // Max block size
-            let target_bytes = target.as_bytes();
-            block_buf[..target_bytes.len()].copy_from_slice(target_bytes);
-
-            write_ext2_block(
-                self.device.as_ref(),
-                block_num,
-                block_size,
-                &block_buf[..block_size],
-            )
-            .map_err(|_| "Failed to write symlink target block")?;
-
-            // Update inode to point to this block
-            new_inode.i_block[0] = block_num;
-            // i_blocks is in 512-byte sectors
-            new_inode.i_blocks = (block_size / 512) as u32;
-        }
-
-        // Write the new inode to disk
-        new_inode
-            .write_to(
-                self.device.as_ref(),
-                new_inode_num,
-                &self.superblock,
-                &self.block_groups,
-            )
-            .map_err(|_| "Failed to write symlink inode")?;
-
-        // Add directory entry with EXT2_FT_SYMLINK type
-        add_directory_entry(&mut dir_data, new_inode_num, link_name, EXT2_FT_SYMLINK)?;
-
-        // Update parent directory timestamps
-        let mut parent_inode_mut = parent_inode;
-        parent_inode_mut.update_timestamps(false, true, true);
-
-        // Write the modified directory data back
-        self.write_directory_data(parent_inode_num, &before, &dir_data)?;
-
-        // Write the updated parent directory inode
-        parent_inode_mut
-            .write_to(
-                self.device.as_ref(),
-                parent_inode_num,
-                &self.superblock,
-                &self.block_groups,
-            )
-            .map_err(|_| "Failed to write parent inode")?;
-
-        // Update superblock with new free inode count
-        self.superblock.decrement_free_inodes();
-        self.superblock
-            .write_to(self.device.as_ref())
-            .map_err(|_| "Failed to write superblock")?;
-
-        // Write updated block group descriptors
-        Ext2BlockGroupDesc::write_table(self.device.as_ref(), &self.superblock, &self.block_groups)
-            .map_err(|_| "Failed to write block group descriptors")?;
+        let target_block = |_: u32, block: &mut [u8]| {
+            block[..target.len()].copy_from_slice(target.as_bytes());
+        };
+        let block: Option<&dyn Fn(u32, &mut [u8])> =
+            if target.len() > 60 { Some(&target_block) } else { None };
+        self.create_entry(
+            parent_inode_num,
+            &parent_inode,
+            &dir_data,
+            link_name.as_bytes(),
+            new_inode,
+            block,
+            |_, _| Ok(()),
+        )?;
 
         log::debug!("ext2: created symlink '{}' -> '{}'", link_name, target);
         Ok(())
@@ -2051,13 +1864,6 @@ impl Ext2Fs {
             bytes.extend_from_slice(target_bytes);
             Ok(bytes)
         }
-    }
-
-    /// Write the blocks of directory `dir_inode_num` whose records differ
-    /// between `before`, as on disk, and `data`.
-    fn write_directory_data(&self, dir_inode_num: u32, before: &[u8], data: &[u8]) -> Result<(), &'static str> {
-        let inode = self.read_inode(dir_inode_num)?;
-        directory_io::write_changes(self.device.as_ref(), &inode, &self.superblock, before, data)
     }
 }
 

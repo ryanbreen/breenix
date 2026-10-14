@@ -27,10 +27,11 @@
 //! link is handed to the ext2 finalizer, which releases its blocks and inode
 //! once its last observer has gone, the custody unlink gives an open orphan.
 
+use super::directory_io::Write;
 use super::live_inode::FileHandle;
 use super::{
     add_directory_entry, dir_entry_type, is_directory_empty, remove_entry, update_directory_entry,
-    write_ext2_block, Ext2Fs, Ext2Inode, EXT2_FT_DIR, EXT2_LINK_MAX, EXT2_ROOT_INO,
+    Ext2Fs, Ext2Inode, EXT2_FT_DIR, EXT2_LINK_MAX, EXT2_ROOT_INO,
 };
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
@@ -63,20 +64,6 @@ pub enum RenameError {
     NoMemory,
 }
 
-/// One planned write and the bytes it replaces.
-pub(super) enum Write<'a> {
-    Block {
-        block: u32,
-        old: &'a [u8],
-        new: &'a [u8],
-    },
-    Inode {
-        ino: u32,
-        old: Ext2Inode,
-        new: Ext2Inode,
-    },
-}
-
 trait MemoryFailure {
     fn no_memory(&self) -> bool;
 }
@@ -88,6 +75,8 @@ impl MemoryFailure for &'static str {
                 | "No memory for ext2 inode object"
                 | "No memory for ext2 inode index"
                 | "No memory for directory data"
+                | "No memory for directory addressing"
+                | "No memory for directory write plan"
         )
     }
 }
@@ -339,13 +328,15 @@ impl Ext2Fs {
         }
         match (&new_image, &new_data) {
             (Some(image), Some(data)) => {
-                self.plan_blocks(&new_dir_inode, data, image, named_at, &mut writes)?;
-                self.plan_blocks(&old_dir_inode, &old_data, &old_image, 0, &mut writes)?;
+                self.plan_blocks(&new_dir_inode, data, image, named_at, &mut writes).map_err(io)?;
+                self.plan_blocks(&old_dir_inode, &old_data, &old_image, 0, &mut writes).map_err(io)?;
             }
-            _ => self.plan_blocks(&old_dir_inode, &old_data, &old_image, named_at, &mut writes)?,
+            _ => self
+                .plan_blocks(&old_dir_inode, &old_data, &old_image, named_at, &mut writes)
+                .map_err(io)?,
         }
         if let Some((data, image)) = &moved {
-            self.plan_blocks(&source_inode, data, image, 0, &mut writes)?;
+            self.plan_blocks(&source_inode, data, image, 0, &mut writes).map_err(io)?;
         }
         writes.try_reserve(4).map_err(|_| RenameError::NoMemory)?;
         // Counts that fall go last, once the names they counted are gone.
@@ -420,88 +411,5 @@ impl Ext2Fs {
         }
         // More steps than inodes: the `..` chain has a cycle.
         Err(RenameError::Io)
-    }
-
-    /// Perform planned writes in order. When one fails, it and the writes
-    /// before it are rewritten with their old bytes, last first, and the
-    /// result is an error. When one of those rewrites fails too, the tree is
-    /// between two states and stays so: the mount writes nothing more.
-    pub(super) fn commit_writes(&mut self, writes: &[Write]) -> Result<(), ()> {
-        for (done, write) in writes.iter().enumerate() {
-            if self.apply(write, false).is_err() {
-                // The failed write may have landed in part, so it is undone
-                // with the rest. Undoing stops at the first rewrite that
-                // fails, so what stays on disk is a prefix of the plan: the
-                // state a crash there leaves, with counts high, never low.
-                let restored = writes[..=done]
-                    .iter()
-                    .rev()
-                    .all(|undo| self.apply(undo, true).is_ok());
-                if !restored {
-                    self.fail_writes();
-                }
-                return Err(());
-            }
-        }
-        Ok(())
-    }
-
-    /// Plan the writes of the blocks of directory `dir` that differ between
-    /// `old` and `new`, the block holding byte `first` first.
-    pub(super) fn plan_blocks<'a>(
-        &self,
-        dir: &Ext2Inode,
-        old: &'a [u8],
-        new: &'a [u8],
-        first: usize,
-        writes: &mut Vec<Write<'a>>,
-    ) -> Result<(), RenameError> {
-        let block_size = self.superblock.block_size();
-        if old.len() != new.len() || old.len() % block_size != 0 {
-            return Err(RenameError::Io);
-        }
-        let blocks = old.len() / block_size;
-        let first = first / block_size;
-        let order = core::iter::once(first).chain((0..blocks).filter(|index| *index != first));
-        for index in order.filter(|index| *index < blocks) {
-            let range = index * block_size..(index + 1) * block_size;
-            if old[range.clone()] == new[range.clone()] {
-                continue;
-            }
-            let block = super::file::get_block_num(
-                self.device.as_ref(),
-                dir,
-                &self.superblock,
-                index as u32,
-            )
-            .map_err(io)?
-            .ok_or(RenameError::Io)?;
-            writes.try_reserve(1).map_err(|_| RenameError::NoMemory)?;
-            writes.push(Write::Block {
-                block,
-                old: &old[range.clone()],
-                new: &new[range],
-            });
-        }
-        Ok(())
-    }
-
-    /// Perform one planned write, or with `undo` restore what it replaced.
-    fn apply(&mut self, write: &Write, undo: bool) -> Result<(), ()> {
-        match write {
-            Write::Block { block, old, new } => write_ext2_block(
-                self.device.as_ref(),
-                *block,
-                self.superblock.block_size(),
-                if undo { old } else { new },
-            )
-            .map_err(|_| ()),
-            Write::Inode { ino, old, new } => if undo {
-                self.write_inode_disk(*ino, old)
-            } else {
-                self.write_inode(*ino, new)
-            }
-            .map_err(|_| ()),
-        }
     }
 }
