@@ -46,6 +46,11 @@ class. `BREENIX_QEMU_UI=0` selects the default host priority for diagnostics;
 it does not change the accelerator. The Mac boot slot still covers the full
 VM lifetime, and boots do not wait for host load to fall.
 
+Parallels VMs get the same class: `run.sh` creates each one with the system flag
+`vm.vcpuprio=6`, so `prl_vm_app` starts its vCPU threads at user-interactive QoS
+(priority 46) instead of the default class (priority 31) and declines later requests
+to change it. `run.sh` refuses to start a VM whose `config.pvs` does not carry the flag.
+
 QEMU-HVF remains a separate target from Parallels and VMware: its VirtIO
 devices and emulated GICv3 remain QEMU's. QEMU 11.0.3 supports that GIC with
 HVF. Its MMIO emulator requires ESR.ISV=1. ARM64 VirtIO device registers,
