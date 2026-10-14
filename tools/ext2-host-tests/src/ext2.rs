@@ -16,6 +16,8 @@ mod directory_extension;
 pub mod reclaim;
 #[path = "../../../kernel/src/fs/ext2/superblock.rs"]
 pub mod superblock;
+#[path = "../../../kernel/src/fs/ext2/sector_cache.rs"]
+mod sector_cache;
 pub use block_group::*;
 pub use inode::*;
 pub use dir::*;
@@ -48,17 +50,25 @@ impl Ext2Fs {
     pub fn host_new(device: Box<dyn crate::block::BlockDevice>, superblock: Ext2Superblock, block_groups: Vec<Ext2BlockGroupDesc>) -> Self {
         Self { device, superblock, block_groups, durable_epoch: core::sync::atomic::AtomicU64::new(0), live_inodes: LiveInodes }
     }
-    pub fn write_directory_for_host(&self, ino:u32, data:&[u8]) -> Result<(), &'static str> { self.write_directory_data(ino,data) }
+    /// Lay down a fixture directory's records, block by block.
+    pub fn write_directory_for_host(&self, ino: u32, data: &[u8]) -> Result<(), &'static str> {
+        let inode = self.read_inode(ino)?;
+        let size = self.superblock.block_size();
+        for (index, records) in data.chunks(size).enumerate() {
+            let block = file::get_block_num(self.device.as_ref(), &inode, &self.superblock, index as u32)
+                .map_err(|_| "map")?
+                .ok_or("unmapped directory block")?;
+            file::write_ext2_block(self.device.as_ref(), block, size, records).map_err(|_| "write")?;
+        }
+        Ok(())
+    }
     pub fn read_directory(&self, inode: &Ext2Inode) -> Result<Vec<u8>, &'static str> {
         if !inode.is_dir() { return Err("Not a directory"); }
         file::read_file(self.device.as_ref(),inode,&self.superblock).map_err(|e| if e == crate::block::BlockError::OutOfMemory { "No memory for directory data" } else { "read directory" })
     }
-    fn write_directory_data(&self, ino: u32, data: &[u8]) -> Result<(), &'static str> {
-        let inode = self.read_inode(ino)?;
-        let blocks=directory_io::prepare(self.device.as_ref(),&inode,&self.superblock,data.len())?;
-        directory_io::write(self.device.as_ref(),self.superblock.block_size(),&blocks,data)
-
-    }
+    /// The kernel's mount stops writing here; the harness disk has no write
+    /// fence, so a test reads the disk to see what a failure left.
+    fn fail_writes(&mut self) {}
     pub fn sync(&self) -> Result<(), &'static str> {
         self.device.flush().map_err(|_| "flush")?;
         self.durable_epoch.fetch_add(1, core::sync::atomic::Ordering::Release);
@@ -76,6 +86,11 @@ impl Ext2Fs {
             &self.block_groups,
         )
         .map_err(|_| "read")
+    }
+    fn write_inode_disk(&self, ino: u32, inode: &Ext2Inode) -> Result<(), &'static str> {
+        inode
+            .write_to(self.device.as_ref(), ino, &self.superblock, &self.block_groups)
+            .map_err(|_| "write")
     }
     pub fn write_inode(&mut self, ino: u32, inode: &Ext2Inode) -> Result<(), &'static str> {
         inode
@@ -500,6 +515,80 @@ mod reclaim_checks {
         let mode = fs.read_inode(ino).unwrap().i_mode;
         assert_eq!(mode, 0o140755);
     }
+    /// A directory (inode 2, block 21) with room, on a disk whose writes can
+    /// be made to fail after they land.
+    fn directory_fixture() -> (Ext2Fs, Arc<Mutex<Vec<u8>>>, Arc<Mutex<Option<u64>>>) {
+        let data = Arc::new(Mutex::new(vec![0; 512 * 4096]));
+        let fail = Arc::new(Mutex::new(None));
+        let mut sb = Ext2Superblock::from_bytes(&[0; 1024]).unwrap();
+        sb.s_blocks_count = 512;
+        sb.s_free_blocks_count = 490;
+        sb.s_inodes_count = 128;
+        sb.s_free_inodes_count = 126;
+        sb.s_log_block_size = 2;
+        sb.s_blocks_per_group = 512;
+        sb.s_inodes_per_group = 128;
+        let mut group: Ext2BlockGroupDesc = unsafe { core::mem::zeroed() };
+        group.bg_inode_table = 8;
+        group.bg_block_bitmap = 3;
+        group.bg_inode_bitmap = 4;
+        group.bg_free_blocks_count = 490;
+        group.bg_free_inodes_count = 126;
+        {
+            let mut bytes = data.lock().unwrap();
+            bytes[3 * 4096..3 * 4096 + 2].fill(0xff);
+            bytes[3 * 4096 + 2] = 0x3f;
+            bytes[4 * 4096] = 3;
+            let dir = &mut bytes[21 * 4096..22 * 4096];
+            dir[4..6].copy_from_slice(&4096u16.to_le_bytes());
+        }
+        let mut fs = Ext2Fs {
+            device: Box::new(Disk { data: data.clone(), fail: fail.clone() }),
+            superblock: sb,
+            block_groups: vec![group],
+            durable_epoch: core::sync::atomic::AtomicU64::new(0),
+            live_inodes: LiveInodes,
+        };
+        let mut parent = Ext2Inode::new_regular_file(0o777, 0, 0);
+        parent.i_mode = 0o40777;
+        parent.i_links_count = 2;
+        parent.i_size = 4096;
+        parent.i_blocks = 8;
+        parent.i_block[0] = 21;
+        fs.write_inode(2, &parent).unwrap();
+        fs.superblock.write_to(fs.device.as_ref()).unwrap();
+        Ext2BlockGroupDesc::write_table(fs.device.as_ref(), &fs.superblock, &fs.block_groups).unwrap();
+        (fs, data, fail)
+    }
+
+    #[test]
+    fn create_whose_entry_write_fails_leaves_the_disk_as_it_was() {
+        let (mut fs, data, fail) = directory_fixture();
+        let before = data.lock().unwrap().clone();
+        // The directory block's first sector lands, then reports an error.
+        *fail.lock().unwrap() = Some(21 * 8);
+        let created = fs.create_node(2, "f", 0o100644, 0, 0, 0);
+        assert_eq!(created, Err("Failed to write new directory entry"));
+        assert!(*data.lock().unwrap() == before, "a failed create changed the disk");
+        let counts = (fs.superblock.s_free_inodes_count, fs.block_groups[0].bg_free_inodes_count);
+        assert_eq!(counts, (126, 126));
+        let ino = fs.create_node(2, "f", 0o100644, 0, 0, 0).unwrap();
+        let parent = fs.read_inode(2).unwrap();
+        assert_eq!(dir::find_inode_bytes(&fs.read_directory(&parent).unwrap(), b"f"), Some(ino));
+    }
+
+    #[test]
+    fn create_whose_count_write_fails_takes_the_name_back_out() {
+        let (mut fs, data, fail) = directory_fixture();
+        let before = data.lock().unwrap().clone();
+        // The superblock, the plan's last write, lands and reports an error.
+        *fail.lock().unwrap() = Some(2);
+        assert!(fs.create_node(2, "f", 0o100644, 0, 0, 0).is_err());
+        assert!(*data.lock().unwrap() == before, "a failed create changed the disk");
+        let parent = fs.read_inode(2).unwrap();
+        assert_eq!(dir::find_inode_bytes(&fs.read_directory(&parent).unwrap(), b"f"), None);
+    }
+
     #[test]
     fn unix_node_raw_directory_names_remain_distinct() {
         let mut dir = vec![0;4096]; dir[4..6].copy_from_slice(&4096u16.to_le_bytes());
