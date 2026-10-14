@@ -5,6 +5,8 @@
  * arrives fails the case after 2 seconds, inside the suite's 10-second case limit.
  */
 #define _POSIX_C_SOURCE 202405L
+/* syscall() and gettid(), to queue the C library's reserved cancel signal directly. */
+#define _DEFAULT_SOURCE
 #include "case.h"
 
 #include <errno.h>
@@ -15,6 +17,7 @@
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -854,6 +857,65 @@ static const char *cancel_cond_signal(void) {
     return PASS;
 }
 
+#if defined(__aarch64__)
+#define NR_TGKILL 131
+#elif defined(__x86_64__)
+#define NR_TGKILL 234
+#endif
+
+/* A cancel request can be pending when a thread with cancellation disabled
+ * execs: a pthread_cancel that ran between the thread blocking the cancel
+ * signal and recording the disabled state queues it behind the mask. Exec
+ * resets that signal's action to SIG_DFL, and the new image must still reach
+ * main. The child queues the signal itself (the race's outcome), then execs
+ * this program to run create-join. */
+static const char *cancel_pending_exec(void) {
+    int p[2];
+    char b[64];
+    CHECK(pipe(p) == 0, "pipe failed");
+    pid_t pid = fork();
+    CHECK(pid >= 0, "fork failed");
+    if (pid == 0) {
+        close(p[0]);
+        if (pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL) != 0)
+            _exit(3);
+        if (syscall(NR_TGKILL, (long)getpid(), (long)gettid(), 32L) != 0)
+            _exit(4);
+        char fd[12];
+        int n = 0;
+        char digits[12];
+        for (int v = p[1]; ; v /= 10) {
+            digits[n++] = (char)('0' + v % 10);
+            if (v < 10)
+                break;
+        }
+        for (int i = 0; i < n; i++)
+            fd[i] = digits[n - 1 - i];
+        fd[n] = 0;
+        char *argv[] = { "/usr/local/test/bin/libc-pthread_test", "create-join", fd, NULL };
+        execve(argv[0], argv, libc_case_envp);
+        _exit(5);
+    }
+    close(p[1]);
+    long n = 0;
+    for (;;) {
+        ssize_t r = read(p[0], b + n, sizeof b - 1 - (size_t)n);
+        if (r <= 0)
+            break;
+        n += r;
+    }
+    b[n] = 0;
+    close(p[0]);
+    int status = 0;
+    EXPECT_INT("waitpid", waitpid(pid, &status, 0), pid);
+    if (WIFSIGNALED(status))
+        return fail_int("signal that ended the exec'd program (0: none)", WTERMSIG(status), 0);
+    EXPECT_INT("child's exit status (3-5: it failed before the exec'd program ran)",
+               WEXITSTATUS(status), 0);
+    EXPECT_STR("what the exec'd program's create-join reported", b, "PASS\n");
+    return PASS;
+}
+
 static pthread_barrier_t barrier;
 static atomic_int arrived, serial, early;
 
@@ -1005,6 +1067,7 @@ const struct libc_case libc_cases[] = {
     { "cancel-disabled-no-eintr", cancel_disabled_no_eintr },
     { "cancel-stdio-unlocks", cancel_stdio_unlocks },
     { "cancel-cond-signal", cancel_cond_signal },
+    { "cancel-pending-exec", cancel_pending_exec },
     { "barrier-wait", barrier_wait },
     { "spin-lock", spin_lock },
     { "attr-stacksize", attr_stacksize },

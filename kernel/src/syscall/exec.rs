@@ -232,31 +232,15 @@ pub(crate) fn caller_killed() -> bool {
         })
 }
 
-/// The exec convenience ABI searches /bin for a bare name: the pathname
-/// `path` names.
-fn convenience_path(path: String) -> Result<String, u64> {
-    if path.contains('/') {
-        return Ok(path);
-    }
-    let mut resolved = String::new();
-    resolved
-        .try_reserve_exact(5 + path.len())
-        .map_err(|_| ENOMEM as u64)?;
-    resolved.push_str("/bin/");
-    resolved.push_str(&path);
-    Ok(resolved)
-}
-
 /// Expand interpreter scripts, keeping the optional argument as one string.
 /// `read` returns a file's bytes and what else its loader learned about it;
 /// that of the ELF image finally loaded is returned with it, so a script's
-/// own set-ID bits confer nothing and its interpreter's do. So is the
-/// pathname of that image: a script's interpreter, not the script.
+/// own set-ID bits confer nothing and its interpreter's do.
 pub(crate) fn read_image<I>(
     path: &str,
     args: &mut Arguments,
     mut read: impl FnMut(&str) -> Result<(Vec<u8>, I), i32>,
-) -> Result<(Vec<u8>, I, String), u64> {
+) -> Result<(Vec<u8>, I), u64> {
     let mut path = copy_string(path)?;
     for depth in 0..=5 {
         let (data, identity) = read(&path).map_err(|errno| {
@@ -268,7 +252,7 @@ pub(crate) fn read_image<I>(
         })?;
         if !data.starts_with(b"#!") {
             validate_elf(&data)?;
-            return Ok((data, identity, convenience_path(path)?));
+            return Ok((data, identity));
         }
         if depth == 5 {
             return Err(ELOOP as u64);
@@ -283,9 +267,17 @@ pub(crate) fn read_image<I>(
             return Err(ENOEXEC as u64);
         }
         let optional = line[split..].trim_matches([' ', '\t']);
-        // Pass the loaded script's path, so its interpreter does not resolve
-        // a bare name in cwd.
-        path = convenience_path(path)?;
+        // The exec convenience ABI searches /bin for bare names. Pass the
+        // loaded script's path, so its interpreter does not resolve it in cwd.
+        if !path.contains('/') {
+            let mut resolved = String::new();
+            resolved
+                .try_reserve_exact(5 + path.len())
+                .map_err(|_| ENOMEM as u64)?;
+            resolved.push_str("/bin/");
+            resolved.push_str(&path);
+            path = resolved;
+        }
         args.interpreter(interpreter.as_bytes(), optional.as_bytes(), path.as_bytes())?;
         path = copy_string(interpreter)?;
     }

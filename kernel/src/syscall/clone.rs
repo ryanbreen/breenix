@@ -355,6 +355,8 @@ pub fn sys_clone_thread(
         child_process.cpu = parent.cpu.clone();
         child_process.itimers = parent.itimers.clone();
     }
+    // Every task runs the image its creator runs.
+    child_process.exe_path = parent.exe_path.clone();
     child_process.umask = parent.umask;
     // A thread is in its process's process group and session.
     child_process.pgid = parent.pgid;
