@@ -58,6 +58,13 @@ pub mod tcp {
         unreachable!()
     }
 }
+/// No DHCP exchange runs here. The kernel's client claims a datagram only while
+/// it awaits a reply, so with none awaited it claims nothing.
+pub mod dhcp {
+    pub fn receive(_: &[u8]) -> bool {
+        false
+    }
+}
 pub fn ip_output(src: [u8; 4], dst: [u8; 4], protocol: u8, data: &[u8]) -> Result<(), TxError> {
     let packet = ipv4::Ipv4Packet::try_build(src, dst, protocol, data)?;
     if is_local_addr(dst) || is_broadcast_addr(dst) {
