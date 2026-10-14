@@ -1171,6 +1171,14 @@ fn generate_pid_status(pid: u64) -> String {
         ProcessState::Terminated(_) => "Terminated",
     });
 
+    // An exited row remains visible until its parent reaps it. Linux procfs
+    // identifies that state as a zombie, independently of scheduler ownership.
+    let state_str = if state_str == "Terminated" {
+        "Z (zombie)"
+    } else {
+        state_str
+    };
+
     let ppid = match process.parent {
         Some(parent) => parent.as_u64(),
         None => 0,

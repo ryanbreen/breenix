@@ -26,11 +26,14 @@ static EXITING_SIBLING_WAIT: crate::task::waitqueue::WaitQueueHead = crate::task
 /// (`ProcessManager::exec_waits_for_exiting_sibling`), so a thread that has
 /// joined the others execs instead of finding them still present. The wait
 /// sleeps a millisecond at a time, so a sibling of lower priority runs, and
-/// a signal ends it with the errno its wait decided. A sibling that has not
-/// begun to exit is left for exec to refuse, as before.
+/// a signal ends it with the errno its wait decided. Thread-group peers are
+/// terminated first; independent CLONE_VM processes retain the refusal gate.
 pub(crate) fn await_exiting_siblings(pid: crate::process::ProcessId) -> Result<(), u64> {
     use crate::ipc::wait::{wait_on, IpcDeadline, WaitEnd};
     const INTERVAL_NS: u64 = 1_000_000;
+    // Only the execing thread survives. The existing kill path defers peers
+    // inside a syscall and protects their roots until their last dispatch ends.
+    crate::signal::delivery::terminate_thread_group_peers(pid, 0);
     while crate::process::with_process_manager(|manager| manager.exec_waits_for_exiting_sibling(pid))
         .unwrap_or(false)
     {
@@ -59,7 +62,7 @@ impl Arguments {
         }
     }
 
-    pub fn copy_from_user(path: &str, argv: u64, envp: u64) -> Result<Self, u64> {
+    pub fn copy_from_user(path: impl AsRef<[u8]>, argv: u64, envp: u64) -> Result<Self, u64> {
         let mut args = Self::empty();
         let mut budget = ARG_MAX;
         args.argv = copy_vector(argv, &mut budget, &mut args.bytes)?;
@@ -67,7 +70,7 @@ impl Arguments {
         // libbreenix's no-argv convenience call uses the pathname as argv[0].
         if argv == 0 {
             args.argv.try_reserve(1).map_err(|_| ENOMEM as u64)?;
-            let range = args.append(path.as_bytes())?;
+            let range = args.append(path.as_ref())?;
             args.argv.push(range);
         }
         args.check_size()?;
@@ -232,54 +235,78 @@ pub(crate) fn caller_killed() -> bool {
         })
 }
 
-/// Expand interpreter scripts, keeping the optional argument as one string.
-/// `read` returns a file's bytes and what else its loader learned about it;
-/// that of the ELF image finally loaded is returned with it, so a script's
-/// own set-ID bits confer nothing and its interpreter's do.
-pub(crate) fn read_image<I>(
-    path: &str,
-    args: &mut Arguments,
-    mut read: impl FnMut(&str) -> Result<(Vec<u8>, I), i32>,
-) -> Result<(Vec<u8>, I), u64> {
-    let mut path = copy_string(path)?;
-    for depth in 0..=5 {
-        let (data, identity) = read(&path).map_err(|errno| {
-            if errno == EISDIR {
-                EACCES as u64
-            } else {
-                errno as u64
+/// The exec convenience ABI searches /bin for a bare name: the pathname
+/// `path` names.
+fn convenience_path(path: Vec<u8>) -> Result<Vec<u8>, u64> {
+    if path.starts_with(b"/") {
+        return Ok(path);
+    }
+    let base = if path.contains(&b'/') {
+        crate::fs::namei::working_dir_path_bytes(&crate::fs::namei::current_working_dir())?
+    } else {
+        let mut base = Vec::new();
+        base.try_reserve_exact(4).map_err(|_| ENOMEM as u64)?;
+        base.extend_from_slice(b"/bin");
+        base
+    };
+    let mut resolved = Vec::new();
+    resolved.try_reserve_exact(base.len() + 1 + path.len()).map_err(|_| ENOMEM as u64)?;
+    resolved.extend_from_slice(&base);
+    if !base.ends_with(b"/") { resolved.push(b'/'); }
+    resolved.extend_from_slice(&path);
+    Ok(resolved)
+}
+
+/// Display-only text; the resolver and interpreter arguments keep raw bytes.
+fn display_path(mut path: &[u8]) -> Result<String, u64> {
+    let mut text = String::new();
+    text.try_reserve_exact(path.len().checked_mul(3).ok_or(ENOMEM as u64)?).map_err(|_| ENOMEM as u64)?;
+    while !path.is_empty() {
+        match core::str::from_utf8(path) {
+            Ok(valid) => { text.push_str(valid); break; }
+            Err(error) => {
+                let valid = error.valid_up_to();
+                text.push_str(core::str::from_utf8(&path[..valid]).map_err(|_| EFAULT as u64)?);
+                text.push('\u{fffd}');
+                path = &path[valid + error.error_len().unwrap_or(path.len() - valid)..];
             }
-        })?;
+        }
+    }
+    Ok(text)
+}
+
+/// Resolve scripts using byte pathnames and preserve every argument byte.
+pub(crate) fn read_image<I>(
+    path: impl AsRef<[u8]>,
+    args: &mut Arguments,
+    mut read: impl FnMut(&[u8]) -> Result<(Vec<u8>, I), i32>,
+) -> Result<(Vec<u8>, I, String), u64> {
+    let input = path.as_ref();
+    let mut path = Vec::new();
+    path.try_reserve_exact(input.len()).map_err(|_| ENOMEM as u64)?;
+    path.extend_from_slice(input);
+    for depth in 0..=5 {
+        path = convenience_path(path)?;
+        let (data, identity) = read(&path).map_err(|errno| if errno == EISDIR { EACCES as u64 } else { errno as u64 })?;
         if !data.starts_with(b"#!") {
             validate_elf(&data)?;
-            return Ok((data, identity));
+            // Process names are display text; lookup and argv remain byte exact.
+            return Ok((data, identity, display_path(&path)?));
         }
-        if depth == 5 {
-            return Err(ELOOP as u64);
-        }
+        if depth == 5 { return Err(ELOOP as u64); }
         let end = data.iter().position(|&b| b == b'\n').unwrap_or(data.len());
-        // Pathnames in the filesystem API are UTF-8; invalid bytes cannot resolve.
-        let line = core::str::from_utf8(&data[2..end]).map_err(|_| super::errno::ENOENT as u64)?;
-        let line = line.trim_matches([' ', '\t']);
-        let split = line.find([' ', '\t']).unwrap_or(line.len());
+        let mut line = &data[2..end];
+        while line.first().is_some_and(|b| matches!(b, b' ' | b'\t')) { line = &line[1..]; }
+        while line.last().is_some_and(|b| matches!(b, b' ' | b'\t')) { line = &line[..line.len()-1]; }
+        let split = line.iter().position(|b| matches!(b, b' ' | b'\t')).unwrap_or(line.len());
         let interpreter = &line[..split];
-        if interpreter.is_empty() {
-            return Err(ENOEXEC as u64);
-        }
-        let optional = line[split..].trim_matches([' ', '\t']);
-        // The exec convenience ABI searches /bin for bare names. Pass the
-        // loaded script's path, so its interpreter does not resolve it in cwd.
-        if !path.contains('/') {
-            let mut resolved = String::new();
-            resolved
-                .try_reserve_exact(5 + path.len())
-                .map_err(|_| ENOMEM as u64)?;
-            resolved.push_str("/bin/");
-            resolved.push_str(&path);
-            path = resolved;
-        }
-        args.interpreter(interpreter.as_bytes(), optional.as_bytes(), path.as_bytes())?;
-        path = copy_string(interpreter)?;
+        if interpreter.is_empty() { return Err(ENOEXEC as u64); }
+        let mut optional = &line[split..];
+        while optional.first().is_some_and(|b| matches!(b, b' ' | b'\t')) { optional = &optional[1..]; }
+        args.interpreter(interpreter, optional, &path)?;
+        path.clear();
+        path.try_reserve(interpreter.len()).map_err(|_| ENOMEM as u64)?;
+        path.extend_from_slice(interpreter);
     }
     Err(ELOOP as u64)
 }

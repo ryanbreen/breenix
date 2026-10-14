@@ -44,7 +44,7 @@ pub fn read_program(path: &str) -> Result<Vec<u8>, i32> {
 /// `read_program`, with the identity the file's set-ID bits confer at exec.
 #[cfg(target_arch = "x86_64")]
 pub fn read_program_image(
-    path: &str,
+    path: impl AsRef<[u8]>,
 ) -> Result<(Vec<u8>, crate::process::credentials::ExecIdentity), i32> {
     use crate::syscall::errno::{EACCES, EIO, EISDIR};
 
@@ -53,7 +53,7 @@ pub fn read_program_image(
 
     // The handle holds the inode until its content is read.
     let (mount, inode_num, _held) =
-        crate::fs::namei::resolve_file(path).map_err(|errno| errno as i32)?;
+        crate::fs::namei::resolve_file_bytes(path.as_ref()).map_err(|errno| errno as i32)?;
     let fs_guard = mount.read().map_err(|errno| errno as i32)?;
     let fs = fs_guard.as_ref().ok_or(EIO)?;
 

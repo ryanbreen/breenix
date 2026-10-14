@@ -345,10 +345,13 @@ impl Default for PipeBuffer {
 ///
 /// Returns (read_buffer, write_buffer) where both point to the same underlying buffer
 /// wrapped in Arc<Mutex> for shared access.
-pub fn create_pipe() -> (
+pub fn create_pipe() -> Result<(
     alloc::sync::Arc<spin::Mutex<PipeBuffer>>,
     alloc::sync::Arc<spin::Mutex<PipeBuffer>>,
-) {
-    let buffer = alloc::sync::Arc::new(spin::Mutex::new(PipeBuffer::new()));
-    (buffer.clone(), buffer)
+), i32> {
+    let mut pipe = PipeBuffer::try_new_zero_refs()?;
+    pipe.readers = 1;
+    pipe.writers = 1;
+    let buffer = alloc::sync::Arc::try_new(spin::Mutex::new(pipe)).map_err(|_| 12)?;
+    Ok((buffer.clone(), buffer))
 }

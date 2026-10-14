@@ -3671,12 +3671,14 @@ pub fn sys_getcwd(buf: u64, size: u64) -> SyscallResult {
 /// * EACCES - Permission denied
 /// * EIO - I/O error
 pub fn sys_chdir(pathname: u64) -> SyscallResult {
-    let resolved = match resolve_user(pathname, true) {
-        Ok(r) => r,
-        Err(e) => return e,
+    let path = match super::userptr::copy_path_bytes_from_user(pathname) {
+        Ok(path) => path,
+        Err(errno) => return SyscallResult::Err(errno),
     };
-
-    log::debug!("sys_chdir: path={:?}", resolved.path);
+    let resolved = match crate::fs::namei::resolve_bytes(&path, true) {
+        Ok(resolved) => resolved,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
 
     match crate::fs::namei::working_dir(&resolved) {
         Ok(dir) => enter_working_dir(dir),

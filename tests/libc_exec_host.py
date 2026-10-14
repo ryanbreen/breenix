@@ -11,7 +11,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 source = (ROOT / 'libs/libbreenix-libc/src/unistd.rs').read_text()
-names = {'ENOEXEC', 'ENOMEM', 'EACCES', 'ENAMETOOLONG', 'ENOENT',
+names = {'ENOEXEC', 'ENOMEM', 'EACCES', 'ENOENT',
          'ENOTDIR', 'ENOSYS', 'SHELL', 'DEFAULT_PATH'}
 constants = '\n'.join(line for line in source.splitlines()
                       if line.startswith('const ') and line.split()[1].rstrip(':') in names) + '\n'
