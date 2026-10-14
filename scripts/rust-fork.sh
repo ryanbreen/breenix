@@ -14,6 +14,7 @@ import sys
 import tomllib
 
 root = Path(sys.argv[1])
+RELEASE_BRANCH = 'breenix-target'
 pin = tomllib.loads((root / 'rust-fork.toml').read_text())
 
 def git(where, *args):
@@ -40,6 +41,30 @@ def archive(source, commit, destination, *paths, prefix=''):
         if producer.wait() != 0 or result.returncode != 0:
             raise RuntimeError('failed to archive the pinned Rust library')
 
+def present(where, commit):
+    return subprocess.run(['git', '-C', str(where), 'cat-file', '-e', commit + '^{commit}'], capture_output=True).returncode == 0
+
+def fetch_pin(source):
+    # Fetch the pinned commit itself, and only when the clone lacks it: a lane pin need not be
+    # a branch tip, a gate with the commit at hand needs no network, and concurrent gates
+    # sharing the clone write no refs.
+    if not present(source, pin['commit']):
+        run(source, 'fetch', '--quiet', '--no-write-fetch-head', pin['repo'], pin['commit'])
+    if not present(source, pin['commit']):
+        raise RuntimeError('fork pin ' + pin['commit'] + ' is not in ' + pin['repo'])
+
+def check_reachable(source):
+    # Fetch the named branch into a private ref so the answer reflects the published fork.
+    ref = 'refs/rust-fork-check/' + str(os.getpid())
+    run(source, 'fetch', '--quiet', '--no-write-fetch-head', pin['repo'], '+refs/heads/' + pin['branch'] + ':' + ref)
+    try:
+        reachable = subprocess.run(['git', '-C', str(source), 'merge-base', '--is-ancestor', pin['commit'], ref], capture_output=True).returncode == 0
+    finally:
+        run(source, 'update-ref', '-d', ref)
+    if not reachable:
+        raise RuntimeError('fork pin ' + pin['commit'] + ' is not reachable from ' + pin['branch'] + ' in ' + pin['repo'])
+    print('Rust fork pin is reachable from ' + pin['branch'])
+
 try:
     if not re.fullmatch(r'[0-9a-f]{40}', pin['commit']):
         raise RuntimeError('fork pin must be a full commit SHA')
@@ -49,9 +74,7 @@ try:
         if len(sys.argv) != 5:
             raise RuntimeError('usage: rust-fork.sh snapshot SOURCE DESTINATION')
         source, destination = map(Path, sys.argv[3:])
-        run(source, 'fetch', 'origin', pin['branch'])
-        run(source, 'fetch', 'origin', pin['commit'])
-        git(source, 'cat-file', '-e', pin['commit'] + '^{commit}')
+        fetch_pin(source)
         if destination.exists():
             shutil.rmtree(destination)
         destination.mkdir(parents=True)
@@ -79,9 +102,7 @@ try:
         if source is None:
             raise RuntimeError('set BREENIX_RUST_FORK_SOURCE to the canonical Rust clone')
         source = Path(source).resolve()
-        run(source, 'fetch', 'origin', pin['branch'])
-        run(source, 'fetch', 'origin', pin['commit'])
-        git(source, 'cat-file', '-e', pin['commit'] + '^{commit}')
+        fetch_pin(source)
         if checkout.is_symlink():
             checkout.unlink()
         if not checkout.exists():
@@ -100,15 +121,17 @@ try:
         modules = [row.split('\t', 1)[1] for row in git(checkout, 'ls-tree', '-r', 'HEAD', 'library').splitlines() if row.startswith('160000 ')]
         if modules:
             run(checkout, 'submodule', 'update', '--init', '--depth', '1', *modules)
-    elif command not in ('verify', 'check-reachable'):
-        raise RuntimeError('usage: rust-fork.sh sync|verify|check-reachable')
+    elif command in ('check-reachable', 'check-release'):
+        # Main may only name a fork commit on the fork's integration branch; lanes name their own.
+        if command == 'check-release' and pin['branch'] != RELEASE_BRANCH:
+            raise RuntimeError('main may only pin a commit on ' + RELEASE_BRANCH + '; rust-fork.toml names ' + pin['branch'])
+        check_reachable(Path(os.environ.get('BREENIX_RUST_FORK_SOURCE', str(checkout))))
+        sys.exit(0)
+    elif command != 'verify':
+        raise RuntimeError('usage: rust-fork.sh sync|verify|check-reachable|check-release')
 
     library = Path(os.environ.get('BREENIX_RUST_FORK_LIBRARY', str(checkout / 'library'))).resolve()
     fork = library.parent
-    if command == 'check-reachable':
-        run(fork, 'merge-base', '--is-ancestor', pin['commit'], 'origin/' + pin['branch'])
-        print('Rust fork pin is reachable from origin/' + pin['branch'])
-        sys.exit(0)
     if not (library / 'std/Cargo.toml').is_file():
         raise RuntimeError('Breenix Rust library is missing; run scripts/rust-fork.sh sync')
     snapshot = fork / '.rust-fork-snapshot.json'

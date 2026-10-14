@@ -43,8 +43,23 @@ class ForkPinTests(unittest.TestCase):
     def git(self, *args, where=None):
         return subprocess.check_output(['git', '-C', str(where or self.source), *args], text=True, stderr=subprocess.DEVNULL).strip()
 
-    def pin(self):
-        (self.root / 'rust-fork.toml').write_text(f'repo="unused"\nbranch="breenix-target"\ncommit="{self.sha}"\nrust="1.90.0"\n')
+    def pin(self, repo=None, branch='breenix-target'):
+        (self.root / 'rust-fork.toml').write_text(f'repo="{repo or self.source}"\nbranch="{branch}"\ncommit="{self.sha}"\nrust="1.90.0"\n')
+
+    def snapshot(self):
+        destination = self.root / 'gate-rust-fork'
+        return subprocess.run([str(self.root / 'scripts/rust-fork.sh'), 'snapshot', str(self.source), str(destination)], env=self.env, text=True, capture_output=True)
+
+    def publish_lane_commit(self):
+        # A commit published only on a lane branch of a remote the canonical clone has not fetched.
+        remote = Path(self.temp.name) / 'remote'
+        subprocess.run(['git', 'clone', '--quiet', '--branch', 'breenix-target', str(self.source), str(remote)], check=True, capture_output=True)
+        self.git('switch', '--quiet', '-c', 'rust-std/lane', where=remote)
+        (remote / 'library/lane.rs').write_text('lane')
+        self.git('add', '.', where=remote)
+        self.git('commit', '-m', 'Lane change', where=remote)
+        self.sha = self.git('rev-parse', 'HEAD', where=remote)
+        return remote
 
     def verify(self, command='verify'):
         return subprocess.run([str(self.root / 'scripts/rust-fork.sh'), command], env=self.env, text=True, capture_output=True)
@@ -103,14 +118,40 @@ class ForkPinTests(unittest.TestCase):
 
     def test_release_pin_requires_remote_reachability(self):
         fork = self.root / 'rust-fork'
-        self.git('fetch', 'origin', where=fork)
         self.assertEqual(self.verify('check-reachable').returncode, 0)
+        self.assertEqual(self.verify('check-release').returncode, 0)
         (fork / 'library/new.rs').write_text('new')
         self.git('add', '.', where=fork)
         self.git('commit', '-m', 'Unpublished lane', where=fork)
         self.sha = self.git('rev-parse', 'HEAD', where=fork)
         self.pin()
-        self.assertNotEqual(self.verify('check-reachable').returncode, 0)
+        result = self.verify('check-release')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('not reachable from breenix-target', result.stderr)
+        self.assertEqual(self.git('for-each-ref', 'refs/rust-fork-check'), '')
+
+    def test_snapshot_fetches_a_pin_only_on_a_lane_branch(self):
+        remote = self.publish_lane_commit()
+        self.pin(repo=remote, branch='rust-std/lane')
+        result = self.snapshot()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.root / 'gate-rust-fork/library/lane.rs').read_text(), 'lane')
+        self.assertEqual(self.verify('check-reachable').returncode, 0)
+        result = self.verify('check-release')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('main may only pin a commit on breenix-target', result.stderr)
+
+    def test_present_pin_needs_no_fetch(self):
+        self.pin(repo=Path(self.temp.name) / 'unreachable')
+        result = self.snapshot()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_missing_pin_is_reported(self):
+        self.publish_lane_commit()
+        self.pin()
+        result = self.snapshot()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('fetch', result.stderr)
 
 if __name__ == '__main__':
     unittest.main()
