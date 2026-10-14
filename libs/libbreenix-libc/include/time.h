@@ -42,5 +42,6 @@ extern long timezone;
 extern int daylight;
 extern char *tzname[2];
 time_t timegm(struct tm *);
+char *strptime(const char *, const char *, struct tm *);
 #endif
 #endif

@@ -4,3 +4,4 @@
 # A lane adds its category here once the category's headers compile.
 string-stdlib
 math
+locale-wchar complete

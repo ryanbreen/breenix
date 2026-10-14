@@ -6,7 +6,10 @@ mod classify;
 #[cfg(not(test))]
 mod format;
 mod multibyte;
+#[cfg(not(test))]
+mod numbers;
 mod objects;
+mod parse_time;
 #[cfg(not(test))]
 mod streams;
 mod unicode_tables;
@@ -363,6 +366,58 @@ mod tests {
                 std::env::remove_var("TZ");
             }
             calendar::tzset();
+        }
+    }
+
+    #[test]
+    fn strptime_dates_names_centuries_weeks_and_unconsumed_input() {
+        unsafe {
+            let mut t = calendar::Tm::default();
+            let text = b"2024-02-29 23:59:60tail\0";
+            let end = parse_time::strptime(text.as_ptr(), b"%F %T\0".as_ptr(), &mut t);
+            assert_eq!(end, text.as_ptr().add(19) as *mut u8);
+            assert_eq!(
+                (t.year, t.mon, t.mday, t.hour, t.min, t.sec, t.yday, t.wday),
+                (124, 1, 29, 23, 59, 60, 59, 4)
+            );
+            assert!(
+                parse_time::strptime(b"2024-13-01\0".as_ptr(), b"%F\0".as_ptr(), &mut t).is_null()
+            );
+            assert!(!parse_time::strptime(
+                b"tUe feb 29 2000\0".as_ptr(),
+                b"%a %b %d %Y\0".as_ptr(),
+                &mut t
+            )
+            .is_null());
+            assert_eq!((t.year, t.mon, t.mday, t.wday), (100, 1, 29, 2));
+            assert!(
+                !parse_time::strptime(b"68 20\0".as_ptr(), b"%y %C\0".as_ptr(), &mut t).is_null()
+            );
+            assert_eq!(t.year, 168);
+            assert!(!parse_time::strptime(b"69\0".as_ptr(), b"%y\0".as_ptr(), &mut t).is_null());
+            assert_eq!(t.year, 69);
+            t.sec = 42;
+            assert!(
+                !parse_time::strptime(b"PM 12:05\0".as_ptr(), b"%p %I:%M\0".as_ptr(), &mut t)
+                    .is_null()
+            );
+            assert_eq!((t.hour, t.min, t.sec), (12, 5, 42));
+            assert!(!parse_time::strptime(
+                b"2020-W53-5\0".as_ptr(),
+                b"%G-W%V-%u\0".as_ptr(),
+                &mut t
+            )
+            .is_null());
+            assert_eq!((t.year, t.mon, t.mday, t.wday), (121, 0, 1, 5));
+            assert!(
+                !parse_time::strptime(b"2020 060\0".as_ptr(), b"%Y %j\0".as_ptr(), &mut t)
+                    .is_null()
+            );
+            assert_eq!((t.year, t.mon, t.mday, t.yday), (120, 1, 29, 59));
+            assert!(
+                !parse_time::strptime(b"+05:45\0".as_ptr(), b"%z\0".as_ptr(), &mut t).is_null()
+            );
+            assert_eq!(t.gmtoff, 20700);
         }
     }
 }

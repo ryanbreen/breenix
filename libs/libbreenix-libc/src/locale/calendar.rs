@@ -47,14 +47,14 @@ pub static mut timezone: i64 = 0;
 pub static mut daylight: i32 = 0;
 #[no_mangle]
 pub static mut tzname: [*const u8; 2] = [b"UTC\0".as_ptr(); 2];
-fn leap(y: i64) -> bool {
+pub(super) fn leap(y: i64) -> bool {
     y.rem_euclid(4) == 0 && (y.rem_euclid(100) != 0 || y.rem_euclid(400) == 0)
 }
 fn year_days(y: i64) -> i64 {
     let p = y - 1;
     365 * p + p.div_euclid(4) - p.div_euclid(100) + p.div_euclid(400)
 }
-fn month_days(y: i64, m: usize) -> i64 {
+pub(super) fn month_days(y: i64, m: usize) -> i64 {
     [
         31,
         if leap(y) { 29 } else { 28 },
@@ -70,10 +70,10 @@ fn month_days(y: i64, m: usize) -> i64 {
         31,
     ][m]
 }
-fn day_number(y: i64, m: usize, d: i64) -> i64 {
+pub(super) fn day_number(y: i64, m: usize, d: i64) -> i64 {
     year_days(y) - 719162 + (0..m).map(|i| month_days(y, i)).sum::<i64>() + d - 1
 }
-fn broken(sec: i64, offset: i64, zone: *const u8) -> Option<Tm> {
+pub(super) fn broken(sec: i64, offset: i64, zone: *const u8) -> Option<Tm> {
     let seconds = sec.checked_add(offset)?;
     let days = seconds.div_euclid(86400);
     let within = seconds.rem_euclid(86400);
@@ -157,7 +157,7 @@ pub unsafe extern "C" fn gmtime_r(t: *const i64, out: *mut Tm) -> *mut Tm {
 pub unsafe extern "C" fn gmtime(t: *const i64) -> *mut Tm {
     gmtime_r(t, addr_of_mut!(RESULT))
 }
-unsafe fn fixed_zone() -> (i64, *const u8) {
+pub(super) unsafe fn fixed_zone() -> (i64, *const u8) {
     ZONE_LOCK.lock();
     update_zone();
     let result = (-timezone, tzname[0]);

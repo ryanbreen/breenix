@@ -58,6 +58,7 @@ long long wcstoll(const wchar_t *, wchar_t **, int);
 unsigned long long wcstoull(const wchar_t *, wchar_t **, int);
 double wcstod(const wchar_t *, wchar_t **);
 float wcstof(const wchar_t *, wchar_t **);
+long double wcstold(const wchar_t *, wchar_t **);
 int fwide(FILE *, int);
 wint_t fgetwc(FILE *);
 wint_t getwc(FILE *);

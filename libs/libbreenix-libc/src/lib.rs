@@ -1274,44 +1274,6 @@ pub extern "C" fn sysconf(name: i32) -> i64 {
     }
 }
 
-/// __xpg_strerror_r - convert error number to string (XPG version)
-#[no_mangle]
-pub unsafe extern "C" fn __xpg_strerror_r(errnum: i32, buf: *mut u8, buflen: usize) -> i32 {
-    let msg: &[u8] = match errnum {
-        0 => b"Success\0",
-        1 => b"Operation not permitted\0",
-        2 => b"No such file or directory\0",
-        3 => b"No such process\0",
-        4 => b"Interrupted system call\0",
-        5 => b"Input/output error\0",
-        9 => b"Bad file descriptor\0",
-        10 => b"No child processes\0",
-        11 => b"Resource temporarily unavailable\0",
-        12 => b"Cannot allocate memory\0",
-        13 => b"Permission denied\0",
-        14 => b"Bad address\0",
-        17 => b"File exists\0",
-        20 => b"Not a directory\0",
-        21 => b"Is a directory\0",
-        22 => b"Invalid argument\0",
-        25 => b"Inappropriate ioctl for device\0",
-        28 => b"No space left on device\0",
-        32 => b"Broken pipe\0",
-        38 => b"Function not implemented\0",
-        _ => b"Unknown error\0",
-    };
-    let copy_len = core::cmp::min(msg.len() - 1, buflen - 1);
-    core::ptr::copy_nonoverlapping(msg.as_ptr(), buf, copy_len);
-    *buf.add(copy_len) = 0;
-    0
-}
-
-/// strerror_r - POSIX strerror_r (same as __xpg_strerror_r)
-#[no_mangle]
-pub unsafe extern "C" fn strerror_r(errnum: i32, buf: *mut u8, buflen: usize) -> i32 {
-    __xpg_strerror_r(errnum, buf, buflen)
-}
-
 /// getauxval - get auxiliary vector value (stub)
 #[no_mangle]
 pub extern "C" fn getauxval(type_: u64) -> u64 {

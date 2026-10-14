@@ -150,3 +150,47 @@ fn prior_error_does_not_fail_a_successful_wide_read() {
         done(l);
     }
 }
+
+#[test]
+fn wide_number_end_pointers_limits_and_direct_float_rounding() {
+    fn wide(s: &str) -> Vec<u32> {
+        s.chars().map(|c| c as u32).chain([0]).collect()
+    }
+    unsafe {
+        let s = wide("  -123x");
+        let mut end = core::ptr::null_mut();
+        assert_eq!(super::numbers::wcstol(s.as_ptr(), &mut end, 10), -123);
+        assert_eq!(end, s.as_ptr().add(6) as *mut u32);
+        let s = wide("9223372036854775808!");
+        assert_eq!(super::numbers::wcstol(s.as_ptr(), &mut end, 10), i64::MAX);
+        assert_eq!(crate::pthread::errno(), 34);
+        assert_eq!(end, s.as_ptr().add(19) as *mut u32);
+        let s = wide("-9223372036854775808");
+        crate::pthread::set_errno(0);
+        assert_eq!(super::numbers::wcstoll(s.as_ptr(), &mut end, 10), i64::MIN);
+        assert_eq!(crate::pthread::errno(), 0);
+        let s = wide("-1");
+        assert_eq!(super::numbers::wcstoull(s.as_ptr(), &mut end, 10), u64::MAX);
+        let s = wide("  +x");
+        assert_eq!(super::numbers::wcstol(s.as_ptr(), &mut end, 10), 0);
+        assert_eq!(end, s.as_ptr() as *mut u32);
+        assert_eq!(super::numbers::wcstol(s.as_ptr(), &mut end, 37), 0);
+        assert_eq!(crate::pthread::errno(), 22);
+        let s = wide("2.5e1x");
+        assert_eq!(super::numbers::wcstod(s.as_ptr(), &mut end), 25.0);
+        assert_eq!(end, s.as_ptr().add(5) as *mut u32);
+        let s = wide("1e+");
+        assert_eq!(super::numbers::wcstod(s.as_ptr(), &mut end), 1.0);
+        assert_eq!(end, s.as_ptr().add(1) as *mut u32);
+        let s = wide("1.0000000596046447753906250000000000000001");
+        assert_eq!(
+            super::numbers::wcstof(s.as_ptr(), &mut end).to_bits(),
+            0x3f800001
+        );
+        let s = wide("0x1p-1074");
+        assert_eq!(super::numbers::wcstod(s.as_ptr(), &mut end).to_bits(), 1);
+        let s = wide("1e9999");
+        assert_eq!(super::numbers::wcstod(s.as_ptr(), &mut end), f64::INFINITY);
+        assert_eq!(crate::pthread::errno(), 34);
+    }
+}
