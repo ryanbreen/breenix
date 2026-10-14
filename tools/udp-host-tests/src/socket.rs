@@ -113,6 +113,10 @@ pub mod object {
         pub fn rcv_deadline(&self) -> Option<u64> {
             None
         }
+        /// IP_TTL is not modelled; every socket sends with the default.
+        pub fn ttl(&self) -> u8 {
+            crate::net::ipv4::DEFAULT_TTL
+        }
     }
     impl Default for SocketCommon {
         fn default() -> Self {
