@@ -41,7 +41,9 @@ const DHCPACK: u8 = 5;
 const DHCPNAK: u8 = 6;
 
 /// How long each attempt waits for the OFFER, and then for the ACK. Three
-/// attempts bound a network with no server to 10 s of boot time.
+/// attempts bound a network with no server to 10 s of boot time. Attempts
+/// retransmit the DISCOVER in one transaction, so an OFFER that answers an
+/// earlier copy after that copy's wait still counts.
 const ATTEMPT_TIMEOUTS_MS: [u64; 3] = [2_000, 4_000, 4_000];
 
 /// The reply the running exchange waits for; zero while none runs, so the
@@ -123,7 +125,6 @@ fn mac_to_u64(mac: [u8; 6]) -> u64 {
 }
 
 fn attempt(mac: [u8; 6], timeout_ms: u64) -> Option<Lease> {
-    XID.fetch_add(1, Ordering::Relaxed);
     let offer = exchange(mac, DHCPDISCOVER, None, DHCPOFFER, timeout_ms)?;
     let server = offer.server?;
     if !valid_address(server) || !valid_address(offer.yiaddr) {
@@ -135,8 +136,12 @@ fn attempt(mac: [u8; 6], timeout_ms: u64) -> Option<Lease> {
         Some((offer.yiaddr, server)),
         DHCPACK,
         timeout_ms,
-    )?;
-    let lease = lease_from_ack(ack, offer.yiaddr, Some(server))?;
+    );
+    let Some(lease) = ack.and_then(|ack| lease_from_ack(ack, offer.yiaddr, Some(server))) else {
+        // A new transaction cannot accept a delayed ACK from this one.
+        XID.fetch_add(1, Ordering::Relaxed);
+        return None;
+    };
     if !probe(mac, lease.ip_addr) {
         let message = build_message(
             DHCPDECLINE,
@@ -145,6 +150,7 @@ fn attempt(mac: [u8; 6], timeout_ms: u64) -> Option<Lease> {
             Some((lease.ip_addr, server)),
         );
         let _ = send_message(&message, [0; 4], [255; 4]);
+        XID.fetch_add(1, Ordering::Relaxed);
         // RFC 2131: wait at least ten seconds after DECLINE before restarting.
         wait_until(now().saturating_add(10_000_000_000));
         return None;
@@ -333,7 +339,8 @@ fn probe(mac: [u8; 6], ip: [u8; 4]) -> bool {
 }
 
 /// Broadcast one message and poll the receive ring until the awaited reply
-/// (or, for a REQUEST, a NAK) arrives or `timeout_ms` passes.
+/// (or, for a REQUEST, a NAK) arrives or `timeout_ms` passes. A retransmission
+/// keeps a reply that arrived for an earlier copy after that copy's wait.
 fn exchange(
     mac: [u8; 6],
     kind: u8,
@@ -341,9 +348,10 @@ fn exchange(
     awaited: u8,
     timeout_ms: u64,
 ) -> Option<Reply> {
-    let _ = take_reply();
+    if AWAITED.swap(awaited, Ordering::AcqRel) != awaited {
+        let _ = take_reply();
+    }
     REQUEST_SENT.store(now(), Ordering::Relaxed);
-    AWAITED.store(awaited, Ordering::Release);
     let message = build_message(kind, XID.load(Ordering::Relaxed), mac, request);
     send_message(&message, [0; 4], [255; 4])?;
     wait_reply(timeout_ms)
