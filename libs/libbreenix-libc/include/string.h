@@ -63,6 +63,7 @@ char *strchrnul(const char *s, int c);
 char *strsep(char **__BREENIX_RESTRICT sp, const char *__BREENIX_RESTRICT delim);
 char *strcasestr(const char *haystack, const char *needle);
 void explicit_bzero(void *s, size_t n);
+int strverscmp(const char *a, const char *b);
 #endif
 
 __BREENIX_END_DECLS

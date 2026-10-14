@@ -104,4 +104,8 @@ void *memalign(size_t alignment, size_t size);
 
 __BREENIX_END_DECLS
 
+#ifdef __BREENIX_EXT
+#include <alloca.h>
+#endif
+
 #endif

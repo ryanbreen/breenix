@@ -175,3 +175,17 @@ pub unsafe extern "C" fn reallocarray(ptr: *mut u8, n: usize, size: usize) -> *m
         }
     }
 }
+
+/// The bytes usable at `ptr`: the recycled block's capacity, or the size requested for a
+/// mapping of its own.
+#[no_mangle]
+pub unsafe extern "C" fn malloc_usable_size(ptr: *mut u8) -> usize {
+    if ptr.is_null() {
+        return 0;
+    }
+    let h = header(ptr);
+    match alloc_cache::marked_class(*h.add(1)) {
+        Some(class) => alloc_cache::capacity(class),
+        None => *h,
+    }
+}
