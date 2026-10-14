@@ -59,7 +59,6 @@ pub type rlim_t = u64;
 pub type pthread_t = c_ulong;
 pub type pthread_key_t = c_uint;
 pub type pthread_once_t = c_int;
-pub type sem_t = [u8; 32];
 
 // Directory entry type
 pub type dirent64 = dirent;
@@ -400,6 +399,14 @@ s! {
         __size: [c_char; 40],
     }
 
+    // libbreenix-libc's semaphore keeps 32-bit atomics at its start, so a
+    // sem_t is 4-byte aligned, as its C header declares it.
+    #[repr(C)]
+    #[repr(align(4))]
+    pub struct sem_t {
+        __size: [c_char; 32],
+    }
+
     #[repr(C)]
     #[repr(align(8))]
     pub struct pthread_mutexattr_t {
@@ -488,8 +495,12 @@ pub const O_APPEND: c_int = 0o2000;
 pub const O_NONBLOCK: c_int = 0o4000;
 pub const O_SYNC: c_int = 0o4010000;
 pub const O_ASYNC: c_int = 0o20000;
+// The Linux values of O_DIRECTORY and O_NOFOLLOW differ by architecture, and the
+// kernel tests each one (kernel/src/syscall/fs.rs).
+#[cfg(target_arch = "x86_64")]
 pub const O_DIRECTORY: c_int = 0o200000;
-// The Linux value differs by architecture, and the kernel tests each one.
+#[cfg(target_arch = "aarch64")]
+pub const O_DIRECTORY: c_int = 0o40000;
 #[cfg(target_arch = "x86_64")]
 pub const O_NOFOLLOW: c_int = 0o400000;
 #[cfg(target_arch = "aarch64")]
@@ -498,7 +509,7 @@ pub const O_CLOEXEC: c_int = 0o2000000;
 pub const O_DSYNC: c_int = 0o10000;
 pub const O_RSYNC: c_int = 0o4010000;
 pub const O_PATH: c_int = 0o10000000;
-pub const O_TMPFILE: c_int = 0o20200000;
+pub const O_TMPFILE: c_int = 0o20000000 | O_DIRECTORY;
 pub const O_ACCMODE: c_int = 3;
 
 // Seek constants

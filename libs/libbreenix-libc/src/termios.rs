@@ -53,8 +53,12 @@ pub unsafe extern "C" fn cfsetispeed(attrs: *mut Termios, speed: u32) -> i32 {
 pub unsafe extern "C" fn tcflush(fd: i32, selector: i32) -> i32 {
     crate::ioctl(fd, request::TCFLSH, selector as u64)
 }
+/// A cancellation point: it waits for output to drain.
 #[no_mangle]
-pub unsafe extern "C" fn tcdrain(fd: i32) -> i32 { crate::ioctl(fd, request::TCSBRK, 1) }
+pub unsafe extern "C" fn tcdrain(fd: i32) -> i32 {
+    crate::syscall_result_to_c_int(crate::pthread::cancel_syscall(libbreenix::syscall::nr::IOCTL,
+        [fd as u64, request::TCSBRK as u64, 1, 0, 0, 0]))
+}
 #[no_mangle]
 pub unsafe extern "C" fn tcflow(fd: i32, action: i32) -> i32 {
     crate::ioctl(fd, request::TCXONC, action as u64)

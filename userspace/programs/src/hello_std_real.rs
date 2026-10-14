@@ -447,10 +447,16 @@ fn main() {
             fn free(ptr: *mut u8);
         }
 
-        // Test 1: malloc(0) should return NULL (our implementation returns NULL for size=0)
+        // Test 1: malloc(0) returns a unique pointer that free accepts. C17 7.22.3 lets it
+        // return either that or NULL; Breenix's libc follows Linux and returns a pointer.
         // black_box prevents the compiler from assuming malloc semantics and optimizing this away
         let ptr_zero = malloc(std::hint::black_box(0));
-        let zero_ok = std::hint::black_box(ptr_zero).is_null();
+        let ptr_zero2 = malloc(std::hint::black_box(0));
+        let zero_ok = !std::hint::black_box(ptr_zero).is_null()
+            && !std::hint::black_box(ptr_zero2).is_null()
+            && ptr_zero != ptr_zero2;
+        free(ptr_zero);
+        free(ptr_zero2);
 
         // Test 2: malloc small size should succeed
         let ptr_small = malloc(1);
@@ -464,7 +470,7 @@ fn main() {
                 println!("RUST_STD_MALLOC_BOUNDARY_WORKS");
             } else {
                 if !zero_ok {
-                    eprintln!("ERROR: malloc(0) did not return NULL");
+                    eprintln!("ERROR: malloc(0) did not return two distinct pointers");
                 }
                 if !read_ok {
                     eprintln!("ERROR: malloc(1) memory not readable/writable");

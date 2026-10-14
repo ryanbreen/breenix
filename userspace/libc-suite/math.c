@@ -69,6 +69,12 @@ static const char *exp_range(void) {
 }
 
 static const char *pow_special(void) {
+    volatile double exponent = -1075.0;
+    fesetround(FE_DOWNWARD);
+    EXPECT_DBL("pow(-2,-1075) downward", pow(-two, exponent), -DBL_TRUE_MIN);
+    fesetround(FE_UPWARD);
+    EXPECT_DBL("pow(-2,-1075) upward", pow(-two, exponent), -0.0);
+    fesetround(FE_TONEAREST);
     volatile double nan = NAN, m1 = -1.0, m2 = -2.0, three = 3.0, ten = 10.0, half = 0.5, four = 4.0;
     EXPECT_DBL("pow(NaN, 0)", pow(nan, zero), 1.0);
     EXPECT_DBL("pow(NaN, -0)", pow(nan, nzero), 1.0);
@@ -84,6 +90,8 @@ static const char *pow_special(void) {
 }
 
 static const char *pow_errors(void) {
+    volatile double extreme = 1e308;
+    MATH_ERR("pow(2,1e308) overflows rather than NaN", pow(two, extreme), INFINITY, ERANGE, FE_OVERFLOW);
     volatile double m8 = -8.0, third = 1.0 / 3.0, ten = 10.0, big = 400.0;
     MATH_ERR("pow(-8, 1/3): NaN, EDOM and FE_INVALID", pow(m8, third), NAN, EDOM, FE_INVALID);
     MATH_ERR("pow(0, -1): HUGE_VAL, ERANGE and FE_DIVBYZERO", pow(zero, -one), HUGE_VAL, ERANGE, FE_DIVBYZERO);
@@ -157,6 +165,10 @@ static const char *modf_parts(void) {
 }
 
 static const char *round_functions(void) {
+    feclearexcept(FE_ALL_EXCEPT);
+    EXPECT_DBL("round(inf)", round(inf), INFINITY);
+    EXPECT_DBL("roundf(-inf)", roundf(-INFINITY), -INFINITY);
+    CHECK(!fetestexcept(FE_INVALID), "round of infinity raised invalid");
     volatile double a = 2.5, h = 0.5, b = 1.7;
     EXPECT_DBL("round(2.5)", round(a), 3.0);
     EXPECT_DBL("round(-2.5)", round(-a), -3.0);
@@ -203,6 +215,12 @@ static const char *fesetround_query(void) {
 }
 
 static const char *lround_lrint(void) {
+    errno = 0;
+    (void)lrint(inf);
+    EXPECT_ERRNO("lrint(inf)", EDOM);
+    errno = 0;
+    (void)llroundf(INFINITY);
+    EXPECT_ERRNO("llroundf(inf)", EDOM);
     volatile double a = 2.5, b = 3.5, h = 0.5, big = 1e30;
     EXPECT_INT("lround(2.5)", lround(a), 3);
     EXPECT_INT("lround(-2.5)", lround(-a), -3);
@@ -290,6 +308,9 @@ static const char *copysign_signbit(void) {
 }
 
 static const char *hypot_no_overflow(void) {
+    fesetround(FE_UPWARD);
+    MATH_ERR("hypot(DBL_MAX,1) upward", hypot(DBL_MAX * one, one), INFINITY, ERANGE, FE_OVERFLOW);
+    fesetround(FE_TONEAREST);
     volatile double three = 3.0, four = 4.0, big = 1e300, nan = NAN;
     EXPECT_DBL("hypot(3, 4)", hypot(three, four), 5.0);
     EXPECT_DBL("hypot(inf, NaN)", hypot(inf, nan), INFINITY);
@@ -310,6 +331,11 @@ static const char *trig_zeros(void) {
 }
 
 static const char *trig_values(void) {
+    volatile double least = DBL_TRUE_MIN, large = 1e308;
+    EXPECT_DBL("atan true min", atan(least), DBL_TRUE_MIN);
+    EXPECT_DBL("asin true min", asin(least), DBL_TRUE_MIN);
+    EXPECT_NEAR("atan(1e308)", atan(large), M_PI_2, 3e-16);
+    CHECK(atan2(one,large) > 0.0 && isfinite(atan2(one,large)), "atan2(1,1e308) is not positive finite");
     volatile double pi6 = M_PI / 6, pi3 = M_PI / 3, big = 1e22;
     EXPECT_NEAR("sin(pi/6)", sin(pi6), 0.5, 2e-16);
     EXPECT_NEAR("cos(pi/3)", cos(pi3), 0.5, 2e-16);
@@ -329,6 +355,10 @@ static const char *trig_domain(void) {
 }
 
 static const char *exp_log_values(void) {
+    volatile double large = 1e308;
+    EXPECT_NEAR("log(1e308)", log(large), 709.1962086421661, 2e-13);
+    EXPECT_NEAR("log2(DBL_MAX)", log2(DBL_MAX * one), 1024.0, 3e-13);
+    EXPECT_NEAR("log10(1e308)", log10(large), 308.0, 1e-13);
     volatile double ten = 10.0, k = 1000.0, e1024 = 1024.0;
     EXPECT_DBL("exp(0)", exp(zero), 1.0);
     EXPECT_DBL("log(1)", log(one), 0.0);
@@ -342,6 +372,17 @@ static const char *exp_log_values(void) {
 }
 
 static const char *log1p_expm1(void) {
+    volatile double least = DBL_TRUE_MIN;
+    EXPECT_DBL("log1p true min", log1p(least), DBL_TRUE_MIN);
+    EXPECT_DBL("asinh true min", asinh(least), DBL_TRUE_MIN);
+    for (int i = 0; i < 3; ++i) {
+        const int modes[] = {FE_DOWNWARD, FE_UPWARD, FE_TOWARDZERO};
+        fesetround(modes[i]);
+        EXPECT_DBL("expm1(-inf) exact", expm1(-inf), -1.0);
+        EXPECT_DBL("tanh(inf) exact", tanh(inf), 1.0);
+        EXPECT_DBL("erf(-inf) exact", erf(-inf), -1.0);
+    }
+    fesetround(FE_TONEAREST);
     EXPECT_DBL("expm1(-0)", expm1(nzero), -0.0);
     EXPECT_DBL("log1p(-0)", log1p(nzero), -0.0);
     volatile double tiny = 1e-20;
@@ -353,6 +394,10 @@ static const char *log1p_expm1(void) {
 }
 
 static const char *float_functions(void) {
+    volatile float ninety = 90.0f;
+    fesetround(FE_DOWNWARD);
+    MATH_ERR("expf(90) downward range error", expf(ninety), FLT_MAX, ERANGE, FE_OVERFLOW);
+    fesetround(FE_TONEAREST);
     volatile float f2 = 2.0f, a = 5.5f, b = 1.5f, big = 1000.0f;
     EXPECT_DBL("sqrtf(2)", (double)sqrtf(f2), (double)1.41421356f);
     EXPECT_DBL("floorf(-1.5)", (double)floorf(-b), -2.0);
@@ -388,6 +433,16 @@ static const char *erf_erfc(void) {
 }
 
 static const char *fma_rounding(void) {
+    volatile double largest = DBL_MAX;
+    volatile float largestf = FLT_MAX;
+    errno = 0;
+    feclearexcept(FE_ALL_EXCEPT);
+    EXPECT_DBL("fma(DBL_MAX,2,-inf)", fma(largest,two,-inf), -INFINITY);
+    EXPECT_DBL("fmaf(FLT_MAX,2,-inf)", fmaf(largestf,2.0f,-INFINITY), -INFINITY);
+    EXPECT_ERRNO("infinite fma addend", 0);
+    CHECK(!fetestexcept(FE_INVALID), "infinite fma addend raised invalid");
+    MATH_ERR("fma invalid product errno", fma(zero,inf,one), NAN, EDOM, FE_INVALID);
+    MATH_ERR("fma overflow errno", fma(largest,two,zero), INFINITY, ERANGE, FE_OVERFLOW);
     volatile double three = 3.0, four = 4.0, a = 1.0 + 0x1p-52, b = 1.0 - 0x1p-52;
     EXPECT_DBL("fma(2, 3, 4)", fma(two, three, four), 10.0);
     EXPECT_DBL("fma(1+2^-52, 1-2^-52, -1) rounded once", fma(a, b, -one), -0x1p-104);
@@ -395,6 +450,12 @@ static const char *fma_rounding(void) {
 }
 
 static const char *fmax_fmin_fdim(void) {
+    errno = 0;
+    EXPECT_DBL("fdim(inf,0)", fdim(inf,zero), INFINITY);
+    EXPECT_ERRNO("fdim(inf,0) has no range error", 0);
+    fesetround(FE_DOWNWARD);
+    MATH_ERR("fdim downward overflow", fdim(DBL_MAX * one,-DBL_MAX * one), DBL_MAX, ERANGE, FE_OVERFLOW);
+    fesetround(FE_TONEAREST);
     volatile double nan = NAN, five = 5.0, three = 3.0;
     EXPECT_DBL("fmax(NaN, 1)", fmax(nan, one), 1.0);
     EXPECT_DBL("fmin(1, NaN)", fmin(one, nan), 1.0);

@@ -11,6 +11,8 @@
 #include <fcntl.h>
 #include <fnmatch.h>
 #include <glob.h>
+#include <locale.h>
+#include <regex.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -312,6 +314,40 @@ static const char *fnmatch_basic(void) {
     EXPECT_INT("fnmatch(\"a?c\", \"abc\")", fnmatch("a?c", "abc", 0), 0);
     EXPECT_INT("fnmatch(\"a?c\", \"ac\")", fnmatch("a?c", "ac", 0), FNM_NOMATCH);
     EXPECT_INT("fnmatch(\"*\", \"\")", fnmatch("*", "", 0), 0);
+    /* Exercise the reviewed scalar semantics through the guest's real C ABI. */
+    CHECK(setlocale(LC_CTYPE, "C.UTF-8") != NULL, "C.UTF-8 locale is unavailable");
+    const char *accent = "\xc3\xa9";
+    EXPECT_INT("UTF-8 question matches one character", fnmatch("?", accent, 0), 0);
+    EXPECT_INT("UTF-8 alpha class", fnmatch("[[:alpha:]]", accent, 0), 0);
+    EXPECT_INT("UTF-8 case folding", fnmatch("\xc3\x89", accent, FNM_CASEFOLD), 0);
+    regex_t re;
+    regmatch_t m[3];
+    EXPECT_INT("UTF-8 dot compile", regcomp(&re, "^.$", REG_EXTENDED), 0);
+    EXPECT_INT("UTF-8 dot match", regexec(&re, accent, 1, m, 0), 0);
+    EXPECT_INT("UTF-8 capture byte start", m[0].rm_so, 0);
+    EXPECT_INT("UTF-8 capture byte end", m[0].rm_eo, 2);
+    regfree(&re);
+    EXPECT_INT("UTF-8 alpha compile", regcomp(&re, "^[[:alpha:]]$", REG_EXTENDED), 0);
+    EXPECT_INT("UTF-8 alpha match", regexec(&re, accent, 1, m, 0), 0);
+    regfree(&re);
+    EXPECT_INT("UTF-8 case compile", regcomp(&re, "^\xc3\x89$", REG_EXTENDED | REG_ICASE), 0);
+    EXPECT_INT("UTF-8 case match", regexec(&re, accent, 1, m, 0), 0);
+    regfree(&re);
+    EXPECT_INT("capture precedence compile", regcomp(&re, "(a|aa)(a?)", REG_EXTENDED), 0);
+    EXPECT_INT("capture precedence match", regexec(&re, "aa", 3, m, 0), 0);
+    EXPECT_INT("longest first capture", m[1].rm_eo, 2);
+    EXPECT_INT("empty second capture start", m[2].rm_so, 2);
+    EXPECT_INT("empty second capture end", m[2].rm_eo, 2);
+    regfree(&re);
+    EXPECT_INT("minimal quantifier compile", regcomp(&re, ".*?c", REG_EXTENDED), 0);
+    EXPECT_INT("minimal quantifier match", regexec(&re, "acbc", 1, m, 0), 0);
+    EXPECT_INT("minimal quantifier end", m[0].rm_eo, 2);
+    regfree(&re);
+    EXPECT_INT("REG_MINIMAL compile", regcomp(&re, ".*c", REG_EXTENDED | REG_MINIMAL), 0);
+    EXPECT_INT("REG_MINIMAL match", regexec(&re, "acbc", 1, m, 0), 0);
+    EXPECT_INT("REG_MINIMAL end", m[0].rm_eo, 2);
+    regfree(&re);
+    CHECK(setlocale(LC_CTYPE, "C") != NULL, "C locale restore failed");
     return PASS;
 }
 
