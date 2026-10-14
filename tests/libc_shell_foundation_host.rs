@@ -23,6 +23,7 @@ thread_local! {
     static OPEN: RefCell<HashMap<i32, (Vec<u8>, usize)>> = RefCell::new(HashMap::new());
     static REPLIES: RefCell<std::collections::VecDeque<i64>> = const { RefCell::new(std::collections::VecDeque::new()) };
     static CALLS: RefCell<Vec<(u64, Vec<u64>)>> = const { RefCell::new(Vec::new()) };
+    static STAT_DEV: Cell<u64> = const { Cell::new(1) };
     static STAT_ERROR: Cell<i32> = const { Cell::new(0) };
     static READ_ERROR: Cell<i32> = const { Cell::new(0) };
 }
@@ -190,10 +191,12 @@ fn syscall_result_to_c_int(r: i64) -> i32 {
 fn kill(pid: i32, sig: i32) -> i32 {
     unsafe { syscall_result_to_c_int(raw::syscall2(129, pid as i64 as u64, sig as u64) as i64) }
 }
-unsafe fn stat(_: *const u8, _: *mut u8) -> i32 {
+unsafe fn stat(_: *const u8, out: *mut u8) -> i32 {
+    out.cast::<u64>().write(STAT_DEV.with(Cell::get));
     status()
 }
-unsafe fn fstat(_: i32, _: *mut u8) -> i32 {
+unsafe fn fstat(_: i32, out: *mut u8) -> i32 {
+    out.cast::<u64>().write(STAT_DEV.with(Cell::get));
     status()
 }
 fn status() -> i32 {
@@ -354,6 +357,34 @@ fn configuration_truncation_invalid_queries_and_bad_objects() {
         assert_eq!(pthread::errno(), 2);
     }
 }
+#[test]
+fn configuration_queries_preserve_unsupported_errno_and_distinguish_filesystems() {
+    unsafe {
+        * __errno_location() = 73;
+        assert_eq!(conf::confstr(1, std::ptr::null_mut(), 0), 0);
+        assert_eq!(* __errno_location(), 73);
+        assert_eq!(conf::confstr(7, std::ptr::null_mut(), 0), 1);
+        let mut text = [0u8; 64];
+        assert_eq!(conf::confstr(15, text.as_mut_ptr(), text.len()), 20);
+        assert_eq!(&text[..20], b"POSIX_V8_LP64_OFF64\0");
+        for dev in [0xffff0002, 0xffff0004] {
+            STAT_DEV.with(|d| d.set(dev));
+            assert_eq!(conf::pathconf(b"/\0".as_ptr(), 0), -1);
+            assert_eq!(* __errno_location(), 73);
+            assert_eq!(conf::fpathconf(3, 10), 0);
+            assert_eq!(conf::fpathconf(3, 22), -1);
+        }
+        STAT_DEV.with(|d| d.set(1));
+        assert_eq!(conf::fpathconf(3, 0), 32000);
+        assert_eq!(conf::fpathconf(3, 9), 64);
+        for name in 11..=15 {
+            assert_eq!(conf::fpathconf(3, name), -1);
+            assert_eq!(* __errno_location(), 73);
+        }
+        assert_eq!(conf::fpathconf(3, 22), 1_000_000_000);
+    }
+}
+
 #[test]
 fn sysinfo_units_uptime_errors_and_bounds() {
     unsafe {

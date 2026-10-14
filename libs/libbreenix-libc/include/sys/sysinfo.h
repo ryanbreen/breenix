@@ -8,8 +8,10 @@ struct sysinfo {
     unsigned long loads[3];
     unsigned long totalram, freeram, sharedram, bufferram, totalswap, freeswap;
     unsigned short procs;
+    unsigned short pad;
     unsigned long totalhigh, freehigh;
     unsigned int mem_unit;
+    char _f[20 - 2 * sizeof(long) - sizeof(int)];
 };
 __BREENIX_BEGIN_DECLS
 int sysinfo(struct sysinfo *);

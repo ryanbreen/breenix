@@ -862,8 +862,10 @@ the manifest's cases in order.
 The busybox cases run applets of a BusyBox built against Breenix's libc, installed as
 `/usr/local/libc/bin/busybox` with its applet links beside it, and compare what the applet
 prints and its exit status with the expected values. `PATH` names only `/usr/local/libc/bin`,
-and `/bin` holds hard links to that same Breenix-libc BusyBox. Each applet has a case of its own (the shell has five), so one that does
-not build or does not behave is a recorded failure of its own.
+and `/bin` contains the same Breenix-libc BusyBox. Each applet has a case of its own
+(the shell has five), so one that does not behave is a recorded failure of its own. The
+builder records each configured applet's compile and link result in `applets.json` and
+fails when any of them fails; image construction requires the names in `required-applets`.
 
 Until a category's program is built against Breenix's libc and installed, each of its cases
 fails saying the program is not installed; until that BusyBox is installed, each busybox

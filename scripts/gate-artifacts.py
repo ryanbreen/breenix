@@ -143,7 +143,7 @@ def canonical_ext2(path):
 
 
 def checked(command, repo, log, *, userspace_prebuilt=False):
-    environment = dict(os.environ, CARGO_BUILD_JOBS='6')
+    environment = dict(os.environ, CARGO_BUILD_JOBS=os.environ.get('CARGO_BUILD_JOBS', '4'))
     if userspace_prebuilt:
         environment['BREENIX_USERSPACE_PREBUILT'] = '1'
     if 'BREENIX_GATE_CACHE_DIR' in os.environ:

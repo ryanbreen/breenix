@@ -3,7 +3,7 @@
 #
 # This script creates an ext2 filesystem image (256MB default) with:
 #   - Test files for filesystem testing
-#   - Breenix-libc BusyBox in /bin/busybox with hard links for coreutils
+#   - Breenix-libc BusyBox in /bin/busybox with hard links for its applets
 #   - hello_world binary for exec testing
 #   - Test binaries in /usr/local/test/bin
 #
