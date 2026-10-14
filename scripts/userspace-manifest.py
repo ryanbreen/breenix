@@ -30,7 +30,8 @@ LOCKFILES = ('userspace/programs/Cargo.lock', 'libs/libbreenix-libc/Cargo.lock')
 # The build of C programs against Breenix's own C library (libc suite, BusyBox).
 C_BUILD = ('scripts/breenix-cc', 'scripts/libc-symbol-audit.py', 'scripts/libc-clean-archive.py', 'scripts/build-libc-busybox.sh',
            'vendor/busybox/breenix-libc.config', 'vendor/busybox/busybox-1.37.0.tar.bz2',
-           'x86_64-breenix-c.json')
+           'x86_64-breenix-c.json', 'vendor/busybox/patches',
+           'vendor/busybox/required-applets', 'scripts/install-libc-busybox.sh')
 
 
 def elf_dir(arch):
