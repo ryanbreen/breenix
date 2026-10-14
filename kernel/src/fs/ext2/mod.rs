@@ -17,6 +17,7 @@ mod mount_device;
 mod namespace_alloc;
 mod reclaim;
 mod rename;
+mod sector_cache;
 pub mod superblock;
 pub mod writeback;
 
@@ -97,10 +98,29 @@ impl Finalize {
 impl Ext2Fs {
     /// Create a new ext2 filesystem instance from a block device
     ///
-    /// Reads and validates the superblock and block group descriptors.
+    /// Reads and validates the superblock and block group descriptors. The
+    /// mount keeps a write-through copy of the blocks it transfers.
     pub fn new(
         device: alloc::boxed::Box<dyn BlockDevice>,
         mount_id: usize,
+    ) -> Result<Self, &'static str> {
+        Self::mount(device, mount_id, true)
+    }
+
+    /// A mount that reads every block from the device: the fault-injection
+    /// leg arms faults on blocks the mount has already read.
+    #[cfg(feature = "fs_fault_inject")]
+    pub fn new_uncached(
+        device: alloc::boxed::Box<dyn BlockDevice>,
+        mount_id: usize,
+    ) -> Result<Self, &'static str> {
+        Self::mount(device, mount_id, false)
+    }
+
+    fn mount(
+        device: alloc::boxed::Box<dyn BlockDevice>,
+        mount_id: usize,
+        cached: bool,
     ) -> Result<Self, &'static str> {
         // Read the superblock
         let superblock = Ext2Superblock::read_from(device.as_ref())
@@ -118,7 +138,7 @@ impl Ext2Fs {
         Ok(Self {
             superblock,
             block_groups,
-            device: alloc::boxed::Box::new(mount_device::MountDevice::new(device, failed.clone())),
+            device: alloc::boxed::Box::new(mount_device::MountDevice::new(device, failed.clone(), cached)),
             failed,
             mount_id,
             mount_pin: live_inode::MountPin::new(mount_id)?,
