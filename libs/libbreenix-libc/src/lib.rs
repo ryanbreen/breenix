@@ -747,36 +747,10 @@ pub unsafe extern "C" fn access(path: *const u8, mode: i32) -> i32 {
 
 /// getcwd - get current working directory
 ///
-/// Returns buf on success, NULL on error (sets errno). As getcwd(3) on Linux
-/// describes, a null buf is allocated with malloc: size bytes, or as many as
-/// the pathname needs when size is 0. The caller frees it.
+/// Returns buf on success, NULL on error (sets errno).
 #[no_mangle]
 pub unsafe extern "C" fn getcwd(buf: *mut u8, size: usize) -> *mut u8 {
-    if buf.is_null() {
-        let capacity = if size == 0 { 4096 } else { size };
-        let own = malloc(capacity);
-        if own.is_null() {
-            *__errno_location() = ENOMEM;
-            return core::ptr::null_mut();
-        }
-        let result = libbreenix::raw::syscall2(
-            libbreenix::syscall::nr::GETCWD,
-            own as u64,
-            capacity as u64,
-        ) as i64;
-        if result < 0 {
-            free(own);
-            set_errno_from_result(result);
-            return core::ptr::null_mut();
-        }
-        if size == 0 {
-            // The syscall returns the length used, NUL included.
-            let fitted = realloc(own, result as usize);
-            return if fitted.is_null() { own } else { fitted };
-        }
-        return own;
-    }
-    if size == 0 {
+    if buf.is_null() || size == 0 {
         *__errno_location() = EINVAL;
         return core::ptr::null_mut();
     }
