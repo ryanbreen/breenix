@@ -175,7 +175,8 @@ fn send(src: [u8; 4], dst: [u8; 4], data: &[u8]) -> Result<(), &'static str> {
         reply.extend(opts);
     }
     let datagram = udp::try_build_udp_packet(SERVER, [255; 4], 67, 68, &reply).unwrap();
-    let mut ip = ipv4::Ipv4Packet::try_build(SERVER, [255; 4], 17, &datagram).unwrap();
+    let mut ip =
+        ipv4::Ipv4Packet::try_build(SERVER, [255; 4], 17, ipv4::DEFAULT_TTL, &datagram).unwrap();
     match p.corrupt {
         1 => ip[10] ^= 1,
         2 => {
@@ -203,7 +204,7 @@ pub fn send_ethernet(_: &[u8; 6], protocol: u16, data: &[u8]) -> Result<(), &'st
     let ip = ipv4::Ipv4Packet::parse(data).unwrap();
     send(ip.src_ip, ip.dst_ip, ip.payload)
 }
-pub fn ip_output(src: [u8; 4], dst: [u8; 4], _: u8, data: &[u8]) -> Result<(), TxError> {
+pub fn ip_output(src: [u8; 4], dst: [u8; 4], _: u8, _: u8, data: &[u8]) -> Result<(), TxError> {
     send(src, dst, data).map_err(|_| TxError::NoBufs)
 }
 pub fn process_rx_budgeted(_: usize) {
@@ -422,7 +423,7 @@ fn physical_ingress_cannot_reach_or_spoof_loopback_services() {
             sum = (sum & 0xffff) + (sum >> 16);
         }
         syn[16..18].copy_from_slice(&(!(sum as u16)).to_be_bytes());
-        let packet = ipv4::Ipv4Packet::try_build(src, dst, 6, &syn).unwrap();
+        let packet = ipv4::Ipv4Packet::try_build(src, dst, 6, ipv4::DEFAULT_TTL, &syn).unwrap();
         let ip = ipv4::Ipv4Packet::parse(&packet).unwrap();
         let frame = ethernet::EthernetFrame {
             src_mac: [9; 6],
@@ -433,7 +434,14 @@ fn physical_ingress_cannot_reach_or_spoof_loopback_services() {
         ipv4::handle_ipv4(&frame, &ip);
     }
     assert_eq!(TCP_DELIVERIES.load(Ordering::Relaxed), 0);
-    let packet = ipv4::Ipv4Packet::try_build([127, 0, 0, 1], [127, 0, 0, 2], 6, &[0; 20]).unwrap();
+    let packet = ipv4::Ipv4Packet::try_build(
+        [127, 0, 0, 1],
+        [127, 0, 0, 2],
+        6,
+        ipv4::DEFAULT_TTL,
+        &[0; 20],
+    )
+    .unwrap();
     let ip = ipv4::Ipv4Packet::parse(&packet).unwrap();
     ipv4::handle_loopback_ipv4(&ip);
     assert_eq!(

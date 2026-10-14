@@ -116,7 +116,13 @@ pub fn handle_icmp(ip: &Ipv4Packet, icmp: &IcmpPacket) {
             reply.extend_from_slice(icmp.payload);
             let checksum = ipv4::internet_checksum(&reply);
             reply[2..4].copy_from_slice(&checksum.to_be_bytes());
-            let _ = super::ip_output(ip.dst_ip, ip.src_ip, PROTOCOL_ICMP, ipv4::DEFAULT_TTL, &reply);
+            let _ = super::ip_output(
+                ip.dst_ip,
+                ip.src_ip,
+                PROTOCOL_ICMP,
+                ipv4::DEFAULT_TTL,
+                &reply,
+            );
         }
         ICMP_ECHO_REPLY => {
             // Preserve the networking boot stage without taking the logger's
@@ -175,7 +181,13 @@ pub fn send_port_unreachable(ip: &Ipv4Packet, l4: &[u8]) {
     packet[len - 8..len].copy_from_slice(&l4[..8]);
     let checksum = ipv4::internet_checksum(&packet[..len]);
     packet[2..4].copy_from_slice(&checksum.to_be_bytes());
-    let _ = super::ip_output(ip.dst_ip, ip.src_ip, PROTOCOL_ICMP, ipv4::DEFAULT_TTL, &packet[..len]);
+    let _ = super::ip_output(
+        ip.dst_ip,
+        ip.src_ip,
+        PROTOCOL_ICMP,
+        ipv4::DEFAULT_TTL,
+        &packet[..len],
+    );
 }
 
 /// Extract an original UDP flow from an ICMP error. RFC 792 quotations may be

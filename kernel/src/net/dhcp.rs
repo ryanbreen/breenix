@@ -212,7 +212,9 @@ fn lease_from_ack(ack: Reply, requested: [u8; 4], server: Option<[u8; 4]>) -> Op
 fn send_message(message: &[u8], src: [u8; 4], dst: [u8; 4]) -> Option<()> {
     let datagram = udp::try_build_udp_packet(src, dst, CLIENT_PORT, SERVER_PORT, message).ok()?;
     if dst == [255; 4] {
-        let packet = ipv4::Ipv4Packet::try_build(src, dst, ipv4::PROTOCOL_UDP, ipv4::DEFAULT_TTL, &datagram).ok()?;
+        let packet =
+            ipv4::Ipv4Packet::try_build(src, dst, ipv4::PROTOCOL_UDP, ipv4::DEFAULT_TTL, &datagram)
+                .ok()?;
         super::send_ethernet(&ethernet::BROADCAST_MAC, ethernet::ETHERTYPE_IPV4, &packet).ok()?;
     } else {
         super::ip_output(src, dst, ipv4::PROTOCOL_UDP, ipv4::DEFAULT_TTL, &datagram).ok()?;

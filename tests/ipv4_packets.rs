@@ -33,7 +33,7 @@ pub fn config() -> Config {
 pub fn is_broadcast_addr(addr: [u8; 4]) -> bool {
     addr == [255; 4] || addr == [10, 0, 2, 255]
 }
-pub fn ip_output(_: [u8; 4], _: [u8; 4], _: u8, _: &[u8]) -> Result<(), TxError> {
+pub fn ip_output(_: [u8; 4], _: [u8; 4], _: u8, _: u8, _: &[u8]) -> Result<(), TxError> {
     unreachable!("wire tests never transmit")
 }
 pub mod tcp {
@@ -63,8 +63,14 @@ use ipv4::{internet_checksum, Ipv4Packet, PROTOCOL_UDP};
 
 #[test]
 fn total_length_cannot_underflow_header_or_exceed_input() {
-    let mut packet =
-        Ipv4Packet::try_build([127, 0, 0, 1], [127, 0, 0, 2], PROTOCOL_UDP, &[0; 8]).unwrap();
+    let mut packet = Ipv4Packet::try_build(
+        [127, 0, 0, 1],
+        [127, 0, 0, 2],
+        PROTOCOL_UDP,
+        ipv4::DEFAULT_TTL,
+        &[0; 8],
+    )
+    .unwrap();
     for len in [0u16, 1, 19, 29, 65535] {
         packet[2..4].copy_from_slice(&len.to_be_bytes());
         assert!(
@@ -78,16 +84,39 @@ fn total_length_cannot_underflow_header_or_exceed_input() {
 }
 
 #[test]
+fn packets_carry_the_ttl_they_are_built_with() {
+    let packet =
+        Ipv4Packet::try_build([127, 0, 0, 1], [127, 0, 0, 2], PROTOCOL_UDP, 42, &[0; 8]).unwrap();
+    let ip = Ipv4Packet::parse(&packet).unwrap();
+    assert_eq!(ip.ttl, 42);
+    assert_eq!(internet_checksum(ip.header), 0);
+    let packet = Ipv4Packet::build([127, 0, 0, 1], [127, 0, 0, 2], PROTOCOL_UDP, &[0; 8]);
+    assert_eq!(Ipv4Packet::parse(&packet).unwrap().ttl, ipv4::DEFAULT_TTL);
+}
+
+#[test]
 fn maximum_ip_length_roundtrips_and_oversize_is_refused() {
     let payload = vec![0x5a; 65515];
-    let packet =
-        Ipv4Packet::try_build([127, 0, 0, 1], [127, 0, 0, 2], PROTOCOL_UDP, &payload).unwrap();
+    let packet = Ipv4Packet::try_build(
+        [127, 0, 0, 1],
+        [127, 0, 0, 2],
+        PROTOCOL_UDP,
+        ipv4::DEFAULT_TTL,
+        &payload,
+    )
+    .unwrap();
     let ip = Ipv4Packet::parse(&packet).unwrap();
     assert_eq!(ip.total_length, 65535);
     assert_eq!(ip.payload, payload);
     assert_eq!(internet_checksum(ip.header), 0);
     assert_eq!(
-        Ipv4Packet::try_build(ip.src_ip, ip.dst_ip, PROTOCOL_UDP, &vec![0; 65516]),
+        Ipv4Packet::try_build(
+            ip.src_ip,
+            ip.dst_ip,
+            PROTOCOL_UDP,
+            ipv4::DEFAULT_TTL,
+            &vec![0; 65516]
+        ),
         Err(TxError::MsgSize)
     );
     assert!(Ipv4Packet::build(ip.src_ip, ip.dst_ip, PROTOCOL_UDP, &vec![0; 65516]).is_empty());
@@ -99,7 +128,14 @@ fn truncated_icmp_quote_identifies_original_flow_and_rejects_malformed_headers()
     udp[..2].copy_from_slice(&49152u16.to_be_bytes());
     udp[2..4].copy_from_slice(&53u16.to_be_bytes());
     udp[4..6].copy_from_slice(&100u16.to_be_bytes());
-    let ip = Ipv4Packet::try_build([127, 0, 0, 2], [127, 0, 0, 1], PROTOCOL_UDP, &udp).unwrap();
+    let ip = Ipv4Packet::try_build(
+        [127, 0, 0, 2],
+        [127, 0, 0, 1],
+        PROTOCOL_UDP,
+        ipv4::DEFAULT_TTL,
+        &udp,
+    )
+    .unwrap();
     let mut error = vec![3, 3, 0, 0, 0, 0, 0, 0];
     error.extend_from_slice(&ip[..28]);
     let parsed = icmp::IcmpPacket::parse(&error).unwrap();
@@ -131,7 +167,14 @@ fn icmp_quote_uses_linux_fatal_codes_without_quoted_checksum_validation() {
     udp[..2].copy_from_slice(&49152u16.to_be_bytes());
     udp[2..4].copy_from_slice(&53u16.to_be_bytes());
     udp[4..6].copy_from_slice(&8u16.to_be_bytes());
-    let ip = Ipv4Packet::try_build([127, 0, 0, 1], [127, 0, 0, 2], PROTOCOL_UDP, &udp).unwrap();
+    let ip = Ipv4Packet::try_build(
+        [127, 0, 0, 1],
+        [127, 0, 0, 2],
+        PROTOCOL_UDP,
+        ipv4::DEFAULT_TTL,
+        &udp,
+    )
+    .unwrap();
     let mut error = vec![3, 3, 0, 0, 0, 0, 0, 0];
     error.extend_from_slice(&ip);
     error[18] ^= 1; // A quoted IP checksum is not validated by Linux.
@@ -177,7 +220,14 @@ fn ethernet_build_preserves_header_and_minimum_padding() {
 fn broadcast_ipv4_is_not_dispatched_to_tcp_or_icmp() {
     for protocol in [ipv4::PROTOCOL_ICMP, ipv4::PROTOCOL_TCP] {
         let payload = icmp::IcmpPacket::echo_request(1, 1, b"broadcast");
-        let packet = Ipv4Packet::try_build([10, 0, 2, 2], [255; 4], protocol, &payload).unwrap();
+        let packet = Ipv4Packet::try_build(
+            [10, 0, 2, 2],
+            [255; 4],
+            protocol,
+            ipv4::DEFAULT_TTL,
+            &payload,
+        )
+        .unwrap();
         let frame = ethernet::EthernetFrame {
             src_mac: [1; 6],
             dst_mac: [255; 6],
