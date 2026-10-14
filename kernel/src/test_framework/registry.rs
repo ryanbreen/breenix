@@ -9579,7 +9579,10 @@ fn test_fd_alloc_close() -> TestResult {
 fn test_create_pipe() -> TestResult {
     use crate::ipc::pipe::create_pipe;
 
-    let (read_end, write_end) = create_pipe();
+    let (read_end, write_end) = match create_pipe() {
+        Ok(ends) => ends,
+        Err(_) => return TestResult::Fail("pipe allocation failed"),
+    };
 
     // Write through write_end
     {

@@ -66,10 +66,21 @@ pub fn sys_pipe(pipefd_ptr: u64) -> SyscallResult {
         };
 
         // Create the pipe buffer (shared between read and write ends)
-        let (read_buffer, write_buffer) = create_pipe();
+        let (read_buffer, write_buffer) = match create_pipe() {
+            Ok(ends) => ends,
+            Err(errno) => return SyscallResult::Err(errno as u64),
+        };
 
-        // Allocate file descriptors for both ends
-        let read_fd = match process.fd_table.alloc(FdKind::PipeRead(read_buffer)) {
+        // Allocate both descriptions before publishing either descriptor.
+        let read_entry = match FileDescriptor::try_with_flags(FdKind::PipeRead(read_buffer), 0, 0) {
+            Ok(entry) => entry,
+            Err(errno) => return SyscallResult::Err(errno as u64),
+        };
+        let write_entry = match FileDescriptor::try_with_flags(FdKind::PipeWrite(write_buffer), 0, 0) {
+            Ok(entry) => entry,
+            Err(errno) => return SyscallResult::Err(errno as u64),
+        };
+        let read_fd = match process.fd_table.alloc_with_entry(read_entry) {
             Ok(fd) => fd,
             Err(e) => {
                 log::error!("sys_pipe: Failed to allocate read fd: {}", e);
@@ -77,7 +88,7 @@ pub fn sys_pipe(pipefd_ptr: u64) -> SyscallResult {
             }
         };
 
-        let write_fd = match process.fd_table.alloc(FdKind::PipeWrite(write_buffer)) {
+        let write_fd = match process.fd_table.alloc_with_entry(write_entry) {
             Ok(fd) => fd,
             Err(e) => {
                 // Clean up read fd on failure
@@ -321,13 +332,20 @@ pub fn sys_pipe2(pipefd_ptr: u64, pipe_flags: u64) -> SyscallResult {
         };
 
         // Create the pipe buffer (shared between read and write ends)
-        let (read_buffer, write_buffer) = create_pipe();
+        let (read_buffer, write_buffer) = match create_pipe() {
+            Ok(ends) => ends,
+            Err(errno) => return SyscallResult::Err(errno as u64),
+        };
 
         // Create file descriptors with the appropriate flags
-        let read_fd_entry =
-            FileDescriptor::with_flags(FdKind::PipeRead(read_buffer), fd_flags, status_flags_val);
-        let write_fd_entry =
-            FileDescriptor::with_flags(FdKind::PipeWrite(write_buffer), fd_flags, status_flags_val);
+        let read_fd_entry = match FileDescriptor::try_with_flags(FdKind::PipeRead(read_buffer), fd_flags, status_flags_val) {
+            Ok(entry) => entry,
+            Err(errno) => return SyscallResult::Err(errno as u64),
+        };
+        let write_fd_entry = match FileDescriptor::try_with_flags(FdKind::PipeWrite(write_buffer), fd_flags, status_flags_val) {
+            Ok(entry) => entry,
+            Err(errno) => return SyscallResult::Err(errno as u64),
+        };
 
         // Allocate file descriptors for both ends using alloc_with_entry
         let read_fd = match process.fd_table.alloc_with_entry(read_fd_entry) {

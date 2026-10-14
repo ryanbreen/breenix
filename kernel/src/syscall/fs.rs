@@ -3635,11 +3635,11 @@ pub fn sys_getcwd(buf: u64, size: u64) -> SyscallResult {
     // process manager is released: the walk reads the filesystem, and the
     // user buffer may be a CoW page whose fault handler takes the manager.
     let dir = crate::fs::namei::current_working_dir();
-    let cwd = match crate::fs::namei::working_dir_path(&dir) {
+    let mut bytes = match crate::fs::namei::working_dir_path_bytes(&dir) {
         Ok(path) => path,
         Err(errno) => return SyscallResult::Err(errno),
     };
-    let mut bytes = cwd.into_bytes();
+    if bytes.try_reserve(1).is_err() { return SyscallResult::Err(super::errno::ENOMEM as u64); }
     bytes.push(0);
 
     // Nothing is written unless the whole pathname and its NUL fit.
@@ -3671,12 +3671,14 @@ pub fn sys_getcwd(buf: u64, size: u64) -> SyscallResult {
 /// * EACCES - Permission denied
 /// * EIO - I/O error
 pub fn sys_chdir(pathname: u64) -> SyscallResult {
-    let resolved = match resolve_user(pathname, true) {
-        Ok(r) => r,
-        Err(e) => return e,
+    let path = match super::userptr::copy_path_bytes_from_user(pathname) {
+        Ok(path) => path,
+        Err(errno) => return SyscallResult::Err(errno),
     };
-
-    log::debug!("sys_chdir: path={:?}", resolved.path);
+    let resolved = match crate::fs::namei::resolve_bytes(&path, true) {
+        Ok(resolved) => resolved,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
 
     match crate::fs::namei::working_dir(&resolved) {
         Ok(dir) => enter_working_dir(dir),

@@ -269,7 +269,7 @@ impl ProcessManager {
         let mut any = false;
         siblings.all(|(_, sibling)| {
             any = true;
-            sibling.exit_started
+            sibling.exit_started || sibling.group_exit_code.is_some()
         }) && any
     }
 
@@ -424,6 +424,22 @@ impl ProcessManager {
     ) -> bool {
         if children.is_empty() {
             return false;
+        }
+
+        // A thread's children stay in its process while any sibling survives.
+        if let Some(survivor) = self.thread_group_peers(exiting).into_iter().find(|peer| {
+            self.processes.live_row(peer).is_some_and(|row| !row.exit_started)
+        }) {
+            for child in children {
+                if *child == survivor { continue; }
+                if let Some(row) = self.processes.live_row_mut(child) {
+                    row.parent = Some(survivor);
+                }
+            }
+            if let Some(row) = self.processes.live_row_mut(&survivor) {
+                row.children.extend(children.iter().copied().filter(|child| *child != survivor));
+            }
+            return true;
         }
 
         let Some(init) = self.designated_init else {
@@ -2418,6 +2434,21 @@ impl ProcessManager {
                 }
             }
         }
+    }
+
+    /// Children wait may collect across all rows in its POSIX thread group,
+    /// including an exited leader whose children still belong to the group.
+    pub(crate) fn wait_children(&self, pid: ProcessId, own_only: bool) -> Result<Vec<ProcessId>, u64> {
+        let caller = self.processes.live_row(&pid).ok_or(crate::syscall::errno::ECHILD as u64)?;
+        let group = caller.thread_group_id.unwrap_or(pid.as_u64());
+        let mut children = Vec::new();
+        for (&owner, row) in self.processes.iter() {
+            if owner == pid || (!own_only && row.thread_group_id.unwrap_or(owner.as_u64()) == group) {
+                children.try_reserve(row.children.len()).map_err(|_| crate::syscall::errno::ENOMEM as u64)?;
+                children.extend_from_slice(&row.children);
+            }
+        }
+        Ok(children)
     }
 
     /// The other live rows of `pid`'s thread group: rows created by `clone`

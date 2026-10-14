@@ -48,6 +48,22 @@ mod nr {
     #[cfg(target_arch = "x86_64")]
     pub const SETGID: u64 = 106;
     #[cfg(target_arch = "aarch64")]
+    pub const GETUID: u64 = 174;
+    #[cfg(target_arch = "x86_64")]
+    pub const GETUID: u64 = 102;
+    #[cfg(target_arch = "aarch64")]
+    pub const GETEUID: u64 = 175;
+    #[cfg(target_arch = "x86_64")]
+    pub const GETEUID: u64 = 107;
+    #[cfg(target_arch = "aarch64")]
+    pub const GETGID: u64 = 176;
+    #[cfg(target_arch = "x86_64")]
+    pub const GETGID: u64 = 104;
+    #[cfg(target_arch = "aarch64")]
+    pub const GETEGID: u64 = 177;
+    #[cfg(target_arch = "x86_64")]
+    pub const GETEGID: u64 = 108;
+    #[cfg(target_arch = "aarch64")]
     pub const CHROOT: u64 = 51;
     #[cfg(target_arch = "x86_64")]
     pub const CHROOT: u64 = 161;
@@ -143,8 +159,7 @@ unsafe fn exec_search(file: *const u8, argv: *const *const u8, envp: *const *con
         // An empty element is the current directory.
         let dir: &[u8] = if dir.is_empty() { b"." } else { dir };
         if dir.len() + 1 + file_len + 1 > buf.len() {
-            set_errno(ENAMETOOLONG);
-            return -1;
+            continue;
         }
         buf[..dir.len()].copy_from_slice(dir);
         buf[dir.len()] = b'/';
@@ -246,6 +261,26 @@ pub unsafe extern "C" fn wait3(status: *mut i32, options: i32, usage: *mut u8) -
 // ---------------------------------------------------------------------------------
 
 #[no_mangle]
+pub extern "C" fn getuid() -> u32 {
+    unsafe { libbreenix::raw::syscall0(nr::GETUID) as u32 }
+}
+
+#[no_mangle]
+pub extern "C" fn geteuid() -> u32 {
+    unsafe { libbreenix::raw::syscall0(nr::GETEUID) as u32 }
+}
+
+#[no_mangle]
+pub extern "C" fn getgid() -> u32 {
+    unsafe { libbreenix::raw::syscall0(nr::GETGID) as u32 }
+}
+
+#[no_mangle]
+pub extern "C" fn getegid() -> u32 {
+    unsafe { libbreenix::raw::syscall0(nr::GETEGID) as u32 }
+}
+
+#[no_mangle]
 pub extern "C" fn setuid(uid: u32) -> i32 {
     let r = unsafe { libbreenix::raw::syscall1(nr::SETUID, uid as u64) };
     crate::syscall_result_to_c_int(r as i64)
@@ -257,7 +292,6 @@ pub extern "C" fn setgid(gid: u32) -> i32 {
     crate::syscall_result_to_c_int(r as i64)
 }
 
-/// chroot: the kernel's answer, ENOSYS where it has no chroot.
 #[no_mangle]
 pub unsafe extern "C" fn chroot(path: *const u8) -> i32 {
     let r = libbreenix::raw::syscall1(nr::CHROOT, path as u64);

@@ -1010,29 +1010,7 @@ pub extern "C" fn getppid() -> i32 {
     syscall_result_to_c_int(result)
 }
 
-/// Get real user ID.
-#[no_mangle]
-pub extern "C" fn getuid() -> u32 {
-    0 // root - single-user system
-}
-
-/// Get effective user ID.
-#[no_mangle]
-pub extern "C" fn geteuid() -> u32 {
-    0 // root
-}
-
-/// Get real group ID.
-#[no_mangle]
-pub extern "C" fn getgid() -> u32 {
-    0 // root group
-}
-
-/// Get effective group ID.
-#[no_mangle]
-pub extern "C" fn getegid() -> u32 {
-    0 // root group
-}
+pub use unistd::{getuid, geteuid, getgid, getegid};
 
 /// setpgid - set process group ID
 #[no_mangle]

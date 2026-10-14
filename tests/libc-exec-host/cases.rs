@@ -53,10 +53,10 @@ fn search_remembers_permission_denial_and_skips_missing_directories() {
     assert_eq!(search(&[20, 2]), 2);
 }
 #[test]
-fn overlong_candidate_reports_name_too_long() {
-    PATH.with(|p| *p.borrow_mut() = CString::new("x".repeat(4096)).unwrap());
-    assert_eq!(search(&[]), 36);
-    assert_eq!(CALLS.with(|c| c.borrow().len()), 0);
+fn overlong_candidate_is_skipped_for_later_path_entry() {
+    PATH.with(|p| *p.borrow_mut() = CString::new(format!("{}:/two", "x".repeat(4096))).unwrap());
+    assert_eq!(search(&[13]), 13);
+    assert_eq!(CALLS.with(|c| c.borrow().clone()), [b"/two/tool".to_vec()]);
     PATH.with(|p| *p.borrow_mut() = CString::new("/one:/two").unwrap());
 }
 #[test]
