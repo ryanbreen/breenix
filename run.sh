@@ -1327,7 +1327,9 @@ else
     # sources change, so an unchanged system disk (and the session disk cloned
     # from it below) survives an incremental run.
     if [ ! -f "$EXT2_DISK" ] || [ -n "$(find "$USERSPACE_MANIFEST" \
-            "$BREENIX_ROOT/scripts/create_ext2_disk.sh" "$BREENIX_ROOT/scripts/install-busybox.py" \
+            "$BREENIX_ROOT/scripts/create_ext2_disk.sh" "$BREENIX_ROOT/scripts/install-libc-busybox.sh" \
+            "$(dirname "$USERSPACE_MANIFEST")/libc-busybox.elf" \
+            "$(dirname "$USERSPACE_MANIFEST")/libc-busybox.links" \
             "$BREENIX_ROOT/fonts" "$BREENIX_ROOT/vendor/busybox" -newer "$EXT2_DISK" -print -quit)" ]; then
         echo "Creating system ext2 disk image..."
         "$BREENIX_ROOT/scripts/create_ext2_disk.sh" ${EXT2_ARGS[@]+"${EXT2_ARGS[@]}"}

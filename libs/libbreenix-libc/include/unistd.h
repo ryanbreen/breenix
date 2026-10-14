@@ -66,6 +66,20 @@ typedef __INTPTR_TYPE__ intptr_t;
 #define _PC_CHOWN_RESTRICTED 6
 #define _PC_NO_TRUNC 7
 #define _PC_VDISABLE 8
+#define _PC_ASYNC_IO 9
+#define _PC_PRIO_IO 10
+#define _PC_SYNC_IO 11
+#define _PC_FILESIZEBITS 12
+#define _PC_REC_INCR_XFER_SIZE 13
+#define _PC_REC_MAX_XFER_SIZE 14
+#define _PC_REC_MIN_XFER_SIZE 15
+#define _PC_REC_XFER_ALIGN 16
+#define _PC_ALLOC_SIZE_MIN 17
+#define _PC_SYMLINK_MAX 18
+#define _PC_2_SYMLINKS 19
+#define _PC_TIMESTAMP_RESOLUTION 20
+#define _PC_TEXTDOMAIN_MAX 21
+#define _PC_FALLOC 22
 
 /* Query IDs preserve this implementation's src/lib.rs sysconf dispatch ABI.
  * Unhandled queries return -1; aliases share an identifier. */
@@ -103,8 +117,24 @@ typedef __INTPTR_TYPE__ intptr_t;
 #define _SC_HOST_NAME_MAX 180
 #define _SC_MONOTONIC_CLOCK 149
 
-/* Our first confstr query ID: the default search path. */
+/* Implementation-owned confstr query IDs. Breenix uses LP64/OFF64. */
 #define _CS_PATH 0
+#define _CS_POSIX_V8_ILP32_OFF32_CFLAGS 1
+#define _CS_POSIX_V8_ILP32_OFF32_LDFLAGS 2
+#define _CS_POSIX_V8_ILP32_OFF32_LIBS 3
+#define _CS_POSIX_V8_ILP32_OFFBIG_CFLAGS 4
+#define _CS_POSIX_V8_ILP32_OFFBIG_LDFLAGS 5
+#define _CS_POSIX_V8_ILP32_OFFBIG_LIBS 6
+#define _CS_POSIX_V8_LP64_OFF64_CFLAGS 7
+#define _CS_POSIX_V8_LP64_OFF64_LDFLAGS 8
+#define _CS_POSIX_V8_LP64_OFF64_LIBS 9
+#define _CS_POSIX_V8_LPBIG_OFFBIG_CFLAGS 10
+#define _CS_POSIX_V8_LPBIG_OFFBIG_LDFLAGS 11
+#define _CS_POSIX_V8_LPBIG_OFFBIG_LIBS 12
+#define _CS_POSIX_V8_THREADS_CFLAGS 13
+#define _CS_POSIX_V8_THREADS_LDFLAGS 14
+#define _CS_POSIX_V8_WIDTH_RESTRICTED_ENVS 15
+#define _CS_V8_ENV 16
 
 __BREENIX_BEGIN_DECLS
 

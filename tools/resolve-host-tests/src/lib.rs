@@ -578,8 +578,10 @@ fn oversized_hosts_name_falls_back_and_unreadable_hosts_do_not_fail() {
 
 // pthread-specific storage shims for the production inet_ntoa implementation.
 pub mod pthread {
-    use std::{cell::Cell, sync::Once};
+    use std::{cell::{Cell, UnsafeCell}, sync::Once};
     static ONCE: Once = Once::new();
+    thread_local! { static H_ERRNO: UnsafeCell<i32> = const { UnsafeCell::new(0) }; }
+    pub fn __h_errno_location() -> *mut i32 { H_ERRNO.with(|value| value.get()) }
     thread_local! { static VALUE: Cell<*mut u8> = const { Cell::new(core::ptr::null_mut()) }; }
     pub unsafe fn pthread_once(_p: *mut i32, init: extern "C" fn()) -> i32 {
         ONCE.call_once(|| init());

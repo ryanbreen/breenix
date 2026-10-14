@@ -648,12 +648,9 @@ fn generate_ext2() -> Result<String, i32> {
 fn generate_uptime() -> String {
     use alloc::format;
 
-    // Get uptime from timer subsystem
-    // Timer ticks at 200 Hz (5ms per tick)
-    let ticks = crate::time::get_ticks();
-    let uptime_ms = ticks * 5; // Convert ticks to milliseconds
-    let uptime_secs = uptime_ms / 1000;
-    let uptime_frac = (uptime_ms % 1000) / 10; // Two decimal places
+    // Use the boot clock, independent of each architecture's timer frequency.
+    let (uptime_secs, nanos) = crate::time::get_monotonic_time_ns();
+    let uptime_frac = nanos / 10_000_000; // Two decimal places
 
     // Format: uptime_seconds idle_seconds
     // For now, idle is always 0 since we don't track it
