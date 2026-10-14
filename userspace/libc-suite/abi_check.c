@@ -4,7 +4,11 @@
  * build.sh compiles this for both architectures on every build; it has no code. Each
  * lane adds the checks for the types its headers define.
  */
+#include <dirent.h>
 #include <fcntl.h>
+#include <getopt.h>
+#include <glob.h>
+#include <regex.h>
 #include <stddef.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -101,3 +105,24 @@ AT(struct stat, st_mtim, 88);
 AT(struct stat, st_ctim, 104);
 #endif
 AT(struct stat, st_ino, 8);
+
+/* struct dirent: the library's Dirent (src/dirent.rs) and the Rust runtime's dirent. */
+SIZE(struct dirent, 280);
+AT(struct dirent, d_off, 8);
+AT(struct dirent, d_reclen, 16);
+AT(struct dirent, d_type, 18);
+AT(struct dirent, d_name, 19);
+
+/* glob_t, regex_t, regmatch_t and struct option, as src/glob.rs, src/regex and
+   src/getopt.rs read them. */
+SIZE(glob_t, 72);
+AT(glob_t, gl_pathv, 8);
+AT(glob_t, gl_offs, 16);
+AT(glob_t, gl_flags, 24);
+SIZE(regex_t, 64);
+SIZE(regmatch_t, 16);
+AT(regmatch_t, rm_eo, 8);
+SIZE(struct option, 32);
+AT(struct option, has_arg, 8);
+AT(struct option, flag, 16);
+AT(struct option, val, 24);
