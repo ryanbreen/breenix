@@ -835,6 +835,7 @@ scripts/boot-interactive.sh --mode suite --suite rust-std
 ./run.sh --vmware --suite rust-std
 # From tools/breenix-runs:
 swift run breenix-runs run x86 --mode full --boots 1 --suite rust-std --gate-timeout 900 --sha <pushed-sha>
+```
 
 ## C library
 
