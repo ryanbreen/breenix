@@ -31,6 +31,8 @@ mod grp;
 mod libgen;
 mod pwd;
 mod unistd;
+mod mntent;
+mod statfs;
 mod inet;
 mod netdb;
 mod mqueue;

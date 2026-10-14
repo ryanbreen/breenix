@@ -477,3 +477,100 @@ pub unsafe extern "C" fn utime(path: *const u8, times: *const [i64; 2]) -> i32 {
     let ts = [Timespec { tv_sec: t[0], tv_nsec: 0 }, Timespec { tv_sec: t[1], tv_nsec: 0 }];
     utimensat(AT_FDCWD, path, ts.as_ptr() as *const u8, 0)
 }
+
+// ---------------------------------------------------------------------------------
+// Process times, process control and assertion failures
+// ---------------------------------------------------------------------------------
+
+mod nr_more {
+    #[cfg(target_arch = "aarch64")]
+    pub const TIMES: u64 = 153;
+    #[cfg(target_arch = "x86_64")]
+    pub const TIMES: u64 = 100;
+    #[cfg(target_arch = "aarch64")]
+    pub const PRCTL: u64 = 167;
+    #[cfg(target_arch = "x86_64")]
+    pub const PRCTL: u64 = 157;
+}
+
+/// times: the process's and its waited-for children's CPU times in clock ticks, and
+/// the elapsed ticks since an arbitrary point.
+#[no_mangle]
+pub unsafe extern "C" fn times(buf: *mut u8) -> i64 {
+    let r = libbreenix::raw::syscall1(nr_more::TIMES, buf as u64) as i64;
+    if (-4095..0).contains(&r) {
+        set_errno(-r as i32);
+        return -1;
+    }
+    r
+}
+
+/// prctl: the kernel's prctl, which reports ENOSYS for operations it does not provide.
+#[no_mangle]
+pub unsafe extern "C" fn prctl(option: i32, mut args: ...) -> i32 {
+    let a: [u64; 4] = [args.arg::<u64>(), args.arg::<u64>(), args.arg::<u64>(), args.arg::<u64>()];
+    let r = libbreenix::raw::syscall5(nr_more::PRCTL, option as i64 as u64, a[0], a[1], a[2], a[3]);
+    crate::syscall_result_to_c_int(r as i64)
+}
+
+extern "C" {
+    fn abort() -> !;
+}
+
+/// Write `parts` to standard error with write(2), so the report does not depend on
+/// stdio's state.
+unsafe fn write_stderr(parts: &[&[u8]]) {
+    for part in parts {
+        let mut rest = *part;
+        while !rest.is_empty() {
+            let n = crate::write(2, rest.as_ptr(), rest.len());
+            if n <= 0 {
+                return;
+            }
+            rest = &rest[n as usize..];
+        }
+    }
+}
+
+/// The failure path of assert (include/assert.h).
+#[no_mangle]
+pub unsafe extern "C" fn __breenix_assert_fail(expr: *const u8, file: *const u8, line: i32, func: *const u8) -> ! {
+    let text = |p: *const u8| if p.is_null() { &b"?"[..] } else { core::slice::from_raw_parts(p, c_len(p)) };
+    let mut digits = [0u8; 12];
+    let mut i = digits.len();
+    let mut n = line.unsigned_abs();
+    loop {
+        i -= 1;
+        digits[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    write_stderr(&[text(file), b":", &digits[i..], b": ", text(func), b": assertion failed: ", text(expr), b"\n"]);
+    abort()
+}
+
+// ---------------------------------------------------------------------------------
+// Device nodes and vfork
+// ---------------------------------------------------------------------------------
+
+#[no_mangle]
+pub unsafe extern "C" fn mknodat(dirfd: i32, path: *const u8, mode: u32, dev: u64) -> i32 {
+    let r = libbreenix::raw::syscall4(libbreenix::syscall::nr::MKNODAT, dirfd as i64 as u64, path as u64,
+                                      mode as u64, dev);
+    crate::syscall_result_to_c_int(r as i64)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mknod(path: *const u8, mode: u32, dev: u64) -> i32 {
+    mknodat(AT_FDCWD, path, mode, dev)
+}
+
+/// vfork: a fork. Everything a vfork child may do (POSIX: only _exit or an exec
+/// function) behaves the same in a forked child, which simply does not borrow the
+/// parent's memory while it runs.
+#[no_mangle]
+pub extern "C" fn vfork() -> i32 {
+    crate::fork()
+}

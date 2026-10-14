@@ -189,11 +189,17 @@ def link(entry, defsyms=()):
     args = [cc, '--arch', arch, f'-Wl,-e,{entry}', f'-Wl,-u,{entry}', '-Wl,--error-limit=0',
             *[f'-Wl,--defsym={s}=0' for s in defsyms], str(work / 'objects.a'), '-o', str(out)]
     r = subprocess.run(args, capture_output=True, text=True)
-    missing = sorted(set(re.findall(r'undefined symbol: (\S+)', r.stderr)))
+    missing = set(re.findall(r'undefined (?:hidden )?symbol: (\S+)', r.stderr))
+    # lld only warns when the entry itself is not defined.
+    if re.search(rf'cannot find entry symbol {re.escape(entry)}\b', r.stderr):
+        missing.add(entry)
+    missing = sorted(missing)
+    ok = r.returncode == 0 and not missing
     if r.returncode != 0 and not missing:
-        missing = ['(link failed: ' + r.stderr.strip().splitlines()[-1][:200] + ')'] if r.stderr.strip() else ['(link failed)']
+        errors = [l for l in r.stderr.splitlines() if 'error:' in l]
+        missing = ['(link failed: ' + (errors[0] if errors else 'no message')[:200] + ')']
     out.unlink(missing_ok=True)
-    return r.returncode == 0, missing
+    return ok, missing
 
 log = (work / 'compile.log').read_text(errors='replace')
 failed_objects = sorted(set(re.findall(r"\[([A-Za-z0-9_./-]+\.o)\] Error", log)))
@@ -259,7 +265,7 @@ if not result['core']['links']:
     print(f"    start-up path does not link; missing: {' '.join(result['core']['missing'][:40])}")
 if result['objects_failed']:
     print(f"    objects that did not compile: {' '.join(result['objects_failed'][:40])}")
-for error in result['compile_errors'][:10]:
+for error in result['compile_errors']:
     print(f"    compile error: {error}")
 for name, a in sorted(apps.items()):
     if not a['compiles']:
