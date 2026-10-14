@@ -3,6 +3,7 @@
 #include <__breenix/features.h>
 #if __BREENIX_POSIX
 #include <sys/types.h>
+#include <stddef.h>
 #include <__breenix/timespec.h>
 struct sched_param { int sched_priority; };
 #define SCHED_OTHER 0
@@ -11,6 +12,9 @@ struct sched_param { int sched_priority; };
 #ifdef __cplusplus
 extern "C" {
 #endif
+/* Breenix CPU masks use 64-bit words; the public set reserves 1024 CPUs. */
+typedef struct { unsigned long __bits[16]; } cpu_set_t;
+int sched_getaffinity(pid_t, size_t, cpu_set_t *);
 int sched_yield(void);
 int sched_setscheduler(pid_t, int, const struct sched_param *);
 int sched_getscheduler(pid_t);

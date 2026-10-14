@@ -172,6 +172,10 @@ def reclaim_legacy(canonical, processes=Path('/proc')):
 def snapshot_fork(source, destination):
     """Build from an immutable private copy, and reject a concurrent source edit."""
     source = Path(source)
+    tree = Path(destination).parent
+    if (tree / 'rust-fork.toml').exists():
+        subprocess.run([str(tree / 'scripts/rust-fork.sh'), 'snapshot', str(source), str(destination)], check=True)
+        return
     def fingerprint():
         result = hashlib.sha256()
         for path in sorted((source / 'library').rglob('*')):
