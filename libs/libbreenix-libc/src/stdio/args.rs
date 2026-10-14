@@ -212,6 +212,10 @@ impl Spec {
                 32 => s.space = true,
                 35 => s.alternate = true,
                 48 => s.zero = true,
+                // POSIX ' (thousands grouping): LC_NUMERIC's thousands_sep is empty in
+                // every locale this library provides (C, POSIX, C.UTF-8), so the
+                // grouping inserts nothing.
+                39 => {}
                 _ => break,
             }
             *i += 1;
@@ -251,10 +255,19 @@ impl Spec {
                 *i += 1;
             }
         }
-        s.conversion = fmt.at(*i) as u8;
-        if s.conversion == 0 {
-            return Err(22);
-        }
+        s.conversion = match fmt.at(*i) {
+            0 => return Err(22),
+            // XSI: %C is %lc and %S is %ls.
+            67 => {
+                s.length = Length::L;
+                b'c'
+            }
+            83 => {
+                s.length = Length::L;
+                b's'
+            }
+            c => c as u8,
+        };
         *i += 1;
         Ok(s)
     }
@@ -279,8 +292,9 @@ impl Spec {
         }
     }
 }
-// POSIX NL_ARGMAX is a published implementation limit; 4096 exceeds its minimum.
-const LIMIT: usize = 4096;
+/// The largest n in %n$, equal to NL_ARGMAX in include/limits.h (POSIX's minimum
+/// for that limit). The printf and scanf engines both use it.
+pub(super) const LIMIT: usize = 9;
 pub(super) struct Arguments<'a, 'f> {
     ap: VaList<'a, 'f>,
     kinds: [Kind; LIMIT],

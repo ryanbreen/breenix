@@ -19,13 +19,6 @@ pub unsafe extern "C" fn popen(command: *const u8, mode: *const u8) -> *mut File
     }
     let parent = fds[if read { 0 } else { 1 }];
     let child = fds[if read { 1 } else { 0 }];
-    if !cloexec && crate::fcntl(parent, 2, 0) < 0 {
-        let e = crate::pthread::errno();
-        crate::close(parent);
-        crate::close(child);
-        crate::pthread::set_errno(e);
-        return ptr::null_mut();
-    }
     let stream = file::fdopen(parent, if read { c"r" } else { c"w" }.as_ptr() as *const u8);
     if stream.is_null() {
         let e = crate::pthread::errno();
@@ -34,7 +27,8 @@ pub unsafe extern "C" fn popen(command: *const u8, mode: *const u8) -> *mut File
         crate::pthread::set_errno(e);
         return ptr::null_mut();
     }
-    let pid = file::fork_pipe(stream);
+    // Both ends stay close-on-exec until fork_pipe marks the stream as a popen stream.
+    let pid = file::fork_pipe(stream, cloexec);
     if pid == 0 {
         file::close_inherited_pipes(stream);
         crate::close(parent);

@@ -6,8 +6,17 @@
 typedef struct __breenix_file FILE;
 typedef struct { long long offset; unsigned char state[8]; } fpos_t;
 #define EOF (-1)
-#define BUFSIZ 1024
-#define FOPEN_MAX 16
+/* Each value below is derived from this implementation or the kernel:
+ * BUFSIZ: a stream's own buffer, one 4 KiB page (BUFFER in src/stdio/file.rs).
+ * FOPEN_MAX: a stream needs only its descriptor, and a process starts with a
+ *   soft RLIMIT_NOFILE of 256 descriptors (INITIAL_FDS in the kernel's fd table).
+ * FILENAME_MAX: the kernel's PATH_MAX, 4096 bytes with the null.
+ * L_tmpnam: tmpnam writes "/tmp/breenix-name-", 16 hex digits and a null, 35 bytes.
+ * TMP_MAX: tmpnam's names end in a per-process 32-bit sequence number, so 2^32
+ *   calls get distinct names; the value is the largest int below that.
+ * L_ctermid: ctermid's "/dev/tty" and its null. */
+#define BUFSIZ 4096
+#define FOPEN_MAX 256
 #define _IOFBF 0
 #define _IOLBF 1
 #define _IONBF 2
@@ -15,9 +24,10 @@ typedef struct { long long offset; unsigned char state[8]; } fpos_t;
 #define SEEK_CUR 1
 #define SEEK_END 2
 #define FILENAME_MAX 4096
-#define L_tmpnam 64
-#define TMP_MAX 238328
+#define L_tmpnam 35
+#define TMP_MAX 2147483647
 #ifdef __BREENIX_POSIX
+#define L_ctermid 9
 #include <sys/types.h>
 #endif
 __BREENIX_BEGIN_DECLS
@@ -57,6 +67,7 @@ int vfscanf(FILE *__BREENIX_RESTRICT, const char *__BREENIX_RESTRICT, va_list);
 int vsscanf(const char *__BREENIX_RESTRICT, const char *__BREENIX_RESTRICT, va_list);
 #ifdef __BREENIX_POSIX
 FILE *fdopen(int, const char *); int fileno(FILE *);
+char *ctermid(char *); int renameat(int, const char *, int, const char *);
 FILE *popen(const char *, const char *); int pclose(FILE *);
 int fseeko(FILE *, off_t, int); off_t ftello(FILE *);
 void flockfile(FILE *); int ftrylockfile(FILE *); void funlockfile(FILE *);
