@@ -51,6 +51,7 @@ mod mqueue;
 mod shm;
 mod semaphore;
 mod sysv;
+mod signal;
 mod termios;
 mod stdio;
 
@@ -139,18 +140,6 @@ fn set_errno_from_error(e: Error) -> i32 {
     -1
 }
 
-/// Convert Result<usize, Error> to C ssize_t convention
-#[inline]
-fn result_usize_to_c_ssize(result: Result<usize, Error>) -> isize {
-    match result {
-        Ok(v) => v as isize,
-        Err(e) => {
-            set_errno_from_error(e);
-            -1
-        }
-    }
-}
-
 /// Convert Result<(), Error> to C int convention (0 success, -1 error)
 #[inline]
 fn result_unit_to_c_int(result: Result<(), Error>) -> i32 {
@@ -190,15 +179,9 @@ pub unsafe extern "C" fn write(fd: i32, buf: *const u8, count: usize) -> isize {
         return -1;
     }
 
-    let fd_val = Fd::from_raw(fd as u64);
-    let slice = if count == 0 {
-        &[]
-    } else {
-        slice::from_raw_parts(buf, count)
-    };
-
-    let result = libbreenix::io::write(fd_val, slice);
-    result_usize_to_c_ssize(result)
+    syscall_result_to_c_ssize(pthread::cancel_syscall(
+        libbreenix::syscall::nr::WRITE, [fd as u64, buf as u64, count as u64, 0, 0, 0],
+    ))
 }
 
 /// Read bytes from a file descriptor.
@@ -209,23 +192,17 @@ pub unsafe extern "C" fn read(fd: i32, buf: *mut u8, count: usize) -> isize {
         return -1;
     }
 
-    let fd_val = Fd::from_raw(fd as u64);
-    let slice = if count == 0 {
-        &mut []
-    } else {
-        slice::from_raw_parts_mut(buf, count)
-    };
-
-    let result = libbreenix::io::read(fd_val, slice);
-    result_usize_to_c_ssize(result)
+    syscall_result_to_c_ssize(pthread::cancel_syscall(
+        libbreenix::syscall::nr::READ, [fd as u64, buf as u64, count as u64, 0, 0, 0],
+    ))
 }
 
 /// Close a file descriptor.
 #[no_mangle]
 pub extern "C" fn close(fd: i32) -> i32 {
-    let fd_val = Fd::from_raw(fd as u64);
-    let result = libbreenix::io::close(fd_val);
-    result_unit_to_c_int(result)
+    unsafe { syscall_result_to_c_int(pthread::cancel_syscall(
+        libbreenix::syscall::nr::CLOSE, [fd as u64, 0, 0, 0, 0, 0],
+    )) }
 }
 
 /// Duplicate a file descriptor.
@@ -313,27 +290,12 @@ pub unsafe extern "C" fn open(path: *const u8, flags: i32, mode: u32) -> i32 {
         return -1;
     }
 
-    let result = {
-        #[cfg(target_arch = "x86_64")]
-        {
-            libbreenix::raw::syscall3(
-                libbreenix::syscall::nr::OPEN,
-                path as u64,
-                flags as u64,
-                mode as u64,
-            ) as i64
-        }
-        #[cfg(target_arch = "aarch64")]
-        {
-            libbreenix::raw::syscall4(
-                libbreenix::syscall::nr::OPENAT,
-                AT_FDCWD_RAW,
-                path as u64,
-                flags as u64,
-                mode as u64,
-            ) as i64
-        }
-    };
+    #[cfg(target_arch = "x86_64")]
+    let result = pthread::cancel_syscall(libbreenix::syscall::nr::OPEN,
+        [path as u64, flags as u64, mode as u64, 0, 0, 0]);
+    #[cfg(target_arch = "aarch64")]
+    let result = pthread::cancel_syscall(libbreenix::syscall::nr::OPENAT,
+        [AT_FDCWD_RAW, path as u64, flags as u64, mode as u64, 0, 0]);
     syscall_result_to_c_int(result)
 }
 
@@ -345,13 +307,8 @@ pub unsafe extern "C" fn openat(dirfd: i32, path: *const u8, flags: i32, mode: u
         return -1;
     }
 
-    let result = libbreenix::raw::syscall4(
-        libbreenix::syscall::nr::OPENAT,
-        dirfd as u64,
-        path as u64,
-        flags as u64,
-        mode as u64,
-    ) as i64;
+    let result = pthread::cancel_syscall(libbreenix::syscall::nr::OPENAT,
+        [dirfd as u64, path as u64, flags as u64, mode as u64, 0, 0]);
     syscall_result_to_c_int(result)
 }
 
@@ -1070,10 +1027,8 @@ pub unsafe extern "C" fn execve(
 /// waitpid - wait for a child process
 #[no_mangle]
 pub unsafe extern "C" fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32 {
-    match libbreenix::process::waitpid(pid, status, options) {
-        Ok(pid) => pid.raw() as i32,
-        Err(e) => set_errno_from_error(e),
-    }
+    syscall_result_to_c_int(pthread::cancel_syscall(libbreenix::syscall::nr::WAIT4,
+        [pid as u64, status as u64, options as u64, 0, 0, 0]))
 }
 
 /// kill - send signal to a process
@@ -1222,8 +1177,11 @@ pub const EMLINK: i32 = 31;
 pub const EPIPE: i32 = 32;
 pub const ENOSYS: i32 = 38;
 
+// =============================================================================
+// String/Utility Functions
+// =============================================================================
 
-// ======================================================================/// Get random bytes from the kernel.
+/// Get random bytes from the kernel.
 #[no_mangle]
 pub unsafe extern "C" fn getrandom(buf: *mut u8, buflen: usize, flags: u32) -> isize {
     let ret = libbreenix::syscall::raw::syscall3(
@@ -1428,6 +1386,7 @@ pub unsafe extern "C" fn epoll_pwait(
 /// write to a broken pipe returns EPIPE instead of killing the program.
 #[no_mangle]
 pub extern "C" fn signal(signum: i32, handler: usize) -> usize {
+    if signum == signal::CANCEL_SIGNAL { pthread::set_errno(EINVAL); return usize::MAX; }
     use libbreenix::signal::{Sigaction, SA_RESTART, SA_RESTORER, SIG_IGN};
     const SIG_ERR: usize = usize::MAX;
 
@@ -1457,6 +1416,7 @@ pub extern "C" fn signal(signum: i32, handler: usize) -> usize {
 /// the C sigaction struct layout to the kernel's layout.
 #[no_mangle]
 pub unsafe extern "C" fn sigaction(signum: i32, act: *const u8, oldact: *mut u8) -> i32 {
+    if signum == signal::CANCEL_SIGNAL { pthread::set_errno(EINVAL); return -1; }
     // The C sigaction struct layout:
     //   offset 0: sa_sigaction (handler) - 8 bytes
     //   offset 8: sa_mask (sigset_t) - 8 bytes
@@ -1589,18 +1549,9 @@ pub unsafe extern "C" fn sigaltstack(ss: *const u8, old_ss: *mut u8) -> i32 {
 
 /// sigprocmask - examine and change blocked signals
 #[no_mangle]
-pub unsafe extern "C" fn sigprocmask(
-    how: i32,
-    set: *const u64,
-    oldset: *mut u64,
-) -> i32 {
-    let set_opt = if set.is_null() { None } else { Some(&*set) };
-    let oldset_opt = if oldset.is_null() { None } else { Some(&mut *oldset) };
-
-    match libbreenix::signal::sigprocmask(how, set_opt, oldset_opt) {
-        Ok(()) => 0,
-        Err(e) => set_errno_from_error(e),
-    }
+pub unsafe extern "C" fn sigprocmask(how: i32, set: *const u64, old: *mut u64) -> i32 {
+    let r = pthread::pthread_sigmask(how, set, old);
+    if r != 0 { pthread::set_errno(r); -1 } else { 0 }
 }
 
 // =============================================================================
@@ -1627,18 +1578,8 @@ pub unsafe extern "C" fn clock_gettime(clk_id: i32, tp: *mut u8) -> i32 {
 /// nanosleep - high-resolution sleep
 #[no_mangle]
 pub unsafe extern "C" fn nanosleep(req: *const u8, rem: *mut u8) -> i32 {
-    let ret = libbreenix::syscall::raw::syscall2(
-        libbreenix::syscall::nr::NANOSLEEP,
-        req as u64,
-        rem as u64,
-    );
-    let ret = ret as i64;
-    if ret < 0 {
-        *__errno_location() = (-ret) as i32;
-        -1
-    } else {
-        0
-    }
+    syscall_result_to_c_int(pthread::cancel_syscall(libbreenix::syscall::nr::NANOSLEEP,
+        [req as u64, rem as u64, 0, 0, 0, 0]))
 }
 
 // =============================================================================
@@ -2008,7 +1949,12 @@ pub unsafe extern "C" fn poll(fds: *mut u8, nfds: u64, timeout: i32) -> i32 {
 /// pause - suspend until signal
 #[no_mangle]
 pub extern "C" fn pause() -> i32 {
-    result_unit_to_c_int(libbreenix::signal::pause())
+    unsafe {
+        let mut mask = 0u64;
+        libbreenix::raw::syscall4(libbreenix::syscall::nr::SIGPROCMASK, 0, 0,
+            &mut mask as *mut u64 as u64, 8);
+        sigsuspend(&mask)
+    }
 }
 
 /// syscall - generic syscall interface
@@ -2183,10 +2129,9 @@ pub unsafe extern "C" fn sigsuspend(mask: *const u64) -> i32 {
         *__errno_location() = EINVAL;
         return -1;
     }
-    let _ret = libbreenix::signal::sigsuspend(&*mask);
-    // sigsuspend always returns -1 with EINTR
-    *__errno_location() = 4; // EINTR
-    -1
+    let mask = *mask & !signal::CANCEL_MASK;
+    syscall_result_to_c_int(pthread::cancel_syscall(libbreenix::syscall::nr::SIGSUSPEND,
+        [&mask as *const u64 as u64, 8, 0, 0, 0, 0]))
 }
 
 // =============================================================================

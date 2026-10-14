@@ -1,5 +1,6 @@
 #ifndef __BREENIX_ERRNO_H
 #define __BREENIX_ERRNO_H
+#include <__breenix/features.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -9,6 +10,11 @@ int *__errno_location(void);
 }
 #endif
 #define errno (*__errno_location())
+#define EDOM 33
+#define ERANGE 34
+#define EILSEQ 84
+/* ISO C17 7.5 permits additional implementation error macros beginning
+ * with E followed by an uppercase letter or digit, even in strict mode. */
 #define EPERM 1
 #define ENOENT 2
 #define ESRCH 3
@@ -41,8 +47,6 @@ int *__errno_location(void);
 #define EROFS 30
 #define EMLINK 31
 #define EPIPE 32
-#define EDOM 33
-#define ERANGE 34
 #define EDEADLK 35
 #define ENAMETOOLONG 36
 #define ENOLCK 37
@@ -90,7 +94,6 @@ int *__errno_location(void);
 #define ELIBSCN 81
 #define ELIBMAX 82
 #define ELIBEXEC 83
-#define EILSEQ 84
 #define ERESTART 85
 #define ESTRPIPE 86
 #define EUSERS 87

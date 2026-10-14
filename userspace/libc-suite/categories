@@ -6,5 +6,6 @@ dirent-glob complete
 getopt-env complete
 locale-wchar complete
 math
+pthread complete
 stdio complete
 string-stdlib
