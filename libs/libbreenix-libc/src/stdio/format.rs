@@ -19,7 +19,7 @@ impl Format {
             Self::Wide(p) => *p.add(i),
         }
     }
-    fn is_wide(&self) -> bool {
+    pub(super) fn is_wide(&self) -> bool {
         matches!(self, Self::Wide(_))
     }
 }

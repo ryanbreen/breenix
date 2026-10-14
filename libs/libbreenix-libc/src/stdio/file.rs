@@ -17,6 +17,7 @@ const EINVAL: i32 = 22;
 const EBADF: i32 = 9;
 const ENOMEM: i32 = 12;
 const ESPIPE: i32 = 29;
+const EMFILE: i32 = 24;
 const EOVERFLOW: i32 = 75;
 
 pub(crate) struct File {
@@ -158,12 +159,13 @@ unsafe fn set_write_end(f: *mut File, n: usize) {
     (*f).write_end = n;
     (*f).pending.store(n > 0, Ordering::Release);
 }
-/// stdin and stdout are fully buffered only when they are not interactive
-/// (C17 7.21.3p7); the first use decides.
+/// A stream on a file is fully buffered only when it is not interactive: C17
+/// 7.21.3p7 for stdin and stdout, 7.21.5.3p8 for fopen (and so fdopen and
+/// tmpfile). The first use decides; stderr stays unbuffered.
 unsafe fn resolve_mode(f: *mut File) {
     if (*f).automatic {
         (*f).automatic = false;
-        if f == ptr::addr_of_mut!(INPUT) || f == ptr::addr_of_mut!(OUTPUT) {
+        if !(*f).memory && (*f).mode == 0 && (*f).fd >= 0 {
             let saved = crate::pthread::errno();
             if crate::isatty((*f).fd) != 0 {
                 (*f).mode = 1;
@@ -492,6 +494,30 @@ pub(crate) unsafe fn ungetc_locked(c: i32, f: *mut File) -> i32 {
     (*f).eof = false;
     c as u8 as i32
 }
+/// Pushes all of b back, so that b[0] is read first, or nothing; clears the
+/// end-of-file indicator only when it succeeds. LOCALE's ungetwc pushes a whole
+/// multibyte character with it.
+#[allow(dead_code)] // Published cross-lane API for the locale owner.
+pub(crate) unsafe fn ungetc_bytes_locked(f: *mut File, b: &[u8]) -> bool {
+    if (*f).closed || !(*f).readable || b.len() > (*f).pushed.len() - (*f).push_len {
+        return false;
+    }
+    for &c in b.iter().rev() {
+        (*f).pushed[(*f).push_len] = c;
+        (*f).push_len += 1;
+    }
+    (*f).eof = false;
+    true
+}
+/// Sets stderr's error indicator after a write that went around the stream: FILES'
+/// getopt writes its diagnostics to descriptor 2 directly (design 3.4 step 2).
+#[allow(dead_code)] // Published cross-lane API for the files owner.
+pub(crate) unsafe fn stderr_write_failed() {
+    let f = stderr;
+    lock(f);
+    set_error(f);
+    unlock(f);
+}
 unsafe fn memory_write(f: *mut File, b: &[u8]) -> usize {
     for (n, &c) in b.iter().enumerate() {
         if (*f).append {
@@ -662,25 +688,8 @@ pub unsafe extern "C" fn fflush_unlocked(f: *mut File) -> i32 {
         flush_output(f)
     }
 }
-/// The close half of fclose and freopen: flush output, give back unread input
-/// (POSIX XSH 2.5.1), close the descriptor and release owned memory.
-unsafe fn close_stream(f: *mut File) -> i32 {
-    if (*f).closed {
-        return fail(f, EBADF);
-    }
-    let mut r = flush_one(f);
-    if !(*f).memory && (*f).fd >= 0 && crate::close((*f).fd) < 0 {
-        r = EOF
-    }
-    (*f).closed = true;
-    (*f).fd = -1;
-    if (*f).owned_buffer {
-        crate::free((*f).buffer);
-        (*f).buffer = ptr::null_mut();
-        (*f).owned_buffer = false;
-        // Only buffers larger than the embedded one are owned.
-        (*f).capacity = BUFFER;
-    }
+/// Drops a memory stream's backing store (after flush_one has published it).
+unsafe fn release_memory(f: *mut File) {
     if (*f).owned_memory {
         crate::free((*f).data);
     }
@@ -691,6 +700,30 @@ unsafe fn close_stream(f: *mut File) -> i32 {
     (*f).data_cap = 0;
     (*f).data_len = 0;
     (*f).data_pos = 0;
+}
+/// fclose's work under the stream lock: flush output, give back unread input
+/// (POSIX XSH 2.5.1), close the descriptor and release owned memory. A stream a
+/// failed freopen already closed only has its memory released.
+unsafe fn close_stream(f: *mut File) -> i32 {
+    let mut r = 0;
+    if (*f).closed {
+        r = fail(f, EBADF);
+    } else {
+        r |= flush_one(f);
+        if !(*f).memory && (*f).fd >= 0 && crate::close((*f).fd) < 0 {
+            r = EOF
+        }
+    }
+    (*f).closed = true;
+    (*f).fd = -1;
+    if (*f).owned_buffer {
+        crate::free((*f).buffer);
+        (*f).buffer = ptr::null_mut();
+        (*f).owned_buffer = false;
+        // Only buffers larger than the embedded one are owned.
+        (*f).capacity = BUFFER;
+    }
+    release_memory(f);
     set_write_end(f, 0);
     r
 }
@@ -778,33 +811,53 @@ unsafe fn change_mode(f: *mut File, flags: i32, r: bool, w: bool) -> bool {
     (*f).push_len = 0;
     true
 }
-/// freopen(path, mode, f): close the old file, then open path on the same
-/// descriptor number when the stream had one.
+/// freopen(path, mode, f). The new file is opened before the old descriptor goes
+/// away, and dup2 then replaces the old descriptor in one step, so its number is
+/// never free for another thread to take and lose. On failure the stream is closed
+/// (C17 7.21.5.4).
 unsafe fn reopen(f: *mut File, path: *const u8, flags: i32) -> bool {
-    let old = (*f).fd;
-    let had_fd = !(*f).closed && !(*f).memory && old >= 0;
+    let mut old = -1;
     if !(*f).closed {
-        close_stream(f);
+        // Failure to close the old file is ignored (C17 7.21.5.4).
+        flush_one(f);
+        if !(*f).memory {
+            old = (*f).fd;
+        }
+        release_memory(f);
     }
-    let fd = crate::open(path, flags, 0o666);
+    (*f).fd = -1;
+    (*f).closed = true;
+    let mut fd = crate::open(path, flags, 0o666);
+    if fd < 0 && crate::pthread::errno() == EMFILE && old >= 0 {
+        // The old descriptor holds the last free slot.
+        crate::close(old);
+        old = -1;
+        fd = crate::open(path, flags, 0o666);
+    }
     if fd < 0 {
+        let e = crate::pthread::errno();
+        if old >= 0 {
+            crate::close(old);
+        }
+        crate::pthread::set_errno(e);
         return false;
     }
-    (*f).fd = fd;
-    if had_fd && fd != old {
+    if old >= 0 && fd != old {
         if crate::dup2(fd, old) < 0 {
             let e = crate::pthread::errno();
             crate::close(fd);
-            (*f).fd = -1;
+            crate::close(old);
             crate::pthread::set_errno(e);
             return false;
         }
         crate::close(fd);
-        (*f).fd = old;
+        fd = old;
+        // dup2 clears FD_CLOEXEC on its result.
         if flags & 0x80000 != 0 {
-            crate::fcntl(old, 2, 1);
+            crate::fcntl(fd, 2, 1);
         }
     }
+    (*f).fd = fd;
     true
 }
 #[no_mangle]
