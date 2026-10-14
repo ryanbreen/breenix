@@ -139,8 +139,15 @@ pub mod object {
         fn accept(&self, sk: &Arc<Socket>, nonblock: bool) -> Result<(Arc<Socket>, SockAddr), i32>;
         fn sendmsg(&self, sk: &Arc<Socket>, msg: &mut SendMsg) -> Result<usize, i32>;
         fn recvmsg(&self, sk: &Arc<Socket>, msg: &mut RecvMsg) -> Result<usize, i32>;
+        fn recvmsg_with(
+            &self,
+            sk: &Arc<Socket>,
+            msg: &mut RecvMsg,
+            deliver: &mut dyn FnMut(&mut RecvMsg) -> Result<(), i32>,
+        ) -> Result<usize, i32>;
         fn shutdown(&self, sk: &Arc<Socket>, how: u8) -> Result<(), i32>;
         fn local_name(&self, sk: &Socket) -> SockAddr;
+        fn try_local_name(&self, sk: &Socket) -> Result<SockAddr, i32>;
         fn peer_name(&self, sk: &Socket) -> Result<SockAddr, i32>;
         fn poll(&self, sk: &Socket) -> u16;
         fn notifies(&self) -> bool {

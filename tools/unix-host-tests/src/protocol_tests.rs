@@ -95,6 +95,7 @@ fn named_connect_accept_and_credentials() {
     assert_eq!(from, SockAddr::Unix(UnixName::Unnamed));
     assert_eq!(c.ops().peer_name(&c).unwrap(), name);
     assert_eq!(s.ops().local_name(&s), name);
+    assert_eq!(s.ops().try_local_name(&s), Ok(name.clone()));
     send(&c, b"ok").unwrap();
     assert_eq!(receive(&s, 4, 0).unwrap().data, b"ok");
     let mut out = OptBuf {
@@ -433,9 +434,6 @@ fn failed_receive_delivery_keeps_bytes_and_rights_queued() {
                 },
             )
             .unwrap();
-        let SocketProto::Unix(unix) = &b.proto else {
-            unreachable!()
-        };
         let mut msg = RecvMsg {
             cap: 64,
             data: Vec::new(),
@@ -446,7 +444,7 @@ fn failed_receive_delivery_keeps_bytes_and_rights_queued() {
             rights: Vec::new(),
         };
         assert_eq!(
-            unix.receive_with(&b, &mut msg, |snapshot| {
+            b.ops().recvmsg_with(&b, &mut msg, &mut |snapshot| {
                 assert_eq!(snapshot.data, b"preserved");
                 assert_eq!(snapshot.rights.len(), 1);
                 Err(14)

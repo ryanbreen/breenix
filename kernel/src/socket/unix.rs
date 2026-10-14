@@ -751,6 +751,14 @@ impl ProtoOps for UnixSock {
     fn recvmsg(&self, sk: &Arc<Socket>, msg: &mut RecvMsg) -> Result<usize, i32> {
         self.receive_with(sk, msg, |_| Ok(()))
     }
+    fn recvmsg_with(
+        &self,
+        sk: &Arc<Socket>,
+        msg: &mut RecvMsg,
+        deliver: &mut dyn FnMut(&mut RecvMsg) -> Result<(), i32>,
+    ) -> Result<usize, i32> {
+        self.receive_with(sk, msg, deliver)
+    }
     fn shutdown(&self, sk: &Arc<Socket>, how: u8) -> Result<(), i32> {
         if how > 2 {
             return Err(EINVAL);
@@ -776,6 +784,9 @@ impl ProtoOps for UnixSock {
     }
     fn local_name(&self, _sk: &Socket) -> SockAddr {
         SockAddr::Unix(self.inner.lock().name.clone())
+    }
+    fn try_local_name(&self, _sk: &Socket) -> Result<SockAddr, i32> {
+        Ok(SockAddr::Unix(copy_name(&self.inner.lock().name)?))
     }
     fn peer_name(&self, _sk: &Socket) -> Result<SockAddr, i32> {
         let state = self.inner.lock();
