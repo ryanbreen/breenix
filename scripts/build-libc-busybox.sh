@@ -229,7 +229,11 @@ python3 - "$WORK/applets.json" "$WORK/disable.config" <<'PYDISABLE'
 import json, sys
 result = json.load(open(sys.argv[1]))
 off = sorted({a['config'] for a in result['applets'].values() if not (a['compiles'] and a['links'])})
-open(sys.argv[2], 'w').write(''.join(f'CONFIG_{c}=n\n' for c in off))
+lines = [f'CONFIG_{c}=n' for c in off]
+# "sh" is a Kconfig choice: switching it off means choosing no shell.
+if 'SH_IS_ASH' in off:
+    lines += ['CONFIG_SH_IS_NONE=y', 'CONFIG_SHELL_ASH=n']
+open(sys.argv[2], 'w').write(''.join(l + '\n' for l in lines))
 PYDISABLE
 
 rm -f "$ELF" "$LINKS"
@@ -237,6 +241,12 @@ core_links="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["c
 if [ "$core_links" = True ]; then
     if [ -s "$WORK/disable.config" ]; then
         configure "$WORK/disable.config"
+        still_on="$(sed -n 's/^\(CONFIG_[A-Z0-9_]*\)=n$/\1/p' "$WORK/disable.config" \
+            | while read -r option; do grep -q "^$option=y" "$SRC/.config" && echo "$option"; done || true)"
+        if [ -n "$still_on" ]; then
+            echo "libc-busybox: Kconfig kept on what was switched off: $still_on" >&2
+            exit 1
+        fi
         compile rebuild
         archive_objects
     fi

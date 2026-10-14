@@ -574,3 +574,103 @@ pub unsafe extern "C" fn mknod(path: *const u8, mode: u32, dev: u64) -> i32 {
 pub extern "C" fn vfork() -> i32 {
     crate::fork()
 }
+
+// ---------------------------------------------------------------------------------
+// Resource limits and setting clocks
+// ---------------------------------------------------------------------------------
+
+/// prlimit: get and/or set a process's resource limit (pid 0 is the caller).
+#[no_mangle]
+pub unsafe extern "C" fn prlimit(pid: i32, resource: i32, new: *const [u64; 2], old: *mut [u64; 2]) -> i32 {
+    let r = libbreenix::raw::syscall4(libbreenix::syscall::nr::PRLIMIT64, pid as i64 as u64, resource as u64,
+                                      new as u64, old as u64);
+    crate::syscall_result_to_c_int(r as i64)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn setrlimit(resource: i32, rlim: *const [u64; 2]) -> i32 {
+    prlimit(0, resource, rlim, null_mut())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn clock_settime(clock: i32, tp: *const u8) -> i32 {
+    let r = libbreenix::raw::syscall2(libbreenix::syscall::nr::CLOCK_SETTIME, clock as i64 as u64, tp as u64);
+    crate::syscall_result_to_c_int(r as i64)
+}
+
+// ---------------------------------------------------------------------------------
+// Unique temporary files and directories
+// ---------------------------------------------------------------------------------
+
+const EEXIST: i32 = 17;
+const O_RDWR: i32 = 2;
+const O_CREAT: i32 = 0o100;
+const O_EXCL: i32 = 0o200;
+/// The flags mkostemp's caller may add (O_APPEND, O_CLOEXEC, O_SYNC and the like);
+/// the access mode, creation and truncation flags are mkostemp's own.
+const O_CALLER_FLAGS_MASK: i32 = !(0o3 | O_CREAT | O_EXCL | 0o1000);
+const LETTERS: &[u8; 62] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+
+/// Replace the `XXXXXX` that ends the first `len - suffix` bytes of `template` with
+/// random letters and digits until `create` succeeds, trying names until one does not
+/// exist (EEXIST). EINVAL when the template does not end that way.
+unsafe fn make_unique(template: *mut u8, suffix: usize, create: &dyn Fn(*const u8) -> i32) -> i32 {
+    let len = c_len(template);
+    if len < 6 + suffix {
+        set_errno(EINVAL);
+        return -1;
+    }
+    let xs = template.add(len - suffix - 6);
+    if core::slice::from_raw_parts(xs, 6) != b"XXXXXX" {
+        set_errno(EINVAL);
+        return -1;
+    }
+    for _ in 0..1000 {
+        let mut random = [0u8; 6];
+        if crate::getrandom(random.as_mut_ptr(), 6, 0) != 6 {
+            return -1;
+        }
+        for (i, r) in random.iter().enumerate() {
+            *xs.add(i) = LETTERS[*r as usize % LETTERS.len()];
+        }
+        let result = create(template);
+        if result >= 0 || crate::pthread::errno() != EEXIST {
+            return result;
+        }
+    }
+    set_errno(EEXIST);
+    -1
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mkostemps(template: *mut u8, suffix: i32, flags: i32) -> i32 {
+    if suffix < 0 {
+        set_errno(EINVAL);
+        return -1;
+    }
+    let flags = (flags & O_CALLER_FLAGS_MASK) | O_RDWR | O_CREAT | O_EXCL;
+    make_unique(template, suffix as usize, &|path| crate::open(path, flags, 0o600))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mkostemp(template: *mut u8, flags: i32) -> i32 {
+    mkostemps(template, 0, flags)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mkstemps(template: *mut u8, suffix: i32) -> i32 {
+    mkostemps(template, suffix, 0)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mkstemp(template: *mut u8) -> i32 {
+    mkostemps(template, 0, 0)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mkdtemp(template: *mut u8) -> *mut u8 {
+    if make_unique(template, 0, &|path| crate::mkdir(path, 0o700)) < 0 {
+        return null_mut();
+    }
+    template
+}
