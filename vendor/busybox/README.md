@@ -13,12 +13,12 @@ in `patches/`, applied in `patches/series` order after extraction. The source
 checksum, configuration, patches, headers and library enter the build digest.
 
 Outputs are `libc-busybox.elf`, `libc-busybox.links`, and per-applet compile/link
-results at `target/libc-busybox/<arch>/applets.json`. Every configured applet must
-compile and link; `required-applets` also preserves every legacy command name
-and every suite applet. Missing names fail before image creation.
+results at `target/libc-busybox/<arch>/applets.json`. Configured applets must
+compile and link; `required-applets` lists the legacy command names
+and suite applets. Missing names fail before image creation.
 
 `scripts/install-libc-busybox.sh` serves both image creation paths. `/bin/busybox`,
-all `/bin` applets, `/sbin/true`, `/sbin/false`, and `/usr/local/libc/bin/busybox`
+the `/bin` applets, `/sbin/true`, `/sbin/false`, and `/usr/local/libc/bin/busybox`
 and its applet links share one inode. `/bin/ls` is the BusyBox applet on both
 architectures. C utilities under `userspace/utilities/*.c` are built by the same
 C driver and installed in `/bin`.

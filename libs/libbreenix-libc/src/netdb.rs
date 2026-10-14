@@ -8,6 +8,7 @@ const O_CLOEXEC: i32 = 0x80000;
 
 const EAI_BADFLAGS: i32 = -1;
 const EAI_NONAME: i32 = -2;
+const EAI_NODATA: i32 = -5;
 const EAI_AGAIN: i32 = -3;
 const EAI_FAIL: i32 = -4;
 const EAI_FAMILY: i32 = -6;
@@ -231,11 +232,9 @@ fn dns_lookup(name: &[u8], out: &mut Addresses) -> Result<(), i32> {
                 return Ok(());
             }
             Err(
-                DnsError::ServerError(3)
-                | DnsError::NoAddress
-                | DnsError::InvalidHostname
-                | DnsError::HostnameTooLong,
+                DnsError::ServerError(3) | DnsError::InvalidHostname | DnsError::HostnameTooLong,
             ) => return Err(EAI_NONAME),
+            Err(DnsError::NoAddress) => return Err(EAI_NODATA),
             Err(DnsError::Timeout | DnsError::ServerError(2)) => failure = EAI_AGAIN,
             Err(
                 DnsError::SocketError
@@ -487,6 +486,7 @@ pub unsafe extern "C" fn getaddrinfo(
             *result = info;
             0
         }
+        Err(EAI_NODATA) => EAI_NONAME,
         Err(e) => e,
     }
 }
@@ -599,6 +599,7 @@ pub unsafe extern "C" fn getnameinfo(
 ) -> i32 {
     match reverse(addr, addrlen, host, hostlen, service, servicelen, flags) {
         Ok(()) => 0,
+        Err(EAI_NODATA) => EAI_NONAME,
         Err(e) => e,
     }
 }
@@ -636,22 +637,36 @@ pub struct HostEnt {
 struct HostStorage {
     entry: HostEnt,
     name: [u8; 256],
-    aliases: [*mut u8; 1],
+    alias_names: [[u8; 256]; 64],
+    aliases: [*mut u8; 65],
     addresses: [[u8; 4]; 64],
     pointers: [*mut u8; 65],
 }
 static mut HOST: HostStorage = HostStorage {
-    entry: HostEnt { name: ptr::null_mut(), aliases: ptr::null_mut(), addrtype: AF_INET,
-                     length: 4, addr_list: ptr::null_mut() },
-    name: [0; 256], aliases: [ptr::null_mut(); 1], addresses: [[0; 4]; 64],
+    entry: HostEnt {
+        name: ptr::null_mut(),
+        aliases: ptr::null_mut(),
+        addrtype: AF_INET,
+        length: 4,
+        addr_list: ptr::null_mut(),
+    },
+    name: [0; 256],
+    alias_names: [[0; 256]; 64],
+    aliases: [ptr::null_mut(); 65],
+    addresses: [[0; 4]; 64],
     pointers: [ptr::null_mut(); 65],
 };
 #[no_mangle]
 pub unsafe extern "C" fn gethostbyname(name: *const u8) -> *mut HostEnt {
     let saved_errno = *crate::__errno_location();
     let error = crate::pthread::__h_errno_location();
-    let result = if name.is_null() { Err(EAI_NONAME) }
-                 else { c_bytes(name, 256).ok_or(EAI_NONAME).and_then(|text| node_addresses(Some(text), 0)) };
+    let result = if name.is_null() {
+        Err(EAI_NONAME)
+    } else {
+        c_bytes(name, 256)
+            .ok_or(EAI_NONAME)
+            .and_then(|text| node_addresses(Some(text), 0))
+    };
     match result {
         Ok(addresses) => {
             let storage = ptr::addr_of_mut!(HOST);
@@ -661,6 +676,54 @@ pub unsafe extern "C" fn gethostbyname(name: *const u8) -> *mut HostEnt {
                 (*storage).pointers[i] = ptr::addr_of_mut!((*storage).addresses[i]).cast();
             }
             (*storage).pointers[addresses.len] = ptr::null_mut();
+            let mut aliases = 0;
+            (*storage).aliases.fill(ptr::null_mut());
+            let alias_result = lines(b"/etc/hosts\0", |line| {
+                if let Some((addr, canon)) = hosts_line(line) {
+                    if addresses.bytes[..addresses.len].contains(&addr)
+                        && equal_name(canon, addresses.canon.text())
+                    {
+                        for alias in fields(line).skip(2) {
+                            if aliases == 64 {
+                                return Err(EAI_MEMORY);
+                            }
+                            let text = Name::new(alias)?;
+                            if (&(*storage).alias_names)[..aliases]
+                                .iter()
+                                .any(|n| *n == text.bytes)
+                            {
+                                continue;
+                            }
+                            (*storage).alias_names[aliases] = text.bytes;
+                            (*storage).aliases[aliases] =
+                                ptr::addr_of_mut!((*storage).alias_names[aliases]).cast();
+                            aliases += 1;
+                        }
+                    }
+                }
+                Ok(())
+            });
+            if let Err(e) = alias_result {
+                *error = 3;
+                if e != EAI_SYSTEM {
+                    *crate::__errno_location() = saved_errno;
+                }
+                return ptr::null_mut();
+            }
+            // A DNS CNAME also makes the requested name an alias.
+            if let Some(query) = c_bytes(name, 256) {
+                if !equal_name(query, addresses.canon.text()) && aliases < 64 {
+                    let text = Name::new(query).unwrap();
+                    if !(&(*storage).alias_names)[..aliases]
+                        .iter()
+                        .any(|n| *n == text.bytes)
+                    {
+                        (*storage).alias_names[aliases] = text.bytes;
+                        (*storage).aliases[aliases] =
+                            ptr::addr_of_mut!((*storage).alias_names[aliases]).cast();
+                    }
+                }
+            }
             (*storage).entry.name = ptr::addr_of_mut!((*storage).name).cast();
             (*storage).entry.aliases = ptr::addr_of_mut!((*storage).aliases).cast();
             (*storage).entry.addr_list = ptr::addr_of_mut!((*storage).pointers).cast();
@@ -669,9 +732,17 @@ pub unsafe extern "C" fn gethostbyname(name: *const u8) -> *mut HostEnt {
             ptr::addr_of_mut!((*storage).entry)
         }
         Err(e) => {
-            *error = match e { EAI_NONAME => 1, EAI_AGAIN => 2, _ => 3 };
-            if e == EAI_MEMORY { *crate::__errno_location() = Errno::ENOMEM as i32; }
-            else if e != EAI_SYSTEM { *crate::__errno_location() = saved_errno; }
+            *error = match e {
+                EAI_NONAME => 1,
+                EAI_NODATA => 4,
+                EAI_AGAIN => 2,
+                _ => 3,
+            };
+            if e == EAI_MEMORY {
+                *crate::__errno_location() = Errno::ENOMEM as i32;
+            } else if e != EAI_SYSTEM {
+                *crate::__errno_location() = saved_errno;
+            }
             ptr::null_mut()
         }
     }

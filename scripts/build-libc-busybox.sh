@@ -1,8 +1,8 @@
 #!/bin/bash
-# Build every configured BusyBox applet against Breenix libc, recording per-applet
+# Build configured BusyBox applets against Breenix libc, recording per-applet
 # compile/link results in target/libc-busybox/<arch>/applets.json. Missing applets
 # fail the build. Patches in vendor/busybox/patches/series apply after extraction;
-# every patch is part of the build digest. Outputs are libc-busybox.elf and
+# Patch contents enter the build digest. Outputs are libc-busybox.elf and
 # libc-busybox.links, installed in /bin and /usr/local/libc/bin as hard links.
 # Usage: scripts/build-libc-busybox.sh --arch aarch64|x86_64
 set -euo pipefail
@@ -69,7 +69,7 @@ for tool in ar nm strip objcopy objdump; do
 done
 chmod +x "${PREFIX}"*
 
-# Re-extract when patches change, so removed/reordered patches never survive.
+# Re-extract when patches change, discarding the previous patched source tree.
 PATCH_DIGEST="$(find "$PATCHES" -type f | sort | xargs shasum -a 256 | shasum -a 256 | cut -d' ' -f1)"
 if [ ! -f "$SRC/.extracted" ] || [ "$(cat "$SRC/.extracted")" != "$PATCH_DIGEST" ]; then
     python3 - "$ARCHIVE" "$SOURCE_SHA256" <<'PYVERIFY'
@@ -123,7 +123,7 @@ configure() {
     { yes "" || true; } | make "${MAKE_ARGS[@]}" oldconfig >> "$WORK/config.log" 2>&1
 }
 
-# This top-level prerequisite builds every applet/library directory without
+# This top-level prerequisite builds the applet/library directories without
 # Kbuild's host-library link step. Link with Breenix's C driver below instead.
 compile() {
     if ! make "${MAKE_ARGS[@]}" -k -j"$JOBS" applets/built-in.o > "$WORK/$1.log" 2>&1; then
@@ -219,21 +219,30 @@ for name in sorted(applets):
 (work / 'applets.json').write_text(json.dumps(result, indent=1, sort_keys=True) + '\n')
 PYANALYZE
 
-# Missing applets are build failures: /bin must never silently lose a utility.
+# Reject configured applets that failed to compile or link.
 rm -f "$ELF" "$LINKS"
 python3 - "$WORK/applets.json" <<'PYCHECK'
 import json, sys
 result = json.load(open(sys.argv[1]))
 failed = [name for name, app in result['applets'].items() if not (app['compiles'] and app['links'])]
 if not result['core']['links'] or failed or result['objects_failed']:
-    print('libc-busybox: unresolved core: ' + ' '.join(result['core']['missing']), file=sys.stderr)
+    if not result['core']['links']:
+        print('libc-busybox: unresolved core: ' + ' '.join(result['core']['missing']), file=sys.stderr)
+    if failed:
+        print('libc-busybox: failed applets: ' + ' '.join(failed), file=sys.stderr)
+    if result['objects_failed']:
+        print('libc-busybox: failed objects: ' + ' '.join(result['objects_failed']), file=sys.stderr)
     for name in failed:
         print(f"  {name}: {result['applets'][name]}", file=sys.stderr)
     for error in result['compile_errors']:
         print('  ' + error, file=sys.stderr)
     sys.exit(1)
 PYCHECK
-"$CC" --arch "$ARCH" -Wl,--error-limit=0 "$WORK/objects.a" -o "$WORK/busybox.elf" > "$WORK/link.log" 2>&1
+if ! "$CC" --arch "$ARCH" -Wl,--error-limit=0 "$WORK/objects.a" -o "$WORK/busybox.elf" > "$WORK/link.log" 2>&1; then
+    echo "libc-busybox: final link failed ($ARCH)" >&2
+    cat "$WORK/link.log" >&2
+    exit 1
+fi
 "$TOOLS/llvm-strip" -o "$ELF" "$WORK/busybox.elf"
 python3 - "$WORK/applets.json" "$LINKS" <<'PYLINKS'
 import json, sys

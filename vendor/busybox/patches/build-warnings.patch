@@ -21,3 +21,15 @@
  				max_arg = c - '0';
  				s++;
  			}
+--- a/scripts/basic/docproc.c
++++ b/scripts/basic/docproc.c
+@@ -90 +90 @@
+-			perror("vfork"+1);
++			perror("fork");
+@@ -155,3 +155,3 @@
+-void adddep2(char * file, char * line)     { line = line; adddep(file); }
+-void noaction(char * line)		   { line = line; }
+-void noaction2(char * file, char * line)   { file = file; line = line; }
++void adddep2(char * file, char * line)     { (void)line; adddep(file); }
++void noaction(char * line)		   { (void)line; }
++void noaction2(char * file, char * line)   { (void)file; (void)line; }

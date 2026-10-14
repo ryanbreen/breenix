@@ -65,7 +65,7 @@ else
 fi
 
 # Both native and gate disks use the exact output of the local libc build.
-# A missing cross compiler must never silently remove coreutils from a disk.
+# Required-applet validation rejects an incomplete BusyBox build.
 python3 "$SCRIPT_DIR/userspace-manifest.py" check --arch "$ARCH"
 "$SCRIPT_DIR/install-libc-busybox.sh" --check "$USERSPACE_DIR" "$PROJECT_ROOT/vendor/busybox/required-applets"
 
@@ -443,11 +443,19 @@ else
     fi
 
     MOUNT_DIR=$(mktemp -d)
+    MOUNTED=0
+    cleanup_mount() {
+        if [[ "$MOUNTED" == 1 ]]; then
+            umount "$MOUNT_DIR" || return
+        fi
+        rm -rf "$MOUNT_DIR"
+    }
+    trap cleanup_mount EXIT
     if [[ "${BREENIX_REPRODUCIBLE_EXT2:-0}" == 1 ]]; then
         chmod 755 "$MOUNT_DIR"
-        trap 'rm -rf "$MOUNT_DIR"' EXIT
     else
         mount "$OUTPUT_FILE" "$MOUNT_DIR"
+        MOUNTED=1
     fi
 
     # Create /bin, /sbin, /usr/local/test/bin, and /usr/local/cbin directories
@@ -689,6 +697,7 @@ INITJS
         trap - EXIT
     else
         umount "$MOUNT_DIR"
+        MOUNTED=0
         rmdir "$MOUNT_DIR"
     fi
 

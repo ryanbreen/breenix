@@ -57,6 +57,8 @@ int main(int argc, char **argv) {
     INIT_G();
     for (const char *p = argv[3]; *p; p++) {
         switch (*p) {
+        case 'r': G.directory_comparison = 1; option_mask32 |= FLAG(r); break;
+        case 'R': option_mask32 |= FLAG(r); break;
         case 'u': option_mask32 |= FLAG(u); break;
         case 'U': option_mask32 |= FLAG(U); break;
         case 'q': option_mask32 |= FLAG(q); break;
@@ -69,6 +71,9 @@ int main(int argc, char **argv) {
         default: return 2;
         }
     }
+    char *command[] = {"diff", "-r"};
+    G.command_args = command;
+    G.command_argc = 2;
     opt_U_context = atoi(argv[4]);
     FILE *fp[2] = {fopen(argv[1], "r"), fopen(argv[2], "r")};
     char *names[2] = {"a", "b"};
@@ -134,6 +139,14 @@ class NormalDiff(unittest.TestCase):
         for old, new, expected in cases:
             with self.subTest(old=old, new=new):
                 self.check_diff(old, new, expected)
+
+    def test_recursive_file_header_once(self):
+        self.check_diff("a\nb\nc\n", "x\nb\ny\n",
+                        "diff -r a b\n1c1\n< a\n---\n> x\n3c3\n< c\n---\n> y\n", "r")
+        self.check_diff("a\n", "a\n", "", "r", status=0)
+
+    def test_recursive_option_on_regular_files_has_no_header(self):
+        self.check_diff("a\n", "b\n", "1c1\n< a\n---\n> b\n", "R")
 
     def test_identical_and_empty(self):
         self.check_diff("a\n", "a\n", "", status=0)
