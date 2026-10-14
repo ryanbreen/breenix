@@ -1,5 +1,6 @@
 # One patch filename per line, in application order.
 diff-normal-format.patch
+build-warnings.patch
 ps-pid-list.patch
 timeout-status.patch
 time-posix.patch

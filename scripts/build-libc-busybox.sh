@@ -93,7 +93,7 @@ fi
 # switch for toolchains that do).
 # Name the compiler clang so Kbuild excludes GCC-only optimization flags.
 MAKE_ARGS=(-C "$SRC" CROSS_COMPILE="$PREFIX" CC="${PREFIX}clang" HOSTCC=cc
-           "EXTRA_CFLAGS=-std=gnu11 -Wno-error -DBB_GLOBAL_CONST="
+           "EXTRA_CFLAGS=-std=gnu11 -Werror -DBB_GLOBAL_CONST="
            SKIP_STRIP=y)
 JOBS="${CARGO_BUILD_JOBS:-6}"
 
@@ -123,10 +123,13 @@ configure() {
     { yes "" || true; } | make "${MAKE_ARGS[@]}" oldconfig >> "$WORK/config.log" 2>&1
 }
 
-# Compile everything that compiles. Kbuild's own link step needs libraries Breenix
-# does not have (-lm, -lcrypt); the link below replaces it.
+# This top-level prerequisite builds every applet/library directory without
+# Kbuild's host-library link step. Link with Breenix's C driver below instead.
 compile() {
-    make "${MAKE_ARGS[@]}" -k -j"$JOBS" busybox_unstripped > "$WORK/$1.log" 2>&1 || true
+    if ! make "${MAKE_ARGS[@]}" -k -j"$JOBS" applets/built-in.o > "$WORK/$1.log" 2>&1; then
+        cat "$WORK/$1.log" >&2
+        return 1
+    fi
 }
 
 # Every target object the build produced (ELF, so not the host tools'), in one archive.
