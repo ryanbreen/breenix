@@ -152,6 +152,10 @@ UTILITY_NAMES=" "
 for source in "$PROJECT_ROOT/userspace/utilities"/*.c; do
     [ -f "$source" ] || continue
     name="$(basename "$source" .c)"
+    if [ "$name" = busybox ] || grep -Fqx "$name" "$TESTS_DIR/libc-busybox.links"; then
+        echo "Utility name collides with BusyBox: $name" >&2
+        exit 1
+    fi
     echo "  Building utility $name ($ARCH)"
     "$PROJECT_ROOT/scripts/breenix-cc" --arch "$ARCH" -std=c17 -O2 -Wall -Wextra -Werror \
         "$source" -o "$TESTS_DIR/$name.elf"

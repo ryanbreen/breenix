@@ -124,7 +124,7 @@ class CacheTests(unittest.TestCase):
             self.assertEqual(build.call_count, 2)
 
     def test_content_key_tracks_source_script_busybox_toolchain_and_external_library(self):
-        names = ['Cargo.lock', 'userspace/programs/Cargo.lock', 'userspace/source.rs', 'scripts/create_ext2_disk.sh', 'scripts/libc-clean-archive.py', 'vendor/busybox/manifest.json', 'rust-toolchain.toml']
+        names = ['Cargo.lock', 'userspace/programs/Cargo.lock', 'userspace/source.rs', 'scripts/create_ext2_disk.sh', 'scripts/libc-clean-archive.py', 'scripts/install-libc-busybox.sh', 'vendor/busybox/manifest.json', 'rust-toolchain.toml']
         for name in names:
             path = self.repo / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -137,7 +137,9 @@ class CacheTests(unittest.TestCase):
         compiler.write_bytes(b'compiler bytes')
         def output(command, **kwargs):
             if 'ls-files' in command:
-                return b'\0'.join(name.encode() for name in names)
+                patterns = command[command.index('--') + 1:]
+                return b'\0'.join(name.encode() for name in names
+                    if any(name == pattern or name.startswith(pattern + '/') for pattern in patterns))
             if command[:2] == ['rustup', 'which']:
                 return str(compiler)
             if '--print' in command or '--tool-dir' in command:

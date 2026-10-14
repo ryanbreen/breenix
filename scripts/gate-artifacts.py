@@ -28,7 +28,7 @@ def key(repo):
     result = hashlib.sha256(b'breenix-x86-userspace-v1\0')
     paths = subprocess.check_output(['git', '-C', str(repo), 'ls-files', '-z', '--',
         'userspace', 'libs', 'fonts', 'vendor/busybox', 'xtask',
-        'rust-fork.toml', 'scripts/rust-fork.sh', 'scripts/gate-artifacts.py', 'scripts/create_ext2_disk.sh', 'scripts/install-busybox.py',
+        'rust-fork.toml', 'scripts/rust-fork.sh', 'scripts/gate-artifacts.py', 'scripts/create_ext2_disk.sh', 'scripts/install-libc-busybox.sh',
         '.cargo', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'x86_64-breenix.json',
         'x86_64-breenix-c.json', 'scripts/breenix-cc', 'scripts/libc-symbol-audit.py',
         'scripts/libc-clean-archive.py',
@@ -143,7 +143,7 @@ def canonical_ext2(path):
 
 
 def checked(command, repo, log, *, userspace_prebuilt=False):
-    environment = dict(os.environ, CARGO_BUILD_JOBS='6')
+    environment = dict(os.environ, CARGO_BUILD_JOBS=os.environ.get('CARGO_BUILD_JOBS', '4'))
     if userspace_prebuilt:
         environment['BREENIX_USERSPACE_PREBUILT'] = '1'
     if 'BREENIX_GATE_CACHE_DIR' in os.environ:
@@ -178,7 +178,9 @@ export CARGO_HOME=/run/breenix-gate/cargo
             command = [str(repo / 'userspace/programs/build.sh')]
         checked(command, repo, logs / f'{label}-userspace.log')
     with tree_cache.timing('disk-repack', f'build={label}'):
-        checked(['python3', str(repo / 'scripts/install-busybox.py'), 'x86_64'], repo, logs / f'{label}-busybox.log')
+        checked([str(repo / 'scripts/install-libc-busybox.sh'), '--check',
+                 str(repo / 'userspace/programs'), str(repo / 'vendor/busybox/required-applets')],
+                repo, logs / f'{label}-busybox.log')
         # The preceding standalone build installed these ELFs; pack them unchanged.
         checked(['cargo', 'run', '-p', 'xtask', '--', 'create-test-disk'], repo,
                 logs / f'{label}-test-disk.log', userspace_prebuilt=True)

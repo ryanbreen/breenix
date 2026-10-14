@@ -3,7 +3,7 @@
 #
 # This script creates an ext2 filesystem image (256MB default) with:
 #   - Test files for filesystem testing
-#   - BusyBox binary in /bin/busybox with symlinks for coreutils
+#   - Breenix-libc BusyBox in /bin/busybox with hard links for its applets
 #   - hello_world binary for exec testing
 #   - Test binaries in /usr/local/test/bin
 #
@@ -64,8 +64,8 @@ else
     TESTDATA_FILE="$PROJECT_ROOT/testdata/ext2.img"
 fi
 
-# Both native and gate disks use the same checked-in, checksummed build.
-# A missing cross compiler must never silently remove coreutils from a disk.
+# Both image paths require the locally built Breenix-libc BusyBox and its applet list.
+# Missing required applets fail image construction rather than disappearing from /bin.
 "$SCRIPT_DIR/install-libc-busybox.sh" --check "$USERSPACE_DIR" "$PROJECT_ROOT/vendor/busybox/required-applets"
 
 echo "Creating ext2 disk image..."
@@ -213,6 +213,7 @@ if [[ "$(uname)" == "Darwin" ]]; then
                         chmod 755 /mnt/ext2/sbin/${bin_name}
                         sbin_count=$((sbin_count + 1))
                     else
+                        [ ! -e "/mnt/ext2/bin/${bin_name}" ] || { echo "Utility name collision: $bin_name" >&2; exit 1; }
                         cp "$elf_file" /mnt/ext2/bin/${bin_name}
                         chmod 755 /mnt/ext2/bin/${bin_name}
                         bin_count=$((bin_count + 1))
@@ -499,6 +500,7 @@ else
                 chmod 755 "$MOUNT_DIR/sbin/${bin_name}"
                 sbin_count=$((sbin_count + 1))
             else
+                [ ! -e "$MOUNT_DIR/bin/${bin_name}" ] || { echo "Utility name collision: $bin_name" >&2; exit 1; }
                 cp "$elf_file" "$MOUNT_DIR/bin/${bin_name}"
                 chmod 755 "$MOUNT_DIR/bin/${bin_name}"
                 bin_count=$((bin_count + 1))

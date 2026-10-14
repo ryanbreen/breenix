@@ -1,7 +1,8 @@
 #!/bin/bash
 # Build every configured BusyBox applet against Breenix libc, recording per-applet
 # compile/link results in target/libc-busybox/<arch>/applets.json. Missing applets
-# fail the build. Patches in vendor/busybox/patches/series apply after extraction;
+# remain recorded failures; image installation enforces required names.
+# Patches in vendor/busybox/patches/series apply after extraction;
 # every patch is part of the build digest. Outputs are libc-busybox.elf and
 # libc-busybox.links, installed in /bin and /usr/local/libc/bin as hard links.
 # Usage: scripts/build-libc-busybox.sh --arch aarch64|x86_64
@@ -216,28 +217,42 @@ for name in sorted(applets):
 (work / 'applets.json').write_text(json.dumps(result, indent=1, sort_keys=True) + '\n')
 PYANALYZE
 
-# Missing applets are build failures: /bin must never silently lose a utility.
+# Preserve the complete probe record, then omit applets that cannot link from
+# the runnable multicall binary. Their suite cases remain recorded failures.
 rm -f "$ELF" "$LINKS"
-python3 - "$WORK/applets.json" <<'PYCHECK'
+python3 - "$WORK/applets.json" "$WORK/omit.config" <<'PYSELECT'
 import json, sys
 result = json.load(open(sys.argv[1]))
 failed = [name for name, app in result['applets'].items() if not (app['compiles'] and app['links'])]
-if not result['core']['links'] or failed or result['objects_failed']:
-    print('libc-busybox: unresolved core: ' + ' '.join(result['core']['missing']), file=sys.stderr)
-    for name in failed:
-        print(f"  {name}: {result['applets'][name]}", file=sys.stderr)
-    for error in result['compile_errors']:
-        print('  ' + error, file=sys.stderr)
-    sys.exit(1)
-PYCHECK
-"$CC" --arch "$ARCH" -Wl,--error-limit=0 "$WORK/objects.a" -o "$WORK/busybox.elf" > "$WORK/link.log" 2>&1
+if not result['core']['links']:
+    print('libc-busybox: unresolved startup symbols: ' + ' '.join(result['core']['missing']), file=sys.stderr)
+for name in failed:
+    print(f"libc-busybox: unavailable applet {name}: {result['applets'][name]}", file=sys.stderr)
+for error in result['compile_errors']:
+    print('libc-busybox: compile error: ' + error, file=sys.stderr)
+open(sys.argv[2], 'w').write(''.join('CONFIG_' + cfg + '=n\n' for cfg in
+    sorted({result['applets'][name]['config'] for name in failed})))
+PYSELECT
+if [ -s "$WORK/omit.config" ]; then
+    make "${MAKE_ARGS[@]}" clean > "$WORK/clean.log" 2>&1
+    configure "$WORK/omit.config"
+    compile selected
+    archive_objects
+fi
+if ! "$CC" --arch "$ARCH" -Wl,--error-limit=0 "$WORK/objects.a" -o "$WORK/busybox.elf" > "$WORK/link.log" 2>&1; then
+    echo "libc-busybox: final multicall link failed:" >&2
+    cat "$WORK/link.log" >&2
+    exit 1
+fi
 "$TOOLS/llvm-strip" -o "$ELF" "$WORK/busybox.elf"
-python3 - "$WORK/applets.json" "$LINKS" <<'PYLINKS'
-import json, sys
+python3 - "$WORK/applets.json" "$LINKS" "$SRC/.config" <<'PYLINKS'
+import json, re, sys
 result = json.load(open(sys.argv[1]))
-open(sys.argv[2], 'w').write(''.join(name + '\n' for name in sorted(result['applets'])))
+enabled = set(re.findall(r'^CONFIG_([A-Z0-9_]+)=y$', open(sys.argv[3]).read(), re.M))
+failed_configs = {a['config'] for a in result['applets'].values() if not (a['compiles'] and a['links'])}
+open(sys.argv[2], 'w').write(''.join(name + '\n' for name, a in sorted(result['applets'].items())
+    if a['config'] in enabled and a['config'] not in failed_configs))
 PYLINKS
-"$ROOT/scripts/install-libc-busybox.sh" --check "$OUT" "$ROOT/vendor/busybox/required-applets"
 
 python3 - "$WORK/applets.json" "$ARCH" "$ELF" <<'PYREPORT'
 import json, os, sys
