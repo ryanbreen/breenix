@@ -199,10 +199,7 @@ mod tests {
 
     #[test]
     fn negative_nice_and_exit_code() {
-        let mut s = sample();
-        s.nice = -20;
-        s.state = b'Z';
-        s.exit_code = 3 << 8;
+        let s = PidStat { nice: -20, state: b'Z', exit_code: 3 << 8, ..sample() };
         let text = line(&s);
         let fields: Vec<&str> = text.trim_end().split(' ').collect();
         assert_eq!(fields[2], "Z");
