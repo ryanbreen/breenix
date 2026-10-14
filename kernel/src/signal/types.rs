@@ -333,10 +333,10 @@ pub struct ThreadSignals {
     /// memory to queue; the next check tries again.
     pub posix_retry: AtomicBool,
     /// The last WNOHANG wait this thread made that found nothing to report:
-    /// which wait it was, and `process::process_manager_releases()` just after
+    /// which wait it was, and `process::process_manager_mutations()` just after
     /// its scan. Zero when there is none.
     pub quiet_wait_query: AtomicU64,
-    pub quiet_wait_releases: AtomicU64,
+    pub quiet_wait_mutations: AtomicU64,
 }
 
 impl ThreadSignals {

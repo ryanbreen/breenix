@@ -112,17 +112,17 @@ struct Found {
 /// matches the selector. A `CallerGroup` selector is bound here to the
 /// caller's group, so a later setpgid by the caller does not change which
 /// children the wait selects, and the group read and the scan share one hold.
-/// `releases` is set to `process::process_manager_releases()` as that hold
+/// `mutations` is set to `process::process_manager_mutations()` as that mutable hold
 /// ends.
 fn scan(
     thread_id: u64,
     selector: &mut Selector,
     options: u32,
-    releases: &mut u64,
+    mutations: &mut u64,
 ) -> Result<Option<Found>, u64> {
     crate::process::with_process_manager(|manager| {
         // Read under the lock: the release ending this hold adds one.
-        *releases = crate::process::process_manager_releases() + 1;
+        *mutations = crate::process::process_manager_mutations() + 1;
         let (reaper, caller_pgid, children) = match manager.find_process_by_thread(thread_id) {
             Some((pid, caller)) => (pid, caller.pgid, caller.children.clone()),
             None => return Err(EINVAL as u64),
@@ -217,9 +217,9 @@ fn quiet_wait_query(selector: Selector, options: u32) -> Option<u64> {
 ///
 /// A parent polling with WNOHANG asks the same question over and over, and
 /// each scan holds PROCESS_MANAGER, with interrupts masked on x86. Every
-/// change to the children a scan reads is made under that lock, so when the
-/// last scan of this same wait found nothing and the lock has not been
-/// released since, the answer is still nothing and is given without taking
+/// change to the children a scan reads requires mutable access under that lock,
+/// so when the last scan of this same wait found nothing and no mutable holder
+/// has released it since, the answer is still nothing and is given without taking
 /// it. A poller then holds the lock only after something has changed, and a
 /// stall of the poller's CPU no longer holds up every other user of the lock:
 /// a woken thread's dispatch, signal delivery, getrusage (#1474, #1478).
@@ -235,20 +235,20 @@ fn wait_for_child(mut selector: Selector, options: u32) -> Result<Option<Found>,
     };
     if let Some((query, signals)) = quiet {
         if signals.quiet_wait_query.load(Ordering::Relaxed) == query
-            && signals.quiet_wait_releases.load(Ordering::Relaxed)
-                == crate::process::process_manager_releases()
+            && signals.quiet_wait_mutations.load(Ordering::Relaxed)
+                == crate::process::process_manager_mutations()
         {
             return Ok(None);
         }
     }
     let thread_id = crate::task::scheduler::current_thread_id().ok_or(EINVAL as u64)?;
-    let mut releases = 0;
-    if let Some(found) = scan(thread_id, &mut selector, options, &mut releases)? {
+    let mut mutations = 0;
+    if let Some(found) = scan(thread_id, &mut selector, options, &mut mutations)? {
         return Ok(Some(found));
     }
     if options & WNOHANG != 0 {
         if let Some((query, signals)) = quiet {
-            signals.quiet_wait_releases.store(releases, Ordering::Relaxed);
+            signals.quiet_wait_mutations.store(mutations, Ordering::Relaxed);
             signals.quiet_wait_query.store(query, Ordering::Relaxed);
         }
         return Ok(None);
@@ -256,7 +256,7 @@ fn wait_for_child(mut selector: Selector, options: u32) -> Result<Option<Found>,
     loop {
         crate::task::scheduler::with_scheduler(|sched| sched.block_current_for_child_exit());
         crate::tracing::providers::process::trace_waitpid_block(thread_id as u16, 0);
-        match scan(thread_id, &mut selector, options, &mut releases) {
+        match scan(thread_id, &mut selector, options, &mut mutations) {
             Ok(None) => {}
             done => {
                 unblock_self();
@@ -269,7 +269,7 @@ fn wait_for_child(mut selector: Selector, options: u32) -> Result<Option<Found>,
             // wait whose child is now reportable: wait/interrupted's second
             // waitpid returned EINTR once on x86. Report the child instead;
             // the signal stays pending for the return to user mode.
-            let found = scan(thread_id, &mut selector, options, &mut releases);
+            let found = scan(thread_id, &mut selector, options, &mut mutations);
             unblock_self();
             return match found {
                 Ok(None) => Err(e as u64),
