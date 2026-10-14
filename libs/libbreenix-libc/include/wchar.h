@@ -1,10 +1,19 @@
 #ifndef __BREENIX_WCHAR_H
 #define __BREENIX_WCHAR_H
+/*
+ * C17 7.29.1 names only, so a strictly conforming program may use every other name:
+ * size_t, wchar_t and NULL come from the compiler's <stddef.h> pieces, and the
+ * prototypes spell FILE and va_list by reserved names. POSIX mode adds the types
+ * POSIX.1-2024 <wchar.h> requires (FILE, locale_t, va_list, wctype_t).
+ */
+#include <__breenix/types.h>
+#include <__breenix/features.h>
+#define __need_size_t
+#define __need_wchar_t
+#define __need_NULL
 #include <stddef.h>
+#define __need___va_list
 #include <stdarg.h>
-#include <stdint.h>
-#include <locale.h>
-#include <stdio.h>
 typedef __breenix_wint_t wint_t;
 typedef __breenix_mbstate_t mbstate_t;
 #define WEOF ((wint_t)-1)
@@ -18,6 +27,8 @@ typedef __breenix_mbstate_t mbstate_t;
 #ifndef WCHAR_MAX
 #define WCHAR_MAX __WCHAR_MAX__
 #endif
+struct __breenix_file;
+struct tm;
 int mbsinit(const mbstate_t *);
 size_t mbrtowc(wchar_t *, const char *, size_t, mbstate_t *);
 size_t mbrlen(const char *, size_t, mbstate_t *);
@@ -59,28 +70,44 @@ unsigned long long wcstoull(const wchar_t *, wchar_t **, int);
 double wcstod(const wchar_t *, wchar_t **);
 float wcstof(const wchar_t *, wchar_t **);
 long double wcstold(const wchar_t *, wchar_t **);
-int fwide(FILE *, int);
-wint_t fgetwc(FILE *);
-wint_t getwc(FILE *);
+int fwide(struct __breenix_file *, int);
+wint_t fgetwc(struct __breenix_file *);
+wint_t getwc(struct __breenix_file *);
 wint_t getwchar(void);
-wint_t fputwc(wchar_t, FILE *);
-wint_t putwc(wchar_t, FILE *);
+wint_t fputwc(wchar_t, struct __breenix_file *);
+wint_t putwc(wchar_t, struct __breenix_file *);
 wint_t putwchar(wchar_t);
-wint_t ungetwc(wint_t, FILE *);
-wchar_t *fgetws(wchar_t *, int, FILE *);
-int fputws(const wchar_t *, FILE *);
+wint_t ungetwc(wint_t, struct __breenix_file *);
+wchar_t *fgetws(wchar_t *, int, struct __breenix_file *);
+int fputws(const wchar_t *, struct __breenix_file *);
 int swprintf(wchar_t *, size_t, const wchar_t *, ...);
-int vswprintf(wchar_t *, size_t, const wchar_t *, va_list);
-int fwprintf(FILE *, const wchar_t *, ...);
-int vfwprintf(FILE *, const wchar_t *, va_list);
+int vswprintf(wchar_t *, size_t, const wchar_t *, __gnuc_va_list);
+int fwprintf(struct __breenix_file *, const wchar_t *, ...);
+int vfwprintf(struct __breenix_file *, const wchar_t *, __gnuc_va_list);
 int wprintf(const wchar_t *, ...);
-int vwprintf(const wchar_t *, va_list);
-struct tm;
+int vwprintf(const wchar_t *, __gnuc_va_list);
 size_t wcsftime(wchar_t *, size_t, const wchar_t *, const struct tm *);
 #if defined(__BREENIX_POSIX)
+#define __need_va_list
+#include <stdarg.h>
+typedef struct __breenix_file FILE;
+typedef __breenix_locale_t locale_t;
+typedef __breenix_wctype_t wctype_t;
+size_t mbsnrtowcs(wchar_t *, const char **, size_t, size_t, mbstate_t *);
+size_t wcsnrtombs(char *, const wchar_t **, size_t, size_t, mbstate_t *);
+wchar_t *wcpcpy(wchar_t *, const wchar_t *);
+wchar_t *wcpncpy(wchar_t *, const wchar_t *, size_t);
+size_t wcslcpy(wchar_t *, const wchar_t *, size_t);
+size_t wcslcat(wchar_t *, const wchar_t *, size_t);
 size_t wcsnlen(const wchar_t *, size_t);
 wchar_t *wcsdup(const wchar_t *);
 int wcscasecmp(const wchar_t *, const wchar_t *);
 int wcsncasecmp(const wchar_t *, const wchar_t *, size_t);
+int wcscasecmp_l(const wchar_t *, const wchar_t *, locale_t);
+int wcsncasecmp_l(const wchar_t *, const wchar_t *, size_t, locale_t);
+int wcscoll_l(const wchar_t *, const wchar_t *, locale_t);
+size_t wcsxfrm_l(wchar_t *, const wchar_t *, size_t, locale_t);
+int wcwidth(wchar_t);
+int wcswidth(const wchar_t *, size_t);
 #endif
 #endif

@@ -1,6 +1,7 @@
 #ifndef __BREENIX_CTYPE_H
 #define __BREENIX_CTYPE_H
-#include <locale.h>
+#include <__breenix/types.h>
+#include <__breenix/features.h>
 int isalnum(int);
 int isalpha(int);
 int isblank(int);
@@ -16,6 +17,7 @@ int isxdigit(int);
 int tolower(int);
 int toupper(int);
 #if defined(__BREENIX_POSIX)
+typedef __breenix_locale_t locale_t;
 int isalnum_l(int, locale_t);
 int isalpha_l(int, locale_t);
 int isblank_l(int, locale_t);

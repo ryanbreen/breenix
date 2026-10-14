@@ -17,13 +17,18 @@ with tempfile.TemporaryDirectory(prefix='breenix-locale-io-') as directory:
         dest = tmp / module
         dest.mkdir()
         for source in (root / 'libs/libbreenix-libc/src' / module).glob('*.rs'):
+            if module == 'locale' and source.name == 'clocks.rs':
+                continue  # Kernel syscall wrappers; nothing to run on the host.
             text = source.read_text().replace('#[no_mangle]', '')
             if module == 'stdio':
                 text = text.split('#[cfg(test)]')[0]
             text = text.replace('#[cfg(not(test))]', '')
             for name in ('stdin', 'stdout', 'stderr', 'timezone', 'daylight', 'tzname'):
                 text = text.replace('pub static mut ' + name, '#[allow(non_upper_case_globals)]\npub static mut ' + name)
+            if module == 'locale' and source.name == 'objects.rs':
+                text = text.split('#[cfg(test)]')[0]  # Reads headers by relative path.
             if module == 'locale' and source.name == 'mod.rs':
+                text = text.replace('mod clocks;', '')
                 # Include only the I/O host cases, not the algorithm test set.
                 text = text.split('#[cfg(test)]')[0]
                 text += '\n#[cfg(test)] mod io_cases;\n'

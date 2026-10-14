@@ -2,7 +2,7 @@ use super::{format, objects, streams};
 use crate::stdio::file;
 use core::ffi::c_void;
 unsafe fn utf8() -> *mut c_void {
-    let l = objects::newlocale(1, b"C.UTF-8\0".as_ptr(), core::ptr::null_mut());
+    let l = objects::newlocale(1 << 2, b"C.UTF-8\0".as_ptr(), core::ptr::null_mut());
     assert!(!l.is_null());
     objects::uselocale(l);
     l
@@ -225,5 +225,60 @@ fn nonblocking_partial_character_retains_state_and_io_errno() {
         file::fclose(f);
         crate::host_close(fds[1]);
         done(l);
+    }
+}
+
+extern "C" {
+    fn mmap(addr: *mut c_void, len: usize, prot: i32, flags: i32, fd: i32, off: i64) -> *mut c_void;
+    fn mprotect(addr: *mut c_void, len: usize, prot: i32) -> i32;
+    fn munmap(addr: *mut c_void, len: usize) -> i32;
+}
+/// `n` writable bytes that end exactly where an inaccessible region begins, so a
+/// read past them faults.
+unsafe fn before_guard(n: usize) -> (*mut u8, *mut c_void) {
+    const HALF: usize = 65536;
+    let anonymous = if cfg!(target_os = "macos") { 0x1000 } else { 0x20 };
+    let base = mmap(core::ptr::null_mut(), 2 * HALF, 3, 2 | anonymous, -1, 0);
+    assert_ne!(base as isize, -1);
+    assert_eq!(mprotect((base as *mut u8).add(HALF) as *mut c_void, HALF, 0), 0);
+    ((base as *mut u8).add(HALF - n), base)
+}
+
+#[test]
+fn c_locale_wide_streams_round_trip_high_bytes_and_unterminated_precision() {
+    unsafe {
+        // The C locale maps bytes 0x80-0xFF to the same wide values and back.
+        let mut bytes = [0u8; 4];
+        let f = file::fmemopen(bytes.as_mut_ptr(), 4, b"w+\0".as_ptr());
+        assert!(!f.is_null());
+        assert_eq!(streams::fputwc(0xe9, f), 0xe9);
+        file::fflush(f);
+        assert_eq!(bytes[0], 0xe9);
+        assert_eq!(streams::fputwc(0x100, f), u32::MAX);
+        assert_eq!(crate::pthread::errno(), 84);
+        file::clearerr(f);
+        file::rewind(f);
+        assert_eq!(streams::fgetwc(f), 0xe9);
+        assert_eq!(streams::ungetwc(0xe9, f), 0xe9);
+        assert_eq!(streams::fgetwc(f), 0xe9);
+        file::fclose(f);
+        // With a precision the argument need not be terminated: nothing past the
+        // precision is read.
+        let mut out = [0u32; 8];
+        let (p, region) = before_guard(8);
+        let wide = p as *mut u32;
+        *wide = 0x61;
+        *wide.add(1) = 0x62;
+        let fmt = [37, 46, 50, 108, 115, 0]; // %.2ls
+        assert_eq!(format::swprintf(out.as_mut_ptr(), 8, fmt.as_ptr(), wide), 2);
+        assert_eq!(&out[..3], &[0x61, 0x62, 0]);
+        let (p, region2) = before_guard(2);
+        *p = b'a';
+        *p.add(1) = b'b';
+        let fmt = [37, 46, 50, 115, 0]; // %.2s
+        assert_eq!(format::swprintf(out.as_mut_ptr(), 8, fmt.as_ptr(), p), 2);
+        assert_eq!(&out[..3], &[0x61, 0x62, 0]);
+        munmap(region, 131072);
+        munmap(region2, 131072);
     }
 }
