@@ -5,7 +5,7 @@ Remove export attributes so these tests never replace the host's FILE ABI.
 The stream/format code is otherwise compiled verbatim from the production files.
 """
 from pathlib import Path
-import os, subprocess, tempfile
+import subprocess, tempfile, sys
 root = Path(__file__).resolve().parents[1]
 with tempfile.TemporaryDirectory(prefix='breenix-stdio-') as tmp:
     tmp = Path(tmp)
@@ -17,6 +17,8 @@ with tempfile.TemporaryDirectory(prefix='breenix-stdio-') as tmp:
                 continue
             text = source.read_text().replace('#[no_mangle]', '')
             text = text.replace('pub static mut stdin', '#[allow(non_upper_case_globals)]\npub static mut stdin').replace('pub static mut stdout', '#[allow(non_upper_case_globals)]\npub static mut stdout').replace('pub static mut stderr', '#[allow(non_upper_case_globals)]\npub static mut stderr')
+            if module == 'stdio' and source.name == 'mod.rs' and '--format-only' in sys.argv:
+                text = text.replace('mod scan;', '').replace('mod misc;', '')
             if module == 'locale':
                 text = text.replace('mod multibyte;', '')
                 text = text.split('#[cfg(test)]')[0]
