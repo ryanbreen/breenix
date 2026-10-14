@@ -60,11 +60,7 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 // Error Handling
 // =============================================================================
 
-/// Returns the calling thread's errno slot.
-#[no_mangle]
-pub extern "C" fn __errno_location() -> *mut i32 {
-    pthread::errno_location()
-}
+pub use pthread::__errno_location;
 
 /// Set errno from a negative syscall return value
 ///

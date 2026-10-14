@@ -157,6 +157,7 @@ struct Thread {
     mapping_len: usize,
     tp: usize,
     errno: i32,
+    locale: *mut core::ffi::c_void,
     robust: *mut Mutex,
     // How many PTHREAD_PRIO_PROTECT mutexes with each ceiling it holds.
     ceilings: [u32; CEILINGS],
@@ -225,6 +226,7 @@ unsafe fn alloc_thread(guard: usize, stack: usize) -> *mut Thread {
             mapping_len: len,
             tp: 0,
             errno: 0,
+            locale: null_mut(),
             robust: null_mut(),
             ceilings: [0; CEILINGS],
             values: [(null_mut(), 0); KEYS],
@@ -528,7 +530,8 @@ unsafe fn descriptor_from_tp() -> *mut Thread {
     }
 }
 
-pub fn errno_location() -> *mut i32 {
+#[no_mangle]
+pub extern "C" fn __errno_location() -> *mut i32 {
     unsafe {
         if !RUNTIME_READY.load(Acquire) {
             // Only the initial thread exists before startup completes.
@@ -543,6 +546,66 @@ pub fn errno_location() -> *mut i32 {
         core::ptr::addr_of_mut!((*p).errno)
     }
 }
+/// Shared error accessors for the clean-room libc modules.
+#[allow(dead_code)] // Published cross-lane API; consumers land independently.
+pub(crate) fn set_errno(e: i32) {
+    unsafe { *__errno_location() = e; }
+}
+#[allow(dead_code)] // Published cross-lane API; consumers land independently.
+pub(crate) fn errno() -> i32 {
+    unsafe { *__errno_location() }
+}
+
+/// A null slot selects the process locale; a new thread starts in that mode.
+#[allow(dead_code)] // Published cross-lane API for the locale owner.
+pub(crate) unsafe fn locale_slot() -> *mut *mut core::ffi::c_void {
+    let p = current();
+    if p.is_null() { super::exit_group(127); }
+    core::ptr::addr_of_mut!((*p).locale)
+}
+
+/// Recursive FILE lock. Only the owner accesses depth, between acquire/release
+/// operations on owner. It needs neither allocation nor descriptor lookup.
+#[allow(dead_code)] // Published cross-lane API for the stdio owner.
+pub(crate) struct RecursiveLock {
+    owner: AtomicU32,
+    depth: core::cell::UnsafeCell<usize>,
+}
+unsafe impl Sync for RecursiveLock {}
+#[allow(dead_code)] // Published cross-lane API for the stdio owner.
+impl RecursiveLock {
+    pub(crate) const fn new() -> Self {
+        Self { owner: AtomicU32::new(0), depth: core::cell::UnsafeCell::new(0) }
+    }
+    pub(crate) fn try_lock(&self) -> bool {
+        let id = tid();
+        if self.owner.load(Relaxed) == id {
+            unsafe { *self.depth.get() += 1; }
+            return true;
+        }
+        if self.owner.compare_exchange(0, id, Acquire, Relaxed).is_err() {
+            return false;
+        }
+        unsafe { *self.depth.get() = 1; }
+        true
+    }
+    pub(crate) fn lock(&self) {
+        while !self.try_lock() {
+            let owner = self.owner.load(Relaxed);
+            if owner != 0 { unsafe { wait(&self.owner, owner); } }
+        }
+    }
+    pub(crate) fn unlock(&self) {
+        unsafe {
+            *self.depth.get() -= 1;
+            if *self.depth.get() == 0 {
+                self.owner.store(0, Release);
+                wake(&self.owner, u32::MAX);
+            }
+        }
+    }
+}
+
 unsafe fn find(handle: usize) -> *mut Thread {
     let mut p = HEAD;
     while !p.is_null() {
