@@ -832,11 +832,9 @@ if [ "$VMWARE" = true ]; then
         exit 1
     fi
 
-    # Fusion cannot attach NAT (vmnet8) without its host networking database.
-    # msg.autoAnswer otherwise dismisses the error and boots with Ethernet0
+    # msg.autoAnswer dismisses Fusion's adapter errors and boots with Ethernet0
     # disconnected, even when the VMX requests a connected adapter.
     source "$BREENIX_ROOT/scripts/vmware-network.sh"
-    vmware_check_nat_config "/Library/Preferences/VMware Fusion/networking"
 
     VMWARE_DIR="$BREENIX_ROOT/target/vmware"
     SERIAL_LOG="${SERIAL_LOG_OVERRIDE:-/tmp/breenix-vmware-serial-$(date -u +%Y%m%dT%H%M%SZ)-$$.log}"
@@ -1047,6 +1045,9 @@ sata0:0.fileName = "$EXT2_VMDK_ARG"
 VMXEOF
     fi
 
+    # Ethernet0 is bridged to the host's network, and the guest takes its address from that network's DHCP
+    # server. Fusion's "nat" runs vmnet8 as a host-only segment that reaches outside only through Fusion's
+    # vmnet-natd, a root service this host does not run (#1202).
     cat >> "$VMX_FILE" <<VMXEOF
 
 serial0.present = "TRUE"
@@ -1055,7 +1056,7 @@ serial0.fileName = "$SERIAL_LOG"
 serial0.yieldOnMsrRead = "TRUE"
 
 ethernet0.present = "TRUE"
-ethernet0.connectionType = "nat"
+ethernet0.connectionType = "bridged"
 ethernet0.virtualDev = "e1000e"
 ethernet0.addressType = "generated"
 ethernet0.linkStatePropagation.enable = "TRUE"
