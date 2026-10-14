@@ -10,6 +10,9 @@ const EAI_BADFLAGS: i32 = -1;
 const EAI_NONAME: i32 = -2;
 const EAI_AGAIN: i32 = -3;
 const EAI_FAIL: i32 = -4;
+// Internal only: the name exists but has no IPv4 address. getaddrinfo reports
+// it as POSIX's EAI_NONAME; gethostbyname reports it as NO_DATA.
+const EAI_NODATA: i32 = -5;
 const EAI_FAMILY: i32 = -6;
 const EAI_SOCKTYPE: i32 = -7;
 const EAI_SERVICE: i32 = -8;
@@ -138,10 +141,42 @@ fn reserved(name: &[u8], suffix: &[u8]) -> bool {
             && equal_name(&name[name.len() - suffix.len()..], suffix))
 }
 
+/// The other names of a host, NUL-terminated and packed for hostent's h_aliases.
+struct Aliases {
+    text: [u8; 1024],
+    used: usize,
+    starts: [u16; 64],
+    count: usize,
+    overflow: bool,
+}
+impl Aliases {
+    fn add(&mut self, name: &[u8], canon: &[u8]) {
+        if name == canon || self.names().any(|known| known == name) {
+            return;
+        }
+        if self.count == self.starts.len() || self.used + name.len() + 1 > self.text.len() {
+            self.overflow = true;
+            return;
+        }
+        self.starts[self.count] = self.used as u16;
+        self.text[self.used..self.used + name.len()].copy_from_slice(name);
+        self.text[self.used + name.len()] = 0;
+        self.used += name.len() + 1;
+        self.count += 1;
+    }
+    fn names(&self) -> impl Iterator<Item = &[u8]> {
+        self.starts[..self.count].iter().map(|start| {
+            let text = &self.text[*start as usize..];
+            &text[..text.iter().position(|b| *b == 0).unwrap_or(0)]
+        })
+    }
+}
+
 struct Addresses {
     bytes: [[u8; 4]; 64],
     len: usize,
     canon: Name,
+    aliases: Aliases,
 }
 impl Addresses {
     fn new(canon: &[u8]) -> Result<Self, i32> {
@@ -149,6 +184,7 @@ impl Addresses {
             bytes: [[0; 4]; 64],
             len: 0,
             canon: Name::new(canon)?,
+            aliases: Aliases { text: [0; 1024], used: 0, starts: [0; 64], count: 0, overflow: false },
         })
     }
     fn add(&mut self, addr: [u8; 4]) -> Result<(), i32> {
@@ -178,6 +214,10 @@ fn hosts_forward(name: &[u8], out: &mut Addresses) -> Result<(), i32> {
                     }
                 }
                 out.add(addr)?;
+                // Every other name on a matching line is an alias of the host.
+                for other in fields(line).skip(1) {
+                    out.aliases.add(other, out.canon.text());
+                }
             }
         }
         Ok(())
@@ -228,11 +268,15 @@ fn dns_lookup(name: &[u8], out: &mut Addresses) -> Result<(), i32> {
                     out.add(record.addr)?;
                 }
                 out.canon = Name::new(&answer.canonical[..answer.canonical_len])?;
+                // A name reached through a CNAME is an alias of the canonical name.
+                if !equal_name(hostname.as_bytes(), out.canon.text()) {
+                    out.aliases.add(hostname.as_bytes(), out.canon.text());
+                }
                 return Ok(());
             }
+            Err(DnsError::NoAddress) => return Err(EAI_NODATA),
             Err(
                 DnsError::ServerError(3)
-                | DnsError::NoAddress
                 | DnsError::InvalidHostname
                 | DnsError::HostnameTooLong,
             ) => return Err(EAI_NONAME),
@@ -408,7 +452,7 @@ unsafe fn lookup(
         (Some(name), None) => service_ports(name)?,
         _ => [numeric; 3],
     };
-    let addresses = node_addresses(node, flags)?;
+    let addresses = node_addresses(node, flags).map_err(|e| if e == EAI_NODATA { EAI_NONAME } else { e })?;
     let mut head: *mut AddrInfo = ptr::null_mut();
     let mut tail: *mut AddrInfo = ptr::null_mut();
     for addr in &addresses.bytes[..addresses.len] {
@@ -636,14 +680,15 @@ pub struct HostEnt {
 struct HostStorage {
     entry: HostEnt,
     name: [u8; 256],
-    aliases: [*mut u8; 1],
+    alias_text: [u8; 1024],
+    aliases: [*mut u8; 65],
     addresses: [[u8; 4]; 64],
     pointers: [*mut u8; 65],
 }
 static mut HOST: HostStorage = HostStorage {
     entry: HostEnt { name: ptr::null_mut(), aliases: ptr::null_mut(), addrtype: AF_INET,
                      length: 4, addr_list: ptr::null_mut() },
-    name: [0; 256], aliases: [ptr::null_mut(); 1], addresses: [[0; 4]; 64],
+    name: [0; 256], alias_text: [0; 1024], aliases: [ptr::null_mut(); 65], addresses: [[0; 4]; 64],
     pointers: [ptr::null_mut(); 65],
 };
 #[no_mangle]
@@ -652,10 +697,17 @@ pub unsafe extern "C" fn gethostbyname(name: *const u8) -> *mut HostEnt {
     let error = crate::pthread::__h_errno_location();
     let result = if name.is_null() { Err(EAI_NONAME) }
                  else { c_bytes(name, 256).ok_or(EAI_NONAME).and_then(|text| node_addresses(Some(text), 0)) };
+    // More aliases than hostent's static storage holds is a resource failure, never a silent cut.
+    let result = result.and_then(|a| if a.aliases.overflow { Err(EAI_MEMORY) } else { Ok(a) });
     match result {
         Ok(addresses) => {
             let storage = ptr::addr_of_mut!(HOST);
             (*storage).name = addresses.canon.bytes;
+            (*storage).alias_text = addresses.aliases.text;
+            for (i, start) in addresses.aliases.starts[..addresses.aliases.count].iter().enumerate() {
+                (*storage).aliases[i] = ptr::addr_of_mut!((*storage).alias_text[*start as usize]);
+            }
+            (*storage).aliases[addresses.aliases.count] = ptr::null_mut();
             (*storage).addresses = addresses.bytes;
             for i in 0..addresses.len {
                 (*storage).pointers[i] = ptr::addr_of_mut!((*storage).addresses[i]).cast();
@@ -669,7 +721,7 @@ pub unsafe extern "C" fn gethostbyname(name: *const u8) -> *mut HostEnt {
             ptr::addr_of_mut!((*storage).entry)
         }
         Err(e) => {
-            *error = match e { EAI_NONAME => 1, EAI_AGAIN => 2, _ => 3 };
+            *error = match e { EAI_NONAME => 1, EAI_AGAIN => 2, EAI_NODATA => 4, _ => 3 };
             if e == EAI_MEMORY { *crate::__errno_location() = Errno::ENOMEM as i32; }
             else if e != EAI_SYSTEM { *crate::__errno_location() = saved_errno; }
             ptr::null_mut()

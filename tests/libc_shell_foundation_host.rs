@@ -121,10 +121,15 @@ pub mod dns {
         pub canonical_len: usize,
     }
     pub fn resolve_all(name: &str, _: [u8; 4]) -> Result<Reply, DnsError> {
-        Err(if name == "temporary.example" {
-            DnsError::Timeout
-        } else {
-            DnsError::ServerError(3)
+        if name == "www.example" {
+            let mut canonical = [0; 256];
+            canonical[..12].copy_from_slice(b"real.example");
+            return Ok(Reply { answers: [Answer { addr: [198, 51, 100, 7] }], len: 1, canonical, canonical_len: 12 });
+        }
+        Err(match name {
+            "temporary.example" => DnsError::Timeout,
+            "noaddress.example" => DnsError::NoAddress,
+            _ => DnsError::ServerError(3),
         })
     }
 }
@@ -281,6 +286,8 @@ fn configuration_truncation_invalid_queries_and_bad_objects() {
     unsafe {
         reset();
         assert_eq!(conf::confstr(0, std::ptr::null_mut(), 0), 14);
+        assert_eq!(conf::confstr(0, std::ptr::null_mut(), 1), 14);
+        assert_eq!(pthread::errno(), 77);
         let mut bytes = [0xaa; 20];
         assert_eq!(conf::confstr(0, bytes.as_mut_ptr(), 5), 14);
         assert_eq!(&bytes[..5], b"/bin\0");
@@ -306,34 +313,23 @@ fn configuration_truncation_invalid_queries_and_bad_objects() {
     }
 }
 #[test]
-fn sysinfo_units_uptime_errors_and_bounds() {
+fn sysinfo_is_the_kernel_call_with_linux_layout() {
     unsafe {
         reset();
-        file("/proc/meminfo",b"MemTotal: 8192 kB\nMemFree: 1024 kB\nBuffers: 2 kB\nSwapTotal: 3 kB\nSwapFree: 1 kB\nShmem: 4 kB\n");
-        file("/proc/uptime", b"123.45 10.00\n");
         let mut info: sysinfo::SysInfo = std::mem::zeroed();
-        READ_ERROR.with(|e| e.set(4));
-        assert_eq!(sysinfo::sysinfo(&mut info), 0);
         assert_eq!(std::mem::size_of_val(&info), 112);
-        assert_eq!(info.uptime, 124);
-        assert_eq!(info.totalram, 8192 * 1024);
-        assert_eq!(info.freeram, 1024 * 1024);
-        assert_eq!(info.sharedram, 4096);
-        assert_eq!(info.bufferram, 2048);
-        assert_eq!(info.mem_unit, 1);
+        assert_eq!(std::mem::offset_of!(sysinfo::SysInfo, procs), 80);
+        assert_eq!(std::mem::offset_of!(sysinfo::SysInfo, mem_unit), 104);
+        // No procfs file or descriptor is involved: only the syscall.
+        replies(&[0, -14]);
+        assert_eq!(sysinfo::sysinfo(&mut info), 0);
         assert_eq!(pthread::errno(), 77);
-        file("/proc/meminfo", b"MemTotal: broken kB\nMemFree: 1 kB\n");
-        assert_eq!(sysinfo::sysinfo(&mut info), -1);
-        assert_eq!(pthread::errno(), 5);
-        assert_eq!(info.totalram, 8192 * 1024);
-        file("/proc/meminfo", &vec![b'x'; 4097]);
-        assert_eq!(sysinfo::sysinfo(&mut info), -1);
-        assert_eq!(pthread::errno(), 75);
-        FILES.with(|f| f.borrow_mut().clear());
-        assert_eq!(sysinfo::sysinfo(&mut info), -1);
-        assert_eq!(pthread::errno(), 2);
-        assert_eq!(sysinfo::sysinfo(std::ptr::null_mut()), -1);
+        assert_eq!(sysinfo::sysinfo(8 as *mut sysinfo::SysInfo), -1);
         assert_eq!(pthread::errno(), 14);
+        let number = if cfg!(target_arch = "aarch64") { 179 } else { 99 };
+        CALLS.with(|c| {
+            assert_eq!(*c.borrow(), vec![(number, vec![&mut info as *mut _ as u64]), (number, vec![8])])
+        });
         OPEN.with(|o| assert!(o.borrow().is_empty()));
     }
 }
@@ -356,12 +352,44 @@ fn legacy_hostname_numeric_hosts_and_errors() {
             [192, 0, 2, 2]
         );
         assert!((*(*host).addr_list.add(2)).is_null());
+        let alias = |host: *mut netdb::HostEnt, i: usize| {
+            let p = *(*host).aliases.add(i);
+            (!p.is_null()).then(|| CStr::from_ptr(p.cast()).to_bytes().to_vec())
+        };
+        assert_eq!(alias(host, 0).as_deref(), Some(b"alias".as_slice()));
+        assert_eq!(alias(host, 1), None);
+        // A retried read still parses every line; the canonical name is never its own alias.
+        file("/etc/hosts", b"# names\n192.0.2.9 box box.local loghost\n192.0.2.10 box2 box\n");
+        READ_ERROR.with(|e| e.set(4));
+        let host = netdb::gethostbyname(b"box\0".as_ptr());
+        assert_eq!(CStr::from_ptr((*host).name.cast()).to_bytes(), b"box");
+        assert_eq!(alias(host, 0).as_deref(), Some(b"box.local".as_slice()));
+        assert_eq!(alias(host, 1).as_deref(), Some(b"loghost".as_slice()));
+        assert_eq!(alias(host, 2).as_deref(), Some(b"box2".as_slice()));
+        assert_eq!(alias(host, 3), None);
+        let host = netdb::gethostbyname(b"www.example\0".as_ptr());
+        assert_eq!(CStr::from_ptr((*host).name.cast()).to_bytes(), b"real.example");
+        assert_eq!(alias(host, 0).as_deref(), Some(b"www.example".as_slice()));
+        assert_eq!(alias(host, 1), None);
         let host = netdb::gethostbyname(b"127.0.0.1\0".as_ptr());
+        assert!((*(*host).aliases).is_null());
         assert_eq!(*(*(*host).addr_list).cast::<[u8; 4]>(), [127, 0, 0, 1]);
         assert!(netdb::gethostbyname(b"missing.invalid\0".as_ptr()).is_null());
         assert_eq!(*pthread::__h_errno_location(), 1);
         assert!(netdb::gethostbyname(b"temporary.example\0".as_ptr()).is_null());
         assert_eq!(*pthread::__h_errno_location(), 2);
+        assert!(netdb::gethostbyname(b"noaddress.example\0".as_ptr()).is_null());
+        assert_eq!(*pthread::__h_errno_location(), 4);
+        let mut crowded = b"192.0.2.5 crowded".to_vec();
+        for i in 0..70 {
+            crowded.extend_from_slice(format!(" n{i}").as_bytes());
+        }
+        crowded.push(b'\n');
+        file("/etc/hosts", &crowded);
+        assert!(netdb::gethostbyname(b"crowded\0".as_ptr()).is_null());
+        assert_eq!(*pthread::__h_errno_location(), 3);
+        assert_eq!(pthread::errno(), 12);
+        pthread::set_errno(77);
         assert!(!CStr::from_ptr(netdb::hstrerror(2).cast())
             .to_bytes()
             .is_empty());

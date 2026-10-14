@@ -8,11 +8,8 @@ pub unsafe extern "C" fn confstr(name: i32, buffer: *mut u8, len: usize) -> usiz
         return 0;
     }
     let value = b"/bin:/usr/bin\0";
-    if len != 0 {
-        if buffer.is_null() {
-            set_errno(14);
-            return 0;
-        }
+    // Like Linux, a null buffer only asks for the size, whatever len says.
+    if len != 0 && !buffer.is_null() {
         let copied = len.min(value.len()) - 1;
         core::ptr::copy_nonoverlapping(value.as_ptr(), buffer, copied);
         *buffer.add(copied) = 0;

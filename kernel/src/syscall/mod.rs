@@ -59,6 +59,7 @@ pub mod rusage;
 pub mod session;
 pub mod signal;
 pub mod socket;
+pub mod sysinfo;
 pub mod timers;
 pub mod wait;
 
@@ -866,6 +867,10 @@ pub const CHROOT_SYSCALL_NUMBER: u64 = 161;
 #[cfg(target_arch = "aarch64")]
 pub const CHROOT_SYSCALL_NUMBER: u64 = 51;
 #[cfg(target_arch = "x86_64")]
+pub const SYSINFO_SYSCALL_NUMBER: u64 = 99;
+#[cfg(target_arch = "aarch64")]
+pub const SYSINFO_SYSCALL_NUMBER: u64 = 179;
+#[cfg(target_arch = "x86_64")]
 pub const MINCORE_SYSCALL_NUMBER: u64 = 27;
 #[cfg(target_arch = "aarch64")]
 pub const MINCORE_SYSCALL_NUMBER: u64 = 232;
@@ -902,6 +907,7 @@ pub fn dispatch_numbered(number: u64, a: [u64; 6]) -> Option<SyscallResult> {
         RECVMSG_SYSCALL_NUMBER => socket::sys_recvmsg(a[0], a[1], a[2]),
         ACCEPT4_SYSCALL_NUMBER => socket::sys_accept4(a[0], a[1], a[2], a[3]),
         CHROOT_SYSCALL_NUMBER => chroot::sys_chroot(a[0]),
+        SYSINFO_SYSCALL_NUMBER => sysinfo::sys_sysinfo(a[0]),
         _ => return None,
     })
 }
