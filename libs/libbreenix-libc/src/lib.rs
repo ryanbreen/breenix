@@ -1223,11 +1223,7 @@ pub const EPIPE: i32 = 32;
 pub const ENOSYS: i32 = 38;
 
 
-// =============================================================================
-// String/Utility Functions
-// =============================================================================
-
-/// Get random bytes from the kernel.
+// ======================================================================/// Get random bytes from the kernel.
 #[no_mangle]
 pub unsafe extern "C" fn getrandom(buf: *mut u8, buflen: usize, flags: u32) -> isize {
     let ret = libbreenix::syscall::raw::syscall3(

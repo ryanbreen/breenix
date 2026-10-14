@@ -4,6 +4,7 @@
 # A lane adds its category here once the category's headers compile.
 dirent-glob complete
 getopt-env complete
+locale-wchar complete
 math
 stdio complete
 string-stdlib
