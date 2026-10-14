@@ -1161,7 +1161,10 @@ fn launch_x86_production_init(name: &str, elf_data: &[u8]) -> Result<(), &'stati
             .as_mut()
             .ok_or("process manager not available")?;
 
-        let ticket = manager.create_init_process(String::from(name), elf_data)?;
+        let path = alloc::format!("/sbin/{}", name);
+        let ticket = manager.create_init_process_with_argv(
+            String::from(name), elf_data, &[path.as_bytes()],
+        )?;
         let publication = manager.designate_init(ticket)?;
         let designated_pid_raw = manager
             .designated_init()
