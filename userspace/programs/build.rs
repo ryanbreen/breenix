@@ -1,6 +1,16 @@
 use std::{env, fs, path::PathBuf};
 
 fn main() {
+    let root = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("manifest directory"))
+        .join("../..");
+    println!("cargo:rerun-if-changed={}", root.join("rust-fork.toml").display());
+    println!("cargo:rerun-if-env-changed=BREENIX_RUST_FORK_LIBRARY");
+    println!("cargo:rerun-if-env-changed=BREENIX_RUST_FORK_DEV");
+    let status = std::process::Command::new(root.join("scripts/rust-fork.sh"))
+        .arg("verify")
+        .status()
+        .expect("validate the pinned Rust library");
+    assert!(status.success(), "Rust library pin validation failed");
     // libc is built separately by build.sh and linked as a native archive.
     // Cargo otherwise considers these binaries fresh when only libc changes.
     let arch = env::var("CARGO_CFG_TARGET_ARCH").expect("target architecture");
