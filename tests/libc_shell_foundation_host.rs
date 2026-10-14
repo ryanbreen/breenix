@@ -123,6 +123,8 @@ pub mod dns {
     pub fn resolve_all(name: &str, _: [u8; 4]) -> Result<Reply, DnsError> {
         Err(if name == "temporary.example" {
             DnsError::Timeout
+        } else if name == "empty.example" {
+            DnsError::NoAddress
         } else {
             DnsError::ServerError(3)
         })
@@ -241,6 +243,7 @@ fn groups_and_errno() {
     assert_eq!(pthread::errno(), 3);
     assert_eq!(process::killpg(7, 15), 0);
     assert_eq!(process::killpg(0, 0), 0);
+    assert_eq!(process::killpg(1, 15), -1);
     assert_eq!(process::killpg(i32::MIN, 15), -1);
     assert_eq!(pthread::errno(), 22);
     CALLS.with(|c| {
@@ -295,6 +298,13 @@ fn configuration_truncation_invalid_queries_and_bad_objects() {
         assert_eq!(conf::pathconf(b"/\0".as_ptr(), 0), 32000);
         assert_eq!(conf::fpathconf(3, 3), 255);
         assert_eq!(conf::fpathconf(3, 5), 4096);
+        assert_eq!(conf::fpathconf(3, 1), 4096);
+        assert_eq!(conf::fpathconf(3, 2), 4095);
+        assert_eq!(conf::fpathconf(3, 19), 1);
+        assert_eq!(conf::fpathconf(3, 20), 1_000_000_000);
+        pthread::set_errno(77);
+        assert_eq!(conf::fpathconf(3, 9), -1);
+        assert_eq!(pthread::errno(), 77);
         assert_eq!(conf::fpathconf(3, 99), -1);
         assert_eq!(pthread::errno(), 22);
         STAT_ERROR.with(|e| e.set(9));
@@ -348,6 +358,8 @@ fn legacy_hostname_numeric_hosts_and_errors() {
         let host = netdb::gethostbyname(b"alias\0".as_ptr());
         assert!(!host.is_null());
         assert_eq!(CStr::from_ptr((*host).name.cast()).to_bytes(), b"server");
+        assert_eq!(CStr::from_ptr((*(*host).aliases).cast()).to_bytes(), b"alias");
+        assert!((*(*host).aliases.add(1)).is_null());
         assert_eq!((*host).addrtype, 2);
         assert_eq!((*host).length, 4);
         assert_eq!(*(*(*host).addr_list).cast::<[u8; 4]>(), [192, 0, 2, 1]);
@@ -360,6 +372,8 @@ fn legacy_hostname_numeric_hosts_and_errors() {
         assert_eq!(*(*(*host).addr_list).cast::<[u8; 4]>(), [127, 0, 0, 1]);
         assert!(netdb::gethostbyname(b"missing.invalid\0".as_ptr()).is_null());
         assert_eq!(*pthread::__h_errno_location(), 1);
+        assert!(netdb::gethostbyname(b"empty.example\0".as_ptr()).is_null());
+        assert_eq!(*pthread::__h_errno_location(), 4);
         assert!(netdb::gethostbyname(b"temporary.example\0".as_ptr()).is_null());
         assert_eq!(*pthread::__h_errno_location(), 2);
         assert!(!CStr::from_ptr(netdb::hstrerror(2).cast())
@@ -369,11 +383,29 @@ fn legacy_hostname_numeric_hosts_and_errors() {
     }
 }
 #[test]
-fn hostname_setter_forwards_enosys() {
+fn hostname_setter_returns_enosys_without_syscall() {
     unsafe {
         reset();
-        replies(&[-38]);
         assert_eq!(process::sethostname(b"new\0".as_ptr(), 3), -1);
         assert_eq!(pthread::errno(), 38);
+        CALLS.with(|c| assert!(c.borrow().is_empty()));
+    }
+}
+
+#[test]
+fn v8_configuration_environments() {
+    unsafe {
+        reset();
+        let mut buffer = [0xff; 64];
+        assert_eq!(conf::confstr(15, buffer.as_mut_ptr(), buffer.len()), 20);
+        assert_eq!(CStr::from_ptr(buffer.as_ptr().cast()).to_bytes(), b"POSIX_V8_LP64_OFF64");
+        for name in [7, 8, 9, 13, 14, 16] {
+            assert_eq!(conf::confstr(name, buffer.as_mut_ptr(), 1), 1);
+            assert_eq!(buffer[0], 0);
+        }
+        for name in [1, 2, 3, 4, 5, 6, 10, 11, 12] {
+            assert_eq!(conf::confstr(name, buffer.as_mut_ptr(), 64), 0);
+            assert_eq!(pthread::errno(), 77);
+        }
     }
 }

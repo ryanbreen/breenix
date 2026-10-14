@@ -3,11 +3,15 @@ use crate::pthread::set_errno;
 
 #[no_mangle]
 pub unsafe extern "C" fn confstr(name: i32, buffer: *mut u8, len: usize) -> usize {
-    if name != 0 {
-        set_errno(22);
-        return 0;
-    }
-    let value = b"/bin:/usr/bin\0";
+    let value: &[u8] = match name {
+        0 => b"/bin:/usr/bin\0",
+        // The C driver selects LP64/OFF64 and links the thread runtime by default.
+        7..=9 | 13 | 14 | 16 => b"\0",
+        15 => b"POSIX_V8_LP64_OFF64\0",
+        // Recognized programming environments that Breenix does not support.
+        1..=6 | 10..=12 => return 0,
+        _ => { set_errno(22); return 0; }
+    };
     if len != 0 {
         if buffer.is_null() {
             set_errno(14);
@@ -22,10 +26,17 @@ pub unsafe extern "C" fn confstr(name: i32, buffer: *mut u8, len: usize) -> usiz
 fn limit(name: i32) -> Option<i64> {
     Some(match name {
         0 => 32000,       // ext2's enforced link limit
-        1 | 2 | 3 => 255, // MAX_CANON, MAX_INPUT, NAME_MAX
+        1 => 4096,        // MAX_CANON
+        2 => 4095,        // MAX_INPUT
+        3 => 255,         // NAME_MAX
         4 | 5 => 4096,    // PATH_MAX, PIPE_BUF
         6 | 7 => 1,       // CHOWN_RESTRICTED, NO_TRUNC
         8 => 0,           // VDISABLE
+        9 | 10 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 21 | 22 => -1,
+        // No async/prioritized I/O or fallocate; transfer recommendations and
+        // file-size, symlink and textdomain limits are indeterminate, not invalid names.
+        11 | 19 => 1,     // SYNC_IO, 2_SYMLINKS
+        20 => 1_000_000_000, // ext2 timestamps have second resolution
         _ => return None,
     })
 }

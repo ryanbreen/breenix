@@ -10,10 +10,6 @@ const GETPRIORITY: u64 = 140;
 const SETPRIORITY: u64 = 140;
 #[cfg(target_arch = "x86_64")]
 const SETPRIORITY: u64 = 141;
-#[cfg(target_arch = "aarch64")]
-const SETHOSTNAME: u64 = 161;
-#[cfg(target_arch = "x86_64")]
-const SETHOSTNAME: u64 = 170;
 
 #[no_mangle]
 pub extern "C" fn getpgid(pid: i32) -> i32 {
@@ -29,8 +25,9 @@ pub extern "C" fn setsid() -> i32 {
 }
 #[no_mangle]
 pub extern "C" fn killpg(group: i32, signal: i32) -> i32 {
-    // Negative groups must not turn into positive PIDs or kill(-1)'s all-process selector.
-    if group < 0 {
+    // Preserve the group-zero extension, but reject the all-process selector.
+    // POSIX leaves groups <= 1 undefined.
+    if group < 0 || group == 1 {
         set_errno(22);
         return -1;
     }
@@ -78,7 +75,8 @@ pub extern "C" fn nice(increment: i32) -> i32 {
     new
 }
 #[no_mangle]
-pub unsafe extern "C" fn sethostname(name: *const u8, len: usize) -> i32 {
-    // No Breenix syscall implements this yet; the kernel returns ENOSYS.
-    crate::syscall_result_to_c_int(raw::syscall2(SETHOSTNAME, name as u64, len as u64) as i64)
+pub unsafe extern "C" fn sethostname(_name: *const u8, _len: usize) -> i32 {
+    // No Breenix syscall implements this operation. Avoid unknown-syscall diagnostics.
+    set_errno(38);
+    -1
 }
