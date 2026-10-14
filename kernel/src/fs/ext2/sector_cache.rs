@@ -7,10 +7,11 @@
 //! copy is direct-mapped: device block `b` can only be in slot `b % slots`.
 //!
 //! The copy never holds data the device does not. A write forgets its blocks
-//! before it starts and records them after it succeeds, unless another write
-//! began or was still at the device meanwhile (their order at the device is
-//! then unknown). A read records what it got only if no write was at the
-//! device when it started and none began before it finished.
+//! before it starts and records them after it succeeds only if it was the
+//! only write at the device throughout: none was in flight when it began and
+//! none began before it ended (otherwise their order at the device is
+//! unknown). A read records what it got only if no write was at the device
+//! when it started and none began before it finished.
 
 use alloc::vec::Vec;
 use spin::Mutex;
@@ -39,9 +40,10 @@ pub(super) struct SectorCache {
 #[derive(Clone, Copy)]
 pub(super) struct Fill(Option<u64>);
 
-/// What a write may record when it returns.
+/// What a write may record when it returns: the write's place in the count
+/// of writes, if it began with no other write in flight.
 #[derive(Clone, Copy)]
-pub(super) struct Store(u64);
+pub(super) struct Store(Option<u64>);
 
 impl SectorCache {
     /// A copy for a device of `block_size`-byte blocks, or None when the
@@ -111,6 +113,7 @@ impl SectorCache {
     /// Forget the blocks a write is about to change.
     pub(super) fn begin_write(&self, block: u64, len: usize) -> Store {
         self.with(|slots| {
+            let alone = slots.in_flight == 0;
             slots.writes += 1;
             slots.in_flight += 1;
             let count = slots.tags.len() as u64;
@@ -120,16 +123,16 @@ impl SectorCache {
                     slots.tags[slot] = EMPTY;
                 }
             }
-            Store(slots.writes)
+            Store(alone.then_some(slots.writes))
         })
     }
 
     /// Record a write's blocks if it succeeded and was the only write at the
-    /// device since it began.
+    /// device from its start to its end.
     pub(super) fn end_write(&self, store: Store, block: u64, written: Option<&[u8]>) {
         self.with(|slots| {
             if let Some(buf) = written {
-                if slots.in_flight == 1 && slots.writes == store.0 {
+                if store.0 == Some(slots.writes) {
                     self.store(slots, block, buf);
                 }
             }
