@@ -836,3 +836,47 @@ scripts/boot-interactive.sh --mode suite --suite rust-std
 # From tools/breenix-runs:
 swift run breenix-runs run x86 --mode full --boots 1 --suite rust-std --gate-timeout 900 --sha <pushed-sha>
 ```
+
+## C library
+
+`libc` measures the libc effort in `docs/efforts/path.json`: Breenix's own clean-room C
+library, `libs/libbreenix-libc`, as C programs see it. Its 256 cases cover eight categories,
+one per milestone: `stdio` (35), `string-stdlib` (33), `math` (35), `locale-wchar` (27),
+`dirent-glob` (23), `getopt-env` (31), `pthread` (37) and `busybox` (35). The contract is ISO
+C17 and POSIX.1-2024, with Linux's ABI where POSIX leaves a choice open; each title names the
+rule its case checks, and titles that measure a Linux choice say so.
+
+Every case but the busybox ones is a C function in `userspace/libc-suite/<category>.c`.
+Each category is one program, `harness.c` plus the category's file, compiled against
+Breenix's libc headers and `libc.a` with `-std=c17 -fno-builtin -frounding-math` (so calls
+reach the library rather than the compiler, and the floating-point environment is honoured)
+and installed as `/usr/local/test/bin/libc-<category>_test`. The suite runs it once per case
+as `libc-<category>_test <case> <fd>` in a scratch directory of its own under `/tmp`, with
+the environment `PATH=/usr/local/libc/bin`, `HOME=/tmp`, `LIBC_SUITE=1` and nothing else.
+The program writes `PASS`, `FAIL <message>` or `SKIP <message>` to descriptor `<fd>` and
+exits 0. Its harness builds that message with `write()` alone, so a broken stdio or
+`string.h` cannot garble the report of what broke; `userspace/libc-suite/case.h` gives the
+contract. `tests/suite_manifests.rs` checks that each C file's `libc_cases[]` table lists
+the manifest's cases in order.
+
+The busybox cases run applets of a BusyBox built against Breenix's libc, installed as
+`/usr/local/libc/bin/busybox` with its applet links beside it, and compare what the applet
+prints and its exit status with the expected values. `PATH` names only `/usr/local/libc/bin`,
+so a shell pipeline never reaches the musl-built BusyBox stand-in in `/bin`, which this
+suite never runs. Each applet has a case of its own (the shell has five), so one that does
+not build or does not behave is a recorded failure of its own.
+
+Until a category's program is built against Breenix's libc and installed, each of its cases
+fails saying the program is not installed; until that BusyBox is installed, each busybox
+case fails saying so. Each case uses the runner's default 10-second deadline; the program it
+starts gets until 1.5 seconds before it, and one still running then is killed and the case
+fails saying it did not finish. Threads cases bound every wait: timeouts are 50 ms and a
+thread that never arrives fails its case after 2 seconds.
+
+```bash
+scripts/boot-interactive.sh --mode suite --suite libc
+./run.sh --parallels --suite libc
+./run.sh --vmware --suite libc
+# From tools/breenix-runs:
+swift run breenix-runs run x86 --mode suite --boots 1 --suite libc --sha <pushed-sha>
+```

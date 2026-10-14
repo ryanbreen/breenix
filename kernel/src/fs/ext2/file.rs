@@ -497,7 +497,7 @@ pub fn set_block_num<B: BlockDevice + ?Sized>(
             // Allocate a new indirect block
             single_indirect_ptr =
                 super::block_group::allocate_block(device, superblock, block_groups)
-                    .map_err(|_| BlockError::IoError)?;
+                    .map_err(|e| if e == "No free blocks available" { BlockError::NoSpace } else { BlockError::IoError })?;
             inode.i_blocks += (block_size / 512) as u32;
 
             // Update the inode's indirect block pointer
@@ -530,7 +530,7 @@ pub fn set_block_num<B: BlockDevice + ?Sized>(
             // Allocate a new double indirect block
             double_indirect_ptr =
                 super::block_group::allocate_block(device, superblock, block_groups)
-                    .map_err(|_| BlockError::IoError)?;
+                    .map_err(|e| if e == "No free blocks available" { BlockError::NoSpace } else { BlockError::IoError })?;
             inode.i_blocks += (block_size / 512) as u32;
 
             // Update the inode's double indirect block pointer
@@ -552,7 +552,7 @@ pub fn set_block_num<B: BlockDevice + ?Sized>(
         if second_level_ptr == 0 {
             // Allocate a new second-level indirect block
             second_level_ptr = super::block_group::allocate_block(device, superblock, block_groups)
-                .map_err(|_| BlockError::IoError)?;
+                .map_err(|e| if e == "No free blocks available" { BlockError::NoSpace } else { BlockError::IoError })?;
             inode.i_blocks += (block_size / 512) as u32;
 
             // Update the first-level block with the new pointer
@@ -576,7 +576,7 @@ pub fn set_block_num<B: BlockDevice + ?Sized>(
     if triple_indirect_ptr == 0 {
         // Allocate a new triple indirect block
         triple_indirect_ptr = super::block_group::allocate_block(device, superblock, block_groups)
-            .map_err(|_| BlockError::IoError)?;
+            .map_err(|e| if e == "No free blocks available" { BlockError::NoSpace } else { BlockError::IoError })?;
         inode.i_blocks += (block_size / 512) as u32;
 
         // Update the inode's triple indirect block pointer
@@ -599,7 +599,7 @@ pub fn set_block_num<B: BlockDevice + ?Sized>(
     let mut second_level_ptr = first_level_blocks[first_level_index];
     if second_level_ptr == 0 {
         second_level_ptr = super::block_group::allocate_block(device, superblock, block_groups)
-            .map_err(|_| BlockError::IoError)?;
+            .map_err(|e| if e == "No free blocks available" { BlockError::NoSpace } else { BlockError::IoError })?;
         inode.i_blocks += (block_size / 512) as u32;
 
         first_level_blocks[first_level_index] = second_level_ptr;
@@ -613,7 +613,7 @@ pub fn set_block_num<B: BlockDevice + ?Sized>(
     let mut third_level_ptr = second_level_blocks[second_level_index];
     if third_level_ptr == 0 {
         third_level_ptr = super::block_group::allocate_block(device, superblock, block_groups)
-            .map_err(|_| BlockError::IoError)?;
+            .map_err(|e| if e == "No free blocks available" { BlockError::NoSpace } else { BlockError::IoError })?;
         inode.i_blocks += (block_size / 512) as u32;
 
         second_level_blocks[second_level_index] = third_level_ptr;

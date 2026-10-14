@@ -62,6 +62,15 @@ mod raw {
         record(n, [a, b, c, d, e])
     }
 }
+// msgsnd and msgrcv are cancellation points. With no thread runtime, as here,
+// the library's cancel_syscall makes the system call directly; neither passes
+// a sixth argument.
+mod pthread {
+    pub unsafe fn cancel_syscall(nr: u64, a: [u64; 6]) -> i64 {
+        assert_eq!(a[5], 0);
+        crate::raw::syscall5(nr, a[0], a[1], a[2], a[3], a[4]) as i64
+    }
+}
 fn syscall_result_to_c_int(result: i64) -> i32 {
     if result < 0 { -1 } else { result as i32 }
 }

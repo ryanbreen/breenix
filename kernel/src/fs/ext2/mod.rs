@@ -7,6 +7,7 @@ pub mod block_group;
 pub mod create_node;
 pub mod dir;
 mod directory_io;
+mod directory_extension;
 mod fifo_times;
 pub mod file;
 pub mod inode;
@@ -934,7 +935,7 @@ impl Ext2Fs {
         }
 
         // Read the parent directory inode
-        let parent_inode = self.read_inode(parent_inode_num)?;
+        let mut parent_inode = self.read_inode(parent_inode_num)?;
         if !parent_inode.is_dir() {
             return Err("Parent is not a directory");
         }
@@ -946,6 +947,7 @@ impl Ext2Fs {
         if find_entry(&dir_data, name).is_some() {
             return Err("File already exists");
         }
+        self.make_directory_room(parent_inode_num, &mut parent_inode, &mut dir_data, name.len())?;
 
         // Allocate a new inode
         let new_inode_num = allocate_inode(
@@ -1307,7 +1309,7 @@ impl Ext2Fs {
             return Err("Invalid directory name");
         }
 
-        let parent_inode = self.read_inode(parent_inode_num)?;
+        let mut parent_inode = self.read_inode(parent_inode_num)?;
 
         if !parent_inode.is_dir() {
             return Err("Parent is not a directory");
@@ -1324,6 +1326,7 @@ impl Ext2Fs {
         if find_entry(&parent_dir_data, dirname).is_some() {
             return Err("Directory already exists");
         }
+        self.make_directory_room(parent_inode_num, &mut parent_inode, &mut parent_dir_data, dirname.len())?;
 
         // Allocate a new inode for the directory
         let new_inode_num = allocate_inode(
@@ -1678,7 +1681,7 @@ impl Ext2Fs {
         {
             return Err("Invalid filename");
         }
-        let new_parent_inode = self.read_inode(new_parent_inode_num)?;
+        let mut new_parent_inode = self.read_inode(new_parent_inode_num)?;
         if !new_parent_inode.is_dir() {
             return Err("Parent is not a directory");
         }
@@ -1691,6 +1694,7 @@ impl Ext2Fs {
         if dir::find_inode(&dir_data, new_filename).is_some() {
             return Err("Destination already exists");
         }
+        self.make_directory_room(new_parent_inode_num, &mut new_parent_inode, &mut dir_data, new_filename.len())?;
 
         // Add a new directory entry pointing to the source inode
         add_directory_entry(
@@ -1826,7 +1830,7 @@ impl Ext2Fs {
             return Err("Symlink target too long");
         }
 
-        let parent_inode = self.read_inode(parent_inode_num)?;
+        let mut parent_inode = self.read_inode(parent_inode_num)?;
 
         if !parent_inode.is_dir() {
             return Err("Parent is not a directory");
@@ -1839,6 +1843,7 @@ impl Ext2Fs {
         // Read the parent directory before the first disk mutation, so a
         // failed read or allocation leaves no inode without an entry.
         let mut dir_data = self.read_directory(&parent_inode)?;
+        self.make_directory_room(parent_inode_num, &mut parent_inode, &mut dir_data, link_name.len())?;
 
         // Allocate a new inode
         let new_inode_num = allocate_inode(

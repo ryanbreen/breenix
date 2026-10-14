@@ -739,5 +739,9 @@ name = "rust-std-child_test"
 path = "src/rust_std_child.rs"
 
 [[bin]]
+name = "suite-libc"
+path = "src/suite_libc.rs"
+
+[[bin]]
 name = "fifo_fs_test"
 path = "src/fifo_fs_test.rs"
