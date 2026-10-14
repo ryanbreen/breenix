@@ -257,7 +257,8 @@ pub(crate) unsafe fn vformat(
                 words.bytes(&wc.to_ne_bytes())?;
             } else if l == Length::L {
                 let mut p = args.pointer(&spec) as *const u32;
-                while *p != 0 && words.n / 4 < precision.unwrap_or(usize::MAX) {
+                // Test the precision first: with one, the array need not be terminated.
+                while words.n / 4 < precision.unwrap_or(usize::MAX) && *p != 0 {
                     words.bytes(&(*p).to_ne_bytes())?;
                     p = p.add(1);
                 }
@@ -267,7 +268,7 @@ pub(crate) unsafe fn vformat(
                     p = c"(null)".as_ptr() as *const u8;
                 }
                 let mut state = core::mem::zeroed();
-                while *p != 0 && words.n / 4 < precision.unwrap_or(usize::MAX) {
+                while words.n / 4 < precision.unwrap_or(usize::MAX) && *p != 0 {
                     let wc = loop {
                         if *p == 0 {
                             return Err(84);
