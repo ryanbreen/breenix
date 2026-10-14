@@ -257,7 +257,6 @@ pub extern "C" fn setgid(gid: u32) -> i32 {
     crate::syscall_result_to_c_int(r as i64)
 }
 
-/// chroot: the kernel's answer, ENOSYS where it has no chroot.
 #[no_mangle]
 pub unsafe extern "C" fn chroot(path: *const u8) -> i32 {
     let r = libbreenix::raw::syscall1(nr::CHROOT, path as u64);

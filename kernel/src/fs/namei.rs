@@ -21,6 +21,13 @@
 //! the directory from being removed (rmdir fails with EBUSY) or its inode
 //! reused while it is anyone's working directory.
 //!
+//! A process's root directory is `/` unless it has called chroot: then an
+//! absolute pathname, and an absolute symlink target, start from that
+//! directory, and `..` there stays there. The root is held as the working
+//! directory is, and travels with it: `CLONE_FS` threads share both, fork
+//! copies both. Until some process changes its root, every root is `/` and a
+//! walk does not look it up.
+//!
 //! The ext2 root filesystem holds `/`. The home filesystem is entered at
 //! `/home` when mounted. devfs and procfs are entered at `/dev` and `/proc`;
 //! they have no symlinks, and each name below their mount points is checked
@@ -31,6 +38,11 @@ use crate::syscall::errno::{EIO, ELOOP, ENAMETOOLONG, ENOENT, ENOTDIR};
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, Ordering};
+
+/// Set by the first chroot and never cleared: until then every process's
+/// root directory is `/`, and a walk does not look it up.
+static ROOT_CHANGED: AtomicBool = AtomicBool::new(false);
 
 /// Longest pathname a syscall accepts, counting its terminating NUL (Linux).
 pub const PATH_MAX: usize = 4096;
@@ -194,6 +206,21 @@ const ROOT: Node = Node::Ext2(Mount::Root, EXT2_ROOT_INO);
 
 fn top(stack: &[Frame]) -> Node {
     stack.last().map_or(ROOT, |frame| frame.node)
+}
+
+/// Whether `stack` is the directory `root` names.
+fn is_root(stack: &[Frame], root: &[Frame]) -> bool {
+    stack.len() == root.len()
+        && stack.iter().zip(root).all(|(a, b)| a.node == b.node && a.name == b.name)
+}
+
+fn copy_frames(frames: &[Frame]) -> Result<Vec<Frame>, u64> {
+    let mut copy = Vec::new();
+    copy.try_reserve_exact(frames.len()).map_err(|_| 12u64)?;
+    for frame in frames {
+        copy.push(Frame { name: copy_bytes(&frame.name)?, node: frame.node });
+    }
+    Ok(copy)
 }
 
 pub(crate) fn fs_errno(error: &'static str) -> u64 {
@@ -397,16 +424,22 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
     }
     // Both read state no filesystem guard is held across.
     let home_mounted = ext2::is_home_mounted();
-    let start = if path.starts_with(b"/") {
-        WorkingDir::Root
+    let absolute = path.starts_with(b"/");
+    let (cwd, root) = if ROOT_CHANGED.load(Ordering::Acquire) {
+        try_current_dirs()?
+    } else if absolute || start.is_some() {
+        (WorkingDir::Root, WorkingDir::Root)
     } else {
-        match start {
-            Some(dir) => dir,
-            None => try_current_working_dir()?,
-        }
+        (try_current_working_dir()?, WorkingDir::Root)
     };
     let mut held = Held(None);
-    let mut stack = frames(&start, &mut held)?;
+    // The directory `/` names, which `..` does not leave.
+    let root = frames(&root, &mut held)?;
+    let mut stack = if absolute {
+        copy_frames(&root)?
+    } else {
+        frames(&start.unwrap_or(cwd), &mut held)?
+    };
     let mut trailing_slash = path.ends_with(b"/");
     let follow_final = match mode {
         Mode::Lookup { follow } => follow || trailing_slash,
@@ -450,7 +483,9 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
             }
             b".." => {
                 last = Last::DotDot;
-                stack.pop();
+                if !is_root(&stack, &root) {
+                    stack.pop();
+                }
                 continue;
             }
             _ => last = Last::Name,
@@ -533,7 +568,7 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
                         trailing_slash = true;
                     }
                     if target.starts_with(b"/") {
-                        stack.clear();
+                        stack = copy_frames(&root)?;
                     }
                     push_components(&mut pending, &target)?;
                     // What is left to resolve is held to the pathname limit.
@@ -635,17 +670,24 @@ impl Default for WorkingDir {
     }
 }
 
-/// The working directory a process holds. Threads created with `CLONE_FS`
-/// share one, so a chdir or fchdir in any of them moves all of them; fork,
-/// spawn and a clone without `CLONE_FS` start from a copy. Its lock is only
-/// taken under the process manager's, and nothing else is taken under it.
-/// An exited row holds none (`release`) and reads as `/`.
+/// A process's working directory and its root directory.
+#[derive(Debug, Default)]
+struct Dirs {
+    cwd: WorkingDir,
+    root: WorkingDir,
+}
+
+/// The working and root directories a process holds. Threads created with
+/// `CLONE_FS` share them, so a chdir, fchdir or chroot in any of them moves
+/// all of them; fork, spawn and a clone without `CLONE_FS` start from a copy.
+/// Its lock is only taken under the process manager's, and nothing else is
+/// taken under it. An exited row holds none (`release`) and reads as `/`.
 #[derive(Debug)]
-pub struct SharedWorkingDir(Option<Arc<spin::Mutex<WorkingDir>>>);
+pub struct SharedWorkingDir(Option<Arc<spin::Mutex<Dirs>>>);
 
 impl Default for SharedWorkingDir {
     fn default() -> Self {
-        Self(Some(Arc::new(spin::Mutex::new(WorkingDir::Root))))
+        Self(Some(Arc::new(spin::Mutex::new(Dirs::default()))))
     }
 }
 
@@ -660,13 +702,17 @@ impl SharedWorkingDir {
         matches!((&self.0, &other.0), (Some(a), Some(b)) if Arc::ptr_eq(a, b))
     }
 
-    /// A separate working directory that starts where this one is.
+    /// Separate working and root directories that start where these are.
     pub fn copy(&self) -> Self {
-        Self(Some(Arc::new(spin::Mutex::new(self.get()))))
+        let dirs = self.0.as_ref().map_or_else(Dirs::default, |shared| {
+            let dirs = shared.lock();
+            Dirs { cwd: dirs.cwd.clone(), root: dirs.root.clone() }
+        });
+        Self(Some(Arc::new(spin::Mutex::new(dirs))))
     }
 
     pub fn get(&self) -> WorkingDir {
-        self.0.as_ref().map_or(WorkingDir::Root, |dir| dir.lock().clone())
+        self.0.as_ref().map_or(WorkingDir::Root, |dirs| dirs.lock().cwd.clone())
     }
 
     /// Make `dir` the working directory. The one it replaces is returned so
@@ -674,7 +720,16 @@ impl SharedWorkingDir {
     /// released its working directory gets `dir` back.
     pub fn replace(&self, dir: WorkingDir) -> WorkingDir {
         match &self.0 {
-            Some(shared) => core::mem::replace(&mut *shared.lock(), dir),
+            Some(shared) => core::mem::replace(&mut shared.lock().cwd, dir),
+            None => dir,
+        }
+    }
+
+    /// Make `dir` the root directory, returning the one it replaces as
+    /// `replace` does.
+    pub fn replace_root(&self, dir: WorkingDir) -> WorkingDir {
+        match &self.0 {
+            Some(shared) => core::mem::replace(&mut shared.lock().root, dir),
             None => dir,
         }
     }
@@ -687,19 +742,8 @@ impl SharedWorkingDir {
     }
 }
 
-fn try_current_working_dir() -> Result<WorkingDir, u64> {
-    let Some(tid) = crate::task::scheduler::current_thread_id() else {
-        return Ok(WorkingDir::Root);
-    };
-    let guard = crate::process::manager();
-    let Some((_, process)) = guard.as_ref().and_then(|m| m.find_process_by_thread(tid)) else {
-        return Ok(WorkingDir::Root);
-    };
-    let Some(shared) = process.cwd.0.as_ref() else {
-        return Ok(WorkingDir::Root);
-    };
-    let dir = shared.lock();
-    Ok(match &*dir {
+fn copy_dir(dir: &WorkingDir) -> Result<WorkingDir, u64> {
+    Ok(match dir {
         WorkingDir::Root => WorkingDir::Root,
         WorkingDir::Ext2 { mount, dir } => WorkingDir::Ext2 {
             mount: *mount,
@@ -707,6 +751,47 @@ fn try_current_working_dir() -> Result<WorkingDir, u64> {
         },
         WorkingDir::Virtual(path) => WorkingDir::Virtual(copy_string(path)?),
     })
+}
+
+/// The calling process's working and root directories; `/` for both when
+/// the caller has no process.
+fn try_current_dirs() -> Result<(WorkingDir, WorkingDir), u64> {
+    let Some(tid) = crate::task::scheduler::current_thread_id() else {
+        return Ok((WorkingDir::Root, WorkingDir::Root));
+    };
+    let guard = crate::process::manager();
+    let Some((_, process)) = guard.as_ref().and_then(|m| m.find_process_by_thread(tid)) else {
+        return Ok((WorkingDir::Root, WorkingDir::Root));
+    };
+    let Some(shared) = process.cwd.0.as_ref() else {
+        return Ok((WorkingDir::Root, WorkingDir::Root));
+    };
+    let dirs = shared.lock();
+    Ok((copy_dir(&dirs.cwd)?, copy_dir(&dirs.root)?))
+}
+
+fn try_current_working_dir() -> Result<WorkingDir, u64> {
+    try_current_dirs().map(|(cwd, _)| cwd)
+}
+
+/// Make `dir` the calling process's root directory, as chroot does once it
+/// holds the directory and has checked the caller may enter it. The threads
+/// that share the working directory share the new root.
+pub fn set_root(dir: WorkingDir) -> Result<(), u64> {
+    let tid = crate::task::scheduler::current_thread_id().ok_or(3u64)?; // ESRCH
+    // Set first, so a walk that can see the new root also looks it up.
+    ROOT_CHANGED.store(true, Ordering::Release);
+    let previous = {
+        let guard = crate::process::manager();
+        let (_, process) = guard
+            .as_ref()
+            .and_then(|m| m.find_process_by_thread(tid))
+            .ok_or(3u64)?;
+        process.cwd.replace_root(dir)
+    };
+    // Released after the process manager, as chdir releases its old directory.
+    drop(previous);
+    Ok(())
 }
 
 /// The working directory of the calling process; `/` for a caller with none.
@@ -774,10 +859,29 @@ pub(crate) fn may_search(
 }
 
 /// The physical pathname of a working directory, derived from the directory
-/// itself. ENOENT when it no longer has a name.
+/// itself, as the calling process names it from its root directory. A
+/// directory outside that root is reported, as Linux does, with the prefix
+/// `(unreachable)`. ENOENT when it no longer has a name.
 pub fn working_dir_path(dir: &WorkingDir) -> Result<String, u64> {
+    let root = if ROOT_CHANGED.load(Ordering::Acquire) {
+        try_current_dirs()?.1
+    } else {
+        WorkingDir::Root
+    };
     let mut held = Held(None);
-    let path = join(&frames(dir, &mut held)?)?;
+    let root = frames(&root, &mut held)?;
+    let stack = frames(dir, &mut held)?;
+    let path = if stack.len() >= root.len() && is_root(&stack[..root.len()], &root) {
+        join(&stack[root.len()..])?
+    } else {
+        const UNREACHABLE: &[u8] = b"(unreachable)";
+        let path = join(&stack)?;
+        let mut prefixed = Vec::new();
+        prefixed.try_reserve_exact(UNREACHABLE.len() + path.len()).map_err(|_| 12u64)?;
+        prefixed.extend_from_slice(UNREACHABLE);
+        prefixed.extend_from_slice(&path);
+        prefixed
+    };
     drop(held);
     if path.len() >= PATH_MAX {
         return Err(ENAMETOOLONG as u64);
