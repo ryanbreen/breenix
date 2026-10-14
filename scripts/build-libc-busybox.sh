@@ -100,8 +100,11 @@ PYVERIFY
     touch "$SRC/.extracted"
 fi
 
+# BB_GLOBAL_CONST empty: BusyBox's "*const" globals pointers are assigned once through
+# a cast, and clang moves loads of them ahead of that store (libbb.h documents the
+# switch for toolchains that do).
 MAKE_ARGS=(-C "$SRC" CROSS_COMPILE="$PREFIX" HOSTCC=cc
-           "EXTRA_CFLAGS=-std=gnu11 -Wno-error"
+           "EXTRA_CFLAGS=-std=gnu11 -Wno-error -DBB_GLOBAL_CONST="
            SKIP_STRIP=y)
 JOBS="${CARGO_BUILD_JOBS:-6}"
 
