@@ -1622,7 +1622,7 @@ fn fork_clone_flags() -> CaseResult {
     const CLONE_CHILD_SETTID: u64 = 0x0100_0000;
     const SIGCHLD: u64 = 17;
     const F_GETFD: u64 = 1;
-    let ret = sc(nr::CLONE, &[CLONE_SIGHAND | SIGCHLD, 0, 0, 0, 0, 0]);
+    let ret = sc(libbreenix::syscall::nr::CLONE, &[CLONE_SIGHAND | SIGCHLD, 0, 0, 0, 0, 0]);
     if ret == 0 {
         sc(libbreenix::syscall::nr::EXIT, &[99]);
         loop {}
@@ -1639,7 +1639,7 @@ fn fork_clone_flags() -> CaseResult {
     let args = [SIGCHLD | CLONE_FILES | CLONE_PARENT_SETTID | CLONE_CHILD_SETTID, 0, ptid, ctid, 0, 0];
     #[cfg(not(target_arch = "x86_64"))]
     let args = [SIGCHLD | CLONE_FILES | CLONE_PARENT_SETTID | CLONE_CHILD_SETTID, 0, ptid, 0, ctid, 0];
-    let ret = sc(nr::CLONE, &args);
+    let ret = sc(libbreenix::syscall::nr::CLONE, &args);
     if ret == 0 {
         // SAFETY: this process's own copy of the word, written before it ran.
         let stored = unsafe { core::ptr::read_volatile(child_tid.get()) };
