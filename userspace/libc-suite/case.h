@@ -55,6 +55,10 @@ const char *fail_str(const char *what, const char *got, const char *want);
 const char *fail_mem(const char *what, const void *got, const void *want, size_t n);
 const char *fail_dbl(const char *what, double got, double want);
 const char *fail_ptr(const char *what, const void *got, const void *want);
+/* Report "FAIL <name> is not in Breenix's C library yet" and exit 0. The suite build
+ * (build.sh) generates a stand-in calling this for each function a category uses that
+ * libc.a does not define yet, so the cases reaching it fail by name. */
+void libc_case_missing(const char *name);
 /* Mark the case skipped, saying why. */
 const char *skip_text(const char *why);
 
