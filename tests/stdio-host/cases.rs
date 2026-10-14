@@ -230,3 +230,106 @@ fn wide_printf_preserves_characters_in_c_locale() {
         assert_eq!(out.0, vec![0xe9, 45, 0x20ac]);
     }
 }
+#[test]
+fn failed_memstream_growth_preserves_buffer() {
+    unsafe {
+        let mut p = ptr::null_mut();
+        let mut n = 0;
+        let f = open_memstream(&mut p, &mut n);
+        assert!(!f.is_null());
+        assert_eq!(fputs(c"kept".as_ptr() as *const u8, f), 0);
+        assert_eq!(fflush(f), 0);
+        let original = p;
+        assert_eq!(fseek(f, 10000, 0), 0);
+        super::FAIL_REALLOC.with(|s| s.set(true));
+        assert_eq!(fputc(b'x' as i32, f), -1);
+        assert_eq!(super::pthread::errno(), 12);
+        assert_ne!(ferror(f), 0);
+        assert_eq!(fflush(f), 0);
+        assert_eq!(p, original);
+        assert_eq!(std::slice::from_raw_parts(p, 5), b"kept\0");
+        assert_eq!(fclose(f), 0);
+        super::free(p);
+    }
+}
+#[test]
+fn flush_and_close_registry_concurrency() {
+    let threads: Vec<_> = (0..4)
+        .map(|_| {
+            std::thread::spawn(|| unsafe {
+                for _ in 0..20 {
+                    let mut p = ptr::null_mut();
+                    let mut n = 0;
+                    let f = open_memstream(&mut p, &mut n);
+                    assert!(!f.is_null());
+                    flockfile(f);
+                    assert_eq!(fputs(c"one".as_ptr() as *const u8, f), 0);
+                    assert_eq!(fputs(c"two".as_ptr() as *const u8, f), 0);
+                    funlockfile(f);
+                    assert_eq!(fflush(ptr::null_mut()), 0);
+                    assert_eq!(fclose(f), 0);
+                    assert_eq!(n, 6);
+                    assert_eq!(std::slice::from_raw_parts(p, 7), b"onetwo\0");
+                    super::free(p);
+                }
+            })
+        })
+        .collect();
+    for t in threads {
+        t.join().unwrap();
+    }
+}
+#[test]
+fn full_line_and_unbuffered_visibility() {
+    unsafe {
+        extern "C" {
+            fn pipe(fds: *mut i32) -> i32;
+        }
+        for mode in 0..3 {
+            let mut fds = [0; 2];
+            assert_eq!(pipe(fds.as_mut_ptr()), 0);
+            let f = fdopen(fds[1], c"w".as_ptr() as *const u8);
+            assert!(!f.is_null());
+            assert_eq!(super::host_fcntl(fds[0], 4, 4i32), 0); // macOS O_NONBLOCK.
+            assert_eq!(setvbuf(f, ptr::null_mut(), mode, 64), 0);
+            assert_eq!(fputs(c"ab".as_ptr() as *const u8, f), 0);
+            let mut b = [0; 3];
+            if mode == 2 {
+                assert_eq!(super::read(fds[0], b.as_mut_ptr(), 3), 2);
+                assert_eq!(&b[..2], b"ab");
+            } else {
+                assert_eq!(super::read(fds[0], b.as_mut_ptr(), 3), -1);
+            }
+            assert_eq!(fputc(10, f), 10);
+            if mode == 0 {
+                assert_eq!(super::read(fds[0], b.as_mut_ptr(), 3), -1);
+                assert_eq!(fflush(f), 0);
+            }
+            let expected = if mode == 2 {
+                b"\n".as_slice()
+            } else {
+                b"ab\n".as_slice()
+            };
+            assert_eq!(
+                super::read(fds[0], b.as_mut_ptr(), 3),
+                expected.len() as isize
+            );
+            assert_eq!(&b[..expected.len()], expected);
+            assert_eq!(fclose(f), 0);
+            super::close(fds[0]);
+        }
+    }
+}
+#[test]
+fn failed_memstream_construction_is_unpublished() {
+    unsafe {
+        let mut p = ptr::null_mut();
+        let mut n = 99;
+        super::FAIL_REALLOC.with(|s| s.set(true));
+        assert!(open_memstream(&mut p, &mut n).is_null());
+        assert_eq!(super::pthread::errno(), 12);
+        assert_eq!(fflush(ptr::null_mut()), 0);
+        assert_eq!(n, 99);
+        assert!(p.is_null());
+    }
+}
