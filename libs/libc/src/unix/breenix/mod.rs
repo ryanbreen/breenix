@@ -1121,10 +1121,12 @@ f! {
     }
 
     pub fn CPU_COUNT_S(size: usize, cpuset: &cpu_set_t) -> c_int {
-        let words = (size / 8).min(cpuset.bits.len());
+        let words = size / 8;
         let mut count = 0;
-        for word in &cpuset.bits[..words] {
-            count += word.count_ones();
+        let mut i = 0;
+        while i < cpuset.bits.len() && i < words {
+            count += cpuset.bits[i].count_ones();
+            i += 1;
         }
         count as c_int
     }
