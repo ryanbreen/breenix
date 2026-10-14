@@ -192,8 +192,14 @@ fn positional_arguments_and_long_double() {
         });
         assert_eq!(s, "    -1.500|123|123");
         assert_eq!(n, s.len() as i32);
-        let (s, _) = printed(c"%.18Lf|%La", |p, n, f| snprintf(p, n, f, 0.125f64, 1.5f64));
-        assert_eq!(s, "0.125000000000000000|0x1.8p+0");
+        // Darwin ARM64's long double is binary64, so f64 is the matching variadic
+        // argument there. Rust has no type for binary128 (Linux ARM64) or the x87
+        // format (x86-64); float.rs's tests format those through Binary directly.
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            let (s, _) = printed(c"%.18Lf|%La", |p, n, f| snprintf(p, n, f, 0.125f64, 1.5f64));
+            assert_eq!(s, "0.125000000000000000|0x1.8p+0");
+        }
     }
 }
 struct WideOutput(Vec<u32>);
@@ -391,27 +397,56 @@ fn printf_honors_all_rounding_directions() {
         struct RoundGuard(u64);
         impl Drop for RoundGuard {
             fn drop(&mut self) {
-                unsafe {
-                    core::arch::asm!("msr fpcr, {}",in(reg)self.0,options(nomem,nostack));
-                }
+                unsafe { write_control(self.0) }
             }
         }
-        let saved: u64;
-        core::arch::asm!("mrs {}, fpcr",out(reg)saved,options(nomem,nostack));
-        let guard = RoundGuard(saved);
+        let guard = RoundGuard(read_control());
         for (mode, want) in [
             (0, "1.2|-1.2"),
             (1, "1.3|-1.2"),
             (2, "1.2|-1.3"),
             (3, "1.2|-1.2"),
         ] {
-            let setting = (saved & !(3u64 << 22)) | (mode << 22);
-            core::arch::asm!("msr fpcr, {}",in(reg)setting,options(nomem,nostack));
+            write_control(with_rounding(guard.0, mode));
             let (s, _) = printed(c"%.1f|%.1f", |p, n, f| snprintf(p, n, f, 1.25f64, -1.25f64));
             assert_eq!(s, want);
         }
         drop(guard);
     }
+}
+// Rounding control, with modes numbered as float.rs reads them: 0 to nearest,
+// 1 upward, 2 downward, 3 toward zero.
+#[cfg(target_arch = "aarch64")]
+unsafe fn read_control() -> u64 {
+    let v: u64;
+    core::arch::asm!("mrs {}, fpcr", out(reg) v, options(nomem, nostack));
+    v
+}
+#[cfg(target_arch = "aarch64")]
+unsafe fn write_control(v: u64) {
+    core::arch::asm!("msr fpcr, {}", in(reg) v, options(nomem, nostack));
+}
+#[cfg(target_arch = "aarch64")]
+fn with_rounding(control: u64, mode: u64) -> u64 {
+    // FPCR.RMode, bits 23:22, uses the same numbering.
+    (control & !(3 << 22)) | (mode << 22)
+}
+#[cfg(target_arch = "x86_64")]
+unsafe fn read_control() -> u64 {
+    let mut v = 0u32;
+    core::arch::asm!("stmxcsr [{}]", in(reg) &mut v, options(nostack));
+    v as u64
+}
+#[cfg(target_arch = "x86_64")]
+unsafe fn write_control(v: u64) {
+    let v = v as u32;
+    core::arch::asm!("ldmxcsr [{}]", in(reg) &v, options(nostack));
+}
+#[cfg(target_arch = "x86_64")]
+fn with_rounding(control: u64, mode: u64) -> u64 {
+    // MXCSR.RC, bits 14:13: 0 nearest, 1 down, 2 up, 3 toward zero.
+    let rc = [0, 2, 1, 3][mode as usize];
+    (control & !(3 << 13)) | (rc << 13)
 }
 use super::stdio::scan::*;
 #[test]
@@ -1114,6 +1149,170 @@ mod review {
             );
             assert_eq!(std::fs::read(&new).unwrap(), b"moved");
             std::fs::remove_file(new).unwrap();
+        }
+    }
+
+    /// #1537/#1538 freopen: the stream keeps its descriptor number, and the new file
+    /// is opened before the old descriptor is replaced.
+    #[test]
+    fn freopen_keeps_the_descriptor_number() {
+        unsafe {
+            let (first, cfirst) = temp_path("reopen-a", b"");
+            let (second, csecond) = temp_path("reopen-b", b"");
+            let f = fopen(cfirst.as_ptr() as *const u8, c(c"w"));
+            let fd = fileno(f);
+            assert_eq!(fputs(c(c"one"), f), 0);
+            assert_eq!(freopen(csecond.as_ptr() as *const u8, c(c"w"), f), f);
+            assert_eq!(fileno(f), fd);
+            assert_eq!(fputs(c(c"two"), f), 0);
+            assert_eq!(fclose(f), 0);
+            assert_eq!(std::fs::read(&first).unwrap(), b"one");
+            assert_eq!(std::fs::read(&second).unwrap(), b"two");
+            let missing = c"/nonexistent-dir/breenix-stdio-reopen";
+            let g = fopen(csecond.as_ptr() as *const u8, c(c"r"));
+            assert!(freopen(c(missing), c(c"r"), g).is_null());
+            assert_eq!(fclose(g), EOF);
+            std::fs::remove_file(first).unwrap();
+            std::fs::remove_file(second).unwrap();
+        }
+    }
+    /// #1537 tty detection: an fopen stream on a terminal is line buffered
+    /// (C17 7.21.5.3p8).
+    #[test]
+    fn fopen_on_a_terminal_is_line_buffered() {
+        extern "C" {
+            fn posix_openpt(flags: i32) -> i32;
+            fn grantpt(fd: i32) -> i32;
+            fn unlockpt(fd: i32) -> i32;
+            fn ptsname(fd: i32) -> *const i8;
+        }
+        unsafe {
+            let master = posix_openpt(2 | 0x20000); // O_RDWR | O_NOCTTY (macOS)
+            assert!(master >= 0);
+            assert_eq!(grantpt(master), 0);
+            assert_eq!(unlockpt(master), 0);
+            assert_eq!(super::super::host_fcntl(master, F_SETFL, O_NONBLOCK), 0);
+            let f = fopen(ptsname(master) as *const u8, c(c"w"));
+            assert!(!f.is_null());
+            assert_eq!(fputs(c(c"ab"), f), 0);
+            let mut b = [0u8; 16];
+            assert_eq!(super::super::host_read(master, b.as_mut_ptr(), 16), -1);
+            assert_eq!(fputs(c(c"c\n"), f), 0);
+            thread::sleep(Duration::from_millis(50));
+            let n = super::super::host_read(master, b.as_mut_ptr(), 16);
+            assert!(n >= 3 && b.starts_with(b"abc"), "{n}");
+            assert_eq!(fclose(f), 0);
+            super::super::close(master);
+        }
+    }
+    /// LOCALE minor 8: a multibyte character is pushed back whole or not at all.
+    #[test]
+    fn ungetc_bytes_is_all_or_nothing() {
+        unsafe {
+            let mut data = *b"z";
+            let f = fmemopen(data.as_mut_ptr(), 1, c(c"r"));
+            assert_eq!(fgetc(f), b'z' as i32);
+            assert_eq!(fgetc(f), EOF);
+            assert_ne!(feof(f), 0);
+            assert!(!ungetc_bytes_locked(f, &[1, 2, 3, 4, 5, 6, 7, 8, 9]));
+            assert_ne!(feof(f), 0);
+            assert!(ungetc_bytes_locked(f, &[0xc3, 0xa9]));
+            assert_eq!(feof(f), 0);
+            assert_eq!((fgetc(f), fgetc(f), fgetc(f)), (0xc3, 0xa9, EOF));
+            assert_eq!(fclose(f), 0);
+        }
+    }
+    /// FILES' hook for getopt's direct writes to descriptor 2.
+    #[test]
+    fn stderr_write_failure_sets_the_indicator() {
+        unsafe {
+            assert_eq!(ferror(stderr), 0);
+            stderr_write_failed();
+            assert_ne!(ferror(stderr), 0);
+            clearerr(stderr);
+        }
+    }
+    struct WideChars {
+        text: Vec<u32>,
+        n: usize,
+    }
+    impl super::super::stdlib::numscan::Chars for WideChars {
+        fn peek(&mut self) -> Option<u32> {
+            self.text.get(self.n).copied()
+        }
+        fn bump(&mut self) {
+            if self.n < self.text.len() {
+                self.n += 1;
+            }
+        }
+        fn pos(&self) -> usize {
+            self.n
+        }
+        fn rewind(&mut self, _: usize) -> bool {
+            false
+        }
+    }
+    /// Scans the null-terminated wide text with a wide format; `used` receives how
+    /// many characters were consumed.
+    unsafe extern "C" fn wide_scan(
+        input: *const u32,
+        used: *mut usize,
+        fmt: *const u32,
+        mut args: ...
+    ) -> i32 {
+        let mut n = 0;
+        while *input.add(n) != 0 {
+            n += 1;
+        }
+        let mut source = WideChars {
+            text: std::slice::from_raw_parts(input, n).to_vec(),
+            n: 0,
+        };
+        let r = super::super::stdio::scan::vscan(
+            &mut source,
+            ptr::null_mut(),
+            &Format::Wide(fmt),
+            args.as_va_list(),
+        );
+        *used = source.n;
+        r
+    }
+    fn wide(s: &str) -> Vec<u32> {
+        s.chars().map(|c| c as u32).chain([0]).collect()
+    }
+    /// LOCALE minor 7: the engine takes a wide format and wide input (C17 7.29.2.2):
+    /// %ls, %lc and %l[ store wide characters, %s and %c store multibyte text, and
+    /// scansets hold wide characters.
+    #[test]
+    fn wide_formats_scan_wide_input() {
+        unsafe {
+            let mut number = 0i32;
+            let mut word = [0u32; 8];
+            let mut narrow = [0u8; 8];
+            let mut one = 0u32;
+            let mut set = [0u32; 8];
+            let mut letter = 0u8;
+            let input = wide("42 w\u{f6}rd ascii \u{20ac} ab\u{20ac}cd%!q");
+            let fmt = wide("%d %ls %s %lc %l[a-c\u{20ac}]d%%!%c");
+            let mut used = 0;
+            let r = wide_scan(
+                input.as_ptr(),
+                &mut used,
+                fmt.as_ptr(),
+                &mut number,
+                word.as_mut_ptr(),
+                narrow.as_mut_ptr(),
+                &mut one,
+                set.as_mut_ptr(),
+                &mut letter,
+            );
+            assert_eq!((r, used), (6, 24));
+            assert_eq!(number, 42);
+            assert_eq!(&word[..5], &['w' as u32, 0xf6, 'r' as u32, 'd' as u32, 0]);
+            assert_eq!(&narrow[..6], b"ascii\0");
+            assert_eq!(one, 0x20ac);
+            assert_eq!(&set[..5], &['a' as u32, 'b' as u32, 0x20ac, 'c' as u32, 0]);
+            assert_eq!(letter, b'q');
         }
     }
 }

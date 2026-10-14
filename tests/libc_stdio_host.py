@@ -13,17 +13,17 @@ with tempfile.TemporaryDirectory(prefix='breenix-stdio-') as tmp:
         destination = tmp / module
         destination.mkdir()
         for source in (root / 'libs/libbreenix-libc/src' / module).glob('*.rs'):
-            if module == 'locale' and source.name != 'mod.rs':
-                continue
-            text = source.read_text().replace('#[no_mangle]', '')
-            text = text.replace('pub static mut stdin', '#[allow(non_upper_case_globals)]\npub static mut stdin').replace('pub static mut stdout', '#[allow(non_upper_case_globals)]\npub static mut stdout').replace('pub static mut stderr', '#[allow(non_upper_case_globals)]\npub static mut stderr')
+            # C names such as stdin and tzname stay lowercase once unexported.
+            text = source.read_text().replace('#[no_mangle]', '#[allow(non_upper_case_globals)]')
             if module == 'stdio' and source.name == 'mod.rs' and '--format-only' in sys.argv:
                 text = text.replace('mod scan;', '').replace('mod misc;', '')
             elif module == 'stdio' and source.name == 'mod.rs':
                 text = text.replace('\nmod misc;', '\npub(crate) mod misc;')
+            # The whole locale module is compiled as a service. The test build sets
+            # cfg(test), which leaves out its stream and formatting parts; its own
+            # unit tests are stripped because this runner does not run them.
             if module == 'locale':
-                text = text.replace('mod multibyte;', '')
-                text = text.split('#[cfg(test)]')[0]
+                text = text.split('#[cfg(test)]\nmod tests')[0]
             (destination / source.name).write_text(text)
     # Shared dependencies are compiled as services for stdio's tests only.
     # Strip their unit tests; this lane does not run another owner's host tests.

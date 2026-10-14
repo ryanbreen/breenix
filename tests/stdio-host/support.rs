@@ -14,6 +14,13 @@ mod pthread {
     pub fn errno() -> i32 {
         ERROR.with(|s| s.get())
     }
+    thread_local! {static LOCALE: Cell<*mut core::ffi::c_void> = const { Cell::new(std::ptr::null_mut()) };}
+    /// This thread's uselocale slot; null selects the process locale. Called by the
+    /// locale service's objects module, which only the integrated tree has.
+    #[allow(dead_code)]
+    pub unsafe fn locale_slot() -> *mut *mut core::ffi::c_void {
+        LOCALE.with(|s| s.as_ptr())
+    }
     pub struct RecursiveLock {
         owner: AtomicU64,
         depth: std::cell::UnsafeCell<usize>,
@@ -219,6 +226,12 @@ pub fn _exit(s: i32) -> ! {
 #[allow(non_upper_case_globals)]
 mod env {
     pub static mut environ: *mut *mut u8 = std::ptr::null_mut();
+    /// Host tests run in the C locale whatever the host environment says. Called by
+    /// the locale service's objects module, which only the integrated tree has.
+    #[allow(dead_code)]
+    pub fn getenv_bytes(_name: &[u8]) -> Option<&'static [u8]> {
+        None
+    }
 }
 extern "C" {
     #[link_name = "sched_yield"]
@@ -254,4 +267,17 @@ pub unsafe fn syscall(n: i64, a: i64, b: i64, c: i64, d: i64, _: i64, _: i64) ->
         dir(c),
         d as *const u8,
     )) as i64
+}
+extern "C" {
+    #[link_name = "clock_gettime"]
+    fn host_clock_gettime(clock: u32, t: *mut u8) -> i32;
+}
+/// The locale service's clocks, translated from Linux's numbering to the host's.
+pub unsafe fn clock_gettime(clock: i32, t: *mut u8) -> i32 {
+    let host = match clock {
+        1 => 6,  // CLOCK_MONOTONIC
+        2 => 12, // CLOCK_PROCESS_CPUTIME_ID
+        c => c as u32,
+    };
+    capture(host_clock_gettime(host, t))
 }
