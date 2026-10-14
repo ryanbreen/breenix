@@ -71,6 +71,10 @@
           "title": "clone with CLONE_VM, CLONE_VFORK and no child stack starts a child the parent waits for"
         },
         {
+          "id": "clone-flags",
+          "title": "A clone without CLONE_VM shares the descriptor table under CLONE_FILES, stores the thread ID for CLONE_PARENT_SETTID and CLONE_CHILD_SETTID, and refuses CLONE_SIGHAND"
+        },
+        {
           "id": "many-children",
           "title": "32 children are alive at once, and each exits with its own status"
         },
