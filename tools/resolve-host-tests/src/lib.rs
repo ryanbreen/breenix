@@ -575,3 +575,56 @@ fn oversized_hosts_name_falls_back_and_unreadable_hosts_do_not_fail() {
         netdb::freeaddrinfo(p);
     }
 }
+
+// pthread-specific storage shims for the production inet_ntoa implementation.
+pub mod pthread {
+    use std::{cell::Cell, sync::Once};
+    static ONCE: Once = Once::new();
+    thread_local! { static VALUE: Cell<*mut u8> = const { Cell::new(core::ptr::null_mut()) }; }
+    pub unsafe fn pthread_once(_p: *mut i32, init: extern "C" fn()) -> i32 {
+        ONCE.call_once(|| init());
+        0
+    }
+    pub unsafe fn pthread_key_create(key: *mut u32, _destructor: Option<unsafe extern "C" fn(*mut u8)>) -> i32 {
+        *key = 0;
+        0
+    }
+    pub unsafe fn pthread_getspecific(_key: u32) -> *mut u8 { VALUE.with(Cell::get) }
+    pub unsafe fn pthread_setspecific(_key: u32, value: *mut u8) -> i32 {
+        VALUE.with(|slot| slot.set(value));
+        0
+    }
+    pub unsafe fn cleanup() {
+        VALUE.with(|slot| crate::free(slot.replace(core::ptr::null_mut())));
+    }
+}
+
+#[test]
+fn inet_ntoa_preserves_other_threads_buffers() {
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+    let threads: Vec<_> = (1..=8).map(|last| {
+        let barrier = barrier.clone();
+        std::thread::spawn(move || unsafe {
+            let address = [192, 0, 2, last];
+            let p = inet::inet_ntoa(u32::from_ne_bytes(address));
+            assert!(!p.is_null());
+            barrier.wait();
+            assert_eq!(std::ffi::CStr::from_ptr(p.cast()).to_bytes(), format!("192.0.2.{last}").as_bytes());
+            assert_eq!(inet::inet_ntoa(u32::from_ne_bytes([127, 0, 0, 1])), p);
+            assert_eq!(std::ffi::CStr::from_ptr(p.cast()).to_bytes(), b"127.0.0.1");
+            pthread::cleanup();
+        })
+    }).collect();
+    for thread in threads { thread.join().unwrap(); }
+}
+
+#[path = "../../../libs/libbreenix-libc/src/string/errtext.rs"]
+mod errtext;
+#[test]
+fn network_errors_have_descriptions() {
+    for error in [64, 94, 112] {
+        assert!(errtext::error_text(error).is_some());
+        assert!(errtext::error_cstr(error).unwrap().ends_with('\0'));
+    }
+    assert!(errtext::signal_text(13).is_some());
+}

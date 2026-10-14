@@ -146,13 +146,15 @@ fn is_local_addr(addr: [u8; 4]) -> bool {
 /// SO_KEEPALIVE and SO_REUSEADDR: when it is made, and whenever one of them
 /// is set (`option_set`).
 fn apply_options(sk: &Socket, conn: &ConnectionId) {
-    let options = sk.common.with_opts(|o| tcp::ConnOptions {
-        rcvbuf: o.rcvbuf,
-        sndbuf: o.sndbuf,
-        keepalive: o.keepalive,
-        reuse: o.reuseaddr,
+    tcp::tcp_set_options(conn, || {
+        sk.common.with_opts(|o| tcp::ConnOptions {
+            rcvbuf: o.rcvbuf,
+            sndbuf: o.sndbuf,
+            keepalive: o.keepalive,
+            reuse: o.reuseaddr,
+            ttl: o.ttl,
+        })
     });
-    tcp::tcp_set_options(conn, options);
 }
 
 /// SO_LINGER with a positive time: wait, at most that long, for the peer to
@@ -211,6 +213,7 @@ impl ProtoOps for TcpSock {
         let backlog = backlog.max(0) as usize;
         let pid = super::object::caller_pid();
         let reuse = sk.common.reuseaddr();
+        let ttl = sk.common.ttl();
         let mut inner = self.inner.lock();
         let (addr, port, autobound) = match inner.state {
             TcpSockState::Bound { addr, port } => (addr, port, false),
@@ -223,7 +226,15 @@ impl ProtoOps for TcpSock {
             }
             TcpSockState::Connected(_) => return Err(errno::EINVAL),
         };
-        match tcp::tcp_listen(addr, port, backlog, pid, reuse, Some(Arc::downgrade(sk))) {
+        match tcp::tcp_listen(
+            addr,
+            port,
+            backlog,
+            pid,
+            reuse,
+            ttl,
+            Some(Arc::downgrade(sk)),
+        ) {
             Ok(id) => {
                 inner.state = TcpSockState::Listening { addr, port, id };
                 Ok(())
@@ -250,9 +261,12 @@ impl ProtoOps for TcpSock {
             addr: conn.remote_ip,
             port: conn.remote_port,
         };
-        // The socket starts with the listener's options, as on Linux.
+        // Preserve the TTL cloned by the handshake, even if the listener
+        // changed it while this connection waited in the accept queue.
+        let ttl = tcp::tcp_ttl(&conn).ok_or(errno::ECONNABORTED)?;
         match Socket::new_child(sk, SocketProto::Tcp(TcpSock::connected(conn))) {
             Ok(socket) => {
+                socket.common.with_opts(|o| o.ttl = ttl);
                 tcp::tcp_set_owner(&conn, Arc::downgrade(&socket));
                 apply_options(&socket, &conn);
                 Ok((socket, peer))
@@ -272,6 +286,7 @@ impl ProtoOps for TcpSock {
             _ => return Err(errno::EAFNOSUPPORT),
         };
         let pid = super::object::caller_pid();
+        let ttl = sk.common.ttl();
         let conn = {
             let mut inner = self.inner.lock();
             let (bind_addr, local_port, autobound) = match inner.state {
@@ -293,16 +308,16 @@ impl ProtoOps for TcpSock {
                 TcpSockState::Listening { .. } => return Err(errno::EISCONN),
             };
             // The connection takes over the binding, or the socket keeps it.
-            let conn = match tcp::tcp_connect(bind_addr, local_port, remote_ip, remote_port, pid)
-            {
-                Ok(conn) => conn,
-                Err(error) => {
-                    if autobound {
-                        tcp::tcp_unbind_port(bind_addr, local_port);
+            let conn =
+                match tcp::tcp_connect(bind_addr, local_port, remote_ip, remote_port, pid, ttl) {
+                    Ok(conn) => conn,
+                    Err(error) => {
+                        if autobound {
+                            tcp::tcp_unbind_port(bind_addr, local_port);
+                        }
+                        return Err(error);
                     }
-                    return Err(error);
-                }
-            };
+                };
             tcp::tcp_set_owner(&conn, Arc::downgrade(sk));
             apply_options(sk, &conn);
             inner.state = TcpSockState::Connected(conn);
@@ -498,8 +513,10 @@ impl ProtoOps for TcpSock {
     }
 
     fn option_set(&self, sk: &Socket, _level: i32, _name: i32) {
-        if let Some(conn) = self.connection() {
-            apply_options(sk, &conn);
+        match self.state() {
+            TcpSockState::Connected(conn) => apply_options(sk, &conn),
+            TcpSockState::Listening { id, .. } => tcp::tcp_set_listener_ttl(id, || sk.common.ttl()),
+            _ => {}
         }
     }
 

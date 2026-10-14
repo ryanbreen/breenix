@@ -2629,8 +2629,15 @@ fn setup_loopback_tcp_pair(
     use crate::net::tcp;
     use crate::process::process::ProcessId;
 
-    let Ok(listener) = tcp::tcp_listen([0; 4], listen_port, 4, ProcessId::new(0), false, None)
-    else {
+    let Ok(listener) = tcp::tcp_listen(
+        [0; 4],
+        listen_port,
+        4,
+        ProcessId::new(0),
+        false,
+        crate::net::ipv4::DEFAULT_TTL,
+        None,
+    ) else {
         return Err("tcp_listen failed during loopback setup");
     };
 
@@ -2640,6 +2647,7 @@ fn setup_loopback_tcp_pair(
         [127, 0, 0, 1],
         listen_port,
         ProcessId::new(0),
+        crate::net::ipv4::DEFAULT_TTL,
     ) {
         Ok(connection) => connection,
         Err(_) => {
@@ -3344,8 +3352,15 @@ fn tcp_accept_waits_for_final_ack() -> TestResult {
     const CLIENT_PORT: u16 = 54_531;
     const CLIENT_ISN: u32 = 0x5453_0000;
 
-    let Ok(listener) = tcp::tcp_listen([0; 4], LISTEN_PORT, 4, ProcessId::new(0), false, None)
-    else {
+    let Ok(listener) = tcp::tcp_listen(
+        [0; 4],
+        LISTEN_PORT,
+        4,
+        ProcessId::new(0),
+        false,
+        crate::net::ipv4::DEFAULT_TTL,
+        None,
+    ) else {
         return TestResult::Fail("tcp_listen failed in the accept handshake fixture");
     };
     let server_ip = crate::net::config().ip_addr;

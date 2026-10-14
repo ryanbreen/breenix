@@ -90,9 +90,10 @@ s! {
         pub sun_path: [c_char; 108],
     }
 
+    // 128 bytes, as include/sys/socket.h and Linux define it.
     pub struct sockaddr_storage {
         pub ss_family: crate::sa_family_t,
-        __ss_padding: Padding<[u8; 126]>,
+        __ss_padding: Padding<[u8; 128 - 2 - 8]>,
         __ss_align: c_ulong,
     }
 
@@ -114,6 +115,8 @@ s! {
         pub dli_saddr: *mut c_void,
     }
 
+    // Packed on x86_64, as the kernel's EpollEvent and Linux's are.
+    #[cfg_attr(target_arch = "x86_64", repr(packed))]
     pub struct epoll_event {
         pub events: u32,
         pub u64: u64,
@@ -124,7 +127,8 @@ s! {
     }
 
     /// A CPU set: CPU_SETSIZE bits in 64-bit words on both architectures, the
-    /// 128 bytes Linux's cpu_set_t occupies.
+    /// 128 bytes Linux's cpu_set_t occupies. The kernel returns an 8-byte mask;
+    /// libc zero-fills the remaining bytes of this public type.
     pub struct cpu_set_t {
         bits: [u64; CPU_SETSIZE as usize / 64],
     }
@@ -1449,11 +1453,5 @@ unsafe extern "C" {
     pub fn sched_rr_get_interval(pid: crate::pid_t, interval: *mut crate::timespec) -> c_int;
 }
 
-// The kernel writes exactly these sizes (kernel/src/syscall/fs.rs).
-#[cfg(target_arch = "x86_64")]
-const _: () = core::assert!(core::mem::size_of::<stat>() == 144 && core::mem::size_of::<stat64>() == 144);
-#[cfg(target_arch = "aarch64")]
-const _: () = core::assert!(core::mem::size_of::<stat>() == 128 && core::mem::size_of::<stat64>() == 128);
-// Linux's public CPU set: the kernel's sched_getaffinity writes its first 8 bytes and
-// libbreenix-libc zero-fills the rest.
-const _: () = core::assert!(core::mem::size_of::<cpu_set_t>() == 128);
+// Every struct std hands to the kernel or to libbreenix-libc, pinned per architecture.
+mod layout;
