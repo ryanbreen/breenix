@@ -246,7 +246,7 @@ if not result['compile_ok'] or not result['core']['links'] or failed or result['
     sys.exit(1)
 PYCHECK
 if ! "$CC" --arch "$ARCH" -Wl,--error-limit=0 "$WORK/objects.a" -o "$WORK/busybox.elf" > "$WORK/link.log" 2>&1; then
-    echo "libc-busybox: final link failed ($ARCH)" >&2
+    echo "libc-busybox: final link failed:" >&2
     cat "$WORK/link.log" >&2
     exit 1
 fi
