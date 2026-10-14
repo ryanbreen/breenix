@@ -78,6 +78,8 @@ prlctl() { "$CONTROLLER" "$@"; }
 host_slot_header() { :; }
 vmware_check_network_log() { :; }
 vmware_network_summary() { :; }
+host_slot_release() { :; }
+delete_vmware_bundle() { :; }
 install_vm_boot_traps
 exit 0
 '''

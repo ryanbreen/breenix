@@ -370,6 +370,27 @@ score_vm_suite_disk() {
     )
 }
 
+# Delete a stopped VMware VM's bundle and its Fusion library entry. A vmware-vmx that was killed leaves its
+# *.lck directories behind, and vmrun deleteVM then answers "Insufficient permissions" and keeps the VM;
+# the VM is stopped, so those locks are stale. A bundle with no .vmx is not a Fusion VM and is removed
+# through a /tmp folder. Callers pass only bundles whose VM is not running.
+delete_vmware_bundle() {
+    local bundle="$1" vmx scratch lock output
+    [ -d "$bundle" ] || return 0
+    vmx="$bundle/$(basename "$bundle" .vmwarevm).vmx"
+    scratch=$(mktemp -d /tmp/breenix-vmware-delete.XXXXXX) || return 1
+    if [ -f "$vmx" ]; then
+        for lock in "$bundle"/*.lck; do
+            [ ! -e "$lock" ] || mv "$lock" "$scratch/"
+        done
+        output=$(bounded_vm_command "$VMRUN" deleteVM "$vmx" 2>&1)
+        [ ! -d "$bundle" ] || echo "WARNING: vmrun deleteVM kept $bundle: $output"
+    else
+        mv "$bundle" "$scratch/"
+    fi
+    rm -rf "$scratch"
+}
+
 finish_vm_boot() {
     local status=$?
     local stopped=true
@@ -397,6 +418,13 @@ finish_vm_boot() {
     fi
     host_slot_header "$SERIAL_LOG"
     "$BREENIX_ROOT/scripts/vigil-record.sh" finish "${VIGIL_ID:-}" "$status"
+    if [ "$PARALLELS" != true ] && [ "$stopped" = true ]; then
+        # Each boot's VM goes with it, after its verdict is recorded and its slot released; the VM's
+        # vmware.log stays beside the serial log.
+        cp "$VM_BUNDLE/vmware.log" "$SERIAL_LOG.vmware.log" 2>/dev/null || true
+        host_slot_release mac-boot
+        delete_vmware_bundle "$VM_BUNDLE"
+    fi
     exit "$status"
 }
 
@@ -967,11 +995,11 @@ if [ "$VMWARE" = true ]; then
     VM_NAME="breenix-$(date +%s)"
     VM_BUNDLE="$VM_MACHINES/$VM_NAME.vmwarevm"
     echo "VM name: $VM_NAME"
-    # Delete earlier boots' VM bundles, which nothing else removes (one per boot, about 100 MB each): only
-    # breenix-<epoch> bundles that are not running and were created more than 30 minutes ago, so a caller still
-    # scoring a just-stopped VM's data disk keeps it. Age comes from the epoch in the name, because VMware Fusion
-    # rewrites listed bundle files, so their modification times are unsuitable. Sweep
-    # before VM startup, so housekeeping cannot delay recording a completed boot or releasing its slot.
+    # Each boot deletes its own VM as it exits; this sweep removes the ones a run killed outright left behind
+    # (one per boot, about 100 MB each): only breenix-<epoch> bundles that are not running and were created
+    # more than 30 minutes ago, so another run still scoring its just-stopped VM's data disk keeps it. Age comes
+    # from the epoch in the name, because VMware Fusion rewrites listed bundle files, so their modification
+    # times are unsuitable. Sweep before VM startup, so housekeeping cannot delay recording a completed boot.
     sweep_vmware_bundles() {
         local now old_bundle old_name old_vmx VM_BUNDLE_LIST
         VM_BUNDLE_LIST=$(mktemp)
@@ -983,15 +1011,18 @@ if [ "$VMWARE" = true ]; then
             old_vmx="$old_bundle/$old_name.vmx"
             bounded_vm_command "$VMRUN" list > "$VM_BUNDLE_LIST" 2>/dev/null || { rm -f "$VM_BUNDLE_LIST"; return 0; }
             grep -qxF "$old_vmx" "$VM_BUNDLE_LIST" && continue
-            # deleteVM also drops the VM from Fusion's library; a bare rm leaves a dead library entry behind.
-            bounded_vm_command "$VMRUN" deleteVM "$old_vmx" >/dev/null 2>&1 || true
+            delete_vmware_bundle "$old_bundle"
         done
         rm -f "$VM_BUNDLE_LIST"
     }
     sweep_vmware_bundles
 
-    # Create VM bundle
+    # Create VM bundle. Until the boot's own traps are installed, any exit deletes it.
     mkdir -p "$VM_BUNDLE"
+    trap 'delete_vmware_bundle "$VM_BUNDLE"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 129' HUP
+    trap 'exit 143' TERM
 
     # Copy VMDKs into the bundle
     cp "$VMWARE_DIR/boot.vmdk" "$VM_BUNDLE/boot.vmdk"

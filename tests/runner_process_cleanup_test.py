@@ -67,6 +67,7 @@ prlctl() {{
                 log = root / "vmware.log"
                 log.write_text("started\n")
                 pid_file = root / "monitor.pid"
+                deleted = root / "deleted"
                 script = f"""
 finish_vm_boot() {{
 {finish}
@@ -79,6 +80,8 @@ host_slot_header() {{ :; }}
 vmware_check_network_log() {{ :; }}
 vmware_network_summary() {{ :; }}
 sweep_vmware_bundles() {{ :; }}
+host_slot_release() {{ :; }}
+delete_vmware_bundle() {{ echo "$1" > {deleted}; }}
 PARALLELS={'true' if platform == 'parallels' else 'false'}
 PARALLELS_VM=test-vm
 VMRUN=/usr/bin/true
@@ -101,6 +104,10 @@ install_vm_boot_traps
                 while self.is_alive(pid) and time.monotonic() < deadline:
                     time.sleep(0.02)
                 self.assertFalse(self.is_alive(pid), f"{name} left monitor PID {pid} alive")
+                if platform == "vmware":
+                    self.assertEqual(deleted.read_text().strip(), str(root), f"{name} kept its VM")
+                else:
+                    self.assertFalse(deleted.exists(), f"{name} deleted a VMware bundle")
 
     def test_stopped_suite_exits_before_log_watching(self):
         source = RUNNER.read_text()

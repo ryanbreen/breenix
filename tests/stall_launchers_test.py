@@ -86,6 +86,8 @@ host_slot_header() { :; }
 vmware_check_network_log() { :; }
 vmware_network_summary() { :; }
 sweep_vmware_bundles() { sleep 10; }
+host_slot_release() { :; }
+delete_vmware_bundle() { :; }
 '''
                 shell = subprocess.Popen(['bash', '-c', definitions + '\n' + stubs +
                                           'install_vm_boot_traps\n' + blocks[index]],
