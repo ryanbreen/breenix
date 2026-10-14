@@ -55,8 +55,9 @@ pub struct Ext2Fs {
     pub superblock: Ext2Superblock,
     /// Block group descriptors
     pub block_groups: Vec<Ext2BlockGroupDesc>,
-    /// The underlying block device
-    pub device: alloc::boxed::Box<dyn BlockDevice>,
+    /// The underlying block device, through the mount's write fence and its
+    /// copy of recently transferred blocks
+    pub device: alloc::boxed::Box<mount_device::MountDevice>,
     /// Set when the tree was left inconsistent; the device then refuses
     /// every write.
     failed: alloc::sync::Arc<AtomicBool>,
@@ -177,6 +178,17 @@ impl Ext2Fs {
             inodes: u64::from(self.superblock.s_inodes_count),
             free_inodes,
         }
+    }
+
+    /// The superblock and group descriptors as the device holds them, read
+    /// past the mount's copy of recent blocks, for checks that compare the
+    /// mount's counts with what reached the disk.
+    pub fn persisted_metadata(&self) -> Result<(Ext2Superblock, Vec<Ext2BlockGroupDesc>), &'static str> {
+        let device = self.device.uncached();
+        let superblock = Ext2Superblock::read_from(device).map_err(|_| "Failed to read superblock")?;
+        let groups = Ext2BlockGroupDesc::read_table(device, &superblock)
+            .map_err(|_| "Failed to read block group descriptors")?;
+        Ok((superblock, groups))
     }
 
     pub fn pin_inode(&self, inode_num: u32) -> Result<live_inode::FileHandle, &'static str> {

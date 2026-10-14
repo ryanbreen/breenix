@@ -624,15 +624,15 @@ pub fn read_file(path: &str) -> Result<String, i32> {
 /// Settle queued orphan reclamation before snapshotting allocation counters
 /// and their persisted counterparts. Failures reach the reader.
 fn generate_ext2() -> Result<String, i32> {
-    use crate::fs::ext2::{self, Ext2BlockGroupDesc, Ext2Superblock};
+    use crate::fs::ext2;
     use core::fmt::Write;
     let mut text = String::new();
     for home in [false, true] {
         let guard = ext2::accounting_fs_write(home).map_err(|_| 5)?;
         let name = if home { "home" } else { "root" };
         if let Some(fs) = guard.as_ref() {
-            let disk = Ext2Superblock::read_from(fs.device.as_ref()).map_err(|_| 5)?;
-            let groups = Ext2BlockGroupDesc::read_table(fs.device.as_ref(), &disk).map_err(|_| 5)?;
+            // Read from the device itself, not the mount's copy of what it wrote.
+            let (disk, groups) = fs.persisted_metadata().map_err(|_| 5)?;
             let free = fs.superblock.s_free_blocks_count;
             let disk_free = disk.s_free_blocks_count;
             let group_free: u64 = fs.block_groups.iter().map(|g| g.bg_free_blocks_count as u64).sum();

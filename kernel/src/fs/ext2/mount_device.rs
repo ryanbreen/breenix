@@ -15,7 +15,7 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-pub(super) struct MountDevice {
+pub struct MountDevice {
     inner: Box<dyn BlockDevice>,
     failed: Arc<AtomicBool>,
     cache: Option<SectorCache>,
@@ -28,6 +28,11 @@ impl MountDevice {
     pub(super) fn new(inner: Box<dyn BlockDevice>, failed: Arc<AtomicBool>, cached: bool) -> Self {
         let cache = if cached { SectorCache::new(inner.block_size()) } else { None };
         Self { inner, failed, cache }
+    }
+
+    /// The device itself, past the copy: for checks of what reached the disk.
+    pub(super) fn uncached(&self) -> &dyn BlockDevice {
+        self.inner.as_ref()
     }
 
     fn write(&self, start_block: u64, buf: &[u8], write: impl FnOnce() -> Result<(), BlockError>) -> Result<(), BlockError> {
