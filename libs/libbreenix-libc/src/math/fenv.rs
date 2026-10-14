@@ -24,6 +24,9 @@ mod arch {
     pub(crate) const FE_TOWARDZERO: i32 = 0xc0_0000;
     const RMODE: u64 = 0xc0_0000;
 
+    /// fexcept_t.
+    pub type FExcept = u32;
+
     /// fenv_t: { unsigned int fpcr; unsigned int fpsr; }.
     #[repr(C)]
     pub struct FEnv {
@@ -94,6 +97,9 @@ mod arch {
     pub(crate) const FE_UPWARD: i32 = 0x800;
     pub(crate) const FE_TOWARDZERO: i32 = 0xc00;
     const RC: u16 = 0xc00;
+
+    /// fexcept_t.
+    pub type FExcept = u16;
 
     /// fenv_t: the 28-byte x87 environment image fnstenv stores, then MXCSR.
     #[repr(C)]
@@ -203,13 +209,13 @@ pub extern "C" fn fetestexcept(excepts: i32) -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn fegetexceptflag(flagp: *mut u32, excepts: i32) -> i32 {
-    *flagp = (flags() & excepts & FE_ALL_EXCEPT) as u32;
+pub unsafe extern "C" fn fegetexceptflag(flagp: *mut FExcept, excepts: i32) -> i32 {
+    *flagp = (flags() & excepts & FE_ALL_EXCEPT) as FExcept;
     0
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn fesetexceptflag(flagp: *const u32, excepts: i32) -> i32 {
+pub unsafe extern "C" fn fesetexceptflag(flagp: *const FExcept, excepts: i32) -> i32 {
     set_flags(excepts, *flagp as i32);
     0
 }
