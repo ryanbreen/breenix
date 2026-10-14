@@ -15,7 +15,9 @@ typedef int nl_item;
 #define NOEXPR 0x50001
 #define CRNCYSTR 0x4000f
 char *nl_langinfo(nl_item);
+#if defined(__BREENIX_POSIX)
 char *nl_langinfo_l(nl_item, locale_t);
+#endif
 #define ABDAY_1 0x20000
 #define ABDAY_2 0x20001
 #define ABDAY_3 0x20002
