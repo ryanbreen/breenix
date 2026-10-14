@@ -333,3 +333,35 @@ fn failed_memstream_construction_is_unpublished() {
         assert!(p.is_null());
     }
 }
+#[test]
+fn prior_error_does_not_discard_a_successful_fgets() {
+    unsafe {
+        let mut bytes = *b"abc\n";
+        let f = fmemopen(bytes.as_mut_ptr(), 4, c"r".as_ptr() as *const u8);
+        assert_eq!(fputc(1, f), -1);
+        assert_ne!(ferror(f), 0);
+        let mut b = [0; 5];
+        assert_eq!(fgets(b.as_mut_ptr(), 5, f), b.as_mut_ptr());
+        assert_eq!(&b, b"abc\n\0");
+        assert_ne!(ferror(f), 0);
+        assert_eq!(fclose(f), 0);
+    }
+}
+#[test]
+fn getline_ignores_capacity_when_pointer_is_null() {
+    unsafe {
+        let mut bytes = *b"long line\nx";
+        let f = fmemopen(bytes.as_mut_ptr(), bytes.len(), c"r".as_ptr() as *const u8);
+        let mut p = ptr::null_mut();
+        let mut capacity = usize::MAX;
+        assert_eq!(getline(&mut p, &mut capacity, f), 10);
+        assert!(capacity > 10);
+        assert_eq!(std::slice::from_raw_parts(p, 11), b"long line\n\0");
+        assert_eq!(getline(&mut p, &mut capacity, f), 1);
+        assert_eq!(std::slice::from_raw_parts(p, 2), b"x\0");
+        assert_eq!(getline(&mut p, &mut capacity, f), -1);
+        assert_ne!(feof(f), 0);
+        fclose(f);
+        super::free(p);
+    }
+}

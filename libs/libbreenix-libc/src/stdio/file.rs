@@ -752,9 +752,11 @@ pub unsafe extern "C" fn fgets(p: *mut u8, n: i32, f: *mut File) -> *mut u8 {
     lock(f);
     orient(f, -1);
     let mut i = 0;
+    let mut failed = false;
     while i < (n - 1) as usize {
         let c = getc_locked(f);
         if c == EOF {
+            failed = (*f).error;
             break;
         }
         *p.add(i) = c as u8;
@@ -763,7 +765,7 @@ pub unsafe extern "C" fn fgets(p: *mut u8, n: i32, f: *mut File) -> *mut u8 {
             break;
         }
     }
-    let r = if (*f).error || (i == 0 && n > 1) {
+    let r = if failed || (i == 0 && n > 1) {
         ptr::null_mut()
     } else {
         *p.add(i) = 0;
@@ -969,7 +971,9 @@ pub unsafe extern "C" fn getdelim(
     let mut r = -1;
     loop {
         if (*line).is_null() || n + 1 >= *cap {
-            let Some(newcap) = core::cmp::max(*cap, 64).checked_mul(2) else {
+            let Some(newcap) =
+                core::cmp::max(if (*line).is_null() { 0 } else { *cap }, 64).checked_mul(2)
+            else {
                 fail(f, EOVERFLOW);
                 break;
             };
@@ -1099,7 +1103,9 @@ pub unsafe extern "C" fn tmpfile() -> *mut File {
             return ptr::null_mut();
         }
         if crate::unlink(path.as_ptr()) < 0 {
+            let e = crate::pthread::errno();
             crate::close(fd);
+            crate::pthread::set_errno(e);
             return ptr::null_mut();
         }
         let f = allocate(fd, true, true);
