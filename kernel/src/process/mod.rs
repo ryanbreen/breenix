@@ -13,6 +13,7 @@ pub mod limits;
 pub mod manager;
 pub mod process;
 pub(crate) mod unpublished;
+mod wait_epoch;
 
 pub use manager::ProcessManager;
 pub use manager::{InitDesignationTicket, InitPublication, FIRST_ORDINARY_PID, RESERVED_INIT_PID};
@@ -199,7 +200,7 @@ impl core::ops::DerefMut for ProcessManagerGuard {
 }
 
 /// Global process manager
-pub static PROCESS_MANAGER: Mutex<Option<ProcessManager>> = Mutex::new(None);
+static PROCESS_MANAGER: Mutex<Option<ProcessManager>> = Mutex::new(None);
 
 #[inline(always)]
 fn note_process_manager_lock_acquired() {
@@ -211,19 +212,17 @@ fn note_process_manager_lock_acquired() {
 
 #[inline(always)]
 fn note_process_manager_lock_released(mutated: bool) {
-    if mutated {
-        PROCESS_MANAGER_MUTATIONS.fetch_add(1, Ordering::Release);
-    }
+    PROCESS_MANAGER_MUTATIONS.release(mutated);
     PROCESS_MANAGER_OWNER_TID.store(PM_LOCK_OWNER_NONE, Ordering::Relaxed);
     PROCESS_MANAGER_OWNER_CPU.store(PM_LOCK_OWNER_NONE, Ordering::Release);
 }
 
 /// Releases of holders that exposed mutable access. Read-only holders cannot
 /// change child wait state and must not invalidate an empty WNOHANG scan.
-static PROCESS_MANAGER_MUTATIONS: AtomicU64 = AtomicU64::new(0);
+static PROCESS_MANAGER_MUTATIONS: wait_epoch::WaitEpoch = wait_epoch::WaitEpoch::new();
 
 pub fn process_manager_mutations() -> u64 {
-    PROCESS_MANAGER_MUTATIONS.load(Ordering::Acquire)
+    PROCESS_MANAGER_MUTATIONS.load()
 }
 
 #[cfg(target_arch = "aarch64")]

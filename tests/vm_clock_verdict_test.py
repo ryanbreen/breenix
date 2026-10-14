@@ -19,9 +19,9 @@ class VMClockVerdictTest(unittest.TestCase):
         manifest = json.loads((ROOT / 'docs/suites/time.json').read_text())
         cases = [f"{category['id']}/{case['id']}" for category in manifest['categories']
                  for case in category['cases']]
-        suite = ('SUITE time START cases=89\n' +
+        suite = (f'SUITE time START cases={len(cases)}\n' +
                  ''.join(f'SUITE time CASE {case} PASS ms=0\n' for case in cases) +
-                 'SUITE time DONE passed=89 failed=0 skipped=0 total=89\n')
+                 f'SUITE time DONE passed={len(cases)} failed=0 skipped=0 total={len(cases)}\n')
         for offset in (None, -14400, 3600, 0):
             with self.subTest(offset=offset), tempfile.TemporaryDirectory() as directory:
                 started = time.time()
@@ -32,7 +32,7 @@ class VMClockVerdictTest(unittest.TestCase):
                 with patch.object(sys, 'argv', ['wait', str(serial), 'suite', '--suite', 'time',
                                               '--started', str(started)]), contextlib.redirect_stdout(output):
                     self.assertEqual(WAIT['main'](), 0 if offset == 0 else 1)
-                self.assertIn('PASS: SUITE time DONE passed=89 failed=0', output.getvalue())
+                self.assertIn(f'PASS: SUITE time DONE passed={len(cases)} failed=0', output.getvalue())
                 self.assertIn('UTC clock PASS' if offset == 0 else 'UTC clock FAIL', output.getvalue())
 
 

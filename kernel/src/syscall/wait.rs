@@ -112,17 +112,17 @@ struct Found {
 /// matches the selector. A `CallerGroup` selector is bound here to the
 /// caller's group, so a later setpgid by the caller does not change which
 /// children the wait selects, and the group read and the scan share one hold.
-/// `mutations` is set to `process::process_manager_mutations()` as that mutable hold
-/// ends.
+/// `mutations` is set to `process::process_manager_mutations()` as that hold ends; an empty scan exposes no mutable access.
 fn scan(
     thread_id: u64,
     selector: &mut Selector,
     options: u32,
     mutations: &mut u64,
 ) -> Result<Option<Found>, u64> {
-    crate::process::with_process_manager(|manager| {
-        // Read under the lock: the release ending this hold adds one.
-        *mutations = crate::process::process_manager_mutations() + 1;
+    let mut guard = crate::process::manager();
+    let manager = guard.as_ref().ok_or(ECHILD as u64)?;
+    *mutations = crate::process::process_manager_mutations();
+    let result = (|| {
         let (reaper, caller_pgid, children) = match manager.find_process_by_thread(thread_id) {
             Some((pid, caller)) => (pid, caller.pgid, caller.children.clone()),
             None => return Err(EINVAL as u64),
@@ -136,7 +136,7 @@ fn scan(
         for child_pid in children {
             // A leader whose other threads still run is a running process.
             let group_running = manager.leader_waits_for_group(child_pid);
-            let Some(child) = manager.get_process_mut(child_pid) else {
+            let Some(child) = manager.get_process(child_pid) else {
                 continue;
             };
             let selected = match selector {
@@ -170,9 +170,6 @@ fn scan(
                 Some(JobReport::Continued) if options & WCONTINUED != 0 => Event::Continued,
                 _ => continue,
             };
-            if options & WNOWAIT == 0 {
-                child.job.report = None;
-            }
             return Ok(Some(Found {
                 reaper,
                 pid: child_pid,
@@ -185,8 +182,14 @@ fn scan(
         } else {
             Err(ECHILD as u64)
         }
-    })
-    .unwrap_or(Err(ECHILD as u64))
+    })();
+    if let Ok(Some(found)) = &result {
+        if options & WNOWAIT == 0 && !matches!(found.event, Event::Exited(_)) {
+            guard.as_mut().unwrap().get_process_mut(found.pid).unwrap().job.report = None;
+            *mutations = mutations.wrapping_add(1);
+        }
+    }
+    result
 }
 
 /// Let the calling thread run on after `block_current_for_child_exit`.
@@ -216,13 +219,12 @@ fn quiet_wait_query(selector: Selector, options: u32) -> Option<u64> {
 /// wait with EINTR, or ERESTARTSYS when it is to be restarted.
 ///
 /// A parent polling with WNOHANG asks the same question over and over, and
-/// each scan holds PROCESS_MANAGER, with interrupts masked on x86. Every
+/// each scan holds PROCESS_MANAGER. Every
 /// change to the children a scan reads requires mutable access under that lock,
 /// so when the last scan of this same wait found nothing and no mutable holder
 /// has released it since, the answer is still nothing and is given without taking
-/// it. A poller then holds the lock only after something has changed, and a
-/// stall of the poller's CPU no longer holds up every other user of the lock:
-/// a woken thread's dispatch, signal delivery, getrusage (#1474, #1478).
+/// it. Mutable holders still invalidate the scan, and a rescan can still
+/// delay other users of the lock if its vCPU stalls.
 ///
 /// Blocking marks the thread BlockedOnChildExit first and scans again after,
 /// so a change landing between the two is seen by the scan or wakes the thread

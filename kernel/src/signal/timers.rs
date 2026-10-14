@@ -22,7 +22,7 @@
 use super::types::ThreadSignals;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 pub const SIGEV_SIGNAL: i32 = 0;
 pub const SIGEV_NONE: i32 = 1;
@@ -39,28 +39,7 @@ pub const TIMER_ABSTIME: u64 = 1;
 
 const NS_PER_SEC: u64 = 1_000_000_000;
 
-/// Set in `TimerSignal::state` while the timer's signal is due or queued and
-/// not yet delivered.
-pub(super) const QUEUED: u64 = 1 << 63;
-
-/// Order of the scheduler passes that made timer signals due. Signals one pass
-/// made due share its number and are queued by `due_late`, in the order their
-/// timers expired, not the order the pass visited the timers.
-pub(super) static NEXT_DUE: AtomicU64 = AtomicU64::new(1);
-
-/// `TimerSignal::due_for` of a due signal whose recipient exited before its
-/// signal check: the scheduler's next pass binds it to another thread.
-pub(super) const REBIND: usize = usize::MAX;
-
-/// `TimerSignal::due_for` of a due SIGCONT or stop signal, which the timer
-/// softirq generates (`generate_job_control`).
-pub(super) const JOB: usize = usize::MAX - 1;
-
-/// How many timers have a due SIGCONT or stop signal waiting for the softirq.
-pub(super) static JOB_DUE: AtomicUsize = AtomicUsize::new(0);
-
-/// `TimerSignal::shown` while no siginfo has been read off the pending signal.
-pub(super) const NOT_SHOWN: u64 = u64::MAX;
+use super::timer_signal::{JOB, JOB_DUE, NEXT_DUE, REBIND};
 
 /// Whether `sig` acts on the whole process when generated: SIGCONT continues
 /// it and a stop signal may stop it, which `kill` does under the process
@@ -188,7 +167,7 @@ impl PosixTimers {
     pub fn is_active(&self) -> bool {
         self.armed.load(Ordering::Acquire) != 0
             || self.table.try_lock().map_or(true, |table| {
-                table.timers.iter().any(|t| t.signal.due_for.load(Ordering::Acquire) != 0)
+                table.timers.iter().any(|t| t.signal.is_pending())
             })
     }
 
@@ -264,6 +243,9 @@ impl PosixTimers {
             clock::THREAD_CPUTIME => Base::ThreadCpu,
             _ => Base::Monotonic,
         };
+        if value != 0 {
+            timer.signal.reset_overruns();
+        }
         timer.interval = if value == 0 { 0 } else { interval };
         timer.deadline = if value == 0 {
             0
@@ -367,7 +349,10 @@ impl PosixTimers {
     /// advance depends on dispatch. A held table requests an immediate retry.
     pub fn next_check_ns(&self, now: &Now) -> u64 {
         let Some(table) = self.table.try_lock() else { return now.monotonic; };
-        table.timers.iter().filter(|t| t.deadline != 0).map(|timer| {
+        table.timers.iter().filter(|t| t.deadline != 0 || t.signal.is_pending()).map(|timer| {
+            if let Some(check) = timer.signal.next_notification_check(now.monotonic, crate::time::timer::MS_PER_TICK * 1_000_000) {
+                return check;
+            }
             match timer.base {
                 Base::Monotonic => timer.deadline,
                 Base::Realtime => now.monotonic.saturating_add(timer.deadline.saturating_sub(now.realtime)),
@@ -391,7 +376,9 @@ impl PosixTimers {
         let mut due = false;
         let mut pass = 0;
         for timer in table.timers.iter_mut() {
-            if timer.signal.due_for.load(Ordering::Acquire) == REBIND {
+            if timer.signal.rebind_job(is_job_control(timer.signo)) {
+                crate::task::softirqd::raise_softirq(crate::task::softirqd::SoftirqType::Timer);
+            } else if timer.signal.due_for.load(Ordering::Acquire) == REBIND {
                 let thread = match timer.notify {
                     Notify::Thread(tid) => Some(tid),
                     _ => None,

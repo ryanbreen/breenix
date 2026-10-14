@@ -1,20 +1,11 @@
 //! Behavioral tests of the kernel's atomic POSIX timer notification state.
 mod signal {
-    mod timers {
-        use core::sync::atomic::{AtomicU64, AtomicUsize};
-        pub(super) const QUEUED: u64 = 1 << 63;
-        pub(super) const REBIND: usize = usize::MAX;
-        pub(super) const JOB: usize = usize::MAX - 1;
-        pub(super) const NOT_SHOWN: u64 = u64::MAX;
-        pub(super) static NEXT_DUE: AtomicU64 = AtomicU64::new(1);
-        pub(super) static JOB_DUE: AtomicUsize = AtomicUsize::new(0);
-    }
     mod timer_signal {
         include!(concat!(env!("CARGO_MANIFEST_DIR"), "/kernel/src/signal/timer_signal.rs"));
     }
     #[cfg(test)]
     mod tests {
-        use super::{timer_signal::TimerSignal, timers::REBIND};
+        use super::{timer_signal::{TimerSignal, REBIND, JOB}};
         use core::sync::atomic::Ordering;
 
         #[test]
@@ -27,7 +18,7 @@ mod signal {
             assert_eq!(timer.last_overrun.load(Ordering::Acquire), 3);
             assert!(timer.expire(1));
             assert_eq!(timer.deliver(), 0);
-            let _ = timer.due_order();
+            assert_eq!(timer.due_order().1, core::cmp::Reverse(0));
         }
 
         #[test]
@@ -64,6 +55,55 @@ mod signal {
             timer.discard();
             assert!(timer.expire(1));
             assert_eq!(timer.deliver(), 0);
+        }
+
+        #[test]
+        fn rearming_resets_previous_arming_counts() {
+            let timer = TimerSignal::new(1);
+            assert!(timer.expire(4));
+            assert_eq!(timer.overrun(), 3);
+            timer.reset_overruns();
+            assert_eq!(timer.last_overrun.load(Ordering::Acquire), 0);
+            assert_eq!(timer.overrun(), 0);
+            assert_eq!(timer.deliver(), 0);
+            assert!(timer.expire(1));
+            assert_eq!(timer.overrun(), 0);
+        }
+
+        #[test]
+        fn queued_then_rebound_notification_stays_active() {
+            let timer = TimerSignal::new(1);
+            assert!(timer.expire(1));
+            assert!(timer.is_pending());
+            assert_eq!(timer.next_notification_check(100, 5), Some(105));
+            assert_eq!(timer.overrun(), 0);
+            assert!(!timer.expire(3));
+            assert_eq!(timer.deliver(), 0);
+            assert!(timer.is_pending());
+            assert_eq!(timer.next_notification_check(100, 5), Some(100));
+            timer.clear_due();
+            assert!(timer.is_pending());
+            assert_eq!(timer.overrun(), 2);
+            assert_eq!(timer.deliver(), 2);
+            assert!(!timer.is_pending());
+            assert_eq!(timer.next_notification_check(100, 5), None);
+        }
+
+        #[test]
+        fn job_control_rebound_uses_softirq_once() {
+            let timer = TimerSignal::new(1);
+            assert!(timer.expire(1));
+            assert_eq!(timer.overrun(), 0);
+            assert!(!timer.expire(1));
+            assert_eq!(timer.deliver(), 0);
+            assert!(!timer.rebind_job(false));
+            assert_eq!(timer.due_for.load(Ordering::Acquire), REBIND);
+            assert!(timer.rebind_job(true));
+            assert_eq!(timer.due_for.load(Ordering::Acquire), JOB);
+            assert!(!timer.rebind_job(true));
+            timer.clear_due();
+            assert_eq!(timer.deliver(), 0);
+            assert!(timer.expire(1));
         }
 
         #[test]

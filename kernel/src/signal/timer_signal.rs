@@ -1,5 +1,28 @@
 use core::sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering};
-use super::timers::{JOB, JOB_DUE, NEXT_DUE, NOT_SHOWN, QUEUED, REBIND};
+/// Set in `TimerSignal::state` while the timer's signal is due or queued and
+/// not yet delivered.
+pub(super) const QUEUED: u64 = 1 << 63;
+
+/// Order of the scheduler passes that made timer signals due. Signals one pass
+/// made due share its number and are queued by `due_late`, in the order their
+/// timers expired, not the order the pass visited the timers.
+pub(super) static NEXT_DUE: AtomicU64 = AtomicU64::new(1);
+
+/// `TimerSignal::due_for` of a due signal whose recipient exited before its
+/// signal check: the scheduler's next pass binds it to another thread.
+pub(super) const REBIND: usize = usize::MAX;
+
+/// `TimerSignal::due_for` of a due SIGCONT or stop signal, which the timer
+/// softirq generates (`generate_job_control`).
+pub(super) const JOB: usize = usize::MAX - 1;
+
+/// How many timers have a due SIGCONT or stop signal waiting for the softirq.
+pub(super) static JOB_DUE: AtomicUsize = AtomicUsize::new(0);
+
+/// `TimerSignal::shown` while no siginfo has been read off the pending signal.
+pub(super) const NOT_SHOWN: u64 = u64::MAX;
+
+
 
 /// What a timer and the signal it has pending share.
 pub struct TimerSignal {
@@ -33,6 +56,39 @@ impl TimerSignal {
             due_seq: AtomicU64::new(0),
             due_late: AtomicU64::new(0),
             shown: AtomicU64::new(NOT_SHOWN),
+        }
+    }
+
+    /// A queued notification keeps the scheduler registration alive until
+    /// delivery finishes publishing any rebound notification.
+    pub(super) fn is_pending(&self) -> bool {
+        self.state.load(Ordering::Acquire) & QUEUED != 0
+            || self.due_for.load(Ordering::Acquire) != 0
+    }
+
+    /// Delivery publishes REBIND without the scheduler lock. While queued,
+    /// keep a tick check; once rebound, request the next scheduler pass now.
+    pub(super) fn next_notification_check(&self, now: u64, tick: u64) -> Option<u64> {
+        if self.due_for.load(Ordering::Acquire) == REBIND { Some(now) }
+        else if self.is_pending() { Some(now.saturating_add(tick)) }
+        else { None }
+    }
+
+    /// Start a new arming's overrun accounting; retain an already queued signal.
+    pub(super) fn reset_overruns(&self) {
+        self.state.fetch_and(QUEUED, Ordering::AcqRel);
+        self.shown.store(NOT_SHOWN, Ordering::Release);
+        self.last_overrun.store(0, Ordering::Release);
+    }
+
+    /// Bind a rebound job-control notification to the timer softirq, rather
+    /// than a thread's ordinary pending mask. Returns whether it was rebound.
+    pub(super) fn rebind_job(&self, job_control: bool) -> bool {
+        if job_control && self.due_for.compare_exchange(REBIND, JOB, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+            JOB_DUE.fetch_add(1, Ordering::AcqRel);
+            true
+        } else {
+            false
         }
     }
 
