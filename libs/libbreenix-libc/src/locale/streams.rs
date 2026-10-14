@@ -111,6 +111,10 @@ pub unsafe extern "C" fn fgetws(s: *mut u32, n: i32, f: *mut File) -> *mut u32 {
         return core::ptr::null_mut();
     }
     file::lock(f);
+    if !orient(f) {
+        file::unlock(f);
+        return core::ptr::null_mut();
+    }
     let mut i = 0;
     while i + 1 < n {
         let c = get(f);
@@ -134,6 +138,10 @@ pub unsafe extern "C" fn fgetws(s: *mut u32, n: i32, f: *mut File) -> *mut u32 {
 #[no_mangle]
 pub unsafe extern "C" fn fputws(s: *const u32, f: *mut File) -> i32 {
     file::lock(f);
+    if !orient(f) {
+        file::unlock(f);
+        return -1;
+    }
     let mut i = 0;
     while *s.add(i) != 0 {
         if put(*s.add(i), f) == u32::MAX {
@@ -156,11 +164,13 @@ pub unsafe extern "C" fn ungetwc(c: u32, f: *mut File) -> u32 {
         u32::MAX
     } else if let Some(n) = encode_charset(c, &mut bytes, encoding(f)) {
         let mut okay = true;
+        let mut pushed = 0;
         for &b in bytes[..n].iter().rev() {
             if file::ungetc_locked(b as i32, f) < 0 {
                 okay = false;
                 break;
             }
+            pushed += 1;
         }
         if okay {
             let saved = (*file::mb_state(f)).reserved;
@@ -168,6 +178,11 @@ pub unsafe extern "C" fn ungetwc(c: u32, f: *mut File) -> u32 {
             (*file::mb_state(f)).reserved = saved;
             c
         } else {
+            // Roll back this character's partial push without consuming the
+            // input or characters pushed by earlier successful calls.
+            for _ in 0..pushed {
+                file::getc_locked(f);
+            }
             u32::MAX
         }
     } else {

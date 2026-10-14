@@ -71,3 +71,58 @@ fn wide_printf_counts_characters_and_rejects_truncation() {
         done(l);
     }
 }
+
+#[test]
+fn wide_printf_preserves_c_locale_wide_values_and_utf8_precision() {
+    unsafe {
+        let mut out = [0u32; 32];
+        let fmt = [37, 108, 115, 0];
+        let word = [0x20ac, 0];
+        assert_eq!(
+            format::swprintf(out.as_mut_ptr(), 32, fmt.as_ptr(), word.as_ptr()),
+            1
+        );
+        assert_eq!(&out[..2], &[0x20ac, 0]);
+        let l = utf8();
+        let fmt = [37, 46, 49, 115, 0];
+        assert_eq!(
+            format::swprintf(out.as_mut_ptr(), 32, fmt.as_ptr(), b"\xc3\xa9x\0".as_ptr()),
+            1
+        );
+        assert_eq!(&out[..2], &[0xe9, 0]);
+        let fmt = [37, 50, 36, 108, 115, 58, 37, 49, 36, 100, 0];
+        assert_eq!(
+            format::swprintf(out.as_mut_ptr(), 32, fmt.as_ptr(), 7i32, word.as_ptr()),
+            3
+        );
+        assert_eq!(&out[..4], &[0x20ac, 58, 55, 0]);
+        done(l);
+    }
+}
+
+#[test]
+fn empty_wide_io_orients_and_failed_pushback_preserves_input() {
+    unsafe {
+        let l = utf8();
+        let mut bytes = [b'x', 0];
+        let f = file::fmemopen(bytes.as_mut_ptr(), 2, b"r+\0".as_ptr());
+        assert_eq!(streams::fputws([0].as_ptr(), f), 0);
+        assert_eq!(streams::fwide(f, 0), 1);
+        for _ in 0..6 {
+            assert_eq!(streams::ungetwc(65, f), 65);
+        }
+        assert_eq!(streams::ungetwc(0x1f600, f), u32::MAX);
+        for _ in 0..6 {
+            assert_eq!(streams::fgetwc(f), 65);
+        }
+        assert_eq!(streams::fgetwc(f), b'x' as u32);
+        file::fclose(f);
+        let f = file::fmemopen(bytes.as_mut_ptr(), 2, b"r\0".as_ptr());
+        let mut w = [99u32; 1];
+        assert_eq!(streams::fgetws(w.as_mut_ptr(), 1, f), w.as_mut_ptr());
+        assert_eq!(w, [0]);
+        assert_eq!(streams::fwide(f, 0), 1);
+        file::fclose(f);
+        done(l);
+    }
+}

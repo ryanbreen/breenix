@@ -7,6 +7,7 @@ symbols cannot be interposed. Guest acceptance remains the unchanged C suite.
 from pathlib import Path
 import subprocess
 import tempfile
+import re
 
 root = Path(__file__).resolve().parents[1]
 with tempfile.TemporaryDirectory(prefix='breenix-locale-io-') as directory:
@@ -26,7 +27,7 @@ with tempfile.TemporaryDirectory(prefix='breenix-locale-io-') as directory:
             (dest / source.name).write_text(text)
     (tmp / 'locale/io_cases.rs').write_text((root / 'tests/locale-host/cases.rs').read_text())
     support = (root / 'tests/stdio-host/support.rs').read_text()
-    support = support.replace('#[cfg(test)] mod cases;', '')
+    support = re.sub(r'#\[cfg\(test\)\]\s*mod cases;', '', support)
     support = support.replace('mod pthread {', '''mod pthread {
  std::thread_local! {static LOCALE:std::cell::UnsafeCell<*mut core::ffi::c_void>=const{std::cell::UnsafeCell::new(core::ptr::null_mut())};}
  pub unsafe fn locale_slot()->*mut *mut core::ffi::c_void{LOCALE.with(|s|s.get())}
