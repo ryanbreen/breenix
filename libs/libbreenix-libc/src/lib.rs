@@ -32,6 +32,7 @@ mod getopt;
 mod glob;
 mod inet;
 mod netdb;
+mod regex;
 mod mqueue;
 mod shm;
 mod semaphore;
