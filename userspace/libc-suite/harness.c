@@ -10,6 +10,8 @@
 
 char **libc_case_envp;
 
+static int result_fd = -1;
+
 static char msg[512];
 static size_t msg_len;
 static int skipped;
@@ -329,6 +331,13 @@ static void report(int fd, const char *kind, const char *text) {
     write_all(fd, line, n);
 }
 
+void libc_case_missing(const char *name) {
+    start(name);
+    put(" is not in Breenix's C library yet");
+    report(result_fd, "FAIL", msg);
+    _exit(0);
+}
+
 int main(int argc, char **argv, char **envp) {
     libc_case_envp = envp;
     if (argc < 3)
@@ -339,6 +348,7 @@ int main(int argc, char **argv, char **envp) {
             _exit(2);
         fd = fd * 10 + (*p - '0');
     }
+    result_fd = fd;
     for (const struct libc_case *c = libc_cases; c->id; c++) {
         if (h_streq(c->id, argv[1])) {
             const char *result = c->run();
