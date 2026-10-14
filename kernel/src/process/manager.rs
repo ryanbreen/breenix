@@ -4090,6 +4090,9 @@ impl ProcessManager {
         // Update the process name to match the new program if provided
         // CRITICAL: The process name must match a binary on the test disk because
         // fork() uses the process name to reload the binary.
+        // This kernel-internal API loads bytes rather than a filesystem path.
+        // Do not retain the pathname of the image it replaces.
+        process.exe_path = None;
         if let Some(name) = program_name {
             process.name = String::from(name);
             log::info!("exec_process: Updated process name to '{}'", name);
@@ -5338,6 +5341,9 @@ impl ProcessManager {
         });
 
         // Update the process with new program data
+        // This kernel-internal API loads bytes rather than a filesystem path.
+        // Do not retain the pathname of the image it replaces.
+        process.exe_path = None;
         if let Some(name) = program_name {
             process.name = String::from(name);
             log::info!("exec_process [ARM64]: Updated process name to '{}'", name);
