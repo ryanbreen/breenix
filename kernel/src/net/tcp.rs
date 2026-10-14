@@ -54,6 +54,7 @@ struct DeferredTx {
     src_ip: [u8; 4],
     dst_ip: [u8; 4],
     dst_mac: Option<[u8; 6]>,
+    ttl: u8,
     tcp_segment: Vec<u8>,
 }
 
@@ -76,6 +77,7 @@ fn queue_deferred_tx_with_mac(
     src_ip: [u8; 4],
     dst_ip: [u8; 4],
     dst_mac: Option<[u8; 6]>,
+    ttl: u8,
     tcp_segment: Vec<u8>,
 ) {
     let _guard = super::net_lock_guard();
@@ -85,6 +87,7 @@ fn queue_deferred_tx_with_mac(
             src_ip,
             dst_ip,
             dst_mac,
+            ttl,
             tcp_segment,
         });
     }
@@ -119,19 +122,21 @@ pub fn drain_deferred_tx() {
         // A segment that fails here was a SYN+ACK; the child's retransmission
         // timer sends it again.
         let _ = if is_loopback {
-            super::send_ipv4_from(pkt.src_ip, pkt.dst_ip, PROTOCOL_TCP, &pkt.tcp_segment)
+            super::send_ipv4_from(pkt.src_ip, pkt.dst_ip, PROTOCOL_TCP, pkt.ttl, &pkt.tcp_segment)
         } else if let Some(mac) = pkt.dst_mac {
             // Send directly to the known MAC (bypasses ARP, which can't work
             // during process_rx since the re-entrancy guard is held).
-            let ip_packet = super::ipv4::Ipv4Packet::build(
+            let ip_packet = super::ipv4::Ipv4Packet::try_build(
                 pkt.src_ip,
                 pkt.dst_ip,
                 PROTOCOL_TCP,
+                pkt.ttl,
                 &pkt.tcp_segment,
-            );
+            )
+            .unwrap_or_default();
             super::send_ethernet(&mac, super::ethernet::ETHERTYPE_IPV4, &ip_packet)
         } else {
-            super::send_ipv4_from(pkt.src_ip, pkt.dst_ip, PROTOCOL_TCP, &pkt.tcp_segment)
+            super::send_ipv4_from(pkt.src_ip, pkt.dst_ip, PROTOCOL_TCP, pkt.ttl, &pkt.tcp_segment)
         };
     }
 
@@ -690,6 +695,8 @@ struct Segment {
     window: u16,
     /// The urgent pointer, meaningful when `flags.urg` is set.
     urgent: u16,
+    /// The IPv4 time to live it leaves with.
+    ttl: u8,
 }
 
 /// Build `seg` with `options` (a multiple of four bytes) and the payload `parts`
@@ -723,7 +730,7 @@ fn try_build_segment(seg: &Segment, options: &[u8], parts: [&[u8]; 2]) -> Option
 fn transmit(seg: &Segment, options: &[u8], parts: [&[u8]; 2]) -> bool {
     match try_build_segment(seg, options, parts) {
         Some(packet) => {
-            super::send_ipv4_from(seg.src_ip, seg.dst_ip, PROTOCOL_TCP, &packet).is_ok()
+            super::send_ipv4_from(seg.src_ip, seg.dst_ip, PROTOCOL_TCP, seg.ttl, &packet).is_ok()
         }
         None => false,
     }
@@ -848,6 +855,8 @@ pub struct TcpConnection {
     snd_cap: usize,
     /// The owner set SO_REUSEADDR: a later bind with it may share the port.
     reuse: bool,
+    /// The owner's IP_TTL: the time to live of every segment it sends.
+    ttl: u8,
     /// The owner set SO_KEEPALIVE.
     keepalive: bool,
     /// When the last acceptable segment arrived, for keepalive.
@@ -1006,6 +1015,7 @@ impl TcpConnection {
             rcv_cap: DEFAULT_RCVBUF,
             snd_cap: DEFAULT_SNDBUF,
             reuse: false,
+            ttl: super::ipv4::DEFAULT_TTL,
             keepalive: false,
             last_recv_ms: now_ms(),
             keepalive_probes: 0,
@@ -1055,6 +1065,7 @@ impl TcpConnection {
             flags,
             window: self.recv_window,
             urgent: 0,
+            ttl: self.ttl,
         }
     }
 
@@ -1600,6 +1611,8 @@ pub struct ListenSocket {
     pub owner_pid: crate::process::process::ProcessId,
     /// The listening socket set SO_REUSEADDR; its children inherit it.
     reuse: bool,
+    /// The listening socket's IP_TTL, which its SYN+ACKs and children take.
+    ttl: u8,
     /// The listening socket, told when a connection is ready for accept.
     owner: Option<Weak<Socket>>,
 }
@@ -1825,6 +1838,7 @@ pub struct ConnOptions {
     pub sndbuf: usize,
     pub keepalive: bool,
     pub reuse: bool,
+    pub ttl: u8,
 }
 
 /// Bring a connection up to date with its socket's options.
@@ -1835,6 +1849,7 @@ pub fn tcp_set_options(conn_id: &ConnectionId, options: ConnOptions) {
         };
         conn.set_buffer_sizes(options.rcvbuf / 2, options.sndbuf / 2);
         conn.reuse = options.reuse;
+        conn.ttl = options.ttl;
         if options.keepalive && !conn.keepalive {
             // Linux starts the keepalive time when the option is turned on.
             conn.last_recv_ms = now_ms();
@@ -2343,6 +2358,7 @@ fn handle_syn_for_listener(
     child.parent = Some(id);
     child.parent_owner = listener.owner.clone();
     child.reuse = listener.reuse;
+    child.ttl = listener.ttl;
     let seg = child.segment(isn, TcpFlags::syn_ack());
     let Some(syn_ack) = try_build_segment(&seg, &mss_option(local_mss(src_ip)), [&[], &[]])
     else {
@@ -2361,7 +2377,7 @@ fn handle_syn_for_listener(
     // TX packet to be silently dropped (the device doesn't process the TX ring
     // while the RX ring is being consumed).
     let src_mac = super::current_packet_src_mac();
-    queue_deferred_tx_with_mac(local_ip, src_ip, Some(src_mac), syn_ack);
+    queue_deferred_tx_with_mac(local_ip, src_ip, Some(src_mac), seg.ttl, syn_ack);
 }
 
 /// Answer a segment no connection or listener takes with a reset
@@ -2411,6 +2427,7 @@ pub fn send_tcp_packet(
         flags,
         window: window_size,
         urgent: 0,
+        ttl: super::ipv4::DEFAULT_TTL,
     };
     // A control segment that cannot be sent is recovered by the peer's
     // retransmission; there is no caller to report it to.
@@ -2427,6 +2444,7 @@ pub fn tcp_connect(
     remote_ip: [u8; 4],
     remote_port: u16,
     owner_pid: crate::process::process::ProcessId,
+    ttl: u8,
 ) -> Result<ConnectionId, i32> {
     ensure_timer_thread()?;
     let config = super::config();
@@ -2449,6 +2467,7 @@ pub fn tcp_connect(
     let isn = generate_isn();
     let mut conn = TcpConnection::new(conn_id, TcpState::SynSent, isn, owner_pid);
     conn.mss = local_mss(remote_ip);
+    conn.ttl = ttl;
     let syn = conn.segment(isn, TcpFlags::syn());
     // The SYN is outstanding until the SYN+ACK comes; the timer resends it.
     conn.arm_retransmit();
@@ -2485,6 +2504,7 @@ pub fn tcp_listen(
     backlog: usize,
     owner_pid: crate::process::process::ProcessId,
     reuse: bool,
+    ttl: u8,
     owner: Option<Weak<Socket>>,
 ) -> Result<ListenerId, i32> {
     // Children retransmit their SYN+ACKs; the timer thread must be there for them.
@@ -2507,6 +2527,7 @@ pub fn tcp_listen(
             backlog: listen_backlog(backlog),
             owner_pid,
             reuse,
+            ttl,
             owner,
         });
         Ok(id)
@@ -2517,6 +2538,16 @@ pub fn tcp_listen(
 /// backlog at SOMAXCONN.
 fn listen_backlog(backlog: usize) -> usize {
     backlog.clamp(1, MAX_BACKLOG)
+}
+
+/// IP_TTL set on a listening socket: the SYN+ACKs and children of later
+/// connection requests take it.
+pub fn tcp_set_listener_ttl(id: ListenerId, ttl: u8) {
+    with_tcp(|tables| {
+        if let Some(listener) = tables.listener(id) {
+            listener.ttl = ttl;
+        }
+    });
 }
 
 /// A second listen on a listening socket: Linux takes its new backlog.
