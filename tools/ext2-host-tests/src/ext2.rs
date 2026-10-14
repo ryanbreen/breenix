@@ -48,6 +48,18 @@ impl Ext2Fs {
     pub fn host_new(device: Box<dyn crate::block::BlockDevice>, superblock: Ext2Superblock, block_groups: Vec<Ext2BlockGroupDesc>) -> Self {
         Self { device, superblock, block_groups, durable_epoch: core::sync::atomic::AtomicU64::new(0), live_inodes: LiveInodes }
     }
+    /// Lay down a fixture directory's records, block by block.
+    pub fn write_directory_for_host(&self, ino: u32, data: &[u8]) -> Result<(), &'static str> {
+        let inode = self.read_inode(ino)?;
+        let size = self.superblock.block_size();
+        for (index, records) in data.chunks(size).enumerate() {
+            let block = file::get_block_num(self.device.as_ref(), &inode, &self.superblock, index as u32)
+                .map_err(|_| "map")?
+                .ok_or("unmapped directory block")?;
+            file::write_ext2_block(self.device.as_ref(), block, size, records).map_err(|_| "write")?;
+        }
+        Ok(())
+    }
     pub fn read_directory(&self, inode: &Ext2Inode) -> Result<Vec<u8>, &'static str> {
         if !inode.is_dir() { return Err("Not a directory"); }
         file::read_file(self.device.as_ref(),inode,&self.superblock).map_err(|e| if e == crate::block::BlockError::OutOfMemory { "No memory for directory data" } else { "read directory" })

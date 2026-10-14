@@ -78,19 +78,21 @@ fn read_waiter_oom_returns_enomem_without_publishing_a_waiter() {
 
 #[test]
 fn ext2_fifo_oom_precedes_disk_changes() {
-    for budget in 0..3 {
+    // Every allocation a creation makes comes before its first disk write:
+    // whichever one fails, the creation reports it and the disk is as it was.
+    let mut budget = 0;
+    loop {
         let (mut fs, bytes) = crate::fifo_disk::fixture();
         let before = bytes.lock().unwrap().clone();
-        assert_eq!(
-            with_budget(budget, || fs.create_node(2, "fifo", 0o010600, 0, 0, 0)),
-            Err(if budget == 2 {
-                "No memory for directory write plan"
-            } else {
-                "No memory for directory data"
-            })
-        );
-        assert_eq!(&*bytes.lock().unwrap(), &before);
+        match with_budget(budget, || fs.create_node(2, "fifo", 0o010600, 0, 0, 0)) {
+            Ok(_) => break,
+            Err(error) => assert!(error.starts_with("No memory"), "budget {budget}: {error}"),
+        }
+        assert!(*bytes.lock().unwrap() == before, "budget {budget} changed the disk");
+        budget += 1;
+        assert!(budget < 64, "creation never succeeded");
     }
+    assert!(budget > 2, "creation made only {budget} allocations");
 }
 #[test]
 fn inode_index_oom_preserves_existing_identity() {
