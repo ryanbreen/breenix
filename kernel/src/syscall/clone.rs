@@ -348,7 +348,11 @@ pub fn sys_clone_thread(
     let child_name = if flags & CLONE_THREAD != 0 {
         alloc::format!("thread-{}", child_pid.as_u64())
     } else {
-        alloc::format!("{}_child_{}", parent.name, child_pid.as_u64())
+        // A process sharing the address space runs the parent's program.
+        match crate::syscall::exec::copy_string(&parent.name) {
+            Ok(name) => name,
+            Err(errno) => return SyscallResult::Err(errno),
+        }
     };
     let mut child_process = Process::new(child_pid, child_name, entry_point);
     child_process.limits = parent.limits.clone();

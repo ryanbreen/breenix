@@ -2953,8 +2953,9 @@ impl ProcessManager {
             child_pid.as_u64()
         );
 
-        // Create child process name
-        let child_name = format!("{}_child_{}", parent_name, child_pid.as_u64());
+        // The child runs the parent's program, under its name.
+        let child_name = crate::syscall::exec::copy_string(&parent_name)
+            .map_err(|_| "fork allocation failed")?;
 
         // Create the child process with the same entry point
         let mut child_process = Process::new(child_pid, child_name.clone(), parent_entry_point);
@@ -3083,7 +3084,7 @@ impl ProcessManager {
         // shares the parent's pages, grown stack pages included.
         let mut child_process = Process::new(
             child_pid,
-            format!("{}_child_{}", parent.name, child_pid.as_u64()),
+            crate::syscall::exec::copy_string(&parent.name).map_err(|_| "fork allocation failed")?,
             parent.entry_point,
         );
         child_process.exe_path = parent.exe_path.clone();
@@ -3655,8 +3656,9 @@ impl ProcessManager {
             child_pid.as_u64()
         );
 
-        // Create child process name
-        let child_name = format!("{}_child_{}", parent.name, child_pid.as_u64());
+        // The child runs the parent's program, under its name.
+        let child_name = crate::syscall::exec::copy_string(&parent.name)
+            .map_err(|_| "fork allocation failed")?;
 
         // Capture parent's pgid, sid, and cwd before borrowing page_table
         let parent_pgid = parent.pgid;
