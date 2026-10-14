@@ -257,6 +257,9 @@ pub struct Process {
     /// Process name (for debugging)
     pub name: String,
 
+    /// Absolute executable pathname, shared across fork and replaced only on exec commit.
+    pub exe_path: Option<alloc::sync::Arc<String>>,
+
     /// Current state
     pub state: ProcessState,
 
@@ -469,6 +472,7 @@ impl Process {
             // Default working directory is root
             cwd: crate::fs::namei::SharedWorkingDir::default(),
             name,
+            exe_path: None,
             state: ProcessState::Creating,
             entry_point,
             main_thread: None,

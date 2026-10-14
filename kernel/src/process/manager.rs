@@ -117,6 +117,7 @@ pub(crate) struct PreparedExecImage {
     loaded_elf: crate::elf::LoadedElf,
     new_stack: Box<crate::memory::stack::GuardedStack>,
     program_name: Option<String>,
+    exe_path: Option<alloc::sync::Arc<String>>,
     user_stack_size: usize,
     stack_top: VirtAddr,
     stack_bottom: VirtAddr,
@@ -1471,7 +1472,6 @@ impl ProcessManager {
         Ok(())
     }
 
-    #[cfg(target_arch = "aarch64")]
     pub fn create_init_process_with_argv_at(
         &mut self,
         provisional_pid: ProcessId,
@@ -1479,6 +1479,14 @@ impl ProcessManager {
         elf_data: &[u8],
         argv: &[&[u8]],
     ) -> Result<InitDesignationTicket, &'static str> {
+        let path = core::str::from_utf8(argv.first().ok_or("init executable path missing")?)
+            .map_err(|_| "init executable path is not UTF-8")?;
+        if !path.starts_with('/') {
+            return Err("init executable path must be absolute");
+        }
+        let exe_path = alloc::sync::Arc::try_new(
+            crate::syscall::exec::copy_string(path).map_err(|_| "init allocation failed")?,
+        ).map_err(|_| "init allocation failed")?;
         self.build_process_with_argv_at(
             provisional_pid,
             name,
@@ -1487,10 +1495,11 @@ impl ProcessManager {
             &super::credentials::ProcessCredentials::root(),
             None,
         )?;
+        self.processes.live_row_mut(&provisional_pid)
+            .ok_or("init process missing")?.exe_path = Some(exe_path);
         self.hold_init_publication(provisional_pid)
     }
 
-    #[cfg(target_arch = "aarch64")]
     pub fn create_init_process_with_argv(
         &mut self,
         name: String,
@@ -2899,6 +2908,8 @@ impl ProcessManager {
 
         // Create the child process with the same entry point
         let mut child_process = Process::new(child_pid, child_name.clone(), parent_entry_point);
+        child_process.exe_path = self.processes.live_row(&parent_pid)
+            .ok_or("Parent process not found")?.exe_path.clone();
         child_process.parent = Some(parent_pid);
         // POSIX: Child inherits parent's process group, session, and working directory
         child_process.pgid = parent_pgid;
@@ -3024,6 +3035,7 @@ impl ProcessManager {
             format!("{}_child_{}", parent.name, child_pid.as_u64()),
             parent.entry_point,
         );
+        child_process.exe_path = parent.exe_path.clone();
         child_process.parent = Some(parent_pid);
         child_process.pgid = parent.pgid;
         crate::tty::ctty::inherit(&mut child_process, parent);
@@ -3532,6 +3544,7 @@ impl ProcessManager {
         // - Signal state forking (handlers and mask, NOT pending signals)
         // - Verification of pgid and sid inheritance
         if let Some(parent) = self.processes.live_row(&parent_pid) {
+            child_process.exe_path = parent.exe_path.clone();
             super::fork::copy_process_state(parent, &mut child_process)?;
         } else {
             return Err("Parent process not found during state copy");
@@ -3598,6 +3611,7 @@ impl ProcessManager {
 
         // Create the child process with the same entry point
         let mut child_process = Process::new(child_pid, child_name.clone(), parent.entry_point);
+        child_process.exe_path = parent.exe_path.clone();
         child_process.parent = Some(parent_pid);
         // POSIX: Child inherits parent's process group, session, and working directory
         child_process.pgid = parent_pgid;
@@ -3816,6 +3830,7 @@ impl ProcessManager {
                     .processes
                     .live_row(&parent_pid)
                     .ok_or("Parent process not found during state copy")?;
+                child_process.exe_path = parent.exe_path.clone();
                 super::fork::copy_process_state(parent, &mut child_process)?;
             }
 
@@ -4297,6 +4312,14 @@ impl ProcessManager {
         image: super::credentials::ExecIdentity,
         cred: super::credentials::ProcessCredentials,
     ) -> Result<PreparedExecImage, &'static str> {
+        let exe_path = program_name
+            .map(|path| {
+                let resolved = crate::fs::namei::resolve(path, true)
+                    .map_err(|_| "exec pathname resolution failed")?;
+                alloc::sync::Arc::try_new(resolved.path)
+                    .map_err(|_| "exec allocation failed")
+            })
+            .transpose()?;
         let user_stack_size = crate::syscall::exec::stack_size(argv, envp)?;
         let program_name = program_name
             .map(crate::syscall::exec::copy_string)
@@ -4410,6 +4433,7 @@ impl ProcessManager {
             loaded_elf,
             new_stack,
             program_name,
+            exe_path,
             user_stack_size,
             stack_top,
             stack_bottom,
@@ -4509,6 +4533,7 @@ impl ProcessManager {
             loaded_elf,
             new_stack,
             program_name,
+            exe_path,
             user_stack_size,
             stack_top,
             stack_bottom,
@@ -4545,6 +4570,7 @@ impl ProcessManager {
             log::info!("exec_process_with_argv: Updated process name to '{}'", name);
             process.name = name;
         }
+        process.exe_path = exe_path;
         process.entry_point = loaded_elf.entry_point;
 
         // Reset heap bounds for the new program
@@ -4710,6 +4736,14 @@ impl ProcessManager {
         use crate::arch_impl::aarch64::constants::USER_STACK_REGION_START;
         #[cfg(target_arch = "aarch64")]
         use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB};
+        let exe_path = program_name
+            .map(|path| {
+                let resolved = crate::fs::namei::resolve(path, true)
+                    .map_err(|_| "exec pathname resolution failed")?;
+                alloc::sync::Arc::try_new(resolved.path)
+                    .map_err(|_| "exec allocation failed")
+            })
+            .transpose()?;
         let user_stack_size = crate::syscall::exec::stack_size(argv, envp)?;
         let program_name = program_name
             .map(crate::syscall::exec::copy_string)
@@ -4818,6 +4852,7 @@ impl ProcessManager {
             loaded_elf,
             new_stack,
             program_name,
+            exe_path,
             user_stack_size,
             stack_top,
             stack_bottom,
@@ -4913,6 +4948,7 @@ impl ProcessManager {
             loaded_elf,
             new_stack,
             program_name,
+            exe_path,
             user_stack_size,
             stack_top,
             stack_bottom,
@@ -4948,6 +4984,7 @@ impl ProcessManager {
             );
             process.name = name;
         }
+        process.exe_path = exe_path;
         process.entry_point = VirtAddr::new(new_entry_point);
 
         // Reset heap bounds for the new program
