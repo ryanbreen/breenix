@@ -2,6 +2,6 @@
 # commit is published on: rust-std/<lane> on a lane branch, breenix-target on main. Builds fetch
 # the commit itself; `scripts/rust-fork.sh check-release` refuses any pin main may not carry.
 repo = "https://github.com/ryanbreen/rust.git"
-branch = "breenix-target"
-commit = "d6e82857e5ddf7106532c9234181abbcc43c7a37"
+branch = "rust-std/fsio"
+commit = "7b7fcbe561c0133d79d8acecef1db51f4e4805be"
 rust = "1.90.0"
