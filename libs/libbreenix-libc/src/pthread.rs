@@ -428,7 +428,7 @@ pub unsafe fn startup(envp: *const *const u8) {
     PROCESS.store(pid(), Relaxed);
     set_tp((*t).tp);
     RUNTIME_READY.store(true, Release);
-    cancel::install();
+    cancel::runtime_start();
 }
 
 /// Repair the registry in a fork child before it enters the C runtime again.

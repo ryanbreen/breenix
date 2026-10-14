@@ -2,9 +2,11 @@
 //! window; async delivery is explicitly requested by the application.
 //!
 //! The cancel signal (signal 32, reserved below SIGRTMIN) is installed with
-//! SA_RESTART and is blocked in the signal mask while a thread has
-//! cancellation disabled, so a request sent then stays pending (POSIX.1-2024
-//! 2.9.5.2) instead of interrupting a wait with EINTR.
+//! SA_RESTART by the first pthread_cancel that sends it, so a program that
+//! never cancels a thread keeps the SIG_DFL action exec gave it. It is blocked
+//! in the signal mask while a thread has cancellation disabled, so a request
+//! sent then stays pending (POSIX.1-2024 2.9.5.2) instead of interrupting a
+//! wait with EINTR.
 use super::*;
 use crate::signal::{CANCEL_MASK, CANCEL_SIGNAL};
 
@@ -96,6 +98,8 @@ pub unsafe extern "C" fn pthread_cancel(handle: usize) -> i32 {
     // request when it next enters the syscall window (its enable is ordered
     // after this fetch_or on the same word), so neither queues a signal.
     if prior & (REQUESTED | DISABLED) != 0 { return 0; }
+    let installed = install_handler();
+    if installed < 0 { return -installed as i32; }
     let r = raw::syscall3(nr::TGKILL, pid() as u64, id as u64, CANCEL_SIGNAL as u64) as i64;
     // ESRCH: the thread ended after the registry check, and a request to an
     // ended thread has nothing left to do.
@@ -169,7 +173,21 @@ unsafe extern "C" fn handler(_sig: i32, _info: *mut u8, context: *mut u8) {
         *pc = core::ptr::addr_of!(__breenix_cancel_return) as usize;
     }
 }
-pub(super) unsafe fn install() {
+/// The runtime starts with the cancel signal unblocked: an image exec'd by a
+/// thread that had cancellation disabled inherits it blocked.
+pub(super) unsafe fn runtime_start() {
+    mask_cancel(SIG_UNBLOCK);
+}
+
+static HANDLER_INSTALLED: AtomicBool = AtomicBool::new(false);
+
+/// Install the cancel signal's handler before the first signal is sent. A
+/// fork child inherits the handler and this flag together; exec resets both.
+/// Returns the raw negative-errno kernel result.
+unsafe fn install_handler() -> i64 {
+    if HANDLER_INSTALLED.load(Acquire) {
+        return 0;
+    }
     let action = libbreenix::signal::Sigaction {
         handler: handler as *const () as u64,
         flags: libbreenix::signal::SA_SIGINFO | libbreenix::signal::SA_RESTORER
@@ -177,10 +195,11 @@ pub(super) unsafe fn install() {
         restorer: libbreenix::signal::__restore_rt as *const () as u64,
         mask: 0,
     };
-    if (raw::syscall4(nr::SIGACTION, CANCEL_SIGNAL as u64, &action as *const _ as u64, 0, 8) as i64) < 0 {
-        super::super::exit_group(127);
+    let r = raw::syscall4(nr::SIGACTION, CANCEL_SIGNAL as u64, &action as *const _ as u64, 0, 8) as i64;
+    if r == 0 {
+        HANDLER_INSTALLED.store(true, Release);
     }
-    mask_cancel(SIG_UNBLOCK);
+    r
 }
 
 /// Returns the raw negative-errno kernel result. Assembly closes the race
