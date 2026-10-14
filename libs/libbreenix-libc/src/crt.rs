@@ -1,7 +1,8 @@
 //! Process entry: `_start` takes argc, argv and envp from the initial stack, sets
 //! `environ`, starts the thread runtime and calls `main(argc, argv, envp)`.
 
-use crate::{environ, exit, pthread};
+use crate::env::environ;
+use crate::{exit, pthread};
 
 /// Pristine x86_64 GPR values at process entry.
 ///
@@ -79,7 +80,7 @@ extern "C" fn _start_rust(sp: *const u64) -> ! {
 
         // envp starts after argv NULL terminator: sp + 1 (argc) + argc + 1 (NULL)
         let envp = sp.add(1 + argc + 1) as *const *const u8;
-        environ = envp as usize;
+        environ = envp as *mut *mut u8;
         pthread::startup(envp);
 
         extern "C" {
