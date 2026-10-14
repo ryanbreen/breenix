@@ -2173,6 +2173,13 @@ unsafe fn rw_take(p: *mut u8, write: bool, attempt: bool, deadline: *const i64, 
         priority,
     };
     (*r).gate.lock();
+    // Linux's policy: a lock or timed lock by the thread holding the rwlock
+    // for writing would wait for itself, so it fails with EDEADLK (a try
+    // reports EBUSY below).
+    if !attempt && (*r).writer != 0 && (*r).writer == (*thread).id.load(Relaxed) {
+        (*r).gate.unlock();
+        return EDEADLK;
+    }
     if write && !attempt {
         waiter.next = (*r).writers;
         (*r).writers = &mut waiter;
