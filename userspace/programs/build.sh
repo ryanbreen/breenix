@@ -72,6 +72,9 @@ echo "========================================"
 echo "  Architecture: $ARCH"
 echo ""
 
+# Reject mixed or uncommitted std inputs before any compilation.
+"$PROJECT_ROOT/scripts/rust-fork.sh" verify
+
 # Step 1: Build libbreenix-libc (produces libc.a)
 echo "[1/3] Building libbreenix-libc ($ARCH)..."
 LIBC_DIR="$PROJECT_ROOT/libs/libbreenix-libc"
@@ -153,6 +156,15 @@ if [ ! -d "$RUST_FORK_LIBRARY" ]; then
     echo "  The forked Rust compiler is required for std support"
     exit 1
 fi
+
+# Cargo's build-std freshness checks can miss edits in an external sysroot.
+# Include its verified commit in compiler metadata so a pin change rebuilds std.
+if [ -f "$RUST_FORK_LIBRARY/../.rust-fork-snapshot.json" ]; then
+    FORK_COMMIT="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["commit"])' "$RUST_FORK_LIBRARY/../.rust-fork-snapshot.json")"
+else
+    FORK_COMMIT="$(git -C "$RUST_FORK_LIBRARY/.." rev-parse HEAD)"
+fi
+STD_RUSTFLAGS+=" -C metadata=breenix_std_$FORK_COMMIT"
 
 if ! (
     set -o pipefail
@@ -386,8 +398,8 @@ STD_BINARIES=(
     "suite-ipc"
     "suite-terminals"
     "suite-networking"
-    "suite-libc"
     "suite-rust-std"
+    "suite-libc"
     "files-io-exec_test"
     "processes-exec_test"
     "rust-std-child_test"
