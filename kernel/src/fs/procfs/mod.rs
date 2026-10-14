@@ -1163,17 +1163,20 @@ fn generate_pid_status(pid: u64) -> String {
         None => return format!("Process {} not found\n", pid),
     };
 
-    // A process whose threads have all ended waits for its parent to reap it:
-    // Linux's zombie, shown as Linux shows it.
-    let state_str = match scheduler_state.unwrap_or(match process.state {
+    let state_str = scheduler_state.unwrap_or(match process.state {
         ProcessState::Creating => "Creating",
         ProcessState::Ready => "Ready",
         ProcessState::Running => "Running",
         ProcessState::Blocked => "Blocked",
         ProcessState::Terminated(_) => "Terminated",
-    }) {
-        "Terminated" => "Z (zombie)",
-        state => state,
+    });
+
+    // An exited row remains visible until its parent reaps it. Linux procfs
+    // identifies that state as a zombie, independently of scheduler ownership.
+    let state_str = if state_str == "Terminated" {
+        "Z (zombie)"
+    } else {
+        state_str
     };
 
     let ppid = match process.parent {
