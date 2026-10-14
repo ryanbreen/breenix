@@ -96,10 +96,10 @@ pub enum Last {
 
 /// The result of resolving a pathname.
 #[derive(Debug)]
-pub struct Resolved {
+pub struct Resolved<P = String> {
     /// The physical absolute pathname of the target: no symlink, `.` or `..`
     /// component, except a final symlink the resolution did not follow.
-    pub path: String,
+    pub path: P,
     pub target: Target,
     pub last: Last,
     /// The pathname ended in `/`, or its final symlink's target did, so its
@@ -148,6 +148,13 @@ impl Resolved {
         }
     }
 
+    /// The final component of the physical pathname.
+    pub fn final_name(&self) -> &str {
+        self.path.rsplit('/').next().unwrap_or("")
+    }
+}
+
+impl<P> Resolved<P> {
     /// The handle a lookup holds on an existing ext2 target.
     pub fn handle(&self) -> Option<&FileHandle> {
         match self.target {
@@ -170,10 +177,6 @@ impl Resolved {
         self.entry_dir.as_ref()
     }
 
-    /// The final component of the physical pathname.
-    pub fn final_name(&self) -> &str {
-        self.path.rsplit('/').next().unwrap_or("")
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -183,7 +186,7 @@ enum Node {
 }
 
 struct Frame {
-    name: String,
+    name: Vec<u8>,
     node: Node,
 }
 
@@ -206,37 +209,27 @@ fn copy_string(text: &str) -> Result<String, u64> {
     copy.push_str(text);
     Ok(copy)
 }
-fn join(stack: &[Frame]) -> Result<String, u64> {
-    let length = stack
-        .iter()
-        .fold(0usize, |size, frame| {
-            size.saturating_add(frame.name.len() + 1)
-        })
-        .max(1);
-    if length >= PATH_MAX {
-        return Err(ENAMETOOLONG as u64);
-    }
-    let mut path = String::new();
+fn copy_bytes(bytes: &[u8]) -> Result<Vec<u8>, u64> {
+    let mut copy = Vec::new();
+    copy.try_reserve_exact(bytes.len()).map_err(|_| 12u64)?;
+    copy.extend_from_slice(bytes);
+    Ok(copy)
+}
+fn join(stack: &[Frame]) -> Result<Vec<u8>, u64> {
+    let length = stack.iter().fold(0usize, |size, frame| size.saturating_add(frame.name.len() + 1)).max(1);
+    if length >= PATH_MAX { return Err(ENAMETOOLONG as u64); }
+    let mut path = Vec::new();
     path.try_reserve_exact(length).map_err(|_| 12u64)?;
-    if stack.is_empty() {
-        path.push('/');
-    }
-    for frame in stack {
-        path.push('/');
-        path.push_str(&frame.name);
-    }
+    if stack.is_empty() { path.push(b'/'); }
+    for frame in stack { path.push(b'/'); path.extend_from_slice(&frame.name); }
     Ok(path)
 }
-
-/// Push the components of `path` onto `pending` so they pop in order.
-fn push_components(pending: &mut Vec<String>, path: &str) -> Result<(), u64> {
+fn push_components(pending: &mut Vec<Vec<u8>>, path: &[u8]) -> Result<(), u64> {
     let start = pending.len();
-    for name in path.split('/').filter(|name| !name.is_empty()) {
-        if name.len() > NAME_MAX {
-            return Err(ENAMETOOLONG as u64);
-        }
+    for name in path.split(|b| *b == b'/').filter(|name| !name.is_empty()) {
+        if name.len() > NAME_MAX { return Err(ENAMETOOLONG as u64); }
         pending.try_reserve(1).map_err(|_| 12u64)?;
-        pending.push(copy_string(name)?);
+        pending.push(copy_bytes(name)?);
     }
     pending[start..].reverse();
     Ok(())
@@ -385,12 +378,17 @@ fn walk(path: &str, mode: Mode) -> Result<Resolved, u64> {
     walk_with(path, mode, None, &cred)
 }
 
-fn walk_with(
-    path: &str,
-    mode: Mode,
-    start: Option<WorkingDir>,
-    cred: &super::permissions::Credentials,
-) -> Result<Resolved, u64> {
+fn walk_with(path: &str, mode: Mode, start: Option<WorkingDir>, cred: &super::permissions::Credentials) -> Result<Resolved, u64> {
+    let raw = walk_bytes(path.as_bytes(), mode, start, cred)?;
+    Ok(Resolved { path: String::from_utf8(raw.path).map_err(|_| EIO as u64)?, target: raw.target, last: raw.last,
+        trailing_slash: raw.trailing_slash, virtual_absent: raw.virtual_absent, pin: raw.pin, entry_dir: raw.entry_dir })
+}
+/// Byte-preserving path resolution for AF_UNIX, including non-UTF-8 components.
+/// Creation holds the parent, lookup holds the target, exactly as the text API.
+pub(crate) fn resolve_socket_path(path: &[u8], create: bool, cred: &super::permissions::Credentials) -> Result<Resolved<Vec<u8>>, u64> {
+    walk_bytes(path, if create { Mode::Create } else { Mode::Lookup { follow: true } }, None, cred)
+}
+fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::permissions::Credentials) -> Result<Resolved<Vec<u8>>, u64> {
     if path.is_empty() {
         return Err(ENOENT as u64);
     }
@@ -399,7 +397,7 @@ fn walk_with(
     }
     // Both read state no filesystem guard is held across.
     let home_mounted = ext2::is_home_mounted();
-    let start = if path.starts_with('/') {
+    let start = if path.starts_with(b"/") {
         WorkingDir::Root
     } else {
         match start {
@@ -409,14 +407,14 @@ fn walk_with(
     };
     let mut held = Held(None);
     let mut stack = frames(&start, &mut held)?;
-    let mut trailing_slash = path.ends_with('/');
+    let mut trailing_slash = path.ends_with(b"/");
     let follow_final = match mode {
         Mode::Lookup { follow } => follow || trailing_slash,
         Mode::Entry | Mode::Rename | Mode::Create => false,
     };
     let mut pending = Vec::new();
     push_components(&mut pending, path)?;
-    let mut last = if path.starts_with('/') {
+    let mut last = if path.starts_with(b"/") {
         Last::Root
     } else {
         Last::Dot
@@ -444,13 +442,13 @@ fn walk_with(
         } else {
             None
         };
-        match name.as_str() {
-            "." => {
+        match name.as_slice() {
+            b"." => {
                 last = Last::Dot;
                 // The search check already verified this directory.
                 continue;
             }
-            ".." => {
+            b".." => {
                 last = Last::DotDot;
                 stack.pop();
                 continue;
@@ -467,7 +465,7 @@ fn walk_with(
                     name,
                     node: Node::Virtual,
                 });
-                match virtual_entry(&join(&stack)?) {
+                match core::str::from_utf8(&join(&stack)?).ok().and_then(virtual_entry) {
                     Some(is_dir) => top_is_dir = is_dir,
                     None if is_final => {
                         virtual_absent = true;
@@ -478,9 +476,9 @@ fn walk_with(
             }
             Node::Ext2(mount, dir) => {
                 if mount == Mount::Root && dir == EXT2_ROOT_INO {
-                    let entered = match name.as_str() {
-                        "dev" | "proc" => Some(Node::Virtual),
-                        "home" if home_mounted => Some(Node::Ext2(Mount::Home, EXT2_ROOT_INO)),
+                    let entered = match name.as_slice() {
+                        b"dev" | b"proc" => Some(Node::Virtual),
+                        b"home" if home_mounted => Some(Node::Ext2(Mount::Home, EXT2_ROOT_INO)),
                         _ => None,
                     };
                     if let Some(node) = entered {
@@ -491,7 +489,7 @@ fn walk_with(
                 }
                 let fs = held.fs(mount)?;
                 let dir_inode = searched_inode.ok_or(ENOTDIR as u64)?;
-                let found = fs.lookup_in_dir(&dir_inode, &name).map_err(fs_errno)?;
+                let found = fs.lookup_in_dir_bytes(&dir_inode, &name).map_err(fs_errno)?;
                 let Some(ino) = found else {
                     if !is_final {
                         return Err(ENOENT as u64);
@@ -506,9 +504,9 @@ fn walk_with(
                     let mut absent = join(&stack)?;
                     absent.try_reserve(name.len() + 1).map_err(|_| 12u64)?;
                     if !stack.is_empty() {
-                        absent.push('/');
+                        absent.push(b'/');
                     }
-                    absent.push_str(&name);
+                    absent.extend_from_slice(&name);
                     return Ok(Resolved {
                         path: absent,
                         target: Target::Absent { mount, parent: dir },
@@ -525,16 +523,16 @@ fn walk_with(
                     if links > MAX_SYMLINKS {
                         return Err(ELOOP as u64);
                     }
-                    let target = fs.read_symlink(ino).map_err(fs_errno)?;
+                    let target = fs.read_symlink_bytes(ino).map_err(fs_errno)?;
                     if target.is_empty() {
                         return Err(ENOENT as u64);
                     }
                     // A final link to `dir/` names a directory, as the
                     // pathname `dir/` would.
-                    if is_final && target.ends_with('/') {
+                    if is_final && target.ends_with(b"/") {
                         trailing_slash = true;
                     }
-                    if target.starts_with('/') {
+                    if target.starts_with(b"/") {
                         stack.clear();
                     }
                     push_components(&mut pending, &target)?;
@@ -763,7 +761,7 @@ pub fn working_dir_path(dir: &WorkingDir) -> Result<String, u64> {
     if path.len() >= PATH_MAX {
         return Err(ENAMETOOLONG as u64);
     }
-    Ok(path)
+    String::from_utf8(path).map_err(|_| EIO as u64)
 }
 
 /// The physical directory stack of a working directory. An ext2 directory's
@@ -776,7 +774,7 @@ fn frames(dir: &WorkingDir, held: &mut Held) -> Result<Vec<Frame>, u64> {
             for name in path.split('/').filter(|name| !name.is_empty()) {
                 frames.try_reserve(1).map_err(|_| 12u64)?;
                 frames.push(Frame {
-                    name: copy_string(name)?,
+                    name: copy_bytes(name.as_bytes())?,
                     node: Node::Virtual,
                 });
             }
@@ -809,12 +807,12 @@ fn ancestry(fs: &ext2::Ext2Fs, mount: Mount, mut ino: u32) -> Result<Vec<Frame>,
                 entry.inode == ino
                     && entry.name != b"."
                     && entry.name != b".."
-                    && core::str::from_utf8(entry.name).is_ok()
+
             })
             .ok_or(ENOENT as u64)?;
         frames.try_reserve(1).map_err(|_| 12u64)?;
         frames.push(Frame {
-            name: copy_string(core::str::from_utf8(entry.name).map_err(|_| ENOENT as u64)?)?,
+            name: copy_bytes(entry.name)?,
             node: Node::Ext2(mount, ino),
         });
         ino = parent;
@@ -822,7 +820,7 @@ fn ancestry(fs: &ext2::Ext2Fs, mount: Mount, mut ino: u32) -> Result<Vec<Frame>,
     if mount == Mount::Home {
         frames.try_reserve(1).map_err(|_| 12u64)?;
         frames.push(Frame {
-            name: copy_string("home")?,
+            name: copy_bytes(b"home")?,
             node: Node::Ext2(Mount::Home, EXT2_ROOT_INO),
         });
     }

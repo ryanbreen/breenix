@@ -17,11 +17,16 @@
 //! ```
 
 use crate::error::Error;
-use crate::process::yield_now;
-use crate::socket::{bind_inet, recvfrom, sendto, socket, SockAddrIn, AF_INET, SOCK_DGRAM, SOCK_NONBLOCK};
+use crate::io::{poll, PollFd};
+use crate::socket::{
+    bind_inet, recvfrom, sendto, socket, SockAddrIn, AF_INET, SOCK_CLOEXEC, SOCK_DGRAM,
+    SOCK_NONBLOCK,
+};
 use crate::syscall::{nr, raw};
 use crate::time::now_monotonic;
-use crate::types::{Fd, Timespec};
+use crate::types::Fd;
+#[cfg(feature = "std")]
+use crate::types::Timespec;
 
 // ============================================================================
 // Constants
@@ -256,25 +261,25 @@ impl DnsHeader {
 // Encoding Functions
 // ============================================================================
 
-/// Generate a pseudo-random transaction ID for DNS queries
-///
-/// Uses a simple hash of the hostname combined with a monotonic counter.
-/// This isn't cryptographically secure but provides enough variation
-/// to avoid transaction ID collisions and basic spoofing.
-fn generate_txid(hostname: &str) -> u16 {
-    use core::sync::atomic::{AtomicU16, Ordering};
-    static COUNTER: AtomicU16 = AtomicU16::new(0);
-
-    // Increment counter for each query
-    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
-
-    // Hash hostname bytes using simple multiply-add
-    let hash: u16 = hostname
-        .bytes()
-        .fold(0u16, |acc, b| acc.wrapping_add(b as u16).wrapping_mul(31));
-
-    // Combine hash, counter, and a constant for variation
-    hash ^ counter ^ 0xBEEF
+/// Obtain the transaction ID from the kernel random source; never fall back to a predictable ID.
+fn generate_txid() -> Result<u16, DnsError> {
+    let mut bytes = [0; 2];
+    let mut used = 0;
+    while used < bytes.len() {
+        let n = unsafe {
+            raw::syscall3(
+                nr::GETRANDOM,
+                bytes[used..].as_mut_ptr() as u64,
+                (bytes.len() - used) as u64,
+                0,
+            )
+        } as i64;
+        if n <= 0 || n as usize > bytes.len() - used {
+            return Err(DnsError::SocketError);
+        }
+        used += n as usize;
+    }
+    Ok(u16::from_ne_bytes(bytes))
 }
 
 /// Encode a hostname as DNS wire format labels
@@ -504,117 +509,222 @@ fn close_fd(fd: Fd) {
 /// # Ok(())
 /// # }
 /// ```
+/// All bounded A results and the final CNAME target from one validated reply.
+pub struct DnsLookup {
+    pub answers: [DnsResult; MAX_ANSWERS],
+    pub len: usize,
+    pub canonical: [u8; 256],
+    pub canonical_len: usize,
+}
+
+// Decode compressed names with a strict hop and output bound, including backward pointers.
+fn decode_name(buf: &[u8], mut pos: usize) -> Option<([u8; 256], usize, usize)> {
+    let mut name = [0; 256];
+    let mut used = 0;
+    let mut end = None;
+    for _ in 0..128 {
+        let n = *buf.get(pos)? as usize;
+        if n == 0 {
+            return Some((name, used, end.unwrap_or(pos + 1)));
+        }
+        if n & 0xc0 == 0xc0 {
+            let target = ((n & 0x3f) << 8) | *buf.get(pos + 1)? as usize;
+            if target >= pos {
+                return None;
+            }
+            end.get_or_insert(pos + 2);
+            pos = target;
+            continue;
+        }
+        if n > 63 {
+            return None;
+        }
+        if used != 0 {
+            name[used] = b'.';
+            used += 1;
+        }
+        if used + n > 255 {
+            return None;
+        }
+        name[used..used + n].copy_from_slice(buf.get(pos + 1..pos + 1 + n)?);
+        used += n as usize;
+        pos += n + 1;
+    }
+    None
+}
+
+fn expected_source(source: &SockAddrIn, server: [u8; 4]) -> bool {
+    source.family == AF_INET as u16 && source.addr == server && source.port == DNS_PORT.to_be()
+}
+
+fn checked_reply(buf: &[u8], id: u16, hostname: &str) -> Option<Result<DnsLookup, DnsError>> {
+    let header = DnsHeader::from_bytes(buf)?;
+    if header.id != id || !header.is_response() || header.flags & 0x7a00 != 0 || header.qdcount != 1
+    {
+        return None;
+    }
+    let (question, qlen, mut at) = decode_name(buf, 12)?;
+    if !question[..qlen].eq_ignore_ascii_case(hostname.as_bytes())
+        || buf.get(at..at + 4)? != [0, 1, 0, 1]
+    {
+        return None;
+    }
+    at += 4;
+    if header.rcode() != 0 {
+        return Some(Err(DnsError::ServerError(header.rcode())));
+    }
+    // Keep the complete answer section bounded. Never use unrelated additional A records.
+    if header.ancount as usize > MAX_ANSWERS {
+        return Some(Err(DnsError::ParseError));
+    }
+    let mut owners = [[0; 256]; MAX_ANSWERS];
+    let mut owner_lens = [0; MAX_ANSWERS];
+    let mut targets = [[0; 256]; MAX_ANSWERS];
+    let mut target_lens = [0; MAX_ANSWERS];
+    let mut records = [DnsAnswer::empty(); MAX_ANSWERS];
+    for i in 0..header.ancount as usize {
+        let (owner, len, next) = decode_name(buf, at)?;
+        owners[i] = owner;
+        owner_lens[i] = len;
+        let rr = buf.get(next..next + 10)?;
+        let kind = u16::from_be_bytes([rr[0], rr[1]]);
+        let class = u16::from_be_bytes([rr[2], rr[3]]);
+        let ttl = u32::from_be_bytes([rr[4], rr[5], rr[6], rr[7]]);
+        let size = u16::from_be_bytes([rr[8], rr[9]]) as usize;
+        at = next + 10;
+        let data = buf.get(at..at + size)?;
+        records[i] = DnsAnswer {
+            rtype: kind,
+            rclass: class,
+            ttl,
+            rdlength: size as u16,
+            ipv4: if kind == TYPE_A && size == 4 {
+                [data[0], data[1], data[2], data[3]]
+            } else {
+                [0; 4]
+            },
+        };
+        if kind == TYPE_CNAME && class == CLASS_IN {
+            let (target, len, end) = decode_name(buf, at)?;
+            if end != at + size {
+                return None;
+            }
+            targets[i] = target;
+            target_lens[i] = len;
+        }
+        at += size;
+    }
+    let mut canonical = question;
+    let mut canonical_len = qlen;
+    for hop in 0..=MAX_ANSWERS {
+        let cname = (0..header.ancount as usize).find(|&i| {
+            records[i].rtype == TYPE_CNAME
+                && records[i].rclass == CLASS_IN
+                && owners[i][..owner_lens[i]].eq_ignore_ascii_case(&canonical[..canonical_len])
+        });
+        let Some(i) = cname else {
+            break;
+        };
+        if hop == MAX_ANSWERS {
+            return None;
+        }
+        canonical = targets[i];
+        canonical_len = target_lens[i];
+    }
+    let mut result = DnsLookup {
+        answers: [DnsResult {
+            addr: [0; 4],
+            ttl: 0,
+        }; MAX_ANSWERS],
+        len: 0,
+        canonical,
+        canonical_len,
+    };
+    for i in 0..header.ancount as usize {
+        if records[i].rtype == TYPE_A
+            && records[i].rclass == CLASS_IN
+            && records[i].rdlength == 4
+            && owners[i][..owner_lens[i]].eq_ignore_ascii_case(&canonical[..canonical_len])
+        {
+            result.answers[result.len] = DnsResult {
+                addr: records[i].ipv4,
+                ttl: records[i].ttl,
+            };
+            result.len += 1;
+        }
+    }
+    Some(if result.len == 0 {
+        Err(DnsError::NoAddress)
+    } else {
+        Ok(result)
+    })
+}
+
 pub fn resolve(hostname: &str, dns_server: [u8; 4]) -> Result<DnsResult, DnsError> {
+    resolve_all(hostname, dns_server).map(|reply| reply.answers[0])
+}
+
+pub fn resolve_all(hostname: &str, dns_server: [u8; 4]) -> Result<DnsLookup, DnsError> {
     if hostname.is_empty() {
         return Err(DnsError::InvalidHostname);
     }
     if hostname.len() > MAX_HOSTNAME_LEN {
         return Err(DnsError::HostnameTooLong);
     }
-
-    // Create UDP socket with non-blocking mode
-    // CRITICAL: Must use SOCK_NONBLOCK because UDP recvfrom now blocks by default.
-    // Without this, the DNS resolver would hang forever waiting for a response.
-    let fd = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 0).map_err(|_| DnsError::SocketError)?;
-
-    // Bind to ephemeral port (port 0 = kernel assigns)
-    let local_addr = SockAddrIn::new([0, 0, 0, 0], 0);
-    if bind_inet(fd, &local_addr).is_err() {
-        close_fd(fd);
-        return Err(DnsError::BindError);
-    }
-
-    // Build query packet
-    let mut query_buf = [0u8; DNS_BUF_SIZE];
-
-    // Generate pseudo-random transaction ID based on hostname and counter
-    let txid: u16 = generate_txid(hostname);
-
-    let query_len = encode_query(hostname, txid, &mut query_buf);
+    let txid = generate_txid()?;
+    let mut query = [0; DNS_BUF_SIZE];
+    let query_len = encode_query(hostname, txid, &mut query);
     if query_len == 0 {
-        close_fd(fd);
         return Err(DnsError::InvalidHostname);
     }
-
-    // Send query to DNS server
-    let dns_addr = SockAddrIn::new(dns_server, DNS_PORT);
-    if sendto(fd, &query_buf[..query_len], &dns_addr).is_err() {
-        close_fd(fd);
-        return Err(DnsError::SendError);
-    }
-
-    // Retry an unanswered UDP query three times; packet validation remains strict.
-    let mut resp_buf = [0u8; DNS_BUF_SIZE];
-    let mut received = false;
-    let mut resp_len = 0;
-
-    // Network packets arrive via interrupt -> softirq -> process_rx().
-    // We poll recvfrom() with yield_now() between attempts.
-    // Hypervisor DNS resolvers respond in <50ms; public DNS in <200ms.
-    const TIMEOUT_MS: u64 = 500;
-    let start = now_monotonic().unwrap_or(Timespec { tv_sec: 0, tv_nsec: 0 });
-    let mut start_ms = start.tv_sec as u64 * 1000 + start.tv_nsec as u64 / 1_000_000;
-    let mut attempts = 1;
-
-    loop {
-        match recvfrom(fd, &mut resp_buf, None) {
-            Ok(len) if len > 0 => {
-                resp_len = len;
-                received = true;
-                break;
-            }
-            _ => {
-                // Check timeout using millisecond precision
-                let now = now_monotonic().unwrap_or(Timespec { tv_sec: 0, tv_nsec: 0 });
-                let now_ms = now.tv_sec as u64 * 1000 + now.tv_nsec as u64 / 1_000_000;
-                if now_ms >= start_ms + TIMEOUT_MS {
-                    if attempts == 3 {
-                        break;
-                    }
-                    if sendto(fd, &query_buf[..query_len], &dns_addr).is_err() {
-                        close_fd(fd);
-                        return Err(DnsError::SendError);
-                    }
-                    attempts += 1;
-                    start_ms = now_ms;
+    let fd = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0)
+        .map_err(|_| DnsError::SocketError)?;
+    let result = (|| {
+        bind_inet(fd, &SockAddrIn::new([0; 4], 0)).map_err(|_| DnsError::BindError)?;
+        let server = SockAddrIn::new(dns_server, DNS_PORT);
+        let mut buf = [0; DNS_BUF_SIZE];
+        for _ in 0..3 {
+            sendto(fd, &query[..query_len], &server).map_err(|_| DnsError::SendError)?;
+            let millis = || {
+                now_monotonic()
+                    .map(|t| t.tv_sec as u64 * 1000 + t.tv_nsec as u64 / 1_000_000)
+                    .map_err(|_| DnsError::RecvError)
+            };
+            let deadline = millis()? + 500;
+            loop {
+                let remaining = deadline.saturating_sub(millis()?);
+                if remaining == 0 {
+                    break;
                 }
-                // Yield to scheduler - allows timer interrupt to fire and process softirqs
-                let _ = yield_now();
+                let mut ready = [PollFd::new(fd, 1)];
+                match poll(&mut ready, remaining as i32) {
+                    Ok(0) => break,
+                    Ok(_) => {}
+                    Err(Error::Os(e)) if e == crate::errno::Errno::EINTR => continue,
+                    Err(_) => return Err(DnsError::RecvError),
+                }
+                let mut source = SockAddrIn::default();
+                let n = match recvfrom(fd, &mut buf, Some(&mut source)) {
+                    Ok(n) => n,
+                    Err(Error::Os(e))
+                        if e == crate::errno::Errno::EAGAIN || e == crate::errno::Errno::EINTR =>
+                    {
+                        continue
+                    }
+                    Err(_) => return Err(DnsError::RecvError),
+                };
+                if !expected_source(&source, dns_server) {
+                    continue;
+                }
+                if let Some(reply) = checked_reply(&buf[..n], txid, hostname) {
+                    return reply;
+                }
             }
         }
-    }
-
+        Err(DnsError::Timeout)
+    })();
     close_fd(fd);
-
-    if !received {
-        return Err(DnsError::Timeout);
-    }
-
-    // Parse response
-    let response = parse_response(&resp_buf[..resp_len]).ok_or(DnsError::ParseError)?;
-
-    // Verify transaction ID matches
-    if response.id != txid {
-        return Err(DnsError::ParseError);
-    }
-
-    // Check for server errors
-    if response.rcode != 0 {
-        return Err(DnsError::ServerError(response.rcode));
-    }
-
-    // Find first A record
-    for i in 0..response.answer_count {
-        let answer = &response.answers[i];
-        if answer.rtype == TYPE_A && answer.rdlength == 4 {
-            return Ok(DnsResult {
-                addr: answer.ipv4,
-                ttl: answer.ttl,
-            });
-        }
-    }
-
-    Err(DnsError::NoAddress)
+    result
 }
 
 /// The first nameserver the kernel's boot-time DHCP lease named, read from
@@ -651,12 +761,18 @@ pub fn resolve_auto(hostname: &str) -> Result<DnsResult, DnsError> {
         Some((SLIRP_DNS, "10.0.2.3")),
     ];
     #[cfg(feature = "std")]
-    let total_start = now_monotonic().unwrap_or(Timespec { tv_sec: 0, tv_nsec: 0 });
+    let total_start = now_monotonic().unwrap_or(Timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    });
 
     let mut last_err = DnsError::Timeout;
     for (server, _name) in servers.iter().flatten() {
         #[cfg(feature = "std")]
-        let attempt_start = now_monotonic().unwrap_or(Timespec { tv_sec: 0, tv_nsec: 0 });
+        let attempt_start = now_monotonic().unwrap_or(Timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        });
 
         match resolve(hostname, *server) {
             Ok(r) if r.addr[0] != 0 && r.addr[0] != 127 => {
@@ -664,37 +780,131 @@ pub fn resolve_auto(hostname: &str) -> Result<DnsResult, DnsError> {
                 {
                     let elapsed = elapsed_ms(&attempt_start);
                     let total = elapsed_ms(&total_start);
-                    eprintln!("[dns] resolved '{}' via {} -> {}.{}.{}.{} ({}ms, total {}ms)",
-                        hostname, _name, r.addr[0], r.addr[1], r.addr[2], r.addr[3],
-                        elapsed, total);
+                    eprintln!(
+                        "[dns] resolved '{}' via {} -> {}.{}.{}.{} ({}ms, total {}ms)",
+                        hostname, _name, r.addr[0], r.addr[1], r.addr[2], r.addr[3], elapsed, total
+                    );
                 }
                 return Ok(r);
             }
             Ok(_) => {
                 #[cfg(feature = "std")]
-                eprintln!("[dns] '{}' via {}: unusable address ({}ms)",
-                    hostname, _name, elapsed_ms(&attempt_start));
+                eprintln!(
+                    "[dns] '{}' via {}: unusable address ({}ms)",
+                    hostname,
+                    _name,
+                    elapsed_ms(&attempt_start)
+                );
                 continue;
             }
             Err(e) => {
                 #[cfg(feature = "std")]
-                eprintln!("[dns] '{}' via {}: {:?} ({}ms)",
-                    hostname, _name, e, elapsed_ms(&attempt_start));
+                eprintln!(
+                    "[dns] '{}' via {}: {:?} ({}ms)",
+                    hostname,
+                    _name,
+                    e,
+                    elapsed_ms(&attempt_start)
+                );
                 last_err = e;
                 continue;
             }
         }
     }
     #[cfg(feature = "std")]
-    eprintln!("[dns] '{}' FAILED all servers (total {}ms)", hostname, elapsed_ms(&total_start));
+    eprintln!(
+        "[dns] '{}' FAILED all servers (total {}ms)",
+        hostname,
+        elapsed_ms(&total_start)
+    );
     Err(last_err)
 }
 
 /// Compute elapsed milliseconds since a start time.
 #[cfg(feature = "std")]
 fn elapsed_ms(start: &Timespec) -> u64 {
-    let now = now_monotonic().unwrap_or(Timespec { tv_sec: 0, tv_nsec: 0 });
+    let now = now_monotonic().unwrap_or(Timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    });
     let start_ms = start.tv_sec as u64 * 1000 + start.tv_nsec as u64 / 1_000_000;
     let now_ms = now.tv_sec as u64 * 1000 + now.tv_nsec as u64 / 1_000_000;
     now_ms.saturating_sub(start_ms)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn reply() -> ([u8; DNS_BUF_SIZE], usize) {
+        let mut packet = [0; DNS_BUF_SIZE];
+        let mut n = encode_query("alias.test", 0x1234, &mut packet);
+        packet[2..4].copy_from_slice(&0x8180u16.to_be_bytes());
+        packet[6..8].copy_from_slice(&3u16.to_be_bytes());
+        // CNAME alias.test -> target.test, then two A records owned by target.test.
+        packet[n..n + 12].copy_from_slice(&[0xc0, 12, 0, 5, 0, 1, 0, 0, 0, 60, 0, 13]);
+        n += 12;
+        let target_at = n;
+        n += encode_hostname("target.test", &mut packet[n..]);
+        for ip in [[192, 0, 2, 1], [192, 0, 2, 2]] {
+            packet[n..n + 12].copy_from_slice(&[
+                0xc0,
+                target_at as u8,
+                0,
+                1,
+                0,
+                1,
+                0,
+                0,
+                0,
+                60,
+                0,
+                4,
+            ]);
+            n += 12;
+            packet[n..n + 4].copy_from_slice(&ip);
+            n += 4;
+        }
+        (packet, n)
+    }
+    #[test]
+    fn rejects_wrong_source_and_unrelated_answer_owner() {
+        let server = [192, 0, 2, 53];
+        assert!(expected_source(&SockAddrIn::new(server, 53), server));
+        assert!(!expected_source(
+            &SockAddrIn::new([192, 0, 2, 54], 53),
+            server
+        ));
+        assert!(!expected_source(&SockAddrIn::new(server, 54), server));
+        let (mut packet, n) = reply();
+        let owner = n - 32;
+        // Both A owners now refer to alias.test, which the CNAME has replaced.
+        packet[owner + 1] = 12;
+        packet[owner + 17] = 12;
+        assert!(matches!(
+            checked_reply(&packet[..n], 0x1234, "alias.test"),
+            Some(Err(DnsError::NoAddress))
+        ));
+    }
+    #[test]
+    fn validates_question_transaction_and_cname_owned_answers() {
+        let (packet, n) = reply();
+        assert!(checked_reply(&packet[..n], 0x5678, "alias.test").is_none());
+        assert!(checked_reply(&packet[..n], 0x1234, "other.test").is_none());
+        let result = checked_reply(&packet[..n], 0x1234, "alias.test")
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.len, 2);
+        assert_eq!(&result.canonical[..result.canonical_len], b"target.test");
+        assert_eq!(result.answers[0].addr, [192, 0, 2, 1]);
+        assert_eq!(result.answers[1].addr, [192, 0, 2, 2]);
+    }
+    #[test]
+    fn rejects_truncated_questions_and_compression_cycles() {
+        let (mut packet, n) = reply();
+        for end in 0..25 {
+            assert!(checked_reply(&packet[..end], 0x1234, "alias.test").is_none());
+        }
+        packet[12..14].copy_from_slice(&[0xc0, 12]);
+        assert!(checked_reply(&packet[..n], 0x1234, "alias.test").is_none());
+    }
 }

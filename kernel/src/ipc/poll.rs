@@ -19,6 +19,8 @@ pub mod events {
     pub const POLLHUP: i16 = 0x0010;
     /// Invalid fd (output only)
     pub const POLLNVAL: i16 = 0x0020;
+    /// The peer shut down its writing side (Linux)
+    pub const POLLRDHUP: i16 = 0x2000;
 }
 
 /// pollfd structure matching Linux definition
@@ -119,20 +121,12 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                 revents |= events::POLLERR;
             }
         }
-        FdKind::UdpSocket(socket) => {
-            // #823: this lock is also taken, masked, by the NetRx IRQ route
-            // (`net/udp.rs::handle_udp`, inside `with_process_manager`).
-            // `sys_poll`, `sys_select` and `sys_epoll_wait` reach this arm
-            // through this one function, with no PM guard active here, so this
-            // was the one call site actually reachable unmasked on both
-            // architectures.
-            let has_data = crate::socket::udp::with_locked_masked(socket, |s| s.has_data());
-            if (events & events::POLLIN) != 0 && has_data {
-                revents |= events::POLLIN;
-            }
-            if (events & events::POLLOUT) != 0 {
-                revents |= events::POLLOUT;
-            }
+        FdKind::Socket(socket) => {
+            // The protocol reports its readiness, and a pending SO_ERROR is
+            // POLLERR on every protocol (`Socket::poll`). POLLERR and POLLHUP
+            // are reported whether or not they were asked for.
+            let bits = socket.poll() as i16;
+            revents = bits & (events | events::POLLERR | events::POLLHUP);
         }
         FdKind::RegularFile(_file) => {
             // Regular files are always readable/writable (for now)
@@ -196,48 +190,6 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                 revents |= events::POLLIN;
             }
         }
-        FdKind::TcpSocket(_) => {
-            // Unconnected TCP socket - always writable (for connect attempt)
-            if (events & events::POLLOUT) != 0 {
-                revents |= events::POLLOUT;
-            }
-        }
-        FdKind::TcpListener(port) => {
-            // Listening socket - check for pending connections
-            if (events & events::POLLIN) != 0 {
-                if crate::net::tcp::tcp_has_pending(*port) {
-                    revents |= events::POLLIN;
-                }
-            }
-        }
-        FdKind::TcpConnection(conn_id) => {
-            // Connected socket - check for data and connection state
-            crate::net::tcp::with_tcp_connections(|connections| {
-                if let Some(conn) = connections.get(conn_id) {
-                    // Check for readable data
-                    if (events & events::POLLIN) != 0 {
-                        if !conn.rx_is_empty() {
-                            revents |= events::POLLIN;
-                        }
-                    }
-                    // Check for writable
-                    if (events & events::POLLOUT) != 0 {
-                        if conn.state == crate::net::tcp::TcpState::Established {
-                            revents |= events::POLLOUT;
-                        }
-                    }
-                    // Check for connection closed
-                    if conn.state == crate::net::tcp::TcpState::Closed
-                        || conn.state == crate::net::tcp::TcpState::CloseWait
-                    {
-                        revents |= events::POLLHUP;
-                    }
-                } else {
-                    // Connection not found - error
-                    revents |= events::POLLERR;
-                }
-            });
-        }
         FdKind::PtyMaster(pair) => {
             // PTY master - check slave_to_master buffer for readable data
             if (events & events::POLLIN) != 0 {
@@ -276,40 +228,6 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                     if buffer.space() > 0 {
                         revents |= events::POLLOUT;
                     }
-                }
-            }
-        }
-        FdKind::UnixStream(socket_ref) => {
-            let socket = socket_ref.lock();
-            // Check for readable data
-            if (events & events::POLLIN) != 0 {
-                if socket.has_data() {
-                    revents |= events::POLLIN;
-                }
-            }
-            // Check for writable
-            if (events & events::POLLOUT) != 0 {
-                if socket.has_write_space() {
-                    revents |= events::POLLOUT;
-                }
-            }
-            // Check for peer closed
-            if socket.peer_closed() && !socket.has_data() {
-                revents |= events::POLLHUP;
-            }
-        }
-        FdKind::UnixSocket(_) => {
-            // Unconnected Unix socket - always writable (for connect attempt)
-            if (events & events::POLLOUT) != 0 {
-                revents |= events::POLLOUT;
-            }
-        }
-        FdKind::UnixListener(listener_ref) => {
-            // Listening socket - check for pending connections
-            if (events & events::POLLIN) != 0 {
-                let listener = listener_ref.lock();
-                if listener.has_pending() {
-                    revents |= events::POLLIN;
                 }
             }
         }
@@ -355,9 +273,9 @@ pub fn check_exception(fd_entry: &FileDescriptor) -> bool {
 /// The receive-side readiness state of a connected TCP fd: the monotonic
 /// nanosecond instant at which bytes were most recently published into its
 /// receive buffer (`0` before the first publication), and how many bytes are in
-/// that buffer now. `None` for fd kinds other than a TCP connection, and for a
-/// connection id that no longer resolves: 1 of 3 TCP-shaped `FdKind` variants
-/// answers with a value, and a listener or an unconnected socket does not.
+/// that buffer now. `None` for anything but a connected TCP socket, and for a
+/// connection id that no longer resolves: a listener or an unconnected socket
+/// has no receive buffer.
 ///
 /// #693 is the reason this exists. A blocking `poll()` that returns 0 ready fds
 /// after its whole timeout is indistinguishable, from outside, between
@@ -367,12 +285,16 @@ pub fn check_exception(fd_entry: &FileDescriptor) -> bool {
 /// These two numbers, read at the instant the poll gives up, decide it from
 /// kernel state: see `poll_report_timeout` in `syscall/handlers.rs`.
 pub fn tcp_rx_publication(fd_entry: &FileDescriptor) -> Option<(u64, usize)> {
-    match &fd_entry.kind {
-        FdKind::TcpConnection(conn_id) => crate::net::tcp::with_tcp_connections(|connections| {
-            connections
-                .get(conn_id)
-                .map(|conn| (conn.rx_publish_ns(), conn.rx_len()))
-        }),
-        _ => None,
-    }
+    let FdKind::Socket(socket) = &fd_entry.kind else {
+        return None;
+    };
+    let crate::socket::object::SocketProto::Tcp(tcp) = &socket.proto else {
+        return None;
+    };
+    let conn_id = tcp.connection()?;
+    crate::net::tcp::with_tcp_connections(|connections| {
+        connections
+            .get(&conn_id)
+            .map(|conn| (conn.rx_publish_ns(), conn.rx_len()))
+    })
 }

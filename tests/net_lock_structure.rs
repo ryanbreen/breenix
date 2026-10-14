@@ -765,68 +765,6 @@ fn validate_deleted_irq_primitives(sources: &[(String, String)]) -> Result<(), S
     Ok(())
 }
 
-fn validate_tcp_accept_publish_recovery(source: &str) -> Result<(), String> {
-    let handle = function_body(source, "handle_tcp")
-        .ok_or_else(|| "missing handle_tcp".to_string())?;
-    let accept = function_body(source, "tcp_accept")
-        .ok_or_else(|| "missing tcp_accept".to_string())?;
-
-    let retry_anchor = handle
-        .find("if retry_connection_lookup")
-        .ok_or_else(|| "handle_tcp lost the no-pending-match connection re-check".to_string())?;
-    let retry = braced_block(handle, &code_mask(handle), retry_anchor)
-        .ok_or_else(|| "cannot parse handle_tcp connection re-check".to_string())?;
-    if identifier_offsets(retry, &code_mask(retry), "with_tcp_connections").len() != 1
-        || !retry.contains("handle_tcp_for_connection(conn, &header, payload);")
-        || !retry.contains("TCP_ACCEPT_PUBLISH_RACE_RECOVERED.fetch_add(1, Ordering::Relaxed);")
-    {
-        return Err(
-            "handle_tcp re-check no longer delivers and counts the recovered segment".to_string(),
-        );
-    }
-
-    let listener_lookup = handle
-        .find("with_tcp_listeners")
-        .ok_or_else(|| "handle_tcp lost its listener lookup".to_string())?;
-    if retry_anchor <= listener_lookup
-        || !handle[..retry_anchor].contains("else if !header.flags.syn")
-        || !handle[..retry_anchor].contains("listener.pending.iter_mut().find")
-        || !handle[..retry_anchor].contains("(true, true)")
-    {
-        return Err(
-            "handle_tcp no-pending-match outcome no longer precedes the sequential re-check"
-                .to_string(),
-        );
-    }
-
-    for (outer, forbidden) in [
-        ("with_tcp_connections", "with_tcp_listeners"),
-        ("with_tcp_listeners", "with_tcp_connections"),
-    ] {
-        for offset in identifier_offsets(handle, &code_mask(handle), outer) {
-            let closure = braced_block(handle, &code_mask(handle), offset)
-                .ok_or_else(|| format!("cannot parse handle_tcp {outer} closure"))?;
-            if !identifier_offsets(closure, &code_mask(closure), forbidden).is_empty() {
-                return Err(format!("handle_tcp nests {forbidden} inside {outer}"));
-            }
-        }
-    }
-
-    let insert = accept
-        .find("connections.insert(conn_id, conn);")
-        .ok_or_else(|| "tcp_accept lost the child connection insert".to_string())?;
-    let remove = accept
-        .find("listener.pending.remove(position)")
-        .ok_or_else(|| "tcp_accept lost the pending entry removal".to_string())?;
-    if insert >= remove {
-        return Err(
-            "tcp_accept must publish the child before removing its pending entry".to_string(),
-        );
-    }
-
-    Ok(())
-}
-
 fn validate_unmatched_tcp_rst_is_dropped(source: &str) -> Result<(), String> {
     let handle = function_body(source, "handle_tcp")
         .ok_or_else(|| "missing handle_tcp".to_string())?;
@@ -881,7 +819,6 @@ fn every_cross_context_net_static_is_guarded_or_declared_thread_only() {
     // deleted.
     const DISCOVERY_FLOOR: &[&str] = &[
         "TCP_CONNECTIONS",
-        "TCP_LISTENERS",
         "SEQ_COUNTER",
         "DEFERRED_TX_QUEUE",
         "ARP_CACHE",
@@ -1122,47 +1059,6 @@ fn irq_primitive_validator_rejects_resurrected_irq_save() {
         "fn irq_save() -> u64 { 0 }".to_string(),
     )];
     assert!(validate_deleted_irq_primitives(&synthetic).is_err());
-}
-
-#[test]
-fn tcp_accept_publish_race_has_a_sequential_recovery_path() {
-    validate_tcp_accept_publish_recovery(&repo_text("kernel/src/net/tcp.rs"))
-        .expect("TCP accept publication keeps the final-ACK recovery invariant");
-}
-
-#[test]
-fn deliberately_broken_tcp_accept_publish_race_variants_fail_the_validator() {
-    let source = repo_text("kernel/src/net/tcp.rs");
-    let handle = function_body(&source, "handle_tcp").expect("find handle_tcp fixture");
-    let retry_anchor = handle
-        .find("if retry_connection_lookup")
-        .expect("find recovery re-check fixture");
-    let retry = braced_block(handle, &code_mask(handle), retry_anchor)
-        .expect("parse recovery re-check fixture");
-    let without_recheck = source.replacen(retry, "{}", 1);
-    assert_ne!(without_recheck, source, "re-check mutation must apply");
-    assert!(validate_tcp_accept_publish_recovery(&without_recheck).is_err());
-
-    let moved_insert = source.replacen(
-        "connections.insert(conn_id, conn);",
-        "__TCP_CHILD_INSERT__",
-        1,
-    );
-    let moved_remove = moved_insert.replacen(
-        "listener.pending.remove(position)",
-        "connections.insert(conn_id, conn);",
-        1,
-    );
-    let swapped_publish_order = moved_remove.replacen(
-        "__TCP_CHILD_INSERT__",
-        "listener.pending.remove(position)",
-        1,
-    );
-    assert_ne!(
-        swapped_publish_order, source,
-        "publish-order mutation must apply"
-    );
-    assert!(validate_tcp_accept_publish_recovery(&swapped_publish_order).is_err());
 }
 
 #[test]

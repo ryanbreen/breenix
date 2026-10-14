@@ -2407,26 +2407,28 @@ fn test_virtio_net_probe() -> TestResult {
 /// Creates a UDP socket, verifies the handle is valid, then closes it.
 /// This tests the socket allocation path without requiring network hardware.
 fn test_socket_creation() -> TestResult {
-    use crate::socket::udp::UdpSocket;
+    use crate::socket::addr::SockAddr;
+    use crate::socket::object::{Socket, SocketProto};
+    use crate::socket::types::{AF_INET, SOCK_DGRAM};
 
-    // Create a new UDP socket
-    let socket = UdpSocket::new();
+    // Create a new UDP socket, as socket(AF_INET, SOCK_DGRAM, 0) does
+    let Ok(udp) = crate::socket::udp::UdpSock::new() else {
+        return TestResult::Fail("UdpSock::new failed");
+    };
+    let Ok(socket) = Socket::new(AF_INET, SOCK_DGRAM, 17, SocketProto::Udp(udp)) else {
+        return TestResult::Fail("Socket::new failed for a UDP socket");
+    };
+    log::info!("created UDP socket");
 
-    // Verify handle is valid (non-zero after first allocation)
-    // The handle ID should be assigned
-    let handle_id = socket.handle.as_u64();
-    log::info!("created UDP socket with handle {}", handle_id);
-
-    // Verify socket is in expected initial state
-    if socket.bound {
+    // A new socket is unbound and has no peer
+    if socket.ops().local_name(&socket) != (SockAddr::Inet { addr: [0; 4], port: 0 }) {
         return TestResult::Fail("newly created socket should not be bound");
     }
-
-    if socket.local_port.is_some() {
-        return TestResult::Fail("newly created socket should not have local port");
+    if socket.ops().peer_name(&socket) != Err(crate::syscall::errno::ENOTCONN) {
+        return TestResult::Fail("newly created socket should have no peer");
     }
 
-    // Socket is dropped here, which cleans up resources
+    // Socket is dropped here, which releases it
     TestResult::Pass
 }
 
@@ -2434,76 +2436,56 @@ fn test_socket_creation() -> TestResult {
 ///
 /// Verifies that TCP sockets can be created on both x86_64 and ARM64.
 /// This ensures the cfg gates have been properly removed from TCP support.
-/// Tests: socket(AF_INET, SOCK_STREAM, 0), FdKind::TcpSocket handling.
+/// Tests: socket(AF_INET, SOCK_STREAM, 0) as an FdKind::Socket, and the TCP
+/// adapter's names for an unbound and a connected socket.
 fn test_tcp_socket_creation() -> TestResult {
     use crate::ipc::fd::FdKind;
+    use crate::socket::addr::SockAddr;
+    use crate::socket::object::{ProtoOps, Socket, SocketProto};
+    use crate::socket::tcp::{TcpSock, TcpSockState};
     use crate::socket::types::{AF_INET, SOCK_STREAM};
 
     log::info!("testing TCP socket creation on current architecture");
 
-    // Create a TCP socket FdKind directly (tests FdKind::TcpSocket variant)
-    // Port 0 means unbound
-    let tcp_socket = FdKind::TcpSocket(0);
-
-    // Verify it's the right type
-    match tcp_socket {
-        FdKind::TcpSocket(port) => {
-            if port != 0 {
-                return TestResult::Fail("unbound TCP socket should have port 0");
-            }
-            log::info!("created FdKind::TcpSocket(0) - unbound TCP socket");
-        }
-        _ => {
-            return TestResult::Fail("expected FdKind::TcpSocket variant");
-        }
+    let Ok(unbound) = Socket::new(AF_INET, SOCK_STREAM, 6, SocketProto::Tcp(TcpSock::new())) else {
+        return TestResult::Fail("Socket::new failed for an unbound TCP socket");
+    };
+    let kind = FdKind::Socket(unbound.clone());
+    if !matches!(kind, FdKind::Socket(_)) {
+        return TestResult::Fail("expected FdKind::Socket variant");
     }
-
-    // Test that we can create bound and listening variants too
-    let tcp_bound = FdKind::TcpSocket(8080);
-    match tcp_bound {
-        FdKind::TcpSocket(port) => {
-            if port != 8080 {
-                return TestResult::Fail("bound TCP socket should have port 8080");
-            }
-            log::info!("created FdKind::TcpSocket(8080) - bound TCP socket");
-        }
-        _ => {
-            return TestResult::Fail("expected FdKind::TcpSocket variant");
-        }
+    match &unbound.proto {
+        SocketProto::Tcp(tcp) if matches!(tcp.state(), TcpSockState::Unbound) => {}
+        _ => return TestResult::Fail("a new TCP socket should be unbound"),
     }
-
-    let tcp_listener = FdKind::TcpListener(8080);
-    match tcp_listener {
-        FdKind::TcpListener(port) => {
-            if port != 8080 {
-                return TestResult::Fail("TCP listener should have port 8080");
-            }
-            log::info!("created FdKind::TcpListener(8080) - listening TCP socket");
-        }
-        _ => {
-            return TestResult::Fail("expected FdKind::TcpListener variant");
-        }
+    if unbound.ops().local_name(&unbound) != (SockAddr::Inet { addr: [0; 4], port: 0 }) {
+        return TestResult::Fail("an unbound TCP socket's name should be 0.0.0.0:0");
     }
+    if unbound.ops().peer_name(&unbound) != Err(crate::syscall::errno::ENOTCONN) {
+        return TestResult::Fail("an unbound TCP socket should have no peer");
+    }
+    log::info!("created FdKind::Socket - unbound TCP socket");
 
-    // Verify TCP connection variant compiles (doesn't require active connection)
+    // A socket carrying a connection names its own end of it, and names a
+    // peer only while the connection is open: this one was never opened, so,
+    // as on Linux for a socket in TCP_CLOSE, it has none.
     let conn_id = crate::net::tcp::ConnectionId {
         local_ip: [127, 0, 0, 1],
         local_port: 8080,
         remote_ip: [127, 0, 0, 1],
         remote_port: 12345,
     };
-    let tcp_connection = FdKind::TcpConnection(conn_id);
-    match tcp_connection {
-        FdKind::TcpConnection(id) => {
-            log::info!("created FdKind::TcpConnection - connection ID works");
-            if id.local_port != 8080 {
-                return TestResult::Fail("connection ID local port mismatch");
-            }
-        }
-        _ => {
-            return TestResult::Fail("expected FdKind::TcpConnection variant");
-        }
+    let connected = TcpSock::connected(conn_id);
+    if connected.connection().map(|id| id.local_port) != Some(8080) {
+        return TestResult::Fail("connection ID local port mismatch");
     }
+    if connected.local_name(&unbound) != (SockAddr::Inet { addr: [127, 0, 0, 1], port: 8080 }) {
+        return TestResult::Fail("a TCP socket with a connection should name its own end");
+    }
+    if connected.peer_name(&unbound) != Err(crate::syscall::errno::ENOTCONN) {
+        return TestResult::Fail("a TCP socket whose connection is not open should have no peer");
+    }
+    log::info!("TcpSock::connected - connection ID works");
 
     // Verify socket constants match expected POSIX values
     if AF_INET != 2 {
@@ -2647,15 +2629,21 @@ fn setup_loopback_tcp_pair(
     use crate::net::tcp;
     use crate::process::process::ProcessId;
 
-    if tcp::tcp_listen(listen_port, 4, ProcessId::new(0)).is_err() {
+    let Ok(listener) = tcp::tcp_listen([0; 4], listen_port, 4, ProcessId::new(0), false, None)
+    else {
         return Err("tcp_listen failed during loopback setup");
-    }
+    };
 
-    let client = match tcp::tcp_connect(client_port, [127, 0, 0, 1], listen_port, ProcessId::new(0))
-    {
+    let client = match tcp::tcp_connect(
+        [0; 4],
+        client_port,
+        [127, 0, 0, 1],
+        listen_port,
+        ProcessId::new(0),
+    ) {
         Ok(connection) => connection,
         Err(_) => {
-            tcp::tcp_listener_ref_dec(listen_port);
+            tcp::tcp_unlisten(listener);
             return Err("tcp_connect failed during loopback setup");
         }
     };
@@ -2665,10 +2653,12 @@ fn setup_loopback_tcp_pair(
     loop {
         crate::net::drain_loopback_queue();
         if server.is_none() {
-            server = tcp::tcp_accept(listen_port);
+            server = tcp::tcp_accept(listener);
         }
         if let Some(server_connection) = server.as_ref() {
             if tcp::tcp_is_established(&client) && tcp::tcp_is_established(server_connection) {
+                // The accepted connection no longer belongs to the listener.
+                tcp::tcp_unlisten(listener);
                 return Ok((client, *server_connection));
             }
         }
@@ -2690,7 +2680,7 @@ fn setup_loopback_tcp_pair(
         server_state,
         server_established,
         listen_port,
-        tcp::tcp_pending_accept_depth(listen_port),
+        tcp::tcp_pending_accept_depth(listener),
     );
 
     let Some(server) = server else {
@@ -2700,7 +2690,7 @@ fn setup_loopback_tcp_pair(
             "kloopbackd",
         );
         let _ = tcp::tcp_close(&client);
-        tcp::tcp_listener_ref_dec(listen_port);
+        tcp::tcp_unlisten(listener);
         return Err("tcp_accept failed during loopback setup");
     };
 
@@ -2708,7 +2698,7 @@ fn setup_loopback_tcp_pair(
     crate::task::scheduler::dump_thread_placement(crate::net::loopback_pump_tid(), "kloopbackd");
     let _ = tcp::tcp_close(&client);
     let _ = tcp::tcp_close(&server);
-    tcp::tcp_listener_ref_dec(listen_port);
+    tcp::tcp_unlisten(listener);
     Err("loopback TCP handshake did not establish both peers")
 }
 
@@ -2873,7 +2863,6 @@ fn run_loopback_recv_wake_test_inner(
         Err(_) => {
             let _ = tcp::tcp_close(&client);
             let _ = tcp::tcp_close(&server);
-            tcp::tcp_listener_ref_dec(listen_port);
             return TestResult::Fail("failed to spawn loopback reader kthread");
         }
     };
@@ -2890,7 +2879,6 @@ fn run_loopback_recv_wake_test_inner(
             let _ = kthread::kthread_join(&reader);
             let _ = tcp::tcp_close(&client);
             let _ = tcp::tcp_close(&server);
-            tcp::tcp_listener_ref_dec(listen_port);
             return TestResult::Fail("reader did not publish its thread id");
         }
         scheduler::yield_current();
@@ -2903,7 +2891,6 @@ fn run_loopback_recv_wake_test_inner(
         tcp::tcp_unregister_recv_waiter(&client, reader_tid);
         let _ = tcp::tcp_close(&client);
         let _ = tcp::tcp_close(&server);
-        tcp::tcp_listener_ref_dec(listen_port);
         return TestResult::Fail("reader did not reach Blocked state");
     }
 
@@ -2926,7 +2913,6 @@ fn run_loopback_recv_wake_test_inner(
                 tcp::tcp_unregister_recv_waiter(&client, reader_tid);
                 let _ = tcp::tcp_close(&client);
                 let _ = tcp::tcp_close(&server);
-                tcp::tcp_listener_ref_dec(listen_port);
                 return TestResult::Fail("failed to spawn loopback load kthread");
             }
         }
@@ -2948,7 +2934,6 @@ fn run_loopback_recv_wake_test_inner(
                 tcp::tcp_unregister_recv_waiter(&client, reader_tid);
                 let _ = tcp::tcp_close(&client);
                 let _ = tcp::tcp_close(&server);
-                tcp::tcp_listener_ref_dec(listen_port);
                 return TestResult::Fail("loopback load kthread did not start");
             }
             scheduler::yield_current();
@@ -2966,7 +2951,6 @@ fn run_loopback_recv_wake_test_inner(
         tcp::tcp_unregister_recv_waiter(&client, reader_tid);
         let _ = tcp::tcp_close(&client);
         let _ = tcp::tcp_close(&server);
-        tcp::tcp_listener_ref_dec(listen_port);
         return TestResult::Fail("tcp_send failed in loopback wake test");
     }
 
@@ -3043,7 +3027,6 @@ fn run_loopback_recv_wake_test_inner(
     tcp::tcp_unregister_recv_waiter(&client, reader_tid);
     let _ = tcp::tcp_close(&client);
     let _ = tcp::tcp_close(&server);
-    tcp::tcp_listener_ref_dec(listen_port);
 
     // #586: the classification is selected from TWO independent facts. The
     // delivery fact (`queue_depth`, `client_has_data`) says what happened to
@@ -3345,113 +3328,95 @@ fn loopback_wake_loss_counters_are_zero() -> TestResult {
     TestResult::Pass
 }
 
-fn tcp_final_ack_survives_accept_publish_race() -> TestResult {
+/// A listener's child stays out of accept's reach until the final ACK of its
+/// handshake: a SYN alone leaves nothing to accept, a reset at the child's
+/// next expected sequence number removes it, an ACK whose checksum does not
+/// hold changes nothing, and the final ACK makes it the one accept returns.
+///
+/// The synthetic peer is 192.0.2.1 (TEST-NET-1, RFC 5737), so the SYN+ACKs
+/// the children send leave through the interface to an address nobody
+/// answers, and no reply races the fixture.
+fn tcp_accept_waits_for_final_ack() -> TestResult {
     use crate::net::{ipv4, tcp};
     use crate::process::process::ProcessId;
 
     const LISTEN_PORT: u16 = 54_530;
     const CLIENT_PORT: u16 = 54_531;
     const CLIENT_ISN: u32 = 0x5453_0000;
-    const LOOPBACK_QUIESCE_ATTEMPTS: usize = 8;
 
-    let mut loopback_quiescent = false;
-    for _ in 0..LOOPBACK_QUIESCE_ATTEMPTS {
-        crate::net::drain_loopback_queue();
-        crate::task::scheduler::yield_current();
-        if crate::net::loopback_queue_depth_for_test() == 0 {
-            loopback_quiescent = true;
-            break;
+    let Ok(listener) = tcp::tcp_listen([0; 4], LISTEN_PORT, 4, ProcessId::new(0), false, None)
+    else {
+        return TestResult::Fail("tcp_listen failed in the accept handshake fixture");
+    };
+    let server_ip = crate::net::config().ip_addr;
+    let client_ip = [192, 0, 2, 1];
+    let child_id = tcp::ConnectionId {
+        local_ip: server_ip,
+        local_port: LISTEN_PORT,
+        remote_ip: client_ip,
+        remote_port: CLIENT_PORT,
+    };
+    let inject = |seq: u32, ack: u32, flags: tcp::TcpFlags, corrupt: bool| {
+        let mut segment = tcp::build_tcp_packet_with_checksum(
+            client_ip,
+            server_ip,
+            CLIENT_PORT,
+            LISTEN_PORT,
+            seq,
+            ack,
+            flags,
+            65_535,
+            &[],
+        );
+        if corrupt {
+            segment[16] ^= 0xff;
         }
-    }
-    if !loopback_quiescent {
-        return TestResult::Fail("loopback queue did not quiesce before the final-ACK race oracle");
-    }
+        let packet = ipv4::Ipv4Packet::build(client_ip, server_ip, ipv4::PROTOCOL_TCP, &segment);
+        if let Some(ip) = ipv4::Ipv4Packet::parse(&packet) {
+            tcp::handle_tcp(&ip, ip.payload);
+        }
+    };
+    let syn_ack_seq = || {
+        tcp::with_tcp_connections(|connections| {
+            connections.get(&child_id).map(|connection| connection.send_next)
+        })
+    };
 
-    if tcp::tcp_listen(LISTEN_PORT, 4, ProcessId::new(0)).is_err() {
-        return TestResult::Fail("tcp_listen failed in final-ACK race oracle");
-    }
-
-    let mut child = None;
     let result = (|| {
-        let server_ip = crate::net::config().ip_addr;
-        let client_ip = [127, 0, 0, 1];
-        let syn_segment = tcp::build_tcp_packet_with_checksum(
-            client_ip,
-            server_ip,
-            CLIENT_PORT,
-            LISTEN_PORT,
-            CLIENT_ISN,
-            0,
-            tcp::TcpFlags::syn(),
-            65_535,
-            &[],
-        );
-        let syn_packet =
-            ipv4::Ipv4Packet::build(client_ip, server_ip, ipv4::PROTOCOL_TCP, &syn_segment);
-        let Some(syn_ip) = ipv4::Ipv4Packet::parse(&syn_packet) else {
-            return TestResult::Fail("failed to parse synthetic SYN IPv4 packet");
+        inject(CLIENT_ISN, 0, tcp::TcpFlags::syn(), false);
+        if tcp::tcp_get_state(&child_id) != Some(tcp::TcpState::SynReceived) {
+            return TestResult::Fail("a SYN did not make a child in SYN_RECEIVED");
+        }
+        if tcp::tcp_pending_accept_depth(listener) != 0 || tcp::tcp_accept(listener).is_some() {
+            return TestResult::Fail("accept took a child whose handshake had not finished");
+        }
+
+        inject(CLIENT_ISN.wrapping_add(1), 0, tcp::TcpFlags::rst(), false);
+        if tcp::tcp_get_state(&child_id).is_some() {
+            return TestResult::Fail("a reset left the half-open child in the table");
+        }
+
+        inject(CLIENT_ISN, 0, tcp::TcpFlags::syn(), false);
+        let Some(server_ack) = syn_ack_seq() else {
+            return TestResult::Fail("a second SYN did not make a child");
         };
-        tcp::handle_tcp(&syn_ip, syn_ip.payload);
-        if tcp::tcp_pending_accept_depth(LISTEN_PORT) != 1 {
-            return TestResult::Fail("synthetic SYN did not create one pending connection");
+        inject(CLIENT_ISN.wrapping_add(1), server_ack, tcp::TcpFlags::ack(), true);
+        if tcp::tcp_get_state(&child_id) != Some(tcp::TcpState::SynReceived) {
+            return TestResult::Fail("an ACK with a bad checksum changed the child");
         }
 
-        let Some(server) = tcp::tcp_accept(LISTEN_PORT) else {
-            return TestResult::Fail("tcp_accept failed in final-ACK race oracle");
-        };
-        child = Some(server);
-        if tcp::tcp_pending_accept_depth(LISTEN_PORT) != 0 {
-            return TestResult::Fail("tcp_accept did not remove the pending connection");
+        inject(CLIENT_ISN.wrapping_add(1), server_ack, tcp::TcpFlags::ack(), false);
+        if tcp::tcp_get_state(&child_id) != Some(tcp::TcpState::Established) {
+            return TestResult::Fail("the final ACK did not establish the child");
         }
-        if tcp::tcp_get_state(&server) != Some(tcp::TcpState::SynReceived) {
-            return TestResult::Fail("accepted child was not waiting for the final ACK");
+        if tcp::tcp_accept(listener) != Some(child_id) {
+            return TestResult::Fail("accept did not return the established child");
         }
-
-        let Some(server_ack) = tcp::with_tcp_connections(|connections| {
-            connections
-                .get(&server)
-                .map(|connection| connection.send_next)
-        }) else {
-            return TestResult::Fail("accepted child was not published");
-        };
-        let recovered_before = tcp::tcp_accept_publish_race_recovered();
-        tcp::arm_forced_connection_lookup_miss(LISTEN_PORT, CLIENT_PORT, 1);
-
-        let ack_segment = tcp::build_tcp_packet_with_checksum(
-            client_ip,
-            server_ip,
-            CLIENT_PORT,
-            LISTEN_PORT,
-            CLIENT_ISN.wrapping_add(1),
-            server_ack,
-            tcp::TcpFlags::ack(),
-            65_535,
-            &[],
-        );
-        let ack_packet =
-            ipv4::Ipv4Packet::build(client_ip, server_ip, ipv4::PROTOCOL_TCP, &ack_segment);
-        let Some(ack_ip) = ipv4::Ipv4Packet::parse(&ack_packet) else {
-            tcp::arm_forced_connection_lookup_miss(LISTEN_PORT, CLIENT_PORT, 0);
-            return TestResult::Fail("failed to parse synthetic ACK IPv4 packet");
-        };
-        tcp::handle_tcp(&ack_ip, ack_ip.payload);
-        tcp::arm_forced_connection_lookup_miss(LISTEN_PORT, CLIENT_PORT, 0);
-
-        if tcp::tcp_get_state(&server) != Some(tcp::TcpState::Established) {
-            return TestResult::Fail("final ACK did not establish the accepted child");
-        }
-        if tcp::tcp_accept_publish_race_recovered() != recovered_before.wrapping_add(1) {
-            return TestResult::Fail("final ACK did not take exactly one recovery path");
-        }
-
         TestResult::Pass
     })();
 
-    tcp::arm_forced_connection_lookup_miss(LISTEN_PORT, CLIENT_PORT, 0);
-    if let Some(server) = child {
-        let _ = tcp::tcp_close(&server);
-    }
-    tcp::tcp_listener_ref_dec(LISTEN_PORT);
+    let _ = tcp::tcp_close_connection(&child_id, true, false);
+    tcp::tcp_unlisten(listener);
     tcp::drain_deferred_tx();
     crate::net::drain_loopback_queue();
     result
@@ -3466,8 +3431,9 @@ fn tcp_final_ack_survives_accept_publish_race() -> TestResult {
 /// - `loopback_recv_wake_under_load` page-faults on a write to `0x100002590aa`.
 /// - `loopback_pump_does_not_busy_spin` page-faults while fetching an instruction
 ///   from a data address.
-/// - `tcp_final_ack_survives_accept_publish_race` resumes at poison-filled RIP
-///   `0x4444446053e6`.
+/// - `tcp_accept_waits_for_final_ack` replaced
+///   `tcp_final_ack_survives_accept_publish_race`, which resumed at
+///   poison-filled RIP `0x4444446053e6`; it stays out until it has run here.
 ///
 /// Any test that schedules in this window currently poisons the x86 boot, so this
 /// path runs only `loopback_wake_loss_counters_are_zero`, which does no scheduling.
@@ -5483,9 +5449,42 @@ static UDP_LOCK_MEASURED_US: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_arch = "aarch64")]
 static UDP_LOCK_NETRX_PENDING: AtomicU64 = AtomicU64::new(0);
 
+/// A UDP socket object bound to 127.0.0.1:`port`, as socket() and bind()
+/// make one.
+#[cfg(target_arch = "aarch64")]
+fn udp_open(port: u16) -> Option<alloc::sync::Arc<crate::socket::object::Socket>> {
+    let socket = crate::socket::object::Socket::new(
+        crate::socket::types::AF_INET,
+        crate::socket::types::SOCK_DGRAM,
+        17,
+        crate::socket::object::SocketProto::Udp(crate::socket::udp::UdpSock::new().ok()?),
+    )
+    .ok()?;
+    socket
+        .ops()
+        .bind(
+            &socket,
+            &crate::socket::addr::SockAddr::Inet {
+                addr: [127, 0, 0, 1],
+                port,
+            },
+        )
+        .ok()?;
+    Some(socket)
+}
+
+/// The UDP half of an oracle's socket.
+#[cfg(target_arch = "aarch64")]
+fn udp_of(socket: &crate::socket::object::Socket) -> &crate::socket::udp::UdpSock {
+    match &socket.proto {
+        crate::socket::object::SocketProto::Udp(udp) => udp,
+        _ => unreachable!("udp_open makes only UDP sockets"),
+    }
+}
+
 #[cfg(target_arch = "aarch64")]
 struct UdpLockSocket {
-    socket: alloc::sync::Arc<spin::Mutex<crate::socket::udp::UdpSocket>>,
+    socket: alloc::sync::Arc<crate::socket::object::Socket>,
     pid: crate::process::process::ProcessId,
     fd: i32,
 }
@@ -5497,13 +5496,9 @@ fn udp_lock_open_socket() -> Option<UdpLockSocket> {
     let pid = crate::process::with_process_manager(|manager| manager.all_pids().first().copied())
         .flatten()?;
 
-    let socket = alloc::sync::Arc::new(spin::Mutex::new(crate::socket::udp::UdpSocket::new()));
-    socket
-        .lock()
-        .bind(pid, [127, 0, 0, 1], UDP_LOCK_PORT)
-        .ok()?;
+    let socket = udp_open(UDP_LOCK_PORT)?;
 
-    let entry = FileDescriptor::with_flags(FdKind::UdpSocket(socket.clone()), 0, 0);
+    let entry = FileDescriptor::with_flags(FdKind::Socket(socket.clone()), 0, 0);
     let fd = crate::process::with_process_manager(|manager| {
         manager
             .get_process_mut(pid)
@@ -5511,10 +5506,9 @@ fn udp_lock_open_socket() -> Option<UdpLockSocket> {
     })
     .flatten();
 
-    let Some(fd) = fd else {
-        crate::socket::SOCKET_REGISTRY.unbind_udp(UDP_LOCK_PORT);
-        return None;
-    };
+    // Without a descriptor the socket goes here, and its release unbinds the
+    // port.
+    let fd = fd?;
 
     Some(UdpLockSocket { socket, pid, fd })
 }
@@ -5523,24 +5517,19 @@ fn udp_lock_open_socket() -> Option<UdpLockSocket> {
 fn udp_lock_close_socket(open: &UdpLockSocket) {
     let pid = open.pid;
     let fd = open.fd;
-    let _ = crate::process::with_process_manager(|manager| {
-        if let Some(process) = manager.get_process_mut(pid) {
-            let _ = process.fd_table.close(fd);
-        }
+    // The entry drops after PM is released, so the socket releases inline.
+    let closed = crate::process::with_process_manager(|manager| {
+        manager
+            .get_process_mut(pid)
+            .and_then(|process| process.fd_table.close(fd).ok())
     });
-    crate::socket::SOCKET_REGISTRY.unbind_udp(UDP_LOCK_PORT);
+    drop(closed);
 }
 
 // #823-review finding 1: the oracle checker also masks the lock under test.
 #[cfg(target_arch = "aarch64")]
 fn udp_lock_received(open: &UdpLockSocket) -> u64 {
-    crate::socket::udp::with_locked_masked(&open.socket, |socket| {
-        let queue = socket.rx_queue.lock();
-        queue
-            .iter()
-            .filter(|packet| packet.data.as_slice() == UDP_LOCK_PAYLOAD)
-            .count() as u64
-    })
+    crate::socket::udp::queued_matching(udp_of(&open.socket), UDP_LOCK_PAYLOAD)
 }
 
 /// The holder: calls the PRODUCTION `with_locked_masked` primitive directly,
@@ -5551,7 +5540,7 @@ fn udp_lock_received(open: &UdpLockSocket) -> u64 {
 #[cfg(target_arch = "aarch64")]
 fn udp_lock_holder_body(
     packet: alloc::vec::Vec<u8>,
-    socket: alloc::sync::Arc<spin::Mutex<crate::socket::udp::UdpSocket>>,
+    socket: alloc::sync::Arc<crate::socket::object::Socket>,
 ) {
     UDP_LOCK_IRQS_ENABLED_BEFORE.store(
         u64::from(crate::arch_interrupts_enabled()),
@@ -5560,7 +5549,7 @@ fn udp_lock_holder_body(
 
     crate::per_cpu::preempt_disable();
 
-    crate::socket::udp::with_locked_masked(&socket, |_locked| {
+    crate::socket::udp::with_locked_masked(udp_of(&socket), |_locked| {
         UDP_LOCK_CPU.store(
             crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id(),
             AtomicOrdering::Relaxed,
@@ -5842,7 +5831,7 @@ static UDP_PORTS_LOCK_MEASURED_US: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(target_arch = "aarch64")]
 struct UdpPortsLockSocket {
-    socket: alloc::sync::Arc<spin::Mutex<crate::socket::udp::UdpSocket>>,
+    socket: alloc::sync::Arc<crate::socket::object::Socket>,
     pid: crate::process::process::ProcessId,
     fd: i32,
 }
@@ -5854,13 +5843,9 @@ fn udp_ports_lock_open_socket() -> Option<UdpPortsLockSocket> {
     let pid = crate::process::with_process_manager(|manager| manager.all_pids().first().copied())
         .flatten()?;
 
-    let socket = alloc::sync::Arc::new(spin::Mutex::new(crate::socket::udp::UdpSocket::new()));
-    socket
-        .lock()
-        .bind(pid, [127, 0, 0, 1], UDP_PORTS_LOCK_PORT)
-        .ok()?;
+    let socket = udp_open(UDP_PORTS_LOCK_PORT)?;
 
-    let entry = FileDescriptor::with_flags(FdKind::UdpSocket(socket.clone()), 0, 0);
+    let entry = FileDescriptor::with_flags(FdKind::Socket(socket.clone()), 0, 0);
     let fd = crate::process::with_process_manager(|manager| {
         manager
             .get_process_mut(pid)
@@ -5868,10 +5853,9 @@ fn udp_ports_lock_open_socket() -> Option<UdpPortsLockSocket> {
     })
     .flatten();
 
-    let Some(fd) = fd else {
-        crate::socket::SOCKET_REGISTRY.unbind_udp(UDP_PORTS_LOCK_PORT);
-        return None;
-    };
+    // Without a descriptor the socket goes here, and its release unbinds the
+    // port.
+    let fd = fd?;
 
     Some(UdpPortsLockSocket { socket, pid, fd })
 }
@@ -5880,24 +5864,19 @@ fn udp_ports_lock_open_socket() -> Option<UdpPortsLockSocket> {
 fn udp_ports_lock_close_socket(open: &UdpPortsLockSocket) {
     let pid = open.pid;
     let fd = open.fd;
-    let _ = crate::process::with_process_manager(|manager| {
-        if let Some(process) = manager.get_process_mut(pid) {
-            let _ = process.fd_table.close(fd);
-        }
+    // The entry drops after PM is released, so the socket releases inline.
+    let closed = crate::process::with_process_manager(|manager| {
+        manager
+            .get_process_mut(pid)
+            .and_then(|process| process.fd_table.close(fd).ok())
     });
-    crate::socket::SOCKET_REGISTRY.unbind_udp(UDP_PORTS_LOCK_PORT);
+    drop(closed);
 }
 
 // The checker must also mask its separate outer per-socket mutex.
 #[cfg(target_arch = "aarch64")]
 fn udp_ports_lock_received(open: &UdpPortsLockSocket) -> u64 {
-    crate::socket::udp::with_locked_masked(&open.socket, |socket| {
-        let queue = socket.rx_queue.lock();
-        queue
-            .iter()
-            .filter(|packet| packet.data.as_slice() == UDP_PORTS_LOCK_PAYLOAD)
-            .count() as u64
-    })
+    crate::socket::udp::queued_matching(udp_of(&open.socket), UDP_PORTS_LOCK_PAYLOAD)
 }
 
 /// #908: peer holder of the exact production registry primitive. The driver
@@ -5910,7 +5889,7 @@ fn udp_ports_lock_holder_body() {
         AtomicOrdering::Release,
     );
     crate::per_cpu::preempt_disable();
-    crate::socket::SOCKET_REGISTRY.with_udp_ports_masked(|_ports| {
+    crate::socket::udp::with_ports_masked(|| {
         UDP_PORTS_LOCK_CPU.store(
             crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id(),
             AtomicOrdering::Relaxed,
@@ -5996,9 +5975,7 @@ pub fn run_udp_ports_lock_oracle() -> bool {
                 UDP_PORTS_LOCK_MEASURED_US.store(0, AtomicOrdering::Relaxed);
 
                 // Fresh delivery evidence for each attempt, under the outer mask.
-                crate::socket::udp::with_locked_masked(&open.socket, |socket| {
-                    socket.rx_queue.lock().clear();
-                });
+                crate::socket::udp::clear_queue(udp_of(&open.socket));
                 let refused_before = crate::socket::udp_ports_lookup_refused();
                 let Ok(handle) =
                     kthread_run_on_cpu_for_test(udp_ports_lock_holder_body, "udp-ports-908", peer)
@@ -6285,7 +6262,7 @@ fn irq_hold_holder_body(packet: alloc::vec::Vec<u8>) {
 /// A loopback UDP socket owned by a live process row, plus the fd it occupies.
 #[cfg(target_arch = "aarch64")]
 struct IrqHoldSocket {
-    socket: alloc::sync::Arc<spin::Mutex<crate::socket::udp::UdpSocket>>,
+    socket: alloc::sync::Arc<crate::socket::object::Socket>,
     pid: crate::process::process::ProcessId,
     fd: i32,
 }
@@ -6299,13 +6276,9 @@ fn irq_hold_open_socket() -> Option<IrqHoldSocket> {
     let pid = crate::process::with_process_manager(|manager| manager.all_pids().first().copied())
         .flatten()?;
 
-    let socket = alloc::sync::Arc::new(spin::Mutex::new(crate::socket::udp::UdpSocket::new()));
-    socket
-        .lock()
-        .bind(pid, [127, 0, 0, 1], IRQ_HOLD_PORT)
-        .ok()?;
+    let socket = udp_open(IRQ_HOLD_PORT)?;
 
-    let entry = FileDescriptor::with_flags(FdKind::UdpSocket(socket.clone()), 0, 0);
+    let entry = FileDescriptor::with_flags(FdKind::Socket(socket.clone()), 0, 0);
     let fd = crate::process::with_process_manager(|manager| {
         manager
             .get_process_mut(pid)
@@ -6313,10 +6286,9 @@ fn irq_hold_open_socket() -> Option<IrqHoldSocket> {
     })
     .flatten();
 
-    let Some(fd) = fd else {
-        crate::socket::SOCKET_REGISTRY.unbind_udp(IRQ_HOLD_PORT);
-        return None;
-    };
+    // Without a descriptor the socket goes here, and its release unbinds the
+    // port.
+    let fd = fd?;
 
     Some(IrqHoldSocket { socket, pid, fd })
 }
@@ -6325,23 +6297,19 @@ fn irq_hold_open_socket() -> Option<IrqHoldSocket> {
 fn irq_hold_close_socket(open: &IrqHoldSocket) {
     let pid = open.pid;
     let fd = open.fd;
-    let _ = crate::process::with_process_manager(|manager| {
-        if let Some(process) = manager.get_process_mut(pid) {
-            let _ = process.fd_table.close(fd);
-        }
+    // The entry drops after PM is released, so the socket releases inline.
+    let closed = crate::process::with_process_manager(|manager| {
+        manager
+            .get_process_mut(pid)
+            .and_then(|process| process.fd_table.close(fd).ok())
     });
-    crate::socket::SOCKET_REGISTRY.unbind_udp(IRQ_HOLD_PORT);
+    drop(closed);
 }
 
 /// Count the oracle's own datagrams sitting in the socket's receive queue.
 #[cfg(target_arch = "aarch64")]
 fn irq_hold_received(open: &IrqHoldSocket) -> u64 {
-    let socket = open.socket.lock();
-    let queue = socket.rx_queue.lock();
-    queue
-        .iter()
-        .filter(|packet| packet.data.as_slice() == IRQ_HOLD_PAYLOAD)
-        .count() as u64
+    crate::socket::udp::queued_matching(udp_of(&open.socket), IRQ_HOLD_PAYLOAD)
 }
 
 /// Force a NetRx softirq to land inside a `try_manager()` hold and require the
@@ -8766,7 +8734,7 @@ fn test_pty_support_aarch64() -> TestResult {
 /// - Socket and PTY infrastructure should be ready
 ///
 /// The test verifies:
-/// 1. FdKind::TcpSocket variant exists (compile-time and runtime check)
+/// 1. A TCP socket can be created as an FdKind::Socket
 /// 2. PTY pair can be allocated (tests the pty allocator)
 /// 3. Socket constants (AF_INET, SOCK_STREAM) are properly defined
 /// 4. No architecture-specific gating blocks telnetd operation
@@ -8780,16 +8748,18 @@ fn test_telnetd_dependencies_aarch64() -> TestResult {
     use crate::ipc::fd::FdKind;
     use crate::tty::pty;
 
-    // Step 1: Verify FdKind::TcpSocket variant exists (compile-time check)
-    // This ensures the ARM64 build includes TCP socket support
-    let tcp_fd_kind = FdKind::TcpSocket(0);
-    match tcp_fd_kind {
-        FdKind::TcpSocket(sock_id) => {
-            if sock_id != 0 {
-                return TestResult::Fail("FdKind::TcpSocket construction failed");
-            }
-        }
-        _ => return TestResult::Fail("FdKind::TcpSocket not matching correctly"),
+    // Step 1: A TCP socket can be created on ARM64 (telnetd listens on one)
+    let tcp = match crate::socket::object::Socket::new(
+        crate::socket::types::AF_INET,
+        crate::socket::types::SOCK_STREAM,
+        6,
+        crate::socket::object::SocketProto::Tcp(crate::socket::tcp::TcpSock::new()),
+    ) {
+        Ok(socket) => socket,
+        Err(_) => return TestResult::Fail("TCP Socket::new failed on ARM64"),
+    };
+    if !matches!(FdKind::Socket(tcp), FdKind::Socket(_)) {
+        return TestResult::Fail("FdKind::Socket not matching correctly");
     }
 
     // Allocate a real pair for the Arc-valued descriptor variants.
@@ -8799,7 +8769,6 @@ fn test_telnetd_dependencies_aarch64() -> TestResult {
         Err(_) => return TestResult::Fail("PTY allocation failed on ARM64"),
     };
     let valid_number = pair.pty_num <= 255;
-    let _ = FdKind::TcpSocket(0);
     let _ = FdKind::PtyMaster(pair.clone());
     let _ = FdKind::PtySlave(pair.clone());
     pty::close_master_ref(&pair);
@@ -10117,7 +10086,7 @@ static FILESYSTEM_TESTS: &[TestDef] = &[
 /// - loopback_recv_wake_when_idle: Verify blocked TCP recv wakes with only idle runnable
 /// - loopback_recv_wake_under_load: Verify the pump delivers while idle never runs
 /// - loopback_pump_does_not_busy_spin: Verify an empty pump blocks instead of polling
-/// - tcp_final_ack_survives_accept_publish_race: Prove accept cannot lose the final ACK
+/// - tcp_accept_waits_for_final_ack: Accept takes a child only after its final ACK
 /// - net_lock_guard_masks_interrupt_source: Prove per-arch network exclusion
 static NETWORK_TESTS: &[TestDef] = &[
     TestDef {
@@ -10184,8 +10153,8 @@ static NETWORK_TESTS: &[TestDef] = &[
         stage: TestStage::EarlyBoot,
     },
     TestDef {
-        name: "tcp_final_ack_survives_accept_publish_race",
-        func: tcp_final_ack_survives_accept_publish_race,
+        name: "tcp_accept_waits_for_final_ack",
+        func: tcp_accept_waits_for_final_ack,
         arch: Arch::Any,
         timeout_ms: 5000,
         stage: TestStage::EarlyBoot,

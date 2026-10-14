@@ -289,7 +289,6 @@ writes_boot_target() {
 stage_boot_ext2_disk() {
     local built="$1" staging_dir="$2"
     BOOT_EXT2_DISK="$built"
-    writes_boot_target || return 0
     if [ ! -f "$built" ]; then
         echo "ERROR: $BOOT_MODE needs the ext2 disk at $built (run without --no-build to create it)"
         exit 1
@@ -298,6 +297,11 @@ stage_boot_ext2_disk() {
     BOOT_EXT2_DISK="$staging_dir/ext2-boot-target.img"
     rm -f "$BOOT_EXT2_DISK"
     cp "$built" "$BOOT_EXT2_DISK" || { echo "ERROR: could not copy $built for the boot target"; exit 1; }
+    local server=10.0.2.3
+    if [ "$PARALLELS" = true ]; then server=10.211.55.1; fi
+    if [ "$VMWARE" = true ]; then server=172.16.45.2; fi
+    "$BREENIX_ROOT/scripts/write-resolv-conf.sh" "$BOOT_EXT2_DISK" "$server" || exit 1
+    writes_boot_target || return 0
     if [ "$PROBE" = true ]; then
         "$BREENIX_ROOT/scripts/write-boot-target.sh" "$BOOT_EXT2_DISK" --probe \
             "$BREENIX_ROOT/userspace/programs/aarch64/probe.elf" || exit 1
@@ -313,13 +317,16 @@ stage_boot_ext2_disk() {
 # disk, and any changes the guest made to it, is kept.
 ext2_rewrap_needed() {
     local rebuilt="$1" marker="$2"
-    [ "$rebuilt" = true ] || writes_boot_target || [ -f "$marker" ]
+    [ "$rebuilt" = true ] || writes_boot_target || [ -f "$marker" ] || [ ! -f "$marker.dns" ]
 }
 
 # Record whether the data disk just wrapped carries a boot target.
 mark_wrapped_ext2() {
     local marker="$1"
     if writes_boot_target; then echo "$BOOT_MODE $SUITE" > "$marker"; else rm -f "$marker"; fi
+    # Staging verifies the nameserver before the wrapped disk is published.
+    if [ "$PARALLELS" = true ]; then echo 10.211.55.1 > "$marker.dns";
+    elif [ "$VMWARE" = true ]; then echo 172.16.45.2 > "$marker.dns"; fi
 }
 
 # Cargo can restore a cached profile with an older mtime. Compare the exact

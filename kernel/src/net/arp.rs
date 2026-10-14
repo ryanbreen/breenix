@@ -2,7 +2,6 @@
 //!
 //! Implements RFC 826 for IPv4-to-Ethernet address resolution.
 
-use alloc::vec::Vec;
 use spin::Mutex;
 
 use super::ethernet::{self, EthernetFrame, BROADCAST_MAC, ETHERTYPE_ARP};
@@ -135,28 +134,17 @@ impl ArpPacket {
         sender_ip: &[u8; 4],
         target_mac: &[u8; 6],
         target_ip: &[u8; 4],
-    ) -> Vec<u8> {
-        let mut packet = Vec::with_capacity(ARP_PACKET_SIZE);
-
-        // Hardware type (Ethernet = 1)
-        packet.extend_from_slice(&ARP_HTYPE_ETHERNET.to_be_bytes());
-        // Protocol type (IPv4 = 0x0800)
-        packet.extend_from_slice(&ARP_PTYPE_IPV4.to_be_bytes());
-        // Hardware address length (6)
-        packet.push(6);
-        // Protocol address length (4)
-        packet.push(4);
-        // Operation
-        packet.extend_from_slice(&operation.to_be_bytes());
-        // Sender MAC
-        packet.extend_from_slice(sender_mac);
-        // Sender IP
-        packet.extend_from_slice(sender_ip);
-        // Target MAC
-        packet.extend_from_slice(target_mac);
-        // Target IP
-        packet.extend_from_slice(target_ip);
-
+    ) -> [u8; ARP_PACKET_SIZE] {
+        let mut packet = [0; ARP_PACKET_SIZE];
+        packet[0..2].copy_from_slice(&ARP_HTYPE_ETHERNET.to_be_bytes());
+        packet[2..4].copy_from_slice(&ARP_PTYPE_IPV4.to_be_bytes());
+        packet[4] = 6;
+        packet[5] = 4;
+        packet[6..8].copy_from_slice(&operation.to_be_bytes());
+        packet[8..14].copy_from_slice(sender_mac);
+        packet[14..18].copy_from_slice(sender_ip);
+        packet[18..24].copy_from_slice(target_mac);
+        packet[24..28].copy_from_slice(target_ip);
         packet
     }
 }
@@ -182,16 +170,6 @@ pub fn handle_arp(eth_frame: &EthernetFrame, arp: &ArpPacket) {
 
     match arp.operation {
         ARP_OP_REQUEST => {
-            // Send ARP reply
-            #[cfg(target_arch = "x86_64")]
-            log::debug!(
-                "ARP: Request from {}.{}.{}.{} for our IP",
-                arp.sender_ip[0],
-                arp.sender_ip[1],
-                arp.sender_ip[2],
-                arp.sender_ip[3]
-            );
-
             let reply = ArpPacket::build(
                 ARP_OP_REPLY,
                 &our_mac,
@@ -203,41 +181,26 @@ pub fn handle_arp(eth_frame: &EthernetFrame, arp: &ArpPacket) {
             let frame =
                 ethernet::EthernetFrame::build(&our_mac, &eth_frame.src_mac, ETHERTYPE_ARP, &reply);
 
-            if let Err(_e) = driver_transmit(&frame) {
-                #[cfg(target_arch = "x86_64")]
-                log::warn!("ARP: Failed to send reply: {}", _e);
-            } else {
-                #[cfg(target_arch = "x86_64")]
-                log::debug!("ARP: Sent reply");
+            if let Ok(frame) = frame {
+                let _ = driver_transmit(&frame);
             }
         }
         ARP_OP_REPLY => {
-            #[cfg(target_arch = "x86_64")]
-            log::debug!(
-                "ARP: Reply from {}.{}.{}.{} -> {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                arp.sender_ip[0],
-                arp.sender_ip[1],
-                arp.sender_ip[2],
-                arp.sender_ip[3],
-                arp.sender_mac[0],
-                arp.sender_mac[1],
-                arp.sender_mac[2],
-                arp.sender_mac[3],
-                arp.sender_mac[4],
-                arp.sender_mac[5]
-            );
-            // Already updated cache above
-            #[cfg(target_arch = "x86_64")]
             if arp.sender_ip == config.gateway {
-                log::info!(
-                    "NET: ARP resolved gateway MAC: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                    arp.sender_mac[0],
-                    arp.sender_mac[1],
-                    arp.sender_mac[2],
-                    arp.sender_mac[3],
-                    arp.sender_mac[4],
-                    arp.sender_mac[5]
-                );
+                static NOTICE: crate::log_notice::Node = crate::log_notice::Node::new();
+                static POSTED: core::sync::atomic::AtomicBool =
+                    core::sync::atomic::AtomicBool::new(false);
+                if !POSTED.swap(true, core::sync::atomic::Ordering::Relaxed) {
+                    let mut line = *b"NET: ARP resolved gateway MAC: 00:00:00:00:00:00";
+                    let hex = b"0123456789abcdef";
+                    for (i, byte) in arp.sender_mac.iter().enumerate() {
+                        line[31 + i * 3] = hex[(byte >> 4) as usize];
+                        line[32 + i * 3] = hex[(byte & 15) as usize];
+                    }
+                    if let Ok(text) = core::str::from_utf8(&line) {
+                        NOTICE.post_again(text);
+                    }
+                }
             }
         }
         _ => {}
@@ -305,18 +268,9 @@ pub fn request(target_ip: &[u8; 4]) -> Result<(), &'static str> {
     );
 
     let frame =
-        ethernet::EthernetFrame::build(&our_mac, &BROADCAST_MAC, ETHERTYPE_ARP, &arp_packet);
+        ethernet::EthernetFrame::build(&our_mac, &BROADCAST_MAC, ETHERTYPE_ARP, &arp_packet)?;
 
     driver_transmit(&frame)?;
-
-    #[cfg(target_arch = "x86_64")]
-    log::debug!(
-        "ARP: Sent request for {}.{}.{}.{}",
-        target_ip[0],
-        target_ip[1],
-        target_ip[2],
-        target_ip[3]
-    );
 
     Ok(())
 }

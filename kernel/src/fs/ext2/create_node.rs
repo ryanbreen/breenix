@@ -58,7 +58,16 @@ impl Ext2Fs {
         gid: u32,
         dev: u32,
     ) -> Result<u32, &'static str> {
-        if name.is_empty() || name.len() > 255 || name.contains('/') || name == "." || name == ".."
+        self.create_node_prepared(parent, name.as_bytes(), mode, uid, gid, dev, |_, ino| Ok(ino))
+    }
+
+    /// Prepare the caller's inode reference before publishing a directory entry.
+    /// Failure restores the old directory while the mount write guard is held.
+    pub fn create_node_prepared<R>(
+        &mut self, parent: u32, name: &[u8], mode: u16, uid: u32, gid: u32, dev: u32,
+        prepare: impl FnOnce(&mut Self, u32) -> Result<R, &'static str>,
+    ) -> Result<R, &'static str> {
+        if name.is_empty() || name.len() > 255 || name.contains(&b'/') || name.contains(&0) || name == b"." || name == b".."
         {
             return Err("Invalid filename");
         }
@@ -70,7 +79,7 @@ impl Ext2Fs {
             return Err("Parent not found");
         }
         let mut data = self.read_directory(&parent_inode)?;
-        if dir::find_inode(&data, name).is_some() {
+        if dir::find_inode_bytes(&data, name).is_some() {
             return Err("File already exists");
         }
         let blocks = directory_io::prepare(
@@ -86,7 +95,7 @@ impl Ext2Fs {
         before.extend_from_slice(&data);
         // Stage insertion before inode allocation; a full directory leaves
         // allocation bitmaps untouched. Replace the temporary inode before I/O.
-        let offset = add_directory_entry(
+        let offset = dir::add_directory_entry_bytes(
             &mut data,
             u32::MAX,
             name,
@@ -109,39 +118,31 @@ impl Ext2Fs {
             )?;
             return Err(error);
         }
+        let prepared = match prepare(self, ino) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                let mut attempted = false;
+                inode::release_orphan_inode(self.device.as_ref(), ino, &self.superblock, &mut self.block_groups, &mut attempted)?;
+                return Err(error);
+            }
+        };
         data[offset..offset + 4].copy_from_slice(&ino.to_le_bytes());
-        if let Err(error) = directory_io::write(
-            self.device.as_ref(),
-            self.superblock.block_size(),
-            &blocks,
-            &data,
-        ) {
-            // A device may write bytes before returning an error. Restore the
-            // old directory before releasing an inode that a name might reach.
-            directory_io::write(
-                self.device.as_ref(),
-                self.superblock.block_size(),
-                &blocks,
-                &before,
-            )?;
+        let publish = (|| {
+            directory_io::write(self.device.as_ref(), self.superblock.block_size(), &blocks, &data)?;
+            parent_inode.update_timestamps(false, true, true);
+            self.write_inode(parent, &parent_inode)?;
+            self.superblock.decrement_free_inodes();
+            self.superblock.write_to(self.device.as_ref()).map_err(|_| "Failed to write superblock")?;
+            Ext2BlockGroupDesc::write_table(self.device.as_ref(), &self.superblock, &self.block_groups).map_err(|_| "Failed to write group descriptors")?;
+            Ok(())
+        })();
+        if let Err(error) = publish {
+            directory_io::write(self.device.as_ref(), self.superblock.block_size(), &blocks, &before)?;
+            drop(prepared);
             let mut attempted = false;
-            inode::release_orphan_inode(
-                self.device.as_ref(),
-                ino,
-                &self.superblock,
-                &mut self.block_groups,
-                &mut attempted,
-            )?;
+            inode::release_orphan_inode(self.device.as_ref(), ino, &self.superblock, &mut self.block_groups, &mut attempted)?;
             return Err(error);
         }
-        parent_inode.update_timestamps(false, true, true);
-        self.write_inode(parent, &parent_inode)?;
-        self.superblock.decrement_free_inodes();
-        self.superblock
-            .write_to(self.device.as_ref())
-            .map_err(|_| "Failed to write superblock")?;
-        Ext2BlockGroupDesc::write_table(self.device.as_ref(), &self.superblock, &self.block_groups)
-            .map_err(|_| "Failed to write group descriptors")?;
-        Ok(ino)
+        Ok(prepared)
     }
 }

@@ -49,6 +49,8 @@ pub struct Ipv4Packet<'a> {
     pub src_ip: [u8; 4],
     /// Destination IP address
     pub dst_ip: [u8; 4],
+    /// Original header, retained for ICMP error quotations.
+    pub header: &'a [u8],
     /// Payload (after header)
     pub payload: &'a [u8],
 }
@@ -89,7 +91,7 @@ impl<'a> Ipv4Packet<'a> {
         let dst_ip = [data[16], data[17], data[18], data[19]];
 
         // Validate total length
-        if (total_length as usize) > data.len() {
+        if (total_length as usize) < header_len || (total_length as usize) > data.len() {
             return None;
         }
 
@@ -107,15 +109,32 @@ impl<'a> Ipv4Packet<'a> {
             checksum,
             src_ip,
             dst_ip,
+            header: &data[..header_len],
             payload,
         })
     }
 
-    /// Build an IPv4 packet
+    /// Compatibility builder for existing TCP and test callers. An empty
+    /// result means construction was refused; send_ethernet rejects it.
     pub fn build(src_ip: [u8; 4], dst_ip: [u8; 4], protocol: u8, payload: &[u8]) -> Vec<u8> {
-        let total_length = (IPV4_HEADER_MIN_SIZE + payload.len()) as u16;
+        Self::try_build(src_ip, dst_ip, protocol, payload).unwrap_or_default()
+    }
 
-        let mut packet = Vec::with_capacity(total_length as usize);
+    /// Construct without truncating lengths or using infallible allocation.
+    pub fn try_build(
+        src_ip: [u8; 4],
+        dst_ip: [u8; 4],
+        protocol: u8,
+        payload: &[u8],
+    ) -> Result<Vec<u8>, super::TxError> {
+        if payload.len() > u16::MAX as usize - IPV4_HEADER_MIN_SIZE {
+            return Err(super::TxError::MsgSize);
+        }
+        let total_length = (IPV4_HEADER_MIN_SIZE + payload.len()) as u16;
+        let mut packet = Vec::new();
+        packet
+            .try_reserve_exact(total_length as usize)
+            .map_err(|_| super::TxError::NoBufs)?;
 
         // Version (4) + IHL (5 = 20 bytes)
         packet.push(0x45);
@@ -148,12 +167,12 @@ impl<'a> Ipv4Packet<'a> {
         // Payload
         packet.extend_from_slice(payload);
 
-        packet
+        Ok(packet)
     }
 }
 
 /// Handle an incoming IPv4 packet
-pub fn handle_ipv4(eth_frame: &EthernetFrame, ip: &Ipv4Packet) {
+pub fn handle_ipv4(_eth_frame: &EthernetFrame, ip: &Ipv4Packet) {
     if ip.protocol == PROTOCOL_UDP && super::dhcp::receive(ip.payload) {
         return;
     }
@@ -161,19 +180,27 @@ pub fn handle_ipv4(eth_frame: &EthernetFrame, ip: &Ipv4Packet) {
     let config = super::config();
 
     // Check if this packet is for us (accept our IP or loopback addresses)
-    if ip.dst_ip != config.ip_addr && ip.dst_ip[0] != 127 {
+    if ip.dst_ip != config.ip_addr
+        && ip.dst_ip[0] != 127
+        && !super::is_broadcast_addr_in(&config, ip.dst_ip)
+    {
         // Not for us, ignore (we don't do routing)
         return;
     }
 
-    // Verify checksum
-    // Note: In a production system, we'd verify the checksum here
-    // For now, we trust the NIC's checksum offload
+    // The stack does not reassemble fragments. Never interpret a fragment as
+    // a complete transport packet. Verify even loopback and offload-less NICs.
+    if ip.flags_fragment & 0x3fff != 0 || internet_checksum(ip.header) != 0 {
+        return;
+    }
 
+    if super::is_broadcast_addr_in(&config, ip.dst_ip) && ip.protocol != PROTOCOL_UDP {
+        return;
+    }
     match ip.protocol {
         PROTOCOL_ICMP => {
             if let Some(icmp_packet) = icmp::IcmpPacket::parse(ip.payload) {
-                icmp::handle_icmp(eth_frame, ip, &icmp_packet);
+                icmp::handle_icmp(ip, &icmp_packet);
             }
         }
         PROTOCOL_TCP => {
@@ -182,9 +209,7 @@ pub fn handle_ipv4(eth_frame: &EthernetFrame, ip: &Ipv4Packet) {
         PROTOCOL_UDP => {
             super::udp::handle_udp(ip, ip.payload);
         }
-        _ => {
-            log::debug!("IPv4: Unknown protocol {}", ip.protocol);
-        }
+        _ => {}
     }
 }
 

@@ -1,0 +1,822 @@
+{
+  "id": "networking",
+  "title": "Networking & sockets",
+  "area": "Sockets",
+  "summary": "TCP, UDP and Unix-domain sockets, their options and shutdown, poll, select and epoll on sockets, and name resolution behave as POSIX and Linux's ABI require, through Breenix's own C library, on every target.",
+  "binary": "/sbin/suite-networking",
+  "timingSensitive": true,
+  "categories": [
+    {
+      "id": "udp",
+      "title": "UDP",
+      "cases": [
+        {
+          "id": "socket",
+          "title": "socket(AF_INET, SOCK_DGRAM) returns a descriptor fstat reports as S_IFSOCK"
+        },
+        {
+          "id": "socket-protocol",
+          "title": "socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP) succeeds"
+        },
+        {
+          "id": "socket-protocol-mismatch",
+          "title": "socket(AF_INET, SOCK_DGRAM, IPPROTO_TCP) fails with EPROTONOSUPPORT"
+        },
+        {
+          "id": "socket-family",
+          "title": "socket of an unknown address family fails with EAFNOSUPPORT"
+        },
+        {
+          "id": "socket-type",
+          "title": "socket of an unknown socket type fails with EINVAL"
+        },
+        {
+          "id": "bind",
+          "title": "bind to 127.0.0.1 and a free port succeeds"
+        },
+        {
+          "id": "bind-eaddrinuse",
+          "title": "A second bind to the same address and port fails with EADDRINUSE"
+        },
+        {
+          "id": "bind-twice",
+          "title": "bind of a socket that is already bound fails with EINVAL"
+        },
+        {
+          "id": "bind-eaddrnotavail",
+          "title": "bind to an address no interface has fails with EADDRNOTAVAIL"
+        },
+        {
+          "id": "bind-short",
+          "title": "bind with an address length shorter than sockaddr_in fails with EINVAL"
+        },
+        {
+          "id": "bind-family",
+          "title": "bind to an address of another family fails with EAFNOSUPPORT"
+        },
+        {
+          "id": "bind-ephemeral",
+          "title": "bind to port 0 picks a port getsockname reports"
+        },
+        {
+          "id": "sendto-recvfrom",
+          "title": "A datagram sent over loopback arrives whole and recvfrom reports its sender"
+        },
+        {
+          "id": "sendto-autobind",
+          "title": "sendto from an unbound socket binds it to an ephemeral port"
+        },
+        {
+          "id": "boundaries",
+          "title": "Datagrams of 1, 100 and 1000 bytes arrive as three messages of those sizes"
+        },
+        {
+          "id": "truncation",
+          "title": "A datagram read into a short buffer is cut short and its rest discarded"
+        },
+        {
+          "id": "msg-trunc",
+          "title": "recv with MSG_TRUNC returns a datagram's full length even into a short buffer"
+        },
+        {
+          "id": "recvmsg-trunc",
+          "title": "recvmsg of a datagram into a short buffer sets MSG_TRUNC in msg_flags"
+        },
+        {
+          "id": "zero-length",
+          "title": "A zero-length datagram is delivered as a message of 0 bytes"
+        },
+        {
+          "id": "peek",
+          "title": "MSG_PEEK returns a datagram without removing it"
+        },
+        {
+          "id": "dontwait",
+          "title": "recv with MSG_DONTWAIT on an empty socket fails with EAGAIN"
+        },
+        {
+          "id": "nonblock",
+          "title": "recv on an empty SOCK_NONBLOCK socket fails with EAGAIN"
+        },
+        {
+          "id": "connect-send",
+          "title": "A connected UDP socket sends to its peer with send"
+        },
+        {
+          "id": "connect-filter",
+          "title": "A connected UDP socket receives only from its peer"
+        },
+        {
+          "id": "connect-getpeername",
+          "title": "getpeername of a connected UDP socket reports its peer"
+        },
+        {
+          "id": "getpeername-enotconn",
+          "title": "getpeername of an unconnected UDP socket fails with ENOTCONN"
+        },
+        {
+          "id": "send-edestaddrreq",
+          "title": "send on an unconnected UDP socket fails with EDESTADDRREQ"
+        },
+        {
+          "id": "connect-unspec",
+          "title": "connect to AF_UNSPEC dissolves a UDP socket's association"
+        },
+        {
+          "id": "connect-refused",
+          "title": "A connected UDP socket that sends to a closed port then fails with ECONNREFUSED"
+        },
+        {
+          "id": "broadcast-eacces",
+          "title": "sendto the broadcast address without SO_BROADCAST fails with EACCES"
+        },
+        {
+          "id": "broadcast",
+          "title": "sendto the broadcast address with SO_BROADCAST succeeds"
+        },
+        {
+          "id": "emsgsize",
+          "title": "sendto of a datagram larger than 65507 bytes fails with EMSGSIZE"
+        },
+        {
+          "id": "large",
+          "title": "A 16384-byte datagram arrives whole over loopback"
+        },
+        {
+          "id": "enotsock",
+          "title": "sendto on a descriptor that is not a socket fails with ENOTSOCK"
+        }
+      ]
+    },
+    {
+      "id": "tcp",
+      "title": "TCP",
+      "cases": [
+        {
+          "id": "socket",
+          "title": "socket(AF_INET, SOCK_STREAM) returns a descriptor fstat reports as S_IFSOCK"
+        },
+        {
+          "id": "listen",
+          "title": "bind and listen on 127.0.0.1 succeed"
+        },
+        {
+          "id": "listen-autobind",
+          "title": "listen on an unbound socket binds it to an ephemeral port"
+        },
+        {
+          "id": "connect-accept",
+          "title": "connect over loopback completes and accept returns a new descriptor"
+        },
+        {
+          "id": "accept-address",
+          "title": "accept reports the connecting socket's address"
+        },
+        {
+          "id": "getpeername-client",
+          "title": "getpeername of the connecting socket reports the listener's address"
+        },
+        {
+          "id": "getpeername-server",
+          "title": "getpeername of the accepted socket reports the connecting socket's address"
+        },
+        {
+          "id": "getsockname-accepted",
+          "title": "getsockname of the accepted socket reports the listening address"
+        },
+        {
+          "id": "econnrefused",
+          "title": "connect to a port nobody listens on fails with ECONNREFUSED"
+        },
+        {
+          "id": "transfer",
+          "title": "256 KiB sent by one process arrive in order in another, then end of file"
+        },
+        {
+          "id": "reverse",
+          "title": "64 KiB sent from the accepted socket arrive in order at the connecting one"
+        },
+        {
+          "id": "eof",
+          "title": "Bytes sent before close are read and then recv returns 0"
+        },
+        {
+          "id": "half-close",
+          "title": "shutdown(SHUT_WR) gives the peer end of file"
+        },
+        {
+          "id": "half-close-reverse",
+          "title": "After shutdown(SHUT_WR) the socket still receives from its peer"
+        },
+        {
+          "id": "rst-unread",
+          "title": "close with unread data resets the connection: the peer gets ECONNRESET"
+        },
+        {
+          "id": "rst-after-data",
+          "title": "Bytes queued before a reset are read before recv reports ECONNRESET"
+        },
+        {
+          "id": "epipe-after-close",
+          "title": "Sending to a peer that closed fails with EPIPE once its reset arrives"
+        },
+        {
+          "id": "sigpipe",
+          "title": "write to a reset connection raises SIGPIPE"
+        },
+        {
+          "id": "nonblock-connect",
+          "title": "A nonblocking connect fails with EINPROGRESS"
+        },
+        {
+          "id": "nonblock-connect-writable",
+          "title": "A nonblocking connect becomes writable with SO_ERROR 0"
+        },
+        {
+          "id": "eisconn",
+          "title": "connect of a connected socket fails with EISCONN"
+        },
+        {
+          "id": "accept-eagain",
+          "title": "accept on a nonblocking listener with nothing pending fails with EAGAIN"
+        },
+        {
+          "id": "accept-einval",
+          "title": "accept on a socket that is not listening fails with EINVAL"
+        },
+        {
+          "id": "bind-eaddrinuse",
+          "title": "bind to a listening socket's address fails with EADDRINUSE"
+        },
+        {
+          "id": "backlog",
+          "title": "Four connections made before any accept are accepted in the order they connected"
+        },
+        {
+          "id": "backlog-zero",
+          "title": "A listener with backlog 0 still accepts a connection"
+        },
+        {
+          "id": "accept4-nonblock",
+          "title": "accept4 with SOCK_NONBLOCK returns a socket with O_NONBLOCK set"
+        },
+        {
+          "id": "accept4-cloexec",
+          "title": "accept4 with SOCK_CLOEXEC returns a socket with FD_CLOEXEC set"
+        },
+        {
+          "id": "accept4-einval",
+          "title": "accept4 with an unknown flag fails with EINVAL"
+        },
+        {
+          "id": "accept-no-inherit",
+          "title": "accept does not pass the listener's O_NONBLOCK to the new socket"
+        },
+        {
+          "id": "socket-nonblock",
+          "title": "socket with SOCK_NONBLOCK sets O_NONBLOCK"
+        },
+        {
+          "id": "socket-cloexec",
+          "title": "socket with SOCK_CLOEXEC sets FD_CLOEXEC"
+        },
+        {
+          "id": "recv-eagain",
+          "title": "recv with MSG_DONTWAIT and nothing queued fails with EAGAIN"
+        },
+        {
+          "id": "recv-enotconn",
+          "title": "recv on a never-connected TCP socket fails with ENOTCONN"
+        },
+        {
+          "id": "peek",
+          "title": "MSG_PEEK on a stream returns bytes that a later recv reads again"
+        },
+        {
+          "id": "waitall",
+          "title": "recv with MSG_WAITALL waits for the full count sent in two parts"
+        }
+      ]
+    },
+    {
+      "id": "unix",
+      "title": "Unix-domain sockets",
+      "cases": [
+        {
+          "id": "stream-socket",
+          "title": "socket(AF_UNIX, SOCK_STREAM) succeeds"
+        },
+        {
+          "id": "dgram-socket",
+          "title": "socket(AF_UNIX, SOCK_DGRAM) succeeds"
+        },
+        {
+          "id": "seqpacket-socket",
+          "title": "socket(AF_UNIX, SOCK_SEQPACKET) succeeds"
+        },
+        {
+          "id": "socketpair",
+          "title": "A stream socketpair carries bytes both ways"
+        },
+        {
+          "id": "socketpair-dgram",
+          "title": "A datagram socketpair keeps message boundaries"
+        },
+        {
+          "id": "socketpair-eopnotsupp",
+          "title": "socketpair(AF_INET, SOCK_STREAM) fails with EOPNOTSUPP"
+        },
+        {
+          "id": "socketpair-eof",
+          "title": "Closing one end of a socketpair gives the other end of file"
+        },
+        {
+          "id": "socketpair-flags",
+          "title": "socketpair with SOCK_NONBLOCK|SOCK_CLOEXEC sets both flags on both ends"
+        },
+        {
+          "id": "bind-path",
+          "title": "bind to a path creates a file stat reports as S_IFSOCK"
+        },
+        {
+          "id": "bind-eaddrinuse",
+          "title": "bind to a path that exists fails with EADDRINUSE"
+        },
+        {
+          "id": "connect-accept",
+          "title": "connect to a listening path is accepted and carries bytes"
+        },
+        {
+          "id": "connect-enoent",
+          "title": "connect to a path that does not exist fails with ENOENT"
+        },
+        {
+          "id": "connect-not-listening",
+          "title": "connect to a bound socket that is not listening fails with ECONNREFUSED"
+        },
+        {
+          "id": "connect-stale",
+          "title": "connect to the path a closed listener left fails with ECONNREFUSED"
+        },
+        {
+          "id": "connect-not-socket",
+          "title": "connect to a regular file's path fails with ECONNREFUSED"
+        },
+        {
+          "id": "connect-eprototype",
+          "title": "A stream connect to a datagram socket's path fails with EPROTOTYPE"
+        },
+        {
+          "id": "unlink-after-bind",
+          "title": "Unlinking a bound path stops new connections but not accepted ones"
+        },
+        {
+          "id": "getsockname-path",
+          "title": "getsockname reports the bound path and its length"
+        },
+        {
+          "id": "getpeername-path",
+          "title": "getpeername of a connected socket reports the server's path"
+        },
+        {
+          "id": "getsockname-unbound",
+          "title": "getsockname of an unbound socket reports AF_UNIX with length 2"
+        },
+        {
+          "id": "abstract",
+          "title": "An abstract address binds, listens and accepts a connection"
+        },
+        {
+          "id": "abstract-eaddrinuse",
+          "title": "A second bind to an abstract name fails with EADDRINUSE"
+        },
+        {
+          "id": "abstract-getsockname",
+          "title": "getsockname reports an abstract name with its exact length"
+        },
+        {
+          "id": "abstract-released",
+          "title": "An abstract name is free again once its socket closes"
+        },
+        {
+          "id": "dgram-path",
+          "title": "A datagram sent to a bound path arrives with the sender's path"
+        },
+        {
+          "id": "path-too-long",
+          "title": "bind with an address longer than sockaddr_un fails with EINVAL"
+        },
+        {
+          "id": "scm-rights",
+          "title": "A descriptor passed with SCM_RIGHTS works in the receiver"
+        },
+        {
+          "id": "scm-rights-same-file",
+          "title": "A descriptor passed with SCM_RIGHTS is a new number for the same open file"
+        },
+        {
+          "id": "peercred-socketpair",
+          "title": "SO_PEERCRED on a socketpair reports the process's pid, uid and gid"
+        },
+        {
+          "id": "peercred-connect",
+          "title": "SO_PEERCRED on an accepted socket reports the connecting process"
+        },
+        {
+          "id": "epipe",
+          "title": "send to a socketpair end whose peer closed fails with EPIPE"
+        }
+      ]
+    },
+    {
+      "id": "options",
+      "title": "Socket options and shutdown",
+      "cases": [
+        {
+          "id": "so-type-stream",
+          "title": "SO_TYPE of a TCP socket is SOCK_STREAM"
+        },
+        {
+          "id": "so-type-dgram",
+          "title": "SO_TYPE of a UDP socket is SOCK_DGRAM"
+        },
+        {
+          "id": "so-protocol",
+          "title": "SO_PROTOCOL of a TCP socket is IPPROTO_TCP"
+        },
+        {
+          "id": "so-domain",
+          "title": "SO_DOMAIN of a Unix socket is AF_UNIX"
+        },
+        {
+          "id": "so-acceptconn",
+          "title": "SO_ACCEPTCONN is 0 before listen and 1 after"
+        },
+        {
+          "id": "so-reuseaddr",
+          "title": "SO_REUSEADDR starts 0 and reads back set"
+        },
+        {
+          "id": "reuseaddr-time-wait",
+          "title": "With SO_REUSEADDR a port whose connection is in TIME_WAIT binds again"
+        },
+        {
+          "id": "time-wait-eaddrinuse",
+          "title": "Without SO_REUSEADDR a port whose connection is in TIME_WAIT fails with EADDRINUSE"
+        },
+        {
+          "id": "reuseaddr-udp",
+          "title": "UDP sockets that all set SO_REUSEADDR share an address and port"
+        },
+        {
+          "id": "so-rcvbuf",
+          "title": "SO_RCVBUF set to 32768 reads back doubled, 65536"
+        },
+        {
+          "id": "so-sndbuf",
+          "title": "SO_SNDBUF set to 32768 reads back doubled, 65536"
+        },
+        {
+          "id": "so-rcvtimeo",
+          "title": "SO_RCVTIMEO reads back the timeval it was set to"
+        },
+        {
+          "id": "so-rcvtimeo-eagain",
+          "title": "recv with SO_RCVTIMEO and no data fails with EAGAIN after the timeout"
+        },
+        {
+          "id": "so-sndtimeo-eagain",
+          "title": "send on a full socket with SO_SNDTIMEO fails with EAGAIN after the timeout"
+        },
+        {
+          "id": "so-rcvtimeo-edom",
+          "title": "SO_RCVTIMEO with tv_usec of a million fails with EDOM"
+        },
+        {
+          "id": "so-linger",
+          "title": "SO_LINGER reads back the l_onoff and l_linger it was set to"
+        },
+        {
+          "id": "so-linger-reset",
+          "title": "close with SO_LINGER of 0 seconds resets the connection"
+        },
+        {
+          "id": "so-error",
+          "title": "SO_ERROR of a new socket is 0"
+        },
+        {
+          "id": "so-error-refused",
+          "title": "A refused nonblocking connect leaves ECONNREFUSED in SO_ERROR, and reading it clears it"
+        },
+        {
+          "id": "tcp-nodelay",
+          "title": "TCP_NODELAY starts 0 and reads back set"
+        },
+        {
+          "id": "tcp-nodelay-udp",
+          "title": "TCP_NODELAY on a UDP socket fails with ENOPROTOOPT"
+        },
+        {
+          "id": "so-keepalive",
+          "title": "SO_KEEPALIVE reads back set"
+        },
+        {
+          "id": "so-broadcast",
+          "title": "SO_BROADCAST starts 0 and reads back set"
+        },
+        {
+          "id": "enoprotoopt-get",
+          "title": "getsockopt of an unknown option fails with ENOPROTOOPT"
+        },
+        {
+          "id": "enoprotoopt-set",
+          "title": "setsockopt of an unknown option fails with ENOPROTOOPT"
+        },
+        {
+          "id": "enotsock",
+          "title": "getsockopt on a descriptor that is not a socket fails with ENOTSOCK"
+        },
+        {
+          "id": "optlen-einval",
+          "title": "setsockopt of an int option with a 2-byte value fails with EINVAL"
+        },
+        {
+          "id": "shut-rd",
+          "title": "After shutdown(SHUT_RD) recv returns 0 at once"
+        },
+        {
+          "id": "shut-wr",
+          "title": "After shutdown(SHUT_WR) send fails with EPIPE"
+        },
+        {
+          "id": "shut-rdwr",
+          "title": "After shutdown(SHUT_RDWR) send fails with EPIPE and recv returns 0"
+        },
+        {
+          "id": "shutdown-enotconn",
+          "title": "shutdown of an unconnected TCP socket fails with ENOTCONN"
+        },
+        {
+          "id": "shutdown-einval",
+          "title": "shutdown with an unknown how fails with EINVAL"
+        }
+      ]
+    },
+    {
+      "id": "multiplex",
+      "title": "poll and select on sockets",
+      "cases": [
+        {
+          "id": "poll-udp-idle",
+          "title": "poll reports nothing on an empty UDP socket"
+        },
+        {
+          "id": "poll-udp-readable",
+          "title": "poll reports POLLIN once a datagram arrives"
+        },
+        {
+          "id": "poll-udp-writable",
+          "title": "poll reports POLLOUT on an idle UDP socket"
+        },
+        {
+          "id": "poll-tcp-idle",
+          "title": "poll reports nothing on a connection with no data"
+        },
+        {
+          "id": "poll-tcp-readable",
+          "title": "poll reports POLLIN once the peer writes"
+        },
+        {
+          "id": "poll-tcp-writable",
+          "title": "poll reports POLLOUT on a new connection"
+        },
+        {
+          "id": "poll-accept-ready",
+          "title": "poll reports POLLIN on a listener with a pending connection"
+        },
+        {
+          "id": "poll-accept-idle",
+          "title": "poll on a listener with nothing pending times out"
+        },
+        {
+          "id": "poll-eof",
+          "title": "poll reports POLLIN at end of file and recv returns 0"
+        },
+        {
+          "id": "poll-rdhup",
+          "title": "poll reports POLLRDHUP after the peer's SHUT_WR"
+        },
+        {
+          "id": "poll-hup-unix",
+          "title": "poll reports POLLHUP on a socketpair end whose peer closed"
+        },
+        {
+          "id": "poll-hup-tcp",
+          "title": "poll reports POLLHUP on a connection shut down both ways"
+        },
+        {
+          "id": "poll-err-refused",
+          "title": "poll reports POLLERR on a socket whose connect was refused"
+        },
+        {
+          "id": "poll-unix-dgram",
+          "title": "poll reports POLLIN on a Unix datagram socket with a datagram queued"
+        },
+        {
+          "id": "poll-wakes-data",
+          "title": "A poll blocked on a socket wakes when another process writes"
+        },
+        {
+          "id": "poll-wakes-accept",
+          "title": "A poll blocked on a listener wakes when another process connects"
+        },
+        {
+          "id": "poll-many",
+          "title": "poll on 8 sockets reports exactly the 3 with data"
+        },
+        {
+          "id": "select-idle",
+          "title": "select reports nothing readable on a connection with no data"
+        },
+        {
+          "id": "select-readable",
+          "title": "select reports a connection readable once the peer writes"
+        },
+        {
+          "id": "select-writable",
+          "title": "select reports a new connection writable"
+        },
+        {
+          "id": "select-accept-ready",
+          "title": "select reports a listener with a pending connection readable"
+        },
+        {
+          "id": "select-eof",
+          "title": "select reports a connection readable at end of file"
+        },
+        {
+          "id": "select-timeout",
+          "title": "select on an idle socket times out"
+        },
+        {
+          "id": "select-connect-writable",
+          "title": "select reports a nonblocking connect writable once it completes"
+        },
+        {
+          "id": "select-connect-refused",
+          "title": "select reports a refused nonblocking connect writable with ECONNREFUSED pending"
+        },
+        {
+          "id": "epoll-readable",
+          "title": "epoll_wait reports EPOLLIN and the registered data once the peer writes"
+        },
+        {
+          "id": "epoll-accept",
+          "title": "epoll_wait reports EPOLLIN on a listener with a pending connection"
+        },
+        {
+          "id": "epoll-timeout",
+          "title": "epoll_wait on an idle socket times out"
+        },
+        {
+          "id": "epoll-edge",
+          "title": "EPOLLET reports a datagram's arrival once"
+        },
+        {
+          "id": "epoll-oneshot",
+          "title": "EPOLLONESHOT reports once until re-armed with EPOLL_CTL_MOD"
+        },
+        {
+          "id": "epoll-hup",
+          "title": "epoll_wait reports EPOLLHUP on a socketpair end whose peer closed"
+        }
+      ]
+    },
+    {
+      "id": "resolve",
+      "title": "Name resolution",
+      "cases": [
+        {
+          "id": "gai-numeric",
+          "title": "getaddrinfo of 127.0.0.1 and port 80 gives one AF_INET TCP address"
+        },
+        {
+          "id": "gai-numerichost",
+          "title": "getaddrinfo of a name with AI_NUMERICHOST fails with EAI_NONAME"
+        },
+        {
+          "id": "gai-localhost",
+          "title": "getaddrinfo of localhost gives 127.0.0.1"
+        },
+        {
+          "id": "gai-passive",
+          "title": "getaddrinfo of no host with AI_PASSIVE gives the wildcard address"
+        },
+        {
+          "id": "gai-null-node",
+          "title": "getaddrinfo of no host without AI_PASSIVE gives the loopback address"
+        },
+        {
+          "id": "gai-eai-noname",
+          "title": "getaddrinfo of no host and no service fails with EAI_NONAME"
+        },
+        {
+          "id": "gai-eai-family",
+          "title": "getaddrinfo with an unknown family fails with EAI_FAMILY"
+        },
+        {
+          "id": "gai-eai-socktype",
+          "title": "getaddrinfo with an unknown socket type fails with EAI_SOCKTYPE"
+        },
+        {
+          "id": "gai-eai-badflags",
+          "title": "getaddrinfo with an unknown flag fails with EAI_BADFLAGS"
+        },
+        {
+          "id": "gai-numericserv",
+          "title": "getaddrinfo of a service name with AI_NUMERICSERV fails with EAI_NONAME"
+        },
+        {
+          "id": "gai-service-port",
+          "title": "getaddrinfo of a numeric service sets the port in network order"
+        },
+        {
+          "id": "gai-socktype-any",
+          "title": "getaddrinfo with no socket type gives both TCP and UDP entries"
+        },
+        {
+          "id": "gai-canonname",
+          "title": "getaddrinfo with AI_CANONNAME reports localhost's canonical name"
+        },
+        {
+          "id": "gai-invalid-tld",
+          "title": "getaddrinfo of a name under .invalid fails with EAI_NONAME"
+        },
+        {
+          "id": "gai-hosts-entry",
+          "title": "getaddrinfo of a name added to /etc/hosts gives its address"
+        },
+        {
+          "id": "gai-hosts-alias",
+          "title": "getaddrinfo of an /etc/hosts alias gives its line's address"
+        },
+        {
+          "id": "gai-strerror",
+          "title": "gai_strerror gives a different message for each error"
+        },
+        {
+          "id": "gni-numeric",
+          "title": "getnameinfo with NI_NUMERICHOST|NI_NUMERICSERV gives 127.0.0.1 and 80"
+        },
+        {
+          "id": "gni-localhost",
+          "title": "getnameinfo of 127.0.0.1 gives localhost"
+        },
+        {
+          "id": "gni-hosts-entry",
+          "title": "getnameinfo with NI_NAMEREQD gives the name /etc/hosts lists for an address"
+        },
+        {
+          "id": "gni-overflow",
+          "title": "getnameinfo into a host buffer too small fails with EAI_OVERFLOW"
+        },
+        {
+          "id": "gni-eai-family",
+          "title": "getnameinfo of an address of an unknown family fails with EAI_FAMILY"
+        },
+        {
+          "id": "inet-pton",
+          "title": "inet_pton converts a dotted-quad address to network order"
+        },
+        {
+          "id": "inet-pton-invalid",
+          "title": "inet_pton returns 0 for malformed addresses"
+        },
+        {
+          "id": "inet-pton-eafnosupport",
+          "title": "inet_pton with an unknown family fails with EAFNOSUPPORT"
+        },
+        {
+          "id": "inet-ntop",
+          "title": "inet_ntop formats 127.0.0.1"
+        },
+        {
+          "id": "inet-ntop-enospc",
+          "title": "inet_ntop into a buffer too small fails with ENOSPC"
+        },
+        {
+          "id": "hosts-localhost",
+          "title": "/etc/hosts maps localhost to 127.0.0.1"
+        },
+        {
+          "id": "gateway-dns-query",
+          "title": "A DNS query to the configured nameserver is answered with an A record"
+        },
+        {
+          "id": "gateway-getaddrinfo",
+          "title": "getaddrinfo of example.com resolves through the configured nameserver"
+        }
+      ]
+    }
+  ]
+}
