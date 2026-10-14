@@ -13,6 +13,7 @@ pub mod limits;
 pub mod manager;
 pub mod process;
 pub(crate) mod unpublished;
+mod wait_epoch;
 
 pub use manager::ProcessManager;
 pub use manager::{InitDesignationTicket, InitPublication, FIRST_ORDINARY_PID, RESERVED_INIT_PID};
@@ -73,7 +74,8 @@ static PROCESS_MANAGER_OWNER_TID: AtomicU64 = AtomicU64::new(PM_LOCK_OWNER_NONE)
 /// Drop order is critical: release the lock FIRST, then restore interrupts.
 /// We use ManuallyDrop to control this ordering explicitly.
 pub struct ProcessManagerGuard {
-    pub(crate) _guard: core::mem::ManuallyDrop<spin::MutexGuard<'static, Option<ProcessManager>>>,
+    _guard: core::mem::ManuallyDrop<spin::MutexGuard<'static, Option<ProcessManager>>>,
+    mutated: bool,
     /// Saved DAIF register value (ARM64 only) - restored on drop to re-enable interrupts
     #[cfg(target_arch = "aarch64")]
     saved_daif: u64,
@@ -93,6 +95,7 @@ pub struct ProcessManagerGuard {
 /// this CPU's hands before an interrupt can be taken on it again.
 pub struct TryProcessManagerGuard {
     guard: core::mem::ManuallyDrop<spin::MutexGuard<'static, Option<ProcessManager>>>,
+    mutated: bool,
     /// Saved DAIF register value (ARM64 only) - restored on drop.
     #[cfg(target_arch = "aarch64")]
     saved_daif: u64,
@@ -106,7 +109,7 @@ impl Drop for TryProcessManagerGuard {
         if let Some(manager) = self.guard.as_mut() {
             manager.finish_group_resets();
         }
-        note_process_manager_lock_released();
+        note_process_manager_lock_released(self.mutated);
 
         // Same ordering rule as ProcessManagerGuard::drop: release the lock
         // BEFORE restoring interrupts. Restoring first would re-open exactly
@@ -143,6 +146,7 @@ impl core::ops::Deref for TryProcessManagerGuard {
 
 impl core::ops::DerefMut for TryProcessManagerGuard {
     fn deref_mut(&mut self) -> &mut Self::Target {
+        self.mutated = true;
         &mut *self.guard
     }
 }
@@ -153,7 +157,7 @@ impl Drop for ProcessManagerGuard {
             manager.finish_group_resets();
         }
         // Clear owner metadata before the mutex becomes available to another CPU.
-        note_process_manager_lock_released();
+        note_process_manager_lock_released(self.mutated);
 
         // CRITICAL: Release the lock BEFORE restoring interrupts.
         // If we restored DAIF first, there'd be a window where interrupts are enabled
@@ -190,12 +194,13 @@ impl core::ops::Deref for ProcessManagerGuard {
 
 impl core::ops::DerefMut for ProcessManagerGuard {
     fn deref_mut(&mut self) -> &mut Self::Target {
+        self.mutated = true;
         &mut *self._guard
     }
 }
 
 /// Global process manager
-pub static PROCESS_MANAGER: Mutex<Option<ProcessManager>> = Mutex::new(None);
+static PROCESS_MANAGER: Mutex<Option<ProcessManager>> = Mutex::new(None);
 
 #[inline(always)]
 fn note_process_manager_lock_acquired() {
@@ -206,22 +211,18 @@ fn note_process_manager_lock_acquired() {
 }
 
 #[inline(always)]
-fn note_process_manager_lock_released() {
-    PROCESS_MANAGER_RELEASES.fetch_add(1, Ordering::Release);
+fn note_process_manager_lock_released(mutated: bool) {
+    PROCESS_MANAGER_MUTATIONS.release(mutated);
     PROCESS_MANAGER_OWNER_TID.store(PM_LOCK_OWNER_NONE, Ordering::Relaxed);
     PROCESS_MANAGER_OWNER_CPU.store(PM_LOCK_OWNER_NONE, Ordering::Release);
 }
 
-/// How many times PROCESS_MANAGER has been released. Every change to the
-/// process table is made while it is held, and each holder adds one here
-/// before it lets go, so a reader that finds the count where a scan of its
-/// own left it knows the table has not changed since that scan.
-static PROCESS_MANAGER_RELEASES: AtomicU64 = AtomicU64::new(0);
+/// Releases of holders that exposed mutable access. Read-only holders cannot
+/// change child wait state and must not invalidate an empty WNOHANG scan.
+static PROCESS_MANAGER_MUTATIONS: wait_epoch::WaitEpoch = wait_epoch::WaitEpoch::new();
 
-/// `PROCESS_MANAGER_RELEASES` as it stands. Read under the lock, the release
-/// that ends the reader's own hold makes it one more.
-pub fn process_manager_releases() -> u64 {
-    PROCESS_MANAGER_RELEASES.load(Ordering::Acquire)
+pub fn process_manager_mutations() -> u64 {
+    PROCESS_MANAGER_MUTATIONS.load()
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -376,6 +377,7 @@ pub fn manager() -> ProcessManagerGuard {
         note_process_manager_lock_acquired();
         ProcessManagerGuard {
             _guard: core::mem::ManuallyDrop::new(guard),
+            mutated: false,
             saved_daif,
         }
     }
@@ -389,6 +391,7 @@ pub fn manager() -> ProcessManagerGuard {
         note_process_manager_lock_acquired();
         ProcessManagerGuard {
             _guard: core::mem::ManuallyDrop::new(guard),
+            mutated: false,
             preempt_braked,
         }
     }
@@ -471,7 +474,7 @@ where
             manager.finish_group_resets();
             result
         });
-        note_process_manager_lock_released();
+        note_process_manager_lock_released(true);
         drop(manager_lock);
         result
     })
@@ -592,7 +595,7 @@ where
             manager.finish_group_resets();
             result
         });
-        note_process_manager_lock_released();
+        note_process_manager_lock_released(true);
         drop(manager_lock);
         result
     })
@@ -631,6 +634,7 @@ pub fn try_manager() -> Option<TryProcessManagerGuard> {
         note_process_manager_lock_acquired();
         Some(TryProcessManagerGuard {
             guard: core::mem::ManuallyDrop::new(guard),
+            mutated: false,
             saved_daif,
         })
     }
@@ -651,6 +655,7 @@ pub fn try_manager() -> Option<TryProcessManagerGuard> {
         note_process_manager_lock_acquired();
         Some(TryProcessManagerGuard {
             guard: core::mem::ManuallyDrop::new(guard),
+            mutated: false,
             interrupts_were_enabled,
         })
     }
