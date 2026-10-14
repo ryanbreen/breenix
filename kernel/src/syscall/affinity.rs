@@ -119,9 +119,8 @@ fn pid_is_caller(tid: u64) -> bool {
 
 /// sched_getaffinity(pid, cpusetsize, mask): the bytes of the mask written.
 pub fn sys_sched_getaffinity(pid: i64, len: u64, mask_ptr: u64) -> SyscallResult {
-    // One complete word is required even on a single-CPU system. Comparing
-    // bytes avoids overflowing the user-supplied length before validation.
-    if len < MASK_BYTES || len % MASK_BYTES != 0 {
+    let cpus = crate::task::scheduler::online_cpus() as u64;
+    if len * 8 < cpus || len % MASK_BYTES != 0 {
         return SyscallResult::Err(EINVAL as u64);
     }
     let tid = match target(pid, false) {
