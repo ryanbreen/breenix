@@ -2,10 +2,10 @@
 //! All implementation is original; encoding follows Unicode's UTF-8 definition.
 
 mod multibyte;
-
-use core::sync::atomic::{AtomicBool, Ordering};
-
-static UTF8: AtomicBool = AtomicBool::new(false);
+mod objects;
+mod classify;
+mod unicode_tables;
+mod wide;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
@@ -21,7 +21,7 @@ pub(crate) struct MbState {
 pub(crate) enum Charset { Byte, Utf8 }
 
 pub(crate) fn charset() -> Charset {
-    if UTF8.load(Ordering::Relaxed) { Charset::Utf8 } else { Charset::Byte }
+    objects::encoding()
 }
 
 pub(crate) fn encode(wc: u32, out: &mut [u8; 4]) -> Option<usize> {
@@ -84,7 +84,7 @@ pub extern "C" fn __breenix_mb_cur_max() -> usize {
     if charset() == Charset::Utf8 { 4 } else { 1 }
 }
 
-fn set_errno(e: i32) { unsafe { *crate::__errno_location() = e; } }
+fn set_errno(e: i32) { crate::pthread::set_errno(e); }
 
 #[cfg(test)]
 mod tests {
@@ -116,5 +116,66 @@ mod tests {
             assert_eq!(decode_charset(&[b], &mut MbState::default(), Charset::Byte), Decoded::Char(b as u32, 1));
         }
         assert_eq!(decode_charset(&[], &mut MbState::default(), Charset::Utf8), Decoded::Incomplete(0));
+    }
+
+    #[test]
+    fn locale_isolation_conversion_limits_and_unicode_classes() {
+        unsafe {
+            let l = objects::newlocale(1, b"C.UTF-8\0".as_ptr(), core::ptr::null_mut());
+            assert!(!l.is_null());
+            assert_eq!(objects::uselocale(l) as usize, usize::MAX);
+            assert_eq!(charset(), Charset::Utf8);
+            assert_eq!(encode(0x10ffff, &mut [0; 4]), Some(4));
+            assert_eq!(encode(0xd800, &mut [0; 4]), None);
+            let src = b"a\xc3\xa9\0".as_ptr();
+            let mut source = src;
+            let mut state = MbState::default();
+            assert_eq!(multibyte::mbsrtowcs(core::ptr::null_mut(), &mut source, 0, &mut state), 2);
+            assert_eq!(source, src);
+            let mut output = [0; 4];
+            assert_eq!(multibyte::mbsrtowcs(output.as_mut_ptr(), &mut source, 1, &mut state), 1);
+            assert_eq!(source, src.add(1));
+            assert_eq!(multibyte::mbsrtowcs(output.as_mut_ptr(), &mut source, 4, &mut state), 1);
+            assert_eq!(output[..2], [0xe9, 0]);
+            assert!(source.is_null());
+            let wide = [0xe9, 0];
+            let mut source = wide.as_ptr();
+            let mut bytes = [0x55; 4];
+            assert_eq!(multibyte::wcsrtombs(bytes.as_mut_ptr(), &mut source, 1, &mut state), 0);
+            assert_eq!(source, wide.as_ptr());
+            assert_eq!(bytes, [0x55; 4]);
+            assert_eq!(multibyte::wcsrtombs(bytes.as_mut_ptr(), &mut source, 4, &mut state), 2);
+            assert_eq!(&bytes[..3], b"\xc3\xa9\0");
+            assert!(source.is_null());
+            assert_eq!(classify::iswalpha(0xe9), 1);
+            assert_eq!(classify::iswdigit(0x663), 0);
+            assert_eq!(classify::towupper(0xe9), 0xc9);
+            assert_eq!(classify::towlower(0x391), 0x3b1);
+            assert_eq!(std::thread::spawn(|| (charset(), classify::iswalpha(0xe9))).join().unwrap(), (Charset::Byte, 0));
+            objects::uselocale(usize::MAX as *mut core::ffi::c_void);
+            objects::freelocale(l);
+            assert_eq!(charset(), Charset::Byte);
+        }
+    }
+
+    #[test]
+    fn wide_strings_pad_move_search_and_tokenize() {
+        unsafe {
+            let mut w = [1, 2, 3, 4, 5, 0];
+            wide::wmemmove(w.as_mut_ptr().add(1), w.as_ptr(), 4);
+            assert_eq!(w, [1, 1, 2, 3, 4, 0]);
+            wide::wmemmove(w.as_mut_ptr(), w.as_ptr().add(1), 4);
+            assert_eq!(w[..4], [1, 2, 3, 4]);
+            wide::wcsncpy(w.as_mut_ptr(), [65, 0].as_ptr(), 6);
+            assert_eq!(w, [65, 0, 0, 0, 0, 0]);
+            assert_eq!(wide::wcschr(w.as_ptr(), 0), w.as_mut_ptr().add(1));
+            assert_eq!(wide::wcsstr(w.as_ptr(), [0].as_ptr()), w.as_mut_ptr());
+            let mut words = [44, 97, 44, 44, 98, 0];
+            let mut save = core::ptr::null_mut();
+            let sep = [44, 0];
+            assert_eq!(wide::wcstok(words.as_mut_ptr(), sep.as_ptr(), &mut save), words.as_mut_ptr().add(1));
+            assert_eq!(wide::wcstok(core::ptr::null_mut(), sep.as_ptr(), &mut save), words.as_mut_ptr().add(4));
+            assert!(wide::wcstok(core::ptr::null_mut(), sep.as_ptr(), &mut save).is_null());
+        }
     }
 }
