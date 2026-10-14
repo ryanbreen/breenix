@@ -2,7 +2,10 @@
 use libbreenix::errno::Errno;
 use libbreenix::error::Error;
 use libbreenix::socket::{self, SockAddrUn, AF_UNIX, SOCK_NONBLOCK, SOCK_STREAM};
-use libbreenix::syscall::{nr, raw::syscall3};
+use libbreenix::syscall::{
+    nr,
+    raw::{syscall3, syscall5},
+};
 use libbreenix::types::Fd;
 use libbreenix::{
     io,
@@ -214,6 +217,20 @@ fn connection(arm: &str, reverse: bool, variant: usize) -> TestResult<usize> {
                     send(ack_w, 1)?;
                     setup
                 };
+                // The fixture measures a fixed capacity, independent of the
+                // protocol's configurable default. Linux stores SO_SNDBUF doubled.
+                let sndbuf = (C / 2) as i32;
+                let result = unsafe {
+                    syscall5(
+                        nr::SETSOCKOPT,
+                        writer.raw(),
+                        1,
+                        7,
+                        &sndbuf as *const i32 as u64,
+                        4,
+                    )
+                } as i64;
+                check(result == 0, "configure 64 KiB transmit capacity")?;
                 send(ack_w, writer.raw() as i64)?;
                 send(ack_w, cv(process::gettid())?.raw() as i64)?;
                 mode(writer, true)?;

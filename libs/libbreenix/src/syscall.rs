@@ -76,6 +76,8 @@ pub mod nr {
     pub const ACCEPT: u64 = 43;
     pub const SENDTO: u64 = 44;
     pub const RECVFROM: u64 = 45;
+    pub const SENDMSG: u64 = 46;
+    pub const RECVMSG: u64 = 47;
     pub const SHUTDOWN: u64 = 48;
     pub const BIND: u64 = 49;
     pub const LISTEN: u64 = 50;
@@ -179,6 +181,7 @@ pub mod nr {
     pub const EPOLL_WAIT: u64 = 232;
     pub const EPOLL_CTL: u64 = 233;
     pub const EPOLL_PWAIT: u64 = 281;
+    pub const ACCEPT4: u64 = 288;
     pub const EPOLL_CREATE1: u64 = 291;
     // Process spawning (Breenix-specific)
     pub const SPAWN: u64 = 440;
@@ -321,6 +324,9 @@ pub mod nr {
     pub const SETSOCKOPT: u64 = 208;
     pub const GETSOCKOPT: u64 = 209;
     pub const SHUTDOWN: u64 = 210;
+    pub const SENDMSG: u64 = 211;
+    pub const RECVMSG: u64 = 212;
+    pub const ACCEPT4: u64 = 242;
 
     // Memory
     pub const BRK: u64 = 214;

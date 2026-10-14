@@ -1,27 +1,90 @@
-//! Socket system call implementations
+//! Socket system calls.
 //!
-//! Implements socket, bind, sendto, recvfrom syscalls for UDP and TCP.
+//! Each call resolves its descriptor to the socket under PROCESS_MANAGER and
+//! releases PM before calling the protocol (`socket::object::ProtoOps`). This
+//! layer owns everything that touches the caller: user memory goes through
+//! `socket::addr` and `userptr`, SIGPIPE is raised here on EPIPE unless
+//! MSG_NOSIGNAL is set (write always raises it), and a pending SO_ERROR is
+//! reported before a fresh send or receive.
+
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 use super::errno::{
-    EADDRINUSE, EAFNOSUPPORT, EAGAIN, EBADF, ECONNREFUSED, EFAULT, EINVAL, EISCONN, ENETUNREACH,
-    ENOENT, ENOTSOCK, EOPNOTSUPP,
+    EAFNOSUPPORT, EBADF, EFAULT, EINVAL, EMSGSIZE, ENOBUFS, ENOMEM, EOPNOTSUPP, EPIPE,
+    EPROTONOSUPPORT, ESOCKTNOSUPPORT, ESRCH,
 };
-use super::errno::{EINPROGRESS, ENOTCONN, ETIMEDOUT};
-use super::{ErrorCode, SyscallResult};
-use crate::arch_impl::traits::CpuOps;
-use crate::ipc::fd::FdKind;
-use crate::socket::types::{SockAddrIn, SockAddrUn, AF_INET, AF_UNIX, SOCK_DGRAM, SOCK_STREAM};
-use crate::socket::udp::UdpSocket;
-use crate::socket::unix::UnixSocket;
+use super::{userptr, SyscallResult};
+use crate::ipc::fd::{flags, status_flags, FdKind, FdTableInner, FileDescriptor};
+use crate::task::process_task::close_extracted_fd;
+use crate::socket::addr::{read_sockaddr, write_sockaddr, SockAddr};
+use crate::socket::object::{
+    caller_ucred, socket_from_fd, OptBuf, RecvMsg, SendMsg, Socket, SocketProto, UCred,
+};
+use crate::socket::{opts, tcp::TcpSock, udp::UdpSock, unix::UnixSock};
 
-// Architecture-specific CPU type for interrupt control
-#[cfg(target_arch = "x86_64")]
-type Cpu = crate::arch_impl::x86_64::X86Cpu;
-#[cfg(target_arch = "aarch64")]
-type Cpu = crate::arch_impl::aarch64::Aarch64Cpu;
+const AF_UNIX: u16 = 1;
+const AF_INET: u16 = 2;
+/// Linux's AF_MAX (NPROTO): a family at or past it is EAFNOSUPPORT.
+const AF_MAX: i32 = 46;
+const SOCK_STREAM: u16 = 1;
+const SOCK_DGRAM: u16 = 2;
+const SOCK_RAW: u16 = 3;
+/// Linux's SOCK_MAX: a type at or past it is EINVAL.
+const SOCK_MAX: u16 = 11;
+const SOCK_TYPE_MASK: u32 = 0xf;
+const SOCK_NONBLOCK: u32 = 0o4000;
+const SOCK_CLOEXEC: u32 = 0o2000000;
+const IPPROTO_TCP: i32 = 6;
+const IPPROTO_UDP: i32 = 17;
+/// Linux's IPPROTO_MAX: an AF_INET protocol outside 0..IPPROTO_MAX is EINVAL.
+const IPPROTO_MAX: i32 = 263;
+/// PF_UNIX, which Linux accepts as AF_UNIX's protocol.
+const PROTO_UNIX: i32 = 1;
+/// Linux's sizeof(struct sockaddr_storage): sendmsg clamps msg_namelen to it.
+const SOCKADDR_STORAGE: u32 = 128;
 
-/// Reset the timer quantum after a blocking wait (architecture-specific)
-/// This prevents immediate preemption after returning from a long blocking syscall
+const MSG_PEEK: u32 = 0x2;
+const MSG_CTRUNC: u32 = 0x8;
+const MSG_DONTWAIT: u32 = 0x40;
+const MSG_NOSIGNAL: u32 = 0x4000;
+const MSG_CMSG_CLOEXEC: u32 = 0x4000_0000;
+
+const SOL_SOCKET: i32 = 1;
+const SCM_RIGHTS: i32 = 1;
+/// Linux's SCM_MAX_FD: descriptors one SCM_RIGHTS message may carry.
+const SCM_MAX_FD: usize = 253;
+/// Linux's net.core.optmem_max: the largest control buffer sendmsg reads.
+const CONTROL_MAX: usize = 20_480;
+/// Linux's UIO_MAXIOV.
+const IOV_MAX: u64 = 1024;
+/// Linux's net.core.somaxconn: the cap on a listen backlog.
+const SOMAXCONN: i32 = 4096;
+/// The most bytes one protocol send or receive moves through the kernel. A
+/// stream send moves a longer buffer in pieces of this size and a stream
+/// receive returns a short count; a datagram or record longer than this is
+/// EMSGSIZE (longer than UDP's limit, and than an AF_UNIX send buffer).
+const MAX_IO: usize = 256 * 1024;
+
+const CMSG_HDR: usize = 16;
+
+fn cmsg_align(len: usize) -> usize {
+    (len + 7) & !7
+}
+
+fn to_result(result: Result<u64, i32>) -> SyscallResult {
+    match result {
+        Ok(value) => SyscallResult::Ok(value),
+        Err(errno) => SyscallResult::Err(errno as u64),
+    }
+}
+
+fn user(result: Result<(), u64>) -> Result<(), i32> {
+    result.map_err(|errno| errno as i32)
+}
+
+/// Reset the timer quantum after a blocking wait (architecture-specific).
+#[cfg(feature = "boot_tests")]
 #[inline(always)]
 fn reset_quantum() {
     #[cfg(target_arch = "x86_64")]
@@ -30,2100 +93,999 @@ fn reset_quantum() {
     crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
 }
 
-fn close_fds_for_thread(thread_id: u64, fds: [i32; 2]) {
-    let mut manager_guard = crate::process::manager();
-    if let Some(ref mut manager) = *manager_guard {
-        if let Some((_pid, process)) = manager.find_process_by_thread_mut(thread_id) {
-            let _ = process.fd_table.close(fds[0]);
-            let _ = process.fd_table.close(fds[1]);
-        }
-    }
-}
-
 /// Test hook to verify reset_quantum wiring on ARM64.
 #[cfg(feature = "boot_tests")]
 pub fn test_reset_quantum_hook() {
     reset_quantum();
 }
 
-const SOCK_NONBLOCK: u64 = 0x800;
-const SOCK_CLOEXEC: u64 = 0x80000;
+/// Run `f` on the caller's descriptor table, under PROCESS_MANAGER.
+fn with_table<R>(f: impl FnOnce(&mut FdTableInner) -> R) -> Result<R, i32> {
+    let tid = crate::task::scheduler::current_thread_id().ok_or(ESRCH)?;
+    let mut guard = crate::process::manager();
+    let manager = guard.as_mut().ok_or(ESRCH)?;
+    let (_, process) = manager.find_process_by_thread_mut(tid).ok_or(ESRCH)?;
+    Ok(f(&mut process.fd_table))
+}
 
-/// sys_socket - Create a new socket
-///
-/// Arguments:
-///   domain: Address family (AF_INET = 2, AF_UNIX = 1)
-///   sock_type: Socket type (SOCK_DGRAM = 2 for UDP, SOCK_STREAM = 1 for TCP/Unix)
-///   protocol: Protocol (0 = default)
-///
-/// Returns: file descriptor on success, negative errno on error
-pub fn sys_socket(domain: u64, sock_type: u64, _protocol: u64) -> SyscallResult {
-    log::debug!(
-        "sys_socket: called with domain={}, type={}",
-        domain,
-        sock_type
-    );
-
-    // Get current thread and process
-    let current_thread_id = match crate::per_cpu::current_thread() {
-        Some(thread) => thread.id,
-        None => {
-            log::error!("sys_socket: No current thread in per-CPU data!");
-            return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
-        }
-    };
-
-    let mut manager_guard = crate::process::manager();
-    let manager = match *manager_guard {
-        Some(ref mut m) => m,
-        None => {
-            log::error!("sys_socket: No process manager!");
-            return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
-        }
-    };
-
-    let (_pid, process) = match manager.find_process_by_thread_mut(current_thread_id) {
-        Some(p) => p,
-        None => {
-            log::error!(
-                "sys_socket: No process found for thread_id={}",
-                current_thread_id
-            );
-            return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
-        }
-    };
-
-    let nonblocking = (sock_type & SOCK_NONBLOCK) != 0;
-    let cloexec = (sock_type & SOCK_CLOEXEC) != 0;
-    let base_type = sock_type & !(SOCK_NONBLOCK | SOCK_CLOEXEC);
-
-    // Create socket based on domain and type
-    let (fd_kind, kind_str) = match domain as u16 {
-        AF_INET => {
-            // IPv4 socket
-            match base_type as u16 {
-                SOCK_DGRAM => {
-                    // Create UDP socket wrapped in Arc<Mutex<>> for sharing
-                    let mut socket = UdpSocket::new();
-                    if nonblocking {
-                        socket.set_nonblocking(true);
-                    }
-                    let socket = alloc::sync::Arc::new(spin::Mutex::new(socket));
-                    (FdKind::UdpSocket(socket), "UDP")
-                }
-                SOCK_STREAM => {
-                    // Create TCP socket (initially unbound, port = 0)
-                    (FdKind::TcpSocket(0), "TCP")
-                }
-                _ => {
-                    log::debug!("sys_socket: unsupported type {} for AF_INET", base_type);
-                    return SyscallResult::Err(EINVAL as u64);
-                }
+/// Hold up to `count` free descriptor slots, stopping at the first that
+/// cannot be held. A call holds its slots before anything it cannot undo,
+/// and installs into them once nothing else can fail. The second value is
+/// why the slots stopped short (EMFILE, ENOMEM), 0 when all were held.
+fn hold_prefix(count: usize) -> Result<(Vec<i32>, i32), i32> {
+    let mut slots = Vec::new();
+    slots.try_reserve_exact(count).map_err(|_| ENOMEM)?;
+    let stopped = with_table(|table| {
+        while slots.len() < count {
+            match table.try_reserve_slot() {
+                Ok(fd) => slots.push(fd),
+                Err(errno) => return errno,
             }
         }
-        AF_UNIX => {
-            // Unix domain socket
-            match base_type as u16 {
-                SOCK_STREAM => {
-                    // Create Unix stream socket (initially unbound)
-                    let socket = UnixSocket::new(nonblocking);
-                    let socket = alloc::sync::Arc::new(spin::Mutex::new(socket));
-                    (FdKind::UnixSocket(socket), "Unix")
-                }
-                _ => {
-                    log::debug!(
-                        "sys_socket: unsupported type {} for AF_UNIX (only SOCK_STREAM supported)",
-                        base_type
-                    );
-                    return SyscallResult::Err(EINVAL as u64);
-                }
-            }
-        }
-        _ => {
-            log::debug!("sys_socket: unsupported domain {}", domain);
-            return SyscallResult::Err(EAFNOSUPPORT as u64);
-        }
-    };
-
-    // Set flags for the file descriptor
-    use crate::ipc::fd::{flags, status_flags, FileDescriptor};
-    let fd_flags = if cloexec { flags::FD_CLOEXEC } else { 0 };
-    let fd_status_flags = if nonblocking {
-        status_flags::O_NONBLOCK
-    } else {
         0
-    };
+    })?;
+    Ok((slots, stopped))
+}
 
-    let fd_entry = FileDescriptor::with_flags(fd_kind, fd_flags, fd_status_flags);
+/// Hold `count` slots, all or none.
+fn hold(count: usize) -> Result<Vec<i32>, i32> {
+    let (slots, stopped) = hold_prefix(count)?;
+    if stopped != 0 {
+        unhold(&slots);
+        return Err(stopped);
+    }
+    Ok(slots)
+}
 
-    // Allocate file descriptor in process
-    match process.fd_table.alloc_with_entry(fd_entry) {
-        Ok(num) => {
-            log::info!("{} socket created fd={}", kind_str, num);
-            log::debug!("{} socket: returning to userspace fd={}", kind_str, num);
-            SyscallResult::Ok(num as u64)
+/// Give back held slots a call no longer needs.
+fn unhold(slots: &[i32]) {
+    let _ = with_table(|table| {
+        for fd in slots {
+            table.release_reserved(*fd);
         }
-        Err(e) => {
-            log::warn!("sys_socket: fd_table full (no free slots)");
-            SyscallResult::Err(e as u64)
+    });
+}
+
+/// Install `entries` in held `slots`, pairwise. A held slot is this call's
+/// alone, so installing into it cannot fail; an entry left over (the
+/// process is gone) is closed.
+fn install(slots: &[i32], entries: impl IntoIterator<Item = FileDescriptor>) {
+    let mut entries = entries.into_iter();
+    let _ = with_table(|table| {
+        for fd in slots {
+            let Some(entry) = entries.next() else {
+                break;
+            };
+            if let Err(entry) = table.install_held(*fd, entry) {
+                // Not reachable while the slot is held; keep the entry.
+                let _ = table.install_reserved(*fd, entry);
+            }
         }
+    });
+    discard_rights(entries);
+}
+
+fn socket_entry(socket: Arc<Socket>, cloexec: bool, nonblock: bool) -> Result<FileDescriptor, i32> {
+    FileDescriptor::try_with_flags(
+        FdKind::Socket(socket),
+        if cloexec { flags::FD_CLOEXEC } else { 0 },
+        if nonblock {
+            status_flags::O_NONBLOCK
+        } else {
+            0
+        },
+    )
+}
+
+/// Close descriptors that never reached a table (SCM_RIGHTS that were not
+/// delivered) the way a close of an extracted descriptor closes them, so
+/// pipe, FIFO and PTY reference counts drop with them. Allocates nothing.
+fn discard_rights(rights: impl IntoIterator<Item = FileDescriptor>) {
+    for right in rights {
+        close_extracted_fd(right);
     }
 }
 
-/// sys_bind - Bind a socket to a local address
-///
-/// Arguments:
-///   fd: Socket file descriptor
-///   addr: Pointer to sockaddr structure (sockaddr_in for AF_INET, sockaddr_un for AF_UNIX)
-///   addrlen: Length of address structure
-///
-/// Returns: 0 on success, negative errno on error
-pub fn sys_bind(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
-    enum BindAddress {
-        Inet(SockAddrIn),
-        Unix(alloc::vec::Vec<u8>),
+/// The family, type and protocol a new socket gets, with Linux's checks in
+/// Linux's order: the family's range (EAFNOSUPPORT), the type's (EINVAL),
+/// then the family's own checks. AF_UNIX takes SOCK_RAW as SOCK_DGRAM.
+fn check_kind(family: i32, kind: u16, protocol: i32) -> Result<(u16, u16, u16), i32> {
+    if !(0..AF_MAX).contains(&family) {
+        return Err(EAFNOSUPPORT);
     }
-
-    // Validate address pointer
-    if addr_ptr == 0 {
-        return SyscallResult::Err(EFAULT as u64);
+    if kind >= SOCK_MAX {
+        return Err(EINVAL);
     }
-
-    // Validate minimum address length (at least 2 bytes for family)
-    if addrlen < 2 {
-        return SyscallResult::Err(EINVAL as u64);
-    }
-
-    // Read address family first
-    let family = unsafe {
-        let family_bytes = core::slice::from_raw_parts(addr_ptr as *const u8, 2);
-        u16::from_ne_bytes([family_bytes[0], family_bytes[1]])
-    };
-
-    let bind_addr = match family {
+    match family as u16 {
         AF_INET => {
-            // Validate address length for IPv4
-            if addrlen < 16 {
-                return SyscallResult::Err(EINVAL as u64);
+            if !(0..IPPROTO_MAX).contains(&protocol) {
+                return Err(EINVAL);
             }
-
-            // Read full IPv4 address from userspace
-            let addr = unsafe {
-                let addr_bytes = core::slice::from_raw_parts(addr_ptr as *const u8, 16);
-                match SockAddrIn::from_bytes(addr_bytes) {
-                    Some(a) => a,
-                    None => return SyscallResult::Err(EINVAL as u64),
-                }
+            let (want, number) = match kind {
+                SOCK_STREAM => (IPPROTO_TCP, 6),
+                SOCK_DGRAM => (IPPROTO_UDP, 17),
+                _ => return Err(ESOCKTNOSUPPORT),
             };
-
-            BindAddress::Inet(addr)
+            if protocol != 0 && protocol != want {
+                return Err(EPROTONOSUPPORT);
+            }
+            Ok((AF_INET, kind, number))
         }
         AF_UNIX => {
-            // Validate address length for Unix (need at least family + 1 byte path)
-            if addrlen < 3 {
-                return SyscallResult::Err(EINVAL as u64);
+            if protocol != 0 && protocol != PROTO_UNIX {
+                return Err(EPROTONOSUPPORT);
             }
+            let kind = if kind == SOCK_RAW { SOCK_DGRAM } else { kind };
+            if !UnixSock::supports_kind(kind) {
+                return Err(ESOCKTNOSUPPORT);
+            }
+            Ok((AF_UNIX, kind, 0))
+        }
+        _ => Err(EAFNOSUPPORT),
+    }
+}
 
-            // Read Unix socket address from userspace
-            let addr = unsafe {
-                let addr_len = (addrlen as usize).min(110); // family (2) + path (108)
-                let addr_bytes = core::slice::from_raw_parts(addr_ptr as *const u8, addr_len);
-                match SockAddrUn::from_bytes(addr_bytes) {
-                    Some(a) => a,
-                    None => return SyscallResult::Err(EINVAL as u64),
-                }
+/// The socket a new descriptor gets for `family`, `kind` and `protocol`.
+fn create(family: i32, kind: u16, protocol: i32) -> Result<Arc<Socket>, i32> {
+    let (family, kind, protocol) = check_kind(family, kind, protocol)?;
+    match (family, kind) {
+        (AF_INET, SOCK_STREAM) => {
+            Socket::new(AF_INET, SOCK_STREAM, protocol, SocketProto::Tcp(TcpSock::new()))
+        }
+        (AF_INET, _) => Socket::new(AF_INET, SOCK_DGRAM, protocol, SocketProto::Udp(UdpSock::new()?)),
+        _ => Socket::new(AF_UNIX, kind, 0, SocketProto::Unix(UnixSock::new(kind))),
+    }
+}
+
+/// Split socket()'s type argument, an int, into the type and the
+/// SOCK_NONBLOCK and SOCK_CLOEXEC flags; any other flag is EINVAL.
+fn split_type(sock_type: u64) -> Result<(u16, bool, bool), i32> {
+    let sock_type = sock_type as u32;
+    let extra = sock_type & !SOCK_TYPE_MASK;
+    if extra & !(SOCK_NONBLOCK | SOCK_CLOEXEC) != 0 {
+        return Err(EINVAL);
+    }
+    Ok((
+        (sock_type & SOCK_TYPE_MASK) as u16,
+        extra & SOCK_NONBLOCK != 0,
+        extra & SOCK_CLOEXEC != 0,
+    ))
+}
+
+/// An int argument: the low 32 bits of the register, as Linux reads it.
+fn int_arg(value: u64) -> i32 {
+    value as u32 as i32
+}
+
+/// socket(domain, type, protocol)
+pub fn sys_socket(domain: u64, sock_type: u64, protocol: u64) -> SyscallResult {
+    to_result((|| {
+        let (kind, nonblock, cloexec) = split_type(sock_type)?;
+        let socket = create(int_arg(domain), kind, int_arg(protocol))?;
+        let entry = socket_entry(socket, cloexec, nonblock)?;
+        let slots = hold(1)?;
+        install(&slots, [entry]);
+        Ok(slots[0] as u64)
+    })())
+}
+
+/// socketpair(domain, type, protocol, sv). Only AF_UNIX makes pairs; Linux
+/// gives AF_INET EOPNOTSUPP once its type and protocol check out. The
+/// descriptors are installed only once sv holds their numbers.
+pub fn sys_socketpair(domain: u64, sock_type: u64, protocol: u64, sv_ptr: u64) -> SyscallResult {
+    to_result((|| {
+        let (kind, nonblock, cloexec) = split_type(sock_type)?;
+        let (family, kind, _) = check_kind(int_arg(domain), kind, int_arg(protocol))?;
+        if family != AF_UNIX {
+            return Err(EOPNOTSUPP);
+        }
+        if sv_ptr == 0 {
+            return Err(EFAULT);
+        }
+        let (a, b) = UnixSock::new_pair(kind, caller_ucred())?;
+        let first = socket_entry(a, cloexec, nonblock)?;
+        let second = socket_entry(b, cloexec, nonblock)?;
+        let slots = hold(2)?;
+        let sv = [slots[0], slots[1]];
+        // sv may be a copy-on-write page: write it with PM released.
+        if let Err(errno) = userptr::copy_to_user(sv_ptr as *mut [i32; 2], &sv) {
+            unhold(&slots);
+            return Err(errno as i32);
+        }
+        install(&slots, [first, second]);
+        Ok(0)
+    })())
+}
+
+/// Close descriptors this call installed before a later step failed, as
+/// close(2) closes them: record locks, IPC close hooks, and pipe, FIFO and
+/// PTY counts. Allocates nothing.
+fn close_own(fds: &[i32]) {
+    for fd in fds {
+        let closed = with_table(|table| table.close(*fd).ok());
+        let Ok(Some(entry)) = closed else {
+            continue;
+        };
+        let owner = {
+            let tid = crate::task::scheduler::current_thread_id();
+            let guard = crate::process::manager();
+            guard
+                .as_ref()
+                .zip(tid)
+                .and_then(|(manager, tid)| manager.find_process_by_thread(tid))
+                .map(|(_, process)| {
+                    (
+                        crate::ipc::object::close_owner(process.id, process.thread_group_id),
+                        process.lock_owner.id(),
+                    )
+                })
+        };
+        if let Some((close_pid, lock_owner)) = owner {
+            crate::fs::locks::release_closed(lock_owner, &entry.kind);
+            if let FdKind::Ipc(object) = &entry.kind {
+                object.on_close(close_pid);
+            }
+        }
+        close_extracted_fd(entry);
+    }
+}
+
+/// The length argument of bind, connect and sendto: Linux reads it as an
+/// int, and a negative one is EINVAL.
+fn addr_len(len: u64) -> Result<u32, i32> {
+    let len = int_arg(len);
+    if len < 0 {
+        return Err(EINVAL);
+    }
+    Ok(len as u32)
+}
+
+/// bind(fd, addr, addrlen)
+pub fn sys_bind(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
+    to_result((|| {
+        let (sk, _) = socket_from_fd(fd as i32)?;
+        let addr = read_sockaddr(addr_ptr, addr_len(addrlen)?, sk.family)?;
+        sk.ops().bind(&sk, &addr)?;
+        Ok(0)
+    })())
+}
+
+/// listen(fd, backlog). Linux caps the backlog at somaxconn, and reads a
+/// negative one as unsigned, so it is capped too.
+pub fn sys_listen(fd: u64, backlog: u64) -> SyscallResult {
+    to_result((|| {
+        let (sk, _) = socket_from_fd(fd as i32)?;
+        let backlog = backlog as i32;
+        let backlog = if !(0..=SOMAXCONN).contains(&backlog) {
+            SOMAXCONN
+        } else {
+            backlog
+        };
+        sk.ops().listen(&sk, backlog)?;
+        sk.common.notify();
+        Ok(0)
+    })())
+}
+
+/// accept(fd, addr, addrlen)
+pub fn sys_accept(fd: u64, addr_ptr: u64, addrlen_ptr: u64) -> SyscallResult {
+    sys_accept4(fd, addr_ptr, addrlen_ptr, 0)
+}
+
+/// accept4(fd, addr, addrlen, flags). SOCK_NONBLOCK and SOCK_CLOEXEC apply to
+/// the new descriptor, which inherits neither from the listener (Linux).
+pub fn sys_accept4(fd: u64, addr_ptr: u64, addrlen_ptr: u64, accept_flags: u64) -> SyscallResult {
+    to_result((|| {
+        if (accept_flags as u32) & !(SOCK_NONBLOCK | SOCK_CLOEXEC) != 0 {
+            return Err(EINVAL);
+        }
+        let accept_flags = accept_flags as u32;
+        let (sk, status) = socket_from_fd(fd as i32)?;
+        let nonblock = status & status_flags::O_NONBLOCK != 0;
+        // The slot is held before a connection is taken off the queue, so
+        // EMFILE leaves the connection queued, as on Linux.
+        let slots = hold(1)?;
+        let accepted = sk.ops().accept(&sk, nonblock).and_then(|(socket, peer)| {
+            let entry = socket_entry(
+                socket,
+                accept_flags & SOCK_CLOEXEC != 0,
+                accept_flags & SOCK_NONBLOCK != 0,
+            )?;
+            if addr_ptr != 0 {
+                // A peer address the caller cannot take fails the call, and
+                // the new socket goes with it.
+                write_sockaddr(&peer, addr_ptr, addrlen_ptr)?;
+            }
+            Ok(entry)
+        });
+        match accepted {
+            Ok(entry) => {
+                install(&slots, [entry]);
+                Ok(slots[0] as u64)
+            }
+            Err(errno) => {
+                unhold(&slots);
+                Err(errno)
+            }
+        }
+    })())
+}
+
+/// connect(fd, addr, addrlen)
+pub fn sys_connect(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
+    to_result((|| {
+        let (sk, status) = socket_from_fd(fd as i32)?;
+        let addr = read_sockaddr(addr_ptr, addr_len(addrlen)?, sk.family)?;
+        let nonblock = status & status_flags::O_NONBLOCK != 0;
+        sk.ops().connect(&sk, &addr, nonblock)?;
+        Ok(0)
+    })())
+}
+
+/// shutdown(fd, how)
+pub fn sys_shutdown(fd: u64, how: u64) -> SyscallResult {
+    to_result((|| {
+        let (sk, _) = socket_from_fd(fd as i32)?;
+        if how > 2 {
+            return Err(EINVAL);
+        }
+        sk.ops().shutdown(&sk, how as u8)?;
+        sk.common.set_shut(how as u8);
+        sk.common.notify();
+        Ok(0)
+    })())
+}
+
+/// getsockname(fd, addr, addrlen)
+pub fn sys_getsockname(fd: u64, addr_ptr: u64, addrlen_ptr: u64) -> SyscallResult {
+    to_result((|| {
+        let (sk, _) = socket_from_fd(fd as i32)?;
+        write_sockaddr(&sk.ops().try_local_name(&sk)?, addr_ptr, addrlen_ptr)?;
+        Ok(0)
+    })())
+}
+
+/// getpeername(fd, addr, addrlen)
+pub fn sys_getpeername(fd: u64, addr_ptr: u64, addrlen_ptr: u64) -> SyscallResult {
+    to_result((|| {
+        let (sk, _) = socket_from_fd(fd as i32)?;
+        let peer = sk.ops().peer_name(&sk)?;
+        write_sockaddr(&peer, addr_ptr, addrlen_ptr)?;
+        Ok(0)
+    })())
+}
+
+/// setsockopt(fd, level, name, optval, optlen)
+pub fn sys_setsockopt(fd: u64, level: u64, name: u64, optval: u64, optlen: u64) -> SyscallResult {
+    to_result((|| {
+        let (sk, _) = socket_from_fd(fd as i32)?;
+        let len = optlen as u32 as i32;
+        if len < 0 {
+            return Err(EINVAL);
+        }
+        // Only the option's own bytes are read, so a value that ends at the
+        // end of a page is never read past.
+        let mut value = [0u8; 16];
+        let n = opts::value_len(level as i32, name as i32, len as usize).min(value.len());
+        user(userptr::read_user_bytes(value.as_mut_ptr(), optval, n))?;
+        opts::setsockopt(&sk, level as i32, name as i32, &value[..n])?;
+        Ok(0)
+    })())
+}
+
+/// getsockopt(fd, level, name, optval, optlen). As on Linux, a value longer
+/// than *optlen is truncated and *optlen is set to the bytes written.
+pub fn sys_getsockopt(fd: u64, level: u64, name: u64, optval: u64, optlen: u64) -> SyscallResult {
+    to_result((|| {
+        let (sk, _) = socket_from_fd(fd as i32)?;
+        let room: u32 = userptr::copy_from_user(optlen as *const u32).map_err(|e| e as i32)?;
+        if (room as i32) < 0 {
+            return Err(EINVAL);
+        }
+        let mut out = OptBuf::new();
+        opts::getsockopt(&sk, level as i32, name as i32, &mut out)?;
+        let n = out.len.min(room as usize);
+        user(userptr::write_user_bytes(optval, out.bytes.as_ptr(), n))?;
+        user(userptr::copy_to_user(optlen as *mut u32, &(n as u32)))?;
+        Ok(0)
+    })())
+}
+
+/// Copy `len` bytes of user memory at `ptr` into a new kernel buffer.
+fn copy_in(ptr: u64, len: usize) -> Result<Vec<u8>, i32> {
+    let mut data = Vec::new();
+    data.try_reserve_exact(len).map_err(|_| ENOMEM)?;
+    data.resize(len, 0);
+    user(userptr::read_user_bytes(data.as_mut_ptr(), ptr, len))?;
+    Ok(data)
+}
+
+/// One protocol send: a pending error first; the descriptors the protocol
+/// did not take are closed.
+fn send_once(sk: &Arc<Socket>, msg: &mut SendMsg) -> Result<usize, i32> {
+    let pending = sk.common.take_error();
+    let result = if pending != 0 {
+        Err(pending)
+    } else {
+        sk.ops().sendmsg(sk, msg)
+    };
+    discard_rights(core::mem::take(&mut msg.rights));
+    result
+}
+
+/// SIGPIPE for a send that failed with EPIPE, unless MSG_NOSIGNAL.
+fn sigpipe(result: Result<usize, i32>, flags: u32) -> Result<usize, i32> {
+    if result == Err(EPIPE) && flags & MSG_NOSIGNAL == 0 {
+        super::signal::raise_sigpipe();
+    }
+    result
+}
+
+/// A send of `len` bytes that `fill(offset, piece)` copies in. A stream
+/// moves them in pieces of at most MAX_IO and returns the bytes sent once a
+/// piece goes short or fails after earlier pieces went (Linux returns the
+/// count, and raises no SIGPIPE, once anything was sent). A datagram or
+/// record goes whole, and one longer than MAX_IO is EMSGSIZE. `rights` and
+/// `dest` go with the first piece.
+fn send_all(
+    sk: &Arc<Socket>,
+    len: usize,
+    flags: u32,
+    nonblock: bool,
+    mut dest: Option<SockAddr>,
+    mut rights: Vec<FileDescriptor>,
+    mut fill: impl FnMut(usize, &mut [u8]) -> Result<(), i32>,
+) -> Result<usize, i32> {
+    if sk.kind != SOCK_STREAM && len > MAX_IO {
+        discard_rights(rights);
+        return Err(EMSGSIZE);
+    }
+    let mut piece = Vec::new();
+    if piece.try_reserve_exact(len.min(MAX_IO)).is_err() {
+        discard_rights(rights);
+        return Err(ENOMEM);
+    }
+    let cred = send_cred(sk);
+    let mut sent = 0;
+    loop {
+        let take = (len - sent).min(MAX_IO);
+        piece.clear();
+        piece.resize(take, 0);
+        let result = fill(sent, &mut piece).and_then(|()| {
+            let mut msg = SendMsg {
+                data: &piece,
+                dest: dest.take(),
+                flags,
+                nonblock,
+                rights: core::mem::take(&mut rights),
+                cred,
             };
-
-            // For now, only support abstract sockets (path starts with '\0')
-            if !addr.is_abstract() {
-                log::debug!(
-                    "sys_bind: Only abstract Unix sockets supported (path must start with \\0)"
-                );
-                return SyscallResult::Err(EINVAL as u64);
-            }
-
-            BindAddress::Unix(addr.path_bytes().to_vec())
-        }
-        _ => {
-            log::debug!("sys_bind: unsupported address family {}", family);
-            return SyscallResult::Err(EAFNOSUPPORT as u64);
-        }
-    };
-
-    // Get current thread and process
-    let current_thread_id = match crate::per_cpu::current_thread() {
-        Some(thread) => thread.id,
-        None => {
-            log::error!("sys_bind: No current thread in per-CPU data!");
-            return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
-        }
-    };
-
-    let mut manager_guard = crate::process::manager();
-    let manager = match *manager_guard {
-        Some(ref mut m) => m,
-        None => {
-            return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
-        }
-    };
-
-    let (pid, process) = match manager.find_process_by_thread_mut(current_thread_id) {
-        Some(p) => p,
-        None => {
-            log::error!(
-                "sys_bind: No process found for thread_id={}",
-                current_thread_id
-            );
-            return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
-        }
-    };
-
-    // Get the socket from fd table
-    let fd_entry = match process.fd_table.get(fd as i32) {
-        Some(e) => e.clone(),
-        None => return SyscallResult::Err(EBADF as u64),
-    };
-
-    // Handle bind based on address family
-    match bind_addr {
-        BindAddress::Inet(addr) => {
-            // Handle bind based on socket type
-            match &fd_entry.kind {
-                FdKind::UdpSocket(s) => {
-                    // Bind UDP socket
-                    //
-                    // #823: hold this lock masked for the whole bind() call --
-                    // see kernel/src/socket/udp.rs::with_locked_masked.
-                    let socket_ref = s.clone();
-                    match crate::socket::udp::with_locked_masked(&socket_ref, |socket| {
-                        socket.bind(pid, addr.addr, addr.port_host())
-                    }) {
-                        Ok(actual_port) => {
-                            log::info!(
-                                "UDP socket bound to port {} (requested: {})",
-                                actual_port,
-                                addr.port_host()
-                            );
-                            log::debug!("UDP bind: returning to userspace");
-                            SyscallResult::Ok(0)
-                        }
-                        Err(e) => SyscallResult::Err(e as u64),
-                    }
-                }
-                FdKind::TcpSocket(existing_port) => {
-                    // TCP socket binding - update the socket's port
-                    if *existing_port != 0 {
-                        // Already bound
-                        return SyscallResult::Err(EINVAL as u64);
-                    }
-
-                    let port = addr.port_host();
-
-                    // Check if port is already in use by another TCP listener
-                    let port_in_use = crate::net::tcp::with_tcp_listeners(|listeners| {
-                        listeners.contains_key(&port)
-                    });
-                    if port_in_use {
-                        log::debug!("TCP: bind failed, port {} already in use", port);
-                        return SyscallResult::Err(EADDRINUSE as u64);
-                    }
-
-                    // Update the fd entry with the bound port
-                    let fd_num = fd as usize;
-                    if let Some(entry) = process.fd_table.get_mut(fd_num as i32) {
-                        entry.kind = FdKind::TcpSocket(port);
-                    }
-
-                    log::info!("TCP: Socket bound to port {}", port);
-                    SyscallResult::Ok(0)
-                }
-                _ => SyscallResult::Err(ENOTSOCK as u64),
-            }
-        }
-        BindAddress::Unix(path) => {
-            // Handle bind based on socket type
-            match &fd_entry.kind {
-                FdKind::UnixSocket(s) => {
-                    // Check if path is already bound
-                    if crate::socket::UNIX_SOCKET_REGISTRY.is_bound(&path) {
-                        log::debug!("Unix: bind failed, path already in use");
-                        return SyscallResult::Err(EADDRINUSE as u64);
-                    }
-
-                    // Bind the socket
-                    let socket_ref = s.clone();
-                    let mut socket = socket_ref.lock();
-                    if let Err(e) = socket.bind(path.clone()) {
-                        return SyscallResult::Err(e as u64);
-                    }
-
-                    log::info!("Unix: Socket bound to abstract path (len={})", path.len());
-                    SyscallResult::Ok(0)
-                }
-                _ => {
-                    log::debug!("sys_bind: AF_UNIX bind on non-Unix socket");
-                    SyscallResult::Err(EINVAL as u64)
+            send_once(sk, &mut msg)
+        });
+        discard_rights(core::mem::take(&mut rights));
+        match result {
+            Ok(n) => {
+                sent += n;
+                if n < take || sent == len {
+                    return Ok(sent);
                 }
             }
+            Err(_) if sent > 0 => return Ok(sent),
+            Err(errno) => return sigpipe(Err(errno), flags),
         }
     }
 }
 
-/// sys_sendto - Send data to a destination address
-///
-/// Arguments:
-///   fd: Socket file descriptor
-///   buf: Pointer to data buffer
-///   len: Length of data
-///   flags: Send flags (ignored for now)
-///   dest_addr: Pointer to destination sockaddr_in
-///   addrlen: Length of address structure
-///
-/// Returns: bytes sent on success, negative errno on error
+/// A receive into `msg` on `sk` that hands the message to `deliver`, the
+/// copy to the caller. Stream bytes an earlier receive could not copy come
+/// first, from the stash; bytes this one cannot copy go back there.
+fn receive(
+    sk: &Arc<Socket>,
+    msg: &mut RecvMsg,
+    deliver: &mut dyn FnMut(&mut RecvMsg) -> Result<(), i32>,
+) -> Result<usize, i32> {
+    if sk.kind == SOCK_STREAM {
+        let peek = msg.flags & MSG_PEEK != 0;
+        if let Some(part) = sk.common.take_stash(msg.cap, peek) {
+            let (data, rights) = part?;
+            msg.data = data;
+            msg.rights = rights;
+            let received = msg.data.len();
+            if let Err(errno) = deliver(msg) {
+                if !peek {
+                    let data = core::mem::take(&mut msg.data);
+                    let rights = core::mem::take(&mut msg.rights);
+                    if let Err((_, rights)) = sk.common.put_back(data, rights) {
+                        // Without memory to rejoin them, the bytes are lost
+                        // and the descriptors closed.
+                        discard_rights(rights);
+                    }
+                }
+                return Err(errno);
+            }
+            return Ok(received);
+        }
+    }
+    // A datagram socket reports a pending error ahead of its queue, as Linux's
+    // datagram receive does. A stream protocol reports it after the bytes
+    // queued before it (TCP on a reset), so it is left to the protocol.
+    if sk.kind != SOCK_STREAM {
+        let pending = sk.common.take_error();
+        if pending != 0 {
+            return Err(pending);
+        }
+    }
+    sk.ops().recvmsg_with(sk, msg, deliver)
+}
+
+/// The identity a send carries: AF_UNIX's peers can ask for it.
+fn send_cred(sk: &Socket) -> UCred {
+    if sk.family == AF_UNIX {
+        caller_ucred()
+    } else {
+        UCred::default()
+    }
+}
+
+fn is_nonblocking(status: u32, msg_flags: u32) -> bool {
+    status & status_flags::O_NONBLOCK != 0 || msg_flags & MSG_DONTWAIT != 0
+}
+
+fn new_recv(cap: usize, flags: u32, nonblock: bool) -> RecvMsg {
+    RecvMsg {
+        cap: cap.min(MAX_IO),
+        data: Vec::new(),
+        flags,
+        nonblock,
+        out_flags: 0,
+        from: None,
+        rights: Vec::new(),
+    }
+}
+
+/// write(2) on a socket: a send with no flags, which always raises SIGPIPE
+/// for EPIPE. Called with PM released.
+pub(crate) fn socket_write(sk: &Arc<Socket>, data: &[u8], nonblock: bool) -> SyscallResult {
+    to_result(
+        send_all(sk, data.len(), 0, nonblock, None, Vec::new(), |at, piece| {
+            piece.copy_from_slice(&data[at..at + piece.len()]);
+            Ok(())
+        })
+        .map(|n| n as u64),
+    )
+}
+
+/// read(2) on a socket: a receive with no flags. Called with PM released.
+/// A read of zero bytes returns 0 at once, as Linux's sock_read_iter does.
+pub(crate) fn socket_read(
+    sk: &Arc<Socket>,
+    buf_ptr: u64,
+    count: usize,
+    nonblock: bool,
+) -> SyscallResult {
+    if count == 0 {
+        return SyscallResult::Ok(0);
+    }
+    to_result((|| {
+        let mut msg = new_recv(count, 0, nonblock);
+        let received = receive(sk, &mut msg, &mut |msg| {
+            user(userptr::write_user_bytes(
+                buf_ptr,
+                msg.data.as_ptr(),
+                msg.data.len(),
+            ))
+        });
+        discard_rights(core::mem::take(&mut msg.rights));
+        Ok(received? as u64)
+    })())
+}
+
+/// sendto(fd, buf, len, flags, dest_addr, addrlen); send is sendto with no
+/// address. A destination with addrlen 0 is no destination, except on a UDP
+/// socket, where Linux's udp_sendmsg finds it too short (EINVAL).
 pub fn sys_sendto(
     fd: u64,
     buf_ptr: u64,
     len: u64,
-    _flags: u64,
+    msg_flags: u64,
     dest_addr_ptr: u64,
     addrlen: u64,
 ) -> SyscallResult {
-    // Validate pointers
-    if buf_ptr == 0 || dest_addr_ptr == 0 {
-        return SyscallResult::Err(EFAULT as u64);
-    }
-
-    // Validate address length
-    if addrlen < 16 {
-        return SyscallResult::Err(EINVAL as u64);
-    }
-
-    // Read destination address from userspace
-    let dest_addr = unsafe {
-        let addr_bytes = core::slice::from_raw_parts(dest_addr_ptr as *const u8, 16);
-        match SockAddrIn::from_bytes(addr_bytes) {
-            Some(a) => a,
-            None => return SyscallResult::Err(EINVAL as u64),
-        }
-    };
-
-    // Read data from userspace (copy to owned buffer so we can release lock)
-    let data: alloc::vec::Vec<u8> =
-        unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len as usize).to_vec() };
-
-    // Extract source port while holding process manager lock, then release it
-    // This prevents deadlock when loopback delivery needs the same lock
-    let src_port = {
-        let current_thread_id = match crate::per_cpu::current_thread() {
-            Some(thread) => thread.id,
-            None => {
-                log::error!("sys_sendto: No current thread in per-CPU data!");
-                return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
-            }
+    to_result((|| {
+        let (sk, status) = socket_from_fd(fd as i32)?;
+        let flags = msg_flags as u32;
+        let dest = match (dest_addr_ptr, addr_len(addrlen)?) {
+            (0, _) => None,
+            (_, 0) if sk.family == AF_INET && sk.kind == SOCK_DGRAM => return Err(EINVAL),
+            (_, 0) => None,
+            (ptr, len) => Some(read_sockaddr(ptr, len, sk.family)?),
         };
+        let len = len as usize;
+        let sent = send_all(
+            &sk,
+            len,
+            flags,
+            is_nonblocking(status, flags),
+            dest,
+            Vec::new(),
+            |at, piece| {
+                user(userptr::read_user_bytes(
+                    piece.as_mut_ptr(),
+                    buf_ptr + at as u64,
+                    piece.len(),
+                ))
+            },
+        )?;
+        Ok(sent as u64)
+    })())
+}
 
-        let manager_guard = crate::process::manager();
-        let manager = match &*manager_guard {
-            Some(m) => m,
-            None => {
-                return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
-            }
-        };
-
-        let (_pid, process) = match manager.find_process_by_thread(current_thread_id) {
-            Some(p) => p,
-            None => {
-                log::error!(
-                    "sys_sendto: No process found for thread_id={}",
-                    current_thread_id
-                );
-                return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
-            }
-        };
-
-        // Get the socket from fd table
-        let fd_entry = match process.fd_table.get(fd as i32) {
-            Some(e) => e,
-            None => return SyscallResult::Err(EBADF as u64),
-        };
-
-        // Verify it's a UDP socket and extract source port
-        match &fd_entry.kind {
-            // #823: mask around this read of the same lock the NetRx IRQ
-            // route locks -- see kernel/src/socket/udp.rs::with_locked_masked.
-            FdKind::UdpSocket(s) => {
-                crate::socket::udp::with_locked_masked(s, |socket| socket.local_port().unwrap_or(0))
-            }
-            _ => return SyscallResult::Err(ENOTSOCK as u64),
-        }
-        // manager_guard dropped here, releasing the lock
-    };
-
-    // Now send without holding the process manager lock
-    // Build UDP packet
-    let udp_packet = crate::net::udp::build_udp_packet(src_port, dest_addr.port_host(), &data);
-
-    // Send via IP layer
-    let result = crate::net::send_ipv4(dest_addr.addr, crate::net::ipv4::PROTOCOL_UDP, &udp_packet);
-
-    // Drain any loopback packets that were queued during send
-    // This is safe now because we don't hold the process manager lock
-    crate::net::drain_loopback_queue();
-
-    match result {
-        Ok(()) => {
-            log::info!("UDP socket sent packet successfully, bytes={}", data.len());
-            log::debug!("UDP sendto: returning to userspace");
-            SyscallResult::Ok(data.len() as u64)
-        }
-        Err(_) => SyscallResult::Err(ENETUNREACH as u64),
+/// Store a received message's source address: none (a stream) stores length 0.
+fn write_from(from: Option<&SockAddr>, addr_ptr: u64, addrlen_ptr: u64) -> Result<(), i32> {
+    match from {
+        Some(addr) => write_sockaddr(addr, addr_ptr, addrlen_ptr),
+        None => user(userptr::copy_to_user(addrlen_ptr as *mut u32, &0u32)),
     }
 }
 
-/// sys_recvfrom - Receive data from a socket
-///
-/// Arguments:
-///   fd: Socket file descriptor
-///   buf: Pointer to receive buffer
-///   len: Length of buffer
-///   flags: Receive flags (ignored for now)
-///   src_addr: Pointer to sockaddr_in for source address (can be NULL)
-///   addrlen: Pointer to address length (can be NULL)
-///
-/// Returns: bytes received on success, negative errno on error
-///
-/// # Blocking Behavior
-///
-/// By default, UDP sockets are blocking. If no data is available, the calling
-/// thread will block until a packet arrives. For non-blocking sockets (set via
-/// fcntl O_NONBLOCK), EAGAIN is returned immediately when no data is available.
-///
-/// # Race Condition Handling (Double-Check Pattern)
-///
-/// The blocking path uses a double-check pattern to prevent a race condition
-/// where a packet arrives between checking for data and entering the blocked state:
-///
-/// ```text
-/// 1. Register as waiter (BEFORE checking for data)
-/// 2. Check for data → if found, unregister and return it
-/// 3. Set thread state to Blocked
-/// 4. Double-check for data → if found, unblock and retry
-/// 5. Enter HLT loop (actually blocked)
-/// ```
-///
-/// The double-check at step 4 catches packets that arrived during the race window
-/// between steps 2-3. Without this, the thread could block forever even though
-/// a packet is available.
-///
-/// This pattern cannot be unit tested under controlled conditions because it
-/// requires precise timing of concurrent events (packet arrival during the
-/// microsecond window between check and block). The pattern is verified by:
-/// - Code review (this documentation)
-/// - Integration tests (blocking_recv_test.rs, concurrent_recv_stress.rs)
-/// - The fact that DNS resolution works reliably in practice
-///
-/// # Interrupt Safety
-///
-/// This function acquires socket locks. The `enqueue_packet()` function on
-/// UdpSocket is called from softirq context when packets arrive via the NIC.
-/// To prevent deadlock:
-///
-/// ```text
-/// SYSCALL PATH: Disables interrupts before acquiring locks
-///   Cpu::without_interrupts(|| {
-///       socket_ref.lock().register_waiter(thread_id);
-///   });
-///
-/// SOFTIRQ PATH: Uses regular lock (interrupts already managed by softirq framework)
-///   let mut waiting = self.waiting_threads.lock();
-/// ```
-///
-/// By disabling interrupts in the syscall path, we guarantee that softirq cannot
-/// run while we hold the lock, preventing the deadlock scenario.
-///
-/// # Packet Delivery Paths
-///
-/// Packets can arrive via two paths:
-///
-/// 1. **Real NIC path**: NIC interrupt → softirq → `process_rx()` → `enqueue_packet()`
-///    This path runs in softirq context and wakes blocked threads.
-///
-/// 2. **Loopback path**: `sendto()` → `drain_loopback_queue()` → `enqueue_packet()`
-///    This path runs synchronously in sender syscall context after locks are released,
-///    so receivers can block on socket waiters and wake on delivery.
-///
-/// # Spurious Wakeups
-///
-/// When multiple threads wait on the same socket and a packet arrives, ALL waiting
-/// threads are woken. Only one will successfully receive the packet; others will
-/// find no data and must re-block. The retry loop handles this correctly by
-/// re-registering as waiter and re-blocking if no data is available after waking.
+/// recvfrom(fd, buf, len, flags, src_addr, addrlen); recv is recvfrom with
+/// no address.
 pub fn sys_recvfrom(
     fd: u64,
     buf_ptr: u64,
     len: u64,
-    _flags: u64,
+    msg_flags: u64,
     src_addr_ptr: u64,
     addrlen_ptr: u64,
 ) -> SyscallResult {
-    log::debug!(
-        "sys_recvfrom: fd={}, buf_ptr=0x{:x}, len={}",
-        fd,
-        buf_ptr,
-        len
-    );
-
-    // Validate buffer pointer
-    if buf_ptr == 0 {
-        return SyscallResult::Err(EFAULT as u64);
-    }
-
-    // Get current thread ID for blocking
-    let thread_id = match crate::per_cpu::current_thread() {
-        Some(thread) => thread.id,
-        None => {
-            log::error!("sys_recvfrom: No current thread in per-CPU data!");
-            return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
+    to_result((|| {
+        let (sk, status) = socket_from_fd(fd as i32)?;
+        let flags = msg_flags as u32;
+        let len = len as usize;
+        if len > 0 && !crate::memory::layout::is_valid_user_range(buf_ptr, len.min(MAX_IO)) {
+            return Err(EFAULT);
         }
-    };
-
-    // Get socket reference and nonblocking flag
-    let (socket_ref, is_nonblocking) = {
-        let mut manager_guard = crate::process::manager();
-        let manager = match *manager_guard {
-            Some(ref mut m) => m,
-            None => {
-                return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
-            }
-        };
-
-        let (_pid, process) = match manager.find_process_by_thread_mut(thread_id) {
-            Some(p) => p,
-            None => {
-                log::error!("sys_recvfrom: No process found for thread_id={}", thread_id);
-                return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
-            }
-        };
-
-        // Get the socket from fd table
-        let fd_entry = match process.fd_table.get(fd as i32) {
-            Some(e) => e,
-            None => return SyscallResult::Err(EBADF as u64),
-        };
-
-        // Verify it's a UDP socket and get Arc<Mutex<>> reference
-        let socket = match &fd_entry.kind {
-            FdKind::UdpSocket(s) => s.clone(),
-            _ => return SyscallResult::Err(ENOTSOCK as u64),
-        };
-
-        // #823: mask around this read too, for the same reason the 8 other
-        // acquisitions in this function already use Cpu::without_interrupts --
-        // see kernel/src/socket/udp.rs::with_locked_masked.
-        let nonblocking = crate::socket::udp::with_locked_masked(&socket, |s| s.nonblocking);
-        (socket, nonblocking)
-        // manager_guard dropped here
-    };
-
-    // Blocking receive loop
-    loop {
-        // Register as waiter FIRST to avoid race condition where packet
-        // arrives between checking and blocking.
-        // CRITICAL: Disable interrupts while holding waiting_threads lock to prevent
-        // deadlock with softirq (which runs in irq_exit before returning to us).
-        Cpu::without_interrupts(|| {
-            socket_ref.lock().register_waiter(thread_id);
+        let mut msg = new_recv(len, flags, is_nonblocking(status, flags));
+        let received = receive(&sk, &mut msg, &mut |msg| {
+            user(userptr::write_user_bytes(
+                buf_ptr,
+                msg.data.as_ptr(),
+                msg.data.len(),
+            ))
         });
-
-        // Try to receive a packet
-        // CRITICAL: Must disable interrupts to prevent deadlock with softirq.
-        // If we hold rx_queue lock and NIC interrupt fires, softirq will try to
-        // acquire the same lock in enqueue_packet() -> deadlock!
-        let packet_opt = Cpu::without_interrupts(|| socket_ref.lock().recv_from());
-        if let Some(packet) = packet_opt {
-            // Data was available - unregister from waiters
-            Cpu::without_interrupts(|| {
-                socket_ref.lock().unregister_waiter(thread_id);
-            });
-
-            // Copy data to userspace
-            let copy_len = core::cmp::min(len as usize, packet.data.len());
-            unsafe {
-                let buf = core::slice::from_raw_parts_mut(buf_ptr as *mut u8, copy_len);
-                buf.copy_from_slice(&packet.data[..copy_len]);
-            }
-
-            // Write source address if requested
-            if src_addr_ptr != 0 && addrlen_ptr != 0 {
-                let src_addr = SockAddrIn::new(packet.src_addr, packet.src_port);
-                let addr_bytes = src_addr.to_bytes();
-                unsafe {
-                    let addrlen = *(addrlen_ptr as *const u32);
-                    let copy_addr_len = core::cmp::min(addrlen as usize, addr_bytes.len());
-                    let addr_buf =
-                        core::slice::from_raw_parts_mut(src_addr_ptr as *mut u8, copy_addr_len);
-                    addr_buf.copy_from_slice(&addr_bytes[..copy_addr_len]);
-                    *(addrlen_ptr as *mut u32) = addr_bytes.len() as u32;
-                }
-            }
-
-            log::debug!(
-                "UDP: Received {} bytes from {}.{}.{}.{}:{}",
-                copy_len,
-                packet.src_addr[0],
-                packet.src_addr[1],
-                packet.src_addr[2],
-                packet.src_addr[3],
-                packet.src_port
-            );
-
-            return SyscallResult::Ok(copy_len as u64);
+        discard_rights(core::mem::take(&mut msg.rights));
+        let received = received?;
+        if src_addr_ptr != 0 {
+            write_from(msg.from.as_ref(), src_addr_ptr, addrlen_ptr)?;
         }
-
-        // No data available
-        if is_nonblocking {
-            Cpu::without_interrupts(|| {
-                socket_ref.lock().unregister_waiter(thread_id);
-            });
-            return SyscallResult::Err(EAGAIN as u64);
-        }
-
-        // === BLOCKING PATH ===
-        // Following the same pattern as stdin blocking in sys_read
-        log::debug!(
-            "UDP recvfrom: fd={} entering blocking path, thread={}",
-            fd,
-            thread_id
-        );
-
-        // Block the current thread AND set blocked_in_syscall flag.
-        // CRITICAL: Setting blocked_in_syscall is essential because:
-        // 1. The thread will enter a kernel-mode HLT loop below
-        // 2. If a context switch happens while in HLT, the scheduler sees
-        //    from_userspace=false (kernel mode) but blocked_in_syscall tells
-        //    it to save/restore kernel context, not userspace context
-        // 3. Without this flag, no context is saved when switching away,
-        //    and stale userspace context is restored when switching back
-        crate::task::scheduler::with_scheduler(|sched| {
-            sched.block_current_in_syscall();
-        });
-
-        // CRITICAL RACE CONDITION FIX:
-        // Check for data AGAIN after setting Blocked state but BEFORE entering HLT.
-        // A packet might have arrived between:
-        //   - when we checked for data (found none)
-        //   - when we set thread state to Blocked
-        // If packet arrived during that window, enqueue_packet() would have tried
-        // to wake us but unblock() would have done nothing (we weren't blocked yet).
-        // Now that we're blocked, check if data arrived and unblock ourselves.
-        // NOTE: Must disable interrupts - has_data() acquires rx_queue lock, same as enqueue_packet()
-        let data_arrived = Cpu::without_interrupts(|| socket_ref.lock().has_data());
-        if data_arrived {
-            log::info!(
-                "UDP: Thread {} caught race - data arrived during block setup",
-                thread_id
-            );
-            // Data arrived during the race window - unblock and retry
-            crate::task::scheduler::with_scheduler(|sched| {
-                if let Some(thread) = sched.current_thread_mut() {
-                    thread.blocked_in_syscall = false;
-                    thread.set_ready();
-                }
-            });
-            Cpu::without_interrupts(|| {
-                socket_ref.lock().unregister_waiter(thread_id);
-            });
-            continue; // Retry the receive loop
-        }
-
-        // Preemption stays disabled until the signal check below has run (#1230):
-        // see `blocking_io::wait_prepared`.
-
-        // HLT loop - wait for timer interrupt which will switch to another thread
-        // When packet arrives via softirq, enqueue_packet() will unblock us
-        loop {
-            // Check for pending signals that should interrupt this syscall
-            if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
-                // Signal pending - unblock and return EINTR
-                Cpu::without_interrupts(|| {
-                    socket_ref.lock().unregister_waiter(thread_id);
-                });
-                crate::task::scheduler::with_scheduler(|sched| {
-                    if let Some(thread) = sched.current_thread_mut() {
-                        thread.blocked_in_syscall = false;
-                        thread.set_ready();
-                    }
-                });
-                log::debug!("UDP: Thread {} interrupted by signal (EINTR)", thread_id);
-                return SyscallResult::Err(e as u64);
-            }
-
-            crate::per_cpu::preempt_enable();
-            crate::task::scheduler::yield_current();
-            crate::arch_halt_while_blocked();
-            crate::per_cpu::preempt_disable();
-
-            // Check if we were unblocked (thread state changed from Blocked)
-            let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
-                if let Some(thread) = sched.current_thread_mut() {
-                    thread.state == crate::task::thread::ThreadState::Blocked
-                } else {
-                    false
-                }
-            })
-            .unwrap_or(false);
-
-            if !still_blocked {
-                log::info!("UDP: Thread {} woken from blocking", thread_id);
-                break;
-            }
-            // else: still blocked, continue HLT loop
-        }
-
-        // NOTE: preempt_disable() is now called inside the HLT loop break path
-        // to close the race window where blocked_in_syscall is true but we've woken.
-
-        // Clear blocked_in_syscall now that we're resuming normal syscall execution
-        crate::task::scheduler::with_scheduler(|sched| {
-            if let Some(thread) = sched.current_thread_mut() {
-                thread.blocked_in_syscall = false;
-            }
-        });
-        // Reset quantum to prevent immediate preemption after long blocking wait
-        reset_quantum();
-        crate::task::scheduler::check_and_clear_need_resched();
-
-        // Unregister from wait queue (will re-register at top of loop)
-        Cpu::without_interrupts(|| {
-            socket_ref.lock().unregister_waiter(thread_id);
-        });
-
-        // Loop back to try receiving again after a delivery wake or spurious wakeup.
-    }
+        Ok(received as u64)
+    })())
 }
 
-/// sys_listen - Mark a socket as listening for connections
-///
-/// Arguments:
-///   fd: Socket file descriptor (must be bound)
-///   backlog: Maximum pending connections
-///
-/// Returns: 0 on success, negative errno on error
-pub fn sys_listen(fd: u64, backlog: u64) -> SyscallResult {
-    log::debug!("sys_listen: fd={}, backlog={}", fd, backlog);
+/// The Linux ABI's struct msghdr.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct MsgHdr {
+    name: u64,
+    namelen: u32,
+    _pad: u32,
+    iov: u64,
+    iovlen: u64,
+    control: u64,
+    controllen: u64,
+    flags: i32,
+    _pad2: u32,
+}
 
-    // Get current thread and process
-    let current_thread_id = match crate::per_cpu::current_thread() {
-        Some(thread) => thread.id,
-        None => {
-            log::error!("sys_listen: No current thread in per-CPU data!");
-            return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
-        }
-    };
+const MSGHDR_NAMELEN: u64 = 8;
+const MSGHDR_CONTROLLEN: u64 = 40;
+const MSGHDR_FLAGS: u64 = 48;
 
-    let mut manager_guard = crate::process::manager();
-    let manager = match *manager_guard {
-        Some(ref mut m) => m,
-        None => {
-            return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
-        }
-    };
+/// struct iovec.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct IoVec {
+    base: u64,
+    len: u64,
+}
 
-    let (pid, process) = match manager.find_process_by_thread_mut(current_thread_id) {
-        Some(p) => p,
-        None => {
-            log::error!(
-                "sys_listen: No process found for thread_id={}",
-                current_thread_id
-            );
-            return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
-        }
-    };
-
-    // Get the socket from fd table
-    let fd_entry = match process.fd_table.get(fd as i32) {
-        Some(e) => e.clone(),
-        None => return SyscallResult::Err(EBADF as u64),
-    };
-
-    // Handle listen based on socket type
-    match &fd_entry.kind {
-        FdKind::TcpSocket(port) => {
-            if *port == 0 {
-                // Not bound
-                return SyscallResult::Err(EINVAL as u64);
-            }
-
-            // Start listening
-            if let Err(_) = crate::net::tcp::tcp_listen(*port, backlog as usize, pid) {
-                return SyscallResult::Err(EADDRINUSE as u64);
-            }
-
-            // Update fd to TcpListener
-            if let Some(entry) = process.fd_table.get_mut(fd as i32) {
-                entry.kind = FdKind::TcpListener(*port);
-            }
-
-            log::info!("TCP: Socket now listening on port {}", port);
-            SyscallResult::Ok(0)
-        }
-        FdKind::TcpListener(_) => {
-            // Already listening
-            SyscallResult::Err(EINVAL as u64)
-        }
-        FdKind::UnixSocket(s) => {
-            // Get socket state and path
-            let socket_ref = s.clone();
-            let socket = socket_ref.lock();
-
-            // Must be bound
-            let path = match &socket.bound_path {
-                Some(p) => p.clone(),
-                None => {
-                    log::debug!("sys_listen: Unix socket not bound");
-                    return SyscallResult::Err(EINVAL as u64);
-                }
-            };
-
-            drop(socket);
-
-            // Create listener and register in global registry
-            // Note: nonblocking mode is tracked via fd status_flags, not on the listener
-            let listener = crate::socket::unix::UnixListener::new(path.clone(), backlog as usize);
-            let listener_arc = alloc::sync::Arc::new(spin::Mutex::new(listener));
-
-            // Register in global registry
-            if let Err(e) =
-                crate::socket::UNIX_SOCKET_REGISTRY.bind(path.clone(), listener_arc.clone())
-            {
-                log::debug!("sys_listen: Failed to register Unix listener: {}", e);
-                return SyscallResult::Err(e as u64);
-            }
-
-            // Update fd to UnixListener
-            if let Some(entry) = process.fd_table.get_mut(fd as i32) {
-                entry.kind = FdKind::UnixListener(listener_arc);
-            }
-
-            log::info!("Unix: Socket now listening (path_len={})", path.len());
-            SyscallResult::Ok(0)
-        }
-        FdKind::UnixListener(_) => {
-            // Already listening
-            SyscallResult::Err(EINVAL as u64)
-        }
-        _ => SyscallResult::Err(EOPNOTSUPP as u64),
+/// The iovec array of a msghdr: EMSGSIZE past IOV_MAX entries, EINVAL when
+/// the lengths add up past what a ssize_t holds.
+fn read_iovecs(ptr: u64, count: u64) -> Result<(Vec<IoVec>, usize), i32> {
+    if count > IOV_MAX {
+        return Err(EMSGSIZE);
     }
-}
-
-/// Internal enum to track listener type for accept
-enum ListenerType {
-    Tcp(u16),
-    Unix(alloc::sync::Arc<spin::Mutex<crate::socket::unix::UnixListener>>),
-}
-
-/// sys_accept - Accept a connection on a listening socket
-///
-/// Arguments:
-///   fd: Listening socket file descriptor
-///   addr: Pointer to sockaddr for client address (can be NULL)
-///   addrlen: Pointer to address length (can be NULL)
-///
-/// Returns: new socket fd on success, negative errno on error
-///
-/// # Blocking Behavior
-///
-/// accept() blocks until a connection is available. When no pending
-/// connections exist, the calling thread blocks until a connection arrives.
-/// The blocking pattern follows the same double-check approach as UDP recvfrom.
-pub fn sys_accept(fd: u64, addr_ptr: u64, addrlen_ptr: u64) -> SyscallResult {
-    log::debug!("sys_accept: fd={}", fd);
-
-    // Get current thread ID for blocking
-    let thread_id = match crate::per_cpu::current_thread() {
-        Some(thread) => thread.id,
-        None => {
-            log::error!("sys_accept: No current thread in per-CPU data!");
-            return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
-        }
-    };
-
-    // Extract listener info and status_flags from fd, then release manager lock
-    let (listener_type, is_nonblocking) = {
-        let mut manager_guard = crate::process::manager();
-        let manager = match *manager_guard {
-            Some(ref mut m) => m,
-            None => {
-                return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
-            }
-        };
-
-        let (_pid, process) = match manager.find_process_by_thread_mut(thread_id) {
-            Some(p) => p,
-            None => {
-                log::error!("sys_accept: No process found for thread_id={}", thread_id);
-                return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
-            }
-        };
-
-        // Get the socket from fd table
-        let fd_entry = match process.fd_table.get(fd as i32) {
-            Some(e) => e.clone(),
-            None => return SyscallResult::Err(EBADF as u64),
-        };
-
-        // Check O_NONBLOCK status flag
-        let nonblocking = (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
-
-        // Determine listener type
-        let lt = match &fd_entry.kind {
-            FdKind::TcpListener(p) => ListenerType::Tcp(*p),
-            FdKind::UnixListener(l) => ListenerType::Unix(l.clone()),
-            _ => return SyscallResult::Err(EOPNOTSUPP as u64),
-        };
-        (lt, nonblocking)
-        // manager_guard dropped here
-    };
-
-    // Dispatch based on listener type
-    match listener_type {
-        ListenerType::Tcp(port) => {
-            sys_accept_tcp(fd, port, is_nonblocking, thread_id, addr_ptr, addrlen_ptr)
-        }
-        ListenerType::Unix(listener) => sys_accept_unix(fd, listener, is_nonblocking, thread_id),
+    let mut iovs = Vec::new();
+    iovs.try_reserve_exact(count as usize).map_err(|_| ENOMEM)?;
+    let mut total: usize = 0;
+    for i in 0..count {
+        let at = ptr
+            .checked_add(i * core::mem::size_of::<IoVec>() as u64)
+            .ok_or(EFAULT)?;
+        let iov: IoVec = userptr::copy_from_user(at as *const IoVec).map_err(|e| e as i32)?;
+        total = total
+            .checked_add(iov.len as usize)
+            .filter(|t| *t <= isize::MAX as usize)
+            .ok_or(EINVAL)?;
+        iovs.push(iov);
     }
+    Ok((iovs, total))
 }
 
-/// Accept on TCP listener
-fn sys_accept_tcp(
-    fd: u64,
-    port: u16,
-    is_nonblocking: bool,
-    thread_id: u64,
-    addr_ptr: u64,
-    addrlen_ptr: u64,
-) -> SyscallResult {
-    // Blocking accept loop
-    loop {
-        // Register as waiter FIRST to avoid race condition
-        crate::net::tcp::tcp_register_accept_waiter(port, thread_id);
-
-        // Try to accept a pending connection
-        if let Some(conn_id) = crate::net::tcp::tcp_accept(port) {
-            // Got a connection - unregister and complete
-            crate::net::tcp::tcp_unregister_accept_waiter(port, thread_id);
-
-            // Write client address if requested
-            if addr_ptr != 0 && addrlen_ptr != 0 {
-                let client_addr = SockAddrIn::new(conn_id.remote_ip, conn_id.remote_port);
-                let addr_bytes = client_addr.to_bytes();
-                unsafe {
-                    let addrlen = *(addrlen_ptr as *const u32);
-                    let copy_addr_len = core::cmp::min(addrlen as usize, addr_bytes.len());
-                    let addr_buf =
-                        core::slice::from_raw_parts_mut(addr_ptr as *mut u8, copy_addr_len);
-                    addr_buf.copy_from_slice(&addr_bytes[..copy_addr_len]);
-                    *(addrlen_ptr as *mut u32) = addr_bytes.len() as u32;
-                }
-            }
-
-            // Create new fd for the connection (need to re-acquire manager lock)
-            let mut manager_guard = crate::process::manager();
-            let manager = match *manager_guard {
-                Some(ref mut m) => m,
-                None => {
-                    return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
-                }
-            };
-
-            let (_pid, process) = match manager.find_process_by_thread_mut(thread_id) {
-                Some(p) => p,
-                None => {
-                    return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
-                }
-            };
-
-            return match process.fd_table.alloc(FdKind::TcpConnection(conn_id)) {
-                Ok(new_fd) => {
-                    log::info!("TCP: Accepted connection on fd {}, new fd {}", fd, new_fd);
-                    SyscallResult::Ok(new_fd as u64)
-                }
-                Err(e) => SyscallResult::Err(e as u64),
-            };
+/// Copy the bytes of the iovecs from byte `skip` on into `out`.
+fn gather(iovs: &[IoVec], skip: usize, out: &mut [u8]) -> Result<(), i32> {
+    let mut skip = skip;
+    let mut at = 0;
+    for iov in iovs {
+        if at == out.len() {
+            break;
         }
-
-        // No pending connection
-        // If non-blocking mode, return EAGAIN immediately
-        if is_nonblocking {
-            log::debug!("TCP accept: fd={} is non-blocking, returning EAGAIN", fd);
-            crate::net::tcp::tcp_unregister_accept_waiter(port, thread_id);
-            return SyscallResult::Err(EAGAIN as u64);
-        }
-
-        // Blocking mode - block the thread
-        log::debug!(
-            "TCP accept: fd={} entering blocking path, thread={}",
-            fd,
-            thread_id
-        );
-
-        // Block the current thread
-        crate::task::scheduler::with_scheduler(|sched| {
-            sched.block_current_in_syscall();
-        });
-
-        // Double-check for pending connection after setting Blocked state
-        if crate::net::tcp::tcp_has_pending(port) {
-            log::info!(
-                "TCP: Thread {} caught race - connection arrived during block setup",
-                thread_id
-            );
-            crate::task::scheduler::with_scheduler(|sched| {
-                if let Some(thread) = sched.current_thread_mut() {
-                    thread.blocked_in_syscall = false;
-                    thread.set_ready();
-                }
-            });
-            crate::net::tcp::tcp_unregister_accept_waiter(port, thread_id);
+        let len = iov.len as usize;
+        if skip >= len {
+            skip -= len;
             continue;
         }
-
-        // Preemption stays disabled until the signal check below has run (#1230):
-        // see `blocking_io::wait_prepared`.
-
-        log::info!(
-            "TCP_BLOCK: Thread {} entering blocked state for accept on port {}",
-            thread_id,
-            port
-        );
-
-        // HLT loop - wait for SYN to arrive
-        loop {
-            // Check for pending signals that should interrupt this syscall
-            if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
-                // Signal pending - unblock and return EINTR
-                crate::net::tcp::tcp_unregister_accept_waiter(port, thread_id);
-                crate::task::scheduler::with_scheduler(|sched| {
-                    if let Some(thread) = sched.current_thread_mut() {
-                        thread.blocked_in_syscall = false;
-                        thread.set_ready();
-                    }
-                });
-                log::debug!(
-                    "TCP accept: Thread {} interrupted by signal (EINTR)",
-                    thread_id
-                );
-                return SyscallResult::Err(e as u64);
-            }
-
-            // Check if we were woken by TCP delivery before sleeping again.
-            let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
-                if let Some(thread) = sched.current_thread_mut() {
-                    thread.state == crate::task::thread::ThreadState::Blocked
-                } else {
-                    false
-                }
-            })
-            .unwrap_or(false);
-
-            if !still_blocked {
-                log::info!("TCP_BLOCK: Thread {} woken from accept blocking", thread_id);
-                break;
-            }
-
-            // Still blocked - yield and wait for interrupt (timer or NIC)
-            crate::per_cpu::preempt_enable();
-            crate::task::scheduler::yield_current();
-            crate::arch_halt_while_blocked();
-            crate::per_cpu::preempt_disable();
-        }
-
-        // Clear blocked_in_syscall
-        crate::task::scheduler::with_scheduler(|sched| {
-            if let Some(thread) = sched.current_thread_mut() {
-                thread.blocked_in_syscall = false;
-            }
-        });
-        // Reset quantum to prevent immediate preemption after long blocking wait
-        reset_quantum();
-        crate::task::scheduler::check_and_clear_need_resched();
-
-        // Unregister from wait queue (will re-register at top of loop)
-        crate::net::tcp::tcp_unregister_accept_waiter(port, thread_id);
+        let take = (len - skip).min(out.len() - at);
+        user(userptr::read_user_bytes(
+            out[at..].as_mut_ptr(),
+            iov.base + skip as u64,
+            take,
+        ))?;
+        at += take;
+        skip = 0;
     }
+    Ok(())
 }
 
-/// Accept on Unix listener
-fn sys_accept_unix(
-    fd: u64,
-    listener: alloc::sync::Arc<spin::Mutex<crate::socket::unix::UnixListener>>,
-    is_nonblocking: bool,
-    thread_id: u64,
-) -> SyscallResult {
-    // Blocking accept loop
-    loop {
-        // Register as waiter FIRST to avoid race condition
-        {
-            let l = listener.lock();
-            l.register_waiter(thread_id);
+/// Scatter `data` over the iovecs.
+fn scatter(iovs: &[IoVec], data: &[u8]) -> Result<(), i32> {
+    let mut at = 0;
+    for iov in iovs {
+        if at == data.len() {
+            break;
         }
+        let take = (iov.len as usize).min(data.len() - at);
+        user(userptr::write_user_bytes(
+            iov.base,
+            data[at..].as_ptr(),
+            take,
+        ))?;
+        at += take;
+    }
+    Ok(())
+}
 
-        // Try to pop a pending connection
-        let pending_socket = {
-            let mut l = listener.lock();
-            l.pop_pending()
-        };
-
-        if let Some(socket) = pending_socket {
-            // Got a connection - unregister and complete
-            {
-                let l = listener.lock();
-                l.unregister_waiter(thread_id);
+/// The descriptors a sendmsg control buffer passes with SCM_RIGHTS, each a
+/// counted reference taken from the caller's table. Control messages at
+/// other levels are not this layer's; SCM_RIGHTS on a socket that is not
+/// AF_UNIX, a malformed header, or another SOL_SOCKET type is EINVAL.
+fn read_rights(sk: &Socket, control: u64, controllen: u64) -> Result<Vec<FileDescriptor>, i32> {
+    if controllen == 0 {
+        return Ok(Vec::new());
+    }
+    if controllen as usize > CONTROL_MAX {
+        return Err(ENOBUFS);
+    }
+    let buffer = copy_in(control, controllen as usize)?;
+    let mut fds: Vec<i32> = Vec::new();
+    let mut at = 0usize;
+    while at + CMSG_HDR <= buffer.len() {
+        let len = u64::from_ne_bytes(buffer[at..at + 8].try_into().map_err(|_| EINVAL)?) as usize;
+        let level = i32::from_ne_bytes(buffer[at + 8..at + 12].try_into().map_err(|_| EINVAL)?);
+        let kind = i32::from_ne_bytes(buffer[at + 12..at + 16].try_into().map_err(|_| EINVAL)?);
+        if len < CMSG_HDR || len > buffer.len() - at {
+            return Err(EINVAL);
+        }
+        if level == SOL_SOCKET {
+            if kind != SCM_RIGHTS || sk.family != AF_UNIX {
+                return Err(EINVAL);
             }
-
-            // Create new fd for the connection
-            let mut manager_guard = crate::process::manager();
-            let manager = match *manager_guard {
-                Some(ref mut m) => m,
+            let count = (len - CMSG_HDR) / 4;
+            if fds.len() + count > SCM_MAX_FD {
+                return Err(EINVAL);
+            }
+            fds.try_reserve(count).map_err(|_| ENOMEM)?;
+            for i in 0..count {
+                let off = at + CMSG_HDR + i * 4;
+                fds.push(i32::from_ne_bytes(
+                    buffer[off..off + 4].try_into().map_err(|_| EINVAL)?,
+                ));
+            }
+        }
+        at += cmsg_align(len);
+    }
+    if fds.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut rights = Vec::new();
+    rights.try_reserve_exact(fds.len()).map_err(|_| ENOMEM)?;
+    let tid = crate::task::scheduler::current_thread_id().ok_or(ESRCH)?;
+    let missing = {
+        let guard = crate::process::manager();
+        let manager = guard.as_ref().ok_or(ESRCH)?;
+        let (_, process) = manager.find_process_by_thread(tid).ok_or(ESRCH)?;
+        let mut missing = false;
+        for fd in &fds {
+            match process.fd_table.get(*fd) {
+                Some(entry) => rights.push(entry.counted_clone()),
                 None => {
-                    return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
+                    missing = true;
+                    break;
                 }
-            };
-
-            let (_pid, process) = match manager.find_process_by_thread_mut(thread_id) {
-                Some(p) => p,
-                None => {
-                    return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
-                }
-            };
-
-            return match process.fd_table.alloc(FdKind::UnixStream(socket)) {
-                Ok(new_fd) => {
-                    log::info!("Unix: Accepted connection on fd {}, new fd {}", fd, new_fd);
-                    SyscallResult::Ok(new_fd as u64)
-                }
-                Err(e) => SyscallResult::Err(e as u64),
-            };
-        }
-
-        // No pending connection
-        // If non-blocking mode, return EAGAIN immediately
-        if is_nonblocking {
-            log::debug!("Unix accept: fd={} is non-blocking, returning EAGAIN", fd);
-            {
-                let l = listener.lock();
-                l.unregister_waiter(thread_id);
             }
-            return SyscallResult::Err(EAGAIN as u64);
         }
-
-        // Blocking mode - block the thread
-        log::debug!(
-            "Unix accept: fd={} entering blocking path, thread={}",
-            fd,
-            thread_id
-        );
-
-        // Block the current thread
-        crate::task::scheduler::with_scheduler(|sched| {
-            sched.block_current_in_syscall();
-        });
-
-        // Double-check for pending connection after setting Blocked state
-        let has_pending = {
-            let l = listener.lock();
-            l.has_pending()
-        };
-        if has_pending {
-            log::info!(
-                "Unix: Thread {} caught race - connection arrived during block setup",
-                thread_id
-            );
-            crate::task::scheduler::with_scheduler(|sched| {
-                if let Some(thread) = sched.current_thread_mut() {
-                    thread.blocked_in_syscall = false;
-                    thread.set_ready();
-                }
-            });
-            {
-                let l = listener.lock();
-                l.unregister_waiter(thread_id);
-            }
-            continue;
-        }
-
-        // Preemption stays disabled until the signal check below has run (#1230):
-        // see `blocking_io::wait_prepared`.
-
-        log::info!(
-            "Unix_BLOCK: Thread {} entering blocked state for accept",
-            thread_id
-        );
-
-        // HLT loop - wait for connection to arrive
-        loop {
-            // Check for pending signals that should interrupt this syscall
-            if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
-                // Signal pending - unblock and return EINTR
-                {
-                    let l = listener.lock();
-                    l.unregister_waiter(thread_id);
-                }
-                crate::task::scheduler::with_scheduler(|sched| {
-                    if let Some(thread) = sched.current_thread_mut() {
-                        thread.blocked_in_syscall = false;
-                        thread.set_ready();
-                    }
-                });
-                log::debug!(
-                    "Unix accept: Thread {} interrupted by signal (EINTR)",
-                    thread_id
-                );
-                return SyscallResult::Err(e as u64);
-            }
-
-            // Check if we were woken
-            let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
-                if let Some(thread) = sched.current_thread_mut() {
-                    thread.state == crate::task::thread::ThreadState::Blocked
-                } else {
-                    false
-                }
-            })
-            .unwrap_or(false);
-
-            if !still_blocked {
-                log::info!(
-                    "Unix_BLOCK: Thread {} woken from accept blocking",
-                    thread_id
-                );
-                break;
-            }
-
-            // Still blocked - yield and wait for interrupt
-            crate::per_cpu::preempt_enable();
-            crate::task::scheduler::yield_current();
-            crate::arch_halt_while_blocked();
-            crate::per_cpu::preempt_disable();
-        }
-
-        // Clear blocked_in_syscall
-        crate::task::scheduler::with_scheduler(|sched| {
-            if let Some(thread) = sched.current_thread_mut() {
-                thread.blocked_in_syscall = false;
-            }
-        });
-        // Reset quantum to prevent immediate preemption after long blocking wait
-        reset_quantum();
-        crate::task::scheduler::check_and_clear_need_resched();
-
-        // Unregister from wait queue (will re-register at top of loop)
-        {
-            let l = listener.lock();
-            l.unregister_waiter(thread_id);
-        }
+        missing
+    };
+    if missing {
+        discard_rights(rights);
+        return Err(EBADF);
     }
+    Ok(rights)
 }
 
-/// sys_connect - Connect a socket to a destination address
-///
-/// Arguments:
-///   fd: Socket file descriptor
-///   addr: Pointer to destination sockaddr
-///   addrlen: Length of address structure
-///
-/// Returns: 0 on success, negative errno on error
-///
-/// # Blocking Behavior
-///
-/// TCP connect() blocks until the connection is established or fails.
-/// Unix connect() completes immediately if the listener exists.
-pub fn sys_connect(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
-    log::debug!("sys_connect: fd={}", fd);
-
-    // Validate address pointer
-    if addr_ptr == 0 {
-        return SyscallResult::Err(EFAULT as u64);
-    }
-
-    // Validate minimum address length (at least 2 bytes for family)
-    if addrlen < 2 {
-        return SyscallResult::Err(EINVAL as u64);
-    }
-
-    // Read address family first
-    let family = unsafe {
-        let family_bytes = core::slice::from_raw_parts(addr_ptr as *const u8, 2);
-        u16::from_ne_bytes([family_bytes[0], family_bytes[1]])
-    };
-
-    // Dispatch based on address family
-    match family {
-        AF_INET => sys_connect_tcp(fd, addr_ptr, addrlen),
-        AF_UNIX => sys_connect_unix(fd, addr_ptr, addrlen),
-        _ => {
-            log::debug!("sys_connect: unsupported address family {}", family);
-            SyscallResult::Err(EAFNOSUPPORT as u64)
+/// sendmsg(fd, msg, flags). A msg_namelen of 0 is no destination and one
+/// past sockaddr_storage is clamped to it, as Linux's copy_msghdr_from_user
+/// does; a negative one is EINVAL.
+pub fn sys_sendmsg(fd: u64, msg_ptr: u64, msg_flags: u64) -> SyscallResult {
+    to_result((|| {
+        let (sk, status) = socket_from_fd(fd as i32)?;
+        let flags = msg_flags as u32;
+        let hdr: MsgHdr =
+            userptr::copy_from_user(msg_ptr as *const MsgHdr).map_err(|e| e as i32)?;
+        if (hdr.namelen as i32) < 0 {
+            return Err(EINVAL);
         }
-    }
-}
-
-/// Connect TCP socket
-fn sys_connect_tcp(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
-    // Validate address length for IPv4
-    if addrlen < 16 {
-        return SyscallResult::Err(EINVAL as u64);
-    }
-
-    // Read address from userspace
-    let addr = unsafe {
-        let addr_bytes = core::slice::from_raw_parts(addr_ptr as *const u8, 16);
-        match SockAddrIn::from_bytes(addr_bytes) {
-            Some(a) => a,
-            None => return SyscallResult::Err(EINVAL as u64),
-        }
-    };
-
-    // Get current thread ID for blocking
-    let thread_id = match crate::per_cpu::current_thread() {
-        Some(thread) => thread.id,
-        None => {
-            log::error!("sys_connect: No current thread in per-CPU data!");
-            return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
-        }
-    };
-
-    // Initiate connection and get conn_id and nonblocking flag, then release manager lock
-    let (conn_id, is_nonblocking) = {
-        let mut manager_guard = crate::process::manager();
-        let manager = match *manager_guard {
-            Some(ref mut m) => m,
-            None => {
-                return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
-            }
-        };
-
-        let (pid, process) = match manager.find_process_by_thread_mut(thread_id) {
-            Some(p) => p,
-            None => {
-                log::error!("sys_connect: No process found for thread_id={}", thread_id);
-                return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
-            }
-        };
-
-        // Get the socket from fd table
-        let fd_entry = match process.fd_table.get(fd as i32) {
-            Some(e) => e.clone(),
-            None => return SyscallResult::Err(EBADF as u64),
-        };
-
-        // Check O_NONBLOCK status flag
-        let nonblocking = (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
-
-        // Handle connect based on socket type
-        match &fd_entry.kind {
-            FdKind::TcpSocket(local_port) => {
-                // Assign ephemeral port if not bound
-                let port = if *local_port == 0 {
-                    static EPHEMERAL_PORT: core::sync::atomic::AtomicU16 =
-                        core::sync::atomic::AtomicU16::new(49152);
-                    EPHEMERAL_PORT.fetch_add(1, core::sync::atomic::Ordering::Relaxed)
-                } else {
-                    *local_port
-                };
-
-                // Initiate connection
-                let conn_id =
-                    match crate::net::tcp::tcp_connect(port, addr.addr, addr.port_host(), pid) {
-                        Ok(id) => id,
-                        Err(_) => return SyscallResult::Err(ECONNREFUSED as u64),
-                    };
-
-                // Update fd to TcpConnection
-                if let Some(entry) = process.fd_table.get_mut(fd as i32) {
-                    entry.kind = FdKind::TcpConnection(conn_id);
-                }
-
-                log::info!(
-                    "TCP: Connect initiated to {}.{}.{}.{}:{}",
-                    addr.addr[0],
-                    addr.addr[1],
-                    addr.addr[2],
-                    addr.addr[3],
-                    addr.port_host()
-                );
-
-                (conn_id, nonblocking)
-            }
-            FdKind::TcpConnection(_) => {
-                // Already connected
-                return SyscallResult::Err(EISCONN as u64);
-            }
-            _ => return SyscallResult::Err(EOPNOTSUPP as u64),
-        }
-        // manager_guard dropped here
-    };
-
-    // Deliver any loopback SYN/SYN+ACK/ACK chain now that PROCESS_MANAGER is
-    // released. The connection waiter below should sleep until TCP wakes it,
-    // not poll-drain localhost packets from the receive side.
-    crate::net::drain_loopback_queue();
-
-    // For non-blocking sockets, return EINPROGRESS immediately
-    // The connection is in progress but not yet established
-    if is_nonblocking {
-        log::debug!(
-            "TCP connect: fd={} is non-blocking, returning EINPROGRESS",
-            fd
-        );
-        return SyscallResult::Err(EINPROGRESS as u64);
-    }
-
-    // Log the conn_id we'll be checking
-    log::info!(
-        "TCP connect: blocking for conn_id={{local={}:{}, remote={}:{}}}",
-        conn_id.local_ip[3],
-        conn_id.local_port,
-        conn_id.remote_ip[3],
-        conn_id.remote_port
-    );
-
-    // Timeout for connect: ~10 seconds (timer fires at 200Hz, so 2000 iterations ≈ 10s)
-    // This prevents blocking forever on unreachable hosts
-    const MAX_CONNECT_ITERATIONS: u32 = 2000;
-    let mut connect_iterations: u32 = 0;
-
-    // Blocking connect loop - wait for handshake to complete
-    loop {
-        // Check for timeout
-        connect_iterations += 1;
-        if connect_iterations > MAX_CONNECT_ITERATIONS {
-            crate::net::tcp::tcp_unregister_recv_waiter(&conn_id, thread_id);
-            log::warn!(
-                "TCP connect: timed out after {} iterations",
-                connect_iterations
-            );
-            return SyscallResult::Err(ETIMEDOUT as u64);
-        }
-        // Register as waiter FIRST to avoid race condition
-        crate::net::tcp::tcp_register_recv_waiter(&conn_id, thread_id);
-
-        // Check if connected
-        if crate::net::tcp::tcp_is_established(&conn_id) {
-            crate::net::tcp::tcp_unregister_recv_waiter(&conn_id, thread_id);
-            log::info!(
-                "TCP connect: thread={} - Connection established, returning success",
-                thread_id
-            );
-            return SyscallResult::Ok(0);
-        }
-
-        // Check if connection failed
-        if crate::net::tcp::tcp_is_failed(&conn_id) {
-            crate::net::tcp::tcp_unregister_recv_waiter(&conn_id, thread_id);
-            log::warn!("TCP: Connection failed");
-            return SyscallResult::Err(ECONNREFUSED as u64);
-        }
-
-        // Not yet established - block
-        log::info!("TCP connect: thread={} entering blocking path", thread_id);
-
-        // Block the current thread
-        crate::task::scheduler::with_scheduler(|sched| {
-            sched.block_current_in_syscall();
-        });
-
-        log::info!(
-            "TCP connect: thread={} blocked, checking for race",
-            thread_id
-        );
-
-        // Double-check for state change after setting Blocked state
-        let is_established = crate::net::tcp::tcp_is_established(&conn_id);
-        let is_failed = crate::net::tcp::tcp_is_failed(&conn_id);
-        log::info!(
-            "TCP connect: thread={} double-check: established={}, failed={}",
-            thread_id,
-            is_established,
-            is_failed
-        );
-
-        if is_established || is_failed {
-            log::info!(
-                "TCP: Thread {} caught race - state changed during block setup",
-                thread_id
-            );
-            crate::task::scheduler::with_scheduler(|sched| {
-                if let Some(thread) = sched.current_thread_mut() {
-                    thread.blocked_in_syscall = false;
-                    thread.set_ready();
-                }
-            });
-            crate::net::tcp::tcp_unregister_recv_waiter(&conn_id, thread_id);
-            continue;
-        }
-
-        // Preemption stays disabled until the signal check below has run (#1230):
-        // see `blocking_io::wait_prepared`.
-
-        log::info!(
-            "TCP_BLOCK: Thread {} entering blocked state for connect",
-            thread_id
-        );
-
-        // HLT loop - wait for SYN+ACK to arrive
-        loop {
-            // Check for pending signals that should interrupt this syscall
-            if let Some(e) = crate::syscall::check_signals_for_eintr() {
-                // Signal pending - unblock and return EINTR
-                crate::net::tcp::tcp_unregister_recv_waiter(&conn_id, thread_id);
-                crate::task::scheduler::with_scheduler(|sched| {
-                    if let Some(thread) = sched.current_thread_mut() {
-                        thread.blocked_in_syscall = false;
-                        thread.set_ready();
-                    }
-                });
-                log::debug!(
-                    "TCP connect: Thread {} interrupted by signal (EINTR)",
-                    thread_id
-                );
-                return SyscallResult::Err(e as u64);
-            }
-
-            // Check if we were woken by TCP delivery before sleeping again.
-            let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
-                if let Some(thread) = sched.current_thread_mut() {
-                    thread.state == crate::task::thread::ThreadState::Blocked
-                } else {
-                    false
-                }
-            })
-            .unwrap_or(false);
-
-            if !still_blocked {
-                log::info!(
-                    "TCP_BLOCK: Thread {} woken from connect blocking",
-                    thread_id
-                );
-                break;
-            }
-
-            // Still blocked - yield and wait for interrupt (timer or NIC)
-            crate::per_cpu::preempt_enable();
-            crate::task::scheduler::yield_current();
-            crate::arch_halt_while_blocked();
-            crate::per_cpu::preempt_disable();
-        }
-
-        // Clear blocked_in_syscall
-        crate::task::scheduler::with_scheduler(|sched| {
-            if let Some(thread) = sched.current_thread_mut() {
-                thread.blocked_in_syscall = false;
-            }
-        });
-        // Reset quantum to prevent immediate preemption after long blocking wait
-        reset_quantum();
-        crate::task::scheduler::check_and_clear_need_resched();
-
-        // Unregister from wait queue (will re-register at top of loop)
-        crate::net::tcp::tcp_unregister_recv_waiter(&conn_id, thread_id);
-
-        log::info!(
-            "TCP connect: thread={} looping back to check connection",
-            thread_id
-        );
-    }
-}
-
-/// Connect Unix domain socket
-fn sys_connect_unix(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
-    use crate::socket::unix::UnixStreamSocket;
-
-    // Validate address length for Unix (need at least family + 1 byte path)
-    if addrlen < 3 {
-        return SyscallResult::Err(EINVAL as u64);
-    }
-
-    // Read Unix socket address from userspace
-    let addr = unsafe {
-        let addr_len = (addrlen as usize).min(110); // family (2) + path (108)
-        let addr_bytes = core::slice::from_raw_parts(addr_ptr as *const u8, addr_len);
-        match SockAddrUn::from_bytes(addr_bytes) {
-            Some(a) => a,
-            None => return SyscallResult::Err(EINVAL as u64),
-        }
-    };
-
-    // For now, only support abstract sockets (path starts with '\0')
-    if !addr.is_abstract() {
-        log::debug!("sys_connect: Only abstract Unix sockets supported (path must start with \\0)");
-        return SyscallResult::Err(ENOENT as u64);
-    }
-
-    // Get the path bytes
-    let path = addr.path_bytes();
-
-    // Look up the listener in the registry
-    let listener = match crate::socket::UNIX_SOCKET_REGISTRY.lookup(path) {
-        Some(l) => l,
-        None => {
-            log::debug!("sys_connect: No listener found for Unix socket path");
-            return SyscallResult::Err(ECONNREFUSED as u64);
-        }
-    };
-
-    // Get current thread ID
-    let thread_id = match crate::per_cpu::current_thread() {
-        Some(thread) => thread.id,
-        None => {
-            log::error!("sys_connect: No current thread in per-CPU data!");
-            return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
-        }
-    };
-
-    // Create a connected pair: client gets socket_a, server gets socket_b
-    let (socket_client, socket_server) = UnixStreamSocket::new_pair(false);
-
-    // Push server socket to listener's pending queue and wake waiters
-    {
-        let mut l = listener.lock();
-        if let Err(e) = l.push_pending(socket_server) {
-            log::debug!("sys_connect: Listener backlog full");
-            return SyscallResult::Err(e as u64);
-        }
-        l.wake_waiters();
-    }
-
-    // Update fd to UnixStream
-    {
-        let mut manager_guard = crate::process::manager();
-        let manager = match *manager_guard {
-            Some(ref mut m) => m,
-            None => {
-                return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
-            }
-        };
-
-        let (_pid, process) = match manager.find_process_by_thread_mut(thread_id) {
-            Some(p) => p,
-            None => {
-                log::error!("sys_connect: No process found for thread_id={}", thread_id);
-                return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
-            }
-        };
-
-        // Get the socket from fd table and verify it's a Unix socket
-        let fd_entry = match process.fd_table.get(fd as i32) {
-            Some(e) => e.clone(),
-            None => return SyscallResult::Err(EBADF as u64),
-        };
-
-        match &fd_entry.kind {
-            FdKind::UnixSocket(_) => {
-                // Update fd to connected stream
-                if let Some(entry) = process.fd_table.get_mut(fd as i32) {
-                    entry.kind = FdKind::UnixStream(socket_client);
-                }
-            }
-            FdKind::UnixStream(_) => {
-                // Already connected
-                return SyscallResult::Err(EISCONN as u64);
-            }
-            _ => {
-                return SyscallResult::Err(EOPNOTSUPP as u64);
-            }
-        }
-    }
-
-    log::info!("Unix: Connected to listener (path_len={})", path.len());
-    SyscallResult::Ok(0)
-}
-
-/// sys_shutdown - Shut down part of a full-duplex connection
-///
-/// Arguments:
-///   fd: Socket file descriptor
-///   how: SHUT_RD (0), SHUT_WR (1), or SHUT_RDWR (2)
-///
-/// Returns: 0 on success, negative errno on error
-pub fn sys_shutdown(fd: u64, how: u64) -> SyscallResult {
-    log::debug!("sys_shutdown: fd={}, how={}", fd, how);
-
-    // Validate how parameter
-    if how > 2 {
-        return SyscallResult::Err(EINVAL as u64);
-    }
-
-    // Get current thread and process
-    let current_thread_id = match crate::per_cpu::current_thread() {
-        Some(thread) => thread.id,
-        None => {
-            log::error!("sys_shutdown: No current thread in per-CPU data!");
-            return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
-        }
-    };
-
-    let manager_guard = crate::process::manager();
-    let manager = match &*manager_guard {
-        Some(m) => m,
-        None => {
-            return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
-        }
-    };
-
-    let (_pid, process) = match manager.find_process_by_thread(current_thread_id) {
-        Some(p) => p,
-        None => {
-            log::error!(
-                "sys_shutdown: No process found for thread_id={}",
-                current_thread_id
-            );
-            return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
-        }
-    };
-
-    // Get the socket from fd table
-    let fd_entry = match process.fd_table.get(fd as i32) {
-        Some(e) => e.clone(),
-        None => return SyscallResult::Err(EBADF as u64),
-    };
-
-    // Must be a TCP connection
-    match &fd_entry.kind {
-        FdKind::TcpConnection(conn_id) => {
-            // Set shutdown flags on the connection
-            let shut_rd = how == 0 || how == 2; // SHUT_RD or SHUT_RDWR
-            let shut_wr = how == 1 || how == 2; // SHUT_WR or SHUT_RDWR
-
-            crate::net::tcp::tcp_shutdown(conn_id, shut_rd, shut_wr);
-
-            log::info!("TCP: Shutdown fd={} how={}", fd, how);
-            SyscallResult::Ok(0)
-        }
-        FdKind::TcpSocket(_) | FdKind::TcpListener(_) => {
-            // Not connected
-            SyscallResult::Err(ENOTCONN as u64)
-        }
-        _ => SyscallResult::Err(EOPNOTSUPP as u64),
-    }
-}
-
-/// sys_socketpair - Create a pair of connected Unix domain sockets
-///
-/// Arguments:
-///   domain: Address family (must be AF_UNIX = 1)
-///   sock_type: Socket type (SOCK_STREAM = 1, optionally OR'd with SOCK_NONBLOCK/SOCK_CLOEXEC)
-///   protocol: Protocol (must be 0)
-///   sv_ptr: Pointer to int[2] to receive the file descriptors
-///
-/// Returns: 0 on success, negative errno on error
-pub fn sys_socketpair(domain: u64, sock_type: u64, protocol: u64, sv_ptr: u64) -> SyscallResult {
-    use crate::ipc::fd::{flags, status_flags, FileDescriptor};
-    use crate::socket::types::{AF_UNIX, SOCK_CLOEXEC, SOCK_NONBLOCK};
-    use crate::socket::unix::UnixStreamSocket;
-
-    log::debug!(
-        "sys_socketpair: domain={}, type={:#x}, protocol={}, sv_ptr={:#x}",
-        domain,
-        sock_type,
-        protocol,
-        sv_ptr
-    );
-
-    // Validate domain - must be AF_UNIX
-    if domain as u16 != AF_UNIX {
-        log::debug!("sys_socketpair: unsupported domain {}", domain);
-        return SyscallResult::Err(EAFNOSUPPORT as u64);
-    }
-
-    // Validate protocol - must be 0
-    if protocol != 0 {
-        log::debug!("sys_socketpair: unsupported protocol {}", protocol);
-        return SyscallResult::Err(EINVAL as u64);
-    }
-
-    // Extract flags from sock_type
-    let nonblocking = (sock_type as u32 & SOCK_NONBLOCK) != 0;
-    let cloexec = (sock_type as u32 & SOCK_CLOEXEC) != 0;
-    let base_type = sock_type as u32 & !(SOCK_NONBLOCK | SOCK_CLOEXEC);
-
-    // Validate socket type - only SOCK_STREAM supported for now
-    if base_type != crate::socket::types::SOCK_STREAM as u32 {
-        log::debug!("sys_socketpair: unsupported socket type {}", base_type);
-        return SyscallResult::Err(EINVAL as u64);
-    }
-
-    // Validate output pointer
-    if sv_ptr == 0 {
-        return SyscallResult::Err(EFAULT as u64);
-    }
-
-    // Get current thread and process
-    let current_thread_id = match crate::per_cpu::current_thread() {
-        Some(thread) => thread.id,
-        None => {
-            log::error!("sys_socketpair: No current thread in per-CPU data!");
-            return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
-        }
-    };
-
-    // Validate pointer is in valid userspace range (code/data, mmap, or stack)
-    if !crate::memory::layout::is_valid_user_address(sv_ptr) {
-        return SyscallResult::Err(EFAULT as u64);
-    }
-
-    let sv: [i32; 2] = {
-        let mut manager_guard = crate::process::manager();
-        let manager = match *manager_guard {
-            Some(ref mut m) => m,
-            None => {
-                log::error!("sys_socketpair: No process manager!");
-                return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
-            }
-        };
-
-        let (_pid, process) = match manager.find_process_by_thread_mut(current_thread_id) {
-            Some(p) => p,
-            None => {
-                log::error!(
-                    "sys_socketpair: No process found for thread_id={}",
-                    current_thread_id
-                );
-                return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
-            }
-        };
-
-        // Create the socket pair
-        let (socket_a, socket_b) = UnixStreamSocket::new_pair(nonblocking);
-
-        // Create file descriptor entries with appropriate flags
-        let fd_flags = if cloexec { flags::FD_CLOEXEC } else { 0 };
-        let fd_status_flags = if nonblocking {
-            status_flags::O_NONBLOCK
+        let (iovs, total) = read_iovecs(hdr.iov, hdr.iovlen)?;
+        let dest = if hdr.name != 0 && hdr.namelen != 0 {
+            Some(read_sockaddr(
+                hdr.name,
+                hdr.namelen.min(SOCKADDR_STORAGE),
+                sk.family,
+            )?)
         } else {
-            0
+            None
         };
+        let rights = read_rights(&sk, hdr.control, hdr.controllen)?;
+        let sent = send_all(
+            &sk,
+            total,
+            flags,
+            is_nonblocking(status, flags),
+            dest,
+            rights,
+            |at, piece| gather(&iovs, at, piece),
+        )?;
+        Ok(sent as u64)
+    })())
+}
 
-        let fd_entry_a =
-            FileDescriptor::with_flags(FdKind::UnixStream(socket_a), fd_flags, fd_status_flags);
-        let fd_entry_b =
-            FileDescriptor::with_flags(FdKind::UnixStream(socket_b), fd_flags, fd_status_flags);
-
-        // Allocate file descriptors
-        let fd_a = match process.fd_table.alloc_with_entry(fd_entry_a) {
-            Ok(fd) => fd,
-            Err(e) => {
-                log::error!("sys_socketpair: Failed to allocate fd_a: {}", e);
-                return SyscallResult::Err(e as u64);
-            }
-        };
-
-        let fd_b = match process.fd_table.alloc_with_entry(fd_entry_b) {
-            Ok(fd) => fd,
-            Err(e) => {
-                // Clean up fd_a on failure
-                let _ = process.fd_table.close(fd_a);
-                log::error!("sys_socketpair: Failed to allocate fd_b: {}", e);
-                return SyscallResult::Err(e as u64);
-            }
-        };
-
-        [fd_a, fd_b]
+/// Install received descriptors and describe them in one SCM_RIGHTS message
+/// in the caller's control buffer: as many as the buffer holds and the
+/// descriptor limit allows. As on Linux this never fails the receive: what
+/// cannot be installed or described is closed and the message is truncated
+/// (MSG_CTRUNC). Returns the control bytes used, whether it was truncated,
+/// and the descriptors installed. The numbers are written before anything
+/// is installed, so a control buffer the caller cannot take installs none.
+fn deliver_rights(
+    rights: Vec<FileDescriptor>,
+    control: u64,
+    controllen: u64,
+    cloexec: bool,
+) -> (usize, bool, Vec<i32>) {
+    if rights.is_empty() {
+        return (0, false, Vec::new());
+    }
+    let room = if control == 0 || (controllen as usize) < CMSG_HDR {
+        0
+    } else {
+        (controllen as usize - CMSG_HDR) / 4
     };
-
-    // Write the file descriptors to userspace sv[0], sv[1] after dropping
-    // PROCESS_MANAGER; sv may point at a CoW page.
-    if let Err(errno) = super::userptr::copy_to_user(sv_ptr as *mut [i32; 2], &sv) {
-        close_fds_for_thread(current_thread_id, sv);
-        return SyscallResult::Err(errno);
-    }
-
-    log::info!(
-        "sys_socketpair: Created Unix socket pair sv=[{}, {}] nonblocking={} cloexec={}",
-        sv[0],
-        sv[1],
-        nonblocking,
-        cloexec
+    let want = room.min(rights.len());
+    let slots = match hold_prefix(want) {
+        Ok((slots, _)) if !slots.is_empty() => slots,
+        Ok((slots, _)) => {
+            discard_rights(rights);
+            return (0, true, slots);
+        }
+        Err(_) => {
+            discard_rights(rights);
+            return (0, true, Vec::new());
+        }
+    };
+    let fit = slots.len();
+    let len = CMSG_HDR + fit * 4;
+    let mut header = [0u8; CMSG_HDR];
+    header[..8].copy_from_slice(&(len as u64).to_ne_bytes());
+    header[8..12].copy_from_slice(&SOL_SOCKET.to_ne_bytes());
+    header[12..16].copy_from_slice(&SCM_RIGHTS.to_ne_bytes());
+    let written = user(userptr::write_user_bytes(control, header.as_ptr(), CMSG_HDR)).and_then(
+        |()| {
+            user(userptr::write_user_bytes(
+                control + CMSG_HDR as u64,
+                slots.as_ptr() as *const u8,
+                fit * 4,
+            ))
+        },
     );
-
-    SyscallResult::Ok(0)
+    if written.is_err() {
+        unhold(&slots);
+        discard_rights(rights);
+        return (0, true, Vec::new());
+    }
+    let truncated = fit < rights.len();
+    let mut rights = rights.into_iter();
+    install(
+        &slots,
+        rights.by_ref().take(fit).map(|mut entry| {
+            entry.flags = if cloexec { flags::FD_CLOEXEC } else { 0 };
+            entry
+        }),
+    );
+    discard_rights(rights);
+    (cmsg_align(len).min(controllen as usize), truncated, slots)
 }
 
-/// sys_setsockopt - Set socket options
-///
-/// Minimal implementation: accepts and ignores most options (returns success).
-/// This is sufficient for basic Rust std networking support.
-pub fn sys_setsockopt(
-    _fd: u64,
-    _level: u64,
-    _optname: u64,
-    _optval: u64,
-    _optlen: u64,
-) -> SyscallResult {
-    // Return success for all options as a no-op.
-    // Many socket options (SO_REUSEADDR, TCP_NODELAY, etc.) are non-critical
-    // and can be safely ignored in a minimal implementation.
-    SyscallResult::Ok(0)
-}
-
-/// sys_getsockopt - Get socket options
-///
-/// Minimal implementation: returns success for SO_ERROR queries (returning 0 = no error),
-/// and ENOPROTOOPT for unrecognized options.
-pub fn sys_getsockopt(
-    _fd: u64,
-    level: u64,
-    optname: u64,
-    optval: u64,
-    optlen: u64,
-) -> SyscallResult {
-    const SOL_SOCKET: u64 = 1;
-    const SO_ERROR: u64 = 4;
-
-    if level == SOL_SOCKET && optname == SO_ERROR {
-        // Return 0 (no error) for SO_ERROR queries
-        if optval != 0 && optlen != 0 {
-            unsafe {
-                let optval_ptr = optval as *mut i32;
-                let optlen_ptr = optlen as *mut u32;
-                // Write 0 (no error) to the optval buffer
-                core::ptr::write(optval_ptr, 0);
-                // Update optlen to indicate we wrote 4 bytes
-                core::ptr::write(optlen_ptr, 4);
+/// recvmsg(fd, msg, flags). The returned msg_flags carry MSG_CMSG_CLOEXEC
+/// when it was asked for, as Linux's do.
+pub fn sys_recvmsg(fd: u64, msg_ptr: u64, msg_flags: u64) -> SyscallResult {
+    to_result((|| {
+        let (sk, status) = socket_from_fd(fd as i32)?;
+        let flags = msg_flags as u32;
+        let hdr: MsgHdr =
+            userptr::copy_from_user(msg_ptr as *const MsgHdr).map_err(|e| e as i32)?;
+        let (iovs, total) = read_iovecs(hdr.iov, hdr.iovlen)?;
+        for iov in &iovs {
+            if iov.len != 0
+                && !crate::memory::layout::is_valid_user_range(iov.base, iov.len as usize)
+            {
+                return Err(EFAULT);
             }
         }
-        return SyscallResult::Ok(0);
-    }
-
-    // For other options, return success with zeroed value
-    if optval != 0 && optlen != 0 {
-        unsafe {
-            let optval_ptr = optval as *mut i32;
-            let optlen_ptr = optlen as *mut u32;
-            core::ptr::write(optval_ptr, 0);
-            core::ptr::write(optlen_ptr, 4);
-        }
-    }
-    SyscallResult::Ok(0)
-}
-
-/// sys_getpeername - Get the address of the peer connected to a socket
-///
-/// Minimal stub: returns EOPNOTSUPP.
-pub fn sys_getpeername(_fd: u64, _addr: u64, _addrlen: u64) -> SyscallResult {
-    SyscallResult::Err(EOPNOTSUPP as u64)
-}
-
-/// sys_getsockname - Get the current address bound to a socket
-///
-/// Minimal stub: returns EOPNOTSUPP.
-pub fn sys_getsockname(_fd: u64, _addr: u64, _addrlen: u64) -> SyscallResult {
-    SyscallResult::Err(EOPNOTSUPP as u64)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Test that sys_recvfrom returns EBADF for invalid file descriptor
-    ///
-    /// NOTE: This test requires a process context which isn't available in unit tests.
-    /// The error path is validated by verifying the constants are correct.
-    #[test]
-    fn test_recvfrom_error_constants() {
-        // Verify EAGAIN constant for non-blocking mode
-        assert_eq!(EAGAIN, 11);
-
-        // Verify EBADF constant for bad file descriptor
-        assert_eq!(EBADF, 9);
-
-        // Verify ENOTSOCK constant for non-socket fd
-        assert_eq!(ENOTSOCK, 88);
-
-        // Verify EFAULT constant for bad address
-        assert_eq!(EFAULT, 14);
-
-        // Verify EINVAL constant for invalid argument
-        assert_eq!(EINVAL, 22);
-    }
-
-    /// Test that EBADF constant is correct for invalid fd error
-    #[test]
-    fn test_recvfrom_ebadf_constant() {
-        // EBADF (Bad file descriptor) should be returned when recvfrom
-        // is called with an invalid fd. Since sys_recvfrom requires a
-        // process context, we verify the constant is correct.
-        // The actual error path is tested by nonblock_eagain_test.rs
-        // userspace integration test.
-        assert_eq!(EBADF, 9);
-    }
-
-    /// Test SockAddrIn structure layout and conversion
-    #[test]
-    fn test_sockaddr_in_structure() {
-        // Create a sockaddr_in for 192.168.1.1:8080
-        let addr = SockAddrIn::new([192, 168, 1, 1], 8080);
-
-        // Verify family
-        assert_eq!(addr.sin_family, AF_INET);
-
-        // Verify port is in network byte order (big-endian)
-        // 8080 = 0x1F90, network order = [0x1F, 0x90]
-        assert_eq!(addr.sin_port, 8080u16.to_be());
-
-        // Convert to bytes and verify
-        let bytes = addr.to_bytes();
-        assert_eq!(bytes.len(), 16); // sockaddr_in is 16 bytes
-
-        // Check family field (first 2 bytes, little-endian u16)
-        assert_eq!(bytes[0], AF_INET as u8);
-        assert_eq!(bytes[1], 0);
-
-        // Check port field (bytes 2-3, big-endian)
-        assert_eq!(bytes[2], 0x1F); // High byte of 8080
-        assert_eq!(bytes[3], 0x90); // Low byte of 8080
-
-        // Check IP address (bytes 4-7)
-        assert_eq!(bytes[4], 192);
-        assert_eq!(bytes[5], 168);
-        assert_eq!(bytes[6], 1);
-        assert_eq!(bytes[7], 1);
-    }
-
-    /// Test socket type constants
-    #[test]
-    fn test_socket_type_constants() {
-        // Verify socket type constants match POSIX/Linux values
-        assert_eq!(AF_INET, 2);
-        assert_eq!(SOCK_STREAM, 1); // TCP
-        assert_eq!(SOCK_DGRAM, 2); // UDP
-    }
-
-    /// Test that blocking recvfrom implementation handles race condition check
-    ///
-    /// The race condition fix checks has_data() AFTER setting thread to Blocked state.
-    /// This test verifies the UdpSocket::has_data() method works correctly.
-    #[test]
-    fn test_udp_socket_has_data_for_race_check() {
-        use crate::socket::udp::{UdpPacket, UdpSocket};
-
-        let socket = UdpSocket::new();
-
-        // Initially no data
-        assert!(!socket.has_data());
-
-        // After enqueue, has_data should return true
-        let packet = UdpPacket {
-            src_addr: [127, 0, 0, 1],
-            src_port: 12345,
-            data: alloc::vec![1, 2, 3, 4],
+        let mut msg = new_recv(total, flags, is_nonblocking(status, flags));
+        let received = receive(&sk, &mut msg, &mut |msg| scatter(&iovs, &msg.data));
+        let rights = core::mem::take(&mut msg.rights);
+        let received = match received {
+            Ok(n) => n,
+            Err(errno) => {
+                discard_rights(rights);
+                return Err(errno);
+            }
         };
-        socket.enqueue_packet(packet);
-
-        assert!(socket.has_data());
-
-        // After receiving, no more data
-        let _ = socket.recv_from();
-        assert!(!socket.has_data());
-    }
+        let namelen_ptr = msg_ptr + MSGHDR_NAMELEN;
+        let named = if hdr.name != 0 {
+            write_from(msg.from.as_ref(), hdr.name, namelen_ptr)
+        } else {
+            user(userptr::copy_to_user(namelen_ptr as *mut u32, &0u32))
+        };
+        if let Err(errno) = named {
+            discard_rights(rights);
+            return Err(errno);
+        }
+        let (used, truncated, installed) = deliver_rights(
+            rights,
+            hdr.control,
+            hdr.controllen,
+            flags & MSG_CMSG_CLOEXEC != 0,
+        );
+        let mut out_flags = msg.out_flags | (flags & MSG_CMSG_CLOEXEC);
+        if truncated {
+            out_flags |= MSG_CTRUNC;
+        }
+        let header = user(userptr::copy_to_user(
+            (msg_ptr + MSGHDR_CONTROLLEN) as *mut u64,
+            &(used as u64),
+        ))
+        .and_then(|()| {
+            user(userptr::copy_to_user(
+                (msg_ptr + MSGHDR_FLAGS) as *mut i32,
+                &(out_flags as i32),
+            ))
+        });
+        if let Err(errno) = header {
+            // The caller cannot learn which descriptors arrived: close them.
+            close_own(&installed);
+            return Err(errno);
+        }
+        Ok(received as u64)
+    })())
 }

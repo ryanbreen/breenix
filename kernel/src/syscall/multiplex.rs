@@ -2,9 +2,13 @@
 //! process-manager guard survives a readiness check or a scheduler operation.
 use super::{userptr, SyscallResult};
 use crate::ipc::{
-    fd::{FileDescriptor, MAX_FDS},
+    fd::{FdKind, FileDescriptor, MAX_FDS},
+    pipe::PipeBuffer,
     poll::{self, events, PollFd},
 };
+use crate::socket::object::Socket;
+use crate::task::waitqueue::WaitQueueHead;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 fn result(r: Result<u64, u64>) -> SyscallResult {
@@ -20,55 +24,175 @@ fn now() -> u64 {
         .saturating_add(n as u64)
 }
 
-/// Publish the sleep before rechecking readiness, closing the wake-before-block
-/// race. Pipe readers use their existing event notifications; descriptor kinds
-/// without a notification source retain a short timer fallback.
-///
-/// The recheck runs before preemption is enabled. It takes descriptor locks
-/// (a pipe buffer's) while the thread is already marked blocked, and an
-/// interrupt that preempted it there would switch it out holding the lock,
-/// for good: the writer that would wake it spins on that lock first. The
-/// signal check runs before it too (#1230): see `blocking_io::wait_prepared`.
-fn park(deadline: u64, ready: impl FnOnce() -> bool) -> Result<(), u64> {
-    crate::task::scheduler::with_scheduler(|s| {
-        s.block_current_for_io_with_timeout((deadline != u64::MAX).then_some(deadline));
-    });
-    let already_ready = ready();
-    let mut interrupted = false;
-    while !already_ready {
-        if super::check_signals_for_wait().is_some() {
-            interrupted = true;
-            break;
+/// A source a poll-style wait sleeps on.
+enum Source {
+    /// A pipe or FIFO with data to read.
+    PipeReader(Arc<spin::Mutex<PipeBuffer>>),
+    /// A socket whose protocol publishes through `notify`.
+    Socket(Arc<Socket>),
+    /// A wait queue: a pipe's writers, an epoll instance's waiters.
+    Queue(Arc<WaitQueueHead>),
+}
+
+/// The sources one poll, select or epoll wait sleeps on. A descriptor with
+/// no wake source makes the wait rescan every millisecond.
+pub(super) struct WaitSet {
+    tid: u64,
+    sources: Vec<Source>,
+    notified: bool,
+}
+
+impl WaitSet {
+    pub(super) fn new(tid: u64) -> Self {
+        WaitSet {
+            tid,
+            sources: Vec::new(),
+            notified: true,
         }
-        let blocked = crate::task::scheduler::with_scheduler(|s| {
-            s.wake_expired_timers();
-            s.current_thread_mut()
-                .is_some_and(|t| t.state == crate::task::thread::ThreadState::BlockedOnIO)
-        })
-        .unwrap_or(false);
-        if !blocked {
-            break;
-        }
-        crate::per_cpu::preempt_enable();
-        crate::task::scheduler::yield_current();
-        crate::arch_halt_while_blocked();
-        crate::per_cpu::preempt_disable();
     }
-    crate::task::scheduler::with_scheduler(|s| {
-        if let Some(t) = s.current_thread_mut() {
-            t.blocked_in_syscall = false;
-            t.wake_time_ns = None;
-            if interrupted || already_ready {
-                t.set_ready();
+
+    fn add(&mut self, source: Source) {
+        if self.sources.try_reserve(1).is_ok() {
+            self.sources.push(source);
+        } else {
+            self.notified = false;
+        }
+    }
+
+    /// Sleep on what wakes `entry` for `wanted` (poll events).
+    pub(super) fn watch(&mut self, entry: &FileDescriptor, wanted: i16) {
+        let mut watched = false;
+        if wanted & (events::POLLIN | events::POLLPRI | events::POLLRDHUP) != 0 {
+            match &entry.kind {
+                FdKind::PipeRead(pipe) | FdKind::FifoRead(_, pipe, _) | FdKind::FifoReadWrite(_, pipe, _) => {
+                    self.add(Source::PipeReader(pipe.clone()));
+                    watched = true;
+                }
+                _ => {}
             }
         }
-    });
-    #[cfg(target_arch = "aarch64")]
-    super::handlers::poll_ensure_address_space();
-    if interrupted {
-        Err(4)
-    } else {
-        Ok(())
+        if wanted & events::POLLOUT != 0 {
+            match &entry.kind {
+                FdKind::PipeWrite(pipe) | FdKind::FifoWrite(_, pipe, _) | FdKind::FifoReadWrite(_, pipe, _) => {
+                    let queue = pipe.lock().write_waiters.clone();
+                    self.add(Source::Queue(queue));
+                    watched = true;
+                }
+                _ => {}
+            }
+        }
+        match &entry.kind {
+            // A socket whose protocol publishes through notify() wakes the
+            // wait; one that still wakes by thread id keeps the rescan.
+            FdKind::Socket(socket) if socket.notifies() => {
+                self.add(Source::Socket(socket.clone()));
+            }
+            _ if watched => {}
+            _ => self.notified = false,
+        }
+    }
+
+    /// Sleep on `queue` as well.
+    pub(super) fn watch_queue(&mut self, queue: Arc<WaitQueueHead>) {
+        self.add(Source::Queue(queue));
+    }
+
+    /// Put this thread on every source's waiters. False when one could not
+    /// take it (no memory).
+    fn register(&self) -> bool {
+        let mut all = true;
+        for source in &self.sources {
+            all &= match source {
+                Source::PipeReader(pipe) => pipe.lock().try_add_read_waiter(self.tid).is_ok(),
+                Source::Socket(socket) => socket.common.wq.add_waiter(self.tid),
+                Source::Queue(queue) => queue.add_waiter(self.tid),
+            };
+        }
+        all
+    }
+
+    fn unregister(&self) {
+        for source in &self.sources {
+            match source {
+                Source::PipeReader(pipe) => pipe.lock().remove_read_waiter(self.tid),
+                Source::Socket(socket) => {
+                    socket.common.wq.take_waiter(self.tid);
+                }
+                Source::Queue(queue) => {
+                    queue.take_waiter(self.tid);
+                }
+            }
+        }
+    }
+
+    /// Sleep until a source wakes the thread, `deadline` passes or a signal
+    /// arrives (Err(EINTR)); `ready` says whether to stay awake.
+    ///
+    /// The blocked state is published, then the thread registers on every
+    /// source, then `ready` runs. A wake after the registration finds the
+    /// thread blocked; a change before it is seen by `ready`. A wake that
+    /// emptied a queue before the publication (a change `ready` does not
+    /// count) cannot leave the thread asleep unregistered, since it registers
+    /// again after publishing.
+    ///
+    /// The recheck runs before preemption is enabled. It takes descriptor
+    /// locks (a pipe buffer's) while the thread is already marked blocked,
+    /// and an interrupt that preempted it there would switch it out holding
+    /// the lock, for good: the writer that would wake it spins on that lock
+    /// first. The signal check runs before it too (#1230): see
+    /// `blocking_io::wait_prepared`.
+    pub(super) fn park(&self, deadline: u64, ready: impl FnOnce() -> bool) -> Result<(), u64> {
+        let wake = if self.notified {
+            deadline
+        } else {
+            deadline.min(now().saturating_add(1_000_000))
+        };
+        // Registered before the publication too, so the queues have room
+        // and the second registration only replaces a waiter a wake took.
+        let registered = self.register();
+        crate::task::scheduler::with_scheduler(|s| {
+            s.block_current_for_io_with_timeout((wake != u64::MAX).then_some(wake));
+        });
+        let registered = self.register() && registered;
+        // A source that could not take the waiter is rescanned at once.
+        let already_ready = !registered || ready();
+        let mut interrupted = false;
+        while !already_ready {
+            if super::check_signals_for_wait().is_some() {
+                interrupted = true;
+                break;
+            }
+            let blocked = crate::task::scheduler::with_scheduler(|s| {
+                s.wake_expired_timers();
+                s.current_thread_mut()
+                    .is_some_and(|t| t.state == crate::task::thread::ThreadState::BlockedOnIO)
+            })
+            .unwrap_or(false);
+            if !blocked {
+                break;
+            }
+            crate::per_cpu::preempt_enable();
+            crate::task::scheduler::yield_current();
+            crate::arch_halt_while_blocked();
+            crate::per_cpu::preempt_disable();
+        }
+        crate::task::scheduler::with_scheduler(|s| {
+            if let Some(t) = s.current_thread_mut() {
+                t.blocked_in_syscall = false;
+                t.wake_time_ns = None;
+                if interrupted || already_ready {
+                    t.set_ready();
+                }
+            }
+        });
+        self.unregister();
+        #[cfg(target_arch = "aarch64")]
+        super::handlers::poll_ensure_address_space();
+        if interrupted {
+            Err(4)
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -131,33 +255,17 @@ fn wait(fds: &mut [PollFd], timeout: Option<u64>, select: bool) -> Result<u64, u
         if super::check_signals_for_wait().is_some() {
             return Err(4);
         }
-        // Register pipe readers before publishing the blocked state. The
-        // post-publication scan in park handles data/EOF arriving during setup.
-        // Keep the wait blocked until an event or its actual deadline instead
-        // of repeatedly making an indefinite pipe wait runnable every 1 ms.
+        // Sleep on every descriptor's wake source until an event or the
+        // actual deadline, rather than making an indefinite wait runnable
+        // every 1 ms; descriptors without one keep the short rescan.
         let tid = crate::task::scheduler::current_thread_id().ok_or(3u64)?;
-        let mut readers = Vec::new();
-        let mut notified = true;
+        let mut waits = WaitSet::new(tid);
         for (f, entry) in fds.iter().zip(&entries) {
-            if f.fd < 0 {
-                continue;
-            }
-            match entry.as_ref().map(|e| &e.kind) {
-                Some(crate::ipc::fd::FdKind::PipeRead(pipe))
-                | Some(crate::ipc::fd::FdKind::FifoRead(_, pipe, _))
-                | Some(crate::ipc::fd::FdKind::FifoReadWrite(_, pipe, _)) => {
-                    pipe.lock().add_read_waiter(tid);
-                    readers.push(pipe.clone());
-                }
-                _ => notified = false,
+            if let (true, Some(entry)) = (f.fd >= 0, entry) {
+                waits.watch(entry, f.events);
             }
         }
-        let wake = if notified {
-            deadline
-        } else {
-            deadline.min(now().saturating_add(1_000_000))
-        };
-        let ret = park(wake, || {
+        let ret = waits.park(deadline, || {
             fds.iter().zip(&entries).any(|(f, entry)| {
                 let Some(entry) = entry else {
                     return false;
@@ -174,9 +282,6 @@ fn wait(fds: &mut [PollFd], timeout: Option<u64>, select: bool) -> Result<u64, u
                 }
             })
         });
-        for pipe in readers {
-            pipe.lock().remove_read_waiter(tid);
-        }
         ret?;
     }
 }
@@ -246,7 +351,11 @@ fn duration(ptr: u64, scale: i64) -> Result<Option<u64>, u64> {
 /// Set the temporary mask before any readiness scan. On EINTR leave it in
 /// force until delivery selects the interrupting signal, then restores it.
 /// Other exits restore immediately, including validation and copy failures.
-fn with_mask(mask: u64, size: u64, call: impl FnOnce() -> Result<u64, u64>) -> Result<u64, u64> {
+pub(super) fn with_mask(
+    mask: u64,
+    size: u64,
+    call: impl FnOnce() -> Result<u64, u64>,
+) -> Result<u64, u64> {
     if mask == 0 {
         return call();
     }

@@ -485,8 +485,11 @@ impl Ext2Fs {
         dir_inode: &Ext2Inode,
         name: &str,
     ) -> Result<Option<u32>, &'static str> {
+        self.lookup_in_dir_bytes(dir_inode, name.as_bytes())
+    }
+    pub fn lookup_in_dir_bytes(&self, dir_inode: &Ext2Inode, name: &[u8]) -> Result<Option<u32>, &'static str> {
         let dir_data = self.read_directory(dir_inode)?;
-        Ok(dir::find_inode(&dir_data, name))
+        Ok(dir::find_inode_bytes(&dir_data, name))
     }
 
     /// Resolve a path to an inode number, following symlinks
@@ -1931,7 +1934,9 @@ impl Ext2Fs {
     /// * `Ok(String)` - The target path the symlink points to
     /// * `Err(msg)` - Error if not a symlink or read error
     pub fn read_symlink(&self, inode_num: u32) -> Result<alloc::string::String, &'static str> {
-        use alloc::string::String;
+        alloc::string::String::from_utf8(self.read_symlink_bytes(inode_num)?).map_err(|_| "Invalid UTF-8 in symlink target")
+    }
+    pub fn read_symlink_bytes(&self, inode_num: u32) -> Result<Vec<u8>, &'static str> {
 
         // Read the inode
         let inode = self.read_inode(inode_num)?;
@@ -1969,7 +1974,7 @@ impl Ext2Fs {
                     .try_reserve_exact(target_bytes.len())
                     .map_err(|_| "No memory for symlink target")?;
                 bytes.extend_from_slice(target_bytes);
-                String::from_utf8(bytes).map_err(|_| "Invalid UTF-8 in symlink target")
+                Ok(bytes)
             }
         } else {
             // Regular symlink: target is stored in a data block
@@ -1994,7 +1999,10 @@ impl Ext2Fs {
 
             // Extract the target string
             let target_bytes = &block_buf[..target_len];
-            String::from_utf8(target_bytes.to_vec()).map_err(|_| "Invalid UTF-8 in symlink target")
+            let mut bytes = Vec::new();
+            bytes.try_reserve_exact(target_bytes.len()).map_err(|_| "No memory for symlink target")?;
+            bytes.extend_from_slice(target_bytes);
+            Ok(bytes)
         }
     }
 

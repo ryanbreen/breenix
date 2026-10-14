@@ -4247,16 +4247,12 @@ const BLOCKING_PRIMITIVES: &[(&str, &str, usize)] = &[
     ("kernel/src/task/waitqueue.rs", "impl WaitQueueHead::fn prepare_to_wait_checked", 1),
 ];
 /// Census A: every right-hand-side publication of a `ThreadState::Blocked*`
-/// value under `kernel/src`. The seven production rows are all blocking-family
+/// value under `kernel/src`. The production rows are all blocking-family
 /// primitives, which `validate_blocked_state_publication_family` asserts as a
-/// derived rule; the five `#[cfg(test)]` rows are fixtures, exempt from that
-/// rule but still pinned here so a new fixture is re-anchored deliberately.
+/// derived rule; the `#[cfg(test)]` row is a fixture, exempt from that rule
+/// but still pinned here so a new fixture is re-anchored deliberately.
 #[rustfmt::skip]
 const BLOCKED_STATE_PUBLICATIONS: &[(&str, &str, usize)] = &[
-    ("kernel/src/socket/udp.rs", "#[cfg(test)] mod tests::fn test_blocking_recvfrom_blocks_and_wakes", 1),
-    ("kernel/src/socket/udp.rs", "#[cfg(test)] mod tests::fn test_enqueue_packet_wakes_blocked_threads", 1),
-    ("kernel/src/socket/udp.rs", "#[cfg(test)] mod tests::fn test_enqueue_packet_wakes_multiple_waiters", 1),
-    ("kernel/src/socket/udp.rs", "#[cfg(test)] mod tests::fn test_spurious_wakeup_handling", 1),
     ("kernel/src/task/scheduler.rs", "#[cfg(all(test,target_arch=x86_64))] mod tests::fn test_unblock_does_not_duplicate_ready_queue", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_child_exit", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_compositor", 1),
@@ -4268,11 +4264,14 @@ const BLOCKED_STATE_PUBLICATIONS: &[(&str, &str, usize)] = &[
 ];
 /// Census B: stores into a field named `state` whose right-hand side is opaque
 /// (not a path), the shape that would launder a blocked publication past census
-/// A. All four rows today are fixtures or a PRNG counter; a production opaque
-/// store on a thread would arrive here as a new row.
+/// A. The rows are fixtures, departure probes that restore a snapshot, a PRNG
+/// counter and a socket state machine; a production opaque store on a thread
+/// would arrive here as a new row.
 #[rustfmt::skip]
 const OPAQUE_THREAD_STATE_STORES: &[(&str, &str, usize)] = &[
-    ("kernel/src/socket/udp.rs", "#[cfg(test)] mod tests::fn make_thread", 1),
+    // A TCP socket's own state machine (`TcpSockState`), returned to Bound or
+    // Unbound by `connect(AF_UNSPEC)`; no thread is involved.
+    ("kernel/src/socket/tcp.rs", "impl TcpSock::fn disconnect", 1),
     // The #647 departure probe restores the state it snapshotted rather than
     // naming a variant, so its restore is an opaque store by construction. It is
     // the census's first non-fixture row: the probe is boot-test wiring, which
@@ -4529,10 +4528,6 @@ const REMOVE_FROM_READY_QUEUE_CALL_SITES: &[(&str, &str, usize)] = &[
     ("kernel/src/arch_impl/aarch64/context_switch.rs", "fn drain_asm_resume_pc_refusals", 2),
     ("kernel/src/arch_impl/aarch64/context_switch.rs", "fn exit_schedule_trampoline", 1),
     ("kernel/src/arch_impl/aarch64/exception.rs", "fn terminate_current_scheduler_thread", 1),
-    ("kernel/src/socket/udp.rs", "#[cfg(test)] mod tests::fn test_blocking_recvfrom_blocks_and_wakes", 1),
-    ("kernel/src/socket/udp.rs", "#[cfg(test)] mod tests::fn test_enqueue_packet_wakes_blocked_threads", 1),
-    ("kernel/src/socket/udp.rs", "#[cfg(test)] mod tests::fn test_enqueue_packet_wakes_multiple_waiters", 1),
-    ("kernel/src/socket/udp.rs", "#[cfg(test)] mod tests::fn test_spurious_wakeup_handling", 1),
     // #713 fix-round-2, N4: sys_spawn's Window-3 teardown arm now undoes the
     // ready-queue push from create_process_with_argv when the child's main
     // thread was never published, alongside retracting the parent's

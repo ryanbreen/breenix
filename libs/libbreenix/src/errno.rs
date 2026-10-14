@@ -78,6 +78,8 @@ pub enum Errno {
     ENOSYS = 38,
     /// Directory not empty
     ENOTEMPTY = 39,
+    /// Protocol not supported
+    EPROTONOSUPPORT = 93,
     /// Operation not supported
     EOPNOTSUPP = 95,
     /// Address family not supported
@@ -155,6 +157,7 @@ impl Errno {
             37 => Errno::ENOLCK,
             38 => Errno::ENOSYS,
             39 => Errno::ENOTEMPTY,
+            93 => Errno::EPROTONOSUPPORT,
             95 => Errno::EOPNOTSUPP,
             97 => Errno::EAFNOSUPPORT,
             98 => Errno::EADDRINUSE,

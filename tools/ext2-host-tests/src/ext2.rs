@@ -455,4 +455,35 @@ mod reclaim_checks {
         assert_eq!(free, 512);
         assert_eq!(free_inodes, 128);
     }
+    #[test]
+    fn unix_node_prepare_failure_leaves_directory_unchanged() {
+        let (mut fs, data, _, _) = two_orphans();
+        let mut parent = Ext2Inode::new_regular_file(0o777, 0, 0);
+        parent.i_mode = 0o40777; parent.i_size = 4096; parent.i_blocks = 8; parent.i_block[0] = 21;
+        fs.write_inode(2, &parent).unwrap();
+        {
+            let mut bytes = data.lock().unwrap();
+            let dir = &mut bytes[21*4096..22*4096]; dir.fill(0);
+            dir[4..6].copy_from_slice(&4096u16.to_le_bytes());
+        }
+        let before = fs.read_directory(&parent).unwrap();
+        assert_eq!(fs.create_node_prepared(2, b"sock\xff", 0o140755, 0, 0, 0, |_, _| Err::<(), _>("No memory for inode pin")), Err("No memory for inode pin"));
+        assert_eq!(fs.read_directory(&parent).unwrap(), before);
+        let ino = fs.create_node_prepared(2, b"sock\xff", 0o140755, 0, 0, 0, |fs, ino| {
+            assert_eq!(dir::find_inode_bytes(&fs.read_directory(&parent)?, b"sock\xff"), None);
+            Ok(ino)
+        }).unwrap();
+        assert_eq!(dir::find_inode_bytes(&fs.read_directory(&parent).unwrap(), b"sock\xff"), Some(ino));
+        let mode = fs.read_inode(ino).unwrap().i_mode;
+        assert_eq!(mode, 0o140755);
+    }
+    #[test]
+    fn unix_node_raw_directory_names_remain_distinct() {
+        let mut dir = vec![0;4096]; dir[4..6].copy_from_slice(&4096u16.to_le_bytes());
+        dir::add_directory_entry_bytes(&mut dir, 17, b"s\xfe", dir::EXT2_FT_SOCK).unwrap();
+        dir::add_directory_entry_bytes(&mut dir, 18, b"s\xff", dir::EXT2_FT_SOCK).unwrap();
+        assert_eq!(dir::find_inode_bytes(&dir, b"s\xfe"), Some(17));
+        assert_eq!(dir::find_inode_bytes(&dir, b"s\xff"), Some(18));
+    }
+
 }

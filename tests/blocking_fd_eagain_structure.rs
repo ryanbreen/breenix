@@ -557,11 +557,22 @@ fn repaired_families_have_no_blocking_eagain_exit() {
         }
     }
     census(&nodes, &mut discovered);
-    for family in ["PipeWrite", "FifoWrite", "UnixStream", "Device"] {
+    for family in ["PipeWrite", "FifoWrite", "Socket", "Device"] {
         assert!(discovered.contains(family), "census lost {family}");
     }
     let helper = read("kernel/src/syscall/blocking_io.rs");
-    let defs = functions(&lex(&helper));
+    let sockets = read("kernel/src/syscall/socket.rs");
+    let unix = read("kernel/src/socket/unix.rs");
+    // The socket write route: handlers.rs hands the descriptor mode to
+    // socket_write, which carries it in SendMsg.nonblock across the protocol's
+    // trait object; Unix gives that mode and its optional deadline to wait_until.
+    let mut defs = functions(&lex(&helper));
+    defs.insert(
+        "socket_write".into(),
+        functions(&lex(&sockets))
+            .remove("socket_write")
+            .expect("socket_write route"),
+    );
     let roots: Vec<_> = defs
         .keys()
         .filter(|name| {
@@ -570,8 +581,8 @@ fn repaired_families_have_no_blocking_eagain_exit() {
         .collect();
     assert_eq!(
         roots.len(),
-        2,
-        "pipe/FIFO and Unix must reach their recognized writer adapters"
+        1,
+        "pipe/FIFO must reach their recognized writer adapter"
     );
     assert_eq!(
         compacted
@@ -581,7 +592,7 @@ fn repaired_families_have_no_blocking_eagain_exit() {
         "shared Pipe/Fifo match must delegate together"
     );
     let routes = match_arms(&nodes, "WriteOperation");
-    for family in ["Pipe", "Fifo", "UnixStream"] {
+    for family in ["Pipe", "Fifo", "Socket"] {
         let arms: Vec<_> = routes
             .iter()
             .filter(|(names, _)| names.iter().any(|name| name == family))
@@ -592,7 +603,7 @@ fn repaired_families_have_no_blocking_eagain_exit() {
         } else if family == "Fifo" {
             "FifoWrite"
         } else {
-            "UnixStream"
+            "Socket"
         };
         let snapshots = match_arms(&nodes, "FdKind");
         let snapshot = snapshots
@@ -654,8 +665,17 @@ fn repaired_families_have_no_blocking_eagain_exit() {
             .expect("snapshotted mode destructured into adapter");
         let mut mode = BTreeMap::new();
         mode.insert(binding.clone(), false);
-        inspect(&arms[0].1, mode, &defs, &mut BTreeSet::new())
-            .unwrap_or_else(|e| panic!("{family} adapter: {e}"));
+        if family == "Socket" {
+            // The arm hands the mode to socket_write, whose result is the
+            // send's, converted without adding an errno of its own.
+            assert!(
+                contains(&arms[0].1, "socket::socket_write("),
+                "Socket write route no longer reaches socket_write"
+            );
+        } else {
+            inspect(&arms[0].1, mode, &defs, &mut BTreeSet::new())
+                .unwrap_or_else(|e| panic!("{family} adapter: {e}"));
+        }
         assert!(
             contains(&arms[0].1, &format!(",{binding})")),
             "{family} lost owned handle or mode forwarding"
@@ -663,11 +683,107 @@ fn repaired_families_have_no_blocking_eagain_exit() {
     }
     audit_helper(&helper, roots[0])
         .unwrap_or_else(|e| panic!("Pipe/FIFO blocking route rejected: {e}"));
-    audit_helper(&helper, "write_unix")
-        .unwrap_or_else(|e| panic!("Unix blocking route rejected: {e}"));
+    assert!(
+        socket_mode_reaches_unix_writer(&sockets, &unix),
+        "socket_write's mode no longer reaches the socket wait"
+    );
+    assert!(
+        unix_wait_contract(&unix, &read("kernel/src/socket/wait.rs")),
+        "Unix send can expose full-queue EAGAIN outside nonblock or an expired deadline"
+    );
     audit_helper(&helper, "read_console").expect("Console/Tty blocking route");
     audit_console_route(&handlers, &helper).expect("Console/Tty syscall result route");
     println!("Pipe/FIFO/Unix writes and Console/Tty reads: bounded blocking EAGAIN census");
+}
+
+/// Validate the actual shared wait boundary: EAGAIN is legal for nonblock
+/// or an expired configured timeout. Full-queue Unix check results retry.
+fn unix_wait_contract(unix: &str, wait: &str) -> bool {
+    fn guarded(nodes: &[Node], allowed: bool) -> bool {
+        let mut i = 0;
+        while i < nodes.len() {
+            if nodes[i].token() == "if" {
+                if let Some(open) = (i + 1..nodes.len()).find(|j| nodes[*j].group('{').is_some()) {
+                    let condition = compact(&nodes[i + 1..open]);
+                    let permit = condition == "nonblock"
+                        || condition == "deadline_ns.is_some_and(|deadline|now_ns()>=deadline)";
+                    if !guarded(nodes[open].group('{').unwrap(), allowed || permit) {
+                        return false;
+                    }
+                    i = open + 1;
+                    continue;
+                }
+            }
+            if matches!(nodes[i].token(), "EAGAIN" | "11") && !allowed {
+                return false;
+            }
+            if let Node::Group(_, inner) = &nodes[i] {
+                if !guarded(inner, allowed) {
+                    return false;
+                }
+            }
+            i += 1;
+        }
+        true
+    }
+    let send = compact(&function(unix, "sendmsg"));
+    let retry = send.split("Err((EAGAIN,message))=>{").nth(1).unwrap_or("");
+    send.contains("letdeadline=sk.common.snd_deadline();")
+        && send.contains("wait_until(sk,msg.nonblock,deadline,||")
+        && !send.contains("Some(Err(EAGAIN))")
+        && !send.contains("Some(Err(11))")
+        && !send.contains("returnErr(EAGAIN)")
+        && !send.contains("returnErr(11)")
+        && retry.contains("None")
+        && !retry.contains("Some(Err(EAGAIN))")
+        && guarded(&function(wait, "wait_until"), false)
+}
+
+/// The descriptor mode crosses the protocol's trait object in SendMsg: write(2)
+/// hands it to send_all, which sets SendMsg.nonblock from it for each piece,
+/// send_once passes the message on whole, and the Unix adapter's sendmsg gives
+/// msg.nonblock to the shared socket wait.
+fn socket_mode_reaches_unix_writer(sockets: &str, unix: &str) -> bool {
+    let signature =
+        compact(&lex(sockets)).contains("fnsocket_write(sk:&Arc<Socket>,data:&[u8],nonblock:bool)");
+    let write = compact(&function(sockets, "socket_write"));
+    let all = compact(&function(sockets, "send_all"));
+    let once = compact(&function(sockets, "send_once"));
+    let adapter = compact(&function(unix, "sendmsg"));
+    signature
+        && write.contains("send_all(sk,data.len(),0,nonblock,")
+        && all.contains("flags,nonblock,rights:")
+        && all.contains("send_once(sk,&mutmsg)")
+        && once.contains("sk.ops().sendmsg(sk,msg)")
+        && adapter.contains("letdeadline=sk.common.snd_deadline();")
+        && adapter.contains("wait_until(sk,msg.nonblock,deadline,||")
+}
+
+#[test]
+fn socket_mode_route_rejects_a_dropped_mode() {
+    let sockets = read("kernel/src/syscall/socket.rs");
+    let unix = read("kernel/src/socket/unix.rs");
+    assert!(socket_mode_reaches_unix_writer(&sockets, &unix));
+    assert!(!socket_mode_reaches_unix_writer(
+        &sockets,
+        &unix.replace(
+            "wait_until(sk, msg.nonblock, deadline",
+            "wait_until(sk, false, deadline"
+        )
+    ));
+    for (from, to) in [
+        ("                nonblock,\n", "                nonblock: false,\n"),
+        ("send_all(sk, data.len(), 0, nonblock,", "send_all(sk, data.len(), 0, false,"),
+    ] {
+        let dropped = sockets.replace(from, to);
+        assert_ne!(dropped, sockets, "socket mode mutation did not apply");
+        assert!(!socket_mode_reaches_unix_writer(&dropped, &unix));
+    }
+    let wait = read("kernel/src/socket/wait.rs");
+    assert!(unix_wait_contract(&unix, &wait));
+    let blocking = wait.replace("if nonblock {", "if !nonblock {");
+    assert_ne!(blocking, wait, "wait mutation did not apply");
+    assert!(!unix_wait_contract(&unix, &blocking));
 }
 
 #[test]

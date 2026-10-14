@@ -322,19 +322,10 @@ pub fn sendto(fd: Fd, buf: &[u8], dest_addr: &SockAddrIn) -> Result<usize, Error
 /// # Returns
 /// Number of bytes received on success, or Error on failure
 pub fn recvfrom(fd: Fd, buf: &mut [u8], src_addr: Option<&mut SockAddrIn>) -> Result<usize, Error> {
+    let mut addrlen = core::mem::size_of::<SockAddrIn>() as u32;
     let (addr_ptr, addrlen_ptr) = match src_addr {
-        Some(addr) => {
-            // We need a mutable length variable
-            static mut ADDRLEN: u32 = core::mem::size_of::<SockAddrIn>() as u32;
-            unsafe {
-                ADDRLEN = core::mem::size_of::<SockAddrIn>() as u32;
-                (
-                    addr as *mut SockAddrIn as u64,
-                    &raw mut ADDRLEN as *mut u32 as u64,
-                )
-            }
-        }
-        None => (0u64, 0u64),
+        Some(addr) => (addr as *mut SockAddrIn as u64, &mut addrlen as *mut u32 as u64),
+        None => (0, 0),
     };
 
     let ret = unsafe {

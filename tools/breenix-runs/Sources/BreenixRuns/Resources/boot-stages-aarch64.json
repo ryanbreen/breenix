@@ -335,14 +335,14 @@
     {
       "name": "TCP listen unbound rejected",
       "marker": "TCP_TEST: listen_unbound OK",
-      "failureMeaning": "listen() on unbound socket did not return EINVAL",
-      "checkHint": "Check sys_listen() validates socket is bound first"
+      "failureMeaning": "listen() on an unbound socket did not bind it to an ephemeral port (Linux autobinds)",
+      "checkHint": "Check TcpSock::listen autobinds an Unbound socket and getsockname reports the port"
     },
     {
       "name": "TCP accept nonlisten rejected",
       "marker": "TCP_TEST: accept_nonlisten OK",
-      "failureMeaning": "accept() on non-listening socket did not return error",
-      "checkHint": "Check sys_accept() validates socket is in listen state"
+      "failureMeaning": "accept() on a non-listening socket did not return EINVAL (Linux)",
+      "checkHint": "Check TcpSock::accept returns EINVAL unless the socket is listening"
     },
     {
       "name": "TCP data test started",

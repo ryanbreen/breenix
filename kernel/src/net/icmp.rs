@@ -4,23 +4,12 @@
 
 use alloc::vec::Vec;
 
-use super::ethernet::{EthernetFrame, ETHERTYPE_IPV4};
 use super::ipv4::{self, Ipv4Packet, PROTOCOL_ICMP};
-
-// Use parent module's driver abstraction
-fn get_mac_address() -> Option<[u8; 6]> {
-    super::get_mac_address()
-}
-
-fn driver_transmit(data: &[u8]) -> Result<(), &'static str> {
-    super::driver_transmit(data)
-}
 
 /// ICMP type: Echo Reply
 pub const ICMP_ECHO_REPLY: u8 = 0;
 
 /// ICMP type: Destination Unreachable
-#[allow(dead_code)]
 pub const ICMP_DEST_UNREACHABLE: u8 = 3;
 
 /// ICMP type: Echo Request
@@ -108,119 +97,125 @@ impl<'a> IcmpPacket<'a> {
 }
 
 /// Handle an incoming ICMP packet
-pub fn handle_icmp(eth_frame: &EthernetFrame, ip: &Ipv4Packet, icmp: &IcmpPacket) {
+pub fn handle_icmp(ip: &Ipv4Packet, icmp: &IcmpPacket) {
+    if ipv4::internet_checksum(ip.payload) != 0 {
+        return;
+    }
     match icmp.icmp_type {
         ICMP_ECHO_REQUEST => {
-            #[cfg(target_arch = "x86_64")]
-            log::info!(
-                "ICMP: Echo request from {}.{}.{}.{} seq={}",
-                ip.src_ip[0],
-                ip.src_ip[1],
-                ip.src_ip[2],
-                ip.src_ip[3],
-                icmp.sequence
-            );
-            #[cfg(target_arch = "aarch64")]
-            crate::serial_println!(
-                "[icmp] Echo request from {}.{}.{}.{} seq={}",
-                ip.src_ip[0],
-                ip.src_ip[1],
-                ip.src_ip[2],
-                ip.src_ip[3],
-                icmp.sequence
-            );
-
-            // Send echo reply
-            send_echo_reply(eth_frame, ip, icmp);
+            let mut reply = Vec::new();
+            if reply
+                .try_reserve_exact(ICMP_HEADER_SIZE + icmp.payload.len())
+                .is_err()
+            {
+                return;
+            }
+            reply.extend_from_slice(&[ICMP_ECHO_REPLY, 0, 0, 0]);
+            reply.extend_from_slice(&icmp.identifier.to_be_bytes());
+            reply.extend_from_slice(&icmp.sequence.to_be_bytes());
+            reply.extend_from_slice(icmp.payload);
+            let checksum = ipv4::internet_checksum(&reply);
+            reply[2..4].copy_from_slice(&checksum.to_be_bytes());
+            let _ = super::ip_output(ip.dst_ip, ip.src_ip, PROTOCOL_ICMP, &reply);
         }
         ICMP_ECHO_REPLY => {
-            #[cfg(target_arch = "x86_64")]
-            log::info!(
-                "NET: ICMP echo reply received from {}.{}.{}.{} seq={}",
-                ip.src_ip[0],
-                ip.src_ip[1],
-                ip.src_ip[2],
-                ip.src_ip[3],
-                icmp.sequence
-            );
-            #[cfg(target_arch = "aarch64")]
-            crate::serial_println!(
-                "[net] ICMP echo reply received from {}.{}.{}.{} seq={}",
-                ip.src_ip[0],
-                ip.src_ip[1],
-                ip.src_ip[2],
-                ip.src_ip[3],
-                icmp.sequence
-            );
+            // Preserve the networking boot stage without taking the logger's
+            // locks in NetRx. The idle/thread writer emits this actual event.
+            if ip.src_ip == super::config().gateway && icmp.identifier == 1 && icmp.sequence == 1 {
+                static ECHO_REPLY_NOTICE: crate::log_notice::Node = crate::log_notice::Node::new();
+                ECHO_REPLY_NOTICE.post_again("NET: ICMP echo reply received from gateway");
+            }
         }
         ICMP_DEST_UNREACHABLE => {
-            #[cfg(target_arch = "x86_64")]
-            log::warn!(
-                "ICMP: Destination unreachable from {}.{}.{}.{} code={}",
-                ip.src_ip[0],
-                ip.src_ip[1],
-                ip.src_ip[2],
-                ip.src_ip[3],
-                icmp.code
-            );
-            #[cfg(target_arch = "aarch64")]
-            crate::serial_println!(
-                "[icmp] Destination unreachable from {}.{}.{}.{} code={}",
-                ip.src_ip[0],
-                ip.src_ip[1],
-                ip.src_ip[2],
-                ip.src_ip[3],
-                icmp.code
-            );
+            if let Some((src, src_port, dst, dst_port, errno)) = udp_error_quote(icmp) {
+                super::udp::udp_icmp_error(src, src_port, dst, dst_port, errno);
+            }
         }
-        _ => {
-            #[cfg(target_arch = "x86_64")]
-            log::debug!(
-                "ICMP: Unknown type {} from {}.{}.{}.{}",
-                icmp.icmp_type,
-                ip.src_ip[0],
-                ip.src_ip[1],
-                ip.src_ip[2],
-                ip.src_ip[3]
-            );
-        }
+        _ => {}
     }
 }
 
-/// Send an ICMP echo reply
-fn send_echo_reply(eth_frame: &EthernetFrame, ip: &Ipv4Packet, icmp: &IcmpPacket) {
-    let our_mac = match get_mac_address() {
-        Some(mac) => mac,
-        None => return,
-    };
-
-    let config = super::config();
-
-    // Build ICMP reply (same identifier, sequence, and payload as request)
-    let icmp_reply = IcmpPacket::echo_reply(icmp.identifier, icmp.sequence, icmp.payload);
-
-    // Build IP packet
-    let ip_packet = Ipv4Packet::build(config.ip_addr, ip.src_ip, PROTOCOL_ICMP, &icmp_reply);
-
-    // Build Ethernet frame (reply to sender)
-    let frame = super::ethernet::EthernetFrame::build(
-        &our_mac,
-        &eth_frame.src_mac,
-        ETHERTYPE_IPV4,
-        &ip_packet,
-    );
-
-    if let Err(_e) = driver_transmit(&frame) {
-        #[cfg(target_arch = "x86_64")]
-        log::warn!("ICMP: Failed to send echo reply: {}", _e);
-    } else {
-        #[cfg(target_arch = "x86_64")]
-        log::debug!(
-            "ICMP: Sent echo reply to {}.{}.{}.{}",
-            ip.src_ip[0],
-            ip.src_ip[1],
-            ip.src_ip[2],
-            ip.src_ip[3]
-        );
+/// Send RFC 792 type 3/code 3 with the original IP header and first eight L4 bytes.
+/// Broadcasts, multicast, noninitial fragments and invalid sources never draw errors.
+pub fn send_port_unreachable(ip: &Ipv4Packet, l4: &[u8]) {
+    if l4.len() < 8
+        || ip.flags_fragment & 0x1fff != 0
+        || super::is_broadcast_addr(ip.dst_ip)
+        || ip.dst_ip[0] >= 224
+        || ip.src_ip == [0; 4]
+        || super::is_broadcast_addr(ip.src_ip)
+        || ip.src_ip[0] >= 224
+    {
+        return;
     }
+    // Bound error output globally to ten packets per second. Linux exempts loopback.
+    if ip.src_ip[0] != 127 {
+        static NEXT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+        let now = crate::time::get_ticks();
+        let next = NEXT.load(core::sync::atomic::Ordering::Relaxed);
+        if now < next
+            || NEXT
+                .compare_exchange(
+                    next,
+                    now.saturating_add(100),
+                    core::sync::atomic::Ordering::Relaxed,
+                    core::sync::atomic::Ordering::Relaxed,
+                )
+                .is_err()
+        {
+            return;
+        }
+    }
+    // IHL is at most 60, so this error packet has a fixed stack bound.
+    let mut packet = [0u8; ICMP_HEADER_SIZE + 60 + 8];
+    packet[0] = ICMP_DEST_UNREACHABLE;
+    packet[1] = 3;
+    let len = ICMP_HEADER_SIZE + ip.header.len() + 8;
+    packet[ICMP_HEADER_SIZE..ICMP_HEADER_SIZE + ip.header.len()].copy_from_slice(ip.header);
+    packet[len - 8..len].copy_from_slice(&l4[..8]);
+    let checksum = ipv4::internet_checksum(&packet[..len]);
+    packet[2..4].copy_from_slice(&checksum.to_be_bytes());
+    let _ = super::ip_output(ip.dst_ip, ip.src_ip, PROTOCOL_ICMP, &packet[..len]);
+}
+
+/// Extract an original UDP flow from an ICMP error. RFC 792 quotations may be
+/// shorter than the original IP total length, so a full IPv4 parse is inappropriate.
+pub fn udp_error_quote(icmp: &IcmpPacket) -> Option<([u8; 4], u16, [u8; 4], u16, i32)> {
+    if icmp.icmp_type != ICMP_DEST_UNREACHABLE {
+        return None;
+    }
+    let data = icmp.payload;
+    if data.len() < 20 || data[0] >> 4 != 4 || data[0] & 15 < 5 || data[9] != ipv4::PROTOCOL_UDP {
+        return None;
+    }
+    let header_len = (data[0] as usize & 15) * 4;
+    if data.len() < header_len + 8
+        || (u16::from_be_bytes([data[2], data[3]]) as usize) < header_len + 8
+        || u16::from_be_bytes([data[6], data[7]]) & 0x1fff != 0
+    {
+        return None;
+    }
+    let udp_len = u16::from_be_bytes([data[header_len + 4], data[header_len + 5]]) as usize;
+    let ip_len = u16::from_be_bytes([data[2], data[3]]) as usize;
+    if udp_len < 8 || udp_len > ip_len - header_len {
+        return None;
+    }
+    use crate::syscall::errno::*;
+    let errno = match icmp.code {
+        2 => ENOPROTOOPT,
+        3 => ECONNREFUSED,
+        4 => EMSGSIZE,
+        6 | 9 => ENETUNREACH,
+        7 => EHOSTDOWN,
+        8 => ENONET,
+        10 | 13 | 14 | 15 => EHOSTUNREACH,
+        _ => return None, // Linux ignores transient errors without IP_RECVERR.
+    };
+    Some((
+        [data[12], data[13], data[14], data[15]],
+        u16::from_be_bytes([data[header_len], data[header_len + 1]]),
+        [data[16], data[17], data[18], data[19]],
+        u16::from_be_bytes([data[header_len + 2], data[header_len + 3]]),
+        errno,
+    ))
 }

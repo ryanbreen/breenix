@@ -155,3 +155,44 @@ pub const ETIMEDOUT: i32 = 110;
 
 /// Operation not supported
 pub const EOPNOTSUPP: i32 = 95;
+
+/// Numerical argument out of domain (a socket timeout's microseconds)
+pub const EDOM: i32 = 33;
+
+/// Destination address required
+pub const EDESTADDRREQ: i32 = 89;
+
+/// Protocol wrong type for socket
+pub const EPROTOTYPE: i32 = 91;
+
+/// Protocol not available (an unknown socket option)
+pub const ENOPROTOOPT: i32 = 92;
+
+/// Protocol not supported
+pub const EPROTONOSUPPORT: i32 = 93;
+
+/// Socket type not supported
+pub const ESOCKTNOSUPPORT: i32 = 94;
+
+/// Cannot assign requested address
+pub const EADDRNOTAVAIL: i32 = 99;
+
+/// Software caused connection abort
+pub const ECONNABORTED: i32 = 103;
+
+/// Connection reset by peer
+pub const ECONNRESET: i32 = 104;
+
+/// No buffer space available
+pub const ENOBUFS: i32 = 105;
+
+/// No route to host
+pub const EHOSTUNREACH: i32 = 113;
+
+/// Operation already in progress
+pub const EALREADY: i32 = 114;
+
+/// Linux: remote host is down.
+pub const EHOSTDOWN: i32 = 112;
+/// Linux: machine is not on the network.
+pub const ENONET: i32 = 64;
