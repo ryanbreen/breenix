@@ -1368,7 +1368,7 @@ fn sys_exec_aarch64(
         Err(errno) => return (-(errno as i64)) as u64,
     };
 
-    let (elf_vec, image_identity) = match crate::syscall::exec::read_image(&program_name, &mut arguments, |path| {
+    let (elf_vec, image_identity, image_path) = match crate::syscall::exec::read_image(&program_name, &mut arguments, |path| {
         if path.contains('/') {
             load_elf_from_ext2(path)
         } else {
@@ -1420,7 +1420,7 @@ fn sys_exec_aarch64(
     let mut prepared = match crate::process::manager::ProcessManager::prepare_exec_image(
         current_pid,
         elf_data,
-        Some(&program_name),
+        Some(&image_path),
         &argv_slices,
         &envp_slices,
         image_identity,
