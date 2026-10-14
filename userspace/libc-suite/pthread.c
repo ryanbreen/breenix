@@ -8,11 +8,13 @@
 #include "case.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -644,6 +646,214 @@ static const char *cancel_cleanup(void) {
     return PASS;
 }
 
+static int count_pipe[2];
+static atomic_long bytes_read;
+
+static void *read_one_byte_at_a_time(void *arg) {
+    char c;
+    (void)arg;
+    atomic_store(&started, 1);
+    for (;;) {
+        if (read(count_pipe[0], &c, 1) == 1)
+            atomic_fetch_add(&bytes_read, 1);
+    }
+    return NULL;
+}
+
+/* Fill the pipe whose write end is fd, leaving fd non-blocking; the bytes written. */
+static long fill_pipe(int fd) {
+    static char block[4096];
+    long total = 0;
+    if (fcntl(fd, F_SETFL, O_NONBLOCK) != 0)
+        return -1;
+    for (long n; (n = (long)write(fd, block, sizeof block)) > 0;)
+        total += n;
+    /* Then byte by byte, so not even a short write fits. */
+    while (write(fd, block, 1) == 1)
+        total++;
+    return total;
+}
+
+/* Read what the non-blocking descriptor holds; the byte count. */
+static long drain_pipe(int fd) {
+    static char block[4096];
+    long total = 0, n;
+    if (fcntl(fd, F_SETFL, O_NONBLOCK) != 0)
+        return -1;
+    while ((n = (long)read(fd, block, sizeof block)) > 0)
+        total += n;
+    return total;
+}
+
+/* A thread reading one byte per call spends most of its time in read, so the
+ * cancel signal mostly arrives as a read returns. Acting on the request then
+ * must not discard the byte that read took (POSIX.1-2024 2.9.5.2: the side
+ * effects are those of an EINTR return, which takes no data). */
+static const char *cancel_completed_read(void) {
+    for (int round = 0; round < 8; round++) {
+        pthread_t t;
+        void *ret = NULL;
+        CHECK(pipe(count_pipe) == 0, "pipe failed");
+        long total = fill_pipe(count_pipe[1]);
+        CHECK(total > 0, "filling the pipe failed");
+        atomic_store(&started, 0);
+        atomic_store(&bytes_read, 0);
+        EXPECT_INT("pthread_create", pthread_create(&t, NULL, read_one_byte_at_a_time, NULL), 0);
+        CHECK(await(&started, 1), "the thread did not start within 2 seconds");
+        pause_ms(1 + round);
+        EXPECT_INT("pthread_cancel", pthread_cancel(t), 0);
+        EXPECT_INT("pthread_join", pthread_join(t, &ret), 0);
+        EXPECT_PTR("value of the cancelled reader", ret, PTHREAD_CANCELED);
+        long left = drain_pipe(count_pipe[0]);
+        close(count_pipe[0]);
+        close(count_pipe[1]);
+        EXPECT_INT("bytes the cancelled thread counted plus bytes left in the pipe",
+            atomic_load(&bytes_read) + left, total);
+    }
+    return PASS;
+}
+
+static atomic_int sleep_errno, read_errno;
+
+static void *disabled_waits(void *arg) {
+    int old;
+    char c;
+    struct timespec ts = { 0, 200 * 1000000L };
+    (void)arg;
+    pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &old);
+    atomic_store(&started, 1);
+    atomic_store(&sleep_errno, nanosleep(&ts, NULL) == 0 ? 0 : errno);
+    atomic_store(&started, 2);
+    long n = (long)read(block_pipe[0], &c, 1);
+    atomic_store(&read_errno, n == 1 ? 0 : n < 0 ? errno : -1);
+    pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, &old);
+    pthread_testcancel();
+    return NULL;
+}
+
+static const char *cancel_disabled_no_eintr(void) {
+    pthread_t t;
+    void *ret = NULL;
+    CHECK(pipe(block_pipe) == 0, "pipe failed");
+    EXPECT_INT("pthread_create", pthread_create(&t, NULL, disabled_waits, NULL), 0);
+    CHECK(await(&started, 1), "the thread did not start within 2 seconds");
+    pause_ms(50);
+    EXPECT_INT("pthread_cancel during nanosleep", pthread_cancel(t), 0);
+    CHECK(await(&started, 2), "nanosleep(200 ms) had not returned 2 seconds later");
+    pause_ms(50);
+    EXPECT_INT("pthread_cancel during read", pthread_cancel(t), 0);
+    pause_ms(50);
+    CHECK(write(block_pipe[1], "x", 1) == 1, "write to the pipe failed");
+    EXPECT_INT("pthread_join", pthread_join(t, &ret), 0);
+    EXPECT_INT("nanosleep's errno (0: it slept the whole time)", atomic_load(&sleep_errno), 0);
+    EXPECT_INT("read's errno (0: it returned the byte written)", atomic_load(&read_errno), 0);
+    EXPECT_PTR("value once cancellation was enabled", ret, PTHREAD_CANCELED);
+    return PASS;
+}
+
+static FILE *full_stream;
+
+static void *write_to_full_pipe(void *arg) {
+    (void)arg;
+    pthread_cleanup_push(mark_finished, NULL);
+    atomic_store(&started, 1);
+    fputs("written once the reader drains the pipe\n", full_stream);
+    fflush(full_stream);
+    pthread_testcancel();
+    atomic_store(&past_cancel, 1);
+    pthread_cleanup_pop(1);
+    return NULL;
+}
+
+/* fputs and fflush may be cancellation points, and a thread cancelled in them
+ * must not leave the stream's lock, or the list of open streams, held. */
+static const char *cancel_stdio_unlocks(void) {
+    int fds[2];
+    pthread_t t;
+    void *ret = NULL;
+    CHECK(pipe(fds) == 0, "pipe failed");
+    CHECK(fill_pipe(fds[1]) > 0, "filling the pipe failed");
+    CHECK(fcntl(fds[1], F_SETFL, 0) == 0, "clearing O_NONBLOCK failed");
+    full_stream = fdopen(fds[1], "w");
+    CHECK(full_stream != NULL, "fdopen failed");
+    EXPECT_INT("pthread_create", pthread_create(&t, NULL, write_to_full_pipe, NULL), 0);
+    CHECK(await(&started, 1), "the thread did not start within 2 seconds");
+    pause_ms(50);
+    EXPECT_INT("pthread_cancel", pthread_cancel(t), 0);
+    pause_ms(50);
+    long long end = now_ns(CLOCK_MONOTONIC) + 2000000000LL;
+    while (!atomic_load(&finished) && now_ns(CLOCK_MONOTONIC) < end) {
+        drain_pipe(fds[0]);
+        pause_ms(1);
+    }
+    EXPECT_INT("pthread_join", pthread_join(t, &ret), 0);
+    EXPECT_PTR("value of the cancelled writer", ret, PTHREAD_CANCELED);
+    EXPECT_INT("ftrylockfile on the stream after the cancel", ftrylockfile(full_stream), 0);
+    funlockfile(full_stream);
+    EXPECT_INT("fclose", fclose(full_stream), 0);
+    FILE *f = fopen("cancel-stdio", "w");
+    CHECK(f != NULL, "fopen after the cancel failed");
+    EXPECT_INT("fclose of a new stream", fclose(f), 0);
+    close(fds[0]);
+    return PASS;
+}
+
+static pthread_mutex_t ticket_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t ticket_cond = PTHREAD_COND_INITIALIZER;
+static int tickets;
+static atomic_int ticket_waiters, tickets_taken;
+
+static void unlock_tickets(void *arg) {
+    (void)arg;
+    pthread_mutex_unlock(&ticket_lock);
+}
+
+static void *take_ticket(void *arg) {
+    (void)arg;
+    pthread_mutex_lock(&ticket_lock);
+    pthread_cleanup_push(unlock_tickets, NULL);
+    atomic_fetch_add(&ticket_waiters, 1);
+    while (tickets == 0)
+        pthread_cond_wait(&ticket_cond, &ticket_lock);
+    tickets--;
+    atomic_fetch_add(&tickets_taken, 1);
+    pthread_cleanup_pop(1);
+    return NULL;
+}
+
+/* Two threads wait; one is cancelled just before a single signal. Whichever
+ * wakes, the ticket must be taken: a cancelled waiter may not swallow the
+ * signal while the other still waits (pthread_cond_wait, POSIX.1-2024). */
+static const char *cancel_cond_signal(void) {
+    for (int round = 0; round < 20; round++) {
+        pthread_t a, b;
+        tickets = 0;
+        atomic_store(&ticket_waiters, 0);
+        atomic_store(&tickets_taken, 0);
+        EXPECT_INT("pthread_create", pthread_create(&a, NULL, take_ticket, NULL), 0);
+        EXPECT_INT("pthread_create", pthread_create(&b, NULL, take_ticket, NULL), 0);
+        CHECK(await(&ticket_waiters, 2), "the waiters did not start within 2 seconds");
+        /* Both release the mutex only inside pthread_cond_wait. */
+        pthread_mutex_lock(&ticket_lock);
+        pthread_mutex_unlock(&ticket_lock);
+        pause_ms(2);
+        EXPECT_INT("pthread_cancel", pthread_cancel(a), 0);
+        pthread_mutex_lock(&ticket_lock);
+        tickets = 1;
+        pthread_cond_signal(&ticket_cond);
+        pthread_mutex_unlock(&ticket_lock);
+        int taken = await(&tickets_taken, 1);
+        pthread_mutex_lock(&ticket_lock);
+        tickets += 2;
+        pthread_cond_broadcast(&ticket_cond);
+        pthread_mutex_unlock(&ticket_lock);
+        pthread_join(a, NULL);
+        pthread_join(b, NULL);
+        CHECK(taken, "no waiter took the ticket within 2 seconds of pthread_cond_signal");
+    }
+    return PASS;
+}
+
 static pthread_barrier_t barrier;
 static atomic_int arrived, serial, early;
 
@@ -791,6 +1001,10 @@ const struct libc_case libc_cases[] = {
     { "cancel-blocking-read", cancel_blocking_read },
     { "cancel-disabled", cancel_disabled },
     { "cancel-cleanup", cancel_cleanup },
+    { "cancel-completed-read", cancel_completed_read },
+    { "cancel-disabled-no-eintr", cancel_disabled_no_eintr },
+    { "cancel-stdio-unlocks", cancel_stdio_unlocks },
+    { "cancel-cond-signal", cancel_cond_signal },
     { "barrier-wait", barrier_wait },
     { "spin-lock", spin_lock },
     { "attr-stacksize", attr_stacksize },
