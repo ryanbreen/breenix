@@ -119,6 +119,8 @@ pub(crate) struct PreparedExecImage {
     program_name: Option<String>,
     exe_path: Option<alloc::sync::Arc<Vec<u8>>>,
     cmdline: alloc::sync::Arc<Vec<u8>>,
+    /// Where the argument strings lie on the new stack (`argv_area`).
+    cmdline_area: (u64, u64),
     user_stack_size: usize,
     stack_top: VirtAddr,
     stack_bottom: VirtAddr,
@@ -922,6 +924,7 @@ impl ProcessManager {
             b"USER=root\0",
             b"SHELL=/bin/bsh\0",
         ];
+        process.cmdline_area = Some(Self::argv_area(stack_top.as_u64(), argv, &default_env));
         let initial_rsp = if let Some(ref page_table) = process.page_table {
             Self::setup_argv_on_stack(
                 page_table,
@@ -1451,6 +1454,7 @@ impl ProcessManager {
             b"USER=root\0",
             b"SHELL=/bin/bsh\0",
         ];
+        process.cmdline_area = Some(Self::argv_area(user_stack_top, argv, &default_env));
         let initial_sp = if let Some(ref page_table) = process.page_table {
             Self::setup_argv_on_stack(
                 page_table,
@@ -2962,6 +2966,7 @@ impl ProcessManager {
         let parent_row = self.processes.live_row(&parent_pid).ok_or("Parent process not found")?;
         child_process.exe_path = parent_row.exe_path.clone();
         child_process.cmdline = parent_row.cmdline.clone();
+        child_process.cmdline_area = parent_row.cmdline_area;
         child_process.parent = Some(parent_pid);
         // POSIX: Child inherits parent's process group, session, and working directory
         child_process.pgid = parent_pgid;
@@ -3089,6 +3094,7 @@ impl ProcessManager {
         );
         child_process.exe_path = parent.exe_path.clone();
         child_process.cmdline = parent.cmdline.clone();
+        child_process.cmdline_area = parent.cmdline_area;
         child_process.parent = Some(parent_pid);
         child_process.pgid = parent.pgid;
         crate::tty::ctty::inherit(&mut child_process, parent);
@@ -3599,6 +3605,7 @@ impl ProcessManager {
         if let Some(parent) = self.processes.live_row(&parent_pid) {
             child_process.exe_path = parent.exe_path.clone();
             child_process.cmdline = parent.cmdline.clone();
+            child_process.cmdline_area = parent.cmdline_area;
             super::fork::copy_process_state(parent, &mut child_process)?;
         } else {
             return Err("Parent process not found during state copy");
@@ -3668,6 +3675,7 @@ impl ProcessManager {
         let mut child_process = Process::new(child_pid, child_name.clone(), parent.entry_point);
         child_process.exe_path = parent.exe_path.clone();
         child_process.cmdline = parent.cmdline.clone();
+        child_process.cmdline_area = parent.cmdline_area;
         child_process.parent = Some(parent_pid);
         // POSIX: Child inherits parent's process group, session, and working directory
         child_process.pgid = parent_pgid;
@@ -3888,6 +3896,7 @@ impl ProcessManager {
                     .ok_or("Parent process not found during state copy")?;
                 child_process.exe_path = parent.exe_path.clone();
                 child_process.cmdline = parent.cmdline.clone();
+                child_process.cmdline_area = parent.cmdline_area;
                 super::fork::copy_process_state(parent, &mut child_process)?;
             }
 
@@ -4151,6 +4160,7 @@ impl ProcessManager {
         // Do not retain the pathname of the image it replaces.
         process.exe_path = None;
         process.cmdline = None;
+        process.cmdline_area = None;
         if let Some(name) = program_name {
             process.name = String::from(name);
             log::info!("exec_process: Updated process name to '{}'", name);
@@ -4462,6 +4472,7 @@ impl ProcessManager {
         // We need to write to the new stack pages that we just mapped
         // Since the new page table is not active yet, we need to translate addresses
         // and write via the physical frames
+        let cmdline_area = Self::argv_area(USER_STACK_TOP, argv, envp);
         let initial_rsp = Self::setup_argv_on_stack(
             &new_page_table,
             USER_STACK_TOP,
@@ -4494,6 +4505,7 @@ impl ProcessManager {
             program_name,
             exe_path,
             cmdline,
+            cmdline_area,
             user_stack_size,
             stack_top,
             stack_bottom,
@@ -4595,6 +4607,7 @@ impl ProcessManager {
             program_name,
             exe_path,
             cmdline,
+            cmdline_area,
             user_stack_size,
             stack_top,
             stack_bottom,
@@ -4633,6 +4646,7 @@ impl ProcessManager {
         }
         process.exe_path = exe_path;
         process.cmdline = Some(cmdline);
+        process.cmdline_area = Some(cmdline_area);
         process.entry_point = loaded_elf.entry_point;
 
         // Reset heap bounds for the new program
@@ -4883,6 +4897,7 @@ impl ProcessManager {
         }
         let initial_tpidr_el0 = Self::map_initial_arm64_tls(new_page_table.as_mut(), stack_top)?;
 
+        let cmdline_area = Self::argv_area(user_stack_top, argv, envp);
         let initial_rsp = Self::setup_argv_on_stack(
             &new_page_table,
             user_stack_top,
@@ -4914,6 +4929,7 @@ impl ProcessManager {
             program_name,
             exe_path,
             cmdline,
+            cmdline_area,
             user_stack_size,
             stack_top,
             stack_bottom,
@@ -5011,6 +5027,7 @@ impl ProcessManager {
             program_name,
             exe_path,
             cmdline,
+            cmdline_area,
             user_stack_size,
             stack_top,
             stack_bottom,
@@ -5048,6 +5065,7 @@ impl ProcessManager {
         }
         process.exe_path = exe_path;
         process.cmdline = Some(cmdline);
+        process.cmdline_area = Some(cmdline_area);
         process.entry_point = VirtAddr::new(new_entry_point);
 
         // Reset heap bounds for the new program
@@ -5405,6 +5423,7 @@ impl ProcessManager {
         // Do not retain the pathname of the image it replaces.
         process.exe_path = None;
         process.cmdline = None;
+        process.cmdline_area = None;
         if let Some(name) = program_name {
             process.name = String::from(name);
             log::info!("exec_process [ARM64]: Updated process name to '{}'", name);
@@ -5638,6 +5657,17 @@ impl ProcessManager {
     ///   (or compares the IDs) to decide whether to start in secure mode.
     ///
     /// Returns: The initial RSP value (pointing to argc)
+    /// Where `setup_argv_on_stack` writes the argument strings, NUL-separated
+    /// and contiguous, for a stack whose top is `stack_top`: their start
+    /// address and length, which /proc/[pid]/cmdline reads.
+    fn argv_area(stack_top: u64, argv: &[&[u8]], envp: &[&[u8]]) -> (u64, u64) {
+        let stored = |s: &&[u8]| if s.last() == Some(&0) { s.len() } else { s.len() + 1 };
+        let args: usize = argv.iter().map(stored).sum();
+        let total = args + envp.iter().map(stored).sum::<usize>();
+        // Below the 16 AT_RANDOM bytes, 8-byte aligned.
+        (((stack_top - 16) - total as u64) & !7, args as u64)
+    }
+
     fn setup_argv_on_stack(
         page_table: &crate::memory::process_memory::ProcessPageTable,
         stack_top: u64,
@@ -5656,14 +5686,10 @@ impl ProcessManager {
 
         // --- Phase 1: Write data at the top of the stack (strings + random bytes) ---
 
-        // Start from the top of the stack and work downward
-        let mut cursor = stack_top;
-
         // Write 16 pseudo-random bytes for AT_RANDOM
         // Use a simple mix of the stack address and fixed values since we don't
         // have a strong PRNG requirement at boot time
-        cursor -= 16;
-        let random_addr = cursor;
+        let random_addr = stack_top - 16;
         let random_seed = stack_top
             .wrapping_mul(0x5851F42D4C957F2D)
             .wrapping_add(0x14057B7EF767814F);
@@ -5687,31 +5713,8 @@ impl ProcessManager {
         ];
         Self::write_bytes_to_stack(page_table, random_addr, &random_bytes)?;
 
-        // Calculate total space needed for argv and envp strings
-        let mut total_string_space: usize = 0;
-        for arg in argv.iter() {
-            let len = arg.len();
-            if len > 0 && arg[len - 1] == 0 {
-                total_string_space += len;
-            } else {
-                total_string_space += len + 1;
-            }
-        }
-        for env in envp.iter() {
-            let len = env.len();
-            if len > 0 && env[len - 1] == 0 {
-                total_string_space += len;
-            } else {
-                total_string_space += len + 1;
-            }
-        }
-
-        // Reserve space for strings below the random bytes
-        cursor -= total_string_space as u64;
-
-        // Align down to 8 bytes for string area
-        cursor = cursor & !7;
-        let string_area_start = cursor;
+        // The strings go below the random bytes (`argv_area`).
+        let (string_area_start, _) = Self::argv_area(stack_top, argv, envp);
 
         // Write argv strings and collect their addresses
         let mut string_addresses: Vec<u64> = Vec::new();

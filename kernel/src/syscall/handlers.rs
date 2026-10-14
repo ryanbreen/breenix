@@ -1487,6 +1487,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         FdKind::ProcfsFile {
             ref content,
             position,
+            ..
         } => {
             // Read from procfs virtual file
             let content = content.clone();

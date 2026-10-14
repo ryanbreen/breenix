@@ -265,6 +265,11 @@ pub struct Process {
     /// exec commit; None for an image the kernel loaded without arguments.
     pub cmdline: Option<alloc::sync::Arc<alloc::vec::Vec<u8>>>,
 
+    /// Where exec wrote the argument strings in the process's memory: their
+    /// start address and length. /proc/[pid]/cmdline reads them from there,
+    /// so a program that rewrites its argv shows the new bytes, as on Linux.
+    pub cmdline_area: Option<(u64, u64)>,
+
     /// Milliseconds after boot at which the process was created. Exec keeps it.
     pub start_ms: u64,
 
@@ -495,6 +500,7 @@ impl Process {
             name,
             exe_path: None,
             cmdline: None,
+            cmdline_area: None,
             start_ms: crate::time::get_monotonic_time(),
             state: ProcessState::Creating,
             entry_point,

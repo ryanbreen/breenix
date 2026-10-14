@@ -1204,6 +1204,8 @@ fn generate_pid_dir(pid: u64) -> String {
 /// Pid:    3
 /// PPid:   1
 /// State:  Running
+/// Uid:    0   0   0   0
+/// Gid:    0   0   0   0
 /// Children:   4 5
 /// FdCount:    6
 /// VmCode: 8 kB
@@ -1302,6 +1304,8 @@ fn generate_pid_status(pid: u64) -> String {
          Pid:\t{}\n\
          PPid:\t{}\n\
          State:\t{}\n\
+         Uid:\t{}\t{}\t{}\t{}\n\
+         Gid:\t{}\t{}\t{}\t{}\n\
          Children:\t{}\n\
          FdCount:\t{}\n\
          VmCode:\t{} kB\n\
@@ -1318,6 +1322,16 @@ fn generate_pid_status(pid: u64) -> String {
         pid,
         ppid,
         state_str,
+        // Real, effective, saved and file-system IDs; the file-system ID
+        // is the effective one.
+        process.cred.uid,
+        process.cred.euid,
+        process.cred.suid,
+        process.cred.euid,
+        process.cred.gid,
+        process.cred.egid,
+        process.cred.sgid,
+        process.cred.egid,
         children_str,
         fd_count,
         vm_code_kb,
@@ -1397,7 +1411,23 @@ fn generate_pid_stat(pid: u64) -> Result<Vec<u8>, i32> {
         .vmas
         .iter()
         .map(|vma| vma.end.as_u64().saturating_sub(vma.start.as_u64()))
-        .fold((usage.code_size + usage.heap_size + usage.stack_size) as u64, u64::saturating_add);
+        .fold(
+            process
+                .image_size
+                .saturating_add((usage.heap_size + usage.stack_size) as u64),
+            u64::saturating_add,
+        );
+    let signals = &process.signals;
+    let (mut ignored, mut caught) = (0u64, 0u64);
+    for sig in 1..=crate::signal::constants::NSIG {
+        let action = signals.get_handler(sig);
+        if action.is_ignore() {
+            ignored |= 1 << (sig - 1);
+        } else if action.is_handler() {
+            caught |= 1 << (sig - 1);
+        }
+    }
+    let sched = process.main_thread.as_ref().map(|thread| thread.sched);
     let (utime_ns, stime_ns) = process.cpu.split_ns();
     let (cutime_ns, cstime_ns) = process.cpu.children_split_ns();
     let ctty = process.ctty;
@@ -1424,6 +1454,15 @@ fn generate_pid_stat(pid: u64) -> Result<Vec<u8>, i32> {
         start_ms: process.start_ms,
         vsize,
         rss_pages,
+        pending: signals.pending_set(),
+        blocked: signals.blocked(),
+        ignored,
+        caught,
+        rt_priority: sched.map_or(0, |sched| sched.priority as u32),
+        policy: sched
+            .map(|sched| sched.policy)
+            .filter(|&policy| policy != crate::task::thread::SchedPolicy::KERNEL)
+            .map_or(0, u32::from),
         exit_code: process
             .exit_code
             .filter(|_| process.is_terminated())
@@ -1445,30 +1484,89 @@ fn generate_pid_stat(pid: u64) -> Result<Vec<u8>, i32> {
     Ok(line.into_bytes())
 }
 
-/// Generate /proc/[pid]/cmdline: the arguments of the program's exec, each
-/// ending in a NUL byte. Empty for a process the kernel built without an
-/// exec, as for a Linux kernel thread.
+/// Generate /proc/[pid]/cmdline: the bytes of the argument strings exec
+/// wrote to the process's memory, each ending in a NUL byte, read from that
+/// memory now, so a program that rewrites its arguments shows the new bytes.
+/// When the last byte is no longer NUL, the program has written one title
+/// over them (setproctitle), and the title ends at its first NUL, as on
+/// Linux. Empty for a process the kernel built without an exec, as for a
+/// Linux kernel thread.
 fn generate_pid_cmdline(pid: u64) -> Result<Vec<u8>, i32> {
     const ENOENT: i32 = 2;
     const ENOMEM: i32 = 12;
-    let cmdline = {
+    let id = crate::process::ProcessId::new(pid);
+    // Size the buffer before taking the lock to read into it.
+    let (area, copy) = {
         let guard = crate::process::manager();
         let process = guard
             .as_ref()
-            .and_then(|manager| manager.get_process(crate::process::ProcessId::new(pid)))
+            .and_then(|manager| manager.get_process(id))
             .ok_or(ENOENT)?;
         if process.is_terminated() {
             // Linux's zombie has no address space to read the arguments from.
             return Ok(Vec::new());
         }
-        process.cmdline.clone()
+        (process.cmdline_area, process.cmdline.clone())
+    };
+    let Some(copy) = copy else {
+        return Ok(Vec::new());
     };
     let mut content = Vec::new();
-    if let Some(cmdline) = cmdline {
-        content.try_reserve_exact(cmdline.len()).map_err(|_| ENOMEM)?;
-        content.extend_from_slice(&cmdline);
+    let len = area.map_or(copy.len() as u64, |(_, len)| len);
+    content.try_reserve_exact(len as usize).map_err(|_| ENOMEM)?;
+    let read = area.is_some_and(|(addr, len)| {
+        let guard = crate::process::manager();
+        let Some(manager) = guard.as_ref() else {
+            return false;
+        };
+        let Some(process) = manager.get_process(id) else {
+            return false;
+        };
+        if process.cmdline_area != Some((addr, len)) {
+            return false;
+        }
+        // A thread's row reads its process's address space.
+        let table = process.page_table.as_deref().or_else(|| {
+            process
+                .thread_group_id
+                .and_then(|group| manager.get_process(crate::process::ProcessId::new(group)))
+                .and_then(|leader| leader.page_table.as_deref())
+        });
+        let Some(table) = table else {
+            return false;
+        };
+        table.read_user_bytes(addr, len, &mut content);
+        true
+    });
+    if !read {
+        content.clear();
+        content.extend_from_slice(&copy[..copy.len().min(content.capacity())]);
+    }
+    if content.last().is_some_and(|&byte| byte != 0) {
+        if let Some(end) = content.iter().position(|&byte| byte == 0) {
+            content.truncate(end);
+        }
     }
     Ok(content)
+}
+
+/// The owner of a procfs entry: a process's directory and the files in it
+/// belong to the process's effective user and group, as on Linux, and every
+/// other entry to root.
+pub fn owner(path: &str) -> (u32, u32) {
+    let pid = match pid_path::parse(path) {
+        Some((pid_path::Pid::Caller, _)) => current_pid(),
+        Some((pid_path::Pid::Number(pid), _)) => Some(pid),
+        None => None,
+    };
+    let Some(pid) = pid else {
+        return (0, 0);
+    };
+    let guard = crate::process::manager();
+    guard
+        .as_ref()
+        .and_then(|manager| manager.get_process(crate::process::ProcessId::new(pid)))
+        .map_or((0, 0), |process| (process.cred.euid, process.cred.egid))
 }
 
 /// The caller's PID, as getpid reports it: its thread group's. Resolved before

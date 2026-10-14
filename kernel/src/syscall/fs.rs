@@ -1131,8 +1131,11 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
         Fifo(alloc::sync::Arc<spin::Mutex<crate::ipc::fifo::FifoEntry>>),
         ProcfsFile {
             size: i64,
+            owner: (u32, u32),
         },
-        ProcfsDirectory,
+        ProcfsDirectory {
+            owner: (u32, u32),
+        },
         Epoll,
         Ipc(alloc::sync::Arc<dyn crate::ipc::object::IpcFile>),
         Native(crate::fs::ext2::live_inode::FileHandle),
@@ -1207,10 +1210,11 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
                 FdKind::FifoRead(_, _, entry)
                 | FdKind::FifoWrite(_, _, entry)
                 | FdKind::FifoReadWrite(_, _, entry) => FstatKind::Fifo(entry.clone()),
-                FdKind::ProcfsFile { ref content, .. } => FstatKind::ProcfsFile {
+                FdKind::ProcfsFile { ref content, owner, .. } => FstatKind::ProcfsFile {
                     size: content.len() as i64,
+                    owner: *owner,
                 },
-                FdKind::ProcfsDirectory { .. } => FstatKind::ProcfsDirectory,
+                FdKind::ProcfsDirectory { owner, .. } => FstatKind::ProcfsDirectory { owner: *owner },
                 FdKind::Epoll(_) => FstatKind::Epoll,
             }
         }
@@ -1325,19 +1329,21 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
                 return SyscallResult::Err(e);
             }
         }
-        FstatKind::ProcfsFile { size } => {
+        FstatKind::ProcfsFile { size, owner } => {
             stat.st_dev = 0xffff0004;
             stat.st_ino = 0;
             stat.st_mode = S_IFREG | 0o444;
             stat.st_nlink = 1;
             stat.st_size = size;
+            (stat.st_uid, stat.st_gid) = owner;
         }
-        FstatKind::ProcfsDirectory => {
+        FstatKind::ProcfsDirectory { owner } => {
             stat.st_dev = 0xffff0004;
             stat.st_ino = 0;
             stat.st_mode = S_IFDIR | 0o555;
             stat.st_nlink = 2;
             stat.st_size = 0;
+            (stat.st_uid, stat.st_gid) = owner;
         }
         FstatKind::Epoll => {
             stat.st_dev = 0xffff0006;
@@ -1611,7 +1617,7 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
     }
 
     // Handle ProcfsDirectory specially
-    if let FdKind::ProcfsDirectory { path, position } = &fd_entry.kind {
+    if let FdKind::ProcfsDirectory { path, position, .. } = &fd_entry.kind {
         let dir_path = path.clone();
         let start_position = *position;
         drop(manager_guard);
@@ -2729,6 +2735,7 @@ fn handle_procfs_open(path: &str, flags: u32) -> SyscallResult {
         let fd_kind = FdKind::ProcfsDirectory {
             path: dir_path,
             position: 0,
+            owner: crate::fs::procfs::owner(normalized),
         };
         let fd_entry = match FileDescriptor::try_opened(fd_kind, flags) {
             Ok(entry) => entry,
@@ -2774,6 +2781,7 @@ fn handle_procfs_open(path: &str, flags: u32) -> SyscallResult {
     let fd_kind = FdKind::ProcfsFile {
         content,
         position: 0,
+        owner: crate::fs::procfs::owner(path),
     };
     let fd_entry = match FileDescriptor::try_opened(fd_kind, flags) {
         Ok(entry) => entry,

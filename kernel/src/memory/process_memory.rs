@@ -2312,6 +2312,34 @@ impl ProcessPageTable {
         Ok(())
     }
 
+    /// Append up to `len` bytes of this address space from the user address
+    /// `addr` to `out`, through the direct map, stopping at the first page
+    /// that is not mapped to the user or when `out` reaches its capacity, so
+    /// nothing here allocates.
+    pub(crate) fn read_user_bytes(&self, addr: u64, len: u64, out: &mut Vec<u8>) {
+        let hhdm_base = crate::memory::physical_memory_offset().as_u64();
+        let end = addr.saturating_add(len).min(USER_STACK_REGION_END);
+        let mut at = addr;
+        while at < end && out.len() < out.capacity() {
+            let page: Page<Size4KiB> = Page::containing_address(VirtAddr::new(at));
+            let Some((frame, flags)) = self.get_page_info(page) else {
+                return;
+            };
+            if !flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+                return;
+            }
+            let offset = at & 0xfff;
+            let chunk = (4096 - offset)
+                .min(end - at)
+                .min((out.capacity() - out.len()) as u64);
+            let src = (hhdm_base + frame.start_address().as_u64() + offset) as *const u8;
+            // SAFETY: the bytes lie in one user frame this table maps, read
+            // through the kernel's direct map.
+            out.extend_from_slice(unsafe { core::slice::from_raw_parts(src, chunk as usize) });
+            at += chunk;
+        }
+    }
+
     /// Resolve a CoW write while the caller owns this process's page table.
     /// Signal delivery already holds PROCESS_MANAGER and must not fault into a
     /// handler that reacquires it. The ordinary data-abort path shares this

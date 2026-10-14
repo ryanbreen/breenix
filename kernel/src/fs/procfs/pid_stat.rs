@@ -26,7 +26,29 @@ pub(super) struct PidStat<'a> {
     pub start_ms: u64,
     pub vsize: u64,
     pub rss_pages: u64,
+    /// Pending, blocked, ignored and caught signals: bit `n - 1` is signal `n`.
+    pub pending: u64,
+    pub blocked: u64,
+    pub ignored: u64,
+    pub caught: u64,
+    /// Real-time priority, 1 to 99 under SCHED_FIFO and SCHED_RR, else 0.
+    pub rt_priority: u32,
+    /// Scheduling policy, as sched_setscheduler numbers it.
+    pub policy: u32,
     pub exit_code: i32,
+}
+
+const SCHED_FIFO: u32 = 1;
+const SCHED_RR: u32 = 2;
+
+/// Field 18, as Linux computes it: -1 - rt_priority under a real-time policy
+/// (-2 to -100), else 20 + nice (0 to 39).
+fn priority(s: &PidStat) -> i64 {
+    if s.policy == SCHED_FIFO || s.policy == SCHED_RR {
+        -1 - s.rt_priority as i64
+    } else {
+        20 + s.nice as i64
+    }
 }
 
 /// Linux's encoding of a device number in `tty_nr`: minor bits 0-7 and
@@ -74,7 +96,7 @@ pub(super) fn write(out: &mut impl core::fmt::Write, s: &PidStat) -> core::fmt::
         ticks(s.stime_ns),
         ticks(s.cutime_ns),
         ticks(s.cstime_ns),
-        20 + s.nice as i64,
+        priority(s),
         s.nice,
         s.num_threads,
         s.start_ms / (1_000 / USER_HZ),
@@ -87,7 +109,11 @@ pub(super) fn write(out: &mut impl core::fmt::Write, s: &PidStat) -> core::fmt::
     // rt_priority, policy, delayacct_blkio_ticks, guest_time, cguest_time,
     // start_data end_data start_brk arg_start arg_end env_start env_end
     // exit_code
-    writeln!(out, " 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0 0 0 0 0 0 0 0 {}", s.exit_code)
+    writeln!(
+        out,
+        " 0 0 0 0 0 {} {} {} {} 0 0 0 17 0 {} {} 0 0 0 0 0 0 0 0 0 0 {}",
+        s.pending, s.blocked, s.ignored, s.caught, s.rt_priority, s.policy, s.exit_code
+    )
 }
 
 #[cfg(test)]
@@ -113,6 +139,12 @@ mod tests {
             start_ms: 12_345,
             vsize: 8192,
             rss_pages: 2,
+            pending: 0,
+            blocked: 0,
+            ignored: 0,
+            caught: 0,
+            rt_priority: 0,
+            policy: 0,
             exit_code: 0,
         }
     }
@@ -149,6 +181,8 @@ mod tests {
         s.tpgid = i64::MIN;
         (s.utime_ns, s.stime_ns, s.cutime_ns, s.cstime_ns) = (u64::MAX, u64::MAX, u64::MAX, u64::MAX);
         (s.num_threads, s.start_ms, s.vsize, s.rss_pages) = (u64::MAX, u64::MAX, u64::MAX, u64::MAX);
+        (s.pending, s.blocked, s.ignored, s.caught) = (u64::MAX, u64::MAX, u64::MAX, u64::MAX);
+        (s.rt_priority, s.policy) = (99, 2);
         s.exit_code = i32::MIN;
         assert!(line(&s).len() <= MAX_LEN);
     }
@@ -174,6 +208,18 @@ mod tests {
         assert_eq!(fields[2], "Z");
         assert_eq!(&fields[17..19], &["0", "-20"]);
         assert_eq!(fields[51], "768");
+    }
+
+    #[test]
+    fn real_time_policy_priority_and_signal_sets() {
+        let mut s = sample();
+        (s.policy, s.rt_priority) = (SCHED_FIFO, 10);
+        (s.pending, s.blocked, s.ignored, s.caught) = (1 << 14, 1 << 9, 1 << 12, 1 << 1);
+        let text = line(&s);
+        let fields: Vec<&str> = text.trim_end().split(' ').collect();
+        assert_eq!(fields[17], "-11");
+        assert_eq!(&fields[30..34], &["16384", "512", "4096", "2"]);
+        assert_eq!(&fields[39..41], &["10", "1"]);
     }
 
     #[test]
