@@ -17,7 +17,7 @@
 //!   sockaddr_storage: Linux's.
 //! - timeval, linger: the kernel's SO_RCVTIMEO/SO_SNDTIMEO and SO_LINGER
 //!   (kernel/src/socket/opts.rs); timespec, iovec, pollfd: the kernel's syscalls.
-//! - cpu_set_t: the most mask the kernel's sched_getaffinity copies, 128 bytes.
+//! - cpu_set_t: 128-byte public mask; libc zero-fills past the kernel's 8 bytes.
 
 use super::*;
 use crate::{iovec, linger, pollfd, timespec, timeval};

@@ -127,7 +127,8 @@ s! {
     }
 
     /// A CPU set: CPU_SETSIZE bits in 64-bit words on both architectures, the
-    /// 128 bytes Linux's cpu_set_t occupies.
+    /// 128 bytes Linux's cpu_set_t occupies. The kernel returns an 8-byte mask;
+    /// libc zero-fills the remaining bytes of this public type.
     pub struct cpu_set_t {
         bits: [u64; CPU_SETSIZE as usize / 64],
     }
@@ -1387,6 +1388,11 @@ unsafe extern "C" {
         pid: crate::pid_t,
         cpusetsize: size_t,
         cpuset: *mut cpu_set_t,
+    ) -> c_int;
+    pub fn sched_setaffinity(
+        pid: crate::pid_t,
+        cpusetsize: size_t,
+        cpuset: *const cpu_set_t,
     ) -> c_int;
 
     pub fn readv(fd: c_int, iov: *const crate::iovec, iovcnt: c_int) -> ssize_t;

@@ -175,7 +175,7 @@ pub fn value_len(level: i32, name: i32, optlen: usize) -> usize {
         (SOL_SOCKET, SO_LINGER) => 8,
         (SOL_SOCKET, _) | (IPPROTO_TCP, _) => 4,
         // Linux takes a one-byte IP_TTL as well as an int.
-        (IPPROTO_IP, IP_TTL) => return optlen.min(4),
+        (IPPROTO_IP, IP_TTL) => return if optlen < 4 { optlen.min(1) } else { 4 },
         _ => return optlen.min(16),
     };
     if optlen < 4 {
@@ -184,6 +184,15 @@ pub fn value_len(level: i32, name: i32, optlen: usize) -> usize {
         4
     } else {
         size
+    }
+}
+
+/// Linux returns IP_TTL as one byte when the caller supplies less than an int.
+pub fn result_len(level: i32, name: i32, room: usize, len: usize) -> usize {
+    if level == IPPROTO_IP && name == IP_TTL && room < 4 {
+        room.min(1)
+    } else {
+        room.min(len)
     }
 }
 
@@ -373,6 +382,11 @@ mod tests {
         assert_eq!(value_len(0, 1, 2), 2);
         assert_eq!(value_len(IPPROTO_IP, IP_TTL, 64), 4);
         assert_eq!(value_len(IPPROTO_IP, IP_TTL, 1), 1);
+        for room in 0..8 {
+            let expected = if room < 4 { room.min(1) } else { 4 };
+            assert_eq!(value_len(IPPROTO_IP, IP_TTL, room), expected);
+            assert_eq!(result_len(IPPROTO_IP, IP_TTL, room, 4), expected);
+        }
     }
 
     #[test]

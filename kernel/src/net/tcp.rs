@@ -1854,11 +1854,14 @@ pub struct ConnOptions {
 }
 
 /// Bring a connection up to date with its socket's options.
-pub fn tcp_set_options(conn_id: &ConnectionId, options: ConnOptions) {
+pub fn tcp_set_options(conn_id: &ConnectionId, options: impl FnOnce() -> ConnOptions) {
     with_tcp_connections(|connections| {
         let Some(conn) = connections.get_mut(conn_id) else {
             return;
         };
+        // Read under the table lock: an older setter must never apply a
+        // snapshot after a newer setter has updated this connection.
+        let options = options();
         conn.set_buffer_sizes(options.rcvbuf / 2, options.sndbuf / 2);
         conn.reuse = options.reuse;
         conn.ttl = options.ttl;
@@ -1872,6 +1875,11 @@ pub fn tcp_set_options(conn_id: &ConnectionId, options: ConnOptions) {
             note_timer_deadline(deadline);
         }
     });
+}
+
+/// The TTL inherited when the handshake created this connection.
+pub fn tcp_ttl(conn_id: &ConnectionId) -> Option<u8> {
+    with_tcp_connections(|connections| connections.get(conn_id).map(|conn| conn.ttl))
 }
 
 /// poll's view of a connection, as Linux's `tcp_poll` reports it: POLLHUP once
@@ -2554,10 +2562,10 @@ fn listen_backlog(backlog: usize) -> usize {
 
 /// IP_TTL set on a listening socket: the SYN+ACKs and children of later
 /// connection requests take it.
-pub fn tcp_set_listener_ttl(id: ListenerId, ttl: u8) {
+pub fn tcp_set_listener_ttl(id: ListenerId, ttl: impl FnOnce() -> u8) {
     with_tcp(|tables| {
         if let Some(listener) = tables.listener(id) {
-            listener.ttl = ttl;
+            listener.ttl = ttl();
         }
     });
 }

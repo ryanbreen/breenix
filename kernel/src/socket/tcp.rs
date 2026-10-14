@@ -146,14 +146,15 @@ fn is_local_addr(addr: [u8; 4]) -> bool {
 /// SO_KEEPALIVE and SO_REUSEADDR: when it is made, and whenever one of them
 /// is set (`option_set`).
 fn apply_options(sk: &Socket, conn: &ConnectionId) {
-    let options = sk.common.with_opts(|o| tcp::ConnOptions {
-        rcvbuf: o.rcvbuf,
-        sndbuf: o.sndbuf,
-        keepalive: o.keepalive,
-        reuse: o.reuseaddr,
-        ttl: o.ttl,
+    tcp::tcp_set_options(conn, || {
+        sk.common.with_opts(|o| tcp::ConnOptions {
+            rcvbuf: o.rcvbuf,
+            sndbuf: o.sndbuf,
+            keepalive: o.keepalive,
+            reuse: o.reuseaddr,
+            ttl: o.ttl,
+        })
     });
-    tcp::tcp_set_options(conn, options);
 }
 
 /// SO_LINGER with a positive time: wait, at most that long, for the peer to
@@ -260,9 +261,12 @@ impl ProtoOps for TcpSock {
             addr: conn.remote_ip,
             port: conn.remote_port,
         };
-        // The socket starts with the listener's options, as on Linux.
+        // Preserve the TTL cloned by the handshake, even if the listener
+        // changed it while this connection waited in the accept queue.
+        let ttl = tcp::tcp_ttl(&conn).ok_or(errno::ECONNABORTED)?;
         match Socket::new_child(sk, SocketProto::Tcp(TcpSock::connected(conn))) {
             Ok(socket) => {
+                socket.common.with_opts(|o| o.ttl = ttl);
                 tcp::tcp_set_owner(&conn, Arc::downgrade(&socket));
                 apply_options(&socket, &conn);
                 Ok((socket, peer))
@@ -511,7 +515,7 @@ impl ProtoOps for TcpSock {
     fn option_set(&self, sk: &Socket, _level: i32, _name: i32) {
         match self.state() {
             TcpSockState::Connected(conn) => apply_options(sk, &conn),
-            TcpSockState::Listening { id, .. } => tcp::tcp_set_listener_ttl(id, sk.common.ttl()),
+            TcpSockState::Listening { id, .. } => tcp::tcp_set_listener_ttl(id, || sk.common.ttl()),
             _ => {}
         }
     }
