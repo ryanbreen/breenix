@@ -283,6 +283,15 @@ writes_boot_target() {
     [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = suite ]
 }
 
+# The nameserver this target's /etc/resolv.conf names. VMware's adapter is bridged
+# to the host's network, whose nameserver only the boot-time DHCP lease knows, so
+# its resolv.conf is the kernel's /proc/net/pnp.
+target_nameserver() {
+    if [ "$PARALLELS" = true ]; then echo 10.211.55.1;
+    elif [ "$VMWARE" = true ]; then echo dhcp;
+    else echo 10.0.2.3; fi
+}
+
 # The ext2 disk a Parallels or VMware VM boots: the built disk itself, or with
 # --suite or --probe a copy carrying the boot target (the built disk never gets one, so later
 # ordinary boots keep using the built disk). Sets BOOT_EXT2_DISK.
@@ -297,10 +306,7 @@ stage_boot_ext2_disk() {
     BOOT_EXT2_DISK="$staging_dir/ext2-boot-target.img"
     rm -f "$BOOT_EXT2_DISK"
     cp "$built" "$BOOT_EXT2_DISK" || { echo "ERROR: could not copy $built for the boot target"; exit 1; }
-    local server=10.0.2.3
-    if [ "$PARALLELS" = true ]; then server=10.211.55.1; fi
-    if [ "$VMWARE" = true ]; then server=172.16.45.2; fi
-    "$BREENIX_ROOT/scripts/write-resolv-conf.sh" "$BOOT_EXT2_DISK" "$server" || exit 1
+    "$BREENIX_ROOT/scripts/write-resolv-conf.sh" "$BOOT_EXT2_DISK" "$(target_nameserver)" || exit 1
     writes_boot_target || return 0
     if [ "$PROBE" = true ]; then
         "$BREENIX_ROOT/scripts/write-boot-target.sh" "$BOOT_EXT2_DISK" --probe \
@@ -312,12 +318,13 @@ stage_boot_ext2_disk() {
 }
 
 # Whether the VM's wrapped data disk (whose boot-target marker file is $1) must
-# be made again: when the built disk changed, this run selects a boot target, or
-# an earlier run's boot target must be cleared. Otherwise the wrapped
-# disk, and any changes the guest made to it, is kept.
+# be made again: when the built disk changed, this run selects a boot target,
+# an earlier run's boot target must be cleared, or the disk names another
+# nameserver. Otherwise the wrapped disk, and any changes the guest made to it, is kept.
 ext2_rewrap_needed() {
     local rebuilt="$1" marker="$2"
-    [ "$rebuilt" = true ] || writes_boot_target || [ -f "$marker" ] || [ ! -f "$marker.dns" ]
+    [ "$rebuilt" = true ] || writes_boot_target || [ -f "$marker" ] ||
+        [ "$(cat "$marker.dns" 2>/dev/null)" != "$(target_nameserver)" ]
 }
 
 # Record whether the data disk just wrapped carries a boot target.
@@ -325,8 +332,7 @@ mark_wrapped_ext2() {
     local marker="$1"
     if writes_boot_target; then echo "$BOOT_MODE $SUITE" > "$marker"; else rm -f "$marker"; fi
     # Staging verifies the nameserver before the wrapped disk is published.
-    if [ "$PARALLELS" = true ]; then echo 10.211.55.1 > "$marker.dns";
-    elif [ "$VMWARE" = true ]; then echo 172.16.45.2 > "$marker.dns"; fi
+    target_nameserver > "$marker.dns"
 }
 
 # Cargo can restore a cached profile with an older mtime. Compare the exact

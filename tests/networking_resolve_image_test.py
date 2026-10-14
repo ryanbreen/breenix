@@ -37,10 +37,25 @@ class ResolverImageTests(unittest.TestCase):
             disk = Path(temporary) / 'target.img'
             subprocess.run([mke2fs, '-q', '-t', 'ext2', '-F', str(disk), '8192'], check=True)
             subprocess.run([debugfs, '-w', '-R', 'mkdir /etc', str(disk)], check=True, capture_output=True)
-            for server in ['10.0.2.3', '10.211.55.1', '172.16.45.2']:
+            for server in ['10.0.2.3', '10.211.55.1', 'dhcp', '10.0.2.3']:
                 subprocess.run(['/bin/bash', str(ROOT / 'scripts/write-resolv-conf.sh'), str(disk), server], check=True)
-                result = subprocess.run([debugfs, '-R', 'cat /etc/resolv.conf', str(disk)], check=True, capture_output=True)
-                self.assertEqual(result.stdout, f'nameserver {server}\n'.encode())
+                result = subprocess.run([debugfs, '-R', 'stat /etc/resolv.conf', str(disk)], check=True, capture_output=True)
+                if server == 'dhcp':
+                    self.assertIn(b'Type: symlink', result.stdout)
+                    self.assertIn(b'Fast link dest: "/proc/net/pnp"\n', result.stdout)
+                else:
+                    self.assertIn(b'Type: regular', result.stdout)
+                    result = subprocess.run([debugfs, '-R', 'cat /etc/resolv.conf', str(disk)], check=True, capture_output=True)
+                    self.assertEqual(result.stdout, f'nameserver {server}\n'.encode())
+
+    def test_retired_vmware_nat_nameserver_is_refused(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            disk = Path(temporary) / 'target.img'
+            disk.touch()
+            result = subprocess.run(['/bin/bash', str(ROOT / 'scripts/write-resolv-conf.sh'), str(disk), '172.16.45.2'],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn('Unsupported target DNS server', result.stderr)
 
     def test_native_path_seeds(self):
         with tempfile.TemporaryDirectory() as temporary:
