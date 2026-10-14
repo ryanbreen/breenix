@@ -1,7 +1,7 @@
 //! POSIX.1-2024 process, time and file-time functions that sit directly on the
-//! kernel: the exec family over execve, wait/wait3/wait4, sleep and usleep,
-//! gettimeofday, gethostname, ttyname, getpagesize, and utime/utimes/futimens/
-//! utimensat over the kernel's utimensat.
+//! kernel: the exec family over execve, wait/wait3/wait4, setuid, setgid and chroot,
+//! sleep and usleep, gettimeofday, gethostname, ttyname, getpagesize, and
+//! utime/utimes/futimens/utimensat over the kernel's utimensat.
 
 use core::ffi::VaList;
 use core::ptr::{null, null_mut};
@@ -39,6 +39,18 @@ mod nr {
     pub const WAIT4: u64 = 260;
     #[cfg(target_arch = "x86_64")]
     pub const WAIT4: u64 = 61;
+    #[cfg(target_arch = "aarch64")]
+    pub const SETUID: u64 = 146;
+    #[cfg(target_arch = "x86_64")]
+    pub const SETUID: u64 = 105;
+    #[cfg(target_arch = "aarch64")]
+    pub const SETGID: u64 = 144;
+    #[cfg(target_arch = "x86_64")]
+    pub const SETGID: u64 = 106;
+    #[cfg(target_arch = "aarch64")]
+    pub const CHROOT: u64 = 51;
+    #[cfg(target_arch = "x86_64")]
+    pub const CHROOT: u64 = 161;
 }
 
 extern "C" {
@@ -227,6 +239,29 @@ pub unsafe extern "C" fn wait4(pid: i32, status: *mut i32, options: i32, usage: 
 #[no_mangle]
 pub unsafe extern "C" fn wait3(status: *mut i32, options: i32, usage: *mut u8) -> i32 {
     wait4(-1, status, options, usage)
+}
+
+// ---------------------------------------------------------------------------------
+// Credentials and the root directory
+// ---------------------------------------------------------------------------------
+
+#[no_mangle]
+pub extern "C" fn setuid(uid: u32) -> i32 {
+    let r = unsafe { libbreenix::raw::syscall1(nr::SETUID, uid as u64) };
+    crate::syscall_result_to_c_int(r as i64)
+}
+
+#[no_mangle]
+pub extern "C" fn setgid(gid: u32) -> i32 {
+    let r = unsafe { libbreenix::raw::syscall1(nr::SETGID, gid as u64) };
+    crate::syscall_result_to_c_int(r as i64)
+}
+
+/// chroot: the kernel's answer, ENOSYS where it has no chroot.
+#[no_mangle]
+pub unsafe extern "C" fn chroot(path: *const u8) -> i32 {
+    let r = libbreenix::raw::syscall1(nr::CHROOT, path as u64);
+    crate::syscall_result_to_c_int(r as i64)
 }
 
 // ---------------------------------------------------------------------------------
