@@ -20,7 +20,8 @@ bundle=$(dirname "$2")
 for lock in "$bundle"/*.lck; do
     [ -e "$lock" ] && { echo "Error: Insufficient permissions"; exit 255; }
 done
-rm -r "$bundle"
+# Fusion deletes known VM files, retaining any runner metadata.
+for item in "$bundle"/*.vmx "$bundle"/*.vmdk; do rm -f "$item"; done
 """
 
 

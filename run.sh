@@ -414,6 +414,12 @@ delete_vmware_bundle() {
     else
         mv "$bundle" "$scratch/" || true
     fi
+    # Fusion removes its known VM files but preserves our ownership marker.
+    # Remove only that marker and an empty directory, never unknown contents.
+    if [ -d "$bundle" ] && [ ! -e "$vmx" ]; then
+        rm -f "$bundle/.breenix-run-owner"
+        rmdir "$bundle" 2>/dev/null || echo "WARNING: keeping extra files in $bundle"
+    fi
     rm -rf "$scratch"
 }
 
