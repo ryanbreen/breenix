@@ -217,6 +217,7 @@ static SUITE: Suite = suite("utilities", "Shell & POSIX utilities", &[
         case("command-v", "command -v writes the path of a utility, the name of a built-in or function, and fails for neither", proc_command_v),
         case("time", "time -p runs a command, writes real, user and sys times to stderr and exits with its status", proc_time),
         case("tty", "tty with standard input that is not a terminal writes not a tty and exits 1", proc_tty),
+        case("free", "free, a legacy /bin name, reports the same total memory as /proc/meminfo", proc_free),
     ]),
     category("scripts", "real shell scripts", &[
         case("wordfreq", "A tr | sort | uniq -c | sort | head pipeline lists the three most frequent words", script_wordfreq),
@@ -1246,6 +1247,14 @@ fn proc_id() -> CaseResult {
     sh(r#"u=$(id -u); case $u in ''|*[!0-9]*) echo bad;; *) echo uid;; esac; case $(id) in "uid=$u("*|"uid=$u "*) echo form;; esac"#)
         .needs(&["id"])
         .expect("uid\nform\n", 0, Empty)
+}
+
+fn proc_free() -> CaseResult {
+    // free reads its totals through sysinfo(2), which it does not check; /proc/meminfo
+    // reads the same kernel counter, so only a filled structure gives the same total.
+    sh(r#"t=$(free -k | awk '$1 == "Mem:" { print $2 }'); m=$(awk '$1 == "MemTotal:" { print $2 }' /proc/meminfo); [ -n "$t" ] && [ "$t" = "$m" ] && echo same"#)
+        .needs(&["free", "awk"])
+        .expect("same\n", 0, Empty)
 }
 
 fn proc_uname() -> CaseResult {
