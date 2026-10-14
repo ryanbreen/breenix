@@ -1,0 +1,11 @@
+# The libc suite categories whose C program build.sh builds, one per line:
+#   <category>            functions libc.a lacks get stand-ins that fail by name
+#   <category> complete   every symbol the program uses must be in libc.a
+# A lane adds its category here once the category's headers compile.
+dirent-glob complete
+getopt-env complete
+locale-wchar complete
+math
+pthread complete
+stdio complete
+string-stdlib
