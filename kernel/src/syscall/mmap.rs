@@ -866,6 +866,11 @@ pub(crate) fn unmap_range(
 ) -> Result<(), u64> {
     use crate::memory::file_map;
 
+    // Reserve anonymous VMA splits before removing any pages.
+    process
+        .vmas
+        .try_reserve(2)
+        .map_err(|_| ErrorCode::OutOfMemory as u64)?;
     // Removing the locks on a middle range can split one interval.
     process.memory_locks.reserve_split()?;
 
@@ -887,26 +892,33 @@ pub(crate) fn unmap_range(
     let Some(page_table) = process.page_table.as_deref_mut() else {
         return Err(ErrorCode::OutOfMemory as u64);
     };
-    // Every file VMA the range touches now lies inside it.
-    while let Some(index) = process
-        .vmas
-        .iter()
-        .position(|v| v.backing.is_some() && v.start.as_u64() < end_addr && addr < v.end.as_u64())
-    {
-        file_map::unmap(&mut process.vmas, index, page_table).map_err(file_vma_errno)?;
-    }
-
-    if process.vmas.try_reserve(2).is_err() {
+    // Refuse missing custody before any descriptor is removed. PM keeps the
+    // table stable through the subsequent removal.
+    if !page_table.can_unmap_range(addr, end_addr) {
         return Err(ErrorCode::OutOfMemory as u64);
     }
+    // Every file VMA the range touches now lies inside it.
+    let mut leaves = crate::memory::process_memory::LeafBatch::new();
+    for index in 0..process.vmas.len() {
+        let vma = &process.vmas[index];
+        if vma.backing.is_some()
+            && vma.start.as_u64() < end_addr
+            && addr < vma.end.as_u64()
+        {
+            file_map::unmap(&process.vmas, index, page_table, &mut leaves)
+                .map_err(file_vma_errno)?;
+        }
+    }
+
     let mut from = addr;
     while let Some(page) = page_table.next_mapped_page(from, end_addr) {
         from = page.start_address().as_u64() + PAGE_SIZE;
         match page_table.unmap_page_deferred(page) {
-            Ok(leaf) => leaf.flush().release(),
+            Ok(leaf) => leaves.push(leaf),
             Err(_) => return Err(ErrorCode::OutOfMemory as u64),
         }
     }
+    leaves.finish();
     let mut index = 0;
     while index < process.vmas.len() {
         let vma = &process.vmas[index];

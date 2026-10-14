@@ -137,6 +137,30 @@
         {
           "id": "unmap-cpus",
           "title": "With two to four processors, worker threads pinned one to each other processor and reading a page the case's thread has just unmapped raise SIGSEGV with SEGV_MAPERR at the byte read every time and never read the old page"
+        },
+        {
+          "id": "unmap-2-cpus",
+          "title": "Every pinned worker warms every page of a 2-page anonymous range and faults on every page in a sweep begun after removal returns"
+        },
+        {
+          "id": "unmap-64-cpus",
+          "title": "Every pinned worker warms every page of a 64-page anonymous range and faults on every page in a sweep begun after removal returns"
+        },
+        {
+          "id": "unmap-65-cpus",
+          "title": "Every pinned worker warms every page of a 65-page anonymous range and faults on every page in a sweep begun after removal returns"
+        },
+        {
+          "id": "unmap-128-cpus",
+          "title": "Every pinned worker warms every page of a 128-page anonymous range and faults on every page in a sweep begun after removal returns"
+        },
+        {
+          "id": "unmap-file-cpus",
+          "title": "Every pinned worker warms every page of a 128-page private file range and faults on every page in a sweep begun after removal returns"
+        },
+        {
+          "id": "shrink-cpus",
+          "title": "Every pinned worker warms every page of a 128-page heap range and faults on every page in a sweep begun after removal returns"
         }
       ]
     },
