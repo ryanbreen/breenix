@@ -2544,8 +2544,11 @@ fn sys_readlink_from(dirfd: i32, pathname: u64, buf: u64, bufsize: u64) -> Sysca
     use crate::fs::ext2::FileType;
     use crate::fs::namei::Target;
 
-    // Validate buffer pointer
-    if buf == 0 || bufsize == 0 {
+    // A buffer of no bytes is EINVAL, as on Linux; a null one EFAULT.
+    if bufsize == 0 {
+        return SyscallResult::Err(EINVAL as u64);
+    }
+    if buf == 0 {
         return SyscallResult::Err(EFAULT as u64);
     }
 
@@ -3482,10 +3485,10 @@ fn handle_procfs_getdents64(
             Err(_) => return SyscallResult::Err(super::errno::ENOMEM as u64),
         }
     } else if dir_path.starts_with("/proc/") {
-        // Per-PID directory - only contains "status"
+        // Per-PID directory: its status file and exe link
         let relative = dir_path.strip_prefix("/proc/").unwrap_or("");
         if !relative.is_empty() && relative.chars().all(|c| c.is_ascii_digit()) {
-            alloc::vec![String::from("status")]
+            alloc::vec![String::from("status"), String::from("exe")]
         } else {
             alloc::vec![]
         }
@@ -3562,6 +3565,8 @@ fn handle_procfs_getdents64(
             let ino = entry.entry_type.inode();
             let dt = if entry.entry_type.is_directory() {
                 DT_DIR
+            } else if entry.entry_type.is_link() {
+                DT_LNK
             } else {
                 DT_REG
             };
@@ -3570,7 +3575,7 @@ fn handle_procfs_getdents64(
             // Check if the entry name is a PID (numeric) - it's a directory
             if entry_name.chars().all(|c| c.is_ascii_digit()) {
                 let pid: u64 = entry_name.parse().unwrap_or(0);
-                (10000 + pid, DT_DIR)
+                (crate::fs::procfs::pid_inode(pid, 0), DT_DIR)
             } else {
                 (0, DT_REG)
             }
@@ -4199,6 +4204,20 @@ pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, flags: u32) -> Sy
         Target::Inode { mount, ino, .. } => (mount, ino as u64),
         Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
         Target::Virtual => {
+            // A procfs link not followed (lstat) is reported as the link.
+            if let Some((ino, uid, gid)) = crate::fs::procfs::link_owner(full_path) {
+                let mut stat = Stat::zeroed();
+                stat.st_ino = ino;
+                stat.st_mode = S_IFLNK | 0o777;
+                stat.st_nlink = 1;
+                stat.st_uid = uid;
+                stat.st_gid = gid;
+                stat.st_blksize = 4096;
+                return match copy_to_user(statbuf as *mut Stat, &stat) {
+                    Ok(()) => SyscallResult::Ok(0),
+                    Err(errno) => SyscallResult::Err(errno),
+                };
+            }
             let fd = match sys_open_from(dirfd, pathname, O_RDONLY, 0) {
                 SyscallResult::Ok(fd) => fd as i32,
                 error => return error,

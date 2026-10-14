@@ -22,9 +22,10 @@
 //! reused while it is anyone's working directory.
 //!
 //! The ext2 root filesystem holds `/`. The home filesystem is entered at
-//! `/home` when mounted. devfs and procfs are entered at `/dev` and `/proc`;
-//! they have no symlinks, and each name below their mount points is checked
-//! against the entries they hold.
+//! `/home` when mounted. devfs and procfs are entered at `/dev` and `/proc`,
+//! and each name below their mount points is checked against the entries they
+//! hold. procfs's links (`/proc/self`, `/proc/<pid>/exe`) are expanded as
+//! symlinks are.
 
 use crate::fs::ext2::{self, live_inode::FileHandle, FileType, EXT2_ROOT_INO};
 use crate::syscall::errno::{EIO, ELOOP, ENAMETOOLONG, ENOENT, ENOTDIR};
@@ -465,7 +466,32 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
                     name,
                     node: Node::Virtual,
                 });
-                match core::str::from_utf8(&join(&stack)?).ok().and_then(virtual_entry) {
+                let joined = join(&stack)?;
+                let link = match core::str::from_utf8(&joined) {
+                    Ok(path) if !is_final || follow_final => {
+                        crate::fs::procfs::link_target(path, cred)
+                    }
+                    _ => None,
+                };
+                if let Some(target) = link {
+                    let target = target?;
+                    links += 1;
+                    if links > MAX_SYMLINKS {
+                        return Err(ELOOP as u64);
+                    }
+                    // The link's own frame: a relative target is resolved
+                    // in the directory that holds the link.
+                    stack.pop();
+                    if target.starts_with('/') {
+                        stack.clear();
+                    }
+                    push_components(&mut pending, target.as_bytes())?;
+                    if pending.iter().map(|name| name.len() + 1).sum::<usize>() >= PATH_MAX {
+                        return Err(ENAMETOOLONG as u64);
+                    }
+                    continue;
+                }
+                match core::str::from_utf8(&joined).ok().and_then(virtual_entry) {
                     Some(is_dir) => top_is_dir = is_dir,
                     None if is_final => {
                         virtual_absent = true;

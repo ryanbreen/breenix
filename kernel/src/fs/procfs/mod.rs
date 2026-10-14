@@ -109,6 +109,8 @@ pub enum ProcEntryType {
     PidStatus(u64),
     /// /proc/[pid]/exe - executable pathname symlink
     PidExe(u64),
+    /// /proc/self - symlink to the caller's process directory
+    SelfLink,
 }
 
 impl ProcEntryType {
@@ -147,6 +149,7 @@ impl ProcEntryType {
             ProcEntryType::PidDir(_) => "pid",
             ProcEntryType::PidStatus(_) => "status",
             ProcEntryType::PidExe(_) => "exe",
+            ProcEntryType::SelfLink => "self",
         }
     }
 
@@ -186,14 +189,14 @@ impl ProcEntryType {
             ProcEntryType::PidDir(_) => "/proc/<pid>",
             ProcEntryType::PidStatus(_) => "/proc/<pid>/status",
             ProcEntryType::PidExe(_) => "/proc/<pid>/exe",
+            ProcEntryType::SelfLink => "/proc/self",
         }
     }
 
     /// Get the inode number for this entry
     ///
-    /// Dynamic PID entries use computed inodes:
-    /// - PidDir(pid) -> 10000 + pid
-    /// - PidStatus(pid) -> 20000 + pid
+    /// Dynamic PID entries use computed inodes above every static one, four
+    /// per PID, so no two entries share a number whatever the PID.
     pub fn inode(&self) -> u64 {
         match self {
             ProcEntryType::Uptime => 1,
@@ -207,7 +210,7 @@ impl ProcEntryType {
             ProcEntryType::TraceCounters => 104,
             ProcEntryType::TraceProviders => 105,
             ProcEntryType::TraceTeardownDir => 106,
-            ProcEntryType::TraceTeardownPid(pid) => 30000 + pid,
+            ProcEntryType::TraceTeardownPid(pid) => pid_inode(*pid, 3),
             ProcEntryType::SlabInfo => 5,
             ProcEntryType::Stat => 6,
             ProcEntryType::CowInfo => 7,
@@ -222,10 +225,16 @@ impl ProcEntryType {
             ProcEntryType::XhciCounters => 302,
             ProcEntryType::NetDir => 400,
             ProcEntryType::NetPnp => 401,
-            ProcEntryType::PidDir(pid) => 10000 + pid,
-            ProcEntryType::PidStatus(pid) => 20000 + pid,
-            ProcEntryType::PidExe(pid) => 40000 + pid,
+            ProcEntryType::PidDir(pid) => pid_inode(*pid, 0),
+            ProcEntryType::PidStatus(pid) => pid_inode(*pid, 1),
+            ProcEntryType::PidExe(pid) => pid_inode(*pid, 2),
+            ProcEntryType::SelfLink => 11,
         }
+    }
+
+    /// Check if this is a symbolic link
+    pub fn is_link(&self) -> bool {
+        matches!(self, ProcEntryType::SelfLink | ProcEntryType::PidExe(_))
     }
 
     /// Check if this is a directory
@@ -240,6 +249,12 @@ impl ProcEntryType {
                 | ProcEntryType::PidDir(_)
         )
     }
+}
+
+/// The inode of a per-process entry: `slot` 0 is the directory, 1 status, 2
+/// exe and 3 the teardown trace.
+pub fn pid_inode(pid: u64, slot: u64) -> u64 {
+    (1u64 << 32).wrapping_add(pid.wrapping_mul(4)).wrapping_add(slot)
 }
 
 /// A procfs entry node
@@ -304,6 +319,7 @@ pub fn init() {
     procfs.entries.push(ProcEntry::new(ProcEntryType::Ext2));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Pids));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Kmsg));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::SelfLink));
 
     // Register /proc/xhci directory and entries
     procfs.entries.push(ProcEntry::new(ProcEntryType::XhciDir));
@@ -574,7 +590,8 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<String, i32> {
         }
         ProcEntryType::PidDir(pid) => Ok(generate_pid_dir(pid)),
         ProcEntryType::PidStatus(pid) => Ok(generate_pid_status(pid)),
-        ProcEntryType::PidExe(_) => Err(-22),
+        // Opening a link without following it (O_NOFOLLOW), as on Linux.
+        ProcEntryType::PidExe(_) | ProcEntryType::SelfLink => Err(-40),
     }
 }
 
@@ -1227,7 +1244,7 @@ fn generate_pid_status(pid: u64) -> String {
          CpuSampleTicks:\t{}\n\
          CpuCapacityTicks:\t{}\n\
          CpuOnline:\t{}\n",
-        process.name,
+        pid_path::command_name(&process.name),
         pid,
         ppid,
         state_str,
@@ -1248,31 +1265,97 @@ fn generate_pid_status(pid: u64) -> String {
     )
 }
 
-/// The caller's PID is resolved before taking any procfs lock.
+/// The caller's PID, as getpid reports it: its thread group's. Resolved before
+/// taking any procfs lock.
 fn current_pid() -> Option<u64> {
     let tid = crate::task::scheduler::current_thread_id()?;
     let guard = crate::process::manager();
-    guard.as_ref()?.find_process_by_thread(tid).map(|(pid, _)| pid.as_u64())
+    guard
+        .as_ref()?
+        .find_process_by_thread(tid)
+        .map(|(pid, process)| process.thread_group_id.unwrap_or(pid.as_u64()))
 }
 
-/// Resolve procfs links without allocating a user-sized buffer. Executable paths
-/// are immutable Arc snapshots, so exec or exit can proceed after the lock drops.
-pub fn readlink(path: &str) -> Result<String, u64> {
-    use crate::syscall::errno::{EINVAL, ENOENT, ENOMEM};
-    if path == "/proc/self" {
-        use core::fmt::Write;
-        let pid = current_pid().ok_or(ENOENT as u64)?;
-        let mut target = String::new();
-        target.try_reserve_exact(26).map_err(|_| ENOMEM as u64)?;
-        write!(target, "/proc/{}", pid).map_err(|_| ENOMEM as u64)?;
-        return Ok(target);
-    }
-    let entry = lookup_by_path(path).ok_or(ENOENT as u64)?;
-    let ProcEntryType::PidExe(pid) = entry.entry_type else { return Err(EINVAL as u64); };
+/// The pathname `/proc/<pid>/exe` names, for a caller with `cred`: ENOENT
+/// once the process has exited, and EACCES unless the caller may read the
+/// process's memory (Linux's PTRACE_MODE_READ_FSCREDS check).
+fn exe_target(pid: u64, cred: &crate::fs::permissions::Credentials) -> Result<String, u64> {
+    use crate::syscall::errno::{EACCES, ENOENT};
     let exe_path = {
         let guard = crate::process::manager();
-        guard.as_ref().and_then(|manager| manager.get_process(crate::process::ProcessId::new(pid)))
-            .and_then(|process| process.exe_path.clone()).ok_or(ENOENT as u64)?
+        let process = guard
+            .as_ref()
+            .and_then(|manager| manager.get_process(crate::process::ProcessId::new(pid)))
+            .ok_or(ENOENT as u64)?;
+        if process.is_terminated() {
+            return Err(ENOENT as u64);
+        }
+        let ids = &process.cred;
+        if !pid_path::may_read(
+            (cred.euid, cred.egid),
+            [ids.uid, ids.euid, ids.suid],
+            [ids.gid, ids.egid, ids.sgid],
+        ) {
+            return Err(EACCES as u64);
+        }
+        process.exe_path.clone().ok_or(ENOENT as u64)?
     };
+    // An immutable Arc snapshot: exec or exit may proceed once the lock drops.
     crate::syscall::exec::copy_string(&exe_path)
+}
+
+/// The caller's process directory, relative to /proc, as `/proc/self` names it.
+fn self_target() -> Result<String, u64> {
+    use crate::syscall::errno::{ENOENT, ENOMEM};
+    use core::fmt::Write;
+    let pid = current_pid().ok_or(ENOENT as u64)?;
+    let mut target = String::new();
+    target.try_reserve_exact(20).map_err(|_| ENOMEM as u64)?;
+    write!(target, "{}", pid).map_err(|_| ENOMEM as u64)?;
+    Ok(target)
+}
+
+/// The target of the procfs link at `path` for a walk with `cred`, or None
+/// when `path` is not a link. Pathname resolution follows these as symlinks.
+pub fn link_target(
+    path: &str,
+    cred: &crate::fs::permissions::Credentials,
+) -> Option<Result<String, u64>> {
+    if path == "/proc/self" {
+        return Some(self_target());
+    }
+    match pid_path::parse(path)? {
+        (pid, pid_path::Entry::Exe) => {
+            let pid = match pid {
+                pid_path::Pid::Caller => current_pid(),
+                pid_path::Pid::Number(pid) => Some(pid),
+            };
+            Some(pid.ok_or(crate::syscall::errno::ENOENT as u64).and_then(|pid| exe_target(pid, cred)))
+        }
+        _ => None,
+    }
+}
+
+/// readlink of a procfs pathname: EINVAL unless it names a link.
+pub fn readlink(path: &str) -> Result<String, u64> {
+    use crate::syscall::errno::{EINVAL, ENOENT};
+    let cred = crate::fs::permissions::Credentials::current(false);
+    match link_target(path, &cred) {
+        Some(target) => target,
+        None if lookup_by_path(path).is_some() => Err(EINVAL as u64),
+        None => Err(ENOENT as u64),
+    }
+}
+
+/// Ownership of a procfs link for lstat: the process's effective IDs.
+pub fn link_owner(path: &str) -> Option<(u64, u32, u32)> {
+    let entry = lookup_by_path(path)?;
+    let pid = match entry.entry_type {
+        ProcEntryType::SelfLink => current_pid()?,
+        ProcEntryType::PidExe(pid) => pid,
+        _ => return None,
+    };
+    let guard = crate::process::manager();
+    let process = guard.as_ref()?.get_process(crate::process::ProcessId::new(pid))?;
+    Some((entry.entry_type.inode(), process.cred.euid, process.cred.egid))
 }
