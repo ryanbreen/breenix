@@ -9,6 +9,7 @@
 extern crate alloc;
 
 pub mod arp;
+pub mod dhcp;
 pub mod ethernet;
 pub mod icmp;
 pub mod ipv4;
@@ -223,8 +224,7 @@ fn active_tx_driver_is_e1000() -> bool {
 pub struct NetConfig {
     /// Our IPv4 address
     pub ip_addr: [u8; 4],
-    /// Subnet mask (for routing decisions - not yet used but required for complete config)
-    #[allow(dead_code)] // Part of complete network config API
+    /// Subnet mask: destinations inside it are on-link, the rest go to the gateway
     pub subnet_mask: [u8; 4],
     /// Default gateway
     pub gateway: [u8; 4],
@@ -920,6 +920,13 @@ fn init_common() {
         }
     }
 
+    #[cfg(target_arch = "aarch64")]
+    let gw = if active_tx_driver_is_e1000() {
+        configure_from_dhcp().unwrap_or(gw)
+    } else {
+        gw
+    };
+
     // Send ARP request for gateway to test network connectivity
     let gateway = gw;
     net_log!(
@@ -994,6 +1001,35 @@ fn init_common() {
         crate::task::softirqd::raise_softirq(SoftirqType::NetRx);
         net_log!("NET: pre-primed NetRx softirq for bootstrap callback re-enable");
     }
+}
+
+/// VMware's adapter is bridged to the host's network, whose addressing only its
+/// DHCP server knows. Returns the leased gateway; without a lease the static
+/// VMware configuration stays in place.
+#[cfg(target_arch = "aarch64")]
+fn configure_from_dhcp() -> Option<[u8; 4]> {
+    let mac = get_mac_address()?;
+    net_log!("NET: Requesting a DHCP lease");
+    let Some(lease) = dhcp::acquire(mac) else {
+        net_log!("NET: No DHCP lease; keeping the static address");
+        return None;
+    };
+    {
+        let _guard = net_lock_guard();
+        let mut config = NET_CONFIG.lock();
+        config.ip_addr = lease.ip_addr;
+        config.subnet_mask = lease.subnet_mask;
+        config.gateway = lease.gateway;
+    }
+    let [a, b, c, d] = lease.ip_addr;
+    let [m0, m1, m2, m3] = lease.subnet_mask;
+    let [g0, g1, g2, g3] = lease.gateway;
+    let [s0, s1, s2, s3] = lease.server;
+    net_log!(
+        "NET: DHCP lease {}.{}.{}.{} mask {}.{}.{}.{} gateway {}.{}.{}.{} from {}.{}.{}.{}",
+        a, b, c, d, m0, m1, m2, m3, g0, g1, g2, g3, s0, s1, s2, s3
+    );
+    Some(lease.gateway)
 }
 
 /// Get the current network configuration.
@@ -1352,11 +1388,10 @@ pub fn send_ipv4_from(
     }
 
     // Determine the next-hop MAC address.
-    // If the destination is on the same /24 subnet, ARP for it directly.
+    // If the destination is on the interface's subnet, ARP for it directly.
     // Otherwise, route through the gateway (standard IP routing).
-    let same_subnet = dst_ip[0] == config.ip_addr[0]
-        && dst_ip[1] == config.ip_addr[1]
-        && dst_ip[2] == config.ip_addr[2];
+    let same_subnet = (0..4)
+        .all(|i| dst_ip[i] & config.subnet_mask[i] == config.ip_addr[i] & config.subnet_mask[i]);
     let next_hop = if same_subnet { dst_ip } else { config.gateway };
     let dst_mac = match arp::lookup(&next_hop) {
         Some(mac) => mac,

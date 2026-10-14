@@ -154,6 +154,10 @@ impl<'a> Ipv4Packet<'a> {
 
 /// Handle an incoming IPv4 packet
 pub fn handle_ipv4(eth_frame: &EthernetFrame, ip: &Ipv4Packet) {
+    if ip.protocol == PROTOCOL_UDP && super::dhcp::receive(ip.payload) {
+        return;
+    }
+
     let config = super::config();
 
     // Check if this packet is for us (accept our IP or loopback addresses)
