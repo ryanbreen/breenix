@@ -35,7 +35,7 @@
 //! symlinks are.
 
 use crate::fs::ext2::{self, live_inode::FileHandle, FileType, EXT2_ROOT_INO};
-use crate::syscall::errno::{EIO, ELOOP, ENAMETOOLONG, ENOENT, ENOTDIR};
+use crate::syscall::errno::{EINVAL, EIO, ELOOP, ENAMETOOLONG, ENOENT, ENOTDIR};
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -111,7 +111,8 @@ pub enum Last {
 #[derive(Debug)]
 pub struct Resolved<P = String> {
     /// The physical absolute pathname of the target: no symlink, `.` or `..`
-    /// component, except a final symlink the resolution did not follow.
+    /// component, except a final symlink the resolution did not follow. As
+    /// text, bytes that are not UTF-8 read as U+FFFD (`text_path`).
     pub path: P,
     pub target: Target,
     pub last: Last,
@@ -408,8 +409,39 @@ fn walk(path: &str, mode: Mode) -> Result<Resolved, u64> {
 
 fn walk_with(path: &str, mode: Mode, start: Option<WorkingDir>, cred: &super::permissions::Credentials) -> Result<Resolved, u64> {
     let raw = walk_bytes(path.as_bytes(), mode, start, cred)?;
-    Ok(Resolved { path: String::from_utf8(raw.path).map_err(|_| EIO as u64)?, target: raw.target, last: raw.last,
+    // A lookup's caller acts on the inode the walk found; any other caller,
+    // and the creator of an absent name, acts on the final entry by name.
+    let by_name = raw.last == Last::Name
+        && (!matches!(mode, Mode::Lookup { .. }) || matches!(raw.target, Target::Absent { .. }));
+    Ok(Resolved { path: text_path(raw.path, by_name)?, target: raw.target, last: raw.last,
         trailing_slash: raw.trailing_slash, virtual_absent: raw.virtual_absent, pin: raw.pin, entry_dir: raw.entry_dir })
+}
+/// A physical pathname as the text interface holds it. A link, a symlink or
+/// procfs's `exe`, can lead a UTF-8 pathname to one that is not. A caller
+/// acting on the inode the walk found uses the pathname only to show it and
+/// to match devfs and procfs names, so its bytes that are not UTF-8 read as
+/// U+FFFD; a caller acting on the final entry by name (`by_name`) needs that
+/// name exactly, and the text interface cannot give it: EINVAL, as for a
+/// pathname that is not UTF-8.
+fn text_path(bytes: Vec<u8>, by_name: bool) -> Result<String, u64> {
+    let bytes = match String::from_utf8(bytes) {
+        Ok(path) => return Ok(path),
+        Err(error) => error.into_bytes(),
+    };
+    let name = bytes.rsplit(|byte| *byte == b'/').next().unwrap_or(&[]);
+    if by_name && core::str::from_utf8(name).is_err() {
+        return Err(EINVAL as u64);
+    }
+    let mut path = String::new();
+    for chunk in bytes.utf8_chunks() {
+        let replaced = if chunk.invalid().is_empty() { 0 } else { char::REPLACEMENT_CHARACTER.len_utf8() };
+        path.try_reserve(chunk.valid().len() + replaced).map_err(|_| 12u64)?;
+        path.push_str(chunk.valid());
+        if replaced != 0 {
+            path.push(char::REPLACEMENT_CHARACTER);
+        }
+    }
+    Ok(path)
 }
 /// Byte-preserving path resolution for AF_UNIX, including non-UTF-8 components.
 /// Creation holds the parent, lookup holds the target, exactly as the text API.

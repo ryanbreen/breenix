@@ -11,10 +11,11 @@ def function(name):
     # These functions end at a top-level closing brace.
     end = source.index("\n}", start) + 2
     return source[start:end]
-production = "\n".join(function(n) for n in ["copy_bytes", "join", "push_components", "is_root", "working_dir_path_bytes"])
+production = "\n".join(function(n) for n in ["copy_bytes", "join", "push_components", "is_root", "working_dir_path_bytes", "text_path"])
 harness = r'''
 use core::sync::atomic::{AtomicBool, Ordering};
 const ENOENT: i32 = 2;
+const EINVAL: i32 = 22;
 const ENAMETOOLONG: i32 = 36;
 const PATH_MAX: usize = 4096;
 const NAME_MAX: usize = 255;
@@ -48,6 +49,16 @@ fn cwd_outside_root_returns_enoent() {
     // A same-spelled directory with a different inode is also outside.
     let different = WorkingDir::Frames(vec![Frame { name: b"jail".to_vec(), node: 5 }]);
     assert_eq!(working_dir_path_bytes(&different).unwrap_err(), 2);
+}
+#[test]
+fn text_paths_keep_an_inode_lookup_and_refuse_a_name_they_cannot_give() {
+    assert_eq!(text_path(b"/bin/child".to_vec(), true).unwrap(), "/bin/child");
+    // open and stat of /proc/self/exe act on the inode its target names.
+    assert_eq!(text_path(b"/bin/child\xff".to_vec(), false).unwrap(), "/bin/child\u{fffd}");
+    assert_eq!(text_path(b"/d\xff\xfe/x".to_vec(), false).unwrap(), "/d\u{fffd}\u{fffd}/x");
+    // An entry named through a non-UTF-8 directory keeps its exact final name.
+    assert_eq!(text_path(b"/d\xff/new".to_vec(), true).unwrap(), "/d\u{fffd}/new");
+    assert_eq!(text_path(b"/bin/child\xff".to_vec(), true).unwrap_err(), 22);
 }
 #[test]
 fn component_limit_remains_enametoolong() {
