@@ -1,0 +1,25 @@
+--- a/findutils/find.c
++++ b/findutils/find.c
+@@ -842,16 +842,15 @@
+ {
+ # if ENABLE_FEATURE_FIND_EXEC_PLUS
+ 	if (ap->filelist) {
+-		int rc;
+-
+ 		ap->filelist = xrealloc_vector(ap->filelist, 8, ap->filelist_idx);
+ 		ap->filelist[ap->filelist_idx++] = xstrdup(fileName);
+ 		ap->file_len += strlen(fileName) + sizeof(char*) + 1;
+-		/* If we have lots of files already, exec the command */
+-		rc = 1;
+-		if (ap->file_len >= G.max_argv_len)
+-			rc = do_exec(ap, NULL);
+-		return rc;
++		/* If we have lots of files already, exec the command.
++		 * POSIX: the + form is always true; a failed invocation
++		 * makes find's exit status non-zero. */
++		if (ap->file_len >= G.max_argv_len && !do_exec(ap, NULL))
++			G.exitstatus |= EXIT_FAILURE;
++		return 1;
+ 	}
+ # endif
+ 	return do_exec(ap, fileName);

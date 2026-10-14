@@ -1,18 +1,26 @@
 --- a/editors/diff.c
 +++ b/editors/diff.c
-@@ -100,10 +100,9 @@
+@@ -100,14 +100,17 @@
  //kbuild:lib-$(CONFIG_DIFF) += diff.o
  
  //usage:#define diff_trivial_usage
 -//usage:       "[-abBdiNqrTstw] [-L LABEL] [-S FILE] [-U LINES] FILE1 FILE2"
-+//usage:       "[-abBdiNqrTstuw] [-L LABEL] [-S FILE] [-U LINES] FILE1 FILE2"
++//usage:       "[-abBdiNqrTstw] [-c|-C LINES|-e|-f|-u|-U LINES] [-L LABEL] [-S FILE] FILE1 FILE2"
  //usage:#define diff_full_usage "\n\n"
  //usage:       "Compare files line by line and output the differences between them.\n"
 -//usage:       "This implementation supports unified diffs only.\n"
  //usage:     "\n	-a	Treat all files as text"
  //usage:     "\n	-b	Ignore changes in the amount of whitespace"
  //usage:     "\n	-B	Ignore changes whose lines are all blank"
-@@ -117,7 +116,8 @@
++//usage:     "\n	-c	Output context format with 3 lines of context"
++//usage:     "\n	-C	Output context format with LINES lines of context"
+ //usage:     "\n	-d	Try hard to find a smaller set of changes"
++//usage:     "\n	-e	Output an ed script"
++//usage:     "\n	-f	Output an ed-like script in forward order"
+ //usage:     "\n	-i	Ignore case differences"
+ //usage:     "\n	-L	Use LABEL instead of the filename in the unified header"
+ //usage:     "\n	-N	Treat absent files as empty"
+@@ -117,7 +120,8 @@
  //usage:     "\n	-T	Make tabs line up by prefixing a tab when necessary"
  //usage:     "\n	-s	Report when two files are the same"
  //usage:     "\n	-t	Expand tabs to spaces in output"
@@ -22,7 +30,15 @@
  //usage:     "\n	-w	Ignore all whitespace"
  
  #include "libbb.h"
-@@ -150,7 +150,7 @@
+@@ -133,6 +137,7 @@
+ 	STATUS_SAME,    /* files are the same */
+ 	STATUS_DIFFER,  /* files differ */
+ 	STATUS_BINARY,  /* binary files differ */
++	STATUS_ERROR,   /* a file could not be read */
+ };
+ 
+ enum {                  /* Commandline flags */
+@@ -150,12 +155,17 @@
  	FLAG_T,
  	FLAG_U,         /* never used, handled by getopt32 */
  	FLAG_w,
@@ -31,61 +47,388 @@
  	FLAG_p,         /* not implemented */
  	FLAG_B,
  	FLAG_E,         /* not implemented */
-@@ -416,6 +416,8 @@
- 		putchar(ch);
- 		if (option_mask32 & FLAG(T))
- 			putchar('\t');
-+		else if (ch == '<' || ch == '>')
-+			putchar(' ');
++	FLAG_c,         /* context format */
++	FLAG_C,         /* never used, handled by getopt32 */
++	FLAG_e,         /* ed script */
++	FLAG_f,         /* forward ed-like script */
+ };
+ #define FLAG(x) (1 << FLAG_##x)
++#define CONTEXT_FORMAT (option_mask32 & (FLAG(c) | FLAG(C)))
+ 
+ /* We cache file position to avoid excessive seeking */
+ typedef struct FILE_and_pos_t {
+@@ -167,6 +177,7 @@
+ 	smallint exit_status;
+ 	int opt_U_context;
+ 	const char *other_dir;
++	char *dir_opts;         /* options for the per-file line of a directory comparison */
+ 	char *label[2];
+ 	struct stat stb[2];
+ };
+@@ -413,13 +424,18 @@
+ 	int i, j, col;
+ 	for (i = a; i <= b; i++) {
+ 		seek_ft(ft, ix[i - 1]);
+-		putchar(ch);
+-		if (option_mask32 & FLAG(T))
+-			putchar('\t');
++		if (ch) {
++			putchar(ch);
++			if (option_mask32 & FLAG(T))
++				putchar('\t');
++			else if (ch == '<' || ch == '>' || CONTEXT_FORMAT)
++				putchar(' ');
++		}
  		for (j = 0, col = 0; j < ix[i] - ix[i - 1]; j++) {
  			int c = fgetc(ft->ft_fp);
  			if (c == EOF) {
-@@ -593,6 +595,13 @@
- 	return J;
- }
+-				puts("\n\\ No newline at end of file");
++				/* An ed script has no way to express a missing newline. */
++				puts(ch ? "\n\\ No newline at end of file" : "");
+ 				return;
+ 			}
+ 			ft->ft_pos++;
+@@ -591,8 +607,63 @@
+ 	}
  
-+static void print_range(int a, int b)
+ 	return J;
++}
++
++static void print_range(int a, int b, char sep)
 +{
 +	printf("%d", MIN(a, b));
 +	if (a < b)
-+		printf(",%d", b);
++		printf("%c%d", sep, b);
++}
++
++/* Text for an ed command, ending input mode. In a script (-e) a line holding
++ * only "." would end input mode early: it is written as "..", input mode ends,
++ * the extra dot is removed and appending resumes after it. */
++static void ed_text(FILE_and_pos_t *ft, const off_t *ix, int a, int b, bool script)
++{
++	bool ended = false;
++	int i;
++
++	for (i = a; i <= b; i++) {
++		int len = ix[i] - ix[i - 1];
++		ended = false;
++		if (script && (len == 2 || (len == 1 && i == b))) {
++			int c0, c1 = '\n';
++			seek_ft(ft, ix[i - 1]);
++			c0 = fgetc(ft->ft_fp);
++			if (len == 2)
++				c1 = fgetc(ft->ft_fp);
++			fseeko(ft->ft_fp, ft->ft_pos, SEEK_SET);
++			if (c0 == '.' && c1 == '\n') {
++				puts("..\n.\ns/.//");
++				if (i < b)
++					puts("a");
++				ended = true;
++				continue;
++			}
++		}
++		fetch(ft, ix, i, i, 0);
++	}
++	if (!ended)
++		puts(".");
+ }
+ 
++static void print_header(const char *mark, int i, char *file[2])
++{
++	char when[64];
++	struct tm *tm;
++
++	if (label[i]) {
++		printf("%s %s\n", mark, label[i]);
++	} else if (CONTEXT_FORMAT && (tm = localtime(&stb[i].st_mtime)) != NULL
++	        && strftime(when, sizeof(when), "%a %b %e %T %Y", tm) != 0) {
++		/* POSIX: "*** %s %s\n" with date's "+%a %b %e %T %Y" timestamp */
++		printf("%s %s %s\n", mark, file[i], when);
++	} else {
++		printf("%s %s\n", mark, file[i]);
++	}
 +}
 +
  static bool diff(FILE* fp[2], char *file[2])
  {
  	int nlen[2];
-@@ -635,7 +644,8 @@
+@@ -602,6 +673,8 @@
+ 	vec_t *vec = NULL;
+ 	int i = 1, j, k, idx = -1;
+ 	bool anychange = false;
++	vec_t *script = NULL;
++	int scriptlen = 0;
+ 	int *J;
+ 
+ 	ft[0].ft_fp = fp[0];
+@@ -635,7 +708,8 @@
  				 * If this change is more than 'context' lines from the
  				 * previous change, dump the record and reset it.
  				 */
 -				int ct = (2 * opt_U_context) + 1;
-+				int ct = (option_mask32 & (FLAG(u) | FLAG(U)))
++				int ct = (option_mask32 & (FLAG(u) | FLAG(U))) || CONTEXT_FORMAT
 +					? (2 * opt_U_context) + 1 : 1;
  				if (idx >= 0
  				 && v[0].a > vec[idx][0].b + ct
  				 && v[1].a > vec[idx][1].b + ct
-@@ -658,7 +668,23 @@
+@@ -658,14 +732,83 @@
  		}
  		if (idx < 0 || ((option_mask32 & FLAG(B)) && !nonempty))
  			goto cont;
 -		if (!(option_mask32 & FLAG(q))) {
-+		if (!(option_mask32 & (FLAG(q) | FLAG(u) | FLAG(U)))) {
++		if (G.dir_opts && !anychange && !(option_mask32 & FLAG(q))) {
++			/* POSIX: each differing pair in a directory comparison is introduced */
++			printf("diff%s %s %s\n", G.dir_opts, file[0], file[1]);
++		}
++		if (option_mask32 & FLAG(q)) {
++			/* brief: print_status() reports the difference */
++		} else if (option_mask32 & FLAG(e)) {
++			/* An ed script edits from the end, so collect it and print it reversed. */
++			for (k = 0; k <= idx; k++) {
++				script = xrealloc_vector(script, 6, scriptlen);
++				memcpy(script[scriptlen++], vec[k], sizeof(vec[k]));
++			}
++		} else if (option_mask32 & FLAG(f)) {
++			for (k = 0; k <= idx; k++) {
++				vec_t *v = &vec[k];
++				bool oldlines = (*v)[0].a <= (*v)[0].b;
++				bool newlines = (*v)[1].a <= (*v)[1].b;
++
++				putchar(!oldlines ? 'a' : !newlines ? 'd' : 'c');
++				print_range((*v)[0].a, (*v)[0].b, ' ');
++				putchar('\n');
++				if (newlines)
++					ed_text(&ft[1], ix[1], (*v)[1].a, (*v)[1].b, false);
++			}
++		} else if (CONTEXT_FORMAT) {
++			vec_t span;
++
++			if (!anychange) {
++				print_header("***", 0, file);
++				print_header("---", 1, file);
++			}
++			puts("***************");
++			for (j = 0; j < 2; j++) {
++				bool changed = false;
++				int lowa;
++
++				span[j].a = MAX(1, vec[0][j].a - opt_U_context);
++				span[j].b = MIN(nlen[j], vec[idx][j].b + opt_U_context);
++				fputs(j ? "--- " : "*** ", stdout);
++				print_range(span[j].a, span[j].b, ',');
++				puts(j ? " ----" : " ****");
++				/* A side's lines are shown only when it has deleted, inserted or changed lines. */
++				for (k = 0; k <= idx; k++)
++					changed |= vec[k][j].a <= vec[k][j].b;
++				if (!changed)
++					continue;
++				for (lowa = span[j].a, k = 0; k <= idx; lowa = vec[k++][j].b + 1) {
++					bool both = vec[k][0].a <= vec[k][0].b && vec[k][1].a <= vec[k][1].b;
++					fetch(&ft[j], ix[j], lowa, vec[k][j].a - 1, ' ');
++					fetch(&ft[j], ix[j], vec[k][j].a, vec[k][j].b, both ? '!' : j ? '+' : '-');
++				}
++				fetch(&ft[j], ix[j], lowa, span[j].b, ' ');
++			}
++		} else if (!(option_mask32 & (FLAG(u) | FLAG(U)))) {
 +			/* POSIX default format: one command per changed range. */
 +			for (k = 0; k <= idx; k++) {
 +				vec_t *v = &vec[k];
 +				bool oldlines = (*v)[0].a <= (*v)[0].b;
 +				bool newlines = (*v)[1].a <= (*v)[1].b;
 +
-+				print_range((*v)[0].a, (*v)[0].b);
++				print_range((*v)[0].a, (*v)[0].b, ',');
 +				putchar(!oldlines ? 'a' : !newlines ? 'd' : 'c');
-+				print_range((*v)[1].a, (*v)[1].b);
++				print_range((*v)[1].a, (*v)[1].b, ',');
 +				putchar('\n');
 +				fetch(&ft[0], ix[0], (*v)[0].a, (*v)[0].b, '<');
 +				if (oldlines && newlines)
 +					puts("---");
 +				fetch(&ft[1], ix[1], (*v)[1].a, (*v)[1].b, '>');
 +			}
-+		} else if (!(option_mask32 & FLAG(q))) {
++		} else {
  			int lowa;
  			vec_t span, *cvp = vec;
  
+ 			if (!anychange) {
+ 				/* Print the context/unidiff header first time through */
+-				printf("--- %s\n", label[0] ? label[0] : file[0]);
+-				printf("+++ %s\n", label[1] ? label[1] : file[1]);
++				print_header("---", 0, file);
++				print_header("+++", 1, file);
+ 			}
+ 
+ 			printf("@@");
+@@ -697,6 +840,18 @@
+ 		idx = -1;
+ 	} while (i <= nlen[0]);
+ 
++	for (k = scriptlen - 1; k >= 0; k--) {
++		vec_t *v = &script[k];
++		bool oldlines = (*v)[0].a <= (*v)[0].b;
++		bool newlines = (*v)[1].a <= (*v)[1].b;
++
++		print_range((*v)[0].a, (*v)[0].b, ',');
++		putchar(!oldlines ? 'a' : !newlines ? 'd' : 'c');
++		putchar('\n');
++		if (newlines)
++			ed_text(&ft[1], ix[1], (*v)[1].a, (*v)[1].b, true);
++	}
++	free(script);
+ 	free(vec);
+ 	free(ix[0]);
+ 	free(ix[1]);
+@@ -704,6 +859,30 @@
+ 	return anychange;
+ }
+ 
++/* Input errors make diff's status 2, never "same" or "different". */
++static bool read_failed(FILE *fp[2], char *file[2])
++{
++	int i;
++
++	for (i = 0; i < 2; i++) {
++		if (ferror(fp[i])) {
++			bb_perror_msg("%s", file[i]);
++			return true;
++		}
++	}
++	return false;
++}
++
++/* Output that was not written is an error, whatever the comparison found. */
++static int output_status(void)
++{
++	if (fflush(stdout) != 0 || ferror(stdout)) {
++		bb_simple_perror_msg(bb_msg_standard_output);
++		return 2;
++	}
++	return (exit_status & 2) ? 2 : exit_status;
++}
++
+ static int diffreg(char *file[2])
+ {
+ 	FILE *fp[2];
+@@ -717,8 +896,10 @@
+ 		if (!LONE_DASH(file[i])) {
+ 			if (!(option_mask32 & FLAG(N))) {
+ 				fd = open_or_warn(file[i], O_RDONLY);
+-				if (fd == -1)
++				if (fd == -1) {
++					status = STATUS_ERROR;
+ 					goto out;
++				}
+ 			} else {
+ 				/* -N: if some file does not exist compare it like empty */
+ 				fd = open(file[i], O_RDONLY);
+@@ -741,7 +922,7 @@
+ 			fd = fd_tmp;
+ 			xlseek(fd, 0, SEEK_SET);
+ 		}
+-		fp[i] = fdopen(fd, "r");
++		fp[i] = xfdopen_for_read(fd);
+ 	}
+ 
+ 	setup_common_bufsiz();
+@@ -752,6 +933,10 @@
+ 		int j, k;
+ 		i = fread(buf0, 1, sz, fp[0]);
+ 		j = fread(buf1, 1, sz, fp[1]);
++		if (read_failed(fp, file)) {
++			status = STATUS_ERROR;
++			goto out;
++		}
+ 		if (i != j) {
+ 			differ = true;
+ 			i = MIN(i, j);
+@@ -770,10 +955,14 @@
+ 			status = STATUS_BINARY;
+ 		else if (diff(fp, file))
+ 			status = STATUS_DIFFER;
++		if (read_failed(fp, file))
++			status = STATUS_ERROR;
+ 	}
+-	if (status != STATUS_SAME)
+-		exit_status |= 1;
+ out:
++	if (status == STATUS_ERROR)
++		exit_status |= 2;
++	else if (status != STATUS_SAME)
++		exit_status |= 1;
+ 	fclose_if_not_stdin(fp[0]);
+ 	fclose_if_not_stdin(fp[1]);
+ 
+@@ -867,8 +1056,9 @@
+ 		 * Using list.len to specify its length,
+ 		 * add_to_dirlist will remove it. */
+ 		list[i].len = strlen(p[i]);
+-		recursive_action(p[i], ACTION_RECURSE | ACTION_FOLLOWLINKS,
+-				add_to_dirlist, skip_dir, &list[i]);
++		if (!recursive_action(p[i], ACTION_RECURSE | ACTION_FOLLOWLINKS,
++				add_to_dirlist, skip_dir, &list[i]))
++			exit_status |= 2;
+ 		/* Sort dl alphabetically.
+ 		 * GNU diff does this ignoring any number of trailing dots.
+ 		 * We don't, so for us dotted files almost always are
+@@ -982,15 +1172,26 @@
+ 	INIT_G();
+ 
+ 	/* exactly 2 params; collect multiple -L <label>; -U N */
+-	GETOPT32(argv, "^" "abdiL:*NqrsS:tTU:+wupBE" "\0" "=2"
++	/* POSIX: an error, including a usage error, exits with a status above 1 */
++	xfunc_error_retval = 2;
++	GETOPT32(argv, "^" "abdiL:*NqrsS:tTU:+wupBEcC:+ef" "\0" "=2"
+ 			LONGOPTS,
+-			&L_arg, &s_start, &opt_U_context);
++			&L_arg, &s_start, &opt_U_context, &opt_U_context);
++	i = !!(option_mask32 & (FLAG(u) | FLAG(U))) + !!CONTEXT_FORMAT
++		+ !!(option_mask32 & FLAG(e)) + !!(option_mask32 & FLAG(f));
++	if (i > 1)
++		bb_simple_error_msg_and_die("conflicting output style options");
++	/* The options as given, repeated on each file line of a directory comparison */
++	G.dir_opts = xstrdup("");
++	for (i = 1; i < optind; i++) {
++		char *opts = xasprintf("%s %s", G.dir_opts, argv[i]);
++		free(G.dir_opts);
++		G.dir_opts = opts;
++	}
+ 	argv += optind;
+ 	while (L_arg)
+ 		label[!!label[0]] = llist_pop(&L_arg);
+ 
+-	/* Compat: "diff file name_which_doesnt_exist" exits with 2 */
+-	xfunc_error_retval = 2;
+ 	for (i = 0; i < 2; i++) {
+ 		file[i] = argv[i];
+ 		if (LONE_DASH(file[i])) {
+@@ -1003,7 +1204,6 @@
+ 			xstat(file[i], &stb[i]);
+ 		}
+ 	}
+-	xfunc_error_retval = 1;
+ 
+ 	if (gotstdin && (S_ISDIR(stb[0].st_mode) || S_ISDIR(stb[1].st_mode)))
+ 		bb_simple_error_msg_and_die("can't compare stdin to a directory");
+@@ -1036,6 +1236,8 @@
+ 	if (S_ISDIR(stb[0].st_mode) && S_ISDIR(stb[1].st_mode)) {
+ #if ENABLE_FEATURE_DIFF_DIR
+ 		diffdir(file, s_start);
++		free(G.dir_opts);
++		G.dir_opts = NULL;
+ #else
+ 		bb_simple_error_msg_and_die("no support for directory comparison");
+ #endif
+@@ -1048,11 +1250,13 @@
+ 			xstat(file[dir], &stb[dir]);
+ 		}
+ 		/* diffreg can get non-regular files here */
++		free(G.dir_opts);
++		G.dir_opts = NULL;
+ 		print_status(gotstdin > 1 ? STATUS_SAME : diffreg(file), file);
+ 
+ 		if (ENABLE_FEATURE_CLEAN_UP && dirfile)
+ 			free(file[dir]);
+ 	}
+ 
+-	return exit_status;
++	return output_status();
+ }

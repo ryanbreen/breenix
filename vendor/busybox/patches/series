@@ -1,3 +1,4 @@
 # One patch filename per line, in application order.
 diff-normal-format.patch
+find-exec-plus-status.patch
 build-warnings.patch
