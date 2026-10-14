@@ -12,6 +12,7 @@ const EOVERFLOW: i32 = 75;
 pub(crate) struct File {
     mutex: RecursiveLock,
     fd: i32,
+    pipe_child: i32,
     readable: bool,
     writable: bool,
     append: bool,
@@ -51,6 +52,7 @@ impl File {
         Self {
             mutex: RecursiveLock::new(),
             fd,
+            pipe_child: 0,
             readable,
             writable,
             append: false,
@@ -717,8 +719,7 @@ pub unsafe extern "C" fn fwrite(p: *const u8, s: usize, n: usize, f: *mut File) 
     r
 }
 #[no_mangle]
-pub unsafe extern "C" fn fputs(s: *const u8, f: *mut File) -> i32 {
-    lock(f);
+pub unsafe extern "C" fn fputs_unlocked(s: *const u8, f: *mut File) -> i32 {
     orient(f, -1);
     let mut p = s;
     let mut r = 0;
@@ -729,6 +730,12 @@ pub unsafe extern "C" fn fputs(s: *const u8, f: *mut File) -> i32 {
         }
         p = p.add(1);
     }
+    r
+}
+#[no_mangle]
+pub unsafe extern "C" fn fputs(s: *const u8, f: *mut File) -> i32 {
+    lock(f);
+    let r = fputs_unlocked(s, f);
     unlock(f);
     r
 }
@@ -745,11 +752,10 @@ pub unsafe extern "C" fn puts(s: *const u8) -> i32 {
     }
 }
 #[no_mangle]
-pub unsafe extern "C" fn fgets(p: *mut u8, n: i32, f: *mut File) -> *mut u8 {
+pub unsafe extern "C" fn fgets_unlocked(p: *mut u8, n: i32, f: *mut File) -> *mut u8 {
     if n <= 0 {
         return ptr::null_mut();
     }
-    lock(f);
     orient(f, -1);
     let mut i = 0;
     let mut failed = false;
@@ -771,6 +777,12 @@ pub unsafe extern "C" fn fgets(p: *mut u8, n: i32, f: *mut File) -> *mut u8 {
         *p.add(i) = 0;
         p
     };
+    r
+}
+#[no_mangle]
+pub unsafe extern "C" fn fgets(p: *mut u8, n: i32, f: *mut File) -> *mut u8 {
+    lock(f);
+    let r = fgets_unlocked(p, n, f);
     unlock(f);
     r
 }
@@ -808,13 +820,18 @@ pub unsafe extern "C" fn clearerr(f: *mut File) {
     unlock(f);
 }
 #[no_mangle]
-pub unsafe extern "C" fn fileno(f: *mut File) -> i32 {
-    lock(f);
+pub unsafe extern "C" fn fileno_unlocked(f: *mut File) -> i32 {
     let r = if (*f).memory || (*f).closed {
         fail(f, EBADF)
     } else {
         (*f).fd
     };
+    r
+}
+#[no_mangle]
+pub unsafe extern "C" fn fileno(f: *mut File) -> i32 {
+    lock(f);
+    let r = fileno_unlocked(f);
     unlock(f);
     r
 }
@@ -1120,4 +1137,37 @@ pub unsafe extern "C" fn tmpfile() -> *mut File {
     }
     crate::pthread::set_errno(17);
     ptr::null_mut()
+}
+
+// The registry lock spans fork so the child sees a complete pipe-stream list.
+// The child only closes raw descriptors and execs/_exits: it never uses the copied lock.
+pub(super) unsafe fn fork_pipe(f: *mut File) -> i32 {
+    REGISTRY_LOCK.lock();
+    registry_init();
+    let pid = crate::fork();
+    if pid > 0 {
+        (*f).pipe_child = pid;
+    }
+    if pid != 0 {
+        REGISTRY_LOCK.unlock();
+    }
+    pid
+}
+pub(super) unsafe fn close_inherited_pipes(current: *mut File) {
+    let mut f = HEAD;
+    while !f.is_null() {
+        if f != current && (*f).pipe_child > 0 {
+            crate::close((*f).fd);
+        }
+        f = (*f).next;
+    }
+}
+pub(super) unsafe fn take_pipe_pid(f: *mut File) -> i32 {
+    REGISTRY_LOCK.lock();
+    lock(f);
+    let pid = (*f).pipe_child;
+    (*f).pipe_child = 0;
+    unlock(f);
+    REGISTRY_LOCK.unlock();
+    pid
 }

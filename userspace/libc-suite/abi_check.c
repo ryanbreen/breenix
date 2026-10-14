@@ -6,6 +6,7 @@
  */
 #include <fcntl.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -101,3 +102,6 @@ AT(struct stat, st_mtim, 88);
 AT(struct stat, st_ctim, 104);
 #endif
 AT(struct stat, st_ino, 8);
+
+/* STDIO positions retain both the offset and the 8-byte multibyte state. */
+SIZE(fpos_t, 16); ALIGN(fpos_t, 8); AT(fpos_t, offset, 0); AT(fpos_t, state, 8);

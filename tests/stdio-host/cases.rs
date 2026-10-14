@@ -413,3 +413,54 @@ fn printf_honors_all_rounding_directions() {
         drop(guard);
     }
 }
+use super::stdio::scan::*;
+#[test]
+fn scanf_integer_widths_and_scansets(){unsafe{
+    let mut decimal=0i32;let mut octal=0u32;let mut hex=0u32;let mut neg=0i64;let mut tiny=0u8;
+    assert_eq!(sscanf(c"42 017 0x1f -9223372036854775808 257".as_ptr() as *const u8,c"%d %o %x %lld %hhu".as_ptr() as *const u8,&mut decimal,&mut octal,&mut hex,&mut neg,&mut tiny),5);
+    assert_eq!((decimal,octal,hex,neg,tiny),(42,15,31,i64::MIN,1));
+    let mut a=[0u8;8];let mut b=[0u8;8];let mut d=0i32;
+    assert_eq!(sscanf(c"abcdef123".as_ptr() as *const u8,c"%3s%7[a-z]%2d".as_ptr() as *const u8,a.as_mut_ptr(),b.as_mut_ptr(),&mut d),3);assert_eq!(&a[..4],b"abc\0");assert_eq!(&b[..4],b"def\0");assert_eq!(d,12);
+    assert_eq!(sscanf(c"]-rest".as_ptr() as *const u8,c"%7[]-]".as_ptr() as *const u8,a.as_mut_ptr()),1);assert_eq!(&a[..3],b"]-\0");
+}}
+#[test]
+fn scanf_assignment_counts_and_failures(){unsafe{
+    let mut v=0i32;let mut n=0i32;
+    assert_eq!(sscanf(c"".as_ptr() as *const u8,c"%d".as_ptr() as *const u8,&mut v),-1);
+    assert_eq!(sscanf(c"x".as_ptr() as *const u8,c"%d".as_ptr() as *const u8,&mut v),0);
+    assert_eq!(sscanf(c"12 34".as_ptr() as *const u8,c"%*d %d%n".as_ptr() as *const u8,&mut v,&mut n),1);assert_eq!((v,n),(34,5));
+    let mut other=0i32;assert_eq!(sscanf(c"12 34".as_ptr() as *const u8,c"%2$d %1$d".as_ptr() as *const u8,&mut other,&mut v),2);assert_eq!((other,v),(34,12));
+    assert_eq!(sscanf(c"".as_ptr() as *const u8,c"%n%d".as_ptr() as *const u8,&mut n,&mut v),0);assert_eq!(n,0);
+}}
+#[test]
+fn scanf_float_rounds_once_and_rejects_partial_forms(){unsafe{
+    let mut x=0f64;let mut y=0f32;let mut z=0f64;
+    assert_eq!(sscanf(c"3.5e2 -0.25 inf".as_ptr() as *const u8,c"%lf %f %lf".as_ptr() as *const u8,&mut x,&mut y,&mut z),3);assert_eq!(x,350.0);assert_eq!(y,-0.25);assert_eq!(z,f64::INFINITY);
+    assert_eq!(sscanf(c"1.00000005960464477539062500001".as_ptr() as *const u8,c"%f".as_ptr() as *const u8,&mut y),1);assert_eq!(y.to_bits(),1f32.to_bits()+1);
+    assert_eq!(sscanf(c"1e+".as_ptr() as *const u8,c"%lf".as_ptr() as *const u8,&mut x),0);
+    assert_eq!(sscanf(c"0x".as_ptr() as *const u8,c"%x".as_ptr() as *const u8,&mut v_for_hex()),0);
+}}
+fn v_for_hex()->u32{0}
+#[test]
+fn fscanf_leaves_first_unmatched_character_unread(){unsafe{
+    let mut bytes=*b"123x";let f=fmemopen(bytes.as_mut_ptr(),4,c"r".as_ptr() as *const u8);let mut v=0i32;
+    assert_eq!(fscanf(f,c"%d".as_ptr() as *const u8,&mut v),1);assert_eq!(v,123);assert_eq!(fgetc(f),b'x' as i32);assert_eq!(fclose(f),0);
+}}
+#[test]
+fn scanf_assignment_allocation(){unsafe{
+    let mut p=ptr::null_mut::<u8>();assert_eq!(sscanf(c"abc,rest".as_ptr() as *const u8,c"%m[^,]".as_ptr() as *const u8,&mut p),1);assert_eq!(std::slice::from_raw_parts(p,4),b"abc\0");super::free(p);
+}}
+#[test]
+fn popen_reads_writes_and_waits_for_status(){unsafe{
+    use super::stdio::pipe::*;
+    super::env::environ=*super::host_environ();
+    let f=popen(c"printf 'pipe text'; exit 7".as_ptr() as *const u8,c"r".as_ptr() as *const u8);assert!(!f.is_null());
+    let mut b=[0u8;32];assert_eq!(fgets(b.as_mut_ptr(),32,f),b.as_mut_ptr());assert_eq!(CStr::from_ptr(b.as_ptr() as *const i8),c"pipe text");assert_eq!(pclose(f),7<<8);
+    let path=format!("/tmp/breenix-popen-{}",super::getpid());let command=CString::new(format!("cat > {path}")).unwrap();
+    let f=popen(command.as_ptr() as *const u8,c"w".as_ptr() as *const u8);assert!(!f.is_null());assert_eq!(fputs_unlocked(c"written".as_ptr() as *const u8,f),0);assert!(fileno_unlocked(f)>=0);assert_eq!(pclose(f),0);
+    assert_eq!(std::fs::read(&path).unwrap(),b"written");std::fs::remove_file(path).unwrap();
+}}
+#[test]
+fn failed_character_scan_does_not_assign(){unsafe{
+    let mut b=*b"keep";assert_eq!(sscanf(c"x".as_ptr() as *const u8,c"%2c".as_ptr() as *const u8,b.as_mut_ptr()),-1);assert_eq!(&b,b"keep");
+}}
