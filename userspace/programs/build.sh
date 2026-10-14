@@ -125,6 +125,10 @@ if [[ "$ARCH" == "x86_64" ]]; then
     echo "  libbreenix-libc C-ABI build (x86_64-breenix-c) built successfully"
 fi
 python3 "$PROJECT_ROOT/scripts/libc-symbol-audit.py" --arch "$ARCH"
+# The std link takes the first of two definitions (--allow-multiple-definition), so
+# refuse a libc.a that defines a symbol twice.
+python3 "$PROJECT_ROOT/scripts/libc-duplicate-check.py" \
+    --archive "$LIBC_RELEASE_DIR/libc.a" --tool-dir "$LIBC_TOOLS"
 echo ""
 
 # Step 1b: C programs built against Breenix's own C library
@@ -165,6 +169,14 @@ if ! (
 fi
 
 echo "  Userspace build successful"
+# And refuse a C symbol that libc.a and another input of the std link both define:
+# the std programs would link whichever came first.
+STD_LINK_INPUTS=()
+for rlib in "$SCRIPT_DIR/target/$TARGET_DIR/release/deps/"*.rlib; do
+    STD_LINK_INPUTS+=(--link-input "$rlib")
+done
+python3 "$PROJECT_ROOT/scripts/libc-duplicate-check.py" \
+    --archive "$LIBC_RELEASE_DIR/libc.a" --tool-dir "$LIBC_TOOLS" "${STD_LINK_INPUTS[@]}"
 echo ""
 
 # Step 3: Copy all binaries as .elf to userspace/programs/ for ext2 inclusion
