@@ -3,14 +3,15 @@
 //! Language chapter and each utility's page.
 //!
 //! Every case runs /bin/sh, or a utility found by its POSIX name through PATH, with the
-//! environment PATH=/bin:/usr/bin and HOME=/tmp, umask 022, fixed standard input and fixed
-//! files in a scratch directory of its own under /tmp, and compares the exit status, the
-//! exact standard output and whether anything was written to standard error with what POSIX
-//! specifies. Where POSIX leaves output layout to the implementation (padding, dates, sizes),
-//! the case reads the fields it needs with the shell rather than comparing the layout. The
-//! expected values were checked against dash and GNU coreutils on Linux, used only as a
-//! behaviour oracle. Before it runs anything, a case checks that each utility it uses is on
-//! PATH and fails naming those that are not.
+//! environment PATH=/bin:/usr/bin and HOME=/tmp, umask 022, every signal at its default
+//! action and none blocked, fixed standard input and fixed files in a scratch directory of
+//! its own under /tmp, and compares the exit status, the exact standard output and whether
+//! anything was written to standard error with what POSIX specifies. Where POSIX leaves
+//! output layout to the implementation (padding, dates, sizes), the case reads the fields it
+//! needs with the shell rather than comparing the layout. The expected values were checked
+//! against dash and GNU coreutils on Linux, used only as a behaviour oracle. Before it runs
+//! anything, a case checks that each utility it uses is on PATH and fails naming those that
+//! are not.
 //!
 //! The scripts category runs whole scripts written to files with `sh script.sh`, the way
 //! they run elsewhere.
@@ -1868,8 +1869,9 @@ fn nonblocking(fd: Fd) {
     }
 }
 
-/// Run `path` with `argv` in `dir` under umask 022, feeding it `input` and collecting its
-/// stdout and stderr until it exits, or killing it 1.5 seconds before the case's limit.
+/// Run `path` with `argv` in `dir` under umask 022 with default signal actions, feeding it
+/// `input` and collecting its stdout and stderr until it exits, or killing it 1.5 seconds
+/// before the case's limit.
 fn run(path: &str, argv: &[&str], dir: &str, input: &[u8]) -> Result<Ran, CaseError> {
     let (in_r, in_w) = pipe()?;
     let (out_r, out_w) = pipe()?;
@@ -1886,6 +1888,14 @@ fn run(path: &str, argv: &[&str], dir: &str, input: &[u8]) -> Result<Ran, CaseEr
                 process::chdir(cdir.as_bytes_with_nul()).map_err(|e| format!("chdir {dir} failed: {e}"))?;
                 // SAFETY: umask takes no pointers.
                 unsafe { raw::syscall1(nr::UMASK, 0o022) };
+                // The program starts with every signal at its default action and none
+                // blocked, as it would from init: this suite is a Rust program, which
+                // ignores SIGPIPE, and exec keeps ignored signals ignored.
+                let default = signal::Sigaction::default();
+                for sig in 1..=64 {
+                    let _ = signal::sigaction(sig, Some(&default), None);
+                }
+                let _ = signal::sigprocmask(signal::SIG_SETMASK, Some(&0), None);
                 io::dup2(in_r, Fd::STDIN).map_err(|e| format!("dup2 failed: {e}"))?;
                 io::dup2(out_w, Fd::STDOUT).map_err(|e| format!("dup2 failed: {e}"))?;
                 io::dup2(err_w, Fd::STDERR).map_err(|e| format!("dup2 failed: {e}"))?;

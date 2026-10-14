@@ -891,7 +891,9 @@ categories, one per milestone: `shell` (40), `file-utils` (37), `text-utils` (39
 
 Each case runs `/bin/sh -c <script>`, or a utility found by its POSIX name on `PATH`, in a
 scratch directory of its own under `/tmp` holding the case's fixed files, with fixed standard
-input, umask 022 and the environment `PATH=/bin:/usr/bin`, `HOME=/tmp` and nothing else. It
+input, umask 022, every signal at its default action and none blocked (the suite is a Rust
+program, which ignores SIGPIPE, and exec would pass that on), and the environment
+`PATH=/bin:/usr/bin`, `HOME=/tmp` and nothing else. It
 compares the exit status, the exact standard output and whether anything was written to
 standard error with what POSIX specifies; where POSIX specifies only a non-zero status, any
 non-zero status passes. Where POSIX leaves output layout to the implementation (column
