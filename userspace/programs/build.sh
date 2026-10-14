@@ -98,7 +98,45 @@ if ! (
     echo "  ERROR: libbreenix-libc build FAILED"
     exit 1
 fi
+# compiler_builtins mixes ABI helpers with foreign libc math. Strip the latter
+# after every Cargo build, including cache hits, before any C or Rust link.
+LIBC_TOOLS="$("$PROJECT_ROOT/scripts/breenix-cc" --arch "$ARCH" --tool-dir)"
+python3 "$PROJECT_ROOT/scripts/libc-clean-archive.py" \
+    --archive "$LIBC_RELEASE_DIR/libc.a" --tool-dir "$LIBC_TOOLS"
 echo "  libbreenix-libc built successfully"
+
+# C programs link libc.a. aarch64's serves C as it is; x86_64's Rust build is
+# soft-float, so C gets a second build of the same crate with the SysV float ABI.
+if [[ "$ARCH" == "x86_64" ]]; then
+    if ! (
+        set -o pipefail
+        cd "$LIBC_DIR" && \
+        CARGO_ENCODED_RUSTFLAGS= \
+        RUSTFLAGS="$REMAP_FLAGS" \
+        cargo build --release --target ../../x86_64-breenix-c.json 2>&1 | while read line; do
+            echo "  $line"
+        done
+    ); then
+        echo "  ERROR: libbreenix-libc C-ABI build FAILED"
+        exit 1
+    fi
+    python3 "$PROJECT_ROOT/scripts/libc-clean-archive.py" \
+        --archive "$LIBC_DIR/target/x86_64-breenix-c/release/libc.a" --tool-dir "$LIBC_TOOLS"
+    echo "  libbreenix-libc C-ABI build (x86_64-breenix-c) built successfully"
+fi
+python3 "$PROJECT_ROOT/scripts/libc-symbol-audit.py" --arch "$ARCH"
+echo ""
+
+# Step 1b: C programs built against Breenix's own C library
+echo "[1b/3] Building the libc suite's C programs ($ARCH)..."
+if ! "$PROJECT_ROOT/userspace/libc-suite/build.sh" --arch "$ARCH"; then
+    echo "  ERROR: libc suite C build FAILED"
+    exit 1
+fi
+if ! "$PROJECT_ROOT/scripts/build-libc-busybox.sh" --arch "$ARCH"; then
+    echo "  ERROR: BusyBox build against Breenix's libc FAILED"
+    exit 1
+fi
 echo ""
 
 # Step 2: Build all userspace binaries
@@ -337,6 +375,7 @@ STD_BINARIES=(
     "suite-terminals"
     "suite-networking"
     "suite-rust-std"
+    "suite-libc"
     "files-io-exec_test"
     "processes-exec_test"
     "rust-std-child_test"
@@ -377,6 +416,13 @@ INSTALL_NAMES=" busybox "
 for entry in "${STD_BINARIES[@]}"; do
     INSTALL_NAMES+="${entry##*:} "
 done
+# The C programs userspace/libc-suite/build.sh and scripts/build-libc-busybox.sh
+# installed above.
+INSTALL_NAMES+="libc-busybox "
+while read -r category _; do
+    case "$category" in ''|'#'*) continue ;; esac
+    INSTALL_NAMES+="libc-${category}_test "
+done < "$PROJECT_ROOT/userspace/libc-suite/categories"
 for elf in "$TESTS_DIR"/*.elf; do
     [ -e "$elf" ] || continue
     name="$(basename "$elf" .elf)"

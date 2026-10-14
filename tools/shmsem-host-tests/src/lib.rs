@@ -702,6 +702,13 @@ fn syscall_result_to_c_int(result: i64) -> i32 {
         result as i32
     }
 }
+// The semaphore waits are cancellation points. With no thread runtime, as
+// here, the library's cancel_syscall makes the system call directly.
+mod pthread {
+    pub unsafe fn cancel_syscall(nr: u64, a: [u64; 6]) -> i64 {
+        crate::raw::syscall6(nr, a[0], a[1], a[2], a[3], a[4], a[5]) as i64
+    }
+}
 #[path = "../../../libs/libbreenix-libc/src/semaphore.rs"]
 mod semaphore;
 
