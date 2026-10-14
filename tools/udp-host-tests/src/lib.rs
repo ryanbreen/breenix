@@ -82,8 +82,17 @@ mod tests {
     use socket::addr::SockAddr;
     use socket::object::ProtoOps;
     use std::sync::atomic::Ordering;
+    /// Every check uses the production SOCKET_REGISTRY, one per process. A
+    /// receive refuses input while another holder has it (#908), so a check
+    /// binding on one test thread drops a datagram another is delivering.
+    /// The checks therefore hold this for their whole body.
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
     #[test]
     fn dup_reference_keeps_binding_until_last_detached_release() {
+        let _serial = serial();
         let a = endpoint();
         a.ops().bind(&a, &address(45212)).unwrap();
         let duplicate = a.clone();
@@ -95,6 +104,7 @@ mod tests {
     }
     #[test]
     fn deferred_release_identity_cannot_remove_a_replacement_binding() {
+        let _serial = serial();
         let a = endpoint();
         a.ops().bind(&a, &address(45213)).unwrap();
         let mut original = Arc::try_unwrap(a).ok().unwrap();
@@ -110,6 +120,7 @@ mod tests {
     }
     #[test]
     fn maximum_datagram_and_odd_checksum_roundtrip() {
+        let _serial = serial();
         let a = endpoint();
         let b = endpoint();
         b.ops().bind(&b, &address(45214)).unwrap();
@@ -133,6 +144,7 @@ mod tests {
     }
     #[test]
     fn bad_inbound_checksum_is_dropped_and_zero_checksum_is_valid() {
+        let _serial = serial();
         let b = endpoint();
         b.ops().bind(&b, &address(45215)).unwrap();
         let mut wire =
@@ -147,6 +159,7 @@ mod tests {
     }
     #[test]
     fn connected_reuse_binding_beats_a_later_unconnected_binding() {
+        let _serial = serial();
         let peer = endpoint();
         peer.ops().bind(&peer, &address(45216)).unwrap();
         let a = endpoint();
@@ -165,6 +178,7 @@ mod tests {
     }
     #[test]
     fn per_call_nonblocking_and_out_of_band_rejection() {
+        let _serial = serial();
         let s = endpoint();
         let mut msg = socket::object::RecvMsg {
             cap: 8,
@@ -181,6 +195,7 @@ mod tests {
     }
     #[test]
     fn msg_more_coalesces_one_datagram_and_preserves_first_destination() {
+        let _serial = serial();
         let a = endpoint();
         let b = endpoint();
         let c = endpoint();
@@ -205,6 +220,7 @@ mod tests {
     }
     #[test]
     fn cork_overflow_discards_unfinished_datagram_without_delivering_fragments() {
+        let _serial = serial();
         let a = endpoint();
         let b = endpoint();
         b.ops().bind(&b, &address(45220)).unwrap();
@@ -227,6 +243,7 @@ mod tests {
     }
     #[test]
     fn dont_route_rejects_a_gateway_destination() {
+        let _serial = serial();
         let a = endpoint();
         let mut msg = socket::object::SendMsg {
             data: b"x",
@@ -248,6 +265,7 @@ mod tests {
     }
     #[test]
     fn bind_names_ephemeral_validation_and_double_bind() {
+        let _serial = serial();
         let s = endpoint();
         assert_eq!(
             s.ops().bind(
@@ -268,6 +286,7 @@ mod tests {
     }
     #[test]
     fn explicit_bind_is_exclusive_and_close_releases() {
+        let _serial = serial();
         let a = endpoint();
         a.ops().bind(&a, &address(45201)).unwrap();
         let b = endpoint();
@@ -277,6 +296,7 @@ mod tests {
     }
     #[test]
     fn reuse_requires_all_holders_and_last_bound_receives() {
+        let _serial = serial();
         let a = endpoint();
         a.common.reuse.store(true, Ordering::Release);
         a.ops().bind(&a, &address(45202)).unwrap();
@@ -291,6 +311,7 @@ mod tests {
     }
     #[test]
     fn autobind_source_and_datagram_boundaries() {
+        let _serial = serial();
         let a = endpoint();
         let b = endpoint();
         b.ops().bind(&b, &address(45203)).unwrap();
@@ -304,6 +325,7 @@ mod tests {
     }
     #[test]
     fn truncation_and_peek_do_not_split_datagrams() {
+        let _serial = serial();
         let a = endpoint();
         let b = endpoint();
         b.ops().bind(&b, &address(45204)).unwrap();
@@ -320,6 +342,7 @@ mod tests {
     }
     #[test]
     fn empty_datagram_is_a_message() {
+        let _serial = serial();
         let a = endpoint();
         let b = endpoint();
         b.ops().bind(&b, &address(45205)).unwrap();
@@ -331,6 +354,7 @@ mod tests {
     }
     #[test]
     fn connect_peer_filters_and_unspec_disconnects() {
+        let _serial = serial();
         let a = endpoint();
         a.ops().bind(&a, &address(45206)).unwrap();
         let b = endpoint();
@@ -351,6 +375,7 @@ mod tests {
     }
     #[test]
     fn icmp_error_read_clear_and_poll() {
+        let _serial = serial();
         let a = endpoint();
         a.ops().connect(&a, &address(45209), false).unwrap();
         assert_eq!(send(&a, b"x", None), Ok(1));
@@ -361,6 +386,7 @@ mod tests {
     }
     #[test]
     fn oversize_and_broadcast_permission() {
+        let _serial = serial();
         let a = endpoint();
         assert_eq!(send(&a, &vec![0; 65508], Some(address(45210))), Err(90));
         let broad = SockAddr::Inet {
@@ -373,6 +399,7 @@ mod tests {
     }
     #[test]
     fn full_receive_queue_preserves_accepted_messages_and_bounds_empty_messages() {
+        let _serial = serial();
         let a = endpoint();
         let b = endpoint();
         b.ops().bind(&b, &address(45211)).unwrap();
@@ -392,6 +419,7 @@ mod tests {
     }
     #[test]
     fn shutdown_read_keeps_later_messages_and_reports_rdhup() {
+        let _serial = serial();
         let a = endpoint();
         let b = endpoint();
         b.ops().bind(&b, &address(45301)).unwrap();
@@ -404,6 +432,7 @@ mod tests {
     }
     #[test]
     fn disconnect_releases_autobound_port() {
+        let _serial = serial();
         let a = endpoint();
         a.ops().connect(&a, &address(45302), false).unwrap();
         let old = a.ops().local_name(&a);
@@ -421,6 +450,7 @@ mod tests {
     }
     #[test]
     fn errqueue_does_not_consume_normal_messages() {
+        let _serial = serial();
         let a = endpoint();
         let b = endpoint();
         b.ops().bind(&b, &address(45303)).unwrap();
@@ -430,6 +460,7 @@ mod tests {
     }
     #[test]
     fn broadcast_loopback_only_wildcard_and_broadcast_bindings_receive() {
+        let _serial = serial();
         let a = endpoint();
         let b = endpoint();
         let c = endpoint();
@@ -468,6 +499,7 @@ mod tests {
     }
     #[test]
     fn small_receive_buffer_admits_one_oversized_packet() {
+        let _serial = serial();
         let a = endpoint();
         let b = endpoint();
         b.ops().bind(&b, &address(45305)).unwrap();
@@ -479,6 +511,7 @@ mod tests {
     }
     #[test]
     fn unspec_send_and_bind_keep_address_and_port() {
+        let _serial = serial();
         let a = endpoint();
         let b = endpoint();
         b.ops()
@@ -513,6 +546,7 @@ mod tests {
     }
     #[test]
     fn loopback_source_cannot_leave_host() {
+        let _serial = serial();
         let a = endpoint();
         a.ops().bind(&a, &address(45308)).unwrap();
         assert_eq!(
@@ -529,6 +563,7 @@ mod tests {
     }
     #[test]
     fn icmp_error_selects_one_reuse_socket() {
+        let _serial = serial();
         let a = endpoint();
         let b = endpoint();
         for sk in [&a, &b] {
