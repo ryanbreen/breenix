@@ -351,7 +351,12 @@ pub fn sys_clone_thread(
         // A process sharing the address space runs the parent's program.
         match crate::syscall::exec::copy_string(&parent.name) {
             Ok(name) => name,
-            Err(errno) => return SyscallResult::Err(errno),
+            Err(errno) => {
+                if shares_undo {
+                    crate::ipc::sysv::unshare_undo(child_pid);
+                }
+                return SyscallResult::Err(errno);
+            }
         }
     };
     let mut child_process = Process::new(child_pid, child_name, entry_point);
