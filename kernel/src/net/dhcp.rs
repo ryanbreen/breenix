@@ -8,7 +8,7 @@
 //! ipconfig does not renew it either.
 
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
 use spin::Mutex;
 
 use super::{ethernet, ipv4, udp};
@@ -50,7 +50,8 @@ const ATTEMPT_TIMEOUTS_MS: [u64; 3] = [2_000, 4_000, 4_000];
 /// receive hook costs one atomic load on every other boot.
 static AWAITED: AtomicU8 = AtomicU8::new(0);
 static XID: AtomicU32 = AtomicU32::new(0);
-static CLIENT_MAC: Mutex<[u8; 6]> = Mutex::new([0; 6]);
+/// The interface's hardware address, in the low 48 bits.
+static CLIENT_MAC: AtomicU64 = AtomicU64::new(0);
 static REPLY: Mutex<Option<Reply>> = Mutex::new(None);
 static LEASE: Mutex<Option<Lease>> = Mutex::new(None);
 
@@ -79,7 +80,7 @@ struct Reply {
 /// Obtain a lease for the interface whose hardware address is `mac`.
 /// Returns `None` when no server completed the exchange.
 pub fn acquire(mac: [u8; 6]) -> Option<Lease> {
-    *CLIENT_MAC.lock() = mac;
+    CLIENT_MAC.store(mac_to_u64(mac), Ordering::Relaxed);
     let seed = crate::time::tsc::nanoseconds_since_base().unwrap_or(0) as u32;
     XID.store(
         u32::from_be_bytes([mac[2], mac[3], mac[4], mac[5]]) ^ seed,
@@ -90,13 +91,22 @@ pub fn acquire(mac: [u8; 6]) -> Option<Lease> {
         .iter()
         .find_map(|&timeout_ms| attempt(mac, timeout_ms));
     AWAITED.store(0, Ordering::Release);
+    let _guard = super::net_lock_guard();
     *LEASE.lock() = lease;
     lease
 }
 
 /// The lease the boot-time exchange obtained, if any.
 pub fn lease() -> Option<Lease> {
-    *LEASE.lock()
+    let _guard = super::net_lock_guard();
+    let lease = *LEASE.lock();
+    lease
+}
+
+fn mac_to_u64(mac: [u8; 6]) -> u64 {
+    let mut bytes = [0u8; 8];
+    bytes[2..].copy_from_slice(&mac);
+    u64::from_be_bytes(bytes)
 }
 
 fn attempt(mac: [u8; 6], timeout_ms: u64) -> Option<Lease> {
@@ -212,7 +222,9 @@ pub fn receive(ip_payload: &[u8]) -> bool {
     if header.dst_port != CLIENT_PORT || header.src_port != SERVER_PORT {
         return false;
     }
-    let Some(reply) = parse_reply(message, XID.load(Ordering::Relaxed), *CLIENT_MAC.lock()) else {
+    let mac = CLIENT_MAC.load(Ordering::Relaxed).to_be_bytes();
+    let mac = [mac[2], mac[3], mac[4], mac[5], mac[6], mac[7]];
+    let Some(reply) = parse_reply(message, XID.load(Ordering::Relaxed), mac) else {
         return true;
     };
     if reply.kind == awaited || (awaited == DHCPACK && reply.kind == DHCPNAK) {
