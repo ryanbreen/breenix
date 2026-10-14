@@ -1,6 +1,7 @@
 #ifndef __BREENIX_WCTYPE_H
 #define __BREENIX_WCTYPE_H
-#include <locale.h>
+#include <__breenix/types.h>
+#include <__breenix/features.h>
 typedef __breenix_wint_t wint_t;
 typedef __breenix_wctype_t wctype_t;
 typedef __breenix_wctrans_t wctrans_t;
@@ -26,6 +27,7 @@ int iswctype(wint_t, wctype_t);
 wctrans_t wctrans(const char *);
 wint_t towctrans(wint_t, wctrans_t);
 #if defined(__BREENIX_POSIX)
+typedef __breenix_locale_t locale_t;
 int iswalnum_l(wint_t, locale_t);
 int iswalpha_l(wint_t, locale_t);
 int iswblank_l(wint_t, locale_t);

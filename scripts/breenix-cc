@@ -96,5 +96,22 @@ if [ "$relocatable" = 1 ]; then
 fi
 [ -f "$LIBC" ] || { echo "breenix-cc: $LIBC is missing; build libs/libbreenix-libc for $ARCH first" >&2; exit 1; }
 
-exec "$CLANG" "${COMPILE_FLAGS[@]}" -static -nostdlib -fuse-ld=lld -B "$GCC_LD" \
+# A final executable is audited after linking as well as its input archive.
+# Preserve clang's last -o argument (both accepted spellings).
+OUTPUT=a.out
+OUTPUT_NEXT=0
+for arg in "$@"; do
+    if [ "$OUTPUT_NEXT" = 1 ]; then
+        OUTPUT="$arg"
+        OUTPUT_NEXT=0
+        continue
+    fi
+    case "$arg" in
+        -o) OUTPUT_NEXT=1 ;;
+        -o?*) OUTPUT="${arg#-o}" ;;
+    esac
+done
+"$CLANG" "${COMPILE_FLAGS[@]}" -static -nostdlib -fuse-ld=lld -B "$GCC_LD" \
     -Wl,-T,"$ROOT/userspace/programs/linker.ld" -Wl,--gc-sections "$@" "$LIBC"
+
+python3 "$ROOT/scripts/libc-symbol-audit.py" --arch "$ARCH" --elf "$OUTPUT" > /dev/null

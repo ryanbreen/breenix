@@ -805,9 +805,9 @@ swift run breenix-runs run x86 --mode suite --boots 1 --suite networking --sha <
 ## C library
 
 `libc` measures the libc effort in `docs/efforts/path.json`: Breenix's own clean-room C
-library, `libs/libbreenix-libc`, as C programs see it. Its 252 cases cover eight categories,
+library, `libs/libbreenix-libc`, as C programs see it. Its 256 cases cover eight categories,
 one per milestone: `stdio` (35), `string-stdlib` (33), `math` (35), `locale-wchar` (27),
-`dirent-glob` (23), `getopt-env` (31), `pthread` (33) and `busybox` (35). The contract is ISO
+`dirent-glob` (23), `getopt-env` (31), `pthread` (37) and `busybox` (35). The contract is ISO
 C17 and POSIX.1-2024, with Linux's ABI where POSIX leaves a choice open; each title names the
 rule its case checks, and titles that measure a Linux choice say so.
 

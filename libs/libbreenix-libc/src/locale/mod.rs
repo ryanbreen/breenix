@@ -1,8 +1,15 @@
 //! ISO C17 7.22/7.29; POSIX.1-2024 locale and wide-character interfaces.
 //! All implementation is original; encoding follows Unicode's UTF-8 definition.
+//! The errno numbers this module sets (2 ENOENT, 12 ENOMEM, 22 EINVAL, 34 ERANGE,
+//! 75 EOVERFLOW, 84 EILSEQ) are the Linux UAPI values the Breenix kernel and
+//! include/errno.h use.
 
 mod calendar;
-mod classify;
+/// Classification and case mapping for other lanes (FILES' regex and fnmatch):
+/// iswctype/wctype, towlower/towupper and wcwidth follow the thread's LC_CTYPE.
+pub(crate) mod classify;
+#[cfg(not(test))]
+mod clocks;
 #[cfg(not(test))]
 mod format;
 mod multibyte;
@@ -10,6 +17,8 @@ mod multibyte;
 mod numbers;
 mod objects;
 mod parse_time;
+#[cfg(not(test))]
+mod scan;
 #[cfg(not(test))]
 mod streams;
 mod unicode_tables;
@@ -41,8 +50,10 @@ pub(crate) fn encode(wc: u32, out: &mut [u8; 4]) -> Option<usize> {
 
 fn encode_charset(wc: u32, out: &mut [u8; 4], encoding: Charset) -> Option<usize> {
     match encoding {
+        // The single-byte C locale maps each byte to the wide character of the same
+        // value, so exactly 0x00-0xFF encode (C17 7.29.6.1.2 wctob(btowc(c)) == c).
         Charset::Byte => {
-            if wc > 0x7f {
+            if wc > 0xff {
                 return None;
             }
             out[0] = wc as u8;
@@ -184,7 +195,12 @@ mod tests {
                 decode_charset(&[b], &mut MbState::default(), Charset::Byte),
                 Decoded::Char(b as u32, 1)
             );
+            let mut out = [0; 4];
+            assert_eq!(encode_charset(b as u32, &mut out, Charset::Byte), Some(1));
+            assert_eq!(out[0], b);
         }
+        assert_eq!(encode_charset(0x100, &mut [0; 4], Charset::Byte), None);
+        assert_eq!(encode_charset(0x20ac, &mut [0; 4], Charset::Byte), None);
         assert_eq!(
             decode_charset(&[], &mut MbState::default(), Charset::Utf8),
             Decoded::Incomplete(0)
@@ -194,7 +210,7 @@ mod tests {
     #[test]
     fn locale_isolation_conversion_limits_and_unicode_classes() {
         unsafe {
-            let l = objects::newlocale(1, b"C.UTF-8\0".as_ptr(), core::ptr::null_mut());
+            let l = objects::newlocale(1 << 2, b"C.UTF-8\0".as_ptr(), core::ptr::null_mut());
             assert!(!l.is_null());
             assert_eq!(objects::uselocale(l) as usize, usize::MAX);
             assert_eq!(charset(), Charset::Utf8);
@@ -248,6 +264,84 @@ mod tests {
             objects::uselocale(usize::MAX as *mut core::ffi::c_void);
             objects::freelocale(l);
             assert_eq!(charset(), Charset::Byte);
+        }
+    }
+
+    #[test]
+    fn c_locale_round_trip_case_pairs_and_widths() {
+        for c in 0..=255u32 {
+            assert_eq!(multibyte::wctob(multibyte::btowc(c as i32)), c as i32);
+        }
+        assert_eq!(multibyte::wctob(0x100), -1);
+        // Titlecase letters are neither upper nor lower, so ISO C maps them to themselves.
+        let l = unsafe { objects::newlocale(1 << 2, b"C.UTF-8\0".as_ptr(), core::ptr::null_mut()) };
+        unsafe {
+            objects::uselocale(l);
+            for c in [0x1c5, 0x1c8, 0x1cb, 0x1f2, 0x1f88, 0x1fbc] {
+                assert_eq!((classify::towupper(c), classify::towlower(c)), (c, c));
+            }
+            assert_eq!(classify::towupper(0x1c6), 0x1c4);
+            assert_eq!(classify::towlower(0x1c4), 0x1c6);
+            for c in 0..=0x10ffffu32 {
+                let up = classify::towupper(c);
+                if up != c {
+                    assert!(classify::iswlower(c) != 0 && classify::iswupper(up) != 0, "{c:x}");
+                }
+                let down = classify::towlower(c);
+                if down != c {
+                    assert!(classify::iswupper(c) != 0 && classify::iswlower(down) != 0, "{c:x}");
+                }
+            }
+            // Format characters such as U+200B are not printable here, so they are -1;
+            // U+3164 is a printable default-ignorable character, so it is zero.
+            for (c, w) in [(0, 0), (0x41, 1), (0xe9, 1), (0x301, 0), (0x3164, 0), (0x200b, -1), (0x4e00, 2), (0x1f600, 2), (7, -1), (0xd800, -1)] {
+                assert_eq!(classify::wcwidth(c), w, "{c:x}");
+            }
+            let text = [0x41, 0x4e00, 0x301, 0];
+            assert_eq!(classify::wcswidth(text.as_ptr(), 8), 3);
+            assert_eq!(classify::wcswidth(text.as_ptr(), 1), 1);
+            assert_eq!(classify::wcswidth([0x41, 7, 0].as_ptr(), 8), -1);
+            // mbsnrtowcs keeps a character cut by its byte limit in the state.
+            let src = b"a\xe2\x82\xacb\0";
+            let mut p = src.as_ptr();
+            let mut st = MbState::default();
+            let mut out = [0u32; 8];
+            assert_eq!(multibyte::mbsnrtowcs(out.as_mut_ptr(), &mut p, 3, 8, &mut st), 1);
+            assert_eq!(p, src.as_ptr().add(3));
+            assert_eq!(multibyte::mbsinit(&st), 0);
+            assert_eq!(multibyte::mbsnrtowcs(out.as_mut_ptr().add(1), &mut p, 8, 8, &mut st), 2);
+            assert_eq!(out[..4], [0x61, 0x20ac, 0x62, 0]);
+            assert!(p.is_null());
+            let wide = [0x61, 0x20ac, 0x62, 0];
+            let mut q = wide.as_ptr();
+            let mut bytes = [0u8; 8];
+            assert_eq!(multibyte::wcsnrtombs(bytes.as_mut_ptr(), &mut q, 2, 8, &mut st), 4);
+            assert_eq!(q, wide.as_ptr().add(2));
+            assert_eq!(multibyte::wcsnrtombs(core::ptr::null_mut(), &mut q, 8, 0, &mut st), 1);
+            objects::uselocale(usize::MAX as *mut core::ffi::c_void);
+            assert_eq!(classify::wcwidth(0xe9), -1);
+            objects::freelocale(l);
+        }
+    }
+
+    #[test]
+    fn posix_wide_copies_and_bounded_concatenation() {
+        unsafe {
+            let mut d = [9u32; 8];
+            let end = wide::wcpcpy(d.as_mut_ptr(), [1, 2, 0].as_ptr());
+            assert_eq!(end, d.as_mut_ptr().add(2));
+            assert_eq!(d[..4], [1, 2, 0, 9]);
+            let end = wide::wcpncpy(d.as_mut_ptr(), [3, 0].as_ptr(), 4);
+            assert_eq!((end, d[..5].to_vec()), (d.as_mut_ptr().add(1), vec![3, 0, 0, 0, 9]));
+            let end = wide::wcpncpy(d.as_mut_ptr(), [5, 6, 7, 0].as_ptr(), 2);
+            assert_eq!((end, d[..3].to_vec()), (d.as_mut_ptr().add(2), vec![5, 6, 0]));
+            assert_eq!(wide::wcslcpy(d.as_mut_ptr(), [1, 2, 3, 0].as_ptr(), 3), 3);
+            assert_eq!(d[..3], [1, 2, 0]);
+            assert_eq!(wide::wcslcat(d.as_mut_ptr(), [4, 5, 0].as_ptr(), 4), 4);
+            assert_eq!(d[..4], [1, 2, 4, 0]);
+            assert_eq!(wide::wcslcat(d.as_mut_ptr(), [4, 0].as_ptr(), 2), 3);
+            assert_eq!(wide::wcslcpy(d.as_mut_ptr(), [1, 0].as_ptr(), 0), 1);
+            assert_eq!(wide::wcscasecmp_l([0x41, 0].as_ptr(), [0x61, 0].as_ptr(), core::ptr::null_mut()), 0);
         }
     }
 
@@ -323,6 +417,37 @@ mod tests {
             assert_eq!(wide[2], b'2' as u32);
             assert_eq!(wide[12], 0);
             assert!(calendar::gmtime_r(&i64::MAX, &mut tm).is_null());
+            // POSIX.1-2024 strftime year fields and the + flag.
+            let mut b = [0u8; 64];
+            for (year, fmt, text) in [
+                (999, b"%Y %C %G\0".as_slice(), b"999 09 999".as_slice()),
+                (1970, b"%+4Y %+5Y %+6Y %06Y\0", b"1970 +1970 +01970 001970"),
+                (12345, b"%Y %+4Y %C %+C %+3C\0", b"12345 +12345 123 +123 +123"),
+                (-5, b"%Y %C %05Y\0", b"-5 00 -0005"),
+                (-150, b"%C %4C\0", b"-1 -001"),
+                (1970, b"%F %10F %+12F %+F\0", b"1970-01-01 1970-01-01 +01970-01-01 1970-01-01"),
+                (12345, b"%F\0", b"12345-01-01"),
+            ] {
+                tm = calendar::Tm { year: year - 1900, mday: 1, wday: 4, ..Default::default() };
+                let n = calendar::strftime(b.as_mut_ptr(), 64, fmt.as_ptr(), &tm);
+                assert_eq!(&b[..n], text, "{year}");
+            }
+            tm.isdst = -1;
+            assert_eq!(calendar::strftime(b.as_mut_ptr(), 64, b"%z\0".as_ptr(), &tm), 0);
+            assert_eq!(b[0], 0);
+            let mut wide = [0u32; 16];
+            let fmt = [37, 43, 54, 89, 0]; // %+6Y
+            tm.year = 70;
+            assert_eq!(calendar::wcsftime(wide.as_mut_ptr(), 16, fmt.as_ptr(), &tm), 6);
+            assert_eq!(wide[..6], [43, 48, 49, 57, 55, 48]);
+            // Week-based fields for any int year, without failing.
+            for year in [i32::MIN, i32::MAX] {
+                tm = calendar::Tm { year, yday: 0, wday: 1, ..Default::default() };
+                assert_ne!(calendar::strftime(b.as_mut_ptr(), 64, b"%G %g %V\0".as_ptr(), &tm), 0);
+            }
+            tm = calendar::Tm { year: 99, yday: 1, wday: 6, ..Default::default() };
+            let n = calendar::strftime(b.as_mut_ptr(), 64, b"%G %V\0".as_ptr(), &tm);
+            assert_eq!(&b[..n], b"1998 53");
         }
     }
 
@@ -360,6 +485,64 @@ mod tests {
             std::env::set_var("TZ", "UTC+");
             calendar::localtime_r(&0, &mut tm);
             assert_eq!(tm.gmtoff, 0);
+            // A dst part with no rule: Breenix's default M3.2.0,M11.1.0 at 02:00.
+            std::env::set_var("TZ", "EST5EDT");
+            let mut b = [0u8; 64];
+            for (epoch, hour, isdst, gmtoff, zone) in [
+                (1625140800, 8, 1, -14400, b"EDT %z=-0400".as_slice()),
+                (1609502400, 7, 0, -18000, b"EST %z=-0500".as_slice()),
+                // 2021-03-14 06:59:59 UTC is 01:59:59 EST; one second later is 03:00 EDT.
+                (1615705199, 1, 0, -18000, b"EST %z=-0500".as_slice()),
+                (1615705200, 3, 1, -14400, b"EDT %z=-0400".as_slice()),
+                // 2021-11-07 05:59:59 UTC is 01:59:59 EDT; one second later is 01:00 EST.
+                (1636264799, 1, 1, -14400, b"EDT %z=-0400".as_slice()),
+                (1636264800, 1, 0, -18000, b"EST %z=-0500".as_slice()),
+            ] {
+                calendar::localtime_r(&epoch, &mut tm);
+                assert_eq!((tm.hour, tm.isdst, tm.gmtoff), (hour, isdst, gmtoff), "{epoch}");
+                let n = calendar::strftime(b.as_mut_ptr(), 64, b"%Z %%z=%z\0".as_ptr(), &tm);
+                assert_eq!(&b[..n], zone);
+                let mut copy = tm;
+                assert_eq!(calendar::mktime(&mut copy), epoch);
+                copy.isdst = -1;
+                if epoch != 1636264799 {
+                    assert_eq!(calendar::mktime(&mut copy), epoch);
+                }
+            }
+            assert_eq!((calendar::timezone, calendar::daylight), (18000, 1));
+            // An ambiguous wall time with tm_isdst < 0 reads as standard time, and a
+            // skipped one reads as standard and normalizes into DST.
+            tm = calendar::Tm { year: 121, mon: 10, mday: 7, hour: 1, min: 30, isdst: -1, ..Default::default() };
+            assert_eq!(calendar::mktime(&mut tm), 1636266600);
+            tm = calendar::Tm { year: 121, mon: 2, mday: 14, hour: 2, min: 30, isdst: -1, ..Default::default() };
+            assert_eq!(calendar::mktime(&mut tm), 1615707000);
+            assert_eq!((tm.hour, tm.isdst), (3, 1));
+            // Southern hemisphere: DST spans the new year; quoted names; explicit times.
+            std::env::set_var("TZ", "<+10>-10<+11>-11,M10.1.0,M4.1.0/3");
+            calendar::localtime_r(&1609459200, &mut tm);
+            assert_eq!((tm.hour, tm.isdst, tm.gmtoff), (11, 1, 39600));
+            calendar::localtime_r(&1625140800, &mut tm);
+            assert_eq!((tm.hour, tm.isdst, tm.gmtoff), (22, 0, 36000));
+            let n = calendar::strftime(b.as_mut_ptr(), 64, b"%Z\0".as_ptr(), &tm);
+            assert_eq!(&b[..n], b"+10");
+            // POSIX's year-round example, and Jn/n dates with a negative time.
+            std::env::set_var("TZ", "EST5EDT,0/0,J365/25");
+            for epoch in [1609459200, 1625140800, 1640995199] {
+                calendar::localtime_r(&epoch, &mut tm);
+                assert_eq!(tm.isdst, 1, "{epoch}");
+            }
+            // DST ends on zero-based day 59 (29 Feb 2020) at 02:00 and starts again on
+            // J60 (1 March) at -1:00, i.e. 23:00 on 29 February.
+            std::env::set_var("TZ", "XXX3YYY,J60/-1,59");
+            calendar::localtime_r(&1583020800, &mut tm); // 2020-03-01 00:00 UTC
+            assert_eq!((tm.mon, tm.mday, tm.hour, tm.isdst), (1, 29, 21, 0));
+            calendar::localtime_r(&1583029800, &mut tm); // 02:30 UTC, 23:30 standard
+            assert_eq!((tm.mon, tm.mday, tm.hour, tm.isdst), (2, 1, 0, 1));
+            calendar::localtime_r(&1582948800, &mut tm); // 2020-02-29 04:00 UTC
+            assert_eq!((tm.mday, tm.hour, tm.isdst), (29, 1, 0));
+            std::env::set_var("TZ", "EST5EDT,M3.2.0,M13.1.0");
+            calendar::localtime_r(&0, &mut tm);
+            assert_eq!((tm.gmtoff, tm.isdst), (0, 0));
             if let Some(old) = old {
                 std::env::set_var("TZ", old);
             } else {
@@ -418,6 +601,10 @@ mod tests {
                 !parse_time::strptime(b"+05:45\0".as_ptr(), b"%z\0".as_ptr(), &mut t).is_null()
             );
             assert_eq!(t.gmtoff, 20700);
+            assert!(
+                !parse_time::strptime(b"\x0b12\0".as_ptr(), b"\t%H\0".as_ptr(), &mut t).is_null()
+            );
+            assert_eq!(t.hour, 12);
         }
     }
 }

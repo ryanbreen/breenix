@@ -1,5 +1,7 @@
 #ifndef __BREENIX_TIME_H
 #define __BREENIX_TIME_H
+#define __need_size_t
+#define __need_NULL
 #include <stddef.h>
 #include <__breenix/types.h>
 #include <__breenix/features.h>

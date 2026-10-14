@@ -26,6 +26,9 @@ fn mapped(c: u32, table: &[(u32, u32)], encoding: Charset) -> u32 {
         Err(_) => c,
     }
 }
+pub(super) fn lower_in(c: u32, encoding: Charset) -> u32 {
+    mapped(c, LOWER, encoding)
+}
 #[no_mangle]
 pub extern "C" fn towlower(c: u32) -> u32 {
     mapped(c, LOWER, charset())
@@ -336,4 +339,41 @@ pub extern "C" fn isxdigit(c: i32) -> i32 {
 #[no_mangle]
 pub extern "C" fn isxdigit_l(c: i32, _l: *mut c_void) -> i32 {
     isxdigit(c)
+}
+// Bits 12 and 13 of the generated classes mark zero- and two-column characters.
+fn width(c: u32, encoding: Charset) -> i32 {
+    if c == 0 {
+        return 0;
+    }
+    let f = flags(c, encoding);
+    if has(c, 8, encoding) == 0 {
+        -1
+    } else if f & (1 << 12) != 0 {
+        0
+    } else if f & (1 << 13) != 0 {
+        2
+    } else {
+        1
+    }
+}
+/// POSIX.1-2024 wcwidth: columns for a printable character, -1 otherwise.
+#[no_mangle]
+pub extern "C" fn wcwidth(c: u32) -> i32 {
+    width(c, charset())
+}
+/// POSIX.1-2024 wcswidth: total columns of up to n characters, -1 if any is not printable.
+#[no_mangle]
+pub unsafe extern "C" fn wcswidth(s: *const u32, n: usize) -> i32 {
+    let encoding = charset();
+    let mut total: i32 = 0;
+    let mut i = 0;
+    while i < n && *s.add(i) != 0 {
+        let w = width(*s.add(i), encoding);
+        if w < 0 {
+            return -1;
+        }
+        total = total.saturating_add(w);
+        i += 1;
+    }
+    total
 }

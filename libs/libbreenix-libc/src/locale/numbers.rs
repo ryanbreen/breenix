@@ -97,6 +97,15 @@ pub unsafe extern "C" fn wcstoul(s: *const u32, end: *mut *mut u32, base: i32) -
 pub unsafe extern "C" fn wcstoull(s: *const u32, end: *mut *mut u32, base: i32) -> u64 {
     wcstoul(s, end, base)
 }
+// C17 7.8.2.4; intmax_t and uintmax_t are 64-bit on both Breenix targets (LP64).
+#[no_mangle]
+pub unsafe extern "C" fn wcstoimax(s: *const u32, end: *mut *mut u32, base: i32) -> i64 {
+    wcstol(s, end, base)
+}
+#[no_mangle]
+pub unsafe extern "C" fn wcstoumax(s: *const u32, end: *mut *mut u32, base: i32) -> u64 {
+    wcstoul(s, end, base)
+}
 #[no_mangle]
 pub unsafe extern "C" fn wcstod(s: *const u32, end: *mut *mut u32) -> f64 {
     let mut chars = WideChars::new(s);

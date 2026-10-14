@@ -34,14 +34,17 @@ pub extern "C" fn msgget(key: i32, msgflg: i32) -> i32 {
 /// msgsnd: send the message at `msgp`, a long type then `msgsz` bytes.
 #[no_mangle]
 pub unsafe extern "C" fn msgsnd(msqid: i32, msgp: *const u8, msgsz: usize, msgflg: i32) -> i32 {
-    syscall_result_to_c_int(raw::syscall4(nr::MSGSND, msqid as u64, msgp as u64, msgsz as u64, msgflg as u64) as i64)
+    // A cancellation point, as msgrcv is.
+    syscall_result_to_c_int(crate::pthread::cancel_syscall(nr::MSGSND,
+        [msqid as u64, msgp as u64, msgsz as u64, msgflg as u64, 0, 0]))
 }
 
 /// msgrcv: receive a message into `msgp`: the number of bytes of text.
 #[no_mangle]
 pub unsafe extern "C" fn msgrcv(msqid: i32, msgp: *mut u8, msgsz: usize, msgtyp: i64, msgflg: i32) -> isize {
     syscall_result_to_c_ssize(
-        raw::syscall5(nr::MSGRCV, msqid as u64, msgp as u64, msgsz as u64, msgtyp as u64, msgflg as u64) as i64,
+        crate::pthread::cancel_syscall(nr::MSGRCV,
+            [msqid as u64, msgp as u64, msgsz as u64, msgtyp as u64, msgflg as u64, 0]),
     )
 }
 

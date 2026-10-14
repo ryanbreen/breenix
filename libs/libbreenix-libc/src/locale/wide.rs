@@ -209,10 +209,12 @@ pub unsafe extern "C" fn wcsdup(s: *const u32) -> *mut u32 {
     }
     wmemcpy(d, s, n)
 }
-#[no_mangle]
-pub unsafe extern "C" fn wcsncasecmp(a: *const u32, b: *const u32, n: usize) -> i32 {
+unsafe fn casecmp(a: *const u32, b: *const u32, n: usize, encoding: super::Charset) -> i32 {
     for i in 0..n {
-        let r = compare(classify::towlower(*a.add(i)), classify::towlower(*b.add(i)));
+        let r = compare(
+            classify::lower_in(*a.add(i), encoding),
+            classify::lower_in(*b.add(i), encoding),
+        );
         if r != 0 {
             return r;
         }
@@ -223,6 +225,75 @@ pub unsafe extern "C" fn wcsncasecmp(a: *const u32, b: *const u32, n: usize) -> 
     0
 }
 #[no_mangle]
+pub unsafe extern "C" fn wcsncasecmp(a: *const u32, b: *const u32, n: usize) -> i32 {
+    casecmp(a, b, n, super::charset())
+}
+#[no_mangle]
 pub unsafe extern "C" fn wcscasecmp(a: *const u32, b: *const u32) -> i32 {
     wcsncasecmp(a, b, usize::MAX)
+}
+#[no_mangle]
+pub unsafe extern "C" fn wcsncasecmp_l(
+    a: *const u32,
+    b: *const u32,
+    n: usize,
+    l: *mut core::ffi::c_void,
+) -> i32 {
+    casecmp(a, b, n, super::objects::encoding_l(l))
+}
+#[no_mangle]
+pub unsafe extern "C" fn wcscasecmp_l(a: *const u32, b: *const u32, l: *mut core::ffi::c_void) -> i32 {
+    wcsncasecmp_l(a, b, usize::MAX, l)
+}
+// Both supported locales collate by code point, so the _l forms ignore the locale.
+#[no_mangle]
+pub unsafe extern "C" fn wcscoll_l(a: *const u32, b: *const u32, _l: *mut core::ffi::c_void) -> i32 {
+    wcscoll(a, b)
+}
+#[no_mangle]
+pub unsafe extern "C" fn wcsxfrm_l(
+    d: *mut u32,
+    s: *const u32,
+    n: usize,
+    _l: *mut core::ffi::c_void,
+) -> usize {
+    wcsxfrm(d, s, n)
+}
+/// POSIX.1-2024 wcpcpy: copy s with its terminator; return the terminator's address in d.
+#[no_mangle]
+pub unsafe extern "C" fn wcpcpy(d: *mut u32, s: *const u32) -> *mut u32 {
+    let n = wcslen(s);
+    wmemcpy(d, s, n + 1);
+    d.add(n)
+}
+/// POSIX.1-2024 wcpncpy: copy at most n characters, pad with nulls to n, and return
+/// the address of the first null written, or d + n when none was.
+#[no_mangle]
+pub unsafe extern "C" fn wcpncpy(d: *mut u32, s: *const u32, n: usize) -> *mut u32 {
+    let len = wcsnlen(s, n);
+    wmemcpy(d, s, len);
+    wmemset(d.add(len), 0, n - len);
+    d.add(len)
+}
+/// POSIX.1-2024 wcslcpy: copy at most size - 1 characters, terminate when size is
+/// nonzero, and return wcslen(s).
+#[no_mangle]
+pub unsafe extern "C" fn wcslcpy(d: *mut u32, s: *const u32, size: usize) -> usize {
+    let len = wcslen(s);
+    if size != 0 {
+        let n = len.min(size - 1);
+        wmemcpy(d, s, n);
+        *d.add(n) = 0;
+    }
+    len
+}
+/// POSIX.1-2024 wcslcat: append to the string in d (looking at most size characters
+/// into it) and return the length it tried to create.
+#[no_mangle]
+pub unsafe extern "C" fn wcslcat(d: *mut u32, s: *const u32, size: usize) -> usize {
+    let used = wcsnlen(d, size);
+    if used == size {
+        return size + wcslen(s);
+    }
+    used + wcslcpy(d.add(used), s, size - used)
 }

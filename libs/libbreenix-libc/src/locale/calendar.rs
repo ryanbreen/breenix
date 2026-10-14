@@ -1,5 +1,6 @@
 //! Gregorian calendar arithmetic derived from the 4/100/400-year leap rule.
-//! Epoch is 1970-01-01; supported TZ settings are UTC and POSIX fixed offsets.
+//! Epoch is 1970-01-01. TZ follows POSIX.1-2024 XBD 8.3's second format
+//! (std offset [dst [offset] [,rule]]); any other value means UTC.
 use super::set_errno;
 use core::ptr::{addr_of_mut, null_mut};
 #[derive(Clone, Copy, Debug, Default)]
@@ -37,7 +38,9 @@ static mut RESULT: Tm = Tm {
     zone: core::ptr::null(),
 };
 static mut TEXT: [u8; 26] = [0; 26];
-static mut ZONE: [u8; 64] = [0; 64];
+static mut STD_NAME: [u8; 64] = [0; 64];
+static mut DST_NAME: [u8; 64] = [0; 64];
+static mut ZONE: Zone = Zone::UTC;
 static ZONE_LOCK: crate::pthread::RecursiveLock = crate::pthread::RecursiveLock::new();
 static mut LAST_TZ: [u8; 128] = [0; 128];
 static mut LAST_LEN: usize = usize::MAX;
@@ -157,18 +160,110 @@ pub unsafe extern "C" fn gmtime_r(t: *const i64, out: *mut Tm) -> *mut Tm {
 pub unsafe extern "C" fn gmtime(t: *const i64) -> *mut Tm {
     gmtime_r(t, addr_of_mut!(RESULT))
 }
-pub(super) unsafe fn fixed_zone() -> (i64, *const u8) {
+/// One end of a daylight-saving period: a date rule and the local time of day.
+#[derive(Clone, Copy)]
+struct Change {
+    date: Date,
+    time: i64,
+}
+#[derive(Clone, Copy)]
+enum Date {
+    /// Jn: day 1-365, never counting 29 February.
+    Julian(i64),
+    /// n: zero-based day 0-365, counting 29 February.
+    Day(i64),
+    /// Mm.w.d: day d (0 = Sunday) of week w (5 = last) of month m.
+    Month(usize, i64, i64),
+}
+#[derive(Clone, Copy)]
+pub(super) struct Zone {
+    /// Seconds east of UTC in standard and in daylight-saving time.
+    std_east: i64,
+    dst_east: i64,
+    std_name: *const u8,
+    dst_name: *const u8,
+    rule: Option<(Change, Change)>,
+}
+impl Zone {
+    const UTC: Zone = Zone {
+        std_east: 0,
+        dst_east: 0,
+        std_name: b"UTC\0".as_ptr(),
+        dst_name: b"UTC\0".as_ptr(),
+        rule: None,
+    };
+}
+/// Days since the epoch of a rule's date in year y.
+fn rule_day(date: Date, y: i64) -> i64 {
+    let jan1 = day_number(y, 0, 1);
+    match date {
+        Date::Julian(n) => jan1 + n - 1 + i64::from(leap(y) && n >= 60),
+        Date::Day(n) => jan1 + n,
+        Date::Month(m, w, d) => {
+            let first = day_number(y, m - 1, 1);
+            let mut mday = 1 + (d - (first + 4)).rem_euclid(7) + 7 * (w - 1);
+            if mday > month_days(y, m - 1) {
+                mday -= 7;
+            }
+            first + mday - 1
+        }
+    }
+}
+fn year_of(seconds: i64) -> i64 {
+    let day = seconds.div_euclid(86400) + 719162;
+    let mut y = day.div_euclid(146097) * 400 + 1;
+    let mut yd = day.rem_euclid(146097);
+    while yd >= if leap(y) { 366 } else { 365 } {
+        yd -= if leap(y) { 366 } else { 365 };
+        y += 1;
+    }
+    y
+}
+impl Zone {
+    /// Whether daylight-saving time is in effect at UTC instant t. The changes of
+    /// the neighbouring years are included so a rule time past midnight, or a
+    /// period that spans the new year, is still found.
+    fn dst_at(&self, t: i64) -> bool {
+        let Some((start, end)) = self.rule else {
+            return false;
+        };
+        let y = year_of(t.saturating_add(self.std_east));
+        let mut last: Option<(i64, bool)> = None;
+        for year in y - 1..=y + 1 {
+            // The start is given in standard time and the end in daylight-saving time.
+            for (instant, on) in [
+                (rule_day(start.date, year) * 86400 + start.time - self.std_east, true),
+                (rule_day(end.date, year) * 86400 + end.time - self.dst_east, false),
+            ] {
+                // At equal instants the start wins, so a year-round period stays on.
+                if instant <= t && last.is_none_or(|l| (instant, on) > l) {
+                    last = Some((instant, on));
+                }
+            }
+        }
+        last.is_some_and(|(_, on)| on)
+    }
+    fn east(&self, dst: bool) -> (i64, *const u8) {
+        if dst {
+            (self.dst_east, self.dst_name)
+        } else {
+            (self.std_east, self.std_name)
+        }
+    }
+}
+pub(super) unsafe fn local_zone() -> Zone {
     ZONE_LOCK.lock();
     update_zone();
-    let result = (-timezone, tzname[0]);
+    let zone = *addr_of_mut!(ZONE);
     ZONE_LOCK.unlock();
-    result
+    zone
 }
-#[no_mangle]
-pub unsafe extern "C" fn localtime_r(t: *const i64, out: *mut Tm) -> *mut Tm {
-    let (offset, zone) = fixed_zone();
-    match broken(*t, offset, zone) {
-        Some(tm) => {
+unsafe fn local(t: i64, out: *mut Tm, zone: &Zone) -> *mut Tm {
+    let dst = zone.dst_at(t);
+    let (east, name) = zone.east(dst);
+    match broken(t, east, name) {
+        Some(mut tm) => {
+            tm.isdst = i32::from(dst);
             *out = tm;
             out
         }
@@ -178,38 +273,64 @@ pub unsafe extern "C" fn localtime_r(t: *const i64, out: *mut Tm) -> *mut Tm {
         }
     }
 }
+/// The local zone's designations with their offsets and tm_isdst values; the
+/// daylight-saving entry repeats the standard one when the zone has no DST.
+pub(super) unsafe fn local_designations() -> [(i64, *const u8, i32); 2] {
+    let zone = local_zone();
+    let dst = i32::from(zone.rule.is_some());
+    [
+        (zone.std_east, zone.std_name, 0),
+        (zone.dst_east, zone.dst_name, dst),
+    ]
+}
+pub(super) unsafe fn local_tm(t: i64) -> Option<Tm> {
+    let mut tm = Tm::default();
+    (!local(t, &mut tm, &local_zone()).is_null()).then_some(tm)
+}
+#[no_mangle]
+pub unsafe extern "C" fn localtime_r(t: *const i64, out: *mut Tm) -> *mut Tm {
+    local(*t, out, &local_zone())
+}
 #[no_mangle]
 pub unsafe extern "C" fn localtime(t: *const i64) -> *mut Tm {
     localtime_r(t, addr_of_mut!(RESULT))
 }
-unsafe fn make(tm: *mut Tm, offset: i64, zone: *const u8) -> i64 {
+unsafe fn make(tm: *mut Tm, zone: &Zone) -> i64 {
     let t = &*tm;
     let year = t.year as i64 + 1900 + (t.mon as i64).div_euclid(12);
     let mon = t.mon.rem_euclid(12) as usize;
-    let seconds = day_number(year, mon, t.mday as i64) * 86400
+    let wall = day_number(year, mon, t.mday as i64) * 86400
         + t.hour as i64 * 3600
         + t.min as i64 * 60
-        + t.sec as i64
-        - offset;
-    match broken(seconds, offset, zone) {
-        Some(out) => {
-            *tm = out;
-            seconds
+        + t.sec as i64;
+    let seconds = if zone.rule.is_none() || t.isdst == 0 {
+        wall - zone.std_east
+    } else if t.isdst > 0 {
+        wall - zone.dst_east
+    } else {
+        // Unknown: take the reading under which the wall time is valid, preferring
+        // standard time; a time skipped by the change to DST reads as standard.
+        let as_standard = wall - zone.std_east;
+        let as_daylight = wall - zone.dst_east;
+        if !zone.dst_at(as_standard) || !zone.dst_at(as_daylight) {
+            as_standard
+        } else {
+            as_daylight
         }
-        None => {
-            set_errno(75);
-            -1
-        }
+    };
+    if local(seconds, tm, zone).is_null() {
+        -1
+    } else {
+        seconds
     }
 }
 #[no_mangle]
 pub unsafe extern "C" fn timegm(tm: *mut Tm) -> i64 {
-    make(tm, 0, b"UTC\0".as_ptr())
+    make(tm, &Zone::UTC)
 }
 #[no_mangle]
 pub unsafe extern "C" fn mktime(tm: *mut Tm) -> i64 {
-    let (offset, zone) = fixed_zone();
-    make(tm, offset, zone)
+    make(tm, &local_zone())
 }
 #[no_mangle]
 pub unsafe extern "C" fn tzset() {
@@ -217,11 +338,145 @@ pub unsafe extern "C" fn tzset() {
     update_zone();
     ZONE_LOCK.unlock();
 }
+/// A std or dst designation, quoted (<...>: alphanumerics, + and -) or unquoted
+/// (alphabetics), 3 to 63 bytes.
+fn designation(b: &[u8], i: &mut usize) -> Option<(usize, usize)> {
+    let (start, end) = if b.get(*i) == Some(&b'<') {
+        let start = *i + 1;
+        let mut j = start;
+        while b.get(j)? != &b'>' {
+            if !(b[j].is_ascii_alphanumeric() || b[j] == b'+' || b[j] == b'-') {
+                return None;
+            }
+            j += 1;
+        }
+        *i = j + 1;
+        (start, j)
+    } else {
+        let start = *i;
+        while b.get(*i).is_some_and(|c| c.is_ascii_alphabetic()) {
+            *i += 1;
+        }
+        (start, *i)
+    };
+    (3..64).contains(&(end - start)).then_some((start, end))
+}
+fn number(b: &[u8], i: &mut usize, max: i64) -> Option<i64> {
+    let begin = *i;
+    let mut n: i64 = 0;
+    while let Some(&c) = b.get(*i).filter(|c| c.is_ascii_digit()) {
+        n = n * 10 + (c - b'0') as i64;
+        *i += 1;
+        if n > max {
+            return None;
+        }
+    }
+    (*i != begin).then_some(n)
+}
+/// [+|-]hh[:mm[:ss]] in seconds, positive for + or no sign.
+fn hms(b: &[u8], i: &mut usize, hours: i64) -> Option<i64> {
+    let sign = match b.get(*i) {
+        Some(b'-') => -1,
+        Some(b'+') => 1,
+        _ => 0,
+    };
+    if sign != 0 {
+        *i += 1;
+    }
+    let mut total = number(b, i, hours)? * 3600;
+    for unit in [60, 1] {
+        if b.get(*i) != Some(&b':') {
+            break;
+        }
+        *i += 1;
+        total += number(b, i, 59)? * unit;
+    }
+    Some(if sign < 0 { -total } else { total })
+}
+fn change(b: &[u8], i: &mut usize) -> Option<Change> {
+    let date = match b.get(*i)? {
+        b'J' => {
+            *i += 1;
+            Date::Julian(number(b, i, 365).filter(|&n| n >= 1)?)
+        }
+        b'M' => {
+            *i += 1;
+            let m = number(b, i, 12).filter(|&m| m >= 1)?;
+            (b.get(*i) == Some(&b'.')).then_some(())?;
+            *i += 1;
+            let w = number(b, i, 5).filter(|&w| w >= 1)?;
+            (b.get(*i) == Some(&b'.')).then_some(())?;
+            *i += 1;
+            Date::Month(m as usize, w, number(b, i, 6)?)
+        }
+        _ => Date::Day(number(b, i, 365)?),
+    };
+    // The default change time is 02:00; an explicit one may be -167 to 167 hours.
+    let time = if b.get(*i) == Some(&b'/') {
+        *i += 1;
+        hms(b, i, 167)?
+    } else {
+        7200
+    };
+    Some(Change { date, time })
+}
+/// Parse POSIX.1-2024 XBD 8.3 TZ "std offset [dst [offset] [,start[/time],end[/time]]]".
+fn parse_zone(b: &[u8]) -> Option<(Zone, (usize, usize), Option<(usize, usize)>)> {
+    let mut i = 0;
+    let std = designation(b, &mut i)?;
+    // POSIX offsets count west of UTC; Zone stores seconds east.
+    let std_east = -hms(b, &mut i, 24)?;
+    let mut zone = Zone {
+        std_east,
+        dst_east: std_east,
+        ..Zone::UTC
+    };
+    if i == b.len() {
+        return Some((zone, std, None));
+    }
+    let dst = designation(b, &mut i)?;
+    zone.dst_east = if matches!(b.get(i), Some(c) if c.is_ascii_digit() || *c == b'+' || *c == b'-')
+    {
+        -hms(b, &mut i, 24)?
+    } else {
+        std_east + 3600
+    };
+    zone.rule = Some(if i == b.len() {
+        // POSIX leaves the changes implementation-defined when dst has no rule.
+        // Breenix uses the second Sunday of March to the first Sunday of November,
+        // at 02:00 local time (TZ rule M3.2.0,M11.1.0).
+        (
+            Change {
+                date: Date::Month(3, 2, 0),
+                time: 7200,
+            },
+            Change {
+                date: Date::Month(11, 1, 0),
+                time: 7200,
+            },
+        )
+    } else {
+        (b[i] == b',').then_some(())?;
+        i += 1;
+        let start = change(b, &mut i)?;
+        (b.get(i) == Some(&b',')).then_some(())?;
+        i += 1;
+        let end = change(b, &mut i)?;
+        (i == b.len()).then_some(())?;
+        (start, end)
+    });
+    Some((zone, std, Some(dst)))
+}
+fn copy_name(buffer: &mut [u8; 64], name: &[u8]) -> *const u8 {
+    buffer[..name.len()].copy_from_slice(name);
+    buffer[name.len()] = 0;
+    buffer.as_ptr()
+}
 unsafe fn update_zone() {
     let b = crate::env::getenv_bytes(b"TZ")
         .filter(|s| s.len() <= 128)
         .unwrap_or(b"");
-    // Reentrant calendar calls must not rewrite the zone name other threads
+    // Reentrant calendar calls must not rewrite the zone names other threads
     // are reading when the environment has not changed.
     let last = &mut *addr_of_mut!(LAST_TZ);
     if LAST_LEN == b.len() && last[..b.len()] == *b {
@@ -229,67 +484,21 @@ unsafe fn update_zone() {
     }
     last[..b.len()].copy_from_slice(b);
     LAST_LEN = b.len();
-    timezone = 0;
-    daylight = 0;
-    tzname = [b"UTC\0".as_ptr(); 2];
-    if b.is_empty() {
-        return;
+    let mut zone = Zone::UTC;
+    // An empty TZ, the implementation-defined ":..." form and geographical names
+    // (Breenix has no zone database) all mean UTC.
+    if let Some((parsed, std, dst)) = parse_zone(b) {
+        zone = parsed;
+        zone.std_name = copy_name(&mut *addr_of_mut!(STD_NAME), &b[std.0..std.1]);
+        zone.dst_name = match dst {
+            Some((start, end)) => copy_name(&mut *addr_of_mut!(DST_NAME), &b[start..end]),
+            None => zone.std_name,
+        };
     }
-    let mut i = 0;
-    let (start, end) = if b.first() == Some(&b'<') {
-        i = 1;
-        while i < b.len() && b[i] != b'>' {
-            i += 1;
-        }
-        if i == b.len() {
-            return;
-        }
-        let end = i;
-        i += 1;
-        (1, end)
-    } else {
-        while i < b.len() && b[i].is_ascii_alphabetic() {
-            i += 1;
-        }
-        (0, i)
-    };
-    if end - start < 3 || end - start >= 64 {
-        return;
-    }
-    let mut sign = 1;
-    let signed_offset = matches!(b.get(i), Some(b'-' | b'+'));
-    if b.get(i) == Some(&b'-') {
-        sign = -1;
-        i += 1;
-    } else if b.get(i) == Some(&b'+') {
-        i += 1;
-    }
-    let mut part = [0i64; 3];
-    for field in 0..3 {
-        let begin = i;
-        while i < b.len() && b[i].is_ascii_digit() {
-            part[field] = part[field] * 10 + (b[i] - b'0') as i64;
-            i += 1;
-            if part[field] > 167 {
-                return;
-            }
-        }
-        if i == begin && (field != 0 || i != b.len() || signed_offset) {
-            return;
-        }
-        if b.get(i) != Some(&b':') {
-            break;
-        }
-        i += 1;
-    }
-    if i != b.len() || part[0] > 24 || part[1] > 59 || part[2] > 59 {
-        return;
-    }
-    let zone = &mut *addr_of_mut!(ZONE);
-    zone[..end - start].copy_from_slice(&b[start..end]);
-    zone[end - start] = 0;
-    timezone = sign * (part[0] * 3600 + part[1] * 60 + part[2]);
-    tzname = [zone.as_ptr(); 2];
+    *addr_of_mut!(ZONE) = zone;
+    timezone = -zone.std_east;
+    daylight = i32::from(zone.rule.is_some());
+    tzname = [zone.std_name, zone.dst_name];
 }
 const DAYS: [&[u8]; 7] = [
     b"Sunday",
@@ -421,13 +630,19 @@ impl Output {
         self.text(&buf[i..])
     }
 }
+/// ISO 8601 week-based year and week, from the fields alone (no calendar call
+/// that could fail, whatever the year).
 fn iso_week(t: &Tm) -> (i64, i64) {
     let y = t.year as i64 + 1900;
-    let weekday = if t.wday == 0 { 7 } else { t.wday } as i64;
+    let weekday = match (t.wday as i64).rem_euclid(7) {
+        0 => 7,
+        d => d,
+    };
     let thursday = t.yday as i64 + 4 - weekday;
     if thursday < 0 {
-        let last = broken(day_number(y, 0, 1) * 86400 - 86400, 0, core::ptr::null()).unwrap();
-        return iso_week(&last);
+        // This week's Thursday falls in the previous year.
+        let previous = if leap(y - 1) { 366 } else { 365 };
+        return (y - 1, (thursday + previous) / 7 + 1);
     }
     let length = if leap(y) { 366 } else { 365 };
     if thursday >= length {
@@ -435,6 +650,43 @@ fn iso_week(t: &Tm) -> (i64, i64) {
     } else {
         (y, thursday / 7 + 1)
     }
+}
+/// A year (or, for %C, a century) under POSIX.1-2024 strftime's field rules: no
+/// padding unless a width is given or `digits` (2 for %C) says so; the + flag
+/// pads with zeros and adds a + once the field needs more than `limit` bytes.
+unsafe fn year(out: &mut Output, v: i64, width: usize, pad: u8, plus: bool, limit: usize) -> bool {
+    let mut digits = 0;
+    let mut rest = v.unsigned_abs();
+    loop {
+        digits += 1;
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
+    let sign = if v < 0 {
+        Some(b'-')
+    } else if plus && width.max(digits) > limit {
+        Some(b'+')
+    } else {
+        None
+    };
+    let total = width.max(digits + usize::from(sign.is_some()));
+    if let Some(sign) = sign {
+        if !out.put(sign) {
+            return false;
+        }
+    }
+    let fill = total - digits - usize::from(sign.is_some());
+    if pad != 0 {
+        for _ in 0..fill {
+            if !out.put(pad) {
+                return false;
+            }
+        }
+    }
+    // Years come from an int tm_year, so the magnitude fits.
+    out.number(v.unsigned_abs() as i64, 0, b'0')
 }
 unsafe fn format(out: &mut Output, fmt: *const u8, t: &Tm) -> bool {
     let mut i = 0;
@@ -452,19 +704,21 @@ unsafe fn format(out: &mut Output, fmt: *const u8, t: &Tm) -> bool {
             return false;
         }
         i += 1;
+        // POSIX flags 0 and +, and the _ (space) and - (no padding) extensions.
         let mut pad = b'0';
+        let mut plus = false;
         let mut width: usize = 0;
-        if c == b'_' || c == b'0' || c == b'-' {
-            pad = if c == b'_' {
-                b' '
-            } else if c == b'-' {
-                0
-            } else {
-                b'0'
+        if matches!(c, b'_' | b'0' | b'-' | b'+') {
+            pad = match c {
+                b'_' => b' ',
+                b'-' => 0,
+                _ => b'0',
             };
+            plus = c == b'+';
             c = *fmt.add(i);
             i += 1;
         }
+        let explicit = c.is_ascii_digit();
         while c.is_ascii_digit() {
             width = width.saturating_mul(10).saturating_add((c - b'0') as usize);
             if width > 4096 {
@@ -478,22 +732,37 @@ unsafe fn format(out: &mut Output, fmt: *const u8, t: &Tm) -> bool {
             i += 1;
         }
         let y = t.year as i64 + 1900;
+        let okay = match c {
+            b'Y' => Some(year(out, y, width, pad, plus, 4)),
+            b'G' => Some(year(out, iso_week(t).0, width, pad, plus, 4)),
+            // Truncated toward zero; two characters at least without a width.
+            b'C' => Some(year(out, y / 100, if explicit { width } else { 2 }, pad, plus, 2)),
+            b'F' => {
+                // The year as %Y with the same flag and width x - 6 (x at least 6).
+                let w = if explicit { width.max(6) - 6 } else { 0 };
+                Some(year(out, y, w, pad, plus, 4) && format(out, b"-%m-%d\0".as_ptr(), t))
+            }
+            _ => None,
+        };
+        if let Some(okay) = okay {
+            if !okay {
+                return false;
+            }
+            continue;
+        }
         let numeric = match c {
             b'd' | b'e' => Some((t.mday as i64, 2)),
             b'H' => Some((t.hour as i64, 2)),
-            b'I' => Some(((t.hour + 11).rem_euclid(12) as i64 + 1, 2)),
+            b'I' => Some(((t.hour as i64 + 11).rem_euclid(12) + 1, 2)),
             b'j' => Some((t.yday as i64 + 1, 3)),
             b'm' => Some((t.mon as i64 + 1, 2)),
             b'M' => Some((t.min as i64, 2)),
             b'S' => Some((t.sec as i64, 2)),
             b'y' => Some((y.rem_euclid(100), 2)),
-            b'Y' => Some((y, 4)),
-            b'C' => Some((y.div_euclid(100), 2)),
             b'w' => Some((t.wday as i64, 1)),
-            b'u' => Some((if t.wday == 0 { 7 } else { t.wday } as i64, 1)),
-            b'U' => Some(((t.yday + 7 - t.wday) as i64 / 7, 2)),
-            b'W' => Some(((t.yday + 7 - (t.wday + 6) % 7) as i64 / 7, 2)),
-            b'G' => Some((iso_week(t).0, 4)),
+            b'u' => Some((if t.wday == 0 { 7 } else { t.wday as i64 }, 1)),
+            b'U' => Some(((t.yday as i64 + 7 - t.wday as i64) / 7, 2)),
+            b'W' => Some(((t.yday as i64 + 7 - (t.wday as i64 + 6) % 7) / 7, 2)),
             b'g' => Some((iso_week(t).0.rem_euclid(100), 2)),
             b'V' => Some((iso_week(t).1, 2)),
             _ => None,
@@ -520,7 +789,6 @@ unsafe fn format(out: &mut Output, fmt: *const u8, t: &Tm) -> bool {
         let composite: &[u8] = match c {
             b'c' => b"%a %b %e %H:%M:%S %Y\0",
             b'D' | b'x' => b"%m/%d/%y\0",
-            b'F' => b"%Y-%m-%d\0",
             b'r' => b"%I:%M:%S %p\0",
             b'R' => b"%H:%M\0",
             b'T' | b'X' => b"%H:%M:%S\0",
@@ -550,15 +818,19 @@ unsafe fn format(out: &mut Output, fmt: *const u8, t: &Tm) -> bool {
                     true
                 }
             }
+            // No offset is determinable when tm_isdst is negative.
+            b'z' if t.isdst < 0 => true,
             b'z' => {
                 let v = t.gmtoff;
+                let a = v.unsigned_abs();
                 out.put(if v < 0 { b'-' } else { b'+' })
-                    && out.number(v.abs() / 3600, 2, b'0')
-                    && out.number((v.abs() / 60) % 60, 2, b'0')
+                    && out.number((a / 3600 % 100) as i64, 2, b'0')
+                    && out.number((a / 60 % 60) as i64, 2, b'0')
             }
+            // Seconds since the epoch, as mktime computes them.
             b's' => {
                 let mut copy = *t;
-                out.number(make(&mut copy, t.gmtoff, t.zone), 0, b'0')
+                out.number(mktime(&mut copy), 0, b'0')
             }
             _ => false,
         };
@@ -617,6 +889,7 @@ pub unsafe extern "C" fn wcsftime(s: *mut u32, n: usize, fmt: *const u32, t: *co
                 && c != b'O' as u32
                 && c != b'_' as u32
                 && c != b'-' as u32
+                && c != b'+' as u32
                 && !(c as u8).is_ascii_digit()
             {
                 break;
@@ -634,7 +907,8 @@ pub unsafe extern "C" fn wcsftime(s: *mut u32, n: usize, fmt: *const u32, t: *co
 }
 #[no_mangle]
 pub unsafe extern "C" fn asctime_r(t: *const Tm, s: *mut u8) -> *mut u8 {
-    if !(-1900..=8099).contains(&(*t).year) {
+    // C17 7.27.3.1 defines asctime only for four-digit years.
+    if !(-900..=8099).contains(&(*t).year) {
         set_errno(75);
         return null_mut();
     }

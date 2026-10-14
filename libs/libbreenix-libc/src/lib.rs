@@ -171,38 +171,67 @@ fn result_i64_to_c_int(result: Result<i64, Error>) -> i32 {
 // I/O Functions
 // =============================================================================
 
-/// Write bytes to a file descriptor.
-#[no_mangle]
-pub unsafe extern "C" fn write(fd: i32, buf: *const u8, count: usize) -> isize {
+// The C functions read, write, close, open and openat are cancellation points
+// (POSIX.1-2024 2.9.5.2). This library's own modules call the Rust functions
+// of the same names below, which are not: stdio, netdb, semaphores and
+// message queues hold a lock or own a descriptor across these calls, and a
+// cancellation acted on inside them would leave the lock held for ever.
+
+/// Run `nr` as a cancellation point, or plainly for this library's callers.
+unsafe fn io_syscall(cancel: bool, nr: u64, a: [u64; 6]) -> i64 {
+    if cancel {
+        pthread::cancel_syscall(nr, a)
+    } else {
+        libbreenix::raw::syscall6(nr, a[0], a[1], a[2], a[3], a[4], a[5]) as i64
+    }
+}
+unsafe fn write_impl(cancel: bool, fd: i32, buf: *const u8, count: usize) -> isize {
     if buf.is_null() && count > 0 {
         *__errno_location() = libbreenix::Errno::EFAULT as i32;
         return -1;
     }
-
-    syscall_result_to_c_ssize(pthread::cancel_syscall(
-        libbreenix::syscall::nr::WRITE, [fd as u64, buf as u64, count as u64, 0, 0, 0],
-    ))
+    syscall_result_to_c_ssize(io_syscall(cancel,
+        libbreenix::syscall::nr::WRITE, [fd as u64, buf as u64, count as u64, 0, 0, 0]))
 }
-
-/// Read bytes from a file descriptor.
-#[no_mangle]
-pub unsafe extern "C" fn read(fd: i32, buf: *mut u8, count: usize) -> isize {
+unsafe fn read_impl(cancel: bool, fd: i32, buf: *mut u8, count: usize) -> isize {
     if buf.is_null() && count > 0 {
         *__errno_location() = libbreenix::Errno::EFAULT as i32;
         return -1;
     }
-
-    syscall_result_to_c_ssize(pthread::cancel_syscall(
-        libbreenix::syscall::nr::READ, [fd as u64, buf as u64, count as u64, 0, 0, 0],
-    ))
+    syscall_result_to_c_ssize(io_syscall(cancel,
+        libbreenix::syscall::nr::READ, [fd as u64, buf as u64, count as u64, 0, 0, 0]))
 }
 
-/// Close a file descriptor.
-#[no_mangle]
-pub extern "C" fn close(fd: i32) -> i32 {
-    unsafe { syscall_result_to_c_int(pthread::cancel_syscall(
-        libbreenix::syscall::nr::CLOSE, [fd as u64, 0, 0, 0, 0, 0],
-    )) }
+/// Write bytes to a file descriptor: C's write, a cancellation point.
+#[export_name = "write"]
+pub unsafe extern "C" fn write_point(fd: i32, buf: *const u8, count: usize) -> isize {
+    write_impl(true, fd, buf, count)
+}
+/// write for this library's own callers: never a cancellation point.
+pub(crate) unsafe fn write(fd: i32, buf: *const u8, count: usize) -> isize {
+    write_impl(false, fd, buf, count)
+}
+
+/// Read bytes from a file descriptor: C's read, a cancellation point.
+#[export_name = "read"]
+pub unsafe extern "C" fn read_point(fd: i32, buf: *mut u8, count: usize) -> isize {
+    read_impl(true, fd, buf, count)
+}
+/// read for this library's own callers: never a cancellation point.
+pub(crate) unsafe fn read(fd: i32, buf: *mut u8, count: usize) -> isize {
+    read_impl(false, fd, buf, count)
+}
+
+/// Close a file descriptor: C's close, a cancellation point.
+#[export_name = "close"]
+pub extern "C" fn close_point(fd: i32) -> i32 {
+    unsafe { syscall_result_to_c_int(io_syscall(true,
+        libbreenix::syscall::nr::CLOSE, [fd as u64, 0, 0, 0, 0, 0])) }
+}
+/// close for this library's own callers: never a cancellation point.
+pub(crate) fn close(fd: i32) -> i32 {
+    unsafe { syscall_result_to_c_int(io_syscall(false,
+        libbreenix::syscall::nr::CLOSE, [fd as u64, 0, 0, 0, 0, 0])) }
 }
 
 /// Duplicate a file descriptor.
@@ -256,19 +285,11 @@ pub unsafe extern "C" fn pipe2(pipefd: *mut i32, flags: i32) -> i32 {
     }
 }
 
-/// writev - write multiple buffers
+/// writev - write multiple buffers in one call, a cancellation point
 #[no_mangle]
 pub unsafe extern "C" fn writev(fd: i32, iov: *const Iovec, iovcnt: i32) -> isize {
-    let mut total: isize = 0;
-    for i in 0..iovcnt as usize {
-        let vec = &*iov.add(i);
-        let result = write(fd, vec.iov_base as *const u8, vec.iov_len);
-        if result < 0 {
-            return result;
-        }
-        total += result;
-    }
-    total
+    syscall_result_to_c_ssize(pthread::cancel_syscall(libbreenix::syscall::nr::WRITEV,
+        [fd as u64, iov as u64, iovcnt as i64 as u64, 0, 0, 0]))
 }
 
 /// Iovec structure for scatter/gather I/O
@@ -282,24 +303,31 @@ pub struct Iovec {
 // File I/O Functions
 // =============================================================================
 
-/// open - open a file
-#[no_mangle]
-pub unsafe extern "C" fn open(path: *const u8, flags: i32, mode: u32) -> i32 {
+unsafe fn open_impl(cancel: bool, path: *const u8, flags: i32, mode: u32) -> i32 {
     if path.is_null() {
         *__errno_location() = EFAULT;
         return -1;
     }
 
     #[cfg(target_arch = "x86_64")]
-    let result = pthread::cancel_syscall(libbreenix::syscall::nr::OPEN,
+    let result = io_syscall(cancel, libbreenix::syscall::nr::OPEN,
         [path as u64, flags as u64, mode as u64, 0, 0, 0]);
     #[cfg(target_arch = "aarch64")]
-    let result = pthread::cancel_syscall(libbreenix::syscall::nr::OPENAT,
+    let result = io_syscall(cancel, libbreenix::syscall::nr::OPENAT,
         [AT_FDCWD_RAW, path as u64, flags as u64, mode as u64, 0, 0]);
     syscall_result_to_c_int(result)
 }
+/// open - open a file: C's open, a cancellation point
+#[export_name = "open"]
+pub unsafe extern "C" fn open_point(path: *const u8, flags: i32, mode: u32) -> i32 {
+    open_impl(true, path, flags, mode)
+}
+/// open for this library's own callers: never a cancellation point.
+pub(crate) unsafe fn open(path: *const u8, flags: i32, mode: u32) -> i32 {
+    open_impl(false, path, flags, mode)
+}
 
-/// openat - open a file relative to a directory fd
+/// openat - open a file relative to a directory fd, a cancellation point
 #[no_mangle]
 pub unsafe extern "C" fn openat(dirfd: i32, path: *const u8, flags: i32, mode: u32) -> i32 {
     if path.is_null() {
@@ -828,19 +856,21 @@ pub unsafe extern "C" fn ftruncate64(fd: i32, length: i64) -> i32 {
     ftruncate(fd, length)
 }
 
-/// fsync - synchronize file state with storage
+/// fsync - synchronize file state with storage, a cancellation point
 #[no_mangle]
 pub extern "C" fn fsync(fd: i32) -> i32 {
-    let result =
-        unsafe { libbreenix::raw::syscall1(libbreenix::syscall::nr::FSYNC, fd as u64) } as i64;
+    let result = unsafe {
+        pthread::cancel_syscall(libbreenix::syscall::nr::FSYNC, [fd as u64, 0, 0, 0, 0, 0])
+    };
     syscall_result_to_c_int(result)
 }
 
-/// fdatasync - synchronize file data with storage
+/// fdatasync - synchronize file data with storage, a cancellation point
 #[no_mangle]
 pub extern "C" fn fdatasync(fd: i32) -> i32 {
-    let result =
-        unsafe { libbreenix::raw::syscall1(libbreenix::syscall::nr::FDATASYNC, fd as u64) } as i64;
+    let result = unsafe {
+        pthread::cancel_syscall(libbreenix::syscall::nr::FDATASYNC, [fd as u64, 0, 0, 0, 0, 0])
+    };
     syscall_result_to_c_int(result)
 }
 
@@ -893,9 +923,16 @@ pub unsafe extern "C" fn umask(mask: u32) -> u32 {
     libbreenix::raw::syscall1(libbreenix::syscall::nr::UMASK, mask as u64) as u32
 }
 
-/// fcntl - file control
+/// fcntl - file control. Blocking lock commands are cancellation points;
+/// their values 7 and 38 match kernel/src/syscall/fs.rs.
 #[no_mangle]
 pub unsafe extern "C" fn fcntl(fd: i32, cmd: i32, arg: u64) -> i32 {
+    const F_SETLKW: i32 = 7;
+    const F_OFD_SETLKW: i32 = 38;
+    if cmd == F_SETLKW || cmd == F_OFD_SETLKW {
+        return syscall_result_to_c_int(pthread::cancel_syscall(libbreenix::syscall::nr::FCNTL,
+            [fd as u64, cmd as u64, arg, 0, 0, 0]));
+    }
     let result = libbreenix::io::fcntl(Fd::from_raw(fd as u64), cmd, arg as i64);
     result_i64_to_c_int(result)
 }
@@ -986,13 +1023,24 @@ pub extern "C" fn setpgid(pid: i32, pgid: i32) -> i32 {
 /// fork - create a child process
 #[no_mangle]
 pub extern "C" fn fork() -> i32 {
+    unsafe { pthread::atfork_prepare(); }
     match libbreenix::process::fork() {
         Ok(libbreenix::process::ForkResult::Child) => {
-            unsafe { pthread::__breenix_after_fork(); }
+            unsafe {
+                pthread::__breenix_after_fork();
+                pthread::atfork_child();
+            }
             0
         },
-        Ok(libbreenix::process::ForkResult::Parent(pid)) => pid.raw() as i32,
-        Err(e) => set_errno_from_error(e),
+        Ok(libbreenix::process::ForkResult::Parent(pid)) => {
+            unsafe { pthread::atfork_parent(); }
+            pid.raw() as i32
+        }
+        Err(e) => {
+            // The parent handlers undo what the prepare handlers did.
+            unsafe { pthread::atfork_parent(); }
+            set_errno_from_error(e)
+        }
     }
 }
 
@@ -1034,12 +1082,15 @@ pub unsafe extern "C" fn waitpid(pid: i32, status: *mut i32, options: i32) -> i3
 /// kill - send signal to a process
 #[no_mangle]
 pub extern "C" fn kill(pid: i32, sig: i32) -> i32 {
+    // The cancel signal is reserved to this library (signal.h).
+    if sig == signal::CANCEL_SIGNAL { pthread::set_errno(EINVAL); return -1; }
     result_unit_to_c_int(libbreenix::signal::kill(pid, sig))
 }
 
 /// raise - send a signal to the calling thread
 #[no_mangle]
 pub extern "C" fn raise(sig: i32) -> i32 {
+    if sig == signal::CANCEL_SIGNAL { pthread::set_errno(EINVAL); return -1; }
     syscall_result_to_c_int(pthread::signal_current(sig))
 }
 
@@ -1431,30 +1482,23 @@ pub unsafe extern "C" fn sigaction(signum: i32, act: *const u8, oldact: *mut u8)
     //   offset 16: restorer - 8 bytes (u64)
     //   offset 24: mask - 8 bytes (u64)
 
-    // A handler (not SIG_DFL or SIG_IGN) returns through __restore_rt, which calls
-    // rt_sigreturn, unless the caller supplied its own restorer: the C struct's
-    // sa_restorer is null in ordinary programs, and a handler must not depend on the
-    // kernel placing a return trampoline on an executable stack.
-    let mut kernel_act = libbreenix::signal::Sigaction { handler: 0, mask: 0, flags: 0, restorer: 0 };
-    let act_ptr = if act.is_null() {
-        core::ptr::null()
+    // Convert on this call's stack (async-signal-safe), preserving BUSYBOX's
+    // default rt_sigreturn restorer for ordinary C handlers on a non-executable stack.
+    let kernel_act = if act.is_null() {
+        None
     } else {
-        // Convert C sigaction to kernel Sigaction
-        let c_handler = *(act as *const u64);
-        let c_mask = *(act.add(8) as *const u64);
-        let c_flags = *(act.add(16) as *const i32);
-        let c_restorer = *(act.add(24) as *const u64);
-
-        kernel_act.handler = c_handler;
-        kernel_act.mask = c_mask;
-        kernel_act.flags = c_flags as u32 as u64;
-        kernel_act.restorer = c_restorer;
-        let has_restorer = kernel_act.flags & libbreenix::signal::SA_RESTORER != 0 && c_restorer != 0;
-        if c_handler > libbreenix::signal::SIG_IGN && !has_restorer {
-            kernel_act.flags |= libbreenix::signal::SA_RESTORER;
-            kernel_act.restorer = libbreenix::signal::__restore_rt as u64;
+        let mut action = libbreenix::signal::Sigaction {
+            handler: *(act as *const u64),
+            mask: *(act.add(8) as *const u64),
+            flags: *(act.add(16) as *const i32) as u32 as u64,
+            restorer: *(act.add(24) as *const u64),
+        };
+        let has_restorer = action.flags & libbreenix::signal::SA_RESTORER != 0 && action.restorer != 0;
+        if action.handler > libbreenix::signal::SIG_IGN && !has_restorer {
+            action.flags |= libbreenix::signal::SA_RESTORER;
+            action.restorer = libbreenix::signal::__restore_rt as u64;
         }
-        &raw const kernel_act
+        Some(action)
     };
 
     let mut kernel_oldact = libbreenix::signal::Sigaction {
@@ -1470,13 +1514,7 @@ pub unsafe extern "C" fn sigaction(signum: i32, act: *const u8, oldact: *mut u8)
         Some(&mut kernel_oldact)
     };
 
-    let act_opt = if act_ptr.is_null() {
-        None
-    } else {
-        Some(unsafe { &*act_ptr })
-    };
-
-    match libbreenix::signal::sigaction(signum, act_opt, oldact_opt) {
+    match libbreenix::signal::sigaction(signum, kernel_act.as_ref(), oldact_opt) {
         Ok(()) => {
             if !oldact.is_null() {
                 *(oldact as *mut u64) = kernel_oldact.handler;
@@ -1506,20 +1544,18 @@ pub unsafe extern "C" fn sigaltstack(ss: *const u8, old_ss: *mut u8) -> i32 {
     //   offset 12: _pad (i32) - 4 bytes
     //   offset 16: ss_size (usize) - 8 bytes
 
-    let ss_opt = if ss.is_null() {
+    // Converted on this call's stack, as each thread has its own signal stack.
+    let kernel_ss = if ss.is_null() {
         None
     } else {
-        static mut KERNEL_SS: libbreenix::signal::StackT = libbreenix::signal::StackT {
-            ss_sp: 0,
-            ss_flags: 2, // SS_DISABLE
+        Some(libbreenix::signal::StackT {
+            ss_sp: *(ss as *const u64),
+            ss_flags: *(ss.add(8) as *const i32),
             _pad: 0,
-            ss_size: 0,
-        };
-        KERNEL_SS.ss_sp = *(ss as *const u64);
-        KERNEL_SS.ss_flags = *(ss.add(8) as *const i32);
-        KERNEL_SS.ss_size = *(ss.add(16) as *const usize);
-        Some(&*(&raw const KERNEL_SS))
+            ss_size: *(ss.add(16) as *const usize),
+        })
     };
+    let ss_opt = kernel_ss.as_ref();
 
     let mut kernel_old = libbreenix::signal::StackT {
         ss_sp: 0,
@@ -1618,12 +1654,8 @@ pub extern "C" fn listen(sockfd: i32, backlog: i32) -> i32 {
 /// accept - accept a connection on a socket
 #[no_mangle]
 pub unsafe extern "C" fn accept(sockfd: i32, addr: *mut u8, addrlen: *mut u32) -> i32 {
-    let result = libbreenix::raw::syscall3(
-        libbreenix::syscall::nr::ACCEPT,
-        sockfd as u64,
-        addr as u64,
-        addrlen as u64,
-    ) as i64;
+    let result = pthread::cancel_syscall(libbreenix::syscall::nr::ACCEPT,
+        [sockfd as u64, addr as u64, addrlen as u64, 0, 0, 0]);
     syscall_result_to_c_int(result)
 }
 
@@ -1636,13 +1668,8 @@ pub unsafe extern "C" fn accept4(
     addrlen: *mut u32,
     flags: i32,
 ) -> i32 {
-    let result = libbreenix::raw::syscall4(
-        libbreenix::syscall::nr::ACCEPT4,
-        sockfd as u64,
-        addr as u64,
-        addrlen as u64,
-        flags as u32 as u64,
-    ) as i64;
+    let result = pthread::cancel_syscall(libbreenix::syscall::nr::ACCEPT4,
+        [sockfd as u64, addr as u64, addrlen as u64, flags as u32 as u64, 0, 0]);
     syscall_result_to_c_int(result)
 }
 
@@ -1654,12 +1681,8 @@ pub unsafe extern "C" fn connect(sockfd: i32, addr: *const u8, addrlen: u32) -> 
         return -1;
     }
 
-    let result = libbreenix::raw::syscall3(
-        libbreenix::syscall::nr::CONNECT,
-        sockfd as u64,
-        addr as u64,
-        addrlen as u64,
-    ) as i64;
+    let result = pthread::cancel_syscall(libbreenix::syscall::nr::CONNECT,
+        [sockfd as u64, addr as u64, addrlen as u64, 0, 0, 0]);
     syscall_result_to_c_int(result)
 }
 
@@ -1687,15 +1710,8 @@ pub unsafe extern "C" fn sendto(
     dest_addr: *const u8,
     addrlen: u32,
 ) -> isize {
-    let result = libbreenix::raw::syscall6(
-        libbreenix::syscall::nr::SENDTO,
-        sockfd as u64,
-        buf as u64,
-        len as u64,
-        flags as u64,
-        dest_addr as u64,
-        addrlen as u64,
-    ) as i64;
+    let result = pthread::cancel_syscall(libbreenix::syscall::nr::SENDTO,
+        [sockfd as u64, buf as u64, len as u64, flags as u64, dest_addr as u64, addrlen as u64]);
     syscall_result_to_c_ssize(result)
 }
 
@@ -1709,15 +1725,8 @@ pub unsafe extern "C" fn recvfrom(
     src_addr: *mut u8,
     addrlen: *mut u32,
 ) -> isize {
-    let result = libbreenix::raw::syscall6(
-        libbreenix::syscall::nr::RECVFROM,
-        sockfd as u64,
-        buf as u64,
-        len as u64,
-        flags as u64,
-        src_addr as u64,
-        addrlen as u64,
-    ) as i64;
+    let result = pthread::cancel_syscall(libbreenix::syscall::nr::RECVFROM,
+        [sockfd as u64, buf as u64, len as u64, flags as u64, src_addr as u64, addrlen as u64]);
     syscall_result_to_c_ssize(result)
 }
 
@@ -1725,12 +1734,8 @@ pub unsafe extern "C" fn recvfrom(
 /// and control messages
 #[no_mangle]
 pub unsafe extern "C" fn sendmsg(sockfd: i32, msg: *const u8, flags: i32) -> isize {
-    let result = libbreenix::raw::syscall3(
-        libbreenix::syscall::nr::SENDMSG,
-        sockfd as u64,
-        msg as u64,
-        flags as u32 as u64,
-    ) as i64;
+    let result = pthread::cancel_syscall(libbreenix::syscall::nr::SENDMSG,
+        [sockfd as u64, msg as u64, flags as u32 as u64, 0, 0, 0]);
     syscall_result_to_c_ssize(result)
 }
 
@@ -1738,12 +1743,8 @@ pub unsafe extern "C" fn sendmsg(sockfd: i32, msg: *const u8, flags: i32) -> isi
 /// address, control messages and flags
 #[no_mangle]
 pub unsafe extern "C" fn recvmsg(sockfd: i32, msg: *mut u8, flags: i32) -> isize {
-    let result = libbreenix::raw::syscall3(
-        libbreenix::syscall::nr::RECVMSG,
-        sockfd as u64,
-        msg as u64,
-        flags as u32 as u64,
-    ) as i64;
+    let result = pthread::cancel_syscall(libbreenix::syscall::nr::RECVMSG,
+        [sockfd as u64, msg as u64, flags as u32 as u64, 0, 0, 0]);
     syscall_result_to_c_ssize(result)
 }
 
@@ -1860,14 +1861,8 @@ pub unsafe extern "C" fn select(
     let result = {
         #[cfg(target_arch = "x86_64")]
         {
-            libbreenix::raw::syscall5(
-                libbreenix::syscall::nr::SELECT,
-                nfds as u64,
-                readfds as u64,
-                writefds as u64,
-                exceptfds as u64,
-                timeout as u64,
-            ) as i64
+            pthread::cancel_syscall(libbreenix::syscall::nr::SELECT,
+                [nfds as u64, readfds as u64, writefds as u64, exceptfds as u64, timeout as u64, 0])
         }
         #[cfg(target_arch = "aarch64")]
         {
@@ -1881,15 +1876,14 @@ pub unsafe extern "C" fn select(
                 }
                 Some([tv[0], tv[1] * 1000])
             };
-            libbreenix::raw::syscall6(
-                libbreenix::syscall::nr::PSELECT6,
+            pthread::cancel_syscall(libbreenix::syscall::nr::PSELECT6, [
                 nfds as u64,
                 readfds as u64,
                 writefds as u64,
                 exceptfds as u64,
                 ts.as_ref().map_or(0, |t| t.as_ptr() as u64),
                 0, // NULL sigmask
-            ) as i64
+            ])
         }
     };
     syscall_result_to_c_int(result)
@@ -1905,38 +1899,18 @@ pub unsafe extern "C" fn poll(fds: *mut u8, nfds: u64, timeout: i32) -> i32 {
     let result = {
         #[cfg(target_arch = "x86_64")]
         {
-            libbreenix::raw::syscall3(
-                libbreenix::syscall::nr::POLL,
-                fds as u64,
-                nfds,
-                timeout as u64,
-            ) as i64
+            pthread::cancel_syscall(libbreenix::syscall::nr::POLL,
+                [fds as u64, nfds, timeout as u64, 0, 0, 0])
         }
         #[cfg(target_arch = "aarch64")]
         {
-            if timeout < 0 {
-                libbreenix::raw::syscall5(
-                    libbreenix::syscall::nr::PPOLL,
-                    fds as u64,
-                    nfds,
-                    0, // NULL timespec = infinite
-                    0, // NULL sigmask
-                    0, // sigsetsize
-                ) as i64
-            } else {
-                let ts = libbreenix::types::Timespec {
-                    tv_sec: (timeout / 1000) as i64,
-                    tv_nsec: ((timeout % 1000) as i64) * 1_000_000,
-                };
-                libbreenix::raw::syscall5(
-                    libbreenix::syscall::nr::PPOLL,
-                    fds as u64,
-                    nfds,
-                    &ts as *const libbreenix::types::Timespec as u64,
-                    0, // NULL sigmask
-                    0, // sigsetsize
-                ) as i64
-            }
+            // A null timespec waits without limit; no sigmask is passed.
+            let ts = libbreenix::types::Timespec {
+                tv_sec: (timeout / 1000) as i64,
+                tv_nsec: ((timeout % 1000) as i64) * 1_000_000,
+            };
+            let ts_ptr = if timeout < 0 { 0 } else { &ts as *const libbreenix::types::Timespec as u64 };
+            pthread::cancel_syscall(libbreenix::syscall::nr::PPOLL, [fds as u64, nfds, ts_ptr, 0, 0, 0])
         }
     };
     syscall_result_to_c_int(result)
@@ -1999,19 +1973,11 @@ mod pthread;
 // Additional libc functions needed by Rust std
 // =============================================================================
 
-/// readv - scatter read
+/// readv - scatter read in one call, a cancellation point
 #[no_mangle]
 pub unsafe extern "C" fn readv(fd: i32, iov: *const Iovec, iovcnt: i32) -> isize {
-    let mut total: isize = 0;
-    for i in 0..iovcnt as usize {
-        let vec = &*iov.add(i);
-        let result = read(fd, vec.iov_base, vec.iov_len);
-        if result < 0 {
-            return result;
-        }
-        total += result;
-    }
-    total
+    syscall_result_to_c_ssize(pthread::cancel_syscall(libbreenix::syscall::nr::READV,
+        [fd as u64, iov as u64, iovcnt as i64 as u64, 0, 0, 0]))
 }
 
 /// setgroups - set list of supplementary group IDs
@@ -2129,7 +2095,9 @@ pub unsafe extern "C" fn sigsuspend(mask: *const u64) -> i32 {
         *__errno_location() = EINVAL;
         return -1;
     }
-    let mask = *mask & !signal::CANCEL_MASK;
+    // The reserved cancel signal stays blocked while this thread has
+    // cancellation disabled, and is otherwise never blocked by the wait.
+    let mask = (*mask & !signal::CANCEL_MASK) | pthread::reserved_block();
     syscall_result_to_c_int(pthread::cancel_syscall(libbreenix::syscall::nr::SIGSUSPEND,
         [&mask as *const u64 as u64, 8, 0, 0, 0, 0]))
 }

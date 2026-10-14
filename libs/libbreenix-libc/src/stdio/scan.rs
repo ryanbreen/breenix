@@ -1,7 +1,8 @@
-//! Formatted input from C17 7.21.6.2 / POSIX fscanf, using STRMATH's number cores.
+//! Formatted input from C17 7.21.6.2 and 7.29.2.2 / POSIX fscanf, using STRMATH's
+//! number cores. One engine serves narrow and wide formats.
 use super::{
     file::{self, File},
-    format::{store_count, Length, Text},
+    format::{store_count, Format, Length, Text},
 };
 use crate::stdlib::numscan::{scan_f32, scan_f64, scan_int, scan_long_double, Chars};
 use core::{ffi::VaList, ptr};
@@ -69,27 +70,51 @@ impl Drop for StreamChars {
         }
     }
 }
-unsafe fn length(fmt: *const u8, i: &mut usize) -> Length {
-    let c = *fmt.add(*i);
+unsafe fn length(fmt: &Format, i: &mut usize) -> Length {
+    let c = fmt.at(*i);
     let l = match c {
-        b'h' => Length::H,
-        b'l' => Length::L,
-        b'j' => Length::J,
-        b'z' => Length::Z,
-        b't' => Length::T,
-        b'L' => Length::BigL,
+        104 => Length::H,
+        108 => Length::L,
+        106 => Length::J,
+        122 => Length::Z,
+        116 => Length::T,
+        76 => Length::BigL,
         _ => return Length::None,
     };
     *i += 1;
-    if c == b'h' && *fmt.add(*i) == b'h' {
+    if c == 104 && fmt.at(*i) == 104 {
         *i += 1;
         Length::Hh
-    } else if c == b'l' && *fmt.add(*i) == b'l' {
+    } else if c == 108 && fmt.at(*i) == 108 {
         *i += 1;
         Length::Ll
     } else {
         l
     }
+}
+/// Whether c is a member of the scanset written at fmt[start..end].
+unsafe fn in_set(fmt: &Format, start: usize, end: usize, c: u32) -> bool {
+    let mut i = start;
+    while i < end {
+        let first = fmt.at(i);
+        if i + 2 < end && fmt.at(i + 1) == 45 {
+            let last = fmt.at(i + 2);
+            if first <= last {
+                if (first..=last).contains(&c) {
+                    return true;
+                }
+            } else if c == first || c == 45 || c == last {
+                return true;
+            }
+            i += 3;
+        } else {
+            if c == first {
+                return true;
+            }
+            i += 1;
+        }
+    }
+    false
 }
 fn skip(s: &mut dyn Chars) {
     while s.peek().is_some_and(whitespace) {
@@ -114,27 +139,43 @@ unsafe fn destination(ap: &mut VaList<'_, '_>, position: usize) -> *mut u8 {
     }
     list.arg::<*mut u8>()
 }
-unsafe fn scan_error(stream:*mut File,errno:i32){crate::pthread::set_errno(errno);if !stream.is_null(){file::set_error(stream);}}
-unsafe fn vscan(s: &mut dyn Chars, stream: *mut File, fmt: *const u8, mut ap: VaList<'_, '_>) -> i32 {
+unsafe fn scan_error(stream: *mut File, errno: i32) {
+    crate::pthread::set_errno(errno);
+    if !stream.is_null() {
+        file::set_error(stream);
+    }
+}
+/// The scanf engine. With a wide format, `s` yields wide characters (LOCALE's wide
+/// sources), and %c, %s and %[ without l store their multibyte encoding.
+pub(crate) unsafe fn vscan(
+    s: &mut dyn Chars,
+    stream: *mut File,
+    fmt: &Format,
+    mut ap: VaList<'_, '_>,
+) -> i32 {
+    let wide_input = fmt.is_wide();
     let mut i = 0;
     let mut assigned = 0;
     let mut completed = false;
-    while *fmt.add(i) != 0 {
-        let c = *fmt.add(i);
+    while fmt.at(i) != 0 {
+        let c = fmt.at(i);
         i += 1;
-        if whitespace(c as u32) {
+        if whitespace(c) {
             skip(s);
             continue;
         }
-        if c != b'%' {
+        if c != 37 {
             match s.peek() {
-                Some(k) if k == c as u32 => s.bump(),
+                Some(k) if k == c => s.bump(),
                 other => return stopped(assigned, completed, other.is_none()),
             }
             continue;
         }
-        if *fmt.add(i) == b'%' {
+        if fmt.at(i) == 37 {
             i += 1;
+            // %% is a conversion specification, so leading white space is skipped
+            // (C17 7.21.6.2p8).
+            skip(s);
             match s.peek() {
                 Some(37) => s.bump(),
                 other => return stopped(assigned, completed, other.is_none()),
@@ -143,20 +184,20 @@ unsafe fn vscan(s: &mut dyn Chars, stream: *mut File, fmt: *const u8, mut ap: Va
         }
         let initial = i;
         let mut position = 0usize;
-        while (*fmt.add(i)).is_ascii_digit() {
+        while (48..=57).contains(&fmt.at(i)) {
             let Some(n) = position
                 .checked_mul(10)
-                .and_then(|n| n.checked_add((*fmt.add(i) - b'0') as usize))
+                .and_then(|n| n.checked_add((fmt.at(i) - 48) as usize))
             else {
-                scan_error(stream,22);
+                scan_error(stream, 22);
                 return assigned;
             };
             position = n;
             i += 1;
         }
-        if *fmt.add(i) == b'$' {
-            if position == 0 || position > 4096 {
-                scan_error(stream,22);
+        if fmt.at(i) == 36 {
+            if position == 0 || position > super::args::LIMIT {
+                scan_error(stream, 22);
                 return assigned;
             }
             i += 1;
@@ -164,17 +205,17 @@ unsafe fn vscan(s: &mut dyn Chars, stream: *mut File, fmt: *const u8, mut ap: Va
             position = 0;
             i = initial;
         }
-        let suppressed = *fmt.add(i) == b'*';
+        let suppressed = fmt.at(i) == 42;
         if suppressed {
             i += 1;
         }
         let mut width = 0usize;
-        while (*fmt.add(i)).is_ascii_digit() {
+        while (48..=57).contains(&fmt.at(i)) {
             let Some(n) = width
                 .checked_mul(10)
-                .and_then(|n| n.checked_add((*fmt.add(i) - b'0') as usize))
+                .and_then(|n| n.checked_add((fmt.at(i) - 48) as usize))
             else {
-                scan_error(stream,75);
+                scan_error(stream, 75);
                 return stopped(assigned, completed, true);
             };
             width = n;
@@ -183,13 +224,21 @@ unsafe fn vscan(s: &mut dyn Chars, stream: *mut File, fmt: *const u8, mut ap: Va
         if width == 0 {
             width = usize::MAX;
         }
-        let allocated = *fmt.add(i) == b'm';
+        let allocated = fmt.at(i) == 109;
         if allocated {
             i += 1;
         }
-        let l = length(fmt, &mut i);
-        let c = *fmt.add(i);
+        let mut l = length(fmt, &mut i);
+        let Ok(mut c) = u8::try_from(fmt.at(i)) else {
+            scan_error(stream, 22);
+            return assigned;
+        };
         i += 1;
+        // XSI: %C is %lc and %S is %ls.
+        if c == b'C' || c == b'S' {
+            l = Length::L;
+            c = c.to_ascii_lowercase();
+        }
         if c == b'n' {
             if !suppressed {
                 store_count(destination(&mut ap, position), l, s.pos());
@@ -197,40 +246,25 @@ unsafe fn vscan(s: &mut dyn Chars, stream: *mut File, fmt: *const u8, mut ap: Va
             completed = true;
             continue;
         }
-        let mut set = [false; 256];
         let mut invert = false;
+        let (mut set_start, mut set_end) = (0, 0);
         if c == b'[' {
-            if *fmt.add(i) == b'^' {
+            if fmt.at(i) == 94 {
                 invert = true;
                 i += 1;
             }
-            if *fmt.add(i) == b']' {
-                set[b']' as usize] = true;
+            set_start = i;
+            if fmt.at(i) == 93 {
                 i += 1;
             }
-            while *fmt.add(i) != 0 && *fmt.add(i) != b']' {
-                let start = *fmt.add(i);
+            while fmt.at(i) != 0 && fmt.at(i) != 93 {
                 i += 1;
-                if *fmt.add(i) == b'-' && *fmt.add(i + 1) != 0 && *fmt.add(i + 1) != b']' {
-                    let end = *fmt.add(i + 1);
-                    if start <= end {
-                        for ch in start..=end {
-                            set[ch as usize] = true;
-                        }
-                    } else {
-                        set[start as usize] = true;
-                        set[b'-' as usize] = true;
-                        set[end as usize] = true;
-                    }
-                    i += 2;
-                } else {
-                    set[start as usize] = true;
-                }
             }
-            if *fmt.add(i) != b']' {
-                scan_error(stream,22);
+            if fmt.at(i) != 93 {
+                scan_error(stream, 22);
                 return assigned;
             }
+            set_end = i;
             i += 1;
         }
         if c != b'c' && c != b'[' {
@@ -327,16 +361,21 @@ unsafe fn vscan(s: &mut dyn Chars, stream: *mut File, fmt: *const u8, mut ap: Va
                     let Some(k) = s.peek() else { break };
                     let matches = match c {
                         b's' => !whitespace(k),
-                        b'[' => set[k as usize] != invert,
+                        b'[' => in_set(fmt, set_start, set_end, k) != invert,
                         _ => true,
                     };
                     if !matches {
                         break;
                     }
-                    if wide {
-                        let wc = loop {
+                    // Narrow input stored wide is decoded; wide input stored narrow is
+                    // encoded (C17 7.29.2.2p12: as if by wcrtomb).
+                    let wc = if wide_input {
+                        s.bump();
+                        k
+                    } else if wide {
+                        loop {
                             let Some(k) = s.peek() else {
-                                scan_error(stream,84);
+                                scan_error(stream, 84);
                                 return stopped(assigned, completed, true);
                             };
                             s.bump();
@@ -344,14 +383,34 @@ unsafe fn vscan(s: &mut dyn Chars, stream: *mut File, fmt: *const u8, mut ap: Va
                                 crate::locale::Decoded::Char(wc, _) => break wc,
                                 crate::locale::Decoded::Incomplete(_) => continue,
                                 crate::locale::Decoded::Invalid => {
-                                    scan_error(stream,84);
+                                    scan_error(stream, 84);
                                     return stopped(assigned, completed, true);
                                 }
                             }
+                        }
+                    } else {
+                        s.bump();
+                        k
+                    };
+                    if !suppressed {
+                        let mut encoded = [0u8; 4];
+                        let bytes: &[u8] = if wide {
+                            encoded = wc.to_ne_bytes();
+                            &encoded
+                        } else if wide_input {
+                            let Some(n) = crate::locale::encode(wc, &mut encoded) else {
+                                scan_error(stream, 84);
+                                return stopped(assigned, completed, true);
+                            };
+                            &encoded[..n]
+                        } else {
+                            encoded[0] = wc as u8;
+                            &encoded[..1]
                         };
-                        if !suppressed{if let Err(e)=body.bytes(&wc.to_ne_bytes()){scan_error(stream,e);return stopped(assigned,completed,true)}}
-                    }else{
-                        s.bump();if !suppressed{if let Err(e)=body.byte(k as u8){scan_error(stream,e);return stopped(assigned,completed,true)}}
+                        if let Err(e) = body.bytes(bytes) {
+                            scan_error(stream, e);
+                            return stopped(assigned, completed, true);
+                        }
                     }
                     units += 1;
                 }
@@ -362,14 +421,24 @@ unsafe fn vscan(s: &mut dyn Chars, stream: *mut File, fmt: *const u8, mut ap: Va
                     return stopped(assigned, completed, s.peek().is_none());
                 }
                 if !suppressed {
-                    if c!=b'c'{let zeros=[0u8;4];if let Err(e)=body.bytes(&zeros[..if wide{4}else{1}]){scan_error(stream,e);return stopped(assigned,completed,true)}}
-                    if allocated{*(destination as *mut *mut u8)=body.p;body.p=ptr::null_mut();}
-                    else{ptr::copy_nonoverlapping(body.p,destination,body.n);}
-                    assigned+=1;
+                    if c != b'c' {
+                        let zeros = [0u8; 4];
+                        if let Err(e) = body.bytes(&zeros[..if wide { 4 } else { 1 }]) {
+                            scan_error(stream, e);
+                            return stopped(assigned, completed, true);
+                        }
+                    }
+                    if allocated {
+                        *(destination as *mut *mut u8) = body.p;
+                        body.p = ptr::null_mut();
+                    } else {
+                        ptr::copy_nonoverlapping(body.p, destination, body.n);
+                    }
+                    assigned += 1;
                 }
             }
             _ => {
-                scan_error(stream,22);
+                scan_error(stream, 22);
                 return assigned;
             }
         }
@@ -379,7 +448,12 @@ unsafe fn vscan(s: &mut dyn Chars, stream: *mut File, fmt: *const u8, mut ap: Va
 }
 #[no_mangle]
 pub unsafe extern "C" fn vsscanf(input: *const u8, fmt: *const u8, ap: VaList<'_, '_>) -> i32 {
-    vscan(&mut StringChars { p: input, n: 0 }, ptr::null_mut(), fmt, ap)
+    vscan(
+        &mut StringChars { p: input, n: 0 },
+        ptr::null_mut(),
+        &Format::Narrow(fmt),
+        ap,
+    )
 }
 #[no_mangle]
 pub unsafe extern "C" fn sscanf(input: *const u8, fmt: *const u8, mut ap: ...) -> i32 {
@@ -394,7 +468,7 @@ pub unsafe extern "C" fn vfscanf(f: *mut File, fmt: *const u8, ap: VaList<'_, '_
         n: 0,
         look: None,
     };
-    let r = vscan(&mut source, f, fmt, ap);
+    let r = vscan(&mut source, f, &Format::Narrow(fmt), ap);
     drop(source);
     file::unlock(f);
     r

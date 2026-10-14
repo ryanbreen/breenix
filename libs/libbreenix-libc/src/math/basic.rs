@@ -655,6 +655,7 @@ pub extern "C" fn fma(a: f64, b: f64, c: f64) -> f64 {
         core::arch::asm!("fmadd {0:d}, {1:d}, {2:d}, {3:d}", out(vreg) r, in(vreg) a, in(vreg) b, in(vreg) c,
             options(nomem, nostack))
     };
+    let r = core::hint::black_box(r);
     let raised = fenv::flags();
     fenv::set_flags(fenv::FE_ALL_EXCEPT, before | raised);
     if raised & fenv::FE_INVALID != 0 { crate::pthread::set_errno(crate::stdlib::EDOM); }
@@ -674,6 +675,7 @@ pub extern "C" fn fmaf(a: f32, b: f32, c: f32) -> f32 {
         core::arch::asm!("fmadd {0:s}, {1:s}, {2:s}, {3:s}", out(vreg) r, in(vreg) a, in(vreg) b, in(vreg) c,
             options(nomem, nostack))
     };
+    let r = core::hint::black_box(r);
     let raised = fenv::flags();
     fenv::set_flags(fenv::FE_ALL_EXCEPT, before | raised);
     if raised & fenv::FE_INVALID != 0 { crate::pthread::set_errno(crate::stdlib::EDOM); }
@@ -736,6 +738,7 @@ pub extern "C" fn fdim(x: f64, y: f64) -> f64 {
         let before = fenv::flags();
         fenv::set_flags(fenv::FE_OVERFLOW, 0);
         let r = core::hint::black_box(x) - core::hint::black_box(y);
+        let r = core::hint::black_box(r);
         let raised = fenv::flags();
         fenv::set_flags(fenv::FE_OVERFLOW, (before | raised) & fenv::FE_OVERFLOW);
         if x.is_finite() && y.is_finite() && raised & fenv::FE_OVERFLOW != 0 {

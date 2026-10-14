@@ -29,12 +29,12 @@ pub unsafe extern "C" fn fwide(f: *mut File, mode: i32) -> i32 {
     file::unlock(f);
     r
 }
-enum Input {
+pub(super) enum Input {
     Char(u32),
     Eof,
     Error,
 }
-unsafe fn get(f: *mut File) -> Input {
+pub(super) unsafe fn get(f: *mut File) -> Input {
     if !orient(f) {
         return Input::Error;
     }
@@ -173,42 +173,29 @@ pub unsafe extern "C" fn fputws(s: *const u32, f: *mut File) -> i32 {
     file::unlock(f);
     0
 }
+/// Pushes c back as one whole multibyte character, or not at all, so a failure
+/// leaves the stream's input and indicators as they were (C17 7.29.3.10).
+pub(super) unsafe fn unget(c: u32, f: *mut File) -> bool {
+    let mut bytes = [0; 4];
+    let Some(n) = encode_charset(c, &mut bytes, encoding(f)) else {
+        set_errno(84);
+        return false;
+    };
+    if !file::ungetc_bytes_locked(f, &bytes[..n]) {
+        return false;
+    }
+    let saved = (*file::mb_state(f)).reserved;
+    *file::mb_state(f) = MbState::default();
+    (*file::mb_state(f)).reserved = saved;
+    true
+}
 #[no_mangle]
 pub unsafe extern "C" fn ungetwc(c: u32, f: *mut File) -> u32 {
     if c == u32::MAX {
         return u32::MAX;
     }
     file::lock(f);
-    let mut bytes = [0; 4];
-    let r = if !orient(f) {
-        u32::MAX
-    } else if let Some(n) = encode_charset(c, &mut bytes, encoding(f)) {
-        let mut okay = true;
-        let mut pushed = 0;
-        for &b in bytes[..n].iter().rev() {
-            if file::ungetc_locked(b as i32, f) < 0 {
-                okay = false;
-                break;
-            }
-            pushed += 1;
-        }
-        if okay {
-            let saved = (*file::mb_state(f)).reserved;
-            *file::mb_state(f) = MbState::default();
-            (*file::mb_state(f)).reserved = saved;
-            c
-        } else {
-            // Roll back this character's partial push without consuming the
-            // input or characters pushed by earlier successful calls.
-            for _ in 0..pushed {
-                file::getc_locked(f);
-            }
-            u32::MAX
-        }
-    } else {
-        set_errno(84);
-        u32::MAX
-    };
+    let r = if orient(f) && unget(c, f) { c } else { u32::MAX };
     file::unlock(f);
     r
 }

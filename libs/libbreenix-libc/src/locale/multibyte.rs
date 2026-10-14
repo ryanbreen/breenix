@@ -107,26 +107,30 @@ pub unsafe extern "C" fn wcrtomb(s: *mut u8, wc: u32, ps: *mut MbState) -> usize
     }
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn mbsrtowcs(
+/// mbsrtowcs with POSIX.1-2024 mbsnrtowcs's limit of nms source bytes. A character
+/// cut by the limit stays in the state, and its bytes count as consumed.
+unsafe fn to_wide(
     dst: *mut u32,
     src: *mut *const u8,
+    nms: usize,
     len: usize,
     ps: *mut MbState,
 ) -> usize {
-    let ps = if ps.is_null() {
-        core::ptr::addr_of_mut!(STRING_READ_STATE)
-    } else {
-        ps
-    };
     let mut local = *ps;
     let st = if dst.is_null() { &mut local } else { &mut *ps };
     let mut s = *src;
+    let mut used = 0;
     let mut count = 0;
     while dst.is_null() || count < len {
-        // Never read past the terminator; decode a byte at a time.
+        // Never read past the terminator or the limit; decode a byte at a time.
         let mut consumed = 0;
         let c = loop {
+            if used + consumed == nms {
+                if !dst.is_null() {
+                    *src = s.add(consumed);
+                }
+                return count;
+            }
             let byte = *s.add(consumed);
             consumed += 1;
             match decode(&[byte], st) {
@@ -151,27 +155,57 @@ pub unsafe extern "C" fn mbsrtowcs(
             return count;
         }
         s = s.add(consumed);
+        used += consumed;
         count += 1;
     }
     *src = s;
     count
 }
-
 #[no_mangle]
-pub unsafe extern "C" fn wcsrtombs(
-    dst: *mut u8,
-    src: *mut *const u32,
+pub unsafe extern "C" fn mbsrtowcs(
+    dst: *mut u32,
+    src: *mut *const u8,
     len: usize,
     ps: *mut MbState,
 ) -> usize {
     let ps = if ps.is_null() {
-        core::ptr::addr_of_mut!(STRING_WRITE_STATE)
+        core::ptr::addr_of_mut!(STRING_READ_STATE)
     } else {
         ps
     };
+    to_wide(dst, src, usize::MAX, len, ps)
+}
+#[no_mangle]
+pub unsafe extern "C" fn mbsnrtowcs(
+    dst: *mut u32,
+    src: *mut *const u8,
+    nms: usize,
+    len: usize,
+    ps: *mut MbState,
+) -> usize {
+    let ps = if ps.is_null() {
+        core::ptr::addr_of_mut!(STRING_READ_STATE)
+    } else {
+        ps
+    };
+    to_wide(dst, src, nms, len, ps)
+}
+
+/// wcsrtombs with POSIX.1-2024 wcsnrtombs's limit of nwc source characters.
+unsafe fn to_bytes(
+    dst: *mut u8,
+    src: *mut *const u32,
+    nwc: usize,
+    len: usize,
+    ps: *mut MbState,
+) -> usize {
     let mut s = *src;
+    let mut read = 0;
     let mut count = 0;
     while dst.is_null() || count < len {
+        if read == nwc {
+            break;
+        }
         let mut bytes = [0; 4];
         let Some(n) = encode(*s, &mut bytes) else {
             if !dst.is_null() {
@@ -195,11 +229,41 @@ pub unsafe extern "C" fn wcsrtombs(
         }
         count += n;
         s = s.add(1);
+        read += 1;
     }
     if !dst.is_null() {
         *src = s;
     }
     count
+}
+#[no_mangle]
+pub unsafe extern "C" fn wcsrtombs(
+    dst: *mut u8,
+    src: *mut *const u32,
+    len: usize,
+    ps: *mut MbState,
+) -> usize {
+    let ps = if ps.is_null() {
+        core::ptr::addr_of_mut!(STRING_WRITE_STATE)
+    } else {
+        ps
+    };
+    to_bytes(dst, src, usize::MAX, len, ps)
+}
+#[no_mangle]
+pub unsafe extern "C" fn wcsnrtombs(
+    dst: *mut u8,
+    src: *mut *const u32,
+    nwc: usize,
+    len: usize,
+    ps: *mut MbState,
+) -> usize {
+    let ps = if ps.is_null() {
+        core::ptr::addr_of_mut!(STRING_WRITE_STATE)
+    } else {
+        ps
+    };
+    to_bytes(dst, src, nwc, len, ps)
 }
 
 #[no_mangle]
@@ -244,9 +308,10 @@ pub extern "C" fn btowc(c: i32) -> u32 {
 }
 #[no_mangle]
 pub extern "C" fn wctob(c: u32) -> i32 {
-    if c < 128 {
-        c as i32
-    } else {
-        -1
+    // A single byte iff the current charset encodes c in one byte.
+    let mut b = [0; 4];
+    match encode(c, &mut b) {
+        Some(1) => b[0] as i32,
+        _ => -1,
     }
 }

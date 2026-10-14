@@ -593,11 +593,6 @@ pub unsafe extern "C" fn setrlimit(resource: i32, rlim: *const [u64; 2]) -> i32 
     prlimit(0, resource, rlim, null_mut())
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn clock_settime(clock: i32, tp: *const u8) -> i32 {
-    let r = libbreenix::raw::syscall2(libbreenix::syscall::nr::CLOCK_SETTIME, clock as i64 as u64, tp as u64);
-    crate::syscall_result_to_c_int(r as i64)
-}
 
 // ---------------------------------------------------------------------------------
 // Unique temporary files and directories
