@@ -432,6 +432,55 @@ fn suite_manifests_match_their_binaries() {
     assert!(errors.is_empty(), "suite manifest problems:\n{}", errors.join("\n"));
 }
 
+/// The case ids in a libc-suite C source's `libc_cases[]` table, in order, from its
+/// `{ "<id>", <function> },` rows up to the `{ 0, 0 }` that ends it.
+fn c_case_table(source: &str) -> Result<Vec<String>, String> {
+    let start = source.find("const struct libc_case libc_cases[] = {").ok_or("no libc_cases[] table")?;
+    let mut ids = Vec::new();
+    for line in source[start..].lines().skip(1) {
+        let row = line.trim();
+        if row == "{ 0, 0 }," {
+            return Ok(ids);
+        }
+        let id = row.strip_prefix("{ \"").and_then(|rest| rest.split_once('"')).map(|(id, _)| id)
+            .ok_or_else(|| format!("unexpected row {row:?} before {{ 0, 0 }}"))?;
+        ids.push(id.to_string());
+    }
+    Err("the table has no { 0, 0 } row".to_string())
+}
+
+/// The libc suite runs each case of every category but busybox as the C function of the
+/// same id in `userspace/libc-suite/<category>.c`; those tables list the manifest's cases.
+#[test]
+fn libc_c_case_tables_match_the_manifest() {
+    let root = repo_root();
+    let manifest: Value = serde_json::from_str(&fs::read_to_string(root.join("docs/suites/libc.json")).unwrap()).unwrap();
+    let mut errors = Vec::new();
+    for category in manifest["categories"].as_array().unwrap() {
+        let id = category["id"].as_str().unwrap();
+        if id == "busybox" {
+            continue;
+        }
+        let want: Vec<String> = category["cases"].as_array().unwrap().iter()
+            .map(|case| case["id"].as_str().unwrap().to_string()).collect();
+        let rel = format!("userspace/libc-suite/{}.c", id.replace('-', "_"));
+        match fs::read_to_string(root.join(&rel)).map_err(|e| e.to_string()).and_then(|s| c_case_table(&s)) {
+            Ok(ids) if ids == want => {}
+            Ok(ids) => errors.push(format!("{rel}: cases {ids:?}, manifest {want:?}")),
+            Err(error) => errors.push(format!("{rel}: {error}")),
+        }
+    }
+    assert!(errors.is_empty(), "libc C case tables differ from docs/suites/libc.json:\n{}", errors.join("\n"));
+}
+
+#[test]
+fn c_case_tables_are_read_exactly() {
+    let table = "const struct libc_case libc_cases[] = {\n    { \"a-b\", a_b },\n    { \"c\", c },\n    { 0, 0 },\n};\n";
+    assert_eq!(c_case_table(table).unwrap(), ["a-b", "c"]);
+    assert!(c_case_table("const struct libc_case libc_cases[] = {\n    { \"a\", a },\n};\n").is_err());
+    assert!(c_case_table("const struct libc_case libc_cases[] = {\n    /* x */\n    { 0, 0 },\n};\n").is_err());
+}
+
 #[test]
 fn ids_are_lowercase_words_joined_by_dashes() {
     for good in ["smoke", "files-io", "ipc2", "a-b-c"] {
