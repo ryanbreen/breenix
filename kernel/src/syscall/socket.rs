@@ -606,9 +606,14 @@ fn receive(
             return Ok(received);
         }
     }
-    let pending = sk.common.take_error();
-    if pending != 0 {
-        return Err(pending);
+    // A datagram socket reports a pending error ahead of its queue, as Linux's
+    // datagram receive does. A stream protocol reports it after the bytes
+    // queued before it (TCP on a reset), so it is left to the protocol.
+    if sk.kind != SOCK_STREAM {
+        let pending = sk.common.take_error();
+        if pending != 0 {
+            return Err(pending);
+        }
     }
     sk.ops().recvmsg_with(sk, msg, deliver)
 }

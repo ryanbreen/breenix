@@ -213,6 +213,10 @@
           "title": "close with unread data resets the connection: the peer gets ECONNRESET"
         },
         {
+          "id": "rst-after-data",
+          "title": "Bytes queued before a reset are read before recv reports ECONNRESET"
+        },
+        {
           "id": "epipe-after-close",
           "title": "Sending to a peer that closed fails with EPIPE once its reset arrives"
         },

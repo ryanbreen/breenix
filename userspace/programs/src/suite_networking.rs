@@ -1507,6 +1507,26 @@ fn tcp_rst_unread() -> CaseResult {
     }
 }
 
+/// Bytes queued before a reset are read first and the reset is reported after them,
+/// as Linux's TCP receive takes queued data before the socket error.
+fn tcp_rst_after_data() -> CaseResult {
+    let t = tcp_pair()?;
+    send_all(&t.s, &pattern(16), "the server")?;
+    queued(&t.c, 16, "the client")?;
+    let set: [i32; 2] = [1, 0];
+    zero("setsockopt(SO_LINGER, on, 0 s)", setsockopt(t.s.0, SOL_SOCKET, SO_LINGER, set.as_ptr() as *const u8, 8)?)?;
+    drop(t.s);
+    let rev = poll_until(&t.c, POLLIN, POLLERR)?;
+    check(rev & POLLERR != 0, &format!("poll on the client after the server's reset reported revents {}, without POLLERR", hex16(rev)))?;
+    let got = recv_exact(&t.c, 16, ARRIVE_MS, "the client after the reset")?;
+    check(got == pattern(16), "the client did not read the 16 bytes queued before the reset")?;
+    let mut buf = [0u8; 8];
+    match recv_wait(&t.c, &mut buf, 0, ARRIVE_MS)? {
+        None => fail(format!("the client saw nothing within {ARRIVE_MS} ms after reading the bytes queued before the reset")),
+        Some(n) => want("recv after the bytes queued before the reset", n, ECONNRESET),
+    }
+}
+
 /// After the peer has closed, a first send draws its RST and a later one fails with
 /// EPIPE, as Linux reports a reset in CLOSE_WAIT.
 fn tcp_epipe_after_close() -> CaseResult {
@@ -2943,6 +2963,7 @@ static SUITE: Suite = suite("networking", "Networking & sockets", &[
         case("half-close", "shutdown(SHUT_WR) gives the peer end of file", tcp_half_close),
         case("half-close-reverse", "After shutdown(SHUT_WR) the socket still receives from its peer", tcp_half_close_reverse),
         case("rst-unread", "close with unread data resets the connection: the peer gets ECONNRESET", tcp_rst_unread),
+        case("rst-after-data", "Bytes queued before a reset are read before recv reports ECONNRESET", tcp_rst_after_data),
         case("epipe-after-close", "Sending to a peer that closed fails with EPIPE once its reset arrives", tcp_epipe_after_close),
         case("sigpipe", "write to a reset connection raises SIGPIPE", tcp_sigpipe),
         case("nonblock-connect", "A nonblocking connect fails with EINPROGRESS", tcp_nonblock_connect),
