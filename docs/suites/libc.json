@@ -262,6 +262,7 @@
         { "id": "cancel-disabled-no-eintr", "title": "A cancel sent while cancellation is disabled does not make nanosleep or a blocking read fail with EINTR" },
         { "id": "cancel-stdio-unlocks", "title": "A thread cancelled while blocked in stdio output leaves the stream unlocked, and fclose and fopen still work" },
         { "id": "cancel-cond-signal", "title": "A waiter cancelled in pthread_cond_wait does not consume a concurrent pthread_cond_signal another thread waits for" },
+        { "id": "cancel-pending-exec", "title": "A program exec'd by a thread with cancellation disabled and a cancel request pending starts and runs" },
         { "id": "barrier-wait", "title": "pthread_barrier_wait releases all four threads together and gives exactly one PTHREAD_BARRIER_SERIAL_THREAD" },
         { "id": "spin-lock", "title": "pthread_spin_trylock of a held spin lock returns EBUSY and succeeds once unlocked" },
         { "id": "attr-stacksize", "title": "pthread_attr_setstacksize refuses less than PTHREAD_STACK_MIN and a thread runs on the size set" },

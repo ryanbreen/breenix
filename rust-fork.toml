@@ -1,4 +1,4 @@
 repo = "https://github.com/ryanbreen/rust.git"
 branch = "breenix-target"
-commit = "b0068cd58b103006495845ab0a802c86aca453b7"
+commit = "ae7a8dee6876fa67c5199430ce70a20c158c9f50"
 rust = "1.90.0"
