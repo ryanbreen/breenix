@@ -100,7 +100,7 @@
         },
         {
           "id": "remove-dir-all",
-          "title": "remove_dir_all removes a tree of files, directories and symlinks"
+          "title": "remove_dir_all removes a tree of files, directories and symlinks, and does not follow a symlink out of it"
         },
         {
           "id": "rename",

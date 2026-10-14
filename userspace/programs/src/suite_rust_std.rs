@@ -64,7 +64,7 @@ static SUITE: Suite = suite("rust-std", "Rust std", &[
         case("read-dir-missing", "read_dir of a missing path fails with ErrorKind::NotFound", read_dir_missing),
         case("create-dir-all", "create_dir_all creates every missing parent and succeeds when the path exists", create_dir_all),
         case("remove-dir-not-empty", "remove_dir of a directory that has an entry fails with ErrorKind::DirectoryNotEmpty", remove_dir_not_empty),
-        case("remove-dir-all", "remove_dir_all removes a tree of files, directories and symlinks", remove_dir_all),
+        case("remove-dir-all", "remove_dir_all removes a tree of files, directories and symlinks, and does not follow a symlink out of it", remove_dir_all),
         case("rename", "rename moves a file, and the old path then fails with ErrorKind::NotFound", rename),
         case("rename-replace", "rename onto an existing file replaces it", rename_replace),
         case("hard-link", "hard_link names the same inode: one ino, nlink 2, and writes through one name read through the other", hard_link),
@@ -668,8 +668,14 @@ fn remove_dir_all() -> CaseResult {
         write_file(&top.join("sub/b"), b"b")?;
         write_file(&top.join("sub/deeper/c"), b"c")?;
         symlink("../a", top.join("sub/link")).ctx("symlink")?;
+        // A symlink to a directory outside the tree is removed, not followed.
+        let outside = dir.path("outside");
+        fs::create_dir(&outside).ctx("create_dir of the outside directory")?;
+        write_file(&outside.join("keep"), b"keep")?;
+        symlink(&outside, top.join("sub/escape")).ctx("symlink to the outside directory")?;
         fs::remove_dir_all(&top).ctx("remove_dir_all")?;
-        want_kind("symlink_metadata of the removed tree", fs::symlink_metadata(&top), ErrorKind::NotFound)
+        want_kind("symlink_metadata of the removed tree", fs::symlink_metadata(&top), ErrorKind::NotFound)?;
+        check(outside.join("keep").is_file(), "remove_dir_all followed sub/escape and removed outside/keep")
     })
 }
 
