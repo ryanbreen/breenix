@@ -1,0 +1,93 @@
+#!/bin/bash
+# Compile and link C for Breenix userspace against Breenix's own C library.
+#
+#   scripts/breenix-cc --arch aarch64|x86_64 <clang arguments>
+#   scripts/breenix-cc --arch aarch64|x86_64 --tool-dir   (prints clang's directory,
+#                                                          where llvm-nm lives)
+#
+# The only C compile and link driver. It runs Homebrew clang with Breenix's headers
+# (libs/libbreenix-libc/include) and the compiler's own (stddef.h, stdarg.h, stdint.h,
+# float.h, ...), and no host headers. A command that links (no -c, -S, -E or -M*)
+# links statically with the rust toolchain's lld, userspace/programs/linker.ld and the
+# arch's libc.a, which supplies _start.
+#
+# libc.a is libs/libbreenix-libc/target/aarch64-breenix/release/libc.a on aarch64
+# and libs/libbreenix-libc/target/x86_64-breenix-c/release/libc.a (the SysV float ABI
+# build) on x86_64; build it first. BREENIX_CC_CLANG overrides the clang used.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+usage() {
+    echo "usage: $0 --arch aarch64|x86_64 <clang arguments>" >&2
+    exit 2
+}
+
+[ "${1:-}" = --arch ] || usage
+ARCH="${2:-}"
+shift 2
+case "$ARCH" in
+    aarch64)
+        TRIPLE=aarch64-unknown-linux-gnu
+        LIBC="$ROOT/libs/libbreenix-libc/target/aarch64-breenix/release/libc.a"
+        ARCH_FLAGS=(-mno-outline-atomics)
+        ;;
+    x86_64)
+        TRIPLE=x86_64-unknown-linux-gnu
+        LIBC="$ROOT/libs/libbreenix-libc/target/x86_64-breenix-c/release/libc.a"
+        ARCH_FLAGS=()
+        ;;
+    *) usage ;;
+esac
+
+find_clang() {
+    if [ -n "${BREENIX_CC_CLANG:-}" ]; then
+        echo "$BREENIX_CC_CLANG"
+        return
+    fi
+    local candidate
+    for candidate in /opt/homebrew/opt/llvm/bin/clang /usr/local/opt/llvm/bin/clang \
+                     /home/linuxbrew/.linuxbrew/opt/llvm/bin/clang clang; do
+        if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -print-resource-dir >/dev/null 2>&1; then
+            echo "$candidate"
+            return
+        fi
+    done
+    echo "breenix-cc: no clang whose -print-resource-dir works (install Homebrew llvm)" >&2
+    exit 1
+}
+
+CLANG="$(find_clang)"
+if [ "${1:-}" = --tool-dir ]; then
+    dirname "$(command -v "$CLANG")"
+    exit 0
+fi
+RESOURCE_DIR="$("$CLANG" -print-resource-dir)"
+[ -d "$RESOURCE_DIR/include" ] || { echo "breenix-cc: $RESOURCE_DIR/include is missing" >&2; exit 1; }
+
+COMPILE_FLAGS=(
+    --target="$TRIPLE"
+    -nostdinc -isystem "$ROOT/libs/libbreenix-libc/include" -isystem "$RESOURCE_DIR/include"
+    -fno-stack-protector -fno-pic -fno-pie
+    "${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"}"
+)
+
+linking=1
+for arg in "$@"; do
+    case "$arg" in
+        -c|-S|-E|-M|-MM|-fsyntax-only) linking=0 ;;
+    esac
+done
+
+if [ "$linking" = 0 ]; then
+    exec "$CLANG" "${COMPILE_FLAGS[@]}" "$@"
+fi
+
+SYSROOT="$(cd "$ROOT" && rustc --print sysroot)"
+HOST="$(cd "$ROOT" && rustc -vV | sed -n 's/^host: //p')"
+GCC_LD="$SYSROOT/lib/rustlib/$HOST/bin/gcc-ld"
+[ -x "$GCC_LD/ld.lld" ] || { echo "breenix-cc: no ld.lld in $GCC_LD (rustup component llvm-tools?)" >&2; exit 1; }
+[ -f "$LIBC" ] || { echo "breenix-cc: $LIBC is missing; build libs/libbreenix-libc for $ARCH first" >&2; exit 1; }
+
+exec "$CLANG" "${COMPILE_FLAGS[@]}" -static -nostdlib -fuse-ld=lld -B "$GCC_LD" \
+    -Wl,-T,"$ROOT/userspace/programs/linker.ld" -Wl,--gc-sections "$@" "$LIBC"
