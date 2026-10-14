@@ -647,7 +647,7 @@ fn create_dir_all() -> CaseResult {
     let dir = Scratch::new()?;
     let deep = dir.path("x/y/z");
     fs::create_dir_all(&deep).ctx("create_dir_all")?;
-    check(fs::metadata(&deep).ctx("metadata")?.is_dir(), "the path create_dir_all made is not a directory")?;
+    fs::read_dir(&deep).ctx("read_dir of the path create_dir_all made")?;
     fs::create_dir_all(&deep).ctx("create_dir_all of an existing path")
 }
 
@@ -885,7 +885,7 @@ fn env_inherit() -> CaseResult {
 
 fn env_remove() -> CaseResult {
     spawning!({
-        std::env::set_var("RUST_STD_C", "gamma");
+        set_and_confirm("RUST_STD_C", "gamma")?;
         let out = run_ok(helper(&["env", "RUST_STD_C"]).env_remove("RUST_STD_C"))?;
         check(out == "RUST_STD_C unset\n", &format!("the program saw {out:?}"))
     })
@@ -893,7 +893,7 @@ fn env_remove() -> CaseResult {
 
 fn env_clear() -> CaseResult {
     spawning!({
-        std::env::set_var("RUST_STD_D", "delta");
+        set_and_confirm("RUST_STD_D", "delta")?;
         let out = run_ok(helper(&["envall"]).env_clear().env("ONLY", "1"))?;
         check(out == "ONLY=1\n", &format!("the program's environment is {out:?}; expected only ONLY=1"))
     })
@@ -2064,8 +2064,24 @@ fn var_empty() -> CaseResult {
     check(got.as_deref() == Ok(""), &format!("env::var returned {got:?}; expected Ok(\"\")"))
 }
 
+/// Set `name` to `value` and fail unless env::var then returns it, so a case that goes on
+/// to remove or hide the variable cannot pass because it was never set.
+fn set_and_confirm(name: &str, value: &str) -> CaseResult {
+    std::env::set_var(name, value);
+    let got = std::env::var(name);
+    check(got.as_deref() == Ok(value), &format!("env::set_var did not set {name}: env::var returned {got:?}"))
+}
+
+/// Remove `name` and fail unless it is then unset, so a case that measures behaviour
+/// without the variable is not measuring an inherited value.
+fn remove_and_confirm(name: &str) -> CaseResult {
+    std::env::remove_var(name);
+    let left = std::env::var_os(name);
+    check(left.is_none(), &format!("env::remove_var left {name} set to {left:?}"))
+}
+
 fn remove_var() -> CaseResult {
-    std::env::set_var("RUST_STD_GONE", "x");
+    set_and_confirm("RUST_STD_GONE", "x")?;
     std::env::remove_var("RUST_STD_GONE");
     let got = std::env::var("RUST_STD_GONE");
     check(got == Err(std::env::VarError::NotPresent), &format!("env::var after remove_var returned {got:?}"))?;
@@ -2088,7 +2104,7 @@ fn set_var_overwrite() -> CaseResult {
 fn current_dir_absolute() -> CaseResult {
     let dir = std::env::current_dir().ctx("current_dir")?;
     check(dir.is_absolute(), &format!("current_dir is {dir:?}"))?;
-    check(fs::metadata(&dir).ctx("metadata of the current directory")?.is_dir(), "current_dir is not a directory")
+    fs::read_dir(&dir).ctx("read_dir of the current directory").map(drop)
 }
 
 fn set_current_dir() -> CaseResult {
@@ -2127,7 +2143,7 @@ fn relative_path() -> CaseResult {
 }
 
 fn temp_dir_default() -> CaseResult {
-    std::env::remove_var("TMPDIR");
+    remove_and_confirm("TMPDIR")?;
     let dir = std::env::temp_dir();
     check(dir == Path::new("/tmp"), &format!("temp_dir is {dir:?}; expected \"/tmp\""))
 }
@@ -2153,7 +2169,7 @@ fn home_dir_passwd() -> CaseResult {
         .find(|fields| fields.len() >= 7 && fields[2].parse() == Ok(uid))
         .map(|fields| PathBuf::from(fields[5]))
         .ok_or_else(|| format!("/etc/passwd has no entry for uid {uid}"))?;
-    std::env::remove_var("HOME");
+    remove_and_confirm("HOME")?;
     let home = std::env::home_dir();
     check(home.as_ref() == Some(&want), &format!("home_dir is {home:?}; /etc/passwd gives uid {uid} {want:?}"))
 }
