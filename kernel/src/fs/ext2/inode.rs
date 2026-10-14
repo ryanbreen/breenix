@@ -327,79 +327,16 @@ pub const EXT2_BAD_INO: u32 = 1;
 /// First non-reserved inode (ext2 uses 11 for rev 0, s_first_ino for rev 1+)
 pub const EXT2_FIRST_INO: u32 = 11;
 
-/// Persist a decreased link count without freeing the inode allocation.
-///
-/// This function:
-/// 1. Reads the inode from disk
-/// 2. Decrements the link count
-/// 3. Updates ctime and writes the inode back to disk.
-/// Zero-link reclamation is a separate task-context operation.
-///
-/// # Arguments
-/// * `device` - The block device
-/// * `inode_num` - The inode number to decrement
-/// * `superblock` - The ext2 superblock
-/// * `block_groups` - Mutable reference to block group descriptors
-///
-/// # Returns
-/// * `Ok(new_link_count)` - The new link count after decrement
-/// * `Err(msg)` - Error message
-pub fn decrement_inode_links<B: BlockDevice + ?Sized>(
-    device: &B, inode_num: u32, superblock: &super::Ext2Superblock,
-    block_groups: &mut [super::Ext2BlockGroupDesc],
-) -> Result<u16, &'static str> {
-    let mut inode = Ext2Inode::read_from(device, inode_num, superblock, block_groups)
-        .map_err(|_| "Failed to read inode")?;
-    if inode.i_links_count == 0 { return Err("Inode already unlinked"); }
-    inode.i_links_count -= 1;
-    inode.update_timestamps(false, false, true);
-    inode.write_to(device, inode_num, superblock, block_groups)
-        .map_err(|_| "Failed to persist link count")?;
-    Ok(inode.i_links_count)
-}
-
-/// Increment inode link count
-///
-/// This function:
-/// 1. Reads the inode from disk
-/// 2. Increments the link count
-/// 3. Updates the ctime (change time)
-/// 4. Writes the updated inode back to disk
-///
-/// # Arguments
-/// * `device` - The block device
-/// * `inode_num` - The inode number to increment
-/// * `superblock` - The ext2 superblock
-/// * `block_groups` - Reference to block group descriptors
-///
-/// # Returns
-/// * `Ok(new_link_count)` - The new link count after increment
-/// * `Err(msg)` - Error message
-pub fn increment_inode_links<B: BlockDevice + ?Sized>(
-    device: &B,
-    inode_num: u32,
+/// Count a new directory inode in its group's directory count.
+pub(super) fn note_directory_used(
+    ino: u32,
     superblock: &super::Ext2Superblock,
-    block_groups: &[super::Ext2BlockGroupDesc],
-) -> Result<u16, &'static str> {
-    // Read the inode
-    let mut inode = Ext2Inode::read_from(device, inode_num, superblock, block_groups)
-        .map_err(|_| "Failed to read inode")?;
-
-    // Increment the link count (saturating to prevent overflow)
-    let current_links =
-        unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_links_count)) };
-    let new_links = current_links.saturating_add(1);
-    inode.i_links_count = new_links;
-
-    // Update ctime (metadata change time)
-    inode.update_timestamps(false, false, true);
-
-    // Write the updated inode back
-    inode
-        .write_to(device, inode_num, superblock, block_groups)
-        .map_err(|_| "Failed to write inode")?;
-
-    Ok(new_links)
+    groups: &mut [super::Ext2BlockGroupDesc],
+) {
+    let Some(adjusted) = ino.checked_sub(1) else { return };
+    if let Some(group) = groups.get_mut((adjusted / superblock.s_inodes_per_group) as usize) {
+        group.bg_used_dirs_count = group.bg_used_dirs_count.saturating_add(1);
+    }
 }
 
 /// Take a freed directory inode out of its group's directory count, which
@@ -654,101 +591,6 @@ impl Ext2Inode {
             i_osd2: [0; 12],
         }
     }
-}
-
-/// Allocate a new inode from the filesystem
-///
-/// Searches the inode bitmaps to find a free inode, marks it as used,
-/// and returns the inode number.
-///
-/// # Arguments
-/// * `device` - The block device
-/// * `superblock` - The ext2 superblock
-/// * `block_groups` - Mutable reference to block group descriptors (to update free count)
-///
-/// # Returns
-/// * `Ok(inode_num)` - The allocated inode number (1-indexed)
-/// * `Err(msg)` - Error if no free inodes available or I/O error
-pub fn allocate_inode<B: BlockDevice + ?Sized>(
-    device: &B,
-    superblock: &super::Ext2Superblock,
-    block_groups: &mut [super::Ext2BlockGroupDesc],
-) -> Result<u32, &'static str> {
-    let block_size = superblock.block_size();
-    let inodes_per_group = superblock.s_inodes_per_group;
-
-    // Determine the first inode we can allocate
-    let first_ino = if superblock.s_rev_level == 0 {
-        EXT2_FIRST_INO
-    } else {
-        superblock.s_first_ino
-    };
-
-    // Search each block group for a free inode
-    for (bg_index, bg) in block_groups.iter_mut().enumerate() {
-        // Read free inodes count safely from packed struct
-        let free_inodes =
-            unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(bg.bg_free_inodes_count)) };
-
-        if free_inodes == 0 {
-            continue; // No free inodes in this group
-        }
-
-        // Read the inode bitmap block
-        // Use stack-based buffer to avoid heap allocation (bump allocator doesn't reclaim)
-        let bitmap_block =
-            unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(bg.bg_inode_bitmap)) };
-        let mut bitmap_buf = [0u8; 4096]; // Max block size
-        read_ext2_block(
-            device,
-            bitmap_block,
-            block_size,
-            &mut bitmap_buf[..block_size],
-        )
-        .map_err(|_| "Failed to read inode bitmap")?;
-
-        // Search for a free inode in this group
-        for local_inode in 0..inodes_per_group {
-            // Calculate the global inode number (1-indexed)
-            let global_inode = bg_index as u32 * inodes_per_group + local_inode + 1;
-
-            // Skip reserved inodes
-            if global_inode < first_ino {
-                continue;
-            }
-
-            // Check if this inode is free (bit = 0)
-            let byte_index = (local_inode / 8) as usize;
-            let bit_index = (local_inode % 8) as u8;
-
-            if byte_index >= block_size {
-                break; // Bitmap doesn't cover this inode
-            }
-
-            if (bitmap_buf[byte_index] & (1 << bit_index)) == 0
-                && !super::reclaim::quarantined(device, true, global_inode) {
-                // Found a free inode - mark it as used
-                bitmap_buf[byte_index] |= 1 << bit_index;
-
-                // Write the updated bitmap back to disk
-                write_ext2_block(device, bitmap_block, block_size, &bitmap_buf[..block_size])
-                    .map_err(|_| "Failed to write inode bitmap")?;
-
-                // Update the free inode count in the block group descriptor
-                // Safety: Writing to packed struct
-                unsafe {
-                    core::ptr::write_unaligned(
-                        core::ptr::addr_of_mut!(bg.bg_free_inodes_count),
-                        free_inodes - 1,
-                    );
-                }
-
-                return Ok(global_inode);
-            }
-        }
-    }
-
-    Err("No free inodes available")
 }
 
 #[cfg(test)]

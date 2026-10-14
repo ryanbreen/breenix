@@ -5,6 +5,10 @@ extern crate alloc;
 pub mod irq_safe_mutex {
     pub type IrqSafeMutex<T> = spin::Mutex<T>;
 }
+/// The host has no interrupts to mask.
+pub fn arch_without_interrupts<R>(f: impl FnOnce() -> R) -> R {
+    f()
+}
 pub use ext2::Ext2Inode;
 pub use syscall::SyscallResult;
 include!(concat!(env!("OUT_DIR"), "/ipc_numbers.rs"));

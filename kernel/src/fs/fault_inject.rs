@@ -355,7 +355,7 @@ pub fn run_fs_fault_leg() {
     // vacuous unless the same operations succeed with no fault armed, so the
     // clean arm runs first, through the same injector object.
     disarm();
-    let baseline = Ext2Fs::new(Box::new(FaultBlockDevice::new(device)), usize::MAX);
+    let baseline = Ext2Fs::new_uncached(Box::new(FaultBlockDevice::new(device)), usize::MAX);
     let fs = match baseline {
         Ok(fs) => {
             crate::serial_println!("[FSFAULT:{}:baseline_mount:verdict=PASS]", ARCH);
@@ -420,7 +420,7 @@ pub fn run_fs_fault_leg() {
             disarm();
             return;
         };
-        let result = Ext2Fs::new(Box::new(FaultBlockDevice::new(device)), usize::MAX);
+        let result = Ext2Fs::new_uncached(Box::new(FaultBlockDevice::new(device)), usize::MAX);
         let fired = hits();
         match result {
             Err(reason) => {
