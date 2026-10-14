@@ -6,3 +6,8 @@ mod args;
 mod float;
 pub(crate) mod format;
 pub(crate) use format::{vformat, Format, Sink};
+
+mod misc;
+pub(crate) mod scan;
+
+pub(crate) mod pipe;

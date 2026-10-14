@@ -14,6 +14,13 @@ mod pthread {
     pub fn errno() -> i32 {
         ERROR.with(|s| s.get())
     }
+    thread_local! {static LOCALE: Cell<*mut core::ffi::c_void> = const { Cell::new(std::ptr::null_mut()) };}
+    /// This thread's uselocale slot; null selects the process locale. Called by the
+    /// locale service's objects module, which only the integrated tree has.
+    #[allow(dead_code)]
+    pub unsafe fn locale_slot() -> *mut *mut core::ffi::c_void {
+        LOCALE.with(|s| s.as_ptr())
+    }
     pub struct RecursiveLock {
         owner: AtomicU64,
         depth: std::cell::UnsafeCell<usize>,
@@ -165,8 +172,112 @@ mod cases;
 #[allow(dead_code)]
 mod locale;
 #[allow(dead_code)]
+mod math;
+#[allow(dead_code)]
 mod stdio;
+#[allow(dead_code)]
+mod stdlib;
+#[allow(dead_code)]
+mod string;
 
 pub fn __errno_location() -> *mut i32 {
     pthread::location()
+}
+
+extern "C" {
+    #[link_name = "pipe"]
+    fn host_pipe(p: *mut i32) -> i32;
+    #[link_name = "fork"]
+    fn host_fork() -> i32;
+    #[link_name = "execve"]
+    fn host_execve(p: *const u8, a: *const *const u8, e: *const *const u8) -> i32;
+    #[link_name = "waitpid"]
+    fn host_waitpid(pid: i32, s: *mut i32, o: i32) -> i32;
+    #[link_name = "rmdir"]
+    fn host_rmdir(p: *const u8) -> i32;
+    #[link_name = "_exit"]
+    fn host_exit(s: i32) -> !;
+    #[link_name = "_NSGetEnviron"]
+    fn host_environ() -> *mut *mut *mut u8;
+}
+pub unsafe fn pipe2(p: *mut i32, flags: i32) -> i32 {
+    let r = capture(host_pipe(p));
+    if r == 0 && flags & 0x80000 != 0 {
+        host_fcntl(*p, 2, 1i32);
+        host_fcntl(*p.add(1), 2, 1i32);
+    }
+    r
+}
+pub fn fork() -> i32 {
+    unsafe { capture(host_fork()) }
+}
+pub unsafe fn execve(p: *const u8, a: *const *const u8, e: *const *const u8) -> i32 {
+    capture(host_execve(p, a, e))
+}
+pub unsafe fn waitpid(pid: i32, s: *mut i32, o: i32) -> i32 {
+    capture(host_waitpid(pid, s, o))
+}
+pub unsafe fn rmdir(p: *const u8) -> i32 {
+    capture(host_rmdir(p))
+}
+pub fn _exit(s: i32) -> ! {
+    unsafe { host_exit(s) }
+}
+#[allow(non_upper_case_globals)]
+mod env {
+    pub static mut environ: *mut *mut u8 = std::ptr::null_mut();
+    /// Host tests run in the C locale whatever the host environment says. Called by
+    /// the locale service's objects module, which only the integrated tree has.
+    #[allow(dead_code)]
+    pub fn getenv_bytes(_name: &[u8]) -> Option<&'static [u8]> {
+        None
+    }
+}
+extern "C" {
+    #[link_name = "sched_yield"]
+    fn host_sched_yield() -> i32;
+    #[link_name = "getentropy"]
+    fn host_getentropy(p: *mut u8, n: usize) -> i32;
+    #[link_name = "lstat"]
+    fn host_lstat(p: *const u8, s: *mut u8) -> i32;
+    #[link_name = "renameat"]
+    fn host_renameat(a: i32, p: *const u8, b: i32, q: *const u8) -> i32;
+}
+pub fn sched_yield() -> i32 {
+    unsafe { host_sched_yield() }
+}
+pub unsafe fn getrandom(p: *mut u8, n: usize, _flags: u32) -> isize {
+    if capture(host_getentropy(p, n)) == 0 {
+        n as isize
+    } else {
+        -1
+    }
+}
+pub unsafe fn lstat(p: *const u8, s: *mut u8) -> i32 {
+    capture(host_lstat(p, s))
+}
+/// Only renameat goes through syscall in the stdio module; the host's AT_FDCWD
+/// differs from Linux's -100, so it is translated.
+pub unsafe fn syscall(n: i64, a: i64, b: i64, c: i64, d: i64, _: i64, _: i64) -> i64 {
+    assert_eq!(n, 38);
+    let dir = |fd: i64| if fd == -100 { -2 } else { fd as i32 };
+    capture(host_renameat(
+        dir(a),
+        b as *const u8,
+        dir(c),
+        d as *const u8,
+    )) as i64
+}
+extern "C" {
+    #[link_name = "clock_gettime"]
+    fn host_clock_gettime(clock: u32, t: *mut u8) -> i32;
+}
+/// The locale service's clocks, translated from Linux's numbering to the host's.
+pub unsafe fn clock_gettime(clock: i32, t: *mut u8) -> i32 {
+    let host = match clock {
+        1 => 6,  // CLOCK_MONOTONIC
+        2 => 12, // CLOCK_PROCESS_CPUTIME_ID
+        c => c as u32,
+    };
+    capture(host_clock_gettime(host, t))
 }
