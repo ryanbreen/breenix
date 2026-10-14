@@ -27,6 +27,10 @@ MANIFEST = '.userspace-manifest.json'
 FOREIGN = {'busybox.elf'}
 # Ignored by git, but still inputs of the build.
 LOCKFILES = ('userspace/programs/Cargo.lock', 'libs/libbreenix-libc/Cargo.lock')
+# The build of C programs against Breenix's own C library (libc suite, BusyBox).
+C_BUILD = ('scripts/breenix-cc', 'scripts/libc-symbol-audit.py', 'scripts/libc-clean-archive.py', 'scripts/build-libc-busybox.sh',
+           'vendor/busybox/breenix-libc.config', 'vendor/busybox/busybox-1.37.0.tar.bz2',
+           'x86_64-breenix-c.json')
 
 
 def elf_dir(arch):
@@ -41,7 +45,7 @@ def digest(path):
 def fingerprint(arch):
     listed = subprocess.check_output(
         ['git', '-C', str(ROOT), 'ls-files', '-z', '--cached', '--others', '--exclude-standard',
-         '--', 'userspace', 'libs', 'rust-toolchain.toml', f'{arch}-breenix.json'])
+         '--', 'userspace', 'libs', 'rust-toolchain.toml', f'{arch}-breenix.json', *C_BUILD])
     names = {os.fsdecode(name) for name in listed.split(b'\0') if name}
     names.update(name for name in LOCKFILES if (ROOT / name).is_file())
     result = hashlib.sha256(f'breenix-userspace-v1\0{arch}\0'.encode())

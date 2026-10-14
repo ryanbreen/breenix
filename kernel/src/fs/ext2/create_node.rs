@@ -82,6 +82,7 @@ impl Ext2Fs {
         if dir::find_inode_bytes(&data, name).is_some() {
             return Err("File already exists");
         }
+        self.make_directory_room(parent, &mut parent_inode, &mut data, name.len())?;
         let blocks = directory_io::prepare(
             self.device.as_ref(),
             &parent_inode,

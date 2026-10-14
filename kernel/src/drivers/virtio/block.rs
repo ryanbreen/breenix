@@ -24,6 +24,7 @@ use crate::drivers::pci::Device as PciDevice;
 use crate::memory::frame_allocator;
 use crate::task::completion::Completion;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use spin::Mutex;
 
@@ -184,6 +185,81 @@ struct VirtioBlkReq {
 pub const SECTOR_SIZE: usize = 512;
 const DMA_DATA_SIZE: usize = 4096;
 
+/// Sectors the sector cache holds: 512 KiB.
+const CACHE_SECTORS: usize = 1024;
+const CACHE_EMPTY: u64 = u64::MAX;
+
+struct CachedSector {
+    sector: u64,
+    data: [u8; SECTOR_SIZE],
+}
+
+/// A write-through copy of recently transferred sectors. The filesystem reads
+/// the same metadata sectors (inodes, directory blocks, bitmaps, the
+/// superblock) for every operation, and each device request waits for the
+/// device, so without it a file creation is dozens of requests. Direct-mapped:
+/// sector `s` can only be in slot `s % CACHE_SECTORS`. Every store and
+/// invalidation is made with the request gate held, right after the transfer
+/// it reflects, so the cache changes in device order; a lookup takes only the
+/// slot lock and sees the disk as of the last completed request. Allocated
+/// once at device initialization; a device that cannot have one runs without.
+struct SectorCache {
+    slots: Mutex<Vec<CachedSector>>,
+}
+
+impl SectorCache {
+    fn new() -> Option<Self> {
+        let mut slots = Vec::new();
+        slots.try_reserve_exact(CACHE_SECTORS).ok()?;
+        slots.resize_with(CACHE_SECTORS, || CachedSector { sector: CACHE_EMPTY, data: [0; SECTOR_SIZE] });
+        Some(Self { slots: Mutex::new(slots) })
+    }
+
+    /// The slot lock is never taken by the interrupt handler, but a holder
+    /// must not be preempted by a thread that then spins on it.
+    fn with_slots<R>(&self, f: impl FnOnce(&mut [CachedSector]) -> R) -> R {
+        x86_64::instructions::interrupts::without_interrupts(|| f(&mut self.slots.lock()))
+    }
+
+    /// Copy `buffer.len() / SECTOR_SIZE` sectors from `sector` on into
+    /// `buffer` if every one of them is cached.
+    fn lookup(&self, sector: u64, buffer: &mut [u8]) -> bool {
+        self.with_slots(|slots| {
+            let all = buffer.chunks(SECTOR_SIZE).zip(sector..).all(|(_, s)| slots[(s % CACHE_SECTORS as u64) as usize].sector == s);
+            if all {
+                for (chunk, s) in buffer.chunks_mut(SECTOR_SIZE).zip(sector..) {
+                    chunk.copy_from_slice(&slots[(s % CACHE_SECTORS as u64) as usize].data);
+                }
+            }
+            all
+        })
+    }
+
+    /// Record sectors as the device now holds them. The request gate is held.
+    fn store(&self, sector: u64, buffer: &[u8]) {
+        self.with_slots(|slots| {
+            for (chunk, s) in buffer.chunks(SECTOR_SIZE).zip(sector..) {
+                let slot = &mut slots[(s % CACHE_SECTORS as u64) as usize];
+                slot.sector = s;
+                slot.data.copy_from_slice(chunk);
+            }
+        })
+    }
+
+    /// Forget sectors whose contents on the device are unknown, after a
+    /// write that did not complete. The request gate is held.
+    fn invalidate(&self, sector: u64, len: usize) {
+        self.with_slots(|slots| {
+            for s in sector..sector + (len / SECTOR_SIZE) as u64 {
+                let slot = &mut slots[(s % CACHE_SECTORS as u64) as usize];
+                if slot.sector == s {
+                    slot.sector = CACHE_EMPTY;
+                }
+            }
+        })
+    }
+}
+
 /// Cached DMA buffers for I/O operations
 /// These are allocated once and reused to prevent frame exhaustion
 struct DmaBuffers {
@@ -316,6 +392,8 @@ pub struct VirtioBlockDevice {
     ops_completed: AtomicU64,
     /// Cached DMA buffers (protected by queue mutex)
     dma_buffers: DmaBuffers,
+    /// Recently transferred sectors, when the allocation succeeded.
+    cache: Option<SectorCache>,
 }
 
 impl VirtioBlockDevice {
@@ -449,6 +527,7 @@ impl VirtioBlockDevice {
             writes_pending: AtomicBool::new(true),
             ops_completed: AtomicU64::new(0),
             dma_buffers,
+            cache: SectorCache::new(),
         })
     }
 
@@ -621,6 +700,9 @@ impl VirtioBlockDevice {
         if sector >= self.capacity {
             return Err("Sector out of range");
         }
+        if self.cache.as_ref().is_some_and(|cache| cache.lookup(sector, buffer)) {
+            return Ok(());
+        }
         if !self.irq_completion_available() {
             return Err("Block IRQ completion unavailable before interrupts are enabled");
         }
@@ -697,6 +779,9 @@ impl VirtioBlockDevice {
 
         self.clear_completion_state();
         result?;
+        if let Some(cache) = &self.cache {
+            cache.store(sector, buffer);
+        }
         self.ops_completed.fetch_add(1, Ordering::Relaxed);
         drop(request_guard);
 
@@ -757,6 +842,7 @@ impl VirtioBlockDevice {
         self.device.notify_queue(0);
 
         if let Err(e) = self.wait_for_completion(completion_token, request_type::OUT) {
+            self.invalidate_cached(sector, buffer.len());
             request_guard.wedge();
             return Err(e);
         }
@@ -765,6 +851,7 @@ impl VirtioBlockDevice {
             Ok(completed) => completed,
             Err(e) => {
                 self.clear_completion_state();
+                self.invalidate_cached(sector, buffer.len());
                 return Err(e);
             }
         };
@@ -774,13 +861,23 @@ impl VirtioBlockDevice {
 
         // Check status
         if status != status_code::OK {
+            self.invalidate_cached(sector, buffer.len());
             return Err("Device returned error status");
         }
 
+        if let Some(cache) = &self.cache {
+            cache.store(sector, buffer);
+        }
         self.ops_completed.fetch_add(1, Ordering::Relaxed);
         drop(request_guard);
 
         Ok(())
+    }
+
+    fn invalidate_cached(&self, sector: u64, len: usize) {
+        if let Some(cache) = &self.cache {
+            cache.invalidate(sector, len);
+        }
     }
 
     /// Flush the device cache using a header/status-only request. A device

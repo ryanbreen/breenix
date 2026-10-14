@@ -26,6 +26,9 @@ mod syscall {
         pub unsafe fn syscall3(_: u64, _: u64, _: u64, _: u64) -> u64 {
             0
         }
+        pub unsafe fn syscall6(_: u64, _: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
+            0
+        }
     }
 }
 
@@ -52,6 +55,23 @@ fn __errno_location() -> *mut i32 {
 
 unsafe fn ioctl(_: i32, _: u64, _: u64) -> i32 {
     0
+}
+
+fn syscall_result_to_c_int(result: i64) -> i32 {
+    if result < 0 {
+        unsafe { *__errno_location() = (-result) as i32 };
+        -1
+    } else {
+        result as i32
+    }
+}
+
+// tcdrain is a cancellation point. With no thread runtime, as here, the
+// library's cancel_syscall makes the system call directly.
+mod pthread {
+    pub unsafe fn cancel_syscall(nr: u64, a: [u64; 6]) -> i64 {
+        crate::syscall::raw::syscall6(nr, a[0], a[1], a[2], a[3], a[4], a[5]) as i64
+    }
 }
 
 #[path = "../libs/libbreenix-libc/src/termios.rs"]

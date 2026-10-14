@@ -185,3 +185,64 @@ mod tests {
         }
     }
 }
+
+/// inet_aton: the one- to four-part forms (decimal, octal or hexadecimal parts) into
+/// `*addr` in network byte order; 1 on success, 0 for an invalid string.
+#[no_mangle]
+pub unsafe extern "C" fn inet_aton(text: *const u8, addr: *mut u32) -> i32 {
+    match c_bytes(text, 64).and_then(parse_inet_addr) {
+        Some(bytes) => {
+            if !addr.is_null() {
+                *addr = u32::from_ne_bytes(bytes);
+            }
+            1
+        }
+        None => 0,
+    }
+}
+
+/// inet_addr: as inet_aton, returning the address, or INADDR_NONE (all ones) for an
+/// invalid string.
+#[no_mangle]
+pub unsafe extern "C" fn inet_addr(text: *const u8) -> u32 {
+    match c_bytes(text, 64).and_then(parse_inet_addr) {
+        Some(bytes) => u32::from_ne_bytes(bytes),
+        None => u32::MAX,
+    }
+}
+
+static mut NTOA: [u8; 16] = [0; 16];
+
+/// inet_ntoa: dotted decimal in storage the next call overwrites.
+#[no_mangle]
+pub unsafe extern "C" fn inet_ntoa(addr: u32) -> *mut u8 {
+    let out = &mut *core::ptr::addr_of_mut!(NTOA);
+    format_ipv4(addr.to_ne_bytes(), out);
+    out.as_mut_ptr()
+}
+
+#[no_mangle]
+pub extern "C" fn htonl(v: u32) -> u32 {
+    v.to_be()
+}
+
+#[no_mangle]
+pub extern "C" fn htons(v: u16) -> u16 {
+    v.to_be()
+}
+
+#[no_mangle]
+pub extern "C" fn ntohl(v: u32) -> u32 {
+    u32::from_be(v)
+}
+
+#[no_mangle]
+pub extern "C" fn ntohs(v: u16) -> u16 {
+    u16::from_be(v)
+}
+
+/// The IPv6 wildcard address (::) and loopback address (::1).
+#[no_mangle]
+pub static in6addr_any: [u8; 16] = [0; 16];
+#[no_mangle]
+pub static in6addr_loopback: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];

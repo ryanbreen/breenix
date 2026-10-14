@@ -11,7 +11,9 @@
 //! (`isr_unblock_for_io`), which the scheduler applies when it drains the wake
 //! buffer. The waiter stores its tid in `waiter` and fences before it checks
 //! `done`, so at least one side sees the other: either `complete()` reads the
-//! tid and buffers a wake, or the waiter sees `done` and does not sleep.
+//! tid and buffers a wake, or the waiter sees `done` and does not sleep. On
+//! x86_64 a syscall waiter halts in place, and the same pairing on its CPU
+//! (`halted_cpu`) lets `complete()` end the halt from another CPU.
 //!
 //! The waiter's done-check and `block_current_for_io()` execute under a single
 //! `with_scheduler()` call, matching Linux's `raw_spin_lock_irq` around
@@ -271,6 +273,12 @@ pub struct Completion {
     /// it slept on to its next tick.
     #[cfg(target_arch = "x86_64")]
     idle_poller: core::sync::atomic::AtomicUsize,
+    /// x86_64: one more than the CPU a syscall waiter is about to halt on in
+    /// place, or 0. Its buffered wake is applied only when a CPU next
+    /// schedules, and a device interrupt taken on another CPU returns without
+    /// scheduling, so `complete()` interrupts the waiter's halt itself.
+    #[cfg(target_arch = "x86_64")]
+    halted_cpu: core::sync::atomic::AtomicUsize,
 }
 
 impl Completion {
@@ -281,6 +289,8 @@ impl Completion {
             waiter: AtomicU64::new(0),
             #[cfg(target_arch = "x86_64")]
             idle_poller: core::sync::atomic::AtomicUsize::new(0),
+            #[cfg(target_arch = "x86_64")]
+            halted_cpu: core::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -482,8 +492,19 @@ impl Completion {
                         crate::arch_impl::aarch64::context_switch::run_deferred_reclamation();
                         crate::arch_impl::aarch64::context_switch::schedule_from_kernel();
                     }
+                    // Published before the done check that precedes the halt,
+                    // so a completion is either seen by that check or finds
+                    // this CPU to interrupt.
                     #[cfg(not(target_arch = "aarch64"))]
-                    crate::task::waitqueue::halt_blocked_current();
+                    {
+                        self.halted_cpu
+                            .store(crate::per_cpu::cpu_id() + 1, Ordering::Release);
+                        fence(Ordering::SeqCst);
+                        if self.done.load(Ordering::Acquire) != expected_token {
+                            crate::task::waitqueue::halt_blocked_current();
+                        }
+                        self.halted_cpu.store(0, Ordering::Release);
+                    }
 
                     #[cfg(target_arch = "aarch64")]
                     trace_wait_timeout_stage(1);
@@ -665,6 +686,10 @@ impl Completion {
 
         #[cfg(target_arch = "x86_64")]
         if let Some(cpu) = self.idle_poller.load(Ordering::Acquire).checked_sub(1) {
+            crate::task::scheduler::kick_cpu_x86(cpu);
+        }
+        #[cfg(target_arch = "x86_64")]
+        if let Some(cpu) = self.halted_cpu.load(Ordering::Acquire).checked_sub(1) {
             crate::task::scheduler::kick_cpu_x86(cpu);
         }
     }

@@ -923,6 +923,16 @@ impl ProcessScheduler {
         // The last thread of a process applies its SEM_UNDO adjustments
         // before Phase 1 makes the row a zombie its parent can reap.
         crate::ipc::sysv::thread_exit(thread_id);
+        // So is the working directory released: rmdir refuses a directory
+        // that is anyone's working directory, and a reaped row stays resident
+        // until its address space retires (on x86-64, at the next idle pass or
+        // fork), so a parent that reaps the child and then removes the
+        // directory it ran in would find it busy. Dropped after PM.
+        let released = crate::process::manager()
+            .as_mut()
+            .and_then(|manager| manager.find_process_by_thread_mut(thread_id))
+            .map(|(_, process)| process.cwd.release());
+        drop(released);
         // Capture the claimer before taking PM. This is a separate scheduler-only
         // acquisition; no scheduler state is consulted while PM is live.
         let report_claimer = scheduler::current_thread_id().unwrap_or(thread_id);
