@@ -185,21 +185,24 @@ fn fixed_memory_preserves_full_buffer() {
     }
 }
 #[test]
-fn positional_arguments_and_long_double() {
+fn positional_arguments() {
     unsafe {
         let (s, n) = printed(c"%3$*1$.*2$f|%4$lld|%4$lld", |p, n, f| {
             snprintf(p, n, f, 10i32, 3i32, -1.5f64, 123i64)
         });
         assert_eq!(s, "    -1.500|123|123");
         assert_eq!(n, s.len() as i32);
-        // Darwin ARM64's long double is binary64, so f64 is the matching variadic
-        // argument there. Rust has no type for binary128 (Linux ARM64) or the x87
-        // format (x86-64); float.rs's tests format those through Binary directly.
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        {
-            let (s, _) = printed(c"%.18Lf|%La", |p, n, f| snprintf(p, n, f, 0.125f64, 1.5f64));
-            assert_eq!(s, "0.125000000000000000|0x1.8p+0");
-        }
+    }
+}
+/// Darwin ARM64's long double is binary64, so f64 is the matching variadic argument
+/// and the case exists only there. Rust has no type for binary128 (Linux ARM64) or
+/// the x87 format (x86-64); float.rs's tests format those through Binary directly.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn long_double_arguments_on_darwin_arm64() {
+    unsafe {
+        let (s, _) = printed(c"%.18Lf|%La", |p, n, f| snprintf(p, n, f, 0.125f64, 1.5f64));
+        assert_eq!(s, "0.125000000000000000|0x1.8p+0");
     }
 }
 struct WideOutput(Vec<u32>);
