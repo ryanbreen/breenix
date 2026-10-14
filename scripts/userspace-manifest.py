@@ -23,8 +23,6 @@ import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = '.userspace-manifest.json'
-# Installed by scripts/install-busybox.py from a pinned, checksummed build.
-FOREIGN = {'busybox.elf'}
 # Ignored by git, but still inputs of the build.
 LOCKFILES = ('userspace/programs/Cargo.lock', 'libs/libbreenix-libc/Cargo.lock')
 # The build of C programs against Breenix's own C library (libc suite, BusyBox).
@@ -52,15 +50,14 @@ def fingerprint(arch):
     result = hashlib.sha256(f'breenix-userspace-v1\0{arch}\0'.encode())
     for name in sorted(names):
         path = ROOT / name
-        if name.endswith('.elf') or Path(name).name == MANIFEST or not path.is_file():
+        if name.endswith('.elf') or Path(name).name in (MANIFEST, 'libc-busybox.links') or not path.is_file():
             continue
         result.update(name.encode() + b'\0' + path.read_bytes() + b'\0')
     return result.hexdigest()
 
 
 def inventory(arch):
-    return {path.name: digest(path) for path in sorted(elf_dir(arch).glob('*.elf'))
-            if path.name not in FOREIGN}
+    return {path.name: digest(path) for path in sorted([*elf_dir(arch).glob('*.elf'), *elf_dir(arch).glob('libc-busybox.links')])}
 
 
 def write(arch):

@@ -304,7 +304,7 @@ STD_BINARIES=(
     "cow_readonly_test"
     "cow_signal_test"
 
-    # Phase 3: Coreutils now provided by BusyBox (see scripts/build-busybox.sh)
+    # Phase 3: Coreutils now provided by BusyBox (see scripts/build-libc-busybox.sh)
     "resolution"
 
     # Phase 4: init_shell

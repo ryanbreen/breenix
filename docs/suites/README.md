@@ -862,8 +862,7 @@ the manifest's cases in order.
 The busybox cases run applets of a BusyBox built against Breenix's libc, installed as
 `/usr/local/libc/bin/busybox` with its applet links beside it, and compare what the applet
 prints and its exit status with the expected values. `PATH` names only `/usr/local/libc/bin`,
-so a shell pipeline never reaches the musl-built BusyBox stand-in in `/bin`, which this
-suite never runs. Each applet has a case of its own (the shell has five), so one that does
+and `/bin` holds hard links to that same Breenix-libc BusyBox. Each applet has a case of its own (the shell has five), so one that does
 not build or does not behave is a recorded failure of its own.
 
 Until a category's program is built against Breenix's libc and installed, each of its cases
@@ -906,9 +905,9 @@ pipeline, a configure-style probe, a make-free build loop, a log rotator, an awk
 a recursive directory walker, here-document templating, getopts argument parsing,
 trap-based cleanup and a script that sources a library.
 
-The suite runs whatever `/bin` holds. The utilities effort replaces the musl-built BusyBox
-stand-in there with BusyBox built against Breenix's own C library
-(`scripts/build-libc-busybox.sh`). Each case uses the runner's default 10-second deadline;
+The suite runs BusyBox built against Breenix's own C library in `/bin`
+(`scripts/build-libc-busybox.sh`), plus the C utilities built from
+`userspace/utilities/*.c` with `breenix-cc`. Each case uses the runner's default 10-second deadline;
 the program it starts gets until 1.5 seconds before it, and one still running then is killed
 and the case fails saying it did not finish.
 

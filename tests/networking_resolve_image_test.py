@@ -67,6 +67,7 @@ class ResolverImageTests(unittest.TestCase):
             for directory in ['scripts', 'userspace/programs/aarch64', 'fonts', 'target', 'stubs']:
                 (repo / directory).mkdir(parents=True, exist_ok=True)
             shutil.copy2(SCRIPT, repo / 'scripts/create_ext2_disk.sh')
+            (repo / 'scripts/userspace-manifest.py').write_text('# fixture: manifest verified\n')
             shutil.copy2(ROOT / 'scripts/install-libc-busybox.sh', repo / 'scripts')
             (repo / 'vendor/busybox').mkdir(parents=True)
             shutil.copy2(ROOT / 'vendor/busybox/required-applets', repo / 'vendor/busybox')
