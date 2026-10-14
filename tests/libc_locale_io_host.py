@@ -18,6 +18,8 @@ with tempfile.TemporaryDirectory(prefix='breenix-locale-io-') as directory:
         dest.mkdir()
         for source in (root / 'libs/libbreenix-libc/src' / module).glob('*.rs'):
             text = source.read_text().replace('#[no_mangle]', '')
+            if module == 'stdio':
+                text = text.split('#[cfg(test)]')[0]
             text = text.replace('#[cfg(not(test))]', '')
             for name in ('stdin', 'stdout', 'stderr', 'timezone', 'daylight', 'tzname'):
                 text = text.replace('pub static mut ' + name, '#[allow(non_upper_case_globals)]\npub static mut ' + name)

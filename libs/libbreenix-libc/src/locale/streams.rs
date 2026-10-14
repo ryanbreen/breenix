@@ -38,13 +38,16 @@ unsafe fn get(f: *mut File) -> Input {
     if !orient(f) {
         return Input::Error;
     }
-    let mut partial = false;
+    let mut partial = (*file::mb_state(f)).expected != 0;
     loop {
         let byte = file::getc_locked(f);
         if byte < 0 {
-            if partial {
+            if file::feof_unlocked(f) != 0 && partial {
                 file::set_error(f);
                 set_errno(84);
+                let saved = (*file::mb_state(f)).reserved;
+                *file::mb_state(f) = MbState::default();
+                (*file::mb_state(f)).reserved = saved;
                 return Input::Error;
             }
             return if file::feof_unlocked(f) != 0 {

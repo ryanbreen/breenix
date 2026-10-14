@@ -41,6 +41,8 @@ fn wide_streams_capture_encoding_pushback_and_error_indicators() {
         assert_eq!(streams::fgetwc(f), u32::MAX);
         assert_eq!(crate::pthread::errno(), 84);
         assert_ne!(file::ferror(f), 0);
+        file::rewind(f);
+        assert_eq!(streams::fgetwc(f), 97);
         file::fclose(f);
         done(l);
     }
@@ -146,6 +148,8 @@ fn prior_error_does_not_fail_a_successful_wide_read() {
         assert!(streams::fgetws(text.as_mut_ptr(), 8, f).is_null());
         assert_eq!(crate::pthread::errno(), 84);
         assert_ne!(file::ferror(f), 0);
+        file::rewind(f);
+        assert_eq!(streams::fgetwc(f), 97);
         file::fclose(f);
         done(l);
     }
@@ -192,5 +196,34 @@ fn wide_number_end_pointers_limits_and_direct_float_rounding() {
         let s = wide("1e9999");
         assert_eq!(super::numbers::wcstod(s.as_ptr(), &mut end), f64::INFINITY);
         assert_eq!(crate::pthread::errno(), 34);
+    }
+}
+
+#[test]
+fn nonblocking_partial_character_retains_state_and_io_errno() {
+    extern "C" {
+        fn pipe(fds: *mut i32) -> i32;
+    }
+    unsafe {
+        let l = utf8();
+        let mut fds = [0; 2];
+        assert_eq!(pipe(fds.as_mut_ptr()), 0);
+        let nonblock = if cfg!(target_os = "macos") {
+            4i32
+        } else {
+            2048i32
+        };
+        assert_eq!(crate::host_fcntl(fds[0], 4, nonblock), 0);
+        let f = file::fdopen(fds[0], b"r\0".as_ptr());
+        assert!(!f.is_null());
+        assert_eq!(crate::host_write(fds[1], b"\xe2\x82".as_ptr(), 2), 2);
+        assert_eq!(streams::fgetwc(f), u32::MAX);
+        assert_eq!(crate::pthread::errno(), *crate::host_error());
+        assert_ne!(crate::pthread::errno(), 84);
+        assert_eq!(crate::host_write(fds[1], b"\xac".as_ptr(), 1), 1);
+        assert_eq!(streams::fgetwc(f), 0x20ac);
+        file::fclose(f);
+        crate::host_close(fds[1]);
+        done(l);
     }
 }
