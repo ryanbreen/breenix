@@ -902,12 +902,24 @@ fn main() {
             all_stubs_ok = false;
         }
 
-        // Test sysconf(_SC_NPROCESSORS_ONLN) - should return 1 (single CPU)
+        // Test sysconf(_SC_NPROCESSORS_ONLN) - the processor records in /proc/cpuinfo
         const _SC_NPROCESSORS_ONLN: i32 = 84;
         let ncpus = sysconf(_SC_NPROCESSORS_ONLN);
-        if ncpus != 1 {
-            eprintln!("ERROR: sysconf(_SC_NPROCESSORS_ONLN) returned {}, expected 1", ncpus);
-            all_stubs_ok = false;
+        let records = std::fs::read_to_string("/proc/cpuinfo").map(|text| {
+            text.lines()
+                .filter(|line| line.split(':').next().map(str::trim) == Some("processor"))
+                .count()
+        });
+        match records {
+            Ok(records) if records > 0 && ncpus == records as _ => {}
+            Ok(records) => {
+                eprintln!("ERROR: sysconf(_SC_NPROCESSORS_ONLN) returned {}, expected {}", ncpus, records);
+                all_stubs_ok = false;
+            }
+            Err(error) => {
+                eprintln!("ERROR: /proc/cpuinfo could not be read: {}", error);
+                all_stubs_ok = false;
+            }
         }
 
         // Test poll() - should return 0 (no events)

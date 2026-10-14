@@ -21,16 +21,29 @@
 //! the directory from being removed (rmdir fails with EBUSY) or its inode
 //! reused while it is anyone's working directory.
 //!
+//! A process's root directory is `/` unless it has called chroot: then an
+//! absolute pathname, and an absolute symlink target, start from that
+//! directory, and `..` there stays there. The root is held as the working
+//! directory is, and travels with it: `CLONE_FS` threads share both, fork
+//! copies both. Until some process changes its root, every root is `/` and a
+//! walk does not look it up.
+//!
 //! The ext2 root filesystem holds `/`. The home filesystem is entered at
-//! `/home` when mounted. devfs and procfs are entered at `/dev` and `/proc`;
-//! they have no symlinks, and each name below their mount points is checked
-//! against the entries they hold.
+//! `/home` when mounted. devfs and procfs are entered at `/dev` and `/proc`,
+//! and each name below their mount points is checked against the entries they
+//! hold. procfs's links (`/proc/self`, `/proc/<pid>/exe`) are expanded as
+//! symlinks are.
 
 use crate::fs::ext2::{self, live_inode::FileHandle, FileType, EXT2_ROOT_INO};
-use crate::syscall::errno::{EIO, ELOOP, ENAMETOOLONG, ENOENT, ENOTDIR};
+use crate::syscall::errno::{EINVAL, EIO, ELOOP, ENAMETOOLONG, ENOENT, ENOTDIR};
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, Ordering};
+
+/// Set by the first chroot and never cleared: until then every process's
+/// root directory is `/`, and a walk does not look it up.
+static ROOT_CHANGED: AtomicBool = AtomicBool::new(false);
 
 /// Longest pathname a syscall accepts, counting its terminating NUL (Linux).
 pub const PATH_MAX: usize = 4096;
@@ -98,7 +111,8 @@ pub enum Last {
 #[derive(Debug)]
 pub struct Resolved<P = String> {
     /// The physical absolute pathname of the target: no symlink, `.` or `..`
-    /// component, except a final symlink the resolution did not follow.
+    /// component, except a final symlink the resolution did not follow. As
+    /// text, bytes that are not UTF-8 read as U+FFFD (`text_path`).
     pub path: P,
     pub target: Target,
     pub last: Last,
@@ -194,6 +208,21 @@ const ROOT: Node = Node::Ext2(Mount::Root, EXT2_ROOT_INO);
 
 fn top(stack: &[Frame]) -> Node {
     stack.last().map_or(ROOT, |frame| frame.node)
+}
+
+/// Whether `stack` is the directory `root` names.
+fn is_root(stack: &[Frame], root: &[Frame]) -> bool {
+    stack.len() == root.len()
+        && stack.iter().zip(root).all(|(a, b)| a.node == b.node && a.name == b.name)
+}
+
+fn copy_frames(frames: &[Frame]) -> Result<Vec<Frame>, u64> {
+    let mut copy = Vec::new();
+    copy.try_reserve_exact(frames.len()).map_err(|_| 12u64)?;
+    for frame in frames {
+        copy.push(Frame { name: copy_bytes(&frame.name)?, node: frame.node });
+    }
+    Ok(copy)
 }
 
 pub(crate) fn fs_errno(error: &'static str) -> u64 {
@@ -380,8 +409,39 @@ fn walk(path: &str, mode: Mode) -> Result<Resolved, u64> {
 
 fn walk_with(path: &str, mode: Mode, start: Option<WorkingDir>, cred: &super::permissions::Credentials) -> Result<Resolved, u64> {
     let raw = walk_bytes(path.as_bytes(), mode, start, cred)?;
-    Ok(Resolved { path: String::from_utf8(raw.path).map_err(|_| EIO as u64)?, target: raw.target, last: raw.last,
+    // A lookup's caller acts on the inode the walk found; any other caller,
+    // and the creator of an absent name, acts on the final entry by name.
+    let by_name = raw.last == Last::Name
+        && (!matches!(mode, Mode::Lookup { .. }) || matches!(raw.target, Target::Absent { .. }));
+    Ok(Resolved { path: text_path(raw.path, by_name)?, target: raw.target, last: raw.last,
         trailing_slash: raw.trailing_slash, virtual_absent: raw.virtual_absent, pin: raw.pin, entry_dir: raw.entry_dir })
+}
+/// A physical pathname as the text interface holds it. A link, a symlink or
+/// procfs's `exe`, can lead a UTF-8 pathname to one that is not. A caller
+/// acting on the inode the walk found uses the pathname only to show it and
+/// to match devfs and procfs names, so its bytes that are not UTF-8 read as
+/// U+FFFD; a caller acting on the final entry by name (`by_name`) needs that
+/// name exactly, and the text interface cannot give it: EINVAL, as for a
+/// pathname that is not UTF-8.
+fn text_path(bytes: Vec<u8>, by_name: bool) -> Result<String, u64> {
+    let bytes = match String::from_utf8(bytes) {
+        Ok(path) => return Ok(path),
+        Err(error) => error.into_bytes(),
+    };
+    let name = bytes.rsplit(|byte| *byte == b'/').next().unwrap_or(&[]);
+    if by_name && core::str::from_utf8(name).is_err() {
+        return Err(EINVAL as u64);
+    }
+    let mut path = String::new();
+    for chunk in bytes.utf8_chunks() {
+        let replaced = if chunk.invalid().is_empty() { 0 } else { char::REPLACEMENT_CHARACTER.len_utf8() };
+        path.try_reserve(chunk.valid().len() + replaced).map_err(|_| 12u64)?;
+        path.push_str(chunk.valid());
+        if replaced != 0 {
+            path.push(char::REPLACEMENT_CHARACTER);
+        }
+    }
+    Ok(path)
 }
 /// Byte-preserving path resolution for AF_UNIX, including non-UTF-8 components.
 /// Creation holds the parent, lookup holds the target, exactly as the text API.
@@ -397,16 +457,22 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
     }
     // Both read state no filesystem guard is held across.
     let home_mounted = ext2::is_home_mounted();
-    let start = if path.starts_with(b"/") {
-        WorkingDir::Root
+    let absolute = path.starts_with(b"/");
+    let (cwd, root) = if ROOT_CHANGED.load(Ordering::Acquire) {
+        try_current_dirs()?
+    } else if absolute || start.is_some() {
+        (WorkingDir::Root, WorkingDir::Root)
     } else {
-        match start {
-            Some(dir) => dir,
-            None => try_current_working_dir()?,
-        }
+        (try_current_working_dir()?, WorkingDir::Root)
     };
     let mut held = Held(None);
-    let mut stack = frames(&start, &mut held)?;
+    // The directory `/` names, which `..` does not leave.
+    let root = frames(&root, &mut held)?;
+    let mut stack = if absolute {
+        copy_frames(&root)?
+    } else {
+        frames(&start.unwrap_or(cwd), &mut held)?
+    };
     let mut trailing_slash = path.ends_with(b"/");
     let follow_final = match mode {
         Mode::Lookup { follow } => follow || trailing_slash,
@@ -450,7 +516,9 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
             }
             b".." => {
                 last = Last::DotDot;
-                stack.pop();
+                if !is_root(&stack, &root) {
+                    stack.pop();
+                }
                 continue;
             }
             _ => last = Last::Name,
@@ -465,7 +533,32 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
                     name,
                     node: Node::Virtual,
                 });
-                match core::str::from_utf8(&join(&stack)?).ok().and_then(virtual_entry) {
+                let joined = join(&stack)?;
+                let link = match core::str::from_utf8(&joined) {
+                    Ok(path) if !is_final || follow_final => {
+                        crate::fs::procfs::link_target(path, cred)
+                    }
+                    _ => None,
+                };
+                if let Some(target) = link {
+                    let target = target?;
+                    links += 1;
+                    if links > MAX_SYMLINKS {
+                        return Err(ELOOP as u64);
+                    }
+                    // The link's own frame: a relative target is resolved
+                    // in the directory that holds the link.
+                    stack.pop();
+                    if target.starts_with(b"/") {
+                        stack.clear();
+                    }
+                    push_components(&mut pending, &target)?;
+                    if pending.iter().map(|name| name.len() + 1).sum::<usize>() >= PATH_MAX {
+                        return Err(ENAMETOOLONG as u64);
+                    }
+                    continue;
+                }
+                match core::str::from_utf8(&joined).ok().and_then(virtual_entry) {
                     Some(is_dir) => top_is_dir = is_dir,
                     None if is_final => {
                         virtual_absent = true;
@@ -533,7 +626,7 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
                         trailing_slash = true;
                     }
                     if target.starts_with(b"/") {
-                        stack.clear();
+                        stack = copy_frames(&root)?;
                     }
                     push_components(&mut pending, &target)?;
                     // What is left to resolve is held to the pathname limit.
@@ -606,16 +699,28 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
 }
 
 /// Resolve `path`, following every symlink, to an existing ext2 inode, as a
-/// program loader needs. The handle holds the inode while it is read.
-pub fn resolve_file(path: &str) -> Result<(Mount, u32, FileHandle), u64> {
-    let resolved = resolve(path, true)?;
+/// program loader needs. The handle holds the inode while it is read; the
+/// pathname is the inode's physical absolute pathname.
+pub fn resolve_file(path: &str) -> Result<(Mount, u32, FileHandle, Vec<u8>), u64> {
+    resolve_file_bytes(path.as_bytes())
+}
+
+/// `resolve_file` for a POSIX byte pathname, which may hold any byte but NUL.
+pub(crate) fn resolve_file_bytes(path: &[u8]) -> Result<(Mount, u32, FileHandle, Vec<u8>), u64> {
+    let resolved = resolve_bytes(path, true)?;
     match resolved.target {
-        Target::Inode { mount, ino, .. } => {
-            resolved.pin.map(|pin| (mount, ino, pin)).ok_or(EIO as u64)
-        }
+        Target::Inode { mount, ino, .. } => resolved
+            .pin
+            .map(|pin| (mount, ino, pin, resolved.path))
+            .ok_or(EIO as u64),
         Target::Absent { .. } => Err(ENOENT as u64),
         Target::Virtual => Err(crate::syscall::errno::EACCES as u64),
     }
+}
+
+pub(crate) fn resolve_bytes(path: &[u8], follow: bool) -> Result<Resolved<Vec<u8>>, u64> {
+    let cred = super::permissions::Credentials::current(false);
+    walk_bytes(path, Mode::Lookup { follow }, None, &cred)
 }
 
 /// A process's working directory.
@@ -635,17 +740,24 @@ impl Default for WorkingDir {
     }
 }
 
-/// The working directory a process holds. Threads created with `CLONE_FS`
-/// share one, so a chdir or fchdir in any of them moves all of them; fork,
-/// spawn and a clone without `CLONE_FS` start from a copy. Its lock is only
-/// taken under the process manager's, and nothing else is taken under it.
-/// An exited row holds none (`release`) and reads as `/`.
+/// A process's working directory and its root directory.
+#[derive(Debug, Default)]
+struct Dirs {
+    cwd: WorkingDir,
+    root: WorkingDir,
+}
+
+/// The working and root directories a process holds. Threads created with
+/// `CLONE_FS` share them, so a chdir, fchdir or chroot in any of them moves
+/// all of them; fork, spawn and a clone without `CLONE_FS` start from a copy.
+/// Its lock is only taken under the process manager's, and nothing else is
+/// taken under it. An exited row holds none (`release`) and reads as `/`.
 #[derive(Debug)]
-pub struct SharedWorkingDir(Option<Arc<spin::Mutex<WorkingDir>>>);
+pub struct SharedWorkingDir(Option<Arc<spin::Mutex<Dirs>>>);
 
 impl Default for SharedWorkingDir {
     fn default() -> Self {
-        Self(Some(Arc::new(spin::Mutex::new(WorkingDir::Root))))
+        Self(Some(Arc::new(spin::Mutex::new(Dirs::default()))))
     }
 }
 
@@ -660,13 +772,17 @@ impl SharedWorkingDir {
         matches!((&self.0, &other.0), (Some(a), Some(b)) if Arc::ptr_eq(a, b))
     }
 
-    /// A separate working directory that starts where this one is.
+    /// Separate working and root directories that start where these are.
     pub fn copy(&self) -> Self {
-        Self(Some(Arc::new(spin::Mutex::new(self.get()))))
+        let dirs = self.0.as_ref().map_or_else(Dirs::default, |shared| {
+            let dirs = shared.lock();
+            Dirs { cwd: dirs.cwd.clone(), root: dirs.root.clone() }
+        });
+        Self(Some(Arc::new(spin::Mutex::new(dirs))))
     }
 
     pub fn get(&self) -> WorkingDir {
-        self.0.as_ref().map_or(WorkingDir::Root, |dir| dir.lock().clone())
+        self.0.as_ref().map_or(WorkingDir::Root, |dirs| dirs.lock().cwd.clone())
     }
 
     /// Make `dir` the working directory. The one it replaces is returned so
@@ -674,7 +790,16 @@ impl SharedWorkingDir {
     /// released its working directory gets `dir` back.
     pub fn replace(&self, dir: WorkingDir) -> WorkingDir {
         match &self.0 {
-            Some(shared) => core::mem::replace(&mut *shared.lock(), dir),
+            Some(shared) => core::mem::replace(&mut shared.lock().cwd, dir),
+            None => dir,
+        }
+    }
+
+    /// Make `dir` the root directory, returning the one it replaces as
+    /// `replace` does.
+    pub fn replace_root(&self, dir: WorkingDir) -> WorkingDir {
+        match &self.0 {
+            Some(shared) => core::mem::replace(&mut shared.lock().root, dir),
             None => dir,
         }
     }
@@ -687,19 +812,8 @@ impl SharedWorkingDir {
     }
 }
 
-fn try_current_working_dir() -> Result<WorkingDir, u64> {
-    let Some(tid) = crate::task::scheduler::current_thread_id() else {
-        return Ok(WorkingDir::Root);
-    };
-    let guard = crate::process::manager();
-    let Some((_, process)) = guard.as_ref().and_then(|m| m.find_process_by_thread(tid)) else {
-        return Ok(WorkingDir::Root);
-    };
-    let Some(shared) = process.cwd.0.as_ref() else {
-        return Ok(WorkingDir::Root);
-    };
-    let dir = shared.lock();
-    Ok(match &*dir {
+fn copy_dir(dir: &WorkingDir) -> Result<WorkingDir, u64> {
+    Ok(match dir {
         WorkingDir::Root => WorkingDir::Root,
         WorkingDir::Ext2 { mount, dir } => WorkingDir::Ext2 {
             mount: *mount,
@@ -707,6 +821,47 @@ fn try_current_working_dir() -> Result<WorkingDir, u64> {
         },
         WorkingDir::Virtual(path) => WorkingDir::Virtual(copy_string(path)?),
     })
+}
+
+/// The calling process's working and root directories; `/` for both when
+/// the caller has no process.
+fn try_current_dirs() -> Result<(WorkingDir, WorkingDir), u64> {
+    let Some(tid) = crate::task::scheduler::current_thread_id() else {
+        return Ok((WorkingDir::Root, WorkingDir::Root));
+    };
+    let guard = crate::process::manager();
+    let Some((_, process)) = guard.as_ref().and_then(|m| m.find_process_by_thread(tid)) else {
+        return Ok((WorkingDir::Root, WorkingDir::Root));
+    };
+    let Some(shared) = process.cwd.0.as_ref() else {
+        return Ok((WorkingDir::Root, WorkingDir::Root));
+    };
+    let dirs = shared.lock();
+    Ok((copy_dir(&dirs.cwd)?, copy_dir(&dirs.root)?))
+}
+
+fn try_current_working_dir() -> Result<WorkingDir, u64> {
+    try_current_dirs().map(|(cwd, _)| cwd)
+}
+
+/// Make `dir` the calling process's root directory, as chroot does once it
+/// holds the directory and has checked the caller may enter it. The threads
+/// that share the working directory share the new root.
+pub fn set_root(dir: WorkingDir) -> Result<(), u64> {
+    let tid = crate::task::scheduler::current_thread_id().ok_or(3u64)?; // ESRCH
+    // Set first, so a walk that can see the new root also looks it up.
+    ROOT_CHANGED.store(true, Ordering::Release);
+    let previous = {
+        let guard = crate::process::manager();
+        let (_, process) = guard
+            .as_ref()
+            .and_then(|m| m.find_process_by_thread(tid))
+            .ok_or(3u64)?;
+        process.cwd.replace_root(dir)
+    };
+    // Released after the process manager, as chdir releases its old directory.
+    drop(previous);
+    Ok(())
 }
 
 /// The working directory of the calling process; `/` for a caller with none.
@@ -725,11 +880,11 @@ pub fn current_working_dir() -> WorkingDir {
 }
 
 /// The working directory a resolved pathname names, for chdir.
-pub fn working_dir(resolved: &Resolved) -> Result<WorkingDir, u64> {
+pub fn working_dir<P: AsRef<[u8]>>(resolved: &Resolved<P>) -> Result<WorkingDir, u64> {
     match resolved.target {
         Target::Absent { .. } => Err(ENOENT as u64),
-        Target::Virtual => match virtual_entry(&resolved.path) {
-            Some(true) => Ok(WorkingDir::Virtual(copy_string(&resolved.path)?)),
+        Target::Virtual => match core::str::from_utf8(resolved.path.as_ref()).ok().and_then(virtual_entry) {
+            Some(true) => Ok(WorkingDir::Virtual(copy_string(core::str::from_utf8(resolved.path.as_ref()).map_err(|_| ENOENT as u64)?)?)),
             Some(false) => Err(ENOTDIR as u64),
             None => Err(ENOENT as u64),
         },
@@ -774,15 +929,32 @@ pub(crate) fn may_search(
 }
 
 /// The physical pathname of a working directory, derived from the directory
-/// itself. ENOENT when it no longer has a name.
+/// itself, as the calling process names it from its root directory. A
+/// directory outside that root, or one that no longer has a name, fails with
+/// ENOENT instead of returning a relative pathname to POSIX callers.
 pub fn working_dir_path(dir: &WorkingDir) -> Result<String, u64> {
+    String::from_utf8(working_dir_path_bytes(dir)?).map_err(|_| EIO as u64)
+}
+
+pub(crate) fn working_dir_path_bytes(dir: &WorkingDir) -> Result<Vec<u8>, u64> {
+    let root = if ROOT_CHANGED.load(Ordering::Acquire) {
+        try_current_dirs()?.1
+    } else {
+        WorkingDir::Root
+    };
     let mut held = Held(None);
-    let path = join(&frames(dir, &mut held)?)?;
+    let root = frames(&root, &mut held)?;
+    let stack = frames(dir, &mut held)?;
+    let path = if stack.len() >= root.len() && is_root(&stack[..root.len()], &root) {
+        join(&stack[root.len()..])?
+    } else {
+        return Err(ENOENT as u64);
+    };
     drop(held);
     if path.len() >= PATH_MAX {
         return Err(ENAMETOOLONG as u64);
     }
-    String::from_utf8(path).map_err(|_| EIO as u64)
+    Ok(path)
 }
 
 /// The physical directory stack of a working directory. An ext2 directory's

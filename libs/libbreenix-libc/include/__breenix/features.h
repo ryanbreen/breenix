@@ -29,8 +29,17 @@
 #else
 #define __BREENIX_BEGIN_DECLS
 #define __BREENIX_END_DECLS
+/* C89 and C90 have neither keyword; the compiler's spellings work in every mode. */
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
 #define __BREENIX_RESTRICT restrict
+#else
+#define __BREENIX_RESTRICT __restrict
+#endif
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
 #define __BREENIX_NORETURN _Noreturn
+#else
+#define __BREENIX_NORETURN __attribute__((__noreturn__))
+#endif
 #endif
 
 #endif

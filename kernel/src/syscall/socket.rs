@@ -484,7 +484,7 @@ pub fn sys_getsockopt(fd: u64, level: u64, name: u64, optval: u64, optlen: u64) 
         }
         let mut out = OptBuf::new();
         opts::getsockopt(&sk, level as i32, name as i32, &mut out)?;
-        let n = out.len.min(room as usize);
+        let n = opts::result_len(level as i32, name as i32, room as usize, out.len);
         user(userptr::write_user_bytes(optval, out.bytes.as_ptr(), n))?;
         user(userptr::copy_to_user(optlen as *mut u32, &(n as u32)))?;
         Ok(0)

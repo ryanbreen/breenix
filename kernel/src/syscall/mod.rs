@@ -33,6 +33,7 @@ pub mod audio;
 pub(crate) mod blocking_io;
 #[cfg(feature = "boot_tests")]
 pub mod blocking_io_oracle;
+pub mod chroot;
 pub mod clone;
 pub mod epoll;
 pub mod fifo;
@@ -861,6 +862,10 @@ pub const MUNLOCKALL_SYSCALL_NUMBER: u64 = 152;
 #[cfg(target_arch = "aarch64")]
 pub const MUNLOCKALL_SYSCALL_NUMBER: u64 = 231;
 #[cfg(target_arch = "x86_64")]
+pub const CHROOT_SYSCALL_NUMBER: u64 = 161;
+#[cfg(target_arch = "aarch64")]
+pub const CHROOT_SYSCALL_NUMBER: u64 = 51;
+#[cfg(target_arch = "x86_64")]
 pub const MINCORE_SYSCALL_NUMBER: u64 = 27;
 #[cfg(target_arch = "aarch64")]
 pub const MINCORE_SYSCALL_NUMBER: u64 = 232;
@@ -896,6 +901,7 @@ pub fn dispatch_numbered(number: u64, a: [u64; 6]) -> Option<SyscallResult> {
         SENDMSG_SYSCALL_NUMBER => socket::sys_sendmsg(a[0], a[1], a[2]),
         RECVMSG_SYSCALL_NUMBER => socket::sys_recvmsg(a[0], a[1], a[2]),
         ACCEPT4_SYSCALL_NUMBER => socket::sys_accept4(a[0], a[1], a[2], a[3]),
+        CHROOT_SYSCALL_NUMBER => chroot::sys_chroot(a[0]),
         _ => return None,
     })
 }

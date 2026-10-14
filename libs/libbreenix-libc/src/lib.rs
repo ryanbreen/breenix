@@ -514,6 +514,26 @@ pub unsafe extern "C" fn unlink(path: *const u8) -> i32 {
     syscall_result_to_c_int(result)
 }
 
+/// unlinkat - remove a directory entry relative to a directory descriptor.
+///
+/// The kernel implements AT_REMOVEDIR for directories and flags=0 for files
+/// and symlinks, without following the final symlink.
+#[no_mangle]
+pub unsafe extern "C" fn unlinkat(dirfd: i32, path: *const u8, flags: i32) -> i32 {
+    if path.is_null() {
+        *__errno_location() = EFAULT;
+        return -1;
+    }
+
+    let result = libbreenix::raw::syscall3(
+        libbreenix::syscall::nr::UNLINKAT,
+        dirfd as u64,
+        path as u64,
+        flags as u64,
+    ) as i64;
+    syscall_result_to_c_int(result)
+}
+
 /// rename - rename a file
 #[no_mangle]
 pub unsafe extern "C" fn rename(oldpath: *const u8, newpath: *const u8) -> i32 {
@@ -990,29 +1010,7 @@ pub extern "C" fn getppid() -> i32 {
     syscall_result_to_c_int(result)
 }
 
-/// Get real user ID.
-#[no_mangle]
-pub extern "C" fn getuid() -> u32 {
-    0 // root - single-user system
-}
-
-/// Get effective user ID.
-#[no_mangle]
-pub extern "C" fn geteuid() -> u32 {
-    0 // root
-}
-
-/// Get real group ID.
-#[no_mangle]
-pub extern "C" fn getgid() -> u32 {
-    0 // root group
-}
-
-/// Get effective group ID.
-#[no_mangle]
-pub extern "C" fn getegid() -> u32 {
-    0 // root group
-}
+pub use unistd::{getuid, geteuid, getgid, getegid};
 
 /// setpgid - set process group ID
 #[no_mangle]
@@ -1270,7 +1268,7 @@ pub extern "C" fn sysconf(name: i32) -> i64 {
         _SC_PAGESIZE => 4096,
         28 => 32768, // _SC_MQ_PRIO_MAX
         33 => 0x7fff_ffff, // _SC_SEM_VALUE_MAX
-        _SC_NPROCESSORS_ONLN | _SC_NPROCESSORS_CONF => 1,
+        _SC_NPROCESSORS_ONLN | _SC_NPROCESSORS_CONF => pthread::processor_count(),
         _SC_GETPW_R_SIZE_MAX | _SC_GETGR_R_SIZE_MAX => 1024,
         67 | 77 | 78 | 133 | 153 | 164 => 200809, // threads, stack attributes, barriers, rwlocks, timeouts
         73 => 4, // PTHREAD_DESTRUCTOR_ITERATIONS
@@ -2248,4 +2246,3 @@ pub unsafe extern "C" fn _Unwind_Backtrace(
 pub unsafe extern "C" fn _Unwind_GetIP(_context: *mut u8) -> usize {
     0
 }
-

@@ -1426,7 +1426,7 @@ fn inside_exec_or_ended(pid: i32, ready_ms: u64) -> Result<bool, CaseError> {
             if state("Blocked") || (state("Running") && now_ms().saturating_sub(ready_ms) >= 5) {
                 return Ok(true);
             }
-            if state("Terminated") { return Ok(false); }
+            if state("Z (zombie)") { return Ok(false); }
         }
         check(now_ms().saturating_sub(ready_ms) < bounded(1000, CLEANUP_MS),
             &format!("child {pid} neither entered its exec nor ended"))?;

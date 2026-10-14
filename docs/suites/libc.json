@@ -267,7 +267,8 @@
         { "id": "spin-lock", "title": "pthread_spin_trylock of a held spin lock returns EBUSY and succeeds once unlocked" },
         { "id": "attr-stacksize", "title": "pthread_attr_setstacksize refuses less than PTHREAD_STACK_MIN and a thread runs on the size set" },
         { "id": "errno-per-thread", "title": "errno is per thread" },
-        { "id": "sigmask-per-thread", "title": "pthread_sigmask changes only the calling thread's signal mask" }
+        { "id": "sigmask-per-thread", "title": "pthread_sigmask changes only the calling thread's signal mask" },
+        { "id": "sched-affinity", "title": "sched_setaffinity narrows and restores the CPU_* set sched_getaffinity reports, with ESRCH for a negative pid and EINVAL for a short or empty set" }
       ]
     },
     {

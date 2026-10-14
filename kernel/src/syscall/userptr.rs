@@ -516,7 +516,11 @@ pub fn validate_user_buffer(ptr: *const u8, len: usize) -> Result<(), u64> {
 /// # Safety
 /// This function validates each byte's address before reading.
 pub fn copy_cstr_from_user(ptr: u64) -> Result<alloc::string::String, u64> {
-    use alloc::string::String;
+    alloc::string::String::from_utf8(copy_path_bytes_from_user(ptr)?).map_err(|_| 22)
+}
+
+/// Copy a POSIX pathname without imposing a text encoding.
+pub fn copy_path_bytes_from_user(ptr: u64) -> Result<alloc::vec::Vec<u8>, u64> {
     use alloc::vec::Vec;
 
     // Validate that the starting address is in userspace
@@ -546,7 +550,7 @@ pub fn copy_cstr_from_user(ptr: u64) -> Result<alloc::string::String, u64> {
 
         if byte == 0 {
             // Found null terminator
-            return String::from_utf8(bytes).map_err(|_| 22); // EINVAL for invalid UTF-8
+            return Ok(bytes);
         }
 
         bytes.try_reserve(1).map_err(|_| 12u64)?;

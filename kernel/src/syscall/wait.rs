@@ -106,7 +106,7 @@ struct Found {
     event: Event,
 }
 
-/// Look once through the calling thread's process's children for a state
+/// Look once through the calling process's thread group's children for a state
 /// change `options` asks for. A stop or continue it reports is consumed here,
 /// unless WNOWAIT; an exit is left for `reap` to claim. ECHILD when no child
 /// matches the selector. A `CallerGroup` selector is bound here to the
@@ -123,10 +123,11 @@ fn scan(
     let manager = guard.as_ref().ok_or(ECHILD as u64)?;
     *mutations = crate::process::process_manager_mutations();
     let result = (|| {
-        let (reaper, caller_pgid, children) = match manager.find_process_by_thread(thread_id) {
-            Some((pid, caller)) => (pid, caller.pgid, caller.children.clone()),
+        let (reaper, caller_pgid) = match manager.find_process_by_thread(thread_id) {
+            Some((pid, caller)) => (pid, caller.pgid),
             None => return Err(EINVAL as u64),
         };
+        let children = manager.wait_children(reaper, options & WNOTHREAD != 0)?;
         if let Selector::CallerGroup = *selector {
             *selector = Selector::Group(caller_pgid);
         }
@@ -416,12 +417,13 @@ fn complete_wait(
     // that produced `exit_code`; only the one that installs the claim may report
     // it, and the loser returns ECHILD having copied nothing.
     let mut claim_refused = false;
-    if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
+    if crate::task::scheduler::current_thread_id().is_some() {
         let mut evicted = None;
         {
             let mut manager_guard = crate::process::manager();
             if let Some(ref mut manager) = *manager_guard {
-                if let Some((_parent_pid, parent)) = manager.find_process_by_thread_mut(thread_id) {
+                let owner = manager.get_process(child_pid).and_then(|child| child.parent);
+                if let Some(parent) = owner.and_then(|owner| manager.get_process_mut(owner)) {
                     parent.children.retain(|&id| id != child_pid);
                 }
                 match manager.reap_row(child_pid, reaper, exit_code) {

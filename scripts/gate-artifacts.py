@@ -28,7 +28,7 @@ def key(repo):
     result = hashlib.sha256(b'breenix-x86-userspace-v1\0')
     paths = subprocess.check_output(['git', '-C', str(repo), 'ls-files', '-z', '--',
         'userspace', 'libs', 'fonts', 'vendor/busybox', 'xtask',
-        'scripts/gate-artifacts.py', 'scripts/create_ext2_disk.sh', 'scripts/install-busybox.py',
+        'rust-fork.toml', 'scripts/rust-fork.sh', 'scripts/gate-artifacts.py', 'scripts/create_ext2_disk.sh', 'scripts/install-busybox.py',
         '.cargo', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'x86_64-breenix.json',
         'x86_64-breenix-c.json', 'scripts/breenix-cc', 'scripts/libc-symbol-audit.py',
         'scripts/libc-clean-archive.py',

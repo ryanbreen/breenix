@@ -289,9 +289,14 @@ impl InitLaunch {
             shown.push(' ');
             shown.push_str(core::str::from_utf8(arg).unwrap_or("?"));
         }
+        // /proc/1/exe reports the physical pathname, resolved before the
+        // launch masks interrupts and takes the process manager.
+        let exe_path = kernel::fs::namei::resolve_file(&self.path)
+            .map(|(_, _, _, path)| path)
+            .map_err(|_| "init pathname does not resolve")?;
         boot_screen::stage(Stage::StartingPid1);
         boot_screen::set_status(format_args!("Starting {}", shown));
-        launch_init_from_elf(elf_data, &self.path, &argv)
+        launch_init_from_elf(elf_data, &self.path, &exe_path, &argv)
     }
 }
 
@@ -321,6 +326,7 @@ fn release_boot_preempt_pin() {
 fn launch_init_from_elf(
     elf_data: alloc::vec::Vec<u8>,
     path: &str,
+    exe_path: &[u8],
     argv: &[&[u8]],
 ) -> Result<core::convert::Infallible, &'static str> {
     use alloc::string::String;
@@ -348,7 +354,7 @@ fn launch_init_from_elf(
         let mut manager_guard = kernel::process::manager();
         if let Some(ref mut manager) = *manager_guard {
             let ticket =
-                manager.create_init_process_with_argv(String::from(proc_name), &elf_data, argv)?;
+                manager.create_init_process_with_argv(String::from(proc_name), exe_path, &elf_data, argv)?;
             let publication = manager.designate_init(ticket)?;
             let pid = publication.pid();
             let init_thread = manager.publish_init(publication);

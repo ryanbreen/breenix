@@ -644,6 +644,11 @@ impl SocketCommon {
         self.with_opts(|o| o.nodelay)
     }
 
+    /// IP_TTL: the time to live of the IPv4 packets the socket sends.
+    pub fn ttl(&self) -> u8 {
+        self.with_opts(|o| o.ttl)
+    }
+
     /// Some(seconds) when SO_LINGER is on.
     pub fn linger(&self) -> Option<u32> {
         self.with_opts(|o| o.linger)

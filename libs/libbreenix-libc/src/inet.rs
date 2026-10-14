@@ -211,14 +211,47 @@ pub unsafe extern "C" fn inet_addr(text: *const u8) -> u32 {
     }
 }
 
-static mut NTOA: [u8; 16] = [0; 16];
+static mut NTOA_ONCE: i32 = 0;
+static mut NTOA_KEY: u32 = 0;
+static mut NTOA_KEY_ERROR: i32 = 0;
 
-/// inet_ntoa: dotted decimal in storage the next call overwrites.
+unsafe extern "C" fn free_ntoa(buffer: *mut u8) {
+    crate::free(buffer);
+}
+
+extern "C" fn init_ntoa() {
+    unsafe {
+        NTOA_KEY_ERROR = crate::pthread::pthread_key_create(
+            core::ptr::addr_of_mut!(NTOA_KEY), Some(free_ntoa));
+    }
+}
+
+/// inet_ntoa: dotted decimal in storage the next call on this thread overwrites.
 #[no_mangle]
 pub unsafe extern "C" fn inet_ntoa(addr: u32) -> *mut u8 {
-    let out = &mut *core::ptr::addr_of_mut!(NTOA);
+    crate::pthread::pthread_once(core::ptr::addr_of_mut!(NTOA_ONCE), init_ntoa);
+    // pthread_once publishes the key and its creation result to every caller.
+    if NTOA_KEY_ERROR != 0 {
+        *crate::__errno_location() = NTOA_KEY_ERROR;
+        return core::ptr::null_mut();
+    }
+    let mut buffer = crate::pthread::pthread_getspecific(NTOA_KEY);
+    if buffer.is_null() {
+        buffer = crate::calloc(1, 16);
+        if buffer.is_null() {
+            *crate::__errno_location() = Errno::ENOMEM as i32;
+            return buffer;
+        }
+        let error = crate::pthread::pthread_setspecific(NTOA_KEY, buffer);
+        if error != 0 {
+            crate::free(buffer);
+            *crate::__errno_location() = error;
+            return core::ptr::null_mut();
+        }
+    }
+    let out = &mut *(buffer as *mut [u8; 16]);
     format_ipv4(addr.to_ne_bytes(), out);
-    out.as_mut_ptr()
+    buffer
 }
 
 #[no_mangle]

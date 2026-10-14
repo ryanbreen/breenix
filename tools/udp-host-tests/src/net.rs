@@ -65,8 +65,8 @@ pub mod dhcp {
         false
     }
 }
-pub fn ip_output(src: [u8; 4], dst: [u8; 4], protocol: u8, data: &[u8]) -> Result<(), TxError> {
-    let packet = ipv4::Ipv4Packet::try_build(src, dst, protocol, data)?;
+pub fn ip_output(src: [u8; 4], dst: [u8; 4], protocol: u8, ttl: u8, data: &[u8]) -> Result<(), TxError> {
+    let packet = ipv4::Ipv4Packet::try_build(src, dst, protocol, ttl, data)?;
     if is_local_addr(dst) || is_broadcast_addr(dst) {
         let ip = ipv4::Ipv4Packet::parse(&packet).unwrap();
         ipv4::handle_loopback_ipv4(&ip);

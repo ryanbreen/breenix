@@ -90,9 +90,10 @@ s! {
         pub sun_path: [c_char; 108],
     }
 
+    // 128 bytes, as include/sys/socket.h and Linux define it.
     pub struct sockaddr_storage {
         pub ss_family: crate::sa_family_t,
-        __ss_padding: Padding<[u8; 126]>,
+        __ss_padding: Padding<[u8; 128 - 2 - 8]>,
         __ss_align: c_ulong,
     }
 
@@ -114,6 +115,8 @@ s! {
         pub dli_saddr: *mut c_void,
     }
 
+    // Packed on x86_64, as the kernel's EpollEvent and Linux's are.
+    #[cfg_attr(target_arch = "x86_64", repr(packed))]
     pub struct epoll_event {
         pub events: u32,
         pub u64: u64,
@@ -121,6 +124,13 @@ s! {
 
     pub struct fd_set {
         fds_bits: [c_ulong; crate::FD_SETSIZE as usize / ULONG_SIZE],
+    }
+
+    /// A CPU set: CPU_SETSIZE bits in 64-bit words on both architectures, the
+    /// 128 bytes Linux's cpu_set_t occupies. The kernel returns an 8-byte mask;
+    /// libc zero-fills the remaining bytes of this public type.
+    pub struct cpu_set_t {
+        bits: [u64; CPU_SETSIZE as usize / 64],
     }
 
     pub struct in_addr {
@@ -468,6 +478,9 @@ s! {
 
 // FD_SETSIZE for select()
 pub const FD_SETSIZE: usize = 1024;
+
+// CPU_SETSIZE for sched_getaffinity()
+pub const CPU_SETSIZE: c_int = 1024;
 const ULONG_SIZE: usize = 64;
 
 // Number of control characters in termios
@@ -1091,6 +1104,46 @@ f! {
     }
 }
 
+// cpu_set_t macros
+f! {
+    pub fn CPU_ZERO(cpuset: &mut cpu_set_t) -> () {
+        for word in cpuset.bits.iter_mut() {
+            *word = 0;
+        }
+    }
+
+    pub fn CPU_SET(cpu: usize, cpuset: &mut cpu_set_t) -> () {
+        cpuset.bits[cpu / 64] |= 1 << (cpu % 64);
+    }
+
+    pub fn CPU_CLR(cpu: usize, cpuset: &mut cpu_set_t) -> () {
+        cpuset.bits[cpu / 64] &= !(1 << (cpu % 64));
+    }
+
+    pub fn CPU_ISSET(cpu: usize, cpuset: &cpu_set_t) -> bool {
+        cpuset.bits[cpu / 64] & (1 << (cpu % 64)) != 0
+    }
+
+    pub fn CPU_COUNT_S(size: usize, cpuset: &cpu_set_t) -> c_int {
+        let words = size / 8;
+        let mut count = 0;
+        let mut i = 0;
+        while i < cpuset.bits.len() && i < words {
+            count += cpuset.bits[i].count_ones();
+            i += 1;
+        }
+        count as c_int
+    }
+
+    pub fn CPU_COUNT(cpuset: &cpu_set_t) -> c_int {
+        CPU_COUNT_S(size_of::<cpu_set_t>(), cpuset)
+    }
+
+    pub fn CPU_EQUAL(set1: &cpu_set_t, set2: &cpu_set_t) -> bool {
+        set1.bits == set2.bits
+    }
+}
+
 // External libc functions provided by libbreenix-libc
 unsafe extern "C" {
     pub fn abort() -> !;
@@ -1331,6 +1384,16 @@ unsafe extern "C" {
     pub fn pthread_rwlock_unlock(rwlock: *mut pthread_rwlock_t) -> c_int;
 
     pub fn sched_yield() -> c_int;
+    pub fn sched_getaffinity(
+        pid: crate::pid_t,
+        cpusetsize: size_t,
+        cpuset: *mut cpu_set_t,
+    ) -> c_int;
+    pub fn sched_setaffinity(
+        pid: crate::pid_t,
+        cpusetsize: size_t,
+        cpuset: *const cpu_set_t,
+    ) -> c_int;
 
     pub fn readv(fd: c_int, iov: *const crate::iovec, iovcnt: c_int) -> ssize_t;
 
@@ -1390,8 +1453,5 @@ unsafe extern "C" {
     pub fn sched_rr_get_interval(pid: crate::pid_t, interval: *mut crate::timespec) -> c_int;
 }
 
-// The kernel writes exactly these sizes (kernel/src/syscall/fs.rs).
-#[cfg(target_arch = "x86_64")]
-const _: () = core::assert!(core::mem::size_of::<stat>() == 144 && core::mem::size_of::<stat64>() == 144);
-#[cfg(target_arch = "aarch64")]
-const _: () = core::assert!(core::mem::size_of::<stat>() == 128 && core::mem::size_of::<stat64>() == 128);
+// Every struct std hands to the kernel or to libbreenix-libc, pinned per architecture.
+mod layout;

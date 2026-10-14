@@ -16,14 +16,15 @@
 #[cfg(target_arch = "x86_64")]
 use alloc::vec::Vec;
 
-/// Read the init ELF binary from the mounted ext2 root filesystem.
+/// Read the init ELF binary from the mounted ext2 root filesystem, with its
+/// physical absolute pathname.
 ///
 /// Requires `kernel::fs::ext2::init_root_fs()` to have already succeeded.
 /// Reading requires IRQ-driven VirtIO block completions, so the caller must
 /// have interrupts hardware-enabled before calling this (matching every
 /// other disk-backed load in `kernel_main_continue()`).
 #[cfg(target_arch = "x86_64")]
-pub fn read_init_from_ext2(path: &str) -> Result<Vec<u8>, &'static str> {
+pub fn read_init_from_ext2(path: &str) -> Result<(Vec<u8>, Vec<u8>), &'static str> {
     use crate::syscall::errno::{EISDIR, ENOENT};
     read_program(path).map_err(|errno| match errno {
         ENOENT => "init not found",
@@ -35,25 +36,26 @@ pub fn read_init_from_ext2(path: &str) -> Result<Vec<u8>, &'static str> {
 /// Read a program image for exec or spawn, resolving `path` as every
 /// pathname is resolved. Fails with the resolution's own errno, EISDIR for a
 /// directory, EACCES when the caller may not execute the file, or EINTR when
-/// a SIGKILL for the caller arrives during the read.
+/// a SIGKILL for the caller arrives during the read. The image comes with its
+/// physical absolute pathname.
 #[cfg(target_arch = "x86_64")]
-pub fn read_program(path: &str) -> Result<Vec<u8>, i32> {
-    read_program_image(path).map(|(data, _)| data)
+pub fn read_program(path: &str) -> Result<(Vec<u8>, Vec<u8>), i32> {
+    read_program_image(path).map(|(data, _, path)| (data, path))
 }
 
 /// `read_program`, with the identity the file's set-ID bits confer at exec.
 #[cfg(target_arch = "x86_64")]
 pub fn read_program_image(
-    path: &str,
-) -> Result<(Vec<u8>, crate::process::credentials::ExecIdentity), i32> {
+    path: impl AsRef<[u8]>,
+) -> Result<(Vec<u8>, crate::process::credentials::ExecIdentity, Vec<u8>), i32> {
     use crate::syscall::errno::{EACCES, EIO, EISDIR};
 
     // Taken before the filesystem lock: who may execute the file.
     let cred = crate::fs::permissions::Credentials::current(false);
 
     // The handle holds the inode until its content is read.
-    let (mount, inode_num, _held) =
-        crate::fs::namei::resolve_file(path).map_err(|errno| errno as i32)?;
+    let (mount, inode_num, _held, resolved) =
+        crate::fs::namei::resolve_file_bytes(path.as_ref()).map_err(|errno| errno as i32)?;
     let fs_guard = mount.read().map_err(|errno| errno as i32)?;
     let fs = fs_guard.as_ref().ok_or(EIO)?;
 
@@ -74,5 +76,5 @@ pub fn read_program_image(
 
     drop(fs_guard);
 
-    Ok((elf_data, crate::process::credentials::ExecIdentity::of(&inode)))
+    Ok((elf_data, crate::process::credentials::ExecIdentity::of(&inode), resolved))
 }

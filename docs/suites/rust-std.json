@@ -1,0 +1,736 @@
+{
+  "id": "rust-std",
+  "title": "Rust std",
+  "area": "Runtimes",
+  "summary": "Rust's standard library on Breenix behaves as its documentation and Linux define: files and I/O, processes, threads and synchronization, sockets, time and the environment, through std's public API on every target.",
+  "binary": "/sbin/suite-rust-std",
+  "timingSensitive": true,
+  "categories": [
+    {
+      "id": "fs-io",
+      "title": "std::fs & std::io",
+      "cases": [
+        {
+          "id": "create-read-back",
+          "title": "File::create and write_all, then fs::read returns exactly the bytes written"
+        },
+        {
+          "id": "create-truncates",
+          "title": "File::create on an existing file truncates it to length 0"
+        },
+        {
+          "id": "open-missing",
+          "title": "File::open of a missing path fails with ErrorKind::NotFound"
+        },
+        {
+          "id": "create-new-exists",
+          "title": "OpenOptions::create_new on an existing path fails with ErrorKind::AlreadyExists"
+        },
+        {
+          "id": "append",
+          "title": "OpenOptions::append writes at the end of the file even after a seek to the start"
+        },
+        {
+          "id": "write-read-only",
+          "title": "Writing through a File opened with File::open fails with EBADF"
+        },
+        {
+          "id": "seek-from-end",
+          "title": "Seek to SeekFrom::End(-3) returns the new position and reads the last three bytes"
+        },
+        {
+          "id": "seek-before-start",
+          "title": "Seeking to before the start of a file fails with ErrorKind::InvalidInput"
+        },
+        {
+          "id": "seek-past-end",
+          "title": "Writing after a seek past the end leaves a gap that reads back as zeros"
+        },
+        {
+          "id": "set-len",
+          "title": "File::set_len extends a file with zeros and truncates it"
+        },
+        {
+          "id": "try-clone-offset",
+          "title": "File::try_clone shares the file offset with the original"
+        },
+        {
+          "id": "sync",
+          "title": "File::sync_all and File::sync_data succeed on a written file"
+        },
+        {
+          "id": "metadata",
+          "title": "metadata reports a file's length, a regular file type and nlink 1, and a directory's type"
+        },
+        {
+          "id": "metadata-missing",
+          "title": "metadata of a missing path fails with ErrorKind::NotFound"
+        },
+        {
+          "id": "permissions-mode",
+          "title": "set_permissions with mode 0o640 is the mode PermissionsExt::mode reports"
+        },
+        {
+          "id": "permissions-readonly",
+          "title": "Permissions::set_readonly(true) clears every write bit and readonly() reports it"
+        },
+        {
+          "id": "modified-now",
+          "title": "A file just written has a modified time within 5 seconds of SystemTime::now"
+        },
+        {
+          "id": "set-modified",
+          "title": "File::set_modified sets the modified time metadata reports"
+        },
+        {
+          "id": "read-dir",
+          "title": "read_dir lists exactly the entries created, without . and .., with their file types"
+        },
+        {
+          "id": "read-dir-missing",
+          "title": "read_dir of a missing path fails with ErrorKind::NotFound"
+        },
+        {
+          "id": "create-dir-all",
+          "title": "create_dir_all creates every missing parent and succeeds when the path exists"
+        },
+        {
+          "id": "remove-dir-not-empty",
+          "title": "remove_dir of a directory that has an entry fails with ErrorKind::DirectoryNotEmpty"
+        },
+        {
+          "id": "remove-dir-all",
+          "title": "remove_dir_all removes a tree of files, directories and symlinks, and does not follow a symlink out of it"
+        },
+        {
+          "id": "rename",
+          "title": "rename moves a file, and the old path then fails with ErrorKind::NotFound"
+        },
+        {
+          "id": "rename-replace",
+          "title": "rename onto an existing file replaces it"
+        },
+        {
+          "id": "hard-link",
+          "title": "hard_link names the same inode: one ino, nlink 2, and writes through one name read through the other"
+        },
+        {
+          "id": "symlink",
+          "title": "symlink and read_link round-trip the target; symlink_metadata sees the link and metadata the target"
+        },
+        {
+          "id": "symlink-dangling",
+          "title": "metadata of a dangling symlink fails with ErrorKind::NotFound while symlink_metadata succeeds"
+        },
+        {
+          "id": "canonicalize",
+          "title": "canonicalize resolves symlinks, . and .. to an absolute path"
+        },
+        {
+          "id": "buf-reader-lines",
+          "title": "BufReader::lines returns each line of a file without its line terminator"
+        },
+        {
+          "id": "buf-writer",
+          "title": "BufWriter keeps small writes until flush, and then the file holds them"
+        },
+        {
+          "id": "io-copy",
+          "title": "io::copy between two files returns the byte count and copies every byte"
+        },
+        {
+          "id": "fs-copy",
+          "title": "fs::copy copies a file's contents and its permission bits"
+        },
+        {
+          "id": "create-on-directory",
+          "title": "File::create on a directory fails with ErrorKind::IsADirectory"
+        },
+        {
+          "id": "std-streams",
+          "title": "io::stdin, stdout and stderr are descriptors 0, 1 and 2, and stdout and stderr accept writes"
+        },
+        {
+          "id": "stdin-pipe",
+          "title": "A program's io::stdin reads to end of file what its parent wrote to a Stdio::piped stdin"
+        }
+      ]
+    },
+    {
+      "id": "process",
+      "title": "std::process",
+      "cases": [
+        {
+          "id": "status-success",
+          "title": "Command::status of a program that exits 0 is success with code Some(0)"
+        },
+        {
+          "id": "exit-code",
+          "title": "A program that exits 42 has ExitStatus::code Some(42) and is not success"
+        },
+        {
+          "id": "exit-low-bits",
+          "title": "process::exit(263) reaches the parent as code 7, its low 8 bits"
+        },
+        {
+          "id": "into-raw-exit",
+          "title": "ExitStatusExt::into_raw of an exit with code 42 is the wait status 0x2a00"
+        },
+        {
+          "id": "args",
+          "title": "Command::args reach the program in order, including an empty one and one with a space"
+        },
+        {
+          "id": "args-non-utf8",
+          "title": "An argument that is not UTF-8 reaches the program byte for byte through args_os"
+        },
+        {
+          "id": "arg0",
+          "title": "CommandExt::arg0 sets the argv[0] the program sees"
+        },
+        {
+          "id": "env-set",
+          "title": "Command::env sets a variable the program sees"
+        },
+        {
+          "id": "env-inherit",
+          "title": "A variable set with env::set_var in the parent is inherited by the program"
+        },
+        {
+          "id": "env-remove",
+          "title": "Command::env_remove hides an inherited variable from the program"
+        },
+        {
+          "id": "env-clear",
+          "title": "Command::env_clear leaves the program only the variables the Command sets"
+        },
+        {
+          "id": "current-dir",
+          "title": "Command::current_dir runs the program in that directory"
+        },
+        {
+          "id": "current-dir-missing",
+          "title": "spawn with a missing current_dir fails with ErrorKind::NotFound"
+        },
+        {
+          "id": "spawn-not-found",
+          "title": "spawn of a missing absolute path fails with ErrorKind::NotFound"
+        },
+        {
+          "id": "spawn-path-missing",
+          "title": "spawn of a bare name in no PATH directory fails with ErrorKind::NotFound"
+        },
+        {
+          "id": "spawn-path-found",
+          "title": "spawn of a bare name finds the program in the PATH the Command sets"
+        },
+        {
+          "id": "spawn-not-executable",
+          "title": "spawn of a file without execute permission fails with ErrorKind::PermissionDenied"
+        },
+        {
+          "id": "spawn-directory",
+          "title": "spawn of a directory fails with ErrorKind::PermissionDenied"
+        },
+        {
+          "id": "output",
+          "title": "Command::output captures stdout and stderr separately along with the exit status"
+        },
+        {
+          "id": "stdout-piped",
+          "title": "A Stdio::piped stdout read from Child::stdout to end of file holds what the program wrote"
+        },
+        {
+          "id": "stdin-piped",
+          "title": "Bytes written to Child::stdin come back through the program's stdout"
+        },
+        {
+          "id": "stdin-large",
+          "title": "256 KiB written to a piped stdin while another thread reads stdout arrive intact"
+        },
+        {
+          "id": "stdio-null",
+          "title": "Stdio::null gives the program an empty stdin and discards its stdout"
+        },
+        {
+          "id": "stdout-to-file",
+          "title": "Stdio::from(File) sends the program's stdout into that file"
+        },
+        {
+          "id": "wait",
+          "title": "Child::wait returns the program's exit status, and a second wait returns it again"
+        },
+        {
+          "id": "try-wait",
+          "title": "Child::try_wait returns None while the program runs and its status once it exits"
+        },
+        {
+          "id": "kill",
+          "title": "Child::kill ends a running program, and ExitStatusExt::signal reports SIGKILL"
+        },
+        {
+          "id": "kill-exited",
+          "title": "Child::kill of a program that exited but was not waited for succeeds, and wait reports its exit"
+        },
+        {
+          "id": "abort-signal",
+          "title": "A program that calls process::abort is reported killed by SIGABRT"
+        },
+        {
+          "id": "signal-into-raw",
+          "title": "ExitStatusExt::into_raw of a SIGKILL death has 9 in its low 7 bits"
+        },
+        {
+          "id": "child-id",
+          "title": "Child::id is the process::id the program reports, and its parent_id is the caller's id"
+        },
+        {
+          "id": "process-id",
+          "title": "process::id is nonzero, the same on every call, and the Pid in /proc/<id>/status"
+        },
+        {
+          "id": "concurrent-children",
+          "title": "Eight programs run at once and each one's exit code reaches its own Child"
+        }
+      ]
+    },
+    {
+      "id": "thread-sync",
+      "title": "std::thread & std::sync",
+      "cases": [
+        {
+          "id": "spawn-join",
+          "title": "JoinHandle::join returns the value the thread's closure returned"
+        },
+        {
+          "id": "spawn-many",
+          "title": "Sixteen threads each return their own result through join"
+        },
+        {
+          "id": "panic-aborts",
+          "title": "Under panic=abort a panic in a spawned thread ends the process with SIGABRT"
+        },
+        {
+          "id": "panic-hook",
+          "title": "A hook set with panic::set_hook runs before a panicking process aborts"
+        },
+        {
+          "id": "builder-name",
+          "title": "thread::current().name() in a thread is the name given to Builder::name"
+        },
+        {
+          "id": "main-name",
+          "title": "thread::current().name() on the main thread is Some(\"main\")"
+        },
+        {
+          "id": "builder-stack-size",
+          "title": "A thread built with Builder::stack_size of 4 MiB can use 3 MiB of stack"
+        },
+        {
+          "id": "thread-ids",
+          "title": "ThreadId is the same on every call in a thread, differs between threads, and matches Thread::id"
+        },
+        {
+          "id": "is-finished",
+          "title": "JoinHandle::is_finished is false while the thread blocks and true once it returns"
+        },
+        {
+          "id": "scoped-borrow",
+          "title": "Threads in thread::scope borrow and write a local array, and all have finished when it returns"
+        },
+        {
+          "id": "scoped-join",
+          "title": "ScopedJoinHandle::join returns the scoped thread's result"
+        },
+        {
+          "id": "mutex-counter",
+          "title": "Four threads incrementing a Mutex-guarded counter 10000 times each leave 40000"
+        },
+        {
+          "id": "mutex-try-lock",
+          "title": "Mutex::try_lock while another thread holds the lock fails with TryLockError::WouldBlock"
+        },
+        {
+          "id": "mutex-blocked-waiter",
+          "title": "A thread blocked in Mutex::lock acquires it once the holder releases it"
+        },
+        {
+          "id": "rwlock-readers",
+          "title": "RwLock::read in another thread succeeds while a reader holds the lock"
+        },
+        {
+          "id": "rwlock-writer-excludes",
+          "title": "RwLock try_read fails while a writer holds the lock, and try_write while a reader does"
+        },
+        {
+          "id": "condvar-notify-one",
+          "title": "Condvar::notify_one wakes a thread in wait_while once its condition holds"
+        },
+        {
+          "id": "condvar-notify-all",
+          "title": "Condvar::notify_all wakes all four waiting threads"
+        },
+        {
+          "id": "condvar-timeout",
+          "title": "Condvar::wait_timeout_while reports timed_out after 100 ms, no earlier and at most 30 ms late"
+        },
+        {
+          "id": "atomic-fetch-add",
+          "title": "Four threads doing 100000 AtomicU64::fetch_add each leave 400000"
+        },
+        {
+          "id": "atomic-cas-lock",
+          "title": "A lock built on AtomicBool::compare_exchange keeps four threads' increments exclusive"
+        },
+        {
+          "id": "mpsc-order",
+          "title": "An mpsc channel delivers 1000 messages from one sender in order"
+        },
+        {
+          "id": "mpsc-disconnect",
+          "title": "mpsc delivers every message from four senders, then recv fails once all are dropped"
+        },
+        {
+          "id": "mpsc-recv-timeout",
+          "title": "Receiver::recv_timeout on an empty channel fails with Timeout after 50 ms, at most 30 ms late"
+        },
+        {
+          "id": "mpsc-try-recv",
+          "title": "Receiver::try_recv fails with Empty while a sender lives and Disconnected after"
+        },
+        {
+          "id": "sync-channel-full",
+          "title": "SyncSender::try_send on a full sync_channel(1) fails with Full"
+        },
+        {
+          "id": "sync-channel-rendezvous",
+          "title": "send on sync_channel(0) blocks until the receiver takes the message"
+        },
+        {
+          "id": "barrier",
+          "title": "Barrier::wait releases four threads together and names exactly one leader"
+        },
+        {
+          "id": "once",
+          "title": "Once::call_once runs its closure exactly once across eight threads"
+        },
+        {
+          "id": "once-lock",
+          "title": "OnceLock::get_or_init initializes once across eight threads, and set then fails"
+        },
+        {
+          "id": "thread-local",
+          "title": "A thread_local! value starts fresh in each thread and is separate from the main thread's"
+        },
+        {
+          "id": "thread-local-dtor",
+          "title": "A thread_local! value's destructor runs when its thread exits, before join returns"
+        },
+        {
+          "id": "park-token",
+          "title": "unpark before park makes the next park return at once"
+        },
+        {
+          "id": "park-unpark",
+          "title": "Thread::unpark wakes a thread blocked in thread::park"
+        },
+        {
+          "id": "park-timeout",
+          "title": "park_timeout returns by its 50 ms timeout plus 30 ms when nothing unparks the thread"
+        },
+        {
+          "id": "available-parallelism",
+          "title": "available_parallelism is the number of processors /proc/cpuinfo lists"
+        },
+        {
+          "id": "available-parallelism-affinity",
+          "title": "available_parallelism follows the thread's affinity when sched_setaffinity narrows and restores it"
+        },
+        {
+          "id": "detached",
+          "title": "A thread whose JoinHandle was dropped keeps running and sends its result"
+        }
+      ]
+    },
+    {
+      "id": "net",
+      "title": "std::net",
+      "cases": [
+        {
+          "id": "tcp-bind",
+          "title": "TcpListener::bind on 127.0.0.1 and a free port reports that address from local_addr"
+        },
+        {
+          "id": "tcp-bind-port-zero",
+          "title": "TcpListener::bind to port 0 gets a nonzero port local_addr reports"
+        },
+        {
+          "id": "tcp-bind-in-use",
+          "title": "A second TcpListener::bind to a listening address fails with ErrorKind::AddrInUse"
+        },
+        {
+          "id": "tcp-accept-addrs",
+          "title": "accept's peer address is the client's local_addr, and the client's peer_addr is the listener"
+        },
+        {
+          "id": "tcp-echo",
+          "title": "Bytes written to a TcpStream arrive at the peer and come back"
+        },
+        {
+          "id": "tcp-large",
+          "title": "1 MiB written by one end of a TCP connection reaches the other intact"
+        },
+        {
+          "id": "tcp-refused",
+          "title": "TcpStream::connect to a port with no listener fails with ErrorKind::ConnectionRefused"
+        },
+        {
+          "id": "tcp-read-eof",
+          "title": "read returns 0 once the peer has closed the connection"
+        },
+        {
+          "id": "tcp-shutdown-write",
+          "title": "shutdown(Write) gives the peer end of file while the stream still reads"
+        },
+        {
+          "id": "tcp-shutdown-read",
+          "title": "read after shutdown(Read) returns 0"
+        },
+        {
+          "id": "tcp-read-timeout",
+          "title": "read with a 100 ms read timeout fails with ErrorKind::WouldBlock after it, at most 30 ms late"
+        },
+        {
+          "id": "tcp-timeout-values",
+          "title": "read_timeout and write_timeout return what set_read_timeout and set_write_timeout set"
+        },
+        {
+          "id": "tcp-nonblocking-accept",
+          "title": "accept on a nonblocking listener with no client fails with ErrorKind::WouldBlock"
+        },
+        {
+          "id": "tcp-nonblocking-read",
+          "title": "read on a nonblocking stream with no data fails with ErrorKind::WouldBlock"
+        },
+        {
+          "id": "tcp-connect-timeout",
+          "title": "TcpStream::connect_timeout connects to a listening address"
+        },
+        {
+          "id": "tcp-nodelay",
+          "title": "nodelay returns what set_nodelay set"
+        },
+        {
+          "id": "tcp-ttl",
+          "title": "ttl returns what set_ttl set"
+        },
+        {
+          "id": "tcp-peek",
+          "title": "peek returns waiting data without consuming it"
+        },
+        {
+          "id": "tcp-write-closed",
+          "title": "Writing to a connection whose peer has gone fails with BrokenPipe or ConnectionReset"
+        },
+        {
+          "id": "udp-send-recv",
+          "title": "UdpSocket::send_to arrives at recv_from with the sender's address"
+        },
+        {
+          "id": "udp-connected",
+          "title": "Connected UdpSockets exchange datagrams with send and recv, and peer_addr names the peer"
+        },
+        {
+          "id": "udp-connected-filter",
+          "title": "A connected UdpSocket receives only from its peer"
+        },
+        {
+          "id": "udp-not-connected",
+          "title": "UdpSocket::peer_addr before connect fails with ErrorKind::NotConnected"
+        },
+        {
+          "id": "udp-truncate",
+          "title": "recv into a buffer smaller than a datagram fills it and discards the rest"
+        },
+        {
+          "id": "udp-read-timeout",
+          "title": "recv_from with a 100 ms read timeout fails with ErrorKind::WouldBlock after it, at most 30 ms late"
+        },
+        {
+          "id": "udp-nonblocking",
+          "title": "recv on a nonblocking UdpSocket with nothing queued fails with ErrorKind::WouldBlock"
+        },
+        {
+          "id": "resolve-localhost",
+          "title": "(\"localhost\", 80).to_socket_addrs() includes 127.0.0.1:80"
+        },
+        {
+          "id": "tcp-bind-localhost",
+          "title": "TcpListener::bind to localhost binds a loopback address"
+        },
+        {
+          "id": "unix-pair",
+          "title": "UnixStream::pair carries bytes both ways"
+        },
+        {
+          "id": "unix-listener",
+          "title": "UnixListener::bind, UnixStream::connect and accept carry bytes, and local_addr names the path"
+        },
+        {
+          "id": "unix-bind-in-use",
+          "title": "UnixListener::bind to a path that exists fails with ErrorKind::AddrInUse"
+        },
+        {
+          "id": "unix-connect-missing",
+          "title": "UnixStream::connect to a missing path fails with ErrorKind::NotFound"
+        },
+        {
+          "id": "unix-datagram",
+          "title": "UnixDatagram::send_to arrives at recv_from with the sender's path"
+        },
+        {
+          "id": "unix-datagram-pair",
+          "title": "UnixDatagram::pair keeps message boundaries"
+        },
+        {
+          "id": "unix-shutdown",
+          "title": "UnixStream::shutdown(Write) gives the peer end of file"
+        }
+      ]
+    },
+    {
+      "id": "time-env",
+      "title": "std::time & std::env",
+      "cases": [
+        {
+          "id": "instant-monotonic",
+          "title": "Successive Instant::now readings never go backwards"
+        },
+        {
+          "id": "instant-elapsed",
+          "title": "Instant::elapsed after a 50 ms sleep is at least 50 ms"
+        },
+        {
+          "id": "instant-threads",
+          "title": "An Instant read after another thread's is never earlier"
+        },
+        {
+          "id": "system-time-epoch",
+          "title": "SystemTime::now is after UNIX_EPOCH and after 2024-01-01"
+        },
+        {
+          "id": "system-time-rate",
+          "title": "SystemTime advances as Instant does across a 200 ms sleep, within 20 ms"
+        },
+        {
+          "id": "system-time-earlier",
+          "title": "duration_since a later SystemTime fails with an error holding the difference"
+        },
+        {
+          "id": "sleep-never-early",
+          "title": "Ten 7 ms thread::sleep calls each last at least 7 ms"
+        },
+        {
+          "id": "sleep-late-bound",
+          "title": "A 100 ms thread::sleep ends at most 30 ms late"
+        },
+        {
+          "id": "sleep-zero",
+          "title": "thread::sleep(Duration::ZERO) returns within 10 ms"
+        },
+        {
+          "id": "sleep-short",
+          "title": "Twenty 1 ms sleeps end with a median lateness of at most 6 ms"
+        },
+        {
+          "id": "args-self",
+          "title": "env::args begins with argv[0], a path naming this program, suite-rust-std"
+        },
+        {
+          "id": "args-child",
+          "title": "env::args in a spawned program is its path followed by its arguments"
+        },
+        {
+          "id": "var-set-get",
+          "title": "env::var returns the value env::set_var set"
+        },
+        {
+          "id": "var-missing",
+          "title": "env::var of an unset variable fails with VarError::NotPresent"
+        },
+        {
+          "id": "var-not-unicode",
+          "title": "env::var of a non-UTF-8 value fails with NotUnicode while var_os returns its bytes"
+        },
+        {
+          "id": "var-empty",
+          "title": "A variable set to the empty string is present and empty"
+        },
+        {
+          "id": "remove-var",
+          "title": "env::remove_var unsets a variable, and vars no longer lists it"
+        },
+        {
+          "id": "vars-lists",
+          "title": "env::vars lists a variable set with set_var exactly once"
+        },
+        {
+          "id": "set-var-overwrite",
+          "title": "A second env::set_var replaces the value"
+        },
+        {
+          "id": "current-dir-absolute",
+          "title": "env::current_dir is an absolute path to a directory"
+        },
+        {
+          "id": "set-current-dir",
+          "title": "env::set_current_dir changes the directory env::current_dir reports"
+        },
+        {
+          "id": "set-current-dir-dotdot",
+          "title": "env::set_current_dir(\"..\") moves to the parent directory"
+        },
+        {
+          "id": "set-current-dir-missing",
+          "title": "env::set_current_dir to a missing path fails with ErrorKind::NotFound"
+        },
+        {
+          "id": "set-current-dir-file",
+          "title": "env::set_current_dir to a file fails with ErrorKind::NotADirectory"
+        },
+        {
+          "id": "relative-path",
+          "title": "A relative path names a file in the current directory"
+        },
+        {
+          "id": "temp-dir-default",
+          "title": "env::temp_dir is /tmp when TMPDIR is unset"
+        },
+        {
+          "id": "temp-dir-tmpdir",
+          "title": "env::temp_dir is TMPDIR when it is set"
+        },
+        {
+          "id": "home-dir-env",
+          "title": "env::home_dir is HOME when it is set"
+        },
+        {
+          "id": "home-dir-passwd",
+          "title": "env::home_dir with HOME unset is the user's home directory in /etc/passwd"
+        },
+        {
+          "id": "current-exe",
+          "title": "env::current_exe is /sbin/suite-rust-std"
+        },
+        {
+          "id": "current-exe-child",
+          "title": "env::current_exe in a spawned program is that program's path"
+        },
+        {
+          "id": "current-exe-non-utf8",
+          "title": "A program at a non-UTF-8 path opens and stats /proc/self/exe, and current_exe is its bytes"
+        }
+      ]
+    }
+  ]
+}

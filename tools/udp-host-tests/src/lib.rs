@@ -151,10 +151,10 @@ mod tests {
             net::udp::try_build_udp_packet([127, 0, 0, 2], [127, 0, 0, 1], 123, 45215, b"checksum")
                 .unwrap();
         wire[8] ^= 1;
-        net::ip_output([127, 0, 0, 2], [127, 0, 0, 1], 17, &wire).unwrap();
+        net::ip_output([127, 0, 0, 2], [127, 0, 0, 1], 17, net::ipv4::DEFAULT_TTL, &wire).unwrap();
         assert_eq!(recv(&b, 16, 0).0, Err(11));
         wire[6..8].fill(0);
-        net::ip_output([127, 0, 0, 2], [127, 0, 0, 1], 17, &wire).unwrap();
+        net::ip_output([127, 0, 0, 2], [127, 0, 0, 1], 17, net::ipv4::DEFAULT_TTL, &wire).unwrap();
         assert_eq!(recv(&b, 16, 0).0, Ok(8));
     }
     #[test]

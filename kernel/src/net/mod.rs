@@ -1297,19 +1297,27 @@ pub fn local_ip_of_inbound(config: &NetConfig, dst: [u8; 4]) -> [u8; 4] {
 
 /// Send an IPv4 packet from the address `source_ip_in` picks for `dst_ip`.
 pub fn send_ipv4(dst_ip: [u8; 4], protocol: u8, payload: &[u8]) -> Result<(), &'static str> {
-    send_ipv4_from(source_ip_in(&config(), dst_ip), dst_ip, protocol, payload)
+    send_ipv4_from(
+        source_ip_in(&config(), dst_ip),
+        dst_ip,
+        protocol,
+        ipv4::DEFAULT_TTL,
+        payload,
+    )
 }
 
 /// Send an IPv4 packet from `src_ip`, a local address: a connection's own, for
-/// a reply on a loopback address other than 127.0.0.1.
+/// a reply on a loopback address other than 127.0.0.1. `ttl` is the socket's
+/// IP_TTL.
 /// Loopback packets are queued from both thread context and the NetRx softirq.
 pub fn send_ipv4_from(
     src_ip: [u8; 4],
     dst_ip: [u8; 4],
     protocol: u8,
+    ttl: u8,
     payload: &[u8],
 ) -> Result<(), &'static str> {
-    ip_output(src_ip, dst_ip, protocol, payload).map_err(TxError::description)
+    ip_output(src_ip, dst_ip, protocol, ttl, payload).map_err(TxError::description)
 }
 
 /// IP output failures, with Linux ABI errno values.
@@ -1375,14 +1383,23 @@ fn enqueue_local_packet(ip_packet: Vec<u8>) -> Result<(), TxError> {
 }
 
 /// Never evict loopback packets. Accepted ARP misses are asynchronous success.
-/// Callers drain loopback only after releasing their protocol locks.
-pub fn ip_output(src: [u8; 4], dst: [u8; 4], protocol: u8, payload: &[u8]) -> Result<(), TxError> {
+/// Callers drain loopback only after releasing their protocol locks. `ttl` is
+/// the time to live the packet leaves with: the sending socket's IP_TTL.
+pub fn ip_output(
+    src: [u8; 4],
+    dst: [u8; 4],
+    protocol: u8,
+    ttl: u8,
+    payload: &[u8],
+) -> Result<(), TxError> {
     if payload.len() > u16::MAX as usize - ipv4::IPV4_HEADER_MIN_SIZE {
         return Err(TxError::MsgSize);
     }
     let cfg = config();
     if is_local_addr_in(&cfg, dst) {
-        return enqueue_local_packet(ipv4::Ipv4Packet::try_build(src, dst, protocol, payload)?);
+        return enqueue_local_packet(ipv4::Ipv4Packet::try_build(
+            src, dst, protocol, ttl, payload,
+        )?);
     }
     let broadcast = is_broadcast_addr_in(&cfg, dst);
     // No fragmentation: use the interface MTU and return EMSGSIZE.
@@ -1392,9 +1409,11 @@ pub fn ip_output(src: [u8; 4], dst: [u8; 4], protocol: u8, payload: &[u8]) -> Re
     let same_subnet =
         (0..4).all(|i| dst[i] & cfg.subnet_mask[i] == cfg.ip_addr[i] & cfg.subnet_mask[i]);
     let next_hop = if same_subnet { dst } else { cfg.gateway };
-    let ip_packet = ipv4::Ipv4Packet::try_build(src, dst, protocol, payload)?;
+    let ip_packet = ipv4::Ipv4Packet::try_build(src, dst, protocol, ttl, payload)?;
     if broadcast {
-        enqueue_local_packet(ipv4::Ipv4Packet::try_build(src, dst, protocol, payload)?)?;
+        enqueue_local_packet(ipv4::Ipv4Packet::try_build(
+            src, dst, protocol, ttl, payload,
+        )?)?;
     }
     let mac = if broadcast {
         ethernet::BROADCAST_MAC

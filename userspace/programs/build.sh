@@ -72,6 +72,9 @@ echo "========================================"
 echo "  Architecture: $ARCH"
 echo ""
 
+# Reject mixed or uncommitted std inputs before any compilation.
+"$PROJECT_ROOT/scripts/rust-fork.sh" verify
+
 # Step 1: Build libbreenix-libc (produces libc.a)
 echo "[1/3] Building libbreenix-libc ($ARCH)..."
 LIBC_DIR="$PROJECT_ROOT/libs/libbreenix-libc"
@@ -125,6 +128,10 @@ if [[ "$ARCH" == "x86_64" ]]; then
     echo "  libbreenix-libc C-ABI build (x86_64-breenix-c) built successfully"
 fi
 python3 "$PROJECT_ROOT/scripts/libc-symbol-audit.py" --arch "$ARCH"
+# The std link takes the first of two definitions (--allow-multiple-definition), so
+# refuse a libc.a that defines a symbol twice.
+python3 "$PROJECT_ROOT/scripts/libc-duplicate-check.py" \
+    --archive "$LIBC_RELEASE_DIR/libc.a" --tool-dir "$LIBC_TOOLS"
 echo ""
 
 # Step 1b: C programs built against Breenix's own C library
@@ -150,6 +157,15 @@ if [ ! -d "$RUST_FORK_LIBRARY" ]; then
     exit 1
 fi
 
+# Cargo's build-std freshness checks can miss edits in an external sysroot.
+# Include its verified commit in compiler metadata so a pin change rebuilds std.
+if [ -f "$RUST_FORK_LIBRARY/../.rust-fork-snapshot.json" ]; then
+    FORK_COMMIT="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["commit"])' "$RUST_FORK_LIBRARY/../.rust-fork-snapshot.json")"
+else
+    FORK_COMMIT="$(git -C "$RUST_FORK_LIBRARY/.." rev-parse HEAD)"
+fi
+STD_RUSTFLAGS+=" -C metadata=breenix_std_$FORK_COMMIT"
+
 if ! (
     set -o pipefail
     cd "$SCRIPT_DIR" && \
@@ -165,6 +181,17 @@ if ! (
 fi
 
 echo "  Userspace build successful"
+# And refuse a C symbol that libc.a and another input of the std link both define:
+# the std programs would link whichever came first.
+STD_LINK_INPUTS=()
+for rlib in "$SCRIPT_DIR/target/$TARGET_DIR/release/deps/"*.rlib; do
+    STD_LINK_INPUTS+=(--link-input "$rlib")
+done
+# The rlibs' objects are LLVM bitcode from rustc's own LLVM, which an older system
+# llvm-nm cannot read; the pinned toolchain's llvm-tools always can.
+RUST_TOOLS="$(cd "$PROJECT_ROOT" && rustc --print sysroot)/lib/rustlib/$(cd "$PROJECT_ROOT" && rustc -vV | sed -n 's/^host: //p')/bin"
+python3 "$PROJECT_ROOT/scripts/libc-duplicate-check.py" \
+    --archive "$LIBC_RELEASE_DIR/libc.a" --tool-dir "$RUST_TOOLS" "${STD_LINK_INPUTS[@]}"
 echo ""
 
 # Step 3: Copy all binaries as .elf to userspace/programs/ for ext2 inclusion
@@ -374,9 +401,11 @@ STD_BINARIES=(
     "suite-ipc"
     "suite-terminals"
     "suite-networking"
+    "suite-rust-std"
     "suite-libc"
     "files-io-exec_test"
     "processes-exec_test"
+    "rust-std-child_test"
     "signals-exec_test"
     "time-exec_test"
     "telnetd"
