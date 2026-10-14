@@ -28,10 +28,15 @@
 #![feature(c_variadic)]
 
 mod crt;
+mod grp;
+mod libgen;
 mod locale;
 mod math;
+mod pwd;
+mod setjmp;
 mod stdlib;
 mod string;
+mod unistd;
 mod inet;
 mod netdb;
 mod mqueue;
@@ -921,13 +926,6 @@ pub unsafe extern "C" fn fchownat(fd: i32, path: *const u8, owner: u32, group: u
 #[no_mangle]
 pub unsafe extern "C" fn umask(mask: u32) -> u32 {
     libbreenix::raw::syscall1(libbreenix::syscall::nr::UMASK, mask as u64) as u32
-}
-
-/// utimes - change file access and modification times
-#[no_mangle]
-pub unsafe extern "C" fn utimes(_path: *const u8, _times: *const u8) -> i32 {
-    *__errno_location() = ENOSYS;
-    -1
 }
 
 /// fcntl - file control
@@ -2306,13 +2304,6 @@ pub unsafe extern "C" fn dirfd(dirp: *mut Dir) -> i32 {
     (*dirp).fd
 }
 
-/// futimens - change file timestamps with nanosecond precision
-#[no_mangle]
-pub unsafe extern "C" fn futimens(_fd: i32, _times: *const u8) -> i32 {
-    *__errno_location() = ENOSYS;
-    -1
-}
-
 /// setgroups - set list of supplementary group IDs
 #[no_mangle]
 pub unsafe extern "C" fn setgroups(size: usize, list: *const u32) -> i32 {
@@ -2323,27 +2314,6 @@ pub unsafe extern "C" fn setgroups(size: usize, list: *const u32) -> i32 {
 #[no_mangle]
 pub unsafe extern "C" fn getgroups(size: i32, list: *mut u32) -> i32 {
     syscall_result_to_c_int(libbreenix::raw::syscall2(libbreenix::syscall::nr::GETGROUPS, size as u64, list as u64) as i64)
-}
-
-/// getpwuid - get password entry by UID (stub)
-#[no_mangle]
-pub unsafe extern "C" fn getpwuid(_uid: u32) -> *mut u8 {
-    core::ptr::null_mut()
-}
-
-/// getpwuid_r - reentrant version of getpwuid (stub)
-#[no_mangle]
-pub unsafe extern "C" fn getpwuid_r(
-    _uid: u32,
-    _pwd: *mut u8,
-    _buf: *mut u8,
-    _buflen: usize,
-    result: *mut *mut u8,
-) -> i32 {
-    if !result.is_null() {
-        *result = core::ptr::null_mut();
-    }
-    0 // Not found, but not an error
 }
 
 // =============================================================================
