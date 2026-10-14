@@ -1163,13 +1163,18 @@ fn generate_pid_status(pid: u64) -> String {
         None => return format!("Process {} not found\n", pid),
     };
 
-    let state_str = scheduler_state.unwrap_or(match process.state {
+    // A process whose threads have all ended waits for its parent to reap it:
+    // Linux's zombie, shown as Linux shows it.
+    let state_str = match scheduler_state.unwrap_or(match process.state {
         ProcessState::Creating => "Creating",
         ProcessState::Ready => "Ready",
         ProcessState::Running => "Running",
         ProcessState::Blocked => "Blocked",
         ProcessState::Terminated(_) => "Terminated",
-    });
+    }) {
+        "Terminated" => "Z (zombie)",
+        state => state,
+    };
 
     let ppid = match process.parent {
         Some(parent) => parent.as_u64(),

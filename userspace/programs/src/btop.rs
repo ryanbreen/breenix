@@ -748,7 +748,7 @@ fn main() {
 
             // Skip terminated/zombie processes (e.g. unreapable children)
             let state_bytes = &proc.state[..proc.state_len];
-            if state_bytes.starts_with(b"Terminated") {
+            if state_bytes.starts_with(b"Z") {
                 continue;
             }
 
