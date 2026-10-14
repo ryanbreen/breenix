@@ -272,6 +272,8 @@ impl PosixTimers {
         } else {
             timer.now(now).saturating_add(value)
         };
+        #[cfg(target_arch = "x86_64")]
+        crate::periodic1540::arm(Arc::as_ptr(&timer.signal) as usize, timer.clock, interval, value, timer.deadline);
         self.recount(&table);
         Ok(old)
     }
@@ -307,6 +309,8 @@ impl PosixTimers {
             .position(|t| t.signal.id == id)
             .ok_or(crate::syscall::errno::EINVAL as u64)?;
         let timer = table.timers.remove(at);
+        #[cfg(target_arch = "x86_64")]
+        crate::periodic1540::removed(Arc::as_ptr(&timer.signal) as usize);
         // A signal already queued stays; one due and not yet queued is gone.
         if timer.signal.due_for.load(Ordering::Acquire) != 0 {
             timer.signal.discard();
@@ -414,6 +418,8 @@ impl PosixTimers {
             if current < timer.deadline {
                 continue;
             }
+            #[cfg(target_arch = "x86_64")]
+            crate::periodic1540::expiry(Arc::as_ptr(&timer.signal) as usize);
             let late = current - timer.deadline;
             let expiries = if timer.interval == 0 {
                 timer.deadline = 0;

@@ -92,6 +92,8 @@ impl TimerSignal {
             self.due_late.store(0, Ordering::Relaxed);
             self.due_for.store(REBIND, Ordering::Release);
         }
+        #[cfg(target_arch = "x86_64")]
+        crate::periodic1540::delivery(self as *const Self as usize, overrun);
         self.last_overrun.store(overrun, Ordering::Release);
         overrun
     }
