@@ -66,7 +66,7 @@ mod syscall {
                 core::ptr::copy_nonoverlapping(0b1011u64.to_ne_bytes().as_ptr(), pointer as *mut u8, 8);
             }
             if number == SET {
-                assert_eq!(*(pointer as *const u64), 0b10);
+                assert_eq!((pointer as *const u64).read_unaligned(), 0b10);
                 return if result < 0 { result as u64 } else { 0 };
             }
             result as u64
