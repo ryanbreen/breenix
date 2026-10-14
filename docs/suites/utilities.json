@@ -209,7 +209,7 @@
         { "id": "getopts", "title": "getopts parses flags and option-arguments, and shift leaves the operands" },
         { "id": "getopts-grouped", "title": "getopts takes grouped flags and stops at --" },
         { "id": "getopts-unknown", "title": "getopts reports an unknown option and the script exits 2 with its usage" },
-        { "id": "getopts-missing-arg", "title": "getopts reports an option missing its argument" },
+        { "id": "getopts-missing-arg", "title": "getopts reports an option missing its argument and the script exits 2 with its usage" },
         { "id": "trap-cleanup", "title": "An EXIT trap removes the script's temporary directory when it ends normally" },
         { "id": "trap-cleanup-exit", "title": "The EXIT trap runs on exit 3 and the script keeps status 3" },
         { "id": "trap-cleanup-int", "title": "On SIGINT the INT trap exits 130 and the EXIT trap still cleans up" },

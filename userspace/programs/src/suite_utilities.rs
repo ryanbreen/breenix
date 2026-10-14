@@ -234,7 +234,7 @@ static SUITE: Suite = suite("utilities", "Shell & POSIX utilities", &[
         case("getopts", "getopts parses flags and option-arguments, and shift leaves the operands", script_getopts),
         case("getopts-grouped", "getopts takes grouped flags and stops at --", script_getopts_grouped),
         case("getopts-unknown", "getopts reports an unknown option and the script exits 2 with its usage", script_getopts_unknown),
-        case("getopts-missing-arg", "getopts reports an option missing its argument", script_getopts_missing_arg),
+        case("getopts-missing-arg", "getopts reports an option missing its argument and the script exits 2 with its usage", script_getopts_missing_arg),
         case("trap-cleanup", "An EXIT trap removes the script's temporary directory when it ends normally", script_trap_cleanup),
         case("trap-cleanup-exit", "The EXIT trap runs on exit 3 and the script keeps status 3", script_trap_cleanup_exit),
         case("trap-cleanup-int", "On SIGINT the INT trap exits 130 and the EXIT trap still cleans up", script_trap_cleanup_int),
@@ -1343,7 +1343,10 @@ fn script_rotate_keep() -> CaseResult {
 }
 
 fn script_rotate_missing() -> CaseResult {
-    util(&["sh", "rotate.sh", "nope.log"]).needs(&["rm", "mv"]).file("rotate.sh", ROTATE).expect("", 1, Written)
+    sh("sh rotate.sh nope.log 2>err; echo $?; cat err")
+        .needs(&["sh", "rm", "mv", "cat"])
+        .file("rotate.sh", ROTATE)
+        .expect("1\nrotate: nope.log: no such file\n", 0, Empty)
 }
 
 fn script_csv_report() -> CaseResult {
@@ -1424,11 +1427,17 @@ fn script_getopts_grouped() -> CaseResult {
 }
 
 fn script_getopts_unknown() -> CaseResult {
-    util(&["sh", "args.sh", "-q", "x"]).file("args.sh", ARGS).expect("", 2, Written)
+    sh("sh args.sh -q x 2>err; echo $?; tail -n 1 err")
+        .needs(&["sh", "tail"])
+        .file("args.sh", ARGS)
+        .expect("2\nusage: args.sh [-v] [-o file] [-n count] arg...\n", 0, Empty)
 }
 
 fn script_getopts_missing_arg() -> CaseResult {
-    util(&["sh", "args.sh", "-o"]).file("args.sh", ARGS).expect("", 2, Written)
+    sh("sh args.sh -o 2>err; echo $?; tail -n 1 err")
+        .needs(&["sh", "tail"])
+        .file("args.sh", ARGS)
+        .expect("2\nusage: args.sh [-v] [-o file] [-n count] arg...\n", 0, Empty)
 }
 
 fn script_trap_cleanup() -> CaseResult {
@@ -1518,13 +1527,6 @@ echo "#define PREFIX \"$prefix\"" >> "$out.tmp"
 mv "$out.tmp" "$out"
 echo "configure: wrote $out"
 "##;
-
-const CONFIG_H: &str = r#"#define HAVE_SH 1
-#define HAVE_SORT 1
-#define HAVE_AWK 1
-/* #undef HAVE_NO_SUCH_TOOL_ZZ */
-#define HAVE_CONFTEST 1
-"#;
 
 const BUILD: &str = r#"#!/bin/sh
 # build.sh: rebuild out/NAME.o from src/NAME.c whenever the source is newer.
