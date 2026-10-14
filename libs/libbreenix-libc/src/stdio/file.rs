@@ -152,12 +152,15 @@ unsafe fn allocate(fd: i32, r: bool, w: bool) -> *mut File {
         return f;
     }
     ptr::write(f, File::new(fd, r, w, true));
+    f
+}
+// Publish only fully initialized streams; fflush(NULL) can visit them immediately.
+unsafe fn register(f: *mut File) {
     REGISTRY_LOCK.lock();
     registry_init();
     (*f).next = HEAD;
     HEAD = f;
     REGISTRY_LOCK.unlock();
-    f
 }
 unsafe fn mode(m: *const u8) -> Option<(i32, bool, bool, bool)> {
     if m.is_null() {
@@ -221,6 +224,7 @@ pub unsafe extern "C" fn fopen(path: *const u8, m: *const u8) -> *mut File {
         crate::pthread::set_errno(e);
     } else {
         (*f).append = a;
+        register(f);
     }
     f
 }
@@ -246,6 +250,7 @@ pub unsafe extern "C" fn fdopen(fd: i32, m: *const u8) -> *mut File {
     let f = allocate(fd, r, w);
     if !f.is_null() {
         (*f).append = a;
+        register(f);
     }
     f
 }
@@ -1017,11 +1022,12 @@ pub unsafe extern "C" fn open_memstream(p: *mut *mut u8, n: *mut usize) -> *mut 
     (*f).publish_ptr = p;
     (*f).publish_size = n;
     if !reserve(f, 1) {
-        fclose(f);
+        crate::free(f as *mut u8);
         return ptr::null_mut();
     }
     *(*f).data = 0;
     publish(f);
+    register(f);
     f
 }
 #[no_mangle]
@@ -1041,7 +1047,8 @@ pub unsafe extern "C" fn fmemopen(p: *mut u8, n: usize, m: *const u8) -> *mut Fi
         (*f).data = crate::calloc(core::cmp::max(n, 1), 1);
         (*f).owned_memory = true;
         if (*f).data.is_null() {
-            fclose(f);
+            crate::pthread::set_errno(ENOMEM);
+            crate::free(f as *mut u8);
             return ptr::null_mut();
         }
     }
@@ -1059,7 +1066,16 @@ pub unsafe extern "C" fn fmemopen(p: *mut u8, n: usize, m: *const u8) -> *mut Fi
     } else {
         n
     };
-    (*f).data_pos = if a { (*f).data_len } else { 0 };
+    (*f).data_pos = if a && !p.is_null() {
+        if (*f).data_len == n {
+            n.saturating_add(1)
+        } else {
+            (*f).data_len
+        }
+    } else {
+        0
+    };
+    register(f);
     f
 }
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -1088,7 +1104,11 @@ pub unsafe extern "C" fn tmpfile() -> *mut File {
         }
         let f = allocate(fd, true, true);
         if f.is_null() {
+            let e = crate::pthread::errno();
             crate::close(fd);
+            crate::pthread::set_errno(e);
+        } else {
+            register(f);
         }
         return f;
     }
