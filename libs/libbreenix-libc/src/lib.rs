@@ -35,6 +35,8 @@ mod pwd;
 mod unistd;
 mod process;
 mod conf;
+mod cwd;
+pub use cwd::getcwd;
 mod sysinfo;
 mod mntent;
 mod statfs;
@@ -743,30 +745,6 @@ pub unsafe extern "C" fn access(path: *const u8, mode: i32) -> i32 {
         }
     };
     syscall_result_to_c_int(result)
-}
-
-/// getcwd - get current working directory
-///
-/// Returns buf on success, NULL on error (sets errno).
-#[no_mangle]
-pub unsafe extern "C" fn getcwd(buf: *mut u8, size: usize) -> *mut u8 {
-    if buf.is_null() || size == 0 {
-        *__errno_location() = EINVAL;
-        return core::ptr::null_mut();
-    }
-
-    let result = libbreenix::raw::syscall2(
-        libbreenix::syscall::nr::GETCWD,
-        buf as u64,
-        size as u64,
-    ) as i64;
-
-    if result < 0 {
-        set_errno_from_result(result);
-        core::ptr::null_mut()
-    } else {
-        buf
-    }
 }
 
 /// chdir - change working directory
