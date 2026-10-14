@@ -431,12 +431,13 @@ impl ProcessManager {
             self.processes.live_row(peer).is_some_and(|row| !row.exit_started)
         }) {
             for child in children {
+                if *child == survivor { continue; }
                 if let Some(row) = self.processes.live_row_mut(child) {
                     row.parent = Some(survivor);
                 }
             }
             if let Some(row) = self.processes.live_row_mut(&survivor) {
-                row.children.extend_from_slice(children);
+                row.children.extend(children.iter().copied().filter(|child| *child != survivor));
             }
             return true;
         }

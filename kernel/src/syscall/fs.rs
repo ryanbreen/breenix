@@ -3635,11 +3635,11 @@ pub fn sys_getcwd(buf: u64, size: u64) -> SyscallResult {
     // process manager is released: the walk reads the filesystem, and the
     // user buffer may be a CoW page whose fault handler takes the manager.
     let dir = crate::fs::namei::current_working_dir();
-    let cwd = match crate::fs::namei::working_dir_path(&dir) {
+    let mut bytes = match crate::fs::namei::working_dir_path_bytes(&dir) {
         Ok(path) => path,
         Err(errno) => return SyscallResult::Err(errno),
     };
-    let mut bytes = cwd.into_bytes();
+    if bytes.try_reserve(1).is_err() { return SyscallResult::Err(super::errno::ENOMEM as u64); }
     bytes.push(0);
 
     // Nothing is written unless the whole pathname and its NUL fit.
