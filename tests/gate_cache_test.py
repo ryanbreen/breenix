@@ -38,6 +38,9 @@ class CacheTests(unittest.TestCase):
                              CARGO_HOME=str(self.root / 'cargo'), BREENIX_GATE_FRESH='0')
         self.env.start()
         self.addCleanup(self.env.stop)
+        # The key follows a caller's library override; these tests model the
+        # tree's own rust-fork, so the override is cleared (patch.dict restores it).
+        os.environ.pop('BREENIX_RUST_FORK_LIBRARY', None)
 
     def build(self, repo, logs, label):
         for name, data in {'userspace/programs/example.elf': b'ELF bytes',
