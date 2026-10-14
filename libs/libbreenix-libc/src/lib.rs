@@ -1767,6 +1767,11 @@ pub unsafe extern "C" fn sigaction(signum: i32, act: *const u8, oldact: *mut u8)
     //   offset 16: restorer - 8 bytes (u64)
     //   offset 24: mask - 8 bytes (u64)
 
+    // A handler (not SIG_DFL or SIG_IGN) returns through __restore_rt, which calls
+    // rt_sigreturn, unless the caller supplied its own restorer: the C struct's
+    // sa_restorer is null in ordinary programs, and a handler must not depend on the
+    // kernel placing a return trampoline on an executable stack.
+    let mut kernel_act = libbreenix::signal::Sigaction { handler: 0, mask: 0, flags: 0, restorer: 0 };
     let act_ptr = if act.is_null() {
         core::ptr::null()
     } else {
@@ -1776,17 +1781,16 @@ pub unsafe extern "C" fn sigaction(signum: i32, act: *const u8, oldact: *mut u8)
         let c_flags = *(act.add(16) as *const i32);
         let c_restorer = *(act.add(24) as *const u64);
 
-        static mut KERNEL_ACT: libbreenix::signal::Sigaction = libbreenix::signal::Sigaction {
-            handler: 0,
-            mask: 0,
-            flags: 0,
-            restorer: 0,
-        };
-        KERNEL_ACT.handler = c_handler;
-        KERNEL_ACT.mask = c_mask;
-        KERNEL_ACT.flags = c_flags as u64;
-        KERNEL_ACT.restorer = c_restorer;
-        &raw const KERNEL_ACT
+        kernel_act.handler = c_handler;
+        kernel_act.mask = c_mask;
+        kernel_act.flags = c_flags as u32 as u64;
+        kernel_act.restorer = c_restorer;
+        let has_restorer = kernel_act.flags & libbreenix::signal::SA_RESTORER != 0 && c_restorer != 0;
+        if c_handler > libbreenix::signal::SIG_IGN && !has_restorer {
+            kernel_act.flags |= libbreenix::signal::SA_RESTORER;
+            kernel_act.restorer = libbreenix::signal::__restore_rt as u64;
+        }
+        &raw const kernel_act
     };
 
     let mut kernel_oldact = libbreenix::signal::Sigaction {
