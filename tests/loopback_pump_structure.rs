@@ -3647,7 +3647,7 @@ fn loopback_enqueue_owns_its_delivery() {
 fn loopback_enqueue_validator_rejects_a_missing_kick() {
     let source = repo_text("kernel/src/net/mod.rs");
     let call =
-        "kick_loopback_delivery();\n        crate::net::loopback_pump::wake_loopback_pump();";
+        "kick_loopback_delivery();\n    crate::net::loopback_pump::wake_loopback_pump();";
     assert!(source.contains(call), "fixture mutation target must exist");
     let mutated = source.replacen(call, "crate::net::loopback_pump::wake_loopback_pump();", 1);
     assert_ne!(mutated, source, "fixture mutation must apply");
