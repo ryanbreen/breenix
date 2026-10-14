@@ -98,6 +98,11 @@ if ! (
     echo "  ERROR: libbreenix-libc build FAILED"
     exit 1
 fi
+# compiler_builtins mixes ABI helpers with foreign libc math. Strip the latter
+# after every Cargo build, including cache hits, before any C or Rust link.
+LIBC_TOOLS="$("$PROJECT_ROOT/scripts/breenix-cc" --arch "$ARCH" --tool-dir)"
+python3 "$PROJECT_ROOT/scripts/libc-clean-archive.py" \
+    --archive "$LIBC_RELEASE_DIR/libc.a" --tool-dir "$LIBC_TOOLS"
 echo "  libbreenix-libc built successfully"
 
 # C programs link libc.a. aarch64's serves C as it is; x86_64's Rust build is
@@ -115,6 +120,8 @@ if [[ "$ARCH" == "x86_64" ]]; then
         echo "  ERROR: libbreenix-libc C-ABI build FAILED"
         exit 1
     fi
+    python3 "$PROJECT_ROOT/scripts/libc-clean-archive.py" \
+        --archive "$LIBC_DIR/target/x86_64-breenix-c/release/libc.a" --tool-dir "$LIBC_TOOLS"
     echo "  libbreenix-libc C-ABI build (x86_64-breenix-c) built successfully"
 fi
 python3 "$PROJECT_ROOT/scripts/libc-symbol-audit.py" --arch "$ARCH"
