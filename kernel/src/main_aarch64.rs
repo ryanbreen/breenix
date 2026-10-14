@@ -1147,6 +1147,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // Initialize softirq subsystem (depends on kthread infrastructure)
     kernel::task::softirqd::init_softirq();
     kernel::net::init_loopback_pump();
+    kernel::net::init_rx_poll();
     serial_println!("[boot] Softirq subsystem initialized");
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::KTHREAD_SUBSYSTEM);

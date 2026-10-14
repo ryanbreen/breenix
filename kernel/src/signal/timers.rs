@@ -11,7 +11,7 @@
 //! The recipient's next signal check queues the due signal as an instance that
 //! carries SI_TIMER, the timer's ID and its sigev_value, and that holds the
 //! timer's `TimerSignal`; taking the instance for delivery reads the overrun
-//! count off it and starts the count again from zero.
+//! count off it. Expiries after a copied siginfo become a new due signal.
 //!
 //! A recipient that exits before its check gives the due signal back for the
 //! scheduler's next pass to bind to another thread (`release_due`). SIGCONT
@@ -22,7 +22,7 @@
 use super::types::ThreadSignals;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 pub const SIGEV_SIGNAL: i32 = 0;
 pub const SIGEV_NONE: i32 = 1;
@@ -39,28 +39,7 @@ pub const TIMER_ABSTIME: u64 = 1;
 
 const NS_PER_SEC: u64 = 1_000_000_000;
 
-/// Set in `TimerSignal::state` while the timer's signal is due or queued and
-/// not yet delivered.
-const QUEUED: u64 = 1 << 63;
-
-/// Order of the scheduler passes that made timer signals due. Signals one pass
-/// made due share its number and are queued by `due_late`, in the order their
-/// timers expired, not the order the pass visited the timers.
-static NEXT_DUE: AtomicU64 = AtomicU64::new(1);
-
-/// `TimerSignal::due_for` of a due signal whose recipient exited before its
-/// signal check: the scheduler's next pass binds it to another thread.
-const REBIND: usize = usize::MAX;
-
-/// `TimerSignal::due_for` of a due SIGCONT or stop signal, which the timer
-/// softirq generates (`generate_job_control`).
-const JOB: usize = usize::MAX - 1;
-
-/// How many timers have a due SIGCONT or stop signal waiting for the softirq.
-static JOB_DUE: AtomicUsize = AtomicUsize::new(0);
-
-/// `TimerSignal::shown` while no siginfo has been read off the pending signal.
-const NOT_SHOWN: u64 = u64::MAX;
+use super::timer_signal::{JOB, JOB_DUE, NEXT_DUE, REBIND};
 
 /// Whether `sig` acts on the whole process when generated: SIGCONT continues
 /// it and a stop signal may stop it, which `kill` does under the process
@@ -69,101 +48,7 @@ fn is_job_control(sig: u32) -> bool {
     sig == super::constants::SIGCONT || super::constants::sig_mask(sig) & super::constants::STOP_SIGNALS != 0
 }
 
-/// What a timer and the signal it has pending share.
-pub struct TimerSignal {
-    /// The timer's ID, as timer_create returned it.
-    pub id: i32,
-    /// `QUEUED`, and in the low 32 bits the expiries since the pending signal
-    /// was generated beyond the one it stands for.
-    state: AtomicU64,
-    /// The overrun count of the signal delivered last (timer_getoverrun).
-    last_overrun: AtomicI32,
-    /// The `ThreadSignals` address of the thread whose next signal check
-    /// queues the due signal, `REBIND` or `JOB`; 0 while none is due.
-    due_for: AtomicUsize,
-    /// The pass that made it due, in `NEXT_DUE` order.
-    due_seq: AtomicU64,
-    /// How long before that pass the timer expired, on its own clock: of
-    /// signals one pass made due, the one with the most is the earliest.
-    due_late: AtomicU64,
-    /// The overrun count the pending signal's siginfo was last read with
-    /// (`overrun`), which delivery then reports, or `NOT_SHOWN`.
-    shown: AtomicU64,
-}
-
-impl TimerSignal {
-    fn new(id: i32) -> Self {
-        Self {
-            id,
-            state: AtomicU64::new(0),
-            last_overrun: AtomicI32::new(0),
-            due_for: AtomicUsize::new(0),
-            due_seq: AtomicU64::new(0),
-            due_late: AtomicU64::new(0),
-            shown: AtomicU64::new(NOT_SHOWN),
-        }
-    }
-
-    /// Where its due signal is queued among the others: by pass, then within
-    /// a pass the earliest expiry first.
-    fn due_order(&self) -> (u64, core::cmp::Reverse<u64>) {
-        (self.due_seq.load(Ordering::Relaxed), core::cmp::Reverse(self.due_late.load(Ordering::Relaxed)))
-    }
-
-    /// Clear the due mark, accounting for a due job-control signal.
-    fn clear_due(&self) {
-        if self.due_for.swap(0, Ordering::AcqRel) == JOB {
-            JOB_DUE.fetch_sub(1, Ordering::AcqRel);
-        }
-    }
-
-    /// Record `expiries` expiries. Returns true when they generate a signal,
-    /// none being pending; otherwise they count as overruns of the one that is.
-    fn expire(&self, expiries: u64) -> bool {
-        let old = self
-            .state
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |state| {
-                Some(if state & QUEUED != 0 {
-                    QUEUED | (state & 0xffff_ffff).saturating_add(expiries).min(i32::MAX as u64)
-                } else {
-                    QUEUED | (expiries - 1).min(i32::MAX as u64)
-                })
-            })
-            .unwrap_or(0);
-        old & QUEUED == 0
-    }
-
-    /// The overrun count the pending signal carries if delivered now, for a
-    /// siginfo copied out before the signal is taken. Delivery then reports
-    /// this same count, so si_overrun and timer_getoverrun agree even when
-    /// the timer expires again in between.
-    pub fn overrun(&self) -> i32 {
-        let overrun = self.state.load(Ordering::Acquire) & 0xffff_ffff;
-        self.shown.store(overrun, Ordering::Release);
-        overrun as i32
-    }
-
-    /// The pending signal is being delivered: its overrun count, which
-    /// timer_getoverrun reports from here on. A later expiry generates a new
-    /// signal. When its siginfo was already read (`overrun`), the count read
-    /// is the one delivered; expiries counted after that read are not
-    /// reported.
-    pub fn deliver(&self) -> i32 {
-        let counted = self.state.swap(0, Ordering::AcqRel) & 0xffff_ffff;
-        let shown = self.shown.swap(NOT_SHOWN, Ordering::AcqRel);
-        let overrun = if shown == NOT_SHOWN { counted } else { shown.min(counted) } as i32;
-        self.last_overrun.store(overrun, Ordering::Release);
-        overrun
-    }
-
-    /// The pending signal was discarded undelivered (ignored, or no thread
-    /// could take it): a later expiry generates a new one.
-    pub fn discard(&self) {
-        self.clear_due();
-        self.shown.store(NOT_SHOWN, Ordering::Release);
-        self.state.store(0, Ordering::Release);
-    }
-}
+pub use super::timer_signal::TimerSignal;
 
 /// How a timer tells of its expiry.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -282,7 +167,7 @@ impl PosixTimers {
     pub fn is_active(&self) -> bool {
         self.armed.load(Ordering::Acquire) != 0
             || self.table.try_lock().map_or(true, |table| {
-                table.timers.iter().any(|t| t.signal.due_for.load(Ordering::Acquire) != 0)
+                table.timers.iter().any(|t| t.signal.is_pending())
             })
     }
 
@@ -358,6 +243,9 @@ impl PosixTimers {
             clock::THREAD_CPUTIME => Base::ThreadCpu,
             _ => Base::Monotonic,
         };
+        if value != 0 {
+            timer.signal.reset_overruns();
+        }
         timer.interval = if value == 0 { 0 } else { interval };
         timer.deadline = if value == 0 {
             0
@@ -461,7 +349,10 @@ impl PosixTimers {
     /// advance depends on dispatch. A held table requests an immediate retry.
     pub fn next_check_ns(&self, now: &Now) -> u64 {
         let Some(table) = self.table.try_lock() else { return now.monotonic; };
-        table.timers.iter().filter(|t| t.deadline != 0).map(|timer| {
+        table.timers.iter().filter(|t| t.deadline != 0 || t.signal.is_pending()).map(|timer| {
+            if let Some(check) = timer.signal.next_notification_check(now.monotonic, crate::time::timer::MS_PER_TICK * 1_000_000) {
+                return check;
+            }
             match timer.base {
                 Base::Monotonic => timer.deadline,
                 Base::Realtime => now.monotonic.saturating_add(timer.deadline.saturating_sub(now.realtime)),
@@ -485,7 +376,9 @@ impl PosixTimers {
         let mut due = false;
         let mut pass = 0;
         for timer in table.timers.iter_mut() {
-            if timer.signal.due_for.load(Ordering::Acquire) == REBIND {
+            if timer.signal.rebind_job(is_job_control(timer.signo)) {
+                crate::task::softirqd::raise_softirq(crate::task::softirqd::SoftirqType::Timer);
+            } else if timer.signal.due_for.load(Ordering::Acquire) == REBIND {
                 let thread = match timer.notify {
                     Notify::Thread(tid) => Some(tid),
                     _ => None,

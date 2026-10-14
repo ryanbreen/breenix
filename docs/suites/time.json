@@ -243,6 +243,14 @@
           "title": "A periodic 50 ms timer fires twenty times a second, 50 ms apart"
         },
         {
+          "id": "continue-stopped",
+          "title": "A periodic SIGCONT timer resumes its stopped process twice"
+        },
+        {
+          "id": "rearm-overrun",
+          "title": "Re-arming resets si_overrun and timer_getoverrun from the previous arming"
+        },
+        {
           "id": "gettime",
           "title": "timer_gettime reports the time left, decreasing and never above the value set, and the interval"
         },

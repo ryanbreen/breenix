@@ -72,9 +72,9 @@ serial0.fileType = "file"
 serial0.fileName = "$SERIAL_LOG"
 serial0.yieldOnMsrRead = "TRUE"
 
-# Networking (NAT with e1000e)
+# Networking (e1000e bridged to the host network; the guest takes a DHCP lease)
 ethernet0.present = "TRUE"
-ethernet0.connectionType = "nat"
+ethernet0.connectionType = "bridged"
 ethernet0.virtualDev = "e1000e"
 ethernet0.addressType = "generated"
 ethernet0.linkStatePropagation.enable = "TRUE"

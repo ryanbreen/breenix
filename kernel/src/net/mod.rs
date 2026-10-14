@@ -9,10 +9,13 @@
 extern crate alloc;
 
 pub mod arp;
+pub mod dhcp;
 pub mod ethernet;
 pub mod icmp;
 pub mod ipv4;
 pub(crate) mod loopback_pump;
+#[cfg(target_arch = "aarch64")]
+mod rx_poll;
 
 // TCP and UDP protocol implementations - architecture-independent
 // The socket syscall layer handles arch-specific details
@@ -23,6 +26,8 @@ pub use loopback_pump::{
     init_loopback_pump, loopback_pump_passes, loopback_pump_rearms, loopback_pump_tid,
     loopback_pump_wake_already_awake, loopback_pump_wake_rejected, loopback_pump_wakes,
 };
+#[cfg(target_arch = "aarch64")]
+pub use rx_poll::init_rx_poll;
 
 use alloc::vec::Vec;
 use core::marker::PhantomData;
@@ -233,13 +238,12 @@ pub const PARALLELS_CONFIG: NetConfig = NetConfig {
     gateway: [10, 211, 55, 1], // Parallels shared network gateway
 };
 
-/// Network configuration for VMware Fusion NAT networking
-/// VMware NAT (vmnet8) uses 172.16.45.x with gateway at 172.16.45.2
+/// Bridged VMware starts unconfigured until DHCP assigns an address.
 #[allow(dead_code)] // Used conditionally when e1000 is active on VMware
 pub const VMWARE_CONFIG: NetConfig = NetConfig {
-    ip_addr: [172, 16, 45, 100], // Static guest IP (avoiding DHCP conflicts)
+    ip_addr: [0; 4],
     subnet_mask: [255, 255, 255, 0],
-    gateway: [172, 16, 45, 2], // VMware NAT gateway
+    gateway: [0; 4],
 };
 
 /// Select network config based on compile-time feature or default to SLIRP
@@ -255,7 +259,6 @@ static NET_CONFIG: Mutex<NetConfig> = Mutex::new(DEFAULT_CONFIG);
 /// Bound both payload storage and metadata, including minimum-size IP packets.
 const MAX_LOOPBACK_QUEUE_BYTES: usize = 1024 * 1024;
 const MAX_DRAIN_ROUNDS: usize = 16;
-const LOOPBACK_TAKE_ATTEMPTS: usize = 64;
 const MAX_ARP_PENDING_QUEUE_SIZE: usize = 16;
 /// How long an IP packet may sit on the pending-ARP queue before
 /// `enqueue_arp_pending_packet` retains it away.
@@ -303,7 +306,6 @@ static LOOPBACK_QUEUE_DEPTH: AtomicUsize = AtomicUsize::new(0);
 static LOOPBACK_DRAIN_TICKET: AtomicU64 = AtomicU64::new(0);
 static LOOPBACK_DRAIN_OWNER: AtomicU64 = AtomicU64::new(0);
 static LOOPBACK_DRAIN_CONTENDED: AtomicU64 = AtomicU64::new(0);
-static LOOPBACK_DRAIN_TAKE_ABANDONED: AtomicU64 = AtomicU64::new(0);
 static LOOPBACK_DRAIN_COMPLETED: AtomicU64 = AtomicU64::new(0);
 static LOOPBACK_DROPPED_FULL: AtomicU64 = AtomicU64::new(0);
 static IDLE_LOOPBACK_DRAIN_CALLS: AtomicU64 = AtomicU64::new(0);
@@ -439,10 +441,6 @@ pub fn loopback_drain_completed() -> u64 {
     LOOPBACK_DRAIN_COMPLETED.load(Ordering::Relaxed)
 }
 
-pub fn loopback_drain_take_abandoned() -> u64 {
-    LOOPBACK_DRAIN_TAKE_ABANDONED.load(Ordering::Relaxed)
-}
-
 pub fn loopback_dropped_full() -> u64 {
     LOOPBACK_DROPPED_FULL.load(Ordering::Relaxed)
 }
@@ -553,38 +551,17 @@ pub(crate) fn flush_arp_pending_packets(next_hop: &[u8; 4], mac: &[u8; 6]) {
     drop(queue);
 }
 
-/// Result of one bounded attempt to take the queued loopback packets.
-enum LoopbackTake {
-    Packets(Vec<LoopbackPacket>),
-    Empty,
-    Contended,
-}
-
-/// Take one batch while excluding other takers. Delivery is deliberately
-/// outside this microsecond-scale guarded window.
-fn take_queued_loopback_packets() -> LoopbackTake {
-    for _ in 0..LOOPBACK_TAKE_ATTEMPTS {
-        if let Some(drain_guard) = LoopbackDrainGuard::acquire() {
-            let net_guard = net_lock_guard();
-            let mut queue = LOOPBACK_QUEUE.lock();
-            let packets = core::mem::take(&mut *queue);
-            LOOPBACK_QUEUE_BYTES.store(0, Ordering::Relaxed);
-            LOOPBACK_QUEUE_DEPTH.store(queue.len(), Ordering::Release);
-            drop(queue);
-            drop(drain_guard);
-            drop(net_guard);
-
-            return if packets.is_empty() {
-                LoopbackTake::Empty
-            } else {
-                LoopbackTake::Packets(packets)
-            };
-        }
-        core::hint::spin_loop();
-    }
-
-    LOOPBACK_DRAIN_TAKE_ABANDONED.fetch_add(1, Ordering::Relaxed);
-    LoopbackTake::Contended
+/// Take every queued packet. Only the context delivering them takes, so the
+/// batches leave the queue in the order they are delivered.
+fn take_queued_loopback_packets() -> Vec<LoopbackPacket> {
+    let net_guard = net_lock_guard();
+    let mut queue = LOOPBACK_QUEUE.lock();
+    let packets = core::mem::take(&mut *queue);
+    LOOPBACK_QUEUE_BYTES.store(0, Ordering::Relaxed);
+    LOOPBACK_QUEUE_DEPTH.store(queue.len(), Ordering::Release);
+    drop(queue);
+    drop(net_guard);
+    packets
 }
 
 /// Deliver at most `max_rounds` rounds of queued loopback packets.
@@ -592,46 +569,57 @@ fn take_queued_loopback_packets() -> LoopbackTake {
 /// Returns true when work remains so callers can re-arm without doing
 /// unbounded delivery work in a single pass.
 pub(crate) fn drain_loopback_rounds(max_rounds: usize, source: LoopbackDrainSource) -> bool {
+    // One context delivers at a time, so packets reach the stack in the order
+    // they were queued. With only the take guarded, two contexts could deliver
+    // consecutive batches at once and the later batch overtake the earlier;
+    // TCP, which keeps no out-of-order queue, then dropped each segment that
+    // arrived ahead of the bytes before it and waited out a retransmission
+    // timeout to send it again. Preemption stays off while the guard is held,
+    // as it is in the softirq, so its holder is never switched out with the
+    // queue left to nobody. Paired with the fence after the release below: a
+    // packet queued before a failed acquire is seen by the holder's re-check.
+    crate::per_cpu::preempt_disable();
+    core::sync::atomic::fence(Ordering::SeqCst);
+    let Some(delivering) = LoopbackDrainGuard::acquire() else {
+        crate::per_cpu::preempt_enable();
+        // The delivering context owns what is queued: it looks at the queue
+        // again once it lets go. Re-raising the softirq here would spin when
+        // that context is the one this interrupt came in on top of.
+        tcp::drain_deferred_tx();
+        return false;
+    };
+    // A socket whose last reference a delivered notice drops is released
+    // later, not here with preemption off, where the release could block.
+    let defer = crate::socket::object::DeferRelease::enter();
+
     for _ in 0..max_rounds {
-        let packets = match take_queued_loopback_packets() {
-            LoopbackTake::Packets(packets) => packets,
-            // An empty loopback queue does not mean there is no queued work:
-            // TCP parks segments it could not send during RX processing on the
-            // deferred-TX queue, and this drain is their only owner. Returning
-            // early without flushing left them waiting for the next loopback
-            // packet from somewhere else to carry them out.
-            LoopbackTake::Empty => {
-                tcp::drain_deferred_tx();
-                return false;
-            }
-            // Another context is taking the batch. It will deliver what it took,
-            // but anything queued behind it belongs to nobody once this call
-            // returns, so hand it back to the softirq rather than dropping it.
-            LoopbackTake::Contended => {
-                tcp::drain_deferred_tx();
-                return rearm_if_work_remains();
-            }
-        };
+        let packets = take_queued_loopback_packets();
+        if packets.is_empty() {
+            break;
+        }
 
         for packet in packets {
             note_loopback_residency(packet.queued_at_tick, source);
             if let Some(parsed_ip) = ipv4::Ipv4Packet::parse(&packet.data) {
-                let src_mac = get_mac_address().unwrap_or([0; 6]);
-                let dummy_frame = ethernet::EthernetFrame {
-                    src_mac,
-                    dst_mac: src_mac,
-                    ethertype: ethernet::ETHERTYPE_IPV4,
-                    payload: &packet.data,
-                };
-                ipv4::handle_ipv4(&dummy_frame, &parsed_ip);
+                ipv4::handle_loopback_ipv4(&parsed_ip);
             }
         }
 
         tcp::drain_deferred_tx();
     }
 
-    // The round budget is spent. Whatever is still queued has no owner unless
-    // this call names one, so re-raise the softirq that owns loopback delivery.
+    drop(defer);
+    drop(delivering);
+    crate::per_cpu::preempt_enable();
+    core::sync::atomic::fence(Ordering::SeqCst);
+
+    // An empty loopback queue does not mean there is no queued work: TCP parks
+    // segments it could not send during RX processing on the deferred-TX
+    // queue, and this drain is their only owner.
+    tcp::drain_deferred_tx();
+    // What was queued while this context delivered, or is left once the round
+    // budget is spent, has no owner unless this call names one, so re-raise
+    // the softirq that owns loopback delivery.
     rearm_if_work_remains()
 }
 
@@ -670,10 +658,9 @@ pub fn idle_loopback_drain_calls() -> u64 {
 pub fn dump_loopback_state() {
     let pump_tid = loopback_pump_tid();
     crate::serial_println!(
-        "loopback: depth={} drain_contended={} drain_take_abandoned={} drain_completed={} dropped_full={} max_residency_ticks={} slow_deliveries={} softirq_raises={} softirq_drains={} pump_tid={} pump_passes={} pump_rearms={} pump_rearm_from_sched={} pump_wakes={} pump_wake_rejected={} pump_wake_already_awake={} isr_wakeup_depth_cpu0={} isr_wakeup_buffer_full={} stalled_reclaimed={}",
+        "loopback: depth={} drain_contended={} drain_completed={} dropped_full={} max_residency_ticks={} slow_deliveries={} softirq_raises={} softirq_drains={} pump_tid={} pump_passes={} pump_rearms={} pump_rearm_from_sched={} pump_wakes={} pump_wake_rejected={} pump_wake_already_awake={} isr_wakeup_depth_cpu0={} isr_wakeup_buffer_full={} stalled_reclaimed={}",
         loopback_queue_depth(),
         loopback_drain_contended(),
-        loopback_drain_take_abandoned(),
         loopback_drain_completed(),
         loopback_dropped_full(),
         loopback_max_residency_ticks(),
@@ -887,6 +874,13 @@ fn init_common() {
         }
     }
 
+    #[cfg(target_arch = "aarch64")]
+    let gw = if active_tx_driver_is_e1000() {
+        configure_from_dhcp().unwrap_or([0; 4])
+    } else {
+        gw
+    };
+
     // Send ARP request for gateway to test network connectivity
     let gateway = gw;
     net_log!(
@@ -963,10 +957,37 @@ fn init_common() {
     }
 }
 
+/// VMware's adapter is bridged to the host's network, whose addressing only its
+/// DHCP server knows. Without a valid lease it remains unconfigured.
+#[cfg(target_arch = "aarch64")]
+fn configure_from_dhcp() -> Option<[u8; 4]> {
+    let mac = get_mac_address()?;
+    net_log!("NET: Requesting a DHCP lease");
+    let Some(lease) = dhcp::acquire(mac) else {
+        net_log!("NET: No DHCP lease; interface remains unconfigured");
+        return None;
+    };
+    let [a, b, c, d] = lease.ip_addr;
+    let [m0, m1, m2, m3] = lease.subnet_mask;
+    let [g0, g1, g2, g3] = lease.gateway;
+    let [s0, s1, s2, s3] = lease.server;
+    net_log!(
+        "NET: DHCP lease {}.{}.{}.{} mask {}.{}.{}.{} gateway {}.{}.{}.{} from {}.{}.{}.{}",
+        a, b, c, d, m0, m1, m2, m3, g0, g1, g2, g3, s0, s1, s2, s3
+    );
+    Some(lease.gateway)
+}
+
 /// Get the current network configuration.
 /// Uses bottom-half exclusion on x86_64 and IRQ masking on aarch64 to prevent
 /// same-CPU re-entry from the network softirq.
 pub fn config() -> NetConfig {
+    #[cfg(target_arch = "aarch64")]
+    if active_tx_driver_is_e1000() {
+        return dhcp::lease().map(|lease| NetConfig {
+            ip_addr: lease.ip_addr, subnet_mask: lease.subnet_mask, gateway: lease.gateway,
+        }).unwrap_or(VMWARE_CONFIG);
+    }
     let _guard = net_lock_guard();
     let c = *NET_CONFIG.lock();
     c
@@ -1231,6 +1252,18 @@ pub fn send_ethernet(
 ) -> Result<(), &'static str> {
     if ethertype == ethernet::ETHERTYPE_IPV4 && ipv4::Ipv4Packet::parse(payload).is_none() {
         return Err("Invalid IPv4 packet");
+    }
+    #[cfg(target_arch = "aarch64")]
+    if active_tx_driver_is_e1000() && ethertype == ethernet::ETHERTYPE_IPV4 {
+        let ip = ipv4::Ipv4Packet::parse(payload).ok_or("Invalid IPv4 packet")?;
+        // Queued packets and established sockets cannot retain an expired or
+        // replaced source address. Discovery/DECLINE alone use 0.0.0.0.
+        let discovery = ip.src_ip == [0; 4] && ip.dst_ip == [255; 4]
+            && ip.protocol == ipv4::PROTOCOL_UDP
+            && udp::UdpHeader::parse(ip.payload).is_some_and(|(h, _)| h.src_port == 68 && h.dst_port == 67);
+        if !discovery && !dhcp::lease().is_some_and(|l| l.ip_addr == ip.src_ip) {
+            return Err("No DHCP address");
+        }
     }
     if payload.len() > ethernet::ETHERNET_MTU {
         return Err("Message too large");

@@ -37,6 +37,8 @@
 //!     Generate content dynamically
 //! ```
 
+mod net;
+
 use alloc::string::String;
 use alloc::vec::Vec;
 use spin::Mutex;
@@ -96,6 +98,10 @@ pub enum ProcEntryType {
     XhciTrace,
     /// /proc/xhci/counters - xHCI trace counters
     XhciCounters,
+    /// /proc/net - network directory
+    NetDir,
+    /// /proc/net/pnp - boot-time autoconfiguration, in Linux ipconfig's format
+    NetPnp,
     /// /proc/[pid] - per-process directory (dynamic, not registered)
     PidDir(u64),
     /// /proc/[pid]/status - per-process status (dynamic, not registered)
@@ -133,6 +139,8 @@ impl ProcEntryType {
             ProcEntryType::XhciDir => "xhci",
             ProcEntryType::XhciTrace => "trace",
             ProcEntryType::XhciCounters => "counters",
+            ProcEntryType::NetDir => "net",
+            ProcEntryType::NetPnp => "pnp",
             ProcEntryType::PidDir(_) => "pid",
             ProcEntryType::PidStatus(_) => "status",
         }
@@ -168,6 +176,8 @@ impl ProcEntryType {
             ProcEntryType::XhciDir => "/proc/xhci",
             ProcEntryType::XhciTrace => "/proc/xhci/trace",
             ProcEntryType::XhciCounters => "/proc/xhci/counters",
+            ProcEntryType::NetDir => "/proc/net",
+            ProcEntryType::NetPnp => "/proc/net/pnp",
             // Dynamic entries don't have static paths
             ProcEntryType::PidDir(_) => "/proc/<pid>",
             ProcEntryType::PidStatus(_) => "/proc/<pid>/status",
@@ -205,6 +215,8 @@ impl ProcEntryType {
             ProcEntryType::XhciDir => 300,
             ProcEntryType::XhciTrace => 301,
             ProcEntryType::XhciCounters => 302,
+            ProcEntryType::NetDir => 400,
+            ProcEntryType::NetPnp => 401,
             ProcEntryType::PidDir(pid) => 10000 + pid,
             ProcEntryType::PidStatus(pid) => 20000 + pid,
         }
@@ -218,6 +230,7 @@ impl ProcEntryType {
                 | ProcEntryType::TraceTeardownDir
                 | ProcEntryType::BreenixDir
                 | ProcEntryType::XhciDir
+                | ProcEntryType::NetDir
                 | ProcEntryType::PidDir(_)
         )
     }
@@ -294,6 +307,10 @@ pub fn init() {
     procfs
         .entries
         .push(ProcEntry::new(ProcEntryType::XhciCounters));
+
+    // Register /proc/net directory and entries
+    procfs.entries.push(ProcEntry::new(ProcEntryType::NetDir));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::NetPnp));
 
     // Register /proc/trace directory and entries
     procfs.entries.push(ProcEntry::new(ProcEntryType::TraceDir));
@@ -405,6 +422,7 @@ pub fn list_entries() -> Vec<String> {
                         | ProcEntryType::BreenixTesting
                         | ProcEntryType::XhciTrace
                         | ProcEntryType::XhciCounters
+                        | ProcEntryType::NetPnp
                 )
             })
             .map(|e| String::from(e.entry_type.name()))
@@ -460,6 +478,11 @@ pub fn list_xhci_entries() -> Vec<String> {
         })
         .map(|e| String::from(e.entry_type.name()))
         .collect()
+}
+
+/// List entries in the /proc/net directory
+pub fn list_net_entries() -> Result<Vec<String>, i32> {
+    net::list_entries()
 }
 
 /// List entries in the /proc/breenix directory
@@ -522,6 +545,13 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<String, i32> {
         #[cfg(not(target_arch = "aarch64"))]
         ProcEntryType::XhciCounters => Ok(String::from("")),
         ProcEntryType::Ext2 => generate_ext2(),
+        ProcEntryType::NetDir => {
+            let mut text = String::new();
+            text.try_reserve_exact(4).map_err(|_| -12)?;
+            text.push_str("pnp\n");
+            Ok(text)
+        }
+        ProcEntryType::NetPnp => net::generate_pnp(),
         ProcEntryType::BreenixDir => {
             // Directory listing
             Ok(String::from("testing\next2\n"))

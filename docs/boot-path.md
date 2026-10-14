@@ -97,8 +97,8 @@ instructions cannot be emulated by this QEMU version.
   manifest and releases the shared boot slot. A missing DONE or fatal kernel
   output fails the boot; its idle exit and `--gate-timeout` DONE deadline also
   stop unfinished suites. Parallels and VMware stop the VM, record the result and
-  release the boot slot after scoring DONE. VMware sweeps older bundles before VM
-  startup, so housekeeping does not delay completion. `--suite --test` on Parallels
+  release the boot slot after scoring DONE. VMware deletes only the stopped bundle exclusively created by the current
+  runner; unowned bundles are never swept. `--suite --test` on Parallels
   waits for DONE before its timed screenshot and exit; VMware rejects `--test`.
   `--gate-timeout N` sets the DONE deadline (default 1800 seconds for ARM64 QEMU
   suites and Parallels/VMware suites and probes); QEMU enforces it even when
