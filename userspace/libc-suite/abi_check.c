@@ -10,6 +10,7 @@
 #include <glob.h>
 #include <regex.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -126,3 +127,6 @@ SIZE(struct option, 32);
 AT(struct option, has_arg, 8);
 AT(struct option, flag, 16);
 AT(struct option, val, 24);
+
+/* STDIO positions retain both the offset and the 8-byte multibyte state. */
+SIZE(fpos_t, 16); ALIGN(fpos_t, 8); AT(fpos_t, offset, 0); AT(fpos_t, state, 8);

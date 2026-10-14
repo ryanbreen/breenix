@@ -57,6 +57,7 @@ int vfscanf(FILE *__BREENIX_RESTRICT, const char *__BREENIX_RESTRICT, va_list);
 int vsscanf(const char *__BREENIX_RESTRICT, const char *__BREENIX_RESTRICT, va_list);
 #ifdef __BREENIX_POSIX
 FILE *fdopen(int, const char *); int fileno(FILE *);
+FILE *popen(const char *, const char *); int pclose(FILE *);
 int fseeko(FILE *, off_t, int); off_t ftello(FILE *);
 void flockfile(FILE *); int ftrylockfile(FILE *); void funlockfile(FILE *);
 int getc_unlocked(FILE *); int getchar_unlocked(void);
@@ -69,6 +70,8 @@ int asprintf(char **__BREENIX_RESTRICT, const char *__BREENIX_RESTRICT, ...); in
 #endif
 #ifdef __BREENIX_EXT
 int fgetc_unlocked(FILE *); int fputc_unlocked(int, FILE *);
+int fileno_unlocked(FILE *); int fputs_unlocked(const char *, FILE *);
+char *fgets_unlocked(char *, int, FILE *);
 size_t fread_unlocked(void *, size_t, size_t, FILE *);
 size_t fwrite_unlocked(const void *, size_t, size_t, FILE *);
 int fflush_unlocked(FILE *); int feof_unlocked(FILE *); int ferror_unlocked(FILE *);
