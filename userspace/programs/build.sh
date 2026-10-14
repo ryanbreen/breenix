@@ -187,8 +187,11 @@ STD_LINK_INPUTS=()
 for rlib in "$SCRIPT_DIR/target/$TARGET_DIR/release/deps/"*.rlib; do
     STD_LINK_INPUTS+=(--link-input "$rlib")
 done
+# The rlibs' objects are LLVM bitcode from rustc's own LLVM, which an older system
+# llvm-nm cannot read; the pinned toolchain's llvm-tools always can.
+RUST_TOOLS="$(cd "$PROJECT_ROOT" && rustc --print sysroot)/lib/rustlib/$(cd "$PROJECT_ROOT" && rustc -vV | sed -n 's/^host: //p')/bin"
 python3 "$PROJECT_ROOT/scripts/libc-duplicate-check.py" \
-    --archive "$LIBC_RELEASE_DIR/libc.a" --tool-dir "$LIBC_TOOLS" "${STD_LINK_INPUTS[@]}"
+    --archive "$LIBC_RELEASE_DIR/libc.a" --tool-dir "$RUST_TOOLS" "${STD_LINK_INPUTS[@]}"
 echo ""
 
 # Step 3: Copy all binaries as .elf to userspace/programs/ for ext2 inclusion
