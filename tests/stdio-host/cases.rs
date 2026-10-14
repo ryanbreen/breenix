@@ -464,3 +464,9 @@ fn popen_reads_writes_and_waits_for_status(){unsafe{
 fn failed_character_scan_does_not_assign(){unsafe{
     let mut b=*b"keep";assert_eq!(sscanf(c"x".as_ptr() as *const u8,c"%2c".as_ptr() as *const u8,b.as_mut_ptr()),-1);assert_eq!(&b,b"keep");
 }}
+#[test]
+fn zero_length_io_leaves_stream_state_unchanged(){unsafe{
+    let mut b=[0u8;8];let f=fmemopen(b.as_mut_ptr(),b.len(),c"w+".as_ptr() as *const u8);assert!(!f.is_null());
+    assert_eq!(fread(ptr::null_mut(),1,0,f),0);assert_eq!(fwrite(ptr::null(),1,0,f),0);
+    assert_eq!(super::stdio::file::orient(f,0),0);assert_eq!(ftell(f),0);assert_eq!(feof(f),0);assert_eq!(ferror(f),0);fclose(f);
+}}

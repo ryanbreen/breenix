@@ -672,7 +672,7 @@ pub unsafe extern "C" fn fread_unlocked(p: *mut u8, size: usize, n: usize, f: *m
         fail(f, EOVERFLOW);
         return 0;
     };
-    if size == 0 {
+    if total == 0 {
         return 0;
     }
     orient(f, -1);
@@ -705,7 +705,7 @@ pub unsafe extern "C" fn fwrite_unlocked(
         fail(f, EOVERFLOW);
         return 0;
     };
-    if size == 0 {
+    if total == 0 {
         return 0;
     }
     orient(f, -1);
