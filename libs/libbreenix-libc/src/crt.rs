@@ -1,7 +1,7 @@
 //! Process entry: `_start` takes argc, argv and envp from the initial stack, sets
 //! `environ`, starts the thread runtime and calls `main(argc, argv, envp)`.
 
-use crate::{environ, exit, pthread};
+use crate::{env::environ, exit, pthread};
 
 /// Pristine x86_64 GPR values at process entry.
 ///

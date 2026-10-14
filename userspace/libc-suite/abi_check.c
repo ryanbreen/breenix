@@ -4,6 +4,7 @@
  * build.sh compiles this for both architectures on every build; it has no code. Each
  * lane adds the checks for the types its headers define.
  */
+#define _POSIX_C_SOURCE 202405L
 #include <fcntl.h>
 #include <stddef.h>
 #include <sys/stat.h>
@@ -13,6 +14,10 @@
 #include <__breenix/iovec.h>
 #include <__breenix/timespec.h>
 #include <__breenix/timeval.h>
+#include <locale.h>
+#include <wchar.h>
+#include <wctype.h>
+#include <time.h>
 
 #define SIZE(type, bytes) _Static_assert(sizeof(type) == (bytes), "sizeof " #type)
 #define ALIGN(type, bytes) _Static_assert(_Alignof(type) == (bytes), "alignment of " #type)
@@ -58,6 +63,15 @@ SIZE(pthread_barrier_t, 32);    ALIGN(pthread_barrier_t, 4);
 SIZE(pthread_barrierattr_t, 4); ALIGN(pthread_barrierattr_t, 4);
 SIZE(__breenix_sem_t, 32);      ALIGN(__breenix_sem_t, 4);
 SIZE(__breenix_mbstate_t, 8);   ALIGN(__breenix_mbstate_t, 4);
+SIZE(mbstate_t, 8);            ALIGN(mbstate_t, 4);
+SIZE(wchar_t, 4);
+SIZE(wint_t, 4);
+SIZE(wctype_t, 8);
+SIZE(wctrans_t, 8);
+SIZE(locale_t, 8);
+SIZE(struct tm, 56);          ALIGN(struct tm, 8);
+AT(struct tm, tm_gmtoff, 40);
+AT(struct tm, tm_zone, 48);
 
 /* Times and buffers. */
 SIZE(struct timespec, 16);

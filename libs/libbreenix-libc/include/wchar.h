@@ -9,7 +9,11 @@ typedef __breenix_wint_t wint_t;
 typedef __breenix_mbstate_t mbstate_t;
 #define WEOF ((wint_t)-1)
 #ifndef WCHAR_MIN
+#ifdef __WCHAR_UNSIGNED__
 #define WCHAR_MIN 0
+#else
+#define WCHAR_MIN (-__WCHAR_MAX__ - 1)
+#endif
 #endif
 #ifndef WCHAR_MAX
 #define WCHAR_MAX __WCHAR_MAX__

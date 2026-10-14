@@ -11,17 +11,29 @@ mod pthread {
     use core::cell::UnsafeCell;
     use core::ffi::c_void;
     std::thread_local! { static LOCALE: UnsafeCell<*mut c_void> = const { UnsafeCell::new(core::ptr::null_mut()) }; }
-    pub(crate) unsafe fn locale_slot() -> *mut *mut c_void { LOCALE.with(|slot| slot.get()) }
-    pub(crate) fn set_errno(e: i32) { unsafe { *crate::__errno_location() = e; } }
+    pub(crate) unsafe fn locale_slot() -> *mut *mut c_void {
+        LOCALE.with(|slot| slot.get())
+    }
+    pub(crate) fn set_errno(e: i32) {
+        unsafe {
+            *crate::__errno_location() = e;
+        }
+    }
 }
 mod env {
     pub(crate) fn getenv_bytes(name: &[u8]) -> Option<&'static [u8]> {
-        let mut key = name.to_vec(); key.push(0);
+        let mut key = name.to_vec();
+        key.push(0);
         unsafe {
             let value = crate::getenv(key.as_ptr());
-            if value.is_null() { return None; }
-            let mut n = 0; while *value.add(n) != 0 { n += 1; }
-            Some(core::slice::from_raw_parts(value,n))
+            if value.is_null() {
+                return None;
+            }
+            let mut n = 0;
+            while *value.add(n) != 0 {
+                n += 1;
+            }
+            Some(core::slice::from_raw_parts(value, n))
         }
     }
 }
