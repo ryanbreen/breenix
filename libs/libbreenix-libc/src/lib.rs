@@ -39,6 +39,7 @@ mod shm;
 mod semaphore;
 mod sysv;
 mod termios;
+mod stdio;
 
 use libbreenix::types::Fd;
 use libbreenix::error::Error;
