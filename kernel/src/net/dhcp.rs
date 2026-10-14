@@ -48,6 +48,7 @@ const ATTEMPT_TIMEOUTS_MS: [u64; 3] = [2_000, 4_000, 4_000];
 /// receive hook costs one atomic load on every other boot.
 static AWAITED: AtomicU8 = AtomicU8::new(0);
 static XID: AtomicU32 = AtomicU32::new(0);
+static REQUEST_SENT: AtomicU64 = AtomicU64::new(0);
 /// The interface's hardware address, in the low 48 bits.
 static CLIENT_MAC: AtomicU64 = AtomicU64::new(0);
 static REPLY: Mutex<Option<Reply>> = Mutex::new(None);
@@ -122,6 +123,7 @@ fn mac_to_u64(mac: [u8; 6]) -> u64 {
 }
 
 fn attempt(mac: [u8; 6], timeout_ms: u64) -> Option<Lease> {
+    XID.fetch_add(1, Ordering::Relaxed);
     let offer = exchange(mac, DHCPDISCOVER, None, DHCPOFFER, timeout_ms)?;
     let server = offer.server?;
     if !valid_address(server) || !valid_address(offer.yiaddr) {
@@ -147,7 +149,7 @@ fn attempt(mac: [u8; 6], timeout_ms: u64) -> Option<Lease> {
         wait_until(now().saturating_add(10_000_000_000));
         return None;
     }
-    Some(lease)
+    (now() < lease.expires_at).then_some(lease)
 }
 
 fn valid_address(ip: [u8; 4]) -> bool {
@@ -168,7 +170,8 @@ fn lease_from_ack(ack: Reply, requested: [u8; 4], server: Option<[u8; 4]>) -> Op
     if seconds == 0 {
         return None;
     }
-    let start = now();
+    // RFC 2131: ACK transit time must not extend the server's lease.
+    let start = REQUEST_SENT.load(Ordering::Relaxed);
     let infinite = seconds == u32::MAX;
     let duration = u64::from(seconds) * 1_000_000_000;
     let t1 = ack
@@ -240,6 +243,7 @@ pub fn maintain(mac: [u8; 6], carrier: bool) {
         // A new transaction cannot accept a delayed ACK from an earlier one.
         XID.fetch_add(1, Ordering::Relaxed);
         let _ = take_reply();
+        REQUEST_SENT.store(now(), Ordering::Relaxed);
         AWAITED.store(DHCPACK, Ordering::Release);
         let mut message = build_message(DHCPREQUEST, XID.load(Ordering::Relaxed), mac, None);
         message[12..16].copy_from_slice(&current.ip_addr);
@@ -336,6 +340,7 @@ fn exchange(
     timeout_ms: u64,
 ) -> Option<Reply> {
     let _ = take_reply();
+    REQUEST_SENT.store(now(), Ordering::Relaxed);
     AWAITED.store(awaited, Ordering::Release);
     let message = build_message(kind, XID.load(Ordering::Relaxed), mac, request);
     send_message(&message, [0; 4], [255; 4])?;
@@ -346,11 +351,11 @@ fn wait_reply(timeout_ms: u64) -> Option<Reply> {
     let deadline = now().saturating_add(timeout_ms * 1_000_000);
     loop {
         let _ = super::process_rx_budgeted(64);
-        if let Some(reply) = take_reply() {
-            return Some(reply);
-        }
         if now() >= deadline {
             return None;
+        }
+        if let Some(reply) = take_reply() {
+            return Some(reply);
         }
         core::hint::spin_loop();
     }

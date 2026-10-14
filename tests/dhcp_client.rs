@@ -53,6 +53,8 @@ pub mod arp {
     }
     pub fn clear() {}
 }
+static ACK_DELAY: AtomicU64 = AtomicU64::new(0);
+static REQUEST_TIME: AtomicU64 = AtomicU64::new(0);
 static CLOCK_STEP: AtomicU64 = AtomicU64::new(100_000_000);
 static CLOCK: AtomicU64 = AtomicU64::new(1_000_000_000);
 pub mod time {
@@ -136,6 +138,9 @@ fn send(src: [u8; 4], dst: [u8; 4], data: &[u8]) -> Result<(), &'static str> {
         return Err("No buffers");
     }
     let kind = msg[242];
+    if kind == 3 {
+        REQUEST_TIME.store(CLOCK.load(Ordering::Relaxed), Ordering::Relaxed);
+    }
     p.sent.push((dst, msg.to_vec()));
     if kind == 4 {
         p.declines += 1;
@@ -205,6 +210,9 @@ pub fn process_rx_budgeted(_: usize) {
     CLOCK.fetch_add(CLOCK_STEP.load(Ordering::Relaxed), Ordering::Relaxed);
     let packet = PEER.lock().unwrap().pending.take();
     if let Some(packet) = packet {
+        if packet.get(20 + 8 + 242) == Some(&5) {
+            CLOCK.fetch_add(ACK_DELAY.load(Ordering::Relaxed), Ordering::Relaxed);
+        }
         let ip = ipv4::Ipv4Packet::parse(&packet).unwrap();
         let eth = ethernet::EthernetFrame {
             src_mac: [0; 6],
@@ -221,6 +229,8 @@ fn setup() -> MutexGuard<'static, ()> {
     *PEER.lock().unwrap() = Peer::default();
     CLOCK.store(1_000_000_000, Ordering::Relaxed);
     CLOCK_STEP.store(100_000_000, Ordering::Relaxed);
+    ACK_DELAY.store(0, Ordering::Relaxed);
+    REQUEST_TIME.store(0, Ordering::Relaxed);
     dhcp::maintain(MAC, false);
     dhcp::maintain(MAC, true);
     PEER.lock().unwrap().sent.clear();
@@ -430,5 +440,25 @@ fn physical_ingress_cannot_reach_or_spoof_loopback_services() {
         TCP_DELIVERIES.load(Ordering::Relaxed),
         1,
         "trusted loopback remains deliverable"
+    );
+}
+
+#[test]
+fn delayed_ack_does_not_add_time_to_initial_or_renewed_lease() {
+    let _guard = setup();
+    PEER.lock().unwrap().lease_seconds = Some(60);
+    ACK_DELAY.store(1_500_000_000, Ordering::Relaxed);
+    let lease = dhcp::acquire(MAC).unwrap();
+    assert_eq!(
+        lease.expires_at,
+        REQUEST_TIME.load(Ordering::Relaxed) + 60_000_000_000
+    );
+    CLOCK.store(lease.renew_at, Ordering::Relaxed);
+    ACK_DELAY.store(200_000_000, Ordering::Relaxed);
+    dhcp::maintain(MAC, true);
+    let renewed = dhcp::lease().unwrap();
+    assert_eq!(
+        renewed.expires_at,
+        REQUEST_TIME.load(Ordering::Relaxed) + 60_000_000_000
     );
 }
