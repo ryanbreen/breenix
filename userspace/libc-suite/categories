@@ -2,3 +2,4 @@
 #   <category>            functions libc.a lacks get stand-ins that fail by name
 #   <category> complete   every symbol the program uses must be in libc.a
 # A lane adds its category here once the category's headers compile.
+pthread complete

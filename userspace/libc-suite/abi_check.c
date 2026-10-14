@@ -4,6 +4,11 @@
  * build.sh compiles this for both architectures on every build; it has no code. Each
  * lane adds the checks for the types its headers define.
  */
+#define _POSIX_C_SOURCE 202405L
+#include <pthread.h>
+#include <signal.h>
+#include <semaphore.h>
+#include <sched.h>
 #include <fcntl.h>
 #include <stddef.h>
 #include <sys/stat.h>
@@ -101,3 +106,32 @@ AT(struct stat, st_mtim, 88);
 AT(struct stat, st_ctim, 104);
 #endif
 AT(struct stat, st_ino, 8);
+
+/* PTHREAD owns these public signal and cleanup layouts. */
+SIZE(pthread_spinlock_t, 4); ALIGN(pthread_spinlock_t, 4);
+SIZE(sem_t, 32); ALIGN(sem_t, 4);
+SIZE(sigset_t, 8); ALIGN(sigset_t, 8);
+SIZE(struct sched_param, 4);
+SIZE(struct __breenix_cleanup, 24);
+AT(struct __breenix_cleanup, routine, 8);
+AT(struct __breenix_cleanup, arg, 16);
+SIZE(struct sigaction, 32);
+AT(struct sigaction, sa_mask, 8);
+AT(struct sigaction, sa_flags, 16);
+AT(struct sigaction, sa_restorer, 24);
+SIZE(siginfo_t, 128); ALIGN(siginfo_t, 8);
+SIZE(struct sigevent, 64); ALIGN(struct sigevent, 8);
+SIZE(stack_t, 24);
+AT(stack_t, ss_flags, 8); AT(stack_t, ss_size, 16);
+#if defined(__aarch64__)
+SIZE(mcontext_t, 4384); ALIGN(mcontext_t, 16);
+SIZE(ucontext_t, 4560); ALIGN(ucontext_t, 16);
+AT(ucontext_t, uc_sigmask, 40);
+AT(ucontext_t, uc_mcontext, 176);
+AT(mcontext_t, pc, 264);
+#else
+SIZE(mcontext_t, 256); ALIGN(mcontext_t, 8);
+SIZE(ucontext_t, 304); ALIGN(ucontext_t, 8);
+AT(ucontext_t, uc_mcontext, 40);
+AT(ucontext_t, uc_sigmask, 296);
+#endif

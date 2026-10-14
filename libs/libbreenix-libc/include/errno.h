@@ -13,7 +13,8 @@ int *__errno_location(void);
 #define EDOM 33
 #define ERANGE 34
 #define EILSEQ 84
-#if __BREENIX_POSIX
+/* ISO C17 7.5 permits additional implementation error macros beginning
+ * with E followed by an uppercase letter or digit, even in strict mode. */
 #define EPERM 1
 #define ENOENT 2
 #define ESRCH 3
@@ -145,5 +146,4 @@ int *__errno_location(void);
 #define EWOULDBLOCK EAGAIN
 #define ENOTSUP EOPNOTSUPP
 #define EDEADLOCK EDEADLK
-#endif
 #endif
