@@ -899,14 +899,16 @@ pub(crate) fn unmap_range(
     if process.vmas.try_reserve(2).is_err() {
         return Err(ErrorCode::OutOfMemory as u64);
     }
+    let mut leaves = crate::memory::process_memory::LeafBatch::new();
     let mut from = addr;
     while let Some(page) = page_table.next_mapped_page(from, end_addr) {
         from = page.start_address().as_u64() + PAGE_SIZE;
         match page_table.unmap_page_deferred(page) {
-            Ok(leaf) => leaf.flush().release(),
+            Ok(leaf) => leaves.push(leaf),
             Err(_) => return Err(ErrorCode::OutOfMemory as u64),
         }
     }
+    leaves.finish();
     let mut index = 0;
     while index < process.vmas.len() {
         let vma = &process.vmas[index];

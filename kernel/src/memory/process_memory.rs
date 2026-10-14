@@ -254,6 +254,69 @@ impl FlushedLeaf {
     }
 }
 
+/// Leaves a `LeafBatch` holds before it flushes them.
+const LEAF_BATCH_PAGES: usize = 64;
+
+/// User leaves removed from one page table and not yet invalidated, flushed
+/// together: unmapping a range costs one cross-CPU invalidation per
+/// `LEAF_BATCH_PAGES` pages instead of one per page. As with `ReleasedLeaf`,
+/// a frame's reference is dropped only after its invalidation; `finish`, and
+/// dropping the batch, do both.
+pub struct LeafBatch {
+    leaves: [Option<ReleasedLeaf>; LEAF_BATCH_PAGES],
+    len: usize,
+}
+
+impl LeafBatch {
+    pub fn new() -> Self {
+        Self {
+            leaves: [const { None }; LEAF_BATCH_PAGES],
+            len: 0,
+        }
+    }
+
+    /// Add a removed leaf, flushing the batch first when it is full or holds
+    /// leaves of another page table.
+    pub fn push(&mut self, leaf: ReleasedLeaf) {
+        let other_root = self.leaves[0]
+            .as_ref()
+            .is_some_and(|first| first.root != leaf.root);
+        if self.len == LEAF_BATCH_PAGES || other_root {
+            self.finish();
+        }
+        self.leaves[self.len] = Some(leaf);
+        self.len += 1;
+    }
+
+    /// Invalidate every held leaf's translation, then release its frame.
+    pub fn finish(&mut self) {
+        let Some(root) = self.leaves[0].as_ref().map(|leaf| leaf.root) else {
+            return;
+        };
+        let mut pages = [0u64; LEAF_BATCH_PAGES];
+        for (page, leaf) in pages.iter_mut().zip(self.leaves[..self.len].iter().flatten()) {
+            *page = leaf.record.page;
+        }
+        crate::memory::tlb::flush_user_pages(root, &pages[..self.len]);
+        for leaf in self.leaves[..self.len].iter_mut().filter_map(Option::take) {
+            ProcessPageTable::release_leaf_record(leaf.record, leaf.frame);
+        }
+        self.len = 0;
+    }
+}
+
+impl Default for LeafBatch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for LeafBatch {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
+
 /// User pages per leaf chunk: the span of one last-level table, 2 MiB.
 const LEAF_CHUNK_PAGES: u64 = 512;
 const LEAF_CHUNK_WORDS: usize = (LEAF_CHUNK_PAGES / 64) as usize;

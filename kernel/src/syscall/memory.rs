@@ -198,18 +198,19 @@ fn free_prepared(prepared: Option<(u64, alloc::vec::Vec<PhysFrame<Size4KiB>>)>) 
     }
 }
 
-/// Unmaps the heap pages in `[start, end)`, flushing each before its frame is
-/// released.
+/// Unmaps the heap pages in `[start, end)`, flushing them in batches before
+/// their frames are released.
 fn unmap_heap_pages(
     page_table: &mut crate::memory::process_memory::ProcessPageTable,
     start: u64,
     end: u64,
 ) {
+    let mut leaves = crate::memory::process_memory::LeafBatch::new();
     let mut page_start = start;
     while page_start < end {
         let page = Page::<Size4KiB>::containing_address(VirtAddr::new(page_start));
         match page_table.unmap_page_deferred(page) {
-            Ok(leaf) => leaf.flush().release(),
+            Ok(leaf) => leaves.push(leaf),
             Err(e) => log::warn!("sys_brk: unmap_page failed for {:#x}: {}", page_start, e),
         }
         page_start += PAGE_SIZE;

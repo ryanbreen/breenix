@@ -73,6 +73,31 @@ pub fn flush_user_page(root: u64, addr: VirtAddr) {
     let _ = root;
 }
 
+/// Flush `pages` of the user address space whose page-table root is `root`,
+/// on every CPU that may cache a translation of that space, with one
+/// cross-CPU request for the whole set.
+///
+/// This CPU invalidates each page. On x86_64 every other CPU that may hold
+/// `root` drops all its non-global translations in one shootdown, rather
+/// than taking one round per page, each of which waits for every target to
+/// answer. aarch64 broadcasts each page's invalidation in hardware, as
+/// `flush_user_page` does. The caller has already cleared the descriptors.
+pub fn flush_user_pages(root: u64, pages: &[u64]) {
+    if let [page] = pages {
+        flush_user_page(root, VirtAddr::new(*page));
+        return;
+    }
+    for &page in pages {
+        tlb::flush(VirtAddr::new(page));
+    }
+    #[cfg(target_arch = "x86_64")]
+    if !pages.is_empty() {
+        shootdown::request_for_root(shootdown::Request::All, root);
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = root;
+}
+
 /// Announce that this CPU is about to load page-table root `root` into CR3.
 /// Called before every CR3 write, so a flush of that address space reaches
 /// this CPU from the moment it can cache one of its translations.

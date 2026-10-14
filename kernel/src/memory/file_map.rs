@@ -1575,11 +1575,17 @@ pub(crate) fn unmap(
     let vma = &vmas[index];
     let (start, end) = (vma.start.as_u64(), vma.end.as_u64());
     let mut clean = true;
+    let mut leaves = crate::memory::process_memory::LeafBatch::new();
     let mut from = start;
     while let Some(page) = pt.next_mapped_page(from, end) {
         from = page.start_address().as_u64() + PAGE_SIZE;
-        clean &= revoke_entry(pt, page);
+        match pt.revoke_page(page) {
+            Ok(Revoked::Absent) => {}
+            Ok(Revoked::Leaf(leaf)) => leaves.push(leaf),
+            Err(_) => clean = false,
+        }
     }
+    leaves.finish();
     if !clean {
         return Err("File mapping entry custody disagreed");
     }
