@@ -224,7 +224,7 @@ for name in sorted(applets):
 (work / 'applets.json').write_text(json.dumps(result, indent=1, sort_keys=True) + '\n')
 PYANALYZE
 
-# Missing applets are build failures: /bin must never silently lose a utility.
+# Reject configured applets that failed to compile or link.
 rm -f "$ELF" "$LINKS"
 python3 - "$WORK/applets.json" <<'PYCHECK'
 import json, sys
@@ -235,6 +235,10 @@ if not result['compile_ok'] or not result['core']['links'] or failed or result['
         print('libc-busybox: compilation failed; see compile.log and applets.json', file=sys.stderr)
     if not result['core']['links']:
         print('libc-busybox: unresolved core: ' + ' '.join(result['core']['missing']), file=sys.stderr)
+    if failed:
+        print('libc-busybox: failed applets: ' + ' '.join(failed), file=sys.stderr)
+    if result['objects_failed']:
+        print('libc-busybox: failed objects: ' + ' '.join(result['objects_failed']), file=sys.stderr)
     for name in failed:
         print(f"  {name}: {result['applets'][name]}", file=sys.stderr)
     for error in result['compile_errors']:
@@ -242,7 +246,7 @@ if not result['compile_ok'] or not result['core']['links'] or failed or result['
     sys.exit(1)
 PYCHECK
 if ! "$CC" --arch "$ARCH" -Wl,--error-limit=0 "$WORK/objects.a" -o "$WORK/busybox.elf" > "$WORK/link.log" 2>&1; then
-    echo "libc-busybox: final link failed:" >&2
+    echo "libc-busybox: final link failed ($ARCH)" >&2
     cat "$WORK/link.log" >&2
     exit 1
 fi

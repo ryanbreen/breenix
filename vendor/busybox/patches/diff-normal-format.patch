@@ -1,0 +1,64 @@
+--- a/editors/diff.c
++++ b/editors/diff.c
+@@ -103 +103 @@
+-//usage:       "[-abBdiNqrTstw] [-L LABEL] [-S FILE] [-U LINES] FILE1 FILE2"
++//usage:       "[-abBdiNqrTstuw] [-L LABEL] [-S FILE] [-U LINES] FILE1 FILE2"
+@@ -106 +105,0 @@
+-//usage:       "This implementation supports unified diffs only.\n"
+@@ -120 +119,2 @@
+-//usage:     "\n	-U	Output LINES lines of context"
++//usage:     "\n	-u	Output unified format with 3 lines of context"
++//usage:     "\n	-U	Output unified format with LINES lines of context"
+@@ -153 +153 @@
+-	FLAG_u,         /* ignored, this is the default */
++	FLAG_u,         /* unified format */
+@@ -166,0 +167,3 @@
++	smallint directory_comparison;
++	char **command_args;
++	int command_argc;
+@@ -418,0 +422,2 @@
++		else if (ch == '<' || ch == '>')
++			putchar(' ');
+@@ -595,0 +601,7 @@
++static void print_range(int a, int b)
++{
++	printf("%d", MIN(a, b));
++	if (a < b)
++		printf(",%d", b);
++}
++
+@@ -638 +650,2 @@
+-				int ct = (2 * opt_U_context) + 1;
++				int ct = (option_mask32 & (FLAG(u) | FLAG(U)))
++					? (2 * opt_U_context) + 1 : 1;
+@@ -661 +674,24 @@
+-		if (!(option_mask32 & FLAG(q))) {
++		if (!(option_mask32 & (FLAG(q) | FLAG(u) | FLAG(U)))) {
++			/* POSIX recursive comparison identifies each changed file. */
++			if (!anychange && G.directory_comparison) {
++				printf("diff");
++				for (k = 1; k < G.command_argc; k++)
++					printf(" %s", G.command_args[k]);
++				printf(" %s %s\n", file[0], file[1]);
++			}
++			/* POSIX default format: one command per changed range. */
++			for (k = 0; k <= idx; k++) {
++				vec_t *v = &vec[k];
++				bool oldlines = (*v)[0].a <= (*v)[0].b;
++				bool newlines = (*v)[1].a <= (*v)[1].b;
++
++				print_range((*v)[0].a, (*v)[0].b);
++				putchar(!oldlines ? 'a' : !newlines ? 'd' : 'c');
++				print_range((*v)[1].a, (*v)[1].b);
++				putchar('\n');
++				fetch(&ft[0], ix[0], (*v)[0].a, (*v)[0].b, '<');
++				if (oldlines && newlines)
++					puts("---");
++				fetch(&ft[1], ix[1], (*v)[1].a, (*v)[1].b, '>');
++			}
++		} else if (!(option_mask32 & FLAG(q))) {
+@@ -987,0 +1024,2 @@
++	G.command_args = argv;
++	G.command_argc = optind;
+@@ -1037,0 +1076 @@
++		G.directory_comparison = 1;

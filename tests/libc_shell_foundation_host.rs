@@ -130,6 +130,45 @@ pub mod dns {
         })
     }
 }
+mod dirent {
+    pub struct Dirent {
+        pub d_name: [u8; 256],
+    }
+    pub struct Dir {
+        entries: Vec<Vec<u8>>,
+        index: usize,
+        current: Dirent,
+    }
+    pub unsafe fn opendir(_: *const u8) -> *mut Dir {
+        let entries = crate::FILES.with(|files| {
+            files
+                .borrow()
+                .keys()
+                .filter_map(|path| path.strip_prefix(b"/proc/").map(|p| p.to_vec()))
+                .collect()
+        });
+        Box::into_raw(Box::new(Dir {
+            entries,
+            index: 0,
+            current: Dirent { d_name: [0; 256] },
+        }))
+    }
+    pub unsafe fn readdir(dir: *mut Dir) -> *mut Dirent {
+        let d = &mut *dir;
+        if d.index == d.entries.len() {
+            return std::ptr::null_mut();
+        }
+        let name = &d.entries[d.index];
+        d.current.d_name.fill(0);
+        d.current.d_name[..name.len()].copy_from_slice(name);
+        d.index += 1;
+        &mut d.current
+    }
+    pub unsafe fn closedir(dir: *mut Dir) -> i32 {
+        drop(Box::from_raw(dir));
+        0
+    }
+}
 #[repr(C)]
 struct Utsname {
     nodename: [u8; 65],
@@ -321,6 +360,9 @@ fn sysinfo_units_uptime_errors_and_bounds() {
         reset();
         file("/proc/meminfo",b"MemTotal: 8192 kB\nMemFree: 1024 kB\nBuffers: 2 kB\nSwapTotal: 3 kB\nSwapFree: 1 kB\nShmem: 4 kB\n");
         file("/proc/uptime", b"123.45 10.00\n");
+        file("/proc/1", b"");
+        file("/proc/42", b"");
+        file("/proc/42x", b"");
         let mut info: sysinfo::SysInfo = std::mem::zeroed();
         READ_ERROR.with(|e| e.set(4));
         assert_eq!(sysinfo::sysinfo(&mut info), 0);
@@ -331,6 +373,7 @@ fn sysinfo_units_uptime_errors_and_bounds() {
         assert_eq!(info.sharedram, 4096);
         assert_eq!(info.bufferram, 2048);
         assert_eq!(info.mem_unit, 1);
+        assert_eq!(info.procs, 2);
         assert_eq!(pthread::errno(), 77);
         file("/proc/meminfo", b"MemTotal: broken kB\nMemFree: 1 kB\n");
         assert_eq!(sysinfo::sysinfo(&mut info), -1);
@@ -368,6 +411,11 @@ fn legacy_hostname_numeric_hosts_and_errors() {
             [192, 0, 2, 2]
         );
         assert!((*(*host).addr_list.add(2)).is_null());
+        assert_eq!(
+            CStr::from_ptr((*(*host).aliases).cast()).to_bytes(),
+            b"alias"
+        );
+        assert!((*(*host).aliases.add(1)).is_null());
         let host = netdb::gethostbyname(b"127.0.0.1\0".as_ptr());
         assert_eq!(*(*(*host).addr_list).cast::<[u8; 4]>(), [127, 0, 0, 1]);
         assert!(netdb::gethostbyname(b"missing.invalid\0".as_ptr()).is_null());
@@ -376,6 +424,8 @@ fn legacy_hostname_numeric_hosts_and_errors() {
         assert_eq!(*pthread::__h_errno_location(), 4);
         assert!(netdb::gethostbyname(b"temporary.example\0".as_ptr()).is_null());
         assert_eq!(*pthread::__h_errno_location(), 2);
+        assert!(netdb::gethostbyname(b"empty.example\0".as_ptr()).is_null());
+        assert_eq!(*pthread::__h_errno_location(), 4);
         assert!(!CStr::from_ptr(netdb::hstrerror(2).cast())
             .to_bytes()
             .is_empty());

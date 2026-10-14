@@ -23,7 +23,7 @@ unsafe fn read_proc(path: &[u8], buf: &mut [u8]) -> Result<usize, ()> {
     }
     let mut used = 0;
     let result = loop {
-        // Reserve one byte for an overflow probe: never parse a truncated file.
+        // Probe one byte beyond the buffer and reject truncated input.
         let mut extra = [0u8; 1];
         let dest = if used == buf.len() {
             &mut extra[..]
@@ -107,7 +107,35 @@ pub unsafe extern "C" fn sysinfo(out: *mut SysInfo) -> i32 {
     let saved = errno();
     let mut info: SysInfo = core::mem::zeroed();
     info.mem_unit = 1;
-    // Load averages and the process census are unavailable in these procfs files.
+    // The Linux ABI has no unavailable-load sentinel; retain 0 until the
+    // kernel exposes load averages. Processes are counted from procfs instead.
+    let dir = crate::dirent::opendir(b"/proc\0".as_ptr());
+    if dir.is_null() {
+        return -1;
+    }
+    loop {
+        set_errno(0);
+        let entry = crate::dirent::readdir(dir);
+        if entry.is_null() {
+            let error = errno();
+            crate::dirent::closedir(dir);
+            if error != 0 {
+                set_errno(error);
+                return -1;
+            }
+            break;
+        }
+        let name = &(*entry).d_name;
+        let end = name.iter().position(|b| *b == 0).unwrap_or(name.len());
+        if decimal(&name[..end]).is_some() {
+            let Some(count) = info.procs.checked_add(1) else {
+                crate::dirent::closedir(dir);
+                set_errno(75);
+                return -1;
+            };
+            info.procs = count;
+        }
+    }
     let mut buf = [0u8; 4096];
     let Ok(n) = read_proc(b"/proc/meminfo\0", &mut buf) else {
         return -1;
