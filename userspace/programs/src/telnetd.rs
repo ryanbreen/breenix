@@ -315,7 +315,7 @@ fn main() {
     setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &optval);
 
     // Bind to port
-    let addr = SockAddrIn::new([0, 0, 0, 0], TELNET_PORT);
+    let addr = SockAddrIn::new([127, 0, 0, 1], TELNET_PORT);
     if bind_inet(listen_fd, &addr).is_err() {
         print!("TELNETD_ERROR: bind failed\n");
         std::process::exit(1);

@@ -173,7 +173,11 @@ impl<'a> Ipv4Packet<'a> {
 
 /// Handle an incoming IPv4 packet
 pub fn handle_ipv4(_eth_frame: &EthernetFrame, ip: &Ipv4Packet) {
-    if ip.protocol == PROTOCOL_UDP && super::dhcp::receive(ip.payload) {
+    // Reject corrupt headers and fragments before DHCP can configure an address.
+    if ip.flags_fragment & 0x3fff != 0 || internet_checksum(ip.header) != 0 {
+        return;
+    }
+    if ip.protocol == PROTOCOL_UDP && super::dhcp::receive(ip) {
         return;
     }
 
@@ -185,12 +189,6 @@ pub fn handle_ipv4(_eth_frame: &EthernetFrame, ip: &Ipv4Packet) {
         && !super::is_broadcast_addr_in(&config, ip.dst_ip)
     {
         // Not for us, ignore (we don't do routing)
-        return;
-    }
-
-    // The stack does not reassemble fragments. Never interpret a fragment as
-    // a complete transport packet. Verify even loopback and offload-less NICs.
-    if ip.flags_fragment & 0x3fff != 0 || internet_checksum(ip.header) != 0 {
         return;
     }
 

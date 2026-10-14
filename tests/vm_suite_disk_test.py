@@ -15,7 +15,7 @@ class VmSuiteDiskTest(unittest.TestCase):
     def test_stopped_written_disk_controls_exit_and_vigil_status(self):
         functions = dict(re.findall(r'(?ms)^(\w+)\(\) \{\n(.*?)^\}', (ROOT / 'run.sh').read_text()))
         definitions = '\n'.join(f'{name}() {{\n{functions[name]}\n}}' for name in
-                                ('bounded_vm_command', 'score_vm_suite_disk', 'finish_vm_boot', 'install_vm_boot_traps'))
+                                ('bounded_vm_command', 'vmware_bundle_stopped', 'score_vm_suite_disk', 'finish_vm_boot', 'install_vm_boot_traps'))
         mke2fs = shutil.which('mke2fs') or '/opt/homebrew/opt/e2fsprogs/sbin/mke2fs'
         for platform in ('parallels', 'vmware'):
             for outcome in ('pass', 'wrong-bytes', 'stop-failed', 'convert-failed'):
@@ -65,7 +65,7 @@ class VmSuiteDiskTest(unittest.TestCase):
                         vmdk.write_text('invalid VMDK')
                     # Both controllers mark the disk stopped before the scorer runs.
                     controller = root / 'stop'
-                    controller.write_text('#!/bin/sh\n[ "$STOP_FAIL" = 0 ] || exit 1\ntouch "$STOPPED"\n')
+                    controller.write_text('#!/bin/sh\nif [ "$1" = list ]; then [ "$STOP_FAIL" = 0 ] || echo "$VM_BUNDLE/test.vmx"; exit 0; fi\n[ "$STOP_FAIL" = 0 ] || exit 1\ntouch "$STOPPED"\n')
                     controller.chmod(0o755)
                     env = dict(os.environ, BREENIX_ROOT=str(root), BOOT_MODE='suite', SUITE='disk',
                                SERIAL_LOG=str(serial), PARALLELS='true' if platform == 'parallels' else 'false',

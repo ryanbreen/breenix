@@ -48,7 +48,7 @@ pub mod udp {
     }
 }
 pub mod dhcp {
-    pub fn receive(_: &[u8]) -> bool {
+    pub fn receive(_: &crate::ipv4::Ipv4Packet) -> bool {
         unreachable!("wire tests never deliver UDP")
     }
 }

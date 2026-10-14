@@ -37,6 +37,8 @@
 //!     Generate content dynamically
 //! ```
 
+mod net;
+
 use alloc::string::String;
 use alloc::vec::Vec;
 use spin::Mutex;
@@ -479,14 +481,8 @@ pub fn list_xhci_entries() -> Vec<String> {
 }
 
 /// List entries in the /proc/net directory
-pub fn list_net_entries() -> Vec<String> {
-    let procfs = PROCFS.lock();
-    procfs
-        .entries
-        .iter()
-        .filter(|e| matches!(e.entry_type, ProcEntryType::NetPnp))
-        .map(|e| String::from(e.entry_type.name()))
-        .collect()
+pub fn list_net_entries() -> Result<Vec<String>, i32> {
+    net::list_entries()
 }
 
 /// List entries in the /proc/breenix directory
@@ -550,10 +546,12 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<String, i32> {
         ProcEntryType::XhciCounters => Ok(String::from("")),
         ProcEntryType::Ext2 => generate_ext2(),
         ProcEntryType::NetDir => {
-            let entries = list_net_entries();
-            Ok(entries.join("\n") + "\n")
+            let mut text = String::new();
+            text.try_reserve_exact(4).map_err(|_| -12)?;
+            text.push_str("pnp\n");
+            Ok(text)
         }
-        ProcEntryType::NetPnp => Ok(generate_net_pnp()),
+        ProcEntryType::NetPnp => net::generate_pnp(),
         ProcEntryType::BreenixDir => {
             // Directory listing
             Ok(String::from("testing\next2\n"))
@@ -623,26 +621,6 @@ fn generate_ext2() -> Result<String, i32> {
 }
 
 /// Generate /proc/uptime content
-/// Linux's `/proc/net/pnp` (net/ipv4/ipconfig.c, pnp_seq_show): the protocol
-/// that configured the interface, then its nameservers and boot server, so
-/// `/etc/resolv.conf` can be a symlink to it.
-fn generate_net_pnp() -> String {
-    use core::fmt::Write;
-    let mut text = String::new();
-    match crate::net::dhcp::lease() {
-        Some(lease) => {
-            text.push_str("#PROTO: DHCP\n");
-            if let Some([a, b, c, d]) = lease.nameserver {
-                let _ = writeln!(text, "nameserver {}.{}.{}.{}", a, b, c, d);
-            }
-            let [a, b, c, d] = lease.server;
-            let _ = writeln!(text, "bootserver {}.{}.{}.{}", a, b, c, d);
-        }
-        None => text.push_str("#MANUAL\n"),
-    }
-    text
-}
-
 fn generate_uptime() -> String {
     use alloc::format;
 

@@ -61,7 +61,7 @@ pub mod tcp {
 /// No DHCP exchange runs here. The kernel's client claims a datagram only while
 /// it awaits a reply, so with none awaited it claims nothing.
 pub mod dhcp {
-    pub fn receive(_: &[u8]) -> bool {
+    pub fn receive(_: &super::ipv4::Ipv4Packet) -> bool {
         false
     }
 }

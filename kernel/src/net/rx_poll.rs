@@ -34,6 +34,9 @@ fn rx_poll_fn() {
         if e1000::can_receive() {
             raise_softirq(SoftirqType::NetRx);
         }
+        if let Some(mac) = super::get_mac_address() {
+            super::dhcp::maintain(mac, e1000::link_up());
+        }
         sleep_one_tick();
     }
 }

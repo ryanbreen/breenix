@@ -238,13 +238,12 @@ pub const PARALLELS_CONFIG: NetConfig = NetConfig {
     gateway: [10, 211, 55, 1], // Parallels shared network gateway
 };
 
-/// Network configuration for VMware Fusion NAT networking
-/// VMware NAT (vmnet8) uses 172.16.45.x with gateway at 172.16.45.2
+/// Bridged VMware starts unconfigured until DHCP assigns an address.
 #[allow(dead_code)] // Used conditionally when e1000 is active on VMware
 pub const VMWARE_CONFIG: NetConfig = NetConfig {
-    ip_addr: [172, 16, 45, 100], // Static guest IP (avoiding DHCP conflicts)
+    ip_addr: [0; 4],
     subnet_mask: [255, 255, 255, 0],
-    gateway: [172, 16, 45, 2], // VMware NAT gateway
+    gateway: [0; 4],
 };
 
 /// Select network config based on compile-time feature or default to SLIRP
@@ -884,7 +883,7 @@ fn init_common() {
 
     #[cfg(target_arch = "aarch64")]
     let gw = if active_tx_driver_is_e1000() {
-        configure_from_dhcp().unwrap_or(gw)
+        configure_from_dhcp().unwrap_or([0; 4])
     } else {
         gw
     };
@@ -966,23 +965,15 @@ fn init_common() {
 }
 
 /// VMware's adapter is bridged to the host's network, whose addressing only its
-/// DHCP server knows. Returns the leased gateway; without a lease the static
-/// VMware configuration stays in place.
+/// DHCP server knows. Without a valid lease it remains unconfigured.
 #[cfg(target_arch = "aarch64")]
 fn configure_from_dhcp() -> Option<[u8; 4]> {
     let mac = get_mac_address()?;
     net_log!("NET: Requesting a DHCP lease");
     let Some(lease) = dhcp::acquire(mac) else {
-        net_log!("NET: No DHCP lease; keeping the static address");
+        net_log!("NET: No DHCP lease; interface remains unconfigured");
         return None;
     };
-    {
-        let _guard = net_lock_guard();
-        let mut config = NET_CONFIG.lock();
-        config.ip_addr = lease.ip_addr;
-        config.subnet_mask = lease.subnet_mask;
-        config.gateway = lease.gateway;
-    }
     let [a, b, c, d] = lease.ip_addr;
     let [m0, m1, m2, m3] = lease.subnet_mask;
     let [g0, g1, g2, g3] = lease.gateway;
@@ -998,6 +989,12 @@ fn configure_from_dhcp() -> Option<[u8; 4]> {
 /// Uses bottom-half exclusion on x86_64 and IRQ masking on aarch64 to prevent
 /// same-CPU re-entry from the network softirq.
 pub fn config() -> NetConfig {
+    #[cfg(target_arch = "aarch64")]
+    if active_tx_driver_is_e1000() {
+        return dhcp::lease().map(|lease| NetConfig {
+            ip_addr: lease.ip_addr, subnet_mask: lease.subnet_mask, gateway: lease.gateway,
+        }).unwrap_or(VMWARE_CONFIG);
+    }
     let _guard = net_lock_guard();
     let c = *NET_CONFIG.lock();
     c
@@ -1262,6 +1259,18 @@ pub fn send_ethernet(
 ) -> Result<(), &'static str> {
     if ethertype == ethernet::ETHERTYPE_IPV4 && ipv4::Ipv4Packet::parse(payload).is_none() {
         return Err("Invalid IPv4 packet");
+    }
+    #[cfg(target_arch = "aarch64")]
+    if active_tx_driver_is_e1000() && ethertype == ethernet::ETHERTYPE_IPV4 {
+        let ip = ipv4::Ipv4Packet::parse(payload).ok_or("Invalid IPv4 packet")?;
+        // Queued packets and established sockets cannot retain an expired or
+        // replaced source address. Discovery/DECLINE alone use 0.0.0.0.
+        let discovery = ip.src_ip == [0; 4] && ip.dst_ip == [255; 4]
+            && ip.protocol == ipv4::PROTOCOL_UDP
+            && udp::UdpHeader::parse(ip.payload).is_some_and(|(h, _)| h.src_port == 68 && h.dst_port == 67);
+        if !discovery && !dhcp::lease().is_some_and(|l| l.ip_addr == ip.src_ip) {
+            return Err("No DHCP address");
+        }
     }
     if payload.len() > ethernet::ETHERNET_MTU {
         return Err("Message too large");

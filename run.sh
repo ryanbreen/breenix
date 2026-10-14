@@ -383,23 +383,36 @@ score_vm_suite_disk() {
     )
 }
 
-# Delete a stopped VMware VM's bundle and its Fusion library entry. A vmware-vmx that was killed leaves its
-# *.lck directories behind, and vmrun deleteVM then answers "Insufficient permissions" and keeps the VM;
-# the VM is stopped, so those locks are stale. A bundle with no .vmx is not a Fusion VM and is removed
-# through a /tmp folder. Callers pass only bundles whose VM is not running.
+# Only this runner's exclusively-created bundle may be deleted. Query all
+# running VMX paths inside it, rather than guessing a filename.
+vmware_bundle_stopped() {
+    local bundle="$1" running
+    running=$(bounded_vm_command "$VMRUN" list 2>/dev/null) || return 1
+    while IFS= read -r vmx; do
+        case "$vmx" in "$bundle"/*) return 1 ;; esac
+    done <<< "$running"
+}
+
 delete_vmware_bundle() {
     local bundle="$1" vmx scratch lock output
-    [ -d "$bundle" ] || return 0
-    vmx="$bundle/$(basename "$bundle" .vmwarevm).vmx"
-    scratch=$(mktemp -d /tmp/breenix-vmware-delete.XXXXXX) || return 1
+    [ -d "$bundle" ] && [ ! -L "$bundle" ] || return 0
+    [ "$bundle" = "${VM_BUNDLE:-}" ] && [ "${VM_BUNDLE_OWNED:-false}" = true ] || return 0
+    [ -f "$bundle/.breenix-run-owner" ] || return 0
+    [ "$(cat "$bundle/.breenix-run-owner")" = "$VM_NAME" ] || return 0
+    vmware_bundle_stopped "$bundle" || { echo "WARNING: keeping running or unqueryable VM bundle $bundle"; return 0; }
+    vmx="$bundle/$VM_NAME.vmx"
+    scratch=$(mktemp -d /tmp/breenix-vmware-delete.XXXXXX) || return 0
     if [ -f "$vmx" ]; then
         for lock in "$bundle"/*.lck; do
-            [ ! -e "$lock" ] || mv "$lock" "$scratch/"
+            [ ! -e "$lock" ] || mv "$lock" "$scratch/" || true
         done
-        output=$(bounded_vm_command "$VMRUN" deleteVM "$vmx" 2>&1)
-        [ ! -d "$bundle" ] || echo "WARNING: vmrun deleteVM kept $bundle: $output"
+        if output=$(bounded_vm_command "$VMRUN" deleteVM "$vmx" 2>&1); then
+            :
+        else
+            echo "WARNING: vmrun deleteVM kept $bundle: $output"
+        fi
     else
-        mv "$bundle" "$scratch/"
+        mv "$bundle" "$scratch/" || true
     fi
     rm -rf "$scratch"
 }
@@ -417,7 +430,9 @@ finish_vm_boot() {
     if [ "$PARALLELS" = true ]; then
         prlctl stop "$PARALLELS_VM" --kill >/dev/null 2>&1 || stopped=false
     else
-        "$VMRUN" stop "$VMX_FILE" hard >/dev/null 2>&1 || stopped=false
+        bounded_vm_command "$VMRUN" stop "$VMX_FILE" hard >/dev/null 2>&1 || {
+            vmware_bundle_stopped "$VM_BUNDLE" || stopped=false
+        }
         vmware_check_network_log "$VM_BUNDLE/vmware.log"
         vmware_network_summary
     fi
@@ -1004,34 +1019,15 @@ if [ "$VMWARE" = true ]; then
     echo ""
     echo "--- Configuring VMware VM ---"
 
-    # Use a unique VM name to avoid stale state
-    VM_NAME="breenix-$(date +%s)"
+    # Exclusive creation prevents clock rollback or name collisions from
+    # granting cleanup ownership of another VM. Never sweep unowned bundles.
+    VM_NAME="breenix-$(date +%s)-$(uuidgen)"
     VM_BUNDLE="$VM_MACHINES/$VM_NAME.vmwarevm"
+    VM_BUNDLE_OWNED=false
+    mkdir "$VM_BUNDLE"
+    printf '%s\n' "$VM_NAME" > "$VM_BUNDLE/.breenix-run-owner"
+    VM_BUNDLE_OWNED=true
     echo "VM name: $VM_NAME"
-    # Each boot deletes its own VM as it exits; this sweep removes the ones a run killed outright left behind
-    # (one per boot, about 100 MB each): only breenix-<epoch> bundles that are not running and were created
-    # more than 30 minutes ago, so another run still scoring its just-stopped VM's data disk keeps it. Age comes
-    # from the epoch in the name, because VMware Fusion rewrites listed bundle files, so their modification
-    # times are unsuitable. Sweep before VM startup, so housekeeping cannot delay recording a completed boot.
-    sweep_vmware_bundles() {
-        local now old_bundle old_name old_vmx VM_BUNDLE_LIST
-        VM_BUNDLE_LIST=$(mktemp)
-        now=$(date +%s)
-        for old_bundle in "$VM_MACHINES"/breenix-[0-9]*.vmwarevm; do
-            [ -d "$old_bundle" ] && [ "$old_bundle" != "$VM_BUNDLE" ] || continue
-            old_name=$(basename "$old_bundle" .vmwarevm)
-            [ $((now - ${old_name#breenix-})) -gt 1800 ] || continue
-            old_vmx="$old_bundle/$old_name.vmx"
-            bounded_vm_command "$VMRUN" list > "$VM_BUNDLE_LIST" 2>/dev/null || { rm -f "$VM_BUNDLE_LIST"; return 0; }
-            grep -qxF "$old_vmx" "$VM_BUNDLE_LIST" && continue
-            delete_vmware_bundle "$old_bundle"
-        done
-        rm -f "$VM_BUNDLE_LIST"
-    }
-    sweep_vmware_bundles
-
-    # Create VM bundle. Until the boot's own traps are installed, any exit deletes it.
-    mkdir -p "$VM_BUNDLE"
     trap 'delete_vmware_bundle "$VM_BUNDLE"' EXIT
     trap 'exit 130' INT
     trap 'exit 129' HUP

@@ -47,9 +47,11 @@ prlctl() {{
     def test_exit_and_interruption_reap_log_monitor(self):
         source = RUNNER.read_text()
         finish = source.split("finish_vm_boot() {\n", 1)[1].split("\n}\n", 1)[0]
+        stopped = source.split("vmware_bundle_stopped() {\n", 1)[1].split("\n}\n", 1)[0]
         install = source.split("install_vm_boot_traps() {\n", 1)[1].split("\n}\n", 1)[0]
         cases = (
             ("vmware_suite", "vmware", 0),
+            ("already_off", "vmware", 0),
             ("success", "parallels", 0),
             ("failure", "parallels", 7),
             ("timeout", "parallels", 124),
@@ -64,6 +66,9 @@ prlctl() {{
                 (root / "scripts").mkdir()
                 (root / "scripts" / "vigil-record.sh").write_text("#!/bin/sh\nexit 0\n")
                 (root / "scripts" / "vigil-record.sh").chmod(0o755)
+                (root / "vmrun").write_text("#!/bin/sh\n" + (
+                    "[ \"$1\" != stop ]\n" if name == "already_off" else "exit 0\n"))
+                (root / "vmrun").chmod(0o755)
                 log = root / "vmware.log"
                 log.write_text("started\n")
                 pid_file = root / "monitor.pid"
@@ -75,6 +80,10 @@ finish_vm_boot() {{
 install_vm_boot_traps() {{
 {install}
 }}
+bounded_vm_command() {{ "$@"; }}
+vmware_bundle_stopped() {{
+{stopped}
+}}
 prlctl() {{ :; }}
 host_slot_header() {{ :; }}
 vmware_check_network_log() {{ :; }}
@@ -84,7 +93,7 @@ host_slot_release() {{ :; }}
 delete_vmware_bundle() {{ echo "$1" > {deleted}; }}
 PARALLELS={'true' if platform == 'parallels' else 'false'}
 PARALLELS_VM=test-vm
-VMRUN=/usr/bin/true
+VMRUN={root / 'vmrun'}
 VMX_FILE={root / 'test.vmx'}
 VM_BUNDLE={root}
 BREENIX_ROOT={root}
