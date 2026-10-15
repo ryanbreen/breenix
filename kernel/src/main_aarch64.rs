@@ -104,10 +104,12 @@ impl BootMode {
 /// unknown request, a program request without an absolute program path, a suite
 /// request without a valid suite id, an unusable boot-target file, or any request to
 /// a `testing` kernel (which always runs its test loader), runs `default` and is
-/// noted on a separate line. Returns the program path for program mode and the suite
-/// id for suite mode. `announce_boot_mode` prints the mode once it is known to run.
+/// noted on a separate line. Returns the mode; the program path for program mode or
+/// the suite id for suite mode; and the `<category>/<case>` a suite boot runs alone,
+/// from fw_cfg `opt/breenix/case` or the boot target's `case` word. `announce_boot_mode`
+/// prints the mode once it is known to run.
 #[cfg(target_arch = "aarch64")]
-fn read_boot_mode() -> (BootMode, Option<alloc::string::String>) {
+fn read_boot_mode() -> (BootMode, Option<alloc::string::String>, Option<alloc::string::String>) {
     use kernel::boot::target;
     // fw_cfg exists only on QEMU (its MMIO window is absent on Parallels).
     let requested = if kernel::platform_config::is_qemu() {
@@ -125,11 +127,13 @@ fn read_boot_mode() -> (BootMode, Option<alloc::string::String>) {
     };
     // Without a fw_cfg mode, the boot-target file may name a suite or probe.
     let mut target_suite = None;
+    let mut only = None;
     let mode = match requested.as_deref() {
         None | Some("") => match target::read() {
             Ok(Some(target::Target::Probe)) => BootMode::Probe,
-            Ok(Some(target::Target::Suite(id))) => {
-                target_suite = Some(id);
+            Ok(Some(target::Target::Suite(suite))) => {
+                target_suite = Some(suite.id);
+                only = suite.case;
                 BootMode::Suite
             }
             Ok(None) => BootMode::Default,
@@ -172,7 +176,19 @@ fn read_boot_mode() -> (BootMode, Option<alloc::string::String>) {
         },
         BootMode::Suite if target_suite.is_some() => target_suite,
         BootMode::Suite => match kernel::drivers::fw_cfg::read_string("opt/breenix/suite") {
-            Some(id) if target::is_suite_id(&id) => Some(id),
+            Some(id) if target::is_suite_id(&id) => {
+                let case = kernel::drivers::fw_cfg::read_string("opt/breenix/case");
+                match target::SuiteTarget::new(id, case) {
+                    Ok(suite) => {
+                        only = suite.case;
+                        Some(suite.id)
+                    }
+                    Err(why) => {
+                        serial_println!("[boot] Ignoring boot mode \"suite\": {}", why);
+                        None
+                    }
+                }
+            }
             Some(id) if !id.is_empty() => {
                 serial_println!(
                     "[boot] Ignoring boot mode \"suite\": {:?} is not a suite id",
@@ -194,16 +210,20 @@ fn read_boot_mode() -> (BootMode, Option<alloc::string::String>) {
     } else {
         mode
     };
-    (mode, arg)
+    (mode, arg, only)
 }
 
 /// Print the one `[boot] Boot mode: <mode>` line, naming the mode that actually
 /// runs (`program <path>` for program mode, `suite <id>` for suite mode), and show
 /// it on the boot screen.
 #[cfg(target_arch = "aarch64")]
-fn announce_boot_mode(mode: BootMode, arg: Option<&str>) {
-    match (mode, arg) {
-        (BootMode::Program | BootMode::Suite, Some(arg)) => {
+fn announce_boot_mode(mode: BootMode, arg: Option<&str>, only: Option<&str>) {
+    match (mode, arg, only) {
+        (BootMode::Suite, Some(arg), Some(case)) => {
+            serial_println!("[boot] Boot mode: suite {} case {}", arg, case);
+            boot_screen::set_mode(format_args!("suite {} case {}", arg, case));
+        }
+        (BootMode::Program | BootMode::Suite, Some(arg), _) => {
             serial_println!("[boot] Boot mode: {} {}", mode.name(), arg);
             boot_screen::set_mode(format_args!("{} {}", mode.name(), arg));
         }
@@ -261,7 +281,7 @@ impl InitLaunch {
         InitLaunch::new("/sbin/init", &[b"/sbin/init"])
     }
 
-    fn for_mode(mode: BootMode, arg: Option<&str>) -> InitLaunch {
+    fn for_mode(mode: BootMode, arg: Option<&str>, only: Option<&str>) -> InitLaunch {
         match mode {
             BootMode::Default => InitLaunch::default_init(),
             BootMode::Probe => InitLaunch::new("/sbin/probe", &[b"/sbin/probe"]),
@@ -273,7 +293,10 @@ impl InitLaunch {
             ),
             BootMode::Suite => {
                 let path = kernel::boot::target::suite_path(arg.unwrap_or(""));
-                InitLaunch::new(&path, &[path.as_bytes()])
+                match only {
+                    Some(case) => InitLaunch::new(&path, &[path.as_bytes(), b"--case", case.as_bytes()]),
+                    None => InitLaunch::new(&path, &[path.as_bytes()]),
+                }
             }
         }
     }
@@ -1203,8 +1226,8 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // (ext2 root filesystem was mounted above at init_root_fs().)
     // Probe, program and suite modes pre-load their own binary (/sbin/probe, or
     // /sbin/suite-<id>) the same way and fall back to /sbin/init.
-    let (mut boot_mode, mut mode_arg) = read_boot_mode();
-    let mut init_launch = InitLaunch::for_mode(boot_mode, mode_arg.as_deref());
+    let (mut boot_mode, mut mode_arg, only) = read_boot_mode();
+    let mut init_launch = InitLaunch::for_mode(boot_mode, mode_arg.as_deref(), only.as_deref());
     let runs_own_binary = matches!(
         boot_mode,
         BootMode::Probe | BootMode::Program | BootMode::Suite
@@ -1251,7 +1274,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         mode_arg = None;
         init_launch = InitLaunch::default_init();
     }
-    announce_boot_mode(boot_mode, mode_arg.as_deref());
+    announce_boot_mode(boot_mode, mode_arg.as_deref(), only.as_deref());
     let init_elf: Option<alloc::vec::Vec<u8>> = if mode_elf.is_some() {
         mode_elf
     } else if device_count > 0 {

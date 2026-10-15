@@ -122,6 +122,14 @@ class SequenceTests(unittest.TestCase):
             self.assertEqual(run('first').returncode, 0)
             result = subprocess.run([debugfs, '-R', 'cat /etc/breenix/suite-sequence', str(image)], capture_output=True)
             self.assertEqual(result.stdout, b'')
+            selected = subprocess.run([script, str(image), 'first', str(root / 'suite-first.elf'), '', 'group/one'],
+                                      env=environment, capture_output=True)
+            self.assertEqual(selected.returncode, 0, selected.stderr)
+            target = subprocess.run([debugfs, '-R', 'cat /etc/breenix/boot-target', str(image)], capture_output=True)
+            self.assertEqual(target.stdout, b'suite first case group/one\n')
+            self.assertEqual(run('first').returncode, 0)
+            target = subprocess.run([debugfs, '-R', 'cat /etc/breenix/boot-target', str(image)], capture_output=True)
+            self.assertEqual(target.stdout, b'suite first\n')
 
 
 if __name__ == '__main__':
