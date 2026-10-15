@@ -191,6 +191,9 @@ fn wait_for_evidence(pid: i32) -> Evidence {
         current.kick_observed,
         current.report
     );
+    let _ = libbreenix::time::sleep_ms(3000);
+    let later = evidence(pid);
+    eprintln!("SIGKILL_TEARDOWN_TEST: 3 s later pid={pid} report={} reclaim={}", later.report, later.reclaim);
     fail("timed out waiting for per-PID teardown pairing")
 }
 

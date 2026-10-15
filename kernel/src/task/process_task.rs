@@ -1298,6 +1298,10 @@ pub fn drain_deferred_fault_sigsegv_exits() {
     crate::arch_without_interrupts(|| tids.append(&mut DEFERRED_FAULT_EXIT_OVERFLOW.lock()));
     for entry in tids {
         let tid = entry & (FAULT_EXIT_NEGATIVE - 1);
+        {
+            let (s, n) = crate::time::get_monotonic_time_ns();
+            log::info!("SKPROBE drain tid={} cur={:?} ms={}", tid, scheduler::current_thread_id(), s * 1000 + n / 1_000_000);
+        }
         let magnitude = (entry >> FAULT_EXIT_STATUS_SHIFT) as i32;
         let exit_code = if entry & FAULT_EXIT_NEGATIVE != 0 { -magnitude } else { magnitude };
         // A fatal signal ends the whole process, not one thread (POSIX).
