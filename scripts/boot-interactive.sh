@@ -172,6 +172,15 @@ if [ "$BUILD" -eq 1 ]; then
 fi
 [ -f "$KERNEL" ] || { echo "No kernel at $KERNEL" >&2; exit 1; }
 [ -f "$DISK" ] || { echo "No disk at $DISK" >&2; exit 1; }
+if [ "$MODE" = suite ] && [[ ",$SUITE," == *",sdk,"* ]]; then
+    # The Developer SDK suite's host side builds the SDK and its test apps and stages
+    # them onto a copy of the disk (docs/suites/README.md, "Developer SDK").
+    echo "==> Staging the Developer SDK suite's host results"
+    SDK_DISK="$ROOT/target/ext2-aarch64-sdk.img"
+    cp "$DISK" "$SDK_DISK"
+    python3 "$ROOT/scripts/sdk-suite.py" --arch aarch64 --image "$SDK_DISK"
+    DISK="$SDK_DISK"
+fi
 
 host_slot_acquire mac-boot
 host_slot_serial "$SERIAL_LOG"

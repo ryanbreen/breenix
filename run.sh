@@ -314,6 +314,10 @@ stage_boot_ext2_disk() {
     else
         "$BREENIX_ROOT/scripts/write-boot-target.sh" "$BOOT_EXT2_DISK" "$SUITE" \
             "$BREENIX_ROOT/userspace/programs/aarch64/suite-$SUITE.elf" || exit 1
+        if [[ ",$SUITE," == *",sdk,"* ]]; then
+            # The Developer SDK suite's host side stages the SDK's results onto the copy.
+            python3 "$BREENIX_ROOT/scripts/sdk-suite.py" --arch aarch64 --image "$BOOT_EXT2_DISK" || exit 1
+        fi
     fi
 }
 

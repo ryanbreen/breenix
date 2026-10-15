@@ -1,0 +1,20 @@
+# The SDK suite's no_std app: a cargo project built outside the Breenix checkout with
+# only the SDK's cargo wrapper, on libbreenix (Breenix's Rust system call library)
+# with no std. libbreenix comes from the SDK: the project names it by version only.
+[package]
+name = "rust-nostd-app"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+libbreenix = { version = "0.1", features = ["runtime"] }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
+# A project of its own, never a member of an enclosing workspace.
+[workspace]

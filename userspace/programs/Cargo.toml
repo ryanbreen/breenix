@@ -747,5 +747,9 @@ name = "suite-utilities"
 path = "src/suite_utilities.rs"
 
 [[bin]]
+name = "suite-sdk"
+path = "src/suite_sdk.rs"
+
+[[bin]]
 name = "fifo_fs_test"
 path = "src/fifo_fs_test.rs"
