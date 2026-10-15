@@ -87,7 +87,7 @@ pub fn png_decode_trns_palette()->Check{decoded(&pngfile(&ihdr(3,1,8,3,0),&[(*b"
 pub fn png_decode_invalid_combos()->Check{for t in 0..=7{for d in [0,1,2,3,4,8,16,32]{let legal=match t{0=>[1,2,4,8,16].contains(&d),2|4|6=>[8,16].contains(&d),3=>[1,2,4,8].contains(&d),_=>false};if !legal{eq(png::decode(&pngfile(&ihdr(1,1,d,t,0),&[],&[0,0])),Err(PE::BadColourType))?;}}}Ok(())}
 pub fn png_decode_rounding_16bit()->Check{let vals=[0,1,128,129,255,256,257,32767,32768,65406,65534,65535];let mut raw=vec![0];raw.extend(samples(&vals,16));let want:Vec<u8>=vals.iter().flat_map(|&v|{let c=scale(v,16);[c,c,c,255]}).collect();decoded(&pngfile(&ihdr(vals.len()as u32,1,16,0,0),&[],&raw),vals.len()as u32,1,&want)}
 fn paeth(a:i32,b:i32,c:i32)->i32{let p=a+b-c;let(pa,pb,pc)=((p-a).abs(),(p-b).abs(),(p-c).abs());if pa<=pb&&pa<=pc{a}else if pb<=pc{b}else{c}}
-pub fn png_decode_filters()->Check{for(t,d,ch)in[(0,8,1),(0,16,1),(2,8,3),(2,16,3),(4,8,2),(4,16,2),(6,8,4),(6,16,4)]{let bpp=ch*(d/8)as usize;let row:Vec<u8>=(0..7*bpp).map(|i|(i*37+17)as u8).collect();let mut filtered=Vec::new();for f in 0..5{filtered.push(f);for i in 0..row.len(){let a=if i>=bpp{row[i-bpp]as i32}else{0};let b=if f==0{0}else{row[i]as i32};let c=if f==0||i<bpp{0}else{row[i-bpp]as i32};let p=match f{0=>0,1=>a,2=>b,3=>(a+b)/2,_=>paeth(a,b,c)};filtered.push(row[i].wrapping_sub(p as u8));}}let mut plain=Vec::new();for _ in 0..5{plain.push(0);plain.extend(&row);}let want=png::decode(&pngfile(&ihdr(7,5,d,t,0),&[],&plain)).map_err(|e|format!("unfiltered {e:?}"))?;decoded(&pngfile(&ihdr(7,5,d,t,0),&[],&filtered),7,5,&want.pixels)?;}Ok(())}
+pub fn png_decode_filters()->Check{for(t,d,ch)in[(0,8,1),(0,16,1),(2,8,3),(2,16,3),(4,8,2),(4,16,2),(6,8,4),(6,16,4)]{let bpp=ch*(d/8)as usize;let row:Vec<u8>=(0..7*bpp).map(|i|(i*37+17)as u8).collect();let mut filtered=Vec::new();for f in 0..5{filtered.push(f);for i in 0..row.len(){let a=if i>=bpp{row[i-bpp]as i32}else{0};let b=if f==0{0}else{row[i]as i32};let c=if f==0||i<bpp{0}else{row[i-bpp]as i32};let p=match f{0=>0,1=>a,2=>b,3=>(a+b)/2,_=>paeth(a,b,c)};filtered.push(row[i].wrapping_sub(p as u8));}}let mut want=Vec::new();for _ in 0..5 { for x in 0..7 { let values:Vec<u16>=if d==16{row[x*bpp..(x+1)*bpp].chunks_exact(2).map(|v|u16::from_be_bytes([v[0],v[1]])).collect()}else{row[x*bpp..(x+1)*bpp].iter().map(|v|*v as u16).collect()};let (r,g,b,a)=match t {0=>(values[0],values[0],values[0],if d==16{65535}else{255}),2=>(values[0],values[1],values[2],if d==16{65535}else{255}),4=>(values[0],values[0],values[0],values[1]),_=>(values[0],values[1],values[2],values[3])};let a=scale(a,d);want.extend([pm(scale(b,d),a),pm(scale(g,d),a),pm(scale(r,d),a),a]); }}decoded(&pngfile(&ihdr(7,5,d,t,0),&[],&filtered),7,5,&want)?;}Ok(())}
 pub fn png_decode_filter_invalid()->Check{eq(png::decode(&pngfile(&ihdr(1,1,8,0,0),&[],&[5,0])),Err(PE::BadFilter))}
 fn scene(w:u32,h:u32)->Vec<u8>{(0..h).flat_map(|y|(0..w).flat_map(move|x|[(x*23)as u8,(y*19)as u8,((x+y)*7)as u8,255])).collect()}
 fn interlaced(w:u32,h:u32)->Vec<u8>{let pix=scene(w,h);let mut raw=Vec::new();for(x0,y0,dx,dy)in[(0,0,8,8),(4,0,8,8),(0,4,4,8),(2,0,4,4),(0,2,2,4),(1,0,2,2),(0,1,1,2)]{if x0>=w{continue;}for y in(y0..h).step_by(dy){raw.push(0);for x in(x0..w).step_by(dx){let i=((y*w+x)*4)as usize;raw.extend([pix[i+2],pix[i+1],pix[i],255]);}}}pngfile(&ihdr(w,h,8,6,1),&[],&raw)}
@@ -118,6 +118,10 @@ pub fn png_encode_sizes()->Check{for(w,h)in[(1,1),(3,7),(17,9),(1280,800)]{let i
 pub fn png_encode_limits()->Check{for(w,h)in[(16385,1),(1,16385),(4097,4097)]{eq(png::encode(&Image{width:w,height:h,pixels:vec![]}),Err(PE::TooLarge))?;}Ok(())}
 
 pub const CHECKS: &[(&str,fn()->Check)] = &[
+    ("bmp_unsupported",bmp_unsupported),
+    ("inflate_independent_fixtures",inflate_independent_fixtures),
+    ("png_decode_independent_fixtures",png_decode_independent_fixtures),
+    ("png_decode_from_disk",png_decode_from_disk),
     ("inflate_stored", inflate_stored),
     ("inflate_stored_length", inflate_stored_length),
     ("inflate_fixed_huffman", inflate_fixed_huffman),
@@ -174,3 +178,24 @@ pub const CHECKS: &[(&str,fn()->Check)] = &[
     ("png_encode_sizes", png_encode_sizes),
     ("png_encode_limits", png_encode_limits),
 ];
+
+fn fixture_root()->std::path::PathBuf{
+    if cfg!(target_os="none"){std::path::PathBuf::from("/usr/local/test/share/breengel")}
+    else {std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"),"/../../testdata/breengel"))}
+}
+pub fn inflate_independent_fixtures()->Check{
+    let root=fixture_root().join("inflate");let index=std::fs::read_to_string(root.join("index.txt")).map_err(|e|format!("inflate fixture index: {e}"))?;
+    let mut count=0;for line in index.lines(){let f:Vec<_>=line.split_whitespace().collect();if f.len()!=2{return Err("invalid inflate fixture index".into());}let input=std::fs::read(root.join(f[0])).map_err(|e|e.to_string())?;let expected=std::fs::read(root.join(f[1])).map_err(|e|e.to_string())?;eq(inflate(&input,expected.len()),Ok(expected))?;count+=1;}eq(count,12)
+}
+pub fn png_decode_independent_fixtures()->Check{
+    let root=fixture_root().join("png");let index=std::fs::read_to_string(root.join("index.txt")).map_err(|e|format!("PNG fixture index: {e}"))?;
+    let mut count=0;for line in index.lines(){let f:Vec<_>=line.split_whitespace().collect();if f.len()!=4{return Err("invalid PNG fixture index".into());}let input=std::fs::read(root.join(f[0])).map_err(|e|e.to_string())?;let expected=std::fs::read(root.join(f[3])).map_err(|e|e.to_string())?;decoded(&input,f[1].parse().map_err(|_|"fixture width")?,f[2].parse().map_err(|_|"fixture height")?,&expected).map_err(|e|format!("{}: {e}",f[0]))?;count+=1;}eq(count,72)
+}
+pub fn png_decode_from_disk()->Check{let root=fixture_root().join("png");let input=std::fs::read(root.join("pinned.png")).map_err(|e|format!("pinned PNG: {e}"))?;let expected=std::fs::read(root.join("pinned.bgra")).map_err(|e|e.to_string())?;decoded(&input,32,32,&expected)}
+
+pub fn bmp_unsupported()->Check {
+ for (bpp,compression) in [(8u16,0u32),(32,0),(24,1),(16,3)] {
+  let mut b=vec![0;118];b[..2].copy_from_slice(b"BM");b[10..14].copy_from_slice(&54u32.to_le_bytes());b[14..18].copy_from_slice(&40u32.to_le_bytes());b[18..22].copy_from_slice(&2u32.to_le_bytes());b[22..26].copy_from_slice(&2u32.to_le_bytes());b[26..28].copy_from_slice(&1u16.to_le_bytes());b[28..30].copy_from_slice(&bpp.to_le_bytes());b[30..34].copy_from_slice(&compression.to_le_bytes());
+  eq(libimg::bmp::decode_bmp(&b),Err(libimg::bmp::BmpError::Unsupported{bpp,compression}))?;
+ }Ok(())
+}

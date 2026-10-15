@@ -1,0 +1,115 @@
+{
+  "encoder": "Python 3.14.6 zlib 1.2.12",
+  "parameters": "wbits=-15, memLevel=8; level and strategy per stream",
+  "license": "CC0-1.0 (original generated data)",
+  "files": [
+    {
+      "file": "01.deflate",
+      "expected": "01.raw",
+      "level": 0,
+      "strategy": "default",
+      "bytes": 0,
+      "sha256": "f067985d352d2da6dfaef4844a66d06c5371ecbd9530a4d195ac599fef8b3427",
+      "expected_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "02.deflate",
+      "expected": "02.raw",
+      "level": 0,
+      "strategy": "default",
+      "bytes": 1,
+      "sha256": "347fd581892eff18f1849acf7d6b75e3a0f0ab3915d2ff304368ccf6202d9393",
+      "expected_sha256": "559aead08264d5795d3909718cdd05abd49572e84fe55590eef31a88a08fdffd"
+    },
+    {
+      "file": "03.deflate",
+      "expected": "03.raw",
+      "level": 0,
+      "strategy": "default",
+      "bytes": 256,
+      "sha256": "65058758d669a26dee5b8c79488ce1d3742ccc3acabbb22ed2658143a54b9c2b",
+      "expected_sha256": "40aff2e9d2d8922e47afd4648e6967497158785fbd1da870e7110266bf944880"
+    },
+    {
+      "file": "04.deflate",
+      "expected": "04.raw",
+      "level": 0,
+      "strategy": "default",
+      "bytes": 9,
+      "sha256": "449db52b105d746ebfd7ea82faed9773ecd50be2e2b8be3514f5196ecc52ae75",
+      "expected_sha256": "d38b38a2dd476e045c299e8ee5d6466834456d97bd592a71746b423a6a05f386"
+    },
+    {
+      "file": "05.deflate",
+      "expected": "05.raw",
+      "level": 6,
+      "strategy": "fixed",
+      "bytes": 11200,
+      "sha256": "6e0a0f7dc22cf62c47fbc56c3c44ea006baa208d5d5ef2502c20f9bd30b213f2",
+      "expected_sha256": "4c5469c43574d155900cda53cc772563bf5a54976bade26fa1c9559ebbea0bb3"
+    },
+    {
+      "file": "06.deflate",
+      "expected": "06.raw",
+      "level": 6,
+      "strategy": "fixed",
+      "bytes": 65536,
+      "sha256": "c817c5425e4f1d29b2620d62bc290a868df1ebef2927310f48fdbb9f9c416158",
+      "expected_sha256": "7daca2095d0438260fa849183dfc67faa459fdf4936e1bc91eec6b281b27e4c2"
+    },
+    {
+      "file": "07.deflate",
+      "expected": "07.raw",
+      "level": 6,
+      "strategy": "fixed",
+      "bytes": 65536,
+      "sha256": "9bbf0ce64a77a510d4722e1f4abbbcda14cc1e8b4e29c9f6885ba82a51f03773",
+      "expected_sha256": "1f8745f0d2d1387ec1af2211a3cf417b2e9e885e853472649c1d979d0e9370e3"
+    },
+    {
+      "file": "08.deflate",
+      "expected": "08.raw",
+      "level": 6,
+      "strategy": "fixed",
+      "bytes": 4096,
+      "sha256": "888c0926dda0c66e91cb7d201616d2ed198731a8570619ab2f3fc37f479bcc51",
+      "expected_sha256": "7f15f0dea656d70536f0d819dbae0e0adc30228cf23c74d9f04014add085c310"
+    },
+    {
+      "file": "09.deflate",
+      "expected": "09.raw",
+      "level": 6,
+      "strategy": "default",
+      "bytes": 32772,
+      "sha256": "366b23889a23aa5e16d6cc6cb85f8c0d763130990f5585e41822b3376376371f",
+      "expected_sha256": "cfc0bc76ec7d83322160fe90bb26c741ee651f78dd7d015c4977c9e36244c11f"
+    },
+    {
+      "file": "10.deflate",
+      "expected": "10.raw",
+      "level": 6,
+      "strategy": "default",
+      "bytes": 65536,
+      "sha256": "891084138292e55eb70c8a3cd3dbb548d4723fac2f1bdbf17becc0f553500a2c",
+      "expected_sha256": "b005c7441fa5d91e40d36becad46f1a8241706b018d72600ac195d177178aa49"
+    },
+    {
+      "file": "11.deflate",
+      "expected": "11.raw",
+      "level": 6,
+      "strategy": "default",
+      "bytes": 70000,
+      "sha256": "811dd3aaafb5bdb4203107fc24f526ad01a84e25f674c64d5965b373d86ba272",
+      "expected_sha256": "02502db1634f5814e326db4e2593f7991d1c226820b3a210f8a0e41e61380206"
+    },
+    {
+      "file": "12.deflate",
+      "expected": "12.raw",
+      "level": 6,
+      "strategy": "default",
+      "bytes": 11200,
+      "sha256": "f9623eb43ea892d926dc7b419020ca219bdce5ffc43f710968d3703c62aca0a8",
+      "expected_sha256": "754be5068002e2032929f21e9d7fe3e06903cb761b208e5eaed248edeb9f9ad7"
+    }
+  ]
+}

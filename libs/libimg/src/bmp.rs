@@ -149,3 +149,11 @@ fn write_u16_le(buf: &mut [u8], offset: usize, val: u16) {
     buf[offset] = val as u8;
     buf[offset + 1] = (val >> 8) as u8;
 }
+
+#[derive(Debug,Clone,PartialEq,Eq)]
+pub struct Bmp { pub width:u32,pub height:u32,pub rgb:Vec<u8> }
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub enum BmpError { Truncated, BadSignature, Unsupported {bpp:u16,compression:u32}, TooLarge, SizeOverflow }
+/// Error-reporting API shell; the independent Unsupported check rejects this
+/// legacy decoder's loss of the error reason before the implementation lands.
+pub fn decode_bmp(data:&[u8])->Result<Bmp,BmpError>{decode_bmp_24(data).map(|(width,height,rgb)|Bmp{width,height,rgb}).ok_or(BmpError::Truncated)}
