@@ -2053,7 +2053,14 @@ mod tests {
             assert_eq!(remainder(n(5.0), n(2.0), f), n(1.0));
             assert_eq!(remainder(n(7.0), n(2.0), f), n(-1.0));
             assert_eq!(fma(n(2.0), n(3.0), n(4.0), f), n(10.0));
-            assert_eq!(fma(n(1e300), n(1e300), n(-1e300), f), exact(false, 0, 0, f) | fma(n(1e300), n(1e300), n(-1e300), f));
+            // fma(x, x, -x) for x = 1e300 = m 2^e: m^2 2^(2e) less x, which lies far below half
+            // an ulp of it, is m^2 rounded to nearest with a tie broken downward.
+            let Val::Fin(_, m, e) = unpack(1e300f64.to_bits() as u128, &floatconv::F64) else { unreachable!() };
+            let sq = m * m;
+            let drop = (128 - sq.leading_zeros()).saturating_sub(f.p);
+            let (q, r) = (sq >> drop, sq & ((1u128 << drop) - 1));
+            let q = if drop > 0 && r > 1u128 << (drop - 1) { q + 1 } else { q };
+            assert_eq!(fma(n(1e300), n(1e300), n(-1e300), f), exact(false, q, 2 * e + drop as i64, f));
             assert_eq!(fdim(n(5.0), n(3.0), f), n(2.0));
             assert_eq!(fdim(n(3.0), n(5.0), f), n(0.0));
             assert_eq!(fmax(n(-0.0), n(0.0), f), n(0.0));
