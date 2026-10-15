@@ -9,13 +9,17 @@
 //! reading flags: Rust does not model arithmetic flags as dependencies of inline asm.
 
 pub(crate) mod basic;
+mod complex;
 mod consts;
 pub(crate) mod dd;
 pub(crate) mod explog;
+pub(crate) mod ext;
 pub(crate) mod fenv;
 mod float32;
+pub(crate) mod long_double;
 pub(crate) mod special;
 pub(crate) mod trig;
+mod two_over_pi;
 
 use crate::pthread::set_errno;
 use crate::stdlib::floatconv::Converted;

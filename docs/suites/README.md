@@ -920,3 +920,98 @@ scripts/boot-interactive.sh --mode suite --suite utilities
 # From tools/breenix-runs:
 swift run breenix-runs run x86 --mode suite --boots 1 --suite utilities --sha <pushed-sha>
 ```
+
+## Developer SDK
+
+`sdk` measures the Developer SDK effort in `docs/efforts/path.json`: our own applications
+build outside the kernel tree against a packaged toolchain, headers and libraries, and run
+here. Its 106 cases cover five categories, one per milestone: `toolchain` (22), `c-app`
+(25), `rust-app` (22), `install` (20) and `templates` (17).
+
+The suite has a host side, `scripts/sdk-suite.py`, which runs before the boot, offline.
+It builds the SDK with `scripts/build-sdk.sh` from a clean checkout (a fresh local clone,
+detached at the commit) into a prefix outside the checkout. It builds it a second time from
+a clone at another path to compare the two, and checks the toolchain. Then it deletes the
+clones and copies each test app in `userspace/sdk-suite/apps` into a fresh directory with
+no path into the checkout. It builds each app with nothing but the SDK, in an environment
+holding only the SDK's `bin`, the Rust prerequisites (cargo and rustup), the system's own
+directories and a home directory of its own. Given a disk image (a copy), it stages what it built
+under `/usr/local/sdk-suite` and installs apps onto the image with the SDK's disk tool.
+It then follows the quick start onto the same image, and writes one record per host step,
+`/usr/local/sdk-suite/host/<category>/<case>`, reading `PASS` or `FAIL <reason>`. Its
+build results are cached outside the checkout by commit, architecture and the script
+itself, so `scripts/sdk-suite.py --arch aarch64` run beforehand leaves only the staging
+to the boot. `scripts/boot-interactive.sh --mode suite --suite sdk`,
+`./run.sh --parallels|--vmware --suite sdk` and the x86-64 gate run it on their copy of
+the disk; nothing else in a build or a boot depends on it.
+
+`/sbin/suite-sdk` reports the records of host steps and runs the staged and installed
+programs. Each runs in a scratch directory of the case's own with the environment
+`PATH=/usr/local/bin:/usr/bin:/bin`, `HOME=/tmp`, `SDK_SUITE_VAR=sdk value`. The case
+compares the exact standard output and exit status, which the test apps' sources fix and
+which they print on Linux and macOS too. A program or record that is not on the disk fails
+its case with the host step's reason, so before the SDK exists every case fails, saying
+which piece is missing; none skips. `install/runs-path` finds programs by bare name through
+BusyBox `env`, and `install/runs-shell` through `sh -c`, both Breenix-libc builds in `/bin`.
+`tests/suite_manifests.rs` checks that every record the harness writes names a manifest
+case and that the guest reads exactly those records.
+
+The SDK the suite measures:
+
+- **Build.** `scripts/build-sdk.sh --prefix DIR` builds the whole SDK for both arches from a
+  checkout, without the network; it takes the pinned Rust fork from
+  `BREENIX_RUST_FORK_LIBRARY` as `userspace/programs/build.sh` does. Two builds of one commit
+  from different directories are byte-identical, and no SDK file names the checkout, the
+  build's directories or the builder's home.
+- **Layout.** `VERSION` is one line, `breenix-sdk <version> <40-hex commit>`. `bin/` holds
+  `aarch64-breenix-cc` and `x86_64-breenix-cc` (C compile and link drivers over clang and
+  lld, static, against Breenix's clean-room libc), `aarch64-breenix-cargo` and
+  `x86_64-breenix-cargo` (cargo for Breenix's targets with the SDK's prebuilt std; a
+  project's `libbreenix = "0.1"` dependency resolves to the SDK's own copy, offline),
+  `breenix-image`, `breenix-new` and `breenix-build`. Each tool's `--version` first line names
+  `breenix-sdk`, its arch where it has one, and the commit. The SDK ships a `libc.a` for
+  each arch's C programs (x86_64's with the SysV SSE float ABI), a second x86_64 `libc.a`
+  with the soft-float ABI of x86_64 Rust inside its Rust sysroot, each archive for one machine,
+  a `libstd-*.rlib` per Breenix target (every sysroot rlib carrying bitcode, so an app may
+  build with `lto = true` or `"thin"`), rustc target specs (`os` breenix) in
+  `share/breenix-sdk/targets/`, the commit's `rust-fork.toml` in `share/breenix-sdk/`, and
+  the quick start as `share/doc/breenix-sdk/quick-start.md`. A compile reads headers only
+  from the SDK and the compiler's own resource directory. Nothing in it is musl-, glibc- or
+  any other libc's code, and no archive defines compiler_builtins' libm math (a port of
+  musl's libm, which `scripts/libc-clean-archive.py` removes from `libc.a` and the pinned
+  fork never builds into std) or holds its module or source paths in rlib metadata, bitcode
+  or data. A copy of the SDK in another directory still works. The SDK's bytes depend only on
+  the commit: its build takes no cargo or rustc setting from the builder's cargo home,
+  environment or the directories above the build root.
+- **Disk tool.** `breenix-image install --image IMG [--mode OCTAL] [--name NAME] FILE` puts a
+  program at `/usr/local/bin/NAME` (default: the file's name), owned by root with mode 0755
+  unless `--mode` says otherwise, creating `/usr/local/bin` (0755, root) if needed and
+  replacing an installed program of that name. It refuses a program built for an
+  architecture other than the disk's. `breenix-image remove --image IMG NAME` takes one off
+  and fails for a name that is not installed; `breenix-image list --image IMG` prints the
+  installed names, one per line, sorted. The disk stays clean for `e2fsck -fn`.
+- **Templates.** `breenix-new --list` names the templates, at least `c`, `rust` and
+  `rust-no-std`. `breenix-new TEMPLATE DIR` makes a project in a new directory, named for
+  the directory, and refuses a directory that already holds files. In a project,
+  `breenix-build --arch ARCH` builds it unchanged and prints the program's path as its last
+  line; the program prints `hello from <project>` and exits 0.
+- **Quick start.** `docs/sdk/quick-start.md` has fenced blocks whose info strings are
+  `sh quick-start` (commands), `breenix quick-start-run` (the one command line a user types
+  in Breenix) and `text quick-start-output` (what that prints). The harness runs the `sh`
+  blocks in order as one `bash -euo pipefail` script, literally, in an empty directory with
+  an empty home. The environment gives `BREENIX_SDK` (the SDK's directory), `BREENIX_IMAGE`
+  (the disk image to install onto) and `BREENIX_ARCH`, and a `PATH` without the SDK's `bin`.
+  The guest then runs the command line through PATH and compares its output.
+
+The harness takes about a second without an SDK. With one, it builds the SDK twice and the
+apps once per run of a new commit. Each SDK build gets an hour, each app or template build 15
+minutes, and each tool call two minutes.
+
+```bash
+scripts/sdk-suite.py --arch aarch64        # optional: build and check ahead of the boot
+scripts/boot-interactive.sh --mode suite --suite sdk
+./run.sh --parallels --suite sdk
+./run.sh --vmware --suite sdk
+# From tools/breenix-runs:
+swift run breenix-runs run x86 --mode suite --boots 1 --suite sdk --sha <pushed-sha>
+```

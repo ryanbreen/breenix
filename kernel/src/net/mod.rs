@@ -298,7 +298,24 @@ struct LoopbackPacket {
     queued_at_tick: u64,
 }
 
+impl Drop for LoopbackPacket {
+    fn drop(&mut self) {
+        loopback_work_done();
+    }
+}
+
 static LOOPBACK_QUEUE: Mutex<Vec<LoopbackPacket>> = Mutex::new(Vec::new());
+/// Loopback work not yet finished: queued or in-delivery loopback packets and
+/// deferred TCP segments taken but not yet sent.
+///
+/// A packet or segment is counted when it is queued and uncounted when it is
+/// dropped, after its delivery or send. Whatever handling it produces is queued,
+/// and so counted, before that drop, so the count reaches zero only once the
+/// whole chain a packet starts has been delivered. A single read of zero is
+/// therefore quiescence; reading the queue depth and the delivery owner one
+/// after the other is not, since a context between the two can queue work and
+/// let go.
+static LOOPBACK_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 /// Single-writer-under-lock atomic mirror of `LOOPBACK_QUEUE.len()`.
 /// Writers publish the new length immediately after each queue mutation.
 static LOOPBACK_QUEUE_BYTES: AtomicUsize = AtomicUsize::new(0);
@@ -462,6 +479,16 @@ pub(crate) fn loopback_queue_has_work() -> bool {
 /// True when the lock-free queue-depth mirror reports no pending packets.
 pub(crate) fn loopback_queue_is_empty() -> bool {
     LOOPBACK_QUEUE_DEPTH.load(Ordering::Acquire) == 0
+}
+
+/// Count one loopback packet or deferred segment as queued.
+pub(crate) fn loopback_work_queued() {
+    LOOPBACK_IN_FLIGHT.fetch_add(1, Ordering::AcqRel);
+}
+
+/// Uncount one loopback packet or deferred segment once it has been handled.
+pub(crate) fn loopback_work_done() {
+    LOOPBACK_IN_FLIGHT.fetch_sub(1, Ordering::AcqRel);
 }
 
 pub(crate) fn record_loopback_pump_rearm_from_sched() {
@@ -640,8 +667,30 @@ fn rearm_if_work_remains() -> bool {
 /// Called after syscalls release their locks to avoid deadlock. TCP loopback
 /// can enqueue deferred replies (SYN+ACK, ACK) while delivering an earlier
 /// packet, so drain bounded rounds until the local packet chain is quiescent.
+///
+/// A syscall's segments are delivered before it returns, as Linux delivers a
+/// loopback segment before the send returns: a close whose FIN and final ACK
+/// were still queued would leave its port held, and a bind right after it
+/// would fail with EADDRINUSE. So this drains until no loopback work is in
+/// flight (`LOOPBACK_IN_FLIGHT`), which covers the packets another context
+/// is delivering and the replies their delivery queues. Work is only ever
+/// held unqueued by a context running with preemption off (the delivery
+/// guard holder, or `drain_deferred_tx`), so on another CPU it finishes, and
+/// it is never below this call on the same CPU: the callers are thread
+/// context.
 pub fn drain_loopback_queue() {
-    let _ = drain_loopback_rounds(MAX_DRAIN_ROUNDS, LoopbackDrainSource::Syscall);
+    loop {
+        let _ = drain_loopback_rounds(MAX_DRAIN_ROUNDS, LoopbackDrainSource::Syscall);
+        if LOOPBACK_IN_FLIGHT.load(Ordering::Acquire) == 0 {
+            return;
+        }
+        while LOOPBACK_DRAIN_OWNER.load(Ordering::Acquire) != 0
+            && LOOPBACK_IN_FLIGHT.load(Ordering::Acquire) != 0
+        {
+            core::hint::spin_loop();
+        }
+        core::hint::spin_loop();
+    }
 }
 
 /// Drain loopback delivery from a general thread-context idle backstop.
@@ -1370,6 +1419,7 @@ fn enqueue_local_packet(ip_packet: Vec<u8>) -> Result<(), TxError> {
             return Err(TxError::NoBufs);
         }
         queue.try_reserve(1).map_err(|_| TxError::NoBufs)?;
+        loopback_work_queued();
         queue.push(LoopbackPacket {
             data: ip_packet,
             queued_at_tick: crate::time::get_ticks(),

@@ -25,7 +25,10 @@
 // This crate defines memcpy, strlen, strcat and the rest: LLVM must not assume their C
 // semantics inside it, or it rewrites their bodies into calls to themselves (or away).
 #![no_builtins]
-#![feature(c_variadic)]
+#![feature(c_variadic, linkage)]
+// long double is binary128 on aarch64, and every target has C23's _Float16 and _Float128
+// functions (math/long_double.rs); their C entry points take and return f16 and f128.
+#![feature(f16, f128)]
 
 mod crt;
 mod setjmp;
@@ -34,6 +37,9 @@ mod libgen;
 mod pwd;
 mod unistd;
 mod process;
+mod spawn;
+mod threads;
+mod uchar;
 mod conf;
 mod cwd;
 pub use cwd::getcwd;
@@ -74,8 +80,9 @@ const AT_REMOVEDIR: u64 = 0x200;
 // Panic Handler
 // =============================================================================
 
-/// Panic handler for no_std environment
+/// Fallback for standalone C programs; Rust std supplies the strong handler.
 #[panic_handler]
+#[linkage = "weak"]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {
         core::hint::spin_loop();

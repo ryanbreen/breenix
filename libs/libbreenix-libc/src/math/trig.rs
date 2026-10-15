@@ -77,7 +77,7 @@ fn reduce(a: f64) -> (u32, DD) {
 }
 
 /// sin r for |r| <= pi/4.
-fn sin_k(r: DD) -> DD {
+pub(crate) fn sin_k(r: DD) -> DD {
     let s = r.sqr();
     let mut sum = DD::from(0.0);
     for k in (0..14).rev() {
@@ -88,7 +88,7 @@ fn sin_k(r: DD) -> DD {
 }
 
 /// cos r for |r| <= pi/4.
-fn cos_k(r: DD) -> DD {
+pub(crate) fn cos_k(r: DD) -> DD {
     let s = r.sqr();
     let mut sum = DD::from(0.0);
     for k in (0..14).rev() {

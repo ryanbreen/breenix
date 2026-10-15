@@ -283,6 +283,19 @@ fi
 phase_end
 BUILD_SECS=$((SECONDS - BUILD_START))
 echo "[gate] Build clean (0 warnings) in ${BUILD_SECS}s"
+if [[ ",$SUITE," == *",sdk,"* ]]; then
+  # The Developer SDK suite's host side builds the SDK and its test apps, inside the
+  # build slot, and stages them onto the boot-target copy (docs/suites/README.md).
+  phase_start sdk-suite-stage
+  if ! python3 "$REPO_DIR/scripts/sdk-suite.py" --arch x86_64 --image "$REPO_DIR/target/ext2-boot-target.img" \
+      > "$GATE_BUILD_LOG_DIR/sdk-suite.log" 2>&1; then
+    echo "GATE: FAIL (the SDK suite's host harness could not stage the disk) - see $GATE_BUILD_LOG_DIR/sdk-suite.log"
+    tail -20 "$GATE_BUILD_LOG_DIR/sdk-suite.log"
+    phase_end 1
+    exit 1
+  fi
+  phase_end
+fi
 export BREENIX_TEST_DISK_PREBUILT=1
 host_slot_release x86-build || exit 1
 

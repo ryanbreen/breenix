@@ -1,6 +1,6 @@
-/* <math.h>: ISO C17 7.12 with Annex F, and POSIX.1-2024 with XSI. Only the double and
- * float functions exist; Breenix has no long double math functions yet, so none are
- * declared. Every domain, pole and range error sets errno and raises its exception. */
+/* <math.h>: ISO C17 7.12 with Annex F, and POSIX.1-2024 with XSI. long double is IEEE
+ * binary128 on aarch64 and the x87 80-bit format on x86_64. Every domain, pole and range
+ * error sets errno and raises its exception. */
 #ifndef __BREENIX_MATH_H
 #define __BREENIX_MATH_H
 
@@ -191,13 +191,84 @@ long lroundf(float x);
 long long llrintf(float x);
 long long llroundf(float x);
 
+long double acosl(long double x);
+long double asinl(long double x);
+long double atanl(long double x);
+long double cosl(long double x);
+long double sinl(long double x);
+long double tanl(long double x);
+long double acoshl(long double x);
+long double asinhl(long double x);
+long double atanhl(long double x);
+long double coshl(long double x);
+long double sinhl(long double x);
+long double tanhl(long double x);
+long double expl(long double x);
+long double exp2l(long double x);
+long double expm1l(long double x);
+long double logl(long double x);
+long double log10l(long double x);
+long double log1pl(long double x);
+long double log2l(long double x);
+long double logbl(long double x);
+long double cbrtl(long double x);
+long double fabsl(long double x);
+long double sqrtl(long double x);
+long double erfl(long double x);
+long double erfcl(long double x);
+long double lgammal(long double x);
+long double tgammal(long double x);
+long double ceill(long double x);
+long double floorl(long double x);
+long double nearbyintl(long double x);
+long double rintl(long double x);
+long double roundl(long double x);
+long double truncl(long double x);
+long double atan2l(long double x, long double y);
+long double hypotl(long double x, long double y);
+long double powl(long double x, long double y);
+long double fmodl(long double x, long double y);
+long double remainderl(long double x, long double y);
+long double copysignl(long double x, long double y);
+long double nextafterl(long double x, long double y);
+long double fdiml(long double x, long double y);
+long double fmaxl(long double x, long double y);
+long double fminl(long double x, long double y);
+long double fmal(long double x, long double y, long double z);
+long double frexpl(long double x, int *exp);
+long double ldexpl(long double x, int exp);
+long double scalbnl(long double x, int n);
+long double scalblnl(long double x, long n);
+int ilogbl(long double x);
+long double modfl(long double x, long double *iptr);
+long double remquol(long double x, long double y, int *quo);
+long double nanl(const char *tag);
+long lrintl(long double x);
+long lroundl(long double x);
+long long llrintl(long double x);
+long long llroundl(long double x);
+
+double nexttoward(double x, long double y);
+float nexttowardf(float x, long double y);
+long double nexttowardl(long double x, long double y);
+
 #ifdef __BREENIX_POSIX
 extern int signgam;
+#endif
+
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ > 201710L
+double roundeven(double x);
+float roundevenf(float x);
+double fmaximum(double x, double y);
+float fmaximumf(float x, float y);
+double fminimum(double x, double y);
+float fminimumf(float x, float y);
 #endif
 
 #ifdef __BREENIX_EXT
 double lgamma_r(double x, int *sign);
 float lgammaf_r(float x, int *sign);
+long double lgammal_r(long double x, int *sign);
 #endif
 
 __BREENIX_END_DECLS

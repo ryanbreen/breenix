@@ -1,0 +1,15 @@
+# The SDK suite's Rust std app: a cargo project built outside the Breenix checkout
+# with only the SDK's cargo wrapper. It has no dependencies but std.
+[package]
+name = "rust-app"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+
+[profile.release]
+panic = "abort"
+
+# A project of its own, never a member of an enclosing workspace.
+[workspace]

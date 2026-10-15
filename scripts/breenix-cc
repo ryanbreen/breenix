@@ -35,7 +35,7 @@ case "$ARCH" in
     x86_64)
         TRIPLE=x86_64-unknown-linux-gnu
         LIBC="$ROOT/libs/libbreenix-libc/target/x86_64-breenix-c/release/libc.a"
-        ARCH_FLAGS=()
+        ARCH_FLAGS=(-mno-red-zone)
         ;;
     *) usage ;;
 esac
@@ -65,8 +65,14 @@ fi
 RESOURCE_DIR="$("$CLANG" -print-resource-dir)"
 [ -d "$RESOURCE_DIR/include" ] || { echo "breenix-cc: $RESOURCE_DIR/include is missing" >&2; exit 1; }
 
+# -nostdinc keeps the environment's header directories (CPATH and the *_INCLUDE_PATH
+# variables, searched before -isystem), and LIBRARY_PATH and COMPILER_PATH reach the link:
+# none of the host's may stand in for Breenix's.
+unset CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH OBJC_INCLUDE_PATH OBJCPLUS_INCLUDE_PATH LIBRARY_PATH COMPILER_PATH
+
 COMPILE_FLAGS=(
-    --target="$TRIPLE"
+    --no-default-config --sysroot="$ROOT/libs/libbreenix-libc"
+    --target="$TRIPLE" -Ulinux -U__linux -U__linux__ -U__gnu_linux__ -D__breenix__=1
     -nostdinc -isystem "$ROOT/libs/libbreenix-libc/include" -isystem "$RESOURCE_DIR/include"
     -fno-stack-protector -fno-pic -fno-pie
     "${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"}"

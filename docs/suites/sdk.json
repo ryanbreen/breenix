@@ -1,0 +1,472 @@
+{
+  "id": "sdk",
+  "title": "Developer SDK",
+  "area": "Developer SDK",
+  "summary": "Applications build outside the kernel tree against the packaged SDK (toolchain, headers, libraries and disk tool) and run here.",
+  "binary": "/sbin/suite-sdk",
+  "timingSensitive": true,
+  "categories": [
+    {
+      "id": "toolchain",
+      "title": "packaged toolchains",
+      "cases": [
+        {
+          "id": "build-script",
+          "title": "The checkout has one SDK build script, scripts/build-sdk.sh, and it is executable"
+        },
+        {
+          "id": "clean-build",
+          "title": "scripts/build-sdk.sh --prefix DIR builds the SDK from a clean clone of the commit, offline, and exits 0"
+        },
+        {
+          "id": "build-quiet",
+          "title": "The SDK build prints no compiler warnings (the pinned core library's NEON notice, #945, excepted)"
+        },
+        {
+          "id": "version-commit",
+          "title": "The SDK's VERSION is one line, breenix-sdk <version> <commit>, naming the full commit it was built from"
+        },
+        {
+          "id": "reproducible",
+          "title": "Two builds of the commit from clean clones at different paths give byte-identical SDK trees"
+        },
+        {
+          "id": "cc-aarch64",
+          "title": "bin/aarch64-breenix-cc --version exits 0 and its first line names breenix-sdk, aarch64 and the commit"
+        },
+        {
+          "id": "cc-x86-64",
+          "title": "bin/x86_64-breenix-cc --version exits 0 and its first line names breenix-sdk, x86_64 and the commit"
+        },
+        {
+          "id": "cargo-aarch64",
+          "title": "bin/aarch64-breenix-cargo --version exits 0 and its first line names breenix-sdk, aarch64 and the commit"
+        },
+        {
+          "id": "cargo-x86-64",
+          "title": "bin/x86_64-breenix-cargo --version exits 0 and its first line names breenix-sdk, x86_64 and the commit"
+        },
+        {
+          "id": "libc-archives",
+          "title": "The SDK ships a libc.a for aarch64 and one for x86_64, each holding objects for its own machine only"
+        },
+        {
+          "id": "rust-std",
+          "title": "The SDK ships a prebuilt Rust std (libstd-*.rlib) for both Breenix targets"
+        },
+        {
+          "id": "std-fork-pin",
+          "title": "share/breenix-sdk/rust-fork.toml is the commit's rust-fork.toml, the pinned fork its std was built from"
+        },
+        {
+          "id": "target-specs",
+          "title": "share/breenix-sdk/targets holds rustc target specs with os breenix for aarch64 and x86_64"
+        },
+        {
+          "id": "headers-c17",
+          "title": "Each of the 29 ISO C17 headers compiles alone and all compile together with -std=c17, for both arches"
+        },
+        {
+          "id": "headers-posix",
+          "title": "Each of the 86 POSIX.1-2024 headers compiles alone and all compile together under _POSIX_C_SOURCE 202405L, for both arches"
+        },
+        {
+          "id": "header-symbols",
+          "title": "A program naming 78 common POSIX functions and 20 constants, from every major header, compiles and links for both arches"
+        },
+        {
+          "id": "headers-self-contained",
+          "title": "A compile reads headers only from the SDK and the compiler's own resource directory, none from the host or the checkout"
+        },
+        {
+          "id": "no-host-paths",
+          "title": "No SDK file holds the checkout's path, the clean clones' paths, the Rust fork's path or the builder's home directory"
+        },
+        {
+          "id": "no-musl",
+          "title": "No SDK file carries musl's marks, and no archive defines compiler_builtins' libm math, a port of musl's libm, or holds its module or sources in metadata, bitcode or data"
+        },
+        {
+          "id": "no-glibc",
+          "title": "No SDK file carries glibc's marks (__GLIBC__, GNU C Library, __THROW, libc.so.6, ld-linux, glibc)"
+        },
+        {
+          "id": "no-other-libc",
+          "title": "No SDK file carries the marks of newlib, bionic, uClibc, dietlibc or picolibc"
+        },
+        {
+          "id": "relocatable",
+          "title": "A copy of the SDK in another directory still compiles and links a C program for each arch"
+        }
+      ]
+    },
+    {
+      "id": "c-app",
+      "title": "a C app built outside the tree",
+      "cases": [
+        {
+          "id": "built",
+          "title": "The C app's eight source files compile and link with only the SDK's driver, in a directory outside the checkout"
+        },
+        {
+          "id": "outside-tree",
+          "title": "No file of the C app's build (sources, dependency lists, objects, program) names a path into the checkout"
+        },
+        {
+          "id": "warnings",
+          "title": "The C app compiles with -Wall -Wextra and no warnings"
+        },
+        {
+          "id": "elf",
+          "title": "The C app is a static ELF executable for this machine (no PT_INTERP)"
+        },
+        {
+          "id": "hello",
+          "title": "c-app hello prints \"hello from c-app\" and exits 0"
+        },
+        {
+          "id": "args",
+          "title": "c-app receives its arguments, including an empty one, and getenv finds the environment it was given"
+        },
+        {
+          "id": "exit-status",
+          "title": "c-app exit 42 ends with exit status 42 and prints nothing"
+        },
+        {
+          "id": "stdio-format",
+          "title": "printf and snprintf format integers, strings, characters and floats with widths, flags and truncation"
+        },
+        {
+          "id": "stdio-stream",
+          "title": "fopen, fprintf, fputs, fgets, fseek and ftell write and read back a two-line file"
+        },
+        {
+          "id": "stderr",
+          "title": "fprintf(stderr) and printf reach standard error and standard output separately"
+        },
+        {
+          "id": "files",
+          "title": "open, write, lseek, read, fstat, rename and unlink work on a file created with mode 0640"
+        },
+        {
+          "id": "dirs",
+          "title": "mkdir, opendir, readdir, closedir and rmdir create, list and remove a directory of three files"
+        },
+        {
+          "id": "spawn",
+          "title": "posix_spawn executes with actions and attributes, restores the parent mask and reports child failure as status 127"
+        },
+        {
+          "id": "fork-wait",
+          "title": "fork and waitpid return a child's exit status 7"
+        },
+        {
+          "id": "exec",
+          "title": "A forked child execv's the app, and the parent's waitpid gets the exit status 3 it asked for"
+        },
+        {
+          "id": "pipe",
+          "title": "A pipe carries a child's message to its parent, which reads it to end of file"
+        },
+        {
+          "id": "signal-handler",
+          "title": "A sigaction handler runs once for raise and once more for kill to the process itself"
+        },
+        {
+          "id": "signal-mask",
+          "title": "A signal blocked by sigprocmask stays pending, then is delivered when unblocked"
+        },
+        {
+          "id": "threads",
+          "title": "Four pthreads each sum a range and pthread_join returns their results"
+        },
+        {
+          "id": "mutex",
+          "title": "Four pthreads incrementing a counter 10000 times each under a mutex reach 40000"
+        },
+        {
+          "id": "condvar",
+          "title": "A producer thread hands 100 values through one slot guarded by a condition variable"
+        },
+        {
+          "id": "socket-unix",
+          "title": "A socketpair carries a message to a forked child and its reply back"
+        },
+        {
+          "id": "socket-tcp",
+          "title": "A TCP server on 127.0.0.1 accepts a forked client, reads its request and replies"
+        },
+        {
+          "id": "socket-udp",
+          "title": "A UDP datagram sent between two sockets on 127.0.0.1 arrives with the sender's port"
+        },
+        {
+          "id": "math",
+          "title": "libm's sqrt, sin, cos, exp, log, pow, fmod, floor, ceil, atan2, hypot, cbrt and lround give the expected values"
+        }
+      ]
+    },
+    {
+      "id": "rust-app",
+      "title": "a Rust app built outside the tree",
+      "cases": [
+        {
+          "id": "built",
+          "title": "The Rust std app, a cargo project outside the checkout, builds with only the SDK's cargo wrapper, offline"
+        },
+        {
+          "id": "nostd-built",
+          "title": "The no_std app builds with only the SDK's cargo wrapper, taking libbreenix from the SDK by version"
+        },
+        {
+          "id": "lto",
+          "title": "The Rust std app also builds with cross-crate fat LTO, which needs bitcode in every rlib of the SDK's std"
+        },
+        {
+          "id": "outside-tree",
+          "title": "Neither Rust app's build (dependency lists, lock file, program) names a path into the checkout"
+        },
+        {
+          "id": "elf",
+          "title": "The Rust std app is a static ELF executable for this machine (no PT_INTERP)"
+        },
+        {
+          "id": "hello",
+          "title": "rust-app hello prints \"hello from rust-app\" and exits 0"
+        },
+        {
+          "id": "args",
+          "title": "std::env::args gives rust-app its arguments, including an empty one"
+        },
+        {
+          "id": "env",
+          "title": "std::env::var reads the environment it was given, and vars_os counts exactly its three variables"
+        },
+        {
+          "id": "exit-code",
+          "title": "std::process::exit(17) ends rust-app with exit status 17"
+        },
+        {
+          "id": "fs-rw",
+          "title": "std::fs::write, OpenOptions append and read_to_string write and read back a file"
+        },
+        {
+          "id": "fs-dir",
+          "title": "std::fs::create_dir_all, read_dir, rename, remove_file, remove_dir and exists manage a directory tree"
+        },
+        {
+          "id": "fs-metadata",
+          "title": "std::fs::set_permissions and metadata report length, file type and mode 0640"
+        },
+        {
+          "id": "process-status",
+          "title": "std::process::Command runs the app itself and status() returns its exit code 5"
+        },
+        {
+          "id": "process-output",
+          "title": "Command with piped stdin and stdout runs a child that copies its input back"
+        },
+        {
+          "id": "cwd",
+          "title": "std::env::current_dir and set_current_dir report and change the working directory"
+        },
+        {
+          "id": "threads",
+          "title": "std::thread::spawn and join return four threads' sums, and a Builder-named thread knows its name"
+        },
+        {
+          "id": "sync",
+          "title": "Arc<Mutex> counts to 40000 across four threads, and an mpsc channel carries 1..=100"
+        },
+        {
+          "id": "net-tcp",
+          "title": "std::net::TcpListener on 127.0.0.1 serves a TcpStream client in another thread"
+        },
+        {
+          "id": "net-udp",
+          "title": "std::net::UdpSocket sends a datagram on 127.0.0.1 that arrives with the sender's address"
+        },
+        {
+          "id": "net-unix",
+          "title": "std::os::unix::net::UnixStream::pair carries a message from another thread"
+        },
+        {
+          "id": "float",
+          "title": "f64 and f32 maximum, minimum and round_ties_even, libc's sqrtf128, fmaximumf128, roundevenf128, fmodf128 and fmaf128, and f16's methods give IEEE 754-2019 results"
+        },
+        {
+          "id": "nostd-hello",
+          "title": "The no_std libbreenix app prints \"hello from rust-nostd-app\" and exits 0"
+        },
+        {
+          "id": "nostd-syscalls",
+          "title": "The no_std app's getpid, file round trip and monotonic clock work through libbreenix"
+        },
+        {
+          "id": "nostd-exit",
+          "title": "The no_std app's main returns 9, and libbreenix's runtime exits with status 9"
+        }
+      ]
+    },
+    {
+      "id": "install",
+      "title": "installing apps onto a Breenix disk",
+      "cases": [
+        {
+          "id": "tool",
+          "title": "The SDK ships bin/breenix-image, and breenix-image --version names the commit"
+        },
+        {
+          "id": "installed",
+          "title": "breenix-image install puts the C, Rust and no_std apps onto the suite's disk, every install exiting 0"
+        },
+        {
+          "id": "path",
+          "title": "/usr/local/bin/sdk-c-app, the documented install path, is a regular file on the booted disk"
+        },
+        {
+          "id": "contents",
+          "title": "The installed program is byte-identical to the one the SDK built"
+        },
+        {
+          "id": "mode-default",
+          "title": "An app installed without --mode has mode 0755"
+        },
+        {
+          "id": "owner",
+          "title": "An installed app is owned by root (uid 0, gid 0)"
+        },
+        {
+          "id": "mode-explicit",
+          "title": "An app installed with --mode 0750 has mode 0750"
+        },
+        {
+          "id": "bindir",
+          "title": "/usr/local/bin is a directory of mode 0755 owned by root"
+        },
+        {
+          "id": "runs-absolute",
+          "title": "/usr/local/bin/sdk-c-app hello runs by its absolute path"
+        },
+        {
+          "id": "runs-path",
+          "title": "bsh finds sdk-c-app by its bare name through the disk shell configuration and runs it"
+        },
+        {
+          "id": "runs-shell",
+          "title": "sh -c 'sdk-c-app hello' finds the app through PATH and runs it"
+        },
+        {
+          "id": "rust-app",
+          "title": "The installed Rust std app runs from PATH"
+        },
+        {
+          "id": "nostd-app",
+          "title": "The installed no_std app runs from PATH"
+        },
+        {
+          "id": "replaced",
+          "title": "Installing the C app over the no_std app's name replaces it: the name runs the C app"
+        },
+        {
+          "id": "removed",
+          "title": "breenix-image remove takes an installed app off the disk: it exited 0 and the name is gone"
+        },
+        {
+          "id": "list",
+          "title": "breenix-image list prints exactly the five installed apps' names, sorted"
+        },
+        {
+          "id": "fsck",
+          "title": "e2fsck -fn finds no errors on the disk after the installs, the removal and the quick start"
+        },
+        {
+          "id": "arch-refused",
+          "title": "breenix-image refuses a program built for the other architecture and leaves the disk without it"
+        },
+        {
+          "id": "remove-missing",
+          "title": "breenix-image remove of a name that was never installed exits non-zero"
+        },
+        {
+          "id": "several-apps",
+          "title": "The booted disk carries all five installed apps and each runs from PATH"
+        }
+      ]
+    },
+    {
+      "id": "templates",
+      "title": "project templates & docs",
+      "cases": [
+        {
+          "id": "tool",
+          "title": "The SDK ships bin/breenix-new, and breenix-new --list names the c, rust and rust-no-std templates"
+        },
+        {
+          "id": "c-create",
+          "title": "breenix-new c tmpl-c creates a project directory and exits 0"
+        },
+        {
+          "id": "c-build",
+          "title": "The c template's project builds unchanged with breenix-build --arch, which prints the program's path"
+        },
+        {
+          "id": "c-runs",
+          "title": "The c template's program prints \"hello from tmpl-c\" and exits 0"
+        },
+        {
+          "id": "rust-create",
+          "title": "breenix-new rust tmpl-rust creates a project directory and exits 0"
+        },
+        {
+          "id": "rust-build",
+          "title": "The rust template's project builds unchanged with breenix-build --arch"
+        },
+        {
+          "id": "rust-runs",
+          "title": "The rust template's program prints \"hello from tmpl-rust\" and exits 0"
+        },
+        {
+          "id": "nostd-create",
+          "title": "breenix-new rust-no-std tmpl-rust-no-std creates a project directory and exits 0"
+        },
+        {
+          "id": "nostd-build",
+          "title": "The rust-no-std template's project builds unchanged with breenix-build --arch"
+        },
+        {
+          "id": "nostd-runs",
+          "title": "The rust-no-std template's program prints \"hello from tmpl-rust-no-std\" and exits 0"
+        },
+        {
+          "id": "every-template",
+          "title": "Every template breenix-new --list names builds unchanged, and each program prints hello from its project"
+        },
+        {
+          "id": "outside-tree",
+          "title": "No generated project's files or build output name a path into the checkout"
+        },
+        {
+          "id": "no-clobber",
+          "title": "breenix-new refuses a directory that already holds a file, exiting non-zero and changing nothing"
+        },
+        {
+          "id": "quick-start-doc",
+          "title": "docs/sdk/quick-start.md has sh quick-start blocks, one breenix quick-start-run line and one text quick-start-output block"
+        },
+        {
+          "id": "quick-start-host",
+          "title": "The quick start's sh blocks, run literally in one shell in an empty directory, exit 0"
+        },
+        {
+          "id": "quick-start-runs",
+          "title": "The quick start's program, run in Breenix as the doc shows, prints what the doc says it prints"
+        },
+        {
+          "id": "sdk-docs",
+          "title": "The SDK ships the quick start as share/doc/breenix-sdk/quick-start.md, identical to docs/sdk/quick-start.md"
+        }
+      ]
+    }
+  ]
+}

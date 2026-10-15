@@ -58,6 +58,7 @@ ARCH="arm64"
 HEADLESS=false
 CLEAN=false
 NO_BUILD=false
+DISK_OVERRIDE=""
 BTRT=false
 PARALLELS=false
 PARALLELS_VM="breenix-dev"
@@ -92,6 +93,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --accel)
             export BREENIX_ARM64_QEMU_ACCEL="${2:?--accel needs hvf or tcg}"
+            shift 2
+            ;;
+        --disk)
+            DISK_OVERRIDE="${2:?--disk needs an ext2 image path}"
             shift 2
             ;;
         --no-build)
@@ -184,6 +189,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --clean                    Full rebuild: userspace, system ext2, kernel"
             echo "  --rebuild-home             Recreate home disk (destroys user data)"
             echo "  --no-build                 Skip all builds, use existing artifacts"
+            echo "  --disk IMG                 Boot a supplied ext2 image, without rebuilding it"
             echo "  --x86, --x86_64, --amd64   Run x86_64 kernel (default: ARM64)"
             echo "  --arm64, --aarch64         Run ARM64 kernel (default)"
             echo "  --parallels                Build and boot on Parallels Desktop VM"
@@ -224,6 +230,39 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [ -n "$DISK_OVERRIDE" ]; then
+    DISK_OVERRIDE=$(python3 - "$DISK_OVERRIDE" <<'PYDISK'
+from pathlib import Path
+import sys
+try:
+    path = Path(sys.argv[1]).resolve(strict=True)
+    if not path.is_file():
+        raise ValueError('not a regular image file')
+    with path.open('rb') as image:
+        image.seek(1024 + 56)
+        if image.read(2) != b'\x53\xef':
+            raise ValueError('not an ext2 image (expected a raw filesystem, not a partitioned disk)')
+    print(path)
+except (OSError, ValueError) as error:
+    sys.exit('--disk: ' + str(error))
+PYDISK
+    ) || exit 2
+    python3 "$BREENIX_ROOT/scripts/ext2-machine.py" "$DISK_OVERRIDE" "$ARCH" || exit 2
+    if [ "$BTRT" = true ]; then
+        echo "--disk cannot be combined with --btrt"
+        exit 2
+    fi
+fi
+
+# Opt in for constrained build hosts; VM execution retains normal priority.
+run_build() {
+    if [ "${BREENIX_BUILD_BACKGROUND:-0}" = 1 ] && [ "$(uname)" = Darwin ]; then
+        taskpolicy -b "$@"
+    else
+        "$@"
+    fi
+}
 
 [[ "$GATE_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || { echo "--gate-timeout needs positive seconds"; exit 2; }
 if [ "$VMWARE" = true ] && [ "$PARALLELS_TEST" = true ]; then
@@ -314,6 +353,10 @@ stage_boot_ext2_disk() {
     else
         "$BREENIX_ROOT/scripts/write-boot-target.sh" "$BOOT_EXT2_DISK" "$SUITE" \
             "$BREENIX_ROOT/userspace/programs/aarch64/suite-$SUITE.elf" || exit 1
+        if [[ ",$SUITE," == *",sdk,"* ]]; then
+            # The Developer SDK suite's host side stages the SDK's results onto the copy.
+            python3 "$BREENIX_ROOT/scripts/sdk-suite.py" --arch aarch64 --image "$BOOT_EXT2_DISK" || exit 1
+        fi
     fi
 }
 
@@ -323,7 +366,7 @@ stage_boot_ext2_disk() {
 # nameserver. Otherwise the wrapped disk, and any changes the guest made to it, is kept.
 ext2_rewrap_needed() {
     local rebuilt="$1" marker="$2"
-    [ "$rebuilt" = true ] || writes_boot_target || [ -f "$marker" ] ||
+    [ -n "$DISK_OVERRIDE" ] || [ "$rebuilt" = true ] || writes_boot_target || [ -f "$marker" ] ||
         [ "$(cat "$marker.dns" 2>/dev/null)" != "$(target_nameserver)" ]
 }
 
@@ -530,7 +573,7 @@ if [ "$PARALLELS" = true ]; then
     SERIAL_LOG="${SERIAL_LOG_OVERRIDE:-/tmp/breenix-parallels-serial-$(date -u +%Y%m%dT%H%M%SZ)-$$.log}"
     HDD_DIR="$PARALLELS_DIR/breenix-efi.hdd"
     EXT2_HDD_DIR="$PARALLELS_DIR/breenix-ext2.hdd"
-    EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
+    EXT2_DISK="${DISK_OVERRIDE:-$BREENIX_ROOT/target/ext2-aarch64.img}"
 
     LOADER_EFI="$BREENIX_ROOT/target/aarch64-unknown-uefi/release/parallels-loader.efi"
     KERNEL_ELF="$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
@@ -554,12 +597,12 @@ if [ "$PARALLELS" = true ]; then
 
         # Build the UEFI loader
         echo "[1/4] Building UEFI loader..."
-        cargo build --release --target aarch64-unknown-uefi -p parallels-loader
+        run_build cargo build --release --target aarch64-unknown-uefi -p parallels-loader
 
         # Build the kernel
         echo ""
         echo "[2/4] Building kernel..."
-        cargo build --release --target aarch64-breenix-kernel.json \
+        run_build cargo build --release --target aarch64-breenix-kernel.json \
             -Z build-std=core,alloc \
             -Z build-std-features=compiler-builtins-mem \
             -p kernel --bin kernel-aarch64 ${KERNEL_FEATURE_ARGS[@]+"${KERNEL_FEATURE_ARGS[@]}"}
@@ -573,20 +616,22 @@ if [ "$PARALLELS" = true ]; then
             exit 1
         fi
 
-        # Build userspace binaries and create ext2 data disk
-        echo ""
-        echo "[3/4] Building userspace binaries (aarch64)..."
-        # A failure here is fatal: packing older ELFs under a new kernel is never a boot of this tree.
-        if ! "$BREENIX_ROOT/userspace/programs/build.sh" --arch aarch64; then
-            echo "ERROR: Userspace build failed"
-            exit 1
-        fi
+        if [ -z "$DISK_OVERRIDE" ]; then
+            # Build userspace binaries and create ext2 data disk
+            echo ""
+            echo "[3/4] Building userspace binaries (aarch64)..."
+            # A failure here is fatal: packing older ELFs under a new kernel is never a boot of this tree.
+            if ! run_build "$BREENIX_ROOT/userspace/programs/build.sh" --arch aarch64; then
+                echo "ERROR: Userspace build failed"
+                exit 1
+            fi
 
-        echo ""
-        echo "[4/4] Creating ext2 data disk image..."
-        if ! "$BREENIX_ROOT/scripts/create_ext2_disk.sh" --arch aarch64; then
-            echo "ERROR: ext2 disk creation failed"
-            exit 1
+            echo ""
+            echo "[4/4] Creating ext2 data disk image..."
+            if ! run_build "$BREENIX_ROOT/scripts/create_ext2_disk.sh" --arch aarch64; then
+                echo "ERROR: ext2 disk creation failed"
+                exit 1
+            fi
         fi
     fi
 
@@ -913,7 +958,7 @@ if [ "$VMWARE" = true ]; then
     SERIAL_LOG="${SERIAL_LOG_OVERRIDE:-/tmp/breenix-vmware-serial-$(date -u +%Y%m%dT%H%M%SZ)-$$.log}"
     # Fusion's "Use full resolution for Retina display": off by default so the guest is scaled 2x.
     if [ "${RETINA:-false}" = true ]; then VMWARE_NATIVE_RESOLUTION=TRUE; else VMWARE_NATIVE_RESOLUTION=FALSE; fi
-    EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
+    EXT2_DISK="${DISK_OVERRIDE:-$BREENIX_ROOT/target/ext2-aarch64.img}"
     VM_MACHINES="$HOME/Virtual Machines.localized"
     LOADER_EFI="$BREENIX_ROOT/target/aarch64-unknown-uefi/release/parallels-loader.efi"
     KERNEL_ELF="$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
@@ -935,12 +980,12 @@ if [ "$VMWARE" = true ]; then
 
         # Build UEFI loader
         echo "[1/6] Building UEFI loader..."
-        cargo build --release --target aarch64-unknown-uefi -p parallels-loader
+        run_build cargo build --release --target aarch64-unknown-uefi -p parallels-loader
 
         # Build kernel
         echo ""
         echo "[2/6] Building kernel..."
-        cargo build --release --target aarch64-breenix-kernel.json \
+        run_build cargo build --release --target aarch64-breenix-kernel.json \
             -Z build-std=core,alloc \
             -Z build-std-features=compiler-builtins-mem \
             -p kernel --bin kernel-aarch64 ${KERNEL_FEATURE_ARGS[@]+"${KERNEL_FEATURE_ARGS[@]}"}
@@ -954,21 +999,23 @@ if [ "$VMWARE" = true ]; then
             exit 1
         fi
 
-        # Build userspace
-        echo ""
-        echo "[3/6] Building userspace binaries (aarch64)..."
-        # A failure here is fatal: packing older ELFs under a new kernel is never a boot of this tree.
-        if ! "$BREENIX_ROOT/userspace/programs/build.sh" --arch aarch64; then
-            echo "ERROR: Userspace build failed"
-            exit 1
-        fi
+        if [ -z "$DISK_OVERRIDE" ]; then
+            # Build userspace
+            echo ""
+            echo "[3/6] Building userspace binaries (aarch64)..."
+            # A failure here is fatal: packing older ELFs under a new kernel is never a boot of this tree.
+            if ! run_build "$BREENIX_ROOT/userspace/programs/build.sh" --arch aarch64; then
+                echo "ERROR: Userspace build failed"
+                exit 1
+            fi
 
-        # Create ext2 data disk
-        echo ""
-        echo "[4/6] Creating ext2 data disk image..."
-        if ! "$BREENIX_ROOT/scripts/create_ext2_disk.sh" --arch aarch64; then
-            echo "ERROR: ext2 disk creation failed"
-            exit 1
+            # Create ext2 data disk
+            echo ""
+            echo "[4/6] Creating ext2 data disk image..."
+            if ! run_build "$BREENIX_ROOT/scripts/create_ext2_disk.sh" --arch aarch64; then
+                echo "ERROR: ext2 disk creation failed"
+                exit 1
+            fi
         fi
 
     fi
@@ -1223,14 +1270,14 @@ fi
 if [ "$ARCH" = "arm64" ]; then
     # ARM64 path - direct kernel boot
     KERNEL="$BREENIX_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
-    EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
+    EXT2_DISK="${DISK_OVERRIDE:-$BREENIX_ROOT/target/ext2-aarch64.img}"
     HOME_DISK="$BREENIX_ROOT/target/ext2-home-aarch64.img"
 
     # Build command for ARM64
     BUILD_CMD="cargo build --release --features boot_tests --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64"
 else
     # x86_64 path - uses UEFI boot
-    EXT2_DISK="$BREENIX_ROOT/target/ext2.img"
+    EXT2_DISK="${DISK_OVERRIDE:-$BREENIX_ROOT/target/ext2.img}"
     HOME_DISK="$BREENIX_ROOT/target/ext2-home.img"
     VNC_PORT=5900
 
@@ -1282,6 +1329,10 @@ echo "Mode: $([ "$HEADLESS" = true ] && echo "headless (serial only)" || echo "g
 
 if [ "$NO_BUILD" = true ]; then
     echo "Skipping all builds (--no-build)"
+elif [ -n "$DISK_OVERRIDE" ]; then
+    echo "Using supplied disk: $EXT2_DISK"
+    echo "Building kernel..."
+    run_build /bin/bash -c "$BUILD_CMD"
 elif [ "$CLEAN" = true ]; then
     # --clean: full rebuild of userspace, system ext2 disk, and kernel
     echo ""
@@ -1290,39 +1341,39 @@ elif [ "$CLEAN" = true ]; then
 
     if [ "$ARCH" = "arm64" ]; then
         echo "[1/3] Building userspace binaries (aarch64)..."
-        "$BREENIX_ROOT/userspace/programs/build.sh" --arch aarch64
+        run_build "$BREENIX_ROOT/userspace/programs/build.sh" --arch aarch64
 
         echo ""
         echo "[2/3] Creating system ext2 disk image..."
-        "$BREENIX_ROOT/scripts/create_ext2_disk.sh" --arch aarch64
+        run_build "$BREENIX_ROOT/scripts/create_ext2_disk.sh" --arch aarch64
 
         echo ""
         echo "[3/3] Building kernel..."
     else
         # create-test-disk builds userspace, then packs target/test_binaries.img.
         echo "[1/3] Building userspace binaries and test disk (x86_64)..."
-        (cd "$BREENIX_ROOT" && cargo run -p xtask -- create-test-disk)
+        (cd "$BREENIX_ROOT" && run_build cargo run -p xtask -- create-test-disk)
 
         echo ""
         echo "[2/3] Creating system ext2 disk image..."
-        "$BREENIX_ROOT/scripts/create_ext2_disk.sh"
+        run_build "$BREENIX_ROOT/scripts/create_ext2_disk.sh"
 
         echo ""
         echo "[3/3] Building kernel..."
     fi
-    eval $BUILD_CMD
+    run_build /bin/bash -c "$BUILD_CMD"
     echo ""
 else
     # Userspace preparation belongs to the launcher, never kernel/build.rs.
     if [ "$ARCH" = "arm64" ]; then
         echo "Building userspace binaries (aarch64)..."
-        "$BREENIX_ROOT/userspace/programs/build.sh" --arch aarch64
+        run_build "$BREENIX_ROOT/userspace/programs/build.sh" --arch aarch64
         USERSPACE_MANIFEST="$BREENIX_ROOT/userspace/programs/aarch64/.userspace-manifest.json"
         EXT2_ARGS=(--arch aarch64)
     else
         # create-test-disk builds userspace, then packs target/test_binaries.img.
         echo "Building userspace binaries and test disk (x86_64)..."
-        (cd "$BREENIX_ROOT" && cargo run -p xtask -- create-test-disk)
+        (cd "$BREENIX_ROOT" && run_build cargo run -p xtask -- create-test-disk)
         USERSPACE_MANIFEST="$BREENIX_ROOT/userspace/programs/.userspace-manifest.json"
         EXT2_ARGS=()
     fi
@@ -1335,14 +1386,14 @@ else
             "$(dirname "$USERSPACE_MANIFEST")/libc-busybox.links" \
             "$BREENIX_ROOT/fonts" "$BREENIX_ROOT/vendor/busybox" -newer "$EXT2_DISK" -print -quit)" ]; then
         echo "Creating system ext2 disk image..."
-        "$BREENIX_ROOT/scripts/create_ext2_disk.sh" ${EXT2_ARGS[@]+"${EXT2_ARGS[@]}"}
+        run_build "$BREENIX_ROOT/scripts/create_ext2_disk.sh" ${EXT2_ARGS[@]+"${EXT2_ARGS[@]}"}
     else
         echo "System ext2 disk image is current"
     fi
     # Always rebuild to ensure correct features (boot_tests, etc.)
     # Cargo is incremental — this is fast if nothing changed
     echo "Building kernel..."
-    eval $BUILD_CMD
+    run_build /bin/bash -c "$BUILD_CMD"
 fi
 
 # Create home disk if it doesn't exist (never recreated unless --rebuild-home)
@@ -1382,7 +1433,7 @@ if [ -f "$EXT2_DISK" ]; then
     # The stamp names the system disk the session was cloned from. A session from
     # the other architecture, or from a system disk rebuilt since, is replaced.
     EXT2_SESSION_BASE="$EXT2_SESSION.base"
-    if [ "$CLEAN" = true ] || [ ! -f "$EXT2_WRITABLE" ] || [ ! -f "$EXT2_SESSION_BASE" ] \
+    if [ -n "$DISK_OVERRIDE" ] || [ "$CLEAN" = true ] || [ ! -f "$EXT2_WRITABLE" ] || [ ! -f "$EXT2_SESSION_BASE" ] \
             || [ "$(cat "$EXT2_SESSION_BASE")" != "$EXT2_DISK" ] || [ "$EXT2_DISK" -nt "$EXT2_SESSION_BASE" ]; then
         echo "Creating fresh session disk from $EXT2_DISK"
         cp "$EXT2_DISK" "$EXT2_WRITABLE"

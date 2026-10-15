@@ -18,6 +18,7 @@ Cargo.lock
 
 # Build directories
 build/
+__pycache__/
 
 # Worktree directories
 .worktrees/

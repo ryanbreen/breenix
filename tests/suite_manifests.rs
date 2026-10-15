@@ -473,6 +473,82 @@ fn libc_c_case_tables_match_the_manifest() {
     assert!(errors.is_empty(), "libc C case tables differ from docs/suites/libc.json:\n{}", errors.join("\n"));
 }
 
+/// The host records scripts/sdk-suite.py writes (its `HOST_CASES`), in order.
+fn sdk_harness_cases(source: &str) -> Vec<String> {
+    let start = source.find("\nHOST_CASES = (\n").expect("scripts/sdk-suite.py has a HOST_CASES table");
+    let body = &source[start..];
+    let end = body.find("\n)\n").expect("HOST_CASES ends with a closing parenthesis");
+    body[..end].split('\'').skip(1).step_by(2).map(String::from).collect()
+}
+
+/// The host records suite_sdk.rs reads: the cases whose function is `host_case`, and
+/// every `category/case` string literal it names.
+fn sdk_guest_reads(source: &str) -> Vec<String> {
+    let mut reads = Vec::new();
+    let mut category = String::new();
+    for line in source.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("category(\"") {
+            category = rest.split('"').next().unwrap_or("").to_string();
+        } else if let (Some(rest), true) = (line.strip_prefix("case(\""), line.ends_with("host_case),")) {
+            reads.push(format!("{category}/{}", rest.split('"').next().unwrap_or("")));
+        }
+    }
+    fn literals(tokens: proc_macro2::TokenStream, out: &mut Vec<String>) {
+        for token in tokens {
+            match token {
+                proc_macro2::TokenTree::Group(group) => literals(group.stream(), out),
+                proc_macro2::TokenTree::Literal(literal) => {
+                    let text = literal.to_string();
+                    let Some(value) = text.strip_prefix('"').and_then(|t| t.strip_suffix('"')) else { continue };
+                    let mut parts = value.split('/');
+                    if let (Some(a), Some(b), None) = (parts.next(), parts.next(), parts.next()) {
+                        if is_id(a) && is_id(b) {
+                            out.push(value.to_string());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    literals(source.parse().expect("suite_sdk.rs tokenizes"), &mut reads);
+    reads.sort();
+    reads.dedup();
+    reads
+}
+
+/// Every record the SDK harness writes names a case of docs/suites/sdk.json, and the
+/// guest reads exactly the records the harness writes, so no host step goes unreported
+/// and no guest case waits on a record nothing writes.
+#[test]
+fn sdk_host_records_match_the_manifest_and_the_guest() {
+    let root = repo_root();
+    let manifest: Value = serde_json::from_str(&fs::read_to_string(root.join("docs/suites/sdk.json")).unwrap()).unwrap();
+    let mut ids = Vec::new();
+    for category in manifest["categories"].as_array().unwrap() {
+        for case in category["cases"].as_array().unwrap() {
+            ids.push(format!("{}/{}", category["id"].as_str().unwrap(), case["id"].as_str().unwrap()));
+        }
+    }
+    let mut written = sdk_harness_cases(&fs::read_to_string(root.join("scripts/sdk-suite.py")).unwrap());
+    let unknown: Vec<&String> = written.iter().filter(|id| !ids.contains(id)).collect();
+    assert!(unknown.is_empty(), "scripts/sdk-suite.py records cases docs/suites/sdk.json lacks: {unknown:?}");
+    let in_order: Vec<&String> = ids.iter().filter(|id| written.contains(id)).collect();
+    assert_eq!(written.iter().collect::<Vec<_>>(), in_order, "HOST_CASES is not in manifest order");
+    written.sort();
+    let read = sdk_guest_reads(&fs::read_to_string(root.join("userspace/programs/src/suite_sdk.rs")).unwrap());
+    assert_eq!(read, written, "the records suite_sdk.rs reads differ from those scripts/sdk-suite.py writes");
+}
+
+#[test]
+fn sdk_record_tables_are_read_exactly() {
+    let harness = "X = 1\nHOST_CASES = (\n    'a/b', 'c/d',\n    'e/f',\n)\nY = ('g/h',)\n";
+    assert_eq!(sdk_harness_cases(harness), ["a/b", "c/d", "e/f"]);
+    let guest = "static S: Suite = suite(\"s\", \"S\", &[\n    category(\"one\", \"One\", &[\n        case(\"x\", \"X\", host_case),\n        case(\"y\", \"Y\", y),\n    ]),\n]);\nfn y() { host(\"two/z\"); let _ = \"not/a/record\"; let _ = \"Not/This\"; }\n";
+    assert_eq!(sdk_guest_reads(guest), ["one/x", "two/z"]);
+}
+
 #[test]
 fn c_case_tables_are_read_exactly() {
     let table = "const struct libc_case libc_cases[] = {\n    { \"a-b\", a_b },\n    { \"c\", c },\n    { 0, 0 },\n};\n";

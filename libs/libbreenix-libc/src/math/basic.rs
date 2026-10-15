@@ -332,6 +332,22 @@ pub extern "C" fn round(x: f64) -> f64 {
     if fabs(x - t) >= 0.5 { t + copysign(1.0, x) } else { t }
 }
 
+/// Halfway cases to the even integer (C23 7.12.9.8). Raises no inexact: every
+/// operation below is exact.
+#[no_mangle]
+pub extern "C" fn roundeven(x: f64) -> f64 {
+    if !x.is_finite() { return super::quiet(x); }
+    let t = trunc(x);
+    let d = fabs(x - t);
+    let half = t * 0.5;
+    if d > 0.5 || (d == 0.5 && trunc(half) != half) { t + copysign(1.0, x) } else { t }
+}
+
+#[no_mangle]
+pub extern "C" fn roundevenf(x: f32) -> f32 {
+    roundeven(x as f64) as f32
+}
+
 #[no_mangle]
 pub extern "C" fn truncf(x: f32) -> f32 {
     trunc(x as f64) as f32
@@ -729,6 +745,26 @@ pub extern "C" fn fmin(x: f64, y: f64) -> f64 {
     y
 }
 
+/// The larger of x and y, a NaN when either is one, and +0 above -0 (C23 7.12.12.4,
+/// IEEE 754-2019 maximum).
+#[no_mangle]
+pub extern "C" fn fmaximum(x: f64, y: f64) -> f64 {
+    if x.is_nan() || y.is_nan() {
+        return x + y;
+    }
+    if x > y || (x == y && y.is_sign_negative()) { x } else { y }
+}
+
+/// The smaller of x and y, a NaN when either is one, and -0 below +0 (C23 7.12.12.5,
+/// IEEE 754-2019 minimum).
+#[no_mangle]
+pub extern "C" fn fminimum(x: f64, y: f64) -> f64 {
+    if x.is_nan() || y.is_nan() {
+        return x + y;
+    }
+    if x < y || (x == y && x.is_sign_negative()) { x } else { y }
+}
+
 #[no_mangle]
 pub extern "C" fn fdim(x: f64, y: f64) -> f64 {
     if x.is_nan() || y.is_nan() {
@@ -758,6 +794,16 @@ pub extern "C" fn fmaxf(x: f32, y: f32) -> f32 {
 #[no_mangle]
 pub extern "C" fn fminf(x: f32, y: f32) -> f32 {
     fmin(x as f64, y as f64) as f32
+}
+
+#[no_mangle]
+pub extern "C" fn fmaximumf(x: f32, y: f32) -> f32 {
+    fmaximum(x as f64, y as f64) as f32
+}
+
+#[no_mangle]
+pub extern "C" fn fminimumf(x: f32, y: f32) -> f32 {
+    fminimum(x as f64, y as f64) as f32
 }
 
 #[no_mangle]

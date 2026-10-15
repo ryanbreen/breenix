@@ -144,7 +144,9 @@ cfg_if! {
     }
 }
 
-// Multi-platform libc
+// Multi-platform libc. Configured out as one macro call on Breenix, so that no other C
+// library's name reaches this crate's metadata there (see unix/mod.rs).
+#[cfg(not(target_os = "breenix"))]
 cfg_if! {
     // FIXME(vxworks): vxworks sets `target_env = "gnu"` but maybe shouldn't.
     if #[cfg(all(

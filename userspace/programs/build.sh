@@ -426,6 +426,7 @@ STD_BINARIES=(
     "suite-rust-std"
     "suite-libc"
     "suite-utilities"
+    "suite-sdk"
     "files-io-exec_test"
     "processes-exec_test"
     "rust-std-child_test"

@@ -3,5 +3,5 @@
 # the commit itself; `scripts/rust-fork.sh check-release` refuses any pin main may not carry.
 repo = "https://github.com/ryanbreen/rust.git"
 branch = "breenix-target"
-commit = "52e023777d30aa3cdc54974af2898c6ef8180ffe"
+commit = "dc93f28f0d59ff29e03808436f2345f2953177c1"
 rust = "1.90.0"

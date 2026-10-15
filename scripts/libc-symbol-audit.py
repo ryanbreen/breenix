@@ -109,13 +109,15 @@ def definitions(arch, path=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('--arch', choices=sorted(LIBC), required=True)
+    parser.add_argument('--archive', type=Path, help='audit this libc archive instead of the default C ABI build')
     parser.add_argument('--elf', type=Path, help='also reject foreign or weak math in a linked C ELF')
     args = parser.parse_args()
-    if not LIBC[args.arch].is_file():
-        sys.exit(f'libc-symbol-audit: {LIBC[args.arch]} is missing')
+    archive = args.archive or LIBC[args.arch]
+    if not archive.is_file():
+        sys.exit(f'libc-symbol-audit: {archive} is missing')
     headers = public_headers()
     functions = declared_functions(args.arch, headers)
-    defined = definitions(args.arch)
+    defined = definitions(args.arch, archive)
     problems = []
     for name, defs in sorted(defined.items()):
         if ('libm_math' in name or 'compiler_builtins4math' in name or 'compiler_builtins..math..' in name
