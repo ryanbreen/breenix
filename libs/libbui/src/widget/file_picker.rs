@@ -23,7 +23,10 @@ pub struct FileEntry {
 }
 
 /// Result of a FilePicker update cycle.
+#[derive(Debug, PartialEq, Eq)]
 pub enum FilePickerResult {
+    /// The editable path was submitted; the caller reads that directory.
+    NavigatePath(Vec<u8>),
     /// Still open, no action taken.
     Active,
     /// User confirmed selection of the entry at this index.
@@ -50,10 +53,13 @@ pub struct FilePicker {
     open_pressed: bool,
     cancel_hovered: bool,
     cancel_pressed: bool,
+    last_click: Option<(usize, u64, i32, i32)>,
+    path_field: super::text_field::TextField,
+    error: Option<Vec<u8>>,
 }
 
 impl FilePicker {
-    pub fn new(rect: Rect, path: Vec<u8>, entries: Vec<FileEntry>, theme: &Theme) -> Self {
+    pub fn new(rect: Rect, path: Vec<u8>, mut entries: Vec<FileEntry>, theme: &Theme) -> Self {
         let row_height = text::text_height(theme) + 4;
         let (_, body) = rect.split_top(TITLE_BAR_H);
         let (btn_bar, list_body) = body.split_bottom(BUTTON_BAR_H);
@@ -70,7 +76,16 @@ impl FilePicker {
         let cancel_btn = Rect::new(btn_x, btn_y, BUTTON_W, BUTTON_H);
         let open_btn = Rect::new(btn_x + BUTTON_W + BUTTON_GAP, btn_y, BUTTON_W, BUTTON_H);
 
+        sort_entries(&mut entries);
+        let mut path_field = super::text_field::TextField::new(
+            Rect::new(rect.x + 4, rect.y + 2, (rect.w - 8).max(0), 20),
+            4096,
+        );
+        path_field.insert_str(core::str::from_utf8(&path).unwrap_or(""));
         Self {
+            last_click: None,
+            path_field,
+            error: None,
             rect,
             path,
             entries,
@@ -89,7 +104,21 @@ impl FilePicker {
     }
 
     /// Replace the displayed directory and entries, resetting scroll and selection.
-    pub fn navigate(&mut self, path: Vec<u8>, entries: Vec<FileEntry>) {
+    pub fn navigate(&mut self, path: Vec<u8>, mut entries: Vec<FileEntry>) {
+        sort_entries(&mut entries);
+        self.path_field = super::text_field::TextField::new(
+            Rect::new(
+                self.rect.x + 4,
+                self.rect.y + 2,
+                (self.rect.w - 8).max(0),
+                20,
+            ),
+            4096,
+        );
+        self.path_field
+            .insert_str(core::str::from_utf8(&path).unwrap_or(""));
+        self.error = None;
+        self.last_click = None;
         self.path = path;
         self.entries = entries;
         self.selected = None;
@@ -128,50 +157,134 @@ impl FilePicker {
             self.cancel_pressed = false;
         }
 
-        // Scroll indicator clicks
-        if input.mouse_pressed && self.list_area.contains(input.mouse_x, input.mouse_y) {
-            let rel_y = input.mouse_y - self.list_area.y;
-
-            // Top scroll indicator region
-            if self.scroll_offset > 0 && rel_y < self.row_height {
-                self.scroll_offset = self.scroll_offset.saturating_sub(1);
-                return FilePickerResult::Active;
-            }
-
-            // Bottom scroll indicator region
-            let has_more_below = self.scroll_offset + self.visible_rows < self.entries.len();
-            if has_more_below {
-                let bottom_start = self.list_area.h - self.row_height;
-                if rel_y >= bottom_start {
-                    self.scroll_offset += 1;
-                    return FilePickerResult::Active;
+        self.path_field.update(input);
+        if input.mouse_pressed
+            && self.error.is_none()
+            && self.list_area.contains(input.mouse_x, input.mouse_y)
+        {
+            let row = ((input.mouse_y - self.list_area.y) / self.row_height) as usize;
+            let idx = self.scroll_offset + row;
+            if idx < self.entries.len() && row < self.visible_rows {
+                self.selected = Some(idx);
+                let double = self.last_click.is_some_and(|(old, t, x, y)| {
+                    old == idx
+                        && input.time_ms >= t
+                        && input.time_ms - t <= 400
+                        && (i64::from(input.mouse_x) - i64::from(x)).abs() <= 4
+                        && (i64::from(input.mouse_y) - i64::from(y)).abs() <= 4
+                });
+                self.last_click = Some((idx, input.time_ms, input.mouse_x, input.mouse_y));
+                if double {
+                    self.last_click = None;
+                    return self.activate(idx);
                 }
-            }
-
-            // Click on an entry row
-            let row = (rel_y / self.row_height) as usize;
-            let entry_idx = self.scroll_offset + row;
-            if entry_idx < self.entries.len() {
-                if self.selected == Some(entry_idx) {
-                    // Double-click (click already-selected) activates
-                    return self.activate(entry_idx);
-                }
-                self.selected = Some(entry_idx);
             }
         }
 
         FilePickerResult::Active
     }
 
+    pub fn path_field(&mut self) -> &mut super::text_field::TextField {
+        &mut self.path_field
+    }
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+    pub fn visible_rows(&self) -> usize {
+        self.visible_rows
+    }
+    pub fn error(&self) -> Option<&[u8]> {
+        self.error.as_deref()
+    }
+    pub fn show_error(&mut self, message: &[u8]) {
+        self.error = Some(message.to_vec());
+        self.entries.clear();
+        self.selected = None;
+        self.scroll_offset = 0;
+        self.last_click = None;
+    }
+    fn reveal(&mut self) {
+        if let Some(i) = self.selected {
+            self.scroll_offset = self.scroll_offset.min(i);
+            if i >= self.scroll_offset + self.visible_rows {
+                self.scroll_offset = (i + 1).saturating_sub(self.visible_rows.max(1));
+            }
+        }
+    }
+    /// Wheel direction is positive up, three rows per step.
+    pub fn scroll(&mut self, steps: i32) {
+        let max = self.entries.len().saturating_sub(self.visible_rows);
+        self.scroll_offset =
+            (self.scroll_offset as i64 - i64::from(steps) * 3).clamp(0, max as i64) as usize;
+    }
+    pub fn key(&mut self, input: &crate::KeyInput<'_>) -> FilePickerResult {
+        use crate::Key;
+        if input.key == Key::Escape {
+            return FilePickerResult::Cancelled;
+        }
+        if input.key == Key::Tab {
+            self.path_field.set_focused(true);
+            return FilePickerResult::Active;
+        }
+        // Enter submits the path only when the field owns focus.
+        if self.path_field.is_focused() {
+            if input.key == Key::Enter {
+                return FilePickerResult::NavigatePath(self.path_field.text().as_bytes().to_vec());
+            }
+            self.path_field.key(input);
+            return FilePickerResult::Active;
+        }
+        if self.error.is_some() || self.entries.is_empty() {
+            return FilePickerResult::Active;
+        }
+        let last = self.entries.len() - 1;
+        self.selected = match input.key {
+            Key::Down => Some(self.selected.map_or(0, |i| (i + 1).min(last))),
+            Key::Up => Some(self.selected.map_or(last, |i| i.saturating_sub(1))),
+            Key::PageDown => Some(
+                self.selected
+                    .map_or(0, |i| (i + self.visible_rows.max(1)).min(last)),
+            ),
+            Key::PageUp => Some(
+                self.selected
+                    .map_or(last, |i| i.saturating_sub(self.visible_rows.max(1))),
+            ),
+            Key::Home => Some(0),
+            Key::End => Some(last),
+            Key::Enter => {
+                return self
+                    .selected
+                    .map_or(FilePickerResult::Active, |i| self.activate(i))
+            }
+            _ => self.selected,
+        };
+        self.reveal();
+        FilePickerResult::Active
+    }
+
     /// Draw the complete dialog.
     pub fn draw(&self, fb: &mut FrameBuf, theme: &Theme) {
         // Background
-        shapes::fill_rect(fb, self.rect.x, self.rect.y, self.rect.w, self.rect.h, theme.panel_bg);
+        shapes::fill_rect(
+            fb,
+            self.rect.x,
+            self.rect.y,
+            self.rect.w,
+            self.rect.h,
+            theme.panel_bg,
+        );
 
         // Title bar
         let title_rect = Rect::new(self.rect.x, self.rect.y, self.rect.w, TITLE_BAR_H);
-        shapes::fill_rect(fb, title_rect.x, title_rect.y, title_rect.w, title_rect.h, theme.widget_bg);
-        text::draw_text_centered(fb, &self.path, &title_rect, theme.text_primary, theme);
+        shapes::fill_rect(
+            fb,
+            title_rect.x,
+            title_rect.y,
+            title_rect.w,
+            title_rect.h,
+            theme.widget_bg,
+        );
+        self.path_field.draw(fb, theme);
         shapes::draw_line(
             fb,
             self.rect.x,
@@ -191,6 +304,16 @@ impl FilePicker {
             theme.panel_bg,
         );
 
+        if let Some(message) = &self.error {
+            text::draw_text(
+                fb,
+                message,
+                self.list_area.x + 4,
+                self.list_area.y + 4,
+                theme.text_primary,
+                theme,
+            );
+        }
         // Draw entries
         let end = (self.scroll_offset + self.visible_rows).min(self.entries.len());
         for i in self.scroll_offset..end {
@@ -200,7 +323,14 @@ impl FilePicker {
 
             // Highlight selected row
             if self.selected == Some(i) {
-                shapes::fill_rect(fb, row_rect.x, row_rect.y, row_rect.w, row_rect.h, theme.accent);
+                shapes::fill_rect(
+                    fb,
+                    row_rect.x,
+                    row_rect.y,
+                    row_rect.w,
+                    row_rect.h,
+                    theme.accent,
+                );
             }
 
             let text_y = ry + (self.row_height - text::text_height(theme)) / 2;
@@ -277,13 +407,34 @@ impl FilePicker {
         );
 
         // Cancel button
-        self.draw_button(fb, &self.cancel_btn, b"Cancel", self.cancel_hovered, self.cancel_pressed, theme);
+        self.draw_button(
+            fb,
+            &self.cancel_btn,
+            b"Cancel",
+            self.cancel_hovered,
+            self.cancel_pressed,
+            theme,
+        );
 
         // Open button
-        self.draw_button(fb, &self.open_btn, b"Open", self.open_hovered, self.open_pressed, theme);
+        self.draw_button(
+            fb,
+            &self.open_btn,
+            b"Open",
+            self.open_hovered,
+            self.open_pressed,
+            theme,
+        );
 
         // Outer border
-        shapes::draw_rect(fb, self.rect.x, self.rect.y, self.rect.w, self.rect.h, theme.border);
+        shapes::draw_rect(
+            fb,
+            self.rect.x,
+            self.rect.y,
+            self.rect.w,
+            self.rect.h,
+            theme.border,
+        );
     }
 
     fn draw_button(
@@ -372,4 +523,8 @@ fn write_u64(val: u64, buf: &mut [u8; 16]) -> usize {
         buf[i] = digits[count - 1 - i];
     }
     count
+}
+
+fn sort_entries(entries: &mut [FileEntry]) {
+    entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.cmp(&b.name)));
 }
