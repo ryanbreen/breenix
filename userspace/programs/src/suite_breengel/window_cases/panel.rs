@@ -57,11 +57,11 @@ fn panel_between_cases() -> CaseResult {
 }
 
 fn panel_cursor_restore() -> CaseResult {
-    missing("a way for a case to move the panel's pointer, so its trail can be observed (section 23)", "23")
+    missing("a way for a case to move the panel's pointer, so its trail can be observed", "23")
 }
 
 fn panel_cursor_trail_detected() -> CaseResult {
-    missing("a way for a case to move the panel's pointer with panel-cursor-no-restore armed (sections 21, 23)", "21, 23")
+    missing("a way for a case to move the panel's pointer with panel-cursor-no-restore armed", "21, 23")
 }
 
 fn panel_kernel_screens() -> CaseResult {

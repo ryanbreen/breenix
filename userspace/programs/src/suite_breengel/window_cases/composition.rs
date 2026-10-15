@@ -663,6 +663,13 @@ fn composition_present_rate() -> CaseResult {
     ensure(rate >= 60, "18", format!("one 256x256 window committing as fast as its buffers are released was composed {composed} times in {elapsed} ms, {rate} a second; the contract requires at least 60"))
 }
 
+/// In a helper: say why it stops (on its standard output, which the case reads) and give the
+/// exit status.
+pub(crate) fn stop(why: String) -> i32 {
+    let _ = io::write(Fd::from_raw(1), format!("failed: {why}\n").as_bytes());
+    1
+}
+
 pub(crate) fn take_over() -> i64 {
     // SAFETY: take_over_display reads no memory.
     unsafe { raw::syscall0(SYS_TAKE_OVER_DISPLAY) as i64 }
@@ -716,17 +723,19 @@ fn composition_takeover_giveback() -> CaseResult {
     interface()?;
     let (before, _) = screen()?;
     let mut f = || {
-        if take_over() < 0 {
-            return 2;
+        let took = take_over();
+        if took < 0 {
+            return stop(format!("take_over_display {}", outcome(took)));
         }
-        if paint([0x20, 0x80, 0xE0, 0]).is_err() {
-            return 3;
+        if let Err(e) = paint([0x20, 0x80, 0xE0, 0]) {
+            return stop(e);
         }
         let _ = io::write(Fd::from_raw(1), b"painted\n");
         let mut b = [0u8; 1];
         let _ = io::read(Fd::from_raw(0), &mut b);
-        if give_back() < 0 {
-            return 4;
+        let gave = give_back();
+        if gave < 0 {
+            return stop(format!("give_back_display {}", outcome(gave)));
         }
         let _ = io::write(Fd::from_raw(1), b"given\n");
         0
@@ -750,11 +759,12 @@ fn composition_ownership_stack() -> CaseResult {
     interface()?;
     // The giver: takes the display, paints it, and hands it to a compositor it names.
     let mut giver_body = || {
-        if take_over() < 0 {
-            return 2;
+        let took = take_over();
+        if took < 0 {
+            return stop(format!("take_over_display {}", outcome(took)));
         }
-        if paint([0x11, 0x99, 0x33, 0]).is_err() {
-            return 3;
+        if let Err(e) = paint([0x11, 0x99, 0x33, 0]) {
+            return stop(e);
         }
         let _ = io::write(Fd::from_raw(1), format!("painted {}\n", getpid()).as_bytes());
         let mut line = [0u8; 32];
@@ -788,21 +798,22 @@ fn composition_ownership_stack() -> CaseResult {
 fn composition_flush_clip() -> CaseResult {
     interface()?;
     let mut f = || {
-        if take_over() < 0 {
-            return 2;
+        let took = take_over();
+        if took < 0 {
+            return stop(format!("take_over_display {}", outcome(took)));
         }
-        if paint([0, 0, 0, 0]).is_err() {
-            return 3;
+        if let Err(e) = paint([0, 0, 0, 0]) {
+            return stop(e);
         }
         let info = match crate::show::fbinfo() {
             Ok(i) => i,
-            Err(_) => return 4,
+            Err(e) => return stop(e),
         };
         let mut width: u64 = 0;
         // SAFETY: the kernel writes the mapped width into this live value.
         let addr = unsafe { raw::syscall1(SYS_FB_MMAP, &mut width as *mut u64 as u64) as i64 };
         if addr <= 0 {
-            return 5;
+            return stop(format!("fb_mmap {}", outcome(addr)));
         }
         let stride = info.stride as usize * 4;
         for y in 700..800usize {
