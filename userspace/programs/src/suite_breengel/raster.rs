@@ -1335,7 +1335,34 @@ fn text_fonts_pinned() -> CaseResult {
 }
 
 fn text_raster_identical() -> CaseResult {
-    reference("text/raster-identical.sha256")
+    // The glyph set and serialization tools/gfx-refgen hashed (PROVENANCE.json).
+    let mut bytes = Vec::new();
+    let fonts = [parse_font(MONO_PATH).cite("8.5")?, parse_font(SANS_PATH).cite("8.5")?];
+    let mut put = |w: usize, h: usize, x: i32, y: i32, c: &[u8]| {
+        bytes.extend_from_slice(&(w as u32).to_le_bytes());
+        bytes.extend_from_slice(&(h as u32).to_le_bytes());
+        bytes.extend_from_slice(&x.to_le_bytes());
+        bytes.extend_from_slice(&y.to_le_bytes());
+        bytes.extend_from_slice(c);
+    };
+    for f in &fonts {
+        for size in [7.0f32, 12.0, 16.0, 23.5, 40.0] {
+            for cp in 0x21u32..=0x7E {
+                let b = f.rasterize_glyph(f.glyph_for(cp), size).map_err(|e| format!("U+{cp:04X} at {size} px: {e}")).cite("8.3")?;
+                put(b.width, b.height, b.x_offset, b.y_offset, &b.coverage);
+            }
+        }
+    }
+    for f in &fonts {
+        for cp in 0x21u32..=0x7E {
+            let b = f.rasterize_glyph_subpixel(f.glyph_for(cp), 16.0).map_err(|e| format!("U+{cp:04X} LCD: {e}")).cite("8.3")?;
+            put(b.width, b.height, b.x_offset, b.y_offset, &b.coverage);
+        }
+    }
+    let got = hex_digest(&bytes);
+    let path = format!("{FRAMES}/text/raster-identical.sha256");
+    let pinned = std::fs::read_to_string(&path).map_err(|e| format!("cannot read {path}: {e}")).cite("8.6")?;
+    ensure(got == pinned.trim(), "8.6", format!("the glyph set hashes to {got} on this target; the reviewed value is {}", pinned.trim()))
 }
 
 fn text_metrics_independent() -> CaseResult {
@@ -1440,11 +1467,19 @@ fn text_noto_coverage() -> CaseResult {
 }
 
 fn text_ttf_glyph() -> CaseResult {
-    reference("text/ttf-glyph.png")
+    let mut font = cached(MONO_PATH).cite("8.5")?;
+    let g = white_on_black(48, 32, |fb| { ttf_font::draw_text(fb, &mut font, "Hg", 8, 6, 16.0, WHITE); });
+    matches_reference(&g, "text/ttf-glyph.png", "8.6")
 }
 
 fn text_ttf_sizes() -> CaseResult {
-    reference("text/ttf-sizes.png")
+    let mut font = cached(SANS_PATH).cite("8.5")?;
+    let g = white_on_black(256, 160, |fb| {
+        for (size, y) in [(8.0, 2), (12.0, 14), (16.0, 30), (24.0, 52), (48.0, 86)] {
+            ttf_font::draw_text(fb, &mut font, "Breenix", 4, y, size, WHITE);
+        }
+    });
+    matches_reference(&g, "text/ttf-sizes.png", "8.6")
 }
 
 fn text_ttf_advance() -> CaseResult {
@@ -1508,7 +1543,9 @@ fn text_ttf_clip_top() -> CaseResult {
 }
 
 fn text_ttf_subpixel() -> CaseResult {
-    reference("text/ttf-subpixel.png")
+    let mut font = cached(SANS_PATH).cite("8.5")?;
+    let g = white_on_black(160, 28, |fb| { ttf_font::draw_text_subpixel(fb, &mut font, "Subpixel LCD", 4, 4, 16.0, WHITE); });
+    matches_reference(&g, "text/ttf-subpixel.png", "8.6")
 }
 
 fn text_ttf_notdef() -> CaseResult {
@@ -1651,7 +1688,9 @@ fn text_compound_glyph() -> CaseResult {
 }
 
 fn text_compound_transform() -> CaseResult {
-    reference("text/compound-transform.png")
+    let mut font = cached("/usr/local/test/share/breengel/fonts/compound-transform.ttf").cite("8.6")?;
+    let g = white_on_black(200, 64, |fb| { ttf_font::draw_text(fb, &mut font, "BA", 4, 8, 48.0, WHITE); });
+    matches_reference(&g, "text/compound-transform.png", "8.6")
 }
 
 /// `round_half_away(v × 64)`, the 26.6 value of a pixel quantity.

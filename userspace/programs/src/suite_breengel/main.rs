@@ -483,3 +483,31 @@ fn reference(name: &str) -> CaseResult {
         Err(_) => missing(&format!("the reviewed reference {path} (tools/gfx-refgen, docs/suites/frames/PROVENANCE.json)"), "8.6"),
     }
 }
+
+/// Where the guest reads the reviewed references (section 8.6).
+const FRAMES: &str = "/usr/local/test/share/breengel/frames";
+
+/// Require `g` to equal the reviewed reference `name` pixel for pixel. The reference is a
+/// PNG decoded by libimg (section 13, certified by the png-decode cases); it must show
+/// something, so a blank drawing cannot match a blank reference.
+fn matches_reference(g: &Guarded, name: &str, section: &str) -> CaseResult {
+    let path = format!("{FRAMES}/{name}");
+    let bytes = std::fs::read(&path).map_err(|e| format!("cannot read the reviewed reference {path}: {e}")).cite(section)?;
+    let img = libimg::png::decode(&bytes).map_err(|e| format!("the reviewed reference {path} does not decode: {e:?}")).cite(section)?;
+    ensure((img.width as usize, img.height as usize) == (g.width, g.height), section, format!(
+        "the reviewed reference {name} is {}x{}; the scene is {}x{}", img.width, img.height, g.width, g.height))?;
+    let at_px = |x: usize, y: usize| {
+        let p = &img.pixels[(y * g.width + x) * 4..][..4];
+        Color::rgb(p[2], p[1], p[0])
+    };
+    let shown = (0..g.height).flat_map(|y| (0..g.width).map(move |x| (x, y))).filter(|&(x, y)| at_px(x, y) != Color::rgb(0, 0, 0)).count();
+    ensure(shown > 0, section, format!("the reviewed reference {name} is blank"))?;
+    for y in 0..g.height {
+        for x in 0..g.width {
+            if g.color(x, y) != at_px(x, y) {
+                return at(section, format!("{name}: pixel ({x},{y}) is {} where the reviewed reference has {}", hex(g.color(x, y)), hex(at_px(x, y))));
+            }
+        }
+    }
+    step(section, g.sentinels())
+}
