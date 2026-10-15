@@ -436,31 +436,63 @@ static BOOT_TEST_CPU_AFFINITY: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0
 #[cfg(target_arch = "x86_64")]
 static QUEUED_CPUS: AtomicU64 = AtomicU64::new(0);
 
-/// x86_64: the scheduler lock, which publishes `QUEUED_CPUS` before it is
-/// released. Every x86_64 acquisition goes through `lock_scheduler` or
-/// `try_lock_scheduler`, and none forgets its guard.
+/// x86_64: the scheduler lock, which publishes `QUEUED_CPUS` and sends the
+/// reschedule IPIs asked for under it once it is released. Every x86_64
+/// acquisition goes through `lock_scheduler` or `try_lock_scheduler`, and
+/// none forgets its guard. Every holder has interrupts masked, so the CPU
+/// that took it releases it.
 #[cfg(target_arch = "x86_64")]
-struct SchedulerGuard(spin::MutexGuard<'static, Option<Scheduler>>);
+struct SchedulerGuard {
+    guard: core::mem::ManuallyDrop<spin::MutexGuard<'static, Option<Scheduler>>>,
+    cpu: usize,
+}
+
+/// x86_64: set while CPU `n` holds the scheduler lock.
+#[cfg(target_arch = "x86_64")]
+static SCHEDULER_HELD: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
+
+/// x86_64: per CPU, the CPUs it asked to reschedule while it held the
+/// scheduler lock, which it interrupts once it has released it.
+///
+/// An APIC write is a VM exit, and on the x86 gate one took up to 38 ms. Made
+/// under the lock, every other CPU's scheduling entry, the idle pass on every
+/// tick included, waited for it.
+#[cfg(target_arch = "x86_64")]
+static DEFERRED_RESCHED: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+
+#[cfg(target_arch = "x86_64")]
+impl SchedulerGuard {
+    fn new(guard: spin::MutexGuard<'static, Option<Scheduler>>) -> Self {
+        let cpu = current_cpu_id_raw();
+        if cpu < MAX_CPUS {
+            SCHEDULER_HELD[cpu].store(true, Ordering::Relaxed);
+        }
+        Self {
+            guard: core::mem::ManuallyDrop::new(guard),
+            cpu,
+        }
+    }
+}
 
 #[cfg(target_arch = "x86_64")]
 impl core::ops::Deref for SchedulerGuard {
     type Target = Option<Scheduler>;
     fn deref(&self) -> &Option<Scheduler> {
-        &self.0
+        &self.guard
     }
 }
 
 #[cfg(target_arch = "x86_64")]
 impl core::ops::DerefMut for SchedulerGuard {
     fn deref_mut(&mut self) -> &mut Option<Scheduler> {
-        &mut self.0
+        &mut self.guard
     }
 }
 
 #[cfg(target_arch = "x86_64")]
 impl Drop for SchedulerGuard {
     fn drop(&mut self) {
-        if let Some(scheduler) = self.0.as_ref() {
+        if let Some(scheduler) = self.guard.as_ref() {
             let queued = scheduler
                 .per_cpu_queues
                 .iter()
@@ -468,6 +500,18 @@ impl Drop for SchedulerGuard {
                 .filter(|(_, queue)| !queue.is_empty())
                 .fold(0u64, |mask, (cpu, _)| mask | 1 << cpu);
             QUEUED_CPUS.store(queued, Ordering::Release);
+        }
+        if self.cpu >= MAX_CPUS {
+            // SAFETY: dropped once, here.
+            unsafe { core::mem::ManuallyDrop::drop(&mut self.guard) };
+            return;
+        }
+        SCHEDULER_HELD[self.cpu].store(false, Ordering::Relaxed);
+        // SAFETY: dropped once, here; nothing reads the guard after this.
+        unsafe { core::mem::ManuallyDrop::drop(&mut self.guard) };
+        let targets = DEFERRED_RESCHED[self.cpu].swap(0, Ordering::Relaxed);
+        for target in (0..MAX_CPUS).filter(|&target| targets & (1 << target) != 0) {
+            send_vector_x86(target, crate::interrupts::RESCHEDULE_VECTOR);
         }
     }
 }
@@ -480,7 +524,7 @@ fn lock_scheduler() -> SchedulerGuard {
     let guard = SCHEDULER.lock();
     crate::tracing::providers::teardown::note_scheduler_acquire();
     #[cfg(target_arch = "x86_64")]
-    let guard = SchedulerGuard(guard);
+    let guard = SchedulerGuard::new(guard);
     guard
 }
 
@@ -489,7 +533,7 @@ fn try_lock_scheduler() -> Option<SchedulerGuard> {
     let guard = SCHEDULER.try_lock()?;
     crate::tracing::providers::teardown::note_scheduler_acquire();
     #[cfg(target_arch = "x86_64")]
-    let guard = SchedulerGuard(guard);
+    let guard = SchedulerGuard::new(guard);
     Some(guard)
 }
 
@@ -1946,9 +1990,16 @@ pub fn kick_cpu_x86(cpu: usize) {
 }
 
 /// x86_64: interrupt `cpu` through the reschedule vector, which wakes it from a
-/// halt and returns through the scheduling point. Takes no lock.
+/// halt and returns through the scheduling point. Takes no lock. Asked for
+/// while this CPU holds the scheduler lock, the interrupt is sent once the
+/// lock is released (`DEFERRED_RESCHED`).
 #[cfg(target_arch = "x86_64")]
 fn send_reschedule_vector_x86(cpu: usize) {
+    let me = current_cpu_id_raw();
+    if me < MAX_CPUS && cpu < MAX_CPUS && SCHEDULER_HELD[me].load(Ordering::Relaxed) {
+        DEFERRED_RESCHED[me].fetch_or(1 << cpu, Ordering::Relaxed);
+        return;
+    }
     send_vector_x86(cpu, crate::interrupts::RESCHEDULE_VECTOR);
 }
 
