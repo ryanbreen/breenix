@@ -846,6 +846,7 @@ fn isolation_quiet_errors() -> CaseResult {
     for path in 1..=p::LAST {
         let (want_t, want_u) = match path {
             p::LOG_WARN => (record, 0),
+            p::SERIAL_PRINTLN | p::NOTICE => (33, 0),
             p::EMERGENCY_PRINT => (0, 32),
             _ => (32, 0),
         };
@@ -857,10 +858,10 @@ fn isolation_quiet_errors() -> CaseResult {
     let mine_before = kernel_output(tid).cite("22")?;
     let other = std::thread::spawn(|| -> Result<(u64, u64), String> {
         let t = gettid();
-        emit(t, p::SERIAL_PRINTLN, 32, 0).map(|(dt, _)| (t, dt))
+        emit(t, p::SERIAL_PRINTLN, 33, 0).map(|(dt, _)| (t, dt))
     }).join().map_err(|_| String::from("the second emitting thread panicked")).cite("22")?.cite("22")?;
     let mine_after = kernel_output(tid).cite("22")?;
-    ensure(other.1 == 32, "22", format!("the second thread's emit-diagnostic(1) added {} bytes to its own counter; the contract gives 32", other.1))?;
+    ensure(other.1 == 33, "22", format!("the second thread's emit-diagnostic(1) added {} bytes to its own counter; the contract gives 33", other.1))?;
     ensure(mine_after == mine_before, "22", format!("the second thread's emission moved this thread's counter by {}", mine_after - mine_before))
 }
 

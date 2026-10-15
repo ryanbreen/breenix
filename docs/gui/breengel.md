@@ -1100,11 +1100,15 @@ newlines are not payload.
 `emit-diagnostic(path)` makes the calling thread's next window op write one fixed 32-byte payload,
 `BREENGEL-EMIT-DIAGNOSTIC-PAYLOAD`, through the named writer: 1 `serial_println!`, 2 `log::warn!`,
 3 `write_byte`, 4 `write_bytes_atomic`, 5 `try_print`, 6 `write_str_bounded`, 7 `_log_print`, 8 a notice
-posted by this thread and written out by another, 9 `emergency_print`. Each adds exactly 32 to the calling
-thread's counter, except `log::warn!`, which adds the logger's whole record, and `emergency_print`, which adds
-32 to `kernel_output_unattributed` and nothing to the thread. The logger's record is
-`[ WARN] test_control: ` followed by the payload and a newline: `[`, the level right-aligned in five columns,
-`] `, the target `test_control`, `: `, the payload, `\n`, which is 55 bytes.
+posted by this thread and written out by another, 9 `emergency_print`. Each adds exactly the bytes its writer
+commits, once: 32 for `write_byte` (32 one-byte records), `write_bytes_atomic`, `try_print`,
+`write_str_bounded` and `_log_print`, which write the payload as it is; 33 for `serial_println!` and the
+notice, which end the payload with a newline (a notice's line is posted with its newline, and it counts when
+posted); the logger's whole record for `log::warn!`; and for `emergency_print`, 32 to
+`kernel_output_unattributed` and nothing to the thread. The logger's record is `[ WARN] test_control: `
+followed by the payload and a newline: `[`, the level right-aligned in five columns, `] `, the target
+`test_control`, `: `, the payload, `\n`, which is 55 bytes. A newline a writer adds is output like any other
+byte; only the lead newline inserted before a record when another writer's line is open is not.
 
 ## 23. The suite panel
 
