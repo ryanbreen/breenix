@@ -20,18 +20,25 @@ fn image_check(name: &str) -> CaseResult {
 }
 
 fn handoff_image(image: &mut libimg::png::Image) -> CaseResult {
-    // SAFETY: the vector owns all bytes and outlives this temporary raw surface;
-    // there is no other mutable access while the judged snapshot is taken.
+    let bytes = (image.width as usize)
+        .checked_mul(image.height as usize)
+        .and_then(|n| n.checked_mul(4))
+        .ok_or("judged image dimensions overflow")?;
+    if bytes != image.pixels.len() {
+        return fail("judged image dimensions do not match its pixel allocation");
+    }
+    // SAFETY: the checked vector owns all bytes and outlives this temporary
+    // surface; there is no mutable alias while the snapshot is taken.
     let frame = unsafe {
-        FrameBuf::from_raw(
+        FrameBuf::from_raw_format(
             image.pixels.as_mut_ptr(),
             image.width as usize,
             image.height as usize,
             image.width as usize * 4,
-            4,
-            true,
+            libgfx::framebuf::Format::BGRA_PREMULTIPLIED,
         )
-    };
+    }
+    .map_err(|e| format!("judged image surface: {e:?}"))?;
     libbreenix::suite::judged(&frame)
 }
 
@@ -402,7 +409,7 @@ fn bmp_truncated() -> CaseResult {
                         return Err(format!("the first {cut} of {len} bytes decoded as {w}x{h}; the contract rejects a truncated BMP"));
                     }
                 }
-                image_check("bmp_truncated_claim")
+                checks::bmp_truncated_claim()
             },
         ),
     )
@@ -592,24 +599,42 @@ fn png_decode_signature() -> CaseResult {
 fn png_decode_independent_fixtures() -> CaseResult {
     image_check("png_decode_independent_fixtures")
 }
-// This adapter intentionally fails until the owning RASTER lane publishes R2.
-// The literal expectation below is committed before that implementation is merged.
-fn blit_decoded(image: &libimg::png::Image) -> Result<libimg::png::Image, String> {
-    Err(format!(
-        "libgfx blit_over is not available for the decoded {}x{} BGRA image (§5.8)",
-        image.width, image.height
-    ))
+fn blit_decoded(image: &mut libimg::png::Image) -> Result<libimg::png::Image, String> {
+    use libgfx::framebuf::Format;
+    // SAFETY: the caller checked this decoded fixture is exactly 1x1/4 bytes;
+    // its vector remains exclusively borrowed until this raw surface is dropped.
+    let source = unsafe {
+        FrameBuf::from_raw_format(
+            image.pixels.as_mut_ptr(),
+            1,
+            1,
+            4,
+            Format::BGRA_PREMULTIPLIED,
+        )
+    }
+    .map_err(|e| format!("PNG blit source: {e:?}"))?;
+    let mut dest = FrameBuf::new_filled(3, 1, Format::BGRX, Color::rgb(200, 200, 200))
+        .map_err(|e| format!("PNG blit destination: {e:?}"))?;
+    libgfx::blit::blit_over(&mut dest, &source, 1, 0);
+    // SAFETY: this owned 3x1 BGRX surface contains exactly twelve bytes;
+    // blit has finished and no mutable access overlaps the snapshot.
+    let pixels = unsafe { std::slice::from_raw_parts(dest.raw_ptr(), 12) }.to_vec();
+    Ok(libimg::png::Image {
+        width: 3,
+        height: 1,
+        pixels,
+    })
 }
 fn png_decode_blit() -> CaseResult {
     let bytes = checks::pngfile(&checks::ihdr(1, 1, 8, 6, 0), &[], &[0, 128, 0, 0, 128]);
-    let image = libimg::png::decode(&bytes).map_err(|e| format!("PNG blend fixture: {e:?}"))?;
-    if image.pixels != [0, 0, 64, 128] {
+    let mut image = libimg::png::decode(&bytes).map_err(|e| format!("PNG blend fixture: {e:?}"))?;
+    if (image.width, image.height) != (1, 1) || image.pixels != [0, 0, 64, 128] {
         return at(
             "2,13",
             "decoded red-128 at alpha-128 must be premultiplied BGRA [0,0,64,128]",
         );
     }
-    let mut actual = blit_decoded(&image)?;
+    let mut actual = blit_decoded(&mut image)?;
     // §2 literal: source channel 64 at alpha 128 over channel 200 gives 164;
     // the two zero source channels give 100, and the opaque background stays opaque.
     let expected = [200, 200, 200, 255, 100, 100, 164, 255, 200, 200, 200, 255];
