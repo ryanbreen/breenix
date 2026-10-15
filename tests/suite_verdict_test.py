@@ -55,6 +55,40 @@ class SuiteVerdictTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0 if expected else 1, result.stdout + result.stderr)
                 self.assertIn(("PASS: " if expected else "FAIL: ") + detail, result.stdout)
 
+    def test_one_case_requires_explicit_selection_and_exact_records(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            serial = Path(temporary) / "serial"
+            partial = ("SUITE fixture START cases=1 only=first/two\n"
+                       "SUITE fixture CASE first/two PASS ms=1\n"
+                       "SUITE fixture DONE passed=1 failed=0 skipped=0 total=1 only=first/two\n")
+            serial.write_text(partial)
+            ok, reason = SCORER.verdict(MANIFEST, serial, [serial])
+            self.assertFalse(ok)
+            self.assertIn("not full-suite evidence", reason)
+            self.assertFalse(WAIT.completion(partial, "suite", "fixture")[0])
+            (Path(temporary) / "docs/suites").mkdir(parents=True)
+            (Path(temporary) / "docs/suites/fixture.json").write_text(json.dumps(MANIFEST))
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = SEQUENCE.record(Path(temporary), Path(temporary), "fixture", partial.encode(), b"", None, 0, 1)
+            self.assertEqual(result["verdict"], "FAIL")
+            self.assertIn("not full-suite evidence", result["reason"])
+            self.assertTrue(WAIT.completion(partial, "suite", "fixture", "first/two")[0])
+            self.assertTrue(SCORER.verdict(MANIFEST, serial, [serial], only="first/two")[0])
+            self.assertFalse(SCORER.verdict(MANIFEST, serial, [serial], only="first/one")[0])
+            # Even a manifest consisting of exactly one case cannot accept a watched run.
+            one = dict(MANIFEST, categories=[dict(id="first", cases=[dict(id="two")])])
+            self.assertFalse(SCORER.verdict(one, serial, [serial])[0])
+            for extra in ("SUITE fixture CASE first/one PASS ms=1\n",
+                          "SUITE fixture CASE first/two PASS ms=1\n"):
+                serial.write_text(partial.replace("SUITE fixture DONE", extra + "SUITE fixture DONE"))
+                self.assertFalse(SCORER.verdict(MANIFEST, serial, [serial], only="first/two")[0])
+            serial.write_text(partial.replace("PASS ms=1", "SKIP msg=unavailable").replace("passed=1", "passed=0").replace("skipped=0", "skipped=1"))
+            self.assertFalse(SCORER.verdict(MANIFEST, serial, [serial], only="first/two")[0])
+            serial.write_text(partial + (FIXTURES / "all-pass.txt").read_text())
+            self.assertFalse(SCORER.verdict(MANIFEST, serial, [serial])[0])
+            unknown = "SUITE fixture DONE passed=0 failed=1 skipped=0 total=0 only=first/missing\n"
+            self.assertFalse(WAIT.completion(unknown, "suite", "fixture", "first/missing")[0])
+
     def test_native_vm_waiter_propagates_verdict(self):
         for name, (expected, reason) in EXPECTATIONS.items():
             with self.subTest(fixture=name), tempfile.TemporaryDirectory() as temporary:

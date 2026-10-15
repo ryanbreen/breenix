@@ -36,6 +36,30 @@ Boot tooling records host load at start and verdict without waiting for it to fa
 on either host, as "Shared host slots" in `docs/boot-path.md` describes. The
 `timingSensitive` flag classifies the workload; it does not request a default wait.
 
+## Watching one case
+
+Use `scripts/boot-interactive.sh --mode suite --suite ID --case CATEGORY/CASE`
+on ARM64 QEMU, or `./run.sh --parallels|--vmware --suite ID --case CATEGORY/CASE`.
+Every suite uses the same runner selection. It runs only the named case, with the
+same isolation, limits, measurements and display as a full run; any setup belongs
+to that case. The panel shows only that case and identifies the run as one case. All three launchers hold its final panel
+for `BREENIX_SUITE_HOLD` seconds (default 5) after a two-second render delay.
+An unknown ID runs nothing and prints an ERROR listing every valid category/case ID.
+
+One-case START and DONE records carry `only=CATEGORY/CASE`, for example:
+
+```text
+SUITE smoke START cases=1 only=process/getpid
+SUITE smoke CASE process/getpid PASS ms=0
+SUITE smoke DONE passed=1 failed=0 skipped=0 total=1 only=process/getpid
+```
+
+An unknown case ends with `passed=0 failed=1 skipped=0 total=0 only=CATEGORY/CASE`.
+One-case runs never continue a suite sequence and never count as full-suite evidence,
+even for a suite with one case. The launcher's explicit selection checks the selected
+case's records; full-suite scorers reject `only=` records. Whole-suite host disk checks
+are not run for a watched case because they depend on other cases.
+
 ## Serial lines
 
 The suite's stdout, one line each, in this shape:

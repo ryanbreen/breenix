@@ -12,6 +12,7 @@
 #                        probe | shell | desktop | program | suite: the production kernel, told the mode
 #                        via -fw_cfg name=opt/breenix/mode (see "Boot modes" in docs/boot-path.md)
 #   --program PATH       for --mode program: the absolute guest path /sbin/probe runs (probe --run PATH)
+#   --case CATEGORY/CASE  for --mode suite: run only this case; never full-suite evidence
 #   --suite ID           for --mode suite: the effort suite (docs/suites/ID.json) run as PID 1, /sbin/suite-ID
 #   --qmp SOCKET         open a QMP socket so another process can screenshot the VM screen:
 #                        scripts/qmp-screendump.py SOCKET out.png (works with --no-display)
@@ -42,12 +43,13 @@ BUILD=1
 MODE=tests
 PROGRAM=
 SUITE=
+ONLY=
 QMP_SOCKET=
 FBCONSOLE=
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --mode|--program|--suite|--serial-log|--idle-exit|--gate-timeout|--qmp|--fbconsole|--accel)
+        --mode|--program|--suite|--case|--serial-log|--idle-exit|--gate-timeout|--qmp|--fbconsole|--accel)
             [ "$#" -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; } ;;
     esac
     case "$1" in
@@ -55,6 +57,7 @@ while [ "$#" -gt 0 ]; do
         --accel) export BREENIX_ARM64_QEMU_ACCEL="$2"; shift 2 ;;
         --program) PROGRAM="$2"; shift 2 ;;
         --suite) SUITE="$2"; shift 2 ;;
+        --case) [ -n "$2" ] || { echo "--case needs a case id" >&2; exit 2; }; ONLY="$2"; shift 2 ;;
         --qmp) QMP_SOCKET="$2"; shift 2 ;;
         --fbconsole) FBCONSOLE="$2"; shift 2 ;;
         --serial-log) SERIAL_LOG="$2"; shift 2 ;;
@@ -87,6 +90,11 @@ if [ "$MODE" = suite ]; then
     fi
 elif [ -n "$SUITE" ]; then
     echo "--suite is only for --mode suite" >&2; exit 2
+fi
+if [ -n "$ONLY" ]; then
+    [ "$MODE" = suite ] && [[ "$ONLY" =~ ^[a-zA-Z0-9_./-]+$ ]] || {
+        echo "--case needs --mode suite and a category/case id" >&2; exit 2;
+    }
 fi
 case "$FBCONSOLE" in
     ""|log) ;;
@@ -134,6 +142,7 @@ if [ "$MODE" = program ]; then
 fi
 if [ "$MODE" = suite ]; then
     MODE_ARGS+=(-fw_cfg "name=opt/breenix/suite,string=$SUITE")
+    [ -z "$ONLY" ] || MODE_ARGS+=(-fw_cfg "name=opt/breenix/case,string=$ONLY")
 fi
 if [ -n "$FBCONSOLE" ]; then
     MODE_ARGS+=(-fw_cfg "name=opt/breenix/fbconsole,string=$FBCONSOLE")
@@ -225,7 +234,7 @@ trap 'exit 130' INT
 exec 3<&0
 set +e
 python3 "$ROOT/scripts/watch-qemu.py" --serial "$SERIAL_LOG" --mode "$MODE" \
-    --suite "$SUITE" --idle-exit "$IDLE_EXIT" --gate-timeout "$GATE_TIMEOUT" --disk "$WRITABLE" -- python3 "$ROOT/scripts/qemu-arm64.py" "$QEMU" \
+    --suite "$SUITE" --case "$ONLY" --idle-exit "$IDLE_EXIT" --gate-timeout "$GATE_TIMEOUT" --disk "$WRITABLE" -- python3 "$ROOT/scripts/qemu-arm64.py" "$QEMU" \
     -rtc base=utc "${QEMU_PROFILE_ARGS[@]}" -m 512 -smp 4 \
     -kernel "$KERNEL" \
     "${DISPLAY_ARGS[@]}" -no-reboot \

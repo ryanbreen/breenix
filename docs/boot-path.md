@@ -92,10 +92,14 @@ instructions cannot be emulated by this QEMU version.
   (`docs/suites/README.md`). Parallels and VMware boot a suite with
   `./run.sh --parallels|--vmware --suite ID`, and the x86-64 gate with
   `BREENIX_BOOT_SUITE=ID docker/qemu/run-x86-gate.sh`: both write `/etc/breenix/boot-target`
-  (one line, `suite ID`) onto a copy of the ext2 disk. The kernel takes the fw_cfg mode
+  (one line, `suite ID`, or `suite ID case CATEGORY/CASE` for `--case CATEGORY/CASE`) onto a copy of the ext2 disk. The kernel takes the fw_cfg mode
   first (x86-64 QEMU reads fw_cfg too, for `default` and `suite`), then that file, else
   `default`. Suite mode exercises the kernel milestones and the first userspace process: the
   suite's `START` and `DONE` lines show PID 1 running in user mode and making syscalls.
+  `--case CATEGORY/CASE` selects one case on all three Mac platforms. QEMU passes
+  it through `opt/breenix/case`; the kernel forwards `--case CATEGORY/CASE` in the
+  suite's argv. START and DONE carry `only=CATEGORY/CASE`, so this is never full-suite
+  evidence. Unknown IDs fail with the valid IDs (see `docs/suites/README.md`).
   ARM64 QEMU waits two seconds after a complete `DONE` line for rendering, then
   holds the scored panel for `BREENIX_SUITE_HOLD` seconds (default 5), continuing
   to watch for fatal output. It stops the VM, validates the records against the

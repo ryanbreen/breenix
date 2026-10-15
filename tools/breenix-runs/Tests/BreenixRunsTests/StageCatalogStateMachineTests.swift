@@ -18,6 +18,14 @@ final class StageCatalogStateMachineTests: XCTestCase {
         }
     }
 
+    func testOneCaseDoesNotReachSuiteStage() throws {
+        let stage = BootStage(name: "Suite done", marker: "SUITE smoke DONE", failureMeaning: "unfinished", checkHint: "suite")
+        let partial = "SUITE smoke DONE passed=1 failed=0 skipped=0 total=1 only=process/getpid\n"
+        XCTAssertFalse(try StateMachine.evaluate(catalog: [stage], serialText: partial)[0].isReached)
+        let full = "SUITE smoke DONE passed=5 failed=0 skipped=0 total=5\n"
+        XCTAssertTrue(try StateMachine.evaluate(catalog: [stage], serialText: full)[0].isReached)
+    }
+
     func testLoaderAnnouncementDoesNotReachUserspaceStage() throws {
         let catalog = try StageCatalog.load(for: .x86_64)
         let stage = try XCTUnwrap(catalog.first { $0.marker == "FILE_READ_TEST_PASSED" })

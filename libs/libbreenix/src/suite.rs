@@ -296,29 +296,55 @@ impl Suite {
 
     fn total(&self) -> usize { self.categories.iter().map(|category| category.cases.len()).sum() }
 
-    /// Run every case in order, printing the serial lines and drawing the panel, then
-    /// leave the final panel up and idle. Never returns.
+    /// Run every case in order, or just argv's `--case category/case`, then
+    /// leave the final panel up and idle. One-case START/DONE carry `only=` and
+    /// never continue a suite sequence or count as full-suite evidence. Never returns.
     pub fn run(&self) -> ! {
-        let total = self.total();
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        let only = match args.as_slice() {
+            [] => None,
+            [flag, case] if flag == "--case" => Some(case.as_str()),
+            _ => {
+                emit(&std::format!("SUITE {} ERROR expected --case <category>/<case>", self.id));
+                process::exit(2)
+            }
+        };
+        let names: Vec<String> = self.categories.iter().flat_map(|category| {
+            category.cases.iter().map(move |case| std::format!("{}/{}", category.id, case.id))
+        }).collect();
+        let known = only.is_none_or(|name| names.iter().any(|valid| valid == name));
+        let total = if only.is_some() { usize::from(known) } else { self.total() };
+        let suffix = only.map_or(String::new(), |name| std::format!(" only={name}"));
         let mut states: Vec<Vec<State>> = self.categories.iter()
             .map(|category| category.cases.iter().map(|_| State::Pending).collect())
             .collect();
         let mut screen = Screen::open();
         let title = std::format!("BREENIX / {} SUITE", self.title.to_uppercase());
-        let subtitle = std::format!("suite {}: {} cases in {} categories", self.id, total, self.categories.len());
+        let subtitle = match only {
+            Some(name) => std::format!("suite {}: one case {name} (not suite evidence)", self.id),
+            None => std::format!("suite {}: {} cases in {} categories", self.id, total, self.categories.len()),
+        };
         let mut counts = Counts::default();
         let mut feed = Feed::default();
         let suite_start = monotonic_ns();
 
-        emit(&std::format!("SUITE {} START cases={}", self.id, total));
+        emit(&std::format!("SUITE {} START cases={}{}", self.id, total, suffix));
+        if !known {
+            let message = std::format!("unknown case {}; valid ids: {}", only.unwrap(), names.join(", "));
+            emit(&std::format!("SUITE {} ERROR {}", self.id, message));
+            emit(&std::format!("SUITE {} DONE passed=0 failed=1 skipped=0 total=0{}", self.id, suffix));
+            screen.draw(self, &title, &subtitle, &states, Verdict::Failed(&message), &feed, only);
+            idle(&mut screen, &feed);
+        }
         let mut done = 0;
         for (c, category) in self.categories.iter().enumerate() {
             for (k, case) in category.cases.iter().enumerate() {
+                let name = std::format!("{}/{}", category.id, case.id);
+                if only.is_some_and(|selected| selected != name) { continue; }
                 states[c][k] = State::Running;
                 let progress = std::format!("Running {}/{} ({} of {})", category.id, case.id, done + 1, total);
-                let name = std::format!("{}/{}", category.id, case.id);
                 feed.start(&name);
-                screen.draw(self, &title, &subtitle, &states, Verdict::Running(&progress), &feed);
+                screen.draw(self, &title, &subtitle, &states, Verdict::Running(&progress), &feed, only);
 
                 let limit_ms = NAMED_CASE_ALLOWANCES.iter()
                     .find(|&&(suite, case, _)| suite == self.id && case == name)
@@ -342,15 +368,17 @@ impl Suite {
                 done += 1;
             }
         }
-        emit(&std::format!("SUITE {} DONE passed={} failed={} skipped={} total={}",
-            self.id, counts.passed, counts.failed, counts.skipped, total));
+        emit(&std::format!("SUITE {} DONE passed={} failed={} skipped={} total={}{}",
+            self.id, counts.passed, counts.failed, counts.skipped, total, suffix));
 
         let summary = std::format!("{} passed, {} failed, {} skipped of {}",
             counts.passed, counts.failed, counts.skipped, total);
         let verdict = if counts.failed == 0 { Verdict::Passed(&summary) } else { Verdict::Failed(&summary) };
         let ms = ms_since(suite_start);
         feed.finish(std::format!("DONE {}.{} s", ms / 1000, ms % 1000 / 100));
-        screen.draw(self, &title, &subtitle, &states, verdict, &feed);
+        screen.draw(self, &title, &subtitle, &states, verdict, &feed, only);
+        // A one-case boot must never execute a sequence's other suites.
+        if only.is_some() { idle(&mut screen, &feed); }
         emit(&std::format!("SUITE_SEQUENCE READY {}", self.id));
         // A sequence replaces PID 1 with the next suite after this suite has
         // emitted its own DONE. Exec replaces the address space and closes only
@@ -976,7 +1004,7 @@ impl Screen {
     }
 
     fn draw(&mut self, suite: &Suite, title: &str, subtitle: &str, states: &[Vec<State>], verdict: Verdict<'_>,
-        feed: &Feed) {
+        feed: &Feed, only: Option<&str>) {
         let live_on = self.live;
         let Some(fb) = self.fb.as_mut() else { return; };
         let details: Vec<Vec<String>> = states.iter()
@@ -992,6 +1020,7 @@ impl Screen {
             .collect();
         let checks: Vec<Vec<Check<'_>>> = suite.categories.iter().zip(states).zip(&details)
             .map(|((category, cases), details)| category.cases.iter().zip(cases).zip(details)
+                .filter(|((case, _), _)| only.is_none_or(|name| name == std::format!("{}/{}", category.id, case.id)))
                 .map(|((case, state), detail)| Check {
                     name: case.id,
                     state: match state {
@@ -1005,6 +1034,7 @@ impl Screen {
             .collect();
         let headings: Vec<String> = suite.categories.iter().map(|category| category.title.to_uppercase()).collect();
         let groups: Vec<Group<'_>> = headings.iter().zip(&checks)
+            .filter(|(_, checks)| !checks.is_empty())
             .map(|(title, checks)| Group { title, checks })
             .collect();
         self.area = Self::with_live(feed, |live| diagnostics::draw(fb, &Panel {

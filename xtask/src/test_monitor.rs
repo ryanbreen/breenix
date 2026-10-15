@@ -98,7 +98,7 @@ impl TestMonitor {
                 last_output = contents.clone();
 
                 // Check for success marker.
-                if contents.contains(&self.completion_marker) {
+                if crate::stage_marker_present(&contents, &self.completion_marker, &[]) {
                     return Ok(MonitorResult {
                         outcome: MonitorOutcome::Success,
                         serial_output: last_output,
@@ -121,7 +121,7 @@ impl TestMonitor {
                 // QEMU exited -- do one final read to catch any last output.
                 if let Ok(contents) = fs::read_to_string(&self.serial_file) {
                     last_output = contents.clone();
-                    if contents.contains(&self.completion_marker) {
+                    if crate::stage_marker_present(&contents, &self.completion_marker, &[]) {
                         return Ok(MonitorResult {
                             outcome: MonitorOutcome::Success,
                             serial_output: last_output,
