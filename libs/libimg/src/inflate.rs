@@ -13,6 +13,7 @@ pub enum InflateError {
     DistanceTooFar,
     Truncated,
     OutputLimit,
+    OutOfMemory,
     BadZlibHeader,
     PresetDictionary,
     BadMethod,
@@ -188,6 +189,12 @@ impl Inflater {
     fn byte(&mut self, b: u8) -> Result<(), InflateError> {
         if self.output.len() == self.limit {
             return Err(OutputLimit);
+        }
+        if self.output.len() == self.output.capacity() {
+            // Bound geometric growth by the caller's limit and return allocation
+            // failure instead of aborting in Vec::push. Never reserve past limit.
+            let next = self.output.capacity().saturating_mul(2).max(4096).min(self.limit);
+            self.output.try_reserve_exact(next - self.output.len()).map_err(|_| OutOfMemory)?;
         }
         self.output.push(b);
         Ok(())

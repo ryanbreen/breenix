@@ -28,6 +28,7 @@ pub enum PngError {
     Truncated,
     TooLarge,
     Bomb,
+    OutOfMemory,
     Compressed(InflateError),
 }
 use PngError::*;
@@ -164,6 +165,10 @@ fn sample(row: &[u8], i: usize, d: u8) -> u16 {
         }
     }
 }
+// PNG §11.3.1.1: high tRNS bits are masked before the comparison.
+fn key(s: &[u8], depth: u8) -> u16 {
+    u16be(s) & (u16::MAX >> (16 - depth))
+}
 fn scaled(v: u16, d: u8) -> u8 {
     if d == 16 {
         ((v as u32 * 255 + 32767) / 65535) as u8
@@ -175,6 +180,12 @@ fn premul(c: u8, a: u8) -> u8 {
     let v = c as u32 * a as u32 + 128;
     ((v + (v >> 8)) >> 8) as u8
 }
+fn zeroed(n: usize) -> Result<Vec<u8>, PngError> {
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(n).map_err(|_| OutOfMemory)?;
+    bytes.resize(n, 0);
+    Ok(bytes)
+}
 fn pixels(
     header: &Header,
     mut raw: Vec<u8>,
@@ -184,7 +195,7 @@ fn pixels(
     let mut image = Image {
         width: header.w,
         height: header.h,
-        pixels: vec![0; header.w as usize * header.h as usize * 4],
+        pixels: zeroed(header.w as usize * header.h as usize * 4)?,
     };
     let mut offset = 0;
     let bpp = (header.channels * header.depth as usize).div_ceil(8).max(1);
@@ -195,7 +206,7 @@ fn pixels(
             continue;
         }
         let n = header.row_bytes(w);
-        let mut prior = vec![0; n];
+        let mut prior = zeroed(n)?;
         for y in 0..h {
             work::step();
             let filter = raw[offset];
@@ -214,7 +225,7 @@ fn pixels(
                             c,
                             c,
                             c,
-                            if trns.len() == 2 && v == u16be(trns) {
+                            if trns.len() == 2 && v == key(trns, d) {
                                 0
                             } else {
                                 255
@@ -224,9 +235,9 @@ fn pixels(
                     2 => {
                         let (g, b) = (sample(row, i + 1, d), sample(row, i + 2, d));
                         let a = if trns.len() == 6
-                            && v == u16be(&trns[..2])
-                            && g == u16be(&trns[2..4])
-                            && b == u16be(&trns[4..6])
+                            && v == key(&trns[..2], d)
+                            && g == key(&trns[2..4], d)
+                            && b == key(&trns[4..6], d)
                         {
                             0
                         } else {
@@ -336,16 +347,15 @@ pub fn decode(input: &[u8]) -> Result<Image, PngError> {
                 if idat || has_trns {
                     return Err(ChunkOrder);
                 }
-                if match h.colour {
-                    0 => n != 2,
-                    2 => n != 6,
-                    3 => palette.is_empty() || n > palette.len() / 3,
-                    _ => true,
-                } {
-                    return Err(BadHeader);
-                }
-                trns = payload;
+                if h.colour == 3 && palette.is_empty() { return Err(ChunkOrder); }
                 has_trns = true;
+                let valid = match h.colour {
+                    0 => n == 2,
+                    2 => n == 6,
+                    3 => n > 0 && n <= palette.len() / 3,
+                    _ => false,
+                };
+                if valid { trns = payload; }
             }
             b"IDAT" => {
                 if closed {
@@ -356,14 +366,14 @@ pub fn decode(input: &[u8]) -> Result<Image, PngError> {
                     return Err(MissingPlte);
                 }
                 idat = true;
+                data.try_reserve_exact(payload.len()).map_err(|_| OutOfMemory)?;
                 data.extend_from_slice(payload);
             }
             b"IEND" => {
-                if !idat || n != 0 || end != input.len() {
+                if !idat || n != 0 {
                     return Err(ChunkOrder);
                 }
                 ended = true;
-                offset = end;
                 break;
             }
             _ => {
@@ -374,14 +384,15 @@ pub fn decode(input: &[u8]) -> Result<Image, PngError> {
         }
         offset = end;
     }
-    if !ended || offset != input.len() {
-        return Err(ChunkOrder);
+    if !ended {
+        return Err(Truncated);
     }
     let h = header.ok_or(ChunkOrder)?;
     let expected = h.expected();
     let raw = zlib_decompress(&data, expected).map_err(|e| match e {
         InflateError::OutputLimit => Bomb,
         InflateError::Truncated => Truncated,
+        InflateError::OutOfMemory => OutOfMemory,
         _ => Compressed(e),
     })?;
     if raw.len() != expected {
