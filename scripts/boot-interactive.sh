@@ -231,7 +231,10 @@ fi
 QEMU_PROFILE_ARGS=(-M virt,gic-version=3 -cpu max)
 QEMU_PROFILE=$(python3 "$ROOT/scripts/qemu-arm64.py" --print-profile "$QEMU" "${QEMU_PROFILE_ARGS[@]}")
 VIGIL_ID=
-[ -n "$ONLY" ] || VIGIL_ID=$("$ROOT/scripts/vigil-record.sh" start qemu "$MODE" "$SUITE" "$SERIAL_LOG" "" "$QEMU_PROFILE")
+# A boot with other than the default 4 processors is recorded with its count, so it never stands for main.
+VIGIL_CPUS=
+[ "$CPUS" = 4 ] || VIGIL_CPUS=$CPUS
+[ -n "$ONLY" ] || VIGIL_ID=$(BREENIX_VIGIL_CPUS="$VIGIL_CPUS" "$ROOT/scripts/vigil-record.sh" start qemu "$MODE" "$SUITE" "$SERIAL_LOG" "" "$QEMU_PROFILE")
 echo "==> Booting (serial: $SERIAL_LOG; Ctrl-A X quits)"
 [ -z "$QMP_SOCKET" ] || echo "==> QMP: $QMP_SOCKET (scripts/qmp-screendump.py $QMP_SOCKET out.png)"
 # Wait interruptibly and register the watcher so a signal to this script also

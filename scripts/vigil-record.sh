@@ -15,7 +15,7 @@ set -u
 [ -z "${VIGIL_BOOT_ID:-}" ] || exit 0
 
 CLI=
-for candidate in "${VIGIL_CLI:-}" /usr/local/bin/vigil-cli "$HOME/fun/code/vigil/.build/release/vigil-cli"; do
+for candidate in "${VIGIL_CLI:-}" "$HOME/.local/bin/vigil-cli" /usr/local/bin/vigil-cli "$HOME/fun/code/vigil/.build/release/vigil-cli"; do
     [ -n "$candidate" ] && [ -x "$candidate" ] || continue
     if "$candidate" breenix 2>&1 | grep -q 'breenix start'; then CLI=$candidate; break; fi
 done
@@ -37,6 +37,9 @@ case "${1:-}" in
         [ -z "$user" ] || args+=(--serial-user "$user")
         [ -z "$profile" ] || [ "$profile" = default ] || args+=(--profile "$profile")
         [ -z "$id" ] || args+=(--id "$id")
+        # A boot given other than its platform's own processors (boot-interactive.sh --cpus) tests a smaller or larger
+        # machine; Vigil keeps it out of main's evidence.
+        [ -z "${BREENIX_VIGIL_CPUS:-}" ] || args+=(--cpus "$BREENIX_VIGIL_CPUS")
         "$CLI" "${args[@]}"
         exit $?
         ;;
