@@ -1,0 +1,17 @@
+[package]
+name = "{{name}}"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+
+libbreenix = { version = "0.1", features = ["runtime"] }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
+[workspace]
