@@ -196,14 +196,20 @@ for name in $(compgen -e); do
     esac
 done
 CARGO_HOME="$ROOT_DIR/.cargo-home"
-mkdir -p "$CARGO_HOME" "$REAL_CARGO_HOME/registry" "$REAL_CARGO_HOME/git"
-# The download caches are linked, and remapped (lib.sh), by their physical directories: the
-# remap that matches the registry's sources reaches the hash of every crate built from them,
-# so it must not change with the way CARGO_HOME spells the same caches.
-CARGO_REGISTRY="$(cd "$REAL_CARGO_HOME/registry" && pwd -P)"
-CARGO_GIT="$(cd "$REAL_CARGO_HOME/git" && pwd -P)"
-ln -s "$CARGO_REGISTRY" "$CARGO_HOME/registry"
-ln -s "$CARGO_GIT" "$CARGO_HOME/git"
+mkdir -p "$REAL_CARGO_HOME/registry/index" "$REAL_CARGO_HOME/registry/cache" "$REAL_CARGO_HOME/git/db"
+# The directory a crate's sources are unpacked in reaches the hash of every crate built from
+# them, through its remap and rustc's working directory, even where no path shows in the
+# output. So the registry's and git's sources are unpacked inside the fixed build root, where
+# every builder has them at the same path, from the builder's download caches (the index,
+# the .crate files and git databases), which are linked by their physical directories.
+CACHE_REGISTRY="$(cd "$REAL_CARGO_HOME/registry" && pwd -P)"
+CACHE_GIT="$(cd "$REAL_CARGO_HOME/git" && pwd -P)"
+mkdir -p "$CARGO_HOME/registry/src" "$CARGO_HOME/git/checkouts"
+ln -s "$CACHE_REGISTRY/index" "$CARGO_HOME/registry/index"
+ln -s "$CACHE_REGISTRY/cache" "$CARGO_HOME/registry/cache"
+ln -s "$CACHE_GIT/db" "$CARGO_HOME/git/db"
+CARGO_REGISTRY="$ROOT_REAL/.cargo-home/registry"
+CARGO_GIT="$ROOT_REAL/.cargo-home/git"
 for entry in .package-cache .package-cache-mutate .global-cache; do
     [ -e "$REAL_CARGO_HOME/$entry" ] || : > "$REAL_CARGO_HOME/$entry"
     ln -s "$REAL_CARGO_HOME/$entry" "$CARGO_HOME/$entry"
@@ -233,7 +239,7 @@ export SDK_ROOT="$ROOT_DIR" SDK_ROOT_REAL="$ROOT_REAL" SDK_STAGE SDK_COMMIT="$CO
 # sysroot's rlibs, which are built from the library; the scan fails every other one, and any
 # one in any other file.
 LOCAL_PATHS=("$ROOT_DIR" "$ROOT_REAL" "$CHECKOUT" "$FORK" "$HOME" "$REAL_HOME" "$REAL_CARGO_HOME" \
-    "$CARGO_REGISTRY" "$CARGO_GIT" "${RUSTUP_HOME:-$REAL_HOME/.rustup}" "$RUST_SYSROOT")
+    "$CACHE_REGISTRY" "$CACHE_GIT" "${RUSTUP_HOME:-$REAL_HOME/.rustup}" "$RUST_SYSROOT")
 LOCAL_PATH_SCAN="$(cat <<'PY'
 import os, re, sys
 from pathlib import Path

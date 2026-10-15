@@ -544,15 +544,17 @@ class Harness:
         """The build's environment plus a builder's settings that must not reach the SDK: a
         cargo home whose config.toml moves the target directory and changes the release
         profile and rustc's flags, the same through CARGO_* and RUSTFLAGS, and C compiler
-        settings. The cargo home shares the real one's download caches."""
+        settings. The cargo home's download caches (the registry's index and .crate files, git's
+        databases) are copies of the real one's at another physical path, with no unpacked
+        sources: a builder whose caches were filled separately builds the same SDK."""
         env = self.build_env()
         real = Path(env['CARGO_HOME'])
         hostile = self.work / 'hostile'
         home = hostile / 'cargo-home'
         home.mkdir(parents=True)
-        for entry in ('registry', 'git', '.package-cache', '.package-cache-mutate', '.global-cache'):
-            if (real / entry).exists():
-                (home / entry).symlink_to(real / entry)
+        for entry in ('registry/index', 'registry/cache', 'git/db'):
+            if (real / entry).is_dir():
+                shutil.copytree(real / entry, home / entry, symlinks=True)
         (home / 'config.toml').write_text(
             '[build]\n'
             f'target-dir = "{hostile / "target"}"\n'

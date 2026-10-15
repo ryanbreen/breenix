@@ -15,8 +15,9 @@
 #                    read rustc's own bitcode
 #   SDK_FORK_COMMIT  the Rust library pin (rust-fork.toml)
 #   SDK_REAL_HOME    the builder's home directory, whatever HOME says
-#   SDK_CARGO_REGISTRY, SDK_CARGO_GIT the physical directories of the builder's download
-#                    caches, which CARGO_HOME links
+#   SDK_CARGO_REGISTRY, SDK_CARGO_GIT the physical directories, inside the build root, that
+#                    the registry's and git's sources are unpacked in from the builder's
+#                    download caches
 #   CARGO_HOME       cargo's home for the build, <root>/.cargo-home, with no config.toml
 #   CARGO_NET_OFFLINE true unless build-sdk.sh was given --fetch
 # and LC_ALL=C, TZ=UTC, SOURCE_DATE_EPOCH (the commit's time) and umask 022. No other
@@ -49,8 +50,8 @@ sdk_remap_flags() {
     echo "--remap-path-prefix=$SDK_RUST_SYSROOT/lib/rustlib/src/rust=/rustc/$SDK_RUSTC_COMMIT"
     echo "--remap-path-prefix=$SDK_ROOT=/breenix-sdk"
     [ "$SDK_ROOT_REAL" = "$SDK_ROOT" ] || echo "--remap-path-prefix=$SDK_ROOT_REAL=/breenix-sdk"
-    # Registry sources: through the build's cargo home, inside the build root, or the
-    # caches' physical directories, wherever cargo resolves them.
+    # Registry and git sources: through the build's cargo home or their physical directories,
+    # both inside the build root, wherever cargo resolves them.
     echo "--remap-path-prefix=$SDK_CARGO_REGISTRY=/cargo/registry"
     echo "--remap-path-prefix=$SDK_CARGO_GIT=/cargo/git"
     echo "--remap-path-prefix=$CARGO_HOME=/cargo"
