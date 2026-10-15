@@ -187,6 +187,11 @@ impl Process {
             .saturating_add(self.heap_end.saturating_sub(self.heap_start))
             .saturating_add(self.user_stack_top.saturating_sub(self.user_stack_bottom))
             .saturating_add(self.vmas.iter().map(|v| v.size()).sum::<u64>())
+            // Window remnants this process holds as an evidence holder (docs/gui/breengel.md
+            // section 17.3) count against its address-space limit too.
+            .saturating_add(crate::window::remnant_bytes(
+                self.thread_group_id.unwrap_or(self.id.as_u64()),
+            ))
     }
 
     pub fn data_bytes(&self) -> u64 {

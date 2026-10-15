@@ -1499,6 +1499,8 @@ fn sys_exec_aarch64(
         drop(manager_guard);
 
         commit.apply();
+        // The old image's windows go with it (docs/gui/breengel.md section 17.2).
+        crate::window::exec_done_current();
 
         log::info!("sys_exec_aarch64: Setting TTBR0_EL1 to {:#x}", new_ttbr0);
         // Installing through the shared discipline publishes `saved_process_cr3`,

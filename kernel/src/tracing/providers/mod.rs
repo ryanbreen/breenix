@@ -34,6 +34,7 @@ pub mod sched;
 pub mod syscall;
 pub mod teardown;
 pub mod virtgpu;
+pub mod window;
 pub mod xhci;
 // #[cfg(feature = "btrt")]
 // pub mod boot_test;
@@ -65,6 +66,7 @@ pub fn init() {
     process::init();
     teardown::init();
     virtgpu::init();
+    window::init();
     xhci::init();
     // #[cfg(feature = "btrt")]
     // boot_test::init();

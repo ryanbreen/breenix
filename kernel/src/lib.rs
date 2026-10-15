@@ -54,8 +54,9 @@ pub mod userspace_test;
 // Syscall module - enabled for both architectures
 // Individual submodules have cfg guards for arch-specific code
 pub mod syscall;
-// Suite-mode test controls (system call 415)
+// Suite-mode test controls (system call 415) and the window interface (system call 414)
 pub mod test_control;
+pub mod window;
 // Socket module - enabled for both architectures
 // Unix domain sockets are fully arch-independent
 pub mod net;

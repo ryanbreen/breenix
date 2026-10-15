@@ -1208,6 +1208,7 @@ fn generate_pid_dir(pid: u64) -> String {
 /// Gid:    0   0   0   0
 /// Children:   4 5
 /// FdCount:    6
+/// VmSize: 2048 kB
 /// VmCode: 8 kB
 /// VmHeap: 64 kB
 /// VmStack:    16 kB
@@ -1308,6 +1309,7 @@ fn generate_pid_status(pid: u64) -> String {
          Gid:\t{}\t{}\t{}\t{}\n\
          Children:\t{}\n\
          FdCount:\t{}\n\
+         VmSize:\t{} kB\n\
          VmCode:\t{} kB\n\
          VmHeap:\t{} kB\n\
          VmStack:\t{} kB\n\
@@ -1334,6 +1336,13 @@ fn generate_pid_status(pid: u64) -> String {
         process.cred.egid,
         children_str,
         fd_count,
+        // The bytes mapped as RLIMIT_AS counts them, from the address space's owner row.
+        manager
+            .find_process_by_cr3(process.inherited_cr3.unwrap_or_else(|| {
+                process.page_table.as_ref().map_or(0, |t| t.level_4_frame().start_address().as_u64())
+            }))
+            .map_or(process.mapped_bytes(), |(_, owner)| owner.mapped_bytes())
+            / 1024,
         vm_code_kb,
         vm_heap_kb,
         vm_stack_kb,

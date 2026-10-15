@@ -923,6 +923,8 @@ impl ProcessScheduler {
         // The last thread of a process applies its SEM_UNDO adjustments
         // before Phase 1 makes the row a zombie its parent can reap.
         crate::ipc::sysv::thread_exit(thread_id);
+        // So are its windows destroyed, when it is the group's last running thread.
+        crate::window::thread_exit(thread_id);
         // So is the working directory released: rmdir refuses a directory
         // that is anyone's working directory, and a reaped row stays resident
         // until its address space retires (on x86-64, at the next idle pass or

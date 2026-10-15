@@ -639,15 +639,11 @@ pub(super) fn flush_owner_pane(cmd: &FbDrawCmd) -> SyscallResult {
 /// * -EFAULT if out_ptr is invalid
 #[cfg(target_arch = "aarch64")]
 pub fn sys_get_mouse_pos(out_ptr: u64) -> SyscallResult {
-    if out_ptr == 0 || out_ptr >= USER_SPACE_MAX {
+    // The state below is consumed as it is read: check the buffer first, so a bad one
+    // loses nothing.
+    if crate::window::mem::probe_writable(out_ptr, 16).is_err() {
         return SyscallResult::Err(super::ErrorCode::Fault as u64);
     }
-
-    let end_ptr = out_ptr.saturating_add(16); // 4 * u32
-    if end_ptr > USER_SPACE_MAX {
-        return SyscallResult::Err(super::ErrorCode::Fault as u64);
-    }
-
     let (mx, my, buttons) = if crate::drivers::virtio::input_mmio::is_tablet_initialized() {
         crate::drivers::virtio::input_mmio::mouse_state()
     } else {
@@ -656,12 +652,11 @@ pub fn sys_get_mouse_pos(out_ptr: u64) -> SyscallResult {
 
     let scroll = crate::drivers::usb::hid::mouse_wheel_consume() as u32;
 
-    unsafe {
-        let out = out_ptr as *mut [u32; 4];
-        core::ptr::write(out, [mx, my, buttons, scroll]);
+    // Through the fault-tolerant copy, so an unmapped or read-only buffer is EFAULT.
+    match crate::syscall::userptr::copy_to_user(out_ptr as *mut [u32; 4], &[mx, my, buttons, scroll]) {
+        Ok(()) => SyscallResult::Ok(0),
+        Err(_) => SyscallResult::Err(super::ErrorCode::Fault as u64),
     }
-
-    SyscallResult::Ok(0)
 }
 
 /// sys_get_mouse_pos - Stub for non-aarch64

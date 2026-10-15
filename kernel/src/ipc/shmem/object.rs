@@ -9,6 +9,9 @@ use core::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU64, AtomicUsiz
 #[cfg(target_arch = "x86_64")]
 use x86_64::structures::paging::{PhysFrame, Size4KiB};
 
+/// A page frame of a shared object, as `frame_at` returns it and `release_frame` takes it.
+pub(crate) type Frame = PhysFrame<Size4KiB>;
+
 static NEXT_INO: AtomicU64 = AtomicU64::new(0x100000);
 
 // Compressed binary radix tree: two fallible nodes per resident page at most.
@@ -437,6 +440,9 @@ fn current_pid() -> i32 {
 pub enum MappingOrigin {
     Mmap,
     SysV,
+    /// A window interface buffer or tree page (`crate::window`): never copied by fork,
+    /// its protection changed only by the window interface.
+    Window,
 }
 /// Linux VM-open accounting is per VMA, including splits and fork.
 #[derive(Debug)]
