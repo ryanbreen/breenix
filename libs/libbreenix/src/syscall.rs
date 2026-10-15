@@ -16,8 +16,8 @@ use core::arch::asm;
 
 /// Syscall numbers matching kernel/src/syscall/mod.rs
 ///
-/// x86_64: Uses Linux x86_64 ABI numbers for musl libc compatibility.
-/// ARM64: Uses Linux ARM64 (asm-generic/unistd.h) numbers for musl libc compatibility.
+/// x86_64: Uses the Linux x86_64 ABI's system call numbers.
+/// ARM64: Uses the Linux ARM64 (asm-generic/unistd.h) system call numbers.
 #[cfg(target_arch = "x86_64")]
 pub mod nr {
     pub const MQ_OPEN: u64 = 240;
