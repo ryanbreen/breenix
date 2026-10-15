@@ -1104,7 +1104,9 @@ VMXEOF
 
     # Ethernet0 is bridged to the host's network, and the guest takes its address from that network's DHCP
     # server. Fusion's "nat" runs vmnet8 as a host-only segment that reaches outside only through Fusion's
-    # vmnet-natd, a root service this host does not run (#1202).
+    # vmnet-natd, a root service this host does not run (#1202). Its MAC is the host's static one, so the
+    # server knows the client (scripts/vmware/static-mac.sh).
+    VMWARE_MAC="$("$BREENIX_ROOT/scripts/vmware/static-mac.sh")" || { echo "ERROR: no static VMware MAC"; exit 1; }
     cat >> "$VMX_FILE" <<VMXEOF
 
 serial0.present = "TRUE"
@@ -1115,7 +1117,8 @@ serial0.yieldOnMsrRead = "TRUE"
 ethernet0.present = "TRUE"
 ethernet0.connectionType = "bridged"
 ethernet0.virtualDev = "e1000e"
-ethernet0.addressType = "generated"
+ethernet0.addressType = "static"
+ethernet0.address = "$VMWARE_MAC"
 ethernet0.linkStatePropagation.enable = "TRUE"
 
 usb.present = "TRUE"

@@ -64,6 +64,8 @@ sata0:0.fileName = "$EXT2_VMDK"
 EOF
 fi
 
+VMWARE_MAC="$("$(dirname "$0")/static-mac.sh")"
+
 cat >> "$VMX_FILE" <<EOF
 
 # Serial port -> file (for kernel debug output)
@@ -72,11 +74,13 @@ serial0.fileType = "file"
 serial0.fileName = "$SERIAL_LOG"
 serial0.yieldOnMsrRead = "TRUE"
 
-# Networking (e1000e bridged to the host network; the guest takes a DHCP lease)
+# Networking (e1000e bridged to the host network; the guest takes a DHCP lease;
+# the host's static MAC, see static-mac.sh)
 ethernet0.present = "TRUE"
 ethernet0.connectionType = "bridged"
 ethernet0.virtualDev = "e1000e"
-ethernet0.addressType = "generated"
+ethernet0.addressType = "static"
+ethernet0.address = "$VMWARE_MAC"
 ethernet0.linkStatePropagation.enable = "TRUE"
 
 # USB (xHCI for keyboard/mouse)
