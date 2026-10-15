@@ -225,6 +225,53 @@ export SDK_ROOT="$ROOT_DIR" SDK_ROOT_REAL="$ROOT_REAL" SDK_STAGE SDK_COMMIT="$CO
     SDK_TOOLCHAIN SDK_LLVM_TOOLS SDK_RUSTC_COMMIT="$RUSTC_COMMIT" SDK_RUST_SYSROOT="$RUST_SYSROOT" \
     SDK_FORK_COMMIT="$FORK_COMMIT" SDK_REAL_HOME="$REAL_HOME" SDK_CARGO_REGISTRY="$CARGO_REGISTRY" SDK_CARGO_GIT="$CARGO_GIT"
 
+# The local paths no file of the SDK may name: the build's directories, the checkout, the
+# Rust fork, the homes and the toolchain. The pinned Rust library's own text can hold a path
+# that starts with one of them (std's docs show "/root/secret_file.txt", and a builder's home
+# can be /root); rustc keeps that text in the rlibs' metadata. Those paths are recorded from
+# the library's sources before any stage runs, and the scan below fails every other one.
+LOCAL_PATHS=("$ROOT_DIR" "$ROOT_REAL" "$CHECKOUT" "$FORK" "$HOME" "$REAL_HOME" "$REAL_CARGO_HOME" \
+    "$CARGO_REGISTRY" "$CARGO_GIT" "${RUSTUP_HOME:-$REAL_HOME/.rustup}" "$RUST_SYSROOT")
+LOCAL_PATH_SCAN="$(cat <<'PY'
+import os, sys
+from pathlib import Path
+mode, tree, paths = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3])
+needles = sorted({n.encode() for n in sys.argv[4:] if n not in ('', '/')})
+PATH_BYTES = set(b'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._~+@%=/-')
+
+def named(data):
+    # Each needle found, with the whole path around it.
+    found = set()
+    for needle in needles:
+        at = data.find(needle)
+        while at >= 0:
+            start, end = at, at + len(needle)
+            while start > 0 and data[start - 1] in PATH_BYTES:
+                start -= 1
+            while end < len(data) and data[end] in PATH_BYTES:
+                end += 1
+            found.add((needle, data[start:end]))
+            at = data.find(needle, at + 1)
+    return found
+
+files = []
+for directory, _, names in os.walk(tree):
+    files += [Path(directory) / name for name in names if not (Path(directory) / name).is_symlink()]
+if mode == 'record':
+    written = {path for f in sorted(files) for _, path in named(f.read_bytes())}
+    paths.write_bytes(b''.join(path + b'\n' for path in sorted(written)))
+    sys.exit(0)
+written = set(paths.read_bytes().splitlines())
+bad = sorted(f'{f.relative_to(tree)} names {needle.decode()} ({path[:160].decode(errors="replace")})'
+             for f in files for needle, path in named(f.read_bytes()) if path not in written)
+for line in bad[:20]:
+    print('build-sdk: ' + line, file=sys.stderr)
+sys.exit(1 if bad else 0)
+PY
+)"
+python3 -c "$LOCAL_PATH_SCAN" record "$ROOT_DIR/rust-fork/library" "$ROOT_DIR/library-paths" "${LOCAL_PATHS[@]}" ||
+    die "could not record the Rust library's own paths"
+
 # Verify that rustc applies the same remaps used by every build stage.
 . "$ROOT_DIR/sdk/builder/lib.sh"
 printf '%s\n' '#[no_mangle] pub static SDK_REMAP_PROBE: &str = file!();' > "$ROOT_DIR/remap-probe.rs"
@@ -250,19 +297,8 @@ for dir in "$SDK_STAGE/bin" "$SDK_STAGE/share/breenix-sdk/libexec"; do
 done
 
 # No file may name the build's directories, the checkout, the Rust fork or the home.
-python3 - "$SDK_STAGE" "$ROOT_DIR" "$ROOT_REAL" "$CHECKOUT" "$FORK" "$HOME" "$REAL_HOME" "$REAL_CARGO_HOME" "$CARGO_REGISTRY" "$CARGO_GIT" "${RUSTUP_HOME:-$REAL_HOME/.rustup}" "$RUST_SYSROOT" <<'PY' || die "the SDK names local paths"
-import sys
-from pathlib import Path
-stage, needles = Path(sys.argv[1]), sorted({n.encode() for n in sys.argv[2:] if n not in ('', '/')})
-bad = []
-for path in sorted(stage.rglob('*')):
-    if path.is_file() and not path.is_symlink():
-        data = path.read_bytes()
-        bad += [f'{path.relative_to(stage)} names {n.decode()}' for n in needles if n in data]
-for line in bad[:20]:
-    print('build-sdk: ' + line, file=sys.stderr)
-sys.exit(1 if bad else 0)
-PY
+python3 -c "$LOCAL_PATH_SCAN" scan "$SDK_STAGE" "$ROOT_DIR/library-paths" "${LOCAL_PATHS[@]}" ||
+    die "the SDK names local paths"
 
 if [ -d "$PREFIX" ]; then
     rmdir "$PREFIX"
