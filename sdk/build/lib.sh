@@ -15,8 +15,11 @@
 #                    read rustc's own bitcode
 #   SDK_FORK_COMMIT  the Rust library pin (rust-fork.toml)
 #   SDK_REAL_HOME    the builder's home directory, whatever HOME says
+#   SDK_REAL_CARGO_HOME the builder's cargo home, whose download caches CARGO_HOME shares
+#   CARGO_HOME       cargo's home for the build, <root>/.cargo-home, with no config.toml
 #   CARGO_NET_OFFLINE true unless build-sdk.sh was given --fetch
-# and LC_ALL=C, TZ=UTC, SOURCE_DATE_EPOCH (the commit's time) and umask 022.
+# and LC_ALL=C, TZ=UTC, SOURCE_DATE_EPOCH (the commit's time) and umask 022. No other
+# CARGO_* variable, rustc flag or wrapper, or C compiler setting reaches the stages.
 set -euo pipefail
 
 sdk_say() {
@@ -37,15 +40,18 @@ sdk_install() {
 # The --remap-path-prefix flags every rustc gets, one per line. rustc applies the last
 # matching mapping, so the most specific directories come last.
 sdk_remap_flags() {
-    local cargo_home="${CARGO_HOME:-$SDK_REAL_HOME/.cargo}"
     local rustup_home="${RUSTUP_HOME:-$SDK_REAL_HOME/.rustup}"
     echo "--remap-path-prefix=$SDK_REAL_HOME=/home"
     [ "$HOME" = "$SDK_REAL_HOME" ] || echo "--remap-path-prefix=$HOME=/home"
     echo "--remap-path-prefix=$rustup_home=/rustup"
-    echo "--remap-path-prefix=$cargo_home=/cargo"
     echo "--remap-path-prefix=$SDK_RUST_SYSROOT/lib/rustlib/src/rust=/rustc/$SDK_RUSTC_COMMIT"
     echo "--remap-path-prefix=$SDK_ROOT=/breenix-sdk"
     [ "$SDK_ROOT_REAL" = "$SDK_ROOT" ] || echo "--remap-path-prefix=$SDK_ROOT_REAL=/breenix-sdk"
+    # Registry sources: through the build's cargo home, inside the build root, or the
+    # builder's, wherever cargo resolves them.
+    echo "--remap-path-prefix=$SDK_REAL_CARGO_HOME=/cargo"
+    echo "--remap-path-prefix=$CARGO_HOME=/cargo"
+    [ "$SDK_ROOT_REAL" = "$SDK_ROOT" ] || echo "--remap-path-prefix=$SDK_ROOT_REAL/${CARGO_HOME#"$SDK_ROOT"/}=/cargo"
 }
 
 # Run cargo in a crate directory with the remaps plus any extra rustc flags:

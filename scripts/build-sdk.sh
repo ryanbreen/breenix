@@ -157,10 +157,50 @@ else
     CARGO_NET_OFFLINE=true
 fi
 export CARGO_NET_OFFLINE
+
+# The builder's own cargo, rustc and C compiler settings would change the SDK's bytes, or
+# move artifacts away from where the stages look, without changing the commit it names: a
+# CARGO_PROFILE_* variable, a [build] target-dir or [profile] in a config.toml, RUSTFLAGS,
+# a rustc wrapper, CFLAGS for a build script. The stages get none of them. Every CARGO_*
+# variable but the network switch and the job count is dropped, with rustc's and the C
+# compiler's, and cargo gets a home of its own inside the build root, without a
+# config.toml, that shares only the builder's download caches and their locks.
+REAL_CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+for name in $(compgen -e); do
+    case "$name" in
+        CARGO_NET_OFFLINE|CARGO_BUILD_JOBS) ;;
+        CARGO_*|RUSTFLAGS|RUSTDOCFLAGS|RUSTC|RUSTDOC|RUSTC_WRAPPER|RUSTC_WORKSPACE_WRAPPER) unset "$name" ;;
+        CC|CXX|AR|RANLIB|CFLAGS|CXXFLAGS|CPPFLAGS|LDFLAGS|ARFLAGS|CRATE_CC_NO_DEFAULTS) unset "$name" ;;
+        CC_*|CXX_*|AR_*|CFLAGS_*|CXXFLAGS_*|ARFLAGS_*|TARGET_*|HOST_*) unset "$name" ;;
+        CPATH|C_INCLUDE_PATH|CPLUS_INCLUDE_PATH|OBJC_INCLUDE_PATH|OBJCPLUS_INCLUDE_PATH|LIBRARY_PATH|COMPILER_PATH) unset "$name" ;;
+        BREENIX_USERSPACE_REMAP) unset "$name" ;;
+    esac
+done
+CARGO_HOME="$ROOT_DIR/.cargo-home"
+mkdir -p "$CARGO_HOME" "$REAL_CARGO_HOME/registry" "$REAL_CARGO_HOME/git"
+for entry in registry git; do
+    ln -s "$REAL_CARGO_HOME/$entry" "$CARGO_HOME/$entry"
+done
+for entry in .package-cache .package-cache-mutate .global-cache; do
+    [ -e "$REAL_CARGO_HOME/$entry" ] || : > "$REAL_CARGO_HOME/$entry"
+    ln -s "$REAL_CARGO_HOME/$entry" "$CARGO_HOME/$entry"
+done
+export CARGO_HOME
+# cargo also reads .cargo/config.toml from every directory above the one it runs in; the
+# build root's own come from the commit, and none may sit above it.
+for dir in "$(dirname "$ROOT_DIR")" "$(dirname "$ROOT_REAL")"; do
+    while :; do
+        for config in "$dir/.cargo/config" "$dir/.cargo/config.toml"; do
+            [ ! -e "$config" ] || die "$config would configure the build's cargo; move it away"
+        done
+        [ "$dir" != / ] || break
+        dir="$(dirname "$dir")"
+    done
+done
+
 export SDK_ROOT="$ROOT_DIR" SDK_ROOT_REAL="$ROOT_REAL" SDK_STAGE SDK_COMMIT="$COMMIT" SDK_VERSION="$VERSION" \
     SDK_TOOLCHAIN SDK_LLVM_TOOLS SDK_RUSTC_COMMIT="$RUSTC_COMMIT" SDK_RUST_SYSROOT="$RUST_SYSROOT" \
-    SDK_FORK_COMMIT="$FORK_COMMIT" SDK_REAL_HOME="$REAL_HOME"
-unset CARGO_TARGET_DIR CARGO_BUILD_TARGET_DIR RUSTFLAGS CARGO_ENCODED_RUSTFLAGS BREENIX_USERSPACE_REMAP
+    SDK_FORK_COMMIT="$FORK_COMMIT" SDK_REAL_HOME="$REAL_HOME" SDK_REAL_CARGO_HOME="$REAL_CARGO_HOME"
 
 for stage in "$ROOT_DIR"/sdk/build/stages/*.sh; do
     echo "build-sdk: stage $(basename "$stage")"

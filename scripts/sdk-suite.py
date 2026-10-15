@@ -435,8 +435,8 @@ class Harness:
         second = self.work / 'export2'
         export(ROOT, self.commit, second)
         prefix = self.work / 'sdk2'
-        say('building the SDK a second time from a clone at another path')
-        ran = run(['bash', second / 'scripts' / 'build-sdk.sh', '--prefix', prefix], second, self.build_env(),
+        say('building the SDK a second time from a clone at another path, in a hostile environment')
+        ran = run(['bash', second / 'scripts' / 'build-sdk.sh', '--prefix', prefix], second, self.hostile_env(),
                   TIMEOUT_SDK, self.logs / 'build-sdk-2.log')
         if not ran.ok:
             self.records.fail('toolchain/reproducible', ran.why('the second build'))
@@ -458,6 +458,39 @@ class Harness:
                              f'{len(differences)} paths differ between the two builds, the first: {", ".join(differences[:3])}')
         shutil.rmtree(prefix, ignore_errors=True)
         shutil.rmtree(second, ignore_errors=True)
+        shutil.rmtree(self.work / 'hostile', ignore_errors=True)
+
+    def hostile_env(self):
+        """The build's environment plus a builder's settings that must not reach the SDK: a
+        cargo home whose config.toml moves the target directory and changes the release
+        profile and rustc's flags, the same through CARGO_* and RUSTFLAGS, and C compiler
+        settings. The cargo home shares the real one's download caches."""
+        env = self.build_env()
+        real = Path(env['CARGO_HOME'])
+        hostile = self.work / 'hostile'
+        home = hostile / 'cargo-home'
+        home.mkdir(parents=True)
+        for entry in ('registry', 'git', '.package-cache', '.package-cache-mutate', '.global-cache'):
+            if (real / entry).exists():
+                (home / entry).symlink_to(real / entry)
+        (home / 'config.toml').write_text(
+            '[build]\n'
+            f'target-dir = "{hostile / "target"}"\n'
+            'rustflags = ["-Copt-level=1", "-Cdebuginfo=2"]\n'
+            '[profile.release]\nopt-level = 1\ndebug = 2\ncodegen-units = 7\n')
+        (hostile / 'include').mkdir()
+        env.update({
+            'CARGO_HOME': str(home),
+            'CARGO_PROFILE_RELEASE_OPT_LEVEL': '1',
+            'CARGO_PROFILE_RELEASE_DEBUG': '2',
+            'CARGO_BUILD_TARGET_DIR': str(hostile / 'target2'),
+            'CARGO_TARGET_DIR': str(hostile / 'target3'),
+            'RUSTFLAGS': '-Copt-level=1',
+            'CARGO_ENCODED_RUSTFLAGS': '-Cdebuginfo=2',
+            'CFLAGS': '-O0 -g',
+            'CPATH': str(hostile / 'include'),
+        })
+        return env
 
     def check_version_line(self, case, tool, arch):
         if not tool.is_file():
