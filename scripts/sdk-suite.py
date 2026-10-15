@@ -218,18 +218,30 @@ def whole_paths(data, needle):
     return paths
 
 
+STD_RLIB = re.compile(r'lib/rust/lib/rustlib/[^/]+/lib/[^/]+\.rlib')
+DOC_LINE = re.compile(rb'^[ \t]*//[/!].*$', re.MULTILINE)
+
+
+def doc_text(data):
+    """The doc comment lines of a Rust source file, the text rustc keeps in rlib metadata."""
+    return b'\n'.join(DOC_LINE.findall(data))
+
+
 def scan(directory, needles, written=frozenset()):
-    """Map each needle found to the relative paths of the files holding it. A place whose
-    whole path is one of `written` (text the sources themselves hold) is not a find."""
+    """Map each needle found to the relative paths of the files holding it. In the Rust
+    sysroot's rlibs, built from the pinned library, a place whose whole path is one of
+    `written` (text the library's doc comments hold) is not a find; in any other file it is."""
     found = {}
     for path in files_under(directory):
         try:
             data = path.read_bytes()
         except OSError:
             continue
+        relative = str(path.relative_to(directory))
+        allowed = written if STD_RLIB.fullmatch(relative) else frozenset()
         for needle in needles:
-            if needle and needle in data and (not written or whole_paths(data, needle) - written):
-                found.setdefault(needle, []).append(str(path.relative_to(directory)))
+            if needle and needle in data and (not allowed or whole_paths(data, needle) - allowed):
+                found.setdefault(needle, []).append(relative)
     return found
 
 
@@ -396,13 +408,14 @@ class Harness:
         return needles
 
     def library_paths(self, needles):
-        """The whole paths holding a needle that the pinned Rust library's sources write. std's
-        docs show "/root/secret_file.txt", a builder's home can be /root, and rustc keeps doc
-        text in rlib metadata. The library is read as scripts/build-sdk.sh reads it: a verified
-        snapshot as it is, a git checkout at the pin, with its submodules."""
+        """The whole paths holding a needle that the pinned Rust library's doc comments write.
+        std's docs show "/root/secret_file.txt", a builder's home can be /root, and rustc keeps
+        doc text in rlib metadata. The library is read as scripts/build-sdk.sh reads it: a
+        verified snapshot as it is, a git checkout at the pin, with its submodules."""
         written = set()
 
         def read(data):
+            data = doc_text(data)
             for needle in needles:
                 if needle in data:
                     written.update(whole_paths(data, needle))
@@ -410,7 +423,8 @@ class Harness:
             return written
         if (self.fork.parent / '.rust-fork-snapshot.json').is_file():
             for path in files_under(self.fork):
-                read(path.read_bytes())
+                if path.suffix == '.rs':
+                    read(path.read_bytes())
             return written
         repo = self.fork.parent
         pin = re.search(r'^commit = "([0-9a-f]{40})"$', (ROOT / 'rust-fork.toml').read_text(), re.MULTILINE)
@@ -429,7 +443,7 @@ class Harness:
                 continue  # an unreadable tree adds no paths, so its finds still fail
             with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as members:
                 for member in members:
-                    if member.isfile():
+                    if member.isfile() and member.name.endswith('.rs'):
                         read(members.extractfile(member).read())
         return written
 

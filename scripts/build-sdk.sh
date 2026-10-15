@@ -229,13 +229,17 @@ export SDK_ROOT="$ROOT_DIR" SDK_ROOT_REAL="$ROOT_REAL" SDK_STAGE SDK_COMMIT="$CO
 # Rust fork, the homes and the toolchain. The pinned Rust library's own text can hold a path
 # that starts with one of them (std's docs show "/root/secret_file.txt", and a builder's home
 # can be /root); rustc keeps that text in the rlibs' metadata. Those paths are recorded from
-# the library's sources before any stage runs, and the scan below fails every other one.
+# the doc comments of the library's sources before any stage runs and pass only in the Rust
+# sysroot's rlibs, which are built from the library; the scan fails every other one, and any
+# one in any other file.
 LOCAL_PATHS=("$ROOT_DIR" "$ROOT_REAL" "$CHECKOUT" "$FORK" "$HOME" "$REAL_HOME" "$REAL_CARGO_HOME" \
     "$CARGO_REGISTRY" "$CARGO_GIT" "${RUSTUP_HOME:-$REAL_HOME/.rustup}" "$RUST_SYSROOT")
 LOCAL_PATH_SCAN="$(cat <<'PY'
-import os, sys
+import os, re, sys
 from pathlib import Path
 mode, tree, paths = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3])
+STD_RLIB = re.compile(r'lib/rust/lib/rustlib/[^/]+/lib/[^/]+\.rlib')
+DOC_LINE = re.compile(rb'^[ \t]*//[/!].*$', re.MULTILINE)
 needles = sorted({n.encode() for n in sys.argv[4:] if n not in ('', '/')})
 PATH_BYTES = set(b'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._~+@%=/-')
 
@@ -258,12 +262,14 @@ files = []
 for directory, _, names in os.walk(tree):
     files += [Path(directory) / name for name in names if not (Path(directory) / name).is_symlink()]
 if mode == 'record':
-    written = {path for f in sorted(files) for _, path in named(f.read_bytes())}
+    written = {path for f in sorted(files) if f.suffix == '.rs'
+               for line in DOC_LINE.findall(f.read_bytes()) for _, path in named(line)}
     paths.write_bytes(b''.join(path + b'\n' for path in sorted(written)))
     sys.exit(0)
 written = set(paths.read_bytes().splitlines())
 bad = sorted(f'{f.relative_to(tree)} names {needle.decode()} ({path[:160].decode(errors="replace")})'
-             for f in files for needle, path in named(f.read_bytes()) if path not in written)
+             for f in files for needle, path in named(f.read_bytes())
+             if path not in written or not STD_RLIB.fullmatch(str(f.relative_to(tree))))
 for line in bad[:20]:
     print('build-sdk: ' + line, file=sys.stderr)
 sys.exit(1 if bad else 0)
