@@ -58,9 +58,13 @@ Parallels Desktop and VMware Fusion. x86-64 boots under QEMU, and its gates run 
 You need:
 
 - `rustup`. [`rust-toolchain.toml`](rust-toolchain.toml) pins the nightly toolchain and its components.
+- LLVM: clang 18 or newer with `llvm-nm`, `llvm-ar` and `llvm-objcopy` beside it. The C library,
+  BusyBox and C userspace programs build with it. On macOS install Homebrew's `llvm`
+  (`brew install llvm`); the build finds it without a `PATH` change, and Apple's
+  `/usr/bin/clang` does not ship those tools.
 - QEMU (`qemu-system-aarch64`, and `qemu-system-x86_64` for x86-64).
 - Docker, which builds the ext2 disk image on macOS.
-- Python 3.
+- Python 3.11 or newer (`scripts/rust-fork.sh` uses `tomllib`; macOS's system Python 3.9 is too old).
 - The forked Rust standard library, described below.
 
 ### The forked Rust standard library
@@ -105,13 +109,16 @@ the kernel, then boots once with the serial console on your terminal (Ctrl-A X q
 ```bash
 scripts/boot-interactive.sh                          # testing kernel: the boot-path gate
 scripts/boot-interactive.sh --mode shell             # bsh on the serial console
-scripts/boot-interactive.sh --mode desktop           # window manager and a terminal in a window
 scripts/boot-interactive.sh --mode probe             # one check per subsystem, ends with PROBE DONE
 scripts/boot-interactive.sh --mode suite --suite files-io   # an effort suite as PID 1
 ```
 
-`./run.sh` is the interactive launcher with a native display window; `./run.sh --headless`
-keeps it to the serial console.
+`./run.sh` boots in a QEMU window; `./run.sh --headless` keeps it to the serial console.
+
+The desktop (the window manager and its terminal) composites through VirGL, which the
+Parallels and VMware GPUs provide. The QEMU launchers attach a `virtio-gpu-device` without
+it, so under QEMU the window manager reports `GPU compositing required` and exits; boot the
+desktop on Parallels or VMware, below.
 
 ![The boot probe on ARM64 QEMU: 16 subsystem checks, all OK](docs/images/probe-arm64-qemu.png)
 
@@ -127,8 +134,14 @@ cargo build --release --target aarch64-breenix-kernel.json \
 
 ### Boot on Parallels Desktop and VMware Fusion
 
+Both boot through a UEFI loader, which needs one more Rust target:
+
 ```bash
-./run.sh --parallels                     # build, create a fresh VM and boot it
+rustup target add aarch64-unknown-uefi
+```
+
+```bash
+./run.sh --parallels                     # build, create a fresh VM and boot to the desktop
 ./run.sh --parallels --suite files-io    # run a suite, stop the VM at its DONE line
 ./run.sh --vmware --probe                # the boot probe on VMware
 ./run.sh --vmware --suite directories
@@ -156,10 +169,12 @@ lands with its own evidence.
 
 The SDK packages C and Rust toolchains for both architectures, so a program can be written,
 built and installed onto a Breenix disk without this source tree.
+[Build the SDK](docs/sdk/reference.md#host-prerequisites-and-sdk-build) into a directory of
+your choice; that section also lists its host prerequisites. Installing onto a disk image
+needs e2fsprogs' `debugfs` on the host (`brew install e2fsprogs` on macOS; Docker does not
+stand in for it). Then create, build and install a program:
 
 ```bash
-scripts/build-sdk.sh --prefix "$HOME/breenix-sdk" --fetch   # --fetch fills cold caches once
-
 export BREENIX_SDK="$HOME/breenix-sdk" BREENIX_ARCH=aarch64
 export BREENIX_IMAGE=/absolute/path/to/a/copy/of/ext2-aarch64.img
 export PATH="$BREENIX_SDK/bin:$PATH"

@@ -522,7 +522,7 @@ Use debug loop to reproduce the issue, then attach GDB for detailed inspection:
 
 ```bash
 # 1. Reproduce with debug loop
-breenix-kernel-debug-loop/scripts/quick_debug.py --signal "CRASH" --timeout 10
+.agents/skills/breenix-kernel-debug-loop/scripts/quick_debug.py --signal "CRASH" --timeout 10
 
 # 2. See crash in logs, now debug with GDB
 tools/gdb-chat/scripts/start_session.py
