@@ -160,6 +160,10 @@ pub(crate) fn kill_process_now(victim: ProcessId, exit_code: i32, claimed: Optio
         .unwrap_or(true)
     });
     if !claimed {
+        {
+            let (s, n) = crate::time::get_monotonic_time_ns();
+            log::info!("SKPROBE kill deferred victim={} ms={}", victim.as_u64(), s * 1000 + n / 1_000_000);
+        }
         // Deferred: wake. A thread that has blocked is woken here, and one
         // about to block refuses to (`Thread::mark_kill_pending`), so its
         // signal check runs and finds SIGKILL.

@@ -1571,6 +1571,10 @@ pub fn exit_frame_fault_on_syscall_return() -> ! {
 #[cfg(target_arch = "x86_64")]
 fn exit_on_syscall_return(exit_code: i32) -> ! {
     if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
+        {
+            let (s, n) = crate::time::get_monotonic_time_ns();
+            log::info!("SKPROBE self-exit tid={} code={} ms={}", thread_id, exit_code, s * 1000 + n / 1_000_000);
+        }
         let row = crate::process::with_process_manager(|manager| {
             manager
                 .find_process_by_thread(thread_id)
