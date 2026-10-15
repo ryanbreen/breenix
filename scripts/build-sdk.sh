@@ -54,7 +54,21 @@ FETCH_ARG=()
 # The builder's home, which HOME need not name (the suite gives builds a home of their own).
 REAL_HOME="$(python3 -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')"
 
-BASE=/tmp/breenix-sdk-build
+# The fixed path preserves Cargo metadata hashes across users and checkouts.
+# Refuse pre-created symlinks, foreign owners and directories others can alter.
+BASE="$(python3 - <<'PYBASE'
+import os, stat
+base = '/tmp/breenix-sdk-build'
+try:
+    os.mkdir(base, 0o700)
+except FileExistsError:
+    pass
+info = os.lstat(base)
+if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o022:
+    raise SystemExit('build-sdk: unsafe build root ' + base)
+print(base)
+PYBASE
+)"
 LOCK="$BASE/$COMMIT.lock"
 # One build of a commit at a time: re-run this script holding an exclusive lock on the
 # commit's lock file (macOS has no flock(1)). The lock lives as long as the open file.
@@ -62,7 +76,11 @@ if [ "${BREENIX_SDK_BUILD_LOCK:-}" != "$LOCK" ]; then
     mkdir -p "$BASE"
     exec python3 -c '
 import fcntl, os, sys
-fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o644)
+import stat
+fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+info = os.fstat(fd)
+if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1:
+    raise SystemExit("build-sdk: unsafe lock file")
 fcntl.flock(fd, fcntl.LOCK_EX)
 os.set_inheritable(fd, True)
 os.environ["BREENIX_SDK_BUILD_LOCK"] = sys.argv[1]

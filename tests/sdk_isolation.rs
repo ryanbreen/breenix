@@ -23,8 +23,6 @@ fn is_sdk_or_suite(path: &str) -> bool {
         "docs/suites/sdk.json",
         "userspace/programs/src/suite_sdk.rs",
         "tests/sdk_isolation.rs",
-        // Un-ignores sdk/build/, which the repository's build/ rule would hide.
-        ".gitignore",
     ];
     PREFIXES.iter().any(|p| path.starts_with(p)) || FILES.contains(&path)
 }
@@ -117,4 +115,15 @@ fn the_component_match_ignores_longer_names() {
     assert!(names_at_component(b"sdk/bin/x", "sdk/bin/"));
     assert!(!names_at_component(b"/opt/wasi-sdk/bin/clang", "sdk/bin/"));
     assert!(names_at_component(b"/opt/sdk/bin/clang", "sdk/bin/"));
+}
+
+#[test]
+fn sdk_host_tools() {
+    let root = repo_root();
+    for test in ["sdk/tests/build_root_test.py", "sdk/tests/templates_test.py", "sdk/tests/image_test.py",
+                 "sdk/tests/run_disk_test.py", "tests/libc_spawn_host.py"] {
+        let status = Command::new("python3").arg(root.join(test)).current_dir(&root)
+            .status().expect("python3 runs");
+        assert!(status.success(), "{test} failed");
+    }
 }

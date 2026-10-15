@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 class SuppliedDiskTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='breenix-run-disk-')
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         shutil.copyfile(ROOT / 'run.sh', self.root / 'run.sh')
         for directory in ('scripts', 'docker/qemu/lib', 'target/aarch64-breenix-kernel/release',
                           'target/release/build/breenix-test/out', 'target/ovmf/x64', 'bin'):
@@ -58,6 +58,8 @@ Path('build-called').write_text('yes')
 ''')
         self.write_tool('taskpolicy', '''import os, sys
 assert sys.argv[1] == '-b'
+from pathlib import Path
+Path('priority-called').write_text('yes')
 os.execvp(sys.argv[2], sys.argv[2:])
 ''')
         for qemu in ('qemu-system-aarch64', 'qemu-system-x86_64'):
@@ -90,12 +92,41 @@ sys.stdout.buffer.write(b'\\x7fELF\\x02\\x01\\x01' + bytes(11) + struct.pack('<H
         for arch in ('--arm64', '--x86'):
             with self.subTest(arch=arch):
                 self.env['TEST_MACHINE'] = '62' if arch == '--x86' else '183'
+                for marker in ('build-called', 'vm-called'):
+                    (self.root / marker).unlink(missing_ok=True)
                 result = self.run_runner(arch, '--headless', '--no-audio', '--disk', str(self.source))
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertTrue((self.root / 'build-called').is_file())
                 self.assertTrue((self.root / 'vm-called').is_file())
+                self.assertFalse((self.root / 'priority-called').exists())
                 self.assertEqual(hashlib.sha256(self.source.read_bytes()).digest(), self.original)
                 self.assertIn('Creating fresh session disk', result.stdout)
+
+    def test_background_builds_are_opt_in_and_keep_caller_jobs(self):
+        self.env['BREENIX_BUILD_BACKGROUND'] = '1'
+        result = self.run_runner('--headless', '--no-audio', '--disk', str(self.source))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue((self.root / 'build-called').is_file())
+        self.assertTrue((self.root / 'vm-called').is_file())
+
+        if os.uname().sysname == 'Darwin':
+            self.assertTrue((self.root / 'priority-called').is_file())
+
+    def test_logical_checkout_keeps_existing_session_writes(self):
+        alias = self.root / 'checkout-alias'
+        alias.symlink_to(self.root, target_is_directory=True)
+        disk = self.root / 'target/ext2-aarch64.img'
+        disk.write_bytes(b'original system')
+        session = self.root / 'target/ext2-session.img'
+        session.write_bytes(b'guest writes')
+        (self.root / 'target/ext2-session.img.base').write_text(str(alias / 'target/ext2-aarch64.img') + '\n')
+        self.write_tool('qemu-system-aarch64', "from pathlib import Path\nassert Path('target/ext2-session.img').read_bytes() == b'guest writes'\n")
+        result = subprocess.run(['/bin/bash', str(alias / 'run.sh'), '--no-build',
+                                 '--headless', '--no-audio'], cwd=self.root,
+                                env=self.env, capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('Reusing existing session disk', result.stdout)
+        self.assertEqual(session.read_bytes(), b'guest writes')
 
     def test_no_build_skips_kernel_too(self):
         result = self.run_runner('--no-build', '--headless', '--no-audio', '--disk', str(self.source))

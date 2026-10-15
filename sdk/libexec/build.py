@@ -34,6 +34,7 @@ def project_config(project):
 
 
 def build_c(project, root, arch, output):
+    output.unlink(missing_ok=True)
     sources = sorted((project / 'src').glob('*.c'))
     if not sources:
         raise ValueError('the C project has no src/*.c files')
@@ -41,6 +42,7 @@ def build_c(project, root, arch, output):
                '-std=c17', '-O2', '-Wall', '-Wextra', *map(str, sources), '-o', str(output)]
     result = subprocess.run(command, cwd=project)
     if result.returncode:
+        output.unlink(missing_ok=True)
         return result.returncode
     if not output.is_file():
         raise ValueError('the C driver succeeded without producing an executable')

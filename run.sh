@@ -33,7 +33,7 @@
 
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$SCRIPT_DIR"
 cd "$BREENIX_ROOT"
 source "$BREENIX_ROOT/scripts/host-slots.sh"
@@ -255,9 +255,9 @@ PYDISK
     fi
 fi
 
-# Builds run at background priority; VM execution retains normal priority.
+# Opt in for constrained build hosts; VM execution retains normal priority.
 run_build() {
-    if [ -n "$DISK_OVERRIDE" ] && [ "$(uname)" = Darwin ]; then
+    if [ "${BREENIX_BUILD_BACKGROUND:-0}" = 1 ] && [ "$(uname)" = Darwin ]; then
         taskpolicy -b "$@"
     else
         "$@"

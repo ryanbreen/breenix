@@ -35,7 +35,7 @@ case "$ARCH" in
     x86_64)
         TRIPLE=x86_64-unknown-linux-gnu
         LIBC="$ROOT/libs/libbreenix-libc/target/x86_64-breenix-c/release/libc.a"
-        ARCH_FLAGS=()
+        ARCH_FLAGS=(-mno-red-zone)
         ;;
     *) usage ;;
 esac

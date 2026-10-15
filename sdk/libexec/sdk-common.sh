@@ -70,7 +70,7 @@ sdk_cc() {
     shift
     case "$_sdk_arch" in
         aarch64) _sdk_triple=aarch64-unknown-linux-gnu; _sdk_arch_flags=-mno-outline-atomics ;;
-        x86_64) _sdk_triple=x86_64-unknown-linux-gnu; _sdk_arch_flags= ;;
+        x86_64) _sdk_triple=x86_64-unknown-linux-gnu; _sdk_arch_flags=-mno-red-zone ;;
         *) sdk_die "unknown architecture $_sdk_arch" ;;
     esac
     _sdk_cc="$(sdk_find_clang)"

@@ -11,8 +11,11 @@ them even when their keg-only tools are absent from PATH. See
 
 Set `BREENIX_SDK` to the absolute path of your unpacked SDK, `BREENIX_ARCH` to
 `aarch64` or `x86_64`, and `BREENIX_IMAGE` to the absolute path of a writable copy
-of a Breenix ext2 disk image for that architecture. See [obtaining a base image](reference.md#obtain-a-base-image) for the checkout
-and Docker-based image build on macOS. Stop any VM using that image.
+of a Breenix ext2 disk image for that architecture. Stop any VM using that image.
+Obtain the image from the person supplying your Breenix VM, or build one as described in
+[obtaining a base image](reference.md#obtain-a-base-image), and copy it before installing
+applications.
+
 Start in an empty directory outside the kernel checkout. These commands create,
 build and install a C application:
 
