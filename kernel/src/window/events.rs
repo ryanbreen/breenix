@@ -1,8 +1,10 @@
 //! Window events (section 19): each window's ring of 64 and its overflow accounting.
 
-use alloc::{collections::VecDeque, vec::Vec};
+use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
 
 use breengel_abi::{event_kind, limits, Plain, WindowEvent};
+
+use crate::task::waitqueue::WaitQueueHead;
 
 /// A window's event ring. A full ring keeps what it holds and counts what it could not
 /// queue; the count is delivered as an `Overflow` event after the kept events and before
@@ -113,4 +115,48 @@ pub fn writable(event: &WindowEvent) -> bool {
         && event.kind != event_kind::OVERFLOW
         && event.text_len as usize <= limits::EVENT_TEXT
         && event.reserved == 0
+}
+
+/// A window's event descriptor (`EVENT_FD`): readable for poll, select and epoll while the
+/// window has an event queued, hung up once the window is destroyed.
+pub struct EventFile {
+    window: u64,
+    queue: Arc<WaitQueueHead>,
+}
+
+impl core::fmt::Debug for EventFile {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("EventFile").field("window", &self.window).finish()
+    }
+}
+
+impl EventFile {
+    pub fn new(window: u64, queue: Arc<WaitQueueHead>) -> EventFile {
+        EventFile { window, queue }
+    }
+}
+
+impl crate::ipc::object::IpcFile for EventFile {
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+
+    fn fill_stat(&self, st: &mut crate::syscall::fs::Stat) {
+        st.st_mode = 0o600;
+        st.st_nlink = 1;
+        st.st_blksize = 4096;
+    }
+
+    fn poll_events(&self) -> i16 {
+        use crate::ipc::poll::events::{POLLHUP, POLLIN};
+        match super::REGISTRY.lock().windows.get(&self.window) {
+            Some(w) if w.ring.has_event() => POLLIN,
+            Some(_) => 0,
+            None => POLLHUP,
+        }
+    }
+
+    fn poll_queue(&self) -> Option<Arc<WaitQueueHead>> {
+        Some(self.queue.clone())
+    }
 }

@@ -4,9 +4,9 @@
 //! `arg` points to the op's argument structure and `len` must equal its size. The structure
 //! is copied in whole before anything else happens; an op whose structure has output fields
 //! has the whole structure checked writable first, so an EFAULT leaves no trace. No path here
-//! writes to any kernel output.
+//! writes to any kernel output, except the payload of an armed `emit-diagnostic`.
 
-use breengel_abi::errno::{EFAULT, EINVAL, ENOSYS, EPERM};
+use breengel_abi::errno::{EFAULT, EINVAL, EPERM};
 use breengel_abi::{
     arg_size, op, Acquire, Capture, Claim, Commit, Composite, CompositeEntry, CompositeRecordHeader,
     Create, Cursor, Geometry, Give, List, MapBuffers, MapTree, Meta, MetaQuery, NoChange, Plain, ReadEvents,
@@ -53,6 +53,15 @@ fn meta(ptr: u64, len: u32) -> Result<Meta, i32> {
 }
 
 fn window(op: u64, arg: u64, len: u64) -> Result<u64, i32> {
+    // The only output a window op ever makes: the payload `emit-diagnostic` was armed to write
+    // on this thread's next op (sections 21 and 22).
+    if crate::test_control::enabled() {
+        if let Some(tid) = crate::task::scheduler::current_thread_id() {
+            if let Some(path) = crate::test_control::take(breengel_abi::tc_point::EMIT_DIAGNOSTIC, tid) {
+                crate::test_control::emit_diagnostic(path);
+            }
+        }
+    }
     let op = u32::try_from(op).map_err(|_| EINVAL)?;
     match arg_size(op) {
         Some(size) if len != size as u64 => return Err(EINVAL),
@@ -104,10 +113,7 @@ fn window(op: u64, arg: u64, len: u64) -> Result<u64, i32> {
         op::RESIZE => inout::<Resize>(arg, |r| ops::resize(&caller, r)),
         op::READ_EVENTS => inout::<ReadEvents>(arg, |r| ops::read_events(&caller, r)),
         op::WRITE_EVENTS => ops::write_events(&caller, &input::<WriteEvents>(arg)?),
-        op::EVENT_FD => {
-            let _ = input::<WinId>(arg)?;
-            Err(ENOSYS)
-        }
+        op::EVENT_FD => ops::event_fd(&caller, input::<WinId>(arg)?.id),
         op::SET_GEOMETRY => ops::set_geometry(&caller, &input::<Geometry>(arg)?),
         op::MAP_COMMITTED => inout::<MapBuffers>(arg, |m| ops::map_committed(&caller, m)),
         op::CAPTURE => inout::<Capture>(arg, |c| ops::capture(&caller, c)),

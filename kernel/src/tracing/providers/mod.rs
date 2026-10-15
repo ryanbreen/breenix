@@ -29,6 +29,7 @@
 pub mod counters;
 pub mod irq;
 pub mod net_rx;
+pub mod output;
 pub mod process;
 pub mod sched;
 pub mod syscall;
@@ -63,6 +64,7 @@ pub fn init() {
     sched::init();
     irq::init();
     net_rx::init();
+    output::init();
     process::init();
     teardown::init();
     virtgpu::init();

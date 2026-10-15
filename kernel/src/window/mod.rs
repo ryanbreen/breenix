@@ -151,7 +151,7 @@ pub struct Waits {
     /// ACQUIRE waiting for a free buffer.
     pub acquire: WaitQueueHead,
     /// READ_EVENTS and the event descriptor waiting for an event.
-    pub events: WaitQueueHead,
+    pub events: Arc<WaitQueueHead>,
 }
 
 /// One window.

@@ -25,7 +25,7 @@
 use alloc::boxed::Box;
 use core::cell::UnsafeCell;
 use core::ptr;
-use core::sync::atomic::{AtomicPtr, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU8, AtomicUsize, Ordering};
 
 /// A node's line, newline included.
 const LINE: usize = 81;
@@ -37,6 +37,16 @@ const WRITTEN: u8 = 3;
 
 /// Posted nodes, newest first.
 static PENDING: AtomicPtr<Node> = AtomicPtr::new(ptr::null_mut());
+
+/// A `fn(usize)` called with each line's length, newline included, as it is posted; 0 for
+/// none. The kernel's output accounting counts a posted line toward its poster here, and the
+/// later write-out counts nothing.
+static ON_POST: AtomicUsize = AtomicUsize::new(0);
+
+/// Call `hook` with each line's length as it is posted.
+pub fn set_on_post(hook: fn(usize)) {
+    ON_POST.store(hook as usize, Ordering::Release);
+}
 
 /// One posted line in the list.
 pub struct Node {
@@ -108,6 +118,12 @@ impl Node {
         // SAFETY: as above.
         unsafe { *self.len.get() = len + 1 };
         self.state.store(POSTED, Ordering::Relaxed);
+        let hook = ON_POST.load(Ordering::Acquire);
+        if hook != 0 {
+            // SAFETY: only `set_on_post` stores a nonzero value, and it stores a `fn(usize)`.
+            let hook: fn(usize) = unsafe { core::mem::transmute(hook) };
+            hook(len + 1);
+        }
 
         let me = self as *const Node as *mut Node;
         let mut head = PENDING.load(Ordering::Relaxed);

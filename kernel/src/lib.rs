@@ -56,6 +56,8 @@ pub mod userspace_test;
 pub mod syscall;
 // Suite-mode test controls (system call 415) and the window interface (system call 414)
 pub mod test_control;
+// Kernel output accounting per thread (docs/gui/breengel.md section 22)
+pub mod output_accounting;
 pub mod window;
 // Socket module - enabled for both architectures
 // Unix domain sockets are fully arch-independent

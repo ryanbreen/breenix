@@ -8,7 +8,7 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use breengel_abi::errno::{
-    EAGAIN, EBUSY, EFAULT, EINTR, EINVAL, ENOENT, ENOMEM, EPERM, ETIMEDOUT,
+    EAGAIN, EBUSY, EFAULT, EINTR, EINVAL, EMFILE, ENOENT, ENOMEM, EPERM, ETIMEDOUT,
 };
 use breengel_abi::{
     event_kind, limits, Acquire, Capture, Claim, Commit, Create, Geometry, List, MapBuffers,
@@ -149,7 +149,7 @@ pub fn create(caller: &Caller, a: &mut Create) -> Result<u64, i32> {
     let ring = Ring::new().ok_or(ENOMEM)?;
     let waits = Arc::try_new(Waits {
         acquire: WaitQueueHead::new(),
-        events: WaitQueueHead::new(),
+        events: Arc::try_new(WaitQueueHead::new()).map_err(|_| ENOMEM)?,
     })
     .map_err(|_| ENOMEM)?;
     let count = a.buffers as usize;
@@ -817,6 +817,24 @@ pub fn read_events(caller: &Caller, r: &mut ReadEvents) -> Result<u64, i32> {
                 .is_some_and(|w| !w.ring.has_event())
         })?;
     }
+}
+
+/// `EVENT_FD` (the owner): a new descriptor that polls readable while the window has an event.
+pub fn event_fd(caller: &Caller, id: u64) -> Result<u64, i32> {
+    use crate::ipc::fd::{FdKind, FileDescriptor};
+    let queue = {
+        let mut reg = REGISTRY.lock();
+        reg.window(id, caller, who::owner)?.waits.events.clone()
+    };
+    let file: Arc<dyn crate::ipc::object::IpcFile> =
+        Arc::try_new(super::events::EventFile::new(id, queue)).map_err(|_| ENOMEM)?;
+    let entry = FileDescriptor::try_opened(FdKind::Ipc(file), 0).map_err(|_| ENOMEM)?;
+    crate::process::with_process_manager(|manager| {
+        let (_, process) = manager.find_process_by_thread_mut(caller.tid).ok_or(breengel_abi::errno::ESRCH)?;
+        process.fd_table.alloc_with_entry(entry).map_err(|_| EMFILE)
+    })
+    .ok_or(breengel_abi::errno::ESRCH)?
+    .map(|fd| fd as u64)
 }
 
 /// `WRITE_EVENTS` (compositor only): all of the events, or none when one is malformed.

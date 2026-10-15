@@ -12,6 +12,20 @@ pub(super) enum Entry {
     Exe,
     Stat,
     Cmdline,
+    /// `task`: one directory per thread of the process.
+    Tasks,
+    /// `task/<tid>`.
+    Task(u64),
+    /// `task/<tid>/kernel_output`: the thread's kernel output bytes.
+    KernelOutput(u64),
+}
+
+/// A decimal id with no sign, no leading zero and no overflow.
+fn number(text: &str) -> Option<u64> {
+    if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) || (text.len() > 1 && text.starts_with('0')) {
+        return None;
+    }
+    text.parse().ok()
 }
 
 pub(super) fn parse(path: &str) -> Option<(Pid, Entry)> {
@@ -32,7 +46,15 @@ pub(super) fn parse(path: &str) -> Option<(Pid, Entry)> {
         "exe" => Entry::Exe,
         "stat" => Entry::Stat,
         "cmdline" => Entry::Cmdline,
-        _ => return None,
+        "task" => Entry::Tasks,
+        _ => {
+            let rest = tail.strip_prefix("task/")?;
+            match rest.split_once('/') {
+                None => Entry::Task(number(rest)?),
+                Some((tid, "kernel_output")) => Entry::KernelOutput(number(tid)?),
+                Some(_) => return None,
+            }
+        }
     };
     Some((pid, entry))
 }
@@ -70,6 +92,12 @@ mod tests {
         assert_eq!(parse("/proc/self/cmdline"), Some((Pid::Caller, Entry::Cmdline)));
         assert_eq!(parse("/proc/123/"), Some((Pid::Number(123), Entry::Directory)));
         assert_eq!(parse("/proc/18446744073709551615/status"), Some((Pid::Number(u64::MAX), Entry::Status)));
+        assert_eq!(parse("/proc/12/task"), Some((Pid::Number(12), Entry::Tasks)));
+        assert_eq!(parse("/proc/12/task/40"), Some((Pid::Number(12), Entry::Task(40))));
+        assert_eq!(parse("/proc/self/task/40/kernel_output"), Some((Pid::Caller, Entry::KernelOutput(40))));
+        for bad in ["/proc/12/task/040", "/proc/12/task/x", "/proc/12/task/40/other", "/proc/12/task/40/kernel_output/x"] {
+            assert_eq!(parse(bad), None, "{bad}");
+        }
     }
 
     #[test]

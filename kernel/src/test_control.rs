@@ -102,6 +102,41 @@ pub fn armed(point: u32) -> bool {
             .is_some_and(|p| p.armed.load(Ordering::Acquire))
 }
 
+/// `emit-diagnostic` (section 22): write the fixed 32-byte payload once through writer `path`
+/// (`breengel_abi::emit_path`). The window system call calls this when the point fires for the
+/// calling thread; an unknown path writes nothing.
+pub fn emit_diagnostic(path: u64) {
+    use breengel_abi::{emit_path as p, EMIT_DIAGNOSTIC_PAYLOAD as PAYLOAD};
+    use crate::serial_writer::Writer;
+    let Ok(text) = core::str::from_utf8(PAYLOAD) else {
+        return;
+    };
+    match path {
+        p::SERIAL_PRINTLN => crate::serial_println!("{}", text),
+        p::LOG_WARN => log::warn!(target: "test_control", "{}", text),
+        p::WRITE_BYTE => {
+            for &byte in PAYLOAD.iter() {
+                crate::serial::write_byte(Writer::Kernel, byte);
+            }
+        }
+        p::WRITE_BYTES_ATOMIC => crate::serial::write_bytes_atomic(Writer::Kernel, PAYLOAD),
+        p::TRY_PRINT => {
+            let _ = crate::serial::try_print(format_args!("{}", text));
+        }
+        p::WRITE_STR_BOUNDED => crate::serial::write_str_bounded(text),
+        p::LOG_PRINT => crate::serial::_log_print(format_args!("{}", text)),
+        p::NOTICE => {
+            // Posted here and written out by whichever thread writes output next.
+            static NODE: crate::log_notice::Node = crate::log_notice::Node::new();
+            NODE.post_again(text);
+        }
+        p::EMERGENCY_PRINT => {
+            let _ = crate::serial::emergency_print(format_args!("{}", text));
+        }
+        _ => {}
+    }
+}
+
 fn caller_is_root() -> bool {
     let Some(tid) = crate::task::scheduler::current_thread_id() else {
         return false;
