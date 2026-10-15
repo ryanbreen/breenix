@@ -34,6 +34,7 @@ mod libgen;
 mod pwd;
 mod unistd;
 mod process;
+mod spawn;
 mod conf;
 mod cwd;
 pub use cwd::getcwd;
