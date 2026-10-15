@@ -768,7 +768,7 @@ def _strip_git_cleanup_noise(lines: list, repo_root: str) -> list:
     it. A `commit-msg` hook runs on COMMIT_EDITMSG BEFORE this cleanup
     (githooks(5)), so without stripping it here too, a real `git commit -v`
     on this very branch tripped `universal-claim` on the appended diff's OWN
-    added prose -- reproduced at scratchpad/cm/serials/h2_verbose.txt (526
+    added prose -- reproduced at tests/fixtures/claim-lint/h2_verbose.txt (526
     lines), `--commit-msg` exit 1 on the diff body; the same file with the
     `-v` region removed is clean."""
     char = _git_comment_char(repo_root)

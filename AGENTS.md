@@ -7,11 +7,21 @@ Breenix is a production-quality x86_64 operating system kernel written in Rust. 
 ## Project Structure
 
 ```
-kernel/          # Core kernel (no_std, no_main)
-src.legacy/      # Previous implementation (being phased out)
-libs/            # libbreenix, tiered_allocator
-tests/           # Integration tests
-docs/planning/   # Numbered phase directories (00-15)
+kernel/            # Core kernel (no_std, no_main), ARM64 and x86_64
+libs/              # libbreenix, clean-room C library, graphics/font/GUI and support crates
+userspace/         # Programs, shell, utilities and the guest-side suites
+sdk/               # Developer SDK builder, compiler wrappers, templates and tests
+parallels-loader/  # ARM64 UEFI loader for Parallels and VMware
+xtask/             # Build/run orchestrator and boot-stage catalog
+src/               # Host-side QEMU launcher binaries
+scripts/           # Build, disk-image, gate, VM and lint scripts
+docker/qemu/       # QEMU gate scripts and their shell libraries
+tools/             # Run Inspector, gdb-chat, MCP server, host-test crates, Linux probes
+tests/             # Host tests, structural guards and fixtures
+vendor/            # Pinned BusyBox and Unicode sources
+fonts/             # TrueType fonts installed into guest images
+docs/              # boot-path, efforts, suites, gui, sdk, user guide, historical planning
+.agents/skills/    # Agent skills (see .agents/skills/README.md)
 ```
 
 ## Build & Run
@@ -42,13 +52,13 @@ Use GDB when you need to understand **why** something is failing, not just **tha
 
 ```bash
 # Start interactive GDB session
-./breenix-gdb-chat/scripts/gdb_session.sh start
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "break kernel::kernel_main"
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "continue"
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "info registers"
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "backtrace 10"
-./breenix-gdb-chat/scripts/gdb_session.sh serial
-./breenix-gdb-chat/scripts/gdb_session.sh stop
+./tools/gdb-chat/scripts/gdb_session.sh start
+./tools/gdb-chat/scripts/gdb_session.sh cmd "break kernel::kernel_main"
+./tools/gdb-chat/scripts/gdb_session.sh cmd "continue"
+./tools/gdb-chat/scripts/gdb_session.sh cmd "info registers"
+./tools/gdb-chat/scripts/gdb_session.sh cmd "backtrace 10"
+./tools/gdb-chat/scripts/gdb_session.sh serial
+./tools/gdb-chat/scripts/gdb_session.sh stop
 ```
 
 ### Logs
@@ -151,9 +161,12 @@ When features are completed, invoke the skill to update progress percentages and
 Update after each PR merge and when starting new work.
 
 ### Structure
-- `docs/planning/00-15/` - Phase directories
-- `docs/planning/legacy-migration/FEATURE_COMPARISON.md` - Track migration progress
-- Cross-cutting dirs: `posix-compliance/`, `legacy-migration/`
+- `docs/boot-path.md`, `docs/boot-path.json` - Boot-path milestones and stages
+- `docs/efforts/` - The effort path (`path.json`) and each effort's plan
+- `docs/suites/` - Suite manifests and the suite runner contract
+- `docs/gui/` - Graphics, window manager, UI testing and GUI apps plan
+- `docs/sdk/` - Developer SDK documentation
+- `docs/planning/` - Historical investigations and campaign records
 
 ## Userland Development Stages
 
@@ -209,13 +222,6 @@ Requires: Stage 4, full filesystem
 - File ops: ls, cp, mv, rm
 - Dir ops: mkdir, rmdir
 - Text: head, tail, wc
-
-## Legacy Code Removal
-
-When new implementation reaches parity:
-1. Remove code from `src.legacy/`
-2. Update `FEATURE_COMPARISON.md`
-3. Include removal in same commit as feature completion
 
 ## Build Configuration
 
@@ -378,32 +384,32 @@ Use `gdb_session.sh` for persistent, interactive debugging sessions:
 
 ```bash
 # Start a persistent session (keeps QEMU + GDB running)
-./breenix-gdb-chat/scripts/gdb_session.sh start
+./tools/gdb-chat/scripts/gdb_session.sh start
 
 # Send commands one at a time, making decisions based on results
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "break kernel::syscall::time::sys_clock_gettime"
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "continue"
+./tools/gdb-chat/scripts/gdb_session.sh cmd "break kernel::syscall::time::sys_clock_gettime"
+./tools/gdb-chat/scripts/gdb_session.sh cmd "continue"
 # Examine what happened, then decide next step...
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "info registers rax rdi rsi"
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "print/x \$rdi"
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "backtrace 10"
+./tools/gdb-chat/scripts/gdb_session.sh cmd "info registers rax rdi rsi"
+./tools/gdb-chat/scripts/gdb_session.sh cmd "print/x \$rdi"
+./tools/gdb-chat/scripts/gdb_session.sh cmd "backtrace 10"
 
 # Get all serial output (kernel print statements)
-./breenix-gdb-chat/scripts/gdb_session.sh serial
+./tools/gdb-chat/scripts/gdb_session.sh serial
 
 # Stop when done
-./breenix-gdb-chat/scripts/gdb_session.sh stop
+./tools/gdb-chat/scripts/gdb_session.sh stop
 ```
 
 This is **conversational debugging** - you send a command, see the result, think about it, and decide what to do next. Just like a human sitting at a GDB terminal.
 
 ### GDB Chat Tool (Underlying Engine)
 
-The session wrapper uses `breenix-gdb-chat/scripts/gdb_chat.py`:
+The session wrapper uses `tools/gdb-chat/scripts/gdb_chat.py`:
 
 ```bash
 # Can also use directly for scripted debugging
-printf 'break kernel::kernel_main\ncontinue\ninfo registers\nquit\n' | python3 breenix-gdb-chat/scripts/gdb_chat.py
+printf 'break kernel::kernel_main\ncontinue\ninfo registers\nquit\n' | python3 tools/gdb-chat/scripts/gdb_chat.py
 ```
 
 The tool:
@@ -524,16 +530,16 @@ log::debug!("clock_gettime called");  # This changes timing!
 
 ```bash
 # Start interactive GDB session
-./breenix-gdb-chat/scripts/gdb_session.sh start
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "break kernel::syscall::time::sys_clock_gettime"
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "continue"
+./tools/gdb-chat/scripts/gdb_session.sh start
+./tools/gdb-chat/scripts/gdb_session.sh cmd "break kernel::syscall::time::sys_clock_gettime"
+./tools/gdb-chat/scripts/gdb_session.sh cmd "continue"
 
 # Examine state at breakpoint
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "info registers rdi rsi"
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "backtrace 10"
+./tools/gdb-chat/scripts/gdb_session.sh cmd "info registers rdi rsi"
+./tools/gdb-chat/scripts/gdb_session.sh cmd "backtrace 10"
 
 # Stop when done
-./breenix-gdb-chat/scripts/gdb_session.sh stop
+./tools/gdb-chat/scripts/gdb_session.sh stop
 ```
 
 ## QEMU Process Cleanup - MANDATORY

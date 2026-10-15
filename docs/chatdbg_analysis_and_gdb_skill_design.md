@@ -168,7 +168,7 @@ Key principles:
                    │
                    ↓ (calls skill script)
 ┌─────────────────────────────────────────────────────────────┐
-│              breenix-gdb-chat/scripts/gdb_cmd.py            │
+│              tools/gdb-chat/scripts/gdb_cmd.py            │
 │  - Maintains GDB session in background                       │
 │  - Sends command via GDB/MI or console                       │
 │  - Parses output, returns structured data                    │
@@ -195,7 +195,7 @@ Key principles:
 #### 1. **Session Creation**
 ```bash
 # Claude invokes skill to start debug session
-breenix-gdb-chat/scripts/start_session.py --mode uefi --timeout 300
+tools/gdb-chat/scripts/start_session.py --mode uefi --timeout 300
 ```
 
 Output:
@@ -204,7 +204,7 @@ Output:
   "session_id": "gdb_20251204_143022",
   "pid": 12345,
   "status": "connected",
-  "kernel_binary": "/Users/wrb/fun/code/breenix/target/x86_64-breenix/release/kernel",
+  "kernel_binary": "<repo>/target/x86_64-breenix/release/kernel",
   "qemu_pid": 12346,
   "socket": "/tmp/breenix_gdb_12345.sock"
 }
@@ -221,7 +221,7 @@ What happens:
 #### 2. **Command Execution**
 ```bash
 # Claude sends command to active session
-breenix-gdb-chat/scripts/gdb_cmd.py --session gdb_20251204_143022 --command "info registers"
+tools/gdb-chat/scripts/gdb_cmd.py --session gdb_20251204_143022 --command "info registers"
 ```
 
 Output:
@@ -245,7 +245,7 @@ Output:
 #### 3. **Session Termination**
 ```bash
 # Claude cleans up when done
-breenix-gdb-chat/scripts/stop_session.py --session gdb_20251204_143022
+tools/gdb-chat/scripts/stop_session.py --session gdb_20251204_143022
 ```
 
 Output:
@@ -312,13 +312,13 @@ Use this skill when you need **interactive, stateful GDB debugging** with back-a
 
 ```bash
 # Start GDB session with UEFI kernel
-breenix-gdb-chat/scripts/start_session.py
+tools/gdb-chat/scripts/start_session.py
 
 # With custom timeout (default: 300s)
-breenix-gdb-chat/scripts/start_session.py --timeout 600
+tools/gdb-chat/scripts/start_session.py --timeout 600
 
 # BIOS mode
-breenix-gdb-chat/scripts/start_session.py --mode bios
+tools/gdb-chat/scripts/start_session.py --mode bios
 ```
 
 The script will output a session ID like `gdb_20251204_143022`. Save this for subsequent commands.
@@ -327,20 +327,20 @@ The script will output a session ID like `gdb_20251204_143022`. Save this for su
 
 ```bash
 # Basic command
-breenix-gdb-chat/scripts/gdb_cmd.py --session SESSION_ID --command "info registers"
+tools/gdb-chat/scripts/gdb_cmd.py --session SESSION_ID --command "info registers"
 
 # Multiple commands (executed in sequence)
-breenix-gdb-chat/scripts/gdb_cmd.py --session SESSION_ID \
+tools/gdb-chat/scripts/gdb_cmd.py --session SESSION_ID \
   --command "break sys_clock_gettime" \
   --command "continue"
 
 # Get structured output (JSON)
-breenix-gdb-chat/scripts/gdb_cmd.py --session SESSION_ID \
+tools/gdb-chat/scripts/gdb_cmd.py --session SESSION_ID \
   --command "info registers" \
   --format json
 
 # Human-readable output
-breenix-gdb-chat/scripts/gdb_cmd.py --session SESSION_ID \
+tools/gdb-chat/scripts/gdb_cmd.py --session SESSION_ID \
   --command "backtrace" \
   --format text
 ```
@@ -348,7 +348,7 @@ breenix-gdb-chat/scripts/gdb_cmd.py --session SESSION_ID \
 ### Stopping a Session
 
 ```bash
-breenix-gdb-chat/scripts/stop_session.py --session SESSION_ID
+tools/gdb-chat/scripts/stop_session.py --session SESSION_ID
 ```
 
 ## Available Commands
@@ -522,10 +522,10 @@ Use debug loop to reproduce the issue, then attach GDB for detailed inspection:
 
 ```bash
 # 1. Reproduce with debug loop
-breenix-kernel-debug-loop/scripts/quick_debug.py --signal "CRASH" --timeout 10
+.agents/skills/breenix-kernel-debug-loop/scripts/quick_debug.py --signal "CRASH" --timeout 10
 
 # 2. See crash in logs, now debug with GDB
-breenix-gdb-chat/scripts/start_session.py
+tools/gdb-chat/scripts/start_session.py
 # ... investigate with GDB commands ...
 ```
 
@@ -568,7 +568,7 @@ Sessions are stored in `/tmp/breenix_gdb_sessions/`:
 
 Each command has a default timeout of 30 seconds. Override with:
 ```bash
-breenix-gdb-chat/scripts/gdb_cmd.py --session SESSION_ID \
+tools/gdb-chat/scripts/gdb_cmd.py --session SESSION_ID \
   --command "continue" \
   --timeout 60
 ```
@@ -627,14 +627,14 @@ Claude can handle this and adjust strategy.
 ### "Session not found"
 The GDB process may have died. Check:
 ```bash
-breenix-gdb-chat/scripts/list_sessions.py
+tools/gdb-chat/scripts/list_sessions.py
 ```
 Start a new session if needed.
 
 ### "Command timeout"
 QEMU or GDB is hung. Stop the session and investigate:
 ```bash
-breenix-gdb-chat/scripts/stop_session.py --session SESSION_ID --force
+tools/gdb-chat/scripts/stop_session.py --session SESSION_ID --force
 ```
 
 ### "Cannot connect to QEMU"
@@ -1165,7 +1165,7 @@ Plan: Use GDB chat to investigate the crash state
 
 **Step 1: Start debug session**
 ```bash
-$ breenix-gdb-chat/scripts/start_session.py
+$ tools/gdb-chat/scripts/start_session.py
 ```
 
 Output:
@@ -1173,13 +1173,13 @@ Output:
 {
   "session_id": "gdb_20251204_151030",
   "status": "connected",
-  "kernel_binary": "/Users/wrb/fun/code/breenix/target/x86_64-breenix/release/kernel"
+  "kernel_binary": "<repo>/target/x86_64-breenix/release/kernel"
 }
 ```
 
 **Step 2: Set breakpoint at page fault handler**
 ```bash
-$ breenix-gdb-chat/scripts/gdb_cmd.py \
+$ tools/gdb-chat/scripts/gdb_cmd.py \
   --session gdb_20251204_151030 \
   --command "break page_fault_handler"
 ```
@@ -1196,7 +1196,7 @@ Output:
 
 **Step 3: Continue until page fault**
 ```bash
-$ breenix-gdb-chat/scripts/gdb_cmd.py \
+$ tools/gdb-chat/scripts/gdb_cmd.py \
   --session gdb_20251204_151030 \
   --command "continue"
 ```
@@ -1213,7 +1213,7 @@ Output:
 
 **Step 4: Check execution context**
 ```bash
-$ breenix-gdb-chat/scripts/gdb_cmd.py \
+$ tools/gdb-chat/scripts/gdb_cmd.py \
   --session gdb_20251204_151030 \
   --command "ctx"
 ```
@@ -1228,7 +1228,7 @@ Output:
 
 **Step 5: Get faulting address**
 ```bash
-$ breenix-gdb-chat/scripts/gdb_cmd.py \
+$ tools/gdb-chat/scripts/gdb_cmd.py \
   --session gdb_20251204_151030 \
   --command "print/x \$cr2"
 ```
@@ -1243,7 +1243,7 @@ Output:
 
 **Step 6: Get backtrace**
 ```bash
-$ breenix-gdb-chat/scripts/gdb_cmd.py \
+$ tools/gdb-chat/scripts/gdb_cmd.py \
   --session gdb_20251204_151030 \
   --command "backtrace"
 ```
@@ -1277,7 +1277,7 @@ Output:
 
 **Step 7: Investigate frame 1 (sys_clock_gettime)**
 ```bash
-$ breenix-gdb-chat/scripts/gdb_cmd.py \
+$ tools/gdb-chat/scripts/gdb_cmd.py \
   --session gdb_20251204_151030 \
   --command "frame 1" \
   --command "info locals"
@@ -1301,7 +1301,7 @@ Output:
 
 **Step 8: Stop session**
 ```bash
-$ breenix-gdb-chat/scripts/stop_session.py --session gdb_20251204_151030
+$ tools/gdb-chat/scripts/stop_session.py --session gdb_20251204_151030
 ```
 
 **Claude reports to user:**
