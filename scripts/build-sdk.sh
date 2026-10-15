@@ -197,9 +197,13 @@ for name in $(compgen -e); do
 done
 CARGO_HOME="$ROOT_DIR/.cargo-home"
 mkdir -p "$CARGO_HOME" "$REAL_CARGO_HOME/registry" "$REAL_CARGO_HOME/git"
-for entry in registry git; do
-    ln -s "$REAL_CARGO_HOME/$entry" "$CARGO_HOME/$entry"
-done
+# The download caches are linked, and remapped (lib.sh), by their physical directories: the
+# remap that matches the registry's sources reaches the hash of every crate built from them,
+# so it must not change with the way CARGO_HOME spells the same caches.
+CARGO_REGISTRY="$(cd "$REAL_CARGO_HOME/registry" && pwd -P)"
+CARGO_GIT="$(cd "$REAL_CARGO_HOME/git" && pwd -P)"
+ln -s "$CARGO_REGISTRY" "$CARGO_HOME/registry"
+ln -s "$CARGO_GIT" "$CARGO_HOME/git"
 for entry in .package-cache .package-cache-mutate .global-cache; do
     [ -e "$REAL_CARGO_HOME/$entry" ] || : > "$REAL_CARGO_HOME/$entry"
     ln -s "$REAL_CARGO_HOME/$entry" "$CARGO_HOME/$entry"
@@ -219,7 +223,7 @@ done
 
 export SDK_ROOT="$ROOT_DIR" SDK_ROOT_REAL="$ROOT_REAL" SDK_STAGE SDK_COMMIT="$COMMIT" SDK_VERSION="$VERSION" \
     SDK_TOOLCHAIN SDK_LLVM_TOOLS SDK_RUSTC_COMMIT="$RUSTC_COMMIT" SDK_RUST_SYSROOT="$RUST_SYSROOT" \
-    SDK_FORK_COMMIT="$FORK_COMMIT" SDK_REAL_HOME="$REAL_HOME" SDK_REAL_CARGO_HOME="$REAL_CARGO_HOME"
+    SDK_FORK_COMMIT="$FORK_COMMIT" SDK_REAL_HOME="$REAL_HOME" SDK_CARGO_REGISTRY="$CARGO_REGISTRY" SDK_CARGO_GIT="$CARGO_GIT"
 
 # Verify that rustc applies the same remaps used by every build stage.
 . "$ROOT_DIR/sdk/builder/lib.sh"
@@ -246,7 +250,7 @@ for dir in "$SDK_STAGE/bin" "$SDK_STAGE/share/breenix-sdk/libexec"; do
 done
 
 # No file may name the build's directories, the checkout, the Rust fork or the home.
-python3 - "$SDK_STAGE" "$ROOT_DIR" "$ROOT_REAL" "$CHECKOUT" "$FORK" "$HOME" "$REAL_HOME" "$REAL_CARGO_HOME" "${RUSTUP_HOME:-$REAL_HOME/.rustup}" "$RUST_SYSROOT" <<'PY' || die "the SDK names local paths"
+python3 - "$SDK_STAGE" "$ROOT_DIR" "$ROOT_REAL" "$CHECKOUT" "$FORK" "$HOME" "$REAL_HOME" "$REAL_CARGO_HOME" "$CARGO_REGISTRY" "$CARGO_GIT" "${RUSTUP_HOME:-$REAL_HOME/.rustup}" "$RUST_SYSROOT" <<'PY' || die "the SDK names local paths"
 import sys
 from pathlib import Path
 stage, needles = Path(sys.argv[1]), sorted({n.encode() for n in sys.argv[2:] if n not in ('', '/')})
