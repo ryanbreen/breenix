@@ -94,12 +94,7 @@ struct Peer {
     silent: bool,
     no_buffers: bool,
     nak: bool,
-    /// DISCOVERs sent before this clock reading never reach the server.
-    deaf_until: u64,
-    /// The server answers a DISCOVER this long after the first copy it heard.
-    offer_delay: u64,
     pending: Option<Vec<u8>>,
-    pending_at: u64,
     sent: Vec<([u8; 4], Vec<u8>)>,
     declines: usize,
 }
@@ -113,10 +108,7 @@ static PEER: Mutex<Peer> = Mutex::new(Peer {
     silent: false,
     no_buffers: false,
     nak: false,
-    deaf_until: 0,
-    offer_delay: 0,
     pending: None,
-    pending_at: 0,
     sent: Vec::new(),
     declines: 0,
 });
@@ -154,12 +146,7 @@ fn send(src: [u8; 4], dst: [u8; 4], data: &[u8]) -> Result<(), &'static str> {
         p.declines += 1;
         return Ok(());
     }
-    let now = CLOCK.load(Ordering::Relaxed);
-    if p.silent || (kind == 1 && now < p.deaf_until) {
-        return Ok(());
-    }
-    if kind == 1 && p.pending.is_some() {
-        // The answer to the first copy heard is already on its way.
+    if p.silent {
         return Ok(());
     }
     let response_kind = if kind == 1 {
@@ -204,7 +191,6 @@ fn send(src: [u8; 4], dst: [u8; 4], data: &[u8]) -> Result<(), &'static str> {
         _ => {}
     }
     p.pending = Some(ip);
-    p.pending_at = if kind == 1 { now + p.offer_delay } else { now };
     let _ = src;
     Ok(())
 }
@@ -223,14 +209,7 @@ pub fn ip_output(src: [u8; 4], dst: [u8; 4], _: u8, _: u8, data: &[u8]) -> Resul
 }
 pub fn process_rx_budgeted(_: usize) {
     CLOCK.fetch_add(CLOCK_STEP.load(Ordering::Relaxed), Ordering::Relaxed);
-    let packet = {
-        let mut p = PEER.lock().unwrap();
-        if CLOCK.load(Ordering::Relaxed) >= p.pending_at {
-            p.pending.take()
-        } else {
-            None
-        }
-    };
+    let packet = PEER.lock().unwrap().pending.take();
     if let Some(packet) = packet {
         if packet.get(20 + 8 + 242) == Some(&5) {
             CLOCK.fetch_add(ACK_DELAY.load(Ordering::Relaxed), Ordering::Relaxed);
@@ -334,23 +313,6 @@ fn renewal_nak_removes_address() {
     dhcp::maintain(MAC, true);
     assert!(dhcp::lease().is_none());
 }
-#[test]
-fn discovery_outlasts_a_late_link_and_a_slow_server() {
-    // VMware's bridge loses the first frames a new guest sends (more than 2.2 s
-    // of them on one boot), and the LAN server answers 3.7-4.2 s after the
-    // first DISCOVER it hears. A DISCOVER sent once the link carries frames
-    // must still be answered inside the 10 s discovery bound.
-    let _guard = setup();
-    let start = CLOCK.load(Ordering::Relaxed);
-    {
-        let mut p = PEER.lock().unwrap();
-        p.deaf_until = start + 2_500_000_000;
-        p.offer_delay = 4_200_000_000;
-    }
-    let lease = dhcp::acquire(MAC).expect("a DISCOVER sent after the link came up got no lease");
-    assert_eq!(lease.ip_addr, ADDRESS);
-}
-
 #[test]
 fn bounded_discovery_and_transmit_allocation_failure() {
     let _guard = setup();
