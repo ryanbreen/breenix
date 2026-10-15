@@ -18,7 +18,6 @@ From a clean checkout, invoke its `scripts/build-sdk.sh --prefix DIR` using the
 script's absolute path. The destination must be empty. The offline build needs
 a warm Cargo dependency cache; add `--fetch` for the initial online build.
 `BREENIX_RUST_FORK_LIBRARY` can identify the pinned fork's `library` directory.
-On a Mac export `CARGO_BUILD_JOBS=4` and run the build under `taskpolicy -b`.
 The SDK version is SemVer in `sdk/sdk.toml`; `VERSION` also names the full source
 commit. Each tool's `--version` prints that identity. The installed prefix can
 be moved: its drivers compute paths relative to themselves at invocation time.
@@ -72,7 +71,9 @@ For direct compilation, use `aarch64-breenix-cc` or `x86_64-breenix-cc` with nor
 clang flags. The drivers supply headers, static libraries and the linker script.
 For Rust, use `aarch64-breenix-cargo` or `x86_64-breenix-cargo`; they select the
 pinned compiler, target, prebuilt sysroot and offline vendor source. Projects
-must use dependencies available in that SDK or supply their own offline sources.
+must use dependencies available in that SDK. Additional offline dependencies must
+use `path` entries or `[patch.crates-io]` path overrides: the wrapper forces
+crates.io to the SDK vendor directory, overriding project source replacement.
 A no_std project depends on `libbreenix = { version = "0.1", features = ["runtime"] }`;
 the template defines `main(argc, argv)` and a panic handler. libbreenix supplies
 `_start` and exits with main's return value.

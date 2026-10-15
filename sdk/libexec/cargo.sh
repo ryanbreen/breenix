@@ -33,7 +33,7 @@ fi
 _cargo_flags="$(_cargo_toml "--sysroot=$SDK/lib/rust")"
 _cargo_flags="$_cargo_flags, $(_cargo_toml "-Lnative=$_cargo_libdir")"
 _cargo_flags="$_cargo_flags, $(_cargo_toml "-Clink-arg=-T$_cargo_share/ldscripts/breenix.ld")"
-_cargo_flags="$_cargo_flags, \"-Clink-arg=--allow-multiple-definition\", \"-Cdefault-linker-libraries=no\""
+_cargo_flags="$_cargo_flags, \"-Cdefault-linker-libraries=no\""
 _cargo_flags="$_cargo_flags, $(_cargo_toml "--remap-path-prefix=$SDK=/breenix-sdk")"
 
 # RUSTFLAGS in the environment would replace every configured flag, the SDK's too, so fold

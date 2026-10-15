@@ -39,6 +39,13 @@ pub struct FileActions {
     tail: *mut Action,
 }
 
+const _: () = {
+    assert!(core::mem::size_of::<Attr>() == 32);
+    assert!(core::mem::align_of::<Attr>() == 8);
+    assert!(core::mem::size_of::<FileActions>() == 16);
+    assert!(core::mem::align_of::<FileActions>() == 8);
+};
+
 struct Action {
     next: *mut Action,
     kind: Kind,

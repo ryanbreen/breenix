@@ -12,6 +12,13 @@ them even when their keg-only tools are absent from PATH. See
 Set `BREENIX_SDK` to the absolute path of your unpacked SDK, `BREENIX_ARCH` to
 `aarch64` or `x86_64`, and `BREENIX_IMAGE` to the absolute path of a writable copy
 of a Breenix ext2 disk image for that architecture. Stop any VM using that image.
+Obtain the image from the person supplying your Breenix VM, or create it in a
+separate kernel checkout: run `userspace/programs/build.sh --arch aarch64`, then
+`scripts/create_ext2_disk.sh --arch aarch64` (use `x86_64` for x86). These produce
+`target/ext2-aarch64.img` or `target/ext2.img`; copy the matching file before
+installing applications. Image creation requires Docker on macOS and `mke2fs`
+on Linux. This checkout is needed to prepare and boot the OS image only.
+
 Start in an empty directory outside the kernel checkout. These commands create,
 build and install a C application:
 

@@ -366,3 +366,17 @@ fn child_failure_exits_127_instead_of_returning_to_application() {
         calls();
     }
 }
+
+#[test]
+fn resetids_uses_guest_syscall_numbers_and_preserves_real_ids() {
+    let ids = if GUEST_ARCH == "aarch64" { [174, 176, 143, 145] } else { [102, 104, 114, 113] };
+    let mut results = vec![42, 43, 0, 0];
+    // sigaction queries plus the inherited caught handler reset.
+    results.extend(vec![0; 63]);
+    setup(&results);
+    unsafe { assert_eq!(attributes(&Attr { flags: RESETIDS, ..Attr::default() }), Ok(())); }
+    let c = calls();
+    assert_eq!(c[..4].iter().map(|c| c.0).collect::<Vec<_>>(), ids);
+    assert_eq!(c[2].1, [u64::MAX, 43, 0, 0, 0, 0]);
+    assert_eq!(c[3].1, [u64::MAX, 42, 0, 0, 0, 0]);
+}

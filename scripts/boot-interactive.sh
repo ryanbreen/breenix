@@ -155,18 +155,26 @@ case "$MODE" in
     suite) echo "==> Mode: suite $SUITE" ;;
     *) echo "==> Mode: $MODE" ;;
 esac
+# Build-host policy is opt-in and never changes VM priority or caller job limits.
+run_build() {
+    if [ "${BREENIX_BUILD_BACKGROUND:-0}" = 1 ] && [ "$(uname)" = Darwin ]; then
+        taskpolicy -b "$@"
+    else
+        "$@"
+    fi
+}
 if [ "$BUILD" -eq 1 ]; then
     echo "==> Building userspace"
-    "$ROOT/userspace/programs/build.sh" --arch aarch64
+    run_build "$ROOT/userspace/programs/build.sh" --arch aarch64
     echo "==> Building the ext2 disk"
-    "$ROOT/scripts/create_ext2_disk.sh" --arch aarch64
+    run_build "$ROOT/scripts/create_ext2_disk.sh" --arch aarch64
     if [ "$MODE" = tests ]; then
         echo "==> Building the testing kernel"
     else
         echo "==> Building the production kernel"
     fi
     # The production build is the prod-profile gate's command: no features at all.
-    cargo build --release ${KERNEL_FEATURES[@]+"${KERNEL_FEATURES[@]}"} --target aarch64-breenix-kernel.json \
+    run_build cargo build --release ${KERNEL_FEATURES[@]+"${KERNEL_FEATURES[@]}"} --target aarch64-breenix-kernel.json \
         -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64
     "$ROOT/scripts/check-kernel-no-neon.sh" "$KERNEL"
 fi
@@ -178,7 +186,7 @@ if [ "$MODE" = suite ] && [[ ",$SUITE," == *",sdk,"* ]]; then
     echo "==> Staging the Developer SDK suite's host results"
     SDK_DISK="$ROOT/target/ext2-aarch64-sdk.img"
     cp "$DISK" "$SDK_DISK"
-    python3 "$ROOT/scripts/sdk-suite.py" --arch aarch64 --image "$SDK_DISK"
+    run_build python3 "$ROOT/scripts/sdk-suite.py" --arch aarch64 --image "$SDK_DISK"
     DISK="$SDK_DISK"
 fi
 

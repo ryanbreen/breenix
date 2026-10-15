@@ -1,0 +1,4 @@
+# Build stage sources are tracked.
+!build/
+
+__pycache__/

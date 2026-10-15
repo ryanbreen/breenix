@@ -104,6 +104,7 @@ pathlib.Path(args[args.index('-o') + 1]).write_bytes(b'executable')
         self.driver('aarch64', 'cc', 'import sys\nsys.exit(23)\n')
         result = self.tool('build', '--arch', 'aarch64', cwd=project)
         self.assertEqual(result.returncode, 23)
+        self.assertFalse(old.exists())
         self.assertEqual(result.stdout, '')
 
     def test_rust_build_uses_named_json_artifact(self):
