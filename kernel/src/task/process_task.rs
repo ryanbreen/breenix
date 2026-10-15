@@ -941,6 +941,7 @@ impl ProcessScheduler {
         if report_claimer == thread_id {
             scheduler::charge_current_cpu();
         }
+        let mut skprobe_seen: Option<(bool, bool)> = None;
         // Phase 1: Under PM lock — minimal work only
         let phase1_result = {
             if let Some(ref mut manager) = *crate::process::manager() {
@@ -1034,6 +1035,7 @@ impl ProcessScheduler {
                     // preserve and report the first-recorded status.
                     let reported_exit_code = process.exit_code.unwrap_or(exit_code);
                     let report_claimed = process.exit_notifications.claim_report(report_claimer);
+                    skprobe_seen = Some((already_terminated, report_claimed));
                     let sigchld_pending = matches!(
                         process.exit_notifications.sigchld,
                         crate::process::process::ExitObligationState::Pending
@@ -1114,6 +1116,11 @@ impl ProcessScheduler {
             terminal_exit,
         )) = phase1_result
         {
+            let skprobe = process_name.starts_with("sigkill_teardown_test");
+            let skprobe_ms = || { let (s, n) = crate::time::get_monotonic_time_ns(); s * 1000 + n / 1_000_000 };
+            if skprobe {
+                log::info!("SKPROBE p2 pid={} tid={} cur={:?} seen={:?} ms={}", pid.as_u64(), thread_id, scheduler::current_thread_id(), skprobe_seen, skprobe_ms());
+            }
             // Condition C8: a row the auto-reap removed is destroyed outside PM.
             drop(auto_reaped);
             if let Some(exited) = group_exited {
@@ -1127,6 +1134,9 @@ impl ProcessScheduler {
 
             // Linux closes descriptors before disassociating the terminal.
             close_extracted_fds(fd_entries);
+            if skprobe {
+                log::info!("SKPROBE closed pid={} ms={}", pid.as_u64(), skprobe_ms());
+            }
             if let Some(exit) = terminal_exit {
                 crate::tty::ctty::finish_exit(exit);
             }
@@ -1159,6 +1169,9 @@ impl ProcessScheduler {
                 );
             }
 
+            if skprobe {
+                log::info!("SKPROBE woke pid={} claimed={} ms={}", pid.as_u64(), report_claimed, skprobe_ms());
+            }
             if report_claimed {
                 let completing_claimer = scheduler::current_thread_id().unwrap_or(report_claimer);
                 redeem_exit_report(pid, reported_exit_code, completing_claimer);
