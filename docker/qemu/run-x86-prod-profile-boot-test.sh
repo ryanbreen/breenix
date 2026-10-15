@@ -953,14 +953,14 @@ fi
 marker_count() {
     local literal="$1"
     local total
-    total=$( { grep -F -h -c -- "$literal" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; } \
+    total=$( { grep -a -F -h -c -- "$literal" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; } \
         | awk '{ total += $1 } END { print total + 0 }')
     printf '%s' "$total"
 }
 
 crash_count() {
     local total
-    total=$( { grep -E -h -c -- "$CRASH_MARKERS_PATTERN" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; } \
+    total=$( { grep -a -E -h -c -- "$CRASH_MARKERS_PATTERN" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; } \
         | awk '{ total += $1 } END { print total + 0 }')
     printf '%s' "$total"
 }
@@ -1048,13 +1048,13 @@ print_observed_values() {
     # init's full boot-script chain (bsh --init-shell -> /etc/init.js's
     # further spawns) is still not pinned here -- see INIT SURVIVAL
     # EVIDENCE above and #722.
-    { grep -F -h -- "$TOMBSTONE_CENSUS_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
-    { grep -F -h -- "$ROOT_CUSTODY_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
-    { grep -F -h -- "$PREEMPT_CENSUS_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
-    { grep -F -h -- "$PROD_BRACKET_RELEASE_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
-    { grep -F -h -- "$TIMER_RESOLUTION_WINDOW_EXCEEDED_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
-    { grep -F -h -- "$TIMER_SCALE_ORACLE_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
-    { grep -F -h -- "$INIT_DESIGNATION_X86_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
+    { grep -a -F -h -- "$TOMBSTONE_CENSUS_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
+    { grep -a -F -h -- "$ROOT_CUSTODY_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
+    { grep -a -F -h -- "$PREEMPT_CENSUS_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
+    { grep -a -F -h -- "$PROD_BRACKET_RELEASE_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
+    { grep -a -F -h -- "$TIMER_RESOLUTION_WINDOW_EXCEEDED_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
+    { grep -a -F -h -- "$TIMER_SCALE_ORACLE_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
+    { grep -a -F -h -- "$INIT_DESIGNATION_X86_PREFIX" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; }
 }
 
 cd "$BREENIX_ROOT"
@@ -1180,12 +1180,12 @@ for _ in $(seq 1 "$POLL_BOUND_SECONDS"); do
     if [ -n "${BREENIX_X86_PROD_FORCE_FAIL:-}" ]; then
         break
     fi
-    if grep -qF -- "$STEADY_STATE_LITERAL" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
+    if grep -a -qF -- "$STEADY_STATE_LITERAL" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
         reached=true
         POLL_BREAK_REASON="scored_pass"
         break
     fi
-    if grep -qE -- "$CRASH_MARKERS_PATTERN" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
+    if grep -a -qE -- "$CRASH_MARKERS_PATTERN" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
         POLL_BREAK_REASON="crash_marker"
         break
     fi
@@ -1333,12 +1333,12 @@ test "$(marker_count "$STEADY_STATE_LITERAL")" -eq 1
 # above). drivers::init() runs long before the ext2 mount / kernel-init-complete
 # markers above, but these assertions sit with the other milestone checks
 # rather than trying to enforce serial line ordering.
-PCI_FN_LINES=$( { grep -h -E -- 'PCI_FN [0-9a-f]{2}:[0-9a-f]{2}\.[0-7] ' "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; } )
+PCI_FN_LINES=$( { grep -a -h -E -- 'PCI_FN [0-9a-f]{2}:[0-9a-f]{2}\.[0-7] ' "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; } )
 test -n "$PCI_FN_LINES"
 test "$(marker_count 'PCI_FN_TOTAL ')" -eq 1
 # The dump is complete in the capture: as many PCI_FN lines as the kernel's own
 # total says it printed.
-PCI_FN_TOTAL_VALUE=$( { grep -h -E -- 'PCI_FN_TOTAL [0-9]+' "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; } | tail -1 | awk '{ print $2 + 0 }')
+PCI_FN_TOTAL_VALUE=$( { grep -a -h -E -- 'PCI_FN_TOTAL [0-9]+' "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; } | tail -1 | awk '{ print $2 + 0 }')
 PCI_FN_LINE_COUNT=$(printf '%s\n' "$PCI_FN_LINES" | grep -c .) || true
 test "$PCI_FN_LINE_COUNT" -eq "$PCI_FN_TOTAL_VALUE"
 # Per vendor:device: as many enumerated functions as flags that attach one. Not

@@ -123,20 +123,20 @@ esac
 # assert a property of the profile that this script cannot know; requiring the
 # ABSENCE of a contradiction is sound on any profile, including one that does
 # not poll a TCP fd.
-if grep -hFq '[POLL_TCP_READY_LOST]' "$@"; then
-    printf '%s\n' "$(grep -hF '[POLL_TCP_READY_LOST]' "$@" | head -1)"
+if grep -a -hFq '[POLL_TCP_READY_LOST]' "$@"; then
+    printf '%s\n' "$(grep -a -hF '[POLL_TCP_READY_LOST]' "$@" | head -1)"
     fail "the kernel reported a lost TCP readiness publication (#693): a blocking poll() returned without POLLIN although bytes were published inside its window and are still buffered"
 fi
 
-if ! grep -hFq 'USERSPACE TEST COMPLETE' "$@"; then
+if ! grep -a -hFq 'USERSPACE TEST COMPLETE' "$@"; then
     fail "USERSPACE TEST COMPLETE was absent; boot did not finish"
 fi
 
-if ! grep -hq 'TEST_TALLY:' "$@"; then
+if ! grep -a -hq 'TEST_TALLY:' "$@"; then
     fail "TEST_TALLY was absent; kernel is stale or userspace did not finish"
 fi
 
-tally_line="$(grep -h 'TEST_TALLY:' "$@" | tail -n 1)"
+tally_line="$(grep -a -h 'TEST_TALLY:' "$@" | tail -n 1)"
 parsed_tally="$(
     printf '%s\n' "$tally_line" \
         | sed -n 's/.*TEST_TALLY: exited=\([0-9][0-9]*\) nonzero=\([0-9][0-9]*\) failed=\[\([^]]*\)\].*/\1|\2|\3/p'
@@ -152,10 +152,10 @@ nonzero=$((10#$nonzero_text))
 
 pass_marker=false
 failure_marker=false
-if grep -hFq '🏁 TEST RUNNER: All tests passed' "$@"; then
+if grep -a -hFq '🏁 TEST RUNNER: All tests passed' "$@"; then
     pass_marker=true
 fi
-if grep -hFq 'TEST RUNNER: FAILED' "$@"; then
+if grep -a -hFq 'TEST RUNNER: FAILED' "$@"; then
     failure_marker=true
 fi
 
