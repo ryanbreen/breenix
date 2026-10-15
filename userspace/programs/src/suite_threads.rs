@@ -15,7 +15,7 @@
 //! fails the case with the step it was stuck in, rather than running the case out of
 //! time, and the trial's process is killed when the case ends. Every wait is bounded.
 //!
-//! Cases that need several processors read the count from /proc/cpuinfo, skip below
+//! Cases that need several processors read the count from /proc/cpuinfo, fail below
 //! two, and start one thread per processor, at most four. Each pins itself to its own
 //! processor and the threads show they run at once before they measure: a thousand
 //! rendezvous within 750 ms, which threads taking turns on one processor cannot make.
@@ -23,6 +23,7 @@
 
 use libbreenix::process::{self, ForkResult};
 use libbreenix::signal::Sigaction;
+use libbreenix::suite::prerequisites;
 use libbreenix::suite::{case, case_ms_left, category, check, fail, suite, value, wait_for, CaseError, CaseResult, Suite};
 #[cfg(target_arch = "aarch64")]
 use libbreenix::syscall::raw;
@@ -929,10 +930,10 @@ fn processors() -> Result<usize, CaseError> {
     Ok(n)
 }
 
-/// The threads a team case starts: one per processor, at most MAX_TEAM. Skips below two.
+/// The threads a team case starts: one per processor, at most MAX_TEAM. Fails below two.
 fn team_size() -> Result<usize, CaseError> {
     let cpus = processors()?;
-    if cpus < 2 { return Err(CaseError::Skip(format!("{cpus} processor online; the case needs 2"))); }
+    prerequisites::cpus(cpus, 2)?;
     Ok(cpus.min(MAX_TEAM))
 }
 
@@ -1914,9 +1915,7 @@ fn mx_robust_attr() -> CaseResult {
 
 fn mx_prio_inherit() -> CaseResult {
     let offered = trial_value(|| Ok(sysconf(SC_THREAD_PRIO_INHERIT)?))?;
-    if offered <= 0 {
-        return Err(CaseError::Skip(format!("sysconf(_SC_THREAD_PRIO_INHERIT) returns {offered}: the option is not offered")));
-    }
+    prerequisites::priority_inheritance(offered)?;
     trial(|| {
         let a = obj();
         rc("pthread_mutexattr_init", pthread_mutexattr_init(a.p())?)?;
@@ -1934,7 +1933,7 @@ fn mx_prio_inherit() -> CaseResult {
         // computes for 500 ms; then the case tells the owner to finish, which takes it 20 ms
         // of computing. Only inheritance lets the owner run past the spinner to do that.
         let cpus = processors()?;
-        if cpus < 2 { return Err(CaseError::Skip(format!("{cpus} processor online; the case needs 2"))); }
+        prerequisites::cpus(cpus, 2)?;
         pin_to(1).map_err(CaseError::Fail)?;
         let owned = Arc::new(AtomicU32::new(0));
         let waiting = Arc::new(AtomicU32::new(0));
@@ -2045,7 +2044,7 @@ fn mx_prio_inherit_chain() -> CaseResult {
         // it ahead of the spinner only if the high priority passes to it through the middle
         // thread.
         let cpus = processors()?;
-        if cpus < 2 { return Err(CaseError::Skip(format!("{cpus} processor online; the case needs 2"))); }
+        prerequisites::cpus(cpus, 2)?;
         pin_to(1).map_err(CaseError::Fail)?;
         let owned = Arc::new(AtomicU32::new(0));
         let middle_waiting = Arc::new(AtomicU32::new(0));
@@ -2124,7 +2123,7 @@ fn mx_prio_protect() -> CaseResult {
         // middle-priority thread that computes for 500 ms. The owner, told to finish, needs
         // 20 ms of computing: it gets it ahead of the spinner only by running at the ceiling.
         let cpus = processors()?;
-        if cpus < 2 { return Err(CaseError::Skip(format!("{cpus} processor online; the case needs 2"))); }
+        prerequisites::cpus(cpus, 2)?;
         pin_to(1).map_err(CaseError::Fail)?;
         let owned = Arc::new(AtomicU32::new(0));
         let go_at = Arc::new(AtomicI64::new(0));

@@ -83,6 +83,9 @@
 //! fn main() { SUITE.run() }
 //! ```
 
+#[path = "suite_prerequisites.rs"]
+pub mod prerequisites;
+
 use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::fmt::Write as _;

@@ -19,14 +19,15 @@
 //! must be blocked before it is released is observed through /proc/<pid>/status. Every
 //! name and key a case creates is removed when the case ends, by the process that made it.
 //!
-//! Cases that need several processors read the count from /proc/cpuinfo, skip below two
+//! Cases that need several processors read the count from /proc/cpuinfo, fail below two
 //! and start one process per processor, at most four. Each pins itself to its own
 //! processor and the processes show they run at once before they measure: a thousand
 //! rounds of a spinning barrier within 750 ms, which processes taking turns on one
 //! processor cannot make.
 use libbreenix::process::{self, ForkResult};
 use libbreenix::signal::{self as signal, Sigaction};
-use libbreenix::suite::{case, case_ms_left, category, check, fail, skip, suite, value, wait_for, CaseError, CaseResult, Suite};
+use libbreenix::suite::prerequisites;
+use libbreenix::suite::{case, case_ms_left, category, check, fail, suite, value, wait_for, CaseError, CaseResult, Suite};
 #[cfg(target_arch = "aarch64")]
 use libbreenix::syscall::raw;
 use std::cell::UnsafeCell;
@@ -1926,8 +1927,8 @@ fn sem_init_einval() -> CaseResult {
     let pg = page()?;
     shared_sem(pg, 0, 1)?;
     let max = sem_value_max()?;
-    if max >= i64::from(u32::MAX) { return skip("SEM_VALUE_MAX is the largest unsigned value"); }
-    want("sem_init with SEM_VALUE_MAX + 1", sem_init(pg.sem(1), 0, max as u32 + 1)?, EINVAL)
+    let invalid = prerequisites::invalid_semaphore_value(max)?;
+    want("sem_init with SEM_VALUE_MAX + 1", sem_init(pg.sem(1), 0, invalid)?, EINVAL)
 }
 
 fn sem_post_wait() -> CaseResult {
@@ -2063,8 +2064,8 @@ fn sem_open_einval_value() -> CaseResult {
     ok("sem_open(O_CREAT)", sem_open(&n.name, O_CREAT | O_EXCL, 0o600, 0)?)?;
     zero("sem_unlink", sem_unlink(n.path())?)?;
     let max = sem_value_max()?;
-    if max >= i64::from(u32::MAX) { return skip("SEM_VALUE_MAX is the largest unsigned value"); }
-    want("sem_open(O_CREAT) with SEM_VALUE_MAX + 1", sem_open(&n.name, O_CREAT | O_EXCL, 0o600, max as u32 + 1)?, EINVAL)
+    let invalid = prerequisites::invalid_semaphore_value(max)?;
+    want("sem_open(O_CREAT) with SEM_VALUE_MAX + 1", sem_open(&n.name, O_CREAT | O_EXCL, 0o600, invalid)?, EINVAL)
 }
 
 fn sem_named_processes() -> CaseResult {
@@ -2119,11 +2120,11 @@ fn sem_getvalue_waiters() -> CaseResult {
     waiter.finish(3000, "the waiter")
 }
 
-/// Processes for a several-processor case: the count online, at most four, or a skip
+/// Processes for a several-processor case: the count online, at most four, or a failure
 /// below two.
 fn cpu_workers() -> Result<usize, CaseError> {
     let n = processors()?;
-    if n < 2 { return Err(CaseError::Skip(format!("{n} processor online; the case needs two"))); }
+    prerequisites::cpus(n, 2)?;
     Ok(n.min(4))
 }
 

@@ -152,9 +152,14 @@ A case returns `Ok(())` to pass, and may report what it measures with `value` an
 message; `fail(msg)` and `check(condition, msg)` fail it, and `skip(why)` emits a SKIP record.
 A SKIP rejects suite acceptance: the host requires skipped=0, failed=0 and
 passed=total=the manifest case count. Missing prerequisites do not grant an exemption.
-CPU prerequisites are tracked in #1615, optional priority inheritance in #1616,
-argument/stack/semaphore limits in #1617, idle-CPU measurement in #1613 and
-eager disk allocation in #1614.
+The time, threads, IPC, memory, signals and processes suites fail cases whose
+CPU prerequisites are missing, retaining their simultaneous-execution checks;
+processes/scheduling/idle-cpu requires four processors. ARM64 QEMU's
+`scripts/boot-interactive.sh --cpus N` can exercise smaller configurations.
+Missing priority inheritance, insufficient argument or stack limits, an
+unrepresentable invalid semaphore value, insufficient observed idle time, and
+eager allocation that prevents the disk-writeback measurement also fail with
+their measured prerequisites. Cached readback never substitutes for disk evidence.
 
 Add the binary to `userspace/programs/Cargo.toml` as `suite-<id>` and to `STD_BINARIES` in
 `userspace/programs/build.sh`; `scripts/create_ext2_disk.sh` installs `suite-*` in `/sbin`.

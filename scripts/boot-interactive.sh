@@ -23,6 +23,7 @@
 #   --display            open QEMU's display window (the default on a Mac desktop session; BREENIX_QEMU_NOGUI=1 turns it off)
 #   --no-display         serial only, even for desktop
 #   --no-build           boot the kernel and disk already in target/
+#   --cpus N             number of guest processors (default 4); suites fail missing CPU prerequisites
 #   --accel hvf|tcg      ARM64 accelerator (default hvf on Apple Silicon, tcg elsewhere)
 #
 # Ctrl-A X quits QEMU; Ctrl-A C toggles the QEMU monitor. Ctrl-C goes to the guest.
@@ -39,6 +40,7 @@ IDLE_EXIT=300
 GATE_TIMEOUT=1800
 DISPLAY_MODE=
 BUILD=1
+CPUS=4
 MODE=tests
 PROGRAM=
 SUITE=
@@ -47,7 +49,7 @@ FBCONSOLE=
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --mode|--program|--suite|--serial-log|--idle-exit|--gate-timeout|--qmp|--fbconsole|--accel)
+        --mode|--program|--suite|--serial-log|--idle-exit|--gate-timeout|--qmp|--fbconsole|--accel|--cpus)
             [ "$#" -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; } ;;
     esac
     case "$1" in
@@ -63,10 +65,12 @@ while [ "$#" -gt 0 ]; do
         --display) DISPLAY_MODE=cocoa; shift ;;
         --no-display) DISPLAY_MODE=none; shift ;;
         --no-build) BUILD=0; shift ;;
+        --cpus) CPUS="$2"; shift 2 ;;
         -h|--help) sed -n '2,/^# --help/p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
+[[ "$CPUS" =~ ^[1-9][0-9]*$ ]] || { echo "--cpus requires a positive integer" >&2; exit 2; }
 case "$MODE" in
     tests|probe|shell|desktop|program|suite) ;;
     *) echo "unknown mode: $MODE (expected tests, probe, shell, desktop, program or suite)" >&2; exit 2 ;;
@@ -226,7 +230,7 @@ exec 3<&0
 set +e
 python3 "$ROOT/scripts/watch-qemu.py" --serial "$SERIAL_LOG" --mode "$MODE" \
     --suite "$SUITE" --idle-exit "$IDLE_EXIT" --gate-timeout "$GATE_TIMEOUT" --disk "$WRITABLE" -- python3 "$ROOT/scripts/qemu-arm64.py" "$QEMU" \
-    -rtc base=utc "${QEMU_PROFILE_ARGS[@]}" -m 512 -smp 4 \
+    -rtc base=utc "${QEMU_PROFILE_ARGS[@]}" -m 512 -smp "$CPUS" \
     -kernel "$KERNEL" \
     "${DISPLAY_ARGS[@]}" -no-reboot \
     ${MODE_ARGS[@]+"${MODE_ARGS[@]}"} \
