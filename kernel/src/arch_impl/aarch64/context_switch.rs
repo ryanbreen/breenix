@@ -5711,6 +5711,13 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
             }
         }
     }
+    // The FP/SIMD registers are saved with the general ones, before anything
+    // below can make the old thread runnable on another CPU (#529).
+    if !is_old_idle {
+        if let Some(old_thread) = sched.get_thread_mut(old_id) {
+            super::fpsimd::save(&mut old_thread.fpsimd);
+        }
+    }
 
     // 7. Commit cpu_state to reflect the new thread as "current" on this CPU
     sched.commit_cpu_state_after_save(new_id);
@@ -6810,6 +6817,8 @@ pub fn schedule_from_kernel() {
             }
             old_thread.context.sp_el0 = read_sp_el0();
             old_thread.context.tpidr_el0 = read_tpidr_el0();
+            // Saved before the trampoline can requeue the thread (#529).
+            super::fpsimd::save(&mut old_thread.fpsimd);
             old_thread.inline_schedule_spsr = kernel_dispatch_spsr(saved_daif & 0x3C0);
             old_thread.inline_schedule_prev_elr = old_thread.context.elr_el1;
             old_thread.inline_schedule_caller_lr =

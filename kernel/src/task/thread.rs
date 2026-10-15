@@ -717,8 +717,9 @@ pub struct Thread {
     #[cfg(target_arch = "x86_64")]
     pub fpu: crate::arch_impl::x86_64::fpu::FpuState,
 
-    /// FP/SIMD registers while the thread is not current on a CPU
-    /// (`arch_impl::aarch64::fpsimd::hand_over`)
+    /// FP/SIMD registers while the thread is not current on a CPU, stored
+    /// where a context switch saves the thread's registers and loaded by
+    /// `arch_impl::aarch64::fpsimd::load_incoming`
     #[cfg(target_arch = "aarch64")]
     pub fpsimd: crate::signal::FpsimdContext,
 

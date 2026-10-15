@@ -3,9 +3,10 @@
 //!
 //! The kernel is built soft-float and executes no FP/SIMD instruction of its
 //! own, so v0-v31, FPSR and FPCR hold the user state of the CPU's current
-//! thread. Every change of a CPU's current thread hands the registers over
-//! (`hand_over`): the outgoing thread stores them in its `Thread`, and the
-//! incoming one loads what it stored. CPACR_EL1.FPEN permits EL1 access
+//! thread. A context switch stores them in the outgoing `Thread` where it
+//! saves that thread's general registers, before the thread can be run
+//! anywhere else, and every change of a CPU's current thread loads the
+//! incoming thread's (`load_incoming`). CPACR_EL1.FPEN permits EL1 access
 //! (boot.S), which is how these routines read and write them; the assembler is
 //! told the FP and SIMD extensions are present for these instructions only.
 
@@ -20,22 +21,20 @@ pub fn capture() -> FpsimdContext {
     ctx
 }
 
-/// Give this CPU's registers from the thread `outgoing` names to the one
-/// `incoming` names, as the CPU's current-thread pointer changes from one to
-/// the other: `outgoing` stores them and `incoming` loads what it stored.
-/// Either may be null, no thread (a CPU going idle, or taking its first).
-/// Without this, a thread that waits while another runs on its CPU comes back
-/// to that thread's registers (#529, #1579).
+/// Load the registers of the thread `incoming` names, as the CPU's
+/// current-thread pointer changes to it from `outgoing`. Either may be null,
+/// no thread (a CPU going idle, or taking its first). The outgoing thread's
+/// registers were stored when the switch saved its context: storing them here
+/// would be too late, since a requeued thread may already be running on
+/// another CPU (#529, #1579).
 ///
 /// # Safety
-/// A non-null pointer names a live scheduler `Thread`; the caller has
-/// interrupts masked, as every change of a CPU's current thread does.
-pub unsafe fn hand_over(outgoing: *mut u8, incoming: *mut u8) {
+/// A non-null `incoming` names a live scheduler `Thread` this CPU is about to
+/// run; the caller has interrupts masked, as every change of a CPU's current
+/// thread does.
+pub unsafe fn load_incoming(outgoing: *mut u8, incoming: *mut u8) {
     if outgoing == incoming {
         return;
-    }
-    if let Some(thread) = (outgoing as *mut Thread).as_mut() {
-        save(&mut thread.fpsimd);
     }
     if let Some(thread) = (incoming as *const Thread).as_ref() {
         restore(&thread.fpsimd);
