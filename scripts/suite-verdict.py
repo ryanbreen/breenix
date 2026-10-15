@@ -72,7 +72,7 @@ def verdict(manifest, records_log, logs, only=None):
             if prefix in line:
                 return False, f"a SUITE record does not start its line: {line.strip()[:200]}"
             continue
-        if not only and any(word.startswith("only=") for word in line.split()):
+        if not only and re.match(rf"{re.escape(prefix)}(?:START|DONE) .* only=\S+$", line):
             return False, "one-case run is not full-suite evidence"
         if line.startswith(prefix + "ERROR "):
             return False, line

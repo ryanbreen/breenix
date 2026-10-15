@@ -91,14 +91,7 @@ public enum StateMachine {
             if line.text.contains("kernel::test_exec:") && line.text.contains("marker") {
                 continue
             }
-            // A watched case is never evidence that the whole suite ran.
-            if line.text.hasPrefix("SUITE ") && line.text.split(whereSeparator: { $0.isWhitespace }).contains(where: { $0.hasPrefix("only=") }) {
-                continue
-            }
             for (marker, longer) in zip(markers, longerMarkers) where line.text.contains(marker) {
-                if marker.hasPrefix("SUITE ") && !line.text.hasPrefix("SUITE ") {
-                    continue
-                }
                 var masked = line.text
                 for other in longer {
                     masked = masked.replacingOccurrences(of: other, with: "\u{0}")

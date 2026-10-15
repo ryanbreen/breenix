@@ -86,8 +86,33 @@ class SuiteVerdictTests(unittest.TestCase):
             self.assertFalse(SCORER.verdict(MANIFEST, serial, [serial], only="first/two")[0])
             serial.write_text(partial + (FIXTURES / "all-pass.txt").read_text())
             self.assertFalse(SCORER.verdict(MANIFEST, serial, [serial])[0])
-            unknown = "SUITE fixture DONE passed=0 failed=1 skipped=0 total=0 only=first/missing\n"
-            self.assertFalse(WAIT.completion(unknown, "suite", "fixture", "first/missing")[0])
+            unknown = "SUITE fixture DONE passed=0 failed=1 skipped=0 total=1 only=first/missing\n"
+            self.assertEqual(WAIT.completion(unknown, "suite", "fixture", "first/missing"), (False, unknown.strip()))
+            self.assertIn("unknown case first/missing", SCORER.verdict(MANIFEST, serial, [serial], only="first/missing")[1])
+
+    def test_only_word_outside_start_and_done_is_not_a_one_case_run(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            serial = Path(temporary) / "serial"
+            text = (FIXTURES / "failed-case.txt").read_text().replace("msg=case failed", "msg=case failed only=first/two")
+            serial.write_text(text)
+            ok, reason = SCORER.verdict(MANIFEST, serial, [serial])
+            self.assertFalse(ok)
+            self.assertNotIn("not full-suite evidence", reason)
+            self.assertIn("only=first/two", reason)
+
+    def test_suite_hold_is_read_only_for_one_case_waits(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            serial = Path(temporary) / "serial.txt"
+            serial.write_text(f"[clock] UTC epoch={int(time.time())} source=PL031\nPROBE DONE passed=16 failed=0\n")
+            output = io.StringIO()
+            with patch.dict("os.environ", {"BREENIX_SUITE_HOLD": "soon"}), \
+                 patch.object(sys, "argv", ["wait", str(serial), "probe"]), \
+                 contextlib.redirect_stdout(output):
+                self.assertEqual(WAIT.main(), 0, output.getvalue())
+            with patch.dict("os.environ", {"BREENIX_SUITE_HOLD": "soon"}), \
+                 patch.object(sys, "argv", ["wait", str(serial), "suite", "--suite", "fixture", "--case", "first/two"]), \
+                 contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                WAIT.main()
 
     def test_native_vm_waiter_propagates_verdict(self):
         for name, (expected, reason) in EXPECTATIONS.items():

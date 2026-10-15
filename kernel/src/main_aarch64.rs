@@ -104,8 +104,10 @@ impl BootMode {
 /// unknown request, a program request without an absolute program path, a suite
 /// request without a valid suite id, an unusable boot-target file, or any request to
 /// a `testing` kernel (which always runs its test loader), runs `default` and is
-/// noted on a separate line. Returns the program path for program mode and the suite
-/// id for suite mode. `announce_boot_mode` prints the mode once it is known to run.
+/// noted on a separate line. Returns the mode; the program path for program mode or
+/// the suite id for suite mode; and the `<category>/<case>` a suite boot runs alone,
+/// from fw_cfg `opt/breenix/case` or the boot target's `case` word. `announce_boot_mode`
+/// prints the mode once it is known to run.
 #[cfg(target_arch = "aarch64")]
 fn read_boot_mode() -> (BootMode, Option<alloc::string::String>, Option<alloc::string::String>) {
     use kernel::boot::target;

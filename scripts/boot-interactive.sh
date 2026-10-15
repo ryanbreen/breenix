@@ -3,7 +3,7 @@
 # console on this terminal. In the default `tests` mode this is the boot-path gate
 # (docs/boot-path.md) with a console you can watch and type into.
 #
-#   scripts/boot-interactive.sh [--mode MODE] [--program PATH] [--suite ID] [--serial-log FILE]
+#   scripts/boot-interactive.sh [--mode MODE] [--program PATH] [--suite ID [--case CATEGORY/CASE]] [--serial-log FILE]
 #                               [--idle-exit SECONDS] [--gate-timeout SECONDS] [--display | --no-display]
 #                               [--qmp SOCKET] [--fbconsole log] [--no-build]
 #
@@ -12,7 +12,7 @@
 #                        probe | shell | desktop | program | suite: the production kernel, told the mode
 #                        via -fw_cfg name=opt/breenix/mode (see "Boot modes" in docs/boot-path.md)
 #   --program PATH       for --mode program: the absolute guest path /sbin/probe runs (probe --run PATH)
-#   --case CATEGORY/CASE  for --mode suite: run only this case; never full-suite evidence
+#   --case CATEGORY/CASE  for --mode suite: run only this case (not full-suite evidence; not filed in Vigil)
 #   --suite ID           for --mode suite: the effort suite (docs/suites/ID.json) run as PID 1, /sbin/suite-ID
 #   --qmp SOCKET         open a QMP socket so another process can screenshot the VM screen:
 #                        scripts/qmp-screendump.py SOCKET out.png (works with --no-display)
@@ -221,9 +221,11 @@ else
     host_slot_quiet
 fi
 # Vigil shows the boot while it runs and scores it when it ends (does nothing without Vigil).
+# A one-case run is not registered: Vigil would score it as a suite boot.
 QEMU_PROFILE_ARGS=(-M virt,gic-version=3 -cpu max)
 QEMU_PROFILE=$(python3 "$ROOT/scripts/qemu-arm64.py" --print-profile "$QEMU" "${QEMU_PROFILE_ARGS[@]}")
-VIGIL_ID=$("$ROOT/scripts/vigil-record.sh" start qemu "$MODE" "$SUITE" "$SERIAL_LOG" "" "$QEMU_PROFILE")
+VIGIL_ID=
+[ -n "$ONLY" ] || VIGIL_ID=$("$ROOT/scripts/vigil-record.sh" start qemu "$MODE" "$SUITE" "$SERIAL_LOG" "" "$QEMU_PROFILE")
 echo "==> Booting (serial: $SERIAL_LOG; Ctrl-A X quits)"
 [ -z "$QMP_SOCKET" ] || echo "==> QMP: $QMP_SOCKET (scripts/qmp-screendump.py $QMP_SOCKET out.png)"
 # Wait interruptibly and register the watcher so a signal to this script also

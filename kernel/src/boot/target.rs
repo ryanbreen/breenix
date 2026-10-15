@@ -1,10 +1,12 @@
 //! The boot-target file: which PID 1 a production boot runs when the QEMU command
 //! line does not say (docs/boot-path.md, "Boot modes").
 //!
-//! The runner writes `suite <id> [case <category>/<case>]` or `probe` to `/etc/breenix/boot-target`. It is
+//! The runner writes `suite <id>`, `suite <id> case <category>/<case>` or `probe` to
+//! `/etc/breenix/boot-target`, words separated by single spaces. It is
 //! written onto a copy of the disk image by `./run.sh --parallels|--vmware --suite <id>`
-//! or `--probe`, and by `BREENIX_BOOT_SUITE=<id>` in `docker/qemu/run-x86-gate.sh`; disks built by
-//! `scripts/create_ext2_disk.sh` carry none. QEMU's fw_cfg mode is read first;
+//! (with `--case <category>/<case>` for one case) or `--probe`, and by
+//! `BREENIX_BOOT_SUITE=<id>` in `docker/qemu/run-x86-gate.sh`; disks built by
+//! `scripts/create_ext2_disk.sh` carry no boot target. QEMU's fw_cfg mode is read first;
 //! without either, the default `/sbin/init` runs.
 
 use alloc::format;
@@ -72,7 +74,8 @@ pub fn parse(text: &str) -> Result<Target, String> {
     if line.trim() == "probe" {
         return Ok(Target::Probe);
     }
-    let words: alloc::vec::Vec<&str> = line.split_whitespace().collect();
+    // Single spaces only, as the runner writes: a tab or a doubled space is refused.
+    let words: alloc::vec::Vec<&str> = line.trim().split(' ').collect();
     match words.as_slice() {
         ["suite", id] => SuiteTarget::new(String::from(*id), None).map(Target::Suite),
         ["suite", id, "case", case] => {

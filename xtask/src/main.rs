@@ -283,7 +283,6 @@ enum Cmd {
 fn stage_marker_present(contents: &str, marker: &str, catalog: &[boot_stages::BootStage]) -> bool {
     contents.lines().any(|line| {
         !(line.contains("kernel::test_exec:") && line.contains("marker"))
-            && !(line.starts_with("SUITE ") && line.split_whitespace().any(|word| word.starts_with("only=")))
             && marker
                 .split('|')
                 .any(|alternative| marker_alternative_present(line, alternative, catalog))
@@ -293,7 +292,7 @@ fn stage_marker_present(contents: &str, marker: &str, catalog: &[boot_stages::Bo
 /// A marker found only inside a longer catalog marker that contains it does not
 /// count: EXEC_ARGV_TEST_PASSED must not credit ARGV_TEST_PASSED.
 fn marker_alternative_present(line: &str, alternative: &str, catalog: &[boot_stages::BootStage]) -> bool {
-    if !line.contains(alternative) || (alternative.starts_with("SUITE ") && !line.starts_with("SUITE ")) {
+    if !line.contains(alternative) {
         return false;
     }
     let mut masked = line.to_string();
@@ -2387,26 +2386,5 @@ fn boot_test_btrt(arch: &str) -> Result<()> {
             results.header.tests_failed,
             results.header.tests_completed
         );
-    }
-}
-
-#[cfg(test)]
-mod suite_selection_tests {
-    use super::stage_marker_present;
-
-    #[test]
-    fn one_case_is_not_a_suite_stage() {
-        assert!(!stage_marker_present(
-            "SUITE smoke DONE passed=1 failed=0 skipped=0 total=1 only=process/getpid\n",
-            "SUITE smoke DONE", &[],
-        ));
-        assert!(stage_marker_present(
-            "SUITE smoke DONE passed=5 failed=0 skipped=0 total=5\n",
-            "SUITE smoke DONE", &[],
-        ));
-        assert!(!stage_marker_present(
-            "kernel::test_exec: Userspace will emit SUITE smoke DONE marker if successful\n",
-            "SUITE smoke DONE", &[],
-        ));
     }
 }

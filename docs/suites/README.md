@@ -40,11 +40,12 @@ on either host, as "Shared host slots" in `docs/boot-path.md` describes. The
 
 Use `scripts/boot-interactive.sh --mode suite --suite ID --case CATEGORY/CASE`
 on ARM64 QEMU, or `./run.sh --parallels|--vmware --suite ID --case CATEGORY/CASE`.
-Every suite uses the same runner selection. It runs only the named case, with the
-same isolation, limits, measurements and display as a full run; any setup belongs
-to that case. The panel shows only that case and identifies the run as one case. All three launchers hold its final panel
-for `BREENIX_SUITE_HOLD` seconds (default 5) after a two-second render delay.
-An unknown ID runs nothing and prints an ERROR listing every valid category/case ID.
+The selection lives in the shared suite runner, so the 16 suites take it the same way.
+It runs only the named case, with the same isolation, limits, measurements and display
+as a full run; any setup belongs to that case. The panel shows only that case and
+identifies the run as one case. The three launchers hold its final panel for
+`BREENIX_SUITE_HOLD` seconds (default 5) after a two-second render delay.
+An unknown ID runs no case and prints an ERROR listing the suite's category/case IDs.
 
 One-case START and DONE records carry `only=CATEGORY/CASE`, for example:
 
@@ -54,11 +55,13 @@ SUITE smoke CASE process/getpid PASS ms=0
 SUITE smoke DONE passed=1 failed=0 skipped=0 total=1 only=process/getpid
 ```
 
-An unknown case ends with `passed=0 failed=1 skipped=0 total=0 only=CATEGORY/CASE`.
-One-case runs never continue a suite sequence and never count as full-suite evidence,
-even for a suite with one case. The launcher's explicit selection checks the selected
-case's records; full-suite scorers reject `only=` records. Whole-suite host disk checks
-are not run for a watched case because they depend on other cases.
+An unknown case ends with `passed=0 failed=1 skipped=0 total=1 only=CATEGORY/CASE`.
+A one-case run stops before a suite sequence's next suite and is not full-suite
+evidence, even for a suite with one case: the launcher's explicit selection checks the
+selected case's records, and the full-suite scorers reject a START or DONE that ends
+in `only=`. Whole-suite host disk checks are skipped for a watched case because they
+depend on other cases. The launchers do not register one-case boots with Vigil, whose
+scorer would count them as suite boots.
 
 ## Serial lines
 

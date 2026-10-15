@@ -96,10 +96,10 @@ instructions cannot be emulated by this QEMU version.
   first (x86-64 QEMU reads fw_cfg too, for `default` and `suite`), then that file, else
   `default`. Suite mode exercises the kernel milestones and the first userspace process: the
   suite's `START` and `DONE` lines show PID 1 running in user mode and making syscalls.
-  `--case CATEGORY/CASE` selects one case on all three Mac platforms. QEMU passes
+  `--case CATEGORY/CASE` selects one case on ARM64 QEMU, Parallels and VMware. QEMU passes
   it through `opt/breenix/case`; the kernel forwards `--case CATEGORY/CASE` in the
-  suite's argv. START and DONE carry `only=CATEGORY/CASE`, so this is never full-suite
-  evidence. Unknown IDs fail with the valid IDs (see `docs/suites/README.md`).
+  suite's argv. START and DONE carry `only=CATEGORY/CASE`, which marks the run as not
+  full-suite evidence. Unknown IDs fail with the valid IDs (see `docs/suites/README.md`).
   ARM64 QEMU waits two seconds after a complete `DONE` line for rendering, then
   holds the scored panel for `BREENIX_SUITE_HOLD` seconds (default 5), continuing
   to watch for fatal output. It stops the VM, validates the records against the

@@ -73,7 +73,7 @@ def completion(serial, mode, suite, only=None):
         return None
     if len(done) != 1:
         return False, "duplicate completion records"
-    if mode == "suite" and not only and any(word.startswith("only=") for word in done[0].split()):
+    if mode == "suite" and not only and re.search(r" only=\S+$", done[0]):
         return False, "one-case run is not full-suite evidence"
     suffix = rf" only={re.escape(only)}" if only else ""
     shape = (r"PROBE DONE passed=(\d+) failed=(\d+)" if mode == "probe"
@@ -97,9 +97,14 @@ def main():
     clock = WallClockCheck(args.serial, args.started)
     # Give a watched case's final panel the same render delay and visible hold
     # as QEMU, still checking fatal output until the VM is stopped.
-    hold = float(os.environ.get("BREENIX_SUITE_HOLD", "5"))
-    if hold < 0:
-        parser.error("suite hold must be nonnegative")
+    hold = 0.0
+    if args.only:
+        try:
+            hold = float(os.environ.get("BREENIX_SUITE_HOLD", "5"))
+        except ValueError:
+            hold = -1.0
+        if hold < 0:
+            parser.error("BREENIX_SUITE_HOLD must be a nonnegative number of seconds")
     done_at = None
     deadline = time.monotonic() + args.timeout
     while True:

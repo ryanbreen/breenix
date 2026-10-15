@@ -296,24 +296,28 @@ impl Suite {
 
     fn total(&self) -> usize { self.categories.iter().map(|category| category.cases.len()).sum() }
 
-    /// Run every case in order, or just argv's `--case category/case`, then
-    /// leave the final panel up and idle. One-case START/DONE carry `only=` and
-    /// never continue a suite sequence or count as full-suite evidence. Never returns.
+    /// Run the cases in manifest order, or only argv's `--case category/case`,
+    /// then leave the final panel up and idle. One-case START/DONE carry `only=`;
+    /// a one-case run stops before any suite sequence and is not full-suite
+    /// evidence. An unknown case or unusable argv ends in a failed DONE. Does not return.
     pub fn run(&self) -> ! {
         let args: Vec<String> = std::env::args().skip(1).collect();
-        let only = match args.as_slice() {
-            [] => None,
-            [flag, case] if flag == "--case" => Some(case.as_str()),
-            _ => {
-                emit(&std::format!("SUITE {} ERROR expected --case <category>/<case>", self.id));
-                process::exit(2)
-            }
+        let (only, usable_args) = match args.as_slice() {
+            [] => (None, true),
+            [flag, case] if flag == "--case" => (Some(case.as_str()), true),
+            _ => (None, false),
         };
         let names: Vec<String> = self.categories.iter().flat_map(|category| {
             category.cases.iter().map(move |case| std::format!("{}/{}", category.id, case.id))
         }).collect();
-        let known = only.is_none_or(|name| names.iter().any(|valid| valid == name));
-        let total = if only.is_some() { usize::from(known) } else { self.total() };
+        let error = if !usable_args {
+            Some(std::format!("expected no arguments or --case <category>/<case>, found {:?}", args))
+        } else {
+            only.filter(|name| !names.iter().any(|valid| valid == name))
+                .map(|name| std::format!("unknown case {}; valid ids: {}", name, names.join(", ")))
+        };
+        // A selection, or an argv that could not be read, counts as one case.
+        let total = if only.is_some() || error.is_some() { 1 } else { self.total() };
         let suffix = only.map_or(String::new(), |name| std::format!(" only={name}"));
         let mut states: Vec<Vec<State>> = self.categories.iter()
             .map(|category| category.cases.iter().map(|_| State::Pending).collect())
@@ -322,18 +326,17 @@ impl Suite {
         let title = std::format!("BREENIX / {} SUITE", self.title.to_uppercase());
         let subtitle = match only {
             Some(name) => std::format!("suite {}: one case {name} (not suite evidence)", self.id),
-            None => std::format!("suite {}: {} cases in {} categories", self.id, total, self.categories.len()),
+            None => std::format!("suite {}: {} cases in {} categories", self.id, self.total(), self.categories.len()),
         };
         let mut counts = Counts::default();
         let mut feed = Feed::default();
         let suite_start = monotonic_ns();
 
         emit(&std::format!("SUITE {} START cases={}{}", self.id, total, suffix));
-        if !known {
-            let message = std::format!("unknown case {}; valid ids: {}", only.unwrap(), names.join(", "));
+        if let Some(message) = &error {
             emit(&std::format!("SUITE {} ERROR {}", self.id, message));
-            emit(&std::format!("SUITE {} DONE passed=0 failed=1 skipped=0 total=0{}", self.id, suffix));
-            screen.draw(self, &title, &subtitle, &states, Verdict::Failed(&message), &feed, only);
+            emit(&std::format!("SUITE {} DONE passed=0 failed=1 skipped=0 total={}{}", self.id, total, suffix));
+            screen.draw(self, &title, &subtitle, &states, Verdict::Failed(message), &feed, only);
             idle(&mut screen, &feed);
         }
         let mut done = 0;
@@ -377,7 +380,7 @@ impl Suite {
         let ms = ms_since(suite_start);
         feed.finish(std::format!("DONE {}.{} s", ms / 1000, ms % 1000 / 100));
         screen.draw(self, &title, &subtitle, &states, verdict, &feed, only);
-        // A one-case boot must never execute a sequence's other suites.
+        // A one-case boot stops here, before a sequence's next suite.
         if only.is_some() { idle(&mut screen, &feed); }
         emit(&std::format!("SUITE_SEQUENCE READY {}", self.id));
         // A sequence replaces PID 1 with the next suite after this suite has

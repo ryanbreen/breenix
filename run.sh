@@ -849,7 +849,8 @@ if [ "$PARALLELS" = true ]; then
     rm -f "$SERIAL_LOG"  # Remove so VMware creates fresh (avoids append/replace prompt)
     VIGIL_ID=""
     install_vm_boot_traps
-    VIGIL_ID=$("$BREENIX_ROOT/scripts/vigil-record.sh" start parallels "$BOOT_MODE" "$SUITE" "$SERIAL_LOG")
+    # A one-case run is not registered: Vigil would score it as a suite boot.
+    [ -n "$ONLY" ] || VIGIL_ID=$("$BREENIX_ROOT/scripts/vigil-record.sh" start parallels "$BOOT_MODE" "$SUITE" "$SERIAL_LOG")
     host_slot_vm "$SERIAL_LOG" prlctl stop "$PARALLELS_VM" --kill
     # Open the VM in its own window, as VMware's `gui` start does, so a boot can be watched;
     # BREENIX_PARALLELS_NOGUI=1 keeps unattended automation off the operator's desktop.
@@ -1231,7 +1232,8 @@ VMXEOF
     rm -f "$SERIAL_LOG"  # Remove so VMware creates fresh (avoids append/replace prompt)
     VIGIL_ID=""
     install_vm_boot_traps
-    VIGIL_ID=$("$BREENIX_ROOT/scripts/vigil-record.sh" start vmware "$BOOT_MODE" "$SUITE" "$SERIAL_LOG")
+    # A one-case run is not registered: Vigil would score it as a suite boot.
+    [ -n "$ONLY" ] || VIGIL_ID=$("$BREENIX_ROOT/scripts/vigil-record.sh" start vmware "$BOOT_MODE" "$SUITE" "$SERIAL_LOG")
     host_slot_vm "$SERIAL_LOG" "$VMRUN" stop "$VMX_FILE" hard
     if [ -n "${BREENIX_VMWARE_NOGUI:-}" ]; then
         # Headless automation (docker/qemu/run-vmware-gate.sh): `gui` mode
