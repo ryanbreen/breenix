@@ -1469,3 +1469,42 @@ pub fn gui_spike_gop_readback() {
         pad_bad
     );
 }
+
+/// GUI entry spike (scratch): write and read back a `w`x`h` pattern at `stride` pixels
+/// from the start of the bootloader's framebuffer memory, under the log sink's lock.
+/// Returns (readback fnv, formula fnv, mismatched pixels); clears the memory after.
+#[cfg(not(feature = "interactive"))]
+pub fn gui_spike_lfb_check(w: usize, h: usize, stride: usize) -> (u64, u64, u64) {
+    use crate::gui_spike::{fnv, pattern_bgrx, FNV_INIT};
+    let Some(lock) = LOG_FRAMEBUFFER.get() else {
+        return (0, 0, u64::MAX);
+    };
+    let fb = lock.lock();
+    let base = fb.buffer_ptr;
+    if stride * h * 4 > fb.buffer_len {
+        return (0, 0, u64::MAX);
+    }
+    for y in 0..h {
+        for x in 0..w {
+            let p = pattern_bgrx(9, x as u32, y as u32);
+            unsafe { core::ptr::copy_nonoverlapping(p.as_ptr(), base.add((y * stride + x) * 4), 4) };
+        }
+    }
+    core::sync::atomic::fence(Ordering::SeqCst);
+    let (mut got, mut want, mut bad) = (FNV_INIT, FNV_INIT, 0u64);
+    for y in 0..h {
+        for x in 0..w {
+            let px = unsafe { core::ptr::read_volatile(base.add((y * stride + x) * 4) as *const [u8; 4]) };
+            let e = pattern_bgrx(9, x as u32, y as u32);
+            for i in 0..4 {
+                got = fnv(got, px[i]);
+                want = fnv(want, e[i]);
+            }
+            if px != e {
+                bad += 1;
+            }
+        }
+    }
+    unsafe { core::ptr::write_bytes(base, 0, fb.buffer_len) };
+    (got, want, bad)
+}

@@ -39,7 +39,87 @@ pub fn run_arm64() {
 #[cfg(target_arch = "x86_64")]
 pub fn run_x86() {
     crate::logger::gui_spike_gop_readback();
+    dispi_mode_set();
     tablet_probe();
+}
+
+/// Set 1280x800x32 through virtio-vga's Bochs VBE DISPI registers, read the mode back,
+/// check the linear framebuffer at that stride, then restore the boot mode.
+#[cfg(target_arch = "x86_64")]
+fn dispi_mode_set() {
+    use crate::serial_println;
+    use x86_64::instructions::port::Port;
+
+    let rd = |i: u16| -> u16 {
+        let mut idx = Port::<u16>::new(0x1ce);
+        let mut dat = Port::<u16>::new(0x1cf);
+        unsafe {
+            idx.write(i);
+            dat.read()
+        }
+    };
+    let wr = |i: u16, v: u16| {
+        let mut idx = Port::<u16>::new(0x1ce);
+        let mut dat = Port::<u16>::new(0x1cf);
+        unsafe {
+            idx.write(i);
+            dat.write(v);
+        }
+    };
+    let id = rd(0);
+    let before = (rd(1), rd(2), rd(3), rd(4), rd(6), rd(7));
+    serial_println!(
+        "GUI_SPIKE x86 dispi id={:#06x} before xres={} yres={} bpp={} enable={:#x} virt={}x{} vram_64k={}",
+        id,
+        before.0,
+        before.1,
+        before.2,
+        before.3,
+        before.4,
+        before.5,
+        rd(0xa)
+    );
+    if !(0xb0c0..=0xb0cf).contains(&id) {
+        serial_println!("GUI_SPIKE x86 dispi absent");
+        return;
+    }
+    let old_enable = before.3;
+    wr(4, 0x02); // GETCAPS
+    let caps = (rd(1), rd(2), rd(3));
+    wr(4, 0);
+    wr(1, 1280);
+    wr(2, 800);
+    wr(3, 32);
+    wr(4, 0x01 | 0x40 | 0x80); // ENABLED | LFB_ENABLED | NOCLEARMEM
+    let after = (rd(1), rd(2), rd(3), rd(4), rd(6), rd(7));
+    let (fnv_got, fnv_want, bad) = crate::logger::gui_spike_lfb_check(1280, 800, 1280);
+    serial_println!(
+        "GUI_SPIKE x86 dispi set 1280x800x32 caps_max={}x{}x{} after xres={} yres={} bpp={} enable={:#x} virt={}x{} lfb fnv={:#018x} expected_fnv={:#018x} mismatched_pixels={}",
+        caps.0,
+        caps.1,
+        caps.2,
+        after.0,
+        after.1,
+        after.2,
+        after.3,
+        after.4,
+        after.5,
+        fnv_got,
+        fnv_want,
+        bad
+    );
+    wr(4, 0);
+    wr(1, before.0);
+    wr(2, before.1);
+    wr(3, before.2);
+    wr(4, old_enable | 0x80);
+    serial_println!(
+        "GUI_SPIKE x86 dispi restored xres={} yres={} bpp={} enable={:#x}",
+        rd(1),
+        rd(2),
+        rd(3),
+        rd(4)
+    );
 }
 
 /// Read the virtio-tablet's virtio-input config through the PCI_CFG capability window.
@@ -120,11 +200,16 @@ fn tablet_probe() {
 
     let n = select(0x01, 0) as u32; // VIRTIO_INPUT_CFG_ID_NAME
     let mut name = [0u8; 64];
-    let take = n.min(64);
-    for i in 0..take {
-        name[i as usize] = read8(8 + i);
+    let mut take = 0usize;
+    for i in 0..n.min(64) {
+        let b = read8(8 + i);
+        if b == 0 {
+            break;
+        }
+        name[take] = if b.is_ascii_graphic() || b == b' ' { b } else { b'?' };
+        take += 1;
     }
-    let name = core::str::from_utf8(&name[..take as usize]).unwrap_or("<non-utf8>");
+    let name = core::str::from_utf8(&name[..take]).unwrap_or("<non-utf8>");
     serial_println!("GUI_SPIKE x86 tablet name_len={} name=\"{}\"", n, name);
 
     for (label, ev) in [("EV_KEY", 0x01u8), ("EV_REL", 0x02u8), ("EV_ABS", 0x03u8)] {
