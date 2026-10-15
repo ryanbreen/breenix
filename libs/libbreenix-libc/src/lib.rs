@@ -25,7 +25,7 @@
 // This crate defines memcpy, strlen, strcat and the rest: LLVM must not assume their C
 // semantics inside it, or it rewrites their bodies into calls to themselves (or away).
 #![no_builtins]
-#![feature(c_variadic)]
+#![feature(c_variadic, linkage)]
 
 mod crt;
 mod setjmp;
@@ -75,8 +75,9 @@ const AT_REMOVEDIR: u64 = 0x200;
 // Panic Handler
 // =============================================================================
 
-/// Panic handler for no_std environment
+/// Fallback for standalone C programs; Rust std supplies the strong handler.
 #[panic_handler]
+#[linkage = "weak"]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {
         core::hint::spin_loop();
