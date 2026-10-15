@@ -338,7 +338,7 @@
         },
         {
           "id": "runs-path",
-          "title": "env finds sdk-c-app by its bare name through PATH=/usr/local/bin:/usr/bin:/bin and runs it"
+          "title": "bsh finds sdk-c-app by its bare name through the disk shell configuration and runs it"
         },
         {
           "id": "runs-shell",
