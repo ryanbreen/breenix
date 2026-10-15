@@ -640,8 +640,30 @@ fn rearm_if_work_remains() -> bool {
 /// Called after syscalls release their locks to avoid deadlock. TCP loopback
 /// can enqueue deferred replies (SYN+ACK, ACK) while delivering an earlier
 /// packet, so drain bounded rounds until the local packet chain is quiescent.
+///
+/// A syscall's segments are delivered before it returns, as Linux delivers a
+/// loopback segment before the send returns: a close whose FIN and final ACK
+/// were still queued would leave its port held, and a bind right after it
+/// would fail with EADDRINUSE. So when another context is delivering, this
+/// waits for it to let go and drains again, until the queue is empty with no
+/// context delivering (everything queued before it has been delivered) or
+/// this call spent its round budget (the softirq owns the rest). A delivering
+/// context holds the guard with preemption off for a bounded number of
+/// rounds, and it is never below this call on the same CPU: the callers are
+/// thread context.
 pub fn drain_loopback_queue() {
-    let _ = drain_loopback_rounds(MAX_DRAIN_ROUNDS, LoopbackDrainSource::Syscall);
+    loop {
+        if drain_loopback_rounds(MAX_DRAIN_ROUNDS, LoopbackDrainSource::Syscall) {
+            return;
+        }
+        // Empty first, then unowned: whoever took the last packets has let go.
+        if loopback_queue_is_empty() && LOOPBACK_DRAIN_OWNER.load(Ordering::Acquire) == 0 {
+            return;
+        }
+        while LOOPBACK_DRAIN_OWNER.load(Ordering::Acquire) != 0 {
+            core::hint::spin_loop();
+        }
+    }
 }
 
 /// Drain loopback delivery from a general thread-context idle backstop.
