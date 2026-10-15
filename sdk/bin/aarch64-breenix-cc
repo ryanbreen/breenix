@@ -1,0 +1,17 @@
+#!/bin/sh
+# aarch64-breenix-cc: compile and link C for Breenix on aarch64 against the SDK's headers and
+# clean-room libc. The arguments are clang's; --version prints the SDK's version line first.
+set -eu
+# Find the SDK from this file's own path, following symlinks, so a copied SDK works.
+self="$0"
+while [ -L "$self" ]; do
+    link="$(readlink "$self")"
+    case "$link" in
+        /*) self="$link" ;;
+        *) self="$(dirname "$self")/$link" ;;
+    esac
+done
+SDK="$(cd "$(dirname "$self")/.." && pwd -P)"
+SDK_TOOL=aarch64-breenix-cc
+. "$SDK/share/breenix-sdk/libexec/sdk-common.sh"
+sdk_cc aarch64 "$@"
