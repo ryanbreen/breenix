@@ -26,7 +26,7 @@
 //!    branch where it cannot fit. Each of the three pieces is proven load-bearing by
 //!    mutating the real source and confirming only the matching predicate
 //!    reddens, the other two staying green.
-//! 2. Census (`no_caller_passes_a_size_flag`): each of the 13 real
+//! 2. Census (`no_caller_passes_a_size_flag`): each of the 15 real
 //!    invocations of create_ext2_disk.sh across `docker/` (recursive),
 //!    `scripts/` (recursive, excluding the script's own file), and
 //!    `run.sh` passes no `--size` flag at all -- the exact caller-side
@@ -94,12 +94,14 @@ fn all_shell_scripts() -> Vec<(String, String)> {
 }
 
 /// A real invocation of create_ext2_disk.sh: a non-comment line whose
-/// trimmed text, after stripping an optional leading `if ! ` or `if `,
-/// starts with one of the two invocation idioms real call sites in this
-/// tree use -- a relative `./scripts/create_ext2_disk.sh` (callers
-/// already running from the repo root) or a quoted
-/// `"$BREENIX_ROOT/scripts/create_ext2_disk.sh"` absolute path (callers
-/// that are not). An `echo "...create_ext2_disk.sh..."` help string and a
+/// trimmed text, after stripping an optional leading `if ! ` or `if ` and
+/// then an optional `run_build ` (run.sh's and boot-interactive.sh's
+/// wrapper that runs a build at background priority on request), starts
+/// with one of the invocation idioms real call sites in this tree use -- a
+/// relative `./scripts/create_ext2_disk.sh` (callers already running from
+/// the repo root) or a quoted `"$BREENIX_ROOT/scripts/create_ext2_disk.sh"`
+/// or `"$ROOT/scripts/create_ext2_disk.sh"` absolute path (callers that
+/// are not). An `echo "...create_ext2_disk.sh..."` help string and a
 /// `#`-led comment both contain the bare token without being a call, and
 /// neither of those two shapes starts this way.
 fn is_create_ext2_disk_invocation(line: &str) -> bool {
@@ -111,8 +113,10 @@ fn is_create_ext2_disk_invocation(line: &str) -> bool {
         .strip_prefix("if ! ")
         .or_else(|| trimmed.strip_prefix("if "))
         .unwrap_or(trimmed);
-    after_if.starts_with("./scripts/create_ext2_disk.sh")
-        || after_if.starts_with("\"$BREENIX_ROOT/scripts/create_ext2_disk.sh\"")
+    let call = after_if.strip_prefix("run_build ").unwrap_or(after_if);
+    call.starts_with("./scripts/create_ext2_disk.sh")
+        || call.starts_with("\"$BREENIX_ROOT/scripts/create_ext2_disk.sh\"")
+        || call.starts_with("\"$ROOT/scripts/create_ext2_disk.sh\"")
 }
 
 fn invocation_lines(text: &str) -> Vec<&str> {
@@ -136,15 +140,16 @@ fn no_caller_passes_a_size_flag() {
         }
     }
 
-    // Anti-vacuity floor: measured at 13 real call sites on this branch
-    // (9 distinct files under docker/qemu/ with one call each, plus
-    // run.sh's own 4). Not a closed list -- a new caller only raises this;
-    // a drop below 13 means the invocation predicate stopped matching a
-    // real call shape, not that callers went away.
+    // Anti-vacuity floor: measured at 15 real call sites on this branch
+    // (10 distinct files under docker/qemu/ with one call each,
+    // scripts/boot-interactive.sh's one, and run.sh's own 4). Not a closed
+    // list -- a new caller only raises this; a drop below 15 means the
+    // invocation predicate stopped matching a real call shape, not that
+    // callers went away.
     assert!(
-        all_invocations.len() >= 13,
+        all_invocations.len() >= 15,
         "only {} real create_ext2_disk.sh invocation(s) found across docker/, scripts/, \
-         and run.sh; expected at least 13 -- the invocation-line predicate may have stopped \
+         and run.sh; expected at least 15 -- the invocation-line predicate may have stopped \
          matching a real call shape:\n{:#?}",
         all_invocations.len(),
         all_invocations
