@@ -242,14 +242,20 @@ impl FontWatcher {
     pub fn take_mono_font(&mut self) -> Option<CachedFont> {
         self.mono_font.take()
     }
+    /// Return a taken font unless a reload has already filled its slot.
     pub fn put_mono_font(&mut self, font: Option<CachedFont>) {
-        self.mono_font = font;
+        if self.mono_font.is_none() {
+            self.mono_font = font;
+        }
     }
     pub fn take_display_font(&mut self) -> Option<CachedFont> {
         self.display_font.take()
     }
+    /// A client returning an older font cannot overwrite a published reload.
     pub fn put_display_font(&mut self, font: Option<CachedFont>) {
-        self.display_font = font;
+        if self.display_font.is_none() {
+            self.display_font = font;
+        }
     }
     pub fn poll(&mut self) -> Result<Option<FontChange>, FontWatchError> {
         if !self.enabled {
