@@ -115,7 +115,7 @@ static SUITE: Suite = suite("sdk", "Developer SDK", &[
         case("net-tcp", "std::net::TcpListener on 127.0.0.1 serves a TcpStream client in another thread", rust_net_tcp),
         case("net-udp", "std::net::UdpSocket sends a datagram on 127.0.0.1 that arrives with the sender's address", rust_net_udp),
         case("net-unix", "std::os::unix::net::UnixStream::pair carries a message from another thread", rust_net_unix),
-        case("float", "f64, f32, f128 and f16 maximum, minimum, round_ties_even, sqrt, % and mul_add give IEEE 754-2019 results, through libc's fmaximum, roundeven, sqrtf128 and kin where the target has no instruction", rust_float),
+        case("float", "f64 and f32 maximum, minimum and round_ties_even, libc's sqrtf128, fmaximumf128, roundevenf128, fmodf128 and fmaf128, and f16's methods give IEEE 754-2019 results", rust_float),
         case("nostd-hello", "The no_std libbreenix app prints \"hello from rust-nostd-app\" and exits 0", nostd_hello),
         case("nostd-syscalls", "The no_std app's getpid, file round trip and monotonic clock work through libbreenix", nostd_syscalls),
         case("nostd-exit", "The no_std app's main returns 9, and libbreenix's runtime exits with status 9", nostd_exit),

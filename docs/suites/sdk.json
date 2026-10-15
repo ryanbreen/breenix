@@ -292,7 +292,7 @@
         },
         {
           "id": "float",
-          "title": "f64, f32, f128 and f16 maximum, minimum, round_ties_even, sqrt, % and mul_add give IEEE 754-2019 results, through libc's fmaximum, roundeven, sqrtf128 and kin where the target has no instruction"
+          "title": "f64 and f32 maximum, minimum and round_ties_even, libc's sqrtf128, fmaximumf128, roundevenf128, fmodf128 and fmaf128, and f16's methods give IEEE 754-2019 results"
         },
         {
           "id": "nostd-hello",

@@ -15,10 +15,21 @@ use std::process::ExitCode;
 
 type CmdResult = Result<(), String>;
 
+// C23's _Float128 functions. rustc reports no reliable f128 math on either Breenix target (on
+// x86-64, LLVM names its binary128 calls after long double, the x87 format there), so f128's
+// methods are not what an application can rely on; these are, and are called directly.
+extern "C" {
+    fn sqrtf128(x: f128) -> f128;
+    fn fmaximumf128(x: f128, y: f128) -> f128;
+    fn roundevenf128(x: f128) -> f128;
+    fn fmodf128(x: f128, y: f128) -> f128;
+    fn fmaf128(x: f128, y: f128, z: f128) -> f128;
+}
+
 /// IEEE 754-2019 maximum and minimum and round-half-to-even, on values the compiler cannot
-/// see: where the target has no instruction for them (x86-64 soft-float, and binary128 on
-/// both targets), LLVM calls the C library's fmaximum, fminimumf, roundeven, sqrtf128,
-/// fmodf128, fmaf128 and the like.
+/// see: where the target has no instruction for them (x86-64 soft-float), LLVM calls the C
+/// library's fmaximum, fminimumf and roundeven. Then the C library's _Float128 functions, and
+/// f16's methods, which LLVM evaluates through f32 or the C library.
 fn float() -> CmdResult {
     use std::hint::black_box;
     let nan = black_box(f64::NAN);
@@ -42,14 +53,17 @@ fn float() -> CmdResult {
         black_box(0.5f32).round_ties_even(),
         black_box(5.5f32).round_ties_even(),
     );
-    println!(
-        "f128={} {} {} {} {}",
-        black_box(2.25f128).sqrt() as f64,
-        black_box(-0.0f128).maximum(black_box(0.0)) as f64,
-        black_box(2.5f128).round_ties_even() as f64,
-        (black_box(7.5f128) % black_box(2.0f128)) as f64,
-        black_box(2.0f128).mul_add(black_box(3.0), black_box(1.0)) as f64,
-    );
+    // SAFETY: the C library defines these with these signatures; they take and return values.
+    let quad = unsafe {
+        [
+            sqrtf128(black_box(2.25)),
+            fmaximumf128(black_box(-0.0), black_box(0.0)),
+            roundevenf128(black_box(2.5)),
+            fmodf128(black_box(7.5), black_box(2.0)),
+            fmaf128(black_box(2.0), black_box(3.0), black_box(1.0)),
+        ]
+    };
+    println!("f128={} {} {} {} {}", quad[0] as f64, quad[1] as f64, quad[2] as f64, quad[3] as f64, quad[4] as f64);
     println!(
         "f16={} {} {} {} {}",
         black_box(2.25f16).sqrt() as f32,
