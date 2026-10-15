@@ -972,13 +972,17 @@ The SDK the suite measures:
   `breenix-sdk`, its arch where it has one, and the commit. The SDK ships a `libc.a` for
   each arch's C programs (x86_64's with the SysV SSE float ABI), a second x86_64 `libc.a`
   with the soft-float ABI of x86_64 Rust inside its Rust sysroot, each archive for one machine,
-  a `libstd-*.rlib` per Breenix target, rustc target specs (`os` breenix) in
+  a `libstd-*.rlib` per Breenix target (every sysroot rlib carrying bitcode, so an app may
+  build with `lto = true` or `"thin"`), rustc target specs (`os` breenix) in
   `share/breenix-sdk/targets/`, the commit's `rust-fork.toml` in `share/breenix-sdk/`, and
   the quick start as `share/doc/breenix-sdk/quick-start.md`. A compile reads headers only
   from the SDK and the compiler's own resource directory. Nothing in it is musl-, glibc- or
   any other libc's code, and no archive defines compiler_builtins' libm math (a port of
-  musl's libm, which `scripts/libc-clean-archive.py` removes from `libc.a`). A copy of the
-  SDK in another directory still works.
+  musl's libm, which `scripts/libc-clean-archive.py` removes from `libc.a` and the pinned
+  fork never builds into std) or holds its module or source paths in rlib metadata, bitcode
+  or data. A copy of the SDK in another directory still works. The SDK's bytes depend only on
+  the commit: its build takes no cargo or rustc setting from the builder's cargo home,
+  environment or the directories above the build root.
 - **Disk tool.** `breenix-image install --image IMG [--mode OCTAL] [--name NAME] FILE` puts a
   program at `/usr/local/bin/NAME` (default: the file's name), owned by root with mode 0755
   unless `--mode` says otherwise, creating `/usr/local/bin` (0755, root) if needed and

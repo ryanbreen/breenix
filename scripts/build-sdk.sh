@@ -151,6 +151,7 @@ fi
 
 SDK_STAGE="$ROOT_DIR/stage"
 mkdir -p "$SDK_STAGE"
+
 if [ "$FETCH" = 1 ]; then
     CARGO_NET_OFFLINE=false
 else
@@ -165,7 +166,7 @@ export CARGO_NET_OFFLINE
 # variable but the network switch and the job count is dropped, with rustc's and the C
 # compiler's, and cargo gets a home of its own inside the build root, without a
 # config.toml, that shares only the builder's download caches and their locks.
-REAL_CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+REAL_CARGO_HOME="${CARGO_HOME:-$REAL_HOME/.cargo}"
 for name in $(compgen -e); do
     case "$name" in
         CARGO_NET_OFFLINE|CARGO_BUILD_JOBS) ;;

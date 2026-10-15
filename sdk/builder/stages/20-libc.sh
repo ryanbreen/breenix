@@ -7,11 +7,18 @@
 . "$SDK_ROOT/sdk/builder/lib.sh"
 
 LIBC="$SDK_ROOT/libs/libbreenix-libc"
+# core and compiler_builtins come from the pinned fork, as std's do: its compiler_builtins builds
+# none of the libm crate's math (a port of musl's) for Breenix. The cleaner then removes nothing,
+# and anything of that math left in an archive, even a source path in its data, stops the build.
 build_libc() {
     sdk_say "building libbreenix-libc for $1"
-    sdk_cargo "$LIBC" -- build --release --target "$SDK_ROOT/$1.json"
+    (
+        export __CARGO_TESTS_ONLY_SRC_ROOT="$SDK_ROOT/rust-fork/library"
+        sdk_cargo "$LIBC" -- build --release --target "$SDK_ROOT/$1.json"
+    )
     sdk_clean_archive "$LIBC/target/$1/release/libc.a"
     python3 "$SDK_ROOT/scripts/libc-symbol-audit.py" --arch "${1%%-*}" --archive "$LIBC/target/$1/release/libc.a"
+    sdk_no_libm_math "$LIBC/target/$1/release/libc.a"
 }
 
 build_libc aarch64-breenix

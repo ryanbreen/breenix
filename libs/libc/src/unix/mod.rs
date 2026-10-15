@@ -2388,6 +2388,15 @@ extern "C" {
     pub fn fnmatch(pattern: *const c_char, name: *const c_char, flags: c_int) -> c_int;
 }
 
+// Breenix's module stands apart from the platform chain, which is configured out as one
+// macro call there: rustc records the names and conditions of configured-out items in a
+// crate's metadata, and the Breenix SDK ships this crate's with no other C library named.
+#[cfg(target_os = "breenix")]
+mod breenix;
+#[cfg(target_os = "breenix")]
+pub use self::breenix::*;
+
+#[cfg(not(target_os = "breenix"))]
 cfg_if! {
     if #[cfg(target_env = "newlib")] {
         mod newlib;
@@ -2437,9 +2446,6 @@ cfg_if! {
     } else if #[cfg(target_os = "nuttx")] {
         mod nuttx;
         pub use self::nuttx::*;
-    } else if #[cfg(target_os = "breenix")] {
-        mod breenix;
-        pub use self::breenix::*;
     } else {
         // Unknown target_os
     }

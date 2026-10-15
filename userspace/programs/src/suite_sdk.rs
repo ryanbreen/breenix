@@ -62,7 +62,7 @@ static SUITE: Suite = suite("sdk", "Developer SDK", &[
         case("header-symbols", "A program naming 78 common POSIX functions and 20 constants, from every major header, compiles and links for both arches", host_case),
         case("headers-self-contained", "A compile reads headers only from the SDK and the compiler's own resource directory, none from the host or the checkout", host_case),
         case("no-host-paths", "No SDK file holds the checkout's path, the clean clones' paths, the Rust fork's path or the builder's home directory", host_case),
-        case("no-musl", "No SDK file carries musl's marks, and no archive defines compiler_builtins' libm math, a port of musl's libm", host_case),
+        case("no-musl", "No SDK file carries musl's marks, and no archive defines compiler_builtins' libm math, a port of musl's libm, or holds its module or sources in metadata, bitcode or data", host_case),
         case("no-glibc", "No SDK file carries glibc's marks (__GLIBC__, GNU C Library, __THROW, libc.so.6, ld-linux, glibc)", host_case),
         case("no-other-libc", "No SDK file carries the marks of newlib, bionic, uClibc, dietlibc or picolibc", host_case),
         case("relocatable", "A copy of the SDK in another directory still compiles and links a C program for each arch", host_case),
@@ -97,6 +97,7 @@ static SUITE: Suite = suite("sdk", "Developer SDK", &[
     category("rust-app", "a Rust app built outside the tree", &[
         case("built", "The Rust std app, a cargo project outside the checkout, builds with only the SDK's cargo wrapper, offline", host_case),
         case("nostd-built", "The no_std app builds with only the SDK's cargo wrapper, taking libbreenix from the SDK by version", host_case),
+        case("lto", "The Rust std app also builds with cross-crate fat LTO, which needs bitcode in every rlib of the SDK's std", host_case),
         case("outside-tree", "Neither Rust app's build (dependency lists, lock file, program) names a path into the checkout", host_case),
         case("elf", "The Rust std app is a static ELF executable for this machine (no PT_INTERP)", rust_elf),
         case("hello", "rust-app hello prints \"hello from rust-app\" and exits 0", rust_hello),
