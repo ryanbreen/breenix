@@ -505,7 +505,7 @@ const CONTRACT: &str = "docs/gui/breengel.md";
 
 /// Fail naming a piece of the stack this case needs that does not exist.
 fn missing(what: &str, section: &str) -> CaseResult {
-    fail(format!("{what} is absent ({CONTRACT} section {section})"))
+    fail(format!("missing {what} ({CONTRACT} section {section})"))
 }
 
 /// Fail with a check's own message, citing its section.
@@ -1245,7 +1245,7 @@ fn raster_damage_noop() -> CaseResult {
             call(&mut fb);
             match dirty(&mut fb) {
                 None => Ok(()),
-                Some(d) => Err(format!("{name} marked {d:?}; a draw clipped to nothing marks nothing")),
+                Some(d) => Err(format!("{name} marked {d:?}; the contract marks nothing for a draw clipped to nothing")),
             }
         }))?;
     }
@@ -1573,7 +1573,7 @@ fn text_ttf_advance() -> CaseResult {
     value("advance", drawn as i64, "px", Some((1928, 1928)));
     ensure(drawn == 1928, "8.3, 8.5", format!(
         "a 200-character DejaVu Sans Mono line at 16 px ends at {drawn} px; 200 advances of 617/64 px, rounded once, end at 1928"))?;
-    ensure(width == 1928, "8.3", format!("text_width of the line is {width}; it ends at 1928"))
+    ensure(width == 1928, "8.3", format!("text_width of the line is {width}; the contract's line ends at 1928"))
 }
 
 fn text_ttf_kerning() -> CaseResult {
@@ -1591,7 +1591,7 @@ fn text_ttf_width() -> CaseResult {
         let drawn = ttf_font::draw_text(&mut g.fb(), &mut font, text, 0, 0, size, WHITE);
         let width = ttf_font::text_width(&mut font, text, size);
         ensure(drawn == want && width == want, "8.3", format!(
-            "{text:?} at {size} px: draw_text returned {drawn} and text_width {width}; the pen ends at {want} px"))?;
+            "{text:?} at {size} px: draw_text returned {drawn} and text_width {width}; the contract's pen ends at {want} px"))?;
     }
     Ok(())
 }
@@ -1758,7 +1758,7 @@ fn text_size_range() -> CaseResult {
         let r = isolated(&format!("rasterize_glyph('H', {size})"), 3_000, || {
             match font.rasterize_glyph(h, size) {
                 Err(_) => Ok(()),
-                Ok(b) => Err(format!("size {size} px rasterized a {}x{} bitmap; sizes below 1 or above 1,024 are rejected", b.width, b.height)),
+                Ok(b) => Err(format!("size {size} px rasterized a {}x{} bitmap; the contract rejects sizes below 1 or above 1,024", b.width, b.height)),
             }
         });
         step("8.3", r)?;
@@ -2188,7 +2188,7 @@ fn font_parser_truncated() -> CaseResult {
     step("10", isolated("parsing every proper prefix of the test font", 8_000, move || {
         for cut in 0..len {
             if Font::parse(&full[..cut]).is_ok() {
-                return Err(format!("the first {cut} of {len} bytes parsed; a truncated font is rejected"));
+                return Err(format!("the first {cut} of {len} bytes parsed; the contract rejects a truncated font"));
             }
         }
         Ok(())
@@ -2589,7 +2589,7 @@ fn bmp_truncated() -> CaseResult {
     step("12", isolated("decoding every proper prefix of a 3x3 BMP", 5_000, move || {
         for cut in 0..len {
             if let Some((w, h, _)) = libimg::bmp::decode_bmp_24(&full[..cut]) {
-                return Err(format!("the first {cut} of {len} bytes decoded as {w}x{h}; a truncated BMP is rejected"));
+                return Err(format!("the first {cut} of {len} bytes decoded as {w}x{h}; the contract rejects a truncated BMP"));
             }
         }
         Ok(())
@@ -2645,7 +2645,7 @@ fn bmp_huge() -> CaseResult {
 fn bmp_unsupported() -> CaseResult {
     for (bpp, compression) in [(8u16, 0u32), (32, 0), (24, 1), (16, 3)] {
         if let Some((w, h, _)) = libimg::bmp::decode_bmp_24(&bmp_header(2, 2, bpp, compression, 64)) {
-            return at("12", format!("a {bpp}-bit BMP with compression {compression} decoded as {w}x{h}; it is unsupported"));
+            return at("12", format!("a {bpp}-bit BMP with compression {compression} decoded as {w}x{h}; the contract does not support it"));
         }
     }
     missing("libimg::bmp::decode_bmp returning BmpError::Unsupported (every unsupported file is rejected, without a reason)", "12")
@@ -2769,9 +2769,9 @@ fn widgets_button_click() -> CaseResult {
 fn widgets_button_cancel() -> CaseResult {
     let mut b = Button::new(Rect::new(10, 8, 60, 20), b"OK");
     let got = events(|i| b.update(i), &[press(30, 15), hold(95, 35), release(95, 35), hover(30, 15)]);
-    ensure(got.is_empty(), "14.3", format!("a press inside released outside reported {got:?}; it reports nothing"))?;
+    ensure(got.is_empty(), "14.3", format!("a press inside released outside reported {got:?}; the contract reports nothing"))?;
     let got = events(|i| b.update(i), &[press(95, 35), hold(30, 15), release(30, 15)]);
-    ensure(got.is_empty(), "14.3", format!("a press outside released inside reported {got:?}; it reports nothing"))
+    ensure(got.is_empty(), "14.3", format!("a press outside released inside reported {got:?}; the contract reports nothing"))
 }
 
 fn widgets_button_disabled() -> CaseResult {
@@ -2834,10 +2834,10 @@ fn widgets_tabbar_select() -> CaseResult {
     let mut t = TabBar::new(Rect::new(0, 0, 300, 24), vec![&b"One"[..], &b"Two"[..], &b"Three"[..]]);
     let got = events(|i| t.update(i), &[press(150, 12), release(150, 12)]);
     ensure(got == vec![WidgetEvent::ValueChanged(1.0)] && t.selected() == 1, "14.3",
-        format!("clicking the second tab reported {got:?} and selected {}; it reports ValueChanged(1) and selects 1", t.selected()))?;
+        format!("clicking the second tab reported {got:?} and selected {}; the contract reports ValueChanged(1) and selects 1", t.selected()))?;
     let got = events(|i| t.update(i), &[press(250, 12), release(250, 12), press(260, 12), release(260, 12)]);
     ensure(got == vec![WidgetEvent::ValueChanged(2.0)] && t.selected() == 2, "14.3",
-        format!("clicking the third tab twice reported {got:?}; only the first click selects"))
+        format!("clicking the third tab twice reported {got:?}; the contract selects on the first click only"))
 }
 
 fn widgets_tabbar_overflow() -> CaseResult {
@@ -2851,7 +2851,7 @@ fn widgets_scrollbar_drag() -> CaseResult {
     // The thumb (40 px of a 160 px range) moved from 0 to 80: offset 80 / 160 × 800.
     ensure(s.offset() == 400, "14.3", format!("dragging the thumb 80 px down set offset {}; the contract gives 400", s.offset()))?;
     s.update(&hold(6, 500));
-    ensure(s.offset() == 800, "14.3", format!("dragging past the end set offset {}; it clamps to 800", s.offset()))
+    ensure(s.offset() == 800, "14.3", format!("dragging past the end set offset {}; the contract clamps it to 800", s.offset()))
 }
 
 fn widgets_scrollbar_wheel() -> CaseResult {
@@ -2950,7 +2950,7 @@ fn widgets_menu_disabled() -> CaseResult {
         let e = m.update(&i, &theme);
         if e != MenuEvent::None { got.push(e); }
     }
-    ensure(got.is_empty(), "14.3", format!("clicking the disabled item reported {got:?}; it cannot be chosen"))?;
+    ensure(got.is_empty(), "14.3", format!("clicking the disabled item reported {got:?}; the contract does not let a disabled item be chosen"))?;
     let mut g = Guarded::bgrx(330, 140);
     g.reset(PAPER);
     m.draw(&mut g.fb(), &theme);
@@ -2975,7 +2975,7 @@ fn widgets_menu_dismiss() -> CaseResult {
         if e != MenuEvent::None { got.push(e); }
     }
     ensure(got.is_empty() && !m.is_open(), "14.3", format!(
-        "a click outside the open menu reported {got:?} and left it {}; it closes without choosing", if m.is_open() { "open" } else { "closed" }))
+        "a click outside the open menu reported {got:?} and left it {}; the contract closes it without choosing", if m.is_open() { "open" } else { "closed" }))
 }
 
 fn widgets_layout_stack() -> CaseResult {
@@ -3142,7 +3142,7 @@ fn icons_step_invariance() -> CaseResult {
         for (label, state, g) in &results[1..] {
             ensure(*state == results[0].1, "16", format!("{name}: after {label} the state is {state:?}, after {} it is {:?}", results[0].0, results[0].1))?;
             if let Some((x, y)) = same_pixels(g, &results[0].2) {
-                return at("16", format!("{name}: after {label} pixel ({x},{y}) differs from the drawing after {}; 1 ms quanta make them equal", results[0].0));
+                return at("16", format!("{name}: after {label} pixel ({x},{y}) differs from the drawing after {}; the contract's 1 ms quanta make them equal", results[0].0));
             }
         }
     }
@@ -3427,7 +3427,7 @@ fn isolation_test_hooks_absent() -> CaseResult {
     let live: Vec<String> = seen.iter().filter(|(_, r)| *r != -38).map(|(op, r)| {
         if *r == i64::MIN { format!("op {op} blocked") } else { format!("op {op} {}", outcome(*r)) }
     }).collect();
-    ensure(live.is_empty(), "17.6", format!("the wait-stress ops are reachable in this production kernel: fb_draw {}; each must fail with ENOSYS", live.join(", ")))
+    ensure(live.is_empty(), "17.6", format!("the wait-stress ops do not return ENOSYS in this production kernel: fb_draw {}; the contract requires ENOSYS from each", live.join(", ")))
 }
 
 fn isolation_retired_ops() -> CaseResult {
@@ -3437,7 +3437,7 @@ fn isolation_retired_ops() -> CaseResult {
         (4, 0, 0, 0, 0), (5, 0, 0, 0, 0), (7, 0, 0, 0, 0), (9, 0, 0, 0, 0)];
     let live: Vec<String> = calls.iter().map(|&(op, a, b, c, d)| (op, fb_draw(op, a, b, c, d)))
         .filter(|(_, r)| *r != -38).map(|(op, r)| format!("op {op} {}", outcome(r))).collect();
-    ensure(live.is_empty(), "17.6", format!("retired fb_draw demo ops still answer: {}; each must fail with ENOSYS", live.join(", ")))
+    ensure(live.is_empty(), "17.6", format!("the retired fb_draw demo ops do not return ENOSYS: {}; the contract requires ENOSYS from each", live.join(", ")))
 }
 
 fn isolation_unknown_op() -> CaseResult {
@@ -3466,10 +3466,10 @@ fn isolation_quiet_errors() -> CaseResult {
 fn isolation_controls_latched() -> CaseResult {
     let state = test_control_state();
     ensure(state == 1, "21", format!(
-        "test_control(STATE) {} in this suite boot; PID 1 is /sbin/suite-breengel, so the latch is set and STATE returns 1", outcome(state)))?;
+        "test_control(STATE) {} in this suite boot, where PID 1 is /sbin/suite-breengel; the contract latches test controls on here, and STATE returns 1", outcome(state)))?;
     // SAFETY: SET_LATCH (op 4) takes no argument and must be refused before reading one.
     let set = unsafe { raw::syscall3(SYS_TEST_CONTROL, 4, 0, 0) as i64 };
-    ensure(set == -22, "21", format!("test_control(SET_LATCH) {}; no op sets or clears the latch (EINVAL)", outcome(set)))?;
+    ensure(set == -22, "21", format!("test_control(SET_LATCH) {}; the contract has no op that sets or clears the latch, so it fails with EINVAL", outcome(set)))?;
     missing("init's child mode (/sbin/init desktop as a child reporting it is not PID 1)", "21")
 }
 
@@ -3523,7 +3523,7 @@ fn composition_fbinfo_geometry() -> CaseResult {
     let i = fbinfo().cite("18")?;
     value("fb-width", i.width as i64, "px", Some((1280, 1280)));
     value("fb-height", i.height as i64, "px", Some((800, 800)));
-    ensure((i.width, i.height) == (1280, 800), "18", format!("fbinfo reports {}x{}; a GUI suite boot runs the display at 1280x800", i.width, i.height))?;
+    ensure((i.width, i.height) == (1280, 800), "18", format!("fbinfo reports {}x{}; the contract requires 1280x800 in a GUI suite boot", i.width, i.height))?;
     ensure(i.bytes_per_pixel == 4 && i.stride >= 1280 && i.pixel_format <= 1, "18", format!(
         "fbinfo reports a stride of {} pixels, {} bytes per pixel and pixel format {}; the contract gives 4 bytes per pixel, a stride of at least 1280 pixels and format 0 or 1",
         i.stride, i.bytes_per_pixel, i.pixel_format))
@@ -3589,7 +3589,7 @@ fn events_malformed_write() -> CaseResult { needs_window("19.2", "EINVAL and not
 
 fn scanout_mode_set() -> CaseResult {
     let i = fbinfo().cite("18")?;
-    ensure((i.width, i.height) == (1280, 800), "18, 20.2", format!("fbinfo reports {}x{}; a GUI suite boot runs the display at 1280x800", i.width, i.height))?;
+    ensure((i.width, i.height) == (1280, 800), "18, 20.2", format!("fbinfo reports {}x{}; the contract requires 1280x800 in a GUI suite boot", i.width, i.height))?;
     needs_window("20.1", "the observation record's 1280x800 mode")
 }
 
