@@ -3,8 +3,15 @@
 version = 4
 
 [[package]]
+name = "breengel-abi"
+version = "0.1.0"
+
+[[package]]
 name = "libbreenix"
 version = "0.1.0"
+dependencies = [
+ "breengel-abi",
+]
 
 [[package]]
 name = "libbreenix-libc"
