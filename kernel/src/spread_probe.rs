@@ -47,6 +47,9 @@ static WSEQ: AtomicU64 = AtomicU64::new(0);
 static WFLAG: AtomicU64 = AtomicU64::new(0);
 static DRAIN_LEFT: AtomicU32 = AtomicU32::new(0);
 
+static SAMPLE_WANTED: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
+static SAMPLE_RIP: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+static SAMPLE_FLAGS: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 static FORCE_NMI: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
 static IN_IDLE_DRAIN: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
 
@@ -114,6 +117,7 @@ fn maybe_arm(now: u64) {
     match STATE.load(Ordering::Acquire) {
         ST_IDLE if now >= NEXT_ARM.load(Ordering::Relaxed) => {
             let kind = ROTATE.fetch_add(1, Ordering::Relaxed) % 4 + 1;
+            let kind = if kind == 4 { 2 } else { kind };
             KIND.store(kind, Ordering::Relaxed);
             STATE.store(ST_ARMED, Ordering::Release);
         }
@@ -177,6 +181,14 @@ pub fn idle_before_halt() {
     }
 }
 
+/// Every NMI: record the interrupted RIP and RFLAGS when a sample is wanted.
+pub fn nmi_sample(cpu: usize, rip: u64, flags: u64) {
+    if cpu < MAX_CPUS && SAMPLE_WANTED[cpu].swap(false, Ordering::AcqRel) {
+        SAMPLE_RIP[cpu].store(rip, Ordering::Relaxed);
+        SAMPLE_FLAGS[cpu].store(flags, Ordering::Relaxed);
+    }
+}
+
 /// UNAVAIL: top of the NMI handler.
 pub fn nmi_hook(cpu: usize) {
     if cpu < MAX_CPUS && FORCE_NMI[cpu].swap(false, Ordering::AcqRel) {
@@ -207,7 +219,23 @@ pub fn ipi_hook(vector: u8) {
     }
     let cpu = cpu_now();
     if try_begin(IPI, cpu) {
-        x86_64::instructions::interrupts::without_interrupts(|| spin_ms(30));
+        x86_64::instructions::interrupts::without_interrupts(|| {
+            spin_ms(20);
+            for other in 0..crate::arch_impl::x86_64::smp::cpus_online().min(4) as usize {
+                if other == cpu {
+                    continue;
+                }
+                SAMPLE_RIP[other].store(0, Ordering::Relaxed);
+                SAMPLE_WANTED[other].store(true, Ordering::Release);
+                if let Some(apic) = crate::arch_impl::x86_64::smp::cpu_apic_id(other) {
+                    let _ = crate::arch_impl::x86_64::apic::send_ipi(
+                        apic,
+                        crate::arch_impl::x86_64::apic::Ipi::Nmi,
+                    );
+                }
+            }
+            spin_ms(10);
+        });
         end();
     }
 }
@@ -335,7 +363,7 @@ pub fn poll() {
     };
     let seq = WSEQ.fetch_add(1, Ordering::Relaxed);
     log::info!(
-        "SPREAD seq={} kind={} cpu={} dur_us={} held={} gap_us={:?} sched_us={:?} pm_us={:?} sd_us={:?} sd_max_us={} sd_at={}:{} sd_tgt={:#x} sd_held={} dblk_us={:?}",
+        "SPREAD seq={} kind={} cpu={} dur_us={} held={} gap_us={:?} sched_us={:?} pm_us={:?} sd_us={:?} sd_max_us={} sd_at={}:{} sd_tgt={:#x} sd_held={} dblk_us={:?} rip={:x?} rfl={:x?}",
         seq,
         KIND.load(Ordering::Relaxed),
         WCPU.load(Ordering::Relaxed),
@@ -351,7 +379,12 @@ pub fn poll() {
         SD_MAX_TGT.load(Ordering::Relaxed),
         SD_MAX_HELD.load(Ordering::Relaxed),
         blocked,
+        [0, 1, 2, 3].map(|i| SAMPLE_RIP[i].load(Ordering::Relaxed)),
+        [0, 1, 2, 3].map(|i| SAMPLE_FLAGS[i].load(Ordering::Relaxed)),
     );
+    for slot in SAMPLE_RIP.iter() {
+        slot.store(0, Ordering::Relaxed);
+    }
     for arr in [&GAP, &SCHED_WAIT, &PM_WAIT, &SD_WAIT, &DISPATCH_BLOCKED] {
         for slot in arr.iter() {
             slot.store(0, Ordering::Relaxed);
@@ -361,6 +394,6 @@ pub fn poll() {
     SD_MAX_LOC.store(0, Ordering::Relaxed);
     SD_MAX_TGT.store(0, Ordering::Relaxed);
     SD_MAX_HELD.store(0, Ordering::Relaxed);
-    NEXT_ARM.store(rdtsc() + 500 * cycles_per_ms(), Ordering::Relaxed);
+    NEXT_ARM.store(rdtsc() + 200 * cycles_per_ms(), Ordering::Relaxed);
     STATE.store(ST_IDLE, Ordering::Release);
 }

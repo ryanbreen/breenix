@@ -459,7 +459,7 @@ mod shootdown {
     /// handling. The CPU is found from its local APIC id. A request posted
     /// after the PENDING read is left set; its NMI, held while this handler
     /// runs, is taken once it returns.
-    pub extern "x86-interrupt" fn shootdown_nmi_handler(_frame: InterruptStackFrame) {
+    pub extern "x86-interrupt" fn shootdown_nmi_handler(frame: InterruptStackFrame) {
         let cpu = if apic::active() {
             smp::cpu_of_apic_id(apic::id())
         } else {
@@ -469,6 +469,11 @@ mod shootdown {
             UNCLAIMED_NMIS.fetch_add(1, Ordering::Relaxed);
             return;
         };
+        crate::spread_probe::nmi_sample(
+            cpu,
+            frame.instruction_pointer.as_u64(),
+            frame.cpu_flags.bits(),
+        );
         crate::spread_probe::nmi_hook(cpu);
         let pending = PENDING[cpu].load(Ordering::Acquire);
         if pending == 0 {
