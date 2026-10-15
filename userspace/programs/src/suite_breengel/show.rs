@@ -12,6 +12,19 @@ pub(crate) const PANEL: &[Case] = &[
     case("counts", "Fixed pass, fail and count fixtures draw the expected digits in the expected colours", panel_counts),
     case("fail-rows", "Failed cases are listed with their names in the failure rows", panel_fail_rows),
     case("layout", "The category bars and score occupy the contract's rectangles at this mode", panel_layout),
+    case("stage-layout", "Stage fixture header, wall, spotlight and ribbon occupy the contract rectangles", panel_stage_layout),
+    case("tile-stamps", "Tile order, milestone grouping, stamp states and key numbers match the fixture", panel_tile_stamps),
+    case("tile-thumbnail", "Every thumbnail is the integer box filter of the judged frame", panel_tile_thumbnail),
+    case("spotlight-picture", "Expected, actual and difference panes show the first mismatch and comparison bound", panel_spotlight_picture),
+    case("spotlight-timing", "Frame-time bars and the budget line match the fixture numbers", panel_spotlight_timing),
+    case("milestone-ribbon", "Milestone segments light exactly when their cases have passed", panel_milestone_ribbon),
+    case("finale", "The summary shows counts and the slowest case and holds for five seconds of UI time", panel_finale),
+    case("deterministic", "The same results at the same UI time draw byte-identical stage pixels without real clock reads", panel_deterministic),
+    case("judged-frame-shown", "Every picture tile shows the frame whose SHA-256 its CASE record printed, after detecting substitution", panel_judged_frame_shown),
+    case("serial-agreement", "Stage scanout tile ids, stamps and numbers agree with CASE bytes after detecting stage-lie", panel_serial_agreement),
+    case("quiet-window", "No runner composite occurs inside a measured case window after detecting stage-draw-in-window", panel_quiet_window),
+    case("boot-ribbon", "The restored kernel ribbon matches producer boot-stage markers after detecting ribbon-drop-stage", panel_boot_ribbon),
+    case("boundary-notice", "The stage observation notice agrees with the backend flags and boundary code", panel_boundary_notice),
 ];
 
 #[repr(C)]
@@ -139,3 +152,17 @@ fn panel_layout() -> CaseResult {
         font5x7::draw_text(fb, b"run", 32, 746, WHITE, 2);
     })
 }
+
+fn panel_stage_layout() -> CaseResult { missing("the run stage", "23.2") }
+fn panel_tile_stamps() -> CaseResult { missing("the run stage", "23.3") }
+fn panel_tile_thumbnail() -> CaseResult { missing("the run stage", "23.3") }
+fn panel_spotlight_picture() -> CaseResult { missing("the run stage", "23.4") }
+fn panel_spotlight_timing() -> CaseResult { missing("the run stage", "23.4") }
+fn panel_milestone_ribbon() -> CaseResult { missing("the run stage", "23.5") }
+fn panel_finale() -> CaseResult { missing("the run stage", "23.6") }
+fn panel_deterministic() -> CaseResult { missing("the run stage", "23.2") }
+fn panel_judged_frame_shown() -> CaseResult { missing("the run stage", "23.8") }
+fn panel_serial_agreement() -> CaseResult { missing("the run stage", "23.8") }
+fn panel_quiet_window() -> CaseResult { missing("the run stage", "23.8") }
+fn panel_boot_ribbon() -> CaseResult { missing("the run stage", "23.7") }
+fn panel_boundary_notice() -> CaseResult { missing("the run stage", "23.8") }

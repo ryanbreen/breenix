@@ -1601,6 +1601,58 @@
           "title": "The category bars and score occupy the contract's rectangles at this mode"
         },
         {
+          "id": "stage-layout",
+          "title": "Stage fixture header, wall, spotlight and ribbon occupy the contract rectangles"
+        },
+        {
+          "id": "tile-stamps",
+          "title": "Tile order, milestone grouping, stamp states and key numbers match the fixture"
+        },
+        {
+          "id": "tile-thumbnail",
+          "title": "Every thumbnail is the integer box filter of the judged frame"
+        },
+        {
+          "id": "spotlight-picture",
+          "title": "Expected, actual and difference panes show the first mismatch and comparison bound"
+        },
+        {
+          "id": "spotlight-timing",
+          "title": "Frame-time bars and the budget line match the fixture numbers"
+        },
+        {
+          "id": "milestone-ribbon",
+          "title": "Milestone segments light exactly when their cases have passed"
+        },
+        {
+          "id": "finale",
+          "title": "The summary shows counts and the slowest case and holds for five seconds of UI time"
+        },
+        {
+          "id": "deterministic",
+          "title": "The same results at the same UI time draw byte-identical stage pixels without real clock reads"
+        },
+        {
+          "id": "judged-frame-shown",
+          "title": "Every picture tile shows the frame whose SHA-256 its CASE record printed, after detecting substitution"
+        },
+        {
+          "id": "serial-agreement",
+          "title": "Stage scanout tile ids, stamps and numbers agree with CASE bytes after detecting stage-lie"
+        },
+        {
+          "id": "quiet-window",
+          "title": "No runner composite occurs inside a measured case window after detecting stage-draw-in-window"
+        },
+        {
+          "id": "boot-ribbon",
+          "title": "The restored kernel ribbon matches producer boot-stage markers after detecting ribbon-drop-stage"
+        },
+        {
+          "id": "boundary-notice",
+          "title": "The stage observation notice agrees with the backend flags and boundary code"
+        },
+        {
           "id": "handoff",
           "title": "A display-taking child under probe takes the display, gives it back, and the panel is restored exactly"
         },
