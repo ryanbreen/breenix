@@ -10,6 +10,7 @@ rational arithmetic; nothing is copied from a table:
   B_2k      Bernoulli numbers from sum_{j=0}^{m} C(m+1, j) B_j = 0
   gamma     Euler's constant by Euler-Maclaurin summation:
             gamma = H_n - ln n - 1/(2n) + sum_k B_2k / (2k n^2k), with n = 10^4
+  zeta(k)-1 Euler-Maclaurin summation after the terms 2..63, for ln Gamma(2 + t)
   1/n!, 1/(2k+1)  exact rationals
 
 Each constant is written as a double-double (hi, lo): hi is the double nearest the value
@@ -77,6 +78,18 @@ def bernoulli(n):
     return b
 
 
+def zeta_minus_one(k, b, n=64):
+    """zeta(k) - 1 by Euler-Maclaurin summation: the terms 2..n-1 in fixed point, then
+    n^(1-k)/(k-1) + n^-k/2 + sum_j B_2j/(2j)! k (k+1) ... (k+2j-2) n^(1-k-2j)."""
+    head = frac(sum(ONE // j ** k for j in range(2, n)))
+    tail = Fraction(1, (k - 1) * n ** (k - 1)) + Fraction(1, 2 * n ** k)
+    rising = k
+    for j in range(1, 20):
+        tail += b[2 * j] / math.factorial(2 * j) * rising / Fraction(n) ** (k + 2 * j - 1)
+        rising *= (k + 2 * j - 1) * (k + 2 * j)
+    return head + tail
+
+
 def emit_dd(out, name, value, doc):
     hi, lo = dd(value)
     out.append(f"/// {doc}")
@@ -136,6 +149,15 @@ def main():
     out.append("")
     emit_dd(out, "EULER", euler, "Euler's constant gamma")
     emit_dd(out, "PI_SQ_12", pi * pi / 12, "pi^2 / 12 = zeta(2) / 2")
+
+    # ln Gamma(2 + t) = (1 - gamma) t + sum_{k>=2} (-1)^k (zeta(k) - 1) / k t^k, |t| < 2.
+    out.append("")
+    out.append("/// (-1)^k (zeta(k) - 1) / k for k = 2..=60, the coefficients of t^k in ln Gamma(2 + t).")
+    out.append("pub(crate) const LGAMMA2: [DD; 59] = [")
+    for k in range(2, 61):
+        hi, lo = dd((-1) ** k * zeta_minus_one(k, b) / k)
+        out.append(f"    DD::new(f64::from_bits(0x{bits(hi):016x}), f64::from_bits(0x{bits(lo):016x})),")
+    out.append("];")
 
     out.append("")
     out.append("/// 1 / n! for n = 0..")

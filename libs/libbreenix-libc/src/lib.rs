@@ -26,6 +26,8 @@
 // semantics inside it, or it rewrites their bodies into calls to themselves (or away).
 #![no_builtins]
 #![feature(c_variadic)]
+// long double is binary128 on aarch64; its C entry points take and return f128.
+#![cfg_attr(target_arch = "aarch64", feature(f128))]
 
 mod crt;
 mod setjmp;
@@ -34,6 +36,9 @@ mod libgen;
 mod pwd;
 mod unistd;
 mod process;
+mod spawn;
+mod threads;
+mod uchar;
 mod conf;
 mod cwd;
 pub use cwd::getcwd;

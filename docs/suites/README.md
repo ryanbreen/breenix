@@ -969,8 +969,10 @@ The SDK the suite measures:
   `x86_64-breenix-cargo` (cargo for Breenix's targets with the SDK's prebuilt std; a
   project's `libbreenix = "0.1"` dependency resolves to the SDK's own copy, offline),
   `breenix-image`, `breenix-new` and `breenix-build`. Each tool's `--version` first line names
-  `breenix-sdk`, its arch where it has one, and the commit. The SDK ships one `libc.a` per
-  arch, a `libstd-*.rlib` per Breenix target, rustc target specs (`os` breenix) in
+  `breenix-sdk`, its arch where it has one, and the commit. The SDK ships a `libc.a` for
+  each arch's C programs (x86_64's with the SysV SSE float ABI), a second x86_64 `libc.a`
+  with the soft-float ABI of x86_64 Rust inside its Rust sysroot, each archive for one machine,
+  a `libstd-*.rlib` per Breenix target, rustc target specs (`os` breenix) in
   `share/breenix-sdk/targets/`, the commit's `rust-fork.toml` in `share/breenix-sdk/`, and
   the quick start as `share/doc/breenix-sdk/quick-start.md`. A compile reads headers only
   from the SDK and the compiler's own resource directory. Nothing in it is musl-, glibc- or

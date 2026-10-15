@@ -435,8 +435,8 @@ class Harness:
         second = self.work / 'export2'
         export(ROOT, self.commit, second)
         prefix = self.work / 'sdk2'
-        say('building the SDK a second time from a clone at another path')
-        ran = run(['bash', second / 'scripts' / 'build-sdk.sh', '--prefix', prefix], second, self.build_env(),
+        say('building the SDK a second time from a clone at another path, in a hostile environment')
+        ran = run(['bash', second / 'scripts' / 'build-sdk.sh', '--prefix', prefix], second, self.hostile_env(),
                   TIMEOUT_SDK, self.logs / 'build-sdk-2.log')
         if not ran.ok:
             self.records.fail('toolchain/reproducible', ran.why('the second build'))
@@ -458,6 +458,39 @@ class Harness:
                              f'{len(differences)} paths differ between the two builds, the first: {", ".join(differences[:3])}')
         shutil.rmtree(prefix, ignore_errors=True)
         shutil.rmtree(second, ignore_errors=True)
+        shutil.rmtree(self.work / 'hostile', ignore_errors=True)
+
+    def hostile_env(self):
+        """The build's environment plus a builder's settings that must not reach the SDK: a
+        cargo home whose config.toml moves the target directory and changes the release
+        profile and rustc's flags, the same through CARGO_* and RUSTFLAGS, and C compiler
+        settings. The cargo home shares the real one's download caches."""
+        env = self.build_env()
+        real = Path(env['CARGO_HOME'])
+        hostile = self.work / 'hostile'
+        home = hostile / 'cargo-home'
+        home.mkdir(parents=True)
+        for entry in ('registry', 'git', '.package-cache', '.package-cache-mutate', '.global-cache'):
+            if (real / entry).exists():
+                (home / entry).symlink_to(real / entry)
+        (home / 'config.toml').write_text(
+            '[build]\n'
+            f'target-dir = "{hostile / "target"}"\n'
+            'rustflags = ["-Copt-level=1", "-Cdebuginfo=2"]\n'
+            '[profile.release]\nopt-level = 1\ndebug = 2\ncodegen-units = 7\n')
+        (hostile / 'include').mkdir()
+        env.update({
+            'CARGO_HOME': str(home),
+            'CARGO_PROFILE_RELEASE_OPT_LEVEL': '1',
+            'CARGO_PROFILE_RELEASE_DEBUG': '2',
+            'CARGO_BUILD_TARGET_DIR': str(hostile / 'target2'),
+            'CARGO_TARGET_DIR': str(hostile / 'target3'),
+            'RUSTFLAGS': '-Copt-level=1',
+            'CARGO_ENCODED_RUSTFLAGS': '-Cdebuginfo=2',
+            'CFLAGS': '-O0 -g',
+            'CPATH': str(hostile / 'include'),
+        })
+        return env
 
     def check_version_line(self, case, tool, arch):
         if not tool.is_file():
@@ -506,11 +539,11 @@ class Harness:
         self.records.set('toolchain/target-specs', not missing,
                          f'share/breenix-sdk/targets has no rustc target spec with os breenix for {", ".join(missing)}')
 
-    def compile(self, arch, args, cwd, log):
+    def compile(self, arch, args, cwd, log, extra=None):
         tool = self.tool(arch, 'cc')
         if not tool.is_file():
             return Ran(127, '', f'the SDK has no bin/{tool.name}')
-        return run([tool, *args], cwd, sdk_env(self.sdk, self.home), TIMEOUT_TOOL, log)
+        return run([tool, *args], cwd, sdk_env(self.sdk, self.home, extra), TIMEOUT_TOOL, log)
 
     def check_headers(self, exported):
         lists = exported / 'userspace' / 'sdk-suite' / 'headers'
@@ -589,17 +622,25 @@ class Harness:
         r.set('toolchain/no-other-libc', not found, 'other C libraries\' marks: ' + describe_found(found, {}))
 
     def libm_symbols(self):
-        """SDK archives whose symbol tables define compiler_builtins' musl-derived math."""
-        tool_dir = run([ROOT / 'scripts' / 'breenix-cc', '--arch', 'aarch64', '--tool-dir'], ROOT, dict(os.environ), TIMEOUT_TOOL)
-        nm = Path(tool_dir.out.strip()) / 'llvm-nm'
-        if not tool_dir.ok or not nm.exists():
-            return ['(llvm-nm was not found, so archives were not read)']
+        """SDK archives whose symbol tables define compiler_builtins' musl-derived math, or
+        that could not be read (named so, which fails the case rather than passing it unread).
+
+        The archives are read with the pinned toolchain's own llvm-nm: rlibs carry rustc's
+        LLVM bitcode, which an older host LLVM cannot read."""
+        sysroot = run(['rustc', '--print', 'sysroot'], ROOT, dict(os.environ), TIMEOUT_TOOL)
+        host = run(['rustc', '-vV'], ROOT, dict(os.environ), TIMEOUT_TOOL)
+        triple = re.search(r'^host: (\S+)$', host.out, re.MULTILINE)
+        nm = Path(sysroot.out.strip()) / 'lib' / 'rustlib' / (triple.group(1) if triple else '') / 'bin' / 'llvm-nm'
+        if not sysroot.ok or not triple or not nm.exists():
+            return ['(the pinned toolchain has no llvm-nm, so no archive was read)']
         holding = []
         for path in files_under(self.sdk):
             if path.suffix not in ('.a', '.rlib'):
                 continue
             ran = run([nm, '--defined-only', '--format=posix', path], self.home, dict(os.environ), TIMEOUT_TOOL)
-            if any(mark in line for line in ran.out.splitlines() for mark in MUSL_LIBM_SYMBOLS):
+            if not ran.ok:
+                holding.append(f'{path.relative_to(self.sdk)} (llvm-nm could not read it: {ran.why("llvm-nm")})')
+            elif any(mark in line for line in ran.out.splitlines() for mark in MUSL_LIBM_SYMBOLS):
                 holding.append(str(path.relative_to(self.sdk)))
         return holding
 
@@ -666,10 +707,20 @@ class Harness:
         app = self.fresh_copy('c-app')
         log = self.logs / 'c-app.log'
         sources = sorted(p.name for p in app.glob('*.c'))
+        # A builder's environment may name its own header directories, which clang searches
+        # ahead of the SDK's: the app builds with CPATH and C_INCLUDE_PATH naming a directory
+        # where every header it includes is an #error.
+        poison = self.work / 'host-include'
+        poison.mkdir()
+        for path in sorted(app.glob('*.[ch]')):
+            for name in re.findall(r'^\s*#\s*include\s*<([^>]+)>', path.read_text(errors='replace'), re.M):
+                (poison / name).parent.mkdir(parents=True, exist_ok=True)
+                (poison / name).write_text(f'#error the host header {name} was used\n')
+        hostile = {'CPATH': str(poison), 'C_INCLUDE_PATH': str(poison)}
         warnings, failed = [], None
         for source in sources:
             ran = self.compile(self.arch, ['-std=c17', '-O2', '-Wall', '-Wextra', '-MD', '-c', source,
-                                           '-o', source[:-2] + '.o'], app, log)
+                                           '-o', source[:-2] + '.o'], app, log, hostile)
             warnings += [l for l in ran.err.splitlines() if 'warning:' in l]
             if not ran.ok:
                 failed = ran.why(f'compiling {source}')
@@ -993,6 +1044,11 @@ def main():
     parser.add_argument('--image', help='an ext2 disk image (a copy) to stage the results onto')
     parser.add_argument('--rebuild', action='store_true', help='discard a cached build of this commit')
     args = parser.parse_args()
+    # The builds share the Mac with its user: run this script's whole process tree at
+    # background priority. The boot that follows it is a separate process and keeps its own.
+    if sys.platform == 'darwin' and os.environ.get('BREENIX_SDK_SUITE_BACKGROUND') != '1' and shutil.which('taskpolicy'):
+        os.environ['BREENIX_SDK_SUITE_BACKGROUND'] = '1'
+        os.execvp('taskpolicy', ['taskpolicy', '-b', sys.executable, *sys.argv])
     harness = Harness(args.arch, args.rebuild)
     harness.build()
     if args.image:
