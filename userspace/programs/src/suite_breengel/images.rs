@@ -9,7 +9,7 @@ fn picture_case(run: impl FnOnce() -> CaseResult) -> CaseResult {
     let result = run();
     let handoff = handoff_images(checks::take_judged_images());
     match (result, handoff) {
-        (Err(primary), Err(secondary)) => fail(format!("{primary}; showcase: {secondary}")),
+        (Err(primary), Err(secondary)) => fail(format!("{primary:?}; showcase: {secondary:?}")),
         (Err(primary), _) => Err(primary),
         (Ok(()), handoff) => handoff,
     }
@@ -48,7 +48,7 @@ fn handoff_images(images: Vec<checks::JudgedImage>) -> CaseResult {
     for (ordinal, (image, &(x0, y0, w, h))) in images.iter().zip(&placements).enumerate() {
         for (row, title) in ["ACTUAL BGR / ALPHA", "REFERENCE BGR / ALPHA", "DIFFERENCE BGR / ALPHA"].iter().enumerate() {
             let y0 = y0 + row * (h + 16);
-            font5x7::draw_text(&mut frame, format!("{} {} {}", ordinal + 1, image.label, title).as_bytes(), x0 as i32, y0 as i32, Color::rgb(255, 255, 255), 1);
+            font5x7::draw_text(&mut frame, format!("{} {} {}", ordinal + 1, image.label, title).as_bytes(), x0, y0, Color::rgb(255, 255, 255), 1);
             for y in 0..h { for x in 0..w {
                 let read = |i: &libimg::png::Image| -> [u8; 4] {
                     if x >= i.width as usize || y >= i.height as usize { return [0; 4]; }
@@ -404,8 +404,7 @@ fn bmp_encode_bytes() -> CaseResult {
     match got.iter().zip(BMP_2X2.iter()).position(|(a, b)| a != b) {
         _ if got.len() != BMP_2X2.len() => at("12", format!("encode_bmp_24 of the 2x2 image wrote {} bytes; the contract's file is 70", got.len())),
         Some(i) => at("12", format!("encode_bmp_24 of the 2x2 image differs at byte {i}: {:#04x}, the contract has {:#04x}", got[i], BMP_2X2[i])),
-        Err(error) if error == expected => Ok(()),
-            Err(error) => Err(format!("{what}: got {error:?}, expected {expected:?}")),
+        None => Ok(()),
     }
 }
 
