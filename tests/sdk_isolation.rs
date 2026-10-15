@@ -116,7 +116,7 @@ fn the_component_match_ignores_longer_names() {
 #[test]
 fn sdk_host_tools() {
     let root = repo_root();
-    for test in ["sdk/tests/templates_test.py", "sdk/tests/image_test.py",
+    for test in ["sdk/tests/build_root_test.py", "sdk/tests/templates_test.py", "sdk/tests/image_test.py",
                  "sdk/tests/run_disk_test.py", "tests/libc_spawn_host.py"] {
         let status = Command::new("python3").arg(root.join(test)).current_dir(&root)
             .status().expect("python3 runs");

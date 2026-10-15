@@ -7,7 +7,7 @@
 # cargo and git reach the network so a cold cache is filled, and the next build needs
 # none. The SDK is versioned by the commit it is built from, so the tree must be clean.
 #
-# The commit's sources are archived into a fixed build root, /tmp/breenix-sdk-build-<uid>/<commit>,
+# The commit's sources are archived into a fixed build root, /tmp/breenix-sdk-build/<commit>,
 # together with the pinned Rust library from BREENIX_RUST_FORK_LIBRARY (default:
 # rust-fork/library), a git checkout holding the pin or a verified snapshot. A fixed root
 # keeps cargo's path-derived crate hashes, and so the output, identical across checkouts.
@@ -54,17 +54,17 @@ FETCH_ARG=()
 # The builder's home, which HOME need not name (the suite gives builds a home of their own).
 REAL_HOME="$(python3 -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')"
 
-# A stable per-user path preserves Cargo metadata hashes without trusting a
-# shared writable directory. Refuse pre-created symlinks and foreign owners.
+# The fixed path preserves Cargo metadata hashes across users and checkouts.
+# Refuse pre-created symlinks, foreign owners and directories others can alter.
 BASE="$(python3 - <<'PYBASE'
 import os, stat
-base = '/tmp/breenix-sdk-build-' + str(os.getuid())
+base = '/tmp/breenix-sdk-build'
 try:
     os.mkdir(base, 0o700)
 except FileExistsError:
     pass
 info = os.lstat(base)
-if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o022:
     raise SystemExit('build-sdk: unsafe build root ' + base)
 print(base)
 PYBASE
