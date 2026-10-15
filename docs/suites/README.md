@@ -925,8 +925,8 @@ swift run breenix-runs run x86 --mode suite --boots 1 --suite utilities --sha <p
 
 `sdk` measures the Developer SDK effort in `docs/efforts/path.json`: our own applications
 build outside the kernel tree against a packaged toolchain, headers and libraries, and run
-here. Its 105 cases cover five categories, one per milestone: `toolchain` (22), `c-app`
-(24), `rust-app` (22), `install` (20) and `templates` (17).
+here. Its 106 cases cover five categories, one per milestone: `toolchain` (22), `c-app`
+(25), `rust-app` (22), `install` (20) and `templates` (17).
 
 The suite has a host side, `scripts/sdk-suite.py`, which runs before the boot, offline.
 It builds the SDK with `scripts/build-sdk.sh` from a clean checkout (a fresh local clone,
