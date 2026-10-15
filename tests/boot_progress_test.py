@@ -121,8 +121,9 @@ class ProgressTest(unittest.TestCase):
         self.assertEqual(self.progress.last_line, 'SUITE threads CASE partial PASS ms=1')
 
     def test_long_silent_case_requires_explicit_named_allowance(self):
-        # Blanket overrides remain forbidden. Only the runner's named RTC
-        # allowance may exceed 10 s, and even it must fit the stall deadline.
+        # Blanket overrides remain forbidden. Only the runner's named
+        # allowances may exceed 10 s (the RTC measurement and the breengel
+        # workloads plan section 19 names), and each must fit the stall deadline.
         self.feed('SUITE threads START cases=141\n', 0)
         self.assertTrue(self.progress.stalled(now=121))
         # Inspect both builder calls and public-field overrides in the program
@@ -139,7 +140,14 @@ class ProgressTest(unittest.TestCase):
                       in entries}
         self.assertEqual(len(entries), len(allowances), 'allowance names must be unique')
         monitor = runpy.run_path(str(ROOT / 'scripts/boot_progress.py'))
-        self.assertEqual(allowances, {('time', 'clocks/rate-counter'): 25_000})
+        self.assertEqual(allowances, {
+            ('time', 'clocks/rate-counter'): 25_000,
+            ('breengel', 'font-parser/corpus'): 20_000,
+            ('breengel', 'inflate/byte-split'): 20_000,
+            ('breengel', 'png-decode/independent-fixtures'): 20_000,
+            ('breengel', 'windows/churn'): 20_000,
+            ('breengel', 'composition/present-rate'): 20_000,
+        })
         for (suite, case), limit in allowances.items():
             manifest = json.loads((ROOT / f'docs/suites/{suite}.json').read_text())
             names = {f"{category['id']}/{item['id']}" for category in manifest['categories']

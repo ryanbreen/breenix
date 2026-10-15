@@ -166,8 +166,16 @@ pub const DEFAULT_CASE_LIMIT_MS: u64 = 10_000;
 /// Named exceptions to case limits, checked by host tests against the stall deadline.
 /// RTC edge selection can span sixteen seconds plus three starting edges;
 /// allow reporter headroom without extending any other time-suite case.
+/// The breengel workloads plan section 19 names (the 64-file font corpus, inflate fed at
+/// every byte split, the PngSuite fixtures, 100 window churns and 300 timed commits) get
+/// the workload plus the 1.5 s collection reserve, rounded up.
 pub const NAMED_CASE_ALLOWANCES: &[(&str, &str, u64)] = &[
     ("time", "clocks/rate-counter", 25_000),
+    ("breengel", "font-parser/corpus", 20_000),
+    ("breengel", "inflate/byte-split", 20_000),
+    ("breengel", "png-decode/independent-fixtures", 20_000),
+    ("breengel", "windows/churn", 20_000),
+    ("breengel", "composition/present-rate", 20_000),
 ];
 
 /// In a case's process, when its limit passes, in monotonic nanoseconds; 0 elsewhere.

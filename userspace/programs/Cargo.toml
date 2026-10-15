@@ -17,6 +17,8 @@ libbui = { path = "../../libs/libbui" }
 libimg = { path = "../../libs/libimg" }
 breenish-js = { path = "../../libs/breenish-js" }
 libicon = { path = "../../libs/libicon" }
+# The 16 px bitmap font libgfx draws; suite-breengel reads its rasters as the reference cells.
+noto-sans-mono-bitmap = { version = "0.3", default-features = false, features = ["size_16", "regular", "unicode-basic-latin", "unicode-specials"] }
 
 [[bin]]
 name = "hello_std_real"
@@ -749,6 +751,10 @@ path = "src/suite_utilities.rs"
 [[bin]]
 name = "suite-sdk"
 path = "src/suite_sdk.rs"
+
+[[bin]]
+name = "suite-breengel"
+path = "src/suite_breengel.rs"
 
 [[bin]]
 name = "fifo_fs_test"

@@ -675,3 +675,37 @@ fn timing_classification_ignores_comments_and_literals() {
         assert!(uses_time_or_concurrency(source.parse().unwrap()));
     }
 }
+
+/// The GUI suites (docs/gui/plan.md section 2.2): every case passes or fails, so a suite
+/// source may not call `skip`, whatever it imports or says in comments.
+const GUI_SUITES: &[&str] = &["breengel", "window-manager", "ui-testing", "gui-apps"];
+
+fn calls_skip(tokens: proc_macro2::TokenStream) -> bool {
+    let tokens: Vec<proc_macro2::TokenTree> = tokens.into_iter().collect();
+    tokens.iter().enumerate().any(|(i, token)| match token {
+        proc_macro2::TokenTree::Group(group) => calls_skip(group.stream()),
+        proc_macro2::TokenTree::Ident(ident) => ident == "skip" && matches!(tokens.get(i + 1),
+            Some(proc_macro2::TokenTree::Group(group)) if group.delimiter() == proc_macro2::Delimiter::Parenthesis),
+        _ => false,
+    })
+}
+
+#[test]
+fn gui_suites_never_skip() {
+    let root = repo_root();
+    let mut checked = 0;
+    for id in GUI_SUITES {
+        let path = root.join(format!("userspace/programs/src/suite_{}.rs", id.replace('-', "_")));
+        let Ok(source) = fs::read_to_string(&path) else { continue };
+        checked += 1;
+        assert!(!calls_skip(source.parse().unwrap()), "{id}: a GUI suite's cases pass or fail; remove the call to skip");
+    }
+    assert!(checked > 0, "no GUI suite source was found");
+}
+
+#[test]
+fn skip_calls_are_found_exactly() {
+    assert!(calls_skip("fn c() -> CaseResult { skip(\"no device\") }".parse().unwrap()));
+    assert!(calls_skip("fn c() -> CaseResult { if x { return suite::skip(why); } Ok(()) }".parse().unwrap()));
+    assert!(!calls_skip("use libbreenix::suite::{fail, skip}; // skip(\"x\")\nfn c() { let s = \"skip(1)\"; let skipped = 0; }".parse().unwrap()));
+}
