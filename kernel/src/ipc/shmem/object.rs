@@ -62,7 +62,10 @@ fn insert(root: &mut Option<Box<PageNode>>, node: Box<PageNode>, mut branch: Box
     } else {
         1u64 << (63 - diff.leading_zeros())
     };
-    if top.bit > bit {
+    // A node whose highest difference from the subtree's lowest index is at or below the
+    // subtree's branch bit belongs inside it; a second branch on the same bit would hide the
+    // subtree's right half from `find`.
+    if top.bit >= bit {
         let top = root.as_mut().unwrap();
         if node.index & top.bit == 0 {
             insert(&mut top.left, node, branch);
