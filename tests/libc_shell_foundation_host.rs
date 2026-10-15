@@ -382,6 +382,12 @@ fn configuration_distinguishes_pseudo_file_systems_and_terminal_lines() {
         assert_eq!(conf::fpathconf(3, 18), 1024);
         assert_eq!(conf::fpathconf(3, 20), 1);
         assert_eq!(conf::fpathconf(3, 21), 1_000_000_000);
+        // POSIX.1-2024's TEXTDOMAIN_MAX (no limit) and _POSIX_FALLOC (no
+        // posix_fallocate): valid names, -1 with errno unchanged.
+        for name in [22, 23] {
+            assert_eq!(conf::fpathconf(3, name), -1);
+            assert_eq!(pthread::errno(), 77);
+        }
     }
 }
 

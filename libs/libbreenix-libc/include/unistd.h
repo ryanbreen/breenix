@@ -88,6 +88,8 @@ typedef __INTPTR_TYPE__ intptr_t;
 #define _PC_SYMLINK_MAX 19
 #define _PC_2_SYMLINKS 20
 #define _PC_TIMESTAMP_RESOLUTION 21
+#define _PC_TEXTDOMAIN_MAX 22
+#define _PC_FALLOC 23
 
 /* sysconf names, numbered as Linux numbers them; the POSIX_V8 programming
  * environments, which Linux lacks, follow its last name. */

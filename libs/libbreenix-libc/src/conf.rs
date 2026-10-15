@@ -180,7 +180,8 @@ enum PathLimit {
     Block { less: i64 },
 }
 
-/// pathconf names (unistd.h): Linux's numbers, then _PC_TIMESTAMP_RESOLUTION.
+/// pathconf names (unistd.h): Linux's numbers, then POSIX.1-2024's
+/// _PC_TIMESTAMP_RESOLUTION, _PC_TEXTDOMAIN_MAX and _PC_FALLOC.
 fn limit(name: i32) -> Option<PathLimit> {
     Some(match name {
         0 => PathLimit::Disk(32000),          // LINK_MAX: ext2's enforced link limit
@@ -200,6 +201,8 @@ fn limit(name: i32) -> Option<PathLimit> {
         19 => PathLimit::Block { less: 1 },
         20 => PathLimit::Disk(1),             // POSIX2_SYMLINKS
         21 => PathLimit::Disk(1_000_000_000), // _POSIX_TIMESTAMP_RESOLUTION: ext2 keeps seconds
+        22 => PathLimit::Fixed(-1),           // TEXTDOMAIN_MAX: no limit
+        23 => PathLimit::Fixed(-1),           // _POSIX_FALLOC: posix_fallocate is not provided
         _ => return None,
     })
 }
