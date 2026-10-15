@@ -23,6 +23,8 @@ fn is_sdk_or_suite(path: &str) -> bool {
         "docs/suites/sdk.json",
         "userspace/programs/src/suite_sdk.rs",
         "tests/sdk_isolation.rs",
+        // Un-ignores sdk/build/, which the repository's build/ rule would hide.
+        ".gitignore",
     ];
     PREFIXES.iter().any(|p| path.starts_with(p)) || FILES.contains(&path)
 }
@@ -62,14 +64,17 @@ fn contains(data: &[u8], needle: &str) -> bool {
     data.windows(needle.len()).any(|w| w == needle.as_bytes())
 }
 
-fn tracked_files() -> Vec<String> {
+/// Tracked files holding "sdk", which every word the checks below look for contains; the
+/// checks then read each one exactly.
+fn candidate_files() -> Vec<String> {
     let out = Command::new("git")
         .arg("-C")
         .arg(repo_root())
-        .args(["ls-files", "-z"])
+        .args(["grep", "-l", "-z", "-F", "-e", "sdk", "--"])
         .output()
-        .expect("git ls-files runs");
-    assert!(out.status.success(), "git ls-files failed");
+        .expect("git grep runs");
+    // git grep exits 1 when nothing matches.
+    assert!(out.status.code().is_some_and(|c| c <= 1), "git grep failed");
     out.stdout
         .split(|&b| b == 0)
         .filter(|p| !p.is_empty())
@@ -81,7 +86,7 @@ fn tracked_files() -> Vec<String> {
 fn only_the_sdk_suite_reaches_the_sdk() {
     let root = repo_root();
     let mut offenders = Vec::new();
-    for path in tracked_files() {
+    for path in candidate_files() {
         if is_sdk_or_suite(&path) {
             continue;
         }
