@@ -590,7 +590,9 @@ pub fn arch_halt_with_interrupts() {
 /// parks, whether or not other work is queued here: x86 enters the reschedule
 /// gate through a software interrupt, and ARM64 saves its blocked continuation
 /// through the native scheduler. Either way the wake is dispatched by whichever
-/// CPU finds it.
+/// CPU finds it. An x86 thread pinned to this CPU is placed back here by its
+/// wake wherever the wake is found, so it gains nothing by leaving and halts in
+/// place unless another thread is queued here.
 pub fn arch_halt_while_blocked() {
     // SAFETY: interrupts are masked only for the state read, and every path
     // below unmasks them before returning.
@@ -600,7 +602,19 @@ pub fn arch_halt_while_blocked() {
             .current_thread_mut()
             .is_some_and(|thread| thread.state.is_blocked())
     };
-    if !task::scheduler::with_scheduler(current_blocked).unwrap_or(false) {
+    let wait_state = task::scheduler::with_scheduler(|scheduler| {
+        let blocked = current_blocked(scheduler);
+        #[cfg(target_arch = "x86_64")]
+        let release = blocked
+            && (scheduler.has_queued_work_here()
+                || !scheduler
+                    .current_thread_mut()
+                    .and_then(|thread| thread.cpu_affinity)
+                    .is_some_and(|pin| pin.cpu == per_cpu::cpu_id()));
+        (blocked, #[cfg(target_arch = "x86_64")] release)
+    })
+    .unwrap_or((false, #[cfg(target_arch = "x86_64")] false));
+    if !wait_state.0 {
         // SAFETY: every caller would have halted with interrupts enabled.
         unsafe { arch_enable_interrupts() };
         return;
@@ -620,7 +634,7 @@ pub fn arch_halt_while_blocked() {
     }
     #[cfg(target_arch = "x86_64")]
     {
-        if per_cpu::preempt_count() == 0 {
+        if wait_state.1 && per_cpu::preempt_count() == 0 {
             task::scheduler::set_need_resched();
             // SAFETY: the reschedule vector's gate is the timer entry, which
             // saves and restores every register; a software interrupt enters
