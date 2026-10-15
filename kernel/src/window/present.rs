@@ -211,24 +211,37 @@ pub fn intersect(a: Rect, b: Rect) -> Option<Rect> {
     (x1 > x0 && y1 > y0).then(|| Rect::new(x0 as i32, y0 as i32, (x1 - x0) as i32, (y1 - y0) as i32))
 }
 
-/// `COMPOSITE` (compositor only): compose the damage since the previous composite.
+/// Composites waiting for the one in flight.
+static IN_FLIGHT: crate::task::waitqueue::WaitQueueHead = crate::task::waitqueue::WaitQueueHead::new();
+
+/// `COMPOSITE` (compositor only): compose the damage since the previous composite. One
+/// composite runs at a time; a second call waits for the first to finish.
 pub fn composite(caller: &Caller) -> Result<(u64, u64), i32> {
     let backend = backend();
-    let frame = {
-        let mut reg = REGISTRY.lock();
-        if !reg.is_compositor(caller) {
-            return Err(EPERM);
+    let frame = loop {
+        {
+            let mut reg = REGISTRY.lock();
+            if !reg.is_compositor(caller) {
+                return Err(EPERM);
+            }
+            let Some(_) = backend else {
+                return Err(EIO);
+            };
+            if !reg.present.busy {
+                break begin(&mut reg)?;
+            }
         }
-        if reg.present.busy {
-            return Err(EBUSY);
+        let never = crate::ipc::wait::IpcDeadline::Never;
+        if let crate::ipc::wait::WaitEnd::Interrupted(_) =
+            crate::ipc::wait::wait_on(&IN_FLIGHT, &never, || REGISTRY.lock().present.busy)
+        {
+            return Err(breengel_abi::errno::EINTR);
         }
-        let Some(_) = backend else {
-            return Err(EIO);
-        };
-        begin(&mut reg)?
     };
     let result = backend.map_or(Err(Failure { reason: 0 }), |b| b.composite(&frame));
-    finish(frame, result)
+    let outcome = finish(frame, result);
+    IN_FLIGHT.wake_up();
+    outcome
 }
 
 /// Build the next frame, under the registry lock: assign its serial, collect its damage and

@@ -955,6 +955,9 @@ pub fn claim(caller: &Caller, c: &mut Claim) -> Result<u64, i32> {
             holder: caller.tgid,
             epoch,
         });
+        // The new compositor's first composite covers the whole screen: what is on it now
+        // was not composed by this claim.
+        reg.present.force_full = true;
         c.epoch = epoch;
         let mut woken = Vec::new();
         let _ = woken.try_reserve_exact(reg.windows.len());
