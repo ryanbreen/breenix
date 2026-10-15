@@ -53,7 +53,10 @@ def record(repo, out, suite, user, kernel, disk, started, ended, forced_failure=
     (directory / 'serial_kernel.log').write_bytes(kernel)
     manifest = json.loads((repo / 'docs/suites' / (suite + '.json')).read_text())
     has_start = re.search(rf'^SUITE {suite} START cases=\d+\r?$', user.decode(errors='replace'), re.M)
-    if not has_start:
+    partial = re.search(rf'^SUITE {suite} (?:START|DONE) .* only=\S+\r?$', user.decode(errors='replace'), re.M)
+    if partial:
+        verdict, reason = 'FAIL', 'one-case run is not full-suite evidence'
+    elif not has_start:
         verdict, reason = 'NOT-RUN', 'suite never printed START'
     else:
         ok, reason = scorer.verdict(manifest, directory / 'serial_user.log', [directory / 'serial_user.log', directory / 'serial_kernel.log'])
@@ -112,6 +115,9 @@ def main():
             suite = suites[current]
             user = data[0][offsets[0]:].decode(errors='replace').replace('\r', '')
             done = re.search(rf'^SUITE {suite} DONE passed=\d+ failed=\d+ skipped=\d+ total=\d+$', user, re.M)
+            if re.search(rf'^SUITE {suite} (?:START|DONE) .* only=\S+$', user, re.M):
+                forced_failure = 'one-case run is not full-suite evidence'
+                break
             ready = f'SUITE_SEQUENCE READY {suite}' in user.splitlines()
             # Every suite draws its final panel before READY and then waits for
             # keyboard acknowledgement. No subsequent disk writes can race us.

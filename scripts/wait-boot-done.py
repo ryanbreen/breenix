@@ -9,6 +9,7 @@ and rejects skips, missing binaries and unexpected process exits.
 
 import argparse
 import json
+import os
 from pathlib import Path
 import re
 import runpy
@@ -22,7 +23,7 @@ FATAL = json.loads((ROOT / "docs/boot-path.json").read_text())["fatal"] + ["KERN
 TESTS_DONE = "USERSPACE TEST REPORT DONE"
 
 
-def completion(serial, mode, suite):
+def completion(serial, mode, suite, only=None):
     """Return None while waiting, or (success, reason) for a completed verdict."""
     # A logfile write can stop anywhere in a record; wait for its newline.
     lines = [line.rstrip("\r") for line in serial.split("\n")[:-1]]
@@ -72,8 +73,11 @@ def completion(serial, mode, suite):
         return None
     if len(done) != 1:
         return False, "duplicate completion records"
+    if mode == "suite" and not only and re.search(r" only=\S+$", done[0]):
+        return False, "one-case run is not full-suite evidence"
+    suffix = rf" only={re.escape(only)}" if only else ""
     shape = (r"PROBE DONE passed=(\d+) failed=(\d+)" if mode == "probe"
-             else rf"SUITE {re.escape(suite)} DONE passed=(\d+) failed=(\d+) skipped=(\d+) total=(\d+)")
+             else rf"SUITE {re.escape(suite)} DONE passed=(\d+) failed=(\d+) skipped=(\d+) total=(\d+){suffix}")
     match = re.fullmatch(shape, done[0])
     if not match:
         return False, f"malformed completion record: {done[0]}"
@@ -85,27 +89,45 @@ def main():
     parser.add_argument("serial", type=Path)
     parser.add_argument("mode", choices=("probe", "suite", "tests"))
     parser.add_argument("--suite", default="")
+    parser.add_argument("--case", default="", dest="only")
     parser.add_argument("--timeout", type=int, default=1800)
     parser.add_argument("--started", type=float, help="host epoch immediately before VM launch")
     args = parser.parse_args()
     progress = BootProgress(args.serial)
     clock = WallClockCheck(args.serial, args.started)
+    # Give a watched case's final panel the same render delay and visible hold
+    # as QEMU, still checking fatal output until the VM is stopped.
+    hold = 0.0
+    if args.only:
+        try:
+            hold = float(os.environ.get("BREENIX_SUITE_HOLD", "5"))
+        except ValueError:
+            hold = -1.0
+        if hold < 0:
+            parser.error("BREENIX_SUITE_HOLD must be a nonnegative number of seconds")
+    done_at = None
     deadline = time.monotonic() + args.timeout
     while True:
         try:
             serial = args.serial.read_bytes().decode("utf-8", errors="replace")
             progress.observe(serial)
             clock.observe(serial)
-            result = completion(serial, args.mode, args.suite)
+            result = completion(serial, args.mode, args.suite, args.only)
         except FileNotFoundError:
             result = None
         if result is not None:
             ok, reason = result
+            if args.mode == "suite" and args.only and not reason.startswith("fatal kernel output:"):
+                if done_at is None:
+                    done_at = time.monotonic()
+                if time.monotonic() - done_at < 2 + hold:
+                    time.sleep(0.2)
+                    continue
             if ok and args.mode == "suite":
                 # Match the x86 gate's manifest, case order and tally checks.
                 manifest = json.loads((ROOT / f"docs/suites/{args.suite}.json").read_text())
                 verdict = runpy.run_path(str(ROOT / "scripts/suite-verdict.py"))["verdict"]
-                ok, reason = verdict(manifest, args.serial, [args.serial])
+                ok, reason = verdict(manifest, args.serial, [args.serial], only=args.only)
             clock_ok, clock_reason = clock.verdict()
             print(clock_reason)
             print(f"{'PASS' if ok else 'FAIL'}: {reason}")

@@ -253,8 +253,9 @@ class EffortTargetGuardTest(unittest.TestCase):
     def test_vm_run_metadata_persists_catchup(self):
         source = (ROOT / 'run.sh').read_text()
         for platform in ('parallels', 'vmware'):
-            self.assertRegex(source, r'\n    record_launch_metadata\n    VIGIL_ID=\$\("\$BREENIX_ROOT/scripts/'
-                                     r'vigil-record\.sh" start ' + platform + ' ')
+            self.assertRegex(source, r'\n    install_vm_boot_traps\n    record_launch_metadata\n(?:    #[^\n]*\n)*'
+                                     r'    [^\n]*VIGIL_ID=\$\("\$BREENIX_ROOT/scripts/vigil-record\.sh" start '
+                                     + platform + ' ')
         body = re.search(r'(?ms)^record_launch_metadata\(\) \{\n(.*?)^\}', source).group(1)
         self.git('checkout', '-q', '--detach', self.scratch)
         for target in ('parallels', 'vmware'):

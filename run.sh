@@ -67,6 +67,7 @@ PARALLELS_TEST=false
 PARALLELS_TEST_WAIT=35
 VMWARE=false
 SUITE=""
+ONLY=""
 PROBE=false
 TESTS=false
 BOOT_MODE=default
@@ -171,6 +172,11 @@ while [[ $# -gt 0 ]]; do
             TESTS=true
             shift
             ;;
+        --case)
+            [ -n "${2:-}" ] || { echo "--case needs a case id"; exit 2; }
+            ONLY="${2:-}"
+            shift 2
+            ;;
         --suite)
             SUITE="${2:-}"
             shift 2
@@ -212,6 +218,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --probe                    Parallels/VMware: run /sbin/probe as PID 1, wait for PROBE DONE, stop VM"
             echo "  --tests                    Parallels/VMware: boot the testing kernel, wait for its userspace report, stop VM"
             echo "  --gate-timeout N           DONE deadline in seconds (default 1800)"
+            echo "  --case CATEGORY/CASE       Run just this suite case (not full-suite evidence)"
             echo "  --suite ID                 Parallels/VMware: run effort suite ID (docs/suites/ID.json) as PID 1"
             echo "  --dry-run                  Check target policy and exit before building or booting"
             echo "  BREENIX_CATCHUP=1          Allow effort catch-up on Parallels/VMware; recorded in metadata"
@@ -321,6 +328,12 @@ if [ -n "$SUITE" ]; then
     fi
 fi
 
+if [ -n "$ONLY" ]; then
+    [ -n "$SUITE" ] && [[ "$ONLY" =~ ^[a-zA-Z0-9_./-]+$ ]] || {
+        echo "--case needs --suite ID and a category/case id"; exit 2;
+    }
+fi
+
 if [ "$PROBE" = true ]; then
     if [ "$PARALLELS" != true ] && [ "$VMWARE" != true ]; then
         echo "--probe is for --parallels or --vmware (ARM64 QEMU: scripts/boot-interactive.sh --mode probe)"
@@ -400,7 +413,7 @@ stage_boot_ext2_disk() {
             "$BREENIX_ROOT/userspace/programs/aarch64/probe.elf" || exit 1
     else
         "$BREENIX_ROOT/scripts/write-boot-target.sh" "$BOOT_EXT2_DISK" "$SUITE" \
-            "$BREENIX_ROOT/userspace/programs/aarch64/suite-$SUITE.elf" || exit 1
+            "$BREENIX_ROOT/userspace/programs/aarch64/suite-$SUITE.elf" "" "$ONLY" || exit 1
         if [[ ",$SUITE," == *",sdk,"* ]]; then
             # The Developer SDK suite's host side stages the SDK's results onto the copy.
             python3 "$BREENIX_ROOT/scripts/sdk-suite.py" --arch aarch64 --image "$BOOT_EXT2_DISK" || exit 1
@@ -442,7 +455,7 @@ efi_artifacts_match() {
 # Wait for a userspace completion record and reject missing or failing verdicts.
 wait_boot_done() {
     python3 "$BREENIX_ROOT/scripts/wait-boot-done.py" "$SERIAL_LOG" "$BOOT_MODE" \
-        --suite "$SUITE" --timeout "$GATE_TIMEOUT" --started "$CLOCK_STARTED"
+        --suite "$SUITE" --case "$ONLY" --timeout "$GATE_TIMEOUT" --started "$CLOCK_STARTED"
 }
 
 # Install before starting a VM. Ignore further signals during cleanup so Vigil
@@ -455,6 +468,8 @@ bounded_vm_command() {
 # bundle, rather than the pristine staging VMDK, holds the guest's writes.
 score_vm_suite_disk() {
     (
+        # Whole-suite disk checks depend on other cases and are not one-case evidence.
+        [ -z "${ONLY:-}" ] || exit 0
         local manifest="$BREENIX_ROOT/docs/suites/$SUITE.json" checks disk temporary
         checks=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("diskChecks", [])))' "$manifest") || exit $?
         [ "$checks" != 0 ] || exit 0
@@ -883,7 +898,8 @@ if [ "$PARALLELS" = true ]; then
     VIGIL_ID=""
     install_vm_boot_traps
     record_launch_metadata
-    VIGIL_ID=$("$BREENIX_ROOT/scripts/vigil-record.sh" start parallels "$BOOT_MODE" "$SUITE" "$SERIAL_LOG")
+    # A one-case run is not registered: Vigil would score it as a suite boot.
+    [ -n "$ONLY" ] || VIGIL_ID=$("$BREENIX_ROOT/scripts/vigil-record.sh" start parallels "$BOOT_MODE" "$SUITE" "$SERIAL_LOG")
     host_slot_vm "$SERIAL_LOG" prlctl stop "$PARALLELS_VM" --kill
     # Open the VM in its own window, as VMware's `gui` start does, so a boot can be watched;
     # BREENIX_PARALLELS_NOGUI=1 keeps unattended automation off the operator's desktop.
@@ -1266,7 +1282,8 @@ VMXEOF
     VIGIL_ID=""
     install_vm_boot_traps
     record_launch_metadata
-    VIGIL_ID=$("$BREENIX_ROOT/scripts/vigil-record.sh" start vmware "$BOOT_MODE" "$SUITE" "$SERIAL_LOG")
+    # A one-case run is not registered: Vigil would score it as a suite boot.
+    [ -n "$ONLY" ] || VIGIL_ID=$("$BREENIX_ROOT/scripts/vigil-record.sh" start vmware "$BOOT_MODE" "$SUITE" "$SERIAL_LOG")
     host_slot_vm "$SERIAL_LOG" "$VMRUN" stop "$VMX_FILE" hard
     if [ -n "${BREENIX_VMWARE_NOGUI:-}" ]; then
         # Headless automation (docker/qemu/run-vmware-gate.sh): `gui` mode

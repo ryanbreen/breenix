@@ -1,10 +1,12 @@
 //! The boot-target file: which PID 1 a production boot runs when the QEMU command
 //! line does not say (docs/boot-path.md, "Boot modes").
 //!
-//! The runner writes `suite <id>` or `probe` to `/etc/breenix/boot-target`. It is
+//! The runner writes `suite <id>`, `suite <id> case <category>/<case>` or `probe` to
+//! `/etc/breenix/boot-target`, words separated by single spaces. It is
 //! written onto a copy of the disk image by `./run.sh --parallels|--vmware --suite <id>`
-//! or `--probe`, and by `BREENIX_BOOT_SUITE=<id>` in `docker/qemu/run-x86-gate.sh`; disks built by
-//! `scripts/create_ext2_disk.sh` carry none. QEMU's fw_cfg mode is read first;
+//! (with `--case <category>/<case>` for one case) or `--probe`, and by
+//! `BREENIX_BOOT_SUITE=<id>` in `docker/qemu/run-x86-gate.sh`; disks built by
+//! `scripts/create_ext2_disk.sh` carry no boot target. QEMU's fw_cfg mode is read first;
 //! without either, the default `/sbin/init` runs.
 
 use alloc::format;
@@ -34,13 +36,35 @@ pub fn suite_path(id: &str) -> String {
     format!("/sbin/suite-{}", id)
 }
 
+/// A suite and an optional single `<category>/<case>` to watch.
+pub struct SuiteTarget {
+    pub id: String,
+    pub case: Option<String>,
+}
+
+impl SuiteTarget {
+    pub fn new(id: String, case: Option<String>) -> Result<Self, String> {
+        if !is_suite_id(&id) {
+            return Err(format!("{:?} is not a suite id", id));
+        }
+        if let Some(name) = &case {
+            // Keep unknown names intact so the suite can list its valid IDs.
+            // Exclude whitespace/newlines and fw_cfg's comma separator.
+            if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b"_-./".contains(&b)) {
+                return Err(format!("{:?} is not a case-id token", name));
+            }
+        }
+        Ok(Self { id, case })
+    }
+}
+
 /// A production PID 1 selected by the boot-target file.
 pub enum Target {
     Probe,
-    Suite(String),
+    Suite(SuiteTarget),
 }
 
-/// Parse one `suite <id>` or `probe` line with an optional final newline.
+/// Parse one `suite <id> [case <category>/<case>]` or `probe` line.
 pub fn parse(text: &str) -> Result<Target, String> {
     let line = text.strip_suffix('\n').unwrap_or(text);
     let line = line.strip_suffix('\r').unwrap_or(line);
@@ -50,10 +74,14 @@ pub fn parse(text: &str) -> Result<Target, String> {
     if line.trim() == "probe" {
         return Ok(Target::Probe);
     }
-    match line.trim().split_once(' ') {
-        Some(("suite", id)) if is_suite_id(id) => Ok(Target::Suite(String::from(id))),
-        Some(("suite", id)) => Err(format!("{:?} is not a suite id", id)),
-        _ => Err(format!("expected \"suite <id>\" or \"probe\", found {:?}", line)),
+    // Single spaces only, as the runner writes: a tab or a doubled space is refused.
+    let words: alloc::vec::Vec<&str> = line.trim().split(' ').collect();
+    match words.as_slice() {
+        ["suite", id] => SuiteTarget::new(String::from(*id), None).map(Target::Suite),
+        ["suite", id, "case", case] => {
+            SuiteTarget::new(String::from(*id), Some(String::from(*case))).map(Target::Suite)
+        }
+        _ => Err(format!("expected \"suite <id> [case <category>/<case>]\" or \"probe\", found {:?}", line)),
     }
 }
 
