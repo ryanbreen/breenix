@@ -43,6 +43,8 @@ BIN_DIR = '/usr/local/bin'
 APP_PATH = '/usr/local/bin:/usr/bin:/bin'
 REQUIRED_TEMPLATES = {'c': 'c', 'rust': 'rust', 'rust-no-std': 'nostd'}
 INSTALLED = ('sdk-c-app', 'sdk-rust-app', 'sdk-nostd-app', 'sdk-private', 'sdk-replaced')
+# Clean-room marks: begin. This block is the one place the harness names a foreign C library;
+# tests/utilities_image_inputs_test.py fails a mention of one anywhere else in this file.
 MUSL_MARKS = (b'__NEED_', b'ld-musl', b'__MUSL__', b'musl libc', b'Rich Felker')
 GLIBC_MARKS = (b'__GLIBC__', b'GNU C Library', b'__THROW', b'libc.so.6', b'ld-linux', b'glibc')
 OTHER_LIBC_MARKS = (b'_NEWLIB_VERSION', b'newlib', b'__BIONIC__', b'__UCLIBC__', b'uClibc',
@@ -54,6 +56,7 @@ OTHER_LIBC_MARKS = (b'_NEWLIB_VERSION', b'newlib', b'__BIONIC__', b'__UCLIBC__',
 # and float helpers use, are not math).
 MUSL_LIBM_SYMBOLS = ('libm_math', 'compiler_builtins4math', 'compiler_builtins..math..')
 MUSL_LIBM_BYTES = re.compile(rb'libm_math|compiler_builtins4math|compiler_builtins\.\.math\.\.|libm/src/math/(?!support/)')
+# Clean-room marks: end.
 
 # Every case this script records, in manifest order. tests/suite_manifests.rs checks that
 # each names a case of docs/suites/sdk.json and that the guest reads each one.
@@ -689,9 +692,9 @@ class Harness:
         libm = self.libm_symbols()
         why = []
         if found:
-            why.append('musl marks: ' + describe_found(found, {}))
+            why.append('foreign C library marks: ' + describe_found(found, {}))
         if libm:
-            why.append('compiler_builtins\' libm math (a port of musl\'s libm) in ' + ', '.join(libm[:3]))
+            why.append('compiler_builtins\' libm math (ported from a foreign C library) in ' + ', '.join(libm[:3]))
         r.set('toolchain/no-musl', not why, '; '.join(why))
         found = scan(self.sdk, list(GLIBC_MARKS))
         r.set('toolchain/no-glibc', not found, 'glibc marks: ' + describe_found(found, {}))
@@ -699,7 +702,7 @@ class Harness:
         r.set('toolchain/no-other-libc', not found, 'other C libraries\' marks: ' + describe_found(found, {}))
 
     def libm_symbols(self):
-        """SDK archives whose symbol tables define compiler_builtins' musl-derived math, whose
+        """SDK archives whose symbol tables define compiler_builtins' libm math, whose
         bytes (rlib metadata, bitcode, data) hold its module or source paths, or that could not
         be read (named so, which fails the case rather than passing it unread).
 

@@ -4,8 +4,8 @@
 //!
 //! A tracked file outside the SDK's own sources and the suite's measurement files fails
 //! this test if it names `build-sdk.sh` or a path of the SDK's sources or build, and a
-//! file other than the hooks, the suite's own and the one that only names it to leave it out
-//! of a text check fails it if it names `sdk-suite.py`.
+//! file other than the hooks, the suite's own and the one that only names it to read it in a
+//! text check fails it if it names `sdk-suite.py`.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -36,8 +36,9 @@ const HOOKS: &[&str] = &[
     "tests/suite_manifests.rs",
 ];
 
-/// Files that name `sdk-suite.py` without running it: the image-inputs test leaves the suite's
-/// clean-room scan, which names the foreign libcs it rejects, out of its foreign-libc check.
+/// Files that name `sdk-suite.py` without running it: the image-inputs test reads the harness's
+/// recipes in its foreign-libc check, leaving out only the block of marks its clean-room scan
+/// rejects.
 const NAMES_ONLY: &[&str] = &["tests/utilities_image_inputs_test.py"];
 
 /// Paths of the SDK's sources, its build root and its installed layout, matched only where a
