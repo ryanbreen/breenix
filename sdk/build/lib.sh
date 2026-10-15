@@ -94,9 +94,9 @@ sdk_clean_archive() {
     python3 "$SDK_ROOT/scripts/libc-clean-archive.py" --archive "$1" --tool-dir "$(sdk_tool_dir)"
 }
 
-# Stop the build if an rlib carries any of the libm crate's math (a port of musl's): its module
-# path or one of its source files, in the rlib's metadata, objects or bitcode. libm's support
-# traits, which compiler_builtins' integer and float helpers use, are not math.
+# Stop the build if an archive carries any of the libm crate's math (a port of musl's): its
+# module path or one of its source files, in an rlib's metadata, objects, bitcode or data.
+# libm's support traits, which compiler_builtins' integer and float helpers use, are not math.
 sdk_no_libm_math() {
     python3 -c '
 import re, sys
@@ -105,5 +105,5 @@ bad = [path for path in sys.argv[1:] if mark.search(open(path, "rb").read())]
 for path in bad:
     print(f"build-sdk: {path} carries libm math", file=sys.stderr)
 sys.exit(1 if bad else 0)
-' "$@" || sdk_die "the prebuilt std carries the libm crate's math"
+' "$@" || sdk_die "an SDK archive carries the libm crate's math"
 }
