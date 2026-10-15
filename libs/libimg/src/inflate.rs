@@ -1,5 +1,5 @@
 //! Clean-room RFC 1951 §§3.1–3.3 and RFC 1950 §2 decoder.
-//! The incremental parser retains at most a symbol's bits, its two canonical
+//! The incremental parser retains a partial symbol, bounded canonical
 //! alphabets and the caller's output. Matches read the last 32 KiB of that output.
 use crate::work;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,7 +20,7 @@ pub enum InflateError {
     Adler32Mismatch,
 }
 use InflateError::*;
-#[derive(Clone, Copy, Default)]
+#[derive(Default)]
 struct Bits {
     value: u64,
     count: u8,
@@ -36,12 +36,18 @@ impl Bits {
         Ok(v as u32)
     }
 }
+#[derive(Default)]
+struct Prefix {
+    code: u16,
+    length: usize,
+}
 struct Huffman {
     counts: [u16; 16],
     first: [u16; 16],
     offset: [u16; 16],
     symbols: [u16; 288],
     empty: bool,
+    max_length: usize,
 }
 impl Huffman {
     fn empty() -> Self {
@@ -51,6 +57,7 @@ impl Huffman {
             offset: [0; 16],
             symbols: [0; 288],
             empty: true,
+            max_length: 0,
         }
     }
     fn build(lengths: &[u8], single: bool, empty: bool) -> Result<Self, InflateError> {
@@ -62,6 +69,7 @@ impl Huffman {
                 return Err(BadSymbol);
             }
             if n != 0 {
+                h.max_length = h.max_length.max(n as usize);
                 h.counts[n as usize] += 1;
                 total += 1;
             }
@@ -98,22 +106,32 @@ impl Huffman {
         h.empty = false;
         Ok(h)
     }
-    fn symbol(&self, bits: &mut Bits) -> Result<u16, InflateError> {
+    fn symbol(&self, bits: &mut Bits, prefix: &mut Prefix) -> Result<u16, InflateError> {
         if self.empty {
             return Err(BadSymbol);
         }
-        let mut code = 0;
-        for n in 1..=15 {
+        let available = (self.max_length - prefix.length).min(bits.count as usize);
+        for _ in 0..available {
             work::step();
-            code = (code << 1) | bits.read(1)? as u16;
+            let bit = bits.read(1)? as u16;
+            prefix.code = (prefix.code << 1) | bit;
+            prefix.length += 1;
+            let n = prefix.length;
             let first = self.first[n];
-            if code >= first && code - first < self.counts[n] {
-                return Ok(self.symbols[(self.offset[n] + code - first) as usize]);
+            if prefix.code >= first && prefix.code - first < self.counts[n] {
+                let symbol = self.symbols[(self.offset[n] + prefix.code - first) as usize];
+                *prefix = Prefix::default();
+                return Ok(symbol);
             }
         }
-        Err(BadSymbol)
+        if prefix.length == self.max_length {
+            Err(BadSymbol)
+        } else {
+            Err(Truncated)
+        }
     }
 }
+
 #[derive(Clone, Copy)]
 enum State {
     Header,
@@ -122,12 +140,17 @@ enum State {
     DynamicCounts,
     CodeLengths(usize),
     Lengths(usize),
+    RepeatLengths(usize, u16),
     Codes,
+    LengthExtra(usize),
+    Distance(usize),
+    DistanceExtra(usize, usize),
     Done,
 }
 /// Raw DEFLATE decoder. `feed` processes its bytes immediately; `finish` checks BFINAL.
 pub struct Inflater {
     bits: Bits,
+    prefix: Prefix,
     state: State,
     last: bool,
     output: Vec<u8>,
@@ -146,6 +169,7 @@ impl Inflater {
     pub fn new(limit: usize) -> Self {
         Self {
             bits: Bits::default(),
+            prefix: Prefix::default(),
             state: State::Header,
             last: false,
             output: Vec::new(),
@@ -175,6 +199,27 @@ impl Inflater {
             State::Header
         };
     }
+    fn lengths(&mut self, index: usize, n: usize, value: u8) -> Result<(), InflateError> {
+        if index + n > self.hlit + self.hdist {
+            return Err(BadSymbol);
+        }
+        for j in index..index + n {
+            work::step();
+            self.lengths[j] = value;
+        }
+        if index + n == self.hlit + self.hdist {
+            self.lit = Huffman::build(&self.lengths[..self.hlit], true, false)?;
+            if self.lengths[256] == 0 {
+                return Err(BadSymbol);
+            }
+            self.dist =
+                Huffman::build(&self.lengths[self.hlit..self.hlit + self.hdist], true, true)?;
+            self.state = State::Codes;
+        } else {
+            self.state = State::Lengths(index + n);
+        }
+        Ok(())
+    }
     fn step(&mut self) -> Result<bool, InflateError> {
         match self.state {
             State::Header => {
@@ -182,14 +227,19 @@ impl Inflater {
                 self.last = header & 1 != 0;
                 match (header >> 1) & 3 {
                     0 => {
-                        let skip = self.bits.count % 8;
-                        self.bits.read(skip)?;
+                        self.bits.read(self.bits.count % 8)?;
                         self.state = State::StoredHeader;
                     }
                     1 => {
                         let mut l = [8; 288];
-                        l[144..256].fill(9);
-                        l[256..280].fill(7);
+                        for length in &mut l[144..256] {
+                            work::step();
+                            *length = 9;
+                        }
+                        for length in &mut l[256..280] {
+                            work::step();
+                            *length = 7;
+                        }
                         self.lit = Huffman::build(&l, true, false)?;
                         self.dist = Huffman::build(&[5; 32], true, false)?;
                         self.state = State::Codes;
@@ -199,9 +249,10 @@ impl Inflater {
                 }
             }
             State::StoredHeader => {
-                let n = self.bits.read(16)?;
-                let inverse = self.bits.read(16)?;
-                if n ^ inverse != 65535 {
+                // A fixed-width field is consumed only when all its bits exist.
+                let header = self.bits.read(32)?;
+                let n = header & 65535;
+                if n ^ (header >> 16) != 65535 {
                     return Err(BadStoredLength);
                 }
                 self.state = State::Stored(n as usize);
@@ -213,15 +264,14 @@ impl Inflater {
                 self.state = State::Stored(n - 1);
             }
             State::DynamicCounts => {
-                let hlit = self.bits.read(5)? as usize + 257;
-                let hdist = self.bits.read(5)? as usize + 1;
-                let hclen = self.bits.read(4)? as usize + 4;
+                let counts = self.bits.read(14)?;
+                let hlit = (counts & 31) as usize + 257;
                 if hlit > 286 {
                     return Err(BadSymbol);
                 }
                 self.hlit = hlit;
-                self.hdist = hdist;
-                self.hclen = hclen;
+                self.hdist = ((counts >> 5) & 31) as usize + 1;
+                self.hclen = (counts >> 10) as usize + 4;
                 self.cl_lengths = [0; 19];
                 self.state = State::CodeLengths(0);
             }
@@ -238,79 +288,70 @@ impl Inflater {
                 }
             }
             State::Lengths(i) => {
-                let symbol = self.cl.symbol(&mut self.bits)?;
-                let (n, v) = match symbol {
-                    0..=15 => (1, symbol as u8),
-                    16 => {
-                        if i == 0 {
-                            return Err(RepeatWithoutPrevious);
-                        }
-                        (self.bits.read(2)? as usize + 3, self.lengths[i - 1])
-                    }
-                    17 => (self.bits.read(3)? as usize + 3, 0),
-                    18 => (self.bits.read(7)? as usize + 11, 0),
+                let symbol = self.cl.symbol(&mut self.bits, &mut self.prefix)?;
+                match symbol {
+                    0..=15 => self.lengths(i, 1, symbol as u8)?,
+                    16 if i == 0 => return Err(RepeatWithoutPrevious),
+                    16..=18 => self.state = State::RepeatLengths(i, symbol),
                     _ => return Err(BadSymbol),
-                };
-                if i + n > self.hlit + self.hdist {
-                    return Err(BadSymbol);
-                }
-                for j in i..i + n {
-                    work::step();
-                    self.lengths[j] = v;
-                }
-                if i + n == self.hlit + self.hdist {
-                    self.lit = Huffman::build(&self.lengths[..self.hlit], true, false)?;
-                    if self.lengths[256] == 0 {
-                        return Err(BadSymbol);
-                    }
-                    self.dist = Huffman::build(
-                        &self.lengths[self.hlit..self.hlit + self.hdist],
-                        true,
-                        true,
-                    )?;
-                    self.state = State::Codes;
-                } else {
-                    self.state = State::Lengths(i + n);
                 }
             }
+            State::RepeatLengths(i, symbol) => {
+                let (n, value) = match symbol {
+                    16 => (self.bits.read(2)? as usize + 3, self.lengths[i - 1]),
+                    17 => (self.bits.read(3)? as usize + 3, 0),
+                    _ => (self.bits.read(7)? as usize + 11, 0),
+                };
+                self.lengths(i, n, value)?;
+            }
             State::Codes => {
-                let s = self.lit.symbol(&mut self.bits)?;
-                match s {
-                    0..=255 => self.byte(s as u8)?,
+                let symbol = self.lit.symbol(&mut self.bits, &mut self.prefix)?;
+                match symbol {
+                    0..=255 => self.byte(symbol as u8)?,
                     256 => self.end_block(),
-                    257..=285 => {
-                        const LEN: [usize; 29] = [
-                            3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51,
-                            59, 67, 83, 99, 115, 131, 163, 195, 227, 258,
-                        ];
-                        const EXTRA: [u8; 29] = [
-                            0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4,
-                            5, 5, 5, 5, 0,
-                        ];
-                        let i = s as usize - 257;
-                        let n = LEN[i] + self.bits.read(EXTRA[i])? as usize;
-                        let d = self.dist.symbol(&mut self.bits)? as usize;
-                        if d >= 30 {
-                            return Err(BadSymbol);
-                        }
-                        let extra = if d < 4 { 0 } else { (d / 2 - 1) as u8 };
-                        let base = if d < 4 {
-                            d + 1
-                        } else {
-                            ((2 + (d & 1)) << extra) + 1
-                        };
-                        let distance = base + self.bits.read(extra)? as usize;
-                        if distance > self.output.len() {
-                            return Err(DistanceTooFar);
-                        }
-                        for _ in 0..n {
-                            work::step();
-                            let b = self.output[self.output.len() - distance];
-                            self.byte(b)?;
-                        }
-                    }
+                    257..=285 => self.state = State::LengthExtra(symbol as usize - 257),
                     _ => return Err(BadSymbol),
                 }
+            }
+            State::LengthExtra(i) => {
+                const BASE: [usize; 29] = [
+                    3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67,
+                    83, 99, 115, 131, 163, 195, 227, 258,
+                ];
+                const EXTRA: [u8; 29] = [
+                    0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5,
+                    5, 5, 0,
+                ];
+                self.state = State::Distance(BASE[i] + self.bits.read(EXTRA[i])? as usize);
+            }
+            State::Distance(length) => {
+                let symbol = self.dist.symbol(&mut self.bits, &mut self.prefix)? as usize;
+                if symbol >= 30 {
+                    return Err(BadSymbol);
+                }
+                self.state = State::DistanceExtra(length, symbol);
+            }
+            State::DistanceExtra(length, symbol) => {
+                let extra = if symbol < 4 {
+                    0
+                } else {
+                    (symbol / 2 - 1) as u8
+                };
+                let base = if symbol < 4 {
+                    symbol + 1
+                } else {
+                    ((2 + (symbol & 1)) << extra) + 1
+                };
+                let distance = base + self.bits.read(extra)? as usize;
+                if distance > self.output.len() {
+                    return Err(DistanceTooFar);
+                }
+                for _ in 0..length {
+                    work::step();
+                    let b = self.output[self.output.len() - distance];
+                    self.byte(b)?;
+                }
+                self.state = State::Codes;
             }
             State::Done => return Ok(false),
         }
@@ -319,14 +360,9 @@ impl Inflater {
     fn pump(&mut self) -> Result<(), InflateError> {
         loop {
             work::step();
-            let saved = self.bits;
             match self.step() {
                 Ok(true) => {}
-                Ok(false) => return Ok(()),
-                Err(Truncated) => {
-                    self.bits = saved;
-                    return Ok(());
-                }
+                Ok(false) | Err(Truncated) => return Ok(()),
                 Err(e) => return Err(e),
             }
         }
