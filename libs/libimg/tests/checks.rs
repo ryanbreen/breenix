@@ -467,14 +467,25 @@ pub fn pngfile(header: &[u8], before: &[([u8; 4], Vec<u8>)], raw: &[u8]) -> Vec<
     chunk(&mut v, b"IEND", &[]);
     v
 }
-static JUDGED: std::sync::Mutex<Option<Image>> = std::sync::Mutex::new(None);
-pub fn take_judged_image() -> Option<Image> {
-    JUDGED.lock().unwrap_or_else(|e| e.into_inner()).take()
+pub struct JudgedImage {
+    pub label: String,
+    pub actual: Image,
+    pub expected: Image,
+}
+static JUDGED: std::sync::Mutex<Vec<JudgedImage>> = std::sync::Mutex::new(Vec::new());
+pub fn take_judged_images() -> Vec<JudgedImage> {
+    std::mem::take(&mut *JUDGED.lock().unwrap_or_else(|e| e.into_inner()))
+}
+pub fn record_image(label: String, actual: Image, expected: Image) {
+    JUDGED.lock().unwrap_or_else(|e| e.into_inner()).push(JudgedImage { label, actual, expected });
 }
 fn decoded(v: &[u8], w: u32, h: u32, p: &[u8]) -> Check {
+    decoded_named(v, w, h, p, format!("{w}x{h}"))
+}
+fn decoded_named(v: &[u8], w: u32, h: u32, p: &[u8], label: String) -> Check {
     let i = png::decode(v).map_err(|e| format!("§13 PNG decode {e:?}"))?;
     let result = eq((i.width, i.height, i.pixels.as_slice()), (w, h, p));
-    *JUDGED.lock().unwrap_or_else(|e| e.into_inner()) = Some(i);
+    record_image(label, i, Image { width: w, height: h, pixels: p.to_vec() });
     result
 }
 fn pm(c: u8, a: u8) -> u8 {
@@ -838,10 +849,16 @@ pub fn png_decode_chunk_order() -> Check {
     eq(png::decode(&v), Err(PE::ChunkOrder))?;
     let mut v = pngfile(&h, &[], &[0, 42]);
     v.truncate(v.len() - 12);
-    eq(png::decode(&v), Err(PE::ChunkOrder))?;
+    // §13: missing IEND is EOF/truncation; a present misplaced chunk is order.
+    eq(png::decode(&v), Err(PE::Truncated))?;
     chunk(&mut v, b"PLTE", &[0, 0, 0]);
     chunk(&mut v, b"IEND", &[]);
-    eq(png::decode(&v), Err(PE::ChunkOrder))
+    eq(png::decode(&v), Err(PE::ChunkOrder))?;
+    eq(png::decode(&pngfile(&ihdr(1, 1, 8, 3, 0),
+        &[(*b"tRNS", vec![0]), (*b"PLTE", vec![0, 0, 0])], &[0, 0])), Err(PE::ChunkOrder))?;
+    let mut trailing = pngfile(&h, &[], &[0, 42]);
+    trailing.extend_from_slice(b"trailing bytes outside PNG datastream");
+    decoded(&trailing, 1, 1, &[42, 42, 42, 255])
 }
 pub fn png_decode_plte_required() -> Check {
     eq(
@@ -879,6 +896,18 @@ pub fn png_decode_critical_unknown() -> Check {
     )
 }
 pub fn png_decode_ancillary_ignored() -> Check {
+    for (colour, payload, raw, expected) in [
+        (0, vec![0], vec![0, 42], vec![42, 42, 42, 255]),
+        (2, vec![0; 5], vec![0, 1, 2, 3], vec![3, 2, 1, 255]),
+        (4, vec![0; 2], vec![0, 42, 255], vec![42, 42, 42, 255]),
+        (6, vec![0; 6], vec![0, 1, 2, 3, 255], vec![3, 2, 1, 255]),
+    ] {
+        decoded(&pngfile(&ihdr(1, 1, 8, colour, 0), &[(*b"tRNS", payload)], &raw),
+            1, 1, &expected)?;
+    }
+    decoded(&pngfile(&ihdr(1, 1, 8, 3, 0),
+        &[(*b"PLTE", vec![1, 2, 3]), (*b"tRNS", vec![0, 0])], &[0, 0]),
+        1, 1, &[3, 2, 1, 255])?;
     let before = [
         (*b"gAMA", vec![0, 0, 177, 143]),
         (*b"iCCP", vec![0, 0]),
@@ -970,7 +999,7 @@ pub fn png_decode_truncated() -> Check {
             return Err(format!("accepted PNG prefix {cut}/{}", v.len()));
         }
     }
-    // Every prefix, including exact chunk boundaries, is cut off (§13).
+    // A proper prefix at a chunk boundary is still cut off (§13).
     for cut in 0..v.len() {
         eq(png::decode(&v[..cut]), Err(PE::Truncated))?;
     }
@@ -1008,7 +1037,7 @@ pub fn png_encode_decodes() -> Check {
         let bytes = png::encode(&i).map_err(|e| format!("encode {e:?}"))?;
         let actual = png::decode(&bytes);
         if let Ok(ref picture) = actual {
-            *JUDGED.lock().unwrap_or_else(|e| e.into_inner()) = Some(picture.clone());
+            record_image(format!("{}x{}", i.width, i.height), picture.clone(), i.clone());
         }
         eq(actual, Ok(i))?;
     }
@@ -1102,7 +1131,7 @@ pub fn png_encode_sizes() -> Check {
         let v = png::encode(&i).map_err(|e| format!("encode {e:?}"))?;
         let actual = png::decode(&v);
         if let Ok(ref picture) = actual {
-            *JUDGED.lock().unwrap_or_else(|e| e.into_inner()) = Some(picture.clone());
+            record_image(format!("{}x{}", i.width, i.height), picture.clone(), i.clone());
         }
         eq(actual, Ok(i))?;
     }
@@ -1227,11 +1256,12 @@ pub fn png_decode_independent_fixtures() -> Check {
         }
         let input = std::fs::read(root.join(f[0])).map_err(|e| e.to_string())?;
         let expected = std::fs::read(root.join(f[3])).map_err(|e| e.to_string())?;
-        decoded(
+        decoded_named(
             &input,
             f[1].parse().map_err(|_| "fixture width")?,
             f[2].parse().map_err(|_| "fixture height")?,
             &expected,
+            f[0].to_string(),
         )
         .map_err(|e| format!("{}: {e}", f[0]))?;
         count += 1;
@@ -1246,6 +1276,9 @@ pub fn png_decode_from_disk() -> Check {
 }
 
 pub fn bmp_unsupported() -> Check {
+    for (w, h, rgb) in [(0, 1, vec![]), (1, 0, vec![]), (1, 1, vec![0; 2]), (16385, 1, vec![])] {
+        eq(libimg::bmp::encode_bmp_24(w, h, &rgb), Vec::<u8>::new())?;
+    }
     for (bpp, compression) in [(8u16, 0u32), (32, 0), (24, 1), (16, 3)] {
         let mut b = vec![0; 118];
         b[..2].copy_from_slice(b"BM");
@@ -1266,6 +1299,24 @@ pub fn bmp_unsupported() -> Check {
 
 // The BITMAPFILEHEADER's file-size field is itself a header claim (§12).
 pub fn bmp_truncated_claim() -> Check {
+    // A complete 12-byte BITMAPCOREHEADER, one bottom-up 24-bit BGR pixel.
+    let core = [66,77,30,0,0,0,0,0,0,0,26,0,0,0,12,0,0,0,1,0,1,0,1,0,24,0,3,2,1,0];
+    let decoded = libimg::bmp::decode_bmp(&core).map_err(|e| format!("CORE header: {e:?}"))?;
+    eq((decoded.width, decoded.height, decoded.rgb), (1, 1, vec![1, 2, 3]))?;
+    for end in 0..core.len() {
+        eq(libimg::bmp::decode_bmp(&core[..end]), Err(libimg::bmp::BmpError::Truncated))?;
+    }
+    for (w, h, offset) in [(0u32, 1u32, 54u32), (1, 0, 54), (1, 1, 20)] {
+        let mut invalid = vec![0; 58];
+        invalid[..2].copy_from_slice(b"BM");
+        invalid[10..14].copy_from_slice(&offset.to_le_bytes());
+        invalid[14..18].copy_from_slice(&40u32.to_le_bytes());
+        invalid[18..22].copy_from_slice(&w.to_le_bytes());
+        invalid[22..26].copy_from_slice(&h.to_le_bytes());
+        invalid[26..28].copy_from_slice(&1u16.to_le_bytes());
+        invalid[28..30].copy_from_slice(&24u16.to_le_bytes());
+        eq(libimg::bmp::decode_bmp(&invalid).map_err(|e| format!("{e:?}")), Err("BadHeader".to_string()))?;
+    }
     let mut b = vec![0; 58];
     b[..2].copy_from_slice(b"BM");
     b[2..6].copy_from_slice(&100u32.to_le_bytes());
