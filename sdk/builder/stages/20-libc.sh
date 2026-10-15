@@ -11,14 +11,12 @@ build_libc() {
     sdk_say "building libbreenix-libc for $1"
     sdk_cargo "$LIBC" -- build --release --target "$SDK_ROOT/$1.json"
     sdk_clean_archive "$LIBC/target/$1/release/libc.a"
+    python3 "$SDK_ROOT/scripts/libc-symbol-audit.py" --arch "${1%%-*}" --archive "$LIBC/target/$1/release/libc.a"
 }
 
 build_libc aarch64-breenix
 build_libc x86_64-breenix-c
 build_libc x86_64-breenix
-for arch in aarch64 x86_64; do
-    python3 "$SDK_ROOT/scripts/libc-symbol-audit.py" --arch "$arch"
-done
 sdk_install "$LIBC/target/aarch64-breenix/release/libc.a" lib/aarch64-breenix/libc.a
 sdk_install "$LIBC/target/x86_64-breenix-c/release/libc.a" lib/x86_64-breenix/libc.a
 sdk_install "$LIBC/target/x86_64-breenix/release/libc.a" lib/rust/lib/rustlib/x86_64-breenix/lib/libc.a
