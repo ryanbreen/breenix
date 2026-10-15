@@ -1,89 +1,63 @@
-#!/bin/sh
-# cargo for a Breenix target with the SDK's prebuilt std (RUSTAPP). bin/<arch>-breenix-cargo
-# runs it as
+# cargo for a Breenix target with the SDK's prebuilt std (RUSTAPP lane). bin/<arch>-breenix-cargo
+# sources this with SDK, SDK_TOOL and SDK_ARCH set, sdk-common.sh loaded and cargo's arguments
+# as "$@"; it answers --version itself.
 #
-#   cargo.sh SDK_ROOT ARCH [cargo arguments...]
-#
-# It pins the SDK's nightly (and refuses any other rustc), names the target through the
-# SDK's target specs, links against the SDK's sysroot, libc and linker script, and
-# resolves crates.io dependencies (libbreenix) from the SDK's vendor directory, offline.
-set -eu
+# It pins the SDK's nightly (and refuses any other rustc), names the target through the SDK's
+# target specs, links against the SDK's sysroot, libc and linker script, and resolves crates.io
+# dependencies (libbreenix) from the SDK's vendor directory, offline.
 
-root=$1
-arch=$2
-shift 2
-share=$root/share/breenix-sdk
-target=$arch-breenix
-tool=$target-cargo
+_cargo_target="$SDK_ARCH-breenix"
+_cargo_share="$SDK/share/breenix-sdk"
 
-read -r _ version commit < "$root/VERSION"
-setting() {
-    sed -n "s/^$1=//p" "$share/sdk.env"
-}
-toolchain=$(setting TOOLCHAIN)
-rustc_commit=$(setting RUSTC_COMMIT)
-export RUSTUP_TOOLCHAIN="$toolchain"
-
-case ${1-} in
---version | -V)
-    echo "breenix-sdk $version $arch $commit"
-    cargo --version
-    exit
-    ;;
-+*)
-    echo "$tool: the SDK builds with $toolchain only; drop '$1'" >&2
-    exit 2
-    ;;
+case "${1-}" in
+    +*) sdk_die "the SDK builds with $(sdk_setting TOOLCHAIN) only; drop '$1'" ;;
 esac
-
-have=$("${RUSTC:-rustc}" -vV 2>/dev/null | sed -n 's/^commit-hash: //p') || have=
-if [ "$have" != "$rustc_commit" ]; then
-    echo "$tool: the SDK's std was built by rustc $toolchain (commit $rustc_commit), but ${RUSTC:-rustc} is ${have:-not runnable}" >&2
-    echo "$tool: install it with: rustup toolchain install $toolchain" >&2
-    exit 1
+sdk_use_toolchain
+_cargo_want="$(sdk_setting RUSTC_COMMIT)"
+_cargo_have="$("${RUSTC:-rustc}" -vV 2>/dev/null | sed -n 's/^commit-hash: //p')" || _cargo_have=
+if [ "$_cargo_have" != "$_cargo_want" ]; then
+    sdk_die "the SDK's std was built by rustc $RUSTUP_TOOLCHAIN (commit $_cargo_want), but ${RUSTC:-rustc} is ${_cargo_have:-not runnable}; install it with: rustup toolchain install $RUSTUP_TOOLCHAIN"
 fi
 
-# A TOML basic string holding $1.
-toml() {
+# _cargo_toml VALUE: VALUE as a TOML basic string.
+_cargo_toml() {
     printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"
 }
 
-if [ "$arch" = x86_64 ]; then
+if [ "$SDK_ARCH" = x86_64 ]; then
     # Rust on x86_64 is soft-float; its libc.a lives in the sysroot beside std.
-    libdir=$root/lib/rust/lib/rustlib/$target/lib
+    _cargo_libdir="$SDK/lib/rust/lib/rustlib/$_cargo_target/lib"
 else
-    libdir=$root/lib/$target
+    _cargo_libdir="$SDK/lib/$_cargo_target"
 fi
-flags="$(toml "--sysroot=$root/lib/rust")"
-flags="$flags, $(toml "-Lnative=$libdir")"
-flags="$flags, $(toml "-Clink-arg=-T$share/ldscripts/breenix.ld")"
-flags="$flags, \"-Clink-arg=--allow-multiple-definition\", \"-Cdefault-linker-libraries=no\""
-flags="$flags, $(toml "--remap-path-prefix=$root=/breenix-sdk")"
+_cargo_flags="$(_cargo_toml "--sysroot=$SDK/lib/rust")"
+_cargo_flags="$_cargo_flags, $(_cargo_toml "-Lnative=$_cargo_libdir")"
+_cargo_flags="$_cargo_flags, $(_cargo_toml "-Clink-arg=-T$_cargo_share/ldscripts/breenix.ld")"
+_cargo_flags="$_cargo_flags, \"-Clink-arg=--allow-multiple-definition\", \"-Cdefault-linker-libraries=no\""
+_cargo_flags="$_cargo_flags, $(_cargo_toml "--remap-path-prefix=$SDK=/breenix-sdk")"
 
-# RUSTFLAGS in the environment would replace every configured flag, the SDK's too, so
-# fold them into the target's list instead.
+# RUSTFLAGS in the environment would replace every configured flag, the SDK's too, so fold
+# them into the target's list instead.
+set -f
 if [ -n "${CARGO_ENCODED_RUSTFLAGS-}" ]; then
-    old_ifs=$IFS
-    IFS=$(printf '\037')
-    set -f
-    for flag in $CARGO_ENCODED_RUSTFLAGS; do
-        flags="$flags, $(toml "$flag")"
+    _cargo_ifs="$IFS"
+    IFS="$(printf '\037')"
+    for _cargo_flag in $CARGO_ENCODED_RUSTFLAGS; do
+        _cargo_flags="$_cargo_flags, $(_cargo_toml "$_cargo_flag")"
     done
-    set +f
-    IFS=$old_ifs
+    IFS="$_cargo_ifs"
 elif [ -n "${RUSTFLAGS-}" ]; then
-    set -f
-    for flag in $RUSTFLAGS; do
-        flags="$flags, $(toml "$flag")"
+    for _cargo_flag in $RUSTFLAGS; do
+        _cargo_flags="$_cargo_flags, $(_cargo_toml "$_cargo_flag")"
     done
-    set +f
 fi
+set +f
 unset CARGO_ENCODED_RUSTFLAGS RUSTFLAGS
 
-export RUST_TARGET_PATH="$share/targets"
-export CARGO_BUILD_TARGET="$target"
+export RUST_TARGET_PATH="$_cargo_share/targets"
+export CARGO_BUILD_TARGET="$_cargo_target"
 exec cargo \
-    --config "target.$target.rustflags=[$flags]" \
+    --config "target.$_cargo_target.rustflags=[$_cargo_flags]" \
     --config 'source.crates-io.replace-with="breenix-sdk"' \
-    --config "source.breenix-sdk.directory=$(toml "$share/vendor")" \
+    --config "source.breenix-sdk.directory=$(_cargo_toml "$_cargo_share/vendor")" \
     "$@"
