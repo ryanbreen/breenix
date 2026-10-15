@@ -163,7 +163,7 @@ fn clip_calls() -> Vec<(&'static str, Box<dyn Fn(&mut FrameBuf)>)> {
     vec![
         ("fill_rect(0, 0, 32, 24)", Box::new(|fb| shapes::fill_rect(fb, 0, 0, 32, 24, INK))),
         ("fill_rect(10, 6, 20, 20)", Box::new(|fb| shapes::fill_rect(fb, 10, 6, 20, 20, INK))),
-        ("draw_rect(3, 2, 20, 15)", Box::new(|fb| shapes::draw_rect(fb, 3, 2, 20, 15, INK))),
+        ("draw_rect(7, 6, 20, 15)", Box::new(|fb| shapes::draw_rect(fb, 7, 6, 20, 15, INK))),
         ("draw_line(0, 0, 31, 23)", Box::new(|fb| shapes::draw_line(fb, 0, 0, 31, 23, INK))),
         ("draw_line(30, 2, 1, 20)", Box::new(|fb| shapes::draw_line(fb, 30, 2, 1, 20, INK))),
         ("fill_circle(12, 10, 6)", Box::new(|fb| shapes::fill_circle(fb, 12, 10, 6, INK))),
