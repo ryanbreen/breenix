@@ -26,6 +26,7 @@ public struct BeastPaths: Equatable, Sendable {
     public var laneKey: String?
     public var requestedSHA: String?
     public var fresh = false
+    public var targetPolicyStamp: String?
 
     public init(
         host: String = "beast",
@@ -158,6 +159,10 @@ public enum RemoteCommand {
         }
         let quietEnv = quiet.isEmpty ? "" : " BREENIX_QUIET=\(quiet)"
         let profileEnv: String = qemuProfile.map { " BREENIX_QEMU_PROFILE=\($0.rawValue)" } ?? ""
+        if let stamp = paths.targetPolicyStamp, stamp.range(of: "^x86:[0-9a-f]{40}$", options: .regularExpression) == nil {
+            return sshRequest(paths: paths, remote: "exit 2")
+        }
+        let policyEnv = paths.targetPolicyStamp.map { " BREENIX_TARGET_POLICY_CHECKED=\($0)" } ?? ""
         var suiteEnv = ""
         if let suite {
             guard isSuiteList(suite) else {
@@ -209,7 +214,7 @@ public enum RemoteCommand {
             + " BREENIX_FULL_BACKSTOP=\(fullBackstopSecs ?? max(1800, timeoutSecs))"
             + " CARGO_BUILD_JOBS=6"
             + (paths.fresh ? " BREENIX_GATE_FRESH=1" : "")
-            + featureEnv + quietEnv + profileEnv + suiteEnv + slotIdentity + progressEnv
+            + featureEnv + quietEnv + profileEnv + policyEnv + suiteEnv + slotIdentity + progressEnv
             + " " + launch
         return sshRequest(paths: paths, remote: incusBashLC(paths: paths, script: script))
     }

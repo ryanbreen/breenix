@@ -36,6 +36,33 @@ Boot tooling records host load at start and verdict without waiting for it to fa
 on either host, as "Shared host slots" in `docs/boot-path.md` describes. The
 `timingSensitive` flag classifies the workload; it does not request a default wait.
 
+## Watching one case
+
+Use `scripts/boot-interactive.sh --mode suite --suite ID --case CATEGORY/CASE`
+on ARM64 QEMU, or `./run.sh --parallels|--vmware --suite ID --case CATEGORY/CASE`.
+The selection lives in the shared suite runner, so the 16 suites take it the same way.
+It runs only the named case, with the same isolation, limits, measurements and display
+as a full run; any setup belongs to that case. The panel shows only that case and
+identifies the run as one case. The three launchers hold its final panel for
+`BREENIX_SUITE_HOLD` seconds (default 5) after a two-second render delay.
+An unknown ID runs no case and prints an ERROR listing the suite's category/case IDs.
+
+One-case START and DONE records carry `only=CATEGORY/CASE`, for example:
+
+```text
+SUITE smoke START cases=1 only=process/getpid
+SUITE smoke CASE process/getpid PASS ms=0
+SUITE smoke DONE passed=1 failed=0 skipped=0 total=1 only=process/getpid
+```
+
+An unknown case ends with `passed=0 failed=1 skipped=0 total=1 only=CATEGORY/CASE`.
+A one-case run stops before a suite sequence's next suite and is not full-suite
+evidence, even for a suite with one case: the launcher's explicit selection checks the
+selected case's records, and the full-suite scorers reject a START or DONE that ends
+in `only=`. Whole-suite host disk checks are skipped for a watched case because they
+depend on other cases. The launchers do not register one-case boots with Vigil, whose
+scorer would count them as suite boots.
+
 ## Serial lines
 
 The suite's stdout, one line each, in this shape:
@@ -149,12 +176,16 @@ fn main() { SUITE.run() }
 
 A case returns `Ok(())` to pass, and may report what it measures with `value` and
 `wait_for` (see above). `?` on a libbreenix error or a string fails it with that
-message; `fail(msg)` and `check(condition, msg)` fail it, and `skip(why)` emits a SKIP record.
-A SKIP rejects suite acceptance: the host requires skipped=0, failed=0 and
-passed=total=the manifest case count. Missing prerequisites do not grant an exemption.
-CPU prerequisites are tracked in #1615, optional priority inheritance in #1616,
-argument/stack/semaphore limits in #1617, idle-CPU measurement in #1613 and
-eager disk allocation in #1614.
+message; `fail(msg)` and `check(condition, msg)` fail it. The runner has no skip helper: a
+case whose measurement prerequisite is missing fails with the measured prerequisite, using
+the shared decisions in `libbreenix::suite::prerequisites` (processor count, priority
+inheritance, the E2BIG argument count and stack limit, an invalid semaphore value, idle
+processor time and delayed block allocation). Their messages fit the runner's 160-byte
+limit, and cached readback does not substitute for disk evidence. The runner still reports
+a `CaseError::Skip` as a SKIP record, which fails suite acceptance: the host requires
+skipped=0, failed=0 and passed=total=the manifest case count.
+`scripts/boot-interactive.sh --cpus N` boots ARM64 QEMU with 1 to 8 processors to exercise
+the processor prerequisites; processes/scheduling/idle-cpu needs four.
 
 Add the binary to `userspace/programs/Cargo.toml` as `suite-<id>` and to `STD_BINARIES` in
 `userspace/programs/build.sh`; `scripts/create_ext2_disk.sh` installs `suite-*` in `/sbin`.

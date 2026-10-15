@@ -22,7 +22,8 @@ use libbreenix::signal::{
     self, Sigaction, StackT, SA_ONSTACK, SA_RESTART, SIGCHLD, SIGCONT, SIGHUP, SIGKILL, SIGSEGV,
     SIGQUIT, SIGSTOP, SIGTERM, SIGUSR1, SIGUSR2, SIGXCPU, SIGXFSZ, SIG_IGN,
 };
-use libbreenix::suite::{case, case_ms_left, category, check, fail, skip, suite, CaseError, CaseResult, Suite};
+use libbreenix::suite::prerequisites;
+use libbreenix::suite::{case, case_ms_left, category, check, fail, suite, CaseError, CaseResult, Suite};
 use libbreenix::syscall::raw;
 use libbreenix::time;
 use libbreenix::types::Fd;
@@ -1167,9 +1168,7 @@ fn fork_cow_threads() -> CaseResult {
     const HANDOFFS: u64 = 1000;
     const HANDOFF_MS: u64 = 200;
     let cpus = processors();
-    if cpus < 2 {
-        return skip(format!("{cpus} processor online; the case needs 2, one for each thread"));
-    }
+    prerequisites::cpus(cpus, 2, "two threads handing off between processors")?;
     let page = memory::mmap(core::ptr::null_mut(), 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)?;
     // SAFETY: the mapping is a page, page-aligned, and stays mapped until both threads are done.
     let cell = unsafe { &*(page as *const AtomicU64) };
@@ -1730,7 +1729,8 @@ fn exec_many_args() -> CaseResult {
 }
 
 /// {ARG_MAX} as a C library reports it on this ABI (musl's sysconf(_SC_ARG_MAX)): a
-/// quarter of the soft RLIMIT_STACK when that is finite and larger, else 131072.
+/// quarter of the soft RLIMIT_STACK when that is finite and larger, else 131072. At
+/// 131072 or more, it holds `exec_long_arg`'s 65536-byte argument twice over.
 fn arg_max() -> Result<u64, CaseError> {
     let [soft, _] = getrlimit(RLIMIT_STACK)?;
     Ok(if soft != RLIM_INFINITY && soft / 4 > 131072 { soft / 4 } else { 131072 })
@@ -1738,7 +1738,6 @@ fn arg_max() -> Result<u64, CaseError> {
 
 fn exec_long_arg() -> CaseResult {
     let max = arg_max()?;
-    if max < 2 * 65536 { return skip(format!("ARG_MAX is {max}, too small to hold a 64 KiB argument")); }
     let long: String = (0..65536).map(|i| (b'a' + (i % 26) as u8) as char).collect();
     let out = exec_output(HELPER, &["helper", "report", FD_ARG, &long], &[], || Ok(()))?;
     let (argv, _) = split_report(&out)?;
@@ -1758,8 +1757,7 @@ fn exec_long_arg() -> CaseResult {
 fn exec_e2big() -> CaseResult {
     let max = arg_max()?;
     // Strings of 4096 bytes with their NULs, more of them than fit in ARG_MAX.
-    let count = max / 4096 + 1;
-    if count > 2048 { return skip(format!("ARG_MAX is {max}; more than 8 MiB of arguments does not fit the case's limit")); }
+    let count = prerequisites::argument_allocation(max)?;
     let big = "x".repeat(4095);
     let mut args = strings(&["helper", "ran"]);
     args.extend((0..count).map(|_| big.clone()));
@@ -2836,10 +2834,9 @@ fn deep(kib: usize) -> u8 {
 
 fn limits_stack() -> CaseResult {
     const DEPTH_KIB: usize = 1024;
+    const LIMIT_KIB: usize = 256;
     let [soft, _] = getrlimit(RLIMIT_STACK)?;
-    if soft < 2 * 1024 * DEPTH_KIB as u64 {
-        return skip(format!("RLIMIT_STACK is {soft}, too small for the {DEPTH_KIB} KiB the case uses under it"));
-    }
+    prerequisites::stack(soft, DEPTH_KIB, LIMIT_KIB)?;
     // Default SIGSEGV handling, so an overflow is reported as SIGSEGV whatever the runtime installed.
     let run = |limit: Option<u64>| -> i32 {
         if signal::sigaction(SIGSEGV, Some(&Sigaction::default()), None).is_err() { return 1; }
@@ -2851,10 +2848,10 @@ fn limits_stack() -> CaseResult {
     };
     Child::start(|| run(None))?.expect_exit(0,
         &format!("a child using {DEPTH_KIB} KiB of stack with RLIMIT_STACK at {soft}"))?;
-    let mut child = Child::start(|| run(Some(256 << 10)))?;
+    let mut child = Child::start(|| run(Some((LIMIT_KIB as u64) << 10)))?;
     let status = child.wait()?;
     check(signaled(status) && term_sig(status) == SIGSEGV,
-        &format!("a child using {DEPTH_KIB} KiB of stack with RLIMIT_STACK at 256 KiB ended with {}", status_text(status)))
+        &format!("a child using {DEPTH_KIB} KiB of stack with RLIMIT_STACK at {LIMIT_KIB} KiB ended with {}", status_text(status)))
 }
 
 fn limits_as() -> CaseResult {
@@ -3192,15 +3189,13 @@ fn woken_process(shared: &[AtomicI64]) -> i32 {
 /// idle for a spare processor's worth of the slice. A woken process placed beside this
 /// one leaves the processor it should have taken idle, so the time it takes from this
 /// one is counted. When less than half of the computation, or the woken process's wait,
-/// had a spare processor, the case cannot tell scheduling from contention, and skips.
+/// had a spare processor, the case fails with the missing idle-time measurements.
 fn sched_idle_cpu() -> CaseResult {
     let cpus = processors();
     // The suite runner, which polls while a case runs, this process and the woken one
     // each hold one, and a further processor has to be left idle while it sleeps. The
     // kernel's render thread, which runs briefly on every tick, needs room too.
-    if cpus < 4 {
-        return skip(format!("{cpus} processor(s) online; the case needs 4, so that one is idle"));
-    }
+    prerequisites::cpus(cpus, 4, "the runner, the computing and woken processes, and one idle processor")?;
     let map = memory::mmap(core::ptr::null_mut(), 4096, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0)?;
     // SAFETY: the shared mapping is page-aligned, zero-filled and outlives both processes' use of it.
     let shared = unsafe { core::slice::from_raw_parts(map as *const AtomicI64, SLEPT_MS + 1) };
@@ -3236,16 +3231,7 @@ fn sched_idle_cpu() -> CaseResult {
         check(wait - WOKEN_SLEEP_MS <= OFF_CPU_LIMIT_MS, &format!(
             "with {cpus} processors online, a process woken from a {WOKEN_SLEEP_MS} ms sleep ran again {wait} ms after it began, though the processors were idle for {wait_idle} ms of that time"))?;
     }
-    let mut unmeasured = Vec::new();
-    if ran.idle_ms < ran.busy_ms {
-        unmeasured.push(format!("the computing process had one for {} of {} ms", ran.idle_ms, ran.idle_ms + ran.busy_ms));
-    }
-    if !wait_measured {
-        unmeasured.push(format!("the woken process's {wait} ms wait had {wait_idle} ms of idle processor time"));
-    }
-    if !unmeasured.is_empty() {
-        return skip(format!("no processor was left idle to measure against: {}", unmeasured.join("; ")));
-    }
+    prerequisites::idle_measurement(ran.idle_ms, ran.busy_ms, wait, wait_idle, wait_measured)?;
     Ok(())
 }
 

@@ -32,7 +32,7 @@ def userspace_tags(root=ROOT):
         tags.add(source.stem.lower())
         tags.update(tag.lower() for tag in re.findall(r'"\[([A-Za-z][A-Za-z0-9_-]*)\]', source.read_text()))
     return tags
-DONE = re.compile(r"^(?:SUITE \S+ DONE passed=\d+ failed=\d+ skipped=\d+ total=\d+|PROBE DONE passed=\d+ failed=\d+|USERSPACE TEST REPORT DONE|RUN \S+ DONE .+)$")
+DONE = re.compile(r"^(?:SUITE \S+ DONE passed=\d+ failed=\d+ skipped=\d+ total=\d+(?: only=\S+)?|PROBE DONE passed=\d+ failed=\d+|USERSPACE TEST REPORT DONE|RUN \S+ DONE .+)$")
 
 
 def stamp(epoch):

@@ -55,7 +55,7 @@ while True:
 
 
 class SuiteWatcherTest(unittest.TestCase):
-    def replay(self, data, idle=2, mode="suite", suite="directories", split=True, late=b"", deadline=30, clock_offset=0):
+    def replay(self, data, idle=2, mode="suite", suite="directories", split=True, late=b"", deadline=30, clock_offset=0, only=""):
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)
             source, serial, stopped, late_source = (directory / name for name in ("source", "serial", "stopped", "late"))
@@ -66,7 +66,7 @@ class SuiteWatcherTest(unittest.TestCase):
             started = time.monotonic()
             result = subprocess.run(
                 [sys.executable, str(ROOT / "scripts/watch-qemu.py"),
-                 "--serial", str(serial), "--mode", mode, "--suite", suite,
+                 "--serial", str(serial), "--mode", mode, "--suite", suite, "--case", only,
                  "--idle-exit", str(idle), "--gate-timeout", str(deadline),
                  "--suite-hold", "0", "--", sys.executable, "-c", REPLAY,
                  str(source), str(serial), str(stopped), "0.4" if split else "0", str(late_source), str(clock_offset)],
@@ -79,6 +79,17 @@ class SuiteWatcherTest(unittest.TestCase):
             self.assertRegex(clock_line, rb"^\[clock\] UTC epoch=\d+ source=PL031$")
             self.assertEqual(body, data + late)
             return result, elapsed
+
+    def test_one_case_completion_is_scored_only_when_requested(self):
+        name = CASES[0]
+        partial = (f"SUITE directories START cases=1 only={name}\n"
+                   f"SUITE directories CASE {name} PASS ms=0\n"
+                   f"SUITE directories DONE passed=1 failed=0 skipped=0 total=1 only={name}\n").encode()
+        result, _ = self.replay(partial, only=name)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        result, _ = self.replay(partial)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not full-suite evidence", result.stdout)
 
     def test_done_stops_before_idle_and_keeps_complete_serial(self):
         result, elapsed = self.replay(RECORDING, idle=5)
