@@ -12,7 +12,7 @@
 //! - **Stage 2**: Higher-level abstractions (File, Process types)
 //! - **Stage 3**: Memory allocator (malloc/free equivalent)
 //! - **Stage 4**: C-compatible ABI for libc
-//! - **Stage 5**: Full POSIX libc port (musl or custom)
+//! - **Stage 5**: Full POSIX C library (libbreenix-libc, Breenix's own clean-room libc)
 //!
 //! # Usage
 //!

@@ -27,7 +27,10 @@ def foreign(name):
 
 
 def clean(archive, tool_dir):
-    nm, ar, objcopy, readelf = [tool_dir / name for name in ('llvm-nm', 'llvm-ar', 'llvm-objcopy', 'llvm-readelf')]
+    nm, ar, objcopy = [tool_dir / name for name in ('llvm-nm', 'llvm-ar', 'llvm-objcopy')]
+    # rustc's llvm-tools ship llvm-readobj without the llvm-readelf name; its GNU style is readelf.
+    readelf = [str(tool_dir / 'llvm-readelf')] if (tool_dir / 'llvm-readelf').exists() else \
+        [str(tool_dir / 'llvm-readobj'), '--elf-output-style=GNU']
     members = subprocess.check_output([str(ar), 't', str(archive)], text=True).splitlines()
     removed = 0
     with tempfile.TemporaryDirectory(prefix='breenix-libc-clean-') as tmp:
@@ -45,7 +48,7 @@ def clean(archive, tool_dir):
             command = [str(objcopy), '--strip-debug', '--wildcard',
                        '--remove-section=*libm_math*', '--remove-section=*compiler_builtins4math*',
                        '--remove-section=*compiler_builtins..math..*']
-            metadata = subprocess.check_output([str(readelf), '-SW', '-sW', str(obj)], text=True)
+            metadata = subprocess.check_output(readelf + ['-SW', '-sW', str(obj)], text=True)
             sections = dict(re.findall(r'^\s*\[\s*(\d+)\]\s+(\S+)', metadata, re.MULTILINE))
             for line in metadata.splitlines():
                 fields = line.split()
