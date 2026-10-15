@@ -108,7 +108,7 @@ Interactive manual testing utility:
 ### Pull Request Workflow
 - Never push directly to `main`.
 - Always branch from latest `main` and use feature branches.
-- Create PRs with GitHub CLI; include summary, implementation details, testing results, legacy parity improvements, and co-authorship credit.
+- Create PRs with GitHub CLI; include summary, implementation details, testing results, and co-authorship credit.
 
 Example flow:
 ```bash
@@ -140,14 +140,10 @@ gh pr create --title "Brief description" --body "Detailed description with testi
   - Update after each PR merge (Recently Completed)
   - Update when starting new work (Currently Working On)
   - Weekly review (Immediate Next Steps)
-- Additional docs:
-  - `docs/planning/legacy-migration/FEATURE_COMPARISON.md`
-  - `docs/planning/06-userspace-execution/USERSPACE_SUMMARY.md`
-  - `docs/planning/posix-compliance/POSIX_COMPLIANCE.md`
-
-### Legacy Code Removal Policy
-- Remove legacy code from `src.legacy/` once the new implementation reaches parity or better and is verified.
-- Update `FEATURE_COMPARISON.md` accordingly and do removal in the same commit when practical.
+- Current references:
+  - `docs/boot-path.md` (boot-path milestones and gates)
+  - `docs/efforts/` (the effort path) and `docs/suites/` (suite manifests)
+  - `docs/gui/plan.md` and `docs/sdk/`
 
 ### Cleanup Utilities
 ```bash

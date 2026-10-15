@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "breenix-mcp": {
+      "command": "./tools/mcp/start.sh",
+      "args": [],
+      "env": {}
+    }
+  }
+}

@@ -27,7 +27,7 @@ BREENIX_HOST_ARGS=("$@")
 #     whichever boots picked the other slot. The base is
 #     instead read off each boot's own serial capture after the settle
 #     window, and the script fails loudly -- not silently -- if that line
-#     is missing. breenix-gdb-chat/scripts/gdb_chat.py's
+#     is missing. tools/gdb-chat/scripts/gdb_chat.py's
 #     resync_symbols() (landed for #739) and the #702 RCA loop harness both
 #     derive the same value the same way; this port does not reinvent it.
 #
