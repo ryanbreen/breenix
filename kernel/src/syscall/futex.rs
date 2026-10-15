@@ -522,7 +522,12 @@ enum Prepared {
 static FUTEX_QUEUES: Mutex<FutexTable> = Mutex::new(FutexTable::new());
 
 fn with_table<R>(f: impl FnOnce(&mut FutexTable) -> R) -> R {
-    crate::arch_without_interrupts(|| f(&mut FUTEX_QUEUES.lock()))
+    crate::arch_without_interrupts(|| {
+        crate::spread_probe::futex_section(true);
+        let r = f(&mut FUTEX_QUEUES.lock());
+        crate::spread_probe::futex_section(false);
+        r
+    })
 }
 
 fn monotonic_ns() -> u64 {

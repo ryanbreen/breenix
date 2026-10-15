@@ -50,6 +50,16 @@ static DRAIN_LEFT: AtomicU32 = AtomicU32::new(0);
 static SAMPLE_WANTED: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
 static SAMPLE_RIP: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 static SAMPLE_FLAGS: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+static IN_FUTEX: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
+
+/// Around each futex table section, the deferred IPI flush included.
+pub fn futex_section(active: bool) {
+    let cpu = cpu_now();
+    if cpu < MAX_CPUS {
+        IN_FUTEX[cpu].store(active, Ordering::Relaxed);
+    }
+}
+
 static FORCE_NMI: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
 static IN_IDLE_DRAIN: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
 
@@ -118,6 +128,8 @@ fn maybe_arm(now: u64) {
         ST_IDLE if now >= NEXT_ARM.load(Ordering::Relaxed) => {
             let kind = ROTATE.fetch_add(1, Ordering::Relaxed) % 4 + 1;
             let kind = if kind == 4 { 2 } else { kind };
+            // This build forces only the futex-wake IPI stall.
+            let kind = { let _ = kind; IPI };
             KIND.store(kind, Ordering::Relaxed);
             STATE.store(ST_ARMED, Ordering::Release);
         }
@@ -218,6 +230,9 @@ pub fn ipi_hook(vector: u8) {
         return;
     }
     let cpu = cpu_now();
+    if cpu >= MAX_CPUS || !IN_FUTEX[cpu].load(Ordering::Relaxed) {
+        return;
+    }
     if try_begin(IPI, cpu) {
         x86_64::instructions::interrupts::without_interrupts(|| {
             spin_ms(20);
