@@ -22,6 +22,7 @@ It needs git, bash and debugfs/e2fsck from e2fsprogs (on PATH or Homebrew's keg)
 """
 import argparse
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -31,6 +32,7 @@ import signal
 import struct
 import subprocess
 import sys
+import tarfile
 import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -198,8 +200,27 @@ def files_under(directory):
     return sorted(p for p in directory.rglob('*') if p.is_file() and not p.is_symlink())
 
 
-def scan(directory, needles):
-    """Map each needle found to the relative paths of the files holding it."""
+PATH_BYTES = frozenset(b'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._~+@%=/-')
+
+
+def whole_paths(data, needle):
+    """The whole path around each place the needle occurs in data."""
+    paths = set()
+    at = data.find(needle)
+    while at >= 0:
+        start, end = at, at + len(needle)
+        while start > 0 and data[start - 1] in PATH_BYTES:
+            start -= 1
+        while end < len(data) and data[end] in PATH_BYTES:
+            end += 1
+        paths.add(data[start:end])
+        at = data.find(needle, at + 1)
+    return paths
+
+
+def scan(directory, needles, written=frozenset()):
+    """Map each needle found to the relative paths of the files holding it. A place whose
+    whole path is one of `written` (text the sources themselves hold) is not a find."""
     found = {}
     for path in files_under(directory):
         try:
@@ -207,7 +228,7 @@ def scan(directory, needles):
         except OSError:
             continue
         for needle in needles:
-            if needle and needle in data:
+            if needle and needle in data and (not written or whole_paths(data, needle) - written):
                 found.setdefault(needle, []).append(str(path.relative_to(directory)))
     return found
 
@@ -373,6 +394,44 @@ class Harness:
         if self.fork:
             needles[str(self.fork).encode()] = 'the Rust fork\'s path'
         return needles
+
+    def library_paths(self, needles):
+        """The whole paths holding a needle that the pinned Rust library's sources write. std's
+        docs show "/root/secret_file.txt", a builder's home can be /root, and rustc keeps doc
+        text in rlib metadata. The library is read as scripts/build-sdk.sh reads it: a verified
+        snapshot as it is, a git checkout at the pin, with its submodules."""
+        written = set()
+
+        def read(data):
+            for needle in needles:
+                if needle in data:
+                    written.update(whole_paths(data, needle))
+        if not self.fork:
+            return written
+        if (self.fork.parent / '.rust-fork-snapshot.json').is_file():
+            for path in files_under(self.fork):
+                read(path.read_bytes())
+            return written
+        repo = self.fork.parent
+        pin = re.search(r'^commit = "([0-9a-f]{40})"$', (ROOT / 'rust-fork.toml').read_text(), re.MULTILINE)
+        if not pin:
+            return written
+        trees = [(repo, pin.group(1), 'library')]
+        listing = subprocess.run(['git', '-C', repo, 'ls-tree', '-r', pin.group(1), 'library'],
+                                 capture_output=True, text=True)
+        for row in listing.stdout.splitlines():
+            entry, path = row.split('\t', 1)
+            if entry.startswith('160000 '):
+                trees.append((repo / path, entry.split()[2], '.'))
+        for tree, commit, path in trees:
+            archive = subprocess.run(['git', '-C', tree, 'archive', '--format=tar', commit, path], capture_output=True)
+            if archive.returncode:
+                continue  # an unreadable tree adds no paths, so its finds still fail
+            with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as members:
+                for member in members:
+                    if member.isfile():
+                        read(members.extractfile(member).read())
+        return written
 
     def build_env(self):
         env = dict(os.environ, CARGO_BUILD_JOBS=os.environ.get('CARGO_BUILD_JOBS', '4'), CARGO_NET_OFFLINE='true',
@@ -610,7 +669,7 @@ class Harness:
     def check_scans(self):
         r = self.records
         names = self.leak_needles()
-        found = scan(self.sdk, list(names))
+        found = scan(self.sdk, list(names), self.library_paths(list(names)))
         r.set('toolchain/no-host-paths', not found, 'the SDK holds ' + describe_found(found, names))
         found = scan(self.sdk, list(MUSL_MARKS))
         libm = self.libm_symbols()
