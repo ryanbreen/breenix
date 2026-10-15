@@ -1,0 +1,26 @@
+#!/bin/sh
+# x86_64-breenix-cargo: cargo for the x86_64-breenix target with the SDK's prebuilt std.
+# The arguments are cargo's. share/breenix-sdk/libexec/cargo.sh (RUSTAPP lane) does the
+# work; it is sourced with SDK, SDK_TOOL and SDK_ARCH set and sdk-common.sh loaded.
+set -eu
+# Find the SDK from this file's own path, following symlinks, so a copied SDK works.
+self="$0"
+while [ -L "$self" ]; do
+    link="$(readlink "$self")"
+    case "$link" in
+        /*) self="$link" ;;
+        *) self="$(dirname "$self")/$link" ;;
+    esac
+done
+SDK="$(cd "$(dirname "$self")/.." && pwd -P)"
+SDK_TOOL=x86_64-breenix-cargo
+SDK_ARCH=x86_64
+. "$SDK/share/breenix-sdk/libexec/sdk-common.sh"
+if [ "$#" = 1 ] && [ "$1" = --version ]; then
+    sdk_version_line x86_64
+    sdk_use_toolchain
+    exec cargo --version
+fi
+[ -f "$SDK/share/breenix-sdk/libexec/cargo.sh" ] ||
+    sdk_die "this SDK has no Rust support (share/breenix-sdk/libexec/cargo.sh is missing)"
+. "$SDK/share/breenix-sdk/libexec/cargo.sh"

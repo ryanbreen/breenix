@@ -589,17 +589,25 @@ class Harness:
         r.set('toolchain/no-other-libc', not found, 'other C libraries\' marks: ' + describe_found(found, {}))
 
     def libm_symbols(self):
-        """SDK archives whose symbol tables define compiler_builtins' musl-derived math."""
-        tool_dir = run([ROOT / 'scripts' / 'breenix-cc', '--arch', 'aarch64', '--tool-dir'], ROOT, dict(os.environ), TIMEOUT_TOOL)
-        nm = Path(tool_dir.out.strip()) / 'llvm-nm'
-        if not tool_dir.ok or not nm.exists():
-            return ['(llvm-nm was not found, so archives were not read)']
+        """SDK archives whose symbol tables define compiler_builtins' musl-derived math, or
+        that could not be read (named so, which fails the case rather than passing it unread).
+
+        The archives are read with the pinned toolchain's own llvm-nm: rlibs carry rustc's
+        LLVM bitcode, which an older host LLVM cannot read."""
+        sysroot = run(['rustc', '--print', 'sysroot'], ROOT, dict(os.environ), TIMEOUT_TOOL)
+        host = run(['rustc', '-vV'], ROOT, dict(os.environ), TIMEOUT_TOOL)
+        triple = re.search(r'^host: (\S+)$', host.out, re.MULTILINE)
+        nm = Path(sysroot.out.strip()) / 'lib' / 'rustlib' / (triple.group(1) if triple else '') / 'bin' / 'llvm-nm'
+        if not sysroot.ok or not triple or not nm.exists():
+            return ['(the pinned toolchain has no llvm-nm, so no archive was read)']
         holding = []
         for path in files_under(self.sdk):
             if path.suffix not in ('.a', '.rlib'):
                 continue
             ran = run([nm, '--defined-only', '--format=posix', path], self.home, dict(os.environ), TIMEOUT_TOOL)
-            if any(mark in line for line in ran.out.splitlines() for mark in MUSL_LIBM_SYMBOLS):
+            if not ran.ok:
+                holding.append(f'{path.relative_to(self.sdk)} (llvm-nm could not read it: {ran.why("llvm-nm")})')
+            elif any(mark in line for line in ran.out.splitlines() for mark in MUSL_LIBM_SYMBOLS):
                 holding.append(str(path.relative_to(self.sdk)))
         return holding
 
