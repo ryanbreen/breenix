@@ -145,11 +145,13 @@ pub fn userspace_dispatch_creating_refused() -> u64 {
 
 #[inline(always)]
 fn note_dispatch_guard_available() {
+    crate::spread_probe::dispatch_guard(true);
     DISPATCH_GUARD_UNAVAILABLE_STREAK.store(0, Ordering::Relaxed);
 }
 
 #[inline(always)]
 fn note_dispatch_guard_unavailable() {
+    crate::spread_probe::dispatch_guard(false);
     let streak = DISPATCH_GUARD_UNAVAILABLE_STREAK
         .fetch_add(1, Ordering::Relaxed)
         .wrapping_add(1);

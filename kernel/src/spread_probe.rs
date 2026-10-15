@@ -55,6 +55,10 @@ static GAP: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 static SCHED_WAIT: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 static PM_WAIT: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 static SD_WAIT: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+/// Longest stretch from a dispatch that found PROCESS_MANAGER busy to the
+/// next one that got it.
+static DISPATCH_BLOCKED: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+static DISPATCH_FAIL_SINCE: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 static SD_MAX: AtomicU64 = AtomicU64::new(0);
 static SD_MAX_LOC: AtomicUsize = AtomicUsize::new(0);
 static SD_MAX_TGT: AtomicU64 = AtomicU64::new(0);
@@ -228,7 +232,11 @@ pub fn idle_drain(active: bool) {
 /// DRAIN: each COM2 port write.
 pub fn port_write_hook() {
     let cpu = cpu_now();
-    if cpu >= MAX_CPUS || !IN_IDLE_DRAIN[cpu].load(Ordering::Acquire) {
+    if cpu >= MAX_CPUS
+        || !IN_IDLE_DRAIN[cpu].load(Ordering::Acquire)
+        || !crate::per_cpu::running_idle_thread()
+        || crate::per_cpu::in_interrupt()
+    {
         return;
     }
     if STATE.load(Ordering::Acquire) == ST_OPEN
@@ -246,6 +254,22 @@ pub fn port_write_hook() {
     } else if try_begin(DRAIN, cpu) {
         DRAIN_LEFT.store(15, Ordering::Relaxed);
         spin_ms(5);
+    }
+}
+
+/// The interrupt-return dispatch got (`true`) or missed PROCESS_MANAGER.
+pub fn dispatch_guard(got: bool) {
+    let cpu = cpu_now();
+    if cpu >= MAX_CPUS {
+        return;
+    }
+    if got {
+        let since = DISPATCH_FAIL_SINCE[cpu].swap(0, Ordering::Relaxed);
+        if since != 0 {
+            note_span(&DISPATCH_BLOCKED, cpu, since, rdtsc());
+        }
+    } else if DISPATCH_FAIL_SINCE[cpu].load(Ordering::Relaxed) == 0 {
+        DISPATCH_FAIL_SINCE[cpu].store(rdtsc(), Ordering::Relaxed);
     }
 }
 
@@ -300,6 +324,7 @@ pub fn poll() {
         v
     };
     let (gap, sched, pm, sd) = (row(&GAP), row(&SCHED_WAIT), row(&PM_WAIT), row(&SD_WAIT));
+    let blocked = row(&DISPATCH_BLOCKED);
     let loc = SD_MAX_LOC.load(Ordering::Relaxed);
     let (file, line) = if loc == 0 {
         ("-", 0)
@@ -310,7 +335,7 @@ pub fn poll() {
     };
     let seq = WSEQ.fetch_add(1, Ordering::Relaxed);
     log::info!(
-        "SPREAD seq={} kind={} cpu={} dur_us={} held={} gap_us={:?} sched_us={:?} pm_us={:?} sd_us={:?} sd_max_us={} sd_at={}:{} sd_tgt={:#x} sd_held={}",
+        "SPREAD seq={} kind={} cpu={} dur_us={} held={} gap_us={:?} sched_us={:?} pm_us={:?} sd_us={:?} sd_max_us={} sd_at={}:{} sd_tgt={:#x} sd_held={} dblk_us={:?}",
         seq,
         KIND.load(Ordering::Relaxed),
         WCPU.load(Ordering::Relaxed),
@@ -325,8 +350,9 @@ pub fn poll() {
         line,
         SD_MAX_TGT.load(Ordering::Relaxed),
         SD_MAX_HELD.load(Ordering::Relaxed),
+        blocked,
     );
-    for arr in [&GAP, &SCHED_WAIT, &PM_WAIT, &SD_WAIT] {
+    for arr in [&GAP, &SCHED_WAIT, &PM_WAIT, &SD_WAIT, &DISPATCH_BLOCKED] {
         for slot in arr.iter() {
             slot.store(0, Ordering::Relaxed);
         }
