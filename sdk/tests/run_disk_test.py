@@ -32,6 +32,11 @@ qemu_host_lock_track_pid() { :; }
         (self.root / 'scripts/qemu-arm64.py').write_text('''import subprocess, sys
 sys.exit(subprocess.call(sys.argv[1:]))
 ''')
+        # The fixture is not a git checkout; tests/effort_target_guard_test.py covers the guard.
+        (self.root / 'scripts/effort-target-guard.py').write_text('''import sys
+assert sys.argv[1:] == ['--repo', sys.argv[2], '--target', 'x86'], sys.argv
+print('0' * 40)
+''')
         for artifact in ('aarch64-breenix-kernel/release/kernel-aarch64',
                          'release/build/breenix-test/out/breenix-uefi.img', 'ovmf/x64/code.fd',
                          'ovmf/x64/vars.fd', 'ext2-home-aarch64.img', 'ext2-home.img'):
