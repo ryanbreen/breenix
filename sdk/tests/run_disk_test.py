@@ -40,6 +40,16 @@ sys.exit(subprocess.call(sys.argv[1:]))
         data[1080:1082] = b'\x53\xef'
         self.source.write_bytes(data)
         self.original = hashlib.sha256(data).digest()
+        # The fake VM never owns the production QMP socket. Keep every host
+        # scratch artifact in the fixture and preserve another runner's IPC.
+        self.write_tool('rm', '''import os, sys
+if '/tmp/breenix-qmp.sock' not in sys.argv[1:]:
+    os.execv('/bin/rm', ['/bin/rm', *sys.argv[1:]])
+''')
+        self.write_tool('mktemp', '''import tempfile
+from pathlib import Path
+print(tempfile.mkdtemp(dir=Path.cwd()))
+''')
         self.write_tool('cargo', '''import os
 from pathlib import Path
 assert os.environ['CARGO_BUILD_JOBS'] == '4'
