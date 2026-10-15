@@ -453,14 +453,19 @@ struct Front {
 }
 
 /// Acquire, check the buffer equals the newest front, and note whether the kernel replayed a
-/// buffer more than eight pixel commits behind (its base older than `newest - 8`) in full.
-fn acquire_checked(w: &W, front: &Front, newest: u64, seen_overflow: &mut bool) -> Result<abi::Acquire, libbreenix::suite::CaseError> {
+/// buffer more than eight pixel commits behind in full. ACQUIRE returns the buffer's base after
+/// its replay (the newest front), so the base it had before is tracked here: `holds[b]` is the
+/// commit buffer `b` held when it was last committed or replayed, 0 for none.
+fn acquire_checked(w: &W, front: &Front, newest: u64, holds: &mut [u64; 3], seen_overflow: &mut bool) -> Result<abi::Acquire, libbreenix::suite::CaseError> {
     let a = w.acquire(1_000_000_000).map_err(|r| format!("ACQUIRE {}", outcome(r))).cite("17.3")?;
     same(w.buf(a.buffer), w.c.width, w.c.height, false, &format!("buffer {} acquired at base {} (newest commit {newest})", a.buffer, a.base), "17.3", |x, y| pattern(front.seed, x, y))?;
-    if a.base != 0 && a.base + 8 < newest {
-        ensure(a.replay_full == 1, "17.3", format!("buffer {} at base {} is more than eight commits behind commit {newest}, and was replayed in {} rectangles, not in full", a.buffer, a.base, a.replay_count))?;
+    ensure(a.base == newest, "17.3", format!("ACQUIRE returned buffer {} with base {}; after its replay it holds the newest commit {newest}", a.buffer, a.base))?;
+    let before = holds[a.buffer as usize];
+    if before != 0 && before + 8 < newest {
+        ensure(a.replay_full == 1, "17.3", format!("buffer {} held commit {before}, more than eight commits behind commit {newest}, and was replayed in {} rectangles, not in full", a.buffer, a.replay_count))?;
         *seen_overflow = true;
     }
+    holds[a.buffer as usize] = a.base;
     Ok(a)
 }
 
@@ -476,30 +481,34 @@ fn windows_acquire_full_copy() -> CaseResult {
     let mut front = Front { seed: 32 };
     fill(w.buf(a.buffer), 48, 12, 32);
     newest = w.commit(a.buffer, &[full(&w.c)]).map_err(|r| format!("COMMIT {}", outcome(r))).cite("17.3")?.commit_id;
+    let mut holds = [0u64; 3];
+    holds[a.buffer as usize] = newest;
     // Give every buffer a commit by holding two at a time, then commit one at a time: the
     // free buffer ACQUIRE leaves unused falls behind. Ten single commits later, acquiring two
     // at once reaches it.
     let mut seen = false;
     let mut based = std::collections::BTreeSet::new();
     for _ in 0..6 {
-        let x = acquire_checked(&w, &front, newest, &mut seen)?;
-        let y = acquire_checked(&w, &front, newest, &mut seen)?;
+        let x = acquire_checked(&w, &front, newest, &mut holds, &mut seen)?;
+        let y = acquire_checked(&w, &front, newest, &mut holds, &mut seen)?;
         for (b, s) in [(x.buffer, front.seed + 1), (y.buffer, front.seed + 2)] {
             fill(w.buf(b), 48, 12, s);
             newest = w.commit(b, &[full(&w.c)]).map_err(|r| format!("COMMIT {}", outcome(r))).cite("17.3")?.commit_id;
+            holds[b as usize] = newest;
             based.insert(b);
         }
         front.seed += 2;
     }
     ensure(based.len() == 3, "17.3", format!("holding two buffers at a time committed only buffers {based:?} of three"))?;
     for _ in 0..10 {
-        let x = acquire_checked(&w, &front, newest, &mut seen)?;
+        let x = acquire_checked(&w, &front, newest, &mut holds, &mut seen)?;
         front.seed += 1;
         fill(w.buf(x.buffer), 48, 12, front.seed);
         newest = w.commit(x.buffer, &[full(&w.c)]).map_err(|r| format!("COMMIT {}", outcome(r))).cite("17.3")?.commit_id;
+        holds[x.buffer as usize] = newest;
     }
-    let _first = acquire_checked(&w, &front, newest, &mut seen)?;
-    let _second = acquire_checked(&w, &front, newest, &mut seen)?;
+    let _first = acquire_checked(&w, &front, newest, &mut holds, &mut seen)?;
+    let _second = acquire_checked(&w, &front, newest, &mut holds, &mut seen)?;
     ensure(seen, "17.3", "no ACQUIRE handed out a buffer more than eight commits behind, so the log-overflow replay was not reached")?;
     // The same through a raw client: its buffer with no base after a commit.
     let mut r = raw_client().cite("24")?;
@@ -801,13 +810,19 @@ fn windows_resize_rollback() -> CaseResult {
     interface()?;
     // CREATE of a 3-buffer 256x256 window allocates four pieces (three buffers, the tree pages);
     // RESIZE to 512x512 allocates three. RLIMIT_AS set to stop each allocation in turn must leave
-    // the registry, the mappings (VmSize) and the next window id as they were.
+    // the registry, the mappings (VmSize) and the next window id as they were. Each limit leaves
+    // `slack` for this child's own allocations (libc maps each one), less than any piece.
     child("the limited child", 15_000, None, || {
         let piece = 256 * 256 * 4u64;
         let tree = 3 * 64 * 1024u64;
+        let slack = 64 * 1024u64;
+        // The slack must not fit any piece, or a step could succeed inside it.
+        if slack >= tree.min(piece) {
+            return Err(format!("the case's slack of {slack} bytes would fit a piece of {} bytes", tree.min(piece)));
+        }
         let base = vm_size()?;
         for step in 0..4u64 {
-            let room = if step < 3 { step * piece } else { 3 * piece } + 4096;
+            let room = if step < 3 { step * piece } else { 3 * piece } + slack;
             if set_rlimit_as(base + room) != 0 { return Err(String::from("prlimit(RLIMIT_AS) failed")); }
             let mut c = abi::Create::ZERO;
             c.width = 256;
@@ -822,14 +837,13 @@ fn windows_resize_rollback() -> CaseResult {
                 return Err(format!("CREATE refused at step {step} left VmSize {now} bytes where it was {base} (section 17.2)"));
             }
         }
-        let _ = tree;
         if set_rlimit_as(u64::MAX) != 0 { return Err(String::from("prlimit(RLIMIT_AS) failed")); }
         let w = W::new(256, 256, 3).map_err(|e| format!("{e:?}"))?;
         w.frame(4)?;
         let base = vm_size()?;
         let big = 512 * 512 * 4u64;
         for step in 0..3u64 {
-            if set_rlimit_as(base + step * big + 4096) != 0 { return Err(String::from("prlimit(RLIMIT_AS) failed")); }
+            if set_rlimit_as(base + step * big + slack) != 0 { return Err(String::from("prlimit(RLIMIT_AS) failed")); }
             let mut r = abi::Resize::ZERO;
             r.id = w.id();
             r.width = 512;
