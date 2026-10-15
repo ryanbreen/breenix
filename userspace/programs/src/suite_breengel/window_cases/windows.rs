@@ -894,6 +894,18 @@ fn windows_rlimit_accounting() -> CaseResult {
 
 fn windows_capture_across_destroy() -> CaseResult {
     interface()?;
+    // One reader thread for every round, so a thread's own memory stays out of the count.
+    let (to_reader, jobs) = std::sync::mpsc::channel::<u64>();
+    let (results, from_reader) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut tree = vec![0u8; 64 * 1024];
+        while let Ok(id) = jobs.recv() {
+            let got = capture(id, 512, 512, Some(&mut tree));
+            if results.send((got, tree[..8].to_vec())).is_err() {
+                break;
+            }
+        }
+    });
     let round = |round: u32| -> CaseResult {
         let mut w = W::new(512, 512, 2)?;
         let seed = 40 + round;
@@ -901,15 +913,10 @@ fn windows_capture_across_destroy() -> CaseResult {
         fill(w.buf(a.buffer), 512, 512, seed);
         w.tree(a.buffer)[..8].copy_from_slice(&(seed as u64).to_le_bytes());
         w.commit(a.buffer, &[abi::Rect::new(0, 0, 512, 512)]).map_err(|r| format!("COMMIT {}", outcome(r))).cite("17.3")?;
-        let id = w.id();
-        let reader = std::thread::spawn(move || {
-            let mut tree = vec![0u8; 64 * 1024];
-            let got = capture(id, 512, 512, Some(&mut tree));
-            (got, tree)
-        });
+        to_reader.send(w.id()).map_err(|_| String::from("the reader thread is gone")).cite("17.3")?;
         let _ = time::sleep_ms(round as u64 % 3);
         want_ok(w.destroy(), "17.2", "DESTROY during a capture")?;
-        let (got, tree) = reader.join().map_err(|_| String::from("the reader panicked")).cite("17.3")?;
+        let (got, tree) = from_reader.recv().map_err(|_| String::from("the reader thread is gone")).cite("17.3")?;
         match got {
             Err(r) => want_errno(r, ENOENT, "17.3", "a capture that began after DESTROY"),
             Ok((c, px)) => {
@@ -919,26 +926,24 @@ fn windows_capture_across_destroy() -> CaseResult {
             }
         }
     };
-    // Rounds first, so the page tables and thread stacks the rounds need exist before the
-    // baseline; the measured rounds must then return to it.
+    // Rounds first, so the page tables the rounds need exist before the baseline; the
+    // measured rounds must then return to it.
     for r in 0..3 {
         round(r)?;
     }
     let _ = mem_free_kb();
     let free_before = mem_free_kb().cite("17.3")?;
+    let mut outcome_of_rounds = Ok(());
     for r in 0..20 {
-        round(r)?;
-    }
-    // A reader thread's kernel stack is reclaimed after it is joined, so the count is allowed
-    // up to 1 s to come back; 20 windows of 2 MiB left behind would never come back.
-    let start = now_ms();
-    let free_after = loop {
-        let now = mem_free_kb().cite("17.3")?;
-        if now + 64 >= free_before || since(start) > 1_000 {
-            break now;
+        outcome_of_rounds = round(r);
+        if outcome_of_rounds.is_err() {
+            break;
         }
-        let _ = time::sleep_ms(20);
-    };
+    }
+    let free_after = mem_free_kb().cite("17.3")?;
+    drop(to_reader);
+    let _ = reader.join();
+    outcome_of_rounds?;
     value("mem-free-change", free_after as i64 - free_before as i64, "kb", None);
     ensure(free_after + 64 >= free_before, "17.3", format!(
         "after 20 windows of 2 MiB were destroyed under captures, {} kB fewer are free; the buffers are freed when the copy ends", free_before - free_after))
