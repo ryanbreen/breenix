@@ -491,10 +491,10 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         // It only exists in the enum for ARM64 compatibility
         Some(SyscallNumber::GetTime) => SyscallResult::Err(super::ErrorCode::NoSys as u64),
         // Graphics syscalls
-        Some(SyscallNumber::FbInfo) => super::graphics::sys_fbinfo(args.0),
-        Some(SyscallNumber::FbDraw) => super::graphics::sys_fbdraw(args.0),
-        Some(SyscallNumber::FbMmap) => super::graphics::sys_fbmmap(args.0),
-        Some(SyscallNumber::GetMousePos) => super::graphics::sys_get_mouse_pos(args.0),
+        Some(SyscallNumber::FbInfo) => super::fb::sys_fbinfo(args.0),
+        Some(SyscallNumber::FbDraw) => super::fb_draw::sys_fbdraw(args.0),
+        Some(SyscallNumber::FbMmap) => super::fb::sys_fbmmap(args.0),
+        Some(SyscallNumber::GetMousePos) => super::fb::sys_get_mouse_pos(args.0),
         // Audio syscalls
         Some(SyscallNumber::AudioInit) => super::audio::sys_audio_init(),
         Some(SyscallNumber::AudioWrite) => super::audio::sys_audio_write(args.0, args.1),
