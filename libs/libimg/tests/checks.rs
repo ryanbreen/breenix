@@ -977,7 +977,10 @@ pub fn png_encode_decodes() -> Check {
 }
 pub fn png_encode_stable() -> Check {
     let i = image(13, 7);
-    eq(png::encode(&i), png::encode(&i))
+    let first = png::encode(&i).map_err(|e| format!("first stable encode: {e:?}"))?;
+    let second = png::encode(&i).map_err(|e| format!("second stable encode: {e:?}"))?;
+    decoded(&first, i.width, i.height, &i.pixels)?;
+    eq(first, second)
 }
 fn encoded_chunks(v: &[u8]) -> Result<Vec<([u8; 4], Vec<u8>, u32)>, String> {
     if !v.starts_with(b"\x89PNG\r\n\x1a\n") {
