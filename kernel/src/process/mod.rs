@@ -605,6 +605,7 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
         }
         let (s0, n0) = crate::time::get_monotonic_time_ns();
         let start = s0 * 1_000_000_000 + n0;
+        log::info!("SKPROBE hold pid={} ms={}", pid.as_u64(), start / 1_000_000);
         loop {
             let (s1, n1) = crate::time::get_monotonic_time_ns();
             if s1 * 1_000_000_000 + n1 - start >= 20_000_000 {
@@ -615,6 +616,8 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
         for _ in 0..held {
             crate::per_cpu::preempt_disable();
         }
+        let (s2, n2) = crate::time::get_monotonic_time_ns();
+        log::info!("SKPROBE held pid={} ms={}", pid.as_u64(), s2 * 1000 + n2 / 1_000_000);
     }
     if let Some(mut receipt) = receipt {
         if let Some(reclaim) = receipt.take_contents() {
