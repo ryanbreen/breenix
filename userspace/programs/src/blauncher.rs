@@ -725,7 +725,7 @@ fn main() {
             w * 4,
             4,
             true,
-        )
+        ).expect("the framebuffer is a valid surface")
     };
 
     loop {

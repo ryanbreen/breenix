@@ -7,10 +7,11 @@
 //! `dispatch`, which runs the app's handler on each and keeps the processed watermark of
 //! section 19.4 for the commit metadata. Dropping the window destroys it.
 
+use libbreenix::errno::Errno;
 use libbreenix::error::Error;
 use libbreenix::window::{self, abi};
 use libfont::CachedFont;
-use libgfx::framebuf::FrameBuf;
+use libgfx::framebuf::{Format, FrameBuf};
 
 use crate::event::{Delivered, Event};
 use crate::font::FontWatcher;
@@ -58,7 +59,6 @@ pub struct Window {
     held: Option<Held>,
     fb: Option<FrameBuf>,
     /// Pixels drawn when no buffer could be acquired (the window was destroyed under us).
-    scratch: Vec<u8>,
     scratch_fb: Option<FrameBuf>,
     font_watcher: FontWatcher,
     /// The highest serial whose handler has returned.
@@ -95,7 +95,6 @@ impl Window {
             buffers: c.buffer,
             held: None,
             fb: None,
-            scratch: Vec::new(),
             scratch_fb: None,
             font_watcher,
             handled: 0,
@@ -105,20 +104,20 @@ impl Window {
         })
     }
 
-    fn frame_over(&self, buffer: u32) -> FrameBuf {
+    fn frame_over(&self, buffer: u32) -> Result<FrameBuf, Error> {
         let stride = self.width as usize * 4;
         // SAFETY: ACQUIRE made this buffer, `height` rows of `stride` bytes, writable by this
         // process until it is committed; the FrameBuf is dropped at the commit.
         unsafe {
-            FrameBuf::from_raw(
+            FrameBuf::from_raw_format(
                 self.buffers[buffer as usize] as *mut u8,
                 self.width as usize,
                 self.height as usize,
                 stride,
-                4,
-                true,
+                Format::BGRX,
             )
         }
+        .map_err(|_| Error::Os(Errno::EINVAL))
     }
 
     /// Take a buffer to draw the next frame into, waiting up to `timeout_ns` (`u64::MAX`
@@ -135,22 +134,20 @@ impl Window {
             replay_full: a.replay_full != 0,
             replay: a.replay[..(a.replay_count as usize).min(16)].to_vec(),
         };
-        self.fb = Some(self.frame_over(a.buffer));
+        self.fb = Some(self.frame_over(a.buffer)?);
         self.held = Some(Held { info: info.clone(), handled_at_acquire: self.handled });
         Ok(info)
     }
 
-    /// The frame being drawn: the acquired buffer, acquired now if none is held.
+    /// The frame being drawn: the acquired buffer, acquired now if none is held. When no buffer
+    /// can be acquired (the window is gone), drawing goes to a scratch frame nobody sees.
     pub fn framebuf(&mut self) -> &mut FrameBuf {
         if self.held.is_none() && self.acquire(u64::MAX).is_err() {
             if self.scratch_fb.is_none() {
-                self.scratch = vec![0; (self.width * self.height * 4) as usize];
-                // SAFETY: `scratch` is `height` rows of `width * 4` bytes, kept as long as the
-                // FrameBuf over it.
-                self.scratch_fb = Some(unsafe {
-                    FrameBuf::from_raw(self.scratch.as_mut_ptr(), self.width as usize, self.height as usize,
-                        self.width as usize * 4, 4, true)
-                });
+                self.scratch_fb = Some(
+                    FrameBuf::new(self.width as usize, self.height as usize, Format::BGRX)
+                        .expect("Breengel: no memory for a scratch frame"),
+                );
             }
             return self.scratch_fb.as_mut().unwrap();
         }

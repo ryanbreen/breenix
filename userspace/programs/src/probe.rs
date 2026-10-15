@@ -369,7 +369,7 @@ fn open_screen() -> Option<Screen> {
     if width < 240 { return None; }
     let fb = unsafe { FrameBuf::from_raw(ptr, width as usize, info.height as usize,
         (width * info.bytes_per_pixel) as usize, info.bytes_per_pixel as usize,
-        info.is_bgr()) };
+        info.is_bgr()).ok()? };
     Some(Screen { fb, lost: false })
 }
 

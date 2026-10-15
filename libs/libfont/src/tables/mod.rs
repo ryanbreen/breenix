@@ -1,76 +1,71 @@
-//! TrueType table directory parser and tag-based table lookup.
+//! The TrueType table directory and the tables libfont reads (OpenType specification,
+//! "Organization of an OpenType font" and the per-table chapters).
 
-use alloc::string::String;
-use crate::reader::Reader;
+use alloc::vec::Vec;
+use core::ops::Range;
 
+use crate::error::FontError;
+use crate::reader::{u16_at, u32_at};
+use crate::work;
+
+pub mod cmap;
+pub mod glyf;
 pub mod head;
 pub mod hhea;
 pub mod hmtx;
-pub mod maxp;
-pub mod cmap;
-pub mod loca;
-pub mod glyf;
 pub mod kern;
+pub mod loca;
+pub mod maxp;
 
-#[derive(Debug, Clone, Copy)]
+/// One table record: its tag and its byte range in the file.
+#[derive(Debug, Clone)]
 pub struct TableRecord {
     pub tag: [u8; 4],
-    pub offset: u32,
-    pub length: u32,
+    pub range: Range<usize>,
 }
 
+/// The table directory of an sfnt file.
 #[derive(Debug, Clone)]
 pub struct TableDirectory {
-    pub num_tables: u16,
-    pub records: alloc::vec::Vec<TableRecord>,
+    pub records: Vec<TableRecord>,
 }
 
 impl TableDirectory {
-    pub fn parse(data: &[u8]) -> Result<Self, String> {
-        let mut r = Reader::new(data);
-        let sfversion = r.read_u32()?;
-        // Accept TrueType (0x00010000) and OpenType with TrueType outlines ('true')
-        if sfversion != 0x00010000 && sfversion != 0x74727565 {
-            return Err(String::from("not a TrueType font"));
+    /// Read the directory: a record whose offset or length runs past the file is
+    /// `BadTable(tag)`; a directory cut short is `Truncated`.
+    pub fn parse(data: &[u8]) -> Result<TableDirectory, FontError> {
+        let version = u32_at(data, 0).ok_or(FontError::Truncated)?;
+        // TrueType outlines: version 1.0 or Apple's 'true'.
+        if version != 0x0001_0000 && version != 0x7472_7565 {
+            return Err(FontError::BadTable(*b"sfnt"));
         }
-        let num_tables = r.read_u16()?;
-        r.skip(6)?; // searchRange, entrySelector, rangeShift
-
-        let mut records = alloc::vec::Vec::with_capacity(num_tables as usize);
-        for _ in 0..num_tables {
-            let tag = r.read_tag()?;
-            r.skip(4)?; // checksum
-            let offset = r.read_u32()?;
-            let length = r.read_u32()?;
-            records.push(TableRecord { tag, offset, length });
+        let n = u16_at(data, 4).ok_or(FontError::Truncated)? as usize;
+        if 12 + 16 * n > data.len() {
+            return Err(FontError::Truncated);
         }
-
-        Ok(Self { num_tables, records })
+        let mut records = Vec::with_capacity(n);
+        work::add(n as u64);
+        for i in 0..n {
+            let r = 12 + 16 * i;
+            let tag = [data[r], data[r + 1], data[r + 2], data[r + 3]];
+            let offset = u32_at(data, r + 8).ok_or(FontError::Truncated)? as u64;
+            let length = u32_at(data, r + 12).ok_or(FontError::Truncated)? as u64;
+            if offset + length > data.len() as u64 {
+                return Err(FontError::BadTable(tag));
+            }
+            records.push(TableRecord { tag, range: offset as usize..(offset + length) as usize });
+        }
+        Ok(TableDirectory { records })
     }
 
-    pub fn find_table(&self, tag: &[u8; 4]) -> Option<&TableRecord> {
-        self.records.iter().find(|r| &r.tag == tag)
+    /// The byte range of table `tag`, if the font has it.
+    pub fn find(&self, tag: &[u8; 4]) -> Option<Range<usize>> {
+        work::add(self.records.len() as u64);
+        self.records.iter().find(|r| &r.tag == tag).map(|r| r.range.clone())
     }
 
-    pub fn table_data<'a>(&self, data: &'a [u8], tag: &[u8; 4]) -> Option<&'a [u8]> {
-        let rec = self.find_table(tag)?;
-        let start = rec.offset as usize;
-        let end = start + rec.length as usize;
-        if end <= data.len() {
-            Some(&data[start..end])
-        } else {
-            None
-        }
-    }
-
-    pub fn table_range(&self, data_len: usize, tag: &[u8; 4]) -> Option<core::ops::Range<usize>> {
-        let rec = self.find_table(tag)?;
-        let start = rec.offset as usize;
-        let end = start + rec.length as usize;
-        if end <= data_len {
-            Some(start..end)
-        } else {
-            None
-        }
+    /// The byte range of a table the font must have.
+    pub fn require(&self, tag: &[u8; 4]) -> Result<Range<usize>, FontError> {
+        self.find(tag).ok_or(FontError::MissingTable(*tag))
     }
 }
