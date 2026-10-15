@@ -1263,6 +1263,11 @@ const SPIKE_X8R8G8B8: u32 = 1;
 const SPIKE_W: u32 = 1280;
 const SPIKE_H: u32 = 800;
 
+/// Device-visible address of a kernel VA (adds VMware's RAM offset inside the linked window).
+fn spike_ipa(virt: u64) -> u64 {
+    crate::platform_config::kernel_va_to_ipa(virt)
+}
+
 /// Submit one command buffer; the address goes in as the header's byte address
 /// (vmwgfx) or as its page frame number (this driver's encoding). Returns the
 /// header status and error offset, or Err on timeout (the buffer is then leaked,
@@ -1276,7 +1281,7 @@ fn spike_submit(cmds: &[u8], ctx: u32, pfn_encoding: bool) -> Result<(u32, u32),
         return Err("alloc");
     }
     let virt = buf as u64;
-    let phys = virt - HHDM_BASE;
+    let phys = spike_ipa(virt);
     let header = buf as *mut SvgaCbHeader;
     unsafe {
         (*header).status = CbStatus::None as u32;
@@ -1354,6 +1359,15 @@ pub fn gui_spike_stdu() {
         fence0
     );
 
+    let probe = alloc_dma_pages(1).map(|(v, _, _)| v).unwrap_or(0);
+    crate::serial_println!(
+        "GUI_SPIKE vmware dma heap_va={:#x} va_minus_hhdm={:#x} kernel_va_to_ipa={:#x} ram_base_offset={:#x}",
+        probe,
+        probe.wrapping_sub(HHDM_BASE),
+        spike_ipa(probe),
+        crate::platform_config::ram_base_offset()
+    );
+
     // Start context 0 through the device context.
     let mut dc = CmdEncoder::new();
     dc.push_u32(SPIKE_DC_START_STOP_CONTEXT);
@@ -1395,12 +1409,12 @@ pub fn gui_spike_stdu() {
         SVGA_OTABLE_SHADER,
         SVGA_OTABLE_SCREENTARGET,
     ] {
-        let Ok((v, p, size)) = alloc_dma_pages(1) else {
+        let Ok((v, _, size)) = alloc_dma_pages(1) else {
             serial_println!("GUI_SPIKE vmware verdict=ERROR otable alloc");
             return;
         };
         unsafe { cache_clean_range(v, size) };
-        enc.set_otable_base64(t, p >> 12, size as u32, 0, SPIKE_MOBFMT_PT64_0);
+        enc.set_otable_base64(t, spike_ipa(v) >> 12, size as u32, 0, SPIKE_MOBFMT_PT64_0);
     }
     if !step("set_otables", &enc.finish()) {
         serial_println!("GUI_SPIKE vmware verdict=FAIL otables");
@@ -1411,7 +1425,7 @@ pub fn gui_spike_stdu() {
     let bytes = (SPIKE_W * SPIKE_H * 4) as usize;
     let pages = bytes.div_ceil(PAGE_SIZE);
     let tables = pages.div_ceil(512);
-    let (Ok((dv, _, _)), Ok((dir_v, dir_p, _)), Ok((pt_v, pt_p, _))) = (
+    let (Ok((dv, _, _)), Ok((dir_v, _, _)), Ok((pt_v, _, _))) = (
         alloc_dma_pages(pages),
         alloc_dma_pages(1),
         alloc_dma_pages(tables),
@@ -1421,17 +1435,18 @@ pub fn gui_spike_stdu() {
     };
     unsafe {
         for i in 0..pages {
-            let ppn = (dv + (i * PAGE_SIZE) as u64 - HHDM_BASE) >> 12;
+            let ppn = spike_ipa(dv + (i * PAGE_SIZE) as u64) >> 12;
             core::ptr::write_volatile((pt_v as *mut u64).add(i), ppn);
         }
         for t in 0..tables {
-            core::ptr::write_volatile((dir_v as *mut u64).add(t), (pt_p >> 12) + t as u64);
+            let pt_ppn = spike_ipa(pt_v + (t * PAGE_SIZE) as u64) >> 12;
+            core::ptr::write_volatile((dir_v as *mut u64).add(t), pt_ppn);
         }
         cache_clean_range(pt_v, tables * PAGE_SIZE);
         cache_clean_range(dir_v, PAGE_SIZE);
     }
     let mut enc = CmdEncoder::new();
-    enc.define_gb_mob64(COMPOSITOR_MOB_ID, SPIKE_MOBFMT_PT64_2, dir_p >> 12, bytes as u32);
+    enc.define_gb_mob64(COMPOSITOR_MOB_ID, SPIKE_MOBFMT_PT64_2, spike_ipa(dir_v) >> 12, bytes as u32);
     let mob_ok = step("define_mob64_pt64_2", &enc.finish());
 
     let mut enc = CmdEncoder::new();
