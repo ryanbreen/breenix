@@ -1,6 +1,9 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include <stdio.h>
+#include <stdlib.h>
+#include <spawn.h>
+#include <fcntl.h>
 #include <string.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -43,6 +46,47 @@ int cmd_fork_wait(int argc, char **argv)
     return 0;
 }
 
+/* Exercise the packaged spawn ABI and real fork/attribute/action/exec sequence.
+ * Keep the original execv check and its exact output below. */
+static int check_spawn(void)
+{
+    _Static_assert(sizeof(posix_spawnattr_t) == 32, "spawn attribute ABI");
+    _Static_assert(sizeof(posix_spawn_file_actions_t) == 16, "spawn actions ABI");
+    posix_spawnattr_t attr;
+    posix_spawn_file_actions_t actions;
+    sigset_t mask;
+    sigemptyset(&mask);
+    sigaddset(&mask, SIGUSR1);
+    if (posix_spawnattr_init(&attr) || posix_spawn_file_actions_init(&actions)
+        || posix_spawnattr_setsigmask(&attr, &mask)
+        || posix_spawnattr_setsigdefault(&attr, &mask)
+        || posix_spawnattr_setflags(&attr, POSIX_SPAWN_RESETIDS | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF)
+        || posix_spawn_file_actions_addopen(&actions, 9, "/dev/null", O_RDONLY, 0)
+        || posix_spawn_file_actions_adddup2(&actions, 9, 10)
+        || posix_spawn_file_actions_addclose(&actions, 9)
+        || posix_spawn_file_actions_addclose(&actions, 10)
+        || posix_spawn_file_actions_addchdir(&actions, ".")) {
+        return 1;
+    }
+    char *const args[] = {(char *)app_path, "exit", "3", NULL};
+    char *const env[] = {"SPAWN_TEST=yes", NULL};
+    pid_t pid;
+    int error = posix_spawn(&pid, app_path, &actions, &attr, args, env);
+    posix_spawn_file_actions_destroy(&actions);
+    posix_spawnattr_destroy(&attr);
+    if (error || reap(pid, "spawn child") != 3) return 1;
+    char directory[4096];
+    const char *base = strrchr(app_path, '/');
+    if (!base || (size_t)(base - app_path) >= sizeof directory) return 1;
+    memcpy(directory, app_path, (size_t)(base - app_path));
+    directory[base - app_path] = 0;
+    if (setenv("PATH", directory, 1)) return 1;
+    error = posix_spawnp(&pid, base + 1, NULL, NULL, args, env);
+    if (error || reap(pid, "spawnp child") != 3) return 1;
+    error = posix_spawn(&pid, "/sdk-no-such-program", NULL, NULL, args, env);
+    return error || reap(pid, "failed spawn exec") != 127;
+}
+
 int cmd_exec(int argc, char **argv)
 {
     (void)argc;
@@ -57,6 +101,7 @@ int cmd_exec(int argc, char **argv)
         execv(app_path, child_argv);
         _exit(127);
     }
+    if (check_spawn()) return 1;
     int code = reap(pid, "the exec'd child");
     if (code < 0) {
         return 1;
