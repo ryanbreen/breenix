@@ -2124,7 +2124,7 @@ fn sem_getvalue_waiters() -> CaseResult {
 /// below two.
 fn cpu_workers() -> Result<usize, CaseError> {
     let n = processors()?;
-    prerequisites::cpus(n, 2)?;
+    prerequisites::cpus(n, 2, "processes pinned to processors of their own, running at once")?;
     Ok(n.min(4))
 }
 

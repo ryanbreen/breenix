@@ -550,7 +550,6 @@ struct Board {
 const RUNNING: u32 = 0;
 const PASSED: u32 = 1;
 const FAILED: u32 = 2;
-const SKIPPED: u32 = 3;
 
 /// In a trial's process, its board.
 static BOARD: AtomicUsize = AtomicUsize::new(0);
@@ -598,8 +597,7 @@ impl Board {
 fn report(b: &Board, result: CaseResult) {
     let (state, msg) = match result {
         Ok(()) => (PASSED, String::new()),
-        Err(CaseError::Fail(m)) => (FAILED, m),
-        Err(CaseError::Skip(m)) => (SKIPPED, m),
+        Err(CaseError::Fail(m) | CaseError::Skip(m)) => (FAILED, m),
     };
     put_text(&b.msg, &b.msg_len, &msg);
     b.state.store(state, SeqCst);
@@ -685,7 +683,6 @@ impl Proc {
                 self.stop()?;
                 return match state {
                     PASSED => Ok(()),
-                    SKIPPED => Err(CaseError::Skip(self.board.msg())),
                     _ => fail(self.board.msg()),
                 };
             }
@@ -933,7 +930,7 @@ fn processors() -> Result<usize, CaseError> {
 /// The threads a team case starts: one per processor, at most MAX_TEAM. Fails below two.
 fn team_size() -> Result<usize, CaseError> {
     let cpus = processors()?;
-    prerequisites::cpus(cpus, 2)?;
+    prerequisites::cpus(cpus, 2, "a team of threads pinned to processors of their own, running at once")?;
     Ok(cpus.min(MAX_TEAM))
 }
 
@@ -1933,7 +1930,7 @@ fn mx_prio_inherit() -> CaseResult {
         // computes for 500 ms; then the case tells the owner to finish, which takes it 20 ms
         // of computing. Only inheritance lets the owner run past the spinner to do that.
         let cpus = processors()?;
-        prerequisites::cpus(cpus, 2)?;
+        prerequisites::cpus(cpus, 2, "the contending threads on processor 0 while the case runs on processor 1")?;
         pin_to(1).map_err(CaseError::Fail)?;
         let owned = Arc::new(AtomicU32::new(0));
         let waiting = Arc::new(AtomicU32::new(0));
@@ -2044,7 +2041,7 @@ fn mx_prio_inherit_chain() -> CaseResult {
         // it ahead of the spinner only if the high priority passes to it through the middle
         // thread.
         let cpus = processors()?;
-        prerequisites::cpus(cpus, 2)?;
+        prerequisites::cpus(cpus, 2, "the contending threads on processor 0 while the case runs on processor 1")?;
         pin_to(1).map_err(CaseError::Fail)?;
         let owned = Arc::new(AtomicU32::new(0));
         let middle_waiting = Arc::new(AtomicU32::new(0));
@@ -2123,7 +2120,7 @@ fn mx_prio_protect() -> CaseResult {
         // middle-priority thread that computes for 500 ms. The owner, told to finish, needs
         // 20 ms of computing: it gets it ahead of the spinner only by running at the ceiling.
         let cpus = processors()?;
-        prerequisites::cpus(cpus, 2)?;
+        prerequisites::cpus(cpus, 2, "the contending threads on processor 0 while the case runs on processor 1")?;
         pin_to(1).map_err(CaseError::Fail)?;
         let owned = Arc::new(AtomicU32::new(0));
         let go_at = Arc::new(AtomicI64::new(0));

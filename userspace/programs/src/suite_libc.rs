@@ -23,7 +23,7 @@ use libbreenix::fs;
 use libbreenix::io::{self, fcntl_cmd, poll_events, status_flags, PollFd};
 use libbreenix::process;
 use libbreenix::signal;
-use libbreenix::suite::{case, case_ms_left, category, fail, running_case, skip, suite, CaseError, CaseResult, Suite};
+use libbreenix::suite::{case, case_ms_left, category, fail, running_case, suite, CaseError, CaseResult, Suite};
 use libbreenix::time;
 use libbreenix::types::Fd;
 use libbreenix::error::Error;
@@ -593,13 +593,10 @@ fn c_case() -> CaseResult {
     if let Some(why) = line.strip_prefix("FAIL ") {
         return fail(why);
     }
-    if let Some(why) = line.strip_prefix("SKIP ") {
-        return skip(why);
-    }
     if line.is_empty() {
         return fail(format!("the C case ended with {} without reporting a result", ran.ended()));
     }
-    fail(format!("the C case reported {line:?}, which is not PASS, FAIL or SKIP"))
+    fail(format!("the C case reported {line:?}, which is not PASS or FAIL"))
 }
 
 /// Run a BusyBox applet in `scratch` with `args` and `input` on stdin.

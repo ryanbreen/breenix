@@ -5,7 +5,7 @@
 #
 #   scripts/boot-interactive.sh [--mode MODE] [--program PATH] [--suite ID] [--serial-log FILE]
 #                               [--idle-exit SECONDS] [--gate-timeout SECONDS] [--display | --no-display]
-#                               [--qmp SOCKET] [--fbconsole log] [--no-build]
+#                               [--qmp SOCKET] [--fbconsole log] [--no-build] [--cpus N]
 #
 #   Suite mode observes DONE, holds the panel briefly, then exits with its verdict.
 #   --mode MODE          tests (default): the testing kernel and its test loader
@@ -17,13 +17,14 @@
 #                        scripts/qmp-screendump.py SOCKET out.png (works with --no-display)
 #   --fbconsole log      draw kernel log lines on the VM screen instead of the boot screen
 #   --serial-log FILE    also write everything the guest prints to FILE (default: a unique file under $TMPDIR/breenix-boot/)
-#   --idle-exit SECONDS  stop the VM after this many seconds without new serial output (default 300; 0 = never)
+#   --idle-exit SECONDS  stop the VM after this many seconds without new serial output (default 300; 0 turns it off)
 #   --gate-timeout SECONDS  suite DONE deadline (default 1800), even with --idle-exit 0
 #   BREENIX_SUITE_HOLD    suite panel hold after a 2 s render delay (default 5 s)
 #   --display            open QEMU's display window (the default on a Mac desktop session; BREENIX_QEMU_NOGUI=1 turns it off)
 #   --no-display         serial only, even for desktop
 #   --no-build           boot the kernel and disk already in target/
-#   --cpus N             number of guest processors (default 4); suites fail missing CPU prerequisites
+#   --cpus N             guest processors, 1 to 8, the ARM64 kernel's MAX_CPUS (default 4); suite cases
+#                        needing more processors than this fail with their CPU prerequisite
 #   --accel hvf|tcg      ARM64 accelerator (default hvf on Apple Silicon, tcg elsewhere)
 #
 # Ctrl-A X quits QEMU; Ctrl-A C toggles the QEMU monitor. Ctrl-C goes to the guest.
@@ -70,7 +71,7 @@ while [ "$#" -gt 0 ]; do
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
-[[ "$CPUS" =~ ^[1-9][0-9]*$ ]] || { echo "--cpus requires a positive integer" >&2; exit 2; }
+[[ "$CPUS" =~ ^[1-8]$ ]] || { echo "--cpus needs 1 to 8 (the ARM64 kernel's MAX_CPUS), got: $CPUS" >&2; exit 2; }
 case "$MODE" in
     tests|probe|shell|desktop|program|suite) ;;
     *) echo "unknown mode: $MODE (expected tests, probe, shell, desktop, program or suite)" >&2; exit 2 ;;

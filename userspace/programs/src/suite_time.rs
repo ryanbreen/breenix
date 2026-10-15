@@ -929,7 +929,7 @@ const HANDOFF_MS: u64 = 1000;
 
 fn clk_monotonic_cpus() -> CaseResult {
     let cpus = processors()?;
-    prerequisites::cpus(cpus, 2)?;
+    prerequisites::cpus(cpus, 2, "two threads handing the clock off between processors")?;
     let thread = std::thread::spawn(|| {
         // Answer handoffs: an odd value becomes the next even one.
         loop {

@@ -108,7 +108,9 @@ use crate::{graphics, time};
 pub enum CaseError {
     /// The case ran and something was wrong.
     Fail(String),
-    /// The case was not run, and why.
+    /// The case was not run, and why. No helper makes one: a case missing a
+    /// prerequisite fails with it. The runner still reports this as a SKIP
+    /// record, which suite acceptance rejects.
     Skip(String),
 }
 
@@ -130,9 +132,6 @@ pub type CaseResult = Result<(), CaseError>;
 
 /// Fail the case with `msg`.
 pub fn fail(msg: impl Into<String>) -> CaseResult { Err(CaseError::Fail(msg.into())) }
-
-/// Skip the case, saying why.
-pub fn skip(why: impl Into<String>) -> CaseResult { Err(CaseError::Skip(why.into())) }
 
 /// Pass if `condition` holds, otherwise fail with `msg`.
 pub fn check(condition: bool, msg: &str) -> CaseResult {

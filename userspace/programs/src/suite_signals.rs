@@ -2634,7 +2634,7 @@ fn shared_for_handlers() -> Result<Shared, CaseError> {
 
 fn h_spinning_target() -> CaseResult {
     let cpus = processors()?;
-    prerequisites::cpus(cpus, 2)?;
+    prerequisites::cpus(cpus, 2, "a target spinning on one processor while its sender runs on another")?;
     let s = shared_for_handlers()?;
     let mut kid = Child::start(|| {
         if catch_with(SIGUSR1, on_mark as usize as u64, 0, 0).is_err() { return 10; }
@@ -3970,7 +3970,7 @@ fn j_group() -> CaseResult {
 
 fn j_stop_threads() -> CaseResult {
     let cpus = processors()?;
-    prerequisites::cpus(cpus, 2)?;
+    prerequisites::cpus(cpus, 2, "two threads computing at once")?;
     let s = Shared::new()?;
     let page = s.page as usize;
     // Slots 0 and 1 count each thread's turns; slot 2 carries handoffs from the first

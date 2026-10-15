@@ -923,7 +923,7 @@ static WHERE: [AtomicU32; MAX_WORKERS] = [const { AtomicU32::new(0) }; MAX_WORKE
 /// Fails when fewer than two processors are online; simultaneous execution is required.
 fn workers_for() -> Result<usize, CaseError> {
     let cpus = processors()?;
-    prerequisites::cpus(cpus, 2)?;
+    prerequisites::cpus(cpus, 2, "the case and its workers on processors of their own at once")?;
     Ok((cpus - 1).min(MAX_WORKERS))
 }
 
