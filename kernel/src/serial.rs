@@ -371,9 +371,10 @@ fn flush_com1(attempts: u32) {
 /// the thread it had just switched away from, and any CPU logging behind it
 /// (some while holding the scheduler or process-manager lock) all waited.
 /// Lines are appended here instead, whole and under a lock held only for
-/// the copy, and go out one FIFO's worth at a time (`write_burst`), written
-/// by whichever context finds the UART ready. Only a caller that may wait
-/// (`_log_print`) waits for the UART between bursts.
+/// the copy, and go out in bursts (`write_burst`), written by whichever
+/// context finds the UART ready. Only a caller that may wait (`_log_print`)
+/// waits for the UART between bursts, and only it writes a FIFO's worth at
+/// once: the idle loop and callers that cannot wait write one byte per burst.
 const LOG_RING_BYTES: usize = 64 * 1024;
 
 /// Which lines the ring takes and which it drops: `log_ring`. A line a
@@ -400,6 +401,12 @@ fn log_burst() -> usize {
     if SERIAL2_FIFO.load(core::sync::atomic::Ordering::Relaxed) { 16 } else { 1 }
 }
 
+/// The burst for a context other CPUs may be waiting on: an idle CPU, which
+/// placement queues woken threads on, or a caller holding a lock or with
+/// interrupts masked. Each port write is a VM exit under virtualization, and
+/// on the x86 gate a FIFO's worth kept interrupts masked for 8-75 ms.
+const SHORT_BURST: usize = 1;
+
 fn log_uart_status() -> u8 {
     // SAFETY: COM2's line status register.
     unsafe { x86_64::instructions::port::Port::<u8>::new(COM2_PORT + 5).read() }
@@ -424,10 +431,11 @@ enum Burst {
     Busy,
 }
 
-/// Write one FIFO's worth of the ring to COM2 if the UART can take it now.
-/// Never waits: the printer role is held, with interrupts masked, for one
-/// status read, the take from the ring and at most 16 port writes.
-fn write_burst() -> Burst {
+/// Write at most `limit` bytes of the ring, and at most one FIFO's worth, to
+/// COM2 if the UART can take them now. Never waits: the printer role is held,
+/// with interrupts masked, for one status read, the take from the ring and at
+/// most `limit` port writes.
+fn write_burst(limit: usize) -> Burst {
     use core::sync::atomic::Ordering;
     crate::arch_without_interrupts(|| {
         if LOG_PRINTER
@@ -440,7 +448,7 @@ fn write_burst() -> Burst {
             if LOG_RING.lock().len() == 0 { Burst::Empty } else { Burst::Busy }
         } else {
             let mut chunk = [0u8; 16];
-            let n = LOG_RING.lock().pop(&mut chunk[..log_burst()]);
+            let n = LOG_RING.lock().pop(&mut chunk[..log_burst().min(limit)]);
             write_log_uart(&chunk[..n]);
             LOG_SENT.fetch_add(n as u64, Ordering::Release);
             if n == 0 { Burst::Empty } else { Burst::Wrote }
@@ -455,7 +463,7 @@ fn write_burst() -> Burst {
 fn drain_until(target: u64) {
     use core::sync::atomic::Ordering;
     while LOG_SENT.load(Ordering::Acquire) < target {
-        match write_burst() {
+        match write_burst(log_burst()) {
             Burst::Empty => return,
             Burst::Wrote => {}
             Burst::Busy => core::hint::spin_loop(),
@@ -465,13 +473,15 @@ fn drain_until(target: u64) {
 
 /// Write the log ring out while `go_on` holds, from a CPU's idle loop: what a
 /// caller that could not wait on the UART left in the ring goes out here.
-/// Each burst masks interrupts only for its own port writes, and the idle
-/// thread can be switched out between bursts as anywhere else in the loop.
+/// Each burst is one byte with interrupts masked, so a woken thread queued
+/// here waits for at most one port write before `go_on` sees its reschedule,
+/// and the idle thread can be switched out between bursts as anywhere else
+/// in the loop.
 pub fn drain_log_while(go_on: impl Fn() -> bool) {
     LOG_IDLE_DRAIN.store(true, core::sync::atomic::Ordering::Release);
     write_notices();
     while go_on() {
-        match write_burst() {
+        match write_burst(SHORT_BURST) {
             Burst::Empty => return,
             Burst::Wrote => {}
             Burst::Busy => core::hint::spin_loop(),
@@ -839,8 +849,8 @@ macro_rules! serial_println {
 /// The line goes into the log ring whole. A caller that may wait on the UART,
 /// one that can be preempted, then writes the ring out up to the end of its
 /// own line. A caller that cannot, holding a lock or with interrupts masked,
-/// writes at most the one burst the UART can take at once and leaves the
-/// rest to the next caller that may wait or to an idle CPU
+/// writes at most one byte and leaves the rest to the next caller that may
+/// wait or to an idle CPU
 /// (`drain_log_while`). Until an idle loop drains the log every caller waits.
 #[doc(hidden)]
 pub fn _log_print(args: fmt::Arguments) {
@@ -866,7 +876,7 @@ pub fn _log_print(args: fmt::Arguments) {
     if may_wait {
         drain_until(end);
     } else {
-        let _ = write_burst();
+        let _ = write_burst(SHORT_BURST);
     }
 }
 
@@ -918,7 +928,7 @@ fn write_notices_from_thread() {
 /// Write the ring out until it has `needed` free bytes.
 fn make_room(needed: usize) {
     while crate::arch_without_interrupts(|| LOG_RING_BYTES - LOG_RING.lock().len() < needed) {
-        match write_burst() {
+        match write_burst(log_burst()) {
             Burst::Empty | Burst::Wrote => {}
             Burst::Busy => core::hint::spin_loop(),
         }
@@ -928,7 +938,7 @@ fn make_room(needed: usize) {
 /// Try one FIFO burst without polling UART readiness, then report whether
 /// bytes remain. Thread-context housekeeping sleeps between calls.
 pub(crate) fn drain_log_once() -> bool {
-    let _ = write_burst();
+    let _ = write_burst(log_burst());
     crate::arch_without_interrupts(|| LOG_RING.lock().len() != 0)
 }
 
