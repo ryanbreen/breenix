@@ -94,9 +94,9 @@ fn attributes_roundtrip_and_reject_invalid_flags_without_changing_them() {
         assert_eq!(posix_spawnattr_setflags(&mut attr, 128), EINVAL);
         assert_eq!(
             posix_spawnattr_setflags(&mut attr, SETSID | SETPGROUP),
-            EINVAL
+            0
         );
-        assert_eq!(attr.flags, SETSIGMASK | SETSIGDEF);
+        assert_eq!(attr.flags, SETSID | SETPGROUP);
         let mut group = 0;
         posix_spawnattr_setpgroup(&mut attr, 21);
         posix_spawnattr_getpgroup(&attr, &mut group);
@@ -416,5 +416,22 @@ fn open_already_at_target_does_not_duplicate_or_close_it() {
         assert_eq!(calls().iter().map(|c| c.0).collect::<Vec<_>>(), [nr::CLOSE,nr::OPENAT]);
         posix_spawn_file_actions_destroy(&mut actions);
         assert_eq!(ALLOCATIONS.with(|a| *a.borrow()), 0);
+    }
+}
+
+#[test]
+fn resetids_uses_the_architecture_abi_and_changes_only_effective_ids() {
+    unsafe {
+        let mut results = vec![23, 42, 0, 0];
+        results.extend(signal_results(false));
+        setup(&results);
+        assert_eq!(attributes(&Attr { flags: RESETIDS, ..Attr::default() }), Ok(()));
+        let c = calls();
+        #[cfg(spawn_aarch64)]
+        assert_eq!(c[..4].iter().map(|c| c.0).collect::<Vec<_>>(), [174, 176, 143, 145]);
+        #[cfg(spawn_x86_64)]
+        assert_eq!(c[..4].iter().map(|c| c.0).collect::<Vec<_>>(), [102, 104, 114, 113]);
+        assert_eq!(c[2].1[..2], [u64::MAX, 42]);
+        assert_eq!(c[3].1[..2], [u64::MAX, 23]);
     }
 }

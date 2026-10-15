@@ -161,6 +161,15 @@ int cmd_spawn(int argc, char **argv)
     posix_spawnattr_destroy(&attr);
     if (posix_spawn(&pid, "/no-such-sdk-program", NULL, NULL, child, env)
         || reap(pid, "missing spawn") != 127) return 1;
+    char directory[4096];
+    char *exit3[] = {(char *)app_path, "exit", "3", NULL};
+    const char *base = strrchr(app_path, '/');
+    if (!base || (size_t)(base - app_path) >= sizeof directory) return 1;
+    memcpy(directory, app_path, (size_t)(base - app_path));
+    directory[base - app_path] = 0;
+    if (setenv("PATH", directory, 1)
+        || posix_spawnp(&pid, base + 1, NULL, NULL, exit3, env)
+        || reap(pid, "spawnp child") != 3) return 1;
     if (setenv("PATH", "/no-such-sdk-dir", 1)
         || posix_spawnp(&pid, "no-such-sdk-program", NULL, NULL, child, env)
         || reap(pid, "missing spawnp") != 127) return 1;

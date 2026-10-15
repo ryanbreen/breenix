@@ -1036,7 +1036,9 @@ class Harness:
                   f'breenix-image installed an {self.other} program onto an {self.arch} disk' if refused.code == 0
                   else 'the refused install still left sdk-wrong-arch on the disk')
         missing = self.image_tool(image, 'remove', 'sdk-never-installed')
-        r.set('install/remove-missing', missing.code != 0, 'breenix-image remove of a name never installed exited 0')
+        r.set('install/remove-missing', missing.code == 1 and not missing.timed_out
+              and 'breenix-image: program is not installed: sdk-never-installed' in missing.err
+              and 'Traceback' not in missing.err, missing.why('remove of an unregistered name'))
 
     def quick_start(self, image):
         r = self.records

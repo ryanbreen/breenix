@@ -245,7 +245,7 @@ GROUP
 // This file is evaluated as ECMAScript by bsh on startup.
 
 // Global PATH - all standard binary directories
-env("PATH", "/bin:/sbin:/usr/local/cbin");
+env("PATH", "/bin:/sbin:/usr/local/bin:/usr/local/cbin");
 
 // Home directory
 env("HOME", "/root");
@@ -526,7 +526,7 @@ GROUP
 // This file is evaluated as ECMAScript by bsh on startup.
 
 // Global PATH - all standard binary directories
-env("PATH", "/bin:/sbin:/usr/local/cbin");
+env("PATH", "/bin:/sbin:/usr/local/bin:/usr/local/cbin");
 
 // Home directory
 env("HOME", "/root");

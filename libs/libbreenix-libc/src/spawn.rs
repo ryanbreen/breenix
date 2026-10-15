@@ -106,7 +106,7 @@ pub unsafe extern "C" fn posix_spawnattr_getflags(attr: *const Attr, value: *mut
 }
 #[no_mangle]
 pub unsafe extern "C" fn posix_spawnattr_setflags(attr: *mut Attr, value: i16) -> i32 {
-    if value & !FLAGS != 0 || value & (SETSID | SETPGROUP) == (SETSID | SETPGROUP) {
+    if value & !FLAGS != 0 {
         return EINVAL;
     }
     (*attr).flags = value;
