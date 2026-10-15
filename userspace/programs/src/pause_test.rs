@@ -129,8 +129,16 @@ fn main() {
 
             // Step 5: Wait for child to exit
             println!("\nStep 5: Waiting for child to exit...");
+            // The child may send one more SIGUSR1 before it sees the pipe
+            // close; the handler has no SA_RESTART, so that signal ends the
+            // wait with EINTR, as on Linux, and the wait is made again.
             let mut status: i32 = 0;
-            let wait_result = process::waitpid(child_pid_raw, &mut status, 0);
+            let wait_result = loop {
+                match process::waitpid(child_pid_raw, &mut status, 0) {
+                    Err(libbreenix::error::Error::Os(libbreenix::Errno::EINTR)) => {}
+                    other => break other,
+                }
+            };
 
             match wait_result {
                 Ok(pid)
