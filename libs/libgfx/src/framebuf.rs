@@ -2,6 +2,7 @@
 //! (docs/gui/breengel.md sections 2, 3, 4 and 6).
 
 use alloc::vec::Vec;
+use core::alloc::Layout;
 
 use crate::color::Color;
 use crate::work;
@@ -207,9 +208,16 @@ impl FrameBuf {
         let stride = width.checked_mul(format.bpp).ok_or(SurfaceError::SizeOverflow)?;
         validate(width, height, stride, format)?;
         let words = (stride * height).div_ceil(4);
-        let mut mem: Vec<u32> = Vec::new();
-        mem.try_reserve_exact(words).map_err(|_| SurfaceError::OutOfMemory)?;
-        mem.resize(words, 0);
+        // Zeroed by the allocator, so a large surface is not written page by page here.
+        let layout = Layout::array::<u32>(words).map_err(|_| SurfaceError::SizeOverflow)?;
+        // SAFETY: the layout has a nonzero size (width and height are at least 1).
+        let raw = unsafe { alloc::alloc::alloc_zeroed(layout) } as *mut u32;
+        if raw.is_null() {
+            return Err(SurfaceError::OutOfMemory);
+        }
+        // SAFETY: `raw` was allocated by the global allocator with the layout of `words`
+        // u32s, all initialized to zero.
+        let mut mem = unsafe { Vec::from_raw_parts(raw, words, words) };
         let ptr = mem.as_mut_ptr() as *mut u8;
         Ok(FrameBuf::make(ptr, Some(mem), width, height, stride, format))
     }
