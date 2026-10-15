@@ -10,6 +10,9 @@ use crate::physics::Spring;
 
 pub struct SearchIcon {
     base: IconBase,
+    remainder_us: u32,
+    pending_click: bool,
+    pending_release: bool,
     /// Overall lens scale.
     scale: Spring,
     /// Angle (radians) of the orbiting shimmer highlight.
@@ -24,6 +27,7 @@ impl SearchIcon {
     pub fn new() -> Self {
         Self {
             base: IconBase::new(),
+            remainder_us: 0, pending_click: false, pending_release: false,
             scale: Spring::new(1.0, 280.0, 18.0),
             shimmer_angle: 0.0,
             sonar_rings: [(0, false); 3],
@@ -40,8 +44,9 @@ impl SearchIcon {
     }
 }
 
-impl Icon for SearchIcon {
-    fn update(&mut self, dt_us: u32, mouse: IconMouse) {
+impl SearchIcon {
+    fn tick(&mut self, mouse: IconMouse) {
+        let dt_us = 1000;
         let state_changed = self.base.update(dt_us, &mouse);
         let dt = dt_us as f32 / 1_000_000.0;
 
@@ -51,8 +56,11 @@ impl Icon for SearchIcon {
         }
 
         // Advance click timer.
-        if self.base.state == IconState::Clicked {
-            self.click_time += dt_us;
+        if self.sonar_rings.iter().any(|&(_,alive)| alive) {
+            self.click_time = self.click_time.saturating_add(dt_us);
+            for (birth,alive) in &mut self.sonar_rings {
+                if self.click_time >= *birth + 450_000 { *alive = false; }
+            }
         }
 
         // Advance shimmer angle when hovering.
@@ -61,7 +69,7 @@ impl Icon for SearchIcon {
             IconState::HoverIn | IconState::Hovering | IconState::Clicked
         ) {
             // Full orbit in ~2 seconds.
-            self.shimmer_angle += dt * 3.14159265;
+            self.shimmer_angle = (self.shimmer_angle + dt * 3.14159265).min(core::f32::consts::TAU);
         }
 
         // Scale targets.
@@ -73,6 +81,22 @@ impl Icon for SearchIcon {
         };
         self.scale.set_target(target_scale);
         self.scale.update(dt);
+    }
+}
+
+impl Icon for SearchIcon {
+    fn update(&mut self, dt_us: u32, mut mouse: IconMouse) {
+        self.remainder_us += dt_us % 1000;
+        let quanta = dt_us/1000 + self.remainder_us/1000;
+        self.remainder_us %= 1000;
+        self.pending_click |= mouse.just_clicked;
+        self.pending_release |= mouse.just_released;
+        for _ in 0..quanta {
+            mouse.just_clicked = self.pending_click;
+            mouse.just_released = self.pending_release;
+            self.pending_click = false; self.pending_release = false;
+            self.tick(mouse);
+        }
     }
 
     fn draw(&self, fb: &mut FrameBuf, cx: i32, cy: i32, size: i32) {
@@ -163,12 +187,16 @@ impl Icon for SearchIcon {
         64
     }
 
+    fn hover_amount(&self) -> f32 { self.base.hover_amount() }
+    fn settled(&self) -> bool { self.base.settled() && self.scale.settled() && self.sonar_rings.iter().all(|&(_,alive)| !alive) }
+
     fn state(&self) -> IconState {
         self.base.state
     }
 
     fn reset(&mut self) {
         self.base.reset();
+        self.remainder_us = 0; self.pending_click = false; self.pending_release = false;
         self.scale.impulse(1.0, 0.0);
         self.scale.set_target(1.0);
         self.shimmer_angle = 0.0;
