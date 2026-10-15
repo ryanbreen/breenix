@@ -521,8 +521,14 @@ enum Prepared {
 /// taken under it.
 static FUTEX_QUEUES: Mutex<FutexTable> = Mutex::new(FutexTable::new());
 
+/// The futex table, locked with interrupts masked. Every futex operation on
+/// every CPU takes this one lock, so the reschedule IPIs of the wakes made
+/// under it are sent once it is released: a slow APIC write held every CPU
+/// entering a futex call.
 fn with_table<R>(f: impl FnOnce(&mut FutexTable) -> R) -> R {
-    crate::arch_without_interrupts(|| f(&mut FUTEX_QUEUES.lock()))
+    crate::arch_without_interrupts(|| {
+        crate::task::scheduler::with_resched_ipis_deferred(|| f(&mut FUTEX_QUEUES.lock()))
+    })
 }
 
 fn monotonic_ns() -> u64 {
