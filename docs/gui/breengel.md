@@ -708,6 +708,24 @@ its label in `text_secondary`, its background unchanged, and reports no events.
   The reference is computed in the suite by a Taylor series in `f64`, independent of the library and of the
   C library's `sin`.
 
+### 16.1 Reviewed icon catalogue
+
+`icons/assets` compares a 640 × 512 scene, background (12, 19, 31), against
+`frames/icons/assets.png`. Rows are Home, Search, Save and Arrow Forward; columns are Idle,
+HoverIn, Hovering, Pressed and Clicked. Each icon is size 48, centred at
+`(64 + 128 × column, 64 + 128 × row)`. Each cell starts with a fresh icon. Hover input has
+`hovering = true`, `rel_x = rel_y = 0`; all other fields are initially false.
+
+- Idle: no update.
+- HoverIn: 101,000 µs of hover.
+- Hovering: 251,000 µs of hover.
+- Pressed: 251,000 µs of hover, a 1,000 µs press edge with the button held, then 50,000 µs held.
+- Clicked: the Pressed schedule, a 1,000 µs release edge, then 120,000 µs of hover.
+
+`tools/gfx-refgen` renders this scene through `libicon::draw_catalogue` for review; the guest compares
+every pixel of its own rendering against the reviewed file. Icons are procedural drawings; no external
+icon asset is used. The reference's redistribution licence and review are recorded in the frame provenance.
+
 ## 17. The window interface, version 2
 
 ### 17.1 The system call
