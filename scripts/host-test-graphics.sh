@@ -15,6 +15,7 @@ CRATES=(
     libs/libimg
     libs/libbui
     libs/libicon
+    libs/breengel
 )
 if [[ $# -gt 0 ]]; then
     CRATES=("$@")
