@@ -58,11 +58,14 @@ thread_local! {
     static RESUMING: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Sleep in 1 ms steps until `done` holds or `STEP_BOUND` passes.
+/// Yield until `done` holds or `STEP_BOUND` passes. Not a sleep: this port's
+/// counter makes `STALL_NS` 10 ms (`ticks`), and at background QoS a 1 ms sleep
+/// woke about 50 ms late, so a race step that waited by sleeping let the other
+/// CPU skip it as stalled.
 fn wait_for(done: impl Fn() -> bool) {
     let deadline = Instant::now() + STEP_BOUND;
     while !done() && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(1));
+        thread::yield_now();
     }
     assert!(done(), "race coordination timed out");
 }
