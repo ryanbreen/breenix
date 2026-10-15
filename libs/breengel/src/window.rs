@@ -67,6 +67,8 @@ pub struct Window {
     since_pixel: Vec<(u64, Handled)>,
     /// The processed watermark last published.
     published: u64,
+    /// The compositor epoch of the last `CompositorChanged`, 0 before one.
+    epoch: u64,
     last: Option<Committed>,
 }
 
@@ -100,6 +102,7 @@ impl Window {
             handled: 0,
             since_pixel: Vec::new(),
             published: 0,
+            epoch: 0,
             last: None,
         })
     }
@@ -154,9 +157,14 @@ impl Window {
         self.fb.as_mut().unwrap()
     }
 
-    fn meta(processed_serial: u64) -> abi::Meta {
+    /// A commit's metadata (section 17.1): the processed watermark, the compositor epoch the
+    /// window last heard of, and the time on the UI clock with its real-clock read count.
+    fn meta(&self, processed_serial: u64) -> abi::Meta {
         let mut m = <abi::Meta as abi::Plain>::ZERO;
         m.processed_serial = processed_serial;
+        m.epoch = self.epoch;
+        m.ui_time_ms = crate::clock::now_ns() / 1_000_000;
+        m.real_clock_reads = crate::clock::real_clock_reads();
         m
     }
 
@@ -168,7 +176,7 @@ impl Window {
             return self.no_change();
         };
         let processed = h.handled_at_acquire.max(self.published);
-        let meta = Self::meta(processed);
+        let meta = self.meta(processed);
         self.fb = None;
         let c = window::commit(self.id, h.info.buffer, damage, Some(&meta))?;
         self.published = processed;
@@ -195,7 +203,7 @@ impl Window {
             }
             processed = processed.max(serial);
         }
-        let meta = Self::meta(processed);
+        let meta = self.meta(processed);
         let commit_id = window::commit_no_change(self.id, Some(&meta))?;
         self.published = processed;
         let pixel_gen = self.last.map_or(0, |c| c.pixel_gen);
@@ -226,9 +234,7 @@ impl Window {
         let mut count = 0;
         for r in raw {
             let d = Delivered::from_raw(r);
-            if let Event::Resized { width, height } = d.event {
-                self.adopt_size(width, height);
-            }
+            self.note(&d.event);
             let handled = handler(&d);
             count += 1;
             if d.serial != 0 {
@@ -273,14 +279,21 @@ impl Window {
     fn decode(&mut self, raw: Vec<abi::WindowEvent>) -> Vec<Event> {
         let mut events: Vec<Event> = raw.iter().map(Event::from_raw).collect();
         for e in events.iter() {
-            if let Event::Resized { width, height } = *e {
-                self.adopt_size(width, height);
-            }
+            self.note(e);
         }
         if matches!(self.font_watcher.poll(), Ok(Some(_))) {
             events.push(Event::FontChanged);
         }
         events
+    }
+
+    /// Take what the window needs to know from an event: its new size, the compositor's epoch.
+    fn note(&mut self, event: &Event) {
+        match *event {
+            Event::Resized { width, height } => self.adopt_size(width, height),
+            Event::CompositorChanged { epoch } => self.epoch = epoch,
+            _ => {}
+        }
     }
 
     fn adopt_size(&mut self, width: u32, height: u32) {
