@@ -754,7 +754,7 @@ path = "src/suite_sdk.rs"
 
 [[bin]]
 name = "suite-breengel"
-path = "src/suite_breengel.rs"
+path = "src/suite_breengel/main.rs"
 
 [[bin]]
 name = "fifo_fs_test"
