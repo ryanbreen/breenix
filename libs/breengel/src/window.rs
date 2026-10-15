@@ -107,7 +107,7 @@ impl Window {
             Err(_) => Vec::new(),
         };
 
-        if self.font_watcher.poll() {
+        if matches!(self.font_watcher.poll(), Ok(Some(_))) {
             events.push(Event::FontChanged);
         }
 
@@ -126,7 +126,7 @@ impl Window {
             Err(_) => Vec::new(),
         };
 
-        if self.font_watcher.poll() {
+        if matches!(self.font_watcher.poll(), Ok(Some(_))) {
             events.push(Event::FontChanged);
         }
 
