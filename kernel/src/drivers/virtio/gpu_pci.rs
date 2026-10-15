@@ -4065,6 +4065,8 @@ struct SubmitResult {
     submit_id: u64,
     /// The fence ID the device reported as completed in the response
     resp_fence: u64,
+    /// The response header's flags (VIRTIO_GPU_FLAG_FENCE when the fence was answered)
+    resp_flags: u32,
 }
 
 fn virgl_submit_3d_cmd(
@@ -4129,6 +4131,7 @@ fn virgl_submit_3d_cmd(
     Ok(SubmitResult {
         submit_id,
         resp_fence,
+        resp_flags,
     })
 }
 
@@ -4928,7 +4931,11 @@ pub fn virgl_render_rects(
             cmdbuf.as_slice().len()
         );
     }
-    let _fence_id = virgl_submit(cmdbuf.as_slice())?;
+    let submit =
+        with_device_state(|state| virgl_submit_3d_cmd(state, VIRGL_CTX_ID, cmdbuf.as_slice()))?;
+    SPIKE_RECTS_SUBMIT.store(submit.submit_id, Ordering::Release);
+    SPIKE_RECTS_RESP_FENCE.store(submit.resp_fence, Ordering::Release);
+    SPIKE_RECTS_RESP_FLAGS.store(submit.resp_flags, Ordering::Release);
 
     // Linux per-frame display pattern: SUBMIT_3D → SET_SCANOUT → RESOURCE_FLUSH.
     // Linux ftrace proves SET_SCANOUT is issued every frame, not just once.
@@ -6626,4 +6633,249 @@ fn virgl_test_textured_quad() -> Result<(), &'static str> {
     crate::serial_println!("[virgl-tex] Test complete — check display for green+checkerboard");
 
     Ok(())
+}
+
+// =============================================================================
+// GUI entry spike (scratch)
+// =============================================================================
+
+static SPIKE_RECTS_SUBMIT: AtomicU64 = AtomicU64::new(0);
+static SPIKE_RECTS_RESP_FENCE: AtomicU64 = AtomicU64::new(0);
+static SPIKE_RECTS_RESP_FLAGS: AtomicU32 = AtomicU32::new(0);
+
+/// Scene `s`: background and up to 60 integer-aligned rects with 8-bit colours, in draw order.
+fn spike_scene(s: u32, w: u32, h: u32, out: &mut [(u32, u32, u32, u32, [u8; 3]); 60]) -> ([u8; 3], usize) {
+    let mut n = 0;
+    let mut push = |r: (u32, u32, u32, u32, [u8; 3])| {
+        out[n] = r;
+        n += 1;
+    };
+    let bg = match s {
+        1 => {
+            push((100, 100, 300, 200, [255, 0, 0]));
+            push((500, 150, 201, 401, [0, 255, 0]));
+            push((0, 0, 1, 1, [0, 0, 255]));
+            push((w - 1, h - 1, 1, 1, [255, 255, 255]));
+            [32, 64, 96]
+        }
+        2 => {
+            push((200, 200, 400, 300, [200, 100, 50]));
+            push((300, 250, 400, 300, [10, 250, 128]));
+            push((w - 64, 0, 64, h, [17, 34, 51]));
+            [0, 0, 0]
+        }
+        _ => {
+            for k in 0..48u32 {
+                push((k * 24, 10, 13, h - 20, [(k * 5) as u8, (255 - k * 5) as u8, (k * 37) as u8]));
+            }
+            [255, 255, 255]
+        }
+    };
+    (bg, n)
+}
+
+/// Parallels spike: compose three known VirGL scenes on the scanout resource, read each
+/// back with a fenced TRANSFER_FROM_HOST_3D, and compare it with its formula.
+pub fn gui_spike_virgl_readback() {
+    use crate::gui_spike::{fnv, FNV_INIT};
+    use crate::serial_println;
+
+    let Some((w, h)) = dimensions() else {
+        serial_println!("GUI_SPIKE parallels verdict=ERROR no dimensions");
+        return;
+    };
+    let (fb, len) = unsafe { (PCI_3D_FB_PTR, PCI_3D_FB_LEN) };
+    let frame = (w as usize) * (h as usize) * 4;
+    if fb.is_null() || len < frame {
+        serial_println!("GUI_SPIKE parallels verdict=ERROR 3D backing missing or short len={}", len);
+        return;
+    }
+    serial_println!(
+        "GUI_SPIKE parallels begin resource={} scanout=0 mode={}x{} format=B8G8R8X8 backing_bytes={}",
+        RESOURCE_3D_ID,
+        w,
+        h,
+        len
+    );
+    let mut all_ok = true;
+    let mut rects = [(0u32, 0u32, 0u32, 0u32, [0u8; 3]); 60];
+    let mut row = alloc::vec![[0u8; 3]; w as usize];
+    for scene in 1..=3u32 {
+        let (bg, n) = spike_scene(scene, w, h, &mut rects);
+        let mut vr = [VirglRect::default(); 60];
+        for (i, r) in rects[..n].iter().enumerate() {
+            vr[i] = VirglRect {
+                x: r.0 as f32,
+                y: r.1 as f32,
+                w: r.2 as f32,
+                h: r.3 as f32,
+                r: r.4[0] as f32 / 255.0,
+                g: r.4[1] as f32 / 255.0,
+                b: r.4[2] as f32 / 255.0,
+                a: 1.0,
+            };
+        }
+        let poison = [0xA5 ^ scene as u8, 0x5A, 0xC3 ^ scene as u8, 0x3C];
+        unsafe {
+            for i in (0..frame).step_by(4) {
+                core::ptr::copy_nonoverlapping(poison.as_ptr(), fb.add(i), 4);
+            }
+        }
+        dma_cache_clean(fb, frame);
+
+        if let Err(e) = virgl_render_rects(
+            &vr[..n],
+            bg[0] as f32 / 255.0,
+            bg[1] as f32 / 255.0,
+            bg[2] as f32 / 255.0,
+        ) {
+            serial_println!("GUI_SPIKE parallels scene={} render ERROR {}", scene, e);
+            all_ok = false;
+            continue;
+        }
+        let sid = SPIKE_RECTS_SUBMIT.load(Ordering::Acquire);
+        let sfence = SPIKE_RECTS_RESP_FENCE.load(Ordering::Acquire);
+        let sflags = SPIKE_RECTS_RESP_FLAGS.load(Ordering::Acquire);
+        let submit_answered = sfence >= sid && sflags & VIRTIO_GPU_FLAG_FENCE != 0;
+        serial_println!(
+            "GUI_SPIKE parallels scene={} submit_3d rects={} fence_id={} resp_fence_id={} resp_flags={:#x} answered={}",
+            scene,
+            n,
+            sid,
+            sfence,
+            sflags,
+            submit_answered
+        );
+
+        // Control: rendering alone must not have written the guest backing.
+        dma_cache_invalidate(fb, frame);
+        let mut untouched = 0u64;
+        for i in (0..frame).step_by(4) {
+            let px = unsafe { core::ptr::read_volatile(fb.add(i) as *const [u8; 4]) };
+            if px == poison {
+                untouched += 1;
+            }
+        }
+        serial_println!(
+            "GUI_SPIKE parallels scene={} control backing_still_poison_after_render={}/{}",
+            scene,
+            untouched,
+            frame / 4
+        );
+
+        let tr = with_device_state(|state| {
+            let f = state.next_fence_id;
+            state.next_fence_id += 1;
+            let command = VirtioGpuTransferHost3d {
+                hdr: VirtioGpuCtrlHdr {
+                    type_: cmd::TRANSFER_FROM_HOST_3D,
+                    flags: VIRTIO_GPU_FLAG_FENCE,
+                    fence_id: f,
+                    ctx_id: VIRGL_CTX_ID,
+                    padding: 0,
+                },
+                box_x: 0,
+                box_y: 0,
+                box_z: 0,
+                box_w: w,
+                box_h: h,
+                box_d: 1,
+                offset: 0,
+                resource_id: RESOURCE_3D_ID,
+                level: 0,
+                stride: w * 4,
+                layer_stride: 0,
+            };
+            let resp = send_owned_command_expect_ok(state, &command)?;
+            let synced = resp.fence_id >= f || virgl_fence_sync(state, f).is_ok();
+            Ok((f, resp.type_, resp.flags, resp.fence_id, synced))
+        });
+        let (f, rtype, rflags, rfence, synced) = match tr {
+            Ok(v) => v,
+            Err(e) => {
+                serial_println!("GUI_SPIKE parallels scene={} transfer_from_host_3d REFUSED {}", scene, e);
+                all_ok = false;
+                continue;
+            }
+        };
+        let transfer_answered = rtype == cmd::RESP_OK_NODATA && rflags & VIRTIO_GPU_FLAG_FENCE != 0 && rfence >= f;
+        serial_println!(
+            "GUI_SPIKE parallels scene={} transfer_from_host_3d box=0,0,{}x{} fence_id={} resp_type={:#x} resp_flags={:#x} resp_fence_id={} answered={} fence_synced={}",
+            scene,
+            w,
+            h,
+            f,
+            rtype,
+            rflags,
+            rfence,
+            transfer_answered,
+            synced
+        );
+
+        dma_cache_invalidate(fb, frame);
+        let mut got = FNV_INIT;
+        let mut want = FNV_INIT;
+        let mut mismatched = 0u64;
+        let mut still_poison = 0u64;
+        let mut first_bad: Option<(u32, u32, [u8; 4], [u8; 3])> = None;
+        let x0 = unsafe { core::ptr::read_volatile(fb.add(3)) };
+        let mut x_differs = 0u64;
+        for y in 0..h {
+            for px in row.iter_mut() {
+                *px = [bg[2], bg[1], bg[0]];
+            }
+            for r in &rects[..n] {
+                if y >= r.1 && y < r.1 + r.3 {
+                    for x in r.0..(r.0 + r.2).min(w) {
+                        row[x as usize] = [r.4[2], r.4[1], r.4[0]];
+                    }
+                }
+            }
+            for x in 0..w {
+                let off = ((y * w + x) as usize) * 4;
+                let px = unsafe { core::ptr::read_volatile(fb.add(off) as *const [u8; 4]) };
+                let e = row[x as usize];
+                for i in 0..3 {
+                    got = fnv(got, px[i]);
+                    want = fnv(want, e[i]);
+                }
+                if px[3] != x0 {
+                    x_differs += 1;
+                }
+                if px == poison {
+                    still_poison += 1;
+                }
+                if px[..3] != e {
+                    mismatched += 1;
+                    if first_bad.is_none() {
+                        first_bad = Some((x, y, px, e));
+                    }
+                }
+            }
+        }
+        if mismatched != 0 || !transfer_answered || !submit_answered {
+            all_ok = false;
+        }
+        serial_println!(
+            "GUI_SPIKE parallels scene={} readback bytes={} fnv_bgr={:#018x} expected_fnv_bgr={:#018x} mismatched_pixels={} still_poison={} x_byte={:#04x} x_byte_differs={}",
+            scene,
+            frame,
+            got,
+            want,
+            mismatched,
+            still_poison,
+            x0,
+            x_differs
+        );
+        if let Some((x, y, px, e)) = first_bad {
+            serial_println!(
+                "GUI_SPIKE parallels scene={} first_mismatch x={} y={} got_bgrx={:02x}{:02x}{:02x}{:02x} want_bgr={:02x}{:02x}{:02x}",
+                scene, x, y, px[0], px[1], px[2], px[3], e[0], e[1], e[2]
+            );
+        }
+    }
+    serial_println!(
+        "GUI_SPIKE parallels verdict={}",
+        if all_ok { "PASS" } else { "FAIL" }
+    );
 }

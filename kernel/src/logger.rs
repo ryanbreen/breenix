@@ -1372,3 +1372,100 @@ pub fn draw_test_pattern() {
         }
     }
 }
+
+/// GUI entry spike (scratch): write the known pattern over the complete GOP framebuffer
+/// memory, read every byte back, and report the mode with checksums of what came back
+/// and of what the formula predicts.
+#[cfg(not(feature = "interactive"))]
+pub fn gui_spike_gop_readback() {
+    use crate::gui_spike::{fnv, pattern_bgrx, FNV_INIT};
+    let Some(lock) = LOG_FRAMEBUFFER.get() else {
+        crate::serial_println!("GUI_SPIKE x86 gop absent: no bootloader framebuffer");
+        return;
+    };
+    let info;
+    let len;
+    let mut got = FNV_INIT;
+    let mut want = FNV_INIT;
+    let mut mismatched: u64 = 0;
+    let mut pad_bad: u64 = 0;
+    {
+        let mut fb = lock.lock();
+        info = fb.info;
+        len = fb.buffer_len;
+        let bpp = info.bytes_per_pixel;
+        let is_bgr = matches!(info.pixel_format, PixelFormat::Bgr);
+        let base = fb.buffer_ptr;
+        let row_bytes = info.stride * bpp;
+        // Device order of the canonical BGRX pattern: BGR keeps it, RGB swaps B and R.
+        let device = |p: [u8; 4]| if is_bgr { p } else { [p[2], p[1], p[0], p[3]] };
+        for y in 0..info.height {
+            for x in 0..info.stride {
+                let off = y * row_bytes + x * bpp;
+                let px = if x < info.width {
+                    device(pattern_bgrx(7, x as u32, y as u32))
+                } else {
+                    [0; 4]
+                };
+                for (i, b) in px.iter().take(bpp).enumerate() {
+                    unsafe { core::ptr::write_volatile(base.add(off + i), *b) };
+                }
+            }
+        }
+        for off in info.height * row_bytes..len {
+            unsafe { core::ptr::write_volatile(base.add(off), 0) };
+        }
+        core::sync::atomic::fence(Ordering::SeqCst);
+        unsafe { core::arch::asm!("sfence; mfence", options(nostack, preserves_flags)) };
+        for y in 0..info.height {
+            for x in 0..info.stride {
+                let off = y * row_bytes + x * bpp;
+                let mut px = [0u8; 4];
+                for (i, b) in px.iter_mut().take(bpp).enumerate() {
+                    *b = unsafe { core::ptr::read_volatile(base.add(off + i)) };
+                }
+                if x >= info.width {
+                    if px != [0; 4] {
+                        pad_bad += 1;
+                    }
+                    continue;
+                }
+                // Back to canonical BGRX before hashing.
+                let canon = if is_bgr { px } else { [px[2], px[1], px[0], px[3]] };
+                let expect = pattern_bgrx(7, x as u32, y as u32);
+                for i in 0..4 {
+                    got = fnv(got, canon[i]);
+                    want = fnv(want, expect[i]);
+                }
+                if canon != expect {
+                    mismatched += 1;
+                }
+            }
+        }
+        for off in info.height * row_bytes..len {
+            if unsafe { core::ptr::read_volatile(base.add(off)) } != 0 {
+                pad_bad += 1;
+            }
+        }
+        unsafe { core::ptr::write_bytes(base, 0, len) };
+        fb.x_pos = BORDER_PADDING;
+        fb.y_pos = BORDER_PADDING;
+    }
+    crate::serial_println!(
+        "GUI_SPIKE x86 gop mode={}x{} stride={} bytes_per_pixel={} format={:?} buffer_bytes={}",
+        info.width,
+        info.height,
+        info.stride,
+        info.bytes_per_pixel,
+        info.pixel_format,
+        len
+    );
+    crate::serial_println!(
+        "GUI_SPIKE x86 gop readback pixels={} fnv={:#018x} expected_fnv={:#018x} mismatched_pixels={} nonzero_padding_bytes={}",
+        info.width * info.height,
+        got,
+        want,
+        mismatched,
+        pad_bad
+    );
+}

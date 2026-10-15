@@ -21,6 +21,7 @@ pub mod uart_owner;
 pub use serial_aarch64 as serial;
 pub mod arch_impl;
 pub mod drivers;
+pub mod gui_spike;
 #[cfg(target_arch = "x86_64")]
 pub mod gdt;
 #[cfg(target_arch = "x86_64")]

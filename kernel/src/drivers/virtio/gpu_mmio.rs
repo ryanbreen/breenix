@@ -924,3 +924,225 @@ pub fn test_device() -> Result<(), &'static str> {
     crate::serial_println!("[virtio-gpu] Test passed!");
     Ok(())
 }
+
+// ─── GUI entry spike (scratch) ───────────────────────────────────────────────
+
+const SPIKE_FLAG_FENCE: u32 = 1;
+
+/// Send one transfer or flush of `rect`, fenced when `fence` is given, and return the
+/// response header's (type, flags, fence_id) as the device wrote it.
+fn spike_cmd(
+    device: &VirtioMmioDevice,
+    state: &mut GpuDeviceState,
+    transfer: bool,
+    rect: (u32, u32, u32, u32),
+    fence: Option<u64>,
+) -> Result<(u32, u32, u64), &'static str> {
+    let (x, y, w, h) = rect;
+    let hdr = VirtioGpuCtrlHdr {
+        type_: if transfer {
+            cmd::TRANSFER_TO_HOST_2D
+        } else {
+            cmd::RESOURCE_FLUSH
+        },
+        flags: if fence.is_some() { SPIKE_FLAG_FENCE } else { 0 },
+        fence_id: fence.unwrap_or(0),
+        ctx_id: 0,
+        padding: 0,
+    };
+    let len = unsafe {
+        let cmd_ptr = &raw mut CMD_BUF;
+        if transfer {
+            let stride = state.width as u64 * BYTES_PER_PIXEL as u64;
+            *((*cmd_ptr).data.as_mut_ptr() as *mut VirtioGpuTransferToHost2d) =
+                VirtioGpuTransferToHost2d {
+                    hdr,
+                    r_x: x,
+                    r_y: y,
+                    r_width: w,
+                    r_height: h,
+                    offset: y as u64 * stride + x as u64 * BYTES_PER_PIXEL as u64,
+                    resource_id: state.resource_id,
+                    padding: 0,
+                };
+            core::mem::size_of::<VirtioGpuTransferToHost2d>()
+        } else {
+            *((*cmd_ptr).data.as_mut_ptr() as *mut VirtioGpuResourceFlush) =
+                VirtioGpuResourceFlush {
+                    hdr,
+                    r_x: x,
+                    r_y: y,
+                    r_width: w,
+                    r_height: h,
+                    resource_id: state.resource_id,
+                    padding: 0,
+                };
+            core::mem::size_of::<VirtioGpuResourceFlush>()
+        }
+    };
+    unsafe {
+        let resp_ptr = &raw mut RESP_BUF;
+        *((*resp_ptr).data.as_mut_ptr() as *mut VirtioGpuCtrlHdr) = VirtioGpuCtrlHdr {
+            type_: 0xDEAD_BEEF,
+            flags: 0xDEAD_BEEF,
+            fence_id: 0xDEAD_BEEF,
+            ctx_id: 0,
+            padding: 0,
+        };
+    }
+    let cmd_phys = virt_to_phys(&raw const CMD_BUF as u64);
+    let resp_phys = virt_to_phys(&raw const RESP_BUF as u64);
+    send_command(
+        device,
+        state,
+        cmd_phys,
+        len as u32,
+        resp_phys,
+        core::mem::size_of::<VirtioGpuCtrlHdr>() as u32,
+    )?;
+    unsafe {
+        let resp_ptr = &raw const RESP_BUF;
+        let r = (*resp_ptr).data.as_ptr() as *const VirtioGpuCtrlHdr;
+        Ok((
+            read_volatile(&(*r).type_),
+            read_volatile(&(*r).flags),
+            read_volatile(&(*r).fence_id),
+        ))
+    }
+}
+
+/// ARM64 QEMU spike: fenced 2D transfers and flushes per serial, then read the full
+/// guest backing of the scanout resource and compare it with the formula.
+pub fn gui_spike_fenced_2d() {
+    use crate::gui_spike::{fnv, pattern_bgrx, FNV_INIT};
+    use crate::serial_println;
+
+    let result = with_device_state(|device, state| {
+        let (w, h) = (state.width, state.height);
+        let len = framebuffer_len(state)?;
+        serial_println!(
+            "GUI_SPIKE qemu2d begin resource={} scanout=0 mode={}x{} format=B8G8R8A8 backing_bytes={}",
+            state.resource_id,
+            w,
+            h,
+            len
+        );
+        let fb = unsafe { &mut (&mut (*(&raw mut FRAMEBUFFER)).pixels)[..len] };
+
+        // Control: an unfenced transfer must come back without the fence flag.
+        let c = spike_cmd(device, state, true, (0, 0, 1, 1), None)?;
+        serial_println!(
+            "GUI_SPIKE qemu2d control unfenced transfer resp_type={:#x} flags={:#x} fence_id={}",
+            c.0,
+            c.1,
+            c.2
+        );
+
+        let damage = |s: u32| -> ([(u32, u32, u32, u32); 3], usize) {
+            match s {
+                1 => ([(0, 0, w, h), (0, 0, 0, 0), (0, 0, 0, 0)], 1),
+                2 => ([(100, 50, 401, 299), (w - 257, h - 129, 257, 129), (0, 0, 0, 0)], 2),
+                _ => ([(0, 0, 1, 1), (0, h / 2, w, 1), (w - 1, h - 1, 1, 1)], 3),
+            }
+        };
+        let inside = |r: (u32, u32, u32, u32), x: u32, y: u32| {
+            x >= r.0 && x < r.0 + r.2 && y >= r.1 && y < r.1 + r.3
+        };
+        let mut next_fence: u64 = 0x51_0000;
+        let mut all_ok = true;
+        for serial in 1..=3u32 {
+            let (rects, n) = damage(serial);
+            for &r in &rects[..n] {
+                for y in r.1..r.1 + r.3 {
+                    for x in r.0..r.0 + r.2 {
+                        let off = ((y * w + x) as usize) * BYTES_PER_PIXEL;
+                        fb[off..off + 4].copy_from_slice(&pattern_bgrx(serial, x, y));
+                    }
+                }
+            }
+            fence(Ordering::SeqCst);
+            for (kind, transfer) in [("transfer", true), ("flush", false)] {
+                let mut answered = 0;
+                let first = next_fence;
+                for &r in &rects[..n] {
+                    let f = next_fence;
+                    next_fence += 1;
+                    let (t, fl, fid) = spike_cmd(device, state, transfer, r, Some(f))?;
+                    let ok = t == cmd::RESP_OK_NODATA && fl & SPIKE_FLAG_FENCE != 0 && fid == f;
+                    if ok {
+                        answered += 1;
+                    } else {
+                        all_ok = false;
+                        serial_println!(
+                            "GUI_SPIKE qemu2d serial={} {} rect={:?} fence={} BAD resp_type={:#x} flags={:#x} fence_id={}",
+                            serial, kind, r, f, t, fl, fid
+                        );
+                    }
+                }
+                serial_println!(
+                    "GUI_SPIKE qemu2d serial={} {}s={} fence_ids={}..={} answered_ok_with_echo={}/{}",
+                    serial,
+                    kind,
+                    n,
+                    first,
+                    next_fence - 1,
+                    answered,
+                    n
+                );
+            }
+            // Read the complete guest backing and compare it with the formula.
+            fence(Ordering::SeqCst);
+            let mut got = FNV_INIT;
+            let mut want = FNV_INIT;
+            let mut mismatched = 0u64;
+            for y in 0..h {
+                for x in 0..w {
+                    let off = ((y * w + x) as usize) * BYTES_PER_PIXEL;
+                    let px = unsafe {
+                        [
+                            read_volatile(&fb[off]),
+                            read_volatile(&fb[off + 1]),
+                            read_volatile(&fb[off + 2]),
+                            read_volatile(&fb[off + 3]),
+                        ]
+                    };
+                    let mut owner = 1;
+                    for s in (1..=serial).rev() {
+                        let (rs, k) = damage(s);
+                        if rs[..k].iter().any(|&r| inside(r, x, y)) {
+                            owner = s;
+                            break;
+                        }
+                    }
+                    let e = pattern_bgrx(owner, x, y);
+                    for i in 0..4 {
+                        got = fnv(got, px[i]);
+                        want = fnv(want, e[i]);
+                    }
+                    if px != e {
+                        mismatched += 1;
+                    }
+                }
+            }
+            if mismatched != 0 {
+                all_ok = false;
+            }
+            serial_println!(
+                "GUI_SPIKE qemu2d serial={} readback bytes={} fnv={:#018x} expected_fnv={:#018x} mismatched_pixels={}",
+                serial,
+                len,
+                got,
+                want,
+                mismatched
+            );
+        }
+        Ok(all_ok)
+    });
+    match result {
+        Ok(ok) => serial_println!(
+            "GUI_SPIKE qemu2d verdict={}",
+            if ok { "PASS" } else { "FAIL" }
+        ),
+        Err(e) => serial_println!("GUI_SPIKE qemu2d verdict=ERROR {}", e),
+    }
+}

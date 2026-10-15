@@ -1246,3 +1246,320 @@ pub fn draw_test_pattern() -> Result<(), &'static str> {
     serial_println!("[svga3] Test pattern drawn successfully");
     Ok(())
 }
+
+// ─── GUI entry spike (scratch) ──────────────────────────────────────────────
+
+const SPIKE_REG_ST_MAX_W: u32 = 55;
+const SPIKE_REG_ST_MAX_H: u32 = 56;
+const SPIKE_REG_MOB_MAX_SIZE: u32 = 57;
+const SPIKE_REG_CAP2: u32 = 59;
+const SPIKE_REG_FENCE: u32 = 69;
+const SPIKE_CMD_FENCE: u32 = 30;
+const SPIKE_3D_READBACK_GB_SURFACE: u32 = 1104;
+const SPIKE_DC_START_STOP_CONTEXT: u32 = 1;
+const SPIKE_MOBFMT_PT64_0: u32 = 4;
+const SPIKE_MOBFMT_PT64_2: u32 = 6;
+const SPIKE_X8R8G8B8: u32 = 1;
+const SPIKE_W: u32 = 1280;
+const SPIKE_H: u32 = 800;
+
+/// Submit one command buffer; the address goes in as the header's byte address
+/// (vmwgfx) or as its page frame number (this driver's encoding). Returns the
+/// header status and error offset, or Err on timeout (the buffer is then leaked,
+/// since the device may still write it).
+fn spike_submit(cmds: &[u8], ctx: u32, pfn_encoding: bool) -> Result<(u32, u32), &'static str> {
+    const HEADER_SIZE: usize = 64;
+    let total = HEADER_SIZE + cmds.len();
+    let layout = Layout::from_size_align(total, PAGE_SIZE).map_err(|_| "layout")?;
+    let buf = unsafe { alloc::alloc::alloc_zeroed(layout) };
+    if buf.is_null() {
+        return Err("alloc");
+    }
+    let virt = buf as u64;
+    let phys = virt - HHDM_BASE;
+    let header = buf as *mut SvgaCbHeader;
+    unsafe {
+        (*header).status = CbStatus::None as u32;
+        (*header).flags = SVGA_CB_FLAG_NO_IRQ;
+        (*header).length = cmds.len() as u32;
+        (*header).pa = phys + HEADER_SIZE as u64;
+        core::ptr::copy_nonoverlapping(cmds.as_ptr(), buf.add(HEADER_SIZE), cmds.len());
+        cache_clean_range(virt, total);
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+        if pfn_encoding {
+            let pfn = phys >> 12;
+            reg_write(SVGA_REG_COMMAND_HIGH, (pfn >> 20) as u32);
+            reg_write(SVGA_REG_COMMAND_LOW, ((pfn & 0xFFFFF) as u32) | (ctx & 0x3F));
+        } else {
+            reg_write(SVGA_REG_COMMAND_HIGH, (phys >> 32) as u32);
+            reg_write(SVGA_REG_COMMAND_LOW, (phys as u32) | (ctx & 0x3F));
+        }
+        let mut spins = 0u32;
+        loop {
+            cache_invalidate_range(virt, 64);
+            core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+            let status = core::ptr::read_volatile(&(*header).status);
+            if status != CbStatus::None as u32 {
+                let err = core::ptr::read_volatile(&(*header).error_offset);
+                alloc::alloc::dealloc(buf, layout);
+                return Ok((status, err));
+            }
+            spins += 1;
+            if spins > 20_000_000 {
+                return Err("timeout");
+            }
+            core::hint::spin_loop();
+        }
+    }
+}
+
+/// Wait for SVGA_REG_FENCE to reach `goal`; returns the last value read.
+fn spike_wait_fence(goal: u32) -> (bool, u32) {
+    let mut last = 0;
+    for _ in 0..20_000_000u32 {
+        last = unsafe { reg_read(SPIKE_REG_FENCE) };
+        if last.wrapping_sub(goal) as i32 >= 0 {
+            return (true, last);
+        }
+        core::hint::spin_loop();
+    }
+    (false, last)
+}
+
+/// VMware spike: a 1280x800 screen target bound to a guest-backed surface, then
+/// READBACK_GB_SURFACE of that surface into its MOB, fenced, compared with the formula.
+pub fn gui_spike_stdu() {
+    use crate::gui_spike::{fnv, pattern_bgrx, FNV_INIT};
+    use crate::serial_println;
+
+    let (caps2, st_w, st_h, mob_max, fence0) = unsafe {
+        (
+            reg_read(SPIKE_REG_CAP2),
+            reg_read(SPIKE_REG_ST_MAX_W),
+            reg_read(SPIKE_REG_ST_MAX_H),
+            reg_read(SPIKE_REG_MOB_MAX_SIZE),
+            reg_read(SPIKE_REG_FENCE),
+        )
+    };
+    let (gw, gh) = unsafe { (reg_read(SVGA_REG_WIDTH), reg_read(SVGA_REG_HEIGHT)) };
+    serial_println!(
+        "GUI_SPIKE vmware begin caps={:#010x} caps2={:#010x} gop_mode={}x{} st_max={}x{} mob_max={} fence_reg={}",
+        unsafe { CAPABILITIES },
+        caps2,
+        gw,
+        gh,
+        st_w,
+        st_h,
+        mob_max,
+        fence0
+    );
+
+    // Start context 0 through the device context.
+    let mut dc = CmdEncoder::new();
+    dc.push_u32(SPIKE_DC_START_STOP_CONTEXT);
+    dc.push_u32(1);
+    dc.push_u32(SVGA_CB_CONTEXT_0);
+    let dc = dc.finish();
+    let mut pfn = false;
+    let mut started = spike_submit(&dc, SVGA_CB_CONTEXT_DEVICE, false);
+    serial_println!("GUI_SPIKE vmware start_context0 encoding=byte_address result={:?}", started);
+    if started.is_err() {
+        pfn = true;
+        started = spike_submit(&dc, SVGA_CB_CONTEXT_DEVICE, true);
+        serial_println!("GUI_SPIKE vmware start_context0 encoding=pfn result={:?}", started);
+    }
+    if started != Ok((CbStatus::Completed as u32, 0)) {
+        serial_println!("GUI_SPIKE vmware verdict=FAIL context 0 did not start");
+        return;
+    }
+    let enc_name = if pfn { "pfn" } else { "byte_address" };
+    let step = |label: &str, cmds: &[u8]| -> bool {
+        let r = spike_submit(cmds, SVGA_CB_CONTEXT_0, pfn);
+        let ok = r == Ok((CbStatus::Completed as u32, 0));
+        serial_println!(
+            "GUI_SPIKE vmware cb {} bytes={} result={:?} ok={}",
+            label,
+            cmds.len(),
+            r,
+            ok
+        );
+        ok
+    };
+
+    // OTables: one zeroed page each (MOB, SURFACE, CONTEXT, SHADER, SCREENTARGET).
+    let mut enc = CmdEncoder::new();
+    for t in [
+        SVGA_OTABLE_MOB,
+        SVGA_OTABLE_SURFACE,
+        SVGA_OTABLE_CONTEXT,
+        SVGA_OTABLE_SHADER,
+        SVGA_OTABLE_SCREENTARGET,
+    ] {
+        let Ok((v, p, size)) = alloc_dma_pages(1) else {
+            serial_println!("GUI_SPIKE vmware verdict=ERROR otable alloc");
+            return;
+        };
+        unsafe { cache_clean_range(v, size) };
+        enc.set_otable_base64(t, p >> 12, size as u32, 0, SPIKE_MOBFMT_PT64_0);
+    }
+    if !step("set_otables", &enc.finish()) {
+        serial_println!("GUI_SPIKE vmware verdict=FAIL otables");
+        return;
+    }
+
+    // Surface backing: 1280x800x4 bytes in a PT64_2 MOB.
+    let bytes = (SPIKE_W * SPIKE_H * 4) as usize;
+    let pages = bytes.div_ceil(PAGE_SIZE);
+    let tables = pages.div_ceil(512);
+    let (Ok((dv, _, _)), Ok((dir_v, dir_p, _)), Ok((pt_v, pt_p, _))) = (
+        alloc_dma_pages(pages),
+        alloc_dma_pages(1),
+        alloc_dma_pages(tables),
+    ) else {
+        serial_println!("GUI_SPIKE vmware verdict=ERROR mob alloc");
+        return;
+    };
+    unsafe {
+        for i in 0..pages {
+            let ppn = (dv + (i * PAGE_SIZE) as u64 - HHDM_BASE) >> 12;
+            core::ptr::write_volatile((pt_v as *mut u64).add(i), ppn);
+        }
+        for t in 0..tables {
+            core::ptr::write_volatile((dir_v as *mut u64).add(t), (pt_p >> 12) + t as u64);
+        }
+        cache_clean_range(pt_v, tables * PAGE_SIZE);
+        cache_clean_range(dir_v, PAGE_SIZE);
+    }
+    let mut enc = CmdEncoder::new();
+    enc.define_gb_mob64(COMPOSITOR_MOB_ID, SPIKE_MOBFMT_PT64_2, dir_p >> 12, bytes as u32);
+    let mob_ok = step("define_mob64_pt64_2", &enc.finish());
+
+    let mut enc = CmdEncoder::new();
+    enc.define_gb_surface_v2(
+        COMPOSITOR_SURFACE_ID,
+        SVGA3D_SURFACE_SCREENTARGET,
+        SPIKE_X8R8G8B8,
+        1,
+        0,
+        SPIKE_W,
+        SPIKE_H,
+        1,
+        0,
+        0,
+    );
+    enc.bind_gb_surface(COMPOSITOR_SURFACE_ID, COMPOSITOR_MOB_ID);
+    let srf_ok = step("define_bind_surface_x8r8g8b8", &enc.finish());
+
+    let mut enc = CmdEncoder::new();
+    enc.define_gb_screentarget(COMPOSITOR_STID, SPIKE_W, SPIKE_H, SVGA_STFLAG_PRIMARY);
+    enc.bind_gb_screentarget(COMPOSITOR_STID, COMPOSITOR_SURFACE_ID);
+    let st_ok = step("define_bind_screentarget_1280x800", &enc.finish());
+    let (rw, rh) = unsafe { (reg_read(SVGA_REG_WIDTH), reg_read(SVGA_REG_HEIGHT)) };
+    serial_println!(
+        "GUI_SPIKE vmware mode_set screentarget={} {}x{} primary encoding={} ok={} regs_after={}x{}",
+        COMPOSITOR_STID,
+        SPIKE_W,
+        SPIKE_H,
+        enc_name,
+        mob_ok && srf_ok && st_ok,
+        rw,
+        rh
+    );
+    if !(mob_ok && srf_ok && st_ok) {
+        serial_println!("GUI_SPIKE vmware verdict=FAIL mode set");
+        return;
+    }
+
+    let data = dv as *mut u8;
+    let mut fence_goal = fence0.wrapping_add(1);
+    let mut all_ok = true;
+    for scene in 1..=2u32 {
+        let s = 10 + scene;
+        for y in 0..SPIKE_H {
+            for x in 0..SPIKE_W {
+                let off = ((y * SPIKE_W + x) * 4) as usize;
+                let p = pattern_bgrx(s, x, y);
+                unsafe { core::ptr::copy_nonoverlapping(p.as_ptr(), data.add(off), 4) };
+            }
+        }
+        unsafe { cache_clean_range(dv, bytes) };
+        let f1 = fence_goal;
+        fence_goal = fence_goal.wrapping_add(1);
+        let mut enc = CmdEncoder::new();
+        enc.update_gb_image(COMPOSITOR_SURFACE_ID, 0, 0, SPIKE_W, SPIKE_H);
+        enc.update_gb_screentarget(COMPOSITOR_STID, 0, 0, SPIKE_W, SPIKE_H);
+        enc.push_u32(SPIKE_CMD_FENCE);
+        enc.push_u32(f1);
+        let up_ok = step("update_image_screentarget_fence", &enc.finish());
+        let (f1_ok, f1_val) = spike_wait_fence(f1);
+        serial_println!(
+            "GUI_SPIKE vmware scene={} present fence={} answered={} fence_reg={}",
+            scene,
+            f1,
+            f1_ok,
+            f1_val
+        );
+
+        // Clobber the guest backing so only a device readback can restore the scene.
+        unsafe {
+            core::ptr::write_bytes(data, 0xA5, bytes);
+            cache_clean_range(dv, bytes);
+        }
+        let f2 = fence_goal;
+        fence_goal = fence_goal.wrapping_add(1);
+        let mut enc = CmdEncoder::new();
+        enc.cmd_header(SPIKE_3D_READBACK_GB_SURFACE, 4);
+        enc.push_u32(COMPOSITOR_SURFACE_ID);
+        enc.push_u32(SPIKE_CMD_FENCE);
+        enc.push_u32(f2);
+        let rb_ok = step("readback_gb_surface_fence", &enc.finish());
+        let (f2_ok, f2_val) = spike_wait_fence(f2);
+        unsafe { cache_invalidate_range(dv, bytes) };
+        let mut got = FNV_INIT;
+        let mut want = FNV_INIT;
+        let mut mismatched = 0u64;
+        let mut still_poison = 0u64;
+        let mut x_differs = 0u64;
+        for y in 0..SPIKE_H {
+            for x in 0..SPIKE_W {
+                let off = ((y * SPIKE_W + x) * 4) as usize;
+                let px = unsafe { core::ptr::read_volatile(data.add(off) as *const [u8; 4]) };
+                let e = pattern_bgrx(s, x, y);
+                for i in 0..3 {
+                    got = fnv(got, px[i]);
+                    want = fnv(want, e[i]);
+                }
+                if px[3] != 0 {
+                    x_differs += 1;
+                }
+                if px == [0xA5; 4] {
+                    still_poison += 1;
+                }
+                if px[..3] != e[..3] {
+                    mismatched += 1;
+                }
+            }
+        }
+        if !(up_ok && f1_ok && rb_ok && f2_ok) || mismatched != 0 {
+            all_ok = false;
+        }
+        serial_println!(
+            "GUI_SPIKE vmware scene={} readback surface={} fence={} answered={} fence_reg={} bytes={} fnv_bgr={:#018x} expected_fnv_bgr={:#018x} mismatched_pixels={} still_poison={} x_byte_nonzero={}",
+            scene,
+            COMPOSITOR_SURFACE_ID,
+            f2,
+            f2_ok,
+            f2_val,
+            bytes,
+            got,
+            want,
+            mismatched,
+            still_poison,
+            x_differs
+        );
+    }
+    serial_println!(
+        "GUI_SPIKE vmware verdict={}",
+        if all_ok { "PASS" } else { "FAIL" }
+    );
+}

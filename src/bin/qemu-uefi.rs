@@ -357,17 +357,19 @@ fn main() {
     let fb_width = env::var("BREENIX_FB_WIDTH")
         .ok()
         .and_then(|s| s.parse::<u32>().ok())
-        .unwrap_or(1920);
+        .unwrap_or(1280);
     let fb_height = env::var("BREENIX_FB_HEIGHT")
         .ok()
         .and_then(|s| s.parse::<u32>().ok())
-        .unwrap_or(1080);
+        .unwrap_or(800);
 
     // virtio-vga provides GOP with configurable resolution
     qemu.args([
         "-device",
         &format!("virtio-vga,xres={},yres={}", fb_width, fb_height),
     ]);
+    // GUI entry spike (scratch): an absolute pointer device on the gate.
+    qemu.args(["-device", "virtio-tablet-pci"]);
 
     let is_interactive = env::var("BREENIX_INTERACTIVE").ok().as_deref() == Some("1");
     if is_interactive {

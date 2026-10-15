@@ -80,7 +80,7 @@ impl Profile {
 
     /// Exact PCI function counts for the selected chipset, storage and NIC.
     pub fn pci_census(self) -> Vec<(&'static str, usize)> {
-        let mut required = vec![("1af4:1050", 1)]; // virtio-vga
+        let mut required = vec![("1af4:1050", 1), ("1af4:1052", 1)]; // virtio-vga, virtio-tablet
         if self.machine() == "q35" {
             required.extend([
                 ("8086:29c0", 1),

@@ -15,11 +15,11 @@ fn main() {
     let fb_width: u64 = env::var("BREENIX_FB_WIDTH")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(1920);
+        .unwrap_or(1280);
     let fb_height: u64 = env::var("BREENIX_FB_HEIGHT")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(1080);
+        .unwrap_or(800);
 
     let mut boot_config = BootConfig::default();
     boot_config.frame_buffer.minimum_framebuffer_width = Some(fb_width);

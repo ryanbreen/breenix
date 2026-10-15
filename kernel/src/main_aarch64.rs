@@ -1066,6 +1066,10 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     let virgl_display = kernel::drivers::virtio::gpu_pci::is_initialized()
         && kernel::drivers::virtio::gpu_pci::is_virgl_enabled();
 
+    if has_display {
+        kernel::gui_spike::run_arm64();
+    }
+
     // Upgrade framebuffer to double buffering now that heap is available.
     // This allocates a shadow buffer in cached RAM so pixel writes are fast
     // (~1ns vs ~100ns for direct GOP BAR0 writes on Parallels).

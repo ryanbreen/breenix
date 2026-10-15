@@ -291,6 +291,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         "PCI subsystem initialized: {} devices found",
         pci_device_count
     );
+    kernel::gui_spike::run_x86();
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::PCI_ENUMERATION);
 
