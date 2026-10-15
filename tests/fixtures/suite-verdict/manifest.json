@@ -1,0 +1,24 @@
+{
+  "id": "fixture",
+  "categories": [
+    {
+      "id": "first",
+      "cases": [
+        {
+          "id": "one"
+        },
+        {
+          "id": "two"
+        }
+      ]
+    },
+    {
+      "id": "second",
+      "cases": [
+        {
+          "id": "three"
+        }
+      ]
+    }
+  ]
+}

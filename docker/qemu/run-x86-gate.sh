@@ -43,7 +43,8 @@
 #                       seconds after the suite's `SUITE <id> DONE` line, and scores
 #                       the boot with scripts/suite-verdict.py: one START, every
 #                       manifest case's CASE line in order, a DONE agreeing with
-#                       them with failed=0, and no fatal kernel output.
+#                       them with failed=0, skipped=0 and passed=total=the manifest count,
+#                       and no fatal kernel output.
 #   BREENIX_QMP_SOCKET  if set, QEMU opens a QMP socket at this path (qemu-uefi.rs)
 #                       so a screendump can be taken while the VM runs. In suite
 #                       mode the gate also saves the final screen as screen.png in

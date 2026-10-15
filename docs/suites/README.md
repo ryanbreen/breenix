@@ -149,8 +149,14 @@ fn main() { SUITE.run() }
 
 A case returns `Ok(())` to pass, and may report what it measures with `value` and
 `wait_for` (see above). `?` on a libbreenix error or a string fails it with that
-message; `fail(msg)` and `check(condition, msg)` fail it, and `skip(why)` skips it. Add the
-binary to `userspace/programs/Cargo.toml` as `suite-<id>` and to `STD_BINARIES` in
+message; `fail(msg)` and `check(condition, msg)` fail it, and `skip(why)` emits a SKIP record.
+A SKIP rejects suite acceptance: the host requires skipped=0, failed=0 and
+passed=total=the manifest case count. Missing prerequisites do not grant an exemption.
+CPU prerequisites are tracked in #1615, optional priority inheritance in #1616,
+argument/stack/semaphore limits in #1617, idle-CPU measurement in #1613 and
+eager disk allocation in #1614.
+
+Add the binary to `userspace/programs/Cargo.toml` as `suite-<id>` and to `STD_BINARIES` in
 `userspace/programs/build.sh`; `scripts/create_ext2_disk.sh` installs `suite-*` in `/sbin`.
 
 ## Booting a suite
@@ -161,7 +167,8 @@ binary to `userspace/programs/Cargo.toml` as `suite-<id>` and to `STD_BINARIES` 
 - x86-64 gate: `BREENIX_BOOT_SUITE=<id> docker/qemu/run-x86-gate.sh`, or
   `swift run breenix-runs run x86 --suite <id>` from `tools/breenix-runs`. The gate scores
   the boot with `scripts/suite-verdict.py`: one START with the manifest's case count, a CASE
-  line for every manifest case in order, a DONE that agrees with them and has `failed=0`, and
+  line for every manifest case in order, a DONE that agrees with them and has `failed=0`,
+  `skipped=0` and `passed=total` equal to the manifest's case count, and
   no fatal kernel output. With `BREENIX_QMP_SOCKET=<path>` QEMU also opens a QMP socket for
   screendumps, and the gate saves the final screen as `screen.png` next to the boot's serial
   logs (breenix-runs keeps boot N's as `screen-N.png`).
@@ -323,8 +330,8 @@ SSE, so compiled code there never uses the xmm registers.
 Permission cases switch to user IDs 4242 and 4343 in children; the suite itself runs as
 root. Two cases need two processors (`handlers/spinning-target` and
 `job-control/stop-threads`). They read the count from /proc/cpuinfo, fail when it cannot be
-read, and skip below two. Before measuring, each shows that its two workers run on
-different processors at once: a thousand handoffs through shared memory, which two that
+read, and emit a suite-rejecting SKIP below two (#1615). Before measuring, each shows
+that its two workers run on different processors at once: a thousand handoffs through shared memory, which two that
 take turns on one processor cannot make in the time allowed. None assumes more than two.
 
 The exec cases run `/usr/local/test/bin/signals-exec_test`, which reports the mask,
@@ -359,8 +366,7 @@ ARM64. `sleep/nanosleep-short` holds the median of twenty 1 ms sleeps to one tic
 and `clocks/coarse-tick` checks that CLOCK_MONOTONIC_COARSE reports and advances in steps
 of the tick. Rates are measured over 2 to 3 seconds: CLOCK_REALTIME against
 CLOCK_MONOTONIC (100 ppm), CLOCK_MONOTONIC against the processor's own counter (1000 ppm;
-ARM64's CNTVCT_EL0 at CNTFRQ_EL0, x86-64's TSC at the frequency CPUID leaf 0x15 gives,
-and a skip when the processor does not give one) and CLOCK_REALTIME against the RTC read
+ARM64's CNTVCT_EL0 at CNTFRQ_EL0, x86-64's TSC calibrated against bounded RTC edges) and CLOCK_REALTIME against the RTC read
 through Linux's `/dev/rtc0` RTC_RD_TIME (2000 ppm). CPU-time clocks and timers are
 checked to stand still while the caller sleeps and to advance while it computes. A CPU-time
 timer is timed in the CPU time it counts, measured across the computing: a POSIX CPU-time
@@ -384,8 +390,8 @@ reports down a pipe. `itimers/alarm-replace` watches past the replaced alarm's d
 
 Cases that set CLOCK_REALTIME put it back before they end, advanced by the time that
 passed. `clocks/settime-eperm` sets it as user 4242 in a child. `clocks/monotonic-cpus`
-needs two processors: it reads the count from /proc/cpuinfo, skips below two, and first
-shows the two threads run at once with a thousand handoffs before comparing their
+needs two processors: it reads the count from /proc/cpuinfo, emits a suite-rejecting
+SKIP below two (#1615), and first shows the two threads run at once with a thousand handoffs before comparing their
 readings. It assumes no more than two.
 
 Where POSIX leaves a behaviour to the implementation, the case title begins
@@ -417,7 +423,8 @@ ran on that processor. The two ARM64 trap cases check the counter access user mo
 denied: reading CNTPCT_EL0, CNTV_CTL_EL0 or CNTP_CTL_EL0 kills a process with SIGILL, and a
 SIGILL handler sees each trapped read with ILL_ILLOPC at the instruction's address, steps
 past it through the ucontext's pc and resumes, while CNTVCT_EL0 and CNTFRQ_EL0 read without
-a trap. They skip on x86-64. `clocks/monotonic-steady` stops its 100000 reads when its time is nearly up and
+a trap. On x86-64 they check that privileged RDMSR timer reads deliver SIGSEGV/SI_KERNEL,
+while RDTSC remains available in user mode. `clocks/monotonic-steady` stops its 100000 reads when its time is nearly up and
 fails saying how long each read took, rather than being killed.
 
 ```bash
@@ -463,8 +470,8 @@ deadline. Files live under `/tmp`, named after the case's process ID, and are re
 the case ends.
 
 Two cases need two processors (`anonymous/unmap-cpus` and `protection/tlb-cpus`). They read
-the count from /proc/cpuinfo, fail when it cannot be read, skip below two and start one
-worker thread per processor beyond the first, at most three; none assumes four. The case's
+the count from /proc/cpuinfo, fail when it cannot be read, emit a suite-rejecting SKIP
+below two (#1615) and start one worker thread per processor beyond the first, at most three; none assumes four. The case's
 thread pins itself to processor 0 and worker i to processor i + 1 with sched_setaffinity,
 and each confirms with getcpu that it runs there. Before measuring, the case and all its
 workers make a thousand rounds of handoffs within 750 ms, each worker checking its processor
@@ -495,8 +502,8 @@ and free memory from MemFree in `/proc/meminfo`, all as Linux reports them. A ma
 resident pages are measured as the drop in VmRSS across munmap of just that mapping, which
 holds whether the kernel maps pages when they are touched or at once. `shared/file-msync-read`
 shows that MS_SYNC wrote the stores by the disk blocks of a sparse file: fstat's st_blocks
-counts blocks on disk, while read() returns cached pages before any sync; it skips if the
-stores alone gave the file its blocks. Each case reports what it asserts on as VALUE records: bytes mapped,
+counts blocks on disk, while read() returns cached pages before any sync; it emits a suite-rejecting SKIP if the
+stores alone gave the file its blocks (#1614). Each case reports what it asserts on as VALUE records: bytes mapped,
 resident pages, fault counts, stale accesses, the time a first touch or a copy-on-write
 fault takes per page, and the longest munmap or mprotect while other processors used the
 page.
@@ -550,8 +557,8 @@ must come back within 100 ms of its release; that is a liveness bound, not a per
 target. Cases that set CLOCK_REALTIME put it back before they end.
 
 The cases titled `-cpus` need two processors. They read the count from /proc/cpuinfo, fail
-when it cannot be read, skip below two and start one thread per processor, at most four; none
-assumes four. Each thread pins itself to its own processor with sched_setaffinity and the
+when it cannot be read, emit a suite-rejecting SKIP below two (#1615) and start one
+thread per processor, at most four; none assumes four. Each thread pins itself to its own processor with sched_setaffinity and the
 threads make a thousand rendezvous within 750 ms before they measure, which threads taking
 turns on one processor cannot do. The scheduling cases that compare SCHED_FIFO threads pin
 both to processor 0; `mutex/prio-inherit` also needs two processors, so its threads can take
@@ -570,8 +577,8 @@ PTHREAD_MUTEX_INITIALIZER and PTHREAD_COND_INITIALIZER are the Linux ABI's, and 
 thread pointer `tls/thread-pointer` checks (TPIDR_EL0 on ARM64, the FS base on x86-64), which
 compiler TLS is built on. POSIX leaves the
 order of destructor calls unspecified, so the destructor cases check rounds and counts, not
-the order of keys. Priority inheritance is an option: `mutex/prio-inherit` skips when
-sysconf(_SC_THREAD_PRIO_INHERIT) says it is not offered. Robust mutexes are in the base
+the order of keys. Priority inheritance is an option: `mutex/prio-inherit` emits a suite-rejecting SKIP when
+sysconf(_SC_THREAD_PRIO_INHERIT) says it is not offered (#1616). Robust mutexes are in the base
 standard and are not skipped.
 
 Each case reports what it asserts on as VALUE records: how late a timed wait ended, how
@@ -642,8 +649,9 @@ its setup has finished, and pass only when that store faults with si_addr the ad
 stored to.
 
 The two cases titled `-cpus` (`semaphores/contention-cpus` and `semaphores/mutex-cpus`) need
-two processors. They read the count from /proc/cpuinfo, fail when it cannot be read, skip
-below two and start one process per processor, at most four; none assumes four. Each pins
+two processors. They read the count from /proc/cpuinfo, fail when it cannot be read,
+emit a suite-rejecting SKIP below two (#1615) and start one process per processor,
+at most four; none assumes four. Each pins
 itself to its own processor with sched_setaffinity, checks with getcpu that it runs there,
 and the processes make a thousand rounds of a spinning barrier within 750 ms before they
 measure, which processes taking turns on one processor cannot do. `contention-cpus` has half

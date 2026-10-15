@@ -1,0 +1,5 @@
+SUITE fixture START cases=3
+SUITE fixture CASE first/one SKIP msg=case unavailable
+SUITE fixture CASE first/two SKIP msg=case unavailable
+SUITE fixture CASE second/three SKIP msg=case unavailable
+SUITE fixture DONE passed=0 failed=0 skipped=3 total=3
