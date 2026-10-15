@@ -20,7 +20,8 @@ runtime = []
 suite = ["std", "dep:libgfx"]
 
 [dependencies]
-# None by default - a pure no_std library. libgfx only with the suite feature.
+breengel-abi = { path = "../breengel-abi" }
+# A pure no_std library: the window ABI, and libgfx only with the suite feature.
 libgfx = { path = "../libgfx", optional = true }
 
 [lints.rust]
