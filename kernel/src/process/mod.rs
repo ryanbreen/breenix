@@ -599,7 +599,7 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
         });
     }
     {
-        let held = crate::per_cpu::preempt_count();
+        let held = crate::per_cpu::preempt_count() & 0xff;
         for _ in 0..held {
             crate::per_cpu::preempt_enable();
         }
