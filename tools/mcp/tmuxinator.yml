@@ -1,0 +1,21 @@
+# Breenix MCP Development Environment
+# Start from the repository root: tmuxinator start -p tools/mcp/tmuxinator.yml
+name: breenix-mcp
+root: .
+
+# Optional tmux configurations
+on_project_start: echo "🚀 Starting Breenix MCP development environment"
+on_project_stop: pkill -f "breenix-http-server" || true
+
+windows:
+  - mcp:
+      layout: even-vertical
+      panes:
+        - mcp_server:
+            - cd tools/mcp
+            - BREENIX_MCP_PORT=8080 cargo run --bin breenix-http-server
+        - kernel_logs:
+            - mkdir -p /tmp/breenix-mcp
+            - touch /tmp/breenix-mcp/kernel.log
+            - echo "📜 Breenix kernel logs - Press Ctrl-C to stop following, then use / or ? to search"
+            - less +F /tmp/breenix-mcp/kernel.log

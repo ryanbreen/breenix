@@ -1,6 +1,5 @@
 {
   "enabledPlugins": {
-    "breenix-ci@breenix-skills": true,
     "breenix-development@breenix-skills": true,
     "breenix-testing@breenix-skills": true,
     "rust-analyzer-lsp@claude-plugins-official": true,

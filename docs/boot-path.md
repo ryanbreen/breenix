@@ -76,7 +76,10 @@ instructions cannot be emulated by this QEMU version.
 - `shell`: the production kernel runs `/sbin/init shell`, a bsh prompt on the serial
   console you can type into.
 - `desktop`: the production kernel runs `/sbin/init desktop`, the window manager and a
-  terminal in the VM window (`--no-display` keeps it headless).
+  terminal in the VM window (`--no-display` keeps it headless). The window manager
+  composites through VirGL, which only the Parallels and VMware GPUs provide: under the
+  QEMU launchers it prints `GPU compositing required` and exits after init reports the
+  services started.
 - `program`: the production kernel runs `/sbin/probe --run PATH` as PID 1 (`--program PATH`,
   an absolute guest path, passed as `-fw_cfg name=opt/breenix/program,string=PATH`). Probe
   runs that one program, relays its output, and prints `RUN PATH START` once the program has

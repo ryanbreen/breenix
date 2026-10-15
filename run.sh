@@ -1300,10 +1300,6 @@ else
 
     # Build command for x86_64
     BUILD_CMD="cargo build --release --features testing,external_test_bins,interactive --bin qemu-uefi"
-
-    # x86_64 needs to find UEFI image
-    UEFI_IMG=$(ls -t "$BREENIX_ROOT/target/release/build/breenix-"*/out/breenix-uefi.img 2>/dev/null | head -1)
-    KERNEL="$UEFI_IMG"  # Reuse KERNEL var for existence check
 fi
 
 # Resolve display resolution
@@ -1427,6 +1423,12 @@ if [ "$REBUILD_HOME" = true ] || [ ! -f "$HOME_DISK" ]; then
     else
         "$BREENIX_ROOT/scripts/create_home_disk.sh"
     fi
+fi
+
+if [ "$ARCH" != "arm64" ]; then
+    # The UEFI image is a build product, so look for it only once the build has run.
+    UEFI_IMG=$(ls -t "$BREENIX_ROOT/target/release/build/breenix-"*/out/breenix-uefi.img 2>/dev/null | head -1)
+    KERNEL="$UEFI_IMG"  # Reuse KERNEL var for existence check
 fi
 
 if [ ! -f "$KERNEL" ]; then
@@ -1609,6 +1611,15 @@ if [ "$ARCH" = "arm64" ]; then
         &
 else
     # x86_64 QEMU invocation (UEFI boot, native)
+    # Fetch the pinned OVMF firmware on first use (a fresh checkout has none cached).
+    if [ ! -f "$BREENIX_ROOT/target/ovmf/x64/code.fd" ] || [ ! -f "$BREENIX_ROOT/target/ovmf/x64/vars.fd" ]; then
+        if [ ! -x "$BREENIX_ROOT/target/release/qemu-uefi" ]; then
+            echo "Error: OVMF firmware is not cached and target/release/qemu-uefi, which fetches it, is not built"
+            exit 1
+        fi
+        echo "Fetching OVMF firmware into target/ovmf..."
+        (cd "$BREENIX_ROOT" && BREENIX_FETCH_OVMF=1 "$BREENIX_ROOT/target/release/qemu-uefi")
+    fi
     # Copy OVMF firmware to output dir (pflash needs writable files)
     cp "$BREENIX_ROOT/target/ovmf/x64/code.fd" "$OUTPUT_DIR/OVMF_CODE.fd"
     cp "$BREENIX_ROOT/target/ovmf/x64/vars.fd" "$OUTPUT_DIR/OVMF_VARS.fd"
