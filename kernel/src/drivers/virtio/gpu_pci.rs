@@ -5260,7 +5260,7 @@ pub fn virgl_composite_frame_textured(
 /// When a window has no GPU texture, its content was already blitted into
 /// COMPOSITE_TEX by BWM, so the background quad covers it.
 fn virgl_composite_single_quad(
-    windows: &[crate::syscall::graphics::WindowCompositeInfo],
+    windows: &[crate::syscall::window_v1::WindowCompositeInfo],
 ) -> Result<(), &'static str> {
     use super::virgl::{format as vfmt, pipe, swizzle, CommandBuffer};
 
@@ -5711,7 +5711,7 @@ pub fn virgl_composite_windows(
     bg_height: u32,
     bg_dirty: bool,
     dirty_rect: Option<(u32, u32, u32, u32)>, // (x, y, w, h) for partial upload
-    windows: &[crate::syscall::graphics::WindowCompositeInfo],
+    windows: &[crate::syscall::window_v1::WindowCompositeInfo],
 ) -> Result<(), &'static str> {
     static COMPOSITE_WIN_FRAME: core::sync::atomic::AtomicU32 =
         core::sync::atomic::AtomicU32::new(0);

@@ -3349,7 +3349,7 @@ pub fn sys_take_over_display() -> SyscallResult {
             if let Some(ref mut mgr) = *mgr_guard {
                 if let Some((pid, process)) = mgr.find_process_by_thread_mut(tid) {
                     process.has_display_ownership = true;
-                    crate::syscall::graphics::DISPLAY_OWNER_PID
+                    crate::syscall::fb::DISPLAY_OWNER_PID
                         .store(pid.as_u64(), core::sync::atomic::Ordering::Release);
                 }
             }

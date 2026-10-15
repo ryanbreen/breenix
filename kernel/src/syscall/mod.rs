@@ -43,7 +43,10 @@ pub mod futex;
 #[cfg(feature = "boot_tests")]
 pub mod futex_oracle;
 pub mod futex_timeout_record;
-pub mod graphics;
+pub mod fb;
+pub mod fb_draw;
+#[cfg(target_arch = "aarch64")]
+pub mod window_v1;
 pub mod handlers;
 pub mod resource;
 pub mod ioctl;

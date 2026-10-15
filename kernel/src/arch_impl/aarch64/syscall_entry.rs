@@ -375,7 +375,7 @@ fn deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) -> bool {
 
     // Clean up window buffers so compositor stops reading freed pages
     if let Some(pid) = terminated_child_pid {
-        crate::syscall::graphics::cleanup_windows_for_pid(pid);
+        crate::syscall::window_v1::cleanup_windows_for_pid(pid);
     }
 
     if let Some((pid, exit_code)) = group_death {
@@ -876,11 +876,11 @@ fn dispatch_syscall_enum(
         )),
 
         // Graphics syscalls
-        SyscallNumber::FbInfo => result_to_u64(crate::syscall::graphics::sys_fbinfo(arg1)),
-        SyscallNumber::FbDraw => result_to_u64(crate::syscall::graphics::sys_fbdraw(arg1)),
-        SyscallNumber::FbMmap => result_to_u64(crate::syscall::graphics::sys_fbmmap(arg1)),
+        SyscallNumber::FbInfo => result_to_u64(crate::syscall::fb::sys_fbinfo(arg1)),
+        SyscallNumber::FbDraw => result_to_u64(crate::syscall::fb_draw::sys_fbdraw(arg1)),
+        SyscallNumber::FbMmap => result_to_u64(crate::syscall::fb::sys_fbmmap(arg1)),
         SyscallNumber::GetMousePos => {
-            result_to_u64(crate::syscall::graphics::sys_get_mouse_pos(arg1))
+            result_to_u64(crate::syscall::fb::sys_get_mouse_pos(arg1))
         }
 
         // Audio syscalls

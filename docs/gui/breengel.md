@@ -1094,7 +1094,7 @@ per-CPU data, panic and double-fault paths, `emergency_print`) count in the trac
 newlines are not payload.
 
 `emit-diagnostic(path)` makes the calling thread's next window op write one fixed 32-byte payload,
-`BREENGEL-EMIT-DIAGNOSTIC-PAYLOAD!`, through the named writer: 1 `serial_println!`, 2 `log::warn!`,
+`BREENGEL-EMIT-DIAGNOSTIC-PAYLOAD`, through the named writer: 1 `serial_println!`, 2 `log::warn!`,
 3 `write_byte`, 4 `write_bytes_atomic`, 5 `try_print`, 6 `write_str_bounded`, 7 `_log_print`, 8 a notice
 posted by this thread and written out by another, 9 `emergency_print`. Each adds exactly 32 to the calling
 thread's counter, except `log::warn!`, which adds the logger's whole record, and `emergency_print`, which adds
