@@ -17570,8 +17570,9 @@ fn try_manager_mask_ratchet_is_not_vacuous() {
     // the release reddens on the release-presence failure whatever the ordering
     // is, so it reads release presence rather than ordering. This one lifts the
     // release block out and re-inserts it below both restores, which is the
-    // regression shape the guard's comment warns against.
-    let release_block = "        unsafe {\n            core::mem::ManuallyDrop::drop(&mut self.guard);\n        }\n\n";
+    // regression shape the guard's comment warns against. The x86 deferred
+    // reschedule-IPI send follows the release and moves with it.
+    let release_block = "        unsafe {\n            core::mem::ManuallyDrop::drop(&mut self.guard);\n        }\n        #[cfg(target_arch = \"x86_64\")]\n        crate::task::scheduler::send_deferred_resched_ipis();\n\n";
     let x86_restore_block = "        #[cfg(target_arch = \"x86_64\")]\n        if self.interrupts_were_enabled {\n            unsafe {\n                crate::arch_enable_interrupts();\n            }\n        }\n";
     let reordered_drop = drop_impl
         .replacen(release_block, "", 1)
