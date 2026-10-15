@@ -51,10 +51,10 @@ const GUI_BADGE: Color = Color::rgb(60, 200, 80);
 const CLI_BADGE: Color = Color::rgb(60, 120, 220);
 
 // Keycodes (USB HID)
-const KEY_UP: u16 = 0x52;
-const KEY_DOWN: u16 = 0x51;
-const KEY_ENTER: u16 = 0x28;
-const KEY_ESCAPE: u16 = 0x29;
+const KEY_UP: u32 = breengel::keys::UP;
+const KEY_DOWN: u32 = breengel::keys::DOWN;
+const KEY_ENTER: u32 = breengel::keys::ENTER;
+const KEY_ESCAPE: u32 = breengel::keys::ESC;
 
 // ---------------------------------------------------------------------------
 // App catalog

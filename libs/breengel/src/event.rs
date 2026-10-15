@@ -5,6 +5,27 @@
 
 use libbreenix::window::abi::{self, event_kind, modifier, WindowEvent};
 
+/// Linux key codes (`KeyPress`/`KeyRelease` `keycode`) the apps match on.
+pub mod keys {
+    pub const ESC: u32 = 1;
+    pub const MINUS: u32 = 12;
+    pub const EQUAL: u32 = 13;
+    pub const BACKSPACE: u32 = 14;
+    pub const TAB: u32 = 15;
+    pub const W: u32 = 17;
+    pub const T: u32 = 20;
+    pub const ENTER: u32 = 28;
+    pub const HOME: u32 = 102;
+    pub const UP: u32 = 103;
+    pub const PAGE_UP: u32 = 104;
+    pub const LEFT: u32 = 105;
+    pub const RIGHT: u32 = 106;
+    pub const END: u32 = 107;
+    pub const DOWN: u32 = 108;
+    pub const PAGE_DOWN: u32 = 109;
+    pub const DELETE: u32 = 111;
+}
+
 /// Modifier keys held when an event was made.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Modifiers {

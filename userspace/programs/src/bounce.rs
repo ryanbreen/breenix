@@ -497,7 +497,7 @@ fn run_window_loop(win: &mut Window, spheres: &mut [Sphere; NUM_SPHERES]) {
                         _ => {}
                     }
                 }
-                Event::Scroll { delta_y } => {
+                Event::Scroll { delta_y, .. } => {
                     // Scroll up = faster, scroll down = slower
                     // Each tick scales by ~15%
                     for _ in 0..delta_y.abs() {
