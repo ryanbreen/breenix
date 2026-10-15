@@ -2893,6 +2893,8 @@ impl Scheduler {
     /// would overwrite the Terminated state that the dispatch path checks, so a
     /// selected Terminated thread would be dispatched anyway (#1173).
     fn set_selected_running(thread: &mut Thread, cpu: usize) {
+        #[cfg(target_arch = "x86_64")]
+        crate::spread_probe::dispatched(thread.id(), cpu);
         if thread.state == ThreadState::Terminated {
             panic!(
                 "scheduler: terminated thread {} selected on CPU {}",
@@ -5646,6 +5648,8 @@ impl Scheduler {
     /// fact the futex timed-wait record needs (#608 F4). An entry with any
     /// other deadline was left by an earlier wait and is only counted.
     fn note_timer_pop(&mut self, wake_time: u64, tid: u64) {
+        #[cfg(target_arch = "x86_64")]
+        crate::spread_probe::timer_popped(tid, wake_time);
         if let Some(thread) = self.get_thread_mut(tid) {
             let wake_time_set = thread.wake_time_ns == Some(wake_time);
             if let Some(record) = thread.timer_pop.as_mut() {
@@ -5771,7 +5775,14 @@ impl Scheduler {
                 }
 
                 if !in_deferred_requeue && !is_idle && !already_queued {
-                    if let Some(target) = self.find_target_cpu_for_wakeup(tid) {
+                    let probe_target = self.find_target_cpu_for_wakeup(tid);
+                    #[cfg(target_arch = "x86_64")]
+                    crate::spread_probe::timer_placed(
+                        tid,
+                        probe_target,
+                        probe_target.is_some_and(|t| self.cpu_is_idle(t)),
+                    );
+                    if let Some(target) = probe_target {
                         trace_sched_diag(
                             TRACE_SCHED_DIAG_WAKE_TIMER_ENQUEUE,
                             tid,

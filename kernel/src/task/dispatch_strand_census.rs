@@ -385,7 +385,7 @@ fn census_thread_fn() {
         sleep_one_interval(if pending {
             DRAIN_RETRY_INTERVAL_NS
         } else {
-            HEARTBEAT_INTERVAL_NS / 10
+            HEARTBEAT_INTERVAL_NS
         });
     }
 }

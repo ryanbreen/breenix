@@ -69,6 +69,128 @@ static SD_MAX_HELD: AtomicU64 = AtomicU64::new(0);
 
 pub static SCHED_HOLDER: AtomicU64 = AtomicU64::new(u64::MAX);
 
+/// This build forces nothing; it records late timed-futex returns.
+const FORCING: bool = false;
+
+fn mono_ns() -> u64 {
+    let (s, n) = crate::time::get_monotonic_time_ns();
+    s as u64 * 1_000_000_000 + n as u64
+}
+
+const TIDS: usize = 512;
+/// Per tid slot: the deadline the timer heap popped, when, and on which CPU.
+static POP_DEADLINE: [AtomicU64; TIDS] = [const { AtomicU64::new(0) }; TIDS];
+static POP_AT: [AtomicU64; TIDS] = [const { AtomicU64::new(0) }; TIDS];
+static POP_CPU: [AtomicU64; TIDS] = [const { AtomicU64::new(0) }; TIDS];
+/// Where the timer wake placed it: target CPU, +100 when that CPU was idle,
+/// +1000 when no CPU was chosen; u64::MAX when it was still current somewhere.
+static PLACED: [AtomicU64; TIDS] = [const { AtomicU64::new(0) }; TIDS];
+static DISPATCH_AT: [AtomicU64; TIDS] = [const { AtomicU64::new(0) }; TIDS];
+static DISPATCH_CPU: [AtomicU64; TIDS] = [const { AtomicU64::new(0) }; TIDS];
+
+/// Per CPU, the last 16 stretches over 10 ms without a timer-entry interrupt:
+/// (monotonic ns at the interrupt that ended it, length in us).
+const GAPS: usize = 16;
+static GAP_END: [[AtomicU64; GAPS]; MAX_CPUS] = [const { [const { AtomicU64::new(0) }; GAPS] }; MAX_CPUS];
+static GAP_LEN: [[AtomicU64; GAPS]; MAX_CPUS] = [const { [const { AtomicU64::new(0) }; GAPS] }; MAX_CPUS];
+static GAP_NEXT: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+
+pub fn timer_popped(tid: u64, deadline_ns: u64) {
+    let i = tid as usize % TIDS;
+    POP_DEADLINE[i].store(deadline_ns, Ordering::Relaxed);
+    POP_AT[i].store(mono_ns(), Ordering::Relaxed);
+    POP_CPU[i].store(cpu_now() as u64, Ordering::Relaxed);
+    PLACED[i].store(u64::MAX, Ordering::Relaxed);
+    DISPATCH_AT[i].store(0, Ordering::Relaxed);
+}
+
+pub fn timer_placed(tid: u64, target: Option<usize>, idle: bool) {
+    let i = tid as usize % TIDS;
+    PLACED[i].store(target.map_or(1000, |t| t as u64 + if idle { 100 } else { 0 }), Ordering::Relaxed);
+}
+
+pub fn dispatched(tid: u64, cpu: usize) {
+    let i = tid as usize % TIDS;
+    if DISPATCH_AT[i].load(Ordering::Relaxed) == 0 && POP_AT[i].load(Ordering::Relaxed) != 0 {
+        DISPATCH_AT[i].store(mono_ns(), Ordering::Relaxed);
+        DISPATCH_CPU[i].store(cpu as u64, Ordering::Relaxed);
+    }
+}
+
+const LATES: usize = 8;
+static LATE_WRITE: AtomicU64 = AtomicU64::new(0);
+static LATE_READ: AtomicU64 = AtomicU64::new(0);
+static LATE_REC: [[AtomicU64; 10]; LATES] = [const { [const { AtomicU64::new(0) }; 10] }; LATES];
+
+/// A timed futex wait returning ETIMEDOUT at `now_ns`, deadline `deadline_ns`.
+pub fn late_return(tid: u64, deadline_ns: u64, now_ns: u64) {
+    if now_ns.saturating_sub(deadline_ns) < 20_000_000 {
+        return;
+    }
+    let i = tid as usize % TIDS;
+    let n = LATE_WRITE.fetch_add(1, Ordering::Relaxed);
+    if n.saturating_sub(LATE_READ.load(Ordering::Relaxed)) >= LATES as u64 {
+        return;
+    }
+    let r = &LATE_REC[n as usize % LATES];
+    let vals = [
+        tid,
+        deadline_ns,
+        now_ns,
+        POP_DEADLINE[i].load(Ordering::Relaxed),
+        POP_AT[i].load(Ordering::Relaxed),
+        POP_CPU[i].load(Ordering::Relaxed),
+        PLACED[i].load(Ordering::Relaxed),
+        DISPATCH_AT[i].load(Ordering::Relaxed),
+        DISPATCH_CPU[i].load(Ordering::Relaxed),
+        cpu_now() as u64,
+    ];
+    for (slot, v) in r.iter().zip(vals) {
+        slot.store(v, Ordering::Relaxed);
+    }
+}
+
+fn print_lates() {
+    let rel = |t: u64, base: u64| -> i64 {
+        if t == 0 { i64::MIN } else { (t as i64 - base as i64) / 1000 }
+    };
+    while LATE_READ.load(Ordering::Relaxed) < LATE_WRITE.load(Ordering::Relaxed).min(LATE_READ.load(Ordering::Relaxed) + LATES as u64) {
+        let n = LATE_READ.load(Ordering::Relaxed);
+        let r = &LATE_REC[n as usize % LATES];
+        let v: [u64; 10] = core::array::from_fn(|k| r[k].load(Ordering::Relaxed));
+        let (deadline, now) = (v[1], v[2]);
+        let mut gaps = [(0i64, 0u64, 0usize); 24];
+        let mut count = 0;
+        for cpu in 0..crate::arch_impl::x86_64::smp::cpus_online().min(4) as usize {
+            for k in 0..GAPS {
+                let end = GAP_END[cpu][k].load(Ordering::Relaxed);
+                let len = GAP_LEN[cpu][k].load(Ordering::Relaxed);
+                if end == 0 || end + 1_000_000 < deadline || end - len * 1000 > now {
+                    continue;
+                }
+                if count < gaps.len() {
+                    gaps[count] = (rel(end - len * 1000, deadline), len, cpu);
+                    count += 1;
+                }
+            }
+        }
+        log::info!(
+            "LATEWAKE tid={} late_us={} popdl_match={} pop_us={} popcpu={} placed={} disp_us={} dispcpu={} retcpu={} gaps(start_us,len_us,cpu)={:?}",
+            v[0],
+            (now - deadline) / 1000,
+            v[3] == deadline,
+            rel(v[4], deadline),
+            v[5],
+            v[6] as i64,
+            rel(v[7], deadline),
+            v[8],
+            v[9],
+            &gaps[..count],
+        );
+        LATE_READ.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 fn cycles_per_ms() -> u64 {
     (frequency_hz() / 1000).max(1)
 }
@@ -105,13 +227,18 @@ pub fn note_interrupt(cpu: usize) {
     let now = rdtsc();
     let prev = LAST_INT[cpu].swap(now, Ordering::Relaxed);
     note_span(&GAP, cpu, prev, now);
+    if prev != 0 && now - prev > 10 * cycles_per_ms() {
+        let k = GAP_NEXT[cpu].fetch_add(1, Ordering::Relaxed) as usize % GAPS;
+        GAP_LEN[cpu][k].store((now - prev) / (cycles_per_ms() / 1000).max(1), Ordering::Relaxed);
+        GAP_END[cpu][k].store(mono_ns(), Ordering::Relaxed);
+    }
     if cpu == 0 {
         maybe_arm(now);
     }
 }
 
 fn maybe_arm(now: u64) {
-    if !ENABLED.load(Ordering::Relaxed) {
+    if !FORCING || !ENABLED.load(Ordering::Relaxed) {
         return;
     }
     match STATE.load(Ordering::Acquire) {
@@ -335,6 +462,7 @@ pub fn shootdown_done(t0: u64, targets: u64, loc: &'static core::panic::Location
 
 /// From kstrandd: start arming, and print a finished window.
 pub fn poll() {
+    print_lates();
     if !ENABLED.swap(true, Ordering::Relaxed) {
         NEXT_ARM.store(rdtsc() + 1000 * cycles_per_ms(), Ordering::Relaxed);
     }

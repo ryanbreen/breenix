@@ -1345,6 +1345,12 @@ fn futex_wait(
                 (Some(deadline), Some(now_ns)) => now_ns >= deadline,
                 _ => false,
             };
+            #[cfg(target_arch = "x86_64")]
+            if let (Some(deadline), Some(now_ns)) = (user_wake_time_ns, arbitration_now_ns) {
+                if removed_by_me && deadline_reached {
+                    crate::spread_probe::late_return(thread_id, deadline, now_ns);
+                }
+            }
 
             let result = if removed_by_me {
                 if signal_pending {
