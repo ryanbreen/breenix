@@ -847,7 +847,8 @@ fn isolation_quiet_errors() -> CaseResult {
     ensure(after == before, "17.5", format!("1,000 failing window calls added {} bytes to this thread's kernel output; window ops produce none", after - before))?;
     ensure(un_after == un_before, "17.5", format!("1,000 failing window calls added {} bytes of unattributed kernel output", un_after - un_before))?;
     use abi::emit_path as p;
-    let record = b"[ WARN] test_control: ".len() as u64 + 32 + 1;
+    // aarch64 installs no `log` sink: its records are dropped where they are made (section 22).
+    let record = if cfg!(target_arch = "aarch64") { 0 } else { b"[ WARN] test_control: ".len() as u64 + 32 + 1 };
     for path in 1..=p::LAST {
         let (want_t, want_u) = match path {
             p::LOG_WARN => (record, 0),

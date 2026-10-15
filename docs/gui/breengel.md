@@ -1108,7 +1108,10 @@ posted); the logger's whole record for `log::warn!`; and for `emergency_print`, 
 `kernel_output_unattributed` and nothing to the thread. The logger's record is `[ WARN] test_control: `
 followed by the payload and a newline: `[`, the level right-aligned in five columns, `] `, the target
 `test_control`, `: `, the payload, `\n`, which is 55 bytes. A newline a writer adds is output like any other
-byte; only the lead newline inserted before a record when another writer's line is open is not.
+byte; only the lead newline inserted before a record when another writer's line is open is not. The aarch64
+kernel installs no `log` sink (its kernel output goes through `serial_println!` and the serial writers, and every
+`log::` record is dropped where it is made), so on aarch64 `log::warn!` writes nothing and adds 0 to both
+counters; on x86-64, where the logger writes its record, it adds the 55 bytes.
 
 ## 23. The suite panel
 
