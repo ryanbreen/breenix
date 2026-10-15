@@ -14,7 +14,6 @@ static int result_fd = -1;
 
 static char msg[512];
 static size_t msg_len;
-static int skipped;
 
 static void put(const char *s) {
     while (*s && msg_len < sizeof msg - 1)
@@ -234,11 +233,6 @@ const char *fail_ptr(const char *what, const void *got, const void *want) {
     return msg;
 }
 
-const char *skip_text(const char *why) {
-    skipped = 1;
-    return start(why);
-}
-
 int h_streq(const char *a, const char *b) {
     if (!a || !b)
         return a == b;
@@ -355,7 +349,7 @@ int main(int argc, char **argv, char **envp) {
             if (!result)
                 report(fd, "PASS", 0);
             else
-                report(fd, skipped ? "SKIP" : "FAIL", result);
+                report(fd, "FAIL", result);
             _exit(0);
         }
     }
