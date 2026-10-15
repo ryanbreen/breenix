@@ -323,3 +323,16 @@ fn blits_convert_blend_and_scale() {
         }
     }
 }
+
+#[test]
+fn long_text_visits_only_its_visible_glyphs() {
+    let mut fb = surface(32, 24);
+    work::reset();
+    libgfx::font::draw_text(&mut fb, &[b'W'; 1_000], 0, 0, INK, 1);
+    let steps = work::steps();
+    assert!(steps <= bound(32 * 7, 7, 32), "{steps} steps");
+    assert!(inked(&fb).iter().any(|&(x, _)| x >= 30), "the visible glyphs were drawn");
+    work::reset();
+    libgfx::font::draw_text(&mut fb, &[b'W'; 1_000], 1 << 31, 3, INK, 1);
+    assert!(work::steps() <= 64);
+}

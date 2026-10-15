@@ -152,13 +152,27 @@ pub fn draw_char(fb: &mut FrameBuf, ch: u8, x0: usize, y0: usize, color: Color, 
 
 /// Draw a string of ASCII bytes at (x, y) with the given color and scale.
 ///
-/// Characters are spaced `(GLYPH_W + 1) * scale` pixels apart.
+/// Characters are spaced `(GLYPH_W + 1) * scale` pixels apart. Only the glyphs whose cells
+/// meet the clip are visited, so the work is bounded by the visible text (section 7).
 pub fn draw_text(fb: &mut FrameBuf, text: &[u8], x: usize, y: usize, color: Color, scale: usize) {
-    let advance = (GLYPH_W + 1).saturating_mul(scale);
-    work::add(text.len() as u64);
-    for (i, &ch) in text.iter().enumerate() {
-        let Some(gx) = i.checked_mul(advance).and_then(|dx| x.checked_add(dx)) else { return };
-        draw_char(fb, ch, gx, y, color, scale);
+    if scale == 0 || text.is_empty() || x > i64::MAX as usize / 2 || y > i64::MAX as usize / 2 {
+        return;
+    }
+    let s = scale.min(i32::MAX as usize) as i64;
+    let (x, y, adv, cell_w) = (x as i64, y as i64, (GLYPH_W as i64 + 1) * s, GLYPH_W as i64 * s);
+    let c = fb.clip_box();
+    if y >= c.y1 || y + GLYPH_H as i64 * s <= c.y0 || x >= c.x1 {
+        return;
+    }
+    // Glyph i covers columns [x + i·adv, x + i·adv + cell_w).
+    let first = if x + cell_w > c.x0 { 0 } else { (c.x0 - x - cell_w) / adv + 1 };
+    let last = ((c.x1 - 1 - x) / adv).min(text.len() as i64 - 1);
+    if first > last {
+        return;
+    }
+    work::add((last - first + 1) as u64);
+    for i in first..=last {
+        draw_char(fb, text[i as usize], (x + i * adv) as usize, y as usize, color, scale);
     }
 }
 
