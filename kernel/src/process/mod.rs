@@ -117,6 +117,8 @@ impl Drop for TryProcessManagerGuard {
         unsafe {
             core::mem::ManuallyDrop::drop(&mut self.guard);
         }
+        #[cfg(target_arch = "x86_64")]
+        crate::task::scheduler::send_deferred_resched_ipis();
 
         #[cfg(target_arch = "aarch64")]
         unsafe {
@@ -165,6 +167,8 @@ impl Drop for ProcessManagerGuard {
         unsafe {
             core::mem::ManuallyDrop::drop(&mut self._guard);
         }
+        #[cfg(target_arch = "x86_64")]
+        crate::task::scheduler::send_deferred_resched_ipis();
 
         #[cfg(target_arch = "aarch64")]
         unsafe {
@@ -208,13 +212,51 @@ fn note_process_manager_lock_acquired() {
     PROCESS_MANAGER_OWNER_TID.store(tid, Ordering::Relaxed);
     PROCESS_MANAGER_OWNER_CPU.store(cpu, Ordering::Release);
     crate::tracing::providers::teardown::note_process_manager_acquire();
+    #[cfg(target_arch = "x86_64")]
+    if (cpu as usize) < crate::task::scheduler::MAX_CPUS
+        && crate::per_cpu::is_initialized()
+        && !crate::arch_interrupts_enabled()
+    {
+        PM_MASKED_HOLD[cpu as usize].store(masked_hold_context(), Ordering::Relaxed);
+    }
 }
 
 #[inline(always)]
 fn note_process_manager_lock_released(mutated: bool) {
     PROCESS_MANAGER_MUTATIONS.release(mutated);
+    #[cfg(target_arch = "x86_64")]
+    if let Some(cpu) = process_manager_owner_snapshot().map(|(cpu, _)| cpu as usize) {
+        if cpu < crate::task::scheduler::MAX_CPUS {
+            PM_MASKED_HOLD[cpu].store(0, Ordering::Relaxed);
+        }
+    }
     PROCESS_MANAGER_OWNER_TID.store(PM_LOCK_OWNER_NONE, Ordering::Relaxed);
     PROCESS_MANAGER_OWNER_CPU.store(PM_LOCK_OWNER_NONE, Ordering::Release);
+}
+
+/// x86_64: per CPU, nonzero while it holds PROCESS_MANAGER taken with
+/// interrupts masked, so that until the release nothing but the holder runs
+/// there: 1 for a holder in thread context, 2 for one in interrupt context.
+/// A reschedule IPI the holder asks for is sent once the lock is released
+/// (`defers_resched_ipis`). Sent under the lock, a slow APIC write held every
+/// CPU waiting for it, for up to 30 ms when forced.
+#[cfg(target_arch = "x86_64")]
+static PM_MASKED_HOLD: [core::sync::atomic::AtomicU8; crate::task::scheduler::MAX_CPUS] =
+    [const { core::sync::atomic::AtomicU8::new(0) }; crate::task::scheduler::MAX_CPUS];
+
+#[cfg(target_arch = "x86_64")]
+fn masked_hold_context() -> u8 {
+    1 + crate::per_cpu::in_interrupt() as u8
+}
+
+/// x86_64: whether a reschedule IPI asked for now on CPU `cpu` comes from
+/// the context holding PROCESS_MANAGER there with interrupts masked, and so
+/// is sent after the release. An interrupt handler that runs on a holder
+/// which unmasked interrupts is a different context and sends at once.
+#[cfg(target_arch = "x86_64")]
+pub fn defers_resched_ipis(cpu: usize) -> bool {
+    let hold = PM_MASKED_HOLD[cpu].load(Ordering::Relaxed);
+    hold != 0 && hold == masked_hold_context()
 }
 
 /// Releases of holders that exposed mutable access. Read-only holders cannot
@@ -476,6 +518,7 @@ where
         });
         note_process_manager_lock_released(true);
         drop(manager_lock);
+        crate::task::scheduler::send_deferred_resched_ipis();
         result
     })
 }
