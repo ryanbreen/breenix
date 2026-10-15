@@ -927,8 +927,8 @@ window ops (10 to 26 and 31) are removed when version 2 lands.
   When an owner dies the display returns to the process that gave it, never to the runner, and the previous
   owner's frame is restored exactly.
 - **The framebuffer.** In a GUI suite boot every target runs its display at **1280 × 800**: `fbinfo` (410)
-  reports width 1280, height 800, 4 bytes per pixel, a stride of at least 5,120 bytes and a pixel format of
-  RGB (0) or BGR (1). `fb_mmap` (412) gives the display owner the whole screen, every row of all 1280 columns,
+  reports width 1280, height 800, 4 bytes per pixel, a stride of at least 1280 (`fbinfo` counts the stride in
+  pixels per row) and a pixel format of RGB (0) or BGR (1). `fb_mmap` (412) gives the display owner the whole screen, every row of all 1280 columns,
   and `FLUSH` clips its rectangle to the screen.
 - **Numbers** (plan §12.2): one 256 × 256 window committing as fast as its buffers are released is composed at
   least 60 times a second (300 commits, the first 30 discarded); the longest IRQ-masked interval in the

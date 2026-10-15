@@ -761,6 +761,11 @@ impl Drop for Guarded {
     }
 }
 
+/// How many pixels differ from `bg`: the positive control that a drawing drew something.
+fn drawn_pixels(g: &Guarded, bg: Color) -> usize {
+    (0..g.height).flat_map(|y| (0..g.width).map(move |x| (x, y))).filter(|&(x, y)| g.color(x, y) != bg).count()
+}
+
 fn hex(c: Color) -> String {
     format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b)
 }
@@ -1051,6 +1056,7 @@ fn raster_bpp3_bpp4() -> CaseResult {
     let four = Guarded::new(14, 18, 14 * 4, 4, true);
     scene(&mut three.fb());
     scene(&mut four.fb());
+    ensure(drawn_pixels(&four, Color::rgb(0, 0, 0)) > 0, "5", "the scene drew nothing on the 4-byte surface")?;
     for y in 0..18 {
         for x in 0..14 {
             if three.color(x, y) != four.color(x, y) {
@@ -1067,6 +1073,7 @@ fn raster_bgr_order() -> CaseResult {
     let rgb = Guarded::new(14, 18, 14 * 4, 4, false);
     scene(&mut bgr.fb());
     scene(&mut rgb.fb());
+    ensure(drawn_pixels(&bgr, Color::rgb(0, 0, 0)) > 0, "5", "the scene drew nothing on the BGR surface")?;
     for y in 0..18 {
         for x in 0..14 {
             // SAFETY: (x, y) is inside both surfaces.
@@ -1270,6 +1277,7 @@ fn raster_damage_sound() -> CaseResult {
         let g = padded(64, 48);
         let mut fb = g.fb();
         let mut rng = Seeded(0x00B2_EE46_E15E_ED01);
+        let mut changed = 0usize;
         for n in 0..300 {
             let before: Vec<Color> = (0..48).flat_map(|y| (0..64).map(move |x| (x, y))).map(|(x, y)| g.color(x, y)).collect();
             let c = Color::rgb(rng.range(0, 255) as u8, rng.range(0, 255) as u8, rng.range(0, 255) as u8);
@@ -1285,6 +1293,7 @@ fn raster_damage_sound() -> CaseResult {
             for y in 0..48 {
                 for x in 0..64 {
                     if g.color(x, y) != before[y * 64 + x] {
+                        changed += 1;
                         let inside = d.is_some_and(|(dx, dy, dw, dh)| in_rect(x as i64, y as i64, dx as i64, dy as i64, dw as i64, dh as i64));
                         if !inside {
                             return Err(format!("primitive {n}, {name}, changed pixel ({x},{y}) outside its damage {d:?}"));
@@ -1293,6 +1302,7 @@ fn raster_damage_sound() -> CaseResult {
                 }
             }
         }
+        if changed == 0 { return Err("the seeded scene changed no pixel".into()); }
         g.sentinels()
     }))
 }
@@ -1412,6 +1422,9 @@ fn glyph_pixels(bitmap: &libfont::Bitmap, x: i32, y: i32, width: usize, height: 
 }
 
 fn same_as_glyph(g: &Guarded, want: &[u8], what: &str, section: &str) -> CaseResult {
+    if !want.iter().any(|&c| c > 0) {
+        return at(section, format!("{what}: the glyph it is compared with has no coverage on the surface"));
+    }
     for y in 0..g.height {
         for x in 0..g.width {
             let [r, gr, b] = g.rgb(x, y);
@@ -1588,6 +1601,7 @@ fn translated(dx: i32, dy: i32, section: &str) -> CaseResult {
     let mut font = cached(MONO_PATH).cite("8.5")?;
     let (w, h) = (64usize, 40usize);
     let base = white_on_black(w, h, |fb| { ttf_font::draw_text(fb, &mut font, "Hg", 20, 12, 16.0, WHITE); });
+    ensure(drawn_pixels(&base, Color::rgb(0, 0, 0)) > 0, "8.3", "\"Hg\" drawn at (20, 12) left the surface black")?;
     let moved = white_on_black(w, h, |fb| { ttf_font::draw_text(fb, &mut font, "Hg", 20 + dx, 12 + dy, 16.0, WHITE); });
     for y in 0..h as i32 {
         for x in 0..w as i32 {
@@ -1702,6 +1716,7 @@ fn text_compound_glyph() -> CaseResult {
     let got: Vec<(i32, i32)> = resolved.map(|g| g.contours.iter().flatten().map(|p| (p.x as i32, p.y as i32)).collect()).unwrap_or_default();
     let mut want = simple_points(glyf, loca(72) as usize);
     want.extend(simple_points(glyf, loca(118) as usize).into_iter().map(|(x, y)| (x + 14, y)));
+    ensure(want.len() > 8, "8.5", format!("the independent decoder found only {} points in e and acute", want.len()))?;
     ensure(got == want, "8.5", format!(
         "glyph 171 resolves to {} points; e (glyph 72) at (0, 0) and acute (glyph 118) at (14, 0) give {}{}",
         got.len(), want.len(),
@@ -1763,6 +1778,7 @@ fn text_with_many(fb: &mut FrameBuf, font: &mut CachedFont, text: &str, x: i32, 
 fn text_many_args_abi() -> CaseResult {
     let mut font = cached(SANS_PATH).cite("8.5")?;
     let reference = white_on_black(96, 40, |fb| { ttf_font::draw_text(fb, &mut font, "Ag", 6, 4, 22.5, WHITE); });
+    ensure(drawn_pixels(&reference, Color::rgb(0, 0, 0)) > 0, "8.3", "the direct call drew nothing")?;
     fn bb<T>(t: T) -> T { std::hint::black_box(t) }
     for (size26, size, scale) in [(0, 11.25f32, 2.0f32), (1440, 0.0, 0.0)] {
         let g = Guarded::bgrx(96, 40);
@@ -1800,6 +1816,7 @@ fn text_cache_evict_correct() -> CaseResult {
     let mut font = CachedFont::new(parse_font(MONO_PATH).cite("8.5")?, 2);
     let (a, b, c) = (font.glyph_index('A'), font.glyph_index('B'), font.glyph_index('C'));
     let first = font.rasterize_glyph(a, 18.0).map_err(|e| e.to_string())?.clone();
+    ensure(first.coverage.iter().any(|&c| c > 0), "8.4", "'A' at 18 px rasterized to nothing")?;
     for g in [b, c, b, c] {
         font.rasterize_glyph(g, 18.0).map_err(|e| e.to_string())?;
     }
@@ -2181,6 +2198,7 @@ fn font_parser_truncated() -> CaseResult {
 fn font_parser_table_offsets() -> CaseResult {
     let good = Ttf::base().build();
     let len = good.len() as u32;
+    Font::parse(&good).map_err(|e| format!("the unmodified test font does not parse: {e}")).cite("10")?;
     // Records start at 12 and are 16 bytes: tag, checksum, offset, length.
     for (record, field, value) in [(1usize, 8usize, len + 4), (1, 12, len), (6, 8, u32::MAX - 2), (0, 12, 0x7FFF_FFFF)] {
         let mut bad = good.clone();
@@ -2567,6 +2585,7 @@ fn bmp_truncated() -> CaseResult {
     let rows = fixture_rows(3, 3, 0x7A7);
     let full = bmp_fixture(3, &rows, false);
     let len = full.len();
+    decodes_to("12", "the whole 3x3 file", &full, 3, &rows)?;
     step("12", isolated("decoding every proper prefix of a 3x3 BMP", 5_000, move || {
         for cut in 0..len {
             if let Some((w, h, _)) = libimg::bmp::decode_bmp_24(&full[..cut]) {
@@ -3119,6 +3138,7 @@ fn icons_step_invariance() -> CaseResult {
             }
             results.push((label, icon.state(), drawn(icon.as_ref(), 48)));
         }
+        ensure(drawn_pixels(&results[0].2, PAPER) > 0, "16", format!("{name} drew nothing after {}", results[0].0))?;
         for (label, state, g) in &results[1..] {
             ensure(*state == results[0].1, "16", format!("{name}: after {label} the state is {state:?}, after {} it is {:?}", results[0].0, results[0].1))?;
             if let Some((x, y)) = same_pixels(g, &results[0].2) {
@@ -3162,7 +3182,9 @@ fn icons_reset() -> CaseResult {
         }
         icon.reset();
         let fresh = make();
-        if let Some((x, y)) = same_pixels(&drawn(icon.as_ref(), 56), &drawn(fresh.as_ref(), 56)) {
+        let fresh_drawing = drawn(fresh.as_ref(), 56);
+        ensure(drawn_pixels(&fresh_drawing, PAPER) > 0, "16", format!("a new {name} icon drew nothing at size 56"))?;
+        if let Some((x, y)) = same_pixels(&drawn(icon.as_ref(), 56), &fresh_drawing) {
             return at("16", format!("{name}: after reset pixel ({x},{y}) differs from a new icon drawn at the new size"));
         }
     }
@@ -3186,6 +3208,9 @@ fn icons_bounded() -> CaseResult {
                 icon.update(1_000 + (rng.next() % 32_000) as u32, IconMouse { hovering, pressed: held, just_clicked: press,
                     just_released: release, rel_x: (rng.next() % 200) as f32 / 100.0 - 1.0, rel_y: (rng.next() % 200) as f32 / 100.0 - 1.0 });
                 icon.draw(&mut g.fb(), 80, 80, size);
+            }
+            if drawn_pixels(&g, PAPER) == 0 {
+                return Err(format!("{name} drew nothing in 10,000 steps"));
             }
             let half = size / 2 + icon.bounds_overflow();
             for y in 0..160i64 {
@@ -3499,8 +3524,8 @@ fn composition_fbinfo_geometry() -> CaseResult {
     value("fb-width", i.width as i64, "px", Some((1280, 1280)));
     value("fb-height", i.height as i64, "px", Some((800, 800)));
     ensure((i.width, i.height) == (1280, 800), "18", format!("fbinfo reports {}x{}; a GUI suite boot runs the display at 1280x800", i.width, i.height))?;
-    ensure(i.bytes_per_pixel == 4 && i.stride >= 1280 * 4 && i.stride % 4 == 0 && i.pixel_format <= 1, "18", format!(
-        "fbinfo reports stride {} bytes, {} bytes per pixel and pixel format {}; the contract gives 4 bytes per pixel, a stride of at least 5,120 and format 0 or 1",
+    ensure(i.bytes_per_pixel == 4 && i.stride >= 1280 && i.pixel_format <= 1, "18", format!(
+        "fbinfo reports a stride of {} pixels, {} bytes per pixel and pixel format {}; the contract gives 4 bytes per pixel, a stride of at least 1280 pixels and format 0 or 1",
         i.stride, i.bytes_per_pixel, i.pixel_format))
 }
 
