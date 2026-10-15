@@ -522,7 +522,7 @@ enum Prepared {
 static FUTEX_QUEUES: Mutex<FutexTable> = Mutex::new(FutexTable::new());
 
 fn with_table<R>(f: impl FnOnce(&mut FutexTable) -> R) -> R {
-    crate::arch_without_interrupts(|| f(&mut FUTEX_QUEUES.lock()))
+    crate::arch_without_interrupts(|| { let probe_cpu = crate::task::scheduler::current_cpu_id_raw(); let mut table = FUTEX_QUEUES.lock(); if probe_cpu < crate::task::scheduler::MAX_CPUS { crate::spread_probe::IN_FUTEX[probe_cpu].store(true, core::sync::atomic::Ordering::Relaxed); } let r = f(&mut table); if probe_cpu < crate::task::scheduler::MAX_CPUS { crate::spread_probe::IN_FUTEX[probe_cpu].store(false, core::sync::atomic::Ordering::Relaxed); } drop(table); r })
 }
 
 fn monotonic_ns() -> u64 {

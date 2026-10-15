@@ -52,6 +52,9 @@ static GAP: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 static SCHED_WAIT: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 static PM_WAIT: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 static SD_WAIT: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+static GAP_AT: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+static SD_DONE: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+pub static IN_FUTEX: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
 static SD_MAX: AtomicU64 = AtomicU64::new(0);
 static SD_MAX_LOC: AtomicUsize = AtomicUsize::new(0);
 static SD_MAX_TGT: AtomicU64 = AtomicU64::new(0);
@@ -94,7 +97,10 @@ pub fn note_interrupt(cpu: usize) {
     }
     let now = rdtsc();
     let prev = LAST_INT[cpu].swap(now, Ordering::Relaxed);
-    note_span(&GAP, cpu, prev, now);
+    let before = GAP[cpu].load(Ordering::Relaxed);
+    if note_span(&GAP, cpu, prev, now) && now - prev > before {
+        GAP_AT[cpu].store(prev, Ordering::Relaxed);
+    }
     if cpu == 0 {
         maybe_arm(now);
     }
@@ -139,6 +145,9 @@ fn try_begin(kind: u32, cpu: usize) -> bool {
     }
     if crate::process::process_manager_held_on_current_cpu() {
         flags |= 2;
+    }
+    if IN_FUTEX[cpu].load(Ordering::Relaxed) {
+        flags |= 4;
     }
     WFLAG.store(flags, Ordering::Relaxed);
     WSTART.store(rdtsc(), Ordering::Release);
@@ -210,7 +219,11 @@ pub fn idle_drain(active: bool) {
 /// DRAIN: each COM2 port write.
 pub fn port_write_hook() {
     let cpu = cpu_now();
-    if cpu >= MAX_CPUS || !IN_IDLE_DRAIN[cpu].load(Ordering::Acquire) {
+    if cpu >= MAX_CPUS
+        || !IN_IDLE_DRAIN[cpu].load(Ordering::Acquire)
+        || !crate::per_cpu::running_idle_thread()
+        || crate::per_cpu::in_interrupt()
+    {
         return;
     }
     if STATE.load(Ordering::Acquire) == ST_OPEN
@@ -248,7 +261,11 @@ pub fn pm_acquired(t0: u64) {
 pub fn shootdown_done(t0: u64, targets: u64, loc: &'static core::panic::Location<'static>) {
     let cpu = cpu_now();
     let t1 = rdtsc();
-    if note_span(&SD_WAIT, cpu, t0, t1) && t1 - t0 > SD_MAX.load(Ordering::Relaxed) {
+    let counted = note_span(&SD_WAIT, cpu, t0, t1);
+    if counted && cpu < MAX_CPUS && t1 >= WSTART.load(Ordering::Acquire) {
+        SD_DONE[cpu].fetch_add(1, Ordering::Relaxed);
+    }
+    if counted && t1 - t0 > SD_MAX.load(Ordering::Relaxed) {
         SD_MAX.store(t1 - t0, Ordering::Relaxed);
         SD_MAX_LOC.store(loc as *const _ as usize, Ordering::Relaxed);
         SD_MAX_TGT.store(targets | ((cpu as u64) << 16), Ordering::Relaxed);
@@ -282,6 +299,22 @@ pub fn poll() {
         v
     };
     let (gap, sched, pm, sd) = (row(&GAP), row(&SCHED_WAIT), row(&PM_WAIT), row(&SD_WAIT));
+    let sd_done = {
+        let mut v = [0u64; 4];
+        for (i, slot) in v.iter_mut().enumerate().take(n) {
+            *slot = SD_DONE[i].load(Ordering::Relaxed);
+        }
+        v
+    };
+    let wstart = WSTART.load(Ordering::Relaxed);
+    let gap_at = {
+        let mut v = [0i64; 4];
+        for (i, slot) in v.iter_mut().enumerate().take(n) {
+            let at = GAP_AT[i].load(Ordering::Relaxed);
+            *slot = if at == 0 { 0 } else { (at as i64 - wstart as i64) / per_us as i64 };
+        }
+        v
+    };
     let loc = SD_MAX_LOC.load(Ordering::Relaxed);
     let (file, line) = if loc == 0 {
         ("-", 0)
@@ -292,23 +325,26 @@ pub fn poll() {
     };
     let seq = WSEQ.fetch_add(1, Ordering::Relaxed);
     log::info!(
-        "SPREAD seq={} kind={} cpu={} dur_us={} held={} gap_us={:?} sched_us={:?} pm_us={:?} sd_us={:?} sd_max_us={} sd_at={}:{} sd_tgt={:#x} sd_held={}",
+        "SPREAD seq={} t0_us={} kind={} cpu={} dur_us={} held={} gap_us={:?} gap_from_us={:?} sched_us={:?} pm_us={:?} sd_us={:?} sd_done={:?} sd_max_us={} sd_at={}:{} sd_tgt={:#x} sd_held={}",
         seq,
+        wstart / per_us,
         KIND.load(Ordering::Relaxed),
         WCPU.load(Ordering::Relaxed),
         (WEND.load(Ordering::Relaxed) - WSTART.load(Ordering::Relaxed)) / per_us,
         WFLAG.load(Ordering::Relaxed),
         gap,
+        gap_at,
         sched,
         pm,
         sd,
+        sd_done,
         SD_MAX.load(Ordering::Relaxed) / per_us,
         file,
         line,
         SD_MAX_TGT.load(Ordering::Relaxed),
         SD_MAX_HELD.load(Ordering::Relaxed),
     );
-    for arr in [&GAP, &SCHED_WAIT, &PM_WAIT, &SD_WAIT] {
+    for arr in [&GAP, &SCHED_WAIT, &PM_WAIT, &SD_WAIT, &GAP_AT, &SD_DONE] {
         for slot in arr.iter() {
             slot.store(0, Ordering::Relaxed);
         }
