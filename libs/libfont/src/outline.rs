@@ -1,26 +1,37 @@
-//! Scaled glyph outline — contours of points in pixel coordinates.
-//!
-//! Takes raw glyph contours from the `glyf` table and scales them to pixel
-//! coordinates, resolving TrueType's implicit on-curve midpoints between
-//! consecutive off-curve points.
+//! Glyph outlines: compound expansion and flattening into line segments
+//! (docs/gui/breengel.md sections 7 and 10).
 
 use alloc::vec::Vec;
-use crate::tables::glyf::{SimpleGlyph, GlyphPoint};
 
-#[inline]
-fn fabs(x: f32) -> f32 {
-    if x < 0.0 { -x } else { x }
-}
+use crate::error::FontError;
+use crate::work;
 
-/// A point in scaled pixel coordinates.
-#[derive(Debug, Clone, Copy)]
-pub struct ScaledPoint {
+/// A point of an expanded outline, in font units.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OutlinePoint {
     pub x: f32,
     pub y: f32,
+    pub on_curve: bool,
 }
 
-/// A line segment in the flattened outline.
-#[derive(Debug, Clone, Copy)]
+/// A glyph's outline after compound expansion, with the glyph's header bounding box.
+#[derive(Debug, Clone)]
+pub struct Outline {
+    pub x_min: i16,
+    pub y_min: i16,
+    pub x_max: i16,
+    pub y_max: i16,
+    pub contours: Vec<Vec<OutlinePoint>>,
+}
+
+impl Outline {
+    pub fn points(&self) -> usize {
+        self.contours.iter().map(|c| c.len()).sum()
+    }
+}
+
+/// A line segment in bitmap pixel coordinates (y down).
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LineSegment {
     pub x0: f32,
     pub y0: f32,
@@ -28,174 +39,83 @@ pub struct LineSegment {
     pub y1: f32,
 }
 
-/// Flatten a glyph's contours into line segments, scaled to pixel coordinates.
-///
-/// `scale` = pixel_size / units_per_em
-/// `y_offset` = ascender * scale (to position the glyph baseline)
-///
-/// The y-axis is flipped: TrueType y increases upward, but pixel y increases downward.
-pub fn flatten_glyph(
-    glyph: &SimpleGlyph,
-    scale: f32,
-    x_offset: f32,
-    y_offset: f32,
-) -> Vec<LineSegment> {
-    let mut segments = Vec::new();
+/// Compound nesting allowed, in compound levels (the outermost compound is level 1).
+pub const MAX_DEPTH: usize = 8;
+/// Quadratic subdivision depth: a curve gives at most 2⁹ = 512 segments.
+pub const MAX_SUBDIVISION: u32 = 9;
+/// Segments one glyph may flatten to.
+pub const MAX_SEGMENTS: usize = 65_536;
 
-    for contour in &glyph.contours {
+/// Flatten `outline` scaled by `scale`, translated so a font-unit point (x, y) lands at
+/// (x·scale + x_off, y_off − y·scale): TrueType y points up, bitmap y down. More than
+/// `MAX_SEGMENTS` segments is `GlyphTooComplex`.
+pub fn flatten(outline: &Outline, scale: f32, x_off: f32, y_off: f32) -> Result<Vec<LineSegment>, FontError> {
+    let mut out = Vec::new();
+    let map = |p: &OutlinePoint| (p.x * scale + x_off, y_off - p.y * scale);
+    for contour in &outline.contours {
+        work::add(1);
         if contour.len() < 2 {
             continue;
         }
-        flatten_contour(contour, scale, x_offset, y_offset, &mut segments);
-    }
-
-    segments
-}
-
-fn flatten_contour(
-    points: &[GlyphPoint],
-    scale: f32,
-    x_off: f32,
-    y_off: f32,
-    segments: &mut Vec<LineSegment>,
-) {
-    // Resolve TrueType implicit on-curve points:
-    // Between two consecutive off-curve points, insert an on-curve midpoint.
-    let mut resolved = Vec::with_capacity(points.len() * 2);
-
-    for i in 0..points.len() {
-        let curr = &points[i];
-        let next = &points[(i + 1) % points.len()];
-
-        resolved.push(ScaledPoint {
-            x: curr.x as f32 * scale + x_off,
-            y: y_off - curr.y as f32 * scale,
-        });
-
-        // If both current and next are off-curve, insert implicit on-curve midpoint
-        if !curr.on_curve && !next.on_curve {
-            resolved.push(ScaledPoint {
-                x: (curr.x as f32 + next.x as f32) * 0.5 * scale + x_off,
-                y: y_off - (curr.y as f32 + next.y as f32) * 0.5 * scale,
-            });
+        // The contour with TrueType's implied on-curve midpoints between consecutive
+        // off-curve points made explicit.
+        let n = contour.len();
+        let mut pts: Vec<((f32, f32), bool)> = Vec::with_capacity(2 * n);
+        work::add(n as u64);
+        for i in 0..n {
+            let (cur, next) = (&contour[i], &contour[(i + 1) % n]);
+            pts.push((map(cur), cur.on_curve));
+            if !cur.on_curve && !next.on_curve {
+                let mid = OutlinePoint { x: (cur.x + next.x) * 0.5, y: (cur.y + next.y) * 0.5, on_curve: true };
+                pts.push((map(&mid), true));
+            }
+        }
+        let m = pts.len();
+        let Some(start) = pts.iter().position(|p| p.1) else { continue };
+        let first = pts[start].0;
+        let mut cursor = first;
+        let mut i = 1;
+        while i <= m {
+            work::add(1);
+            let (p, on) = pts[(start + i) % m];
+            if on {
+                push(&mut out, cursor, p)?;
+                cursor = p;
+                i += 1;
+            } else {
+                let end = pts[(start + i + 1) % m].0;
+                quad(&mut out, cursor, p, end, 0)?;
+                cursor = end;
+                i += 2;
+            }
         }
     }
-
-    if resolved.len() < 2 {
-        return;
-    }
-
-    // Re-derive on_curve flags for the resolved list
-    // Original on-curve points keep their status; inserted midpoints are on-curve.
-    let mut on_curve_flags = Vec::with_capacity(resolved.len());
-    let mut ri = 0;
-    for i in 0..points.len() {
-        on_curve_flags.push(points[i].on_curve);
-        ri += 1;
-        let next = &points[(i + 1) % points.len()];
-        if !points[i].on_curve && !next.on_curve {
-            on_curve_flags.push(true); // inserted midpoint is on-curve
-            ri += 1;
-        }
-    }
-    let _ = ri;
-
-    // Find first on-curve point to start from
-    let start = on_curve_flags.iter().position(|&oc| oc).unwrap_or(0);
-    let n = resolved.len();
-
-    let mut cursor = resolved[start];
-    let mut i = 1;
-    while i < n {
-        let idx = (start + i) % n;
-        if on_curve_flags[idx] {
-            // Line segment
-            let target = resolved[idx];
-            segments.push(LineSegment {
-                x0: cursor.x, y0: cursor.y,
-                x1: target.x, y1: target.y,
-            });
-            cursor = target;
-            i += 1;
-        } else {
-            // Quadratic bezier: cursor -> off-curve -> next on-curve
-            let control = resolved[idx];
-            let end_idx = (start + i + 1) % n;
-            let end_pt = resolved[end_idx];
-            flatten_quad_bezier(cursor, control, end_pt, segments);
-            cursor = end_pt;
-            i += 2;
-        }
-    }
-
-    // Close the contour
-    let first = resolved[start];
-    if fabs(cursor.x - first.x) > 0.01 || fabs(cursor.y - first.y) > 0.01 {
-        segments.push(LineSegment {
-            x0: cursor.x, y0: cursor.y,
-            x1: first.x, y1: first.y,
-        });
-    }
+    Ok(out)
 }
 
-/// Adaptively flatten a quadratic bezier into line segments.
-///
-/// Subdivision threshold: if the control point is within 0.35px of the
-/// chord midpoint, emit a straight line; otherwise split at t=0.5.
-fn flatten_quad_bezier(
-    p0: ScaledPoint,
-    p1: ScaledPoint,
-    p2: ScaledPoint,
-    segments: &mut Vec<LineSegment>,
-) {
-    flatten_quad_recursive(p0, p1, p2, segments, 0);
+fn push(out: &mut Vec<LineSegment>, a: (f32, f32), b: (f32, f32)) -> Result<(), FontError> {
+    if a == b {
+        return Ok(());
+    }
+    if out.len() == MAX_SEGMENTS {
+        return Err(FontError::GlyphTooComplex);
+    }
+    out.push(LineSegment { x0: a.0, y0: a.1, x1: b.0, y1: b.1 });
+    Ok(())
 }
 
-fn flatten_quad_recursive(
-    p0: ScaledPoint,
-    p1: ScaledPoint,
-    p2: ScaledPoint,
-    segments: &mut Vec<LineSegment>,
-    depth: u32,
-) {
-    // Max recursion depth to prevent stack overflow
-    if depth > 8 {
-        segments.push(LineSegment {
-            x0: p0.x, y0: p0.y,
-            x1: p2.x, y1: p2.y,
-        });
-        return;
+/// Subdivide the quadratic (p0, p1, p2) at t = ½ until its control point is within 0.35 px
+/// of the chord's midpoint, or `MAX_SUBDIVISION` levels.
+fn quad(out: &mut Vec<LineSegment>, p0: (f32, f32), p1: (f32, f32), p2: (f32, f32), depth: u32) -> Result<(), FontError> {
+    work::add(1);
+    let (mx, my) = ((p0.0 + p2.0) * 0.5, (p0.1 + p2.1) * 0.5);
+    let (dx, dy) = (p1.0 - mx, p1.1 - my);
+    if depth >= MAX_SUBDIVISION || dx * dx + dy * dy <= 0.35 * 0.35 {
+        return push(out, p0, p2);
     }
-
-    // Check if control point is close enough to chord midpoint
-    let mid_x = (p0.x + p2.x) * 0.5;
-    let mid_y = (p0.y + p2.y) * 0.5;
-    let dx = p1.x - mid_x;
-    let dy = p1.y - mid_y;
-    let dist_sq = dx * dx + dy * dy;
-
-    if dist_sq <= 0.35 * 0.35 {
-        segments.push(LineSegment {
-            x0: p0.x, y0: p0.y,
-            x1: p2.x, y1: p2.y,
-        });
-        return;
-    }
-
-    // Split at t=0.5 using de Casteljau
-    let p01 = ScaledPoint {
-        x: (p0.x + p1.x) * 0.5,
-        y: (p0.y + p1.y) * 0.5,
-    };
-    let p12 = ScaledPoint {
-        x: (p1.x + p2.x) * 0.5,
-        y: (p1.y + p2.y) * 0.5,
-    };
-    let p012 = ScaledPoint {
-        x: (p01.x + p12.x) * 0.5,
-        y: (p01.y + p12.y) * 0.5,
-    };
-
-    flatten_quad_recursive(p0, p01, p012, segments, depth + 1);
-    flatten_quad_recursive(p012, p12, p2, segments, depth + 1);
+    let p01 = ((p0.0 + p1.0) * 0.5, (p0.1 + p1.1) * 0.5);
+    let p12 = ((p1.0 + p2.0) * 0.5, (p1.1 + p2.1) * 0.5);
+    let mid = ((p01.0 + p12.0) * 0.5, (p01.1 + p12.1) * 0.5);
+    quad(out, p0, p01, mid, depth + 1)?;
+    quad(out, mid, p12, p2, depth + 1)
 }
