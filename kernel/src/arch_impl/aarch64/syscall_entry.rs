@@ -1552,6 +1552,9 @@ fn sys_exec_aarch64(
 
         frame.spsr = 0x0; // EL0t, DAIF clear
 
+        // The new image starts from the initial FP/SIMD state, not the old one's.
+        crate::arch_impl::aarch64::fpsimd::reset_current();
+
         // Trace: frame registers zeroed, SPSR set
         super::trace::trace_exec(b'F');
 

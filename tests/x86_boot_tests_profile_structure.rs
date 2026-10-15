@@ -84,12 +84,17 @@ fn validate_context_fork(source: &str) -> Result<(), &'static str> {
     let start = source.find("pub fn fork_process_with_context(").ok_or("context fork missing")?;
     let end = source[start..].find("    /// Replace a process's address space").ok_or("next method missing")?;
     let body = &source[start..start+end];
-    // The architecture-only FPU field is part of Thread; the fork work itself
+    // The architecture-only FP fields are part of Thread; the fork work itself
     // must remain present in every kernel feature profile.
-    let profile_body = body.replace(
-        "#[cfg(target_arch = \"x86_64\")]\n                fpu: crate::arch_impl::x86_64::fpu::FpuState::capture(),",
-        "",
-    );
+    let profile_body = body
+        .replace(
+            "#[cfg(target_arch = \"x86_64\")]\n                fpu: crate::arch_impl::x86_64::fpu::FpuState::capture(),",
+            "",
+        )
+        .replace(
+            "#[cfg(target_arch = \"aarch64\")]\n                fpsimd: crate::arch_impl::aarch64::fpsimd::capture(),",
+            "",
+        );
     if profile_body.contains("#[cfg") || profile_body.contains("cfg!(") { return Err("context fork is feature gated"); }
     for required in ["super::fork::setup_cow_pages_with_vmas(",
         "child_process.page_table = Some(child_page_table);",
