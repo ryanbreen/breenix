@@ -1,0 +1,3 @@
+# The Developer SDK's version: SemVer over its interface (layout, tool flags, target names and
+# the libbreenix major). The commit a build came from identifies that build exactly.
+version = "0.1.0"
