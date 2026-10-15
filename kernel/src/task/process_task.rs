@@ -1133,7 +1133,7 @@ impl ProcessScheduler {
 
             // Clean up window buffers so the compositor stops reading freed pages
             #[cfg(target_arch = "aarch64")]
-            crate::syscall::graphics::cleanup_windows_for_pid(pid.as_u64());
+            crate::syscall::window_v1::cleanup_windows_for_pid(pid.as_u64());
 
             for pgid in orphaned_groups {
                 crate::syscall::signal::signal_orphaned_group(pgid);
