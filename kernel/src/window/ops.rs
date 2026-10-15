@@ -301,10 +301,13 @@ fn info(w: &Window, backend: u32) -> WinInfo {
 }
 
 /// `LIST`: every registered window, up to `capacity` copied out; returns how many there are.
+/// The whole array of `capacity` entries is the output range, checked before anything else,
+/// however many windows there are (section 17.5).
 pub fn list(_caller: &Caller, l: &List) -> Result<u64, i32> {
     if l.reserved != 0 {
         return Err(EINVAL);
     }
+    mem::probe_writable(l.ptr, (l.capacity as u64).saturating_mul(core::mem::size_of::<WinInfo>() as u64))?;
     sweep_dead_owners();
     let backend = super::present::backend_code();
     let entries: Vec<WinInfo> = {
@@ -316,7 +319,6 @@ pub fn list(_caller: &Caller, l: &List) -> Result<u64, i32> {
     };
     let n = entries.len().min(l.capacity as usize);
     let bytes = n * core::mem::size_of::<WinInfo>();
-    mem::probe_writable(l.ptr, bytes as u64)?;
     // SAFETY: WinInfo is plain data without padding.
     let raw = unsafe { core::slice::from_raw_parts(entries.as_ptr() as *const u8, bytes) };
     mem::copy_out(l.ptr, raw)?;
