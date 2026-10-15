@@ -88,6 +88,11 @@ sdk_cc() {
             -r|-Wl,-r) _sdk_relocatable=1 ;;
         esac
     done
+    # -nostdinc drops clang's default header directories but not the ones the environment
+    # names: CPATH and the *_INCLUDE_PATH variables are searched before -isystem, so a host's
+    # headers could stand in for the SDK's. LIBRARY_PATH and COMPILER_PATH likewise add the
+    # host's libraries and programs to the link.
+    unset CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH OBJC_INCLUDE_PATH OBJCPLUS_INCLUDE_PATH LIBRARY_PATH COMPILER_PATH
     # shellcheck disable=SC2086
     set -- --target="$_sdk_triple" -nostdinc -isystem "$SDK/include" -isystem "$_sdk_resource/include" \
         -fno-stack-protector -fno-pic -fno-pie $_sdk_arch_flags "$@"

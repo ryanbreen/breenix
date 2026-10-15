@@ -539,11 +539,11 @@ class Harness:
         self.records.set('toolchain/target-specs', not missing,
                          f'share/breenix-sdk/targets has no rustc target spec with os breenix for {", ".join(missing)}')
 
-    def compile(self, arch, args, cwd, log):
+    def compile(self, arch, args, cwd, log, extra=None):
         tool = self.tool(arch, 'cc')
         if not tool.is_file():
             return Ran(127, '', f'the SDK has no bin/{tool.name}')
-        return run([tool, *args], cwd, sdk_env(self.sdk, self.home), TIMEOUT_TOOL, log)
+        return run([tool, *args], cwd, sdk_env(self.sdk, self.home, extra), TIMEOUT_TOOL, log)
 
     def check_headers(self, exported):
         lists = exported / 'userspace' / 'sdk-suite' / 'headers'
@@ -707,10 +707,20 @@ class Harness:
         app = self.fresh_copy('c-app')
         log = self.logs / 'c-app.log'
         sources = sorted(p.name for p in app.glob('*.c'))
+        # A builder's environment may name its own header directories, which clang searches
+        # ahead of the SDK's: the app builds with CPATH and C_INCLUDE_PATH naming a directory
+        # where every header it includes is an #error.
+        poison = self.work / 'host-include'
+        poison.mkdir()
+        for path in sorted(app.glob('*.[ch]')):
+            for name in re.findall(r'^\s*#\s*include\s*<([^>]+)>', path.read_text(errors='replace'), re.M):
+                (poison / name).parent.mkdir(parents=True, exist_ok=True)
+                (poison / name).write_text(f'#error the host header {name} was used\n')
+        hostile = {'CPATH': str(poison), 'C_INCLUDE_PATH': str(poison)}
         warnings, failed = [], None
         for source in sources:
             ran = self.compile(self.arch, ['-std=c17', '-O2', '-Wall', '-Wextra', '-MD', '-c', source,
-                                           '-o', source[:-2] + '.o'], app, log)
+                                           '-o', source[:-2] + '.o'], app, log, hostile)
             warnings += [l for l in ran.err.splitlines() if 'warning:' in l]
             if not ran.ok:
                 failed = ran.why(f'compiling {source}')
