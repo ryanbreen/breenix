@@ -788,30 +788,31 @@ fn gettid() -> u64 {
 }
 
 /// Arm `emit-diagnostic` with writer `path` for thread `tid`, make one window op, and return
-/// how much the thread's counter and the unattributed counter moved, waiting up to 200 ms for
-/// a notice written out by another thread.
-fn emit(tid: u64, path: u64, want_thread: u64, want_unattributed: u64) -> Result<(u64, u64), String> {
-    let t0 = kernel_output(tid)?;
-    let u0 = counter("kernel_output_unattributed")?;
+/// how much the thread's counter and the unattributed counter moved. Reading
+/// `/proc/trace/counters` is itself kernel output on the reading thread (procfs prints its
+/// census lines), so the unattributed counter is read only outside the thread's brackets.
+fn emit(tid: u64, path: u64, want_thread: u64) -> Result<(u64, u64), String> {
     let f0 = libbreenix::test_control::fired(abi::tc_point::EMIT_DIAGNOSTIC).map_err(|e| format!("FIRED: {e}"))?;
+    let u0 = counter("kernel_output_unattributed")?;
+    let t0 = kernel_output(tid)?;
     libbreenix::test_control::arm(abi::tc_point::EMIT_DIAGNOSTIC, tid, path).map_err(|e| format!("ARM emit-diagnostic({path}): {e}"))?;
     let _ = window_version();
     let start = now_ms();
-    let (dt, du) = loop {
+    let dt = loop {
         let dt = kernel_output(tid)? - t0;
-        let du = counter("kernel_output_unattributed")? - u0;
-        if (dt, du) == (want_thread, want_unattributed) || since(start) > 200 {
-            break (dt, du);
+        if dt == want_thread || since(start) > 200 {
+            break dt;
         }
         let _ = time::sleep_ms(5);
     };
+    // Once: a second op without arming adds nothing.
+    let _ = window_version();
+    let again = kernel_output(tid)? - t0;
+    let du = counter("kernel_output_unattributed")? - u0;
     let fired = libbreenix::test_control::fired(abi::tc_point::EMIT_DIAGNOSTIC).map_err(|e| format!("FIRED: {e}"))? - f0;
     if fired != 1 {
         return Err(format!("emit-diagnostic({path}) fired {fired} times for one window op"));
     }
-    // Once: a second op without arming adds nothing.
-    let _ = window_version();
-    let again = kernel_output(tid)? - t0;
     if again != dt {
         return Err(format!("emit-diagnostic({path}) went on counting after its one op: {dt} then {again}"));
     }
@@ -821,8 +822,8 @@ fn emit(tid: u64, path: u64, want_thread: u64, want_unattributed: u64) -> Result
 fn isolation_quiet_errors() -> CaseResult {
     interface()?;
     let tid = gettid();
-    let before = kernel_output(tid).cite("22")?;
     let un_before = counter("kernel_output_unattributed").cite("22")?;
+    let before = kernel_output(tid).cite("22")?;
     let bad = unmapped();
     for i in 0..1_000u64 {
         let r = match i % 4 {
@@ -842,6 +843,7 @@ fn isolation_quiet_errors() -> CaseResult {
     }
     let after = kernel_output(tid).cite("22")?;
     let un_after = counter("kernel_output_unattributed").cite("22")?;
+    // The census lines the counters read printed land after `after` was taken.
     ensure(after == before, "17.5", format!("1,000 failing window calls added {} bytes to this thread's kernel output; window ops produce none", after - before))?;
     ensure(un_after == un_before, "17.5", format!("1,000 failing window calls added {} bytes of unattributed kernel output", un_after - un_before))?;
     use abi::emit_path as p;
@@ -853,7 +855,7 @@ fn isolation_quiet_errors() -> CaseResult {
             p::EMERGENCY_PRINT => (0, 32),
             _ => (32, 0),
         };
-        let (dt, du) = emit(tid, path, want_t, want_u).cite("22")?;
+        let (dt, du) = emit(tid, path, want_t).cite("22")?;
         ensure((dt, du) == (want_t, want_u), "22", format!(
             "emit-diagnostic({path}) added {dt} bytes to the thread and {du} unattributed; the contract gives {want_t} and {want_u}"))?;
     }
@@ -861,7 +863,7 @@ fn isolation_quiet_errors() -> CaseResult {
     let mine_before = kernel_output(tid).cite("22")?;
     let other = std::thread::spawn(|| -> Result<(u64, u64), String> {
         let t = gettid();
-        emit(t, p::SERIAL_PRINTLN, 33, 0).map(|(dt, _)| (t, dt))
+        emit(t, p::SERIAL_PRINTLN, 33).map(|(dt, _)| (t, dt))
     }).join().map_err(|_| String::from("the second emitting thread panicked")).cite("22")?.cite("22")?;
     let mine_after = kernel_output(tid).cite("22")?;
     ensure(other.1 == 33, "22", format!("the second thread's emit-diagnostic(1) added {} bytes to its own counter; the contract gives 33", other.1))?;

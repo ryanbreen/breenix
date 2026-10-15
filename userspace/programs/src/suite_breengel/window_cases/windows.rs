@@ -894,8 +894,7 @@ fn windows_rlimit_accounting() -> CaseResult {
 
 fn windows_capture_across_destroy() -> CaseResult {
     interface()?;
-    let free_before = mem_free_kb().cite("17.3")?;
-    for round in 0..20u32 {
+    let round = |round: u32| -> CaseResult {
         let mut w = W::new(512, 512, 2)?;
         let seed = 40 + round;
         let a = w.acquire(1_000_000_000).map_err(|r| format!("ACQUIRE {}", outcome(r))).cite("17.3")?;
@@ -912,15 +911,34 @@ fn windows_capture_across_destroy() -> CaseResult {
         want_ok(w.destroy(), "17.2", "DESTROY during a capture")?;
         let (got, tree) = reader.join().map_err(|_| String::from("the reader panicked")).cite("17.3")?;
         match got {
-            Err(r) => want_errno(r, ENOENT, "17.3", "a capture that began after DESTROY")?,
+            Err(r) => want_errno(r, ENOENT, "17.3", "a capture that began after DESTROY"),
             Ok((c, px)) => {
                 same(&px, 512, 512, false, &format!("round {round}: a capture across DESTROY"), "17.3", |x, y| pattern(seed, x, y))?;
                 let t = u64::from_le_bytes(tree[..8].try_into().unwrap());
-                ensure(t == seed as u64 && c.commit_id == 1, "17.3", format!("round {round}: the capture's tree page says {t} for commit {}", c.commit_id))?;
+                ensure(t == seed as u64 && c.commit_id == 1, "17.3", format!("round {round}: the capture's tree page says {t} for commit {}", c.commit_id))
             }
         }
+    };
+    // Rounds first, so the page tables and thread stacks the rounds need exist before the
+    // baseline; the measured rounds must then return to it.
+    for r in 0..3 {
+        round(r)?;
     }
-    let free_after = mem_free_kb().cite("17.3")?;
+    let _ = mem_free_kb();
+    let free_before = mem_free_kb().cite("17.3")?;
+    for r in 0..20 {
+        round(r)?;
+    }
+    // A reader thread's kernel stack is reclaimed after it is joined, so the count is allowed
+    // up to 1 s to come back; 20 windows of 2 MiB left behind would never come back.
+    let start = now_ms();
+    let free_after = loop {
+        let now = mem_free_kb().cite("17.3")?;
+        if now + 64 >= free_before || since(start) > 1_000 {
+            break now;
+        }
+        let _ = time::sleep_ms(20);
+    };
     value("mem-free-change", free_after as i64 - free_before as i64, "kb", None);
     ensure(free_after + 64 >= free_before, "17.3", format!(
         "after 20 windows of 2 MiB were destroyed under captures, {} kB fewer are free; the buffers are freed when the copy ends", free_before - free_after))
@@ -1016,23 +1034,30 @@ fn windows_remnant_on_death() -> CaseResult {
 
 fn windows_churn() -> CaseResult {
     interface()?;
-    // One cycle first, so page tables the mappings need are there before the baseline.
-    drop(W::new(64, 64, 2)?);
-    let listed_before = list().cite("17.2")?.len();
-    let allocs_before = counter("window_buffer_allocs").cite("18")?;
-    let free_before = mem_free_kb().cite("17.2")?;
-    let vm_before = vm_size().cite("17.2")?;
-    for _ in 0..100 {
+    // Cycles first, and every read below once, so page tables the mappings need, and the
+    // blocks the reads allocate (libc keeps small ones mapped), exist before the baseline.
+    let cycle = || -> CaseResult {
         let mut w = W::new(64, 64, 2)?;
         want_ok(w.register(b"churn"), "17.1", "REGISTER")?;
-        want_ok(w.destroy(), "17.2", "DESTROY")?;
+        want_ok(w.destroy(), "17.2", "DESTROY").map(|_| ())
+    };
+    for _ in 0..10 {
+        cycle()?;
     }
+    let _ = (list(), counter("window_buffer_allocs"), vm_size(), mem_free_kb());
+    let listed_before = list().cite("17.2")?.len();
+    let allocs_before = counter("window_buffer_allocs").cite("18")?;
+    let vm_before = vm_size().cite("17.2")?;
+    let free_before = mem_free_kb().cite("17.2")?;
+    for _ in 0..100 {
+        cycle()?;
+    }
+    let free_after = mem_free_kb().cite("17.2")?;
     let allocs = counter("window_buffer_allocs").cite("18")? - allocs_before;
     value("buffer-allocs", allocs as i64, "", Some((200, 200)));
     ensure(allocs == 200, "18", format!("100 two-buffer windows counted {allocs} buffer allocations; each counts 2"))?;
     ensure(list().cite("17.2")?.len() == listed_before, "17.2", "after 100 create and destroy cycles the registry lists a different number of windows")?;
     ensure(vm_size().cite("17.2")? == vm_before, "17.2", "after 100 create and destroy cycles VmSize differs from its baseline")?;
-    let free_after = mem_free_kb().cite("17.2")?;
     value("mem-free-change", free_after as i64 - free_before as i64, "kb", None);
     ensure(free_after + 16 >= free_before, "17.2", format!("after 100 cycles {} kB fewer are free", free_before.saturating_sub(free_after)))
 }
