@@ -46,8 +46,9 @@ pub mod op {
     pub const READ_REMNANT: u32 = 25;
     pub const RELEASE_REMNANT: u32 = 26;
     pub const GIVE_DISPLAY: u32 = 27;
+    pub const READ_META: u32 = 28;
     /// The highest op number; every op above it is EINVAL.
-    pub const LAST: u32 = GIVE_DISPLAY;
+    pub const LAST: u32 = READ_META;
 }
 
 /// Linux's errno values, which the interface returns negated (section 25).
@@ -466,6 +467,17 @@ pub struct Give {
     pub reserved: u32,
 }
 
+/// Argument of `READ_META`: the newest commit's metadata, copied to `meta`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MetaQuery {
+    pub id: u64,
+    /// A `Meta` the kernel fills.
+    pub meta: u64,
+    /// Out: the commit whose metadata it is, 0 before the first.
+    pub commit_id: u64,
+}
+
 /// `COMPOSITE_RECORD`'s header (section 18); `count` `CompositeEntry` follow it.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -732,6 +744,7 @@ layout!(RecordQuery, 24, serial @ 0, ptr @ 8, len @ 16, reserved @ 20);
 layout!(Readback, 40, dst @ 0, dst_len @ 8, record @ 16, record_len @ 24, reserved @ 28, serial @ 32);
 layout!(Cursor, 16, shape @ 0, visible @ 4, x @ 8, y @ 12);
 layout!(Give, 8, pid @ 0, reserved @ 4);
+layout!(MetaQuery, 24, id @ 0, meta @ 8, commit_id @ 16);
 layout!(CompositeRecordHeader, 24, serial @ 0, pixels @ 8, count @ 16, flags @ 20);
 layout!(CompositeEntry, 32, id @ 0, commit_id @ 8, pixel_gen @ 16, pixels @ 24);
 layout!(ObservedWindow, 16, id @ 0, commit_id @ 8);
@@ -770,6 +783,7 @@ pub const fn arg_size(op: u32) -> Option<usize> {
         op::SCANOUT_READBACK => size_of::<Readback>(),
         op::SET_CURSOR => size_of::<Cursor>(),
         op::GIVE_DISPLAY => size_of::<Give>(),
+        op::READ_META => size_of::<MetaQuery>(),
         _ => return None,
     })
 }

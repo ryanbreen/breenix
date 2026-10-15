@@ -752,6 +752,7 @@ architecture only.
 | 25 | `READ_REMNANT` | `Capture` (56) | 0 | ENOENT |
 | 26 | `RELEASE_REMNANT` | `WinId` (8) | 0 | ENOENT |
 | 27 | `GIVE_DISPLAY` | `Give` (8) | 0 | ESRCH no such process |
+| 28 | `READ_META` | `MetaQuery` (24) | 0 | ENOENT |
 
 Argument structures (offsets in bytes):
 
@@ -796,6 +797,8 @@ Argument structures (offsets in bytes):
 - `Cursor`: `shape: u32 @0` (0 arrow, 1 to 4 the resize shapes, 5 hidden), `visible: u32 @4`, `x: i32 @8`,
   `y: i32 @12`.
 - `Give`: `pid: u32 @0`, reserved `@4`.
+- `MetaQuery`: `id: u64 @0`, `meta: u64 @8` (pointer to a `Meta` the kernel fills), *out* `commit_id: u64 @16` (the
+  newest commit, `COMMIT` or `COMMIT_NO_CHANGE`, whose metadata it is; 0 before the first).
 
 ### 17.2 Ids, limits and lifetime
 
@@ -874,7 +877,7 @@ Principals: the **owner** (by kernel identity, never by PID number, so PID reuse
 | `READ_EVENTS`, `EVENT_FD` | yes | — | — | EPERM |
 | `WRITE_EVENTS`, `SET_GEOMETRY` | EPERM | yes | EPERM | EPERM |
 | `MAP_COMMITTED` | yes | yes | EPERM | EPERM |
-| `CAPTURE`, `MAP_TREE` | yes | yes | yes | EPERM |
+| `CAPTURE`, `MAP_TREE`, `READ_META` | yes | yes | yes | EPERM |
 | `COMPOSITE`, `COMPOSITE_RECORD`, `MAP_COMPOSITOR_TEXTURE`, `SET_CURSOR` | — | yes | EPERM | EPERM |
 | `CLAIM_COMPOSITOR` | — | — | yes if no live claim, else EBUSY | EPERM |
 | `SCANOUT_READBACK` | — | yes | yes | EPERM |
@@ -994,7 +997,8 @@ whose handler returns after frame N was acquired is acknowledged by frame N + 1,
 polled but not yet handled is never acknowledged. For `commit_no_change`, it is the highest serial *s* such
 that every serial up to *s* handled since the last pixel commit returned `NoChange`: a `Redraw` stops it until
 a frame acquired after its handler returned is committed. Serials Breengel refused at dispatch are listed in
-`Meta.rejected` and count as finished. Raw clients set the watermark themselves.
+`Meta.rejected` and count as finished. Raw clients set the watermark themselves. `READ_META` reads back the
+metadata the newest commit published, with that commit's id.
 
 ## 20. Scanout observation
 
