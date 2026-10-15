@@ -256,6 +256,15 @@ long double nexttowardl(long double x, long double y);
 extern int signgam;
 #endif
 
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ > 201710L
+double roundeven(double x);
+float roundevenf(float x);
+double fmaximum(double x, double y);
+float fmaximumf(float x, float y);
+double fminimum(double x, double y);
+float fminimumf(float x, float y);
+#endif
+
 #ifdef __BREENIX_EXT
 double lgamma_r(double x, int *sign);
 float lgammaf_r(float x, int *sign);

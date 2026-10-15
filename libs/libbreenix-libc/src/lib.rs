@@ -26,8 +26,9 @@
 // semantics inside it, or it rewrites their bodies into calls to themselves (or away).
 #![no_builtins]
 #![feature(c_variadic, linkage)]
-// long double is binary128 on aarch64; its C entry points take and return f128.
-#![cfg_attr(target_arch = "aarch64", feature(f128))]
+// long double is binary128 on aarch64, and every target has C23's _Float16 and _Float128
+// functions (math/long_double.rs); their C entry points take and return f16 and f128.
+#![feature(f16, f128)]
 
 mod crt;
 mod setjmp;

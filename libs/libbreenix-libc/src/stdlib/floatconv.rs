@@ -165,9 +165,9 @@ pub(crate) struct Format {
     pub dec_low: i64,
 }
 
+pub(crate) const F16: Format = Format { p: 11, emin: -14, emax: 15, explicit_lead: false, dec_high: 5, dec_low: -9 };
 pub(crate) const F32: Format = Format { p: 24, emin: -126, emax: 127, explicit_lead: false, dec_high: 39, dec_low: -47 };
 pub(crate) const F64: Format = Format { p: 53, emin: -1022, emax: 1023, explicit_lead: false, dec_high: 309, dec_low: -326 };
-#[cfg_attr(target_arch = "x86_64", allow(dead_code))]
 pub(crate) const F128: Format =
     Format { p: 113, emin: -16382, emax: 16383, explicit_lead: false, dec_high: 4933, dec_low: -4968 };
 #[cfg_attr(target_arch = "aarch64", allow(dead_code))]

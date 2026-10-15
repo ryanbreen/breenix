@@ -115,6 +115,7 @@ static SUITE: Suite = suite("sdk", "Developer SDK", &[
         case("net-tcp", "std::net::TcpListener on 127.0.0.1 serves a TcpStream client in another thread", rust_net_tcp),
         case("net-udp", "std::net::UdpSocket sends a datagram on 127.0.0.1 that arrives with the sender's address", rust_net_udp),
         case("net-unix", "std::os::unix::net::UnixStream::pair carries a message from another thread", rust_net_unix),
+        case("float", "f64, f32, f128 and f16 maximum, minimum, round_ties_even, sqrt, % and mul_add give IEEE 754-2019 results, through libc's fmaximum, roundeven, sqrtf128 and kin where the target has no instruction", rust_float),
         case("nostd-hello", "The no_std libbreenix app prints \"hello from rust-nostd-app\" and exits 0", nostd_hello),
         case("nostd-syscalls", "The no_std app's getpid, file round trip and monotonic clock work through libbreenix", nostd_syscalls),
         case("nostd-exit", "The no_std app's main returns 9, and libbreenix's runtime exits with status 9", nostd_exit),
@@ -598,6 +599,10 @@ fn rust_net_tcp() -> CaseResult { rust(&["net-tcp"], "tcp server got: hello tcp\
 fn rust_net_udp() -> CaseResult { rust(&["net-udp"], "udp: datagram from-matches=true\n") }
 
 fn rust_net_unix() -> CaseResult { rust(&["net-unix"], "unix: unix ping\n") }
+
+fn rust_float() -> CaseResult {
+    rust(&["float"], "maximum=NaN 0 1.25\nminimum=NaN -0 -3.5\nround_ties_even=2 4 -2 0 6\nf128=1.5 0 2 1.5 7\nf16=1.5 0 2 1.5 -3\n")
+}
 
 fn nostd_hello() -> CaseResult { nostd(&["hello"], "hello from rust-nostd-app\n", 0) }
 

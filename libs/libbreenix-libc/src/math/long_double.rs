@@ -96,6 +96,7 @@ enum Mode {
     Floor,
     Ceil,
     HalfAway,
+    HalfEven,
     Current,
 }
 
@@ -118,6 +119,7 @@ fn int_of(neg: bool, sig: u128, exp: i64, mode: Mode) -> (u128, bool) {
             Mode::Floor => neg,
             Mode::Ceil => !neg,
             Mode::HalfAway => above_half(false),
+            Mode::HalfEven => above_half(true) || (half == Some(rem) && int & 1 == 1),
             Mode::Current => match direction() {
                 Round::Nearest => above_half(true) || (half == Some(rem) && int & 1 == 1),
                 Round::Up => !neg,
@@ -156,6 +158,12 @@ pub(crate) fn ceil(x: Ld, f: &Format) -> Ld {
 
 pub(crate) fn round(x: Ld, f: &Format) -> Ld {
     round_to_int(x, f, Mode::HalfAway, false)
+}
+
+/// Halfway cases to the even integer, whatever the rounding direction, raising no
+/// inexact (C23 7.12.9.8).
+pub(crate) fn roundeven(x: Ld, f: &Format) -> Ld {
+    round_to_int(x, f, Mode::HalfEven, false)
 }
 
 pub(crate) fn rint(x: Ld, f: &Format) -> Ld {
@@ -765,6 +773,34 @@ pub(crate) fn fmin(x: Ld, y: Ld, f: &Format) -> Ld {
         return x;
     }
     y
+}
+
+/// The larger of x and y, a NaN when either is one, and +0 above -0 (C23 7.12.12.4,
+/// IEEE 754-2019 maximum).
+pub(crate) fn fmaximum(x: Ld, y: Ld, f: &Format) -> Ld {
+    let (a, b) = (unpack(x, f), unpack(y, f));
+    if let Some(n) = nan_of(a, b, f) {
+        return n;
+    }
+    match cmp_val(a, b) {
+        Ordering::Greater => x,
+        Ordering::Equal if neg_of(b) => x,
+        _ => y,
+    }
+}
+
+/// The smaller of x and y, a NaN when either is one, and -0 below +0 (C23 7.12.12.5,
+/// IEEE 754-2019 minimum).
+pub(crate) fn fminimum(x: Ld, y: Ld, f: &Format) -> Ld {
+    let (a, b) = (unpack(x, f), unpack(y, f));
+    if let Some(n) = nan_of(a, b, f) {
+        return n;
+    }
+    match cmp_val(a, b) {
+        Ordering::Less => x,
+        Ordering::Equal if neg_of(a) => x,
+        _ => y,
+    }
 }
 
 pub(crate) fn fdim(x: Ld, y: Ld, f: &Format) -> Ld {
@@ -1458,6 +1494,56 @@ pub(crate) fn tgamma(x: Ld, f: &Format) -> Ld {
 // ----------------------------------------------------------------------------
 // C entry points
 // ----------------------------------------------------------------------------
+
+#[cfg(not(test))]
+mod interchange {
+    //! C23's _Float16 and _Float128 functions (7.12, Annex X) that LLVM calls for Rust's
+    //! f16 and f128 operations where the target has no instruction for them: the exact ones,
+    //! each the format-generic function above applied to the value's encoding.
+    use super::*;
+    use crate::stdlib::floatconv::{F128, F16};
+
+    macro_rules! entries {
+        ($ty:ty, $f:expr; $($kind:ident $name:ident => $func:path),* $(,)?) => {$(
+            entries!(@$kind $ty, $f, $name, $func);
+        )*};
+        (@unary $ty:ty, $f:expr, $name:ident, $func:path) => {
+            #[no_mangle]
+            pub extern "C" fn $name(x: $ty) -> $ty {
+                <$ty>::from_bits($func(x.to_bits() as u128, $f) as _)
+            }
+        };
+        (@binary $ty:ty, $f:expr, $name:ident, $func:path) => {
+            #[no_mangle]
+            pub extern "C" fn $name(x: $ty, y: $ty) -> $ty {
+                <$ty>::from_bits($func(x.to_bits() as u128, y.to_bits() as u128, $f) as _)
+            }
+        };
+    }
+
+    entries!(f16, &F16;
+        unary ceilf16 => ceil, unary fabsf16 => fabs, unary floorf16 => floor,
+        unary rintf16 => rint, unary roundevenf16 => roundeven, unary roundf16 => round,
+        unary sqrtf16 => sqrt, unary truncf16 => trunc,
+        binary copysignf16 => copysign, binary fdimf16 => fdim, binary fmaxf16 => fmax,
+        binary fmaximumf16 => fmaximum, binary fminf16 => fmin, binary fminimumf16 => fminimum,
+        binary fmodf16 => fmod,
+    );
+
+    entries!(f128, &F128;
+        unary ceilf128 => ceil, unary fabsf128 => fabs, unary floorf128 => floor,
+        unary rintf128 => rint, unary roundevenf128 => roundeven, unary roundf128 => round,
+        unary sqrtf128 => sqrt, unary truncf128 => trunc,
+        binary copysignf128 => copysign, binary fdimf128 => fdim, binary fmaxf128 => fmax,
+        binary fmaximumf128 => fmaximum, binary fminf128 => fmin, binary fminimumf128 => fminimum,
+        binary fmodf128 => fmod,
+    );
+
+    #[no_mangle]
+    pub extern "C" fn fmaf128(x: f128, y: f128, z: f128) -> f128 {
+        f128::from_bits(fma(x.to_bits(), y.to_bits(), z.to_bits(), &F128))
+    }
+}
 
 #[cfg(all(target_arch = "aarch64", not(test)))]
 mod abi {

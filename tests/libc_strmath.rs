@@ -333,3 +333,102 @@ fn split_products_keep_the_exact_residual() {
         assert_eq!(got.lo, residual, "a={a:?} b={b:?}");
     }
 }
+
+#[test]
+fn ieee_maximum_minimum_and_roundeven() {
+    use math::{basic::*, fenv::*};
+    let nan = f64::NAN;
+    assert!(fmaximum(1.0, nan).is_nan() && fmaximum(nan, 1.0).is_nan());
+    assert!(fminimum(1.0, nan).is_nan() && fminimum(nan, -1.0).is_nan());
+    assert!(fmaximumf(f32::NAN, 2.0).is_nan() && fminimumf(2.0, f32::NAN).is_nan());
+    assert_eq!(fmaximum(-0.0, 0.0).to_bits(), 0.0f64.to_bits());
+    assert_eq!(fmaximum(0.0, -0.0).to_bits(), 0.0f64.to_bits());
+    assert_eq!(fminimum(0.0, -0.0).to_bits(), (-0.0f64).to_bits());
+    assert_eq!(fminimum(-0.0, 0.0).to_bits(), (-0.0f64).to_bits());
+    assert_eq!(fmaximumf(-0.0, 0.0).to_bits(), 0.0f32.to_bits());
+    assert_eq!(fminimumf(0.0, -0.0).to_bits(), (-0.0f32).to_bits());
+    assert_eq!(fmaximum(f64::NEG_INFINITY, -f64::MAX), -f64::MAX);
+    assert_eq!(fminimum(3.0, f64::NEG_INFINITY), f64::NEG_INFINITY);
+    assert_eq!(fmaximumf(1.25, 0.5), 1.25);
+    assert_eq!(fminimumf(2.5, -3.5), -3.5);
+
+    let mut values = vec![0.0, -0.0, 0.25, 0.5, 0.75, 1.5, 2.5, 3.5, -2.5, 4503599627370495.5,
+                          4503599627370497.0, 1e300, f64::MIN_POSITIVE, f64::from_bits(1),
+                          f64::INFINITY, f64::NEG_INFINITY];
+    for i in -40..=40 {
+        values.push(i as f64 * 0.25);
+        values.push(i as f64 * 0.5 + 0.5);
+    }
+    for x in values {
+        let xf = x as f32;
+        feclearexcept(FE_ALL_EXCEPT);
+        let (r, rf) = (roundeven(x), roundevenf(xf));
+        assert_eq!(fetestexcept(FE_ALL_EXCEPT), 0, "roundeven({x}) raised an exception");
+        assert_eq!(r.to_bits(), x.round_ties_even().to_bits(), "roundeven({x})");
+        assert_eq!(rf.to_bits(), xf.round_ties_even().to_bits(), "roundevenf({xf})");
+    }
+    assert!(roundeven(nan).is_nan());
+}
+
+#[test]
+fn interchange_formats_round_even_and_order_ieee() {
+    use math::long_double::{fmaximum, fminimum, fmod, roundeven, sqrt};
+    use stdlib::floatconv::{F128, F16};
+    // binary16 values through f32, which holds each of them, and their results, exactly.
+    let h = |x: f32| -> u128 {
+        let b = x.to_bits();
+        let (sign, exp, frac) = ((b >> 16) & 0x8000, ((b >> 23) & 0xff) as i32, b & 0x7f_ffff);
+        let bits = match exp {
+            0xff => sign | 0x7c00 | (frac >> 13),
+            0 => sign,
+            _ if exp - 127 < -14 => sign | ((frac | 0x80_0000) >> (126 - exp - 14 + 13 + 1)),
+            _ => {
+                // Round the 24-bit significand to 11 bits, halfway cases to even.
+                let m = frac | 0x80_0000;
+                let (r, rem) = (m >> 13, m & 0x1fff);
+                let r = r + (rem > 0x1000 || (rem == 0x1000 && r & 1 == 1)) as u32;
+                sign | ((((exp - 127 + 15) as u32) << 10) + (r - 0x400))
+            }
+        };
+        bits as u128
+    };
+    let f = |b: u128| -> f32 {
+        let b = b as u32;
+        let (sign, exp, frac) = ((b & 0x8000) << 16, (b >> 10) & 0x1f, b & 0x3ff);
+        let mag = match exp {
+            0x1f => f32::from_bits(0x7f80_0000 | (frac << 13)),
+            0 => frac as f32 * 2f32.powi(-24),
+            _ => f32::from_bits(((exp + 127 - 15) << 23) | (frac << 13)),
+        };
+        f32::from_bits(mag.to_bits() | sign)
+    };
+    for x in [0.5f32, 1.5, 2.5, 3.5, -2.5, -0.5, 1023.5, 2047.0, 0.25, 6.0e-8, 65504.0] {
+        assert_eq!(f(roundeven(h(x), &F16)).to_bits(), x.round_ties_even().to_bits(), "roundevenf16({x})");
+    }
+    for x in [2.0f32, 0.25, 1024.0, 3.0, 65504.0] {
+        assert_eq!(f(sqrt(h(x), &F16)), f(h(x.sqrt())), "sqrtf16({x})");
+    }
+    assert_eq!(f(fmod(h(7.5), h(2.0), &F16)), 1.5);
+    assert_eq!(fmaximum(h(-0.0), h(0.0), &F16), h(0.0));
+    assert_eq!(fminimum(h(0.0), h(-0.0), &F16), h(-0.0));
+    assert!(f(fmaximum(h(f32::NAN), h(1.0), &F16)).is_nan());
+    assert!(f(fminimum(h(1.0), h(f32::NAN), &F16)).is_nan());
+    assert_eq!(f(fmaximum(h(1.5), h(-3.0), &F16)), 1.5);
+    assert_eq!(f(fminimum(h(1.5), h(-3.0), &F16)), -3.0);
+
+    // binary128: exponent bias 16383, 112 fraction bits.
+    let q = |neg: bool, e: i64, frac: u128| ((neg as u128) << 127) | (((e + 16383) as u128) << 112) | frac;
+    let half = 1u128 << 111;
+    let (one, two, three) = (q(false, 0, 0), q(false, 1, 0), q(false, 1, half));
+    assert_eq!(roundeven(q(false, 1, 1u128 << 110), &F128), two); // 2.5 -> 2
+    assert_eq!(roundeven(q(false, 1, (1u128 << 111) | (1u128 << 110)), &F128), q(false, 2, 0)); // 3.5 -> 4
+    assert_eq!(roundeven(q(true, -1, 0), &F128), 1u128 << 127); // -0.5 -> -0
+    assert_eq!(roundeven(q(false, 0, half), &F128), two); // 1.5 -> 2
+    assert_eq!(fmaximum(one, three, &F128), three);
+    assert_eq!(fminimum(one, three, &F128), one);
+    assert_eq!(fmaximum(1u128 << 127, 0, &F128), 0);
+    assert_eq!(fminimum(0, 1u128 << 127, &F128), 1u128 << 127);
+    let nan = q(false, 16384, half);
+    assert_eq!(fmaximum(one, nan, &F128) >> 111, nan >> 111);
+    assert_eq!(fminimum(nan, one, &F128) >> 111, nan >> 111);
+}
