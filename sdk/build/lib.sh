@@ -43,6 +43,7 @@ sdk_remap_flags() {
     [ "$HOME" = "$SDK_REAL_HOME" ] || echo "--remap-path-prefix=$HOME=/home"
     echo "--remap-path-prefix=$rustup_home=/rustup"
     echo "--remap-path-prefix=$cargo_home=/cargo"
+    echo "--remap-path-prefix=$SDK_RUST_SYSROOT=/rust-sysroot"
     echo "--remap-path-prefix=$SDK_RUST_SYSROOT/lib/rustlib/src/rust=/rustc/$SDK_RUSTC_COMMIT"
     echo "--remap-path-prefix=$SDK_ROOT=/breenix-sdk"
     [ "$SDK_ROOT_REAL" = "$SDK_ROOT" ] || echo "--remap-path-prefix=$SDK_ROOT_REAL=/breenix-sdk"

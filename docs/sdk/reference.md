@@ -81,11 +81,30 @@ the template defines `main(argc, argv)` and a panic handler. libbreenix supplies
 
 `breenix-image install --image IMG [--mode OCTAL] [--name NAME] FILE` installs an
 ELF into `/usr/local/bin`, owned by root, with mode 0755 by default. It replaces
-an existing installation of that name. `breenix-image list --image IMG` lists
+an existing SDK installation of that name; unmanaged files are refused. `breenix-image list --image IMG` lists
 SDK installations; `breenix-image remove --image IMG NAME` removes one. The tool
 refuses the wrong ELF architecture and dynamic executables. Work on a copy of
 the image and stop its VM before editing it. See [disk-image.md](disk-image.md)
 for image-tool details.
+
+## Obtain a base image
+
+Base images are currently built from a separate Breenix checkout; they are not
+bundled in the SDK or published as standalone downloads. On macOS this step
+requires Docker Desktop running. Set `BREENIX_CHECKOUT` to that checkout's
+absolute path and select `BREENIX_ARCH=aarch64` or `x86_64`:
+
+```sh
+export CARGO_BUILD_JOBS=4
+taskpolicy -b "$BREENIX_CHECKOUT/userspace/programs/build.sh" --arch "$BREENIX_ARCH"
+taskpolicy -b "$BREENIX_CHECKOUT/scripts/create_ext2_disk.sh" --arch "$BREENIX_ARCH"
+```
+
+On Linux omit `taskpolicy -b`. Copy `target/ext2-aarch64.img` (ARM64) or
+`target/ext2.img` (x86-64) from that checkout to a writable image of your own
+and set `BREENIX_IMAGE` to its absolute path. The image contains the base
+userspace and shell configuration; the launcher builds the matching kernel.
+Application creation and compilation still require only the installed SDK.
 
 ## Run an installed program
 
@@ -105,7 +124,7 @@ path and `BREENIX_IMAGE` to the edited image's absolute path:
 | VMware | `"$BREENIX_CHECKOUT/run.sh" --vmware --disk "$BREENIX_IMAGE"` |
 
 Run VM boots at normal priority, one Mac VM at a time through the launcher's
-shared boot slot. At the Breenix shell use `/usr/local/bin/NAME` or `NAME` with
-`/usr/local/bin` on PATH. The quick start installs `hello-breenix`, which prints
+shared boot slot. At the Breenix shell use `NAME`; the base image puts `/usr/local/bin` on PATH.
+`/usr/local/bin/NAME` also works. The quick start installs `hello-breenix`, which prints
 `hello from hello-breenix` and exits 0. The application directory, compiler inputs
 and build process remain independent of this checkout.

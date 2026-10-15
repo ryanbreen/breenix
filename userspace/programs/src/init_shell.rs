@@ -450,7 +450,7 @@ fn builtin_fg(arg: &str) {
 // PATH-based command resolution
 // ============================================================================
 
-const DEFAULT_PATH: &str = "/bin:/sbin:/usr/local/cbin";
+const DEFAULT_PATH: &str = "/bin:/sbin:/usr/local/bin:/usr/local/cbin";
 
 /// Resolve a command name to a full filesystem path by searching $PATH.
 /// Returns a null-terminated byte vector suitable for execve, or None if not found.

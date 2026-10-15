@@ -248,6 +248,7 @@ except (OSError, ValueError) as error:
     sys.exit('--disk: ' + str(error))
 PYDISK
     ) || exit 2
+    python3 "$BREENIX_ROOT/scripts/ext2-machine.py" "$DISK_OVERRIDE" "$ARCH" || exit 2
     if [ "$BTRT" = true ]; then
         echo "--disk cannot be combined with --btrt"
         exit 2
@@ -256,10 +257,10 @@ fi
 
 # Builds run at background priority; VM execution retains normal priority.
 run_build() {
-    if [ "$(uname)" = Darwin ]; then
-        CARGO_BUILD_JOBS=4 taskpolicy -b "$@"
+    if [ -n "$DISK_OVERRIDE" ] && [ "$(uname)" = Darwin ]; then
+        taskpolicy -b "$@"
     else
-        CARGO_BUILD_JOBS=4 "$@"
+        "$@"
     fi
 }
 

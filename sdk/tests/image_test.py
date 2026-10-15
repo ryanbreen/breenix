@@ -19,9 +19,9 @@ DEBUGFS = image_tool.debugfs_tool()
 SBIN = Path(DEBUGFS).parent
 
 
-def elf(machine=183, interp=False, payload=b''):
+def elf(machine=183, interp=False, payload=b'', kind=2):
     header = struct.pack('<16sHHIQQQIHHHHHH', b'\x7fELF\x02\x01\x01' + bytes(9),
-                         2, machine, 1, 0x400000, 64, 0, 0, 64, 56, 1, 0, 0, 0)
+                         kind, machine, 1, 0x400000, 64, 0, 0, 64, 56, 1, 0, 0, 0)
     return header + struct.pack('<IIQQQQQQ', 3 if interp else 1, 5, 0, 0x400000, 0x400000,
                                 120 + len(payload), 120 + len(payload), 4096) + payload
 
@@ -53,6 +53,10 @@ class ImageTests(unittest.TestCase):
                                  '--image', str(self.disk), *map(str, args[1:])],
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode == 0, ok, result.stdout + result.stderr)
+        if not ok:
+            self.assertNotIn('Traceback', result.stderr)
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertTrue(result.stderr.startswith('breenix-image: '), result.stderr)
         self.fsck()
         return result
 
@@ -82,16 +86,68 @@ class ImageTests(unittest.TestCase):
 
     def test_refusals_preserve_entire_image(self):
         before = self.digest()
-        for data in (b'not ELF', elf(62), elf(interp=True), elf()[:90]):
+        for data, diagnostic in ((b'not ELF', 'expected a little-endian ELF64'),
+                                 (elf(62), 'wrong architecture'),
+                                 (elf(interp=True), 'PT_INTERP'),
+                                 (elf(kind=3), 'executable ELF'),
+                                 (elf()[:90], 'invalid ELF program header table')):
             self.app.write_bytes(data)
-            self.run_tool('install', self.app, ok=False)
+            result = self.run_tool('install', self.app, ok=False)
+            self.assertIn(diagnostic, result.stderr)
             self.assertEqual(self.digest(), before)
-        self.run_tool('remove', 'missing', ok=False)
+        result = self.run_tool('remove', 'missing', ok=False)
+        self.assertIn('program is not installed: missing', result.stderr)
         self.assertEqual(self.digest(), before)
         self.app.write_bytes(elf())
-        self.run_tool('install', '--name', '../escape', self.app, ok=False)
-        self.run_tool('install', '--mode', '0899', self.app, ok=False)
+        result = self.run_tool('install', '--name', '../escape', self.app, ok=False)
+        self.assertIn('name must be a filename', result.stderr)
         self.assertEqual(self.digest(), before)
+
+    def test_invalid_octal_is_an_argument_error(self):
+        before = self.digest()
+        result = subprocess.run([sys.executable, str(ROOT / 'sdk/libexec/image.py'), 'install',
+                                 '--image', str(self.disk), '--mode', '0899', str(self.app)],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('mode must be three or four octal digits', result.stderr)
+        self.assertNotIn('Traceback', result.stderr)
+        self.assertEqual(self.digest(), before)
+
+    def test_unmanaged_regular_file_and_directory_metadata_preserved(self):
+        view = self.view()
+        view.mkdirs('/usr/local/bin')
+        view.command('sif /usr/local/bin mode 040750', write=True)
+        view.command('sif /usr/local/bin uid 23', write=True)
+        view.write('/usr/local/bin/hello', b'unmanaged', 0o700)
+        before = self.digest()
+        result = self.run_tool('install', self.app, ok=False)
+        self.assertIn('refusing to replace an unmanaged file', result.stderr)
+        self.assertEqual(self.digest(), before)
+        directory = view.stat('/usr/local/bin')
+        self.run_tool('install', '--name', 'other', self.app)
+        after = view.stat('/usr/local/bin')
+        self.assertIn('Mode:  0750', after)
+        self.assertIn('User:    23', after)
+        self.assertEqual(directory.split()[1], after.split()[1])
+
+    def test_host_metadata_hard_links_and_special_host_paths(self):
+        self.disk = self.disk.rename(self.root / 'disk \"quoted".ext2')
+        os.chmod(self.disk, 0o640)
+        if hasattr(os, 'setxattr'):
+            key = 'com.breenix.sdk-test' if sys.platform == 'darwin' else 'user.breenix-sdk-test'
+            os.setxattr(self.disk, key, b'keep me')
+        before = self.disk.stat()
+        self.run_tool('install', self.app)
+        after = self.disk.stat()
+        self.assertEqual((after.st_uid, after.st_gid, after.st_mode),
+                         (before.st_uid, before.st_gid, before.st_mode))
+        if hasattr(os, 'getxattr'):
+            self.assertEqual(os.getxattr(self.disk, key), b'keep me')
+        os.link(self.disk, self.root / 'alias')
+        digest = self.digest()
+        result = self.run_tool('remove', 'hello', ok=False)
+        self.assertIn('hard-linked image', result.stderr)
+        self.assertEqual(self.digest(), digest)
 
     def test_no_existing_directory_inode_leaks(self):
         self.run_tool('install', self.app)

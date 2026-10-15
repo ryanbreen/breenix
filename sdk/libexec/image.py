@@ -46,7 +46,9 @@ def quote(value):
     value = str(value)
     if any(ord(c) < 32 or ord(c) == 127 for c in value):
         raise ImageError('control characters are not allowed in paths')
-    return '"' + value.replace('\\', '\\\\').replace('"', '\\"') + '"'
+    if '"' in value:
+        raise ImageError('double quotes are not allowed in guest paths')
+    return '"' + value + '"'
 
 
 def name_checked(value):
@@ -60,7 +62,7 @@ def elf_machine(data, program=True):
     if len(data) < 64 or data[:7] != b'\x7fELF\x02\x01\x01':
         raise ImageError('expected a little-endian ELF64 program')
     kind, machine, version = struct.unpack_from('<HHI', data, 16)
-    if kind not in (2, 3) or machine not in MACHINES or version != 1:
+    if kind != 2 or machine not in MACHINES or version != 1:
         raise ImageError('expected an aarch64 or x86_64 executable ELF')
     phoff = struct.unpack_from('<Q', data, 32)[0]
     ehsize, phsize, phnum = struct.unpack_from('<HHH', data, 52)
@@ -77,9 +79,9 @@ class Image:
     def __init__(self, path, directory, tool):
         self.path, self.directory, self.tool = path, directory, tool
 
-    def command(self, command, write=False, missing=False):
+    def command(self, command, write=False, missing=False, cwd=None):
         result = subprocess.run([self.tool, *(['-w'] if write else []), '-R', command, str(self.path)],
-                                capture_output=True, text=True)
+                                capture_output=True, text=True, cwd=cwd)
         # debugfs often exits zero even when the requested operation failed.
         errors = [line for line in result.stderr.splitlines()
                   if line and not line.startswith('debugfs ')]
@@ -95,7 +97,7 @@ class Image:
     def read(self, path):
         with tempfile.TemporaryDirectory(dir=self.directory) as scratch:
             output = Path(scratch) / 'contents'
-            self.command('dump ' + quote(path) + ' ' + quote(output))
+            self.command('dump ' + quote(path) + ' contents', cwd=scratch)
             if not output.is_file():
                 raise ImageError('could not read back ' + path)
             return output.read_bytes()
@@ -133,7 +135,7 @@ class Image:
         with tempfile.TemporaryDirectory(dir=self.directory) as scratch:
             source = Path(scratch) / 'contents'
             source.write_bytes(data)
-            self.command('write ' + quote(source) + ' ' + quote(path), write=True)
+            self.command('write contents ' + quote(path), write=True, cwd=scratch)
         self.metadata(path, 0o100000 | mode)
         if self.read(path) != data:
             raise ImageError('read-back differs from the input: ' + path)
@@ -189,18 +191,20 @@ def operate(args):
                 raise ImageError('wrong architecture: program is ' + MACHINES[machine]
                                  + ', image is ' + MACHINES[disk_machine])
         names = disk.installed()
+        if path.stat().st_nlink != 1:
+            raise ImageError('refusing to replace a hard-linked image; use an independent copy')
+        if data is not None and name not in names and disk.stat(BINDIR + '/' + name) is not None:
+            raise ImageError('refusing to replace an unmanaged file: ' + name)
         if args.action == 'remove' and name not in names:
             raise ImageError('program is not installed: ' + name)
         # Publish only a fully verified edit. Failed operations leave the original
         # byte-identical, including allocation metadata and the registry.
         staged = Path(directory) / 'image'
-        shutil.copyfile(path, staged)
-        shutil.copymode(path, staged)
+        shutil.copy2(path, staged)
         disk.path = staged
         destination = BINDIR + '/' + name
         if data is not None:
             disk.mkdirs(BINDIR)
-            disk.metadata(BINDIR, 0o40755)
             disk.write(destination, data, args.mode)
             names.add(name)
         else:
@@ -211,7 +215,22 @@ def operate(args):
                 raise ImageError('program still exists after removal: ' + name)
             names.remove(name)
         disk.registry(names)
+        # Preserve host ownership and extended attributes; refuse unsupported metadata
+        # copying rather than quietly discarding it. Publication changes the inode.
+        original = path.stat()
+        os.chown(staged, original.st_uid, original.st_gid)
+        shutil.copystat(path, staged)
+        if hasattr(os, 'listxattr'):
+            for key in os.listxattr(path):
+                os.setxattr(staged, key, os.getxattr(path, key))
+        with staged.open('rb') as handle:
+            os.fsync(handle.fileno())
         os.replace(staged, path)
+        parent = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(parent)
+        finally:
+            os.close(parent)
 
 
 def octal(value):

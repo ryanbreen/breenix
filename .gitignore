@@ -17,9 +17,9 @@
 Cargo.lock
 
 # Build directories
-build/
-# The SDK's build sources (scripts/build-sdk.sh)
-!/sdk/build/
+/build/
+/userspace/**/build/
+__pycache__/
 
 # Worktree directories
 .worktrees/

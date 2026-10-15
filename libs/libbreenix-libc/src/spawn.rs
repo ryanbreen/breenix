@@ -39,6 +39,14 @@ pub struct FileActions {
     tail: *mut Action,
 }
 
+// Both supported targets use the same LP64 C ABI. Keep spawn.h storage stable.
+const _: () = {
+    assert!(core::mem::size_of::<Attr>() == 32);
+    assert!(core::mem::align_of::<Attr>() == 8);
+    assert!(core::mem::size_of::<FileActions>() == 16);
+    assert!(core::mem::align_of::<FileActions>() == 8);
+};
+
 struct Action {
     next: *mut Action,
     kind: Kind,
@@ -97,7 +105,7 @@ pub unsafe extern "C" fn posix_spawnattr_getflags(attr: *const Attr, value: *mut
 }
 #[no_mangle]
 pub unsafe extern "C" fn posix_spawnattr_setflags(attr: *mut Attr, value: i16) -> i32 {
-    if value & !FLAGS != 0 || value & (SETSID | SETPGROUP) == (SETSID | SETPGROUP) {
+    if value & !FLAGS != 0 {
         return EINVAL;
     }
     (*attr).flags = value;

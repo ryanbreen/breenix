@@ -175,7 +175,8 @@ for dir in "$SDK_STAGE/bin" "$SDK_STAGE/share/breenix-sdk/libexec"; do
 done
 
 # No file may name the build's directories, the checkout, the Rust fork or the home.
-python3 - "$SDK_STAGE" "$ROOT_DIR" "$ROOT_REAL" "$CHECKOUT" "$FORK" "$HOME" "$REAL_HOME" <<'PY' || die "the SDK names local paths"
+python3 - "$SDK_STAGE" "$ROOT_DIR" "$ROOT_REAL" "$CHECKOUT" "$FORK" "$HOME" "$REAL_HOME" \
+    "${RUSTUP_HOME:-$REAL_HOME/.rustup}" "${CARGO_HOME:-$REAL_HOME/.cargo}" "$RUST_SYSROOT" <<'PY' || die "the SDK names local paths"
 import sys
 from pathlib import Path
 stage, needles = Path(sys.argv[1]), sorted({n.encode() for n in sys.argv[2:] if n not in ('', '/')})

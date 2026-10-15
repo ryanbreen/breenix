@@ -5,7 +5,9 @@ filesystem image itself, not a partitioned disk or a mounted filesystem. Stop
 any VM using it and keep a backup. The tool needs Python 3.9 or newer and
 e2fsprogs debugfs. It searches `BREENIX_DEBUGFS`, Homebrew's e2fsprogs keg,
 `/sbin`, `/usr/sbin`, then PATH. Keep enough host space for one image copy:
-edits publish atomically after verification.
+edits publish atomically after verification and fsync. Host ownership, permissions
+and extended attributes are preserved. Atomic publication changes the image inode;
+hard-linked images are refused, so first make an independent copy.
 
 ## Install
 
@@ -17,11 +19,12 @@ This installs the static ELF as `/usr/local/bin/my-app`, with mode 0755 and
 owner root:root. `--name NAME` selects a different destination basename;
 `--mode OCTAL` selects permissions, for example `--mode 0700`. Names must be
 single basenames, not paths. Missing installation directories are created with
-mode 0755 and owner root:root. Reinstalling replaces an existing regular file.
+mode 0755 and owner root:root. Reinstalling replaces an existing SDK-managed regular file; unmanaged files
+are refused. Existing directory ownership and permissions are preserved.
 
 The tool reads back installed bytes and metadata before publishing the edit.
 It derives the disk's architecture from `/bin/busybox` and refuses a non-ELF,
-wrong-architecture ELF or executable containing `PT_INTERP` without changing
+wrong-architecture ELF, ET_DYN image or executable containing `PT_INTERP` without changing
 the image. ARM64 programs work on ARM64 QEMU, Parallels and VMware images;
 x86-64 programs need an x86-64 image.
 

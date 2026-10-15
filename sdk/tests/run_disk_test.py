@@ -19,6 +19,7 @@ class SuppliedDiskTests(unittest.TestCase):
         for directory in ('scripts', 'docker/qemu/lib', 'target/aarch64-breenix-kernel/release',
                           'target/release/build/breenix-test/out', 'target/ovmf/x64', 'bin'):
             (self.root / directory).mkdir(parents=True)
+        shutil.copyfile(ROOT / 'scripts/ext2-machine.py', self.root / 'scripts/ext2-machine.py')
         (self.root / 'scripts/host-slots.sh').write_text('''
 host_slots_start() { :; }
 host_slot_acquire() { :; }
@@ -52,7 +53,7 @@ print(tempfile.mkdtemp(dir=Path.cwd()))
 ''')
         self.write_tool('cargo', '''import os
 from pathlib import Path
-assert os.environ['CARGO_BUILD_JOBS'] == '4'
+assert os.environ['CARGO_BUILD_JOBS'] == '3'
 Path('build-called').write_text('yes')
 ''')
         self.write_tool('taskpolicy', '''import os, sys
@@ -68,7 +69,10 @@ assert any('file=' + str(session.resolve()) in arg for arg in sys.argv)
 session.write_bytes(b'VM writes go to the session copy')
 Path('vm-called').write_text('yes')
 ''')
-        self.env = {**os.environ, 'PATH': str(self.root / 'bin') + ':' + os.environ['PATH']}
+        self.write_tool('debugfs', '''import os, struct, sys
+sys.stdout.buffer.write(b'\\x7fELF\\x02\\x01\\x01' + bytes(11) + struct.pack('<H', int(os.environ.get('TEST_MACHINE', '183'))) + bytes(44))
+''')
+        self.env = {**os.environ, 'CARGO_BUILD_JOBS': '3', 'BREENIX_DEBUGFS': str(self.root / 'bin/debugfs'), 'PATH': str(self.root / 'bin') + ':' + os.environ['PATH']}
 
     def tearDown(self):
         self.temp.cleanup()
@@ -85,6 +89,7 @@ Path('vm-called').write_text('yes')
     def test_supplied_image_skips_userspace_and_preserves_source(self):
         for arch in ('--arm64', '--x86'):
             with self.subTest(arch=arch):
+                self.env['TEST_MACHINE'] = '62' if arch == '--x86' else '183'
                 result = self.run_runner(arch, '--headless', '--no-audio', '--disk', str(self.source))
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertTrue((self.root / 'build-called').is_file())
@@ -98,6 +103,14 @@ Path('vm-called').write_text('yes')
         self.assertFalse((self.root / 'build-called').exists())
         self.assertTrue((self.root / 'vm-called').is_file())
         self.assertEqual(hashlib.sha256(self.source.read_bytes()).digest(), self.original)
+
+    def test_wrong_architecture_fails_before_build_or_vm(self):
+        self.env['TEST_MACHINE'] = '62'
+        result = self.run_runner('--arm64', '--disk', str(self.source))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('wrong architecture', result.stderr)
+        self.assertFalse((self.root / 'build-called').exists())
+        self.assertFalse((self.root / 'vm-called').exists())
 
     def test_bad_image_fails_before_build_or_vm(self):
         self.source.write_bytes(b'not an ext2 image')
