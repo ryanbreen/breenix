@@ -834,15 +834,16 @@ fn widgets_label_clip() -> CaseResult {
     g.reset(PAPER);
     Label::new(Rect::new(10, 8, 35, 7), b"ABCDEFGHIJKLM").draw(&mut g.fb(), &theme);
     same_as(&g, PAPER, "35-pixel clipped label", "14.3", |fb| {
-        font5x7::draw_text(fb, b"ABC...", 10, 8, theme.text_primary, 1)
+        font5x7::draw_text(fb, b"ABC...", 10, 8, theme.text_primary, 1);
     })?;
-    g.reset(PAPER);
-    Label::new(Rect::new(10, 8, 12, 3), b"ABCDEFGHIJKLM").draw(&mut g.fb(), &theme);
+    let mut narrow = Guarded::bgrx(80, 40);
+    narrow.reset(PAPER);
+    Label::new(Rect::new(10, 8, 12, 7), b"ABCDEFGHIJKLM").draw(&mut narrow.fb(), &theme);
     for y in 0..40 {
         for x in 0..80 {
-            if !in_rect(x as i64, y as i64, 10, 8, 12, 3) {
+            if !in_rect(x as i64, y as i64, 10, 8, 12, 7) {
                 ensure(
-                    g.color(x, y) == PAPER,
+                    narrow.color(x, y) == PAPER,
                     "14.3",
                     format!("small label wrote outside bounds at {x},{y}"),
                 )?;
@@ -850,9 +851,28 @@ fn widgets_label_clip() -> CaseResult {
         }
     }
     ensure(
-        drawn_pixels(&g, PAPER) > 0,
+        drawn_pixels(&narrow, PAPER) > 0,
         "14.3",
         "small label drew no visible ellipsis",
+    )?;
+    // Operator ruling 2026-10-15: the narrow scene includes the dot rows;
+    // its clipped third dot has no ink inside the twelve-pixel width.
+    same_as(&narrow, PAPER, "12x7 ellipsis", "14.3", |fb| {
+        font5x7::draw_text(fb, b"..", 10, 8, theme.text_primary, 1);
+    })?;
+    narrow.reset(PAPER);
+    Label::new(Rect::new(10, 8, 12, 3), b"ABCDEFGHIJKLM").draw(&mut narrow.fb(), &theme);
+    ensure(
+        drawn_pixels(&narrow, PAPER) == 0,
+        "14.3",
+        "clip above dot rows drew ink",
+    )?;
+    same_as(
+        &narrow,
+        PAPER,
+        "12x3 clip above the dot rows",
+        "14.3",
+        |_| {},
     )?;
     libbreenix::suite::judged(&g.fb())
 }
