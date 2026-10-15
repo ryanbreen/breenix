@@ -93,6 +93,7 @@ use libgfx::diagnostics::{self, Check, CheckState, Group, Live, LiveArea, Panel,
 use libgfx::framebuf::FrameBuf;
 
 use crate::error::Error;
+pub use crate::suite_spawn::{spawn, Keep, Run};
 use crate::fs;
 use crate::io::{self, poll_events, status_flags, PollFd};
 use crate::process::{self, ForkResult, WNOHANG};

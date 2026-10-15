@@ -428,6 +428,8 @@ STD_BINARIES=(
     "suite-utilities"
     "suite-sdk"
     "suite-breengel"
+    "kiosk_test"
+    "raw-window_test"
     "files-io-exec_test"
     "processes-exec_test"
     "rust-std-child_test"
