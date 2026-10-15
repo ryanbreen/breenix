@@ -39,6 +39,14 @@ fn main() {
         println!("{}", profile.cpus());
         return;
     }
+    // Launcher preflight: fetch the pinned OVMF firmware into target/ovmf and stop.
+    if env::var("BREENIX_FETCH_OVMF").ok().as_deref() == Some("1") {
+        if let Err(error) = Prebuilt::fetch(Source::LATEST, "target/ovmf") {
+            eprintln!("[qemu-uefi] OVMF fetch failed: {error}");
+            process::exit(1);
+        }
+        return;
+    }
     // Allow overriding OVMF firmware paths via environment for CI/DEBUG builds
     let ovmf_code = if let Ok(path) = env::var("BREENIX_OVMF_CODE_PATH") {
         let p = PathBuf::from(path);

@@ -1,42 +1,31 @@
 {
   "name": "breenix-skills",
   "owner": {
-    "name": "Ryan Breen",
-    "email": "ryan@breen.com"
+    "name": "Breenix"
   },
   "metadata": {
-    "description": "Breenix OS kernel development skills for debugging, testing, CI/CD, and code quality",
-    "version": "1.1.0"
+    "description": "Breenix OS kernel development skills for debugging, testing and code quality",
+    "version": "1.2.0"
   },
   "plugins": [
     {
-      "name": "breenix-ci",
-      "description": "GitHub Actions CI/CD workflows: authoring, optimization, and failure analysis for kernel testing",
-      "source": "./",
-      "strict": false,
-      "skills": [
-        "./breenix-github-workflow-authoring",
-        "./breenix-ci-failure-analysis"
-      ]
-    },
-    {
       "name": "breenix-development",
-      "description": "Core kernel development: fast debug loops, log analysis, systematic debugging, code quality checks, memory debugging, boot analysis, legacy migration, and advanced debugging tools",
+      "description": "Core kernel development: fast debug loops, log analysis, systematic debugging, code quality checks, memory debugging, boot analysis, and advanced debugging tools",
       "source": "./",
       "strict": false,
       "skills": [
-        "./breenix-kernel-debug-loop",
-        "./breenix-log-analysis",
-        "./breenix-systematic-debugging",
-        "./breenix-code-quality-check",
-        "./breenix-memory-debugging",
-        "./breenix-boot-analysis",
-        "./breenix-legacy-migration",
-        "./breenix-interrupt-trace",
-        "./breenix-gdb-attach",
-        "./breenix-register-watch",
-        "./breenix-qemu-debug-session",
-        "./breenix-interrupt-syscall-development"
+        "./.agents/skills/breenix-kernel-debug-loop",
+        "./.agents/skills/breenix-log-analysis",
+        "./.agents/skills/breenix-systematic-debugging",
+        "./.agents/skills/breenix-code-quality-check",
+        "./.agents/skills/breenix-memory-debugging",
+        "./.agents/skills/breenix-boot-analysis",
+        "./.agents/skills/breenix-interrupt-trace",
+        "./.agents/skills/breenix-gdb-attach",
+        "./.agents/skills/breenix-gdb-chat",
+        "./.agents/skills/breenix-register-watch",
+        "./.agents/skills/breenix-qemu-debug-session",
+        "./.agents/skills/breenix-interrupt-syscall-development"
       ]
     },
     {
@@ -45,7 +34,7 @@
       "source": "./",
       "strict": false,
       "skills": [
-        "./breenix-integration-test-authoring"
+        "./.agents/skills/breenix-integration-test-authoring"
       ]
     }
   ]

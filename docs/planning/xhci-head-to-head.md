@@ -4,7 +4,7 @@
 
 | | Linux Module | Breenix Driver |
 |---|---|---|
-| **Location** | `linux_xhci_module/breenix_xhci_probe.c` | `kernel/src/drivers/usb/xhci.rs` |
+| **Location** | `tools/linux-xhci-probe/breenix_xhci_probe.c` | `kernel/src/drivers/usb/xhci.rs` |
 | **Platform** | linux-probe VM (Alpine ARM64) | breenix-dev VM (Breenix ARM64) |
 | **M1-M10** | All PASS | All PASS |
 | **M11 (Event Delivery)** | PASS — HID reports received via MSI | FAIL — CC=12, all endpoints Halted |

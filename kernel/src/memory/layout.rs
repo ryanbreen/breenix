@@ -474,7 +474,7 @@ pub fn is_valid_user_address(addr: u64) -> bool {
 /// it structurally cannot admit a kernel address regardless of where the
 /// per-boot kernel PIE relocation lands (x86_64 has been observed to pick
 /// more than one base across otherwise-identical boots -- see #739 /
-/// `breenix-gdb-chat/scripts/gdb_chat.py`'s `KERNEL_BASE_X86` comment).
+/// `tools/gdb-chat/scripts/gdb_chat.py`'s `KERNEL_BASE_X86` comment).
 ///
 /// A range that spans two regions (e.g. straddling the code/data-to-mmap
 /// gap) is rejected, not merged -- deliberately conservative: no legitimate

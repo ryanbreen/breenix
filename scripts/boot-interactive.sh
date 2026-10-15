@@ -10,7 +10,8 @@
 #   Suite mode observes DONE, holds the panel briefly, then exits with its verdict.
 #   --mode MODE          tests (default): the testing kernel and its test loader
 #                        probe | shell | desktop | program | suite: the production kernel, told the mode
-#                        via -fw_cfg name=opt/breenix/mode (see "Boot modes" in docs/boot-path.md)
+#                        via -fw_cfg name=opt/breenix/mode (see "Boot modes" in docs/boot-path.md);
+#                        desktop's window manager needs VirGL, which this QEMU GPU lacks, so it exits here
 #   --program PATH       for --mode program: the absolute guest path /sbin/probe runs (probe --run PATH)
 #   --suite ID           for --mode suite: the effort suite (docs/suites/ID.json) run as PID 1, /sbin/suite-ID
 #   --qmp SOCKET         open a QMP socket so another process can screenshot the VM screen:
