@@ -11,7 +11,7 @@
 # together with the pinned Rust library from BREENIX_RUST_FORK_LIBRARY (default:
 # rust-fork/library), a git checkout holding the pin or a verified snapshot. A fixed root
 # keeps cargo's path-derived crate hashes, and so the output, identical across checkouts.
-# The stages in sdk/build/stages/ then fill <root>/stage in order, the result is normalized
+# The stages in sdk/builder/stages/ then fill <root>/stage in order, the result is normalized
 # and scanned for local paths, and it is moved to DIR.
 #
 # Host prerequisites: git, bash, python3 >= 3.9, rustup with the toolchain named by
@@ -111,7 +111,7 @@ echo "build-sdk: breenix-sdk $VERSION $COMMIT, toolchain $SDK_TOOLCHAIN, Rust li
 SOURCES=""
 for path in libs userspace/programs/linker.ld aarch64-breenix.json x86_64-breenix.json \
             x86_64-breenix-c.json rust-fork.toml rust-toolchain.toml sdk docs/sdk \
-            scripts/libc-clean-archive.py; do
+            scripts/libc-clean-archive.py scripts/libc-symbol-audit.py scripts/breenix-cc; do
     if git -C "$CHECKOUT" cat-file -e "HEAD:$path" 2>/dev/null; then
         SOURCES="$SOURCES $path"
     fi
@@ -202,7 +202,19 @@ export SDK_ROOT="$ROOT_DIR" SDK_ROOT_REAL="$ROOT_REAL" SDK_STAGE SDK_COMMIT="$CO
     SDK_TOOLCHAIN SDK_LLVM_TOOLS SDK_RUSTC_COMMIT="$RUSTC_COMMIT" SDK_RUST_SYSROOT="$RUST_SYSROOT" \
     SDK_FORK_COMMIT="$FORK_COMMIT" SDK_REAL_HOME="$REAL_HOME" SDK_REAL_CARGO_HOME="$REAL_CARGO_HOME"
 
-for stage in "$ROOT_DIR"/sdk/build/stages/*.sh; do
+# Verify that rustc applies the same remaps used by every build stage.
+. "$ROOT_DIR/sdk/builder/lib.sh"
+printf '%s\n' '#[no_mangle] pub static SDK_REMAP_PROBE: &str = file!();' > "$ROOT_DIR/remap-probe.rs"
+REMAP_ARGS=()
+while IFS= read -r flag; do REMAP_ARGS+=("$flag"); done < <(sdk_remap_flags)
+rustc --crate-type lib --emit=obj "${REMAP_ARGS[@]}" "$ROOT_DIR/remap-probe.rs" -o "$ROOT_DIR/remap-probe.o"
+python3 - "$ROOT_DIR/remap-probe.o" <<'PYREMAP' || die "rustc did not apply source path remapping"
+import sys
+from pathlib import Path
+assert b'/breenix-sdk/remap-probe.rs' in Path(sys.argv[1]).read_bytes()
+PYREMAP
+
+for stage in "$ROOT_DIR"/sdk/builder/stages/*.sh; do
     echo "build-sdk: stage $(basename "$stage")"
     (cd "$ROOT_DIR" && bash "$stage") || die "stage $(basename "$stage") failed"
 done
@@ -215,7 +227,7 @@ for dir in "$SDK_STAGE/bin" "$SDK_STAGE/share/breenix-sdk/libexec"; do
 done
 
 # No file may name the build's directories, the checkout, the Rust fork or the home.
-python3 - "$SDK_STAGE" "$ROOT_DIR" "$ROOT_REAL" "$CHECKOUT" "$FORK" "$HOME" "$REAL_HOME" <<'PY' || die "the SDK names local paths"
+python3 - "$SDK_STAGE" "$ROOT_DIR" "$ROOT_REAL" "$CHECKOUT" "$FORK" "$HOME" "$REAL_HOME" "${CARGO_HOME:-$REAL_HOME/.cargo}" "${RUSTUP_HOME:-$REAL_HOME/.rustup}" "$RUST_SYSROOT" <<'PY' || die "the SDK names local paths"
 import sys
 from pathlib import Path
 stage, needles = Path(sys.argv[1]), sorted({n.encode() for n in sys.argv[2:] if n not in ('', '/')})

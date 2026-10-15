@@ -16,6 +16,8 @@ int cmd_stderr(int argc, char **argv);
 int cmd_files(int argc, char **argv);
 int cmd_dirs(int argc, char **argv);
 int cmd_fork_wait(int argc, char **argv);
+int cmd_spawn(int argc, char **argv);
+int cmd_spawn_child(int argc, char **argv);
 int cmd_exec(int argc, char **argv);
 int cmd_pipe(int argc, char **argv);
 int cmd_signal_handler(int argc, char **argv);

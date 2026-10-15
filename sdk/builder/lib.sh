@@ -1,6 +1,6 @@
-# Helpers for the SDK build's stages (sdk/build/stages/*.sh). Each stage sources this file:
+# Helpers for the SDK build's stages (sdk/builder/stages/*.sh). Each stage sources this file:
 #
-#   . "$SDK_ROOT/sdk/build/lib.sh"
+#   . "$SDK_ROOT/sdk/builder/lib.sh"
 #
 # scripts/build-sdk.sh runs every stage from the build root with these set:
 #   SDK_ROOT         the build root, holding the commit's sources and rust-fork/library

@@ -25,6 +25,18 @@ typedef struct {
     void *__tail;
 } posix_spawn_file_actions_t;
 
+/* The sizes and offsets libc's src/spawn.rs asserts for the same two objects. */
+#if defined(__cplusplus)
+#define __BREENIX_SPAWN_ASSERT static_assert
+#else
+#define __BREENIX_SPAWN_ASSERT _Static_assert
+#endif
+__BREENIX_SPAWN_ASSERT(sizeof(posix_spawnattr_t) == 32, "spawn attr ABI size");
+__BREENIX_SPAWN_ASSERT(__builtin_offsetof(posix_spawnattr_t, __sigdefault) == 8, "spawn signal ABI");
+__BREENIX_SPAWN_ASSERT(__builtin_offsetof(posix_spawnattr_t, __schedpolicy) == 28, "spawn scheduler ABI");
+__BREENIX_SPAWN_ASSERT(sizeof(posix_spawn_file_actions_t) == 16, "spawn actions ABI size");
+#undef __BREENIX_SPAWN_ASSERT
+
 #define POSIX_SPAWN_RESETIDS 1
 #define POSIX_SPAWN_SETPGROUP 2
 #define POSIX_SPAWN_SETSIGDEF 4

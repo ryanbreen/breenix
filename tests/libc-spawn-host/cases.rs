@@ -6,6 +6,7 @@ type Invocation = (u64, [u64; 6], Vec<u8>);
 thread_local! {
     static CALLS: RefCell<Vec<Invocation>> = const { RefCell::new(Vec::new()) };
     static RESULTS: RefCell<VecDeque<i64>> = const { RefCell::new(VecDeque::new()) };
+    static ALLOCATION_CALLS: RefCell<usize> = const { RefCell::new(0) };
     static ALLOCATIONS: RefCell<usize> = const { RefCell::new(0) };
 }
 pub mod mock_raw {
@@ -40,6 +41,7 @@ pub mod mock_raw {
     }
 }
 unsafe fn malloc(n: usize) -> *mut u8 {
+    ALLOCATION_CALLS.with(|a| *a.borrow_mut() += 1);
     ALLOCATIONS.with(|a| *a.borrow_mut() += 1);
     let layout = std::alloc::Layout::from_size_align(n + 16, 16).unwrap();
     let p = std::alloc::alloc(layout);
@@ -167,6 +169,7 @@ fn file_actions_copy_paths_preserve_order_and_release_storage() {
 #[test]
 fn invalid_action_descriptors_do_not_append_or_allocate() {
     unsafe {
+        let count = ALLOCATION_CALLS.with(|a| *a.borrow());
         let mut actions = FileActions {
             head: null_mut(),
             tail: null_mut(),
@@ -181,6 +184,8 @@ fn invalid_action_descriptors_do_not_append_or_allocate() {
             EBADF
         );
         assert!(actions.head.is_null());
+        assert_eq!(ALLOCATION_CALLS.with(|a| *a.borrow()), count);
+        assert_eq!(ALLOCATIONS.with(|a| *a.borrow()), 0);
     }
 }
 
@@ -248,6 +253,9 @@ fn parent_restores_mask_and_returns_fork_error_or_waitable_pid() {
         assert_eq!(pid, 99);
         let c = calls();
         assert_eq!(c[0].0, nr::SIGPROCMASK);
+        assert_eq!(c[0].1[0], 2);
+        assert_eq!(c[0].2, u64::MAX.to_ne_bytes());
+        assert_eq!(c[1].0, if cfg!(spawn_aarch64) {220} else {57});
         assert_eq!(c[2].0, nr::SIGPROCMASK);
         assert_eq!(c[2].2, 0x1234u64.to_ne_bytes());
         setup(&[0, 42, 0]);
@@ -279,7 +287,7 @@ fn signal_results(reset_ignored: bool) -> Vec<i64> {
         if sig == 9 || sig == 19 {
             continue;
         }
-        results.push(0);
+        if !(reset_ignored && sig == 12) { results.push(0); }
         if sig == 10 || reset_ignored && sig == 12 {
             results.push(0);
         }
@@ -364,5 +372,49 @@ fn child_failure_exits_127_instead_of_returning_to_application() {
         });
         assert_eq!(*failed.unwrap_err().downcast::<i32>().unwrap(), 127);
         calls();
+    }
+}
+
+#[test]
+fn restore_failure_is_reported_in_release_too() {
+    unsafe {
+        setup(&[0, 42, -22]);
+        let mut pid = 0;
+        assert_eq!(posix_spawn(&mut pid, b"app\0".as_ptr(), null(), null(), null(), null()), 22);
+        assert_eq!(pid, 42);
+        calls();
+    }
+}
+#[test]
+fn identity_session_group_and_scheduler_parameter_attributes() {
+    unsafe {
+        for (flags, expected) in [(SETSID, vec![nr::SETSID]), (SETPGROUP, vec![nr::SETPGID]),
+            (SETSCHEDPARAM, vec![nr::SCHED_SETPARAM]),
+            (RESETIDS, if cfg!(spawn_aarch64) {vec![174,176,143,145]} else {vec![102,104,114,113]})] {
+            let attr = Attr {flags, pgroup: 7, ..Attr::default()};
+            let mut results = vec![0; expected.len()];
+            results.extend(signal_results(false));
+            setup(&results);
+            assert_eq!(attributes(&attr), Ok(()));
+            let c = calls();
+            assert_eq!(c[..expected.len()].iter().map(|c| c.0).collect::<Vec<_>>(), expected);
+            if flags == SETPGROUP { assert_eq!(c[0].1[..2], [0,7]); }
+            if flags == RESETIDS {
+                assert_eq!(c[2].1[..2], [u64::MAX,0]);
+                assert_eq!(c[3].1[..2], [u64::MAX,0]);
+            }
+        }
+    }
+}
+#[test]
+fn open_already_at_target_does_not_duplicate_or_close_it() {
+    unsafe {
+        let mut actions = FileActions {head: null_mut(), tail: null_mut()};
+        assert_eq!(posix_spawn_file_actions_addopen(&mut actions, 3, b"x\0".as_ptr(), 0, 0), 0);
+        setup(&[0,3]);
+        assert_eq!(file_actions(&actions), Ok(()));
+        assert_eq!(calls().iter().map(|c| c.0).collect::<Vec<_>>(), [nr::CLOSE,nr::OPENAT]);
+        posix_spawn_file_actions_destroy(&mut actions);
+        assert_eq!(ALLOCATIONS.with(|a| *a.borrow()), 0);
     }
 }

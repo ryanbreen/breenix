@@ -1,6 +1,6 @@
 # Stage 10, layout (TOOLCHAIN lane): the SDK's directories, VERSION, its settings and the
 # shell code its bin/ entries share.
-. "$SDK_ROOT/sdk/build/lib.sh"
+. "$SDK_ROOT/sdk/builder/lib.sh"
 
 for dir in bin include lib share/breenix-sdk/libexec share/doc/breenix-sdk; do
     mkdir -p "$SDK_STAGE/$dir"

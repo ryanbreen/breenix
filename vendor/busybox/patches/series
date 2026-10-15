@@ -19,3 +19,5 @@ sha-drop-sha512-rotate.patch
 list-drop-installer-paths.patch
 # Warning (-Wstring-plus-int, -Wself-assign): docproc serves only Documentation/docbook, which this build never generates.
 host-drop-docproc.patch
+# free: Breenix provides sysinfo without defining the Linux platform macro.
+free-breenix-sysinfo.patch
