@@ -1,7 +1,8 @@
 //! 5x7 bitmap font rendering (rendered at 2x scale = 10x14 pixels per glyph).
 
 use crate::color::Color;
-use crate::framebuf::FrameBuf;
+use crate::framebuf::{Box64, FrameBuf};
+use crate::work;
 
 /// Character cell width at 1x scale.
 const GLYPH_W: usize = 5;
@@ -113,39 +114,51 @@ fn glyph_for(ch: u8) -> [u8; GLYPH_H] {
     }
 }
 
-/// Draw a single character at (x0, y0) with the given color and scale factor.
-///
-/// At scale=2 (the default used by bounce), each glyph cell is 10x14 pixels,
-/// with 12 pixels horizontal advance (2 pixel gap).
+/// Draw a single character at (x0, y0) with the given color and scale factor
+/// (docs/gui/breengel.md section 8.1): pixel (col, row) of the glyph, when set, is the
+/// `scale × scale` square at `(x0 + col·scale, y0 + row·scale)`. Marks the glyph's
+/// `5·scale × 7·scale` rectangle.
 pub fn draw_char(fb: &mut FrameBuf, ch: u8, x0: usize, y0: usize, color: Color, scale: usize) {
+    if scale == 0 || x0 > i64::MAX as usize || y0 > i64::MAX as usize {
+        return;
+    }
+    let s = scale.min(i32::MAX as usize) as i64;
+    let (x0, y0) = (x0 as i64, y0 as i64);
+    let cell = Box64 { x0, y0, x1: x0.saturating_add(GLYPH_W as i64 * s), y1: y0.saturating_add(GLYPH_H as i64 * s) };
+    let clip = fb.clip_box();
+    if cell.intersect(&clip).is_empty() {
+        return;
+    }
+    let px = fb.opaque(color);
     let glyph = glyph_for(ch);
-    for row in 0..GLYPH_H {
-        let bits = glyph[row];
+    work::add((GLYPH_W * GLYPH_H) as u64);
+    for (row, bits) in glyph.iter().enumerate() {
         for col in 0..GLYPH_W {
             if bits & (0x10 >> col) != 0 {
-                let px = x0 + col * scale;
-                let py = y0 + row * scale;
-                for sy in 0..scale {
-                    for sx in 0..scale {
-                        let xx = px + sx;
-                        let yy = py + sy;
-                        if xx < fb.width && yy < fb.height {
-                            fb.put_pixel(xx, yy, color);
-                        }
+                let x = x0 + col as i64 * s;
+                let y = y0 + row as i64 * s;
+                let b = Box64 { x0: x, y0: y, x1: x + s, y1: y + s }.intersect(&clip);
+                if !b.is_empty() {
+                    work::add(b.height() as u64);
+                    for yy in b.y0..b.y1 {
+                        fb.span(yy as usize, b.x0 as usize, b.x1 as usize, px);
                     }
                 }
             }
         }
     }
+    fb.mark(cell);
 }
 
 /// Draw a string of ASCII bytes at (x, y) with the given color and scale.
 ///
 /// Characters are spaced `(GLYPH_W + 1) * scale` pixels apart.
 pub fn draw_text(fb: &mut FrameBuf, text: &[u8], x: usize, y: usize, color: Color, scale: usize) {
-    let advance = (GLYPH_W + 1) * scale;
+    let advance = (GLYPH_W + 1).saturating_mul(scale);
+    work::add(text.len() as u64);
     for (i, &ch) in text.iter().enumerate() {
-        draw_char(fb, ch, x + i * advance, y, color, scale);
+        let Some(gx) = i.checked_mul(advance).and_then(|dx| x.checked_add(dx)) else { return };
+        draw_char(fb, ch, gx, y, color, scale);
     }
 }
 

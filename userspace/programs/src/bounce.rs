@@ -412,7 +412,7 @@ fn main() {
             (width as usize) * bpp,
             bpp,
             info.is_bgr(),
-        )
+        ).expect("the framebuffer is a valid surface")
     };
 
     println!("Starting bounce spheres demo ({} spheres, {}x{}, mmap)", NUM_SPHERES, width, height);

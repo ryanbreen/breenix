@@ -946,7 +946,7 @@ impl Screen {
             if width == 0 { return None; }
             Some(unsafe {
                 FrameBuf::from_raw(ptr, width as usize, info.height as usize,
-                    (width * info.bytes_per_pixel) as usize, info.bytes_per_pixel as usize, info.is_bgr())
+                    (width * info.bytes_per_pixel) as usize, info.bytes_per_pixel as usize, info.is_bgr()).ok()?
             })
         })();
         let off = std::fs::read_to_string("/etc/breenix/suite-live").is_ok_and(|text| text.trim() == "off");

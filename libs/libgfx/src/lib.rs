@@ -5,7 +5,11 @@
 
 #![no_std]
 
+extern crate alloc;
+
+pub mod alpha;
 pub mod bitmap_font;
+pub mod blit;
 pub mod color;
 pub mod diagnostics;
 pub mod font;
@@ -13,3 +17,4 @@ pub mod framebuf;
 pub mod math;
 pub mod shapes;
 pub mod ttf_font;
+pub mod work;
