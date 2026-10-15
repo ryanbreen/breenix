@@ -585,6 +585,17 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
     let Some((outcome, receipt, thread_id, reported_exit_code, orphaned_groups, signal_wake, terminal_exit)) = locked else {
         return ExitOutcome::Missing;
     };
+    {
+        let (s0, n0) = crate::time::get_monotonic_time_ns();
+        let start = s0 * 1_000_000_000 + n0;
+        loop {
+            let (s1, n1) = crate::time::get_monotonic_time_ns();
+            if s1 * 1_000_000_000 + n1 - start >= 200_000_000 {
+                break;
+            }
+            core::hint::spin_loop();
+        }
+    }
     if let Some(exit) = terminal_exit {
         crate::tty::ctty::finish_exit(exit);
     }
