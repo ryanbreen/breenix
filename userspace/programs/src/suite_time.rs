@@ -21,6 +21,7 @@
 //! reports the quantities it asserts on as VALUE records, and each wait of 100 ms or more
 //! on a sleep or timer as a WAIT record.
 use libbreenix::io;
+use libbreenix::memory::{self, MAP_ANONYMOUS, MAP_SHARED, PROT_READ, PROT_WRITE};
 use libbreenix::process::{self, ForkResult};
 use libbreenix::signal::Sigaction;
 use libbreenix::suite::{case, case_ms_left, category, check, fail, pulses, skip, suite, value, wait_for, CaseError, CaseResult, Suite};
@@ -47,6 +48,7 @@ mod nr {
     pub const GETTIMEOFDAY: u64 = 96;
     pub const GETRUSAGE: u64 = 98;
     pub const SETUID: u64 = 105;
+    pub const SETPGID: u64 = 109;
     pub const RT_SIGPENDING: u64 = 127;
     pub const RT_SIGTIMEDWAIT: u64 = 128;
     pub const TIME: u64 = 201;
@@ -80,6 +82,7 @@ mod nr {
     pub const SCHED_SETAFFINITY: u64 = 122;
     pub const GETCPU: u64 = 168;
     pub const SETUID: u64 = 146;
+    pub const SETPGID: u64 = 154;
     pub const RT_SIGPENDING: u64 = 136;
     pub const RT_SIGTIMEDWAIT: u64 = 137;
     pub const TIMER_CREATE: u64 = 107;
@@ -2368,6 +2371,180 @@ fn it_real_interval() -> CaseResult {
     periodic(SIGALRM, 50, 1000, || Ok(arm_itimer(ITIMER_REAL, 50_000, 50_000)?), || { let _ = arm_itimer(ITIMER_REAL, 0, 0); })
 }
 
+/// How many times itimers/rearm-group-signal re-arms ITIMER_REAL.
+const REARMS: i64 = 40;
+/// The one-shot value it re-arms ITIMER_REAL with.
+const REARM_MS: i64 = 10;
+/// What a register holds while the group's other process computes.
+const CLOBBER: u64 = 0xa5a5_a5a5_a5a5_a5a5;
+
+/// Wait up to one second for blocked SIGALRM with sigtimedwait, holding `held` in a
+/// floating-point register the calling convention preserves across calls (ARM64 d8;
+/// on x86-64, whose userspace target uses no SSE register itself, xmm8), as timeout(1)
+/// holds its -k duration, a double, across its wait. Returns sigtimedwait's result and
+/// what the register held when the wait returned.
+#[inline(never)]
+fn await_alarm_holding(held: u64) -> (i64, u64) {
+    let set = [bit(SIGALRM)];
+    let limit = ts(NS);
+    let ret: i64;
+    let back: u64;
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: the system call reads `set` and `limit` and writes nothing (no siginfo
+    // buffer); d8 (v8) is declared clobbered.
+    unsafe {
+        core::arch::asm!(
+            "fmov d8, {held}",
+            "svc #0",
+            "fmov {back}, d8",
+            held = in(reg) held,
+            back = lateout(reg) back,
+            inlateout("x0") set.as_ptr() as u64 => ret,
+            in("x1") 0u64,
+            in("x2") limit.as_ptr() as u64,
+            in("x3") 8u64,
+            in("x8") nr::RT_SIGTIMEDWAIT,
+            out("v8") _,
+            options(nostack),
+        );
+    }
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: as on ARM64; xmm8 is never used by compiled code here, and SYSCALL
+    // clobbers rcx and r11.
+    unsafe {
+        core::arch::asm!(
+            "movq xmm8, {held}",
+            "syscall",
+            "movq {back}, xmm8",
+            held = in(reg) held,
+            back = lateout(reg) back,
+            inlateout("rax") nr::RT_SIGTIMEDWAIT => ret,
+            in("rdi") set.as_ptr() as u64,
+            in("rsi") 0u64,
+            in("rdx") limit.as_ptr() as u64,
+            in("r10") 8u64,
+            out("rcx") _,
+            out("r11") _,
+            options(nostack),
+        );
+    }
+    (ret, back)
+}
+
+/// Fill the floating-point registers a program may expect a wait to preserve with
+/// CLOBBER, as a process computing in floating point does.
+fn clobber_fp_registers() {
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: only the declared registers are written.
+    unsafe {
+        core::arch::asm!(
+            "fmov d8, {v}", "fmov d9, {v}", "fmov d10, {v}", "fmov d11, {v}",
+            "fmov d12, {v}", "fmov d13, {v}", "fmov d14, {v}", "fmov d15, {v}",
+            v = in(reg) CLOBBER,
+            out("v8") _, out("v9") _, out("v10") _, out("v11") _,
+            out("v12") _, out("v13") _, out("v14") _, out("v15") _,
+            options(nostack, nomem),
+        );
+    }
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: writes only xmm8-xmm15, which compiled code here never uses.
+    unsafe {
+        core::arch::asm!(
+            "movq xmm8, {v}", "movq xmm9, {v}", "movq xmm10, {v}", "movq xmm11, {v}",
+            "movq xmm12, {v}", "movq xmm13, {v}", "movq xmm14, {v}", "movq xmm15, {v}",
+            v = in(reg) CLOBBER,
+            options(nostack, nomem),
+        );
+    }
+}
+
+/// A count shared with forked children, on a page of its own.
+struct SharedCount { page: *mut u8 }
+
+impl SharedCount {
+    fn new() -> Result<SharedCount, CaseError> {
+        let page = memory::mmap(core::ptr::null_mut(), 4096, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0)?;
+        Ok(SharedCount { page })
+    }
+
+    fn word(&self) -> &AtomicU64 {
+        // SAFETY: the page is mapped, aligned and zero-filled for as long as `self` lives.
+        unsafe { &*(self.page as *const AtomicU64) }
+    }
+
+    fn get(&self) -> u64 { self.word().load(Ordering::SeqCst) }
+    fn add(&self) { self.word().fetch_add(1, Ordering::SeqCst); }
+}
+
+impl Drop for SharedCount {
+    fn drop(&mut self) { let _ = memory::munmap(self.page, 4096); }
+}
+
+/// timeout(1)'s escalation (#1579): a process leading its own process group, with the
+/// signal it sends blocked in itself, signals the group and re-arms ITIMER_REAL with a
+/// value it held in a floating-point register across its wait for the previous expiry,
+/// while the utility in its group computes in floating point on the same processor.
+/// Every wait must return the register as it went in, the utility must have filled its
+/// registers during every wait, and every re-armed timer fires, no earlier than its value
+/// and late by at most LATE_MS.
+fn it_rearm_group_signal() -> CaseResult {
+    zero("setpgid(0, 0)", sc(nr::SETPGID, &[0, 0]))?;
+    block(bit(SIGALRM) | bit(SIGUSR1))?;
+    let cpu = getcpu()?;
+    let mask = [1u64 << cpu];
+    zero(&format!("sched_setaffinity(processor {cpu})"), sc(nr::SCHED_SETAFFINITY, &[0, 8, mask.as_ptr() as u64]))?;
+    // The utility counts each fill of its registers once the fill is done.
+    let fills = SharedCount::new()?;
+    let _utility = Child::start(|| loop {
+        clobber_fp_registers();
+        fills.add();
+        nap();
+    })?;
+    let mut rearms = 0;
+    let mut worst = 0;
+    let mut failure = None;
+    let held_us = REARM_MS * 1000;
+    // Each re-arm uses what the register held across the previous wait.
+    let mut armed_us = held_us;
+    while rearms < REARMS && failure.is_none() && case_ms_left() > CLEANUP_MS + 1000 {
+        let start = mono();
+        let armed = setitimer(ITIMER_REAL, &itv(0, armed_us), None);
+        if armed != 0 {
+            failure = Some(format!("re-arm {rearms}: setitimer(ITIMER_REAL, {armed_us} us) failed with {}", shown(armed)));
+            break;
+        }
+        let before = fills.get();
+        let (ret, held) = await_alarm_holding(held_us as u64);
+        // Two counts after `before` bracket a whole fill that began after it, while
+        // this process was in its wait or about to enter it.
+        let filled = fills.get() - before;
+        let elapsed = mono() - start;
+        let late = elapsed - armed_us * 1000;
+        worst = worst.max(late);
+        failure = if ret != SIGALRM as i64 {
+            Some(format!("re-arm {rearms}: no SIGALRM {} ms after arming ITIMER_REAL for {armed_us} us (sigtimedwait returned {})", elapsed / MS, shown(ret)))
+        } else if held != held_us as u64 {
+            Some(format!("re-arm {rearms}: the register went into the wait holding {held_us} and came back holding {}", held as i64))
+        } else if filled < 2 {
+            Some(format!("re-arm {rearms}: the utility filled its registers {filled} times during the wait, not at least twice"))
+        } else if late < 0 {
+            Some(format!("re-arm {rearms}: SIGALRM came {} us after arming, before the {armed_us} us asked for", elapsed / 1000))
+        } else if late > LATE_MS * MS {
+            Some(format!("re-arm {rearms}: SIGALRM came {} us late, more than {LATE_MS} ms", late / 1000))
+        } else if kill(0, SIGUSR1) != 0 {
+            Some("kill(0, SIGUSR1) failed".into())
+        } else {
+            armed_us = held as i64;
+            rearms += 1;
+            None
+        };
+    }
+    value("rearms", rearms, "", Some((REARMS, REARMS)));
+    value("worst-late", worst / 1000, "us", Some((0, LATE_MS * 1000)));
+    if let Some(msg) = failure { return fail(msg); }
+    check(rearms == REARMS, &format!("only {rearms} of {REARMS} re-arms fit in the case's time"))
+}
+
 fn it_getitimer() -> CaseResult {
     catch(SIGALRM)?;
     arm_itimer(ITIMER_REAL, 250_000, 1_000_000)?;
@@ -2657,6 +2834,7 @@ static SUITE: Suite = suite(
             case("alarm-read", "An alarm interrupts a blocking read of an empty pipe with EINTR", it_alarm_read),
             case("real", "setitimer ITIMER_REAL with no interval fires SIGALRM once, on time", it_real),
             case("real-interval", "ITIMER_REAL reloads its interval: a 50 ms timer fires twenty times a second, 50 ms apart", it_real_interval),
+            case("rearm-group-signal", "A process leading its own process group signals the group, with the signal blocked in itself, and re-arms ITIMER_REAL straight after each expiry with a value it held in a floating-point register across its wait while a process of its group computed in floating point on the same processor: every re-armed timer fires on time", it_rearm_group_signal),
             case("getitimer", "getitimer reports the time left, decreasing and never above the value set, and the interval", it_getitimer),
             case("old-value", "setitimer returns the previous setting in old_value", it_old_value),
             case("disarm", "setitimer with a zero it_value disarms the timer", it_disarm),

@@ -345,6 +345,10 @@
           "title": "ITIMER_REAL reloads its interval: a 50 ms timer fires twenty times a second, 50 ms apart"
         },
         {
+          "id": "rearm-group-signal",
+          "title": "A process leading its own process group signals the group, with the signal blocked in itself, and re-arms ITIMER_REAL straight after each expiry with a value it held in a floating-point register across its wait while a process of its group computed in floating point on the same processor: every re-armed timer fires on time"
+        },
+        {
           "id": "getitimer",
           "title": "getitimer reports the time left, decreasing and never above the value set, and the interval"
         },

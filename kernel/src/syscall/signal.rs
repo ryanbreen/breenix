@@ -1605,7 +1605,7 @@ pub fn sys_setitimer(which: i32, new_value: u64, old_value: u64) -> SyscallResul
         crate::task::scheduler::charge_current_process_cpu();
     }
 
-    let old_itimerval = {
+    let (old_itimerval, timers, cpu) = {
         let mut manager_guard = manager();
         let manager_ref = match manager_guard.as_mut() {
             Some(m) => m,
@@ -1634,9 +1634,11 @@ pub fn sys_setitimer(which: i32, new_value: u64, old_value: u64) -> SyscallResul
             timer.get_value(now)
         };
 
-        crate::task::scheduler::with_scheduler(|s| s.register_signal_timers(&process.itimers, &process.cpu));
-        old_itimerval
+        (old_itimerval, process.itimers.clone(), process.cpu.clone())
     };
+    // The scheduler lock ranks above the process manager's, so the timers are
+    // registered after the manager is released, as alarm() does.
+    crate::task::scheduler::with_scheduler(|s| s.register_signal_timers(&timers, &cpu));
 
     // Write old value to userspace (if requested)
     if old_value != 0 {

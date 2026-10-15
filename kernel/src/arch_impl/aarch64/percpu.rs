@@ -416,6 +416,8 @@ impl PerCpuOps for Aarch64PerCpu {
     /// Set the current thread pointer
     #[inline]
     unsafe fn set_current_thread_ptr(ptr: *mut u8) {
+        // The FP/SIMD registers follow the thread the CPU runs.
+        super::fpsimd::load_incoming(Self::current_thread_ptr(), ptr);
         percpu_write_u64(PERCPU_CURRENT_THREAD_OFFSET, ptr as u64);
     }
 

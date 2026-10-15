@@ -292,6 +292,8 @@ pub fn sys_clone_thread(
         kernel_stack_allocation: Some(kernel_stack),
         #[cfg(target_arch = "x86_64")]
         fpu: crate::arch_impl::x86_64::fpu::FpuState::capture(),
+        #[cfg(target_arch = "aarch64")]
+        fpsimd: crate::arch_impl::aarch64::fpsimd::capture(),
         tls_block,
         sched: crate::task::thread::SchedPolicy::DEFAULT,
         time_slice: 10,
