@@ -46,11 +46,13 @@ use libicon::icons::{arrow::ArrowIcon, home::HomeIcon, save::SaveIcon, search::S
 use libicon::particles::{Particle, ParticlePool};
 use libicon::physics::Spring;
 
-/// Counts every allocation the suite's process makes, so "before any allocation" and the
-/// parsers' allocation bounds (contract section 7) can be measured in the guest.
+/// Counts every allocation the suite's process makes, and the bytes it frees, so "before any
+/// allocation", the parsers' allocation bounds (contract section 7) and an owned surface's
+/// release can be measured in the guest.
 struct Counting;
 static ALLOC_CALLS: AtomicU64 = AtomicU64::new(0);
 static ALLOC_BYTES: AtomicU64 = AtomicU64::new(0);
+static FREE_BYTES: AtomicU64 = AtomicU64::new(0);
 
 // SAFETY: every call is forwarded unchanged to the system allocator; only counters are added.
 unsafe impl GlobalAlloc for Counting {
@@ -60,6 +62,7 @@ unsafe impl GlobalAlloc for Counting {
         System.alloc(layout)
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        FREE_BYTES.fetch_add(layout.size() as u64, Relaxed);
         System.dealloc(ptr, layout)
     }
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
@@ -70,6 +73,7 @@ unsafe impl GlobalAlloc for Counting {
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         ALLOC_CALLS.fetch_add(1, Relaxed);
         ALLOC_BYTES.fetch_add(new_size as u64, Relaxed);
+        FREE_BYTES.fetch_add(layout.size() as u64, Relaxed);
         System.realloc(ptr, layout, new_size)
     }
 }
@@ -356,7 +360,7 @@ impl Guarded {
     fn fb(&self) -> FrameBuf {
         // SAFETY: base addresses stride * height writable bytes that outlive the FrameBuf,
         // which is used only while this Guarded is alive.
-        unsafe { FrameBuf::from_raw(self.base, self.width, self.height, self.stride, self.bpp, self.bgr) }
+        unsafe { FrameBuf::from_raw(self.base, self.width, self.height, self.stride, self.bpp, self.bgr).expect("a guarded surface is valid") }
     }
 
     /// The pixel's colour channels, decoded by the surface's channel order.

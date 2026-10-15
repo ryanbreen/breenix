@@ -3,6 +3,8 @@
 //! cases live in `widgets.rs`.
 
 use crate::*;
+use libgfx::framebuf::{Format, Rect, SurfaceError};
+use libgfx::{alpha, blit, work};
 
 pub(crate) const RASTER: &[Case] = &[
     case("fill-rect", "fill_rect writes exactly the pixels of a half-open rectangle and no others", raster_fill_rect),
@@ -106,6 +108,81 @@ pub(crate) const FONT_PARSER: &[Case] = &[
 // ---------------------------------------------------------------------------------------
 // raster: shapes, blits, clipping & alpha (contract sections 2 to 7)
 // ---------------------------------------------------------------------------------------
+
+/// Round-to-nearest of `x / 255` as `(2x + 255) / 510`, written independently of the
+/// shift form section 1 gives libgfx (`x / 255` is never halfway between integers).
+fn nearest255(x: u32) -> u32 {
+    (2 * x + 255) / 510
+}
+
+/// Section 2's source-over on premultiplied `[b, g, r, a]`, by `nearest255`, unclamped.
+fn source_over(s: [u8; 4], d: [u8; 4]) -> [u32; 4] {
+    let inv = 255 - s[3] as u32;
+    [0, 1, 2, 3].map(|i| s[i] as u32 + nearest255(d[i] as u32 * inv))
+}
+
+/// A colour of its own for each pixel (i, j) of a blit source.
+fn tile_colour(i: usize, j: usize) -> Color {
+    Color::rgb((40 * i + 7) as u8, (60 * j + 11) as u8, (13 * i + 29 * j + 100) as u8)
+}
+
+/// A 5 × 4 owned source of `format` holding `tile_colour`.
+fn tile(format: Format) -> Result<FrameBuf, String> {
+    let mut fb = FrameBuf::new(5, 4, format).map_err(|e| format!("FrameBuf::new(5, 4, {format:?}) failed: {e}"))?;
+    for j in 0..4 {
+        for i in 0..5 {
+            fb.put_pixel(i, j, tile_colour(i, j));
+        }
+    }
+    Ok(fb)
+}
+
+/// Write `[b, g, r, a]` at (x, y) of a 4-byte surface in its own memory order, by hand.
+fn poke(fb: &FrameBuf, x: usize, y: usize, [b, g, r, a]: [u8; 4]) {
+    let bytes = if fb.is_bgr { [b, g, r, a] } else { [r, g, b, a] };
+    // SAFETY: (x, y) is inside the 4-byte surface.
+    unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), fb.raw_ptr().add(y * fb.stride + x * 4), 4) }
+}
+
+/// The four bytes at (x, y) of a 4-byte surface as `[b, g, r, a]`, by hand.
+fn peek(fb: &FrameBuf, x: usize, y: usize) -> [u8; 4] {
+    let mut p = [0u8; 4];
+    // SAFETY: (x, y) is inside the 4-byte surface.
+    unsafe { std::ptr::copy_nonoverlapping(fb.raw_ptr().add(y * fb.stride + x * 4), p.as_mut_ptr(), 4) }
+    if fb.is_bgr { p } else { [p[2], p[1], p[0], p[3]] }
+}
+
+/// A rectangle on a 32 × 24 surface, intersected with it.
+fn on_surface(x: i64, y: i64, w: i64, h: i64) -> Option<(i32, i32, i32, i32)> {
+    let (x0, y0, x1, y1) = (x.max(0), y.max(0), (x + w).min(32), (y + h).min(24));
+    (x0 < x1 && y0 < y1).then(|| (x0 as i32, y0 as i32, (x1 - x0) as i32, (y1 - y0) as i32))
+}
+
+/// Primitives that draw something inside (5, 4, 12, 9) on a 32 × 24 surface.
+fn clip_calls() -> Vec<(&'static str, Box<dyn Fn(&mut FrameBuf)>)> {
+    vec![
+        ("fill_rect(0, 0, 32, 24)", Box::new(|fb| shapes::fill_rect(fb, 0, 0, 32, 24, INK))),
+        ("fill_rect(10, 6, 20, 20)", Box::new(|fb| shapes::fill_rect(fb, 10, 6, 20, 20, INK))),
+        ("draw_rect(3, 2, 20, 15)", Box::new(|fb| shapes::draw_rect(fb, 3, 2, 20, 15, INK))),
+        ("draw_line(0, 0, 31, 23)", Box::new(|fb| shapes::draw_line(fb, 0, 0, 31, 23, INK))),
+        ("draw_line(30, 2, 1, 20)", Box::new(|fb| shapes::draw_line(fb, 30, 2, 1, 20, INK))),
+        ("fill_circle(12, 10, 6)", Box::new(|fb| shapes::fill_circle(fb, 12, 10, 6, INK))),
+        ("draw_circle(11, 8, 5)", Box::new(|fb| shapes::draw_circle(fb, 11, 8, 5, INK))),
+        ("rounded_rect(2, 2, 25, 18, 6)", Box::new(|fb| shapes::rounded_rect(fb, 2, 2, 25, 18, 6, INK))),
+        ("gradient_v(0, 0, 32, 24)", Box::new(|fb| shapes::gradient_v(fb, 0, 0, 32, 24, INK, WHITE))),
+        ("put_pixel(8, 6) and (2, 2)", Box::new(|fb| { fb.put_pixel(8, 6, INK); fb.put_pixel(2, 2, INK); })),
+        ("clear", Box::new(|fb| fb.clear(INK))),
+        ("font::draw_text(\"A1\", 4, 5, scale 2)", Box::new(|fb| font5x7::draw_text(fb, b"A1", 4, 5, INK, 2))),
+        ("bitmap_font::draw_char('A', 6, 3)", Box::new(|fb| bitmap_font::draw_char(fb, 'A', 6, 3, INK))),
+        ("copy_row_from(0, 7, 32 pixels)", Box::new(|fb| {
+            let row: Vec<u8> = (0..32).flat_map(|_| [INK.b, INK.g, INK.r, 0xFF]).collect();
+            fb.copy_row_from(0, 7, &row, row.len());
+        })),
+        ("blit(tile, 3, 3)", Box::new(|fb| if let Ok(t) = tile(Format::BGRX) { blit::blit(fb, &t, 3, 3) })),
+        ("blit_over(tile, 9, 8)", Box::new(|fb| if let Ok(t) = tile(Format::BGRX) { blit::blit_over(fb, &t, 9, 8) })),
+        ("blit_scaled(tile, 0, 0, 3)", Box::new(|fb| if let Ok(t) = tile(Format::BGRX) { blit::blit_scaled(fb, &t, 0, 0, 3) })),
+    ]
+}
 
 /// A padded BGRX surface: stride 12 bytes past the pixels, so every row has a sentinel.
 fn padded(width: usize, height: usize) -> Guarded {
@@ -339,7 +416,73 @@ fn raster_guard_pages() -> CaseResult {
 }
 
 fn raster_extreme_work_bound() -> CaseResult {
-    missing("libgfx's step counter (libgfx::work)", "7")
+    const MAX: i32 = i32::MAX;
+    const MIN: i32 = i32::MIN;
+    const HALF: i32 = 1 << 30;
+    type Extreme = (&'static str, Option<Rect>, Box<dyn Fn(&mut FrameBuf)>, Option<(i64, i64, i64, i64)>);
+    let small_clip = Some(Rect::new(10, 8, 4, 3));
+    // Each call, an optional clip, and the clipped bounding rectangle the contract's damage
+    // table gives it on a 32 × 24 surface (sections 6 and 7), worked out by hand.
+    let calls: Vec<Extreme> = vec![
+        ("fill_rect(MIN, MIN, MAX, MAX)", None, Box::new(|fb| shapes::fill_rect(fb, MIN, MIN, MAX, MAX, INK)), None),
+        ("fill_rect(MAX, MAX, MAX, MAX)", None, Box::new(|fb| shapes::fill_rect(fb, MAX, MAX, MAX, MAX, INK)), None),
+        ("fill_rect(-MAX, 3, 5, 5)", None, Box::new(|fb| shapes::fill_rect(fb, -MAX, 3, 5, 5, INK)), None),
+        ("fill_rect(-2^30, -2^30, MAX, MAX)", None, Box::new(|fb| shapes::fill_rect(fb, -HALF, -HALF, MAX, MAX, INK)), Some((0, 0, 32, 24))),
+        ("draw_rect(MIN, MIN, MAX, MAX)", None, Box::new(|fb| shapes::draw_rect(fb, MIN, MIN, MAX, MAX, INK)), None),
+        ("draw_rect(-2^30, -2^30, MAX, MAX)", None, Box::new(|fb| shapes::draw_rect(fb, -HALF, -HALF, MAX, MAX, INK)), Some((0, 0, 32, 24))),
+        ("draw_rect(MAX - 1, 0, 9, 9)", None, Box::new(|fb| shapes::draw_rect(fb, MAX - 1, 0, 9, 9, INK)), None),
+        ("fill_circle(MAX - 1, 5, 5)", None, Box::new(|fb| shapes::fill_circle(fb, MAX - 1, 5, 5, INK)), None),
+        ("fill_circle(MIN + 1, 5, 5)", None, Box::new(|fb| shapes::fill_circle(fb, MIN + 1, 5, 5, INK)), None),
+        ("fill_circle(5, 5, 46340)", None, Box::new(|fb| shapes::fill_circle(fb, 5, 5, 46_340, INK)), Some((0, 0, 32, 24))),
+        ("fill_circle(16, 12, MAX)", None, Box::new(|fb| shapes::fill_circle(fb, 16, 12, MAX, INK)), Some((0, 0, 32, 24))),
+        ("fill_circle(16, 12, MAX) clipped to (10, 8, 4, 3)", small_clip, Box::new(|fb| shapes::fill_circle(fb, 16, 12, MAX, INK)), Some((10, 8, 4, 3))),
+        ("draw_circle(MIN + 9, 5, 5)", None, Box::new(|fb| shapes::draw_circle(fb, MIN + 9, 5, 5, INK)), None),
+        ("draw_circle(5, 5, 1000000)", None, Box::new(|fb| shapes::draw_circle(fb, 5, 5, 1_000_000, INK)), Some((0, 0, 32, 24))),
+        ("draw_circle(16, 12, MAX)", None, Box::new(|fb| shapes::draw_circle(fb, 16, 12, MAX, INK)), Some((0, 0, 32, 24))),
+        ("draw_circle(16, 12, 1000000) clipped to (10, 8, 4, 3)", small_clip, Box::new(|fb| shapes::draw_circle(fb, 16, 12, 1_000_000, INK)), Some((10, 8, 4, 3))),
+        ("draw_line(MIN/2, 3, MAX/2, 4)", None, Box::new(|fb| shapes::draw_line(fb, MIN / 2, 3, MAX / 2, 4, INK)), Some((0, 3, 32, 2))),
+        ("draw_line(5, MIN/2, 6, MAX/2)", None, Box::new(|fb| shapes::draw_line(fb, 5, MIN / 2, 6, MAX / 2, INK)), Some((5, 0, 2, 24))),
+        ("draw_line(MIN, MIN, MAX, MAX)", None, Box::new(|fb| shapes::draw_line(fb, MIN, MIN, MAX, MAX, INK)), Some((0, 0, 32, 24))),
+        ("draw_line(MIN, 30, MAX, 40)", None, Box::new(|fb| shapes::draw_line(fb, MIN, 30, MAX, 40, INK)), None),
+        ("draw_line(MAX, MIN, MIN, MAX) clipped to (10, 8, 4, 3)", small_clip, Box::new(|fb| shapes::draw_line(fb, MAX, MIN, MIN, MAX, INK)), Some((10, 8, 4, 3))),
+        ("rounded_rect(MIN, MIN, MAX, MAX, MAX)", None, Box::new(|fb| shapes::rounded_rect(fb, MIN, MIN, MAX, MAX, MAX, INK)), None),
+        ("rounded_rect(-2^30, -2^30, MAX, MAX, MAX)", None, Box::new(|fb| shapes::rounded_rect(fb, -HALF, -HALF, MAX, MAX, MAX, INK)), Some((0, 0, 32, 24))),
+        ("gradient_v(-2^30, -2^30, MAX, MAX)", None, Box::new(|fb| shapes::gradient_v(fb, -HALF, -HALF, MAX, MAX, INK, WHITE)), Some((0, 0, 32, 24))),
+        ("gradient_v(MIN, 0, 10, 24)", None, Box::new(|fb| shapes::gradient_v(fb, MIN, 0, 10, 24, INK, WHITE)), None),
+        ("blit_scaled(5 x 4, MIN, 0, 2^30)", None, Box::new(|fb| if let Ok(t) = tile(Format::BGRX) { blit::blit_scaled(fb, &t, MIN, 0, HALF) }), Some((0, 0, 32, 24))),
+        ("blit(5 x 4, MAX - 2, 0)", None, Box::new(|fb| if let Ok(t) = tile(Format::BGRX) { blit::blit(fb, &t, MAX - 2, 0) }), None),
+        ("blit_over(5 x 4, MIN, MIN)", None, Box::new(|fb| if let Ok(t) = tile(Format::BGRX) { blit::blit_over(fb, &t, MIN, MIN) }), None),
+        ("clear", None, Box::new(|fb| fb.clear(INK)), Some((0, 0, 32, 24))),
+        ("copy_row_from(31, 23, 64 bytes)", None, Box::new(|fb| fb.copy_row_from(31, 23, &[0x5Au8; 64], 64)), Some((31, 23, 1, 1))),
+        ("font::draw_text(\"WWWW\", 29, 21, scale 3)", None, Box::new(|fb| font5x7::draw_text(fb, b"WWWW", 29, 21, INK, 3)), Some((29, 21, 3, 3))),
+        ("font::draw_text(1,000 bytes, 0, 0, scale 1)", None, Box::new(|fb| font5x7::draw_text(fb, &[b'W'; 1_000], 0, 0, INK, 1)), Some((0, 0, 32, 7))),
+        ("font::draw_text(1,000 bytes, 2^31, 3, scale 1)", None, Box::new(|fb| font5x7::draw_text(fb, &[b'W'; 1_000], 1 << 31, 3, INK, 1)), None),
+    ];
+    for (name, clip, call, rect) in calls {
+        step("7", isolated(name, 2_000, || {
+            let g = padded(32, 24);
+            let mut fb = g.fb();
+            if let Some(c) = clip {
+                fb.push_clip(c);
+            }
+            work::reset();
+            call(&mut fb);
+            let steps = work::steps();
+            let (bound, what) = match rect {
+                None => (64, "a call wholly outside the surface and clip".to_string()),
+                Some((_, _, w, h)) => ((2 * (w * h + h + w) + 64) as u64, format!("its clipped {w} x {h} rectangle")),
+            };
+            if steps > bound {
+                return Err(format!("{name} took {steps} steps of libgfx::work; section 7 allows {bound} for {what}"));
+            }
+            let written = (0..24).flat_map(|y| (0..32).map(move |x| (x, y))).filter(|&(x, y)| g.color(x, y) != PAPER).count() as u64;
+            if written >= 8 && steps < written {
+                return Err(format!("{name} changed {written} pixels in {steps} counted steps; every loop iteration is a step, so a primitive writing n pixels counts at least n"));
+            }
+            g.sentinels()
+        }))?;
+    }
+    Ok(())
 }
 
 /// A scene touching every primitive, in bounds.
@@ -366,7 +509,51 @@ fn raster_stride_padding() -> CaseResult {
 }
 
 fn raster_surface_validate() -> CaseResult {
-    missing("FrameBuf::new and a validating FrameBuf::from_raw returning SurfaceError", "3")
+    use libgfx::framebuf::SurfaceError::{Empty, Format as BadFormat, Misaligned, Null, SizeOverflow, StrideTooShort, TooLarge};
+    let premultiplied3 = Format { bpp: 3, is_bgr: true, premultiplied: true };
+    for (what, w, h, format, want) in [
+        ("new(0, 4)", 0, 4, Format::BGRX, Empty),
+        ("new(4, 0)", 4, 0, Format::BGRX, Empty),
+        ("new(16385, 1)", 16_385, 1, Format::BGRX, TooLarge),
+        ("new(1, 16385)", 1, 16_385, Format::RGB, TooLarge),
+        ("new(16384, 16384) with 4-byte pixels (2^32 bytes)", 16_384, 16_384, Format::BGRX, SizeOverflow),
+        ("new(4, 4) premultiplied with 3-byte pixels", 4, 4, premultiplied3, BadFormat),
+    ] {
+        let got = FrameBuf::new(w, h, format).err();
+        ensure(got == Some(want), "3", format!("FrameBuf::{what} gave {got:?}; the contract's table gives {want:?}"))?;
+    }
+    for (w, h, format) in [(16_384, 1, Format::BGRX), (1, 16_384, Format::RGB), (1, 1, Format::BGRA_PREMULTIPLIED)] {
+        ensure(FrameBuf::new(w, h, format).is_ok(), "3", format!("FrameBuf::new({w}, {h}, {format:?}) was refused; it breaks no rule of the table"))?;
+    }
+    let g = padded(8, 4);
+    let base = g.base;
+    // SAFETY: every call either refuses its arguments without touching memory, or (the
+    // accepted ones) describes memory inside the guarded mapping `g`, which outlives it.
+    let raw = |what: &str, p: *mut u8, w: usize, h: usize, stride: usize, bpp: usize| -> (String, Option<SurfaceError>) {
+        (format!("from_raw({what}, {w}, {h}, stride {stride}, bpp {bpp})"),
+            unsafe { FrameBuf::from_raw(p, w, h, stride, bpp, true) }.err())
+    };
+    for ((what, got), want) in [
+        (raw("base", base, 0, 4, 44, 4), Empty),
+        (raw("base", base, 8, 0, 44, 4), Empty),
+        (raw("base", base, 16_385, 1, 65_540, 4), TooLarge),
+        (raw("base", base, 8, 4, 44, 2), BadFormat),
+        (raw("base", base, 8, 4, 44, 5), BadFormat),
+        (raw("base", base, 8, 4, 31, 4), StrideTooShort),
+        (raw("base", base, 8, 4, 23, 3), StrideTooShort),
+        (raw("base", base, 8, 2, 1 << 30, 4), SizeOverflow),
+        (raw("base", base, 8, 4, usize::MAX / 2, 4), SizeOverflow),
+        (raw("null", std::ptr::null_mut(), 8, 4, 44, 4), Null),
+        (raw("base + 1", unsafe { base.add(1) }, 8, 3, 44, 4), Misaligned),
+        (raw("base + 2", unsafe { base.add(2) }, 8, 3, 44, 4), Misaligned),
+    ] {
+        ensure(got == Some(want), "3", format!("FrameBuf::{what} gave {got:?}; the contract's table gives {want:?}"))?;
+    }
+    for (stride, bpp) in [(44, 4), (32, 4), (24, 3), (44, 3)] {
+        let (what, got) = raw("base", base, 8, 4, stride, bpp);
+        ensure(got.is_none(), "3", format!("FrameBuf::{what} was refused with {got:?}; it breaks no rule of the table"))?;
+    }
+    Ok(())
 }
 
 fn raster_bpp3_bpp4() -> CaseResult {
@@ -449,63 +636,337 @@ fn raster_copy_row_clip() -> CaseResult {
 }
 
 fn raster_premultiply() -> CaseResult {
-    missing("libgfx::alpha::premultiply", "2")
+    for a in 0..=255u32 {
+        for c in 0..=255u32 {
+            let (got, want) = (alpha::premultiply(c as u8, a as u8) as u32, nearest255(c * a));
+            if got != want {
+                return at("2", format!("premultiply({c}, {a}) is {got}; div255({}) is {want}", c * a));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn raster_alpha_over_examples() -> CaseResult {
-    missing("libgfx::alpha::over (premultiplied source-over)", "2")
+    for ((sc, sa), (dc, da), (oc, oa)) in [
+        ((128u8, 128u8), (0u8, 255u8), (128u8, 255u8)),
+        ((128, 128), (255, 255), (255, 255)),
+        ((64, 128), (200, 255), (164, 255)),
+        ((64, 128), (100, 100), (114, 178)),
+        ((0, 0), (77, 77), (77, 77)),
+        ((200, 255), (13, 50), (200, 255)),
+    ] {
+        let got = alpha::over([sc, sc, sc, sa], [dc, dc, dc, da]);
+        if got != [oc, oc, oc, oa] {
+            return at("2", format!("over(({sc}, {sa}), ({dc}, {da})) is {got:?}; the contract's table gives colour {oc}, alpha {oa}"));
+        }
+    }
+    let got = alpha::over([64, 0, 32, 128], [100, 200, 0, 255]);
+    ensure(got == [114, 100, 32, 255], "2", format!("over([64, 0, 32, 128], [100, 200, 0, 255]) is {got:?}; channel by channel it is [114, 100, 32, 255]"))
 }
 
 fn raster_alpha_over_sweep() -> CaseResult {
-    missing("libgfx::alpha::over (premultiplied source-over)", "2")
+    let backgrounds = [[0u8, 0, 0, 255], [255, 255, 255, 255], [240, 128, 10, 255], [60, 30, 90, 120]];
+    for sa in 0..=255u32 {
+        let s = [nearest255(37 * sa) as u8, nearest255(200 * sa) as u8, nearest255(255 * sa) as u8, sa as u8];
+        for d in backgrounds {
+            let want = source_over(s, d);
+            if let Some(i) = want.iter().position(|&v| v > 255) {
+                return at("2", format!("source-over of {s:?} on {d:?} reaches {} in channel {i}; the contract's formula never exceeds 255 for valid inputs", want[i]));
+            }
+            let got = alpha::over(s, d);
+            if got.map(|v| v as u32) != want {
+                return at("2", format!("over({s:?}, {d:?}) is {got:?}; section 2's formula gives {want:?}"));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn raster_alpha_extremes() -> CaseResult {
-    missing("libgfx::alpha::over and blit_over", "2, 5.8")
+    let dsts = [[0u8, 0, 0, 0], [9, 8, 7, 10], [255, 255, 255, 255], [3, 200, 90, 255]];
+    for d in dsts {
+        for s in [[0u8, 0, 0, 255], [17, 34, 51, 255], [255, 255, 255, 255]] {
+            let got = alpha::over(s, d);
+            ensure(got == s, "2", format!("over({s:?}, {d:?}) is {got:?}; an alpha-255 source replaces the destination"))?;
+        }
+        let got = alpha::over([0; 4], d);
+        ensure(got == d, "2", format!("over([0, 0, 0, 0], {d:?}) is {got:?}; an alpha-0 source leaves it unchanged"))?;
+    }
+    let src = FrameBuf::new(4, 1, Format::BGRA_PREMULTIPLIED).cite("3")?;
+    poke(&src, 0, 0, [INK.b, INK.g, INK.r, 255]);
+    poke(&src, 2, 0, [WHITE.b, WHITE.g, WHITE.r, 255]);
+    let g = padded(32, 24);
+    blit::blit_over(&mut g.fb(), &src, 6, 9);
+    step("2, 5.8", g.compare("blit_over of [opaque, transparent, opaque, transparent] at (6, 9)", |x, y| match (x, y) {
+        (6, 9) => INK,
+        (8, 9) => WHITE,
+        _ => PAPER,
+    }))
 }
 
 fn raster_alpha_output() -> CaseResult {
-    missing("premultiplied BGRA surfaces and libgfx::alpha::over", "2, 3")
+    let dst = FrameBuf::new(16, 16, Format::BGRA_PREMULTIPLIED).cite("3")?;
+    let src = FrameBuf::new(16, 16, Format::BGRA_PREMULTIPLIED).cite("3")?;
+    let d_of = |x: usize, y: usize| { let a = (x * 16 + y) as u8; [a / 2, a / 3, a, a] };
+    let s_of = |x: usize, y: usize| { let a = (y * 17) as u8; [a / 3, a.saturating_sub(x as u8), a / 5, a] };
+    for y in 0..16 {
+        for x in 0..16 {
+            poke(&dst, x, y, d_of(x, y));
+            poke(&src, x, y, s_of(x, y));
+        }
+    }
+    let mut dst = dst;
+    blit::blit_over(&mut dst, &src, 0, 0);
+    for y in 0..16 {
+        for x in 0..16 {
+            let (got, want) = (peek(&dst, x, y), source_over(s_of(x, y), d_of(x, y)));
+            if got.map(|v| v as u32) != want {
+                return at("2, 3", format!("blit_over of {:?} onto the premultiplied pixel {:?} at ({x},{y}) stored {got:?}; section 2 gives {want:?}",
+                    s_of(x, y), d_of(x, y)));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn raster_blit() -> CaseResult {
-    missing("libgfx blit", "5.8")
+    for format in [Format::BGRX, Format::RGBX, Format::RGB, Format::BGR] {
+        let src = tile(format).cite("3")?;
+        let g = padded(32, 24);
+        blit::blit(&mut g.fb(), &src, 7, 3);
+        step("5.8", g.compare(&format!("blit of a 5 x 4 {format:?} source at (7, 3)"),
+            |x, y| if in_rect(x as i64, y as i64, 7, 3, 5, 4) { tile_colour(x - 7, y - 3) } else { PAPER }))?;
+        for (x, y) in [(7, 3), (11, 6)] {
+            ensure(g.x_byte(x, y) == 0xFF, "2", format!("blit of a {format:?} source wrote X byte {:#04x} at ({x},{y})", g.x_byte(x, y)))?;
+        }
+        let three = Guarded::new(32, 24, 32 * 3 + 6, 3, false);
+        blit::blit(&mut three.fb(), &src, 20, 18);
+        step("5.8", three.compare(&format!("blit of a {format:?} source onto a 3-byte RGB surface at (20, 18)"),
+            |x, y| if in_rect(x as i64, y as i64, 20, 18, 5, 4) { tile_colour(x - 20, y - 18) } else { Color::rgb(0, 0, 0) }))?;
+    }
+    Ok(())
 }
 
 fn raster_blit_clip() -> CaseResult {
-    missing("libgfx blit", "5.8")
+    let src = tile(Format::BGRX).cite("3")?;
+    for (x, y) in [(-2, -1), (29, 21), (-4, 10), (30, -3), (-5, 0), (32, 0), (0, 24), (0, -4), (i32::MIN, i32::MIN)] {
+        let g = padded(32, 24);
+        let mut fb = g.fb();
+        blit::blit(&mut fb, &src, x, y);
+        step("5.8, 4", g.compare(&format!("blit of a 5 x 4 source at ({x}, {y}) on a 32 x 24 surface"), |px, py| {
+            if in_rect(px as i64, py as i64, x as i64, y as i64, 5, 4) {
+                tile_colour((px as i64 - x as i64) as usize, (py as i64 - y as i64) as usize)
+            } else {
+                PAPER
+            }
+        }))?;
+        let (got, want) = (dirty(&mut fb), on_surface(x as i64, y as i64, 5, 4));
+        ensure(got == want, "6", format!("blit at ({x}, {y}) marked {got:?}; the contract marks (x, y, 5, 4) intersected with the surface, {want:?}"))?;
+    }
+    Ok(())
 }
 
 fn raster_blit_alpha() -> CaseResult {
-    missing("libgfx blit_over", "5.8")
+    let src = FrameBuf::new(5, 4, Format::BGRA_PREMULTIPLIED).cite("3")?;
+    let s_of = |i: usize, j: usize| {
+        let a = [0u32, 64, 128, 200, 255][i];
+        let c = tile_colour(i, j);
+        [nearest255(c.b as u32 * a) as u8, nearest255(c.g as u32 * a) as u8, nearest255(c.r as u32 * a) as u8, a as u8]
+    };
+    for j in 0..4 {
+        for i in 0..5 {
+            poke(&src, i, j, s_of(i, j));
+        }
+    }
+    let g = padded(32, 24);
+    blit::blit_over(&mut g.fb(), &src, 6, 5);
+    step("2, 5.8", g.compare("blit_over of a premultiplied 5 x 4 source at (6, 5)", |x, y| {
+        if in_rect(x as i64, y as i64, 6, 5, 5, 4) {
+            let [b, g, r, _] = source_over(s_of(x - 6, y - 5), [PAPER.b, PAPER.g, PAPER.r, 255]);
+            Color::rgb(r as u8, g as u8, b as u8)
+        } else {
+            PAPER
+        }
+    }))
 }
 
 fn raster_blit_straight() -> CaseResult {
-    missing("libgfx blit_straight", "5.8")
+    let alphas = [0u32, 1, 128, 254, 255];
+    let straight = |i: usize, j: usize| Color::rgb(200, (100 + 30 * j) as u8, (30 + 40 * i) as u8);
+    for is_bgr in [false, true] {
+        let mut mem = vec![0u32; 5 * 4];
+        let base = mem.as_mut_ptr() as *mut u8;
+        for j in 0..4 {
+            for i in 0..5 {
+                let (c, a) = (straight(i, j), alphas[i] as u8);
+                let bytes = if is_bgr { [c.b, c.g, c.r, a] } else { [c.r, c.g, c.b, a] };
+                // SAFETY: (i, j) is inside the 5 × 4, 20-byte-stride buffer.
+                unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), base.add(j * 20 + i * 4), 4) };
+            }
+        }
+        // SAFETY: `mem` holds 5 × 4 four-byte pixels and outlives `src`.
+        let src = unsafe { FrameBuf::from_raw(base, 5, 4, 20, 4, is_bgr) }.cite("3")?;
+        let g = padded(32, 24);
+        blit::blit_straight(&mut g.fb(), &src, 20, 2);
+        let order = if is_bgr { "B, G, R, A" } else { "R, G, B, A" };
+        step("2, 5.8", g.compare(&format!("blit_straight of a straight {order} source at (20, 2)"), |x, y| {
+            if in_rect(x as i64, y as i64, 20, 2, 5, 4) {
+                let (c, a) = (straight(x - 20, y - 2), alphas[x - 20]);
+                let s = [nearest255(c.b as u32 * a) as u8, nearest255(c.g as u32 * a) as u8, nearest255(c.r as u32 * a) as u8, a as u8];
+                let [b, g, r, _] = source_over(s, [PAPER.b, PAPER.g, PAPER.r, 255]);
+                Color::rgb(r as u8, g as u8, b as u8)
+            } else {
+                PAPER
+            }
+        }))?;
+        drop(src);
+        drop(mem);
+    }
+    Ok(())
 }
 
 fn raster_blit_scale() -> CaseResult {
-    missing("libgfx blit_scaled", "5.8")
+    let src = tile(Format::BGRX).cite("3")?;
+    for (x, y, n) in [(2, 1, 3), (4, 4, 1), (-6, -5, 4), (25, 19, 2)] {
+        let g = padded(32, 24);
+        let mut fb = g.fb();
+        blit::blit_scaled(&mut fb, &src, x, y, n);
+        let (x, y, n) = (x as i64, y as i64, n as i64);
+        step("5.8", g.compare(&format!("blit_scaled of a 5 x 4 source at ({x}, {y}), scale {n}"), |px, py| {
+            if in_rect(px as i64, py as i64, x, y, 5 * n, 4 * n) {
+                tile_colour(((px as i64 - x) / n) as usize, ((py as i64 - y) / n) as usize)
+            } else {
+                PAPER
+            }
+        }))?;
+        let (got, want) = (dirty(&mut fb), on_surface(x, y, 5 * n, 4 * n));
+        ensure(got == want, "6", format!("blit_scaled at ({x}, {y}), scale {n} marked {got:?}; the contract gives {want:?}"))?;
+    }
+    for n in [0, -2] {
+        let g = padded(32, 24);
+        let mut fb = g.fb();
+        blit::blit_scaled(&mut fb, &src, 3, 3, n);
+        step("5.8", g.compare(&format!("blit_scaled with scale {n}"), |_, _| PAPER))?;
+        ensure(dirty(&mut fb).is_none(), "6", format!("blit_scaled with scale {n} draws nothing, so marks nothing"))?;
+    }
+    Ok(())
 }
 
 fn raster_clip_rect() -> CaseResult {
-    missing("the clip stack (FrameBuf::push_clip and pop_clip)", "4")
+    for (name, call) in clip_calls() {
+        let free = padded(32, 24);
+        call(&mut free.fb());
+        let inside = (4..13).flat_map(|y| (5..17).map(move |x| (x, y))).filter(|&(x, y)| free.color(x, y) != PAPER).count();
+        ensure(inside > 0, "4", format!("{name} drew nothing inside (5, 4, 12, 9) unclipped, so it cannot show the clip"))?;
+        let g = padded(32, 24);
+        let mut fb = g.fb();
+        fb.push_clip(Rect::new(5, 4, 12, 9));
+        call(&mut fb);
+        step("4", g.compare(&format!("{name} with the clip (5, 4, 12, 9)"),
+            |x, y| if in_rect(x as i64, y as i64, 5, 4, 12, 9) { free.color(x, y) } else { PAPER }))?;
+        if let Some((dx, dy, dw, dh)) = dirty(&mut fb) {
+            ensure(dx >= 5 && dy >= 4 && dx + dw <= 17 && dy + dh <= 13, "4, 6",
+                format!("{name} with the clip (5, 4, 12, 9) marked ({dx}, {dy}, {dw}, {dh}), outside the clip"))?;
+        }
+    }
+    Ok(())
 }
 
 fn raster_clip_stack() -> CaseResult {
-    missing("the clip stack (FrameBuf::push_clip and pop_clip)", "4")
+    let (c1, c2, c3, c4) = (Color::rgb(250, 0, 0), Color::rgb(0, 250, 0), Color::rgb(0, 0, 250), Color::rgb(250, 250, 0));
+    let g = padded(32, 24);
+    let mut fb = g.fb();
+    let clip = |fb: &FrameBuf| { let c = fb.clip(); (c.x, c.y, c.w, c.h) };
+    ensure(clip(&fb) == (0, 0, 32, 24), "4", format!("with no clip pushed the clip is {:?}; the contract gives the whole surface", clip(&fb)))?;
+    fb.push_clip(Rect::new(2, 2, 20, 15));
+    fb.push_clip(Rect::new(10, -5, 30, 12));
+    ensure(clip(&fb) == (10, 2, 12, 5), "4", format!("(10, -5, 30, 12) pushed inside (2, 2, 20, 15) gave the clip {:?}; their intersection is (10, 2, 12, 5)", clip(&fb)))?;
+    shapes::fill_rect(&mut fb, 0, 0, 32, 24, c1);
+    fb.pop_clip();
+    ensure(clip(&fb) == (2, 2, 20, 15), "4", format!("one pop gave the clip {:?}; the contract restores (2, 2, 20, 15)", clip(&fb)))?;
+    shapes::fill_rect(&mut fb, 0, 12, 32, 12, c2);
+    fb.pop_clip();
+    ensure(clip(&fb) == (0, 0, 32, 24), "4", format!("the second pop gave the clip {:?}; the contract restores the whole surface", clip(&fb)))?;
+    shapes::fill_rect(&mut fb, 0, 20, 32, 4, c3);
+    fb.pop_clip();
+    ensure(clip(&fb) == (0, 0, 32, 24), "4", format!("a pop with nothing pushed changed the clip to {:?}", clip(&fb)))?;
+    shapes::fill_rect(&mut fb, 30, 0, 2, 2, c4);
+    step("4", g.compare("fills through two nested clips, each pop, and an extra pop", |x, y| {
+        let (x, y) = (x as i64, y as i64);
+        if in_rect(x, y, 30, 0, 2, 2) { c4 }
+        else if in_rect(x, y, 0, 20, 32, 4) { c3 }
+        else if in_rect(x, y, 2, 12, 20, 5) { c2 }
+        else if in_rect(x, y, 10, 2, 12, 5) { c1 }
+        else { PAPER }
+    }))?;
+    fb.push_clip(Rect::new(0, 0, 10, 10));
+    fb.push_clip(Rect::new(20, 20, 5, 5));
+    ensure(fb.clip().w <= 0 || fb.clip().h <= 0, "4", format!("disjoint nested clips gave {:?}; their intersection is empty", fb.clip()))
 }
 
 fn raster_clip_empty() -> CaseResult {
-    missing("the clip stack (FrameBuf::push_clip and pop_clip)", "4, 6")
+    let clips: [(&str, &[Rect]); 4] = [
+        ("(5, 5, 0, 10)", &[Rect::new(5, 5, 0, 10)]),
+        ("(5, 5, 10, -1)", &[Rect::new(5, 5, 10, -1)]),
+        ("(40, 2, 5, 5) outside the surface", &[Rect::new(40, 2, 5, 5)]),
+        ("(0, 0, 10, 10) then (20, 20, 5, 5)", &[Rect::new(0, 0, 10, 10), Rect::new(20, 20, 5, 5)]),
+    ];
+    for (what, rects) in clips {
+        for (name, call) in clip_calls() {
+            let g = padded(32, 24);
+            let mut fb = g.fb();
+            for &r in rects {
+                fb.push_clip(r);
+            }
+            call(&mut fb);
+            step("4", g.compare(&format!("{name} with the empty clip {what}"), |_, _| PAPER))?;
+            let d = dirty(&mut fb);
+            ensure(d.is_none(), "4, 6", format!("{name} with the empty clip {what} marked {d:?}; an empty clip marks no damage"))?;
+        }
+    }
+    Ok(())
 }
 
 fn raster_rounded_rect() -> CaseResult {
-    missing("libgfx rounded_rect", "5.6")
+    for (x, y, w, h, radius) in [(2, 3, 26, 18, 6), (0, 0, 9, 9, 100), (5, 5, 1, 7, 3), (-4, -6, 25, 30, 9), (3, 3, 12, 5, 0), (1, 2, 30, 21, 15), (20, 15, 20, 20, 7)] {
+        let r = (radius as i64).min(w as i64 / 2).min(h as i64 / 2);
+        let (xl, yl, wl, hl) = (x as i64, y as i64, w as i64, h as i64);
+        // The corner predicate of section 5.6, mirrored to all four corners.
+        let corner = |p: i64, lo: i64, len: i64| if p < lo + r { Some(2 * (lo + r - p) - 1) } else if p >= lo + len - r { Some(2 * (p - (lo + len - r)) + 1) } else { None };
+        exact("5.6", &format!("rounded_rect({x}, {y}, {w}, {h}, {radius})"), 32, 24,
+            |fb| shapes::rounded_rect(fb, x, y, w, h, radius, INK),
+            |px, py| in_rect(px, py, xl, yl, wl, hl) && match (corner(px, xl, wl), corner(py, yl, hl)) {
+                (Some(u), Some(v)) if r > 0 => u * u + v * v <= 4 * r * r,
+                _ => true,
+            })?;
+        let g = padded(32, 24);
+        let mut fb = g.fb();
+        shapes::rounded_rect(&mut fb, x, y, w, h, radius, INK);
+        let (got, want) = (dirty(&mut fb), on_surface(xl, yl, wl, hl));
+        ensure(got == want, "6", format!("rounded_rect({x}, {y}, {w}, {h}, {radius}) marked {got:?}; the contract gives {want:?}"))?;
+    }
+    Ok(())
 }
 
 fn raster_gradient() -> CaseResult {
-    missing("libgfx gradient_v", "5.7")
+    let (top, bottom) = (Color::rgb(250, 0, 17), Color::rgb(3, 255, 200));
+    for (x, y, w, h) in [(0, 0, 32, 1), (0, 0, 32, 2), (3, 4, 9, 3), (0, 0, 32, 24), (-3, 2, 10, 7), (5, -100, 20, 300), (1, 1, 30, 256)] {
+        let (xl, yl, hl) = (x as i64, y as i64, h as i64);
+        let colour = |py: i64| {
+            let i = py - yl;
+            let ch = |t: u8, b: u8| if hl == 1 { t } else { ((t as i64 * (hl - 1 - i) + b as i64 * i + (hl - 1) / 2) / (hl - 1)) as u8 };
+            Color::rgb(ch(top.r, bottom.r), ch(top.g, bottom.g), ch(top.b, bottom.b))
+        };
+        let g = padded(32, 24);
+        let mut fb = g.fb();
+        shapes::gradient_v(&mut fb, x, y, w, h, top, bottom);
+        step("5.7", g.compare(&format!("gradient_v({x}, {y}, {w}, {h})"),
+            |px, py| if in_rect(px as i64, py as i64, xl, yl, w as i64, hl) { colour(py as i64) } else { PAPER }))?;
+        let (got, want) = (dirty(&mut fb), on_surface(xl, yl, w as i64, hl));
+        ensure(got == want, "6", format!("gradient_v({x}, {y}, {w}, {h}) marked {got:?}; the contract gives {want:?}"))?;
+    }
+    Ok(())
 }
 
 /// The damage a primitive must mark on a 32 × 24 surface with no clip (section 6).
@@ -612,7 +1073,40 @@ fn raster_damage_sound() -> CaseResult {
 }
 
 fn raster_surface_owned() -> CaseResult {
-    missing("FrameBuf::new (a surface that owns its memory)", "3")
+    let allocated0 = ALLOC_BYTES.load(Relaxed);
+    let fb = FrameBuf::new(13, 7, Format::BGRX).cite("3")?;
+    let allocated = ALLOC_BYTES.load(Relaxed) - allocated0;
+    ensure((fb.width, fb.height, fb.stride, fb.bpp) == (13, 7, 52, 4), "3", format!(
+        "FrameBuf::new(13, 7, BGRX) is {} x {} with stride {} and {} bytes per pixel; the contract gives 13 x 7, stride 52, 4",
+        fb.width, fb.height, fb.stride, fb.bpp))?;
+    ensure(allocated >= 52 * 7, "3", format!("FrameBuf::new(13, 7, BGRX) allocated {allocated} bytes for its 364 bytes of pixels"))?;
+    // SAFETY: an owned 13 × 7 BGRX surface spans stride × height = 364 bytes.
+    let bytes = unsafe { std::slice::from_raw_parts(fb.raw_ptr(), 364) };
+    if let Some(i) = bytes.iter().position(|&b| b != 0) {
+        return at("3", format!("byte {i} of a new surface is {:#04x}; the contract clears it to zero", bytes[i]));
+    }
+    let freed_before_drop = FREE_BYTES.load(Relaxed);
+    drop(fb);
+    let freed = FREE_BYTES.load(Relaxed) - freed_before_drop;
+    ensure(freed >= 364, "3", format!("dropping the owned 13 x 7 surface freed {freed} bytes; it owns 364"))?;
+    let mut fb = FrameBuf::new_filled(13, 7, Format::RGB, INK).cite("3")?;
+    ensure(fb.stride == 39, "3", format!("FrameBuf::new_filled(13, 7, RGB) has stride {}; the contract gives width x bpp = 39", fb.stride))?;
+    for y in 0..7 {
+        for x in 0..13 {
+            // SAFETY: (x, y) is inside the owned 3-byte surface.
+            let p = unsafe { std::slice::from_raw_parts(fb.raw_ptr().add(y * 39 + x * 3), 3) };
+            if p != [INK.r, INK.g, INK.b] {
+                return at("2, 3", format!("pixel ({x},{y}) of new_filled(13, 7, RGB, {}) holds bytes {p:02x?}", hex(INK)));
+            }
+        }
+    }
+    shapes::fill_rect(&mut fb, 2, 3, 4, 2, PAPER);
+    ensure(fb.get_pixel(3, 4) == PAPER && fb.get_pixel(6, 4) == INK, "3", "a fill_rect on an owned surface did not draw where it should")?;
+    let fb = FrameBuf::new_filled(5, 2, Format::BGRX, INK).cite("3")?;
+    // SAFETY: an owned 5 × 2 BGRX surface spans 40 bytes.
+    let bytes = unsafe { std::slice::from_raw_parts(fb.raw_ptr(), 40) };
+    ensure(bytes.chunks(4).all(|p| p == [INK.b, INK.g, INK.r, 0xFF]), "2, 3",
+        format!("new_filled(5, 2, BGRX, {}) holds {bytes:02x?}; every pixel is B, G, R, 0xFF", hex(INK)))
 }
 const LINE_TABLE: &[((i32, i32, i32, i32), &[(i32, i32)])] = &[
     ((0, 0, 7, 3), &[(0, 0), (1, 0), (2, 1), (3, 1), (4, 2), (5, 2), (6, 3), (7, 3)]),
