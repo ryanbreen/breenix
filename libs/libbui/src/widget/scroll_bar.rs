@@ -69,8 +69,6 @@ pub struct ScrollBar {
     dragging: bool,
     /// Y offset within the thumb where the drag began.
     drag_anchor: i32,
-    enabled: bool,
-    redraw: bool,
 }
 
 impl ScrollBar {
@@ -92,8 +90,6 @@ impl ScrollBar {
             offset: 0,
             dragging: false,
             drag_anchor: 0,
-            enabled: true,
-            redraw: false,
         }
     }
 
@@ -123,38 +119,15 @@ impl ScrollBar {
     ///
     /// Each unit corresponds to approximately 3 rows of 13px text (about 40px).
     pub fn scroll(&mut self, delta_y: i32) {
-        let before = self.offset;
-        if self.enabled {
-            self.offset = (i64::from(self.offset) - i64::from(delta_y) * 40)
-                .clamp(0, i64::from(self.max_scroll())) as i32;
-        }
-        self.redraw = before != self.offset;
+        self.offset -= delta_y * 40;
+        self.clamp_offset();
     }
 
     /// Process mouse input for drag interaction.
     ///
     /// Returns `true` if the scrollbar consumed the event (the caller should
     /// not pass this input to widgets behind the scrollbar).
-    pub fn last_update_redraw(&self) -> bool {
-        self.redraw
-    }
-    pub fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
-        if !enabled {
-            self.dragging = false;
-        }
-    }
     pub fn update(&mut self, input: &InputState) -> bool {
-        self.redraw = false;
-        if !self.enabled {
-            return false;
-        }
-        let before = (self.offset, self.dragging);
-        let consumed = self.update_inner(input);
-        self.redraw = before != (self.offset, self.dragging);
-        consumed
-    }
-    fn update_inner(&mut self, input: &InputState) -> bool {
         let max_scroll = self.max_scroll();
         if max_scroll <= 0 {
             self.dragging = false;
@@ -207,14 +180,7 @@ impl ScrollBar {
 
         // Track background
         let track_color = Color::rgb(40, 42, 48);
-        shapes::fill_rect(
-            fb,
-            self.rect.x,
-            self.rect.y,
-            self.rect.w,
-            self.rect.h,
-            track_color,
-        );
+        shapes::fill_rect(fb, self.rect.x, self.rect.y, self.rect.w, self.rect.h, track_color);
 
         // Thumb — inset by 2px on sides, 1px top/bottom for a rounded appearance
         let thumb = self.thumb_rect();
@@ -264,13 +230,14 @@ impl ScrollBar {
         // Thumb height proportional to visible fraction of total content
         let ratio = self.view_height as f32 / self.content_height as f32;
         let thumb_h = ((ratio * self.rect.h as f32) as i32)
-            .max(20) // minimum 20px so it's always clickable
+            .max(20)      // minimum 20px so it's always clickable
             .min(self.rect.h);
 
         // Thumb Y position proportional to scroll offset
         let track_range = self.rect.h - thumb_h;
         let thumb_y = if max_scroll > 0 {
-            self.rect.y + (self.offset as f32 / max_scroll as f32 * track_range as f32) as i32
+            self.rect.y
+                + (self.offset as f32 / max_scroll as f32 * track_range as f32) as i32
         } else {
             self.rect.y
         };

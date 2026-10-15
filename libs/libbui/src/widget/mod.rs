@@ -7,7 +7,6 @@ pub mod panel;
 pub mod scroll_bar;
 pub mod slider;
 pub mod tab_bar;
-pub mod text_field;
 
 use libgfx::color::Color;
 use libgfx::framebuf::FrameBuf;
@@ -25,7 +24,13 @@ pub trait Widget {
 }
 
 /// Draw a filled background for a widget, selecting color based on hover/pressed state.
-pub fn draw_widget_bg(fb: &mut FrameBuf, rect: &Rect, theme: &Theme, hovered: bool, pressed: bool) {
+pub fn draw_widget_bg(
+    fb: &mut FrameBuf,
+    rect: &Rect,
+    theme: &Theme,
+    hovered: bool,
+    pressed: bool,
+) {
     let bg = if pressed {
         theme.widget_bg_active
     } else if hovered {
@@ -39,16 +44,4 @@ pub fn draw_widget_bg(fb: &mut FrameBuf, rect: &Rect, theme: &Theme, hovered: bo
 /// Draw a border around a widget rectangle.
 pub fn draw_widget_border(fb: &mut FrameBuf, rect: &Rect, color: Color) {
     shapes::draw_rect(fb, rect.x, rect.y, rect.w, rect.h, color);
-}
-
-/// Draw the contract focus perimeter, two pixels outside the widget bounds.
-pub fn draw_focus_ring(fb: &mut FrameBuf, rect: &Rect, theme: &Theme) {
-    shapes::draw_rect(
-        fb,
-        rect.x - 2,
-        rect.y - 2,
-        rect.w + 4,
-        rect.h + 4,
-        theme.focus_ring,
-    );
 }

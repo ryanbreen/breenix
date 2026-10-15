@@ -8,7 +8,6 @@
 
 extern crate alloc;
 
-pub mod focus;
 pub mod input;
 pub mod layout;
 pub mod rect;
@@ -17,6 +16,6 @@ pub mod text;
 pub mod theme;
 pub mod widget;
 
-pub use input::{InputState, Key, KeyInput, WidgetEvent};
+pub use input::{InputState, WidgetEvent};
 pub use rect::Rect;
 pub use theme::Theme;

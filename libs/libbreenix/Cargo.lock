@@ -7,7 +7,6 @@ name = "libbreenix"
 version = "0.1.0"
 dependencies = [
  "libgfx",
- "libpixcheck",
 ]
 
 [[package]]
@@ -21,10 +20,6 @@ dependencies = [
  "libfont",
  "noto-sans-mono-bitmap",
 ]
-
-[[package]]
-name = "libpixcheck"
-version = "0.1.0"
 
 [[package]]
 name = "noto-sans-mono-bitmap"

@@ -8,9 +8,6 @@ use crate::widget;
 
 /// A clickable button with a text label.
 pub struct Button {
-    enabled: bool,
-    focused: bool,
-    redraw: bool,
     pub rect: Rect,
     pub label: &'static [u8],
     hovered: bool,
@@ -20,9 +17,6 @@ pub struct Button {
 impl Button {
     pub fn new(rect: Rect, label: &'static [u8]) -> Self {
         Self {
-            enabled: true,
-            focused: false,
-            redraw: false,
             rect,
             label,
             hovered: false,
@@ -32,29 +26,6 @@ impl Button {
 
     /// Process input and return `WidgetEvent::Clicked` on click.
     pub fn update(&mut self, input: &InputState) -> WidgetEvent {
-        self.redraw = false;
-        if !self.enabled {
-            return WidgetEvent::None;
-        }
-        let before = (self.hovered, self.pressed);
-        let result = self.update_inner(input);
-        self.redraw = before != (self.hovered, self.pressed);
-        result
-    }
-    pub fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
-        if !enabled {
-            self.pressed = false;
-            self.hovered = false;
-        }
-    }
-    pub fn set_focused(&mut self, focused: bool) {
-        self.focused = focused;
-    }
-    pub fn last_update_redraw(&self) -> bool {
-        self.redraw
-    }
-    fn update_inner(&mut self, input: &InputState) -> WidgetEvent {
         self.hovered = self.rect.contains(input.mouse_x, input.mouse_y);
 
         if self.hovered && input.mouse_pressed {
@@ -76,20 +47,7 @@ impl Button {
     pub fn draw(&self, fb: &mut FrameBuf, theme: &Theme) {
         widget::draw_widget_bg(fb, &self.rect, theme, self.hovered, self.pressed);
         widget::draw_widget_border(fb, &self.rect, theme.border);
-        text::draw_text_centered(
-            fb,
-            self.label,
-            &self.rect,
-            if self.enabled {
-                theme.text_primary
-            } else {
-                theme.text_secondary
-            },
-            theme,
-        );
-        if self.focused && self.enabled {
-            crate::widget::draw_focus_ring(fb, &self.rect, theme);
-        }
+        text::draw_text_centered(fb, self.label, &self.rect, theme.text_primary, theme);
     }
 
     /// Convenience: update and return true if clicked.
