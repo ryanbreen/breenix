@@ -552,7 +552,7 @@ file's error.
   `BadPaletteIndex`. Zero width or height and unknown compression, filter or interlace methods are
   `BadHeader`; a bad signature is `BadSignature`; a cut-off stream is `Truncated`.
 - **Limits**: section 7's dimension limits (`TooLarge`, before inflating) and decompressed size (`Bomb`).
-- `encode(image) -> Vec<u8>` writes RGB (opaque images) or RGBA at depth 8, filter 0 on every row, one
+- `encode(image) -> Result<Vec<u8>, PngError>` writes RGB (opaque images) or RGBA at depth 8, filter 0 on every row, one
   IDAT of stored or fixed-Huffman deflate blocks in a zlib stream with a correct Adler-32, and correct
   CRCs. Encoding the same image twice gives identical bytes. Images past the dimension limits are refused
   with `TooLarge`.
