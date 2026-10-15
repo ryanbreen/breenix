@@ -107,6 +107,32 @@ fn reload_is_paced_independent_atomic_and_tracks_inode_replacements() {
             display: false
         }))
     );
+    // A client can be drawing with a taken font while a reload is applied.
+    // Returning that old font must not replace the newly published one.
+    let held = w.take_mono_font().unwrap();
+    std::fs::write(
+        dir.join("replacement"),
+        include_bytes!("../../../fonts/DejaVuSansMono.ttf"),
+    )
+    .unwrap();
+    std::fs::rename(dir.join("replacement"), &mono).unwrap();
+    step(2_500_000_000);
+    assert_eq!(
+        w.poll(),
+        Ok(Some(FontChange {
+            mono: true,
+            display: false
+        }))
+    );
+    let glyph = w.mono_font().unwrap().glyph_index('W');
+    let new_advance = w.mono_font().unwrap().advance_width(glyph, 24.0);
+    assert_ne!(held.advance_width(held.glyph_index('W'), 24.0), new_advance);
+    w.put_mono_font(Some(held));
+    assert_eq!(
+        w.mono_font().unwrap().advance_width(glyph, 24.0),
+        new_advance,
+        "returning an old client font overwrote the reload"
+    );
     assert_eq!(clock::real_clock_reads(), 0);
     std::env::remove_var("BREENIX_UI_CLOCK");
     std::env::remove_var("BREENIX_CONFIG_ROOT");

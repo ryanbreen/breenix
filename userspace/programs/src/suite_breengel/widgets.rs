@@ -456,6 +456,7 @@ fn text_fontwatch_independent() -> CaseResult {
         "9.3",
         "display reload changed mono pixels or failed to change display pixels",
     )?;
+    let held_mono = w.take_mono_font();
     f.config("display.ttf", 16, "mono.ttf", 24).cite("9.2")?;
     let display = watch_frame(&mut w, false);
     f.step(500_000_000).cite("9.1")?;
@@ -468,6 +469,9 @@ fn text_fontwatch_independent() -> CaseResult {
         "9.3",
         "mono change was not independent",
     )?;
+    w.put_mono_font(held_mono);
+    let reloaded_mono = watch_frame(&mut w, true);
+    f.assert_frame(&reloaded_mono, "display.ttf", 16.0)?;
     ensure(
         same_pixels(&display, &watch_frame(&mut w, false)).is_none(),
         "9.3",
