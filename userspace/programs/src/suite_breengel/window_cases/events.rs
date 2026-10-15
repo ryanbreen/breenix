@@ -398,6 +398,8 @@ fn events_serial() -> CaseResult {
         all.extend(serials);
     }
     ensure(all.windows(2).all(|p| p[1] > p[0]), "19.3", format!("serials across writes do not increase strictly: {all:?}"))?;
+    // One compositor at a time: this one goes before the Breengel check claims its own.
+    drop(k);
     let (mut bw_k, mut bw) = setup(b"serial")?;
     let s = send(&mut bw_k, bw.id(), &[key(kind::KEY_PRESS, 30)]).cite("19.3")?;
     let got = collect(&mut bw, 1, Handled::NoChange)?;

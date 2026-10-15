@@ -772,19 +772,26 @@ fn windows_resize_rlimit() -> CaseResult {
     child("the limited child", 10_000, None, || {
         let w = W::new(64, 64, 2).map_err(|e| format!("{e:?}"))?;
         w.frame(9)?;
+        let _ = read_events(w.id());
+        // VmSize is read just before and just after the RESIZE, so this child's own allocations
+        // (libc keeps small blocks mapped for reuse) fall outside the comparison.
+        let _ = vm_size()?;
         let base = vm_size()?;
         // Room for a little more, not for two 1024x1024 buffers.
         if set_rlimit_as(base + 1024 * 1024) != 0 {
             return Err(String::from("prlimit(RLIMIT_AS) failed"));
         }
-        let _ = read_events(w.id());
         let mut r = abi::Resize::ZERO;
         r.id = w.id();
         r.width = 1024;
         r.height = 1024;
         let ret = call(op::RESIZE, &mut r);
+        let after = vm_size()?;
         if ret != -(ENOMEM as i64) {
             return Err(format!("RESIZE past RLIMIT_AS {}; the contract gives ENOMEM (section 17.2)", outcome(ret)));
+        }
+        if after != base {
+            return Err(format!("the refused RESIZE changed VmSize from {base} to {after} bytes (section 17.2)"));
         }
         let (_, px) = capture(w.id(), 64, 64, None).map_err(|e| format!("CAPTURE after the refused RESIZE {}", outcome(e)))?;
         if let Some((x, y, _, _)) = first_diff(&px, 64, 64, false, |x, y| pattern(9, x, y)) {
@@ -793,10 +800,6 @@ fn windows_resize_rlimit() -> CaseResult {
         let a = w.acquire(1_000_000_000).map_err(|e| format!("ACQUIRE after the refused RESIZE {}", outcome(e)))?;
         if first_diff(w.buf(a.buffer), 64, 64, false, |x, y| pattern(9, x, y)).is_some() {
             return Err(String::from("after the refused RESIZE an acquired old buffer no longer holds the frame (section 17.2)"));
-        }
-        let after = vm_size()?;
-        if after != base {
-            return Err(format!("the refused RESIZE changed VmSize from {base} to {after} bytes (section 17.2)"));
         }
         let events = read_events(w.id()).map_err(|e| format!("READ_EVENTS {}", outcome(e)))?;
         if !events.iter().any(|e| e.kind == abi::event_kind::RESIZE_FAILED && (e.width, e.height) == (64, 64)) {
@@ -820,6 +823,7 @@ fn windows_resize_rollback() -> CaseResult {
         if slack >= tree.min(piece) {
             return Err(format!("the case's slack of {slack} bytes would fit a piece of {} bytes", tree.min(piece)));
         }
+        let _ = vm_size()?;
         let base = vm_size()?;
         for step in 0..4u64 {
             let room = if step < 3 { step * piece } else { 3 * piece } + slack;
@@ -840,6 +844,9 @@ fn windows_resize_rollback() -> CaseResult {
         if set_rlimit_as(u64::MAX) != 0 { return Err(String::from("prlimit(RLIMIT_AS) failed")); }
         let w = W::new(256, 256, 3).map_err(|e| format!("{e:?}"))?;
         w.frame(4)?;
+        // The capture buffer is allocated before any limit is set.
+        let mut px = vec![0u8; 256 * 256 * 4];
+        let _ = vm_size()?;
         let base = vm_size()?;
         let big = 512 * 512 * 4u64;
         for step in 0..3u64 {
@@ -856,7 +863,14 @@ fn windows_resize_rollback() -> CaseResult {
             if now != base {
                 return Err(format!("RESIZE refused at step {step} left VmSize {now} where it was {base} (section 17.2)"));
             }
-            let (_, px) = capture(w.id(), 256, 256, None).map_err(|e| format!("CAPTURE {}", outcome(e)))?;
+            let mut c = abi::Capture::ZERO;
+            c.id = w.id();
+            c.dst = px.as_mut_ptr() as u64;
+            c.dst_len = px.len() as u64;
+            let got = call(op::CAPTURE, &mut c);
+            if got < 0 {
+                return Err(format!("CAPTURE after the refused RESIZE {}", outcome(got)));
+            }
             if first_diff(&px, 256, 256, false, |x, y| pattern(4, x, y)).is_some() {
                 return Err(format!("RESIZE refused at step {step} changed the window's pixels (section 17.2)"));
             }

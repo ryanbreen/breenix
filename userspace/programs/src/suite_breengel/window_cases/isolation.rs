@@ -457,11 +457,9 @@ fn isolation_pid_reuse() -> CaseResult {
 
 fn isolation_efault_create() -> CaseResult {
     interface()?;
-    let allocs = counter("window_buffer_allocs").cite("18")?;
-    let vm = vm_size().cite("17.2")?;
-    let r = call_at(op::CREATE, unmapped(), core::mem::size_of::<abi::Create>());
-    want_errno(r, EFAULT, "17.5", "CREATE with an unmapped argument")?;
     // A valid request in a read-only page: the kernel reads it but cannot write the result.
+    // The page and the unmapped address are made before the baseline is taken.
+    let bad = unmapped();
     let page = Pages::filled(1, 0, false, |b| {
         let mut c = abi::Create::ZERO;
         c.width = 32;
@@ -470,6 +468,11 @@ fn isolation_efault_create() -> CaseResult {
         // SAFETY: Create is plain data and the page holds at least its size.
         unsafe { core::ptr::write_unaligned(b.as_mut_ptr() as *mut abi::Create, c) };
     }).cite("17.5")?;
+    let _ = vm_size();
+    let allocs = counter("window_buffer_allocs").cite("18")?;
+    let vm = vm_size().cite("17.2")?;
+    let r = call_at(op::CREATE, bad, core::mem::size_of::<abi::Create>());
+    want_errno(r, EFAULT, "17.5", "CREATE with an unmapped argument")?;
     let r = call_at(op::CREATE, page.addr(), core::mem::size_of::<abi::Create>());
     want_errno(r, EFAULT, "17.5", "CREATE whose argument is read-only")?;
     let allocs_after = counter("window_buffer_allocs").cite("18")?;
