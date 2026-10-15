@@ -20,7 +20,7 @@ class TemplatesTest(unittest.TestCase):
         self.sdk.mkdir()
         (self.sdk / 'VERSION').write_text('breenix-sdk 0.1.0 ' + 'a' * 40 + '\n')
         env = dict(os.environ, SDK_ROOT=str(ROOT), SDK_STAGE=str(self.sdk))
-        subprocess.run(['/bin/sh', str(ROOT / 'sdk/build/stages/60-templates.sh')], env=env, check=True)
+        subprocess.run(['/bin/sh', str(ROOT / 'sdk/builder/stages/60-templates.sh')], env=env, check=True)
 
     def tool(self, name, *args, cwd=None):
         return subprocess.run([str(self.sdk / 'bin' / ('breenix-' + name)), *map(str, args)],

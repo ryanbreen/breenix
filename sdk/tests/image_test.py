@@ -172,7 +172,7 @@ class ImageTests(unittest.TestCase):
         (stage / 'share/breenix-sdk/libexec').mkdir(parents=True)
         commit = 'a' * 40
         (stage / 'VERSION').write_text('breenix-sdk 0.1.0 ' + commit + '\n')
-        subprocess.run(['/bin/sh', str(ROOT / 'sdk/build/stages/50-image.sh')], check=True,
+        subprocess.run(['/bin/sh', str(ROOT / 'sdk/builder/stages/50-image.sh')], check=True,
                        env={**os.environ, 'SDK_ROOT': str(ROOT), 'SDK_STAGE': str(stage)})
         moved = self.root / 'relocated'
         stage.rename(moved)
