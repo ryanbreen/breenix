@@ -21,6 +21,7 @@
 //! reports the quantities it asserts on as VALUE records, and each wait of 100 ms or more
 //! on a sleep or timer as a WAIT record.
 use libbreenix::io;
+use libbreenix::memory::{self, MAP_ANONYMOUS, MAP_SHARED, PROT_READ, PROT_WRITE};
 use libbreenix::process::{self, ForkResult};
 use libbreenix::signal::Sigaction;
 use libbreenix::suite::{case, case_ms_left, category, check, fail, pulses, skip, suite, value, wait_for, CaseError, CaseResult, Suite};
@@ -2457,39 +2458,75 @@ fn clobber_fp_registers() {
     }
 }
 
+/// A count shared with forked children, on a page of its own.
+struct SharedCount { page: *mut u8 }
+
+impl SharedCount {
+    fn new() -> Result<SharedCount, CaseError> {
+        let page = memory::mmap(core::ptr::null_mut(), 4096, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0)?;
+        Ok(SharedCount { page })
+    }
+
+    fn word(&self) -> &AtomicU64 {
+        // SAFETY: the page is mapped, aligned and zero-filled for as long as `self` lives.
+        unsafe { &*(self.page as *const AtomicU64) }
+    }
+
+    fn get(&self) -> u64 { self.word().load(Ordering::SeqCst) }
+    fn add(&self) { self.word().fetch_add(1, Ordering::SeqCst); }
+}
+
+impl Drop for SharedCount {
+    fn drop(&mut self) { let _ = memory::munmap(self.page, 4096); }
+}
+
 /// timeout(1)'s escalation (#1579): a process leading its own process group, with the
 /// signal it sends blocked in itself, signals the group and re-arms ITIMER_REAL with a
 /// value it held in a floating-point register across its wait for the previous expiry,
 /// while the utility in its group computes in floating point on the same processor.
-/// Every re-armed timer fires, no earlier than its value and late by at most LATE_MS.
+/// Every wait must return the register as it went in, the utility must have filled its
+/// registers during every wait, and every re-armed timer fires, no earlier than its value
+/// and late by at most LATE_MS.
 fn it_rearm_group_signal() -> CaseResult {
     zero("setpgid(0, 0)", sc(nr::SETPGID, &[0, 0]))?;
     block(bit(SIGALRM) | bit(SIGUSR1))?;
     let cpu = getcpu()?;
     let mask = [1u64 << cpu];
     zero(&format!("sched_setaffinity(processor {cpu})"), sc(nr::SCHED_SETAFFINITY, &[0, 8, mask.as_ptr() as u64]))?;
+    // The utility counts each fill of its registers once the fill is done.
+    let fills = SharedCount::new()?;
     let _utility = Child::start(|| loop {
         clobber_fp_registers();
+        fills.add();
         nap();
     })?;
     let mut rearms = 0;
     let mut worst = 0;
     let mut failure = None;
+    let held_us = REARM_MS * 1000;
     // Each re-arm uses what the register held across the previous wait.
-    let mut armed_us = REARM_MS * 1000;
+    let mut armed_us = held_us;
     while rearms < REARMS && failure.is_none() && case_ms_left() > CLEANUP_MS + 1000 {
         let start = mono();
         let armed = setitimer(ITIMER_REAL, &itv(0, armed_us), None);
         if armed != 0 {
-            failure = Some(format!("re-arm {rearms}: setitimer(ITIMER_REAL, {armed_us} us) failed with {}; the register held {} us across the wait", shown(armed), REARM_MS * 1000));
+            failure = Some(format!("re-arm {rearms}: setitimer(ITIMER_REAL, {armed_us} us) failed with {}", shown(armed)));
             break;
         }
-        let (ret, held) = await_alarm_holding((REARM_MS * 1000) as u64);
+        let before = fills.get();
+        let (ret, held) = await_alarm_holding(held_us as u64);
+        // Two counts after `before` bracket a whole fill that began after it, while
+        // this process was in its wait or about to enter it.
+        let filled = fills.get() - before;
         let elapsed = mono() - start;
         let late = elapsed - armed_us * 1000;
         worst = worst.max(late);
         failure = if ret != SIGALRM as i64 {
             Some(format!("re-arm {rearms}: no SIGALRM {} ms after arming ITIMER_REAL for {armed_us} us (sigtimedwait returned {})", elapsed / MS, shown(ret)))
+        } else if held != held_us as u64 {
+            Some(format!("re-arm {rearms}: the register went into the wait holding {held_us} and came back holding {}", held as i64))
+        } else if filled < 2 {
+            Some(format!("re-arm {rearms}: the utility filled its registers {filled} times during the wait, not at least twice"))
         } else if late < 0 {
             Some(format!("re-arm {rearms}: SIGALRM came {} us after arming, before the {armed_us} us asked for", elapsed / 1000))
         } else if late > LATE_MS * MS {
