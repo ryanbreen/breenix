@@ -1357,7 +1357,8 @@ pub(crate) fn setup_idle_return(interrupt_frame: &mut InterruptStackFrame) {
 
         // NOTE: We do NOT switch page tables here. The userspace process page table
         // already has all kernel mappings (code, stacks, etc.) so we can run
-        // kernel code (idle loop) with it.
+        // kernel code (idle loop) with it. The idle loop leaves it before it
+        // halts.
 
         // Idle never returns to user mode, so this CPU's user-return CR3 now
         // names nothing it will load. Left set, it would keep a dead process's
@@ -1998,6 +1999,12 @@ pub fn idle_loop() -> ! {
                 core::arch::asm!("int {vector}", vector = const super::RESCHEDULE_VECTOR);
             }
         }
+        // Leave the user root this CPU last ran on before halting. A halted
+        // CPU that still has it loaded is a target of every flush and release
+        // of that address space, and a halted vCPU answers only once its host
+        // runs it again: initiators waited up to 265 ms on the x86 gate. The
+        // next dispatch of a user thread loads its own root.
+        crate::memory::tlb::load_kernel_root(crate::per_cpu::cpu_id());
         // CRITICAL: Use enable_and_hlt() instead of just hlt()
         // This atomically enables interrupts and halts, preventing race conditions
         // where interrupts might be disabled when we enter this loop.
