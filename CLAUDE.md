@@ -343,15 +343,15 @@ Breenix will not port, vendor or link musl, glibc, newlib, bionic or any other e
 - Linux syscall numbers and struct layouts are interface facts and may come from the published ABI headers
   or kernel documentation; implementations may not.
 - `libs/libbreenix-libc` is the seed. Rust std on Breenix and the SDK will sit on this library.
-- Today's musl-built BusyBox (scripts/build-busybox.sh, the pinned gate BusyBox from #1108) is a temporary
-  stand-in so the coreutils stages can run; it is replaced once our libc can build those programs, and no new
-  work may take a dependency on musl or glibc.
+- The Shell & POSIX utilities image builder installs BusyBox built against clean-room
+  `libbreenix-libc` in `/bin` and `/sbin`. The musl stand-in is retired by this effort;
+  no new work may take a dependency on musl or glibc.
 - Acceptance includes BusyBox (operator, 2026-10-07): the libc suite's `busybox` category (the libc effort's
   "BusyBox built on our libc" milestone) compiles BusyBox applets against Breenix's own libc and runs a usage
   test for each one on every target. The applet list starts small and grows over time, and every applet's
   result is tracked separately: compiles, links, and passes its usage tests. An applet that does not compile is
-  a recorded failing case, not a silently dropped one. When the full BusyBox applet set compiles and passes,
-  the musl-built BusyBox stand-in is retired.
+  a recorded failing case, not a silently dropped one. Installed applets come from this build;
+  the retired musl stand-in must not return as a fallback.
 
 ### Stage 4: Shell - 📋 Planned
 Requires: Stage 3, filesystem syscalls, pipe/dup

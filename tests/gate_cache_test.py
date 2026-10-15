@@ -124,7 +124,7 @@ class CacheTests(unittest.TestCase):
             self.assertEqual(build.call_count, 2)
 
     def test_content_key_tracks_source_script_busybox_toolchain_and_external_library(self):
-        names = ['Cargo.lock', 'userspace/programs/Cargo.lock', 'userspace/source.rs', 'scripts/create_ext2_disk.sh', 'scripts/libc-clean-archive.py', 'vendor/busybox/manifest.json', 'rust-toolchain.toml']
+        names = ['Cargo.lock', 'userspace/programs/Cargo.lock', 'userspace/source.rs', 'scripts/create_ext2_disk.sh', 'scripts/install-libc-busybox.sh', 'scripts/libc-clean-archive.py', 'vendor/busybox/manifest.json', 'rust-toolchain.toml']
         for name in names:
             path = self.repo / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -137,7 +137,7 @@ class CacheTests(unittest.TestCase):
         compiler.write_bytes(b'compiler bytes')
         def output(command, **kwargs):
             if 'ls-files' in command:
-                return b'\0'.join(name.encode() for name in names)
+                return b'\0'.join(name.encode() for name in names if any(name == selected or name.startswith(selected + '/') for selected in command[command.index('--') + 1:]))
             if command[:2] == ['rustup', 'which']:
                 return str(compiler)
             if '--print' in command or '--tool-dir' in command:
@@ -163,6 +163,21 @@ class CacheTests(unittest.TestCase):
             alias.symlink_to(library, target_is_directory=True)
             with patch.dict(os.environ, BREENIX_RUST_FORK_LIBRARY=str(alias)):
                 self.assertNotEqual(previous, artifacts.key(self.repo))
+
+    def test_repack_uses_breenix_userspace_without_foreign_busybox_installer(self):
+        disk = self.repo / 'testdata/ext2.img'
+        disk.parent.mkdir()
+        disk.write_bytes(b'disk')
+        (self.repo / 'target').mkdir()
+        with patch.dict(os.environ, CARGO_HOME=str(self.root / 'cargo')), \
+                patch.object(artifacts, 'checked') as checked, \
+                patch.object(artifacts, 'canonical_ext2'):
+            artifacts.build(self.repo, self.logs, 'candidate')
+        commands = [call.args[0] for call in checked.call_args_list]
+        self.assertEqual(len(commands), 3)
+        self.assertIn('build.sh', ' '.join(commands[0]))
+        self.assertEqual(commands[1][-1], 'create-test-disk')
+        self.assertEqual(commands[2], [str(self.repo / 'scripts/create_ext2_disk.sh')])
 
     def test_eviction_skips_leased_entries_and_removes_old_idle_entry(self):
         os.utime(self.repo, (1, 1))

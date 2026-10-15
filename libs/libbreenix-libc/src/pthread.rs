@@ -168,6 +168,7 @@ struct Thread {
     mapping_len: usize,
     tp: usize,
     errno: i32,
+    h_errno: i32,
     locale: *mut core::ffi::c_void,
     cancel: AtomicU32,
     cleanup: *mut cancel::Cleanup,
@@ -182,6 +183,7 @@ static REGISTRY: Lock = Lock::new();
 static PROCESS: AtomicU32 = AtomicU32::new(0);
 static RUNTIME_READY: AtomicBool = AtomicBool::new(false);
 static mut EARLY_ERRNO: i32 = 0;
+static mut EARLY_H_ERRNO: i32 = 0;
 static mut HEAD: *mut Thread = null_mut();
 static mut TLS_IMAGE: *const u8 = null();
 static mut TLS_FILE: usize = 0;
@@ -239,6 +241,7 @@ unsafe fn alloc_thread(guard: usize, stack: usize) -> *mut Thread {
             mapping_len: len,
             tp: 0,
             errno: 0,
+            h_errno: 0,
             locale: null_mut(),
             cancel: AtomicU32::new(0),
             cleanup: null_mut(),
@@ -562,6 +565,19 @@ pub extern "C" fn __errno_location() -> *mut i32 {
         core::ptr::addr_of_mut!((*p).errno)
     }
 }
+/// The legacy resolver error belongs to the calling thread, independently of errno.
+#[no_mangle]
+pub extern "C" fn __h_errno_location() -> *mut i32 {
+    unsafe {
+        if !RUNTIME_READY.load(Acquire) {
+            return core::ptr::addr_of_mut!(EARLY_H_ERRNO);
+        }
+        let p = current();
+        if p.is_null() { super::exit_group(127); }
+        core::ptr::addr_of_mut!((*p).h_errno)
+    }
+}
+
 /// Shared error accessors for the clean-room libc modules.
 #[allow(dead_code)] // Published cross-lane API; consumers land independently.
 pub(crate) fn set_errno(e: i32) {

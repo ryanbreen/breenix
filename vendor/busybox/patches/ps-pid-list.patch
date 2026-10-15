@@ -1,0 +1,240 @@
+--- a/procps/ps.c
++++ b/procps/ps.c
+@@ -284,14 +284,27 @@
+ static void func_rss(char *buf, int size, const procps_status_t *ps)
+ {
+ 	put_lu(buf, size, ps->rss);
++}
++
++/* The terminal's name, as ps -t takes it: pts/N, ttyN or console; "?"
++ * for none (a tty field of 0). */
++static void tty_name(char *buf, int size, unsigned major, unsigned minor)
++{
++	if (major >= 136 && major <= 143)
++		snprintf(buf, size, "pts/%u", (major - 136) * 256 + minor);
++	else if (major == 5 && minor == 1)
++		snprintf(buf, size, "console");
++	else if (major == 4)
++		snprintf(buf, size, "tty%u", minor);
++	else if (major)
++		snprintf(buf, size, "%u,%u", major, minor);
++	else
++		snprintf(buf, size, "?");
+ }
+ 
+ static void func_tty(char *buf, int size, const procps_status_t *ps)
+ {
+-	buf[0] = '?';
+-	buf[1] = '\0';
+-	if (ps->tty_major) /* tty field of "0" means "no tty" */
+-		snprintf(buf, size+1, "%u,%u", ps->tty_major, ps->tty_minor);
++	tty_name(buf, size+1, ps->tty_major, ps->tty_minor);
+ }
+ 
+ #if ENABLE_FEATURE_PS_ADDITIONAL_COLUMNS
+@@ -541,22 +554,105 @@
+ 	printf("%.*s\n", terminal_width, buffer);
+ }
+ 
++/* POSIX's default columns: PID, TTY, TIME and CMD. */
+ #if ENABLE_SELINUX
+ # define SELINUX_O_PREFIX "label,"
+-# define DEFAULT_O_STR    (SELINUX_O_PREFIX "pid,user" IF_FEATURE_PS_TIME(",time") ",args")
++# define DEFAULT_O_STR    (SELINUX_O_PREFIX "pid,tty" IF_FEATURE_PS_TIME(",time") ",comm")
+ #else
+-# define DEFAULT_O_STR    ("pid,user" IF_FEATURE_PS_TIME(",time") ",args")
++# define DEFAULT_O_STR    ("pid,tty" IF_FEATURE_PS_TIME(",time") ",comm")
+ #endif
++
++/* POSIX selection: each list option is one argument of items separated by
++ * commas or blanks; an empty list or item is a syntax error. A process is
++ * written if any given option selects it.
++ */
++struct selection {
++	char **items;
++	unsigned *ids;
++	unsigned count;
++};
++
++static void split_lists(llist_t *lists, struct selection *sel)
++{
++	while (lists) {
++		char *s = llist_pop(&lists);
++		int need_item = 1; /* at the start, or after a comma */
++		for (;;) {
++			char sep;
++			s += strspn(s, " \t");
++			if (*s == '\0' || *s == ',') {
++				if (need_item)
++					bb_simple_error_msg_and_die("list syntax error");
++				if (*s++ == '\0')
++					break;
++				need_item = 1;
++				continue;
++			}
++			sel->items = xrealloc_vector(sel->items, 4, sel->count);
++			sel->items[sel->count++] = s;
++			s += strcspn(s, ", \t");
++			sep = *s;
++			if (sep)
++				*s++ = '\0';
++			need_item = (sep == ',');
++			if (!sep)
++				break;
++		}
++	}
++}
+ 
++/* Numeric IDs, or user or group names when `name2id` is given. */
++static void select_ids(llist_t *lists, struct selection *sel, long FAST_FUNC (*name2id)(const char *))
++{
++	unsigned i;
++
++	split_lists(lists, sel);
++	sel->ids = xzalloc(sel->count * sizeof(sel->ids[0]) + 1);
++	for (i = 0; i < sel->count; i++) {
++		const char *item = sel->items[i];
++		if (name2id && item[strspn(item, "0123456789")] != '\0')
++			sel->ids[i] = name2id(item);
++		else
++			sel->ids[i] = xatou(item);
++	}
++}
++
++static int has_id(const struct selection *sel, unsigned id)
++{
++	unsigned i;
++	for (i = 0; i < sel->count; i++)
++		if (sel->ids[i] == id)
++			return 1;
++	return 0;
++}
++
++static int has_tty(const struct selection *sel, const procps_status_t *p)
++{
++	char name[32];
++	unsigned i;
++
++	tty_name(name, sizeof(name), p->tty_major, p->tty_minor);
++	for (i = 0; i < sel->count; i++) {
++		const char *item = sel->items[i];
++		if (is_prefixed_with(item, "/dev/"))
++			item += 5;
++		if (strcmp(item, name) == 0)
++			return 1;
++	}
++	return 0;
++}
++
+ int ps_main(int argc, char **argv) MAIN_EXTERNALLY_VISIBLE;
+ int ps_main(int argc UNUSED_PARAM, char **argv)
+ {
+ 	procps_status_t *p;
+ 	llist_t* opt_o = NULL;
++	llist_t *opt_p = NULL, *opt_g = NULL, *opt_G = NULL;
++	llist_t *opt_t = NULL, *opt_u = NULL, *opt_U = NULL;
++	struct selection pids = {}, sids = {}, rgids = {}, ttys = {}, euids = {}, ruids = {};
++	unsigned self_major = 0, self_minor = 0, written = 0;
+ 	char default_o[sizeof(DEFAULT_O_STR)];
+-#if ENABLE_SELINUX || ENABLE_FEATURE_SHOW_THREADS
+ 	int opt;
+-#endif
+ 	enum {
+ 		OPT_Z = (1 << 0),
+ 		OPT_o = (1 << 1),
+@@ -567,6 +663,13 @@
+ 		OPT_f = (1 << 6),
+ 		OPT_l = (1 << 7),
+ 		OPT_T = (1 << 8) * ENABLE_FEATURE_SHOW_THREADS,
++		OPT_p = (1 << (8 + ENABLE_FEATURE_SHOW_THREADS)),
++		OPT_g = OPT_p << 1,
++		OPT_G = OPT_p << 2,
++		OPT_t = OPT_p << 3,
++		OPT_u = OPT_p << 4,
++		OPT_U = OPT_p << 5,
++		OPT_SELECT = OPT_a | OPT_A | OPT_d | OPT_e | OPT_p | OPT_g | OPT_G | OPT_t | OPT_u | OPT_U,
+ 	};
+ 
+ 	INIT_G();
+@@ -587,15 +690,42 @@
+ 	// -l  Generate a long listing
+ 	// -o col1,col2,col3=header
+ 	//     Select which columns to display
+-	/* We allow (and ignore) most of the above. FIXME.
+-	 * -T is picked for threads (POSIX hasn't standardized it).
++	// -g grouplist  processes whose session leaders are in grouplist
++	// -G grouplist  processes whose real group ID is in grouplist
++	// -p proclist   processes whose process ID is in proclist
++	// -t termlist   processes whose terminal is in termlist
++	// -u userlist   processes whose effective user ID is in userlist
++	// -U userlist   processes whose real user ID is in userlist
++	// With none of these, the processes with the invoker's effective user
++	// ID and controlling terminal. -f and -l are accepted and ignored.
++	/* -T is picked for threads (POSIX hasn't standardized it).
+ 	 * procps v3.2.7 supports -T and shows tids as SPID column,
+ 	 * it also supports -L where it shows tids as LWP column.
+ 	 */
+-#if ENABLE_SELINUX || ENABLE_FEATURE_SHOW_THREADS
+-	opt =
+-#endif
+-		getopt32(argv, "Zo:*aAdefl"IF_FEATURE_SHOW_THREADS("T"), &opt_o);
++	opt = getopt32(argv, "Zo:*aAdefl"IF_FEATURE_SHOW_THREADS("T")"p:*g:*G:*t:*u:*U:*",
++			&opt_o, &opt_p, &opt_g, &opt_G, &opt_t, &opt_u, &opt_U);
++	select_ids(opt_p, &pids, NULL);
++	select_ids(opt_g, &sids, NULL);
++	select_ids(opt_G, &rgids, xgroup2gid);
++	split_lists(opt_t, &ttys);
++	select_ids(opt_u, &euids, xuname2uid);
++	select_ids(opt_U, &ruids, xuname2uid);
++	need_flags |= PSSCAN_PID | PSSCAN_UIDGID | PSSCAN_SID | PSSCAN_TTY;
++	if (opt & (OPT_G | OPT_U))
++		need_flags |= PSSCAN_RUIDGID;
++	if (!(opt & OPT_SELECT)) {
++		/* The invoker's controlling terminal. */
++		pid_t self = getpid();
++		p = NULL;
++		while ((p = procps_scan(p, PSSCAN_PID | PSSCAN_TTY)) != NULL) {
++			if (p->pid == self) {
++				self_major = p->tty_major;
++				self_minor = p->tty_minor;
++				free_procps_scan(p);
++				break;
++			}
++		}
++	}
+ 
+ 	if (opt_o) {
+ 		do {
+@@ -634,10 +764,31 @@
+ 
+ 	p = NULL;
+ 	while ((p = procps_scan(p, need_flags)) != NULL) {
++		int leader = (p->sid == p->pid);
++		if (opt & OPT_SELECT) {
++			if (!(opt & (OPT_A | OPT_e))
++			 && !((opt & OPT_a) && p->tty_major && !leader)
++			 && !((opt & OPT_d) && !leader)
++			 && !has_id(&pids, p->pid)
++			 && !has_id(&sids, p->sid)
++			 && !has_id(&rgids, p->rgid)
++			 && !(ttys.count && has_tty(&ttys, p))
++			 && !has_id(&euids, p->uid)
++			 && !has_id(&ruids, p->ruid)
++			) {
++				continue;
++			}
++		} else if (p->uid != geteuid()
++			|| p->tty_major != self_major || p->tty_minor != self_minor
++		) {
++			continue;
++		}
+ 		format_process(p);
++		written++;
+ 	}
+ 
+-	return EXIT_SUCCESS;
++	/* As procps: no process selected is an error. */
++	return written ? EXIT_SUCCESS : EXIT_FAILURE;
+ }
+ 
+ 

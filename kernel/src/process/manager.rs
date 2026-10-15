@@ -118,6 +118,9 @@ pub(crate) struct PreparedExecImage {
     new_stack: Box<crate::memory::stack::GuardedStack>,
     program_name: Option<String>,
     exe_path: Option<alloc::sync::Arc<Vec<u8>>>,
+    cmdline: alloc::sync::Arc<Vec<u8>>,
+    /// Where the argument strings lie on the new stack (`argv_area`).
+    cmdline_area: (u64, u64),
     user_stack_size: usize,
     stack_top: VirtAddr,
     stack_bottom: VirtAddr,
@@ -169,6 +172,27 @@ pub(crate) struct ForkCopy {
     /// `copy`, its only user, reads it.
     parent_page_table: *const ProcessPageTable,
     claim: crate::memory::fork_copy::CopyClaim,
+    /// The child's share of the parent's SEM_UNDO adjustments (CLONE_SYSVSEM).
+    undo: SharedUndo,
+}
+
+/// A fork child's share of its parent's SEM_UNDO adjustments, given back when
+/// the child is never published. A published child gives it back as it exits.
+pub(crate) struct SharedUndo(Option<ProcessId>);
+
+impl SharedUndo {
+    /// The child was published: its exit now gives the share back.
+    fn keep(mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for SharedUndo {
+    fn drop(&mut self) {
+        if let Some(child) = self.0.take() {
+            crate::ipc::sysv::unshare_undo(child);
+        }
+    }
 }
 
 /// A fork child's address space until its row is inserted: the table, still
@@ -855,6 +879,7 @@ impl ProcessManager {
         }
 
         let mut process = Process::new(pid, name.clone(), loaded_elf.entry_point);
+        process.cmdline = Some(super::process::cmdline_of(argv)?);
         if let Some(parent_pid) = parent_pid {
             crate::tty::ctty::inherit(
                 &mut process,
@@ -920,6 +945,7 @@ impl ProcessManager {
             b"USER=root\0",
             b"SHELL=/bin/bsh\0",
         ];
+        process.cmdline_area = Some(Self::argv_area(stack_top.as_u64(), argv, &default_env));
         let initial_rsp = if let Some(ref page_table) = process.page_table {
             Self::setup_argv_on_stack(
                 page_table,
@@ -1361,6 +1387,7 @@ impl ProcessManager {
         // Create the process
         let entry_point = VirtAddr::new(loaded_elf.entry_point);
         let mut process = Process::new(pid, name.clone(), entry_point);
+        process.cmdline = Some(super::process::cmdline_of(argv)?);
         if let Some(parent_pid) = parent_pid {
             crate::tty::ctty::inherit(
                 &mut process,
@@ -1448,6 +1475,7 @@ impl ProcessManager {
             b"USER=root\0",
             b"SHELL=/bin/bsh\0",
         ];
+        process.cmdline_area = Some(Self::argv_area(user_stack_top, argv, &default_env));
         let initial_sp = if let Some(ref page_table) = process.page_table {
             Self::setup_argv_on_stack(
                 page_table,
@@ -2954,13 +2982,17 @@ impl ProcessManager {
             child_pid.as_u64()
         );
 
-        // Create child process name
-        let child_name = format!("{}_child_{}", parent_name, child_pid.as_u64());
+        // The child runs the parent's program, under its name.
+        let child_name = crate::syscall::exec::copy_string(&parent_name)
+            .map_err(|_| "fork allocation failed")?;
 
         // Create the child process with the same entry point
         let mut child_process = Process::new(child_pid, child_name.clone(), parent_entry_point);
-        child_process.exe_path = self.processes.live_row(&parent_pid)
-            .ok_or("Parent process not found")?.exe_path.clone();
+        child_process.forked_without_exec = true;
+        let parent_row = self.processes.live_row(&parent_pid).ok_or("Parent process not found")?;
+        child_process.exe_path = parent_row.exe_path.clone();
+        child_process.cmdline = parent_row.cmdline.clone();
+        child_process.cmdline_area = parent_row.cmdline_area;
         child_process.parent = Some(parent_pid);
         // POSIX: Child inherits parent's process group, session, and working directory
         child_process.pgid = parent_pgid;
@@ -3047,6 +3079,7 @@ impl ProcessManager {
         &mut self,
         parent_pid: ProcessId,
         child_page_table: crate::memory::process_memory::UnpublishedPageTable,
+        clone: &crate::syscall::clone::ForkClone,
     ) -> Result<ForkCopy, &'static str> {
         crate::tracing::providers::process::trace_fork_entry(parent_pid.as_u64() as u32);
 
@@ -3083,14 +3116,27 @@ impl ProcessManager {
         // shares the parent's pages, grown stack pages included.
         let mut child_process = Process::new(
             child_pid,
-            format!("{}_child_{}", parent.name, child_pid.as_u64()),
+            crate::syscall::exec::copy_string(&parent.name).map_err(|_| "fork allocation failed")?,
             parent.entry_point,
         );
+        child_process.forked_without_exec = true;
         child_process.exe_path = parent.exe_path.clone();
+        child_process.cmdline = parent.cmdline.clone();
+        child_process.cmdline_area = parent.cmdline_area;
         child_process.parent = Some(parent_pid);
         child_process.pgid = parent.pgid;
         crate::tty::ctty::inherit(&mut child_process, parent);
-        child_process.cwd = parent.cwd.copy();
+        // A fork-style clone can share the working directories (CLONE_FS)
+        // and the descriptor table (CLONE_FILES) instead of copying them.
+        child_process.cwd = if clone.share_fs {
+            parent.cwd.share()
+        } else {
+            parent.cwd.copy()
+        };
+        if clone.share_files {
+            child_process.fd_table = parent.fd_table.share();
+        }
+        child_process.clear_child_tid = clone.child_clear_tid;
         child_process.heap_start = parent.heap_start;
         child_process.heap_end = parent.heap_end;
         child_process.mmap_hint = parent.mmap_hint;
@@ -3103,6 +3149,12 @@ impl ProcessManager {
         // SAFETY: the table is the parent row's, read under this guard.
         let root = unsafe { (*parent_page_table).level_4_frame().start_address().as_u64() };
         let child_space = child_page_table.address_space();
+        let undo = if clone.share_undo {
+            crate::ipc::sysv::share_undo(parent_pid, child_pid).map_err(|_| "fork allocation failed")?;
+            SharedUndo(Some(child_pid))
+        } else {
+            SharedUndo(None)
+        };
         Ok(ForkCopy {
             parent_pid,
             child_pid,
@@ -3112,6 +3164,7 @@ impl ProcessManager {
             child_page_table,
             parent_page_table,
             claim: crate::memory::fork_copy::CopyClaim::take(root, child_space),
+            undo,
         })
     }
 
@@ -3219,11 +3272,12 @@ impl ProcessManager {
     #[cfg(target_arch = "x86_64")]
     pub(crate) fn finish_fork(
         &mut self,
-        fork: ForkCopy,
+        mut fork: ForkCopy,
         copied: Result<(), &'static str>,
         parent_context: crate::task::thread::CpuContext,
         abandoned: &mut Option<AbandonedFork>,
     ) -> Result<ProcessId, &'static str> {
+        let undo = core::mem::replace(&mut fork.undo, SharedUndo(None));
         let (_claim, ended) = self.end_fork_copy(fork, copied, abandoned);
         let (parent_pid, child_pid, parent_thread, child_process, memory) = ended?;
         let mut memory = Some(memory);
@@ -3238,6 +3292,9 @@ impl ProcessManager {
             &mut memory,
         );
         Self::abandon_unpublished(memory, abandoned);
+        if completed.is_ok() {
+            undo.keep();
+        }
         completed
     }
 
@@ -3247,7 +3304,7 @@ impl ProcessManager {
     #[cfg(target_arch = "aarch64")]
     pub(crate) fn finish_fork(
         &mut self,
-        fork: ForkCopy,
+        mut fork: ForkCopy,
         copied: Result<(), &'static str>,
         parent_context: crate::task::thread::CpuContext,
         abandoned: &mut Option<AbandonedFork>,
@@ -3255,6 +3312,7 @@ impl ProcessManager {
         // NOTE: No logging in this function — it runs under PM lock which disables
         // interrupts on ARM64. Acquiring the logger lock here can deadlock if another
         // thread was preempted while holding it. Use tracing events instead.
+        let undo = core::mem::replace(&mut fork.undo, SharedUndo(None));
         let (_claim, ended) = self.end_fork_copy(fork, copied, abandoned);
         let (parent_pid, child_pid, parent_thread, child_process, memory) = ended?;
         let mut memory = Some(memory);
@@ -3267,6 +3325,9 @@ impl ProcessManager {
             &mut memory,
         );
         Self::abandon_unpublished(memory, abandoned);
+        if completed.is_ok() {
+            undo.keep();
+        }
         completed
     }
 
@@ -3599,6 +3660,8 @@ impl ProcessManager {
         // - Verification of pgid and sid inheritance
         if let Some(parent) = self.processes.live_row(&parent_pid) {
             child_process.exe_path = parent.exe_path.clone();
+            child_process.cmdline = parent.cmdline.clone();
+            child_process.cmdline_area = parent.cmdline_area;
             super::fork::copy_process_state(parent, &mut child_process)?;
         } else {
             return Err("Parent process not found during state copy");
@@ -3656,8 +3719,9 @@ impl ProcessManager {
             child_pid.as_u64()
         );
 
-        // Create child process name
-        let child_name = format!("{}_child_{}", parent.name, child_pid.as_u64());
+        // The child runs the parent's program, under its name.
+        let child_name = crate::syscall::exec::copy_string(&parent.name)
+            .map_err(|_| "fork allocation failed")?;
 
         // Capture parent's pgid, sid, and cwd before borrowing page_table
         let parent_pgid = parent.pgid;
@@ -3665,7 +3729,10 @@ impl ProcessManager {
 
         // Create the child process with the same entry point
         let mut child_process = Process::new(child_pid, child_name.clone(), parent.entry_point);
+        child_process.forked_without_exec = true;
         child_process.exe_path = parent.exe_path.clone();
+        child_process.cmdline = parent.cmdline.clone();
+        child_process.cmdline_area = parent.cmdline_area;
         child_process.parent = Some(parent_pid);
         // POSIX: Child inherits parent's process group, session, and working directory
         child_process.pgid = parent_pgid;
@@ -3887,6 +3954,8 @@ impl ProcessManager {
                     .live_row(&parent_pid)
                     .ok_or("Parent process not found during state copy")?;
                 child_process.exe_path = parent.exe_path.clone();
+                child_process.cmdline = parent.cmdline.clone();
+                child_process.cmdline_area = parent.cmdline_area;
                 super::fork::copy_process_state(parent, &mut child_process)?;
             }
 
@@ -4149,6 +4218,9 @@ impl ProcessManager {
         // This kernel-internal API loads bytes rather than a filesystem path.
         // Do not retain the pathname of the image it replaces.
         process.exe_path = None;
+        process.cmdline = None;
+        process.cmdline_area = None;
+        process.forked_without_exec = false;
         if let Some(name) = program_name {
             process.name = String::from(name);
             log::info!("exec_process: Updated process name to '{}'", name);
@@ -4377,6 +4449,7 @@ impl ProcessManager {
             .transpose()
             .map_err(|_| "exec allocation failed")?;
         let user_stack_size = crate::syscall::exec::stack_size(argv, envp)?;
+        let cmdline = super::process::cmdline_of(argv)?;
         let program_name = program_name
             .map(crate::syscall::exec::copy_string)
             .transpose()
@@ -4459,6 +4532,7 @@ impl ProcessManager {
         // We need to write to the new stack pages that we just mapped
         // Since the new page table is not active yet, we need to translate addresses
         // and write via the physical frames
+        let cmdline_area = Self::argv_area(USER_STACK_TOP, argv, envp);
         let initial_rsp = Self::setup_argv_on_stack(
             &new_page_table,
             USER_STACK_TOP,
@@ -4490,6 +4564,8 @@ impl ProcessManager {
             new_stack,
             program_name,
             exe_path,
+            cmdline,
+            cmdline_area,
             user_stack_size,
             stack_top,
             stack_bottom,
@@ -4590,6 +4666,8 @@ impl ProcessManager {
             new_stack,
             program_name,
             exe_path,
+            cmdline,
+            cmdline_area,
             user_stack_size,
             stack_top,
             stack_bottom,
@@ -4627,6 +4705,9 @@ impl ProcessManager {
             process.name = name;
         }
         process.exe_path = exe_path;
+        process.forked_without_exec = false;
+        process.cmdline = Some(cmdline);
+        process.cmdline_area = Some(cmdline_area);
         process.entry_point = loaded_elf.entry_point;
 
         // Reset heap bounds for the new program
@@ -4798,6 +4879,7 @@ impl ProcessManager {
             .transpose()
             .map_err(|_| "exec allocation failed")?;
         let user_stack_size = crate::syscall::exec::stack_size(argv, envp)?;
+        let cmdline = super::process::cmdline_of(argv)?;
         let program_name = program_name
             .map(crate::syscall::exec::copy_string)
             .transpose()
@@ -4876,6 +4958,7 @@ impl ProcessManager {
         }
         let initial_tpidr_el0 = Self::map_initial_arm64_tls(new_page_table.as_mut(), stack_top)?;
 
+        let cmdline_area = Self::argv_area(user_stack_top, argv, envp);
         let initial_rsp = Self::setup_argv_on_stack(
             &new_page_table,
             user_stack_top,
@@ -4906,6 +4989,8 @@ impl ProcessManager {
             new_stack,
             program_name,
             exe_path,
+            cmdline,
+            cmdline_area,
             user_stack_size,
             stack_top,
             stack_bottom,
@@ -5002,6 +5087,8 @@ impl ProcessManager {
             new_stack,
             program_name,
             exe_path,
+            cmdline,
+            cmdline_area,
             user_stack_size,
             stack_top,
             stack_bottom,
@@ -5038,6 +5125,9 @@ impl ProcessManager {
             process.name = name;
         }
         process.exe_path = exe_path;
+        process.forked_without_exec = false;
+        process.cmdline = Some(cmdline);
+        process.cmdline_area = Some(cmdline_area);
         process.entry_point = VirtAddr::new(new_entry_point);
 
         // Reset heap bounds for the new program
@@ -5394,6 +5484,9 @@ impl ProcessManager {
         // This kernel-internal API loads bytes rather than a filesystem path.
         // Do not retain the pathname of the image it replaces.
         process.exe_path = None;
+        process.cmdline = None;
+        process.cmdline_area = None;
+        process.forked_without_exec = false;
         if let Some(name) = program_name {
             process.name = String::from(name);
             log::info!("exec_process [ARM64]: Updated process name to '{}'", name);
@@ -5627,6 +5720,17 @@ impl ProcessManager {
     ///   (or compares the IDs) to decide whether to start in secure mode.
     ///
     /// Returns: The initial RSP value (pointing to argc)
+    /// Where `setup_argv_on_stack` writes the argument strings, NUL-separated
+    /// and contiguous, for a stack whose top is `stack_top`: their start
+    /// address and length, which /proc/[pid]/cmdline reads.
+    fn argv_area(stack_top: u64, argv: &[&[u8]], envp: &[&[u8]]) -> (u64, u64) {
+        let stored = |s: &&[u8]| if s.last() == Some(&0) { s.len() } else { s.len() + 1 };
+        let args: usize = argv.iter().map(stored).sum();
+        let total = args + envp.iter().map(stored).sum::<usize>();
+        // Below the 16 AT_RANDOM bytes, 8-byte aligned.
+        (((stack_top - 16) - total as u64) & !7, args as u64)
+    }
+
     fn setup_argv_on_stack(
         page_table: &crate::memory::process_memory::ProcessPageTable,
         stack_top: u64,
@@ -5645,14 +5749,10 @@ impl ProcessManager {
 
         // --- Phase 1: Write data at the top of the stack (strings + random bytes) ---
 
-        // Start from the top of the stack and work downward
-        let mut cursor = stack_top;
-
         // Write 16 pseudo-random bytes for AT_RANDOM
         // Use a simple mix of the stack address and fixed values since we don't
         // have a strong PRNG requirement at boot time
-        cursor -= 16;
-        let random_addr = cursor;
+        let random_addr = stack_top - 16;
         let random_seed = stack_top
             .wrapping_mul(0x5851F42D4C957F2D)
             .wrapping_add(0x14057B7EF767814F);
@@ -5676,31 +5776,8 @@ impl ProcessManager {
         ];
         Self::write_bytes_to_stack(page_table, random_addr, &random_bytes)?;
 
-        // Calculate total space needed for argv and envp strings
-        let mut total_string_space: usize = 0;
-        for arg in argv.iter() {
-            let len = arg.len();
-            if len > 0 && arg[len - 1] == 0 {
-                total_string_space += len;
-            } else {
-                total_string_space += len + 1;
-            }
-        }
-        for env in envp.iter() {
-            let len = env.len();
-            if len > 0 && env[len - 1] == 0 {
-                total_string_space += len;
-            } else {
-                total_string_space += len + 1;
-            }
-        }
-
-        // Reserve space for strings below the random bytes
-        cursor -= total_string_space as u64;
-
-        // Align down to 8 bytes for string area
-        cursor = cursor & !7;
-        let string_area_start = cursor;
+        // The strings go below the random bytes (`argv_area`).
+        let (string_area_start, _) = Self::argv_area(stack_top, argv, envp);
 
         // Write argv strings and collect their addresses
         let mut string_addresses: Vec<u64> = Vec::new();
@@ -5924,7 +6001,11 @@ impl ProcessManager {
             child_page_table,
             parent_pid.as_u64(),
         );
-        let mut fork = self.begin_fork(parent_pid, child_page_table)?;
+        let mut fork = self.begin_fork(
+            parent_pid,
+            child_page_table,
+            &crate::syscall::clone::ForkClone::FORK,
+        )?;
         let copied = fork.copy();
         let mut abandoned = None;
         self.finish_fork(fork, copied, parent_context, &mut abandoned)

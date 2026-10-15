@@ -146,6 +146,28 @@ if ! "$PROJECT_ROOT/scripts/build-libc-busybox.sh" --arch "$ARCH"; then
 fi
 echo ""
 
+# Additional POSIX C utilities are built only with Breenix's C driver.
+UTILITY_BUILD_DIR="$SCRIPT_DIR/target/utilities-$ARCH"
+mkdir -p "$TESTS_DIR" "$UTILITY_BUILD_DIR"
+UTILITY_NAMES=" "
+for source in "$PROJECT_ROOT/userspace/utilities"/*.c; do
+    [ -f "$source" ] || continue
+    name="$(basename "$source" .c)"
+    if [ "$name" = libc-busybox ] || [ "$name" = busybox ] ||
+        grep -Fqx "$name" "$TESTS_DIR/libc-busybox.links" ||
+        awk -v name="$name" '
+            $1 !~ /^#/ && name == "libc-" $1 "_test" { found=1 }
+            END { exit !found }
+        ' "$PROJECT_ROOT/userspace/libc-suite/categories"; then
+        echo "ERROR: utility output name collision: $name" >&2
+        exit 1
+    fi
+    echo "  Building utility $name ($ARCH)"
+    "$PROJECT_ROOT/scripts/breenix-cc" --arch "$ARCH" -std=c17 -O2 -Wall -Wextra -Werror \
+        "$source" -o "$UTILITY_BUILD_DIR/$name.elf"
+    UTILITY_NAMES+="$name "
+done
+
 # Step 2: Build all userspace binaries
 echo "[2/3] Building userspace ($ARCH)..."
 
@@ -292,7 +314,7 @@ STD_BINARIES=(
     "cow_readonly_test"
     "cow_signal_test"
 
-    # Phase 3: Coreutils now provided by BusyBox (see scripts/build-busybox.sh)
+    # Phase 3: Coreutils now provided by BusyBox (see scripts/build-libc-busybox.sh)
     "resolution"
 
     # Phase 4: init_shell
@@ -403,6 +425,7 @@ STD_BINARIES=(
     "suite-networking"
     "suite-rust-std"
     "suite-libc"
+    "suite-utilities"
     "files-io-exec_test"
     "processes-exec_test"
     "rust-std-child_test"
@@ -431,15 +454,34 @@ STD_BINARIES=(
     "bssh"
 )
 
+# Check producer names before copying outputs into the shared ELF directory.
+SEEN_NAMES="$UTILITY_NAMES libc-busybox "
+while read -r category _; do
+    case "$category" in ''|'#'*) continue ;; esac
+    SEEN_NAMES+="libc-${category}_test "
+done < "$PROJECT_ROOT/userspace/libc-suite/categories"
+for entry in "${STD_BINARIES[@]}"; do
+    name="${entry##*:}"
+    if [[ "$SEEN_NAMES" == *" $name "* ]] || [ "$name" = busybox ] ||
+        grep -Fqx "$name" "$TESTS_DIR/libc-busybox.links"; then
+        echo "ERROR: ELF output name collision: $name" >&2
+        exit 1
+    fi
+    SEEN_NAMES+="$name "
+done
+
+for name in $UTILITY_NAMES; do
+    cp "$UTILITY_BUILD_DIR/$name.elf" "$TESTS_DIR/$name.elf"
+done
+
 RELEASE_DIR="$SCRIPT_DIR/target/$TARGET_DIR/release"
 INSTALLED=0
 FAILED=0
 
 mkdir -p "$TESTS_DIR"
 
-# Remove every ELF this build does not install, so a removed or renamed program
-# never reaches a disk image. busybox.elf belongs to scripts/install-busybox.py.
-INSTALL_NAMES=" busybox "
+# Remove stale ELFs absent from the current producer list before image packing.
+INSTALL_NAMES="$UTILITY_NAMES"
 for entry in "${STD_BINARIES[@]}"; do
     INSTALL_NAMES+="${entry##*:} "
 done

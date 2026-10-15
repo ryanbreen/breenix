@@ -1,0 +1,20 @@
+--- a/libbb/appletlib.c
++++ b/libbb/appletlib.c
+@@ -848,17 +848,11 @@
+ #  endif
+ 
+ 	if (is_prefixed_with(argv[1], "--list")) {
+-		unsigned i = 0;
+ 		const char *a = applet_names;
+ 		dup2(1, 2);
+ 		while (*a) {
+-#  if ENABLE_FEATURE_INSTALLER
+-			if (argv[1][6]) /* --list-full? */
+-				full_write2_str(install_dir[APPLET_INSTALL_LOC(i)] + 1);
+-#  endif
+ 			full_write2_str(a);
+ 			full_write2_str("\n");
+-			i++;
+ 			while (*a++ != '\0')
+ 				continue;
+ 		}

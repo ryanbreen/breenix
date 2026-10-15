@@ -862,9 +862,10 @@ the manifest's cases in order.
 The busybox cases run applets of a BusyBox built against Breenix's libc, installed as
 `/usr/local/libc/bin/busybox` with its applet links beside it, and compare what the applet
 prints and its exit status with the expected values. `PATH` names only `/usr/local/libc/bin`,
-so a shell pipeline never reaches the musl-built BusyBox stand-in in `/bin`, which this
-suite never runs. Each applet has a case of its own (the shell has five), so one that does
-not build or does not behave is a recorded failure of its own.
+and `/bin` contains the same Breenix-libc BusyBox. Each applet has a case of its own
+(the shell has five), so one that does not behave is a recorded failure of its own. The
+builder records each configured applet's compile and link result in `applets.json` and
+fails when any of them fails; image construction requires the names in `required-applets`.
 
 Until a category's program is built against Breenix's libc and installed, each of its cases
 fails saying the program is not installed; until that BusyBox is installed, each busybox
@@ -879,4 +880,43 @@ scripts/boot-interactive.sh --mode suite --suite libc
 ./run.sh --vmware --suite libc
 # From tools/breenix-runs:
 swift run breenix-runs run x86 --mode suite --boots 1 --suite libc --sha <pushed-sha>
+```
+
+## Shell & POSIX utilities
+
+`utilities` measures the utilities effort in `docs/efforts/path.json`: a POSIX shell and the
+core utilities, as POSIX.1-2024's Shell and Utilities volume (XCU) specifies them in the
+Shell Command Language chapter and each utility's page. Its 187 cases cover five
+categories, one per milestone: `shell` (40), `file-utils` (37), `text-utils` (39),
+`process-utils` (42) and `scripts` (29).
+
+Each case runs `/bin/sh -c <script>`, or a utility found by its POSIX name on `PATH`, in a
+scratch directory of its own under `/tmp` holding the case's fixed files, with fixed standard
+input, umask 022, every signal at its default action and none blocked (the suite is a Rust
+program, which ignores SIGPIPE, and exec would pass that on), and the environment
+`PATH=/bin:/usr/bin`, `HOME=/tmp` and nothing else. It
+compares the exit status, the exact standard output and whether anything was written to
+standard error with what POSIX specifies; where POSIX specifies only a non-zero status, any
+non-zero status passes. Where POSIX leaves output layout to the implementation (column
+padding, dates, block counts), the case reads the fields it checks with the shell instead of
+comparing the layout. The expected values were checked against dash and GNU coreutils on
+Linux, which serve only as a behaviour oracle. Before running anything a case checks that
+every utility it uses is on `PATH`, and fails naming the ones that are not. The `scripts`
+cases write whole scripts to files and run them with `sh script.sh`: a word-frequency
+pipeline, a configure-style probe, a make-free build loop, a log rotator, an awk CSV report,
+a recursive directory walker, here-document templating, getopts argument parsing,
+trap-based cleanup and a script that sources a library.
+
+The suite runs BusyBox built against Breenix's own C library in `/bin`
+(`scripts/build-libc-busybox.sh`), plus the C utilities built from
+`userspace/utilities/*.c` with `breenix-cc`. Each case uses the runner's default 10-second deadline;
+the program it starts gets until 1.5 seconds before it, and one still running then is killed
+and the case fails saying it did not finish.
+
+```bash
+scripts/boot-interactive.sh --mode suite --suite utilities
+./run.sh --parallels --suite utilities
+./run.sh --vmware --suite utilities
+# From tools/breenix-runs:
+swift run breenix-runs run x86 --mode suite --boots 1 --suite utilities --sha <pushed-sha>
 ```

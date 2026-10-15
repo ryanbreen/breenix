@@ -1594,6 +1594,78 @@ fn fork_kill_heap() -> CaseResult {
     kill_readers()
 }
 
+/// clone(CLONE_VM | CLONE_VFORK | SIGCHLD) with no child stack, the form vfork takes as a
+/// system call: it returns 0 in a child, whose only act is to _exit, and the child's PID in
+/// the parent, which then waits for it.
+fn fork_vfork_clone() -> CaseResult {
+    const CLONE_VM: u64 = 0x100;
+    const CLONE_VFORK: u64 = 0x4000;
+    const SIGCHLD: u64 = 17;
+    let ret = sc(libbreenix::syscall::nr::CLONE, &[CLONE_VM | CLONE_VFORK | SIGCHLD, 0, 0, 0, 0, 0]);
+    if ret == 0 {
+        sc(libbreenix::syscall::nr::EXIT, &[7]);
+        loop {}
+    }
+    check(ret > 0, &format!("clone returned {}", errname(-ret)))?;
+    let mut child = Child { pid: ret as i32, live: true };
+    child.expect_exit(7, "the vfork child")
+}
+
+/// A fork-style clone (no CLONE_VM) honours its flags: CLONE_FILES shares the descriptor
+/// table, CLONE_PARENT_SETTID and CLONE_CHILD_SETTID store the child's thread ID in the
+/// parent's memory and in the child's own copy, and CLONE_SIGHAND, which needs a shared
+/// address space, is refused with EINVAL.
+fn fork_clone_flags() -> CaseResult {
+    const CLONE_SIGHAND: u64 = 0x800;
+    const CLONE_FILES: u64 = 0x400;
+    const CLONE_PARENT_SETTID: u64 = 0x0010_0000;
+    const CLONE_CHILD_SETTID: u64 = 0x0100_0000;
+    const SIGCHLD: u64 = 17;
+    const F_GETFD: u64 = 1;
+    let ret = sc(libbreenix::syscall::nr::CLONE, &[CLONE_SIGHAND | SIGCHLD, 0, 0, 0, 0, 0]);
+    if ret == 0 {
+        sc(libbreenix::syscall::nr::EXIT, &[99]);
+        loop {}
+    }
+    want_eq("clone(CLONE_SIGHAND | SIGCHLD)", ret, -22)?;
+
+    let (r, w) = io::pipe()?;
+    let (r, w) = (r.raw(), w.raw());
+    let parent_tid = core::cell::UnsafeCell::new(0u32);
+    let child_tid = core::cell::UnsafeCell::new(0u32);
+    let (ptid, ctid) = (parent_tid.get() as u64, child_tid.get() as u64);
+    // Linux's argument order: child_tid then tls on x86-64, tls then child_tid on ARM64.
+    #[cfg(target_arch = "x86_64")]
+    let args = [SIGCHLD | CLONE_FILES | CLONE_PARENT_SETTID | CLONE_CHILD_SETTID, 0, ptid, ctid, 0, 0];
+    #[cfg(not(target_arch = "x86_64"))]
+    let args = [SIGCHLD | CLONE_FILES | CLONE_PARENT_SETTID | CLONE_CHILD_SETTID, 0, ptid, 0, ctid, 0];
+    let ret = sc(libbreenix::syscall::nr::CLONE, &args);
+    if ret == 0 {
+        // SAFETY: this process's own copy of the word, written before it ran.
+        let stored = unsafe { core::ptr::read_volatile(child_tid.get()) };
+        let code = if stored as i64 != sc(libbreenix::syscall::nr::GETTID, &[]) {
+            3
+        } else if sc(libbreenix::syscall::nr::CLOSE, &[r]) != 0 {
+            4
+        } else {
+            0
+        };
+        sc(libbreenix::syscall::nr::EXIT, &[code]);
+        loop {}
+    }
+    check(ret > 0, &format!("clone returned {}", errname(-ret)))?;
+    let mut child = Child { pid: ret as i32, live: true };
+    child.expect_exit(0, "the CLONE_FILES child (3: its CLONE_CHILD_SETTID word, 4: its close)")?;
+    // SAFETY: the parent's words, read after the child exited.
+    let (stored_parent, stored_child) =
+        unsafe { (core::ptr::read_volatile(parent_tid.get()), core::ptr::read_volatile(child_tid.get())) };
+    check(stored_parent != 0, "CLONE_PARENT_SETTID stored no thread ID in the parent")?;
+    check(stored_child == 0, &format!("the child's CLONE_CHILD_SETTID store reached the parent's memory: {stored_child}"))?;
+    want_eq("fcntl(F_GETFD) on the descriptor the CLONE_FILES child closed", sc(nr::FCNTL, &[r, F_GETFD]), -9)?;
+    let _ = sc(libbreenix::syscall::nr::CLOSE, &[w]);
+    Ok(())
+}
+
 fn fork_many() -> CaseResult {
     let (r, w) = io::pipe()?;
     let mut children = Vec::new();
@@ -3322,6 +3394,8 @@ static SUITE: Suite = suite(
             case("cwd-umask", "The working directory and umask are inherited", fork_cwd_umask),
             case("times-reset", "The child's times() counts start at zero", fork_times_reset),
             case("nproc-eagain", "fork fails with EAGAIN when the user is at RLIMIT_NPROC", fork_nproc),
+            case("vfork-clone", "clone with CLONE_VM, CLONE_VFORK and no child stack starts a child the parent waits for", fork_vfork_clone),
+            case("clone-flags", "A clone without CLONE_VM shares the descriptor table under CLONE_FILES, stores the thread ID for CLONE_PARENT_SETTID and CLONE_CHILD_SETTID, and refuses CLONE_SIGHAND", fork_clone_flags),
             case("many-children", "32 children are alive at once, and each exits with its own status", fork_many),
             case("kill-heap", "Children killed inside a read or an exec leave the kernel heap as it was", fork_kill_heap),
         ]),

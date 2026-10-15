@@ -67,7 +67,13 @@ class ResolverImageTests(unittest.TestCase):
             for directory in ['scripts', 'userspace/programs/aarch64', 'fonts', 'target', 'stubs']:
                 (repo / directory).mkdir(parents=True, exist_ok=True)
             shutil.copy2(SCRIPT, repo / 'scripts/create_ext2_disk.sh')
-            (repo / 'scripts/install-busybox.py').write_text('# fixture: no binaries are installed\n')
+            (repo / 'scripts/userspace-manifest.py').write_text('# fixture: manifest verified\n')
+            shutil.copy2(ROOT / 'scripts/install-libc-busybox.sh', repo / 'scripts')
+            (repo / 'vendor/busybox').mkdir(parents=True)
+            shutil.copy2(ROOT / 'vendor/busybox/required-applets', repo / 'vendor/busybox')
+            binaries = repo / 'userspace/programs/aarch64'
+            (binaries / 'libc-busybox.elf').write_bytes(b'fixture ELF')
+            shutil.copy2(ROOT / 'vendor/busybox/required-applets', binaries / 'libc-busybox.links')
             capture = repo / 'docker-args.json'
             docker = repo / 'stubs/docker'
             docker.write_text('#!/usr/bin/env python3\nimport json,os,pathlib,sys\n'

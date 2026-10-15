@@ -2312,6 +2312,64 @@ impl ProcessPageTable {
         Ok(())
     }
 
+    /// Append up to `len` bytes of this address space from the user address
+    /// `addr` to `out`, through the direct map, stopping at the first page
+    /// that is not mapped to the user or when `out` reaches its capacity, so
+    /// nothing here allocates.
+    pub(crate) fn read_user_bytes(&self, addr: u64, len: u64, out: &mut Vec<u8>) {
+        let hhdm_base = crate::memory::physical_memory_offset().as_u64();
+        let end = addr.saturating_add(len).min(USER_STACK_REGION_END);
+        let mut at = addr;
+        while at < end && out.len() < out.capacity() {
+            let page: Page<Size4KiB> = Page::containing_address(VirtAddr::new(at));
+            let Some((frame, flags)) = self.get_page_info(page) else {
+                return;
+            };
+            if !flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+                return;
+            }
+            let offset = at & 0xfff;
+            let chunk = (4096 - offset)
+                .min(end - at)
+                .min((out.capacity() - out.len()) as u64);
+            let src = (hhdm_base + frame.start_address().as_u64() + offset) as *const u8;
+            // SAFETY: the bytes lie in one user frame this table maps, read
+            // through the kernel's direct map.
+            out.extend_from_slice(unsafe { core::slice::from_raw_parts(src, chunk as usize) });
+            at += chunk;
+        }
+    }
+
+    /// Store `value` at the user address `addr` of this address space through
+    /// the direct map, for a process that is not running (a fork child before
+    /// its first dispatch). A copy-on-write page gets its private copy first,
+    /// as the process's own write would. False, storing nothing, when `addr`
+    /// is unaligned or not mapped writable to the user.
+    pub(crate) fn store_user_u32(&mut self, addr: u64, value: u32, pid: u64) -> bool {
+        if addr % 4 != 0 || addr >= USER_STACK_REGION_END {
+            return false;
+        }
+        let page: Page<Size4KiB> = Page::containing_address(VirtAddr::new(addr));
+        let Some((_, flags)) = self.get_page_info(page) else {
+            return false;
+        };
+        if is_cow_page(flags) && !self.resolve_cow_write(addr, pid) {
+            return false;
+        }
+        let Some((frame, flags)) = self.get_page_info(page) else {
+            return false;
+        };
+        if !flags.contains(PageTableFlags::WRITABLE) || !flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+            return false;
+        }
+        let hhdm_base = crate::memory::physical_memory_offset().as_u64();
+        let word = (hhdm_base + frame.start_address().as_u64() + (addr & 0xfff)) as *mut u32;
+        // SAFETY: the word lies in a user frame this table maps writable and
+        // privately, reached through the kernel's direct map.
+        unsafe { core::ptr::write_volatile(word, value) };
+        true
+    }
+
     /// Resolve a CoW write while the caller owns this process's page table.
     /// Signal delivery already holds PROCESS_MANAGER and must not fault into a
     /// handler that reacquires it. The ordinary data-abort path shares this

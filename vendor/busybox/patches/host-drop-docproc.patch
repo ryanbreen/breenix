@@ -1,0 +1,13 @@
+--- a/scripts/basic/Makefile
++++ b/scripts/basic/Makefile
+@@ -9,9 +9,8 @@
+ # fixdep: 	 Used to generate dependency information during build process
+ # split-include: Divide all config symbols up in a number of files in
+ #                include/config/...
+-# docproc:	 Used in Documentation/docbook
+ 
+-hostprogs-y	:= fixdep split-include docproc
++hostprogs-y	:= fixdep split-include
+ always		:= $(hostprogs-y)
+ 
+ # fixdep is needed to compile other host programs

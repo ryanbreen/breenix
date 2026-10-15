@@ -1,32 +1,10 @@
 #!/bin/bash
-# Build BusyBox against Breenix's own C library, applet by applet.
-#
-#   scripts/build-libc-busybox.sh --arch aarch64|x86_64
-#
-# Extracts the checksummed vendor/busybox/busybox-1.37.0.tar.bz2 under
-# target/libc-busybox/<arch>/, configures it with vendor/busybox/breenix-libc.config
-# on top of allnoconfig, and compiles it with scripts/breenix-cc, continuing past
-# objects that do not compile. Then, for each configured applet, it links the
-# applet's own code (entry <applet>_main) and BusyBox's common start-up path (entry
-# main) against libc.a and records what does not resolve:
-#
-#   target/libc-busybox/<arch>/applets.json
-#       { "core": {"links": bool, "missing": [...]},
-#         "objects_failed": [...],
-#         "applets": { "<name>": {"compiles": bool, "links": bool, "missing": [...]} } }
-#
-# Applets that do not compile or link are switched off and BusyBox is rebuilt and
-# linked with the rest, as userspace/programs/{,aarch64/}libc-busybox.elf with
-# libc-busybox.links naming its applets; the disk installs it as
-# /usr/local/libc/bin/busybox with a hard link per applet. A switched-off applet's
-# case fails with BusyBox's "applet not found", and applets.json says why. When the
-# start-up path itself does not link, there is no libc-busybox.elf and every case
-# fails saying BusyBox is not installed.
-#
-# The build is skipped when none of its inputs changed (libc.a, the headers, the
-# config fragment, the source archive, breenix-cc and this script). It fails only
-# when BusyBox cannot be built at all for reasons of its own (the archive, the
-# configuration); missing library pieces are results, not failures.
+# Build every configured BusyBox applet against Breenix libc, recording per-applet
+# compile/link results in target/libc-busybox/<arch>/applets.json. Missing applets
+# fail the build. Patches in vendor/busybox/patches/series apply after extraction;
+# every patch is part of the build digest. Outputs are libc-busybox.elf and
+# libc-busybox.links, installed in /bin and /usr/local/libc/bin as hard links.
+# Usage: scripts/build-libc-busybox.sh --arch aarch64|x86_64
 set -euo pipefail
 export LC_ALL=C
 
@@ -34,6 +12,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ARCHIVE="$ROOT/vendor/busybox/busybox-1.37.0.tar.bz2"
 SOURCE_SHA256="3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4"
 FRAGMENT="$ROOT/vendor/busybox/breenix-libc.config"
+PATCHES="$ROOT/vendor/busybox/patches"
 export SOURCE_DATE_EPOCH=1725148800
 export KBUILD_BUILD_TIMESTAMP="2024-09-01 00:00:00 UTC"
 export KBUILD_BUILD_USER=breenix KBUILD_BUILD_HOST=breenix
@@ -68,7 +47,8 @@ mkdir -p "$WORK" "$OUT"
 
 inputs_digest() {
     {
-        shasum -a 256 "$LIBC" "$ARCHIVE" "$FRAGMENT" "$CC" "${BASH_SOURCE[0]}"
+        shasum -a 256 "$LIBC" "$ARCHIVE" "$FRAGMENT" "$CC" "${BASH_SOURCE[0]}" "$ROOT/vendor/busybox/required-applets" "$ROOT/scripts/install-libc-busybox.sh"
+        find "$PATCHES" -type f | sort | xargs shasum -a 256
         find "$ROOT/libs/libbreenix-libc/include" -type f -name '*.h' | sort | xargs shasum -a 256
         "$TOOLS/clang" --version
     } | shasum -a 256 | cut -d' ' -f1
@@ -78,7 +58,7 @@ if [ -f "$WORK/inputs.sha256" ] && [ "$(cat "$WORK/inputs.sha256")" = "$DIGEST" 
     echo "  libc-busybox ($ARCH): up to date"
     exit 0
 fi
-rm -f "$WORK/inputs.sha256"
+rm -f "$WORK/inputs.sha256" "$WORK/applets.json" "$ELF" "$LINKS"
 
 # Cross tools BusyBox's Kbuild finds by prefix.
 mkdir -p "$WORK/bin"
@@ -89,7 +69,9 @@ for tool in ar nm strip objcopy objdump; do
 done
 chmod +x "${PREFIX}"*
 
-if [ ! -f "$SRC/.extracted" ]; then
+# Re-extract when patches change, so removed/reordered patches never survive.
+PATCH_DIGEST="$(find "$PATCHES" -type f | sort | xargs shasum -a 256 | shasum -a 256 | cut -d' ' -f1)"
+if [ ! -f "$SRC/.extracted" ] || [ "$(cat "$SRC/.extracted")" != "$PATCH_DIGEST" ]; then
     python3 - "$ARCHIVE" "$SOURCE_SHA256" <<'PYVERIFY'
 import hashlib, pathlib, sys
 if hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest() != sys.argv[2]:
@@ -97,17 +79,25 @@ if hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest() != sys.arg
 PYVERIFY
     rm -rf "$SRC"
     tar -xjf "$ARCHIVE" -C "$WORK"
-    touch "$SRC/.extracted"
+    while IFS= read -r patch_name || [ -n "$patch_name" ]; do
+        case "$patch_name" in ''|'#'*) continue ;; esac
+        case "$patch_name" in */*|*..*|*[!a-zA-Z0-9_.-]*) echo "Invalid patch name: $patch_name" >&2; exit 1 ;; esac
+        [ -f "$PATCHES/$patch_name" ] || { echo "Missing BusyBox patch: $patch_name" >&2; exit 1; }
+        patch -d "$SRC" -p1 < "$PATCHES/$patch_name"
+    done < "$PATCHES/series"
+    echo "$PATCH_DIGEST" > "$SRC/.extracted"
 fi
 
 # BB_GLOBAL_CONST empty: BusyBox's "*const" globals pointers are assigned once through
 # a cast, and clang moves loads of them ahead of that store (libbb.h documents the
 # switch for toolchains that do).
+# Upstream code that warns under this configuration is deleted by patches in the
+# series (see vendor/busybox/README.md); the compiler flags suppress nothing.
 # Name the compiler clang so Kbuild excludes GCC-only optimization flags.
-MAKE_ARGS=(-C "$SRC" CROSS_COMPILE="$PREFIX" CC="${PREFIX}clang" HOSTCC=cc
-           "EXTRA_CFLAGS=-std=gnu11 -Wno-error -DBB_GLOBAL_CONST="
+MAKE_ARGS=(-C "$SRC" CROSS_COMPILE="$PREFIX" CC="${PREFIX}clang" HOSTCC="$TOOLS/clang" "HOSTCFLAGS=-Wall -Wstrict-prototypes -O2 -fomit-frame-pointer"
+           "EXTRA_CFLAGS=-std=gnu11 -Werror -DBB_GLOBAL_CONST="
            SKIP_STRIP=y)
-JOBS="${CARGO_BUILD_JOBS:-6}"
+JOBS="${CARGO_BUILD_JOBS:-4}"
 
 # Apply `fragment` (CONFIG_X=value lines; =n switches an option off) to .config.
 apply_config() {
@@ -135,10 +125,13 @@ configure() {
     { yes "" || true; } | make "${MAKE_ARGS[@]}" oldconfig >> "$WORK/config.log" 2>&1
 }
 
-# Compile everything that compiles. Kbuild's own link step needs libraries Breenix
-# does not have (-lm, -lcrypt); the link below replaces it.
+# This top-level prerequisite builds every applet/library directory without
+# Kbuild's host-library link step. Link with Breenix's C driver below instead.
 compile() {
-    make "${MAKE_ARGS[@]}" -k -j"$JOBS" busybox_unstripped > "$WORK/$1.log" 2>&1 || true
+    if ! make "${MAKE_ARGS[@]}" -k -j"$JOBS" applets/built-in.o > "$WORK/$1.log" 2>&1; then
+        cat "$WORK/$1.log" >&2
+        return 1
+    fi
 }
 
 # Every target object the build produced (ELF, so not the host tools'), in one archive.
@@ -155,11 +148,13 @@ archive_objects() {
 echo "  libc-busybox ($ARCH): configuring"
 configure
 echo "  libc-busybox ($ARCH): compiling"
-compile compile
+make "${MAKE_ARGS[@]}" clean > "$WORK/clean.log" 2>&1
+compile_ok=1
+compile compile || compile_ok=0
 archive_objects
 
 # Per-applet analysis.
-python3 - "$SRC" "$WORK" "$CC" "$ARCH" "$FRAGMENT" <<'PYANALYZE'
+python3 - "$SRC" "$WORK" "$CC" "$ARCH" "$FRAGMENT" "$compile_ok" <<'PYANALYZE'
 import json, os, re, subprocess, sys
 from pathlib import Path
 
@@ -217,7 +212,7 @@ if objects:
     core_links, core_missing = link('main', defsyms=mains)
 else:
     core_links, core_missing = False, ['(nothing compiled)']
-result = {'core': {'links': core_links, 'missing': core_missing}, 'objects_failed': failed_objects,
+result = {'compile_ok': sys.argv[6] == '1', 'core': {'links': core_links, 'missing': core_missing}, 'objects_failed': failed_objects,
           'compile_errors': errors[:60], 'applets': {}}
 for name in sorted(applets):
     a = applets[name]
@@ -228,45 +223,39 @@ for name in sorted(applets):
 (work / 'applets.json').write_text(json.dumps(result, indent=1, sort_keys=True) + '\n')
 PYANALYZE
 
-# Switch off what failed, rebuild, and link the rest.
-python3 - "$WORK/applets.json" "$WORK/disable.config" <<'PYDISABLE'
-import json, sys
-result = json.load(open(sys.argv[1]))
-off = sorted({a['config'] for a in result['applets'].values() if not (a['compiles'] and a['links'])})
-lines = [f'CONFIG_{c}=n' for c in off]
-# "sh" is a Kconfig choice: switching it off means choosing no shell.
-if 'SH_IS_ASH' in off:
-    lines += ['CONFIG_SH_IS_NONE=y', 'CONFIG_SHELL_ASH=n']
-open(sys.argv[2], 'w').write(''.join(l + '\n' for l in lines))
-PYDISABLE
-
+# Reject configured applets that failed to compile or link.
 rm -f "$ELF" "$LINKS"
-core_links="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["core"]["links"])' "$WORK/applets.json")"
-if [ "$core_links" = True ]; then
-    if [ -s "$WORK/disable.config" ]; then
-        configure "$WORK/disable.config"
-        still_on="$(sed -n 's/^\(CONFIG_[A-Z0-9_]*\)=n$/\1/p' "$WORK/disable.config" \
-            | while read -r option; do grep -q "^$option=y" "$SRC/.config" && echo "$option"; done || true)"
-        if [ -n "$still_on" ]; then
-            echo "libc-busybox: Kconfig kept on what was switched off: $still_on" >&2
-            exit 1
-        fi
-        compile rebuild
-        archive_objects
-    fi
-    if "$CC" --arch "$ARCH" -Wl,--error-limit=0 "$WORK/objects.a" -o "$WORK/busybox.elf" > "$WORK/link.log" 2>&1; then
-        "$TOOLS/llvm-strip" -o "$ELF" "$WORK/busybox.elf"
-        python3 - "$WORK/applets.json" "$LINKS" <<'PYLINKS'
+python3 - "$WORK/applets.json" <<'PYCHECK'
 import json, sys
 result = json.load(open(sys.argv[1]))
-names = [n for n, a in sorted(result['applets'].items()) if a['compiles'] and a['links']]
-open(sys.argv[2], 'w').write(''.join(n + '\n' for n in names))
-PYLINKS
-    else
-        echo "  libc-busybox ($ARCH): the final link failed; see $WORK/link.log" >&2
-        tail -5 "$WORK/link.log" >&2
-    fi
+failed = [name for name, app in result['applets'].items() if not (app['compiles'] and app['links'])]
+if not result['compile_ok'] or not result['core']['links'] or failed or result['objects_failed']:
+    if not result['compile_ok']:
+        print('libc-busybox: compilation failed; see compile.log and applets.json', file=sys.stderr)
+    if not result['core']['links']:
+        print('libc-busybox: unresolved core: ' + ' '.join(result['core']['missing']), file=sys.stderr)
+    if failed:
+        print('libc-busybox: failed applets: ' + ' '.join(failed), file=sys.stderr)
+    if result['objects_failed']:
+        print('libc-busybox: failed objects: ' + ' '.join(result['objects_failed']), file=sys.stderr)
+    for name in failed:
+        print(f"  {name}: {result['applets'][name]}", file=sys.stderr)
+    for error in result['compile_errors']:
+        print('  ' + error, file=sys.stderr)
+    sys.exit(1)
+PYCHECK
+if ! "$CC" --arch "$ARCH" -Wl,--error-limit=0 "$WORK/objects.a" -o "$WORK/busybox.elf" > "$WORK/link.log" 2>&1; then
+    echo "libc-busybox: final link failed:" >&2
+    cat "$WORK/link.log" >&2
+    exit 1
 fi
+"$TOOLS/llvm-strip" -o "$ELF" "$WORK/busybox.elf"
+python3 - "$WORK/applets.json" "$LINKS" <<'PYLINKS'
+import json, sys
+result = json.load(open(sys.argv[1]))
+open(sys.argv[2], 'w').write(''.join(name + '\n' for name in sorted(result['applets'])))
+PYLINKS
+"$ROOT/scripts/install-libc-busybox.sh" --check "$OUT" "$ROOT/vendor/busybox/required-applets"
 
 python3 - "$WORK/applets.json" "$ARCH" "$ELF" <<'PYREPORT'
 import json, os, sys

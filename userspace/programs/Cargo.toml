@@ -743,5 +743,9 @@ name = "suite-libc"
 path = "src/suite_libc.rs"
 
 [[bin]]
+name = "suite-utilities"
+path = "src/suite_utilities.rs"
+
+[[bin]]
 name = "fifo_fs_test"
 path = "src/fifo_fs_test.rs"

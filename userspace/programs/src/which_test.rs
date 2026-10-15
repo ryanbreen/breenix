@@ -94,21 +94,21 @@ fn main() {
         }
     }
 
-    // Test 2: which true -> /sbin/true (found in /sbin, not /bin)
-    println!("Test 2: which true returns /sbin/true");
+    // Test 2: which init -> /sbin/init (found in /sbin, not /bin)
+    println!("Test 2: which init returns /sbin/init");
     {
         let program = b"/bin/which\0";
         let arg0 = b"which\0".as_ptr();
-        let arg1 = b"true\0".as_ptr();
+        let arg1 = b"init\0".as_ptr();
         let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
         let (exit_code, output) = run_and_capture(program, &argv);
 
-        if exit_code == 0 && output_matches(&output, b"/sbin/true") {
-            println!("WHICH_TRUE_OK");
+        if exit_code == 0 && output_matches(&output, b"/sbin/init") {
+            println!("WHICH_SBIN_OK");
             tests_passed += 1;
         } else {
-            println!("WHICH_TRUE_FAILED (exit={}, len={})", exit_code, output.len());
+            println!("WHICH_SBIN_FAILED (exit={}, len={})", exit_code, output.len());
             tests_failed += 1;
         }
     }

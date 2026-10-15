@@ -3,7 +3,7 @@
 #
 # This script creates an ext2 filesystem image (256MB default) with:
 #   - Test files for filesystem testing
-#   - BusyBox binary in /bin/busybox with symlinks for coreutils
+#   - Breenix-libc BusyBox in /bin/busybox with hard links for its applets
 #   - hello_world binary for exec testing
 #   - Test binaries in /usr/local/test/bin
 #
@@ -64,9 +64,10 @@ else
     TESTDATA_FILE="$PROJECT_ROOT/testdata/ext2.img"
 fi
 
-# Both native and gate disks use the same checked-in, checksummed build.
-# A missing cross compiler must never silently remove coreutils from a disk.
-python3 "$SCRIPT_DIR/install-busybox.py" "$ARCH"
+# Both native and gate disks use the exact output of the local libc build.
+# Required-applet validation rejects an incomplete BusyBox build.
+python3 "$SCRIPT_DIR/userspace-manifest.py" check --arch "$ARCH"
+"$SCRIPT_DIR/install-libc-busybox.sh" --check "$USERSPACE_DIR" "$PROJECT_ROOT/vendor/busybox/required-applets"
 
 echo "Creating ext2 disk image..."
 echo "  Arch: $ARCH"
@@ -154,6 +155,8 @@ if [[ "$(uname)" == "Darwin" ]]; then
         -v "$TARGET_DIR:/work" \
         -v "$USERSPACE_DIR:/binaries:ro" \
         -v "$PROJECT_ROOT/fonts:/fonts:ro" \
+        -v "$SCRIPT_DIR/install-libc-busybox.sh:/install-libc-busybox.sh:ro" \
+        -v "$PROJECT_ROOT/vendor/busybox/required-applets:/required-applets:ro" \
         -e "OUTPUT_FILENAME=$OUTPUT_FILENAME" \
         -e "BREENIX_WAIT_STRESS=${BREENIX_WAIT_STRESS:-0}" \
         -e "BREENIX_BSSH_AUTORUN=${BREENIX_BSSH_AUTORUN:-0}" \
@@ -180,45 +183,9 @@ if [[ "$(uname)" == "Darwin" ]]; then
             mkdir -p /mnt/ext2/usr/local/test/bin
             mkdir -p /mnt/ext2/usr/local/cbin
 
-            # Install BusyBox with symlinks for coreutils
-            if [ -f /binaries/busybox.elf ]; then
-                cp /binaries/busybox.elf /mnt/ext2/bin/busybox
-                chmod 755 /mnt/ext2/bin/busybox
-
-                # Create hardlinks for the 48 applets listed below in /bin
-                # (hardlinks avoid needing symlink-following in kernel exec path)
-                for cmd in cat ls head tail wc grep more cp mv rm mkdir rmdir false \
-                           echo which sh ash sed awk find sort uniq tee xargs \
-                           chmod chown chgrp df du free date sleep test expr seq \
-                           id whoami hostname basename dirname env printf cut tr \
-                           od hexdump md5sum sha256sum vi; do
-                    ln /mnt/ext2/bin/busybox /mnt/ext2/bin/$cmd
-                done
-
-                # /sbin applets (hardlinks)
-                for cmd in true false; do
-                    ln /mnt/ext2/bin/busybox /mnt/ext2/sbin/$cmd
-                done
-
-                echo "  Installed BusyBox with hardlinks in /bin and /sbin"
-            else
-                echo "  WARNING: busybox.elf not found, skipping coreutils"
-            fi
-
-            # BusyBox built against Breenix'"'"'s own C library, with a hard link per applet
-            # it was built with (scripts/build-libc-busybox.sh).
-            if [ -f /binaries/libc-busybox.elf ]; then
-                mkdir -p /mnt/ext2/usr/local/libc/bin
-                cp /binaries/libc-busybox.elf /mnt/ext2/usr/local/libc/bin/busybox
-                chmod 755 /mnt/ext2/usr/local/libc/bin/busybox
-                while read -r applet; do
-                    [ -n "$applet" ] && ln /mnt/ext2/usr/local/libc/bin/busybox "/mnt/ext2/usr/local/libc/bin/$applet"
-                done < /binaries/libc-busybox.links
-                echo "  Installed libc BusyBox with $(wc -l < /binaries/libc-busybox.links) applets in /usr/local/libc/bin"
-            fi
+            sh /install-libc-busybox.sh /binaries /required-applets /mnt/ext2
 
             # Copy remaining binaries from /binaries directory
-            # Routing: musl C programs (*_musl*) -> /usr/local/cbin
             #          test binaries (*_test, test_*) -> /usr/local/test/bin
             #          system binaries (telnetd, init, probe, blogd, suite-*) -> /sbin
             #          everything else -> /bin
@@ -226,18 +193,13 @@ if [[ "$(uname)" == "Darwin" ]]; then
             bin_count=0
             sbin_count=0
             test_count=0
-            cbin_count=0
+
             for elf_file in /binaries/*.elf; do
                 if [ -f "$elf_file" ]; then
                     bin_name=$(basename "$elf_file" .elf)
-                    # Skip both BusyBoxes (already installed above)
-                    [ "$bin_name" = "busybox" ] && continue
+                    # Skip BusyBox (already installed above)
                     [ "$bin_name" = "libc-busybox" ] && continue
-                    if echo "$bin_name" | grep -qE "_musl"; then
-                        cp "$elf_file" /mnt/ext2/usr/local/cbin/${bin_name}
-                        chmod 755 /mnt/ext2/usr/local/cbin/${bin_name}
-                        cbin_count=$((cbin_count + 1))
-                    elif echo "$bin_name" | grep -qE "_test$|^test_"; then
+                    if echo "$bin_name" | grep -qE "_test$|^test_"; then
                         cp "$elf_file" /mnt/ext2/usr/local/test/bin/${bin_name}
                         chmod 755 /mnt/ext2/usr/local/test/bin/${bin_name}
                         test_count=$((test_count + 1))
@@ -254,7 +216,7 @@ if [[ "$(uname)" == "Darwin" ]]; then
             done
             echo "  Installed $bin_count binaries in /bin"
             echo "  Installed $sbin_count binaries in /sbin"
-            echo "  Installed $cbin_count C binaries in /usr/local/cbin"
+
             echo "  Installed $test_count test binaries in /usr/local/test/bin"
 
             # The Rust std suite starts its helper through a name that is not UTF-8.
@@ -262,15 +224,8 @@ if [[ "$(uname)" == "Darwin" ]]; then
                 ln /mnt/ext2/usr/local/test/bin/rust-std-child_test "/mnt/ext2/usr/local/test/bin/rust-std-child_test$(printf "\377")"
             fi
 
-            # Keep the ARM64 workaround for #1074; x86 must execute BusyBox ls.
-            if [ "$BREENIX_ARCH" = aarch64 ] && [ -f /mnt/ext2/bin/bls ]; then
-                rm -f /mnt/ext2/bin/ls
-                cp /mnt/ext2/bin/bls /mnt/ext2/bin/ls
-                chmod 755 /mnt/ext2/bin/ls
-                echo "  Installed native Breenix ls as /bin/ls"
-            fi
 
-            # Create /etc with passwd and group for musl getpwuid/getgrgid
+            # Create /etc with passwd and group for libc getpwuid/getgrgid
             mkdir -p /mnt/ext2/etc
             printf "127.0.0.1 localhost\n" > /mnt/ext2/etc/hosts
             printf "nameserver %s\n" "$DNS_SERVER" > /mnt/ext2/etc/resolv.conf
@@ -488,11 +443,19 @@ else
     fi
 
     MOUNT_DIR=$(mktemp -d)
+    MOUNTED=0
+    cleanup_mount() {
+        if [[ "$MOUNTED" == 1 ]]; then
+            umount "$MOUNT_DIR" || return
+        fi
+        rm -rf "$MOUNT_DIR"
+    }
+    trap cleanup_mount EXIT
     if [[ "${BREENIX_REPRODUCIBLE_EXT2:-0}" == 1 ]]; then
         chmod 755 "$MOUNT_DIR"
-        trap 'rm -rf "$MOUNT_DIR"' EXIT
     else
         mount "$OUTPUT_FILE" "$MOUNT_DIR"
+        MOUNTED=1
     fi
 
     # Create /bin, /sbin, /usr/local/test/bin, and /usr/local/cbin directories
@@ -501,45 +464,9 @@ else
     mkdir -p "$MOUNT_DIR/usr/local/test/bin"
     mkdir -p "$MOUNT_DIR/usr/local/cbin"
 
-    # Install BusyBox with hardlinks for coreutils
-    # The pinned artifact is verified and installed before disk creation.
-    if [[ -f "$USERSPACE_DIR/busybox.elf" ]]; then
-        cp "$USERSPACE_DIR/busybox.elf" "$MOUNT_DIR/bin/busybox"
-        chmod 755 "$MOUNT_DIR/bin/busybox"
-
-        # Create hardlinks for the 48 applets listed below in /bin
-        for cmd in cat ls head tail wc grep more cp mv rm mkdir rmdir false \
-                   echo which sh ash sed awk find sort uniq tee xargs \
-                   chmod chown chgrp df du free date sleep test expr seq \
-                   id whoami hostname basename dirname env printf cut tr \
-                   od hexdump md5sum sha256sum vi; do
-            ln "$MOUNT_DIR/bin/busybox" "$MOUNT_DIR/bin/$cmd"
-        done
-
-        # /sbin applets (hardlinks)
-        for cmd in true false; do
-            ln "$MOUNT_DIR/bin/busybox" "$MOUNT_DIR/sbin/$cmd"
-        done
-
-        echo "  Installed BusyBox with hardlinks in /bin and /sbin"
-    else
-        echo "  WARNING: busybox.elf not found, skipping coreutils"
-    fi
-
-    # BusyBox built against Breenix's own C library, with a hard link per applet it was
-    # built with (scripts/build-libc-busybox.sh).
-    if [[ -f "$USERSPACE_DIR/libc-busybox.elf" ]]; then
-        mkdir -p "$MOUNT_DIR/usr/local/libc/bin"
-        cp "$USERSPACE_DIR/libc-busybox.elf" "$MOUNT_DIR/usr/local/libc/bin/busybox"
-        chmod 755 "$MOUNT_DIR/usr/local/libc/bin/busybox"
-        while read -r applet; do
-            [[ -n "$applet" ]] && ln "$MOUNT_DIR/usr/local/libc/bin/busybox" "$MOUNT_DIR/usr/local/libc/bin/$applet"
-        done < "$USERSPACE_DIR/libc-busybox.links"
-        echo "  Installed libc BusyBox with $(wc -l < "$USERSPACE_DIR/libc-busybox.links") applets in /usr/local/libc/bin"
-    fi
+    "$SCRIPT_DIR/install-libc-busybox.sh" "$USERSPACE_DIR" "$PROJECT_ROOT/vendor/busybox/required-applets" "$MOUNT_DIR"
 
     # Copy remaining binaries from userspace directory
-    # Routing: musl C programs (*_musl*) -> /usr/local/cbin
     #          test binaries (*_test, test_*) -> /usr/local/test/bin
     #          system binaries (telnetd, init, probe, blogd, suite-*) -> /sbin
     #          everything else -> /bin
@@ -547,18 +474,13 @@ else
     bin_count=0
     sbin_count=0
     test_count=0
-    cbin_count=0
+
     for elf_file in "$USERSPACE_DIR"/*.elf; do
         if [ -f "$elf_file" ]; then
             bin_name=$(basename "$elf_file" .elf)
-            # Skip both BusyBoxes (already installed above)
-            [ "$bin_name" = "busybox" ] && continue
+            # Skip BusyBox (already installed above)
             [ "$bin_name" = "libc-busybox" ] && continue
-            if echo "$bin_name" | grep -qE '_musl'; then
-                cp "$elf_file" "$MOUNT_DIR/usr/local/cbin/${bin_name}"
-                chmod 755 "$MOUNT_DIR/usr/local/cbin/${bin_name}"
-                cbin_count=$((cbin_count + 1))
-            elif echo "$bin_name" | grep -qE '_test$|^test_'; then
+            if echo "$bin_name" | grep -qE '_test$|^test_'; then
                 cp "$elf_file" "$MOUNT_DIR/usr/local/test/bin/${bin_name}"
                 chmod 755 "$MOUNT_DIR/usr/local/test/bin/${bin_name}"
                 test_count=$((test_count + 1))
@@ -575,7 +497,7 @@ else
     done
     echo "  Installed $bin_count binaries in /bin"
     echo "  Installed $sbin_count binaries in /sbin"
-    echo "  Installed $cbin_count C binaries in /usr/local/cbin"
+
     echo "  Installed $test_count test binaries in /usr/local/test/bin"
 
     # The Rust std suite starts its helper through a name that is not UTF-8.
@@ -583,15 +505,8 @@ else
         ln "$MOUNT_DIR/usr/local/test/bin/rust-std-child_test" "$MOUNT_DIR/usr/local/test/bin/rust-std-child_test$(printf '\377')"
     fi
 
-    # Keep the ARM64 workaround for #1074; x86 must execute BusyBox ls.
-    if [[ "$ARCH" = aarch64 ]] && [ -f "$MOUNT_DIR/bin/bls" ]; then
-        rm -f "$MOUNT_DIR/bin/ls"
-        cp "$MOUNT_DIR/bin/bls" "$MOUNT_DIR/bin/ls"
-        chmod 755 "$MOUNT_DIR/bin/ls"
-        echo "  Installed native Breenix ls as /bin/ls"
-    fi
 
-    # Create /etc with passwd and group for musl getpwuid/getgrgid
+    # Create /etc with passwd and group for libc getpwuid/getgrgid
     mkdir -p "$MOUNT_DIR/etc"
     printf '127.0.0.1 localhost\n' > "$MOUNT_DIR/etc/hosts"
     printf 'nameserver %s\n' "$DNS_SERVER" > "$MOUNT_DIR/etc/resolv.conf"
@@ -782,6 +697,7 @@ INITJS
         trap - EXIT
     else
         umount "$MOUNT_DIR"
+        MOUNTED=0
         rmdir "$MOUNT_DIR"
     fi
 

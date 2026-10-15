@@ -226,6 +226,10 @@ pub struct Process {
     #[allow(dead_code)]
     pub id: ProcessId,
 
+    /// Forked and has not exec'd since (Linux's PF_FORKNOEXEC). Such a child
+    /// carries its parent's name; exit accounting still tells it apart.
+    pub forked_without_exec: bool,
+
     /// Process group ID (for job control)
     /// By default, a process's pgid equals its pid when created
     pub pgid: ProcessId,
@@ -259,6 +263,19 @@ pub struct Process {
 
     /// Absolute executable pathname, shared across fork and replaced only on exec commit.
     pub exe_path: Option<alloc::sync::Arc<alloc::vec::Vec<u8>>>,
+
+    /// The arguments of the program's exec, each ending in a NUL byte, as
+    /// /proc/[pid]/cmdline reports them. Shared across fork and replaced on
+    /// exec commit; None for an image the kernel loaded without arguments.
+    pub cmdline: Option<alloc::sync::Arc<alloc::vec::Vec<u8>>>,
+
+    /// Where exec wrote the argument strings in the process's memory: their
+    /// start address and length. /proc/[pid]/cmdline reads them from there,
+    /// so a program that rewrites its argv shows the new bytes, as on Linux.
+    pub cmdline_area: Option<(u64, u64)>,
+
+    /// Milliseconds after boot at which the process was created. Exec keeps it.
+    pub start_ms: u64,
 
     /// Current state
     pub state: ProcessState,
@@ -443,6 +460,19 @@ pub struct MemoryUsage {
 /// The `exec_id` of the next program image an exec installs.
 static NEXT_EXEC_ID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
 
+/// The `Process::cmdline` of an exec with `argv`: each argument followed by
+/// a NUL byte. Fallible: exec has already bounded the arguments' total size.
+pub fn cmdline_of(argv: &[&[u8]]) -> Result<alloc::sync::Arc<alloc::vec::Vec<u8>>, &'static str> {
+    let len = argv.iter().map(|arg| arg.len() + 1).sum();
+    let mut cmdline = alloc::vec::Vec::new();
+    cmdline.try_reserve_exact(len).map_err(|_| "exec allocation failed")?;
+    for arg in argv {
+        cmdline.extend_from_slice(arg);
+        cmdline.push(0);
+    }
+    alloc::sync::Arc::try_new(cmdline).map_err(|_| "exec allocation failed")
+}
+
 /// A new `Process::exec_id`, for an exec under PROCESS_MANAGER.
 pub fn next_exec_id() -> u64 {
     NEXT_EXEC_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed)
@@ -472,7 +502,11 @@ impl Process {
             // Default working directory is root
             cwd: crate::fs::namei::SharedWorkingDir::default(),
             name,
+            forked_without_exec: false,
             exe_path: None,
+            cmdline: None,
+            cmdline_area: None,
+            start_ms: crate::time::get_monotonic_time(),
             state: ProcessState::Creating,
             entry_point,
             main_thread: None,
@@ -632,7 +666,7 @@ impl Process {
         // count too. The guard above makes this exactly once per process. This
         // is safe under PROCESS_MANAGER: record_exit allocates/logs nothing and
         // takes only its leaf spin mutex; that mutex never nests PROCESS_MANAGER.
-        crate::task::exit_tally::record_exit(&self.name, exit_code);
+        crate::task::exit_tally::record_exit(&self.name, self.forked_child_pid(), exit_code);
 
         // CRITICAL FIX: Mark the main thread as terminated so the scheduler
         // doesn't keep putting it back in the ready queue. The scheduler checks
@@ -642,6 +676,11 @@ impl Process {
         if let Some(ref mut thread) = self.main_thread {
             thread.set_terminated();
         }
+    }
+
+    /// This process's pid while it is a forked child that has not exec'd.
+    fn forked_child_pid(&self) -> Option<u64> {
+        self.forked_without_exec.then_some(self.id.as_u64())
     }
 
     /// Minimal terminate: mark process and thread as terminated without cleanup.
@@ -667,7 +706,7 @@ impl Process {
         // count too. The guard above makes this exactly once per process. This
         // is safe under PROCESS_MANAGER: record_exit allocates/logs nothing and
         // takes only its leaf spin mutex; that mutex never nests PROCESS_MANAGER.
-        crate::task::exit_tally::record_exit(&self.name, exit_code);
+        crate::task::exit_tally::record_exit(&self.name, self.forked_child_pid(), exit_code);
         if let Some(ref mut thread) = self.main_thread {
             thread.set_terminated();
         }

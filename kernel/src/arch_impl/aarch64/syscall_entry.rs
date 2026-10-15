@@ -122,7 +122,7 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
             crate::syscall::handlers::end_thread_group_peers((arg1 as i32) & 0xff);
             sys_exit_aarch64((arg1 as i32) & 0xff, Some(custody), true)
         }
-        Some(SyscallNumber::Fork) => sys_fork_aarch64(frame),
+        Some(SyscallNumber::Fork) => sys_fork_aarch64(frame, crate::syscall::clone::ForkClone::FORK),
         Some(SyscallNumber::Exec) => {
             let exec_result = sys_exec_aarch64(frame, arg1, arg2, arg3);
             super::trace::trace_exec(b'H');
@@ -154,11 +154,14 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
         }
         Some(SyscallNumber::Clone) => {
             // ARM64 has no fork syscall; libbreenix emulates fork via clone(SIGCHLD, 0, 0, 0, 0).
-            // Detect fork-style clone (no CLONE_VM) and route to sys_fork_aarch64 which
-            // needs the exception frame to snapshot parent registers.
-            const CLONE_VM: u64 = 0x00000100;
-            if arg1 & CLONE_VM == 0 {
-                sys_fork_aarch64(frame)
+            // Route a fork-style clone (no CLONE_VM, or vfork's CLONE_VFORK with no
+            // stack) to sys_fork_aarch64, which needs the exception frame to
+            // snapshot parent registers.
+            if crate::syscall::clone::is_fork_style(arg1, arg2) {
+                match crate::syscall::clone::ForkClone::from_args(arg1, arg2, arg3, arg4, arg5) {
+                    Ok(clone) => sys_fork_aarch64(frame, clone),
+                    Err(errno) => (-(errno as i64)) as u64,
+                }
             } else {
                 result_to_u64(crate::syscall::clone::sys_clone_thread(
                     arg1, arg2, arg3, arg4, arg5, arg6,
@@ -1104,7 +1107,7 @@ fn sys_clock_gettime(clock_id: u32, user_timespec_ptr: *mut Timespec) -> u64 {
 /// - To parent: child PID (positive)
 /// - To child: 0
 /// - On error: negative errno
-fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
+fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame, clone: crate::syscall::clone::ForkClone) -> u64 {
     // Breadcrumb: fork entry on CPU 0
     let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
     if cpu_id == 0 {
@@ -1126,7 +1129,9 @@ fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
     }
 
     // Create a CpuContext from the exception frame
-    let parent_context = crate::task::thread::CpuContext::from_aarch64_frame(frame, user_sp);
+    // A fork-style clone's child starts with its requested stack and TLS.
+    let mut parent_context = crate::task::thread::CpuContext::from_aarch64_frame(frame, user_sp);
+    clone.apply_to_context(&mut parent_context);
 
     // NOTE: No without_interrupts wrapper! The PM lock handles its own interrupt
     // disabling. Wrapping the entire fork in without_interrupts caused deadlocks
@@ -1182,7 +1187,7 @@ fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
             if !crate::process::limits::fork_allowed(manager, parent_pid) {
                 return (-11_i64) as u64;
             }
-            manager.begin_fork(parent_pid, child_page_table)
+            manager.begin_fork(parent_pid, child_page_table, &clone)
         } else {
             Err("Process manager not available")
         }
@@ -1222,12 +1227,17 @@ fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
                 None
             };
 
+            if let (Some((child_thread_id, _)), Some(ref mut manager)) = (&child_info, &mut *manager_guard) {
+                clone.store_child_tid(manager, child_pid, *child_thread_id);
+            }
+
             // Drop PM lock BEFORE any logging or scheduler operations
             crate::serial_line::Line::new().char(b'8'); // Fork: dropping PM lock
             drop(manager_guard);
             crate::serial_line::Line::new().char(b'9'); // Fork: PM lock dropped
 
             if let Some((child_thread_id, child_thread)) = child_info {
+                clone.store_parent_tid(child_thread_id);
                 crate::serial_line::Line::new().char(b'S'); // Fork: calling spawn_front
                 crate::task::scheduler::spawn_front(child_thread);
                 crate::tracing::providers::process::trace_spawn_front(
@@ -1619,9 +1629,9 @@ fn load_elf_from_ext2(
 
     let data = fs
         .read_file_content_coherent_unless(inode_num, &inode, crate::syscall::exec::caller_killed)
-        .map_err(|_| {
+        .map_err(|errno| {
             super::trace::trace_exec(b'%');
-            EIO
+            errno
         })?
         .ok_or(crate::syscall::errno::EINTR)?;
     super::trace::trace_exec(b'7');

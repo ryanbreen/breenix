@@ -1487,12 +1487,13 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         FdKind::ProcfsFile {
             ref content,
             position,
+            ..
         } => {
             // Read from procfs virtual file
             let content = content.clone();
             let pos = *position;
             drop(manager_guard);
-            let bytes = content.as_bytes();
+            let bytes = content.as_slice();
             if pos >= bytes.len() {
                 return SyscallResult::Ok(0);
             }
@@ -1576,7 +1577,27 @@ pub fn sys_fork_with_frame(frame: &super::handler::SyscallFrame) -> SyscallResul
     let parent_context = crate::task::thread::CpuContext::from_syscall_frame(frame);
 
     // Call fork with the complete parent context
-    sys_fork_with_parent_context(parent_context)
+    sys_fork_with_parent_context(parent_context, super::clone::ForkClone::FORK)
+}
+
+/// A fork-style clone (`clone::is_fork_style`): fork, with what the flags ask
+/// the child to share and where it starts (`clone::ForkClone`).
+#[cfg(target_arch = "x86_64")]
+pub fn sys_clone_fork_with_frame(
+    frame: &super::handler::SyscallFrame,
+    flags: u64,
+    stack: u64,
+    parent_tid: u64,
+    child_tid: u64,
+    tls: u64,
+) -> SyscallResult {
+    let clone = match super::clone::ForkClone::from_args(flags, stack, parent_tid, child_tid, tls) {
+        Ok(clone) => clone,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
+    let mut parent_context = crate::task::thread::CpuContext::from_syscall_frame(frame);
+    clone.apply_to_context(&mut parent_context);
+    sys_fork_with_parent_context(parent_context, clone)
 }
 
 /// sys_fork with full parent context - captures all registers from syscall frame
@@ -1613,7 +1634,10 @@ pub fn sys_fork_with_frame(frame: &super::handler::SyscallFrame) -> SyscallResul
 /// `#[cfg(target_arch = "aarch64")]` arm of `manager()` in
 /// kernel/src/process/mod.rs -- one arm, not a survey.
 #[cfg(target_arch = "x86_64")]
-fn sys_fork_with_parent_context(parent_context: crate::task::thread::CpuContext) -> SyscallResult {
+fn sys_fork_with_parent_context(
+    parent_context: crate::task::thread::CpuContext,
+    clone: super::clone::ForkClone,
+) -> SyscallResult {
     // Declared before PM guards: removed FD tables are destroyed after PM unlock.
     let mut retired_rows = alloc::vec::Vec::new();
     use super::errno::{EINVAL, ENOMEM, ESRCH};
@@ -1680,7 +1704,7 @@ fn sys_fork_with_parent_context(parent_context: crate::task::thread::CpuContext)
                 if !crate::process::limits::fork_allowed(manager, parent_pid) {
                     return SyscallResult::Err(super::errno::EAGAIN as u64);
                 }
-                manager.begin_fork(parent_pid, child_page_table)
+                manager.begin_fork(parent_pid, child_page_table, &clone)
             }
             None => Err("Process manager not available"),
         }
@@ -1771,10 +1795,15 @@ fn sys_fork_with_parent_context(parent_context: crate::task::thread::CpuContext)
                 return SyscallResult::Err(ENOMEM as u64);
             };
 
+            if let Some(ref mut manager) = *manager_guard {
+                clone.store_child_tid(manager, child_pid, child_thread_id);
+            }
+
             // Drop the PM lock BEFORE any logging or scheduler operations
             // (mirrors aarch64 fork's own ordering, and is required by the
             // creation-publication lock-order census, #745 precheck C5).
             drop(manager_guard);
+            clone.store_parent_tid(child_thread_id);
 
             // TLS registration for the child, hoisted OUT of `complete_fork`
             // (#745 precheck C9/C10, review round 2 B2). `register_thread_tls`
@@ -1862,8 +1891,7 @@ fn load_elf_from_ext2(
     }
 
     let data = fs
-        .read_file_content_coherent_unless(inode_num, &inode, super::exec::caller_killed)
-        .map_err(|_| EIO)?
+        .read_file_content_coherent_unless(inode_num, &inode, super::exec::caller_killed)?
         .ok_or(super::errno::EINTR)?;
     Ok((data, crate::process::credentials::ExecIdentity::of(&inode), resolved))
 }

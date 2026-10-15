@@ -339,7 +339,6 @@ fn resolve_exec_path(command: &str) -> Option<String> {
         format!("/bin/{}", command),
         format!("/sbin/{}", command),
         format!("/usr/local/cbin/{}", command),
-        format!("/usr/local/cbin/{}_musl_test", command),
     ];
 
     candidates
