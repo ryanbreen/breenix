@@ -1001,6 +1001,11 @@ def main():
     parser.add_argument('--image', help='an ext2 disk image (a copy) to stage the results onto')
     parser.add_argument('--rebuild', action='store_true', help='discard a cached build of this commit')
     args = parser.parse_args()
+    # The builds share the Mac with its user: run this script's whole process tree at
+    # background priority. The boot that follows it is a separate process and keeps its own.
+    if sys.platform == 'darwin' and os.environ.get('BREENIX_SDK_SUITE_BACKGROUND') != '1' and shutil.which('taskpolicy'):
+        os.environ['BREENIX_SDK_SUITE_BACKGROUND'] = '1'
+        os.execvp('taskpolicy', ['taskpolicy', '-b', sys.executable, *sys.argv])
     harness = Harness(args.arch, args.rebuild)
     harness.build()
     if args.image:
