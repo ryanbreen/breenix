@@ -136,6 +136,99 @@ pub fn check(condition: bool, msg: &str) -> CaseResult {
     if condition { Ok(()) } else { fail(msg) }
 }
 
+/// Canonical pixels handed to the runner by a picture case, with their content hash.
+/// The stage consumes this snapshot, never a later redraw of the case's surface.
+pub struct JudgedFrame {
+    pub width: usize,
+    pub height: usize,
+    pub pixels: Vec<u8>,
+    pub sha256: [u8; 32],
+}
+
+static JUDGED_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static JUDGED_RUNNER: AtomicU64 = AtomicU64::new(0);
+
+fn judged_path() -> String {
+    std::format!("/tmp/.suite-judged-{}-{}", JUDGED_RUNNER.load(Ordering::Relaxed), JUDGED_SEQUENCE.load(Ordering::Relaxed))
+}
+
+/// Hand off the exact surface just judged, before it is modified or dropped.
+/// Call after the comparison even when it failed. File transport avoids a full-frame
+/// pipe blocking the child while its parent waits for it to exit. Collection is outside
+/// the measured case window; the parent verifies length, canonical form and SHA-256.
+pub fn judged(frame: &FrameBuf) -> CaseResult {
+    use std::io::Write;
+    check(running_case().is_some(), "judged() called outside a suite case")?;
+    let size = frame.width.checked_mul(frame.height).and_then(|n| n.checked_mul(4))
+        .filter(|&n| n <= i32::MAX as usize).ok_or("judged frame dimensions overflow")?;
+    check(frame.width > 0 && frame.height > 0 && frame.width <= 16384 && frame.height <= 16384,
+        "judged frame dimensions outside surface contract")?;
+    let mut pixels = Vec::new();
+    pixels.try_reserve_exact(size).map_err(|_| "judged frame allocation failed")?;
+    for y in 0..frame.height { for x in 0..frame.width {
+        let p = frame.get_pixel(x, y);
+        pixels.extend_from_slice(&[p.b, p.g, p.r, 255]);
+    } }
+    let digest = libpixcheck::sha256(&pixels);
+    let path = judged_path();
+    let temporary = std::format!("{path}.new");
+    let write = || -> std::io::Result<()> {
+        let mut file = std::fs::File::create(&temporary)?;
+        file.write_all(b"JDG1")?;
+        file.write_all(&(frame.width as u32).to_le_bytes())?;
+        file.write_all(&(frame.height as u32).to_le_bytes())?;
+        file.write_all(&digest)?;
+        file.write_all(&pixels)?;
+        drop(file);
+        std::fs::rename(&temporary, &path)
+    };
+    write().map_err(|error| CaseError::Fail(std::format!("judged frame handoff: {error}")))
+}
+
+fn collect_judged() -> Result<Option<JudgedFrame>, String> {
+    use std::io::Read;
+    let path = judged_path();
+    let result = (|| {
+        let mut file = match std::fs::File::open(&path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(std::format!("judged frame open: {e}")),
+        };
+        let mut header = [0u8; 44];
+        file.read_exact(&mut header).map_err(|_| "judged frame header truncated")?;
+        if &header[..4] != b"JDG1" { return Err(String::from("judged frame header invalid")); }
+        let width = u32::from_le_bytes(header[4..8].try_into().unwrap()) as usize;
+        let height = u32::from_le_bytes(header[8..12].try_into().unwrap()) as usize;
+        if width == 0 || height == 0 || width > 16384 || height > 16384 {
+            return Err(String::from("judged frame dimensions invalid"));
+        }
+        let size = width.checked_mul(height).and_then(|n| n.checked_mul(4)).ok_or("judged frame size overflow")?;
+        if file.metadata().map_err(|_| "judged frame metadata unavailable")?.len() != (44 + size) as u64 {
+            return Err(String::from("judged frame length differs from header"));
+        }
+        let mut pixels = Vec::new();
+        pixels.try_reserve_exact(size).map_err(|_| "judged frame allocation failed")?;
+        pixels.resize(size, 0);
+        file.read_exact(&mut pixels).map_err(|_| "judged frame pixels truncated")?;
+        if pixels.chunks_exact(4).any(|p| p[3] != 255) { return Err(String::from("judged frame is not canonical")); }
+        let sha256 = libpixcheck::sha256(&pixels);
+        if header[12..44] != sha256 { return Err(String::from("judged frame SHA-256 differs from handoff")); }
+        Ok(Some(JudgedFrame { width, height, pixels, sha256 }))
+    })();
+    let _ = std::fs::remove_file(path);
+    let _ = std::fs::remove_file(std::format!("{}.new", judged_path()));
+    result
+}
+
+fn frame_hash(frame: Option<&JudgedFrame>) -> String {
+    let mut text = String::new();
+    if let Some(frame) = frame {
+        text.push_str(" sha256=");
+        for b in frame.sha256 { let _ = write!(text, "{b:02x}"); }
+    }
+    text
+}
+
 /// One case: its id (lowercase words joined by '-'), the title the manifest gives it,
 /// and the function that runs it.
 pub struct Case {
@@ -332,18 +425,19 @@ impl Suite {
                     .find(|&&(suite, case, _)| suite == self.id && case == name)
                     .map_or(self.case_limit_ms, |&(_, _, limit)| limit);
                 let outcome = run_case(case, limit_ms, self.id, &name, &mut screen, &mut feed);
+                let picture_hash = frame_hash(screen.judged.as_ref());
                 match &outcome {
                     Outcome::Pass { ms } => {
                         counts.passed += 1;
-                        emit(&std::format!("SUITE {} CASE {} PASS ms={}", self.id, name, ms));
+                        emit(&std::format!("SUITE {} CASE {} PASS ms={}{}", self.id, name, ms, picture_hash));
                     }
                     Outcome::Fail { ms, msg } => {
                         counts.failed += 1;
-                        emit(&std::format!("SUITE {} CASE {} FAIL ms={} msg={}", self.id, name, ms, msg));
+                        emit(&std::format!("SUITE {} CASE {} FAIL ms={}{} msg={}", self.id, name, ms, picture_hash, msg));
                     }
                     Outcome::Skip { msg } => {
                         counts.skipped += 1;
-                        emit(&std::format!("SUITE {} CASE {} SKIP msg={}", self.id, name, msg));
+                        emit(&std::format!("SUITE {} CASE {} SKIP{} msg={}", self.id, name, picture_hash, msg));
                     }
                 }
                 states[c][k] = State::Done(outcome);
@@ -689,6 +783,9 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
             return Outcome::Fail { ms: 0, msg: plain(&std::format!("could not start the case: pipe failed: {error}")) };
         }
     };
+    screen.judged = None;
+    JUDGED_RUNNER.store(process::getpid().map_or(0, |pid| pid.raw()) as u64, Ordering::Relaxed);
+    JUDGED_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let start = monotonic_ns();
     match process::fork() {
         Ok(ForkResult::Child) => {
@@ -749,6 +846,10 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
             let outcome = match sweep() {
                 Some(note) => with_note(outcome, note),
                 None => outcome,
+            };
+            let outcome = match collect_judged() {
+                Ok(frame) => { screen.judged = frame; outcome }
+                Err(note) => with_note(outcome, &note),
             };
             match restore_realtime(realtime) {
                 Some(note) => with_note(outcome, &note),
@@ -925,6 +1026,7 @@ impl Feed {
 
 /// The suite's view of the display, when there is one to draw on.
 struct Screen {
+    judged: Option<JudgedFrame>,
     fb: Option<FrameBuf>,
     /// Whether the live strip is drawn (see `/etc/breenix/suite-live`).
     live: bool,
@@ -950,7 +1052,7 @@ impl Screen {
             })
         })();
         let off = std::fs::read_to_string("/etc/breenix/suite-live").is_ok_and(|text| text.trim() == "off");
-        Screen { live: fb.is_some() && !off, fb, area: None }
+        Screen { live: fb.is_some() && !off, fb, area: None, judged: None }
     }
 
     fn live_on(&self) -> bool { self.live }

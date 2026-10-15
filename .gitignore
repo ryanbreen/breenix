@@ -36,6 +36,8 @@ libs/*
 !libs/breenix_std/**
 !libs/libbreenix-libc/
 !libs/libbreenix-libc/**
+!libs/libpixcheck/
+!libs/libpixcheck/**
 !libs/libgfx/
 !libs/libgfx/**
 !libs/libc/
