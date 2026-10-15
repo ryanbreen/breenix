@@ -5,11 +5,11 @@
 use crate::*;
 
 use libbreenix::suite::{spawn, Run};
-use libbreenix::types::Fd;
+pub(crate) use libbreenix::types::Fd;
 pub(crate) use libbreenix::window::abi;
 use abi::{op, Plain};
 
-pub(crate) use abi::errno::{EAGAIN, EBUSY, EFAULT, EINTR, EINVAL, EIO, ENOENT, ENOMEM, ENOSYS, EPERM, ETIMEDOUT};
+pub(crate) use abi::errno::{EAGAIN, EBUSY, EFAULT, EINTR, EINVAL, ENOENT, ENOMEM, EPERM, ETIMEDOUT};
 
 // ---------------------------------------------------------------------------------------
 // Raw calls
@@ -274,6 +274,17 @@ impl Pages {
             memory::mprotect(base, mapped * PAGE, memory::PROT_READ).map_err(|e| format!("mprotect: {e}"))?;
         }
         Ok(Pages { base, len: mapped * PAGE })
+    }
+
+    /// Like `new`, with the mapped pages filled by `fill` before any protection change.
+    pub(crate) fn filled(mapped: usize, unmapped: usize, writable: bool, fill: impl FnOnce(&mut [u8])) -> Result<Pages, String> {
+        let p = Pages::new(mapped, unmapped, true)?;
+        // SAFETY: the mapped part is readable and writable until the protection below.
+        fill(unsafe { core::slice::from_raw_parts_mut(p.base, p.len) });
+        if !writable {
+            memory::mprotect(p.base, p.len, memory::PROT_READ).map_err(|e| format!("mprotect: {e}"))?;
+        }
+        Ok(p)
     }
 
     pub(crate) fn addr(&self) -> u64 {

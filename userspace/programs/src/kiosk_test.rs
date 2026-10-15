@@ -5,20 +5,33 @@
 //! standard output: `ok ...` or `err <errno>`.
 //!
 //!   place <id> <x> <y> <z> <flags>   SET_GEOMETRY
-//!   event <id> <640 hex digits>      WRITE_EVENTS of one 320-byte event -> ok <queued>
+//!   event <id> <hex> [<hex>...]      WRITE_EVENTS of these 320-byte events (640 hex digits
+//!                                    each) in one call, each given the next input serial ->
+//!                                    ok <queued> <first serial>
+//!   burst <id> <count> <kind> <code> WRITE_EVENTS of <count> events of <kind> with keycodes
+//!                                    <code>, <code> + 1, ... in one call -> ok <queued> <first serial>
+//!   capture <id> <w> <h>             CAPTURE -> ok <commit_id> <width> <height> <FNV-1a of the pixels>
+//!   badwrite <id>                    WRITE_EVENTS of one event from an unmapped page
+//!   crosswrite <id>                  WRITE_EVENTS of two events, the second running into an
+//!                                    unmapped page
+//!   badcomposite                     COMPOSITE with an unmapped descriptor, then with a read-only
+//!                                    one -> <first answer> <second answer>
 //!   composite                        COMPOSITE -> ok <serial> <pixels>
 //!   auto <0|1>                       compose after every commit it sees (on at start)
 //!   release                          RELEASE_COMPOSITOR
 //!   quit                             exit 0
 //!
+//! Input serials (section 19.3) start at 1 and increase by one for every event it writes.
 //! With `auto` on it lists the windows every 2 ms and composes when any registered window's
 //! commit id has changed since its last composite.
 
 use std::collections::BTreeMap;
 
 use libbreenix::io::{self, poll_events::POLLIN, PollFd};
+use libbreenix::memory;
 use libbreenix::types::Fd;
 use libbreenix::window::{self, abi};
+use abi::{op, Plain};
 
 fn say(line: &str) {
     let mut out = String::from(line);
@@ -53,33 +66,141 @@ fn hex_event(text: &str) -> Option<abi::WindowEvent> {
     Some(unsafe { core::ptr::read_unaligned(bytes.as_ptr() as *const abi::WindowEvent) })
 }
 
-fn command(line: &str, auto: &mut bool) -> bool {
-    let words: Vec<&str> = line.split_whitespace().collect();
-    let num = |i: usize| words.get(i).and_then(|w| w.parse::<i64>().ok());
-    match words.first().copied() {
-        Some("place") => match (num(1), num(2), num(3), num(4), num(5)) {
-            (Some(id), Some(x), Some(y), Some(z), Some(flags)) => {
-                reply(window::set_geometry(id as u64, x as i32, y as i32, z as u32, flags as u32).map(|_| String::new()))
+/// What `window(op, ptr, len)` returned, as a reply word pair: `ok` or `err <errno>`.
+fn answer(ret: i64) -> String {
+    if ret < 0 { format!("err {}", -ret) } else { String::from("ok") }
+}
+
+/// `pages` pages of fresh anonymous memory, the last `unmapped` of them unmapped again, and the
+/// rest read-only when `readonly`.
+fn pages(pages: usize, unmapped: usize, readonly: bool) -> Option<*mut u8> {
+    let len = pages * 4096;
+    let base = memory::mmap(core::ptr::null_mut(), len, memory::PROT_READ | memory::PROT_WRITE,
+        memory::MAP_PRIVATE | memory::MAP_ANONYMOUS, -1, 0).ok()?;
+    let kept = (pages - unmapped) * 4096;
+    if unmapped > 0 {
+        // SAFETY: the tail lies inside the mapping just made.
+        memory::munmap(unsafe { base.add(kept) }, unmapped * 4096).ok()?;
+    }
+    if readonly {
+        memory::mprotect(base, kept, memory::PROT_READ).ok()?;
+    }
+    Some(base)
+}
+
+fn raw(op: u32, ptr: u64, len: usize) -> i64 {
+    // SAFETY: the kernel checks every user pointer; a bad one is EFAULT.
+    unsafe { window::raw_call(op, ptr as *mut u8, len) }
+}
+
+fn write_raw(id: u64, ptr: u64, count: u32) -> i64 {
+    let mut w = abi::WriteEvents::ZERO;
+    w.id = id;
+    w.ptr = ptr;
+    w.count = count;
+    raw(op::WRITE_EVENTS, &mut w as *mut abi::WriteEvents as u64, core::mem::size_of::<abi::WriteEvents>())
+}
+
+struct Kiosk {
+    auto: bool,
+    /// The next input serial.
+    serial: u64,
+}
+
+impl Kiosk {
+    /// Give `events` the next serials and write them to window `id` in one call.
+    fn send(&mut self, id: u64, events: &mut [abi::WindowEvent]) {
+        let first = self.serial;
+        for e in events.iter_mut() {
+            e.serial = self.serial;
+            self.serial += 1;
+        }
+        reply(window::write_events(id, events).map(|n| format!("{n} {first}")));
+    }
+
+    fn command(&mut self, line: &str) -> bool {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        let num = |i: usize| words.get(i).and_then(|w| w.parse::<i64>().ok());
+        match words.first().copied() {
+            Some("place") => match (num(1), num(2), num(3), num(4), num(5)) {
+                (Some(id), Some(x), Some(y), Some(z), Some(flags)) => {
+                    reply(window::set_geometry(id as u64, x as i32, y as i32, z as u32, flags as u32).map(|_| String::new()))
+                }
+                _ => say("err 22"),
+            },
+            Some("event") => {
+                let events: Option<Vec<abi::WindowEvent>> = words.iter().skip(2).map(|t| hex_event(t)).collect();
+                match (num(1), events) {
+                    (Some(id), Some(mut events)) if !events.is_empty() => self.send(id as u64, &mut events),
+                    _ => say("err 22"),
+                }
+            }
+            Some("burst") => match (num(1), num(2), num(3), num(4)) {
+                (Some(id), Some(count), Some(kind), Some(code)) if count > 0 => {
+                    let mut events: Vec<abi::WindowEvent> = (0..count)
+                        .map(|i| {
+                            let mut e = abi::WindowEvent::ZERO;
+                            e.kind = kind as u16;
+                            e.keycode = (code + i) as u32;
+                            e
+                        })
+                        .collect();
+                    self.send(id as u64, &mut events);
+                }
+                _ => say("err 22"),
+            },
+            Some("capture") => match (num(1), num(2), num(3)) {
+                (Some(id), Some(w), Some(h)) => {
+                    let mut px = vec![0u8; (w * h * 4) as usize];
+                    let mut c = abi::Capture::ZERO;
+                    c.id = id as u64;
+                    c.dst = px.as_mut_ptr() as u64;
+                    c.dst_len = px.len() as u64;
+                    reply(window::call(op::CAPTURE, &mut c).map(|_| {
+                        let fnv = px.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3));
+                        format!("{} {} {} {fnv:016x}", c.commit_id, c.width, c.height)
+                    }));
+                }
+                _ => say("err 22"),
+            },
+            Some("badwrite") => match (num(1), pages(1, 1, false)) {
+                (Some(id), Some(base)) => say(&answer(write_raw(id as u64, base as u64, 1))),
+                _ => say("err 22"),
+            },
+            Some("crosswrite") => match (num(1), pages(2, 1, false)) {
+                (Some(id), Some(base)) => {
+                    let size = core::mem::size_of::<abi::WindowEvent>();
+                    // The first event lies whole in the mapped page; the second runs past its end.
+                    let at = base as usize + 4096 - size - size / 2;
+                    let mut e = abi::WindowEvent::ZERO;
+                    e.kind = abi::event_kind::KEY_PRESS;
+                    e.keycode = 2;
+                    // SAFETY: the first event's bytes lie inside the mapped page.
+                    unsafe { core::ptr::write_unaligned(at as *mut abi::WindowEvent, e) };
+                    say(&answer(write_raw(id as u64, at as u64, 2)));
+                }
+                _ => say("err 22"),
+            },
+            Some("badcomposite") => {
+                let size = core::mem::size_of::<abi::Composite>();
+                let first = pages(1, 1, false).map_or(-1, |p| raw(op::COMPOSITE, p as u64, size));
+                let second = pages(1, 0, true).map_or(-1, |p| raw(op::COMPOSITE, p as u64, size));
+                say(&format!("{} {}", answer(first), answer(second)));
+            }
+            Some("composite") => reply(window::composite().map(|(serial, pixels)| format!("{serial} {pixels}"))),
+            Some("auto") => {
+                self.auto = num(1) == Some(1);
+                say("ok");
+            }
+            Some("release") => reply(window::release_compositor().map(|_| String::new())),
+            Some("quit") => {
+                say("ok");
+                return false;
             }
             _ => say("err 22"),
-        },
-        Some("event") => match (num(1), words.get(2).and_then(|t| hex_event(t))) {
-            (Some(id), Some(e)) => reply(window::write_events(id as u64, &[e]).map(|n| n.to_string())),
-            _ => say("err 22"),
-        },
-        Some("composite") => reply(window::composite().map(|(serial, pixels)| format!("{serial} {pixels}"))),
-        Some("auto") => {
-            *auto = num(1) == Some(1);
-            say("ok");
         }
-        Some("release") => reply(window::release_compositor().map(|_| String::new())),
-        Some("quit") => {
-            say("ok");
-            return false;
-        }
-        _ => say("err 22"),
+        true
     }
-    true
 }
 
 /// Compose when any registered window has a commit not yet composed.
@@ -108,7 +229,7 @@ fn main() {
             std::process::exit(1);
         }
     }
-    let mut auto = true;
+    let mut kiosk = Kiosk { auto: true, serial: 1 };
     let mut seen = BTreeMap::new();
     let mut pending = Vec::new();
     loop {
@@ -123,12 +244,12 @@ fn main() {
             while let Some(end) = pending.iter().position(|&b| b == b'\n') {
                 let line: Vec<u8> = pending.drain(..=end).collect();
                 let text = String::from_utf8_lossy(&line[..line.len() - 1]).into_owned();
-                if !command(&text, &mut auto) {
+                if !kiosk.command(&text) {
                     return;
                 }
             }
         }
-        if auto {
+        if kiosk.auto {
             compose_new_commits(&mut seen);
         }
     }
