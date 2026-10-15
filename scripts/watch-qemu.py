@@ -38,7 +38,7 @@ def label(mode, suite):
     return f"Suite {suite}" if mode == "suite" else "Boot probe" if mode == "probe" else "Testing boot"
 
 
-def watch(process, serial, mode, suite, idle_exit, gate_timeout, suite_hold, clock):
+def watch(process, serial, mode, suite, idle_exit, gate_timeout, suite_hold, clock, only=None):
     progress = BootProgress(serial)
     last_size = 0
     started = last_output = time.monotonic()
@@ -65,7 +65,7 @@ def watch(process, serial, mode, suite, idle_exit, gate_timeout, suite_hold, clo
             progress.observe(text)
             if mode in COMPLETING_MODES:
                 clock.observe(text)
-                result = DONE["completion"](text, mode, suite)
+                result = DONE["completion"](text, mode, suite, only)
                 if result is not None:
                     if result[1].startswith("fatal kernel output:"):
                         print(f"FAIL: {result[1]}", flush=True)
@@ -97,6 +97,7 @@ def main():
     parser.add_argument("--serial", type=Path, required=True)
     parser.add_argument("--mode", required=True)
     parser.add_argument("--suite", default="")
+    parser.add_argument("--case", default="", dest="only")
     parser.add_argument("--idle-exit", type=float, default=300)
     parser.add_argument("--gate-timeout", type=float, default=1800)
     parser.add_argument("--suite-hold", type=float, default=float(os.environ.get("BREENIX_SUITE_HOLD", "5")))
@@ -119,7 +120,7 @@ def main():
     process = subprocess.Popen(command)
     try:
         reason = watch(process, args.serial, args.mode, args.suite, args.idle_exit,
-                       args.gate_timeout, args.suite_hold, clock)
+                       args.gate_timeout, args.suite_hold, clock, args.only)
     finally:
         stop(process)
     clock_ok = True
@@ -132,12 +133,12 @@ def main():
         return 1
     if args.mode in ("probe", "tests", "program"):
         serial = args.serial.read_bytes().decode("utf-8", errors="replace") if args.serial.exists() else ""
-        result = DONE["completion"](serial, args.mode, args.suite)
+        result = DONE["completion"](serial, args.mode, args.suite, args.only)
         print(f"{'PASS' if result and result[0] else 'FAIL'}: {result[1] if result else 'no completion record'}", flush=True)
         return 0 if result and result[0] and clock_ok else 1
     if args.mode == "suite":
         serial = args.serial.read_bytes().decode("utf-8", errors="replace") if args.serial.exists() else ""
-        result = DONE["completion"](serial, args.mode, args.suite)
+        result = DONE["completion"](serial, args.mode, args.suite, args.only)
         if result is None:
             print(f"FAIL: no complete SUITE {args.suite} DONE before {reason}", flush=True)
             return 1
@@ -145,8 +146,8 @@ def main():
             print(f"FAIL: {result[1]}", flush=True)
             return 1
         manifest = json.loads((ROOT / f"docs/suites/{args.suite}.json").read_text())
-        ok, detail = VERDICT["verdict"](manifest, args.serial, [args.serial])
-        if ok:
+        ok, detail = VERDICT["verdict"](manifest, args.serial, [args.serial], only=args.only)
+        if ok and not args.only:
             ok, disk_detail = VERDICT["disk_verdict"](manifest.get("diskChecks", []), args.disk)
             if disk_detail:
                 detail += f"; {disk_detail}"

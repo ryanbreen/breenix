@@ -540,7 +540,7 @@ private struct Fixture {
         stream = FakeStream()
         runner = LaunchRunner(status: status, stream: stream)
         stream.onStop = { [runner] in runner.events.append("stream.stop") }
-        launcher = BeastLauncher(store: RunStore(root: root), runner: runner, vigilScript: URL(fileURLWithPath: "/fake-vigil"), serialStreaming: stream)
+        launcher = BeastLauncher(store: RunStore(root: root), runner: runner, vigilScript: URL(fileURLWithPath: "/fake-vigil"), serialStreaming: stream, targetGuard: nil)
         launcher.reconnectLimit = 2
         launcher.reconnectDelay = { _ in }
         launcher.makeSignals = { [runner] _ in
