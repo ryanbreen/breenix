@@ -688,13 +688,16 @@ impl Ext2Fs {
 
     /// `read_file_content_coherent`, read 64 KiB at a time. Before each
     /// chunk it asks `stop`, and gives up with `Ok(None)` when the reader no
-    /// longer wants the content.
+    /// longer wants the content. The whole file's buffer is reserved once, at
+    /// its exact size: a heap that cannot hold it is ENOMEM, never a panic.
+    /// Other failures are EIO.
     pub fn read_file_content_coherent_unless(
         &self,
         ino: u32,
         inode: &Ext2Inode,
         stop: impl Fn() -> bool,
-    ) -> Result<Option<Vec<u8>>, &'static str> {
+    ) -> Result<Option<Vec<u8>>, i32> {
+        use crate::syscall::errno::{EIO, ENOMEM};
         const CHUNK: u64 = 64 * 1024;
         let size = inode.size();
         // The whole-file read's bound: no file holds more than the filesystem.
@@ -703,20 +706,18 @@ impl Ext2Fs {
         }
         .saturating_mul(self.superblock.block_size() as u64);
         if size > capacity {
-            return Err("Failed to read file content");
+            return Err(EIO);
         }
         let mut bytes = Vec::new();
+        bytes.try_reserve_exact(size as usize).map_err(|_| ENOMEM)?;
         while (bytes.len() as u64) < size {
             if stop() {
                 return Ok(None);
             }
             let offset = bytes.len() as u64;
-            let chunk = self.read_file_range_coherent(
-                ino,
-                inode,
-                offset,
-                CHUNK.min(size - offset) as usize,
-            )?;
+            let chunk = self
+                .read_file_range_coherent(ino, inode, offset, CHUNK.min(size - offset) as usize)
+                .map_err(|_| EIO)?;
             if chunk.is_empty() {
                 break;
             }

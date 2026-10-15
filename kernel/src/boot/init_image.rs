@@ -70,8 +70,7 @@ pub fn read_program_image(
     }
 
     let elf_data = fs
-        .read_file_content_coherent_unless(inode_num, &inode, crate::syscall::exec::caller_killed)
-        .map_err(|_| EIO)?
+        .read_file_content_coherent_unless(inode_num, &inode, crate::syscall::exec::caller_killed)?
         .ok_or(crate::syscall::errno::EINTR)?;
 
     drop(fs_guard);

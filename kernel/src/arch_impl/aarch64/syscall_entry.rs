@@ -1629,9 +1629,9 @@ fn load_elf_from_ext2(
 
     let data = fs
         .read_file_content_coherent_unless(inode_num, &inode, crate::syscall::exec::caller_killed)
-        .map_err(|_| {
+        .map_err(|errno| {
             super::trace::trace_exec(b'%');
-            EIO
+            errno
         })?
         .ok_or(crate::syscall::errno::EINTR)?;
     super::trace::trace_exec(b'7');
