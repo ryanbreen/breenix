@@ -236,7 +236,7 @@ impl Window {
                 self.since_pixel.push((d.serial, handled));
             }
         }
-        if self.font_watcher.poll() {
+        if matches!(self.font_watcher.poll(), Ok(Some(_))) {
             handler(&Delivered { serial: 0, time_ns: 0, event: Event::FontChanged });
             count += 1;
         }
@@ -277,7 +277,7 @@ impl Window {
                 self.adopt_size(width, height);
             }
         }
-        if self.font_watcher.poll() {
+        if matches!(self.font_watcher.poll(), Ok(Some(_))) {
             events.push(Event::FontChanged);
         }
         events

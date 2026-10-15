@@ -50,6 +50,7 @@
 
 mod window;
 mod event;
+pub mod clock;
 pub mod font;
 
 pub use window::Window;
