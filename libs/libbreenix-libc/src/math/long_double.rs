@@ -14,9 +14,9 @@
 
 use super::ext::{
     acosh_x, as_integer, asinh_x, atan2_x, atan_x, atanh_x, domain, erf_series, erfc_cf, exp_exact, exp_x,
-    expm1_x, is_integer, is_odd_integer, lgamma_pos_x, ln2, log1p_x, log_x, mul_wide, overflow, pi, pi_2,
-    pole, quiet_nan, round_parts, round_x, sign_bit, sincos, sincos_pi, sinh_cosh_x, tanh_x, underflow, unpack,
-    x_of, Val, X,
+    expm1_x, is_integer, is_odd_integer, lgamma_pos_with, lgamma_pos_x, ln2, log1p_x, log_x, mul_wide, overflow,
+    pi, pi_2, pole, quiet_nan, round_parts, round_x, sign_bit, sincos, sincos_pi, sinh_cosh_x, sub_int, tanh_x,
+    underflow, unpack, x_of, Val, X,
 };
 use super::fenv;
 use crate::stdlib::floatconv::{self, Big, Format, Round};
@@ -935,62 +935,59 @@ pub(crate) fn expm1(x: Ld, f: &Format) -> Ld {
     }
 }
 
-/// ln of a positive finite value, or the result of a special operand.
-fn log_operand(x: Ld, f: &Format) -> Result<X, Ld> {
+/// ln x for finite x = sig 2^exp > 0: near 1, ln(1 + t) of the exact t = x - 1.
+fn ln_parts(sig: u128, exp: i64) -> X {
+    let t = sub_int(false, sig, exp, 1);
+    if t.is_zero() || t.e < -2 { log1p_x(t) } else { log_x(X::from_parts(false, sig, exp)) }
+}
+
+/// A positive finite value's (sig, exp), or the result of a special operand.
+fn log_operand(x: Ld, f: &Format) -> Result<(u128, i64), Ld> {
     match unpack(x, f) {
         v @ Val::Nan { .. } => Err(quiet_nan(v, f)),
         Val::Zero(_) => Err(pole(true, f)),
         Val::Inf(false) => Err(x),
         Val::Inf(true) | Val::Fin(true, _, _) => Err(domain(f)),
-        v @ Val::Fin(false, _, _) => Ok(xv(v)),
+        Val::Fin(false, sig, exp) => Ok((sig, exp)),
     }
 }
 
 pub(crate) fn log(x: Ld, f: &Format) -> Ld {
     match log_operand(x, f) {
         Err(r) => r,
-        Ok(a) => {
-            if a.cmp(X::ONE) == Ordering::Equal {
-                return f.zero(false);
-            }
-            round_x(log_x(a), false, f)
-        }
+        Ok((sig, exp)) => round_x(ln_parts(sig, exp), false, f),
     }
 }
 
 pub(crate) fn log2(x: Ld, f: &Format) -> Ld {
-    let a = match log_operand(x, f) {
+    let (sig, exp) = match log_operand(x, f) {
         Err(r) => return r,
         Ok(a) => a,
     };
-    if let Val::Fin(_, sig, exp) = unpack(x, f) {
-        let (o, t) = odd_part(sig, exp);
-        if o == 1 {
-            return integer(t < 0, t.unsigned_abs() as u128, f);
-        }
+    let (o, t) = odd_part(sig, exp);
+    if o == 1 {
+        return integer(t < 0, t.unsigned_abs() as u128, f);
     }
-    round_x(log_x(a).mul_dd(super::consts::INV_LN2), false, f)
+    round_x(ln_parts(sig, exp).mul_dd(super::consts::INV_LN2), false, f)
 }
 
 pub(crate) fn log10(x: Ld, f: &Format) -> Ld {
-    let a = match log_operand(x, f) {
+    let (sig, exp) = match log_operand(x, f) {
         Err(r) => return r,
         Ok(a) => a,
     };
-    if let Val::Fin(_, sig, exp) = unpack(x, f) {
-        // 10^k = 5^k 2^k exactly.
-        let (o, t) = odd_part(sig, exp);
-        let mut p = 1u128;
-        let mut k = 0i64;
-        while p < o {
-            p *= 5;
-            k += 1;
-        }
-        if p == o && t == k {
-            return integer(false, k as u128, f);
-        }
+    // 10^k = 5^k 2^k exactly.
+    let (o, t) = odd_part(sig, exp);
+    let mut p = 1u128;
+    let mut k = 0i64;
+    while p < o {
+        p *= 5;
+        k += 1;
     }
-    round_x(log_x(a).mul_dd(super::consts::INV_LN10), false, f)
+    if p == o && t == k {
+        return integer(false, k as u128, f);
+    }
+    round_x(ln_parts(sig, exp).mul_dd(super::consts::INV_LN10), false, f)
 }
 
 pub(crate) fn log1p(x: Ld, f: &Format) -> Ld {
@@ -998,12 +995,19 @@ pub(crate) fn log1p(x: Ld, f: &Format) -> Ld {
         v @ Val::Nan { .. } => quiet_nan(v, f),
         Val::Zero(_) | Val::Inf(false) => x,
         Val::Inf(true) => domain(f),
-        v @ Val::Fin(..) => {
+        v @ Val::Fin(neg, sig, exp) => {
             let a = xv(v);
-            match a.cmp(X::ONE.neg()) {
-                Ordering::Less => domain(f),
-                Ordering::Equal => pole(true, f),
-                Ordering::Greater => round_x(log1p_x(a), false, f),
+            if a.e < -2 {
+                return round_x(log1p_x(a), false, f);
+            }
+            // 1 + x exactly: near x = -1 it keeps the bits an X of x drops.
+            let s = sub_int(neg, sig, exp, -1);
+            if s.is_zero() {
+                pole(true, f)
+            } else if s.is_neg() {
+                domain(f)
+            } else {
+                round_x(log_x(s), false, f)
             }
         }
     }
@@ -1071,7 +1075,7 @@ pub(crate) fn pow(x: Ld, y: Ld, f: &Format) -> Ld {
             return r;
         }
     }
-    let t = log_x(xv(a).abs()).mul(xv(b));
+    let t = ln_parts(sx, ex).mul(xv(b));
     if t.cmp(X::from_f64(12000.0)) == Ordering::Greater {
         return overflow(neg, f);
     }
@@ -1181,7 +1185,7 @@ fn arc(x: Ld, f: &Format, cos: bool) -> Ld {
         v @ Val::Nan { .. } => quiet_nan(v, f),
         Val::Inf(_) => domain(f),
         Val::Zero(_) => if cos { round_x(pi_2(), false, f) } else { x },
-        v @ Val::Fin(neg, _, _) => {
+        v @ Val::Fin(neg, sig, exp) => {
             let a = xv(v);
             match a.cmp_abs(X::ONE) {
                 Ordering::Greater => domain(f),
@@ -1193,7 +1197,7 @@ fn arc(x: Ld, f: &Format, cos: bool) -> Ld {
                     }
                 }
                 Ordering::Less => {
-                    let (one_m, one_p) = (X::ONE.sub(a), X::ONE.add(a));
+                    let (one_m, one_p) = (sub_int(neg, sig, exp, 1).neg(), sub_int(neg, sig, exp, -1));
                     if cos {
                         // acos t = 2 atan(sqrt((1 - t) / (1 + t))).
                         round_x(atan_x(one_m.div(one_p).sqrt()).scale(1), false, f)
@@ -1285,12 +1289,14 @@ pub(crate) fn acosh(x: Ld, f: &Format) -> Ld {
         v @ Val::Nan { .. } => quiet_nan(v, f),
         Val::Inf(false) => x,
         Val::Zero(_) | Val::Inf(true) | Val::Fin(true, _, _) => domain(f),
-        v @ Val::Fin(false, _, _) => {
-            let a = xv(v);
-            match a.cmp(X::ONE) {
-                Ordering::Less => domain(f),
-                Ordering::Equal => f.zero(false),
-                Ordering::Greater => round_x(acosh_x(a), false, f),
+        Val::Fin(false, sig, exp) => {
+            let u = sub_int(false, sig, exp, 1);
+            if u.is_neg() {
+                domain(f)
+            } else if u.is_zero() {
+                f.zero(false)
+            } else {
+                round_x(acosh_x(X::from_parts(false, sig, exp), u), false, f)
             }
         }
     }
@@ -1301,12 +1307,15 @@ pub(crate) fn atanh(x: Ld, f: &Format) -> Ld {
         v @ Val::Nan { .. } => quiet_nan(v, f),
         Val::Zero(_) => x,
         Val::Inf(_) => domain(f),
-        v @ Val::Fin(neg, _, _) => {
-            let a = xv(v);
-            match a.cmp_abs(X::ONE) {
-                Ordering::Greater => domain(f),
-                Ordering::Equal => pole(neg, f),
-                Ordering::Less => round_x(atanh_x(a), neg, f),
+        v @ Val::Fin(neg, sig, exp) => {
+            // 1 - |x| exactly.
+            let d = sub_int(false, sig, exp, 1).neg();
+            if d.is_neg() {
+                domain(f)
+            } else if d.is_zero() {
+                pole(neg, f)
+            } else {
+                round_x(atanh_x(xv(v), d), neg, f)
             }
         }
     }
@@ -1366,18 +1375,7 @@ pub(crate) fn erfc(x: Ld, f: &Format) -> Ld {
 fn lgamma_signed(neg: bool, sig: u128, exp: i64) -> (X, bool) {
     let x = X::from_parts(neg, sig, exp);
     if !neg {
-        // Near the zeros at 1 and 2 the general path cancels; t = x - 1 or x - 2 there.
-        for z in [1.0, 2.0] {
-            let t = x.add_f(-z);
-            if !t.is_zero() && t.e < -27 {
-                let euler = X::from_dd(super::consts::EULER);
-                let pi2 = X::from_dd(super::consts::PI_SQ_12);
-                let c1 = if z == 1.0 { euler.neg() } else { X::ONE.sub(euler) };
-                let c2 = if z == 1.0 { pi2 } else { pi2.add_f(-0.5) };
-                return (c1.mul(t).add(c2.mul(t.sqr())), false);
-            }
-        }
-        return (lgamma_pos_x(x), false);
+        return (lgamma_pos_with(x, |c| sub_int(false, sig, exp, c)), false);
     }
     // Gamma(x) Gamma(1 - x) = pi / sin(pi x).
     let (s, _) = sincos_pi(true, sig, exp);
@@ -1923,6 +1921,15 @@ mod tests {
         ("erfc", &[1.0], 0x3ffc4226162fbddd4e4bfbbc0913cb64, 0x3ffca1130b17deeea726, false),
         ("tgamma", &[0.5], 0x3fffc5bf891b4ef6aa79c3b0520d5db9, 0x3fffe2dfc48da77b553d, false),
         ("lgamma", &[10.0], 0x400299a8921a7f7cf4b07d758b4c2bc1, 0x4002ccd4490d3fbe7a58, false),
+        ("lgamma", &[1.0000000037252903], 0xbfe22788cfaca9bb2dc3c25432a08536, 0xbfe293c467d654dd96e2, false),
+        ("lgamma", &[0.9999999990686774], 0x3fe02788cfcd8fcb27eb37dbf5dd9d3a, 0x3fe093c467e6c7e593f6, false),
+        ("lgamma", &[2.0000000000009095], 0x3fd5b0ee60720a8716390367b7685c1b, 0x3fd5d877303905438b1d, false),
+        ("lgamma", &[1.5], 0xbffbeeb95b094c1914d1a18fd62c1d35, 0xbffbf75cad84a60c8a69, false),
+        ("lgamma", &[0.75], 0x3ffca051c372609edd816b9f5bec23c5, 0x3ffcd028e1b9304f6ec1, false),
+        ("lgamma", &[0.25], 0x3fff49bbd81c16efb1e317135ab901c0, 0x3fffa4ddec0e0b77d8f2, false),
+        ("lgamma", &[2.5], 0x3ffd2383e809a67e79f700737168fdd5, 0x3ffd91c1f404d33f3cfc, false),
+        ("lgamma", &[3.0], 0x3ffe62e42fefa39ef35793c7673007e6, 0x3ffeb17217f7d1cf79ac, false),
+        ("lgamma", &[7.5], 0x4001e233060e41f7f4f3d20ee266b83e, 0x4001f119830720fbfa7a, false),
         ("cbrt", &[2.0], 0x3fff428a2f98d728ae223ddab715be25, 0x3fffa14517cc6b945711, false),
         ("pow", &[2.0,0.5], 0x3fff6a09e667f3bcc908b2fb1366ea95, 0x3fffb504f333f9de6484, false),
         ("pow", &[10.0,-0.25], 0x3ffe1feb33c1c381e11737c93ff804f4, 0x3ffe8ff599e0e1c0f08c, false),
@@ -2068,6 +2075,51 @@ mod tests {
             // nexttoward(double, long double) steps the double.
             let d = next_toward(1f64.to_bits() as u128, &floatconv::F64, up, f);
             assert_eq!(f64::from_bits(d as u64), 1.0 + f64::EPSILON);
+        }
+    }
+
+    /// Functions at the neighbours of 1 (1 - 2^-p below, 1 + 2^(1-p) above), where an X of the
+    /// argument alone has lost what the result depends on. References from the decimal module
+    /// at 140 digits, as for REFS: (function, binary128 encoding, x87 encoding).
+    #[test]
+    fn near_one() {
+        const NEAR: &[(&str, u128, u128)] = &[
+            ("atanh_down", 0x40043c133ab16db990b9ff9d97e6c709, 0x4003b437e057b116b792),
+            ("acos_down", 0x3fc70000000000000000000000000000, 0x3fdfb504f333f9de6484),
+            ("asin_down", 0x3fff921fb54442d18369898cc51701b8, 0x3fffc90fdaa16c63cf01),
+            ("log_down", 0xbf8e0000000000000000000000000000, 0xbfbf8000000000000000),
+            ("log_up", 0x3f8effffffffffffffffffffffffffff, 0x3fbfffffffffffffffff),
+            ("log2_down", 0xbf8e71547652b82fe1777d0ffda0d23b, 0xbfbfb8aa3b295c17f0bc),
+            ("log10_down", 0xbf8cbcb7b1526e50e32a6ab7555f5a68, 0xbfbdde5bd8a937287196),
+            ("acosh_up", 0x3fc76a09e667f3bcc908b2fb1366ea95, 0x3fe08000000000000000),
+            ("log1p_negdown", 0xc005394d72518e7252d35076091866f9, 0xc004b17217f7d1cf79ac),
+            ("pow_down_2p", 0x3ffd78b56362cef37c6aeb7b1e0a4154, 0x3ffdbc5ab1b16779be35),
+            ("lgamma_down", 0x3f8d2788cfc6fb618f49a37c7f0202a6, 0x3fbe93c467e37db0c7a6),
+            ("lgamma_up", 0xbf8e2788cfc6fb618f49a37c7f0202a4, 0xbfbf93c467e37db0c7a3),
+        ];
+        for &(name, q, x) in NEAR {
+            for (f, want, limit) in [(&F128, q, 1u128 << 12), (&X87, x, 1)] {
+                let one = ld(1.0, f);
+                let down = next_after(one, ld(0.0, f), f);
+                let up = next_after(one, ld(2.0, f), f);
+                let got = match name {
+                    "atanh_down" => atanh(down, f),
+                    "acos_down" => acos(down, f),
+                    "asin_down" => asin(down, f),
+                    "log_down" => log(down, f),
+                    "log_up" => log(up, f),
+                    "log2_down" => log2(down, f),
+                    "log10_down" => log10(down, f),
+                    "acosh_up" => acosh(up, f),
+                    "log1p_negdown" => log1p(down | sign_bit(f), f),
+                    "pow_down_2p" => pow(down, exact(false, 1, f.p as i64, f), f),
+                    "lgamma_down" => lgamma(down, &mut 0, f),
+                    "lgamma_up" => lgamma(up, &mut 0, f),
+                    _ => panic!("{name}"),
+                };
+                let d = ulps(got, want, f);
+                assert!(d <= limit, "{name} p={}: {got:#x} vs {want:#x}, {d} ulps", f.p);
+            }
         }
     }
 }

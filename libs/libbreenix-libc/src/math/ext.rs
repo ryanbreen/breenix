@@ -15,7 +15,7 @@
 //! Machin's formula pi = 16 atan(1/5) - 4 atan(1/239).
 
 use super::basic::{decompose, round};
-use super::consts::{HALF_LN_2PI, INV_FACT, INV_LN2, INV_ODD, LN2, PI, PI_2, STIRLING};
+use super::consts::{HALF_LN_2PI, INV_FACT, INV_LN2, INV_ODD, LGAMMA2, LN2, PI, PI_2, STIRLING};
 use super::dd::{two_prod, two_sum, DD};
 use super::explog::{exp_dd, log_dd};
 use super::fenv;
@@ -189,18 +189,21 @@ impl X {
         X::new(DD::from(x), 0)
     }
 
-    /// (-1)^neg * sig * 2^exp, keeping sig's top 106 bits.
+    /// (-1)^neg * sig * 2^exp to about 107 bits: sig's top 53 bits rounded to nearest, and
+    /// the signed rest rounded to nearest, so a value a double-double holds, such as
+    /// 1 - 2^-113, stays exact.
     pub(crate) fn from_parts(neg: bool, sig: u128, exp: i64) -> X {
         if sig == 0 {
             return X::ZERO;
         }
+        // s: sig with its top bit at bit 125 (a 127- or 128-bit sig loses its lowest bits).
         let lz = sig.leading_zeros() as i64;
-        let s = sig << lz;
-        let hi = (s >> 75) as u64 as f64;
-        let lo = (s & ((1u128 << 75) - 1)) as f64 * super::basic::pow2(-75);
+        let s = if lz >= 2 { sig << (lz - 2) } else { sig >> (2 - lz) };
+        let hi = (s >> 64) as u64 as f64;
+        let lo = (s as i128 - ((hi as u64 as i128) << 64)) as f64 * super::basic::pow2(-64);
         let m = two_sum(hi, lo);
         let m = if neg { m.neg() } else { m };
-        X::new(m, 75 - lz + exp)
+        X::new(m, exp + 66 - lz)
     }
 
     pub(crate) fn is_zero(self) -> bool {
@@ -339,6 +342,19 @@ pub(crate) fn x_of(v: Val) -> X {
         Val::Fin(neg, sig, exp) => X::from_parts(neg, sig, exp),
         _ => X::ZERO,
     }
+}
+
+/// x - c for x = (-1)^neg sig 2^exp and an integer |c| <= 32, from the exact difference:
+/// near c the subtraction cancels the bits an X of x keeps and leaves those it dropped.
+pub(crate) fn sub_int(neg: bool, sig: u128, exp: i64, c: i64) -> X {
+    debug_assert!(c.abs() <= 32);
+    if (-120..=0).contains(&exp) && sig >> 120 == 0 {
+        let x = if neg { -(sig as i128) } else { sig as i128 };
+        let d = x - ((c as i128) << -exp);
+        return X::from_parts(d < 0, d.unsigned_abs(), exp);
+    }
+    // Here x lies above 2^p or below 2^-7: far from c, nothing cancels.
+    X::from_parts(neg, sig, exp).add_f(-(c as f64))
 }
 
 // ----------------------------------------------------------------------------
@@ -658,22 +674,21 @@ pub(crate) fn asinh_x(t: X) -> X {
     if t.is_neg() { r.neg() } else { r }
 }
 
-/// acosh t for t >= 1.
-pub(crate) fn acosh_x(t: X) -> X {
+/// acosh t for t >= 1, given u = t - 1 (exactly, near 1).
+pub(crate) fn acosh_x(t: X, u: X) -> X {
     if t.e > 60 {
         return log_x(t).add(ln2());
     }
-    let u = t.add_f(-1.0);
     log1p_x(u.add(u.mul(t.add_f(1.0)).sqrt()))
 }
 
-/// atanh t for |t| < 1.
-pub(crate) fn atanh_x(t: X) -> X {
+/// atanh t for |t| < 1, given d = 1 - |t| (exactly, near 1).
+pub(crate) fn atanh_x(t: X, d: X) -> X {
     let a = t.abs();
     let r = if a.e < -60 {
         a.add(a.mul(a.sqr()).mul_f(1.0 / 3.0))
     } else {
-        log1p_x(a.scale(1).div(X::ONE.sub(a))).scale(-1)
+        log1p_x(a.scale(1).div(d)).scale(-1)
     };
     if t.is_neg() { r.neg() } else { r }
 }
@@ -780,21 +795,54 @@ fn stirling_x(z: X) -> X {
     base.add(X::from_dd(sum.mul(inv)))
 }
 
-/// ln Gamma x for x > 0.
-pub(crate) fn lgamma_pos_x(x: X) -> X {
+/// ln Gamma(2 + t) for |t| <= 1/2: (1 - euler) t + sum (-1)^k (zeta(k) - 1) / k t^k, whose
+/// terms past t^60 lie below 2^-120 of the sum.
+fn lgamma2_series(t: X) -> X {
+    let c1 = X::ONE.sub(X::from_dd(super::consts::EULER));
+    if t.is_zero() || t.e < -500 {
+        return c1.mul(t);
+    }
+    let d = t.to_dd();
+    let mut sum = DD::from(0.0);
+    for c in LGAMMA2.iter().rev() {
+        sum = sum.add(*c).mul(d);
+    }
+    X::from_dd(sum).add(c1).mul(t)
+}
+
+/// ln Gamma x for x > 0, with `minus(c)` giving x - c for a small integer c. Near the zeros
+/// at 1 and 2 the result is about that difference times a constant, so a caller holding
+/// x's exact bits passes the exact difference.
+pub(crate) fn lgamma_pos_with(x: X, minus: impl Fn(i64) -> X) -> X {
     if x.e < -1000 {
         return log_x(x).neg();
     }
-    if x.approx() >= 30.0 {
+    let a = x.approx();
+    if a >= 30.0 {
         return stirling_x(x);
     }
-    // ln Gamma x = ln Gamma(x + n) - ln(x (x + 1) ... (x + n - 1)).
-    let n = (30.0 - x.approx()) as i32 + 1;
-    let mut prod = x;
-    for i in 1..n {
-        prod = prod.mul(x.add_f(i as f64));
+    if a < 0.5 {
+        // Gamma x = Gamma(2 + x) / (x (1 + x)).
+        return lgamma2_series(x).sub(log1p_x(x)).sub(log_x(x));
     }
-    stirling_x(x.add_f(n as f64)).sub(log_x(prod))
+    if a < 1.5 {
+        // Gamma x = Gamma(2 + t) / (1 + t), t = x - 1.
+        let t = minus(1);
+        return lgamma2_series(t).sub(log1p_x(t));
+    }
+    // Gamma x = Gamma(2 + t) (x - 1) (x - 2) ... (x - n), t = x - 2 - n in [-1/2, 1/2].
+    let n = (a - 1.5) as i64;
+    let mut prod = X::ONE;
+    for i in 1..=n {
+        prod = prod.mul(x.add_f(-(i as f64)));
+    }
+    let r = lgamma2_series(minus(n + 2));
+    if n == 0 { r } else { r.add(log_x(prod)) }
+}
+
+/// ln Gamma x for x > 0.
+pub(crate) fn lgamma_pos_x(x: X) -> X {
+    lgamma_pos_with(x, |c| x.add_f(-(c as f64)))
 }
 
 /// The value of an exact rational sig * 2^exp as a u128 integer, when it is one and fits.
