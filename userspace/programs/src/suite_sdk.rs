@@ -127,7 +127,7 @@ static SUITE: Suite = suite("sdk", "Developer SDK", &[
         case("mode-explicit", "An app installed with --mode 0750 has mode 0750", install_mode_explicit),
         case("bindir", "/usr/local/bin is a directory of mode 0755 owned by root", install_bindir),
         case("runs-absolute", "/usr/local/bin/sdk-c-app hello runs by its absolute path", install_runs_absolute),
-        case("runs-path", "env finds sdk-c-app by its bare name through PATH=/usr/local/bin:/usr/bin:/bin and runs it", install_runs_path),
+        case("runs-path", "bsh finds sdk-c-app by its bare name through the disk shell configuration and runs it", install_runs_path),
         case("runs-shell", "sh -c 'sdk-c-app hello' finds the app through PATH and runs it", install_runs_shell),
         case("rust-app", "The installed Rust std app runs from PATH", install_rust_app),
         case("nostd-app", "The installed no_std app runs from PATH", install_nostd_app),
@@ -653,13 +653,23 @@ fn install_bindir() -> CaseResult {
                   if dir { "a directory" } else { "not a directory" }))
 }
 
-/// Run `name args` by its bare name through env's PATH search.
+/// Run through the disk's shell configuration, exactly as an interactive bsh
+/// session does. The suite's private ENV must not supply the PATH being tested.
+fn configured_shell(words: &[&str], dir: &str) -> Result<Ran, CaseError> {
+    let config = std::fs::read_to_string("/etc/bshrc")
+        .map_err(|e| format!("could not read the shell configuration: {e}"))?;
+    let arguments = words.iter().map(|word| format!("{word:?}")).collect::<Vec<_>>().join(", ");
+    let script = format!("{config}\nexit(run({arguments}));");
+    run("/bin/bsh", &["bsh", "-e", &script], dir)
+}
+
+/// Run `name args` by its bare name through the configured shell's PATH search.
 fn from_path(name: &str, args: &[&str], stdout: &str) -> CaseResult {
     installed(name)?;
     let scratch = Scratch::new()?;
-    let mut argv = vec!["env", name];
+    let mut argv = vec![name];
     argv.extend_from_slice(args);
-    let ran = run("/bin/env", &argv, &scratch.dir)?;
+    let ran = configured_shell(&argv, &scratch.dir)?;
     expect(&format!("env {name} {}", args.join(" ")), &ran, stdout, 0)
 }
 
@@ -733,9 +743,7 @@ fn quick_start_runs() -> CaseResult {
     let words: Vec<&str> = line.split_whitespace().collect();
     check(!words.is_empty(), "the quick start's run line is empty")?;
     let scratch = Scratch::new()?;
-    let mut argv = vec!["env"];
-    argv.extend_from_slice(&words);
-    let ran = run("/bin/env", &argv, &scratch.dir)?;
+    let ran = configured_shell(&words, &scratch.dir)?;
     expect(line.trim(), &ran, &expected, 0)
 }
 
