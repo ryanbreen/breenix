@@ -165,6 +165,8 @@ fn counter(name: &str) -> u64 {
 }
 
 fn wait_for_evidence(pid: i32) -> Evidence {
+    let start = libbreenix::time::now_monotonic().map(|t| t.tv_sec * 1000 + t.tv_nsec / 1_000_000).unwrap_or(-1);
+    eprintln!("SIGKILL_TEARDOWN_TEST: evidence wait start ms={start} pid={pid}");
     let mut current = Evidence::default();
     for _ in 0..20_000 {
         current = evidence(pid);
@@ -179,8 +181,9 @@ fn wait_for_evidence(pid: i32) -> Evidence {
         }
         let _ = process::yield_now();
     }
+    let now = libbreenix::time::now_monotonic().map(|t| t.tv_sec * 1000 + t.tv_nsec / 1_000_000).unwrap_or(-1);
     eprintln!(
-        "SIGKILL_TEARDOWN_TEST: evidence timeout pid={pid} defer={} reclaim={} quarantine={} sgi={} observed={} report={}",
+        "SIGKILL_TEARDOWN_TEST: evidence timeout ms={now} pid={pid} defer={} reclaim={} quarantine={} sgi={} observed={} report={}",
         current.defer,
         current.reclaim,
         current.quarantine,
