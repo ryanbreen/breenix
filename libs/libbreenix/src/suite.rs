@@ -768,6 +768,7 @@ fn keep_record_output(suite: &str, name: &str) {
 /// Run a case in a forked child, giving it `limit_ms`, and keep the live strip up to
 /// date while it runs.
 fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Screen, feed: &mut Feed) -> Outcome {
+    screen.judged = None;
     // The live strip's copy of the case's records, when the strip is on.
     let live = if screen.live_on() {
         io::pipe2(status_flags::O_CLOEXEC | status_flags::O_NONBLOCK).ok()
@@ -783,7 +784,6 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
             return Outcome::Fail { ms: 0, msg: plain(&std::format!("could not start the case: pipe failed: {error}")) };
         }
     };
-    screen.judged = None;
     JUDGED_RUNNER.store(process::getpid().map_or(0, |pid| pid.raw()) as u64, Ordering::Relaxed);
     JUDGED_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let start = monotonic_ns();
@@ -1124,5 +1124,43 @@ impl Screen {
         // back, or the flush is refused and the panel stops updating.
         let _ = graphics::take_over_display();
         let _ = graphics::fb_flush();
+    }
+}
+
+#[cfg(test)]
+mod judged_transport_tests {
+    use super::*;
+
+    #[test]
+    fn changed_truncated_and_noncanonical_snapshots_are_rejected() {
+        JUDGED_RUNNER.store(std::process::id() as u64, Ordering::Relaxed);
+        JUDGED_SEQUENCE.store(u64::MAX, Ordering::Relaxed);
+        let pixels = [1u8, 2, 3, 255];
+        let mut snapshot = Vec::from(&b"JDG1"[..]);
+        snapshot.extend_from_slice(&1u32.to_le_bytes());
+        snapshot.extend_from_slice(&1u32.to_le_bytes());
+        snapshot.extend_from_slice(&libpixcheck::sha256(&pixels));
+        snapshot.extend_from_slice(&pixels);
+        std::fs::write(judged_path(), &snapshot).unwrap();
+        let frame = collect_judged().unwrap().unwrap();
+        assert_eq!((frame.width, frame.height), (1, 1));
+        assert_eq!(frame.pixels, pixels);
+        assert!(collect_judged().unwrap().is_none(), "collected evidence must be removed");
+
+        let mut changed = snapshot.clone();
+        changed[44] ^= 1;
+        std::fs::write(judged_path(), &changed).unwrap();
+        assert!(collect_judged().err().unwrap().contains("SHA-256"));
+        assert!(!std::path::Path::new(&judged_path()).exists());
+
+        std::fs::write(judged_path(), &snapshot[..47]).unwrap();
+        assert!(collect_judged().err().unwrap().contains("length"));
+
+        let mut noncanonical = snapshot;
+        noncanonical[47] = 0;
+        let digest = libpixcheck::sha256(&noncanonical[44..]);
+        noncanonical[12..44].copy_from_slice(&digest);
+        std::fs::write(judged_path(), &noncanonical).unwrap();
+        assert!(collect_judged().err().unwrap().contains("canonical"));
     }
 }
