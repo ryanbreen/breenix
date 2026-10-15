@@ -85,7 +85,7 @@ an existing installation of that name. `breenix-image list --image IMG` lists
 SDK installations; `breenix-image remove --image IMG NAME` removes one. The tool
 refuses the wrong ELF architecture and dynamic executables. Work on a copy of
 the image and stop its VM before editing it. See [disk-image.md](disk-image.md)
-for image-tool details when provided with your SDK.
+for image-tool details.
 
 ## Run an installed program
 
