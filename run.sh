@@ -37,7 +37,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$SCRIPT_DIR"
 cd "$BREENIX_ROOT"
 source "$BREENIX_ROOT/scripts/host-slots.sh"
-host_slots_start "$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")" "$@"
+RUN_ARGS=("$@")
 
 # #826/#834/#865/R181: this script's native (non-Parallels, non-VMware)
 # QEMU boot runs behind the host-wide lock in
@@ -58,6 +58,7 @@ ARCH="arm64"
 HEADLESS=false
 CLEAN=false
 NO_BUILD=false
+DRY_RUN=false
 DISK_OVERRIDE=""
 BTRT=false
 PARALLELS=false
@@ -102,6 +103,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --no-build)
             NO_BUILD=true
+            shift
+            ;;
+        --dry-run)
+            DRY_RUN=true
             shift
             ;;
         --parallels)
@@ -215,6 +220,8 @@ while [[ $# -gt 0 ]]; do
             echo "  --gate-timeout N           DONE deadline in seconds (default 1800)"
             echo "  --case CATEGORY/CASE       Run just this suite case (not full-suite evidence)"
             echo "  --suite ID                 Parallels/VMware: run effort suite ID (docs/suites/ID.json) as PID 1"
+            echo "  --dry-run                  Check target policy and exit before building or booting"
+            echo "  BREENIX_CATCHUP=1          Allow effort catch-up on Parallels/VMware; recorded in metadata"
             echo "  --retina                   Parallels/VMware: native Retina resolution (default: scaled 2x, readable)"
             echo "  --resolution WxH           Set display resolution (e.g. 1920x1080)"
             echo "                             Default: auto-detect from screen"
@@ -237,6 +244,37 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Refuse effort work on x86-64, Parallels and VMware before builds, VM setup or host-slot
+# supervision. The supervised re-exec (BREENIX_SLOT_SESSION) inherits the normalized
+# BREENIX_CATCHUP and the checked stamp, so the check and its launch line run once.
+TARGET=arm64-qemu
+if [ "$ARCH" = x86_64 ]; then TARGET=x86; fi
+if [ "$PARALLELS" = true ]; then TARGET=parallels
+elif [ "$VMWARE" = true ]; then TARGET=vmware
+fi
+if [ -z "${BREENIX_SLOT_SESSION:-}" ]; then
+    case "$(printf %s "${BREENIX_CATCHUP:-}" | tr '[:upper:]' '[:lower:]')" in
+        ''|0|false|no) BREENIX_CATCHUP=0 ;;
+        1|true|yes) BREENIX_CATCHUP=1 ;;
+        *)
+            echo "BREENIX_CATCHUP must be 1, true or yes for the catch-up, or 0, false, no or unset; got '$BREENIX_CATCHUP'" >&2
+            exit 1
+            ;;
+    esac
+    export BREENIX_CATCHUP
+    echo "Breenix target=$TARGET BREENIX_CATCHUP=$BREENIX_CATCHUP dry-run=$DRY_RUN"
+    if [ "$TARGET" != arm64-qemu ]; then
+        POLICY_SHA=$(python3 "$BREENIX_ROOT/scripts/effort-target-guard.py" --repo "$BREENIX_ROOT" \
+            --target "$TARGET") || exit 1
+        export BREENIX_TARGET_POLICY_CHECKED="$TARGET:$POLICY_SHA"
+    fi
+fi
+if [ "$DRY_RUN" = true ]; then
+    echo "Target policy accepted; no build or boot requested."
+    exit 0
+fi
+host_slots_start "$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")" "${RUN_ARGS[@]}"
 
 if [ -n "$DISK_OVERRIDE" ]; then
     DISK_OVERRIDE=$(python3 - "$DISK_OVERRIDE" <<'PYDISK'
@@ -329,6 +367,16 @@ if [ "$TESTS" = true ]; then
     BOOT_MODE=tests
     KERNEL_FEATURE_ARGS=(--features testing)
 fi
+
+# Keep host launch policy beside this run's serial, including successful catch-up overrides.
+record_launch_metadata() {
+    python3 - "$SERIAL_LOG.launch.json" "$TARGET" "${BREENIX_CATCHUP:-0}" "$(git rev-parse HEAD)" <<'PYLAUNCH'
+import json, sys
+from pathlib import Path
+Path(sys.argv[1]).write_text(json.dumps({'target': sys.argv[2], 'catchup': sys.argv[3] == '1',
+                                       'commit': sys.argv[4]}) + '\n')
+PYLAUNCH
+}
 
 # Whether this boot writes a boot target onto a copy of the ext2 disk.
 writes_boot_target() {
@@ -849,6 +897,7 @@ if [ "$PARALLELS" = true ]; then
     rm -f "$SERIAL_LOG"  # Remove so VMware creates fresh (avoids append/replace prompt)
     VIGIL_ID=""
     install_vm_boot_traps
+    record_launch_metadata
     # A one-case run is not registered: Vigil would score it as a suite boot.
     [ -n "$ONLY" ] || VIGIL_ID=$("$BREENIX_ROOT/scripts/vigil-record.sh" start parallels "$BOOT_MODE" "$SUITE" "$SERIAL_LOG")
     host_slot_vm "$SERIAL_LOG" prlctl stop "$PARALLELS_VM" --kill
@@ -1232,6 +1281,7 @@ VMXEOF
     rm -f "$SERIAL_LOG"  # Remove so VMware creates fresh (avoids append/replace prompt)
     VIGIL_ID=""
     install_vm_boot_traps
+    record_launch_metadata
     # A one-case run is not registered: Vigil would score it as a suite boot.
     [ -n "$ONLY" ] || VIGIL_ID=$("$BREENIX_ROOT/scripts/vigil-record.sh" start vmware "$BOOT_MODE" "$SUITE" "$SERIAL_LOG")
     host_slot_vm "$SERIAL_LOG" "$VMRUN" stop "$VMX_FILE" hard

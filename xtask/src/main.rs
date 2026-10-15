@@ -1902,6 +1902,20 @@ fn kthread_stress_ci() -> Result<()> {
 /// Local version: Uses Docker for clean QEMU isolation
 fn kthread_stress_docker() -> Result<()> {
     println!("=== Kthread Stress Test (Docker) ===\n");
+    // This boot starts qemu-system-x86_64 itself, not through qemu-uefi, so it checks the
+    // effort target policy here, before building.
+    let root = workspace_root();
+    let policy = Command::new("python3")
+        .arg(root.join("scripts/effort-target-guard.py"))
+        .arg("--repo")
+        .arg(root)
+        .args(["--target", "x86"])
+        .stdout(Stdio::null())
+        .status()
+        .context("running scripts/effort-target-guard.py")?;
+    if !policy.success() {
+        bail!("effort target policy refused this x86-64 boot");
+    }
 
     // Step 0: Clean old build artifacts to ensure we use the fresh stress test build
     println!("Cleaning old build artifacts...");

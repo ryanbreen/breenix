@@ -25,6 +25,7 @@ struct RunX86Arguments {
     var fresh = false
     var suite: String?
     var dryRun = false
+    var catchup = false
     var tags: [String] = []
     var persist = true
 }
@@ -47,7 +48,7 @@ func usage() -> String {
     """
     Usage:
       breenix-runs run arm [strict|prod|testing] [--boots N] [--tag T] [--no-store]
-      breenix-runs run x86 [gate] [--hardware NAME] [--gate-timeout SECONDS] [--boots N] [--sha SHA] [--mode kthread|full|suite] [--suite ID[,ID...]] [--fresh] [--dry-run] [--tag T] [--no-store]
+      breenix-runs run x86 [gate] [--hardware NAME] [--gate-timeout SECONDS] [--boots N] [--sha SHA] [--mode kthread|full|suite] [--suite ID[,ID...]] [--fresh] [--catchup] [--dry-run] [--tag T] [--no-store]
       breenix-runs recover x86 <run-id>
       breenix-runs show <run-id|latest|latest-fail> [--subsystems] [--messages] [--traces]
       breenix-runs list [--arch aarch64|x86_64] [--profile NAME] [--verdict pass|fail|attributed|running|unknown]
@@ -70,6 +71,7 @@ func usage() -> String {
     Full boots stop on USERSPACE TEST REPORT DONE. BREENIX_FULL_BACKSTOP sets the hang
     backstop for that wait (default: max(1800, deadline)).
     --mode suite requires --suite ID; it runs the full gate booting that suite.
+    --catchup allows effort catch-up on x86 after ARM64 QEMU passes; recorded in metadata.
     --no-store avoids persistence; --dry-run prints the x86 remote plan.
     import preserves gate metadata when present; loose serial verdicts remain unknown.
     Use --help or <command> --help to print this usage without accessing the store.
@@ -155,6 +157,8 @@ func parseRunX86(_ args: ArraySlice<String>) throws -> RunX86Arguments {
                 throw CLIError(description: "--suite requires a suite id (lowercase words joined by '-')")
             }
             parsed.suite = value
+        case "--catchup":
+            parsed.catchup = true
         case "--dry-run":
             parsed.dryRun = true
         case "--tag":
@@ -412,7 +416,7 @@ func main() -> Int32 {
             guard args.count == 3, args[1] == "x86" else {
                 throw CLIError(description: "recover requires x86 and an exact run id")
             }
-            try BeastLauncher(store: store).recoverX86(id: args[2])
+            try BeastLauncher(store: store, targetGuard: nil).recoverX86(id: args[2])
             print("Remote run stopped, evidence harvested, and cleanup completed.")
             return 0
         case "run":
@@ -446,7 +450,12 @@ func main() -> Int32 {
                     return 0
                 }
             case "x86":
-                let runArgs = try parseRunX86(args.dropFirst(2))
+                var runArgs = try parseRunX86(args.dropFirst(2))
+                switch (ProcessInfo.processInfo.environment["BREENIX_CATCHUP"] ?? "").lowercased() {
+                case "", "0", "false", "no": break
+                case "1", "true", "yes": runArgs.catchup = true
+                default: throw CLIError(description: "BREENIX_CATCHUP must be 1, true or yes for the catch-up, or 0, false, no or unset")
+                }
                 let root = try repoRoot(startingAt: URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true))
                 let runner = RealProcessRunner()
                 let explicitSHA = runArgs.sha != nil
@@ -462,6 +471,7 @@ func main() -> Int32 {
                     }
                     sha = resolved.stdoutString.trimmingCharacters(in: .whitespacesAndNewlines)
                 }
+                FileHandle.standardOutput.write(Data("Breenix target=x86 catchup=\(runArgs.catchup) dry-run=\(runArgs.dryRun)\n".utf8))
                 if !explicitSHA, git.dirty == true {
                     FileHandle.standardError.write(Data("warning: beast will test the pushed commit \(sha), not the dirty working tree\n".utf8))
                 }
@@ -474,7 +484,8 @@ func main() -> Int32 {
                     slotHelperBase64: try Data(contentsOf: root.appendingPathComponent("scripts/host-slots.py")).base64EncodedString(),
                     progressBundleBase64: try BeastLauncher.progressBundle(repoRoot: root),
                     treeHelperBase64: try Data(contentsOf: root.appendingPathComponent("scripts/gate-tree.py")).base64EncodedString(),
-                    vigilScript: root.appendingPathComponent("scripts/vigil-record.sh")
+                    vigilScript: root.appendingPathComponent("scripts/vigil-record.sh"),
+                    targetGuard: root.appendingPathComponent("scripts/effort-target-guard.py")
                 )
                 var options = BeastLaunchOptions(
                     boots: runArgs.boots,
@@ -486,9 +497,11 @@ func main() -> Int32 {
                     qemuProfile: runArgs.qemuProfile,
                     suite: runArgs.suite,
                     laneKey: SHA256.hash(data: Data(root.standardizedFileURL.path.utf8)).map { String(format: "%02x", $0) }.joined(),
-                    fresh: runArgs.fresh
+                    fresh: runArgs.fresh,
+                    catchup: runArgs.catchup
                 )
                 if runArgs.dryRun {
+                    options.targetPolicySHA = try launcher.checkTargetPolicy(options: options)
                     printDryRun(plan: try launcher.plan(options: options))
                     return 0
                 }
