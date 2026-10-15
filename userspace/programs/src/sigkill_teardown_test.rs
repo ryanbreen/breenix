@@ -301,6 +301,8 @@ fn parent_kill_and_observe_sigchld(victim: i32) {
         fail("parent pause did not return through the SIGCHLD handler");
     }
     wait_killed(victim);
+    let reaped = libbreenix::time::now_monotonic().map(|t| t.tv_sec * 1000 + t.tv_nsec / 1_000_000).unwrap_or(-1);
+    eprintln!("SIGKILL_TEARDOWN_TEST: reaped victim={victim} ms={reaped}");
     wait_exited(killer);
 }
 
