@@ -20,7 +20,7 @@ use crate::theme::Theme;
 ///
 /// ```
 /// use libbui::{InputState, Rect, Theme, widget::scroll_bar::ScrollBar};
-/// use libgfx::framebuf::FrameBuf;
+/// use libgfx::framebuf::{Format, FrameBuf};
 ///
 /// let (win_w, win_h) = (320, 240);
 /// let (content_height, visible_height) = (600, win_h);
@@ -38,23 +38,19 @@ use crate::theme::Theme;
 ///
 /// // When rendering content, subtract bar.offset() from all y positions.
 /// // Draw the bar last so it renders on top of content.
-/// let mut pixels = vec![0u8; win_w as usize * win_h as usize * 4];
-/// let mut fb = unsafe {
-///     FrameBuf::from_raw(pixels.as_mut_ptr(), win_w as usize, win_h as usize,
-///                        win_w as usize * 4, 4, false)
-/// };
+/// let mut fb = FrameBuf::new(win_w as usize, win_h as usize, Format::RGBX).expect("a valid surface");
 /// let theme = Theme::dark();
 /// bar.draw(&mut fb, &theme);
 /// // At offset 80, the 96px thumb starts at y=32; check its interior and
 /// // the track above and below it so a misplaced thumb fails the example.
 /// let pixel = |y: usize| {
-///     let start = (y * win_w as usize + (win_w - 6) as usize) * 4;
-///     &pixels[start..start + 3]
+///     let c = fb.get_pixel((win_w - 6) as usize, y);
+///     [c.r, c.g, c.b]
 /// };
-/// assert_eq!(pixel(20), &[40, 42, 48]);
-/// assert_eq!(pixel(40), &[80, 85, 100]);
-/// assert_eq!(pixel(120), &[80, 85, 100]);
-/// assert_eq!(pixel(140), &[40, 42, 48]);
+/// assert_eq!(pixel(20), [40, 42, 48]);
+/// assert_eq!(pixel(40), [80, 85, 100]);
+/// assert_eq!(pixel(120), [80, 85, 100]);
+/// assert_eq!(pixel(140), [40, 42, 48]);
 /// ```
 pub struct ScrollBar {
     /// Position and size of the scroll bar track.

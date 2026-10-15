@@ -1,156 +1,181 @@
-//! `cmap` table: character-to-glyph mapping.
-//!
-//! Supports format 4 (BMP) and format 12 (full Unicode).
+//! `cmap`: codepoint to glyph mapping through a Unicode format 12 or format 4 subtable
+//! (OpenType specification, "cmap" chapter). Every Unicode subtable of format 4 or 12 is
+//! validated when the font is parsed; a malformed one rejects the font with `BadCmap`.
 
-use alloc::boxed::Box;
-use alloc::string::String;
-use crate::reader::{Reader, read_u16_at, read_u32_at};
+use core::ops::Range;
 
-pub struct CmapTable {
-    data: Box<[u8]>,
-    format: u16,
-    subtable_offset: usize,
+use crate::error::FontError;
+use crate::reader::{u16_at, u32_at};
+use crate::work;
+
+/// The subtable lookups use, absolute in the font file.
+#[derive(Debug, Clone, Copy)]
+pub enum CmapTable {
+    /// No Unicode subtable libfont reads: every codepoint is unmapped.
+    None,
+    Format4 { at: usize, seg_count: usize },
+    Format12 { at: usize, groups: usize },
+}
+
+fn is_unicode(platform: u16, encoding: u16) -> bool {
+    platform == 0 || (platform == 3 && (encoding == 1 || encoding == 10))
 }
 
 impl CmapTable {
-    pub fn parse(data: &[u8]) -> Result<Self, String> {
-        let mut r = Reader::new(data);
-        r.skip(2)?; // version
-        let num_tables = r.read_u16()?;
-
-        // Find the best subtable: prefer format 12 (platform 3, encoding 10),
-        // then format 4 (platform 3, encoding 1 — Unicode BMP),
-        // then format 4 (platform 0).
-        let mut best_offset: Option<u32> = None;
-        let mut best_priority = 0u8;
-
-        for _ in 0..num_tables {
-            let platform_id = r.read_u16()?;
-            let encoding_id = r.read_u16()?;
-            let offset = r.read_u32()?;
-
-            let priority = match (platform_id, encoding_id) {
-                (3, 10) => 4, // Windows, full Unicode (format 12)
-                (0, 4) => 3,  // Unicode, full repertoire
-                (3, 1) => 2,  // Windows, Unicode BMP (format 4)
-                (0, 3) => 1,  // Unicode, BMP
-                _ => 0,
-            };
-
-            if priority > best_priority {
-                best_priority = priority;
-                best_offset = Some(offset);
-            }
+    /// `table` is the cmap table's range in `file`.
+    pub fn parse(file: &[u8], table: Range<usize>) -> Result<CmapTable, FontError> {
+        let d = &file[table.clone()];
+        let n = u16_at(d, 2).ok_or(FontError::Truncated)? as usize;
+        if 4 + 8 * n > d.len() {
+            return Err(FontError::Truncated);
         }
-
-        let subtable_offset = best_offset
-            .ok_or_else(|| String::from("no suitable cmap subtable found"))? as usize;
-
-        if subtable_offset + 2 > data.len() {
-            return Err(String::from("cmap subtable offset out of bounds"));
-        }
-
-        let format = read_u16_at(data, subtable_offset);
-        if format != 4 && format != 12 {
-            return Err(String::from("unsupported cmap format"));
-        }
-
-        Ok(Self {
-            data: Box::from(data),
-            format,
-            subtable_offset,
-        })
-    }
-
-    pub fn glyph_index(&self, codepoint: u32) -> u16 {
-        match self.format {
-            4 => self.lookup_format4(codepoint),
-            12 => self.lookup_format12(codepoint),
-            _ => 0,
-        }
-    }
-
-    fn lookup_format4(&self, codepoint: u32) -> u16 {
-        if codepoint > 0xFFFF {
-            return 0;
-        }
-        let cp = codepoint as u16;
-        let base = self.subtable_offset;
-        if base + 6 > self.data.len() {
-            return 0;
-        }
-        let seg_count_x2 = read_u16_at(&self.data, base + 6) as usize;
-        let seg_count = seg_count_x2 / 2;
-
-        // Arrays start after the 14-byte format 4 header
-        let end_codes_offset = base + 14;
-        // +2 for reservedPad
-        let start_codes_offset = end_codes_offset + seg_count_x2 + 2;
-        let id_delta_offset = start_codes_offset + seg_count_x2;
-        let id_range_offset_base = id_delta_offset + seg_count_x2;
-
-        for i in 0..seg_count {
-            let end_code = read_u16_at(&self.data, end_codes_offset + i * 2);
-            if cp > end_code {
+        let (mut best4, mut best12) = (None, None);
+        work::add(n as u64);
+        for i in 0..n {
+            let r = 4 + 8 * i;
+            let (platform, encoding) = (u16_at(d, r).unwrap_or(0), u16_at(d, r + 2).unwrap_or(0));
+            let off = u32_at(d, r + 4).ok_or(FontError::Truncated)? as usize;
+            if !is_unicode(platform, encoding) {
                 continue;
             }
-            let start_code = read_u16_at(&self.data, start_codes_offset + i * 2);
-            if cp < start_code {
-                return 0;
+            match u16_at(d, off).ok_or(FontError::Truncated)? {
+                4 => {
+                    let seg_count = validate4(d, off)?;
+                    best4.get_or_insert(CmapTable::Format4 { at: table.start + off, seg_count });
+                }
+                12 => {
+                    let groups = validate12(d, off)?;
+                    best12.get_or_insert(CmapTable::Format12 { at: table.start + off, groups });
+                }
+                _ => {}
             }
-            let id_delta = read_u16_at(&self.data, id_delta_offset + i * 2);
-            let id_range_offset_pos = id_range_offset_base + i * 2;
-            let id_range_offset = read_u16_at(&self.data, id_range_offset_pos);
-
-            if id_range_offset == 0 {
-                return cp.wrapping_add(id_delta);
-            }
-
-            let glyph_offset = id_range_offset_pos
-                + id_range_offset as usize
-                + (cp - start_code) as usize * 2;
-            if glyph_offset + 2 > self.data.len() {
-                return 0;
-            }
-            let glyph_id = read_u16_at(&self.data, glyph_offset);
-            if glyph_id == 0 {
-                return 0;
-            }
-            return glyph_id.wrapping_add(id_delta);
         }
-        0
+        Ok(best12.or(best4).unwrap_or(CmapTable::None))
     }
 
-    fn lookup_format12(&self, codepoint: u32) -> u16 {
-        let base = self.subtable_offset;
-        if base + 16 > self.data.len() {
-            return 0;
+    /// The glyph for `cp`, or 0 when it is unmapped.
+    pub fn lookup(&self, file: &[u8], cp: u32) -> u16 {
+        match *self {
+            CmapTable::None => 0,
+            CmapTable::Format4 { at, seg_count } => lookup4(file, at, seg_count, cp),
+            CmapTable::Format12 { at, groups } => lookup12(file, at, groups, cp),
         }
-        // format 12: u16 format, u16 reserved, u32 length, u32 language, u32 numGroups
-        let num_groups = read_u32_at(&self.data, base + 12) as usize;
-        let groups_offset = base + 16;
-
-        // Binary search over groups
-        let mut lo = 0usize;
-        let mut hi = num_groups;
-        while lo < hi {
-            let mid = (lo + hi) / 2;
-            let entry = groups_offset + mid * 12;
-            if entry + 12 > self.data.len() {
-                return 0;
-            }
-            let start_char = read_u32_at(&self.data, entry);
-            let end_char = read_u32_at(&self.data, entry + 4);
-            let start_glyph = read_u32_at(&self.data, entry + 8);
-
-            if codepoint < start_char {
-                hi = mid;
-            } else if codepoint > end_char {
-                lo = mid + 1;
-            } else {
-                return (start_glyph + (codepoint - start_char)) as u16;
-            }
-        }
-        0
     }
+}
+
+/// The subtable `d[off..off + length]`, or `Truncated` when it runs past the table.
+fn subtable(d: &[u8], off: usize, length: usize) -> Result<&[u8], FontError> {
+    d.get(off..off.checked_add(length).ok_or(FontError::Truncated)?).ok_or(FontError::Truncated)
+}
+
+/// Format 4: `segCountX2` even, end codes strictly increasing and ending at 0xFFFF, and every
+/// `idRangeOffset` inside the subtable. Returns the segment count.
+fn validate4(d: &[u8], off: usize) -> Result<usize, FontError> {
+    let length = u16_at(d, off + 2).ok_or(FontError::Truncated)? as usize;
+    let s = subtable(d, off, length)?;
+    let seg_x2 = u16_at(s, 6).ok_or(FontError::BadCmap)? as usize;
+    if seg_x2 % 2 != 0 || seg_x2 == 0 {
+        return Err(FontError::BadCmap);
+    }
+    let segs = seg_x2 / 2;
+    if 16 + 4 * seg_x2 > s.len() {
+        return Err(FontError::BadCmap);
+    }
+    let (ends, starts, ranges) = (14, 16 + seg_x2, 16 + 3 * seg_x2);
+    work::add(segs as u64);
+    let mut prev_end: Option<u16> = None;
+    for i in 0..segs {
+        let end = u16_at(s, ends + 2 * i).ok_or(FontError::BadCmap)?;
+        if prev_end.is_some_and(|p| end <= p) {
+            return Err(FontError::BadCmap);
+        }
+        prev_end = Some(end);
+        let start = u16_at(s, starts + 2 * i).ok_or(FontError::BadCmap)?;
+        let ro = u16_at(s, ranges + 2 * i).ok_or(FontError::BadCmap)? as usize;
+        if ro != 0 && start <= end {
+            // The glyph id for `end` is read at ro_pos + ro + 2 (end − start).
+            let last = ranges + 2 * i + ro + 2 * (end - start) as usize;
+            if last + 2 > s.len() {
+                return Err(FontError::BadCmap);
+            }
+        }
+    }
+    if prev_end != Some(0xFFFF) {
+        return Err(FontError::BadCmap);
+    }
+    Ok(segs)
+}
+
+/// Format 12: groups sorted by start, not overlapping, each with start ≤ end. Returns the
+/// group count.
+fn validate12(d: &[u8], off: usize) -> Result<usize, FontError> {
+    let length = u32_at(d, off + 4).ok_or(FontError::Truncated)? as usize;
+    let s = subtable(d, off, length)?;
+    let n = u32_at(s, 12).ok_or(FontError::BadCmap)? as usize;
+    if n.checked_mul(12).and_then(|b| b.checked_add(16)).is_none_or(|b| b > s.len()) {
+        return Err(FontError::BadCmap);
+    }
+    work::add(n as u64);
+    let mut prev_end: Option<u32> = None;
+    for i in 0..n {
+        let g = 16 + 12 * i;
+        let (start, end) = (u32_at(s, g).ok_or(FontError::BadCmap)?, u32_at(s, g + 4).ok_or(FontError::BadCmap)?);
+        if start > end || prev_end.is_some_and(|p| start <= p) {
+            return Err(FontError::BadCmap);
+        }
+        prev_end = Some(end);
+    }
+    Ok(n)
+}
+
+fn lookup4(file: &[u8], at: usize, segs: usize, cp: u32) -> u16 {
+    if cp > 0xFFFF {
+        return 0;
+    }
+    let cp = cp as u16;
+    let seg_x2 = 2 * segs;
+    let (ends, starts, deltas, ranges) = (at + 14, at + 16 + seg_x2, at + 16 + 2 * seg_x2, at + 16 + 3 * seg_x2);
+    // The first segment whose end code is at least cp.
+    let (mut lo, mut hi) = (0usize, segs);
+    while lo < hi {
+        work::add(1);
+        let mid = (lo + hi) / 2;
+        if u16_at(file, ends + 2 * mid).unwrap_or(0xFFFF) < cp { lo = mid + 1 } else { hi = mid }
+    }
+    if lo == segs {
+        return 0;
+    }
+    let i = lo;
+    let start = u16_at(file, starts + 2 * i).unwrap_or(0xFFFF);
+    if start > cp {
+        return 0;
+    }
+    let delta = u16_at(file, deltas + 2 * i).unwrap_or(0);
+    let ro = u16_at(file, ranges + 2 * i).unwrap_or(0) as usize;
+    if ro == 0 {
+        return cp.wrapping_add(delta);
+    }
+    match u16_at(file, ranges + 2 * i + ro + 2 * (cp - start) as usize) {
+        Some(0) | None => 0,
+        Some(g) => g.wrapping_add(delta),
+    }
+}
+
+fn lookup12(file: &[u8], at: usize, groups: usize, cp: u32) -> u16 {
+    let (mut lo, mut hi) = (0usize, groups);
+    while lo < hi {
+        work::add(1);
+        let mid = (lo + hi) / 2;
+        let g = at + 16 + 12 * mid;
+        let (start, end) = (u32_at(file, g).unwrap_or(u32::MAX), u32_at(file, g + 4).unwrap_or(0));
+        if cp < start {
+            hi = mid;
+        } else if cp > end {
+            lo = mid + 1;
+        } else {
+            let glyph = u32_at(file, g + 8).unwrap_or(0).wrapping_add(cp - start);
+            return if glyph > 0xFFFF { 0 } else { glyph as u16 };
+        }
+    }
+    0
 }

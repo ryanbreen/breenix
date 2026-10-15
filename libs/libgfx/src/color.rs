@@ -25,16 +25,10 @@ impl Color {
     pub const PURPLE: Self = Self::rgb(150, 50, 255);
     pub const GRAY: Self = Self::rgb(200, 200, 200);
 
-    /// Blend this color (foreground) over another (background) using an 8-bit intensity.
-    /// intensity=255 means fully foreground, intensity=0 means fully background.
+    /// The coverage blend of this colour (foreground) over `bg` with 8-bit coverage
+    /// `intensity`: 255 gives the foreground, 0 leaves the background (`alpha::blend`).
     #[inline]
     pub fn blend(self, bg: Color, intensity: u8) -> Color {
-        let a = intensity as u16;
-        let inv = 255 - a;
-        Color {
-            r: ((self.r as u16 * a + bg.r as u16 * inv) / 255) as u8,
-            g: ((self.g as u16 * a + bg.g as u16 * inv) / 255) as u8,
-            b: ((self.b as u16 * a + bg.b as u16 * inv) / 255) as u8,
-        }
+        crate::alpha::blend(self, bg, intensity)
     }
 }

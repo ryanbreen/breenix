@@ -203,7 +203,7 @@ fn run_window_loop(win: &graphics::WindowBuffer, rects: &mut [AnimRect; NUM_RECT
             stride,
             bpp,
             true, // BGRA
-        )
+        ).expect("the framebuffer is a valid surface")
     };
 
     let mut fps = FpsCounter::new();
@@ -297,7 +297,7 @@ fn run_mmap_loop(rects: &mut [AnimRect; NUM_RECTS], width: i32, height: i32, inf
             (width as usize) * bpp,
             bpp,
             info.is_bgr(),
-        )
+        ).expect("the framebuffer is a valid surface")
     };
 
     println!("Starting collision demo ({} rects, {}x{}, mmap, batch flush)", NUM_RECTS, width, height);

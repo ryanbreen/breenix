@@ -4,6 +4,7 @@
 //! Includes automatic font management via an internal FontWatcher.
 
 use libfont::CachedFont;
+use libbreenix::errno::Errno;
 use libbreenix::error::Error;
 use libbreenix::graphics::{self, WindowInputEvent};
 use libgfx::framebuf::FrameBuf;
@@ -67,7 +68,7 @@ impl Window {
                 stride,
                 bpp,
                 true, // BGRA for compositor
-            )
+            ).map_err(|_| Error::Os(Errno::EINVAL))?
         };
 
         Ok(Self {
@@ -240,7 +241,7 @@ impl Window {
                 stride,
                 bpp,
                 true,
-            )
+            ).map_err(|_| Error::Os(Errno::EINVAL))?
         };
         self.width = new_width;
         self.height = new_height;
