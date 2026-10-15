@@ -56,6 +56,7 @@ pub struct FilePicker {
     last_click: Option<(usize, u64, i32, i32)>,
     path_field: super::text_field::TextField,
     error: Option<Vec<u8>>,
+    redraw: bool,
 }
 
 impl FilePicker {
@@ -86,6 +87,7 @@ impl FilePicker {
             last_click: None,
             path_field,
             error: None,
+            redraw: false,
             rect,
             path,
             entries,
@@ -131,7 +133,28 @@ impl FilePicker {
     }
 
     /// Process input and return the result.
+    pub fn last_update_redraw(&self) -> bool {
+        self.redraw
+    }
+    fn visual_state(&self) -> (Option<usize>, usize, bool, bool, bool, bool, bool) {
+        (
+            self.selected,
+            self.scroll_offset,
+            self.open_hovered,
+            self.open_pressed,
+            self.cancel_hovered,
+            self.cancel_pressed,
+            self.path_field.is_focused(),
+        )
+    }
     pub fn update(&mut self, input: &InputState) -> FilePickerResult {
+        let before = self.visual_state();
+        let result = self.update_inner(input);
+        self.redraw = before != self.visual_state() || self.path_field.last_update_redraw();
+        result
+    }
+    fn update_inner(&mut self, input: &InputState) -> FilePickerResult {
+        self.path_field.update(input);
         self.open_hovered = self.open_btn.contains(input.mouse_x, input.mouse_y);
         self.cancel_hovered = self.cancel_btn.contains(input.mouse_x, input.mouse_y);
 
@@ -157,7 +180,6 @@ impl FilePicker {
             self.cancel_pressed = false;
         }
 
-        self.path_field.update(input);
         if input.mouse_pressed
             && self.error.is_none()
             && self.list_area.contains(input.mouse_x, input.mouse_y)
@@ -218,6 +240,13 @@ impl FilePicker {
             (self.scroll_offset as i64 - i64::from(steps) * 3).clamp(0, max as i64) as usize;
     }
     pub fn key(&mut self, input: &crate::KeyInput<'_>) -> FilePickerResult {
+        self.redraw = false;
+        let before = self.visual_state();
+        let result = self.key_inner(input);
+        self.redraw |= before != self.visual_state();
+        result
+    }
+    fn key_inner(&mut self, input: &crate::KeyInput<'_>) -> FilePickerResult {
         use crate::Key;
         if input.key == Key::Escape {
             return FilePickerResult::Cancelled;
@@ -232,6 +261,7 @@ impl FilePicker {
                 return FilePickerResult::NavigatePath(self.path_field.text().as_bytes().to_vec());
             }
             self.path_field.key(input);
+            self.redraw = self.path_field.last_update_redraw();
             return FilePickerResult::Active;
         }
         if self.error.is_some() || self.entries.is_empty() {

@@ -30,7 +30,9 @@ impl ArrowIcon {
     pub fn new(forward: bool) -> Self {
         Self {
             base: IconBase::new(),
-            remainder_us: 0, pending_click: false, pending_release: false,
+            remainder_us: 0,
+            pending_click: false,
+            pending_release: false,
             forward,
             stretch_x: Spring::new(0.0, 350.0, 18.0),
             scale: Spring::new(1.0, 300.0, 20.0),
@@ -40,7 +42,11 @@ impl ArrowIcon {
     }
 
     fn dir(&self) -> f32 {
-        if self.forward { 1.0 } else { -1.0 }
+        if self.forward {
+            1.0
+        } else {
+            -1.0
+        }
     }
 
     fn emit_speed_lines(&mut self, count: usize) {
@@ -91,7 +97,9 @@ impl ArrowIcon {
             IconState::HoverIn => (1.05, dir * 0.08),
             IconState::Hovering => {
                 // Oscillate slightly in idle hover.
-                let osc = sin_approx(self.base.state_time.min(1_000_000) as f32 / 500_000.0 * 3.14159265) * 0.03;
+                let osc =
+                    sin_approx(self.base.state_time.min(1_000_000) as f32 / 500_000.0 * 3.14159265)
+                        * 0.03;
                 (1.05, dir * (0.08 + osc))
             }
             IconState::Clicked => (1.12, dir * 0.18),
@@ -109,14 +117,15 @@ impl ArrowIcon {
 impl Icon for ArrowIcon {
     fn update(&mut self, dt_us: u32, mut mouse: IconMouse) {
         self.remainder_us += dt_us % 1000;
-        let quanta = dt_us/1000 + self.remainder_us/1000;
+        let quanta = dt_us / 1000 + self.remainder_us / 1000;
         self.remainder_us %= 1000;
         self.pending_click |= mouse.just_clicked;
         self.pending_release |= mouse.just_released;
         for _ in 0..quanta {
             mouse.just_clicked = self.pending_click;
             mouse.just_released = self.pending_release;
-            self.pending_click = false; self.pending_release = false;
+            self.pending_click = false;
+            self.pending_release = false;
             self.tick(mouse);
         }
     }
@@ -207,8 +216,16 @@ impl Icon for ArrowIcon {
         18
     }
 
-    fn hover_amount(&self) -> f32 { self.base.hover_amount() }
-    fn settled(&self) -> bool { self.base.settled() && self.scale.settled() && self.stretch_x.settled() && self.particles.active_count() == 0 }
+    fn hover_amount(&self) -> f32 {
+        self.base.hover_amount()
+    }
+    fn settled(&self) -> bool {
+        self.base.settled()
+            && (self.base.state != IconState::Hovering || self.base.state_time >= 1_000_000)
+            && self.scale.settled()
+            && self.stretch_x.settled()
+            && self.particles.active_count() == 0
+    }
 
     fn state(&self) -> IconState {
         self.base.state
@@ -216,7 +233,9 @@ impl Icon for ArrowIcon {
 
     fn reset(&mut self) {
         self.base.reset();
-        self.remainder_us = 0; self.pending_click = false; self.pending_release = false;
+        self.remainder_us = 0;
+        self.pending_click = false;
+        self.pending_release = false;
         self.scale.impulse(1.0, 0.0);
         self.scale.set_target(1.0);
         self.stretch_x.impulse(0.0, 0.0);

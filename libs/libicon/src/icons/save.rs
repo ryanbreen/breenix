@@ -42,7 +42,9 @@ impl SaveIcon {
     pub fn new() -> Self {
         Self {
             base: IconBase::new(),
-            remainder_us: 0, pending_click: false, pending_release: false,
+            remainder_us: 0,
+            pending_click: false,
+            pending_release: false,
             scale: Spring::new(1.0, 320.0, 22.0),
             lift_y: Spring::new(0.0, 200.0, 14.0),
             insert_y: Spring::new(0.0, 350.0, 18.0),
@@ -134,7 +136,8 @@ impl SaveIcon {
         // lift_y target: hover lifts the disk -3 px with a gentle ±2 px bob.
         let target_lift = match self.base.state {
             IconState::HoverIn | IconState::Hovering => {
-                let bob = sin_approx(self.base.state_time.min(1_000_000) as f32 / 1_000_000.0 * 3.5) * 2.0;
+                let bob =
+                    sin_approx(self.base.state_time.min(500_000) as f32 / 1_000_000.0 * 3.5) * 2.0;
                 -3.0 + bob
             }
             // Pressed: nudge toward slot.
@@ -167,14 +170,15 @@ impl SaveIcon {
 impl Icon for SaveIcon {
     fn update(&mut self, dt_us: u32, mut mouse: IconMouse) {
         self.remainder_us += dt_us % 1000;
-        let quanta = dt_us/1000 + self.remainder_us/1000;
+        let quanta = dt_us / 1000 + self.remainder_us / 1000;
         self.remainder_us %= 1000;
         self.pending_click |= mouse.just_clicked;
         self.pending_release |= mouse.just_released;
         for _ in 0..quanta {
             mouse.just_clicked = self.pending_click;
             mouse.just_released = self.pending_release;
-            self.pending_click = false; self.pending_release = false;
+            self.pending_click = false;
+            self.pending_release = false;
             self.tick(mouse);
         }
     }
@@ -324,8 +328,18 @@ impl Icon for SaveIcon {
         24
     }
 
-    fn hover_amount(&self) -> f32 { self.base.hover_amount() }
-    fn settled(&self) -> bool { self.base.settled() && self.scale.settled() && self.lift_y.settled() && self.insert_y.settled() && self.particles.active_count() == 0 && self.slot_glow == 0.0 }
+    fn hover_amount(&self) -> f32 {
+        self.base.hover_amount()
+    }
+    fn settled(&self) -> bool {
+        self.base.settled()
+            && (self.base.state != IconState::Hovering || self.base.state_time >= 500_000)
+            && self.scale.settled()
+            && self.lift_y.settled()
+            && self.insert_y.settled()
+            && self.particles.active_count() == 0
+            && self.slot_glow == 0.0
+    }
 
     fn state(&self) -> IconState {
         self.base.state
@@ -333,7 +347,9 @@ impl Icon for SaveIcon {
 
     fn reset(&mut self) {
         self.base.reset();
-        self.remainder_us = 0; self.pending_click = false; self.pending_release = false;
+        self.remainder_us = 0;
+        self.pending_click = false;
+        self.pending_release = false;
         self.scale.impulse(1.0, 0.0);
         self.scale.set_target(1.0);
         self.lift_y.impulse(0.0, 0.0);
