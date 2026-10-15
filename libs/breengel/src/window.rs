@@ -26,7 +26,7 @@ use crate::font::FontWatcher;
 /// to get the loaded font for rendering.
 pub struct Window {
     buffer_id: u32,
-    fb: FrameBuf,
+    fb: Option<FrameBuf>,
     width: u32,
     height: u32,
     font_watcher: FontWatcher,
@@ -55,11 +55,11 @@ impl Window {
         height: u32,
         font_watcher: FontWatcher,
     ) -> Result<Self, Error> {
-        let win = graphics::create_window(width, height)?;
-        graphics::register_window(win.id, title)?;
-
         let bpp = 4usize;
         let stride = width as usize * bpp;
+        FrameBuf::validate_layout(width as usize, height as usize, stride, libgfx::framebuf::Format::BGRX)
+            .map_err(|_| Error::Os(Errno::EINVAL))?;
+        let win = graphics::create_window(width, height)?;
         let fb = unsafe {
             FrameBuf::from_raw(
                 win.pixels as *mut u8,
@@ -68,12 +68,15 @@ impl Window {
                 stride,
                 bpp,
                 true, // BGRA for compositor
-            ).map_err(|_| Error::Os(Errno::EINVAL))?
+            ).expect("kernel returned an invalid window mapping after layout validation")
         };
+        // Version 1 has no destroy op. A kernel postcondition/registration failure
+        // must terminate the owner so process teardown reclaims its window registry.
+        graphics::register_window(win.id, title).expect("kernel refused registration of a new window");
 
         Ok(Self {
             buffer_id: win.id,
-            fb,
+            fb: Some(fb),
             width,
             height,
             font_watcher,
@@ -82,7 +85,7 @@ impl Window {
 
     /// Get a mutable reference to the framebuffer for drawing.
     pub fn framebuf(&mut self) -> &mut FrameBuf {
-        &mut self.fb
+        self.fb.as_mut().expect("window has no drawable mapping after a failed resize")
     }
 
     /// Signal the compositor that this window's pixels have changed.
@@ -90,6 +93,7 @@ impl Window {
     /// Call after drawing a frame. This may block until the compositor
     /// consumes the previous frame (back-pressure / frame pacing).
     pub fn present(&self) -> Result<(), Error> {
+        if self.fb.is_none() { return Err(Error::Os(Errno::EINVAL)); }
         graphics::mark_window_dirty(self.buffer_id)
     }
 
@@ -229,11 +233,17 @@ impl Window {
     /// copies the intersection of old content, and returns a new mmap pointer.
     /// The internal FrameBuf is recreated at the new dimensions.
     pub fn apply_resize(&mut self, new_width: u32, new_height: u32) -> Result<(), Error> {
-        let win = graphics::resize_window(self.buffer_id, new_width, new_height)?;
-
         let bpp = 4usize;
         let stride = new_width as usize * bpp;
-        self.fb = unsafe {
+        FrameBuf::validate_layout(new_width as usize, new_height as usize, stride, libgfx::framebuf::Format::BGRX)
+            .map_err(|_| Error::Os(Errno::EINVAL))?;
+        // The syscall can retire the old mapping even on an error. Invalidate the
+        // wrapper before calling it; no later drawing may reuse the old pointer.
+        self.fb = None;
+        self.width = 0;
+        self.height = 0;
+        let win = graphics::resize_window(self.buffer_id, new_width, new_height)?;
+        self.fb = Some(unsafe {
             FrameBuf::from_raw(
                 win.pixels as *mut u8,
                 new_width as usize,
@@ -242,7 +252,7 @@ impl Window {
                 bpp,
                 true,
             ).map_err(|_| Error::Os(Errno::EINVAL))?
-        };
+        });
         self.width = new_width;
         self.height = new_height;
 
