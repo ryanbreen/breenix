@@ -4488,7 +4488,8 @@ const CLEAR_CHILD_TID_EXIT_SITES: &[(&str, &str, usize)] = &[
 ];
 #[rustfmt::skip]
 const BTRT_PROCESS_EXIT_REPORTS: &[(&str, &str, usize)] = &[
-    ("kernel/src/task/process_task.rs", "impl ProcessScheduler::fn handle_thread_exit", 1),
+    // Both exit paths redeem a claimed report through this one helper.
+    ("kernel/src/task/process_task.rs", "fn redeem_exit_report", 1),
 ];
 #[rustfmt::skip]
 // P6a PR-2 re-derivation, per delta: the bump moved with the raw removal into

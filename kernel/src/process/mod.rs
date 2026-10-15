@@ -489,6 +489,9 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
     crate::ipc::sysv::row_exit(pid);
     let released = with_process_manager(|pm| pm.get_process_mut(pid).map(|process| process.cwd.release()));
     drop(released);
+    // Captured before PM, as `handle_thread_exit` does: no scheduler state is
+    // consulted while PM is held.
+    let report_claimer = crate::task::scheduler::current_thread_id().unwrap_or(0);
     let mut fifo_opens = alloc::vec::Vec::new();
     let locked = with_process_manager(|pm| {
         // A FIFO open the row's thread was parked in when a kill terminated
@@ -506,6 +509,7 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
                 alloc::vec::Vec::new(),
                 None,
                 None,
+                false,
             );
         };
         let outcome = if process.is_terminated() {
@@ -521,6 +525,12 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
             .get_process(pid)
             .and_then(|process| process.exit_code)
             .unwrap_or(exit_code);
+        // The row is reapable once PM is released, and a reaped row is gone
+        // from `handle_thread_exit`'s lookup: claim the report in this same
+        // hold, so a parent that reaps first cannot leave it unredeemed.
+        let report_claimed = pm
+            .get_process_mut(pid)
+            .is_some_and(|process| process.exit_notifications.claim_report(report_claimer));
         // Groups this exit leaves orphaned with a stopped member, asked once
         // per row whichever exit path gets here first.
         let orphaned_groups = pm.groups_orphaned_by_exit(pid, &children);
@@ -532,6 +542,7 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
             orphaned_groups,
             signal_wake,
             terminal_exit,
+            report_claimed,
         )
     });
 
@@ -539,7 +550,7 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
         crate::ipc::fifo::abandon_fifo_open(open);
     }
 
-    let Some((outcome, receipt, thread_id, reported_exit_code, orphaned_groups, signal_wake, terminal_exit)) = locked else {
+    let Some((outcome, receipt, thread_id, reported_exit_code, orphaned_groups, signal_wake, terminal_exit, report_claimed)) = locked else {
         return ExitOutcome::Missing;
     };
     if let Some(exit) = terminal_exit {
@@ -567,9 +578,13 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
         crate::syscall::signal::signal_orphaned_group(pgid);
     }
 
-    // The unchanged btrt effect remains in handle_thread_exit. Calling the
-    // existing two-phase path here lets a remote commit race a natural thread
-    // exit for the row's report claim without ever invoking SERIAL under PM.
+    if report_claimed {
+        crate::task::process_task::redeem_exit_report(pid, reported_exit_code, report_claimer);
+    }
+
+    // The two-phase path finishes the thread's exit. Its report claim finds
+    // the report already claimed, here or by a natural exit that committed
+    // first, and leaves it to that claimer.
     if let Some(thread_id) = thread_id {
         crate::task::process_task::ProcessScheduler::handle_thread_exit(
             thread_id,

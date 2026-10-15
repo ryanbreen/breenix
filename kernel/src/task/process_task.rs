@@ -1210,20 +1210,8 @@ impl ProcessScheduler {
             }
 
             if report_claimed {
-                #[cfg(feature = "btrt")]
-                crate::test_framework::btrt::on_process_exit(pid.as_u64(), reported_exit_code);
-                #[cfg(not(feature = "btrt"))]
-                let _ = reported_exit_code;
-                crate::tracing::providers::teardown::record_report(pid.as_u64());
-
                 let completing_claimer = scheduler::current_thread_id().unwrap_or(report_claimer);
-                let _ = crate::process::with_process_manager(|manager| {
-                    if let Some(process) = manager.get_process_mut(pid) {
-                        process
-                            .exit_notifications
-                            .complete_report(completing_claimer);
-                    }
-                });
+                redeem_exit_report(pid, reported_exit_code, completing_claimer);
             }
 
             #[cfg(target_arch = "x86_64")]
@@ -1251,6 +1239,23 @@ impl ProcessScheduler {
                 .map(|(pid, _)| pid)
         })
     }
+}
+
+/// Redeem a process's exit report, which `claimer` claimed under
+/// PROCESS_MANAGER: the effect runs here, with PM released, and the claim is
+/// completed under a fresh hold. The one redemption site for both exit paths,
+/// `handle_thread_exit` and `process::exit_process_and_retire`.
+pub(crate) fn redeem_exit_report(pid: ProcessId, exit_code: i32, claimer: u64) {
+    #[cfg(feature = "btrt")]
+    crate::test_framework::btrt::on_process_exit(pid.as_u64(), exit_code);
+    #[cfg(not(feature = "btrt"))]
+    let _ = exit_code;
+    crate::tracing::providers::teardown::record_report(pid.as_u64());
+    let _ = crate::process::with_process_manager(|manager| {
+        if let Some(process) = manager.get_process_mut(pid) {
+            process.exit_notifications.complete_report(claimer);
+        }
+    });
 }
 
 /// A thread group's last row has ended (`ProcessManager::group_exited`):
