@@ -11,6 +11,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CRATES=(
     libs/libgfx
+    libs/libpixcheck
     libs/libfont
     libs/libimg
     libs/libbui
