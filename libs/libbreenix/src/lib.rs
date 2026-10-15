@@ -58,12 +58,14 @@ pub mod suite;
 pub mod synth;
 pub mod syscall;
 pub mod termios;
+pub mod test_control;
 #[cfg(feature = "std")]
 pub mod ssh;
 #[cfg(feature = "std")]
 pub mod tls;
 pub mod time;
 pub mod types;
+pub mod window;
 #[cfg(feature = "std")]
 pub mod x509;
 

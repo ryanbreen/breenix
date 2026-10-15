@@ -45,6 +45,7 @@ pub mod futex_oracle;
 pub mod futex_timeout_record;
 pub mod fb;
 pub mod fb_draw;
+pub mod window;
 #[cfg(target_arch = "aarch64")]
 pub mod window_v1;
 pub mod handlers;
@@ -203,6 +204,9 @@ pub enum SyscallNumber {
     FbDraw,
     FbMmap,
     GetMousePos,
+    // The BreenGL window interface and its suite-mode test controls (Breenix-specific)
+    Window,
+    TestControl,
     // Audio syscalls (Breenix-specific)
     AudioInit,
     AudioWrite,
@@ -406,6 +410,8 @@ impl SyscallNumber {
             411 => Some(Self::FbDraw),
             412 => Some(Self::FbMmap),
             413 => Some(Self::GetMousePos),
+            414 => Some(Self::Window),
+            415 => Some(Self::TestControl),
             // Audio syscalls (Breenix-specific)
             420 => Some(Self::AudioInit),
             421 => Some(Self::AudioWrite),
@@ -567,6 +573,8 @@ impl SyscallNumber {
             411 => Some(Self::FbDraw),
             412 => Some(Self::FbMmap),
             413 => Some(Self::GetMousePos),
+            414 => Some(Self::Window),
+            415 => Some(Self::TestControl),
             // Audio syscalls (Breenix-specific)
             420 => Some(Self::AudioInit),
             421 => Some(Self::AudioWrite),

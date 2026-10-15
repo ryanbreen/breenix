@@ -179,10 +179,19 @@ fn check(index: usize) -> Result<(), &'static str> {
             else { Err("loopback payload mismatch") }
         }
         15 => {
+            // The production drawing path: take the display, draw one pixel into the
+            // whole-screen mapping and flush it. The probe takes the display back after.
             let info = graphics::fbinfo().map_err(|_| "fbinfo failed")?;
             if info.width == 0 || info.height == 0 { return Err("empty framebuffer"); }
-            graphics::fb_fill_rect(0, 0, 1, 1, graphics::rgb(36, 48, 70))
-                .map_err(|_| "framebuffer draw failed")?;
+            let bpp = info.bytes_per_pixel as usize;
+            if !(3..=4).contains(&bpp) { return Err("unsupported pixel size"); }
+            graphics::take_over_display().map_err(|_| "take_over_display failed")?;
+            let (ptr, width) = graphics::fb_mmap_pane().map_err(|_| "fb_mmap failed")?;
+            if width == 0 { return Err("empty fb_mmap pane"); }
+            let pixel = if info.is_bgr() { [70, 48, 36, 0xFF] } else { [36, 48, 70, 0xFF] };
+            // SAFETY: the mapping holds at least one row of `width` pixels of `bpp` bytes.
+            unsafe { core::ptr::copy_nonoverlapping(pixel.as_ptr(), ptr, bpp) };
+            graphics::fb_flush_rect(0, 0, 1, 1).map_err(|_| "framebuffer flush failed")?;
             Ok(())
         }
         _ => Err("unknown check"),
@@ -379,6 +388,16 @@ fn flush_screen(screen: &mut Screen) {
     }
 }
 
+/// A check may have taken the display (the framebuffer check draws as its owner): take it
+/// back so the probe's screen keeps updating.
+fn retake_screen(screen: &mut Option<Screen>) {
+    if let Some(screen) = screen.as_mut() {
+        if graphics::take_over_display().is_ok() {
+            screen.lost = false;
+        }
+    }
+}
+
 /// The program has exited: take the display back, if it had taken it, to show the
 /// verdict.
 fn reclaim_screen(screen: &mut Option<Screen>) {
@@ -434,6 +453,7 @@ fn probe() {
     let mut passed = 0;
     for index in 0..IDS.len() {
         let (result, inline) = supervised_check(index);
+        retake_screen(&mut fb);
         states[index] = Some(result.is_ok());
         match result {
             Ok(()) => {
