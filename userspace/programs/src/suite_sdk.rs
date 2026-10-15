@@ -659,8 +659,19 @@ fn configured_shell(words: &[&str], dir: &str) -> Result<Ran, CaseError> {
     let config = std::fs::read_to_string("/etc/bshrc")
         .map_err(|e| format!("could not read the shell configuration: {e}"))?;
     let arguments = words.iter().map(|word| format!("{word:?}")).collect::<Vec<_>>().join(", ");
-    let script = format!("{config}\nexit(run({arguments}));");
-    run("/bin/bsh", &["bsh", "-e", &script], dir)
+    // Capture the command independently from startup output (bshrc prints a
+    // greeting). Missing output files are errors, never a fallback to shell output.
+    let stdout = format!("{dir}/command-stdout");
+    let stderr = format!("{dir}/command-stderr");
+    let script = format!("{config}\nlet result = exec({arguments});\n\
+        writeFile({stdout:?}, result.stdout);\n\
+        writeFile({stderr:?}, result.stderr);\nexit(result.exitCode);");
+    let mut ran = run("/bin/bsh", &["bsh", "-e", &script], dir)?;
+    ran.stdout = std::fs::read(&stdout).map_err(|e| format!("could not read command stdout: {e}"))?;
+    let mut command_stderr = std::fs::read(&stderr)
+        .map_err(|e| format!("could not read command stderr: {e}"))?;
+    ran.stderr.append(&mut command_stderr);
+    Ok(ran)
 }
 
 /// Run `name args` by its bare name through the configured shell's PATH search.
@@ -670,7 +681,7 @@ fn from_path(name: &str, args: &[&str], stdout: &str) -> CaseResult {
     let mut argv = vec![name];
     argv.extend_from_slice(args);
     let ran = configured_shell(&argv, &scratch.dir)?;
-    expect(&format!("env {name} {}", args.join(" ")), &ran, stdout, 0)
+    expect(&format!("bsh {name} {}", args.join(" ")), &ran, stdout, 0)
 }
 
 fn install_runs_absolute() -> CaseResult {
