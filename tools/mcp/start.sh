@@ -10,4 +10,4 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR/../.." || exit 1
 
 # Run the MCP server
-cargo run --manifest-path "$SCRIPT_DIR/Cargo.toml"
+cargo run --quiet --manifest-path "$SCRIPT_DIR/Cargo.toml" --bin breenix-mcp
