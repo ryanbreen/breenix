@@ -557,7 +557,7 @@ pub fn arch_halt_with_interrupts() {
 }
 
 /// Park a waiting thread until its wake: return at once if the current thread
-/// has left its blocked state. Preemptible ARM64 callers schedule out; other
+/// has left its blocked state. Preemptible callers schedule out; other
 /// callers halt until the next interrupt.
 ///
 /// A syscall wait loop checks its blocked state and then halts. With
@@ -580,10 +580,17 @@ pub fn arch_halt_with_interrupts() {
 /// wakes, the CPU's tick is re-armed 1 ms after it is taken, and once the tick
 /// fell just after each nap's deadline no interrupt arrived inside a nap. Each
 /// tick then found the napper awake and ranked above the thread queued
-/// behind it (#1467). With a thread queued here, the waiter
-/// releases its CPU at once: x86 enters the reschedule gate through a software
-/// interrupt, while ARM64 saves a preemptible blocked continuation through
-/// the native scheduler, including when no other work is queued locally.
+/// behind it (#1467).
+///
+/// A waiter that halts as current can also be resumed only by its own CPU, so
+/// a wake that another CPU finds on time still waits for this CPU's next
+/// interrupt. Under the x86 gate's nested virtualization a halted vCPU can go
+/// tens to hundreds of milliseconds without taking one, while the other CPUs
+/// run (#1468, #1540). So a preemptible waiter releases its CPU before it
+/// parks, whether or not other work is queued here: x86 enters the reschedule
+/// gate through a software interrupt, and ARM64 saves its blocked continuation
+/// through the native scheduler. Either way the wake is dispatched by whichever
+/// CPU finds it.
 pub fn arch_halt_while_blocked() {
     // SAFETY: interrupts are masked only for the state read, and every path
     // below unmasks them before returning.
@@ -593,14 +600,7 @@ pub fn arch_halt_while_blocked() {
             .current_thread_mut()
             .is_some_and(|thread| thread.state.is_blocked())
     };
-    let wait_state = task::scheduler::with_scheduler(|scheduler| {
-        let blocked = current_blocked(scheduler);
-        #[cfg(target_arch = "x86_64")]
-        let queued_work = blocked && scheduler.has_queued_work_here();
-        (blocked, #[cfg(target_arch = "x86_64")] queued_work)
-    })
-    .unwrap_or((false, #[cfg(target_arch = "x86_64")] false));
-    if !wait_state.0 {
+    if !task::scheduler::with_scheduler(current_blocked).unwrap_or(false) {
         // SAFETY: every caller would have halted with interrupts enabled.
         unsafe { arch_enable_interrupts() };
         return;
@@ -620,17 +620,24 @@ pub fn arch_halt_while_blocked() {
     }
     #[cfg(target_arch = "x86_64")]
     {
-        if wait_state.1 && per_cpu::preempt_count() == 0 {
+        if per_cpu::preempt_count() == 0 {
             task::scheduler::set_need_resched();
             // SAFETY: the reschedule vector's gate is the timer entry, which
             // saves and restores every register; a software interrupt enters
             // it from here as the tick would from the halt. The thread
-            // resumes after it, with interrupts as they were, masked.
+            // resumes after it, with interrupts as they were, masked: once it
+            // is dispatched again after its wake, or at once if the switch
+            // was declined because the process manager is busy on another
+            // CPU. Only a waiter still blocked halts here, as before, and the
+            // tick that ends that halt switches it out.
             unsafe {
                 core::arch::asm!("int {vector}", vector = const interrupts::RESCHEDULE_VECTOR);
-                arch_enable_interrupts();
             }
-            return;
+            if !task::scheduler::with_scheduler(current_blocked).unwrap_or(false) {
+                // SAFETY: as at the top, the caller halts with interrupts enabled.
+                unsafe { arch_enable_interrupts() };
+                return;
+            }
         }
         x86_64::instructions::interrupts::enable_and_hlt();
     }
