@@ -416,7 +416,7 @@ func main() -> Int32 {
             guard args.count == 3, args[1] == "x86" else {
                 throw CLIError(description: "recover requires x86 and an exact run id")
             }
-            try BeastLauncher(store: store).recoverX86(id: args[2])
+            try BeastLauncher(store: store, targetGuard: nil).recoverX86(id: args[2])
             print("Remote run stopped, evidence harvested, and cleanup completed.")
             return 0
         case "run":
@@ -450,7 +450,12 @@ func main() -> Int32 {
                     return 0
                 }
             case "x86":
-                let runArgs = try parseRunX86(args.dropFirst(2))
+                var runArgs = try parseRunX86(args.dropFirst(2))
+                switch (ProcessInfo.processInfo.environment["BREENIX_CATCHUP"] ?? "").lowercased() {
+                case "", "0", "false", "no": break
+                case "1", "true", "yes": runArgs.catchup = true
+                default: throw CLIError(description: "BREENIX_CATCHUP must be 1, true or yes for the catch-up, or 0, false, no or unset")
+                }
                 let root = try repoRoot(startingAt: URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true))
                 let runner = RealProcessRunner()
                 let explicitSHA = runArgs.sha != nil
@@ -467,14 +472,6 @@ func main() -> Int32 {
                     sha = resolved.stdoutString.trimmingCharacters(in: .whitespacesAndNewlines)
                 }
                 FileHandle.standardOutput.write(Data("Breenix target=x86 catchup=\(runArgs.catchup) dry-run=\(runArgs.dryRun)\n".utf8))
-                let policy = try runner.run(ProcessRequest(executable: "/usr/bin/env",
-                    arguments: ["python3", root.appendingPathComponent("scripts/effort-target-guard.py").path,
-                                "--repo", root.path, "--commit", sha, "--target", "x86"]
-                        + (runArgs.catchup ? ["--catchup"] : [])))
-                FileHandle.standardError.write(policy.stderr)
-                guard policy.exitCode == 0 else {
-                    throw CLIError(description: "effort target policy refused this launch")
-                }
                 if !explicitSHA, git.dirty == true {
                     FileHandle.standardError.write(Data("warning: beast will test the pushed commit \(sha), not the dirty working tree\n".utf8))
                 }
@@ -487,7 +484,8 @@ func main() -> Int32 {
                     slotHelperBase64: try Data(contentsOf: root.appendingPathComponent("scripts/host-slots.py")).base64EncodedString(),
                     progressBundleBase64: try BeastLauncher.progressBundle(repoRoot: root),
                     treeHelperBase64: try Data(contentsOf: root.appendingPathComponent("scripts/gate-tree.py")).base64EncodedString(),
-                    vigilScript: root.appendingPathComponent("scripts/vigil-record.sh")
+                    vigilScript: root.appendingPathComponent("scripts/vigil-record.sh"),
+                    targetGuard: root.appendingPathComponent("scripts/effort-target-guard.py")
                 )
                 var options = BeastLaunchOptions(
                     boots: runArgs.boots,
@@ -503,6 +501,7 @@ func main() -> Int32 {
                     catchup: runArgs.catchup
                 )
                 if runArgs.dryRun {
+                    options.targetPolicySHA = try launcher.checkTargetPolicy(options: options)
                     printDryRun(plan: try launcher.plan(options: options))
                     return 0
                 }

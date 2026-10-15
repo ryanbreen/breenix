@@ -35,6 +35,12 @@ docs/              # boot-path, efforts, suites, gui, sdk, user guide, historica
 
 QEMU runs natively for both x86-64 and ARM64 architectures.
 
+### Effort lanes run on ARM64 QEMU
+
+Effort lanes (`<effort id>/<lane>` from `docs/efforts/path.json`) build and race on ARM64 QEMU only; x86-64, Parallels and VMware are backported in the catch-up once that effort is green on ARM64 QEMU (operator, 2026-10-15). Only regression fixes for finished efforts and the catch-up itself use other targets.
+
+`scripts/effort-target-guard.py` refuses a commit when any commit in its history that origin/main lacks is also in an effort lane's history, on origin or in a local branch; a `fix/*` or `scratch/*` name exempts nothing, and it refuses when origin cannot be read. `run.sh` (`--x86`, `--btrt --x86`, `--parallels`, `--vmware`, and `--dry-run` to check only) and `breenix-runs run x86` run it before building; every x86-64 QEMU boot runs it again in `qemu_host_lock_acquire` and in `qemu-uefi`. For the catch-up pass `breenix-runs run x86 --catchup` or `BREENIX_CATCHUP=1`: the launch line prints it, the x86 run manifest records it, and Parallels and VMware runs record it in `<serial log>.launch.json`. Vigil has no catch-up field.
+
 ### Interactive Mode
 
 Use `./run.sh` for interactive development with graphical display:
@@ -204,8 +210,6 @@ clock_gettime syscall. Set breakpoint, examine registers, report findings.")
 ```
 
 When a debugging task requires multiple iterations, dispatch it ONCE to an agent with comprehensive instructions. The agent will iterate internally and return a summary. If more investigation is needed, dispatch another agent - don't bring the iteration into the main session.
-
-Effort lanes (`<effort id>/<lane>` from `docs/efforts/path.json`) build and race on ARM64 QEMU only; x86-64, Parallels and VMware are backported in the catch-up once that effort is green on ARM64 QEMU (operator, 2026-10-15). Only regression fixes for finished efforts and the catch-up itself use other targets: pass `breenix-runs run x86 --catchup` or `BREENIX_CATCHUP=1 ./run.sh --parallels` / `--vmware` for catch-up, which is printed and recorded in run metadata. The shared target guard refuses unmerged effort commits before building; main, `fix/*` and `scratch/*` commits remain allowed.
 
 ### Feature Branches (REQUIRED)
 Never push directly to main. Always:

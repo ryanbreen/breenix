@@ -238,18 +238,30 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Refuse effort targets before builds, VM setup or host-slot supervision.
-CATCHUP_ARGS=()
-if [ "${BREENIX_CATCHUP:-0}" = 1 ]; then CATCHUP_ARGS=(--catchup); fi
+# Refuse effort work on x86-64, Parallels and VMware before builds, VM setup or host-slot
+# supervision. The supervised re-exec (BREENIX_SLOT_SESSION) inherits the normalized
+# BREENIX_CATCHUP and the checked stamp, so the check and its launch line run once.
 TARGET=arm64-qemu
 if [ "$ARCH" = x86_64 ]; then TARGET=x86; fi
 if [ "$PARALLELS" = true ]; then TARGET=parallels
 elif [ "$VMWARE" = true ]; then TARGET=vmware
 fi
-echo "Breenix target=$TARGET BREENIX_CATCHUP=${BREENIX_CATCHUP:-0} dry-run=$DRY_RUN"
-if [ "$PARALLELS" = true ] || [ "$VMWARE" = true ]; then
-    python3 "$BREENIX_ROOT/scripts/effort-target-guard.py" --repo "$BREENIX_ROOT" \
-        --target "$TARGET" "${CATCHUP_ARGS[@]}" || exit $?
+if [ -z "${BREENIX_SLOT_SESSION:-}" ]; then
+    case "$(printf %s "${BREENIX_CATCHUP:-}" | tr '[:upper:]' '[:lower:]')" in
+        ''|0|false|no) BREENIX_CATCHUP=0 ;;
+        1|true|yes) BREENIX_CATCHUP=1 ;;
+        *)
+            echo "BREENIX_CATCHUP must be 1, true or yes for the catch-up, or 0, false, no or unset; got '$BREENIX_CATCHUP'" >&2
+            exit 1
+            ;;
+    esac
+    export BREENIX_CATCHUP
+    echo "Breenix target=$TARGET BREENIX_CATCHUP=$BREENIX_CATCHUP dry-run=$DRY_RUN"
+    if [ "$TARGET" != arm64-qemu ]; then
+        POLICY_SHA=$(python3 "$BREENIX_ROOT/scripts/effort-target-guard.py" --repo "$BREENIX_ROOT" \
+            --target "$TARGET") || exit 1
+        export BREENIX_TARGET_POLICY_CHECKED="$TARGET:$POLICY_SHA"
+    fi
 fi
 if [ "$DRY_RUN" = true ]; then
     echo "Target policy accepted; no build or boot requested."

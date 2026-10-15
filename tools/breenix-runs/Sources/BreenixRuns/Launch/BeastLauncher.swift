@@ -7,6 +7,7 @@ public enum BeastLauncherError: Error, Equatable, CustomStringConvertible {
     case invalidBootCount(Int)
     case invalidSuiteID(String)
     case invalidLaneKey(String)
+    case targetPolicyRefused(String)
 
     public var description: String {
         switch self {
@@ -20,6 +21,8 @@ public enum BeastLauncherError: Error, Equatable, CustomStringConvertible {
             return "--boots requires a positive integer, got \(boots)"
         case .invalidLaneKey(let key):
             return "invalid lane key \(key.debugDescription)"
+        case .targetPolicyRefused(let output):
+            return "effort target policy refused this launch: \(output)"
         case .invalidSuiteID(let id):
             return "--suite requires a suite id (lowercase words of a-z and 0-9 joined by '-'), got \(id.debugDescription)"
         }
@@ -52,6 +55,8 @@ public struct BeastLaunchOptions: Sendable {
     public var laneKey: String?
     public var fresh: Bool
     public var catchup: Bool
+    /// The commit scripts/effort-target-guard.py accepted; beast's nested launchers skip re-checking it.
+    public var targetPolicySHA: String?
 
     public init(
         boots: Int = 1,
@@ -105,6 +110,8 @@ public struct BeastLauncher {
     public var slotHelperBase64: String?
     public var progressBundleBase64: String?
     public var vigilScript: URL?
+    /// scripts/effort-target-guard.py; nil only where a caller deliberately runs without the policy.
+    public var targetGuard: URL?
     public var treeHelperBase64: String?
     var makeSignals: (ProcessRunner) -> X86LaunchSignals = { X86LaunchSignals(runner: $0) }
     public var quietOverride: String?
@@ -122,7 +129,8 @@ public struct BeastLauncher {
         treeHelperBase64: String? = nil,
         vigilScript: URL? = nil,
         serialStreaming: X86SerialStreaming = SSHSerialStreaming(),
-        quietOverride: String? = ProcessInfo.processInfo.environment["BREENIX_QUIET"]
+        quietOverride: String? = ProcessInfo.processInfo.environment["BREENIX_QUIET"],
+        targetGuard: URL?
     ) {
         self.store = store
         self.runner = runner
@@ -134,6 +142,7 @@ public struct BeastLauncher {
         self.progressBundleBase64 = progressBundleBase64
         self.treeHelperBase64 = treeHelperBase64
         self.vigilScript = vigilScript
+        self.targetGuard = targetGuard
         self.serialStreaming = serialStreaming
         self.quietOverride = quietOverride
     }
@@ -198,6 +207,7 @@ public struct BeastLauncher {
         paths.laneKey = options.laneKey
         paths.requestedSHA = options.sha
         paths.fresh = options.fresh
+        paths.targetPolicyStamp = options.targetPolicySHA.map { "x86:" + $0 }
         return RemoteCommand.plan(
             sha: options.sha,
             boots: options.boots,
@@ -214,11 +224,27 @@ public struct BeastLauncher {
         )
     }
 
+    /// Runs the effort target policy for `options.sha`, returning the full SHA it accepted
+    /// (nil without a guard); a refusal throws before anything reaches beast.
+    public func checkTargetPolicy(options: BeastLaunchOptions) throws -> String? {
+        try validate(options: options)
+        guard let targetGuard else { return nil }
+        let repo = targetGuard.deletingLastPathComponent().deletingLastPathComponent()
+        let result = try runner.run(ProcessRequest(executable: "/usr/bin/env",
+            arguments: ["python3", targetGuard.path, "--repo", repo.path, "--commit", options.sha, "--target", "x86"]
+                + (options.catchup ? ["--catchup"] : [])))
+        guard result.exitCode == 0 else {
+            throw BeastLauncherError.targetPolicyRefused(result.stderrString.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return result.stdoutString.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     public func runX86(options: BeastLaunchOptions) throws -> BeastLaunchResult {
         let startedAt = Date()
         let id = options.runID ?? RunManifest.makeID(startedAt: startedAt, arch: .x86_64, profile: "gate")
         var plannedOptions = options
         plannedOptions.runID = id
+        plannedOptions.targetPolicySHA = try checkTargetPolicy(options: options)
         let planResult = try plan(options: plannedOptions)
 
         let startFacts = parseHostFactsSample(runner: runner, paths: planResult.paths, wallTime: startedAt)

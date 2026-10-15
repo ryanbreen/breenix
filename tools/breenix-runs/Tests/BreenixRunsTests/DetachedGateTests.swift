@@ -103,7 +103,7 @@ final class DetachedGateTests: XCTestCase {
 
     func testUnsupportedLANAliasIsRejected() throws {
         let launcher = BeastLauncher(store: RunStore(root: URL(fileURLWithPath: "/unused")),
-                                     pathsTemplate: BeastPaths(host: "beast-lan", clonePath: ""))
+                                     pathsTemplate: BeastPaths(host: "beast-lan", clonePath: ""), targetGuard: nil)
         XCTAssertThrowsError(try launcher.plan(options: BeastLaunchOptions(sha: "abc")))
     }
 
