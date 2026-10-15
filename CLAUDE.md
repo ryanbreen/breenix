@@ -150,6 +150,13 @@ GDB debugging is fully supported. See the "GDB-Only Kernel Debugging" section be
 
 ## Development Workflow
 
+### No builds or tests in GitHub
+
+Breenix never builds, tests or checks anything in GitHub Actions or any other hosted CI: the repository has no
+`.github/workflows`, and Actions is turned off for it. Every check (host tests, the suite verdict, the Rust fork
+pin's `check-release` and `check-reachable`) runs locally or on beast, and lands with the PR's own evidence.
+Never add a workflow file.
+
 ### Agent-Based Development (MANDATORY)
 
 **The main conversation is for ORCHESTRATION ONLY.** Never execute tests, run builds, or perform iterative debugging directly in the top-level session. This burns token context and leads to session exhaustion.
