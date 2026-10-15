@@ -1256,6 +1256,7 @@ const SPIKE_REG_CAP2: u32 = 59;
 const SPIKE_REG_FENCE: u32 = 69;
 const SPIKE_CMD_FENCE: u32 = 30;
 const SPIKE_3D_READBACK_GB_SURFACE: u32 = 1104;
+const SPIKE_3D_DEFINE_GB_SURFACE: u32 = 1097;
 const SPIKE_DC_START_STOP_CONTEXT: u32 = 1;
 const SPIKE_MOBFMT_PT64_0: u32 = 4;
 const SPIKE_MOBFMT_PT64_2: u32 = 6;
@@ -1449,26 +1450,71 @@ pub fn gui_spike_stdu() {
     enc.define_gb_mob64(COMPOSITOR_MOB_ID, SPIKE_MOBFMT_PT64_2, spike_ipa(dir_v) >> 12, bytes as u32);
     let mob_ok = step("define_mob64_pt64_2", &enc.finish());
 
-    let mut enc = CmdEncoder::new();
-    enc.define_gb_surface_v2(
-        COMPOSITOR_SURFACE_ID,
-        SVGA3D_SURFACE_SCREENTARGET,
-        SPIKE_X8R8G8B8,
-        1,
-        0,
-        SPIKE_W,
-        SPIKE_H,
-        1,
-        0,
-        0,
-    );
-    enc.bind_gb_surface(COMPOSITOR_SURFACE_ID, COMPOSITOR_MOB_ID);
-    let srf_ok = step("define_bind_surface_x8r8g8b8", &enc.finish());
+    // After a command error the context halts; vmwgfx stops and restarts it.
+    let restart = || {
+        let mut stop = CmdEncoder::new();
+        stop.push_u32(SPIKE_DC_START_STOP_CONTEXT);
+        stop.push_u32(0);
+        stop.push_u32(SVGA_CB_CONTEXT_0);
+        let a = spike_submit(&stop.finish(), SVGA_CB_CONTEXT_DEVICE, pfn);
+        let mut start = CmdEncoder::new();
+        start.push_u32(SPIKE_DC_START_STOP_CONTEXT);
+        start.push_u32(1);
+        start.push_u32(SVGA_CB_CONTEXT_0);
+        let b = spike_submit(&start.finish(), SVGA_CB_CONTEXT_DEVICE, pfn);
+        serial_println!("GUI_SPIKE vmware restart_context0 stop={:?} start={:?}", a, b);
+    };
+    let try_step = |label: &str, cmds: &[u8]| -> bool {
+        let ok = step(label, cmds);
+        if !ok {
+            restart();
+        }
+        ok
+    };
 
-    let mut enc = CmdEncoder::new();
-    enc.define_gb_screentarget(COMPOSITOR_STID, SPIKE_W, SPIKE_H, SVGA_STFLAG_PRIMARY);
-    enc.bind_gb_screentarget(COMPOSITOR_STID, COMPOSITOR_SURFACE_ID);
-    let st_ok = step("define_bind_screentarget_1280x800", &enc.finish());
+    // Surface definitions in order; each in its own command buffer.
+    let mut sid = 0u32;
+    for (label, v2, flags, format, id) in [
+        ("define_surface_v1_x8r8g8b8_screentarget", false, SVGA3D_SURFACE_SCREENTARGET, SPIKE_X8R8G8B8, 1u32),
+        ("define_surface_v2_x8r8g8b8_screentarget", true, SVGA3D_SURFACE_SCREENTARGET, SPIKE_X8R8G8B8, 2),
+        ("define_surface_v2_b8g8r8x8_unorm_screentarget", true, SVGA3D_SURFACE_SCREENTARGET, SVGA3D_B8G8R8X8_UNORM, 3),
+        ("define_surface_v1_x8r8g8b8_noflags_control", false, 0, SPIKE_X8R8G8B8, 4),
+    ] {
+        let mut enc = CmdEncoder::new();
+        if v2 {
+            enc.define_gb_surface_v2(id, flags, format, 1, 0, SPIKE_W, SPIKE_H, 1, 0, 0);
+        } else {
+            enc.cmd_header(SPIKE_3D_DEFINE_GB_SURFACE, 36);
+            enc.push_u32(id);
+            enc.push_u32(flags);
+            enc.push_u32(format);
+            enc.push_u32(1); // numMipLevels
+            enc.push_u32(0); // multisampleCount
+            enc.push_u32(0); // autogenFilter
+            enc.push_u32(SPIKE_W);
+            enc.push_u32(SPIKE_H);
+            enc.push_u32(1);
+        }
+        if try_step(label, &enc.finish()) && flags != 0 {
+            sid = id;
+            break;
+        }
+    }
+    let srf_ok = sid != 0;
+    let mut bind_ok = false;
+    let mut st_ok = false;
+    if srf_ok {
+        let mut enc = CmdEncoder::new();
+        enc.bind_gb_surface(sid, COMPOSITOR_MOB_ID);
+        bind_ok = try_step("bind_surface_to_mob", &enc.finish());
+        let mut enc = CmdEncoder::new();
+        enc.define_gb_screentarget(COMPOSITOR_STID, SPIKE_W, SPIKE_H, SVGA_STFLAG_PRIMARY);
+        let def_ok = try_step("define_screentarget_1280x800_primary", &enc.finish());
+        let mut enc = CmdEncoder::new();
+        enc.bind_gb_screentarget(COMPOSITOR_STID, sid);
+        st_ok = def_ok && try_step("bind_screentarget_to_surface", &enc.finish());
+    }
+    let srf_ok = srf_ok && bind_ok;
     let (rw, rh) = unsafe { (reg_read(SVGA_REG_WIDTH), reg_read(SVGA_REG_HEIGHT)) };
     serial_println!(
         "GUI_SPIKE vmware mode_set screentarget={} {}x{} primary encoding={} ok={} regs_after={}x{}",
@@ -1501,7 +1547,7 @@ pub fn gui_spike_stdu() {
         let f1 = fence_goal;
         fence_goal = fence_goal.wrapping_add(1);
         let mut enc = CmdEncoder::new();
-        enc.update_gb_image(COMPOSITOR_SURFACE_ID, 0, 0, SPIKE_W, SPIKE_H);
+        enc.update_gb_image(sid, 0, 0, SPIKE_W, SPIKE_H);
         enc.update_gb_screentarget(COMPOSITOR_STID, 0, 0, SPIKE_W, SPIKE_H);
         enc.push_u32(SPIKE_CMD_FENCE);
         enc.push_u32(f1);
@@ -1524,7 +1570,7 @@ pub fn gui_spike_stdu() {
         fence_goal = fence_goal.wrapping_add(1);
         let mut enc = CmdEncoder::new();
         enc.cmd_header(SPIKE_3D_READBACK_GB_SURFACE, 4);
-        enc.push_u32(COMPOSITOR_SURFACE_ID);
+        enc.push_u32(sid);
         enc.push_u32(SPIKE_CMD_FENCE);
         enc.push_u32(f2);
         let rb_ok = step("readback_gb_surface_fence", &enc.finish());
@@ -1561,7 +1607,7 @@ pub fn gui_spike_stdu() {
         serial_println!(
             "GUI_SPIKE vmware scene={} readback surface={} fence={} answered={} fence_reg={} bytes={} fnv_bgr={:#018x} expected_fnv_bgr={:#018x} mismatched_pixels={} still_poison={} x_byte_nonzero={}",
             scene,
-            COMPOSITOR_SURFACE_ID,
+            sid,
             f2,
             f2_ok,
             f2_val,
