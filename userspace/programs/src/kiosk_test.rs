@@ -17,6 +17,12 @@
 //!   badcomposite                     COMPOSITE with an unmapped descriptor, then with a read-only
 //!                                    one -> <first answer> <second answer>
 //!   composite                        COMPOSITE -> ok <serial> <pixels>
+//!   composite2                       two COMPOSITE calls at once, from two threads ->
+//!                                    <first answer>, <second answer>
+//!   record <serial>                  COMPOSITE_RECORD -> ok <serial> <pixels> <count> <flags>
+//!                                    followed by <id>:<commit_id>:<pixel_gen>:<pixels> per entry
+//!   cursor <shape> <visible> <x> <y> SET_CURSOR
+//!   give <pid>                       GIVE_DISPLAY
 //!   auto <0|1>                       compose after every commit it sees (on at start)
 //!   release                          RELEASE_COMPOSITOR
 //!   quit                             exit 0
@@ -188,6 +194,54 @@ impl Kiosk {
                 say(&format!("{} {}", answer(first), answer(second)));
             }
             Some("composite") => reply(window::composite().map(|(serial, pixels)| format!("{serial} {pixels}"))),
+            Some("composite2") => {
+                let other = std::thread::spawn(|| window::composite());
+                let mine = window::composite();
+                let theirs = other.join().unwrap_or(Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EIO)));
+                let word = |r: Result<(u64, u64), libbreenix::error::Error>| match r {
+                    Ok((serial, pixels)) => format!("ok {serial} {pixels}"),
+                    Err(e) => format!("err {}", errno(e)),
+                };
+                say(&format!("{}, {}", word(mine), word(theirs)));
+            }
+            Some("record") => match num(1) {
+                Some(serial) => {
+                    let mut buf = vec![0u8; 16 + 8 + 64 * 32];
+                    let mut q = abi::RecordQuery::ZERO;
+                    q.serial = serial as u64;
+                    q.ptr = buf.as_mut_ptr() as u64;
+                    q.len = buf.len() as u32;
+                    reply(window::call(op::COMPOSITE_RECORD, &mut q).map(|_| {
+                        // SAFETY: the kernel wrote a header and `count` entries into `buf`.
+                        let h: abi::CompositeRecordHeader = unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+                        let mut text = format!("{} {} {} {}", h.serial, h.pixels, h.count, h.flags);
+                        let head = core::mem::size_of::<abi::CompositeRecordHeader>();
+                        for i in 0..(h.count as usize).min(64) {
+                            // SAFETY: as above.
+                            let e: abi::CompositeEntry = unsafe {
+                                core::ptr::read_unaligned(buf.as_ptr().add(head + i * core::mem::size_of::<abi::CompositeEntry>()) as *const _)
+                            };
+                            text.push_str(&format!(" {}:{}:{}:{}", e.id, e.commit_id, e.pixel_gen, e.pixels));
+                        }
+                        text
+                    }));
+                }
+                None => say("err 22"),
+            },
+            Some("cursor") => match (num(1), num(2), num(3), num(4)) {
+                (Some(shape), Some(visible), Some(x), Some(y)) => {
+                    let mut c = abi::Cursor { shape: shape as u32, visible: visible as u32, x: x as i32, y: y as i32 };
+                    reply(window::call(op::SET_CURSOR, &mut c).map(|_| String::new()));
+                }
+                _ => say("err 22"),
+            },
+            Some("give") => match num(1) {
+                Some(pid) => {
+                    let mut g = abi::Give { pid: pid as u32, reserved: 0 };
+                    reply(window::call(op::GIVE_DISPLAY, &mut g).map(|_| String::new()));
+                }
+                None => say("err 22"),
+            },
             Some("auto") => {
                 self.auto = num(1) == Some(1);
                 say("ok");

@@ -208,18 +208,6 @@ fn window_version() -> i64 {
     unsafe { raw::syscall3(SYS_WINDOW, 0, 0, 0) as i64 }
 }
 
-/// A case of the window interface, compositor, events or observation path: it needs
-/// version 2 of the interface, and fails naming the section it checks.
-fn needs_window(section: &str, what: &str) -> CaseResult {
-    match window_version() {
-        2 => fail(format!(
-            "window interface v2 answers, but this case's check of {what} ({CONTRACT} section {section}) is not written yet")),
-        ret => fail(format!(
-            "window interface v2 is absent: window(VERSION) {} ({CONTRACT} section 17.1); this case checks {what} (section {section})",
-            outcome(ret))),
-    }
-}
-
 /// `test_control(STATE)` (contract section 21): 1 when suite-mode test controls are latched on.
 fn test_control_state() -> i64 {
     // SAFETY: op 0 takes no argument.
