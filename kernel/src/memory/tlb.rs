@@ -53,6 +53,7 @@ use x86_64::VirtAddr;
 /// This is more efficient than flushing the entire TLB when only
 /// a single page mapping has changed.
 #[inline]
+#[track_caller]
 pub fn flush_page(addr: VirtAddr) {
     tlb::flush(addr);
     #[cfg(target_arch = "x86_64")]
@@ -65,6 +66,7 @@ pub fn flush_page(addr: VirtAddr) {
 /// The caller has already changed the descriptor: a CPU that announces `root`
 /// after this looks finds the new one when it walks the table.
 #[inline]
+#[track_caller]
 pub fn flush_user_page(root: u64, addr: VirtAddr) {
     tlb::flush(addr);
     #[cfg(target_arch = "x86_64")]
@@ -76,6 +78,7 @@ pub fn flush_user_page(root: u64, addr: VirtAddr) {
 /// Invalidate removed user leaves before their frames can be released.
 /// x86 uses one root-targeted full shootdown for a multi-page set; ARM64
 /// broadcasts the addresses for all ASIDs with one pair of data barriers.
+#[track_caller]
 pub fn flush_user_pages(root: u64, pages: &[u64]) {
     if let [page] = pages {
         flush_user_page(root, VirtAddr::new(*page));
@@ -124,6 +127,7 @@ pub fn note_root_load_on(cpu: usize, root: u64) {
 /// Note: Writing to CR3 also flushes the entire TLB, but this function
 /// provides an explicit way to do it.
 #[inline]
+#[track_caller]
 pub fn flush_all() {
     tlb::flush_all();
     #[cfg(target_arch = "x86_64")]
@@ -157,6 +161,7 @@ pub fn flush_after_page_table_switch() {
 /// check, as the retirement proof already does. Returns after every target
 /// has acknowledged.
 #[cfg(target_arch = "x86_64")]
+#[track_caller]
 pub fn release_root_on_other_cpus(root: u64) {
     shootdown::request(shootdown::Request::ReleaseRoot(root));
 }
@@ -248,12 +253,14 @@ mod shootdown {
 
     /// Deliver `request` to every other online CPU and wait for every
     /// acknowledgement. One atomic load when only this CPU is online.
+    #[track_caller]
     pub(super) fn request(request: Request) {
         deliver(request, |_| true);
     }
 
     /// Deliver `request` to every other online CPU that may hold a translation
     /// of the address space `root`, and wait for those acknowledgements.
+    #[track_caller]
     pub(super) fn request_for_root(request: Request, root: u64) {
         // The descriptor change is ordered before every announcement read.
         fence(Ordering::SeqCst);
@@ -262,7 +269,9 @@ mod shootdown {
     }
 
     /// Deliver `request` to the other online CPUs `targeted` selects.
+    #[track_caller]
     fn deliver(request: Request, targeted: impl Fn(usize) -> bool) {
+        let loc = core::panic::Location::caller();
         if smp::cpus_online() <= 1 {
             return;
         }
@@ -303,6 +312,7 @@ mod shootdown {
             // write.
             fence(Ordering::SeqCst);
 
+            let probe_t0 = crate::arch_impl::x86_64::timer::rdtsc();
             for cpu in (0..MAX_CPUS).filter(|cpu| targets & (1 << cpu) != 0) {
                 let apic_id = smp::cpu_apic_id(cpu)
                     .unwrap_or_else(|| panic!("TLB shootdown: online CPU {} has no APIC id", cpu));
@@ -326,6 +336,7 @@ mod shootdown {
             }
 
             IN_FLIGHT.store(false, Ordering::Release);
+            crate::spread_probe::shootdown_done(probe_t0, targets, loc);
         });
     }
 
@@ -341,6 +352,9 @@ mod shootdown {
         } else {
             None
         };
+        if let Some(cpu) = cpu {
+            crate::spread_probe::nmi_hook(cpu);
+        }
         let Some(cpu) = cpu.filter(|&cpu| PENDING[cpu].load(Ordering::Acquire)) else {
             UNCLAIMED_NMIS.fetch_add(1, Ordering::Relaxed);
             return;
