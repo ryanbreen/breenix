@@ -50,13 +50,13 @@ sdk_find_clang() {
 sdk_find_lld_dir() {
     sdk_use_toolchain
     _sdk_sysroot="$(rustc --print sysroot)" || sdk_die "rustc $RUSTUP_TOOLCHAIN does not run (rustup toolchain install $RUSTUP_TOOLCHAIN)"
-    for _sdk_lld in "$_sdk_sysroot"/lib/rustlib/*/bin/gcc-ld; do
-        if [ -x "$_sdk_lld/ld.lld" ]; then
-            echo "$_sdk_lld"
-            return
-        fi
-    done
-    sdk_die "the $RUSTUP_TOOLCHAIN toolchain has no gcc-ld/ld.lld"
+    _sdk_vv="$(rustc -vV)" || sdk_die "rustc identity is unavailable"
+    _sdk_commit="$(printf '%s\n' "$_sdk_vv" | sed -n 's/^commit-hash: //p')"
+    [ "$_sdk_commit" = "$(sdk_setting RUSTC_COMMIT)" ] || sdk_die "rustc commit differs from sdk.env"
+    _sdk_host="$(printf '%s\n' "$_sdk_vv" | sed -n 's/^host: //p')"
+    _sdk_lld="$_sdk_sysroot/lib/rustlib/$_sdk_host/bin/gcc-ld"
+    [ -x "$_sdk_lld/ld.lld" ] || sdk_die "the host toolchain has no gcc-ld/ld.lld"
+    echo "$_sdk_lld"
 }
 
 # sdk_cc ARCH CLANG-ARGUMENTS...: compile and link C for Breenix on ARCH against the
@@ -89,7 +89,7 @@ sdk_cc() {
         esac
     done
     # shellcheck disable=SC2086
-    set -- --target="$_sdk_triple" -nostdinc -isystem "$SDK/include" -isystem "$_sdk_resource/include" \
+    set -- --no-default-config --sysroot="$SDK" --target="$_sdk_triple" -Ulinux -U__linux -U__linux__ -U__gnu_linux__ -D__breenix__=1 -nostdinc -isystem "$SDK/include" -isystem "$_sdk_resource/include" \
         -fno-stack-protector -fno-pic -fno-pie $_sdk_arch_flags "$@"
     if [ "$_sdk_linking" = 0 ]; then
         exec "$_sdk_cc" "$@"

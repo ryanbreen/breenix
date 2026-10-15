@@ -66,7 +66,8 @@ RESOURCE_DIR="$("$CLANG" -print-resource-dir)"
 [ -d "$RESOURCE_DIR/include" ] || { echo "breenix-cc: $RESOURCE_DIR/include is missing" >&2; exit 1; }
 
 COMPILE_FLAGS=(
-    --target="$TRIPLE"
+    --no-default-config --sysroot="$ROOT/libs/libbreenix-libc"
+    --target="$TRIPLE" -Ulinux -U__linux -U__linux__ -U__gnu_linux__ -D__breenix__=1
     -nostdinc -isystem "$ROOT/libs/libbreenix-libc/include" -isystem "$RESOURCE_DIR/include"
     -fno-stack-protector -fno-pic -fno-pie
     "${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"}"

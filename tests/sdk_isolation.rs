@@ -39,6 +39,7 @@ const HOOKS: &[&str] = &[
 /// path component starts (so `wasi-sdk/bin/` is not `sdk/bin/`).
 const SDK_PATHS: &[&str] = &[
     "sdk/build/",
+    "sdk/builder/",
     "sdk/bin/",
     "sdk/libexec/",
     "sdk/templates/",

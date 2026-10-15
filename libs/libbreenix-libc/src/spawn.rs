@@ -39,6 +39,15 @@ pub struct FileActions {
     tail: *mut Action,
 }
 
+const _: () = {
+    assert!(core::mem::size_of::<Attr>() == 32);
+    assert!(core::mem::align_of::<Attr>() == 8);
+    assert!(core::mem::offset_of!(Attr, sigdefault) == 8);
+    assert!(core::mem::offset_of!(Attr, schedpolicy) == 28);
+    assert!(core::mem::size_of::<FileActions>() == 16);
+    assert!(core::mem::align_of::<FileActions>() == 8);
+};
+
 struct Action {
     next: *mut Action,
     kind: Kind,
@@ -373,8 +382,11 @@ unsafe fn attributes(attr: &Attr) -> Result<(), i32> {
         }
         // Kernel sigaction layout: handler, flags, restorer, mask.
         let mut action = [0u64; 4];
-        call(nr::SIGACTION, [sig, 0, action.as_mut_ptr() as u64, 8, 0, 0])?;
-        if action[0] > 1 || attr.flags & SETSIGDEF != 0 && attr.sigdefault & (1 << (sig - 1)) != 0 {
+        let reset = attr.flags & SETSIGDEF != 0 && attr.sigdefault & (1 << (sig - 1)) != 0;
+        if !reset {
+            call(nr::SIGACTION, [sig, 0, action.as_mut_ptr() as u64, 8, 0, 0])?;
+        }
+        if reset || action[0] > 1 {
             action = [0; 4];
             call(nr::SIGACTION, [sig, action.as_ptr() as u64, 0, 8, 0, 0])?;
         }
@@ -481,7 +493,7 @@ unsafe fn spawn(
             });
         // A successful exec cannot return, even if the new image exits 127.
         let _ = result;
-        libbreenix::process::exit(127);
+        crate::_exit(127);
     }
     let restored = call(nr::SIGPROCMASK, [2, &old as *const u64 as u64, 0, 8, 0, 0]);
     match child {
@@ -490,10 +502,10 @@ unsafe fn spawn(
             if !pid.is_null() {
                 *pid = child as i32;
             }
-            // The kernel accepted this same mask before fork; restoration
-            // cannot fail for a valid stack address and sigset size.
-            debug_assert!(restored.is_ok());
-            0
+            match restored {
+                Ok(_) => 0,
+                Err(e) => e,
+            }
         }
     }
 }

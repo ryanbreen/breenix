@@ -32,6 +32,10 @@ args = sys.argv[1:]
 if '-print-resource-dir' in args:
     print(root / 'resource')
     sys.exit(0)
+assert '--no-default-config' in args
+assert Path(next(a.split('=', 1)[1] for a in args if a.startswith('--sysroot='))).resolve() == (root / 'libs/libbreenix-libc').resolve()
+assert '-D__breenix__=1' in args
+assert '-U__linux__' in args and '-U__gnu_linux__' in args
 if any(a in args for a in ('-c', '-S', '-E', '-M', '-MM', '-fsyntax-only')):
     sys.exit(0)
 output = 'a.out'
@@ -50,7 +54,7 @@ assert output.is_file()
 (root / 'audit.json').write_text(json.dumps(args))
 sys.exit(7 if output.name == 'tainted.elf' else 0)
 ''')
-        self.env = dict(os.environ, BREENIX_CC_CLANG=str(compiler), CARGO_BUILD_JOBS='6')
+        self.env = dict(os.environ, BREENIX_CC_CLANG=str(compiler), CARGO_BUILD_JOBS='4')
         # Use the checkout's toolchain so the temporary tree does not select a
         # different default installation without the linker component.
         self.env['RUSTUP_TOOLCHAIN'] = subprocess.check_output(
