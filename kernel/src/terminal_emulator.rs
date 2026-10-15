@@ -60,8 +60,8 @@ impl TerminalEmulator {
         self.pty.pty_num
     }
 
-    /// Get the slave device path for the PTY.
-    pub fn slave_path(&self) -> alloc::string::String {
+    /// Get the slave device path for the PTY, or ENOMEM when the path cannot be allocated.
+    pub fn slave_path(&self) -> Result<alloc::string::String, i32> {
         self.pty.slave_path()
     }
 
