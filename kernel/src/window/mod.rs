@@ -230,6 +230,8 @@ pub struct Remnant {
     pub commit_id: u64,
     pub pixels: Option<Arc<Mem>>,
     pub tree: Arc<Mem>,
+    /// Where in `tree` the front buffer's tree page starts, and its length.
+    pub tree_offset: u64,
     pub tree_len: u64,
     /// Bytes charged to the holder's `RLIMIT_AS`.
     pub charge: u64,

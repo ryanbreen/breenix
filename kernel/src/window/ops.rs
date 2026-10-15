@@ -998,10 +998,10 @@ pub fn read_remnant(caller: &Caller, c: &mut Capture) -> Result<u64, i32> {
     if !caller.is_root() {
         return Err(EPERM);
     }
-    let (pixels, tree, tree_len, width, height, commit_id) = {
+    let (pixels, tree, tree_offset, tree_len, width, height, commit_id) = {
         let reg = REGISTRY.lock();
         let r = reg.remnants.get(&c.id).filter(|r| r.holder == caller.tgid).ok_or(ENOENT)?;
-        (r.pixels.clone(), r.tree.clone(), r.tree_len, r.width, r.height, r.commit_id)
+        (r.pixels.clone(), r.tree.clone(), r.tree_offset, r.tree_len, r.width, r.height, r.commit_id)
     };
     if c.dst_len < buffer_bytes(width, height) || (c.tree_dst != 0 && c.tree_len < tree_len) {
         return Err(EINVAL);
@@ -1012,7 +1012,7 @@ pub fn read_remnant(caller: &Caller, c: &mut Capture) -> Result<u64, i32> {
     }
     pixels_out(pixels.as_deref(), width * 4, width, height, c.dst)?;
     if c.tree_dst != 0 {
-        bytes_out(&tree, 0, tree_len, c.tree_dst)?;
+        bytes_out(&tree, tree_offset, tree_len, c.tree_dst)?;
     }
     c.commit_id = commit_id;
     c.width = width;
@@ -1054,6 +1054,7 @@ pub fn group_gone(tgid: u64, at_exit: bool) {
                         if kept < limits::MAX_REMNANTS {
                             let pixels = w.front.map(|f| w.buffers[f].mem.clone());
                             let tree_len = w.tree_kib as u64 * 1024;
+                            let tree_offset = w.front.map_or(0, |f| f as u64 * tree_len);
                             let charge = pixels.as_ref().map_or(0, |m| m.len()) + w.tree.len();
                             let remnant = Remnant {
                                 holder,
@@ -1062,6 +1063,7 @@ pub fn group_gone(tgid: u64, at_exit: bool) {
                                 commit_id: w.front_commit,
                                 pixels,
                                 tree: w.tree.clone(),
+                                tree_offset,
                                 tree_len,
                                 charge,
                             };
