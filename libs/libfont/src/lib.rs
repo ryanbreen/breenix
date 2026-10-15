@@ -185,11 +185,17 @@ impl Font {
             (Some(s), Some(e)) => (s as usize, e as usize),
             _ => return Err(FontError::GlyphOutOfRange),
         };
+        // A glyph's own loca entry places it: one starting past the glyf table is out of
+        // range, and a record the next entry would run past the table ends at the table's
+        // end (section 10 scopes a bad loca entry to its own glyph).
         let glyf = &self.data[self.glyf.clone()];
-        if end > glyf.len() || start > end {
+        if start == end {
+            return Ok(None);
+        }
+        if start >= glyf.len() || start > end {
             return Err(FontError::GlyphOutOfRange);
         }
-        Ok(if start == end { None } else { Some(&glyf[start..end]) })
+        Ok(Some(&glyf[start..end.min(glyf.len())]))
     }
 
     fn parse_glyph(&self, glyph: u16) -> Result<Option<Glyph>, FontError> {
