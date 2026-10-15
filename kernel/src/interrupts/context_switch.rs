@@ -1976,7 +1976,9 @@ pub fn idle_loop() -> ! {
         // Lines logged by callers that could not wait on the UART, holding a
         // lock or with interrupts masked, are written out here, until this
         // CPU has something to run.
+        crate::spread_probe::idle_drain(true);
         crate::serial::drain_log_while(|| !crate::task::scheduler::is_need_resched());
+        crate::spread_probe::idle_drain(false);
         // Reclamation can wake a waiter. Check with interrupts masked so a
         // wakeup cannot slip between the check and the atomic enable/halt.
         // A reschedule raised while the housekeeping above could not switch
@@ -2009,6 +2011,7 @@ pub fn idle_loop() -> ! {
         // This atomically enables interrupts and halts, preventing race conditions
         // where interrupts might be disabled when we enter this loop.
         // Without this, if interrupts are disabled, HLT would hang forever.
+        crate::spread_probe::idle_before_halt();
         x86_64::instructions::interrupts::enable_and_hlt();
     }
 }

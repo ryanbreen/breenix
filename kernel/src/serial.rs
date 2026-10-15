@@ -416,6 +416,7 @@ fn log_uart_status() -> u8 {
 fn write_log_uart(bytes: &[u8]) {
     let mut data = x86_64::instructions::port::Port::<u8>::new(COM2_PORT);
     for &byte in bytes {
+        crate::spread_probe::port_write_hook();
         // SAFETY: COM2's data port; only the `LOG_PRINTER` holder writes COM2.
         unsafe { data.write(byte) };
     }
