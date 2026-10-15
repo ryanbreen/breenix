@@ -610,6 +610,10 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
         });
     }
     {
+        let held = crate::per_cpu::preempt_count();
+        for _ in 0..held {
+            crate::per_cpu::preempt_enable();
+        }
         let (s0, n0) = crate::time::get_monotonic_time_ns();
         let start = s0 * 1_000_000_000 + n0;
         loop {
@@ -618,6 +622,9 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
                 break;
             }
             core::hint::spin_loop();
+        }
+        for _ in 0..held {
+            crate::per_cpu::preempt_disable();
         }
     }
     if let Some(mut receipt) = receipt {
