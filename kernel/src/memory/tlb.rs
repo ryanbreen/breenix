@@ -87,6 +87,17 @@ pub fn flush_user_page(root: u64, addr: VirtAddr) {
     let _ = root;
 }
 
+/// Flush every translation of the user address space whose page-table root is
+/// `root`, on every CPU that may cache one of them.
+#[inline]
+pub fn flush_user_all(root: u64) {
+    tlb::flush_all();
+    #[cfg(target_arch = "x86_64")]
+    shootdown::request_for_root(shootdown::Request::All, root);
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = root;
+}
+
 /// Invalidate removed user leaves before their frames can be released.
 /// x86 uses one root-targeted full shootdown for a multi-page set; ARM64
 /// broadcasts the addresses for all ASIDs with one pair of data barriers.

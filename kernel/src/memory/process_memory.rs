@@ -1799,14 +1799,15 @@ impl ProcessPageTable {
         }
 
         // The translations are dropped once for the whole table, as Linux
-        // flushes once at the end of a fork's copy: on x86_64 every other
-        // online CPU answers a flush by NMI, and on ARM64 a broadcast
-        // invalidation per page cost the first fork of a 48 MB process about
-        // 100 ms. Until then another CPU may still write through a stale
-        // writable entry, which is a write racing the fork, as on Linux; the
-        // forking thread itself writes no user memory before this returns.
+        // flushes once at the end of a fork's copy: on x86_64 every other CPU
+        // that may cache this address space answers a flush by NMI, and on
+        // ARM64 a broadcast invalidation per page cost the first fork of a
+        // 48 MB process about 100 ms. Until then another CPU may still write
+        // through a stale writable entry, which is a write racing the fork, as
+        // on Linux; the forking thread itself writes no user memory before
+        // this returns.
         if lowered {
-            crate::memory::tlb::flush_all();
+            crate::memory::tlb::flush_user_all(self.level_4_frame.start_address().as_u64());
         }
         result
     }
@@ -2092,7 +2093,10 @@ impl ProcessPageTable {
     fn break_descriptor(&mut self, page: Page<Size4KiB>) -> RevokeFailed {
         crate::trace_count!(crate::tracing::providers::teardown::LEAF_CUSTODY_REFUSED);
         if self.mapper.unmap(page).is_ok() {
-            crate::memory::tlb::flush_page(page.start_address());
+            crate::memory::tlb::flush_user_page(
+                self.level_4_frame.start_address().as_u64(),
+                page.start_address(),
+            );
         }
         RevokeFailed
     }
@@ -2417,7 +2421,10 @@ impl ProcessPageTable {
                 );
             }
             #[cfg(target_arch = "x86_64")]
-            crate::memory::tlb::flush_page(faulting_addr);
+            crate::memory::tlb::flush_user_page(
+                self.level_4_frame.start_address().as_u64(),
+                faulting_addr,
+            );
             cow_stats::SOLE_OWNER_OPT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             crate::tracing::providers::process::trace_cow_copy(pid as u16, (far >> 12) as u16);
             return true;

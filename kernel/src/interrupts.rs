@@ -1271,7 +1271,7 @@ fn handle_cow_direct(
 
         // Every CPU drops the old translation before the old frame can be
         // returned: a stale entry would keep writes landing in a freed frame.
-        X86PageTableOps::flush_tlb_page(faulting_addr.as_u64());
+        crate::memory::tlb::flush_user_page(cr3, faulting_addr);
 
         if frame_decref(old_frame) && deallocate_leaf_frame(old_frame) == ReturnOutcome::Returned {
             crate::trace_count!(crate::tracing::providers::teardown::LEAF_FRAMES_RETURNED);
