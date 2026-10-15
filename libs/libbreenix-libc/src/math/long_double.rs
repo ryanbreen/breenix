@@ -1850,31 +1850,43 @@ mod abi {
         nan(F)
     }
 
-    /// double nexttoward(double, long double): x in xmm0, y on the stack, result in xmm0.
-    #[unsafe(naked)]
-    #[no_mangle]
-    pub unsafe extern "C" fn nexttoward() {
-        core::arch::naked_asm!(
-            "mov rdi, [rsp + 8]",
-            "mov rsi, [rsp + 16]",
-            "jmp {f}",
-            f = sym inner_nexttoward,
-        )
+    /// double nexttoward(double, long double) and float nexttowardf(float, long double): y
+    /// on the stack, x in xmm0 with SSE and in rdi in the soft-float build. The inner function
+    /// takes x and then y's two words, which go to the integer registers x leaves free; its
+    /// result is already where the caller looks for it.
+    macro_rules! toward {
+        ($($name:ident => $inner:ident),* $(,)?) => {$(
+            #[cfg(target_feature = "sse2")]
+            #[unsafe(naked)]
+            #[no_mangle]
+            pub unsafe extern "C" fn $name() {
+                core::arch::naked_asm!(
+                    "mov rdi, [rsp + 8]",
+                    "mov rsi, [rsp + 16]",
+                    "jmp {f}",
+                    f = sym $inner,
+                )
+            }
+            #[cfg(not(target_feature = "sse2"))]
+            #[unsafe(naked)]
+            #[no_mangle]
+            pub unsafe extern "C" fn $name() {
+                core::arch::naked_asm!(
+                    "mov rsi, [rsp + 8]",
+                    "mov rdx, [rsp + 16]",
+                    "jmp {f}",
+                    f = sym $inner,
+                )
+            }
+        )*};
     }
+
+    toward!(nexttoward => inner_nexttoward, nexttowardf => inner_nexttowardf);
+
     extern "C" fn inner_nexttoward(x: f64, lo: u64, hi: u64) -> f64 {
         f64::from_bits(next_toward(x.to_bits() as u128, &floatconv::F64, m(lo, hi), F) as u64)
     }
 
-    #[unsafe(naked)]
-    #[no_mangle]
-    pub unsafe extern "C" fn nexttowardf() {
-        core::arch::naked_asm!(
-            "mov rdi, [rsp + 8]",
-            "mov rsi, [rsp + 16]",
-            "jmp {f}",
-            f = sym inner_nexttowardf,
-        )
-    }
     extern "C" fn inner_nexttowardf(x: f32, lo: u64, hi: u64) -> f32 {
         f32::from_bits(next_toward(x.to_bits() as u128, &floatconv::F32, m(lo, hi), F) as u32)
     }
