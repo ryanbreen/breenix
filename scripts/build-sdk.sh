@@ -151,6 +151,37 @@ fi
 
 SDK_STAGE="$ROOT_DIR/stage"
 mkdir -p "$SDK_STAGE"
+
+# Cargo takes configuration from its home, from every directory above the crate and from
+# CARGO_* variables, and any of them (a [build] target-dir, [profile.release] settings, a
+# rustc wrapper) could move or change what the SDK is built from without changing its
+# version. The stages get a cargo home holding only links to the builder's crate caches, none
+# of the builder's cargo or rustc settings but the job count, and no directory above the
+# build root may hold a cargo configuration.
+BUILDER_CARGO_HOME="${CARGO_HOME:-$REAL_HOME/.cargo}"
+mkdir -p "$ROOT_DIR/cargo-home"
+for cache in registry git; do
+    mkdir -p "$BUILDER_CARGO_HOME/$cache"
+    ln -s "$BUILDER_CARGO_HOME/$cache" "$ROOT_DIR/cargo-home/$cache"
+done
+for top in "$ROOT_DIR" "$ROOT_REAL"; do
+    dir="$top"
+    while [ "$dir" != / ]; do
+        dir="$(dirname "$dir")"
+        for config in "$dir/.cargo/config" "$dir/.cargo/config.toml"; do
+            [ ! -e "$config" ] || die "$config would configure the SDK's cargo builds; move it aside"
+        done
+    done
+done
+for var in $(compgen -e); do
+    case "$var" in
+        CARGO_BUILD_JOBS) ;;
+        CARGO_*) unset "$var" ;;
+    esac
+done
+unset RUSTC RUSTC_WRAPPER RUSTC_WORKSPACE_WRAPPER RUSTDOC RUSTFLAGS RUSTDOCFLAGS BREENIX_USERSPACE_REMAP
+export CARGO_HOME="$ROOT_DIR/cargo-home" SDK_BUILDER_CARGO_HOME="$BUILDER_CARGO_HOME"
+
 if [ "$FETCH" = 1 ]; then
     CARGO_NET_OFFLINE=false
 else
@@ -160,7 +191,6 @@ export CARGO_NET_OFFLINE
 export SDK_ROOT="$ROOT_DIR" SDK_ROOT_REAL="$ROOT_REAL" SDK_STAGE SDK_COMMIT="$COMMIT" SDK_VERSION="$VERSION" \
     SDK_TOOLCHAIN SDK_LLVM_TOOLS SDK_RUSTC_COMMIT="$RUSTC_COMMIT" SDK_RUST_SYSROOT="$RUST_SYSROOT" \
     SDK_FORK_COMMIT="$FORK_COMMIT" SDK_REAL_HOME="$REAL_HOME"
-unset CARGO_TARGET_DIR CARGO_BUILD_TARGET_DIR RUSTFLAGS CARGO_ENCODED_RUSTFLAGS BREENIX_USERSPACE_REMAP
 
 for stage in "$ROOT_DIR"/sdk/build/stages/*.sh; do
     echo "build-sdk: stage $(basename "$stage")"

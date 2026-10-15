@@ -84,7 +84,7 @@
         },
         {
           "id": "no-musl",
-          "title": "No SDK file carries musl's marks, and no archive defines compiler_builtins' libm math, a port of musl's libm"
+          "title": "No SDK file carries musl's marks, and no archive defines compiler_builtins' libm math, a port of musl's libm, or holds its module or sources in metadata, bitcode or data"
         },
         {
           "id": "no-glibc",
@@ -213,6 +213,10 @@
         {
           "id": "nostd-built",
           "title": "The no_std app builds with only the SDK's cargo wrapper, taking libbreenix from the SDK by version"
+        },
+        {
+          "id": "lto",
+          "title": "The Rust std app also builds with cross-crate fat LTO, which needs bitcode in every rlib of the SDK's std"
         },
         {
           "id": "outside-tree",

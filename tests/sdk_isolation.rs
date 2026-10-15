@@ -14,9 +14,11 @@ fn repo_root() -> PathBuf {
 }
 
 /// The SDK's sources and the suite's measurement files: these may name anything SDK.
+/// `.gitignore` names `sdk/build/` only to keep the SDK's build sources tracked.
 fn is_sdk_or_suite(path: &str) -> bool {
     const PREFIXES: &[&str] = &["sdk/", "docs/sdk/", "userspace/sdk-suite/"];
     const FILES: &[&str] = &[
+        ".gitignore",
         "scripts/build-sdk.sh",
         "scripts/sdk-suite.py",
         "docs/suites/README.md",

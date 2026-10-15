@@ -15,6 +15,8 @@
 #                    read rustc's own bitcode
 #   SDK_FORK_COMMIT  the Rust library pin (rust-fork.toml)
 #   SDK_REAL_HOME    the builder's home directory, whatever HOME says
+#   SDK_BUILDER_CARGO_HOME the builder's cargo home, whose crate caches the build reads
+#   CARGO_HOME       <root>/cargo-home: links to those caches and no configuration
 #   CARGO_NET_OFFLINE true unless build-sdk.sh was given --fetch
 # and LC_ALL=C, TZ=UTC, SOURCE_DATE_EPOCH (the commit's time) and umask 022.
 set -euo pipefail
@@ -37,20 +39,22 @@ sdk_install() {
 # The --remap-path-prefix flags every rustc gets, one per line. rustc applies the last
 # matching mapping, so the most specific directories come last.
 sdk_remap_flags() {
-    local cargo_home="${CARGO_HOME:-$SDK_REAL_HOME/.cargo}"
     local rustup_home="${RUSTUP_HOME:-$SDK_REAL_HOME/.rustup}"
     echo "--remap-path-prefix=$SDK_REAL_HOME=/home"
     [ "$HOME" = "$SDK_REAL_HOME" ] || echo "--remap-path-prefix=$HOME=/home"
     echo "--remap-path-prefix=$rustup_home=/rustup"
-    echo "--remap-path-prefix=$cargo_home=/cargo"
+    echo "--remap-path-prefix=$SDK_BUILDER_CARGO_HOME=/cargo"
     echo "--remap-path-prefix=$SDK_RUST_SYSROOT/lib/rustlib/src/rust=/rustc/$SDK_RUSTC_COMMIT"
     echo "--remap-path-prefix=$SDK_ROOT=/breenix-sdk"
     [ "$SDK_ROOT_REAL" = "$SDK_ROOT" ] || echo "--remap-path-prefix=$SDK_ROOT_REAL=/breenix-sdk"
+    echo "--remap-path-prefix=$CARGO_HOME=/cargo"
+    [ "$SDK_ROOT_REAL" = "$SDK_ROOT" ] || echo "--remap-path-prefix=$SDK_ROOT_REAL/cargo-home=/cargo"
 }
 
 # Run cargo in a crate directory with the remaps plus any extra rustc flags:
 #   sdk_cargo DIR [--rustflag FLAG]... -- CARGO-ARGUMENTS...
-# Output is prefixed so the build log says where it came from.
+# Its output goes to DIR/target, whatever a cargo configuration says, and is prefixed so the
+# build log says where it came from.
 sdk_cargo() {
     local dir="$1"
     shift
@@ -64,7 +68,8 @@ sdk_cargo() {
     (
         set -o pipefail
         cd "$dir"
-        CARGO_ENCODED_RUSTFLAGS="$(printf '%s' "$flags" | tr '\n' '\037')" cargo "$@" 2>&1 |
+        CARGO_TARGET_DIR="$dir/target" CARGO_ENCODED_RUSTFLAGS="$(printf '%s' "$flags" | tr '\n' '\037')" \
+            cargo "$@" 2>&1 |
             sed 's/^/  /'
     )
 }
@@ -87,4 +92,18 @@ sdk_tool_dir() {
 # Strip compiler_builtins' libm math (a port of musl's) from an archive, in place.
 sdk_clean_archive() {
     python3 "$SDK_ROOT/scripts/libc-clean-archive.py" --archive "$1" --tool-dir "$(sdk_tool_dir)"
+}
+
+# Stop the build if an rlib carries any of the libm crate's math (a port of musl's): its module
+# path or one of its source files, in the rlib's metadata, objects or bitcode. libm's support
+# traits, which compiler_builtins' integer and float helpers use, are not math.
+sdk_no_libm_math() {
+    python3 -c '
+import re, sys
+mark = re.compile(rb"libm_math|compiler_builtins4math|compiler_builtins\.\.math\.\.|libm/src/math/(?!support/)")
+bad = [path for path in sys.argv[1:] if mark.search(open(path, "rb").read())]
+for path in bad:
+    print(f"build-sdk: {path} carries libm math", file=sys.stderr)
+sys.exit(1 if bad else 0)
+' "$@" || sdk_die "the prebuilt std carries the libm crate's math"
 }

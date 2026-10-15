@@ -40,7 +40,9 @@ for arch in aarch64 x86_64; do
     sdk_say "building std for $target from fork $SDK_FORK_COMMIT"
     (
         export RUST_TARGET_PATH="$SHARE/targets" __CARGO_TESTS_ONLY_SRC_ROOT="$FORK_LIBRARY"
-        sdk_cargo "$WORK" --rustflag "-Cmetadata=breenix_std_$SDK_FORK_COMMIT" -- \
+        # cargo asks for no bitcode when nothing in this build uses LTO; an app built with
+        # lto = true or "thin" needs it in every sysroot rlib, as rustup's own std carries it.
+        sdk_cargo "$WORK" --rustflag "-Cmetadata=breenix_std_$SDK_FORK_COMMIT" --rustflag -Cembed-bitcode=yes -- \
             build --quiet --release --target "$target" \
             -Zbuild-std=std,panic_abort -Zbuild-std-features=compiler-builtins-mem
     )
@@ -51,10 +53,10 @@ for arch in aarch64 x86_64; do
             *) sdk_install "$rlib" "$lib/$(basename "$rlib")" ;;
         esac
     done
-    # compiler_builtins carries the libm crate, a port of musl's libm; libc.a has Breenix's own math.
-    for rlib in "$SDK_STAGE/$lib"/libcompiler_builtins-*.rlib; do
-        sdk_clean_archive "$rlib"
-    done
+    # The pinned fork builds none of the libm crate's math (a port of musl's) into compiler_builtins
+    # for Breenix; libc.a has Breenix's own. Stripping objects would leave the math in an rlib's
+    # metadata and bitcode, so a std that carries any of it stops the build instead.
+    sdk_no_libm_math "$SDK_STAGE/$lib"/*.rlib
 done
 [ -f "$SDK_STAGE/lib/rust/lib/rustlib/x86_64-breenix/lib/libc.a" ] ||
     sdk_die "stage 20 left no soft-float libc.a beside x86_64-breenix's std"

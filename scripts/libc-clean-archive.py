@@ -45,9 +45,11 @@ def clean(archive, tool_dir):
                      (kind in 'Ww' and not name.startswith('_') and name not in MEMORY)}
             if not names:
                 continue
+            # Embedded bitcode (.llvmbc, .llvmcmd) is the member's whole module, math included.
             command = [str(objcopy), '--strip-debug', '--wildcard',
                        '--remove-section=*libm_math*', '--remove-section=*compiler_builtins4math*',
-                       '--remove-section=*compiler_builtins..math..*']
+                       '--remove-section=*compiler_builtins..math..*',
+                       '--remove-section=.llvmbc', '--remove-section=.llvmcmd']
             metadata = subprocess.check_output(readelf + ['-SW', '-sW', str(obj)], text=True)
             sections = dict(re.findall(r'^\s*\[\s*(\d+)\]\s+(\S+)', metadata, re.MULTILINE))
             for line in metadata.splitlines():

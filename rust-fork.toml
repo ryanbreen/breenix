@@ -3,5 +3,5 @@
 # the commit itself; `scripts/rust-fork.sh check-release` refuses any pin main may not carry.
 repo = "https://github.com/ryanbreen/rust.git"
 branch = "rust-std/sdk"
-commit = "fd90d9361d8b56f01d8996d37fd11fe4d080b1de"
+commit = "dc93f28f0d59ff29e03808436f2345f2953177c1"
 rust = "1.90.0"

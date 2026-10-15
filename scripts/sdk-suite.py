@@ -46,8 +46,12 @@ GLIBC_MARKS = (b'__GLIBC__', b'GNU C Library', b'__THROW', b'libc.so.6', b'ld-li
 OTHER_LIBC_MARKS = (b'_NEWLIB_VERSION', b'newlib', b'__BIONIC__', b'__UCLIBC__', b'uClibc',
                     b'dietlibc', b'__PICOLIBC__', b'picolibc')
 # compiler_builtins' math is the libm crate, a port of musl's libm; scripts/libc-clean-archive.py
-# removes it from libc.a by these symbol names.
+# removes it from libc.a by these symbol names, and the pinned fork builds none of it into the
+# std rlibs. MUSL_LIBM_BYTES also finds it in an archive's rlib metadata, bitcode or data: its
+# module path, or a path of its sources (libm's support traits, which compiler_builtins' integer
+# and float helpers use, are not math).
 MUSL_LIBM_SYMBOLS = ('libm_math', 'compiler_builtins4math', 'compiler_builtins..math..')
+MUSL_LIBM_BYTES = re.compile(rb'libm_math|compiler_builtins4math|compiler_builtins\.\.math\.\.|libm/src/math/(?!support/)')
 
 # Every case this script records, in manifest order. tests/suite_manifests.rs checks that
 # each names a case of docs/suites/sdk.json and that the guest reads each one.
@@ -60,7 +64,7 @@ HOST_CASES = (
     'toolchain/header-symbols', 'toolchain/headers-self-contained', 'toolchain/no-host-paths',
     'toolchain/no-musl', 'toolchain/no-glibc', 'toolchain/no-other-libc', 'toolchain/relocatable',
     'c-app/built', 'c-app/outside-tree', 'c-app/warnings',
-    'rust-app/built', 'rust-app/nostd-built', 'rust-app/outside-tree',
+    'rust-app/built', 'rust-app/nostd-built', 'rust-app/lto', 'rust-app/outside-tree',
     'install/tool', 'install/installed', 'install/removed', 'install/list',
     'install/fsck', 'install/arch-refused', 'install/remove-missing',
     'templates/tool', 'templates/c-create', 'templates/c-build', 'templates/rust-create',
@@ -589,8 +593,9 @@ class Harness:
         r.set('toolchain/no-other-libc', not found, 'other C libraries\' marks: ' + describe_found(found, {}))
 
     def libm_symbols(self):
-        """SDK archives whose symbol tables define compiler_builtins' musl-derived math, or
-        that could not be read (named so, which fails the case rather than passing it unread).
+        """SDK archives whose symbol tables define compiler_builtins' musl-derived math, whose
+        bytes (rlib metadata, bitcode, data) hold its module or source paths, or that could not
+        be read (named so, which fails the case rather than passing it unread).
 
         The archives are read with the pinned toolchain's own llvm-nm: rlibs carry rustc's
         LLVM bitcode, which an older host LLVM cannot read."""
@@ -609,6 +614,8 @@ class Harness:
                 holding.append(f'{path.relative_to(self.sdk)} (llvm-nm could not read it: {ran.why("llvm-nm")})')
             elif any(mark in line for line in ran.out.splitlines() for mark in MUSL_LIBM_SYMBOLS):
                 holding.append(str(path.relative_to(self.sdk)))
+            elif MUSL_LIBM_BYTES.search(path.read_bytes()):
+                holding.append(f'{path.relative_to(self.sdk)} (in its metadata, bitcode or data)')
         return holding
 
     def check_relocatable(self, exported):
@@ -699,13 +706,13 @@ class Harness:
         else:
             r.fail('c-app/outside-tree', 'the C app did not build')
 
-    def cargo_build(self, app, log):
+    def cargo_build(self, app, log, extra=None):
         """Build a cargo project with the SDK's wrapper; returns (Ran, program path or None)."""
         tool = self.tool(self.arch, 'cargo')
         if not tool.is_file():
             return Ran(127, '', f'the SDK has no bin/{tool.name}'), None
         ran = run([tool, 'build', '--release', '--offline', '--message-format=json-render-diagnostics'], app,
-                  sdk_env(self.sdk, self.home), TIMEOUT_BUILD, log)
+                  sdk_env(self.sdk, self.home, extra), TIMEOUT_BUILD, log)
         program = None
         for line in ran.out.splitlines():
             try:
@@ -720,7 +727,7 @@ class Harness:
         r = self.records
         if not self.sdk_built():
             why = 'the SDK was not built, so the Rust apps could not be: ' + r.data['toolchain/clean-build'][5:]
-            for case in ('rust-app/built', 'rust-app/nostd-built', 'rust-app/outside-tree'):
+            for case in ('rust-app/built', 'rust-app/nostd-built', 'rust-app/lto', 'rust-app/outside-tree'):
                 r.fail(case, why)
             return
         built = []
@@ -736,6 +743,19 @@ class Harness:
                 r.set(case, True)
                 self.stage_app(name, program)
                 built.append(app)
+        if built and built[0].name == 'rust-app':
+            # Fat LTO reads every crate's bitcode, std's and compiler_builtins' included.
+            say('building rust-app again with cross-crate fat LTO')
+            lto = {'CARGO_PROFILE_RELEASE_LTO': 'fat', 'CARGO_TARGET_DIR': str(built[0] / 'target-lto')}
+            ran, program = self.cargo_build(built[0], self.logs / 'rust-app-lto.log', lto)
+            if not ran.ok:
+                r.fail('rust-app/lto', ran.why(f'{self.arch}-breenix-cargo build --release with lto = "fat"'))
+            else:
+                r.set('rust-app/lto', program is not None and program.is_file()
+                      and elf_machine(program.read_bytes()) == ELF_MACHINE[self.arch],
+                      f'cargo reported no {self.arch} executable for the LTO build')
+        else:
+            r.fail('rust-app/lto', 'the Rust std app did not build, so its LTO build was not tried')
         if built:
             found, names = self.outside_tree(built)
             r.set('rust-app/outside-tree', not found, 'the build holds ' + describe_found(found, names))
