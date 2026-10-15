@@ -37,7 +37,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$SCRIPT_DIR"
 cd "$BREENIX_ROOT"
 source "$BREENIX_ROOT/scripts/host-slots.sh"
-host_slots_start "$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")" "$@"
+RUN_ARGS=("$@")
 
 # #826/#834/#865/R181: this script's native (non-Parallels, non-VMware)
 # QEMU boot runs behind the host-wide lock in
@@ -58,6 +58,7 @@ ARCH="arm64"
 HEADLESS=false
 CLEAN=false
 NO_BUILD=false
+DRY_RUN=false
 DISK_OVERRIDE=""
 BTRT=false
 PARALLELS=false
@@ -101,6 +102,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --no-build)
             NO_BUILD=true
+            shift
+            ;;
+        --dry-run)
+            DRY_RUN=true
             shift
             ;;
         --parallels)
@@ -208,6 +213,8 @@ while [[ $# -gt 0 ]]; do
             echo "  --tests                    Parallels/VMware: boot the testing kernel, wait for its userspace report, stop VM"
             echo "  --gate-timeout N           DONE deadline in seconds (default 1800)"
             echo "  --suite ID                 Parallels/VMware: run effort suite ID (docs/suites/ID.json) as PID 1"
+            echo "  --dry-run                  Check target policy and exit before building or booting"
+            echo "  BREENIX_CATCHUP=1          Allow effort catch-up on Parallels/VMware; recorded in metadata"
             echo "  --retina                   Parallels/VMware: native Retina resolution (default: scaled 2x, readable)"
             echo "  --resolution WxH           Set display resolution (e.g. 1920x1080)"
             echo "                             Default: auto-detect from screen"
@@ -230,6 +237,25 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Refuse effort targets before builds, VM setup or host-slot supervision.
+CATCHUP_ARGS=()
+if [ "${BREENIX_CATCHUP:-0}" = 1 ]; then CATCHUP_ARGS=(--catchup); fi
+TARGET=arm64-qemu
+if [ "$ARCH" = x86_64 ]; then TARGET=x86; fi
+if [ "$PARALLELS" = true ]; then TARGET=parallels
+elif [ "$VMWARE" = true ]; then TARGET=vmware
+fi
+echo "Breenix target=$TARGET BREENIX_CATCHUP=${BREENIX_CATCHUP:-0} dry-run=$DRY_RUN"
+if [ "$PARALLELS" = true ] || [ "$VMWARE" = true ]; then
+    python3 "$BREENIX_ROOT/scripts/effort-target-guard.py" --repo "$BREENIX_ROOT" \
+        --target "$TARGET" "${CATCHUP_ARGS[@]}" || exit $?
+fi
+if [ "$DRY_RUN" = true ]; then
+    echo "Target policy accepted; no build or boot requested."
+    exit 0
+fi
+host_slots_start "$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")" "${RUN_ARGS[@]}"
 
 if [ -n "$DISK_OVERRIDE" ]; then
     DISK_OVERRIDE=$(python3 - "$DISK_OVERRIDE" <<'PYDISK'
@@ -316,6 +342,16 @@ if [ "$TESTS" = true ]; then
     BOOT_MODE=tests
     KERNEL_FEATURE_ARGS=(--features testing)
 fi
+
+# Keep host launch policy beside this run's serial, including successful catch-up overrides.
+record_launch_metadata() {
+    python3 - "$SERIAL_LOG.launch.json" "$TARGET" "${BREENIX_CATCHUP:-0}" "$(git rev-parse HEAD)" <<'PYLAUNCH'
+import json, sys
+from pathlib import Path
+Path(sys.argv[1]).write_text(json.dumps({'target': sys.argv[2], 'catchup': sys.argv[3] == '1',
+                                       'commit': sys.argv[4]}) + '\n')
+PYLAUNCH
+}
 
 # Whether this boot writes a boot target onto a copy of the ext2 disk.
 writes_boot_target() {
@@ -834,6 +870,7 @@ if [ "$PARALLELS" = true ]; then
     rm -f "$SERIAL_LOG"  # Remove so VMware creates fresh (avoids append/replace prompt)
     VIGIL_ID=""
     install_vm_boot_traps
+    record_launch_metadata
     VIGIL_ID=$("$BREENIX_ROOT/scripts/vigil-record.sh" start parallels "$BOOT_MODE" "$SUITE" "$SERIAL_LOG")
     host_slot_vm "$SERIAL_LOG" prlctl stop "$PARALLELS_VM" --kill
     # Open the VM in its own window, as VMware's `gui` start does, so a boot can be watched;
@@ -1216,6 +1253,7 @@ VMXEOF
     rm -f "$SERIAL_LOG"  # Remove so VMware creates fresh (avoids append/replace prompt)
     VIGIL_ID=""
     install_vm_boot_traps
+    record_launch_metadata
     VIGIL_ID=$("$BREENIX_ROOT/scripts/vigil-record.sh" start vmware "$BOOT_MODE" "$SUITE" "$SERIAL_LOG")
     host_slot_vm "$SERIAL_LOG" "$VMRUN" stop "$VMX_FILE" hard
     if [ -n "${BREENIX_VMWARE_NOGUI:-}" ]; then

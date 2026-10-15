@@ -51,6 +51,7 @@ public struct BeastLaunchOptions: Sendable {
     public var runID: String?
     public var laneKey: String?
     public var fresh: Bool
+    public var catchup: Bool
 
     public init(
         boots: Int = 1,
@@ -63,12 +64,14 @@ public struct BeastLaunchOptions: Sendable {
         qemuProfile: X86HardwareProfile? = nil,
         suite: String? = nil,
         laneKey: String? = nil,
-        fresh: Bool = false
+        fresh: Bool = false,
+        catchup: Bool = false
     ) {
         self.qemuProfile = qemuProfile
         self.suite = suite
         self.laneKey = laneKey
         self.fresh = fresh
+        self.catchup = catchup
         self.boots = boots
         self.mode = mode
         self.sha = sha
@@ -395,6 +398,7 @@ public struct BeastLauncher {
                 env["BREENIX_GATE_CACHE_RESULT"] = String(line)
             }
         }
+        env["BREENIX_CATCHUP"] = options.catchup ? "1" : "0"
         let gateVerdictString: String
         if gateStdoutText.contains("PASS-WITH-ATTRIBUTED-LOCKUP:") {
             gateVerdictString = "PASS-WITH-ATTRIBUTED-LOCKUP"
