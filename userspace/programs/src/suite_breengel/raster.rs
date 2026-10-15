@@ -509,6 +509,8 @@ fn raster_stride_padding() -> CaseResult {
 }
 
 fn raster_surface_validate() -> CaseResult {
+    // SizeOverflow is reachable only through from_raw: new's largest surface,
+    // 16,384 x 16,384 x 4 bytes, is 2^30 bytes.
     use libgfx::framebuf::SurfaceError::{Empty, Format as BadFormat, Misaligned, Null, SizeOverflow, StrideTooShort, TooLarge};
     let premultiplied3 = Format { bpp: 3, is_bgr: true, premultiplied: true };
     for (what, w, h, format, want) in [
@@ -516,7 +518,6 @@ fn raster_surface_validate() -> CaseResult {
         ("new(4, 0)", 4, 0, Format::BGRX, Empty),
         ("new(16385, 1)", 16_385, 1, Format::BGRX, TooLarge),
         ("new(1, 16385)", 1, 16_385, Format::RGB, TooLarge),
-        ("new(16384, 16384) with 4-byte pixels (2^32 bytes)", 16_384, 16_384, Format::BGRX, SizeOverflow),
         ("new(4, 4) premultiplied with 3-byte pixels", 4, 4, premultiplied3, BadFormat),
     ] {
         let got = FrameBuf::new(w, h, format).err();
