@@ -4,7 +4,8 @@
 //!
 //! A tracked file outside the SDK's own sources and the suite's measurement files fails
 //! this test if it names `build-sdk.sh` or a path of the SDK's sources or build, and a
-//! file other than the hooks and the suite's own fails it if it names `sdk-suite.py`.
+//! file other than the hooks, the suite's own and the one that only names it to leave it out
+//! of a text check fails it if it names `sdk-suite.py`.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -34,6 +35,10 @@ const HOOKS: &[&str] = &[
     "docker/qemu/run-x86-gate.sh",
     "tests/suite_manifests.rs",
 ];
+
+/// Files that name `sdk-suite.py` without running it: the image-inputs test leaves the suite's
+/// clean-room scan, which names the foreign libcs it rejects, out of its foreign-libc check.
+const NAMES_ONLY: &[&str] = &["tests/utilities_image_inputs_test.py"];
 
 /// Paths of the SDK's sources, its build root and its installed layout, matched only where a
 /// path component starts (so `wasi-sdk/bin/` is not `sdk/bin/`).
@@ -102,7 +107,10 @@ fn only_the_sdk_suite_reaches_the_sdk() {
                 offenders.push(format!("{path} names the SDK path {needle}"));
             }
         }
-        if !HOOKS.contains(&path.as_str()) && contains(&data, "sdk-suite.py") {
+        if !HOOKS.contains(&path.as_str())
+            && !NAMES_ONLY.contains(&path.as_str())
+            && contains(&data, "sdk-suite.py")
+        {
             offenders.push(format!("{path} runs or names scripts/sdk-suite.py but is not one of its hooks"));
         }
     }
