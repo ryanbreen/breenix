@@ -58,6 +58,12 @@ struct DeferredTx {
     tcp_segment: Vec<u8>,
 }
 
+impl Drop for DeferredTx {
+    fn drop(&mut self) {
+        super::loopback_work_done();
+    }
+}
+
 static DEFERRED_TX_QUEUE: Mutex<Vec<DeferredTx>> = Mutex::new(Vec::new());
 static TCP_WAKE_REJECTED: AtomicU64 = AtomicU64::new(0);
 
@@ -83,6 +89,7 @@ fn queue_deferred_tx_with_mac(
     let _guard = super::net_lock_guard();
     let mut queue = DEFERRED_TX_QUEUE.lock();
     if queue.try_reserve(1).is_ok() {
+        super::loopback_work_queued();
         queue.push(DeferredTx {
             src_ip,
             dst_ip,
@@ -107,7 +114,11 @@ pub fn deferred_tx_queue_len() -> usize {
 /// every connection that holds unsent data or an unsent FIN.
 /// Called after process_rx() completes and after each round of loopback delivery.
 /// The queue is filled from thread context and NetRx, so guard only the queue take.
+/// Preemption stays off from the take until the last segment is sent: taken
+/// segments are counted as loopback work in flight, and a syscall drain waits
+/// for that count, so their holder must not be switched out.
 pub fn drain_deferred_tx() {
+    crate::per_cpu::preempt_disable();
     let packets: Vec<DeferredTx> = {
         let _guard = super::net_lock_guard();
         let mut queue = DEFERRED_TX_QUEUE.lock();
@@ -151,6 +162,7 @@ pub fn drain_deferred_tx() {
             )
         };
     }
+    crate::per_cpu::preempt_enable();
 
     if TX_RETRY.swap(false, Ordering::AcqRel) {
         let stalled = with_tcp_connections(|connections| {
