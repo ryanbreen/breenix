@@ -452,9 +452,10 @@ struct SchedulerGuard {
 static SCHEDULER_HELD: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
 
 /// x86_64: per CPU, the CPUs it asked to reschedule while it held the
-/// scheduler lock, or PROCESS_MANAGER taken with interrupts masked
-/// (`process::defers_resched_ipis`), which it interrupts once it has
-/// released both (`send_deferred_resched_ipis`).
+/// scheduler lock, PROCESS_MANAGER taken with interrupts masked
+/// (`process::defers_resched_ipis`) or a lock a `with_resched_ipis_deferred`
+/// section holds, which it interrupts once it has released all of them
+/// (`send_deferred_resched_ipis`).
 ///
 /// An APIC write is a VM exit, and on the x86 gate one took up to 38 ms. Made
 /// under the scheduler lock, every other CPU's scheduling entry, the idle pass
@@ -514,16 +515,43 @@ impl Drop for SchedulerGuard {
     }
 }
 
+/// x86_64: per CPU, how many `with_resched_ipis_deferred` sections are open.
+#[cfg(target_arch = "x86_64")]
+static DEFER_SECTIONS: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+
+/// Run `f`, which holds a global lock that other CPUs take with interrupts
+/// masked and wakes threads under it, with the reschedule IPIs those wakes
+/// ask for sent after `f` returns, as under the scheduler lock. Interrupts
+/// must be masked, so that nothing else runs on this CPU meanwhile.
+pub fn with_resched_ipis_deferred<R>(f: impl FnOnce() -> R) -> R {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let me = current_cpu_id_raw();
+        if me >= MAX_CPUS {
+            return f();
+        }
+        DEFER_SECTIONS[me].fetch_add(1, Ordering::Relaxed);
+        let result = f();
+        DEFER_SECTIONS[me].fetch_sub(1, Ordering::Relaxed);
+        send_deferred_resched_ipis();
+        result
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    f()
+}
+
 /// x86_64: whether a reschedule IPI asked for on this CPU, `me`, waits for a
 /// lock to be released (`DEFERRED_RESCHED`).
 #[cfg(target_arch = "x86_64")]
 fn resched_ipi_deferred(me: usize) -> bool {
-    SCHEDULER_HELD[me].load(Ordering::Relaxed) || crate::process::defers_resched_ipis(me)
+    SCHEDULER_HELD[me].load(Ordering::Relaxed)
+        || DEFER_SECTIONS[me].load(Ordering::Relaxed) != 0
+        || crate::process::defers_resched_ipis(me)
 }
 
 /// x86_64: send the reschedule IPIs this CPU deferred, unless it still holds
-/// a lock they wait for. Called after each release of the scheduler lock and
-/// of PROCESS_MANAGER.
+/// a lock they wait for. Called after each release of the scheduler lock, of
+/// PROCESS_MANAGER and of a `with_resched_ipis_deferred` section.
 #[cfg(target_arch = "x86_64")]
 pub fn send_deferred_resched_ipis() {
     let me = current_cpu_id_raw();
@@ -2017,8 +2045,9 @@ pub fn kick_cpu_x86(cpu: usize) {
 
 /// x86_64: interrupt `cpu` through the reschedule vector, which wakes it from a
 /// halt and returns through the scheduling point. Takes no lock. Asked for
-/// while this CPU holds the scheduler lock or PROCESS_MANAGER, the interrupt
-/// is sent once the lock is released (`DEFERRED_RESCHED`).
+/// while this CPU holds the scheduler lock, PROCESS_MANAGER or a lock in a
+/// `with_resched_ipis_deferred` section, the interrupt is sent once the lock
+/// is released (`DEFERRED_RESCHED`).
 #[cfg(target_arch = "x86_64")]
 fn send_reschedule_vector_x86(cpu: usize) {
     let me = current_cpu_id_raw();
