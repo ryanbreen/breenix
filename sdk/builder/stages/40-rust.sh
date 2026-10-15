@@ -53,9 +53,10 @@ for arch in aarch64 x86_64; do
             *) sdk_install "$rlib" "$lib/$(basename "$rlib")" ;;
         esac
     done
-    # The pinned fork builds none of the libm crate's math (a port of musl's) into compiler_builtins
-    # for Breenix; libc.a has Breenix's own. Stripping objects would leave the math in an rlib's
-    # metadata and bitcode, so a std that carries any of it stops the build instead.
+    # The pinned fork builds none of the libm crate's math (ported from a foreign C library) into
+    # compiler_builtins for Breenix; libc.a has Breenix's own. Stripping objects would leave the
+    # math in an rlib's metadata and bitcode, so a std that carries any of it stops the build
+    # instead.
     sdk_no_libm_math "$SDK_STAGE/$lib"/*.rlib
 done
 [ -f "$SDK_STAGE/lib/rust/lib/rustlib/x86_64-breenix/lib/libc.a" ] ||

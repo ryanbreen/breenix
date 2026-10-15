@@ -8,13 +8,19 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class ImageInputsTests(unittest.TestCase):
     def test_build_and_install_inputs_use_only_breenix_libc(self):
-        # These are Breenix's build/install recipes. Vendored Rust libc platform
-        # declarations and its upstream CI are not Breenix build recipes.
+        # These are Breenix's build/install recipes, the Developer SDK's included.
+        # Vendored Rust libc platform declarations and its upstream CI are not
+        # Breenix build recipes. The SDK suite's host harness is the clean-room
+        # scan that rejects foreign libcs, so it names them (its marks and its
+        # toolchain/no-musl case).
         names = subprocess.check_output([
             'git', '-C', str(ROOT), 'ls-files', '-z', '--', 'scripts', '.cargo',
-            'run.sh', 'xtask', 'vendor/busybox/*.config', 'userspace/**/build.sh',
+            'run.sh', 'xtask', 'sdk', 'vendor/busybox/*.config', 'userspace/**/build.sh',
             'userspace/**/Makefile', 'userspace/**/*.ld']).split(b'\0')
+        scanners = {'scripts/sdk-suite.py'}
         for name in filter(None, names):
+            if name.decode() in scanners:
+                continue
             path = ROOT / name.decode()
             if path.is_file():
                 self.assertNotIn('musl', path.read_text().lower(), str(path.relative_to(ROOT)))

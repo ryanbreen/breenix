@@ -8,7 +8,7 @@
 
 LIBC="$SDK_ROOT/libs/libbreenix-libc"
 # core and compiler_builtins come from the pinned fork, as std's do: its compiler_builtins builds
-# none of the libm crate's math (a port of musl's) for Breenix. The cleaner then removes nothing,
+# none of the libm crate's math (ported from a foreign C library) for Breenix. The cleaner then removes nothing,
 # and anything of that math left in an archive, even a source path in its data, stops the build.
 build_libc() {
     sdk_say "building libbreenix-libc for $1"
