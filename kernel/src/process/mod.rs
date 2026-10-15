@@ -219,6 +219,8 @@ fn note_process_manager_lock_acquired() {
     {
         PM_MASKED_HOLD[cpu as usize].store(masked_hold_context(), Ordering::Relaxed);
     }
+    #[cfg(target_arch = "x86_64")]
+    crate::spread_probe::pm_hold_hook();
 }
 
 #[inline(always)]

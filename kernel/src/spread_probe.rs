@@ -23,6 +23,9 @@ use crate::task::scheduler::MAX_CPUS;
 pub const UNAVAIL: u32 = 1;
 pub const IPI: u32 = 2;
 pub const DRAIN: u32 = 3;
+/// A CPU that has just taken PROCESS_MANAGER with interrupts masked becomes
+/// unavailable for 50 ms while holding it.
+pub const PMHOLD: u32 = 4;
 
 const ST_IDLE: u32 = 0;
 const ST_ARMED: u32 = 1;
@@ -106,7 +109,7 @@ fn maybe_arm(now: u64) {
     }
     match STATE.load(Ordering::Acquire) {
         ST_IDLE if now >= NEXT_ARM.load(Ordering::Relaxed) => {
-            let kind = ROTATE.fetch_add(1, Ordering::Relaxed) % 3 + 1;
+            let kind = ROTATE.fetch_add(1, Ordering::Relaxed) % 4 + 1;
             KIND.store(kind, Ordering::Relaxed);
             STATE.store(ST_ARMED, Ordering::Release);
         }
@@ -173,8 +176,23 @@ pub fn idle_before_halt() {
 /// UNAVAIL: top of the NMI handler.
 pub fn nmi_hook(cpu: usize) {
     if cpu < MAX_CPUS && FORCE_NMI[cpu].swap(false, Ordering::AcqRel) {
-        spin_ms(100);
+        spin_ms(if KIND.load(Ordering::Relaxed) == PMHOLD { 50 } else { 100 });
         end();
+    }
+}
+
+/// PMHOLD: PROCESS_MANAGER was just taken on this CPU.
+pub fn pm_hold_hook() {
+    if x86_64::instructions::interrupts::are_enabled() {
+        return;
+    }
+    let cpu = cpu_now();
+    if cpu < MAX_CPUS && try_begin(PMHOLD, cpu) {
+        FORCE_NMI[cpu].store(true, Ordering::Release);
+        let _ = crate::arch_impl::x86_64::apic::send_ipi(
+            crate::arch_impl::x86_64::apic::id(),
+            crate::arch_impl::x86_64::apic::Ipi::Nmi,
+        );
     }
 }
 
