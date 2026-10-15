@@ -7,7 +7,8 @@ RECORDS_LOG is the serial the suite's stdout went to; every log given is also
 searched for fatal kernel output. The boot passes when the suite's records, each
 a whole line, are exactly: one START with the manifest's case count, one CASE line
 per manifest case in manifest order, and one DONE whose counts match those CASE
-lines with failed=0; and no log shows a kernel panic, soft lockup or EL1 abort
+lines with failed=0, skipped=0 and passed=total=the manifest's case count;
+and no log shows a kernel panic, soft lockup or EL1 abort
 (`fatal` in docs/boot-path.json, plus x86-64's "KERNEL PANIC:"). VALUE, WAIT and
 PULSES records, which a case may print while it runs, are accepted between START and
 DONE when they are well formed and name a manifest case; they do not count.
@@ -112,6 +113,9 @@ def verdict(manifest, records_log, logs):
     if failed:
         failures = "; ".join(l[len(prefix):] for k, _, l in records if k == "FAIL")
         return False, f"{line}: {failures[:400]}"
+    if skipped:
+        skips = "; ".join(l[len(prefix):] for k, _, l in records if k == "SKIP")
+        return False, f"{line}: suite acceptance requires skipped=0 and passed=total={len(cases)}; {skips[:400]}"
     return True, line
 
 

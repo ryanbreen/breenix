@@ -94,6 +94,20 @@ class SuiteWatcherTest(unittest.TestCase):
         self.assertIn("UTC clock FAIL", result.stdout)
         self.assertIn("PASS: SUITE directories DONE", result.stdout)
 
+    def test_skipped_cases_fail_the_qemu_watcher(self):
+        for count in (1, len(CASES)):
+            with self.subTest(skipped=count):
+                data = RECORDING
+                for case in CASES[:count]:
+                    data = data.replace(f"CASE {case} PASS ms=0".encode(),
+                                        f"CASE {case} SKIP msg=unavailable".encode())
+                data = data.replace(f"passed={len(CASES)} failed=0 skipped=0".encode(),
+                                    f"passed={len(CASES) - count} failed=0 skipped={count}".encode())
+                result, _ = self.replay(data)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("suite acceptance requires skipped=0", result.stdout)
+                self.assertIn("completed; stopping", result.stdout)
+
     def test_missing_done_idles_and_fails(self):
         data = b"\n".join(line for line in RECORDING.split(b"\n")
                           if not line.startswith(b"SUITE directories DONE "))
