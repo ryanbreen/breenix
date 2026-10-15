@@ -1873,42 +1873,44 @@ fn icons_step_invariance() -> CaseResult {
 }
 
 fn icons_settles() -> CaseResult {
-    for (name, make) in catalogue() {
-        let mut icon = make();
-        icon.update(251_000, mouse(true, false, false, false));
-        icon.update(1_000, mouse(true, true, true, false));
-        icon.update(50_000, mouse(true, true, false, false));
-        icon.update(1_000, mouse(true, false, false, true));
-        icon.update(120_000, mouse(true, false, false, false));
-        icon.update(2_000_000, IconMouse::none());
-        ensure(
-            icon.settled(),
-            "16",
-            format!("{name} did not settle within 2000ms of final input"),
-        )?;
-        let frame = drawn(&*icon, 48);
-        icon.update(100_000, IconMouse::none());
-        ensure(
-            same_pixels(&frame, &drawn(&*icon, 48)).is_none(),
-            "16",
-            format!("{name} kept drawing animation after reporting settled"),
-        )?;
-        let half = 24 + icon.bounds_overflow();
-        for y in 0..160 {
-            for x in 0..160 {
-                if !in_rect(
-                    x as i64,
-                    y as i64,
-                    (80 - half) as i64,
-                    (80 - half) as i64,
-                    (2 * half) as i64,
-                    (2 * half) as i64,
-                ) {
-                    ensure(
-                        frame.color(x, y) == PAPER,
-                        "16",
-                        format!("settled {name} wrote outside its box at {x},{y}"),
-                    )?;
+    for hovering in [false, true] {
+        for (name, make) in catalogue() {
+            let mut icon = make();
+            icon.update(251_000, mouse(true, false, false, false));
+            icon.update(1_000, mouse(true, true, true, false));
+            icon.update(50_000, mouse(true, true, false, false));
+            icon.update(1_000, mouse(true, false, false, true));
+            icon.update(120_000, mouse(true, false, false, false));
+            icon.update(2_000_000, mouse(hovering, false, false, false));
+            ensure(
+                icon.settled(),
+                "16",
+                format!("{name} did not settle within 2000ms of final input"),
+            )?;
+            let frame = drawn(&*icon, 48);
+            icon.update(100_000, mouse(hovering, false, false, false));
+            ensure(
+                same_pixels(&frame, &drawn(&*icon, 48)).is_none(),
+                "16",
+                format!("{name} kept drawing animation after reporting settled"),
+            )?;
+            let half = 24 + icon.bounds_overflow();
+            for y in 0..160 {
+                for x in 0..160 {
+                    if !in_rect(
+                        x as i64,
+                        y as i64,
+                        (80 - half) as i64,
+                        (80 - half) as i64,
+                        (2 * half) as i64,
+                        (2 * half) as i64,
+                    ) {
+                        ensure(
+                            frame.color(x, y) == PAPER,
+                            "16",
+                            format!("settled {name} wrote outside its box at {x},{y}"),
+                        )?;
+                    }
                 }
             }
         }
