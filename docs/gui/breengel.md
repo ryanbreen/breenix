@@ -504,6 +504,7 @@ file's error.
   30 and 31 are `BadSymbol`.
 - **Matches**: a distance before the start of the output is `DistanceTooFar`; distances up to 32,768 and
   lengths up to 258 decode.
+- Allocation failure is `OutOfMemory`; output growth is fallible and does not reserve past `limit`.
 - **Ends**: a stream cut off at any byte is `Truncated`. Output past `limit` is `OutputLimit`, and nothing is
   written past the limit.
 - **zlib**: a bad header check value, a preset dictionary, a method other than 8 and a window above 32 KiB
@@ -532,6 +533,9 @@ file's error.
   headers or pixel data claim), `BadSignature`, `Unsupported { bpp, compression }`, `TooLarge` (section 7's
   dimension limits) and `SizeOverflow` (a row or image size that overflows). `TooLarge` and `SizeOverflow`
   are found before any allocation; a rejection never panics.
+  `BadHeader` denotes zero dimensions, a DIB size below the supported header sizes, or a pixel
+  offset inside the headers. The 12-byte `BITMAPCOREHEADER` is supported alongside
+  `BITMAPINFOHEADER` and its extensions; its dimensions are unsigned 16-bit and its rows bottom-up.
 
 ## 13. PNG (`libimg::png`)
 
@@ -548,16 +552,28 @@ file's error.
   multiple of 3 and at most 2^depth entries (`BadPlte`); IDAT may be split across chunks, empty ones
   included; IEND required. Out of order is `ChunkOrder`; a bad CRC is `BadCrc`; a chunk length above
   2³¹ − 1 is `BadChunkLength`; an unknown critical chunk is `UnknownCritical`; gAMA, iCCP, sRGB, tEXt and
-  every other ancillary chunk are ignored (no colour management). A palette index past the palette is
+  other ancillary chunks are ignored (no colour management). Valid tRNS is processed as above;
+  invalid tRNS lengths and tRNS on colour types 4/6 are ignored. A palette tRNS before PLTE,
+  a repeated tRNS, or tRNS after IDAT is `ChunkOrder`. A palette index past the palette is
   `BadPaletteIndex`. Zero width or height and unknown compression, filter or interlace methods are
-  `BadHeader`; a bad signature is `BadSignature`; a cut-off stream is `Truncated`.
+  `BadHeader`; a bad signature is `BadSignature`; a cut-off stream is `Truncated`, including
+  EOF exactly at a chunk boundary before IEND and a truncated zlib stream in a complete IDAT.
+  IEND terminates the PNG datastream; bytes following it are ignored.
 - **Limits**: section 7's dimension limits (`TooLarge`, before inflating) and decompressed size (`Bomb`).
+  Allocation failure is `OutOfMemory`; decoder allocations are fallible.
 - `encode(image) -> Result<Vec<u8>, PngError>` writes RGB (opaque images) or RGBA at depth 8, filter 0 on every row, one
   IDAT of stored or fixed-Huffman deflate blocks in a zlib stream with a correct Adler-32, and correct
   CRCs. Encoding the same image twice gives identical bytes. Images past the dimension limits are refused
   with `TooLarge`.
 - **Fixtures**: the public PngSuite images, with the pixels an independent decoder recorded at authoring
   time, under `/usr/local/test/share/breengel/png/`; `png-decode/from-disk` reads `pinned.png` there.
+
+The image error clarifications follow the operator's 2026-10-15 review-fix brief:
+`Vec<u8>` cannot express the required `TooLarge`, hence the `Result` encoding signature;
+PNG §11.3.1.1 specifies sample-depth tRNS masking, §§11.2.4 and 13.1 distinguish the
+end of the datastream and unexpected EOF, and §13.1 permits ignoring invalid ancillary
+payloads. These clarify error reporting and preserve the pixel formulas and dimension limits.
+BMP's published BITMAPCOREHEADER layout specifies the 12-byte header's 16-bit fields.
 
 ## 14. Widgets (`libbui`)
 
