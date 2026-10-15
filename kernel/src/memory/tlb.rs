@@ -67,6 +67,7 @@ use x86_64::VirtAddr;
 /// This is more efficient than flushing the entire TLB when only
 /// a single page mapping has changed.
 #[inline]
+#[track_caller]
 pub fn flush_page(addr: VirtAddr) {
     tlb::flush(addr);
     #[cfg(target_arch = "x86_64")]
@@ -79,6 +80,7 @@ pub fn flush_page(addr: VirtAddr) {
 /// The caller has already changed the descriptor: a CPU that announces `root`
 /// after this looks finds the new one when it walks the table.
 #[inline]
+#[track_caller]
 pub fn flush_user_page(root: u64, addr: VirtAddr) {
     tlb::flush(addr);
     #[cfg(target_arch = "x86_64")]
@@ -90,6 +92,7 @@ pub fn flush_user_page(root: u64, addr: VirtAddr) {
 /// Flush every translation of the user address space whose page-table root is
 /// `root`, on every CPU that may cache one of them.
 #[inline]
+#[track_caller]
 pub fn flush_user_all(root: u64) {
     tlb::flush_all();
     #[cfg(target_arch = "x86_64")]
@@ -101,6 +104,7 @@ pub fn flush_user_all(root: u64) {
 /// Invalidate removed user leaves before their frames can be released.
 /// x86 uses one root-targeted full shootdown for a multi-page set; ARM64
 /// broadcasts the addresses for all ASIDs with one pair of data barriers.
+#[track_caller]
 pub fn flush_user_pages(root: u64, pages: &[u64]) {
     if let [page] = pages {
         flush_user_page(root, VirtAddr::new(*page));
@@ -149,6 +153,7 @@ pub fn note_root_load_on(cpu: usize, root: u64) {
 /// Note: Writing to CR3 also flushes the entire TLB, but this function
 /// provides an explicit way to do it.
 #[inline]
+#[track_caller]
 pub fn flush_all() {
     tlb::flush_all();
     #[cfg(target_arch = "x86_64")]
@@ -183,6 +188,7 @@ pub fn flush_after_page_table_switch() {
 /// master kernel PML4 since it last announced any other root is not asked.
 /// Returns after every target has acknowledged.
 #[cfg(target_arch = "x86_64")]
+#[track_caller]
 pub fn release_root_on_other_cpus(root: u64) {
     shootdown::request_release(root);
 }
@@ -342,12 +348,14 @@ mod shootdown {
 
     /// Deliver `request` to every other online CPU and wait for every
     /// acknowledgement. One atomic load when only this CPU is online.
+    #[track_caller]
     pub(super) fn request(request: Request) {
         deliver(request, |_| true);
     }
 
     /// Deliver `request` to every other online CPU that may hold a translation
     /// of the address space `root`, and wait for those acknowledgements.
+    #[track_caller]
     pub(super) fn request_for_root(request: Request, root: u64) {
         // The descriptor change is ordered before every announcement read.
         fence(Ordering::SeqCst);
@@ -357,6 +365,7 @@ mod shootdown {
 
     /// Ask every other online CPU that may still have `root` loaded to leave
     /// it, and wait for those acknowledgements.
+    #[track_caller]
     pub(super) fn request_release(root: u64) {
         fence(Ordering::SeqCst);
         let root = root & ROOT_MASK;
@@ -364,7 +373,9 @@ mod shootdown {
     }
 
     /// Deliver `request` to the other online CPUs `targeted` selects.
+    #[track_caller]
     fn deliver(request: Request, targeted: impl Fn(usize) -> bool) {
+        let loc = core::panic::Location::caller();
         if smp::cpus_online() <= 1 {
             return;
         }
@@ -381,18 +392,18 @@ mod shootdown {
             && !crate::per_cpu::in_interrupt();
         if interruptible {
             crate::per_cpu::preempt_disable();
-            post_and_wait(kind, arg, &targeted, 0);
+            post_and_wait(kind, arg, &targeted, 0, loc);
             crate::per_cpu::preempt_enable();
         } else {
             x86_64::instructions::interrupts::without_interrupts(|| {
-                post_and_wait(kind, arg, &targeted, 1)
+                post_and_wait(kind, arg, &targeted, 1, loc)
             });
         }
     }
 
     /// Post one request in this CPU's slot `level`, NMI each target and wait
     /// for all of them to acknowledge.
-    fn post_and_wait(kind: u8, arg: u64, targeted: &impl Fn(usize) -> bool, level: usize) {
+    fn post_and_wait(kind: u8, arg: u64, targeted: &impl Fn(usize) -> bool, level: usize, loc: &'static core::panic::Location<'static>) {
         use crate::arch_impl::PerCpuOps;
         let me = crate::arch_impl::x86_64::percpu::X86PerCpu::cpu_id() as usize;
 
@@ -415,6 +426,7 @@ mod shootdown {
         // write.
         fence(Ordering::SeqCst);
 
+        let probe_t0 = crate::arch_impl::x86_64::timer::rdtsc();
         for cpu in (0..MAX_CPUS).filter(|cpu| targets & (1 << cpu) != 0) {
             let apic_id = smp::cpu_apic_id(cpu)
                 .unwrap_or_else(|| panic!("TLB shootdown: online CPU {} has no APIC id", cpu));
@@ -436,6 +448,7 @@ mod shootdown {
                 core::hint::spin_loop();
             }
         }
+        crate::spread_probe::shootdown_done(probe_t0, targets, loc);
     }
 
     /// The NMI handler: carry out every request addressed to this CPU, and
@@ -456,6 +469,7 @@ mod shootdown {
             UNCLAIMED_NMIS.fetch_add(1, Ordering::Relaxed);
             return;
         };
+        crate::spread_probe::nmi_hook(cpu);
         let pending = PENDING[cpu].load(Ordering::Acquire);
         if pending == 0 {
             UNCLAIMED_NMIS.fetch_add(1, Ordering::Relaxed);

@@ -495,6 +495,7 @@ impl core::ops::DerefMut for SchedulerGuard {
 #[cfg(target_arch = "x86_64")]
 impl Drop for SchedulerGuard {
     fn drop(&mut self) {
+        crate::spread_probe::sched_released();
         if let Some(scheduler) = self.guard.as_ref() {
             let queued = scheduler
                 .per_cpu_queues
@@ -540,7 +541,11 @@ type SchedulerGuard = spin::MutexGuard<'static, Option<Scheduler>>;
 
 #[inline(always)]
 fn lock_scheduler() -> SchedulerGuard {
+    #[cfg(target_arch = "x86_64")]
+    let probe_t0 = crate::arch_impl::x86_64::timer::rdtsc();
     let guard = SCHEDULER.lock();
+    #[cfg(target_arch = "x86_64")]
+    crate::spread_probe::sched_acquired(probe_t0);
     crate::tracing::providers::teardown::note_scheduler_acquire();
     #[cfg(target_arch = "x86_64")]
     let guard = SchedulerGuard::new(guard);
@@ -550,6 +555,8 @@ fn lock_scheduler() -> SchedulerGuard {
 #[inline(always)]
 fn try_lock_scheduler() -> Option<SchedulerGuard> {
     let guard = SCHEDULER.try_lock()?;
+    #[cfg(target_arch = "x86_64")]
+    crate::spread_probe::sched_acquired(crate::arch_impl::x86_64::timer::rdtsc());
     crate::tracing::providers::teardown::note_scheduler_acquire();
     #[cfg(target_arch = "x86_64")]
     let guard = SchedulerGuard::new(guard);
@@ -2037,6 +2044,7 @@ fn send_vector_x86(cpu: usize, vector: u8) {
         0,
         (((cpu as u32) & 0xFFFF) << 16) | ((current_cpu_id_raw() as u32) & 0xFFFF),
     );
+    crate::spread_probe::ipi_hook(vector);
     let _ = apic::send_ipi(apic_id, apic::Ipi::Fixed(vector));
 }
 
@@ -8410,7 +8418,7 @@ pub fn isr_unblock_for_io(tid: u64) {
 /// data, which both GS bases name in kernel and user mode alike.
 /// Safe to call from ISR context.
 #[inline]
-fn current_cpu_id_raw() -> usize {
+pub fn current_cpu_id_raw() -> usize {
     #[cfg(target_arch = "aarch64")]
     {
         let mpidr: u64;
