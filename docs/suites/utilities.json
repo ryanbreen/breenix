@@ -49,7 +49,8 @@
         { "id": "dot", "title": ". runs a file in the current shell, and return in it ends the file with a status" },
         { "id": "cd-pwd", "title": "cd changes the directory and PWD, pwd agrees, and cd to a missing directory fails" },
         { "id": "signal-status", "title": "A command killed by a signal has exit status 128 plus the signal number" },
-        { "id": "subshell", "title": "( ) runs in a subshell whose changes do not persist, while { } runs in the current shell" }
+        { "id": "subshell", "title": "( ) runs in a subshell whose changes do not persist, while { } runs in the current shell" },
+        { "id": "alias", "title": "alias defines a word later commands expand, alias NAME writes it for reuse, and unalias removes it" }
       ]
     },
     {
@@ -84,6 +85,7 @@
         { "id": "find-type", "title": "find -type d selects directories, including the starting point" },
         { "id": "find-mtime", "title": "find -mtime +n selects files modified more than n days ago" },
         { "id": "find-exec", "title": "find -exec runs a command for each file with {} replaced by its path" },
+        { "id": "find-exec-plus", "title": "find -exec ... {} + runs the command once with all the paths, and find fails when it fails" },
         { "id": "find-prune", "title": "find -prune keeps find from descending into a directory" },
         { "id": "du", "title": "du writes one line per directory in the hierarchy, ending with the operand" },
         { "id": "df", "title": "df -k -P writes the POSIX header and a line for the file system holding the operand" },
@@ -131,6 +133,10 @@
         { "id": "grep-status", "title": "grep exits 1 when nothing matches and more than 1 for a missing file" },
         { "id": "diff-same", "title": "diff of identical files writes nothing and exits 0" },
         { "id": "diff-differ", "title": "diff writes the default change format and exits 1 when files differ" },
+        { "id": "diff-context", "title": "diff -c writes both file names and the context format, marking changed lines with !" },
+        { "id": "diff-ed", "title": "diff -e writes an ed script that edits from the last change back, and -f the forward form" },
+        { "id": "diff-dir", "title": "diff -r introduces each differing file with a diff line and names files in one directory only" },
+        { "id": "diff-errors", "title": "diff exits above 1 when its output cannot be written or an operand is missing" },
         { "id": "cmp", "title": "cmp names the first differing byte and line and exits 1" },
         { "id": "comm", "title": "comm writes lines unique to each file and common lines in three tab-indented columns" },
         { "id": "paste", "title": "paste joins corresponding lines with tabs, and -s -d joins one file's lines" },
@@ -185,7 +191,8 @@
         { "id": "command-v", "title": "command -v writes the path of a utility, the name of a built-in or function, and fails for neither" },
         { "id": "time", "title": "time -p runs a command, writes real, user and sys times to stderr and exits with its status" },
         { "id": "time-signal", "title": "time -p exits 128 plus the signal number when a signal ends the command" },
-        { "id": "tty", "title": "tty with standard input that is not a terminal writes not a tty and exits 1" }
+        { "id": "tty", "title": "tty with standard input that is not a terminal writes not a tty and exits 1" },
+        { "id": "free", "title": "free, a legacy /bin name, reports the same total memory as /proc/meminfo" }
       ]
     },
     {
