@@ -1,6 +1,6 @@
 {
-  "title": "Path to a POSIX kernel with a userspace you can build on",
-  "outcome": "Breenix runs real programs unmodified on ARM64 and x86-64: every POSIX system interface backed and behaving to the standard, a C library and Rust std on top, POSIX utilities, and an SDK for building our own applications.",
+  "title": "Path to a POSIX kernel with a userspace and a desktop you can build on",
+  "outcome": "Breenix runs real programs unmodified on ARM64 and x86-64: every POSIX system interface backed and behaving to the standard, a C library and Rust std on top, POSIX utilities, an SDK for building our own applications, and a graphical desktop (BreenGL, the window manager and its applications) tested to the same bar.",
   "efforts": [
     {
       "id": "kernel-bring-up",
@@ -1219,6 +1219,519 @@
             "suite": "sdk",
             "categories": [
               "templates"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "breengel",
+      "title": "BreenGL graphics library",
+      "outcome": "Programs draw with BreenGL's 2D library (clipped and alpha-blended shapes and blits, TrueType and bitmap text, PNG and BMP images, widgets and animated icons) exactly to its written contract, and the windows they commit through an authority-checked kernel interface are composed and observed on the display pixel-exact on every target.",
+      "suite": "breengel",
+      "subsystems": [
+        17,
+        22,
+        25
+      ],
+      "milestones": [
+        {
+          "id": "raster",
+          "title": "shapes, blits, clipping & alpha",
+          "measure": {
+            "suite": "breengel",
+            "categories": [
+              "raster"
+            ]
+          }
+        },
+        {
+          "id": "text",
+          "title": "TrueType & bitmap text",
+          "measure": {
+            "suite": "breengel",
+            "categories": [
+              "text"
+            ]
+          }
+        },
+        {
+          "id": "font-parser",
+          "title": "font parsing safety",
+          "measure": {
+            "suite": "breengel",
+            "categories": [
+              "font-parser"
+            ]
+          }
+        },
+        {
+          "id": "inflate",
+          "title": "clean-room inflate",
+          "measure": {
+            "suite": "breengel",
+            "categories": [
+              "inflate"
+            ]
+          }
+        },
+        {
+          "id": "images",
+          "title": "BMP & PNG images",
+          "measure": {
+            "suite": "breengel",
+            "categories": [
+              "bmp",
+              "png-decode",
+              "png-encode"
+            ]
+          }
+        },
+        {
+          "id": "widgets",
+          "title": "widgets",
+          "measure": {
+            "suite": "breengel",
+            "categories": [
+              "widgets"
+            ]
+          }
+        },
+        {
+          "id": "text-entry",
+          "title": "text fields, focus & file picker",
+          "measure": {
+            "suite": "breengel",
+            "categories": [
+              "text-entry"
+            ]
+          }
+        },
+        {
+          "id": "icons",
+          "title": "animated icons",
+          "measure": {
+            "suite": "breengel",
+            "categories": [
+              "icons"
+            ]
+          }
+        },
+        {
+          "id": "windows",
+          "title": "window lifecycle on every target",
+          "measure": {
+            "suite": "breengel",
+            "categories": [
+              "windows"
+            ]
+          }
+        },
+        {
+          "id": "isolation",
+          "title": "window authority & EFAULT safety",
+          "measure": {
+            "suite": "breengel",
+            "categories": [
+              "isolation"
+            ]
+          }
+        },
+        {
+          "id": "composition",
+          "title": "commit, composition & present",
+          "measure": {
+            "suite": "breengel",
+            "categories": [
+              "composition"
+            ]
+          }
+        },
+        {
+          "id": "events",
+          "title": "window input events",
+          "measure": {
+            "suite": "breengel",
+            "categories": [
+              "events"
+            ]
+          }
+        },
+        {
+          "id": "scanout",
+          "title": "display observation on every target",
+          "measure": {
+            "suite": "breengel",
+            "categories": [
+              "scanout"
+            ]
+          }
+        },
+        {
+          "id": "panel",
+          "title": "suite & probe panels",
+          "measure": {
+            "suite": "breengel",
+            "categories": [
+              "panel"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "window-manager",
+      "title": "Window manager",
+      "outcome": "Independent programs share one desktop: keyboard and pointer events from every target's devices reach bwm through the kernel's input core, and bwm composes, stacks, focuses, moves, resizes and closes their windows, routes input and the clipboard between them with a recorded outcome for every event, and recovers from hung, crashed or misbehaving clients and from its own death, on every target.",
+      "suite": "window-manager",
+      "subsystems": [
+        17,
+        18,
+        25
+      ],
+      "milestones": [
+        {
+          "id": "input-core",
+          "title": "input core & virtual devices",
+          "measure": {
+            "suite": "window-manager",
+            "categories": [
+              "input-core"
+            ]
+          }
+        },
+        {
+          "id": "input-devices",
+          "title": "keyboard & pointer drivers on every target",
+          "measure": {
+            "suite": "window-manager",
+            "categories": [
+              "input-devices"
+            ]
+          }
+        },
+        {
+          "id": "startup",
+          "title": "bwm starts and shows clients",
+          "measure": {
+            "suite": "window-manager",
+            "categories": [
+              "startup"
+            ]
+          }
+        },
+        {
+          "id": "composition",
+          "title": "composition, chrome & repaint",
+          "measure": {
+            "suite": "window-manager",
+            "categories": [
+              "composition"
+            ]
+          }
+        },
+        {
+          "id": "stacking",
+          "title": "stacking & minimize",
+          "measure": {
+            "suite": "window-manager",
+            "categories": [
+              "stacking"
+            ]
+          }
+        },
+        {
+          "id": "focus",
+          "title": "focus, keyboard routing & hotkeys",
+          "measure": {
+            "suite": "window-manager",
+            "categories": [
+              "focus"
+            ]
+          }
+        },
+        {
+          "id": "pointer",
+          "title": "pointer routing",
+          "measure": {
+            "suite": "window-manager",
+            "categories": [
+              "pointer"
+            ]
+          }
+        },
+        {
+          "id": "geometry",
+          "title": "move & resize",
+          "measure": {
+            "suite": "window-manager",
+            "categories": [
+              "geometry"
+            ]
+          }
+        },
+        {
+          "id": "lifecycle",
+          "title": "close, crash & launch",
+          "measure": {
+            "suite": "window-manager",
+            "categories": [
+              "lifecycle"
+            ]
+          }
+        },
+        {
+          "id": "recovery",
+          "title": "WM death, restart & supervision",
+          "measure": {
+            "suite": "window-manager",
+            "categories": [
+              "recovery"
+            ]
+          }
+        },
+        {
+          "id": "clipboard",
+          "title": "clipboard between programs",
+          "measure": {
+            "suite": "window-manager",
+            "categories": [
+              "clipboard"
+            ]
+          }
+        },
+        {
+          "id": "liveness",
+          "title": "idle, stalls & stress",
+          "measure": {
+            "suite": "window-manager",
+            "categories": [
+              "liveness"
+            ]
+          }
+        },
+        {
+          "id": "performance",
+          "title": "latency & frame rate",
+          "measure": {
+            "suite": "window-manager",
+            "categories": [
+              "performance"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "ui-testing",
+      "title": "UI test framework",
+      "outcome": "Any GUI program can be driven by scripted keyboard, pointer and text input from inside the guest and judged by its committed frames and semantic tree at acknowledged clock epochs and causal barriers, deterministically and identically on every target, with every check shown able to fail and every failure leaving its evidence.",
+      "suite": "ui-testing",
+      "subsystems": [
+        18,
+        21,
+        25
+      ],
+      "milestones": [
+        {
+          "id": "runner",
+          "title": "result transport & proof executor",
+          "measure": {
+            "suite": "ui-testing",
+            "categories": [
+              "runner"
+            ]
+          }
+        },
+        {
+          "id": "input",
+          "title": "scripted keyboard, pointer & text input",
+          "measure": {
+            "suite": "ui-testing",
+            "categories": [
+              "input"
+            ]
+          }
+        },
+        {
+          "id": "tree",
+          "title": "semantic trees of windows & widgets",
+          "measure": {
+            "suite": "ui-testing",
+            "categories": [
+              "tree"
+            ]
+          }
+        },
+        {
+          "id": "frames",
+          "title": "frame capture & comparison",
+          "measure": {
+            "suite": "ui-testing",
+            "categories": [
+              "frames"
+            ]
+          }
+        },
+        {
+          "id": "clock",
+          "title": "UI time & stepping",
+          "measure": {
+            "suite": "ui-testing",
+            "categories": [
+              "clock"
+            ]
+          }
+        },
+        {
+          "id": "settle",
+          "title": "causal barriers & settling",
+          "measure": {
+            "suite": "ui-testing",
+            "categories": [
+              "settle"
+            ]
+          }
+        },
+        {
+          "id": "sessions",
+          "title": "sessions, state isolation & cleanup",
+          "measure": {
+            "suite": "ui-testing",
+            "categories": [
+              "sessions"
+            ]
+          }
+        },
+        {
+          "id": "diagnosis",
+          "title": "saved evidence & failure messages",
+          "measure": {
+            "suite": "ui-testing",
+            "categories": [
+              "diagnosis"
+            ]
+          }
+        },
+        {
+          "id": "proof",
+          "title": "proven on bwm & a test app",
+          "measure": {
+            "suite": "ui-testing",
+            "categories": [
+              "proof"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "gui-apps",
+      "title": "GUI applications",
+      "outcome": "Breenix's desktop applications (bterm, blauncher, bfontpicker, blog with blogd, Gus Kit and bcheck, with the graphics demos) do their jobs correctly through real input on a real desktop, on every target.",
+      "suite": "gui-apps",
+      "subsystems": [
+        24,
+        25
+      ],
+      "milestones": [
+        {
+          "id": "terminal-emulation",
+          "title": "bterm terminal emulation",
+          "measure": {
+            "suite": "gui-apps",
+            "categories": [
+              "terminal-emulation"
+            ]
+          }
+        },
+        {
+          "id": "bterm",
+          "title": "bterm runs shell sessions",
+          "measure": {
+            "suite": "gui-apps",
+            "categories": [
+              "bterm"
+            ]
+          }
+        },
+        {
+          "id": "blauncher",
+          "title": "blauncher finds & launches programs",
+          "measure": {
+            "suite": "gui-apps",
+            "categories": [
+              "blauncher"
+            ]
+          }
+        },
+        {
+          "id": "bfontpicker",
+          "title": "bfontpicker sets system fonts",
+          "measure": {
+            "suite": "gui-apps",
+            "categories": [
+              "bfontpicker"
+            ]
+          }
+        },
+        {
+          "id": "blog",
+          "title": "blog & blogd show the logs",
+          "measure": {
+            "suite": "gui-apps",
+            "categories": [
+              "blog"
+            ]
+          }
+        },
+        {
+          "id": "guskit",
+          "title": "Gus Kit paints & saves",
+          "measure": {
+            "suite": "gui-apps",
+            "categories": [
+              "guskit"
+            ]
+          }
+        },
+        {
+          "id": "guskit-collab",
+          "title": "Gus Kit collaboration",
+          "measure": {
+            "suite": "gui-apps",
+            "categories": [
+              "guskit-collab"
+            ]
+          }
+        },
+        {
+          "id": "bcheck",
+          "title": "bcheck reports truthfully",
+          "measure": {
+            "suite": "gui-apps",
+            "categories": [
+              "bcheck"
+            ]
+          }
+        },
+        {
+          "id": "demos",
+          "title": "graphics demos in windows",
+          "measure": {
+            "suite": "gui-apps",
+            "categories": [
+              "demos"
+            ]
+          }
+        },
+        {
+          "id": "desktop",
+          "title": "the whole desktop together",
+          "measure": {
+            "suite": "gui-apps",
+            "categories": [
+              "desktop"
             ]
           }
         }
