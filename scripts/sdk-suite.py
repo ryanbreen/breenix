@@ -80,8 +80,15 @@ def say(text):
     print(f'[sdk-suite] {text}', flush=True)
 
 
+# Local paths a record must not carry (records reach serial logs and reports), longest
+# first, each with what it stands for.
+SCRUB = []
+
+
 def one_line(text, limit=400):
     text = ' '.join(str(text).split())
+    for path, name in SCRUB:
+        text = text.replace(path, name)
     return text if len(text) <= limit else text[:limit - 3] + '...'
 
 
@@ -280,6 +287,11 @@ class Harness:
         if rebuild and self.cache.exists():
             shutil.rmtree(self.cache)
         self.sdk = self.cache / 'sdk'
+        aliases = [(self.sdk, 'SDK'), (self.cache, '<work>'), (ROOT, '<checkout>'), (real_home(), '~')]
+        for path, name in aliases:
+            for form in {str(path), str(path).removeprefix('/private')}:
+                SCRUB.append((form, name))
+        SCRUB.sort(key=lambda pair: -len(pair[0]))
         self.stage = self.cache / 'stage'
         self.logs = self.cache / 'logs'
         self.work = self.cache / 'work'
@@ -531,7 +543,9 @@ class Harness:
             if not ran.ok:
                 undefined = sorted(set(re.findall(r'undefined symbol: (\S+)', ran.err)))
                 undeclared = sorted(set(re.findall(r"undeclared (?:function|identifier) '(\w+)'", ran.err)))
-                detail = (f'{len(undeclared)} undeclared ({", ".join(undeclared[:10])})' if undeclared else
+                headers = sorted(set(re.findall(r"'([\w/]+\.h)' file not found", ran.err)))
+                detail = (f'missing header {", ".join(headers)}' if headers else
+                          f'{len(undeclared)} undeclared ({", ".join(undeclared[:10])})' if undeclared else
                           f'{len(undefined)} undefined ({", ".join(undefined[:10])})' if undefined else ran.why('the compile'))
                 problems.append(f'{arch}: {detail}')
         self.records.set('toolchain/header-symbols', not problems, '; '.join(problems))
@@ -541,12 +555,14 @@ class Harness:
             source = scratch / 'all.c'
             source.write_text('#define _POSIX_C_SOURCE 202405L\n' + ''.join(
                 f'#include <{h}>\n' for h in (lists / 'posix-headers.txt').read_text().split()))
-            ran = self.compile(arch, ['-std=c17', '-M', source.name], scratch, log)
+            ran = self.compile(arch, ['-std=c17', '-M', '-MG', source.name], scratch, log)
             if not ran.ok or not resource.ok:
-                problems.append(f'{arch}: the dependency listing failed')
+                problems.append(f'{arch}: ' + (ran if not ran.ok else resource).why('listing the headers a compile reads'))
                 continue
             allowed = [str(self.sdk.resolve()), str(self.sdk), str(Path(resource.out.strip()).resolve()), resource.out.strip()]
-            paths = [p for p in ran.out.replace('\\\n', ' ').split()[1:] if p != source.name]
+            # -MG lists a missing header by its bare name; only paths say where one was read.
+            paths = [p for p in ran.out.replace('\\\n', ' ').split()[1:] if p != source.name and '/' in p
+                     and os.path.isabs(p)]
             foreign = sorted({str(Path(p).parent) for p in paths
                               if not any(os.path.realpath(p).startswith(a + '/') or p.startswith(a + '/') for a in allowed)})
             if foreign:
@@ -631,7 +647,8 @@ class Harness:
         self.apps[name] = dest
 
     def outside_tree(self, directories):
-        names = self.leak_needles()
+        names = {k: v for k, v in self.leak_needles().items() if v in ('the checkout\'s path', 'the clean clone\'s path',
+                                                                    'the second clone\'s path')}
         found = {}
         for directory in directories:
             for needle, paths in scan(directory, list(names)).items():
@@ -750,7 +767,11 @@ class Harness:
         projects = self.work / 'templates'
         projects.mkdir()
         everyone, made = [], []
-        for name in names or list(REQUIRED_TEMPLATES):
+        for name, slug in REQUIRED_TEMPLATES.items():
+            if name not in names:
+                r.fail(f'templates/{slug}-create', f'breenix-new --list does not name the {name} template')
+                r.fail(f'templates/{slug}-build', f'breenix-new --list does not name the {name} template')
+        for name in names:
             project = f'tmpl-{name}'
             slug = REQUIRED_TEMPLATES.get(name)
             created = run([new, name, project], projects, env, TIMEOUT_TOOL, log)
@@ -858,7 +879,8 @@ class Harness:
         elif not clean_before.ok:
             self.records.fail('install/fsck', 'e2fsck -fn found errors on the disk before the SDK\'s tool touched it')
         else:
-            self.records.set('install/fsck', after.ok, after.why('e2fsck -fn after the installs'))
+            found = [l.strip() for l in after.out.splitlines() if l.strip() and not l.startswith(('e2fsck ', 'Pass '))]
+            self.records.set('install/fsck', after.ok, f'e2fsck -fn exited {after.code} after the installs: ' + ' | '.join(found[:3]))
         records = self.work / 'records'
         if records.exists():
             shutil.rmtree(records)
@@ -875,11 +897,15 @@ class Harness:
 
     def write_tree(self, debugfs, image, source, guest):
         """Copy source's tree to guest on the image, owned by root, as one debugfs batch."""
+        # debugfs's mkdir of a directory that already exists leaks an inode, leaving the
+        # disk inconsistent, so only missing directories are made.
         commands = []
         parts = guest.strip('/').split('/')
         for i in range(1, len(parts) + 1):
-            commands.append(f'mkdir /{"/".join(parts[:i])}')
-        commands += [f'sif {guest} mode 040755', f'sif {guest} uid 0', f'sif {guest} gid 0']
+            directory = '/' + '/'.join(parts[:i])
+            found = subprocess.run([debugfs, '-R', f'stat {directory}', str(image)], capture_output=True, text=True)
+            if 'File not found' in found.stdout + found.stderr:
+                commands += [f'mkdir {directory}', f'sif {directory} mode 040755', f'sif {directory} uid 0', f'sif {directory} gid 0']
         for path in sorted(source.rglob('*')):
             target = f'{guest}/{path.relative_to(source)}'
             if path.is_dir():
