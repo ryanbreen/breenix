@@ -2,6 +2,10 @@
 //! 14 to 16).
 
 use crate::*;
+use libbui::{Key, KeyInput};
+use libbui::focus::FocusChain;
+use libbui::widget::{text_field::TextField, file_picker::FilePickerResult, label::Label};
+use breengel::font::{FontWatcher,FontWatchError,FontChange};
 
 pub(crate) const FONTWATCH: &[Case] = &[
     case("fontwatch-reload", "Changing the configured font makes later text use newly rasterized glyphs of the new font", text_fontwatch_reload),
@@ -79,31 +83,70 @@ pub(crate) const ICONS: &[Case] = &[
 ];
 
 fn text_fontwatch_reload() -> CaseResult {
-    missing("breengel::font::FontWatcher (poll on the UI clock, reload on change)", "9.3")
+let f=FontFixture::new().cite("9.3")?;let mut w=FontWatcher::try_new().map_err(|e|format!("watcher startup: {e:?}")).cite("9.3")?;
+    let old=watch_frame(&mut w,true);f.config("display.ttf",16,"display.ttf",24).cite("9.3")?;
+    f.step(249_999_999).cite("9.1")?;ensure(w.poll()==Ok(None),"9.3","watcher checked before 250ms")?;
+    f.step(250_000_000).cite("9.1")?;
+    ensure(w.poll()==Ok(Some(FontChange{mono:true,display:false})),"9.3","changed mono font was not applied at first check")?;
+    ensure(w.mono_font().is_some_and(|font|font.cache_stats().entries==0),"9.3","changed font retained cached glyphs")?;
+    let new=watch_frame(&mut w,true);ensure(same_pixels(&old,&new).is_some(),"9.3","changing mono font left all pixels unchanged")?;
+    f.assert_frame(&new,"display.ttf",16.0)?;libbreenix::suite::judged(&new.fb())
 }
 
 fn text_fontwatch_size() -> CaseResult {
-    missing("breengel::font::FontWatcher (poll on the UI clock, reload on change)", "9.3")
+let f=FontFixture::new().cite("9.3")?;let mut w=FontWatcher::try_new().map_err(|e|format!("watcher startup: {e:?}")).cite("9.3")?;
+    let old=watch_frame(&mut w,true);f.config("mono.ttf",32,"display.ttf",24).cite("9.3")?;f.step(250_000_000).cite("9.1")?;
+    ensure(w.poll()==Ok(Some(FontChange{mono:true,display:false})) && w.mono_size()==32.0,"9.3","new mono size was not applied")?;
+    ensure(w.mono_font().is_some_and(|font|font.cache_stats().entries==0),"9.3","size change retained old cache entries")?;
+    let new=watch_frame(&mut w,true);ensure(same_pixels(&old,&new).is_some(),"9.3","size change did not change rasterized pixels")?;
+    f.assert_frame(&new,"mono.ttf",32.0)?;libbreenix::suite::judged(&new.fb())
 }
 
 fn text_fontwatch_missing() -> CaseResult {
-    missing("breengel::font::FontWatcher with FontWatchError::Font", "9.3")
+let f=FontFixture::new().cite("9.3")?;let mut w=FontWatcher::try_new().map_err(|e|format!("watcher startup: {e:?}")).cite("9.3")?;
+    let old=watch_frame(&mut w,true);let old_display=watch_frame(&mut w,false);
+    f.config("display.ttf",32,"absent.ttf",40).cite("9.3")?;f.step(250_000_000).cite("9.1")?;
+    ensure(w.poll()==Err(FontWatchError::Font(f.path("absent.ttf"))),"9.3","missing second font did not report its path")?;
+    ensure(w.mono_size()==16.0 && w.display_size()==24.0 && same_pixels(&old,&watch_frame(&mut w,true)).is_none() && same_pixels(&old_display,&watch_frame(&mut w,false)).is_none(),"9.3","missing font partly changed previous fonts")
 }
 
 fn text_fontwatch_malformed_config() -> CaseResult {
-    missing("breengel::font::FontWatcher with FontWatchError::Config", "9.2, 9.3")
+let f=FontFixture::new().cite("9.3")?;let mut w=FontWatcher::try_new().map_err(|e|format!("watcher startup: {e:?}")).cite("9.3")?;
+    let old=watch_frame(&mut w,true);
+    for (i,bad) in ["mono.font=/cut", "mono.font=x\nmono.size=16\ndisplay.font=x\ndisplay.size=NaN\n", "mono.font=x\nmono.size=16\ndisplay.font=x\ndisplay.size=24\nmono.size=18\n", "mono.font=x\nmono.size=73\ndisplay.font=x\ndisplay.size=24\n"].iter().enumerate() {
+        std::fs::write(f.root.join("etc/fonts.conf"),bad).map_err(|e|format!("write config: {e}")).cite("9.2")?;f.step((i as u64+1)*250_000_000).cite("9.1")?;
+        ensure(w.poll()==Err(FontWatchError::Config),"9.2",format!("malformed config {i} was not rejected"))?;
+        ensure(w.mono_size()==16.0 && same_pixels(&old,&watch_frame(&mut w,true)).is_none(),"9.3","malformed configuration changed old pixels")?;
+    }Ok(())
 }
 
 fn text_fontwatch_partial() -> CaseResult {
-    missing("breengel::font::FontWatcher (inode, size and mtime checks)", "9.2, 9.3")
+let f=FontFixture::new().cite("9.3")?;let mut w=FontWatcher::try_new().map_err(|e|format!("watcher startup: {e:?}")).cite("9.3")?;
+    std::fs::write(f.root.join("etc/pending"),"mono.font=/cut").map_err(|e|format!("write partial: {e}")).cite("9.2")?;
+    std::fs::rename(f.root.join("etc/pending"),f.root.join("etc/fonts.conf")).map_err(|e|format!("rename config: {e}")).cite("9.2")?;
+    f.step(250_000_000).cite("9.1")?;ensure(w.poll()==Err(FontWatchError::Config) && w.mono_size()==16.0,"9.3","partial renamed config did not preserve previous size")?;
+    f.config("mono.ttf",28,"display.ttf",24).cite("9.2")?;f.step(500_000_000).cite("9.1")?;
+    ensure(w.poll()==Ok(Some(FontChange{mono:true,display:false})) && w.mono_size()==28.0,"9.3","complete renamed config was not applied")
 }
 
 fn text_fontwatch_repeated() -> CaseResult {
-    missing("breengel::font::FontWatcher (poll on the UI clock, reload on change)", "9.3")
+let f=FontFixture::new().cite("9.3")?;let mut w=FontWatcher::try_new().map_err(|e|format!("watcher startup: {e:?}")).cite("9.3")?;
+    for i in 0..5 {
+        f.config("mono.ttf",20+i,"display.ttf",24).cite("9.2")?;f.step((i as u64+1)*250_000_000).cite("9.1")?;
+        ensure(w.poll()==Ok(Some(FontChange{mono:true,display:false})) && w.mono_size()==(20+i) as f32,"9.3",format!("change {i} was not applied"))?;
+    }
+    let frame=watch_frame(&mut w,true);f.assert_frame(&frame,"mono.ttf",24.0)?;libbreenix::suite::judged(&frame.fb())
 }
 
 fn text_fontwatch_independent() -> CaseResult {
-    missing("breengel::font::FontWatcher (mono and display fonts)", "9.3")
+let f=FontFixture::new().cite("9.3")?;let mut w=FontWatcher::try_new().map_err(|e|format!("watcher startup: {e:?}")).cite("9.3")?;
+    let mono=watch_frame(&mut w,true);let display=watch_frame(&mut w,false);
+    f.config("mono.ttf",16,"mono.ttf",24).cite("9.2")?;f.step(250_000_000).cite("9.1")?;
+    ensure(w.poll()==Ok(Some(FontChange{mono:false,display:true})),"9.3","display change was not independent")?;
+    ensure(same_pixels(&mono,&watch_frame(&mut w,true)).is_none() && same_pixels(&display,&watch_frame(&mut w,false)).is_some(),"9.3","display reload changed mono pixels or failed to change display pixels")?;
+    f.config("display.ttf",16,"mono.ttf",24).cite("9.2")?;let display=watch_frame(&mut w,false);f.step(500_000_000).cite("9.1")?;
+    ensure(w.poll()==Ok(Some(FontChange{mono:true,display:false})),"9.3","mono change was not independent")?;
+    ensure(same_pixels(&display,&watch_frame(&mut w,false)).is_none(),"9.3","mono reload changed display pixels")
 }
 
 fn text_fontwatch_idle() -> CaseResult {
@@ -111,7 +154,14 @@ fn text_fontwatch_idle() -> CaseResult {
 }
 
 fn text_fontwatch_file_replaced() -> CaseResult {
-    missing("breengel::font::FontWatcher (font files compared by inode, size and mtime)", "9.3")
+let f=FontFixture::new().cite("9.3")?;let mut w=FontWatcher::try_new().map_err(|e|format!("watcher startup: {e:?}")).cite("9.3")?;
+    let old=watch_frame(&mut w,true);let config=std::fs::read(f.root.join("etc/fonts.conf")).map_err(|e|format!("read config: {e}")).cite("9.3")?;
+    std::fs::copy(f.root.join("display.ttf"),f.root.join("pending.ttf")).map_err(|e|format!("copy replacement: {e}")).cite("9.3")?;
+    std::fs::rename(f.root.join("pending.ttf"),f.root.join("mono.ttf")).map_err(|e|format!("rename font: {e}")).cite("9.3")?;
+    f.step(250_000_000).cite("9.1")?;ensure(w.poll()==Ok(Some(FontChange{mono:true,display:false})),"9.3","same-path font replacement was not observed")?;
+    ensure(std::fs::read(f.root.join("etc/fonts.conf")).ok()==Some(config),"9.3","fixture changed fonts.conf during same-path replacement")?;
+    let frame=watch_frame(&mut w,true);ensure(same_pixels(&old,&frame).is_some(),"9.3","same-path replacement left old glyphs cached")?;
+    f.assert_frame(&frame,"display.ttf",16.0)?;libbreenix::suite::judged(&frame.fb())
 }
 
 // ---------------------------------------------------------------------------------------
@@ -119,7 +169,7 @@ fn text_fontwatch_file_replaced() -> CaseResult {
 // ---------------------------------------------------------------------------------------
 
 fn input(x: i32, y: i32, down: bool, pressed: bool, released: bool) -> InputState {
-    InputState { mouse_x: x, mouse_y: y, mouse_down: down, mouse_pressed: pressed, mouse_released: released }
+    InputState { time_ms: 0, mouse_x: x, mouse_y: y, mouse_down: down, mouse_pressed: pressed, mouse_released: released }
 }
 fn hover(x: i32, y: i32) -> InputState { input(x, y, false, false, false) }
 fn press(x: i32, y: i32) -> InputState { input(x, y, true, true, false) }
@@ -174,7 +224,17 @@ fn widgets_button_cancel() -> CaseResult {
 }
 
 fn widgets_button_disabled() -> CaseResult {
-    missing("Button::set_enabled (a disabled state)", "14.2")
+let theme=Theme::dark();
+    let mut b=Button::new(Rect::new(10,8,60,20),b"OK");
+    b.set_enabled(false);
+    ensure(events(|i| b.update(i),&[hover(30,15),press(30,15),release(30,15)]).is_empty(),"14.2","disabled button emitted an event")?;
+    let mut g=Guarded::bgrx(100,40);g.reset(PAPER);b.draw(&mut g.fb(),&theme);
+    same_as(&g,PAPER,"disabled button","14.2",|fb| {
+        shapes::fill_rect(fb,10,8,60,20,theme.widget_bg);
+        shapes::draw_rect(fb,10,8,60,20,theme.border);
+        font5x7::draw_text(fb,b"OK",34,14,theme.text_secondary,1);
+    })?;
+    libbreenix::suite::judged(&g.fb())
 }
 
 fn widgets_checkbox_toggle() -> CaseResult {
@@ -198,7 +258,13 @@ fn widgets_checkbox_toggle() -> CaseResult {
 }
 
 fn widgets_checkbox_space() -> CaseResult {
-    missing("keyboard input to widgets (KeyInput and Checkbox::key)", "14.2, 14.3")
+let mut c=Checkbox::new(Rect::new(10,10,100,20),b"Opt");
+    ensure(c.key(&KeyInput::new(Key::Space)) == WidgetEvent::None && !c.checked,"14.3","unfocused checkbox toggled")?;
+    c.set_focused(true);
+    ensure(c.key(&KeyInput::new(Key::Space)) == WidgetEvent::Toggled(true) && c.checked,"14.3","Space did not toggle the focused checkbox")?;
+    ensure(c.key(&KeyInput::new(Key::Space)) == WidgetEvent::Toggled(false) && !c.checked,"14.3","second Space did not toggle back")?;
+    c.set_enabled(false);
+    ensure(c.key(&KeyInput::new(Key::Space)) == WidgetEvent::None && !c.checked,"14.2","disabled checkbox toggled")
 }
 
 /// The slider's value for a pointer at `x`, from the contract's formula (section 14.3).
@@ -222,11 +288,23 @@ fn widgets_slider_clamp() -> CaseResult {
 }
 
 fn widgets_slider_keys() -> CaseResult {
-    missing("keyboard input to widgets (KeyInput and Slider::key with a step size)", "14.2, 14.3")
+let mut slider=Slider::new(Rect::new(0,0,112,20),10.0,20.0);slider.set_step(3.0);
+    ensure(slider.key(&KeyInput::new(Key::Right)) == WidgetEvent::None,"14.3","unfocused slider responded to a key")?;
+    slider.set_focused(true);
+    for (key,want,event) in [(Key::Right,13.0,true),(Key::Right,16.0,true),(Key::Right,19.0,true),(Key::Right,20.0,true),(Key::Right,20.0,false),(Key::Left,17.0,true),(Key::Left,14.0,true),(Key::Left,11.0,true),(Key::Left,10.0,true),(Key::Left,10.0,false)] {
+        let got=slider.key(&KeyInput::new(key));
+        ensure(slider.mapped_value()==want && got==if event {WidgetEvent::ValueChanged(want)} else {WidgetEvent::None},"14.3",format!("slider {key:?} gave {got:?}, value {}; expected {want}",slider.mapped_value()))?;
+    } Ok(())
 }
 
 fn widgets_label_clip() -> CaseResult {
-    missing("libbui Label clipping with an ellipsis", "14.3")
+let theme=Theme::dark();let mut g=Guarded::bgrx(80,40);g.reset(PAPER);
+    Label::new(Rect::new(10,8,35,7),b"ABCDEFGHIJKLM").draw(&mut g.fb(),&theme);
+    same_as(&g,PAPER,"35-pixel clipped label","14.3",|fb| font5x7::draw_text(fb,b"ABC...",10,8,theme.text_primary,1))?;
+    g.reset(PAPER);Label::new(Rect::new(10,8,12,3),b"ABCDEFGHIJKLM").draw(&mut g.fb(),&theme);
+    for y in 0..40 {for x in 0..80 {if !in_rect(x as i64,y as i64,10,8,12,3) {ensure(g.color(x,y)==PAPER,"14.3",format!("small label wrote outside bounds at {x},{y}"))?;}}}
+    ensure(drawn_pixels(&g,PAPER)>0,"14.3","small label drew no visible ellipsis")?;
+    libbreenix::suite::judged(&g.fb())
 }
 
 fn widgets_tabbar_select() -> CaseResult {
@@ -240,7 +318,17 @@ fn widgets_tabbar_select() -> CaseResult {
 }
 
 fn widgets_tabbar_overflow() -> CaseResult {
-    missing("TabBar scrolling (scroll_by) when tabs do not fit", "14.3")
+let mut tabs=TabBar::new(Rect::new(10,8,70,24),vec![b"First",b"Second",b"Third",b"Fourth",b"Fifth"]);
+    for i in 0..5 {
+        tabs.scroll_by(if i==0 {0} else {1});
+        tabs.update(&press(20,18));let event=tabs.update(&release(20,18));
+        ensure(tabs.selected()==i && event==if i==0 {WidgetEvent::None} else {WidgetEvent::ValueChanged(i as f32)},"14.3",format!("scrolled tab {i} was unreachable: selected {} event {event:?}",tabs.selected()))?;
+    }
+    tabs.scroll_by(-100);tabs.update(&release(20,18));
+    ensure(tabs.selected()==0,"14.3","scrolling back did not reach first tab")?;
+    let mut g=Guarded::bgrx(100,50);g.reset(PAPER);tabs.draw(&mut g.fb(),&Theme::dark());
+    for y in 0..50 {for x in 0..100 {if !in_rect(x as i64,y as i64,10,8,70,24) {ensure(g.color(x,y)==PAPER,"14.3",format!("overflowing tab wrote outside bar at {x},{y}"))?;}}}
+    libbreenix::suite::judged(&g.fb())
 }
 
 fn widgets_scrollbar_drag() -> CaseResult {
@@ -338,7 +426,13 @@ fn widgets_menubar_shortcut() -> CaseResult {
 }
 
 fn widgets_menu_keys() -> CaseResult {
-    missing("keyboard navigation of an open menu (MenuBar::key)", "14.3")
+let (mut menu,_)=open_menu();
+    for (key,want) in [(Key::Down,0),(Key::Down,2),(Key::Down,4),(Key::Down,0),(Key::Up,4)] {
+        ensure(menu.key(&KeyInput::new(key))==MenuEvent::None && menu.highlighted()==Some(want),"14.3",format!("menu {key:?} did not highlight enabled item {want}"))?;
+    }
+    ensure(menu.key(&KeyInput::new(Key::Enter))==MenuEvent::Activated(4) && !menu.is_open(),"14.3","Enter did not activate Quit and close")?;
+    let (mut menu,_)=open_menu();
+    ensure(menu.key(&KeyInput::new(Key::Escape))==MenuEvent::None && !menu.is_open(),"14.3","Escape did not close without activation")
 }
 
 fn widgets_menu_disabled() -> CaseResult {
@@ -389,38 +483,113 @@ fn widgets_layout_stack() -> CaseResult {
 }
 
 fn widgets_focus_ring() -> CaseResult {
-    missing("widget focus and the theme's focus ring (Theme::focus_ring)", "14.1, 14.3")
+let rect=Rect::new(20,20,100,24);let theme=Theme::dark();
+    ensure(theme.focus_ring==Color::rgb(255,200,60),"14.1","focus ring colour differs from literal theme")?;
+    let mut b=Button::new(rect,b"OK");let mut c=Checkbox::new(rect,b"Opt");let mut slider=Slider::new(rect,0.0,1.0);
+    let mut tabs=TabBar::new(rect,vec![b"One",b"Two"]);let mut field=TextField::new(rect,30);
+    let mut g=Guarded::bgrx(150,70);
+    for focused in [false,true] {
+        b.set_focused(focused);c.set_focused(focused);slider.set_focused(focused);tabs.set_focused(focused);field.set_focused(focused);
+        for kind in 0..5 {
+            g.reset(PAPER);match kind {0=>b.draw(&mut g.fb(),&theme),1=>c.draw(&mut g.fb(),&theme),2=>slider.draw(&mut g.fb(),&theme),3=>tabs.draw(&mut g.fb(),&theme),_=>field.draw(&mut g.fb(),&theme)};
+            for y in 18..46 {for x in 18..122 {
+                if x==18 || x==121 || y==18 || y==45 {
+                    let want=if focused {theme.focus_ring} else {PAPER};
+                    ensure(g.color(x,y)==want,"14.3",format!("widget {kind} focused={focused} ring differs at {x},{y}"))?;
+                }
+            }}
+        }
+    }
+    libbreenix::suite::judged(&g.fb())
 }
 
 fn widgets_no_change_ack() -> CaseResult {
-    missing("Widget::last_update_redraw (whether an update changed what the widget draws)", "14.2")
+let mut b=Button::new(Rect::new(10,10,80,24),b"OK");
+    b.update(&hover(0,0));ensure(!b.last_update_redraw(),"14.2","unchanged outside pointer requested redraw")?;
+    b.update(&hover(20,20));ensure(b.last_update_redraw(),"14.2","entering hover did not request redraw")?;
+    b.update(&hover(21,21));ensure(!b.last_update_redraw(),"14.2","moving within hover requested redraw")?;
+    b.update(&press(21,21));ensure(b.last_update_redraw(),"14.2","press did not request redraw")?;
+    b.update(&hold(22,22));ensure(!b.last_update_redraw(),"14.2","unchanged held state requested redraw")?;
+    let mut c=Checkbox::new(Rect::new(10,10,80,24),b"Opt");c.set_focused(true);
+    c.key(&KeyInput::new(Key::Left));ensure(!c.last_update_redraw(),"14.2","irrelevant checkbox key requested redraw")?;
+    let mut f=entry_field(10);f.key(&KeyInput::new(Key::Left));
+    ensure(!f.last_update_redraw(),"14.2","cursor clamped at start requested redraw")
 }
 
 // ---------------------------------------------------------------------------------------
 // text-entry: text fields, focus & file picker (contract section 15)
 // ---------------------------------------------------------------------------------------
 
-fn no_text_field() -> CaseResult {
-    missing("libbui::widget::text_field::TextField", "15")
-}
 
-fn no_focus_chain() -> CaseResult {
-    missing("libbui::focus::FocusChain", "15")
-}
 
-fn text_entry_insert() -> CaseResult { no_text_field() }
-fn text_entry_delete() -> CaseResult { no_text_field() }
-fn text_entry_move() -> CaseResult { no_text_field() }
-fn text_entry_select() -> CaseResult { no_text_field() }
-fn text_entry_utf8() -> CaseResult { no_text_field() }
-fn text_entry_maxlen() -> CaseResult { no_text_field() }
-fn text_entry_scroll_to_cursor() -> CaseResult { no_text_field() }
-fn text_entry_selection_text() -> CaseResult { no_text_field() }
-fn text_entry_paste_insert() -> CaseResult { no_text_field() }
-fn text_entry_focus_tab() -> CaseResult { no_focus_chain() }
-fn text_entry_focus_shift_tab() -> CaseResult { no_focus_chain() }
-fn text_entry_focus_skip_disabled() -> CaseResult { no_focus_chain() }
-fn text_entry_focus_click() -> CaseResult { no_focus_chain() }
+fn text_entry_insert() -> CaseResult {
+let mut f=entry_field(40);f.key(&KeyInput::text("abcd"));f.key(&KeyInput::new(Key::Left));f.key(&KeyInput::text("XY"));
+    ensure(f.text()=="abcXYd" && f.cursor()==5,"15",format!("insertion produced {:?} cursor {}",f.text(),f.cursor()))
+}
+fn text_entry_delete() -> CaseResult {
+let mut f=entry_field(40);f.insert_str("abcde");f.key(&KeyInput::new(Key::Left));f.key(&KeyInput::new(Key::Backspace));
+    ensure(f.text()=="abce" && f.cursor()==3,"15","Backspace did not remove d as one scalar")?;
+    f.key(&KeyInput::new(Key::Delete));ensure(f.text()=="abc" && f.cursor()==3,"15","Delete did not remove e")?;
+    f.key(&KeyInput::new(Key::End));f.key(&KeyInput::new(Key::Delete));
+    f.key(&KeyInput::new(Key::Home));f.key(&KeyInput::new(Key::Backspace));
+    ensure(f.text()=="abc" && f.cursor()==0,"15","delete at ends changed the string")
+}
+fn text_entry_move() -> CaseResult {
+let mut f=entry_field(40);f.insert_str("aé中🦀");
+    for (key,want) in [(Key::Home,0),(Key::Left,0),(Key::Right,1),(Key::Right,2),(Key::End,4),(Key::Right,4),(Key::Left,3)] {
+        f.key(&KeyInput::new(key));ensure(f.cursor()==want,"15",format!("{key:?} cursor {} expected {want}",f.cursor()))?;
+    }Ok(())
+}
+fn text_entry_select() -> CaseResult {
+let mut f=entry_field(40);f.insert_str("abcdef");
+    f.key(&shift_key(Key::Left));f.key(&shift_key(Key::Left));
+    ensure(f.selection()==Some((4,6)),"15","Shift+Left did not select ef")?;
+    f.key(&KeyInput::text("Q"));ensure(f.text()=="abcdQ" && f.cursor()==5 && f.selection().is_none(),"15","typing did not replace ef and collapse selection")
+}
+fn text_entry_utf8() -> CaseResult {
+let mut f=entry_field(40);f.insert_str("aé中🦀");
+    ensure(f.cursor()==4,"15","cursor counted UTF-8 bytes")?;
+    f.key(&KeyInput::new(Key::Backspace));f.key(&KeyInput::new(Key::Left));f.key(&KeyInput::new(Key::Delete));
+    ensure(f.text()=="aé" && f.cursor()==2,"15",format!("Unicode scalar deletion produced {:?}, cursor {}",f.text(),f.cursor()))
+}
+fn text_entry_maxlen() -> CaseResult {
+let mut f=entry_field(4);ensure(f.insert_str("é中🦀"),"15","valid three-scalar paste refused")?;
+    ensure(!f.insert_str("xy") && f.text()=="é中🦀" && f.cursor()==3,"15","overflowing paste was partly inserted")?;
+    f.key(&shift_key(Key::Left));ensure(!f.insert_str("abc") && f.selected_text()=="🦀","15","refused replacement changed selection")?;
+    ensure(f.insert_str("ab") && f.text()=="é中ab" && f.cursor()==4,"15","replacement did not count removed selection")
+}
+fn text_entry_scroll_to_cursor() -> CaseResult {
+let mut f=entry_field(100);f.insert_str("abcdefghijklmnopqrstuvwxyz");
+    ensure(f.scroll_offset()>0 && f.cursor_x()>=14 && f.cursor_x()<70,"15","end cursor not visible in 60px field")?;
+    f.key(&KeyInput::new(Key::Home));ensure(f.scroll_offset()==0 && f.cursor_x()==14,"15","Home did not reveal the first column")?;
+    let mut g=Guarded::bgrx(100,50);g.reset(PAPER);f.draw(&mut g.fb(),&Theme::dark());
+    for y in 0..50 {for x in 0..100 {if !in_rect(x as i64,y as i64,8,8,64,24) {ensure(g.color(x,y)==PAPER,"15","scrolling field wrote outside bounds and focus ring")?;}}}
+    libbreenix::suite::judged(&g.fb())
+}
+fn text_entry_selection_text() -> CaseResult {
+let mut f=entry_field(40);f.insert_str("aé中🦀z");f.key(&KeyInput::new(Key::Left));
+    for _ in 0..3 {f.key(&shift_key(Key::Left));}
+    ensure(f.selection()==Some((1,4)) && f.selected_text()=="é中🦀","15",format!("selected {:?}, range {:?}",f.selected_text(),f.selection()))
+}
+fn text_entry_paste_insert() -> CaseResult {
+let mut f=entry_field(40);f.insert_str("abcde");f.key(&KeyInput::new(Key::Left));f.key(&shift_key(Key::Left));f.key(&shift_key(Key::Left));
+    ensure(f.insert_str("é🦀中") && f.text()=="abé🦀中e" && f.cursor()==5 && f.selection().is_none(),"15","paste did not replace cd with three scalars")
+}
+fn text_entry_focus_tab() -> CaseResult {
+let mut f=focus_fixture();for want in [0,1,2,0,1] {ensure(f.key(&KeyInput::new(Key::Tab))==Some(want),"15",format!("Tab did not focus {want}"))?;}Ok(())
+}
+fn text_entry_focus_shift_tab() -> CaseResult {
+let mut f=focus_fixture();for want in [2,1,0,2] {ensure(f.key(&shift_key(Key::Tab))==Some(want),"15",format!("Shift+Tab did not focus {want}"))?;}Ok(())
+}
+fn text_entry_focus_skip_disabled() -> CaseResult {
+let mut f=focus_fixture();f.set_enabled(1,false);for want in [0,2,0,2] {ensure(f.key(&KeyInput::new(Key::Tab))==Some(want),"15",format!("Tab did not skip disabled 1 to {want}"))?;}
+    f.set_enabled(0,false);f.set_enabled(2,false);ensure(f.key(&KeyInput::new(Key::Tab)).is_none(),"15","all-disabled chain retained a focus")
+}
+fn text_entry_focus_click() -> CaseResult {
+let mut f=focus_fixture();ensure(f.update(&press(65,15))==Some(2),"15","press did not focus third widget")?;
+    f.set_enabled(1,false);ensure(f.update(&press(35,15))==Some(2),"15","disabled widget stole focus")?;
+    ensure(f.update(&release(5,15))==Some(2),"15","release moved focus without a press")
+}
 
 fn text_entry_filepicker_list() -> CaseResult {
     let theme = Theme::dark();
@@ -439,23 +608,45 @@ fn text_entry_filepicker_list() -> CaseResult {
 }
 
 fn text_entry_filepicker_keys() -> CaseResult {
-    missing("keyboard input to the file picker (FilePicker::key)", "15")
+let mut p=picker_fixture(5);p.key(&KeyInput::new(Key::Down));
+    ensure(p.selected_entry().is_some_and(|e|e.is_dir && e.name==b"Dir"),"15","Down did not select first directory")?;
+    ensure(p.key(&KeyInput::new(Key::Enter))==FilePickerResult::NavigateDir(0),"15","Enter did not open directory")?;
+    p.key(&KeyInput::new(Key::Down));ensure(p.key(&KeyInput::new(Key::Enter))==FilePickerResult::Selected(1),"15","Enter did not open first file")?;
+    p.key(&KeyInput::new(Key::Up));ensure(p.selected_entry().is_some_and(|e|e.name==b"Dir"),"15","Up did not return to directory")
 }
 
 fn text_entry_filepicker_path() -> CaseResult {
-    missing("the file picker's path field", "15")
+let mut p=picker_fixture(5);p.key(&KeyInput::new(Key::Tab));p.key(&KeyInput::new(Key::Home));p.key(&shift_key(Key::End));
+    p.key(&KeyInput::text("/new/é"));ensure(p.key(&KeyInput::new(Key::Enter))==FilePickerResult::NavigatePath("/new/é".as_bytes().to_vec()),"15","typed path did not emit exact navigation request")
 }
 
 fn text_entry_filepicker_mouse() -> CaseResult {
-    missing("InputState timestamps (time_ms) for the file picker's double click", "15")
+let mut p=picker_fixture(5);
+    for (time,x,want) in [(1000,50,FilePickerResult::Active),(1401,50,FilePickerResult::Active),(1801,55,FilePickerResult::Active),(2201,59,FilePickerResult::NavigateDir(0))] {
+        let got=p.update(&press(x,30).with_time(time));
+        ensure(got==want,"15",format!("press at {time}ms x={x} gave {got:?}, expected {want:?}"))?;
+        p.update(&release(x,30).with_time(time));
+    }Ok(())
 }
 
 fn text_entry_filepicker_scroll() -> CaseResult {
-    missing("file picker scrolling by keys and wheel", "15")
+let mut p=picker_fixture(60);p.key(&KeyInput::new(Key::End));
+    ensure(p.selected_entry().is_some_and(|e|e.name==b"file059") && p.scroll_offset()>0,"15","End did not reveal final row")?;
+    p.key(&KeyInput::new(Key::Home));ensure(p.scroll_offset()==0,"15","Home did not scroll to start")?;
+    p.scroll(-1);ensure(p.scroll_offset()==3,"15","wheel did not scroll three rows")?;
+    p.scroll(1);ensure(p.scroll_offset()==0,"15","wheel up did not scroll back")?;
+    p.key(&KeyInput::new(Key::PageDown));ensure(p.scroll_offset()>0,"15","PageDown did not reveal selected row beyond first page")?;
+    p.key(&KeyInput::new(Key::PageUp));ensure(p.scroll_offset()==0,"15","PageUp did not reveal top row")
 }
 
 fn text_entry_filepicker_errors() -> CaseResult {
-    missing("FilePicker::show_error (a directory's read error in the list)", "15")
+let mut p=picker_fixture(5);p.show_error(b"Permission denied");
+    ensure(p.error()==Some(&b"Permission denied"[..]) && p.selected_entry().is_none(),"15","picker did not retain error and remove entries")?;
+    let mut g=Guarded::bgrx(320,250);g.reset(PAPER);p.draw(&mut g.fb(),&Theme::dark());
+    let mut expected=Guarded::bgrx(101,7);expected.reset(Theme::dark().panel_bg);font5x7::draw_text(&mut expected.fb(),b"Permission denied",0,0,Color::WHITE,1);
+    for y in 0..7 {for x in 0..101 {ensure(g.color(x+5,y+29)==expected.color(x,y),"15",format!("error text differs at {x},{y}"))?;}}
+    ensure(p.key(&KeyInput::new(Key::Enter))==FilePickerResult::Active,"15","Enter activated a stale entry under error")?;
+    libbreenix::suite::judged(&g.fb())
 }
 
 // ---------------------------------------------------------------------------------------
@@ -549,7 +740,22 @@ fn icons_step_invariance() -> CaseResult {
 }
 
 fn icons_settles() -> CaseResult {
-    missing("Icon::settled", "16")
+for (name,make) in catalogue() {
+        let mut icon=make();
+        icon.update(251_000,mouse(true,false,false,false));
+        icon.update(1_000,mouse(true,true,true,false));
+        icon.update(50_000,mouse(true,true,false,false));
+        icon.update(1_000,mouse(true,false,false,true));
+        icon.update(120_000,mouse(true,false,false,false));
+        icon.update(2_000_000,IconMouse::none());
+        ensure(icon.settled(),"16",format!("{name} did not settle within 2000ms of final input"))?;
+        let frame=drawn(&*icon,48);icon.update(100_000,IconMouse::none());
+        ensure(same_pixels(&frame,&drawn(&*icon,48)).is_none(),"16",format!("{name} kept drawing animation after reporting settled"))?;
+        let half=24+icon.bounds_overflow();
+        for y in 0..160 {for x in 0..160 {if !in_rect(x as i64,y as i64,(80-half) as i64,(80-half) as i64,(2*half) as i64,(2*half) as i64) {
+            ensure(frame.color(x,y)==PAPER,"16",format!("settled {name} wrote outside its box at {x},{y}"))?;
+        }}}
+    }Ok(())
 }
 
 fn icons_interrupt() -> CaseResult {
@@ -569,7 +775,16 @@ fn icons_interrupt() -> CaseResult {
 }
 
 fn icons_reversal() -> CaseResult {
-    missing("Icon::hover_amount (a continuous hover position)", "16")
+for (name,make) in catalogue() {
+        let mut icon=make();icon.update(101_000,mouse(true,false,false,false));
+        let previous=icon.hover_amount();
+        ensure(previous>0.0 && previous<1.0,"16",format!("{name} has no intermediate hover position: {previous}"))?;
+        icon.update(0,IconMouse::none());ensure(icon.hover_amount()==previous,"16",format!("{name} jumped on zero-time reversal"))?;
+        icon.update(1_000,IconMouse::none());let after=icon.hover_amount();
+        ensure(after>=0.0 && after<previous && previous-after <= 0.0051,"16",format!("{name} reversal jumped from {previous} to {after}"))?;
+        icon.update(50_000,IconMouse::none());let before=icon.hover_amount();
+        icon.update(0,mouse(true,false,false,false));ensure(icon.hover_amount()==before,"16",format!("{name} jumped on second reversal"))?;
+    }Ok(())
 }
 
 fn icons_reset() -> CaseResult {
@@ -665,17 +880,34 @@ fn icons_sin_approx() -> CaseResult {
 }
 
 fn icons_particles_bounded() -> CaseResult {
-    let mut pool = ParticlePool::new(8);
+let mut pool=ParticlePool::with_bounds(8,-12.0,-10.0,12.0,10.0);
     for i in 0..20 {
-        pool.emit(Particle { x: 0.0, y: 0.0, vx: i as f32 * 0.1, vy: -0.2, life: 1.0, max_life: 1.0, size: 2.0,
-            color: Color::rgb(200, 200, 200), gravity: 0.5, friction: 0.1 });
-        ensure(pool.active_count() <= 8, "16", format!("after {} emits a pool of 8 holds {} live particles", i + 1, pool.active_count()))?;
+        pool.emit(Particle {x:0.0,y:0.0,vx:100.0+i as f32,vy:-120.0,life:1.0,max_life:1.0,size:2.0,color:Color::WHITE,gravity:1000.0,friction:0.1});
+        ensure(pool.active_count()<=8,"16","particle count exceeded capacity")?;
     }
-    missing("ParticlePool::with_bounds (the count stays within the cap; positions are not confined)", "16")
+    let mut g=Guarded::bgrx(80,80);g.reset(PAPER);
+    for _ in 0..1000 {
+        pool.update(0.001);
+        for p in &pool.particles {if p.alive() {ensure(p.x>=-11.0 && p.x<=11.0 && p.y>=-9.0 && p.y<=9.0,"16",format!("particle escaped bounds at {},{}",p.x,p.y))?;}}
+        pool.draw(&mut g.fb(),40,40);
+    }
+    ensure(drawn_pixels(&g,PAPER)>0,"16","bounded pool drew nothing")?;
+    for y in 0..80 {for x in 0..80 {if !in_rect(x as i64,y as i64,28,30,24,20) {ensure(g.color(x,y)==PAPER,"16",format!("particle footprint escaped at {x},{y}"))?;}}}
+    ensure(pool.active_count()==0,"16","expired particles remained live")?;
+    libbreenix::suite::judged(&g.fb())
 }
 
 fn icons_assets() -> CaseResult {
-    reference("icons/assets.png")
+let path="/usr/local/test/share/breengel/frames/icons/assets.png";
+    let bytes=std::fs::read(path).map_err(|e|format!("reviewed icon reference is absent: {e}")).cite("8.6,16")?;
+    let reference=libimg::png::decode(&bytes).map_err(|e|format!("reviewed icon PNG cannot be decoded: {e:?}")).cite("8.6,16")?;
+    ensure(reference.width==640 && reference.height==512,"8.6,16","reviewed icon scene is not 640x512")?;
+    let mut g=Guarded::bgrx(640,512);g.reset(Color::rgb(12,19,31));libicon::draw_catalogue(&mut g.fb());
+    for y in 0..512 {for x in 0..640 {let i=(y*640+x)*4;
+        let want=Color::rgb(reference.pixels[i+2],reference.pixels[i+1],reference.pixels[i]);
+        ensure(g.color(x,y)==want,"8.6,16",format!("catalogue differs from reviewed scene at {x},{y}: actual {} expected {}",hex(g.color(x,y)),hex(want)))?;
+    }}
+    libbreenix::suite::judged(&g.fb())
 }
 const EASING_TABLE: &[(&str, [f64; 11])] = &[
     ("linear", [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]),
@@ -696,3 +928,58 @@ const SPRING_TABLE: &[(u32, f64, f64)] = &[
     (500, 0.992322, 0.098756),
     (1000, 0.999973, 0.000876),
 ];
+
+fn entry_field(max:usize)->TextField {let mut f=TextField::new(Rect::new(10,10,60,20),max);f.set_focused(true);f}
+fn shift_key(key:Key)->KeyInput<'static> {KeyInput {shift:true,..KeyInput::new(key)}}
+fn focus_fixture()->FocusChain {let mut f=FocusChain::new();for i in 0..3 {f.add(Rect::new(i*30,10,20,20));}f}
+fn picker_fixture(files:usize)->FilePicker {
+    let mut entries=vec![FileEntry {name:b"Dir".to_vec(),is_dir:true,size:0}];
+    for i in (0..files).rev() {entries.push(FileEntry {name:format!("file{i:03}").into_bytes(),is_dir:false,size:10});}
+    FilePicker::new(Rect::new(0,0,300,240),b"/data".to_vec(),entries,&Theme::dark())
+}
+
+struct FontFixture {root:std::path::PathBuf,old_root:Option<std::ffi::OsString>,old_clock:Option<std::ffi::OsString>}
+impl FontFixture {
+    fn new()->Result<Self,String> {
+        let root=std::path::PathBuf::from(format!("/tmp/breengel-font-{}",process::getpid().map_err(|e|format!("getpid: {e}"))?.raw()));
+        std::fs::create_dir_all(root.join("etc")).map_err(|e|format!("create font fixture: {e}"))?;
+        std::fs::copy("/usr/share/fonts/DejaVuSansMono.ttf",root.join("mono.ttf")).map_err(|e|format!("copy mono: {e}"))?;
+        std::fs::copy("/usr/share/fonts/DejaVuSans.ttf",root.join("display.ttf")).map_err(|e|format!("copy display: {e}"))?;
+        let mut page=[0u8;4096];page[..8].copy_from_slice(b"BGCLK001");page[24..32].copy_from_slice(&1_767_225_600_000_000_000u64.to_le_bytes());
+        std::fs::write(root.join("clock"),page).map_err(|e|format!("write clock page: {e}"))?;
+        let f=Self {root,old_root:std::env::var_os("BREENIX_CONFIG_ROOT"),old_clock:std::env::var_os("BREENIX_UI_CLOCK")};
+        f.config("mono.ttf",16,"display.ttf",24)?;
+        std::env::set_var("BREENIX_CONFIG_ROOT",&f.root);std::env::set_var("BREENIX_UI_CLOCK",f.root.join("clock"));Ok(f)
+    }
+    fn path(&self,name:&str)->String {self.root.join(name).to_string_lossy().into_owned()}
+    fn config(&self,mono:&str,ms:u32,display:&str,ds:u32)->Result<(),String> {
+        let contents=format!("mono.font={}\nmono.size={ms}\ndisplay.font={}\ndisplay.size={ds}\n",self.path(mono),self.path(display));
+        std::fs::write(self.root.join("etc/pending"),contents).map_err(|e|format!("write fonts.conf: {e}"))?;
+        std::fs::rename(self.root.join("etc/pending"),self.root.join("etc/fonts.conf")).map_err(|e|format!("replace fonts.conf: {e}"))
+    }
+    fn step(&self,ns:u64)->Result<(),String> {
+        use std::io::{Seek,SeekFrom,Write};
+        let mut file=std::fs::OpenOptions::new().write(true).open(self.root.join("clock")).map_err(|e|format!("open clock: {e}"))?;
+        file.seek(SeekFrom::Start(8)).map_err(|e|format!("clock seek: {e}"))?;
+        file.write_all(&(ns/250_000_000).to_le_bytes()).map_err(|e|format!("write clock epoch: {e}"))?;
+        file.write_all(&ns.to_le_bytes()).map_err(|e|format!("write UI time: {e}"))
+    }
+    fn assert_frame(&self,got:&Guarded,path:&str,size:f32)->CaseResult {
+        let bytes=std::fs::read(self.root.join(path)).map_err(|e|format!("read expected font: {e}")).cite("9.3")?;
+        let mut font=CachedFont::new(Font::parse(&bytes).map_err(|e|format!("parse expected font: {e}")).cite("9.3")?,256);
+        same_as(got,PAPER,"reloaded font pixels","9.3",|fb| {ttf_font::draw_text(fb,&mut font,"Wi é A",8,40,size,Color::WHITE);})
+    }
+}
+impl Drop for FontFixture {
+    fn drop(&mut self) {
+        if let Some(v)=&self.old_root {std::env::set_var("BREENIX_CONFIG_ROOT",v);} else {std::env::remove_var("BREENIX_CONFIG_ROOT");}
+        if let Some(v)=&self.old_clock {std::env::set_var("BREENIX_UI_CLOCK",v);} else {std::env::remove_var("BREENIX_UI_CLOCK");}
+        let _=std::fs::remove_dir_all(&self.root);
+    }
+}
+fn watch_frame(w:&mut FontWatcher,mono:bool)->Guarded {
+    let mut g=Guarded::bgrx(200,70);g.reset(PAPER);
+    let size=if mono {w.mono_size()} else {w.display_size()};
+    let font=if mono {w.mono_font()} else {w.display_font()}.expect("loaded watcher font");
+    ttf_font::draw_text(&mut g.fb(),font,"Wi é A",8,40,size,Color::WHITE);g
+}
