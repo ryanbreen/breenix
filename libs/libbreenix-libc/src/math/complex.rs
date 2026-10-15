@@ -314,14 +314,23 @@ fn cpow_finite(zv: Z, wv: Z, f: &Format) -> (Bits, Bits) {
     let pi_ = wr.mul(lim).add(wi.mul(lre));
     let (pn, ps, pe) = parts(pi_);
     let (s, c) = if pi_.is_zero() { (X::ZERO, X::ONE) } else { sincos(pn, ps, pe) };
-    if pr.cmp(X::from_f64(12000.0)) == Ordering::Greater {
-        return (overflow(c.is_neg(), f), overflow(s.is_neg(), f));
-    }
-    if pr.cmp(X::from_f64(-12000.0)) == Ordering::Less {
-        return (underflow(c.is_neg(), f), underflow(s.is_neg(), f));
-    }
-    let e = exp_x(pr);
-    (round_x(e.mul(c), c.is_neg(), f), round_x(e.mul(s), s.is_neg(), f))
+    // e^pr times each part, rounded once. An exactly zero part stays zero (C17 G.6.4.1:
+    // cpow(2, 20000) is (+inf, +0)). Beyond |pr| = 10^6 a nonzero part overflows or
+    // underflows outright: a nonzero sine is at least |pi_| / 2, above e^-23000, and a
+    // cosine of a value with a 107-bit significand comes nowhere near e^-10^5.
+    let big = X::from_f64(1.0e6);
+    let e = if pr.cmp_abs(big) == Ordering::Greater { None } else { Some(exp_x(pr)) };
+    let part = |v: X| -> Bits {
+        if v.is_zero() {
+            return zero(f);
+        }
+        match e {
+            Some(e) => round_x(e.mul(v), v.is_neg(), f),
+            None if pr.is_neg() => underflow(v.is_neg(), f),
+            None => overflow(v.is_neg(), f),
+        }
+    };
+    (part(c), part(s))
 }
 
 fn cpow(zv: Z, wv: Z, f: &Format) -> (Bits, Bits) {
@@ -1267,6 +1276,16 @@ mod tests {
         assert_eq!(pow(2.0, 0.0, 10.0, 0.0), (1024.0, 0.0));
         assert_eq!(pow(5.0, 3.0, 0.0, 0.0), (1.0, 0.0));
         assert_eq!(pow(0.0, 0.0, 2.0, 1.0), (0.0, 0.0));
+        // C17 G.6.4.1: a zero part stays zero beside an overflowing one.
+        let (r, i) = pow(2.0, 0.0, 20000.0, 0.0);
+        assert!(r == f64::INFINITY && i == 0.0 && i.is_sign_positive(), "2^20000 = ({r}, {i})");
+        // (2 + 2^-16000 i)^20000 in binary128: the real part overflows, but the imaginary part,
+        // about 20000 2^3999, lies in the format's range.
+        let q = |e: u128, frac: u128| (e << 112) | frac;
+        let r = apply_pow(q(16384, 0), q(383, 0), q(16397, 113 << 103), 0, &crate::stdlib::floatconv::F128);
+        assert_eq!(r.0, q(0x7fff, 0), "real part {:#x}", r.0);
+        assert!(matches!(unpack(r.1, &crate::stdlib::floatconv::F128), Val::Fin(false, _, e) if e + 112 == 4013),
+                "imaginary part {:#x}", r.1);
     }
 
     #[test]
