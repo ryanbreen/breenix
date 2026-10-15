@@ -1187,6 +1187,102 @@ fn hex_digest(bytes: &[u8]) -> String {
     sha256(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Section 7's raster bound, `E + H × (10C + 8E × (3 + ⌈log₂(E + 1)⌉) + 17) + 64`, worked
+/// here from its formula.
+fn raster_steps_bound(e: u64, h: u64, c: u64) -> u64 {
+    let mut log = 0u64;
+    while (1u64 << log) < e + 1 {
+        log += 1;
+    }
+    e + h * (10 * c + 8 * e * (3 + log) + 17) + 64
+}
+
+/// A glyph's bytes and its points after compound expansion, read from the file here
+/// independently of libfont (the glyf record layout and component flags of the OpenType
+/// specification). Bytes count every record the expansion reads, components included.
+fn independent_glyph(file: &[u8], glyph: u16, depth: u32) -> Result<(u64, u64), String> {
+    let be16 = |o: usize| file.get(o..o + 2).map(|b| u16::from_be_bytes([b[0], b[1]])).ok_or_else(|| format!("read past the file at {o}"));
+    let (head_at, _) = ttf_table(file, b"head").ok_or("no head table")?;
+    let (loca_at, _) = ttf_table(file, b"loca").ok_or("no loca table")?;
+    let (glyf_at, _) = ttf_table(file, b"glyf").ok_or("no glyf table")?;
+    let long = be16(head_at + 50)? == 1;
+    let entry = |i: usize| -> Result<usize, String> {
+        Ok(if long {
+            u32::from_be_bytes(file.get(loca_at + 4 * i..loca_at + 4 * i + 4).ok_or("loca past the file")?.try_into().unwrap()) as usize
+        } else {
+            2 * be16(loca_at + 2 * i)? as usize
+        })
+    };
+    let (start, end) = (entry(glyph as usize)?, entry(glyph as usize + 1)?);
+    if start == end || depth > 8 {
+        return Ok((0, 0));
+    }
+    let rec = glyf_at + start;
+    let contours = be16(rec)? as i16;
+    if contours >= 0 {
+        let points = if contours == 0 { 0 } else { be16(rec + 10 + 2 * (contours as usize - 1))? as u64 + 1 };
+        return Ok(((end - start) as u64, points));
+    }
+    let (mut bytes, mut points, mut p) = ((end - start) as u64, 0u64, rec + 10);
+    loop {
+        let (flags, child) = (be16(p)?, be16(p + 2)?);
+        p += 4 + if flags & 0x0001 != 0 { 4 } else { 2 };
+        p += if flags & 0x0008 != 0 { 2 } else if flags & 0x0040 != 0 { 4 } else if flags & 0x0080 != 0 { 8 } else { 0 };
+        let (b, n) = independent_glyph(file, child, depth + 1)?;
+        bytes += b;
+        points += n;
+        if flags & 0x0020 == 0 {
+            return Ok((bytes, points));
+        }
+    }
+}
+
+/// Each stage of rasterizing `glyph` at `size` against section 7's bounds, by
+/// libfont::work: the outline within `16 × glyph bytes + 4,096`, the flattening within
+/// `1,028 × P`, and the grayscale and LCD rasterizations within the raster bound. The
+/// stages together give exactly `rasterize_glyph`'s bitmap.
+fn staged_within_bounds(font: &Font, file: &[u8], glyph: u16, size: f32, what: &str) -> Result<(), String> {
+    use libfont::{work as fwork, GlyphLayout};
+    let (bytes, points) = independent_glyph(file, glyph, 0)?;
+    let size26 = Font::size26(size).map_err(|e| format!("{what}: size {size} refused: {e}"))?;
+    fwork::reset();
+    let outline = font.glyph_outline(glyph).map_err(|e| format!("{what}: no outline: {e}"))?;
+    let steps = fwork::steps();
+    if steps > 16 * bytes + 4_096 {
+        return Err(format!("{what}: its outline took {steps} steps; section 7 allows 16 x {bytes} + 4096"));
+    }
+    fwork::reset();
+    let layout = font.layout_glyph(&outline, glyph, size26).map_err(|e| format!("{what}: no layout: {e}"))?;
+    let steps = fwork::steps();
+    if steps > 1_028 * points {
+        return Err(format!("{what}: flattening its {points} points took {steps} steps; section 7 allows {}", 1_028 * points));
+    }
+    let GlyphLayout::Outline { segments, width, height, x_offset, y_offset } = layout else { return Ok(()) };
+    let e = segments.len() as u64;
+    fwork::reset();
+    let gray = libfont::rasterizer::rasterize(&segments, width, height, x_offset, y_offset).map_err(|e| format!("{what}: {e}"))?;
+    let steps = fwork::steps();
+    let bound = raster_steps_bound(e, height as u64, width as u64);
+    if steps > bound {
+        return Err(format!("{what}: rasterizing {e} segments into {width} x {height} took {steps} steps; section 7 allows {bound}"));
+    }
+    if steps < 8 * height as u64 {
+        return Err(format!("{what}: rasterizing {height} rows counted only {steps} steps; each row samples 8 sub-scanlines"));
+    }
+    let whole = font.rasterize_glyph(glyph, size).map_err(|e| format!("{what}: {e}"))?;
+    if whole != gray {
+        return Err(format!("{what}: rasterize_glyph differs from its outline, layout and raster stages run one by one"));
+    }
+    fwork::reset();
+    libfont::rasterizer::rasterize_subpixel(&segments, width, height, x_offset, y_offset).map_err(|e| format!("{what}: LCD: {e}"))?;
+    let steps = fwork::steps();
+    let bound = e + raster_steps_bound(e, height as u64, 3 * width as u64);
+    if steps > bound {
+        return Err(format!("{what}: the LCD rasterization took {steps} steps; section 7 allows {bound} for 3 x {width} sampled columns"));
+    }
+    Ok(())
+}
+
 /// Draw `text` with `draw` on a black 96 × 48 surface in white, so the coverage blend is
 /// the coverage itself under any rounding.
 fn white_on_black(width: usize, height: usize, draw: impl FnOnce(&mut FrameBuf)) -> Guarded {
@@ -1244,16 +1340,15 @@ fn text_raster_identical() -> CaseResult {
 
 fn text_metrics_independent() -> CaseResult {
     let font = parse_font(MONO_PATH).cite("8.5")?;
-    for &(cp, gid, adv, _lsb, x_min, y_min, x_max, y_max) in MONO_METRICS.iter() {
+    for &(cp, gid, adv, lsb, x_min, y_min, x_max, y_max) in MONO_METRICS.iter() {
         let ch = char::from_u32(cp).unwrap();
         ensure(font.glyph_index(ch) == gid, "8.5", format!("U+{cp:04X} maps to glyph {}, the table says {gid}", font.glyph_index(ch)))?;
-        let got = font.advance_width(gid, 2048.0);
-        ensure(got == adv as f32, "8.5", format!("glyph {gid}'s advance is {got} units, the table says {adv}"))?;
-        let d = font.debug_glyph(gid);
-        ensure((d.x_min, d.y_min, d.x_max, d.y_max) == (x_min, y_min, x_max, y_max), "8.5",
-            format!("glyph {gid}'s box is {:?}, the table says {:?}", (d.x_min, d.y_min, d.x_max, d.y_max), (x_min, y_min, x_max, y_max)))?;
+        let m = font.glyph_metrics(gid).map_err(|e| format!("glyph {gid} has no metrics: {e}")).cite("8.3")?;
+        let got = (m.advance, m.lsb, m.x_min, m.y_min, m.x_max, m.y_max);
+        let want = (adv, lsb as i16, x_min, y_min, x_max, y_max);
+        ensure(got == want, "8.3, 8.5", format!("glyph {gid} (U+{cp:04X}): advance, lsb and box are {got:?}; the independent table gives {want:?}"))?;
     }
-    missing("Font::glyph_metrics (left side bearings; advances and boxes of all 50 glyphs match the table)", "8.3")
+    Ok(())
 }
 
 fn text_cmap_independent() -> CaseResult {
@@ -1441,7 +1536,52 @@ fn text_utf8_text() -> CaseResult {
 }
 
 fn text_utf8_invalid() -> CaseResult {
-    missing("ttf_font::draw_text_bytes (UTF-8 decoding with U+FFFD per maximal invalid subpart)", "8.3")
+    const R: u32 = 0xFFFD;
+    // The Unicode Standard's own example (section 3.9, Table 3-8), then literal edge cases.
+    let table: [(&[u8], &[u32]); 9] = [
+        (&[0x61, 0xF1, 0x80, 0x80, 0xE1, 0x80, 0xC2, 0x62, 0x80, 0x63, 0x80, 0xBF, 0x64],
+            &[0x61, R, R, R, 0x62, R, 0x63, R, R, 0x64]),
+        (&[0xC0, 0x80], &[R, R]),
+        (&[0xE0, 0x80, 0x80], &[R, R, R]),
+        (&[0xED, 0xA0, 0x80], &[R, R, R]),
+        (&[0xF4, 0x90, 0x80, 0x80], &[R, R, R, R]),
+        (&[0x41, 0xF0, 0x9F, 0x98], &[0x41, R]),
+        (&[0xE2, 0x82], &[R]),
+        (&[0xF0, 0x9F, 0x98, 0x80, 0xFF, 0x7F], &[0x1F600, R, 0x7F]),
+        (&[0xF5, 0xC2, 0xA9, 0xEF, 0xBF, 0xBD], &[R, 0xA9, R]),
+    ];
+    for (bytes, want) in table {
+        let got: Vec<u32> = ttf_font::decode_utf8(bytes).collect();
+        ensure(got == want, "8.3", format!("UTF-8 {bytes:02x?} decoded to {got:x?}; one U+FFFD per maximal invalid subpart gives {want:x?}"))?;
+    }
+    let mut font = cached(MONO_PATH).cite("8.5")?;
+    let (bytes, want) = table[0];
+    let text: String = want.iter().map(|&c| char::from_u32(c).unwrap()).collect();
+    let direct = white_on_black(160, 24, |fb| { ttf_font::draw_text(fb, &mut font, &text, 2, 2, 14.0, WHITE); });
+    ensure(drawn_pixels(&direct, Color::rgb(0, 0, 0)) > 0, "8.3", "the decoded text drew nothing")?;
+    let mut ret = 0;
+    let bytes_drawn = white_on_black(160, 24, |fb| { ret = ttf_font::draw_text_bytes(fb, &mut font, bytes, 2, 2, 14.0, WHITE); });
+    let width = ttf_font::text_width(&mut font, &text, 14.0);
+    ensure(ret == width, "8.3", format!("draw_text_bytes returned {ret}; the decoded text is {width} px wide"))?;
+    for y in 0..24 {
+        for x in 0..160 {
+            if bytes_drawn.rgb(x, y) != direct.rgb(x, y) {
+                return at("8.3", format!("draw_text_bytes of {bytes:02x?} differs at ({x},{y}) from drawing {want:x?}"));
+            }
+        }
+    }
+    step("8.3", isolated("draw_text_bytes over every byte value and 1,000 seeded byte strings", 8_000, move || {
+        let g = Guarded::bgrx(64, 24);
+        let mut rng = Seeded(0x0BAD_0B17E5);
+        for b in 0..=255u8 {
+            ttf_font::draw_text_bytes(&mut g.fb(), &mut font, &[b, b, 0x80, b], 0, 0, 10.0, WHITE);
+        }
+        for _ in 0..1_000 {
+            let s: Vec<u8> = (0..rng.range(1, 12)).map(|_| rng.range(0x70, 0xFF) as u8).collect();
+            ttf_font::draw_text_bytes(&mut g.fb(), &mut font, &s, 0, 0, 10.0, WHITE);
+        }
+        g.sentinels()
+    }))
 }
 
 /// A table's (offset, length) from a TrueType file's directory, read here independently.
@@ -1498,10 +1638,9 @@ fn text_compound_glyph() -> CaseResult {
     let glyf = &file[glyf_at..glyf_at + glyf_len];
     // DejaVu Sans Mono's loca is long (indexToLocFormat 1).
     let loca = |g: usize| u32::from_be_bytes(file[loca_at + 4 * g..loca_at + 4 * g + 4].try_into().unwrap());
-    let resolved = libfont::tables::glyf::resolve_compound(glyf, loca(171), &|g| {
-        libfont::tables::glyf::parse_glyph(glyf, loca(g as usize)).ok().flatten()
-    }).map_err(|e| format!("glyph 171 (é) does not resolve: {e}")).cite("10")?;
-    let got: Vec<(i32, i32)> = resolved.map(|g| g.contours.iter().flatten().map(|p| (p.x as i32, p.y as i32)).collect()).unwrap_or_default();
+    let font = Font::parse(&file).cite("8.5")?;
+    let outline = font.glyph_outline(171).map_err(|e| format!("glyph 171 (é) does not resolve: {e}")).cite("10")?;
+    let got: Vec<(i32, i32)> = outline.contours.iter().flatten().map(|p| (p.x as i32, p.y as i32)).collect();
     let mut want = simple_points(glyf, loca(72) as usize);
     want.extend(simple_points(glyf, loca(118) as usize).into_iter().map(|(x, y)| (x + 14, y)));
     ensure(want.len() > 8, "8.5", format!("the independent decoder found only {} points in e and acute", want.len()))?;
@@ -1542,16 +1681,27 @@ fn text_size_range() -> CaseResult {
         let b = font.rasterize_glyph(h, size as f32).map_err(|e| format!("'H' at {size} px does not rasterize: {e}")).cite("8.3")?;
         ensure(b.coverage.iter().any(|&c| c > 0), "8.3", format!("'H' at {size} px rasterized to nothing"))?;
     }
-    for size in [0.0f32, -3.0, 1025.0, 4096.0] {
+    for size in [0.0f32, -3.0, 0.5, 1024.5, 1025.0, 4096.0, f32::NAN] {
         let r = isolated(&format!("rasterize_glyph('H', {size})"), 3_000, || {
             match font.rasterize_glyph(h, size) {
-                Err(_) => Ok(()),
+                Err(libfont::FontError::BadSize) => Ok(()),
+                Err(e) => Err(format!("size {size} px gave {e}; the contract's error is BadSize")),
                 Ok(b) => Err(format!("size {size} px rasterized a {}x{} bitmap; the contract rejects sizes below 1 or above 1,024", b.width, b.height)),
             }
         });
         step("8.3", r)?;
     }
-    missing("libfont's step counter (libfont::work) for the flattening and rasterization bounds", "7")
+    for path in [MONO_PATH, SANS_PATH] {
+        let file = read_file(path).cite("8.5")?;
+        let font = Font::parse(&file).cite("8.5")?;
+        for size in [6.0f32, 12.0, 24.0, 48.0, 72.0] {
+            for cp in 0x21u32..0x7F {
+                let g = font.glyph_index(char::from_u32(cp).unwrap());
+                step("7", staged_within_bounds(&font, &file, g, size, &format!("{path} U+{cp:04X} at {size} px")))?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Ten or more arguments with trailing f32 and 26.6 values, as the text entry points take.
@@ -1588,16 +1738,42 @@ fn text_cache_hit() -> CaseResult {
     let g = font.glyph_index('Q');
     let fresh = font.font().rasterize_glyph(g, 20.0).map_err(|e| e.to_string())?;
     let first = font.rasterize_glyph(g, 20.0).map_err(|e| e.to_string())?.clone();
+    let after_first = font.cache_stats();
     let second = font.rasterize_glyph(g, 20.0).map_err(|e| e.to_string())?.clone();
+    let after_second = font.cache_stats();
     for (name, b) in [("first", &first), ("cached", &second)] {
         ensure((b.width, b.height, b.x_offset, b.y_offset, &b.coverage) == (fresh.width, fresh.height, fresh.x_offset, fresh.y_offset, &fresh.coverage),
             "8.4", format!("the {name} rasterization of 'Q' differs from a fresh one"))?;
     }
-    missing("CachedFont::cache_stats (hits; the cached glyph is identical to a fresh one)", "8.4")
+    ensure((after_first.hits, after_first.misses, after_first.entries) == (0, 1, 1), "8.4",
+        format!("after the first 'Q' the cache reports {after_first:?}; a first use is one miss and one entry"))?;
+    ensure((after_second.hits, after_second.misses, after_second.entries) == (1, 1, 1), "8.4",
+        format!("after the second 'Q' the cache reports {after_second:?}; the second use is a hit"))?;
+    ensure(after_second.bytes == fresh.coverage.len(), "8.4",
+        format!("the cache reports {} bytes holding one {} x {} glyph", after_second.bytes, fresh.width, fresh.height))
 }
 
 fn text_cache_bound() -> CaseResult {
-    missing("CachedFont::with_default_cache and cache_stats (entries and bytes)", "8.4")
+    let mut font = CachedFont::with_default_cache(parse_font(MONO_PATH).cite("8.5")?);
+    // 1,800 small pairs (glyphs 3 to 362 at five sizes), then U+2588 at 200 sizes from 150 px,
+    // whose bitmaps outgrow 4 MiB long before 256 entries.
+    let block = font.glyph_index('\u{2588}');
+    ensure(block != 0, "8.5", "DejaVu Sans Mono does not map U+2588")?;
+    let pairs: Vec<(u16, f32)> = (3..363u16).flat_map(|g| [8.0f32, 10.0, 12.0, 14.0, 16.0].map(|s| (g, s)))
+        .chain((150..350).map(|s| (block, s as f32))).collect();
+    ensure(pairs.len() == 2_000, "8.4", format!("the suite built {} pairs, not 2,000", pairs.len()))?;
+    let (mut most_entries, mut most_bytes) = (0usize, 0usize);
+    for &(g, size) in &pairs {
+        font.rasterize_glyph(g, size).map_err(|e| format!("glyph {g} at {size} px: {e}")).cite("8.3")?;
+        let s = font.cache_stats();
+        ensure(s.entries <= 256 && s.bytes <= 4 << 20, "8.4", format!("after glyph {g} at {size} px the cache holds {} entries and {} bytes; the contract allows 256 and 4 MiB", s.entries, s.bytes))?;
+        most_entries = most_entries.max(s.entries);
+        most_bytes = most_bytes.max(s.bytes);
+    }
+    ensure(most_entries == 256, "8.4", format!("the cache never held more than {most_entries} entries; 2,000 distinct pairs fill all 256"))?;
+    ensure(most_bytes > 3 << 20, "8.4", format!("the cache never held more than {most_bytes} bytes; the large glyphs reach the 4 MiB budget"))?;
+    let s = font.cache_stats();
+    ensure(s.misses == 2_000 && s.hits == 0, "8.4", format!("2,000 distinct pairs gave {} misses and {} hits", s.misses, s.hits))
 }
 
 fn text_cache_evict_correct() -> CaseResult {
@@ -1897,6 +2073,54 @@ impl Ttf {
     }
 }
 
+const CORPUS_DIR: &str = "/usr/local/test/share/breengel/fonts-corpus";
+
+/// One line of the corpus index: the file, the glyph and size a glyph-scoped defect is
+/// read at, and the documented error.
+struct CorpusEntry {
+    file: String,
+    glyph: Option<(u16, f32)>,
+    error: String,
+}
+
+fn corpus_index() -> Result<Vec<CorpusEntry>, String> {
+    let path = format!("{CORPUS_DIR}/index.txt");
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("cannot read the corpus index {path}: {e}"))?;
+    let mut out = Vec::new();
+    for line in text.lines().filter(|l| !l.trim().is_empty() && !l.starts_with('#')) {
+        let f: Vec<&str> = line.split_whitespace().collect();
+        let entry = match f.as_slice() {
+            [file, "font", error] => CorpusEntry { file: file.to_string(), glyph: None, error: error.to_string() },
+            [file, "glyph", g, size, error] => CorpusEntry {
+                file: file.to_string(),
+                glyph: Some((g.parse().map_err(|_| format!("bad glyph in {line:?}"))?, size.parse().map_err(|_| format!("bad size in {line:?}"))?)),
+                error: error.to_string(),
+            },
+            _ => return Err(format!("{path}: malformed line {line:?}")),
+        };
+        out.push(entry);
+    }
+    if out.len() != 64 {
+        return Err(format!("{path} lists {} files; the contract's corpus has 64", out.len()));
+    }
+    Ok(out)
+}
+
+/// A glyph record with the given header box and contour of `(x, y, on_curve)` points,
+/// coordinates as wrapping 16-bit deltas.
+fn raw_glyph(contour: &[(i16, i16, bool)], bbox: [i16; 4]) -> Vec<u8> {
+    let mut v = Vec::new();
+    be16(&mut v, 1);
+    for b in bbox { be16(&mut v, b as u16); }
+    be16(&mut v, contour.len() as u16 - 1);
+    be16(&mut v, 0);
+    v.extend(contour.iter().map(|p| if p.2 { 0x01u8 } else { 0x00 }));
+    let (mut px, mut py) = (0i16, 0i16);
+    for &(x, _, _) in contour { be16(&mut v, x.wrapping_sub(px) as u16); px = x; }
+    for &(_, y, _) in contour { be16(&mut v, y.wrapping_sub(py) as u16); py = y; }
+    v
+}
+
 /// Parse `bytes` in a child: Ok(whether it parsed) or the crash.
 fn parses(what: &str, bytes: Vec<u8>) -> Result<bool, String> {
     let r = isolated(what, 3_000, move || match Font::parse(&bytes) {
@@ -2168,22 +2392,170 @@ fn font_parser_units_per_em() -> CaseResult {
 }
 
 fn font_parser_coords_extreme() -> CaseResult {
-    missing("libfont's step counter (libfont::work) and the GlyphTooComplex and GlyphTooExpensive refusals", "7, 10")
+    use libfont::{FontError, GlyphLayout};
+    let (lo, hi) = (i16::MIN, i16::MAX);
+    let square = [(lo, lo, true), (lo, hi, true), (hi, hi, true), (hi, lo, true)];
+    let swings: Vec<(i16, i16, bool)> = (0..130i16).flat_map(|i| [(i * 4, 0, true), (i * 4 + 2, if i % 2 == 1 { hi } else { lo }, false)]).collect();
+    let cases: [(&str, Vec<u8>); 5] = [
+        ("a square at the i16 limits with its true box", raw_glyph(&square, [lo, lo, hi, hi])),
+        ("the same square under a 10-unit box", raw_glyph(&square, [0, 0, 10, 10])),
+        ("a triangle with a vertex at each limit under a 10-unit box", raw_glyph(&[(lo, 0, true), (0, hi, true), (hi, lo, true)], [0, 0, 10, 10])),
+        ("130 quadratics swinging between the limits under a 10-unit box", raw_glyph(&swings, [0, 0, 10, 10])),
+        ("off-curve points alternating between opposite corners", raw_glyph(&[(lo, lo, false), (hi, hi, false), (lo, hi, false), (hi, lo, false)], [0, 0, 10, 10])),
+    ];
+    for (what, glyph) in cases {
+        let mut t = Ttf::base();
+        t.glyphs[2] = glyph;
+        t.max_points = 260;
+        let file = t.build();
+        for size in [1.0f32, 24.0, 1024.0] {
+            let file = file.clone();
+            let name = format!("{what} at {size} px");
+            step("7, 10", isolated(&name.clone(), 8_000, move || {
+                let font = Font::parse(&file).map_err(|e| format!("{name}: the font was rejected ({e})"))?;
+                let (bytes, points) = independent_glyph(&file, 2, 0)?;
+                libfont::work::reset();
+                let outline = font.glyph_outline(2).map_err(|e| format!("{name}: no outline ({e})"))?;
+                let steps = libfont::work::steps();
+                if steps > 16 * bytes + 4_096 {
+                    return Err(format!("{name}: its outline took {steps} steps; section 7 allows {}", 16 * bytes + 4_096));
+                }
+                let size26 = Font::size26(size).map_err(|e| e.to_string())?;
+                libfont::work::reset();
+                let layout = font.layout_glyph(&outline, 2, size26);
+                let steps = libfont::work::steps();
+                if steps > 1_028 * points {
+                    return Err(format!("{name}: flattening {points} points took {steps} steps; section 7 allows {}", 1_028 * points));
+                }
+                let (segments, width, height) = match layout {
+                    Err(FontError::GlyphTooComplex | FontError::GlyphTooExpensive) => return Ok(()),
+                    Err(e) => return Err(format!("{name}: refused with {e}; the contract refuses such a glyph only with GlyphTooComplex or GlyphTooExpensive")),
+                    Ok(GlyphLayout::Empty { .. }) => return Err(format!("{name}: laid out as empty")),
+                    Ok(GlyphLayout::Outline { segments, width, height, .. }) => (segments, width, height),
+                };
+                libfont::work::reset();
+                let raster = libfont::rasterizer::rasterize(&segments, width, height, 0, 0);
+                let steps = libfont::work::steps();
+                match raster {
+                    Err(FontError::GlyphTooExpensive) if steps == 0 => Ok(()),
+                    Err(FontError::GlyphTooExpensive) => Err(format!("{name}: refused with GlyphTooExpensive after {steps} raster steps; the refusal comes before any raster loop")),
+                    Err(e) => Err(format!("{name}: rasterization refused with {e}")),
+                    Ok(_) => {
+                        let bound = raster_steps_bound(segments.len() as u64, height as u64, width as u64);
+                        if steps > bound {
+                            Err(format!("{name}: rasterizing {} segments into {width} x {height} took {steps} steps; section 7 allows {bound}", segments.len()))
+                        } else {
+                            Ok(())
+                        }
+                    }
+                }
+            }))?;
+        }
+    }
+    Ok(())
 }
 
 fn font_parser_work_bound() -> CaseResult {
-    missing("libfont's step counter (libfont::work)", "7")
+    use libfont::outline::LineSegment;
+    // The independent square of section 7: four edges 1,022 px apart with a 1-pixel margin,
+    // built here, in a 1,024 × 1,024 bitmap.
+    let (a, b) = (1.0f32, 1023.0f32);
+    let square = [
+        LineSegment { x0: a, y0: a, x1: a, y1: b },
+        LineSegment { x0: a, y0: b, x1: b, y1: b },
+        LineSegment { x0: b, y0: b, x1: b, y1: a },
+        LineSegment { x0: b, y0: a, x1: a, y1: a },
+    ];
+    ensure(raster_steps_bound(4, 1_024, 1_024) == 10_699_844, "7", "the suite's raster bound for the square is not the contract's 10,699,844")?;
+    libfont::work::reset();
+    let bitmap = libfont::rasterizer::rasterize(&square, 1_024, 1_024, 0, 0).cite("7")?;
+    let steps = libfont::work::steps();
+    value("square-steps", steps as i64, "steps", Some((8_388_608, 10_699_844)));
+    ensure(bitmap.coverage[512 * 1_024 + 512] == 255 && bitmap.coverage[0] == 0, "7", "the square rasterized to the wrong coverage")?;
+    ensure((8_388_608..=10_699_844).contains(&steps), "7", format!(
+        "the 1,024 x 1,024 square took {steps} steps; section 7 requires at least 8,388,608 (8 x 1,024 x 1,024) and at most 10,699,844"))?;
+    for entry in corpus_index().cite("10")? {
+        let path = format!("{CORPUS_DIR}/{}", entry.file);
+        let file = read_file(&path).cite("10")?;
+        let name = entry.file.clone();
+        step("7", isolated(&name.clone(), 8_000, move || {
+            libfont::work::reset();
+            let parsed = Font::parse(&file);
+            let steps = libfont::work::steps();
+            let bound = 16 * file.len() as u64 + 65_536;
+            if steps > bound {
+                return Err(format!("{name}: loading took {steps} steps; section 7 allows 16 x {} + 65,536 = {bound}", file.len()));
+            }
+            let Ok(font) = parsed else { return Ok(()) };
+            let size = entry.glyph.map_or(24.0, |(_, s)| s);
+            for g in 0..font.num_glyphs() {
+                let what = format!("{name} glyph {g} at {size} px");
+                let (bytes, points) = independent_glyph(&file, g, 0).unwrap_or((file.len() as u64, 65_535));
+                libfont::work::reset();
+                match font.rasterize_glyph(g, size) {
+                    Ok(_) => staged_within_bounds(&font, &file, g, size, &what)?,
+                    Err(e) => {
+                        let steps = libfont::work::steps();
+                        let bound = 16 * bytes + 4_096 + 1_028 * points;
+                        if steps > bound {
+                            return Err(format!("{what}: refusing it ({e}) took {steps} steps; its outline and flattening bounds allow {bound}"));
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }))?;
+    }
+    Ok(())
 }
 
-const FONT_CORPUS: &str = "/usr/local/test/share/breengel/fonts-corpus/index.txt";
-
 fn font_parser_alloc_bound() -> CaseResult {
-    match std::fs::metadata(FONT_CORPUS) {
-        Ok(_) => missing("typed FontError values to match the corpus index against", "10"),
-        Err(_) => missing(&format!("the malformed font corpus ({FONT_CORPUS})"), "10"),
+    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+    for entry in corpus_index().cite("10")? {
+        let path = format!("{CORPUS_DIR}/{}", entry.file);
+        files.push((entry.file, read_file(&path).cite("10")?));
     }
+    for path in [MONO_PATH, SANS_PATH] {
+        files.push((path.to_string(), read_file(path).cite("8.5")?));
+    }
+    for (name, file) in files {
+        let before = ALLOC_BYTES.load(Relaxed);
+        let parsed = Font::parse(&file);
+        let allocated = ALLOC_BYTES.load(Relaxed) - before;
+        let bound = 2 * file.len() as u64 + 65_536;
+        ensure(allocated <= bound, "7", format!("{name}: loading allocated {allocated} bytes; section 7 allows 2 x {} + 64 KiB = {bound}", file.len()))?;
+        let Ok(font) = parsed else { continue };
+        for g in 0..font.num_glyphs().min(400) {
+            let (_, points) = independent_glyph(&file, g, 0).unwrap_or((0, 65_535));
+            let before = ALLOC_BYTES.load(Relaxed);
+            let _ = font.glyph_outline(g);
+            let allocated = ALLOC_BYTES.load(Relaxed) - before;
+            let bound = 64 * points + 65_536;
+            ensure(allocated <= bound, "7", format!("{name} glyph {g}: its outline allocated {allocated} bytes; section 7 allows 64 x {points} + 64 KiB = {bound}"))?;
+        }
+    }
+    Ok(())
 }
 
 fn font_parser_corpus() -> CaseResult {
-    font_parser_alloc_bound()
+    for entry in corpus_index().cite("10")? {
+        let path = format!("{CORPUS_DIR}/{}", entry.file);
+        let file = read_file(&path).cite("10")?;
+        let name = entry.file.clone();
+        step("10", isolated(&name.clone(), 3_000, move || {
+            match (Font::parse(&file), entry.glyph) {
+                (Err(e), None) if e.to_string() == entry.error => Ok(()),
+                (Err(e), None) => Err(format!("{name}: Font::parse gave {e}; the index documents {}", entry.error)),
+                (Ok(_), None) => Err(format!("{name} parsed; the index documents {}", entry.error)),
+                (Err(e), Some(_)) => Err(format!("{name}: the font was rejected whole ({e}); the index confines {} to one glyph", entry.error)),
+                (Ok(font), Some((g, size))) => match font.rasterize_glyph(g, size) {
+                    Ok(b) => Err(format!("{name}: glyph {g} rasterized ({}x{}); the index documents {}", b.width, b.height, entry.error)),
+                    Err(e) if e.to_string() != entry.error => Err(format!("{name}: glyph {g} gave {e}; the index documents {}", entry.error)),
+                    Err(_) => font.rasterize_glyph(1, size).map(|_| ())
+                        .map_err(|e| format!("{name}: glyph 1, which is valid, was refused too ({e}); the defect is glyph {g}'s alone")),
+                },
+            }
+        }))?;
+    }
+    Ok(())
 }
