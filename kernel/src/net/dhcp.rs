@@ -46,6 +46,13 @@ const DHCPNAK: u8 = 6;
 /// earlier copy after that copy's wait still counts.
 const ATTEMPT_TIMEOUTS_MS: [u64; 3] = [2_000, 4_000, 4_000];
 
+/// While it waits for the OFFER, an attempt sends its DISCOVER again this often.
+/// A link can lose a new interface's first frames (VMware's bridge has lost more
+/// than 2 s of them), and a server may answer only seconds after the first copy
+/// it hears, so the first copy that crosses must go out soon after the link
+/// carries frames, not at the next attempt.
+const DISCOVER_RETRANSMIT_MS: u64 = 1_000;
+
 /// The reply the running exchange waits for; zero while none runs, so the
 /// receive hook costs one atomic load on every other boot.
 static AWAITED: AtomicU8 = AtomicU8::new(0);
@@ -339,7 +346,8 @@ fn probe(mac: [u8; 6], ip: [u8; 4]) -> bool {
 }
 
 /// Broadcast one message and poll the receive ring until the awaited reply
-/// (or, for a REQUEST, a NAK) arrives or `timeout_ms` passes. A retransmission
+/// (or, for a REQUEST, a NAK) arrives or `timeout_ms` passes; a DISCOVER is
+/// re-sent every `DISCOVER_RETRANSMIT_MS` of that wait. A retransmission
 /// keeps a reply that arrived for an earlier copy after that copy's wait.
 fn exchange(
     mac: [u8; 6],
@@ -354,7 +362,21 @@ fn exchange(
     REQUEST_SENT.store(now(), Ordering::Relaxed);
     let message = build_message(kind, XID.load(Ordering::Relaxed), mac, request);
     send_message(&message, [0; 4], [255; 4])?;
-    wait_reply(timeout_ms)
+    if kind != DHCPDISCOVER {
+        return wait_reply(timeout_ms);
+    }
+    let mut waited = 0;
+    loop {
+        let slice = DISCOVER_RETRANSMIT_MS.min(timeout_ms - waited);
+        if let Some(reply) = wait_reply(slice) {
+            return Some(reply);
+        }
+        waited += slice;
+        if waited >= timeout_ms {
+            return None;
+        }
+        send_message(&message, [0; 4], [255; 4])?;
+    }
 }
 
 fn wait_reply(timeout_ms: u64) -> Option<Reply> {
