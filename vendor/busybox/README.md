@@ -9,7 +9,11 @@ https://busybox.net/downloads/busybox-1.37.0.tar.bz2, SHA-256
 `3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4`.
 BusyBox is GPLv2; `LICENSE` and the archive contain its license notices.
 `breenix-libc.config` contains the configuration. Small POSIX corrections live
-in `patches/`, applied in `patches/series` order after extraction. The source
+in `patches/`, applied in `patches/series` order after extraction. Upstream code
+that warns under this configuration is deleted by a patch as well, and only when
+the configuration never runs that code: no applet or feature is enabled to quiet a
+warning, and no diagnostic is suppressed or downgraded. `series` gives each patch's
+reason on the comment line above it. The source
 checksum, configuration, patches, headers and library enter the build digest.
 
 Outputs are `libc-busybox.elf`, `libc-busybox.links`, and per-applet compile/link

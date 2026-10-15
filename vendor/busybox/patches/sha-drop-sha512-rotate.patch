@@ -1,0 +1,16 @@
+--- a/libbb/hash_md5_sha.c
++++ b/libbb/hash_md5_sha.c
+@@ -67,13 +67,6 @@
+ {
+ 	return (x >> n) | (x << (32 - n));
+ }
+-/* rotr64 in needed for sha512 only: */
+-//#define rotr64(x,n) (((x) >> (n)) | ((x) << (64 - (n))))
+-static ALWAYS_INLINE uint64_t rotr64(uint64_t x, unsigned n)
+-{
+-	return (x >> n) | (x << (64 - n));
+-}
+-
+ /* rotl64 only used for sha3 currently */
+ static ALWAYS_INLINE uint64_t rotl64(uint64_t x, unsigned n)
+ {

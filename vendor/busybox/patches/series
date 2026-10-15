@@ -1,6 +1,21 @@
-# One patch filename per line, in application order.
+# One patch filename per line, in application order. A comment line above each
+# patch gives its reason. Warning patches delete upstream code that this
+# configuration never runs; no diagnostic is suppressed or downgraded.
+# diff: POSIX normal, context, ed and forward formats, -r headers, error statuses.
 diff-normal-format.patch
+# find: -exec ... {} + is always true, and a failed invocation makes find's status non-zero.
 find-exec-plus-status.patch
+# ps: POSIX selection lists (-p, -G, -U, -t) and default columns.
 ps-pid-list.patch
+# timeout: POSIX exit statuses, -k escalation and signal forwarding.
 timeout-status.patch
+# time: -p prints the POSIX format and a killed utility gives a status above 128.
 time-posix.patch
+# Warning (-Wunused-but-set-variable): getopt32's spec_flgs is set and never read.
+getopt32-dead-usage-flag.patch
+# Warning (-Wunused-function): rotr64 serves only SHA-512, which is not configured.
+sha-drop-sha512-rotate.patch
+# Warning (-Wunused-but-set-variable): --list's counter feeds only FEATURE_INSTALLER's --list-full, which is not configured.
+list-drop-installer-paths.patch
+# Warning (-Wstring-plus-int, -Wself-assign): docproc serves only Documentation/docbook, which this build never generates.
+host-drop-docproc.patch

@@ -1,0 +1,24 @@
+--- a/libbb/getopt32.c
++++ b/libbb/getopt32.c
+@@ -348,10 +348,7 @@
+ 	unsigned trigger;
+ 	int min_arg = 0;
+ 	int max_arg = -1;
+-	int spec_flgs = 0;
+ 
+-#define SHOW_USAGE_IF_ERROR     1
+-
+ 	on_off = complementary;
+ 	memset(on_off, 0, sizeof(complementary));
+ 
+@@ -449,9 +446,7 @@
+ 			continue;
+ 		c = s[1];
+ 		if (*s == '?') {
+-			if (c < '0' || c > '9') {
+-				spec_flgs |= SHOW_USAGE_IF_ERROR;
+-			} else {
++			if (c >= '0' && c <= '9') {
+ 				max_arg = c - '0';
+ 				s++;
+ 			}

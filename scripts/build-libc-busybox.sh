@@ -91,12 +91,11 @@ fi
 # BB_GLOBAL_CONST empty: BusyBox's "*const" globals pointers are assigned once through
 # a cast, and clang moves loads of them ahead of that store (libbb.h documents the
 # switch for toolchains that do).
-# BusyBox's disabled features leave unused upstream helpers and variables. Keep
-# those warning exceptions in third-party compiler flags, not source patches or
-# extra applets; our C programs still build with unqualified -Werror.
+# Upstream code that warns under this configuration is deleted by patches in the
+# series (see vendor/busybox/README.md); the compiler flags suppress nothing.
 # Name the compiler clang so Kbuild excludes GCC-only optimization flags.
-MAKE_ARGS=(-C "$SRC" CROSS_COMPILE="$PREFIX" CC="${PREFIX}clang" HOSTCC="$TOOLS/clang" "HOSTCFLAGS=-Wall -Wstrict-prototypes -O2 -fomit-frame-pointer -Wno-string-plus-int -Wno-self-assign"
-           "EXTRA_CFLAGS=-std=gnu11 -Werror -Wno-unused-variable -Wno-unused-but-set-variable -Wno-unused-function -DBB_GLOBAL_CONST="
+MAKE_ARGS=(-C "$SRC" CROSS_COMPILE="$PREFIX" CC="${PREFIX}clang" HOSTCC="$TOOLS/clang" "HOSTCFLAGS=-Wall -Wstrict-prototypes -O2 -fomit-frame-pointer"
+           "EXTRA_CFLAGS=-std=gnu11 -Werror -DBB_GLOBAL_CONST="
            SKIP_STRIP=y)
 JOBS="${CARGO_BUILD_JOBS:-4}"
 
