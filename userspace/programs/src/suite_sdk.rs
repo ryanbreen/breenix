@@ -80,6 +80,7 @@ static SUITE: Suite = suite("sdk", "Developer SDK", &[
         case("stderr", "fprintf(stderr) and printf reach standard error and standard output separately", c_stderr),
         case("files", "open, write, lseek, read, fstat, rename and unlink work on a file created with mode 0640", c_files),
         case("dirs", "mkdir, opendir, readdir, closedir and rmdir create, list and remove a directory of three files", c_dirs),
+        case("spawn", "posix_spawn executes with actions and attributes, restores the parent mask and reports child failure as status 127", c_spawn),
         case("fork-wait", "fork and waitpid return a child's exit status 7", c_fork_wait),
         case("exec", "A forked child execv's the app, and the parent's waitpid gets the exit status 3 it asked for", c_exec),
         case("pipe", "A pipe carries a child's message to its parent, which reads it to end of file", c_pipe),
@@ -519,6 +520,7 @@ fn c_files() -> CaseResult { c(&["files"], "read=456 size=10 mode=640\nrenamed\n
 
 fn c_dirs() -> CaseResult { c(&["dirs"], "entries=a,b,c\nrmdir ok\n") }
 
+fn c_spawn() -> CaseResult { c(&["spawn"], "spawn actions, attributes, exec and status 127 passed\n") }
 fn c_fork_wait() -> CaseResult { c(&["fork-wait"], "child exited 7\n") }
 
 fn c_exec() -> CaseResult { c(&["exec"], "exec child exited 3\n") }

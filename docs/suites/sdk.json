@@ -153,6 +153,10 @@
           "title": "mkdir, opendir, readdir, closedir and rmdir create, list and remove a directory of three files"
         },
         {
+          "id": "spawn",
+          "title": "posix_spawn executes with actions and attributes, restores the parent mask and reports child failure as status 127"
+        },
+        {
           "id": "fork-wait",
           "title": "fork and waitpid return a child's exit status 7"
         },

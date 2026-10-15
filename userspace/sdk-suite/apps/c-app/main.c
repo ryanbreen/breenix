@@ -22,6 +22,8 @@ static const struct command commands[] = {
     {"dirs", cmd_dirs},
     {"fork-wait", cmd_fork_wait},
     {"exec", cmd_exec},
+    {"spawn", cmd_spawn},
+    {"spawn-child", cmd_spawn_child},
     {"pipe", cmd_pipe},
     {"signal-handler", cmd_signal_handler},
     {"signal-mask", cmd_signal_mask},
