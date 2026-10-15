@@ -129,6 +129,9 @@ pub fn timer_interrupt() {
         let elapsed = super::tsc::read_tsc().saturating_sub(TICK_TSC_BASE.load(Ordering::Relaxed));
         let ticks = elapsed / TSC_CYCLES_PER_TICK.load(Ordering::Relaxed);
         TICKS.fetch_max(ticks, Ordering::Relaxed);
+        if crate::per_cpu::is_initialized() {
+            crate::spread_probe::note_interrupt(crate::per_cpu::cpu_id());
+        }
     }
     #[cfg(not(target_arch = "x86_64"))]
     TICKS.fetch_add(1, Ordering::Relaxed);
