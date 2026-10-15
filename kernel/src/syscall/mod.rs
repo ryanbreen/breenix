@@ -45,7 +45,6 @@ pub mod futex_oracle;
 pub mod futex_timeout_record;
 pub mod fb;
 pub mod fb_draw;
-pub mod graphics;
 #[cfg(target_arch = "aarch64")]
 pub mod window_v1;
 pub mod handlers;
