@@ -317,7 +317,70 @@ pub fn inflate_byte_split() -> Check {
     for b in data {
         i.feed(&[b]).map_err(|e| format!("byte feed: {e:?}"))?;
     }
-    eq(i.finish(), Ok(b"AA".to_vec()))
+    eq(i.finish(), Ok(b"AA".to_vec()))?;
+    // Complete canonical alphabets: one code at each length 1..14, two at
+    // length 15. A is 0/1 bit, EOB is 10/2 bits and length 257 is 32767/15.
+    // The first stream was independently decoded at authoring time by zlib
+    // 1.2.12 to 6145 A bytes. No external decoder runs in this check.
+    let mut lit = vec![0; 258];
+    lit[65] = 1;
+    lit[256] = 2;
+    for n in 0..12 {
+        lit[n] = n as u8 + 3;
+    }
+    lit[12] = 15;
+    lit[257] = 15;
+    for with_extra in [false, true] {
+        let mut dist = vec![0; 16];
+        if with_extra {
+            // Distance symbol 6 is 32766/15, plus 00/2 extra bits = distance 9.
+            let mut length = 1;
+            for symbol in 0..16 {
+                if symbol == 6 || symbol == 7 {
+                    dist[symbol] = 15;
+                } else {
+                    dist[symbol] = length;
+                    length += 1;
+                }
+            }
+        } else {
+            dist[0] = 15;
+            dist[1] = 15;
+            for n in 2..16 {
+                dist[n] = 16 - n as u8;
+            }
+        }
+        let seed = if with_extra { 9 } else { 1 };
+        let mut body = vec![(0, 1); seed];
+        for _ in 0..2048 {
+            body.extend([(32767, 15), (32766, 15)]);
+            if with_extra {
+                body.push((0, 2));
+            }
+        }
+        body.push((2, 2));
+        let stream = dynamic(&lit, &dist, &body);
+        let expected = seed + 3 * 2048;
+        libimg::work::reset();
+        let mut decoder = Inflater::new(expected);
+        for &byte in &stream {
+            decoder
+                .feed(&[byte])
+                .map_err(|e| format!("long-code feed: {e:?}"))?;
+        }
+        let output = decoder
+            .finish()
+            .map_err(|e| format!("long-code finish: {e:?}"))?;
+        let steps = libimg::work::steps();
+        eq(output, vec![65; expected])?;
+        let bound = 4 * expected as u64 + 16 * stream.len() as u64 + 1024;
+        if steps > bound {
+            return Err(format!(
+                "byte-fed 15-bit codes extra={with_extra} used {steps} steps; §7 permits {bound}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 // Slow polynomial division and literal Adler recurrence are independent check code.
@@ -532,20 +595,34 @@ pub fn png_decode_trns_palette() -> Check {
     )
 }
 pub fn png_decode_invalid_combos() -> Check {
-    for t in 0..=7 {
-        for d in [0, 1, 2, 3, 4, 8, 16, 32] {
-            let legal = match t {
-                0 => [1, 2, 4, 8, 16].contains(&d),
-                2 | 4 | 6 => [8, 16].contains(&d),
-                3 => [1, 2, 4, 8].contains(&d),
-                _ => false,
-            };
-            if !legal {
-                eq(
-                    png::decode(&pngfile(&ihdr(1, 1, d, t, 0), &[], &[0, 0])),
-                    Err(PE::BadColourType),
-                )?;
+    const LEGAL: [(u8, u8); 15] = [
+        (0, 1),
+        (0, 2),
+        (0, 4),
+        (0, 8),
+        (0, 16),
+        (2, 8),
+        (2, 16),
+        (3, 1),
+        (3, 2),
+        (3, 4),
+        (3, 8),
+        (4, 8),
+        (4, 16),
+        (6, 8),
+        (6, 16),
+    ];
+    let mut bytes = pngfile(&ihdr(1, 1, 8, 0, 0), &[], &[0, 0]);
+    for colour in 0..=255u8 {
+        for depth in 0..=255u8 {
+            if LEGAL.contains(&(colour, depth)) {
+                continue;
             }
+            bytes[24] = depth;
+            bytes[25] = colour;
+            let checksum = crc(&bytes[12..29]);
+            bytes[29..33].copy_from_slice(&checksum.to_be_bytes());
+            eq(png::decode(&bytes), Err(PE::BadColourType))?;
         }
     }
     Ok(())
