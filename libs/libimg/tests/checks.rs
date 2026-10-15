@@ -159,6 +159,13 @@ pub fn inflate_code_incomplete() -> Check {
         b.put(0, 3);
     }
     eq(inflate(&b.bytes, 1), Err(IE::CodeIncomplete))?;
+    // A non-empty code-length alphabet with only a length-two code is
+    // incomplete, even though it is neither empty nor oversubscribed (§11).
+    let mut nonempty = Bits::default();
+    nonempty.put(5, 3);
+    nonempty.put(0, 14);
+    for n in [0, 0, 0, 2] { nonempty.put(n, 3); }
+    eq(inflate(&nonempty.bytes, 1), Err(IE::CodeIncomplete))?;
     let mut l = literal_tree();
     l[65] = 2;
     l[256] = 2;
@@ -303,7 +310,21 @@ pub fn inflate_output_limit() -> Check {
     eq(inflate(&fixed_data(b"12345"), 4), Err(IE::OutputLimit))?;
     let mut b = Bits::default();
     b.stored(b"12345", true);
-    eq(inflate(&b.bytes, 4), Err(IE::OutputLimit))
+    eq(inflate(&b.bytes, 4), Err(IE::OutputLimit))?;
+    let mut matched = Bits::default();
+    matched.put(3, 3);
+    matched.fixed(65);
+    matched.fixed(285); // length 258, distance 1: overlapping match copy
+    matched.code(0, 5);
+    matched.fixed(256);
+    eq(inflate(&matched.bytes, 259), Ok(vec![65; 259]))?;
+    for limit in [1, 2, 128, 258] {
+        eq(inflate(&matched.bytes, limit), Err(IE::OutputLimit))?;
+        let mut incremental = Inflater::new(limit);
+        eq(incremental.feed(&matched.bytes), Err(IE::OutputLimit))?;
+        eq(incremental.finish(), Err(IE::OutputLimit))?;
+    }
+    Ok(())
 }
 pub fn inflate_byte_split() -> Check {
     let data = dynamic(&literal_tree(), &[1], &[(0, 1), (0, 1), (1, 1)]);
@@ -553,6 +574,11 @@ pub fn png_decode_trns_gray() -> Check {
         let mut raw = vec![0];
         raw.extend(samples(&[0, 1], d));
         let c = scale(1, d);
+        if d < 16 {
+            let key = ((1u16 << d) | 1).to_be_bytes().to_vec();
+            decoded(&pngfile(&ihdr(2, 1, d, 0, 0), &[(*b"tRNS", key)], &raw),
+                2, 1, &[0, 0, 0, 255, 0, 0, 0, 0])?;
+        }
         decoded(
             &pngfile(&ihdr(2, 1, d, 0, 0), &[(*b"tRNS", vec![0, 0])], &raw),
             2,
@@ -566,6 +592,11 @@ pub fn png_decode_trns_rgb() -> Check {
     for d in [8, 16] {
         let mut raw = vec![0];
         raw.extend(samples(&[1, 2, 3, 3, 2, 1], d));
+        if d == 8 {
+            decoded(&pngfile(&ihdr(2, 1, d, 2, 0),
+                &[(*b"tRNS", vec![1, 1, 2, 2, 3, 3])], &raw),
+                2, 1, &[0, 0, 0, 0, 1, 2, 3, 255])?;
+        }
         decoded(
             &pngfile(
                 &ihdr(2, 1, d, 2, 0),
@@ -939,10 +970,18 @@ pub fn png_decode_truncated() -> Check {
             return Err(format!("accepted PNG prefix {cut}/{}", v.len()));
         }
     }
-    // The fixture's IDAT occupies bytes 33..58. Every interior cut must be
-    // Truncated, rather than merely some rejection.
-    for cut in 34..58 {
+    // Every prefix, including exact chunk boundaries, is cut off (§13).
+    for cut in 0..v.len() {
         eq(png::decode(&v[..cut]), Err(PE::Truncated))?;
+    }
+    // Keep chunk framing/CRC complete while cutting each byte of the zlib stream.
+    let z = zstored(&[0, 42]);
+    for cut in 0..z.len() {
+        let mut v = b"\x89PNG\r\n\x1a\n".to_vec();
+        chunk(&mut v, b"IHDR", &ihdr(1, 1, 8, 0, 0));
+        chunk(&mut v, b"IDAT", &z[..cut]);
+        chunk(&mut v, b"IEND", &[]);
+        eq(png::decode(&v), Err(PE::Truncated))?;
     }
     Ok(())
 }

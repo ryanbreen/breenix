@@ -379,7 +379,8 @@ fn bmp_encode_bytes() -> CaseResult {
     match got.iter().zip(BMP_2X2.iter()).position(|(a, b)| a != b) {
         _ if got.len() != BMP_2X2.len() => at("12", format!("encode_bmp_24 of the 2x2 image wrote {} bytes; the contract's file is 70", got.len())),
         Some(i) => at("12", format!("encode_bmp_24 of the 2x2 image differs at byte {i}: {:#04x}, the contract has {:#04x}", got[i], BMP_2X2[i])),
-        None => Ok(()),
+        Err(error) if error == expected => Ok(()),
+            Err(error) => Err(format!("{what}: got {error:?}, expected {expected:?}")),
     }
 }
 
@@ -435,18 +436,19 @@ fn bmp_header(width: u32, height: i32, bpp: u16, compression: u32, data: usize) 
 }
 
 /// The file is rejected, without a crash and without allocating anything.
-fn rejected_before_allocating(section: &str, what: &str, bytes: Vec<u8>) -> CaseResult {
+fn rejected_before_allocating(section: &str, what: &str, bytes: Vec<u8>, expected: libimg::bmp::BmpError) -> CaseResult {
     let what = what.to_string();
     step(
         section,
         isolated(&what.clone(), 5_000, move || {
             let before = ALLOC_CALLS.load(Relaxed);
-            let decoded = libimg::bmp::decode_bmp_24(&bytes).map(|(w, h, rgb)| (w, h, rgb.len()));
+            let decoded = libimg::bmp::decode_bmp(&bytes).map(|b| (b.width, b.height, b.rgb.len()));
             let allocated = ALLOC_CALLS.load(Relaxed) - before;
             match decoded {
-            Some((w, h, n)) => Err(format!("{what} decoded as {w}x{h} ({n} bytes); the contract rejects it")),
-            None if allocated > 0 => Err(format!("{what} was rejected, but only after {allocated} allocations; the contract checks before allocating")),
-            None => Ok(()),
+            Ok((w, h, n)) => Err(format!("{what} decoded as {w}x{h} ({n} bytes); the contract rejects it")),
+            Err(_) if allocated > 0 => Err(format!("{what} was rejected, but only after {allocated} allocations; the contract checks before allocating")),
+            Err(error) if error == expected => Ok(()),
+            Err(error) => Err(format!("{what}: got {error:?}, expected {expected:?}")),
         }
         }),
     )
@@ -457,16 +459,19 @@ fn bmp_size_overflow() -> CaseResult {
         "7, 12",
         "a BMP 1,431,655,766 pixels wide (its row size overflows 32 bits)",
         bmp_header(0x5555_5556, 1, 24, 0, 64),
+        libimg::bmp::BmpError::SizeOverflow,
     )?;
     rejected_before_allocating(
         "7, 12",
         "a BMP of 2^30 x 2^30 pixels",
         bmp_header(0x4000_0000, 0x4000_0000, 24, 0, 64),
+        libimg::bmp::BmpError::SizeOverflow,
     )?;
     rejected_before_allocating(
         "7, 12",
         "a BMP 2^31 - 1 rows tall, top-down",
         bmp_header(4, -i32::MAX, 24, 0, 64),
+        libimg::bmp::BmpError::SizeOverflow,
     )
 }
 
@@ -475,16 +480,19 @@ fn bmp_huge() -> CaseResult {
         "7, 12",
         "a complete BMP 20,000 x 1 pixels",
         bmp_header(20_000, 1, 24, 0, 60_000),
+        libimg::bmp::BmpError::TooLarge,
     )?;
     rejected_before_allocating(
         "7, 12",
         "a complete BMP 1 x 16,385 pixels",
         bmp_header(1, 16_385, 24, 0, 4 * 16_385),
+        libimg::bmp::BmpError::TooLarge,
     )?;
     rejected_before_allocating(
         "7, 12",
         "a BMP of 4,097 x 4,097 pixels (16,785,409 pixels)",
         bmp_header(4_097, 4_097, 24, 0, 1_024),
+        libimg::bmp::BmpError::TooLarge,
     )
 }
 
