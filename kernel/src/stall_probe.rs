@@ -74,7 +74,7 @@ static GAP: [[AtomicU64; 3]; GAPS] = [const { [const { AtomicU64::new(0) }; 3] }
 static LAST_INT: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 
 /// Lock waits over 3 ms: end ns, length us, cpu | kind << 8 | holder << 16.
-/// kind 1 scheduler, 2 PROCESS_MANAGER.
+/// kind 1 scheduler, 2 PROCESS_MANAGER, 3 futex table.
 const WAITS: usize = 128;
 static WAIT_NEXT: AtomicU64 = AtomicU64::new(0);
 static WAIT: [[AtomicU64; 4]; WAITS] = [const { [const { AtomicU64::new(0) }; 4] }; WAITS];
@@ -349,6 +349,23 @@ pub fn sched_released() {
         }
     }
     SCHED_HOLDER.store(u64::MAX, Ordering::Relaxed);
+}
+
+static FUTEX_HOLDER: AtomicU64 = AtomicU64::new(u64::MAX);
+
+/// Futex table waits are kind 3, with the holder's CPU.
+pub fn futex_wait_begin() -> (u64, u64) {
+    (rdtsc(), FUTEX_HOLDER.load(Ordering::Relaxed))
+}
+
+#[track_caller]
+pub fn futex_acquired(begin: (u64, u64)) {
+    note_wait(3, begin.0, begin.1, core::panic::Location::caller() as *const _ as u64);
+    FUTEX_HOLDER.store(cpu_now() as u64, Ordering::Relaxed);
+}
+
+pub fn futex_released() {
+    FUTEX_HOLDER.store(u64::MAX, Ordering::Relaxed);
 }
 
 pub fn pm_wait_begin() -> (u64, u64) {
@@ -635,9 +652,10 @@ pub fn poll() {
             nwt += 1;
         }
         log::info!(
-            "LATE tid={} kind={:#x} late_ms10={} wake=({},{}) placed={} disp=({},{}) ret_cpu={} win(s,e,cpu|fl<<8,tid,rip)={:x?} gap(s,len,cpu)={:?} wait(s,len,cpu|k<<8|h<<16)={:x?} pinfo(cur,q,promo,idle,rank)=({},{},{},{},{})",
+            "LATE tid={} kind={:#x} due_ms10={} late_ms10={} wake=({},{}) placed={} disp=({},{}) ret_cpu={} win(s,e,cpu|fl<<8,tid,rip)={:x?} gap(s,len,cpu)={:?} wait(s,len,cpu|k<<8|h<<16)={:x?} pinfo(cur,q,promo,idle,rank)=({},{},{},{},{})",
             v[0],
             v[1],
+            due / 100_000,
             (now - due) / 100_000,
             rel_ms(v[3], due),
             v[4],
