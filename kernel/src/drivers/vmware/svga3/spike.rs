@@ -68,9 +68,9 @@ impl Dma {
         }
         self.clean();
     }
-    fn poison(&self) {
+    fn poison(&self, value: u8) {
         unsafe {
-            core::ptr::write_bytes(self.ptr, 0xa5, self.len);
+            core::ptr::write_bytes(self.ptr, value, self.len);
         }
         self.clean();
     }
@@ -288,6 +288,14 @@ impl Probe {
         cmd(&mut e, 1152, &[6, 0]);
         submit(e, true, false)
     }
+    fn scissor(&self, enable: bool) -> Result<()> {
+        let mut e = CmdEncoder::new();
+        cmd(&mut e, 1164, &[u32::from(enable)]);
+        if enable {
+            cmd(&mut e, 1175, &[0, 23, 41, 191, 217]);
+        }
+        submit(e, true, false)
+    }
     fn copy(&self, src: &Surface, dst: &Surface) -> Result<()> {
         let mut e = CmdEncoder::new();
         cmd(
@@ -297,7 +305,7 @@ impl Probe {
         );
         submit(e, true, false)
     }
-    fn read(&mut self, src: &Surface, read: &Surface) -> Result<Vec<u8>> {
+    fn read(&mut self, src: &Surface, read: &Surface, poison: u8) -> Result<Vec<u8>> {
         // GPU host copy first: never interpret the render target's guest backing.
         let mut e = CmdEncoder::new();
         cmd(
@@ -306,7 +314,7 @@ impl Probe {
             &[src.sid, 0, 0, read.sid, 0, 0, 0, 0, 0, W, H, 1, 0, 0, 0],
         );
         submit(e, false, false)?;
-        read.dma.poison();
+        read.dma.poison(poison);
         let mut e = CmdEncoder::new();
         cmd(&mut e, 1104, &[read.sid]);
         submit(e, false, false)?;
@@ -343,7 +351,8 @@ impl Probe {
         fault: bool,
     ) -> Result<()> {
         let begin = ticks();
-        let data = self.read(src, read)?;
+        let data = self.read(src, read, 0xa5)?;
+        let confirmation = self.read(src, read, 0x5a)?;
         let mut mismatches = 0;
         let mut first = None;
         for y in 0..H {
@@ -353,27 +362,27 @@ impl Probe {
                     want.swap(0, 2);
                 }
                 let offset = ((y * W + x) * 4) as usize;
-                if data[offset..offset + 4] != want {
+                if data[offset..offset + 4] != want || confirmation[offset..offset + 4] != want {
                     mismatches += 1;
                     if first.is_none() {
+                        let observed = if data[offset..offset + 4] != want {
+                            &data[offset..offset + 4]
+                        } else {
+                            &confirmation[offset..offset + 4]
+                        };
                         first = Some((
                             x,
                             y,
                             want,
-                            [
-                                data[offset],
-                                data[offset + 1],
-                                data[offset + 2],
-                                data[offset + 3],
-                            ],
+                            [observed[0], observed[1], observed[2], observed[3]],
                         ));
                     }
                 }
             }
         }
-        self.pixels += (W * H) as usize;
+        self.pixels += (2 * W * H) as usize;
         let pass = if fault {
-            mismatches > 0
+            mismatches > 0 && data == confirmation
         } else {
             mismatches == 0
         };
@@ -383,7 +392,7 @@ impl Probe {
             self.failed += 1;
         }
         serial_println!(
-            "GPU_SPIKE CASE {} {} pixels={} mismatches={} fault={} read_us={}",
+            "GPU_SPIKE CASE {} {} pixels={} observations=2 mismatches={} fault={} read_us={}",
             name,
             if pass { "PASS" } else { "FAIL" },
             W * H,
@@ -563,6 +572,127 @@ fn wide(high: bool) -> Shader {
     s
 }
 
+// Test a general triangle with fragment-centre edge functions and explicit
+// top-left ties; the independent reference below evaluates edges with i128.
+fn triangle_top_left() -> Shader {
+    let mut s = colour([219, 37, 83, 255]);
+    for (a, b) in [
+        ((21i32, 31i32), (235i32, 62i32)),
+        ((235, 62), (83, 230)),
+        ((83, 230), (21, 31)),
+    ] {
+        let dx = b.0 - a.0;
+        let dy = b.1 - a.1;
+        s.inst(
+            35,
+            &[
+                dst(0, 2, 1),
+                scalar(0, 0),
+                imm(2),
+                imm((1 - 2 * a.0) as u32),
+            ],
+        );
+        s.inst(
+            35,
+            &[
+                dst(0, 2, 2),
+                scalar(0, 1),
+                imm(2),
+                imm((1 - 2 * a.1) as u32),
+            ],
+        );
+        s.inst(35, &[dst(0, 3, 1), scalar(2, 0), imm((-dy) as u32), imm(0)]);
+        s.inst(
+            35,
+            &[dst(0, 3, 1), scalar(2, 1), imm(dx as u32), scalar(3, 0)],
+        );
+        s.inst(34, &[dst(0, 3, 2), scalar(3, 0), imm(0)]);
+        if !(dy < 0 || (dy == 0 && dx > 0)) {
+            s.inst(32, &[dst(0, 3, 4), scalar(3, 0), imm(0)]);
+            s.inst(60, &[dst(0, 3, 2), scalar(3, 1), scalar(3, 2)]);
+        }
+        s.inst(13 | (1 << 18), &[scalar(3, 1)]);
+    }
+    s
+}
+
+// Restoring division over three 32-bit words. No native high multiply or
+// native wide division. Exactly 96 steps, written here as a bounded encoder
+// loop; each generated program returns one quotient word as four UNORM bytes.
+fn divide96(word: u32) -> Shader {
+    let mut s = Shader::pixel(false);
+    s.inst(
+        35,
+        &[dst(0, 1, 1), scalar(0, 0), imm(0x01010101), imm(0xfedcba98)],
+    );
+    s.inst(
+        35,
+        &[dst(0, 1, 2), scalar(0, 1), imm(0x00100101), imm(0x87654321)],
+    );
+    s.inst(41, &[dst(0, 1, 4), scalar(0, 0), imm(24)]);
+    s.inst(87, &[dst(0, 1, 4), scalar(1, 2), imm(0x80000000)]);
+    s.inst(35, &[dst(0, 5, 1), scalar(0, 1), imm(0x00010001), imm(0)]);
+    s.inst(87, &[dst(0, 1, 4), scalar(1, 2), scalar(5, 0)]);
+    s.inst(35, &[dst(0, 1, 8), scalar(0, 1), imm(65537), imm(1)]);
+    s.inst(60, &[dst(0, 5, 1), scalar(1, 3), imm(0x80000000)]);
+    s.inst(1, &[dst(0, 5, 4), scalar(0, 1), imm(1)]);
+    s.inst(
+        55,
+        &[dst(0, 1, 8), scalar(5, 2), scalar(5, 0), scalar(1, 3)],
+    );
+    s.inst(40, &[dst(0, 5, 2), scalar(1, 3)]);
+    s.inst(54, &[dst(0, 2, 15), imm(0)]);
+    s.inst(54, &[dst(0, 3, 1), imm(0)]);
+    for bit in (0..96).rev() {
+        s.inst(85, &[dst(0, 4, 1), scalar(3, 0), imm(31)]);
+        s.inst(41, &[dst(0, 3, 1), scalar(3, 0), imm(1)]);
+        s.inst(85, &[dst(0, 4, 2), scalar(1, bit / 32), imm(bit % 32)]);
+        s.inst(1, &[dst(0, 4, 2), scalar(4, 1), imm(1)]);
+        s.inst(60, &[dst(0, 3, 1), scalar(3, 0), scalar(4, 1)]);
+        s.inst(80, &[dst(0, 4, 4), scalar(3, 0), scalar(1, 3)]);
+        s.inst(60, &[dst(0, 4, 4), scalar(4, 2), scalar(4, 0)]);
+        s.inst(30, &[dst(0, 4, 8), scalar(3, 0), scalar(5, 1)]);
+        s.inst(
+            55,
+            &[dst(0, 3, 1), scalar(4, 2), scalar(4, 3), scalar(3, 0)],
+        );
+        s.inst(1, &[dst(0, 4, 2), scalar(4, 2), imm(1)]);
+        s.inst(41, &[dst(0, 4, 2), scalar(4, 1), imm(bit % 32)]);
+        s.inst(
+            60,
+            &[
+                dst(0, 2, 1 << (bit / 32)),
+                scalar(2, bit / 32),
+                scalar(4, 1),
+            ],
+        );
+    }
+    for c in 0..4 {
+        s.inst(85, &[dst(0, 11, 1 << c), scalar(2, word), imm(c * 8)]);
+    }
+    s.inst(1, &[dst(0, 11, 15), src(0, 11), imm(255)]);
+    s.output_bytes(11);
+    s
+}
+fn reference96(x: u32, y: u32, word: u32) -> [u8; 4] {
+    let lo = x.wrapping_mul(0x01010101).wrapping_add(0xfedcba98);
+    let mid = y.wrapping_mul(0x00100101).wrapping_add(0x87654321);
+    let hi = 0x80000000 ^ (x << 24) ^ y.wrapping_mul(65537);
+    let divisor = (y * 65537 + 1) | if y % 2 == 1 { 0x80000000 } else { 0 };
+    let numerator = ((hi as u128) << 64) | ((mid as u128) << 32) | lo as u128;
+    (((numerator / (divisor as u128)) >> (word * 32)) as u32).to_le_bytes()
+}
+fn reference_over(x: u32, y: u32, draws: u32) -> [u8; 4] {
+    let mut dst = [17u32, 83, 151, 239];
+    for _ in 0..draws {
+        for (c, d) in dst.iter_mut().enumerate() {
+            let source = if c == 3 { y } else { (x * y + 127) / 255 };
+            *d = source + (*d * (255 - y) + 127) / 255;
+        }
+    }
+    dst.map(|c| c as u8)
+}
+
 pub(super) fn run() -> ! {
     serial_println!("GPU_SPIKE START backend=svga3-dx size={}x{}", W, H);
     let mut p = Probe {
@@ -654,10 +784,14 @@ fn execute(p: &mut Probe) -> Result<()> {
         (6, over()),
         (7, wide(false)),
         (8, wide(true)),
+        (9, triangle_top_left()),
+        (10, divide96(0)),
+        (11, divide96(1)),
+        (12, divide96(2)),
     ] {
         p.shader(id, 2, s)?;
     }
-    serial_println!("GPU_SPIKE shaders-bound programs=9 format=SM4+VMware-signature");
+    serial_println!("GPU_SPIKE shaders-bound programs=13 format=SM4+VMware-signature");
     let vb = p.surface(37, 1 << 20, 96, 1)?;
     let vertices: [u32; 24] = [
         0xbf800000, 0x3f800000, 0, 0x3f800000, 0x3f800000, 0x3f800000, 0, 0x3f800000, 0xbf800000,
@@ -681,6 +815,11 @@ fn execute(p: &mut Probe) -> Result<()> {
     cmd(&mut e, 1195, &[0, 0x00080100, 0, 0x08010101, 0x08010101]);
     cmd(&mut e, 1163, &[0, 0]);
     cmd(&mut e, 1197, &[0, 0x00000103, 0, 0, 0, 1, 0x3f800000, 0]);
+    cmd(
+        &mut e,
+        1197,
+        &[1, 0x00000103, 0, 0, 0, 0x101, 0x3f800000, 0],
+    );
     cmd(&mut e, 1164, &[0]);
     cmd(
         &mut e,
@@ -692,6 +831,7 @@ fn execute(p: &mut Probe) -> Result<()> {
     let rg = p.surface(RGBA, RT | SR, W, H)?;
     let mask = p.surface(R8, SR, W, H)?;
     let scratch = p.surface(BGRA, SR | RT, W, H)?;
+    let scratch_r = p.surface(RGBA, SR | RT, W, H)?;
     let read_b = p.surface(BGRA, 0, W, H)?;
     let read_r = p.surface(RGBA, 0, W, H)?;
     for (target, read) in [(&bg, &read_b), (&rg, &read_r)] {
@@ -723,6 +863,88 @@ fn execute(p: &mut Probe) -> Result<()> {
             },
             false,
         )?;
+        // A partial rectangle exposes both missed pixels and writes outside.
+        let partial: [u32; 24] = [
+            0xbf400000, 0x3f200000, 0, 0x3f800000, 0x3f400000, 0x3f200000, 0, 0x3f800000,
+            0xbf400000, 0xbf200000, 0, 0x3f800000, 0xbf400000, 0xbf200000, 0, 0x3f800000,
+            0x3f400000, 0x3f200000, 0, 0x3f800000, 0x3f400000, 0xbf200000, 0, 0x3f800000,
+        ];
+        p.upload(&vb, &words(&partial))?;
+        p.clear()?;
+        p.draw(1)?;
+        p.judge(
+            "rect-half-open",
+            target,
+            read,
+            |x, y| {
+                if (32..224).contains(&x) && (48..208).contains(&y) {
+                    [17, 83, 151, 239]
+                } else {
+                    [0; 4]
+                }
+            },
+            false,
+        )?;
+        p.upload(&vb, &words(&vertices))?;
+        p.clear()?;
+        p.draw(9)?;
+        p.judge(
+            "triangle-top-left",
+            target,
+            read,
+            |x, y| {
+                let inside = [
+                    ((21i128, 31i128), (235i128, 62i128)),
+                    ((235, 62), (83, 230)),
+                    ((83, 230), (21, 31)),
+                ]
+                .iter()
+                .all(|(a, b)| {
+                    let dx = b.0 - a.0;
+                    let dy = b.1 - a.1;
+                    let edge =
+                        dx * (2 * y as i128 + 1 - 2 * a.1) - dy * (2 * x as i128 + 1 - 2 * a.0);
+                    edge > 0 || (edge == 0 && (dy < 0 || (dy == 0 && dx > 0)))
+                });
+                if inside {
+                    [219, 37, 83, 255]
+                } else {
+                    [0; 4]
+                }
+            },
+            false,
+        )?;
+        p.clear()?;
+        p.scissor(true)?;
+        p.draw(1)?;
+        p.judge(
+            "scissor-half-open",
+            target,
+            read,
+            |x, y| {
+                if (23..191).contains(&x) && (41..217).contains(&y) {
+                    [17, 83, 151, 239]
+                } else {
+                    [0; 4]
+                }
+            },
+            false,
+        )?;
+        p.scissor(false)?;
+        for word in 0..3 {
+            p.draw(10 + word)?;
+            p.judge(
+                match word {
+                    0 => "divide96-low",
+                    1 => "divide96-mid",
+                    _ => "divide96-high",
+                },
+                target,
+                read,
+                |x, y| reference96(x, y, word),
+                false,
+            )?;
+        }
         for high in [false, true] {
             p.draw(if high { 8 } else { 7 })?;
             p.judge(
@@ -792,6 +1014,38 @@ fn execute(p: &mut Probe) -> Result<()> {
         },
         false,
     )?;
+    p.copy(&bg, &scratch)?;
+    p.texture(&scratch)?;
+    p.draw(6)?;
+    p.judge(
+        "over-overlap",
+        &bg,
+        &read_b,
+        |x, y| reference_over(x, y, 2),
+        false,
+    )?;
+    p.target(&rg)?;
+    p.draw(1)?;
+    p.copy(&rg, &scratch_r)?;
+    p.texture(&scratch_r)?;
+    p.draw(6)?;
+    p.judge(
+        "destination-copy-straight-over",
+        &rg,
+        &read_r,
+        |x, y| reference_over(x, y, 1),
+        false,
+    )?;
+    p.copy(&rg, &scratch_r)?;
+    p.texture(&scratch_r)?;
+    p.draw(6)?;
+    p.judge(
+        "over-overlap",
+        &rg,
+        &read_r,
+        |x, y| reference_over(x, y, 2),
+        false,
+    )?;
     // Planted translator failure: suppress intended solid draw, retain completed
     // command fence and readback. Independent expected image remains the solid.
     p.judge(
@@ -808,5 +1062,12 @@ fn execute(p: &mut Probe) -> Result<()> {
     submit(e, false, false)?;
     serial_println!("GPU_SPIKE present-completed surface=BGRA size={}x{}", W, H);
     p.passed += 1;
+    p.judge(
+        "presented-target",
+        &bg,
+        &read_b,
+        |x, y| reference_over(x, y, 2),
+        false,
+    )?;
     Ok(())
 }

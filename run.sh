@@ -1256,7 +1256,7 @@ VMXEOF
 
     cat >> "$VMX_FILE" <<VMXEOF
 gui.fitGuestUsingNativeDisplayResolution = "${VMWARE_NATIVE_RESOLUTION}"
-mks.enable3d = "TRUE"
+mks.enable3d = "${BREENIX_SPIKE_VMWARE_3D:-TRUE}"
 
 vmci0.present = "TRUE"
 
