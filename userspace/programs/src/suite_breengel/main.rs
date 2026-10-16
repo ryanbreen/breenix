@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::Mutex;
 
 use libbreenix::crypto::sha256::sha256;
-use libbreenix::process::{self, ForkResult, WNOHANG};
+use libbreenix::process::{self, WNOHANG};
 use libbreenix::suite::{case, category, fail, suite, value, CaseResult, Suite};
 use libbreenix::syscall::raw;
 use libbreenix::{io, memory, signal, time};
@@ -98,6 +98,8 @@ macro_rules! pictured {
 mod images;
 mod raster;
 mod show;
+mod stage_fixtures;
+use libgfx::stage;
 mod widgets;
 mod window_cases;
 
@@ -166,7 +168,7 @@ static SUITE: Suite = suite("breengel", "BreenGL graphics library", &[
     category("events", "window input events", window_cases::EVENTS),
     category("scanout", "display observation on every target", window_cases::SCANOUT),
     category("panel", "suite & probe panels", &PANEL),
-]);
+]).gui();
 
 fn main() {
     SUITE.run()
@@ -240,7 +242,14 @@ fn test_control_state() -> i64 {
 static PICTURES: AtomicBool = AtomicBool::new(false);
 
 /// The last judged frame: width, height and canonical BGRX pixels.
-static LAST_JUDGED: Mutex<Option<(usize, usize, Vec<u8>)>> = Mutex::new(None);
+static LAST_JUDGED: Mutex<Option<(usize, usize, Vec<u8>, Option<Vec<u8>>)>> = Mutex::new(None);
+
+/// Snapshot a directly compared canonical screen at the comparison point.
+pub(crate) fn remember_frame(pixels:&[u8],width:usize,height:usize,reference:Option<Vec<u8>>) {
+    if !PICTURES.load(Relaxed){return;}
+    let mut actual=pixels[..width*height*4].to_vec();for p in actual.chunks_exact_mut(4){p[3]=255;}
+    *LAST_JUDGED.lock().unwrap_or_else(|e|e.into_inner())=Some((width,height,actual,reference));
+}
 
 /// Exit-status bit an isolated child sets when it handed a judged frame to the runner, so
 /// the parent's own older frame is not handed after it.
@@ -259,14 +268,37 @@ fn judged_case(run: fn() -> CaseResult) -> CaseResult {
 
 /// Hand the last judged frame, if any, to the runner; whether one was handed.
 fn hand_off_judged() -> Result<bool, String> {
-    let Some((width, height, mut pixels)) = LAST_JUDGED.lock().unwrap_or_else(|e| e.into_inner()).take() else {
+    let Some((width, height, mut pixels, mut expected)) = LAST_JUDGED.lock().unwrap_or_else(|e| e.into_inner()).take() else {
         return Ok(false);
     };
     // SAFETY: `pixels` holds width × height canonical BGRX pixels and outlives the surface.
     let frame = unsafe { FrameBuf::from_raw(pixels.as_mut_ptr(), width, height, width * 4, 4, true) }
         .map_err(|e| format!("the judged {width} x {height} frame is not a valid surface: {e}"))?;
-    libbreenix::suite::judged(&frame).map_err(|e| format!("handing the judged frame to the runner failed: {e:?}"))?;
+    let reference=expected.as_mut().map(|bytes|unsafe{FrameBuf::from_raw(bytes.as_mut_ptr(),width,height,width*4,4,true).unwrap()});
+    libbreenix::suite::judged_with_reference(&frame,reference.as_ref()).map_err(|e| format!("handing the judged frame to the runner failed: {e:?}"))?;
     Ok(true)
+}
+
+/// Nested probes return their snapshot to the case; only the case publishes to the runner.
+fn export_isolated_frame(path:&str)->Result<bool,String> {
+    use std::io::Write;
+    let Some((w,h,pixels,reference))=LAST_JUDGED.lock().unwrap_or_else(|e|e.into_inner()).take() else{return Ok(false);};
+    let mut file=std::fs::OpenOptions::new().write(true).create_new(true).open(path).map_err(|e|e.to_string())?;
+    for n in [w as u32,h as u32,u32::from(reference.is_some())]{file.write_all(&n.to_le_bytes()).map_err(|e|e.to_string())?;}
+    file.write_all(&pixels).map_err(|e|e.to_string())?;
+    if let Some(r)=reference{file.write_all(&r).map_err(|e|e.to_string())?;}Ok(true)
+}
+fn import_isolated_frame(path:&str)->Result<(),String> {
+    let bytes=std::fs::read(path).map_err(|e|e.to_string())?;
+    if bytes.len()<12{return Err("isolated frame header truncated".into());}
+    let word=|i:usize|u32::from_le_bytes(bytes[i..i+4].try_into().unwrap()) as usize;
+    let (w,h,has)=(word(0),word(4),word(8));
+    if w==0 || h==0 || w>16384 || h>16384 || has>1 {return Err("isolated frame geometry invalid".into());}
+    let size=w*h*4;
+    if bytes.len()!=12+size*(1+has){return Err("isolated frame length invalid".into());}
+    if bytes[12..].chunks_exact(4).any(|p|p[3]!=255){return Err("isolated frame is not canonical".into());}
+    *LAST_JUDGED.lock().unwrap_or_else(|e|e.into_inner())=Some((w,h,bytes[12..12+size].to_vec(),if has==1{Some(bytes[12+size..].to_vec())}else{None}));
+    Ok(())
 }
 
 /// Run `f` in a forked child, which reports its own result; a crash or a child that runs
@@ -274,22 +306,21 @@ fn hand_off_judged() -> Result<bool, String> {
 /// frame the child judged goes to the runner when it exits.
 fn isolated(what: &str, limit_ms: u64, f: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
     let (rd, wr) = io::pipe().map_err(|e| format!("pipe: {e}"))?;
-    match process::fork().map_err(|e| format!("fork: {e}"))? {
-        ForkResult::Child => {
-            let _ = io::close(rd);
-            let result = f();
-            let handed = hand_off_judged();
-            let frame = if matches!(handed, Ok(true)) { HANDED_FRAME } else { 0 };
-            let code = match result.and(handed.map(|_| ())) {
-                Ok(()) => frame,
-                Err(msg) => {
-                    let _ = io::write(wr, msg.as_bytes());
-                    1 | frame
-                }
-            };
-            process::exit(code);
+    static PROBE_SEQUENCE:AtomicU64=AtomicU64::new(0);
+    let path=format!("/dev/shm/isolated-frame-{}-{}",process::getpid().map_err(|e|e.to_string())?.raw(),PROBE_SEQUENCE.fetch_add(1,Relaxed));
+    if let Err(e)=std::fs::remove_file(&path){if e.kind()!=std::io::ErrorKind::NotFound{return Err(e.to_string());}}
+    let mut callback=Some(f);
+    let mut body=|| {
+        LAST_JUDGED.lock().unwrap_or_else(|e|e.into_inner()).take();
+        let result=callback.take().unwrap()();
+        let handed=export_isolated_frame(&path);
+        let frame=if matches!(handed,Ok(true)){HANDED_FRAME}else{0};
+        match result.and(handed.map(|_|())) {
+            Ok(())=>frame,
+            Err(msg)=>{let _=io::write(wr,msg.as_bytes());1|frame}
         }
-        ForkResult::Parent(pid) => {
+    };
+    let pid=libbreenix::suite::spawn(&[(wr,wr)],libbreenix::suite::Run::Call(&mut body)).map_err(|e|format!("spawn: {e}"))?;
             let _ = io::close(wr);
             let pid = pid.raw() as i32;
             let start = now_ms();
@@ -318,8 +349,9 @@ fn isolated(what: &str, limit_ms: u64, f: impl FnOnce() -> Result<(), String>) -
             let code = if process::wifexited(status) { Some(process::wexitstatus(status)) } else { None };
             if code.is_some_and(|c| c & HANDED_FRAME != 0) {
                 // The child's frame is newer than any this process holds.
-                LAST_JUDGED.lock().unwrap_or_else(|e| e.into_inner()).take();
+                import_isolated_frame(&path)?;
             }
+            let _=std::fs::remove_file(&path);
             if !exited {
                 Err(format!("{what} did not finish within {limit_ms} ms"))
             } else if process::wifsignaled(status) {
@@ -329,8 +361,6 @@ fn isolated(what: &str, limit_ms: u64, f: impl FnOnce() -> Result<(), String>) -
             } else {
                 Err(if msg.is_empty() { format!("{what} failed without a message") } else { msg })
             }
-        }
-    }
 }
 
 fn now_ms() -> u64 {
@@ -353,6 +383,7 @@ struct Guarded {
     lead: usize,
     /// Whether a check has read its pixels: such a surface is a judged frame.
     read: Cell<bool>,
+    reference: std::cell::RefCell<Option<Vec<u8>>>,
 }
 
 const LEAD_BYTES: usize = 64;
@@ -375,7 +406,7 @@ impl Guarded {
         // The pixels end at the guard; with stride a multiple of 4 the base stays aligned.
         let base = unsafe { map.add(body - bytes) };
         let lead = body - bytes;
-        let mut g = Guarded { map, map_len, base, width, height, stride, bpp, bgr, lead, read: Cell::new(false) };
+        let mut g = Guarded { map, map_len, base, width, height, stride, bpp, bgr, lead, read: Cell::new(false), reference:std::cell::RefCell::new(None) };
         g.reset(Color::rgb(0, 0, 0));
         g
     }
@@ -461,6 +492,11 @@ impl Guarded {
 
     /// The first pixel whose colour differs from `want(x, y)`, as a message.
     fn compare(&self, what: &str, want: impl Fn(usize, usize) -> Color) -> Result<(), String> {
+        if PICTURES.load(Relaxed) {
+            let mut reference=Vec::with_capacity(self.width*self.height*4);
+            for y in 0..self.height {for x in 0..self.width {let p=want(x,y);reference.extend_from_slice(&[p.b,p.g,p.r,255]);}}
+            *self.reference.borrow_mut()=Some(reference);
+        }
         for y in 0..self.height {
             for x in 0..self.width {
                 let (got, w) = (self.color(x, y), want(x, y));
@@ -483,7 +519,7 @@ impl Drop for Guarded {
                     pixels.extend_from_slice(&[b, g, r, 0xFF]);
                 }
             }
-            *LAST_JUDGED.lock().unwrap_or_else(|e| e.into_inner()) = Some((self.width, self.height, pixels));
+            *LAST_JUDGED.lock().unwrap_or_else(|e| e.into_inner()) = Some((self.width, self.height, pixels, self.reference.borrow_mut().take()));
         }
         let _ = memory::munmap(self.map, self.map_len);
     }

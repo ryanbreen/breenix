@@ -3,34 +3,34 @@
 use crate::*;
 
 pub(crate) const COMPOSITION: &[Case] = &[
-    case("compose-position", "A committed pattern appears at the window's position in the composed frame, exactly", composition_compose_position),
-    case("compose-overlap", "Two overlapping windows compose in z order, exactly", composition_compose_overlap),
-    case("compose-offscreen", "A window partly off the screen is clipped at the screen edge", composition_compose_offscreen),
-    case("compose-fullscreen", "A 1280x800 window at 0,0 fills the frame exactly", composition_compose_fullscreen),
-    case("compose-many", "Sixteen windows in a fixed stack compose to the formula, exactly", composition_compose_many),
-    case("generation", "Each commit advances the window's commit id by exactly one", composition_generation),
-    case("no-compositor", "A commit with no compositor returns within 250 ms and is composed once a compositor claims", composition_no_compositor),
-    case("compositor-dies", "An acquire blocked when the compositor exits returns within 250 ms, and the next commit succeeds", composition_compositor_dies),
-    case("eintr", "A signal interrupts a blocked acquire with EINTR", composition_eintr),
-    case("damage-metadata", "A commit's damage rectangles are recorded exactly", composition_damage_metadata),
-    case("damage-work", "A composite processes exactly the pixels in its damage union, by the compositor's counter, and with `ignore-damage` armed the excess is reported by count", composition_damage_work),
-    case("damage-screen", "A partial composite gives the same frame as a full recomposition", composition_damage_screen),
-    case("composite-record", "Each composite publishes its serial and the commit id and pixel generation of every presentation-required window it accounts for, a wholly occluded one included with zero composed pixels", composition_composite_record),
-    case("backend-error", "A forced backend failure leaves the commit uncomposited, is reported to the compositor, and the retry succeeds", composition_backend_error),
-    case("inflight-bound", "At most one composite per window is in flight", composition_inflight_bound),
-    case("no-change-commit", "commit_no_change publishes new metadata with empty damage and the same pixel generation, causes no composite, and is presented by the composite that already holds that generation", composition_no_change_commit),
-    case("cursor-hidden", "With the cursor hidden, no cursor pixel appears in the frame", composition_cursor_hidden),
-    case("cursor-no-trail", "Moving the cursor over a static scene restores every pixel it covered", composition_cursor_no_trail),
-    case("cursor-shape", "Setting a cursor shape draws that shape at the pointer", composition_cursor_shape),
-    case("cursor-stationary-repaint", "Content committed under a stationary cursor is shown, with the cursor redrawn above it", composition_cursor_stationary_repaint),
-    case("flush-irq-bound", "The longest IRQ-masked interval during full-screen damage stays within 500 µs, after `irq-hold` has shown the gauge reads a 2 ms hold", composition_flush_irq_bound),
-    case("present-rate", "One 256x256 window composes at least 60 commits a second", composition_present_rate),
-    case("takeover-giveback", "Display takeover and giveback restore the previous owner's frame exactly", composition_takeover_giveback),
-    case("ownership-stack", "When a compositor dies, the display returns to the process that gave it, not to the runner", composition_ownership_stack),
+    pictured!("compose-position", "A committed pattern appears at the window's position in the composed frame, exactly", composition_compose_position),
+    pictured!("compose-overlap", "Two overlapping windows compose in z order, exactly", composition_compose_overlap),
+    pictured!("compose-offscreen", "A window partly off the screen is clipped at the screen edge", composition_compose_offscreen),
+    pictured!("compose-fullscreen", "A 1280x800 window at 0,0 fills the frame exactly", composition_compose_fullscreen),
+    pictured!("compose-many", "Sixteen windows in a fixed stack compose to the formula, exactly", composition_compose_many),
+    pictured!("generation", "Each commit advances the window's commit id by exactly one", composition_generation),
+    pictured!("no-compositor", "A commit with no compositor returns within 250 ms and is composed once a compositor claims", composition_no_compositor),
+    pictured!("compositor-dies", "An acquire blocked when the compositor exits returns within 250 ms, and the next commit succeeds", composition_compositor_dies),
+    pictured!("eintr", "A signal interrupts a blocked acquire with EINTR", composition_eintr),
+    pictured!("damage-metadata", "A commit's damage rectangles are recorded exactly", composition_damage_metadata),
+    pictured!("damage-work", "A composite processes exactly the pixels in its damage union, by the compositor's counter, and with `ignore-damage` armed the excess is reported by count", composition_damage_work),
+    pictured!("damage-screen", "A partial composite gives the same frame as a full recomposition", composition_damage_screen),
+    pictured!("composite-record", "Each composite publishes its serial and the commit id and pixel generation of every presentation-required window it accounts for, a wholly occluded one included with zero composed pixels", composition_composite_record),
+    pictured!("backend-error", "A forced backend failure leaves the commit uncomposited, is reported to the compositor, and the retry succeeds", composition_backend_error),
+    pictured!("inflight-bound", "At most one composite per window is in flight", composition_inflight_bound),
+    pictured!("no-change-commit", "commit_no_change publishes new metadata with empty damage and the same pixel generation, causes no composite, and is presented by the composite that already holds that generation", composition_no_change_commit),
+    pictured!("cursor-hidden", "With the cursor hidden, no cursor pixel appears in the frame", composition_cursor_hidden),
+    pictured!("cursor-no-trail", "Moving the cursor over a static scene restores every pixel it covered", composition_cursor_no_trail),
+    pictured!("cursor-shape", "Setting a cursor shape draws that shape at the pointer", composition_cursor_shape),
+    pictured!("cursor-stationary-repaint", "Content committed under a stationary cursor is shown, with the cursor redrawn above it", composition_cursor_stationary_repaint),
+    pictured!("flush-irq-bound", "The longest IRQ-masked interval during full-screen damage stays within 500 µs, after `irq-hold` has shown the gauge reads a 2 ms hold", composition_flush_irq_bound),
+    pictured!("present-rate", "One 256x256 window composes at least 60 commits a second", composition_present_rate),
+    pictured!("takeover-giveback", "Display takeover and giveback restore the previous owner's frame exactly", composition_takeover_giveback),
+    pictured!("ownership-stack", "When a compositor dies, the display returns to the process that gave it, not to the runner", composition_ownership_stack),
 ];
 
 pub(crate) const COMPOSITION_FLUSH: &[Case] = &[
-    case("flush-clip", "FLUSH clips its rectangle to the screen", composition_flush_clip),
+    pictured!("flush-clip", "FLUSH clips its rectangle to the screen", composition_flush_clip),
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -530,6 +530,7 @@ fn composition_no_change_commit() -> CaseResult {
 
 /// The pixels of `px` that differ from the formula, as (x, y).
 fn differing(px: &[u8], scene: &[Placed]) -> Vec<(u32, u32)> {
+    crate::remember_frame(px,1280,800,None);
     let f = formula(scene);
     let mut out = Vec::new();
     for y in 0..800u32 {
@@ -678,6 +679,7 @@ fn composition_present_rate() -> CaseResult {
     let w = W::new(256, 256, 2)?;
     want_ok(w.register(b"present-rate"), "17.1", "REGISTER")?;
     place(&mut k, w.id(), &p, abi::geometry_flags::VISIBLE)?;
+    let mut frame_times=Vec::new();
     let mut start = 0;
     let mut composites0 = 0;
     for i in 0..300u32 {
@@ -685,12 +687,15 @@ fn composition_present_rate() -> CaseResult {
             start = now_ms();
             composites0 = counter("composites").cite("18")?;
         }
+        let began=time::now_monotonic()?.as_nanos();
         w.frame(i).cite("17.3")?;
+        if i>=236 {frame_times.push(((time::now_monotonic()?.as_nanos()-began)/1000).min(u32::MAX as i128) as u32);}
     }
     let elapsed = since(start).max(1);
     let composed = counter("composites").cite("18")? - composites0;
     let rate = composed * 1_000 / elapsed;
-    value("composites-per-second", rate as i64, "/s", Some((60, i64::MAX)));
+    libbreenix::suite::timing(&frame_times,16_667)?;
+    value("composites-per-second", rate as i64, "fps", Some((60, i64::MAX)));
     ensure(rate >= 60, "18", format!("one 256x256 window committing as fast as its buffers are released was composed {composed} times in {elapsed} ms, {rate} a second; the contract requires at least 60"))
 }
 
@@ -779,6 +784,7 @@ fn composition_takeover_giveback() -> CaseResult {
     let given = h.ask("go").cite("24")?;
     ensure(given == "given", "18", format!("the child's give_back_display: `{given}`"))?;
     let (after, _) = screen()?;
+    crate::remember_frame(&after,1280,800,Some(before.clone()));
     match (0..1280 * 800).find(|&i| before[i * 4..i * 4 + 4] != after[i * 4..i * 4 + 4]) {
         None => Ok(()),
         Some(i) => at("18", format!("after giveback the screen differs from the previous owner's frame at ({}, {}): {:02x?} against {:02x?}",
@@ -818,10 +824,12 @@ fn composition_ownership_stack() -> CaseResult {
     show(&mut k, &w, &p)?;
     compose(&mut k)?;
     let (px, _) = screen()?;
+    crate::remember_frame(&px,1280,800,None);
     ensure(px[(150 * 1280 + 150) * 4..(150 * 1280 + 150) * 4 + 3] == pattern(28, 50, 50)[..3], "18", "the compositor given the display does not show its composition")?;
     k.kill();
     let _ = time::sleep_ms(50);
     let (px, _) = screen()?;
+    crate::remember_frame(&px,1280,800,None);
     ensure(px[..4] == [0x11, 0x99, 0x33, 0xFF] && px[(150 * 1280 + 150) * 4..(150 * 1280 + 150) * 4 + 4] == [0x11, 0x99, 0x33, 0xFF], "18", format!(
         "after the compositor died the screen shows {:02x?} at (0, 0); the display returns to the giver and its frame is restored exactly", &px[..4]))
 }
@@ -864,6 +872,7 @@ fn composition_flush_clip() -> CaseResult {
     let said = h.line(5_000).cite("24")?;
     ensure(said == "flushed 0", "18", format!("FLUSH of (1180, 700, 400, 300), running past the screen's edges: `{said}`; it is clipped to the screen and succeeds"))?;
     let (px, _) = screen()?;
+    crate::remember_frame(&px,1280,800,None);
     for (x, y, want) in [(1180usize, 700usize, [0x40u8, 0x50, 0x60, 0xFF]), (1279, 799, [0x40, 0x50, 0x60, 0xFF]), (1179, 700, [0, 0, 0, 0xFF])] {
         let i = (y * 1280 + x) * 4;
         ensure(px[i..i + 4] == want, "18", format!("after the clipped FLUSH the screen's pixel ({x}, {y}) is {:02x?}, not {want:02x?}", &px[i..i + 4]))?;

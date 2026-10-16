@@ -9,9 +9,9 @@ pub(crate) const COMPOSITION: &[Case] = &[
 ];
 
 pub(crate) const PANEL: &[Case] = &[
-    case("counts", "Fixed pass, fail and count fixtures draw the expected digits in the expected colours", panel_counts),
-    case("fail-rows", "Failed cases are listed with their names in the failure rows", panel_fail_rows),
-    case("layout", "The category bars and score occupy the contract's rectangles at this mode", panel_layout),
+    pictured!("counts", "Fixed pass, fail and count fixtures draw the expected digits in the expected colours", panel_counts),
+    pictured!("fail-rows", "Failed cases are listed with their names in the failure rows", panel_fail_rows),
+    pictured!("layout", "The category bars and score occupy the contract's rectangles at this mode", panel_layout),
     case("stage-layout", "Stage fixture header, wall, spotlight and ribbon occupy the contract rectangles", panel_stage_layout),
     case("tile-stamps", "Tile order, milestone grouping, stamp states and key numbers match the fixture", panel_tile_stamps),
     case("tile-thumbnail", "Every thumbnail is the integer box filter of the judged frame", panel_tile_thumbnail),
@@ -153,16 +153,54 @@ fn panel_layout() -> CaseResult {
     })
 }
 
-fn panel_stage_layout() -> CaseResult { missing("the run stage", "23.2") }
-fn panel_tile_stamps() -> CaseResult { missing("the run stage", "23.3") }
-fn panel_tile_thumbnail() -> CaseResult { missing("the run stage", "23.3") }
-fn panel_spotlight_picture() -> CaseResult { missing("the run stage", "23.4") }
-fn panel_spotlight_timing() -> CaseResult { missing("the run stage", "23.4") }
-fn panel_milestone_ribbon() -> CaseResult { missing("the run stage", "23.5") }
-fn panel_finale() -> CaseResult { missing("the run stage", "23.6") }
-fn panel_deterministic() -> CaseResult { missing("the run stage", "23.2") }
-fn panel_judged_frame_shown() -> CaseResult { missing("the run stage", "23.8") }
-fn panel_serial_agreement() -> CaseResult { missing("the run stage", "23.8") }
-fn panel_quiet_window() -> CaseResult { missing("the run stage", "23.8") }
-fn panel_boot_ribbon() -> CaseResult { missing("the run stage", "23.7") }
-fn panel_boundary_notice() -> CaseResult { missing("the run stage", "23.8") }
+fn panel_stage_layout() -> CaseResult { stage_fixture("stage-layout") }
+fn panel_tile_stamps() -> CaseResult { stage_fixture("tile-stamps") }
+fn panel_tile_thumbnail() -> CaseResult { stage_fixture("tile-thumbnail") }
+fn panel_spotlight_picture() -> CaseResult { stage_fixture("spotlight-picture") }
+fn panel_spotlight_timing() -> CaseResult { stage_fixture("spotlight-timing") }
+fn panel_milestone_ribbon() -> CaseResult { stage_fixture("milestone-ribbon") }
+fn panel_finale() -> CaseResult { stage_fixture("finale") }
+fn panel_deterministic() -> CaseResult {
+    let path=format!("/dev/shm/stage-clock-{}",process::getpid()?.raw());
+    let mut page=[0u8;4096];page[..8].copy_from_slice(b"BGCLK001");page[16..24].copy_from_slice(&250_000_000u64.to_le_bytes());
+    std::fs::write(&path,page).map_err(|e|e.to_string())?;
+    let old=std::env::var_os("BREENIX_UI_CLOCK");std::env::set_var("BREENIX_UI_CLOCK",&path);
+    let result=crate::stage_fixtures::check_capture("deterministic",|fb|libbreenix::suite::judged(fb).map_err(|e|format!("{e:?}")));
+    let reads=libbreenix::suite::ui_clock::real_clock_reads()+breengel::clock::real_clock_reads();
+    if let Some(v)=old{std::env::set_var("BREENIX_UI_CLOCK",v);}else{std::env::remove_var("BREENIX_UI_CLOCK");}
+    let _=std::fs::remove_file(path);
+    result.map_err(libbreenix::suite::CaseError::Fail)?;
+    ensure(reads==0,"23.2",format!("deterministic render read the real clock {reads} times"))
+}
+fn panel_judged_frame_shown() -> CaseResult { libbreenix::suite::showcase_check("judged-frame-shown") }
+fn panel_serial_agreement() -> CaseResult { libbreenix::suite::showcase_check("serial-agreement") }
+fn panel_quiet_window() -> CaseResult { libbreenix::suite::showcase_check("quiet-window") }
+fn panel_boot_ribbon() -> CaseResult {
+    use crate::window_cases::composition::{give_back, take_over, screen};
+    for faulty in [true,false] {
+        let before=std::fs::read_to_string("/proc/breenix/boot-ribbon").map_err(|e|format!("producer stage records: {e}"))?;
+        const EXPECTED:&[&str]=include!("stage_boot_markers.rs");
+        let observed:Vec<_>=before.lines().filter_map(|line|line.split_once('|')).collect();
+        ensure(observed.len()==EXPECTED.len() && observed.iter().zip(EXPECTED).all(|((lit,marker),expected)|(*lit=="0" || *lit=="1") && marker==expected),"23.7","kernel ribbon stages do not match the binding ARM64 manifest in order")?;
+        let reached:Vec<bool>=observed.iter().map(|(lit,_)|*lit=="1").collect();
+        ensure(!reached.is_empty() && reached.iter().any(|v|*v),"23.7","no actual producer stages were observed")?;
+        if faulty {libbreenix::test_control::arm(15,0,0)?;}
+        ensure(give_back()>=0,"23.7","give back for kernel ribbon failed")?;
+        let result=screen();let took=take_over();ensure(took>=0,"23.7","retake after ribbon failed")?;
+        let (px,_)=result?;let mut mismatch=false;
+        for (i,&lit) in reached.iter().enumerate() {
+            let a=16+1248*i/reached.len();let b=16+1248*(i+1)/reached.len();
+            let rgb=if lit {[77,112,26,255]}else{[96,67,48,255]};
+            for y in 752..768 {for x in a..b-2 {let o=(y*1280+x)*4;mismatch|=px[o..o+4]!=rgb;}}
+            for y in 752..768 {for x in b-2..b {let o=(y*1280+x)*4;mismatch|=px[o..o+4]!=[31,19,12,255];}}
+        }
+        let fired=libbreenix::test_control::fired(15)?;libbreenix::test_control::disarm_all()?;
+        ensure(mismatch==faulty,"23.7","kernel ribbon disagrees with actual producer markers, or dropped-stage fault was not detected")?;
+        if faulty {ensure(fired>0,"21","ribbon-drop-stage never fired")?;}
+    }Ok(())
+}
+fn panel_boundary_notice() -> CaseResult { libbreenix::suite::showcase_check("boundary-notice") }
+
+fn stage_fixture(name:&str)->CaseResult {
+    crate::stage_fixtures::check_capture(name,|fb|libbreenix::suite::judged(fb).map_err(|e|format!("{e:?}"))).map_err(libbreenix::suite::CaseError::Fail)
+}

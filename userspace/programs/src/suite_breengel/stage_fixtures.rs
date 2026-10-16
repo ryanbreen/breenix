@@ -38,8 +38,11 @@ fn tiles() -> [Tile<'static>;5] {
 }
 const MILESTONES:[Milestone<'static>;2]=[Milestone {id:"alpha",first:0,end:2},Milestone{id:"beta",first:2,end:5}];
 
-pub fn check(name:&str) -> Result<(),String> {
+#[cfg(test)]
+pub fn check(name:&str) -> Result<(),String> {check_capture(name,|_|Ok(()))}
+pub fn check_capture(name:&str,capture:impl FnOnce(&FrameBuf)->Result<(),String>) -> Result<(),String> {
     let mut bytes=vec![0u8;1280*800*4]; let mut fb=surface(&mut bytes);
+    let result=(|| {
     let mut cases=tiles(); let mut model=run(&cases,&MILESTONES);
     match name {
         "stage-layout" => {
@@ -164,5 +167,7 @@ pub fn check(name:&str) -> Result<(),String> {
             if bytes!=before { Err("same results and UI time drew different stage bytes".into()) } else { Ok(()) }
         }
         _ => Err(format!("unknown stage fixture {name}")),
-    }
+    }})();
+    let handed=capture(&fb);
+    result.and(handed)
 }

@@ -33,6 +33,8 @@ pub struct Milestone<'a> {
 #[derive(Clone, Copy)]
 pub enum Spotlight<'a> {
     None,
+    /// A judged surface without a supplied independent reference.
+    Actual(Image<'a>),
     Picture {
         expected: Image<'a>,
         actual: Image<'a>,
@@ -260,6 +262,7 @@ fn validate(fb: &FrameBuf, run: &Run<'_>) -> Result<(), StageError> {
                 return Err(StageError::Timing);
             }
         }
+        Spotlight::Actual(image) => {if !image.valid(){return Err(StageError::Image);}}
         Spotlight::None => {}
     }
     run.boundary.notice()?;
@@ -384,6 +387,10 @@ fn draw_spotlight(fb: &mut FrameBuf, run: &Run<'_>) {
     text(fb, key.bytes(), 840, 144, 424, 1, Color::WHITE);
     match run.spotlight {
         Spotlight::None => {}
+        Spotlight::Actual(image) => {
+            text(fb,b"actual (reference not supplied)",840,152,424,1,Color::WHITE);
+            for y in 0..128 {for x in 0..128 {fb.put_pixel(984+x,168+y,color(image.pixel(x*image.width/128,y*image.height/128)));}}
+        }
         Spotlight::Picture {
             expected,
             actual,

@@ -1126,6 +1126,13 @@ with the composition formula).
   as a child (in a suite boot) it prints `[init] not PID 1: test-control check skipped` and makes no absence
   claim.
 
+The userspace run stage consumes its one-shot points 12–14 by reading
+`/proc/breenix/stage-control`: a decimal bitset, bit `point` set when that point fired for
+this caller's process id (or target 0). Each open snapshots and consumes the points once.
+It is ENOSYS outside suite boots and EPERM for non-root; it never changes the latch.
+`/proc/breenix/boot-ribbon` lists the actual producer markers in ARM64 boot-path order,
+one `0|marker` or `1|marker` line per applicable stage. Announcements do not reach stages.
+
 ## 22. Kernel output accounting
 
 Plan §12.1 is the contract. Each thread's `kernel_output_bytes` counts the payload bytes it commits for
@@ -1262,7 +1269,10 @@ The runner derives CASE serial bytes and tile state and numbers from one stored 
 calls `libbreenix::suite::judged(&FrameBuf)` with the exact surface it judged, before modifying it. The
 handoff canonicalizes BGRX and snapshots it with SHA-256 (FIPS 180-4); the runner verifies the complete
 snapshot and appends ` sha256=<64 lowercase hex digits>` after `ms=<n>` on PASS and FAIL CASE lines
-(before `msg=` on FAIL). The stage uses only that verified snapshot for the tile and actual pane.
+(before `msg=` on FAIL). The stage uses only that verified snapshot for the tile and actual pane. An independently constructed
+reference may be handed off alongside it; it has the same dimensions and its own verified SHA-256.
+When a surface check has no reference (for example a structural predicate), the spotlight labels it
+`actual (reference not supplied)` and shows the actual pane alone; it never constructs a matching reference.
 A malformed or changed snapshot fails the case. A case with no picture has no hash field.
 The stage composes only between cases, never in a measured case window.
 

@@ -56,6 +56,8 @@ pub mod socket;
 #[cfg(feature = "suite")]
 pub mod suite;
 #[cfg(feature = "suite")]
+mod suite_stage;
+#[cfg(feature = "suite")]
 pub mod suite_spawn;
 pub mod synth;
 pub mod syscall;

@@ -96,6 +96,7 @@ use libgfx::framebuf::FrameBuf;
 
 use crate::error::Error;
 pub use crate::suite_spawn::{spawn, Keep, Run};
+pub use crate::suite_stage::clock as ui_clock;
 use crate::fs;
 use crate::io::{self, poll_events, status_flags, PollFd};
 use crate::process::{self, ForkResult, WNOHANG};
@@ -146,6 +147,7 @@ pub struct JudgedFrame {
     pub height: usize,
     pub pixels: Vec<u8>,
     pub sha256: [u8; 32],
+    pub expected: Option<Vec<u8>>,
 }
 
 static JUDGED_ENABLED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
@@ -162,7 +164,10 @@ fn judged_path() -> String {
 /// Call after the comparison even when it failed. In-memory shared-file transport avoids a full-frame
 /// pipe blocking the child while its parent waits for it to exit; no disk I/O is measured. Collection is outside
 /// the measured case window; the parent verifies length, canonical form and SHA-256.
-pub fn judged(frame: &FrameBuf) -> CaseResult {
+pub fn judged(frame: &FrameBuf) -> CaseResult { judged_with_reference(frame,None) }
+
+/// Hand off an independently constructed reference with the exact judged surface.
+pub fn judged_with_reference(frame:&FrameBuf,expected:Option<&FrameBuf>)->CaseResult {
     use std::io::Write;
     check(JUDGED_ENABLED.load(Ordering::Relaxed), "judged transport is not enabled for this suite")?;
     check(running_case().is_some(), "judged() called outside a suite case")?;
@@ -176,15 +181,22 @@ pub fn judged(frame: &FrameBuf) -> CaseResult {
         let p = frame.get_pixel(x, y);
         pixels.extend_from_slice(&[p.b, p.g, p.r, 255]);
     } }
+    let reference=if let Some(e)=expected {
+        check((e.width,e.height)==(frame.width,frame.height),"reference dimensions differ from judged surface")?;
+        let mut bytes=Vec::with_capacity(size);
+        for y in 0..e.height {for x in 0..e.width {let p=e.get_pixel(x,y);bytes.extend_from_slice(&[p.b,p.g,p.r,255]);}}
+        Some(bytes)
+    }else{None};
     let digest = libpixcheck::sha256(&pixels);
     let path = judged_path();
     let write = || -> std::io::Result<()> {
         let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path)?;
-        file.write_all(b"JDG1")?;
+        file.write_all(if reference.is_some(){b"JDG2"}else{b"JDG1"})?;
         file.write_all(&(frame.width as u32).to_le_bytes())?;
         file.write_all(&(frame.height as u32).to_le_bytes())?;
         file.write_all(&digest)?;
         file.write_all(&pixels)?;
+        if let Some(bytes)=&reference {file.write_all(&libpixcheck::sha256(bytes))?;file.write_all(bytes)?;}
         drop(file);
         Ok(())
     };
@@ -203,14 +215,16 @@ fn collect_judged() -> Result<Option<JudgedFrame>, String> {
         };
         let mut header = [0u8; 44];
         file.read_exact(&mut header).map_err(|_| "judged frame header truncated")?;
-        if &header[..4] != b"JDG1" { return Err(String::from("judged frame header invalid")); }
+        if &header[..4] != b"JDG1" && &header[..4] != b"JDG2" { return Err(String::from("judged frame header invalid")); }
         let width = u32::from_le_bytes(header[4..8].try_into().unwrap()) as usize;
         let height = u32::from_le_bytes(header[8..12].try_into().unwrap()) as usize;
         if width == 0 || height == 0 || width > 16384 || height > 16384 {
             return Err(String::from("judged frame dimensions invalid"));
         }
         let size = width.checked_mul(height).and_then(|n| n.checked_mul(4)).ok_or("judged frame size overflow")?;
-        if file.metadata().map_err(|_| "judged frame metadata unavailable")?.len() != (44 + size) as u64 {
+        let has_reference=&header[..4]==b"JDG2";
+        let total=44+size+if has_reference{32+size}else{0};
+        if file.metadata().map_err(|_| "judged frame metadata unavailable")?.len() != total as u64 {
             return Err(String::from("judged frame length differs from header"));
         }
         let mut pixels = Vec::new();
@@ -220,11 +234,37 @@ fn collect_judged() -> Result<Option<JudgedFrame>, String> {
         if pixels.chunks_exact(4).any(|p| p[3] != 255) { return Err(String::from("judged frame is not canonical")); }
         let sha256 = libpixcheck::sha256(&pixels);
         if header[12..44] != sha256 { return Err(String::from("judged frame SHA-256 differs from handoff")); }
-        Ok(Some(JudgedFrame { width, height, pixels, sha256 }))
+        let expected=if has_reference {
+            let mut hash=[0u8;32];file.read_exact(&mut hash).map_err(|_|"reference hash truncated")?;
+            let mut bytes=std::vec![0;size];file.read_exact(&mut bytes).map_err(|_|"reference pixels truncated")?;
+            if bytes.chunks_exact(4).any(|p|p[3]!=255) || libpixcheck::sha256(&bytes)!=hash {return Err(String::from("reference snapshot invalid"));}
+            Some(bytes)
+        }else{None};
+        Ok(Some(JudgedFrame { width, height, pixels, sha256, expected }))
     })();
     let _ = std::fs::remove_file(path);
     let _ = std::fs::remove_file(std::format!("{}.new", judged_path()));
     result
+}
+
+/// Measured frame times for the timing spotlight (microseconds), never UI animation time.
+#[derive(Clone)]
+pub struct FrameTiming {pub frame_us:Vec<u32>,pub budget_us:u32}
+pub fn timing(frame_us:&[u32],budget_us:u32)->CaseResult {
+    check(JUDGED_ENABLED.load(Ordering::Relaxed) && running_case().is_some(),"timing outside BreenGL case")?;
+    check(!frame_us.is_empty() && frame_us.len()<=64 && budget_us>0,"invalid frame timing samples")?;
+    let mut text=std::format!("{budget_us}");for t in frame_us {let _=write!(text," {t}");}
+    std::fs::write(std::format!("{}.time",judged_path()),text).map_err(|e|CaseError::Fail(e.to_string()))
+}
+fn collect_timing()->Result<Option<FrameTiming>,String> {
+    if !JUDGED_ENABLED.load(Ordering::Relaxed){return Ok(None);}
+    let path=std::format!("{}.time",judged_path());
+    let bytes=match std::fs::read_to_string(&path){Ok(b)=>b,Err(e) if e.kind()==std::io::ErrorKind::NotFound=>return Ok(None),Err(e)=>return Err(e.to_string())};
+    let _=std::fs::remove_file(path);
+    let mut words=bytes.split_whitespace();let budget_us=words.next().and_then(|v|v.parse().ok()).ok_or("invalid timing budget")?;
+    let frame_us=words.map(str::parse).collect::<Result<Vec<u32>,_>>().map_err(|_|"invalid timing sample")?;
+    if budget_us==0 || frame_us.is_empty() || frame_us.len()>64{return Err("invalid timing snapshot".into());}
+    Ok(Some(FrameTiming{frame_us,budget_us}))
 }
 
 fn frame_hash(frame: Option<&JudgedFrame>) -> String {
@@ -390,13 +430,17 @@ pub struct Suite {
     pub title: &'static str,
     pub categories: &'static [Category],
     pub case_limit_ms: u64,
+    pub gui: bool,
 }
 
 pub const fn suite(id: &'static str, title: &'static str, categories: &'static [Category]) -> Suite {
-    Suite { id, title, categories, case_limit_ms: DEFAULT_CASE_LIMIT_MS }
+    Suite { id, title, categories, case_limit_ms: DEFAULT_CASE_LIMIT_MS, gui:false }
 }
 
 impl Suite {
+    /// Hand the display to each isolated case; draw only between measured windows.
+    pub const fn gui(self)->Suite {Suite{gui:true,..self}}
+
     /// The same suite with a different per-case time limit.
     pub const fn case_limit_ms(self, ms: u64) -> Suite {
         Suite { case_limit_ms: ms, ..self }
@@ -411,7 +455,8 @@ impl Suite {
         let mut states: Vec<Vec<State>> = self.categories.iter()
             .map(|category| category.cases.iter().map(|_| State::Pending).collect())
             .collect();
-        let mut screen = Screen::open();
+        let mut screen = Screen::open(self.gui);
+        if self.gui {crate::suite_stage::init(self);}
         let title = std::format!("BREENIX / {} SUITE", self.title.to_uppercase());
         let subtitle = std::format!("suite {}: {} cases in {} categories", self.id, total, self.categories.len());
         let mut counts = Counts::default();
@@ -433,24 +478,30 @@ impl Suite {
                     .map_or(self.case_limit_ms, |&(_, _, limit)| limit);
                 let outcome = run_case(case, limit_ms, self.id, &name, &mut screen, &mut feed);
                 let picture_hash = frame_hash(screen.judged.as_ref());
-                match &outcome {
+                let line = match &outcome {
                     Outcome::Pass { ms } => {
                         counts.passed += 1;
-                        emit(&std::format!("SUITE {} CASE {} PASS ms={}{}", self.id, name, ms, picture_hash));
+                        std::format!("SUITE {} CASE {} PASS ms={}{}", self.id, name, ms, picture_hash)
                     }
                     Outcome::Fail { ms, msg } => {
                         counts.failed += 1;
-                        emit(&std::format!("SUITE {} CASE {} FAIL ms={}{} msg={}", self.id, name, ms, picture_hash, msg));
+                        std::format!("SUITE {} CASE {} FAIL ms={}{} msg={}", self.id, name, ms, picture_hash, msg)
                     }
                     Outcome::Skip { msg } => {
                         counts.skipped += 1;
-                        emit(&std::format!("SUITE {} CASE {} SKIP msg={}", self.id, name, msg));
+                        std::format!("SUITE {} CASE {} SKIP msg={}", self.id, name, msg)
                     }
+                };
+                emit(&line);
+                if self.gui {
+                    let fps=feed.values.iter().rev().find(|v|v.name=="composites-per-second").and_then(|v|u32::try_from(v.number).ok());
+                    crate::suite_stage::record(&line,&outcome,screen.judged.take(),screen.timing.take(),fps).expect("recording stage result");
                 }
                 states[c][k] = State::Done(outcome);
                 done += 1;
             }
         }
+        if self.gui {crate::suite_stage::finale().expect("presenting stage finale");}
         emit(&std::format!("SUITE {} DONE passed={} failed={} skipped={} total={}",
             self.id, counts.passed, counts.failed, counts.skipped, total));
 
@@ -500,13 +551,13 @@ struct Counts {
     skipped: usize,
 }
 
-enum Outcome {
+pub(super) enum Outcome {
     Pass { ms: u64 },
     Fail { ms: u64, msg: String },
     Skip { msg: String },
 }
 
-enum State {
+pub(super) enum State {
     Pending,
     Running,
     Done(Outcome),
@@ -775,9 +826,9 @@ fn keep_record_output(suite: &str, name: &str) {
 /// Run a case in a forked child, giving it `limit_ms`, and keep the live strip up to
 /// date while it runs.
 fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Screen, feed: &mut Feed) -> Outcome {
-    screen.judged = None;
+    screen.judged = None;screen.timing=None;
     // The live strip's copy of the case's records, when the strip is on.
-    let live = if screen.live_on() {
+    let live = if screen.live_on() || screen.gui {
         io::pipe2(status_flags::O_CLOEXEC | status_flags::O_NONBLOCK).ok()
     } else {
         None
@@ -795,7 +846,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
     JUDGED_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     // A prior interrupted boot may have left this PID/sequence on a reused disk.
     JUDGED_ENABLED.store(suite == "breengel", Ordering::Relaxed);
-    for path in [judged_path(), std::format!("{}.new", judged_path())].into_iter().filter(|_| suite == "breengel") {
+    for path in [judged_path(), std::format!("{}.new", judged_path()), std::format!("{}.time",judged_path())].into_iter().filter(|_| suite == "breengel") {
         if let Err(e) = std::fs::remove_file(path) {
             if e.kind() != std::io::ErrorKind::NotFound {
                 let _ = (io::close(reader),io::close(writer));
@@ -803,6 +854,10 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
                 return Outcome::Fail{ms:0,msg:std::format!("cannot clear judged transport: {e}")};
             }
         }
+    }
+    if screen.gui {
+        graphics::give_back_display().expect("GUI display release before case");
+        crate::suite_stage::begin();
     }
     let start = monotonic_ns();
     match process::fork() {
@@ -816,6 +871,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
             CASE_DEADLINE_NS.store(deadline, Ordering::Relaxed);
             let _ = CASE_NAME.set(String::from(name));
             keep_record_output(suite, name);
+            if screen.gui {graphics::take_over_display().expect("GUI case display claim");}
             let outcome = match silence_output() {
                 Ok(()) => run_inline(case),
                 Err(error) => Outcome::Fail {
@@ -856,6 +912,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
                     Outcome::Fail { ms: ms_since(start), msg: plain(&std::format!("waitpid failed: {error}{note}")) }
                 }
             };
+            if screen.gui {crate::suite_stage::end();}
             let _ = io::close(reader);
             if let Some(fd) = live_reader {
                 feed.drain(fd);
@@ -869,6 +926,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
                 Ok(frame) => { screen.judged = frame; outcome }
                 Err(note) => with_note(outcome, &note),
             };
+            let outcome=match collect_timing(){Ok(timing)=>{screen.timing=timing;outcome},Err(note)=>with_note(outcome,&note)};
             match restore_realtime(realtime) {
                 Some(note) => with_note(outcome, &note),
                 None => outcome,
@@ -1044,7 +1102,9 @@ impl Feed {
 
 /// The suite's view of the display, when there is one to draw on.
 struct Screen {
+    gui:bool,
     judged: Option<JudgedFrame>,
+    timing:Option<FrameTiming>,
     fb: Option<FrameBuf>,
     /// Whether the live strip is drawn (see `/etc/breenix/suite-live`).
     live: bool,
@@ -1055,7 +1115,7 @@ struct Screen {
 impl Screen {
     /// Take the display and map all of it. Without a framebuffer the suite still
     /// runs and prints its serial lines; on a small one the panel draws what fits.
-    fn open() -> Screen {
+    fn open(gui:bool) -> Screen {
         let fb = (|| {
             let info = graphics::fbinfo().ok()?;
             if !(3..=4).contains(&info.bytes_per_pixel) {
@@ -1070,7 +1130,7 @@ impl Screen {
             })
         })();
         let off = std::fs::read_to_string("/etc/breenix/suite-live").is_ok_and(|text| text.trim() == "off");
-        Screen { live: fb.is_some() && !off, fb, area: None, judged: None }
+        Screen { gui,live: fb.is_some() && !off && !gui, fb, area: None, judged: None,timing:None }
     }
 
     fn live_on(&self) -> bool { self.live }
@@ -1097,6 +1157,7 @@ impl Screen {
 
     /// Redraw only the live strip and flush it.
     fn frame(&mut self, feed: &Feed) {
+        if self.gui {crate::suite_stage::tick().expect("GUI stage tick");return;}
         let (Some(fb), Some(area), true) = (self.fb.as_mut(), self.area, self.live) else { return };
         Self::with_live(feed, |live| diagnostics::draw_live(fb, area, live));
         let _ = graphics::take_over_display();
@@ -1105,6 +1166,11 @@ impl Screen {
 
     fn draw(&mut self, suite: &Suite, title: &str, subtitle: &str, states: &[Vec<State>], verdict: Verdict<'_>,
         feed: &Feed) {
+        if self.gui {
+            graphics::take_over_display().expect("runner display claim");
+            crate::suite_stage::draw(states).expect("run stage presentation");
+            return;
+        }
         let live_on = self.live;
         let Some(fb) = self.fb.as_mut() else { return; };
         let details: Vec<Vec<String>> = states.iter()
@@ -1150,6 +1216,24 @@ mod judged_transport_tests {
     use super::*;
 
     #[test]
+    fn a_case_publishes_once_and_keeps_its_independent_reference() {
+        JUDGED_ENABLED.store(true,Ordering::Relaxed);
+        JUDGED_RUNNER.store(std::process::id() as u64,Ordering::Relaxed);
+        JUDGED_SEQUENCE.store(u64::MAX-1,Ordering::Relaxed);
+        let _=std::fs::remove_file(judged_path());
+        let _=CASE_NAME.set(String::from("transport/one"));
+        let actual=FrameBuf::new_filled(2,1,libgfx::framebuf::Format::BGRX,libgfx::color::Color::rgb(1,2,3)).unwrap();
+        let expected=FrameBuf::new_filled(2,1,libgfx::framebuf::Format::BGRX,libgfx::color::Color::BLACK).unwrap();
+        judged_with_reference(&actual,Some(&expected)).unwrap();
+        assert!(judged(&expected).is_err(),"a later handoff must not replace the first");
+        let frame=collect_judged().unwrap().unwrap();
+        assert_eq!(frame.pixels,[3,2,1,255,3,2,1,255]);
+        assert_eq!(frame.expected.unwrap(),[0,0,0,255,0,0,0,255]);
+        JUDGED_ENABLED.store(false,Ordering::Relaxed);
+        assert!(collect_judged().unwrap().is_none());
+    }
+
+    #[test]
     fn changed_truncated_and_noncanonical_snapshots_are_rejected() {
         JUDGED_ENABLED.store(true, Ordering::Relaxed);
         JUDGED_RUNNER.store(std::process::id() as u64, Ordering::Relaxed);
@@ -1183,3 +1267,6 @@ mod judged_transport_tests {
         assert!(collect_judged().err().unwrap().contains("canonical"));
     }
 }
+
+/// Validate the live runner stage against its stored CASE records and scanout.
+pub fn showcase_check(name:&str)->CaseResult {crate::suite_stage::showcase_check(name)}

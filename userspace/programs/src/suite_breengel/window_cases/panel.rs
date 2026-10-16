@@ -3,11 +3,11 @@
 use crate::*;
 
 pub(crate) const PANEL: &[Case] = &[
-    case("handoff", "A display-taking child under probe takes the display, gives it back, and the panel is restored exactly", panel_handoff),
-    case("between-cases", "In a GUI suite the panel is drawn only between cases and restored exactly after each", panel_between_cases),
-    case("cursor-restore", "Moving the pointer over the panel leaves no cursor trail", panel_cursor_restore),
-    case("cursor-trail-detected", "With the panel cursor's save and restore disabled by a test control, the trail is detected", panel_cursor_trail_detected),
-    case("kernel-screens", "The kernel's console screen redraws exactly after the display is given back", panel_kernel_screens),
+    pictured!("handoff", "A display-taking child under probe takes the display, gives it back, and the panel is restored exactly", panel_handoff),
+    pictured!("between-cases", "In a GUI suite the panel is drawn only between cases and restored exactly after each", panel_between_cases),
+    pictured!("cursor-restore", "Moving the pointer over the panel leaves no cursor trail", panel_cursor_restore),
+    pictured!("cursor-trail-detected", "With the panel cursor's save and restore disabled by a test control, the trail is detected", panel_cursor_trail_detected),
+    pictured!("kernel-screens", "The kernel's console screen redraws exactly after the display is given back", panel_kernel_screens),
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -18,6 +18,7 @@ use super::composition::{give_back, paint, screen, take_over};
 use super::kit::*;
 
 fn first_difference(a: &[u8], b: &[u8]) -> Option<(usize, usize)> {
+    crate::remember_frame(b,1280,800,Some(a.to_vec()));
     (0..1280 * 800).find(|&i| a[i * 4..i * 4 + 4] != b[i * 4..i * 4 + 4]).map(|i| (i % 1280, i / 1280))
 }
 
@@ -92,6 +93,7 @@ fn trail(no_restore: bool) -> Result<Vec<(u32, u32)>, libbreenix::suite::CaseErr
     let _ = libbreenix::test_control::disarm_all();
     crossed?;
     let (back, _) = screen()?;
+    crate::remember_frame(&back,1280,800,if no_restore{None}else{Some(rest.clone())});
     Ok((0..1280 * 800u32)
         .filter(|&i| rest[i as usize * 4..i as usize * 4 + 4] != back[i as usize * 4..i as usize * 4 + 4])
         .map(|i| (i % 1280, i / 1280))
