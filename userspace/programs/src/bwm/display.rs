@@ -3,7 +3,7 @@
 use abi::{op, Plain};
 use core::sync::atomic::{AtomicU64, Ordering};
 pub use libbreenix::graphics::{
-    cursor_shape, fbinfo, input_event_type, mouse_pos, mouse_state_with_scroll,
+    fbinfo, input_event_type, mouse_pos, mouse_state_with_scroll,
     poll_modifier_state, take_over_display, WindowInputEvent,
 };
 use libbreenix::{
@@ -87,11 +87,6 @@ pub fn set_window_position(id: u64, x: i32, y: i32, z: u32, visible: bool) -> Re
         },
     )
     .map(|_| ())
-}
-pub fn set_cursor_shape(shape: u32) -> Result<(), Error> {
-    let mut c = CURSOR.lock().unwrap();
-    c.shape = shape;
-    win::call(op::SET_CURSOR, &mut *c).map(|_| ())
 }
 pub fn write_window_input(id: u64, old: &WindowInputEvent) -> Result<(), Error> {
     use abi::event_kind as kind;
