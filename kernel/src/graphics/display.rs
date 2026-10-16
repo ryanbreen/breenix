@@ -16,6 +16,8 @@ const W: usize = 1280;
 const H: usize = 800;
 const LEN: usize = W * H * 4;
 const MAX_OWNERS: usize = 4;
+/// The latest completed composite serial of each live compositing thread group. A row
+/// leaves only when its group exits, so another group's composites never evict it.
 static COMPOSITES: Mutex<Vec<(u64, u64)>> = Mutex::new(Vec::new());
 
 /// Kernel-published completed composite serials, independent of runner timestamps.
@@ -321,8 +323,10 @@ impl Backend for Display {
         publish(s, &bounded_damage(damage), true).map_err(|e| Failure { reason: e as u32 })?;
         let caller = Caller::current().map_err(|e| Failure { reason: e as u32 })?;
         let mut records = COMPOSITES.lock();
-        if records.len() == 2048 { records.remove(0); }
-        records.push((caller.tgid, f.serial));
+        match records.iter_mut().find(|(pid, _)| *pid == caller.tgid) {
+            Some(record) => record.1 = record.1.max(f.serial),
+            None => records.push((caller.tgid, f.serial)),
+        }
         Ok(Composed { pixels, per_window })
     }
     fn readback(&self, _caller: &Caller, rb: &mut abi::Readback) -> Result<(), i32> {
@@ -434,6 +438,8 @@ pub fn gone(pid: u64) {
     if let Some(s) = guard.as_mut() {
         s.owners.retain(|(owner, _, _)| *owner != pid);
     }
+    drop(guard);
+    COMPOSITES.lock().retain(|(owner, _)| *owner != pid);
 }
 
 /// Copy a caller's private mmap pane, clipped before touching any pixels.
