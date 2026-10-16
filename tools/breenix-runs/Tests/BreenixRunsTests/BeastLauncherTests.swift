@@ -170,14 +170,51 @@ final class BeastLauncherTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let runner = BeastScriptedProcessRunner()
         let launcher = BeastLauncher(store: RunStore(root: root.appendingPathComponent("store")),
-                                     runner: runner, timeoutSecs: 180, serialStreaming: NoSerialStreaming(), quietOverride: nil)
+                                     runner: runner, timeoutSecs: 180, serialStreaming: NoSerialStreaming(), quietOverride: nil, targetGuard: nil)
         var selected = options(runID: "q35-run")
         selected.qemuProfile = .q35
         let plan = try launcher.plan(options: selected)
         XCTAssertTrue(plan.runGate.arguments.last!.contains("BREENIX_GATE_TIMEOUT=180 BREENIX_FULL_BACKSTOP=1800 CARGO_BUILD_JOBS=6 BREENIX_QEMU_PROFILE=q35"))
+        selected.catchup = true
         let result = try launcher.runX86(options: selected)
+        XCTAssertEqual(result.manifest.env["BREENIX_CATCHUP"], "1")
         XCTAssertEqual(result.manifest.env["BREENIX_QEMU_PROFILE"], "q35")
         XCTAssertEqual(result.manifest.env["BREENIX_GATE_TIMEOUT"], "180")
+    }
+
+    func testTargetPolicyRefusalStopsBeforeBeast() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let runner = BeastScriptedProcessRunner()
+        runner.policyResult = ProcessResult(stderr: Data("Refusing x86 for effort lane breengel/window\n".utf8), exitCode: 1)
+        let launcher = BeastLauncher(store: RunStore(root: root.appendingPathComponent("store")), runner: runner,
+                                     serialStreaming: NoSerialStreaming(),
+                                     targetGuard: URL(fileURLWithPath: "/repo/scripts/effort-target-guard.py"))
+        XCTAssertThrowsError(try launcher.runX86(options: options(runID: "refused"))) { error in
+            XCTAssertEqual(error as? BeastLauncherError, .targetPolicyRefused("Refusing x86 for effort lane breengel/window"))
+        }
+        XCTAssertEqual(runner.calls.map(\.executable), ["/usr/bin/env"])
+        XCTAssertEqual(runner.calls[0].arguments,
+                       ["python3", "/repo/scripts/effort-target-guard.py", "--repo", "/repo", "--commit", "abc123def", "--target", "x86"])
+    }
+
+    func testAcceptedTargetPolicyStampsTheRemoteGate() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let runner = BeastScriptedProcessRunner()
+        let launcher = BeastLauncher(store: RunStore(root: root.appendingPathComponent("store")), runner: runner,
+                                     serialStreaming: NoSerialStreaming(), quietOverride: nil,
+                                     targetGuard: URL(fileURLWithPath: "/repo/scripts/effort-target-guard.py"))
+        var selected = options(runID: "accepted")
+        selected.catchup = true
+        let result = try launcher.runX86(options: selected)
+        XCTAssertEqual(runner.calls[0].arguments.last, "--catchup")
+        var stamped = selected
+        stamped.targetPolicySHA = String(repeating: "a", count: 40)
+        let plan = try launcher.plan(options: stamped)
+        XCTAssertTrue(plan.runGate.arguments.last!.contains("BREENIX_TARGET_POLICY_CHECKED=x86:" + String(repeating: "a", count: 40)))
+        XCTAssertTrue(runner.calls.contains(RemoteCommand.startGateRequest(gate: plan.runGate, paths: plan.paths)))
+        XCTAssertEqual(result.manifest.env["BREENIX_CATCHUP"], "1")
     }
 
     func testQuietOverrideForwardingAndRejection() throws {
@@ -278,7 +315,7 @@ final class BeastLauncherTests: XCTestCase {
         let store = RunStore(root: root.appendingPathComponent("store", isDirectory: true))
         let runner = BeastScriptedProcessRunner()
         runner.prepareResult = ProcessResult(stdout: Data("fetch failed\n".utf8), exitCode: 1)
-        let launcher = BeastLauncher(store: store, runner: runner, serialStreaming: NoSerialStreaming())
+        let launcher = BeastLauncher(store: store, runner: runner, serialStreaming: NoSerialStreaming(), targetGuard: nil)
 
         XCTAssertThrowsError(try launcher.runX86(options: options(runID: "prepare-fails"))) { error in
             guard case BeastLauncherError.prepareCloneFailed(let exitCode, _) = error else {
@@ -368,7 +405,7 @@ final class BeastLauncherTests: XCTestCase {
             return ProcessResult(exitCode: 0)
         }
         let launcher = BeastLauncher(store: RunStore(root: root.appendingPathComponent("store")), runner: runner,
-                                     vigilScript: URL(fileURLWithPath: "/record.sh"), serialStreaming: NoSerialStreaming())
+                                     vigilScript: URL(fileURLWithPath: "/record.sh"), serialStreaming: NoSerialStreaming(), targetGuard: nil)
         let result = try launcher.runX86(options: options(runID: "file-finished"))
         XCTAssertTrue(result.manifest.captures.contains { $0.path == "screen-1-files-io.png" })
         let filings = runner.calls.filter { $0.executable == "/record.sh" && $0.arguments.first == "record" }
@@ -410,8 +447,7 @@ final class BeastLauncherTests: XCTestCase {
         let launcher = BeastLauncher(
             store: RunStore(root: root.appendingPathComponent("store", isDirectory: true)),
             runner: runner,
-            pathsTemplate: BeastPaths(host: "localhost", clonePath: ""), serialStreaming: NoSerialStreaming()
-        )
+            pathsTemplate: BeastPaths(host: "localhost", clonePath: ""), serialStreaming: NoSerialStreaming(), targetGuard: nil)
 
         XCTAssertThrowsError(try launcher.runX86(options: options(runID: "bad-host"))) { error in
             XCTAssertEqual(error as? BeastLauncherError, .unsupportedHost("localhost"))
@@ -426,8 +462,7 @@ final class BeastLauncherTests: XCTestCase {
         let runner = BeastScriptedProcessRunner()
         let launcher = BeastLauncher(
             store: RunStore(root: root.appendingPathComponent("store", isDirectory: true)),
-            runner: runner, serialStreaming: NoSerialStreaming()
-        )
+            runner: runner, serialStreaming: NoSerialStreaming(), targetGuard: nil)
         let launchOptions = options(runID: runID)
         let plan = try launcher.plan(options: launchOptions)
 
@@ -454,7 +489,7 @@ final class BeastLauncherTests: XCTestCase {
 
     private func runSuccessfulX86(root: URL, runner: BeastScriptedProcessRunner, runID: String) throws -> BeastLaunchResult {
         let store = RunStore(root: root.appendingPathComponent("store", isDirectory: true))
-        let launcher = BeastLauncher(store: store, runner: runner, serialStreaming: NoSerialStreaming())
+        let launcher = BeastLauncher(store: store, runner: runner, serialStreaming: NoSerialStreaming(), targetGuard: nil)
         return try launcher.runX86(options: options(runID: runID))
     }
 
@@ -534,6 +569,7 @@ private final class BeastScriptedProcessRunner: ProcessRunner {
     var gateResult = ProcessResult(stdout: Data("GATE: PASS (1/1 boot tests passed)\n".utf8), exitCode: 0)
     var pullResult = ProcessResult(stdout: Data([1]), exitCode: 0)
     var removeResult = ProcessResult(exitCode: 0)
+    var policyResult = ProcessResult(stdout: Data((String(repeating: "a", count: 40) + "\n").utf8), exitCode: 0)
     var extractTarball: (ProcessRequest) throws -> ProcessResult = { request in
         try FileManager.default.createDirectory(at: URL(fileURLWithPath: request.arguments.last!).appendingPathComponent("gate-tmp"), withIntermediateDirectories: true)
         return ProcessResult(exitCode: 0)
@@ -551,6 +587,9 @@ private final class BeastScriptedProcessRunner: ProcessRunner {
         }
         if request.executable == "/usr/bin/tar" {
             return try extractTarball(request)
+        }
+        if request.executable == "/usr/bin/env", request.arguments[safe: 1]?.hasSuffix("effort-target-guard.py") == true {
+            return policyResult
         }
 
         guard request.executable == "/usr/bin/ssh", let remote = request.arguments.last else {

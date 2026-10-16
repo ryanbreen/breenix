@@ -5979,6 +5979,8 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     // ── Release lock ──────────────────────────────────────────────
     drop(guard);
 
+    wake_for_dispatched_return_work(frame, cpu_id);
+
     // ── Lock-free post-switch ─────────────────────────────────────
     unsafe {
         // We are returning from one exception frame into a newly dispatched thread,
@@ -6619,11 +6621,31 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         }
     }
     cpu0_breadcrumb(cpu_id, 43); // before aarch64_enter_exception_frame (non-idle ERET)
+    wake_for_dispatched_return_work(frame, cpu_id);
     // The dispatched thread's address space is installed above, so a frame
     // returning to EL0 starts its user time here.
     aarch64_resume_user_time(frame);
     unsafe {
         aarch64_enter_exception_frame(frame as *const Aarch64ExceptionFrame);
+    }
+}
+
+/// A thread dispatched straight to EL0 returns without the return-to-user
+/// signal check, so a signal sent while it was descheduled would wait for its
+/// next syscall or non-switching tick (on one CPU, a sender woken by each tick
+/// kept that from coming, so suite-signals' live-register handler cases saw 0
+/// and 2 of their 10 interruptions). A wake SGI to this CPU is taken as soon as EL0
+/// unmasks IRQs and makes the check, as when delivery finds the process
+/// manager busy. Called with IRQs masked after the dispatch is committed.
+fn wake_for_dispatched_return_work(frame: &Aarch64ExceptionFrame, cpu_id: usize) {
+    if (frame.spsr & 0xF) == 0
+        && crate::per_cpu_aarch64::current_thread()
+            .is_some_and(|thread| thread.needs_user_return_check())
+    {
+        crate::arch_impl::aarch64::gic::send_sgi(
+            crate::arch_impl::aarch64::constants::SGI_WAKE as u8,
+            cpu_id as u8,
+        );
     }
 }
 

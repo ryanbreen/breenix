@@ -3,9 +3,9 @@
 # console on this terminal. In the default `tests` mode this is the boot-path gate
 # (docs/boot-path.md) with a console you can watch and type into.
 #
-#   scripts/boot-interactive.sh [--mode MODE] [--program PATH] [--suite ID] [--serial-log FILE]
+#   scripts/boot-interactive.sh [--mode MODE] [--program PATH] [--suite ID [--case CATEGORY/CASE]] [--serial-log FILE]
 #                               [--idle-exit SECONDS] [--gate-timeout SECONDS] [--display | --no-display]
-#                               [--qmp SOCKET] [--fbconsole log] [--no-build]
+#                               [--qmp SOCKET] [--fbconsole log] [--no-build] [--cpus N]
 #
 #   Suite mode observes DONE, holds the panel briefly, then exits with its verdict.
 #   --mode MODE          tests (default): the testing kernel and its test loader
@@ -13,17 +13,20 @@
 #                        via -fw_cfg name=opt/breenix/mode (see "Boot modes" in docs/boot-path.md);
 #                        desktop's window manager needs VirGL, which this QEMU GPU lacks, so it exits here
 #   --program PATH       for --mode program: the absolute guest path /sbin/probe runs (probe --run PATH)
+#   --case CATEGORY/CASE  for --mode suite: run only this case (not full-suite evidence; not filed in Vigil)
 #   --suite ID           for --mode suite: the effort suite (docs/suites/ID.json) run as PID 1, /sbin/suite-ID
 #   --qmp SOCKET         open a QMP socket so another process can screenshot the VM screen:
 #                        scripts/qmp-screendump.py SOCKET out.png (works with --no-display)
 #   --fbconsole log      draw kernel log lines on the VM screen instead of the boot screen
 #   --serial-log FILE    also write everything the guest prints to FILE (default: a unique file under $TMPDIR/breenix-boot/)
-#   --idle-exit SECONDS  stop the VM after this many seconds without new serial output (default 300; 0 = never)
+#   --idle-exit SECONDS  stop the VM after this many seconds without new serial output (default 300; 0 turns it off)
 #   --gate-timeout SECONDS  suite DONE deadline (default 1800), even with --idle-exit 0
 #   BREENIX_SUITE_HOLD    suite panel hold after a 2 s render delay (default 5 s)
 #   --display            open QEMU's display window (the default on a Mac desktop session; BREENIX_QEMU_NOGUI=1 turns it off)
 #   --no-display         serial only, even for desktop
 #   --no-build           boot the kernel and disk already in target/
+#   --cpus N             guest processors, 1 to 8, the ARM64 kernel's MAX_CPUS (default 4); suite cases
+#                        needing more processors than this fail with their CPU prerequisite
 #   --accel hvf|tcg      ARM64 accelerator (default hvf on Apple Silicon, tcg elsewhere)
 #
 # Ctrl-A X quits QEMU; Ctrl-A C toggles the QEMU monitor. Ctrl-C goes to the guest.
@@ -40,15 +43,17 @@ IDLE_EXIT=300
 GATE_TIMEOUT=1800
 DISPLAY_MODE=
 BUILD=1
+CPUS=4
 MODE=tests
 PROGRAM=
 SUITE=
+ONLY=
 QMP_SOCKET=
 FBCONSOLE=
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --mode|--program|--suite|--serial-log|--idle-exit|--gate-timeout|--qmp|--fbconsole|--accel)
+        --mode|--program|--suite|--case|--serial-log|--idle-exit|--gate-timeout|--qmp|--fbconsole|--accel|--cpus)
             [ "$#" -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; } ;;
     esac
     case "$1" in
@@ -56,6 +61,7 @@ while [ "$#" -gt 0 ]; do
         --accel) export BREENIX_ARM64_QEMU_ACCEL="$2"; shift 2 ;;
         --program) PROGRAM="$2"; shift 2 ;;
         --suite) SUITE="$2"; shift 2 ;;
+        --case) [ -n "$2" ] || { echo "--case needs a case id" >&2; exit 2; }; ONLY="$2"; shift 2 ;;
         --qmp) QMP_SOCKET="$2"; shift 2 ;;
         --fbconsole) FBCONSOLE="$2"; shift 2 ;;
         --serial-log) SERIAL_LOG="$2"; shift 2 ;;
@@ -64,10 +70,12 @@ while [ "$#" -gt 0 ]; do
         --display) DISPLAY_MODE=cocoa; shift ;;
         --no-display) DISPLAY_MODE=none; shift ;;
         --no-build) BUILD=0; shift ;;
+        --cpus) CPUS="$2"; shift 2 ;;
         -h|--help) sed -n '2,/^# --help/p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
+[[ "$CPUS" =~ ^[1-8]$ ]] || { echo "--cpus needs 1 to 8 (the ARM64 kernel's MAX_CPUS), got: $CPUS" >&2; exit 2; }
 case "$MODE" in
     tests|probe|shell|desktop|program|suite) ;;
     *) echo "unknown mode: $MODE (expected tests, probe, shell, desktop, program or suite)" >&2; exit 2 ;;
@@ -88,6 +96,11 @@ if [ "$MODE" = suite ]; then
     fi
 elif [ -n "$SUITE" ]; then
     echo "--suite is only for --mode suite" >&2; exit 2
+fi
+if [ -n "$ONLY" ]; then
+    [ "$MODE" = suite ] && [[ "$ONLY" =~ ^[a-zA-Z0-9_./-]+$ ]] || {
+        echo "--case needs --mode suite and a category/case id" >&2; exit 2;
+    }
 fi
 case "$FBCONSOLE" in
     ""|log) ;;
@@ -135,6 +148,7 @@ if [ "$MODE" = program ]; then
 fi
 if [ "$MODE" = suite ]; then
     MODE_ARGS+=(-fw_cfg "name=opt/breenix/suite,string=$SUITE")
+    [ -z "$ONLY" ] || MODE_ARGS+=(-fw_cfg "name=opt/breenix/case,string=$ONLY")
 fi
 if [ -n "$FBCONSOLE" ]; then
     MODE_ARGS+=(-fw_cfg "name=opt/breenix/fbconsole,string=$FBCONSOLE")
@@ -213,9 +227,14 @@ else
     host_slot_quiet
 fi
 # Vigil shows the boot while it runs and scores it when it ends (does nothing without Vigil).
+# A one-case run is not registered: Vigil would score it as a suite boot.
 QEMU_PROFILE_ARGS=(-M virt,gic-version=3 -cpu max)
 QEMU_PROFILE=$(python3 "$ROOT/scripts/qemu-arm64.py" --print-profile "$QEMU" "${QEMU_PROFILE_ARGS[@]}")
-VIGIL_ID=$("$ROOT/scripts/vigil-record.sh" start qemu "$MODE" "$SUITE" "$SERIAL_LOG" "" "$QEMU_PROFILE")
+VIGIL_ID=
+# A boot with other than the default 4 processors is recorded with its count, so it never stands for main.
+VIGIL_CPUS=
+[ "$CPUS" = 4 ] || VIGIL_CPUS=$CPUS
+[ -n "$ONLY" ] || VIGIL_ID=$(BREENIX_VIGIL_CPUS="$VIGIL_CPUS" "$ROOT/scripts/vigil-record.sh" start qemu "$MODE" "$SUITE" "$SERIAL_LOG" "" "$QEMU_PROFILE")
 echo "==> Booting (serial: $SERIAL_LOG; Ctrl-A X quits)"
 [ -z "$QMP_SOCKET" ] || echo "==> QMP: $QMP_SOCKET (scripts/qmp-screendump.py $QMP_SOCKET out.png)"
 # Wait interruptibly and register the watcher so a signal to this script also
@@ -226,8 +245,8 @@ trap 'exit 130' INT
 exec 3<&0
 set +e
 python3 "$ROOT/scripts/watch-qemu.py" --serial "$SERIAL_LOG" --mode "$MODE" \
-    --suite "$SUITE" --idle-exit "$IDLE_EXIT" --gate-timeout "$GATE_TIMEOUT" --disk "$WRITABLE" -- python3 "$ROOT/scripts/qemu-arm64.py" "$QEMU" \
-    -rtc base=utc "${QEMU_PROFILE_ARGS[@]}" -m 512 -smp 4 \
+    --suite "$SUITE" --case "$ONLY" --idle-exit "$IDLE_EXIT" --gate-timeout "$GATE_TIMEOUT" --disk "$WRITABLE" -- python3 "$ROOT/scripts/qemu-arm64.py" "$QEMU" \
+    -rtc base=utc "${QEMU_PROFILE_ARGS[@]}" -m 512 -smp "$CPUS" \
     -kernel "$KERNEL" \
     "${DISPLAY_ARGS[@]}" -no-reboot \
     ${MODE_ARGS[@]+"${MODE_ARGS[@]}"} \

@@ -1156,6 +1156,7 @@ fn launch_x86_production_init(
     name: &str,
     exe_path: &[u8],
     elf_data: &[u8],
+    only: Option<&str>,
 ) -> Result<(), &'static str> {
     use alloc::string::String;
 
@@ -1166,8 +1167,12 @@ fn launch_x86_production_init(
             .ok_or("process manager not available")?;
 
         let path = alloc::format!("/sbin/{}", name);
+        let mut argv: alloc::vec::Vec<&[u8]> = alloc::vec![path.as_bytes()];
+        if let Some(case) = only {
+            argv.extend_from_slice(&[b"--case", case.as_bytes()]);
+        }
         let ticket = manager.create_init_process_with_argv(
-            String::from(name), exe_path, elf_data, &[path.as_bytes()],
+            String::from(name), exe_path, elf_data, &argv,
         )?;
         let publication = manager.designate_init(ticket)?;
         let designated_pid_raw = manager
@@ -1204,13 +1209,13 @@ fn launch_x86_production_init(
         feature = "disable_x86_prod_init"
     ))
 ))]
-fn x86_boot_suite() -> Option<alloc::string::String> {
+fn x86_boot_suite() -> Option<kernel::boot::target::SuiteTarget> {
     use kernel::boot::target;
     use kernel::drivers::fw_cfg;
 
     match fw_cfg::read_string("opt/breenix/mode").as_deref() {
         None | Some("") => match target::read() {
-            Ok(Some(target::Target::Suite(id))) => Some(id),
+            Ok(Some(target::Target::Suite(suite))) => Some(suite),
             Ok(Some(target::Target::Probe)) => {
                 log::warn!("[boot] Ignoring probe boot target: x86-64 runs only default and suite");
                 None
@@ -1223,7 +1228,15 @@ fn x86_boot_suite() -> Option<alloc::string::String> {
         },
         Some("default") => None,
         Some("suite") => match fw_cfg::read_string("opt/breenix/suite") {
-            Some(id) if target::is_suite_id(&id) => Some(id),
+            Some(id) if target::is_suite_id(&id) => {
+                match target::SuiteTarget::new(id, fw_cfg::read_string("opt/breenix/case")) {
+                    Ok(suite) => Some(suite),
+                    Err(why) => {
+                        log::warn!("[boot] Ignoring boot mode \"suite\": {}", why);
+                        None
+                    }
+                }
+            },
             Some(id) if !id.is_empty() => {
                 log::warn!(
                     "[boot] Ignoring boot mode \"suite\": {:?} is not a suite id",
@@ -1262,17 +1275,22 @@ fn x86_boot_suite() -> Option<alloc::string::String> {
     ))
 ))]
 fn read_x86_production_init(
-) -> Result<(alloc::string::String, alloc::vec::Vec<u8>, alloc::vec::Vec<u8>), &'static str> {
+) -> Result<(alloc::string::String, alloc::vec::Vec<u8>, alloc::vec::Vec<u8>, Option<alloc::string::String>), &'static str> {
     use kernel::boot::{init_image::read_init_from_ext2, target};
 
-    if let Some(id) = x86_boot_suite() {
+    if let Some(suite) = x86_boot_suite() {
+        let id = suite.id;
         let path = target::suite_path(&id);
         match read_init_from_ext2(&path)
             .and_then(|(elf_data, exe_path)| target::check_elf(&elf_data).map(|()| (elf_data, exe_path)))
         {
             Ok((elf_data, exe_path)) => {
-                log::info!("[boot] Boot mode: suite {}", id);
-                return Ok((alloc::format!("suite-{}", id), exe_path, elf_data));
+                if let Some(case) = &suite.case {
+                    log::info!("[boot] Boot mode: suite {} case {}", id, case);
+                } else {
+                    log::info!("[boot] Boot mode: suite {}", id);
+                }
+                return Ok((alloc::format!("suite-{}", id), exe_path, elf_data, suite.case));
             }
             Err(e) => log::warn!(
                 "[boot] Ignoring boot mode \"suite\": {} could not be loaded ({})",
@@ -1294,10 +1312,10 @@ fn read_x86_production_init(
     ))
 ))]
 fn read_default_x86_init(
-) -> Result<(alloc::string::String, alloc::vec::Vec<u8>, alloc::vec::Vec<u8>), &'static str> {
+) -> Result<(alloc::string::String, alloc::vec::Vec<u8>, alloc::vec::Vec<u8>, Option<alloc::string::String>), &'static str> {
     log::info!("[boot] Boot mode: default");
     kernel::boot::init_image::read_init_from_ext2("/sbin/init")
-        .map(|(elf_data, exe_path)| (alloc::string::String::from("init"), exe_path, elf_data))
+        .map(|(elf_data, exe_path)| (alloc::string::String::from("init"), exe_path, elf_data, None))
 }
 
 /// Continue kernel initialization after setting up threading
@@ -1902,9 +1920,9 @@ fn kernel_main_continue() -> ! {
         let mut image = read_x86_production_init();
         loop {
             match image {
-                Ok((name, exe_path, elf_data)) => {
+                Ok((name, exe_path, elf_data, only)) => {
                     let launched = x86_64::instructions::interrupts::without_interrupts(|| {
-                        launch_x86_production_init(&name, &exe_path, &elf_data)
+                        launch_x86_production_init(&name, &exe_path, &elf_data, only.as_deref())
                     });
                     match launched {
                         Ok(()) => {}

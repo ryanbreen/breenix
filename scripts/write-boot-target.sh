@@ -2,7 +2,7 @@
 # Write the boot-target file onto an ext2 disk image, so a production kernel booted
 # from it selects a suite or probe as PID 1 (docs/boot-path.md, "Boot modes"):
 #
-#   scripts/write-boot-target.sh IMAGE SUITE_ID|--probe [PID1_ELF]
+#   scripts/write-boot-target.sh IMAGE SUITE_ID|--probe [PID1_ELF] [SEQUENCE] [CATEGORY/CASE]
 #
 # IMAGE gets /etc/breenix/boot-target containing "suite SUITE_ID" or "probe",
 # replacing the prior target. Use a copy so ordinary boots keep their disk.
@@ -14,7 +14,7 @@
 
 set -euo pipefail
 
-if [ "$#" -lt 2 ] || [ "$#" -gt 4 ]; then
+if [ "$#" -lt 2 ] || [ "$#" -gt 5 ]; then
     sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//' >&2
     exit 2
 fi
@@ -22,6 +22,7 @@ IMAGE="$1"
 SUITE="$2"
 SUITE_ELF="${3:-}"
 SEQUENCE="${4:-}"
+ONLY="${5:-}"
 BOOT_TARGET="suite $SUITE"
 BINARY="/sbin/suite-$SUITE"
 if [ "$SUITE" = --probe ]; then
@@ -30,6 +31,13 @@ if [ "$SUITE" = --probe ]; then
 elif [[ ! "$SUITE" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
     echo "write-boot-target: not a suite id (lowercase words joined by '-'): $SUITE" >&2
     exit 2
+fi
+if [ -n "$ONLY" ]; then
+    if [ "$SUITE" = --probe ] || [ -n "$SEQUENCE" ] || [[ ! "$ONLY" =~ ^[a-zA-Z0-9_./-]+$ ]]; then
+        echo "write-boot-target: one case needs a suite, no sequence, and category/case" >&2
+        exit 2
+    fi
+    BOOT_TARGET+=" case $ONLY"
 fi
 [ -f "$IMAGE" ] || { echo "write-boot-target: no disk image at $IMAGE" >&2; exit 1; }
 if [ -n "$SUITE_ELF" ] && [ ! -f "$SUITE_ELF" ]; then
