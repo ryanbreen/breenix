@@ -14,6 +14,11 @@ use crate::work;
 /// ones test each pixel, so a narrow clip never pays for the root.
 const ROOT_SPAN: i64 = 48;
 
+/// A circle outline whose clipped rectangle has at most this many pixels tests each of them
+/// instead of walking: a walk may need two square roots (64 steps), more than a tiny clip's
+/// bound allows.
+const WALK_AREA: i64 = 64;
+
 /// Fill the visible part of `b` (already clipped) with `px`.
 fn fill_box(fb: &mut FrameBuf, b: Box64, px: [u8; 4]) {
     work::add(b.height() as u64);
@@ -202,6 +207,9 @@ fn octant_x(r: i64, y: i64) -> Option<i64> {
 /// Four walks of the first octant cover it: two over the visible rows (the points
 /// `(cx ± x, cy ± y)`) and two over the visible columns (`(cx ± y, cy ± x)`). A walk that
 /// starts past `y = 0` starts from `octant_x`, so only visible rows and columns are walked.
+/// A clipped rectangle of at most `WALK_AREA` pixels is tested pixel by pixel instead: the
+/// octant's points are exactly the `(x, y)` with `y ≤ x` and `x = octant_x(r, y)`, that is
+/// `x² − x ≤ r² − y² < x² + x`.
 pub fn draw_circle(fb: &mut FrameBuf, cx: i32, cy: i32, r: i32, color: Color) {
     if r < 0 {
         return;
@@ -215,6 +223,22 @@ pub fn draw_circle(fb: &mut FrameBuf, cx: i32, cy: i32, r: i32, color: Color) {
     let px = fb.opaque(color);
     if r == 0 {
         fb.write(cx as usize, cy as usize, px);
+        fb.mark(bbox);
+        return;
+    }
+    if c.width() * c.height() <= WALK_AREA {
+        let r2 = (r as i128) * (r as i128);
+        let on = |x: i128, y: i128| y <= x && x * x - x <= r2 - y * y && r2 - y * y < x * x + x;
+        work::add(c.height() as u64);
+        for py in c.y0..c.y1 {
+            work::add(c.width() as u64);
+            for pxx in c.x0..c.x1 {
+                let (a, b) = ((pxx - cx).unsigned_abs() as i128, (py - cy).unsigned_abs() as i128);
+                if on(a, b) || on(b, a) {
+                    fb.write(pxx as usize, py as usize, px);
+                }
+            }
+        }
         fb.mark(bbox);
         return;
     }
@@ -261,7 +285,8 @@ pub fn draw_circle(fb: &mut FrameBuf, cx: i32, cy: i32, r: i32, color: Color) {
                 d += 2 * (y - x) as i128 + 1;
             }
         }
-        work::add(steps);
+        // Each step of the walk runs the two-point loop above.
+        work::add(3 * steps);
     }
     fb.mark(bbox);
 }

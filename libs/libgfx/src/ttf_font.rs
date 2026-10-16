@@ -4,7 +4,9 @@
 //! drawn with its origin at `x + floor((pen_i + 32) / 64)`, and
 //! `pen_{i+1} = pen_i + advance26(g_i) + kern26(g_i, g_{i+1})`. A codepoint the font does not
 //! map draws glyph 0 (`.notdef`). Each glyph pixel is the coverage blend of the foreground
-//! over the pixel already there, and each drawn glyph marks its bitmap rectangle.
+//! over the pixel already there, and each drawn glyph marks its bitmap rectangle. A glyph
+//! whose bitmap rectangle, from its record header, lies wholly outside the surface or clip
+//! is laid out but never rasterized.
 
 use libfont::{CachedFont, Font, GlyphBitmap, SubpixelBitmap};
 
@@ -138,8 +140,25 @@ fn glyphs_of<'a>(font: &'a CachedFont, cps: impl Iterator<Item = u32> + 'a) -> i
     cps.map(move |cp| font.font().glyph_for(cp))
 }
 
+/// Whether glyph `g` at `size26` with its pen at (x, y) can draw inside the clip. A glyph
+/// without contours, or whose record is bad, draws nothing, so it cannot.
+fn reaches_clip(fb: &FrameBuf, font: &CachedFont, g: u16, size26: i32, x: i64, y: i64) -> bool {
+    match font.font().glyph_box(g, size26) {
+        Ok(Some(b)) => {
+            let (x0, y0) = (x + b.x_offset as i64, y + b.y_offset as i64);
+            let rect = Box64 { x0, y0, x1: x0 + b.width as i64, y1: y0 + b.height as i64 };
+            !rect.intersect(&fb.clip_box()).is_empty()
+        }
+        _ => false,
+    }
+}
+
 fn draw_glyphs(fb: &mut FrameBuf, font: &mut CachedFont, glyphs: alloc::vec::Vec<u16>, x: i32, y: i32, size: f32, fg: Color) -> i32 {
+    let size26 = Font::size26(size).unwrap_or(0);
     layout(font, glyphs.into_iter(), size, |font, g, dx| {
+        if !reaches_clip(fb, font, g, size26, x as i64 + dx, y as i64) {
+            return;
+        }
         if let Ok(bitmap) = font.rasterize_glyph(g, size) {
             blit_coverage(fb, bitmap, x as i64 + dx, y as i64, fg);
         }
@@ -177,7 +196,11 @@ pub fn text_width_bytes(font: &mut CachedFont, bytes: &[u8], size: f32) -> i32 {
 }
 
 fn draw_glyphs_subpixel(fb: &mut FrameBuf, font: &mut CachedFont, glyphs: alloc::vec::Vec<u16>, x: i32, y: i32, size: f32, fg: Color) -> i32 {
+    let size26 = Font::size26(size).unwrap_or(0);
     layout(font, glyphs.into_iter(), size, |font, g, dx| {
+        if !reaches_clip(fb, font, g, size26, x as i64 + dx, y as i64) {
+            return;
+        }
         if let Ok(bitmap) = font.font().rasterize_glyph_subpixel(g, size) {
             blit_subpixel(fb, &bitmap, x as i64 + dx, y as i64, fg);
         }

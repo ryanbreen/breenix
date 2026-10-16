@@ -196,6 +196,32 @@ fn big_circles_match_and_stay_bounded() {
 }
 
 #[test]
+fn circles_under_small_clips_match_the_walk_and_stay_bounded() {
+    // Clipped rectangles of 1 to 64 pixels take the per-pixel path; each must give the
+    // transcribed walk's visible pixels within section 7's bound for that rectangle.
+    let clips = [(10, 8, 1, 1), (10, 8, 4, 3), (0, 0, 8, 8), (3, 17, 2, 9), (20, 0, 1, 24), (5, 5, 9, 7)];
+    let circles = [(16i64, 12i64, 7i64), (16, 12, 12), (2, 2, 30), (-5, 30, 26), (16, 12, 1_000_000), (16, 12, i32::MAX as i64), (0, 0, 0)];
+    for &(x, y, w, h) in &clips {
+        for &(cx, cy, r) in &circles {
+            let mut fb = surface(32, 24);
+            fb.push_clip(Rect::new(x, y, w, h));
+            work::reset();
+            shapes::draw_circle(&mut fb, cx as i32, cy as i32, r as i32, INK);
+            let steps = work::steps();
+            let clip = (x as i64, y as i64, (x + w) as i64, (y + h) as i64);
+            if r < 3_000 {
+                assert_eq!(inked(&fb), visible(circle_path(cx, cy, r), clip), "draw_circle({cx}, {cy}, {r}) in {clip:?}");
+            }
+            // The circle's bounding rectangle, clipped.
+            let (x0, y0) = ((cx - r).max(clip.0), (cy - r).max(clip.1));
+            let (x1, y1) = ((cx + r + 1).min(clip.2), (cy + r + 1).min(clip.3));
+            let limit = if x0 < x1 && y0 < y1 { bound((x1 - x0) * (y1 - y0), y1 - y0, x1 - x0) } else { 64 };
+            assert!(steps <= limit, "draw_circle({cx}, {cy}, {r}) in {clip:?}: {steps} steps; section 7 allows {limit}");
+        }
+    }
+}
+
+#[test]
 fn extreme_calls_stay_within_the_work_bound() {
     type Call = (&'static str, Box<dyn Fn(&mut FrameBuf)>);
     let calls: Vec<Call> = vec![
