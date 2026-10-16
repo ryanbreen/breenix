@@ -654,20 +654,22 @@ impl HandlerTarget for RowTarget<'_, '_> {
 }
 
 /// The current thread's own signal state (`ThreadSignals::mirror`), for a
-/// signal already taken off its timer, with the siginfo that goes with it.
-/// The frame is written with this CPU on the thread's page tables, and a
-/// write that would fault is refused rather than resolved.
+/// timer's signal, with the siginfo that goes with it and the alternate
+/// stack read from the mirror beforehand. The frame is written with this CPU
+/// on the thread's page tables, and a write that would fault is refused
+/// rather than resolved.
 #[cfg(target_arch = "x86_64")]
 struct LocklessTarget<'a> {
     signals: &'a ThreadSignals,
     thread_id: u64,
     info: SigInfo,
+    alt: AltStack,
 }
 
 #[cfg(target_arch = "x86_64")]
 impl HandlerTarget for LocklessTarget<'_> {
     fn alt_stack(&self) -> AltStack {
-        self.signals.mirror.alt_stack()
+        self.alt
     }
 
     fn info(&self, _sig: u32) -> SigInfo {
@@ -708,8 +710,9 @@ impl HandlerTarget for LocklessTarget<'_> {
 /// holding that lock does not hold the handler up (#1635). Returns whether it
 /// did. It declines, taking nothing, whenever the process-manager path is
 /// needed: the row holds a pending signal or a stop, more than one timer
-/// signal is due, the action is a default one or SA_RESETHAND, the timer
-/// table is busy, or the frame cannot be written without a fault resolved.
+/// signal is due, the action is a default one or SA_RESETHAND, the
+/// dispositions are being rewritten, the timer table is busy, or the frame
+/// cannot be written without a fault resolved.
 #[cfg(target_arch = "x86_64")]
 fn deliver_timer_signal_lockless(
     thread_id: u64,
@@ -735,7 +738,9 @@ fn deliver_timer_signal_lockless(
     }
     let sig = (itimer | posix).trailing_zeros() + 1;
     let bit = sig_mask(sig);
-    let action = mirror.action(sig);
+    let (Some(action), Some(alt)) = (mirror.action(sig), mirror.alt_stack()) else {
+        return false;
+    };
     if !action.is_handler() || action.flags & SA_RESETHAND != 0 {
         return false;
     }
@@ -758,7 +763,7 @@ fn deliver_timer_signal_lockless(
         }
     };
 
-    let mut target = LocklessTarget { signals, thread_id, info };
+    let mut target = LocklessTarget { signals, thread_id, info, alt };
     let installed = install_user_handler_x86_64(
         &mut target,
         user_return,
