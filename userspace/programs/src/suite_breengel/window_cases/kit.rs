@@ -304,7 +304,11 @@ impl Pages {
 
 impl Drop for Pages {
     fn drop(&mut self) {
-        let _ = memory::munmap(self.base, self.len);
+        // No mapped part (`unmapped()`'s page is gone already): nothing to unmap, and a
+        // zero-length munmap is an error the kernel reports in its log.
+        if self.len > 0 {
+            let _ = memory::munmap(self.base, self.len);
+        }
     }
 }
 
