@@ -176,12 +176,16 @@ fn main() { SUITE.run() }
 
 A case returns `Ok(())` to pass, and may report what it measures with `value` and
 `wait_for` (see above). `?` on a libbreenix error or a string fails it with that
-message; `fail(msg)` and `check(condition, msg)` fail it, and `skip(why)` emits a SKIP record.
-A SKIP rejects suite acceptance: the host requires skipped=0, failed=0 and
-passed=total=the manifest case count. Missing prerequisites do not grant an exemption.
-CPU prerequisites are tracked in #1615, optional priority inheritance in #1616,
-argument/stack/semaphore limits in #1617, idle-CPU measurement in #1613 and
-eager disk allocation in #1614.
+message; `fail(msg)` and `check(condition, msg)` fail it. The runner has no skip helper: a
+case whose measurement prerequisite is missing fails with the measured prerequisite, using
+the shared decisions in `libbreenix::suite::prerequisites` (processor count, priority
+inheritance, the E2BIG argument count and stack limit, an invalid semaphore value, idle
+processor time and delayed block allocation). Their messages fit the runner's 160-byte
+limit, and cached readback does not substitute for disk evidence. The runner still reports
+a `CaseError::Skip` as a SKIP record, which fails suite acceptance: the host requires
+skipped=0, failed=0 and passed=total=the manifest case count.
+`scripts/boot-interactive.sh --cpus N` boots ARM64 QEMU with 1 to 8 processors to exercise
+the processor prerequisites; processes/scheduling/idle-cpu needs four.
 
 Add the binary to `userspace/programs/Cargo.toml` as `suite-<id>` and to `STD_BINARIES` in
 `userspace/programs/build.sh`; `scripts/create_ext2_disk.sh` installs `suite-*` in `/sbin`.

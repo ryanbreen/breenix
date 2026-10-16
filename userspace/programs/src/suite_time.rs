@@ -24,7 +24,8 @@ use libbreenix::io;
 use libbreenix::memory::{self, MAP_ANONYMOUS, MAP_SHARED, PROT_READ, PROT_WRITE};
 use libbreenix::process::{self, ForkResult};
 use libbreenix::signal::Sigaction;
-use libbreenix::suite::{case, case_ms_left, category, check, fail, pulses, skip, suite, value, wait_for, CaseError, CaseResult, Suite};
+use libbreenix::suite::prerequisites;
+use libbreenix::suite::{case, case_ms_left, category, check, fail, pulses, suite, value, wait_for, CaseError, CaseResult, Suite};
 #[cfg(target_arch = "aarch64")]
 use libbreenix::syscall::raw;
 use libbreenix::types::Fd;
@@ -928,9 +929,7 @@ const HANDOFF_MS: u64 = 1000;
 
 fn clk_monotonic_cpus() -> CaseResult {
     let cpus = processors()?;
-    if cpus < 2 {
-        return skip(format!("{cpus} processor online; the case needs 2"));
-    }
+    prerequisites::cpus(cpus, 2, "two threads handing the clock off between processors")?;
     let thread = std::thread::spawn(|| {
         // Answer handoffs: an odd value becomes the next even one.
         loop {
