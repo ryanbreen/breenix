@@ -16,6 +16,12 @@ library and the kernel window interface), **`window-manager`** (bwm and the kern
 (the UI test framework, as its own effort) and **`gui-apps`** (every GUI application in one effort, the
 destination). Nothing in this revision splits, merges or reorders them.
 
+**The platform is GPU only (operator's ruling, 2026-10-16).** The GPU effort comes before BreenGL lands, and
+every pixel the platform draws is drawn by a GPU. A new effort, **`gpu`** (GPU rendering), now sits between
+`sdk` and `breengel`; its design and contract, and the plan for rebuilding BreenGL on it, are in
+[`docs/gui/gpu.md`](gpu.md). Where this plan makes BreenGL a CPU 2D library, gives it a software compositor
+(section 1, item 3; section 4) or defers GPU rendering, `docs/gui/gpu.md` governs.
+
 ## 0. What changed from the first design, in one paragraph
 
 The order, the single applications effort, the destination and the path JSON shapes are unchanged. What
@@ -38,7 +44,9 @@ rewritten: **1,142 cases** in place of 803.
 
 1. **BreenGL is a 2D library and window client, not a GL.** Its effort also owns the kernel window interface,
    the software compositor and the display observation path, because nothing above it reaches four targets
-   until they exist. GPU or 3D client rendering is a later, separate effort.
+   until they exist. The platform is GPU only: BreenGL draws through BGL, the GL-style API the `gpu` effort
+   delivers before it, and its windows are composed by the GPU and observed by device readback
+   (`docs/gui/gpu.md`).
 2. **Windows commit immutable buffers** (section 3.1). A client draws into a back buffer and `commit()`s it.
    The kernel publishes pixels, tree, processed-input watermark, clock epoch and damage as one transaction,
    and keeps the committed buffer immutable until the compositor and any capture in progress are done with
