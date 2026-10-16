@@ -6,13 +6,15 @@
 //!
 //! ```text
 //! SUITE <id> START cases=<total>
-//! SUITE <id> CASE <category>/<case> PASS ms=<n>
-//! SUITE <id> CASE <category>/<case> FAIL ms=<n> msg=<short plain reason>
+//! SUITE <id> CASE <category>/<case> PASS ms=<n> [sha256=<64 lowercase hex>]
+//! SUITE <id> CASE <category>/<case> FAIL ms=<n> [sha256=<64 lowercase hex>] msg=<short plain reason>
 //! SUITE <id> CASE <category>/<case> SKIP msg=<why>
 //! SUITE <id> DONE passed=<p> failed=<f> skipped=<s> total=<n>
 //! ```
 //!
-//! and draws a benchmark-style panel on the framebuffer (libgfx's diagnostics panel,
+//! The optional sha256 field appears only when a PASS or FAIL has a verified judged frame.
+//!
+//! The runner draws a benchmark-style panel on the framebuffer (libgfx's diagnostics panel,
 //! scored) as the cases run. When every case has run it leaves the final panel up and
 //! idles: a suite runs as PID 1 and never exits.
 //!
