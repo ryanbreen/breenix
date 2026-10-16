@@ -277,13 +277,8 @@ pub extern "C" fn check_need_resched_and_switch(
     // during a boot-thread disk-completion wait). The two sites are not
     // inconsistent: each recognizes the family that is provably safe for
     // where it sits.
-    let mut current_thread_blocked_or_terminated = scheduler::with_scheduler(|sched| {
-        sched.current_thread_mut().is_some_and(|current| {
-            current.state.is_blocked()
-                || current.state == crate::task::thread::ThreadState::Terminated
-        })
-    })
-    .unwrap_or(false);
+    let mut current_thread_blocked_or_terminated =
+        scheduler::current_thread_blocked_or_terminated();
 
     // Check if reschedule is needed
     // CRITICAL: If current thread is blocked/terminated, we MUST schedule regardless of need_resched.
@@ -777,43 +772,30 @@ fn switch_to_thread(
     interrupt_frame: &mut InterruptStackFrame,
 ) {
     // The x87/SSE registers follow the thread being dispatched, and the
-    // per-CPU current thread and TSS.RSP0 are updated, in one scheduler hold
-    // that also reads how the thread resumes.
-    let incoming = scheduler::with_scheduler(|sched| {
-        crate::arch_impl::x86_64::fpu::hand_over(sched, Some(resume_thread_id), thread_id);
-        let is_idle = thread_id == sched.idle_thread();
-        let thread = sched.get_thread_mut(thread_id);
-        let incoming = thread.as_ref().map(|thread| Incoming {
-            is_idle,
-            is_kernel_thread: thread.privilege == ThreadPrivilege::Kernel,
-            // Check if thread was blocked inside a syscall (pause/waitpid)
-            // If so, we must NOT restore userspace context - the thread needs to
-            // continue executing the syscall code and return through the normal path.
-            // The saved CS is the authoritative record of the ring where the
-            // context was captured, even if a remote waker cleared
-            // blocked_in_syscall, so a saved kernel frame resumes in the kernel too.
-            resumes_in_kernel: thread.blocked_in_syscall || saved_context_is_kernel_frame(thread),
-            cached_root: thread.cached_ttbr0,
-            has_started: thread.has_started,
-        });
-        if let Some(thread) = thread {
-            // Update per-CPU current thread pointer
-            let thread_ptr = thread as *const _ as *mut crate::task::thread::Thread;
-            crate::per_cpu::set_current_thread(thread_ptr);
-
-            // Update TSS.RSP0 with new thread's kernel stack top
-            // This is critical for interrupt/exception handling
-            if let Some(kernel_stack_top) = thread.kernel_stack_top {
-                crate::per_cpu::update_tss_rsp0(kernel_stack_top.as_u64());
-            }
-        }
-        incoming.unwrap_or(Incoming {
-            is_idle,
-            is_kernel_thread: false,
-            resumes_in_kernel: false,
-            cached_root: 0,
-            has_started: false,
-        })
+    // per-CPU current thread and TSS.RSP0 are updated, in one hold of this
+    // CPU's run-queue lock that also reads how the thread resumes (#1649).
+    let incoming = scheduler::switch_in(Some(resume_thread_id), thread_id, |thread, is_idle| {
+        thread
+            .map(|thread| Incoming {
+                is_idle,
+                is_kernel_thread: thread.privilege == ThreadPrivilege::Kernel,
+                // Check if thread was blocked inside a syscall (pause/waitpid)
+                // If so, we must NOT restore userspace context - the thread needs to
+                // continue executing the syscall code and return through the normal path.
+                // The saved CS is the authoritative record of the ring where the
+                // context was captured, even if a remote waker cleared
+                // blocked_in_syscall, so a saved kernel frame resumes in the kernel too.
+                resumes_in_kernel: thread.blocked_in_syscall || saved_context_is_kernel_frame(thread),
+                cached_root: thread.cached_ttbr0,
+                has_started: thread.has_started,
+            })
+            .unwrap_or(Incoming {
+                is_idle,
+                is_kernel_thread: false,
+                resumes_in_kernel: false,
+                cached_root: 0,
+                has_started: false,
+            })
     })
     .unwrap_or(Incoming {
         is_idle: false,
@@ -1089,14 +1071,7 @@ pub(crate) fn setup_idle_return(interrupt_frame: &mut InterruptStackFrame) {
     // CRITICAL: Get the idle thread's actual kernel stack from the scheduler
     // Do NOT use per_cpu::kernel_stack_top() because that gets updated during
     // context switches and may point to a different thread's stack!
-    let idle_stack = scheduler::with_scheduler(|sched| {
-        let idle_id = sched.idle_thread();
-        sched
-            .get_thread(idle_id)
-            .and_then(|t| t.kernel_stack_top.map(|v| v.as_u64()))
-    })
-    .flatten()
-    .unwrap_or_else(|| {
+    let idle_stack = scheduler::idle_kernel_stack_top().unwrap_or_else(|| {
         note_fact(DispatchLogFact::IdleStackMissing);
         crate::per_cpu::kernel_stack_top() // Fallback, but this is wrong
     });

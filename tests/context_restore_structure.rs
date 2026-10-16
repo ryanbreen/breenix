@@ -4890,12 +4890,13 @@ fn validate_interrupt_return_scheduler_acquisitions(source: &str) -> Result<(), 
     }
 
     // The incoming thread is made current, and everything its routing needs
-    // is read, in one scheduler acquisition.
+    // is read, in one scheduler acquisition: `scheduler::switch_in`, which
+    // makes it the per-CPU current thread under the lock it reads it with.
     let switch = function_body(source, "switch_to_thread")
         .ok_or_else(|| "missing fn switch_to_thread".to_string())?;
     let switch_mask = code_mask(switch);
     let compact_switch = normalized_code(switch).replace(' ', "");
-    let acquisitions = ["with_scheduler", "with_thread_mut", "lock_scheduler"]
+    let acquisitions = ["with_scheduler", "with_thread_mut", "lock_scheduler", "switch_in"]
         .iter()
         .map(|name| call_offsets(switch, &switch_mask, name).len())
         .sum::<usize>();
@@ -4903,11 +4904,13 @@ fn validate_interrupt_return_scheduler_acquisitions(source: &str) -> Result<(), 
         .matches("scheduler::with_thread_mut(thread_id,|thread|{letidle_loop_addr")
         .count();
     if acquisitions - idle_context_reads != 1
-        || !compact_switch.contains("letincoming=scheduler::with_scheduler(|sched|{")
+        || !compact_switch.contains(
+            "letincoming=scheduler::switch_in(Some(resume_thread_id),thread_id,|thread,is_idle|{",
+        )
         || !compact_switch.contains(
             "resumes_in_kernel:thread.blocked_in_syscall||saved_context_is_kernel_frame(thread),",
         )
-        || !compact_switch.contains("crate::per_cpu::set_current_thread(thread_ptr);")
+        || !switch_in_publishes_current_thread()
     {
         return Err(
             "the incoming thread's routing fields take more than one scheduler acquisition"
@@ -5146,15 +5149,31 @@ fn validate_save_failure_rollback(source: &str) -> Result<(), String> {
     validate_rollback_return_alternation(&save_tail[..switch_offset], "save region")
 }
 
+/// `scheduler::switch_in` makes the incoming thread the per-CPU current thread
+/// in both of its arms: under this CPU's run-queue lock (`rq::switch_in`) and
+/// under the whole scheduler.
+fn switch_in_publishes_current_thread() -> bool {
+    let scheduler = repo_text("kernel/src/task/scheduler.rs");
+    let rq = repo_text("kernel/src/task/scheduler/rq.rs");
+    let whole = function_body(&scheduler, "switch_in").map(|body| normalized_code(body).replace(' ', ""));
+    let local = function_body(&rq, "switch_in").map(|body| normalized_code(body).replace(' ', ""));
+    whole.is_some_and(|body| {
+        body.contains("rq::switch_in(&mutlocal,outgoing,incoming,")
+            && body.contains("crate::per_cpu::set_current_thread(thread_ptr);")
+    }) && local.is_some_and(|body| body.contains("crate::per_cpu::set_current_thread(threadas*mutThread);"))
+}
+
 fn validate_switch_dispatch_rollback(source: &str) -> Result<(), String> {
     let body = function_body(source, "switch_to_thread")
         .ok_or_else(|| "missing fn switch_to_thread".to_string())?;
     let body_mask = code_mask(body);
-    let committed_start = identifier_offsets(body, &body_mask, "set_current_thread")
+    // The dispatch is committed where the incoming thread becomes the per-CPU
+    // current thread, inside `scheduler::switch_in`.
+    let committed_start = call_offsets(body, &body_mask, "switch_in")
         .first()
         .copied()
         .ok_or_else(|| {
-            "switch_to_thread has no set_current_thread dispatch-commit anchor".to_string()
+            "switch_to_thread has no switch_in dispatch-commit anchor".to_string()
         })?;
 
     validate_rollback_return_alternation(
