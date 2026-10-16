@@ -1759,7 +1759,7 @@ Each denial follows a positive control in the same case: the authorized principa
 - `efault-events` — An unmapped event-read buffer, or an argument structure made read-only while the read blocks, fails with EFAULT and consumes no event.
 - `efault-inject` — An unmapped event pointer given to the compositor's write fails with EFAULT.
 - `efault-composite` — An unmapped composite descriptor fails with EFAULT.
-- `efault-mouse` — An unmapped pointer-position buffer fails with EFAULT.
+- `efault-mouse` — An unmapped or read-only pointer-position or key-state buffer fails with EFAULT.
 - `efault-commit` — An unmapped commit metadata pointer fails with EFAULT, metadata with a nonzero reserved field fails with EINVAL, and neither commits anything.
 - `efault-readback` — An unmapped readback destination fails with EFAULT.
 - `efault-claim` — An unmapped claim argument fails with EFAULT and claims nothing.
@@ -1769,7 +1769,7 @@ Each denial follows a positive control in the same case: the authorized principa
 - `cow-output` — Output written into a copy-on-write page after fork lands only in the caller's copy.
 - `destroy-during-commit` — Destroying a window while another thread commits it ends with one outcome and no fault.
 - `test-hooks-absent` — The wait-stress ops fail with ENOSYS in the production kernel.
-- `retired-ops` — The retired demo ops fail with ENOSYS.
+- `retired-ops` — The retired demo ops and version 1 window ops fail with ENOSYS.
 - `unknown-op` — An unknown op fails with EINVAL.
 - `killable` — SIGKILL ends a process blocked in acquire or wait_event within 250 ms.
 - `quiet-errors` — 1,000 failing window calls on one thread add nothing to that thread's kernel-output counter or to the unattributed counter; with `emit-diagnostic(path)` armed, each writer path of section 12.1 (direct writers, nested wrappers, the logger, a notice written out by another thread, and `emergency_print` into the unattributed counter) adds exactly its bytes, once, to the right counter, and a second emitting thread moves only its own.

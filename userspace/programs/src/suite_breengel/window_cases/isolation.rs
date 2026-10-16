@@ -36,7 +36,7 @@ pub(crate) const ISOLATION: &[Case] = &[
     pictured!("cow-output", "Output written into a copy-on-write page after fork lands only in the caller's copy", isolation_cow_output),
     pictured!("destroy-during-commit", "Destroying a window while another thread commits it ends with one outcome and no fault", isolation_destroy_during_commit),
     pictured!("test-hooks-absent", "The wait-stress ops fail with ENOSYS in the production kernel", isolation_test_hooks_absent),
-    pictured!("retired-ops", "The retired demo ops fail with ENOSYS", isolation_retired_ops),
+    pictured!("retired-ops", "The retired demo ops and version 1 window ops fail with ENOSYS", isolation_retired_ops),
     pictured!("unknown-op", "An unknown op fails with EINVAL", isolation_unknown_op),
     pictured!("killable", "SIGKILL ends a process blocked in acquire or wait_event within 250 ms", isolation_killable),
     pictured!("quiet-errors", "1,000 failing window calls on one thread add nothing to that thread's kernel-output counter or to the unattributed counter; with `emit-diagnostic(path)` armed, each writer path of section 12.1 (direct writers, nested wrappers, the logger, a notice written out by another thread, and `emergency_print` into the unattributed counter) adds exactly its bytes, once, to the right counter, and a second emitting thread moves only its own", isolation_quiet_errors),
@@ -573,12 +573,11 @@ fn isolation_efault_composite() -> CaseResult {
 
 fn isolation_efault_mouse() -> CaseResult {
     #[cfg(target_arch = "aarch64")]
-    step("17.5", child("legacy graphics EFAULT", 5_000, None, || {
-        use libbreenix::graphics::FbDrawCmd;
+    step("17.5", child("framebuffer EFAULT", 5_000, None, || {
         let hole = Pages::new(0, 1, true)?;
         let bad = hole.addr();
         let draw = |op, p1, p2, p3, p4| {
-            let cmd = FbDrawCmd { op, p1, p2, p3, p4, color: 1 };
+            let cmd = libbreenix::graphics::FbDrawCmd { op, p1, p2, p3, p4, color: 1 };
             unsafe { raw::syscall1(SYS_FB_DRAW, &cmd as *const _ as u64) as i64 }
         };
         let lo = bad as u32 as i32;
@@ -586,61 +585,22 @@ fn isolation_efault_mouse() -> CaseResult {
         for (name, ret) in [
             ("fbinfo", unsafe { raw::syscall1(SYS_FB_INFO, bad) as i64 }),
             ("command", unsafe { raw::syscall1(SYS_FB_DRAW, bad) as i64 }),
-            ("composite pixels", draw(10, lo, hi, 1, 1)),
-            ("create output", draw(11, 8, 8, lo, hi)),
-            ("title", draw(12, 0, lo, hi, 8)),
-            ("event", draw(18, 0, lo, hi, 0)),
-            ("composite descriptor", draw(16, lo, hi, 0, 0)),
             ("flush rectangles", draw(8, lo, hi, 1, 0)),
         ] { errno_is(ret, EFAULT, "unmapped user page", name)?; }
-        let desc = [bad, 1u64 | (1u64 << 32), 1, 0, 0];
-        let ptr = desc.as_ptr() as u64;
-        errno_is(draw(16, ptr as i32, (ptr >> 32) as i32, 0, 0), EFAULT, "unmapped background", "composite")?;
-        let mut addr = 0u64;
-        let out = &mut addr as *mut u64 as u64;
-        let id = draw(11, 8, 8, out as i32, (out >> 32) as i32);
-        if id < 0 { return Err(format!("legacy create {}", outcome(id))); }
-        let title = b"fault-check";
-        let ptr = title.as_ptr() as u64;
-        if draw(12, id as i32, ptr as i32, (ptr >> 32) as i32, title.len() as i32) != 0 {
-            return Err("legacy register failed".into());
-        }
-        // CREATE may reuse the first hole. Make the output fault address only
-        // after the last allocation of a window mapping.
-        let hole = Pages::new(0, 1, true)?;
-        let bad = hole.addr();
-        if bad == addr { return Err("fault fixture aliases the live window mapping".into()); }
-        let lo = bad as u32 as i32;
-        let hi = (bad >> 32) as u32 as i32;
-        errno_is(draw(13, lo, hi, 1, 0), EFAULT, "unmapped list", "legacy LIST")?;
-        errno_is(draw(14, id as i32, lo, hi, 256), EFAULT, "unmapped pixels", "legacy READ")?;
-        let mut pixels = [0xA5u8; 256];
-        let ptr = pixels.as_mut_ptr() as u64;
-        if draw(14, id as i32, ptr as i32, (ptr >> 32) as i32, 256) != ((8i64 << 32) | 8)
-            || pixels.iter().any(|&v| v != 0) {
-            return Err("failed legacy pixel copy consumed the buffer generation".into());
-        }
-        let event = [1u16, 42, 0, 0, 0, 0];
-        let ptr = event.as_ptr() as u64;
-        if draw(18, id as i32, ptr as i32, (ptr >> 32) as i32, 0) != 0 {
-            return Err("legacy event write failed".into());
-        }
-        errno_is(draw(19, id as i32, lo, hi, 1), EFAULT, "unmapped event destination", "legacy READ_EVENTS")?;
-        let mut got = [0u16; 6];
-        let ptr = got.as_mut_ptr() as u64;
-        if draw(19, id as i32, ptr as i32, (ptr >> 32) as i32, 1) != 1 || got != event {
-            return Err("failed legacy event copy consumed or changed the event".into());
-        }
         Ok(())
     }))?;
-    // SAFETY: the kernel checks the pointer.
-    let r = unsafe { raw::syscall1(GET_MOUSE_POS, unmapped()) as i64 };
-    ensure(r == -(EFAULT as i64), "17.5", format!("get_mouse_pos into an unmapped buffer {}; the contract gives EFAULT", outcome(r)))?;
-    let page = Pages::filled(1, 0, false, |b| b.fill(0x5A)).cite("17.5")?;
-    // SAFETY: as above.
-    let r = unsafe { raw::syscall1(GET_MOUSE_POS, page.addr()) as i64 };
-    ensure(r == -(EFAULT as i64), "17.5", format!("get_mouse_pos into a read-only buffer {}; the contract gives EFAULT", outcome(r)))?;
-    ensure(page.bytes().iter().all(|&b| b == 0x5A), "17.5", "get_mouse_pos changed a read-only buffer")
+    // The pointer words (16 bytes) and the key words (8 bytes) alike.
+    for len in [16u64, 8] {
+        // SAFETY: the kernel checks the pointer.
+        let r = unsafe { raw::syscall2(GET_MOUSE_POS, unmapped(), len) as i64 };
+        ensure(r == -(EFAULT as i64), "17.5", format!("get_mouse_pos of {len} bytes into an unmapped buffer {}; the contract gives EFAULT", outcome(r)))?;
+        let page = Pages::filled(1, 0, false, |b| b.fill(0x5A)).cite("17.5")?;
+        // SAFETY: as above.
+        let r = unsafe { raw::syscall2(GET_MOUSE_POS, page.addr(), len) as i64 };
+        ensure(r == -(EFAULT as i64), "17.5", format!("get_mouse_pos of {len} bytes into a read-only buffer {}; the contract gives EFAULT", outcome(r)))?;
+        ensure(page.bytes().iter().all(|&b| b == 0x5A), "17.5", format!("get_mouse_pos of {len} bytes changed a read-only buffer"))?;
+    }
+    Ok(())
 }
 
 fn isolation_efault_commit() -> CaseResult {
@@ -1088,13 +1048,13 @@ fn isolation_test_hooks_absent() -> CaseResult {
 }
 
 fn isolation_retired_ops() -> CaseResult {
-    // Arguments that draw nothing: empty rectangles, a zero radius, a one-pixel line, a null
-    // descriptor for the VirGL ops; op 0 clears with black.
-    let calls: [(u32, i32, i32, i32, i32); 8] = [(0, 0, 0, 0, 0), (1, 0, 0, 0, 0), (2, 0, 0, 0, 0), (3, 0, 0, 0, 0),
-        (4, 0, 0, 0, 0), (5, 0, 0, 0, 0), (7, 0, 0, 0, 0), (9, 0, 0, 0, 0)];
-    let live: Vec<String> = calls.iter().map(|&(op, a, b, c, d)| (op, fb_draw(op, a, b, c, d)))
+    // The demo ops 0 to 5, 7 and 9 and the version 1 window ops 10 to 26 and 31. Arguments
+    // that would do nothing were an op live: empty rectangles, a zero radius, a one-pixel line,
+    // null descriptors and pointers, window id 0 and a zero timeout; op 0 clears with black.
+    let ops: Vec<u32> = [0u32, 1, 2, 3, 4, 5, 7, 9].into_iter().chain(10..=26).chain([31]).collect();
+    let live: Vec<String> = ops.iter().map(|&op| (op, fb_draw(op, 0, 0, 0, 0)))
         .filter(|(_, r)| *r != -38).map(|(op, r)| format!("op {op} {}", outcome(r))).collect();
-    ensure(live.is_empty(), "17.6", format!("the retired fb_draw demo ops do not return ENOSYS: {}; the contract requires ENOSYS from each", live.join(", ")))
+    ensure(live.is_empty(), "17.6", format!("the retired fb_draw ops do not return ENOSYS: {}; the contract requires ENOSYS from each", live.join(", ")))
 }
 
 fn isolation_unknown_op() -> CaseResult {

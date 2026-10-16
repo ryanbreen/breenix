@@ -2151,10 +2151,6 @@ impl ProcessManager {
             if self.current_pid == Some(pid) {
                 self.current_pid = None;
             }
-
-            // Clean up window buffers so the compositor stops reading freed pages
-            #[cfg(target_arch = "aarch64")]
-            crate::syscall::window_v1::cleanup_windows_for_pid(pid.as_u64());
         }
 
         let children: Vec<ProcessId> = self

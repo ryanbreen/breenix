@@ -7735,7 +7735,6 @@ fn validate_leaf_custody(sources: &[(String, String)]) -> Result<(), ()> {
     let interrupts = source(sources, "kernel/src/interrupts.rs");
     let arm_exception = source(sources, "kernel/src/arch_impl/aarch64/exception.rs");
     let stack = source(sources, "kernel/src/memory/stack.rs");
-    let window_v1 = source(sources, "kernel/src/syscall/window_v1.rs");
     let manager = source(sources, "kernel/src/process/manager.rs");
     let arm_elf = source(sources, "kernel/src/arch_impl/aarch64/elf.rs");
 
@@ -7829,9 +7828,7 @@ fn validate_leaf_custody(sources: &[(String, String)]) -> Result<(), ()> {
             return Err(());
         }
     }
-    if stack.matches("register_external_leaf_frame(frame)?;").count() != 2
-        || !window_v1.contains("register_external_leaf_span(")
-    {
+    if stack.matches("register_external_leaf_frame(frame)?;").count() != 2 {
         return Err(());
     }
 

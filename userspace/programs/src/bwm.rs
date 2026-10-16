@@ -393,7 +393,7 @@ impl HotkeyManager {
     /// hotkey matched.
     ///
     /// `super_taps` is the count of Super press-edges latched in the kernel HID
-    /// path since the previous frame (op=31, read-and-clear). Because the latch
+    /// path since the previous frame (`key_state`, read-and-clear). Because the latch
     /// captures every 0→1 SUPER transition the instant the HID report arrives,
     /// it recovers taps whose entire ~30ms high window fell between two bursty
     /// compositor-wait polls — which the level-based edge detection would miss.
@@ -546,38 +546,6 @@ fn trim(s: &[u8]) -> &[u8] {
     let start = s.iter().position(|&b| b != b' ' && b != b'\t' && b != b'\r').unwrap_or(s.len());
     let end = s.iter().rposition(|&b| b != b' ' && b != b'\t' && b != b'\r').map(|i| i + 1).unwrap_or(start);
     &s[start..end]
-}
-
-/// Read-and-clear the kernel's latched count of Super press-edges (FBDRAW op=31).
-///
-/// The kernel HID path increments a lock-free atomic on every 0→1 SUPER
-/// transition the instant the report arrives, so a tap whose high window fell
-/// entirely between two compositor-wait polls is still counted. This drains
-/// that latch so missed taps reach the double-tap detector.
-#[cfg(target_arch = "aarch64")]
-fn take_super_tap_count() -> u32 {
-    use libbreenix::graphics::FbDrawCmd;
-    use libbreenix::syscall::nr;
-    let cmd = FbDrawCmd {
-        op: 31,
-        p1: 0,
-        p2: 0,
-        p3: 0,
-        p4: 0,
-        color: 0,
-    };
-    let ret =
-        unsafe { libbreenix::raw::syscall1(nr::FBDRAW, &cmd as *const FbDrawCmd as u64) as i64 };
-    if ret < 0 {
-        0
-    } else {
-        ret as u32
-    }
-}
-
-#[cfg(not(target_arch = "aarch64"))]
-fn take_super_tap_count() -> u32 {
-    0
 }
 
 // ─── Window Defaults (Position/Size Memory) ─────────────────────────────────
@@ -1524,12 +1492,12 @@ fn main() {
         };
 
         // ── 0b. Poll modifier state and check hotkeys ──
-        // Drain the kernel's latched Super press-edge count (op=31) every frame
-        // — including frames where compositor_wait was skipped — so a tap that
-        // completed between polls is fed into double-tap detection and the
-        // keyboard-ready latch can't busy-loop compositor_wait.
-        let super_taps = take_super_tap_count();
-        let current_mods = graphics::poll_modifier_state() as u8;
+        // Drain the kernel's latched Super press-edge count every frame — including
+        // frames where compositor_wait was skipped — so a tap that completed between
+        // polls is fed into double-tap detection.
+        let keys = graphics::key_state().unwrap_or_default();
+        let super_taps = keys.super_taps;
+        let current_mods = keys.modifiers as u8;
         if let Some(action) = hotkey_mgr.update(current_mods, None, super_taps) {
             match &action {
                 HotkeyAction::FocusNext => {

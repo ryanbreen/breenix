@@ -947,9 +947,11 @@ Principals: the **owner** (by kernel identity, never by PID number, so PID reuse
 ### 17.6 Retired operations
 
 The graphics system call `fb_draw` (411) keeps op 6 (`FLUSH`) and op 8 (`FLUSH_BATCH`). Its demo ops 0 to 5,
-7 and 9 return ENOSYS (`isolation/retired-ops`), and its wait-stress ops 27 to 30 return ENOSYS in the
-production kernel; they exist only in `boot_tests` builds (`isolation/test-hooks-absent`). The version 1
-window ops (10 to 26 and 31) are removed when version 2 lands.
+7 and 9 and the version 1 window ops 10 to 26 and 31 return ENOSYS (`isolation/retired-ops`), and its
+wait-stress ops 27 to 30 return ENOSYS in the production kernel; they exist only in `boot_tests` builds
+(`isolation/test-hooks-absent`). The compositor's keyboard state, once version 1's ops 26 (modifiers) and 31
+(the latched Super presses), is the 8-byte form of `get_mouse_pos` (413): `[modifiers, super_taps]` as
+`u32`s, where the 16-byte form is the pointer's `[x, y, buttons, scroll]`; any other length is EINVAL.
 
 ## 18. Compositor, composition and the display
 

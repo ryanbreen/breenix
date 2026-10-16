@@ -1210,7 +1210,7 @@
         },
         {
           "id": "efault-mouse",
-          "title": "An unmapped pointer-position buffer fails with EFAULT"
+          "title": "An unmapped or read-only pointer-position or key-state buffer fails with EFAULT"
         },
         {
           "id": "efault-commit",
@@ -1250,7 +1250,7 @@
         },
         {
           "id": "retired-ops",
-          "title": "The retired demo ops fail with ENOSYS"
+          "title": "The retired demo ops and version 1 window ops fail with ENOSYS"
         },
         {
           "id": "unknown-op",

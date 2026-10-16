@@ -3,8 +3,8 @@
 use abi::{op, Plain};
 use core::sync::atomic::{AtomicU64, Ordering};
 pub use libbreenix::graphics::{
-    fbinfo, input_event_type, mouse_pos, mouse_state_with_scroll,
-    poll_modifier_state, take_over_display, WindowInputEvent,
+    fbinfo, input_event_type, key_state, mouse_pos, mouse_state_with_scroll, take_over_display,
+    WindowInputEvent,
 };
 use libbreenix::{
     error::Error,

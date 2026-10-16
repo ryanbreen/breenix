@@ -1,12 +1,13 @@
 //! Bouncing rectangles demo for Breenix.
 //!
-//! Draws colored rectangles into a window buffer, or into the fb_mmap pane when no
+//! Draws colored rectangles into a Breengel window, or into the fb_mmap pane when no
 //! window can be created.
 //!
 //! Created for Gus!
 
 use std::process;
 
+use breengel::Window;
 use libbreenix::graphics;
 use libbreenix::graphics::FlushRect;
 
@@ -135,18 +136,17 @@ fn main() {
     let boot_id = clock_monotonic_ns();
     println!("Rectangles demo starting (for Gus!) [boot_id={:016x}]", boot_id);
 
-    // Try window-buffer mode first: BWM composites us as a floating window
-    match graphics::create_window(WIN_W, WIN_H) {
-        Ok(win) => {
-            let _ = graphics::register_window(win.id, b"Rectangles");
-            println!("[rectangles] Window mode: id={} {}x{} @ {:p} [boot_id={:016x}]",
-                     win.id, WIN_W, WIN_H, win.pixels, boot_id);
+    // Try window mode first: BWM composites us as a floating window
+    match Window::new_without_fonts(b"Rectangles", WIN_W, WIN_H) {
+        Ok(mut win) => {
+            println!("[rectangles] Window mode: id={} {}x{} [boot_id={:016x}]",
+                     win.id(), WIN_W, WIN_H, boot_id);
             let mut rects = make_rects();
-            run_window_loop(&win, &mut rects);
+            run_window_loop(&mut win, &mut rects);
             return;
         }
         Err(e) => {
-            println!("[rectangles] create_window failed: {} — falling back to VirGL direct", e);
+            println!("[rectangles] Window::new failed: {} — falling back to mmap", e);
         }
     }
 
@@ -175,24 +175,11 @@ fn make_rects() -> [AnimRect; NUM_RECTS] {
     ]
 }
 
-/// Render bouncing rects into a window buffer. BWM composites this as a floating window.
-fn run_window_loop(win: &graphics::WindowBuffer, rects: &mut [AnimRect; NUM_RECTS]) {
-    let width = win.width as i32;
-    let height = win.height as i32;
-    let bpp = 4usize;
-    let stride = width as usize * bpp;
+/// Render bouncing rects into a window. BWM composites this as a floating window.
+fn run_window_loop(win: &mut Window, rects: &mut [AnimRect; NUM_RECTS]) {
+    let width = win.width() as i32;
+    let height = win.height() as i32;
     let bg = Color::rgb(15, 15, 30);
-
-    let mut fb = unsafe {
-        FrameBuf::from_raw(
-            win.pixels as *mut u8,
-            width as usize,
-            height as usize,
-            stride,
-            bpp,
-            true, // BGRA
-        ).expect("the framebuffer is a valid surface")
-    };
 
     let mut fps = FpsCounter::new();
     let mut last_ns = clock_monotonic_ns();
@@ -220,14 +207,15 @@ fn run_window_loop(win: &graphics::WindowBuffer, rects: &mut [AnimRect; NUM_RECT
             for rect in rects.iter_mut() { rect.bounce_walls(width, height); }
         }
 
+        let _ = win.poll_events();
+        // Acquiring the next buffer waits for the compositor to release one, so the demo
+        // renders at the display rate.
+        let fb = win.framebuf();
         fb.clear(bg);
-        for rect in rects.iter() { rect.draw(&mut fb); }
+        for rect in rects.iter() { rect.draw(fb); }
         fps.tick();
-        fps.draw(&mut fb);
-
-        // Signal frame ready and block until compositor displays it.
-        // This provides back-pressure — we render at exactly the display rate.
-        let _ = graphics::mark_window_dirty(win.id);
+        fps.draw(fb);
+        let _ = win.present();
     }
 }
 

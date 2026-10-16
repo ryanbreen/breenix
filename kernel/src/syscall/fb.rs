@@ -622,22 +622,38 @@ pub(super) fn flush_owner_pane(cmd: &FbDrawCmd) -> SyscallResult {
     }
 }
 
-/// sys_get_mouse_pos - Get current mouse cursor position, button state, and scroll delta
+/// sys_get_mouse_pos - the compositor's input state: the pointer, or the keys
 ///
 /// # Arguments
-/// * `out_ptr` - Pointer to a [u32; 4] array in userspace: [x, y, buttons, scroll_delta]
-///   buttons: bit 0 = left button pressed
-///   scroll_delta: accumulated scroll wheel ticks since last call (positive = up)
+/// * `out_ptr` - where the words go
+/// * `len` - 16 for the pointer, `[x, y, buttons, scroll_delta]` as `u32`s (buttons: bit 0 =
+///   left button pressed; scroll_delta: wheel ticks since the last pointer read, positive up),
+///   or 8 for the keys, `[modifiers, super_taps]` (modifiers: bit 0 Shift, 1 Ctrl, 2 Alt,
+///   3 Super; super_taps: Super presses latched since the last key read)
 ///
 /// # Returns
 /// * 0 on success
 /// * -EFAULT if out_ptr is invalid
+/// * -EINVAL for any other length
 #[cfg(target_arch = "aarch64")]
-pub fn sys_get_mouse_pos(out_ptr: u64) -> SyscallResult {
+pub fn sys_get_mouse_pos(out_ptr: u64, len: u64) -> SyscallResult {
     // The state below is consumed as it is read: check the buffer first, so a bad one
     // loses nothing.
-    if crate::window::mem::probe_writable(out_ptr, 16).is_err() {
+    if len != 16 && len != 8 {
+        return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
+    }
+    if crate::window::mem::probe_writable(out_ptr, len).is_err() {
         return SyscallResult::Err(super::ErrorCode::Fault as u64);
+    }
+    if len == 8 {
+        let keys = [
+            crate::drivers::usb::hid::poll_modifier_state(),
+            crate::drivers::usb::hid::take_super_tap_count(),
+        ];
+        return match crate::syscall::userptr::copy_to_user(out_ptr as *mut [u32; 2], &keys) {
+            Ok(()) => SyscallResult::Ok(0),
+            Err(_) => SyscallResult::Err(super::ErrorCode::Fault as u64),
+        };
     }
     let (mx, my, buttons) = if crate::drivers::virtio::input_mmio::is_tablet_initialized() {
         crate::drivers::virtio::input_mmio::mouse_state()
