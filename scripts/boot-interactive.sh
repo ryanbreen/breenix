@@ -5,7 +5,7 @@
 #
 #   scripts/boot-interactive.sh [--mode MODE] [--program PATH] [--suite ID [--case CATEGORY/CASE]] [--serial-log FILE]
 #                               [--idle-exit SECONDS] [--gate-timeout SECONDS] [--display | --no-display]
-#                               [--qmp SOCKET] [--fbconsole log] [--no-build] [--cpus N]
+#                               [--qmp SOCKET] [--fbconsole log] [--no-build] [--cpus N] [--gpu-gl]
 #
 #   Suite mode observes DONE, holds the panel briefly, then exits with its verdict.
 #   --mode MODE          tests (default): the testing kernel and its test loader
@@ -28,6 +28,12 @@
 #   --cpus N             guest processors, 1 to 8, the ARM64 kernel's MAX_CPUS (default 4); suite cases
 #                        needing more processors than this fail with their CPU prerequisite
 #   --accel hvf|tcg      ARM64 accelerator (default hvf on Apple Silicon, tcg elsewhere)
+#   --gpu-gl             also attach virtio-gpu-gl-pci, on the GL QEMU that scripts/build-qemu-gl.sh installs
+#                        (VirGL on ANGLE's Metal backend): the window is -display cocoa,gl=es, a run without
+#                        one has SPICE GL on a local socket. After the VM stops, scripts/check-host-renderer.py
+#                        judges the run's host renderer attestation, host-renderer.json beside the serial log,
+#                        and a refused attestation fails the boot. BREENIX_QEMU_GL_BINARY names another GL
+#                        QEMU, such as the planted software-renderer copy (scripts/qemu-gl/plant-software-renderer.sh).
 #
 # Ctrl-A X quits QEMU; Ctrl-A C toggles the QEMU monitor. Ctrl-C goes to the guest.
 # Each step prints a "==> " line so a watcher can tell building from booting.
@@ -51,6 +57,7 @@ ONLY=
 QMP_SOCKET=
 QMP_REQUESTED=0
 FBCONSOLE=
+GPU_GL=0
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -72,6 +79,7 @@ while [ "$#" -gt 0 ]; do
         --no-display) DISPLAY_MODE=none; shift ;;
         --no-build) BUILD=0; shift ;;
         --cpus) CPUS="$2"; shift 2 ;;
+        --gpu-gl) GPU_GL=1; shift ;;
         -h|--help) sed -n '2,/^# --help/p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
@@ -120,7 +128,23 @@ if [ -z "$DISPLAY_MODE" ]; then
 fi
 DISPLAY_ARGS=(-display "$DISPLAY_MODE")
 QEMU=qemu-system-aarch64
-if [ "$DISPLAY_MODE" = cocoa ] && [ "$(uname -s)" = Darwin ]; then
+GPU_ARGS=()
+if [ "$GPU_GL" -eq 1 ]; then
+    QEMU="${BREENIX_QEMU_GL_BINARY:-$("$ROOT/scripts/build-qemu-gl.sh" --print-path)}" || {
+        echo "--gpu-gl needs the GL QEMU: run scripts/build-qemu-gl.sh" >&2; exit 1;
+    }
+    # Like QEMU-1x, the bundle draws one guest pixel per point and is kept out of App Nap (#1292).
+    defaults write org.breenix.qemu-gl NSAppSleepDisabled -bool YES
+    # UTM's default ANGLE backend; ANGLE alone would pick its OpenGL backend.
+    export ANGLE_DEFAULT_PLATFORM="${ANGLE_DEFAULT_PLATFORM:-metal}"
+    if [ "$DISPLAY_MODE" = cocoa ]; then
+        DISPLAY_ARGS=(-display cocoa,gl=es)
+    else
+        SPICE_SOCKET="/tmp/breenix-spice-$$.sock"
+        DISPLAY_ARGS=(-display none -spice "unix=on,addr=$SPICE_SOCKET,disable-ticketing=on,gl=es")
+    fi
+    GPU_ARGS=(-device virtio-gpu-gl-pci)
+elif [ "$DISPLAY_MODE" = cocoa ] && [ "$(uname -s)" = Darwin ]; then
     # Draw the window at one guest pixel per point, as large as a VMware or Parallels window
     # (QEMU's Retina rendering otherwise shows the guest at a quarter of the area).
     QEMU="$("$ROOT/scripts/qemu-1x-app.sh" qemu-system-aarch64)"
@@ -209,6 +233,10 @@ mkdir -p "$(dirname "$SERIAL_LOG")"
 : > "$SERIAL_LOG"
 WRITABLE="$(dirname "$SERIAL_LOG")/ext2-writable.img"
 cp "$DISK" "$WRITABLE"
+if [ "$GPU_GL" -eq 1 ]; then
+    export BREENIX_HOST_RENDERER_JSON="$(dirname "$SERIAL_LOG")/host-renderer.json"
+    rm -f "$BREENIX_HOST_RENDERER_JSON"
+fi
 # This disposable image is checked as a raw host file after the suite. Keep
 # writes to that file, but do not make each guest barrier wait for APFS's
 # power-loss durability. The test never crashes or restarts the host.
@@ -270,6 +298,7 @@ python3 "$ROOT/scripts/watch-qemu.py" --serial "$SERIAL_LOG" --mode "$MODE" \
     ${MODE_ARGS[@]+"${MODE_ARGS[@]}"} \
     ${QMP_ARGS[@]+"${QMP_ARGS[@]}"} \
     -device virtio-gpu-device \
+    ${GPU_ARGS[@]+"${GPU_ARGS[@]}"} \
     -device virtio-keyboard-device \
     -device virtio-tablet-device \
     -device virtio-blk-device,drive=ext2 \
@@ -285,6 +314,12 @@ code=$?
 set -e
 echo
 echo "==> VM stopped (exit $code)"
+if [ "$GPU_GL" -eq 1 ]; then
+    [ -z "${SPICE_SOCKET:-}" ] || rm -f "$SPICE_SOCKET"
+    if ! python3 "$ROOT/scripts/check-host-renderer.py" "$BREENIX_HOST_RENDERER_JSON" --serial "$SERIAL_LOG"; then
+        [ "$code" -ne 0 ] || code=1
+    fi
+fi
 host_slot_header "$SERIAL_LOG"
 "$ROOT/scripts/vigil-record.sh" finish "$VIGIL_ID" "$code"
 
