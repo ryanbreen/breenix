@@ -248,8 +248,10 @@ pub(super) fn insert(thread: &mut Thread, owner: usize) {
 /// thread only once none does (`unpinned`).
 pub(super) fn remove(tid: u64) {
     if let Some(slot) = find(tid) {
-        if slot.held.swap(0, Ordering::AcqRel) != 0 {
+        let word = slot.held.swap(0, Ordering::AcqRel);
+        if word != 0 {
             HELD_SLOTS.fetch_sub(1, Ordering::AcqRel);
+            release_held_place(word);
         }
         slot.root.store(0, Ordering::Release);
         slot.group.store(0, Ordering::Release);
@@ -1244,12 +1246,20 @@ pub(super) fn take_held(mut apply: impl FnMut(u64, u64, usize)) {
             continue;
         }
         HELD_SLOTS.fetch_sub(1, Ordering::AcqRel);
-        let home = ((word >> HELD_HOME_SHIFT) & 0xff) as usize;
-        if word & HELD_PLACE != 0 && home < MAX_CPUS {
-            let _ = super::PINNED_HOLDS_OUTSTANDING[home]
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |holds| holds.checked_sub(1));
-        }
-        apply(word >> HELD_TID_SHIFT, word & HELD_BITS, home);
+        release_held_place(word);
+        apply(word >> HELD_TID_SHIFT, word & HELD_BITS, ((word >> HELD_HOME_SHIFT) & 0xff) as usize);
+    }
+}
+
+/// Uncount a held placement that `word`, just taken off its slot, carries.
+/// `hold` counted it for its home CPU, which treats itself as having work
+/// until the count is back to zero: a count left behind kept that CPU's idle
+/// loop from ever halting, and every sched_yield from taking its shortcut.
+fn release_held_place(word: u64) {
+    let home = ((word >> HELD_HOME_SHIFT) & 0xff) as usize;
+    if word & HELD_PLACE != 0 && home < MAX_CPUS {
+        let _ = super::PINNED_HOLDS_OUTSTANDING[home]
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |holds| holds.checked_sub(1));
     }
 }
 

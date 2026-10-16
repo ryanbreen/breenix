@@ -2757,23 +2757,16 @@ pub(crate) struct CpuSchedulerState {
 /// x86_64: hold `thread_id`'s wake for `home`, the CPU its pin names, from a
 /// path under run-queue locks, as `Scheduler::hold_pinned_wake_for_home`
 /// holds it under the whole scheduler: counted, the first one marked, and
-/// placed by `deliver_pinned_wakes_for_this_cpu` on `home`'s next scheduler
-/// entry.
+/// placed by `home`'s next pass (`rq::place_held`).
 #[cfg(target_arch = "x86_64")]
 fn note_pinned_hold(thread_id: u64, home: usize) {
-    // x86_64: held on the thread's index slot, where its home's next pass
-    // finds it without the whole scheduler (`rq::hold`), which counts it.
-    #[cfg(target_arch = "x86_64")]
-    let counted = rq::owner(thread_id).is_some();
-    #[cfg(target_arch = "x86_64")]
-    if counted {
-        rq::hold(thread_id, rq::HELD_PLACE, home);
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    let counted = false;
-    if home < MAX_CPUS && !counted {
-        PINNED_HOLDS_OUTSTANDING[home].fetch_add(1, Ordering::Relaxed);
-    }
+    // Held on the thread's index slot, where its home's next pass finds it
+    // without the whole scheduler (`rq::hold`), which counts it for that
+    // home until a pass applies it or the slot is retired. A thread the index
+    // no longer holds has nothing left to place and is not counted: counted
+    // here instead, nothing on this path would ever uncount it, and its home
+    // would never halt again.
+    rq::hold(thread_id, rq::HELD_PLACE, home);
     let holds = PINNED_HOME_CPU_UNAVAILABLE.fetch_add(1, Ordering::Relaxed) + 1;
     if !PINNED_HOME_CPU_UNAVAILABLE_MARKED.swap(true, Ordering::Relaxed) {
         let mut line = crate::tracing::output::Record::new();
