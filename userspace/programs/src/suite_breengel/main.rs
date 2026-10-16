@@ -85,7 +85,7 @@ static ALLOCATOR: Counting = Counting;
 
 /// A case whose judged frame goes to the runner (`judged_case`): the table entry for `$run`.
 macro_rules! pictured {
-    ($id:literal, $title:literal, $run:ident) => {
+    ($id:literal, $title:literal, $run:ident $(,)?) => {
         libbreenix::suite::case($id, $title, {
             fn run() -> libbreenix::suite::CaseResult {
                 crate::judged_case($run)
@@ -242,11 +242,13 @@ fn test_control_state() -> i64 {
 static PICTURES: AtomicBool = AtomicBool::new(false);
 
 /// The last judged frame: width, height and canonical BGRX pixels.
+static EXPLICIT_FRAME: AtomicBool = AtomicBool::new(false);
 static LAST_JUDGED: Mutex<Option<(usize, usize, Vec<u8>, Option<Vec<u8>>)>> = Mutex::new(None);
 
 /// Snapshot a directly compared canonical screen at the comparison point.
 pub(crate) fn remember_frame(pixels:&[u8],width:usize,height:usize,reference:Option<Vec<u8>>) {
     if !PICTURES.load(Relaxed){return;}
+    EXPLICIT_FRAME.store(true,Relaxed);
     let mut actual=pixels[..width*height*4].to_vec();for p in actual.chunks_exact_mut(4){p[3]=255;}
     *LAST_JUDGED.lock().unwrap_or_else(|e|e.into_inner())=Some((width,height,actual,reference));
 }
@@ -259,6 +261,7 @@ const HANDED_FRAME: i32 = 2;
 /// case that passed; a failed case keeps its own message.
 fn judged_case(run: fn() -> CaseResult) -> CaseResult {
     PICTURES.store(true, Relaxed);
+    EXPLICIT_FRAME.store(false,Relaxed);
     let result = run();
     match (hand_off_judged(), result) {
         (Err(msg), Ok(())) => fail(msg),
@@ -312,6 +315,7 @@ fn isolated(what: &str, limit_ms: u64, f: impl FnOnce() -> Result<(), String>) -
     let mut callback=Some(f);
     let mut body=|| {
         LAST_JUDGED.lock().unwrap_or_else(|e|e.into_inner()).take();
+        EXPLICIT_FRAME.store(false,Relaxed);
         let result=callback.take().unwrap()();
         let handed=export_isolated_frame(&path);
         let frame=if matches!(handed,Ok(true)){HANDED_FRAME}else{0};
@@ -511,7 +515,7 @@ impl Guarded {
 
 impl Drop for Guarded {
     fn drop(&mut self) {
-        if self.read.get() && PICTURES.load(Relaxed) && self.width > 0 && self.height > 0 {
+        if !EXPLICIT_FRAME.load(Relaxed) && self.read.get() && PICTURES.load(Relaxed) && self.width > 0 && self.height > 0 {
             let mut pixels = Vec::with_capacity(self.width * self.height * 4);
             for y in 0..self.height {
                 for x in 0..self.width {

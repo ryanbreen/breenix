@@ -856,7 +856,6 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
         }
     }
     if screen.gui {
-        graphics::give_back_display().expect("GUI display release before case");
         crate::suite_stage::begin();
     }
     let start = monotonic_ns();
@@ -1116,6 +1115,11 @@ impl Screen {
     /// Take the display and map all of it. Without a framebuffer the suite still
     /// runs and prints its serial lines; on a small one the panel draws what fits.
     fn open(gui:bool) -> Screen {
+        if gui {
+            graphics::take_over_display().expect("initialize GUI display");
+            graphics::give_back_display().expect("release initial boot panel");
+            return Screen {gui,live:false,fb:None,area:None,judged:None,timing:None};
+        }
         let fb = (|| {
             let info = graphics::fbinfo().ok()?;
             if !(3..=4).contains(&info.bytes_per_pixel) {
@@ -1167,7 +1171,6 @@ impl Screen {
     fn draw(&mut self, suite: &Suite, title: &str, subtitle: &str, states: &[Vec<State>], verdict: Verdict<'_>,
         feed: &Feed) {
         if self.gui {
-            graphics::take_over_display().expect("runner display claim");
             crate::suite_stage::draw(states).expect("run stage presentation");
             return;
         }

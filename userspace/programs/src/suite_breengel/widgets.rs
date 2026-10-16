@@ -8,129 +8,129 @@ use libbui::widget::{file_picker::FilePickerResult, label::Label, text_field::Te
 use libbui::{Key, KeyInput};
 
 pub(crate) const FONTWATCH: &[Case] = &[
-    case("fontwatch-reload", "Changing the configured font makes later text use newly rasterized glyphs of the new font", text_fontwatch_reload),
-    case("fontwatch-size", "Changing the configured size changes the rasterized glyphs and their metrics", text_fontwatch_size),
-    case("fontwatch-missing", "A configured font file that is missing keeps the previous font and reports the error", text_fontwatch_missing),
-    case("fontwatch-malformed-config", "A malformed fonts.conf keeps the previous fonts and reports the error", text_fontwatch_malformed_config),
-    case("fontwatch-partial", "A fonts.conf replaced by rename is seen whole, and a truncated one is rejected", text_fontwatch_partial),
-    case("fontwatch-repeated", "Five changes in a row end with the last one in use", text_fontwatch_repeated),
-    case("fontwatch-independent", "Mono and display fonts change independently", text_fontwatch_independent),
-    case("fontwatch-idle", "A window that receives no events, with fonts.conf changed at UI time *t*, draws the new font in its first commit at or after the watcher's first 250 ms check after *t*", text_fontwatch_idle),
-    case("fontwatch-file-replaced", "Replacing the configured font file at the same path by rename, with fonts.conf unchanged, makes later text use newly rasterized glyphs of the new file by the next check", text_fontwatch_file_replaced),
+    pictured!("fontwatch-reload", "Changing the configured font makes later text use newly rasterized glyphs of the new font", text_fontwatch_reload),
+    pictured!("fontwatch-size", "Changing the configured size changes the rasterized glyphs and their metrics", text_fontwatch_size),
+    pictured!("fontwatch-missing", "A configured font file that is missing keeps the previous font and reports the error", text_fontwatch_missing),
+    pictured!("fontwatch-malformed-config", "A malformed fonts.conf keeps the previous fonts and reports the error", text_fontwatch_malformed_config),
+    pictured!("fontwatch-partial", "A fonts.conf replaced by rename is seen whole, and a truncated one is rejected", text_fontwatch_partial),
+    pictured!("fontwatch-repeated", "Five changes in a row end with the last one in use", text_fontwatch_repeated),
+    pictured!("fontwatch-independent", "Mono and display fonts change independently", text_fontwatch_independent),
+    pictured!("fontwatch-idle", "A window that receives no events, with fonts.conf changed at UI time *t*, draws the new font in its first commit at or after the watcher's first 250 ms check after *t*", text_fontwatch_idle),
+    pictured!("fontwatch-file-replaced", "Replacing the configured font file at the same path by rename, with fonts.conf unchanged, makes later text use newly rasterized glyphs of the new file by the next check", text_fontwatch_file_replaced),
 ];
 
 pub(crate) const WIDGETS: &[Case] = &[
-    case(
+    pictured!(
         "button-draw",
         "A button draws its label and frame in the theme's literal colours and positions",
         widgets_button_draw,
     ),
-    case(
+    pictured!(
         "button-click",
         "Press and release inside a button report exactly one click",
         widgets_button_click,
     ),
-    case(
+    pictured!(
         "button-cancel",
         "Press inside and release outside report no click",
         widgets_button_cancel,
     ),
-    case(
+    pictured!(
         "button-disabled",
         "A disabled button draws dimmed and reports no click",
         widgets_button_disabled,
     ),
-    case(
+    pictured!(
         "checkbox-toggle",
         "Clicking a checkbox toggles it and redraws the mark",
         widgets_checkbox_toggle,
     ),
-    case(
+    pictured!(
         "checkbox-space",
         "Space toggles a focused checkbox",
         widgets_checkbox_space,
     ),
-    case(
+    pictured!(
         "slider-drag",
         "Dragging a slider sets the value the contract maps from the pointer x",
         widgets_slider_drag,
     ),
-    case(
+    pictured!(
         "slider-clamp",
         "Dragging past either end clamps to the minimum or maximum",
         widgets_slider_clamp,
     ),
-    case(
+    pictured!(
         "slider-keys",
         "Arrow keys step a focused slider by its step size",
         widgets_slider_keys,
     ),
-    case(
+    pictured!(
         "label-clip",
         "A label wider than its bounds is clipped at the bounds with an ellipsis",
         widgets_label_clip,
     ),
-    case(
+    pictured!(
         "tabbar-select",
         "Clicking a tab selects it and reports its index",
         widgets_tabbar_select,
     ),
-    case(
+    pictured!(
         "tabbar-overflow",
         "More tabs than fit scroll, and every tab stays reachable",
         widgets_tabbar_overflow,
     ),
-    case(
+    pictured!(
         "scrollbar-drag",
         "Dragging the thumb sets the offset proportionally",
         widgets_scrollbar_drag,
     ),
-    case(
+    pictured!(
         "scrollbar-wheel",
         "A wheel step moves the offset by the configured amount",
         widgets_scrollbar_wheel,
     ),
-    case(
+    pictured!(
         "scrollbar-thumb",
         "The thumb's length is proportional to visible over total",
         widgets_scrollbar_thumb,
     ),
-    case(
+    pictured!(
         "menubar-open",
         "Clicking a menu title opens its menu below it",
         widgets_menubar_open,
     ),
-    case(
+    pictured!(
         "menubar-shortcut",
         "match_shortcut returns the item bound to Ctrl+S",
         widgets_menubar_shortcut,
     ),
-    case(
+    pictured!(
         "menu-keys",
         "Arrows, Enter and Escape navigate, choose and close an open menu",
         widgets_menu_keys,
     ),
-    case(
+    pictured!(
         "menu-disabled",
         "A disabled item draws dimmed and cannot be chosen",
         widgets_menu_disabled,
     ),
-    case(
+    pictured!(
         "menu-dismiss",
         "A click outside an open menu closes it without choosing",
         widgets_menu_dismiss,
     ),
-    case(
+    pictured!(
         "layout-stack",
         "h_stack and v_stack place children at the contract's literal positions",
         widgets_layout_stack,
     ),
-    case(
+    pictured!(
         "focus-ring",
         "Each focusable widget draws the theme's focus ring when focused and none otherwise",
         widgets_focus_ring,
     ),
-    case(
+    pictured!(
         "no-change-ack",
         "An event that changes no widget state is reported as needing no redraw",
         widgets_no_change_ack,
@@ -138,97 +138,97 @@ pub(crate) const WIDGETS: &[Case] = &[
 ];
 
 pub(crate) const TEXT_ENTRY: &[Case] = &[
-    case(
+    pictured!(
         "insert",
         "Typed text is inserted at the cursor",
         text_entry_insert,
     ),
-    case(
+    pictured!(
         "delete",
         "Backspace and Delete remove the character before and after the cursor",
         text_entry_delete,
     ),
-    case(
+    pictured!(
         "move",
         "Left, Right, Home and End move the cursor as the contract says",
         text_entry_move,
     ),
-    case(
+    pictured!(
         "select",
         "Shift with an arrow selects, and typing replaces the selection",
         text_entry_select,
     ),
-    case(
+    pictured!(
         "utf8",
         "Multi-byte characters insert and delete as one character",
         text_entry_utf8,
     ),
-    case(
+    pictured!(
         "maxlen",
         "Input beyond the maximum length is refused",
         text_entry_maxlen,
     ),
-    case(
+    pictured!(
         "scroll-to-cursor",
         "Text wider than the field scrolls to keep the cursor visible",
         text_entry_scroll_to_cursor,
     ),
-    case(
+    pictured!(
         "selection-text",
         "The selected text is returned exactly for a copy",
         text_entry_selection_text,
     ),
-    case(
+    pictured!(
         "paste-insert",
         "Inserted paste text replaces the selection and moves the cursor past it",
         text_entry_paste_insert,
     ),
-    case(
+    pictured!(
         "focus-tab",
         "Tab moves focus through focusable widgets in order",
         text_entry_focus_tab,
     ),
-    case(
+    pictured!(
         "focus-shift-tab",
         "Shift+Tab moves focus in reverse",
         text_entry_focus_shift_tab,
     ),
-    case(
+    pictured!(
         "focus-skip-disabled",
         "Focus traversal skips disabled widgets",
         text_entry_focus_skip_disabled,
     ),
-    case(
+    pictured!(
         "focus-click",
         "Clicking a focusable widget focuses it",
         text_entry_focus_click,
     ),
-    case(
+    pictured!(
         "filepicker-list",
         "The file picker lists the given entries, directories first, in byte order",
         text_entry_filepicker_list,
     ),
-    case(
+    pictured!(
         "filepicker-keys",
         "Arrows move the selection and Enter opens it",
         text_entry_filepicker_keys,
     ),
-    case(
+    pictured!(
         "filepicker-path",
         "Typing a path into the picker's text field navigates to it",
         text_entry_filepicker_path,
     ),
-    case(
+    pictured!(
         "filepicker-mouse",
         "A click selects and a double click within the interval, by explicit timestamps, opens",
         text_entry_filepicker_mouse,
     ),
-    case(
+    pictured!(
         "filepicker-scroll",
         "Lists longer than the view scroll by keys and wheel",
         text_entry_filepicker_scroll,
     ),
-    case(
+    pictured!(
         "filepicker-errors",
         "A directory that cannot be read shows its error in the picker",
         text_entry_filepicker_errors,
@@ -236,18 +236,18 @@ pub(crate) const TEXT_ENTRY: &[Case] = &[
 ];
 
 pub(crate) const ICONS: &[Case] = &[
-    case("states", "An icon goes idle, hover, pressed and released on the corresponding pointer edges", icons_states),
-    case("spring-steps", "Spring positions after fixed time steps equal the contract's literal table", icons_spring_steps),
-    case("step-invariance", "One step of 1,000 ms, a thousand steps of 1 ms and steps of 16 ms give identical states at equal times", icons_step_invariance),
-    case("settles", "Every catalogue animation settles within 2,000 ms of UI time after its last input and never draws outside its box", icons_settles),
-    case("interrupt", "A hover interrupted by a press mid-animation follows the contract's state table", icons_interrupt),
-    case("reversal", "Leaving mid-hover reverses from the current position without a jump", icons_reversal),
-    case("reset", "Reset after a resize returns the icon to idle at its new geometry", icons_reset),
-    case("bounded", "Over 10,000 steps of seeded random pointer input, the trajectory stays inside its box", icons_bounded),
-    case("easing", "Each easing function matches the literal table at its sample points", icons_easing),
-    case("sin-approx", "sin_approx stays within 0.0012 of sin at 4,096 evenly spaced points of [−π, π]", icons_sin_approx),
-    case("particles-bounded", "Particle counts stay at or below the cap, and positions stay inside the box", icons_particles_bounded),
-    case("assets", "Each icon in each state draws to its reviewed reference", icons_assets),
+    pictured!("states", "An icon goes idle, hover, pressed and released on the corresponding pointer edges", icons_states),
+    pictured!("spring-steps", "Spring positions after fixed time steps equal the contract's literal table", icons_spring_steps),
+    pictured!("step-invariance", "One step of 1,000 ms, a thousand steps of 1 ms and steps of 16 ms give identical states at equal times", icons_step_invariance),
+    pictured!("settles", "Every catalogue animation settles within 2,000 ms of UI time after its last input and never draws outside its box", icons_settles),
+    pictured!("interrupt", "A hover interrupted by a press mid-animation follows the contract's state table", icons_interrupt),
+    pictured!("reversal", "Leaving mid-hover reverses from the current position without a jump", icons_reversal),
+    pictured!("reset", "Reset after a resize returns the icon to idle at its new geometry", icons_reset),
+    pictured!("bounded", "Over 10,000 steps of seeded random pointer input, the trajectory stays inside its box", icons_bounded),
+    pictured!("easing", "Each easing function matches the literal table at its sample points", icons_easing),
+    pictured!("sin-approx", "sin_approx stays within 0.0012 of sin at 4,096 evenly spaced points of [−π, π]", icons_sin_approx),
+    pictured!("particles-bounded", "Particle counts stay at or below the cap, and positions stay inside the box", icons_particles_bounded),
+    pictured!("assets", "Each icon in each state draws to its reviewed reference", icons_assets),
 ];
 
 fn text_fontwatch_reload() -> CaseResult {
@@ -282,7 +282,7 @@ fn text_fontwatch_reload() -> CaseResult {
         "changing mono font left all pixels unchanged",
     )?;
     f.assert_frame(&new, "display.ttf", 16.0)?;
-    libbreenix::suite::judged(&new.fb())
+    snapshot(&new)
 }
 
 fn text_fontwatch_size() -> CaseResult {
@@ -316,7 +316,7 @@ fn text_fontwatch_size() -> CaseResult {
         "size change did not change rasterized pixels",
     )?;
     f.assert_frame(&new, "mono.ttf", 32.0)?;
-    libbreenix::suite::judged(&new.fb())
+    snapshot(&new)
 }
 
 fn text_fontwatch_missing() -> CaseResult {
@@ -429,7 +429,7 @@ fn text_fontwatch_repeated() -> CaseResult {
     }
     let frame = watch_frame(&mut w, true);
     f.assert_frame(&frame, "mono.ttf", 24.0)?;
-    libbreenix::suite::judged(&frame.fb())
+    snapshot(&frame)
 }
 
 fn text_fontwatch_independent() -> CaseResult {
@@ -523,7 +523,7 @@ fn text_fontwatch_file_replaced() -> CaseResult {
         "same-path replacement left old glyphs cached",
     )?;
     f.assert_frame(&frame, "display.ttf", 16.0)?;
-    libbreenix::suite::judged(&frame.fb())
+    snapshot(&frame)
 }
 
 // ---------------------------------------------------------------------------------------
@@ -553,6 +553,15 @@ fn release(x: i32, y: i32) -> InputState {
     input(x, y, false, false, true)
 }
 
+fn canonical(g:&Guarded)->Vec<u8> {
+    let fb=g.fb();let mut pixels=Vec::with_capacity(g.width*g.height*4);
+    for y in 0..g.height {for x in 0..g.width {let p=fb.get_pixel(x,y);pixels.extend_from_slice(&[p.b,p.g,p.r,255]);}}
+    pixels
+}
+fn snapshot(g:&Guarded)->CaseResult {
+    remember_frame(&canonical(g),g.width,g.height,g.reference.borrow().clone());Ok(())
+}
+
 /// Compare `got` with a surface drawn by `expect`, both on a `bg` background.
 fn same_as(
     got: &Guarded,
@@ -561,10 +570,12 @@ fn same_as(
     section: &str,
     expect: impl FnOnce(&mut FrameBuf),
 ) -> CaseResult {
-    libbreenix::suite::judged(&got.fb())?;
     let mut want = Guarded::bgrx(got.width, got.height);
     want.reset(bg);
     expect(&mut want.fb());
+    let reference=canonical(&want);
+    *got.reference.borrow_mut()=Some(reference.clone());
+    remember_frame(&canonical(got),got.width,got.height,Some(reference));
     for y in 0..got.height {
         for x in 0..got.width {
             if got.color(x, y) != want.color(x, y) {
@@ -678,7 +689,7 @@ fn widgets_button_disabled() -> CaseResult {
         shapes::draw_rect(fb, 10, 8, 60, 20, theme.border);
         font5x7::draw_text(fb, b"OK", 34, 14, theme.text_secondary, 1);
     })?;
-    libbreenix::suite::judged(&g.fb())
+    snapshot(&g)
 }
 
 fn widgets_checkbox_toggle() -> CaseResult {
@@ -878,7 +889,7 @@ fn widgets_label_clip() -> CaseResult {
         "14.3",
         |_| {},
     )?;
-    libbreenix::suite::judged(&g.fb())
+    snapshot(&g)
 }
 
 fn widgets_tabbar_select() -> CaseResult {
@@ -947,7 +958,7 @@ fn widgets_tabbar_overflow() -> CaseResult {
             }
         }
     }
-    libbreenix::suite::judged(&g.fb())
+    snapshot(&g)
 }
 
 fn widgets_scrollbar_drag() -> CaseResult {
@@ -1247,7 +1258,7 @@ fn widgets_focus_ring() -> CaseResult {
             }
         }
     }
-    libbreenix::suite::judged(&g.fb())
+    snapshot(&g)
 }
 
 fn widgets_no_change_ack() -> CaseResult {
@@ -1501,7 +1512,7 @@ fn text_entry_scroll_to_cursor() -> CaseResult {
             }
         }
     }
-    libbreenix::suite::judged(&g.fb())
+    snapshot(&g)
 }
 fn text_entry_selection_text() -> CaseResult {
     let mut f = entry_field(40);
@@ -1758,7 +1769,7 @@ fn text_entry_filepicker_errors() -> CaseResult {
         "15",
         "Enter activated a stale entry under error",
     )?;
-    libbreenix::suite::judged(&g.fb())
+    snapshot(&g)
 }
 
 // ---------------------------------------------------------------------------------------
@@ -2233,7 +2244,7 @@ fn icons_particles_bounded() -> CaseResult {
         "16",
         "expired particles remained live",
     )?;
-    libbreenix::suite::judged(&g.fb())
+    snapshot(&g)
 }
 
 fn icons_assets() -> CaseResult {
@@ -2271,7 +2282,7 @@ fn icons_assets() -> CaseResult {
             )?;
         }
     }
-    libbreenix::suite::judged(&g.fb())
+    snapshot(&g)
 }
 const EASING_TABLE: &[(&str, [f64; 11])] = &[
     (
