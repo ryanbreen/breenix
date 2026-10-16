@@ -109,6 +109,11 @@ fn submit(e: CmdEncoder, dx: bool, device: bool) -> Result<()> {
         if status != 0 {
             let off = unsafe { core::ptr::read_volatile(mem.ptr.add(4) as *const u32) };
             if status != 1 {
+                let command = data
+                    .get(off as usize..off as usize + 4)
+                    .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+                    .unwrap_or(0);
+                serial_println!("GPU_SPIKE rejected_command={}", command);
                 serial_println!(
                     "GPU_SPIKE CB status={} offset={} dx={} device={} bytes={}",
                     status,
@@ -209,7 +214,12 @@ impl Probe {
         let bytes = width as usize * height as usize * if format == R8 { 1 } else { 4 };
         let (id, dma) = self.mob(bytes)?;
         let mut e = CmdEncoder::new();
-        e.define_gb_surface_v2(id, flags, format, 1, 0, width, height, 1, 0, 0);
+        // v1 expresses exactly the profile's one mip, one sample, no array.
+        cmd(
+            &mut e,
+            1097,
+            &[id, flags, format, 1, 0, 0, width, height, 1],
+        );
         e.bind_gb_surface(id, id);
         submit(e, false, false)?;
         Ok(Surface {
@@ -638,7 +648,7 @@ fn execute(p: &mut Probe) -> Result<()> {
         p.shader(id, 2, s)?;
     }
     serial_println!("GPU_SPIKE shaders-bound programs=9 format=SM4+VMware-signature");
-    let vb = p.surface(37, 1 << 20, 24, 1)?;
+    let vb = p.surface(37, 1 << 20, 96, 1)?;
     let vertices: [u32; 24] = [
         0xbf800000, 0x3f800000, 0, 0x3f800000, 0x3f800000, 0x3f800000, 0, 0x3f800000, 0xbf800000,
         0xbf800000, 0, 0x3f800000, 0xbf800000, 0xbf800000, 0, 0x3f800000, 0x3f800000, 0x3f800000,
