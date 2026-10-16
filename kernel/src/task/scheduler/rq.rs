@@ -595,6 +595,11 @@ fn retain_affine(source: &mut Held, tid: u64, taking: usize) -> bool {
         home.enqueue(tid, false);
         drop(home);
         request_resched_x86(pin.cpu);
+        // Scratch forcing (never lands): hold the window open 2 ms.
+        let until = crate::signal::monotonic_nanos() + 2_000_000;
+        while crate::signal::monotonic_nanos() < until {
+            core::hint::spin_loop();
+        }
         return true;
     }
     // Its home's lock stayed busy: hold the wake for it rather than queue a
