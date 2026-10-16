@@ -2664,6 +2664,31 @@ pub(crate) struct CpuSchedulerState {
     pub(crate) last_dispatch_promoted: bool,
 }
 
+/// x86_64: hold `thread_id`'s wake for `home`, the CPU its pin names, from a
+/// path under run-queue locks, as `Scheduler::hold_pinned_wake_for_home`
+/// holds it under the whole scheduler: counted, the first one marked, and
+/// placed by `deliver_pinned_wakes_for_this_cpu` on `home`'s next scheduler
+/// entry.
+#[cfg(target_arch = "x86_64")]
+fn note_pinned_hold(thread_id: u64, home: usize) {
+    if home < MAX_CPUS {
+        PINNED_HOLDS_OUTSTANDING[home].fetch_add(1, Ordering::Relaxed);
+    }
+    let holds = PINNED_HOME_CPU_UNAVAILABLE.fetch_add(1, Ordering::Relaxed) + 1;
+    if !PINNED_HOME_CPU_UNAVAILABLE_MARKED.swap(true, Ordering::Relaxed) {
+        let mut line = crate::tracing::output::Line::new();
+        line.text("[PINNED_HOME_CPU_UNAVAILABLE:first:tid=");
+        line.dec(thread_id);
+        line.text(":home=");
+        line.dec(home as u64);
+        line.text(":cpu=");
+        line.dec(Scheduler::current_cpu_id() as u64);
+        line.text(":count=");
+        line.dec(holds);
+        line.text("]\r\n");
+    }
+}
+
 /// The timed waits' deadlines, as (wake_time_ns, thread_id) entries.
 ///
 /// x86_64 keeps one heap per CPU, holding the deadlines of the threads that
