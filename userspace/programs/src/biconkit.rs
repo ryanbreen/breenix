@@ -189,7 +189,7 @@ fn main() {
                     mouse_y = y;
                 }
                 Event::MouseButton { button, pressed, x, y } => {
-                    if button == 1 {
+                    if button == breengel::buttons::LEFT {
                         mouse_down = pressed;
                         mouse_x = x;
                         mouse_y = y;

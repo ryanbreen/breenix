@@ -799,7 +799,7 @@ fn main() {
                     let layout = compute_layout(w, h, filtered_count.min(MAX_VISIBLE));
                     state.hovered = hit_test_row(x, y, &layout);
                 }
-                Event::MouseButton { button: 1, pressed: true, x, y } => {
+                Event::MouseButton { button: breengel::buttons::LEFT, pressed: true, x, y } => {
                     let (filtered, filtered_count) = get_filtered_apps(
                         &state.query, state.query_len,
                     );

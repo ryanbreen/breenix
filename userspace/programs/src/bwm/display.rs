@@ -130,7 +130,14 @@ pub fn write_window_input(id: u64, old: &WindowInputEvent) -> Result<(), Error> 
         event.y = old.mouse_y as i32;
     }
     if k == kind::POINTER_BUTTON {
-        event.button = abi::button::LEFT + old.keycode as u32;
+        // bwm's input loop numbers its buttons 1 left, 2 right and 3 middle; the event carries
+        // the Linux button code (section 19.1).
+        event.button = match old.keycode {
+            1 => abi::button::LEFT,
+            2 => abi::button::RIGHT,
+            3 => abi::button::MIDDLE,
+            _ => return Err(Error::Os(libbreenix::errno::Errno::EINVAL)),
+        };
         event.pressed = u32::from(old.scroll_y != 0);
     }
     if k == kind::SCROLL {

@@ -463,7 +463,7 @@ fn run_window_loop(win: &mut Window, spheres: &mut [Sphere; NUM_SPHERES]) {
         // Poll input events — coordinates are already window-local
         for event in win.poll_events() {
             match event {
-                Event::MouseButton { button: 1, pressed: true, x, y } => {
+                Event::MouseButton { button: breengel::buttons::LEFT, pressed: true, x, y } => {
                     let mut hit = false;
                     for sphere in spheres.iter_mut() {
                         if sphere.hit_test(x, y) {

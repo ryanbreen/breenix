@@ -547,7 +547,7 @@ fn main() {
                     mouse_x = x;
                     mouse_y = y;
                 }
-                Event::MouseButton { button: 1, pressed, .. } => {
+                Event::MouseButton { button: breengel::buttons::LEFT, pressed, .. } => {
                     let old_buttons = mouse_buttons;
                     if pressed {
                         mouse_buttons |= 1;

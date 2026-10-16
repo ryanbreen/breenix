@@ -578,7 +578,7 @@ fn main() {
                         }
                     }
                 }
-                Event::MouseButton { button: 1, pressed: true, x: _, y } => {
+                Event::MouseButton { button: breengel::buttons::LEFT, pressed: true, x: _, y } => {
                     let ly = y as usize;
                     if ly >= LIST_TOP && ly < list_bottom {
                         let clicked_list_idx = scroll + (ly - LIST_TOP) / ITEM_H;

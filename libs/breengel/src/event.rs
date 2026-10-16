@@ -26,6 +26,11 @@ pub mod keys {
     pub const DELETE: u32 = 111;
 }
 
+/// Linux button codes (`MouseButton` `button`) the apps match on.
+pub mod buttons {
+    pub use libbreenix::window::abi::button::{LEFT, MIDDLE, RIGHT};
+}
+
 /// Modifier keys held when an event was made.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Modifiers {

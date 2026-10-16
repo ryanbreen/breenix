@@ -1944,7 +1944,7 @@ fn main() {
                     state.my = y.max(0).min(state.height as i32 - 1);
                 }
                 Event::MouseButton { button, pressed, x, y } => {
-                    if button == 1 {
+                    if button == breengel::buttons::LEFT {
                         state.left_down = pressed;
                         state.mx = x.max(0).min(state.width as i32 - 1);
                         state.my = y.max(0).min(state.height as i32 - 1);
