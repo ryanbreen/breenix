@@ -340,7 +340,7 @@ fn events_compositor_changed() -> CaseResult {
     let got = collect(&mut w, 1, Handled::NoChange)?;
     ensure(got.iter().any(|d| d.event == Event::CompositorChanged { epoch: e1 }), "18", format!(
         "after kiosk_test claimed with epoch {e1}, Breengel delivered [{}]", kinds(&got)))?;
-    first.kill();
+    first.kill_checked().cite("24")?;
     let (_second, e2) = kiosk().cite("24")?;
     let got = collect(&mut w, 1, Handled::NoChange)?;
     ensure(got.iter().any(|d| d.event == Event::CompositorChanged { epoch: e2 }) && e2 > e1, "18", format!(

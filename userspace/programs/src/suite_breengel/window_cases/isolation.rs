@@ -350,7 +350,7 @@ fn isolation_claim_twice() -> CaseResult {
 fn isolation_claim_after_death() -> CaseResult {
     interface()?;
     let (mut first, e1) = kiosk().cite("24")?;
-    first.kill();
+    first.kill_checked().cite("24")?;
     let (_second, e2) = kiosk().map_err(|e| format!("after the first compositor died: {e}")).cite("18")?;
     ensure(e2 > e1, "18", format!("the claim after the holder died has epoch {e2}, not above the dead holder's {e1}"))
 }
@@ -422,7 +422,7 @@ fn isolation_pid_reuse() -> CaseResult {
     };
     let i = info(id)?;
     ensure(i.owner as u64 == dead, "17.4", format!("LIST gives owner {} for the child {dead}'s window", i.owner))?;
-    owner.kill();
+    owner.kill_checked().cite("24")?;
     // What a process given the dead owner's number could reach: nothing in the registry may
     // still name that owner once it is dead.
     let named: Vec<u64> = list().cite("17.1")?.iter().filter(|w| w.owner as u64 == dead).map(|w| w.id).collect();
@@ -790,9 +790,12 @@ fn kill_blocked(what: &str, block: fn() -> i64) -> Result<u64, String> {
     if line != "blocking" {
         return Err(format!("the {what} helper said `{line}`"));
     }
-    let _ = time::sleep_ms(100);
+    // A call that failed or returned at once has printed its result by now.
+    if let Some(after) = h.try_line(100).map_err(|e| format!("the {what} helper: {e}"))? {
+        return Err(format!("the {what} helper did not stay blocked: it printed `{after}`"));
+    }
     let start = now_ms();
-    h.kill();
+    h.kill_checked().map_err(|e| format!("the {what} helper: {e}"))?;
     Ok(since(start))
 }
 

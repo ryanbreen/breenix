@@ -828,7 +828,7 @@ fn composition_ownership_stack() -> CaseResult {
     let (px, _) = screen()?;
     crate::remember_frame(&px,1280,800,None);
     ensure(px[(150 * 1280 + 150) * 4..(150 * 1280 + 150) * 4 + 3] == pattern(28, 50, 50)[..3], "18", "the compositor given the display does not show its composition")?;
-    k.kill();
+    k.kill_checked().cite("24")?;
     let _ = time::sleep_ms(50);
     let (px, _) = screen()?;
     crate::remember_frame(&px,1280,800,None);

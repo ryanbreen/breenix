@@ -1079,7 +1079,7 @@ fn windows_remnant_on_death() -> CaseResult {
     // This case's process is root and neither owner nor compositor: it is the holder.
     let free_before = mem_free_kb().cite("17.3")?;
     want_ok(call_id(op::HOLD_EVIDENCE, id), "17.3", "HOLD_EVIDENCE by root")?;
-    owner.kill();
+    owner.kill_checked().cite("24")?;
     let mut c = abi::Capture::ZERO;
     let mut px = vec![0u8; 64 * 32 * 4];
     let mut tree = vec![0u8; 64 * 1024];

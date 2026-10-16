@@ -512,15 +512,21 @@ impl Helper {
 
     /// The next line it prints, within `limit_ms`.
     pub(crate) fn line(&mut self, limit_ms: u64) -> Result<String, String> {
+        self.try_line(limit_ms)?.ok_or_else(|| format!("no line from the helper within {limit_ms} ms"))
+    }
+
+    /// The next line it prints within `limit_ms`, or `None` when it prints none in that time.
+    /// An error when it closed its output (it exited) or the read failed.
+    pub(crate) fn try_line(&mut self, limit_ms: u64) -> Result<Option<String>, String> {
         let start = now_ms();
         loop {
             if let Some(end) = self.pending.iter().position(|&b| b == b'\n') {
                 let line: Vec<u8> = self.pending.drain(..=end).collect();
-                return Ok(String::from_utf8_lossy(&line[..line.len() - 1]).into_owned());
+                return Ok(Some(String::from_utf8_lossy(&line[..line.len() - 1]).into_owned()));
             }
             let left = limit_ms.saturating_sub(now_ms() - start);
             if left == 0 {
-                return Err(format!("no line from the helper within {limit_ms} ms"));
+                return Ok(None);
             }
             let mut fds = [io::PollFd { fd: self.from.raw() as i32, events: io::poll_events::POLLIN, revents: 0 }];
             if io::poll(&mut fds, left.min(100) as i32).unwrap_or(0) == 0 {
@@ -541,12 +547,33 @@ impl Helper {
         self.line(5_000)
     }
 
+    /// Kill and reap it, whatever state it is in (cleanup).
     pub(crate) fn kill(&mut self) {
         if self.pid > 0 {
             let _ = signal::kill(self.pid, signal::SIGKILL);
             let mut status = 0;
             let _ = process::waitpid(self.pid, &mut status, 0);
             self.pid = 0;
+        }
+    }
+
+    /// Kill it and reap it, and require that the kill is what ended it: a helper that had
+    /// already exited, or that the kill or the reap did not reach, is an error.
+    pub(crate) fn kill_checked(&mut self) -> Result<(), String> {
+        if self.pid <= 0 {
+            return Err(String::from("the helper was already reaped"));
+        }
+        let pid = self.pid;
+        self.pid = 0;
+        signal::kill(pid, signal::SIGKILL).map_err(|e| format!("kill({pid}, SIGKILL): {e}"))?;
+        let mut status = 0;
+        process::waitpid(pid, &mut status, 0).map_err(|e| format!("waitpid({pid}): {e}"))?;
+        if process::wifsignaled(status) && process::wtermsig(status) == signal::SIGKILL {
+            Ok(())
+        } else if process::wifsignaled(status) {
+            Err(format!("the helper died of signal {}, not the SIGKILL", process::wtermsig(status)))
+        } else {
+            Err(format!("the helper had exited with status {} before the SIGKILL", process::wexitstatus(status)))
         }
     }
 }
