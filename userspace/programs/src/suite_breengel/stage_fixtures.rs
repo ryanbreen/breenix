@@ -4,7 +4,7 @@ use super::stage::{self, Finale, Image, Milestone, Run, Spotlight, Stamp, Tile};
 use libgfx::{color::Color, font, framebuf::FrameBuf};
 
 fn surface(bytes: &mut [u8]) -> FrameBuf {
-    unsafe { FrameBuf::from_raw(bytes.as_mut_ptr(),1280,800,5120,4,true) }
+    unsafe { FrameBuf::from_raw(bytes.as_mut_ptr(),1280,800,5120,4,true).unwrap() }
 }
 fn expect_pixel(fb:&FrameBuf,x:usize,y:usize,rgb:(u8,u8,u8)) -> Result<(),String> {
     let p=fb.get_pixel(x,y);
@@ -98,7 +98,8 @@ pub fn check(name:&str) -> Result<(),String> {
         "spotlight-timing" => {
             let times=[0,500,1000,2000];
             model.spotlight=Spotlight::Timing{frame_us:&times,budget_us:1000};render(&mut fb,&model)?;
-            rect(&fb,848,336,99,192,(18,29,44))?;
+            rect(&fb,848,336,99,96,(18,29,44))?;
+            rect(&fb,848,433,99,95,(18,29,44))?;
             rect(&fb,948,480,99,48,(64,160,224))?;
             rect(&fb,1048,433,99,95,(64,160,224))?;
             rect(&fb,1148,336,99,96,(145,50,58))?;
