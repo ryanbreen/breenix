@@ -203,7 +203,6 @@ pub(super) fn framebuffer_op(cmd: FbDrawCmd) -> SyscallResult {
         return SyscallResult::Err(super::ErrorCode::PermissionDenied as u64);
     }
 
-    #[cfg(target_arch = "aarch64")]
     if crate::graphics::display::active() && cmd.op == 6 {
         if let (Some(pane),Ok(caller))=(fb_mmap_info_pre,crate::window::Caller::current()) {
             let rect=if cmd.p3>0 && cmd.p4>0 {breengel_abi::Rect::new(cmd.p1,cmd.p2,cmd.p3,cmd.p4)}
@@ -594,6 +593,16 @@ pub(super) fn flush_owner_pane(cmd: &FbDrawCmd) -> SyscallResult {
         },
         None => (None, false),
     };
+    if crate::graphics::display::active() {
+        if let (Some(pane), Ok(caller)) = (fb_mmap, crate::window::Caller::current()) {
+            let rect = if cmd.p3 > 0 && cmd.p4 > 0 {
+                breengel_abi::Rect::new(cmd.p1, cmd.p2, cmd.p3, cmd.p4)
+            } else { breengel_abi::Rect::new(0, 0, pane.width as i32, pane.height as i32) };
+            return match crate::graphics::display::flush(caller.tgid, pane, rect) {
+                Ok(()) => SyscallResult::Ok(0), Err(e) => SyscallResult::Err(e as u64),
+            };
+        }
+    }
     if !caller_owns_display {
         return SyscallResult::Err(super::ErrorCode::PermissionDenied as u64);
     }
@@ -654,10 +663,14 @@ pub fn sys_get_mouse_pos(out_ptr: u64) -> SyscallResult {
     }
 }
 
-/// sys_get_mouse_pos - Stub for non-aarch64
-#[cfg(not(target_arch = "aarch64"))]
-pub fn sys_get_mouse_pos(_out_ptr: u64) -> SyscallResult {
-    SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
+/// x86 has no pointer driver yet. Validate the destination before reporting absence,
+/// so invalid buffers retain the graphics EFAULT contract without consuming input.
+#[cfg(target_arch = "x86_64")]
+pub fn sys_get_mouse_pos(out_ptr: u64) -> SyscallResult {
+    if crate::window::mem::probe_writable(out_ptr, 16).is_err() {
+        return SyscallResult::Err(super::ErrorCode::Fault as u64);
+    }
+    SyscallResult::Err(super::errno::ENODEV as u64)
 }
 
 /// sys_fbmmap - Map a framebuffer buffer into the calling process's address space

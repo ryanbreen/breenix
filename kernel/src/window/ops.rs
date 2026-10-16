@@ -1195,7 +1195,6 @@ pub fn group_gone(tgid: u64, at_exit: bool) {
     }
     drop(gone);
     drop(freed);
-    #[cfg(target_arch = "aarch64")]
     if at_exit && crate::graphics::display::active() {crate::graphics::display::gone(tgid);}
 }
 

@@ -51,9 +51,10 @@ fn main() {
     )
     .expect("write stage_markers.rs");
 
-    if target.starts_with("aarch64") {
-        let ribbon=stage_markers::arm64_ribbon(repo_root).expect("ARM64 ribbon stages");
-        assert!(!ribbon.is_empty() && ribbon.len() <= 416, "ARM64 boot ribbon exceeds its 1248-pixel segment capacity");
+    {
+        let arch = if target.starts_with("aarch64") { "aarch64" } else { "x86_64" };
+        let ribbon=stage_markers::architecture_ribbon(repo_root, arch).expect("architecture ribbon stages");
+        assert!(!ribbon.is_empty() && ribbon.len() <= 416, "boot ribbon exceeds its 1248-pixel segment capacity");
         fs::write(PathBuf::from(&out_dir).join("boot_ribbon.rs"),format!("&{ribbon:?}")).expect("write ribbon stages");
     }
 

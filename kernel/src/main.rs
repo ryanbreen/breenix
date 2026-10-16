@@ -1285,6 +1285,11 @@ fn read_x86_production_init(
             .and_then(|(elf_data, exe_path)| target::check_elf(&elf_data).map(|()| (elf_data, exe_path)))
         {
             Ok((elf_data, exe_path)) => {
+                if matches!(id.as_str(), "breengel" | "window-manager" | "ui-testing" | "gui-apps") {
+                    kernel::graphics::gop::set_suite_mode()?;
+                    kernel::graphics::display::init();
+                    kernel::graphics::display::spawn_panel_thread()?;
+                }
                 if let Some(case) = &suite.case {
                     log::info!("[boot] Boot mode: suite {} case {}", id, case);
                 } else {

@@ -1,7 +1,10 @@
-//! ARM64 virtio 2D composition and atomic display observation (BreenGL §§18,20).
+//! Software composition for virtio 2D and x86 GOP and atomic display observation (BreenGL §§18,20).
 //! All allocation and pixel work runs in thread context with IRQs enabled. No display
 //! lock is taken by an interrupt; the render thread only tries it for the panel cursor.
+#[cfg(target_arch = "aarch64")]
 use crate::drivers::virtio::gpu_mmio as gpu;
+#[cfg(target_arch = "x86_64")]
+use super::gop as gpu;
 use crate::window::{
     mem,
     present::{self, Backend, Composed, Failure, Frame},
@@ -52,13 +55,19 @@ pub fn init() {
 }
 fn state(s: &mut Option<State>) -> &mut State {
     s.get_or_insert_with(|| {
+        #[cfg(target_arch = "aarch64")]
         let pixels = gpu::framebuffer().map_or_else(|| vec![0; LEN], |p| p[..LEN].to_vec());
+        #[cfg(target_arch = "x86_64")]
+        let pixels = gpu::snapshot().unwrap_or_else(|_| vec![0; LEN]);
         State {
             pixels,
             record: abi::ObservationRecord::ZERO,
             invalid: 0,
             repair: false,
+            #[cfg(target_arch = "aarch64")]
             last_fence: gpu::last_answer_fence(),
+            #[cfg(target_arch = "x86_64")]
+            last_fence: 0,
             cursor: abi::Cursor {
                 shape: abi::cursor_shape::HIDDEN,
                 visible: 0,
@@ -77,6 +86,7 @@ fn full() -> Rect {
 fn cursor_rect(c: &abi::Cursor) -> Rect {
     Rect::new(c.x, c.y, 24, 24)
 }
+#[cfg(target_arch = "aarch64")]
 fn ticks() -> u64 {
     let n: u64;
     unsafe {
@@ -84,6 +94,7 @@ fn ticks() -> u64 {
     }
     n
 }
+#[cfg(target_arch = "aarch64")]
 fn micros(n: u64) -> u64 {
     let f: u64;
     unsafe {
@@ -92,6 +103,43 @@ fn micros(n: u64) -> u64 {
     n.saturating_mul(1_000_000) / f.max(1)
 }
 
+#[cfg(target_arch = "x86_64")]
+fn ticks() -> u64 { crate::time::tsc::read_tsc() }
+#[cfg(target_arch = "x86_64")]
+fn micros(n: u64) -> u64 { n.saturating_mul(1_000_000) / crate::time::tsc::frequency_hz().max(1) }
+
+#[cfg(target_arch = "x86_64")]
+fn publish(s: &mut State, damage: &[Rect], faults: bool) -> Result<(), i32> {
+    if faults && crate::test_control::take(point::IRQ_HOLD, 0).is_some() {
+        crate::arch_without_interrupts(|| {
+            let began = ticks();
+            while micros(ticks() - began) < 2000 { core::hint::spin_loop(); }
+            crate::tracing::providers::window::record_irq_masked(micros(ticks() - began));
+        });
+    }
+    let skip = faults && crate::test_control::take(point::SKIP_TRANSFER, 0).is_some();
+    let wrong = faults && crate::test_control::take(point::WRONG_RESOURCE, 0).is_some();
+    let stale = (faults && crate::test_control::take(point::STALE_FENCE, 0).is_some()).then_some(s.last_fence);
+    let began = ticks();
+    let masked = !crate::arch_interrupts_enabled();
+    let (resource, done) = gpu::present(&s.pixels, damage, skip, wrong, stale)?;
+    if masked { crate::tracing::providers::window::record_irq_masked(micros(ticks()-began)); }
+    s.record.resource = resource;
+    s.record.completion_count = done.len() as u32;
+    if done.len() > s.record.completions.len() { return Err(EIO); }
+    s.record.completions.fill(abi::Completion { fence: 0, kind: 0, status: 0 });
+    s.record.completions[..done.len()].copy_from_slice(&done);
+    let mismatch = done.iter().any(|c| c.fence <= s.last_fence);
+    if let Some(fence) = done.iter().map(|c| c.fence).max() { s.last_fence = s.last_fence.max(fence); }
+    s.invalid = if done.len() != damage.len() { EAGAIN }
+        else if resource != gpu::resource() || mismatch { EIO } else { 0 };
+    let corrupt = faults && crate::test_control::take(point::CORRUPT_OUTSIDE_DAMAGE, 0).is_some();
+    s.repair |= s.invalid != 0 || corrupt;
+    if corrupt { gpu::corrupt_last_row(); s.pixels[(H-1)*W*4] ^= 255; }
+    Ok(())
+}
+
+#[cfg(target_arch = "aarch64")]
 /// Submit the exact damaged bands and keep their answered command headers with the backing.
 fn publish(s: &mut State, damage: &[Rect], faults: bool) -> Result<(), i32> {
     let start = ticks();
@@ -157,13 +205,15 @@ fn publish(s: &mut State, damage: &[Rect], faults: bool) -> Result<(), i32> {
     Ok(())
 }
 fn observation(s: &mut State) {
-    s.record.backend = abi::backend::VIRTIO_GPU_2D;
+    s.record.backend = DISPLAY.code();
     s.record.width = W as u32;
     s.record.height = H as u32;
     s.record.stride = W as u32 * 4;
     s.record.source_format = 1;
-    s.record.flags = abi::OBSERVATION_DEVICE_COPY_OUTSIDE;
-    s.record.boundary = 1;
+    #[cfg(target_arch = "aarch64")]
+    { s.record.flags = abi::OBSERVATION_DEVICE_COPY_OUTSIDE; s.record.boundary = 1; }
+    #[cfg(target_arch = "x86_64")]
+    { s.record.flags = 0; s.record.boundary = 2; }
 }
 fn bounded_damage(mut d: Vec<Rect>) -> Vec<Rect> {
     d = d.into_iter().filter_map(present::clip_to_screen).collect();
@@ -216,7 +266,10 @@ fn sprite(pixels: &mut [u8], c: &abi::Cursor) {
 }
 impl Backend for Display {
     fn code(&self) -> u32 {
-        abi::backend::VIRTIO_GPU_2D
+        #[cfg(target_arch = "aarch64")]
+        { abi::backend::VIRTIO_GPU_2D }
+        #[cfg(target_arch = "x86_64")]
+        { abi::backend::GOP_FRAMEBUFFER }
     }
     fn composite(&self, f: &Frame) -> Result<Composed, Failure> {
         if crate::test_control::take(point::BACKEND_ERROR, 0).is_some() {
@@ -337,8 +390,10 @@ impl Backend for Display {
         if s.record.window_count as usize > s.record.windows.len() { return Err(EIO); }
         // Read the entire actual bound resource's backing, under the same lock as
         // composite publication, with X normalized. Never a sampled band.
-        let source = gpu::framebuffer().ok_or(EIO)?;
-        let mut out = source[..LEN].to_vec();
+        #[cfg(target_arch = "aarch64")]
+        let mut out = gpu::framebuffer().ok_or(EIO)?[..LEN].to_vec();
+        #[cfg(target_arch = "x86_64")]
+        let mut out = gpu::snapshot()?;
         for p in out.chunks_exact_mut(4) {
             p[3] = 255;
         }
@@ -393,7 +448,10 @@ fn take_from(pid: u64, expected: Option<u64>) -> Result<(), i32> {
     let mut snapshot = Vec::new();
     snapshot.try_reserve_exact(LEN).map_err(|_| ENOMEM)?;
     if let Some(r) = restore_panel(s) { publish(s, &[r], false)?; }
+    #[cfg(target_arch = "aarch64")]
     snapshot.extend_from_slice(&gpu::framebuffer().ok_or(EIO)?[..LEN]);
+    #[cfg(target_arch = "x86_64")]
+    snapshot.extend_from_slice(&gpu::snapshot()?);
     s.owners.push((previous, snapshot, s.record));
     OWNER.store(pid, Ordering::Release);
     crate::syscall::fb::DISPLAY_OWNER_PID.store(pid, Ordering::Release);
@@ -532,4 +590,23 @@ pub fn panel_pointer(x: u32, y: u32) {
 /// Whether this target registered the software display backend.
 pub fn active() -> bool {
     gpu::dimensions() == Some((W as u32, H as u32))
+}
+
+/// The production x86 kernel has no text render queue. Its display worker performs
+/// producer-ribbon parsing and panel cursor work in thread context, once per tick.
+#[cfg(target_arch = "x86_64")]
+pub fn spawn_panel_thread() -> Result<(), &'static str> {
+    crate::task::kthread::kthread_run(|| {
+        loop {
+            super::boot_ribbon::drain();
+            if active() && OWNER.load(Ordering::Acquire) != 0
+                && crate::window::REGISTRY.try_lock().is_some_and(|r| r.claim.is_none()) {
+                if let Some(p) = crate::test_control::take(point::MOVE_POINTER, 0) {
+                    panel_pointer(p as u32, (p >> 32) as u32);
+                }
+            }
+            crate::task::scheduler::yield_current();
+            x86_64::instructions::hlt();
+        }
+    }, "display").map(|_| ()).map_err(|_| "cannot spawn display worker")
 }

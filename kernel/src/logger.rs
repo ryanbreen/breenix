@@ -984,6 +984,7 @@ fn write_framebuffer_record(record: &Record) {
     };
     crate::arch_without_interrupts(|| {
         if let Some(mut framebuffer) = framebuffer.try_lock() {
+            if DISPLAY_TAKEN.load(Ordering::Acquire) { return; }
             let _ = writeln!(framebuffer, "{:>5}: {}", record.level(), record.args());
         }
     });
@@ -1141,6 +1142,7 @@ pub fn serial_ready() {
 pub fn init_framebuffer(buffer: &'static mut [u8], info: bootloader_api::info::FrameBufferInfo) {
     let buffer_ptr = buffer.as_mut_ptr();
     let buffer_len = buffer.len();
+    crate::graphics::gop::record_mapping(buffer_ptr as usize, buffer_len);
 
     // In interactive mode, store framebuffer info for later double buffer upgrade
     // We can't allocate the shadow buffer yet because the heap isn't initialized
@@ -1169,7 +1171,8 @@ pub fn init_framebuffer(buffer: &'static mut [u8], info: bootloader_api::info::F
 /// pixels are not 3- or 4-byte RGB or BGR.
 #[cfg(not(feature = "interactive"))]
 pub fn display_geometry() -> Option<(usize, usize, usize, usize, bool)> {
-    let info = DISPLAY_INFO.get()?;
+    let mode = crate::graphics::gop::mode();
+    let info = mode.as_ref().or_else(|| DISPLAY_INFO.get())?;
     let is_bgr = match info.pixel_format {
         PixelFormat::Rgb => false,
         PixelFormat::Bgr => true,
@@ -1179,6 +1182,17 @@ pub fn display_geometry() -> Option<(usize, usize, usize, usize, bool)> {
         return None;
     }
     Some((info.width, info.height, info.stride, info.bytes_per_pixel, is_bgr))
+}
+
+/// Relinquish the boot logger's VRAM before changing the hardware mode.
+pub fn stop_display_logging() {
+    #[cfg(not(feature = "interactive"))]
+    {
+        DISPLAY_TAKEN.store(true, Ordering::Release);
+        crate::arch_without_interrupts(|| {
+            if let Some(fb) = LOG_FRAMEBUFFER.get() { drop(fb.lock()); }
+        });
+    }
 }
 
 /// A userspace process has the display: stop drawing log records on it.

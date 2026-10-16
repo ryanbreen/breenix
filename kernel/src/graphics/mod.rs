@@ -42,7 +42,7 @@ pub fn compositor_backend() -> CompositorBackend {
 pub mod arm64_fb;
 #[cfg(target_arch = "aarch64")]
 pub mod boot_screen;
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", feature = "interactive"))]
 pub mod demo;
 pub mod double_buffer;
 pub mod font;
@@ -58,6 +58,7 @@ pub mod log_console;
 pub mod render_queue;
 #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
 pub mod render_task;
+#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
 pub mod split_screen;
 pub mod terminal;
 
@@ -66,11 +67,11 @@ pub mod cursor;
 
 pub use double_buffer::DoubleBufferedFrameBuffer;
 
-#[cfg(target_arch = "aarch64")]
 pub mod display;
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(target_arch = "x86_64")]
+pub mod gop;
+
 pub mod boot_ribbon;
 
-#[cfg(target_arch = "aarch64")]
 mod boot_producer;

@@ -46,6 +46,7 @@ struct Entry {
 #[derive(Clone)]
 struct Show {
     suite: String,
+    target: String,
     entries: Vec<Entry>,
     groups: Vec<(String, usize, usize)>,
     current: usize,
@@ -250,7 +251,7 @@ impl Show {
             fb,
             &mut stage::Run {
                 suite: &self.suite,
-                target: "ARM64 QEMU",
+                target: &self.target,
                 case_number: self.current + 1,
                 ui_time_ms: 0,
                 fps: self.fps,
@@ -318,19 +319,28 @@ pub(super) fn init(suite: &Suite) {
             groups.push((String::from(group), first, entries.len()));
         }
     }
+    let target = if cfg!(target_arch = "x86_64") { "x86-64" } else {
+        match std::fs::read_to_string("/proc/breenix/platform").as_deref().map(str::trim) {
+            Ok("aarch64-qemu") => "ARM64 QEMU",
+            Ok("aarch64-parallels") => "Parallels",
+            Ok("aarch64-vmware") => "VMware",
+            _ => "unknown target",
+        }
+    };
+    let observation = snapshot().map_or(
+        Observation { backend: 0, flags: 0, boundary: 0 },
+        |(_, rec)| Observation { backend: rec.backend, flags: rec.flags, boundary: rec.boundary },
+    );
     *SHOW.lock().unwrap() = Some(Show {
         suite: String::from(suite.id),
+        target: String::from(target),
         entries,
         groups,
         current: 0,
         selected: 0,
         last: None,
         first_failure: None,
-        observation: Observation {
-            backend: 1,
-            flags: 1,
-            boundary: 1,
-        },
+        observation,
         started_ms: clock::now_ns() / 1_000_000,
         finale: None,
         fps: 0,

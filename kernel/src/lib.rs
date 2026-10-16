@@ -75,8 +75,7 @@ pub mod fs;
 pub mod logger;
 #[cfg(target_arch = "aarch64")]
 pub mod platform_config;
-// Graphics module: available on x86_64 with "interactive" feature, or always on ARM64
-#[cfg(any(feature = "interactive", target_arch = "aarch64"))]
+// Display composition is shared by production kernels on both architectures.
 pub mod graphics;
 // Boot utilities (test disk loader, etc.)
 pub mod boot;

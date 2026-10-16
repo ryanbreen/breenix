@@ -96,6 +96,7 @@ pub enum ProcEntryType {
     /// Actual producer markers reached in boot-path order.
     BootRibbon,
     BootSerial,
+    Platform,
     StageComposites,
     /// /proc/breenix/ext2 - mounted ext2 allocation counters
     Ext2,
@@ -162,6 +163,7 @@ impl ProcEntryType {
             ProcEntryType::StageControl => "stage-control",
             ProcEntryType::BootRibbon => "boot-ribbon",
             ProcEntryType::BootSerial => "boot-serial",
+            ProcEntryType::Platform => "platform",
             ProcEntryType::StageComposites => "stage-composites",
             ProcEntryType::Ext2 => "ext2",
             ProcEntryType::Pids => "pids",
@@ -210,6 +212,7 @@ impl ProcEntryType {
             ProcEntryType::StageControl => "/proc/breenix/stage-control",
             ProcEntryType::BootRibbon => "/proc/breenix/boot-ribbon",
             ProcEntryType::BootSerial => "/proc/breenix/boot-serial",
+            ProcEntryType::Platform => "/proc/breenix/platform",
             ProcEntryType::StageComposites => "/proc/breenix/stage-composites",
             ProcEntryType::Ext2 => "/proc/breenix/ext2",
             ProcEntryType::Pids => "/proc/pids",
@@ -259,6 +262,7 @@ impl ProcEntryType {
             ProcEntryType::StageControl => 203,
             ProcEntryType::BootRibbon => 204,
             ProcEntryType::BootSerial => 205,
+            ProcEntryType::Platform => 207,
             ProcEntryType::StageComposites => 206,
             ProcEntryType::Ext2 => 202,
             ProcEntryType::Pids => 9,
@@ -378,6 +382,7 @@ pub fn init() {
     procfs.entries.push(ProcEntry::new(ProcEntryType::StageControl));
     procfs.entries.push(ProcEntry::new(ProcEntryType::BootRibbon));
     procfs.entries.push(ProcEntry::new(ProcEntryType::BootSerial));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::Platform));
     procfs.entries.push(ProcEntry::new(ProcEntryType::StageComposites));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Ext2));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Pids));
@@ -644,7 +649,7 @@ pub fn list_breenix_entries() -> Vec<String> {
     procfs
         .entries
         .iter()
-        .filter(|e| matches!(e.entry_type, ProcEntryType::BreenixTesting|ProcEntryType::StageControl|ProcEntryType::BootRibbon|ProcEntryType::BootSerial|ProcEntryType::StageComposites))
+        .filter(|e| matches!(e.entry_type, ProcEntryType::BreenixTesting|ProcEntryType::StageControl|ProcEntryType::BootRibbon|ProcEntryType::BootSerial|ProcEntryType::StageComposites|ProcEntryType::Platform))
         .map(|e| String::from(e.entry_type.name()))
         .collect()
 }
@@ -671,24 +676,19 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
             for point in 12..=14 {if crate::test_control::take(point,caller.tgid).is_some(){bits|=1<<point;}}
             text(alloc::format!("{bits}\n"))
         }
-        ProcEntryType::BootRibbon => {
-            #[cfg(target_arch="aarch64")]
-            {text(crate::graphics::boot_ribbon::records())}
-            #[cfg(not(target_arch="aarch64"))]
-            {Err(-38)}
+        ProcEntryType::Platform => {
+            #[cfg(target_arch = "x86_64")]
+            let name = "x86_64";
+            #[cfg(target_arch = "aarch64")]
+            let name = if crate::platform_config::is_qemu() { "aarch64-qemu" }
+                else if crate::platform_config::is_vmware() { "aarch64-vmware" }
+                else if crate::platform_config::is_parallels() { "aarch64-parallels" }
+                else { "unknown" };
+            text(alloc::format!("{name}\n"))
         }
-        ProcEntryType::BootSerial => {
-            #[cfg(target_arch="aarch64")]
-            { crate::graphics::boot_ribbon::serial().map(|s| s.into_bytes()) }
-            #[cfg(not(target_arch="aarch64"))]
-            {Err(-38)}
-        }
-        ProcEntryType::StageComposites => {
-            #[cfg(target_arch="aarch64")]
-            {text(crate::graphics::display::composite_records())}
-            #[cfg(not(target_arch="aarch64"))]
-            {Err(-38)}
-        }
+        ProcEntryType::BootRibbon => text(crate::graphics::boot_ribbon::records()),
+        ProcEntryType::BootSerial => crate::graphics::boot_ribbon::serial().map(|s| s.into_bytes()),
+        ProcEntryType::StageComposites => text(crate::graphics::display::composite_records()),
         ProcEntryType::Uptime => text(generate_uptime()),
         ProcEntryType::Version => text(generate_version()),
         ProcEntryType::MemInfo => text(generate_meminfo()),
