@@ -406,6 +406,7 @@ pub fn init() {
 /// thread that has been switched out. `try_manager()` and
 /// `with_process_manager()` already hold the lock with interrupts masked,
 /// which gives them the same property.
+#[track_caller]
 pub fn manager() -> ProcessManagerGuard {
     // #821. Recorded BEFORE the acquisition, so a call that wedges on a lock
     // this CPU already owns, and so does not return, is still counted.
@@ -506,16 +507,18 @@ pub fn pm_held_on_this_cpu() -> Option<PmHeldOnThisCpu> {
 /// Execute a function with the process manager while interrupts are disabled
 /// This prevents deadlock when the timer interrupt tries to access the process manager
 #[cfg(target_arch = "x86_64")]
+#[track_caller]
 pub fn with_process_manager<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut ProcessManager) -> R,
 {
     // #821, for the same reason as `manager()`.
     note_blocking_process_manager_acquisition();
+    let site = core::panic::Location::caller();
     x86_64::instructions::interrupts::without_interrupts(|| {
         let probe = crate::stall_probe::pm_wait_begin();
         let mut manager_lock = crate::stall_probe::spin_acquire(2, crate::stall_probe::pm_holder, || PROCESS_MANAGER.try_lock());
-        crate::stall_probe::pm_acquired(probe);
+        crate::stall_probe::pm_acquired_at(probe, site);
         note_process_manager_lock_acquired();
         let result = manager_lock.as_mut().map(|manager| {
             let result = f(manager);
@@ -745,6 +748,7 @@ const INTERRUPT_RETURN_PM_POLL_US: u64 = 200;
 /// next release, and the bound keeps the interrupt the holder may need from
 /// waiting longer than that.
 #[cfg(target_arch = "x86_64")]
+#[track_caller]
 pub fn poll_manager() -> Option<TryProcessManagerGuard> {
     if process_manager_held_on_current_cpu() {
         return None;

@@ -77,7 +77,7 @@ static LAST_INT: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS]
 /// kind 1 scheduler, 2 PROCESS_MANAGER.
 const WAITS: usize = 128;
 static WAIT_NEXT: AtomicU64 = AtomicU64::new(0);
-static WAIT: [[AtomicU64; 3]; WAITS] = [const { [const { AtomicU64::new(0) }; 3] }; WAITS];
+static WAIT: [[AtomicU64; 4]; WAITS] = [const { [const { AtomicU64::new(0) }; 4] }; WAITS];
 
 /// Every timer-entry interrupt (tick, reschedule IPI, retry).
 pub fn note_interrupt(cpu: usize) {
@@ -304,7 +304,7 @@ pub fn pm_hold_hook() {
     }
 }
 
-fn note_wait(kind: u64, t0: u64, holder: u64) {
+fn note_wait(kind: u64, t0: u64, holder: u64, site: u64) {
     let t1 = rdtsc();
     if t1 <= t0 || t1 - t0 < 3_000 * cycles_per_us() {
         return;
@@ -313,6 +313,7 @@ fn note_wait(kind: u64, t0: u64, holder: u64) {
     WAIT[k][0].store(mono_ns(), Ordering::Relaxed);
     WAIT[k][1].store((t1 - t0) / cycles_per_us(), Ordering::Relaxed);
     WAIT[k][2].store(cpu_now() as u64 | kind << 8 | (holder & 0xff) << 16, Ordering::Relaxed);
+    WAIT[k][3].store(site, Ordering::Relaxed);
 }
 
 pub fn sched_wait_begin() -> (u64, u64) {
@@ -329,7 +330,7 @@ static PROBE_T0: AtomicU64 = AtomicU64::new(0);
 
 pub fn sched_acquired(begin: (u64, u64)) {
     let cpu = crate::task::scheduler::current_cpu_id_raw();
-    note_wait(1, begin.0, begin.1);
+    note_wait(1, begin.0, begin.1, 0);
     SCHED_HOLDER.store(cpu as u64, Ordering::Relaxed);
     if cpu < MAX_CPUS {
         SCHED_HOLD_AT[cpu].store(rdtsc(), Ordering::Relaxed);
@@ -355,8 +356,27 @@ pub fn pm_wait_begin() -> (u64, u64) {
     (rdtsc(), holder)
 }
 
+#[track_caller]
 pub fn pm_acquired(begin: (u64, u64)) {
-    note_wait(2, begin.0, begin.1);
+    pm_acquired_at(begin, core::panic::Location::caller());
+}
+
+pub fn pm_acquired_at(begin: (u64, u64), site: &'static core::panic::Location<'static>) {
+    note_wait(2, begin.0, begin.1, site as *const _ as u64);
+}
+
+/// A PROCESS_MANAGER wait's call site, printed as file:line.
+#[derive(Clone, Copy)]
+struct Site(u64);
+
+impl core::fmt::Debug for Site {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        if self.0 == 0 {
+            return f.write_str("-");
+        }
+        let loc = unsafe { &*(self.0 as *const core::panic::Location<'static>) };
+        write!(f, "{}:{}", loc.file().rsplit('/').next().unwrap_or(""), loc.line())
+    }
 }
 
 // ---------------------------------------------------------------- waits
@@ -594,14 +614,14 @@ pub fn poll() {
             gaps[ng] = (rel_ms(e - len * 1000, due), len / 100, g[2].load(Ordering::Relaxed));
             ng += 1;
         }
-        let mut waits = [(0i64, 0u64, 0u64); 12];
+        let mut waits = [(0i64, 0u64, 0u64, Site(0)); 12];
         let mut nwt = 0;
         for w in WAIT.iter() {
             let (e, len) = (w[0].load(Ordering::Relaxed), w[1].load(Ordering::Relaxed));
             if e == 0 || e < lo || e.saturating_sub(len * 1000) > now || nwt == waits.len() {
                 continue;
             }
-            waits[nwt] = (rel_ms(e - len * 1000, due), len / 100, w[2].load(Ordering::Relaxed));
+            waits[nwt] = (rel_ms(e - len * 1000, due), len / 100, w[2].load(Ordering::Relaxed), Site(w[3].load(Ordering::Relaxed)));
             nwt += 1;
         }
         log::info!(
