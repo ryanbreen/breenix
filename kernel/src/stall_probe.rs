@@ -682,6 +682,21 @@ fn summary() {
         GAP_NEXT.load(Ordering::Relaxed),
         WAIT_NEXT.load(Ordering::Relaxed),
     );
+    let mut long = [(0u64, 0u64, 0u64, Site(0)); 16];
+    let mut n = 0;
+    for k in 0..WAITS {
+        let len_us = WAIT[k][1].load(Ordering::Relaxed);
+        if len_us >= 20_000 && n < long.len() {
+            long[n] = (
+                WAIT[k][0].load(Ordering::Relaxed) / 1_000_000,
+                len_us,
+                WAIT[k][2].load(Ordering::Relaxed),
+                Site(WAIT[k][3].load(Ordering::Relaxed)),
+            );
+            n += 1;
+        }
+    }
+    log::info!("LONGWAITS (end_ms,len_us,cpu|kind<<8|holder<<16,site)={:?}", &long[..n]);
 }
 
 /// From kstrandd: start forcing, and print late records.
