@@ -549,7 +549,8 @@ fn isolation_efault_mouse() -> CaseResult {
     #[cfg(target_arch = "aarch64")]
     step("17.5", child("legacy graphics EFAULT", 5_000, None, || {
         use libbreenix::graphics::FbDrawCmd;
-        let bad = unmapped();
+        let hole = Pages::new(0, 1, true)?;
+        let bad = hole.addr();
         let draw = |op, p1, p2, p3, p4| {
             let cmd = FbDrawCmd { op, p1, p2, p3, p4, color: 1 };
             unsafe { raw::syscall1(SYS_FB_DRAW, &cmd as *const _ as u64) as i64 }
@@ -578,8 +579,21 @@ fn isolation_efault_mouse() -> CaseResult {
         if draw(12, id as i32, ptr as i32, (ptr >> 32) as i32, title.len() as i32) != 0 {
             return Err("legacy register failed".into());
         }
+        // CREATE may reuse the first hole. Make the output fault address only
+        // after the last allocation of a window mapping.
+        let hole = Pages::new(0, 1, true)?;
+        let bad = hole.addr();
+        if bad == addr { return Err("fault fixture aliases the live window mapping".into()); }
+        let lo = bad as u32 as i32;
+        let hi = (bad >> 32) as u32 as i32;
         errno_is(draw(13, lo, hi, 1, 0), EFAULT, "unmapped list", "legacy LIST")?;
         errno_is(draw(14, id as i32, lo, hi, 256), EFAULT, "unmapped pixels", "legacy READ")?;
+        let mut pixels = [0xA5u8; 256];
+        let ptr = pixels.as_mut_ptr() as u64;
+        if draw(14, id as i32, ptr as i32, (ptr >> 32) as i32, 256) != ((8i64 << 32) | 8)
+            || pixels.iter().any(|&v| v != 0) {
+            return Err("failed legacy pixel copy consumed the buffer generation".into());
+        }
         let event = [1u16, 42, 0, 0, 0, 0];
         let ptr = event.as_ptr() as u64;
         if draw(18, id as i32, ptr as i32, (ptr >> 32) as i32, 0) != 0 {
