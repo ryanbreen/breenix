@@ -415,6 +415,9 @@ pub enum UnblockOutcome {
 /// Global scheduler instance
 static SCHEDULER: Mutex<Option<Scheduler>> = Mutex::new(None);
 
+#[cfg(target_arch = "x86_64")]
+mod rq;
+
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 fn arch_can_dispatch_here() -> bool {
@@ -482,7 +485,15 @@ static DEFERRED_RESCHED: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; M
 
 #[cfg(target_arch = "x86_64")]
 impl SchedulerGuard {
+    /// The whole scheduler: `guard` is the scheduler-wide lock, and every
+    /// run-queue lock is taken with it (`rq::lock_all`).
     fn new(guard: spin::MutexGuard<'static, Option<Scheduler>>) -> Self {
+        rq::lock_all();
+        Self::holding_all(guard)
+    }
+
+    /// `new` for a caller that took every run-queue lock itself.
+    fn holding_all(guard: spin::MutexGuard<'static, Option<Scheduler>>) -> Self {
         let cpu = current_cpu_id_raw();
         if cpu < MAX_CPUS {
             SCHEDULER_HELD[cpu].store(true, Ordering::Relaxed);
@@ -520,7 +531,9 @@ impl Drop for SchedulerGuard {
                 .filter(|(_, queue)| !queue.is_empty())
                 .fold(0u64, |mask, (cpu, _)| mask | 1 << cpu);
             QUEUED_CPUS.store(queued, Ordering::Release);
+            rq::refresh(scheduler);
         }
+        rq::unlock_all();
         if self.cpu < MAX_CPUS {
             SCHEDULER_HELD[self.cpu].store(false, Ordering::Relaxed);
         }
@@ -594,9 +607,14 @@ fn lock_scheduler() -> SchedulerGuard {
 #[inline(always)]
 fn try_lock_scheduler() -> Option<SchedulerGuard> {
     let guard = SCHEDULER.try_lock()?;
+    // x86_64: the whole scheduler is every run-queue lock too, each tried.
+    #[cfg(target_arch = "x86_64")]
+    if !rq::try_lock_all() {
+        return None;
+    }
     crate::tracing::providers::teardown::note_scheduler_acquire();
     #[cfg(target_arch = "x86_64")]
-    let guard = SchedulerGuard::new(guard);
+    let guard = SchedulerGuard::holding_all(guard);
     Some(guard)
 }
 
@@ -2330,6 +2348,63 @@ pub(crate) struct CpuSchedulerState {
     pub(crate) last_dispatch_promoted: bool,
 }
 
+/// The timed waits' deadlines, as (wake_time_ns, thread_id) entries.
+///
+/// x86_64 keeps one heap per CPU, holding the deadlines of the threads that
+/// blocked there, so a CPU can expire its own under its run-queue lock
+/// (`rq`). `peek` and `pop` take the earliest entry of all of them, which is
+/// the order the single heap elsewhere gives.
+struct TimerHeaps {
+    #[cfg(target_arch = "x86_64")]
+    heaps: [BinaryHeap<Reverse<(u64, u64)>>; MAX_CPUS],
+    #[cfg(not(target_arch = "x86_64"))]
+    heap: BinaryHeap<Reverse<(u64, u64)>>,
+}
+
+impl TimerHeaps {
+    fn new() -> Self {
+        Self {
+            #[cfg(target_arch = "x86_64")]
+            heaps: core::array::from_fn(|_| BinaryHeap::new()),
+            #[cfg(not(target_arch = "x86_64"))]
+            heap: BinaryHeap::new(),
+        }
+    }
+
+    /// Add a deadline of a thread blocking on `cpu`.
+    fn push(&mut self, cpu: usize, entry: Reverse<(u64, u64)>) {
+        #[cfg(target_arch = "x86_64")]
+        self.heaps[cpu.min(MAX_CPUS - 1)].push(entry);
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let _ = cpu;
+            self.heap.push(entry);
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn earliest(&self) -> Option<usize> {
+        (0..MAX_CPUS)
+            .filter_map(|cpu| self.heaps[cpu].peek().map(|entry| (entry.0, cpu)))
+            .min()
+            .map(|(_, cpu)| cpu)
+    }
+
+    fn peek(&self) -> Option<&Reverse<(u64, u64)>> {
+        #[cfg(target_arch = "x86_64")]
+        return self.earliest().and_then(|cpu| self.heaps[cpu].peek());
+        #[cfg(not(target_arch = "x86_64"))]
+        self.heap.peek()
+    }
+
+    fn pop(&mut self) -> Option<Reverse<(u64, u64)>> {
+        #[cfg(target_arch = "x86_64")]
+        return self.earliest().and_then(|cpu| self.heaps[cpu].pop());
+        #[cfg(not(target_arch = "x86_64"))]
+        self.heap.pop()
+    }
+}
+
 /// The kernel scheduler
 pub struct Scheduler {
     /// All threads in the system
@@ -2342,11 +2417,11 @@ pub struct Scheduler {
     /// Per-CPU scheduler state (current_thread + idle_thread per CPU)
     pub(crate) cpu_state: [CpuSchedulerState; MAX_CPUS],
 
-    /// Min-heap of (wake_time_ns, thread_id) for timer-blocked threads.
+    /// Min-heaps of (wake_time_ns, thread_id) for timer-blocked threads.
     /// Replaces O(N) scan in wake_expired_timers with O(log N) insert + O(1) peek.
     /// Stale entries (threads already woken by ISR or terminated) are harmless —
     /// wake_expired_timers validates each entry before acting on it.
-    timer_heap: BinaryHeap<Reverse<(u64, u64)>>,
+    timer_heap: TimerHeaps,
 
     /// Only groups with armed interval timers; registered outside scheduling.
     signal_timer_groups: alloc::vec::Vec<(alloc::sync::Weak<crate::signal::IntervalTimers>, alloc::sync::Weak<super::thread::CpuAccount>)>,
@@ -2475,7 +2550,7 @@ impl Scheduler {
             threads: alloc::vec![idle_thread],
             per_cpu_queues,
             cpu_state,
-            timer_heap: BinaryHeap::new(),
+            timer_heap: TimerHeaps::new(),
             signal_timer_groups: alloc::vec::Vec::new(),
             retirement_grace: alloc::vec::Vec::new(),
             exit_kick_watch: [(0, 0); crate::tracing::providers::teardown::EXIT_KICK_BUCKETS],
@@ -2616,6 +2691,12 @@ impl Scheduler {
         }
         let idle_id = idle_thread.id();
         self.threads.push(idle_thread);
+        #[cfg(target_arch = "x86_64")]
+        if rq::is_live(self) {
+            if let Some(thread) = self.threads.last_mut() {
+                rq::insert(thread, cpu_id);
+            }
+        }
         self.cpu_state[cpu_id].idle_thread = idle_id;
         #[cfg(target_arch = "aarch64")]
         {
@@ -2682,6 +2763,14 @@ impl Scheduler {
         let is_user = thread.privilege == super::thread::ThreadPrivilege::User;
         let cpu_affinity = thread.cpu_affinity;
         self.threads.push(thread);
+        // Indexed before it is queued; the queue's CPU owns it, which the
+        // release of this lock records.
+        #[cfg(target_arch = "x86_64")]
+        if rq::is_live(self) {
+            if let Some(thread) = self.threads.last_mut() {
+                rq::insert(thread, Self::current_cpu_id());
+            }
+        }
         // A thread that carries a CPU pin is queued to the CPU that pin names.
         // A thread without one routes to the least-loaded CPU (an idle one if
         // there is one, the current CPU if tied), which is the path taken
@@ -2816,6 +2905,12 @@ impl Scheduler {
             reclaimed_threads.push(thread);
         }
         self.threads = retained_threads;
+        #[cfg(target_arch = "x86_64")]
+        if rq::is_live(self) {
+            for &tid in reclaimed_ids.iter() {
+                rq::remove(tid);
+            }
+        }
         self.retirement_grace
             .retain(|grace| !reclaimed_ids.contains(&grace.thread_id));
         for queue in self.per_cpu_queues.iter_mut() {
@@ -2839,6 +2934,12 @@ impl Scheduler {
         thread.has_started = true;
         self.threads.push(thread);
         let cpu = Self::current_cpu_id();
+        #[cfg(target_arch = "x86_64")]
+        if rq::is_live(self) {
+            if let Some(thread) = self.threads.last_mut() {
+                rq::insert(thread, cpu);
+            }
+        }
         #[cfg(target_arch = "aarch64")]
         {
             let old_val = self.cpu_state[cpu].current_thread.unwrap_or(0xDEAD);
@@ -5201,7 +5302,7 @@ impl Scheduler {
             set_cpu_idle(Self::current_cpu_id(), true);
             // Insert into timer heap for O(1) expiry detection
             if !already_armed {
-                self.timer_heap.push(Reverse((wake_time_ns, current_id)));
+                self.timer_heap.push(Self::current_cpu_id(), Reverse((wake_time_ns, current_id)));
                 self.publish_timer_deadline();
             }
             for q in self.per_cpu_queues.iter_mut() {
@@ -5290,7 +5391,7 @@ impl Scheduler {
         if let Some(current_id) = self.block_current_for_io_publish(wake_time_ns) {
             // Insert into timer heap if a timeout was specified
             if let Some(wt) = wake_time_ns {
-                self.timer_heap.push(Reverse((wt, current_id)));
+                self.timer_heap.push(Self::current_cpu_id(), Reverse((wt, current_id)));
                 self.publish_timer_deadline();
             }
             true
@@ -5502,7 +5603,7 @@ impl Scheduler {
                 thread.blocked_in_syscall = true;
             }
             // Insert into timer heap for O(1) expiry detection
-            self.timer_heap.push(Reverse((timeout_ns, current_id)));
+            self.timer_heap.push(Self::current_cpu_id(), Reverse((timeout_ns, current_id)));
             self.publish_timer_deadline();
             for q in self.per_cpu_queues.iter_mut() {
                 q.retain(|&id| id != current_id);
@@ -6985,6 +7086,10 @@ pub fn init(idle_thread: Box<Thread>) {
     without_interrupts(|| {
         let mut scheduler_lock = lock_scheduler();
         *scheduler_lock = Some(Scheduler::new(idle_thread));
+        #[cfg(target_arch = "x86_64")]
+        if let Some(scheduler) = scheduler_lock.as_mut() {
+            rq::publish_live(scheduler);
+        }
         // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
         #[cfg(target_arch = "x86_64")]
         log_serial_println!("Scheduler initialized");
@@ -7016,6 +7121,10 @@ pub fn init_with_current(current_thread: Box<Thread>) {
         scheduler.cpu_state[0].current_thread = Some(thread_id);
 
         *scheduler_lock = Some(scheduler);
+        #[cfg(target_arch = "x86_64")]
+        if let Some(scheduler) = scheduler_lock.as_mut() {
+            rq::publish_live(scheduler);
+        }
         // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
         #[cfg(target_arch = "x86_64")]
         log_serial_println!(
