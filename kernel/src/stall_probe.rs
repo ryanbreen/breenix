@@ -203,7 +203,9 @@ pub fn nmi_hook(cpu: usize, rip: u64, cs: u64, rflags: u64, rsp: u64) {
                 for slot in &r[5..] {
                     slot.store(0, Ordering::Relaxed);
                 }
-                if cs & 3 == 0 && rsp & 7 == 0 {
+                // A page-aligned RSP is an empty stack: its page is the
+                // unmapped one above the stack's top.
+                if cs & 3 == 0 && rsp & 7 == 0 && rsp & 0xfff != 0 {
                     // Kernel text lies within a few MB of this function.
                     let here = nmi_hook as usize as u64;
                     let (lo, hi) = (here.saturating_sub(8 << 20), here + (8 << 20));
