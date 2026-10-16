@@ -438,7 +438,7 @@ impl Suite {
                     }
                     Outcome::Skip { msg } => {
                         counts.skipped += 1;
-                        emit(&std::format!("SUITE {} CASE {} SKIP{} msg={}", self.id, name, picture_hash, msg));
+                        emit(&std::format!("SUITE {} CASE {} SKIP msg={}", self.id, name, msg));
                     }
                 }
                 states[c][k] = State::Done(outcome);
