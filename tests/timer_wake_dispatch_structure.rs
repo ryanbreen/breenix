@@ -173,16 +173,23 @@ fn a_late_timer_wake_expired_under_a_run_queue_lock_is_enqueued_at_the_head() {
     let source = read("kernel/src/task/scheduler/rq.rs");
     let expire = item_body(&source, "fn expire_heap(");
     assert!(
-        !code_lines_mentioning(&expire, "place(local, Some(source), tid, target, true)").is_empty()
-            && !code_lines_mentioning(&expire, "place(local, None, tid, target, true)").is_empty(),
+        !code_lines_mentioning(&expire, "place_woken(local, Some(source), tid, target, true)").is_empty()
+            && !code_lines_mentioning(&expire, "place_woken(local, None, tid, target, true)").is_empty(),
         "`rq::expire_heap` must place a late timer wake with promotion asked for"
+    );
+    let woken = item_body(&source, "fn place_woken(");
+    assert!(
+        !code_lines_mentioning(&woken, "place(local, source, tid, cpu, promote, pinned)").is_empty(),
+        "`rq::place_woken` must hand the promotion to `place`"
     );
     let place = item_body(&source, "fn place(");
     assert!(
         code_lines_mentioning(&place, "push_back(").is_empty(),
         "`rq::place` must enqueue through `Held::enqueue`, whose front argument carries the promotion"
     );
-    for needle in ["promotion_open(held)", "promotion_open(&mut remote)", "enqueue(tid, front)", "promoted_wake = Some(tid)"] {
+    // One closure queues the thread on whichever CPU it goes to, so its
+    // `promotion_open(held)` bounds every destination.
+    for needle in ["promotion_open(held)", "enqueue(tid, front)", "promoted_wake = Some(tid)"] {
         assert!(
             !code_lines_mentioning(&place, needle).is_empty(),
             "`rq::place` must bound head promotion by the target's `promotion_open`: missing `{needle}`"
