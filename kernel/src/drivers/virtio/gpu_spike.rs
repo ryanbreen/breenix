@@ -562,17 +562,18 @@ fn run_inner() -> Result<(), &'static str> {
     cb.create_sub_ctx(1);
     cb.set_sub_ctx(1);
     cb.create_surface(1, RES_RT, vfmt::B8G8R8A8_UNORM, 0, 0);
-    // Blending off, all channels written, no dithering (profile item 1).
-    cb.raw(1 | (1 << 8) | (11 << 16), &[1, 0, 0, 0xF << 27, 0, 0, 0, 0, 0, 0, 0]);
-    cb.create_dsa_default(1);
-    cb.create_rasterizer(1, 1 << 29);
-    cb.create_vertex_elements(1, &[(0, 0, 0, vfmt::R32G32B32A32_FLOAT)]);
-    cb.create_shader(2, pipe::SHADER_VERTEX, 64, VS);
-    cb.create_shader(3, pipe::SHADER_FRAGMENT, 1024, FS_TEXFETCH);
-    cb.create_shader(4, pipe::SHADER_FRAGMENT, 1024, FS_INTEGER);
-    cb.create_shader(5, pipe::SHADER_FRAGMENT, 1024, FS_BACKGROUND);
-    cb.create_shader(6, pipe::SHADER_FRAGMENT, 1024, FS_BLEND);
-    cb.create_shader(7, pipe::SHADER_FRAGMENT, 1024, FS_UNORM);
+    // Blending off, all channels written, no dithering (profile item 1). Handles are unique
+    // across object types: vrend keeps one handle space per sub-context.
+    cb.raw(1 | (1 << 8) | (11 << 16), &[2, 0, 0, 0xF << 27, 0, 0, 0, 0, 0, 0, 0]);
+    cb.create_dsa_default(3);
+    cb.create_rasterizer(4, 1 << 29);
+    cb.create_vertex_elements(5, &[(0, 0, 0, vfmt::R32G32B32A32_FLOAT)]);
+    cb.create_shader(10, pipe::SHADER_VERTEX, 64, VS);
+    cb.create_shader(11, pipe::SHADER_FRAGMENT, 1024, FS_TEXFETCH);
+    cb.create_shader(12, pipe::SHADER_FRAGMENT, 1024, FS_INTEGER);
+    cb.create_shader(13, pipe::SHADER_FRAGMENT, 1024, FS_BACKGROUND);
+    cb.create_shader(14, pipe::SHADER_FRAGMENT, 1024, FS_BLEND);
+    cb.create_shader(15, pipe::SHADER_FRAGMENT, 1024, FS_UNORM);
     cb.create_sampler_view(20, RES_T8, vfmt::R8_UNORM, pipe::TEXTURE_2D, 0, 0, 0, 0, swizzle::IDENTITY);
     cb.create_sampler_view(21, RES_TB, vfmt::B8G8R8A8_UNORM, pipe::TEXTURE_2D, 0, 0, 0, 0, swizzle::IDENTITY);
     cb.create_sampler_view(22, RES_COPY, vfmt::B8G8R8A8_UNORM, pipe::TEXTURE_2D, 0, 0, 0, 0, swizzle::IDENTITY);
@@ -585,34 +586,34 @@ fn run_inner() -> Result<(), &'static str> {
         pipe::TEX_MIPFILTER_NONE,
         pipe::TEX_FILTER_NEAREST,
     );
-    cb.bind_object(1, super::virgl::OBJ_BLEND);
-    cb.bind_object(1, super::virgl::OBJ_DSA);
-    cb.bind_object(1, super::virgl::OBJ_RASTERIZER);
-    cb.bind_object(1, super::virgl::OBJ_VERTEX_ELEMENTS);
-    cb.bind_shader(2, pipe::SHADER_VERTEX);
+    cb.bind_object(2, super::virgl::OBJ_BLEND);
+    cb.bind_object(3, super::virgl::OBJ_DSA);
+    cb.bind_object(4, super::virgl::OBJ_RASTERIZER);
+    cb.bind_object(5, super::virgl::OBJ_VERTEX_ELEMENTS);
+    cb.bind_shader(10, pipe::SHADER_VERTEX);
     cb.set_framebuffer_state(0, &[1]);
     cb.set_viewport(W as f32, H as f32);
     cb.set_vertex_buffers(&[(16, 0, RES_VB)]);
     cb.clear_color(0.0, 0.0, 0.0, 0.0);
 
-    cb.bind_shader(3, pipe::SHADER_FRAGMENT);
+    cb.bind_shader(11, pipe::SHADER_FRAGMENT);
     cb.set_sampler_views(pipe::SHADER_FRAGMENT, 0, &[20, 21]);
     cb.bind_sampler_states(pipe::SHADER_FRAGMENT, 0, &[30, 30]);
     quad(cb, 0, 0, 0, TW, TH);
 
-    cb.bind_shader(4, pipe::SHADER_FRAGMENT);
+    cb.bind_shader(12, pipe::SHADER_FRAGMENT);
     quad(cb, 4, 0, 16, W, 32);
 
-    cb.bind_shader(5, pipe::SHADER_FRAGMENT);
+    cb.bind_shader(13, pipe::SHADER_FRAGMENT);
     quad(cb, 8, 0, 32, TW, 48);
     copy_region(cb, RES_COPY, RES_RT, 0, 32, TW, TH);
 
-    cb.bind_shader(6, pipe::SHADER_FRAGMENT);
+    cb.bind_shader(14, pipe::SHADER_FRAGMENT);
     cb.set_sampler_views(pipe::SHADER_FRAGMENT, 0, &[22]);
     cb.bind_sampler_states(pipe::SHADER_FRAGMENT, 0, &[30]);
     quad(cb, 12, 0, 32, TW, 48);
 
-    cb.bind_shader(7, pipe::SHADER_FRAGMENT);
+    cb.bind_shader(15, pipe::SHADER_FRAGMENT);
     quad(cb, 16, 0, 48, W, 64);
     serial_println!("GPU_SPIKE submitting {} dwords", cb.len());
     if cb.len() >= 3000 {
