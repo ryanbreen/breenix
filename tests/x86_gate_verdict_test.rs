@@ -1056,3 +1056,21 @@ fn full_accounting_requires_a_publication_count() {
     assert!(!output.status.success(), "{text}");
     assert!(text.contains("published process count is absent"), "{text}");
 }
+
+#[test]
+fn nul_bytes_do_not_hide_a_complete_green_serial() {
+    let fixture = SerialFixture::new(&format!("\0\n{}\0\n", green_log()), "\0");
+    let output = fixture.run(Some("10"));
+    assert!(output.status.success(), "{}", output_text(&output));
+}
+
+#[test]
+fn nul_bytes_do_not_hide_a_real_test_failure() {
+    let kernel = format!("\0\n{}\0\n", green_log().replace("failed=[]", "failed=[argv_test:1]")
+        .replace("nonzero=0", "nonzero=1"));
+    let fixture = SerialFixture::new(&kernel, "\0");
+    let output = fixture.run(Some("10"));
+    let text = output_text(&output);
+    assert!(!output.status.success(), "{text}");
+    assert!(text.contains("program=argv_test status=1 FAIL"), "{text}");
+}

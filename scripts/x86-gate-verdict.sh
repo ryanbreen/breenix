@@ -4,6 +4,10 @@
 
 set -euo pipefail
 
+# Serial logs are byte streams and may contain NULs, including beside UTF-8 markers.
+# BSD grep needs bytewise matching as well as -a to find those markers.
+export LC_ALL=C
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 fail() {
