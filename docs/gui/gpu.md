@@ -40,8 +40,8 @@ when this was written.
    renderer attestation (section 1.6.5), and the gate refuses a run whose renderer is software or unknown.
    llvmpipe may exercise guest transport code on throwaway branches; it never produces a verdict.
 3. **The macOS host for ARM64 QEMU uses UTM's matched graphics stack** (QEMU 10.0.12-utm with its ANGLE on
-   Metal, epoxy and virglrenderer forks), built as a command-line binary with one rendering context model for
-   both the headless gate and the interactive viewer (section 1.6.1).
+   Metal, epoxy and virglrenderer forks), built as a command-line binary that serves both the headless gate
+   and the interactive window (section 1.6.1).
 4. **x86-64 needs a hardware GPU on the x86 gate host,** which has none a guest renderer can use today. The
    proposal is a discrete card with an open Mesa driver and the x86 gate in a container on the gate host
    sharing the host's render node. Until it is in place, x86-64 cannot complete the catch-up, and the effort is
@@ -297,6 +297,15 @@ A profile violation is a failing case to fix, never a reason for a tolerance.
 | x86-64 | `virtio-vga-gl` | the same VirGL backend, after the PCI transport is generalized from ARM64 to x86-64 | virglrenderer on a hardware GPU's Mesa driver behind `egl-headless` (section 1.6.4; ruling R1) | the same |
 | VMware Fusion | SVGA3 | SVGA3D DX contexts and objects on `svga3.rs`'s command buffers, MOBs and GB surfaces | Fusion's own, on the host's GPU | GPU copy of the target into a dedicated readback surface, then `READBACK_GB_SURFACE` |
 
+**VirGL object handles (all three VirGL targets).** virglrenderer keeps one object-handle space per context,
+shared by every object type a command stream creates: blend, rasterizer and depth-stencil states, shaders,
+vertex elements, sampler views, sampler states, surfaces, queries and stream-output targets. The contract
+forbids reusing a handle across types: a handle the VirGL encoder has used for one object type is never used
+for an object of another type in the same context, even after the first object is destroyed, and the encoder
+allocates every object handle from one per-context allocator. The G0 spike found why: when a handle was
+reused across types, the host flagged a context error and dropped the creation, the draws that depended on
+it did nothing, and the readback showed the target as it was before them, with no error reaching the guest.
+
 #### 1.6.1 ARM64 QEMU on the macOS host
 
 The stock QEMU 11.0.3 that the ARM64 gates use today has `virtio-gpu-device` and `virtio-gpu-pci` only, no
@@ -305,31 +314,35 @@ work is milestone G0.
 
 - **The stack: UTM's matched set,** pinned at UTM's dependency manifest commit
   `4d73aaf0d284f1c22e3e1c1072e729988e134268`: QEMU **10.0.12-utm** with its patch set, WebKit's ANGLE built
-  for its Metal backend, UTM's epoxy fork, and UTM's virglrenderer fork at `451505ad`. Mixing current
-  packaged builds with one patch is not equivalent and is not attempted.
-- **What Breenix builds:** `scripts/host/qemu-gl/build.sh` runs the graphics subset of UTM's dependency build
-  (ANGLE, epoxy, virglrenderer, the SPICE server and their dependencies) and then builds
-  `qemu-system-aarch64` as an executable from the same patched source, `--target-list=aarch64-softmmu
-  --enable-hvf --enable-opengl --enable-virglrenderer --enable-spice --disable-cocoa --disable-sdl`, into a
-  per-pin cache directory outside the tree. UTM builds QEMU as a shared library for its app; turning it into
-  a command-line binary is the adaptation G0 does. Every pin is recorded in `scripts/host/qemu-gl/PINS`.
-- **The context model, one for both frontends.** One EGL display, ANGLE on Metal, owned by QEMU's SPICE GL
-  display. virglrenderer's contexts are created through QEMU's GL context callbacks on that display, in the
-  scanout context's share group, so the scanout texture is visible to the renderer without copies. Frames
-  leave the process as IOSurfaces to whatever SPICE client is attached; no GL context crosses a process.
-  - *Headless (every gate):* `-spice gl=on` on a Unix socket in the run directory, `-display none`, no client
-    attached.
-  - *Interactive (`run.sh`):* the same binary and arguments, plus a SPICE viewer attached to the socket that
-    shows the IOSurface frames: a small Breenix host viewer on UTM's CocoaSpice, signed and marked
-    `NSHighResolutionCapable`, so a 2560×1600 guest fills a 1280×800-point window at full resolution.
-  - G0's first finding is whether rendering and `TRANSFER_FROM_HOST_3D` proceed with no client attached. If
-    they do not, the gate attaches a host-side null client that acknowledges frames, and the record says so.
-- **Signing and App Nap:** the executable and viewer are ad-hoc signed with `com.apple.security.hypervisor`
-  after any install-name changes, with App Nap disabled as the gates' QEMU app bundle has done since #1397.
-- **Fallback, sized honestly:** if UTM's stack cannot be made into a command-line binary, upstream QEMU 11.0.3
-  with SDL's GL on Apple's desktop OpenGL 4.1 (headless as a hidden SDL window) is the next route, sized at 1
-  to 2 weeks with its own context-sharing investigation; a Darwin headless ANGLE display written from scratch
-  is a separate host project, attempted only if both fail. Neither is a "small patch".
+  for its Metal and OpenGL backends, UTM's epoxy fork, and UTM's virglrenderer fork at `451505ad`. Mixing
+  current packaged builds with one patch is not equivalent and is not attempted.
+- **What Breenix builds:** `scripts/build-qemu-gl.sh` runs the graphics subset of UTM's dependency build
+  (ANGLE, epoxy, virglrenderer, the SPICE server and protocol) and then builds `qemu-system-aarch64` as an
+  executable from the same patched source, `--target-list=aarch64-softmmu --enable-hvf --enable-cocoa
+  --enable-opengl --enable-virglrenderer --enable-spice`, into a per-pin cache directory outside the tree.
+  UTM builds QEMU as a shared library for its app; turning it into a command-line binary is the adaptation
+  G0 did. The result is a self-contained `QEMU-GL.app` (it loads nothing from Homebrew) whose `PINS` file
+  records every source pin and bundled library version, with every component's licence texts; the docs note
+  is `docs/gui/qemu-gl.md`.
+- **ANGLE's backend:** ANGLE renders on Metal only when `ANGLE_DEFAULT_PLATFORM=metal`, as UTM sets it;
+  without it ANGLE picks its OpenGL backend. The launcher sets it.
+- **The renderer context is OpenGL ES 3.0.** ANGLE gives virglrenderer an OpenGL ES 3.0 context (`GL_VERSION`
+  reads `OpenGL ES 3.0.0 (ANGLE …)`), so virglrenderer runs in its GLES mode, and every pipeline in the
+  profile must run on what that mode offers. The G0 spike's pipelines (integer texel fetch, 32-bit integer
+  routines, an integer source-over blend against a destination copy) did.
+- **Two frontends, one binary.** UTM's QEMU fork has a GL path in its Cocoa display, drawing GL scanouts
+  through ANGLE, so no separate viewer is needed:
+  - *Headless (every gate):* `-display none -spice unix=on,addr=<socket>,disable-ticketing=on,gl=es`, with
+    no client attached. G0 found that rendering and `TRANSFER_FROM_HOST_3D` proceed with no client, so no
+    null client is needed.
+  - *Interactive (`run.sh`, `scripts/boot-interactive.sh`):* the same binary with `-display cocoa,gl=es`.
+    The bundle is marked `NSHighResolutionCapable`, and UTM's Cocoa display sizes its window at guest pixels
+    divided by the backing scale, so a 2560×1600 guest fills a 1280×800-point window at full resolution.
+- **Signing and App Nap:** the bundle is ad-hoc signed with `com.apple.security.hypervisor` after every
+  install-name change, with App Nap disabled as the gates' QEMU app bundle has done since #1397.
+- **Fallback (not needed):** UTM's stack became a command-line binary, so the fallback routes (upstream QEMU
+  11.0.3 with SDL's GL on Apple's desktop OpenGL 4.1, or a Darwin headless ANGLE display written from
+  scratch) were not taken.
 - **Launcher changes:** `run.sh`, `scripts/boot-interactive.sh` and the ARM64 gate scripts gain the GL
   binary and `-device virtio-gpu-gl-pci`. The `gpu` suite's boots use it from G1. Every other ARM64 gate
   switches to it in `gpu`'s landing PR, only after one run of every ARM64 suite on the new binary matches
@@ -343,8 +356,11 @@ work is milestone G0.
      back with `TRANSFER_FROM_HOST_3D`; every pixel equals its formula, and all 256 UNORM values round-trip;
   3. the host renderer attestation for those runs (section 1.6.5) names the Apple GPU through ANGLE's Metal
      backend, and the guest's capset renderer string, where the capset carries one, agrees with it;
-  4. the same binary forced onto a software renderer (ANGLE's SwiftShader backend) runs the same guest, and
-     the gate refuses that run naming the software renderer.
+  4. the same binary forced onto a software renderer runs the same guest, and the gate refuses that run
+     naming the software renderer. WebKit's ANGLE has no SwiftShader backend, and Mesa's llvmpipe cannot
+     stand in (UTM's SPICE and Cocoa displays need ANGLE's IOSurface support), so the planted run uses
+     Apple's software OpenGL renderer through ANGLE's OpenGL backend
+     (`scripts/qemu-gl/plant-software-renderer.sh`, booted with an empty `ANGLE_DEFAULT_PLATFORM`).
 
 #### 1.6.2 Parallels
 
@@ -423,7 +439,9 @@ rests on host-side evidence that the gate checks, recorded with every run:
   `GL_VENDOR`, `GL_RENDERER` and `GL_VERSION` of the context that executes the guest's commands to
   `<run dir>/host-renderer.json`, at the creation of each renderer context and at its first `SUBMIT_3D`. It
   comes from the same process and context as the guest's workload, not from a separate probe. The gate
-  (`breenix-runs` and the ARM64 gate scripts) refuses a run whose file is missing, names a software renderer
+  (`breenix-runs` and the ARM64 gate scripts) refuses a run whose file is missing, records no first
+  `SUBMIT_3D` (creation alone says nothing about the renderer that executed the work), records a submission
+  without its context's creation before it, names a software renderer
   (llvmpipe, softpipe, lavapipe, SwiftShader, or any renderer string containing "Software"), or names a
   renderer other than the target's declared one, and requires the guest's capset renderer string, where the
   capset carries one, to agree.
@@ -654,7 +672,7 @@ most of this work's code does not exist yet, and the items below are what makes 
 
 | Item | Guess |
 |---|---|
-| G0 host stack: UTM's build turned into a CLI binary, the viewer, the attestation patch, signing, both frontends | 1 to 2 weeks (2 more if the SDL fallback is needed) |
+| G0 host stack: UTM's build turned into a CLI binary, the attestation patch, signing, both frontends | 1 to 2 weeks (2 more if the SDL fallback is needed) |
 | G0 audit, spikes (VMware's covering the whole profile), contract and suite skeleton | 1 to 2 weeks, partly in parallel with the host stack |
 | G1–G2: kernel core, validation, work estimate, watchdog and reset, readback | 1.5 to 3 weeks |
 | G3–G5: uploads, the catalogue in TGSI including multi-word arithmetic, binary32 emulation, destination copies and the hazard rule | 2 to 4 weeks |
