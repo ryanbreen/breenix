@@ -102,11 +102,16 @@ fn main() {
             // Step 3: Call pause() to wait for signal. The child keeps
             // signalling until the pipe closes, so a signal arrives after
             // pause() blocks whenever the first one came earlier. The flag is
-            // cleared first, so only a handler that ran after this point,
-            // the one that ends pause(), can set it for step 4.
+            // cleared first and read the moment pause() returns, before any
+            // other system call, so a handler that runs after pause() returned
+            // (the child's next SIGUSR1) cannot stand in for the one that
+            // should have ended it. One that runs between the store and the
+            // call is not excluded: pause() cannot unblock a signal and wait
+            // in one step, which is what sigsuspend() is for.
             println!("\nStep 3: Calling pause() to wait for signal...");
             SIGUSR1_RECEIVED.store(false, Ordering::SeqCst);
             let pause_result = libbreenix::signal::pause();
+            let handler_ran = SIGUSR1_RECEIVED.load(Ordering::SeqCst);
             let _ = io::close(done_w);
 
             // pause() returns only when a caught signal's handler has run,
@@ -131,7 +136,7 @@ fn main() {
 
             // Step 4: Verify signal handler was called
             println!("\nStep 4: Verify SIGUSR1 handler was called");
-            if SIGUSR1_RECEIVED.load(Ordering::SeqCst) {
+            if handler_ran {
                 println!("  PASS: SIGUSR1 handler was called!");
             } else {
                 println!("  FAIL: SIGUSR1 handler was NOT called");
