@@ -36,8 +36,15 @@ impl Spring {
         self.remainder_ns = self.remainder_ns.saturating_add((dt as f64 * 1_000_000_000.0 + 0.5) as u64);
         while self.remainder_ns >= 1_000_000 {
             self.remainder_ns -= 1_000_000;
+            let before = (self.value.to_bits(), self.velocity.to_bits());
             self.velocity += (-self.stiffness*(self.value-self.target)-self.damping*self.velocity)*0.001;
             self.value += self.velocity*0.001;
+            // Once the f32 recurrence is an exact fixed point, all remaining
+            // quanta are identical. Keep only the sub-millisecond remainder.
+            if before == (self.value.to_bits(), self.velocity.to_bits()) {
+                self.remainder_ns %= 1_000_000;
+                break;
+            }
         }
     }
 

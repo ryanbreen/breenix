@@ -147,10 +147,17 @@ impl ParticlePool {
         self.remainder_ns = self.remainder_ns.saturating_add((dt as f64 * 1_000_000_000.0 + 0.5) as u64);
         while self.remainder_ns >= 1_000_000 {
             self.remainder_ns -= 1_000_000;
+            let mut changed = false;
             for p in self.particles.iter_mut() {
+                let state = |p: &Particle| (p.x.to_bits(), p.y.to_bits(), p.vx.to_bits(), p.vy.to_bits(), p.life.to_bits());
+                let before = state(p);
                 p.update(0.001);
                 Self::confine(self.bounds,p);
+                changed |= before != state(p);
             }
+            // Dead particles and exact f32 fixed points cannot change in any
+            // later quantum until the caller emits or mutates a particle.
+            if !changed { self.remainder_ns %= 1_000_000; break; }
         }
     }
 
