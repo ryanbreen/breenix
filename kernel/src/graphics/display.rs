@@ -1,7 +1,11 @@
-//! ARM64 virtio 2D composition and atomic display observation (BreenGL §§18,20).
+//! ARM64 composition and atomic display observation (BreenGL §§18,20) on the three ARM64
+//! displays: virtio-gpu 2D (QEMU), VirGL (Parallels) and the SVGA3 screen target (VMware).
+//! Composition is in software into `State::pixels`; each display then presents the damaged
+//! rectangles its own way (`Device`) and is observed through its §20.2 row.
 //! All allocation and pixel work runs in thread context with IRQs enabled. No display
 //! lock is taken by an interrupt; the render thread only tries it for the panel cursor.
-use crate::drivers::virtio::gpu_mmio as gpu;
+use crate::drivers::virtio::{gpu_mmio as gpu, gpu_pci};
+use crate::drivers::vmware::svga3;
 use crate::window::{
     mem,
     present::{self, Backend, Composed, Failure, Frame},
@@ -9,7 +13,7 @@ use crate::window::{
 };
 use alloc::{vec, vec::Vec};
 use breengel_abi::{self as abi, errno::*, tc_point as point, Plain, Rect};
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use spin::Mutex;
 
 const W: usize = 1280;
@@ -45,20 +49,189 @@ struct State {
 }
 struct Display;
 
+/// The display a composite is presented on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Device {
+    /// virtio-gpu 2D (ARM64 QEMU): the scanout resource's guest backing, transferred per
+    /// damaged rectangle and flushed.
+    Virtio2d,
+    /// VirGL (Parallels): the compositor texture, drawn onto the scanout resource by
+    /// SUBMIT_3D and read back by TRANSFER_FROM_HOST_3D.
+    Virgl,
+    /// The SVGA3 screen target (VMware): the MOB of the bound surface, updated per damaged
+    /// rectangle and fenced; it has no readback of the device's copy.
+    Svga3,
+}
+
+/// The device whose setup completed: 0 none, else `Device as u8 + 1`.
+static READY: AtomicU8 = AtomicU8::new(0);
+static SETUP: Mutex<()> = Mutex::new(());
+
+impl Device {
+    /// The display this boot has at 1280 x 800, without touching the device.
+    fn detect() -> Option<Device> {
+        if gpu::dimensions() == Some((W as u32, H as u32)) {
+            return Some(Device::Virtio2d);
+        }
+        if gpu_pci::is_initialized()
+            && gpu_pci::dimensions() == Some((W as u32, H as u32))
+            && gpu_pci::compositor_ready()
+        {
+            return Some(Device::Virgl);
+        }
+        let gop = super::arm64_fb::FB_INFO_CACHE.get().is_some_and(|c| {
+            (c.width, c.height, c.stride, c.bytes_per_pixel, c.is_bgr) == (W, H, W, 4, true)
+        });
+        if svga3::is_initialized() && svga3::has_gbobjects() && super::arm64_fb::is_gop_active() && gop {
+            return Some(Device::Svga3);
+        }
+        None
+    }
+
+    /// The device, once its setup has completed.
+    fn get() -> Option<Device> {
+        match READY.load(Ordering::Acquire) {
+            1 => Some(Device::Virtio2d),
+            2 => Some(Device::Virgl),
+            3 => Some(Device::Svga3),
+            _ => None,
+        }
+    }
+
+    /// The kernel's own screen: what the kernel draws while it owns the display, rows of
+    /// `W * 4` bytes.
+    fn canvas(self) -> Option<&'static mut [u8]> {
+        let c = match self {
+            Device::Virtio2d => gpu::framebuffer(),
+            Device::Virgl => gpu_pci::framebuffer(),
+            Device::Svga3 => super::arm64_fb::gop_framebuffer(),
+        }?;
+        (c.len() >= LEN).then_some(c)
+    }
+
+    /// Where `publish` copies composed rows before presenting them.
+    fn destination(self) -> Option<&'static mut [u8]> {
+        let d = match self {
+            Device::Virtio2d => gpu::framebuffer(),
+            Device::Virgl => gpu_pci::compositor_texture(),
+            Device::Svga3 => svga3::compositor_backing(),
+        }?;
+        (d.len() >= LEN).then_some(d)
+    }
+
+    /// Present `damage` (and, unrecorded, `extra`) with the planted faults; returns the
+    /// resource the device is bound to and the answered completions.
+    fn present(
+        self,
+        damage: &[Rect],
+        extra: Option<Rect>,
+        skip: bool,
+        wrong: bool,
+        stale: Option<u64>,
+    ) -> Result<(u64, Vec<abi::Completion>), &'static str> {
+        match self {
+            Device::Virtio2d => gpu::present_damage(damage, skip, wrong, stale),
+            Device::Virgl => gpu_pci::compositor_present(damage, extra, skip, wrong, stale),
+            Device::Svga3 => svga3::compositor_present(damage, extra, skip, wrong, stale),
+        }
+    }
+
+    /// The completions a composite of `rects` damaged rectangles answers.
+    fn expected(self, rects: usize) -> usize {
+        match self {
+            // A transfer per rectangle, then one flush.
+            Device::Virtio2d => rects + usize::from(rects != 0),
+            // An upload per rectangle, then the SUBMIT_3D that draws them.
+            Device::Virgl => rects + 1,
+            // A fence per rectangle.
+            Device::Svga3 => rects,
+        }
+    }
+
+    /// The most damaged rectangles a record has room for: twelve completions, less the
+    /// final flush on virtio 2D, and the SUBMIT_3D and the readback transfer on VirGL.
+    fn max_rects(self) -> usize {
+        match self {
+            Device::Virtio2d => 11,
+            Device::Virgl => 10,
+            Device::Svga3 => 12,
+        }
+    }
+
+    fn composed_resource(self) -> u64 {
+        match self {
+            Device::Virtio2d => gpu::composed_resource(),
+            Device::Virgl => gpu_pci::compositor_resource(),
+            Device::Svga3 => svga3::compositor_resource(),
+        }
+    }
+
+    fn last_fence(self) -> u64 {
+        match self {
+            Device::Virtio2d => gpu::last_answer_fence(),
+            Device::Virgl => gpu_pci::last_fence(),
+            Device::Svga3 => svga3::last_fence(),
+        }
+    }
+
+    fn code(self) -> u32 {
+        match self {
+            Device::Virtio2d => abi::backend::VIRTIO_GPU_2D,
+            Device::Virgl => abi::backend::VIRGL,
+            Device::Svga3 => abi::backend::SVGA3_SCREEN_TARGET,
+        }
+    }
+
+    /// Section 20.2's observation flags and boundary code for this backend.
+    fn boundary(self) -> (u32, u32) {
+        match self {
+            Device::Virtio2d | Device::Svga3 => (abi::OBSERVATION_DEVICE_COPY_OUTSIDE, 1),
+            Device::Virgl => (0, 3),
+        }
+    }
+}
+
+/// Set up this boot's display for composition once; true when it is ready.
+fn setup() -> Option<Device> {
+    if let Some(d) = Device::get() {
+        return Some(d);
+    }
+    let _once = SETUP.lock();
+    if let Some(d) = Device::get() {
+        return Some(d);
+    }
+    let d = Device::detect()?;
+    if d == Device::Svga3 {
+        if let Err(e) = svga3::init_stdu(W as u32, H as u32) {
+            crate::serial_println!("[display] SVGA3 screen target setup failed: {}", e);
+            return None;
+        }
+    }
+    READY.store(d as u8 + 1, Ordering::Release);
+    if d == Device::Svga3 {
+        // The screen target replaces the GOP scanout: show the kernel's screen on it.
+        let mut guard = STATE.lock();
+        let s = state(&mut guard);
+        let _ = publish(s, &[full()], false);
+    }
+    Some(d)
+}
+
 pub fn init() {
-    if gpu::dimensions() == Some((W as u32, H as u32)) {
+    if setup().is_some() {
         present::set_backend(&DISPLAY);
     }
 }
 fn state(s: &mut Option<State>) -> &mut State {
     s.get_or_insert_with(|| {
-        let pixels = gpu::framebuffer().map_or_else(|| vec![0; LEN], |p| p[..LEN].to_vec());
+        let d = Device::get().or_else(Device::detect);
+        let pixels = d.and_then(Device::canvas).map_or_else(|| vec![0; LEN], |p| p[..LEN].to_vec());
         State {
             pixels,
             record: abi::ObservationRecord::ZERO,
             invalid: 0,
             repair: false,
-            last_fence: gpu::last_answer_fence(),
+            last_fence: d.map_or(0, Device::last_fence),
             cursor: abi::Cursor {
                 shape: abi::cursor_shape::HIDDEN,
                 visible: 0,
@@ -107,7 +280,8 @@ fn publish(s: &mut State, damage: &[Rect], faults: bool) -> Result<(), i32> {
     // The production copy has no IRQ-masked interval. Observe its actual entry state,
     // rather than substituting total wall time for an IRQ-masked measurement.
     let masked = !crate::arch_interrupts_enabled();
-    let fb = gpu::framebuffer().ok_or(EIO)?;
+    let device = Device::get().ok_or(EIO)?;
+    let fb = device.destination().ok_or(EIO)?;
     for r in damage {
         for y in r.y as usize..(r.y + r.h) as usize {
             let a = (y * W + r.x as usize) * 4;
@@ -122,7 +296,17 @@ fn publish(s: &mut State, damage: &[Rect], faults: bool) -> Result<(), i32> {
     let wrong = faults && crate::test_control::take(point::WRONG_RESOURCE, 0).is_some();
     let stale = (faults && crate::test_control::take(point::STALE_FENCE, 0).is_some())
         .then_some(s.last_fence);
-    let (resource, answers) = gpu::present_damage(damage, skip, wrong, stale).map_err(|_| EIO)?;
+    let corrupt = faults && crate::test_control::take(point::CORRUPT_OUTSIDE_DAMAGE, 0).is_some();
+    // The first pixel of the last row, outside the frame's damage. VirGL and SVGA3 present
+    // the corrupted pixel to the device with the frame; virtio 2D writes it into the
+    // observed guest backing after the frame's transfers.
+    let corner = (H - 1) * W * 4;
+    let extra = (corrupt && device != Device::Virtio2d).then(|| {
+        fb[corner] ^= 0xFF;
+        s.pixels[corner] = fb[corner];
+        Rect::new(0, H as i32 - 1, 1, 1)
+    });
+    let (resource, answers) = device.present(damage, extra, skip, wrong, stale).map_err(|_| EIO)?;
     s.record.resource = resource;
     s.record.completion_count = answers.len() as u32;
     s.record.completions = [abi::Completion {
@@ -134,7 +318,7 @@ fn publish(s: &mut State, damage: &[Rect], faults: bool) -> Result<(), i32> {
         return Err(EIO);
     }
     s.record.completions[..answers.len()].copy_from_slice(&answers);
-    let missing = answers.len() != damage.len() + usize::from(!damage.is_empty());
+    let missing = answers.len() != device.expected(damage.len());
     let mut serial_mismatch = false;
     for answer in &answers {
         serial_mismatch |= answer.fence <= s.last_fence;
@@ -142,35 +326,37 @@ fn publish(s: &mut State, damage: &[Rect], faults: bool) -> Result<(), i32> {
     }
     s.invalid = if missing {
         EAGAIN
-    } else if resource != gpu::composed_resource() || serial_mismatch {
+    } else if resource != device.composed_resource() || serial_mismatch {
         EIO
     } else {
         0
     };
-    let corrupt = faults && crate::test_control::take(point::CORRUPT_OUTSIDE_DAMAGE, 0).is_some();
     s.repair |= s.invalid != 0 || corrupt;
-    if corrupt {
+    if corrupt && device == Device::Virtio2d {
         // Corrupt the actual destination backing outside this frame's damage.
-        fb[(H - 1) * W * 4] ^= 0xFF;
-        s.pixels[(H - 1) * W * 4] = fb[(H - 1) * W * 4];
+        fb[corner] ^= 0xFF;
+        s.pixels[corner] = fb[corner];
     }
     Ok(())
 }
 fn observation(s: &mut State) {
-    s.record.backend = abi::backend::VIRTIO_GPU_2D;
+    let device = Device::get().unwrap_or(Device::Virtio2d);
+    let (flags, boundary) = device.boundary();
+    s.record.backend = device.code();
     s.record.width = W as u32;
     s.record.height = H as u32;
     s.record.stride = W as u32 * 4;
+    // Every backend's destination is B, G, R, X in memory.
     s.record.source_format = 1;
-    s.record.flags = abi::OBSERVATION_DEVICE_COPY_OUTSIDE;
-    s.record.boundary = 1;
+    s.record.flags = flags;
+    s.record.boundary = boundary;
 }
 fn bounded_damage(mut d: Vec<Rect>) -> Vec<Rect> {
     d = d.into_iter().filter_map(present::clip_to_screen).collect();
-    // ObservationRecord has room for eleven transfers and their final flush. When
-    // metadata is larger, a covering transfer updates the device's full backing;
+    // ObservationRecord has room for twelve completions (`Device::max_rects`). When
+    // metadata is larger, a covering rectangle updates the device's full backing;
     // composition work still uses exactly the original damage union.
-    if d.len() > 11 {
+    if d.len() > Device::get().map_or(11, Device::max_rects) {
         let mut r = d[0];
         for b in &d[1..] {
             let x = r.x.min(b.x);
@@ -216,7 +402,7 @@ fn sprite(pixels: &mut [u8], c: &abi::Cursor) {
 }
 impl Backend for Display {
     fn code(&self) -> u32 {
-        abi::backend::VIRTIO_GPU_2D
+        Device::get().map_or(abi::backend::NONE, Device::code)
     }
     fn composite(&self, f: &Frame) -> Result<Composed, Failure> {
         if crate::test_control::take(point::BACKEND_ERROR, 0).is_some() {
@@ -335,10 +521,29 @@ impl Backend for Display {
         observation(s);
         // A fixed ABI record cannot describe a larger frame. Composition still succeeds.
         if s.record.window_count as usize > s.record.windows.len() { return Err(EIO); }
-        // Read the entire actual bound resource's backing, under the same lock as
-        // composite publication, with X normalized. Never a sampled band.
-        let source = gpu::framebuffer().ok_or(EIO)?;
-        let mut out = source[..LEN].to_vec();
+        // Read the entire destination through this backend's §20.2 path, under the same
+        // lock as composite publication, with X normalized. Never a sampled band.
+        let device = Device::get().ok_or(EIO)?;
+        let mut record = s.record;
+        let mut out = Vec::new();
+        out.try_reserve_exact(LEN).map_err(|_| ENOMEM)?;
+        match device {
+            Device::Virtio2d => out.extend_from_slice(&gpu::framebuffer().ok_or(EIO)?[..LEN]),
+            Device::Svga3 => out.extend_from_slice(&svga3::compositor_backing().ok_or(EIO)?[..LEN]),
+            Device::Virgl => {
+                // The fenced TRANSFER_FROM_HOST_3D is this observation's own completion.
+                out.resize(LEN, 0);
+                if s.invalid == 0 {
+                    let done = gpu_pci::compositor_readback(&mut out).map_err(|_| EIO)?;
+                    let n = record.completion_count as usize;
+                    if n >= record.completions.len() {
+                        return Err(EIO);
+                    }
+                    record.completions[n] = done;
+                    record.completion_count += 1;
+                }
+            }
+        }
         for p in out.chunks_exact_mut(4) {
             p[3] = 255;
         }
@@ -346,7 +551,7 @@ impl Backend for Display {
         if s.invalid != EAGAIN {
             mem::copy_out(rb.record, unsafe {
                 core::slice::from_raw_parts(
-                    (&s.record as *const abi::ObservationRecord).cast::<u8>(),
+                    (&record as *const abi::ObservationRecord).cast::<u8>(),
                     core::mem::size_of::<abi::ObservationRecord>(),
                 )
             })?;
@@ -379,6 +584,7 @@ pub fn take(pid: u64) -> Result<(), i32> {
     take_from(pid, None)
 }
 fn take_from(pid: u64, expected: Option<u64>) -> Result<(), i32> {
+    setup().ok_or(EIO)?;
     let mut guard = STATE.lock();
     if expected.is_some_and(|owner| OWNER.load(Ordering::Acquire) != owner) { return Err(EPERM); }
     let s = state(&mut guard);
@@ -393,7 +599,18 @@ fn take_from(pid: u64, expected: Option<u64>) -> Result<(), i32> {
     let mut snapshot = Vec::new();
     snapshot.try_reserve_exact(LEN).map_err(|_| ENOMEM)?;
     if let Some(r) = restore_panel(s) { publish(s, &[r], false)?; }
-    snapshot.extend_from_slice(&gpu::framebuffer().ok_or(EIO)?[..LEN]);
+    let device = Device::get().ok_or(EIO)?;
+    if device == Device::Virtio2d {
+        snapshot.extend_from_slice(&gpu::framebuffer().ok_or(EIO)?[..LEN]);
+    } else {
+        // While the kernel owns the display its screen is the canvas; afterwards it is
+        // what the owners composed.
+        if previous == 0 {
+            let canvas = device.canvas().ok_or(EIO)?;
+            s.pixels.copy_from_slice(&canvas[..LEN]);
+        }
+        snapshot.extend_from_slice(&s.pixels);
+    }
     s.owners.push((previous, snapshot, s.record));
     OWNER.store(pid, Ordering::Release);
     crate::syscall::fb::DISPLAY_OWNER_PID.store(pid, Ordering::Release);
@@ -414,6 +631,10 @@ pub fn give(from:u64,to:u64)->Result<(),i32> {
 }
 
 pub fn back(pid: u64) -> Result<(), i32> {
+    if OWNER.load(Ordering::Acquire) != pid {
+        return Err(EPERM);
+    }
+    setup().ok_or(EIO)?;
     let mut guard = STATE.lock();
     let s = state(&mut guard);
     if OWNER.load(Ordering::Acquire) != pid {
@@ -425,6 +646,10 @@ pub fn back(pid: u64) -> Result<(), i32> {
     s.panel_cursor = None;
     if previous == 0 {
         super::boot_ribbon::draw(&mut s.pixels);
+        // The kernel draws its screen on the canvas again: start it from what is shown.
+        if let Some(canvas) = Device::get().filter(|d| *d != Device::Virtio2d).and_then(Device::canvas) {
+            canvas[..LEN].copy_from_slice(&s.pixels);
+        }
     }
     OWNER.store(previous, Ordering::Release);
     crate::syscall::fb::DISPLAY_OWNER_PID.store(previous, Ordering::Release);
@@ -444,6 +669,7 @@ pub fn gone(pid: u64) {
 
 /// Copy a caller's private mmap pane, clipped before touching any pixels.
 pub fn flush(pid: u64, pane: crate::process::process::FbMmapInfo, rect: Rect) -> Result<(), i32> {
+    setup().ok_or(EIO)?;
     if pane.whole_screen && OWNER.load(Ordering::Acquire) != pid { return Err(EPERM); }
     let Some(r) = present::intersect(rect, Rect::new(0, 0, pane.width as i32, pane.height as i32))
         .and_then(present::clip_to_screen) else { return Ok(()); };
@@ -529,7 +755,33 @@ pub fn panel_pointer(x: u32, y: u32) {
     let _ = publish(s, &bounded_damage(damage), false);
 }
 
-/// Whether this target registered the software display backend.
+/// Whether this target has a 1280 x 800 display the compositor can present on.
 pub fn active() -> bool {
-    gpu::dimensions() == Some((W as u32, H as u32))
+    Device::get().is_some() || Device::detect().is_some()
+}
+
+/// The kernel presented rectangle (x, y, w, h) of its canvas. On SVGA3 the screen target,
+/// not the GOP framebuffer the kernel draws on, is what the device shows, so while the
+/// kernel owns the display the rectangle is copied into the composed screen and presented.
+/// Never blocks on the display lock: a composite in progress already owns the screen.
+pub fn canvas_presented(x: u32, y: u32, w: u32, h: u32) {
+    if Device::get() != Some(Device::Svga3) || OWNER.load(Ordering::Acquire) != 0 {
+        return;
+    }
+    let Some(r) = present::clip_to_screen(Rect::new(x as i32, y as i32, w as i32, h as i32)) else {
+        return;
+    };
+    let Some(mut guard) = STATE.try_lock() else {
+        return;
+    };
+    let s = state(&mut guard);
+    let Some(canvas) = Device::Svga3.canvas() else {
+        return;
+    };
+    for y in r.y as usize..(r.y + r.h) as usize {
+        let a = (y * W + r.x as usize) * 4;
+        let b = a + r.w as usize * 4;
+        s.pixels[a..b].copy_from_slice(&canvas[a..b]);
+    }
+    let _ = publish(s, &[r], false);
 }
