@@ -565,6 +565,8 @@ fn raster_bpp3_bpp4() -> CaseResult {
     scene(&mut three.fb());
     scene(&mut four.fb());
     ensure(drawn_pixels(&four, Color::rgb(0, 0, 0)) > 0, "5", "the scene drew nothing on the 4-byte surface")?;
+    *three.reference.borrow_mut() = Some(canonical_pixels(&four));
+    three.judge();
     for y in 0..18 {
         for x in 0..14 {
             if three.color(x, y) != four.color(x, y) {
@@ -582,6 +584,8 @@ fn raster_bgr_order() -> CaseResult {
     scene(&mut bgr.fb());
     scene(&mut rgb.fb());
     ensure(drawn_pixels(&bgr, Color::rgb(0, 0, 0)) > 0, "5", "the scene drew nothing on the BGR surface")?;
+    *bgr.reference.borrow_mut() = Some(canonical_pixels(&rgb));
+    bgr.judge();
     for y in 0..18 {
         for x in 0..14 {
             // SAFETY: (x, y) is inside both surfaces.
@@ -1669,6 +1673,8 @@ fn text_utf8_invalid() -> CaseResult {
     let mut ret = 0;
     let bytes_drawn = white_on_black(160, 24, |fb| { ret = ttf_font::draw_text_bytes(fb, &mut font, bytes, 2, 2, 14.0, WHITE); });
     let width = ttf_font::text_width(&mut font, &text, 14.0);
+    *bytes_drawn.reference.borrow_mut() = Some(canonical_pixels(&direct));
+    bytes_drawn.judge();
     ensure(ret == width, "8.3", format!("draw_text_bytes returned {ret}; the decoded text is {width} px wide"))?;
     for y in 0..24 {
         for x in 0..160 {
@@ -1845,6 +1851,8 @@ fn text_many_args_abi() -> CaseResult {
     for (size26, size, scale) in [(0, 11.25f32, 2.0f32), (1440, 0.0, 0.0)] {
         let g = Guarded::bgrx(96, 40);
         let ret = text_with_many(&mut g.fb(), &mut font, bb("Ag"), bb(4), bb(4), bb(255), bb(255), bb(255), bb(2), bb(size26), bb(size), bb(scale));
+        *g.reference.borrow_mut() = Some(canonical_pixels(&reference));
+        g.judge();
         for y in 0..40 {
             for x in 0..96 {
                 if g.rgb(x, y) != reference.rgb(x, y) {

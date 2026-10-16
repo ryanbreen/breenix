@@ -497,13 +497,25 @@ impl Guarded {
         Ok(())
     }
 
-    /// The first pixel whose colour differs from `want(x, y)`, as a message.
+    /// Hand this surface, as it is now, to the runner as the case's judged frame (section
+    /// 23.8): the surface a check decides on, never a control or reference read beside it. A
+    /// judged frame is kept whatever surfaces are dropped after it, failure unwinding included.
+    fn judge(&self) {
+        if !PICTURES.load(Relaxed) || self.width == 0 || self.height == 0 {
+            return;
+        }
+        remember_frame(&canonical_pixels(self), self.width, self.height, self.reference.borrow().clone());
+    }
+
+    /// The first pixel whose colour differs from `want(x, y)`, as a message. The surface is the
+    /// case's judged frame from here on.
     fn compare(&self, what: &str, want: impl Fn(usize, usize) -> Color) -> Result<(), String> {
         if PICTURES.load(Relaxed) {
             let mut reference=Vec::with_capacity(self.width*self.height*4);
             for y in 0..self.height {for x in 0..self.width {let p=want(x,y);reference.extend_from_slice(&[p.b,p.g,p.r,255]);}}
             *self.reference.borrow_mut()=Some(reference);
         }
+        self.judge();
         for y in 0..self.height {
             for x in 0..self.width {
                 let (got, w) = (self.color(x, y), want(x, y));
@@ -517,6 +529,9 @@ impl Guarded {
 }
 
 impl Drop for Guarded {
+    /// A case that judges a single surface by reading its pixels, with no `compare` or `judge`,
+    /// has that surface as its frame. Once a case has judged a surface explicitly, no dropped
+    /// surface replaces it.
     fn drop(&mut self) {
         if !EXPLICIT_FRAME.load(Relaxed) && self.read.get() && PICTURES.load(Relaxed) && self.width > 0 && self.height > 0 {
             let mut pixels = Vec::with_capacity(self.width * self.height * 4);
@@ -530,6 +545,18 @@ impl Drop for Guarded {
         }
         let _ = memory::munmap(self.map, self.map_len);
     }
+}
+
+/// A surface's pixels as canonical BGRX rows, X 0xFF, decoded by its channel order.
+fn canonical_pixels(g: &Guarded) -> Vec<u8> {
+    let mut pixels = Vec::with_capacity(g.width * g.height * 4);
+    for y in 0..g.height {
+        for x in 0..g.width {
+            let [r, gr, b] = g.rgb(x, y);
+            pixels.extend_from_slice(&[b, gr, r, 0xFF]);
+        }
+    }
+    pixels
 }
 
 /// How many pixels differ from `bg`: the positive control that a drawing drew something.
