@@ -10,27 +10,81 @@ const TRACK_HEIGHT: i32 = 4;
 
 /// A horizontal slider with a normalized 0.0–1.0 internal value.
 pub struct Slider {
+    enabled: bool,
+    focused: bool,
+    redraw: bool,
     pub rect: Rect,
     /// Normalized value in 0.0–1.0.
     pub value: f32,
     pub min_val: f32,
     pub max_val: f32,
     dragging: bool,
+    step: f32,
 }
 
 impl Slider {
     pub fn new(rect: Rect, min_val: f32, max_val: f32) -> Self {
         Self {
+            enabled: true,
+            focused: false,
+            redraw: false,
             rect,
             value: 0.0,
             min_val,
             max_val,
             dragging: false,
+            step: 1.0,
         }
     }
 
     /// Process input and return `WidgetEvent::ValueChanged(mapped)` when the value changes.
     pub fn update(&mut self, input: &InputState) -> WidgetEvent {
+        self.redraw = false;
+        if !self.enabled {
+            return WidgetEvent::None;
+        }
+        let before = (self.value.to_bits(), self.dragging);
+        let result = self.update_inner(input);
+        self.redraw = before != (self.value.to_bits(), self.dragging);
+        result
+    }
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+        if !enabled {
+            self.dragging = false;
+        }
+    }
+    pub fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+    pub fn last_update_redraw(&self) -> bool {
+        self.redraw
+    }
+    pub fn set_step(&mut self, step: f32) {
+        if step.is_finite() && step > 0.0 {
+            self.step = step;
+        }
+    }
+    pub fn key(&mut self, input: &crate::KeyInput<'_>) -> WidgetEvent {
+        self.redraw = false;
+        if !self.enabled || !self.focused || self.max_val <= self.min_val {
+            return WidgetEvent::None;
+        }
+        let delta = match input.key {
+            crate::Key::Left => -self.step,
+            crate::Key::Right => self.step,
+            _ => return WidgetEvent::None,
+        };
+        let mapped = (self.mapped_value() + delta).clamp(self.min_val, self.max_val);
+        let value = (mapped - self.min_val) / (self.max_val - self.min_val);
+        if self.value == value {
+            return WidgetEvent::None;
+        }
+        self.value = value;
+        self.redraw = true;
+        WidgetEvent::ValueChanged(mapped)
+    }
+    fn update_inner(&mut self, input: &InputState) -> WidgetEvent {
         if input.mouse_pressed && self.rect.contains(input.mouse_x, input.mouse_y) {
             self.dragging = true;
         }
@@ -82,6 +136,9 @@ impl Slider {
         let thumb_y = self.rect.y + self.rect.h / 2;
         shapes::fill_circle(fb, thumb_x, thumb_y, THUMB_RADIUS, theme.widget_bg_hover);
         shapes::draw_circle(fb, thumb_x, thumb_y, THUMB_RADIUS, theme.border);
+        if self.focused && self.enabled {
+            crate::widget::draw_focus_ring(fb, &self.rect, theme);
+        }
     }
 
     /// Get the value mapped to the `min_val..max_val` range.

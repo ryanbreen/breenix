@@ -30,12 +30,16 @@ rust-os-gdb
 libs/*
 !libs/arm64-boot-contract/
 !libs/arm64-boot-contract/**
+!libs/breengel-abi/
+!libs/breengel-abi/**
 !libs/libbreenix/
 !libs/libbreenix/**
 !libs/breenix_std/
 !libs/breenix_std/**
 !libs/libbreenix-libc/
 !libs/libbreenix-libc/**
+!libs/libpixcheck/
+!libs/libpixcheck/**
 !libs/libgfx/
 !libs/libgfx/**
 !libs/libc/

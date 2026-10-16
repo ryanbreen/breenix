@@ -50,10 +50,12 @@
 
 mod window;
 mod event;
+pub mod clock;
 pub mod font;
 
 pub use window::Window;
-pub use event::{Event, Modifiers};
+pub use event::{buttons, keys, Delivered, Event, Modifiers};
+pub use window::{Acquired, Committed, Handled};
 pub use font::FontConfig;
 pub use libfont::CachedFont;
 pub use libbreenix::graphics::{WindowInputEvent, input_event_type};

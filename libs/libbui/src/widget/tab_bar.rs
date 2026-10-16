@@ -15,19 +15,29 @@ use crate::theme::Theme;
 /// Tracks which tab is selected and returns `WidgetEvent::ValueChanged(index)`
 /// when the user clicks a different tab.
 pub struct TabBar {
+    bitmap_font: bool,
+    enabled: bool,
+    focused: bool,
+    redraw: bool,
     rect: Rect,
     labels: Vec<&'static [u8]>,
     selected: usize,
+    scroll: usize,
     hovered: Option<usize>,
 }
 
 impl TabBar {
     /// Create a tab bar occupying `rect` with the given tab labels.
-    pub fn new(rect: Rect, labels: Vec<&'static [u8]>) -> Self {
+    pub fn new(rect: Rect, labels: Vec<&'static [u8]>, theme: &Theme) -> Self {
         Self {
+            bitmap_font: theme.use_bitmap_font,
+            enabled: true,
+            focused: false,
+            redraw: false,
             rect,
             labels,
             selected: 0,
+            scroll: 0,
             hovered: None,
         }
     }
@@ -65,7 +75,9 @@ impl TabBar {
 
     /// Remove a tab by index. Adjusts selected index if needed.
     pub fn remove_tab(&mut self, index: usize) {
-        if index >= self.labels.len() { return; }
+        if index >= self.labels.len() {
+            return;
+        }
         self.labels.remove(index);
         if self.selected >= self.labels.len() && !self.labels.is_empty() {
             self.selected = self.labels.len() - 1;
@@ -82,19 +94,51 @@ impl TabBar {
         )
     }
 
+    /// Set layout metrics before input, including before the first draw.
+    pub fn layout(&mut self, theme: &Theme) {
+        if self.bitmap_font != theme.use_bitmap_font {
+            self.bitmap_font = theme.use_bitmap_font;
+            self.redraw = true;
+        }
+    }
+
+    fn min_width(&self, index: usize) -> i32 {
+        let mut theme = Theme::dark();
+        theme.use_bitmap_font = self.bitmap_font;
+        text::text_width(self.labels[index], &theme).saturating_add(16)
+    }
+    fn overflowing(&self) -> bool {
+        self.labels
+            .iter()
+            .enumerate()
+            .any(|(i, _)| self.min_width(i) > self.rect.w / self.labels.len().max(1) as i32)
+    }
+    pub fn scroll_by(&mut self, tabs: i32) {
+        let next =
+            (self.scroll as i64 + tabs as i64).clamp(0, self.labels.len().saturating_sub(1) as i64);
+        self.scroll = next as usize;
+    }
     fn tab_rect(&self, index: usize) -> Rect {
-        let n = self.labels.len().max(1) as i32;
-        let tab_w = self.rect.w / n;
+        if !self.overflowing() {
+            let w = self.rect.w / self.labels.len().max(1) as i32;
+            return Rect::new(self.rect.x + index as i32 * w, self.rect.y, w, self.rect.h);
+        }
+        let start: i32 = (0..index).map(|i| self.min_width(i)).sum();
+        let offset: i32 = (0..self.scroll.min(self.labels.len()))
+            .map(|i| self.min_width(i))
+            .sum();
         Rect::new(
-            self.rect.x + (index as i32) * tab_w,
+            self.rect.x + start - offset,
             self.rect.y,
-            tab_w,
+            self.min_width(index),
             self.rect.h,
         )
     }
 
     fn hit_test(&self, px: i32, py: i32) -> Option<usize> {
-        if !self.rect.contains(px, py) { return None; }
+        if !self.rect.contains(px, py) {
+            return None;
+        }
         for i in 0..self.labels.len() {
             if self.tab_rect(i).contains(px, py) {
                 return Some(i);
@@ -105,6 +149,25 @@ impl TabBar {
 
     /// Process input. Returns `ValueChanged(new_index)` if a different tab was clicked.
     pub fn update(&mut self, input: &InputState) -> WidgetEvent {
+        self.redraw = false;
+        if !self.enabled {
+            return WidgetEvent::None;
+        }
+        let before = (self.hovered, self.selected);
+        let result = self.update_inner(input);
+        self.redraw = before != (self.hovered, self.selected);
+        result
+    }
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+    }
+    pub fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+    pub fn last_update_redraw(&self) -> bool {
+        self.redraw
+    }
+    fn update_inner(&mut self, input: &InputState) -> WidgetEvent {
         self.hovered = self.hit_test(input.mouse_x, input.mouse_y);
 
         if input.mouse_released {
@@ -121,11 +184,26 @@ impl TabBar {
 
     /// Draw the tab bar.
     pub fn draw(&self, fb: &mut FrameBuf, theme: &Theme) {
+        // Drawing and input share the font selected by layout().
+        let mut theme = *theme;
+        theme.use_bitmap_font = self.bitmap_font;
+        let theme = &theme;
+        fb.push_clip(libgfx::framebuf::Rect::new(self.rect.x, self.rect.y, self.rect.w, self.rect.h));
         // Background
-        shapes::fill_rect(fb, self.rect.x, self.rect.y, self.rect.w, self.rect.h, theme.panel_bg);
+        shapes::fill_rect(
+            fb,
+            self.rect.x,
+            self.rect.y,
+            self.rect.w,
+            self.rect.h,
+            theme.panel_bg,
+        );
 
         for (i, label) in self.labels.iter().enumerate() {
             let r = self.tab_rect(i);
+            if r.x + r.w <= self.rect.x || r.x >= self.rect.x + self.rect.w {
+                continue;
+            }
             let is_selected = i == self.selected;
             let is_hovered = self.hovered == Some(i);
 
@@ -151,12 +229,18 @@ impl TabBar {
             }
 
             // Label
-            let text_color = if is_selected {
+            let text_color = if !self.enabled {
+                theme.text_secondary
+            } else if is_selected {
                 Color::WHITE
             } else {
                 theme.text_secondary
             };
             text::draw_text_centered(fb, label, &r, text_color, theme);
+        }
+        fb.pop_clip();
+        if self.focused && self.enabled {
+            crate::widget::draw_focus_ring(fb, &self.rect, theme);
         }
     }
 }

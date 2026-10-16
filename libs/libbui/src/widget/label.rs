@@ -33,6 +33,23 @@ impl Label {
     /// Draw the label text at the widget's position.
     pub fn draw(&self, fb: &mut FrameBuf, theme: &Theme) {
         let color = self.color.unwrap_or(theme.text_primary);
-        text::draw_text(fb, self.text, self.rect.x, self.rect.y, color, theme);
+        fb.push_clip(libgfx::framebuf::Rect::new(self.rect.x, self.rect.y, self.rect.w, self.rect.h));
+        if text::text_width(self.text, theme) <= self.rect.w {
+            text::draw_text(fb, self.text, self.rect.x, self.rect.y, color, theme);
+        } else {
+            let dots = text::text_width(b"...", theme);
+            let mut end = 0;
+            // Measure the prefix together with its ellipsis, including the inter-glyph gap.
+            while end < self.text.len() {
+                let width = text::text_width(&self.text[..end + 1], theme)
+                    + if theme.use_bitmap_font { dots } else { dots + 1 };
+                if width > self.rect.w { break; }
+                end += 1;
+            }
+            let mut clipped = alloc::vec::Vec::from(&self.text[..end]);
+            clipped.extend_from_slice(b"...");
+            text::draw_text(fb, &clipped, self.rect.x, self.rect.y, color, theme);
+        }
+        fb.pop_clip();
     }
 }

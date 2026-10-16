@@ -59,11 +59,13 @@ name = "qemu-bios"
 test = false
 
 [workspace]
+exclude = ["libs/libgfx", "libs/libfont"]
 members = [
     "kernel",
     "parallels-loader",
     "xtask",
-    "libs/arm64-boot-contract"
+    "libs/arm64-boot-contract",
+    "libs/breengel-abi"
 ]
 
 [dependencies]

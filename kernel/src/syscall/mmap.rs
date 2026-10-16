@@ -236,12 +236,13 @@ pub fn sys_mmap(
             end_addr
         );
 
-        let page_table = match process.page_table.as_mut() {
-            Some(pt) => pt,
-            None => {
-                log::error!("sys_mmap: No page table for process!");
-                return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
-            }
+        if process.page_table.is_none() {
+            log::error!("sys_mmap: No page table for process!");
+            super::memory_common::release_placement(process, start_addr, end_addr);
+            return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
+        }
+        let Some(page_table) = process.page_table.as_mut() else {
+            return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
         };
 
         let root = page_table.level_4_frame().start_address().as_u64();
@@ -340,13 +341,14 @@ pub fn sys_mmap(
 }
 
 /// A failed mmap that took the address below `hint` gives it back, unless a
-/// later mmap has already moved the hint on.
+/// later mmap has already moved the hint on, and gives back its placement.
 fn restore_mmap_hint(thread_id: u64, start: u64, hint: u64) {
     let mut manager_guard = crate::process::manager_for_address_space(thread_id);
     if let Some((_, process)) = manager_guard
         .as_mut()
         .and_then(|manager| manager.find_address_space_by_thread_mut(thread_id))
     {
+        super::memory_common::release_placement(process, start, start + PAGE_SIZE);
         if process.mmap_hint == start {
             process.mmap_hint = hint;
         }
@@ -413,7 +415,8 @@ fn free_hint(process: &crate::process::Process, addr: u64, length: u64) -> Optio
     let end = start.checked_add(length)?;
     (start >= crate::memory::vma::MMAP_REGION_START
         && end <= crate::memory::vma::MMAP_REGION_END
-        && !range_is_mapped(process, start, end))
+        && !range_is_mapped(process, start, end)
+        && !super::memory_common::placement_pending(process, start, end))
     .then_some(start)
 }
 
@@ -433,6 +436,9 @@ pub(crate) fn clear_for_mapping(
     prot: Protection,
     flags: MmapFlags,
 ) -> Result<(), u64> {
+    // The range is published now, or refused: either way it is no longer a
+    // placement waiting to be published.
+    super::memory_common::release_placement(process, start, end);
     // A replacement removes VMAs and pushes up to two pieces of them.
     if process.vmas.try_reserve(3).is_err() {
         return Err(ErrorCode::OutOfMemory as u64);

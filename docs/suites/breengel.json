@@ -1,0 +1,1678 @@
+{
+  "id": "breengel",
+  "title": "BreenGL graphics library",
+  "area": "BreenGL graphics library",
+  "summary": "BreenGL draws shapes, text, images and widgets exactly to its written contract and rejects malformed fonts and images within bounded work, and windows created, committed, composed, observed on the display and destroyed through the kernel's window interface behave the same, safely, on every target.",
+  "binary": "/sbin/suite-breengel",
+  "timingSensitive": true,
+  "categories": [
+    {
+      "id": "raster",
+      "title": "shapes, blits, clipping & alpha",
+      "cases": [
+        {
+          "id": "fill-rect",
+          "title": "fill_rect writes exactly the pixels of a half-open rectangle and no others"
+        },
+        {
+          "id": "fill-rect-clip-left",
+          "title": "A rectangle partly off the left edge fills only its visible columns"
+        },
+        {
+          "id": "fill-rect-offscreen-left",
+          "title": "A rectangle wholly left of the surface changes no pixel"
+        },
+        {
+          "id": "fill-rect-offscreen-top",
+          "title": "A rectangle wholly above the surface changes no pixel"
+        },
+        {
+          "id": "fill-rect-overflow",
+          "title": "A rectangle whose x + w overflows i32 clips to the surface without wrapping"
+        },
+        {
+          "id": "fill-rect-empty",
+          "title": "Zero or negative width or height draws nothing"
+        },
+        {
+          "id": "draw-rect",
+          "title": "draw_rect writes exactly the one-pixel perimeter"
+        },
+        {
+          "id": "line-axes",
+          "title": "Horizontal and vertical lines cover exactly their spans, endpoints included"
+        },
+        {
+          "id": "line-bresenham",
+          "title": "Shallow, steep and 45-degree lines write exactly the pixels in the contract's literal tables"
+        },
+        {
+          "id": "line-clip",
+          "title": "A line crossing the edges writes only the in-surface pixels of its unclipped path"
+        },
+        {
+          "id": "circle-fill",
+          "title": "fill_circle sets exactly the pixels the contract's x² + y² ≤ r² rule selects"
+        },
+        {
+          "id": "circle-fill-offscreen-left",
+          "title": "A circle partly or wholly off the left edge writes nothing outside the surface"
+        },
+        {
+          "id": "circle-outline",
+          "title": "draw_circle writes the midpoint-algorithm pixels listed in the contract for radii 0 to 40"
+        },
+        {
+          "id": "guard-pages",
+          "title": "Every primitive called with extreme coordinates leaves the guard pages untouched and the process alive"
+        },
+        {
+          "id": "extreme-work-bound",
+          "title": "Every primitive at coordinates near ±2³¹ takes no more loop steps than section 12.3's bound for its clipped rectangle, by libgfx's work counter, which counts rejected iterations too"
+        },
+        {
+          "id": "stride-padding",
+          "title": "Drawing into a surface whose stride exceeds width × bytes per pixel leaves every row's sentinel bytes intact"
+        },
+        {
+          "id": "surface-validate",
+          "title": "`Surface::new` and `Surface::from_raw` both reject a short stride, an overflowing size, an oversize dimension, a misaligned or null base with section 12.3's errors"
+        },
+        {
+          "id": "bpp3-bpp4",
+          "title": "The same scene on a 3-byte RGB surface and a 4-byte BGRX surface gives the same colours"
+        },
+        {
+          "id": "bgr-order",
+          "title": "The BGR flag swaps the channel order and nothing else"
+        },
+        {
+          "id": "x-byte",
+          "title": "Every primitive writes the X byte of a BGRX pixel as 0xFF"
+        },
+        {
+          "id": "copy-row-clip",
+          "title": "copy_row_from clips at the end of the row instead of wrapping into the next one"
+        },
+        {
+          "id": "premultiply",
+          "title": "Straight colour and alpha premultiply to div255(c × a) for all 65,536 pairs"
+        },
+        {
+          "id": "alpha-over-examples",
+          "title": "Source-over gives the contract's literal results for fractional source and destination alphas"
+        },
+        {
+          "id": "alpha-over-sweep",
+          "title": "Source-over matches the premultiplied formula for all 256 alphas over four backgrounds"
+        },
+        {
+          "id": "alpha-extremes",
+          "title": "Alpha 255 replaces the destination and alpha 0 leaves it unchanged"
+        },
+        {
+          "id": "alpha-output",
+          "title": "The output alpha over a translucent destination follows the contract's formula"
+        },
+        {
+          "id": "blit",
+          "title": "blit copies a source surface to a position exactly"
+        },
+        {
+          "id": "blit-clip",
+          "title": "A blit partly off the surface copies only the visible intersection"
+        },
+        {
+          "id": "blit-alpha",
+          "title": "A premultiplied blit blends each pixel by the formula"
+        },
+        {
+          "id": "blit-straight",
+          "title": "A straight-alpha source is premultiplied exactly once before blending"
+        },
+        {
+          "id": "blit-scale",
+          "title": "An integer-scale blit replicates each source pixel into an exact square"
+        },
+        {
+          "id": "clip-rect",
+          "title": "With a clip rectangle set, every primitive draws only inside it"
+        },
+        {
+          "id": "clip-stack",
+          "title": "Nested clips intersect, and popping one restores the outer clip"
+        },
+        {
+          "id": "clip-empty",
+          "title": "An empty clip draws nothing and marks no damage"
+        },
+        {
+          "id": "rounded-rect",
+          "title": "Rounded-rectangle corners match the contract's corner predicate"
+        },
+        {
+          "id": "gradient",
+          "title": "A vertical gradient's rows equal the contract's integer interpolation"
+        },
+        {
+          "id": "damage-exact",
+          "title": "Each primitive marks exactly the clipped bounding rectangle the contract's table gives"
+        },
+        {
+          "id": "damage-noop",
+          "title": "A draw clipped to nothing marks nothing, and a same-colour draw still marks its rectangle"
+        },
+        {
+          "id": "damage-sound",
+          "title": "Over a seeded random scene, every changed pixel lies inside the accumulated damage"
+        },
+        {
+          "id": "surface-owned",
+          "title": "An owned surface allocates, clears to a colour and frees its memory when dropped"
+        }
+      ]
+    },
+    {
+      "id": "text",
+      "title": "TrueType & bitmap text",
+      "cases": [
+        {
+          "id": "fonts-pinned",
+          "title": "The test fonts parse, and their SHA-256 values match the pins"
+        },
+        {
+          "id": "raster-identical",
+          "title": "A fixed set of rasterized glyphs hashes to the pinned value, the same on every target"
+        },
+        {
+          "id": "metrics-independent",
+          "title": "Advance widths, left bearings and bounding boxes of 50 glyphs equal the independently extracted table"
+        },
+        {
+          "id": "cmap-independent",
+          "title": "Codepoint-to-glyph mappings for 200 codepoints equal the independently extracted table"
+        },
+        {
+          "id": "bitmap-glyph",
+          "title": "The built-in 5x7 font draws 'A' exactly as its table defines it"
+        },
+        {
+          "id": "bitmap-scale",
+          "title": "Scale 3 turns each glyph pixel into a 3x3 block"
+        },
+        {
+          "id": "bitmap-unknown",
+          "title": "A byte without a glyph draws the contract's replacement box"
+        },
+        {
+          "id": "noto-ascii",
+          "title": "noto-sans-mono-bitmap draws every printable ASCII character matching its reference cell"
+        },
+        {
+          "id": "noto-coverage",
+          "title": "Bitmap coverage blends with the background by the alpha contract"
+        },
+        {
+          "id": "ttf-glyph",
+          "title": "DejaVu Sans Mono \"Hg\" at 16 px matches its reviewed reference"
+        },
+        {
+          "id": "ttf-sizes",
+          "title": "One string at 8, 12, 16, 24 and 48 px matches each size's reviewed reference"
+        },
+        {
+          "id": "ttf-advance",
+          "title": "A 200-character line ends where the literal sum of 26.6 advances says, rounded once"
+        },
+        {
+          "id": "ttf-kerning",
+          "title": "\"AV\" in DejaVu Sans is narrower than \"A\" plus \"V\" by the kern table's literal value"
+        },
+        {
+          "id": "ttf-width",
+          "title": "text_width equals the distance from the pen start to the end of the last advance"
+        },
+        {
+          "id": "ttf-clip-left",
+          "title": "Text starting at negative x draws its visible part"
+        },
+        {
+          "id": "ttf-clip-top",
+          "title": "Glyphs partly above row 0 draw their visible part"
+        },
+        {
+          "id": "ttf-subpixel",
+          "title": "LCD subpixel text matches its reviewed reference per channel"
+        },
+        {
+          "id": "ttf-notdef",
+          "title": "A codepoint the font lacks draws glyph 0"
+        },
+        {
+          "id": "utf8-text",
+          "title": "UTF-8 input draws \"é\" from the font's glyph for U+00E9"
+        },
+        {
+          "id": "utf8-invalid",
+          "title": "Invalid UTF-8 draws one U+FFFD per maximal invalid subpart and does not panic"
+        },
+        {
+          "id": "compound-glyph",
+          "title": "A compound glyph places its components at the literal offsets"
+        },
+        {
+          "id": "compound-transform",
+          "title": "Scaled and 2x2-transformed components match their reviewed reference"
+        },
+        {
+          "id": "line-metrics",
+          "title": "Ascent, descent and line gap equal the font's hhea values at each size"
+        },
+        {
+          "id": "size-range",
+          "title": "Sizes from 6 to 72 px render, and size 0 or above 1,024 px is rejected; at 6, 12, 24, 48 and 72 px every printable ASCII glyph of the pinned fonts, grayscale and LCD, stays within section 12.3's flattening and rasterization bounds by the work counter"
+        },
+        {
+          "id": "many-args-abi",
+          "title": "The text calls with ten or more parameters, including trailing f32 or 26.6 values, give the reference output on this target"
+        },
+        {
+          "id": "cache-hit",
+          "title": "A cached glyph renders identically to a fresh one, and the cache reports a hit"
+        },
+        {
+          "id": "cache-bound",
+          "title": "2,000 distinct glyph and size pairs keep the cache within 256 entries and 4 MiB"
+        },
+        {
+          "id": "cache-evict-correct",
+          "title": "A glyph evicted and rasterized again renders identically"
+        },
+        {
+          "id": "fontwatch-reload",
+          "title": "Changing the configured font makes later text use newly rasterized glyphs of the new font"
+        },
+        {
+          "id": "fontwatch-size",
+          "title": "Changing the configured size changes the rasterized glyphs and their metrics"
+        },
+        {
+          "id": "fontwatch-missing",
+          "title": "A configured font file that is missing keeps the previous font and reports the error"
+        },
+        {
+          "id": "fontwatch-malformed-config",
+          "title": "A malformed fonts.conf keeps the previous fonts and reports the error"
+        },
+        {
+          "id": "fontwatch-partial",
+          "title": "A fonts.conf replaced by rename is seen whole, and a truncated one is rejected"
+        },
+        {
+          "id": "fontwatch-repeated",
+          "title": "Five changes in a row end with the last one in use"
+        },
+        {
+          "id": "fontwatch-independent",
+          "title": "Mono and display fonts change independently"
+        },
+        {
+          "id": "fontwatch-idle",
+          "title": "A window that receives no events, with fonts.conf changed at UI time *t*, draws the new font in its first commit at or after the watcher's first 250 ms check after *t*"
+        },
+        {
+          "id": "fontwatch-file-replaced",
+          "title": "Replacing the configured font file at the same path by rename, with fonts.conf unchanged, makes later text use newly rasterized glyphs of the new file by the next check"
+        }
+      ]
+    },
+    {
+      "id": "font-parser",
+      "title": "font parsing safety",
+      "cases": [
+        {
+          "id": "truncated",
+          "title": "A truncated TTF fails to parse with an error instead of panicking"
+        },
+        {
+          "id": "table-offsets",
+          "title": "Table offsets or lengths past the end of the file are rejected"
+        },
+        {
+          "id": "loca-range",
+          "title": "A loca entry past the glyf table is rejected for that glyph only"
+        },
+        {
+          "id": "loca-order",
+          "title": "A loca table that is not monotonic is rejected"
+        },
+        {
+          "id": "numglyphs",
+          "title": "A glyph count that disagrees between maxp and loca is rejected"
+        },
+        {
+          "id": "cmap4-segments",
+          "title": "A format 4 cmap whose segCountX2 is odd, or whose end codes are not sorted, is rejected"
+        },
+        {
+          "id": "cmap4-odd-segments",
+          "title": "A valid format 4 cmap with an odd number of segments (39, as in the OpenType specification's example) maps 200 codepoints as the independently extracted table says"
+        },
+        {
+          "id": "cmap4-range-offset",
+          "title": "A format 4 idRangeOffset that points outside the table is rejected"
+        },
+        {
+          "id": "cmap12-groups",
+          "title": "Overlapping or unsorted format 12 groups are rejected"
+        },
+        {
+          "id": "glyf-endpoints",
+          "title": "Contour end points that do not increase are rejected"
+        },
+        {
+          "id": "glyf-points",
+          "title": "A point count above maxp's maximum is rejected"
+        },
+        {
+          "id": "glyf-flags",
+          "title": "A flag repeat that runs past the glyph's data is rejected"
+        },
+        {
+          "id": "compound-depth",
+          "title": "A compound nested deeper than the limit is rejected for that glyph"
+        },
+        {
+          "id": "compound-cycle",
+          "title": "A compound glyph that refers to itself, directly or through another, is rejected within bounded work"
+        },
+        {
+          "id": "compound-missing",
+          "title": "A component index past the glyph count is rejected"
+        },
+        {
+          "id": "hmtx-compressed",
+          "title": "A valid hmtx with fewer long metrics than glyphs gives the remaining glyphs the last advance and their own left side bearings"
+        },
+        {
+          "id": "hmtx-truncated",
+          "title": "An hmtx shorter than 4 × numberOfHMetrics + 2 × (numGlyphs − numberOfHMetrics) bytes, or an hhea numberOfHMetrics of 0 or above the glyph count, is rejected"
+        },
+        {
+          "id": "units-per-em",
+          "title": "unitsPerEm of 0 or above 16,384 is rejected"
+        },
+        {
+          "id": "coords-extreme",
+          "title": "Glyphs with coordinates at the i16 limits either flatten and rasterize within section 12.3's bounds by the work counter, or are refused with `GlyphTooComplex` or `GlyphTooExpensive` before any raster loop runs, never after it"
+        },
+        {
+          "id": "work-bound",
+          "title": "Every corpus file loads, or fails to, within section 12.3's step bounds for a load and for each glyph's outline, flattening and rasterization; and the independent 1,024 × 1,024 square fixture rasterizes in at least 8,388,608 and at most 10,699,844 steps"
+        },
+        {
+          "id": "alloc-bound",
+          "title": "No corpus file makes the parser allocate more than section 12.3's limits"
+        },
+        {
+          "id": "corpus",
+          "title": "Each of the 64 malformed corpus files yields its documented error, never a panic"
+        }
+      ]
+    },
+    {
+      "id": "inflate",
+      "title": "clean-room inflate",
+      "cases": [
+        {
+          "id": "stored",
+          "title": "A stored block decodes to its bytes"
+        },
+        {
+          "id": "stored-length",
+          "title": "A stored block whose LEN and NLEN disagree is rejected"
+        },
+        {
+          "id": "fixed-huffman",
+          "title": "A fixed-Huffman block decodes to the literal expected bytes"
+        },
+        {
+          "id": "dynamic-huffman",
+          "title": "A dynamic-Huffman block decodes to the literal expected bytes"
+        },
+        {
+          "id": "block-sequence",
+          "title": "Stored, fixed and dynamic blocks in one stream decode, ending at the final block"
+        },
+        {
+          "id": "block-type-invalid",
+          "title": "Block type 3 is rejected"
+        },
+        {
+          "id": "code-oversubscribed",
+          "title": "An over-subscribed code-length set is rejected"
+        },
+        {
+          "id": "code-incomplete",
+          "title": "An incomplete code-length code is rejected, and so is an incomplete literal/length or distance code other than a single one-bit code"
+        },
+        {
+          "id": "code-single",
+          "title": "A literal/length code holding only end-of-block (code 256, one bit) decodes, and a distance code of one one-bit code decodes; the recheck's empty dynamic block decodes to empty output, as the independent decoder recorded"
+        },
+        {
+          "id": "no-distance-codes",
+          "title": "A block whose distance code lengths are all zero (RFC 1951 §3.2.7: no distance codes used) decodes its literals, and a length symbol in that block is rejected"
+        },
+        {
+          "id": "repeat-first",
+          "title": "A repeat code with no previous length is rejected"
+        },
+        {
+          "id": "symbols-invalid",
+          "title": "Literal/length symbols 286 and 287 and distance symbols 30 and 31 are rejected"
+        },
+        {
+          "id": "distance-too-far",
+          "title": "A distance reaching before the start of the output is rejected"
+        },
+        {
+          "id": "distance-max",
+          "title": "A distance of 32,768 within the window decodes"
+        },
+        {
+          "id": "length-258",
+          "title": "A match of length 258 decodes"
+        },
+        {
+          "id": "truncated",
+          "title": "A stream cut off at any byte is rejected"
+        },
+        {
+          "id": "zlib-header",
+          "title": "A bad check value, a preset dictionary, a method other than 8 and a window above 32 KiB are each rejected"
+        },
+        {
+          "id": "adler32",
+          "title": "A stream whose Adler-32 is wrong is rejected"
+        },
+        {
+          "id": "output-limit",
+          "title": "Output past the caller's limit is rejected without writing past it"
+        },
+        {
+          "id": "byte-split",
+          "title": "A stream fed in pieces split at every byte position decodes identically"
+        },
+        {
+          "id": "independent-fixtures",
+          "title": "Twelve fixtures made by an independent encoder at authoring time decode to their recorded bytes"
+        }
+      ]
+    },
+    {
+      "id": "bmp",
+      "title": "BMP images",
+      "cases": [
+        {
+          "id": "decode-fixtures",
+          "title": "Independent BMP fixtures decode to their literal pixels"
+        },
+        {
+          "id": "orientation",
+          "title": "Bottom-up and top-down (negative height) BMPs decode to the same pixels"
+        },
+        {
+          "id": "padding",
+          "title": "Widths 1 to 4 decode correctly across row padding"
+        },
+        {
+          "id": "encode-bytes",
+          "title": "encode_bmp_24 writes the literal expected header and rows"
+        },
+        {
+          "id": "roundtrip",
+          "title": "Encoding then decoding returns the original pixels"
+        },
+        {
+          "id": "truncated",
+          "title": "A BMP shorter than its header claims is rejected"
+        },
+        {
+          "id": "size-overflow",
+          "title": "Dimensions whose row or image size overflows are rejected before any allocation"
+        },
+        {
+          "id": "huge",
+          "title": "Dimensions beyond section 12.3's limits are rejected before any allocation"
+        },
+        {
+          "id": "unsupported",
+          "title": "An unsupported depth or compression is rejected with its error"
+        }
+      ]
+    },
+    {
+      "id": "png-decode",
+      "title": "PNG decoding",
+      "cases": [
+        {
+          "id": "gray-depths",
+          "title": "Grayscale at depths 1, 2, 4, 8 and 16 decodes exactly"
+        },
+        {
+          "id": "gray-alpha",
+          "title": "Grayscale with alpha at depths 8 and 16 decodes exactly"
+        },
+        {
+          "id": "rgb",
+          "title": "RGB at depths 8 and 16 decodes exactly"
+        },
+        {
+          "id": "rgba",
+          "title": "RGBA at depths 8 and 16 decodes to premultiplied pixels exactly"
+        },
+        {
+          "id": "palette-depths",
+          "title": "Palette images at depths 1, 2, 4 and 8 decode exactly"
+        },
+        {
+          "id": "trns-gray",
+          "title": "A grayscale tRNS key colour becomes transparent"
+        },
+        {
+          "id": "trns-rgb",
+          "title": "An RGB tRNS key colour becomes transparent"
+        },
+        {
+          "id": "trns-palette",
+          "title": "Palette tRNS alphas apply per entry"
+        },
+        {
+          "id": "invalid-combos",
+          "title": "Every illegal colour type and depth pair is rejected with its error"
+        },
+        {
+          "id": "rounding-16bit",
+          "title": "16-bit samples convert to 8 bits by the contract's formula"
+        },
+        {
+          "id": "filters",
+          "title": "Rows using each of the five filter types decode exactly, at every bytes-per-pixel width"
+        },
+        {
+          "id": "filter-invalid",
+          "title": "A filter type above 4 is rejected"
+        },
+        {
+          "id": "interlace",
+          "title": "An Adam7 image decodes to the same pixels as its non-interlaced twin"
+        },
+        {
+          "id": "interlace-small",
+          "title": "Images from 1x1 to 9x9, where some passes are empty, decode correctly"
+        },
+        {
+          "id": "multi-idat",
+          "title": "Image data split across many IDAT chunks, including empty ones, decodes identically"
+        },
+        {
+          "id": "crc",
+          "title": "A chunk with a bad CRC is rejected"
+        },
+        {
+          "id": "chunk-order",
+          "title": "IDAT before IHDR, PLTE after IDAT and a missing IEND are each rejected"
+        },
+        {
+          "id": "plte-required",
+          "title": "A palette image without PLTE is rejected"
+        },
+        {
+          "id": "plte-size",
+          "title": "A PLTE whose length is not a multiple of 3 or exceeds the depth's entries is rejected"
+        },
+        {
+          "id": "palette-index",
+          "title": "A pixel index past the palette's end is rejected"
+        },
+        {
+          "id": "critical-unknown",
+          "title": "An unknown critical chunk is rejected"
+        },
+        {
+          "id": "ancillary-ignored",
+          "title": "gAMA, iCCP, sRGB and tEXt are ignored, as the contract states (no colour management)"
+        },
+        {
+          "id": "ihdr-invalid",
+          "title": "Zero width or height and invalid compression, filter or interlace methods are rejected"
+        },
+        {
+          "id": "chunk-length",
+          "title": "A chunk length above 2³¹ - 1 is rejected"
+        },
+        {
+          "id": "huge",
+          "title": "Dimensions beyond section 12.3's limits are rejected before inflating"
+        },
+        {
+          "id": "bomb",
+          "title": "Data that inflates past the image's expected size is rejected"
+        },
+        {
+          "id": "truncated",
+          "title": "A PNG cut off inside IDAT is rejected"
+        },
+        {
+          "id": "signature",
+          "title": "A bad signature is rejected"
+        },
+        {
+          "id": "independent-fixtures",
+          "title": "The public PngSuite fixtures decode to the pixels an independent decoder recorded at authoring time"
+        },
+        {
+          "id": "blit",
+          "title": "A decoded RGBA image blitted into a surface gives the literal blended values"
+        },
+        {
+          "id": "from-disk",
+          "title": "A pinned PNG read from the ext2 disk decodes to its recorded pixels"
+        }
+      ]
+    },
+    {
+      "id": "png-encode",
+      "title": "PNG encoding",
+      "cases": [
+        {
+          "id": "decodes",
+          "title": "An encoded frame decodes to the same pixels"
+        },
+        {
+          "id": "stable",
+          "title": "Encoding the same frame twice gives identical bytes"
+        },
+        {
+          "id": "format",
+          "title": "The output is the documented format: RGB or RGBA at depth 8, filter 0, stored or fixed-Huffman blocks"
+        },
+        {
+          "id": "chunk-crc",
+          "title": "Every chunk's CRC matches the literal table's value"
+        },
+        {
+          "id": "zlib-adler",
+          "title": "The zlib stream's Adler-32 is correct"
+        },
+        {
+          "id": "sizes",
+          "title": "Frames of 1x1, odd widths and 1280x800 encode and decode"
+        },
+        {
+          "id": "limits",
+          "title": "A frame beyond the dimension limit is refused"
+        }
+      ]
+    },
+    {
+      "id": "widgets",
+      "title": "widgets",
+      "cases": [
+        {
+          "id": "button-draw",
+          "title": "A button draws its label and frame in the theme's literal colours and positions"
+        },
+        {
+          "id": "button-click",
+          "title": "Press and release inside a button report exactly one click"
+        },
+        {
+          "id": "button-cancel",
+          "title": "Press inside and release outside report no click"
+        },
+        {
+          "id": "button-disabled",
+          "title": "A disabled button draws dimmed and reports no click"
+        },
+        {
+          "id": "checkbox-toggle",
+          "title": "Clicking a checkbox toggles it and redraws the mark"
+        },
+        {
+          "id": "checkbox-space",
+          "title": "Space toggles a focused checkbox"
+        },
+        {
+          "id": "slider-drag",
+          "title": "Dragging a slider sets the value the contract maps from the pointer x"
+        },
+        {
+          "id": "slider-clamp",
+          "title": "Dragging past either end clamps to the minimum or maximum"
+        },
+        {
+          "id": "slider-keys",
+          "title": "Arrow keys step a focused slider by its step size"
+        },
+        {
+          "id": "label-clip",
+          "title": "A label wider than its bounds is clipped at the bounds with an ellipsis"
+        },
+        {
+          "id": "tabbar-select",
+          "title": "Clicking a tab selects it and reports its index"
+        },
+        {
+          "id": "tabbar-overflow",
+          "title": "More tabs than fit scroll, and every tab stays reachable"
+        },
+        {
+          "id": "scrollbar-drag",
+          "title": "Dragging the thumb sets the offset proportionally"
+        },
+        {
+          "id": "scrollbar-wheel",
+          "title": "A wheel step moves the offset by the configured amount"
+        },
+        {
+          "id": "scrollbar-thumb",
+          "title": "The thumb's length is proportional to visible over total"
+        },
+        {
+          "id": "menubar-open",
+          "title": "Clicking a menu title opens its menu below it"
+        },
+        {
+          "id": "menubar-shortcut",
+          "title": "match_shortcut returns the item bound to Ctrl+S"
+        },
+        {
+          "id": "menu-keys",
+          "title": "Arrows, Enter and Escape navigate, choose and close an open menu"
+        },
+        {
+          "id": "menu-disabled",
+          "title": "A disabled item draws dimmed and cannot be chosen"
+        },
+        {
+          "id": "menu-dismiss",
+          "title": "A click outside an open menu closes it without choosing"
+        },
+        {
+          "id": "layout-stack",
+          "title": "h_stack and v_stack place children at the contract's literal positions"
+        },
+        {
+          "id": "focus-ring",
+          "title": "Each focusable widget draws the theme's focus ring when focused and none otherwise"
+        },
+        {
+          "id": "no-change-ack",
+          "title": "An event that changes no widget state is reported as needing no redraw"
+        }
+      ]
+    },
+    {
+      "id": "text-entry",
+      "title": "text fields, focus & file picker",
+      "cases": [
+        {
+          "id": "insert",
+          "title": "Typed text is inserted at the cursor"
+        },
+        {
+          "id": "delete",
+          "title": "Backspace and Delete remove the character before and after the cursor"
+        },
+        {
+          "id": "move",
+          "title": "Left, Right, Home and End move the cursor as the contract says"
+        },
+        {
+          "id": "select",
+          "title": "Shift with an arrow selects, and typing replaces the selection"
+        },
+        {
+          "id": "utf8",
+          "title": "Multi-byte characters insert and delete as one character"
+        },
+        {
+          "id": "maxlen",
+          "title": "Input beyond the maximum length is refused"
+        },
+        {
+          "id": "scroll-to-cursor",
+          "title": "Text wider than the field scrolls to keep the cursor visible"
+        },
+        {
+          "id": "selection-text",
+          "title": "The selected text is returned exactly for a copy"
+        },
+        {
+          "id": "paste-insert",
+          "title": "Inserted paste text replaces the selection and moves the cursor past it"
+        },
+        {
+          "id": "focus-tab",
+          "title": "Tab moves focus through focusable widgets in order"
+        },
+        {
+          "id": "focus-shift-tab",
+          "title": "Shift+Tab moves focus in reverse"
+        },
+        {
+          "id": "focus-skip-disabled",
+          "title": "Focus traversal skips disabled widgets"
+        },
+        {
+          "id": "focus-click",
+          "title": "Clicking a focusable widget focuses it"
+        },
+        {
+          "id": "filepicker-list",
+          "title": "The file picker lists the given entries, directories first, in byte order"
+        },
+        {
+          "id": "filepicker-keys",
+          "title": "Arrows move the selection and Enter opens it"
+        },
+        {
+          "id": "filepicker-path",
+          "title": "Typing a path into the picker's text field navigates to it"
+        },
+        {
+          "id": "filepicker-mouse",
+          "title": "A click selects and a double click within the interval, by explicit timestamps, opens"
+        },
+        {
+          "id": "filepicker-scroll",
+          "title": "Lists longer than the view scroll by keys and wheel"
+        },
+        {
+          "id": "filepicker-errors",
+          "title": "A directory that cannot be read shows its error in the picker"
+        }
+      ]
+    },
+    {
+      "id": "icons",
+      "title": "animated icons",
+      "cases": [
+        {
+          "id": "states",
+          "title": "An icon goes idle, hover, pressed and released on the corresponding pointer edges"
+        },
+        {
+          "id": "spring-steps",
+          "title": "Spring positions after fixed time steps equal the contract's literal table"
+        },
+        {
+          "id": "step-invariance",
+          "title": "One step of 1,000 ms, a thousand steps of 1 ms and steps of 16 ms give identical states at equal times"
+        },
+        {
+          "id": "settles",
+          "title": "Every catalogue animation settles within 2,000 ms of UI time after its last input and never draws outside its box"
+        },
+        {
+          "id": "interrupt",
+          "title": "A hover interrupted by a press mid-animation follows the contract's state table"
+        },
+        {
+          "id": "reversal",
+          "title": "Leaving mid-hover reverses from the current position without a jump"
+        },
+        {
+          "id": "reset",
+          "title": "Reset after a resize returns the icon to idle at its new geometry"
+        },
+        {
+          "id": "bounded",
+          "title": "Over 10,000 steps of seeded random pointer input, the trajectory stays inside its box"
+        },
+        {
+          "id": "easing",
+          "title": "Each easing function matches the literal table at its sample points"
+        },
+        {
+          "id": "sin-approx",
+          "title": "sin_approx stays within 0.0012 of sin at 4,096 evenly spaced points of [−π, π]"
+        },
+        {
+          "id": "particles-bounded",
+          "title": "Particle counts stay at or below the cap, and positions stay inside the box"
+        },
+        {
+          "id": "assets",
+          "title": "Each icon in each state draws to its reviewed reference"
+        }
+      ]
+    },
+    {
+      "id": "windows",
+      "title": "window lifecycle on every target",
+      "cases": [
+        {
+          "id": "create",
+          "title": "create_window returns a window id and buffers of the requested size"
+        },
+        {
+          "id": "create-zeroed",
+          "title": "A new window's buffers are all zero"
+        },
+        {
+          "id": "register-listed",
+          "title": "A registered window is listed with its title, size and owner"
+        },
+        {
+          "id": "title-limit",
+          "title": "A 64-byte title is kept whole, and a longer one is refused with EINVAL"
+        },
+        {
+          "id": "title-utf8",
+          "title": "A UTF-8 title is stored and listed byte for byte"
+        },
+        {
+          "id": "title-change",
+          "title": "Setting a new title updates the listing"
+        },
+        {
+          "id": "size-zero",
+          "title": "A zero width or height fails with EINVAL"
+        },
+        {
+          "id": "size-too-big",
+          "title": "A dimension over 4,096 fails with EINVAL"
+        },
+        {
+          "id": "limit",
+          "title": "The seventeenth window fails with the contract's errno, and the first sixteen are unaffected"
+        },
+        {
+          "id": "multi-window",
+          "title": "One process creates and draws four windows independently"
+        },
+        {
+          "id": "destroy",
+          "title": "The destroy op removes the window from the listing and unmaps its buffers"
+        },
+        {
+          "id": "drop-destroys",
+          "title": "Dropping a Breengel Window destroys it"
+        },
+        {
+          "id": "stale-id",
+          "title": "Every op on a destroyed window's id fails with ENOENT, and ids are never reused in a boot"
+        },
+        {
+          "id": "register-unwinds",
+          "title": "When registration fails, Window::new frees the buffers it created"
+        },
+        {
+          "id": "exit-cleanup",
+          "title": "A process's windows disappear when it exits"
+        },
+        {
+          "id": "exec-cleanup",
+          "title": "A process's windows disappear when it execs"
+        },
+        {
+          "id": "fork-no-mapping",
+          "title": "A forked child inherits no mapping of its parent's buffers"
+        },
+        {
+          "id": "fork-no-authority",
+          "title": "A forked child cannot commit, resize or destroy its parent's window"
+        },
+        {
+          "id": "commit-swaps",
+          "title": "After a commit, acquire returns a different buffer holding the committed pixels"
+        },
+        {
+          "id": "acquire-replays-damage",
+          "title": "With three buffers and alternating disjoint updates (A commits `[1,0]`, B commits `[1,2]` with only the second cell damaged), the next acquired buffer holds `[1,2]`, and every acquire over 300 such commits equals the newest front"
+        },
+        {
+          "id": "acquire-full-copy",
+          "title": "A buffer with no base, or whose missing commits have left the 8-entry damage log, is replayed in full by the kernel and equals the newest front, for a Breengel client and a raw client alike"
+        },
+        {
+          "id": "stale-base-commit",
+          "title": "Of two concurrently acquired buffers, committing the one with the older base gives exactly that buffer's pixels, with damage widened to cover every pixel that changed. With `acquire-stall` holding thread 1's replay copy from front A halfway, thread 2 commits C and then acquires: it does not get A until the copy ends, and thread 1's buffer equals exactly the commit its returned base names. A stale buffer committed after more than eight intervening commits gets whole-window damage. Every step compares whole pixels to the formula and checks that the damage covers every changed pixel"
+        },
+        {
+          "id": "commit-immutable",
+          "title": "Writing a committed buffer, or its tree page at any tree size, faults"
+        },
+        {
+          "id": "commit-busy",
+          "title": "Committing a buffer twice without acquiring it again fails with EBUSY"
+        },
+        {
+          "id": "thread-commit",
+          "title": "Two threads of the owner committing concurrently both succeed with distinct, ordered commit ids"
+        },
+        {
+          "id": "release-order",
+          "title": "A retired buffer returns to free only after its composite and any capture copy in progress are done"
+        },
+        {
+          "id": "acquire-timeout",
+          "title": "acquire with no free buffer returns ETIMEDOUT no earlier than its timeout and within 100 ms after it"
+        },
+        {
+          "id": "resize",
+          "title": "The owner's resize gives buffers of the new size holding the old contents in the intersection, also while another thread of the owner resizes the window"
+        },
+        {
+          "id": "resize-error",
+          "title": "A resize the kernel refuses is reported as an error, and no Resized event claims the new size"
+        },
+        {
+          "id": "resize-rlimit",
+          "title": "A resize over RLIMIT_AS fails with ENOMEM and leaves the old buffers intact"
+        },
+        {
+          "id": "resize-rollback",
+          "title": "A failure at each allocation step of create and resize leaves registry, mappings and accounting unchanged"
+        },
+        {
+          "id": "rlimit-accounting",
+          "title": "Window buffers count against RLIMIT_AS, and destroying the window returns them"
+        },
+        {
+          "id": "capture-across-destroy",
+          "title": "A capture in progress when its window is destroyed or resized returns the whole commit, with the tree page of that same commit when a tree destination is given; a capture begun after the destroy is ENOENT; and the buffer is freed when the copy ends"
+        },
+        {
+          "id": "two-buffer-capture-load",
+          "title": "A two-buffer client committing 300 frames while a reader captures it continuously and an evidence holder is registered never waits in acquire beyond one composite and one capture copy"
+        },
+        {
+          "id": "remnant-on-death",
+          "title": "When the owner of a window with an evidence holder is killed, the holder reads its last front and tree, and releasing the remnant returns memory to the baseline"
+        },
+        {
+          "id": "churn",
+          "title": "100 create and destroy cycles return the registry, allocation counter and memory to the baseline"
+        },
+        {
+          "id": "distinct-content",
+          "title": "Sixteen live windows each composite their own pixels, never another window's"
+        },
+        {
+          "id": "raw-client",
+          "title": "A client using the raw libbreenix calls, without Breengel, creates, commits and destroys a window"
+        },
+        {
+          "id": "every-target",
+          "title": "Window creation works on this target's backend and reports the backend by name"
+        }
+      ]
+    },
+    {
+      "id": "isolation",
+      "title": "window authority & EFAULT safety",
+      "cases": [
+        {
+          "id": "other-register",
+          "title": "An unrelated process registering another's window fails with EPERM"
+        },
+        {
+          "id": "other-commit",
+          "title": "An unrelated process committing another's window fails with EPERM"
+        },
+        {
+          "id": "other-position",
+          "title": "A non-compositor setting a window's position fails with EPERM"
+        },
+        {
+          "id": "other-inject",
+          "title": "A non-compositor writing events into a window fails with EPERM"
+        },
+        {
+          "id": "other-read",
+          "title": "An unrelated non-root process capturing another's window fails with EPERM, and root succeeds"
+        },
+        {
+          "id": "other-map",
+          "title": "An unrelated process mapping another's buffers fails with EPERM"
+        },
+        {
+          "id": "other-resize",
+          "title": "An unrelated process resizing another's window fails with EPERM"
+        },
+        {
+          "id": "other-destroy",
+          "title": "An unrelated process destroying another's window fails with EPERM"
+        },
+        {
+          "id": "other-tree",
+          "title": "An unrelated non-root process mapping another's tree page fails with EPERM"
+        },
+        {
+          "id": "texture-map",
+          "title": "A non-compositor mapping the compositor texture fails with EPERM"
+        },
+        {
+          "id": "composite-denied",
+          "title": "A non-compositor compositing fails with EPERM"
+        },
+        {
+          "id": "claim-unprivileged",
+          "title": "A uid 1000 process claiming the compositor fails with EPERM, and root's claim succeeds"
+        },
+        {
+          "id": "claim-twice",
+          "title": "A second compositor claim fails with EBUSY while the first lives"
+        },
+        {
+          "id": "claim-after-death",
+          "title": "The compositor role can be claimed again once its holder dies, with a higher epoch"
+        },
+        {
+          "id": "compositor-authorized",
+          "title": "The compositor's position, inject, capture and composite calls succeed on every window"
+        },
+        {
+          "id": "pid-reuse",
+          "title": "A process that reuses a dead owner's PID number gains no authority over any window"
+        },
+        {
+          "id": "efault-create",
+          "title": "An unmapped output pointer for create fails with EFAULT and creates nothing"
+        },
+        {
+          "id": "efault-register",
+          "title": "An unmapped title pointer fails with EFAULT"
+        },
+        {
+          "id": "efault-list",
+          "title": "An unmapped list buffer fails with EFAULT"
+        },
+        {
+          "id": "efault-capture",
+          "title": "An unmapped capture destination fails with EFAULT"
+        },
+        {
+          "id": "efault-events",
+          "title": "An unmapped event-read buffer, or an argument structure made read-only while the read blocks, fails with EFAULT and consumes no event"
+        },
+        {
+          "id": "efault-inject",
+          "title": "An unmapped event pointer given to the compositor's write fails with EFAULT"
+        },
+        {
+          "id": "efault-composite",
+          "title": "An unmapped composite descriptor fails with EFAULT"
+        },
+        {
+          "id": "efault-mouse",
+          "title": "An unmapped or read-only pointer-position or key-state buffer fails with EFAULT"
+        },
+        {
+          "id": "efault-commit",
+          "title": "An unmapped commit metadata pointer fails with EFAULT, metadata with a nonzero reserved field fails with EINVAL, and neither commits anything"
+        },
+        {
+          "id": "efault-readback",
+          "title": "An unmapped readback destination fails with EFAULT"
+        },
+        {
+          "id": "efault-claim",
+          "title": "An unmapped claim argument fails with EFAULT and claims nothing"
+        },
+        {
+          "id": "efault-cross-page",
+          "title": "A buffer that runs from a mapped page into an unmapped one fails with EFAULT and has no side effect"
+        },
+        {
+          "id": "efault-overflow",
+          "title": "A pointer whose range overflows the address space fails with EFAULT"
+        },
+        {
+          "id": "efault-readonly",
+          "title": "A read-only output buffer fails with EFAULT and is left unchanged"
+        },
+        {
+          "id": "cow-output",
+          "title": "Output written into a copy-on-write page after fork lands only in the caller's copy"
+        },
+        {
+          "id": "destroy-during-commit",
+          "title": "Destroying a window while another thread commits it ends with one outcome and no fault"
+        },
+        {
+          "id": "test-hooks-absent",
+          "title": "The wait-stress ops fail with ENOSYS in the production kernel"
+        },
+        {
+          "id": "retired-ops",
+          "title": "The retired demo ops and version 1 window ops fail with ENOSYS"
+        },
+        {
+          "id": "unknown-op",
+          "title": "An unknown op fails with EINVAL"
+        },
+        {
+          "id": "killable",
+          "title": "SIGKILL ends a process blocked in acquire or wait_event within 250 ms"
+        },
+        {
+          "id": "quiet-errors",
+          "title": "1,000 failing window calls on one thread add nothing to that thread's kernel-output counter or to the unattributed counter; with `emit-diagnostic(path)` armed, each writer path of section 12.1 (direct writers, nested wrappers, the logger, a notice written out by another thread, and `emergency_print` into the unattributed counter) adds exactly its bytes, once, to the right counter, and a second emitting thread moves only its own"
+        },
+        {
+          "id": "controls-latched",
+          "title": "In this suite boot the test controls are enabled because PID 1 is a suite binary, no op can clear or set the latch, and a child running `/sbin/init desktop` reports it is not PID 1 and makes no absence claim"
+        }
+      ]
+    },
+    {
+      "id": "composition",
+      "title": "commit, composition & present",
+      "cases": [
+        {
+          "id": "compose-position",
+          "title": "A committed pattern appears at the window's position in the composed frame, exactly"
+        },
+        {
+          "id": "compose-overlap",
+          "title": "Two overlapping windows compose in z order, exactly"
+        },
+        {
+          "id": "compose-offscreen",
+          "title": "A window partly off the screen is clipped at the screen edge"
+        },
+        {
+          "id": "compose-fullscreen",
+          "title": "A 1280x800 window at 0,0 fills the frame exactly"
+        },
+        {
+          "id": "compose-many",
+          "title": "Sixteen windows in a fixed stack compose to the formula, exactly"
+        },
+        {
+          "id": "generation",
+          "title": "Each commit advances the window's commit id by exactly one"
+        },
+        {
+          "id": "no-compositor",
+          "title": "A commit with no compositor returns within 250 ms and is composed once a compositor claims"
+        },
+        {
+          "id": "compositor-dies",
+          "title": "An acquire blocked when the compositor exits, and a blocking event read on another window, return within 250 ms, and the next commit succeeds"
+        },
+        {
+          "id": "eintr",
+          "title": "A signal interrupts a blocked acquire with EINTR"
+        },
+        {
+          "id": "damage-metadata",
+          "title": "A commit's damage rectangles are recorded exactly"
+        },
+        {
+          "id": "damage-work",
+          "title": "A composite processes exactly the pixels in its damage union, by the compositor's counter, and with `ignore-damage` armed the excess is reported by count"
+        },
+        {
+          "id": "damage-screen",
+          "title": "A partial composite gives the same frame as a full recomposition"
+        },
+        {
+          "id": "composite-record",
+          "title": "Each composite publishes its serial and the commit id and pixel generation of every presentation-required window it accounts for, a wholly occluded one included with zero composed pixels"
+        },
+        {
+          "id": "backend-error",
+          "title": "A forced backend failure leaves the commit uncomposited, is reported to the compositor, and the retry succeeds"
+        },
+        {
+          "id": "inflight-bound",
+          "title": "At most one composite per window is in flight"
+        },
+        {
+          "id": "no-change-commit",
+          "title": "commit_no_change publishes new metadata with empty damage and the same pixel generation, causes no composite, and is presented by the composite that already holds that generation"
+        },
+        {
+          "id": "cursor-hidden",
+          "title": "With the cursor hidden, no cursor pixel appears in the frame"
+        },
+        {
+          "id": "cursor-no-trail",
+          "title": "Moving the cursor over a static scene restores every pixel it covered"
+        },
+        {
+          "id": "cursor-shape",
+          "title": "Setting a cursor shape draws that shape at the pointer"
+        },
+        {
+          "id": "cursor-stationary-repaint",
+          "title": "Content committed under a stationary cursor is shown, with the cursor redrawn above it"
+        },
+        {
+          "id": "flush-irq-bound",
+          "title": "The longest IRQ-masked interval during full-screen damage stays within 500 µs, after `irq-hold` has shown the gauge reads a 2 ms hold"
+        },
+        {
+          "id": "present-rate",
+          "title": "One 256x256 window composes at least 60 commits a second"
+        },
+        {
+          "id": "takeover-giveback",
+          "title": "Display takeover and giveback restore the previous owner's frame exactly"
+        },
+        {
+          "id": "ownership-stack",
+          "title": "When a compositor dies, the display returns to the process that gave it, not to the runner"
+        },
+        {
+          "id": "fbinfo-geometry",
+          "title": "fbinfo's stride, bytes per pixel and pixel format agree with the mode"
+        },
+        {
+          "id": "fbmmap-pane",
+          "title": "fb_mmap gives the display owner the whole screen"
+        },
+        {
+          "id": "flush-clip",
+          "title": "FLUSH clips its rectangle to the screen"
+        }
+      ]
+    },
+    {
+      "id": "events",
+      "title": "window input events",
+      "cases": [
+        {
+          "id": "key-press-release",
+          "title": "A key press and its release arrive with the same keycode"
+        },
+        {
+          "id": "key-text",
+          "title": "A key event carries the UTF-8 text the compositor attached"
+        },
+        {
+          "id": "key-modifiers",
+          "title": "Shift, Ctrl, Alt and Super arrive as separate modifier bits"
+        },
+        {
+          "id": "key-repeat",
+          "title": "A repeat arrives marked as a repeat"
+        },
+        {
+          "id": "text-event",
+          "title": "A text event delivers its UTF-8 string whole"
+        },
+        {
+          "id": "mouse-move",
+          "title": "Pointer motion arrives in window-local coordinates"
+        },
+        {
+          "id": "mouse-buttons",
+          "title": "Left, right and middle press and release arrive with the right button"
+        },
+        {
+          "id": "scroll",
+          "title": "Vertical and horizontal scroll arrive with their signed amounts"
+        },
+        {
+          "id": "focus",
+          "title": "FocusGained and FocusLost arrive as sent"
+        },
+        {
+          "id": "close-requested",
+          "title": "CloseRequested arrives as sent"
+        },
+        {
+          "id": "resized",
+          "title": "Resized arrives only after the buffers have the new size, and says that size"
+        },
+        {
+          "id": "resize-failed",
+          "title": "A failed resize delivers ResizeFailed with the old size, never Resized"
+        },
+        {
+          "id": "font-changed",
+          "title": "FontChanged arrives when the configured font changes"
+        },
+        {
+          "id": "compositor-changed",
+          "title": "A new compositor claim delivers CompositorChanged with the new epoch"
+        },
+        {
+          "id": "unknown-type",
+          "title": "An unknown event type arrives as Unknown, not as a key press"
+        },
+        {
+          "id": "order",
+          "title": "100 events arrive in the order sent"
+        },
+        {
+          "id": "serial",
+          "title": "Each event carries its input serial"
+        },
+        {
+          "id": "processed-serial",
+          "title": "After the app's handlers return and it acquires, draws and commits, the commit's processed serial is the highest serial whose handler had returned at acquire"
+        },
+        {
+          "id": "processed-not-polled",
+          "title": "An event polled but not yet handled when an animation frame is committed is not acknowledged by that commit"
+        },
+        {
+          "id": "processed-at-acquire",
+          "title": "An event whose handler returns after frame N was acquired is acknowledged by frame N + 1, not by frame N"
+        },
+        {
+          "id": "no-change-after-redraw",
+          "title": "commit_no_change does not acknowledge an event whose handler returned Redraw until a frame acquired after it is committed"
+        },
+        {
+          "id": "processed-ack",
+          "title": "commit_no_change publishes the processed serial without changing pixels"
+        },
+        {
+          "id": "overflow",
+          "title": "A full ring reports how many events were lost instead of dropping them silently"
+        },
+        {
+          "id": "wait-timeout",
+          "title": "wait_event with a timeout returns no earlier than the timeout and within 100 ms after it when nothing arrives"
+        },
+        {
+          "id": "wait-eintr",
+          "title": "A signal interrupts a blocked wait_event with EINTR"
+        },
+        {
+          "id": "wait-targeted",
+          "title": "An event for one window does not wake a reader blocked on another"
+        },
+        {
+          "id": "pollable",
+          "title": "A window's event descriptor reports POLLIN through poll when an event is queued"
+        },
+        {
+          "id": "per-window",
+          "title": "Two windows of one process each receive only their own events"
+        },
+        {
+          "id": "after-destroy",
+          "title": "Writing to a destroyed window fails with ENOENT"
+        },
+        {
+          "id": "abi-layout",
+          "title": "The event struct has the contract's literal size and field offsets"
+        },
+        {
+          "id": "no-overloaded-fields",
+          "title": "Resize size, button state and text travel in named fields, not borrowed ones"
+        },
+        {
+          "id": "malformed-write",
+          "title": "A compositor write with an invalid type or length fails with EINVAL and delivers nothing"
+        }
+      ]
+    },
+    {
+      "id": "scanout",
+      "title": "display observation on every target",
+      "cases": [
+        {
+          "id": "mode-set",
+          "title": "A GUI suite boot runs this target's display at 1280x800, and fbinfo agrees"
+        },
+        {
+          "id": "device-path",
+          "title": "Readback uses this backend's observation path from the contract and names it"
+        },
+        {
+          "id": "changing-scene",
+          "title": "Three successive known scenes each read back equal to their formulas"
+        },
+        {
+          "id": "full-destination",
+          "title": "Readback covers the whole destination, and a change in its last row is seen"
+        },
+        {
+          "id": "binding",
+          "title": "The record names the scanout resource or address the device is bound to, and it is the composed one"
+        },
+        {
+          "id": "completion",
+          "title": "The record carries answered completion for every damaged rectangle of its composite serial"
+        },
+        {
+          "id": "atomic-record",
+          "title": "The pixels and the record always belong to the same composite serial under continuous commits"
+        },
+        {
+          "id": "window-commits",
+          "title": "The record lists the commit id of each window composed"
+        },
+        {
+          "id": "format-canonical",
+          "title": "RGB and BGR destinations read back as the same canonical BGRX pixels"
+        },
+        {
+          "id": "root-only",
+          "title": "A non-root, non-compositor process cannot read back the scanout"
+        },
+        {
+          "id": "fault-skipped-transfer",
+          "title": "A skipped transfer or update is reported as missing completion, and the next composite recovers"
+        },
+        {
+          "id": "fault-wrong-resource",
+          "title": "A flush or scanout bound to the wrong resource is reported as a binding mismatch"
+        },
+        {
+          "id": "fault-stale-fence",
+          "title": "A fence answered for another serial is reported as a serial mismatch"
+        },
+        {
+          "id": "fault-outside-damage",
+          "title": "Corruption written outside any damage is found by comparing the full destination"
+        },
+        {
+          "id": "boundary-stated",
+          "title": "The record states what lies outside the guest's view for this backend"
+        }
+      ]
+    },
+    {
+      "id": "panel",
+      "title": "suite & probe panels",
+      "cases": [
+        {
+          "id": "counts",
+          "title": "Fixed pass, fail and count fixtures draw the expected digits in the expected colours"
+        },
+        {
+          "id": "fail-rows",
+          "title": "Failed cases are listed with their names in the failure rows"
+        },
+        {
+          "id": "layout",
+          "title": "The category bars and score occupy the contract's rectangles at this mode"
+        },
+        {
+          "id": "stage-layout",
+          "title": "Stage fixture header, wall, spotlight and ribbon occupy the contract rectangles"
+        },
+        {
+          "id": "tile-stamps",
+          "title": "Tile order, milestone grouping, stamp states and key numbers match the fixture"
+        },
+        {
+          "id": "tile-thumbnail",
+          "title": "Every thumbnail is the integer box filter of the judged frame"
+        },
+        {
+          "id": "spotlight-picture",
+          "title": "Expected, actual and difference panes show the first mismatch and comparison bound"
+        },
+        {
+          "id": "spotlight-timing",
+          "title": "Frame-time bars and the budget line match the fixture numbers"
+        },
+        {
+          "id": "milestone-ribbon",
+          "title": "Milestone segments light exactly when their cases have passed"
+        },
+        {
+          "id": "finale",
+          "title": "The summary shows counts and the slowest case and holds for five seconds of UI time"
+        },
+        {
+          "id": "deterministic",
+          "title": "The same results at the same UI time draw byte-identical stage pixels without real clock reads"
+        },
+        {
+          "id": "judged-frame-shown",
+          "title": "Every picture tile shows the frame whose SHA-256 its CASE record printed, after detecting substitution"
+        },
+        {
+          "id": "serial-agreement",
+          "title": "Stage scanout tile ids, stamps and numbers agree with CASE bytes after detecting stage-lie"
+        },
+        {
+          "id": "quiet-window",
+          "title": "No runner composite occurs inside a measured case window after detecting stage-draw-in-window"
+        },
+        {
+          "id": "boot-ribbon",
+          "title": "The restored kernel ribbon matches producer boot-stage markers after detecting ribbon-drop-stage"
+        },
+        {
+          "id": "boundary-notice",
+          "title": "The stage observation notice agrees with the backend flags and boundary code"
+        },
+        {
+          "id": "handoff",
+          "title": "A display-taking child under probe takes the display, gives it back, and the panel is restored exactly"
+        },
+        {
+          "id": "between-cases",
+          "title": "In a GUI suite the panel is drawn only between cases and restored exactly after each"
+        },
+        {
+          "id": "cursor-restore",
+          "title": "Moving the pointer over the panel leaves no cursor trail"
+        },
+        {
+          "id": "cursor-trail-detected",
+          "title": "With the panel cursor's save and restore disabled by a test control, the trail is detected"
+        },
+        {
+          "id": "kernel-screens",
+          "title": "The kernel's console screen redraws exactly after the display is given back"
+        }
+      ]
+    }
+  ]
+}

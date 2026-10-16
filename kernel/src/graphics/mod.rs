@@ -65,3 +65,12 @@ pub mod terminal;
 pub mod cursor;
 
 pub use double_buffer::DoubleBufferedFrameBuffer;
+
+#[cfg(target_arch = "aarch64")]
+pub mod display;
+
+#[cfg(target_arch = "aarch64")]
+pub mod boot_ribbon;
+
+#[cfg(target_arch = "aarch64")]
+mod boot_producer;

@@ -68,6 +68,9 @@ pub trait Icon {
     /// The icon's current animation state.
     fn state(&self) -> IconState;
 
+    fn hover_amount(&self) -> f32;
+    fn settled(&self) -> bool;
+
     /// Reset to idle, clearing all animation state.
     fn reset(&mut self);
 
@@ -87,6 +90,12 @@ pub struct IconBase {
     pub idle_time: u32,
     /// Normalized transition progress 0.0..=1.0 for the current state.
     pub progress: f32,
+    hover: f32,
+    previous_hover: bool,
+    previous_pressed: bool,
+    remainder_us: u32,
+    pending_click: bool,
+    pending_release: bool,
 }
 
 impl IconBase {
@@ -96,6 +105,8 @@ impl IconBase {
             state_time: 0,
             idle_time: 0,
             progress: 0.0,
+            previous_hover: false, previous_pressed: false,
+            hover: 0.0, remainder_us: 0, pending_click: false, pending_release: false,
         }
     }
 
@@ -103,8 +114,40 @@ impl IconBase {
     ///
     /// Returns `true` if the state changed this frame.
     pub fn update(&mut self, dt_us: u32, mouse: &IconMouse) -> bool {
-        self.state_time += dt_us;
-        self.idle_time += dt_us;
+        let mut changed = false;
+        let mut input = *mouse;
+        self.remainder_us += dt_us % 1000;
+        let quanta = dt_us/1000 + self.remainder_us/1000;
+        self.remainder_us %= 1000;
+        self.pending_click |= mouse.just_clicked;
+        self.pending_release |= mouse.just_released;
+        for _ in 0..quanta {
+            input.just_clicked = self.pending_click;
+            input.just_released = self.pending_release;
+            self.pending_click = false; self.pending_release = false;
+            changed |= self.tick(&input);
+        }
+        changed
+    }
+    pub fn hover_amount(&self) -> f32 { self.hover }
+    pub fn settled(&self) -> bool {
+        matches!(self.state,IconState::Idle | IconState::Hovering | IconState::Pressed)
+            && (self.hover == 0.0 || self.hover == 1.0)
+    }
+    fn tick(&mut self, mouse: &IconMouse) -> bool {
+        let dt_us = 1000;
+        self.state_time = self.state_time.saturating_add(dt_us);
+        // Restart finite idle effects on input, not on internal timed transitions.
+        if mouse.hovering != self.previous_hover || mouse.pressed != self.previous_pressed
+            || mouse.just_clicked || mouse.just_released {
+            self.idle_time = 0;
+        }
+        self.previous_hover = mouse.hovering;
+        self.previous_pressed = mouse.pressed;
+        // Idle effects reach a stable phase after input settles.
+        self.idle_time = self.idle_time.saturating_add(dt_us).min(2_000_000);
+        if mouse.hovering { self.hover = (self.hover + 0.004).min(1.0); }
+        else { self.hover = (self.hover - 0.005).max(0.0); }
 
         let old_state = self.state;
 
@@ -182,5 +225,7 @@ impl IconBase {
         self.state_time = 0;
         self.idle_time = 0;
         self.progress = 0.0;
+        self.previous_hover = false; self.previous_pressed = false;
+        self.hover = 0.0; self.remainder_us = 0; self.pending_click = false; self.pending_release = false;
     }
 }

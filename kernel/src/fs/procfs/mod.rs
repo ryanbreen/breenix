@@ -91,6 +91,13 @@ pub enum ProcEntryType {
     BreenixDir,
     /// /proc/breenix/testing - whether testing mode is active
     BreenixTesting,
+    /// Suite-only stage fault handoff to the userspace renderer.
+    StageControl,
+    /// Actual producer markers reached in boot-path order.
+    BootRibbon,
+    BootSerial,
+    StageComposites,
+    ShowcasePace,
     /// /proc/breenix/ext2 - mounted ext2 allocation counters
     Ext2,
     /// /proc/pids - list of all process IDs
@@ -119,6 +126,13 @@ pub enum ProcEntryType {
     PidCmdline(u64),
     /// /proc/self - symlink to the caller's process directory
     SelfLink,
+    /// /proc/[pid]/task - a directory per thread of the process
+    PidTasks(u64),
+    /// /proc/[pid]/task/[tid] - one thread's directory
+    PidTask(u64, u64),
+    /// /proc/[pid]/task/[tid]/kernel_output - the thread's kernel output bytes
+    /// (docs/gui/breengel.md section 22)
+    PidTaskKernelOutput(u64, u64),
 }
 
 impl ProcEntryType {
@@ -146,6 +160,11 @@ impl ProcEntryType {
             ProcEntryType::Mounts => "mounts",
             ProcEntryType::BreenixDir => "breenix",
             ProcEntryType::BreenixTesting => "testing",
+            ProcEntryType::StageControl => "stage-control",
+            ProcEntryType::ShowcasePace => "pace",
+            ProcEntryType::BootRibbon => "boot-ribbon",
+            ProcEntryType::BootSerial => "boot-serial",
+            ProcEntryType::StageComposites => "stage-composites",
             ProcEntryType::Ext2 => "ext2",
             ProcEntryType::Pids => "pids",
             ProcEntryType::Kmsg => "kmsg",
@@ -160,6 +179,9 @@ impl ProcEntryType {
             ProcEntryType::PidStat(_) => "stat",
             ProcEntryType::PidCmdline(_) => "cmdline",
             ProcEntryType::SelfLink => "self",
+            ProcEntryType::PidTasks(_) => "task",
+            ProcEntryType::PidTask(_, _) => "tid",
+            ProcEntryType::PidTaskKernelOutput(_, _) => "kernel_output",
         }
     }
 
@@ -187,6 +209,11 @@ impl ProcEntryType {
             ProcEntryType::Mounts => "/proc/mounts",
             ProcEntryType::BreenixDir => "/proc/breenix",
             ProcEntryType::BreenixTesting => "/proc/breenix/testing",
+            ProcEntryType::StageControl => "/proc/breenix/stage-control",
+            ProcEntryType::ShowcasePace => "/proc/breenix/pace",
+            ProcEntryType::BootRibbon => "/proc/breenix/boot-ribbon",
+            ProcEntryType::BootSerial => "/proc/breenix/boot-serial",
+            ProcEntryType::StageComposites => "/proc/breenix/stage-composites",
             ProcEntryType::Ext2 => "/proc/breenix/ext2",
             ProcEntryType::Pids => "/proc/pids",
             ProcEntryType::Kmsg => "/proc/kmsg",
@@ -202,6 +229,9 @@ impl ProcEntryType {
             ProcEntryType::PidStat(_) => "/proc/<pid>/stat",
             ProcEntryType::PidCmdline(_) => "/proc/<pid>/cmdline",
             ProcEntryType::SelfLink => "/proc/self",
+            ProcEntryType::PidTasks(_) => "/proc/<pid>/task",
+            ProcEntryType::PidTask(_, _) => "/proc/<pid>/task/<tid>",
+            ProcEntryType::PidTaskKernelOutput(_, _) => "/proc/<pid>/task/<tid>/kernel_output",
         }
     }
 
@@ -229,6 +259,11 @@ impl ProcEntryType {
             ProcEntryType::Mounts => 8,
             ProcEntryType::BreenixDir => 200,
             ProcEntryType::BreenixTesting => 201,
+            ProcEntryType::StageControl => 203,
+            ProcEntryType::ShowcasePace => 207,
+            ProcEntryType::BootRibbon => 204,
+            ProcEntryType::BootSerial => 205,
+            ProcEntryType::StageComposites => 206,
             ProcEntryType::Ext2 => 202,
             ProcEntryType::Pids => 9,
             ProcEntryType::Kmsg => 10,
@@ -243,6 +278,9 @@ impl ProcEntryType {
             ProcEntryType::PidStat(pid) => pid_inode(*pid, 4),
             ProcEntryType::PidCmdline(pid) => pid_inode(*pid, 5),
             ProcEntryType::SelfLink => 11,
+            ProcEntryType::PidTasks(pid) => pid_inode(*pid, 6),
+            ProcEntryType::PidTask(_, tid) => task_inode(*tid, 0),
+            ProcEntryType::PidTaskKernelOutput(_, tid) => task_inode(*tid, 1),
         }
     }
 
@@ -261,6 +299,8 @@ impl ProcEntryType {
                 | ProcEntryType::XhciDir
                 | ProcEntryType::NetDir
                 | ProcEntryType::PidDir(_)
+                | ProcEntryType::PidTasks(_)
+                | ProcEntryType::PidTask(_, _)
         )
     }
 }
@@ -271,8 +311,14 @@ pub fn pid_inode(pid: u64, slot: u64) -> u64 {
     (1u64 << 32).wrapping_add(pid.wrapping_mul(8)).wrapping_add(slot)
 }
 
+/// The inode of a per-thread entry: `slot` 0 is `/proc/<pid>/task/<tid>`, 1 its
+/// `kernel_output`. Thread ids get their own range above the per-process inodes.
+pub fn task_inode(tid: u64, slot: u64) -> u64 {
+    (1u64 << 62).wrapping_add(tid.wrapping_mul(2)).wrapping_add(slot)
+}
+
 /// The names in a process directory, in listing order.
-pub const PID_DIR_ENTRIES: [&str; 4] = ["status", "stat", "cmdline", "exe"];
+pub const PID_DIR_ENTRIES: [&str; 5] = ["status", "stat", "cmdline", "exe", "task"];
 
 /// A procfs entry node
 #[derive(Debug, Clone)]
@@ -333,6 +379,11 @@ pub fn init() {
         .entries
         .push(ProcEntry::new(ProcEntryType::BreenixTesting));
 
+    procfs.entries.push(ProcEntry::new(ProcEntryType::StageControl));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::ShowcasePace));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::BootRibbon));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::BootSerial));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::StageComposites));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Ext2));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Pids));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Kmsg));
@@ -507,7 +558,21 @@ pub fn directory_child(dir: &str, name: &str) -> Option<ProcEntryType> {
             "stat" => Some(ProcEntryType::PidStat(pid)),
             "cmdline" => Some(ProcEntryType::PidCmdline(pid)),
             "exe" => Some(ProcEntryType::PidExe(pid)),
+            "task" => Some(ProcEntryType::PidTasks(pid)),
             _ => None,
+        };
+    }
+    if let Some((pid, rest)) = dir
+        .strip_prefix("/proc/")
+        .and_then(|tail| tail.split_once("/task"))
+        .and_then(|(pid, rest)| Some((pid.parse::<u64>().ok()?, rest)))
+    {
+        return match rest {
+            "" => name.parse().ok().map(|tid| ProcEntryType::PidTask(pid, tid)),
+            _ => {
+                let tid = rest.strip_prefix('/')?.parse().ok()?;
+                (name == "kernel_output").then_some(ProcEntryType::PidTaskKernelOutput(pid, tid))
+            }
         };
     }
     let procfs = PROCFS.lock();
@@ -522,6 +587,18 @@ pub fn directory_child(dir: &str, name: &str) -> Option<ProcEntryType> {
                 == Some(name)
         })
         .map(|e| e.entry_type)
+}
+
+/// The listing of `/proc/<pid>/task` (its threads) or `/proc/<pid>/task/<tid>`, or None for
+/// any other directory.
+pub fn list_task_entries(dir: &str) -> Option<Result<Vec<String>, i32>> {
+    let (pid, rest) = dir.strip_prefix("/proc/")?.split_once("/task")?;
+    let pid: u64 = pid.parse().ok()?;
+    if rest.is_empty() {
+        return Some(thread_ids(pid).map(|ids| ids.iter().map(|tid| alloc::format!("{tid}")).collect()));
+    }
+    rest.strip_prefix('/')?.parse::<u64>().ok()?;
+    Some(Ok(alloc::vec![String::from("kernel_output")]))
 }
 
 /// List entries in the /proc/trace directory
@@ -572,7 +649,7 @@ pub fn list_breenix_entries() -> Vec<String> {
     procfs
         .entries
         .iter()
-        .filter(|e| matches!(e.entry_type, ProcEntryType::BreenixTesting))
+        .filter(|e| matches!(e.entry_type, ProcEntryType::BreenixTesting|ProcEntryType::ShowcasePace|ProcEntryType::StageControl|ProcEntryType::BootRibbon|ProcEntryType::BootSerial|ProcEntryType::StageComposites))
         .map(|e| String::from(e.entry_type.name()))
         .collect()
 }
@@ -591,6 +668,38 @@ pub fn is_initialized() -> bool {
 /// The content as a String, or an error code
 pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
     match entry_type {
+        ProcEntryType::ShowcasePace => {
+            #[cfg(target_arch="aarch64")]
+            if !crate::platform_config::is_qemu() { return text(String::from("\n")); }
+            let pace=crate::drivers::fw_cfg::read_string("opt/breenix/pace").unwrap_or_default();
+            text(alloc::format!("{}\n",pace))
+        }
+        ProcEntryType::StageControl => {
+            if !crate::test_control::enabled() {return Err(-38);}
+            let caller=crate::window::Caller::current().map_err(|e|-e)?;
+            if !caller.is_root(){return Err(-1);}
+            let mut bits=0u32;
+            for point in 12..=14 {if crate::test_control::take(point,caller.tgid).is_some(){bits|=1<<point;}}
+            text(alloc::format!("{bits}\n"))
+        }
+        ProcEntryType::BootRibbon => {
+            #[cfg(target_arch="aarch64")]
+            {text(crate::graphics::boot_ribbon::records())}
+            #[cfg(not(target_arch="aarch64"))]
+            {Err(-38)}
+        }
+        ProcEntryType::BootSerial => {
+            #[cfg(target_arch="aarch64")]
+            { crate::graphics::boot_ribbon::serial().map(|s| s.into_bytes()) }
+            #[cfg(not(target_arch="aarch64"))]
+            {Err(-38)}
+        }
+        ProcEntryType::StageComposites => {
+            #[cfg(target_arch="aarch64")]
+            {text(crate::graphics::display::composite_records())}
+            #[cfg(not(target_arch="aarch64"))]
+            {Err(-38)}
+        }
         ProcEntryType::Uptime => text(generate_uptime()),
         ProcEntryType::Version => text(generate_version()),
         ProcEntryType::MemInfo => text(generate_meminfo()),
@@ -651,6 +760,17 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         ProcEntryType::PidStatus(pid) => text(generate_pid_status(pid)),
         ProcEntryType::PidStat(pid) => generate_pid_stat(pid),
         ProcEntryType::PidCmdline(pid) => generate_pid_cmdline(pid),
+        ProcEntryType::PidTasks(pid) => {
+            let mut listing = String::new();
+            for tid in thread_ids(pid)? {
+                listing.push_str(&alloc::format!("{tid}\n"));
+            }
+            text(listing)
+        }
+        ProcEntryType::PidTask(_, _) => text(String::from("kernel_output\n")),
+        ProcEntryType::PidTaskKernelOutput(pid, tid) => {
+            text(alloc::format!("{}\n", thread_kernel_output(pid, tid).ok_or(-2)?))
+        }
         // Opening a link without following it (O_NOFOLLOW), as on Linux.
         ProcEntryType::PidExe(_) | ProcEntryType::SelfLink => Err(-40),
     }
@@ -1156,13 +1276,53 @@ fn lookup_pid_path(path: &str) -> Option<ProcEntry> {
     if !pid_exists(pid) {
         return None;
     }
+    let in_group = |tid: u64| thread_kernel_output(pid, tid).is_some();
+    match entry {
+        pid_path::Entry::Task(tid) | pid_path::Entry::KernelOutput(tid) if !in_group(tid) => return None,
+        _ => {}
+    }
     Some(ProcEntry::new(match entry {
+        pid_path::Entry::Tasks => ProcEntryType::PidTasks(pid),
+        pid_path::Entry::Task(tid) => ProcEntryType::PidTask(pid, tid),
+        pid_path::Entry::KernelOutput(tid) => ProcEntryType::PidTaskKernelOutput(pid, tid),
         pid_path::Entry::Directory => ProcEntryType::PidDir(pid),
         pid_path::Entry::Status => ProcEntryType::PidStatus(pid),
         pid_path::Entry::Exe => ProcEntryType::PidExe(pid),
         pid_path::Entry::Stat => ProcEntryType::PidStat(pid),
         pid_path::Entry::Cmdline => ProcEntryType::PidCmdline(pid),
     }))
+}
+
+/// The thread ids of thread group `pid`, in increasing order.
+pub fn thread_ids(pid: u64) -> Result<Vec<u64>, i32> {
+    let mut ids = Vec::new();
+    let manager_guard = crate::process::manager();
+    if let Some(ref manager) = *manager_guard {
+        for (row, process) in manager.iter_processes() {
+            if process.thread_group_id.unwrap_or(row.as_u64()) != pid || process.is_terminated() {
+                continue;
+            }
+            if let Some(thread) = process.main_thread.as_ref() {
+                ids.try_reserve(1).map_err(|_| -12)?;
+                ids.push(thread.id);
+            }
+        }
+    }
+    ids.sort_unstable();
+    Ok(ids)
+}
+
+/// The kernel output bytes of thread `tid` (docs/gui/breengel.md section 22), if it is a live
+/// thread of thread group `pid`.
+pub fn thread_kernel_output(pid: u64, tid: u64) -> Option<u64> {
+    let manager_guard = crate::process::manager();
+    let manager = manager_guard.as_ref()?;
+    let (row, process) = manager.find_process_by_thread(tid)?;
+    if process.thread_group_id.unwrap_or(row.as_u64()) != pid || process.is_terminated() {
+        return None;
+    }
+    let thread = process.main_thread.as_ref().filter(|t| t.id == tid)?;
+    Some(thread.signals.kernel_output_bytes.load(core::sync::atomic::Ordering::Relaxed))
 }
 
 fn lookup_trace_teardown_path(path: &str) -> Option<ProcEntry> {
@@ -1208,6 +1368,7 @@ fn generate_pid_dir(pid: u64) -> String {
 /// Gid:    0   0   0   0
 /// Children:   4 5
 /// FdCount:    6
+/// VmSize: 2048 kB
 /// VmCode: 8 kB
 /// VmHeap: 64 kB
 /// VmStack:    16 kB
@@ -1308,6 +1469,7 @@ fn generate_pid_status(pid: u64) -> String {
          Gid:\t{}\t{}\t{}\t{}\n\
          Children:\t{}\n\
          FdCount:\t{}\n\
+         VmSize:\t{} kB\n\
          VmCode:\t{} kB\n\
          VmHeap:\t{} kB\n\
          VmStack:\t{} kB\n\
@@ -1334,6 +1496,13 @@ fn generate_pid_status(pid: u64) -> String {
         process.cred.egid,
         children_str,
         fd_count,
+        // The bytes mapped as RLIMIT_AS counts them, from the address space's owner row.
+        manager
+            .find_process_by_cr3(process.inherited_cr3.unwrap_or_else(|| {
+                process.page_table.as_ref().map_or(0, |t| t.level_4_frame().start_address().as_u64())
+            }))
+            .map_or(process.mapped_bytes(), |(_, owner)| owner.mapped_bytes())
+            / 1024,
         vm_code_kb,
         vm_heap_kb,
         vm_stack_kb,

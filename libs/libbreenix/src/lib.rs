@@ -55,15 +55,23 @@ pub mod signal;
 pub mod socket;
 #[cfg(feature = "suite")]
 pub mod suite;
+#[cfg(feature = "suite")]
+mod suite_stage;
+#[cfg(feature = "suite")]
+pub mod suite_spawn;
 pub mod synth;
 pub mod syscall;
 pub mod termios;
+pub mod test_control;
 #[cfg(feature = "std")]
 pub mod ssh;
 #[cfg(feature = "std")]
 pub mod tls;
 pub mod time;
+#[cfg(feature = "std")]
+pub mod ui_clock;
 pub mod types;
+pub mod window;
 #[cfg(feature = "std")]
 pub mod x509;
 

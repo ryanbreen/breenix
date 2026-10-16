@@ -1,0 +1,72 @@
+{
+  "about": "Reviewed reference frames of the breengel suite (docs/gui/breengel.md section 8.6). Each is rendered by tools/gfx-refgen from the guest's own no_std libgfx and libfont on the host at authoring time and reviewed before it is committed. The guest reads them from /usr/local/test/share/breengel/frames/. Frames saved from runs never become references.",
+  "references": [
+    {
+      "path": "breengel/text/ttf-glyph.png",
+      "case": "text/ttf-glyph",
+      "scene": "DejaVu Sans Mono \"Hg\" at 16 px, white, pen at (8, 6) on 48 x 32 black",
+      "generator": "tools/gfx-refgen",
+      "generator_commit": "446fc033a7d97321563e2b8414e261c635ce6e90",
+      "sha256": "ee54297626396a1aa90b88a6874c6c85489d163732ebb6906011b9d05a8af3fc",
+      "date": "2026-10-15",
+      "reviewer": "Claude Opus 5.5 (breengel raster lane), from the rendered frames enlarged 4x",
+      "checked": "Both glyphs legible with anti-aliased edges; the g descender below the baseline; nothing clipped."
+    },
+    {
+      "path": "breengel/text/ttf-sizes.png",
+      "case": "text/ttf-sizes",
+      "scene": "DejaVu Sans \"Breenix\" at 8, 12, 16, 24 and 48 px, pens at x 4 and y 2, 14, 30, 52 and 86, white on 256 x 160 black",
+      "generator": "tools/gfx-refgen",
+      "generator_commit": "446fc033a7d97321563e2b8414e261c635ce6e90",
+      "sha256": "ad94cc359e5108ec9bf42d514ab1205cf782df18b483347ae4c6e9bd816f212f",
+      "date": "2026-10-15",
+      "reviewer": "Claude Opus 5.5 (breengel raster lane), from the rendered frames enlarged 4x",
+      "checked": "Five lines in ascending size, none overlapping or clipped; at 8 px the unhinted 26.6 layout leaves a visibly wider n-i gap, as section 8.3 rounding gives."
+    },
+    {
+      "path": "breengel/text/ttf-subpixel.png",
+      "case": "text/ttf-subpixel",
+      "scene": "DejaVu Sans \"Subpixel LCD\" at 16 px with LCD rendering, white, pen at (4, 4) on 160 x 28 black",
+      "generator": "tools/gfx-refgen",
+      "generator_commit": "446fc033a7d97321563e2b8414e261c635ce6e90",
+      "sha256": "ba359efe5e7cdeb05906889e1b05cd747982ca36a30fafec133370ba57ec4974",
+      "date": "2026-10-15",
+      "reviewer": "Claude Opus 5.5 (breengel raster lane), from the rendered frames enlarged 4x",
+      "checked": "Legible text with per-channel colour fringes on the left and right edges of stems, as horizontal RGB striping gives."
+    },
+    {
+      "path": "breengel/text/compound-transform.png",
+      "case": "text/compound-transform",
+      "scene": "testdata/breengel/fonts/compound-transform.ttf \"BA\" at 48 px, white, pen at (4, 8) on 200 x 64 black",
+      "generator": "tools/gfx-refgen",
+      "generator_commit": "446fc033a7d97321563e2b8414e261c635ce6e90",
+      "sha256": "de3eef65e9b7fadb1ad60b176fe109037764cfab2778a174a976fa3e809e24d9",
+      "date": "2026-10-15",
+      "reviewer": "Claude Opus 5.5 (breengel raster lane), from the rendered frames enlarged 4x",
+      "checked": "'B' is the F with its round bowl; 'A' shows it at half scale, stretched by (1.5, 0.75) with the bowl flattened, and rotated 30 degrees counter-clockwise, each at its component offset."
+    },
+    {
+      "path": "breengel/text/raster-identical.sha256",
+      "case": "text/raster-identical",
+      "scene": "SHA-256 of U+0021 to U+007E of DejaVu Sans Mono then DejaVu Sans at 7, 12, 16, 23.5 and 40 px, then both fonts with LCD rendering at 16 px; per glyph: width and height (u32), x and y offsets (i32), little-endian, then the coverage bytes",
+      "generator": "tools/gfx-refgen",
+      "generator_commit": "446fc033a7d97321563e2b8414e261c635ce6e90",
+      "sha256": "fc446b1da0f0481874b59d87c45388404ae3bcc008f579ce59565e70386fdc64",
+      "date": "2026-10-15",
+      "reviewer": "Claude Opus 5.5 (breengel raster lane), from the rendered frames enlarged 4x",
+      "checked": "The hash of the glyph set the reviewed frames are drawn from; the guest recomputes it on every target."
+    },
+    {
+      "path": "breengel/icons/assets.png",
+      "case": "icons/assets",
+      "scene": "BreenGL section 16.1 literal 640x512 scene: Home, Search, Save, Arrow Forward; Idle, HoverIn, Hovering, Pressed, Clicked; size 48 centered at (64+128*column,64+128*row), background (12,19,31).",
+      "generator": "tools/gfx-refgen --icons-only",
+      "generator_commit": "726148a32fefe9ceaa3166cd9ff88615d3876143",
+      "sha256": "1c6c3ff22a16b300b217eaf66611f728ef137dc6a5ad020aefe8608e69dad297",
+      "date": "2026-10-15",
+      "reviewer": "GPT-6.1 Sol, inspected the generated 640x512 image before pinning",
+      "checked": "All twenty cells contain the named icon at the specified center; roofs and doors, glass and handles, solid disks and slots, forward arrows are legible. Clicked cells show the door highlight, expanding sonar, inserted disk and trail; effects stay within their cells. The guest uses independent schedule code and reads this immutable file.",
+      "license": "No third-party content: original in-tree procedural artwork, redistributed with the repository on the same terms as its source; see testdata/breengel/LICENSES.md."
+    }
+  ]
+}

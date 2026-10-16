@@ -67,6 +67,7 @@ PARALLELS_TEST=false
 PARALLELS_TEST_WAIT=35
 VMWARE=false
 SUITE=""
+PACE=""
 ONLY=""
 PROBE=false
 TESTS=false
@@ -160,6 +161,11 @@ while [[ $# -gt 0 ]]; do
             SERIAL_LOG_OVERRIDE="$2"
             shift 2
             ;;
+        --pace)
+            PACE="${2:-}"
+            [ "$#" -ge 2 ] && [ -n "$PACE" ] || { echo "--pace needs milliseconds"; exit 2; }
+            shift 2
+            ;;
         --gate-timeout)
             GATE_TIMEOUT="${2:-}"
             shift 2
@@ -218,6 +224,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --probe                    Parallels/VMware: run /sbin/probe as PID 1, wait for PROBE DONE, stop VM"
             echo "  --tests                    Parallels/VMware: boot the testing kernel, wait for its userspace report, stop VM"
             echo "  --gate-timeout N           DONE deadline in seconds (default 1800)"
+            echo "  --pace MS                  Hold each completed suite case outside measurement (default 0)"
             echo "  --case CATEGORY/CASE       Run just this suite case (not full-suite evidence)"
             echo "  --suite ID                 Parallels/VMware: run effort suite ID (docs/suites/ID.json) as PID 1"
             echo "  --dry-run                  Check target policy and exit before building or booting"
@@ -348,6 +355,12 @@ elif [ -n "$SUITE" ]; then
     BOOT_MODE=suite
 fi
 
+if [ -n "$PACE" ]; then
+    [ -n "$SUITE" ] && [[ "$PACE" =~ ^[0-9]+$ ]] && [ "${#PACE}" -le 10 ] && [ "$PACE" -le 4294967295 ] || {
+        echo "--pace needs --suite and milliseconds from 0 to 4294967295"; exit 2;
+    }
+fi
+
 # --tests: the testing kernel (--features testing) and its test loader, as
 # scripts/boot-interactive.sh --mode tests runs it on ARM64 QEMU.
 KERNEL_FEATURE_ARGS=()
@@ -413,7 +426,7 @@ stage_boot_ext2_disk() {
             "$BREENIX_ROOT/userspace/programs/aarch64/probe.elf" || exit 1
     else
         "$BREENIX_ROOT/scripts/write-boot-target.sh" "$BOOT_EXT2_DISK" "$SUITE" \
-            "$BREENIX_ROOT/userspace/programs/aarch64/suite-$SUITE.elf" "" "$ONLY" || exit 1
+            "$BREENIX_ROOT/userspace/programs/aarch64/suite-$SUITE.elf" "" "$ONLY" "$PACE" || exit 1
         if [[ ",$SUITE," == *",sdk,"* ]]; then
             # The Developer SDK suite's host side stages the SDK's results onto the copy.
             python3 "$BREENIX_ROOT/scripts/sdk-suite.py" --arch aarch64 --image "$BOOT_EXT2_DISK" || exit 1
@@ -1245,12 +1258,13 @@ usb_xhci:6.port = "6"
 svga.vramSize = "268435456"
 VMXEOF
 
-    # Keep the default scaled viewport bounded; --retina retains GOP autodetection.
+    # Keep the default scaled viewport bounded at the 1280x800 display every target runs
+    # in a GUI suite boot (BreenGL contract section 18); --retina retains GOP autodetection.
     if [ "${RETINA:-false}" != true ]; then
         cat >> "$VMX_FILE" <<VMXEOF
 svga.autodetect = "FALSE"
 svga.maxWidth = "1280"
-svga.maxHeight = "960"
+svga.maxHeight = "800"
 VMXEOF
     fi
 

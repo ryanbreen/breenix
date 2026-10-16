@@ -11,6 +11,9 @@ use crate::physics::Spring;
 
 pub struct HomeIcon {
     base: IconBase,
+    remainder_us: u32,
+    pending_click: bool,
+    pending_release: bool,
     /// Overall icon scale driven by spring.
     scale: Spring,
     /// Chimney smoke particles.
@@ -29,6 +32,9 @@ impl HomeIcon {
     pub fn new() -> Self {
         Self {
             base: IconBase::new(),
+            remainder_us: 0,
+            pending_click: false,
+            pending_release: false,
             scale: Spring::new(1.0, 300.0, 20.0),
             particles: ParticlePool::new(8),
             rng: Rng::new(0x48_4F4D_45), // "HOME"
@@ -55,18 +61,18 @@ impl HomeIcon {
             vx,
             vy,
             life: 1.0,
-            max_life: self.rng.range(1.0, 1.8),
+            max_life: self.rng.range(0.6, 1.0),
             size: self.rng.range(2.0, 3.5),
             color: Color::rgb(180, 180, 195),
             gravity: 0.0,
             friction: 0.4,
         });
     }
-
 }
 
-impl Icon for HomeIcon {
-    fn update(&mut self, dt_us: u32, mouse: IconMouse) {
+impl HomeIcon {
+    fn tick(&mut self, mouse: IconMouse) {
+        let dt_us = 1000;
         let state_changed = self.base.update(dt_us, &mouse);
         let dt = dt_us as f32 / 1_000_000.0;
 
@@ -87,10 +93,9 @@ impl Icon for HomeIcon {
         }
 
         // Emit chimney smoke while hovering or after click.
-        let emit_smoke = matches!(
-            self.base.state,
-            IconState::HoverIn | IconState::Hovering | IconState::Clicked
-        );
+        let emit_smoke = self.base.state == IconState::HoverIn
+            || (matches!(self.base.state, IconState::Hovering | IconState::Clicked)
+                && self.base.state_time <= 250_000);
         if emit_smoke {
             self.smoke_accum += dt_us;
             // ~2 wisps per second. Gentle, not a cannon.
@@ -114,6 +119,23 @@ impl Icon for HomeIcon {
         self.scale.set_target(target_scale);
         self.scale.update(dt);
         self.particles.update(dt);
+    }
+}
+
+impl Icon for HomeIcon {
+    fn update(&mut self, dt_us: u32, mut mouse: IconMouse) {
+        self.remainder_us += dt_us % 1000;
+        let quanta = dt_us / 1000 + self.remainder_us / 1000;
+        self.remainder_us %= 1000;
+        self.pending_click |= mouse.just_clicked;
+        self.pending_release |= mouse.just_released;
+        for _ in 0..quanta {
+            mouse.just_clicked = self.pending_click;
+            mouse.just_released = self.pending_release;
+            self.pending_click = false;
+            self.pending_release = false;
+            self.tick(mouse);
+        }
     }
 
     fn draw(&self, fb: &mut FrameBuf, cx: i32, cy: i32, size: i32) {
@@ -163,12 +185,25 @@ impl Icon for HomeIcon {
             let glow_x = cx - glow_w / 2;
             let glow_y = body_y + body_h / 2 - glow_h / 2;
             let intensity = (glow_t * 40.0) as u8;
-            shapes::fill_rect(fb, glow_x, glow_y, glow_w, glow_h,
-                Color::rgb(intensity, intensity / 2, 0));
+            shapes::fill_rect(
+                fb,
+                glow_x,
+                glow_y,
+                glow_w,
+                glow_h,
+                Color::rgb(intensity, intensity / 2, 0),
+            );
         }
 
         // --- Draw house body ---
-        shapes::fill_rect(fb, body_x, body_y, body_w, body_h, Color::rgb(120, 160, 200));
+        shapes::fill_rect(
+            fb,
+            body_x,
+            body_y,
+            body_w,
+            body_h,
+            Color::rgb(120, 160, 200),
+        );
 
         // --- Draw roof (two lines forming an inverted V) ---
         let roof_color = Color::rgb(180, 80, 60);
@@ -179,7 +214,14 @@ impl Icon for HomeIcon {
         shapes::draw_line(fb, cx, apex_y + 1, roof_right_x, body_y + 1, roof_color);
 
         // --- Draw chimney ---
-        shapes::fill_rect(fb, chimney_x, chimney_y, chimney_w, chimney_h, Color::rgb(140, 90, 70));
+        shapes::fill_rect(
+            fb,
+            chimney_x,
+            chimney_y,
+            chimney_w,
+            chimney_h,
+            Color::rgb(140, 90, 70),
+        );
 
         // --- Draw door ---
         let door_color = if self.door_open {
@@ -200,10 +242,22 @@ impl Icon for HomeIcon {
             let t = (self.door_progress - 0.3) / 0.7;
             let a1 = (t * 80.0) as u8;
             let a2 = (t * 40.0) as u8;
-            shapes::draw_rect(fb, door_x - 1, door_y - 1, door_w + 2, door_h + 2,
-                Color::rgb(a1, a1 / 2, 0));
-            shapes::draw_rect(fb, door_x - 2, door_y - 2, door_w + 4, door_h + 4,
-                Color::rgb(a2, a2 / 2, 0));
+            shapes::draw_rect(
+                fb,
+                door_x - 1,
+                door_y - 1,
+                door_w + 2,
+                door_h + 2,
+                Color::rgb(a1, a1 / 2, 0),
+            );
+            shapes::draw_rect(
+                fb,
+                door_x - 2,
+                door_y - 2,
+                door_w + 4,
+                door_h + 4,
+                Color::rgb(a2, a2 / 2, 0),
+            );
         }
 
         // --- Draw window (left of door) ---
@@ -242,7 +296,7 @@ impl Icon for HomeIcon {
         // Since we can't rescale in-place (pool is immutable in draw), instead we
         // draw manually with the scale factor.
         let smoke_scale = size as f32;
-        for p in &self.particles.particles {
+        for p in self.particles.particles() {
             if !p.alive() {
                 continue;
             }
@@ -262,15 +316,29 @@ impl Icon for HomeIcon {
         24
     }
 
+    fn hover_amount(&self) -> f32 {
+        self.base.hover_amount()
+    }
+    fn settled(&self) -> bool {
+        self.base.settled()
+            && self.base.idle_time >= 2_000_000
+            && self.scale.settled()
+            && self.particles.active_count() == 0
+    }
+
     fn state(&self) -> IconState {
         self.base.state
     }
 
     fn reset(&mut self) {
         self.base.reset();
+        self.remainder_us = 0;
+        self.pending_click = false;
+        self.pending_release = false;
         self.scale.impulse(1.0, 0.0);
         self.scale.set_target(1.0);
         self.particles.clear();
+        self.rng = Rng::new(0x48_4F4D_45);
         self.smoke_accum = 0;
         self.door_open = false;
         self.door_progress = 0.0;

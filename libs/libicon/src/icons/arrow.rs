@@ -11,6 +11,9 @@ use crate::physics::Spring;
 
 pub struct ArrowIcon {
     base: IconBase,
+    remainder_us: u32,
+    pending_click: bool,
+    pending_release: bool,
     /// If true the arrow points right (forward); if false, left (back).
     pub forward: bool,
     /// X stretch spring — positive = lean forward, negative = pull back.
@@ -27,6 +30,9 @@ impl ArrowIcon {
     pub fn new(forward: bool) -> Self {
         Self {
             base: IconBase::new(),
+            remainder_us: 0,
+            pending_click: false,
+            pending_release: false,
             forward,
             stretch_x: Spring::new(0.0, 350.0, 18.0),
             scale: Spring::new(1.0, 300.0, 20.0),
@@ -36,7 +42,11 @@ impl ArrowIcon {
     }
 
     fn dir(&self) -> f32 {
-        if self.forward { 1.0 } else { -1.0 }
+        if self.forward {
+            1.0
+        } else {
+            -1.0
+        }
     }
 
     fn emit_speed_lines(&mut self, count: usize) {
@@ -64,8 +74,9 @@ impl ArrowIcon {
     }
 }
 
-impl Icon for ArrowIcon {
-    fn update(&mut self, dt_us: u32, mouse: IconMouse) {
+impl ArrowIcon {
+    fn tick(&mut self, mouse: IconMouse) {
+        let dt_us = 1000;
         let state_changed = self.base.update(dt_us, &mouse);
         let dt = dt_us as f32 / 1_000_000.0;
         let dir = self.dir();
@@ -86,7 +97,9 @@ impl Icon for ArrowIcon {
             IconState::HoverIn => (1.05, dir * 0.08),
             IconState::Hovering => {
                 // Oscillate slightly in idle hover.
-                let osc = sin_approx(self.base.state_time as f32 / 500_000.0 * 3.14159265) * 0.03;
+                let osc =
+                    sin_approx(self.base.state_time.min(1_000_000) as f32 / 500_000.0 * 3.14159265)
+                        * 0.03;
                 (1.05, dir * (0.08 + osc))
             }
             IconState::Clicked => (1.12, dir * 0.18),
@@ -98,6 +111,23 @@ impl Icon for ArrowIcon {
         self.scale.update(dt);
         self.stretch_x.update(dt);
         self.particles.update(dt);
+    }
+}
+
+impl Icon for ArrowIcon {
+    fn update(&mut self, dt_us: u32, mut mouse: IconMouse) {
+        self.remainder_us += dt_us % 1000;
+        let quanta = dt_us / 1000 + self.remainder_us / 1000;
+        self.remainder_us %= 1000;
+        self.pending_click |= mouse.just_clicked;
+        self.pending_release |= mouse.just_released;
+        for _ in 0..quanta {
+            mouse.just_clicked = self.pending_click;
+            mouse.just_released = self.pending_release;
+            self.pending_click = false;
+            self.pending_release = false;
+            self.tick(mouse);
+        }
     }
 
     fn draw(&self, fb: &mut FrameBuf, cx: i32, cy: i32, size: i32) {
@@ -167,7 +197,7 @@ impl Icon for ArrowIcon {
 
         // Draw speed-line particles (unit-normalised coords → scale by size).
         let scale = size as f32;
-        for p in &self.particles.particles {
+        for p in self.particles.particles() {
             if !p.alive() {
                 continue;
             }
@@ -186,17 +216,32 @@ impl Icon for ArrowIcon {
         18
     }
 
+    fn hover_amount(&self) -> f32 {
+        self.base.hover_amount()
+    }
+    fn settled(&self) -> bool {
+        self.base.settled()
+            && (self.base.state != IconState::Hovering || self.base.state_time >= 1_000_000)
+            && self.scale.settled()
+            && self.stretch_x.settled()
+            && self.particles.active_count() == 0
+    }
+
     fn state(&self) -> IconState {
         self.base.state
     }
 
     fn reset(&mut self) {
         self.base.reset();
+        self.remainder_us = 0;
+        self.pending_click = false;
+        self.pending_release = false;
         self.scale.impulse(1.0, 0.0);
         self.scale.set_target(1.0);
         self.stretch_x.impulse(0.0, 0.0);
         self.stretch_x.set_target(0.0);
         self.particles.clear();
+        self.rng = Rng::new(if self.forward { 0xF0_1234 } else { 0xBA_CEDC });
     }
 
     fn name(&self) -> &'static str {

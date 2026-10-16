@@ -44,10 +44,10 @@ const PREVIEW_BORDER: Color = Color::rgb(60, 60, 80);
 const PREVIEW_LABEL: Color = Color::rgb(120, 120, 160);
 const PREVIEW_TEXT: Color = Color::rgb(220, 220, 230);
 
-const KEY_UP: u16 = 0x52;
-const KEY_DOWN: u16 = 0x51;
-const KEY_ENTER: u16 = 0x28;
-const KEY_ESCAPE: u16 = 0x29;
+const KEY_UP: u32 = breengel::keys::UP;
+const KEY_DOWN: u32 = breengel::keys::DOWN;
+const KEY_ENTER: u32 = breengel::keys::ENTER;
+const KEY_ESCAPE: u32 = breengel::keys::ESC;
 
 const PREVIEW_SAMPLE: &str = "The quick brown fox jumps over the lazy dog";
 const PREVIEW_SAMPLE_2: &str = "0123456789 !@#$%^&*() ABCDEFG abcdefg";
@@ -578,7 +578,7 @@ fn main() {
                         }
                     }
                 }
-                Event::MouseButton { button: 1, pressed: true, x: _, y } => {
+                Event::MouseButton { button: breengel::buttons::LEFT, pressed: true, x: _, y } => {
                     let ly = y as usize;
                     if ly >= LIST_TOP && ly < list_bottom {
                         let clicked_list_idx = scroll + (ly - LIST_TOP) / ITEM_H;

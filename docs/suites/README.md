@@ -75,6 +75,10 @@ SUITE <id> CASE <category>/<case> SKIP msg=<why>
 SUITE <id> DONE passed=<p> failed=<f> skipped=<s> total=<n>
 ```
 
+A paced BreenGL START appends ` pace_ms=<positive unsigned 32-bit milliseconds>`
+after any `only=` selection. It identifies a watch profile; CASE measurements and
+DONE acceptance stay the same. Other suites do not accept or apply this field.
+
 Each record is one write that starts with a newline, so it always begins its own line even
 when other output on the same serial port (the x86-64 scheduler's COM1 breadcrumbs) left a
 line unfinished; a reader takes the lines that start with `SUITE <id> ` and ignores blank
@@ -1053,4 +1057,42 @@ scripts/boot-interactive.sh --mode suite --suite sdk
 ./run.sh --vmware --suite sdk
 # From tools/breenix-runs:
 swift run breenix-runs run x86 --mode suite --boots 1 --suite sdk --sha <pushed-sha>
+```
+
+## BreenGL graphics library
+
+`breengel` measures the BreenGL effort in `docs/efforts/path.json`, the first of the four GUI
+efforts in `docs/gui/plan.md`. Its 380 cases cover sixteen categories in fourteen milestones:
+`raster` (40), `text` (37), `font-parser` (22), `inflate` (21), `bmp` (9), `png-decode` (31) and
+`png-encode` (7) (the images milestone), `widgets` (23), `text-entry` (19), `icons` (12),
+`windows` (39), `isolation` (38), `composition` (27), `events` (32), `scanout` (15) and `panel` (8).
+The contract the cases cite is `docs/gui/breengel.md`; each failure message names the section it
+checks.
+
+Library cases run in the suite's own process. Surface cases draw into memory that has a
+`PROT_NONE` guard page after the last row and a sentinel in front of the first row and in every
+row's padding, and check them. A call that can crash or run away (extreme coordinates, malformed
+fonts and images) runs in a forked child with a deadline, so the case names the call and how it
+failed. Expected pixels come from the contract's literal tables and formulas, typed into the
+suite by hand; from fixtures the suite builds from those tables (TrueType fonts, BMP files); from
+tables extracted from the pinned DejaVu fonts at authoring time by an independent parser
+(fontTools); or from a lower layer whose own cases certify it (the 5×7 font, drawing expected
+labels). A global allocator wrapper counts allocations, so "rejected before any allocation" is
+measured in the guest.
+
+A case whose layer does not exist fails naming the missing piece, and none skips; the GUI suites
+may not call `skip` (`tests/suite_manifests.rs`). The kernel window interface is system call 414
+and the suite-mode test controls 415 (contract sections 17 and 21): window, isolation,
+composition, event and scanout cases probe `window(VERSION)` and fail naming the interface while
+it is absent, and once it answers, any case whose checks are not yet written fails saying so, so
+no case passes because a layer is missing. Five cases have the 20-second allowances plan section
+19 names: `font-parser/corpus`, `inflate/byte-split`, `png-decode/independent-fixtures`,
+`windows/churn` and `composition/present-rate`. The gate timeout is the plan's 900 seconds.
+
+```bash
+scripts/boot-interactive.sh --mode suite --suite breengel
+./run.sh --parallels --suite breengel
+./run.sh --vmware --suite breengel
+# From tools/breenix-runs:
+swift run breenix-runs run x86 --mode suite --boots 1 --suite breengel --gate-timeout 900 --sha <pushed-sha>
 ```

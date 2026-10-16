@@ -412,7 +412,7 @@ fn main() {
             (width as usize) * bpp,
             bpp,
             info.is_bgr(),
-        )
+        ).expect("the framebuffer is a valid surface")
     };
 
     println!("Starting bounce spheres demo ({} spheres, {}x{}, mmap)", NUM_SPHERES, width, height);
@@ -463,7 +463,7 @@ fn run_window_loop(win: &mut Window, spheres: &mut [Sphere; NUM_SPHERES]) {
         // Poll input events — coordinates are already window-local
         for event in win.poll_events() {
             match event {
-                Event::MouseButton { button: 1, pressed: true, x, y } => {
+                Event::MouseButton { button: breengel::buttons::LEFT, pressed: true, x, y } => {
                     let mut hit = false;
                     for sphere in spheres.iter_mut() {
                         if sphere.hit_test(x, y) {
@@ -497,7 +497,7 @@ fn run_window_loop(win: &mut Window, spheres: &mut [Sphere; NUM_SPHERES]) {
                         _ => {}
                     }
                 }
-                Event::Scroll { delta_y } => {
+                Event::Scroll { delta_y, .. } => {
                     // Scroll up = faster, scroll down = slower
                     // Each tick scales by ~15%
                     for _ in 0..delta_y.abs() {

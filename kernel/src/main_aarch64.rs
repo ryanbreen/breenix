@@ -732,6 +732,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
 
     // Initialize serial output first so we can print
     serial::init_serial();
+    serial::init_log_sink();
 
     // Breadcrumb: 'S' = serial initialized
     kernel::serial_line::Line::new().char(b'S');
@@ -2563,6 +2564,8 @@ fn panic(info: &PanicInfo) -> ! {
     unsafe {
         core::arch::asm!("msr DAIFSet, #0x3", options(nomem, nostack));
     }
+    // Output from here on names no thread (docs/gui/breengel.md section 22).
+    kernel::output_accounting::panicking();
 
     serial_println!();
     serial_println!("========================================");

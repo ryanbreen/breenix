@@ -197,11 +197,11 @@ for smp in "${SMP_LEGS[@]}"; do
 
     reached=false
     for _ in $(seq 1 "$POLL_BOUND_SECONDS"); do
-        if grep -qF -- "$PASS_MARKER_TERMINAL" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
+        if grep -a -qF -- "$PASS_MARKER_TERMINAL" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
             reached=true
             break
         fi
-        if grep -qF -- 'TEST RUNNER: FAILED' "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
+        if grep -a -qF -- 'TEST RUNNER: FAILED' "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
             break
         fi
         if ! kill -0 "$QEMU_PID" 2>/dev/null; then
@@ -216,23 +216,23 @@ for smp in "${SMP_LEGS[@]}"; do
 
     leg_ok=true
 
-    marker_count=$( { grep -hcE -- '\[X86_SMP_ENUM:' "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; } | awk '{ total += $1 } END { print total + 0 }')
+    marker_count=$( { grep -a -hcE -- '\[X86_SMP_ENUM:' "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; } | awk '{ total += $1 } END { print total + 0 }')
     if [ "$marker_count" -ne 1 ]; then
         echo "  leg -smp $smp: FAIL (expected exactly 1 [X86_SMP_ENUM:] line, found $marker_count)"
         leg_ok=false
     fi
 
     expected_pattern="$(marker_pattern_for_leg "$smp")"
-    if grep -qE -- "$expected_pattern" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
-        echo "  leg -smp $smp: marker $(grep -hoE -- '\[X86_SMP_ENUM:[^]]*\]' "$OUTPUT_DIR"/serial_*.txt | head -1)"
+    if grep -a -qE -- "$expected_pattern" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
+        echo "  leg -smp $smp: marker $(grep -a -hoE -- '\[X86_SMP_ENUM:[^]]*\]' "$OUTPUT_DIR"/serial_*.txt | head -1)"
     else
         echo "  leg -smp $smp: FAIL (no marker matching madt_cpus=$smp:enabled=$smp:...:online=1)"
-        echo "    found: $( { grep -hoE -- '\[X86_SMP_ENUM:[^]]*\]' "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; } | head -1)"
+        echo "    found: $( { grep -a -hoE -- '\[X86_SMP_ENUM:[^]]*\]' "$OUTPUT_DIR"/serial_*.txt 2>/dev/null || true; } | head -1)"
         leg_ok=false
     fi
 
     for marker in "$PASS_MARKER_EARLY" "$PASS_MARKER_MID" "$PASS_MARKER_TERMINAL"; do
-        if ! grep -qF -- "$marker" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
+        if ! grep -a -qF -- "$marker" "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
             echo "  leg -smp $smp: FAIL (existing pass marker absent: $marker)"
             leg_ok=false
         fi

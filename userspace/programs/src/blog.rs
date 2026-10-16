@@ -53,13 +53,13 @@ const STATUS_FG: Color = Color::rgb(180, 180, 200);
 const FOLLOW_COLOR: Color = Color::rgb(100, 200, 100);
 const NOT_FOUND_COLOR: Color = Color::rgb(200, 100, 100);
 
-// USB HID keycodes for arrow keys and navigation
-const KEY_UP: u16 = 0x52;
-const KEY_DOWN: u16 = 0x51;
-const KEY_PAGE_UP: u16 = 0x4B;
-const KEY_PAGE_DOWN: u16 = 0x4E;
-const KEY_HOME: u16 = 0x4A;
-const KEY_END: u16 = 0x4D;
+// Linux key codes for arrow keys and navigation
+const KEY_UP: u32 = breengel::keys::UP;
+const KEY_DOWN: u32 = breengel::keys::DOWN;
+const KEY_PAGE_UP: u32 = breengel::keys::PAGE_UP;
+const KEY_PAGE_DOWN: u32 = breengel::keys::PAGE_DOWN;
+const KEY_HOME: u32 = breengel::keys::HOME;
+const KEY_END: u32 = breengel::keys::END;
 
 // ---------------------------------------------------------------------------
 // Log tab state
@@ -415,7 +415,7 @@ fn main() {
     theme.use_bitmap_font = true;
 
     let tab_rect = Rect::new(0, 0, WIN_W as i32, TAB_BAR_H);
-    let mut tab_bar = TabBar::new(tab_rect, vec![b"Kernel", b"Serial"]);
+    let mut tab_bar = TabBar::new(tab_rect, vec![b"Kernel", b"Serial"], &theme);
 
     let mut tabs = vec![
         LogTab::new("/var/log/kernel.log"),
@@ -547,7 +547,7 @@ fn main() {
                     mouse_x = x;
                     mouse_y = y;
                 }
-                Event::MouseButton { button: 1, pressed, .. } => {
+                Event::MouseButton { button: breengel::buttons::LEFT, pressed, .. } => {
                     let old_buttons = mouse_buttons;
                     if pressed {
                         mouse_buttons |= 1;
@@ -559,6 +559,7 @@ fn main() {
                         mouse_y,
                         mouse_buttons,
                         old_buttons,
+                        breengel::clock::now_ns() / 1_000_000,
                     );
                     tab_bar.update(&input);
                 }

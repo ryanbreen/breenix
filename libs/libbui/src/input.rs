@@ -2,6 +2,8 @@
 #[derive(Clone, Copy, Debug)]
 pub struct InputState {
     pub mouse_x: i32,
+    /// Event timestamp in UI milliseconds, used for click intervals.
+    pub time_ms: u64,
     pub mouse_y: i32,
     /// Left button currently held.
     pub mouse_down: bool,
@@ -12,13 +14,20 @@ pub struct InputState {
 }
 
 impl InputState {
+    pub fn with_time(mut self, time_ms: u64) -> Self {
+        self.time_ms = time_ms;
+        self
+    }
+
     /// Construct from raw mouse_state() return values.
     ///
     /// `buttons` and `prev_buttons` are button bitmasks where bit 0 = left button.
-    pub fn from_raw(mx: i32, my: i32, buttons: u32, prev_buttons: u32) -> Self {
+    /// `time_ms` is the event's UI timestamp, supplied by the caller.
+    pub fn from_raw(mx: i32, my: i32, buttons: u32, prev_buttons: u32, time_ms: u64) -> Self {
         let down = (buttons & 1) != 0;
         let was_down = (prev_buttons & 1) != 0;
         Self {
+            time_ms,
             mouse_x: mx,
             mouse_y: my,
             mouse_down: down,
@@ -39,4 +48,53 @@ pub enum WidgetEvent {
     Toggled(bool),
     /// Slider or numeric input value changed.
     ValueChanged(f32),
+}
+
+/// Logical keys independent of the window-system keycode ABI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Key {
+    Left,
+    Right,
+    Up,
+    Down,
+    Home,
+    End,
+    Enter,
+    Escape,
+    Tab,
+    Space,
+    Backspace,
+    Delete,
+    Char,
+    PageUp,
+    PageDown,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct KeyInput<'a> {
+    pub key: Key,
+    pub shift: bool,
+    pub ctrl: bool,
+    pub alt: bool,
+    pub text: &'a str,
+}
+impl<'a> KeyInput<'a> {
+    pub const fn new(key: Key) -> Self {
+        Self {
+            key,
+            shift: false,
+            ctrl: false,
+            alt: false,
+            text: "",
+        }
+    }
+    pub const fn text(text: &'a str) -> Self {
+        Self {
+            key: Key::Char,
+            shift: false,
+            ctrl: false,
+            alt: false,
+            text,
+        }
+    }
 }

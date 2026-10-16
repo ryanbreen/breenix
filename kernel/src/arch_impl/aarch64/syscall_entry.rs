@@ -273,7 +273,6 @@ fn deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) -> bool {
 
     // Track if signal termination happened (for parent notification after lock release)
     let mut signal_termination_info: Option<crate::signal::delivery::ParentNotification> = None;
-    let mut terminated_child_pid: Option<u64> = None;
     // A signal death ends the whole thread group (pid and exit status).
     let mut group_death: Option<(crate::process::ProcessId, i32)> = None;
 
@@ -350,7 +349,6 @@ fn deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) -> bool {
             {
                 // Process was terminated by signal - switch to idle
                 crate::task::scheduler::set_need_resched();
-                terminated_child_pid = Some(notification.child_pid.as_u64());
                 // Save notification to notify parent after releasing lock
                 signal_termination_info = Some(notification);
             }
@@ -371,11 +369,6 @@ fn deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) -> bool {
     // Notify parent if signal terminated a child - this unblocks waitpid()
     if let Some(notification) = signal_termination_info {
         crate::signal::delivery::notify_parent_of_termination_deferred(&notification);
-    }
-
-    // Clean up window buffers so compositor stops reading freed pages
-    if let Some(pid) = terminated_child_pid {
-        crate::syscall::graphics::cleanup_windows_for_pid(pid);
     }
 
     if let Some((pid, exit_code)) = group_death {
@@ -876,11 +869,15 @@ fn dispatch_syscall_enum(
         )),
 
         // Graphics syscalls
-        SyscallNumber::FbInfo => result_to_u64(crate::syscall::graphics::sys_fbinfo(arg1)),
-        SyscallNumber::FbDraw => result_to_u64(crate::syscall::graphics::sys_fbdraw(arg1)),
-        SyscallNumber::FbMmap => result_to_u64(crate::syscall::graphics::sys_fbmmap(arg1)),
+        SyscallNumber::FbInfo => result_to_u64(crate::syscall::fb::sys_fbinfo(arg1)),
+        SyscallNumber::FbDraw => result_to_u64(crate::syscall::fb_draw::sys_fbdraw(arg1)),
+        SyscallNumber::FbMmap => result_to_u64(crate::syscall::fb::sys_fbmmap(arg1)),
         SyscallNumber::GetMousePos => {
-            result_to_u64(crate::syscall::graphics::sys_get_mouse_pos(arg1))
+            result_to_u64(crate::syscall::fb::sys_get_mouse_pos(arg1, arg2))
+        }
+        SyscallNumber::Window => result_to_u64(crate::syscall::window::sys_window(arg1, arg2, arg3)),
+        SyscallNumber::TestControl => {
+            result_to_u64(crate::test_control::sys_test_control(arg1, arg2, arg3))
         }
 
         // Audio syscalls
@@ -1495,6 +1492,8 @@ fn sys_exec_aarch64(
         drop(manager_guard);
 
         commit.apply();
+        // The old image's windows go with it (docs/gui/breengel.md section 17.2).
+        crate::window::exec_done_current();
 
         log::info!("sys_exec_aarch64: Setting TTBR0_EL1 to {:#x}", new_ttbr0);
         // Installing through the shared discipline publishes `saved_process_cr3`,

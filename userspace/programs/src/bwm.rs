@@ -11,7 +11,10 @@ use std::process;
 
 #[cfg(not(target_arch = "aarch64"))]
 use libbreenix::fs;
-use libbreenix::graphics::{self, WindowInputEvent, input_event_type};
+#[path="bwm/display.rs"]
+mod display;
+use display::{WindowInputEvent,input_event_type};
+use display as graphics;
 use libbreenix::io;
 use libbreenix::signal;
 use libbreenix::types::Fd;
@@ -57,14 +60,6 @@ const CHROME_BTN_PAD: usize = 4;
 /// Space reserved in title bar for chrome buttons
 const CHROME_RESERVED: usize = 52;
 
-/// Resize grab zone width in pixels (edges and corners)
-const RESIZE_GRAB: usize = 8;
-
-/// Minimum total window width (including decorations)
-const MIN_WIN_WIDTH: usize = 120;
-
-/// Minimum total window height (including decorations)
-const MIN_WIN_HEIGHT: usize = 80 + TITLE_BAR_HEIGHT + BORDER_WIDTH * 2;
 
 /// Maximum remembered window positions/sizes
 const MAX_DEFAULTS: usize = 16;
@@ -398,7 +393,7 @@ impl HotkeyManager {
     /// hotkey matched.
     ///
     /// `super_taps` is the count of Super press-edges latched in the kernel HID
-    /// path since the previous frame (op=31, read-and-clear). Because the latch
+    /// path since the previous frame (`key_state`, read-and-clear). Because the latch
     /// captures every 0→1 SUPER transition the instant the HID report arrives,
     /// it recovers taps whose entire ~30ms high window fell between two bursty
     /// compositor-wait polls — which the level-based edge detection would miss.
@@ -553,52 +548,6 @@ fn trim(s: &[u8]) -> &[u8] {
     &s[start..end]
 }
 
-/// Read-and-clear the kernel's latched count of Super press-edges (FBDRAW op=31).
-///
-/// The kernel HID path increments a lock-free atomic on every 0→1 SUPER
-/// transition the instant the report arrives, so a tap whose high window fell
-/// entirely between two compositor-wait polls is still counted. This drains
-/// that latch so missed taps reach the double-tap detector.
-#[cfg(target_arch = "aarch64")]
-fn take_super_tap_count() -> u32 {
-    use libbreenix::graphics::FbDrawCmd;
-    use libbreenix::syscall::nr;
-    let cmd = FbDrawCmd {
-        op: 31,
-        p1: 0,
-        p2: 0,
-        p3: 0,
-        p4: 0,
-        color: 0,
-    };
-    let ret =
-        unsafe { libbreenix::raw::syscall1(nr::FBDRAW, &cmd as *const FbDrawCmd as u64) as i64 };
-    if ret < 0 {
-        0
-    } else {
-        ret as u32
-    }
-}
-
-#[cfg(not(target_arch = "aarch64"))]
-fn take_super_tap_count() -> u32 {
-    0
-}
-
-// ─── Resize Edge ────────────────────────────────────────────────────────────
-
-#[derive(Clone, Copy, PartialEq)]
-enum ResizeEdge {
-    Top,
-    Bottom,
-    Left,
-    Right,
-    TopLeft,
-    TopRight,
-    BottomLeft,
-    BottomRight,
-}
-
 // ─── Window Defaults (Position/Size Memory) ─────────────────────────────────
 
 struct WindowDefaults {
@@ -606,8 +555,6 @@ struct WindowDefaults {
     title_len: usize,
     x: i32,
     y: i32,
-    width: usize,
-    height: usize,
     valid: bool,
 }
 
@@ -635,18 +582,19 @@ fn save_window_defaults(win: &Window, defaults: &mut [WindowDefaults; MAX_DEFAUL
         defaults[i].title_len = win.title_len;
         defaults[i].x = win.x;
         defaults[i].y = win.y;
-        defaults[i].width = win.width;
-        defaults[i].height = win.height;
         defaults[i].valid = true;
     }
 }
 
+/// Where a window with this title was last: a window keeps its client's size, which only the
+/// client changes (a compositor resize request needs the configure protocol of the
+/// window-manager effort), so only the position is remembered.
 fn find_window_defaults(
     title: &[u8], title_len: usize, defaults: &[WindowDefaults; MAX_DEFAULTS],
-) -> Option<(i32, i32, usize, usize)> {
+) -> Option<(i32, i32)> {
     for d in defaults.iter() {
         if d.valid && d.title_len == title_len && d.title[..d.title_len] == title[..title_len] {
-            return Some((d.x, d.y, d.width, d.height));
+            return Some((d.x, d.y));
         }
     }
     None
@@ -661,7 +609,7 @@ struct Window {
     height: usize,
     title: [u8; 32],
     title_len: usize,
-    window_id: u32,
+    window_id: u64,
     owner_pid: u32,
     minimized: bool,
     /// Stable ordering for appbar (assigned at discovery time, never changes)
@@ -735,37 +683,6 @@ impl Window {
         mx >= bx && mx < bx + bw as i32 && my >= by && my < by + bh as i32
     }
 
-    fn hit_resize_edge(&self, mx: i32, my: i32) -> Option<ResizeEdge> {
-        if self.minimized || self.chromeless { return None; }
-
-        let x0 = self.x;
-        let y0 = self.y;
-        let x1 = self.x + self.width as i32;
-        let y1 = self.y + self.total_height() as i32;
-        let g = RESIZE_GRAB as i32;
-
-        // Must be within or near the window bounds
-        if mx < x0 - g || mx >= x1 + g || my < y0 - g || my >= y1 + g {
-            return None;
-        }
-
-        let on_left = mx < x0 + g;
-        let on_right = mx >= x1 - g;
-        let on_top = my < y0 + g;
-        let on_bottom = my >= y1 - g;
-
-        match (on_left, on_right, on_top, on_bottom) {
-            (true, _, true, _) => Some(ResizeEdge::TopLeft),
-            (_, true, true, _) => Some(ResizeEdge::TopRight),
-            (true, _, _, true) => Some(ResizeEdge::BottomLeft),
-            (_, true, _, true) => Some(ResizeEdge::BottomRight),
-            (true, _, _, _) => Some(ResizeEdge::Left),
-            (_, true, _, _) => Some(ResizeEdge::Right),
-            (_, _, true, _) => Some(ResizeEdge::Top),
-            (_, _, _, true) => Some(ResizeEdge::Bottom),
-            _ => None,
-        }
-    }
 }
 
 // ─── Drawing Helpers ─────────────────────────────────────────────────────────
@@ -1112,7 +1029,7 @@ fn discover_windows(
 ) -> bool {
     let mut win_infos = [graphics::WindowInfo {
         buffer_id: 0, owner_pid: 0, width: 0, height: 0,
-        x: 0, y: 0, title_len: 0, title: [0; 64],
+        title_len: 0, title: [0; 64],
     }; 16];
     let count = match graphics::list_windows(&mut win_infos) {
         Ok(c) => c as usize,
@@ -1131,6 +1048,19 @@ fn discover_windows(
         win_infos[..count].iter().any(|info| info.buffer_id == w.window_id)
     });
     let removed = before > windows.len();
+
+    // A frame is always its client's size: only the client resizes its buffers, so a frame
+    // follows a client that did.
+    let mut resized = false;
+    for w in windows.iter_mut() {
+        let Some(info) = win_infos[..count].iter().find(|info| info.buffer_id == w.window_id) else { continue };
+        let (fw, fh) = frame_size(info, w.chromeless);
+        if (fw, fh) != (w.width, w.height) {
+            w.width = fw;
+            w.height = fh;
+            resized = true;
+        }
+    }
 
     let mut added = false;
     for i in 0..count {
@@ -1151,35 +1081,28 @@ fn discover_windows(
         // Chromeless windows (title prefix \x01) have no frame/chrome
         let chromeless = title_len > 0 && title[0] == 1;
 
-        let total_w = if chromeless {
-            info.width as usize
-        } else {
-            info.width as usize + BORDER_WIDTH * 2
-        };
-        let total_h = if chromeless {
-            info.height as usize
-        } else {
-            info.height as usize + TITLE_BAR_HEIGHT + BORDER_WIDTH * 2
-        };
+        let (total_w, total_h) = frame_size(info, chromeless);
 
-        // Use saved defaults if available, otherwise cascade (or origin for fullscreen chromeless)
-        let (win_x, win_y, win_w, win_h) = match find_window_defaults(
+        // Use the saved position if there is one, otherwise cascade (or origin for fullscreen
+        // chromeless); the frame is the client's size.
+        let (win_x, win_y) = match find_window_defaults(
             &title[..title_len], title_len, win_defaults,
         ) {
-            Some((dx, dy, dw, dh)) => (dx, dy, dw, dh),
+            Some(at) => at,
             None => {
                 if chromeless && total_w >= screen_w && total_h >= screen_h {
-                    (0i32, 0i32, total_w, total_h)
+                    (0i32, 0i32)
                 } else if chromeless {
                     // Center small chromeless windows on screen
                     let cx = (screen_w as i32 - total_w as i32) / 2;
                     let cy = screen_h as i32 / 5; // Spotlight-style: 1/5 from top
-                    (cx.max(0), cy.max(0), total_w, total_h)
+                    (cx.max(0), cy.max(0))
                 } else {
-                    (cascade_x, cascade_y, total_w, total_h)
+                    (cascade_x, cascade_y)
                 }
             }
         };
+        let (win_w, win_h) = (total_w, total_h);
 
         print!("[bwm] Discovered window '{}' (id={}, {}x{}{}) at ({},{})\n",
             core::str::from_utf8(&title[..title_len]).unwrap_or("?"),
@@ -1193,24 +1116,7 @@ fn discover_windows(
             (win_x + BORDER_WIDTH as i32, win_y + TITLE_BAR_HEIGHT as i32 + BORDER_WIDTH as i32)
         };
         let z_order = windows.len() as u32;
-        let _ = graphics::set_window_position(info.buffer_id, content_x, content_y, z_order);
-
-        // If saved defaults give different content dimensions, notify client
-        if !chromeless {
-            let default_cw = win_w.saturating_sub(BORDER_WIDTH * 2);
-            let default_ch = win_h.saturating_sub(TITLE_BAR_HEIGHT + BORDER_WIDTH * 2);
-            if default_cw != info.width as usize || default_ch != info.height as usize {
-                let resize_event = WindowInputEvent {
-                    event_type: input_event_type::WINDOW_RESIZED,
-                    keycode: default_cw as u16,
-                    mouse_x: default_ch as i16,
-                    mouse_y: 0,
-                    modifiers: 0,
-                    scroll_y: 0,
-                };
-                let _ = graphics::write_window_input(info.buffer_id, &resize_event);
-            }
-        }
+        let _ = graphics::set_window_position(info.buffer_id, content_x, content_y, z_order,true);
 
         let order = *next_order;
         *next_order += 1;
@@ -1225,7 +1131,17 @@ fn discover_windows(
         added = true;
     }
 
-    removed || added
+    removed || added || resized
+}
+
+/// The frame of a window whose client is `info`'s size: the content plus the border and title
+/// bar, or the content alone for a chromeless window.
+fn frame_size(info: &graphics::WindowInfo, chromeless: bool) -> (usize, usize) {
+    if chromeless {
+        (info.width as usize, info.height as usize)
+    } else {
+        (info.width as usize + BORDER_WIDTH * 2, info.height as usize + TITLE_BAR_HEIGHT + BORDER_WIDTH * 2)
+    }
 }
 
 /// Update kernel z-order for all windows. Called after any z-order change
@@ -1234,7 +1150,7 @@ fn discover_windows(
 fn update_kernel_z_order(windows: &[Window]) {
     for (i, win) in windows.iter().enumerate() {
         if win.window_id != 0 {
-            let _ = graphics::set_window_position(win.window_id, win.content_x(), win.content_y(), i as u32);
+            let _ = graphics::set_window_position(win.window_id, win.content_x(), win.content_y(), i as u32,!win.minimized);
         }
     }
 }
@@ -1442,53 +1358,16 @@ fn main() {
     let screen_h = info.height as usize;
     let bpp = info.bytes_per_pixel as usize;
 
-    let gpu_compositing = {
-        let test_pixel: [u32; 1] = [0xFF000000];
-        let mut ok = false;
-        for attempt in 0..20 {
-            if graphics::virgl_composite(&test_pixel, 1, 1).is_ok() {
-                ok = true;
-                break;
-            }
-            if attempt < 19 {
-                let _ = libbreenix::time::nanosleep(&libbreenix::types::Timespec {
-                    tv_sec: 0, tv_nsec: 100_000_000,
-                });
-            }
-        }
-        ok
-    };
-    if !gpu_compositing {
-        print!("[bwm] ERROR: GPU compositing required\n");
-        process::exit(1);
-    }
-
-    print!("[bwm] GPU compositing mode (VirGL), display: {}x{}\n", screen_w, screen_h);
-
-    // Try to map COMPOSITE_TEX directly into our address space.
-    // If successful, all pixel writes go straight to GPU texture backing (zero-copy).
-    let (composite_buf, direct_mapped) = match graphics::map_compositor_texture() {
-        Ok((ptr, tex_w, tex_h)) => {
-            let mapped_w = tex_w as usize;
-            let mapped_h = tex_h as usize;
-            print!("[bwm] Direct compositor mapping: {}x{} at {:p}\n", mapped_w, mapped_h, ptr);
-            let buf = unsafe { core::slice::from_raw_parts_mut(ptr, mapped_w * mapped_h) };
-            (buf, true)
-        }
-        Err(_) => {
-            print!("[bwm] Fallback: heap-allocated compositor buffer\n");
-            // Leak a Vec to get a &'static mut slice — BWM runs for the lifetime of the OS
-            let v = vec![0u32; screen_w * screen_h];
-            let leaked = v.leak();
-            (leaked as &mut [u32], false)
-        }
-    };
+    graphics::init(screen_w as u32,screen_h as u32).unwrap_or_else(|e|{eprintln!("[bwm] v2 compositor: {e}");process::exit(1)});
+    let composite_buf=vec![0u32;screen_w*screen_h].leak();
+    #[cfg(not(target_arch = "aarch64"))]
+    let direct_mapped=false;
 
     let mut fb = unsafe {
         FrameBuf::from_raw(
             composite_buf.as_mut_ptr() as *mut u8,
             screen_w, screen_h, screen_w * bpp, bpp, info.is_bgr(),
-        )
+        ).expect("the framebuffer is a valid surface")
     };
 
     // VirGL direct-mapped texture writes are not visible until the explicit
@@ -1542,17 +1421,13 @@ fn main() {
     let (mut mouse_x, mut mouse_y) = graphics::mouse_pos()
         .map(|(x, y)| (x as i32, y as i32))
         .unwrap_or((0, 0));
-    #[cfg(target_arch = "aarch64")]
-    let mut active_cursor_shape = graphics::cursor_shape::ARROW;
     let mut prev_buttons: u32 = 0;
     let mut dragging: Option<(usize, i32, i32)> = None;
-    // Active resize: (win_idx, edge, anchor_x, anchor_y, orig_x, orig_y, orig_w, orig_h)
-    let mut resizing: Option<(usize, ResizeEdge, i32, i32, i32, i32, usize, usize)> = None;
     let mut full_redraw = true;
     let mut content_dirty = false;
     let mut windows_dirty = false;
     let mut win_defaults: [WindowDefaults; MAX_DEFAULTS] = core::array::from_fn(|_| WindowDefaults {
-        title: [0; 32], title_len: 0, x: 0, y: 0, width: 0, height: 0, valid: false,
+        title: [0; 32], title_len: 0, x: 0, y: 0, valid: false,
     });
 
     // Clock state
@@ -1573,33 +1448,18 @@ fn main() {
     #[cfg(not(target_arch = "aarch64"))]
     hotkey_mgr.load_config("/etc/hotkeys.conf");
 
-    // Initial composite. ARM64 uses the same op16 SUBMIT_3D compositor path as
-    // steady-state frames so presentation is gated by the GPU present fence.
+    // Publish the v2 chrome window before entering the input loop.
     #[cfg(target_arch = "aarch64")]
     {
-        if direct_mapped {
-            let _ = graphics::virgl_composite_windows_rect(
-                &[],
-                0,
-                0,
-                1,
-                0,
-                0,
-                screen_w as u32,
-                screen_h as u32,
-            );
-        } else {
-            let _ =
-                graphics::virgl_composite_windows(composite_buf, screen_w as u32, screen_h as u32, true);
-        }
+        let _ = graphics::compose_scene(composite_buf, screen_w as u32, screen_h as u32, true);
     }
     #[cfg(not(target_arch = "aarch64"))]
     {
         if direct_mapped {
             // Data is already in COMPOSITE_TEX — just tell kernel to upload + display
-            let _ = graphics::virgl_composite_windows_rect(&[], 0, 0, 1, 0, 0, screen_w as u32, screen_h as u32);
+            let _ = graphics::compose_region(&[], 0, 0, 1, 0, 0, screen_w as u32, screen_h as u32);
         } else {
-            let _ = graphics::virgl_composite_windows(&composite_buf, screen_w as u32, screen_h as u32, true);
+            let _ = graphics::compose_scene(&composite_buf, screen_w as u32, screen_h as u32, true);
         }
     }
 
@@ -1632,12 +1492,12 @@ fn main() {
         };
 
         // ── 0b. Poll modifier state and check hotkeys ──
-        // Drain the kernel's latched Super press-edge count (op=31) every frame
-        // — including frames where compositor_wait was skipped — so a tap that
-        // completed between polls is fed into double-tap detection and the
-        // keyboard-ready latch can't busy-loop compositor_wait.
-        let super_taps = take_super_tap_count();
-        let current_mods = graphics::poll_modifier_state() as u8;
+        // Drain the kernel's latched Super press-edge count every frame — including
+        // frames where compositor_wait was skipped — so a tap that completed between
+        // polls is fed into double-tap detection.
+        let keys = graphics::key_state().unwrap_or_default();
+        let super_taps = keys.super_taps;
+        let current_mods = keys.modifiers as u8;
         if let Some(action) = hotkey_mgr.update(current_mods, None, super_taps) {
             match &action {
                 HotkeyAction::FocusNext => {
@@ -1728,8 +1588,6 @@ fn main() {
         let mut dirty_y0 = i32::MAX;
         let mut dirty_x1 = 0i32;
         let mut dirty_y1 = 0i32;
-        #[cfg(target_arch = "aarch64")]
-        let mut cursor_dirty = false;
 
         // ── 4. Process mouse input (only when mouse changed) ──
         let mut mouse_moved_this_frame = false;
@@ -1757,7 +1615,7 @@ fn main() {
                             if windows[win_idx].window_id != 0 {
                                 let cx = windows[win_idx].content_x();
                                 let cy = windows[win_idx].content_y();
-                                let _ = graphics::set_window_position(windows[win_idx].window_id, cx, cy, win_idx as u32);
+                                let _ = graphics::set_window_position(windows[win_idx].window_id, cx, cy, win_idx as u32,!windows[win_idx].minimized);
                             }
                             // Dirty region = union of old and new bounds
                             let (nx0, ny0, nx1, ny1) = windows[win_idx].bounds();
@@ -1773,88 +1631,6 @@ fn main() {
                             dirty_y1 = dirty_y1.max(dr_y1 as i32);
                             content_dirty = true;
                         }
-                    } else if let Some((win_idx, edge, anchor_x, anchor_y, orig_x, orig_y, orig_w, orig_h)) = resizing {
-                        let dx = mouse_x - anchor_x;
-                        let dy = mouse_y - anchor_y;
-
-                        let (mut new_x, mut new_y, mut new_w, mut new_h) =
-                            (orig_x, orig_y, orig_w as i32, orig_h as i32);
-
-                        match edge {
-                            ResizeEdge::Right => { new_w += dx; }
-                            ResizeEdge::Bottom => { new_h += dy; }
-                            ResizeEdge::Left => { new_x += dx; new_w -= dx; }
-                            ResizeEdge::Top => { new_y += dy; new_h -= dy; }
-                            ResizeEdge::TopLeft => { new_x += dx; new_w -= dx; new_y += dy; new_h -= dy; }
-                            ResizeEdge::TopRight => { new_w += dx; new_y += dy; new_h -= dy; }
-                            ResizeEdge::BottomLeft => { new_x += dx; new_w -= dx; new_h += dy; }
-                            ResizeEdge::BottomRight => { new_w += dx; new_h += dy; }
-                        }
-
-                        // Enforce minimums
-                        if (new_w as usize) < MIN_WIN_WIDTH {
-                            if edge == ResizeEdge::Left || edge == ResizeEdge::TopLeft || edge == ResizeEdge::BottomLeft {
-                                new_x = orig_x + orig_w as i32 - MIN_WIN_WIDTH as i32;
-                            }
-                            new_w = MIN_WIN_WIDTH as i32;
-                        }
-                        if (new_h as usize) < MIN_WIN_HEIGHT {
-                            if edge == ResizeEdge::Top || edge == ResizeEdge::TopLeft || edge == ResizeEdge::TopRight {
-                                new_y = orig_y + orig_h as i32 - MIN_WIN_HEIGHT as i32;
-                            }
-                            new_h = MIN_WIN_HEIGHT as i32;
-                        }
-
-                        // Clamp top to taskbar
-                        new_y = new_y.max(TASKBAR_HEIGHT as i32);
-
-                        let (ox0, oy0, ox1, oy1) = windows[win_idx].bounds();
-
-                        // Update frame dimensions live (content stays at old size until release)
-                        windows[win_idx].x = new_x;
-                        windows[win_idx].y = new_y;
-                        windows[win_idx].width = new_w as usize;
-                        windows[win_idx].height = new_h as usize;
-
-                        // Update kernel window position
-                        if windows[win_idx].window_id != 0 {
-                            let cx = windows[win_idx].content_x();
-                            let cy = windows[win_idx].content_y();
-                            let _ = graphics::set_window_position(
-                                windows[win_idx].window_id, cx, cy, win_idx as u32,
-                            );
-                        }
-
-                        // Send live resize event to client
-                        let new_cw = windows[win_idx].content_width();
-                        let new_ch = windows[win_idx].content_height();
-                        if windows[win_idx].window_id != 0 {
-                            let resize_event = WindowInputEvent {
-                                event_type: input_event_type::WINDOW_RESIZED,
-                                keycode: new_cw as u16,
-                                mouse_x: new_ch as i16,
-                                mouse_y: 0,
-                                modifiers: 0,
-                                scroll_y: 0,
-                            };
-                            let _ = graphics::write_window_input(
-                                windows[win_idx].window_id, &resize_event,
-                            );
-                        }
-
-                        // Dirty region = union of old and new bounds
-                        let (nx0, ny0, nx1, ny1) = windows[win_idx].bounds();
-                        let dr_x0 = ox0.min(nx0).max(0) as usize;
-                        let dr_y0 = oy0.min(ny0).max(0) as usize;
-                        let dr_x1 = ox1.max(nx1) as usize;
-                        let dr_y1 = oy1.max(ny1) as usize;
-                        compose_partial_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache,
-                            &windows, focused_win, &clock_text, dr_x0, dr_y0, dr_x1, dr_y1, &mut ui_font);
-                        dirty_x0 = dirty_x0.min(dr_x0 as i32);
-                        dirty_y0 = dirty_y0.min(dr_y0 as i32);
-                        dirty_x1 = dirty_x1.max(dr_x1 as i32);
-                        dirty_y1 = dirty_y1.max(dr_y1 as i32);
-                        content_dirty = true;
                     } else if !windows.is_empty() && focused_win < windows.len()
                         && !windows[focused_win].minimized
                         && windows[focused_win].hit_content(mouse_x, mouse_y)
@@ -1863,71 +1639,13 @@ fn main() {
                         let local_y = (mouse_y - windows[focused_win].content_y()) as i16;
                         route_mouse_move_to_focused(&windows, focused_win, local_x, local_y);
                     }
-
-                    // Update cursor shape based on resize edge hover
-                    if dragging.is_none() && resizing.is_none() {
-                        let mut hover_shape = graphics::cursor_shape::ARROW;
-                        for i in (0..windows.len()).rev() {
-                            if windows[i].minimized { continue; }
-                            if let Some(edge) = windows[i].hit_resize_edge(mouse_x, mouse_y) {
-                                hover_shape = match edge {
-                                    ResizeEdge::Top | ResizeEdge::Bottom => graphics::cursor_shape::RESIZE_NS,
-                                    ResizeEdge::Left | ResizeEdge::Right => graphics::cursor_shape::RESIZE_EW,
-                                    ResizeEdge::TopLeft | ResizeEdge::BottomRight => graphics::cursor_shape::RESIZE_NWSE,
-                                    ResizeEdge::TopRight | ResizeEdge::BottomLeft => graphics::cursor_shape::RESIZE_NESW,
-                                };
-                                break;
-                            }
-                            if windows[i].hit_any(mouse_x, mouse_y) {
-                                break; // Inside window but not on edge
-                            }
-                        }
-                        let _ = graphics::set_cursor_shape(hover_shape);
-                        #[cfg(target_arch = "aarch64")]
-                        {
-                            cursor_dirty |= active_cursor_shape != hover_shape;
-                            active_cursor_shape = hover_shape;
-                        }
-                    }
                 }
 
                 // Release: end drag or route release event.
                 // Per-endpoint button tracking in the kernel prevents dual USB HID
                 // endpoints from racing (one endpoint can't cancel the other's press).
                 if (buttons & 1) == 0 && (prev_buttons & 1) != 0 {
-                    if let Some((win_idx, _, _, _, _, _, orig_w, orig_h)) = resizing.take() {
-                        // Reset cursor shape back to arrow
-                        let _ = graphics::set_cursor_shape(graphics::cursor_shape::ARROW);
-                        #[cfg(target_arch = "aarch64")]
-                        {
-                            cursor_dirty |= active_cursor_shape != graphics::cursor_shape::ARROW;
-                            active_cursor_shape = graphics::cursor_shape::ARROW;
-                        }
-                        // Resize ended — notify client of new content dimensions
-                        let new_cw = windows[win_idx].content_width();
-                        let new_ch = windows[win_idx].content_height();
-                        let old_cw = orig_w.saturating_sub(BORDER_WIDTH * 2);
-                        let old_ch = orig_h.saturating_sub(TITLE_BAR_HEIGHT + BORDER_WIDTH * 2);
-                        print!("[bwm] resize end: id={} old={}x{} new={}x{} frame={}x{}\n",
-                            windows[win_idx].window_id, old_cw, old_ch, new_cw, new_ch,
-                            windows[win_idx].width, windows[win_idx].height);
-                        if (new_cw != old_cw || new_ch != old_ch)
-                            && windows[win_idx].window_id != 0
-                        {
-                            let resize_event = WindowInputEvent {
-                                event_type: input_event_type::WINDOW_RESIZED,
-                                keycode: new_cw as u16,
-                                mouse_x: new_ch as i16,
-                                mouse_y: 0,
-                                modifiers: 0,
-                                scroll_y: 0,
-                            };
-                            let _ = graphics::write_window_input(
-                                windows[win_idx].window_id, &resize_event,
-                            );
-                        }
-                        save_window_defaults(&windows[win_idx], &mut win_defaults);
-                    } else if dragging.is_some() {
+                    if dragging.is_some() {
                         let drag_idx = dragging.unwrap().0;
                         dragging = None;
                         save_window_defaults(&windows[drag_idx], &mut win_defaults);
@@ -1997,15 +1715,8 @@ fn main() {
                     else if !windows.is_empty() {
                         let mut clicked_idx: Option<usize> = None;
                         let mut clicked_title = false;
-                        let mut clicked_resize: Option<ResizeEdge> = None;
                         for i in (0..windows.len()).rev() {
                             if windows[i].minimized { continue; }
-                            // Check resize edges first (they extend slightly outside)
-                            if let Some(edge) = windows[i].hit_resize_edge(mouse_x, mouse_y) {
-                                clicked_idx = Some(i);
-                                clicked_resize = Some(edge);
-                                break;
-                            }
                             let ht = windows[i].hit_title(mouse_x, mouse_y);
                             let ha = windows[i].hit_any(mouse_x, mouse_y);
                             if ht || ha {
@@ -2032,27 +1743,7 @@ fn main() {
                                 focused_win = top;
                             }
 
-                            if let Some(edge) = clicked_resize {
-                                // Start resize — set cursor shape for the edge
-                                let shape = match edge {
-                                    ResizeEdge::Top | ResizeEdge::Bottom => graphics::cursor_shape::RESIZE_NS,
-                                    ResizeEdge::Left | ResizeEdge::Right => graphics::cursor_shape::RESIZE_EW,
-                                    ResizeEdge::TopLeft | ResizeEdge::BottomRight => graphics::cursor_shape::RESIZE_NWSE,
-                                    ResizeEdge::TopRight | ResizeEdge::BottomLeft => graphics::cursor_shape::RESIZE_NESW,
-                                };
-                                let _ = graphics::set_cursor_shape(shape);
-                                #[cfg(target_arch = "aarch64")]
-                                {
-                                    cursor_dirty |= active_cursor_shape != shape;
-                                    active_cursor_shape = shape;
-                                }
-                                resizing = Some((
-                                    top, edge,
-                                    mouse_x, mouse_y,
-                                    windows[top].x, windows[top].y,
-                                    windows[top].width, windows[top].height,
-                                ));
-                            } else if clicked_title {
+                            if clicked_title {
                                 // Check chrome buttons before starting drag
                                 if windows[top].hit_close_button(mouse_x, mouse_y) {
                                     let close_event = WindowInputEvent {
@@ -2139,14 +1830,10 @@ fn main() {
         // ── 6. Composite to GPU (only when something changed) ──
         #[cfg(target_arch = "aarch64")]
         {
-            if full_redraw || content_dirty || windows_dirty || mouse_moved_this_frame || cursor_dirty {
-                let (cbuf, cw, ch): (&[u32], u32, u32) = if direct_mapped {
-                    (&[], 0, 0)
-                } else {
-                    (&composite_buf, screen_w as u32, screen_h as u32)
-                };
+            if full_redraw || content_dirty || windows_dirty || mouse_moved_this_frame {
+                let (cbuf, cw, ch): (&[u32], u32, u32) = (composite_buf, screen_w as u32, screen_h as u32);
                 if full_redraw {
-                    let _ = graphics::virgl_composite_windows_rect(
+                    let _ = graphics::compose_region(
                         cbuf,
                         cw,
                         ch,
@@ -2163,9 +1850,9 @@ fn main() {
                     let dy = dirty_y0.max(0) as u32;
                     let dw = (dirty_x1.min(sw) - dirty_x0.max(0)).max(0) as u32;
                     let dh = (dirty_y1.min(sh) - dirty_y0.max(0)).max(0) as u32;
-                    let _ = graphics::virgl_composite_windows_rect(cbuf, cw, ch, 2, dx, dy, dw, dh);
-                } else if windows_dirty || mouse_moved_this_frame || cursor_dirty {
-                    let _ = graphics::virgl_composite_windows_rect(cbuf, cw, ch, 0, 0, 0, 0, 0);
+                    let _ = graphics::compose_region(cbuf, cw, ch, 2, dx, dy, dw, dh);
+                } else if windows_dirty || mouse_moved_this_frame {
+                    let _ = graphics::compose_region(cbuf, cw, ch, 0, 0, 0, 0, 0);
                 }
                 full_redraw = false;
                 content_dirty = false;
@@ -2180,7 +1867,7 @@ fn main() {
             (&composite_buf, screen_w as u32, screen_h as u32)
         };
         if full_redraw {
-            let _ = graphics::virgl_composite_windows_rect(
+            let _ = graphics::compose_region(
                 cbuf, cw, ch,
                 1, 0, 0, screen_w as u32, screen_h as u32,
             );
@@ -2194,7 +1881,7 @@ fn main() {
             let dy = dirty_y0.max(0) as u32;
             let dw = (dirty_x1.min(sw) - dirty_x0.max(0)).max(0) as u32;
             let dh = (dirty_y1.min(sh) - dirty_y0.max(0)).max(0) as u32;
-            let _ = graphics::virgl_composite_windows_rect(
+            let _ = graphics::compose_region(
                 cbuf, cw, ch,
                 2, dx, dy, dw, dh,
             );
@@ -2204,7 +1891,7 @@ fn main() {
             // Window content and/or mouse-only update: no COMPOSITE_TEX change,
             // but kernel uploads per-window textures and draws cursor via SUBMIT_3D.
             // dirty_mode=0 tells kernel bg_dirty=false → skip COMPOSITE_TEX upload.
-            let _ = graphics::virgl_composite_windows_rect(
+            let _ = graphics::compose_region(
                 cbuf, cw, ch,
                 0, 0, 0, 0, 0,
             );

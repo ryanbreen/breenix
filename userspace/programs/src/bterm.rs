@@ -464,12 +464,11 @@ fn main() {
     let mut rows = (content_h as usize / cell_h).max(1);
 
     // Create tab bar
+    let theme = Theme::dark();
     let btop_label = make_static_label("btop");
     let mut tab_bar = TabBar::new(
         Rect::new(0, 0, WIN_WIDTH as i32, TAB_BAR_HEIGHT),
-        vec![btop_label],
-    );
-    let theme = Theme::dark();
+        vec![btop_label], &theme);
 
     // Spawn initial tabs: btop (default visible) + shell
     let mut tabs: Vec<Tab> = vec![spawn_tab_cmd(cols, rows, b"/bin/btop\0")];
@@ -502,10 +501,10 @@ fn main() {
                 Event::CloseRequested => {
                     process::exit(0);
                 }
-                Event::KeyPress { ascii, keycode, modifiers } => {
+                Event::KeyPress { ascii, keycode, modifiers, .. } => {
                     // Debug: log key events for +/- and ctrl
                     if *ascii == b'+' || *ascii == b'=' || *ascii == b'-'
-                       || *keycode == 0x2D || *keycode == 0x2E
+                       || *keycode == breengel::keys::MINUS || *keycode == breengel::keys::EQUAL
                     {
                         print!("[bterm] key: ascii={} keycode=0x{:02X} ctrl={}\n",
                                *ascii, *keycode, modifiers.ctrl);
@@ -513,7 +512,7 @@ fn main() {
                     if modifiers.ctrl {
                         // Ctrl+T: new tab
                         if *ascii == b't' - b'a' + 1 || *ascii == b'T' - b'A' + 1
-                           || *keycode == b't' as u16 || *keycode == b'T' as u16
+                           || *keycode == breengel::keys::T
                         {
                             let label = make_tab_label();
                             let idx = tab_bar.add_tab(label);
@@ -526,7 +525,7 @@ fn main() {
                         }
                         // Ctrl+W: close tab
                         if *ascii == b'w' - b'a' + 1 || *ascii == b'W' - b'A' + 1
-                           || *keycode == b'w' as u16 || *keycode == b'W' as u16
+                           || *keycode == breengel::keys::W
                         {
                             let sel = tab_bar.selected();
                             if tabs.len() <= 1 {
@@ -550,7 +549,7 @@ fn main() {
                             continue;
                         }
                         // Ctrl+= or Ctrl++: increase font size
-                        if *ascii == b'+' || *ascii == b'=' || *keycode == 0x2E {
+                        if *ascii == b'+' || *ascii == b'=' || *keycode == breengel::keys::EQUAL {
                             if ttf_font.is_some() {
                                 let new_size = (font_size + FONT_SIZE_STEP).min(MAX_FONT_SIZE);
                                 if new_size != font_size {
@@ -562,7 +561,7 @@ fn main() {
                             continue;
                         }
                         // Ctrl+-: decrease font size
-                        if *ascii == b'-' || *keycode == 0x2D {
+                        if *ascii == b'-' || *keycode == breengel::keys::MINUS {
                             if ttf_font.is_some() {
                                 let new_size = (font_size - FONT_SIZE_STEP).max(MIN_FONT_SIZE);
                                 if new_size != font_size {
@@ -575,14 +574,14 @@ fn main() {
                         }
                     }
 
-                    // Arrow keys (USB HID keycodes)
+                    // Arrow keys (Linux key codes)
                     let sel = tab_bar.selected();
                     if let Some(tab) = tabs.get(sel) {
                         match *keycode {
-                            79 => { let _ = io::write(tab.master_fd, b"\x1b[C"); } // Right
-                            80 => { let _ = io::write(tab.master_fd, b"\x1b[D"); } // Left
-                            81 => { let _ = io::write(tab.master_fd, b"\x1b[B"); } // Down
-                            82 => { let _ = io::write(tab.master_fd, b"\x1b[A"); } // Up
+                            breengel::keys::RIGHT => { let _ = io::write(tab.master_fd, b"\x1b[C"); }
+                            breengel::keys::LEFT => { let _ = io::write(tab.master_fd, b"\x1b[D"); }
+                            breengel::keys::DOWN => { let _ = io::write(tab.master_fd, b"\x1b[B"); }
+                            breengel::keys::UP => { let _ = io::write(tab.master_fd, b"\x1b[A"); }
                             _ => {
                                 if *ascii > 0 {
                                     let _ = io::write(tab.master_fd, &[*ascii]);
@@ -598,7 +597,7 @@ fn main() {
                 Event::MouseButton { button, pressed, x, y } => {
                     mouse_x = *x;
                     mouse_y = *y;
-                    if *button == 0 || *button == 1 {
+                    if *button == breengel::buttons::LEFT {
                         if *pressed {
                             buttons |= 1;
                         } else {
@@ -660,7 +659,7 @@ fn main() {
         }
 
         // Pass mouse state to TabBar for tab switching
-        let input = InputState::from_raw(mouse_x, mouse_y, buttons, prev_buttons);
+        let input = InputState::from_raw(mouse_x, mouse_y, buttons, prev_buttons, breengel::clock::now_ns() / 1_000_000);
         if let WidgetEvent::ValueChanged(_) = tab_bar.update(&input) {
             let sel = tab_bar.selected();
             if let Some(tab) = tabs.get_mut(sel) {

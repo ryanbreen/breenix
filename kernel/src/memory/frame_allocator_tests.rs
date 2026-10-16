@@ -39,19 +39,11 @@ pub(crate) fn retire_with_free_list_contended(
 }
 
 /// Run `f` with the free list held by this CPU, so a frame returned inside `f`
-/// finds it busy. On x86 a return waits for a holder on another CPU and only
-/// gives up when this CPU is the holder, so the hold goes through
-/// `with_free_frames` and records this CPU as the owner.
+/// finds it busy. A return waits for a holder on another CPU and only gives up
+/// when this CPU is the holder, so the hold goes through `with_free_frames` and
+/// records this CPU as the owner.
 fn with_free_list_held<R>(f: impl FnOnce() -> R) -> R {
-    #[cfg(target_arch = "x86_64")]
-    {
-        with_free_frames(|_| f())
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        let _free_list = FREE_FRAMES.lock();
-        f()
-    }
+    with_free_frames(|_| f())
 }
 
 fn restore_lease(lease: FrameLease) -> bool {

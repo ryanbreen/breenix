@@ -342,7 +342,7 @@ serial.
 |---|---|---|---|---|
 | virtio-gpu 2D (ARM64 QEMU; Parallels if the gate fails) | the full guest backing of the resource bound by `SET_SCANOUT` | for every damaged rectangle of serial *S*, a fenced `TRANSFER_TO_HOST_2D` answered OK, then `RESOURCE_FLUSH` answered OK | the kernel records the fence ids of serial *S*'s transfers and flush, and readback refuses (EAGAIN) until they are answered | the host's copy of the resource and the host window. virtio-gpu 2D has no transfer back, so equality of the host copy rests on the spec's transfer semantics, independently checked through binding and completion |
 | GOP framebuffer (x86-64) | the **complete** GOP framebuffer memory after `copy_to_display`, converted from RGB or BGR | the copy of every damaged band of serial *S* has returned, with a store barrier | copy completion is recorded per band against *S* | the host's scanning of that memory into its window |
-| SVGA3 screen target (VMware) | the screen target's surface after `READBACK_GB_SURFACE` into its guest MOB, fenced; if the device does not support that readback, the guest backing of the bound surface | `UPDATE_GB_SCREENTARGET` for every damaged rectangle of *S*, fenced and answered; the readback fence when used | fence ids recorded against *S*; the readback names the screen target id and surface id bound by `DEFINE_GB_SCREENTARGET` | with readback: the host window only. Without it: also the device's copy, as for virtio 2D, and the record says so |
+| SVGA3 screen target (VMware) | the surface bound to the screen target, copied on the host by `SURFACE_COPY` into a readback surface, then written by `READBACK_GB_SURFACE` into that surface's own guest MOB, fenced; the MOB is cleared first and a pixel the device did not write is refused | `UPDATE_GB_SCREENTARGET` for every damaged rectangle of *S*, with a `SURFACE_COPY` of the rectangle in the same command buffer, fenced and answered; the readback fence | fence ids recorded against *S*; the readback copies the surface bound to the screen target, and refuses (EIO) when that is not the composed surface | the host window |
 | VirGL (Parallels, only if the gate passes) | the scanout resource read back by a fenced `TRANSFER_FROM_HOST_3D` into a guest buffer | the composite's `SUBMIT_3D` fence and the transfer fence, both answered | fence ids recorded against *S* | the host window |
 
 Rules common to every backend:
@@ -373,6 +373,21 @@ One boot per target, written as a throwaway program, before the window-interface
    - In neither case does a reconstructed image count as evidence.
 2. **VMware.** A 1280x800 mode set takes effect; `READBACK_GB_SURFACE` of the screen target works or not. That
    picks which row of section 4.1 applies.
+   - **Result.** The 1280x800 screen target works. `READBACK_GB_SURFACE` of the surface the guest uploads
+     completes and answers its fence but writes nothing: all 1,024,000 pixels of the cleared MOB stay as they
+     were. After a `SURFACE_COPY` of that surface into a second surface on its own cleared MOB, a fenced
+     `READBACK_GB_SURFACE` of the copy writes all 1,024,000 pixels, equal to the uploaded scene. The device
+     skips readback of a surface the host has not modified, so VMware is observed through a host-side copy of
+     the bound surface (section 4.1).
+   - **The device uploads lazily.** A fenced `UPDATE_GB_IMAGE`, with or without `UPDATE_GB_SCREENTARGET`,
+     answers its fence before the device has read the MOB: when the guest rewrites the MOB right after the
+     fence, a later copy returns the rewritten pixels for the whole surface; 100 ms after the fence it returns
+     the uploaded ones. With a `SURFACE_COPY` of the surface in the same command buffer as the update, the copy
+     returns the uploaded pixels, and the device keeps them after the MOB is rewritten. A MOB change with no
+     update never reaches the device's copy. So every presented rectangle carries that copy before its fence.
+   - **Proof that it observes the device.** On VMware the `corrupt-outside-damage` fault presents the corrupted
+     pixel to the device and then restores the guest backing. A readback of guest memory would miss it; the
+     `scanout/fault-outside-damage` case finds it in every VMware suite boot.
 3. **x86-64.** The bootloader honours 1280x800 with `virtio-vga,xres=1280,yres=800`; adding
    `virtio-tablet-pci` to the gate leaves every existing x86 suite's verdict unchanged.
 4. **ARM64 QEMU.** A fenced 2D transfer plus flush round-trip, with fence ids recorded per serial.
@@ -1232,7 +1247,7 @@ allocator wrapper in the test build of the case.
 | Limit | Value | Cases |
 |---|---|---|
 | font load (table directory, cmap, hmtx, loca validation) | at most 16 × file bytes + 65,536 steps; at most 2 × file bytes + 64 KiB allocated | `font-parser/work-bound`, `alloc-bound`, `corpus` |
-| one glyph's outline | compound depth at most 8; at most 256 components after expansion; at most 65,535 points and no more than maxp declares; at most 16 × the glyph data bytes visited + 4,096 steps; at most 64 bytes per point + 64 KiB allocated | `font-parser/compound-*`, `glyf-points`, `coords-extreme`, `work-bound` |
+| one glyph's outline | compound depth at most 8; at most 256 components after expansion; at most 65,535 points and no more than maxp declares; at most 16 × the glyph data bytes visited + 8 × *P* + 4,096 steps, where *P* is the glyph's point count after compound expansion (expansion copies every component's points, so a 526-byte compound glyph can yield 65,535 points and no bound on bytes alone holds); at most 64 bytes per point + 64 KiB allocated | `font-parser/compound-*`, `glyf-points`, `coords-extreme`, `work-bound` |
 | one glyph's flattening into line segments | quadratic curves subdivide to depth at most 9, so at most 512 segments per curve; at most 65,536 segments per glyph, beyond which the glyph is refused with `GlyphTooComplex`; at most 1,028 × *P* steps, where *P* is the glyph's point count after compound expansion | `font-parser/coords-extreme`, `work-bound` |
 | one glyph's rasterization at size *s* px | a bitmap at most 4*s* × 4*s*; at most *E* + *H* × (10*C* + 8*E* × (3 + ⌈log₂(*E* + 1)⌉) + 17) + 64 steps and at most *H* × *C* + 4*C* + 48*E* + 4,096 bytes allocated, where *H* is the bitmap's rows, *C* its sampled columns (its width, or three times its width for LCD subpixel text) and *E* its segments; a glyph whose step bound exceeds 2²⁸ (268,435,456) is refused with `GlyphTooExpensive` before any raster loop runs | `font-parser/coords-extreme`, `work-bound`, `text/size-range` |
 | inflate | at most 4 × output bytes + 16 × input bytes + 1,024 per block steps; 32 KiB window plus at most 64 KiB of tables besides the caller's output | `inflate/output-limit`, `byte-split`, `png-decode/bomb` |
@@ -1701,17 +1716,17 @@ Cases run against `kiosk_test` and read the registry.
 - `acquire-replays-damage` — With three buffers and alternating disjoint updates (A commits `[1,0]`, B commits `[1,2]` with only the second cell damaged), the next acquired buffer holds `[1,2]`, and every acquire over 300 such commits equals the newest front.
 - `acquire-full-copy` — A buffer with no base, or whose missing commits have left the 8-entry damage log, is replayed in full by the kernel and equals the newest front, for a Breengel client and a raw client alike.
 - `stale-base-commit` — Of two concurrently acquired buffers, committing the one with the older base gives exactly that buffer's pixels, with damage widened to cover every pixel that changed. With `acquire-stall` holding thread 1's replay copy from front A halfway, thread 2 commits C and then acquires: it does not get A until the copy ends, and thread 1's buffer equals exactly the commit its returned base names. A stale buffer committed after more than eight intervening commits gets whole-window damage. Every step compares whole pixels to the formula and checks that the damage covers every changed pixel.
-- `commit-immutable` — Writing a committed buffer faults.
+- `commit-immutable` — Writing a committed buffer, or its tree page at any tree size, faults.
 - `commit-busy` — Committing a buffer twice without acquiring it again fails with EBUSY.
 - `thread-commit` — Two threads of the owner committing concurrently both succeed with distinct, ordered commit ids.
 - `release-order` — A retired buffer returns to free only after its composite and any capture copy in progress are done.
 - `acquire-timeout` — acquire with no free buffer returns ETIMEDOUT no earlier than its timeout and within 100 ms after it.
-- `resize` — The owner's resize gives buffers of the new size holding the old contents in the intersection.
+- `resize` — The owner's resize gives buffers of the new size holding the old contents in the intersection, also while another thread of the owner resizes the window.
 - `resize-error` — A resize the kernel refuses is reported as an error, and no Resized event claims the new size.
 - `resize-rlimit` — A resize over RLIMIT_AS fails with ENOMEM and leaves the old buffers intact.
 - `resize-rollback` — A failure at each allocation step of create and resize leaves registry, mappings and accounting unchanged.
 - `rlimit-accounting` — Window buffers count against RLIMIT_AS, and destroying the window returns them.
-- `capture-across-destroy` — A capture in progress when its window is destroyed returns the whole commit, with the tree page of that same commit when a tree destination is given, and the buffer is freed when the copy ends.
+- `capture-across-destroy` — A capture in progress when its window is destroyed or resized returns the whole commit, with the tree page of that same commit when a tree destination is given; a capture begun after the destroy is ENOENT; and the buffer is freed when the copy ends.
 - `two-buffer-capture-load` — A two-buffer client committing 300 frames while a reader captures it continuously and an evidence holder is registered never waits in acquire beyond one composite and one capture copy.
 - `remnant-on-death` — When the owner of a window with an evidence holder is killed, the holder reads its last front and tree, and releasing the remnant returns memory to the baseline.
 - `churn` — 100 create and destroy cycles return the registry, allocation counter and memory to the baseline.
@@ -1741,11 +1756,11 @@ Each denial follows a positive control in the same case: the authorized principa
 - `efault-register` — An unmapped title pointer fails with EFAULT.
 - `efault-list` — An unmapped list buffer fails with EFAULT.
 - `efault-capture` — An unmapped capture destination fails with EFAULT.
-- `efault-events` — An unmapped event-read buffer fails with EFAULT and consumes no event.
+- `efault-events` — An unmapped event-read buffer, or an argument structure made read-only while the read blocks, fails with EFAULT and consumes no event.
 - `efault-inject` — An unmapped event pointer given to the compositor's write fails with EFAULT.
 - `efault-composite` — An unmapped composite descriptor fails with EFAULT.
-- `efault-mouse` — An unmapped pointer-position buffer fails with EFAULT.
-- `efault-commit` — An unmapped commit metadata pointer fails with EFAULT and commits nothing.
+- `efault-mouse` — An unmapped or read-only pointer-position or key-state buffer fails with EFAULT.
+- `efault-commit` — An unmapped commit metadata pointer fails with EFAULT, metadata with a nonzero reserved field fails with EINVAL, and neither commits anything.
 - `efault-readback` — An unmapped readback destination fails with EFAULT.
 - `efault-claim` — An unmapped claim argument fails with EFAULT and claims nothing.
 - `efault-cross-page` — A buffer that runs from a mapped page into an unmapped one fails with EFAULT and has no side effect.
@@ -1754,7 +1769,7 @@ Each denial follows a positive control in the same case: the authorized principa
 - `cow-output` — Output written into a copy-on-write page after fork lands only in the caller's copy.
 - `destroy-during-commit` — Destroying a window while another thread commits it ends with one outcome and no fault.
 - `test-hooks-absent` — The wait-stress ops fail with ENOSYS in the production kernel.
-- `retired-ops` — The retired demo ops fail with ENOSYS.
+- `retired-ops` — The retired demo ops and version 1 window ops fail with ENOSYS.
 - `unknown-op` — An unknown op fails with EINVAL.
 - `killable` — SIGKILL ends a process blocked in acquire or wait_event within 250 ms.
 - `quiet-errors` — 1,000 failing window calls on one thread add nothing to that thread's kernel-output counter or to the unattributed counter; with `emit-diagnostic(path)` armed, each writer path of section 12.1 (direct writers, nested wrappers, the logger, a notice written out by another thread, and `emergency_print` into the unattributed counter) adds exactly its bytes, once, to the right counter, and a second emitting thread moves only its own.
@@ -1770,7 +1785,7 @@ derived from its id.
 - `compose-many` — Sixteen windows in a fixed stack compose to the formula, exactly.
 - `generation` — Each commit advances the window's commit id by exactly one.
 - `no-compositor` — A commit with no compositor returns within 250 ms and is composed once a compositor claims.
-- `compositor-dies` — An acquire blocked when the compositor exits returns within 250 ms, and the next commit succeeds.
+- `compositor-dies` — An acquire blocked when the compositor exits, and a blocking event read on another window, return within 250 ms, and the next commit succeeds.
 - `eintr` — A signal interrupts a blocked acquire with EINTR.
 - `damage-metadata` — A commit's damage rectangles are recorded exactly.
 - `damage-work` — A composite processes exactly the pixels in its damage union, by the compositor's counter, and with `ignore-damage` armed the excess is reported by count.

@@ -16,6 +16,9 @@ use crate::physics::Spring;
 
 pub struct SaveIcon {
     base: IconBase,
+    remainder_us: u32,
+    pending_click: bool,
+    pending_release: bool,
     /// Overall scale spring. stiffness=320, damping=22.
     scale: Spring,
     /// Vertical lift for hover (negative = up). stiffness=200, damping=14.
@@ -39,6 +42,9 @@ impl SaveIcon {
     pub fn new() -> Self {
         Self {
             base: IconBase::new(),
+            remainder_us: 0,
+            pending_click: false,
+            pending_release: false,
             scale: Spring::new(1.0, 320.0, 22.0),
             lift_y: Spring::new(0.0, 200.0, 14.0),
             insert_y: Spring::new(0.0, 350.0, 18.0),
@@ -82,8 +88,9 @@ impl SaveIcon {
     }
 }
 
-impl Icon for SaveIcon {
-    fn update(&mut self, dt_us: u32, mouse: IconMouse) {
+impl SaveIcon {
+    fn tick(&mut self, mouse: IconMouse) {
+        let dt_us = 1000;
         let state_changed = self.base.update(dt_us, &mouse);
         let dt = dt_us as f32 / 1_000_000.0;
 
@@ -129,15 +136,14 @@ impl Icon for SaveIcon {
         // lift_y target: hover lifts the disk -3 px with a gentle ±2 px bob.
         let target_lift = match self.base.state {
             IconState::HoverIn | IconState::Hovering => {
-                let bob = sin_approx(self.base.state_time as f32 / 1_000_000.0 * 3.5) * 2.0;
+                let bob =
+                    sin_approx(self.base.state_time.min(500_000) as f32 / 1_000_000.0 * 3.5) * 2.0;
                 -3.0 + bob
             }
             // Pressed: nudge toward slot.
             IconState::Pressed => 2.0,
             // Idle: subtle breathing ~1 px.
-            IconState::Idle => {
-                sin_approx(self.base.idle_time as f32 / 1_000_000.0 * 1.8) * 1.0
-            }
+            IconState::Idle => sin_approx(self.base.idle_time.min(500_000) as f32 / 1_000_000.0 * 2.0),
             _ => 0.0,
         };
 
@@ -158,6 +164,23 @@ impl Icon for SaveIcon {
         self.lift_y.update(dt);
         self.insert_y.update(dt);
         self.particles.update(dt);
+    }
+}
+
+impl Icon for SaveIcon {
+    fn update(&mut self, dt_us: u32, mut mouse: IconMouse) {
+        self.remainder_us += dt_us % 1000;
+        let quanta = dt_us / 1000 + self.remainder_us / 1000;
+        self.remainder_us %= 1000;
+        self.pending_click |= mouse.just_clicked;
+        self.pending_release |= mouse.just_released;
+        for _ in 0..quanta {
+            mouse.just_clicked = self.pending_click;
+            mouse.just_released = self.pending_release;
+            self.pending_click = false;
+            self.pending_release = false;
+            self.tick(mouse);
+        }
     }
 
     fn draw(&self, fb: &mut FrameBuf, cx: i32, cy: i32, size: i32) {
@@ -283,7 +306,7 @@ impl Icon for SaveIcon {
         // ---------------------------------------------------------------
         // Sparkle particles — anchored at (cx, slot_y)
         // ---------------------------------------------------------------
-        for p in &self.particles.particles {
+        for p in self.particles.particles() {
             if !p.alive() {
                 continue;
             }
@@ -305,12 +328,29 @@ impl Icon for SaveIcon {
         24
     }
 
+    fn hover_amount(&self) -> f32 {
+        self.base.hover_amount()
+    }
+    fn settled(&self) -> bool {
+        self.base.settled()
+            && self.base.idle_time >= 500_000
+            && (self.base.state != IconState::Hovering || self.base.state_time >= 500_000)
+            && self.scale.settled()
+            && self.lift_y.settled()
+            && self.insert_y.settled()
+            && self.particles.active_count() == 0
+            && self.slot_glow == 0.0
+    }
+
     fn state(&self) -> IconState {
         self.base.state
     }
 
     fn reset(&mut self) {
         self.base.reset();
+        self.remainder_us = 0;
+        self.pending_click = false;
+        self.pending_release = false;
         self.scale.impulse(1.0, 0.0);
         self.scale.set_target(1.0);
         self.lift_y.impulse(0.0, 0.0);
@@ -322,6 +362,7 @@ impl Icon for SaveIcon {
         self.ejecting = false;
         self.sparkles_emitted = false;
         self.particles.clear();
+        self.rng = Rng::new(0xD15C_FABB);
     }
 
     fn name(&self) -> &'static str {

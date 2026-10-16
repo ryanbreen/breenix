@@ -112,6 +112,9 @@ fn read_be16() -> u16 {
 /// Look up a named file in fw_cfg and read its contents into buf (as much as
 /// fits). Returns the file's full size, or 0 if it is not found.
 pub fn read_file(name: &str, buf: &mut [u8]) -> usize {
+    // Selector and byte cursor are shared by all CPUs for the whole transaction.
+    static TRANSACTION: spin::Mutex<()> = spin::Mutex::new(());
+    let _transaction = TRANSACTION.lock();
     if !present() {
         return 0;
     }

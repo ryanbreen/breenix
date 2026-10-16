@@ -8,7 +8,8 @@ use noto_sans_mono_bitmap::{
 };
 
 use crate::color::Color;
-use crate::framebuf::FrameBuf;
+use crate::framebuf::{Box64, FrameBuf};
+use crate::work;
 
 /// Font metrics for layout calculations.
 #[derive(Debug, Clone, Copy)]
@@ -37,36 +38,40 @@ pub fn metrics() -> FontMetrics {
     }
 }
 
-/// Draw a single character with anti-aliased alpha blending.
-///
-/// The character is rendered at (x0, y0) with the given foreground color.
-/// Background pixels are read from the framebuffer and blended with the
-/// glyph intensity for smooth anti-aliased edges.
+/// Draw a single character with its raster's top-left at (x0, y0) (docs/gui/breengel.md
+/// section 8.2): each pixel is the coverage blend of `fg` over the pixel already there. A
+/// character the crate lacks draws the raster of '?'. Marks the raster's rectangle.
 pub fn draw_char(fb: &mut FrameBuf, ch: char, x0: usize, y0: usize, fg: Color) {
+    if x0 > i64::MAX as usize / 2 || y0 > i64::MAX as usize / 2 {return;}
+    draw_char_at(fb,ch,x0 as i64,y0 as i64,fg);
+}
+
+/// Signed origins for kernel console cells clipped at the left and top edges.
+pub fn draw_char_at(fb:&mut FrameBuf,ch:char,x0:i64,y0:i64,fg:Color) {
+    if !(-1_000_000_000..=1_000_000_000).contains(&x0) || !(-1_000_000_000..=1_000_000_000).contains(&y0) {return;}
     let rc = match get_raster(ch, FontWeight::Regular, RasterHeight::Size16) {
         Some(rc) => rc,
-        None => match get_raster('?', FontWeight::Regular, RasterHeight::Size16) {
-            Some(rc) => rc,
-            None => return,
-        },
+        None => match get_raster('?', FontWeight::Regular, RasterHeight::Size16) {Some(rc)=>rc,None=>return},
     };
-
-    let width = rc.width();
-    for (y, row) in rc.raster().iter().enumerate() {
-        for (x, &intensity) in row.iter().take(width).enumerate() {
-            if intensity == 0 {
-                continue;
-            }
-            let px = x0 + x;
-            let py = y0 + y;
-            if intensity == 255 {
-                fb.put_pixel(px, py, fg);
-            } else {
-                let bg = fb.get_pixel(px, py);
-                fb.put_pixel(px, py, fg.blend(bg, intensity));
+    let raster = rc.raster();
+    let cell = Box64 { x0, y0, x1: x0 + rc.width() as i64, y1: y0 + raster.len() as i64 };
+    let v = cell.intersect(&fb.clip_box());
+    if !v.is_empty() {
+        work::add(v.height() as u64 * (1 + v.width() as u64));
+        for py in v.y0..v.y1 {
+            let row = &raster[(py - y0) as usize];
+            for px in v.x0..v.x1 {
+                let a = row[(px - x0) as usize];
+                if a == 0 {
+                    continue;
+                }
+                let c = if a == 255 { fg } else { fg.blend(fb.get_pixel(px as usize, py as usize), a) };
+                let p = fb.opaque(c);
+                fb.write(px as usize, py as usize, p);
             }
         }
     }
+    fb.mark(cell);
 }
 
 /// Draw a string of ASCII bytes at (x, y) with the given foreground color.
@@ -74,8 +79,10 @@ pub fn draw_char(fb: &mut FrameBuf, ch: char, x0: usize, y0: usize, fg: Color) {
 /// Characters are spaced at the font's monospace advance width (no letter spacing).
 pub fn draw_text(fb: &mut FrameBuf, text: &[u8], x: usize, y: usize, fg: Color) {
     let m = metrics();
+    work::add(text.len() as u64);
     for (i, &ch) in text.iter().enumerate() {
-        draw_char(fb, ch as char, x + i * m.char_width, y, fg);
+        let Some(cx) = i.checked_mul(m.char_width).and_then(|dx| x.checked_add(dx)) else { return };
+        draw_char(fb, ch as char, cx, y, fg);
     }
 }
 

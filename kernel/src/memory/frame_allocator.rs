@@ -245,14 +245,25 @@ static EXTERNAL_LEAF_SPANS: Mutex<[ExternalLeafSpan; MAX_EXTERNAL_LEAF_SPANS]> =
 /// refuse at the exact boundary rather than reallocating.
 static FREE_FRAMES: Mutex<Vec<PhysFrame>> = Mutex::new(Vec::new());
 
-/// x86_64: the logical CPU holding `FREE_FRAMES` through `with_free_frames`,
-/// or `usize::MAX`.
-#[cfg(target_arch = "x86_64")]
+/// The CPU holding `FREE_FRAMES` through `with_free_frames`, or `usize::MAX`.
 static FREE_FRAMES_OWNER: AtomicUsize = AtomicUsize::new(usize::MAX);
 
-/// x86_64: run `f` on the free list. A holder on another CPU is waited for;
-/// `f` gets `None` only when this CPU already holds it, which happens when the
-/// capacity reservation below grows the heap and the heap allocates a frame.
+/// This CPU's number, for `FREE_FRAMES_OWNER`.
+fn this_cpu() -> usize {
+    #[cfg(target_arch = "x86_64")]
+    {
+        crate::per_cpu::cpu_id()
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize
+    }
+}
+
+/// Run `f` on the free list. A holder on another CPU is waited for; `f` gets
+/// `None` only when this CPU already holds it, which on x86_64 happens when
+/// the capacity reservation below grows the heap and the heap allocates a
+/// frame.
 ///
 /// The list used to be try-locked everywhere. With one CPU a busy lock could
 /// only mean such nesting, and the fallbacks fit it: an allocation took the
@@ -261,10 +272,9 @@ static FREE_FRAMES_OWNER: AtomicUsize = AtomicUsize::new(usize::MAX);
 /// returned while it was held was lost: free in the ledger, on no list.
 /// Interrupts are masked for the hold, so no holder is ever interrupted or
 /// switched out with it held.
-#[cfg(target_arch = "x86_64")]
 fn with_free_frames<R>(f: impl FnOnce(Option<&mut Vec<PhysFrame>>) -> R) -> R {
     crate::arch_without_interrupts(|| {
-        let me = crate::per_cpu::cpu_id();
+        let me = this_cpu();
         loop {
             if let Some(mut free_list) = FREE_FRAMES.try_lock() {
                 FREE_FRAMES_OWNER.store(me, Ordering::Relaxed);
@@ -429,43 +439,6 @@ pub(crate) fn register_external_leaf_frame(frame: PhysFrame) -> Result<(), &'sta
     } else {
         Err("external leaf frame is outside allocator memory")
     }
-}
-
-/// Register a kernel/device-owned physical span before it is exposed through a
-/// process page table. Allocator-backed pages also receive the per-frame marker;
-/// device apertures remain authoritative through this fixed-capacity registry.
-#[cfg(target_arch = "aarch64")]
-pub(crate) fn register_external_leaf_span(
-    start: PhysAddr,
-    byte_len: u64,
-) -> Result<(), &'static str> {
-    let start = start.as_u64();
-    if start & 0xfff != 0 || byte_len == 0 || byte_len & 0xfff != 0 {
-        return Err("external leaf span must be nonempty and page-aligned");
-    }
-    let end = start
-        .checked_add(byte_len)
-        .ok_or("external leaf span overflow")?;
-
-    let mut address = start;
-    while address < end {
-        let frame = PhysFrame::containing_address(PhysAddr::new(address));
-        mark_external_leaf_slot(frame)?;
-        address += 4096;
-    }
-
-    let mut spans = EXTERNAL_LEAF_SPANS.lock();
-    if spans
-        .iter()
-        .any(|span| span.start == start && span.end == end)
-    {
-        return Ok(());
-    }
-    let Some(slot) = spans.iter_mut().find(|span| span.start == span.end) else {
-        return Err("external leaf span registry full");
-    };
-    *slot = ExternalLeafSpan { start, end };
-    Ok(())
 }
 
 /// Derive one mapping reference from allocator state before its descriptor is
@@ -683,17 +656,7 @@ fn ensure_free_frame_capacity(required: usize) -> PrepareFrame {
         FREE_FRAME_CAPACITY.store(free_list.capacity(), Ordering::Release);
         PrepareFrame::Ready
     };
-    #[cfg(target_arch = "x86_64")]
-    {
-        with_free_frames(|free_list| free_list.map_or(PrepareFrame::Contended, reserve))
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        let Some(mut free_list) = FREE_FRAMES.try_lock() else {
-            return PrepareFrame::Contended;
-        };
-        reserve(&mut free_list)
-    }
+    with_free_frames(|free_list| free_list.map_or(PrepareFrame::Contended, reserve))
 }
 
 fn prepare_frame_for_allocation(index: usize) -> PrepareFrame {
@@ -904,22 +867,9 @@ fn allocate_candidate() -> Option<PhysFrame> {
         return None;
     }
 
-    // Try to reuse a frame from the free list (all architectures).
-    #[cfg(target_arch = "x86_64")]
+    // Try to reuse a frame from the free list.
     if let Some(frame) = with_free_frames(|free_list| free_list.and_then(|list| list.pop())) {
         return Some(frame);
-    }
-    // Uses try_lock() to avoid deadlock if called from interrupt context.
-    #[cfg(not(target_arch = "x86_64"))]
-    if let Some(mut free_list) = FREE_FRAMES.try_lock() {
-        if let Some(frame) = free_list.pop() {
-            log::trace!(
-                "Frame allocator: Reused frame {:#x} from free list ({} remaining)",
-                frame.start_address().as_u64(),
-                free_list.len()
-            );
-            return Some(frame);
-        }
     }
 
     // Fall back to sequential allocation from memory map
@@ -1199,18 +1149,9 @@ pub(crate) fn return_lease(lease: FrameLease) -> ReturnOutcome {
         free_list.push(lease.frame);
         ReturnOutcome::Returned
     };
-    #[cfg(target_arch = "x86_64")]
-    {
-        with_free_frames(|free_list| {
-            free_list.map_or_else(|| counted(ReturnOutcome::LostContended), push)
-        })
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    if let Some(mut free_list) = FREE_FRAMES.try_lock() {
-        push(&mut free_list)
-    } else {
-        counted(ReturnOutcome::LostContended)
-    }
+    with_free_frames(|free_list| {
+        free_list.map_or_else(|| counted(ReturnOutcome::LostContended), push)
+    })
 }
 
 fn current_lease_for_frame(frame: PhysFrame) -> FrameLease {
@@ -1306,11 +1247,10 @@ pub fn memory_stats() -> MemoryStats {
 
     let allocated_frames = NEXT_FREE_FRAME.load(Ordering::Relaxed);
 
-    let free_list_frames = if let Some(free_list) = FREE_FRAMES.try_lock() {
-        free_list.len()
-    } else {
-        0
-    };
+    let free_list_frames = with_free_frames(|free_list| match free_list {
+        Some(list) => list.len(),
+        None => 0,
+    });
 
     MemoryStats {
         total_bytes,
