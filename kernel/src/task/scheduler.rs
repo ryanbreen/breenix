@@ -5846,7 +5846,17 @@ impl Scheduler {
                 if !in_deferred_requeue && !is_idle && !already_queued {
                     let probe_target = self.find_target_cpu_for_wakeup(tid);
                     #[cfg(target_arch = "x86_64")]
-                    crate::stall_probe::placed(tid, probe_target);
+                    {
+                        let info = probe_target.map_or(0, |t| {
+                            let cur = self.cpu_state[t].current_thread.unwrap_or(0);
+                            let qlen = self.per_cpu_queues[t].len().min(255) as u64;
+                            let promo = self.timer_wake_promotion_open(t) as u64;
+                            let idle = (cur == self.cpu_state[t].idle_thread) as u64;
+                            let rank = u64::from(self.sched_rank(cur));
+                            (cur & 0xfffff) | qlen << 20 | promo << 28 | idle << 29 | rank << 32
+                        });
+                        crate::stall_probe::placed_info(tid, probe_target, info);
+                    }
                     if let Some(target) = probe_target {
                         trace_sched_diag(
                             TRACE_SCHED_DIAG_WAKE_TIMER_ENQUEUE,

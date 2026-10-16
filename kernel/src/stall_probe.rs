@@ -427,6 +427,16 @@ pub fn placed(tid: u64, target: Option<usize>) {
     }
 }
 
+/// Placement with what the target CPU held: its current tid, queue length,
+/// whether a promoted (head) enqueue was open, whether it was idle, and the
+/// current thread's rank.
+static PLACE_INFO: [AtomicU64; TIDS] = [const { AtomicU64::new(0) }; TIDS];
+
+pub fn placed_info(tid: u64, target: Option<usize>, info: u64) {
+    placed(tid, target);
+    PLACE_INFO[tid as usize % TIDS].store(info, Ordering::Relaxed);
+}
+
 /// Dispatches per CPU, and per window the other CPUs' dispatches inside it.
 static DISP_COUNT: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 static WIN_DISP_START: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
@@ -484,7 +494,7 @@ pub fn returned(site: u64) {
         DISP_CPU[i].load(Ordering::Relaxed),
         now,
         cpu_now() as u64,
-        0,
+        PLACE_INFO[i].swap(0, Ordering::Relaxed),
     ];
     for (slot, v) in LATE_REC[n as usize % LATES].iter().zip(vals) {
         slot.store(v, Ordering::Relaxed);
@@ -625,7 +635,7 @@ pub fn poll() {
             nwt += 1;
         }
         log::info!(
-            "LATE tid={} kind={:#x} late_ms10={} wake=({},{}) placed={} disp=({},{}) ret_cpu={} win(s,e,cpu|fl<<8,tid,rip)={:x?} gap(s,len,cpu)={:?} wait(s,len,cpu|k<<8|h<<16)={:x?}",
+            "LATE tid={} kind={:#x} late_ms10={} wake=({},{}) placed={} disp=({},{}) ret_cpu={} win(s,e,cpu|fl<<8,tid,rip)={:x?} gap(s,len,cpu)={:?} wait(s,len,cpu|k<<8|h<<16)={:x?} pinfo(cur,q,promo,idle,rank)=({},{},{},{},{})",
             v[0],
             v[1],
             (now - due) / 100_000,
@@ -638,6 +648,11 @@ pub fn poll() {
             &wins[..nw],
             &gaps[..ng],
             &waits[..nwt],
+            v[10] & 0xfffff,
+            v[10] >> 20 & 0xff,
+            v[10] >> 28 & 1,
+            v[10] >> 29 & 1,
+            v[10] >> 32,
         );
         LATE_READ.fetch_add(1, Ordering::Relaxed);
     }
