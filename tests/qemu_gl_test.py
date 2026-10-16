@@ -15,9 +15,14 @@ CHECK = ROOT / "scripts/check-host-renderer.py"
 METAL = "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)"
 
 
-def record(event, renderer, vendor="Google Inc. (Apple)", version="OpenGL ES 3.0.0 (ANGLE 2.1)"):
-    return {"event": event, "ctx_id": 1, "gl_vendor": vendor, "gl_renderer": renderer,
+def record(event, renderer, vendor="Google Inc. (Apple)", version="OpenGL ES 3.0.0 (ANGLE 2.1)", ctx_id=1):
+    return {"event": event, "ctx_id": ctx_id, "gl_vendor": vendor, "gl_renderer": renderer,
             "gl_version": version, "egl_vendor": "Google Inc. (Apple)", "egl_version": "1.5 (ANGLE 2.1)"}
+
+
+def workload(renderer=METAL):
+    """A context created and then submitted to, as a guest that renders leaves it."""
+    return [record("context-create", renderer), record("first-submit-3d", renderer)]
 
 
 class CheckHostRendererTest(unittest.TestCase):
@@ -26,10 +31,10 @@ class CheckHostRendererTest(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.dir = Path(self.tmp.name)
 
-    def check(self, records=None, serial=None):
+    def check(self, records=None, serial=None, fmt=1):
         path = self.dir / "host-renderer.json"
         if records is not None:
-            path.write_text(json.dumps({"format": 1, "pid": 1, "records": records}))
+            path.write_text(json.dumps({"format": fmt, "pid": 1, "records": records}))
         args = [sys.executable, str(CHECK), str(path)]
         if serial is not None:
             (self.dir / "serial.txt").write_text(serial)
@@ -42,8 +47,7 @@ class CheckHostRendererTest(unittest.TestCase):
         self.assertIn(reason, result.stdout)
 
     def test_the_apple_gpu_through_metal_is_accepted(self):
-        result = self.check([record("context-create", METAL), record("first-submit-3d", METAL)],
-                            serial="VIRGL_CAPSET_RENDERER=Apple M1\n")
+        result = self.check(workload(), serial="VIRGL_CAPSET_RENDERER=Apple M1\n")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("accepted", result.stdout)
         self.assertIn(METAL, result.stdout)
@@ -54,6 +58,38 @@ class CheckHostRendererTest(unittest.TestCase):
 
     def test_a_record_without_strings_is_refused(self):
         self.assertRefused(self.check([record("context-create", None)]), "no GL renderer strings")
+
+    def test_another_format_is_refused(self):
+        self.assertRefused(self.check(workload(), fmt=2), "not format 1")
+
+    def test_creation_without_a_submission_is_refused(self):
+        self.assertRefused(self.check([record("context-create", METAL)]), "records no first-submit-3d")
+        self.assertRefused(self.check([record("context-create", METAL),
+                                       record("context-create", METAL, ctx_id=2)]),
+                           "records no first-submit-3d")
+
+    def test_a_submission_needs_its_context_created_first(self):
+        self.assertRefused(self.check([record("first-submit-3d", METAL), record("context-create", METAL)]),
+                           "first-submit-3d of context 1 has no context-create")
+        self.assertRefused(self.check([record("context-create", METAL),
+                                       record("first-submit-3d", METAL, ctx_id=2)]),
+                           "first-submit-3d of context 2 has no context-create")
+
+    def test_a_repeated_first_submission_is_refused(self):
+        self.assertRefused(self.check(workload() + [record("first-submit-3d", METAL)]),
+                           "repeats that context's first submission")
+
+    def test_a_recreated_context_may_submit_again(self):
+        result = self.check(workload() + workload())
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_unknown_events_and_bad_context_ids_are_refused(self):
+        self.assertRefused(self.check(workload() + [record("context-destroy", METAL)]),
+                           "unknown event 'context-destroy'")
+        for ctx in (0, -1, "1", None, True):
+            with self.subTest(ctx=ctx):
+                self.assertRefused(self.check([record("context-create", METAL, ctx_id=ctx)]),
+                                   "has no valid ctx_id")
 
     def test_software_renderers_are_refused_by_name(self):
         for renderer, name in (("llvmpipe (LLVM 22.1.8, 128 bits)", "llvmpipe"),
@@ -67,10 +103,10 @@ class CheckHostRendererTest(unittest.TestCase):
 
     def test_another_hardware_backend_is_refused(self):
         other = "ANGLE (Apple, Apple M1, OpenGL 4.1 Metal - 90.5)"
-        self.assertRefused(self.check([record("context-create", other)]), "not the Apple GPU through ANGLE's Metal")
+        self.assertRefused(self.check(workload(other)), "not the Apple GPU through ANGLE's Metal")
 
     def test_a_guest_capset_naming_another_renderer_is_refused(self):
-        self.assertRefused(self.check([record("context-create", METAL)], serial="VIRGL_CAPSET_RENDERER=llvmpipe\n"),
+        self.assertRefused(self.check(workload(), serial="VIRGL_CAPSET_RENDERER=llvmpipe\n"),
                            "capset renderer 'llvmpipe'")
 
 
@@ -119,7 +155,7 @@ class BootInteractiveGpuGlTest(unittest.TestCase):
     def launch(self, *args, gl="/stub/QEMU-GL.app/Contents/MacOS/qemu-system-aarch64", records=None):
         env = {k: v for k, v in os.environ.items() if k not in ("ANGLE_DEFAULT_PLATFORM", "BREENIX_QEMU_NOGUI")}
         env.update(CAPTURE=str(self.root / "launch.json"), STUB_GL=gl or "",
-                   STUB_RECORD=json.dumps({"records": records}) if records is not None else "")
+                   STUB_RECORD=json.dumps({"format": 1, "pid": 1, "records": records}) if records is not None else "")
         result = subprocess.run(
             ["bash", str(self.root / "scripts/boot-interactive.sh"), "--no-build", "--mode", "probe",
              "--serial-log", str(self.root / "run/serial.txt"), *args],
@@ -128,7 +164,7 @@ class BootInteractiveGpuGlTest(unittest.TestCase):
         return result, launch
 
     def test_the_window_uses_cocoa_gl_on_the_gl_binary_with_the_gl_device(self):
-        result, launch = self.launch("--gpu-gl", "--display", records=[record("context-create", METAL)])
+        result, launch = self.launch("--gpu-gl", "--display", records=workload())
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         argv = launch["argv"]
         self.assertEqual(argv[2], "/stub/QEMU-GL.app/Contents/MacOS/qemu-system-aarch64")
@@ -141,7 +177,7 @@ class BootInteractiveGpuGlTest(unittest.TestCase):
         self.assertIn("host renderer: accepted", result.stdout)
 
     def test_a_run_without_a_window_has_spice_gl_and_no_display(self):
-        result, launch = self.launch("--gpu-gl", "--no-display", records=[record("context-create", METAL)])
+        result, launch = self.launch("--gpu-gl", "--no-display", records=workload())
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         argv = launch["argv"]
         self.assertEqual(argv[argv.index("-display") + 1], "none")
@@ -152,7 +188,7 @@ class BootInteractiveGpuGlTest(unittest.TestCase):
 
     def test_a_refused_attestation_fails_the_boot(self):
         result, _ = self.launch("--gpu-gl", "--no-display",
-                                records=[record("context-create", "llvmpipe (LLVM 22.1.8, 128 bits)")])
+                                records=workload("llvmpipe (LLVM 22.1.8, 128 bits)"))
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("REFUSED", result.stdout)
         result, _ = self.launch("--gpu-gl", "--no-display")
@@ -162,7 +198,7 @@ class BootInteractiveGpuGlTest(unittest.TestCase):
     def test_a_named_gl_binary_replaces_the_installed_one(self):
         os.environ["BREENIX_QEMU_GL_BINARY"] = "/planted/QEMU-GL.app/Contents/MacOS/qemu-system-aarch64"
         self.addCleanup(os.environ.pop, "BREENIX_QEMU_GL_BINARY")
-        result, launch = self.launch("--gpu-gl", "--no-display", gl=None, records=[record("context-create", METAL)])
+        result, launch = self.launch("--gpu-gl", "--no-display", gl=None, records=workload())
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(launch["argv"][2], "/planted/QEMU-GL.app/Contents/MacOS/qemu-system-aarch64")
 

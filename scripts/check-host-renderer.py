@@ -7,7 +7,13 @@ ATTESTATION is the host-renderer.json the GL QEMU wrote for the run (the
 BREENIX_HOST_RENDERER_JSON file of scripts/qemu-gl/host-renderer-attestation.patch).
 The run is refused, with the reason, when:
 
-  - the file is missing or records no renderer context;
+  - the file is missing, is not format 1, or records no renderer context;
+  - any record's event is not context-create or first-submit-3d, or its ctx_id is not
+    a positive integer;
+  - a first-submit-3d record has no context-create of the same ctx_id before it, or
+    repeats one already recorded for that context;
+  - no record is a first-submit-3d: the guest never submitted commands, so the file
+    says nothing about the renderer that executed them;
   - any record lacks its renderer strings;
   - any record names a software renderer: llvmpipe, softpipe, lavapipe, SwiftShader,
     or any renderer string containing "Software";
@@ -26,6 +32,7 @@ import sys
 SOFTWARE = re.compile(r"llvmpipe|softpipe|lavapipe|swiftshader|software", re.IGNORECASE)
 DECLARED = re.compile(r"ANGLE Metal Renderer: Apple ")
 DECLARED_NAME = "the Apple GPU through ANGLE's Metal backend"
+EVENTS = ("context-create", "first-submit-3d")
 
 
 def judge(attestation, serial):
@@ -36,12 +43,31 @@ def judge(attestation, serial):
         return "no host renderer attestation: the guest created no VirGL context"
     except (OSError, ValueError) as e:
         return f"unreadable host renderer attestation: {e}"
+    if not isinstance(doc, dict) or doc.get("format") != 1:
+        return "the host renderer attestation is not format 1"
     records = doc.get("records") or []
-    if not records:
+    if not isinstance(records, list) or not records:
         return "the host renderer attestation records no renderer context"
     renderers = set()
+    created, submitted = set(), set()
     for rec in records:
-        where = f"{rec.get('event')} of context {rec.get('ctx_id')}"
+        if not isinstance(rec, dict):
+            return f"the host renderer attestation has a malformed record: {rec!r}"
+        event, ctx = rec.get("event"), rec.get("ctx_id")
+        where = f"{event} of context {ctx}"
+        if event not in EVENTS:
+            return f"the host renderer attestation has an unknown event {event!r}"
+        if not isinstance(ctx, int) or isinstance(ctx, bool) or ctx < 1:
+            return f"{where} has no valid ctx_id"
+        if event == "context-create":
+            created.add(ctx)
+            submitted.discard(ctx)
+        elif ctx not in created:
+            return f"{where} has no context-create for that context before it"
+        elif ctx in submitted:
+            return f"{where} repeats that context's first submission"
+        else:
+            submitted.add(ctx)
         fields = [rec.get(k) for k in ("gl_vendor", "gl_renderer", "gl_version")]
         if not all(isinstance(v, str) and v for v in fields):
             return f"{where} has no GL renderer strings"
@@ -52,6 +78,8 @@ def judge(attestation, serial):
         if not DECLARED.search(rec["gl_renderer"]):
             return f"{where} ran on {rec['gl_renderer']}, not {DECLARED_NAME}"
         renderers.add(rec["gl_renderer"])
+    if not any(rec["event"] == "first-submit-3d" for rec in records):
+        return "the host renderer attestation records no first-submit-3d: the guest submitted no commands"
     if serial:
         try:
             with open(serial, encoding="utf-8", errors="replace") as f:
