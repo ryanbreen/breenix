@@ -1150,54 +1150,10 @@ fn init_composite_texture(width: u32, height: u32) -> Result<(), &'static str> {
         RESOURCE_COMPOSITE_TEX_ID
     );
 
-    // Pre-allocate per-window texture pool at init time.
-    // TRANSFER_TO_HOST_3D only works for resources created before first SUBMIT_3D.
-    for slot in 0..MAX_WIN_TEX_SLOTS {
-        let max_w: u32 = MIN_FB_WIDTH;
-        let max_h: u32 = MIN_FB_HEIGHT;
-        let tex_size = (max_w as usize) * (max_h as usize) * 4;
-        let res_id = RESOURCE_WIN_TEX_BASE + slot as u32;
-
-        let layout = alloc::alloc::Layout::from_size_align(tex_size, 4096)
-            .map_err(|_| "invalid pre-alloc texture layout")?;
-        let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
-        if ptr.is_null() {
-            return Err("failed to allocate pre-alloc texture backing");
-        }
-
-        with_device_state(|state| {
-            virgl_resource_create_3d_cmd(
-                state,
-                res_id,
-                pipe::TEXTURE_2D,
-                vfmt::B8G8R8A8_UNORM,
-                pipe::BIND_SAMPLER_VIEW | pipe::BIND_SCANOUT,
-                max_w,
-                max_h,
-                1,
-                1,
-            )
-        })?;
-        with_device_state(|state| virgl_attach_backing_paged(state, res_id, ptr, tex_size))?;
-        with_device_state(|state| virgl_ctx_attach_resource_cmd(state, VIRGL_CTX_ID, res_id))?;
-        dma_cache_clean(ptr, tex_size);
-        with_device_state(|state| {
-            transfer_to_host_3d(state, res_id, 0, 0, max_w, max_h, max_w * 4)
-        })?;
-
-        unsafe {
-            WIN_TEX_BACKING[slot] = (ptr, tex_size);
-            WIN_TEX_DIMS[slot] = (max_w, max_h);
-            WIN_TEX_INITIALIZED[slot] = true;
-        }
-        crate::serial_println!(
-            "[virgl-pool] Pre-allocated slot={} res_id={} {}x{}",
-            slot,
-            res_id,
-            max_w,
-            max_h
-        );
-    }
+    // The version 1 per-window textures are created on demand by
+    // `create_window_texture`, not pre-allocated: eight full-screen slots took 32 MB of
+    // the 64 MiB kernel heap, which the version 2 compositor (BreenGL §18) needs for its
+    // screen and its bounded owner snapshots, and bwm composes through version 2.
 
     // Initialize cursor GPU texture (12x18 arrow bitmap, uploaded once)
     init_cursor_texture()?;
