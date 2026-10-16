@@ -233,11 +233,16 @@ VIGIL_ID=
 VIGIL_CPUS=
 [ "$CPUS" = 4 ] || VIGIL_CPUS=$CPUS
 [ -n "$ONLY" ] || VIGIL_ID=$(BREENIX_VIGIL_CPUS="$VIGIL_CPUS" "$ROOT/scripts/vigil-record.sh" start qemu "$MODE" "$SUITE" "$SERIAL_LOG" "" "$QEMU_PROFILE")
-# Vigil's BreenixScreen looks for qmp.sock in the registered boot's folder.
-# Unix socket paths on macOS allow 103 bytes, including any UTF-8 in HOME.
+# Vigil's BreenixScreen looks for qmp.sock in the registered boot's folder, which vigil-cli makes under the
+# account's home as macOS reports it (VIGIL_TEST_HOME in Vigil's tests), not under $HOME.
+# Vigil's capture takes socket paths of at most 103 bytes, counted in UTF-8 (macOS itself allows 104).
 if [ "$QMP_REQUESTED" -eq 0 ] && [ -n "$VIGIL_ID" ]; then
-    VIGIL_QMP_SOCKET="$HOME/Library/Application Support/Vigil/breenix/boots/$VIGIL_ID/qmp.sock"
-    if [ "$(printf '%s' "$VIGIL_QMP_SOCKET" | wc -c)" -le 103 ]; then
+    VIGIL_HOME=${VIGIL_TEST_HOME:-$(python3 -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')}
+    VIGIL_BOOT_DIR="$VIGIL_HOME/Library/Application Support/Vigil/breenix/boots/$VIGIL_ID"
+    VIGIL_QMP_SOCKET="$VIGIL_BOOT_DIR/qmp.sock"
+    if [ ! -d "$VIGIL_BOOT_DIR" ]; then
+        echo "==> Vigil QMP disabled: no boot folder at $VIGIL_BOOT_DIR"
+    elif [ "$(printf '%s' "$VIGIL_QMP_SOCKET" | wc -c)" -le 103 ]; then
         QMP_SOCKET="$VIGIL_QMP_SOCKET"
     else
         echo "==> Vigil QMP disabled: socket path exceeds 103 bytes: $VIGIL_QMP_SOCKET"
@@ -249,7 +254,7 @@ if [ -n "$QMP_SOCKET" ]; then
     QMP_ARGS=(-qmp "unix:$QMP_SOCKET,server=on,wait=off")
 fi
 echo "==> Booting (serial: $SERIAL_LOG; Ctrl-A X quits)"
-[ -z "$QMP_SOCKET" ] || echo "==> QMP: $QMP_SOCKET (scripts/qmp-screendump.py $QMP_SOCKET out.png)"
+[ -z "$QMP_SOCKET" ] || echo "==> QMP: $QMP_SOCKET (scripts/qmp-screendump.py $(printf '%q' "$QMP_SOCKET") out.png)"
 # Wait interruptibly and register the watcher so a signal to this script also
 # stops and reaps its QEMU before the host lock is released.
 trap 'exit 143' TERM
