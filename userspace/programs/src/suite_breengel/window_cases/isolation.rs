@@ -423,11 +423,17 @@ fn isolation_pid_reuse() -> CaseResult {
     let i = info(id)?;
     ensure(i.owner as u64 == dead, "17.4", format!("LIST gives owner {} for the child {dead}'s window", i.owner))?;
     owner.kill();
+    // What a process given the dead owner's number could reach: nothing in the registry may
+    // still name that owner once it is dead.
+    let named: Vec<u64> = list().cite("17.1")?.iter().filter(|w| w.owner as u64 == dead).map(|w| w.id).collect();
+    ensure(named.is_empty(), "17.4", format!("after owner {dead} died, LIST still gives it windows {named:?}"))?;
     ensure(listed(id).cite("17.2")?.is_none(), "17.2", format!("window {id} is still listed after its owner {dead} died"))?;
     let live = shown(8, 8, 15, b"pid-reuse-live")?;
     let live_id = live.id();
-    // New processes, one of which would take the dead owner's number were numbers reused,
-    // try every op the owner had on both windows.
+    // New processes try every op the owner had, on the dead owner's window and on a live one.
+    // Breenix allocates numbers from a counter that never repeats, so none of them gets the
+    // dead owner's number; a kernel that reuses numbers gives one of them that number here,
+    // and it must be refused like the rest.
     for _ in 0..32 {
         step("17.4", child("a new process", 3_000, None, || {
             let me = getpid();
@@ -445,9 +451,6 @@ fn isolation_pid_reuse() -> CaseResult {
                             outcome(ret), errno_name(want as i64)));
                     }
                 }
-            }
-            if me == dead {
-                return Err(format!("a new process got the dead owner's pid {dead}, and was refused, as it must be"));
             }
             Ok(())
         }))?;
@@ -847,8 +850,7 @@ fn isolation_quiet_errors() -> CaseResult {
     ensure(after == before, "17.5", format!("1,000 failing window calls added {} bytes to this thread's kernel output; window ops produce none", after - before))?;
     ensure(un_after == un_before, "17.5", format!("1,000 failing window calls added {} bytes of unattributed kernel output", un_after - un_before))?;
     use abi::emit_path as p;
-    // aarch64 installs no `log` sink: its records are dropped where they are made (section 22).
-    let record = if cfg!(target_arch = "aarch64") { 0 } else { b"[ WARN] test_control: ".len() as u64 + 32 + 1 };
+    let record = b"[ WARN] test_control: ".len() as u64 + 32 + 1;
     for path in 1..=p::LAST {
         let (want_t, want_u) = match path {
             p::LOG_WARN => (record, 0),

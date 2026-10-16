@@ -788,7 +788,9 @@ fn events_malformed_write() -> CaseResult {
     reserved.reserved = 1;
     let cases = [
         ("kind 0", ev(0)), ("kind 15", ev(15)), ("FontChanged, which Breengel makes", ev(kind::FONT_CHANGED)),
-        ("Overflow, which the kernel makes", ev(kind::OVERFLOW)), ("text_len 241", long), ("a nonzero reserved field", reserved),
+        ("Overflow, which the kernel makes", ev(kind::OVERFLOW)), ("Resized, which the kernel makes", ev(kind::RESIZED)),
+        ("ResizeFailed, which the kernel makes", ev(kind::RESIZE_FAILED)), ("CompositorChanged, which the kernel makes", ev(kind::COMPOSITOR_CHANGED)),
+        ("text_len 241", long), ("a nonzero reserved field", reserved),
     ];
     for (what, bad) in cases {
         let answer = k.ask(&format!("event {} {}", w.id(), event_hex(&bad))).cite("24")?;
