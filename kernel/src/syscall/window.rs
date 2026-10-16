@@ -72,6 +72,8 @@ fn window(op: u64, arg: u64, len: u64) -> Result<u64, i32> {
         None if arg != 0 || len != 0 => return Err(EINVAL),
         None => {}
     }
+    #[cfg(target_arch = "aarch64")]
+    crate::graphics::display::init();
     if op == op::VERSION {
         return Ok(INTERFACE_VERSION as u64);
     }

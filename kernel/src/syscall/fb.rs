@@ -206,6 +206,17 @@ pub(super) fn framebuffer_op(cmd: FbDrawCmd) -> SyscallResult {
         return SyscallResult::Err(super::ErrorCode::PermissionDenied as u64);
     }
 
+    #[cfg(target_arch = "aarch64")]
+    if crate::graphics::display::active() && cmd.op == 6 {
+        if let (Some(pane),Ok(caller))=(fb_mmap_info_pre,crate::window::Caller::current()) {
+            let rect=if cmd.p3>0 && cmd.p4>0 {breengel_abi::Rect::new(cmd.p1,cmd.p2,cmd.p3,cmd.p4)}
+                else {breengel_abi::Rect::new(0,0,pane.width as i32,pane.height as i32)};
+            return match crate::graphics::display::flush(caller.tgid,pane.user_addr,pane.user_stride,rect) {
+                Ok(())=>SyscallResult::Ok(0),Err(e)=>SyscallResult::Err(e as u64)
+            };
+        }
+    }
+
     // Get framebuffer
     let fb = match SHELL_FRAMEBUFFER.get() {
         Some(fb) => fb,

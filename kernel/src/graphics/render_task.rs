@@ -234,6 +234,11 @@ pub fn is_display_taken() -> bool {
 /// the render thread's stack, not in interrupt context.
 #[cfg(target_arch = "aarch64")]
 fn update_mouse_cursor() {
+    if super::display::active() && is_display_taken() {
+        let moved=crate::test_control::take(breengel_abi::tc_point::MOVE_POINTER,0);
+        if let Some(p)=moved {super::display::panel_pointer(p as u32,(p>>32) as u32);}
+        return;
+    }
     let (mx, my) = if crate::drivers::virtio::input_mmio::is_tablet_initialized() {
         crate::drivers::virtio::input_mmio::mouse_position()
     } else if crate::drivers::usb::xhci::is_initialized() {
