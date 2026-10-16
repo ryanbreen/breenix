@@ -347,6 +347,9 @@ fn in_interrupt_context() -> bool {
 /// that check as the end of the halt.
 #[cfg(not(target_arch = "aarch64"))]
 pub(crate) fn halt_blocked_current() {
+    #[cfg(target_arch = "x86_64")]
+    let others_ready = crate::task::scheduler::any_thread_queued();
+    #[cfg(not(target_arch = "x86_64"))]
     let others_ready =
         crate::task::scheduler::with_scheduler(|sched| sched.ready_queue_length() != 0)
             .unwrap_or(false);

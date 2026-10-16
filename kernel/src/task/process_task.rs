@@ -271,10 +271,7 @@ impl PendingProcessReclaim {
     /// receipt's roots: ARM64 keeps its last TTBR0 there, and x86_64
     /// dispatches a user thread on the root cached there.
     fn cached_root_is_live(&self) -> bool {
-        scheduler::with_scheduler(|scheduler| {
-            scheduler.any_cached_ttbr0_matches(|cached| self.any_root_matches(cached))
-        })
-        .unwrap_or(false)
+        scheduler::any_cached_root_matches(|cached| self.any_root_matches(cached))
     }
 
     /// x86_64 switches CR3 lazily: idle keeps running on the tables of
