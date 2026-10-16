@@ -26,7 +26,7 @@ use crate::task::scheduler::MAX_CPUS;
 pub const FORCE_KIND: u32 = 0;
 const FORCING: bool = FORCE_KIND == 1;
 const STALL_MS: u64 = 50;
-const LATE_NS: u64 = 20_000_000;
+const LATE_NS: u64 = 10_000_000;
 
 fn cycles_per_us() -> u64 {
     (frequency_hz() / 1_000_000).max(1)
@@ -449,7 +449,7 @@ pub fn dispatched(tid: u64, cpu: usize) {
     }
 }
 
-const LATES: usize = 16;
+const LATES: usize = 64;
 static LATE_WRITE: AtomicU64 = AtomicU64::new(0);
 static LATE_READ: AtomicU64 = AtomicU64::new(0);
 static LATE_REC: [[AtomicU64; 11]; LATES] = [const { [const { AtomicU64::new(0) }; 11] }; LATES];
