@@ -651,6 +651,17 @@ fn lock_scheduler() -> SchedulerGuard {
     guard
 }
 
+/// x86_64: the scheduler-wide lock alone, tried, without the run-queue locks:
+/// what covers the thread list and the reclamation state (`rq::reclaim`).
+/// Instrumented as `try_lock_scheduler` is.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn try_lock_scheduler_list() -> Option<spin::MutexGuard<'static, Option<Scheduler>>> {
+    let guard = SCHEDULER.try_lock()?;
+    crate::tracing::providers::teardown::note_scheduler_acquire();
+    Some(guard)
+}
+
 #[inline(always)]
 fn try_lock_scheduler() -> Option<SchedulerGuard> {
     let guard = SCHEDULER.try_lock()?;
@@ -7593,26 +7604,29 @@ pub fn register_cpu_idle_thread(cpu_id: usize, idle_thread: Box<Thread>) {
 fn spawn_x86(thread: Box<Thread>, front: bool) -> Result<(), Box<Thread>> {
     let is_user = thread.privilege == super::thread::ThreadPrivilege::User;
     let thread_id = thread.id();
-    without_interrupts(|| {
-        let name = (!is_user).then(|| thread.name.clone());
+    let name = (!is_user).then(|| thread.name.clone());
+    let target = without_interrupts(|| -> Result<usize, Box<Thread>> {
         let target = rq::spawn(thread, front)?;
         if target == current_cpu_id_raw() {
             set_need_resched();
         } else {
             request_resched_x86(target);
         }
-        // Kernel threads only, as `add_thread_inner` logs them.
-        if let Some(name) = name {
-            log_serial_println!(
-                "Added thread {} '{}' to scheduler (user: {}, target_cpu: {})",
-                thread_id,
-                name,
-                is_user,
-                target
-            );
-        }
-        Ok(())
-    })
+        Ok(target)
+    })?;
+    // Kernel threads only, as `add_thread_inner` logs them, and with no
+    // scheduler lock held: the strand census and the ext2 lock-race gate
+    // read these lines.
+    if let Some(name) = name {
+        log_serial_println!(
+            "Added thread {} '{}' to scheduler (user: {}, target_cpu: {})",
+            thread_id,
+            name,
+            is_user,
+            target
+        );
+    }
+    Ok(())
 }
 
 /// Add a thread to the scheduler
@@ -7825,7 +7839,7 @@ pub fn note_thread_terminated(thread: &Thread) {
 #[cfg(target_arch = "x86_64")]
 fn reclaim_x86() -> Option<alloc::vec::Vec<Box<Thread>>> {
     without_interrupts(|| {
-        let Some(mut guard) = SCHEDULER.try_lock() else {
+        let Some(mut guard) = try_lock_scheduler_list() else {
             return Some(alloc::vec::Vec::new());
         };
         let scheduler = guard.as_mut()?;
@@ -7867,21 +7881,19 @@ pub fn reclaim_terminated_threads() {
     // Harvest with interrupts masked, then release outside the scheduler lock.
     // ARM64 also masks interrupts during release; x86 keeps them available
     // throughout the page teardown while preemption remains disabled.
-    // x86_64: only tried, as the idle loop's is: a CPU stopped while it
-    // reclaims must not hold up a fork or exec on another (#1649).
-    #[cfg(target_arch = "x86_64")]
-    let harvested = reclaim_x86();
-    #[cfg(not(target_arch = "x86_64"))]
-    let harvested: Option<alloc::vec::Vec<Box<Thread>>> = None;
-    let reclaimed_threads = harvested.unwrap_or_else(|| {
-        without_interrupts(|| {
-            let mut scheduler_lock = lock_scheduler();
-            if let Some(scheduler) = scheduler_lock.as_mut() {
-                scheduler.reclaim_terminated_threads()
-            } else {
-                alloc::vec::Vec::new()
-            }
-        })
+    let reclaimed_threads = without_interrupts(|| {
+        // x86_64: only tried, as the idle loop's is: a CPU stopped while it
+        // reclaims must not hold up a fork or exec on another (#1649).
+        #[cfg(target_arch = "x86_64")]
+        if let Some(harvested) = reclaim_x86() {
+            return harvested;
+        }
+        let mut scheduler_lock = lock_scheduler();
+        if let Some(scheduler) = scheduler_lock.as_mut() {
+            scheduler.reclaim_terminated_threads()
+        } else {
+            alloc::vec::Vec::new()
+        }
     });
     #[cfg(all(target_arch = "x86_64", feature = "testing"))]
     idle_release_probe::hold();
@@ -8980,19 +8992,9 @@ pub fn current_signal_timers() -> Option<(
 #[cfg(target_arch = "x86_64")]
 pub fn park_for_stop(tid: u64, spare: bool) -> bool {
     without_interrupts(|| {
-        rq::with_thread(tid, |held, thread| {
-            let current = held.state().current_thread == Some(tid);
-            let user_context = thread.context.cs & 3 == 3;
-            let parks = !current
-                && thread.state == ThreadState::Ready
-                && thread.privilege == super::thread::ThreadPrivilege::User
-                && !thread.blocked_in_syscall
-                && (user_context || !thread.has_started);
-            if parks {
-                thread.stop_timer_cpu();
-                thread.state = ThreadState::Blocked;
-                held.remove_from_ready_queue(tid);
-            } else if current && !spare {
+        rq::with_thread(tid, |held, _| {
+            let parks = rq::block_ready_user_thread(held, tid);
+            if !parks && !spare && held.state().current_thread == Some(tid) {
                 rq::choose_again(held, tid);
             }
             parks
@@ -9101,12 +9103,13 @@ pub fn claim_process_threads_for_kill(pid: u64) -> bool {
     with_scheduler(|scheduler| scheduler.claim_process_threads_for_kill(pid)).unwrap_or(true)
 }
 
-/// Make every scheduler thread of process row `pid` non-runnable
-/// (`Scheduler::terminate_process_threads`). x86_64: each under the lock of
-/// the CPU that owns it, a quarantine token on that CPU's queue, and the exit
-/// kick watched outside the scheduler (#1649).
-pub fn terminate_process_threads(pid: u64) {
-    #[cfg(target_arch = "x86_64")]
+/// x86_64: make every scheduler thread of process row `pid` non-runnable
+/// (`Scheduler::terminate_process_threads`): each under the lock of the CPU
+/// that owns it, a quarantine token on that CPU's queue, and the exit kick
+/// watched outside the scheduler (#1649). False, doing nothing, before the
+/// run-queue locks exist: the caller takes the whole scheduler.
+#[cfg(target_arch = "x86_64")]
+pub fn terminate_process_threads(pid: u64) -> bool {
     if rq_live() {
         use crate::tracing::providers::teardown::{EXIT_KICK_BUCKETS, EXIT_KICK_SLOTS};
         crate::tracing::providers::teardown::record_quarantine(pid);
@@ -9127,9 +9130,9 @@ pub fn terminate_process_threads(pid: u64) {
                 })
             });
         });
-        return;
+        return true;
     }
-    with_scheduler(|scheduler| scheduler.terminate_process_threads(pid));
+    false
 }
 
 /// x86_64: the signal state of live thread `tid` and the process row it

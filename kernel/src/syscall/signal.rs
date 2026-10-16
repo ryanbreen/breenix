@@ -183,7 +183,16 @@ pub(crate) fn kill_process_now(victim: ProcessId, exit_code: i32, claimed: Optio
         return;
     }
     crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_SIGNAL);
-    crate::task::scheduler::terminate_process_threads(victim.as_u64());
+    // x86_64: each thread under the lock of the CPU that owns it (#1649).
+    #[cfg(target_arch = "x86_64")]
+    let quarantined = crate::task::scheduler::terminate_process_threads(victim.as_u64());
+    #[cfg(not(target_arch = "x86_64"))]
+    let quarantined = false;
+    if !quarantined {
+        crate::task::scheduler::with_scheduler(|scheduler| {
+            scheduler.terminate_process_threads(victim.as_u64());
+        });
+    }
 
     let batch = crate::task::scheduler::GroupBatchId::for_single_victim(victim.as_u64());
     crate::task::scheduler::Scheduler::send_exit_expedite_sgi(victim.as_u64(), batch);

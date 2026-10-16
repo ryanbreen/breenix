@@ -753,7 +753,7 @@ impl ProcessManager {
         );
         crate::task::exit_tally::record_start();
 
-        self.insert_row(pid, unpublished.commit());
+        self.processes.insert(pid, unpublished.commit());
         Ok(())
     }
 
@@ -977,7 +977,7 @@ impl ProcessManager {
         );
         crate::task::exit_tally::record_start();
 
-        self.insert_row(pid, unpublished.commit());
+        self.processes.insert(pid, unpublished.commit());
         Ok(())
     }
 
@@ -1283,7 +1283,7 @@ impl ProcessManager {
             "manager.create_process [ARM64]: Inserting process into process table"
         );
         crate::task::exit_tally::record_start();
-        self.insert_row(pid, unpublished.commit());
+        self.processes.insert(pid, unpublished.commit());
 
         log::info!("ARM64: Created process {} (PID {})", name, pid.as_u64());
         crate::serial_println!(
@@ -1518,7 +1518,7 @@ impl ProcessManager {
         );
         crate::task::exit_tally::record_start();
 
-        self.insert_row(pid, unpublished.commit());
+        self.processes.insert(pid, unpublished.commit());
         Ok(())
     }
 
@@ -1893,12 +1893,6 @@ impl ProcessManager {
     /// Insert a fully-constructed process into the manager
     pub fn insert_process(&mut self, pid: ProcessId, process: Process) {
         crate::task::exit_tally::record_start();
-        self.insert_row(pid, process);
-    }
-
-    /// Add `process` to the table and publish its identity
-    /// (`Process::publish_identity`).
-    fn insert_row(&mut self, pid: ProcessId, process: Process) {
         process.publish_identity();
         process.publish_fd_table();
         self.processes.insert(pid, process);
@@ -3487,8 +3481,10 @@ impl ProcessManager {
         // published in it only now: a failure above leaves the table in
         // unpublished custody, released after the PM unlock.
         Self::publish_child_memory(&mut child_process, memory);
+        child_process.publish_identity();
+        child_process.publish_fd_table();
         crate::task::exit_tally::record_start();
-        self.insert_row(child_pid, child_process);
+        self.processes.insert(child_pid, child_process);
 
         // Lock-free trace: fork exit with child PID
         crate::tracing::providers::process::trace_fork_exit(child_pid.as_u64() as u32);
@@ -3686,8 +3682,10 @@ impl ProcessManager {
         // published in it only now: a failure above leaves the table in
         // unpublished custody, released after the PM unlock.
         Self::publish_child_memory(&mut child_process, memory);
+        child_process.publish_identity();
+        child_process.publish_fd_table();
         crate::task::exit_tally::record_start();
-        self.insert_row(child_pid, child_process);
+        self.processes.insert(child_pid, child_process);
 
         // Lock-free trace: fork exit with child PID
         crate::tracing::providers::process::trace_fork_exit(child_pid.as_u64() as u32);
@@ -3979,8 +3977,10 @@ impl ProcessManager {
             }
 
             // Add the child process to the process table
+            child_process.publish_identity();
+            child_process.publish_fd_table();
             crate::task::exit_tally::record_start();
-            self.insert_row(child_pid, child_process);
+            self.processes.insert(child_pid, child_process);
 
             // Add the child to the ready queue so it can be scheduled
             self.ready_queue.push(child_pid);

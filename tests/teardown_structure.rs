@@ -4251,6 +4251,9 @@ const BLOCKING_PRIMITIVES: &[(&str, &str, usize)] = &[
     // owns can be on; `CurrentSched`'s members forward to it, or to the
     // `Scheduler` primitive of the same name under the whole scheduler.
     ("kernel/src/task/scheduler/rq.rs", "fn block_current", 1),
+    // #1649: a job stop parks a Ready user thread under the lock of the CPU
+    // that owns it (`scheduler::park_for_stop`), not the whole scheduler.
+    ("kernel/src/task/scheduler/rq.rs", "fn block_ready_user_thread", 1),
     ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] impl CurrentSched<'_>::fn block_current", 1),
     ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] impl CurrentSched<'_>::fn block_current_for_child_exit", 1),
     ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] impl CurrentSched<'_>::fn block_current_for_io", 1),
@@ -4277,6 +4280,7 @@ const BLOCKED_STATE_PUBLICATIONS: &[(&str, &str, usize)] = &[
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_ready_user_thread", 1),
     // #1649: the x86_64 run-queue-lock block publishes each of its five kinds.
     ("kernel/src/task/scheduler/rq.rs", "fn block_current", 5),
+    ("kernel/src/task/scheduler/rq.rs", "fn block_ready_user_thread", 1),
 ];
 /// Census B: stores into a field named `state` whose right-hand side is opaque
 /// (not a path), the shape that would launder a blocked publication past census
@@ -4368,6 +4372,9 @@ const THREAD_STATE_ALIASES: &[(&str, &str, usize)] = &[
 const RAW_SCHEDULER_LOCK_SITES: &[(&str, &str, usize)] = &[
     ("kernel/src/task/scheduler.rs", "fn lock_scheduler", 1),
     ("kernel/src/task/scheduler.rs", "fn try_lock_scheduler", 1),
+    // #1649: x86_64 reclamation takes the scheduler-wide lock without the
+    // run-queue locks, through this instrumented wrapper.
+    ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] fn try_lock_scheduler_list", 1),
 ];
 #[rustfmt::skip]
 const PROCESS_MEMORY_FRAME_RETURNS: &[(&str, &str, usize)] = &[
@@ -4571,6 +4578,13 @@ const REMOVE_FROM_READY_QUEUE_CALL_SITES: &[(&str, &str, usize)] = &[
     // #1649: the x86_64 run-queue-lock block departs its thread from this
     // CPU's queue (`rq::Held::remove_from_ready_queue`).
     ("kernel/src/task/scheduler/rq.rs", "fn block_current", 1),
+    // #1649: under the run-queue lock of the CPU that owns the thread, a job
+    // stop parks a Ready user thread off its queue, reclamation drops a freed
+    // thread from it, and a new pin moves a thread queued on a CPU it no
+    // longer allows to its home.
+    ("kernel/src/task/scheduler/rq.rs", "fn block_ready_user_thread", 1),
+    ("kernel/src/task/scheduler/rq.rs", "fn reclaim", 1),
+    ("kernel/src/task/scheduler/rq.rs", "fn repin", 1),
     ("kernel/src/test_exec.rs", "fn test_exec_real_userspace", 1),
     ("kernel/src/test_exec.rs", "fn test_exec_without_scheduling", 1),
     ("kernel/src/test_exec.rs", "fn test_shell_fork_exec", 1),

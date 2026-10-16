@@ -2714,3 +2714,28 @@ pub(super) fn group_threads(tid: u64) -> alloc::vec::Vec<u64> {
     }
     out
 }
+
+/// `Scheduler::block_ready_user_thread` for `tid`, owned by `held`'s CPU: a
+/// job stop parks a thread that is Ready to resume user code, Blocked and off
+/// the queue, and returns true; one running, in a syscall or not Ready is
+/// left alone.
+pub(super) fn block_ready_user_thread(held: &mut Held, tid: u64) -> bool {
+    if held.state().current_thread == Some(tid) {
+        return false;
+    }
+    let Some(thread) = held.thread(tid) else {
+        return false;
+    };
+    let user_context = thread.context.cs & 3 == 3;
+    if thread.state != ThreadState::Ready
+        || thread.privilege != ThreadPrivilege::User
+        || thread.blocked_in_syscall
+        || !(user_context || !thread.has_started)
+    {
+        return false;
+    }
+    thread.stop_timer_cpu();
+    thread.state = ThreadState::Blocked;
+    held.remove_from_ready_queue(tid);
+    true
+}
