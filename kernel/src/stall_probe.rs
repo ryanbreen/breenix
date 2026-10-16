@@ -20,7 +20,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use crate::arch_impl::x86_64::timer::{frequency_hz, rdtsc};
 use crate::task::scheduler::MAX_CPUS;
 
-const FORCING: bool = true;
+const FORCING: bool = false;
 const STALL_MS: u64 = 50;
 const LATE_NS: u64 = 20_000_000;
 
@@ -56,7 +56,9 @@ static FORCE_NMI: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MA
 /// scheduler lock, 16 idle thread current.
 const WINS: usize = 64;
 static WIN_NEXT: AtomicU64 = AtomicU64::new(0);
-static WIN: [[AtomicU64; 4]; WINS] = [const { [const { AtomicU64::new(0) }; 4] }; WINS];
+static WIN: [[AtomicU64; 5]; WINS] = [const { [const { AtomicU64::new(0) }; 5] }; WINS];
+/// Windows seen, and how many interrupted each of: user, PM held, sched held, idle.
+static WIN_COUNT: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
 static WIN_SLOT: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 
 pub static SCHED_HOLDER: AtomicU64 = AtomicU64::new(u64::MAX);
@@ -106,7 +108,7 @@ pub fn note_interrupt(cpu: usize) {
 }
 
 /// Top of the NMI handler.
-pub fn nmi_hook(cpu: usize, cs: u64, rflags: u64) {
+pub fn nmi_hook(cpu: usize, rip: u64, cs: u64, rflags: u64) {
     if cpu >= MAX_CPUS || !FORCE_NMI[cpu].swap(false, Ordering::AcqRel) {
         return;
     }
@@ -133,6 +135,13 @@ pub fn nmi_hook(cpu: usize, cs: u64, rflags: u64) {
     WIN[k][1].store(0, Ordering::Relaxed);
     WIN[k][2].store(cpu as u64 | flags << 8, Ordering::Relaxed);
     WIN[k][3].store(tid, Ordering::Relaxed);
+    WIN[k][4].store(rip, Ordering::Relaxed);
+    WIN_COUNT[0].fetch_add(1, Ordering::Relaxed);
+    for (bit, slot) in [(1u64, 1usize), (4, 2), (8, 3), (16, 4)] {
+        if flags & bit != 0 {
+            WIN_COUNT[slot].fetch_add(1, Ordering::Relaxed);
+        }
+    }
     WIN_SLOT[cpu].store(k as u64, Ordering::Relaxed);
     let until = rdtsc() + STALL_MS * 1000 * cycles_per_us();
     while rdtsc() < until {
@@ -282,8 +291,46 @@ fn rel_ms(t: u64, base: u64) -> i64 {
     (t as i64 - base as i64) / 100_000
 }
 
+static NEXT_SUMMARY: AtomicU64 = AtomicU64::new(0);
+
+/// Every 10 s: windows by what they interrupted, silent stretches per CPU
+/// (count, longest us) and lock waits (count, longest us) since boot.
+fn summary() {
+    let now = rdtsc();
+    let next = NEXT_SUMMARY.load(Ordering::Relaxed);
+    if now < next {
+        return;
+    }
+    NEXT_SUMMARY.store(now + 10_000_000 * cycles_per_us(), Ordering::Relaxed);
+    let mut gaps = [(0u64, 0u64); 4];
+    for g in GAP.iter() {
+        let (e, len, cpu) = (g[0].load(Ordering::Relaxed), g[1].load(Ordering::Relaxed), g[2].load(Ordering::Relaxed) as usize);
+        if e != 0 && cpu < 4 {
+            gaps[cpu].0 += 1;
+            gaps[cpu].1 = gaps[cpu].1.max(len);
+        }
+    }
+    let mut waits = [(0u64, 0u64); 2];
+    for w in WAIT.iter() {
+        let (e, len, kind) = (w[0].load(Ordering::Relaxed), w[1].load(Ordering::Relaxed), (w[2].load(Ordering::Relaxed) >> 8) & 0xff);
+        if e != 0 && (1..=2).contains(&kind) {
+            waits[kind as usize - 1].0 += 1;
+            waits[kind as usize - 1].1 = waits[kind as usize - 1].1.max(len);
+        }
+    }
+    log::info!(
+        "STALLSUM wins(all,user,pm,sched,idle)={:?} gaps_last128(cpu:count,max_us)={:?} waits_last128(sched,pm:count,max_us)={:?} total_gaps={} total_waits={}",
+        WIN_COUNT.each_ref().map(|c| c.load(Ordering::Relaxed)),
+        gaps,
+        waits,
+        GAP_NEXT.load(Ordering::Relaxed),
+        WAIT_NEXT.load(Ordering::Relaxed),
+    );
+}
+
 /// From kstrandd: start forcing, and print late records.
 pub fn poll() {
+    summary();
     if !ENABLED.swap(true, Ordering::Relaxed) {
         NEXT_ARM.store(rdtsc() + 1_000_000 * cycles_per_us(), Ordering::Release);
     }
@@ -295,7 +342,7 @@ pub fn poll() {
         let (due, now) = (v[2], v[8]);
         let lo = due.saturating_sub(5_000_000);
         // Times are tenths of a millisecond from `due`.
-        let mut wins = [(0i64, 0i64, 0u64, 0u64); 8];
+        let mut wins = [(0i64, 0i64, 0u64, 0u64, 0u64); 8];
         let mut nw = 0;
         for w in WIN.iter() {
             let (s, e) = (w[0].load(Ordering::Relaxed), w[1].load(Ordering::Relaxed));
@@ -303,7 +350,7 @@ pub fn poll() {
             if s == 0 || e2 < lo || s > now || nw == wins.len() {
                 continue;
             }
-            wins[nw] = (rel_ms(s, due), rel_ms(e2, due), w[2].load(Ordering::Relaxed), w[3].load(Ordering::Relaxed));
+            wins[nw] = (rel_ms(s, due), rel_ms(e2, due), w[2].load(Ordering::Relaxed), w[3].load(Ordering::Relaxed), w[4].load(Ordering::Relaxed));
             nw += 1;
         }
         let mut gaps = [(0i64, 0u64, 0u64); 12];
@@ -327,7 +374,7 @@ pub fn poll() {
             nwt += 1;
         }
         log::info!(
-            "LATE tid={} kind={:#x} late_ms10={} wake=({},{}) placed={} disp=({},{}) ret_cpu={} win(s,e,cpu|fl<<8,tid)={:?} gap(s,len,cpu)={:?} wait(s,len,cpu|k<<8|h<<16)={:x?}",
+            "LATE tid={} kind={:#x} late_ms10={} wake=({},{}) placed={} disp=({},{}) ret_cpu={} win(s,e,cpu|fl<<8,tid,rip)={:x?} gap(s,len,cpu)={:?} wait(s,len,cpu|k<<8|h<<16)={:x?}",
             v[0],
             v[1],
             (now - due) / 100_000,
