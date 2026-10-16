@@ -140,6 +140,14 @@ pub fn credit_ticks(cpu: usize, idle: bool) {
     }
 }
 
+/// The tick at which logical CPU `cpu` was last credited: its last return from
+/// an interrupt. 0 before its first.
+pub fn credited_to_tick(cpu: usize) -> u64 {
+    CREDITED_TO_TICK
+        .get(cpu)
+        .map_or(0, |tick| tick.load(Ordering::Relaxed))
+}
+
 /// Ticks logical CPU `cpu` has been credited with.
 pub fn cpu_elapsed_ticks(cpu: usize) -> u64 {
     ELAPSED_TICKS

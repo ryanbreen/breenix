@@ -4382,6 +4382,7 @@ mod time { pub fn get_ticks() -> u64 { 100 } }
 mod arch_impl { pub mod aarch64 { pub mod constants { pub fn percpu_stack_slot_of(sp: u64) -> Option<usize> { assert_eq!(sp, 0); None } } } }
 mod tracing { pub mod output { pub struct Line; impl Line { pub fn new() -> Self { Self } pub fn text(&mut self, s: &str) { print!("{s}"); } pub fn dec(&mut self, n: u64) { print!("{n}"); } } } }
 fn arch_can_dispatch_here() -> bool { true }
+fn last_interrupt_return_tick(_cpu: usize) -> u64 { 0 }
 #[derive(Clone, Copy, PartialEq)] enum ThreadState { Ready, Terminated }
 #[derive(Clone, Copy)] struct CpuPin { cpu: usize, per_cpu_worker: bool }
 struct Context { sp: u64 }

@@ -427,6 +427,22 @@ fn arch_can_dispatch_here() -> bool {
     true
 }
 
+/// x86_64: the tick at which `cpu` last returned from an interrupt
+/// (`note_x86_interrupt_return`), which a running CPU does at least once a
+/// tick whether or not it enters the scheduler.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn last_interrupt_return_tick(cpu: usize) -> u64 {
+    crate::arch_impl::x86_64::smp::credited_to_tick(cpu)
+}
+
+/// Elsewhere a CPU is live by its scheduler entries alone.
+#[cfg(not(target_arch = "x86_64"))]
+#[inline(always)]
+fn last_interrupt_return_tick(_cpu: usize) -> u64 {
+    0
+}
+
 #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
 static BOOT_TEST_CPU_AFFINITY: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 
@@ -1682,8 +1698,18 @@ pub(crate) const MAX_CPUS: usize = 8;
 pub(crate) const MAX_CPUS: usize = 8;
 
 /// A CPU that has not entered the scheduler in 20 ms will not dispatch a wake
-/// within any latency budget the kernel cares about.
+/// within any latency budget the kernel cares about (aarch64 ticks are 1 ms).
+#[cfg(not(target_arch = "x86_64"))]
 const CPU_STALL_TICKS: u64 = 20;
+
+/// x86_64 ticks are 5 ms, and a running CPU returns from an interrupt at least
+/// once a tick, which a busy one does without entering the scheduler for a
+/// whole 50 ms quantum. One that has done neither for more than two ticks
+/// (10 to 15 ms) is not running -- a vCPU the host has stopped, or one held
+/// with interrupts masked -- and a wake queued there waits until it runs
+/// again; 20 ticks let that wait reach 100 ms.
+#[cfg(target_arch = "x86_64")]
+const CPU_STALL_TICKS: u64 = 2;
 
 /// Scheduler-entry epochs per online CPU.
 ///
@@ -2521,10 +2547,12 @@ impl Scheduler {
     }
 
     /// The staleness test, judged from outside the CPU: has it entered the
-    /// scheduler recently enough to dispatch newly runnable work?
+    /// scheduler, or on x86_64 returned from an interrupt, recently enough to
+    /// dispatch newly runnable work?
     #[inline(always)]
     fn cpu_dispatch_stale(&self, cpu: usize) -> bool {
-        let last_schedule_ticks = self.cpu_state[cpu].last_schedule_ticks;
+        let last_schedule_ticks =
+            self.cpu_state[cpu].last_schedule_ticks.max(last_interrupt_return_tick(cpu));
         crate::time::get_ticks().wrapping_sub(last_schedule_ticks) > CPU_STALL_TICKS
     }
 
