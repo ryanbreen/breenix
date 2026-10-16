@@ -1,29 +1,24 @@
-//! `fb_draw` (411): the operation table. `FLUSH`, `FLUSH_BATCH` and the VirGL demo ops are
-//! carried out in `fb.rs`, the version 1 window ops (10 to 26 and 31) in `window_v1.rs`.
+//! `fb_draw` (411): the operation table. `FLUSH` and `FLUSH_BATCH` are carried out in `fb.rs`,
+//! the version 1 window ops (10 to 26 and 31) in `window_v1.rs`.
 
-#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
 use super::fb::USER_SPACE_MAX;
 use super::SyscallResult;
-#[cfg(target_arch = "aarch64")]
-use crate::graphics::arm64_fb::SHELL_FRAMEBUFFER;
-#[cfg(all(target_arch = "x86_64", feature = "interactive"))]
-use crate::graphics::primitives::Canvas;
-#[cfg(all(target_arch = "x86_64", feature = "interactive"))]
-use crate::logger::SHELL_FRAMEBUFFER;
 
-/// Dedicated F32c waitqueue race reproducer. These test-only FBDRAW ops let a
-/// userspace harness drive wait/wake races without involving BWM state.
-#[cfg(target_arch = "aarch64")]
+/// Dedicated F32c waitqueue race reproducer. These test-only FBDRAW ops (27 to 30) let a
+/// userspace harness drive wait/wake races without involving BWM state. They exist only in
+/// `boot_tests` kernels; the production kernel answers ENOSYS (docs/gui/breengel.md 17.6).
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
 static WAIT_STRESS_WQ: crate::task::waitqueue::WaitQueueHead =
     crate::task::waitqueue::WaitQueueHead::new();
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
 static WAIT_STRESS_ENTERED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
 static WAIT_STRESS_RETURNED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
 static WAIT_STRESS_WAKES: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
 fn handle_wait_stress_reset() -> SyscallResult {
     use core::sync::atomic::Ordering;
 
@@ -34,7 +29,7 @@ fn handle_wait_stress_reset() -> SyscallResult {
     SyscallResult::Ok(0)
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
 fn handle_wait_stress_wait() -> SyscallResult {
     use core::sync::atomic::Ordering;
 
@@ -54,7 +49,7 @@ fn handle_wait_stress_wait() -> SyscallResult {
     SyscallResult::Ok(entered)
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
 fn handle_wait_stress_wake() -> SyscallResult {
     use core::sync::atomic::Ordering;
 
@@ -63,7 +58,7 @@ fn handle_wait_stress_wake() -> SyscallResult {
     SyscallResult::Ok(wakes)
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
 fn handle_wait_stress_stats(cmd: &FbDrawCmd) -> SyscallResult {
     use core::sync::atomic::Ordering;
 
@@ -96,26 +91,13 @@ fn handle_wait_stress_stats(cmd: &FbDrawCmd) -> SyscallResult {
 // =============================================================================
 
 /// Draw command operations for sys_fbdraw
-#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
+/// The operations of `fb_draw` (411) the production interface keeps (docs/gui/breengel.md
+/// section 17.6). Ops 0 to 5, 7 and 9 were demo draws and VirGL submissions and are ENOSYS;
+/// ops 10 to 26 and 31 are the version 1 window interface (`window_v1.rs`).
 #[repr(u32)]
-#[allow(dead_code)]
 pub enum FbDrawOp {
-    /// Clear the left pane with a color
-    Clear = 0,
-    /// Fill a rectangle: x, y, width, height, color
-    FillRect = 1,
-    /// Draw rectangle outline: x, y, width, height, color
-    DrawRect = 2,
-    /// Fill a circle: cx, cy, radius, color
-    FillCircle = 3,
-    /// Draw circle outline: cx, cy, radius, color
-    DrawCircle = 4,
-    /// Draw a line: x1, y1, x2, y2, color
-    DrawLine = 5,
-    /// Flush the framebuffer (for double-buffering)
+    /// Flush the caller's fb_mmap pane, or the rectangle p1-p4 of it, to the screen
     Flush = 6,
-    /// Submit a VirGL GPU-rendered frame (balls array + background color)
-    VirglSubmitFrame = 7,
     /// Batch flush multiple dirty rects with one DSB barrier
     FlushBatch = 8,
 }
@@ -139,36 +121,8 @@ pub struct FbDrawCmd {
     pub color: u32,
 }
 
-/// Get the width of the left (demo) pane
-#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
-#[allow(dead_code)]
-fn left_pane_width() -> usize {
-    if let Some(fb) = SHELL_FRAMEBUFFER.get() {
-        if let Some(fb_guard) = fb.try_lock() {
-            fb_guard.width() / 2
-        } else {
-            0
-        }
-    } else {
-        0
-    }
-}
-
-/// Get the height of the framebuffer
-#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
-#[allow(dead_code)]
-fn fb_height() -> usize {
-    if let Some(fb) = SHELL_FRAMEBUFFER.get() {
-        if let Some(fb_guard) = fb.try_lock() {
-            fb_guard.height()
-        } else {
-            0
-        }
-    } else {
-        0
-    }
-}
-
+/// sys_fbdraw - the framebuffer operations: `FLUSH` and `FLUSH_BATCH`, the version 1 window
+/// ops, and the wait-stress ops of `boot_tests` kernels.
 ///
 /// # Arguments
 /// * `cmd_ptr` - Pointer to userspace FbDrawCmd structure
@@ -180,35 +134,39 @@ fn fb_height() -> usize {
 /// * -EINVAL if operation is invalid
 #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
 pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
-    // Validate pointer
-    if cmd_ptr == 0 || cmd_ptr >= USER_SPACE_MAX {
-        return SyscallResult::Err(super::ErrorCode::Fault as u64);
-    }
-
-    // Validate the entire FbDrawCmd struct fits in userspace
-    let end_ptr = cmd_ptr.saturating_add(core::mem::size_of::<FbDrawCmd>() as u64);
-    if end_ptr > USER_SPACE_MAX {
-        return SyscallResult::Err(super::ErrorCode::Fault as u64);
-    }
-
-    // Read the command from userspace
-    let cmd: FbDrawCmd = unsafe { core::ptr::read(cmd_ptr as *const FbDrawCmd) };
-
-    #[cfg(target_arch = "aarch64")]
+    let cmd: FbDrawCmd = match crate::syscall::userptr::copy_from_user(cmd_ptr as *const FbDrawCmd)
+    {
+        Ok(cmd) => cmd,
+        Err(_) => return SyscallResult::Err(super::ErrorCode::Fault as u64),
+    };
     match cmd.op {
-        7 | 9 => return super::fb::virgl_demo_op(&cmd),
-        27 => return handle_wait_stress_reset(),
-        // F32c waitqueue stress wait. Intentionally has no persistent condition; a wake
-        // after prepare_to_wait must make schedule a no-op, matching the Linux waitqueue
-        // race-closure invariant.
-        28 => return handle_wait_stress_wait(),
-        29 => return handle_wait_stress_wake(),
-        30 => return handle_wait_stress_stats(&cmd),
+        0..=5 | 7 | 9 => return SyscallResult::Err(super::errno::ENOSYS as u64),
+        27..=30 => return wait_stress(&cmd),
+        #[cfg(target_arch = "aarch64")]
         op if op >= 10 => return super::window_v1::handle_op(&cmd),
         _ => {}
     }
 
     super::fb::framebuffer_op(cmd)
+}
+
+/// The F32c wait-stress ops (27 to 30), present only in `boot_tests` kernels.
+#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
+fn wait_stress(cmd: &FbDrawCmd) -> SyscallResult {
+    #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+    match cmd.op {
+        27 => handle_wait_stress_reset(),
+        // A wait with no persistent condition: a wake after prepare_to_wait must make
+        // schedule a no-op, matching the Linux waitqueue race-closure invariant.
+        28 => handle_wait_stress_wait(),
+        29 => handle_wait_stress_wake(),
+        _ => handle_wait_stress_stats(cmd),
+    }
+    #[cfg(not(all(target_arch = "aarch64", feature = "boot_tests")))]
+    {
+        let _ = cmd;
+        SyscallResult::Err(super::errno::ENOSYS as u64)
+    }
 }
 
 /// sys_fbdraw - production x86_64 form. Only Flush (op 6) is supported: it copies
@@ -219,7 +177,8 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
 /// # Returns
 /// * 0 on success
 /// * -EFAULT if cmd_ptr is invalid
-/// * -EINVAL for any op but Flush, or a caller with no fb_mmap pane
+/// * -ENOSYS for the retired demo, VirGL and wait-stress ops
+/// * -EINVAL for any other op but Flush, or a caller with no fb_mmap pane
 /// * -EPERM if the caller does not own the display
 /// * -EBUSY if the kernel's log sink holds the framebuffer (flush again)
 #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
@@ -229,8 +188,10 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
         Ok(cmd) => cmd,
         Err(_) => return SyscallResult::Err(super::ErrorCode::Fault as u64),
     };
-    if cmd.op != 6 {
-        return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
+    match cmd.op {
+        6 => super::fb::flush_owner_pane(&cmd),
+        // The demo draws, VirGL submissions and wait-stress ops are not in this kernel.
+        0..=5 | 7 | 9 | 27..=30 => SyscallResult::Err(super::errno::ENOSYS as u64),
+        _ => SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
     }
-    super::fb::flush_owner_pane(&cmd)
 }

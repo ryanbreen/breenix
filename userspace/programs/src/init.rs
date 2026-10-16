@@ -94,9 +94,37 @@ fn run_init_group_refusal_probe(phase: &str) {
     );
 }
 
+/// Suite-mode test controls (system call 415) exist only in boots whose PID 1 is a suite
+/// binary (docs/gui/breengel.md section 21). As PID 1, init checks that every op is ENOSYS
+/// before it says the controls are absent. Run as a child (inside a suite boot, where the
+/// controls may legitimately be on) it makes no claim.
+fn check_test_controls(pid: u64) {
+    use libbreenix::test_control::raw_call;
+    if pid != 1 {
+        print!("[init] not PID 1: test-control check skipped\n");
+        return;
+    }
+    let mut arg = [0u8; 32];
+    let mut present = None;
+    for op in 0..=5u32 {
+        for (ptr, len) in [(core::ptr::null_mut(), 0usize), (arg.as_mut_ptr(), arg.len())] {
+            // SAFETY: the kernel reads or writes at most `len` bytes of `arg`, a live buffer.
+            let ret = unsafe { raw_call(op, ptr, len) };
+            if ret != -38 && present.is_none() {
+                present = Some((op, ret));
+            }
+        }
+    }
+    match present {
+        None => print!("[init] test controls absent\n"),
+        Some((op, ret)) => print!("[init] test controls PRESENT: test_control op {} returned {}\n", op, ret),
+    }
+}
+
 fn main() {
     let pid = getpid().map(|p| p.raw()).unwrap_or(0);
     print!("[init] Breenix init starting (PID {})\n", pid);
+    check_test_controls(pid);
 
     // The kernel passes a boot mode as argv[1] (`shell` or `desktop`); no argument is the
     // full boot below.

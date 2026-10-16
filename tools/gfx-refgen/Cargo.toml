@@ -1,0 +1,12 @@
+[package]
+name = "gfx-refgen"
+version = "0.1.0"
+edition = "2021"
+description = "Renders the breengel suite's reviewed reference frames (docs/gui/breengel.md section 8.6)"
+publish = false
+
+[workspace]
+
+[dependencies]
+libgfx = { path = "../../libs/libgfx" }
+libfont = { path = "../../libs/libfont" }

@@ -3499,6 +3499,11 @@ fn handle_procfs_getdents64(
             Ok(entries) => entries,
             Err(_) => return SyscallResult::Err(super::errno::ENOMEM as u64),
         }
+    } else if let Some(listed) = crate::fs::procfs::list_task_entries(dir_path) {
+        match listed {
+            Ok(entries) => entries,
+            Err(_) => return SyscallResult::Err(super::errno::ENOMEM as u64),
+        }
     } else {
         Vec::new()
     };

@@ -1,7 +1,8 @@
 #!/bin/bash
 # Host tests of the BreenGL libraries: the development loop of the breengel lanes
 # (docs/gui/breengel.md). Each crate's own unit tests run on the host with warnings
-# denied; the guest suite (/sbin/suite-breengel) gives the verdict.
+# denied, one test at a time (libgfx::work and libfont::work count every thread); the
+# guest suite (/sbin/suite-breengel) gives the verdict.
 #
 # Usage: scripts/host-test-graphics.sh [crate-dir ...]   (default: every crate below)
 #
@@ -38,7 +39,7 @@ for crate in "${CRATES[@]}"; do
         continue
     fi
     echo "==> $crate"
-    if ! (cd "$ROOT" && "${LOW[@]}" cargo test --manifest-path "$manifest" --quiet); then
+    if ! (cd "$ROOT" && "${LOW[@]}" cargo test --manifest-path "$manifest" --quiet -- --test-threads=1); then
         failed+=("$crate")
     fi
 done

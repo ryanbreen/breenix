@@ -18,7 +18,9 @@
 //! case says so; with it, a case whose checks are not written here fails saying that, so no
 //! case passes for want of a layer.
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use std::cell::Cell;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
+use std::sync::Mutex;
 
 use libbreenix::crypto::sha256::sha256;
 use libbreenix::process::{self, ForkResult, WNOHANG};
@@ -46,11 +48,13 @@ use libicon::icons::{arrow::ArrowIcon, home::HomeIcon, save::SaveIcon, search::S
 use libicon::particles::{Particle, ParticlePool};
 use libicon::physics::Spring;
 
-/// Counts every allocation the suite's process makes, so "before any allocation" and the
-/// parsers' allocation bounds (contract section 7) can be measured in the guest.
+/// Counts every allocation the suite's process makes, and the bytes it frees, so "before any
+/// allocation", the parsers' allocation bounds (contract section 7) and an owned surface's
+/// release can be measured in the guest.
 struct Counting;
 static ALLOC_CALLS: AtomicU64 = AtomicU64::new(0);
 static ALLOC_BYTES: AtomicU64 = AtomicU64::new(0);
+static FREE_BYTES: AtomicU64 = AtomicU64::new(0);
 
 // SAFETY: every call is forwarded unchanged to the system allocator; only counters are added.
 unsafe impl GlobalAlloc for Counting {
@@ -60,6 +64,7 @@ unsafe impl GlobalAlloc for Counting {
         System.alloc(layout)
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        FREE_BYTES.fetch_add(layout.size() as u64, Relaxed);
         System.dealloc(ptr, layout)
     }
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
@@ -70,12 +75,25 @@ unsafe impl GlobalAlloc for Counting {
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         ALLOC_CALLS.fetch_add(1, Relaxed);
         ALLOC_BYTES.fetch_add(new_size as u64, Relaxed);
+        FREE_BYTES.fetch_add(layout.size() as u64, Relaxed);
         System.realloc(ptr, layout, new_size)
     }
 }
 
 #[global_allocator]
 static ALLOCATOR: Counting = Counting;
+
+/// A case whose judged frame goes to the runner (`judged_case`): the table entry for `$run`.
+macro_rules! pictured {
+    ($id:literal, $title:literal, $run:ident) => {
+        libbreenix::suite::case($id, $title, {
+            fn run() -> libbreenix::suite::CaseResult {
+                crate::judged_case($run)
+            }
+            run
+        })
+    };
+}
 
 mod images;
 mod raster;
@@ -204,36 +222,69 @@ fn window_version() -> i64 {
     unsafe { raw::syscall3(SYS_WINDOW, 0, 0, 0) as i64 }
 }
 
-/// A case of the window interface, compositor, events or observation path: it needs
-/// version 2 of the interface, and fails naming the section it checks.
-fn needs_window(section: &str, what: &str) -> CaseResult {
-    match window_version() {
-        2 => fail(format!(
-            "window interface v2 answers, but this case's check of {what} ({CONTRACT} section {section}) is not written yet")),
-        ret => fail(format!(
-            "window interface v2 is absent: window(VERSION) {} ({CONTRACT} section 17.1); this case checks {what} (section {section})",
-            outcome(ret))),
-    }
-}
-
 /// `test_control(STATE)` (contract section 21): 1 when suite-mode test controls are latched on.
 fn test_control_state() -> i64 {
     // SAFETY: op 0 takes no argument.
     unsafe { raw::syscall3(SYS_TEST_CONTROL, 0, 0, 0) as i64 }
 }
 
+// ---------------------------------------------------------------------------------------
+// Judged frames: the runner's stage shows exactly the frame a verdict judged. A `Guarded`
+// surface whose pixels were read for a verdict keeps a copy of itself here when it is
+// dropped, inside a `pictured!` case; the last one is handed to the runner
+// (`suite::judged`, with its SHA-256 on the CASE line) when the case ends, or when the
+// isolated child that judged it exits.
+// ---------------------------------------------------------------------------------------
+
+/// Set while a `pictured!` case runs (inherited by its isolated children).
+static PICTURES: AtomicBool = AtomicBool::new(false);
+
+/// The last judged frame: width, height and canonical BGRX pixels.
+static LAST_JUDGED: Mutex<Option<(usize, usize, Vec<u8>)>> = Mutex::new(None);
+
+/// Exit-status bit an isolated child sets when it handed a judged frame to the runner, so
+/// the parent's own older frame is not handed after it.
+const HANDED_FRAME: i32 = 2;
+
+/// Run a case, then hand its last judged frame to the runner. A failed hand-off fails a
+/// case that passed; a failed case keeps its own message.
+fn judged_case(run: fn() -> CaseResult) -> CaseResult {
+    PICTURES.store(true, Relaxed);
+    let result = run();
+    match (hand_off_judged(), result) {
+        (Err(msg), Ok(())) => fail(msg),
+        (_, result) => result,
+    }
+}
+
+/// Hand the last judged frame, if any, to the runner; whether one was handed.
+fn hand_off_judged() -> Result<bool, String> {
+    let Some((width, height, mut pixels)) = LAST_JUDGED.lock().unwrap_or_else(|e| e.into_inner()).take() else {
+        return Ok(false);
+    };
+    // SAFETY: `pixels` holds width × height canonical BGRX pixels and outlives the surface.
+    let frame = unsafe { FrameBuf::from_raw(pixels.as_mut_ptr(), width, height, width * 4, 4, true) }
+        .map_err(|e| format!("the judged {width} x {height} frame is not a valid surface: {e}"))?;
+    libbreenix::suite::judged(&frame).map_err(|e| format!("handing the judged frame to the runner failed: {e:?}"))?;
+    Ok(true)
+}
+
 /// Run `f` in a forked child, which reports its own result; a crash or a child that runs
-/// past `limit_ms` is reported as such. Output a case needs goes back as the message.
+/// past `limit_ms` is reported as such. Output a case needs goes back as the message. A
+/// frame the child judged goes to the runner when it exits.
 fn isolated(what: &str, limit_ms: u64, f: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
     let (rd, wr) = io::pipe().map_err(|e| format!("pipe: {e}"))?;
     match process::fork().map_err(|e| format!("fork: {e}"))? {
         ForkResult::Child => {
             let _ = io::close(rd);
-            let code = match f() {
-                Ok(()) => 0,
+            let result = f();
+            let handed = hand_off_judged();
+            let frame = if matches!(handed, Ok(true)) { HANDED_FRAME } else { 0 };
+            let code = match result.and(handed.map(|_| ())) {
+                Ok(()) => frame,
                 Err(msg) => {
                     let _ = io::write(wr, msg.as_bytes());
-                    1
+                    1 | frame
                 }
             };
             process::exit(code);
@@ -264,11 +315,16 @@ fn isolated(what: &str, limit_ms: u64, f: impl FnOnce() -> Result<(), String>) -
             }
             let _ = io::close(rd);
             let msg = String::from_utf8_lossy(&msg).into_owned();
+            let code = if process::wifexited(status) { Some(process::wexitstatus(status)) } else { None };
+            if code.is_some_and(|c| c & HANDED_FRAME != 0) {
+                // The child's frame is newer than any this process holds.
+                LAST_JUDGED.lock().unwrap_or_else(|e| e.into_inner()).take();
+            }
             if !exited {
                 Err(format!("{what} did not finish within {limit_ms} ms"))
             } else if process::wifsignaled(status) {
                 Err(format!("{what} crashed with signal {}", process::wtermsig(status)))
-            } else if process::wifexited(status) && process::wexitstatus(status) == 0 {
+            } else if code.is_some_and(|c| c & !HANDED_FRAME == 0) {
                 Ok(())
             } else {
                 Err(if msg.is_empty() { format!("{what} failed without a message") } else { msg })
@@ -295,6 +351,8 @@ struct Guarded {
     bpp: usize,
     bgr: bool,
     lead: usize,
+    /// Whether a check has read its pixels: such a surface is a judged frame.
+    read: Cell<bool>,
 }
 
 const LEAD_BYTES: usize = 64;
@@ -317,7 +375,7 @@ impl Guarded {
         // The pixels end at the guard; with stride a multiple of 4 the base stays aligned.
         let base = unsafe { map.add(body - bytes) };
         let lead = body - bytes;
-        let mut g = Guarded { map, map_len, base, width, height, stride, bpp, bgr, lead };
+        let mut g = Guarded { map, map_len, base, width, height, stride, bpp, bgr, lead, read: Cell::new(false) };
         g.reset(Color::rgb(0, 0, 0));
         g
     }
@@ -356,11 +414,12 @@ impl Guarded {
     fn fb(&self) -> FrameBuf {
         // SAFETY: base addresses stride * height writable bytes that outlive the FrameBuf,
         // which is used only while this Guarded is alive.
-        unsafe { FrameBuf::from_raw(self.base, self.width, self.height, self.stride, self.bpp, self.bgr) }
+        unsafe { FrameBuf::from_raw(self.base, self.width, self.height, self.stride, self.bpp, self.bgr).expect("a guarded surface is valid") }
     }
 
     /// The pixel's colour channels, decoded by the surface's channel order.
     fn rgb(&self, x: usize, y: usize) -> [u8; 3] {
+        self.read.set(true);
         // SAFETY: x < width, y < height by the callers.
         unsafe {
             let p = self.base.add(y * self.stride + x * self.bpp);
@@ -374,6 +433,7 @@ impl Guarded {
     }
 
     fn x_byte(&self, x: usize, y: usize) -> u8 {
+        self.read.set(true);
         // SAFETY: as for rgb, on a 4-byte surface.
         unsafe { *self.base.add(y * self.stride + x * self.bpp + 3) }
     }
@@ -415,6 +475,16 @@ impl Guarded {
 
 impl Drop for Guarded {
     fn drop(&mut self) {
+        if self.read.get() && PICTURES.load(Relaxed) && self.width > 0 && self.height > 0 {
+            let mut pixels = Vec::with_capacity(self.width * self.height * 4);
+            for y in 0..self.height {
+                for x in 0..self.width {
+                    let [r, g, b] = self.rgb(x, y);
+                    pixels.extend_from_slice(&[b, g, r, 0xFF]);
+                }
+            }
+            *LAST_JUDGED.lock().unwrap_or_else(|e| e.into_inner()) = Some((self.width, self.height, pixels));
+        }
         let _ = memory::munmap(self.map, self.map_len);
     }
 }
@@ -471,11 +541,30 @@ impl Seeded {
     }
 }
 
-/// A reviewed reference image the contract's section 8.6 keeps for whole scenes.
-fn reference(name: &str) -> CaseResult {
-    let path = format!("/usr/local/test/share/breengel/frames/{name}");
-    match std::fs::metadata(&path) {
-        Ok(_) => fail(format!("the reviewed reference {path} exists, but the PNG decoder this case compares it with is absent ({CONTRACT} sections 8.6, 13)")),
-        Err(_) => missing(&format!("the reviewed reference {path} (tools/gfx-refgen, docs/suites/frames/PROVENANCE.json)"), "8.6"),
+/// Where the guest reads the reviewed references (section 8.6).
+const FRAMES: &str = "/usr/local/test/share/breengel/frames";
+
+/// Require `g` to equal the reviewed reference `name` pixel for pixel. The reference is a
+/// PNG decoded by libimg (section 13, certified by the png-decode cases); it must show
+/// something, so a blank drawing cannot match a blank reference.
+fn matches_reference(g: &Guarded, name: &str, section: &str) -> CaseResult {
+    let path = format!("{FRAMES}/{name}");
+    let bytes = std::fs::read(&path).map_err(|e| format!("cannot read the reviewed reference {path}: {e}")).cite(section)?;
+    let img = libimg::png::decode(&bytes).map_err(|e| format!("the reviewed reference {path} does not decode: {e:?}")).cite(section)?;
+    ensure((img.width as usize, img.height as usize) == (g.width, g.height), section, format!(
+        "the reviewed reference {name} is {}x{}; the scene is {}x{}", img.width, img.height, g.width, g.height))?;
+    let at_px = |x: usize, y: usize| {
+        let p = &img.pixels[(y * g.width + x) * 4..][..4];
+        Color::rgb(p[2], p[1], p[0])
+    };
+    let shown = (0..g.height).flat_map(|y| (0..g.width).map(move |x| (x, y))).filter(|&(x, y)| at_px(x, y) != Color::rgb(0, 0, 0)).count();
+    ensure(shown > 0, section, format!("the reviewed reference {name} is blank"))?;
+    for y in 0..g.height {
+        for x in 0..g.width {
+            if g.color(x, y) != at_px(x, y) {
+                return at(section, format!("{name}: pixel ({x},{y}) is {} where the reviewed reference has {}", hex(g.color(x, y)), hex(at_px(x, y))));
+            }
+        }
     }
+    step(section, g.sentinels())
 }

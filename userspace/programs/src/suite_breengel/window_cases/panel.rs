@@ -10,8 +10,139 @@ pub(crate) const PANEL: &[Case] = &[
     case("kernel-screens", "The kernel's console screen redraws exactly after the display is given back", panel_kernel_screens),
 ];
 
-fn panel_handoff() -> CaseResult { needs_window("18, 20, 23", "the panel restored exactly after a display-taking child, by SCANOUT_READBACK") }
-fn panel_between_cases() -> CaseResult { needs_window("23", "the panel drawn only between GUI cases and restored exactly") }
-fn panel_cursor_restore() -> CaseResult { needs_window("18, 23", "no cursor trail over the panel, by SCANOUT_READBACK") }
-fn panel_cursor_trail_detected() -> CaseResult { needs_window("21, 23", "the panel-cursor-no-restore control's trail detected") }
-fn panel_kernel_screens() -> CaseResult { needs_window("23", "the kernel console screen redrawn exactly after giveback") }
+// ---------------------------------------------------------------------------------------
+// panel: the suite panel around window cases (contract section 23)
+// ---------------------------------------------------------------------------------------
+
+use super::composition::{give_back, paint, screen, take_over};
+use super::kit::*;
+
+fn first_difference(a: &[u8], b: &[u8]) -> Option<(usize, usize)> {
+    (0..1280 * 800).find(|&i| a[i * 4..i * 4 + 4] != b[i * 4..i * 4 + 4]).map(|i| (i % 1280, i / 1280))
+}
+
+fn panel_handoff() -> CaseResult {
+    interface()?;
+    let (before, _) = screen()?;
+    let f = || {
+        if take_over() < 0 {
+            return 2;
+        }
+        if paint([0x70, 0x10, 0x90, 0]).is_err() {
+            return 3;
+        }
+        if give_back() < 0 {
+            return 4;
+        }
+        0
+    };
+    let ended = child_end(5_000, || f()).cite("23")?;
+    ensure(matches!(ended, Ended::Exit(0)), "23", "the display-taking child did not take, paint and give back the display")?;
+    let (after, _) = screen()?;
+    match first_difference(&before, &after) {
+        None => Ok(()),
+        Some((x, y)) => at("23", format!("after the child gave the display back, the panel differs at ({x}, {y})")),
+    }
+}
+
+fn panel_between_cases() -> CaseResult {
+    interface()?;
+    let (a, _) = screen()?;
+    let _ = time::sleep_ms(300);
+    let (b, _) = screen()?;
+    match first_difference(&a, &b) {
+        None => Ok(()),
+        Some((x, y)) => at("23", format!("the screen changed at ({x}, {y}) while this case ran; the panel is drawn only between cases")),
+    }
+}
+
+/// Move the kernel's pointer to (x, y) with `move-pointer`, wait until the kernel has read it,
+/// and give the panel cursor time to follow.
+fn move_pointer(x: u32, y: u32) -> CaseResult {
+    use abi::tc_point::MOVE_POINTER;
+    let fired = || libbreenix::test_control::fired(MOVE_POINTER).map_err(|e| format!("FIRED: {e}"));
+    let before = fired().cite("21")?;
+    libbreenix::test_control::arm(MOVE_POINTER, 0, x as u64 | (y as u64) << 32).map_err(|e| format!("ARM move-pointer: {e}")).cite("21")?;
+    let start = now_ms();
+    while fired().cite("21")? == before {
+        if since(start) > 500 {
+            return at("21, 23", format!("move-pointer to ({x}, {y}) did not fire within 500 ms: nothing read the pointing device for the panel cursor"));
+        }
+        let _ = time::sleep_ms(5);
+    }
+    let _ = time::sleep_ms(50);
+    Ok(())
+}
+
+/// Where the pointer goes: off the scene at the top right, then across the panel, then back.
+const REST: (u32, u32) = (1200, 40);
+const PATH: [(u32, u32); 5] = [(200, 300), (400, 320), (640, 400), (900, 500), (1100, 600)];
+
+/// The pixels that differ between the screen with the pointer at rest and the screen after it
+/// crossed the panel and came back to rest, with `panel-cursor-no-restore` armed for the
+/// crossing when `no_restore`.
+fn trail(no_restore: bool) -> Result<Vec<(u32, u32)>, libbreenix::suite::CaseError> {
+    move_pointer(REST.0, REST.1)?;
+    let (rest, _) = screen()?;
+    if no_restore {
+        libbreenix::test_control::arm(abi::tc_point::PANEL_CURSOR_NO_RESTORE, 0, 0)
+            .map_err(|e| format!("ARM panel-cursor-no-restore: {e}")).cite("21")?;
+    }
+    let crossed = PATH.iter().try_for_each(|&(x, y)| move_pointer(x, y)).and_then(|()| move_pointer(REST.0, REST.1));
+    let _ = libbreenix::test_control::disarm_all();
+    crossed?;
+    let (back, _) = screen()?;
+    Ok((0..1280 * 800u32)
+        .filter(|&i| rest[i as usize * 4..i as usize * 4 + 4] != back[i as usize * 4..i as usize * 4 + 4])
+        .map(|i| (i % 1280, i / 1280))
+        .collect())
+}
+
+fn panel_cursor_restore() -> CaseResult {
+    interface()?;
+    let left = trail(false)?;
+    ensure(left.is_empty(), "23", format!(
+        "after the pointer crossed the panel and came back, {} pixels differ from the panel it left, the first at {:?}: a cursor trail",
+        left.len(), left.first()))
+}
+
+fn panel_cursor_trail_detected() -> CaseResult {
+    interface()?;
+    let left = trail(true)?;
+    ensure(!left.is_empty(), "21, 23", "with panel-cursor-no-restore armed the pointer crossed the panel and left no trail: the restore was not disabled, or the trail is not seen")?;
+    let near = |&(x, y): &(u32, u32)| PATH.iter().any(|&(px, py)| x.abs_diff(px) < 32 && y.abs_diff(py) < 32);
+    ensure(left.iter().all(near), "21, 23", format!(
+        "the trail left with panel-cursor-no-restore armed has pixels away from every place the pointer stopped, the first at {:?}",
+        left.iter().find(|p| !near(p))))
+}
+
+fn panel_kernel_screens() -> CaseResult {
+    interface()?;
+    // This runner owns the display; giving it back shows the kernel's console screen.
+    let gave = give_back();
+    ensure(gave >= 0, "18", format!("give_back_display by the runner {}", outcome(gave)))?;
+    let shown = screen();
+    let f = || {
+        if take_over() < 0 {
+            return 2;
+        }
+        if paint([0x05, 0x06, 0x07, 0]).is_err() {
+            return 3;
+        }
+        if give_back() < 0 {
+            return 4;
+        }
+        0
+    };
+    let ended = child_end(5_000, || f());
+    let again = screen();
+    let retook = take_over();
+    let (console, _) = shown?;
+    let (redrawn, _) = again?;
+    ensure(retook >= 0, "18", format!("the runner's take_over_display {}", outcome(retook)))?;
+    ensure(matches!(ended.cite("23")?, Ended::Exit(0)), "23", "the display-taking child did not take, paint and give back the display")?;
+    match first_difference(&console, &redrawn) {
+        None => Ok(()),
+        Some((x, y)) => at("23", format!("after a process took the display and gave it back, the kernel's console screen differs at ({x}, {y})")),
+    }
+}

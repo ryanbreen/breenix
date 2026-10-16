@@ -354,31 +354,46 @@ fn census_diff(actual: &Census, anchors: &[(&str, &str, usize)]) -> Vec<String> 
     diff
 }
 
-// MAP_FIXED still checks its own floor. Descending allocation moved to
+// MAP_FIXED still checks its own floor. Allocation moved to
 // memory_common::place_below_hint in 6d795512; every former producer must
-// delegate to that helper, whose floor refusal is checked below.
+// delegate to that helper. It places top-down in the highest free gap and
+// falls back to the descent `place_below`; both floor refusals are checked
+// below.
 const FLOOR_ANCHORS: &[(&str, &str, usize)] = &[
     ("kernel/src/syscall/mmap.rs", "sys_mmap", 1),
-    ("kernel/src/syscall/memory_common.rs", "place_below_hint", 1),
+    ("kernel/src/syscall/memory_common.rs", "place_below", 1),
 ];
+// The graphics system call's producers moved out of `graphics.rs`: the
+// window version 1 buffers to `window_v1.rs` and `fbmmap` to `fb.rs`.
 const DESCENT_ANCHORS: &[(&str, &str, usize)] = &[
     ("kernel/src/syscall/mmap.rs", "sys_mmap", 1),
-    ("kernel/src/syscall/graphics.rs", "handle_create_window_buffer", 1),
-    ("kernel/src/syscall/graphics.rs", "handle_resize_window_buffer", 1),
-    ("kernel/src/syscall/graphics.rs", "handle_map_window_buffer", 1),
-    ("kernel/src/syscall/graphics.rs", "handle_map_compositor_texture", 1),
-    ("kernel/src/syscall/graphics.rs", "fbmmap", 1),
+    ("kernel/src/syscall/fb.rs", "fbmmap", 1),
+    ("kernel/src/syscall/window_v1.rs", "handle_create_window_buffer", 1),
+    ("kernel/src/syscall/window_v1.rs", "handle_resize_window_buffer", 1),
+    ("kernel/src/syscall/window_v1.rs", "handle_map_window_buffer", 1),
+    ("kernel/src/syscall/window_v1.rs", "handle_map_compositor_texture", 1),
+];
+const PRODUCER_FILES: &[&str] = &[
+    "kernel/src/syscall/mmap.rs",
+    "kernel/src/syscall/fb.rs",
+    "kernel/src/syscall/window_v1.rs",
 ];
 
 fn shared_descent_refuses_below_floor(source: &str) -> bool {
     let bodies = module_function_bodies(source);
-    let Some(bodies) = bodies.get("place_below_hint") else { return false; };
-    if bodies.len() != 1 { return false; }
-    let body = normalized_code(bodies[0]).replace(' ', "");
-    body.contains("letstart=round_down_to_page(top.checked_sub(length)?);")
-        && body.contains("ifstart<crate::memory::vma::MMAP_REGION_START{returnNone;}")
-        && body.find("returnNone;") < body.find("process.mmap_hint=start;")
-        && body.contains("process.mmap_hint=start;returnSome(start);")
+    let (Some(top_down), Some(descent)) = (bodies.get("place_below_hint"), bodies.get("place_below")) else {
+        return false;
+    };
+    if top_down.len() != 1 || descent.len() != 1 { return false; }
+    let top_down = normalized_code(top_down[0]).replace(' ', "");
+    let descent = normalized_code(descent[0]).replace(' ', "");
+    top_down.contains("ifcandidate>=end.max(MMAP_REGION_START){")
+        && top_down.contains("once(&(0,MMAP_REGION_START))")
+        && top_down.ends_with("None}")
+        && descent.contains("letstart=round_down_to_page(top.checked_sub(length)?);")
+        && descent.contains("ifstart<crate::memory::vma::MMAP_REGION_START{returnNone;}")
+        && descent.find("returnNone;") < descent.find("process.mmap_hint=start;")
+        && descent.contains("process.mmap_hint=start;returnSome(start);")
 }
 
 /// The five `mmap_hint` seed sites: the struct-literal init in
@@ -394,8 +409,10 @@ const SEED_ANCHORS: &[(&str, &str, usize)] = &[
 ];
 
 fn floor_census() -> Census {
-    let mut census = file_census("kernel/src/syscall/mmap.rs", &[FLOOR_NEEDLE]);
-    census.extend(file_census("kernel/src/syscall/graphics.rs", &[FLOOR_NEEDLE]));
+    let mut census = Census::new();
+    for path in PRODUCER_FILES {
+        census.extend(file_census(path, &[FLOOR_NEEDLE]));
+    }
     census.extend(file_census("kernel/src/syscall/memory_common.rs", &[FLOOR_NEEDLE]));
     census
 }
@@ -409,8 +426,10 @@ fn seed_census() -> Census {
 
 #[test]
 fn mmap_floor_producers_match_the_pinned_census() {
-    let mut descent = file_census("kernel/src/syscall/mmap.rs", &["place_below_hint("]);
-    descent.extend(file_census("kernel/src/syscall/graphics.rs", &["place_below_hint("]));
+    let mut descent = Census::new();
+    for path in PRODUCER_FILES {
+        descent.extend(file_census(path, &["place_below_hint("]));
+    }
     assert_eq!(census_diff(&descent, DESCENT_ANCHORS), Vec::<String>::new());
     let common = repo_text("kernel/src/syscall/memory_common.rs");
     assert!(shared_descent_refuses_below_floor(&common));
@@ -600,7 +619,7 @@ fn no_producer_file_hardcodes_the_stale_mmap_floor_literal() {
     // above: the pre-#742 literal must not appear anywhere in the *code*
     // (comments are exempt -- both files' fix-notes prose mentions it on
     // purpose, as history) of either producer file.
-    for path in ["kernel/src/syscall/mmap.rs", "kernel/src/syscall/graphics.rs"] {
+    for path in PRODUCER_FILES {
         let source = repo_text(path);
         let normalized = normalized_code(&source);
         assert!(

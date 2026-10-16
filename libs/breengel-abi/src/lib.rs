@@ -46,8 +46,9 @@ pub mod op {
     pub const READ_REMNANT: u32 = 25;
     pub const RELEASE_REMNANT: u32 = 26;
     pub const GIVE_DISPLAY: u32 = 27;
+    pub const READ_META: u32 = 28;
     /// The highest op number; every op above it is EINVAL.
-    pub const LAST: u32 = GIVE_DISPLAY;
+    pub const LAST: u32 = READ_META;
 }
 
 /// Linux's errno values, which the interface returns negated (section 25).
@@ -466,6 +467,25 @@ pub struct Give {
     pub reserved: u32,
 }
 
+/// Argument of `READ_META`: the newest commit's metadata, copied to `meta`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MetaQuery {
+    pub id: u64,
+    /// A `Meta` the kernel fills.
+    pub meta: u64,
+    /// Out: the commit whose metadata it is, 0 before the first.
+    pub commit_id: u64,
+}
+
+/// `CompositeRecordHeader.flags` (section 18).
+pub mod record_flags {
+    /// The composite failed (`COMPOSITE` returned EIO); nothing of it reached the display.
+    pub const FAILED: u32 = 1;
+    /// A failed composite's reason, the display backend's code, is `(flags >> REASON_SHIFT) & 0xFF`.
+    pub const REASON_SHIFT: u32 = 8;
+}
+
 /// `COMPOSITE_RECORD`'s header (section 18); `count` `CompositeEntry` follow it.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -501,6 +521,14 @@ pub struct Completion {
     pub fence: u64,
     pub kind: u32,
     pub status: u32,
+}
+
+/// `Completion.kind` and `Completion.status` on virtio-gpu (section 20.1): the type of the
+/// command answered and the type of its response, from the virtio specification's GPU device.
+pub mod completion {
+    pub const RESOURCE_FLUSH: u32 = 0x0104;
+    pub const TRANSFER_TO_HOST_2D: u32 = 0x0105;
+    pub const RESP_OK_NODATA: u32 = 0x1100;
 }
 
 /// `ObservationRecord.flags` bit 0: the device's copy is outside the guest's view.
@@ -639,8 +667,16 @@ pub mod tc_point {
     pub const CORRUPT_OUTSIDE_DAMAGE: u32 = 9;
     pub const PANEL_CURSOR_NO_RESTORE: u32 = 10;
     pub const RELEASE_STALL: u32 = 11;
+    // 12 to 15 are the run stage's points (section 23), which DISPLAY defines.
+    pub const COMPOSITE_STALL: u32 = 16;
+    pub const MOVE_POINTER: u32 = 17;
     /// The highest point number section 21 defines.
-    pub const LAST: u32 = RELEASE_STALL;
+    pub const LAST: u32 = MOVE_POINTER;
+
+    /// Whether section 21 defines `point`.
+    pub const fn defined(point: u32) -> bool {
+        matches!(point, IGNORE_DAMAGE..=RELEASE_STALL | COMPOSITE_STALL | MOVE_POINTER)
+    }
 }
 
 /// `emit-diagnostic`'s writer paths (section 22), its `param`.
@@ -732,6 +768,7 @@ layout!(RecordQuery, 24, serial @ 0, ptr @ 8, len @ 16, reserved @ 20);
 layout!(Readback, 40, dst @ 0, dst_len @ 8, record @ 16, record_len @ 24, reserved @ 28, serial @ 32);
 layout!(Cursor, 16, shape @ 0, visible @ 4, x @ 8, y @ 12);
 layout!(Give, 8, pid @ 0, reserved @ 4);
+layout!(MetaQuery, 24, id @ 0, meta @ 8, commit_id @ 16);
 layout!(CompositeRecordHeader, 24, serial @ 0, pixels @ 8, count @ 16, flags @ 20);
 layout!(CompositeEntry, 32, id @ 0, commit_id @ 8, pixel_gen @ 16, pixels @ 24);
 layout!(ObservedWindow, 16, id @ 0, commit_id @ 8);
@@ -770,6 +807,7 @@ pub const fn arg_size(op: u32) -> Option<usize> {
         op::SCANOUT_READBACK => size_of::<Readback>(),
         op::SET_CURSOR => size_of::<Cursor>(),
         op::GIVE_DISPLAY => size_of::<Give>(),
+        op::READ_META => size_of::<MetaQuery>(),
         _ => return None,
     })
 }

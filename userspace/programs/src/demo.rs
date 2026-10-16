@@ -246,7 +246,7 @@ fn main() {
             (width as usize) * bpp,
             bpp,
             info.is_bgr(),
-        )
+        ).expect("the framebuffer is a valid surface")
     };
 
     println!("Starting animation loop (mmap mode)...");

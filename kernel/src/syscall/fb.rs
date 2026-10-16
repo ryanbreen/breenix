@@ -1,7 +1,6 @@
 //! The framebuffer system calls: `fbinfo` (410), `fb_mmap` (412), `get_mouse_pos` and the
-//! framebuffer operations of `fb_draw` (411) that touch the display: `FLUSH` (6),
-//! `FLUSH_BATCH` (8) and the VirGL demo submissions (7, 9). `fb_draw`'s op table lives in
-//! `fb_draw.rs`.
+//! framebuffer operations of `fb_draw` (411) that touch the display: `FLUSH` (6) and
+//! `FLUSH_BATCH` (8). `fb_draw`'s op table lives in `fb_draw.rs`.
 
 extern crate alloc;
 
@@ -14,9 +13,7 @@ use crate::logger::SHELL_FRAMEBUFFER;
 use super::fb_draw::FbDrawCmd;
 use super::SyscallResult;
 #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
-use crate::graphics::primitives::{
-    draw_circle, draw_line, draw_rect, fill_circle, fill_rect, Canvas, Color, Rect,
-};
+use crate::graphics::primitives::Canvas;
 
 /// Counter for fb_flush syscalls (diagnostic — read from timer heartbeat)
 #[cfg(target_arch = "aarch64")]
@@ -175,77 +172,7 @@ pub fn sys_fbinfo(info_ptr: u64) -> SyscallResult {
     }
 }
 
-/// Handle VirGL GPU rendering ops (7=balls, 9=rects) without needing SHELL_FRAMEBUFFER.
-/// Called early in sys_fbdraw before acquiring the framebuffer lock.
-#[cfg(target_arch = "aarch64")]
-#[cfg(target_arch = "aarch64")]
-pub(super) fn virgl_demo_op(cmd: &FbDrawCmd) -> SyscallResult {
-    match cmd.op {
-        7 => {
-            // VirglSubmitFrame: GPU-rendered balls
-            let desc_ptr = (cmd.p1 as u32 as u64) | ((cmd.p2 as u32 as u64) << 32);
-            if desc_ptr == 0 || desc_ptr >= USER_SPACE_MAX {
-                return SyscallResult::Err(super::ErrorCode::Fault as u64);
-            }
-            let ball_count = unsafe { core::ptr::read(desc_ptr as *const u32) } as usize;
-            if ball_count > 16 {
-                return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
-            }
-            let balls_ptr = (desc_ptr + 8) as *const crate::drivers::virtio::gpu_pci::VirglBall;
-            let balls_end = desc_ptr
-                + 8
-                + (ball_count as u64)
-                    * core::mem::size_of::<crate::drivers::virtio::gpu_pci::VirglBall>() as u64;
-            if balls_end > USER_SPACE_MAX {
-                return SyscallResult::Err(super::ErrorCode::Fault as u64);
-            }
-            let balls = unsafe { core::slice::from_raw_parts(balls_ptr, ball_count) };
-            let bg_r = ((cmd.color >> 16) & 0xFF) as f32 / 255.0;
-            let bg_g = ((cmd.color >> 8) & 0xFF) as f32 / 255.0;
-            let bg_b = (cmd.color & 0xFF) as f32 / 255.0;
-            match crate::drivers::virtio::gpu_pci::virgl_render_frame(balls, bg_r, bg_g, bg_b) {
-                Ok(()) => SyscallResult::Ok(0),
-                Err(e) => {
-                    crate::serial_println!("[virgl-syscall] render_frame FAILED: {}", e);
-                    SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
-                }
-            }
-        }
-        9 => {
-            // VirglSubmitRects: GPU-rendered rectangles
-            let desc_ptr = (cmd.p1 as u32 as u64) | ((cmd.p2 as u32 as u64) << 32);
-            if desc_ptr == 0 || desc_ptr >= USER_SPACE_MAX {
-                return SyscallResult::Err(super::ErrorCode::Fault as u64);
-            }
-            let rect_count = unsafe { core::ptr::read(desc_ptr as *const u32) } as usize;
-            if rect_count > 60 {
-                return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
-            }
-            let rects_ptr = (desc_ptr + 8) as *const crate::drivers::virtio::gpu_pci::VirglRect;
-            let rects_end = desc_ptr
-                + 8
-                + (rect_count as u64)
-                    * core::mem::size_of::<crate::drivers::virtio::gpu_pci::VirglRect>() as u64;
-            if rects_end > USER_SPACE_MAX {
-                return SyscallResult::Err(super::ErrorCode::Fault as u64);
-            }
-            let rects = unsafe { core::slice::from_raw_parts(rects_ptr, rect_count) };
-            let bg_r = ((cmd.color >> 16) & 0xFF) as f32 / 255.0;
-            let bg_g = ((cmd.color >> 8) & 0xFF) as f32 / 255.0;
-            let bg_b = (cmd.color & 0xFF) as f32 / 255.0;
-            match crate::drivers::virtio::gpu_pci::virgl_render_rects(rects, bg_r, bg_g, bg_b) {
-                Ok(()) => SyscallResult::Ok(0),
-                Err(e) => {
-                    crate::serial_println!("[virgl-syscall] render_rects FAILED: {}", e);
-                    SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
-                }
-            }
-        }
-        _ => SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
-    }
-}
-
-/// The `fb_draw` ops that draw into or flush the framebuffer (0 to 6 and 8).
+/// The `fb_draw` ops that flush the framebuffer: `FLUSH` (6) and `FLUSH_BATCH` (8).
 #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
 pub(super) fn framebuffer_op(cmd: FbDrawCmd) -> SyscallResult {
     // Read the caller's fb_mmap info and display ownership BEFORE acquiring
@@ -307,7 +234,7 @@ pub(super) fn framebuffer_op(cmd: FbDrawCmd) -> SyscallResult {
         }
     };
 
-    // Every op that reaches here (0-6, 8) draws into this framebuffer: userspace
+    // Every op that reaches here (6, 8) puts pixels on this framebuffer: userspace
     // is drawing, so the kernel's boot screen gives the screen up, under the same
     // lock as this draw. After a kernel failure the diagnostics screen keeps it.
     #[cfg(target_arch = "aarch64")]
@@ -315,139 +242,7 @@ pub(super) fn framebuffer_op(cmd: FbDrawCmd) -> SyscallResult {
         return SyscallResult::Err(super::ErrorCode::Busy as u64);
     }
 
-    // Get left pane dimensions (half the screen width)
-    let pane_width = fb_guard.width() / 2;
-    let pane_height = fb_guard.height();
-
-    // Parse color
-    let color = Color::rgb(
-        ((cmd.color >> 16) & 0xFF) as u8,
-        ((cmd.color >> 8) & 0xFF) as u8,
-        (cmd.color & 0xFF) as u8,
-    );
-
     match cmd.op {
-        0 => {
-            // Clear: fill entire left pane with color
-            fill_rect(
-                &mut *fb_guard,
-                Rect {
-                    x: 0,
-                    y: 0,
-                    width: pane_width as u32,
-                    height: pane_height as u32,
-                },
-                color,
-            );
-            #[cfg(target_arch = "aarch64")]
-            crate::graphics::arm64_fb::mark_dirty(0, 0, pane_width as u32, pane_height as u32);
-        }
-        1 => {
-            // FillRect: x, y, width, height, color
-            // Clip to left pane
-            let x = cmd.p1.max(0) as i32;
-            let y = cmd.p2.max(0) as i32;
-            let w = cmd.p3.max(0) as u32;
-            let h = cmd.p4.max(0) as u32;
-
-            // Only draw if within left pane
-            if (x as usize) < pane_width {
-                let clipped_w = w.min((pane_width as i32 - x) as u32);
-                fill_rect(
-                    &mut *fb_guard,
-                    Rect {
-                        x,
-                        y,
-                        width: clipped_w,
-                        height: h,
-                    },
-                    color,
-                );
-                #[cfg(target_arch = "aarch64")]
-                crate::graphics::arm64_fb::mark_dirty(x as u32, y as u32, clipped_w, h);
-            }
-        }
-        2 => {
-            // DrawRect: x, y, width, height, color
-            let x = cmd.p1.max(0) as i32;
-            let y = cmd.p2.max(0) as i32;
-            let w = cmd.p3.max(0) as u32;
-            let h = cmd.p4.max(0) as u32;
-
-            if (x as usize) < pane_width {
-                draw_rect(
-                    &mut *fb_guard,
-                    Rect {
-                        x,
-                        y,
-                        width: w,
-                        height: h,
-                    },
-                    color,
-                );
-                #[cfg(target_arch = "aarch64")]
-                crate::graphics::arm64_fb::mark_dirty(x as u32, y as u32, w, h);
-            }
-        }
-        3 => {
-            // FillCircle: cx, cy, radius, color
-            let cx = cmd.p1;
-            let cy = cmd.p2;
-            let radius = cmd.p3.max(0) as u32;
-
-            if (cx as usize) < pane_width {
-                fill_circle(&mut *fb_guard, cx, cy, radius, color);
-                #[cfg(target_arch = "aarch64")]
-                crate::graphics::arm64_fb::mark_dirty(
-                    (cx - radius as i32).max(0) as u32,
-                    (cy - radius as i32).max(0) as u32,
-                    radius * 2,
-                    radius * 2,
-                );
-            }
-        }
-        4 => {
-            // DrawCircle: cx, cy, radius, color
-            let cx = cmd.p1;
-            let cy = cmd.p2;
-            let radius = cmd.p3.max(0) as u32;
-
-            if (cx as usize) < pane_width {
-                draw_circle(&mut *fb_guard, cx, cy, radius, color);
-                #[cfg(target_arch = "aarch64")]
-                crate::graphics::arm64_fb::mark_dirty(
-                    (cx - radius as i32).max(0) as u32,
-                    (cy - radius as i32).max(0) as u32,
-                    radius * 2,
-                    radius * 2,
-                );
-            }
-        }
-        5 => {
-            // DrawLine: x1, y1, x2, y2, color
-            let x1 = cmd.p1;
-            let y1 = cmd.p2;
-            let x2 = cmd.p3;
-            let y2 = cmd.p4;
-
-            // Allow lines that start or end in left pane
-            if (x1 as usize) < pane_width || (x2 as usize) < pane_width {
-                draw_line(&mut *fb_guard, x1, y1, x2, y2, color);
-                #[cfg(target_arch = "aarch64")]
-                {
-                    let min_x = x1.min(x2).max(0) as u32;
-                    let min_y = y1.min(y2).max(0) as u32;
-                    let max_x = x1.max(x2).max(0) as u32;
-                    let max_y = y1.max(y2).max(0) as u32;
-                    crate::graphics::arm64_fb::mark_dirty(
-                        min_x,
-                        min_y,
-                        max_x.saturating_sub(min_x) + 1,
-                        max_y.saturating_sub(min_y) + 1,
-                    );
-                }
-            }
-        }
         6 => {
             // Flush: sync buffer to screen
             #[cfg(target_arch = "aarch64")]
@@ -677,12 +472,6 @@ pub(super) fn framebuffer_op(cmd: FbDrawCmd) -> SyscallResult {
                 }
             }
         }
-        7 | 9 => {
-            // VirGL ops — handled early on aarch64 (before FB lock acquisition).
-            // On other architectures, VirGL is not supported.
-            drop(fb_guard);
-            return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
-        }
         8 => {
             // FlushBatch: batch flush multiple dirty rects with one DSB barrier.
             // p1:p2 = 64-bit pointer to FlushRect array [(x, y, w, h); ...]
@@ -850,15 +639,11 @@ pub(super) fn flush_owner_pane(cmd: &FbDrawCmd) -> SyscallResult {
 /// * -EFAULT if out_ptr is invalid
 #[cfg(target_arch = "aarch64")]
 pub fn sys_get_mouse_pos(out_ptr: u64) -> SyscallResult {
-    if out_ptr == 0 || out_ptr >= USER_SPACE_MAX {
+    // The state below is consumed as it is read: check the buffer first, so a bad one
+    // loses nothing.
+    if crate::window::mem::probe_writable(out_ptr, 16).is_err() {
         return SyscallResult::Err(super::ErrorCode::Fault as u64);
     }
-
-    let end_ptr = out_ptr.saturating_add(16); // 4 * u32
-    if end_ptr > USER_SPACE_MAX {
-        return SyscallResult::Err(super::ErrorCode::Fault as u64);
-    }
-
     let (mx, my, buttons) = if crate::drivers::virtio::input_mmio::is_tablet_initialized() {
         crate::drivers::virtio::input_mmio::mouse_state()
     } else {
@@ -867,12 +652,11 @@ pub fn sys_get_mouse_pos(out_ptr: u64) -> SyscallResult {
 
     let scroll = crate::drivers::usb::hid::mouse_wheel_consume() as u32;
 
-    unsafe {
-        let out = out_ptr as *mut [u32; 4];
-        core::ptr::write(out, [mx, my, buttons, scroll]);
+    // Through the fault-tolerant copy, so an unmapped or read-only buffer is EFAULT.
+    match crate::syscall::userptr::copy_to_user(out_ptr as *mut [u32; 4], &[mx, my, buttons, scroll]) {
+        Ok(()) => SyscallResult::Ok(0),
+        Err(_) => SyscallResult::Err(super::ErrorCode::Fault as u64),
     }
-
-    SyscallResult::Ok(0)
 }
 
 /// sys_get_mouse_pos - Stub for non-aarch64

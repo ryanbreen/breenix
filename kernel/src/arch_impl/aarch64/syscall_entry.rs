@@ -882,6 +882,10 @@ fn dispatch_syscall_enum(
         SyscallNumber::GetMousePos => {
             result_to_u64(crate::syscall::fb::sys_get_mouse_pos(arg1))
         }
+        SyscallNumber::Window => result_to_u64(crate::syscall::window::sys_window(arg1, arg2, arg3)),
+        SyscallNumber::TestControl => {
+            result_to_u64(crate::test_control::sys_test_control(arg1, arg2, arg3))
+        }
 
         // Audio syscalls
         SyscallNumber::AudioInit => result_to_u64(crate::syscall::audio::sys_audio_init()),
@@ -1495,6 +1499,8 @@ fn sys_exec_aarch64(
         drop(manager_guard);
 
         commit.apply();
+        // The old image's windows go with it (docs/gui/breengel.md section 17.2).
+        crate::window::exec_done_current();
 
         log::info!("sys_exec_aarch64: Setting TTBR0_EL1 to {:#x}", new_ttbr0);
         // Installing through the shared discipline publishes `saved_process_cr3`,
