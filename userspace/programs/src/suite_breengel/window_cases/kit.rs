@@ -225,6 +225,21 @@ pub(crate) fn fill_rect(buf: &mut [u8], w: u32, r: abi::Rect, seed: u32) {
 /// The first pixel of a `w`-wide image whose colour differs from `want(x, y)`, comparing B, G and
 /// R (and X when `with_x`).
 pub(crate) fn first_diff(img: &[u8], w: u32, h: u32, with_x: bool, want: impl Fn(u32, u32) -> [u8; 4]) -> Option<(u32, u32, [u8; 4], [u8; 4])> {
+    // Memory-limit probes deliberately disable picture collection. Preserve their
+    // allocation-free comparator; observation must not consume the limit under test.
+    if !crate::PICTURES.load(core::sync::atomic::Ordering::Relaxed) {
+        let n = if with_x { 4 } else { 3 };
+        for y in 0..h { for x in 0..w {
+            let at = ((y * w + x) * 4) as usize;
+            let expect = want(x, y);
+            if img[at..at + n] != expect[..n] {
+                let mut got = [0; 4];
+                got.copy_from_slice(&img[at..at + 4]);
+                return Some((x, y, got, expect));
+            }
+        } }
+        return None;
+    }
     // Evaluate the independent reference once. These exact bytes decide the verdict
     // and, canonicalized only after comparison, travel with the judged snapshot.
     let mut reference = Vec::with_capacity(w as usize * h as usize * 4);

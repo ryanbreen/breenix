@@ -70,6 +70,9 @@ pub fn showcase_check(name: &str) -> CaseResult {
     // The production finale must select the same retained frame on an all-pass run.
     if name=="judged-frame-shown" {
         let mut final_show=s.clone();final_show.finale=Some(0);
+        // Exercise the all-pass selection path even if an earlier real case
+        // failed without supplying a picture; that finale correctly shows words.
+        final_show.first_failure=None;
         let mut fb=FrameBuf::new(1280,800,Format::BGRX).map_err(|e|e.to_string())?;
         final_show.render(&mut fb,0).map_err(crate::suite::CaseError::Fail)?;
         check_spotlight(&final_show,&fb_bytes(&fb)).map_err(crate::suite::CaseError::Fail)?;
