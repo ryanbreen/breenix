@@ -85,6 +85,7 @@ impl Window {
     }
 
     fn with_watcher(title: &[u8], width: u32, height: u32, font_watcher: FontWatcher) -> Result<Self, Error> {
+        Self::validate_size(width, height)?;
         let c = window::create(width, height, 2, 0)?;
         if let Err(e) = window::register(c.id, title) {
             let _ = window::destroy(c.id);
@@ -105,6 +106,13 @@ impl Window {
             epoch: 0,
             last: None,
         })
+    }
+
+    /// Refuse a size no `FrameBuf` can describe before the kernel makes buffers of it, so a
+    /// buffer `ACQUIRE` hands out can always be drawn into.
+    fn validate_size(width: u32, height: u32) -> Result<(), Error> {
+        FrameBuf::validate_layout(width as usize, height as usize, width as usize * 4, Format::BGRX)
+            .map_err(|_| Error::Os(Errno::EINVAL))
     }
 
     fn frame_over(&self, buffer: u32) -> Result<FrameBuf, Error> {
@@ -375,6 +383,7 @@ impl Window {
     /// overlap; a buffer held for drawing is given up. The kernel reports `Resized` (or
     /// `ResizeFailed`) through the window's events.
     pub fn apply_resize(&mut self, new_width: u32, new_height: u32) -> Result<(), Error> {
+        Self::validate_size(new_width, new_height)?;
         let r = window::resize(self.id, new_width, new_height)?;
         self.held = None;
         self.fb = None;

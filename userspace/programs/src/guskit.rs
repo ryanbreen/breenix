@@ -1872,6 +1872,10 @@ fn handle_menu_action(state: &mut GuskitState, action: MenuAction) {
             let path = core::str::from_utf8(&path_buf[..path_len]).unwrap_or("/home/guskit.bmp");
             let bmp_data =
                 bmp::encode_bmp_24(state.canvas_w as u32, state.canvas_h as u32, &state.canvas);
+            if bmp_data.is_empty() {
+                println!("Save error: invalid canvas dimensions or RGB buffer");
+                return;
+            }
             match File::create(path) {
                 Ok(file) => {
                     let written = write_all(&file, &bmp_data);

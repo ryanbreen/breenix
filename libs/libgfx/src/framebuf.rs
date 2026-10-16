@@ -187,6 +187,12 @@ fn validate(width: usize, height: usize, stride: usize, format: Format) -> Resul
 }
 
 impl FrameBuf {
+    /// Check numeric surface rules before a caller changes external resources.
+    /// This validates layout only; wrapping memory still requires `from_raw`.
+    pub fn validate_layout(width: usize, height: usize, stride: usize, format: Format) -> Result<(), SurfaceError> {
+        validate(width, height, stride, format)
+    }
+
     fn make(ptr: *mut u8, owned: Option<Vec<u32>>, width: usize, height: usize, stride: usize, format: Format) -> FrameBuf {
         FrameBuf {
             ptr,

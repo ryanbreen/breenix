@@ -4,41 +4,65 @@ use crate::*;
 #[path = "../../../../libs/libimg/tests/checks.rs"]
 mod checks;
 
-fn image_check(name: &str) -> CaseResult {
-    let _ = checks::take_judged_image();
-    let run = checks::CHECKS
-        .iter()
-        .find(|(id, _)| *id == name)
-        .map(|(_, run)| *run)
-        .ok_or_else(|| format!("unknown image check {name}"))?;
+fn picture_case(run: impl FnOnce() -> CaseResult) -> CaseResult {
+    let _ = checks::take_judged_images();
     let result = run();
-    if let Some(mut image) = checks::take_judged_image() {
-        handoff_image(&mut image)?;
+    let handoff = handoff_images(checks::take_judged_images());
+    match (result, handoff) {
+        (Err(primary), Err(secondary)) => fail(format!("{primary:?}; showcase: {secondary:?}")),
+        (Err(primary), _) => Err(primary),
+        (Ok(()), handoff) => handoff,
     }
-    result.map_err(|e| format!("contract §§7,11–13: {e}"))?;
-    Ok(())
+}
+fn image_check(name: &str) -> CaseResult {
+    picture_case(|| {
+        let run = checks::CHECKS.iter().find(|(id, _)| *id == name)
+            .map(|(_, run)| *run).ok_or_else(|| format!("unknown image check {name}"))?;
+        run().map_err(|e| format!("contract §§7,11–13: {e}"))?;
+        Ok(())
+    })
 }
 
-fn handoff_image(image: &mut libimg::png::Image) -> CaseResult {
-    let bytes = (image.width as usize)
-        .checked_mul(image.height as usize)
-        .and_then(|n| n.checked_mul(4))
-        .ok_or("judged image dimensions overflow")?;
-    if bytes != image.pixels.len() {
-        return fail("judged image dimensions do not match its pixel allocation");
+// An opaque, lossless view of the compared bytes: BGR alongside alpha in grey,
+// with actual, reference and absolute difference rows for each fixture. No
+// source is redrawn or composited against a background that could hide alpha.
+fn handoff_images(images: Vec<checks::JudgedImage>) -> CaseResult {
+    use libgfx::framebuf::Format;
+    if images.is_empty() { return Ok(()); }
+    let mut placements = Vec::new();
+    let width = images.iter().map(|i| i.actual.width.max(i.expected.width) as usize * 2)
+        .max().unwrap_or(1).max(1280);
+    let (mut x, mut y, mut row_height) = (0, 0, 0);
+    for image in &images {
+        let w = image.actual.width.max(image.expected.width) as usize;
+        let h = image.actual.height.max(image.expected.height) as usize;
+        let tile_width = (w * 2).max(240);
+        let tile_height = h * 3 + 48;
+        if x + tile_width > width { x = 0; y += row_height; row_height = 0; }
+        placements.push((x, y, w, h));
+        x += tile_width;
+        row_height = row_height.max(tile_height);
     }
-    // SAFETY: the checked vector owns all bytes and outlives this temporary
-    // surface; there is no mutable alias while the snapshot is taken.
-    let frame = unsafe {
-        FrameBuf::from_raw_format(
-            image.pixels.as_mut_ptr(),
-            image.width as usize,
-            image.height as usize,
-            image.width as usize * 4,
-            libgfx::framebuf::Format::BGRA_PREMULTIPLIED,
-        )
+    let mut frame = FrameBuf::new_filled(width, y + row_height, Format::BGRX, Color::rgb(12, 19, 31))
+        .map_err(|e| format!("image showcase surface: {e:?}"))?;
+    for (ordinal, (image, &(x0, y0, w, h))) in images.iter().zip(&placements).enumerate() {
+        for (row, title) in ["ACTUAL BGR / ALPHA", "REFERENCE BGR / ALPHA", "DIFFERENCE BGR / ALPHA"].iter().enumerate() {
+            let y0 = y0 + row * (h + 16);
+            font5x7::draw_text(&mut frame, format!("{} {} {}", ordinal + 1, image.label, title).as_bytes(), x0, y0, Color::rgb(255, 255, 255), 1);
+            for y in 0..h { for x in 0..w {
+                let read = |i: &libimg::png::Image| -> [u8; 4] {
+                    if x >= i.width as usize || y >= i.height as usize { return [0; 4]; }
+                    let at = (y * i.width as usize + x) * 4;
+                    i.pixels.get(at..at+4).and_then(|p| p.try_into().ok()).unwrap_or([0; 4])
+                };
+                let a = read(&image.actual);
+                let r = read(&image.expected);
+                let p = match row { 0 => a, 1 => r, _ => std::array::from_fn(|c| a[c].abs_diff(r[c])) };
+                frame.put_pixel(x0 + x, y0 + 16 + y, Color::rgb(p[2], p[1], p[0]));
+                frame.put_pixel(x0 + w + x, y0 + 16 + y, Color::rgb(p[3], p[3], p[3]));
+            } }
+        }
     }
-    .map_err(|e| format!("judged image surface: {e:?}"))?;
     libbreenix::suite::judged(&frame)
 }
 
@@ -299,11 +323,9 @@ fn decodes_to(
                 .chunks_exact(3)
                 .flat_map(|p| [p[2], p[1], p[0], 255])
                 .collect();
-            handoff_image(&mut libimg::png::Image {
-                width: w,
-                height: h,
-                pixels,
-            })?;
+            checks::record_image(what.to_string(), libimg::png::Image { width: w, height: h, pixels },
+                libimg::png::Image { width, height: rows.len() as u32,
+                    pixels: flat(rows).chunks_exact(3).flat_map(|p| [p[2], p[1], p[0], 255]).collect() });
             if matches {
                 Ok(())
             } else {
@@ -317,7 +339,8 @@ fn decodes_to(
     }
 }
 
-fn bmp_decode_fixtures() -> CaseResult {
+fn bmp_decode_fixtures() -> CaseResult { picture_case(bmp_decode_fixtures_checks) }
+fn bmp_decode_fixtures_checks() -> CaseResult {
     let rows = vec![
         vec![[255, 0, 0], [0, 255, 0], [0, 0, 255]],
         vec![[10, 20, 30], [40, 50, 60], [70, 80, 90]],
@@ -333,7 +356,8 @@ fn bmp_decode_fixtures() -> CaseResult {
     decodes_to("12", "the contract's 2x2 file", &BMP_2X2, 2, &rows)
 }
 
-fn bmp_orientation() -> CaseResult {
+fn bmp_orientation() -> CaseResult { picture_case(bmp_orientation_checks) }
+fn bmp_orientation_checks() -> CaseResult {
     let rows = fixture_rows(5, 4, 0xB0B);
     decodes_to(
         "12",
@@ -351,7 +375,8 @@ fn bmp_orientation() -> CaseResult {
     )
 }
 
-fn bmp_padding() -> CaseResult {
+fn bmp_padding() -> CaseResult { picture_case(bmp_padding_checks) }
+fn bmp_padding_checks() -> CaseResult {
     for width in 1..=4 {
         let rows = fixture_rows(width, 3, width as u64 * 77);
         decodes_to(
@@ -383,7 +408,8 @@ fn bmp_encode_bytes() -> CaseResult {
     }
 }
 
-fn bmp_roundtrip() -> CaseResult {
+fn bmp_roundtrip() -> CaseResult { picture_case(bmp_roundtrip_checks) }
+fn bmp_roundtrip_checks() -> CaseResult {
     for (w, h) in [(1u32, 1u32), (5, 3), (7, 7), (64, 2)] {
         let rows = fixture_rows(w, h, (w * 31 + h) as u64);
         let rgb = flat(&rows);
@@ -393,7 +419,8 @@ fn bmp_roundtrip() -> CaseResult {
     Ok(())
 }
 
-fn bmp_truncated() -> CaseResult {
+fn bmp_truncated() -> CaseResult { picture_case(bmp_truncated_checks) }
+fn bmp_truncated_checks() -> CaseResult {
     let rows = fixture_rows(3, 3, 0x7A7);
     let full = bmp_fixture(3, &rows, false);
     let len = full.len();
@@ -435,18 +462,19 @@ fn bmp_header(width: u32, height: i32, bpp: u16, compression: u32, data: usize) 
 }
 
 /// The file is rejected, without a crash and without allocating anything.
-fn rejected_before_allocating(section: &str, what: &str, bytes: Vec<u8>) -> CaseResult {
+fn rejected_before_allocating(section: &str, what: &str, bytes: Vec<u8>, expected: libimg::bmp::BmpError) -> CaseResult {
     let what = what.to_string();
     step(
         section,
         isolated(&what.clone(), 5_000, move || {
             let before = ALLOC_CALLS.load(Relaxed);
-            let decoded = libimg::bmp::decode_bmp_24(&bytes).map(|(w, h, rgb)| (w, h, rgb.len()));
+            let decoded = libimg::bmp::decode_bmp(&bytes).map(|b| (b.width, b.height, b.rgb.len()));
             let allocated = ALLOC_CALLS.load(Relaxed) - before;
             match decoded {
-            Some((w, h, n)) => Err(format!("{what} decoded as {w}x{h} ({n} bytes); the contract rejects it")),
-            None if allocated > 0 => Err(format!("{what} was rejected, but only after {allocated} allocations; the contract checks before allocating")),
-            None => Ok(()),
+            Ok((w, h, n)) => Err(format!("{what} decoded as {w}x{h} ({n} bytes); the contract rejects it")),
+            Err(_) if allocated > 0 => Err(format!("{what} was rejected, but only after {allocated} allocations; the contract checks before allocating")),
+            Err(error) if error == expected => Ok(()),
+            Err(error) => Err(format!("{what}: got {error:?}, expected {expected:?}")),
         }
         }),
     )
@@ -457,16 +485,19 @@ fn bmp_size_overflow() -> CaseResult {
         "7, 12",
         "a BMP 1,431,655,766 pixels wide (its row size overflows 32 bits)",
         bmp_header(0x5555_5556, 1, 24, 0, 64),
+        libimg::bmp::BmpError::SizeOverflow,
     )?;
     rejected_before_allocating(
         "7, 12",
         "a BMP of 2^30 x 2^30 pixels",
         bmp_header(0x4000_0000, 0x4000_0000, 24, 0, 64),
+        libimg::bmp::BmpError::SizeOverflow,
     )?;
     rejected_before_allocating(
         "7, 12",
         "a BMP 2^31 - 1 rows tall, top-down",
         bmp_header(4, -i32::MAX, 24, 0, 64),
+        libimg::bmp::BmpError::SizeOverflow,
     )
 }
 
@@ -475,16 +506,19 @@ fn bmp_huge() -> CaseResult {
         "7, 12",
         "a complete BMP 20,000 x 1 pixels",
         bmp_header(20_000, 1, 24, 0, 60_000),
+        libimg::bmp::BmpError::TooLarge,
     )?;
     rejected_before_allocating(
         "7, 12",
         "a complete BMP 1 x 16,385 pixels",
         bmp_header(1, 16_385, 24, 0, 4 * 16_385),
+        libimg::bmp::BmpError::TooLarge,
     )?;
     rejected_before_allocating(
         "7, 12",
         "a BMP of 4,097 x 4,097 pixels (16,785,409 pixels)",
         bmp_header(4_097, 4_097, 24, 0, 1_024),
+        libimg::bmp::BmpError::TooLarge,
     )
 }
 
@@ -625,7 +659,8 @@ fn blit_decoded(image: &mut libimg::png::Image) -> Result<libimg::png::Image, St
         pixels,
     })
 }
-fn png_decode_blit() -> CaseResult {
+fn png_decode_blit() -> CaseResult { picture_case(png_decode_blit_checks) }
+fn png_decode_blit_checks() -> CaseResult {
     let bytes = checks::pngfile(&checks::ihdr(1, 1, 8, 6, 0), &[], &[0, 128, 0, 0, 128]);
     let mut image = libimg::png::decode(&bytes).map_err(|e| format!("PNG blend fixture: {e:?}"))?;
     if (image.width, image.height) != (1, 1) || image.pixels != [0, 0, 64, 128] {
@@ -634,12 +669,13 @@ fn png_decode_blit() -> CaseResult {
             "decoded red-128 at alpha-128 must be premultiplied BGRA [0,0,64,128]",
         );
     }
-    let mut actual = blit_decoded(&mut image)?;
+    let actual = blit_decoded(&mut image)?;
     // §2 literal: source channel 64 at alpha 128 over channel 200 gives 164;
     // the two zero source channels give 100, and the opaque background stays opaque.
     let expected = [200, 200, 200, 255, 100, 100, 164, 255, 200, 200, 200, 255];
     let matches = (actual.width, actual.height) == (3, 1) && actual.pixels == expected;
-    handoff_image(&mut actual)?;
+    checks::record_image("source-over".into(), actual,
+        libimg::png::Image { width: 3, height: 1, pixels: expected.to_vec() });
     if matches {
         Ok(())
     } else {
