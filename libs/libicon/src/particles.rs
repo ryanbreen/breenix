@@ -108,6 +108,8 @@ impl ParticlePool {
     }
     fn confine(bounds: Option<(f32,f32,f32,f32)>, p: &mut Particle) {
         if let Some((l,t,r,b)) = bounds {
+            // No whole pixel fits; retaining a live particle would violate the box.
+            if r-l < 1.0 || b-t < 1.0 { p.life = 0.0; return; }
             p.size = p.size.max(0.0).min(r-l).min(b-t);
             let half = p.size.max(1.0)/2.0;
             let x = p.x.clamp(l+half,r-half);
