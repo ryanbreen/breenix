@@ -471,8 +471,9 @@ fn run_inner() -> Result<(), &'static str> {
         return Err("control queue too small");
     }
     dev.set_queue_num(QSIZE as u32);
-    let q = phys((&raw const QUEUE.0) as u64);
-    cache_clean((&raw const QUEUE.0) as *const u8, 8192);
+    let queue = unsafe { (&raw const QUEUE.0) as *const u8 };
+    let q = phys(queue as u64);
+    cache_clean(queue, 8192);
     dev.set_queue_desc(q);
     dev.set_queue_avail(q + AVAIL as u64);
     dev.set_queue_used(q + USED as u64);
