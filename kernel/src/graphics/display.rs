@@ -221,8 +221,10 @@ impl Backend for Display {
         if s.cursor.visible != 0 {
             damage.push(cursor_rect(&s.cursor));
         }
-        if crate::test_control::take(point::IGNORE_DAMAGE, 0).is_some() {
-            damage = vec![full()];
+        for window in &f.windows {
+            if crate::test_control::take(point::IGNORE_DAMAGE, window.id).is_some() {
+                damage.push(window.rect);
+            }
         }
         let mut pixels = 0u64;
         let mut per_window = vec![0u64; f.windows.len()];
