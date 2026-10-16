@@ -333,6 +333,13 @@ pub(crate) fn unmapped() -> u64 {
 // Processes and accounting
 // ---------------------------------------------------------------------------------------
 
+#[cfg(target_arch = "x86_64")]
+mod nr {
+    pub const SETUID: u64 = 105;
+    pub const PRLIMIT64: u64 = 302;
+    pub const GET_MOUSE_POS: u64 = 413;
+}
+
 #[cfg(target_arch = "aarch64")]
 mod nr {
     pub const SETUID: u64 = 146;
