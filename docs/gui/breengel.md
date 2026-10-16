@@ -902,7 +902,8 @@ Plan §3.1 is the contract, transcribed here.
   resize or destroy during a capture retires the buffer and frees it after the copy, so a capture returns a
   whole committed generation, or ENOENT when the window was destroyed before the copy began. With a tree
   destination, `CAPTURE` copies the same buffer's tree page under the same pin and returns the one commit id
-  both belong to.
+  both belong to; until that copy ends, `ACQUIRE` does not hand out the buffer at that tree page's index, even
+  when a resize has replaced the buffer the capture pinned.
 - **No pins between system calls.** With two buffers, the longest a client ever waits in `ACQUIRE` is one
   composite plus one capture copy in progress.
 - **Remnants.** A root process registered with `HOLD_EVIDENCE` as a window's evidence holder keeps, when the
@@ -1129,9 +1130,10 @@ with the composition formula).
   16 `composite-stall` (target: a window; the next composite that includes it pauses before the backend
   composes, with every window's front pinned, until released, a signal reaches the compositor, or 1 s), 17
   `move-pointer` (param: x in bits 0 to 31, y in bits 32 to 63; the next time the kernel reads the pointing
-  device's position, for the panel cursor, the position is (x, y), as if the device had moved there). Points
-  12 to 15 are the run stage's (section 23). Faults are branches in the real code paths, disarmed at case end
-  by the suite.
+  device's position, for the panel cursor, the position is (x, y), as if the device had moved there), 18
+  `capture-stall` (target: a window; the next `CAPTURE` of it pauses after copying half its rows, with its pins
+  held, until released or 1 s). Points 12 to 15 are the run stage's (section 23). Faults are branches in the
+  real code paths, disarmed at case end by the suite.
 - `init`, running as PID 1, checks that every op returns ENOSYS and prints `[init] test controls absent`; run
   as a child (in a suite boot) it prints `[init] not PID 1: test-control check skipped` and makes no absence
   claim.

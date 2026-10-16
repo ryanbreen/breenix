@@ -743,25 +743,39 @@ fn isolation_destroy_during_commit() -> CaseResult {
                 return Err(format!("round {round}: CREATE failed"));
             }
             let id = c.id;
+            let done = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let counted = done.clone();
             let committer = std::thread::spawn(move || -> Result<u64, String> {
-                let mut commits = 0u64;
                 loop {
                     let a = match acquire(id, 100_000_000) {
                         Ok(a) => a,
-                        Err(r) if r == -(ENOENT as i64) => return Ok(commits),
+                        Err(r) if r == -(ENOENT as i64) => return Ok(counted.load(std::sync::atomic::Ordering::SeqCst)),
                         Err(r) => return Err(format!("ACQUIRE {}", outcome(r))),
                     };
                     match commit(id, a.buffer, &[abi::Rect::new(0, 0, 64, 64)], None) {
-                        Ok(_) => commits += 1,
-                        Err(r) if r == -(ENOENT as i64) => return Ok(commits),
+                        Ok(_) => {
+                            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        }
+                        Err(r) if r == -(ENOENT as i64) => return Ok(counted.load(std::sync::atomic::Ordering::SeqCst)),
                         Err(r) => return Err(format!("COMMIT {}", outcome(r))),
                     }
                 }
             });
+            // The destroy lands while the committer is in its loop: after its first commit,
+            // and, the loop never ending on its own, before its last.
+            let start = now_ms();
+            while done.load(std::sync::atomic::Ordering::SeqCst) == 0 && since(start) < 2_000 {
+                let _ = time::sleep_ms(1);
+            }
+            let before = done.load(std::sync::atomic::Ordering::SeqCst);
             let _ = time::sleep_ms(round % 5);
             let d = call_id(op::DESTROY, id);
             if d != 0 {
                 return Err(format!("round {round}: DESTROY while another thread commits {}", outcome(d)));
+            }
+            if before == 0 {
+                let _ = committer.join();
+                return Err(format!("round {round}: the committing thread made no commit within 2 s, so DESTROY raced nothing"));
             }
             match committer.join() {
                 Ok(Ok(_)) => {}

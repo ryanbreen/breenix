@@ -1716,17 +1716,17 @@ Cases run against `kiosk_test` and read the registry.
 - `acquire-replays-damage` — With three buffers and alternating disjoint updates (A commits `[1,0]`, B commits `[1,2]` with only the second cell damaged), the next acquired buffer holds `[1,2]`, and every acquire over 300 such commits equals the newest front.
 - `acquire-full-copy` — A buffer with no base, or whose missing commits have left the 8-entry damage log, is replayed in full by the kernel and equals the newest front, for a Breengel client and a raw client alike.
 - `stale-base-commit` — Of two concurrently acquired buffers, committing the one with the older base gives exactly that buffer's pixels, with damage widened to cover every pixel that changed. With `acquire-stall` holding thread 1's replay copy from front A halfway, thread 2 commits C and then acquires: it does not get A until the copy ends, and thread 1's buffer equals exactly the commit its returned base names. A stale buffer committed after more than eight intervening commits gets whole-window damage. Every step compares whole pixels to the formula and checks that the damage covers every changed pixel.
-- `commit-immutable` — Writing a committed buffer faults.
+- `commit-immutable` — Writing a committed buffer, or its tree page at any tree size, faults.
 - `commit-busy` — Committing a buffer twice without acquiring it again fails with EBUSY.
 - `thread-commit` — Two threads of the owner committing concurrently both succeed with distinct, ordered commit ids.
 - `release-order` — A retired buffer returns to free only after its composite and any capture copy in progress are done.
 - `acquire-timeout` — acquire with no free buffer returns ETIMEDOUT no earlier than its timeout and within 100 ms after it.
-- `resize` — The owner's resize gives buffers of the new size holding the old contents in the intersection.
+- `resize` — The owner's resize gives buffers of the new size holding the old contents in the intersection, also while another thread of the owner resizes the window.
 - `resize-error` — A resize the kernel refuses is reported as an error, and no Resized event claims the new size.
 - `resize-rlimit` — A resize over RLIMIT_AS fails with ENOMEM and leaves the old buffers intact.
 - `resize-rollback` — A failure at each allocation step of create and resize leaves registry, mappings and accounting unchanged.
 - `rlimit-accounting` — Window buffers count against RLIMIT_AS, and destroying the window returns them.
-- `capture-across-destroy` — A capture in progress when its window is destroyed returns the whole commit, with the tree page of that same commit when a tree destination is given, and the buffer is freed when the copy ends.
+- `capture-across-destroy` — A capture in progress when its window is destroyed or resized returns the whole commit, with the tree page of that same commit when a tree destination is given; a capture begun after the destroy is ENOENT; and the buffer is freed when the copy ends.
 - `two-buffer-capture-load` — A two-buffer client committing 300 frames while a reader captures it continuously and an evidence holder is registered never waits in acquire beyond one composite and one capture copy.
 - `remnant-on-death` — When the owner of a window with an evidence holder is killed, the holder reads its last front and tree, and releasing the remnant returns memory to the baseline.
 - `churn` — 100 create and destroy cycles return the registry, allocation counter and memory to the baseline.

@@ -677,12 +677,13 @@ pub mod tc_point {
     pub const RIBBON_DROP_STAGE:u32=15;
     pub const COMPOSITE_STALL: u32 = 16;
     pub const MOVE_POINTER: u32 = 17;
+    pub const CAPTURE_STALL: u32 = 18;
     /// The highest point number section 21 defines.
-    pub const LAST: u32 = MOVE_POINTER;
+    pub const LAST: u32 = CAPTURE_STALL;
 
     /// Whether section 21 defines `point`.
     pub const fn defined(point: u32) -> bool {
-        matches!(point, IGNORE_DAMAGE..=MOVE_POINTER)
+        matches!(point, IGNORE_DAMAGE..=CAPTURE_STALL)
     }
 }
 

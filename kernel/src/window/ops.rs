@@ -214,6 +214,7 @@ pub fn create(caller: &Caller, a: &mut Create) -> Result<u64, i32> {
             width: a.width,
             height: a.height,
             buffers,
+            tree_pins: [0; limits::MAX_BUFFERS as usize],
             tree,
             tree_addr,
             tree_kib,
@@ -337,7 +338,9 @@ fn pick_free(w: &Window) -> Option<usize> {
     w.buffers
         .iter()
         .enumerate()
-        .filter(|(_, b)| b.state == BufState::Free && !b.acquired && !b.replaying && !b.committing)
+        .filter(|(i, b)| {
+            b.state == BufState::Free && !b.acquired && !b.replaying && !b.committing && w.tree_pins[*i] == 0
+        })
         .max_by_key(|(_, b)| (b.base == w.front_commit && w.front.is_some(), b.base))
         .map(|(i, _)| i)
 }
@@ -357,7 +360,8 @@ fn since(w: &Window, base: u64) -> Damage {
     d
 }
 
-/// A pause inside the replay copy (`acquire-stall`) or a composite (`composite-stall`): until
+/// A pause inside the replay copy (`acquire-stall`), a capture copy (`capture-stall`) or a
+/// composite (`composite-stall`): until
 /// `release-stall` fires, a signal arrives or 1 s has passed.
 static STALL: WaitQueueHead = WaitQueueHead::new();
 
@@ -652,13 +656,16 @@ pub fn no_change(caller: &Caller, n: &mut NoChange, meta: Meta) -> Result<u64, i
 }
 
 /// Copy `height` rows of `width` BGRX pixels from `src` (`stride` bytes per row) to the user
-/// at `dst`, with every X byte 0xFF.
-fn pixels_out(src: Option<&Mem>, stride: u32, width: u32, height: u32, dst: u64) -> Result<(), i32> {
+/// at `dst`, with every X byte 0xFF, pausing before row `pause_at` when it is given.
+fn pixels_out(src: Option<&Mem>, stride: u32, width: u32, height: u32, dst: u64, pause_at: Option<u64>) -> Result<(), i32> {
     let row_len = width as usize * 4;
     let mut row = Vec::new();
     row.try_reserve_exact(row_len).map_err(|_| ENOMEM)?;
     row.resize(row_len, 0);
     for y in 0..height as u64 {
+        if pause_at == Some(y) {
+            stall();
+        }
         match src {
             Some(m) => m.read(y * stride as u64, &mut row),
             None => row.fill(0),
@@ -684,34 +691,65 @@ fn bytes_out(src: &Mem, offset: u64, len: u64, dst: u64) -> Result<(), i32> {
     Ok(())
 }
 
-/// `CAPTURE`: a whole committed generation, and that same commit's tree page on request.
+/// A capture's hold on the tree page of buffer index `slot` of window `window` while it copies
+/// the page (`Window::tree_pins`).
+struct TreePin {
+    window: u64,
+    slot: usize,
+}
+
+impl Drop for TreePin {
+    fn drop(&mut self) {
+        let waits = {
+            let mut reg = REGISTRY.lock();
+            let Some(w) = reg.windows.get_mut(&self.window) else {
+                return;
+            };
+            w.tree_pins[self.slot] = w.tree_pins[self.slot].saturating_sub(1);
+            (w.tree_pins[self.slot] == 0).then(|| w.waits.clone())
+        };
+        if let Some(waits) = waits {
+            waits.acquire.wake_up();
+        }
+    }
+}
+
+/// `CAPTURE`: a whole committed generation, and that same commit's tree page on request. The
+/// front's buffer is pinned, and with a tree destination so is its index's tree page, until
+/// the copy ends; `capture-stall` pauses the copy half way.
 pub fn capture(caller: &Caller, c: &mut Capture) -> Result<u64, i32> {
-    let (pin, tree, tree_offset, tree_len, width, height, stride, commit_id) = {
+    let (pin, tree_pin, tree, tree_offset, tree_len, width, height, stride, commit_id) = {
         let mut reg = REGISTRY.lock();
         let w = reg.window(c.id, caller, who::owner_compositor_or_root)?;
         let tree_len = w.tree_kib as u64 * 1024;
         if c.dst_len < buffer_bytes(w.width, w.height) || (c.tree_dst != 0 && c.tree_len < tree_len) {
             return Err(EINVAL);
         }
-        let (pin, tree_offset, commit_id) = match w.front {
+        let (pin, tree_pin, tree_offset, commit_id) = match w.front {
             Some(f) => {
+                let tree_pin = (c.tree_dst != 0).then(|| {
+                    w.tree_pins[f] += 1;
+                    TreePin { window: w.id, slot: f }
+                });
                 let b = &mut w.buffers[f];
                 b.pins += 1;
-                (Some(Pin::new(w.id, b.uid, b.mem.clone())), f as u64 * tree_len, w.front_commit)
+                (Some(Pin::new(w.id, b.uid, b.mem.clone())), tree_pin, f as u64 * tree_len, w.front_commit)
             }
-            None => (None, 0, 0),
+            None => (None, None, 0, 0),
         };
-        (pin, w.tree.clone(), tree_offset, tree_len, w.width, w.height, w.stride(), commit_id)
+        (pin, tree_pin, w.tree.clone(), tree_offset, tree_len, w.width, w.height, w.stride(), commit_id)
     };
     let need = buffer_bytes(width, height);
     mem::probe_writable(c.dst, need)?;
     if c.tree_dst != 0 {
         mem::probe_writable(c.tree_dst, tree_len)?;
     }
-    pixels_out(pin.as_ref().map(|p| p.mem()), stride, width, height, c.dst)?;
+    let pause_at = crate::test_control::take(breengel_abi::tc_point::CAPTURE_STALL, c.id).map(|_| height as u64 / 2);
+    pixels_out(pin.as_ref().map(|p| p.mem()), stride, width, height, c.dst, pause_at)?;
     if c.tree_dst != 0 {
         bytes_out(&tree, tree_offset, tree_len, c.tree_dst)?;
     }
+    drop(tree_pin);
     drop(pin);
     c.commit_id = commit_id;
     c.width = width;
@@ -1101,7 +1139,7 @@ pub fn read_remnant(caller: &Caller, c: &mut Capture) -> Result<u64, i32> {
     if c.tree_dst != 0 {
         mem::probe_writable(c.tree_dst, tree_len)?;
     }
-    pixels_out(pixels.as_deref(), width * 4, width, height, c.dst)?;
+    pixels_out(pixels.as_deref(), width * 4, width, height, c.dst, None)?;
     if c.tree_dst != 0 {
         bytes_out(&tree, tree_offset, tree_len, c.tree_dst)?;
     }

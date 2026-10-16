@@ -167,6 +167,10 @@ pub struct Window {
     pub width: u32,
     pub height: u32,
     pub buffers: Vec<Buffer>,
+    /// Captures copying each buffer index's tree page now: a buffer whose tree page is being
+    /// copied is not handed out, which would make that page writable, even after a resize
+    /// has replaced the buffer the capture pinned.
+    pub tree_pins: [u32; limits::MAX_BUFFERS as usize],
     pub tree: Arc<Mem>,
     pub tree_addr: u64,
     pub tree_kib: u32,

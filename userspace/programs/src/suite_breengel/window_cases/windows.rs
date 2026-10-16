@@ -25,17 +25,17 @@ pub(crate) const WINDOWS: &[Case] = &[
     pictured!("acquire-replays-damage", "With three buffers and alternating disjoint updates (A commits `[1,0]`, B commits `[1,2]` with only the second cell damaged), the next acquired buffer holds `[1,2]`, and every acquire over 300 such commits equals the newest front", windows_acquire_replays_damage),
     pictured!("acquire-full-copy", "A buffer with no base, or whose missing commits have left the 8-entry damage log, is replayed in full by the kernel and equals the newest front, for a Breengel client and a raw client alike", windows_acquire_full_copy),
     pictured!("stale-base-commit", "Of two concurrently acquired buffers, committing the one with the older base gives exactly that buffer's pixels, with damage widened to cover every pixel that changed. With `acquire-stall` holding thread 1's replay copy from front A halfway, thread 2 commits C and then acquires: it does not get A until the copy ends, and thread 1's buffer equals exactly the commit its returned base names. A stale buffer committed after more than eight intervening commits gets whole-window damage. Every step compares whole pixels to the formula and checks that the damage covers every changed pixel", windows_stale_base_commit),
-    pictured!("commit-immutable", "Writing a committed buffer faults", windows_commit_immutable),
+    pictured!("commit-immutable", "Writing a committed buffer, or its tree page at any tree size, faults", windows_commit_immutable),
     pictured!("commit-busy", "Committing a buffer twice without acquiring it again fails with EBUSY", windows_commit_busy),
     pictured!("thread-commit", "Two threads of the owner committing concurrently both succeed with distinct, ordered commit ids", windows_thread_commit),
     pictured!("release-order", "A retired buffer returns to free only after its composite and any capture copy in progress are done", windows_release_order),
     pictured!("acquire-timeout", "acquire with no free buffer returns ETIMEDOUT no earlier than its timeout and within 100 ms after it", windows_acquire_timeout),
-    pictured!("resize", "The owner's resize gives buffers of the new size holding the old contents in the intersection", windows_resize),
+    pictured!("resize", "The owner's resize gives buffers of the new size holding the old contents in the intersection, also while another thread of the owner resizes the window", windows_resize),
     pictured!("resize-error", "A resize the kernel refuses is reported as an error, and no Resized event claims the new size", windows_resize_error),
     pictured!("resize-rlimit", "A resize over RLIMIT_AS fails with ENOMEM and leaves the old buffers intact", windows_resize_rlimit),
     pictured!("resize-rollback", "A failure at each allocation step of create and resize leaves registry, mappings and accounting unchanged", windows_resize_rollback),
     pictured!("rlimit-accounting", "Window buffers count against RLIMIT_AS, and destroying the window returns them", windows_rlimit_accounting),
-    pictured!("capture-across-destroy", "A capture in progress when its window is destroyed returns the whole commit, with the tree page of that same commit when a tree destination is given, and the buffer is freed when the copy ends", windows_capture_across_destroy),
+    pictured!("capture-across-destroy", "A capture in progress when its window is destroyed or resized returns the whole commit, with the tree page of that same commit when a tree destination is given; a capture begun after the destroy is ENOENT; and the buffer is freed when the copy ends", windows_capture_across_destroy),
     pictured!("two-buffer-capture-load", "A two-buffer client committing 300 frames while a reader captures it continuously and an evidence holder is registered never waits in acquire beyond one composite and one capture copy", windows_two_buffer_capture_load),
     pictured!("remnant-on-death", "When the owner of a window with an evidence holder is killed, the holder reads its last front and tree, and releasing the remnant returns memory to the baseline", windows_remnant_on_death),
     pictured!("churn", "100 create and destroy cycles return the registry, allocation counter and memory to the baseline", windows_churn),
@@ -974,13 +974,33 @@ fn windows_capture_across_destroy() -> CaseResult {
         fill(w.buf(a.buffer), 512, 512, seed);
         w.tree(a.buffer)[..8].copy_from_slice(&(seed as u64).to_le_bytes());
         w.commit(a.buffer, &[abi::Rect::new(0, 0, 512, 512)]).map_err(|r| format!("COMMIT {}", outcome(r))).cite("17.3")?;
-        to_reader.send(w.id()).map_err(|_| String::from("the reader thread is gone")).cite("17.3")?;
-        let _ = time::sleep_ms(round as u64 % 3);
-        want_ok(w.destroy(), "17.2", "DESTROY during a capture")?;
+        // Even rounds destroy the window while `capture-stall` holds the capture half way
+        // through its copy; odd rounds destroy it before the capture begins.
+        let in_flight = round % 2 == 0;
+        if in_flight {
+            let fired = |point| libbreenix::test_control::fired(point).map_err(|e| format!("FIRED: {e}"));
+            let stalls = fired(abi::tc_point::CAPTURE_STALL).cite("21")?;
+            libbreenix::test_control::arm(abi::tc_point::CAPTURE_STALL, w.id(), 0).map_err(|e| format!("ARM capture-stall: {e}")).cite("21")?;
+            to_reader.send(w.id()).map_err(|_| String::from("the reader thread is gone")).cite("17.3")?;
+            let start = now_ms();
+            while fired(abi::tc_point::CAPTURE_STALL).cite("21")? == stalls && since(start) < 1_000 {
+                let _ = time::sleep_ms(2);
+            }
+            let paused = fired(abi::tc_point::CAPTURE_STALL).cite("21")? > stalls;
+            let destroyed = w.destroy();
+            let _ = libbreenix::test_control::arm(abi::tc_point::RELEASE_STALL, 0, 0);
+            ensure(paused, "21", format!("round {round}: the capture-stall control did not fire within 1 s"))?;
+            want_ok(destroyed, "17.2", "DESTROY during a paused capture")?;
+        } else {
+            want_ok(w.destroy(), "17.2", "DESTROY before a capture")?;
+            to_reader.send(w.id()).map_err(|_| String::from("the reader thread is gone")).cite("17.3")?;
+        }
         let (got, tree) = from_reader.recv().map_err(|_| String::from("the reader thread is gone")).cite("17.3")?;
-        match got {
-            Err(r) => want_errno(r, ENOENT, "17.3", "a capture that began after DESTROY"),
-            Ok((c, px)) => {
+        match (in_flight, got) {
+            (false, Err(r)) => want_errno(r, ENOENT, "17.3", "a capture that began after DESTROY"),
+            (false, Ok(_)) => at("17.3", format!("round {round}: a capture that began after DESTROY returned pixels; it is ENOENT")),
+            (true, Err(r)) => at("17.3", format!("round {round}: a capture paused half way when its window was destroyed {}; it returns the whole commit", outcome(r))),
+            (true, Ok((c, px))) => {
                 same(&px, 512, 512, false, &format!("round {round}: a capture across DESTROY"), "17.3", |x, y| pattern(seed, x, y))?;
                 let t = u64::from_le_bytes(tree[..8].try_into().unwrap());
                 ensure(t == seed as u64 && c.commit_id == 1, "17.3", format!("round {round}: the capture's tree page says {t} for commit {}", c.commit_id))
@@ -1002,12 +1022,71 @@ fn windows_capture_across_destroy() -> CaseResult {
         }
     }
     let free_after = mem_free_kb().cite("17.3")?;
+    let _ = libbreenix::test_control::disarm_all();
     drop(to_reader);
     let _ = reader.join();
     outcome_of_rounds?;
     value("mem-free-change", free_after as i64 - free_before as i64, "kb", None);
     ensure(free_after + 64 >= free_before, "17.3", format!(
-        "after 20 windows of 2 MiB were destroyed under captures, {} kB fewer are free; the buffers are freed when the copy ends", free_before - free_after))
+        "after 20 windows of 2 MiB were destroyed under captures, {} kB fewer are free; the buffers are freed when the copy ends", free_before - free_after))?;
+    capture_across_resize()
+}
+
+/// A capture with a tree destination, paused half way by `capture-stall`, while its window is
+/// resized and the owner commits the other buffer: the captured index's buffer is not handed
+/// out until the copy ends, and the capture returns commit 1's pixels and tree page.
+fn capture_across_resize() -> CaseResult {
+    let fired = |point| libbreenix::test_control::fired(point).map_err(|e| format!("FIRED: {e}"));
+    let w = W::new(64, 64, 2)?;
+    let id = w.id();
+    let first = w.acquire(1_000_000_000).map_err(|r| format!("ACQUIRE {}", outcome(r))).cite("17.3")?;
+    fill(w.buf(first.buffer), 64, 64, 60);
+    w.tree(first.buffer)[..8].copy_from_slice(&60u64.to_le_bytes());
+    let c1 = w.commit(first.buffer, &[full(&w.c)]).map_err(|r| format!("COMMIT {}", outcome(r))).cite("17.3")?;
+    let stalls = fired(abi::tc_point::CAPTURE_STALL).cite("21")?;
+    libbreenix::test_control::arm(abi::tc_point::CAPTURE_STALL, id, 0).map_err(|e| format!("ARM capture-stall: {e}")).cite("21")?;
+    let reader = std::thread::spawn(move || {
+        let mut tree = vec![0u8; 64 * 1024];
+        let got = capture(id, 64, 64, Some(&mut tree));
+        (got, tree[..8].to_vec())
+    });
+    let start = now_ms();
+    while fired(abi::tc_point::CAPTURE_STALL).cite("21")? == stalls && since(start) < 1_000 {
+        let _ = time::sleep_ms(2);
+    }
+    let paused = fired(abi::tc_point::CAPTURE_STALL).cite("21")? > stalls;
+    let mut r = abi::Resize::ZERO;
+    r.id = id;
+    r.width = 32;
+    r.height = 32;
+    let resized = call(op::RESIZE, &mut r);
+    // The front keeps its index; the other buffer takes the next commit.
+    let second = acquire(id, 1_000_000_000);
+    let committed = second.map(|a| {
+        w.tree(a.buffer)[..8].copy_from_slice(&61u64.to_le_bytes());
+        commit(id, a.buffer, &[abi::Rect::new(0, 0, 32, 32)], None)
+    });
+    // The captured index's buffer is free now but for the capture: handing it out would make
+    // its tree page writable, and the owner would write it.
+    let early = acquire(id, 0);
+    if let Ok(a) = early {
+        w.tree(a.buffer)[..8].copy_from_slice(&0xEEu64.to_le_bytes());
+    }
+    let _ = libbreenix::test_control::arm(abi::tc_point::RELEASE_STALL, 0, 0);
+    let (got, tree) = reader.join().map_err(|_| String::from("the reader thread panicked")).cite("17.3")?;
+    let _ = libbreenix::test_control::disarm_all();
+    ensure(paused, "21", "the capture-stall control did not fire within 1 s")?;
+    want_ok(resized, "17.2", "RESIZE during a paused capture")?;
+    second.map_err(|r| format!("ACQUIRE after the resize {}", outcome(r))).cite("17.3")?;
+    committed.map_err(|r| format!("ACQUIRE after the resize {}", outcome(r))).cite("17.3")?
+        .map_err(|r| format!("COMMIT after the resize {}", outcome(r))).cite("17.3")?;
+    ensure(early.err() == Some(-(abi::errno::ETIMEDOUT as i64)), "17.3", format!(
+        "ACQUIRE handed out buffer {:?}, whose tree page a paused capture was copying; it waits for the copy", early.map(|a| a.buffer)))?;
+    let (c, px) = got.map_err(|r| format!("the capture across the resize {}", outcome(r))).cite("17.3")?;
+    same(&px, 64, 64, false, "a capture across a resize", "17.3", |x, y| pattern(60, x, y))?;
+    let t = u64::from_le_bytes(tree[..8].try_into().unwrap());
+    ensure(c.commit_id == c1.commit_id && t == 60, "17.3", format!(
+        "the capture across a resize returned commit {} with tree page {t}; commit {} wrote 60", c.commit_id, c1.commit_id))
 }
 
 fn windows_two_buffer_capture_load() -> CaseResult {
