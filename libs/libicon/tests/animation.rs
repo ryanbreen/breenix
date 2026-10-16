@@ -150,3 +150,19 @@ fn a_subpixel_particle_box_never_panics_or_draws_outside_it() {
     p.update(0.001);
     assert_eq!(p.active_count(), 0, "no whole pixel fits in this box");
 }
+
+#[test]
+fn huge_elapsed_time_skips_only_exact_fixed_points_and_dead_particles() {
+    let mut a = Spring::new(0.0, 300.0, 20.0);
+    let mut b = Spring::new(0.0, 300.0, 20.0);
+    a.set_target(1.0); b.set_target(1.0);
+    a.update(f32::MAX); b.update(100.0);
+    assert_eq!((a.value, a.velocity), (b.value, b.velocity));
+    use libicon::particles::{Particle, ParticlePool};
+    let mut pool = ParticlePool::new(1);
+    pool.emit(Particle { x: 0.0, y: 0.0, vx: 2.0, vy: 2.0, life: 1.0,
+        max_life: 1.0, size: 2.0, color: libgfx::color::Color::WHITE,
+        gravity: 1.0, friction: 0.0 });
+    pool.update(f32::MAX);
+    assert_eq!(pool.active_count(), 0);
+}
