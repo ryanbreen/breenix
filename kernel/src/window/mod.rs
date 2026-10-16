@@ -72,6 +72,8 @@ pub struct Buffer {
     pub state: BufState,
     /// Handed out by ACQUIRE and not committed since.
     pub acquired: bool,
+    /// Taken by an ACQUIRE that is still replaying into it: neither free nor committable.
+    pub replaying: bool,
     /// A COMMIT of this buffer is between its checks and its publication.
     pub committing: bool,
     /// The commit id whose pixels the buffer holds, 0 for none.
@@ -195,6 +197,11 @@ pub struct Window {
 impl Window {
     pub fn stride(&self) -> u32 {
         self.width * 4
+    }
+
+    /// Bytes of one buffer's tree page: buffer `i`'s starts `i * tree_len()` into `tree`.
+    pub fn tree_len(&self) -> u64 {
+        self.tree_kib as u64 * 1024
     }
 
     /// The buffer with pin key `uid`.
@@ -365,13 +372,21 @@ pub fn exec_done_current() {
     }
 }
 
-/// Bytes `tgid`'s remnants charge against its `RLIMIT_AS`.
-pub fn remnant_bytes(tgid: u64) -> u64 {
-    REGISTRY
-        .lock()
-        .remnants
+/// Bytes the registry charges against `tgid`'s `RLIMIT_AS` beyond the mappings in `vmas` (its
+/// address space): the remnants it holds, and the part of its own windows' buffers and tree
+/// pages it has unmapped. Window memory counts while the registry holds it, so unmapping a
+/// buffer's view frees no room under the limit. PROCESS_MANAGER held.
+pub fn charged_bytes(tgid: u64, vmas: &[crate::memory::vma::Vma]) -> u64 {
+    let reg = REGISTRY.lock();
+    let remnants: u64 = reg.remnants.values().filter(|r| r.holder == tgid).map(|r| r.charge).sum();
+    let unmapped: u64 = reg
+        .windows
         .values()
-        .filter(|r| r.holder == tgid)
-        .map(|r| r.charge)
-        .sum()
+        .filter(|w| w.owner == tgid)
+        .map(|w| {
+            let buffers: u64 = w.buffers.iter().map(|b| mem::unmapped_len(&b.mem, b.addr, vmas)).sum();
+            buffers + mem::unmapped_len(&w.tree, w.tree_addr, vmas)
+        })
+        .sum();
+    remnants + unmapped
 }

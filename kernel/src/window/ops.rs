@@ -77,12 +77,12 @@ fn buffer_bytes(width: u32, height: u32) -> u64 {
     width as u64 * height as u64 * 4
 }
 
-/// One buffer, allocated and mapped read-write into the caller. ENOMEM when the mapping would
-/// pass `RLIMIT_AS` or memory runs out.
-fn new_buffer(reg_uid: u64, width: u32, height: u32) -> Result<Buffer, i32> {
+/// One buffer, allocated and mapped into the caller, read-write or read-only. ENOMEM when the
+/// mapping would pass `RLIMIT_AS` or memory runs out.
+fn new_buffer(reg_uid: u64, width: u32, height: u32, writable: bool) -> Result<Buffer, i32> {
     room_for(buffer_bytes(width, height))?;
     let mem = Mem::new(buffer_bytes(width, height))?;
-    let addr = mem::map(&mem, true)?;
+    let addr = mem::map(&mem, writable)?;
     crate::tracing::providers::window::count_buffer_alloc();
     Ok(Buffer {
         uid: reg_uid,
@@ -90,6 +90,7 @@ fn new_buffer(reg_uid: u64, width: u32, height: u32) -> Result<Buffer, i32> {
         addr,
         state: BufState::Free,
         acquired: false,
+        replaying: false,
         committing: false,
         base: 0,
         pins: 0,
@@ -97,12 +98,13 @@ fn new_buffer(reg_uid: u64, width: u32, height: u32) -> Result<Buffer, i32> {
 }
 
 /// ENOMEM when mapping `bytes` more would take the caller past its `RLIMIT_AS`, checked
-/// before the memory is allocated. Mapping checks it again.
+/// before the memory is allocated, against the row that holds the caller's address space.
+/// Mapping checks it again.
 fn room_for(bytes: u64) -> Result<(), i32> {
     let tid = crate::task::scheduler::current_thread_id().ok_or(ENOMEM)?;
     let bytes = bytes.div_ceil(4096) * 4096;
     let fits = crate::process::with_process_manager(|m| {
-        m.find_process_by_thread(tid).is_some_and(|(_, p)| {
+        m.find_address_space_by_thread_mut(tid).is_some_and(|(_, p)| {
             p.mapped_bytes().saturating_add(bytes) <= p.limits.get(crate::process::limits::AS).soft
         })
     })
@@ -157,7 +159,7 @@ pub fn create(caller: &Caller, a: &mut Create) -> Result<u64, i32> {
     let mut buffers: Vec<Buffer> = Vec::new();
     buffers.try_reserve_exact(count).map_err(|_| ENOMEM)?;
     for &uid in keys.iter() {
-        match new_buffer(uid, a.width, a.height) {
+        match new_buffer(uid, a.width, a.height, true) {
             Ok(b) => buffers.push(b),
             Err(e) => {
                 unmap_all(&buffers, None);
@@ -331,7 +333,7 @@ fn pick_free(w: &Window) -> Option<usize> {
     w.buffers
         .iter()
         .enumerate()
-        .filter(|(_, b)| b.state == BufState::Free && !b.acquired && !b.committing)
+        .filter(|(_, b)| b.state == BufState::Free && !b.acquired && !b.replaying && !b.committing)
         .max_by_key(|(_, b)| (b.base == w.front_commit && w.front.is_some(), b.base))
         .map(|(i, _)| i)
 }
@@ -351,10 +353,11 @@ fn since(w: &Window, base: u64) -> Damage {
     d
 }
 
-/// A pause inside the replay copy, for `acquire-stall`: until `release-stall` fires or 1 s.
+/// A pause inside the replay copy (`acquire-stall`) or a composite (`composite-stall`): until
+/// `release-stall` fires, a signal arrives or 1 s has passed.
 static STALL: WaitQueueHead = WaitQueueHead::new();
 
-fn stall() {
+pub(super) fn stall() {
     use breengel_abi::tc_point::RELEASE_STALL;
     let end = now_ns() + 1_000_000_000;
     while now_ns() < end {
@@ -390,19 +393,22 @@ fn replay(window: u64, src: &Mem, dst: &Mem, stride: u32, rects: &[Rect]) {
     }
 }
 
-/// `ACQUIRE`: hand out a free buffer, replayed in the kernel to the newest front.
+/// `ACQUIRE`: hand out a free buffer, replayed in the kernel to the newest front. The buffer
+/// is taken as replaying, which no other ACQUIRE or COMMIT can use; it is made writable (its
+/// pixels and its tree page) once the replay is copied, and only then handed out.
 pub fn acquire(caller: &Caller, a: &mut Acquire) -> Result<u64, i32> {
     if a.reserved != 0 {
         return Err(EINVAL);
     }
     let until = deadline(a.timeout_ns);
     // Take a buffer, compute its replay set and pin the front it copies from.
-    let (index, uid, dst, addr, base, set, source, stride, width, height) = loop {
+    let (index, uid, dst, addr, base, set, source, stride, width, height, tree, tree_addr, tree_len) = loop {
         let waits = {
             let mut reg = REGISTRY.lock();
             let w = reg.window(a.id, caller, who::owner)?;
             if let Some(i) = pick_free(w) {
                 let (stride, width, height, front_commit) = (w.stride(), w.width, w.height, w.front_commit);
+                let (tree, tree_addr, tree_len) = (w.tree.clone(), w.tree_addr, w.tree_len());
                 let set = match w.front {
                     Some(_) if w.buffers[i].base != front_commit => since(w, w.buffers[i].base),
                     _ => Damage::none(),
@@ -416,9 +422,9 @@ pub fn acquire(caller: &Caller, a: &mut Acquire) -> Result<u64, i32> {
                     _ => None,
                 };
                 let b = &mut w.buffers[i];
-                b.acquired = true;
+                b.replaying = true;
                 let base = if source.is_some() || w.front.is_some() { front_commit } else { b.base };
-                break (i, b.uid, b.mem.clone(), b.addr, base, set, source, stride, width, height);
+                break (i, b.uid, b.mem.clone(), b.addr, base, set, source, stride, width, height, tree, tree_addr, tree_len);
             }
             w.waits.clone()
         };
@@ -436,23 +442,36 @@ pub fn acquire(caller: &Caller, a: &mut Acquire) -> Result<u64, i32> {
         replay(a.id, src.mem(), &dst, stride, &rects);
     }
     drop(source);
-    // Publish the base, unless the window or the buffer went away during the copy.
-    let alive = {
+    let writable = mem::protect(&dst, addr, true)
+        .and_then(|()| mem::protect_range(&tree, tree_addr, index as u64 * tree_len, tree_len, true));
+    // Hand the buffer out with its new base, unless the window or the buffer went away during
+    // the copy.
+    let (alive, waits) = {
         let mut reg = REGISTRY.lock();
-        match reg.windows.get_mut(&a.id).and_then(|w| w.buffer_mut(uid)) {
-            Some(b) if b.acquired => {
-                b.base = base;
-                true
+        match reg.windows.get_mut(&a.id) {
+            Some(w) => {
+                let waits = w.waits.clone();
+                match w.buffer_mut(uid) {
+                    Some(b) if b.replaying => {
+                        b.replaying = false;
+                        b.base = base;
+                        b.acquired = writable.is_ok();
+                        (true, Some(waits))
+                    }
+                    _ => (false, Some(waits)),
+                }
             }
-            _ => false,
+            None => (false, None),
         }
     };
+    if let Err(e) = writable {
+        if let Some(waits) = waits {
+            waits.acquire.wake_up();
+        }
+        return Err(e);
+    }
     if !alive {
         return Err(ENOENT);
-    }
-    if let Err(e) = mem::protect(&dst, addr, true) {
-        unacquire(a.id, uid);
-        return Err(e);
     }
     a.buffer = index as u32;
     a.replay_full = matches!(set, Damage::Full) as u32;
@@ -465,33 +484,42 @@ pub fn acquire(caller: &Caller, a: &mut Acquire) -> Result<u64, i32> {
     Ok(0)
 }
 
-/// Give back buffer `index`, which `ACQUIRE` took, when its result could not be delivered.
+/// Give back buffer `index`, which `ACQUIRE` took, when its result could not be delivered:
+/// it is read-only to the owner again, pixels and tree page, so it still holds exactly the
+/// generation its base names.
 pub fn unacquire_index(window: u64, index: u32) {
-    let uid = {
-        let reg = REGISTRY.lock();
-        reg.windows
-            .get(&window)
-            .and_then(|w| w.buffers.get(index as usize))
-            .map(|b| b.uid)
+    let taken = {
+        let mut reg = REGISTRY.lock();
+        reg.windows.get_mut(&window).and_then(|w| {
+            let (tree, tree_addr, tree_len) = (w.tree.clone(), w.tree_addr, w.tree_len());
+            let b = w.buffers.get_mut(index as usize).filter(|b| b.acquired && !b.committing)?;
+            // Committing marks it busy while its protection changes back.
+            b.committing = true;
+            Some((b.uid, b.mem.clone(), b.addr, tree, tree_addr, tree_len))
+        })
     };
-    if let Some(uid) = uid {
-        unacquire(window, uid);
-    }
-}
-
-/// Give back a buffer `ACQUIRE` took, when its result could not be delivered.
-pub fn unacquire(window: u64, uid: u64) {
+    let Some((uid, buf, addr, tree, tree_addr, tree_len)) = taken else {
+        return;
+    };
+    let _ = mem::protect(&buf, addr, false);
+    let _ = mem::protect_range(&tree, tree_addr, index as u64 * tree_len, tree_len, false);
     let waits = {
         let mut reg = REGISTRY.lock();
         let Some(w) = reg.windows.get_mut(&window) else {
             return;
         };
         if let Some(b) = w.buffer_mut(uid) {
+            b.committing = false;
             b.acquired = false;
         }
         w.waits.clone()
     };
     waits.acquire.wake_up();
+}
+
+/// Whether the byte ranges `[a, a + alen)` and `[b, b + blen)` overlap.
+fn overlaps(a: u64, alen: u64, b: u64, blen: u64) -> bool {
+    a < b.saturating_add(blen) && b < a.saturating_add(alen)
 }
 
 fn rect_in(r: &Rect, width: u32, height: u32) -> bool {
@@ -503,29 +531,43 @@ fn rect_in(r: &Rect, width: u32, height: u32) -> bool {
         && r.y as i64 + r.h as i64 <= height as i64
 }
 
-/// `COMMIT`: publish an acquired buffer as the new front.
-pub fn commit(caller: &Caller, c: &mut Commit, meta: Meta) -> Result<u64, i32> {
+/// `COMMIT`: publish an acquired buffer as the new front. `out` is where the caller's `Commit`
+/// structure lies: inside the buffer or its tree page, which the commit makes read-only, its
+/// output could not be written, so that is EFAULT before anything changes.
+pub fn commit(caller: &Caller, c: &mut Commit, meta: Meta, out: u64) -> Result<u64, i32> {
     if c.reserved != 0 || c.damage_count as usize > limits::MAX_DAMAGE {
         return Err(EINVAL);
     }
     let given: Vec<Rect> = c.damage[..c.damage_count as usize].to_vec();
+    let out_len = core::mem::size_of::<Commit>() as u64;
     // Check, and claim the buffer for this commit.
-    let (uid, buf_mem, addr) = {
+    let (uid, buf_mem, addr, tree, tree_page, tree_len) = {
         let mut reg = REGISTRY.lock();
         let w = reg.window(c.id, caller, who::owner)?;
         let (width, height) = (w.width, w.height);
         if c.buffer as usize >= w.buffers.len() || !given.iter().all(|r| rect_in(r, width, height)) {
             return Err(EINVAL);
         }
+        let (tree, tree_len) = (w.tree.clone(), w.tree_len());
+        let tree_page = w.tree_addr + c.buffer as u64 * tree_len;
         let b = &mut w.buffers[c.buffer as usize];
         if !b.acquired || b.committing {
             return Err(EBUSY);
         }
+        if overlaps(out, out_len, b.addr, b.mem.len()) || overlaps(out, out_len, tree_page, tree_len) {
+            return Err(EFAULT);
+        }
         b.committing = true;
-        (b.uid, b.mem.clone(), b.addr)
+        (b.uid, b.mem.clone(), b.addr, tree, tree_page, tree_len)
     };
-    // The buffer is read-only to its owner before it becomes the front.
-    if let Err(e) = mem::protect(&buf_mem, addr, false) {
+    // The buffer and its tree page are read-only to their owner before they become the front.
+    let tree_addr = tree_page - c.buffer as u64 * tree_len;
+    let offset = c.buffer as u64 * tree_len;
+    let sealed = mem::protect(&buf_mem, addr, false)
+        .and_then(|()| mem::protect_range(&tree, tree_addr, offset, tree_len, false));
+    if let Err(e) = sealed {
+        let _ = mem::protect(&buf_mem, addr, true);
+        let _ = mem::protect_range(&tree, tree_addr, offset, tree_len, true);
         let mut reg = REGISTRY.lock();
         if let Some(b) = reg.windows.get_mut(&c.id).and_then(|w| w.buffer_mut(uid)) {
             b.committing = false;
@@ -558,8 +600,12 @@ pub fn commit(caller: &Caller, c: &mut Commit, meta: Meta) -> Result<u64, i32> {
         let mut released = false;
         if let Some(f) = w.front.filter(|&f| f != index) {
             let old = &mut w.buffers[f];
-            old.state = if old.pins > 0 { BufState::Retired } else { BufState::Free };
-            released = old.state == BufState::Free;
+            if old.pins > 0 {
+                old.state = BufState::Retired;
+            } else {
+                old.state = BufState::Free;
+                released = true;
+            }
         }
         let b = &mut w.buffers[index];
         b.state = BufState::Front;
@@ -671,13 +717,20 @@ pub fn capture(caller: &Caller, c: &mut Capture) -> Result<u64, i32> {
 
 /// `RESIZE`: new buffers of the new size, each holding the old front in the intersection.
 /// A refusal tells the window `ResizeFailed` with the old size; success, `Resized` with the
-/// new one, once the buffers have it.
-pub fn resize(caller: &Caller, r: &mut Resize) -> Result<u64, i32> {
-    let (old_w, old_h, count, front) = {
+/// new one, once the buffers have it. The new buffers are mapped read-only until `ACQUIRE`
+/// hands one out, since each already holds the front's generation; the new front keeps the
+/// old front's index, so it keeps its tree page. `out` is where the caller's `Resize` lies:
+/// inside a buffer this resize unmaps, its output could not be written, so that is EFAULT
+/// before anything changes.
+pub fn resize(caller: &Caller, r: &mut Resize, out: u64) -> Result<u64, i32> {
+    let out_len = core::mem::size_of::<Resize>() as u64;
+    let (old_w, old_h, count) = {
         let mut reg = REGISTRY.lock();
         let w = reg.window(r.id, caller, who::owner)?;
-        let front = w.front.map(|f| w.buffers[f].mem.clone());
-        (w.width, w.height, w.buffers.len(), front)
+        if w.buffers.iter().any(|b| overlaps(out, out_len, b.addr, b.mem.len())) {
+            return Err(EFAULT);
+        }
+        (w.width, w.height, w.buffers.len())
     };
     let refuse = |e: i32| {
         tell(r.id, |ev| {
@@ -696,7 +749,7 @@ pub fn resize(caller: &Caller, r: &mut Resize) -> Result<u64, i32> {
         return refuse(ENOMEM);
     }
     for &uid in keys.iter() {
-        match new_buffer(uid, r.width, r.height) {
+        match new_buffer(uid, r.width, r.height, false) {
             Ok(b) => buffers.push(b),
             Err(e) => {
                 unmap_all(&buffers, None);
@@ -704,34 +757,54 @@ pub fn resize(caller: &Caller, r: &mut Resize) -> Result<u64, i32> {
             }
         }
     }
-    if let Some(old) = front.as_ref() {
-        let cols = old_w.min(r.width) as usize * 4;
-        for y in 0..old_h.min(r.height) as u64 {
-            let mut row = [0u8; 512];
-            let mut done = 0usize;
-            while done < cols {
-                let n = (cols - done).min(row.len());
-                old.read(y * old_w as u64 * 4 + done as u64, &mut row[..n]);
-                for b in buffers.iter() {
-                    b.mem.write(y * r.width as u64 * 4 + done as u64, &row[..n]);
+    // Copy the front, pinned so it cannot change under the copy; a commit landing meanwhile
+    // makes a newer front, which is copied again.
+    let (old, waits) = loop {
+        let (front_commit, front, source) = {
+            let mut reg = REGISTRY.lock();
+            let Some(w) = reg.windows.get_mut(&r.id) else {
+                drop(reg);
+                unmap_all(&buffers, None);
+                return Err(ENOENT);
+            };
+            let source = w.front.map(|f| {
+                let b = &mut w.buffers[f];
+                b.pins += 1;
+                Pin::new(w.id, b.uid, b.mem.clone())
+            });
+            (w.front_commit, w.front, source)
+        };
+        if let Some(src) = source.as_ref() {
+            let cols = old_w.min(r.width) as usize * 4;
+            for y in 0..old_h.min(r.height) as u64 {
+                let mut row = [0u8; 512];
+                let mut done = 0usize;
+                while done < cols {
+                    let n = (cols - done).min(row.len());
+                    src.mem().read(y * old_w as u64 * 4 + done as u64, &mut row[..n]);
+                    for b in buffers.iter() {
+                        b.mem.write(y * r.width as u64 * 4 + done as u64, &row[..n]);
+                    }
+                    done += n;
                 }
-                done += n;
             }
         }
-    }
-    let (old, waits) = {
+        drop(source);
         let mut reg = REGISTRY.lock();
         let Some(w) = reg.windows.get_mut(&r.id) else {
             drop(reg);
             unmap_all(&buffers, None);
             return Err(ENOENT);
         };
-        let had_front = w.front.is_some();
-        for b in buffers.iter_mut() {
-            b.base = if had_front { w.front_commit } else { 0 };
+        if w.front_commit != front_commit {
+            continue;
         }
-        if had_front {
-            buffers[0].state = BufState::Front;
+        // The commit point.
+        for b in buffers.iter_mut() {
+            b.base = front_commit;
+        }
+        if let Some(f) = front {
+            buffers[f].state = BufState::Front;
             w.pixel_gen += 1;
         }
         r.stride = r.width * 4;
@@ -739,8 +812,8 @@ pub fn resize(caller: &Caller, r: &mut Resize) -> Result<u64, i32> {
         for (i, b) in buffers.iter().enumerate() {
             r.buffer[i] = b.addr;
         }
-        let old = core::mem::replace(&mut w.buffers, buffers);
-        w.front = had_front.then_some(0);
+        let old = core::mem::replace(&mut w.buffers, core::mem::take(&mut buffers));
+        w.front = front;
         w.width = r.width;
         w.height = r.height;
         w.log.clear();
@@ -753,7 +826,7 @@ pub fn resize(caller: &Caller, r: &mut Resize) -> Result<u64, i32> {
         w.ring.push(ev);
         let waits = w.waits.clone();
         reg.present.uncover(shown);
-        (old, waits)
+        break (old, waits);
     };
     unmap_all(&old, None);
     waits.acquire.wake_up();
@@ -1047,6 +1120,22 @@ pub fn release_remnant(caller: &Caller, id: u64) -> Result<u64, i32> {
 pub fn group_gone(tgid: u64, at_exit: bool) {
     let mut gone: Vec<Window> = Vec::new();
     let mut freed: Vec<Remnant> = Vec::new();
+    // The room each evidence holder has under its `RLIMIT_AS`, read before the registry is
+    // taken (the process manager is never taken under it). A remnant that does not fit is not
+    // kept.
+    let mut rooms: Vec<(u64, u64)> = Vec::new();
+    if at_exit {
+        let mut holders: Vec<u64> = REGISTRY
+            .lock()
+            .windows
+            .values()
+            .filter(|w| w.owner == tgid)
+            .filter_map(|w| w.holder.filter(|&h| h != tgid))
+            .collect();
+        holders.sort_unstable();
+        holders.dedup();
+        rooms = holders.into_iter().map(|h| (h, room_of(h))).collect();
+    }
     {
         let mut reg = REGISTRY.lock();
         let ids: Vec<u64> = reg.windows.values().filter(|w| w.owner == tgid).map(|w| w.id).collect();
@@ -1056,11 +1145,15 @@ pub fn group_gone(tgid: u64, at_exit: bool) {
                 if at_exit {
                     if let Some(holder) = w.holder.filter(|&h| h != tgid) {
                         let kept = reg.remnants.values().filter(|r| r.holder == holder).count();
-                        if kept < limits::MAX_REMNANTS {
-                            let pixels = w.front.map(|f| w.buffers[f].mem.clone());
-                            let tree_len = w.tree_kib as u64 * 1024;
-                            let tree_offset = w.front.map_or(0, |f| f as u64 * tree_len);
-                            let charge = pixels.as_ref().map_or(0, |m| m.len()) + w.tree.len();
+                        let pixels = w.front.map(|f| w.buffers[f].mem.clone());
+                        let tree_len = w.tree_len();
+                        let tree_offset = w.front.map_or(0, |f| f as u64 * tree_len);
+                        let charge = pixels.as_ref().map_or(0, |m| m.len()) + w.tree.len();
+                        let room = rooms.iter_mut().find(|(h, _)| *h == holder).map(|(_, room)| room);
+                        if kept < limits::MAX_REMNANTS && room.as_ref().is_some_and(|room| charge <= **room) {
+                            if let Some(room) = room {
+                                *room -= charge;
+                            }
                             let remnant = Remnant {
                                 holder,
                                 width: w.width,
@@ -1102,6 +1195,19 @@ pub fn group_gone(tgid: u64, at_exit: bool) {
     }
     drop(gone);
     drop(freed);
+}
+
+/// Bytes thread group `tgid` may still map under its `RLIMIT_AS`, 0 when it is gone.
+fn room_of(tgid: u64) -> u64 {
+    crate::process::with_process_manager(|m| {
+        m.get_process(crate::process::ProcessId::new(tgid)).map_or(0, |p| {
+            p.limits
+                .get(crate::process::limits::AS)
+                .soft
+                .saturating_sub(p.mapped_bytes())
+        })
+    })
+    .unwrap_or(0)
 }
 
 /// Destroy the windows of owners with no live thread left (a backstop for the exit hooks).

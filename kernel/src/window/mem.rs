@@ -10,6 +10,11 @@
 use alloc::{sync::Arc, vec::Vec};
 use breengel_abi::errno::{EFAULT, ENOMEM, ESRCH};
 
+#[cfg(target_arch = "aarch64")]
+use crate::memory::arch_stub::VirtAddr;
+#[cfg(target_arch = "x86_64")]
+use x86_64::VirtAddr;
+
 use crate::ipc::shmem::{Frame, MappingOrigin, ShmObject};
 use crate::memory::vma::Protection;
 use crate::syscall::memory_common::PAGE_SIZE;
@@ -127,17 +132,24 @@ pub fn map(mem: &Mem, writable: bool) -> Result<u64, i32> {
     crate::ipc::shmem::map_window(&mem.obj, mem.len, writable).map_err(|e| e as i32)
 }
 
-/// Whether `vma` is the window mapping of `mem` at exactly `[start, start + len)`.
-fn is_mapping_of(vma: &crate::memory::vma::Vma, mem: &Mem, start: u64) -> bool {
-    vma.start.as_u64() == start
-        && vma.end.as_u64() == start + mem.len
+/// Whether `vma` is a piece of the window mapping of `mem` placed at `start`: the whole
+/// mapping, or what is left of it after the owner unmapped part of it (or mapped over part
+/// of it). Every piece keeps its place, `vma.start - vma.shm_offset == start`.
+fn is_piece_of(vma: &crate::memory::vma::Vma, mem: &Mem, start: u64) -> bool {
+    vma.start.as_u64().checked_sub(vma.shm_offset) == Some(start)
         && vma.shm.as_ref().is_some_and(|m| {
             m.origin() == MappingOrigin::Window && Arc::ptr_eq(m.object(), &mem.obj)
         })
 }
 
-/// Remove the calling process's mapping of `mem` at `start`, if it is still there. A range
-/// the process unmapped itself, or reused for another mapping, is left alone.
+/// Bytes of `mem` that no piece of its window mapping at `start` in `vmas` maps any more.
+pub fn unmapped_len(mem: &Mem, start: u64, vmas: &[crate::memory::vma::Vma]) -> u64 {
+    let mapped: u64 = vmas.iter().filter(|v| is_piece_of(v, mem, start)).map(|v| v.size()).sum();
+    mem.len.saturating_sub(mapped)
+}
+
+/// Remove what is left of the calling process's mapping of `mem` at `start`: every piece of
+/// it. A range the process unmapped itself, or reused for another mapping, is left alone.
 pub fn unmap(mem: &Mem, start: u64) {
     let Ok(tid) = current_thread() else {
         return;
@@ -149,44 +161,64 @@ pub fn unmap(mem: &Mem, start: u64) {
     else {
         return;
     };
-    if process.vmas.iter().any(|v| is_mapping_of(v, mem, start)) {
-        let _ = crate::syscall::mmap::unmap_range(process, start, start + mem.len);
+    while let Some((from, to)) = process
+        .vmas
+        .iter()
+        .find(|v| is_piece_of(v, mem, start))
+        .map(|v| (v.start.as_u64(), v.end.as_u64()))
+    {
+        if crate::syscall::mmap::unmap_range(process, from, to).is_err() {
+            return;
+        }
     }
 }
 
-/// Make the calling process's mapping of `mem` at `start` writable or read-only. Pages already
-/// installed get the new protection at once, on every CPU; later faults install them with it.
+/// Make the calling process's mapping of `mem` at `start` writable or read-only.
 pub fn protect(mem: &Mem, start: u64, writable: bool) -> Result<(), i32> {
+    protect_range(mem, start, 0, mem.len, writable)
+}
+
+/// Make bytes `[offset, offset + len)` of the calling process's mapping of `mem` at `start`
+/// writable or read-only, in every piece of the mapping that is left: the pieces are split at
+/// the range's ends, pages already installed get the new protection at once on every CPU, and
+/// later faults install them with it. ENOMEM, with nothing changed, when the split cannot be
+/// recorded.
+pub fn protect_range(mem: &Mem, start: u64, offset: u64, len: u64, writable: bool) -> Result<(), i32> {
     let tid = current_thread()?;
     let prot = if writable {
         Protection::from_bits_truncate(Protection::READ.bits() | Protection::WRITE.bits())
     } else {
         Protection::READ
     };
+    let (lo, hi) = (start + offset, start + offset + len);
     let mut guard = crate::process::manager_for_address_space(tid);
     let (_, process) = guard
         .as_mut()
         .and_then(|m| m.find_address_space_by_thread_mut(tid))
         .ok_or(ESRCH)?;
-    let Some(index) = process.vmas.iter().position(|v| is_mapping_of(v, mem, start)) else {
-        // The owner unmapped its own view: nothing of it can be written.
-        return Ok(());
+    let in_range = |v: &crate::memory::vma::Vma| {
+        is_piece_of(v, mem, start) && v.start.as_u64() < hi && lo < v.end.as_u64() && v.prot != prot
     };
-    if process.vmas[index].prot == prot {
-        return Ok(());
-    }
-    let page_table = process.page_table.as_deref_mut().ok_or(ENOMEM)?;
+    // Each piece changed may leave a prefix and a suffix.
+    let pieces = process.vmas.iter().filter(|v| in_range(v)).count();
+    process.vmas.try_reserve(2 * pieces).map_err(|_| ENOMEM)?;
     let flags = crate::memory::anon_map::page_flags(prot);
-    let end = start + mem.len;
-    let mut from = start;
-    while let Some(page) = page_table.next_mapped_page(from, end) {
-        from = page.start_address().as_u64() + PAGE_SIZE;
-        page_table
-            .update_page_flags(page, flags)
-            .map_err(|_| ENOMEM)?;
-        crate::syscall::memory_common::flush_tlb(page.start_address());
+    while let Some(index) = process.vmas.iter().position(|v| in_range(v)) {
+        let (vstart, vend) = (process.vmas[index].start.as_u64(), process.vmas[index].end.as_u64());
+        let (from, to) = (vstart.max(lo), vend.min(hi));
+        let page_table = process.page_table.as_deref_mut().ok_or(ENOMEM)?;
+        let mut at = from;
+        while let Some(page) = page_table.next_mapped_page(at, to) {
+            at = page.start_address().as_u64() + PAGE_SIZE;
+            page_table.update_page_flags(page, flags).map_err(|_| ENOMEM)?;
+            crate::syscall::memory_common::flush_tlb(page.start_address());
+        }
+        let prefix = (vstart < from).then(|| process.vmas[index].piece(VirtAddr::new(vstart), VirtAddr::new(from)));
+        let suffix = (to < vend).then(|| process.vmas[index].piece(VirtAddr::new(to), VirtAddr::new(vend)));
+        process.vmas[index] = process.vmas[index].replacement_piece(VirtAddr::new(from), VirtAddr::new(to));
+        process.vmas[index].prot = prot;
+        process.vmas.extend(prefix.into_iter().chain(suffix));
     }
-    process.vmas[index].prot = prot;
     Ok(())
 }
 

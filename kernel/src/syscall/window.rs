@@ -33,7 +33,9 @@ fn output<T: Plain>(arg: u64, value: &T) -> Result<(), i32> {
 }
 
 /// Run an op whose structure is both input and output: copy it in, check it can be written
-/// back, run `f` on it and copy it out.
+/// back, run `f` on it and copy it out. An op that changes the caller's mappings (`COMMIT`
+/// makes a buffer read-only, `RESIZE` unmaps the old buffers) is given `arg` and refuses a
+/// structure lying in memory it changes, so the copy out cannot fail on its account.
 fn inout<T: Plain>(arg: u64, f: impl FnOnce(&mut T) -> Result<u64, i32>) -> Result<u64, i32> {
     let mut value = input::<T>(arg)?;
     mem::probe_writable(arg, core::mem::size_of::<T>() as u64)?;
@@ -103,14 +105,14 @@ fn window(op: u64, arg: u64, len: u64) -> Result<u64, i32> {
         op::COMMIT => {
             let c = input::<Commit>(arg)?;
             let m = meta(c.meta, c.meta_len)?;
-            inout::<Commit>(arg, |c| ops::commit(&caller, c, m))
+            inout::<Commit>(arg, |c| ops::commit(&caller, c, m, arg))
         }
         op::COMMIT_NO_CHANGE => {
             let n = input::<NoChange>(arg)?;
             let m = meta(n.meta, n.meta_len)?;
             inout::<NoChange>(arg, |n| ops::no_change(&caller, n, m))
         }
-        op::RESIZE => inout::<Resize>(arg, |r| ops::resize(&caller, r)),
+        op::RESIZE => inout::<Resize>(arg, |r| ops::resize(&caller, r, arg)),
         op::READ_EVENTS => inout::<ReadEvents>(arg, |r| ops::read_events(&caller, r)),
         op::WRITE_EVENTS => ops::write_events(&caller, &input::<WriteEvents>(arg)?),
         op::EVENT_FD => ops::event_fd(&caller, input::<WinId>(arg)?.id),
