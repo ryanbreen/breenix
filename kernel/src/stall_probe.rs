@@ -20,7 +20,11 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use crate::arch_impl::x86_64::timer::{frequency_hz, rdtsc};
 use crate::task::scheduler::MAX_CPUS;
 
-const FORCING: bool = false;
+/// 0: record only. 1: HOSTSTALL, a random CPU unavailable 50 ms every
+/// 300-500 ms. 2: PMHOLD, a CPU that has just taken PROCESS_MANAGER with
+/// interrupts masked unavailable 50 ms, at most every 300-500 ms.
+pub const FORCE_KIND: u32 = 0;
+const FORCING: bool = FORCE_KIND == 1;
 const STALL_MS: u64 = 50;
 const LATE_NS: u64 = 20_000_000;
 
@@ -82,6 +86,19 @@ pub fn note_interrupt(cpu: usize) {
     }
     let now = rdtsc();
     let prev = LAST_INT[cpu].swap(now, Ordering::Relaxed);
+    SILENCE_SAMPLED[cpu].store(false, Ordering::Relaxed);
+    for peer in 0..ncpus() {
+        let last = LAST_INT[peer].load(Ordering::Relaxed);
+        if peer != cpu
+            && last != 0
+            && now > last
+            && now - last > 15_000 * cycles_per_us()
+            && !SILENCE_SAMPLED[peer].swap(true, Ordering::Relaxed)
+        {
+            SAMPLE_SILENT_US[peer].store((now - last) / cycles_per_us(), Ordering::Relaxed);
+            request_sample(3, peer);
+        }
+    }
     if prev != 0 && now > prev && now - prev > 10_000 * cycles_per_us() {
         let k = GAP_NEXT.fetch_add(1, Ordering::Relaxed) as usize % GAPS;
         GAP[k][0].store(mono_ns(), Ordering::Relaxed);
@@ -115,11 +132,16 @@ pub fn note_interrupt(cpu: usize) {
 /// not executing.
 static SAMPLE_REQ: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 static SAMPLE_WHO: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+/// How long the sampled CPU had been silent when a kind-3 sample was asked.
+static SAMPLE_SILENT_US: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+/// Set once a silent CPU has been sampled; cleared at its next interrupt.
+static SILENCE_SAMPLED: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
 const HOLDS: usize = 32;
 static HOLD_WRITE: AtomicU64 = AtomicU64::new(0);
 static HOLD_READ: AtomicU64 = AtomicU64::new(0);
-/// at ns, answer us, holder | kind << 8 | waiter << 16 | flags << 24, rip.
-static HOLD: [[AtomicU64; 4]; HOLDS] = [const { [const { AtomicU64::new(0) }; 4] }; HOLDS];
+/// at ns, answer us, holder | kind << 8 | waiter << 16 | flags << 24, rip,
+/// silent us (kind 3).
+static HOLD: [[AtomicU64; 5]; HOLDS] = [const { [const { AtomicU64::new(0) }; 5] }; HOLDS];
 
 fn request_sample(kind: u64, holder: usize) {
     if holder >= MAX_CPUS || holder == cpu_now() {
@@ -176,6 +198,7 @@ pub fn nmi_hook(cpu: usize, rip: u64, cs: u64, rflags: u64) {
                 r[1].store(rdtsc().saturating_sub(sent) / cycles_per_us(), Ordering::Relaxed);
                 r[2].store(cpu as u64 | (who & 0xff) << 8 | (who >> 8 & 0xff) << 16 | flags << 24, Ordering::Relaxed);
                 r[3].store(rip, Ordering::Relaxed);
+                r[4].store(SAMPLE_SILENT_US[cpu].load(Ordering::Relaxed), Ordering::Relaxed);
             }
             SAMPLE_REQ[cpu].store(0, Ordering::Release);
         }
@@ -214,13 +237,49 @@ pub fn nmi_hook(cpu: usize, rip: u64, cs: u64, rflags: u64) {
         }
     }
     WIN_SLOT[cpu].store(k as u64, Ordering::Relaxed);
-    let until = rdtsc() + STALL_MS * 1000 * cycles_per_us();
+    for (other, slot) in WIN_DISP_START.iter().enumerate() {
+        slot.store(DISP_COUNT[other].load(Ordering::Relaxed), Ordering::Relaxed);
+    }
+    let t0 = rdtsc();
+    let until = t0 + STALL_MS * 1000 * cycles_per_us();
     while rdtsc() < until {
         core::hint::spin_loop();
     }
     WIN[k][1].store(mono_ns(), Ordering::Relaxed);
+    let mut others = 0;
+    for other in (0..ncpus()).filter(|&other| other != cpu) {
+        others += DISP_COUNT[other].load(Ordering::Relaxed).saturating_sub(WIN_DISP_START[other].load(Ordering::Relaxed));
+    }
+    WIN_DISP[0].fetch_add(1, Ordering::Relaxed);
+    WIN_DISP[1].fetch_add(others, Ordering::Relaxed);
+    if others == 0 {
+        WIN_DISP[2].fetch_add(1, Ordering::Relaxed);
+    }
+    WIN_DISP[3].fetch_add((rdtsc() - t0) / cycles_per_us(), Ordering::Relaxed);
     let gap = (300 + (rdtsc() >> 9) % 200) * 1000 * cycles_per_us();
     NEXT_ARM.store(rdtsc() + gap, Ordering::Release);
+}
+
+/// PMHOLD: PROCESS_MANAGER was just taken on this CPU.
+pub fn pm_hold_hook() {
+    if FORCE_KIND != 2 || !ENABLED.load(Ordering::Relaxed) || x86_64::instructions::interrupts::are_enabled() {
+        return;
+    }
+    let cpu = cpu_now();
+    let now = rdtsc();
+    let next = NEXT_ARM.load(Ordering::Relaxed);
+    if cpu < MAX_CPUS
+        && now >= next
+        && NEXT_ARM
+            .compare_exchange(next, u64::MAX, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+    {
+        FORCE_NMI[cpu].store(true, Ordering::Release);
+        let _ = crate::arch_impl::x86_64::apic::send_ipi(
+            crate::arch_impl::x86_64::apic::id(),
+            crate::arch_impl::x86_64::apic::Ipi::Nmi,
+        );
+    }
 }
 
 fn note_wait(kind: u64, t0: u64, holder: u64) {
@@ -305,7 +364,21 @@ pub fn placed(tid: u64, target: Option<usize>) {
     }
 }
 
+/// Dispatches per CPU, and per window the other CPUs' dispatches inside it.
+static DISP_COUNT: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+static WIN_DISP_START: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+/// windows, sum of other-CPU dispatches in them, windows with none, sum of
+/// window lengths us; and dispatches and time outside windows.
+static WIN_DISP: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+static FIRST_DISP_TSC: AtomicU64 = AtomicU64::new(0);
+
 pub fn dispatched(tid: u64, cpu: usize) {
+    if cpu < MAX_CPUS {
+        DISP_COUNT[cpu].fetch_add(1, Ordering::Relaxed);
+        if FIRST_DISP_TSC.load(Ordering::Relaxed) == 0 {
+            FIRST_DISP_TSC.store(rdtsc(), Ordering::Relaxed);
+        }
+    }
     let i = tid as usize % TIDS;
     if DUE[i].load(Ordering::Relaxed) != 0 && DISP_AT[i].load(Ordering::Relaxed) == 0 {
         DISP_AT[i].store(mono_ns(), Ordering::Relaxed);
@@ -389,6 +462,18 @@ fn summary() {
             waits[kind as usize - 1].1 = waits[kind as usize - 1].1.max(len);
         }
     }
+    let total: u64 = DISP_COUNT.iter().take(ncpus()).map(|c| c.load(Ordering::Relaxed)).sum();
+    let elapsed_us = rdtsc().saturating_sub(FIRST_DISP_TSC.load(Ordering::Relaxed)) / cycles_per_us();
+    log::info!(
+        "WINDISP windows={} other_cpu_dispatches_in_windows={} windows_with_none={} window_us={} all_dispatches={} elapsed_us={} cpus={}",
+        WIN_DISP[0].load(Ordering::Relaxed),
+        WIN_DISP[1].load(Ordering::Relaxed),
+        WIN_DISP[2].load(Ordering::Relaxed),
+        WIN_DISP[3].load(Ordering::Relaxed),
+        total,
+        elapsed_us,
+        ncpus(),
+    );
     log::info!(
         "STALLSUM wins(all,user,pm,sched,idle)={:?} gaps_last128(cpu:count,max_us)={:?} waits_last128(sched,pm:count,max_us)={:?} total_gaps={} total_waits={}",
         WIN_COUNT.each_ref().map(|c| c.load(Ordering::Relaxed)),
@@ -406,9 +491,9 @@ pub fn poll() {
         < HOLD_WRITE.load(Ordering::Relaxed).min(HOLD_READ.load(Ordering::Relaxed) + HOLDS as u64)
     {
         let n = HOLD_READ.load(Ordering::Relaxed);
-        let v: [u64; 4] = core::array::from_fn(|k| HOLD[n as usize % HOLDS][k].load(Ordering::Relaxed));
+        let v: [u64; 5] = core::array::from_fn(|k| HOLD[n as usize % HOLDS][k].load(Ordering::Relaxed));
         log::info!(
-            "HOLDSAMPLE at_ms={} answer_us={} holder={} kind={} waiter={} user={} if={} rip={:#x}",
+            "HOLDSAMPLE at_ms={} answer_us={} holder={} kind={} waiter={} user={} if={} rip={:#x} silent_us={}",
             v[0] / 1_000_000,
             v[1],
             v[2] & 0xff,
@@ -417,6 +502,7 @@ pub fn poll() {
             v[2] >> 24 & 1,
             v[2] >> 25 & 1,
             v[3],
+            v[4],
         );
         HOLD_READ.fetch_add(1, Ordering::Relaxed);
     }
