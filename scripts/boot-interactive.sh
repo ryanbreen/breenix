@@ -15,6 +15,7 @@
 #   --program PATH       for --mode program: the absolute guest path /sbin/probe runs (probe --run PATH)
 #   --case CATEGORY/CASE  for --mode suite: run only this case (not full-suite evidence; not filed in Vigil)
 #   --suite ID           for --mode suite: the effort suite (docs/suites/ID.json) run as PID 1, /sbin/suite-ID
+#   --pace MS            hold each completed case on screen, outside its measured window (default 0)
 #   --qmp SOCKET         open a QMP socket so another process can screenshot the VM screen:
 #                        scripts/qmp-screendump.py SOCKET out.png (works with --no-display)
 #   --fbconsole log      draw kernel log lines on the VM screen instead of the boot screen
@@ -48,13 +49,14 @@ MODE=tests
 PROGRAM=
 SUITE=
 ONLY=
+PACE=
 QMP_SOCKET=
 QMP_REQUESTED=0
 FBCONSOLE=
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --mode|--program|--suite|--case|--serial-log|--idle-exit|--gate-timeout|--qmp|--fbconsole|--accel|--cpus)
+        --mode|--program|--suite|--case|--pace|--serial-log|--idle-exit|--gate-timeout|--qmp|--fbconsole|--accel|--cpus)
             [ "$#" -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; } ;;
     esac
     case "$1" in
@@ -63,6 +65,7 @@ while [ "$#" -gt 0 ]; do
         --program) PROGRAM="$2"; shift 2 ;;
         --suite) SUITE="$2"; shift 2 ;;
         --case) [ -n "$2" ] || { echo "--case needs a case id" >&2; exit 2; }; ONLY="$2"; shift 2 ;;
+        --pace) [ -n "$2" ] || { echo "--pace needs milliseconds" >&2; exit 2; }; PACE="$2"; shift 2 ;;
         --qmp) QMP_SOCKET="$2"; QMP_REQUESTED=1; shift 2 ;;
         --fbconsole) FBCONSOLE="$2"; shift 2 ;;
         --serial-log) SERIAL_LOG="$2"; shift 2 ;;
@@ -101,6 +104,11 @@ fi
 if [ -n "$ONLY" ]; then
     [ "$MODE" = suite ] && [[ "$ONLY" =~ ^[a-zA-Z0-9_./-]+$ ]] || {
         echo "--case needs --mode suite and a category/case id" >&2; exit 2;
+    }
+fi
+if [ -n "$PACE" ]; then
+    [ "$MODE" = suite ] && [[ "$PACE" =~ ^[0-9]+$ ]] && [ "${#PACE}" -le 10 ] && [ "$PACE" -le 4294967295 ] || {
+        echo "--pace needs --mode suite and milliseconds from 0 to 4294967295" >&2; exit 2;
     }
 fi
 case "$FBCONSOLE" in
@@ -150,6 +158,9 @@ fi
 if [ "$MODE" = suite ]; then
     MODE_ARGS+=(-fw_cfg "name=opt/breenix/suite,string=$SUITE")
     [ -z "$ONLY" ] || MODE_ARGS+=(-fw_cfg "name=opt/breenix/case,string=$ONLY")
+fi
+if [ -n "$PACE" ]; then
+    MODE_ARGS+=(-fw_cfg "name=opt/breenix/pace,string=$PACE")
 fi
 if [ -n "$FBCONSOLE" ]; then
     MODE_ARGS+=(-fw_cfg "name=opt/breenix/fbconsole,string=$FBCONSOLE")

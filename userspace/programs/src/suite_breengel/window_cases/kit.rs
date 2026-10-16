@@ -225,20 +225,28 @@ pub(crate) fn fill_rect(buf: &mut [u8], w: u32, r: abi::Rect, seed: u32) {
 /// The first pixel of a `w`-wide image whose colour differs from `want(x, y)`, comparing B, G and
 /// R (and X when `with_x`).
 pub(crate) fn first_diff(img: &[u8], w: u32, h: u32, with_x: bool, want: impl Fn(u32, u32) -> [u8; 4]) -> Option<(u32, u32, [u8; 4], [u8; 4])> {
-    crate::remember_frame(img,w as usize,h as usize,None);
+    // Evaluate the independent reference once. These exact bytes decide the verdict
+    // and, canonicalized only after comparison, travel with the judged snapshot.
+    let mut reference = Vec::with_capacity(w as usize * h as usize * 4);
+    for y in 0..h { for x in 0..w { reference.extend_from_slice(&want(x, y)); } }
     let n = if with_x { 4 } else { 3 };
-    for y in 0..h {
+    let mut mismatch = None;
+    'rows: for y in 0..h {
         for x in 0..w {
             let at = ((y * w + x) * 4) as usize;
-            let expect = want(x, y);
-            if img[at..at + n] != expect[..n] {
+            if img[at..at + n] != reference[at..at + n] {
                 let mut got = [0u8; 4];
                 got.copy_from_slice(&img[at..at + 4]);
-                return Some((x, y, got, expect));
+                let mut expect = [0u8; 4];
+                expect.copy_from_slice(&reference[at..at + 4]);
+                mismatch = Some((x, y, got, expect));
+                break 'rows;
             }
         }
     }
-    None
+    for p in reference.chunks_exact_mut(4) { p[3] = 255; }
+    crate::remember_frame(img, w as usize, h as usize, Some(reference));
+    mismatch
 }
 
 /// `img` equals `want` everywhere, or a message naming the first difference.

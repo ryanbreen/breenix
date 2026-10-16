@@ -292,6 +292,51 @@ fn collect_timing()->Result<Option<FrameTiming>,String> {
     Ok(Some(FrameTiming{frame_us,budget_us}))
 }
 
+/// Input evidence captured at the handler that the case actually exercises.
+#[derive(Clone, Default)]
+pub struct InputTrace { pub points: Vec<libgfx::stage::InputPoint>, pub hit: String }
+static INPUT_TRACE: std::sync::Mutex<Option<InputTrace>> = std::sync::Mutex::new(None);
+fn input_label(hit:&str)->String {
+    let mut label=plain(hit);
+    if label.len()>192 {let mut end=189;while !label.is_char_boundary(end){end-=1;}label.truncate(end);label.push_str("...");}
+    label
+}
+pub fn input_step(x:i32,y:i32,pressed:bool,hit:&str) {
+    if !JUDGED_ENABLED.load(Ordering::Relaxed) {return;}
+    let mut trace=INPUT_TRACE.lock().unwrap();
+    let t=trace.get_or_insert_with(InputTrace::default);
+    if t.points.len()<256 {t.points.push(libgfx::stage::InputPoint{x,y,pressed});}
+    if !hit.is_empty() {t.hit=input_label(hit);}
+}
+pub fn input_key(hit:&str) {
+    if !JUDGED_ENABLED.load(Ordering::Relaxed) {return;}
+    INPUT_TRACE.lock().unwrap().get_or_insert_with(InputTrace::default).hit=input_label(hit);
+}
+fn publish_input()->CaseResult {
+    let Some(t)=INPUT_TRACE.lock().unwrap().take() else{return Ok(());};
+    let hit=if t.hit.is_empty(){std::format!("{}: no widget response",running_case().unwrap_or("input"))}else{t.hit};
+    let mut body=std::format!("{hit}\n");
+    for p in t.points {let _=writeln!(body,"{} {} {}",p.x,p.y,u8::from(p.pressed));}
+    let digest=libpixcheck::sha256(body.as_bytes());
+    let mut bytes=digest.to_vec();bytes.extend_from_slice(body.as_bytes());
+    std::fs::write(std::format!("{}.input",judged_path()),bytes).map_err(|e|CaseError::Fail(e.to_string()))
+}
+pub(super) fn collect_input()->Result<Option<InputTrace>,String> {
+    let path=std::format!("{}.input",judged_path());
+    let bytes=match std::fs::read(&path){Ok(v)=>v,Err(e) if e.kind()==std::io::ErrorKind::NotFound=>return Ok(None),Err(e)=>return Err(e.to_string())};
+    let _=std::fs::remove_file(path);
+    if bytes.len()<32 || libpixcheck::sha256(&bytes[32..])!=bytes[..32] {return Err("input snapshot hash differs".into());}
+    let text=core::str::from_utf8(&bytes[32..]).map_err(|_|"input snapshot not text")?;
+    let mut lines=text.lines();let hit=String::from(lines.next().ok_or("input target missing")?);
+    let mut points=Vec::new();
+    for line in lines {
+        let words=line.split_whitespace().map(str::parse).collect::<Result<Vec<i32>,_>>().map_err(|_|"invalid input point")?;
+        if words.len()!=3 || !(0..=1).contains(&words[2]) || words[..2].iter().any(|v|v.abs_diff(0)>1_000_000) || points.len()==256 {return Err("invalid input point".into());}
+        points.push(libgfx::stage::InputPoint{x:words[0],y:words[1],pressed:words[2]==1});
+    }
+    Ok(Some(InputTrace{points,hit}))
+}
+
 fn frame_hash(frame: Option<&JudgedFrame>) -> String {
     let mut text = String::new();
     if let Some(frame) = frame {
@@ -540,13 +585,16 @@ impl Suite {
                 };
                 let mut line = make_line(&outcome);
                 if self.gui {
-                    let fps=feed.values.iter().rev().find(|v|v.name=="composites-per-second").and_then(|v|u32::try_from(v.number).ok());
-                    let recorded = crate::suite_stage::record(&line,&outcome,screen.judged.take(),screen.timing.take(),fps);
-                    let result = recorded.and_then(|()| if done + 1 == total {crate::suite_stage::finale()} else {Ok(())});
+                    // Feed deliberately keeps the previous case's readings until new output
+                    // arrives; those readings must never become this case's evidence.
+                    let readings=if feed.from==name {feed.values.as_slice()} else {&[]};
+                    let fps=readings.iter().rev().find(|v|v.name=="composites-per-second").and_then(|v|u32::try_from(v.number).ok());
+                    let recorded = crate::suite_stage::record(&line,&outcome,screen.judged.take(),screen.timing.take(),fps,readings,limit_ms);
+                    let result = recorded.and_then(|()| crate::suite_stage::completed()).and_then(|()| if done + 1 == total {crate::suite_stage::finale()} else {Ok(())});
                     if let Err(error) = result {
                         outcome = with_note(outcome, &error);
                         line = make_line(&outcome);
-                        screen.stage_result(crate::suite_stage::record(&line,&outcome,None,None,fps));
+                        screen.stage_result(crate::suite_stage::record(&line,&outcome,None,None,fps,readings,limit_ms));
                         screen.stage_result(crate::suite_stage::redraw());
                     }
                 }
@@ -670,7 +718,7 @@ fn run_inline(case: &Case) -> Outcome {
     let start = monotonic_ns();
     let result = (case.run)();
     let ms = ms_since(start);
-    let result = result.and(publish_judged());
+    let result = result.and(publish_judged()).and(publish_input());
     match result {
         Ok(()) => Outcome::Pass { ms },
         Err(CaseError::Fail(msg)) => Outcome::Fail { ms, msg: plain(&msg) },
@@ -903,7 +951,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
     JUDGED_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     // A prior interrupted boot may have left this PID/sequence on a reused disk.
     JUDGED_ENABLED.store(screen.gui, Ordering::Relaxed);
-    for path in [judged_path(), std::format!("{}.new", judged_path()), std::format!("{}.time",judged_path())].into_iter().filter(|_| screen.gui) {
+    for path in [judged_path(), std::format!("{}.new", judged_path()), std::format!("{}.time",judged_path()), std::format!("{}.input",judged_path())].into_iter().filter(|_| screen.gui) {
         if let Err(e) = std::fs::remove_file(path) {
             if e.kind() != std::io::ErrorKind::NotFound {
                 let _ = (io::close(reader),io::close(writer));
@@ -1025,11 +1073,12 @@ fn idle(screen: &mut Screen, feed: &Feed) -> ! {
 }
 
 /// A VALUE record as the live strip holds it.
-struct Value {
-    name: String,
-    number: i64,
-    unit: String,
-    expect: Option<(i64, i64)>,
+#[derive(Clone)]
+pub(super) struct Value {
+    pub(super) name: String,
+    pub(super) number: i64,
+    pub(super) unit: String,
+    pub(super) expect: Option<(i64, i64)>,
 }
 
 /// The most values the live strip keeps for one case.
@@ -1317,6 +1366,30 @@ mod judged_transport_tests {
         assert!(!std::path::Path::new(&judged_path()).exists(),"snapshot hashing/publication must wait until the timer stops");
         publish_judged().unwrap();
         assert_eq!(collect_judged().unwrap().unwrap().bound,1);
+        JUDGED_ENABLED.store(false,Ordering::Relaxed);
+    }
+
+    #[test]
+    fn input_snapshot_keeps_handlers_and_rejects_changed_bytes() {
+        let _serial = TRANSPORT.lock().unwrap();
+        JUDGED_ENABLED.store(true,Ordering::Relaxed);
+        JUDGED_RUNNER.store(std::process::id() as u64,Ordering::Relaxed);
+        JUDGED_SEQUENCE.store(u64::MAX-3,Ordering::Relaxed);
+        let path=std::format!("{}.input",judged_path());
+        let _=std::fs::remove_file(&path);
+        input_step(30,15,true,"button: Clicked");
+        input_step(31,16,false,"");
+        assert!(!std::path::Path::new(&path).exists(),"publication must wait for the case timer");
+        publish_input().unwrap();
+        let mut bytes=std::fs::read(&path).unwrap();
+        let trace=collect_input().unwrap().unwrap();
+        assert_eq!(trace.hit,"button: Clicked");
+        assert_eq!(trace.points,[libgfx::stage::InputPoint{x:30,y:15,pressed:true},libgfx::stage::InputPoint{x:31,y:16,pressed:false}]);
+        assert!(collect_input().unwrap().is_none());
+        bytes[32]^=1;
+        std::fs::write(&path,bytes).unwrap();
+        assert!(collect_input().err().unwrap().contains("hash"));
+        assert!(!std::path::Path::new(&path).exists());
         JUDGED_ENABLED.store(false,Ordering::Relaxed);
     }
 

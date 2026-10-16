@@ -67,12 +67,34 @@ pub fn showcase_check(name: &str) -> CaseResult {
             .map_err(|e| std::format!("thumbnail: {e:?}"))?;
         check(thumb == stored.pixels, "a tile thumbnail is not the box filter of its judged frame")?;
     }
+    // The production finale must select the same retained frame on an all-pass run.
+    if name=="judged-frame-shown" {
+        let mut final_show=s.clone();final_show.finale=Some(0);
+        let mut fb=FrameBuf::new(1280,800,Format::BGRX).map_err(|e|e.to_string())?;
+        final_show.render(&mut fb,0).map_err(crate::suite::CaseError::Fail)?;
+        check_spotlight(&final_show,&fb_bytes(&fb)).map_err(crate::suite::CaseError::Fail)?;
+        let mut f=JudgedFrame{width:1,height:1,pixels:std::vec![10,20,30,255],sha256:[0;32],expected:Some(std::vec![10,25,30,255]),bound:0};
+        f.sha256=libpixcheck::sha256(&f.pixels);
+        let mut probe=s.clone();probe.first_failure=None;probe.finale=None;
+        probe.entries[probe.selected].timing=None;probe.entries[probe.selected].input=None;
+        probe.entries[probe.selected].line=std::format!(" sha256={}",f.sha256.iter().map(|b|std::format!("{b:02x}")).collect::<String>());
+        probe.last=Some(Arc::new(f));probe.draw(0).map_err(crate::suite::CaseError::Fail)?;
+        let (px,_)=snapshot().map_err(crate::suite::CaseError::Fail)?;
+        check_spotlight(&probe,&px).map_err(crate::suite::CaseError::Fail)?;
+        for (x,y) in [(840,168),(984,168),(1128,168),(1136,176),(840,312)] {
+            let mut wrong=px.clone();wrong[(y*1280+x)*4]^=255;
+            check(check_spotlight(&probe,&wrong).is_err(),"spotlight accepted a substituted pane, heat map, cross or bound")?;
+        }
+    }
     let point = match name {
         "judged-frame-shown" => Some(13),
         "serial-agreement" => Some(12),
         "boundary-notice" => None,
         _ => return Err("unknown live stage check".into()),
     };
+    let ids:Vec<_>=s.entries.iter().map(|e|e.id.clone()).collect();
+    let tiles:Vec<_>=ids.iter().map(|id|Tile{id,stamp:Stamp::Pending,key:0,thumbnail:None}).collect();
+    let wall=stage::Wall::for_tiles(&tiles);
     for faulty in if point.is_some() {
         &[true, false][..]
     } else {
@@ -104,18 +126,21 @@ pub fn showcase_check(name: &str) -> CaseResult {
                             libpixcheck::sha256(&p.pixels) == p.thumb_hash,
                             "thumbnail snapshot changed after verification",
                         )?;
-                        let slot = i + s.groups.iter().filter(|v| v.2 <= i).count();
-                        let (left, top) = (18 + 40 * (slot % 20), 114 + 28 * (slot / 20));
-                        for y in 0..p.height {
-                            for x in 0..p.width {
+                        let (x0,y0)=wall.origin(wall.slot(&tiles,i));
+                        let (left,top)=(x0+2*wall.scale,y0+2*wall.scale);
+                        for y in 0..p.height*wall.scale {
+                            for x in 0..p.width*wall.scale {
                                 let o = ((top + y) * 1280 + left + x) * 4;
-                                let r = (y * p.width + x) * 4;
+                                let r = ((y/wall.scale) * p.width + x/wall.scale) * 4;
                                 mismatch |= pixels[o..o + 4] != p.pixels[r..r + 4];
                             }
                         }
                     }
                 }
                 check(n > 0, "no earlier judged pictures to check")?;
+                // Independently compute every displayed source pixel, heat-map channel,
+                // first-mismatch cross and caption; a correct tile cannot conceal a false spotlight.
+                mismatch |= check_spotlight(&s,&pixels).is_err();
             }
             "serial-agreement" => {
                 for (i, e) in s.entries.iter().enumerate() {
@@ -144,8 +169,8 @@ pub fn showcase_check(name: &str) -> CaseResult {
                             "tile key differs from its CASE milliseconds",
                         )?;
                     }
-                    let slot = i + s.groups.iter().filter(|v| v.2 <= i).count();
-                    let (left, top) = (16 + 40 * (slot % 20), 112 + 28 * (slot / 20));
+                    let (left,top)=wall.origin(wall.slot(&tiles,i));
+                    let scale=wall.scale;
                     let words: Vec<_> = e.line.split_whitespace().collect();
                     let colour = match words.get(4).copied() {
                         Some("PASS") => libgfx::color::Color::rgb(26, 112, 77),
@@ -154,28 +179,28 @@ pub fn showcase_check(name: &str) -> CaseResult {
                         _ => return Err("invalid stored CASE verdict".into()),
                     };
                     let mut expected = FrameBuf::new_filled(
-                        38,
-                        26,
+                        38*scale,
+                        24*scale,
                         Format::BGRX,
                         libgfx::color::Color::rgb(12, 19, 31),
                     )
                     .map_err(|e| e.to_string())?;
-                    libgfx::shapes::draw_rect(&mut expected, 0, 0, 38, 26, colour);
+                    libgfx::shapes::draw_rect(&mut expected, 0, 0, (38*scale) as i32, (24*scale) as i32, colour);
                     libgfx::shapes::fill_rect(
                         &mut expected,
-                        2,
-                        2,
-                        16,
-                        12,
+                        (2*scale) as i32,
+                        (2*scale) as i32,
+                        (16*scale) as i32,
+                        (12*scale) as i32,
                         libgfx::color::Color::rgb(18, 29, 44),
                     );
                     if let Some(p) = &e.picture {
-                        for y in 0..p.height {
-                            for x in 0..p.width {
-                                let o = (y * p.width + x) * 4;
+                        for y in 0..p.height*scale {
+                            for x in 0..p.width*scale {
+                                let o = ((y/scale) * p.width + x/scale) * 4;
                                 expected.put_pixel(
-                                    x + 2,
-                                    y + 2,
+                                    x + 2*scale,
+                                    y + 2*scale,
                                     libgfx::color::Color::rgb(
                                         p.pixels[o + 2],
                                         p.pixels[o + 1],
@@ -185,17 +210,17 @@ pub fn showcase_check(name: &str) -> CaseResult {
                             }
                         }
                     }
-                    expected.push_clip(libgfx::framebuf::Rect::new(20, 2, 18, 7));
+                    expected.push_clip(libgfx::framebuf::Rect::new((20*scale) as i32,(2*scale) as i32,(18*scale) as i32,(7*scale) as i32));
                     libgfx::font::draw_text(
                         &mut expected,
                         std::format!("{}", i + 1).as_bytes(),
-                        20,
-                        2,
+                        20*scale,
+                        2*scale,
                         libgfx::color::Color::WHITE,
-                        1,
+                        scale,
                     );
                     expected.pop_clip();
-                    libgfx::shapes::fill_rect(&mut expected, 1, 15, 36, 10, colour);
+                    libgfx::shapes::fill_rect(&mut expected, 1, (15*scale) as i32, (38*scale-2) as i32, (9*scale-1) as i32, colour);
                     let number = words
                         .iter()
                         .find_map(|w| w.strip_prefix("ms="))
@@ -204,18 +229,18 @@ pub fn showcase_check(name: &str) -> CaseResult {
                         .parse::<u64>()
                         .map_err(|_| "invalid CASE milliseconds")?;
                     let key = if n > 99999 { ">" } else { number };
-                    expected.push_clip(libgfx::framebuf::Rect::new(2, 17, 34, 7));
+                    expected.push_clip(libgfx::framebuf::Rect::new((2*scale) as i32,(16*scale) as i32,(34*scale) as i32,(7*scale) as i32));
                     libgfx::font::draw_text(
                         &mut expected,
                         key.as_bytes(),
-                        2,
-                        17,
+                        2*scale,
+                        16*scale,
                         libgfx::color::Color::WHITE,
-                        1,
+                        scale,
                     );
                     expected.pop_clip();
-                    for y in 0..26 {
-                        for x in 0..38 {
+                    for y in 0..24*scale {
+                        for x in 0..38*scale {
                             let o = ((top + y) * 1280 + left + x) * 4;
                             let p = expected.get_pixel(x, y);
                             mismatch |= pixels[o..o + 4] != [p.b, p.g, p.r, 255];
@@ -268,6 +293,40 @@ pub fn showcase_check(name: &str) -> CaseResult {
             }
         }
         crate::test_control::disarm_all()?;
+    }
+    Ok(())
+}
+
+fn fb_bytes(fb:&FrameBuf)->Vec<u8> {
+    let mut bytes=Vec::with_capacity(1280*800*4);
+    for y in 0..800 {for x in 0..1280 {let p=fb.get_pixel(x,y);bytes.extend_from_slice(&[p.b,p.g,p.r,255]);}}
+    bytes
+}
+/// Literal spotlight formulas from section 23, applied to the verified retained frame.
+fn check_spotlight(s:&Show,bytes:&[u8])->Result<(),String> {
+    let chosen=s.first_failure.as_ref().filter(|_|s.finale.is_some()).map_or(s.selected,|v|v.0);
+    let frame=if s.finale.is_some() && s.first_failure.is_some(){s.first_failure.as_ref().and_then(|v|v.1.as_deref())}else{s.last.as_deref()}.ok_or("no judged spotlight source")?;
+    verify_source(&s.entries[chosen].line,frame)?;
+    let pixel=|x:usize,y:usize| &bytes[(y*1280+x)*4..][..4];
+    if let Some(expected)=&frame.expected {
+        let mut first=None;let mut differing=0;
+        for (i,(a,b)) in frame.pixels.chunks_exact(4).zip(expected.chunks_exact(4)).enumerate(){if a!=b{differing+=1;first.get_or_insert((i%frame.width,i/frame.width));}}
+        for y in 0..128 {for x in 0..128 {
+            let i=((y*frame.height/128)*frame.width+x*frame.width/128)*4;
+            let a=&frame.pixels[i..i+4];let e=&expected[i..i+4];
+            let d=(0..3).map(|c|a[c].abs_diff(e[c])).max().unwrap();
+            let cross=first.is_some_and(|(fx,fy)|{let (cx,cy)=(fx*128/frame.width,fy*128/frame.height);(y==cy && x.abs_diff(cx)<=2)||(x==cx && y.abs_diff(cy)<=2)});
+            let diff=if cross{[255,255,255,255]}else if d==0{[0,0,0,255]}else{[0,255-d,255,255]};
+            if pixel(840+x,168+y)!=e || pixel(984+x,168+y)!=a || pixel(1128+x,168+y)!=diff{return Err("spotlight differs from judged actual, reference or heat map".into());}
+        }}
+        let mut label=FrameBuf::new_filled(424,7,Format::BGRX,libgfx::color::Color::rgb(18,29,44)).map_err(|e|e.to_string())?;
+        libgfx::font::draw_text(&mut label,std::format!("{differing} pixels differ; bound {}",frame.bound).as_bytes(),0,0,libgfx::color::Color::WHITE,1);
+        for y in 0..7 {for x in 0..424 {let p=label.get_pixel(x,y);if pixel(840+x,312+y)!=[p.b,p.g,p.r,255]{return Err("spotlight bound differs".into());}}}
+    }else{
+        for y in 0..250 {for x in 0..400 {
+            let i=((y*frame.height/250)*frame.width+x*frame.width/400)*4;
+            if pixel(848+x,168+y)!=&frame.pixels[i..i+4]{return Err("actual-only spotlight differs from judged source".into());}
+        }}
     }
     Ok(())
 }

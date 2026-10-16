@@ -97,6 +97,7 @@ pub enum ProcEntryType {
     BootRibbon,
     BootSerial,
     StageComposites,
+    ShowcasePace,
     /// /proc/breenix/ext2 - mounted ext2 allocation counters
     Ext2,
     /// /proc/pids - list of all process IDs
@@ -160,6 +161,7 @@ impl ProcEntryType {
             ProcEntryType::BreenixDir => "breenix",
             ProcEntryType::BreenixTesting => "testing",
             ProcEntryType::StageControl => "stage-control",
+            ProcEntryType::ShowcasePace => "pace",
             ProcEntryType::BootRibbon => "boot-ribbon",
             ProcEntryType::BootSerial => "boot-serial",
             ProcEntryType::StageComposites => "stage-composites",
@@ -208,6 +210,7 @@ impl ProcEntryType {
             ProcEntryType::BreenixDir => "/proc/breenix",
             ProcEntryType::BreenixTesting => "/proc/breenix/testing",
             ProcEntryType::StageControl => "/proc/breenix/stage-control",
+            ProcEntryType::ShowcasePace => "/proc/breenix/pace",
             ProcEntryType::BootRibbon => "/proc/breenix/boot-ribbon",
             ProcEntryType::BootSerial => "/proc/breenix/boot-serial",
             ProcEntryType::StageComposites => "/proc/breenix/stage-composites",
@@ -257,6 +260,7 @@ impl ProcEntryType {
             ProcEntryType::BreenixDir => 200,
             ProcEntryType::BreenixTesting => 201,
             ProcEntryType::StageControl => 203,
+            ProcEntryType::ShowcasePace => 207,
             ProcEntryType::BootRibbon => 204,
             ProcEntryType::BootSerial => 205,
             ProcEntryType::StageComposites => 206,
@@ -376,6 +380,7 @@ pub fn init() {
         .push(ProcEntry::new(ProcEntryType::BreenixTesting));
 
     procfs.entries.push(ProcEntry::new(ProcEntryType::StageControl));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::ShowcasePace));
     procfs.entries.push(ProcEntry::new(ProcEntryType::BootRibbon));
     procfs.entries.push(ProcEntry::new(ProcEntryType::BootSerial));
     procfs.entries.push(ProcEntry::new(ProcEntryType::StageComposites));
@@ -644,7 +649,7 @@ pub fn list_breenix_entries() -> Vec<String> {
     procfs
         .entries
         .iter()
-        .filter(|e| matches!(e.entry_type, ProcEntryType::BreenixTesting|ProcEntryType::StageControl|ProcEntryType::BootRibbon|ProcEntryType::BootSerial|ProcEntryType::StageComposites))
+        .filter(|e| matches!(e.entry_type, ProcEntryType::BreenixTesting|ProcEntryType::ShowcasePace|ProcEntryType::StageControl|ProcEntryType::BootRibbon|ProcEntryType::BootSerial|ProcEntryType::StageComposites))
         .map(|e| String::from(e.entry_type.name()))
         .collect()
 }
@@ -663,6 +668,12 @@ pub fn is_initialized() -> bool {
 /// The content as a String, or an error code
 pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
     match entry_type {
+        ProcEntryType::ShowcasePace => {
+            #[cfg(target_arch="aarch64")]
+            if !crate::platform_config::is_qemu() { return text(String::from("0\n")); }
+            let pace=crate::drivers::fw_cfg::read_string("opt/breenix/pace").unwrap_or_else(||String::from("0"));
+            text(alloc::format!("{}\n",pace))
+        }
         ProcEntryType::StageControl => {
             if !crate::test_control::enabled() {return Err(-38);}
             let caller=crate::window::Caller::current().map_err(|e|-e)?;

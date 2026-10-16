@@ -1212,7 +1212,7 @@ fail (145,50,58), not reached (57,67,80), pending outline (48,67,96), and timing
 | suite title | (24,16), scale 3 | `BREENIX / <suite>` |
 | target and progress | (24,48), scale 1 | `<target>  case <n> of <N>  elapsed <ms> ms  fps <fps>` |
 | counts | (24,68), scale 2 | `<P> passed  <F> failed  <R> not reached` |
-| tile wall | (16,112,800,588) | 20 columns, 21 rows, as §23.3 |
+| tile wall | (16,112,800,588) | adaptive category groups, as §23.3 |
 | spotlight | (832,112,432,588) | inset; §23.4 |
 | milestone ribbon | (16,728,1248,24) | §23.5 |
 | boot stage ribbon | (16,752,1248,16) | §23.7 |
@@ -1224,22 +1224,28 @@ edge. The renderer reads no clock and does not change the inputs.
 
 ### 23.3 Tiles
 
-Cases occupy manifest order, grouped by the milestones in `docs/efforts/path.json` (the images milestone
-contains BMP, PNG decode and PNG encode). Insert one empty slot between consecutive milestones. For slot s,
-the tile is (16 + 40(s mod 20),112 + 28 floor(s/20),38,26). Its one-based manifest ordinal identifies the
-case; the spotlight spells out that ordinal's full category and case id. A tile has:
+Cases occupy manifest order, grouped by category. Each category starts with a two-slot heading:
+its full category id and `<P>/<N> pass` on separate lines, white on header colour. If only one
+slot remains in a row, leave it empty before starting the heading on the next row. Cases follow
+immediately; a category may continue onto the next row. No case is hidden or omitted.
 
-- A one-pixel border, green for pass, red for our own failure, grey for not reached, pending outline (48,67,96) for pending.
-- Its ordinal at tile+(20,2), scale 1, white; its key number at tile+(2,17), scale 1, white. The number is
-  the serial CASE's milliseconds unless the case supplies a named picture or timing measurement. Keys with more than five decimal digits use `>` in the tile instead of a truncated
-  number; the selected case always shows `key <full decimal number>` at (840,144), scale 1, white.
-- A 16×12 thumbnail at tile+(2,2), or inset if the case has no judged frame. A smaller source is drawn at
-  its own size in that rectangle. For destination coordinate (x,y), source bins are
-  `[floor(xW/w),floor((x+1)W/w)) × [floor(yH/h),floor((y+1)H/h))`. Each colour is the bin's sum divided by its
-  pixel count, rounded half up; X is 255. No source pixel is sampled in place of the bin mean.
-- The key strip (tile+(1,15),36,10) filled with its stamp colour. Pending has only its outline, ordinal
-  and placeholder, with no key text or filled strip. Running uses RGB (64,128+floor(127q/500),224), where
-  `q = 500 - abs((ui_time_ms mod 1000)-500)`; its animation happens only between measured cases.
+Choose the largest integer scale s in 1..4 for which `ceil((N + 3C)/columns) * 26s <= 588`,
+where N is the case count, C is the category count, and `columns = floor(800/(40s))`.
+The third reserved slot per category bounds the possible wrap gap. At slot k the tile origin is
+`(16 + 40s(k mod columns),112 + 26s floor(k/columns))`; its size is 38s by 24s. This enlarges
+small runs while fitting all 393 cases and all 16 category headings at scale 1.
+
+- The one-pixel border is green for pass, red for failure, grey for not reached and pending
+  outline colour for pending. Running uses RGB (64,128+floor(127q/500),224), where
+  `q = 500 - abs((ui_time_ms mod 1000)-500)`, only between measured windows.
+- The one-based manifest ordinal is at tile+(20s,2s), scale s; the key is at tile+(2s,16s),
+  scale s. The key strip is (tile+(1,15s),38s-2,9s-1). Keys greater than 99999 use `>`;
+  the spotlight prints the full number. Pending tiles have no filled strip or key text.
+- The thumbnail is at tile+(2s,2s), at most 16s by 12s. First reduce the judged source to
+  min(W,16) by min(H,12) by integer box filtering: each bin spans
+  `[floor(xW/w),floor((x+1)W/w))` by `[floor(yH/h),floor((y+1)H/h))`; channel sums are
+  divided by the bin pixel count, rounded half up, X=255. Enlarge each result pixel to
+  s by s. A sampled source pixel never replaces the bin mean.
 
 ### 23.4 Spotlight
 
@@ -1253,14 +1259,35 @@ pixel in row-major order is marked by white horizontal and vertical lines extend
 clipped to that pane. Its mapped coordinate is `(floor(x128/W),floor(y128/H))`.
 At (840,312), scale 1, white, is `<N> pixels differ; bound <M>`.
 
+When no independent reference was supplied, the actual-only pane is (848,168,400,250),
+nearest-scaled from the complete verified snapshot and explicitly labelled as such.
+
 A timing spotlight plots at (848,336,400,192). It accepts 1–64 frame times in microseconds and a positive
 budget b. Bar i occupies `[floor(400i/n),floor(400(i+1)/n)-1)`, leaving a one-pixel gap, from the bottom
 up by `floor(192 min(t,2b)/(2b))` pixels. The budget line is white at y=432. Bars at or below budget are
 (64,160,224); over-budget bars are fail red. At (840,312) is `frame times us; budget <b>`.
 
+An input spotlight names the exercised widget/window and its actual handler result, and plots
+its recorded pointer trail. The trail maps its min/max x and y to (864,336)..(1216,528),
+with each constant axis using an extent of one. Consecutive points are joined in timing blue;
+5x5 point markers are white when up, pass green when down. Keyboard-only input says
+`Keyboard input (no pointer)`. For an input case with a judged picture, preserve the picture
+panes and put the input evidence below them: label at (848,432), handler text at (848,448),
+trail at (864,516)..(1216,596). Input metadata is snapshotted after its handler and transported
+with a verified SHA-256, published after the timer stops. At most the first 256 pointer samples
+are retained. Target text is bounded to 192 bytes with an explicit trailing ellipsis.
+
+A text-only case shows its recorded measurement name at (848,208), scale 2, its value and unit
+at (848,280), scale 3, and `Expected exactly <value> <unit>` or `Bound: <lo> to <hi> <unit>`
+at (848,392), scale 2. Text wraps within 400 pixels. Prefer the last bounded VALUE, then the
+last VALUE. Without a supplied reading, show the measured case execution time against its
+runner deadline, labelled `Case execution time`; never invent a picture or comparison bound.
+The selected case's verdict appears at (848,640), scale 3, in its stamp colour.
+
 ### 23.5 Milestone ribbon
 
-For milestone i of m, its segment is `(16+floor(1248i/m),728,floor(1248(i+1)/m)-floor(1248i/m)-2,24)`.
+The run ribbon has one completion segment per manifest category, including separate BMP, PNG decode
+and PNG encode segments within the images effort milestone. For category i of m, its segment is `(16+floor(1248i/m),728,floor(1248(i+1)/m)-floor(1248i/m)-2,24)`.
 It is pass green exactly when all its cases have passed, otherwise pending outline colour. Its id is
 at segment+(4,8), scale 1, white, clipped at the segment's right edge. Empty milestones are invalid.
 
@@ -1294,7 +1321,14 @@ When a surface check has no reference (for example a structural predicate), the 
 A malformed or changed snapshot fails the case. A case with no picture has no hash field.
 Snapshot hashing and publication run after the case timer stops. The transported picture includes its
 comparison bound; the spotlight prints that bound. The stage composes only between cases, never in a
-measured case window. A stage error fails the affected case and preserves the serial DONE record.
+measured case window. Each result is drawn immediately after collection and verification, before
+starting another case. `opt/breenix/pace` is an optional unsigned 32-bit millisecond boot value;
+`scripts/boot-interactive.sh --mode suite --suite breengel --pace MS` supplies it through fw_cfg
+and `run.sh --parallels|--vmware --suite breengel --pace MS` supplies `/etc/breenix/pace` on its
+private boot disk. Zero or absence adds no hold. The runner sleeps only after the completed
+spotlight has been presented, outside all case timers, deadlines, UI clock and timing samples.
+The finale preserves the last judged picture on an all-pass run as well as the first failure
+on a failed run. A stage error fails the affected case and preserves the serial DONE record.
 
 The stage's boundary notice is `host copy and window outside guest view` for boundary 1 on virtio 2D,
 `host scanning outside guest view` for boundary 2, and `host window outside guest view` for boundary 3

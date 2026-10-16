@@ -629,6 +629,8 @@ fn matches_reference(g: &Guarded, name: &str, section: &str) -> CaseResult {
     };
     let shown = (0..g.height).flat_map(|y| (0..g.width).map(move |x| (x, y))).filter(|&(x, y)| at_px(x, y) != Color::rgb(0, 0, 0)).count();
     ensure(shown > 0, section, format!("the reviewed reference {name} is blank"))?;
+    let mut reference=img.pixels.clone();for p in reference.chunks_exact_mut(4){p[3]=255;}
+    remember_frame(&canonical_pixels(g),g.width,g.height,Some(reference));
     for y in 0..g.height {
         for x in 0..g.width {
             if g.color(x, y) != at_px(x, y) {
