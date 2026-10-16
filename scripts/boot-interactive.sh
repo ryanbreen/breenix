@@ -133,7 +133,8 @@ if [ "$GPU_GL" -eq 1 ]; then
     QEMU="${BREENIX_QEMU_GL_BINARY:-$("$ROOT/scripts/build-qemu-gl.sh" --print-path)}" || {
         echo "--gpu-gl needs the GL QEMU: run scripts/build-qemu-gl.sh" >&2; exit 1;
     }
-    # Like QEMU-1x, the bundle draws one guest pixel per point and is kept out of App Nap (#1292).
+    # The bundle draws one guest pixel per device pixel (a 2560x1600 guest in a 1280x800-point
+    # window) and, like QEMU-1x, is kept out of App Nap (#1292).
     defaults write org.breenix.qemu-gl NSAppSleepDisabled -bool YES
     # UTM's default ANGLE backend, Metal, unless the caller sets the variable (empty: ANGLE's own
     # default, its OpenGL backend).

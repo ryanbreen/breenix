@@ -15,16 +15,19 @@
 # On top of UTM's patches it applies scripts/qemu-gl/host-renderer-attestation.patch.
 #
 # Libraries UTM also builds from source that carry no graphics code (glib, pixman,
-# libslirp, OpenSSL, libjpeg, Opus, libpng) come from Homebrew. virglrenderer is built
+# libslirp, OpenSSL, libjpeg, Opus, libpng) come from Homebrew at build time and are
+# copied into the bundle with everything they load, so upgrading Homebrew does not change
+# an installed bundle; PINS records each formula's version. virglrenderer is built
 # without Venus and Neptune (Vulkan and Direct3D), which the VirGL path does not use.
 #
 # The result is an app bundle, <cache>/qemu-gl/<PIN>/QEMU-GL.app, holding the executable,
 # its libraries and ANGLE's EGL and GLESv2 frameworks, ad-hoc signed with the hypervisor
-# entitlement. Run it with ANGLE_DEFAULT_PLATFORM=metal (UTM's default backend);
-# without it ANGLE picks its OpenGL backend. Downloads are cached beside the bundle; the
-# build tree is /tmp/breenix-qemu-gl-build, emptied at the start of each build, so one
-# build runs at a time. Builds run at background priority with at most
-# BREENIX_QEMU_GL_JOBS (default 4) jobs.
+# entitlement, with every component's licence texts under Contents/Resources/licenses.
+# Run it with ANGLE_DEFAULT_PLATFORM=metal (UTM's default backend); without it ANGLE picks
+# its OpenGL backend. Downloads are cached beside the bundle; the build tree is
+# /tmp/breenix-qemu-gl-build, emptied at the start of each build, and a lock on
+# /tmp/breenix-qemu-gl-build.lock makes a second build wait for the first. Builds run at
+# background priority with at most BREENIX_QEMU_GL_JOBS (default 4) jobs.
 #
 # Host prerequisites: Xcode (with the macOS SDK), git, curl, meson, ninja, pkg-config and
 # Homebrew's glib, pixman, libslirp, openssl@3, jpeg-turbo, opus and libpng.
@@ -48,7 +51,7 @@ VIRGL_COMMIT=451505ad0aa449290f2c0672da6877d57ee770e5
 DTC_REPO=https://gitlab.com/qemu-project/dtc.git
 DTC_COMMIT=b6910bec11614980a21e46fbccc35934b671bd81
 # Bump the suffix whenever the recipe or the Breenix patch changes, so a stale build is not reused.
-PIN=10.0.12-utm-4d73aaf0-b1
+PIN=10.0.12-utm-4d73aaf0-b2
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CACHE="${BREENIX_QEMU_GL_DIR:-$HOME/Library/Caches/breenix/qemu-gl}"
@@ -74,10 +77,12 @@ if [ "$REBUILD" -eq 0 ] && [ -x "$BIN" ] && codesign --verify --strict "$DEST" 2
     echo "build-qemu-gl: $PIN is installed: $BIN"
     exit 0
 fi
-# Builds never compete with boots or the operator: rerun at background priority.
-if [ -z "${BREENIX_QEMU_GL_BACKGROUND:-}" ]; then
-    export BREENIX_QEMU_GL_BACKGROUND=1
-    exec taskpolicy -b "$0" "$@"
+# Builds never compete with boots or the operator: rerun at background priority, holding
+# the build lock, since every build empties the same build tree. A build that waited reruns
+# the check above and stops if the other build installed this pin.
+if [ -z "${BREENIX_QEMU_GL_LOCKED:-}" ]; then
+    export BREENIX_QEMU_GL_LOCKED=1
+    exec taskpolicy -b lockf -k /tmp/breenix-qemu-gl-build.lock "$0" "$@"
 fi
 
 JOBS="${BREENIX_QEMU_GL_JOBS:-4}"
@@ -87,13 +92,11 @@ SRC="$WORK/src"
 PREFIX="$WORK/prefix"
 export MACOSX_DEPLOYMENT_TARGET=26.0
 
-for tool in xcodebuild git curl meson ninja pkg-config shasum codesign install_name_tool rsync; do
+for tool in xcodebuild git curl meson ninja pkg-config shasum codesign install_name_tool rsync brew realpath; do
     command -v "$tool" >/dev/null || die "missing $tool"
 done
-PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PREFIX/share/pkgconfig"
-if command -v brew >/dev/null; then
-    PKG_CONFIG_PATH="$PKG_CONFIG_PATH:$(brew --prefix openssl@3)/lib/pkgconfig"
-fi
+BREW="$(brew --prefix)"
+PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PREFIX/share/pkgconfig:$(brew --prefix openssl@3)/lib/pkgconfig"
 export PKG_CONFIG_PATH
 for pc in glib-2.0 gio-2.0 pixman-1 slirp openssl libjpeg opus libpng; do
     pkg-config --exists "$pc" || die "missing development package $pc (Homebrew: glib pixman libslirp openssl@3 jpeg-turbo opus libpng)"
@@ -146,6 +149,7 @@ meson_build() {
 }
 
 START=$(date +%s)
+# Safe under the build lock taken above.
 rm -rf /tmp/breenix-qemu-gl-build
 mkdir -p "$SRC" "$PREFIX/lib" "$PREFIX/include" "$DOWNLOADS"
 
@@ -161,15 +165,21 @@ git_pin "$VIRGL_REPO" "$VIRGL_COMMIT" "$SRC/virglrenderer"
 
 step "building ANGLE (Metal and OpenGL backends)"
 # ANGLE keeps UTM's deployment target: from 26.0 WebKit's configuration defines
-# _LIBCPP_ENABLE_ASSERTIONS, which the macOS 27 SDK's libc++ rejects.
+# _LIBCPP_ENABLE_ASSERTIONS, which the macOS 27 SDK's libc++ rejects. WebKit builds ANGLE
+# with warnings as errors and lists the warnings its sources are known to raise in
+# WK_FIXME_WARNING_CFLAGS; the list here is WebKit's plus the two this Xcode's clang adds
+# for the pinned sources (memcpy of non-trivially-copyable state structs, and virtual
+# destructors in final classes). Any other warning still fails the build.
 (
     cd "$SRC/WebKit/Source/ThirdParty/ANGLE"
+    grep -q '^WK_FIXME_WARNING_CFLAGS = -Wno-deprecated-declarations -Wno-inconsistent-missing-override -Wno-macro-redefined -Wno-undef -Wno-unused-parameter;$' \
+        Configurations/Base.xcconfig || die "ANGLE's WK_FIXME_WARNING_CFLAGS changed"
     env -i PATH="/usr/bin:/bin:/usr/sbin:/sbin" HOME="$HOME" xcodebuild archive -quiet \
         -archivePath ANGLE -scheme ANGLE -sdk macosx -arch arm64 -configuration Release \
         -derivedDataPath "$WORK/angle-derived" -jobs "$JOBS" \
         WEBCORE_LIBRARY_DIR=/usr/local/lib NORMAL_UMBRELLA_FRAMEWORKS_DIR= \
-        CODE_SIGNING_ALLOWED=NO GCC_TREAT_WARNINGS_AS_ERRORS=NO \
-        MACOSX_DEPLOYMENT_TARGET=12.0
+        CODE_SIGNING_ALLOWED=NO MACOSX_DEPLOYMENT_TARGET=12.0 \
+        WK_FIXME_WARNING_CFLAGS="-Wno-deprecated-declarations -Wno-inconsistent-missing-override -Wno-macro-redefined -Wno-undef -Wno-unused-parameter -Wno-nontrivial-memcall -Wno-unnecessary-virtual-specifier"
     rsync -a ANGLE.xcarchive/Products/usr/local/lib/ "$PREFIX/lib/"
     rsync -a include/ "$PREFIX/include/"
 )
@@ -207,7 +217,8 @@ mkdir -p "$QEMU_DIR/build-breenix"
 step "assembling and signing QEMU-GL.app"
 STAGE="$WORK/stage"
 APP="$STAGE/QEMU-GL.app"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks" "$APP/Contents/share/qemu"
+LICENSES="$APP/Contents/Resources/licenses"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks" "$APP/Contents/share/qemu" "$LICENSES"
 cp "$QEMU_DIR/build-breenix/qemu-system-aarch64" "$APP/Contents/MacOS/"
 cp -R "$QEMU_DIR/pc-bios/keymaps" "$APP/Contents/share/qemu/"
 cp "$QEMU_DIR/pc-bios/efi-virtio.rom" "$APP/Contents/share/qemu/"
@@ -249,26 +260,64 @@ for file in "$APP/Contents/MacOS/qemu-system-aarch64" "$APP"/Contents/Frameworks
     done
 done
 install_name_tool -add_rpath @executable_path/../Frameworks "$APP/Contents/MacOS/qemu-system-aarch64" 2>/dev/null
-# The window is drawn at one guest pixel per point, as scripts/qemu-1x-app.sh does for Homebrew's QEMU.
+# Homebrew's libraries, and every Homebrew library they load, are copied in, so the bundle
+# loads nothing from Homebrew. Each formula's version and licence files are recorded.
+BREW_PINS="$STAGE/homebrew-pins"
+: > "$BREW_PINS"
+copied=1
+while [ "$copied" -eq 1 ]; do
+    copied=0
+    for file in "$APP/Contents/MacOS/qemu-system-aarch64" "$APP"/Contents/Frameworks/*.dylib; do
+        for dep in $(otool -L "$file" | tail -n +2 | awk '{print $1}' | grep "^$BREW/" || true); do
+            name="${dep##*/}"
+            if [ ! -e "$APP/Contents/Frameworks/$name" ]; then
+                real="$(realpath "$dep")"
+                keg="${real%%/lib/*}"
+                formula="$(basename "$(dirname "$keg")")"
+                case "$keg" in "$BREW"/Cellar/*/*) ;; *) die "$dep is not in a Homebrew keg ($real)";; esac
+                cp "$real" "$APP/Contents/Frameworks/$name"
+                chmod u+w "$APP/Contents/Frameworks/$name"
+                install_name_tool -id "@rpath/$name" "$APP/Contents/Frameworks/$name" 2>/dev/null
+                echo "homebrew $formula $(basename "$keg") $name" >> "$BREW_PINS"
+                if [ ! -d "$LICENSES/homebrew-$formula" ]; then
+                    mkdir -p "$LICENSES/homebrew-$formula"
+                    find "$keg" -maxdepth 1 -type f \( -iname '*licen[cs]e*' -o -iname '*copying*' \
+                        -o -iname '*gpl*' -o -iname 'notice*' -o -name sbom.spdx.json \) \
+                        -exec cp {} "$LICENSES/homebrew-$formula/" \;
+                    [ -n "$(ls "$LICENSES/homebrew-$formula")" ] || die "Homebrew's $formula has no licence files"
+                fi
+                copied=1
+            fi
+            install_name_tool -change "$dep" "@rpath/$name" "$file" 2>/dev/null
+        done
+    done
+done
+# Licence texts of the components built here.
+SRC_LICENSES="qemu:$QEMU_DIR/COPYING qemu:$QEMU_DIR/COPYING.LIB qemu:$QEMU_DIR/LICENSE qemu:$QEMU_DIR/pc-bios/README
+dtc:$QEMU_DIR/subprojects/dtc/README.license dtc:$QEMU_DIR/subprojects/dtc/BSD-2-Clause dtc:$QEMU_DIR/subprojects/dtc/GPL
+angle:$SRC/WebKit/Source/ThirdParty/ANGLE/LICENSE angle-xxhash:$SRC/WebKit/Source/ThirdParty/ANGLE/src/common/third_party/xxhash/LICENSE
+libepoxy:$SRC/libepoxy/COPYING virglrenderer:$SRC/virglrenderer/COPYING
+spice-server:$SPICE_DIR/COPYING spice-protocol:$SRC/spice-protocol-0.14.4/COPYING"
+for entry in $SRC_LICENSES; do
+    mkdir -p "$LICENSES/${entry%%:*}"
+    cp "${entry#*:}" "$LICENSES/${entry%%:*}/" || die "missing licence file ${entry#*:}"
+done
+# A 2560x1600 guest fills a 1280x800-point window at full resolution: UTM's Cocoa display
+# sizes the window at guest pixels divided by the backing scale (docs/gui/gpu.md section 1.6.1).
 plist "    <key>CFBundleExecutable</key><string>qemu-system-aarch64</string>
     <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
     <key>CFBundleName</key><string>QEMU GL</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>$PIN</string>
-    <key>NSHighResolutionCapable</key><false/>" > "$APP/Contents/Info.plist"
-for file in "$APP/Contents/MacOS/qemu-system-aarch64" "$APP"/Contents/Frameworks/*.dylib; do
-    if otool -L "$file" | tail -n +2 | grep -F "$WORK"; then
-        die "$file still loads from the build directory"
+    <key>NSHighResolutionCapable</key><true/>" > "$APP/Contents/Info.plist"
+for file in "$APP/Contents/MacOS/qemu-system-aarch64" "$APP"/Contents/Frameworks/*.dylib \
+    "$APP/Contents/Frameworks/EGL.framework/Versions/A/EGL" "$APP/Contents/Frameworks/GLESv2.framework/Versions/A/GLESv2"; do
+    if otool -L "$file" | tail -n +2 | awk '{print $1}' | grep -v -E '^(/usr/lib/|/System/Library/|@rpath/)'; then
+        die "$file loads a library from outside the bundle and the system"
     fi
 done
-for item in "$APP"/Contents/Frameworks/*.framework "$APP"/Contents/Frameworks/*.dylib; do
-    codesign --force --sign - "$item"
-done
-codesign --force --sign - --entitlements "$QEMU_DIR/accel/hvf/entitlements.plist" "$APP"
-codesign --verify --strict --deep "$APP"
-codesign -d --entitlements - "$APP/Contents/MacOS/qemu-system-aarch64" 2>/dev/null \
-    | grep -q com.apple.security.hypervisor || die "the hypervisor entitlement is missing"
-cat > "$STAGE/PINS" <<PINS
+# The pins travel inside the signed bundle with the licences, and beside it.
+cat > "$LICENSES/PINS" <<PINS
 pin $PIN
 utm $UTM_COMMIT
 qemu $QEMU_URL sha256:$QEMU_SHA256
@@ -282,6 +331,16 @@ spice-protocol $SPICE_PROTOCOL_URL sha256:$SPICE_PROTOCOL_SHA256
 spice-server $SPICE_SERVER_URL sha256:$SPICE_SERVER_SHA256
 spice-patch spice-0.14.3.patch sha256:$SPICE_PATCH_SHA256
 PINS
+cat "$BREW_PINS" >> "$LICENSES/PINS"
+rm "$BREW_PINS"
+cp "$LICENSES/PINS" "$STAGE/PINS"
+for item in "$APP"/Contents/Frameworks/*.framework "$APP"/Contents/Frameworks/*.dylib; do
+    codesign --force --sign - "$item"
+done
+codesign --force --sign - --entitlements "$QEMU_DIR/accel/hvf/entitlements.plist" "$APP"
+codesign --verify --strict --deep "$APP"
+codesign -d --entitlements - "$APP/Contents/MacOS/qemu-system-aarch64" 2>/dev/null \
+    | grep -q com.apple.security.hypervisor || die "the hypervisor entitlement is missing"
 # A replaced install moves into the build tree, which the next build empties.
 [ ! -e "$CACHE/$PIN" ] || mv "$CACHE/$PIN" "$WORK/replaced"
 mv "$STAGE" "$CACHE/$PIN"
