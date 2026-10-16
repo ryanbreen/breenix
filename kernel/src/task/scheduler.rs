@@ -86,7 +86,7 @@ static EXIT_KICKS_WATCHED: AtomicBool = AtomicBool::new(false);
 /// on every busy CPU at once.
 #[inline]
 pub fn timer_deadline_due() -> bool {
-    // x86_64: each CPU's own heap, a stopped CPU's, and the interval and
+    // x86_64: each CPU's heap -- this CPU's first -- and the interval and
     // POSIX timers, each claimed the same way (#1649).
     #[cfg(target_arch = "x86_64")]
     {
@@ -96,7 +96,7 @@ pub fn timer_deadline_due() -> bool {
         if cpu < MAX_CPUS && rq::claim_due(cpu, now, retry) {
             return true;
         }
-        if rq::claim_stopped_due(cpu, now, retry) {
+        if rq::claim_other_due(cpu, now, retry) {
             return true;
         }
         let signal = SIGNAL_TIMERS_NEXT.load(Ordering::Acquire);
@@ -1941,7 +1941,45 @@ pub fn set_idle_housekeeping(active: bool) {
 /// it. Takes the scheduler lock.
 #[cfg(target_arch = "x86_64")]
 pub fn has_queued_work_here() -> bool {
+    // x86_64: this CPU's queue is under its own run-queue lock (#1649).
+    #[cfg(target_arch = "x86_64")]
+    if let Some(queued) = without_interrupts(|| {
+        rq::local().map(|mut local| {
+            !local.queue().is_empty()
+                || PINNED_HOLDS_OUTSTANDING[current_cpu_id_raw()].load(Ordering::Relaxed) != 0
+        })
+    }) {
+        return queued;
+    }
     with_scheduler(|scheduler| scheduler.has_queued_work_here()).unwrap_or(false)
+}
+
+/// x86_64: whether any CPU's run queue holds a thread, as each queue stood
+/// when its lock was last released. Takes no lock.
+#[cfg(target_arch = "x86_64")]
+pub fn any_thread_queued() -> bool {
+    QUEUED_CPUS.load(Ordering::Acquire) != 0
+}
+
+/// Whether a scheduler thread that has not terminated still caches a
+/// page-table root `matches` accepts. x86_64: read from the thread index
+/// under this CPU's run-queue lock, not the whole scheduler (#1649).
+pub(crate) fn any_cached_root_matches(matches: impl FnMut(u64) -> bool) -> bool {
+    #[cfg(target_arch = "x86_64")]
+    let matches = {
+        let mut matches = Some(matches);
+        if let Some(found) = without_interrupts(|| {
+            let mut local = rq::local()?;
+            matches.take().map(|matches| rq::any_cached_root(&mut local, matches))
+        }) {
+            return found;
+        }
+        match matches {
+            Some(matches) => matches,
+            None => return false,
+        }
+    };
+    with_scheduler(|scheduler| scheduler.any_cached_ttbr0_matches(matches)).unwrap_or(false)
 }
 
 /// x86_64: CPUs to send a reschedule IPI when this CPU clears its
@@ -8471,6 +8509,10 @@ impl ExecSchedCommit {
                         // same hold that replaces the context.
                         #[cfg(target_arch = "x86_64")]
                         t.set_dispatch_root(self.new_page_table_root);
+                        // A new address space: the futex key group is read
+                        // again from the process row.
+                        #[cfg(target_arch = "x86_64")]
+                        t.futex_group.store(0, core::sync::atomic::Ordering::Release);
                         // The interval before exec belongs to the old thread group.
                         t.charge_cpu(crate::time::get_cpu_ticks());
                         replaced_account = core::mem::replace(&mut t.cpu_account, self.cpu_account);

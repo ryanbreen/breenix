@@ -586,6 +586,18 @@ impl Deadline {
 /// keyed by its physical address unless the operation is private; the caller
 /// has touched the word, so its page is present.
 fn futex_key(uaddr: u64, private: bool) -> Option<FutexKey> {
+    // x86_64: a private word's key needs only the group, which the thread
+    // caches after its first lookup, so it is keyed without PROCESS_MANAGER: a
+    // CPU that stopped while it held that lock held every futex call up
+    // (#1650).
+    #[cfg(target_arch = "x86_64")]
+    if private {
+        let cached = crate::per_cpu::current_thread()
+            .map_or(0, |thread| thread.futex_group.load(core::sync::atomic::Ordering::Acquire));
+        if cached != 0 {
+            return Some((cached - 1, uaddr));
+        }
+    }
     let thread_id = crate::task::scheduler::current_thread_id()?;
     // A shared word's key translates through the caller's tables: a fork
     // copying them is waited for with the lock released (`memory::fork_copy`).
@@ -595,6 +607,12 @@ fn futex_key(uaddr: u64, private: bool) -> Option<FutexKey> {
         let (pid, process) = manager.find_process_by_thread(thread_id)?;
         process.address_space_lifetime.as_ref().map_or(pid.as_u64(), |owners| owners.id)
     };
+    #[cfg(target_arch = "x86_64")]
+    if let Some(thread) = crate::per_cpu::current_thread().filter(|thread| thread.id == thread_id) {
+        thread
+            .futex_group
+            .store(group.wrapping_add(1), core::sync::atomic::Ordering::Release);
+    }
     if private {
         return Some((group, uaddr));
     }

@@ -409,14 +409,13 @@ pub(super) fn claim_due(cpu: usize, now: u64, retry: u64) -> bool {
             .is_ok()
 }
 
-/// Claim a due deadline of a CPU other than `me` that has stopped scheduling,
-/// whose sleepers this CPU's pass then wakes (`expire_timers`).
-pub(super) fn claim_stopped_due(me: usize, now: u64, retry: u64) -> bool {
+/// Claim a due deadline of a CPU other than `me`, whose sleepers this CPU's
+/// pass then wakes (`expire_timers`). With one heap any CPU's tick found every
+/// due deadline, so a sleep waited for the next tick of any of them, not of
+/// its own CPU alone.
+pub(super) fn claim_other_due(me: usize, now: u64, retry: u64) -> bool {
     (0..MAX_CPUS).any(|cpu| {
-        cpu != me
-            && NEXT_CHECK[cpu].load(Ordering::Relaxed) <= now
-            && !accepts_wakeups(cpu)
-            && claim_due(cpu, now, retry)
+        cpu != me && NEXT_CHECK[cpu].load(Ordering::Relaxed) <= now && claim_due(cpu, now, retry)
     })
 }
 
@@ -846,18 +845,24 @@ fn expire_heap(local: &mut Held, mut source: Option<&mut Held>, now: u64) {
     }
 }
 
-/// Expire this CPU's due deadlines, and those of any CPU that has stopped
-/// scheduling whose lock is free: a stopped vCPU's sleepers are woken here
-/// and run on a CPU that is running.
+/// Expire this CPU's due deadlines, and those of every other CPU whose lock
+/// is free now: a sleep is woken by the first pass on any CPU after its
+/// deadline, as with one heap, and a stopped vCPU's sleepers run on a CPU
+/// that is running. A deadline claimed by a tick (`claim_due`) reads a tick
+/// later, so any CPU with deadlines is looked at, not only one whose
+/// published deadline is due.
 pub(super) fn expire_timers(local: &mut Held) {
     let now = now_ns();
     expire_heap(local, None, now);
     for cpu in 0..MAX_CPUS {
-        if cpu == local.cpu || NEXT_CHECK[cpu].load(Ordering::Acquire) == u64::MAX || accepts_wakeups(cpu) {
+        if cpu == local.cpu || NEXT_CHECK[cpu].load(Ordering::Acquire) == u64::MAX {
             continue;
         }
         if let Some(mut remote) = try_remote(cpu) {
-            expire_heap(local, Some(&mut remote), now);
+            let due = remote.heap().peek().is_some_and(|entry| entry.0 .0 <= now);
+            if due {
+                expire_heap(local, Some(&mut remote), now);
+            }
         }
     }
 }
@@ -1631,4 +1636,35 @@ fn expedite(local: &mut Held, mut source: Option<&mut Held>, tid: u64) {
     } else {
         request_resched_x86(cpu);
     }
+}
+
+// ------------------------------------------------------- whole-index scans
+
+/// Whether a thread that has not terminated caches a page-table root
+/// `matches` accepts (`Scheduler::any_cached_ttbr0_matches`), read from the
+/// thread index. `local` pins every indexed thread: reclamation, the only
+/// path that frees one, takes every run-queue lock. The fields are read
+/// without their owners' locks, which suits the caller: a dead process's
+/// roots are cached by fewer threads over time, never more, and retirement
+/// asks again until none is.
+pub(super) fn any_cached_root(_local: &mut Held, mut matches: impl FnMut(u64) -> bool) -> bool {
+    INDEX.iter().any(|slot| {
+        let key = slot.key.load(Ordering::Acquire);
+        if key == EMPTY || key == REMOVED {
+            return false;
+        }
+        let thread = slot.thread.load(Ordering::Acquire);
+        if thread.is_null() {
+            return false;
+        }
+        // SAFETY: `_local` keeps the thread from being freed, and the fields
+        // are read with volatile loads, each of one aligned word.
+        let (state, root) = unsafe {
+            (
+                core::ptr::read_volatile(core::ptr::addr_of!((*thread).state)),
+                core::ptr::read_volatile(core::ptr::addr_of!((*thread).cached_ttbr0)),
+            )
+        };
+        state != ThreadState::Terminated && root != 0 && matches(root)
+    })
 }
