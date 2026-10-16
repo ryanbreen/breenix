@@ -619,7 +619,10 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
         log::info!("SKPROBE hold pid={} ms={}", pid.as_u64(), start / 1_000_000);
         loop {
             let (s1, n1) = crate::time::get_monotonic_time_ns();
-            if s1 * 1_000_000_000 + n1 - start >= 60_000_000 {
+            if s1 * 1_000_000_000 + n1 - start >= 50_000_000 {
+                break;
+            }
+            if with_process_manager(|pm| pm.get_process(pid).is_none()).unwrap_or(true) {
                 break;
             }
             core::hint::spin_loop();
