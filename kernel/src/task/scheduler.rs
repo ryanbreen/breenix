@@ -571,6 +571,9 @@ type SchedulerGuard = spin::MutexGuard<'static, Option<Scheduler>>;
 fn lock_scheduler() -> SchedulerGuard {
     #[cfg(target_arch = "x86_64")]
     let probe = crate::stall_probe::sched_wait_begin();
+    #[cfg(target_arch = "x86_64")]
+    let guard = crate::stall_probe::spin_acquire(1, crate::stall_probe::sched_holder, || SCHEDULER.try_lock());
+    #[cfg(not(target_arch = "x86_64"))]
     let guard = SCHEDULER.lock();
     #[cfg(target_arch = "x86_64")]
     crate::stall_probe::sched_acquired(probe);

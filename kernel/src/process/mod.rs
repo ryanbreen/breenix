@@ -430,7 +430,7 @@ pub fn manager() -> ProcessManagerGuard {
             crate::per_cpu::preempt_disable();
         }
         let probe = crate::stall_probe::pm_wait_begin();
-        let guard = PROCESS_MANAGER.lock();
+        let guard = crate::stall_probe::spin_acquire(2, crate::stall_probe::pm_holder, || PROCESS_MANAGER.try_lock());
         crate::stall_probe::pm_acquired(probe);
         note_process_manager_lock_acquired();
         ProcessManagerGuard {
@@ -512,7 +512,7 @@ where
     note_blocking_process_manager_acquisition();
     x86_64::instructions::interrupts::without_interrupts(|| {
         let probe = crate::stall_probe::pm_wait_begin();
-        let mut manager_lock = PROCESS_MANAGER.lock();
+        let mut manager_lock = crate::stall_probe::spin_acquire(2, crate::stall_probe::pm_holder, || PROCESS_MANAGER.try_lock());
         crate::stall_probe::pm_acquired(probe);
         note_process_manager_lock_acquired();
         let result = manager_lock.as_mut().map(|manager| {
