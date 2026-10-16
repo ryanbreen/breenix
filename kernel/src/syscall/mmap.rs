@@ -236,12 +236,13 @@ pub fn sys_mmap(
             end_addr
         );
 
-        let page_table = match process.page_table.as_mut() {
-            Some(pt) => pt,
-            None => {
-                log::error!("sys_mmap: No page table for process!");
-                return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
-            }
+        if process.page_table.is_none() {
+            log::error!("sys_mmap: No page table for process!");
+            super::memory_common::release_placement(process, start_addr, end_addr);
+            return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
+        }
+        let Some(page_table) = process.page_table.as_mut() else {
+            return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
         };
 
         let root = page_table.level_4_frame().start_address().as_u64();

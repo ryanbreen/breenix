@@ -123,10 +123,6 @@ pub fn cleanup_mapped_pages(
     }
 }
 
-/// Placements `place_below_hint` handed out that are not published yet, kept
-/// per address space.
-const PENDING_PLACEMENTS: usize = 32;
-
 /// The highest page-aligned range of `length` bytes in the mmap region that no
 /// VMA overlaps, as Linux's top-down allocator places mappings. A range munmap
 /// freed is used again, so a process that maps and unmaps over and over neither
@@ -139,7 +135,9 @@ const PENDING_PLACEMENTS: usize = 32;
 /// its VMA (to allocate frames). The range stays in `mmap_pending` until
 /// `clear_for_mapping` publishes it or `release_placement` gives it back, and
 /// no other placement takes it meanwhile, so two threads mapping at once never
-/// pick the same gap.
+/// pick the same gap. Every caller does one or the other on every path, so the
+/// list holds only placements in flight, and none is ever dropped to make room:
+/// a dropped placement still being mapped could be handed out again.
 pub fn place_below_hint(process: &mut crate::process::Process, length: u64) -> Option<u64> {
     use crate::memory::vma::{MMAP_REGION_END, MMAP_REGION_START};
     let mut taken: alloc::vec::Vec<(u64, u64)> = alloc::vec::Vec::new();
@@ -165,9 +163,7 @@ pub fn place_below_hint(process: &mut crate::process::Process, length: u64) -> O
         if let Some(candidate) = top.checked_sub(length).map(round_down_to_page) {
             if candidate >= end.max(MMAP_REGION_START) {
                 process.mmap_hint = process.mmap_hint.min(candidate);
-                if process.mmap_pending.len() == PENDING_PLACEMENTS {
-                    process.mmap_pending.remove(0);
-                }
+                // Room was reserved above.
                 process.mmap_pending.push((candidate, candidate + length));
                 return Some(candidate);
             }

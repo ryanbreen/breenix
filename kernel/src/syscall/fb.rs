@@ -660,6 +660,17 @@ pub fn sys_get_mouse_pos(_out_ptr: u64) -> SyscallResult {
     SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
 }
 
+/// Give back the placement `fbmmap` took for `[start, end)`, for a mapping it will not make.
+fn give_back_placement(thread_id: u64, start: u64, end: u64) {
+    let mut guard = crate::process::manager_for_address_space(thread_id);
+    if let Some((_, process)) = guard
+        .as_mut()
+        .and_then(|m| m.find_address_space_by_thread_mut(thread_id))
+    {
+        crate::syscall::memory_common::release_placement(process, start, end);
+    }
+}
+
 /// sys_fbmmap - Map a framebuffer buffer into the calling process's address space
 ///
 /// Allocates physical frames, maps them into the process as a compact buffer at
@@ -842,6 +853,7 @@ fn fbmmap(width_out: u64) -> SyscallResult {
                     for f in &frames {
                         crate::memory::frame_allocator::deallocate_frame(*f);
                     }
+                    give_back_placement(current_thread_id, start_addr, end_addr);
                     return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
                 }
             };
@@ -884,20 +896,22 @@ fn fbmmap(width_out: u64) -> SyscallResult {
         }
     };
 
-    let page_table = match process.page_table.as_mut() {
-        Some(pt) => pt,
-        None => {
-            for f in &frames {
-                crate::memory::frame_allocator::deallocate_frame(*f);
-            }
-            return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
+    if process.page_table.is_none() {
+        for f in &frames {
+            crate::memory::frame_allocator::deallocate_frame(*f);
         }
+        crate::syscall::memory_common::release_placement(process, start_addr, end_addr);
+        return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
+    }
+    let Some(page_table) = process.page_table.as_mut() else {
+        return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
     };
 
     let prot = Protection::from_bits_truncate(3);
     let page_flags = prot_to_page_flags(prot);
     let mut mapped_pages = alloc::vec::Vec::new();
     let mut current_page = start_page;
+    let mut mapped_all = true;
 
     for frame in &frames {
         if let Err(_e) = page_table.map_page(current_page, *frame, page_flags) {
@@ -906,7 +920,8 @@ fn fbmmap(width_out: u64) -> SyscallResult {
             for f in frames.iter().skip(mapped_pages.len()) {
                 crate::memory::frame_allocator::deallocate_frame(*f);
             }
-            return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
+            mapped_all = false;
+            break;
         }
 
         flush_new_mapping(current_page.start_address());
@@ -916,6 +931,11 @@ fn fbmmap(width_out: u64) -> SyscallResult {
             break;
         }
         current_page += 1;
+    }
+    // Published below, or refused: the placement is no longer waiting either way.
+    crate::syscall::memory_common::release_placement(process, start_addr, end_addr);
+    if !mapped_all {
+        return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
     }
 
     // MAP_SHARED | MAP_ANONYMOUS, as the window and texture buffers above are:
