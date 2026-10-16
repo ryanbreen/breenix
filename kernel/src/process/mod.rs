@@ -710,6 +710,7 @@ where
 /// PROCESS_MANAGER through the blocking `with_process_manager`. `spin::Mutex`
 /// is not reentrant, so the CPU waits on a lock it already owns. The mask makes
 /// this accessor differ from `manager()` only in whether it blocks.
+#[track_caller]
 pub fn try_manager() -> Option<TryProcessManagerGuard> {
     #[cfg(target_arch = "aarch64")]
     {
@@ -749,6 +750,7 @@ pub fn try_manager() -> Option<TryProcessManagerGuard> {
             }
             return None;
         };
+        crate::stall_probe::pm_site(core::panic::Location::caller());
         note_process_manager_lock_acquired();
         Some(TryProcessManagerGuard {
             guard: core::mem::ManuallyDrop::new(guard),

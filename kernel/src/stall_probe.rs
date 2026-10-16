@@ -61,6 +61,10 @@ static FORCE_NMI: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MA
 const WINS: usize = 64;
 static WIN_NEXT: AtomicU64 = AtomicU64::new(0);
 static WIN: [[AtomicU64; 5]; WINS] = [const { [const { AtomicU64::new(0) }; 5] }; WINS];
+/// The PROCESS_MANAGER acquisition site a forced window interrupted.
+static WIN_SITE: [AtomicU64; WINS] = [const { AtomicU64::new(0) }; WINS];
+static LAST_PM_SITE: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+static LAST_PM_TSC: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 /// Windows seen, and how many interrupted each of: user, PM held, sched held, idle.
 static WIN_COUNT: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
 static WIN_SLOT: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
@@ -307,6 +311,8 @@ pub fn nmi_hook(cpu: usize, rip: u64, cs: u64, rflags: u64, rsp: u64) {
     WIN[k][2].store(cpu as u64 | flags << 8, Ordering::Relaxed);
     WIN[k][3].store(tid, Ordering::Relaxed);
     WIN[k][4].store(rip, Ordering::Relaxed);
+    let recent = rdtsc().saturating_sub(LAST_PM_TSC[cpu].load(Ordering::Relaxed)) < 200 * cycles_per_us();
+    WIN_SITE[k].store(if flags & 4 != 0 && recent { LAST_PM_SITE[cpu].load(Ordering::Relaxed) } else { 0 }, Ordering::Relaxed);
     WIN_COUNT[0].fetch_add(1, Ordering::Relaxed);
     for (bit, slot) in [(1u64, 1usize), (4, 2), (8, 3), (16, 4)] {
         if flags & bit != 0 {
@@ -474,7 +480,17 @@ pub fn pm_acquired(begin: (u64, u64)) {
 }
 
 pub fn pm_acquired_at(begin: (u64, u64), site: &'static core::panic::Location<'static>) {
+    pm_site(site);
     note_wait(2, begin.0, begin.1, site as *const _ as u64);
+}
+
+/// The site of the PROCESS_MANAGER acquisition this CPU just made.
+pub fn pm_site(site: &'static core::panic::Location<'static>) {
+    let cpu = cpu_now();
+    if cpu < MAX_CPUS {
+        LAST_PM_SITE[cpu].store(site as *const _ as u64, Ordering::Relaxed);
+        LAST_PM_TSC[cpu].store(rdtsc(), Ordering::Relaxed);
+    }
 }
 
 /// A PROCESS_MANAGER wait's call site, printed as file:line.
@@ -714,6 +730,20 @@ fn summary() {
         }
     }
     log::info!("LONGWAITS (end_ms,len_us,cpu|kind<<8|holder<<16,site)={:?}", &long[..n]);
+    let mut wins = [(0u64, 0u64, 0u64, 0u64, Site(0)); WINS];
+    let mut w = 0;
+    for k in 0..WINS {
+        let start = WIN[k][0].load(Ordering::Relaxed);
+        if start == 0 {
+            continue;
+        }
+        let tid = WIN[k][3].load(Ordering::Relaxed);
+        let pid = crate::task::scheduler::thread_signals(tid).map_or(u64::MAX, |(row, _)| row);
+        wins[w] = (start / 1_000_000, WIN[k][2].load(Ordering::Relaxed), tid, pid, Site(WIN_SITE[k].load(Ordering::Relaxed)));
+        w += 1;
+    }
+    wins[..w].sort_unstable_by_key(|entry| entry.0);
+    log::info!("PMWINS (start_ms,cpu|flags<<8,tid,pid,site)={:?}", &wins[..w]);
     let mut kinds = [(0u64, 0u64); 5];
     for w in WAIT.iter() {
         let (e, len, kind) = (w[0].load(Ordering::Relaxed), w[1].load(Ordering::Relaxed), (w[2].load(Ordering::Relaxed) >> 8) & 0xff);
