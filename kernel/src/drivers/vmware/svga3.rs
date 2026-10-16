@@ -25,6 +25,11 @@
 //!   3. UPDATE_GB_IMAGE — tell GPU that guest memory changed
 //!   4. UPDATE_GB_SCREENTARGET — present dirty region to display
 //!
+//! Readback: SURFACE_COPY of the bound surface into a readback surface on the host, then
+//! READBACK_GB_SURFACE of that copy into its own MOB (`compositor_readback`). The device
+//! reads an updated region from the MOB lazily; a SURFACE_COPY of it in the same command
+//! buffer makes it read the region before the buffer's fence (`compositor_present`).
+//!
 //! Reference: Linux kernel drivers/gpu/drm/vmwgfx/ and device_include/svga_reg.h
 
 extern crate alloc;
@@ -119,6 +124,10 @@ const SVGA_3D_CMD_DEFINE_GB_SCREENTARGET: u32 = 1124;
 const SVGA_3D_CMD_BIND_GB_SCREENTARGET: u32 = 1126;
 /// Present a dirty region of the Screen Target to the display.
 const SVGA_3D_CMD_UPDATE_GB_SCREENTARGET: u32 = 1127;
+/// Copy boxes of one surface into another, on the host.
+const SVGA_3D_CMD_SURFACE_COPY: u32 = 1042;
+/// Write a guest-backed surface's host contents into its MOB.
+const SVGA_3D_CMD_READBACK_GB_SURFACE: u32 = 1104;
 
 // ─── OTable types ───────────────────────────────────────────────────────────
 
@@ -234,6 +243,11 @@ const COMPOSITOR_STID: u32 = 0;
 
 /// The surface the wrong-resource fault binds the screen target to, over the same MOB.
 const ALT_SURFACE_ID: u32 = 2;
+/// The surface the readback copies the screen target's surface into, on its own MOB.
+const READBACK_SURFACE_ID: u32 = 3;
+const READBACK_MOB_ID: u32 = 2;
+/// The readback surface's MOB.
+static READBACK_BUF_VIRT: AtomicU64 = AtomicU64::new(0);
 /// The screen target's size.
 static STDU_W: AtomicU32 = AtomicU32::new(0);
 static STDU_H: AtomicU32 = AtomicU32::new(0);
@@ -497,6 +511,28 @@ impl CmdEncoder {
         self.push_i32((y + h) as i32);
     }
 
+    /// SURFACE_COPY: copy the box (`x`, `y`, `w`, `h`) of `src` to the same place in `dst`,
+    /// on the host.
+    fn surface_copy(&mut self, src: u32, dst: u32, x: u32, y: u32, w: u32, h: u32) {
+        // Body: src image(12) + dest image(12) + one copy box(36) = 60
+        self.cmd_header(SVGA_3D_CMD_SURFACE_COPY, 60);
+        for sid in [src, dst] {
+            self.push_u32(sid);
+            self.push_u32(0); // face
+            self.push_u32(0); // mipmap
+        }
+        // SVGA3dCopyBox: x, y, z, w, h, d, srcx, srcy, srcz
+        for v in [x, y, 0, w, h, 1, x, y, 0] {
+            self.push_u32(v);
+        }
+    }
+
+    /// READBACK_GB_SURFACE: write the host's contents of surface `sid` into its MOB.
+    fn readback_gb_surface(&mut self, sid: u32) {
+        self.cmd_header(SVGA_3D_CMD_READBACK_GB_SURFACE, 4);
+        self.push_u32(sid);
+    }
+
     fn finish(self) -> Vec<u8> {
         self.buf
     }
@@ -730,6 +766,39 @@ fn define_surface(sid: u32, flags: u32, width: u32, height: u32) -> Vec<u8> {
     enc.finish()
 }
 
+/// Define MOB `mob` over zeroed contiguous pages under a two-level page table (PT64_2), and
+/// screen-target surface `sid` of `width` x `height` bound to it. Returns the pages' address.
+fn backed_surface(mob: u32, sid: u32, width: u32, height: u32) -> Result<u64, &'static str> {
+    let bytes = width as usize * height as usize * 4;
+    let pages = bytes.div_ceil(PAGE_SIZE);
+    let tables = pages.div_ceil(PAGE_SIZE / 8);
+    let (data_virt, _, _) = alloc_dma_pages(pages)?;
+    let (dir_virt, dir_phys, _) = alloc_dma_pages(1)?;
+    let (pt_virt, _, _) = alloc_dma_pages(tables)?;
+    unsafe {
+        for i in 0..pages {
+            let ppn = device_address(data_virt + (i * PAGE_SIZE) as u64) >> 12;
+            core::ptr::write_volatile((pt_virt as *mut u64).add(i), ppn);
+        }
+        for t in 0..tables {
+            let ppn = device_address(pt_virt + (t * PAGE_SIZE) as u64) >> 12;
+            core::ptr::write_volatile((dir_virt as *mut u64).add(t), ppn);
+        }
+        cache_clean_range(pt_virt, tables * PAGE_SIZE);
+        cache_clean_range(dir_virt, PAGE_SIZE);
+        cache_clean_range(data_virt, bytes);
+    }
+    let mut enc = CmdEncoder::new();
+    enc.define_gb_mob64(mob, SVGA3D_MOBFMT_PT64_2, dir_phys >> 12, bytes as u32);
+    submit_commands(&enc.finish())?;
+    // Each object in its own command buffer, so an error names its command.
+    submit_commands(&define_surface(sid, SVGA3D_SURFACE_SCREENTARGET, width, height))?;
+    let mut enc = CmdEncoder::new();
+    enc.bind_gb_surface(sid, mob);
+    submit_commands(&enc.finish())?;
+    Ok(data_virt)
+}
+
 /// Initialize the STDU pipeline at `width` x `height`: start context 0, register the
 /// OTables, define a MOB for the compositor's backing, a screen-target surface bound to it,
 /// and primary screen target `COMPOSITOR_STID` bound to the surface. After this the device
@@ -761,40 +830,9 @@ pub fn init_stdu(width: u32, height: u32) -> Result<(), &'static str> {
     }
     submit_commands(&enc.finish())?;
 
-    // The backing: contiguous data pages under a two-level page table (PT64_2).
+    let data_virt = backed_surface(COMPOSITOR_MOB_ID, COMPOSITOR_SURFACE_ID, width, height)?;
     let bytes = width as usize * height as usize * 4;
-    let pages = bytes.div_ceil(PAGE_SIZE);
-    let tables = pages.div_ceil(PAGE_SIZE / 8);
-    let (data_virt, _, _) = alloc_dma_pages(pages)?;
-    let (dir_virt, dir_phys, _) = alloc_dma_pages(1)?;
-    let (pt_virt, _, _) = alloc_dma_pages(tables)?;
-    unsafe {
-        for i in 0..pages {
-            let ppn = device_address(data_virt + (i * PAGE_SIZE) as u64) >> 12;
-            core::ptr::write_volatile((pt_virt as *mut u64).add(i), ppn);
-        }
-        for t in 0..tables {
-            let ppn = device_address(pt_virt + (t * PAGE_SIZE) as u64) >> 12;
-            core::ptr::write_volatile((dir_virt as *mut u64).add(t), ppn);
-        }
-        cache_clean_range(pt_virt, tables * PAGE_SIZE);
-        cache_clean_range(dir_virt, PAGE_SIZE);
-        cache_clean_range(data_virt, bytes);
-    }
-    let mut enc = CmdEncoder::new();
-    enc.define_gb_mob64(COMPOSITOR_MOB_ID, SVGA3D_MOBFMT_PT64_2, dir_phys >> 12, bytes as u32);
-    submit_commands(&enc.finish())?;
-
-    // Each object in its own command buffer, so an error names its command.
-    submit_commands(&define_surface(
-        COMPOSITOR_SURFACE_ID,
-        SVGA3D_SURFACE_SCREENTARGET,
-        width,
-        height,
-    ))?;
-    let mut enc = CmdEncoder::new();
-    enc.bind_gb_surface(COMPOSITOR_SURFACE_ID, COMPOSITOR_MOB_ID);
-    submit_commands(&enc.finish())?;
+    let readback_virt = backed_surface(READBACK_MOB_ID, READBACK_SURFACE_ID, width, height)?;
     let mut enc = CmdEncoder::new();
     enc.define_gb_screentarget(COMPOSITOR_STID, width, height, SVGA_STFLAG_PRIMARY);
     submit_commands(&enc.finish())?;
@@ -804,6 +842,7 @@ pub fn init_stdu(width: u32, height: u32) -> Result<(), &'static str> {
 
     COMPOSITOR_BUF_VIRT.store(data_virt, Ordering::Release);
     COMPOSITOR_BUF_SIZE.store(bytes as u64, Ordering::Release);
+    READBACK_BUF_VIRT.store(readback_virt, Ordering::Release);
     STDU_W.store(width, Ordering::Release);
     STDU_H.store(height, Ordering::Release);
     BOUND_SURFACE.store(COMPOSITOR_SURFACE_ID, Ordering::Release);
@@ -946,6 +985,16 @@ pub fn last_fence() -> u64 {
     NEXT_FENCE.load(Ordering::Acquire).wrapping_sub(1) as u64
 }
 
+/// A new fence for the command stream; never 0.
+fn next_fence() -> u32 {
+    let f = NEXT_FENCE.fetch_add(1, Ordering::AcqRel);
+    if f == 0 {
+        NEXT_FENCE.fetch_add(1, Ordering::AcqRel)
+    } else {
+        f
+    }
+}
+
 /// Wait for `SVGA_REG_FENCE` to pass `goal`.
 fn wait_fence(goal: u32) -> bool {
     for _ in 0..20_000_000u32 {
@@ -957,12 +1006,14 @@ fn wait_fence(goal: u32) -> bool {
     false
 }
 
-/// Present `rects` of the backing: per rectangle `UPDATE_GB_IMAGE`,
-/// `UPDATE_GB_SCREENTARGET` and `SVGA_CMD_FENCE`, then wait for `SVGA_REG_FENCE` to reach
-/// every fence. `extra` is updated too, unfenced and unrecorded. `skip` leaves out the first
-/// rectangle, `wrong` binds the screen target to another surface over the same MOB, and
-/// `stale` gives the first rectangle that fence instead of a new one (the planted faults of
-/// BreenGL §20.3). Returns the surface bound to the screen target and one completion per
+/// Present `rects` of the backing: per rectangle `UPDATE_GB_IMAGE`, a `SURFACE_COPY` of the
+/// rectangle into the readback surface, `UPDATE_GB_SCREENTARGET` and `SVGA_CMD_FENCE`, then
+/// wait for `SVGA_REG_FENCE` to reach every fence. The device reads an updated rectangle from
+/// the backing lazily, possibly after its fence has passed; the copy makes it take the pixels
+/// from the backing before the fence, so a fenced rectangle is the device's. `extra` is
+/// updated too, unfenced and unrecorded. `skip` leaves out the first rectangle, `wrong`
+/// binds the screen target to another surface over the same MOB, and `stale` gives the first
+/// rectangle that fence instead of a new one (the planted faults of BreenGL §20.3). Returns the surface bound to the screen target and one completion per
 /// fenced rectangle.
 pub fn compositor_present(
     rects: &[breengel_abi::Rect],
@@ -999,18 +1050,12 @@ pub fn compositor_present(
         let end = (y + rh - 1) as usize * row + (x + rw) as usize * 4;
         unsafe { cache_clean_range(backing[start..end].as_ptr() as u64, end - start) };
         enc.update_gb_image(COMPOSITOR_SURFACE_ID, x, y, rw, rh);
+        enc.surface_copy(COMPOSITOR_SURFACE_ID, READBACK_SURFACE_ID, x, y, rw, rh);
         enc.update_gb_screentarget(COMPOSITOR_STID, x, y, rw, rh);
         if i < rects.len() {
             let fence = match stale {
                 Some(f) if i == 0 => f as u32,
-                _ => {
-                    let f = NEXT_FENCE.fetch_add(1, Ordering::AcqRel);
-                    if f == 0 {
-                        NEXT_FENCE.fetch_add(1, Ordering::AcqRel)
-                    } else {
-                        f
-                    }
-                }
+                _ => next_fence(),
             };
             enc.push_u32(SVGA_CMD_FENCE);
             enc.push_u32(fence);
@@ -1032,6 +1077,49 @@ pub fn compositor_present(
         });
     }
     Ok((bound as u64, done))
+}
+
+/// Read the device's copy of the surface bound to the screen target into `out` (rows of
+/// `width * 4` bytes, B, G, R, X). The device writes nothing back for a surface whose host
+/// contents came only from guest uploads, so the host first copies the bound surface into the
+/// readback surface (`SURFACE_COPY`), and `READBACK_GB_SURFACE` writes that copy into the
+/// readback surface's own MOB, fenced. The MOB is cleared to X 0 before, and every published
+/// pixel has X 0xFF, so a pixel the device did not write is refused. Returns the readback's
+/// answered completion.
+pub fn compositor_readback(out: &mut [u8]) -> Result<breengel_abi::Completion, &'static str> {
+    if !is_stdu_ready() {
+        return Err("STDU not ready");
+    }
+    let (w, h) = (STDU_W.load(Ordering::Acquire), STDU_H.load(Ordering::Acquire));
+    let len = w as usize * h as usize * 4;
+    if out.len() < len {
+        return Err("readback destination too small");
+    }
+    let virt = READBACK_BUF_VIRT.load(Ordering::Acquire);
+    let copy = unsafe { core::slice::from_raw_parts_mut(virt as *mut u8, len) };
+    copy.fill(0);
+    unsafe { cache_clean_range(virt, len) };
+    let fence = next_fence();
+    let mut enc = CmdEncoder::new();
+    enc.surface_copy(BOUND_SURFACE.load(Ordering::Acquire), READBACK_SURFACE_ID, 0, 0, w, h);
+    enc.readback_gb_surface(READBACK_SURFACE_ID);
+    enc.push_u32(SVGA_CMD_FENCE);
+    enc.push_u32(fence);
+    unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)) };
+    submit_commands(&enc.finish())?;
+    if !wait_fence(fence) {
+        return Err("SVGA_REG_FENCE did not reach the readback's fence");
+    }
+    unsafe { cache_invalidate_range(virt, len) };
+    if copy.chunks_exact(4).any(|px| px[3] != 0xFF) {
+        return Err("readback left pixels the device did not write");
+    }
+    out[..len].copy_from_slice(copy);
+    Ok(breengel_abi::Completion {
+        fence: fence as u64,
+        kind: SVGA_3D_CMD_READBACK_GB_SURFACE,
+        status: CbStatus::Completed as u32,
+    })
 }
 
 /// Present a dirty rectangle from the compositor buffer (VRAM) to the display.
