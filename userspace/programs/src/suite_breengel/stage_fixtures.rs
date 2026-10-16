@@ -112,9 +112,29 @@ pub fn check_capture(name:&str,capture:impl FnOnce(&FrameBuf)->Result<(),String>
             let sizes=[40,37,22,21,9,31,7,23,19,12,39,38,27,32,15,21];
             let ids:Vec<String>=sizes.iter().enumerate().flat_map(|(i,n)|(0..*n).map(move|k|format!("cat{i}/case{k}"))).collect();
             let tiles:Vec<_>=ids.iter().map(|id|Tile{id,stamp:Stamp::Pending,key:0,thumbnail:None}).collect();
-            let wall=stage::Wall::for_tiles(&tiles);
+            let wall=stage::Wall::for_tiles(&tiles).map_err(|e|format!("wall: {e:?}"))?;
             if tiles.len()!=393 || wall.scale!=1 || wall.columns!=20 {return Err("full wall size or scale changed".into());}
             for i in 0..393 {let (x,y)=wall.origin(wall.slot(&tiles,i));if x+38>816 || y+24>700{return Err(format!("tile {i} is outside wall"));}}
+            // Exercise the reported growth: two cases in existing groups and 13 in a new one.
+            let mut larger = ids.clone();
+            larger.insert(1,"cat0/extra0".into()); larger.insert(2,"cat0/extra1".into());
+            larger.extend((0..13).map(|i|format!("cat16/extra{i}")));
+            let bigger:Vec<_>=larger.iter().map(|id|Tile{id,stamp:Stamp::Pending,key:0,thumbnail:None}).collect();
+            let mut groups=Vec::new();let mut first=0;
+            for i in 1..=bigger.len() {
+                if i==bigger.len() || bigger[i].id.split('/').next()!=bigger[first].id.split('/').next() {
+                    groups.push(Milestone{id:bigger[first].id.split('/').next().unwrap(),first,end:i}); first=i;
+                }
+            }
+            let mut grown=run(&bigger,&groups);grown.selected=0;
+            render(&mut fb,&grown)?;
+            let packed=stage::Wall::for_tiles(&bigger).map_err(|e|format!("grown wall: {e:?}"))?;
+            for i in 0..408 {let (x,y)=packed.origin(packed.slot(&bigger,i));rect(&fb,x,y,38,1,(48,67,96))?;if y+24>700{return Err("grown wall overflow".into());}}
+            // A single category also supports more than the retired 420-case cap.
+            let many_ids:Vec<_>=(0..430).map(|i|format!("one/{i}")).collect();
+            let many:Vec<_>=many_ids.iter().map(|id|Tile{id,stamp:Stamp::Pending,key:0,thumbnail:None}).collect();
+            let one=[Milestone{id:"one",first:0,end:430}];let mut big=run(&many,&one);big.selected=0;
+            render(&mut fb,&big)?;
             Ok(())
         }
         "tile-thumbnail" => {
@@ -148,6 +168,15 @@ pub fn check_capture(name:&str,capture:impl FnOnce(&FrameBuf)->Result<(),String>
                 expect_pixel(&fb,1128+x,168+y,colour)?;
             }}
             text(&fb,840,312,"1 pixels differ; bound 0",1,(18,29,44))?;
+            let points=[stage::InputPoint{x:10,y:20,pressed:false},stage::InputPoint{x:30,y:40,pressed:true}];
+            model.input=Some((&points,"button OK: Clicked"));
+            render(&mut fb,&model)?;
+            text(&fb,848,432,"INPUT / pointer trail and handler result",1,(18,29,44))?;
+            text(&fb,848,448,"button OK: Clicked",1,(18,29,44))?;
+            rect(&fb,862,514,5,5,(255,255,255))?;rect(&fb,1214,594,5,5,(26,112,77))?;
+            expect_pixel(&fb,1040,556,(64,160,224))?;
+            text(&fb,840,312,"1 pixels differ; bound 0",1,(18,29,44))?;
+            model.input=None;
             model.spotlight=Spotlight::Actual(Image{pixels:&actual,width:2,height:2});
             render(&mut fb,&model)?;
             text(&fb,840,152,"actual (reference not supplied)",1,(18,29,44))?;
@@ -191,7 +220,15 @@ pub fn check_capture(name:&str,capture:impl FnOnce(&FrameBuf)->Result<(),String>
             expect_pixel(&fb,1040,432,(64,160,224))?;
             model.spotlight=Spotlight::Input{points:&[],hit:"checkbox: Space => Toggled(true)"};
             render(&mut fb,&model)?;
-            text(&fb,848,360,"Keyboard input (no pointer)",2,(18,29,44))?;
+            text(&fb,848,360,"Events (no pointer)",2,(18,29,44))?;
+            text(&fb,848,184,"INPUT / events",2,(18,29,44))?;
+            rect(&fb,848,568,400,7,(18,29,44))?;
+            // Whole words move to the next line; the fifth line carries an ellipsis.
+            model.spotlight=Spotlight::Input{points:&[],hit:"None Modifiers None Modifiers None Modifiers None Modifiers None Modifiers None Modifiers None Modifiers None Modifiers None Modifiers None Modifiers None Modifiers None Modifiers"};
+            render(&mut fb,&model)?;
+            text(&fb,848,216,"None Modifiers None Modifiers",2,(18,29,44))?;
+            text(&fb,848,234,"None Modifiers None Modifiers",2,(18,29,44))?;
+            text(&fb,848,288,"None Modifiers None Modifiers...",2,(18,29,44))?;
             Ok(())
         }
         "milestone-ribbon" => {

@@ -56,8 +56,9 @@ def verdict(manifest, records_log, logs, only=None):
     prefix = f"SUITE {suite} "
     name = r"([a-z0-9]+(?:-[a-z0-9]+)*/[a-z0-9]+(?:-[a-z0-9]+)*)"
     picture = r"(?: sha256=[0-9a-f]{64})?"
+    pace = r"(?: pace_ms=([1-9][0-9]{0,9}))?" if suite == "breengel" else ""
     shapes = {
-        "START": re.compile(rf"^SUITE {suite} START cases=(\d+){suffix}$"),
+        "START": re.compile(rf"^SUITE {suite} START cases=(\d+){suffix}{pace}$"),
         "PASS": re.compile(rf"^SUITE {suite} CASE {name} PASS ms=\d+{picture}$"),
         "FAIL": re.compile(rf"^SUITE {suite} CASE {name} FAIL ms=\d+{picture} msg=\S.*$"),
         "SKIP": re.compile(rf"^SUITE {suite} CASE {name} SKIP msg=\S.*$"),
@@ -100,6 +101,8 @@ def verdict(manifest, records_log, logs, only=None):
     kind, match, line = records[0]
     if kind != "START" or [r[0] for r in records].count("START") != 1:
         return False, "the records do not begin with exactly one START line"
+    if suite == "breengel" and match.group(2) is not None and int(match.group(2)) > 4294967295:
+        return False, "pace_ms exceeds unsigned 32-bit milliseconds"
     if int(match.group(1)) != len(cases):
         return False, f"{line} but the manifest lists {len(cases)} cases"
 

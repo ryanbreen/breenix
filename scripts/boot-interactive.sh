@@ -110,6 +110,8 @@ if [ -n "$PACE" ]; then
     [ "$MODE" = suite ] && [[ "$PACE" =~ ^[0-9]+$ ]] && [ "${#PACE}" -le 10 ] && [ "$PACE" -le 4294967295 ] || {
         echo "--pace needs --mode suite and milliseconds from 0 to 4294967295" >&2; exit 2;
     }
+    python3 "$ROOT/scripts/showcase-pace.py" --suite "$SUITE" --pace "$PACE" \
+        --cases "${ONLY:+1}" --gate-timeout "$GATE_TIMEOUT" --idle-exit "$IDLE_EXIT"
 fi
 case "$FBCONSOLE" in
     ""|log) ;;
@@ -239,6 +241,8 @@ fi
 # A one-case run is not registered: Vigil would score it as a suite boot.
 QEMU_PROFILE_ARGS=(-M virt,gic-version=3 -cpu max)
 QEMU_PROFILE=$(python3 "$ROOT/scripts/qemu-arm64.py" --print-profile "$QEMU" "${QEMU_PROFILE_ARGS[@]}")
+# A watched run is a distinct profile in Vigil's run.json.
+if [ "${PACE:-0}" -gt 0 ]; then QEMU_PROFILE="$QEMU_PROFILE-pace-${PACE}ms"; fi
 VIGIL_ID=
 # A boot with other than the default 4 processors is recorded with its count, so it never stands for main.
 VIGIL_CPUS=

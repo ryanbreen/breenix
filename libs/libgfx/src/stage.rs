@@ -57,14 +57,14 @@ pub struct InputPoint { pub x: i32, pub y: i32, pub pressed: bool }
 #[derive(Clone, Copy)]
 pub struct Wall { pub columns: usize, pub scale: usize }
 impl Wall {
-    pub fn for_tiles(tiles: &[Tile<'_>]) -> Self {
-        let groups = tiles.iter().enumerate().filter(|(i,t)| *i == 0 || category(t.id) != category(tiles[*i-1].id)).count();
-        let slots = tiles.len() + 3 * groups;
-        let scale = (1..=4).rev().find(|s| {
-            let cols = 800 / (40 * s);
-            slots.div_ceil(cols) * 26 * s <= 588
-        }).unwrap_or(1);
-        Self { columns: 800 / (40 * scale), scale }
+    pub fn for_tiles(tiles: &[Tile<'_>]) -> Result<Self, StageError> {
+        if tiles.is_empty() { return Err(StageError::Manifest); }
+        for scale in (1..=4).rev() {
+            let wall = Self { columns: 800 / (40 * scale), scale };
+            let slot = wall.slot(tiles, tiles.len() - 1);
+            if wall.origin(slot).1 + 24 * scale <= 700 { return Ok(wall); }
+        }
+        Err(StageError::Manifest)
     }
     pub fn slot(self, tiles: &[Tile<'_>], index: usize) -> usize {
         let mut slot = 0;
@@ -79,7 +79,7 @@ impl Wall {
         slot
     }
     pub fn origin(self, slot: usize) -> (usize,usize) {
-        (16 + 40*self.scale*(slot%self.columns),112 + 26*self.scale*(slot/self.columns))
+        (16 + 40*self.scale*(slot%self.columns),112 + (if self.scale == 1 { 24 } else { 26*self.scale })*(slot/self.columns))
     }
 }
 fn category(id: &str) -> &str { id.split_once('/').map_or(id, |v| v.0) }
@@ -241,7 +241,6 @@ fn validate(fb: &FrameBuf, run: &Run<'_>) -> Result<(), StageError> {
         || run.case_number > run.tiles.len()
         || run.milestones.is_empty()
         || run.milestones.len() > 64
-        || run.tiles.len() > 420
     {
         return Err(StageError::Manifest);
     }
@@ -306,8 +305,9 @@ fn validate(fb: &FrameBuf, run: &Run<'_>) -> Result<(), StageError> {
         Spotlight::Measurement { bound: Some((lo,hi)), .. } if lo>hi => return Err(StageError::Timing),
         Spotlight::Measurement { .. } | Spotlight::None => {}
     }
+    if run.input.is_some() && !matches!(run.spotlight, Spotlight::Picture { .. } | Spotlight::Actual(_)) { return Err(StageError::Image); }
     if run.input.is_some_and(|(points,hit)|points.len()>256 || hit.len()>192 || points.iter().any(|p|p.x.abs_diff(0)>1_000_000 || p.y.abs_diff(0)>1_000_000)) {return Err(StageError::Image);}
-    let wall=Wall::for_tiles(run.tiles);
+    let wall=Wall::for_tiles(run.tiles)?;
     if wall.origin(wall.slot(run.tiles,run.tiles.len()-1)).1+24*wall.scale>700 {return Err(StageError::Manifest);}
     run.boundary.notice()?;
     Ok(())
@@ -332,7 +332,7 @@ pub fn draw(fb: &mut FrameBuf, run: &Run<'_>) -> Result<(), StageError> {
     );
     text(fb, progress.bytes(), 24, 48, 1256, 1, Color::WHITE);
     text(fb, counts(run).bytes(), 24, 68, 1256, 2, Color::WHITE);
-    let wall = Wall::for_tiles(run.tiles);
+    let wall = Wall::for_tiles(run.tiles)?;
     let scale = wall.scale;
     for (i, tile) in run.tiles.iter().enumerate() {
         let slot=wall.slot(run.tiles,i);
@@ -425,8 +425,23 @@ fn thumbnail(fb: &mut FrameBuf, image: Image<'_>, left: usize, top: usize, scale
 }
 fn wrapped(fb:&mut FrameBuf,bytes:&[u8],x:usize,y:usize,width:usize,scale:usize) {
     let count=width/(6*scale);
-    for (line,chunk) in bytes.chunks(count).take(5).enumerate() {
-        text(fb,chunk,x,y+line*9*scale,width,scale,Color::WHITE);
+    if count < 3 { return; }
+    let mut rest = bytes;
+    for line in 0..5 {
+        while rest.first().is_some_and(u8::is_ascii_whitespace) { rest = &rest[1..]; }
+        if rest.is_empty() { break; }
+        if line == 4 && rest.len() > count {
+            let mut end = count - 3;
+            if let Some(space) = rest[..end].iter().rposition(u8::is_ascii_whitespace) { end = space; }
+            text(fb,&rest[..end],x,y+line*9*scale,width,scale,Color::WHITE);
+            text(fb,b"...",x+end*6*scale,y+line*9*scale,width-end*6*scale,scale,Color::WHITE);
+            break;
+        }
+        let end = if rest.len() <= count { rest.len() } else {
+            rest[..=count].iter().rposition(u8::is_ascii_whitespace).filter(|n| *n > 0).unwrap_or(count)
+        };
+        text(fb,&rest[..end],x,y+line*9*scale,width,scale,Color::WHITE);
+        rest = &rest[end..];
     }
 }
 fn draw_spotlight(fb: &mut FrameBuf, run: &Run<'_>) {
@@ -443,7 +458,7 @@ fn draw_spotlight(fb: &mut FrameBuf, run: &Run<'_>) {
     text(fb,match selected.stamp {Stamp::Pass=>b"PASS",Stamp::Fail=>b"FAIL",Stamp::NotReached=>b"NOT REACHED",_=>b"RUNNING"},848,640,400,3,stamp(selected.stamp,run.ui_time_ms));
     match run.spotlight {
         Spotlight::None => {
-            text(fb,b"Awaiting case result",848,360,400,2,DIM);
+            text(fb,if selected.stamp == Stamp::NotReached {b"Case did not run"} else {b"Awaiting case result"},848,360,400,2,DIM);
         }
         Spotlight::Measurement { name, number, unit, bound } => {
             wrapped(fb,name.as_bytes(),848,208,400,2);
@@ -458,7 +473,7 @@ fn draw_spotlight(fb: &mut FrameBuf, run: &Run<'_>) {
             wrapped(fb,label.bytes(),848,392,400,2);
         }
         Spotlight::Input { points, hit } => {
-            text(fb,b"INPUT / pointer trail",848,184,400,2,Color::WHITE);
+            text(fb,if points.is_empty(){b"INPUT / events"}else{b"INPUT / pointer trail"},848,184,400,2,Color::WHITE);
             wrapped(fb,hit.as_bytes(),848,216,400,2);
             let min_x=points.iter().map(|p|p.x).min().unwrap_or(0) as i64;
             let min_y=points.iter().map(|p|p.y).min().unwrap_or(0) as i64;
@@ -470,8 +485,8 @@ fn draw_spotlight(fb: &mut FrameBuf, run: &Run<'_>) {
                 shapes::draw_line(fb,x as i32,y as i32,xx as i32,yy as i32,BAR);
             }
             for p in points {let (x,y)=mapped(p);fill(fb,x-2,y-2,5,5,if p.pressed{PASS}else{Color::WHITE});}
-            if points.is_empty(){text(fb,b"Keyboard input (no pointer)",848,360,400,2,Color::WHITE);}
-            text(fb,b"green: pointer down / white: up",848,568,400,1,DIM);
+            if points.is_empty(){text(fb,b"Events (no pointer)",848,360,400,2,Color::WHITE);}
+            if !points.is_empty(){text(fb,b"green: pointer down / white: up",848,568,400,1,DIM);}
         }
         Spotlight::Actual(image) => {
             text(fb,b"actual (reference not supplied)",840,152,424,1,Color::WHITE);
@@ -548,7 +563,7 @@ fn draw_spotlight(fb: &mut FrameBuf, run: &Run<'_>) {
         }
     }
     if let Some((points,hit))=run.input {
-        text(fb,b"INPUT / pointer trail and handler result",848,432,400,1,Color::WHITE);
+        text(fb,if points.is_empty(){b"INPUT / events and handler result"}else{b"INPUT / pointer trail and handler result"},848,432,400,1,Color::WHITE);
         wrapped(fb,hit.as_bytes(),848,448,400,1);
         let min_x=points.iter().map(|p|p.x).min().unwrap_or(0) as i64;
         let min_y=points.iter().map(|p|p.y).min().unwrap_or(0) as i64;
@@ -560,7 +575,7 @@ fn draw_spotlight(fb: &mut FrameBuf, run: &Run<'_>) {
             shapes::draw_line(fb,x as i32,y as i32,xx as i32,yy as i32,BAR);
         }
         for p in points {let (x,y)=mapped(p);fill(fb,x-2,y-2,5,5,if p.pressed{PASS}else{Color::WHITE});}
-        if points.is_empty(){text(fb,b"Keyboard input (no pointer)",848,536,400,2,Color::WHITE);}
+        if points.is_empty(){text(fb,b"Events (no pointer)",848,536,400,2,Color::WHITE);}
     }
 }
 /// Decode precisely the observation strength the record supports.

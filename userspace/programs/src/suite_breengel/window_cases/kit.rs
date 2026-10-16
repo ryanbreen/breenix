@@ -267,13 +267,6 @@ pub(crate) fn first_diff(img: &[u8], w: u32, h: u32, with_x: bool, want: impl Fn
 /// `img` equals `want` everywhere, or a message naming the first difference.
 pub(crate) fn same(img: &[u8], w: u32, h: u32, with_x: bool, what: &str, section: &str, want: impl Fn(u32, u32) -> [u8; 4]) -> CaseResult {
     let difference=first_diff(img,w,h,with_x,&want);
-    if crate::PICTURES.load(core::sync::atomic::Ordering::Relaxed) {
-        let mut pixels=img[..w as usize*h as usize*4].to_vec();
-        let mut reference=Vec::with_capacity(pixels.len());
-        for y in 0..h {for x in 0..w {let mut p=want(x,y);p[3]=255;reference.extend_from_slice(&p);}}
-        for p in pixels.chunks_exact_mut(4){p[3]=255;}
-        *crate::LAST_JUDGED.lock().unwrap_or_else(|e|e.into_inner())=Some((w as usize,h as usize,pixels,Some(reference)));
-    }
     match difference {
         None => Ok(()),
         Some((x, y, got, expect)) => at(section, format!(

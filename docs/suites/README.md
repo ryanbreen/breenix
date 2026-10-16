@@ -75,6 +75,10 @@ SUITE <id> CASE <category>/<case> SKIP msg=<why>
 SUITE <id> DONE passed=<p> failed=<f> skipped=<s> total=<n>
 ```
 
+A paced BreenGL START appends ` pace_ms=<positive unsigned 32-bit milliseconds>`
+after any `only=` selection. It identifies a watch profile; CASE measurements and
+DONE acceptance stay the same. Other suites do not accept or apply this field.
+
 Each record is one write that starts with a newline, so it always begins its own line even
 when other output on the same serial port (the x86-64 scheduler's COM1 breadcrumbs) left a
 line unfinished; a reader takes the lines that start with `SUITE <id> ` and ignores blank

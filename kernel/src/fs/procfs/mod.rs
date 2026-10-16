@@ -670,8 +670,8 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
     match entry_type {
         ProcEntryType::ShowcasePace => {
             #[cfg(target_arch="aarch64")]
-            if !crate::platform_config::is_qemu() { return text(String::from("0\n")); }
-            let pace=crate::drivers::fw_cfg::read_string("opt/breenix/pace").unwrap_or_else(||String::from("0"));
+            if !crate::platform_config::is_qemu() { return text(String::from("\n")); }
+            let pace=crate::drivers::fw_cfg::read_string("opt/breenix/pace").unwrap_or_default();
             text(alloc::format!("{}\n",pace))
         }
         ProcEntryType::StageControl => {

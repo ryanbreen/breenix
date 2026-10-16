@@ -1229,11 +1229,14 @@ its full category id and `<P>/<N> pass` on separate lines, white on header colou
 slot remains in a row, leave it empty before starting the heading on the next row. Cases follow
 immediately; a category may continue onto the next row. No case is hidden or omitted.
 
-Choose the largest integer scale s in 1..4 for which `ceil((N + 3C)/columns) * 26s <= 588`,
-where N is the case count, C is the category count, and `columns = floor(800/(40s))`.
-The third reserved slot per category bounds the possible wrap gap. At slot k the tile origin is
-`(16 + 40s(k mod columns),112 + 26s floor(k/columns))`; its size is 38s by 24s. This enlarges
-small runs while fitting all 393 cases and all 16 category headings at scale 1.
+Choose the largest integer scale s in 1..4 whose actual packed last tile ends at or above
+y=700, with `columns = floor(800/(40s))`. Pack each two-slot heading and its cases in order,
+including the one-slot gap only when a heading would straddle a row. At slot k the origin is
+`(16 + 40s(k mod columns),112 + pitch floor(k/columns))`; its size is 38s by 24s.
+Pitch is 24 at scale 1 and 26s at larger scales. Scale 1 has 24 rows (480 slots), enough for
+393 cases, their 16 headings, and the reported expansion to 408 cases and 17 headings.
+There is no separate case-count cap or unchecked fallback: a manifest that cannot fit even
+at scale 1 is rejected before drawing. Smaller runs expand to the largest fitting scale.
 
 - The one-pixel border is green for pass, red for failure, grey for not reached and pending
   outline colour for pending. Running uses RGB (64,128+floor(127q/500),224), where
@@ -1270,8 +1273,8 @@ up by `floor(192 min(t,2b)/(2b))` pixels. The budget line is white at y=432. Bar
 An input spotlight names the exercised widget/window and its actual handler result, and plots
 its recorded pointer trail. The trail maps its min/max x and y to (864,336)..(1216,528),
 with each constant axis using an extent of one. Consecutive points are joined in timing blue;
-5x5 point markers are white when up, pass green when down. Keyboard-only input says
-`Keyboard input (no pointer)`. For an input case with a judged picture, preserve the picture
+5x5 point markers are white when up, pass green when down. Without pointer samples the heading
+says `INPUT / events`, the panel says `Events (no pointer)`, and there is no pointer legend. For an input case with a judged picture, preserve the picture
 panes and put the input evidence below them: label at (848,432), handler text at (848,448),
 trail at (864,516)..(1216,596). Input metadata is snapshotted after its handler and transported
 with a verified SHA-256, published after the timer stops. At most the first 256 pointer samples
@@ -1320,13 +1323,23 @@ When a surface check has no reference (for example a structural predicate), the 
 `actual (reference not supplied)` and shows the actual pane alone; it never constructs a matching reference.
 A malformed or changed snapshot fails the case. A case with no picture has no hash field.
 Snapshot hashing and publication run after the case timer stops. The transported picture includes its
-comparison bound; the spotlight prints that bound. The stage composes only between cases, never in a
+comparison bound; the spotlight prints that bound. Readings come from a hash-verified transport of
+the exact emitted serial VALUE lines, independently of the lossy live strip. A case with no VALUE
+shows its measured execution time; a skipped case has no fabricated zero-time reading.
+A picture takes priority over timing data, so its input overlay cannot overlap the timing plot.
+Input headings and legends describe a pointer trail only when pointer samples are present; event-only
+cases use a neutral events label. Wrapped labels keep words intact and show an ellipsis when truncated. The stage composes only between cases, never in a
 measured case window. Each result is drawn immediately after collection and verification, before
 starting another case. `opt/breenix/pace` is an optional unsigned 32-bit millisecond boot value;
 `scripts/boot-interactive.sh --mode suite --suite breengel --pace MS` supplies it through fw_cfg
 and `run.sh --parallels|--vmware --suite breengel --pace MS` supplies `/etc/breenix/pace` on its
-private boot disk. Zero or absence adds no hold. The runner sleeps only after the completed
-spotlight has been presented, outside all case timers, deadlines, UI clock and timing samples.
+private boot disk. Zero or absence adds no hold. The runner applies pace only to the `breengel` suite, even in a sequence; other suites ignore it.
+A present fw_cfg value, including zero, overrides the staged file. The ARM64 QEMU launcher rejects
+holds that reach its serial-idle or 120-second classified-progress budget, or leave less than 60 seconds in the suite deadline for
+boot, execution, rendering and the finale; use an explicit larger deadline for a longer watch.
+Paced START records carry `pace_ms=MS`, and Vigil's profile contains `pace-MSms`.
+The runner sleeps only after the completed spotlight has been presented, outside all case timers,
+case deadlines and timing samples, with its SHOW mutex released. Elapsed UI time includes the holds.
 The finale preserves the last judged picture on an all-pass run as well as the first failure
 on a failed run. A stage error fails the affected case and preserves the serial DONE record.
 
@@ -1336,6 +1349,9 @@ The stage's boundary notice is `host copy and window outside guest view` for bou
 An unknown or inconsistent backend/flags/boundary combination is an error, never a stronger observation.
 The live showcase checks arm the matching fault, require its detection, disarm it and require the clean result:
 12 `stage-lie`, 13 `stage-substitute-frame`, 14 `stage-draw-in-window`, 15 `ribbon-drop-stage`.
+Input and measurement spotlights independently detect point-13 substitution, as do picture panes;
+a changed thumbnail cannot satisfy their detection checks. Live checks also inspect the picture input
+overlay, verdict, category headings and boot ribbon, with individual pixel substitutions in each region.
 
 ## 24. Helpers and boots
 

@@ -208,7 +208,7 @@ impl Show {
         if bits & (1<<13)!=0 && !substituted.is_empty() { substituted[0]^=255; }
         let reading = self.entries[chosen].reading.as_ref();
         let fallback = reading.map_or(Spotlight::None, |v| Spotlight::Measurement {
-            name: &v.name, number: v.number, unit: &v.unit, bound: v.expect,
+            name: &v.name, number: if bits & (1<<13) != 0 { v.number ^ 1 } else { v.number }, unit: &v.unit, bound: v.expect,
         });
         let spotlight = picture.map_or(fallback, |p| {
             // The checked surface is available even when a case has no independent reference.
@@ -249,12 +249,16 @@ impl Show {
         let spotlight =
             self.entries[chosen]
                 .timing
-                .as_ref()
+                .as_ref().filter(|_| picture.is_none())
                 .map_or(spotlight, |t| Spotlight::Timing {
                     frame_us: &t.frame_us,
                     budget_us: t.budget_us,
                 });
-        let input=self.entries[chosen].input.as_ref();
+        let mut substituted_input = self.entries[chosen].input.clone();
+        if bits & (1<<13) != 0 {
+            if let Some(input) = &mut substituted_input { input.hit = "substituted handler result".into(); }
+        }
+        let input=substituted_input.as_ref();
         let has_picture=picture.is_some();
         let spotlight = if has_picture {spotlight} else {input.map_or(spotlight, |t|
             Spotlight::Input { points: &t.points, hit: &t.hit })};
@@ -313,7 +317,7 @@ impl Show {
 fn quiet(windows: &[(u64, u64)]) -> bool {
     windows.iter().all(|&(before, after)| before == after)
 }
-pub(super) fn init(suite: &Suite) {
+pub(super) fn init(suite: &Suite) -> u64 {
     let mut entries = Vec::new();
     let mut groups: Vec<(String, usize, usize)> = Vec::new();
     for c in suite.categories {
@@ -334,6 +338,7 @@ pub(super) fn init(suite: &Suite) {
         // image categories that share an effort milestone.
         groups.push((String::from(c.id), first, entries.len()));
     }
+    let pace_ms = if suite.id == "breengel" { pace_ms() } else { 0 };
     *SHOW.lock().unwrap() = Some(Show {
         suite: String::from(suite.id),
         entries,
@@ -352,8 +357,9 @@ pub(super) fn init(suite: &Suite) {
         fps: 0,
         windows: Vec::new(),
         measured: None,
-        pace_ms: pace_ms(),
+        pace_ms,
     });
+    pace_ms
 }
 pub(super) fn draw(states: &[Vec<State>]) -> Result<(), String> {
     let mut guard = SHOW.lock().unwrap();
@@ -378,6 +384,7 @@ pub(super) fn record(
     fps: Option<u32>,
     values: &[super::suite::Value],
     limit_ms: u64,
+    input: Option<super::suite::InputTrace>,
 ) -> Result<(), String> {
     let mut guard = SHOW.lock().unwrap();
     let s = guard.as_mut().ok_or("stage is not initialized")?;
@@ -387,15 +394,15 @@ pub(super) fn record(
     let e = &mut s.entries[s.current];
     e.line = String::from(line);
     e.timing = timing;
-    e.input = super::suite::collect_input()?;
+    if input.is_some() { e.input = input; }
     (e.stamp, e.key) = match outcome {
         Outcome::Pass { ms } => (Stamp::Pass, *ms),
         Outcome::Fail { ms, .. } => (Stamp::Fail, *ms),
         Outcome::Skip { .. } => (Stamp::NotReached, 0),
     };
-    e.reading = Some(values.iter().rev().find(|v|v.expect.is_some()).or_else(||values.last()).cloned()
+    e.reading = if matches!(outcome, Outcome::Skip { .. }) { None } else { Some(values.iter().rev().find(|v|v.expect.is_some()).or_else(||values.last()).cloned()
         .unwrap_or(super::suite::Value { name: String::from("Case execution time"), number: e.key as i64,
-            unit: String::from("ms"), expect: Some((0,limit_ms as i64)) }));
+            unit: String::from("ms"), expect: Some((0,limit_ms as i64)) })) };
     if let Some(f) = frame {
         verify_source(line, &f)?;
         let source = libpixcheck::Frame::new(
@@ -475,17 +482,19 @@ fn pace_ms() -> u64 {
     // the same setting on the runner's private boot disk.
     ["/proc/breenix/pace", "/etc/breenix/pace"].iter()
         .filter_map(|p| std::fs::read_to_string(p).ok())
-        .find_map(|s|s.trim().parse::<u32>().ok().filter(|v|*v>0))
+        .find_map(|s|s.trim().parse::<u32>().ok())
         .map_or(0,u64::from)
 }
 pub(super) fn completed() -> Result<(), String> {
-    let mut guard=SHOW.lock().unwrap();
-    let s=guard.as_mut().ok_or("stage missing")?;
-    check(s.measured.is_none(),"spotlight hold entered a measured window").map_err(|e|std::format!("{e:?}"))?;
-    s.draw(0)?;
-    // A wall-clock sleep belongs after the result and scanout, never in run_case,
-    // the UI clock, frame-time samples, or the case deadline.
-    if s.pace_ms>0 {time::sleep_ms(s.pace_ms).map_err(|e|e.to_string())?;}
+    let pace_ms = {
+        let mut guard=SHOW.lock().unwrap();
+        let s=guard.as_mut().ok_or("stage missing")?;
+        check(s.measured.is_none(),"spotlight hold entered a measured window").map_err(|e|std::format!("{e:?}"))?;
+        s.draw(0)?;
+        s.pace_ms
+    };
+    // Holds advance elapsed UI time but never case timers or frame-time samples.
+    if pace_ms>0 {time::sleep_ms(pace_ms).map_err(|e|e.to_string())?;}
     Ok(())
 }
 pub(super) fn finale() -> Result<(), String> {
