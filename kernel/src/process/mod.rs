@@ -429,7 +429,9 @@ pub fn manager() -> ProcessManagerGuard {
         if preempt_braked {
             crate::per_cpu::preempt_disable();
         }
+        let probe = crate::stall_probe::pm_wait_begin();
         let guard = PROCESS_MANAGER.lock();
+        crate::stall_probe::pm_acquired(probe);
         note_process_manager_lock_acquired();
         ProcessManagerGuard {
             _guard: core::mem::ManuallyDrop::new(guard),
@@ -509,7 +511,9 @@ where
     // #821, for the same reason as `manager()`.
     note_blocking_process_manager_acquisition();
     x86_64::instructions::interrupts::without_interrupts(|| {
+        let probe = crate::stall_probe::pm_wait_begin();
         let mut manager_lock = PROCESS_MANAGER.lock();
+        crate::stall_probe::pm_acquired(probe);
         note_process_manager_lock_acquired();
         let result = manager_lock.as_mut().map(|manager| {
             let result = f(manager);
@@ -745,8 +749,10 @@ pub fn poll_manager() -> Option<TryProcessManagerGuard> {
     }
     let budget = crate::time::tsc::frequency_hz() / 1_000_000 * INTERRUPT_RETURN_PM_POLL_US;
     let start = crate::time::tsc::read_tsc();
+    let probe = crate::stall_probe::pm_wait_begin();
     loop {
         if let Some(guard) = try_manager() {
+            crate::stall_probe::pm_acquired(probe);
             return Some(guard);
         }
         if crate::time::tsc::read_tsc().wrapping_sub(start) >= budget {
