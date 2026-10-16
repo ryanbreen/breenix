@@ -184,6 +184,18 @@ impl FilePicker {
             && self.error.is_none()
             && self.list_area.contains(input.mouse_x, input.mouse_y)
         {
+            // The visible more controls consume their rows before entry hit testing.
+            if self.scroll_offset > 0 && input.mouse_y < self.list_area.y + self.row_height {
+                self.scroll(1);
+                self.last_click = None;
+                return FilePickerResult::Active;
+            }
+            if self.scroll_offset + self.visible_rows < self.entries.len()
+                && input.mouse_y >= self.list_area.y + self.list_area.h - self.row_height {
+                self.scroll(-1);
+                self.last_click = None;
+                return FilePickerResult::Active;
+            }
             let row = ((input.mouse_y - self.list_area.y) / self.row_height) as usize;
             let idx = self.scroll_offset + row;
             if idx < self.entries.len() && row < self.visible_rows {
