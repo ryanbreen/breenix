@@ -480,14 +480,55 @@ fn text_fontwatch_independent() -> CaseResult {
 }
 
 fn text_fontwatch_idle() -> CaseResult {
-    missing(
-        "breengel::clock (the clock page named by BREENIX_UI_CLOCK) and the 250 ms FontWatcher",
-        "9.1, 9.3",
-    )
+    let f = FontFixture::new().cite("9.3")?;
+    let mut win = breengel::Window::new(b"idle font reload", 200, 70)
+        .map_err(|e| format!("create idle window: {e:?}")).cite("9.3")?;
+    // Drain startup notifications before the idle interval: no input is injected.
+    win.dispatch(|_| breengel::Handled::NoChange)
+        .map_err(|e| format!("drain startup: {e:?}")).cite("9.3")?;
+    f.config("display.ttf", 16, "display.ttf", 24).cite("9.3")?;
+    for (ns, expected_font, changed) in [
+        (249_999_999, "mono.ttf", false), (250_000_000, "display.ttf", true),
+    ] {
+        f.step(ns).cite("9.1")?;
+        let mut font_events = 0;
+        let mut input_events = 0;
+        win.dispatch(|delivered| {
+            if matches!(delivered.event, breengel::Event::FontChanged) { font_events += 1; }
+            else { input_events += 1; }
+            breengel::Handled::Redraw
+        }).map_err(|e| format!("idle dispatch: {e:?}")).cite("9.3")?;
+        ensure(input_events == 0 && font_events == usize::from(changed), "9.3",
+            format!("idle epoch {ns}: font events={font_events}, input events={input_events}"))?;
+        let mut font = win.take_mono_font().ok_or("idle window lost mono font").cite("9.3")?;
+        let size = win.mono_size();
+        let fb = win.framebuf();
+        fb.clear(PAPER);
+        ttf_font::draw_text(fb, &mut font, "Wi é A", 8, 40, size, Color::WHITE);
+        win.put_mono_font(Some(font));
+        let commit = win.commit(&[libbreenix::window::abi::Rect::new(0, 0, 200, 70)])
+            .map_err(|e| format!("idle commit: {e:?}")).cite("9.3")?;
+        let mut pixels = vec![0u8; 200 * 70 * 4];
+        let capture = libbreenix::window::capture(win.id(), &mut pixels, None)
+            .map_err(|e| format!("capture idle commit: {e:?}")).cite("9.3")?;
+        ensure(capture.commit_id == commit.commit_id, "9.3", "capture is not the first idle epoch commit")?;
+        let got = Guarded::bgrx(200, 70);
+        // CAPTURE supplied exactly the checked frame's extent.
+        unsafe { std::ptr::copy_nonoverlapping(pixels.as_ptr(), got.base, pixels.len()); }
+        f.assert_frame(&got, expected_font, 16.0)?;
+        libbreenix::suite::judged(&got.fb())?;
+    }
+    ensure(breengel::clock::real_clock_reads() == 0, "9.1", "idle reload read real time")
 }
 
 fn text_fontwatch_file_replaced() -> CaseResult {
     let f = FontFixture::new().cite("9.3")?;
+    use std::os::unix::fs::MetadataExt;
+    let mut original = std::fs::read(f.root.join("mono.ttf")).map_err(|e| e.to_string()).cite("9.3")?;
+    let size = std::fs::metadata(f.root.join("display.ttf")).map_err(|e| e.to_string()).cite("9.3")?.len();
+    original.resize(size as usize, 0);
+    std::fs::write(f.root.join("mono.ttf"), original).map_err(|e| e.to_string()).cite("9.3")?;
+    let before = std::fs::metadata(f.root.join("mono.ttf")).map_err(|e| e.to_string()).cite("9.3")?;
     let mut w = FontWatcher::try_new()
         .map_err(|e| format!("watcher startup: {e:?}"))
         .cite("9.3")?;
@@ -498,6 +539,13 @@ fn text_fontwatch_file_replaced() -> CaseResult {
     std::fs::copy(f.root.join("display.ttf"), f.root.join("pending.ttf"))
         .map_err(|e| format!("copy replacement: {e}"))
         .cite("9.3")?;
+    std::fs::File::options().write(true).open(f.root.join("pending.ttf"))
+        .and_then(|file| file.set_times(std::fs::FileTimes::new().set_modified(before.modified()?)))
+        .map_err(|e| format!("preserve replacement mtime: {e}")).cite("9.3")?;
+    let replacement = std::fs::metadata(f.root.join("pending.ttf")).map_err(|e| e.to_string()).cite("9.3")?;
+    ensure(before.ino() != replacement.ino() && before.len() == replacement.len()
+        && before.mtime() == replacement.mtime() && before.mtime_nsec() == replacement.mtime_nsec(),
+        "9.3", "replacement must differ only by inode in the watched metadata")?;
     std::fs::rename(f.root.join("pending.ttf"), f.root.join("mono.ttf"))
         .map_err(|e| format!("rename font: {e}"))
         .cite("9.3")?;
@@ -1842,9 +1890,9 @@ fn catalogue() -> Vec<(&'static str, fn() -> Box<dyn Icon>)> {
 }
 
 fn drawn(icon: &dyn Icon, size: i32) -> Guarded {
-    let mut g = Guarded::bgrx(160, 160);
+    let mut g = Guarded::bgrx(256, 256);
     g.reset(PAPER);
-    icon.draw(&mut g.fb(), 80, 80, size);
+    icon.draw(&mut g.fb(), 128, 128, size);
     g
 }
 
@@ -1919,13 +1967,13 @@ fn icons_settles() -> CaseResult {
                 format!("{name} kept drawing animation after reporting settled"),
             )?;
             let half = 24 + icon.bounds_overflow();
-            for y in 0..160 {
-                for x in 0..160 {
+            for y in 0..256 {
+                for x in 0..256 {
                     if !in_rect(
                         x as i64,
                         y as i64,
-                        (80 - half) as i64,
-                        (80 - half) as i64,
+                        (128 - half) as i64,
+                        (128 - half) as i64,
                         (2 * half) as i64,
                         (2 * half) as i64,
                     ) {
@@ -2058,7 +2106,7 @@ fn icons_bounded() -> CaseResult {
                 || {
                     let mut icon = make();
                     let size = 32;
-                    let mut g = Guarded::bgrx(160, 160);
+                    let mut g = Guarded::bgrx(256, 256);
                     g.reset(PAPER);
                     let mut rng = Seeded(0x1C0_5EED ^ name.len() as u64);
                     let mut held = false;
@@ -2078,24 +2126,24 @@ fn icons_bounded() -> CaseResult {
                                 rel_y: (rng.next() % 200) as f32 / 100.0 - 1.0,
                             },
                         );
-                        icon.draw(&mut g.fb(), 80, 80, size);
+                        icon.draw(&mut g.fb(), 128, 128, size);
                     }
                     if drawn_pixels(&g, PAPER) == 0 {
                         return Err(format!("{name} drew nothing in 10,000 steps"));
                     }
                     let half = size / 2 + icon.bounds_overflow();
-                    for y in 0..160i64 {
-                        for x in 0..160i64 {
+                    for y in 0..256i64 {
+                        for x in 0..256i64 {
                             if !in_rect(
                                 x,
                                 y,
-                                80 - half as i64,
-                                80 - half as i64,
+                                128 - half as i64,
+                                128 - half as i64,
                                 2 * half as i64,
                                 2 * half as i64,
                             ) && g.color(x as usize, y as usize) != PAPER
                             {
-                                return Err(format!("{name} drew pixel ({x},{y}), outside its box of half-width {half} around (80,80)"));
+                                return Err(format!("{name} drew pixel ({x},{y}), outside its box of half-width {half} around (128,128)"));
                             }
                         }
                     }
