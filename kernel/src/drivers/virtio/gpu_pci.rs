@@ -1561,11 +1561,8 @@ fn dma_cache_clean(_ptr: *const u8, _len: usize) {
 /// After the host writes to guest memory via DMA (e.g., TRANSFER_FROM_HOST),
 /// the CPU cache may hold stale data. DC CIVAC cleans and invalidates each
 /// cache line so subsequent CPU reads see the DMA-written values.
-/// Currently unused but kept for future TRANSFER_FROM_HOST operations.
-#[allow(dead_code)]
 #[cfg(target_arch = "aarch64")]
 #[inline]
-#[allow(dead_code)]
 fn dma_cache_invalidate(ptr: *const u8, len: usize) {
     const CACHE_LINE: usize = 64;
     let start = ptr as usize & !(CACHE_LINE - 1);
@@ -1580,7 +1577,6 @@ fn dma_cache_invalidate(ptr: *const u8, len: usize) {
     }
 }
 
-#[allow(dead_code)]
 #[cfg(not(target_arch = "aarch64"))]
 #[inline]
 fn dma_cache_invalidate(_ptr: *const u8, _len: usize) {
@@ -6582,4 +6578,305 @@ fn virgl_test_textured_quad() -> Result<(), &'static str> {
     crate::serial_println!("[virgl-tex] Test complete — check display for green+checkerboard");
 
     Ok(())
+}
+
+// =============================================================================
+// BreenGL compositor: the VirGL row of contract §20.2
+// =============================================================================
+//
+// The kernel compositor composes in software and presents through VirGL: each damaged
+// rectangle is uploaded into the compositor texture by a fenced TRANSFER_TO_HOST_3D, one
+// fenced SUBMIT_3D draws those rectangles from the texture onto the scanout resource
+// (nearest sampling, integer-aligned quads, no blending), and RESOURCE_FLUSH shows them.
+// The draw never touches the scanout resource's guest backing, so a fenced
+// TRANSFER_FROM_HOST_3D of that resource into the backing observes the device's copy.
+
+/// The resource the compositor last bound to scanout 0.
+static COMPOSITOR_BOUND: AtomicU32 = AtomicU32::new(RESOURCE_3D_ID);
+
+/// Poison written over the scanout backing before a readback: B8G8R8X8 reads back with X
+/// 0xFF, so a pixel whose X byte is still 0 was not written by the device.
+const READBACK_POISON: u32 = 0x00A5_5A3C;
+
+/// Whether the compositor path can run: VirGL owns the scanout and the compositor texture
+/// matches the display.
+pub fn compositor_ready() -> bool {
+    scanout_is_3d()
+        && COMPOSITE_TEX_READY.load(Ordering::Acquire)
+        && dimensions()
+            == Some((
+                COMPOSITE_TEX_W.load(Ordering::Acquire),
+                COMPOSITE_TEX_H.load(Ordering::Acquire),
+            ))
+}
+
+/// The scanout resource the compositor composes into.
+pub fn compositor_resource() -> u64 {
+    RESOURCE_3D_ID as u64
+}
+
+/// The compositor texture's guest backing: rows of `width * 4` bytes.
+pub fn compositor_texture() -> Option<&'static mut [u8]> {
+    if !COMPOSITE_TEX_READY.load(Ordering::Acquire) {
+        return None;
+    }
+    unsafe {
+        let ptr = COMPOSITE_TEX_PTR;
+        (!ptr.is_null()).then(|| core::slice::from_raw_parts_mut(ptr, COMPOSITE_TEX_LEN))
+    }
+}
+
+/// The most recent fence id handed out, for the observer's high-water mark.
+pub fn last_fence() -> u64 {
+    unsafe { (*(&raw const GPU_PCI_STATE)).as_ref().map_or(0, |s| s.next_fence_id.saturating_sub(1)) }
+}
+
+fn fenced_hdr(type_: u32, fence_id: u64, ctx_id: u32) -> VirtioGpuCtrlHdr {
+    VirtioGpuCtrlHdr {
+        type_,
+        flags: VIRTIO_GPU_FLAG_FENCE,
+        fence_id,
+        ctx_id,
+        padding: 0,
+    }
+}
+
+/// The answer to a fenced command, which must echo its fence.
+fn answered(kind: u32, fence_id: u64, resp: VirtioGpuCtrlHdr) -> Result<breengel_abi::Completion, &'static str> {
+    if resp.flags & VIRTIO_GPU_FLAG_FENCE == 0 || resp.fence_id != fence_id {
+        return Err("fenced command answered without its fence");
+    }
+    Ok(breengel_abi::Completion {
+        fence: fence_id,
+        kind,
+        status: resp.type_,
+    })
+}
+
+fn take_fence(state: &mut GpuPciDeviceState) -> u64 {
+    let f = state.next_fence_id;
+    state.next_fence_id += 1;
+    f
+}
+
+/// Upload `rects` of the compositor texture, then draw them, and `extra`, onto the scanout
+/// resource with one fenced SUBMIT_3D, and flush. `skip` leaves out the first upload, `wrong`
+/// binds the scanout to the 2D resource instead, and `stale` gives the first upload that
+/// fence instead of a new one (the planted faults of §20.3). Returns the resource bound to
+/// the scanout and the answered completions: one TRANSFER_TO_HOST_3D per uploaded rectangle,
+/// then the SUBMIT_3D.
+pub fn compositor_present(
+    rects: &[breengel_abi::Rect],
+    extra: Option<breengel_abi::Rect>,
+    skip: bool,
+    wrong: bool,
+    stale: Option<u64>,
+) -> Result<(u64, alloc::vec::Vec<breengel_abi::Completion>), &'static str> {
+    use super::virgl::{format as vfmt, pipe, swizzle, CommandBuffer};
+    let tex = compositor_texture().ok_or("compositor texture not ready")?;
+    let tex_w = COMPOSITE_TEX_W.load(Ordering::Acquire);
+    let tex_h = COMPOSITE_TEX_H.load(Ordering::Acquire);
+    let stride = tex_w as usize * 4;
+    let mut done = alloc::vec::Vec::new();
+    let mut cmdbuf = alloc::boxed::Box::new(CommandBuffer::new());
+    with_device_state(|state| {
+        for (i, r) in rects.iter().chain(extra.iter()).enumerate() {
+            if (skip && i == 0) || r.w <= 0 || r.h <= 0 {
+                continue;
+            }
+            let (x, y, w, h) = (r.x as u32, r.y as u32, r.w as u32, r.h as u32);
+            if x + w > tex_w || y + h > tex_h {
+                return Err("damage outside the compositor texture");
+            }
+            let start = y as usize * stride + x as usize * 4;
+            let end = (y + h - 1) as usize * stride + (x + w) as usize * 4;
+            dma_cache_clean(tex[start..end].as_ptr(), end - start);
+            let recorded = i < rects.len();
+            let fence_id = match stale {
+                Some(f) if i == 0 => f,
+                _ => take_fence(state),
+            };
+            let command = VirtioGpuTransferHost3d {
+                hdr: fenced_hdr(cmd::TRANSFER_TO_HOST_3D, fence_id, VIRGL_CTX_ID),
+                box_x: x,
+                box_y: y,
+                box_z: 0,
+                box_w: w,
+                box_h: h,
+                box_d: 1,
+                offset: start as u64,
+                resource_id: RESOURCE_COMPOSITE_TEX_ID,
+                level: 0,
+                stride: stride as u32,
+                layer_stride: 0,
+            };
+            let resp = send_owned_command_expect_ok(state, &command)?;
+            let c = answered(cmd::TRANSFER_TO_HOST_3D, fence_id, resp)?;
+            if recorded {
+                done.push(c);
+            }
+        }
+
+        let (dw, dh) = (state.width as f32, state.height as f32);
+        cmdbuf.create_sub_ctx(1);
+        cmdbuf.set_sub_ctx(1);
+        cmdbuf.set_tweaks(1, 1);
+        cmdbuf.set_tweaks(2, state.width);
+        cmdbuf.create_surface(10, RESOURCE_3D_ID, vfmt::B8G8R8X8_UNORM, 0, 0);
+        cmdbuf.set_framebuffer_state(0, &[10]);
+        cmdbuf.create_blend_simple(11);
+        cmdbuf.bind_object(11, super::virgl::OBJ_BLEND);
+        cmdbuf.create_dsa_default(12);
+        cmdbuf.bind_object(12, super::virgl::OBJ_DSA);
+        cmdbuf.create_rasterizer_default(13);
+        cmdbuf.bind_object(13, super::virgl::OBJ_RASTERIZER);
+        let vs = b"VERT\nDCL IN[0]\nDCL IN[1]\nDCL OUT[0], POSITION\nDCL OUT[1], GENERIC[0]\n  0: MOV OUT[0], IN[0]\n  1: MOV OUT[1], IN[1]\n  2: END\n";
+        cmdbuf.create_shader(14, pipe::SHADER_VERTEX, 300, vs);
+        cmdbuf.bind_shader(14, pipe::SHADER_VERTEX);
+        let fs = b"FRAG\nPROPERTY FS_COLOR0_WRITES_ALL_CBUFS 1\nDCL IN[0], GENERIC[0], LINEAR\nDCL OUT[0], COLOR\nDCL SAMP[0]\nDCL SVIEW[0], 2D, FLOAT\n  0: TEX OUT[0], IN[0], SAMP[0], 2D\n  1: END\n";
+        cmdbuf.create_shader(15, pipe::SHADER_FRAGMENT, 300, fs);
+        cmdbuf.bind_shader(15, pipe::SHADER_FRAGMENT);
+        cmdbuf.create_vertex_elements(
+            16,
+            &[(0, 0, 0, vfmt::R32G32B32A32_FLOAT), (16, 0, 0, vfmt::R32G32B32A32_FLOAT)],
+        );
+        cmdbuf.bind_object(16, super::virgl::OBJ_VERTEX_ELEMENTS);
+        cmdbuf.create_sampler_state(
+            18,
+            pipe::TEX_WRAP_CLAMP_TO_EDGE,
+            pipe::TEX_WRAP_CLAMP_TO_EDGE,
+            pipe::TEX_WRAP_CLAMP_TO_EDGE,
+            pipe::TEX_FILTER_NEAREST,
+            pipe::TEX_MIPFILTER_NONE,
+            pipe::TEX_FILTER_NEAREST,
+        );
+        cmdbuf.bind_sampler_states(pipe::SHADER_FRAGMENT, 0, &[18]);
+        cmdbuf.set_min_samples(1);
+        cmdbuf.set_viewport(dw, dh);
+        cmdbuf.create_sampler_view(
+            17,
+            RESOURCE_COMPOSITE_TEX_ID,
+            vfmt::B8G8R8X8_UNORM,
+            pipe::TEXTURE_2D,
+            0,
+            0,
+            0,
+            0,
+            swizzle::IDENTITY,
+        );
+        cmdbuf.set_sampler_views(pipe::SHADER_FRAGMENT, 0, &[17]);
+        let (tw, th) = (tex_w as f32, tex_h as f32);
+        let mut vb_offset = 0u32;
+        let mut first = 0u32;
+        for r in rects.iter().chain(extra.iter()).filter(|r| r.w > 0 && r.h > 0) {
+            let (x0, y0) = (r.x as f32, r.y as f32);
+            let (x1, y1) = ((r.x + r.w) as f32, (r.y + r.h) as f32);
+            let (nx0, nx1) = (x0 / dw * 2.0 - 1.0, x1 / dw * 2.0 - 1.0);
+            let (ny0, ny1) = (1.0 - y0 / dh * 2.0, 1.0 - y1 / dh * 2.0);
+            let (u0, u1, v0, v1) = (x0 / tw, x1 / tw, y0 / th, y1 / th);
+            let mut verts = [0u32; 32];
+            for (i, (nx, ny, u, v)) in [(nx0, ny0, u0, v0), (nx0, ny1, u0, v1), (nx1, ny1, u1, v1), (nx1, ny0, u1, v0)]
+                .into_iter()
+                .enumerate()
+            {
+                verts[i * 8..i * 8 + 8].copy_from_slice(&[
+                    nx.to_bits(),
+                    ny.to_bits(),
+                    0f32.to_bits(),
+                    1f32.to_bits(),
+                    u.to_bits(),
+                    v.to_bits(),
+                    0f32.to_bits(),
+                    0f32.to_bits(),
+                ]);
+            }
+            cmdbuf.resource_inline_write(RESOURCE_VB_ID, vb_offset, 128, &verts);
+            cmdbuf.set_vertex_buffers(&[(32, 0, RESOURCE_VB_ID)]);
+            cmdbuf.draw_vbo(first, 4, pipe::PRIM_TRIANGLE_FAN, first + 3);
+            vb_offset += 128;
+            first += 4;
+        }
+        let payload = cmdbuf.as_slice();
+        let fence_id = take_fence(state);
+        let header = VirtioGpuCmdSubmit {
+            hdr: fenced_hdr(cmd::SUBMIT_3D, fence_id, VIRGL_CTX_ID),
+            size: (payload.len() * 4) as u32,
+            _padding: 0,
+        };
+        let (_, resp) = send_owned_3desc_command(state, &header, payload)?;
+        if resp.type_ != cmd::RESP_OK_NODATA {
+            return Err("compositor SUBMIT_3D failed");
+        }
+        done.push(answered(cmd::SUBMIT_3D, fence_id, resp)?);
+
+        let bound = if wrong { RESOURCE_ID } else { RESOURCE_3D_ID };
+        if COMPOSITOR_BOUND.load(Ordering::Acquire) != bound {
+            set_scanout_resource(state, bound)?;
+            COMPOSITOR_BOUND.store(bound, Ordering::Release);
+        }
+        let flush = VirtioGpuResourceFlush {
+            hdr: VirtioGpuCtrlHdr {
+                type_: cmd::RESOURCE_FLUSH,
+                flags: 0,
+                fence_id: 0,
+                ctx_id: 0,
+                padding: 0,
+            },
+            r_x: 0,
+            r_y: 0,
+            r_width: state.width,
+            r_height: state.height,
+            resource_id: bound,
+            padding: 0,
+        };
+        send_owned_command_expect_ok(state, &flush)?;
+        Ok((bound as u64, done))
+    })
+}
+
+/// Read the whole scanout resource back from the device into its guest backing with a fenced
+/// TRANSFER_FROM_HOST_3D and copy it into `out` (rows of `width * 4` bytes). The backing is
+/// poisoned first, and a pixel the device did not write fails the readback.
+pub fn compositor_readback(out: &mut [u8]) -> Result<breengel_abi::Completion, &'static str> {
+    let fb = unsafe {
+        let ptr = PCI_3D_FB_PTR;
+        if ptr.is_null() {
+            return Err("3D framebuffer not initialized");
+        }
+        core::slice::from_raw_parts_mut(ptr, PCI_3D_FB_LEN)
+    };
+    with_device_state(|state| {
+        let (w, h) = (state.width, state.height);
+        let len = w as usize * h as usize * 4;
+        if out.len() < len || fb.len() < len {
+            return Err("readback destination too small");
+        }
+        for px in fb[..len].chunks_exact_mut(4) {
+            px.copy_from_slice(&READBACK_POISON.to_le_bytes());
+        }
+        dma_cache_clean(fb.as_ptr(), len);
+        let fence_id = take_fence(state);
+        let command = VirtioGpuTransferHost3d {
+            hdr: fenced_hdr(cmd::TRANSFER_FROM_HOST_3D, fence_id, VIRGL_CTX_ID),
+            box_x: 0,
+            box_y: 0,
+            box_z: 0,
+            box_w: w,
+            box_h: h,
+            box_d: 1,
+            offset: 0,
+            resource_id: RESOURCE_3D_ID,
+            level: 0,
+            stride: w * 4,
+            layer_stride: 0,
+        };
+        let resp = send_owned_command_expect_ok(state, &command)?;
+        let done = answered(cmd::TRANSFER_FROM_HOST_3D, fence_id, resp)?;
+        dma_cache_invalidate(fb.as_ptr(), len);
+        if fb[..len].chunks_exact(4).any(|px| px[3] != 0xFF) {
+            return Err("readback left pixels the device did not write");
+        }
+        out[..len].copy_from_slice(&fb[..len]);
+        Ok(done)
+    })
 }
