@@ -71,10 +71,11 @@ static NEXT_TIMER_CHECK_NS: AtomicU64 = AtomicU64::new(u64::MAX);
 #[cfg(target_arch = "x86_64")]
 static SIGNAL_TIMERS_NEXT: AtomicU64 = AtomicU64::new(u64::MAX);
 
-/// x86_64: whether exit kicks are watched (`Scheduler::exit_kick_watched`), as
-/// of the whole scheduler's last release.
+/// x86_64: a tick claimed the interval and POSIX timers' check
+/// (`timer_deadline_due`), and the next pass on that CPU runs it
+/// (`timer_groups::expire`, which clears this).
 #[cfg(target_arch = "x86_64")]
-static EXIT_KICKS_WATCHED: AtomicBool = AtomicBool::new(false);
+static SIGNAL_PASS_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 /// Whether a sleep or signal timer needs a scheduling pass on this CPU,
 /// without locking or walking any queue in interrupt context.
@@ -100,11 +101,15 @@ pub fn timer_deadline_due() -> bool {
             return true;
         }
         let signal = SIGNAL_TIMERS_NEXT.load(Ordering::Acquire);
-        return signal != u64::MAX
+        let claimed = signal != u64::MAX
             && now >= signal
             && SIGNAL_TIMERS_NEXT
                 .compare_exchange(signal, retry, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok();
+        if claimed {
+            SIGNAL_PASS_REQUESTED.store(true, Ordering::Release);
+        }
+        return claimed;
     }
     #[allow(unreachable_code)]
     let deadline = NEXT_TIMER_CHECK_NS.load(Ordering::Acquire);
@@ -449,6 +454,8 @@ static SCHEDULER: Mutex<Option<Scheduler>> = Mutex::new(None);
 
 #[cfg(target_arch = "x86_64")]
 mod rq;
+#[cfg(target_arch = "x86_64")]
+mod timer_groups;
 
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
@@ -527,8 +534,13 @@ impl SchedulerGuard {
         Self::holding_all(guard)
     }
 
-    /// `new` for a caller that took every run-queue lock itself.
-    fn holding_all(guard: spin::MutexGuard<'static, Option<Scheduler>>) -> Self {
+    /// `new` for a caller that took every run-queue lock itself. Threads
+    /// published without the scheduler-wide lock join the thread list here
+    /// (`rq::splice_spawned`).
+    fn holding_all(mut guard: spin::MutexGuard<'static, Option<Scheduler>>) -> Self {
+        if let Some(scheduler) = guard.as_mut().filter(|scheduler| rq::is_live(scheduler)) {
+            rq::splice_spawned(scheduler);
+        }
         let cpu = current_cpu_id_raw();
         if cpu < MAX_CPUS {
             SCHEDULER_HELD[cpu].fetch_add(1, Ordering::Relaxed);
@@ -637,6 +649,17 @@ fn lock_scheduler() -> SchedulerGuard {
     #[cfg(target_arch = "x86_64")]
     let guard = SchedulerGuard::new(guard);
     guard
+}
+
+/// x86_64: the scheduler-wide lock alone, tried, without the run-queue locks:
+/// what covers the thread list and the reclamation state (`rq::reclaim`).
+/// Instrumented as `try_lock_scheduler` is.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn try_lock_scheduler_list() -> Option<spin::MutexGuard<'static, Option<Scheduler>>> {
+    let guard = SCHEDULER.try_lock()?;
+    crate::tracing::providers::teardown::note_scheduler_acquire();
+    Some(guard)
 }
 
 #[inline(always)]
@@ -2098,39 +2121,36 @@ pub fn x86_idle_pass() -> bool {
             .any(|queue| !queue.is_empty())
 }
 
-/// x86_64: the timer and teardown work only the whole scheduler can do --
-/// interval and POSIX timers, whose recipients are found among every thread,
-/// watched exit kicks, and wakes held for one of this CPU's per-CPU workers --
-/// when there is some. It is only tried: with any scheduler lock busy it waits
-/// for the next pass, which `timer_deadline_due` asks for again.
+/// x86_64: the interval and POSIX timers' expiry (`timer_groups`) and the
+/// watched exit kicks (`rq::observe_exit_kicks`), when there are some. Neither
+/// takes a scheduler lock (#1649): a vCPU stopped in this work used to hold
+/// every run-queue lock, and stop scheduling on every CPU. Wakes held for a
+/// per-CPU worker are placed by this CPU's scheduling pass (`rq::hold`).
 #[cfg(target_arch = "x86_64")]
-fn whole_scheduler_housekeeping(cpu: usize) {
-    // Within a tick of now: the tick that asked for this pass claimed the
-    // deadline by moving it a tick later (`timer_deadline_due`).
-    let signal_due = SIGNAL_TIMERS_NEXT.load(Ordering::Acquire)
-        <= crate::signal::monotonic_nanos()
-            .saturating_add(crate::time::timer::MS_PER_TICK * 1_000_000);
-    let kicks = EXIT_KICKS_WATCHED.load(Ordering::Acquire);
-    let pinned = cpu < MAX_CPUS && PINNED_HOLDS_OUTSTANDING[cpu].load(Ordering::Relaxed) != 0;
-    if !signal_due && !kicks && !pinned {
+fn whole_scheduler_housekeeping(_cpu: usize) {
+    // Asked for by a tick that claimed the check (`timer_deadline_due`), or
+    // due now.
+    let signal_due = SIGNAL_PASS_REQUESTED.load(Ordering::Acquire)
+        || SIGNAL_TIMERS_NEXT.load(Ordering::Acquire) <= crate::signal::monotonic_nanos();
+    let kicks = rq::exit_kicks_watched();
+    if !signal_due && !kicks {
         return;
     }
     without_interrupts(|| {
-        let Some(mut guard) = try_lock_scheduler() else {
-            return;
-        };
-        let Some(scheduler) = guard.as_mut() else {
-            return;
-        };
         if signal_due {
-            scheduler.wake_signal_timers();
-            scheduler.publish_timer_deadline();
+            timer_groups::expire();
+            // Groups the table had no room for are the scheduler's
+            // (`timer_groups::OVERFLOWED`): only tried, never waited for.
+            if timer_groups::OVERFLOWED.load(Ordering::Acquire) {
+                if let Some(mut guard) = try_lock_scheduler() {
+                    if let Some(scheduler) = guard.as_mut() {
+                        scheduler.wake_signal_timers();
+                    }
+                }
+            }
         }
         if kicks {
-            scheduler.observe_watched_exit_kicks();
-        }
-        if pinned {
-            scheduler.deliver_pinned_wakes_for_this_cpu();
+            rq::observe_exit_kicks();
         }
     });
 }
@@ -2697,7 +2717,17 @@ pub(crate) struct CpuSchedulerState {
 /// entry.
 #[cfg(target_arch = "x86_64")]
 fn note_pinned_hold(thread_id: u64, home: usize) {
-    if home < MAX_CPUS {
+    // x86_64: held on the thread's index slot, where its home's next pass
+    // finds it without the whole scheduler (`rq::hold`), which counts it.
+    #[cfg(target_arch = "x86_64")]
+    let counted = rq::owner(thread_id).is_some();
+    #[cfg(target_arch = "x86_64")]
+    if counted {
+        rq::hold(thread_id, rq::HELD_PLACE, home);
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    let counted = false;
+    if home < MAX_CPUS && !counted {
         PINNED_HOLDS_OUTSTANDING[home].fetch_add(1, Ordering::Relaxed);
     }
     let holds = PINNED_HOME_CPU_UNAVAILABLE.fetch_add(1, Ordering::Relaxed) + 1;
@@ -2809,6 +2839,11 @@ pub struct Scheduler {
     /// belong to the live one.
     #[cfg(target_arch = "aarch64")]
     drains_wake_inboxes: bool,
+
+    /// x86_64: reclaimed threads dropped from the thread index while a
+    /// reader held a pin, freed by a later pass once none does (`rq::Pin`).
+    #[cfg(target_arch = "x86_64")]
+    unpinned_free: alloc::vec::Vec<Box<Thread>>,
 }
 
 #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
@@ -2924,6 +2959,8 @@ impl Scheduler {
             exit_kick_watched: 0,
             #[cfg(target_arch = "aarch64")]
             drains_wake_inboxes: true,
+            #[cfg(target_arch = "x86_64")]
+            unpinned_free: alloc::vec::Vec::new(),
         };
 
         scheduler
@@ -5793,15 +5830,32 @@ impl Scheduler {
     /// `isr_unblock_for_io()`. Every CPU's buffer is drained, because the
     /// completing interrupt may have run on any CPU.
     ///
-    /// x86_64: the wakes a run-queue pass held because the thread's CPU had
-    /// its lock held (`rq::take_held_io_wakes`) are applied too.
+    /// x86_64: the wakes held because the thread's CPU had its lock held
+    /// (`rq::hold`) are applied too.
     fn apply_isr_wakeups(&mut self) {
         for buf in ISR_WAKEUP_BUFFERS.iter() {
             buf.take_each(|tid| self.unblock_for_io_from_isr_buffer(tid));
         }
         #[cfg(target_arch = "x86_64")]
         if rq::is_live(self) {
-            rq::take_held_io_wakes(|tid| self.unblock_for_io_from_isr_buffer(tid));
+            rq::take_held(|tid, bits, home| {
+                if bits & rq::HELD_IO != 0 {
+                    self.unblock_for_io_from_isr_buffer(tid);
+                }
+                if bits & rq::HELD_GENERIC != 0 {
+                    self.unblock(tid);
+                }
+                if bits & rq::HELD_SIGNAL != 0 {
+                    self.unblock_for_signal(tid);
+                }
+                if bits & rq::HELD_CHILD_EXIT != 0 {
+                    self.unblock_for_child_exit(tid);
+                }
+                if bits & rq::HELD_PLACE != 0 && home < MAX_CPUS && self.pinned_wake_is_waiting_here(tid, home) {
+                    self.per_cpu_queues[home].push_back(tid);
+                    PINNED_WAKES_DELIVERED.fetch_add(1, Ordering::Relaxed);
+                }
+            });
         }
     }
 
@@ -6025,8 +6079,11 @@ impl Scheduler {
             }
             deadline = deadline.min(group.posix.next_check_ns(&now));
         }
+        // x86_64: the timer table publishes its own next check
+        // (`timer_groups::expire`); this list holds only the groups the
+        // table had no room for, and may only bring that check earlier.
         #[cfg(target_arch = "x86_64")]
-        SIGNAL_TIMERS_NEXT.store(deadline, Ordering::Release);
+        SIGNAL_TIMERS_NEXT.fetch_min(deadline, Ordering::AcqRel);
         NEXT_TIMER_CHECK_NS.store(deadline.min(sleeps), Ordering::Release);
     }
 
@@ -6528,6 +6585,13 @@ impl Scheduler {
     /// looks at (#1413). A bucket is released once the kick is observed, or
     /// once a later publication has displaced it.
     fn observe_watched_exit_kicks(&mut self) {
+        // x86_64: the watch is kept outside the scheduler, observed and
+        // released without a lock (`rq::observe_exit_kicks`).
+        #[cfg(target_arch = "x86_64")]
+        if rq::is_live(self) {
+            rq::observe_exit_kicks();
+            return;
+        }
         let mut watched = self.exit_kick_watched;
         while watched != 0 {
             let bucket = watched.trailing_zeros() as usize;
@@ -6549,8 +6613,17 @@ impl Scheduler {
             use crate::tracing::providers::teardown::{EXIT_KICK_BUCKETS, EXIT_KICK_SLOTS};
             const _: () = assert!(EXIT_KICK_BUCKETS <= u64::BITS as usize);
             let bucket = owner_pid as usize % EXIT_KICK_BUCKETS;
-            self.exit_kick_watch[bucket] = (owner_pid, EXIT_KICK_SLOTS[bucket].generation());
-            self.exit_kick_watched |= 1 << bucket;
+            #[cfg(target_arch = "x86_64")]
+            let outside = rq::is_live(self);
+            #[cfg(not(target_arch = "x86_64"))]
+            let outside = false;
+            if outside {
+                #[cfg(target_arch = "x86_64")]
+                rq::watch_exit_kick(bucket, owner_pid, EXIT_KICK_SLOTS[bucket].generation());
+            } else {
+                self.exit_kick_watch[bucket] = (owner_pid, EXIT_KICK_SLOTS[bucket].generation());
+                self.exit_kick_watched |= 1 << bucket;
+            }
         }
         if crate::process::process_manager_held_on_current_cpu() {
             crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_LOCK_ORDER_SUSPECT);
@@ -7524,9 +7597,45 @@ pub fn register_cpu_idle_thread(cpu_id: usize, idle_thread: Box<Thread>) {
     });
 }
 
+/// x86_64: publish `thread` under the lock of the CPU it is queued on
+/// (`rq::spawn`), not the whole scheduler (#1649), and interrupt that CPU.
+/// The thread back before the run-queue locks exist.
+#[cfg(target_arch = "x86_64")]
+fn spawn_x86(thread: Box<Thread>, front: bool) -> Result<(), Box<Thread>> {
+    let is_user = thread.privilege == super::thread::ThreadPrivilege::User;
+    let thread_id = thread.id();
+    let name = (!is_user).then(|| thread.name.clone());
+    let target = without_interrupts(|| -> Result<usize, Box<Thread>> {
+        let target = rq::spawn(thread, front)?;
+        if target == current_cpu_id_raw() {
+            set_need_resched();
+        } else {
+            request_resched_x86(target);
+        }
+        Ok(target)
+    })?;
+    // Kernel threads only, as `add_thread_inner` logs them, and with no
+    // scheduler lock held: the strand census and the ext2 lock-race gate
+    // read these lines.
+    if let Some(name) = name {
+        log_serial_println!(
+            "Added thread {} '{}' to scheduler (user: {}, target_cpu: {})",
+            thread_id,
+            name,
+            is_user,
+            target
+        );
+    }
+    Ok(())
+}
+
 /// Add a thread to the scheduler
 pub fn spawn(thread: Box<Thread>) {
     note_scheduler_publication();
+    #[cfg(target_arch = "x86_64")]
+    let Err(thread) = spawn_x86(thread, false) else {
+        return;
+    };
     // Disable interrupts to prevent timer interrupt deadlock
     without_interrupts(|| {
         let mut scheduler_lock = lock_scheduler();
@@ -7555,6 +7664,15 @@ pub fn spawn(thread: Box<Thread>) {
 /// change -- so no thread the kernel builds carries a pin today.
 pub fn spawn_on_cpu(mut thread: Box<Thread>, cpu: usize) {
     note_scheduler_publication();
+    #[cfg(target_arch = "x86_64")]
+    {
+        assert!(cpu < online_cpus(), "CPU-affine spawn target {} is offline", cpu);
+        thread.cpu_affinity = Some(super::thread::CpuPin::per_cpu_worker(cpu));
+        let Err(returned) = spawn_x86(thread, false) else {
+            return;
+        };
+        thread = returned;
+    }
     without_interrupts(|| {
         let mut scheduler_lock = lock_scheduler();
         let scheduler = scheduler_lock
@@ -7670,6 +7788,10 @@ pub(crate) fn spawn_pinned_where_placed_for_test(thread: Box<Thread>) -> usize {
 /// Used for fork children so they run before other queued threads.
 pub fn spawn_front(thread: Box<Thread>) {
     note_scheduler_publication();
+    #[cfg(target_arch = "x86_64")]
+    let Err(thread) = spawn_x86(thread, true) else {
+        return;
+    };
     without_interrupts(|| {
         let mut scheduler_lock = lock_scheduler();
         if let Some(scheduler) = scheduler_lock.as_mut() {
@@ -7699,17 +7821,38 @@ static TERMINATED_UNRECLAIMED: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_arch = "x86_64")]
 static IDLE_RECLAIM_TICK: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(u64::MAX) }; MAX_CPUS];
 
-/// x86_64: a thread has just been marked Terminated (`Thread::set_terminated`).
+/// x86_64: `thread` has just been marked Terminated (`Thread::set_terminated`):
+/// it is to be reclaimed, caches no page-table root, and the thread index
+/// says it has terminated.
 #[cfg(target_arch = "x86_64")]
-pub fn note_thread_terminated() {
+pub fn note_thread_terminated(thread: &Thread) {
     TERMINATED_UNRECLAIMED.fetch_add(1, Ordering::Release);
+    rq::publish_terminated(thread);
 }
 
-/// x86_64: the idle loop's reclamation. Reclaiming needs the whole scheduler,
-/// which is every run-queue lock, so the idle loop takes it only while a
-/// thread waits to be reclaimed, at most once a tick per CPU, and only when it
-/// is free: an idle CPU stopped while it held the whole scheduler on every
-/// pass would stop every CPU's dispatch (#1649).
+/// x86_64: reclaim under the scheduler-wide lock alone, which covers the
+/// thread list, and the run-queue lock of the thread freed, taken without
+/// waiting (`rq::reclaim`): never every run-queue lock (#1649). The
+/// scheduler-wide lock is only tried: a busy one means another CPU is
+/// reclaiming, or holds the whole scheduler. None before the run-queue locks
+/// exist.
+#[cfg(target_arch = "x86_64")]
+fn reclaim_x86() -> Option<alloc::vec::Vec<Box<Thread>>> {
+    without_interrupts(|| {
+        let Some(mut guard) = try_lock_scheduler_list() else {
+            return Some(alloc::vec::Vec::new());
+        };
+        let scheduler = guard.as_mut()?;
+        if !rq::is_live(scheduler) {
+            return None;
+        }
+        Some(rq::reclaim(scheduler))
+    })
+}
+
+/// x86_64: the idle loop's reclamation, while a thread waits to be
+/// reclaimed, at most once a tick per CPU, and only when no other CPU is
+/// reclaiming (`reclaim_x86`).
 #[cfg(target_arch = "x86_64")]
 pub fn reclaim_terminated_threads_from_idle() {
     if TERMINATED_UNRECLAIMED.load(Ordering::Acquire) == 0 {
@@ -7721,15 +7864,7 @@ pub fn reclaim_terminated_threads_from_idle() {
         return;
     }
     crate::per_cpu::preempt_disable();
-    let reclaimed_threads = without_interrupts(|| {
-        let Some(mut scheduler_lock) = try_lock_scheduler() else {
-            return alloc::vec::Vec::new();
-        };
-        match scheduler_lock.as_mut() {
-            Some(scheduler) => scheduler.reclaim_terminated_threads(),
-            None => alloc::vec::Vec::new(),
-        }
-    });
+    let reclaimed_threads = reclaim_x86().unwrap_or_default();
     #[cfg(feature = "testing")]
     idle_release_probe::hold();
     release_reclaimed_threads(reclaimed_threads);
@@ -7747,6 +7882,12 @@ pub fn reclaim_terminated_threads() {
     // ARM64 also masks interrupts during release; x86 keeps them available
     // throughout the page teardown while preemption remains disabled.
     let reclaimed_threads = without_interrupts(|| {
+        // x86_64: only tried, as the idle loop's is: a CPU stopped while it
+        // reclaims must not hold up a fork or exec on another (#1649).
+        #[cfg(target_arch = "x86_64")]
+        if let Some(harvested) = reclaim_x86() {
+            return harvested;
+        }
         let mut scheduler_lock = lock_scheduler();
         if let Some(scheduler) = scheduler_lock.as_mut() {
             scheduler.reclaim_terminated_threads()
@@ -8267,21 +8408,11 @@ where
     F: FnOnce(&mut super::thread::Thread) -> R,
 {
     // x86_64: under the lock of the CPU that owns the thread, which covers its
-    // fields; the whole scheduler only when that lock is busy (#1649).
+    // fields, never the whole scheduler (#1649).
     #[cfg(target_arch = "x86_64")]
-    let f = {
-        let mut f = Some(f);
-        let done = without_interrupts(|| {
-            rq::with_owner(thread_id, |_, thread| f.take().map(|f| f(thread)))
-        });
-        if let Some(Some(result)) = done {
-            return Some(result);
-        }
-        match f {
-            Some(f) => f,
-            None => return None,
-        }
-    };
+    if rq_live() {
+        return without_interrupts(|| rq::with_thread(thread_id, |_, thread| f(thread)));
+    }
     without_interrupts(|| {
         let mut scheduler_lock = lock_scheduler();
         scheduler_lock
@@ -8419,6 +8550,51 @@ impl ExecSchedCommit {
         self.new_page_table_root
     }
 
+    /// x86_64: the commit under this CPU's run-queue lock, which covers the
+    /// exec'd thread, this CPU's current thread; its timers are registered
+    /// once the thread receives them, so the timer pass finds a live thread
+    /// for them. Returns the account and timers the thread had, to be
+    /// dropped by the caller; the receipt back when the thread is not this
+    /// CPU's current thread, for the whole scheduler to commit and report.
+    #[cfg(target_arch = "x86_64")]
+    fn commit_on_this_cpu(
+        self,
+    ) -> Result<
+        (
+            Option<alloc::sync::Arc<super::thread::CpuAccount>>,
+            Option<alloc::sync::Arc<crate::signal::IntervalTimers>>,
+        ),
+        Self,
+    > {
+        let Some(mut local) = rq::local() else {
+            return Err(self);
+        };
+        if local.state().current_thread != Some(self.thread_id) {
+            return Err(self);
+        }
+        let Some(t) = local.thread(self.thread_id) else {
+            return Err(self);
+        };
+        t.context = self.context;
+        t.clear_inline_schedule_state();
+        t.stack_top = self.stack_top;
+        t.stack_bottom = self.stack_bottom;
+        t.kernel_stack_top = self.kernel_stack_top;
+        t.tls_block = self.tls_block;
+        t.set_dispatch_root(self.new_page_table_root);
+        t.futex_group.store(0, core::sync::atomic::Ordering::Release);
+        t.charge_cpu(crate::time::get_cpu_ticks());
+        let account = core::mem::replace(&mut t.cpu_account, self.cpu_account.clone());
+        let timers = core::mem::replace(&mut t.signal_timers, self.signal_timers.clone());
+        t.state = crate::task::thread::ThreadState::Ready;
+        rq::publish_group(t);
+        drop(local);
+        if let (Some(timers), Some(cpu)) = (&self.signal_timers, &self.cpu_account) {
+            register_signal_timers(timers, cpu);
+        }
+        Ok((account, timers))
+    }
+
     pub fn apply(self) {
         without_interrupts(|| {
             // Oracle 1: the whole point of the receipt is that the process-manager lock is gone.
@@ -8431,35 +8607,63 @@ impl ExecSchedCommit {
             // The account the thread charged before, dropped once SCHEDULER is released.
             let mut replaced_account = None;
             let mut replaced_timers = None;
-            {
+            // x86_64: the exec'd thread is this CPU's current thread, which
+            // this CPU's run-queue lock covers (#1649).
+            #[cfg(target_arch = "x86_64")]
+            let pending = match self.commit_on_this_cpu() {
+                Ok((account, timers)) => {
+                    applied = true;
+                    replaced_account = account;
+                    replaced_timers = timers;
+                    None
+                }
+                Err(this) => Some(this),
+            };
+            #[cfg(not(target_arch = "x86_64"))]
+            let pending = Some(self);
+            if let Some(this) = pending {
                 let mut scheduler_lock = lock_scheduler();
                 if let Some(sched) = scheduler_lock.as_mut() {
-                    unpinned = sched.current_thread_id_inner() != Some(self.thread_id);
-                    if let (Some(timers), Some(cpu)) = (&self.signal_timers, &self.cpu_account) {
-                        sched.register_signal_timers(timers, cpu);
+                    unpinned = sched.current_thread_id_inner() != Some(this.thread_id);
+                    if let (Some(timers), Some(cpu)) = (&this.signal_timers, &this.cpu_account) {
+                        // x86_64: in the timer table, which needs no lock
+                        // (`register_signal_timers`).
+                        #[cfg(target_arch = "x86_64")]
+                        let listed = rq::is_live(sched) && timer_groups::register(timers, cpu);
+                        #[cfg(not(target_arch = "x86_64"))]
+                        let listed = false;
+                        if !listed {
+                            #[cfg(target_arch = "x86_64")]
+                            if rq::is_live(sched) {
+                                timer_groups::OVERFLOWED.store(true, Ordering::Release);
+                            }
+                            sched.register_signal_timers(timers, cpu);
+                        }
                     }
-                    if let Some(t) = sched.get_thread_mut(self.thread_id) {
+                    if let Some(t) = sched.get_thread_mut(this.thread_id) {
                         #[cfg(all(target_arch = "aarch64", feature = "ret_zero_pc_oracle_exec"))]
                         crate::task::ret_zero_pc_oracle::inject_exec_commit_if_armed(t);
-                        t.context = self.context;
+                        t.context = this.context;
                         t.clear_inline_schedule_state();
-                        t.stack_top = self.stack_top;
-                        t.stack_bottom = self.stack_bottom;
-                        t.kernel_stack_top = self.kernel_stack_top;
-                        t.tls_block = self.tls_block;
+                        t.stack_top = this.stack_top;
+                        t.stack_bottom = this.stack_bottom;
+                        t.kernel_stack_top = this.kernel_stack_top;
+                        t.tls_block = this.tls_block;
                         // x86_64 dispatches a user thread on the root cached
                         // here (`dispatch_root`), so exec replaces it in the
                         // same hold that replaces the context.
                         #[cfg(target_arch = "x86_64")]
-                        t.set_dispatch_root(self.new_page_table_root);
+                        t.set_dispatch_root(this.new_page_table_root);
                         // A new address space: the futex key group is read
                         // again from the process row.
                         #[cfg(target_arch = "x86_64")]
                         t.futex_group.store(0, core::sync::atomic::Ordering::Release);
                         // The interval before exec belongs to the old thread group.
                         t.charge_cpu(crate::time::get_cpu_ticks());
-                        replaced_account = core::mem::replace(&mut t.cpu_account, self.cpu_account);
-                        replaced_timers = core::mem::replace(&mut t.signal_timers, self.signal_timers);
+                        replaced_account = core::mem::replace(&mut t.cpu_account, this.cpu_account);
+                        replaced_timers = core::mem::replace(&mut t.signal_timers, this.signal_timers);
+                        #[cfg(target_arch = "x86_64")]
+                        rq::publish_group(t);
                         t.state = crate::task::thread::ThreadState::Ready;
                         #[cfg(all(target_arch = "aarch64", feature = "ret_zero_pc_oracle_exec"))]
                         crate::task::ret_zero_pc_oracle::record_exec_commit_inline_state(t);
@@ -8515,52 +8719,74 @@ pub fn adopt_legacy_exec(row_thread: &Thread, root: u64) {
 /// `isr_unblock_for_io` so they never spin on the scheduler lock.
 pub fn wake_waitqueue_thread(tid: u64) {
     #[cfg(target_arch = "x86_64")]
-    if owner_wake(tid, rq::Wake::Io { from_isr_buffer: false }).is_some() {
+    if owner_wake(tid, rq::Wake::Io { from_isr_buffer: false }) {
         return;
     }
     with_scheduler(|sched| sched.wake_waitqueue_thread(tid));
 }
 
 /// x86_64: wake `tid` under the lock of the CPU that owns it, with this CPU's
-/// for placement (#1649). None when that lock is busy, or before the
-/// run-queue locks exist: the caller takes the whole scheduler.
+/// for placement, or hold the wake for that CPU when its lock stays busy
+/// (`rq::wake_or_hold`): never the whole scheduler (#1649). False before the
+/// run-queue locks exist.
 #[cfg(target_arch = "x86_64")]
-fn owner_wake(tid: u64, kind: rq::Wake) -> Option<UnblockOutcome> {
+fn owner_wake(tid: u64, kind: rq::Wake) -> bool {
+    if !rq_live() {
+        return false;
+    }
+    without_interrupts(|| rq::wake_or_hold(tid, kind));
+    true
+}
+
+/// x86_64: whether the run-queue locks exist.
+#[cfg(target_arch = "x86_64")]
+fn rq_live() -> bool {
+    rq::live()
+}
+
+/// x86_64: `set_user_affinity` under the lock of the CPU that owns the
+/// thread (`rq::repin`), never the whole scheduler (#1649).
+#[cfg(target_arch = "x86_64")]
+fn set_user_affinity_x86(tid: u64, pin: Option<super::thread::CpuPin>) -> bool {
     without_interrupts(|| {
-        let mut local = rq::local()?;
-        match rq::wake(&mut local, tid, kind) {
-            rq::Woken::Done(outcome) => Some(outcome),
-            rq::Woken::Busy => None,
-        }
+        rq::with_thread(tid, |held, thread| {
+            thread.cpu_affinity = pin;
+            rq::repin(held, tid);
+        })
+        .is_some()
     })
 }
 
 /// `Scheduler::unblock` for `tid`. x86_64: under the lock of the CPU that
-/// owns it, the whole scheduler only when that lock is busy.
+/// owns it, or held for that CPU when its lock stays busy; the outcome is
+/// then `Transitioned`, the wake being as good as made.
 pub fn unblock_thread(tid: u64) -> Option<UnblockOutcome> {
     #[cfg(target_arch = "x86_64")]
-    if let Some(outcome) = owner_wake(tid, rq::Wake::Generic) {
+    if rq_live() {
         // Counted as `Scheduler::unblock` counts the calls it takes.
         UNBLOCK_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
-        return Some(outcome);
+        if rq::owner(tid).is_none() {
+            return Some(UnblockOutcome::NotFound);
+        }
+        let outcome = without_interrupts(|| rq::wake_or_hold(tid, rq::Wake::Generic));
+        return Some(outcome.unwrap_or(UnblockOutcome::Transitioned));
     }
     with_scheduler(|sched| sched.unblock(tid))
 }
 
 /// Wake `tid` for a signal (`Scheduler::unblock_for_signal`) and, with
 /// `child_exit`, for a child's exit too (`unblock_for_child_exit`). x86_64:
-/// under the lock of the CPU that owns it, the whole scheduler only when that
-/// lock is busy.
+/// under the lock of the CPU that owns it, or held for that CPU when its lock
+/// stays busy.
 pub fn wake_for_signal(tid: u64, child_exit: bool) {
     #[cfg(target_arch = "x86_64")]
     {
-        let done = without_interrupts(|| {
-            rq::local().map(|mut local| {
-                rq::notify(&mut local, tid, rq::Notice::Signal)
-                    && (!child_exit || rq::notify(&mut local, tid, rq::Notice::ChildExit))
-            })
-        });
-        if done == Some(true) {
+        let notices: &[rq::Notice] = if child_exit {
+            &[rq::Notice::Signal, rq::Notice::ChildExit]
+        } else {
+            &[rq::Notice::Signal]
+        };
+        if without_interrupts(|| rq::notify_or_hold(tid, notices)) {
             return;
         }
     }
@@ -8575,9 +8801,7 @@ pub fn wake_for_signal(tid: u64, child_exit: bool) {
 /// Wake `tid` for a child's exit (`Scheduler::unblock_for_child_exit`).
 pub fn wake_for_child_exit(tid: u64) {
     #[cfg(target_arch = "x86_64")]
-    if without_interrupts(|| rq::local().map(|mut local| rq::notify(&mut local, tid, rq::Notice::ChildExit)))
-        == Some(true)
-    {
+    if without_interrupts(|| rq::notify_or_hold(tid, &[rq::Notice::ChildExit])) {
         return;
     }
     with_scheduler(|sched| sched.unblock_for_child_exit(tid));
@@ -8587,6 +8811,15 @@ pub fn wake_for_child_exit(tid: u64) {
 /// charged first: a thread that dies where it runs keeps that time, and its
 /// parent can reap it only after this.
 pub fn terminate_thread(tid: u64) -> Option<()> {
+    #[cfg(target_arch = "x86_64")]
+    if rq_live() {
+        return without_interrupts(|| {
+            rq::with_thread(tid, |_, thread| {
+                thread.charge_cpu_if_running(crate::time::get_cpu_ticks());
+                thread.set_terminated();
+            })
+        });
+    }
     with_scheduler(|scheduler| {
         let thread = scheduler.get_thread_mut(tid)?;
         thread.charge_cpu_if_running(crate::time::get_cpu_ticks());
@@ -8600,6 +8833,17 @@ pub fn terminate_thread(tid: u64) -> Option<()> {
 /// an account read next includes the interval it is running in. Returns the
 /// thread's own total, in ticks.
 pub fn charge_current_cpu() -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    if let Some(total) = without_interrupts(|| {
+        let mut local = rq::local()?;
+        let tid = local.state().current_thread?;
+        local.thread(tid).map(|thread| {
+            thread.charge_cpu(crate::time::get_cpu_ticks());
+            thread.cpu_ticks_total
+        })
+    }) {
+        return total;
+    }
     with_scheduler(|scheduler| {
         scheduler.current_thread_mut().map_or(0, |thread| {
             thread.charge_cpu(crate::time::get_cpu_ticks());
@@ -8614,6 +8858,15 @@ pub fn charge_current_cpu() -> u64 {
 /// CLOCK_PROCESS_CPUTIME_ID and the process CPU-time timers read. No
 /// process-manager lock is needed for this query.
 pub fn process_cpu_ns() -> Option<u64> {
+    // x86_64: the account from the calling thread, and its runnable threads
+    // charged under each CPU's own lock (`rq::charge_account`).
+    #[cfg(target_arch = "x86_64")]
+    if rq_live() {
+        let account = current_cpu_account()?;
+        without_interrupts(|| rq::charge_account(&account));
+        let (user, system) = account.split_ns();
+        return Some(user.saturating_add(system));
+    }
     with_scheduler(|scheduler| {
         let account = scheduler.current_thread()?.cpu_account.clone()?;
         scheduler.charge_account_threads(&account);
@@ -8648,6 +8901,10 @@ pub fn online_cpus() -> usize {
 /// the pin changes nothing else would. False when the scheduler has no such
 /// thread.
 pub fn set_user_affinity(tid: u64, pin: Option<super::thread::CpuPin>) -> bool {
+    #[cfg(target_arch = "x86_64")]
+    if rq_live() {
+        return set_user_affinity_x86(tid, pin);
+    }
     with_scheduler(|sched| {
         let Some(old) = sched.get_thread(tid).map(|thread| thread.cpu_affinity) else {
             return false;
@@ -8692,6 +8949,266 @@ pub fn set_user_affinity(tid: u64, pin: Option<super::thread::CpuPin>) -> bool {
     .unwrap_or(false)
 }
 
+/// Register `timers`, which count `cpu`, after a timer syscall or exec changed
+/// them, so the scheduler's timer pass expires them. x86_64: in the timer
+/// table (`timer_groups`), which no scheduler lock covers (#1649); in the
+/// scheduler's own list only when that table is full.
+pub fn register_signal_timers(
+    timers: &alloc::sync::Arc<crate::signal::IntervalTimers>,
+    cpu: &alloc::sync::Arc<super::thread::CpuAccount>,
+) {
+    #[cfg(target_arch = "x86_64")]
+    if rq_live() {
+        if timer_groups::register(timers, cpu) {
+            return;
+        }
+        timer_groups::OVERFLOWED.store(true, Ordering::Release);
+    }
+    with_scheduler(|scheduler| scheduler.register_signal_timers(timers, cpu));
+}
+
+/// x86_64: the calling thread's interval timers and the CPU account they
+/// count, which its process row holds too, read under this CPU's lock: a
+/// timer syscall needs no process manager for them (#1650). None for a
+/// thread with no timers, or before the run-queue locks exist.
+#[cfg(target_arch = "x86_64")]
+pub fn current_signal_timers() -> Option<(
+    alloc::sync::Arc<crate::signal::IntervalTimers>,
+    alloc::sync::Arc<super::thread::CpuAccount>,
+)> {
+    without_interrupts(|| {
+        let mut local = rq::local()?;
+        let tid = local.state().current_thread?;
+        let thread = local.thread(tid)?;
+        Some((thread.signal_timers.clone()?, thread.cpu_account.clone()?))
+    })
+}
+
+/// x86_64: a job stop's handling of thread `tid`, under the lock of the CPU
+/// that owns it (#1649): parked when it is Ready to resume user code
+/// (`Scheduler::block_ready_user_thread`); else, unless `spare` says it is
+/// the stopping thread, the CPU running it is asked to reach a scheduling
+/// point (`Scheduler::kick_thread`). Returns whether it was parked.
+#[cfg(target_arch = "x86_64")]
+pub fn park_for_stop(tid: u64, spare: bool) -> bool {
+    without_interrupts(|| {
+        rq::with_thread(tid, |held, _| {
+            let parks = rq::block_ready_user_thread(held, tid);
+            if !parks && !spare && held.state().current_thread == Some(tid) {
+                rq::choose_again(held, tid);
+            }
+            parks
+        })
+        .unwrap_or(false)
+    })
+}
+
+/// x86_64: whether thread `tid` is running or ready to run
+/// (`Scheduler::thread_may_run`), under its owner's lock.
+#[cfg(target_arch = "x86_64")]
+pub fn thread_may_run(tid: u64) -> bool {
+    without_interrupts(|| {
+        rq::with_thread(tid, |_, thread| matches!(thread.state, ThreadState::Running | ThreadState::Ready))
+            .unwrap_or(false)
+    })
+}
+
+/// Make the signal recipient `tid` run soon
+/// (`Scheduler::expedite_signal_recipient`). x86_64: under this CPU's lock
+/// and, tried, the lock of the CPU that owns it (#1649).
+pub fn expedite_thread(tid: u64) {
+    #[cfg(target_arch = "x86_64")]
+    if rq_live() {
+        without_interrupts(|| rq::expedite_thread(tid));
+        return;
+    }
+    with_scheduler(|sched| sched.expedite_signal_recipient(tid));
+}
+
+/// Wake every thread sleeping to a CLOCK_REALTIME deadline, after that clock
+/// was set (`Scheduler::wake_realtime_sleepers`). x86_64: each under the
+/// lock of the CPU that owns it (#1649).
+pub fn wake_realtime_sleepers() {
+    #[cfg(target_arch = "x86_64")]
+    if rq_live() {
+        rq::each_live(|tid| {
+            if without_interrupts(|| rq::with_thread(tid, |_, thread| thread.realtime_sleep)) == Some(true) {
+                let _ = unblock_thread(tid);
+            }
+        });
+        return;
+    }
+    with_scheduler(|sched| sched.wake_realtime_sleepers());
+}
+
+/// Wake every blocked thread of process row `pid` for a SIGKILL left pending,
+/// and mark each so that it does not sleep again
+/// (`Scheduler::wake_process_threads_for_kill`). x86_64: each under the lock
+/// of the CPU that owns it, or held for it (#1649).
+pub fn wake_process_threads_for_kill(pid: u64) {
+    #[cfg(target_arch = "x86_64")]
+    if rq_live() {
+        rq::each_live_of_pid(pid, |tid| {
+            let state = without_interrupts(|| {
+                rq::with_thread(tid, |_, thread| {
+                    thread.mark_kill_pending();
+                    thread.state
+                })
+            });
+            match state {
+                Some(ThreadState::BlockedOnChildExit) => wake_for_child_exit(tid),
+                Some(ThreadState::BlockedOnTimer) => {
+                    let _ = unblock_thread(tid);
+                }
+                Some(ThreadState::Blocked | ThreadState::BlockedOnSignal | ThreadState::BlockedOnIO) => {
+                    wake_for_signal(tid, false)
+                }
+                _ => {}
+            }
+        });
+        return;
+    }
+    with_scheduler(|scheduler| scheduler.wake_process_threads_for_kill(pid));
+}
+
+/// Claim every thread of process row `pid` for an immediate kill, or none
+/// (`Scheduler::claim_process_threads_for_kill`). x86_64: through the thread
+/// index, whose threads a pin keeps allocated; the claims are atomics on the
+/// threads, so no scheduler lock is taken (#1649).
+pub fn claim_process_threads_for_kill(pid: u64) -> bool {
+    #[cfg(target_arch = "x86_64")]
+    if rq_live() {
+        let pin = rq::Pin::new();
+        let mut threads = alloc::vec::Vec::new();
+        rq::each_tid_of_pid(pid, |tid| {
+            if let Some(thread) = pin.thread(tid) {
+                threads.push(thread);
+            }
+        });
+        if threads.iter().any(|thread| thread.in_kill_custody()) {
+            return false;
+        }
+        // A thread running on another CPU can still open a section between
+        // the check and its claim; that claim fails and the others are undone.
+        for (claimed, thread) in threads.iter().enumerate() {
+            if !thread.claim_for_kill() {
+                for thread in threads.iter().take(claimed) {
+                    thread.release_kill_claim();
+                }
+                return false;
+            }
+        }
+        return true;
+    }
+    with_scheduler(|scheduler| scheduler.claim_process_threads_for_kill(pid)).unwrap_or(true)
+}
+
+/// x86_64: make every scheduler thread of process row `pid` non-runnable
+/// (`Scheduler::terminate_process_threads`): each under the lock of the CPU
+/// that owns it, a quarantine token on that CPU's queue, and the exit kick
+/// watched outside the scheduler (#1649). False, doing nothing, before the
+/// run-queue locks exist: the caller takes the whole scheduler.
+#[cfg(target_arch = "x86_64")]
+pub fn terminate_process_threads(pid: u64) -> bool {
+    if rq_live() {
+        use crate::tracing::providers::teardown::{EXIT_KICK_BUCKETS, EXIT_KICK_SLOTS};
+        crate::tracing::providers::teardown::record_quarantine(pid);
+        let bucket = pid as usize % EXIT_KICK_BUCKETS;
+        rq::watch_exit_kick(bucket, pid, EXIT_KICK_SLOTS[bucket].generation());
+        if crate::process::process_manager_held_on_current_cpu() {
+            crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_LOCK_ORDER_SUSPECT);
+        }
+        let now = crate::time::get_cpu_ticks();
+        rq::each_tid_of_pid(pid, |tid| {
+            without_interrupts(|| {
+                rq::with_thread(tid, |held, thread| {
+                    // A victim running on a CPU keeps the time it ran up to
+                    // the kill, charged before its row can be reaped.
+                    thread.charge_cpu_if_running(now);
+                    thread.set_terminated();
+                    rq::quarantine_token(held, tid);
+                })
+            });
+        });
+        return true;
+    }
+    false
+}
+
+/// x86_64: the signal state of live thread `tid` and the process row it
+/// belongs to, read from the thread index without any lock: what a signal
+/// sent without PROCESS_MANAGER writes (#1650).
+#[cfg(target_arch = "x86_64")]
+pub fn thread_signals(tid: u64) -> Option<(u64, alloc::sync::Arc<crate::signal::ThreadSignals>)> {
+    if !rq_live() {
+        return None;
+    }
+    let pin = rq::Pin::new();
+    rq::live_signals(&pin, tid)
+}
+
+/// x86_64: the live thread of process row `pid`, from the thread index.
+#[cfg(target_arch = "x86_64")]
+pub fn row_thread(pid: u64) -> Option<u64> {
+    rq_live().then(|| rq::row_thread(pid)).flatten()
+}
+
+/// x86_64: the live threads of `tid`'s thread group, `tid` included, with
+/// their signal state, from the thread index without any lock.
+#[cfg(target_arch = "x86_64")]
+pub fn group_signals(tid: u64) -> alloc::vec::Vec<(u64, alloc::sync::Arc<crate::signal::ThreadSignals>)> {
+    if !rq_live() {
+        return alloc::vec::Vec::new();
+    }
+    let pin = rq::Pin::new();
+    rq::group_threads(tid)
+        .into_iter()
+        .filter_map(|member| rq::live_signals(&pin, member).map(|(_, signals)| (member, signals)))
+        .collect()
+}
+
+/// Thread `tid`'s state. x86_64: read under the lock of the CPU that owns
+/// it, not the whole scheduler (#1649).
+pub fn thread_state(tid: u64) -> Option<ThreadState> {
+    #[cfg(target_arch = "x86_64")]
+    if rq_live() {
+        return without_interrupts(|| rq::with_thread(tid, |_, thread| thread.state));
+    }
+    with_scheduler(|sched| sched.get_thread(tid).map(|thread| thread.state)).flatten()
+}
+
+/// Whether a user thread has not terminated. x86_64: read from the thread
+/// index without a lock.
+pub fn has_live_user_threads() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    if rq_live() {
+        return rq::any_live_user_thread();
+    }
+    with_scheduler(|sched| sched.has_userspace_threads()).unwrap_or(false)
+}
+
+/// What has become of thread `tid`, for a priority-inheritance futex whose
+/// owner it is: None when the scheduler has no such thread, else whether it
+/// has left its PI futexes (`SchedPolicy::pi_exited`), whether it has
+/// terminated, and whether a CPU still runs it. x86_64: read without a lock.
+pub fn thread_fate(tid: u64) -> Option<(bool, bool, bool)> {
+    #[cfg(target_arch = "x86_64")]
+    if rq_live() {
+        let dead = rq::is_dead(tid)?;
+        let pi_exited = rq::policy(tid).is_some_and(|sched| sched.pi_exited);
+        return Some((pi_exited, dead, rq::is_current_anywhere(tid)));
+    }
+    with_scheduler(|sched| {
+        let thread = sched.get_thread(tid)?;
+        Some((
+            thread.sched.pi_exited,
+            thread.state == ThreadState::Terminated,
+            sched.is_current_on_any_cpu(tid),
+        ))
+    })
+    .flatten()
+}
+
 /// Whether any thread has ever been given SCHED_FIFO, SCHED_RR or
 /// SCHED_IDLE. Until one has, every run queue is in arrival order and the
 /// scheduler keeps it that way without looking at policies.
@@ -8707,6 +9224,27 @@ pub fn update_sched_policy<E>(
     tid: u64,
     change: impl FnOnce(super::thread::SchedPolicy) -> Result<super::thread::SchedPolicy, E>,
 ) -> Result<(), Option<E>> {
+    // x86_64: under the lock of the CPU that owns the thread (#1649).
+    #[cfg(target_arch = "x86_64")]
+    if rq_live() {
+        return without_interrupts(|| {
+            rq::with_thread(tid, |held, thread| {
+                let mut sched = thread.sched.keeping_boosts(change(thread.sched).map_err(Some)?);
+                if sched.is_realtime() || sched.policy == SchedPolicy::IDLE || sched.is_boosted() {
+                    POLICIES_IN_USE.store(true, Ordering::Release);
+                }
+                sched.rr_used = 0;
+                sched.rr_seen = thread.cpu_ticks_total;
+                sched.yielded = false;
+                sched.head_on_requeue = false;
+                thread.sched = sched;
+                rq::publish_policy(thread);
+                rq::choose_again(held, tid);
+                Ok(())
+            })
+            .unwrap_or(Err(None))
+        });
+    }
     with_scheduler(|scheduler| {
         let Some(thread) = scheduler.get_thread_mut(tid) else {
             return Err(None);
@@ -8747,6 +9285,25 @@ pub fn update_sched_boost(
     tid: u64,
     change: impl FnOnce(&mut super::thread::SchedPolicy),
 ) -> Option<super::thread::SchedPolicy> {
+    // x86_64: under the lock of the CPU that owns the thread (#1649).
+    #[cfg(target_arch = "x86_64")]
+    if rq_live() {
+        return without_interrupts(|| {
+            rq::with_thread(tid, |held, thread| {
+                let before = thread.sched.rank();
+                change(&mut thread.sched);
+                let sched = thread.sched;
+                rq::publish_policy(thread);
+                if sched.rank() != before {
+                    if sched.rank() > SchedPolicy::DEFAULT.rank() {
+                        POLICIES_IN_USE.store(true, Ordering::Release);
+                    }
+                    rq::choose_again(held, tid);
+                }
+                sched
+            })
+        });
+    }
     with_scheduler(|scheduler| {
         let thread = scheduler.get_thread_mut(tid)?;
         let before = thread.sched.rank();
@@ -8779,7 +9336,15 @@ pub fn set_sched_policy(tid: u64, sched: super::thread::SchedPolicy) -> bool {
 }
 
 /// Thread `tid`'s scheduling policy.
+///
+/// x86_64: read without a lock from the thread index, which publishes every
+/// change; the run-time fields (`rr_used`, `yielded`, ...) read as their
+/// defaults.
 pub fn sched_policy(tid: u64) -> Option<super::thread::SchedPolicy> {
+    #[cfg(target_arch = "x86_64")]
+    if rq_live() {
+        return rq::policy(tid);
+    }
     with_scheduler(|scheduler| scheduler.get_thread(tid).map(|thread| thread.sched)).flatten()
 }
 
@@ -8814,13 +9379,35 @@ pub fn note_sched_yield() {
 /// time its threads running on other CPUs have used. Called without the
 /// process-manager lock held.
 pub fn charge_account_cpu(account: &alloc::sync::Arc<super::thread::CpuAccount>) {
+    #[cfg(target_arch = "x86_64")]
+    if rq_live() {
+        without_interrupts(|| rq::charge_account(account));
+        return;
+    }
     with_scheduler(|scheduler| scheduler.charge_account_threads(account));
+}
+
+/// x86_64: the calling thread's CPU account, read under this CPU's lock.
+#[cfg(target_arch = "x86_64")]
+fn current_cpu_account() -> Option<alloc::sync::Arc<super::thread::CpuAccount>> {
+    without_interrupts(|| {
+        let mut local = rq::local()?;
+        let tid = local.state().current_thread?;
+        local.thread(tid)?.cpu_account.clone()
+    })
 }
 
 /// `charge_account_cpu` for the caller's own process, found from the calling
 /// thread rather than the process table, so it needs no process-manager lock
 /// and is called before that lock is taken.
 pub fn charge_current_process_cpu() {
+    #[cfg(target_arch = "x86_64")]
+    if rq_live() {
+        if let Some(account) = current_cpu_account() {
+            without_interrupts(|| rq::charge_account(&account));
+        }
+        return;
+    }
     with_scheduler(|scheduler| {
         if let Some(account) = scheduler.current_thread().and_then(|thread| thread.cpu_account.clone()) {
             scheduler.charge_account_threads(&account);
@@ -8832,6 +9419,11 @@ pub fn charge_current_process_cpu() {
 /// Exited threads remain in that account; procfs must not sum only live threads.
 /// Called before taking the process-manager lock, preserving lock order.
 pub fn charge_process_cpu(pid: u64) {
+    #[cfg(target_arch = "x86_64")]
+    if rq_live() {
+        without_interrupts(|| rq::charge_pid(pid));
+        return;
+    }
     with_scheduler(|scheduler| {
         let now = crate::time::get_cpu_ticks();
         for thread in scheduler.threads.iter_mut() {
@@ -8848,6 +9440,12 @@ pub fn charge_process_cpu(pid: u64) {
 /// process's threads are blocked in syscalls. Procfs consumers such as btop
 /// need the thread-level runtime state to avoid presenting sleepers as CPU-bound.
 pub fn get_process_display_state(owner_pid: u64) -> Option<&'static str> {
+    // x86_64: from each thread under its owner's lock, tried, never the whole
+    // scheduler (#1649).
+    #[cfg(target_arch = "x86_64")]
+    if rq_live() {
+        return without_interrupts(|| rq::display_state(owner_pid));
+    }
     without_interrupts(|| {
         let scheduler_lock = try_lock_scheduler()?;
         let scheduler = scheduler_lock.as_ref()?;
@@ -9057,7 +9655,7 @@ pub fn wake_thread_any_context(tid: u64) -> WakeOutcome {
         }
         outcome
     } else {
-        match with_scheduler(|scheduler| scheduler.unblock(tid)) {
+        match unblock_thread(tid) {
             Some(UnblockOutcome::Transitioned) => {
                 set_need_resched();
                 WakeOutcome::Applied
@@ -9087,7 +9685,7 @@ fn buffer_isr_wakeup(tid: u64) -> WakeOutcome {
         }
         IsrWakePush::Full => {
             if !crate::per_cpu::in_interrupt() {
-                match with_scheduler(|scheduler| scheduler.unblock(tid)) {
+                match unblock_thread(tid) {
                     Some(UnblockOutcome::Transitioned) => WakeOutcome::Applied,
                     Some(UnblockOutcome::AlreadyRunnable) => WakeOutcome::AlreadyRunnable,
                     Some(UnblockOutcome::NotFound) | None => WakeOutcome::Rejected,

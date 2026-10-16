@@ -166,13 +166,7 @@ fn wait_for_next_tick() {
         // this CPU switches to.
         let _ = scheduler::check_and_clear_need_resched();
         scheduler::schedule();
-        let asleep = scheduler::with_scheduler(|sched| {
-            sched
-                .get_thread(tid)
-                .is_some_and(|thread| thread.state == ThreadState::BlockedOnTimer)
-        })
-        .unwrap_or(false);
-        if !asleep {
+        if scheduler::thread_state(tid) != Some(ThreadState::BlockedOnTimer) {
             break;
         }
     }

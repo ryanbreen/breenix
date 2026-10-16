@@ -101,15 +101,11 @@ fn wake_blocked_readers_try() {
         return;
     }
 
-    // Try to wake threads via the scheduler's non-blocking path
-    // Note: We use the with_scheduler variant here which may need to disable
-    // interrupts, but since we're already in an interrupt handler with a
-    // non-reentrant interrupt, this is safe.
-    crate::task::scheduler::with_scheduler(|sched| {
-        for thread_id in &readers {
-            sched.unblock(*thread_id);
-        }
-    });
+    // Each under the lock of the CPU that owns it, or held for that CPU
+    // (`unblock_thread`): never the whole scheduler (#1649).
+    for thread_id in &readers {
+        let _ = crate::task::scheduler::unblock_thread(*thread_id);
+    }
 
     // Trigger reschedule so the woken thread runs soon
     crate::task::scheduler::set_need_resched();
@@ -198,13 +194,12 @@ fn wake_blocked_readers() {
 
     log::trace!("stdin: Waking {} blocked readers", readers.len());
 
-    // Wake each blocked thread
-    crate::task::scheduler::with_scheduler(|sched| {
-        for thread_id in readers {
-            sched.unblock(thread_id);
-            log::trace!("stdin: Woke thread {}", thread_id);
-        }
-    });
+    // Each under the lock of the CPU that owns it, or held for that CPU
+    // (`unblock_thread`): never the whole scheduler (#1649).
+    for thread_id in readers {
+        let _ = crate::task::scheduler::unblock_thread(thread_id);
+        log::trace!("stdin: Woke thread {}", thread_id);
+    }
 
     // Trigger reschedule to let woken threads run
     crate::task::scheduler::set_need_resched();

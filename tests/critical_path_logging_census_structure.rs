@@ -672,6 +672,7 @@ const CRITICAL_PATH_LOG_ANCHORS: &[(&str, &str, usize)] = &[
     ("kernel/src/task/scheduler.rs", "#[cfg(feature=boot_tests)] fn probe_publication_lock_order_injection", 1),
     ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] fn abort_dispatch_and_resume", 1),
     ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] fn run_scheduler_tests", 3),
+    ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] fn spawn_x86", 1),
     ("kernel/src/task/scheduler.rs", "fn emit_pinned_placement_census", 1),
     ("kernel/src/task/scheduler.rs", "fn emit_wake_attribution_counters", 2),
     ("kernel/src/task/scheduler.rs", "fn init", 1),
@@ -709,8 +710,11 @@ const ESCAPED_SITE: (&str, &str, usize) = (
 // Routine scheduler lines were removed by 3cdadb58 and 3bc5e91b;
 // clock_settime's diagnostic was removed by 8aae5ba0, and #1635's dispatch
 // rewrite removed eight. Restoring any of those calls is still an unexpected
-// census entry.
-const CRITICAL_PATH_LOG_TOTAL: usize = 88;
+// census entry. #1649 added one: x86-64 publishes a new thread without the
+// scheduler lock (`spawn_x86`), and logs a kernel thread's spawn there, after
+// releasing the run-queue lock, where `add_thread_inner` logged it under the
+// whole scheduler; `add_thread_inner` keeps its line for ARM64 and early boot.
+const CRITICAL_PATH_LOG_TOTAL: usize = 89;
 
 fn wider_anchors() -> Vec<(&'static str, &'static str, usize)> {
     let mut anchors = CRITICAL_PATH_LOG_ANCHORS.to_vec();

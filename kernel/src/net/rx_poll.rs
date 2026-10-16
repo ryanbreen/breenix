@@ -55,22 +55,12 @@ fn sleep_one_tick() {
         .saturating_mul(1_000_000_000)
         .saturating_add(nanos)
         .saturating_add(crate::time::timer::MS_PER_TICK * 1_000_000);
-    scheduler::with_scheduler(|sched| {
-        if sched.get_thread(tid).is_some() {
-            sched.block_current_for_timer(wake_at);
-        }
-    });
+    scheduler::with_current(|sched| sched.block_current_for_timer(wake_at));
     scheduler::yield_current();
 
     loop {
         crate::arch_halt_with_interrupts();
-        let still_blocked = scheduler::with_scheduler(|sched| {
-            sched
-                .get_thread(tid)
-                .is_some_and(|thread| thread.state == ThreadState::BlockedOnTimer)
-        })
-        .unwrap_or(false);
-        if !still_blocked {
+        if scheduler::thread_state(tid) != Some(ThreadState::BlockedOnTimer) {
             break;
         }
     }

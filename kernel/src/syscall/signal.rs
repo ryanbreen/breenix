@@ -163,15 +163,20 @@ pub(crate) fn kill_process_now(victim: ProcessId, exit_code: i32, claimed: Optio
         // Deferred: wake. A thread that has blocked is woken here, and one
         // about to block refuses to (`Thread::mark_kill_pending`), so its
         // signal check runs and finds SIGKILL.
-        crate::task::scheduler::with_scheduler(|scheduler| {
-            scheduler.wake_process_threads_for_kill(victim.as_u64());
-        });
+        crate::task::scheduler::wake_process_threads_for_kill(victim.as_u64());
         return;
     }
     crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_SIGNAL);
-    crate::task::scheduler::with_scheduler(|scheduler| {
-        scheduler.terminate_process_threads(victim.as_u64());
-    });
+    // x86_64: each thread under the lock of the CPU that owns it (#1649).
+    #[cfg(target_arch = "x86_64")]
+    let quarantined = crate::task::scheduler::terminate_process_threads(victim.as_u64());
+    #[cfg(not(target_arch = "x86_64"))]
+    let quarantined = false;
+    if !quarantined {
+        crate::task::scheduler::with_scheduler(|scheduler| {
+            scheduler.terminate_process_threads(victim.as_u64());
+        });
+    }
 
     let batch = crate::task::scheduler::GroupBatchId::for_single_victim(victim.as_u64());
     crate::task::scheduler::Scheduler::send_exit_expedite_sgi(victim.as_u64(), batch);
@@ -204,10 +209,7 @@ fn claim_kill_locked(
         process.group_exit_code.get_or_insert(exit_code);
         process.signals.set_pending(SIGKILL);
     }
-    let claimed = crate::task::scheduler::with_scheduler(|scheduler| {
-        scheduler.claim_process_threads_for_kill(victim.as_u64())
-    })
-    .unwrap_or(true);
+    let claimed = crate::task::scheduler::claim_process_threads_for_kill(victim.as_u64());
     if claimed {
         if let Some(process) = manager.get_process_mut(victim) {
             process.signals.clear_pending(SIGKILL);
@@ -992,17 +994,17 @@ fn wait_for_signal(thread_id: u64) {
 }
 
 fn finish_signal_wait(thread_id: u64) {
-    crate::task::scheduler::with_scheduler(|sched| {
-        if let Some(thread) = sched.get_thread_mut(thread_id) {
-            thread.blocked_in_syscall = false;
-            thread.saved_userspace_context = None;
-            thread.wake_time_ns = None;
-            thread
-                .signals
-                .wait_set
-                .store(0, core::sync::atomic::Ordering::Release);
-            thread.set_running();
-        }
+    // The calling thread: under the lock of the CPU that owns it, this one on
+    // x86_64 (#1649).
+    crate::task::scheduler::with_thread_mut(thread_id, |thread| {
+        thread.blocked_in_syscall = false;
+        thread.saved_userspace_context = None;
+        thread.wake_time_ns = None;
+        thread
+            .signals
+            .wait_set
+            .store(0, core::sync::atomic::Ordering::Release);
+        thread.set_running();
     });
 }
 
@@ -1430,7 +1432,7 @@ pub fn sys_alarm(seconds: u64) -> SyscallResult {
     let timers = p.itimers.clone();
     let cpu = p.cpu.clone();
     drop(guard);
-    crate::task::scheduler::with_scheduler(|s| s.register_signal_timers(&timers, &cpu));
+    crate::task::scheduler::register_signal_timers(&timers, &cpu);
     SyscallResult::Ok(old.it_value.to_micros().div_ceil(1_000_000))
 }
 
@@ -1632,7 +1634,7 @@ pub fn sys_setitimer(which: i32, new_value: u64, old_value: u64) -> SyscallResul
     };
     // The scheduler lock ranks above the process manager's, so the timers are
     // registered after the manager is released, as alarm() does.
-    crate::task::scheduler::with_scheduler(|s| s.register_signal_timers(&timers, &cpu));
+    crate::task::scheduler::register_signal_timers(&timers, &cpu);
 
     // Write old value to userspace (if requested)
     if old_value != 0 {

@@ -216,9 +216,7 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
         });
 
         // Check if there are any other userspace threads to run
-        let has_other_userspace_threads =
-            crate::task::scheduler::with_scheduler(|sched| sched.has_userspace_threads())
-                .unwrap_or(false);
+        let has_other_userspace_threads = crate::task::scheduler::has_live_user_threads();
 
         if !has_other_userspace_threads {
             if !crate::task::userspace_completion::reporter_started() {

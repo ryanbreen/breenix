@@ -882,7 +882,9 @@ fn validate_io_wake_buffers_before_thread_context_overflow_fallback(
         .ok_or_else(|| "full-buffer arm does not inspect interrupt context".to_string())?;
     let thread_context = braced_block(full, &code_mask(full), interrupt_offset)
         .ok_or_else(|| "cannot parse thread-context overflow arm".to_string())?;
-    for required in ["with_scheduler", "unblock", "Applied", "AlreadyRunnable"] {
+    // `unblock_thread` applies the wake inline: under the scheduler lock, or
+    // on x86-64 under the lock of the CPU that owns the thread (#1649).
+    for required in ["unblock_thread", "Applied", "AlreadyRunnable"] {
         if !has_identifier(thread_context, required) {
             return Err(format!("thread-context overflow arm is missing {required}"));
         }
@@ -900,7 +902,9 @@ fn validate_io_wake_buffers_before_thread_context_overflow_fallback(
             return Err(format!("real-interrupt overflow arm is missing {required}"));
         }
     }
-    if has_identifier(interrupt_context, "with_scheduler") {
+    if has_identifier(interrupt_context, "with_scheduler")
+        || has_identifier(interrupt_context, "unblock_thread")
+    {
         return Err("real-interrupt overflow arm takes the scheduler lock".to_string());
     }
     Ok(())

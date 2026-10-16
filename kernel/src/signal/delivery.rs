@@ -1354,6 +1354,21 @@ fn stop_thread_group(
     let Some(group) = manager.thread_group_of(pid) else {
         return;
     };
+    // x86_64: each thread under the lock of the CPU that owns it (#1649).
+    #[cfg(target_arch = "x86_64")]
+    for row in manager.group_rows_mut(group) {
+        row.job.stopped = Some(sig);
+        row.signals.thread.mirror.set_job_stopped(true);
+        row.signals.thread.return_work.store(true, core::sync::atomic::Ordering::Release);
+        row.signals.clear_pending(SIGCONT);
+        let Some(thread_id) = row.main_thread.as_ref().map(|thread| thread.id) else {
+            continue;
+        };
+        if crate::task::scheduler::park_for_stop(thread_id, Some(thread_id) == caller_tid) {
+            row.job.parked = true;
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
     crate::task::scheduler::with_scheduler(|scheduler| {
         for row in manager.group_rows_mut(group) {
             row.job.stopped = Some(sig);
@@ -1390,6 +1405,13 @@ fn complete_stop_report(manager: &mut ProcessManager, group: u64, caller_tid: Op
     {
         return;
     }
+    #[cfg(target_arch = "x86_64")]
+    let quiescent = manager.group_rows(group).all(|row| {
+        row.main_thread.as_ref().is_none_or(|thread| {
+            Some(thread.id) == caller_tid || !crate::task::scheduler::thread_may_run(thread.id)
+        })
+    });
+    #[cfg(not(target_arch = "x86_64"))]
     let quiescent = crate::task::scheduler::with_scheduler(|scheduler| {
         manager.group_rows(group).all(|row| {
             row.main_thread.as_ref().is_none_or(|thread| {
@@ -1467,6 +1489,20 @@ pub fn continue_thread_group_locked(manager: &mut ProcessManager, pid: ProcessId
         return;
     };
     let mut was_stopped = false;
+    // x86_64: each wake under the lock of the CPU that owns the thread
+    // (#1649).
+    #[cfg(target_arch = "x86_64")]
+    for row in manager.group_rows_mut(group) {
+        row.signals.discard_pending(STOP_SIGNALS);
+        was_stopped |= row.job.stopped.take().is_some();
+        row.signals.thread.mirror.set_job_stopped(false);
+        if core::mem::take(&mut row.job.parked) {
+            if let Some(thread) = row.main_thread.as_ref() {
+                let _ = crate::task::scheduler::unblock_thread(thread.id);
+            }
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
     crate::task::scheduler::with_scheduler(|scheduler| {
         for row in manager.group_rows_mut(group) {
             row.signals.discard_pending(STOP_SIGNALS);

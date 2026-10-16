@@ -1857,8 +1857,7 @@ impl Thread {
         self.realtime_sleep = false;
         #[cfg(target_arch = "x86_64")]
         if self.state != ThreadState::Terminated {
-            crate::task::scheduler::note_thread_terminated();
-            crate::task::scheduler::publish_cached_root(self, 0);
+            crate::task::scheduler::note_thread_terminated(self);
         }
         self.state = ThreadState::Terminated;
     }

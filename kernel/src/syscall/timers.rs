@@ -163,7 +163,7 @@ fn timer_settime(id: i32, flags: u64, new_value: u64, old_value: u64) -> Result<
     let (old_value_ns, old_interval) =
         caller.timers.posix.settime(id, flags, interval, value, &now(&caller.cpu))?;
     if value != 0 {
-        crate::task::scheduler::with_scheduler(|s| s.register_signal_timers(&caller.timers, &caller.cpu));
+        crate::task::scheduler::register_signal_timers(&caller.timers, &caller.cpu);
     }
     if old_value != 0 {
         copy_to_user(old_value as *mut Itimerspec, &itimerspec(old_interval, old_value_ns))?;

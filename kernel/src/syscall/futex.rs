@@ -113,19 +113,13 @@ enum OwnerState {
 const PI_DYING_RECHECK_NS: u64 = 1_000_000;
 
 fn owner_state(tid: u64) -> OwnerState {
-    crate::task::scheduler::with_scheduler(|sched| match sched.get_thread(tid) {
+    match crate::task::scheduler::thread_fate(tid) {
         None => OwnerState::Gone,
-        Some(thread) if thread.sched.pi_exited => OwnerState::Gone,
-        Some(thread) if thread.state == ThreadState::Terminated => {
-            if sched.is_current_on_any_cpu(tid) {
-                OwnerState::Dying
-            } else {
-                OwnerState::Gone
-            }
-        }
-        Some(_) => OwnerState::Live,
-    })
-    .unwrap_or(OwnerState::Live)
+        Some((true, _, _)) => OwnerState::Gone,
+        Some((false, true, true)) => OwnerState::Dying,
+        Some((false, true, false)) => OwnerState::Gone,
+        Some((false, false, _)) => OwnerState::Live,
+    }
 }
 
 /// The highest-ranked of `waiters`, the earliest of those sharing that rank.

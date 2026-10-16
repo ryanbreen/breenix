@@ -195,11 +195,8 @@ pub fn user_state(thread_id: u64) -> FpuState {
         if OWNER[crate::per_cpu::cpu_id()].load(Ordering::Relaxed) == thread_id {
             return FpuState::capture();
         }
-        crate::task::scheduler::with_scheduler(|sched| {
-            sched.get_thread(thread_id).map(|thread| thread.fpu)
-        })
-        .flatten()
-        .unwrap_or(FpuState::initial())
+        crate::task::scheduler::with_thread_mut(thread_id, |thread| thread.fpu)
+            .unwrap_or(FpuState::initial())
     })
 }
 
@@ -211,11 +208,7 @@ pub fn set_user_state(thread_id: u64, state: &FpuState) {
             state.restore();
             return;
         }
-        crate::task::scheduler::with_scheduler(|sched| {
-            if let Some(thread) = sched.get_thread_mut(thread_id) {
-                thread.fpu = *state;
-            }
-        });
+        crate::task::scheduler::with_thread_mut(thread_id, |thread| thread.fpu = *state);
     })
 }
 
