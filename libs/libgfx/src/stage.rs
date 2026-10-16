@@ -129,12 +129,13 @@ fn text(
     scale: usize,
     color: Color,
 ) {
+    if width == 0 { return; }
+    fb.push_clip(crate::framebuf::Rect::new(x as i32,y as i32,width as i32,(7*scale) as i32));
     for (i, &ch) in bytes.iter().enumerate() {
-        if (i + 1) * 6 * scale > width {
-            break;
-        }
+        if i * 6 * scale >= width { break; }
         font::draw_char(fb, ch, x + i * 6 * scale, y, color, scale);
     }
+    fb.pop_clip();
 }
 impl Image<'_> {
     fn valid(&self) -> bool {
@@ -262,7 +263,7 @@ pub fn draw(fb: &mut FrameBuf, run: &Run<'_>) -> Result<(), StageError> {
     fill(fb, 0, 0, 1280, 96, HEADER);
     let mut title = Text::new();
     let _ = write!(title, "BREENIX / {}", run.suite);
-    text(fb, title.bytes(), 24, 16, 1232, 3, Color::WHITE);
+    text(fb, title.bytes(), 24, 16, 1256, 3, Color::WHITE);
     let mut progress = Text::new();
     let _ = write!(
         progress,
@@ -273,8 +274,8 @@ pub fn draw(fb: &mut FrameBuf, run: &Run<'_>) -> Result<(), StageError> {
         run.ui_time_ms,
         run.fps
     );
-    text(fb, progress.bytes(), 24, 48, 1232, 1, Color::WHITE);
-    text(fb, counts(run).bytes(), 24, 68, 1232, 2, Color::WHITE);
+    text(fb, progress.bytes(), 24, 48, 1256, 1, Color::WHITE);
+    text(fb, counts(run).bytes(), 24, 68, 1256, 2, Color::WHITE);
     for (i, tile) in run.tiles.iter().enumerate() {
         let slot = i + run.milestones.iter().filter(|m| m.end <= i).count();
         let (x, y) = (16 + 40 * (slot % 20), 112 + 28 * (slot / 20));
@@ -315,23 +316,23 @@ pub fn draw(fb: &mut FrameBuf, run: &Run<'_>) -> Result<(), StageError> {
             m.id.as_bytes(),
             left + 4,
             736,
-            right - left - 10,
+            right - left - 6,
             1,
             Color::WHITE,
         );
     }
-    text(fb, run.boundary.as_bytes(), 24, 776, 1232, 1, DIM);
+    text(fb, run.boundary.as_bytes(), 24, 776, 1256, 1, DIM);
     if let Some(finale) = run.finale {
         fill(fb, 48, 240, 720, 240, HEADER);
-        text(fb, b"RUN COMPLETE", 72, 264, 672, 3, Color::WHITE);
-        text(fb, counts(run).bytes(), 72, 312, 672, 2, Color::WHITE);
+        text(fb, b"RUN COMPLETE", 72, 264, 696, 3, Color::WHITE);
+        text(fb, counts(run).bytes(), 72, 312, 696, 2, Color::WHITE);
         let mut slowest = Text::new();
         let _ = write!(
             slowest,
             "slowest {} {} ms",
             finale.slowest, finale.slowest_ms
         );
-        text(fb, slowest.bytes(), 72, 352, 672, 1, Color::WHITE);
+        text(fb, slowest.bytes(), 72, 352, 696, 1, Color::WHITE);
     }
     Ok(())
 }
@@ -367,8 +368,8 @@ fn draw_spotlight(fb: &mut FrameBuf, run: &Run<'_>) {
     let (group, id) = selected.id.split_once('/').unwrap_or(("", selected.id));
     let mut heading = Text::new();
     let _ = write!(heading, "CASE {} / {}", run.selected + 1, group);
-    text(fb, heading.bytes(), 840, 120, 416, 1, Color::WHITE);
-    text(fb, id.as_bytes(), 840, 132, 416, 1, Color::WHITE);
+    text(fb, heading.bytes(), 840, 120, 424, 1, Color::WHITE);
+    text(fb, id.as_bytes(), 840, 132, 424, 1, Color::WHITE);
     let mut key = Text::new();
     let _ = write!(key, "key {}", selected.key);
     text(fb, key.bytes(), 840, 144, 424, 1, Color::WHITE);
@@ -416,7 +417,7 @@ fn draw_spotlight(fb: &mut FrameBuf, run: &Run<'_>) {
             }
             let mut label = Text::new();
             let _ = write!(label, "{differing} pixels differ; bound {bound}");
-            text(fb, label.bytes(), 840, 312, 416, 1, Color::WHITE);
+            text(fb, label.bytes(), 840, 312, 424, 1, Color::WHITE);
         }
         Spotlight::Timing {
             frame_us,
@@ -441,7 +442,7 @@ fn draw_spotlight(fb: &mut FrameBuf, run: &Run<'_>) {
             fill(fb, 848, 432, 400, 1, Color::WHITE);
             let mut label = Text::new();
             let _ = write!(label, "frame times us; budget {budget_us}");
-            text(fb, label.bytes(), 840, 312, 416, 1, Color::WHITE);
+            text(fb, label.bytes(), 840, 312, 424, 1, Color::WHITE);
         }
     }
 }
