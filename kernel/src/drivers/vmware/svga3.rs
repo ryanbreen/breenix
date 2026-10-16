@@ -24,7 +24,8 @@
 //!   3. UPDATE_GB_IMAGE — tell GPU that guest memory changed
 //!   4. UPDATE_GB_SCREENTARGET — present dirty region to display
 //!
-//! Reference: Linux kernel drivers/gpu/drm/vmwgfx/ and device_include/svga_reg.h
+//! Wire provenance: VMware-authored device interface definitions; the
+//! command submission derivation and exact source anchors are in command.rs.
 
 extern crate alloc;
 
@@ -162,43 +163,19 @@ const PAGE_SIZE: usize = 4096;
 
 // ─── Command buffer structures ──────────────────────────────────────────────
 
-/// Command buffer status codes (volatile, written by device)
-#[repr(u32)]
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum CbStatus {
-    None = 0,
-    Completed = 1,
-    #[allow(dead_code)]
-    QueueFull = 2,
-    #[allow(dead_code)]
-    CommandError = 3,
-    #[allow(dead_code)]
-    HeaderError = 4,
-    #[allow(dead_code)]
-    Preempted = 5,
-    #[allow(dead_code)]
-    SubmissionError = 6,
-}
+#[path = "command.rs"]
+mod command;
+use command::Header as SvgaCbHeader;
+const SVGA_CB_CONTEXT_0: u32 = 0;
+const SVGA_CB_CONTEXT_DEVICE: u32 = 63;
 
-/// Command buffer context IDs (encoded in lower 6 bits of COMMAND_LOW)
-#[allow(dead_code)]
-const SVGA_CB_CONTEXT_0: u32 = 0x0;
-/// Device-level context for OTable, MOB, Surface, ScreenTarget management
-const SVGA_CB_CONTEXT_DEVICE: u32 = 0x3F;
-
-/// SVGACBHeader — 56 bytes, must be 64-byte aligned in memory.
-#[repr(C)]
-struct SvgaCbHeader {
-    status: u32,
-    error_offset: u32,
-    id: u64,
-    flags: u32,
-    length: u32,
-    pa: u64,
-    offset: u32,
-    dx_context: u32,
-    must_be_zero: [u32; 6],
-}
+// Breenix policy: serialize HIGH/LOW register pairs and permit one outstanding
+// command. State is Off -> Ready after START_STOP_CONTEXT(enable=1) completes;
+// any submission error/timeout -> Failed until a fresh device boot. No command
+// is retried, and a late device write cannot resurrect a failed context.
+static CB_LOCK: spin::Mutex<()> = spin::Mutex::new(());
+static CB_READY: AtomicBool = AtomicBool::new(false);
+static CB_FAILED: AtomicBool = AtomicBool::new(false);
 
 // ─── Driver state ───────────────────────────────────────────────────────────
 
@@ -259,102 +236,102 @@ unsafe fn reg_write(index: u32, value: u32) {
 
 // ─── Command buffer submission ──────────────────────────────────────────────
 
-/// Flag: don't generate an IRQ on command buffer completion.
-const SVGA_CB_FLAG_NO_IRQ: u32 = 1 << 0;
-
-/// Submit a command buffer to the SVGA3 device with a specific context.
-///
-/// The header + inline commands are allocated on a page boundary.
-/// COMMAND_LOW/HIGH carry the PFN (phys >> 12) with context in bits [5:0],
-/// matching the Linux vmwgfx encoding.
+/// Submit using VMware's published SVGACBHeader and byte-address registers.
+/// Caller holds CB_LOCK. All current packets fit behind a 64-byte header in
+/// one page, so translating that page preserves physical contiguity. No
+/// implicit HHDM subtraction, PFN conversion or cross-page assumption.
 fn submit_commands_ctx(cmds: &[u8], ctx: u32) -> Result<(), &'static str> {
-    use crate::serial_println;
-
     if cmds.is_empty() {
         return Ok(());
     }
-
-    const HEADER_SIZE: usize = 64;
-    let total_size = HEADER_SIZE + cmds.len();
-
-    // Page-align the allocation so PFN encoding works cleanly.
-    let layout = Layout::from_size_align(total_size, PAGE_SIZE)
-        .map_err(|_| "Invalid layout for command buffer")?;
-    let buf_ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
-    if buf_ptr.is_null() {
-        return Err("Failed to allocate command buffer");
+    let header_size = core::mem::size_of::<SvgaCbHeader>();
+    if cmds.len() > PAGE_SIZE - header_size {
+        return Err("SVGA batch exceeds single DMA page");
     }
-
-    let buf_virt = buf_ptr as u64;
-    let buf_phys = buf_virt - HHDM_BASE;
-
-    let header = buf_ptr as *mut SvgaCbHeader;
-    let cmd_phys = buf_phys + HEADER_SIZE as u64;
-
-    unsafe {
-        (*header).status = CbStatus::None as u32;
-        (*header).error_offset = 0;
-        (*header).id = 0;
-        (*header).flags = SVGA_CB_FLAG_NO_IRQ;
-        (*header).length = cmds.len() as u32;
-        (*header).pa = cmd_phys;
-        (*header).offset = 0;
-        (*header).dx_context = 0;
-        (*header).must_be_zero = [0; 6];
-
-        let cmd_dst = buf_ptr.add(HEADER_SIZE);
-        core::ptr::copy_nonoverlapping(cmds.as_ptr(), cmd_dst, cmds.len());
-
-        // Flush all CPU caches to main memory so the device sees our writes
-        // (ARM64 DMA: device reads from physical memory, not CPU cache)
-        cache_clean_range(buf_virt, total_size);
-        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
-
-        // Encode as PFN (phys >> 12) with context in bits [5:0]
-        // (matches Linux vmwgfx vmw_cmdbuf_ctx_submit encoding)
-        let pfn = buf_phys >> 12;
-        let cmd_high = (pfn >> 20) as u32;
-        let cmd_low = ((pfn & 0xFFFFF) as u32) | (ctx & 0x3F);
-
-        reg_write(SVGA_REG_COMMAND_HIGH, cmd_high);
-        reg_write(SVGA_REG_COMMAND_LOW, cmd_low);
-
-        let mut spins = 0u32;
-        loop {
-            // Invalidate CPU cache for the status field so we see device writes
-            cache_invalidate_range(buf_virt, 64);
-            core::arch::asm!("dsb sy", options(nostack, preserves_flags));
-
-            let status = core::ptr::read_volatile(&(*header).status);
-            if status != CbStatus::None as u32 {
-                if status == CbStatus::Completed as u32 {
-                    break;
-                }
-                let err_off = core::ptr::read_volatile(&(*header).error_offset);
-                serial_println!(
-                    "[svga3] CB error: ctx={:#x} status={} err_off={} len={}",
-                    ctx,
-                    status,
-                    err_off,
-                    cmds.len()
-                );
-                alloc::alloc::dealloc(buf_ptr, layout);
-                return Err("Command buffer error");
+    let layout = Layout::from_size_align(PAGE_SIZE, PAGE_SIZE).map_err(|_| "SVGA DMA layout")?;
+    let storage = unsafe { alloc::alloc::alloc_zeroed(layout) };
+    if storage.is_null() {
+        return Err("SVGA DMA allocation failed");
+    }
+    let physical = crate::platform_config::kernel_va_to_ipa(storage as u64);
+    let (high, low) = match command::address_words(physical, ctx) {
+        Ok(words) => words,
+        Err(error) => {
+            unsafe {
+                alloc::alloc::dealloc(storage, layout);
             }
-            spins += 1;
-            if spins > 10_000_000 {
-                serial_println!("[svga3] CB timeout: ctx={:#x} pfn={:#x} phys={:#x} len={} cmd_hi={:#x} cmd_lo={:#x}",
-                    ctx, pfn, buf_phys, cmds.len(), cmd_high, cmd_low);
-                alloc::alloc::dealloc(buf_ptr, layout);
-                return Err("Command buffer timeout");
+            return Err(error);
+        }
+    };
+    let value = match SvgaCbHeader::new(physical + header_size as u64, cmds.len()) {
+        Ok(header) => header,
+        Err(error) => {
+            unsafe {
+                alloc::alloc::dealloc(storage, layout);
+            }
+            return Err(error);
+        }
+    };
+    unsafe {
+        let header = storage as *mut SvgaCbHeader;
+        core::ptr::write(header, value);
+        core::ptr::copy_nonoverlapping(cmds.as_ptr(), storage.add(header_size), cmds.len());
+        cache_clean_range(storage as u64, header_size + cmds.len());
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+        // COMMAND_HIGH latches the upper byte-address bits before COMMAND_LOW
+        // publishes the aligned lower address and the six-bit context selector.
+        reg_write(SVGA_REG_COMMAND_HIGH, high);
+        reg_write(SVGA_REG_COMMAND_LOW, low);
+        let start = crate::arch_impl::aarch64::timer::rdtsc();
+        let budget = crate::arch_impl::aarch64::timer::frequency_hz() * 5;
+        loop {
+            cache_invalidate_range(storage as u64, header_size);
+            core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+            let status = core::ptr::read_volatile(&(*header).status);
+            if status == 1 {
+                // SVGACBStatus::COMPLETED, not merely nonzero.
+                alloc::alloc::dealloc(storage, layout);
+                return Ok(());
+            }
+            if status != 0 {
+                // Conservatively retain the allocation for every error status,
+                // including unknown and PARTIAL_COMPLETE; no documented reset
+                // has returned ownership. The wrapper stops further commands.
+                return Err("SVGA device rejected command buffer");
+            }
+            if crate::arch_impl::aarch64::timer::rdtsc().wrapping_sub(start) >= budget {
+                return Err("SVGA command buffer timed out; DMA retained");
             }
             core::hint::spin_loop();
         }
-
-        alloc::alloc::dealloc(buf_ptr, layout);
     }
+}
 
-    Ok(())
+/// SVGADCCmdStartStop: device command ID, enable DWORD, context DWORD.
+/// The device context carries this control message, not SVGA3D packets.
+fn start_context0() -> Result<(), &'static str> {
+    let _guard = CB_LOCK.lock();
+    if CB_FAILED.load(Ordering::Acquire) {
+        return Err("SVGA context failed; device reset required");
+    }
+    if CB_READY.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    let words = [1u32, 1, SVGA_CB_CONTEXT_0];
+    let mut bytes = [0u8; 12];
+    for (index, word) in words.iter().enumerate() {
+        bytes[index * 4..index * 4 + 4].copy_from_slice(&word.to_le_bytes());
+    }
+    match submit_commands_ctx(&bytes, SVGA_CB_CONTEXT_DEVICE) {
+        Ok(()) => {
+            CB_READY.store(true, Ordering::Release);
+            Ok(())
+        }
+        Err(error) => {
+            CB_FAILED.store(true, Ordering::Release);
+            Err(error)
+        }
+    }
 }
 
 /// Clean (write-back) CPU cache for a memory range so device can read it.
@@ -379,14 +356,48 @@ unsafe fn cache_invalidate_range(virt: u64, size: usize) {
     }
 }
 
-/// Submit device-level commands (OTable, MOB, Surface, ScreenTarget setup).
-fn submit_device_commands(cmds: &[u8]) -> Result<(), &'static str> {
-    submit_commands_ctx(cmds, SVGA_CB_CONTEXT_DEVICE)
-}
-
-/// Submit rendering commands (UPDATE_GB_IMAGE, UPDATE_GB_SCREENTARGET).
+/// All SVGA3D packets use the explicitly started context 0. Error recovery is
+/// fail-stop: preserve the failure and device-visible storage until reset.
+/// A reboot, rather than an undocumented stop/restart-and-retry, reestablishes
+/// object tables and backing. Normal VMware initialization is the black-box
+/// check of this routing; a non-COMPLETED status remains a failure.
 fn submit_commands(cmds: &[u8]) -> Result<(), &'static str> {
-    submit_commands_ctx(cmds, SVGA_CB_CONTEXT_DEVICE)
+    let _guard = CB_LOCK.lock();
+    if CB_FAILED.load(Ordering::Acquire) || !CB_READY.load(Ordering::Acquire) {
+        return Err("SVGA submission context is unavailable");
+    }
+    // svga_reg.h SVGA_CMD_FENCE (30), SVGA_REG_FENCE (69). Buffer
+    // consumption alone does not prove that preceding GPU work is finished.
+    // Select a value different from the register's current value; the lock
+    // ensures no other Breenix submission can satisfy it prematurely.
+    let previous = unsafe { reg_read(69) };
+    let next = match previous.wrapping_add(1) {
+        0 => 1,
+        value => value,
+    };
+    let mut fenced = Vec::with_capacity(cmds.len() + 8);
+    fenced.extend_from_slice(cmds);
+    fenced.extend_from_slice(&30u32.to_le_bytes());
+    fenced.extend_from_slice(&next.to_le_bytes());
+    let result = submit_commands_ctx(&fenced, SVGA_CB_CONTEXT_0).and_then(|()| {
+        let start = crate::arch_impl::aarch64::timer::rdtsc();
+        let budget = crate::arch_impl::aarch64::timer::frequency_hz() * 5;
+        loop {
+            if unsafe { reg_read(69) } == next {
+                return Ok(());
+            }
+            if crate::arch_impl::aarch64::timer::rdtsc().wrapping_sub(start) >= budget {
+                return Err("SVGA GPU fence timed out");
+            }
+            core::hint::spin_loop();
+        }
+    });
+    if result.is_err() {
+        CB_FAILED.store(true, Ordering::Release);
+        CB_READY.store(false, Ordering::Release);
+        STDU_READY.store(false, Ordering::Release);
+    }
+    result
 }
 
 // ─── SVGA3D command encoding ────────────────────────────────────────────────
@@ -747,7 +758,7 @@ fn alloc_dma_pages(num_pages: usize) -> Result<(u64, u64, usize), &'static str> 
         return Err("Failed to allocate DMA pages");
     }
     let virt = ptr as u64;
-    let phys = virt - HHDM_BASE;
+    let phys = crate::platform_config::kernel_va_to_ipa(virt);
     Ok((virt, phys, size))
 }
 
@@ -789,6 +800,11 @@ pub fn init_stdu() -> Result<(), &'static str> {
         return Err("SVGA3 device does not support GBObjects (needed for STDU)");
     }
 
+    if unsafe { CAPABILITIES } & SVGA_CAP_COMMAND_BUFFERS == 0 {
+        return Err("SVGA command buffers are required for STDU");
+    }
+    start_context0()?;
+
     let width = unsafe { DISPLAY_WIDTH };
     let height = unsafe { DISPLAY_HEIGHT };
     serial_println!(
@@ -822,7 +838,7 @@ pub fn init_stdu() -> Result<(), &'static str> {
         OTABLE_MOB_BASE_ID + 2,
     )?;
 
-    submit_device_commands(&enc.finish())?;
+    submit_commands(&enc.finish())?;
     serial_println!("[svga3-stdu] OTables initialized (MOB, Surface, ScreenTarget)");
 
     // Phase 2: Allocate compositor buffer and create MOB
@@ -854,7 +870,7 @@ pub fn init_stdu() -> Result<(), &'static str> {
     let mut enc = CmdEncoder::new();
     let ppn = buf_phys >> 12;
     enc.define_gb_mob64(COMPOSITOR_MOB_ID, SVGA3D_MOBFMT_RANGE, ppn, buf_size as u32);
-    submit_device_commands(&enc.finish())?;
+    submit_commands(&enc.finish())?;
     serial_println!(
         "[svga3-stdu] Compositor MOB defined (id={}, ppn={:#x})",
         COMPOSITOR_MOB_ID,
@@ -876,7 +892,7 @@ pub fn init_stdu() -> Result<(), &'static str> {
         0, // arraySize, pad
     );
     enc.bind_gb_surface(COMPOSITOR_SURFACE_ID, COMPOSITOR_MOB_ID);
-    submit_device_commands(&enc.finish())?;
+    submit_commands(&enc.finish())?;
     serial_println!(
         "[svga3-stdu] Surface {} created and bound to MOB {}",
         COMPOSITOR_SURFACE_ID,
@@ -887,7 +903,7 @@ pub fn init_stdu() -> Result<(), &'static str> {
     let mut enc = CmdEncoder::new();
     enc.define_gb_screentarget(COMPOSITOR_STID, width, height, SVGA_STFLAG_PRIMARY);
     enc.bind_gb_screentarget(COMPOSITOR_STID, COMPOSITOR_SURFACE_ID);
-    submit_device_commands(&enc.finish())?;
+    submit_commands(&enc.finish())?;
     serial_println!(
         "[svga3-stdu] Screen target {} defined and bound to surface {}",
         COMPOSITOR_STID,

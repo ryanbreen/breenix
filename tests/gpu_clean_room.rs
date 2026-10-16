@@ -10,10 +10,16 @@ struct TrackingAllocator;
 static WATCHED: AtomicUsize = AtomicUsize::new(0);
 static RELEASED: AtomicBool = AtomicBool::new(false);
 unsafe impl GlobalAlloc for TrackingAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 { System.alloc(layout) }
-    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 { System.alloc_zeroed(layout) }
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        System.alloc(layout)
+    }
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        System.alloc_zeroed(layout)
+    }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        if ptr as usize == WATCHED.load(Ordering::SeqCst) { RELEASED.store(true, Ordering::SeqCst); }
+        if ptr as usize == WATCHED.load(Ordering::SeqCst) {
+            RELEASED.store(true, Ordering::SeqCst);
+        }
         System.dealloc(ptr, layout);
     }
 }
@@ -30,7 +36,10 @@ fn request_storage_survives_device_ownership_and_releases_only_after_return() {
     assert_eq!(request.ptr(0) as usize % 4096, 0);
     assert_eq!(request.ptr(1) as usize - request.ptr(0) as usize, 64);
     assert_eq!(request.ptr(2) as usize - request.ptr(1) as usize, 64);
-    assert_eq!([request.len(0), request.len(1), request.len(2)], [32, 7, 24]);
+    assert_eq!(
+        [request.len(0), request.len(1), request.len(2)],
+        [32, 7, 24]
+    );
     unsafe {
         assert_eq!(std::slice::from_raw_parts(request.ptr(0), 32), &[1; 32]);
         assert_eq!(std::slice::from_raw_parts(request.ptr(1), 7), &payload);
@@ -57,4 +66,29 @@ fn request_storage_survives_device_ownership_and_releases_only_after_return() {
     drop(request);
     assert!(RELEASED.load(Ordering::SeqCst));
     WATCHED.store(0, Ordering::SeqCst);
+}
+
+#[path = "../kernel/src/drivers/vmware/command.rs"]
+mod svga_command;
+
+#[test]
+fn svga_submission_uses_byte_addresses_and_a_complete_64_byte_header() {
+    use svga_command::{address_words, Header};
+    assert_eq!(std::mem::size_of::<Header>(), 64);
+    assert_eq!(std::mem::align_of::<Header>(), 64);
+    assert_eq!(address_words(0x1234567800, 0).unwrap(), (0x12, 0x34567800));
+    assert_eq!(address_words(0x1234567800, 63).unwrap(), (0x12, 0x3456783f));
+    assert!(address_words(0x1001, 0).is_err());
+    assert!(address_words(0x1000, 64).is_err());
+    let header = Header::new(0x1234567840, 12).unwrap();
+    assert_eq!((header.status, header.error_offset, header.id), (0, 0, 0));
+    assert_eq!(
+        (header.flags, header.length, header.pa),
+        (1, 12, 0x1234567840)
+    );
+    assert_eq!((header.offset, header.dx_context), (0, 0));
+    assert_eq!(header.must_be_zero, [0; 6]);
+    assert!(Header::new(0x1040, 0).is_err());
+    assert!(Header::new(0x1040, 3).is_err());
+    assert!(Header::new(0x1040, 512 * 1024 + 4).is_err());
 }
