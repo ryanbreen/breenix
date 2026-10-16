@@ -437,6 +437,16 @@ impl WindowRegistry {
 
 /// Framebuffer info structure returned by sys_fbinfo.
 
+/// Snapshot untrusted pixels before passing a slice to a graphics backend.
+#[cfg(target_arch = "aarch64")]
+fn copy_user_pixels(ptr: u64, count: usize) -> Result<alloc::vec::Vec<u32>, u64> {
+    let mut pixels = alloc::vec::Vec::new();
+    pixels.try_reserve_exact(count).map_err(|_| super::ErrorCode::OutOfMemory as u64)?;
+    pixels.resize(count, 0u32);
+    super::userptr::read_user_bytes(pixels.as_mut_ptr().cast(), ptr, count * 4)?;
+    Ok(pixels)
+}
+
 /// The version 1 window ops of `fb_draw` (10 to 26 and 31).
 #[cfg(target_arch = "aarch64")]
 pub(super) fn handle_op(cmd: &FbDrawCmd) -> SyscallResult {
@@ -461,10 +471,10 @@ pub(super) fn handle_op(cmd: &FbDrawCmd) -> SyscallResult {
                 crate::tracing::providers::virtgpu::trace_bwm_composite_frame_exit(1);
                 return SyscallResult::Err(super::ErrorCode::Fault as u64);
             }
-            let mut pixels = alloc::vec![0u32; pixel_count as usize];
-            if super::userptr::read_user_bytes(pixels.as_mut_ptr().cast(), buf_ptr, pixels.len() * 4).is_err() {
-                return SyscallResult::Err(super::ErrorCode::Fault as u64);
-            }
+            let pixels = match copy_user_pixels(buf_ptr, pixel_count as usize) {
+                Ok(pixels) => pixels,
+                Err(e) => return SyscallResult::Err(e),
+            };
             let pixels = pixels.as_slice();
             match crate::graphics::compositor_backend() {
                 crate::graphics::CompositorBackend::VirGL => {
@@ -1126,11 +1136,10 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
         if end > USER_SPACE_MAX {
             return SyscallResult::Err(super::ErrorCode::Fault as u64);
         }
-        let mut pixels = alloc::vec![0u32; pixel_count];
-        if super::userptr::read_user_bytes(pixels.as_mut_ptr().cast(), desc.bg_pixels_ptr, pixel_count * 4).is_err() {
-            return SyscallResult::Err(super::ErrorCode::Fault as u64);
+        match copy_user_pixels(desc.bg_pixels_ptr, pixel_count) {
+            Ok(pixels) => Some(pixels),
+            Err(e) => return SyscallResult::Err(e),
         }
-        Some(pixels)
     } else {
         None
     };
