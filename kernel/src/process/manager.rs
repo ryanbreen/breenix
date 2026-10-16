@@ -1721,6 +1721,7 @@ impl ProcessManager {
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
             kill_custody: core::sync::atomic::AtomicU64::new(0),
+            futex_group: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         };
 
@@ -1816,6 +1817,7 @@ impl ProcessManager {
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
             kill_custody: core::sync::atomic::AtomicU64::new(0),
+            futex_group: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         };
 
@@ -3913,6 +3915,7 @@ impl ProcessManager {
                 cached_ttbr0: parent_thread.cached_ttbr0,
                 wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
                 kill_custody: core::sync::atomic::AtomicU64::new(0),
+                futex_group: core::sync::atomic::AtomicU64::new(0),
                 // A per-CPU worker's or hold pen's pin is not inherited: a
                 // `per_cpu_worker` pin is a claim about servicing one CPU's
                 // per-CPU state and a child services none of it; a hold-pen pin
@@ -4329,6 +4332,9 @@ impl ProcessManager {
             // These must match what the GDT defines
             thread.context.cs = 0x33; // User code segment (GDT index 6, ring 3)
             thread.context.ss = 0x2b; // User data segment (GDT index 5, ring 3)
+
+            // A new address space: the futex key group is read again.
+            thread.futex_group.store(0, core::sync::atomic::Ordering::Release);
 
             // Mark the thread as ready to run the new program
             thread.state = crate::task::thread::ThreadState::Ready;

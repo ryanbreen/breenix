@@ -8461,6 +8461,10 @@ impl ExecSchedCommit {
                         // same hold that replaces the context.
                         #[cfg(target_arch = "x86_64")]
                         t.set_dispatch_root(self.new_page_table_root);
+                        // A new address space: the futex key group is read
+                        // again from the process row.
+                        #[cfg(target_arch = "x86_64")]
+                        t.futex_group.store(0, core::sync::atomic::Ordering::Release);
                         // The interval before exec belongs to the old thread group.
                         t.charge_cpu(crate::time::get_cpu_ticks());
                         replaced_account = core::mem::replace(&mut t.cpu_account, self.cpu_account);

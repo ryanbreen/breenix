@@ -864,6 +864,11 @@ pub struct Thread {
     /// compare-and-swap on this one word, so a thread is never killed inside a
     /// section and never enters one once claimed. See `KillCustody`.
     pub kill_custody: AtomicU64,
+    /// x86_64: the key group of this thread's private futexes, plus one: its
+    /// address space's lifetime id, or its pid. 0 until a futex call has read
+    /// it from the process row; exec clears it. A private futex call that
+    /// finds it set keys the word without PROCESS_MANAGER (#1650).
+    pub futex_group: AtomicU64,
 
     /// Optional CPU target: `Some(pin)` pins the thread; the empty state permits
     /// migration.
@@ -1336,6 +1341,8 @@ impl Clone for Thread {
             // as a backwards jump.
             wait_loop_iters: AtomicU64::new(self.wait_loop_iters.load(Ordering::Relaxed)),
             kill_custody: AtomicU64::new(self.kill_custody.load(Ordering::Acquire)),
+            // Looked up again by the copy's first futex call.
+            futex_group: AtomicU64::new(0),
             cpu_affinity: self.cpu_affinity,
         }
     }
@@ -1458,6 +1465,7 @@ impl Thread {
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
             kill_custody: core::sync::atomic::AtomicU64::new(0),
+            futex_group: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         })
     }
@@ -1534,6 +1542,7 @@ impl Thread {
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
             kill_custody: core::sync::atomic::AtomicU64::new(0),
+            futex_group: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         })
     }
@@ -1597,6 +1606,7 @@ impl Thread {
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
             kill_custody: core::sync::atomic::AtomicU64::new(0),
+            futex_group: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         }
     }
@@ -1659,6 +1669,7 @@ impl Thread {
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
             kill_custody: core::sync::atomic::AtomicU64::new(0),
+            futex_group: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         }
     }
@@ -1734,6 +1745,7 @@ impl Thread {
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
             kill_custody: core::sync::atomic::AtomicU64::new(0),
+            futex_group: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         }
     }
@@ -1804,6 +1816,7 @@ impl Thread {
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
             kill_custody: core::sync::atomic::AtomicU64::new(0),
+            futex_group: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         }
     }
@@ -1904,6 +1917,7 @@ impl Thread {
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
             kill_custody: core::sync::atomic::AtomicU64::new(0),
+            futex_group: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         }
     }
@@ -1962,6 +1976,7 @@ impl Thread {
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
             kill_custody: core::sync::atomic::AtomicU64::new(0),
+            futex_group: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         }
     }
