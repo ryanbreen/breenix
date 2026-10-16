@@ -68,7 +68,7 @@ fn report_when_finished() {
         let (seconds, nanos) = crate::time::get_monotonic_time_ns();
         let wake_at = seconds.saturating_mul(1_000_000_000).saturating_add(nanos)
             .saturating_add(1_000_000_000);
-        super::scheduler::with_scheduler(|scheduler| scheduler.block_current_for_timer(wake_at));
+        super::scheduler::with_current(|scheduler| scheduler.block_current_for_timer(wake_at));
         super::scheduler::yield_current();
         loop {
             crate::arch_halt_with_interrupts();

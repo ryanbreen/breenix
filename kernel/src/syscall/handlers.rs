@@ -209,7 +209,7 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
         crate::task::process_task::ProcessScheduler::handle_thread_exit(thread_id, exit_code);
 
         // Mark current thread as terminated
-        crate::task::scheduler::with_scheduler(|scheduler| {
+        crate::task::scheduler::with_current(|scheduler| {
             if let Some(thread) = scheduler.current_thread_mut() {
                 thread.set_terminated();
             }
@@ -912,7 +912,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         // 3. Without this flag, no context is saved when switching away,
                         //    and stale userspace context is restored when switching back,
                         //    causing RIP corruption (kernel address in userspace CS)
-                        crate::task::scheduler::with_scheduler(|sched| {
+                        crate::task::scheduler::with_current(|sched| {
                             sched.block_current_in_syscall();
                         });
 
@@ -928,7 +928,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                             if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
                                 // Signal pending - unblock and return EINTR
                                 crate::ipc::stdin::unregister_blocked_reader(thread_id);
-                                crate::task::scheduler::with_scheduler(|sched| {
+                                crate::task::scheduler::with_current(|sched| {
                                     if let Some(thread) = sched.current_thread_mut() {
                                         thread.blocked_in_syscall = false;
                                         thread.set_ready();
@@ -947,7 +947,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                             crate::per_cpu::preempt_disable();
 
                             // Check if we were unblocked (thread state changed from Blocked)
-                            let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+                            let still_blocked = crate::task::scheduler::with_current(|sched| {
                                 if let Some(thread) = sched.current_thread_mut() {
                                     thread.state == crate::task::thread::ThreadState::Blocked
                                 } else {
@@ -966,7 +966,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         }
 
                         // Clear blocked_in_syscall now that we're resuming normal syscall execution
-                        crate::task::scheduler::with_scheduler(|sched| {
+                        crate::task::scheduler::with_current(|sched| {
                             if let Some(thread) = sched.current_thread_mut() {
                                 thread.blocked_in_syscall = false;
                                 log::trace!(
@@ -1052,7 +1052,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         }
 
                         // Block the thread
-                        crate::task::scheduler::with_scheduler(|sched| {
+                        crate::task::scheduler::with_current(|sched| {
                             sched.block_current_in_syscall();
                         });
 
@@ -1064,7 +1064,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
                         if data_ready {
                             // Data arrived during setup - unblock and retry immediately
-                            crate::task::scheduler::with_scheduler(|sched| {
+                            crate::task::scheduler::with_current(|sched| {
                                 if let Some(thread) = sched.current_thread_mut() {
                                     thread.blocked_in_syscall = false;
                                     thread.set_ready();
@@ -1085,7 +1085,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                                     let mut pipe = pipe_buffer_clone.lock();
                                     pipe.remove_read_waiter(thread_id);
                                 }
-                                crate::task::scheduler::with_scheduler(|sched| {
+                                crate::task::scheduler::with_current(|sched| {
                                     if let Some(thread) = sched.current_thread_mut() {
                                         thread.blocked_in_syscall = false;
                                         thread.set_ready();
@@ -1103,7 +1103,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                             crate::arch_halt_while_blocked();
                             crate::per_cpu::preempt_disable();
 
-                            let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+                            let still_blocked = crate::task::scheduler::with_current(|sched| {
                                 if let Some(thread) = sched.current_thread_mut() {
                                     thread.state == crate::task::thread::ThreadState::Blocked
                                 } else {
@@ -1122,7 +1122,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         }
 
                         // Clear blocked state
-                        crate::task::scheduler::with_scheduler(|sched| {
+                        crate::task::scheduler::with_current(|sched| {
                             if let Some(thread) = sched.current_thread_mut() {
                                 thread.blocked_in_syscall = false;
                             }
@@ -1212,7 +1212,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         }
 
                         // Block the thread
-                        crate::task::scheduler::with_scheduler(|sched| {
+                        crate::task::scheduler::with_current(|sched| {
                             sched.block_current_in_syscall();
                         });
 
@@ -1224,7 +1224,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
                         if data_ready {
                             // Data arrived during setup - unblock and retry immediately
-                            crate::task::scheduler::with_scheduler(|sched| {
+                            crate::task::scheduler::with_current(|sched| {
                                 if let Some(thread) = sched.current_thread_mut() {
                                     thread.blocked_in_syscall = false;
                                     thread.set_ready();
@@ -1245,7 +1245,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                                     let mut pipe = pipe_buffer_clone.lock();
                                     pipe.remove_read_waiter(thread_id);
                                 }
-                                crate::task::scheduler::with_scheduler(|sched| {
+                                crate::task::scheduler::with_current(|sched| {
                                     if let Some(thread) = sched.current_thread_mut() {
                                         thread.blocked_in_syscall = false;
                                         thread.set_ready();
@@ -1263,7 +1263,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                             crate::arch_halt_while_blocked();
                             crate::per_cpu::preempt_disable();
 
-                            let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+                            let still_blocked = crate::task::scheduler::with_current(|sched| {
                                 if let Some(thread) = sched.current_thread_mut() {
                                     thread.state == crate::task::thread::ThreadState::Blocked
                                 } else {
@@ -1282,7 +1282,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         }
 
                         // Clear blocked state
-                        crate::task::scheduler::with_scheduler(|sched| {
+                        crate::task::scheduler::with_current(|sched| {
                             if let Some(thread) = sched.current_thread_mut() {
                                 thread.blocked_in_syscall = false;
                             }

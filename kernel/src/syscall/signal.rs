@@ -499,13 +499,7 @@ fn send_signal(target: ProcessId, sig: u32, sender: Sender, info: SigInfo, to: R
                 // Release the manager lock before acquiring the scheduler lock
                 // to avoid deadlock
                 drop(manager_guard);
-                crate::task::scheduler::with_scheduler(|sched| {
-                    // Wake thread if it's blocked on pause()/sigsuspend()
-                    sched.unblock_for_signal(thread_id);
-                    // Also wake thread if it's blocked on waitpid() - signals should
-                    // interrupt waitpid with EINTR so the signal can be delivered
-                    sched.unblock_for_child_exit(thread_id);
-                });
+                crate::task::scheduler::wake_for_signal(thread_id, true);
                 return SyscallResult::Ok(0);
             } else {
                 log::warn!(
@@ -982,7 +976,7 @@ fn wait_for_signal(thread_id: u64) {
         if super::check_signals_for_wait().is_some() {
             break;
         }
-        crate::task::scheduler::with_scheduler(|sched| {
+        crate::task::scheduler::with_current(|sched| {
             sched.block_current_for_signal();
         });
         let eligible = super::check_signals_for_wait().is_some();
@@ -1859,7 +1853,7 @@ pub fn sys_sigtimedwait(set_ptr: u64, info_ptr: u64, timeout_ptr: u64, size: u64
     let result = loop {
         // Stops resume this wait rather than returning a spurious EINTR.
         let interrupted = super::check_signals_for_wait().is_some();
-        crate::task::scheduler::with_scheduler(|sched| {
+        crate::task::scheduler::with_current(|sched| {
             if let Some(deadline) = deadline {
                 sched.block_current_for_timer(deadline);
             } else {

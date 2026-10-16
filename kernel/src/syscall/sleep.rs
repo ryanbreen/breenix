@@ -62,7 +62,7 @@ pub fn clock_nanosleep(clock: u32, flags: u64, req_ptr: u64, rem_ptr: u64) -> Sy
         if super::check_signals_for_wait().is_some() {
             break true;
         }
-        let expired = crate::task::scheduler::with_scheduler(|sched| {
+        let expired = crate::task::scheduler::with_current(|sched| {
             // Sample realtime first, rounding toward the later monotonic sample.
             let real_now = if realtime {
                 let (secs, nanos) = crate::time::get_real_time_ns();
@@ -94,7 +94,7 @@ pub fn clock_nanosleep(clock: u32, flags: u64, req_ptr: u64, rem_ptr: u64) -> Sy
         crate::arch_halt_while_blocked();
         crate::per_cpu::preempt_disable();
     };
-    crate::task::scheduler::with_scheduler(|sched| {
+    crate::task::scheduler::with_current(|sched| {
         if let Some(thread) = sched.current_thread_mut() {
             thread.realtime_sleep = false;
             thread.blocked_in_syscall = false;

@@ -1327,13 +1327,15 @@ pub fn notify_parent_of_job_change_locked(
     let Some(parent_tid) = parent.main_thread.as_ref().map(|thread| thread.id) else {
         return;
     };
-    crate::task::scheduler::with_scheduler(|scheduler| {
-        scheduler.unblock_for_job_change(parent_tid, signal_eligible);
-        if let Some(tid) = signal_wake {
-            scheduler.unblock_for_signal(tid);
-            scheduler.unblock_for_child_exit(tid);
-        }
-    });
+    // `Scheduler::unblock_for_job_change`: waitpid always, a signal wait when
+    // the SIGCHLD is deliverable.
+    crate::task::scheduler::wake_for_child_exit(parent_tid);
+    if signal_eligible {
+        crate::task::scheduler::wake_for_signal(parent_tid, false);
+    }
+    if let Some(tid) = signal_wake {
+        crate::task::scheduler::wake_for_signal(tid, true);
+    }
 }
 
 /// Stop `pid`'s process for stop signal `sig`, with PM held: every row of its
@@ -1565,7 +1567,7 @@ pub fn hold_stopped_thread_on_interrupt_return_or_busy(thread_id: u64) -> Option
     if !take_stop_locked(manager, thread_id) {
         return Some(false);
     }
-    let blocked = crate::task::scheduler::with_scheduler(|scheduler| {
+    let blocked = crate::task::scheduler::with_current(|scheduler| {
         let current = scheduler.current_thread_mut().map(|thread| thread.id);
         if current == Some(thread_id) {
             scheduler.block_current();
@@ -1605,7 +1607,7 @@ pub fn hold_stopped_thread_on_syscall_return() {
     loop {
         // Block first, then look: a SIGCONT after the look finds the thread
         // parked and wakes it.
-        let terminated = crate::task::scheduler::with_scheduler(|scheduler| {
+        let terminated = crate::task::scheduler::with_current(|scheduler| {
             match scheduler.current_thread_mut() {
                 Some(thread) if thread.state != crate::task::thread::ThreadState::Terminated => {
                     scheduler.block_current_in_syscall();
@@ -1643,7 +1645,7 @@ pub fn hold_stopped_thread_on_syscall_return() {
         }
     }
     let terminated =
-        crate::task::scheduler::with_scheduler(|scheduler| match scheduler.current_thread_mut() {
+        crate::task::scheduler::with_current(|scheduler| match scheduler.current_thread_mut() {
             Some(thread) if thread.state != crate::task::thread::ThreadState::Terminated => {
                 thread.blocked_in_syscall = false;
                 thread.set_ready();
@@ -1661,7 +1663,7 @@ pub fn hold_stopped_thread_on_syscall_return() {
 /// terminated, or its process's row is gone. The thread is marked terminated
 /// and waits, preemptible, for the scheduler to switch away for good.
 fn abandon_syscall_return() -> ! {
-    crate::task::scheduler::with_scheduler(|scheduler| {
+    crate::task::scheduler::with_current(|scheduler| {
         if let Some(thread) = scheduler.current_thread_mut() {
             thread.set_terminated();
         }
@@ -1851,7 +1853,7 @@ fn exit_on_syscall_return(exit_code: i32) -> ! {
         }
         crate::task::process_task::ProcessScheduler::handle_thread_exit(thread_id, exit_code);
     }
-    crate::task::scheduler::with_scheduler(|scheduler| {
+    crate::task::scheduler::with_current(|scheduler| {
         if let Some(thread) = scheduler.current_thread_mut() {
             thread.set_terminated();
         }
@@ -1926,23 +1928,18 @@ pub fn notify_parent_of_termination_deferred(notification: &ParentNotification) 
     };
     drop(auto_reaped);
     if let Some(tid) = signal_wake {
-        crate::task::scheduler::with_scheduler(|s| {
-            s.unblock_for_signal(tid);
-            s.unblock_for_child_exit(tid);
-        });
+        crate::task::scheduler::wake_for_signal(tid, true);
     }
 
     // Unblock parent thread if it's waiting on waitpid or sigsuspend
     if let Some((parent_tid, signal_eligible)) = parent_thread_id {
-        crate::task::scheduler::with_scheduler(|sched| {
-            // Wake parent if blocked in waitpid (BlockedOnChildExit)
-            sched.unblock_for_child_exit(parent_tid);
-            // A child exit wakes waitpid even when SIGCHLD is ignored or blocked.
-            // Signal waits only wake when there is actual delivery work.
-            if signal_eligible {
-                sched.unblock_for_signal(parent_tid);
-            }
-        });
+        // Wake parent if blocked in waitpid (BlockedOnChildExit)
+        crate::task::scheduler::wake_for_child_exit(parent_tid);
+        // A child exit wakes waitpid even when SIGCHLD is ignored or blocked.
+        // Signal waits only wake when there is actual delivery work.
+        if signal_eligible {
+            crate::task::scheduler::wake_for_signal(parent_tid, false);
+        }
         log::info!(
             "notify_parent_of_termination_deferred: unblocked parent thread {} for child {} termination",
             parent_tid,

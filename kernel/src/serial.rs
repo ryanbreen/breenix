@@ -245,7 +245,7 @@ fn wait_for_output() {
     let running = || TX_STATE.load(Ordering::Acquire) == TX_RUNNING;
     while !running() {
         crate::arch_without_interrupts(|| {
-            crate::task::scheduler::with_scheduler(|sched| {
+            crate::task::scheduler::with_current(|sched| {
                 if !running() {
                     sched.block_current();
                 }

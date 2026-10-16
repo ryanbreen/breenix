@@ -388,6 +388,7 @@ fn inspect(
                     // SIGPIPE publication returns unit, not a syscall result.
                     "raise_sigpipe",
                     "with_scheduler",
+                    "with_current",
                     "yield_current",
                     "arch_halt_while_blocked",
                     "preempt_enable",

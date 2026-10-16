@@ -68,7 +68,10 @@ assert m.score(line()+'\n'+line())[0] == 1
 fn park_final_check_and_unpark_flag_share_scheduler_serialization() {
     let source = read("kernel/src/task/kthread.rs");
     let park = source.split("pub fn kthread_park_if").nth(1).unwrap().split("pub fn kthread_unpark").next().unwrap();
-    let block = park.split("scheduler::with_scheduler(|sched| {").nth(1).unwrap();
+    // The park reads the flag and blocks in one hold of its CPU's run-queue
+    // lock (`with_current`); the unpark's store and wake take the whole
+    // scheduler, which includes that lock, so the two still serialize.
+    let block = park.split("scheduler::with_current(|sched| {").nth(1).unwrap();
     assert!(block.find("parked.load(Ordering::Acquire)").unwrap() < block.find("sched.block_current()").unwrap());
     let wake = source.split("pub fn kthread_unpark").nth(1).unwrap().split("/// Test-only").next().unwrap();
     assert!(wake.find("scheduler::with_scheduler(|sched| {").unwrap() < wake.find("parked.store(false").unwrap());

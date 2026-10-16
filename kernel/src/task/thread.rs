@@ -1839,6 +1839,10 @@ impl Thread {
     pub fn set_terminated(&mut self) {
         self.stop_timer_cpu();
         self.realtime_sleep = false;
+        #[cfg(target_arch = "x86_64")]
+        if self.state != ThreadState::Terminated {
+            crate::task::scheduler::note_thread_terminated();
+        }
         self.state = ThreadState::Terminated;
     }
 

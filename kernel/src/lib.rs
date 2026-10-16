@@ -599,13 +599,10 @@ pub fn arch_halt_while_blocked() {
     // SAFETY: interrupts are masked only for the state read, and every path
     // below unmasks them before returning.
     unsafe { arch_disable_interrupts() };
-    let current_blocked = |scheduler: &mut task::scheduler::Scheduler| {
-        scheduler
+    let wait_state = task::scheduler::with_current(|scheduler| {
+        let blocked = scheduler
             .current_thread_mut()
-            .is_some_and(|thread| thread.state.is_blocked())
-    };
-    let wait_state = task::scheduler::with_scheduler(|scheduler| {
-        let blocked = current_blocked(scheduler);
+            .is_some_and(|thread| thread.state.is_blocked());
         #[cfg(target_arch = "x86_64")]
         let release = blocked
             && (scheduler.has_queued_work_here()
@@ -649,7 +646,12 @@ pub fn arch_halt_while_blocked() {
             unsafe {
                 core::arch::asm!("int {vector}", vector = const interrupts::RESCHEDULE_VECTOR);
             }
-            if !task::scheduler::with_scheduler(current_blocked).unwrap_or(false) {
+            let blocked = task::scheduler::with_current(|scheduler| {
+                scheduler
+                    .current_thread_mut()
+                    .is_some_and(|thread| thread.state.is_blocked())
+            });
+            if !blocked.unwrap_or(false) {
                 // SAFETY: as at the top, the caller halts with interrupts enabled.
                 unsafe { arch_enable_interrupts() };
                 return;

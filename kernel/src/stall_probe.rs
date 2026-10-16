@@ -74,7 +74,7 @@ static GAP: [[AtomicU64; 3]; GAPS] = [const { [const { AtomicU64::new(0) }; 3] }
 static LAST_INT: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 
 /// Lock waits over 3 ms: end ns, length us, cpu | kind << 8 | holder << 16.
-/// kind 1 scheduler, 2 PROCESS_MANAGER, 3 futex table.
+/// kind 1 scheduler, 2 PROCESS_MANAGER, 3 futex table, 4 own run-queue lock.
 const WAITS: usize = 128;
 static WAIT_NEXT: AtomicU64 = AtomicU64::new(0);
 static WAIT: [[AtomicU64; 4]; WAITS] = [const { [const { AtomicU64::new(0) }; 4] }; WAITS];
@@ -177,6 +177,42 @@ pub fn spin_acquire<T>(kind: u64, holder: impl Fn() -> u64, mut try_once: impl F
     }
 }
 
+/// Per CPU: when it took its own run-queue lock (0 while it holds none),
+/// total cycles held, holds, the longest hold.
+static RQ_HOLD_AT: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+static RQ_HOLD_SUM: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+static RQ_HOLD_N: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+static RQ_HOLD_MAX: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+/// Try-locks of a peer's run-queue lock: taken, refused.
+static RQ_TRY: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+
+/// This CPU waited `t0`..now for its own run-queue lock (kind 4).
+pub fn rq_waited(t0: u64) {
+    note_wait(4, t0, 0xff, 0);
+}
+
+pub fn rq_acquired(cpu: usize) {
+    if cpu < MAX_CPUS {
+        RQ_HOLD_AT[cpu].store(rdtsc(), Ordering::Relaxed);
+    }
+}
+
+pub fn rq_released(cpu: usize) {
+    if cpu < MAX_CPUS {
+        let at = RQ_HOLD_AT[cpu].swap(0, Ordering::Relaxed);
+        if at != 0 {
+            let held = rdtsc().saturating_sub(at);
+            RQ_HOLD_SUM[cpu].fetch_add(held, Ordering::Relaxed);
+            RQ_HOLD_N[cpu].fetch_add(1, Ordering::Relaxed);
+            RQ_HOLD_MAX[cpu].fetch_max(held, Ordering::Relaxed);
+        }
+    }
+}
+
+pub fn rq_tried(taken: bool) {
+    RQ_TRY[!taken as usize].fetch_add(1, Ordering::Relaxed);
+}
+
 pub fn sched_holder() -> u64 {
     SCHED_HOLDER.load(Ordering::Relaxed)
 }
@@ -240,7 +276,7 @@ pub fn nmi_hook(cpu: usize, rip: u64, cs: u64, rflags: u64, rsp: u64) {
     if crate::process::process_manager_held_on_current_cpu() {
         flags |= 4;
     }
-    if SCHED_HOLDER.load(Ordering::Relaxed) == cpu as u64 {
+    if SCHED_HOLDER.load(Ordering::Relaxed) == cpu as u64 || RQ_HOLD_AT[cpu.min(MAX_CPUS - 1)].load(Ordering::Relaxed) != 0 {
         flags |= 8;
     }
     if crate::per_cpu::running_idle_thread() {
@@ -619,6 +655,13 @@ fn summary() {
         (Site(SITE_KEY[i].load(Ordering::Relaxed)), SITE_N[i].load(Ordering::Relaxed), cyc / per, SITE_MAX[i].load(Ordering::Relaxed) / per)
     });
     log::info!("SCHEDSITES (site,holds,us,max_us)={:?}", sites);
+    log::info!(
+        "RQHOLD held_us={:?} holds={:?} max_us={:?} remote_tries(taken,refused)={:?}",
+        [0, 1, 2, 3].map(|c| RQ_HOLD_SUM[c].load(Ordering::Relaxed) / per),
+        [0, 1, 2, 3].map(|c| RQ_HOLD_N[c].load(Ordering::Relaxed)),
+        [0, 1, 2, 3].map(|c| RQ_HOLD_MAX[c].load(Ordering::Relaxed) / per),
+        RQ_TRY.each_ref().map(|c| c.load(Ordering::Relaxed)),
+    );
     let total: u64 = DISP_COUNT.iter().take(ncpus()).map(|c| c.load(Ordering::Relaxed)).sum();
     let elapsed_us = rdtsc().saturating_sub(FIRST_DISP_TSC.load(Ordering::Relaxed)) / cycles_per_us();
     log::info!(

@@ -158,7 +158,36 @@ fn assert_quantum_agrees(oracle: &str, x86_timer: &str, aarch64_timer: &str) {
 #[test]
 fn a_late_timer_wake_is_enqueued_at_the_head() {
     let source = read(SCHEDULER_SOURCE);
-    assert_late_wakes_go_to_the_head(&item_body(&source, "pub fn wake_expired_timers("));
+    let scheduler = source
+        .find("impl Scheduler {")
+        .expect("no `impl Scheduler` in the source under test");
+    assert_late_wakes_go_to_the_head(&item_body(&source[scheduler..], "pub fn wake_expired_timers("));
+}
+
+/// #1649: x86_64 expires a CPU's deadlines under its run-queue lock
+/// (`rq::expire_heap`), and a late wake found there goes to the head of its
+/// target queue the same way: `place` asked to promote, which enqueues at the
+/// front only while that queue's promotion is open.
+#[test]
+fn a_late_timer_wake_expired_under_a_run_queue_lock_is_enqueued_at_the_head() {
+    let source = read("kernel/src/task/scheduler/rq.rs");
+    let expire = item_body(&source, "fn expire_heap(");
+    assert!(
+        !code_lines_mentioning(&expire, "place(local, Some(source), tid, target, true)").is_empty()
+            && !code_lines_mentioning(&expire, "place(local, None, tid, target, true)").is_empty(),
+        "`rq::expire_heap` must place a late timer wake with promotion asked for"
+    );
+    let place = item_body(&source, "fn place(");
+    assert!(
+        code_lines_mentioning(&place, "push_back(").is_empty(),
+        "`rq::place` must enqueue through `Held::enqueue`, whose front argument carries the promotion"
+    );
+    for needle in ["promotion_open(held)", "promotion_open(&mut remote)", "enqueue(tid, front)", "promoted_wake = Some(tid)"] {
+        assert!(
+            !code_lines_mentioning(&place, needle).is_empty(),
+            "`rq::place` must bound head promotion by the target's `promotion_open`: missing `{needle}`"
+        );
+    }
 }
 
 #[test]

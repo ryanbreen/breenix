@@ -150,7 +150,7 @@ impl WaitSet {
         // Registered before the publication too, so the queues have room
         // and the second registration only replaces a waiter a wake took.
         let registered = self.register();
-        crate::task::scheduler::with_scheduler(|s| {
+        crate::task::scheduler::with_current(|s| {
             s.block_current_for_io_with_timeout((wake != u64::MAX).then_some(wake));
         });
         let registered = self.register() && registered;
@@ -162,7 +162,7 @@ impl WaitSet {
                 interrupted = true;
                 break;
             }
-            let blocked = crate::task::scheduler::with_scheduler(|s| {
+            let blocked = crate::task::scheduler::with_current(|s| {
                 s.wake_expired_timers();
                 s.current_thread_mut()
                     .is_some_and(|t| t.state == crate::task::thread::ThreadState::BlockedOnIO)
@@ -176,7 +176,7 @@ impl WaitSet {
             crate::arch_halt_while_blocked();
             crate::per_cpu::preempt_disable();
         }
-        crate::task::scheduler::with_scheduler(|s| {
+        crate::task::scheduler::with_current(|s| {
             if let Some(t) = s.current_thread_mut() {
                 t.blocked_in_syscall = false;
                 t.wake_time_ns = None;

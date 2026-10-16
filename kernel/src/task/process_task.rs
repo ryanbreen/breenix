@@ -1136,19 +1136,14 @@ impl ProcessScheduler {
             }
 
             if let Some(tid) = signal_wake {
-                scheduler::with_scheduler(|s| {
-                    s.unblock_for_signal(tid);
-                    s.unblock_for_child_exit(tid);
-                });
+                scheduler::wake_for_signal(tid, true);
             }
             // Wake the parent's thread if it waits in waitpid. An interruptible
             // wait (pause, a futex wait) is woken only by `signal_wake` above,
             // which is set when the SIGCHLD is one the parent will act on: an
             // ignored SIGCHLD is discarded without waking anybody, as on Linux.
             if let Some(parent_tid) = parent_tid {
-                scheduler::with_scheduler(|sched| {
-                    sched.unblock_for_child_exit(parent_tid);
-                });
+                scheduler::wake_for_child_exit(parent_tid);
                 crate::tracing::providers::process::trace_waitpid_wake(
                     parent_tid as u16,
                     pid.as_u64() as u16,
@@ -1209,17 +1204,14 @@ pub(crate) fn redeem_exit_report(pid: ProcessId, exit_code: i32, claimer: u64) {
 /// Called with PROCESS_MANAGER released (condition C8).
 fn wake_group_parent(exited: crate::process::manager::GroupExited) {
     drop(exited.reaped);
-    scheduler::with_scheduler(|sched| {
-        if let Some(tid) = exited.signal_wake {
-            sched.unblock_for_signal(tid);
-            sched.unblock_for_child_exit(tid);
-        }
-        // As for a single-threaded child's exit: waitpid only, never an
-        // interruptible wait for a SIGCHLD the parent discards.
-        if let Some(tid) = exited.parent_tid {
-            sched.unblock_for_child_exit(tid);
-        }
-    });
+    if let Some(tid) = exited.signal_wake {
+        scheduler::wake_for_signal(tid, true);
+    }
+    // As for a single-threaded child's exit: waitpid only, never an
+    // interruptible wait for a SIGCHLD the parent discards.
+    if let Some(tid) = exited.parent_tid {
+        scheduler::wake_for_child_exit(tid);
+    }
 }
 
 fn next_reclaim_pass_id(mut pass: u32) -> u32 {

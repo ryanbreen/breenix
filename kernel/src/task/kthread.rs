@@ -249,7 +249,7 @@ pub fn kthread_park_if(should_park: impl FnOnce() -> bool) {
             // the departure comes with it: the primitive removes the current
             // thread from every per-CPU ready queue in the same acquisition, so
             // there is no longer a caller-side dequeue to forget.
-            scheduler::with_scheduler(|sched| {
+            scheduler::with_current(|sched| {
                 // Serialize the final sleep decision with unpark's flag clear.
                 if handle.inner.parked.load(Ordering::Acquire) {
                     sched.block_current();
@@ -355,7 +355,7 @@ pub fn kthread_exit(code: i32) -> ! {
     // one already-masked scheduler-lock acquisition, so interrupt latency is
     // unaffected.
     without_interrupts(|| {
-        scheduler::with_scheduler(|sched| {
+        scheduler::with_current(|sched| {
             if let Some(thread) = sched.current_thread_mut() {
                 thread.set_terminated();
             }
