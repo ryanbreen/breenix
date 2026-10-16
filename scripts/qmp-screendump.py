@@ -40,10 +40,12 @@ def read_ppm(path):
     if magic != b"P6" or maxval != 255:
         raise ValueError("not an 8-bit P6 PPM")
     pixels = data[at + 1:]
-    stride = width * 3
+    # QEMU's ppm_save writes each row from a pixman line buffer, padded to 4 bytes.
+    row = width * 3
+    stride = (row + 3) & ~3
     if len(pixels) < stride * height:
         raise ValueError("PPM is shorter than its %dx%d header" % (width, height))
-    return width, height, [pixels[y * stride:(y + 1) * stride] for y in range(height)]
+    return width, height, [pixels[y * stride:y * stride + row] for y in range(height)]
 
 
 def write_png(path, width, height, rows):

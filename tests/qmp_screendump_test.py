@@ -50,7 +50,8 @@ class StubQmp(threading.Thread):
                 if req["execute"] == "screendump" and self.error:
                     stream.write(json.dumps({"error": {"class": "GenericError", "desc": self.error}}) + "\n")
                 elif req["execute"] == "screendump":
-                    rows = b"".join(pixel(x, y) for y in range(HEIGHT) for x in range(WIDTH))
+                    # ppm_save pads each row to the pixman stride; 5 pixels of 3 bytes become 16.
+                    rows = b"".join(b"".join(pixel(x, y) for x in range(WIDTH)) + b"\xee" for y in range(HEIGHT))
                     Path(req["arguments"]["filename"]).write_bytes(b"P6\n%d %d\n255\n" % (WIDTH, HEIGHT) + rows)
                     stream.write(json.dumps({"timestamp": {}, "event": "RESUME"}) + "\n")
                     stream.write(json.dumps({"return": {}}) + "\n")
