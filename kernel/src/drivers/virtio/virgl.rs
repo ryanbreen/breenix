@@ -2,7 +2,17 @@
 //!
 //! Encodes Gallium3D-style commands into the VirGL wire format for submission
 //! via VirtIO GPU SUBMIT_3D. Each command is a sequence of 32-bit DWORDs with
-//! a header encoding `(length << 16 | subcmd << 8 | object_type)`.
+//! a header encoding `(length << 16 | object_type << 8 | command)`.
+//!
+//! State provenance (#1659): independently derived from the published wire
+//! definitions at revision 07a5bc398dfffdc36ad20a3476348753aa10a322:
+//! https://chromium.googlesource.com/chromiumos/third_party/virglrenderer/+/07a5bc398dfffdc36ad20a3476348753aa10a322/src/virgl_protocol.h
+//! Anchors below name fields, not host implementation routines. Breenix chooses
+//! a single colour attachment, deterministic UNORM writes, no depth/stencil/alpha
+//! test, no culling, filled triangles and no multisampling. Rasterization uses
+//! half-integer pixel centres (OpenGL 4.6 core, section 14.6.1) and the bottom-edge
+//! convention for our negative-Y viewport. These are profile choices.
+//! https://registry.khronos.org/OpenGL/specs/gl/glspec46.core.pdf
 
 // =============================================================================
 // VirGL Command Types (VIRGL_CCMD_*)
@@ -258,18 +268,17 @@ impl CommandBuffer {
 
     /// Create a blend state (no blending, write all color channels).
     pub fn create_blend_simple(&mut self, handle: u32) {
-        // len=11: handle + S0 + S1 + S2[0..7]
+        // VIRGL_OBJ_BLEND_SIZE / S0 / S1 / S2: eight target slots.
+        // S0=0 disables independent blending, logic ops, dithering and alpha
+        // coverage/one. S1=0 is inactive because logic ops are disabled.
         self.push(Self::cmd0(ccmd::CREATE_OBJECT, obj::BLEND, 11));
         self.push(handle);
-        self.push(0x00000004); // S0: dither enabled (bit 2) — matches Mesa
-        self.push(0); // S1: logicop_func = 0
-                      // S2[0]: colormask=0xF (write RGBA), blend disabled
-                      // VIRGL_OBJ_BLEND_S2_RT_COLORMASK(x) = ((x) & 0xf) << 27 in virgl_hw.h
-                      // Mesa sends 0x78000000 — NOT 0xF0000000 (that was a 1-bit shift error)
-        self.push(0xF << 27);
-        // S2[1..7]: unused render targets
-        for _ in 0..7 {
-            self.push(0);
+        self.push(0);
+        self.push(0);
+        for target in 0..8 {
+            // S2: blending/functions/factors inactive (zero); only target 0
+            // writes RGBA (four channel bits at bit 27). Others cannot write.
+            self.push(if target == 0 { 0b1111 << 27 } else { 0 });
         }
     }
 
@@ -289,7 +298,7 @@ impl CommandBuffer {
         //   bits 27-30: colormask = 0xF (write RGBA)
         self.push(Self::cmd0(ccmd::CREATE_OBJECT, obj::BLEND, 11));
         self.push(handle);
-        self.push(0x00000004); // S0: dither enabled
+        self.push(0); // S0: deterministic UNORM writes; no dithering
         self.push(0); // S1: logicop_func = 0
         self.push(0x7C42_2631); // S2[0]: alpha blend enabled
         for _ in 0..7 {
@@ -297,44 +306,35 @@ impl CommandBuffer {
         }
     }
 
-    /// Create a depth-stencil-alpha state matching Mesa exactly.
-    /// Mesa sends DSA with S0=0x00000000, length=5.
+    /// Colour-only profile: no depth, stencil or alpha rejection.
     pub fn create_dsa_default(&mut self, handle: u32) {
+        // VIRGL_OBJ_DSA_SIZE: handle, S0, front/back stencil, alpha reference.
+        // All enable/write bits are zero. Inactive compare/op/mask fields and
+        // alpha reference are canonical zero, including IEEE +0.0 for alpha.
         self.push(Self::cmd0(ccmd::CREATE_OBJECT, obj::DSA, 5));
-        self.push(handle);
-        self.push(0); // S0: all zeros — matches Mesa
-        self.push(0); // S1: front stencil
-        self.push(0); // S2: back stencil
-        self.push(0); // alpha_ref
+        self.push_slice(&[handle, 0, 0, 0, 0.0f32.to_bits()]);
     }
 
-    /// Create a rasterizer state matching Mesa exactly.
-    /// Mesa sends rasterizer with S0=0x60000002 (depth_clip + bottom_edge_rule), length=9.
+    /// Filled, unculled triangles sampled at half-integer pixel centres.
     pub fn create_rasterizer_default(&mut self, handle: u32) {
-        self.push(Self::cmd0(ccmd::CREATE_OBJECT, obj::RASTERIZER, 9));
-        self.push(handle);
-        self.push(0x60000002); // S0: depth_clip_near(bit1) + bottom_edge_rule(bit30) — matches Mesa
-        self.push(0); // point_size = 0.0
-        self.push(0); // sprite_coord_enable
-        self.push(0); // S3
-        self.push(0); // line_width
-        self.push(0); // S5: offset_units
-        self.push(0); // S6: offset_scale
-        self.push(0); // S7: offset_clamp
+        // VIRGL_OBJ_RS_S0: depth_clip=1 (bit 1), half_pixel_center=1
+        // (bit 29), bottom_edge_rule=1 (bit 30). Every other S0 field is 0:
+        // smooth interpolation, full Z clip, no discard/cull/scissor/clamp,
+        // solid front/back fill (enum 0), no offsets/smoothing/stipple/MSAA.
+        self.create_rasterizer(handle, (1 << 1) | (1 << 29) | (1 << 30));
     }
 
-    /// Create a rasterizer state with custom S0 flags.
+    /// Encode caller-selected S0 with the same defined scalar state profile.
     pub fn create_rasterizer(&mut self, handle: u32, s0_flags: u32) {
+        // VIRGL_OBJ_RS_POINT_SIZE and LINE_WIDTH are IEEE f32 +1.0: even
+        // though current draws are triangles, keep valid unit primitive sizes.
+        // SPRITE_COORD_ENABLE=0; S3 stipple pattern/factor and clip-plane mask=0.
+        // OFFSET_UNITS/SCALE/CLAMP=IEEE +0.0 (polygon offset disabled).
         self.push(Self::cmd0(ccmd::CREATE_OBJECT, obj::RASTERIZER, 9));
-        self.push(handle);
-        self.push(s0_flags);
-        self.push(0);
-        self.push(0);
-        self.push(0);
-        self.push(0);
-        self.push(0);
-        self.push(0);
-        self.push(0);
+        self.push_slice(&[
+            handle, s0_flags, 1.0f32.to_bits(), 0, 0, 1.0f32.to_bits(),
+            0.0f32.to_bits(), 0.0f32.to_bits(), 0.0f32.to_bits(),
+        ]);
     }
 
     /// Bind an object by type and handle.
@@ -455,10 +455,13 @@ impl CommandBuffer {
         self.push(f32_bits(g));
         self.push(f32_bits(b));
         self.push(f32_bits(a));
-        // depth as f64 = 1.0 (0x3FF0000000000000) matching Mesa exactly
-        self.push(0x00000000); // low 32 bits
-        self.push(0x3FF00000); // high 32 bits = 1.0
-        self.push(0); // stencil
+        // VIRGL_OBJ_CLEAR_DEPTH_0/1 and STENCIL are present in the wire
+        // packet but inactive: CLEAR_COLOR0 excludes depth and stencil. Use
+        // canonical IEEE f64 +0.0, low word first, and stencil integer zero.
+        let unused_depth = 0.0f64.to_bits();
+        self.push(unused_depth as u32);
+        self.push((unused_depth >> 32) as u32);
+        self.push(0);
     }
 
     /// Create vertex elements describing vertex layout.
@@ -719,4 +722,33 @@ impl CommandBuffer {
 #[inline]
 fn f32_bits(f: f32) -> u32 {
     f.to_bits()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CommandBuffer;
+
+    #[test]
+    fn colour_profile_disables_dither_and_unused_attachments() {
+        let mut stream = CommandBuffer::new();
+        stream.create_blend_simple(7);
+        assert_eq!(stream.as_slice(), &[0x000b0101, 7, 0, 0, 0x78000000, 0, 0, 0, 0, 0, 0, 0]);
+        stream.clear();
+        stream.create_dsa_default(9);
+        assert_eq!(stream.as_slice(), &[0x00050301, 9, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn rasterization_has_defined_unit_sizes_and_pixel_rules() {
+        let mut stream = CommandBuffer::new();
+        stream.create_rasterizer_default(3);
+        assert_eq!(stream.as_slice(), &[0x00090201, 3, 0x60000002, 0x3f800000, 0, 0, 0x3f800000, 0, 0, 0]);
+    }
+
+    #[test]
+    fn colour_clear_does_not_request_depth_or_stencil() {
+        let mut stream = CommandBuffer::new();
+        stream.clear_color(1.0, 0.5, 0.0, 1.0);
+        assert_eq!(stream.as_slice(), &[0x00080007, 4, 0x3f800000, 0x3f000000, 0, 0x3f800000, 0, 0, 0]);
+    }
 }
