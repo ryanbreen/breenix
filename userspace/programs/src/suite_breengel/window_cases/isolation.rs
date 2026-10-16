@@ -3,44 +3,44 @@
 use crate::*;
 
 pub(crate) const ISOLATION: &[Case] = &[
-    case("other-register", "An unrelated process registering another's window fails with EPERM", isolation_other_register),
-    case("other-commit", "An unrelated process committing another's window fails with EPERM", isolation_other_commit),
-    case("other-position", "A non-compositor setting a window's position fails with EPERM", isolation_other_position),
-    case("other-inject", "A non-compositor writing events into a window fails with EPERM", isolation_other_inject),
-    case("other-read", "An unrelated non-root process capturing another's window fails with EPERM, and root succeeds", isolation_other_read),
-    case("other-map", "An unrelated process mapping another's buffers fails with EPERM", isolation_other_map),
-    case("other-resize", "An unrelated process resizing another's window fails with EPERM", isolation_other_resize),
-    case("other-destroy", "An unrelated process destroying another's window fails with EPERM", isolation_other_destroy),
-    case("other-tree", "An unrelated non-root process mapping another's tree page fails with EPERM", isolation_other_tree),
-    case("texture-map", "A non-compositor mapping the compositor texture fails with EPERM", isolation_texture_map),
-    case("composite-denied", "A non-compositor compositing fails with EPERM", isolation_composite_denied),
-    case("claim-unprivileged", "A uid 1000 process claiming the compositor fails with EPERM, and root's claim succeeds", isolation_claim_unprivileged),
-    case("claim-twice", "A second compositor claim fails with EBUSY while the first lives", isolation_claim_twice),
-    case("claim-after-death", "The compositor role can be claimed again once its holder dies, with a higher epoch", isolation_claim_after_death),
-    case("compositor-authorized", "The compositor's position, inject, capture and composite calls succeed on every window", isolation_compositor_authorized),
-    case("pid-reuse", "A process that reuses a dead owner's PID number gains no authority over any window", isolation_pid_reuse),
-    case("efault-create", "An unmapped output pointer for create fails with EFAULT and creates nothing", isolation_efault_create),
-    case("efault-register", "An unmapped title pointer fails with EFAULT", isolation_efault_register),
-    case("efault-list", "An unmapped list buffer fails with EFAULT", isolation_efault_list),
-    case("efault-capture", "An unmapped capture destination fails with EFAULT", isolation_efault_capture),
-    case("efault-events", "An unmapped event-read buffer fails with EFAULT and consumes no event", isolation_efault_events),
-    case("efault-inject", "An unmapped event pointer given to the compositor's write fails with EFAULT", isolation_efault_inject),
-    case("efault-composite", "An unmapped composite descriptor fails with EFAULT", isolation_efault_composite),
-    case("efault-mouse", "An unmapped pointer-position buffer fails with EFAULT", isolation_efault_mouse),
-    case("efault-commit", "An unmapped commit metadata pointer fails with EFAULT and commits nothing", isolation_efault_commit),
-    case("efault-readback", "An unmapped readback destination fails with EFAULT", isolation_efault_readback),
-    case("efault-claim", "An unmapped claim argument fails with EFAULT and claims nothing", isolation_efault_claim),
-    case("efault-cross-page", "A buffer that runs from a mapped page into an unmapped one fails with EFAULT and has no side effect", isolation_efault_cross_page),
-    case("efault-overflow", "A pointer whose range overflows the address space fails with EFAULT", isolation_efault_overflow),
-    case("efault-readonly", "A read-only output buffer fails with EFAULT and is left unchanged", isolation_efault_readonly),
-    case("cow-output", "Output written into a copy-on-write page after fork lands only in the caller's copy", isolation_cow_output),
-    case("destroy-during-commit", "Destroying a window while another thread commits it ends with one outcome and no fault", isolation_destroy_during_commit),
-    case("test-hooks-absent", "The wait-stress ops fail with ENOSYS in the production kernel", isolation_test_hooks_absent),
-    case("retired-ops", "The retired demo ops fail with ENOSYS", isolation_retired_ops),
-    case("unknown-op", "An unknown op fails with EINVAL", isolation_unknown_op),
-    case("killable", "SIGKILL ends a process blocked in acquire or wait_event within 250 ms", isolation_killable),
-    case("quiet-errors", "1,000 failing window calls on one thread add nothing to that thread's kernel-output counter or to the unattributed counter; with `emit-diagnostic(path)` armed, each writer path of section 12.1 (direct writers, nested wrappers, the logger, a notice written out by another thread, and `emergency_print` into the unattributed counter) adds exactly its bytes, once, to the right counter, and a second emitting thread moves only its own", isolation_quiet_errors),
-    case("controls-latched", "In this suite boot the test controls are enabled because PID 1 is a suite binary, no op can clear or set the latch, and a child running `/sbin/init desktop` reports it is not PID 1 and makes no absence claim", isolation_controls_latched),
+    pictured!("other-register", "An unrelated process registering another's window fails with EPERM", isolation_other_register),
+    pictured!("other-commit", "An unrelated process committing another's window fails with EPERM", isolation_other_commit),
+    pictured!("other-position", "A non-compositor setting a window's position fails with EPERM", isolation_other_position),
+    pictured!("other-inject", "A non-compositor writing events into a window fails with EPERM", isolation_other_inject),
+    pictured!("other-read", "An unrelated non-root process capturing another's window fails with EPERM, and root succeeds", isolation_other_read),
+    pictured!("other-map", "An unrelated process mapping another's buffers fails with EPERM", isolation_other_map),
+    pictured!("other-resize", "An unrelated process resizing another's window fails with EPERM", isolation_other_resize),
+    pictured!("other-destroy", "An unrelated process destroying another's window fails with EPERM", isolation_other_destroy),
+    pictured!("other-tree", "An unrelated non-root process mapping another's tree page fails with EPERM", isolation_other_tree),
+    pictured!("texture-map", "A non-compositor mapping the compositor texture fails with EPERM", isolation_texture_map),
+    pictured!("composite-denied", "A non-compositor compositing fails with EPERM", isolation_composite_denied),
+    pictured!("claim-unprivileged", "A uid 1000 process claiming the compositor fails with EPERM, and root's claim succeeds", isolation_claim_unprivileged),
+    pictured!("claim-twice", "A second compositor claim fails with EBUSY while the first lives", isolation_claim_twice),
+    pictured!("claim-after-death", "The compositor role can be claimed again once its holder dies, with a higher epoch", isolation_claim_after_death),
+    pictured!("compositor-authorized", "The compositor's position, inject, capture and composite calls succeed on every window", isolation_compositor_authorized),
+    pictured!("pid-reuse", "A process that reuses a dead owner's PID number gains no authority over any window", isolation_pid_reuse),
+    pictured!("efault-create", "An unmapped output pointer for create fails with EFAULT and creates nothing", isolation_efault_create),
+    pictured!("efault-register", "An unmapped title pointer fails with EFAULT", isolation_efault_register),
+    pictured!("efault-list", "An unmapped list buffer fails with EFAULT", isolation_efault_list),
+    pictured!("efault-capture", "An unmapped capture destination fails with EFAULT", isolation_efault_capture),
+    pictured!("efault-events", "An unmapped event-read buffer fails with EFAULT and consumes no event", isolation_efault_events),
+    pictured!("efault-inject", "An unmapped event pointer given to the compositor's write fails with EFAULT", isolation_efault_inject),
+    pictured!("efault-composite", "An unmapped composite descriptor fails with EFAULT", isolation_efault_composite),
+    pictured!("efault-mouse", "An unmapped pointer-position buffer fails with EFAULT", isolation_efault_mouse),
+    pictured!("efault-commit", "An unmapped commit metadata pointer fails with EFAULT and commits nothing", isolation_efault_commit),
+    pictured!("efault-readback", "An unmapped readback destination fails with EFAULT", isolation_efault_readback),
+    pictured!("efault-claim", "An unmapped claim argument fails with EFAULT and claims nothing", isolation_efault_claim),
+    pictured!("efault-cross-page", "A buffer that runs from a mapped page into an unmapped one fails with EFAULT and has no side effect", isolation_efault_cross_page),
+    pictured!("efault-overflow", "A pointer whose range overflows the address space fails with EFAULT", isolation_efault_overflow),
+    pictured!("efault-readonly", "A read-only output buffer fails with EFAULT and is left unchanged", isolation_efault_readonly),
+    pictured!("cow-output", "Output written into a copy-on-write page after fork lands only in the caller's copy", isolation_cow_output),
+    pictured!("destroy-during-commit", "Destroying a window while another thread commits it ends with one outcome and no fault", isolation_destroy_during_commit),
+    pictured!("test-hooks-absent", "The wait-stress ops fail with ENOSYS in the production kernel", isolation_test_hooks_absent),
+    pictured!("retired-ops", "The retired demo ops fail with ENOSYS", isolation_retired_ops),
+    pictured!("unknown-op", "An unknown op fails with EINVAL", isolation_unknown_op),
+    pictured!("killable", "SIGKILL ends a process blocked in acquire or wait_event within 250 ms", isolation_killable),
+    pictured!("quiet-errors", "1,000 failing window calls on one thread add nothing to that thread's kernel-output counter or to the unattributed counter; with `emit-diagnostic(path)` armed, each writer path of section 12.1 (direct writers, nested wrappers, the logger, a notice written out by another thread, and `emergency_print` into the unattributed counter) adds exactly its bytes, once, to the right counter, and a second emitting thread moves only its own", isolation_quiet_errors),
+    pictured!("controls-latched", "In this suite boot the test controls are enabled because PID 1 is a suite binary, no op can clear or set the latch, and a child running `/sbin/init desktop` reports it is not PID 1 and makes no absence claim", isolation_controls_latched),
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -1005,14 +1005,12 @@ fn isolation_test_hooks_absent() -> CaseResult {
         (30, fb_draw(30, ptr as u32 as i32, (ptr >> 32) as i32, 4, 0))];
     // Op 28 waits until woken: it runs in a child, which op 29 wakes if the op exists.
     let (rd, wr) = io::pipe()?;
-    match process::fork()? {
-        ForkResult::Child => {
-            let _ = io::close(rd);
-            let r = fb_draw(28, 0, 0, 0, 0);
-            let _ = io::write(wr, &r.to_le_bytes());
-            process::exit(0);
-        }
-        ForkResult::Parent(pid) => {
+    let mut body=|| {
+        let r=fb_draw(28,0,0,0,0);
+        let _=io::write(wr,&r.to_le_bytes());
+        0
+    };
+    let pid=libbreenix::suite::spawn(&[(wr,wr)],libbreenix::suite::Run::Call(&mut body))?;
             let _ = io::close(wr);
             let _ = time::sleep_ms(100);
             let _ = fb_draw(29, 0, 0, 0, 0);
@@ -1025,8 +1023,6 @@ fn isolation_test_hooks_absent() -> CaseResult {
             let got = if io::read(rd, &mut buf).is_ok_and(|n| n == 8) { i64::from_le_bytes(buf) } else { i64::MIN };
             let _ = io::close(rd);
             seen.insert(1, (28, got));
-        }
-    }
     let live: Vec<String> = seen.iter().filter(|(_, r)| *r != -38).map(|(op, r)| {
         if *r == i64::MIN { format!("op {op} blocked") } else { format!("op {op} {}", outcome(*r)) }
     }).collect();

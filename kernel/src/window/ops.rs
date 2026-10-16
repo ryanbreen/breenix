@@ -1195,6 +1195,8 @@ pub fn group_gone(tgid: u64, at_exit: bool) {
     }
     drop(gone);
     drop(freed);
+    #[cfg(target_arch = "aarch64")]
+    if at_exit && crate::graphics::display::active() {crate::graphics::display::gone(tgid);}
 }
 
 /// Bytes thread group `tgid` may still map under its `RLIMIT_AS`, 0 when it is gone.

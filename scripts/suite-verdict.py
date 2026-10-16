@@ -55,7 +55,7 @@ def verdict(manifest, records_log, logs):
         "START": re.compile(rf"^SUITE {suite} START cases=(\d+)$"),
         "PASS": re.compile(rf"^SUITE {suite} CASE {name} PASS ms=\d+{picture}$"),
         "FAIL": re.compile(rf"^SUITE {suite} CASE {name} FAIL ms=\d+{picture} msg=\S.*$"),
-        "SKIP": re.compile(rf"^SUITE {suite} CASE {name} SKIP{picture} msg=\S.*$"),
+        "SKIP": re.compile(rf"^SUITE {suite} CASE {name} SKIP msg=\S.*$"),
         "DONE": re.compile(rf"^SUITE {suite} DONE passed=(\d+) failed=(\d+) skipped=(\d+) total=(\d+)$"),
         "VALUE": re.compile(rf"^SUITE {suite} VALUE {name} [a-z0-9]+(?:-[a-z0-9]+)*=(-?\d+(?:\.\d+)?)([a-z]*)"
                             r"(?: expect=(-?\d+(?:\.\d+)?)\.\.(-?\d+(?:\.\d+)?)([a-z]*))?$"),

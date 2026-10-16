@@ -15,6 +15,10 @@ use spin::Mutex;
 /// Without this, concurrent callers (e.g. render thread + particle thread) corrupt
 /// the shared command/response buffers and virtqueue state.
 static GPU_LOCK: Mutex<()> = Mutex::new(());
+static NEXT_PRESENT_FENCE: AtomicU64 = AtomicU64::new(1);
+static LAST_ANSWER: Mutex<breengel_abi::Completion> = Mutex::new(breengel_abi::Completion { fence:0,kind:0,status:0 });
+static SCANOUT_RESOURCE: AtomicU32 = AtomicU32::new(0);
+static REUSE_FENCE: AtomicU64 = AtomicU64::new(0);
 
 /// VirtIO GPU command types
 #[allow(dead_code)]
@@ -660,6 +664,14 @@ fn send_command_expect_ok(
 ) -> Result<(), &'static str> {
     let cmd_phys = virt_to_phys(&raw const CMD_BUF as u64);
     let resp_phys = virt_to_phys(&raw const RESP_BUF as u64);
+    let reused = REUSE_FENCE.swap(0, Ordering::Relaxed);
+    let fence_id = if reused != 0 { reused } else { NEXT_PRESENT_FENCE.fetch_add(1, Ordering::Relaxed) };
+    let kind = unsafe {
+        let hdr = &mut *((&raw mut CMD_BUF).cast::<VirtioGpuCtrlHdr>());
+        hdr.flags = 1;
+        hdr.fence_id = fence_id;
+        hdr.type_
+    };
     send_command(
         device,
         state,
@@ -672,10 +684,11 @@ fn send_command_expect_ok(
     unsafe {
         let resp_ptr = &raw const RESP_BUF;
         let resp = &*((*resp_ptr).data.as_ptr() as *const VirtioGpuCtrlHdr);
-        if resp.type_ != cmd::RESP_OK_NODATA {
+        if resp.type_ != cmd::RESP_OK_NODATA || resp.flags & 1 == 0 || resp.fence_id != fence_id {
             return Err("GPU command failed");
         }
     }
+    *LAST_ANSWER.lock() = breengel_abi::Completion { fence:fence_id,kind,status:cmd::RESP_OK_NODATA };
     Ok(())
 }
 
@@ -748,7 +761,10 @@ fn attach_backing() -> Result<(), &'static str> {
 }
 
 fn set_scanout() -> Result<(), &'static str> {
-    with_device_state(|device, state| {
+    with_device_state(|device,state| bind_scanout(device,state,state.resource_id))
+}
+
+fn bind_scanout(device:&VirtioMmioDevice,state:&mut GpuDeviceState,resource:u32) -> Result<(), &'static str> {
         unsafe {
             let cmd_ptr = &raw mut CMD_BUF;
             let cmd = &mut *((*cmd_ptr).data.as_mut_ptr() as *mut VirtioGpuSetScanout);
@@ -765,15 +781,12 @@ fn set_scanout() -> Result<(), &'static str> {
                 r_width: state.width,
                 r_height: state.height,
                 scanout_id: 0,
-                resource_id: state.resource_id,
+                resource_id: resource,
             };
         }
-        send_command_expect_ok(
-            device,
-            state,
-            core::mem::size_of::<VirtioGpuSetScanout>() as u32,
-        )
-    })
+        send_command_expect_ok(device,state,core::mem::size_of::<VirtioGpuSetScanout>() as u32)?;
+        SCANOUT_RESOURCE.store(resource, Ordering::Release);
+        Ok(())
 }
 
 fn transfer_to_host(
@@ -924,3 +937,51 @@ pub fn test_device() -> Result<(), &'static str> {
     crate::serial_println!("[virtio-gpu] Test passed!");
     Ok(())
 }
+
+/// A synchronous, fenced presentation. The record is copied from device answers, never
+/// inferred from queue submission. Caller serializes the backing and the readback record.
+pub fn present_damage(rects:&[breengel_abi::Rect], skip:bool, wrong:bool, stale:Option<u64>)
+    -> Result<(u64, alloc::vec::Vec<breengel_abi::Completion>), &'static str>
+{
+    with_device_state(|device,state| {
+        let mut done=alloc::vec::Vec::new();
+        // Test-only alternate resource: real creation and SET_SCANOUT binding, sharing backing.
+        static ALTERNATE: core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
+        if wrong && !ALTERNATE.load(Ordering::Acquire) {
+            unsafe {
+                let out=(&raw mut CMD_BUF).cast::<VirtioGpuResourceCreate2d>();
+                *out=VirtioGpuResourceCreate2d { hdr:VirtioGpuCtrlHdr{type_:cmd::RESOURCE_CREATE_2D,..Default::default()},
+                    resource_id:state.resource_id+1,format:format::B8G8R8A8_UNORM,width:state.width,height:state.height };
+            }
+            send_command_expect_ok(device,state,core::mem::size_of::<VirtioGpuResourceCreate2d>() as u32)?;
+            unsafe {
+                let out=(&raw mut CMD_BUF).cast::<AttachBackingCmd>();
+                *out=AttachBackingCmd{cmd:VirtioGpuResourceAttachBacking{hdr:VirtioGpuCtrlHdr{type_:cmd::RESOURCE_ATTACH_BACKING,..Default::default()},
+                    resource_id:state.resource_id+1,nr_entries:1},entry:VirtioGpuMemEntry{addr:virt_to_phys(&raw const FRAMEBUFFER as u64),length:framebuffer_len(state)? as u32,padding:0}};
+            }
+            send_command_expect_ok(device,state,core::mem::size_of::<AttachBackingCmd>() as u32)?;
+            ALTERNATE.store(true,Ordering::Release);
+        }
+        let bound=state.resource_id+u32::from(wrong);
+        if SCANOUT_RESOURCE.load(Ordering::Acquire)!=bound { bind_scanout(device,state,bound)?; }
+        for (i,r) in rects.iter().enumerate() {
+            if skip && i==0 { continue; }
+            if i==0 {if let Some(fence)=stale {REUSE_FENCE.store(fence,Ordering::Relaxed);}}
+            transfer_to_host(device,state,r.x as u32,r.y as u32,r.w as u32,r.h as u32)?;
+            done.push(*LAST_ANSWER.lock());
+        }
+        if !rects.is_empty() {
+            resource_flush(device,state,0,0,state.width,state.height)?;
+            done.push(*LAST_ANSWER.lock());
+        }
+        Ok((SCANOUT_RESOURCE.load(Ordering::Acquire) as u64,done))
+    })
+}
+
+/// Resource whose guest backing `framebuffer` exposes.
+pub fn composed_resource() -> u64 {
+    unsafe { (&*(&raw const GPU_DEVICE)).as_ref().map_or(0,|s| s.resource_id as u64) }
+}
+
+/// Most recently answered command fence, for initializing the observation high-water mark.
+pub fn last_answer_fence()->u64 {LAST_ANSWER.lock().fence}

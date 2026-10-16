@@ -451,6 +451,11 @@ fn draw_changes(canvas: &mut impl Canvas, layout: &Layout, screen: &mut Screen, 
         );
         screen.status_dirty = false;
     }
+    if canvas.width()==1280 && canvas.height()==800 && canvas.bytes_per_pixel()==4 && canvas.is_bgr() && canvas.stride()==1280 {
+        super::boot_ribbon::draw(canvas.buffer_mut());
+        canvas.mark_dirty_region(16,752,1248,16);
+    }
+
 }
 
 fn clear_line(canvas: &mut impl Canvas, layout: &Layout, y: i32) {
@@ -568,6 +573,8 @@ fn presenter_main() {
     while !crate::task::kthread::kthread_should_stop() {
         let kernel_screen_up =
             DIAG_CLAIMED.load(Ordering::Acquire) || !HANDED_OVER.load(Ordering::Acquire);
+        super::boot_ribbon::drain();
+        if kernel_screen_up && super::boot_ribbon::take_dirty() { refresh(); }
         if kernel_screen_up && timer::rdtsc() >= retry_at {
             if let Some((x, y, w, h)) = arm64_fb::take_dirty_rect() {
                 // Non-blocking: the GPU lock may be held for good by a CPU that

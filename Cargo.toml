@@ -59,6 +59,7 @@ name = "qemu-bios"
 test = false
 
 [workspace]
+exclude = ["libs/libgfx", "libs/libfont"]
 members = [
     "kernel",
     "parallels-loader",

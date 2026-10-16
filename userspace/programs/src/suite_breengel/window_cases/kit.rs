@@ -225,6 +225,7 @@ pub(crate) fn fill_rect(buf: &mut [u8], w: u32, r: abi::Rect, seed: u32) {
 /// The first pixel of a `w`-wide image whose colour differs from `want(x, y)`, comparing B, G and
 /// R (and X when `with_x`).
 pub(crate) fn first_diff(img: &[u8], w: u32, h: u32, with_x: bool, want: impl Fn(u32, u32) -> [u8; 4]) -> Option<(u32, u32, [u8; 4], [u8; 4])> {
+    crate::remember_frame(img,w as usize,h as usize,None);
     let n = if with_x { 4 } else { 3 };
     for y in 0..h {
         for x in 0..w {
@@ -242,7 +243,15 @@ pub(crate) fn first_diff(img: &[u8], w: u32, h: u32, with_x: bool, want: impl Fn
 
 /// `img` equals `want` everywhere, or a message naming the first difference.
 pub(crate) fn same(img: &[u8], w: u32, h: u32, with_x: bool, what: &str, section: &str, want: impl Fn(u32, u32) -> [u8; 4]) -> CaseResult {
-    match first_diff(img, w, h, with_x, want) {
+    let difference=first_diff(img,w,h,with_x,&want);
+    if crate::PICTURES.load(core::sync::atomic::Ordering::Relaxed) {
+        let mut pixels=img[..w as usize*h as usize*4].to_vec();
+        let mut reference=Vec::with_capacity(pixels.len());
+        for y in 0..h {for x in 0..w {let mut p=want(x,y);p[3]=255;reference.extend_from_slice(&p);}}
+        for p in pixels.chunks_exact_mut(4){p[3]=255;}
+        *crate::LAST_JUDGED.lock().unwrap_or_else(|e|e.into_inner())=Some((w as usize,h as usize,pixels,Some(reference)));
+    }
+    match difference {
         None => Ok(()),
         Some((x, y, got, expect)) => at(section, format!(
             "{what}: pixel ({x},{y}) is {:02x?}, the formula gives {:02x?}", got, expect)),

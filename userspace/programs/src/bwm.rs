@@ -11,7 +11,10 @@ use std::process;
 
 #[cfg(not(target_arch = "aarch64"))]
 use libbreenix::fs;
-use libbreenix::graphics::{self, WindowInputEvent, input_event_type};
+#[path="bwm/display.rs"]
+mod display;
+use display::{WindowInputEvent,input_event_type};
+use display as graphics;
 use libbreenix::io;
 use libbreenix::signal;
 use libbreenix::types::Fd;
@@ -661,7 +664,7 @@ struct Window {
     height: usize,
     title: [u8; 32],
     title_len: usize,
-    window_id: u32,
+    window_id: u64,
     owner_pid: u32,
     minimized: bool,
     /// Stable ordering for appbar (assigned at discovery time, never changes)
@@ -1112,7 +1115,7 @@ fn discover_windows(
 ) -> bool {
     let mut win_infos = [graphics::WindowInfo {
         buffer_id: 0, owner_pid: 0, width: 0, height: 0,
-        x: 0, y: 0, title_len: 0, title: [0; 64],
+        title_len: 0, title: [0; 64],
     }; 16];
     let count = match graphics::list_windows(&mut win_infos) {
         Ok(c) => c as usize,
@@ -1193,7 +1196,7 @@ fn discover_windows(
             (win_x + BORDER_WIDTH as i32, win_y + TITLE_BAR_HEIGHT as i32 + BORDER_WIDTH as i32)
         };
         let z_order = windows.len() as u32;
-        let _ = graphics::set_window_position(info.buffer_id, content_x, content_y, z_order);
+        let _ = graphics::set_window_position(info.buffer_id, content_x, content_y, z_order,true);
 
         // If saved defaults give different content dimensions, notify client
         if !chromeless {
@@ -1234,7 +1237,7 @@ fn discover_windows(
 fn update_kernel_z_order(windows: &[Window]) {
     for (i, win) in windows.iter().enumerate() {
         if win.window_id != 0 {
-            let _ = graphics::set_window_position(win.window_id, win.content_x(), win.content_y(), i as u32);
+            let _ = graphics::set_window_position(win.window_id, win.content_x(), win.content_y(), i as u32,!win.minimized);
         }
     }
 }
@@ -1442,47 +1445,10 @@ fn main() {
     let screen_h = info.height as usize;
     let bpp = info.bytes_per_pixel as usize;
 
-    let gpu_compositing = {
-        let test_pixel: [u32; 1] = [0xFF000000];
-        let mut ok = false;
-        for attempt in 0..20 {
-            if graphics::virgl_composite(&test_pixel, 1, 1).is_ok() {
-                ok = true;
-                break;
-            }
-            if attempt < 19 {
-                let _ = libbreenix::time::nanosleep(&libbreenix::types::Timespec {
-                    tv_sec: 0, tv_nsec: 100_000_000,
-                });
-            }
-        }
-        ok
-    };
-    if !gpu_compositing {
-        print!("[bwm] ERROR: GPU compositing required\n");
-        process::exit(1);
-    }
-
-    print!("[bwm] GPU compositing mode (VirGL), display: {}x{}\n", screen_w, screen_h);
-
-    // Try to map COMPOSITE_TEX directly into our address space.
-    // If successful, all pixel writes go straight to GPU texture backing (zero-copy).
-    let (composite_buf, direct_mapped) = match graphics::map_compositor_texture() {
-        Ok((ptr, tex_w, tex_h)) => {
-            let mapped_w = tex_w as usize;
-            let mapped_h = tex_h as usize;
-            print!("[bwm] Direct compositor mapping: {}x{} at {:p}\n", mapped_w, mapped_h, ptr);
-            let buf = unsafe { core::slice::from_raw_parts_mut(ptr, mapped_w * mapped_h) };
-            (buf, true)
-        }
-        Err(_) => {
-            print!("[bwm] Fallback: heap-allocated compositor buffer\n");
-            // Leak a Vec to get a &'static mut slice — BWM runs for the lifetime of the OS
-            let v = vec![0u32; screen_w * screen_h];
-            let leaked = v.leak();
-            (leaked as &mut [u32], false)
-        }
-    };
+    graphics::init(screen_w as u32,screen_h as u32).unwrap_or_else(|e|{eprintln!("[bwm] v2 compositor: {e}");process::exit(1)});
+    let composite_buf=vec![0u32;screen_w*screen_h].leak();
+    #[cfg(not(target_arch = "aarch64"))]
+    let direct_mapped=false;
 
     let mut fb = unsafe {
         FrameBuf::from_raw(
@@ -1573,33 +1539,18 @@ fn main() {
     #[cfg(not(target_arch = "aarch64"))]
     hotkey_mgr.load_config("/etc/hotkeys.conf");
 
-    // Initial composite. ARM64 uses the same op16 SUBMIT_3D compositor path as
-    // steady-state frames so presentation is gated by the GPU present fence.
+    // Publish the v2 chrome window before entering the input loop.
     #[cfg(target_arch = "aarch64")]
     {
-        if direct_mapped {
-            let _ = graphics::virgl_composite_windows_rect(
-                &[],
-                0,
-                0,
-                1,
-                0,
-                0,
-                screen_w as u32,
-                screen_h as u32,
-            );
-        } else {
-            let _ =
-                graphics::virgl_composite_windows(composite_buf, screen_w as u32, screen_h as u32, true);
-        }
+        let _ = graphics::compose_scene(composite_buf, screen_w as u32, screen_h as u32, true);
     }
     #[cfg(not(target_arch = "aarch64"))]
     {
         if direct_mapped {
             // Data is already in COMPOSITE_TEX — just tell kernel to upload + display
-            let _ = graphics::virgl_composite_windows_rect(&[], 0, 0, 1, 0, 0, screen_w as u32, screen_h as u32);
+            let _ = graphics::compose_region(&[], 0, 0, 1, 0, 0, screen_w as u32, screen_h as u32);
         } else {
-            let _ = graphics::virgl_composite_windows(&composite_buf, screen_w as u32, screen_h as u32, true);
+            let _ = graphics::compose_scene(&composite_buf, screen_w as u32, screen_h as u32, true);
         }
     }
 
@@ -1757,7 +1708,7 @@ fn main() {
                             if windows[win_idx].window_id != 0 {
                                 let cx = windows[win_idx].content_x();
                                 let cy = windows[win_idx].content_y();
-                                let _ = graphics::set_window_position(windows[win_idx].window_id, cx, cy, win_idx as u32);
+                                let _ = graphics::set_window_position(windows[win_idx].window_id, cx, cy, win_idx as u32,!windows[win_idx].minimized);
                             }
                             // Dirty region = union of old and new bounds
                             let (nx0, ny0, nx1, ny1) = windows[win_idx].bounds();
@@ -1821,7 +1772,7 @@ fn main() {
                             let cx = windows[win_idx].content_x();
                             let cy = windows[win_idx].content_y();
                             let _ = graphics::set_window_position(
-                                windows[win_idx].window_id, cx, cy, win_idx as u32,
+                                windows[win_idx].window_id, cx, cy, win_idx as u32,!windows[win_idx].minimized,
                             );
                         }
 
@@ -2140,13 +2091,9 @@ fn main() {
         #[cfg(target_arch = "aarch64")]
         {
             if full_redraw || content_dirty || windows_dirty || mouse_moved_this_frame || cursor_dirty {
-                let (cbuf, cw, ch): (&[u32], u32, u32) = if direct_mapped {
-                    (&[], 0, 0)
-                } else {
-                    (&composite_buf, screen_w as u32, screen_h as u32)
-                };
+                let (cbuf, cw, ch): (&[u32], u32, u32) = (composite_buf, screen_w as u32, screen_h as u32);
                 if full_redraw {
-                    let _ = graphics::virgl_composite_windows_rect(
+                    let _ = graphics::compose_region(
                         cbuf,
                         cw,
                         ch,
@@ -2163,9 +2110,9 @@ fn main() {
                     let dy = dirty_y0.max(0) as u32;
                     let dw = (dirty_x1.min(sw) - dirty_x0.max(0)).max(0) as u32;
                     let dh = (dirty_y1.min(sh) - dirty_y0.max(0)).max(0) as u32;
-                    let _ = graphics::virgl_composite_windows_rect(cbuf, cw, ch, 2, dx, dy, dw, dh);
+                    let _ = graphics::compose_region(cbuf, cw, ch, 2, dx, dy, dw, dh);
                 } else if windows_dirty || mouse_moved_this_frame || cursor_dirty {
-                    let _ = graphics::virgl_composite_windows_rect(cbuf, cw, ch, 0, 0, 0, 0, 0);
+                    let _ = graphics::compose_region(cbuf, cw, ch, 0, 0, 0, 0, 0);
                 }
                 full_redraw = false;
                 content_dirty = false;
@@ -2180,7 +2127,7 @@ fn main() {
             (&composite_buf, screen_w as u32, screen_h as u32)
         };
         if full_redraw {
-            let _ = graphics::virgl_composite_windows_rect(
+            let _ = graphics::compose_region(
                 cbuf, cw, ch,
                 1, 0, 0, screen_w as u32, screen_h as u32,
             );
@@ -2194,7 +2141,7 @@ fn main() {
             let dy = dirty_y0.max(0) as u32;
             let dw = (dirty_x1.min(sw) - dirty_x0.max(0)).max(0) as u32;
             let dh = (dirty_y1.min(sh) - dirty_y0.max(0)).max(0) as u32;
-            let _ = graphics::virgl_composite_windows_rect(
+            let _ = graphics::compose_region(
                 cbuf, cw, ch,
                 2, dx, dy, dw, dh,
             );
@@ -2204,7 +2151,7 @@ fn main() {
             // Window content and/or mouse-only update: no COMPOSITE_TEX change,
             // but kernel uploads per-window textures and draws cursor via SUBMIT_3D.
             // dirty_mode=0 tells kernel bg_dirty=false → skip COMPOSITE_TEX upload.
-            let _ = graphics::virgl_composite_windows_rect(
+            let _ = graphics::compose_region(
                 cbuf, cw, ch,
                 0, 0, 0, 0, 0,
             );

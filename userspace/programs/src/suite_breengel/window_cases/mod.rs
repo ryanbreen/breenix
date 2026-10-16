@@ -4,7 +4,7 @@
 mod kit;
 mod windows;
 mod isolation;
-mod composition;
+pub(crate) mod composition;
 mod events;
 mod scanout;
 mod panel;

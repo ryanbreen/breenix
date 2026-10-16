@@ -192,9 +192,12 @@ impl Comparison {
 fn delta(a: [u8; 4], b: [u8; 4]) -> u8 {
     (0..3).map(|i| a[i].abs_diff(b[i])).max().unwrap()
 }
+fn in_region(options:&Options<'_>, region:Rect, x:usize,y:usize)->bool {
+    region.contains(x,y) && !options.masks.iter().any(|m| region.encloses(m.rect) && m.rect.contains(x,y))
+}
 fn domain(options: &Options<'_>, x: usize, y: usize) -> bool {
-    (options.regions.is_empty() || options.regions.iter().any(|r| r.contains(x, y)))
-        && !options.masks.iter().any(|m| m.rect.contains(x, y))
+    if options.regions.is_empty() { !options.masks.iter().any(|m| m.rect.contains(x,y)) }
+    else { options.regions.iter().any(|&r|in_region(options,r,x,y)) }
 }
 fn validate(frame: Frame<'_>, options: &Options<'_>) -> Result<usize, Error> {
     if options.tolerance.channel > 8 {
@@ -233,7 +236,7 @@ fn validate(frame: Frame<'_>, options: &Options<'_>) -> Result<usize, Error> {
         let mut remaining = 0usize;
         for y in r.y..r.y + r.h {
             for x in r.x..r.x + r.w {
-                remaining += usize::from(!options.masks.iter().any(|m| m.rect.contains(x, y)));
+                remaining += usize::from(in_region(options,*r,x,y));
             }
         }
         if remaining == 0 {
@@ -355,4 +358,66 @@ pub fn thumbnail(frame: Frame<'_>, width: usize, height: usize) -> Result<Vec<u8
         }
     }
     Ok(out)
+}
+
+/// Structural operands index declared regions; they never supply free comparison rectangles.
+#[derive(Clone, Copy)]
+pub enum Predicate {
+    Uniform { region:usize, colour:[u8;3] },
+    Outside { region:usize, rect:Rect, colour:[u8;3] },
+    Count { region:usize, min:usize, max:Option<usize> },
+    EqualRegions { a:usize,b:usize },
+    DiffersFromPrevious { region:usize,min_differing:usize },
+}
+/// A previous check of the same source, including its own compared domain.
+pub struct Previous<'a> { pub frame:Frame<'a>,pub options:Options<'a> }
+/// Invalid domains are errors, distinct from a valid predicate that fails.
+pub fn structural(frame:Frame<'_>,options:Options<'_>,predicate:Predicate,previous:Option<Previous<'_>>)->Result<bool,Error> {
+    validate(frame,&options)?;
+    let region=|i:usize|options.regions.get(i).copied().ok_or(Error::Predicate);
+    let indices=|r:Rect| {
+        let mut v=Vec::new();
+        for y in r.y..r.y+r.h {for x in r.x..r.x+r.w {if in_region(&options,r,x,y){v.push((x,y));}}}
+        v
+    };
+    let rgb=|p:[u8;4]|[p[2],p[1],p[0]];
+    match predicate {
+        Predicate::Uniform{region:i,colour}=>{
+            let pts=indices(region(i)?);if pts.len()<2{return Err(Error::Predicate);}
+            Ok(pts.into_iter().all(|(x,y)|rgb(frame.pixel(x,y).unwrap())==colour))
+        }
+        Predicate::Outside{region:i,rect,colour}=>{
+            let r=region(i)?;
+            if !rect.valid(frame.width,frame.height) || !r.encloses(rect) || rect==r {return Err(Error::Predicate);}
+            let pts:Vec<_>=indices(r).into_iter().filter(|&(x,y)|!rect.contains(x,y)).collect();
+            if pts.is_empty() || pts.len()*4<(r.w*r.h-rect.w*rect.h)*3{return Err(Error::Predicate);}
+            Ok(pts.into_iter().all(|(x,y)|rgb(frame.pixel(x,y).unwrap())!=colour))
+        }
+        Predicate::Count{region:i,min,max}=>{
+            let pts=indices(region(i)?);
+            if min<2 || max.is_some_and(|m|m<min) || pts.len()<min{return Err(Error::Predicate);}
+            let mut colours:Vec<_>=pts.into_iter().map(|(x,y)|frame.pixel(x,y).unwrap()).collect();
+            colours.sort_unstable();colours.dedup();
+            Ok(colours.len()>=min && max.is_none_or(|m|colours.len()<=m))
+        }
+        Predicate::EqualRegions{a,b}=>{
+            let (ra,rb)=(region(a)?,region(b)?);
+            if (ra.w,ra.h)!=(rb.w,rb.h) || (ra.x<rb.x+rb.w && rb.x<ra.x+ra.w && ra.y<rb.y+rb.h && rb.y<ra.y+ra.h){return Err(Error::Predicate);}
+            let mut n=0;let mut same=true;
+            for y in 0..ra.h {for x in 0..ra.w {
+                if in_region(&options,ra,ra.x+x,ra.y+y) && in_region(&options,rb,rb.x+x,rb.y+y) {
+                    n+=1;same &=frame.pixel(ra.x+x,ra.y+y)==frame.pixel(rb.x+x,rb.y+y);
+                }
+            }}
+            if n<2 || n*4<ra.w*ra.h*3{return Err(Error::Predicate);}Ok(same)
+        }
+        Predicate::DiffersFromPrevious{region:i,min_differing}=>{
+            let r=region(i)?;let p=previous.ok_or(Error::Predicate)?;
+            if (p.frame.width,p.frame.height)!=(frame.width,frame.height){return Err(Error::Geometry);}
+            validate(p.frame,&p.options)?;
+            let pts:Vec<_>=indices(r).into_iter().filter(|&(x,y)|domain(&p.options,x,y)).collect();
+            if min_differing==0 || min_differing>pts.len(){return Err(Error::Predicate);}
+            Ok(pts.into_iter().filter(|&(x,y)|frame.pixel(x,y)!=p.frame.pixel(x,y)).count()>=min_differing)
+        }
+    }
 }

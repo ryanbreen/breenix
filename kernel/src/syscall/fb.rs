@@ -203,6 +203,17 @@ pub(super) fn framebuffer_op(cmd: FbDrawCmd) -> SyscallResult {
         return SyscallResult::Err(super::ErrorCode::PermissionDenied as u64);
     }
 
+    #[cfg(target_arch = "aarch64")]
+    if crate::graphics::display::active() && cmd.op == 6 {
+        if let (Some(pane),Ok(caller))=(fb_mmap_info_pre,crate::window::Caller::current()) {
+            let rect=if cmd.p3>0 && cmd.p4>0 {breengel_abi::Rect::new(cmd.p1,cmd.p2,cmd.p3,cmd.p4)}
+                else {breengel_abi::Rect::new(0,0,pane.width as i32,pane.height as i32)};
+            return match crate::graphics::display::flush(caller.tgid,pane,rect) {
+                Ok(())=>SyscallResult::Ok(0),Err(e)=>SyscallResult::Err(e as u64)
+            };
+        }
+    }
+
     // Get framebuffer
     let fb = match SHELL_FRAMEBUFFER.get() {
         Some(fb) => fb,
@@ -692,6 +703,13 @@ fn fbmmap(width_out: u64) -> SyscallResult {
         Some(id) => id,
         None => return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64),
     };
+
+    // Repeated mapping queries return this process's existing pane, rather than
+    // failing after the caller has already used it to paint a previous frame.
+    if let Some(pane)=crate::process::with_process_manager(|m|m.find_process_by_thread(current_thread_id).and_then(|(_,p)|p.fb_mmap)).flatten() {
+        if width_out!=0 && crate::syscall::userptr::copy_to_user(width_out as *mut u64,&(pane.width as u64)).is_err(){return SyscallResult::Err(14);}
+        return SyscallResult::Ok(pane.user_addr);
+    }
 
     // Check the optional pane-width out pointer before mapping anything.
     if width_out != 0

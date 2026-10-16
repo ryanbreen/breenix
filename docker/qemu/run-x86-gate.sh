@@ -401,7 +401,7 @@ for i in $(seq 1 "$COUNT"); do
   # count and network floor. Default still requires 3 VirtIO block and >=1 NIC.
   census_ok=true
   census_reason=""
-  pci_census_line=$(grep -h -E 'PCI: Enumeration complete\. Found [0-9]+ devices \([0-9]+ VirtIO block, [0-9]+ network\)' \
+  pci_census_line=$(grep -a -h -E 'PCI: Enumeration complete\. Found [0-9]+ devices \([0-9]+ VirtIO block, [0-9]+ network\)' \
       "$OUTDIR"/serial_*.log 2>/dev/null | tail -1)
   if [ -z "$pci_census_line" ]; then
     census_ok=false
@@ -425,16 +425,16 @@ for i in $(seq 1 "$COUNT"); do
 
   # x86 is tested only as a multiprocessor: every CPU the profile configures
   # must come online.
-  if ! grep -q -F "[smp] every reported CPU is online ($expected_cpus of $expected_cpus)" \
+  if ! grep -a -q -F "[smp] every reported CPU is online ($expected_cpus of $expected_cpus)" \
       "$OUTDIR/serial_kernel.log" 2>/dev/null; then
-    smp_report=$(grep -h -o '\[smp\] online=[0-9]* reported=[0-9]*' "$OUTDIR/serial_kernel.log" 2>/dev/null | tail -1)
+    smp_report=$(grep -a -h -o '\[smp\] online=[0-9]* reported=[0-9]*' "$OUTDIR/serial_kernel.log" 2>/dev/null | tail -1)
     census_ok=false
     census_reason="${census_reason:+$census_reason; }${smp_report:-[smp] bring-up report absent}; profile=$PROFILE configures $expected_cpus CPUs"
   fi
 
   # Require the profile's actual controllers and NIC, independently of drivers.
   while read -r pci_id pci_count; do
-    observed=$(grep -h -E "^PCI_FN [0-9a-f]{2}:[0-9a-f]{2}\\.[0-7] $pci_id " \
+    observed=$(grep -a -h -E "^PCI_FN [0-9a-f]{2}:[0-9a-f]{2}\\.[0-7] $pci_id " \
         "$OUTDIR"/serial_*.log 2>/dev/null | wc -l)
     if [ "$observed" -ne "$pci_count" ]; then
       census_ok=false
@@ -481,7 +481,7 @@ for i in $(seq 1 "$COUNT"); do
       verdict_ok=false
       verdict_reason="see $OUTDIR/serial_kernel.log"
     fi
-  elif grep -q "$MARKER_GREP" "$OUTDIR/serial_kernel.log" "$OUTDIR/serial_user.log" 2>/dev/null; then
+  elif grep -a -q "$MARKER_GREP" "$OUTDIR/serial_kernel.log" "$OUTDIR/serial_user.log" 2>/dev/null; then
     verdict_ok=true
     verdict_reason=""
   else

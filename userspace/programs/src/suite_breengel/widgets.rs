@@ -8,129 +8,129 @@ use libbui::widget::{file_picker::FilePickerResult, label::Label, text_field::Te
 use libbui::{Key, KeyInput};
 
 pub(crate) const FONTWATCH: &[Case] = &[
-    case("fontwatch-reload", "Changing the configured font makes later text use newly rasterized glyphs of the new font", text_fontwatch_reload),
-    case("fontwatch-size", "Changing the configured size changes the rasterized glyphs and their metrics", text_fontwatch_size),
-    case("fontwatch-missing", "A configured font file that is missing keeps the previous font and reports the error", text_fontwatch_missing),
-    case("fontwatch-malformed-config", "A malformed fonts.conf keeps the previous fonts and reports the error", text_fontwatch_malformed_config),
-    case("fontwatch-partial", "A fonts.conf replaced by rename is seen whole, and a truncated one is rejected", text_fontwatch_partial),
-    case("fontwatch-repeated", "Five changes in a row end with the last one in use", text_fontwatch_repeated),
-    case("fontwatch-independent", "Mono and display fonts change independently", text_fontwatch_independent),
-    case("fontwatch-idle", "A window that receives no events, with fonts.conf changed at UI time *t*, draws the new font in its first commit at or after the watcher's first 250 ms check after *t*", text_fontwatch_idle),
-    case("fontwatch-file-replaced", "Replacing the configured font file at the same path by rename, with fonts.conf unchanged, makes later text use newly rasterized glyphs of the new file by the next check", text_fontwatch_file_replaced),
+    pictured!("fontwatch-reload", "Changing the configured font makes later text use newly rasterized glyphs of the new font", text_fontwatch_reload),
+    pictured!("fontwatch-size", "Changing the configured size changes the rasterized glyphs and their metrics", text_fontwatch_size),
+    pictured!("fontwatch-missing", "A configured font file that is missing keeps the previous font and reports the error", text_fontwatch_missing),
+    pictured!("fontwatch-malformed-config", "A malformed fonts.conf keeps the previous fonts and reports the error", text_fontwatch_malformed_config),
+    pictured!("fontwatch-partial", "A fonts.conf replaced by rename is seen whole, and a truncated one is rejected", text_fontwatch_partial),
+    pictured!("fontwatch-repeated", "Five changes in a row end with the last one in use", text_fontwatch_repeated),
+    pictured!("fontwatch-independent", "Mono and display fonts change independently", text_fontwatch_independent),
+    pictured!("fontwatch-idle", "A window that receives no events, with fonts.conf changed at UI time *t*, draws the new font in its first commit at or after the watcher's first 250 ms check after *t*", text_fontwatch_idle),
+    pictured!("fontwatch-file-replaced", "Replacing the configured font file at the same path by rename, with fonts.conf unchanged, makes later text use newly rasterized glyphs of the new file by the next check", text_fontwatch_file_replaced),
 ];
 
 pub(crate) const WIDGETS: &[Case] = &[
-    case(
+    pictured!(
         "button-draw",
         "A button draws its label and frame in the theme's literal colours and positions",
         widgets_button_draw,
     ),
-    case(
+    pictured!(
         "button-click",
         "Press and release inside a button report exactly one click",
         widgets_button_click,
     ),
-    case(
+    pictured!(
         "button-cancel",
         "Press inside and release outside report no click",
         widgets_button_cancel,
     ),
-    case(
+    pictured!(
         "button-disabled",
         "A disabled button draws dimmed and reports no click",
         widgets_button_disabled,
     ),
-    case(
+    pictured!(
         "checkbox-toggle",
         "Clicking a checkbox toggles it and redraws the mark",
         widgets_checkbox_toggle,
     ),
-    case(
+    pictured!(
         "checkbox-space",
         "Space toggles a focused checkbox",
         widgets_checkbox_space,
     ),
-    case(
+    pictured!(
         "slider-drag",
         "Dragging a slider sets the value the contract maps from the pointer x",
         widgets_slider_drag,
     ),
-    case(
+    pictured!(
         "slider-clamp",
         "Dragging past either end clamps to the minimum or maximum",
         widgets_slider_clamp,
     ),
-    case(
+    pictured!(
         "slider-keys",
         "Arrow keys step a focused slider by its step size",
         widgets_slider_keys,
     ),
-    case(
+    pictured!(
         "label-clip",
         "A label wider than its bounds is clipped at the bounds with an ellipsis",
         widgets_label_clip,
     ),
-    case(
+    pictured!(
         "tabbar-select",
         "Clicking a tab selects it and reports its index",
         widgets_tabbar_select,
     ),
-    case(
+    pictured!(
         "tabbar-overflow",
         "More tabs than fit scroll, and every tab stays reachable",
         widgets_tabbar_overflow,
     ),
-    case(
+    pictured!(
         "scrollbar-drag",
         "Dragging the thumb sets the offset proportionally",
         widgets_scrollbar_drag,
     ),
-    case(
+    pictured!(
         "scrollbar-wheel",
         "A wheel step moves the offset by the configured amount",
         widgets_scrollbar_wheel,
     ),
-    case(
+    pictured!(
         "scrollbar-thumb",
         "The thumb's length is proportional to visible over total",
         widgets_scrollbar_thumb,
     ),
-    case(
+    pictured!(
         "menubar-open",
         "Clicking a menu title opens its menu below it",
         widgets_menubar_open,
     ),
-    case(
+    pictured!(
         "menubar-shortcut",
         "match_shortcut returns the item bound to Ctrl+S",
         widgets_menubar_shortcut,
     ),
-    case(
+    pictured!(
         "menu-keys",
         "Arrows, Enter and Escape navigate, choose and close an open menu",
         widgets_menu_keys,
     ),
-    case(
+    pictured!(
         "menu-disabled",
         "A disabled item draws dimmed and cannot be chosen",
         widgets_menu_disabled,
     ),
-    case(
+    pictured!(
         "menu-dismiss",
         "A click outside an open menu closes it without choosing",
         widgets_menu_dismiss,
     ),
-    case(
+    pictured!(
         "layout-stack",
         "h_stack and v_stack place children at the contract's literal positions",
         widgets_layout_stack,
     ),
-    case(
+    pictured!(
         "focus-ring",
         "Each focusable widget draws the theme's focus ring when focused and none otherwise",
         widgets_focus_ring,
     ),
-    case(
+    pictured!(
         "no-change-ack",
         "An event that changes no widget state is reported as needing no redraw",
         widgets_no_change_ack,
@@ -138,97 +138,97 @@ pub(crate) const WIDGETS: &[Case] = &[
 ];
 
 pub(crate) const TEXT_ENTRY: &[Case] = &[
-    case(
+    pictured!(
         "insert",
         "Typed text is inserted at the cursor",
         text_entry_insert,
     ),
-    case(
+    pictured!(
         "delete",
         "Backspace and Delete remove the character before and after the cursor",
         text_entry_delete,
     ),
-    case(
+    pictured!(
         "move",
         "Left, Right, Home and End move the cursor as the contract says",
         text_entry_move,
     ),
-    case(
+    pictured!(
         "select",
         "Shift with an arrow selects, and typing replaces the selection",
         text_entry_select,
     ),
-    case(
+    pictured!(
         "utf8",
         "Multi-byte characters insert and delete as one character",
         text_entry_utf8,
     ),
-    case(
+    pictured!(
         "maxlen",
         "Input beyond the maximum length is refused",
         text_entry_maxlen,
     ),
-    case(
+    pictured!(
         "scroll-to-cursor",
         "Text wider than the field scrolls to keep the cursor visible",
         text_entry_scroll_to_cursor,
     ),
-    case(
+    pictured!(
         "selection-text",
         "The selected text is returned exactly for a copy",
         text_entry_selection_text,
     ),
-    case(
+    pictured!(
         "paste-insert",
         "Inserted paste text replaces the selection and moves the cursor past it",
         text_entry_paste_insert,
     ),
-    case(
+    pictured!(
         "focus-tab",
         "Tab moves focus through focusable widgets in order",
         text_entry_focus_tab,
     ),
-    case(
+    pictured!(
         "focus-shift-tab",
         "Shift+Tab moves focus in reverse",
         text_entry_focus_shift_tab,
     ),
-    case(
+    pictured!(
         "focus-skip-disabled",
         "Focus traversal skips disabled widgets",
         text_entry_focus_skip_disabled,
     ),
-    case(
+    pictured!(
         "focus-click",
         "Clicking a focusable widget focuses it",
         text_entry_focus_click,
     ),
-    case(
+    pictured!(
         "filepicker-list",
         "The file picker lists the given entries, directories first, in byte order",
         text_entry_filepicker_list,
     ),
-    case(
+    pictured!(
         "filepicker-keys",
         "Arrows move the selection and Enter opens it",
         text_entry_filepicker_keys,
     ),
-    case(
+    pictured!(
         "filepicker-path",
         "Typing a path into the picker's text field navigates to it",
         text_entry_filepicker_path,
     ),
-    case(
+    pictured!(
         "filepicker-mouse",
         "A click selects and a double click within the interval, by explicit timestamps, opens",
         text_entry_filepicker_mouse,
     ),
-    case(
+    pictured!(
         "filepicker-scroll",
         "Lists longer than the view scroll by keys and wheel",
         text_entry_filepicker_scroll,
     ),
-    case(
+    pictured!(
         "filepicker-errors",
         "A directory that cannot be read shows its error in the picker",
         text_entry_filepicker_errors,
@@ -236,18 +236,18 @@ pub(crate) const TEXT_ENTRY: &[Case] = &[
 ];
 
 pub(crate) const ICONS: &[Case] = &[
-    case("states", "An icon goes idle, hover, pressed and released on the corresponding pointer edges", icons_states),
-    case("spring-steps", "Spring positions after fixed time steps equal the contract's literal table", icons_spring_steps),
-    case("step-invariance", "One step of 1,000 ms, a thousand steps of 1 ms and steps of 16 ms give identical states at equal times", icons_step_invariance),
-    case("settles", "Every catalogue animation settles within 2,000 ms of UI time after its last input and never draws outside its box", icons_settles),
-    case("interrupt", "A hover interrupted by a press mid-animation follows the contract's state table", icons_interrupt),
-    case("reversal", "Leaving mid-hover reverses from the current position without a jump", icons_reversal),
-    case("reset", "Reset after a resize returns the icon to idle at its new geometry", icons_reset),
-    case("bounded", "Over 10,000 steps of seeded random pointer input, the trajectory stays inside its box", icons_bounded),
-    case("easing", "Each easing function matches the literal table at its sample points", icons_easing),
-    case("sin-approx", "sin_approx stays within 0.0012 of sin at 4,096 evenly spaced points of [−π, π]", icons_sin_approx),
-    case("particles-bounded", "Particle counts stay at or below the cap, and positions stay inside the box", icons_particles_bounded),
-    case("assets", "Each icon in each state draws to its reviewed reference", icons_assets),
+    pictured!("states", "An icon goes idle, hover, pressed and released on the corresponding pointer edges", icons_states),
+    pictured!("spring-steps", "Spring positions after fixed time steps equal the contract's literal table", icons_spring_steps),
+    pictured!("step-invariance", "One step of 1,000 ms, a thousand steps of 1 ms and steps of 16 ms give identical states at equal times", icons_step_invariance),
+    pictured!("settles", "Every catalogue animation settles within 2,000 ms of UI time after its last input and never draws outside its box", icons_settles),
+    pictured!("interrupt", "A hover interrupted by a press mid-animation follows the contract's state table", icons_interrupt),
+    pictured!("reversal", "Leaving mid-hover reverses from the current position without a jump", icons_reversal),
+    pictured!("reset", "Reset after a resize returns the icon to idle at its new geometry", icons_reset),
+    pictured!("bounded", "Over 10,000 steps of seeded random pointer input, the trajectory stays inside its box", icons_bounded),
+    pictured!("easing", "Each easing function matches the literal table at its sample points", icons_easing),
+    pictured!("sin-approx", "sin_approx stays within 0.0012 of sin at 4,096 evenly spaced points of [−π, π]", icons_sin_approx),
+    pictured!("particles-bounded", "Particle counts stay at or below the cap, and positions stay inside the box", icons_particles_bounded),
+    pictured!("assets", "Each icon in each state draws to its reviewed reference", icons_assets),
 ];
 
 fn text_fontwatch_reload() -> CaseResult {
@@ -256,7 +256,7 @@ fn text_fontwatch_reload() -> CaseResult {
         .map_err(|e| format!("watcher startup: {e:?}"))
         .cite("9.3")?;
     let old = watch_frame(&mut w, true);
-    libbreenix::suite::judged(&old.fb())?;
+    snapshot(&old)?;
     f.config("display.ttf", 16, "display.ttf", 24).cite("9.3")?;
     f.step(249_999_999).cite("9.1")?;
     ensure(w.poll() == Ok(None), "9.3", "watcher checked before 250ms")?;
@@ -277,14 +277,14 @@ fn text_fontwatch_reload() -> CaseResult {
         "changed font retained cached glyphs",
     )?;
     let new = watch_frame(&mut w, true);
-    libbreenix::suite::judged(&new.fb())?;
+    snapshot(&new)?;
     ensure(
         same_pixels(&old, &new).is_some(),
         "9.3",
         "changing mono font left all pixels unchanged",
     )?;
     f.assert_frame(&new, "display.ttf", 16.0)?;
-    Ok(())
+    snapshot(&new)
 }
 
 fn text_fontwatch_size() -> CaseResult {
@@ -293,7 +293,7 @@ fn text_fontwatch_size() -> CaseResult {
         .map_err(|e| format!("watcher startup: {e:?}"))
         .cite("9.3")?;
     let old = watch_frame(&mut w, true);
-    libbreenix::suite::judged(&old.fb())?;
+    snapshot(&old)?;
     f.config("mono.ttf", 32, "display.ttf", 24).cite("9.3")?;
     f.step(250_000_000).cite("9.1")?;
     ensure(
@@ -313,14 +313,14 @@ fn text_fontwatch_size() -> CaseResult {
         "size change retained old cache entries",
     )?;
     let new = watch_frame(&mut w, true);
-    libbreenix::suite::judged(&new.fb())?;
+    snapshot(&new)?;
     ensure(
         same_pixels(&old, &new).is_some(),
         "9.3",
         "size change did not change rasterized pixels",
     )?;
     f.assert_frame(&new, "mono.ttf", 32.0)?;
-    Ok(())
+    snapshot(&new)
 }
 
 fn text_fontwatch_missing() -> CaseResult {
@@ -329,9 +329,9 @@ fn text_fontwatch_missing() -> CaseResult {
         .map_err(|e| format!("watcher startup: {e:?}"))
         .cite("9.3")?;
     let old = watch_frame(&mut w, true);
-    libbreenix::suite::judged(&old.fb())?;
+    snapshot(&old)?;
     let old_display = watch_frame(&mut w, false);
-    libbreenix::suite::judged(&old_display.fb())?;
+    snapshot(&old_display)?;
     f.config("display.ttf", 32, "absent.ttf", 40).cite("9.3")?;
     f.step(250_000_000).cite("9.1")?;
     ensure(
@@ -340,10 +340,10 @@ fn text_fontwatch_missing() -> CaseResult {
         "missing second font did not report its path",
     )?;
     let actual_mono = watch_frame(&mut w, true);
-    libbreenix::suite::judged(&actual_mono.fb())?;
+    snapshot(&actual_mono)?;
     ensure(same_pixels(&old, &actual_mono).is_none(), "9.3", "missing font changed mono pixels")?;
     let actual_display = watch_frame(&mut w, false);
-    libbreenix::suite::judged(&actual_display.fb())?;
+    snapshot(&actual_display)?;
     ensure(
         w.mono_size() == 16.0
             && w.display_size() == 24.0
@@ -359,7 +359,7 @@ fn text_fontwatch_malformed_config() -> CaseResult {
         .map_err(|e| format!("watcher startup: {e:?}"))
         .cite("9.3")?;
     let old = watch_frame(&mut w, true);
-    libbreenix::suite::judged(&old.fb())?;
+    snapshot(&old)?;
     for (i, bad) in [
         "mono.font=/cut",
         "mono.font=x\nmono.size=16\ndisplay.font=x\ndisplay.size=NaN\n",
@@ -379,7 +379,7 @@ fn text_fontwatch_malformed_config() -> CaseResult {
             format!("malformed config {i} was not rejected"),
         )?;
         let actual = watch_frame(&mut w, true);
-        libbreenix::suite::judged(&actual.fb())?;
+        snapshot(&actual)?;
         ensure(
             w.mono_size() == 16.0 && same_pixels(&old, &actual).is_none(),
             "9.3",
@@ -441,9 +441,9 @@ fn text_fontwatch_repeated() -> CaseResult {
         )?;
     }
     let frame = watch_frame(&mut w, true);
-    libbreenix::suite::judged(&frame.fb())?;
+    snapshot(&frame)?;
     f.assert_frame(&frame, "mono.ttf", 24.0)?;
-    Ok(())
+    snapshot(&frame)
 }
 
 fn text_fontwatch_independent() -> CaseResult {
@@ -452,9 +452,9 @@ fn text_fontwatch_independent() -> CaseResult {
         .map_err(|e| format!("watcher startup: {e:?}"))
         .cite("9.3")?;
     let mono = watch_frame(&mut w, true);
-    libbreenix::suite::judged(&mono.fb())?;
+    snapshot(&mono)?;
     let display = watch_frame(&mut w, false);
-    libbreenix::suite::judged(&display.fb())?;
+    snapshot(&display)?;
     f.config("mono.ttf", 16, "mono.ttf", 24).cite("9.2")?;
     f.step(250_000_000).cite("9.1")?;
     ensure(
@@ -467,10 +467,10 @@ fn text_fontwatch_independent() -> CaseResult {
         "display change was not independent",
     )?;
     let actual_mono = watch_frame(&mut w, true);
-    libbreenix::suite::judged(&actual_mono.fb())?;
+    snapshot(&actual_mono)?;
     ensure(same_pixels(&mono, &actual_mono).is_none(), "9.3", "display reload changed mono pixels")?;
     let actual_display = watch_frame(&mut w, false);
-    libbreenix::suite::judged(&actual_display.fb())?;
+    snapshot(&actual_display)?;
     ensure(
         same_pixels(&display, &actual_display).is_some(),
         "9.3",
@@ -479,7 +479,7 @@ fn text_fontwatch_independent() -> CaseResult {
     let held_mono = w.take_mono_font();
     f.config("display.ttf", 16, "mono.ttf", 24).cite("9.2")?;
     let display = watch_frame(&mut w, false);
-    libbreenix::suite::judged(&display.fb())?;
+    snapshot(&display)?;
     f.step(500_000_000).cite("9.1")?;
     ensure(
         w.poll()
@@ -492,10 +492,10 @@ fn text_fontwatch_independent() -> CaseResult {
     )?;
     w.put_mono_font(held_mono);
     let reloaded_mono = watch_frame(&mut w, true);
-    libbreenix::suite::judged(&reloaded_mono.fb())?;
+    snapshot(&reloaded_mono)?;
     f.assert_frame(&reloaded_mono, "display.ttf", 16.0)?;
     let actual_display = watch_frame(&mut w, false);
-    libbreenix::suite::judged(&actual_display.fb())?;
+    snapshot(&actual_display)?;
     ensure(
         same_pixels(&display, &actual_display).is_none(),
         "9.3",
@@ -540,7 +540,7 @@ fn text_fontwatch_idle() -> CaseResult {
         // CAPTURE supplied exactly the checked frame's extent.
         unsafe { std::ptr::copy_nonoverlapping(pixels.as_ptr(), got.base, pixels.len()); }
         f.assert_frame(&got, expected_font, 16.0)?;
-        libbreenix::suite::judged(&got.fb())?;
+        snapshot(&got)?;
     }
     ensure(breengel::clock::real_clock_reads() == 0, "9.1", "idle reload read real time")
 }
@@ -557,7 +557,7 @@ fn text_fontwatch_file_replaced() -> CaseResult {
         .map_err(|e| format!("watcher startup: {e:?}"))
         .cite("9.3")?;
     let old = watch_frame(&mut w, true);
-    libbreenix::suite::judged(&old.fb())?;
+    snapshot(&old)?;
     let config = std::fs::read(f.root.join("etc/fonts.conf"))
         .map_err(|e| format!("read config: {e}"))
         .cite("9.3")?;
@@ -590,14 +590,14 @@ fn text_fontwatch_file_replaced() -> CaseResult {
         "fixture changed fonts.conf during same-path replacement",
     )?;
     let frame = watch_frame(&mut w, true);
-    libbreenix::suite::judged(&frame.fb())?;
+    snapshot(&frame)?;
     ensure(
         same_pixels(&old, &frame).is_some(),
         "9.3",
         "same-path replacement left old glyphs cached",
     )?;
     f.assert_frame(&frame, "display.ttf", 16.0)?;
-    Ok(())
+    snapshot(&frame)
 }
 
 // ---------------------------------------------------------------------------------------
@@ -627,6 +627,15 @@ fn release(x: i32, y: i32) -> InputState {
     input(x, y, false, false, true)
 }
 
+fn canonical(g:&Guarded)->Vec<u8> {
+    let fb=g.fb();let mut pixels=Vec::with_capacity(g.width*g.height*4);
+    for y in 0..g.height {for x in 0..g.width {let p=fb.get_pixel(x,y);pixels.extend_from_slice(&[p.b,p.g,p.r,255]);}}
+    pixels
+}
+fn snapshot(g:&Guarded)->CaseResult {
+    remember_frame(&canonical(g),g.width,g.height,g.reference.borrow().clone());Ok(())
+}
+
 /// Compare `got` with a surface drawn by `expect`, both on a `bg` background.
 fn same_as(
     got: &Guarded,
@@ -635,10 +644,12 @@ fn same_as(
     section: &str,
     expect: impl FnOnce(&mut FrameBuf),
 ) -> CaseResult {
-    libbreenix::suite::judged(&got.fb())?;
     let mut want = Guarded::bgrx(got.width, got.height);
     want.reset(bg);
     expect(&mut want.fb());
+    let reference=canonical(&want);
+    *got.reference.borrow_mut()=Some(reference.clone());
+    remember_frame(&canonical(got),got.width,got.height,Some(reference));
     for y in 0..got.height {
         for x in 0..got.width {
             if got.color(x, y) != want.color(x, y) {
@@ -661,7 +672,7 @@ fn widgets_button_draw() -> CaseResult {
     let mut g = Guarded::bgrx(100, 40);
     g.reset(PAPER);
     Button::new(Rect::new(10, 8, 60, 20), b"OK").draw(&mut g.fb(), &theme);
-    libbreenix::suite::judged(&g.fb())?;
+    snapshot(&g)?;
     same_as(
         &g,
         PAPER,
@@ -748,13 +759,13 @@ fn widgets_button_disabled() -> CaseResult {
     let mut g = Guarded::bgrx(100, 40);
     g.reset(PAPER);
     b.draw(&mut g.fb(), &theme);
-    libbreenix::suite::judged(&g.fb())?;
+    snapshot(&g)?;
     same_as(&g, PAPER, "disabled button", "14.2", |fb| {
         shapes::fill_rect(fb, 10, 8, 60, 20, theme.widget_bg);
         shapes::draw_rect(fb, 10, 8, 60, 20, theme.border);
         font5x7::draw_text(fb, b"OK", 34, 14, theme.text_secondary, 1);
     })?;
-    Ok(())
+    snapshot(&g)
 }
 
 fn widgets_checkbox_toggle() -> CaseResult {
@@ -775,7 +786,7 @@ fn widgets_checkbox_toggle() -> CaseResult {
     let mut g = Guarded::bgrx(140, 40);
     g.reset(PAPER);
     c.draw(&mut g.fb(), &theme);
-    libbreenix::suite::judged(&g.fb())?;
+    snapshot(&g)?;
     same_as(&g, PAPER, "a checked checkbox", "14.3", |fb| {
         let (bx, by) = (10, 13);
         shapes::fill_rect(fb, bx, by, 14, 14, theme.accent);
@@ -914,14 +925,14 @@ fn widgets_label_clip() -> CaseResult {
     let mut g = Guarded::bgrx(80, 40);
     g.reset(PAPER);
     Label::new(Rect::new(10, 8, 35, 7), b"ABCDEFGHIJKLM").draw(&mut g.fb(), &theme);
-    libbreenix::suite::judged(&g.fb())?;
+    snapshot(&g)?;
     same_as(&g, PAPER, "35-pixel clipped label", "14.3", |fb| {
         font5x7::draw_text(fb, b"ABC...", 10, 8, theme.text_primary, 1);
     })?;
     let mut narrow = Guarded::bgrx(80, 40);
     narrow.reset(PAPER);
     Label::new(Rect::new(10, 8, 12, 7), b"ABCDEFGHIJKLM").draw(&mut narrow.fb(), &theme);
-    libbreenix::suite::judged(&narrow.fb())?;
+    snapshot(&narrow)?;
     for y in 0..40 {
         for x in 0..80 {
             if !in_rect(x as i64, y as i64, 10, 8, 12, 7) {
@@ -945,7 +956,7 @@ fn widgets_label_clip() -> CaseResult {
     })?;
     narrow.reset(PAPER);
     Label::new(Rect::new(10, 8, 12, 3), b"ABCDEFGHIJKLM").draw(&mut narrow.fb(), &theme);
-    libbreenix::suite::judged(&narrow.fb())?;
+    snapshot(&narrow)?;
     ensure(
         drawn_pixels(&narrow, PAPER) == 0,
         "14.3",
@@ -958,7 +969,7 @@ fn widgets_label_clip() -> CaseResult {
         "14.3",
         |_| {},
     )?;
-    Ok(())
+    snapshot(&g)
 }
 
 fn widgets_tabbar_select() -> CaseResult {
@@ -1014,7 +1025,7 @@ fn widgets_tabbar_overflow() -> CaseResult {
     let mut g = Guarded::bgrx(100, 50);
     g.reset(PAPER);
     tabs.draw(&mut g.fb(), &Theme::dark());
-    libbreenix::suite::judged(&g.fb())?;
+    snapshot(&g)?;
     ensure(g.color(12, 10) == Theme::dark().widget_bg_active
         && g.color(12, 30) == Theme::dark().accent, "14.3", "tab fill or selected highlight missing")?;
     for y in 0..50 {
@@ -1028,7 +1039,7 @@ fn widgets_tabbar_overflow() -> CaseResult {
             }
         }
     }
-    Ok(())
+    snapshot(&g)
 }
 
 fn widgets_scrollbar_drag() -> CaseResult {
@@ -1077,7 +1088,7 @@ fn widgets_scrollbar_thumb() -> CaseResult {
         let mut g = Guarded::bgrx(20, 200);
         g.reset(PAPER);
         s.draw(&mut g.fb(), &Theme::dark());
-        libbreenix::suite::judged(&g.fb())?;
+        snapshot(&g)?;
         let rows = (0..200)
             .filter(|&y| g.color(9, y) == Color::rgb(80, 85, 100))
             .count();
@@ -1129,7 +1140,7 @@ fn widgets_menubar_open() -> CaseResult {
     let mut g = Guarded::bgrx(330, 140);
     g.reset(PAPER);
     m.draw(&mut g.fb(), &theme);
-    libbreenix::suite::judged(&g.fb())?;
+    snapshot(&g)?;
     // The dropdown is under the File title: its widest row, Save As with Ctrl+Shift+S, is
     // 18 + 24 + 41 + 24 + 71 + 8 = 186 wide, and four items and a separator are 97 tall.
     let (dx, dy, dw, dh) = (10usize, 27usize, 186usize, 97usize);
@@ -1233,7 +1244,7 @@ fn widgets_menu_disabled() -> CaseResult {
     let mut g = Guarded::bgrx(330, 140);
     g.reset(PAPER);
     m.draw(&mut g.fb(), &theme);
-    libbreenix::suite::judged(&g.fb())?;
+    snapshot(&g)?;
     let mut want = Guarded::bgrx(23, 7);
     want.reset(theme.widget_bg);
     font5x7::draw_text(&mut want.fb(), b"Save", 0, 0, theme.text_secondary, 1);
@@ -1317,7 +1328,7 @@ fn widgets_focus_ring() -> CaseResult {
                 3 => tabs.draw(&mut g.fb(), &theme),
                 _ => field.draw(&mut g.fb(), &theme),
             };
-    libbreenix::suite::judged(&g.fb())?;
+    snapshot(&g)?;
             for y in 18..46 {
                 for x in 18..122 {
                     if x == 18 || x == 121 || y == 18 || y == 45 {
@@ -1332,7 +1343,7 @@ fn widgets_focus_ring() -> CaseResult {
             }
         }
     }
-    Ok(())
+    snapshot(&g)
 }
 
 fn widgets_no_change_ack() -> CaseResult {
@@ -1575,7 +1586,7 @@ fn text_entry_scroll_to_cursor() -> CaseResult {
     let mut g = Guarded::bgrx(100, 50);
     g.reset(PAPER);
     f.draw(&mut g.fb(), &Theme::dark());
-    libbreenix::suite::judged(&g.fb())?;
+    snapshot(&g)?;
     ensure(g.color(10, 10) == Theme::dark().border
         && g.color(14, 16) == Color::WHITE
         && g.color(65, 12) == Theme::dark().widget_bg, "15", "focused field border or interior drawing missing")?;
@@ -1590,7 +1601,7 @@ fn text_entry_scroll_to_cursor() -> CaseResult {
             }
         }
     }
-    Ok(())
+    snapshot(&g)
 }
 fn text_entry_selection_text() -> CaseResult {
     let mut f = entry_field(40);
@@ -1823,7 +1834,7 @@ fn text_entry_filepicker_errors() -> CaseResult {
     let mut g = Guarded::bgrx(320, 250);
     g.reset(PAPER);
     p.draw(&mut g.fb(), &Theme::dark());
-    libbreenix::suite::judged(&g.fb())?;
+    snapshot(&g)?;
     let mut expected = Guarded::bgrx(101, 7);
     expected.reset(Theme::dark().panel_bg);
     font5x7::draw_text(
@@ -1848,7 +1859,7 @@ fn text_entry_filepicker_errors() -> CaseResult {
         "15",
         "Enter activated a stale entry under error",
     )?;
-    Ok(())
+    snapshot(&g)
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1963,17 +1974,17 @@ fn icons_step_invariance() -> CaseResult {
                 }
             }
             let frame = drawn(icon.as_ref(), 48);
-            libbreenix::suite::judged(&frame.fb())?;
+            snapshot(&frame)?;
             results.push((label, icon.state(), frame));
         }
-        libbreenix::suite::judged(&results[0].2.fb())?;
+        snapshot(&results[0].2)?;
         ensure(
             drawn_pixels(&results[0].2, PAPER) > 0,
             "16",
             format!("{name} drew nothing after {}", results[0].0),
         )?;
         for (label, state, g) in &results[1..] {
-            libbreenix::suite::judged(&g.fb())?;
+            snapshot(&g)?;
             ensure(
                 *state == results[0].1,
                 "16",
@@ -2001,7 +2012,7 @@ fn icons_settles() -> CaseResult {
             icon.update(120_000, mouse(true, false, false, false));
             icon.update(2_000_000, mouse(hovering, false, false, false));
             let frame = drawn(&*icon, 48);
-            libbreenix::suite::judged(&frame.fb())?;
+            snapshot(&frame)?;
             ensure(
                 icon.settled(),
                 "16",
@@ -2009,13 +2020,13 @@ fn icons_settles() -> CaseResult {
             )?;
             icon.update(100_000, mouse(hovering, false, false, false));
             let later = drawn(&*icon, 48);
-            libbreenix::suite::judged(&later.fb())?;
+            snapshot(&later)?;
             ensure(
                 same_pixels(&frame, &later).is_none(),
                 "16",
                 format!("{name} kept drawing animation after reporting settled"),
             )?;
-            libbreenix::suite::judged(&frame.fb())?;
+            snapshot(&frame)?;
             let half = 24 + icon.bounds_overflow();
             for y in 0..256 {
                 for x in 0..256 {
@@ -2132,14 +2143,14 @@ fn icons_reset() -> CaseResult {
         icon.reset();
         let fresh = make();
         let fresh_drawing = drawn(fresh.as_ref(), 56);
-        libbreenix::suite::judged(&fresh_drawing.fb())?;
+        snapshot(&fresh_drawing)?;
         ensure(
             drawn_pixels(&fresh_drawing, PAPER) > 0,
             "16",
             format!("a new {name} icon drew nothing at size 56"),
         )?;
         let actual = drawn(icon.as_ref(), 56);
-        libbreenix::suite::judged(&actual.fb())?;
+        snapshot(&actual)?;
         if let Some((x, y)) = same_pixels(&actual, &fresh_drawing) {
             return at("16", format!("{name}: after reset pixel ({x},{y}) differs from a new icon drawn at the new size"));
         }
@@ -2179,7 +2190,7 @@ fn icons_bounded() -> CaseResult {
                         );
                         icon.draw(&mut g.fb(), 128, 128, size);
                     }
-                    libbreenix::suite::judged(&g.fb()).map_err(|e| format!("judged icon: {e:?}"))?;
+                    snapshot(&g).map_err(|e| format!("judged icon: {e:?}"))?;
                     if drawn_pixels(&g, PAPER) == 0 {
                         return Err(format!("{name} drew nothing in 10,000 steps"));
                     }
@@ -2312,7 +2323,7 @@ fn icons_particles_bounded() -> CaseResult {
         }
         pool.draw(&mut g.fb(), 40, 40);
     }
-    libbreenix::suite::judged(&g.fb())?;
+    snapshot(&g)?;
     ensure(
         drawn_pixels(&g, PAPER) > 0,
         "16",
@@ -2341,7 +2352,7 @@ fn icons_particles_bounded() -> CaseResult {
         let mut frame = Guarded::bgrx(20, 20);
         frame.reset(PAPER);
         negative.draw(&mut frame.fb(), 10, 10);
-        libbreenix::suite::judged(&frame.fb())?;
+        snapshot(&frame)?;
         ensure(drawn_pixels(&frame, PAPER) > 0, "16", "negative bounded pool drew nothing")?;
         for y in 0..20 { for x in 0..20 {
             if x as f32 >= edge + 10.0 || y as f32 >= edge + 10.0
@@ -2350,7 +2361,7 @@ fn icons_particles_bounded() -> CaseResult {
             }
         }}
     }
-    Ok(())
+    snapshot(&g)
 }
 
 fn icons_assets() -> CaseResult {
@@ -2386,7 +2397,7 @@ fn icons_assets() -> CaseResult {
             icon.draw(&mut g.fb(), 64 + col as i32 * 128, 64 + row as i32 * 128, 48);
         }
     }
-    libbreenix::suite::judged(&g.fb())?;
+    snapshot(&g)?;
     for y in 0..512 {
         for x in 0..640 {
             let i = (y * 640 + x) * 4;
@@ -2402,7 +2413,7 @@ fn icons_assets() -> CaseResult {
             }
         }
     }
-    Ok(())
+    snapshot(&g)
 }
 const EASING_TABLE: &[(&str, [f64; 11])] = &[
     (

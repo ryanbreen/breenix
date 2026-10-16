@@ -974,7 +974,10 @@ window ops (10 to 26 and 31) are removed when version 2 lands.
 - **Display ownership** is a stack: `take_over_display` (431) pushes the caller as owner, `give_back_display`
   (432) pops it, and `GIVE_DISPLAY(pid)` hands it to another process, which becomes owner above the giver.
   When an owner dies the display returns to the process that gave it, never to the runner, and the previous
-  owner's frame is restored exactly.
+  owner's frame is restored exactly. Direct take-over requires uid 0; explicit GIVE_DISPLAY retains its
+  owner authority. On ARM64 QEMU the snapshot stack holds at most four covered owners; another push or a
+  cycle returns EBUSY without changing ownership, and allocation failure returns ENOMEM. This bounds
+  retained 1280×800×4 snapshots to 16,384,000 bytes on the 64 MiB kernel heap.
 - **The framebuffer.** In a GUI suite boot every target runs its display at **1280 × 800**: `fbinfo` (410)
   reports width 1280, height 800, 4 bytes per pixel, a stride of at least 1280 (`fbinfo` counts the stride in
   pixels per row) and a pixel format of RGB (0) or BGR (1). `fb_mmap` (412) gives the display owner the whole screen, every row of all 1280 columns,
@@ -1070,6 +1073,10 @@ an `ObservationRecord` (512 bytes) produced atomically for one composite serial:
 The full destination is read; no sampled band stands for the frame. A readback never returns pixels without
 its record. It refuses with EAGAIN while serial *S*'s completions are unanswered, and with EIO and a named
 reason when the device's binding differs from the composed resource or a fence belongs to another serial.
+The 16 entries in this fixed-size observation ABI are not a global window limit: the §17.2 limit is per
+process, and composition plus COMPOSITE_RECORD still cover every window. If more than 16 windows are in
+that frame, SCANOUT_READBACK returns EIO without copying a partial record or pixels; the fixed ABI cannot
+represent the complete observation. It never truncates a successful observation.
 RGB and BGR destinations read back as the same canonical pixels, and X is normalized to 0xFF in every
 capture (`CAPTURE` and `SCANOUT_READBACK`).
 
@@ -1081,6 +1088,9 @@ capture (`CAPTURE` and `SCANOUT_READBACK`).
 | x86-64 | GOP framebuffer, 1280 × 800 set by the kernel through virtio-vga's DISPI registers | the complete framebuffer memory after the copy, converted from BGR | each damaged band's copy returned, with a store barrier | 2: the host's scanning of that memory into its window |
 | VMware | SVGA3 screen target, without readback (`READBACK_GB_SURFACE` does not return the device's copy) | the guest backing (MOB) of the surface bound by `DEFINE_GB_SCREENTARGET` | `UPDATE_GB_IMAGE` and `UPDATE_GB_SCREENTARGET` per damaged rectangle, followed by `SVGA_CMD_FENCE`, with `SVGA_REG_FENCE` reaching the fence | 1: the device's copy and the host window |
 | Parallels | VirGL | the scanout resource read back by a fenced `TRANSFER_FROM_HOST_3D` into a guest buffer | the composite's `SUBMIT_3D` fence and the transfer fence, both answered | 3: the host window |
+
+Observation flags are exactly 1 (`DEVICE_COPY_OUTSIDE`) for virtio-gpu 2D and SVGA3,
+and 0 for GOP and VirGL. Unknown flag bits or a different boundary code are invalid.
 
 The VirGL path reads X as 0xFF; nearest sampling, integer-aligned quads and no sRGB conversion are contract,
 so Parallels' frames use the same formula expectations as the software targets. Parallels runs at
@@ -1123,6 +1133,13 @@ with the composition formula).
   as a child (in a suite boot) it prints `[init] not PID 1: test-control check skipped` and makes no absence
   claim.
 
+The userspace run stage consumes its one-shot points 12–14 by reading
+`/proc/breenix/stage-control`: a decimal bitset, bit `point` set when that point fired for
+this caller's process id (or target 0). Each open snapshots and consumes the points once.
+It is ENOSYS outside suite boots and EPERM for non-root; it never changes the latch.
+`/proc/breenix/boot-ribbon` lists the actual producer markers in ARM64 boot-path order,
+one `0|marker` or `1|marker` line per applicable stage. Announcements do not reach stages.
+
 ## 22. Kernel output accounting
 
 Plan §12.1 is the contract. Each thread's `kernel_output_bytes` counts the payload bytes it commits for
@@ -1146,7 +1163,9 @@ followed by the payload and a newline: `[`, the level right-aligned in five colu
 byte; only the lead newline inserted before a record when another writer's line is open is not. The
 aarch64 kernel's `log` sink writes each warning and error as this record.
 
-## 23. The suite panel
+## 23. The suite panel and run stage
+
+### 23.1 Existing panel
 
 `libgfx::diagnostics::draw` with `scored: true` on a 1280 × 800 surface, two groups and no output or live
 strip, draws at scale 2. For the fixture the cases use (title `BREENGEL PANEL`, subtitle `fixture`, verdict
@@ -1169,6 +1188,111 @@ Text is the 5×7 font (section 8.1), which `text/bitmap-glyph` and `bitmap-scale
 draw the expected text with it. In a GUI suite the runner draws the panel only between cases and restores it
 exactly after each; the panel cursor is saved and restored, so moving the pointer over the panel leaves no
 trail; the kernel's console screen redraws exactly after the display is given back.
+
+### 23.2 Stage layout
+
+The run stage is `libgfx::stage`, a pure integer renderer with explicit UI time. It draws at 1280 × 800.
+The 5×7 font of §8.1 is used throughout. Rectangles are half-open. The palette, in RGB, is background
+(12,19,31), header (24,39,59), inset (18,29,44), white (255,255,255), dim (161,183,204), pass (26,112,77),
+fail (145,50,58), not reached (57,67,80), pending outline (48,67,96), and timing bar (64,160,224).
+
+| Element | Rectangle or text origin | Content |
+|---|---|---|
+| background | (0,0,1280,800) | background |
+| header | (0,0,1280,96) | header |
+| suite title | (24,16), scale 3 | `BREENIX / <suite>` |
+| target and progress | (24,48), scale 1 | `<target>  case <n> of <N>  elapsed <ms> ms  fps <fps>` |
+| counts | (24,68), scale 2 | `<P> passed  <F> failed  <R> not reached` |
+| tile wall | (16,112,800,588) | 20 columns, 21 rows, as §23.3 |
+| spotlight | (832,112,432,588) | inset; §23.4 |
+| milestone ribbon | (16,728,1248,24) | §23.5 |
+| boot stage ribbon | (16,752,1248,16) | §23.7 |
+| observation boundary | (24,776), scale 1, dim | the record's boundary notice (§23.8) |
+
+`n` is one-based while a case runs and N at completion. Not reached counts only cases explicitly not reached;
+pending and running cases are not counted as failures or not reached. Text is clipped at its element's right
+edge. The renderer reads no clock and does not change the inputs.
+
+### 23.3 Tiles
+
+Cases occupy manifest order, grouped by the milestones in `docs/efforts/path.json` (the images milestone
+contains BMP, PNG decode and PNG encode). Insert one empty slot between consecutive milestones. For slot s,
+the tile is (16 + 40(s mod 20),112 + 28 floor(s/20),38,26). Its one-based manifest ordinal identifies the
+case; the spotlight spells out that ordinal's full category and case id. A tile has:
+
+- A one-pixel border, green for pass, red for our own failure, grey for not reached, pending outline (48,67,96) for pending.
+- Its ordinal at tile+(20,2), scale 1, white; its key number at tile+(2,17), scale 1, white. The number is
+  the serial CASE's milliseconds unless the case supplies a named picture or timing measurement. Keys with more than five decimal digits use `>` in the tile instead of a truncated
+  number; the selected case always shows `key <full decimal number>` at (840,144), scale 1, white.
+- A 16×12 thumbnail at tile+(2,2), or inset if the case has no judged frame. A smaller source is drawn at
+  its own size in that rectangle. For destination coordinate (x,y), source bins are
+  `[floor(xW/w),floor((x+1)W/w)) × [floor(yH/h),floor((y+1)H/h))`. Each colour is the bin's sum divided by its
+  pixel count, rounded half up; X is 255. No source pixel is sampled in place of the bin mean.
+- The key strip (tile+(1,15),36,10) filled with its stamp colour. Pending has only its outline, ordinal
+  and placeholder, with no key text or filled strip. Running uses RGB (64,128+floor(127q/500),224), where
+  `q = 500 - abs((ui_time_ms mod 1000)-500)`; its animation happens only between measured cases.
+
+### 23.4 Spotlight
+
+The heading `CASE <one-based ordinal> / <category>` is at (840,120), and its case id at (840,132),
+scale 1, white.
+A picture has `expected`, `actual`, `difference` labels at x=840,984,1128, y=152. Each pane is 128×128
+at those x coordinates, y=168. The complete source is nearest-scaled into its pane: source coordinate
+`(floor(xW/128),floor(yH/128))`. A difference pixel's largest absolute B,G,R channel difference d gives
+BGRX (0,0,0,255) if d=0, otherwise (0,255-d,255,255). On the difference pane, the first mismatching source
+pixel in row-major order is marked by white horizontal and vertical lines extending two pixels each way,
+clipped to that pane. Its mapped coordinate is `(floor(x128/W),floor(y128/H))`.
+At (840,312), scale 1, white, is `<N> pixels differ; bound <M>`.
+
+A timing spotlight plots at (848,336,400,192). It accepts 1–64 frame times in microseconds and a positive
+budget b. Bar i occupies `[floor(400i/n),floor(400(i+1)/n)-1)`, leaving a one-pixel gap, from the bottom
+up by `floor(192 min(t,2b)/(2b))` pixels. The budget line is white at y=432. Bars at or below budget are
+(64,160,224); over-budget bars are fail red. At (840,312) is `frame times us; budget <b>`.
+
+### 23.5 Milestone ribbon
+
+For milestone i of m, its segment is `(16+floor(1248i/m),728,floor(1248(i+1)/m)-floor(1248i/m)-2,24)`.
+It is pass green exactly when all its cases have passed, otherwise pending outline colour. Its id is
+at segment+(4,8), scale 1, white, clipped at the segment's right edge. Empty milestones are invalid.
+
+### 23.6 Finale
+
+The finale preserves the selected first-failure spotlight (or last case if no failure) and overlays
+(48,240,720,240) with header colour. Text in white: `RUN COMPLETE` at (72,264), scale 3; the same counts
+as the header at (72,312), scale 2; `slowest <category>/<case> <ms> ms` at (72,352), scale 1.
+It remains up for at least 5,000 ms of UI time before the runner emits DONE. The stage renderer receives
+the finale start time; a stepped session must advance its UI clock through that hold. A stalled clock
+is a stage failure at the runner deadline, never a successful hold or a lost DONE. The hold is complete iff `ui_time_ms.saturating_sub(start_ms) >= 5000`.
+
+### 23.7 Boot stage ribbon
+
+The kernel draws one segment per architecture-applicable stage in `docs/boot-path.json`, in that file's
+order, across (16,752,1248,16), using the same integer segment partition as §23.5 and a two-pixel gap.
+Reached is pass green, unreached is pending outline colour. A stage lights only when its actual producer
+prints the stage marker; loader announcements never light a segment. The serial stage lines remain the record.
+The ribbon is restored with the kernel screen after display giveback.
+
+### 23.8 Agreement
+
+The runner derives CASE serial bytes and tile state and numbers from one stored result. A picture case
+calls `libbreenix::suite::judged(&FrameBuf)` with the exact surface it judged, before modifying it. The
+handoff canonicalizes BGRX and snapshots it with SHA-256 (FIPS 180-4); the runner verifies the complete
+snapshot and appends ` sha256=<64 lowercase hex digits>` after `ms=<n>` on PASS and FAIL CASE lines
+(before `msg=` on FAIL). The stage uses only that verified snapshot for the tile and actual pane. An independently constructed
+reference may be handed off alongside it; it has the same dimensions and its own verified SHA-256.
+When a surface check has no reference (for example a structural predicate), the spotlight labels it
+`actual (reference not supplied)` and shows the actual pane alone; it never constructs a matching reference.
+A malformed or changed snapshot fails the case. A case with no picture has no hash field.
+Snapshot hashing and publication run after the case timer stops. The transported picture includes its
+comparison bound; the spotlight prints that bound. The stage composes only between cases, never in a
+measured case window. A stage error fails the affected case and preserves the serial DONE record.
+
+The stage's boundary notice is `host copy and window outside guest view` for boundary 1 on virtio 2D,
+`host scanning outside guest view` for boundary 2, and `host window outside guest view` for boundary 3.
+On VMware (backend 3, flag bit 0 set, boundary 1) it is exactly `picture not host-verified`.
+An unknown or inconsistent backend/flags/boundary combination is an error, never a stronger observation.
+The live showcase checks arm the matching fault, require its detection, disarm it and require the clean result:
+12 `stage-lie`, 13 `stage-substitute-frame`, 14 `stage-draw-in-window`, 15 `ribbon-drop-stage`.
 
 ## 24. Helpers and boots
 

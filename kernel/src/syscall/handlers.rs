@@ -3340,6 +3340,17 @@ pub struct CowStatsResult {
 /// After this syscall, the calling process is responsible for rendering
 /// to the framebuffer.
 pub fn sys_take_over_display() -> SyscallResult {
+    #[cfg(target_arch = "aarch64")]
+    if crate::graphics::display::active() {
+        let caller = match crate::window::Caller::current() {
+            Ok(caller) => caller, Err(e) => return SyscallResult::Err(e as u64),
+        };
+        if !caller.is_root() { return SyscallResult::Err(1); }
+        {
+            crate::graphics::display::init();
+            if let Err(e)=crate::graphics::display::take(caller.tgid) {return SyscallResult::Err(e as u64);}
+        }
+    }
     {
         // Mark the calling process as the display owner. Ownership moves: a
         // previous owner's whole-screen mapping can no longer draw.
@@ -3376,6 +3387,12 @@ pub fn sys_take_over_display() -> SyscallResult {
 /// Give back the display to the kernel.
 /// Called by init when BWM crashes so the kernel can resume rendering.
 pub fn sys_give_back_display() -> SyscallResult {
+    #[cfg(target_arch = "aarch64")]
+    if crate::graphics::display::active() {
+        return match crate::window::Caller::current().and_then(|c|crate::graphics::display::back(c.tgid)) {
+            Ok(())=>SyscallResult::Ok(0),Err(e)=>SyscallResult::Err(e as u64)
+        };
+    }
     SyscallResult::Ok(0)
 }
 

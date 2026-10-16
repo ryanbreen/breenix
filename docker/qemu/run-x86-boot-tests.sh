@@ -708,83 +708,83 @@ for i in $(seq 1 "$COUNT"); do
         # waiting on a rare fault. See
         # docs/planning/green-program/failure-capture/PR-5-2026-09-06.md.
         if [ -z "${BREENIX_X86_BOOT_FORCE_FAIL:-}" ] \
-            && grep -q '\[TEST:process:frame_custody_refusal_gate:PASS\]' \
+            && grep -a -q '\[TEST:process:frame_custody_refusal_gate:PASS\]' \
             "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -qE "$FRAME_CUSTODY_PATTERN" \
+            && grep -a -qE "$FRAME_CUSTODY_PATTERN" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -q '\[TEST:process:page_table_custody_disposition_gate:PASS\]' \
+            && grep -a -q '\[TEST:process:page_table_custody_disposition_gate:PASS\]' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -qF "$PT_CUSTODY_LITERAL" \
+            && grep -a -qF "$PT_CUSTODY_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -qE "$EXEC_FAILED_RELEASE_ORACLE_PATTERN" \
+            && grep -a -qE "$EXEC_FAILED_RELEASE_ORACLE_PATTERN" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -q '\[TEST:process:retirement_fence_gate:PASS\]' \
+            && grep -a -q '\[TEST:process:retirement_fence_gate:PASS\]' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -q '\[TEST:process:reclaim_progress_gate:PASS\]' \
+            && grep -a -q '\[TEST:process:reclaim_progress_gate:PASS\]' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -q '\[TEST:process:x86_retire_cohort:PASS\]' \
+            && grep -a -q '\[TEST:process:x86_retire_cohort:PASS\]' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -qF "$PT_COHORT_LITERAL" \
+            && grep -a -qF "$PT_COHORT_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -q '\[TEST:process:x86_exec_cohort:PASS\]' \
+            && grep -a -q '\[TEST:process:x86_exec_cohort:PASS\]' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -qF "$PT_EXEC_COHORT_LITERAL" \
+            && grep -a -qF "$PT_EXEC_COHORT_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -q '\[TEST:process:exec_detach_oracle:PASS\]' \
+            && grep -a -q '\[TEST:process:exec_detach_oracle:PASS\]' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -qF "$EXEC_DETACH_ORACLE_LITERAL" \
+            && grep -a -qF "$EXEC_DETACH_ORACLE_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -q '\[TEST:process:clone_admission_oracle:PASS\]' \
+            && grep -a -q '\[TEST:process:clone_admission_oracle:PASS\]' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -qF "$CLONE_ADMISSION_ORACLE_LITERAL" \
+            && grep -a -qF "$CLONE_ADMISSION_ORACLE_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -q '\[TEST:process:init_designation_oracle:PASS\]' \
+            && grep -a -q '\[TEST:process:init_designation_oracle:PASS\]' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -qF "$INIT_DESIGNATION_ORACLE_LITERAL" \
+            && grep -a -qF "$INIT_DESIGNATION_ORACLE_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -q '\[TEST:process:init_group_refusal_oracle:PASS\]' \
+            && grep -a -q '\[TEST:process:init_group_refusal_oracle:PASS\]' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -qF "$INIT_GROUP_REFUSAL_ORACLE_LITERAL" \
+            && grep -a -qF "$INIT_GROUP_REFUSAL_ORACLE_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -qE "$SCHED_STRAND_ORACLE_PATTERN" \
+            && grep -a -qE "$SCHED_STRAND_ORACLE_PATTERN" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -qE "$TIMER_WAKE_LATENCY_ORACLE_PASS_PATTERN" \
+            && grep -a -qE "$TIMER_WAKE_LATENCY_ORACLE_PASS_PATTERN" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -qF "$CENSUS_WIDEN_ORACLE_LITERAL" \
+            && grep -a -qF "$CENSUS_WIDEN_ORACLE_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -qF "$FCNTL_PM_CONTENTION_ORACLE_LITERAL" \
+            && grep -a -qF "$FCNTL_PM_CONTENTION_ORACLE_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -qF "$IRQ_HOLD_ORACLE_LITERAL" \
+            && grep -a -qF "$IRQ_HOLD_ORACLE_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -qF "$UDP_LOCK_ORACLE_LITERAL" \
+            && grep -a -qF "$UDP_LOCK_ORACLE_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -qF "$UDP_PORTS_LOCK_ORACLE_LITERAL" \
+            && grep -a -qF "$UDP_PORTS_LOCK_ORACLE_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -qE "$TTY_IRQ_PM_ORACLE_PATTERN" \
+            && grep -a -qE "$TTY_IRQ_PM_ORACLE_PATTERN" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -qE "$TTY_IRQ_FG_ORACLE_PATTERN" \
+            && grep -a -qE "$TTY_IRQ_FG_ORACLE_PATTERN" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -qF "$DISPATCH_FACT_ORACLE_LITERAL" \
+            && grep -a -qF "$DISPATCH_FACT_ORACLE_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -qF "$EXEC_FAILED_RELEASE_PROD_LITERAL" \
+            && grep -a -qF "$EXEC_FAILED_RELEASE_PROD_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -qE "$KSTACK_OWNER_ORACLE_PATTERN" \
+            && grep -a -qE "$KSTACK_OWNER_ORACLE_PATTERN" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -qF "$CREATION_LOCK_ORDER_INJECTED_LITERAL" \
+            && grep -a -qF "$CREATION_LOCK_ORDER_INJECTED_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -qF "$TOMBSTONE_JOIN_ORACLE_LITERAL" \
+            && grep -a -qF "$TOMBSTONE_JOIN_ORACLE_LITERAL" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -qF '[TOMBSTONE_QUIESCE:' \
+            && grep -a -qF '[TOMBSTONE_QUIESCE:' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -qE "$KSTACK_QUIESCE_LEAK_PATTERN" \
+            && grep -a -qE "$KSTACK_QUIESCE_LEAK_PATTERN" \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -qF '[RECLAIM_DRAIN:' \
+            && grep -a -qF '[RECLAIM_DRAIN:' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -q '\[TEST:userspace:loopback_recv_wake:PASS\]' \
+            && grep -a -q '\[TEST:userspace:loopback_recv_wake:PASS\]' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -q 'TEST_TALLY:' \
+            && grep -a -q 'TEST_TALLY:' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null \
-            && grep -qE 'TEST RUNNER: (All tests passed|FAILED)' \
+            && grep -a -qE 'TEST RUNNER: (All tests passed|FAILED)' \
                 "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
             passed=true
             # failure-trace-capture PR-5: set at the same site as
@@ -802,29 +802,29 @@ for i in $(seq 1 "$COUNT"); do
         # literal FAIL/PANIC patterns a second time, which would silently
         # desync loopback_pump_structure.rs's and teardown_structure.rs's
         # own exact-occurrence-count ratchets on this file's text.
-        if grep -qE '\[BOOT_TESTS:FAIL|KERNEL PANIC|panic!' \
+        if grep -a -qE '\[BOOT_TESTS:FAIL|KERNEL PANIC|panic!' \
             "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
             POLL_BREAK_REASON="crash_marker"
             break
         fi
-        if grep -qE '\[CENSUS_WIDEN_ORACLE:x86:[^]]*:FAIL\]' \
+        if grep -a -qE '\[CENSUS_WIDEN_ORACLE:x86:[^]]*:FAIL\]' \
             "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
             POLL_BREAK_REASON="failure_marker"
             break
         fi
         # The scheduler publication seam emits this prefix if it publishes while
         # the process-manager lock is held on that CPU; fail early on any variant.
-        if grep -qF '[CREATION_LOCK_ORDER:VIOLATION' \
+        if grep -a -qF '[CREATION_LOCK_ORDER:VIOLATION' \
             "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
             POLL_BREAK_REASON="failure_marker"
             break
         fi
-        if grep -qE '\[TEST:network:[^]]*:FAIL' \
+        if grep -a -qE '\[TEST:network:[^]]*:FAIL' \
             "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
             POLL_BREAK_REASON="failure_marker"
             break
         fi
-        if grep -qE '\[TEST:userspace:[^]]*:FAIL' \
+        if grep -a -qE '\[TEST:userspace:[^]]*:FAIL' \
             "$OUTPUT_DIR"/serial_*.txt 2>/dev/null; then
             POLL_BREAK_REASON="failure_marker"
             break
@@ -922,7 +922,7 @@ for i in $(seq 1 "$COUNT"); do
     # command rather than the `test -n "$PCI_CENSUS_LINE"` assertion below
     # that is actually making the claim. Let the assignment succeed with an
     # empty value and let the explicit `test -n` name the real failure.
-    PCI_CENSUS_LINE=$(grep -h -E 'PCI: Enumeration complete\. Found [0-9]+ devices \([0-9]+ VirtIO block, [0-9]+ network\)' \
+    PCI_CENSUS_LINE=$(grep -a -h -E 'PCI: Enumeration complete\. Found [0-9]+ devices \([0-9]+ VirtIO block, [0-9]+ network\)' \
         "$OUTPUT_DIR"/serial_*.txt | tail -1) || true
     test -n "$PCI_CENSUS_LINE"
     CENSUS_VIRTIO_BLOCK=$(printf '%s\n' "$PCI_CENSUS_LINE" | \
@@ -1016,10 +1016,10 @@ for i in $(seq 1 "$COUNT"); do
     # `|| true` on each capture for the same reason as PCI_CENSUS_LINE
     # above: let an absent line fail the explicit `test` below with a named
     # assertion, not an aborted $() at a pipefail boundary.
-    PCI_FN_LINES=$(grep -h -E 'PCI_FN [0-9a-f]{2}:[0-9a-f]{2}\.[0-7] ' \
+    PCI_FN_LINES=$(grep -a -h -E 'PCI_FN [0-9a-f]{2}:[0-9a-f]{2}\.[0-7] ' \
         "$OUTPUT_DIR"/serial_*.txt) || true
     test -n "$PCI_FN_LINES"
-    PCI_FN_TOTAL_LINE=$(grep -h -E 'PCI_FN_TOTAL [0-9]+' \
+    PCI_FN_TOTAL_LINE=$(grep -a -h -E 'PCI_FN_TOTAL [0-9]+' \
         "$OUTPUT_DIR"/serial_*.txt | tail -1) || true
     test -n "$PCI_FN_TOTAL_LINE"
     echo "  PCI function facts ($PCI_FN_TOTAL_LINE):"
@@ -1072,65 +1072,65 @@ for i in $(seq 1 "$COUNT"); do
     # assertions below, and is exactly as opaque on failure without the
     # ERR trap installed above.
     test "$passed" = true
-    test "$(grep -h -c '\[TEST:process:frame_custody_refusal_gate:PASS\]' \
+    test "$(grep -a -h -c '\[TEST:process:frame_custody_refusal_gate:PASS\]' \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    test "$(grep -h -c '\[TEST:process:page_table_custody_disposition_gate:PASS\]' \
+    test "$(grep -a -h -c '\[TEST:process:page_table_custody_disposition_gate:PASS\]' \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    test "$(grep -h -c '\[TEST:process:retirement_fence_gate:PASS\]' \
+    test "$(grep -a -h -c '\[TEST:process:retirement_fence_gate:PASS\]' \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    test "$(grep -h -c '\[TEST:process:reclaim_progress_gate:PASS\]' \
+    test "$(grep -a -h -c '\[TEST:process:reclaim_progress_gate:PASS\]' \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    test "$(grep -h -c '\[TEST:process:x86_retire_cohort:PASS\]' \
+    test "$(grep -a -h -c '\[TEST:process:x86_retire_cohort:PASS\]' \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    test "$(grep -h -c '\[TEST:process:x86_exec_cohort:PASS\]' \
+    test "$(grep -a -h -c '\[TEST:process:x86_exec_cohort:PASS\]' \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    test "$(grep -h -c '\[TEST:process:exec_detach_oracle:PASS\]' \
+    test "$(grep -a -h -c '\[TEST:process:exec_detach_oracle:PASS\]' \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    test "$(grep -h -c '\[TEST:process:clone_admission_oracle:PASS\]' \
+    test "$(grep -a -h -c '\[TEST:process:clone_admission_oracle:PASS\]' \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    test "$(grep -h -c '\[TEST:process:init_designation_oracle:PASS\]' \
+    test "$(grep -a -h -c '\[TEST:process:init_designation_oracle:PASS\]' \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    test "$(grep -h -c '\[TEST:process:init_group_refusal_oracle:PASS\]' \
+    test "$(grep -a -h -c '\[TEST:process:init_group_refusal_oracle:PASS\]' \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     # Four scheduling tests remain deferred on x86 until #567 is fixed:
     # loopback_recv_wake_when_idle, loopback_recv_wake_under_load,
     # loopback_pump_does_not_busy_spin, and tcp_accept_waits_for_final_ack.
-    test "$(grep -h -c '\[TEST:userspace:loopback_recv_wake:PASS\]' \
+    test "$(grep -a -h -c '\[TEST:userspace:loopback_recv_wake:PASS\]' \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    test "$(grep -h -c 'Refusing to map' \
+    test "$(grep -a -h -c 'Refusing to map' \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    test "$(grep -h -E -c "$FRAME_CUSTODY_PATTERN" \
+    test "$(grep -a -h -E -c "$FRAME_CUSTODY_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    test "$(grep -h -F -c "$PT_CUSTODY_LITERAL" \
+    test "$(grep -a -h -F -c "$PT_CUSTODY_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    test "$(grep -h -E -c "$EXEC_FAILED_RELEASE_ORACLE_PATTERN" \
+    test "$(grep -a -h -E -c "$EXEC_FAILED_RELEASE_ORACLE_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    test "$(grep -h -F -c "$PT_COHORT_LITERAL" \
+    test "$(grep -a -h -F -c "$PT_COHORT_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    test "$(grep -h -F -c "$PT_EXEC_COHORT_LITERAL" \
+    test "$(grep -a -h -F -c "$PT_EXEC_COHORT_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    test "$(grep -h -F -c "$EXEC_DETACH_ORACLE_LITERAL" \
+    test "$(grep -a -h -F -c "$EXEC_DETACH_ORACLE_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    test "$(grep -h -F -c "$CLONE_ADMISSION_ORACLE_LITERAL" \
+    test "$(grep -a -h -F -c "$CLONE_ADMISSION_ORACLE_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    test "$(grep -h -F -c "$INIT_DESIGNATION_ORACLE_LITERAL" \
+    test "$(grep -a -h -F -c "$INIT_DESIGNATION_ORACLE_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    test "$(grep -h -F -c "$INIT_GROUP_REFUSAL_ORACLE_LITERAL" \
+    test "$(grep -a -h -F -c "$INIT_GROUP_REFUSAL_ORACLE_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    test "$(grep -h -E -c "$SCHED_STRAND_ORACLE_PATTERN" \
+    test "$(grep -a -h -E -c "$SCHED_STRAND_ORACLE_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -ge 1
-    test "$(grep -h -F -c "$CENSUS_WIDEN_ORACLE_LITERAL" \
+    test "$(grep -a -h -F -c "$CENSUS_WIDEN_ORACLE_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    test "$(grep -h -E -c "$FUTEX_HANDOFF_ORACLE_PATTERN" \
+    test "$(grep -a -h -E -c "$FUTEX_HANDOFF_ORACLE_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    test "$(grep -h -F -c 'CLONEVM_EXEC_TEST: post-exec rendezvous complete' \
+    test "$(grep -a -h -F -c 'CLONEVM_EXEC_TEST: post-exec rendezvous complete' \
         "$OUTPUT_DIR"/serial_*.txt | \
         awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    test "$(grep -h -F -c "$EXEC_FAILED_RELEASE_PROD_LITERAL" \
+    test "$(grep -a -h -F -c "$EXEC_FAILED_RELEASE_PROD_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    test "$(grep -h -E -c "$KSTACK_OWNER_ORACLE_PATTERN" \
+    test "$(grep -a -h -E -c "$KSTACK_OWNER_ORACLE_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    test "$(grep -h -F -c "$CREATION_LOCK_ORDER_INJECTED_LITERAL" \
+    test "$(grep -a -h -F -c "$CREATION_LOCK_ORDER_INJECTED_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     # The one assertion in this file that expects ZERO matches, and therefore
     # the one that has to survive grep's no-match exit status. Under
@@ -1142,20 +1142,20 @@ for i in $(seq 1 "$COUNT"); do
     # healthy boot, i.e. exactly when this violation was correctly absent.
     # `|| test $? -eq 1` accepts no-match and nothing else: a real grep error
     # (exit 2) still aborts.
-    test "$( { grep -h -F -c "$CREATION_LOCK_ORDER_VIOLATION_LITERAL" \
+    test "$( { grep -a -h -F -c "$CREATION_LOCK_ORDER_VIOLATION_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt || test $? -eq 1; } | \
         awk '{ total += $1 } END { print total + 0 }')" -eq 0
-    test "$(grep -h -F -c "$TOMBSTONE_JOIN_ORACLE_LITERAL" \
+    test "$(grep -a -h -F -c "$TOMBSTONE_JOIN_ORACLE_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     # (1) The userspace-end census, pinned by conservation rather than by a race.
     # The poll loop deliberately waits on marker PRESENCE, not on these field
     # values: a field the fix makes timing-dependent must never be able to turn a
     # real regression into a 900-second poll timeout instead of a legible
     # assertion failure here.
-    test "$(grep -h -F -c '[TOMBSTONE_CENSUS:' \
+    test "$(grep -a -h -F -c '[TOMBSTONE_CENSUS:' \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" \
         -eq "$TOMBSTONE_CENSUS_EMISSIONS"
-    TOMBSTONE_CENSUS_USERSPACE_END_LINE=$(grep -h -F '[TOMBSTONE_CENSUS:' \
+    TOMBSTONE_CENSUS_USERSPACE_END_LINE=$(grep -a -h -F '[TOMBSTONE_CENSUS:' \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     CENSUS_RESIDENT=$(printf '%s\n' "$TOMBSTONE_CENSUS_USERSPACE_END_LINE" | \
         sed -n 's/.*\[TOMBSTONE_CENSUS:resident=\([0-9][0-9]*\):.*/\1/p')
@@ -1168,22 +1168,22 @@ for i in $(seq 1 "$COUNT"); do
     test "$(( CENSUS_RESIDENT + CENSUS_REMOVED - TOMBSTONE_FIXTURE_REMOVALS ))" \
         -eq "$PRODUCTION_REAPED_ROWS"
     # (2) Quiesce: return to zero, plus the join-arm sum the split cannot pin.
-    test "$(grep -h -E -c "$TOMBSTONE_QUIESCE_PATTERN" \
+    test "$(grep -a -h -E -c "$TOMBSTONE_QUIESCE_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    QUIESCE_LINE=$(grep -h -E "$TOMBSTONE_QUIESCE_PATTERN" \
+    QUIESCE_LINE=$(grep -a -h -E "$TOMBSTONE_QUIESCE_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     QUIESCE_REAP_SECOND=$(printf '%s\n' "$QUIESCE_LINE" | \
         sed -n 's/.*:reap_second=\([0-9][0-9]*\):.*/\1/p')
     QUIESCE_RETIRE_SECOND=$(printf '%s\n' "$QUIESCE_LINE" | \
         sed -n 's/.*:retire_second=\([0-9][0-9]*\):.*/\1/p')
     test "$(( QUIESCE_REAP_SECOND + QUIESCE_RETIRE_SECOND ))" -eq "$TOMBSTONE_JOINED_REMOVALS"
-    test "$(grep -h -E -c "$KSTACK_QUIESCE_LEAK_PATTERN" \
+    test "$(grep -a -h -E -c "$KSTACK_QUIESCE_LEAK_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     # (3) The drain's refusal counters, with the injected arm proving the refusal
     # path still executes.
-    test "$(grep -h -E -c "$RECLAIM_DRAIN_PATTERN" \
+    test "$(grep -a -h -E -c "$RECLAIM_DRAIN_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    RECLAIM_DRAIN_LINE=$(grep -h -E "$RECLAIM_DRAIN_PATTERN" \
+    RECLAIM_DRAIN_LINE=$(grep -a -h -E "$RECLAIM_DRAIN_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     # Depth conservation: every receipt still queued at quiesce is named by a
     # root-proof term. An unattributed receipt is a receipt the drain left behind
@@ -1207,13 +1207,13 @@ for i in $(seq 1 "$COUNT"); do
     test "$INIT_GROUP_WALK_COUNT" -eq 0
     # (3b) critical-path logging drain PR-1: the dispatch-fact oracle, emitted
     # once and passing.
-    test "$(grep -h -F -c "$DISPATCH_FACT_ORACLE_LITERAL" \
+    test "$(grep -a -h -F -c "$DISPATCH_FACT_ORACLE_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     # And no site in the dispatch path printed any of the sixteen strings PR-1
     # deleted. The census ratchet says the CALLS are gone at source; this says
     # the BYTES are gone from the capture, which is the property the drain is
     # for.
-    test "$(grep -h -c -e 'Context switch aborted' \
+    test "$(grep -a -h -c -e 'Context switch aborted' \
         -e 'has no main_thread for thread' \
         -e 'Could not find process for thread' \
         -e 'Process manager is None' \
@@ -1231,14 +1231,14 @@ for i in $(seq 1 "$COUNT"); do
         -e 'Signal delivery check: process' \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 0
     # (4) #767: the timer-scale oracle, emitted once and passing.
-    test "$(grep -h -F -c -- "$TIMER_SCALE_ORACLE_PREFIX" \
+    test "$(grep -a -h -F -c -- "$TIMER_SCALE_ORACLE_PREFIX" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    test "$(grep -h -E -c "$TIMER_SCALE_ORACLE_PASS_PATTERN" \
+    test "$(grep -a -h -E -c "$TIMER_SCALE_ORACLE_PASS_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     # (5) the ring-span self-check: present, and its sampling ratio (a pure
     # count relationship, immune to wall-clock jitter -- see the comment at
     # this script's RING_SPAN_RATIO_FLOOR definition) clears the floor.
-    RING_SPAN_LINE=$(grep -h -oE "$RING_SPAN_PATTERN" \
+    RING_SPAN_LINE=$(grep -a -h -oE "$RING_SPAN_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     test -n "$RING_SPAN_LINE"
     RING_SPAN_TICKS_TOTAL=$(printf '%s\n' "$RING_SPAN_LINE" | \
@@ -1274,15 +1274,15 @@ for i in $(seq 1 "$COUNT"); do
     # Pinning the emission count at 1 as well as the PASS line means a FAIL
     # emission cannot hide behind a later PASS, and a deleted call site cannot
     # pass this gate by silence.
-    test "$(grep -h -F -c -- "$TIMER_WAKE_LATENCY_ORACLE_PREFIX" \
+    test "$(grep -a -h -F -c -- "$TIMER_WAKE_LATENCY_ORACLE_PREFIX" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
-    test "$(grep -h -E -c "$TIMER_WAKE_LATENCY_ORACLE_PASS_PATTERN" \
+    test "$(grep -a -h -E -c "$TIMER_WAKE_LATENCY_ORACLE_PASS_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     EXPECTED_EXITS="$EXPECTED_USERSPACE_EXITS" \
         "$BREENIX_ROOT/scripts/x86-gate-verdict.sh" "$OUTPUT_DIR"/serial_*.txt
-    COUNTER_LINE=$(grep -hE "$FRAME_CUSTODY_PATTERN" \
+    COUNTER_LINE=$(grep -a -hE "$FRAME_CUSTODY_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
-    KSTACK_OWNER_LINE=$(grep -hE "$KSTACK_OWNER_ORACLE_PATTERN" \
+    KSTACK_OWNER_LINE=$(grep -a -hE "$KSTACK_OWNER_ORACLE_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     echo "$COUNTER_LINE"
     echo "$PT_CUSTODY_LITERAL"
@@ -1292,10 +1292,10 @@ for i in $(seq 1 "$COUNT"); do
     echo "$CLONE_ADMISSION_ORACLE_LITERAL"
     echo "$INIT_DESIGNATION_ORACLE_LITERAL"
     echo "$INIT_GROUP_REFUSAL_ORACLE_LITERAL"
-    SCHED_STRAND_ORACLE_LINE=$(grep -h -E "$SCHED_STRAND_ORACLE_PATTERN" \
+    SCHED_STRAND_ORACLE_LINE=$(grep -a -h -E "$SCHED_STRAND_ORACLE_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     echo "$SCHED_STRAND_ORACLE_LINE"
-    CENSUS_WIDEN_ORACLE_LINE=$(grep -h -F "$CENSUS_WIDEN_ORACLE_LITERAL" \
+    CENSUS_WIDEN_ORACLE_LINE=$(grep -a -h -F "$CENSUS_WIDEN_ORACLE_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     echo "$CENSUS_WIDEN_ORACLE_LINE"
     # Surfaced for the same reason its sibling above is: the wait predicate
@@ -1309,25 +1309,25 @@ for i in $(seq 1 "$COUNT"); do
     # the evidence behind it.
     # claim-lint:ok: the citation and its correction are recorded in
     # docs/planning/green-program/syscalls/819-ORACLE-ARMING-2026-09-05.md
-    FCNTL_PM_CONTENTION_ORACLE_LINE=$(grep -h -F "$FCNTL_PM_CONTENTION_ORACLE_LITERAL" \
+    FCNTL_PM_CONTENTION_ORACLE_LINE=$(grep -a -h -F "$FCNTL_PM_CONTENTION_ORACLE_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     echo "$FCNTL_PM_CONTENTION_ORACLE_LINE"
-    IRQ_HOLD_ORACLE_LINE=$(grep -h -F "$IRQ_HOLD_ORACLE_LITERAL" \
+    IRQ_HOLD_ORACLE_LINE=$(grep -a -h -F "$IRQ_HOLD_ORACLE_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     echo "$IRQ_HOLD_ORACLE_LINE"
-    UDP_LOCK_ORACLE_LINE=$(grep -h -F "$UDP_LOCK_ORACLE_LITERAL" \
+    UDP_LOCK_ORACLE_LINE=$(grep -a -h -F "$UDP_LOCK_ORACLE_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     echo "$UDP_LOCK_ORACLE_LINE"
-    UDP_PORTS_LOCK_ORACLE_LINE=$(grep -h -F "$UDP_PORTS_LOCK_ORACLE_LITERAL" \
+    UDP_PORTS_LOCK_ORACLE_LINE=$(grep -a -h -F "$UDP_PORTS_LOCK_ORACLE_LITERAL" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     echo "$UDP_PORTS_LOCK_ORACLE_LINE"
-    TTY_IRQ_PM_ORACLE_LINE=$(grep -h -E "$TTY_IRQ_PM_ORACLE_PATTERN" \
+    TTY_IRQ_PM_ORACLE_LINE=$(grep -a -h -E "$TTY_IRQ_PM_ORACLE_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     echo "$TTY_IRQ_PM_ORACLE_LINE"
-    TTY_IRQ_FG_ORACLE_LINE=$(grep -h -E "$TTY_IRQ_FG_ORACLE_PATTERN" \
+    TTY_IRQ_FG_ORACLE_LINE=$(grep -a -h -E "$TTY_IRQ_FG_ORACLE_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     echo "$TTY_IRQ_FG_ORACLE_LINE"
-    FUTEX_HANDOFF_ORACLE_LINE=$(grep -h -E "$FUTEX_HANDOFF_ORACLE_PATTERN" \
+    FUTEX_HANDOFF_ORACLE_LINE=$(grep -a -h -E "$FUTEX_HANDOFF_ORACLE_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     echo "$FUTEX_HANDOFF_ORACLE_LINE"
     echo "$EXEC_FAILED_RELEASE_PROD_LITERAL"
@@ -1337,36 +1337,36 @@ for i in $(seq 1 "$COUNT"); do
     echo "$TOMBSTONE_CENSUS_USERSPACE_END_LINE"
     echo "$QUIESCE_LINE"
     echo "$RECLAIM_DRAIN_LINE"
-    TIMER_SCALE_ORACLE_LINE=$(grep -h -F -- "$TIMER_SCALE_ORACLE_PREFIX" \
+    TIMER_SCALE_ORACLE_LINE=$(grep -a -h -F -- "$TIMER_SCALE_ORACLE_PREFIX" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     echo "$TIMER_SCALE_ORACLE_LINE"
     echo "$RING_SPAN_LINE"
-    TIMER_WAKE_LATENCY_ORACLE_LINE=$(grep -h -F -- "$TIMER_WAKE_LATENCY_ORACLE_PREFIX" \
+    TIMER_WAKE_LATENCY_ORACLE_LINE=$(grep -a -h -F -- "$TIMER_WAKE_LATENCY_ORACLE_PREFIX" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     echo "$TIMER_WAKE_LATENCY_ORACLE_LINE"
-    if grep -qE '\[BOOT_TESTS:FAIL|KERNEL PANIC|panic!' \
+    if grep -a -qE '\[BOOT_TESTS:FAIL|KERNEL PANIC|panic!' \
         "$OUTPUT_DIR"/serial_*.txt; then
         echo "x86 frame-custody gate run $i: FAIL (BOOT_TESTS:FAIL, KERNEL PANIC, or panic! marker present)"
         false
     fi
-    if grep -qE '\[CENSUS_WIDEN_ORACLE:x86:[^]]*:FAIL\]' \
+    if grep -a -qE '\[CENSUS_WIDEN_ORACLE:x86:[^]]*:FAIL\]' \
         "$OUTPUT_DIR"/serial_*.txt; then
         echo "x86 frame-custody gate run $i: FAIL (CENSUS_WIDEN_ORACLE:FAIL marker present)"
         false
     fi
-    if grep -qE '\[TEST:network:[^]]*:FAIL' \
+    if grep -a -qE '\[TEST:network:[^]]*:FAIL' \
         "$OUTPUT_DIR"/serial_*.txt; then
         echo "x86 frame-custody gate run $i: FAIL (TEST:network:*:FAIL marker present)"
         false
     fi
-    if grep -qE '\[TEST:userspace:[^]]*:FAIL' \
+    if grep -a -qE '\[TEST:userspace:[^]]*:FAIL' \
         "$OUTPUT_DIR"/serial_*.txt; then
         echo "x86 frame-custody gate run $i: FAIL (TEST:userspace:*:FAIL marker present)"
         false
     fi
     # Absence is meaningful because KSTACK_OWNER_ORACLE pins a nonzero
     # sched_publications driver and the injected marker proves the detector fires.
-    if grep -qF '[CREATION_LOCK_ORDER:VIOLATION' \
+    if grep -a -qF '[CREATION_LOCK_ORDER:VIOLATION' \
         "$OUTPUT_DIR"/serial_*.txt; then
         echo "x86 frame-custody gate run $i: FAIL (CREATION_LOCK_ORDER:VIOLATION marker present)"
         false

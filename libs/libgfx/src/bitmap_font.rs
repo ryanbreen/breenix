@@ -42,17 +42,17 @@ pub fn metrics() -> FontMetrics {
 /// section 8.2): each pixel is the coverage blend of `fg` over the pixel already there. A
 /// character the crate lacks draws the raster of '?'. Marks the raster's rectangle.
 pub fn draw_char(fb: &mut FrameBuf, ch: char, x0: usize, y0: usize, fg: Color) {
+    if x0 > i64::MAX as usize / 2 || y0 > i64::MAX as usize / 2 {return;}
+    draw_char_at(fb,ch,x0 as i64,y0 as i64,fg);
+}
+
+/// Signed origins for kernel console cells clipped at the left and top edges.
+pub fn draw_char_at(fb:&mut FrameBuf,ch:char,x0:i64,y0:i64,fg:Color) {
+    if !(-1_000_000_000..=1_000_000_000).contains(&x0) || !(-1_000_000_000..=1_000_000_000).contains(&y0) {return;}
     let rc = match get_raster(ch, FontWeight::Regular, RasterHeight::Size16) {
         Some(rc) => rc,
-        None => match get_raster('?', FontWeight::Regular, RasterHeight::Size16) {
-            Some(rc) => rc,
-            None => return,
-        },
+        None => match get_raster('?', FontWeight::Regular, RasterHeight::Size16) {Some(rc)=>rc,None=>return},
     };
-    if x0 > i64::MAX as usize / 2 || y0 > i64::MAX as usize / 2 {
-        return;
-    }
-    let (x0, y0) = (x0 as i64, y0 as i64);
     let raster = rc.raster();
     let cell = Box64 { x0, y0, x1: x0 + rc.width() as i64, y1: y0 + raster.len() as i64 };
     let v = cell.intersect(&fb.clip_box());
