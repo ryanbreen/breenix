@@ -23,7 +23,7 @@ impl Ring {
     }
 
     fn free(&self) -> usize {
-        limits::EVENT_RING - self.queue.len()
+        limits::EVENT_RING.saturating_sub(self.queue.len())
     }
 
     /// Queue `event`. False when it was counted as lost instead.
@@ -66,17 +66,20 @@ impl Ring {
         0
     }
 
-    /// Put back what `take` removed, when it could not be delivered.
+    /// Put back what `take` removed, when it could not be delivered, ahead of anything queued
+    /// since: the events were already queued, so they go back even past the ring's 64 (new
+    /// events still wait for room). Only an allocation failure counts one as lost, which the
+    /// next `Overflow` reports.
     pub fn untake(&mut self, mut taken: Vec<WindowEvent>, lost: u64) {
         if lost > 0 {
             taken.pop();
             self.lost += lost;
         }
         while let Some(e) = taken.pop() {
-            if self.queue.len() == limits::EVENT_RING {
-                self.lost += 1;
-            } else {
+            if self.queue.try_reserve(1).is_ok() {
                 self.queue.push_front(e);
+            } else {
+                self.lost += 1;
             }
         }
     }

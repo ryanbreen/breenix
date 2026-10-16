@@ -1198,7 +1198,7 @@
         },
         {
           "id": "efault-events",
-          "title": "An unmapped event-read buffer fails with EFAULT and consumes no event"
+          "title": "An unmapped event-read buffer, or an argument structure made read-only while the read blocks, fails with EFAULT and consumes no event"
         },
         {
           "id": "efault-inject",
@@ -1214,7 +1214,7 @@
         },
         {
           "id": "efault-commit",
-          "title": "An unmapped commit metadata pointer fails with EFAULT and commits nothing"
+          "title": "An unmapped commit metadata pointer fails with EFAULT, metadata with a nonzero reserved field fails with EINVAL, and neither commits anything"
         },
         {
           "id": "efault-readback",
@@ -1304,7 +1304,7 @@
         },
         {
           "id": "compositor-dies",
-          "title": "An acquire blocked when the compositor exits returns within 250 ms, and the next commit succeeds"
+          "title": "An acquire blocked when the compositor exits, and a blocking event read on another window, return within 250 ms, and the next commit succeeds"
         },
         {
           "id": "eintr",

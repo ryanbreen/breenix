@@ -636,6 +636,12 @@ impl Backend for Display {
     fn give_display(&self, caller: &Caller, pid: u32) -> Result<(), i32> {
         give(caller.tgid, pid as u64)
     }
+    fn abandon(&self) {
+        let mut guard = STATE.lock();
+        let s = state(&mut guard);
+        s.invalid = EAGAIN;
+        s.repair = true;
+    }
 }
 
 /// Push caller ownership, saving exactly the display it covered.

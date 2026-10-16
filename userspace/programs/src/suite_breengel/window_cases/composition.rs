@@ -10,7 +10,7 @@ pub(crate) const COMPOSITION: &[Case] = &[
     pictured!("compose-many", "Sixteen windows in a fixed stack compose to the formula, exactly", composition_compose_many),
     pictured!("generation", "Each commit advances the window's commit id by exactly one", composition_generation),
     pictured!("no-compositor", "A commit with no compositor returns within 250 ms and is composed once a compositor claims", composition_no_compositor),
-    pictured!("compositor-dies", "An acquire blocked when the compositor exits returns within 250 ms, and the next commit succeeds", composition_compositor_dies),
+    pictured!("compositor-dies", "An acquire blocked when the compositor exits, and a blocking event read on another window, return within 250 ms, and the next commit succeeds", composition_compositor_dies),
     pictured!("eintr", "A signal interrupts a blocked acquire with EINTR", composition_eintr),
     pictured!("damage-metadata", "A commit's damage rectangles are recorded exactly", composition_damage_metadata),
     pictured!("damage-work", "A composite processes exactly the pixels in its damage union, by the compositor's counter, and with `ignore-damage` armed the excess is reported by count", composition_damage_work),
@@ -288,12 +288,36 @@ fn composition_compositor_dies() -> CaseResult {
             (now_ms(), a)
         })
     };
+    // A second window's reader blocks with no timeout and nothing queued: the compositor's
+    // death ends its wait with no events.
+    let quiet = W::new(8, 8, 2)?;
+    let _ = read_events(quiet.id());
+    let qid = quiet.id();
+    let reader = std::thread::spawn(move || -> (u64, i64) {
+        let mut ev = vec![abi::WindowEvent::ZERO; 4];
+        let mut r = abi::ReadEvents::ZERO;
+        r.id = qid;
+        r.ptr = ev.as_mut_ptr() as u64;
+        r.capacity = 4;
+        r.flags = abi::READ_EVENTS_BLOCK;
+        r.timeout_ns = u64::MAX;
+        let n = call(op::READ_EVENTS, &mut r);
+        (now_ms(), n)
+    });
     let _ = time::sleep_ms(100);
     let killed = now_ms();
-    k.kill();
+    let death = k.kill_checked();
     let reaped = now_ms();
     let (returned, a) = client.join().map_err(|_| String::from("the client thread panicked")).cite("17.5")?;
     let _ = libbreenix::test_control::disarm_all();
+    death.cite("24")?;
+    let (read_at, n) = reader.join().map_err(|_| String::from("the reader thread panicked")).cite("17.5")?;
+    ensure(n == 0, "17.5", format!("the blocking READ_EVENTS on another window returned {} when the compositor died; it returns 0 events", outcome(n)))?;
+    ensure(read_at >= killed, "17.5", format!("the blocking READ_EVENTS returned {} ms before the compositor was killed", killed - read_at))?;
+    let read_gap = read_at.saturating_sub(reaped);
+    value("read-events-after-death-ms", read_gap as i64, "ms", Some((0, 250)));
+    ensure(read_gap <= 250, "17.5", format!(
+        "after the compositor was reaped the blocking READ_EVENTS returned {read_gap} ms later; it returns within 250 ms of the compositor's death"))?;
     let a = a.map_err(|r| format!("the blocked ACQUIRE {}", outcome(r))).cite("17.5")?;
     ensure(returned >= killed, "17.5", format!(
         "the ACQUIRE returned {} ms before the compositor was killed; with the only other buffer pinned by the compositor it must block", killed - returned))?;

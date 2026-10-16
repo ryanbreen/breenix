@@ -3,8 +3,11 @@
 //!
 //! `arg` points to the op's argument structure and `len` must equal its size. The structure
 //! is copied in whole before anything else happens; an op whose structure has output fields
-//! has the whole structure checked writable first, so an EFAULT leaves no trace. No path here
-//! writes to any kernel output, except the payload of an armed `emit-diagnostic`.
+//! has the whole structure checked writable first. Another thread can still unmap the
+//! structure or make it read-only while the op runs, so an op that changes state copies its
+//! output out before its commit point, or undoes what it did when the copy fails: an EFAULT
+//! leaves no trace (section 17.5). No path here writes to any kernel output, except the
+//! payload of an armed `emit-diagnostic`.
 
 use breengel_abi::errno::{EFAULT, EINVAL, EPERM};
 use breengel_abi::{
@@ -12,6 +15,11 @@ use breengel_abi::{
     Create, Cursor, Geometry, Give, List, MapBuffers, MapTree, Meta, MetaQuery, NoChange, Plain, ReadEvents,
     Readback, RecordQuery, Resize, Title, WinId, WriteEvents, INTERFACE_VERSION,
 };
+
+/// Copy `value` to the user at `arg`: an op's output, written before its commit point.
+pub fn copy_out<T: Plain>(arg: u64, value: &T) -> Result<(), i32> {
+    output(arg, value)
+}
 
 use super::SyscallResult;
 use crate::window::{mem, ops, present, Caller, REGISTRY};
@@ -32,10 +40,8 @@ fn output<T: Plain>(arg: u64, value: &T) -> Result<(), i32> {
     crate::syscall::userptr::copy_to_user(arg as *mut T, value).map_err(|_| EFAULT)
 }
 
-/// Run an op whose structure is both input and output: copy it in, check it can be written
-/// back, run `f` on it and copy it out. An op that changes the caller's mappings (`COMMIT`
-/// makes a buffer read-only, `RESIZE` unmaps the old buffers) is given `arg` and refuses a
-/// structure lying in memory it changes, so the copy out cannot fail on its account.
+/// Run an op that changes no state and whose structure is both input and output: copy it in,
+/// check it can be written back, run `f` on it and copy it out.
 fn inout<T: Plain>(arg: u64, f: impl FnOnce(&mut T) -> Result<u64, i32>) -> Result<u64, i32> {
     let mut value = input::<T>(arg)?;
     mem::probe_writable(arg, core::mem::size_of::<T>() as u64)?;
@@ -44,12 +50,28 @@ fn inout<T: Plain>(arg: u64, f: impl FnOnce(&mut T) -> Result<u64, i32>) -> Resu
     Ok(result)
 }
 
-/// A commit's metadata: none (all zero), or one `Meta` at `ptr`.
+/// Run an op that changes state and copies its own output to `arg` before its commit point
+/// (or undoes its change when that copy fails): copy the structure in, check it can be
+/// written back, and run `f` on it with `arg`.
+fn committing<T: Plain>(arg: u64, f: impl FnOnce(&mut T, u64) -> Result<u64, i32>) -> Result<u64, i32> {
+    let mut value = input::<T>(arg)?;
+    mem::probe_writable(arg, core::mem::size_of::<T>() as u64)?;
+    f(&mut value, arg)
+}
+
+/// A commit's metadata: none (all zero), or one `Meta` at `ptr`, whose reserved fields are
+/// zero.
 fn meta(ptr: u64, len: u32) -> Result<Meta, i32> {
     match (ptr, len as usize) {
         (0, 0) => Ok(Meta::ZERO),
         (0, _) => Err(EINVAL),
-        (_, n) if n == core::mem::size_of::<Meta>() => input::<Meta>(ptr),
+        (_, n) if n == core::mem::size_of::<Meta>() => {
+            let m = input::<Meta>(ptr)?;
+            if m.reserved != 0 || m.reserved2 != 0 {
+                return Err(EINVAL);
+            }
+            Ok(m)
+        }
         _ => Err(EINVAL),
     }
 }
@@ -107,30 +129,28 @@ fn window(op: u64, arg: u64, len: u64) -> Result<u64, i32> {
         op::COMMIT => {
             let c = input::<Commit>(arg)?;
             let m = meta(c.meta, c.meta_len)?;
-            inout::<Commit>(arg, |c| ops::commit(&caller, c, m, arg))
+            committing::<Commit>(arg, |c, out| ops::commit(&caller, c, m, out))
         }
         op::COMMIT_NO_CHANGE => {
             let n = input::<NoChange>(arg)?;
             let m = meta(n.meta, n.meta_len)?;
-            inout::<NoChange>(arg, |n| ops::no_change(&caller, n, m))
+            committing::<NoChange>(arg, |n, out| ops::no_change(&caller, n, m, out))
         }
-        op::RESIZE => inout::<Resize>(arg, |r| ops::resize(&caller, r, arg)),
-        op::READ_EVENTS => inout::<ReadEvents>(arg, |r| ops::read_events(&caller, r)),
+        op::RESIZE => committing::<Resize>(arg, |r, out| ops::resize(&caller, r, out)),
+        op::READ_EVENTS => committing::<ReadEvents>(arg, |r, out| ops::read_events(&caller, r, out)),
         op::WRITE_EVENTS => ops::write_events(&caller, &input::<WriteEvents>(arg)?),
         op::EVENT_FD => ops::event_fd(&caller, input::<WinId>(arg)?.id),
         op::SET_GEOMETRY => ops::set_geometry(&caller, &input::<Geometry>(arg)?),
-        op::MAP_COMMITTED => inout::<MapBuffers>(arg, |m| ops::map_committed(&caller, m)),
+        op::MAP_COMMITTED => committing::<MapBuffers>(arg, |m, out| ops::map_committed(&caller, m, out)),
         op::CAPTURE => inout::<Capture>(arg, |c| ops::capture(&caller, c)),
-        op::MAP_TREE => inout::<MapTree>(arg, |m| ops::map_tree(&caller, m)),
-        op::CLAIM_COMPOSITOR => inout::<Claim>(arg, |c| ops::claim(&caller, c)),
+        op::MAP_TREE => committing::<MapTree>(arg, |m, out| ops::map_tree(&caller, m, out)),
+        op::CLAIM_COMPOSITOR => committing::<Claim>(arg, |c, out| ops::claim(&caller, c, out)),
         op::RELEASE_COMPOSITOR => ops::release(&caller),
-        op::COMPOSITE => inout::<Composite>(arg, |c| {
+        op::COMPOSITE => committing::<Composite>(arg, |c, out| {
             if c.flags != 0 || c.reserved != 0 {
                 return Err(EINVAL);
             }
-            let (serial, pixels) = present::composite(&caller)?;
-            c.serial = serial;
-            c.pixels = pixels;
+            present::composite(&caller, out)?;
             Ok(0)
         }),
         op::COMPOSITE_RECORD => composite_record(&caller, &input::<RecordQuery>(arg)?),

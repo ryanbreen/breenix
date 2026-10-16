@@ -156,6 +156,7 @@ pub fn create(caller: &Caller, a: &mut Create) -> Result<u64, i32> {
     let waits = Arc::try_new(Waits {
         acquire: WaitQueueHead::new(),
         events: Arc::try_new(WaitQueueHead::new()).map_err(|_| ENOMEM)?,
+        gate: WaitQueueHead::new(),
     })
     .map_err(|_| ENOMEM)?;
     let count = a.buffers as usize;
@@ -232,6 +233,7 @@ pub fn create(caller: &Caller, a: &mut Create) -> Result<u64, i32> {
             ring,
             waits,
             holder: None,
+            gate: false,
             present: WindowPresent::new(),
         },
     );
@@ -525,6 +527,43 @@ pub fn unacquire_index(window: u64, index: u32) {
     waits.acquire.wake_up();
 }
 
+/// A window's commit gate, held (`Window::gate`) until dropped.
+struct Gate {
+    window: u64,
+    waits: Arc<Waits>,
+}
+
+impl Gate {
+    /// Take window `id`'s commit gate for its owner, waiting while another commit or resize
+    /// holds it. The gate is held only across one commit's or resize's own work, so a signal
+    /// does not end the wait: the call it would interrupt is not a blocking one.
+    fn enter(id: u64, caller: &Caller) -> Result<Gate, i32> {
+        loop {
+            let waits = {
+                let mut reg = REGISTRY.lock();
+                let w = reg.window(id, caller, who::owner)?;
+                if !w.gate {
+                    w.gate = true;
+                    return Ok(Gate { window: id, waits: w.waits.clone() });
+                }
+                w.waits.clone()
+            };
+            let _ = wait_on(&waits.gate, &IpcDeadline::Never, || {
+                REGISTRY.lock().windows.get(&id).is_some_and(|w| w.gate)
+            });
+        }
+    }
+}
+
+impl Drop for Gate {
+    fn drop(&mut self) {
+        if let Some(w) = REGISTRY.lock().windows.get_mut(&self.window) {
+            w.gate = false;
+        }
+        self.waits.gate.wake_up();
+    }
+}
+
 /// Whether the byte ranges `[a, a + alen)` and `[b, b + blen)` overlap.
 fn overlaps(a: u64, alen: u64, b: u64, blen: u64) -> bool {
     a < b.saturating_add(blen) && b < a.saturating_add(alen)
@@ -541,15 +580,18 @@ fn rect_in(r: &Rect, width: u32, height: u32) -> bool {
 
 /// `COMMIT`: publish an acquired buffer as the new front. `out` is where the caller's `Commit`
 /// structure lies: inside the buffer or its tree page, which the commit makes read-only, its
-/// output could not be written, so that is EFAULT before anything changes.
+/// output could not be written, so that is EFAULT before anything changes. Under the window's
+/// commit gate the commit's id, damage and pixel generation are settled first and copied out
+/// to `out`; only then is the buffer sealed and published.
 pub fn commit(caller: &Caller, c: &mut Commit, meta: Meta, out: u64) -> Result<u64, i32> {
     if c.reserved != 0 || c.damage_count as usize > limits::MAX_DAMAGE {
         return Err(EINVAL);
     }
     let given: Vec<Rect> = c.damage[..c.damage_count as usize].to_vec();
     let out_len = core::mem::size_of::<Commit>() as u64;
-    // Check, and claim the buffer for this commit.
-    let (uid, buf_mem, addr, tree, tree_page, tree_len) = {
+    let gate = Gate::enter(c.id, caller)?;
+    // Check, claim the buffer for this commit, and settle what it publishes.
+    let (uid, buf_mem, addr, tree, tree_page, tree_len, damage) = {
         let mut reg = REGISTRY.lock();
         let w = reg.window(c.id, caller, who::owner)?;
         let (width, height) = (w.width, w.height);
@@ -558,37 +600,14 @@ pub fn commit(caller: &Caller, c: &mut Commit, meta: Meta, out: u64) -> Result<u
         }
         let (tree, tree_len) = (w.tree.clone(), w.tree_len());
         let tree_page = w.tree_addr + c.buffer as u64 * tree_len;
-        let b = &mut w.buffers[c.buffer as usize];
+        let b = &w.buffers[c.buffer as usize];
         if !b.acquired || b.committing {
             return Err(EBUSY);
         }
         if overlaps(out, out_len, b.addr, b.mem.len()) || overlaps(out, out_len, tree_page, tree_len) {
             return Err(EFAULT);
         }
-        b.committing = true;
-        (b.uid, b.mem.clone(), b.addr, tree, tree_page, tree_len)
-    };
-    // The buffer and its tree page are read-only to their owner before they become the front.
-    let tree_addr = tree_page - c.buffer as u64 * tree_len;
-    let offset = c.buffer as u64 * tree_len;
-    let sealed = mem::protect(&buf_mem, addr, false)
-        .and_then(|()| mem::protect_range(&tree, tree_addr, offset, tree_len, false));
-    if let Err(e) = sealed {
-        let _ = mem::protect(&buf_mem, addr, true);
-        let _ = mem::protect_range(&tree, tree_addr, offset, tree_len, true);
-        let mut reg = REGISTRY.lock();
-        if let Some(b) = reg.windows.get_mut(&c.id).and_then(|w| w.buffer_mut(uid)) {
-            b.committing = false;
-        }
-        return Err(e);
-    }
-    let waits = {
-        let mut reg = REGISTRY.lock();
-        let w = reg.windows.get_mut(&c.id).ok_or(ENOENT)?;
-        let Some(index) = w.buffers.iter().position(|b| b.uid == uid) else {
-            return Err(ENOENT);
-        };
-        let base = w.buffers[index].base;
+        let base = b.base;
         let mut damage = Damage::Rects(given);
         if w.front.is_none() {
             damage = Damage::Full;
@@ -600,11 +619,43 @@ pub fn commit(caller: &Caller, c: &mut Commit, meta: Meta, out: u64) -> Result<u
             Damage::Rects(r) if r.len() > limits::MAX_DAMAGE => Damage::Rects(alloc::vec![super::bounds(&r)]),
             d => d,
         };
-        w.commit_id += 1;
-        let id = w.commit_id;
-        if !damage.is_empty() {
-            w.pixel_gen += 1;
+        c.commit_id = w.commit_id + 1;
+        c.pixel_gen = w.pixel_gen + u64::from(!damage.is_empty());
+        let b = &mut w.buffers[c.buffer as usize];
+        b.committing = true;
+        (b.uid, b.mem.clone(), b.addr, tree, tree_page, tree_len, damage)
+    };
+    let release = |uid: u64| {
+        let mut reg = REGISTRY.lock();
+        if let Some(b) = reg.windows.get_mut(&c.id).and_then(|w| w.buffer_mut(uid)) {
+            b.committing = false;
         }
+    };
+    if let Err(e) = crate::syscall::window::copy_out(out, &*c) {
+        release(uid);
+        return Err(e);
+    }
+    // The buffer and its tree page are read-only to their owner before they become the front.
+    let tree_addr = tree_page - c.buffer as u64 * tree_len;
+    let offset = c.buffer as u64 * tree_len;
+    let sealed = mem::protect(&buf_mem, addr, false)
+        .and_then(|()| mem::protect_range(&tree, tree_addr, offset, tree_len, false));
+    if let Err(e) = sealed {
+        let _ = mem::protect(&buf_mem, addr, true);
+        let _ = mem::protect_range(&tree, tree_addr, offset, tree_len, true);
+        release(uid);
+        return Err(e);
+    }
+    let waits = {
+        let mut reg = REGISTRY.lock();
+        let w = reg.windows.get_mut(&c.id).ok_or(ENOENT)?;
+        let Some(index) = w.buffers.iter().position(|b| b.uid == uid) else {
+            return Err(ENOENT);
+        };
+        // The gate kept every other commit and resize out since the id was settled.
+        w.commit_id = c.commit_id;
+        w.pixel_gen = c.pixel_gen;
+        let id = c.commit_id;
         let mut released = false;
         if let Some(f) = w.front.filter(|&f| f != index) {
             let old = &mut w.buffers[f];
@@ -631,27 +682,29 @@ pub fn commit(caller: &Caller, c: &mut Commit, meta: Meta, out: u64) -> Result<u
         w.present.pending.add(&damage);
         w.log.push_back((id, damage));
         w.meta = meta;
-        c.commit_id = id;
-        c.pixel_gen = w.pixel_gen;
         crate::tracing::providers::window::count_damage_rects(rects);
         released.then(|| w.waits.clone())
     };
+    drop(gate);
     if let Some(waits) = waits {
         waits.acquire.wake_up();
     }
     Ok(0)
 }
 
-/// `COMMIT_NO_CHANGE`: new metadata against the current front's pixels.
-pub fn no_change(caller: &Caller, n: &mut NoChange, meta: Meta) -> Result<u64, i32> {
+/// `COMMIT_NO_CHANGE`: new metadata against the current front's pixels, its commit id copied
+/// out to `out` before it is published.
+pub fn no_change(caller: &Caller, n: &mut NoChange, meta: Meta, out: u64) -> Result<u64, i32> {
     if n.reserved != 0 {
         return Err(EINVAL);
     }
+    let _gate = Gate::enter(n.id, caller)?;
+    n.commit_id = REGISTRY.lock().window(n.id, caller, who::owner)?.commit_id + 1;
+    crate::syscall::window::copy_out(out, &*n)?;
     let mut reg = REGISTRY.lock();
     let w = reg.window(n.id, caller, who::owner)?;
-    w.commit_id += 1;
+    w.commit_id = n.commit_id;
     w.meta = meta;
-    n.commit_id = w.commit_id;
     Ok(0)
 }
 
@@ -763,7 +816,8 @@ pub fn capture(caller: &Caller, c: &mut Capture) -> Result<u64, i32> {
 /// hands one out, since each already holds the front's generation; the new front keeps the
 /// old front's index, so it keeps its tree page. `out` is where the caller's `Resize` lies:
 /// inside a buffer this resize unmaps, its output could not be written, so that is EFAULT
-/// before anything changes.
+/// before anything changes. The resize holds the window's commit gate, and copies its output
+/// to `out` before its commit point; when that copy fails nothing changes and no event is told.
 pub fn resize(caller: &Caller, r: &mut Resize, out: u64) -> Result<u64, i32> {
     let out_len = core::mem::size_of::<Resize>() as u64;
     let (old_w, old_h, count) = {
@@ -785,6 +839,7 @@ pub fn resize(caller: &Caller, r: &mut Resize, out: u64) -> Result<u64, i32> {
     if r.reserved != 0 || !valid_size(r.width, r.height) {
         return refuse(EINVAL);
     }
+    let _gate = Gate::enter(r.id, caller)?;
     let keys = uids(count);
     let mut buffers: Vec<Buffer> = Vec::new();
     if buffers.try_reserve_exact(count).is_err() {
@@ -841,6 +896,15 @@ pub fn resize(caller: &Caller, r: &mut Resize, out: u64) -> Result<u64, i32> {
             copied = true;
         }
         drop(source);
+        r.stride = r.width * 4;
+        r.buffer = [0; 3];
+        for (i, b) in buffers.iter().enumerate() {
+            r.buffer[i] = b.addr;
+        }
+        if let Err(e) = crate::syscall::window::copy_out(out, &*r) {
+            unmap_all(&buffers, None);
+            return Err(e);
+        }
         let mut reg = REGISTRY.lock();
         let Some(w) = reg.windows.get_mut(&r.id) else {
             drop(reg);
@@ -857,11 +921,6 @@ pub fn resize(caller: &Caller, r: &mut Resize, out: u64) -> Result<u64, i32> {
         if let Some(f) = front {
             buffers[f].state = BufState::Front;
             w.pixel_gen += 1;
-        }
-        r.stride = r.width * 4;
-        r.buffer = [0; 3];
-        for (i, b) in buffers.iter().enumerate() {
-            r.buffer[i] = b.addr;
         }
         let old = core::mem::replace(&mut w.buffers, core::mem::take(&mut buffers));
         w.front = front;
@@ -900,8 +959,10 @@ fn tell(id: u64, fill: impl FnOnce(&mut WindowEvent)) {
     waits.events.wake_up();
 }
 
-/// `READ_EVENTS`: the owner takes up to `capacity` events, waiting for one when asked.
-pub fn read_events(caller: &Caller, r: &mut ReadEvents) -> Result<u64, i32> {
+/// `READ_EVENTS`: the owner takes up to `capacity` events, waiting for one when asked. A wait
+/// that began under a compositor ends, with no events, when that compositor dies or releases
+/// its claim (section 17.5).
+pub fn read_events(caller: &Caller, r: &mut ReadEvents, out_arg: u64) -> Result<u64, i32> {
     if r.flags & !READ_EVENTS_BLOCK != 0 {
         return Err(EINVAL);
     }
@@ -909,40 +970,61 @@ pub fn read_events(caller: &Caller, r: &mut ReadEvents) -> Result<u64, i32> {
     let capacity = (r.capacity as usize).min(limits::EVENT_RING + 1);
     mem::probe_writable(r.ptr, (r.capacity as u64).saturating_mul(size as u64))?;
     let until = deadline(r.timeout_ns);
+    let mut compositor: Option<Option<u64>> = None;
     loop {
         let mut out = Vec::new();
         out.try_reserve_exact(capacity).map_err(|_| ENOMEM)?;
-        let (lost, waits) = {
+        let (lost, waits, claim) = {
             let mut reg = REGISTRY.lock();
+            let claim = reg.claim.map(|c| c.epoch);
             let w = reg.window(r.id, caller, who::owner)?;
-            (w.ring.take(&mut out, capacity), w.waits.clone())
+            (w.ring.take(&mut out, capacity), w.waits.clone(), claim)
         };
+        let began = *compositor.get_or_insert(claim);
         if !out.is_empty() || capacity == 0 {
+            // The events and the structure are both copied out before the read returns; when
+            // either copy fails the events go back to the front of the ring, none consumed.
+            r.lost = lost;
             // SAFETY: WindowEvent is plain data without padding.
             let raw = unsafe { core::slice::from_raw_parts(out.as_ptr() as *const u8, out.len() * size) };
-            if let Err(e) = mem::copy_out(r.ptr, raw) {
+            let copied = mem::copy_out(r.ptr, raw).and_then(|()| crate::syscall::window::copy_out(out_arg, &*r));
+            if let Err(e) = copied {
                 let mut reg = REGISTRY.lock();
                 if let Some(w) = reg.windows.get_mut(&r.id) {
                     w.ring.untake(out, lost);
                 }
                 return Err(e);
             }
-            r.lost = lost;
             return Ok(out.len() as u64);
         }
-        if r.flags & READ_EVENTS_BLOCK == 0 {
+        if r.flags & READ_EVENTS_BLOCK == 0 || (began.is_some() && claim != began) {
             r.lost = 0;
+            crate::syscall::window::copy_out(out_arg, &*r)?;
             return Ok(0);
         }
         let id = r.id;
         wait(&waits.events, &until, || {
-            REGISTRY
-                .lock()
-                .windows
-                .get(&id)
-                .is_some_and(|w| !w.ring.has_event())
+            let reg = REGISTRY.lock();
+            reg.claim.map(|c| c.epoch) == began && reg.windows.get(&id).is_some_and(|w| !w.ring.has_event())
         })?;
     }
+}
+
+/// The compositor claim has ended: wake every window's event readers, so a blocking read that
+/// began under it returns.
+fn claim_ended(windows: Vec<Arc<Waits>>) {
+    for waits in windows {
+        waits.events.wake_up();
+    }
+}
+
+/// Every window's wait queues, for `claim_ended`. Registry lock held.
+fn all_waits(reg: &super::Registry) -> Vec<Arc<Waits>> {
+    let mut v = Vec::new();
+    if v.try_reserve_exact(reg.windows.len()).is_ok() {
+        v.extend(reg.windows.values().map(|w| w.waits.clone()));
+    }
+    v
 }
 
 /// `EVENT_FD` (the owner): a new descriptor that polls readable while the window has an event.
@@ -1009,8 +1091,9 @@ pub fn set_geometry(caller: &Caller, g: &Geometry) -> Result<u64, i32> {
     Ok(0)
 }
 
-/// `MAP_COMMITTED` (owner or compositor): every buffer mapped read-only into the caller.
-pub fn map_committed(caller: &Caller, m: &mut MapBuffers) -> Result<u64, i32> {
+/// `MAP_COMMITTED` (owner or compositor): every buffer mapped read-only into the caller. The
+/// mappings are undone when the output cannot be copied to `out`.
+pub fn map_committed(caller: &Caller, m: &mut MapBuffers, out: u64) -> Result<u64, i32> {
     if m.reserved != 0 {
         return Err(EINVAL);
     }
@@ -1037,6 +1120,12 @@ pub fn map_committed(caller: &Caller, m: &mut MapBuffers) -> Result<u64, i32> {
         m.buffer[i] = *addr;
     }
     m.stride = stride;
+    if let Err(e) = crate::syscall::window::copy_out(out, &*m) {
+        for (mm, addr) in mapped.iter() {
+            mem::unmap(mm, *addr);
+        }
+        return Err(e);
+    }
     Ok(0)
 }
 
@@ -1048,19 +1137,26 @@ pub fn read_meta(caller: &Caller, id: u64) -> Result<(u64, Meta), i32> {
     Ok((w.commit_id, w.meta))
 }
 
-/// `MAP_TREE` (owner, compositor or root): the window's tree pages, read-only.
-pub fn map_tree(caller: &Caller, m: &mut MapTree) -> Result<u64, i32> {
+/// `MAP_TREE` (owner, compositor or root): the window's tree pages, read-only. The mapping is
+/// undone when the output cannot be copied to `out`.
+pub fn map_tree(caller: &Caller, m: &mut MapTree, out: u64) -> Result<u64, i32> {
     let tree = {
         let mut reg = REGISTRY.lock();
         reg.window(m.id, caller, who::owner_compositor_or_root)?.tree.clone()
     };
     m.addr = mem::map(&tree, false)?;
     m.len = tree.len();
+    if let Err(e) = crate::syscall::window::copy_out(out, &*m) {
+        mem::unmap(&tree, m.addr);
+        return Err(e);
+    }
     Ok(0)
 }
 
-/// `CLAIM_COMPOSITOR` (root, with no live claim): a new epoch, told to every window.
-pub fn claim(caller: &Caller, c: &mut Claim) -> Result<u64, i32> {
+/// `CLAIM_COMPOSITOR` (root, with no live claim): a new epoch, told to every window. The claim
+/// is held while its epoch is copied to `out`, and given up, epoch and all, when that fails;
+/// only then is it told.
+pub fn claim(caller: &Caller, c: &mut Claim, out: u64) -> Result<u64, i32> {
     if !caller.is_root() {
         return Err(EPERM);
     }
@@ -1068,21 +1164,34 @@ pub fn claim(caller: &Caller, c: &mut Claim) -> Result<u64, i32> {
         return Err(EINVAL);
     }
     sweep_dead_owners();
-    let woken = {
+    let epoch = {
         let mut reg = REGISTRY.lock();
         if reg.claim.is_some() {
             return Err(EBUSY);
         }
         reg.epoch += 1;
-        let epoch = reg.epoch;
         reg.claim = Some(Held {
             holder: caller.tgid,
-            epoch,
+            epoch: reg.epoch,
         });
+        reg.epoch
+    };
+    c.epoch = epoch;
+    if let Err(e) = crate::syscall::window::copy_out(out, &*c) {
+        let mut reg = REGISTRY.lock();
+        if reg.claim.is_some_and(|h| h.holder == caller.tgid && h.epoch == epoch) {
+            reg.claim = None;
+            if reg.epoch == epoch {
+                reg.epoch -= 1;
+            }
+        }
+        return Err(e);
+    }
+    let woken = {
+        let mut reg = REGISTRY.lock();
         // The new compositor's first composite covers the whole screen: what is on it now
         // was not composed by this claim.
         reg.present.force_full = true;
-        c.epoch = epoch;
         let mut woken = Vec::new();
         let _ = woken.try_reserve_exact(reg.windows.len());
         for w in reg.windows.values_mut() {
@@ -1101,11 +1210,15 @@ pub fn claim(caller: &Caller, c: &mut Claim) -> Result<u64, i32> {
 
 /// `RELEASE_COMPOSITOR` (the compositor).
 pub fn release(caller: &Caller) -> Result<u64, i32> {
-    let mut reg = REGISTRY.lock();
-    if !reg.is_compositor(caller) {
-        return Err(EPERM);
-    }
-    reg.claim = None;
+    let woken = {
+        let mut reg = REGISTRY.lock();
+        if !reg.is_compositor(caller) {
+            return Err(EPERM);
+        }
+        reg.claim = None;
+        all_waits(&reg)
+    };
+    claim_ended(woken);
     Ok(0)
 }
 
@@ -1171,6 +1284,7 @@ pub fn release_remnant(caller: &Caller, id: u64) -> Result<u64, i32> {
 pub fn group_gone(tgid: u64, at_exit: bool) {
     let mut gone: Vec<Window> = Vec::new();
     let mut freed: Vec<Remnant> = Vec::new();
+    let mut readers: Vec<Arc<Waits>> = Vec::new();
     // The room each evidence holder has under its `RLIMIT_AS`, read before the registry is
     // taken (the process manager is never taken under it). A remnant that does not fit is not
     // kept.
@@ -1225,6 +1339,7 @@ pub fn group_gone(tgid: u64, at_exit: bool) {
         }
         if reg.claim.is_some_and(|c| c.holder == tgid) {
             reg.claim = None;
+            readers = all_waits(&reg);
         }
         if at_exit {
             let held: Vec<u64> = reg.remnants.iter().filter(|(_, r)| r.holder == tgid).map(|(id, _)| *id).collect();
@@ -1244,6 +1359,7 @@ pub fn group_gone(tgid: u64, at_exit: bool) {
         w.waits.acquire.wake_up();
         w.waits.events.wake_up();
     }
+    claim_ended(readers);
     drop(gone);
     drop(freed);
     #[cfg(target_arch = "aarch64")]

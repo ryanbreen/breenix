@@ -154,6 +154,8 @@ pub struct Waits {
     pub acquire: WaitQueueHead,
     /// READ_EVENTS and the event descriptor waiting for an event.
     pub events: Arc<WaitQueueHead>,
+    /// COMMIT, COMMIT_NO_CHANGE and RESIZE waiting for the window's commit gate.
+    pub gate: WaitQueueHead,
 }
 
 /// One window.
@@ -195,6 +197,10 @@ pub struct Window {
     pub waits: Arc<Waits>,
     /// The root process holding this window's evidence, if any.
     pub holder: Option<u64>,
+    /// A COMMIT, COMMIT_NO_CHANGE or RESIZE is between its checks and its publication. They
+    /// take turns, so each knows the commit id and pixel generation it will publish, and
+    /// copies them out, before it publishes anything.
+    pub gate: bool,
     pub present: present::WindowPresent,
 }
 

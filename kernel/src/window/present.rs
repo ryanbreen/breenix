@@ -108,6 +108,9 @@ pub trait Backend: Sync {
     fn give_display(&self, _caller: &Caller, _pid: u32) -> Result<(), i32> {
         Err(EIO)
     }
+    /// The composite just completed is abandoned (its output could not be copied out): no
+    /// observation may stand for it, and the next composite repairs the whole screen.
+    fn abandon(&self) {}
 }
 
 static BACKEND: spin::Once<&'static dyn Backend> = spin::Once::new();
@@ -219,9 +222,12 @@ pub fn intersect(a: Rect, b: Rect) -> Option<Rect> {
 /// Composites waiting for the one in flight.
 static IN_FLIGHT: crate::task::waitqueue::WaitQueueHead = crate::task::waitqueue::WaitQueueHead::new();
 
-/// `COMPOSITE` (compositor only): compose the damage since the previous composite. One
-/// composite runs at a time; a second call waits for the first to finish.
-pub fn composite(caller: &Caller) -> Result<(u64, u64), i32> {
+/// `COMPOSITE` (compositor only): compose the damage since the previous composite, and copy
+/// its serial and pixel count to `out` before it is published (its record kept and its
+/// windows' commits presented). One composite runs at a time; a second call waits for the
+/// first to finish. A composite whose output cannot be copied out is abandoned: no record, no
+/// commit presented, no observation, and the next composite composes the whole screen.
+pub fn composite(caller: &Caller, out: u64) -> Result<(u64, u64), i32> {
     let backend = backend();
     let frame = loop {
         {
@@ -251,6 +257,24 @@ pub fn composite(caller: &Caller) -> Result<(u64, u64), i32> {
         super::ops::stall();
     }
     let result = backend.map_or(Err(Failure { reason: 0 }), |b| b.composite(&frame));
+    if let Ok(done) = &result {
+        let mut c = breengel_abi::Composite::ZERO;
+        c.serial = frame.serial;
+        c.pixels = done.pixels;
+        if let Err(e) = crate::syscall::window::copy_out(out, &c) {
+            if let Some(b) = backend {
+                b.abandon();
+            }
+            {
+                let mut reg = REGISTRY.lock();
+                reg.present.busy = false;
+                reg.present.force_full = true;
+            }
+            drop(frame);
+            IN_FLIGHT.wake_up();
+            return Err(e);
+        }
+    }
     let outcome = finish(frame, result);
     IN_FLIGHT.wake_up();
     outcome

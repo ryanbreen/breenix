@@ -1756,11 +1756,11 @@ Each denial follows a positive control in the same case: the authorized principa
 - `efault-register` — An unmapped title pointer fails with EFAULT.
 - `efault-list` — An unmapped list buffer fails with EFAULT.
 - `efault-capture` — An unmapped capture destination fails with EFAULT.
-- `efault-events` — An unmapped event-read buffer fails with EFAULT and consumes no event.
+- `efault-events` — An unmapped event-read buffer, or an argument structure made read-only while the read blocks, fails with EFAULT and consumes no event.
 - `efault-inject` — An unmapped event pointer given to the compositor's write fails with EFAULT.
 - `efault-composite` — An unmapped composite descriptor fails with EFAULT.
 - `efault-mouse` — An unmapped pointer-position buffer fails with EFAULT.
-- `efault-commit` — An unmapped commit metadata pointer fails with EFAULT and commits nothing.
+- `efault-commit` — An unmapped commit metadata pointer fails with EFAULT, metadata with a nonzero reserved field fails with EINVAL, and neither commits anything.
 - `efault-readback` — An unmapped readback destination fails with EFAULT.
 - `efault-claim` — An unmapped claim argument fails with EFAULT and claims nothing.
 - `efault-cross-page` — A buffer that runs from a mapped page into an unmapped one fails with EFAULT and has no side effect.
@@ -1785,7 +1785,7 @@ derived from its id.
 - `compose-many` — Sixteen windows in a fixed stack compose to the formula, exactly.
 - `generation` — Each commit advances the window's commit id by exactly one.
 - `no-compositor` — A commit with no compositor returns within 250 ms and is composed once a compositor claims.
-- `compositor-dies` — An acquire blocked when the compositor exits returns within 250 ms, and the next commit succeeds.
+- `compositor-dies` — An acquire blocked when the compositor exits, and a blocking event read on another window, return within 250 ms, and the next commit succeeds.
 - `eintr` — A signal interrupts a blocked acquire with EINTR.
 - `damage-metadata` — A commit's damage rectangles are recorded exactly.
 - `damage-work` — A composite processes exactly the pixels in its damage union, by the compositor's counter, and with `ignore-damage` armed the excess is reported by count.

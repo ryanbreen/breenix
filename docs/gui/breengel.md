@@ -940,7 +940,9 @@ Principals: the **owner** (by kernel identity, never by PID number, so PID reuse
 - No window op writes to the serial log or any kernel output on any path (section 22).
 - Destroying a window while another thread commits it ends with exactly one of the two outcomes and no fault.
 - A blocked `ACQUIRE` or blocking `READ_EVENTS` returns within 250 ms of a SIGKILL, a destroy or a compositor
-  death. A timed wait returns no earlier than its timeout and no later than the timeout plus 100 ms.
+  death. A blocking `READ_EVENTS` that began while a compositor held the claim, on any window, returns 0 events
+  when that claim ends (its holder's death or release) with no event queued. A timed wait returns no earlier
+  than its timeout and no later than the timeout plus 100 ms.
 
 ### 17.6 Retired operations
 

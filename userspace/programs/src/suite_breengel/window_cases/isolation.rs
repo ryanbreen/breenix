@@ -23,11 +23,11 @@ pub(crate) const ISOLATION: &[Case] = &[
     pictured!("efault-register", "An unmapped title pointer fails with EFAULT", isolation_efault_register),
     pictured!("efault-list", "An unmapped list buffer fails with EFAULT", isolation_efault_list),
     pictured!("efault-capture", "An unmapped capture destination fails with EFAULT", isolation_efault_capture),
-    pictured!("efault-events", "An unmapped event-read buffer fails with EFAULT and consumes no event", isolation_efault_events),
+    pictured!("efault-events", "An unmapped event-read buffer, or an argument structure made read-only while the read blocks, fails with EFAULT and consumes no event", isolation_efault_events),
     pictured!("efault-inject", "An unmapped event pointer given to the compositor's write fails with EFAULT", isolation_efault_inject),
     pictured!("efault-composite", "An unmapped composite descriptor fails with EFAULT", isolation_efault_composite),
-    pictured!("efault-mouse", "An unmapped pointer-position buffer fails with EFAULT", isolation_efault_mouse),
-    pictured!("efault-commit", "An unmapped commit metadata pointer fails with EFAULT and commits nothing", isolation_efault_commit),
+    pictured!("efault-mouse", "An unmapped or read-only pointer-position or key-state buffer fails with EFAULT", isolation_efault_mouse),
+    pictured!("efault-commit", "An unmapped commit metadata pointer fails with EFAULT, metadata with a nonzero reserved field fails with EINVAL, and neither commits anything", isolation_efault_commit),
     pictured!("efault-readback", "An unmapped readback destination fails with EFAULT", isolation_efault_readback),
     pictured!("efault-claim", "An unmapped claim argument fails with EFAULT and claims nothing", isolation_efault_claim),
     pictured!("efault-cross-page", "A buffer that runs from a mapped page into an unmapped one fails with EFAULT and has no side effect", isolation_efault_cross_page),
@@ -520,7 +520,33 @@ fn isolation_efault_events() -> CaseResult {
     want_errno(read_events_at(w.id(), unmapped(), 4), EFAULT, "17.5", "READ_EVENTS into an unmapped buffer")?;
     let got = read_events(w.id()).map_err(|r| format!("READ_EVENTS {}", outcome(r))).cite("19.2")?;
     ensure(got.iter().any(|e| e.kind == abi::event_kind::KEY_PRESS && e.keycode == 44), "17.5", format!(
-        "after a READ_EVENTS that failed with EFAULT, the key press is gone: {} event(s) remain, kinds {:?}", got.len(), got.iter().map(|e| e.kind).collect::<Vec<_>>()))
+        "after a READ_EVENTS that failed with EFAULT, the key press is gone: {} event(s) remain, kinds {:?}", got.len(), got.iter().map(|e| e.kind).collect::<Vec<_>>()))?;
+    // A blocking read whose argument structure another thread makes read-only while it waits:
+    // the event that wakes it cannot be reported, so the read fails with EFAULT and the event
+    // stays queued.
+    let page = Pages::new(1, 0, true).cite("17.5")?;
+    let mut buf = vec![abi::WindowEvent::ZERO; 4];
+    let mut r = abi::ReadEvents::ZERO;
+    r.id = w.id();
+    r.ptr = buf.as_mut_ptr() as u64;
+    r.capacity = 4;
+    r.flags = abi::READ_EVENTS_BLOCK;
+    r.timeout_ns = 3_000_000_000;
+    // SAFETY: the page is mapped writable and holds a ReadEvents.
+    unsafe { core::ptr::write_unaligned(page.addr() as *mut abi::ReadEvents, r) };
+    let at = page.addr();
+    let reader = std::thread::spawn(move || call_at(op::READ_EVENTS, at, core::mem::size_of::<abi::ReadEvents>()));
+    let _ = time::sleep_ms(100);
+    memory::mprotect(page.base, page.len, memory::PROT_READ).map_err(|e| format!("mprotect: {e}")).cite("17.5")?;
+    let wrote = k.ask(&format!("event {} {}", w.id(), event_hex(&key_event(45)))).cite("24")?;
+    ensure(wrote.starts_with("ok 1 "), "19.2", format!("kiosk_test's WRITE_EVENTS answered `{wrote}`"))?;
+    let blocked = reader.join().map_err(|_| String::from("the reading thread panicked")).cite("17.5")?;
+    drop(buf);
+    want_errno(blocked, EFAULT, "17.5", "a blocking READ_EVENTS whose argument structure was made read-only while it waited")?;
+    let got = read_events(w.id()).map_err(|r| format!("READ_EVENTS {}", outcome(r))).cite("19.2")?;
+    ensure(got.iter().any(|e| e.kind == abi::event_kind::KEY_PRESS && e.keycode == 45), "17.5", format!(
+        "after a blocking READ_EVENTS failed with EFAULT on its read-only argument structure, the key press that woke it is gone: kinds {:?}",
+        got.iter().map(|e| e.kind).collect::<Vec<_>>()))
 }
 
 fn isolation_efault_inject() -> CaseResult {
@@ -635,6 +661,21 @@ fn isolation_efault_commit() -> CaseResult {
     ensure(mid == before, "17.5", format!("a COMMIT that failed with EFAULT moved the commit id from {before} to {mid}"))?;
     let (_, px) = capture(w.id(), 16, 16, None).map_err(|r| format!("CAPTURE {}", outcome(r))).cite("17.3")?;
     same(&px, 16, 16, false, "the front after a COMMIT that failed with EFAULT", "17.5", |x, y| pattern(20, x, y))?;
+    // Metadata with a nonzero reserved field is EINVAL (section 17.1), for both commits.
+    for (field, poke) in [("@52", 52usize), ("@124", 124)] {
+        let mut bad = abi::Meta::ZERO;
+        // SAFETY: the offset is inside the 128-byte Meta, at a reserved u32.
+        unsafe { *((&mut bad as *mut abi::Meta as *mut u8).add(poke) as *mut u32) = 1 };
+        c.meta = &bad as *const abi::Meta as u64;
+        want_errno(call(op::COMMIT, &mut c), EINVAL, "17.1", &format!("COMMIT with Meta's reserved field {field} set"))?;
+        let mut n = abi::NoChange::ZERO;
+        n.id = w.id();
+        n.meta = &bad as *const abi::Meta as u64;
+        n.meta_len = core::mem::size_of::<abi::Meta>() as u32;
+        want_errno(call(op::COMMIT_NO_CHANGE, &mut n), EINVAL, "17.1", &format!("COMMIT_NO_CHANGE with Meta's reserved field {field} set"))?;
+    }
+    let refused = info(w.id())?.commit_id;
+    ensure(refused == before, "17.1", format!("commits refused for reserved Meta fields moved the commit id from {before} to {refused}"))?;
     let meta = abi::Meta::ZERO;
     let done = commit(w.id(), a.buffer, &[abi::Rect::new(0, 0, 16, 16)], Some(&meta))
         .map_err(|r| format!("committing the same buffer properly afterwards {}; the failed commit must leave it acquired", outcome(r))).cite("17.5")?;
