@@ -342,7 +342,7 @@ serial.
 |---|---|---|---|---|
 | virtio-gpu 2D (ARM64 QEMU; Parallels if the gate fails) | the full guest backing of the resource bound by `SET_SCANOUT` | for every damaged rectangle of serial *S*, a fenced `TRANSFER_TO_HOST_2D` answered OK, then `RESOURCE_FLUSH` answered OK | the kernel records the fence ids of serial *S*'s transfers and flush, and readback refuses (EAGAIN) until they are answered | the host's copy of the resource and the host window. virtio-gpu 2D has no transfer back, so equality of the host copy rests on the spec's transfer semantics, independently checked through binding and completion |
 | GOP framebuffer (x86-64) | the **complete** GOP framebuffer memory after `copy_to_display`, converted from RGB or BGR | the copy of every damaged band of serial *S* has returned, with a store barrier | copy completion is recorded per band against *S* | the host's scanning of that memory into its window |
-| SVGA3 screen target (VMware) | the surface bound to the screen target, copied on the host by `SURFACE_COPY` into a readback surface, then written by `READBACK_GB_SURFACE` into that surface's own guest MOB, fenced; the MOB is cleared first and a pixel the device did not write is refused | `UPDATE_GB_SCREENTARGET` for every damaged rectangle of *S*, fenced and answered; the readback fence | fence ids recorded against *S*; the readback copies the surface bound to the screen target, and refuses (EIO) when that is not the composed surface | the host window |
+| SVGA3 screen target (VMware) | the surface bound to the screen target, copied on the host by `SURFACE_COPY` into a readback surface, then written by `READBACK_GB_SURFACE` into that surface's own guest MOB, fenced; the MOB is cleared first and a pixel the device did not write is refused | `UPDATE_GB_SCREENTARGET` for every damaged rectangle of *S*, with a `SURFACE_COPY` of the rectangle in the same command buffer, fenced and answered; the readback fence | fence ids recorded against *S*; the readback copies the surface bound to the screen target, and refuses (EIO) when that is not the composed surface | the host window |
 | VirGL (Parallels, only if the gate passes) | the scanout resource read back by a fenced `TRANSFER_FROM_HOST_3D` into a guest buffer | the composite's `SUBMIT_3D` fence and the transfer fence, both answered | fence ids recorded against *S* | the host window |
 
 Rules common to every backend:
@@ -379,6 +379,12 @@ One boot per target, written as a throwaway program, before the window-interface
      `READBACK_GB_SURFACE` of the copy writes all 1,024,000 pixels, equal to the uploaded scene. The device
      skips readback of a surface the host has not modified, so VMware is observed through a host-side copy of
      the bound surface (section 4.1).
+   - **The device uploads lazily.** A fenced `UPDATE_GB_IMAGE`, with or without `UPDATE_GB_SCREENTARGET`,
+     answers its fence before the device has read the MOB: when the guest rewrites the MOB right after the
+     fence, a later copy returns the rewritten pixels for the whole surface; 100 ms after the fence it returns
+     the uploaded ones. With a `SURFACE_COPY` of the surface in the same command buffer as the update, the copy
+     returns the uploaded pixels, and the device keeps them after the MOB is rewritten. A MOB change with no
+     update never reaches the device's copy. So every presented rectangle carries that copy before its fence.
    - **Proof that it observes the device.** On VMware the `corrupt-outside-damage` fault presents the corrupted
      pixel to the device and then restores the guest backing. A readback of guest memory would miss it; the
      `scanout/fault-outside-damage` case finds it in every VMware suite boot.

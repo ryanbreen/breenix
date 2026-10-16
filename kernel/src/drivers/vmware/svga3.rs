@@ -26,7 +26,9 @@
 //!   4. UPDATE_GB_SCREENTARGET — present dirty region to display
 //!
 //! Readback: SURFACE_COPY of the bound surface into a readback surface on the host, then
-//! READBACK_GB_SURFACE of that copy into its own MOB (`compositor_readback`).
+//! READBACK_GB_SURFACE of that copy into its own MOB (`compositor_readback`). The device
+//! reads an updated region from the MOB lazily; a SURFACE_COPY of it in the same command
+//! buffer makes it read the region before the buffer's fence (`compositor_present`).
 //!
 //! Reference: Linux kernel drivers/gpu/drm/vmwgfx/ and device_include/svga_reg.h
 
@@ -244,7 +246,7 @@ const ALT_SURFACE_ID: u32 = 2;
 /// The surface the readback copies the screen target's surface into, on its own MOB.
 const READBACK_SURFACE_ID: u32 = 3;
 const READBACK_MOB_ID: u32 = 2;
-/// The readback surface's MOB, once defined.
+/// The readback surface's MOB.
 static READBACK_BUF_VIRT: AtomicU64 = AtomicU64::new(0);
 /// The screen target's size.
 static STDU_W: AtomicU32 = AtomicU32::new(0);
@@ -509,8 +511,9 @@ impl CmdEncoder {
         self.push_i32((y + h) as i32);
     }
 
-    /// SURFACE_COPY: copy the `w` x `h` box at the origin of `src` into `dst`, on the host.
-    fn surface_copy(&mut self, src: u32, dst: u32, w: u32, h: u32) {
+    /// SURFACE_COPY: copy the box (`x`, `y`, `w`, `h`) of `src` to the same place in `dst`,
+    /// on the host.
+    fn surface_copy(&mut self, src: u32, dst: u32, x: u32, y: u32, w: u32, h: u32) {
         // Body: src image(12) + dest image(12) + one copy box(36) = 60
         self.cmd_header(SVGA_3D_CMD_SURFACE_COPY, 60);
         for sid in [src, dst] {
@@ -519,7 +522,7 @@ impl CmdEncoder {
             self.push_u32(0); // mipmap
         }
         // SVGA3dCopyBox: x, y, z, w, h, d, srcx, srcy, srcz
-        for v in [0, 0, 0, w, h, 1, 0, 0, 0] {
+        for v in [x, y, 0, w, h, 1, x, y, 0] {
             self.push_u32(v);
         }
     }
@@ -829,6 +832,7 @@ pub fn init_stdu(width: u32, height: u32) -> Result<(), &'static str> {
 
     let data_virt = backed_surface(COMPOSITOR_MOB_ID, COMPOSITOR_SURFACE_ID, width, height)?;
     let bytes = width as usize * height as usize * 4;
+    let readback_virt = backed_surface(READBACK_MOB_ID, READBACK_SURFACE_ID, width, height)?;
     let mut enc = CmdEncoder::new();
     enc.define_gb_screentarget(COMPOSITOR_STID, width, height, SVGA_STFLAG_PRIMARY);
     submit_commands(&enc.finish())?;
@@ -838,6 +842,7 @@ pub fn init_stdu(width: u32, height: u32) -> Result<(), &'static str> {
 
     COMPOSITOR_BUF_VIRT.store(data_virt, Ordering::Release);
     COMPOSITOR_BUF_SIZE.store(bytes as u64, Ordering::Release);
+    READBACK_BUF_VIRT.store(readback_virt, Ordering::Release);
     STDU_W.store(width, Ordering::Release);
     STDU_H.store(height, Ordering::Release);
     BOUND_SURFACE.store(COMPOSITOR_SURFACE_ID, Ordering::Release);
@@ -1001,12 +1006,14 @@ fn wait_fence(goal: u32) -> bool {
     false
 }
 
-/// Present `rects` of the backing: per rectangle `UPDATE_GB_IMAGE`,
-/// `UPDATE_GB_SCREENTARGET` and `SVGA_CMD_FENCE`, then wait for `SVGA_REG_FENCE` to reach
-/// every fence. `extra` is updated too, unfenced and unrecorded. `skip` leaves out the first
-/// rectangle, `wrong` binds the screen target to another surface over the same MOB, and
-/// `stale` gives the first rectangle that fence instead of a new one (the planted faults of
-/// BreenGL §20.3). Returns the surface bound to the screen target and one completion per
+/// Present `rects` of the backing: per rectangle `UPDATE_GB_IMAGE`, a `SURFACE_COPY` of the
+/// rectangle into the readback surface, `UPDATE_GB_SCREENTARGET` and `SVGA_CMD_FENCE`, then
+/// wait for `SVGA_REG_FENCE` to reach every fence. The device reads an updated rectangle from
+/// the backing lazily, possibly after its fence has passed; the copy makes it take the pixels
+/// from the backing before the fence, so a fenced rectangle is the device's. `extra` is
+/// updated too, unfenced and unrecorded. `skip` leaves out the first rectangle, `wrong`
+/// binds the screen target to another surface over the same MOB, and `stale` gives the first
+/// rectangle that fence instead of a new one (the planted faults of BreenGL §20.3). Returns the surface bound to the screen target and one completion per
 /// fenced rectangle.
 pub fn compositor_present(
     rects: &[breengel_abi::Rect],
@@ -1043,6 +1050,7 @@ pub fn compositor_present(
         let end = (y + rh - 1) as usize * row + (x + rw) as usize * 4;
         unsafe { cache_clean_range(backing[start..end].as_ptr() as u64, end - start) };
         enc.update_gb_image(COMPOSITOR_SURFACE_ID, x, y, rw, rh);
+        enc.surface_copy(COMPOSITOR_SURFACE_ID, READBACK_SURFACE_ID, x, y, rw, rh);
         enc.update_gb_screentarget(COMPOSITOR_STID, x, y, rw, rh);
         if i < rects.len() {
             let fence = match stale {
@@ -1087,17 +1095,13 @@ pub fn compositor_readback(out: &mut [u8]) -> Result<breengel_abi::Completion, &
     if out.len() < len {
         return Err("readback destination too small");
     }
-    let mut virt = READBACK_BUF_VIRT.load(Ordering::Acquire);
-    if virt == 0 {
-        virt = backed_surface(READBACK_MOB_ID, READBACK_SURFACE_ID, w, h)?;
-        READBACK_BUF_VIRT.store(virt, Ordering::Release);
-    }
+    let virt = READBACK_BUF_VIRT.load(Ordering::Acquire);
     let copy = unsafe { core::slice::from_raw_parts_mut(virt as *mut u8, len) };
     copy.fill(0);
     unsafe { cache_clean_range(virt, len) };
     let fence = next_fence();
     let mut enc = CmdEncoder::new();
-    enc.surface_copy(BOUND_SURFACE.load(Ordering::Acquire), READBACK_SURFACE_ID, w, h);
+    enc.surface_copy(BOUND_SURFACE.load(Ordering::Acquire), READBACK_SURFACE_ID, 0, 0, w, h);
     enc.readback_gb_surface(READBACK_SURFACE_ID);
     enc.push_u32(SVGA_CMD_FENCE);
     enc.push_u32(fence);
