@@ -651,6 +651,50 @@ fn lock_scheduler() -> SchedulerGuard {
     guard
 }
 
+/// x86_64: a spin for a lock another CPU holds, during which this CPU
+/// dispatches nothing. Past `LOCK_SPIN_QUIET_US` it says so
+/// (`rq::spinning_begin`): placement passes it over, and its peers take
+/// what is queued on it, so a holder whose vCPU has stopped holds up this
+/// CPU's caller alone, not the threads waiting to run here (#1650). Dropped,
+/// it withdraws that.
+#[cfg(target_arch = "x86_64")]
+pub struct LockSpin {
+    start: u64,
+    noted: bool,
+}
+
+/// x86_64: how long a lock spin stays quiet (`LockSpin`).
+#[cfg(target_arch = "x86_64")]
+const LOCK_SPIN_QUIET_US: u64 = 20;
+
+#[cfg(target_arch = "x86_64")]
+impl LockSpin {
+    pub fn new() -> Self {
+        Self { start: crate::time::tsc::read_tsc(), noted: false }
+    }
+
+    /// One more turn of the spin.
+    pub fn tick(&mut self) {
+        if self.noted {
+            return;
+        }
+        let quiet = crate::time::tsc::frequency_hz() / 1_000_000 * LOCK_SPIN_QUIET_US;
+        if crate::time::tsc::read_tsc().wrapping_sub(self.start) >= quiet {
+            self.noted = true;
+            rq::spinning_begin();
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl Drop for LockSpin {
+    fn drop(&mut self) {
+        if self.noted {
+            rq::spinning_end();
+        }
+    }
+}
+
 /// x86_64: the scheduler-wide lock alone, tried, without the run-queue locks:
 /// what covers the thread list and the reclamation state (`rq::reclaim`).
 /// Instrumented as `try_lock_scheduler` is.

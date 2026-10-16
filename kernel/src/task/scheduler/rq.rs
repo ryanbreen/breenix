@@ -613,6 +613,9 @@ pub(super) fn accepts_wakeups(cpu: usize) -> bool {
     if cpu == super::current_cpu_id_raw() {
         return true;
     }
+    if spinning(cpu) {
+        return false;
+    }
     let last = CPU_LAST_SCHEDULE[cpu].load(Ordering::Relaxed).max(super::last_interrupt_return_tick(cpu));
     crate::time::get_ticks().wrapping_sub(last) <= super::CPU_STALL_TICKS
 }
@@ -1735,8 +1738,23 @@ pub(super) fn with_thread<R>(tid: u64, f: impl FnOnce(&mut Held, &mut Thread) ->
                 Some(held) => held,
                 None if LIVE.load(Ordering::Acquire).is_null() => return None,
                 None => {
-                    core::hint::spin_loop();
-                    continue;
+                    // Waited for with this CPU's work handed to its peers
+                    // meanwhile (`super::LockSpin`).
+                    let mut spin = super::LockSpin::new();
+                    let taken = loop {
+                        if let Some(held) = try_remote(owner) {
+                            break Some(held);
+                        }
+                        if self::owner(tid) != Some(owner) {
+                            break None;
+                        }
+                        spin.tick();
+                        core::hint::spin_loop();
+                    };
+                    match taken {
+                        Some(held) => held,
+                        None => continue,
+                    }
                 }
             }
         };
@@ -2738,4 +2756,40 @@ pub(super) fn block_ready_user_thread(held: &mut Held, tid: u64) -> bool {
     thread.state = ThreadState::Blocked;
     held.remove_from_ready_queue(tid);
     true
+}
+
+// ------------------------------------------------- CPUs spinning for a lock
+
+/// Per CPU: spinning for a lock another CPU holds (`LockSpin`), and so
+/// dispatching nothing until it gets it.
+static SPINNING: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
+
+/// Whether `cpu` is spinning for a lock (`SPINNING`).
+fn spinning(cpu: usize) -> bool {
+    SPINNING[cpu].load(Ordering::Acquire)
+}
+
+/// This CPU spins for a lock from now on: placement passes it over
+/// (`accepts_wakeups`), and an idle peer is asked to take what is queued on
+/// it (`reclaim_stalled`).
+pub(super) fn spinning_begin() {
+    let me = super::current_cpu_id_raw();
+    if me >= MAX_CPUS || LIVE.load(Ordering::Acquire).is_null() {
+        return;
+    }
+    SPINNING[me].store(true, Ordering::Release);
+    if super::QUEUED_CPUS.load(Ordering::Acquire) & 1 << me == 0 {
+        return;
+    }
+    if let Some(peer) = (0..online()).find(|&cpu| cpu != me && is_idle(cpu) && accepts_wakeups(cpu)) {
+        request_resched_x86(peer);
+    }
+}
+
+/// This CPU has the lock it spun for.
+pub(super) fn spinning_end() {
+    let me = super::current_cpu_id_raw();
+    if me < MAX_CPUS {
+        SPINNING[me].store(false, Ordering::Release);
+    }
 }

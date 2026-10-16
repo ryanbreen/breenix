@@ -442,13 +442,32 @@ pub fn manager() -> ProcessManagerGuard {
         if preempt_braked {
             crate::per_cpu::preempt_disable();
         }
-        let guard = PROCESS_MANAGER.lock();
+        let guard = lock_process_manager();
         note_process_manager_lock_acquired();
         ProcessManagerGuard {
             _guard: core::mem::ManuallyDrop::new(guard),
             mutated: false,
             preempt_braked,
         }
+    }
+}
+
+/// x86_64: PROCESS_MANAGER, waited for. The waiting CPU dispatches nothing
+/// meanwhile, so past a few microseconds its peers take what is queued on it
+/// (`task::scheduler::LockSpin`): a holder whose vCPU has stopped then holds
+/// up the waiter alone, not every thread queued behind it (#1650).
+#[cfg(target_arch = "x86_64")]
+fn lock_process_manager() -> spin::MutexGuard<'static, Option<ProcessManager>> {
+    if let Some(guard) = PROCESS_MANAGER.try_lock() {
+        return guard;
+    }
+    let mut spin = crate::task::scheduler::LockSpin::new();
+    loop {
+        if let Some(guard) = PROCESS_MANAGER.try_lock() {
+            return guard;
+        }
+        spin.tick();
+        core::hint::spin_loop();
     }
 }
 
@@ -522,7 +541,7 @@ where
     // #821, for the same reason as `manager()`.
     note_blocking_process_manager_acquisition();
     x86_64::instructions::interrupts::without_interrupts(|| {
-        let mut manager_lock = PROCESS_MANAGER.lock();
+        let mut manager_lock = lock_process_manager();
         note_process_manager_lock_acquired();
         let result = manager_lock.as_mut().map(|manager| {
             let result = f(manager);
