@@ -1054,3 +1054,33 @@ scripts/boot-interactive.sh --mode suite --suite sdk
 # From tools/breenix-runs:
 swift run breenix-runs run x86 --mode suite --boots 1 --suite sdk --sha <pushed-sha>
 ```
+
+## GPU rendering
+
+`gpu` measures the GPU rendering effort in `docs/efforts/path.json` against its contract,
+`docs/gui/gpu.md`: one category per milestone, in build order, `device` (12), `submit` (22),
+`readback` (19), `textures` (19), `profile` (22), `pipelines` (26), `isolation` (25),
+`present` (16) and `performance` (9), 170 cases. Its targets are ARM64 QEMU, Parallels and
+VMware; x86-64 joins when a dedicated Breenix hardware box replaces the current x86 gate host
+(`docs/gui/gpu.md` section 1.6.4), so there is no x86-64 boot of it.
+
+The suite is written ahead of the layers it measures. Each case names the layer it needs and
+the build step that supplies it, asks syscall 416's VERSION op, and until that layer exists
+fails with what the kernel answered, for example `missing READBACK and record v2 (G2):
+syscall 416 VERSION returned ENOSYS`. Once VERSION answers, a case whose check is not written
+yet fails saying so. No case skips. `device/version` is already its real check. Each lane
+writes its category's checks from the contract, in their own commits, before the code they
+measure. Cases judge device readbacks against in-suite formulas and literal tables, or
+`libgfx-ref` output for the coverage-span cases (contract section 1.10), never against BGL
+or the kernel. CPU reference output is only an oracle; the GPU draws the scene.
+
+ARM64 QEMU boots of this suite use the GL QEMU (`--gpu-gl`; `docs/gui/qemu-gl.md`), whose
+host renderer attestation is judged after the VM stops: a boot whose guest never creates a
+VirGL context has no attestation, and the launcher fails it on that account even when the
+suite's own verdict is complete.
+
+```bash
+scripts/boot-interactive.sh --mode suite --suite gpu --gpu-gl --gate-timeout 900
+./run.sh --parallels --suite gpu --gate-timeout 900
+./run.sh --vmware --suite gpu --gate-timeout 900
+```
