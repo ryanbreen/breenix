@@ -1257,7 +1257,7 @@ pub fn defer_fault_exit(thread_id: u64, exit_code: i32) -> bool {
     if let Some(daemon) = FAULT_EXIT_DAEMON.get() {
         crate::task::kthread::kthread_unpark(daemon);
         // Publishing a fatal signal's status cannot wait a busy CPU's quantum.
-        scheduler::with_scheduler(|s| s.expedite_signal_recipient(daemon.tid()));
+        scheduler::expedite_thread(daemon.tid());
     }
     queued
 }

@@ -21,7 +21,7 @@ fn ensure_current_address_space() {
 
 // The scheduler owns both wait publication and clock-change wakeups.
 pub fn realtime_changed() {
-    crate::task::scheduler::with_scheduler(|sched| sched.wake_realtime_sleepers());
+    crate::task::scheduler::wake_realtime_sleepers();
 }
 
 pub fn nanosleep(req_ptr: u64, rem_ptr: u64) -> SyscallResult {

@@ -705,14 +705,16 @@ impl HandlerTarget for LocklessTarget<'_> {
 }
 
 /// Deliver a due timer signal -- an interval timer's, or a POSIX timer's --
-/// to its user handler on the way back to Ring 3, from the current thread's
-/// own signal state and without PROCESS_MANAGER, so a CPU that stopped while
-/// holding that lock does not hold the handler up (#1635). Returns whether it
-/// did. It declines, leaving the signal due, whenever the process-manager
-/// path is needed: the row holds a pending signal or a stop, more than one
-/// timer signal is due, the action is a default one or SA_RESETHAND, the
-/// dispositions are being rewritten, the timer table is busy, or the frame
-/// cannot be written without a fault resolved.
+/// or a standard signal kill or tgkill generated without PROCESS_MANAGER
+/// (`ThreadSignals::sent`) to its user handler on the way back to Ring 3,
+/// from the current thread's own signal state and without PROCESS_MANAGER,
+/// so a CPU that stopped while holding that lock does not hold the handler up
+/// (#1635, #1650). Returns whether it did. It declines, leaving the signal
+/// due, whenever the process-manager path is needed: the row holds a pending
+/// signal or a stop, more than one such signal is due, the action is a
+/// default one or SA_RESETHAND, the dispositions are being rewritten, the
+/// timer table is busy, or the frame cannot be written without a fault
+/// resolved.
 #[cfg(target_arch = "x86_64")]
 fn deliver_timer_signal_lockless(
     thread_id: u64,
@@ -733,16 +735,31 @@ fn deliver_timer_signal_lockless(
     let blocked = signals.blocked.load(Ordering::Relaxed);
     let itimer = signals.timer_pending.load(Ordering::Acquire) & !ignored & !blocked;
     let posix = signals.posix_pending.load(Ordering::Acquire) & !ignored & !blocked;
-    if (itimer | posix).count_ones() != 1 || (itimer != 0 && posix != 0) {
+    let sent = signals.sent.load(Ordering::Acquire) & !ignored & !blocked;
+    if (itimer | posix | sent).count_ones() != 1 || [itimer, posix, sent].iter().filter(|&&due| due != 0).count() != 1 {
         return false;
     }
-    let sig = (itimer | posix).trailing_zeros() + 1;
+    let sig = (itimer | posix | sent).trailing_zeros() + 1;
     let bit = sig_mask(sig);
     let (Some(action), Some(alt)) = (mirror.action(sig), mirror.alt_stack()) else {
         return false;
     };
     if !action.is_handler() || action.flags & SA_RESETHAND != 0 {
         return false;
+    }
+
+    if sent != 0 {
+        let Some((info, process)) = signals.take_sent(sig) else {
+            return false;
+        };
+        let mut target = LocklessTarget { signals, thread_id, info, alt };
+        let installed =
+            install_user_handler_x86_64(&mut target, user_return, saved_regs, sig, action.handler, &action);
+        if installed.is_err() {
+            signals.restore_sent(sig, &info, process);
+            return false;
+        }
+        return true;
     }
 
     if itimer != 0 {
@@ -1354,6 +1371,21 @@ fn stop_thread_group(
     let Some(group) = manager.thread_group_of(pid) else {
         return;
     };
+    // x86_64: each thread under the lock of the CPU that owns it (#1649).
+    #[cfg(target_arch = "x86_64")]
+    for row in manager.group_rows_mut(group) {
+        row.job.stopped = Some(sig);
+        row.signals.thread.mirror.set_job_stopped(true);
+        row.signals.thread.return_work.store(true, core::sync::atomic::Ordering::Release);
+        row.signals.clear_pending(SIGCONT);
+        let Some(thread_id) = row.main_thread.as_ref().map(|thread| thread.id) else {
+            continue;
+        };
+        if crate::task::scheduler::park_for_stop(thread_id, Some(thread_id) == caller_tid) {
+            row.job.parked = true;
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
     crate::task::scheduler::with_scheduler(|scheduler| {
         for row in manager.group_rows_mut(group) {
             row.job.stopped = Some(sig);
@@ -1390,6 +1422,13 @@ fn complete_stop_report(manager: &mut ProcessManager, group: u64, caller_tid: Op
     {
         return;
     }
+    #[cfg(target_arch = "x86_64")]
+    let quiescent = manager.group_rows(group).all(|row| {
+        row.main_thread.as_ref().is_none_or(|thread| {
+            Some(thread.id) == caller_tid || !crate::task::scheduler::thread_may_run(thread.id)
+        })
+    });
+    #[cfg(not(target_arch = "x86_64"))]
     let quiescent = crate::task::scheduler::with_scheduler(|scheduler| {
         manager.group_rows(group).all(|row| {
             row.main_thread.as_ref().is_none_or(|thread| {
@@ -1467,6 +1506,20 @@ pub fn continue_thread_group_locked(manager: &mut ProcessManager, pid: ProcessId
         return;
     };
     let mut was_stopped = false;
+    // x86_64: each wake under the lock of the CPU that owns the thread
+    // (#1649).
+    #[cfg(target_arch = "x86_64")]
+    for row in manager.group_rows_mut(group) {
+        row.signals.discard_pending(STOP_SIGNALS);
+        was_stopped |= row.job.stopped.take().is_some();
+        row.signals.thread.mirror.set_job_stopped(false);
+        if core::mem::take(&mut row.job.parked) {
+            if let Some(thread) = row.main_thread.as_ref() {
+                let _ = crate::task::scheduler::unblock_thread(thread.id);
+            }
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
     crate::task::scheduler::with_scheduler(|scheduler| {
         for row in manager.group_rows_mut(group) {
             row.signals.discard_pending(STOP_SIGNALS);

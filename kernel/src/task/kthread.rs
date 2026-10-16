@@ -272,6 +272,14 @@ pub fn kthread_park_if(should_park: impl FnOnce() -> bool) {
 
 /// Unpark a parked thread (wake)
 pub fn kthread_unpark(handle: &KthreadHandle) {
+    // x86_64: under the lock of the CPU that owns the thread, or held for it
+    // (`scheduler::unblock_thread`), not the whole scheduler (#1649).
+    #[cfg(target_arch = "x86_64")]
+    {
+        handle.inner.parked.store(false, Ordering::Release);
+        let _ = scheduler::unblock_thread(handle.inner.tid);
+    }
+    #[cfg(not(target_arch = "x86_64"))]
     scheduler::with_scheduler(|sched| {
         handle.inner.parked.store(false, Ordering::Release);
         sched.unblock(handle.inner.tid);

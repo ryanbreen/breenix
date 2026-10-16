@@ -92,6 +92,7 @@ pub fn sys_setsid() -> SyscallResult {
         if row.thread_group_id.unwrap_or(row.id.as_u64()) == group {
             row.sid = new_sid;
             row.pgid = new_sid;
+            row.publish_identity();
         }
     }
 

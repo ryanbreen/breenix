@@ -400,22 +400,12 @@ fn sleep_one_interval(interval_ns: u64) {
         return;
     };
     let wake_at = monotonic_now_ns().saturating_add(interval_ns);
-    super::scheduler::with_scheduler(|scheduler| {
-        if scheduler.get_thread(tid).is_some() {
-            scheduler.block_current_for_timer(wake_at);
-        }
-    });
+    super::scheduler::with_current(|scheduler| scheduler.block_current_for_timer(wake_at));
     super::scheduler::yield_current();
 
     loop {
         crate::arch_halt_with_interrupts();
-        let still_blocked = super::scheduler::with_scheduler(|scheduler| {
-            scheduler
-                .get_thread(tid)
-                .is_some_and(|thread| thread.state == ThreadState::BlockedOnTimer)
-        })
-        .unwrap_or(false);
-        if !still_blocked {
+        if super::scheduler::thread_state(tid) != Some(ThreadState::BlockedOnTimer) {
             break;
         }
     }
