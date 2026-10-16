@@ -56,12 +56,64 @@ fn panel_between_cases() -> CaseResult {
     }
 }
 
+/// Move the kernel's pointer to (x, y) with `move-pointer`, wait until the kernel has read it,
+/// and give the panel cursor time to follow.
+fn move_pointer(x: u32, y: u32) -> CaseResult {
+    use abi::tc_point::MOVE_POINTER;
+    let fired = || libbreenix::test_control::fired(MOVE_POINTER).map_err(|e| format!("FIRED: {e}"));
+    let before = fired().cite("21")?;
+    libbreenix::test_control::arm(MOVE_POINTER, 0, x as u64 | (y as u64) << 32).map_err(|e| format!("ARM move-pointer: {e}")).cite("21")?;
+    let start = now_ms();
+    while fired().cite("21")? == before {
+        if since(start) > 500 {
+            return at("21, 23", format!("move-pointer to ({x}, {y}) did not fire within 500 ms: nothing read the pointing device for the panel cursor"));
+        }
+        let _ = time::sleep_ms(5);
+    }
+    let _ = time::sleep_ms(50);
+    Ok(())
+}
+
+/// Where the pointer goes: off the scene at the top right, then across the panel, then back.
+const REST: (u32, u32) = (1200, 40);
+const PATH: [(u32, u32); 5] = [(200, 300), (400, 320), (640, 400), (900, 500), (1100, 600)];
+
+/// The pixels that differ between the screen with the pointer at rest and the screen after it
+/// crossed the panel and came back to rest, with `panel-cursor-no-restore` armed for the
+/// crossing when `no_restore`.
+fn trail(no_restore: bool) -> Result<Vec<(u32, u32)>, libbreenix::suite::CaseError> {
+    move_pointer(REST.0, REST.1)?;
+    let (rest, _) = screen()?;
+    if no_restore {
+        libbreenix::test_control::arm(abi::tc_point::PANEL_CURSOR_NO_RESTORE, 0, 0)
+            .map_err(|e| format!("ARM panel-cursor-no-restore: {e}")).cite("21")?;
+    }
+    let crossed = PATH.iter().try_for_each(|&(x, y)| move_pointer(x, y)).and_then(|()| move_pointer(REST.0, REST.1));
+    let _ = libbreenix::test_control::disarm_all();
+    crossed?;
+    let (back, _) = screen()?;
+    Ok((0..1280 * 800u32)
+        .filter(|&i| rest[i as usize * 4..i as usize * 4 + 4] != back[i as usize * 4..i as usize * 4 + 4])
+        .map(|i| (i % 1280, i / 1280))
+        .collect())
+}
+
 fn panel_cursor_restore() -> CaseResult {
-    missing("a way for a case to move the panel's pointer, so its trail can be observed", "23")
+    interface()?;
+    let left = trail(false)?;
+    ensure(left.is_empty(), "23", format!(
+        "after the pointer crossed the panel and came back, {} pixels differ from the panel it left, the first at {:?}: a cursor trail",
+        left.len(), left.first()))
 }
 
 fn panel_cursor_trail_detected() -> CaseResult {
-    missing("a way for a case to move the panel's pointer with panel-cursor-no-restore armed", "21, 23")
+    interface()?;
+    let left = trail(true)?;
+    ensure(!left.is_empty(), "21, 23", "with panel-cursor-no-restore armed the pointer crossed the panel and left no trail: the restore was not disabled, or the trail is not seen")?;
+    let near = |&(x, y): &(u32, u32)| PATH.iter().any(|&(px, py)| x.abs_diff(px) < 32 && y.abs_diff(py) < 32);
+    ensure(left.iter().all(near), "21, 23", format!(
+        "the trail left with panel-cursor-no-restore armed has pixels away from every place the pointer stopped, the first at {:?}",
+        left.iter().find(|p| !near(p))))
 }
 
 fn panel_kernel_screens() -> CaseResult {

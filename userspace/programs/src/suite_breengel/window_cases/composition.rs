@@ -263,35 +263,46 @@ fn composition_compositor_dies() -> CaseResult {
     let w = std::sync::Arc::new(W::new(256, 256, 2)?);
     want_ok(w.register(b"compositor-dies"), "17.1", "REGISTER")?;
     place(&mut k, w.id(), &Placed::new(10, 10, 256, 256, 0, 0), abi::geometry_flags::VISIBLE)?;
-    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    w.frame(1).cite("17.3")?;
+    let _ = time::sleep_ms(50);
+    // The compositor's next composite of this window pauses with the window's front pinned.
+    let fired = |point| libbreenix::test_control::fired(point).map_err(|e| format!("FIRED: {e}"));
+    let stalls = fired(abi::tc_point::COMPOSITE_STALL).cite("21")?;
+    libbreenix::test_control::arm(abi::tc_point::COMPOSITE_STALL, w.id(), 0).map_err(|e| format!("ARM composite-stall: {e}")).cite("21")?;
+    w.frame(2).cite("17.3")?;
+    let start = now_ms();
+    while fired(abi::tc_point::COMPOSITE_STALL).cite("21")? == stalls && since(start) < 1_000 {
+        let _ = time::sleep_ms(5);
+    }
+    if fired(abi::tc_point::COMPOSITE_STALL).cite("21")? == stalls {
+        let _ = libbreenix::test_control::disarm_all();
+        return at("18", "the compositor's composite of a new commit never reached the backend with the window pinned (composite-stall did not fire within 1 s)");
+    }
+    // Commit the other buffer: the pinned one is retired, so no buffer is free and the next
+    // ACQUIRE blocks until the compositor lets go of it.
+    w.frame(3).cite("17.3")?;
     let client = {
-        let (w, stop) = (w.clone(), stop.clone());
-        std::thread::spawn(move || -> Result<Vec<u64>, String> {
-            let mut returns = Vec::new();
-            let mut seed = 0;
-            while !stop.load(std::sync::atomic::Ordering::SeqCst) {
-                let a = w.acquire(2_000_000_000).map_err(|r| format!("ACQUIRE {}", outcome(r)))?;
-                returns.push(now_ms());
-                seed += 1;
-                fill_rect(w.buf(a.buffer), 256, abi::Rect::new(0, 0, 256, 8), seed);
-                w.commit(a.buffer, &[abi::Rect::new(0, 0, 256, 8)]).map_err(|r| format!("COMMIT {}", outcome(r)))?;
-            }
-            Ok(returns)
+        let w = w.clone();
+        std::thread::spawn(move || -> (u64, Result<abi::Acquire, i64>) {
+            let a = w.acquire(2_000_000_000);
+            (now_ms(), a)
         })
     };
-    let _ = time::sleep_ms(300);
+    let _ = time::sleep_ms(100);
+    let killed = now_ms();
     k.kill();
     let reaped = now_ms();
-    let _ = time::sleep_ms(400);
-    stop.store(true, std::sync::atomic::Ordering::SeqCst);
-    let returns = client.join().map_err(|_| String::from("the client thread panicked")).cite("17.5")?.cite("17.5")?;
-    let next = returns.iter().find(|&&t| t >= reaped).copied();
-    let gap = next.map(|t| t - reaped);
-    value("acquire-after-death-ms", gap.map_or(-1, |g| g as i64), "ms", Some((0, 250)));
-    ensure(gap.is_some_and(|g| g <= 250), "17.5", format!(
-        "after the compositor was reaped the client's next ACQUIRE returned {}; a blocked ACQUIRE returns within 250 ms of the compositor's death",
-        gap.map_or(String::from("never within 400 ms"), |g| format!("{g} ms later"))))?;
-    w.frame(77).cite("17.3")?;
+    let (returned, a) = client.join().map_err(|_| String::from("the client thread panicked")).cite("17.5")?;
+    let _ = libbreenix::test_control::disarm_all();
+    let a = a.map_err(|r| format!("the blocked ACQUIRE {}", outcome(r))).cite("17.5")?;
+    ensure(returned >= killed, "17.5", format!(
+        "the ACQUIRE returned {} ms before the compositor was killed; with the only other buffer pinned by the compositor it must block", killed - returned))?;
+    let gap = returned.saturating_sub(reaped);
+    value("acquire-after-death-ms", gap as i64, "ms", Some((0, 250)));
+    ensure(gap <= 250, "17.5", format!(
+        "after the compositor was reaped the blocked ACQUIRE returned {gap} ms later; it returns within 250 ms of the compositor's death"))?;
+    fill(w.buf(a.buffer), 256, 256, 77);
+    w.commit(a.buffer, &[abi::Rect::new(0, 0, 256, 256)]).map_err(|r| format!("COMMIT after the compositor died {}", outcome(r))).cite("17.3")?;
     Ok(())
 }
 
@@ -450,13 +461,18 @@ fn composition_backend_error() -> CaseResult {
     let p = Placed::new(200, 200, 100, 100, 0, 16);
     let w = W::new(p.w, p.h, 2)?;
     show(&mut k, &w, &p)?;
-    compose(&mut k)?;
+    let (serial, _) = compose(&mut k)?;
     let next = Placed { seed: 17, ..p };
     w.frame(next.seed).cite("17.3")?;
     libbreenix::test_control::arm(abi::tc_point::BACKEND_ERROR, 0, 0).map_err(|e| format!("ARM backend-error: {e}")).cite("21")?;
     let failed = k.ask("composite").cite("24")?;
     let _ = libbreenix::test_control::disarm_all();
     ensure(failed == format!("err {}", 5), "18", format!("COMPOSITE with backend-error armed answered `{failed}`; the contract gives EIO (err 5)"))?;
+    // The failed composite is serial + 1, recorded as failed, with no pixels and no windows.
+    let record = k.ask(&format!("record {}", serial + 1)).cite("24")?;
+    let fields: Vec<u64> = record.strip_prefix("ok ").unwrap_or("").split(' ').take(4).filter_map(|n| n.parse().ok()).collect();
+    ensure(fields.len() == 4 && fields[0] == serial + 1 && fields[1] == 0 && fields[2] == 0 && fields[3] & abi::record_flags::FAILED as u64 != 0, "18", format!(
+        "COMPOSITE_RECORD of the failed composite {} answered `{record}`; it is recorded with 0 pixels, no windows and flags bit 0 (failed)", serial + 1))?;
     let (px, _) = screen()?;
     screen_is(&px, &[p], "the screen after the failed composite, still the previous commit")?;
     compose(&mut k)?;
@@ -603,6 +619,10 @@ fn composition_cursor_stationary_repaint() -> CaseResult {
     compose(&mut k)?;
     let (px, _) = screen()?;
     let sprite: Vec<(u32, u32)> = differing(&px, &scene);
+    ensure(!sprite.is_empty(), "18", "the visible arrow cursor at (380, 290) drew no pixel over the window")?;
+    ensure(sprite.iter().all(|&(x, y)| x.abs_diff(380) < 32 && y.abs_diff(290) < 32), "18", format!(
+        "the cursor at (380, 290) changed pixels outside the 32-pixel box around it, the first at {:?}",
+        sprite.iter().find(|&&(x, y)| x.abs_diff(380) >= 32 || y.abs_diff(290) >= 32)))?;
     // New content under the stationary cursor.
     scene[0].seed = 25;
     w.frame(25).cite("17.3")?;
@@ -632,12 +652,23 @@ fn composition_flush_irq_bound() -> CaseResult {
     show(&mut k, &w, &p)?;
     libbreenix::test_control::arm(abi::tc_point::IRQ_HOLD, 0, 0).map_err(|e| format!("ARM irq-hold: {e}")).cite("21")?;
     w.frame(27).cite("17.3")?;
-    compose(&mut k)?;
+    let composed = compose(&mut k);
+    let held = irq_gauge();
     let _ = libbreenix::test_control::disarm_all();
-    let held = irq_gauge()?;
+    composed?;
+    let held = held?;
     value("irq-hold-gauge", held as i64, "us", Some((2_000, i64::MAX)));
     ensure(held >= 2_000, "18, 21", format!("with irq-hold armed the gauge reads {held} us; the 2 ms hold reads at least 2,000"))?;
-    missing("the reset of the display_irq_masked_max_us gauge that plan section 12.1 measures the bound after", "18")
+    // DISARM_ALL restarted the gauge; now 20 composites of full-screen damage.
+    let reset = irq_gauge()?;
+    ensure(reset == 0, "21", format!("after DISARM_ALL the gauge reads {reset} us; it restarts at 0"))?;
+    for i in 0..20 {
+        w.frame(28 + i).cite("17.3")?;
+        compose(&mut k)?;
+    }
+    let bound = irq_gauge()?;
+    value("irq-masked-max", bound as i64, "us", Some((0, 500)));
+    ensure(bound <= 500, "18", format!("over 20 composites of full-screen damage the longest IRQ-masked interval in the display copy was {bound} us; the bound is 500"))
 }
 
 fn composition_present_rate() -> CaseResult {

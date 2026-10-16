@@ -155,9 +155,15 @@ fn scanout_completion() -> CaseResult {
         "the record of composite {serial} (serial {}) carries completions {done:?}; each answered completion names its fence", rec.serial))?;
     let fences: std::collections::BTreeSet<u64> = done.iter().map(|c| c.fence).collect();
     ensure(fences.len() == done.len(), "20.1", format!("the record's completions repeat a fence: {done:?}"))?;
+    ensure(done.iter().all(|c| c.kind != 0 && c.status != 0), "20.1", format!(
+        "the record's completions {done:?} include one that names no command or no answer"))?;
     if rec.backend == backend::VIRTIO_GPU_2D {
-        ensure(done.len() == 3, "20.2", format!(
-            "virtio-gpu 2D answered {} completions for a composite of two damaged rectangles; it answers a transfer per rectangle and one flush", done.len()))?;
+        use abi::completion::{RESOURCE_FLUSH, RESP_OK_NODATA, TRANSFER_TO_HOST_2D};
+        let kinds: Vec<u32> = done.iter().map(|c| c.kind).collect();
+        ensure(kinds == [TRANSFER_TO_HOST_2D, TRANSFER_TO_HOST_2D, RESOURCE_FLUSH], "20.2", format!(
+            "virtio-gpu 2D answered commands {kinds:#06x?} for a composite of two damaged rectangles; it answers a TRANSFER_TO_HOST_2D (0x0105) per rectangle, then one RESOURCE_FLUSH (0x0104)"))?;
+        ensure(done.iter().all(|c| c.status == RESP_OK_NODATA), "20.2", format!(
+            "virtio-gpu 2D answered {:#06x?}; each command is answered OK_NODATA (0x1100)", done.iter().map(|c| c.status).collect::<Vec<_>>()))?;
     }
     Ok(())
 }
@@ -200,7 +206,8 @@ fn scanout_atomic_record() -> CaseResult {
             result = at("20.1", format!("the record of serial {} does not list the committing window", rec.serial));
             break;
         };
-        let at_pixel = |x: u32, y: u32| ((600 + y) * 1280 + 600 + x) as usize * 4;
+        // The window is at (600, 400); (x, y) is a pixel of it.
+        let at_pixel = |x: u32, y: u32| ((400 + y) * 1280 + 600 + x) as usize * 4;
         let want = pattern(commit as u32, 5, 7);
         if px[at_pixel(5, 7)..at_pixel(5, 7) + 3] != want[..3] {
             result = at("20.1", format!("readback serial {} names commit {commit} but its pixels are not commit {commit}'s", rec.serial));
