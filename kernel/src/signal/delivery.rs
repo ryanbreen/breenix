@@ -266,7 +266,7 @@ pub enum DeliverResult {
 
 /// A pending SIGKILL ends a stopped process: it is not held stopped.
 fn sigkill_pending(process: &Process) -> bool {
-    process.signals.pending & sig_mask(SIGKILL) != 0
+    process.signals.pending() & sig_mask(SIGKILL) != 0
 }
 
 /// Whether `sig` takes its default action in `process` and that action stops
@@ -486,8 +486,7 @@ fn deliver_to_user_handler_x86_64(
         rflags: interrupt_frame.cpu_flags.bits(),
     };
     install_user_handler_x86_64(
-        process,
-        shared_table,
+        &mut RowTarget { process, shared_table },
         &mut user_return,
         saved_regs,
         sig,
@@ -538,8 +537,7 @@ pub fn deliver_caught_signal_on_syscall_return(
             }
             handler_addr => {
                 return match install_user_handler_x86_64(
-                    process,
-                    &mut shared_table,
+                    &mut RowTarget { process, shared_table: &mut shared_table },
                     user_return,
                     saved_regs,
                     sig,
@@ -597,10 +595,214 @@ fn fault_address(sig: u32, info: &SigInfo) -> u64 {
 /// interrupted x87/SSE state lies above the frame, and the handler starts
 /// with the initial x87/SSE state, as on Linux. On the thread's own stack the
 /// 128-byte red zone below the interrupted RSP is left alone.
+/// What installing a handler frame reads and writes: the process row, under
+/// PROCESS_MANAGER (`RowTarget`), or the thread's own copies of its row's
+/// signal state, without it (`LocklessTarget`).
+#[cfg(target_arch = "x86_64")]
+trait HandlerTarget {
+    /// The alternate signal stack.
+    fn alt_stack(&self) -> AltStack;
+    /// The siginfo the handler is given for `sig`.
+    fn info(&self, sig: u32) -> SigInfo;
+    /// The signal mask the frame records, which sigreturn restores.
+    fn frame_mask(&self) -> u64;
+    /// The thread the handler runs on, whose x87/SSE state the frame saves.
+    fn thread_id(&self) -> Option<u64>;
+    /// Write `bytes` to the user stack at `addr`.
+    fn write(&mut self, addr: u64, bytes: &[u8]) -> Result<(), PrepareWriteError>;
+    /// Take the signal and set the handler's mask, once the frame is written.
+    fn enter_handler(&mut self, sig: u32, action: &SignalAction);
+}
+
+/// The process row, with the address space's owner row for a CLONE_VM
+/// thread. PROCESS_MANAGER held.
+#[cfg(target_arch = "x86_64")]
+struct RowTarget<'a, 'b> {
+    process: &'a mut Process,
+    shared_table: &'a mut Option<&'b mut Process>,
+}
+
+#[cfg(target_arch = "x86_64")]
+impl HandlerTarget for RowTarget<'_, '_> {
+    fn alt_stack(&self) -> AltStack {
+        *self.process.signals.alt_stack()
+    }
+
+    fn info(&self, sig: u32) -> SigInfo {
+        self.process.signals.next_info(sig)
+    }
+
+    fn frame_mask(&self) -> u64 {
+        self.process
+            .signals
+            .thread
+            .wait_mask()
+            .unwrap_or_else(|| self.process.signals.blocked())
+    }
+
+    fn thread_id(&self) -> Option<u64> {
+        self.process.main_thread.as_ref().map(|thread| thread.id)
+    }
+
+    fn write(&mut self, addr: u64, bytes: &[u8]) -> Result<(), PrepareWriteError> {
+        write_signal_stack(self.process, self.shared_table, addr, bytes)
+    }
+
+    fn enter_handler(&mut self, sig: u32, action: &SignalAction) {
+        enter_handler(self.process, sig, action);
+    }
+}
+
+/// The current thread's own signal state (`ThreadSignals::mirror`), for a
+/// signal already taken off its timer, with the siginfo that goes with it.
+/// The frame is written with this CPU on the thread's page tables, and a
+/// write that would fault is refused rather than resolved.
+#[cfg(target_arch = "x86_64")]
+struct LocklessTarget<'a> {
+    signals: &'a ThreadSignals,
+    thread_id: u64,
+    info: SigInfo,
+}
+
+#[cfg(target_arch = "x86_64")]
+impl HandlerTarget for LocklessTarget<'_> {
+    fn alt_stack(&self) -> AltStack {
+        self.signals.mirror.alt_stack()
+    }
+
+    fn info(&self, _sig: u32) -> SigInfo {
+        self.info
+    }
+
+    fn frame_mask(&self) -> u64 {
+        self.signals
+            .wait_mask()
+            .unwrap_or_else(|| self.signals.blocked.load(core::sync::atomic::Ordering::Relaxed))
+    }
+
+    fn thread_id(&self) -> Option<u64> {
+        Some(self.thread_id)
+    }
+
+    fn write(&mut self, addr: u64, bytes: &[u8]) -> Result<(), PrepareWriteError> {
+        crate::syscall::userptr::write_user_bytes_nofault(addr, bytes.as_ptr(), bytes.len())
+            .map_err(|_| PrepareWriteError::Retry)
+    }
+
+    fn enter_handler(&mut self, sig: u32, action: &SignalAction) {
+        use core::sync::atomic::Ordering;
+        self.signals.take_wait_mask();
+        let mut mask = action.mask;
+        if (action.flags & SA_NODEFER) == 0 {
+            mask |= sig_mask(sig);
+        }
+        self.signals
+            .blocked
+            .fetch_or(mask & !UNCATCHABLE_SIGNALS, Ordering::Relaxed);
+    }
+}
+
+/// Deliver a due timer signal -- an interval timer's, or a POSIX timer's --
+/// to its user handler on the way back to Ring 3, from the current thread's
+/// own signal state and without PROCESS_MANAGER, so a CPU that stopped while
+/// holding that lock does not hold the handler up (#1635). Returns whether it
+/// did. It declines, taking nothing, whenever the process-manager path is
+/// needed: the row holds a pending signal or a stop, more than one timer
+/// signal is due, the action is a default one or SA_RESETHAND, the timer
+/// table is busy, or the frame cannot be written without a fault resolved.
+#[cfg(target_arch = "x86_64")]
+pub fn deliver_timer_signal_lockless(
+    thread_id: u64,
+    signals: &ThreadSignals,
+    timers: Option<&super::IntervalTimers>,
+    interrupt_frame: &mut x86_64::structures::idt::InterruptStackFrame,
+    saved_regs: &mut crate::task::process_context::SavedRegisters,
+) -> bool {
+    use core::sync::atomic::Ordering;
+    let mirror = &signals.mirror;
+    if mirror.pending() != 0
+        || mirror.job_stopped()
+        || signals.posix_retry.load(Ordering::Acquire)
+    {
+        return false;
+    }
+    let ignored = mirror.ignored();
+    let blocked = signals.blocked.load(Ordering::Relaxed);
+    let itimer = signals.timer_pending.load(Ordering::Acquire) & !ignored & !blocked;
+    let posix = signals.posix_pending.load(Ordering::Acquire) & !ignored & !blocked;
+    if (itimer | posix).count_ones() != 1 || (itimer != 0 && posix != 0) {
+        return false;
+    }
+    let sig = (itimer | posix).trailing_zeros() + 1;
+    let bit = sig_mask(sig);
+    let action = mirror.action(sig);
+    if !action.is_handler() || action.flags & SA_RESETHAND != 0 {
+        return false;
+    }
+    let (info, posix_timer) = if itimer != 0 {
+        if signals.timer_pending.fetch_and(!bit, Ordering::AcqRel) & bit == 0 {
+            return false;
+        }
+        (SigInfo::kernel(), None)
+    } else {
+        let Some(timers) = timers else {
+            return false;
+        };
+        match timers.posix.try_take_next_due(signals) {
+            Some((due, info, timer)) if due == sig => (info.with_overrun(timer.overrun()), Some(timer)),
+            Some((due, _, timer)) => {
+                timers.posix.return_due(signals, &timer, due);
+                return false;
+            }
+            None => return false,
+        }
+    };
+
+    let mut target = LocklessTarget { signals, thread_id, info };
+    let mut user_return = X86UserReturn {
+        rip: interrupt_frame.instruction_pointer.as_u64(),
+        rsp: interrupt_frame.stack_pointer.as_u64(),
+        rflags: interrupt_frame.cpu_flags.bits(),
+    };
+    let installed = install_user_handler_x86_64(
+        &mut target,
+        &mut user_return,
+        saved_regs,
+        sig,
+        action.handler,
+        &action,
+    );
+    match (installed, &posix_timer, timers) {
+        (Ok(()), Some(timer), Some(timers)) => {
+            timer.deliver();
+            let _ = timers.posix.settle_due(signals, sig);
+        }
+        (Ok(()), _, _) => {}
+        (Err(_), None, _) => {
+            signals.timer_pending.fetch_or(bit, Ordering::AcqRel);
+            return false;
+        }
+        (Err(_), Some(timer), Some(timers)) => {
+            timers.posix.return_due(signals, timer, sig);
+            return false;
+        }
+        (Err(_), Some(_), None) => return false,
+    }
+    // The installer accepted both addresses as canonical.
+    unsafe {
+        interrupt_frame.as_mut().update(|frame| {
+            frame.instruction_pointer = x86_64::VirtAddr::new(user_return.rip);
+            frame.stack_pointer = x86_64::VirtAddr::new(user_return.rsp);
+            frame.cpu_flags =
+                x86_64::registers::rflags::RFlags::from_bits_truncate(user_return.rflags);
+        });
+    }
+    true
+}
+
 #[cfg(target_arch = "x86_64")]
 fn install_user_handler_x86_64(
-    process: &mut Process,
-    shared_table: &mut Option<&mut Process>,
+    target: &mut impl HandlerTarget,
     user_return: &mut X86UserReturn,
     saved_regs: &mut crate::task::process_context::SavedRegisters,
     sig: u32,
@@ -611,24 +813,20 @@ fn install_user_handler_x86_64(
 
     const RED_ZONE: u64 = 128;
     let original_rsp = user_return.rsp;
+    let alt = target.alt_stack();
 
     // Check if we should use the alternate signal stack
     // SA_ONSTACK flag means use alt stack if one is configured and enabled
     // A handler interrupting code already on the alternate stack nests below
     // it there, as one without SA_ONSTACK does on any stack.
     let use_alt_stack = (action.flags & SA_ONSTACK) != 0
-        && (process.signals.alt_stack.flags & super::constants::SS_DISABLE as u32) == 0
-        && process.signals.alt_stack.size > 0
-        && !process.signals.alt_stack.on_stack(original_rsp);
+        && (alt.flags & super::constants::SS_DISABLE as u32) == 0
+        && alt.size > 0
+        && !alt.on_stack(original_rsp);
 
     let top = if use_alt_stack {
         // Use alternate stack - stack grows down, so start at top (base + size)
-        match process
-            .signals
-            .alt_stack
-            .base
-            .checked_add(process.signals.alt_stack.size as u64)
-        {
+        match alt.base.checked_add(alt.size as u64) {
             Some(alt_top) => alt_top,
             None => return Err(PrepareWriteError::Fault),
         }
@@ -667,7 +865,6 @@ fn install_user_handler_x86_64(
         return Err(PrepareWriteError::Fault);
     };
     // A frame on the alternate stack, first or nested, must fit on it.
-    let alt = &process.signals.alt_stack;
     if (use_alt_stack || alt.on_stack(original_rsp)) && !alt.on_stack(frame_rsp) {
         return Err(PrepareWriteError::Fault);
     }
@@ -678,14 +875,10 @@ fn install_user_handler_x86_64(
     }
     let return_addr = trampoline_addr.unwrap_or(action.restorer);
 
-    let thread_id = process.main_thread.as_ref().map(|thread| thread.id);
+    let thread_id = target.thread_id();
     let fp_state = thread_id.map_or_else(fpu::FpuState::initial, fpu::user_state);
-    let info = process.signals.next_info(sig);
-    let blocked = process
-        .signals
-        .thread
-        .wait_mask()
-        .unwrap_or_else(|| process.signals.blocked());
+    let info = target.info(sig);
+    let blocked = target.frame_mask();
 
     let signal_frame = SignalFrame {
         // When the handler does 'ret', it pops this and jumps there.
@@ -693,7 +886,7 @@ fn install_user_handler_x86_64(
         uc: UContext {
             uc_flags: 0,
             uc_link: 0,
-            uc_stack: process.signals.alt_stack.stack_t(original_rsp),
+            uc_stack: alt.stack_t(original_rsp),
             uc_mcontext: SigContext {
                 r8: saved_regs.r8,
                 r9: saved_regs.r9,
@@ -728,14 +921,9 @@ fn install_user_handler_x86_64(
     };
 
     if let Some(addr) = trampoline_addr {
-        write_signal_stack(
-            process,
-            shared_table,
-            addr,
-            &super::trampoline::SIGNAL_TRAMPOLINE,
-        )?;
+        target.write(addr, &super::trampoline::SIGNAL_TRAMPOLINE)?;
     }
-    write_signal_stack(process, shared_table, fp_addr, fp_state.as_bytes())?;
+    target.write(fp_addr, fp_state.as_bytes())?;
     // SAFETY: SignalFrame is repr(C) plain data with no padding (types.rs
     // checks each size against its fields), and every field is initialized.
     let bytes = unsafe {
@@ -744,8 +932,8 @@ fn install_user_handler_x86_64(
             SignalFrame::SIZE,
         )
     };
-    write_signal_stack(process, shared_table, frame_rsp, bytes)?;
-    enter_handler(process, sig, action);
+    target.write(frame_rsp, bytes)?;
+    target.enter_handler(sig, action);
     if let Some(thread_id) = thread_id {
         fpu::set_user_state(thread_id, &fpu::FpuState::initial());
     }
@@ -813,17 +1001,17 @@ fn deliver_to_user_handler_aarch64(
     // A handler interrupting code already on the alternate stack nests below
     // it there, as one without SA_ONSTACK does on any stack.
     let use_alt_stack = (action.flags & SA_ONSTACK) != 0
-        && (process.signals.alt_stack.flags & super::constants::SS_DISABLE as u32) == 0
-        && process.signals.alt_stack.size > 0
-        && !process.signals.alt_stack.on_stack(original_sp);
+        && (process.signals.alt_stack().flags & super::constants::SS_DISABLE as u32) == 0
+        && process.signals.alt_stack().size > 0
+        && !process.signals.alt_stack().on_stack(original_sp);
 
     let top = if use_alt_stack {
         // Use alternate stack - stack grows down, so start at top (base + size)
         match process
             .signals
-            .alt_stack
+            .alt_stack()
             .base
-            .checked_add(process.signals.alt_stack.size as u64)
+            .checked_add(process.signals.alt_stack().size as u64)
         {
             Some(alt_top) => alt_top,
             None => return Err(PrepareWriteError::Fault),
@@ -853,7 +1041,7 @@ fn deliver_to_user_handler_aarch64(
         return Err(PrepareWriteError::Fault);
     };
     // A frame on the alternate stack, first or nested, must fit on it.
-    let alt = &process.signals.alt_stack;
+    let alt = process.signals.alt_stack();
     if (use_alt_stack || alt.on_stack(original_sp)) && !alt.on_stack(frame_sp) {
         return Err(PrepareWriteError::Fault);
     }
@@ -904,7 +1092,7 @@ fn deliver_to_user_handler_aarch64(
         uc: UContext {
             uc_flags: 0,
             uc_link: 0,
-            uc_stack: process.signals.alt_stack.stack_t(original_sp),
+            uc_stack: process.signals.alt_stack().stack_t(original_sp),
             uc_sigmask: blocked,
             unused: [0; 120],
             _pad: 0,
@@ -1089,6 +1277,7 @@ fn stop_thread_group(
     crate::task::scheduler::with_scheduler(|scheduler| {
         for row in manager.group_rows_mut(group) {
             row.job.stopped = Some(sig);
+            row.signals.thread.mirror.set_job_stopped(true);
             row.signals.thread.return_work.store(true, core::sync::atomic::Ordering::Release);
             row.signals.clear_pending(SIGCONT);
             let Some(thread_id) = row.main_thread.as_ref().map(|thread| thread.id) else {
@@ -1202,6 +1391,7 @@ pub fn continue_thread_group_locked(manager: &mut ProcessManager, pid: ProcessId
         for row in manager.group_rows_mut(group) {
             row.signals.discard_pending(STOP_SIGNALS);
             was_stopped |= row.job.stopped.take().is_some();
+            row.signals.thread.mirror.set_job_stopped(false);
             if core::mem::take(&mut row.job.parked) {
                 if let Some(thread) = row.main_thread.as_ref() {
                     let _ = scheduler.unblock(thread.id);

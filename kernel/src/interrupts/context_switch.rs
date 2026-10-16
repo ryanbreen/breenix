@@ -298,14 +298,14 @@ pub extern "C" fn check_need_resched_and_switch(
     // the first instruction boundary in Ring 3, rather than left to the
     // dispatch below: when that found the lock free a moment later it declined
     // the stop and returned the thread to user mode until the next tick, and a
-    // child that sent itself SIGSTOP ran on and exited first. A stop in force
-    // or pending sets the return-work hint of every thread it holds
-    // (`stop_thread_group`, and generating the signal), so a thread without
-    // the hint has no stop to take and its switch does not wait for that lock.
+    // child that sent itself SIGSTOP ran on and exited first. Only a stop in
+    // force, or a stop signal pending, can hold the thread, and the thread's
+    // copies of its row's signal state say whether there is one, so any
+    // other switch does not wait for that lock.
     if from_userspace
         && need_resched
         && !current_thread_blocked_or_terminated
-        && crate::per_cpu::current_thread().is_some_and(|thread| thread.needs_user_return_check())
+        && crate::per_cpu::current_thread().is_some_and(|thread| thread.signals.mirror.stop_possible())
     {
         if let Some(current_tid) = scheduler::current_thread_id() {
             match crate::signal::delivery::hold_stopped_thread_on_interrupt_return_or_busy(
@@ -1502,6 +1502,11 @@ fn deliver_signals_on_user_return(
     interrupt_frame: &mut InterruptStackFrame,
     at: UserReturn,
 ) {
+    // A timer's signal for a user handler needs no process manager.
+    if deliver_timer_signal_lockless(thread_id, saved_regs, interrupt_frame) {
+        return;
+    }
+
     // This returns to Ring 3, so a busy process manager is held on another
     // CPU. Waiting for it with interrupts masked could deadlock against a
     // holder waiting for an interrupt routed here, so it is polled for a
@@ -1611,6 +1616,51 @@ fn deliver_signals_on_user_return(
             crate::signal::delivery::notify_parent_of_termination_deferred(&notification);
         }
     }
+}
+
+/// Deliver a due timer signal to its user handler without PROCESS_MANAGER
+/// (`signal::delivery::deliver_timer_signal_lockless`), for current thread
+/// `thread_id`, writing the frame through its own page tables. Returns
+/// whether it did; otherwise the caller takes the process-manager path.
+fn deliver_timer_signal_lockless(
+    thread_id: u64,
+    saved_regs: &mut SavedRegisters,
+    interrupt_frame: &mut InterruptStackFrame,
+) -> bool {
+    let Some(thread) = crate::per_cpu::current_thread() else {
+        return false;
+    };
+    // A CPU-limit signal or a deferred SIGKILL is the process-manager path's.
+    if thread.id != thread_id
+        || thread.cached_ttbr0 == 0
+        || thread.kill_pending()
+        || thread
+            .resource_limits
+            .as_ref()
+            .is_some_and(|limits| limits.has_pending_cpu_signals())
+    {
+        return false;
+    }
+    let root = thread.cached_ttbr0;
+    unsafe {
+        use x86_64::registers::control::{Cr3, Cr3Flags};
+        use x86_64::structures::paging::PhysFrame;
+        use x86_64::PhysAddr;
+        if Cr3::read().0.start_address().as_u64() != root & !0xfff {
+            crate::memory::tlb::note_root_load(root);
+            Cr3::write(
+                PhysFrame::containing_address(PhysAddr::new(root)),
+                Cr3Flags::empty(),
+            );
+        }
+    }
+    crate::signal::delivery::deliver_timer_signal_lockless(
+        thread_id,
+        &thread.signals,
+        thread.signal_timers.as_deref(),
+        interrupt_frame,
+        saved_regs,
+    )
 }
 
 /// Simple idle loop - made pub for exception handlers that need to jump to idle

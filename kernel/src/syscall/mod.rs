@@ -632,29 +632,45 @@ fn signal_wait_thread() -> Option<u64> {
 /// 1. Clean up any waiter registrations
 /// 2. Return -EINTR to userspace
 /// 3. The signal will be delivered when the syscall returns
+///
+/// It reads the copies of the row's signal state the thread carries
+/// (`ThreadSignals::mirror`), not the row, so a wait that a deadline or a
+/// signal ends does not first wait for PROCESS_MANAGER: a CPU that stopped
+/// while holding that lock used to hold every such wait past its deadline.
 pub fn check_signals_for_eintr() -> Option<i32> {
-    let thread_id = signal_wait_thread()?;
+    let signals = signal_wait_signals()?;
+    signals.mirror.interrupting(&signals).then_some(errno::EINTR)
+}
 
-    let manager_guard = crate::process::manager();
-    let mut interrupted = false;
-    if let Some(ref manager) = *manager_guard {
-        if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
-            if crate::signal::delivery::has_interrupting_signals(process) {
-                interrupted = true;
-            }
-        }
-    }
-    drop(manager_guard);
-    if interrupted {
-        return Some(errno::EINTR);
-    }
-    None
+/// The current thread's signal state, when its return-work hint says a
+/// signal or a stop may be waiting for it (`signal_wait_thread`).
+fn signal_wait_signals() -> Option<alloc::sync::Arc<crate::signal::ThreadSignals>> {
+    crate::arch_without_interrupts(|| {
+        #[cfg(target_arch = "x86_64")]
+        let thread = crate::per_cpu::current_thread();
+        #[cfg(target_arch = "aarch64")]
+        let thread = crate::per_cpu_aarch64::current_thread();
+        let thread = thread?;
+        thread.needs_user_return_check().then(|| thread.signals.clone())
+    })
 }
 
 /// Handle job-control stops without completing an interruptible wait. Only
 /// caught or fatal signals end the wait; SIGCONT resumes its existing deadline
 /// and temporary mask. Called with syscall preemption disabled and no PM guard.
 pub fn check_signals_for_wait() -> Option<i32> {
+    // With no stop to take, the thread's copies of its row's signal state
+    // decide it without PROCESS_MANAGER, unless the signal is one the row
+    // must consume.
+    let signals = signal_wait_signals()?;
+    if !signals.mirror.stop_possible() {
+        let sig = signals.mirror.next_deliverable(&signals)?;
+        if signals.mirror.action(sig).is_handler()
+            || crate::signal::delivery::fatal_exit_code(sig).is_some()
+        {
+            return Some(errno::EINTR);
+        }
+    }
     let tid = signal_wait_thread()?;
     loop {
         let mut guard = crate::process::manager();
@@ -681,6 +697,16 @@ pub fn check_signals_for_wait() -> Option<i32> {
 /// Some(ERESTARTSYS) otherwise, which the syscall return path turns into a
 /// re-execution of the syscall once any handler has run.
 pub fn check_signals_for_restartable_wait() -> Option<i32> {
+    // A deliverable signal decides it from the thread's copies of its row's
+    // signal state, without PROCESS_MANAGER; only a possible stop reads the row.
+    let signals = signal_wait_signals()?;
+    if signals.mirror.interrupting(&signals) {
+        return Some(if signals.mirror.restarts(&signals) {
+            errno::ERESTARTSYS
+        } else {
+            errno::EINTR
+        });
+    }
     let thread_id = signal_wait_thread()?;
 
     let manager_guard = crate::process::manager();

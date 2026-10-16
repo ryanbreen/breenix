@@ -230,7 +230,7 @@ pub(crate) fn caller_killed() -> bool {
         .as_ref()
         .and_then(|manager| manager.find_process_by_thread(thread_id))
         .is_some_and(|(_, process)| {
-            process.signals.pending & crate::signal::constants::sig_mask(crate::signal::constants::SIGKILL)
+            process.signals.pending() & crate::signal::constants::sig_mask(crate::signal::constants::SIGKILL)
                 != 0
         })
 }

@@ -1378,13 +1378,16 @@ extern "x86-interrupt" fn page_fault_handler(
     // syscall's bad pointer, not a kernel bug: a copy-on-write write or a
     // user-stack growth is resolved as it would be for a user-mode access and
     // the copy retried; anything else resumes at the routine's fault exit,
-    // which returns EFAULT to the syscall.
+    // which returns EFAULT to the syscall. A copy that cannot wait for the
+    // resolution (`write_user_bytes_nofault`) takes the fault exit at once.
     if (stack_frame.code_segment.0 & 3) == 0 {
         let rip = stack_frame.instruction_pointer.as_u64();
         if let Some(fixup) = crate::syscall::userptr::uaccess_fixup(rip, cr2) {
             crate::per_cpu::preempt_disable();
             let addr = x86_64::VirtAddr::new(cr2);
-            let resolved = if is_potential_cow {
+            let resolved = if crate::syscall::userptr::uaccess_nofault() {
+                false
+            } else if is_potential_cow {
                 handle_cow_fault(addr, error_code, cr3, may_retry)
             } else {
                 (!error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION)

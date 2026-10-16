@@ -976,6 +976,7 @@ fn validate_dispatch_takes_no_process_manager(source: &str) -> Result<(), String
         "setup_first_userspace_entry",
         "refuse_user_dispatch",
         "check_and_deliver_signals_for_current_thread",
+        "deliver_timer_signal_lockless",
     ] {
         let body = function_body(source, name).ok_or_else(|| format!("missing fn {name}"))?;
         let mask = code_mask(body);
@@ -992,10 +993,10 @@ fn validate_dispatch_takes_no_process_manager(source: &str) -> Result<(), String
     ordered_in(
         &compact_check,
         &[
-            "&&crate::per_cpu::current_thread().is_some_and(|thread|thread.needs_user_return_check())",
+            "&&crate::per_cpu::current_thread().is_some_and(|thread|thread.signals.mirror.stop_possible())",
             "hold_stopped_thread_on_interrupt_return_or_busy(",
         ],
-        "the interrupt-return stop check is not gated on the return-work hint",
+        "the interrupt-return stop check is not gated on a possible stop",
     )?;
 
     let root = function_body(source, "dispatch_root")
@@ -1600,7 +1601,7 @@ fn dispatch_no_pm_validator_rejects_ungated_delivery() {
     let mutant = mutate_function(
         &source,
         "check_need_resched_and_switch",
-        "\n        && crate::per_cpu::current_thread().is_some_and(|thread| thread.needs_user_return_check())",
+        "\n        && crate::per_cpu::current_thread().is_some_and(|thread| thread.signals.mirror.stop_possible())",
         "",
     );
     assert!(validate_dispatch_takes_no_process_manager(&mutant).is_err());

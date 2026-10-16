@@ -2432,7 +2432,7 @@ impl ProcessManager {
         let row = self.get_process_mut(recipient)?;
         row.signals.generate(sig, info, true);
         let eligible = row.signals.has_deliverable_signals()
-            || row.signals.pending & row.signals.thread.wait_set.load(Ordering::Acquire) != 0;
+            || row.signals.pending() & row.signals.thread.wait_set.load(Ordering::Acquire) != 0;
         if row.job.stopped.is_none() && eligible {
             row.main_thread.as_ref().map(|t| t.id)
         } else {

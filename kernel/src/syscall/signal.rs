@@ -1218,7 +1218,7 @@ pub fn sys_sigaltstack(ss: u64, old_ss: u64, user_sp: u64) -> SyscallResult {
             }
         };
 
-        let alt = &process.signals.alt_stack;
+        let alt = process.signals.alt_stack();
         (alt.stack_t(user_sp), alt.on_stack(user_sp))
     };
 
@@ -1267,7 +1267,7 @@ pub fn sys_sigaltstack(ss: u64, old_ss: u64, user_sp: u64) -> SyscallResult {
             }
         };
 
-        process.signals.alt_stack = next_alt_stack;
+        process.signals.set_alt_stack(next_alt_stack);
     }
 
     SyscallResult::Ok(0)
@@ -1328,11 +1328,11 @@ fn alt_stack_from(new_stack: &StackT) -> Result<crate::signal::types::AltStack, 
 /// changed) is installed, unless the thread, at `sp`, is running on the
 /// current one. A `uc_stack` sigaltstack would refuse leaves it unchanged.
 fn restore_alt_stack(process: &mut crate::process::Process, uc_stack: &StackT, sp: u64) {
-    if process.signals.alt_stack.on_stack(sp) {
+    if process.signals.alt_stack().on_stack(sp) {
         return;
     }
     if let Ok(alt) = alt_stack_from(uc_stack) {
-        process.signals.alt_stack = alt;
+        process.signals.set_alt_stack(alt);
     }
 }
 
@@ -1872,7 +1872,7 @@ pub fn sys_sigtimedwait(set_ptr: u64, info_ptr: u64, timeout_ptr: u64, size: u64
                 break SyscallResult::Err(3);
             };
             p.signals.collect_timer_signals(&p.itimers);
-            let pending = p.signals.pending & set;
+            let pending = p.signals.pending() & set;
             if pending == 0 {
                 None
             } else {
