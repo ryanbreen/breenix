@@ -177,14 +177,32 @@ impl Probe {
         self.next += 1;
         let mem = Dma::new(size)?;
         let mut e = CmdEncoder::new();
-        e.define_gb_mob64(id, 3, mem.pa >> 12, mem.len as u32);
+        // Two indirections of 64-bit page numbers, each page holds 512 entries.
+        let leaves = Dma::new(mem.len.div_ceil(4096) * 8)?;
+        let root = Dma::new(leaves.len.div_ceil(4096) * 8)?;
+        for i in 0..mem.len / 4096 {
+            let pa = crate::platform_config::kernel_va_to_ipa(mem.ptr as u64 + (i * 4096) as u64);
+            unsafe {
+                core::ptr::write_volatile((leaves.ptr as *mut u64).add(i), pa >> 12);
+            }
+        }
+        for i in 0..leaves.len / 4096 {
+            let pa =
+                crate::platform_config::kernel_va_to_ipa(leaves.ptr as u64 + (i * 4096) as u64);
+            unsafe {
+                core::ptr::write_volatile((root.ptr as *mut u64).add(i), pa >> 12);
+            }
+        }
+        leaves.clean();
+        root.clean();
+        e.define_gb_mob64(id, 6, root.pa >> 12, mem.len as u32);
         submit(e, false, false)?;
         Ok((id, mem))
     }
     fn table(&mut self, ty: u32, size: usize) -> Result<()> {
         let mem = Dma::new(size)?;
         let mut e = CmdEncoder::new();
-        e.set_otable_base64(ty, mem.pa >> 12, mem.len as u32, 0, 3);
+        e.set_otable_base64(ty, mem.pa >> 12, mem.len as u32, 0, 4);
         submit(e, false, false)
     }
     fn surface(&mut self, format: u32, flags: u32, width: u32, height: u32) -> Result<Surface> {
@@ -581,7 +599,7 @@ fn execute(p: &mut Probe) -> Result<()> {
     }
     submit(e, false, true)?;
     // Published entries: MOB=16, surface=64, screen target=64, DX context=8.
-    for (ty, size) in [(0, 4096), (1, 16384), (4, 4096), (5, 4096)] {
+    for (ty, size) in [(0, 4096), (1, 4096), (4, 4096), (5, 4096)] {
         p.table(ty, size)?;
     }
     let (mob, _context) = p.mob(8192)?;
