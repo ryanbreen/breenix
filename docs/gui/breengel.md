@@ -938,7 +938,8 @@ window ops (10 to 26 and 31) are removed when version 2 lands.
   `pixels = 0`. A commit is presented when a composite with its readback completion lists its window at a
   `pixel_gen` at or above the commit's.
 - **Failure.** A backend failure leaves the commit uncomposited, fails `COMPOSITE` with EIO and the record's
-  reason, and the next composite retries it.
+  reason, and the next composite retries it. The failed composite keeps its serial and has a record: `pixels`
+  0, no entries, and `flags` bit 0 set with the backend's reason code in bits 8 to 15.
 - **Cursor.** The compositor draws the cursor sprite above every window at its position. Moving it over a
   static scene restores every pixel it covered; hidden, no cursor pixel appears; content committed under a
   stationary cursor is shown with the cursor redrawn above it. Shapes 0 to 4 are the arrow and the four
@@ -992,8 +993,9 @@ meaning. Breengel maps an unknown kind to `Event::Unknown { kind }`, never to a 
 
 ### 19.2 Delivery
 
-- `WRITE_EVENTS` (compositor only) queues events on one window's ring of 64. A kind outside 1 to 14 (other
-  than those Breengel makes) or a `text_len` above 240 is EINVAL, and nothing in that call is delivered.
+- `WRITE_EVENTS` (compositor only) queues events on one window's ring of 64. A kind outside 1 to 14, the kind
+  Breengel makes (`FontChanged`), a kind the kernel makes (`Resized`, `ResizeFailed`, `CompositorChanged`,
+  `Overflow`) or a `text_len` above 240 is EINVAL, and nothing in that call is delivered.
   Writing to a destroyed window is ENOENT.
 - Events arrive in the order written. A full ring keeps the events it holds, counts the ones it could not
   queue, and delivers an `Overflow` event with the count before the next event; nothing is lost silently.
@@ -1034,7 +1036,7 @@ an `ObservationRecord` (512 bytes) produced atomically for one composite serial:
 | 32 | `resource: u64`: the scanout resource id, screen-target id or framebuffer address bound to the device |
 | 40 | `window_count: u32`, `completion_count: u32` |
 | 48 | `windows: [(id: u64, commit_id: u64); 16]` |
-| 304 | `completions: [(fence: u64, kind: u32, status: u32); 12]` |
+| 304 | `completions: [(fence: u64, kind: u32, status: u32); 12]`: `kind` is the command answered and `status` its answer, both nonzero; on virtio-gpu, the command's and the response's `type` (`TRANSFER_TO_HOST_2D` 0x0105, `RESOURCE_FLUSH` 0x0104, `RESP_OK_NODATA` 0x1100) |
 | 496 | `boundary: u32`: what stays outside the guest's view (section 20.2) |
 | 500 | reserved |
 
@@ -1075,15 +1077,21 @@ with the composition formula).
   it for the rest of the boot. In every other boot every op returns ENOSYS. In a suite boot only root may use
   them (EPERM otherwise).
 - Op 0 `STATE` returns 1 (enabled). Op 1 `ARM { point: u32 @0, reserved @4, target: u64 @8, param: u64 @16 }`
-  arms one one-shot fault; op 2 `DISARM_ALL`; op 3 `FIRED { point: u32 @0, reserved @4, out count: u64 @8 }`
-  reports how many times a point fired. There is no op that sets or clears the latch: op 4 `SET_LATCH` and
+  arms one one-shot fault; op 2 `DISARM_ALL` disarms every point and restarts the gauge
+  `display_irq_masked_max_us` at 0; op 3 `FIRED { point: u32 @0, reserved @4, out count: u64 @8 }`
+  reports how many times a point fired. Arming or reading a point this section does not define is EINVAL. There is no op that sets or clears the latch: op 4 `SET_LATCH` and
   every op above 4 are EINVAL.
 - Points: 1 `ignore-damage` (the next composite processes the whole window), 2 `irq-hold` (the next display
   copy holds IRQs masked for 2 ms), 3 `emit-diagnostic` (param: the writer path, section 22), 4
   `acquire-stall` (target: a window; the next `ACQUIRE` pauses after copying half its replay rows until
   released or 1 s), 5 `backend-error`, 6 `skip-transfer`, 7 `wrong-resource`, 8 `stale-fence`, 9
-  `corrupt-outside-damage`, 10 `panel-cursor-no-restore`, 11 `release-stall` (resumes a paused point).
-  Faults are branches in the real code paths, disarmed at case end by the suite.
+  `corrupt-outside-damage`, 10 `panel-cursor-no-restore`, 11 `release-stall` (resumes a paused point),
+  16 `composite-stall` (target: a window; the next composite that includes it pauses before the backend
+  composes, with every window's front pinned, until released, a signal reaches the compositor, or 1 s), 17
+  `move-pointer` (param: x in bits 0 to 31, y in bits 32 to 63; the next time the kernel reads the pointing
+  device's position, for the panel cursor, the position is (x, y), as if the device had moved there). Points
+  12 to 15 are the run stage's (section 23). Faults are branches in the real code paths, disarmed at case end
+  by the suite.
 - `init`, running as PID 1, checks that every op returns ENOSYS and prints `[init] test controls absent`; run
   as a child (in a suite boot) it prints `[init] not PID 1: test-control check skipped` and makes no absence
   claim.
@@ -1108,10 +1116,8 @@ posted); the logger's whole record for `log::warn!`; and for `emergency_print`, 
 `kernel_output_unattributed` and nothing to the thread. The logger's record is `[ WARN] test_control: `
 followed by the payload and a newline: `[`, the level right-aligned in five columns, `] `, the target
 `test_control`, `: `, the payload, `\n`, which is 55 bytes. A newline a writer adds is output like any other
-byte; only the lead newline inserted before a record when another writer's line is open is not. The aarch64
-kernel installs no `log` sink (its kernel output goes through `serial_println!` and the serial writers, and every
-`log::` record is dropped where it is made), so on aarch64 `log::warn!` writes nothing and adds 0 to both
-counters; on x86-64, where the logger writes its record, it adds the 55 bytes.
+byte; only the lead newline inserted before a record when another writer's line is open is not. The
+aarch64 kernel's `log` sink writes each warning and error as this record.
 
 ## 23. The suite panel
 
