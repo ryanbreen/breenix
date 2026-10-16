@@ -825,6 +825,8 @@ pub struct Thread {
     /// Last known good TTBR0/CR3 value for this thread's userspace address space.
     /// On ARM64 this lets the scheduler resume blocked-in-syscall threads without
     /// taking PROCESS_MANAGER in the hot dispatch path when the lock is contended.
+    /// On x86_64 it is the root a user thread is dispatched on, filled at its
+    /// first dispatch and replaced by exec (`interrupts::context_switch`).
     pub cached_ttbr0: u64,
 
     /// How many times this thread has parked on one of the kernel's halt
@@ -1154,15 +1156,11 @@ impl Thread {
         self.kill_custody.load(Ordering::Acquire) & KILL_PENDING != 0
     }
 
-    /// Close every section the thread's syscall had open, for a syscall whose
-    /// kernel stack is discarded instead of unwound: x86-64 returns a pause or
-    /// sigsuspend that a signal ends to user mode straight from the context
-    /// switch, so the syscall's `KillCustody` guards are never dropped. Left
-    /// open, they would refuse every later kill claim and make every later
-    /// syscall look nested.
+    /// x86_64: cache `root` as the page-table root this user thread is
+    /// dispatched on: the dispatch's first lookup and exec's commit set it.
     #[cfg(target_arch = "x86_64")]
-    pub(crate) fn abandon_syscall_custody(&self) {
-        self.kill_custody.fetch_and(!CUSTODY_COUNT, Ordering::AcqRel);
+    pub(crate) fn set_dispatch_root(&mut self, root: u64) {
+        self.cached_ttbr0 = root;
     }
 }
 

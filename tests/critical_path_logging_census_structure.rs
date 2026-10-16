@@ -1,14 +1,16 @@
 //! Structural ratchet for `scripts/check-critical-path-violations.sh`.
 //!
 //! The shell script greps a fixed file list for a fixed spelling list and
-//! exits 1 today (108 distinct call sites across 9 files -- 135 at the
-//! classification snapshot in `docs/planning/green-program/gates/
+//! exits 1 today (`CRITICAL_PATH_LOG_TOTAL` distinct call sites -- 135 at
+//! the classification snapshot in `docs/planning/green-program/gates/
 //! CRITICAL-PATH-DEBT-2026-09-06.md` §1-4, less the 16 PR-1 of that
 //! document's drain plan deleted from
 //! `kernel/src/interrupts/context_switch.rs` and the 4 first-userspace-entry
-//! calls #1048 deleted from the same file, and the five per-wake records
-//! deleted from `Scheduler::unblock_for_signal`, and the two wait-path
-//! logs removed from `block_current_for_signal_with_context`). It is not
+//! calls #1048 deleted from the same file, the five per-wake records
+//! deleted from `Scheduler::unblock_for_signal`, the two wait-path
+//! logs removed from `block_current_for_signal_with_context`, the routine
+//! scheduler and clock_settime lines, and the six that went with the
+//! process-manager save and restore code #1635 took out of the x86 dispatch). It is not
 //! wired into any gate, so today the only thing that notices a NEW call
 //! creeping in is a human rereading 259 lines of grep output. This suite
 //! pins the census in Rust so a per-`(file, item-path)` INCREASE fails a
@@ -26,13 +28,13 @@
 //! # Two censuses, on purpose
 //!
 //! `CRITICAL_PATH_LOG_ANCHORS` pins the shell script's ORIGINAL twelve
-//! spellings at 108 -- the number the drain plan's PR ledger tracks PR by
-//! PR, 135 before PR-1, 119 before #1048 and 115 before the
-//! `unblock_for_signal` drain. A second, WIDER set adds three
+//! spellings at `CRITICAL_PATH_LOG_TOTAL` -- the number the drain plan's PR
+//! ledger tracks PR by PR, 135 before PR-1, 119 before #1048, 115 before the
+//! `unblock_for_signal` drain and 96 before #1635. A second, WIDER set adds three
 //! spellings the original denylist misses by construction (`serial_print!`,
 //! `log_serial_print!`, `log::log!` -- each reaches the same blocking serial lock as the
 //! `serial_println!`/`log::*!` families the narrow list already denies).
-//! That wider census is 109 today: the 108 plus exactly one escaped site,
+//! That wider census is the narrow one plus exactly one escaped site,
 //! `kernel/src/arch_impl/aarch64/exception.rs :: fn sys_write`, a
 //! `crate::serial_print!` call inside a per-BYTE loop. This same PR widens
 //! `PROHIBITED_PATTERNS` in the shell script to carry the three new
@@ -636,7 +638,11 @@ fn log_census(sources: &[(String, String)], patterns: &[&str]) -> Census {
 /// call is not a census row -- and left the other seven at 1, 5, 1, 1, 3, 1
 /// and 2. #1048 then deleted the four INFO lines on the first-userspace-entry
 /// dispatch, which took `fn setup_first_userspace_entry` to 0 (row gone) and
-/// `fn restore_userspace_thread_context` from 5 to 4.
+/// `fn restore_userspace_thread_context` from 5 to 4. #1635 took the process
+/// manager out of the dispatch, and the process-row save and restore code with
+/// it: `fn restore_userspace_thread_context`,
+/// `fn save_current_thread_context_with_guard` and `fn save_kthread_context`
+/// went to 0 (rows gone, six calls).
 const CRITICAL_PATH_LOG_ANCHORS: &[(&str, &str, usize)] = &[
     ("kernel/src/arch_impl/aarch64/context_switch.rs", "#[cfg(feature=boot_tests)] fn report_user_rsp_scratch_el_census", 1),
     ("kernel/src/arch_impl/aarch64/context_switch.rs", "fn drain_asm_resume_pc_refusals", 1),
@@ -648,9 +654,6 @@ const CRITICAL_PATH_LOG_ANCHORS: &[(&str, &str, usize)] = &[
     ("kernel/src/arch_impl/aarch64/timer_interrupt.rs", "fn dump_gic_state", 9),
     ("kernel/src/arch_impl/aarch64/timer_interrupt.rs", "fn init", 9),
     ("kernel/src/interrupts/context_switch.rs", "fn check_need_resched_and_switch", 1),
-    ("kernel/src/interrupts/context_switch.rs", "fn restore_userspace_thread_context", 4),
-    ("kernel/src/interrupts/context_switch.rs", "fn save_current_thread_context_with_guard", 1),
-    ("kernel/src/interrupts/context_switch.rs", "fn save_kthread_context", 1),
     ("kernel/src/interrupts/context_switch.rs", "fn setup_idle_return", 1),
     ("kernel/src/interrupts/context_switch.rs", "fn switch_to_thread", 2),
     ("kernel/src/per_cpu.rs", "fn can_schedule", 1),
@@ -702,9 +705,10 @@ const ESCAPED_SITE: (&str, &str, usize) = (
 /// the total -- or changes the total without saying so -- fails on the number
 /// the plan is written in, not only on the per-row diff.
 // Routine scheduler lines were removed by 3cdadb58 and 3bc5e91b;
-// clock_settime's diagnostic was removed by 8aae5ba0. Restoring any of
-// those calls is still an unexpected census entry.
-const CRITICAL_PATH_LOG_TOTAL: usize = 96;
+// clock_settime's diagnostic was removed by 8aae5ba0, and #1635's dispatch
+// rewrite removed six. Restoring any of those calls is still an unexpected
+// census entry.
+const CRITICAL_PATH_LOG_TOTAL: usize = 90;
 
 fn wider_anchors() -> Vec<(&'static str, &'static str, usize)> {
     let mut anchors = CRITICAL_PATH_LOG_ANCHORS.to_vec();

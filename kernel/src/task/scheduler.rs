@@ -1941,11 +1941,11 @@ pub fn release_outgoing_stack_from_idle() {
 /// already switched off its own CPU, nothing ran a full pass, and a completed
 /// disk request was seen only when the waiter's one-second wait slice expired.
 ///
-/// A full pass needs the process manager for the switch it may make, and an
-/// idle CPU that found it held on another CPU used to return with nothing
-/// done. Its scheduler entry then went stale, placement took it for a CPU
-/// that had stopped dispatching, and new and woken threads were queued on the
-/// busy CPUs instead.
+/// An idle CPU whose pass found the process manager held on another CPU used
+/// to return with nothing done, when the switch still needed that lock. Its
+/// scheduler entry then went stale, placement took it for a CPU that had
+/// stopped dispatching, and new and woken threads were queued on the busy CPUs
+/// instead. This pass needs no process manager, and the switch no longer does.
 #[cfg(target_arch = "x86_64")]
 pub fn x86_idle_pass() -> bool {
     let cpu = current_cpu_id_raw();
@@ -6808,7 +6808,6 @@ impl Scheduler {
     /// Return whether any scheduler-owned thread still caches a matching
     /// userspace translation-table root. The caller supplies the root matcher
     /// so the scheduler lock is acquired exactly once for an entire receipt.
-    #[cfg(target_arch = "aarch64")]
     pub(crate) fn any_cached_ttbr0_matches<F>(&self, mut root_matches: F) -> bool
     where
         F: FnMut(u64) -> bool,
@@ -7859,6 +7858,11 @@ impl ExecSchedCommit {
                         t.stack_bottom = self.stack_bottom;
                         t.kernel_stack_top = self.kernel_stack_top;
                         t.tls_block = self.tls_block;
+                        // x86_64 dispatches a user thread on the root cached
+                        // here (`dispatch_root`), so exec replaces it in the
+                        // same hold that replaces the context.
+                        #[cfg(target_arch = "x86_64")]
+                        t.set_dispatch_root(self.new_page_table_root);
                         // The interval before exec belongs to the old thread group.
                         t.charge_cpu(crate::time::get_cpu_ticks());
                         replaced_account = core::mem::replace(&mut t.cpu_account, self.cpu_account);
@@ -7892,6 +7896,24 @@ impl ExecSchedCommit {
             }
         })
     }
+}
+
+/// Debug and test code that execs another process through the legacy x86_64
+/// `ProcessManager::exec_process`, which rewrites only the process row,
+/// installs that exec in the thread's scheduler row with this, from the row it
+/// just rewrote, while PROCESS_MANAGER is still held: dispatch reads a user
+/// thread's context, stacks and page-table root from its scheduler row. A
+/// thread not yet published to the scheduler is published from the rewritten
+/// row and needs nothing here.
+#[cfg(target_arch = "x86_64")]
+pub fn adopt_legacy_exec(row_thread: &Thread, root: u64) {
+    with_thread_mut(row_thread.id, |thread| {
+        thread.context = row_thread.context.clone();
+        thread.stack_top = row_thread.stack_top;
+        thread.stack_bottom = row_thread.stack_bottom;
+        thread.kernel_stack_top = row_thread.kernel_stack_top;
+        thread.set_dispatch_root(root);
+    });
 }
 
 /// Wake a waitqueue waiter immediately from task context.

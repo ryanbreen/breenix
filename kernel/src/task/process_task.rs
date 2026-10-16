@@ -267,18 +267,14 @@ impl PendingProcessReclaim {
         RootProof::default()
     }
 
+    /// Whether a thread that has not terminated still caches one of this
+    /// receipt's roots: ARM64 keeps its last TTBR0 there, and x86_64
+    /// dispatches a user thread on the root cached there.
     fn cached_root_is_live(&self) -> bool {
-        #[cfg(target_arch = "aarch64")]
-        {
-            scheduler::with_scheduler(|scheduler| {
-                scheduler.any_cached_ttbr0_matches(|cached| self.any_root_matches(cached))
-            })
-            .unwrap_or(false)
-        }
-        #[cfg(not(target_arch = "aarch64"))]
-        {
-            false
-        }
+        scheduler::with_scheduler(|scheduler| {
+            scheduler.any_cached_ttbr0_matches(|cached| self.any_root_matches(cached))
+        })
+        .unwrap_or(false)
     }
 
     /// x86_64 switches CR3 lazily: idle keeps running on the tables of

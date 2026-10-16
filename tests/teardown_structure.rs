@@ -7953,11 +7953,17 @@ fn validate_leaf_custody(sources: &[(String, String)]) -> Result<(), ()> {
     Ok(())
 }
 
-/// Q2's asymmetric cached-root proof is intentional: x86 has no per-thread
-/// cached CR3 writer. Discover assignments structurally, then require every
-/// writer to belong to the one aarch64 setter used by both cache and clear.
+/// Each architecture has one per-thread cached-root writer, and the cached
+/// leg of the retirement proof reads both: aarch64's setter, used by both
+/// cache and clear, and x86_64's `Thread::set_dispatch_root`, the root a user
+/// thread is dispatched on, set by the dispatch's first lookup and by exec
+/// (#1635). Discover assignments structurally, then require every writer to
+/// belong to one of those two setters.
 fn validate_cached_ttbr0_single_writer(sources: &[(String, String)]) -> Result<(), ()> {
-    const ALLOWED_PATH: &str = "kernel/src/arch_impl/aarch64/context_switch.rs";
+    const ALLOWED: [(&str, &str); 2] = [
+        ("kernel/src/arch_impl/aarch64/context_switch.rs", "set_thread_cached_ttbr0"),
+        ("kernel/src/task/thread.rs", "set_dispatch_root"),
+    ];
     let mut writers = Vec::new();
     for (path, module) in sources {
         let mask = code_mask(module);
@@ -7967,14 +7973,22 @@ fn validate_cached_ttbr0_single_writer(sources: &[(String, String)]) -> Result<(
                 .map(|offset| (path.as_str(), offset)),
         );
     }
-    if writers.len() != 1 || writers[0].0 != ALLOWED_PATH {
+    if writers.len() != ALLOWED.len() {
         return Err(());
     }
-    let module = source(sources, ALLOWED_PATH);
-    function_span(module, "set_thread_cached_ttbr0")
-        .contains(&writers[0].1)
-        .then_some(())
-        .ok_or(())
+    for (path, setter) in ALLOWED {
+        let module = source(sources, path);
+        let span = function_span(module, setter);
+        if writers
+            .iter()
+            .filter(|(writer_path, offset)| *writer_path == path && span.contains(offset))
+            .count()
+            != 1
+        {
+            return Err(());
+        }
+    }
+    Ok(())
 }
 
 /// The shared proof must dispatch to both architectures' real hardware and
