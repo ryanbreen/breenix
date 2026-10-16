@@ -38,9 +38,14 @@ def read_lines(path):
     return [line.rstrip("\r") for line in text.split("\n")]
 
 
-def verdict(manifest, records_log, logs):
+def verdict(manifest, records_log, logs, only=None):
     suite = manifest["id"]
     cases = [f"{category['id']}/{case['id']}" for category in manifest["categories"] for case in category["cases"]]
+    if only:
+        if only not in cases:
+            return False, f"unknown case {only}; valid ids: {', '.join(cases)}"
+        cases = [only]
+    suffix = rf" only={re.escape(only)}" if only else ""
     fatal = json.loads((REPO / "docs/boot-path.json").read_text())["fatal"] + [r"KERNEL PANIC:"]
     for log in logs:
         for line in read_lines(log):
@@ -52,11 +57,11 @@ def verdict(manifest, records_log, logs):
     name = r"([a-z0-9]+(?:-[a-z0-9]+)*/[a-z0-9]+(?:-[a-z0-9]+)*)"
     picture = r"(?: sha256=[0-9a-f]{64})?"
     shapes = {
-        "START": re.compile(rf"^SUITE {suite} START cases=(\d+)$"),
+        "START": re.compile(rf"^SUITE {suite} START cases=(\d+){suffix}$"),
         "PASS": re.compile(rf"^SUITE {suite} CASE {name} PASS ms=\d+{picture}$"),
         "FAIL": re.compile(rf"^SUITE {suite} CASE {name} FAIL ms=\d+{picture} msg=\S.*$"),
         "SKIP": re.compile(rf"^SUITE {suite} CASE {name} SKIP msg=\S.*$"),
-        "DONE": re.compile(rf"^SUITE {suite} DONE passed=(\d+) failed=(\d+) skipped=(\d+) total=(\d+)$"),
+        "DONE": re.compile(rf"^SUITE {suite} DONE passed=(\d+) failed=(\d+) skipped=(\d+) total=(\d+){suffix}$"),
         "VALUE": re.compile(rf"^SUITE {suite} VALUE {name} [a-z0-9]+(?:-[a-z0-9]+)*=(-?\d+(?:\.\d+)?)([a-z]*)"
                             r"(?: expect=(-?\d+(?:\.\d+)?)\.\.(-?\d+(?:\.\d+)?)([a-z]*))?$"),
         "WAIT": re.compile(rf"^SUITE {suite} WAIT {name} until=\d+ for=\d+ result=[a-z0-9]+(?:-[a-z0-9]+)*$"),
@@ -68,6 +73,10 @@ def verdict(manifest, records_log, logs):
             if prefix in line:
                 return False, f"a SUITE record does not start its line: {line.strip()[:200]}"
             continue
+        if not only and re.match(rf"{re.escape(prefix)}(?:START|DONE) .* only=\S+$", line):
+            return False, "one-case run is not full-suite evidence"
+        if line.startswith(prefix + "ERROR "):
+            return False, line
         for kind, shape in shapes.items():
             match = shape.match(line)
             if match:

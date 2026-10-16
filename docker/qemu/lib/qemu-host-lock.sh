@@ -285,12 +285,17 @@ _qhl_verdict_banner() {
 # locked and contended, prints a wait message roughly once per 30s span
 # (poll granularity is 1s; the message is not itself the poll interval).
 qemu_host_lock_acquire() {
+    _qhl_resolve_bin "${1:-}" || exit 1
+    local qemu_bin="$_QHL_RESOLVED_BIN"
+    # Every x86-64 QEMU boot passes here: refuse effort work that has not reached its catch-up
+    # (scripts/effort-target-guard.py; a launcher that already checked this commit stamps it).
+    if [ "$qemu_bin" = qemu-system-x86_64 ]; then
+        python3 "$_QHL_REPO/scripts/effort-target-guard.py" --repo "$_QHL_REPO" --target x86 >/dev/null || exit 1
+    fi
     if [ "$_QHL_SLOT_ENROLLED" = 1 ]; then
         if [ "$(uname -s)" != Darwin ]; then host_slot_release x86-build; fi
         host_slot_acquire "$_QHL_RESOURCE"
     fi
-    _qhl_resolve_bin "${1:-}" || exit 1
-    local qemu_bin="$_QHL_RESOLVED_BIN"
     _qhl_chain_exit_trap
     if [ -n "${BREENIX_QEMU_LOCK:-}" ] && [ "$BREENIX_QEMU_LOCK" != "off" ]; then
         case "$BREENIX_QEMU_LOCK" in

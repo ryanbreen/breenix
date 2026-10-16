@@ -1,7 +1,7 @@
 use std::{
     env, fs,
     path::PathBuf,
-    process::{self, Command},
+    process::{self, Command, Stdio},
 };
 
 use ovmf_prebuilt::{Arch, FileType, Prebuilt, Source};
@@ -38,6 +38,30 @@ fn main() {
     if env::var("BREENIX_PRINT_QEMU_CPUS").ok().as_deref() == Some("1") {
         println!("{}", profile.cpus());
         return;
+    }
+    // Launcher preflight: fetch the pinned OVMF firmware into target/ovmf and stop.
+    if env::var("BREENIX_FETCH_OVMF").ok().as_deref() == Some("1") {
+        if let Err(error) = Prebuilt::fetch(Source::LATEST, "target/ovmf") {
+            eprintln!("[qemu-uefi] OVMF fetch failed: {error}");
+            process::exit(1);
+        }
+        return;
+    }
+    // Every x86-64 boot this launcher starts must pass the effort target policy
+    // (scripts/effort-target-guard.py); a launcher that already checked this commit stamps it.
+    let repo = env!("CARGO_MANIFEST_DIR");
+    match Command::new("python3")
+        .arg(format!("{repo}/scripts/effort-target-guard.py"))
+        .args(["--repo", repo, "--target", "x86"])
+        .stdout(Stdio::null())
+        .status()
+    {
+        Ok(status) if status.success() => {}
+        Ok(_) => process::exit(1),
+        Err(error) => {
+            eprintln!("[qemu-uefi] cannot run the effort target guard: {error}");
+            process::exit(1);
+        }
     }
     // Allow overriding OVMF firmware paths via environment for CI/DEBUG builds
     let ovmf_code = if let Ok(path) = env::var("BREENIX_OVMF_CODE_PATH") {

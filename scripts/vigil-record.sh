@@ -15,9 +15,13 @@ set -u
 [ -z "${VIGIL_BOOT_ID:-}" ] || exit 0
 
 CLI=
-for candidate in "${VIGIL_CLI:-}" /usr/local/bin/vigil-cli "$HOME/fun/code/vigil/.build/release/vigil-cli"; do
+for candidate in "${VIGIL_CLI:-}" "$HOME/.local/bin/vigil-cli" /usr/local/bin/vigil-cli "$HOME/fun/code/vigil/.build/release/vigil-cli"; do
     [ -n "$candidate" ] && [ -x "$candidate" ] || continue
-    if "$candidate" breenix 2>&1 | grep -q 'breenix start'; then CLI=$candidate; break; fi
+    usage=$("$candidate" breenix 2>&1)
+    printf '%s' "$usage" | grep -q 'breenix start' || continue
+    # A boot with a processor count needs a vigil-cli that records it; an older one is skipped, never used untagged.
+    [ -z "${BREENIX_VIGIL_CPUS:-}" ] || printf '%s' "$usage" | grep -q -- '--cpus' || continue
+    CLI=$candidate; break
 done
 [ -n "$CLI" ] || exit 0
 
@@ -37,8 +41,12 @@ case "${1:-}" in
         [ -z "$user" ] || args+=(--serial-user "$user")
         [ -z "$profile" ] || [ "$profile" = default ] || args+=(--profile "$profile")
         [ -z "$id" ] || args+=(--id "$id")
-        "$CLI" "${args[@]}"
-        exit $?
+        # A boot given other than its platform's own processors (boot-interactive.sh --cpus) tests a smaller or larger
+        # machine; Vigil keeps it out of main's evidence.
+        [ -z "${BREENIX_VIGIL_CPUS:-}" ] || args+=(--cpus "$BREENIX_VIGIL_CPUS")
+        # A registration Vigil refuses leaves the boot unrecorded; it never stops the boot.
+        "$CLI" "${args[@]}" || exit 0
+        exit 0
         ;;
     record)
         platform=${2:-}; mode=${3:-}; suite=${4:-}; serial=${5:-}; user=${6:-}; profile=${7:-}; id=${8:-}; commit=${9:-}
@@ -47,8 +55,10 @@ case "${1:-}" in
         if [ -n "$suite" ]; then args+=(--suite "$suite"); else args+=(--mode "$mode"); fi
         [ -z "$profile" ] || args+=(--profile "$profile")
         # A timed-out start may already have published this exact id. Finish it
-        # instead of creating a second record or letting the importer assign zero.
-        if [ -f "$HOME/Library/Application Support/Vigil/breenix/boots/$id/run.json" ]; then
+        # instead of creating a second record or letting the importer assign zero. vigil-cli keeps boots under the
+        # account's home as macOS reports it (VIGIL_TEST_HOME in Vigil's tests), not under $HOME.
+        vigil_home=${VIGIL_TEST_HOME:-$(python3 -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')}
+        if [ -f "$vigil_home/Library/Application Support/Vigil/breenix/boots/$id/run.json" ]; then
             "$CLI" breenix finish --id "$id" --exit-status "$status" --ended "$ended"
         else
             "$CLI" "${args[@]}"

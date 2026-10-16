@@ -59,8 +59,6 @@ const char *fail_ptr(const char *what, const void *got, const void *want);
  * (build.sh) generates a stand-in calling this for each function a category uses that
  * libc.a does not define yet, so the cases reaching it fail by name. */
 void libc_case_missing(const char *name);
-/* Mark the case skipped, saying why. */
-const char *skip_text(const char *why);
 
 /* Harness copies of what the cases would otherwise take from the library under test. */
 int h_streq(const char *a, const char *b);

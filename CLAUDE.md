@@ -14,16 +14,32 @@ Breenix is a production-quality x86_64 operating system kernel written in Rust. 
 ## Project Structure
 
 ```
-kernel/          # Core kernel (no_std, no_main)
-src.legacy/      # Previous implementation (being phased out)
-libs/            # libbreenix, tiered_allocator
-tests/           # Integration tests
-docs/planning/   # Numbered phase directories (00-15)
+kernel/            # Core kernel (no_std, no_main), ARM64 and x86_64
+libs/              # libbreenix, clean-room C library, graphics/font/GUI and support crates
+userspace/         # Programs, shell, utilities and the guest-side suites
+sdk/               # Developer SDK builder, compiler wrappers, templates and tests
+parallels-loader/  # ARM64 UEFI loader for Parallels and VMware
+xtask/             # Build/run orchestrator and boot-stage catalog
+src/               # Host-side QEMU launcher binaries
+scripts/           # Build, disk-image, gate, VM and lint scripts
+docker/qemu/       # QEMU gate scripts and their shell libraries
+tools/             # Run Inspector, gdb-chat, MCP server, host-test crates, Linux probes
+tests/             # Host tests, structural guards and fixtures
+vendor/            # Pinned BusyBox and Unicode sources
+fonts/             # TrueType fonts installed into guest images
+docs/              # boot-path, efforts, suites, gui, sdk, user guide, historical planning
+.agents/skills/    # Agent skills (see .agents/skills/README.md)
 ```
 
 ## Build & Run
 
 QEMU runs natively for both x86-64 and ARM64 architectures.
+
+### Effort lanes run on ARM64 QEMU
+
+Effort lanes (`<effort id>/<lane>` from `docs/efforts/path.json`) build and race on ARM64 QEMU only; x86-64, Parallels and VMware are backported in the catch-up once that effort is green on ARM64 QEMU (operator, 2026-10-15). Only regression fixes for finished efforts and the catch-up itself use other targets.
+
+`scripts/effort-target-guard.py` refuses a commit when any commit in its history that origin/main lacks is also in an effort lane's history, on origin or in a local branch; a `fix/*` or `scratch/*` name exempts nothing, and it refuses when origin cannot be read. `run.sh` (`--x86`, `--btrt --x86`, `--parallels`, `--vmware`, and `--dry-run` to check only) and `breenix-runs run x86` run it before building; every x86-64 QEMU boot runs it again in `qemu_host_lock_acquire` and in `qemu-uefi`. For the catch-up pass `breenix-runs run x86 --catchup` or `BREENIX_CATCHUP=1`: the launch line prints it, the x86 run manifest records it, and Parallels and VMware runs record it in `<serial log>.launch.json`. Vigil has no catch-up field.
 
 ### Interactive Mode
 
@@ -186,7 +202,7 @@ cat target/output.txt | grep ...
 **Correct pattern:**
 ```
 # DO use GDB for kernel debugging
-printf 'break kernel::kernel_main\ncontinue\ninfo registers\nquit\n' | python3 breenix-gdb-chat/scripts/gdb_chat.py
+printf 'break kernel::kernel_main\ncontinue\ninfo registers\nquit\n' | python3 tools/gdb-chat/scripts/gdb_chat.py
 
 # DO dispatch to an agent for GDB sessions
 Task(subagent_type="general-purpose", prompt="Use gdb_chat.py to debug the
@@ -299,9 +315,12 @@ When features are completed, invoke the skill to update progress percentages and
 Update after each PR merge and when starting new work.
 
 ### Structure
-- `docs/planning/00-15/` - Phase directories
-- `docs/planning/legacy-migration/FEATURE_COMPARISON.md` - Track migration progress
-- Cross-cutting dirs: `posix-compliance/`, `legacy-migration/`
+- `docs/boot-path.md`, `docs/boot-path.json` - Boot-path milestones and stages
+- `docs/efforts/` - The effort path (`path.json`) and each effort's plan
+- `docs/suites/` - Suite manifests and the suite runner contract
+- `docs/gui/` - Graphics, window manager, UI testing and GUI apps plan
+- `docs/sdk/` - Developer SDK documentation
+- `docs/planning/` - Historical investigations and campaign records
 
 ## Userland Development Stages
 
@@ -374,13 +393,6 @@ Requires: Stage 4, full filesystem
 - File ops: ls, cp, mv, rm
 - Dir ops: mkdir, rmdir
 - Text: head, tail, wc
-
-## Legacy Code Removal
-
-When new implementation reaches parity:
-1. Remove code from `src.legacy/`
-2. Update `FEATURE_COMPARISON.md`
-3. Include removal in same commit as feature completion
 
 ## 🚨 Parallels VM Testing — MANDATORY RESTART PROTOCOL 🚨
 
@@ -616,10 +628,10 @@ python3 scripts/trace_memory_dump.py --parse /tmp/trace_buffers.bin --validate
 #### 2. GDB Breakpoints and Memory Inspection
 
 ```bash
-./breenix-gdb-chat/scripts/gdb_session.sh start
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "break kernel::syscall::handler::syscall_handler"
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "continue"
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "info registers"
+./tools/gdb-chat/scripts/gdb_session.sh start
+./tools/gdb-chat/scripts/gdb_session.sh cmd "break kernel::syscall::handler::syscall_handler"
+./tools/gdb-chat/scripts/gdb_session.sh cmd "continue"
+./tools/gdb-chat/scripts/gdb_session.sh cmd "info registers"
 ```
 
 #### 3. QEMU Interrupt Tracing (for interrupt-level issues)
@@ -706,26 +718,26 @@ Use `gdb_session.sh` for persistent, interactive debugging sessions:
 
 ```bash
 # Start a persistent session (keeps QEMU + GDB running)
-./breenix-gdb-chat/scripts/gdb_session.sh start
+./tools/gdb-chat/scripts/gdb_session.sh start
 
 # Send commands one at a time, making decisions based on results
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "break kernel::syscall::time::sys_clock_gettime"
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "continue"
+./tools/gdb-chat/scripts/gdb_session.sh cmd "break kernel::syscall::time::sys_clock_gettime"
+./tools/gdb-chat/scripts/gdb_session.sh cmd "continue"
 # Examine what happened, then decide next step...
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "info registers rax rdi rsi"
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "print/x \$rdi"
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "backtrace 10"
+./tools/gdb-chat/scripts/gdb_session.sh cmd "info registers rax rdi rsi"
+./tools/gdb-chat/scripts/gdb_session.sh cmd "print/x \$rdi"
+./tools/gdb-chat/scripts/gdb_session.sh cmd "backtrace 10"
 
 # IMPORTANT: Use tracing framework for kernel observability
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "call trace_dump()"
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "call trace_dump_latest(20)"
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "call trace_dump_counters()"
+./tools/gdb-chat/scripts/gdb_session.sh cmd "call trace_dump()"
+./tools/gdb-chat/scripts/gdb_session.sh cmd "call trace_dump_latest(20)"
+./tools/gdb-chat/scripts/gdb_session.sh cmd "call trace_dump_counters()"
 
 # Get all serial output (kernel print statements)
-./breenix-gdb-chat/scripts/gdb_session.sh serial
+./tools/gdb-chat/scripts/gdb_session.sh serial
 
 # Stop when done
-./breenix-gdb-chat/scripts/gdb_session.sh stop
+./tools/gdb-chat/scripts/gdb_session.sh stop
 ```
 
 This is **conversational debugging** - you send a command, see the result, think about it, and decide what to do next. Just like a human sitting at a GDB terminal.
@@ -749,11 +761,11 @@ This captures an atomic snapshot of the tracing buffers and validates:
 
 ### GDB Chat Tool (Underlying Engine)
 
-The session wrapper uses `breenix-gdb-chat/scripts/gdb_chat.py`:
+The session wrapper uses `tools/gdb-chat/scripts/gdb_chat.py`:
 
 ```bash
 # Can also use directly for scripted debugging
-printf 'break kernel::kernel_main\ncontinue\ninfo registers\nquit\n' | python3 breenix-gdb-chat/scripts/gdb_chat.py
+printf 'break kernel::kernel_main\ncontinue\ninfo registers\nquit\n' | python3 tools/gdb-chat/scripts/gdb_chat.py
 ```
 
 The tool:
@@ -894,16 +906,16 @@ log::debug!("clock_gettime called");  # This changes timing!
 
 ```bash
 # Start interactive GDB session
-./breenix-gdb-chat/scripts/gdb_session.sh start
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "break kernel::syscall::time::sys_clock_gettime"
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "continue"
+./tools/gdb-chat/scripts/gdb_session.sh start
+./tools/gdb-chat/scripts/gdb_session.sh cmd "break kernel::syscall::time::sys_clock_gettime"
+./tools/gdb-chat/scripts/gdb_session.sh cmd "continue"
 
 # Examine state at breakpoint
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "info registers rdi rsi"
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "backtrace 10"
+./tools/gdb-chat/scripts/gdb_session.sh cmd "info registers rdi rsi"
+./tools/gdb-chat/scripts/gdb_session.sh cmd "backtrace 10"
 
 # Stop when done
-./breenix-gdb-chat/scripts/gdb_session.sh stop
+./tools/gdb-chat/scripts/gdb_session.sh stop
 ```
 
 ## QEMU Process Cleanup

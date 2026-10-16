@@ -178,6 +178,14 @@ class ProgressTest(unittest.TestCase):
                        'suite.case_limit_ms = 121000;', 'suite.case_limit_ms (121000)'):
             self.assertTrue(has_case_override(source), source)
 
+    def test_one_case_done_disarms_completion_monitor(self):
+        self.progress = Progress(self.serial, now=0, epoch=0, track_completion=True)
+        start = 'SUITE smoke START cases=1 only=memory/mmap\n'
+        self.feed(start, 0)
+        self.assertTrue(self.progress.stalled(now=120))
+        self.feed(start + 'SUITE smoke DONE passed=1 failed=0 skipped=0 total=1 only=memory/mmap\n', 1)
+        self.assertFalse(self.progress.stalled(now=1000))
+
     def test_done_only_disarms_when_monitor_explicitly_tracks_completion(self):
         self.feed('PROBE DONE passed=16 failed=0\n', 0)
         self.assertTrue(self.progress.stalled(now=120))

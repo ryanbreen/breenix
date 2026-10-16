@@ -37,7 +37,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$SCRIPT_DIR"
 cd "$BREENIX_ROOT"
 source "$BREENIX_ROOT/scripts/host-slots.sh"
-host_slots_start "$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")" "$@"
+RUN_ARGS=("$@")
 
 # #826/#834/#865/R181: this script's native (non-Parallels, non-VMware)
 # QEMU boot runs behind the host-wide lock in
@@ -58,6 +58,7 @@ ARCH="arm64"
 HEADLESS=false
 CLEAN=false
 NO_BUILD=false
+DRY_RUN=false
 DISK_OVERRIDE=""
 BTRT=false
 PARALLELS=false
@@ -66,6 +67,7 @@ PARALLELS_TEST=false
 PARALLELS_TEST_WAIT=35
 VMWARE=false
 SUITE=""
+ONLY=""
 PROBE=false
 TESTS=false
 BOOT_MODE=default
@@ -101,6 +103,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --no-build)
             NO_BUILD=true
+            shift
+            ;;
+        --dry-run)
+            DRY_RUN=true
             shift
             ;;
         --parallels)
@@ -166,6 +172,11 @@ while [[ $# -gt 0 ]]; do
             TESTS=true
             shift
             ;;
+        --case)
+            [ -n "${2:-}" ] || { echo "--case needs a case id"; exit 2; }
+            ONLY="${2:-}"
+            shift 2
+            ;;
         --suite)
             SUITE="${2:-}"
             shift 2
@@ -207,7 +218,10 @@ while [[ $# -gt 0 ]]; do
             echo "  --probe                    Parallels/VMware: run /sbin/probe as PID 1, wait for PROBE DONE, stop VM"
             echo "  --tests                    Parallels/VMware: boot the testing kernel, wait for its userspace report, stop VM"
             echo "  --gate-timeout N           DONE deadline in seconds (default 1800)"
+            echo "  --case CATEGORY/CASE       Run just this suite case (not full-suite evidence)"
             echo "  --suite ID                 Parallels/VMware: run effort suite ID (docs/suites/ID.json) as PID 1"
+            echo "  --dry-run                  Check target policy and exit before building or booting"
+            echo "  BREENIX_CATCHUP=1          Allow effort catch-up on Parallels/VMware; recorded in metadata"
             echo "  --retina                   Parallels/VMware: native Retina resolution (default: scaled 2x, readable)"
             echo "  --resolution WxH           Set display resolution (e.g. 1920x1080)"
             echo "                             Default: auto-detect from screen"
@@ -230,6 +244,37 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Refuse effort work on x86-64, Parallels and VMware before builds, VM setup or host-slot
+# supervision. The supervised re-exec (BREENIX_SLOT_SESSION) inherits the normalized
+# BREENIX_CATCHUP and the checked stamp, so the check and its launch line run once.
+TARGET=arm64-qemu
+if [ "$ARCH" = x86_64 ]; then TARGET=x86; fi
+if [ "$PARALLELS" = true ]; then TARGET=parallels
+elif [ "$VMWARE" = true ]; then TARGET=vmware
+fi
+if [ -z "${BREENIX_SLOT_SESSION:-}" ]; then
+    case "$(printf %s "${BREENIX_CATCHUP:-}" | tr '[:upper:]' '[:lower:]')" in
+        ''|0|false|no) BREENIX_CATCHUP=0 ;;
+        1|true|yes) BREENIX_CATCHUP=1 ;;
+        *)
+            echo "BREENIX_CATCHUP must be 1, true or yes for the catch-up, or 0, false, no or unset; got '$BREENIX_CATCHUP'" >&2
+            exit 1
+            ;;
+    esac
+    export BREENIX_CATCHUP
+    echo "Breenix target=$TARGET BREENIX_CATCHUP=$BREENIX_CATCHUP dry-run=$DRY_RUN"
+    if [ "$TARGET" != arm64-qemu ]; then
+        POLICY_SHA=$(python3 "$BREENIX_ROOT/scripts/effort-target-guard.py" --repo "$BREENIX_ROOT" \
+            --target "$TARGET") || exit 1
+        export BREENIX_TARGET_POLICY_CHECKED="$TARGET:$POLICY_SHA"
+    fi
+fi
+if [ "$DRY_RUN" = true ]; then
+    echo "Target policy accepted; no build or boot requested."
+    exit 0
+fi
+host_slots_start "$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")" "${RUN_ARGS[@]}"
 
 if [ -n "$DISK_OVERRIDE" ]; then
     DISK_OVERRIDE=$(python3 - "$DISK_OVERRIDE" <<'PYDISK'
@@ -283,6 +328,12 @@ if [ -n "$SUITE" ]; then
     fi
 fi
 
+if [ -n "$ONLY" ]; then
+    [ -n "$SUITE" ] && [[ "$ONLY" =~ ^[a-zA-Z0-9_./-]+$ ]] || {
+        echo "--case needs --suite ID and a category/case id"; exit 2;
+    }
+fi
+
 if [ "$PROBE" = true ]; then
     if [ "$PARALLELS" != true ] && [ "$VMWARE" != true ]; then
         echo "--probe is for --parallels or --vmware (ARM64 QEMU: scripts/boot-interactive.sh --mode probe)"
@@ -316,6 +367,16 @@ if [ "$TESTS" = true ]; then
     BOOT_MODE=tests
     KERNEL_FEATURE_ARGS=(--features testing)
 fi
+
+# Keep host launch policy beside this run's serial, including successful catch-up overrides.
+record_launch_metadata() {
+    python3 - "$SERIAL_LOG.launch.json" "$TARGET" "${BREENIX_CATCHUP:-0}" "$(git rev-parse HEAD)" <<'PYLAUNCH'
+import json, sys
+from pathlib import Path
+Path(sys.argv[1]).write_text(json.dumps({'target': sys.argv[2], 'catchup': sys.argv[3] == '1',
+                                       'commit': sys.argv[4]}) + '\n')
+PYLAUNCH
+}
 
 # Whether this boot writes a boot target onto a copy of the ext2 disk.
 writes_boot_target() {
@@ -352,7 +413,7 @@ stage_boot_ext2_disk() {
             "$BREENIX_ROOT/userspace/programs/aarch64/probe.elf" || exit 1
     else
         "$BREENIX_ROOT/scripts/write-boot-target.sh" "$BOOT_EXT2_DISK" "$SUITE" \
-            "$BREENIX_ROOT/userspace/programs/aarch64/suite-$SUITE.elf" || exit 1
+            "$BREENIX_ROOT/userspace/programs/aarch64/suite-$SUITE.elf" "" "$ONLY" || exit 1
         if [[ ",$SUITE," == *",sdk,"* ]]; then
             # The Developer SDK suite's host side stages the SDK's results onto the copy.
             python3 "$BREENIX_ROOT/scripts/sdk-suite.py" --arch aarch64 --image "$BOOT_EXT2_DISK" || exit 1
@@ -394,7 +455,7 @@ efi_artifacts_match() {
 # Wait for a userspace completion record and reject missing or failing verdicts.
 wait_boot_done() {
     python3 "$BREENIX_ROOT/scripts/wait-boot-done.py" "$SERIAL_LOG" "$BOOT_MODE" \
-        --suite "$SUITE" --timeout "$GATE_TIMEOUT" --started "$CLOCK_STARTED"
+        --suite "$SUITE" --case "$ONLY" --timeout "$GATE_TIMEOUT" --started "$CLOCK_STARTED"
 }
 
 # Install before starting a VM. Ignore further signals during cleanup so Vigil
@@ -407,6 +468,8 @@ bounded_vm_command() {
 # bundle, rather than the pristine staging VMDK, holds the guest's writes.
 score_vm_suite_disk() {
     (
+        # Whole-suite disk checks depend on other cases and are not one-case evidence.
+        [ -z "${ONLY:-}" ] || exit 0
         local manifest="$BREENIX_ROOT/docs/suites/$SUITE.json" checks disk temporary
         checks=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("diskChecks", [])))' "$manifest") || exit $?
         [ "$checks" != 0 ] || exit 0
@@ -834,7 +897,9 @@ if [ "$PARALLELS" = true ]; then
     rm -f "$SERIAL_LOG"  # Remove so VMware creates fresh (avoids append/replace prompt)
     VIGIL_ID=""
     install_vm_boot_traps
-    VIGIL_ID=$("$BREENIX_ROOT/scripts/vigil-record.sh" start parallels "$BOOT_MODE" "$SUITE" "$SERIAL_LOG")
+    record_launch_metadata
+    # A one-case run is not registered: Vigil would score it as a suite boot.
+    [ -n "$ONLY" ] || VIGIL_ID=$("$BREENIX_ROOT/scripts/vigil-record.sh" start parallels "$BOOT_MODE" "$SUITE" "$SERIAL_LOG")
     host_slot_vm "$SERIAL_LOG" prlctl stop "$PARALLELS_VM" --kill
     # Open the VM in its own window, as VMware's `gui` start does, so a boot can be watched;
     # BREENIX_PARALLELS_NOGUI=1 keeps unattended automation off the operator's desktop.
@@ -1216,7 +1281,9 @@ VMXEOF
     rm -f "$SERIAL_LOG"  # Remove so VMware creates fresh (avoids append/replace prompt)
     VIGIL_ID=""
     install_vm_boot_traps
-    VIGIL_ID=$("$BREENIX_ROOT/scripts/vigil-record.sh" start vmware "$BOOT_MODE" "$SUITE" "$SERIAL_LOG")
+    record_launch_metadata
+    # A one-case run is not registered: Vigil would score it as a suite boot.
+    [ -n "$ONLY" ] || VIGIL_ID=$("$BREENIX_ROOT/scripts/vigil-record.sh" start vmware "$BOOT_MODE" "$SUITE" "$SERIAL_LOG")
     host_slot_vm "$SERIAL_LOG" "$VMRUN" stop "$VMX_FILE" hard
     if [ -n "${BREENIX_VMWARE_NOGUI:-}" ]; then
         # Headless automation (docker/qemu/run-vmware-gate.sh): `gui` mode
@@ -1283,10 +1350,6 @@ else
 
     # Build command for x86_64
     BUILD_CMD="cargo build --release --features testing,external_test_bins,interactive --bin qemu-uefi"
-
-    # x86_64 needs to find UEFI image
-    UEFI_IMG=$(ls -t "$BREENIX_ROOT/target/release/build/breenix-"*/out/breenix-uefi.img 2>/dev/null | head -1)
-    KERNEL="$UEFI_IMG"  # Reuse KERNEL var for existence check
 fi
 
 # Resolve display resolution
@@ -1410,6 +1473,12 @@ if [ "$REBUILD_HOME" = true ] || [ ! -f "$HOME_DISK" ]; then
     else
         "$BREENIX_ROOT/scripts/create_home_disk.sh"
     fi
+fi
+
+if [ "$ARCH" != "arm64" ]; then
+    # The UEFI image is a build product, so look for it only once the build has run.
+    UEFI_IMG=$(ls -t "$BREENIX_ROOT/target/release/build/breenix-"*/out/breenix-uefi.img 2>/dev/null | head -1)
+    KERNEL="$UEFI_IMG"  # Reuse KERNEL var for existence check
 fi
 
 if [ ! -f "$KERNEL" ]; then
@@ -1592,6 +1661,15 @@ if [ "$ARCH" = "arm64" ]; then
         &
 else
     # x86_64 QEMU invocation (UEFI boot, native)
+    # Fetch the pinned OVMF firmware on first use (a fresh checkout has none cached).
+    if [ ! -f "$BREENIX_ROOT/target/ovmf/x64/code.fd" ] || [ ! -f "$BREENIX_ROOT/target/ovmf/x64/vars.fd" ]; then
+        if [ ! -x "$BREENIX_ROOT/target/release/qemu-uefi" ]; then
+            echo "Error: OVMF firmware is not cached and target/release/qemu-uefi, which fetches it, is not built"
+            exit 1
+        fi
+        echo "Fetching OVMF firmware into target/ovmf..."
+        (cd "$BREENIX_ROOT" && BREENIX_FETCH_OVMF=1 "$BREENIX_ROOT/target/release/qemu-uefi")
+    fi
     # Copy OVMF firmware to output dir (pflash needs writable files)
     cp "$BREENIX_ROOT/target/ovmf/x64/code.fd" "$OUTPUT_DIR/OVMF_CODE.fd"
     cp "$BREENIX_ROOT/target/ovmf/x64/vars.fd" "$OUTPUT_DIR/OVMF_VARS.fd"

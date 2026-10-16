@@ -20,7 +20,8 @@ use libbreenix::io;
 use libbreenix::memory::{self, MAP_ANONYMOUS, MAP_PRIVATE, MAP_SHARED, PROT_READ, PROT_WRITE};
 use libbreenix::process::{self, ForkResult};
 use libbreenix::signal::{Sigaction, StackT};
-use libbreenix::suite::{case, case_ms_left, category, check, fail, skip, suite, CaseError, CaseResult, Suite};
+use libbreenix::suite::prerequisites;
+use libbreenix::suite::{case, case_ms_left, category, check, fail, suite, CaseError, CaseResult, Suite};
 #[cfg(target_arch = "aarch64")]
 use libbreenix::syscall::raw;
 use libbreenix::time;
@@ -2633,9 +2634,7 @@ fn shared_for_handlers() -> Result<Shared, CaseError> {
 
 fn h_spinning_target() -> CaseResult {
     let cpus = processors()?;
-    if cpus < 2 {
-        return skip(format!("{cpus} processor online; the case needs 2, so the target spins on one while the sender runs on another"));
-    }
+    prerequisites::cpus(cpus, 2, "a target spinning on one processor while its sender runs on another")?;
     let s = shared_for_handlers()?;
     let mut kid = Child::start(|| {
         if catch_with(SIGUSR1, on_mark as usize as u64, 0, 0).is_err() { return 10; }
@@ -3971,9 +3970,7 @@ fn j_group() -> CaseResult {
 
 fn j_stop_threads() -> CaseResult {
     let cpus = processors()?;
-    if cpus < 2 {
-        return skip(format!("{cpus} processor online; the case needs 2, so both threads compute at once"));
-    }
+    prerequisites::cpus(cpus, 2, "two threads computing at once")?;
     let s = Shared::new()?;
     let page = s.page as usize;
     // Slots 0 and 1 count each thread's turns; slot 2 carries handoffs from the first

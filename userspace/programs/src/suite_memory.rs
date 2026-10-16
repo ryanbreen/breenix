@@ -21,6 +21,7 @@
 //! report back through pipes, never through the memory under test.
 use libbreenix::process::{self, ForkResult};
 use libbreenix::signal::Sigaction;
+use libbreenix::suite::prerequisites;
 use libbreenix::suite::{case, case_ms_left, category, check, fail, suite, value, CaseError, CaseResult, Suite};
 #[cfg(target_arch = "aarch64")]
 use libbreenix::syscall::raw;
@@ -919,10 +920,10 @@ const MOVED: u32 = 4;
 static WHERE: [AtomicU32; MAX_WORKERS] = [const { AtomicU32::new(0) }; MAX_WORKERS];
 
 /// The workers a case starts: one per processor beyond the first, at most MAX_WORKERS.
-/// Skips when fewer than two processors are online.
+/// Fails when fewer than two processors are online; simultaneous execution is required.
 fn workers_for() -> Result<usize, CaseError> {
     let cpus = processors()?;
-    if cpus < 2 { return Err(CaseError::Skip(format!("{cpus} processor online; the case needs 2"))); }
+    prerequisites::cpus(cpus, 2, "the case and its workers on processors of their own at once")?;
     Ok((cpus - 1).min(MAX_WORKERS))
 }
 
@@ -2004,9 +2005,7 @@ fn sh_file_msync_read() -> CaseResult {
     fill(p, len, 13);
     let stored = disk_blocks(f.fd)?;
     value("blocks-before", stored, "", None);
-    if stored >= (len / 512) as i64 {
-        return Err(CaseError::Skip(format!("storing into the mapping already gave the file {stored} disk blocks, so st_blocks cannot show what msync writes")));
-    }
+    prerequisites::delayed_allocation(stored, (len / 512) as i64)?;
     zero("msync(MS_SYNC)", msync(p, len, MS_SYNC))?;
     let synced = disk_blocks(f.fd)?;
     value("blocks-after", synced, "", None);
