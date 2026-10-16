@@ -960,7 +960,7 @@ enum QuickRead {
 /// x86_64: the calling thread's descriptor table, from the reference its row
 /// publishes (`Process::publish_fd_table`), without PROCESS_MANAGER (#1650).
 #[cfg(target_arch = "x86_64")]
-fn current_fd_table() -> Option<crate::ipc::FdTable> {
+pub(super) fn current_fd_table() -> Option<crate::ipc::FdTable> {
     let thread = crate::per_cpu::current_thread()?;
     let reference = thread.signals.fd_table.try_lock()?.clone()?;
     reference.upgrade()

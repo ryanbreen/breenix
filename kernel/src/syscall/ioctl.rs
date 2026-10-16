@@ -151,7 +151,7 @@ fn descriptor_readable(fd: i32) -> bool {
         .and_then(|(_, p)| p.fd_table.get(fd)).is_some_and(|entry| entry.readable())
 }
 
-fn fd_kind(table: &FdTable, fd: u64) -> Option<FdKind> {
+fn fd_kind(table: &crate::ipc::fd::FdTableInner, fd: u64) -> Option<FdKind> {
     if fd > i32::MAX as u64 { return None; }
     Some(table.get(fd as i32)?.kind.clone())
 }
@@ -186,7 +186,15 @@ fn rtc_ioctl(request: u64, arg: u64) -> SyscallResult {
 }
 
 /// The FdKind of the caller's file descriptor `fd`, or None if it is not open.
+/// x86_64: from the table the caller's row publishes to it, without
+/// PROCESS_MANAGER (#1650), unless a hold of that lock is changing it.
 fn get_fd_kind(fd: i32) -> Option<FdKind> {
+    #[cfg(target_arch = "x86_64")]
+    if let Some(kind) = super::handlers::current_fd_table()
+        .and_then(|table| table.try_read_lockless(|inner| fd_kind(inner, fd as u64)))
+    {
+        return kind;
+    }
     let thread_id = crate::task::scheduler::current_thread_id()?;
     let manager_guard = crate::process::manager();
     let manager = manager_guard.as_ref()?;
