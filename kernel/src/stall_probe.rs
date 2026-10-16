@@ -107,8 +107,79 @@ pub fn note_interrupt(cpu: usize) {
     }
 }
 
+// ------------------------------------------------- lock-holder sampling
+
+/// A waiter that has spun 20 ms on a lock NMIs its holder once: the holder
+/// records its RIP and how long the NMI took to be answered. Microseconds
+/// mean the holder was running code; tens of milliseconds mean its vCPU was
+/// not executing.
+static SAMPLE_REQ: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+static SAMPLE_WHO: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+const HOLDS: usize = 32;
+static HOLD_WRITE: AtomicU64 = AtomicU64::new(0);
+static HOLD_READ: AtomicU64 = AtomicU64::new(0);
+/// at ns, answer us, holder | kind << 8 | waiter << 16 | flags << 24, rip.
+static HOLD: [[AtomicU64; 4]; HOLDS] = [const { [const { AtomicU64::new(0) }; 4] }; HOLDS];
+
+fn request_sample(kind: u64, holder: usize) {
+    if holder >= MAX_CPUS || holder == cpu_now() {
+        return;
+    }
+    SAMPLE_WHO[holder].store(kind | (cpu_now() as u64) << 8, Ordering::Relaxed);
+    if SAMPLE_REQ[holder]
+        .compare_exchange(0, rdtsc(), Ordering::AcqRel, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+    if let Some(apic) = crate::arch_impl::x86_64::smp::cpu_apic_id(holder) {
+        let _ = crate::arch_impl::x86_64::apic::send_ipi(apic, crate::arch_impl::x86_64::apic::Ipi::Nmi);
+    }
+}
+
+/// Spin until `try_once` succeeds, sampling the holder `holder()` names once
+/// the wait passes 20 ms.
+pub fn spin_acquire<T>(kind: u64, holder: impl Fn() -> u64, mut try_once: impl FnMut() -> Option<T>) -> T {
+    let t0 = rdtsc();
+    let mut sampled = false;
+    loop {
+        if let Some(guard) = try_once() {
+            return guard;
+        }
+        if !sampled && rdtsc().saturating_sub(t0) > 20_000 * cycles_per_us() {
+            sampled = true;
+            request_sample(kind, holder() as usize);
+        }
+        core::hint::spin_loop();
+    }
+}
+
+pub fn sched_holder() -> u64 {
+    SCHED_HOLDER.load(Ordering::Relaxed)
+}
+
+pub fn pm_holder() -> u64 {
+    crate::process::process_manager_owner_snapshot().map_or(u64::MAX, |(cpu, _)| cpu)
+}
+
 /// Top of the NMI handler.
 pub fn nmi_hook(cpu: usize, rip: u64, cs: u64, rflags: u64) {
+    if cpu < MAX_CPUS {
+        let sent = SAMPLE_REQ[cpu].load(Ordering::Acquire);
+        if sent != 0 {
+            let who = SAMPLE_WHO[cpu].load(Ordering::Relaxed);
+            let flags = (cs & 3 == 3) as u64 | ((rflags & 0x200 != 0) as u64) << 1;
+            let n = HOLD_WRITE.fetch_add(1, Ordering::Relaxed);
+            if n.saturating_sub(HOLD_READ.load(Ordering::Relaxed)) < HOLDS as u64 {
+                let r = &HOLD[n as usize % HOLDS];
+                r[0].store(mono_ns(), Ordering::Relaxed);
+                r[1].store(rdtsc().saturating_sub(sent) / cycles_per_us(), Ordering::Relaxed);
+                r[2].store(cpu as u64 | (who & 0xff) << 8 | (who >> 8 & 0xff) << 16 | flags << 24, Ordering::Relaxed);
+                r[3].store(rip, Ordering::Relaxed);
+            }
+            SAMPLE_REQ[cpu].store(0, Ordering::Release);
+        }
+    }
     if cpu >= MAX_CPUS || !FORCE_NMI[cpu].swap(false, Ordering::AcqRel) {
         return;
     }
@@ -331,6 +402,24 @@ fn summary() {
 /// From kstrandd: start forcing, and print late records.
 pub fn poll() {
     summary();
+    while HOLD_READ.load(Ordering::Relaxed)
+        < HOLD_WRITE.load(Ordering::Relaxed).min(HOLD_READ.load(Ordering::Relaxed) + HOLDS as u64)
+    {
+        let n = HOLD_READ.load(Ordering::Relaxed);
+        let v: [u64; 4] = core::array::from_fn(|k| HOLD[n as usize % HOLDS][k].load(Ordering::Relaxed));
+        log::info!(
+            "HOLDSAMPLE at_ms={} answer_us={} holder={} kind={} waiter={} user={} if={} rip={:#x}",
+            v[0] / 1_000_000,
+            v[1],
+            v[2] & 0xff,
+            v[2] >> 8 & 0xff,
+            v[2] >> 16 & 0xff,
+            v[2] >> 24 & 1,
+            v[2] >> 25 & 1,
+            v[3],
+        );
+        HOLD_READ.fetch_add(1, Ordering::Relaxed);
+    }
     if !ENABLED.swap(true, Ordering::Relaxed) {
         NEXT_ARM.store(rdtsc() + 1_000_000 * cycles_per_us(), Ordering::Release);
     }
