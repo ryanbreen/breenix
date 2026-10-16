@@ -1,6 +1,7 @@
 //! `cmap`: codepoint to glyph mapping through a Unicode format 12 or format 4 subtable
-//! (OpenType specification, "cmap" chapter). Every Unicode subtable of format 4 or 12 is
-//! validated when the font is parsed; a malformed one rejects the font with `BadCmap`.
+//! (OpenType specification, "cmap" chapter). The subtables lookups read, the first Unicode
+//! subtable of each format, are validated when the font is parsed; a malformed one rejects
+//! the font with `BadCmap`.
 
 use core::ops::Range;
 
@@ -29,9 +30,12 @@ impl CmapTable {
         if 4 + 8 * n > d.len() {
             return Err(FontError::Truncated);
         }
-        let (mut best4, mut best12) = (None, None);
-        work::add(n as u64);
+        // Choose first, then validate: many records may point at one subtable (DejaVu's
+        // 0/3 and 3/1 records share theirs), so validating per record would cost the record
+        // count times the subtable's size.
+        let (mut first4, mut first12) = (None, None);
         for i in 0..n {
+            work::add(1);
             let r = 4 + 8 * i;
             let (platform, encoding) = (u16_at(d, r).unwrap_or(0), u16_at(d, r + 2).unwrap_or(0));
             let off = u32_at(d, r + 4).ok_or(FontError::Truncated)? as usize;
@@ -39,17 +43,19 @@ impl CmapTable {
                 continue;
             }
             match u16_at(d, off).ok_or(FontError::Truncated)? {
-                4 => {
-                    let seg_count = validate4(d, off)?;
-                    best4.get_or_insert(CmapTable::Format4 { at: table.start + off, seg_count });
-                }
-                12 => {
-                    let groups = validate12(d, off)?;
-                    best12.get_or_insert(CmapTable::Format12 { at: table.start + off, groups });
-                }
+                4 => _ = first4.get_or_insert(off),
+                12 => _ = first12.get_or_insert(off),
                 _ => {}
             }
         }
+        let best4 = match first4 {
+            Some(off) => Some(CmapTable::Format4 { at: table.start + off, seg_count: validate4(d, off)? }),
+            None => None,
+        };
+        let best12 = match first12 {
+            Some(off) => Some(CmapTable::Format12 { at: table.start + off, groups: validate12(d, off)? }),
+            None => None,
+        };
         Ok(best12.or(best4).unwrap_or(CmapTable::None))
     }
 
@@ -82,9 +88,9 @@ fn validate4(d: &[u8], off: usize) -> Result<usize, FontError> {
         return Err(FontError::BadCmap);
     }
     let (ends, starts, ranges) = (14, 16 + seg_x2, 16 + 3 * seg_x2);
-    work::add(segs as u64);
     let mut prev_end: Option<u16> = None;
     for i in 0..segs {
+        work::add(1);
         let end = u16_at(s, ends + 2 * i).ok_or(FontError::BadCmap)?;
         if prev_end.is_some_and(|p| end <= p) {
             return Err(FontError::BadCmap);
@@ -115,9 +121,9 @@ fn validate12(d: &[u8], off: usize) -> Result<usize, FontError> {
     if n.checked_mul(12).and_then(|b| b.checked_add(16)).is_none_or(|b| b > s.len()) {
         return Err(FontError::BadCmap);
     }
-    work::add(n as u64);
     let mut prev_end: Option<u32> = None;
     for i in 0..n {
+        work::add(1);
         let g = 16 + 12 * i;
         let (start, end) = (u32_at(s, g).ok_or(FontError::BadCmap)?, u32_at(s, g + 4).ok_or(FontError::BadCmap)?);
         if start > end || prev_end.is_some_and(|p| start <= p) {

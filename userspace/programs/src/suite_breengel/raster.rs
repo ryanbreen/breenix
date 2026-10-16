@@ -7,102 +7,102 @@ use libgfx::framebuf::{Format, Rect, SurfaceError};
 use libgfx::{alpha, blit, work};
 
 pub(crate) const RASTER: &[Case] = &[
-    case("fill-rect", "fill_rect writes exactly the pixels of a half-open rectangle and no others", raster_fill_rect),
-    case("fill-rect-clip-left", "A rectangle partly off the left edge fills only its visible columns", raster_fill_rect_clip_left),
-    case("fill-rect-offscreen-left", "A rectangle wholly left of the surface changes no pixel", raster_fill_rect_offscreen_left),
-    case("fill-rect-offscreen-top", "A rectangle wholly above the surface changes no pixel", raster_fill_rect_offscreen_top),
-    case("fill-rect-overflow", "A rectangle whose x + w overflows i32 clips to the surface without wrapping", raster_fill_rect_overflow),
-    case("fill-rect-empty", "Zero or negative width or height draws nothing", raster_fill_rect_empty),
-    case("draw-rect", "draw_rect writes exactly the one-pixel perimeter", raster_draw_rect),
-    case("line-axes", "Horizontal and vertical lines cover exactly their spans, endpoints included", raster_line_axes),
-    case("line-bresenham", "Shallow, steep and 45-degree lines write exactly the pixels in the contract's literal tables", raster_line_bresenham),
-    case("line-clip", "A line crossing the edges writes only the in-surface pixels of its unclipped path", raster_line_clip),
-    case("circle-fill", "fill_circle sets exactly the pixels the contract's x² + y² ≤ r² rule selects", raster_circle_fill),
-    case("circle-fill-offscreen-left", "A circle partly or wholly off the left edge writes nothing outside the surface", raster_circle_fill_offscreen_left),
-    case("circle-outline", "draw_circle writes the midpoint-algorithm pixels listed in the contract for radii 0 to 40", raster_circle_outline),
-    case("guard-pages", "Every primitive called with extreme coordinates leaves the guard pages untouched and the process alive", raster_guard_pages),
-    case("extreme-work-bound", "Every primitive at coordinates near ±2³¹ takes no more loop steps than section 12.3's bound for its clipped rectangle, by libgfx's work counter, which counts rejected iterations too", raster_extreme_work_bound),
-    case("stride-padding", "Drawing into a surface whose stride exceeds width × bytes per pixel leaves every row's sentinel bytes intact", raster_stride_padding),
-    case("surface-validate", "`Surface::new` and `Surface::from_raw` both reject a short stride, an overflowing size, an oversize dimension, a misaligned or null base with section 12.3's errors", raster_surface_validate),
-    case("bpp3-bpp4", "The same scene on a 3-byte RGB surface and a 4-byte BGRX surface gives the same colours", raster_bpp3_bpp4),
-    case("bgr-order", "The BGR flag swaps the channel order and nothing else", raster_bgr_order),
-    case("x-byte", "Every primitive writes the X byte of a BGRX pixel as 0xFF", raster_x_byte),
-    case("copy-row-clip", "copy_row_from clips at the end of the row instead of wrapping into the next one", raster_copy_row_clip),
-    case("premultiply", "Straight colour and alpha premultiply to div255(c × a) for all 65,536 pairs", raster_premultiply),
-    case("alpha-over-examples", "Source-over gives the contract's literal results for fractional source and destination alphas", raster_alpha_over_examples),
-    case("alpha-over-sweep", "Source-over matches the premultiplied formula for all 256 alphas over four backgrounds", raster_alpha_over_sweep),
-    case("alpha-extremes", "Alpha 255 replaces the destination and alpha 0 leaves it unchanged", raster_alpha_extremes),
-    case("alpha-output", "The output alpha over a translucent destination follows the contract's formula", raster_alpha_output),
-    case("blit", "blit copies a source surface to a position exactly", raster_blit),
-    case("blit-clip", "A blit partly off the surface copies only the visible intersection", raster_blit_clip),
-    case("blit-alpha", "A premultiplied blit blends each pixel by the formula", raster_blit_alpha),
-    case("blit-straight", "A straight-alpha source is premultiplied exactly once before blending", raster_blit_straight),
-    case("blit-scale", "An integer-scale blit replicates each source pixel into an exact square", raster_blit_scale),
-    case("clip-rect", "With a clip rectangle set, every primitive draws only inside it", raster_clip_rect),
-    case("clip-stack", "Nested clips intersect, and popping one restores the outer clip", raster_clip_stack),
-    case("clip-empty", "An empty clip draws nothing and marks no damage", raster_clip_empty),
-    case("rounded-rect", "Rounded-rectangle corners match the contract's corner predicate", raster_rounded_rect),
-    case("gradient", "A vertical gradient's rows equal the contract's integer interpolation", raster_gradient),
-    case("damage-exact", "Each primitive marks exactly the clipped bounding rectangle the contract's table gives", raster_damage_exact),
-    case("damage-noop", "A draw clipped to nothing marks nothing, and a same-colour draw still marks its rectangle", raster_damage_noop),
-    case("damage-sound", "Over a seeded random scene, every changed pixel lies inside the accumulated damage", raster_damage_sound),
-    case("surface-owned", "An owned surface allocates, clears to a colour and frees its memory when dropped", raster_surface_owned),
+    pictured!("fill-rect", "fill_rect writes exactly the pixels of a half-open rectangle and no others", raster_fill_rect),
+    pictured!("fill-rect-clip-left", "A rectangle partly off the left edge fills only its visible columns", raster_fill_rect_clip_left),
+    pictured!("fill-rect-offscreen-left", "A rectangle wholly left of the surface changes no pixel", raster_fill_rect_offscreen_left),
+    pictured!("fill-rect-offscreen-top", "A rectangle wholly above the surface changes no pixel", raster_fill_rect_offscreen_top),
+    pictured!("fill-rect-overflow", "A rectangle whose x + w overflows i32 clips to the surface without wrapping", raster_fill_rect_overflow),
+    pictured!("fill-rect-empty", "Zero or negative width or height draws nothing", raster_fill_rect_empty),
+    pictured!("draw-rect", "draw_rect writes exactly the one-pixel perimeter", raster_draw_rect),
+    pictured!("line-axes", "Horizontal and vertical lines cover exactly their spans, endpoints included", raster_line_axes),
+    pictured!("line-bresenham", "Shallow, steep and 45-degree lines write exactly the pixels in the contract's literal tables", raster_line_bresenham),
+    pictured!("line-clip", "A line crossing the edges writes only the in-surface pixels of its unclipped path", raster_line_clip),
+    pictured!("circle-fill", "fill_circle sets exactly the pixels the contract's x² + y² ≤ r² rule selects", raster_circle_fill),
+    pictured!("circle-fill-offscreen-left", "A circle partly or wholly off the left edge writes nothing outside the surface", raster_circle_fill_offscreen_left),
+    pictured!("circle-outline", "draw_circle writes the midpoint-algorithm pixels listed in the contract for radii 0 to 40", raster_circle_outline),
+    pictured!("guard-pages", "Every primitive called with extreme coordinates leaves the guard pages untouched and the process alive", raster_guard_pages),
+    pictured!("extreme-work-bound", "Every primitive at coordinates near ±2³¹ takes no more loop steps than section 12.3's bound for its clipped rectangle, by libgfx's work counter, which counts rejected iterations too", raster_extreme_work_bound),
+    pictured!("stride-padding", "Drawing into a surface whose stride exceeds width × bytes per pixel leaves every row's sentinel bytes intact", raster_stride_padding),
+    pictured!("surface-validate", "`Surface::new` and `Surface::from_raw` both reject a short stride, an overflowing size, an oversize dimension, a misaligned or null base with section 12.3's errors", raster_surface_validate),
+    pictured!("bpp3-bpp4", "The same scene on a 3-byte RGB surface and a 4-byte BGRX surface gives the same colours", raster_bpp3_bpp4),
+    pictured!("bgr-order", "The BGR flag swaps the channel order and nothing else", raster_bgr_order),
+    pictured!("x-byte", "Every primitive writes the X byte of a BGRX pixel as 0xFF", raster_x_byte),
+    pictured!("copy-row-clip", "copy_row_from clips at the end of the row instead of wrapping into the next one", raster_copy_row_clip),
+    pictured!("premultiply", "Straight colour and alpha premultiply to div255(c × a) for all 65,536 pairs", raster_premultiply),
+    pictured!("alpha-over-examples", "Source-over gives the contract's literal results for fractional source and destination alphas", raster_alpha_over_examples),
+    pictured!("alpha-over-sweep", "Source-over matches the premultiplied formula for all 256 alphas over four backgrounds", raster_alpha_over_sweep),
+    pictured!("alpha-extremes", "Alpha 255 replaces the destination and alpha 0 leaves it unchanged", raster_alpha_extremes),
+    pictured!("alpha-output", "The output alpha over a translucent destination follows the contract's formula", raster_alpha_output),
+    pictured!("blit", "blit copies a source surface to a position exactly", raster_blit),
+    pictured!("blit-clip", "A blit partly off the surface copies only the visible intersection", raster_blit_clip),
+    pictured!("blit-alpha", "A premultiplied blit blends each pixel by the formula", raster_blit_alpha),
+    pictured!("blit-straight", "A straight-alpha source is premultiplied exactly once before blending", raster_blit_straight),
+    pictured!("blit-scale", "An integer-scale blit replicates each source pixel into an exact square", raster_blit_scale),
+    pictured!("clip-rect", "With a clip rectangle set, every primitive draws only inside it", raster_clip_rect),
+    pictured!("clip-stack", "Nested clips intersect, and popping one restores the outer clip", raster_clip_stack),
+    pictured!("clip-empty", "An empty clip draws nothing and marks no damage", raster_clip_empty),
+    pictured!("rounded-rect", "Rounded-rectangle corners match the contract's corner predicate", raster_rounded_rect),
+    pictured!("gradient", "A vertical gradient's rows equal the contract's integer interpolation", raster_gradient),
+    pictured!("damage-exact", "Each primitive marks exactly the clipped bounding rectangle the contract's table gives", raster_damage_exact),
+    pictured!("damage-noop", "A draw clipped to nothing marks nothing, and a same-colour draw still marks its rectangle", raster_damage_noop),
+    pictured!("damage-sound", "Over a seeded random scene, every changed pixel lies inside the accumulated damage", raster_damage_sound),
+    pictured!("surface-owned", "An owned surface allocates, clears to a colour and frees its memory when dropped", raster_surface_owned),
 ];
 
 pub(crate) const TEXT: &[Case] = &[
-    case("fonts-pinned", "The test fonts parse, and their SHA-256 values match the pins", text_fonts_pinned),
-    case("raster-identical", "A fixed set of rasterized glyphs hashes to the pinned value, the same on every target", text_raster_identical),
-    case("metrics-independent", "Advance widths, left bearings and bounding boxes of 50 glyphs equal the independently extracted table", text_metrics_independent),
-    case("cmap-independent", "Codepoint-to-glyph mappings for 200 codepoints equal the independently extracted table", text_cmap_independent),
-    case("bitmap-glyph", "The built-in 5x7 font draws 'A' exactly as its table defines it", text_bitmap_glyph),
-    case("bitmap-scale", "Scale 3 turns each glyph pixel into a 3x3 block", text_bitmap_scale),
-    case("bitmap-unknown", "A byte without a glyph draws the contract's replacement box", text_bitmap_unknown),
-    case("noto-ascii", "noto-sans-mono-bitmap draws every printable ASCII character matching its reference cell", text_noto_ascii),
-    case("noto-coverage", "Bitmap coverage blends with the background by the alpha contract", text_noto_coverage),
-    case("ttf-glyph", "DejaVu Sans Mono \"Hg\" at 16 px matches its reviewed reference", text_ttf_glyph),
-    case("ttf-sizes", "One string at 8, 12, 16, 24 and 48 px matches each size's reviewed reference", text_ttf_sizes),
-    case("ttf-advance", "A 200-character line ends where the literal sum of 26.6 advances says, rounded once", text_ttf_advance),
-    case("ttf-kerning", "\"AV\" in DejaVu Sans is narrower than \"A\" plus \"V\" by the kern table's literal value", text_ttf_kerning),
-    case("ttf-width", "text_width equals the distance from the pen start to the end of the last advance", text_ttf_width),
-    case("ttf-clip-left", "Text starting at negative x draws its visible part", text_ttf_clip_left),
-    case("ttf-clip-top", "Glyphs partly above row 0 draw their visible part", text_ttf_clip_top),
-    case("ttf-subpixel", "LCD subpixel text matches its reviewed reference per channel", text_ttf_subpixel),
-    case("ttf-notdef", "A codepoint the font lacks draws glyph 0", text_ttf_notdef),
-    case("utf8-text", "UTF-8 input draws \"é\" from the font's glyph for U+00E9", text_utf8_text),
-    case("utf8-invalid", "Invalid UTF-8 draws one U+FFFD per maximal invalid subpart and does not panic", text_utf8_invalid),
-    case("compound-glyph", "A compound glyph places its components at the literal offsets", text_compound_glyph),
-    case("compound-transform", "Scaled and 2x2-transformed components match their reviewed reference", text_compound_transform),
-    case("line-metrics", "Ascent, descent and line gap equal the font's hhea values at each size", text_line_metrics),
-    case("size-range", "Sizes from 6 to 72 px render, and size 0 or above 1,024 px is rejected; at 6, 12, 24, 48 and 72 px every printable ASCII glyph of the pinned fonts, grayscale and LCD, stays within section 12.3's flattening and rasterization bounds by the work counter", text_size_range),
-    case("many-args-abi", "The text calls with ten or more parameters, including trailing f32 or 26.6 values, give the reference output on this target", text_many_args_abi),
-    case("cache-hit", "A cached glyph renders identically to a fresh one, and the cache reports a hit", text_cache_hit),
-    case("cache-bound", "2,000 distinct glyph and size pairs keep the cache within 256 entries and 4 MiB", text_cache_bound),
-    case("cache-evict-correct", "A glyph evicted and rasterized again renders identically", text_cache_evict_correct),
+    pictured!("fonts-pinned", "The test fonts parse, and their SHA-256 values match the pins", text_fonts_pinned),
+    pictured!("raster-identical", "A fixed set of rasterized glyphs hashes to the pinned value, the same on every target", text_raster_identical),
+    pictured!("metrics-independent", "Advance widths, left bearings and bounding boxes of 50 glyphs equal the independently extracted table", text_metrics_independent),
+    pictured!("cmap-independent", "Codepoint-to-glyph mappings for 200 codepoints equal the independently extracted table", text_cmap_independent),
+    pictured!("bitmap-glyph", "The built-in 5x7 font draws 'A' exactly as its table defines it", text_bitmap_glyph),
+    pictured!("bitmap-scale", "Scale 3 turns each glyph pixel into a 3x3 block", text_bitmap_scale),
+    pictured!("bitmap-unknown", "A byte without a glyph draws the contract's replacement box", text_bitmap_unknown),
+    pictured!("noto-ascii", "noto-sans-mono-bitmap draws every printable ASCII character matching its reference cell", text_noto_ascii),
+    pictured!("noto-coverage", "Bitmap coverage blends with the background by the alpha contract", text_noto_coverage),
+    pictured!("ttf-glyph", "DejaVu Sans Mono \"Hg\" at 16 px matches its reviewed reference", text_ttf_glyph),
+    pictured!("ttf-sizes", "One string at 8, 12, 16, 24 and 48 px matches each size's reviewed reference", text_ttf_sizes),
+    pictured!("ttf-advance", "A 200-character line ends where the literal sum of 26.6 advances says, rounded once", text_ttf_advance),
+    pictured!("ttf-kerning", "\"AV\" in DejaVu Sans is narrower than \"A\" plus \"V\" by the kern table's literal value", text_ttf_kerning),
+    pictured!("ttf-width", "text_width equals the distance from the pen start to the end of the last advance", text_ttf_width),
+    pictured!("ttf-clip-left", "Text starting at negative x draws its visible part", text_ttf_clip_left),
+    pictured!("ttf-clip-top", "Glyphs partly above row 0 draw their visible part", text_ttf_clip_top),
+    pictured!("ttf-subpixel", "LCD subpixel text matches its reviewed reference per channel", text_ttf_subpixel),
+    pictured!("ttf-notdef", "A codepoint the font lacks draws glyph 0", text_ttf_notdef),
+    pictured!("utf8-text", "UTF-8 input draws \"é\" from the font's glyph for U+00E9", text_utf8_text),
+    pictured!("utf8-invalid", "Invalid UTF-8 draws one U+FFFD per maximal invalid subpart and does not panic", text_utf8_invalid),
+    pictured!("compound-glyph", "A compound glyph places its components at the literal offsets", text_compound_glyph),
+    pictured!("compound-transform", "Scaled and 2x2-transformed components match their reviewed reference", text_compound_transform),
+    pictured!("line-metrics", "Ascent, descent and line gap equal the font's hhea values at each size", text_line_metrics),
+    pictured!("size-range", "Sizes from 6 to 72 px render, and size 0 or above 1,024 px is rejected; at 6, 12, 24, 48 and 72 px every printable ASCII glyph of the pinned fonts, grayscale and LCD, stays within section 12.3's flattening and rasterization bounds by the work counter", text_size_range),
+    pictured!("many-args-abi", "The text calls with ten or more parameters, including trailing f32 or 26.6 values, give the reference output on this target", text_many_args_abi),
+    pictured!("cache-hit", "A cached glyph renders identically to a fresh one, and the cache reports a hit", text_cache_hit),
+    pictured!("cache-bound", "2,000 distinct glyph and size pairs keep the cache within 256 entries and 4 MiB", text_cache_bound),
+    pictured!("cache-evict-correct", "A glyph evicted and rasterized again renders identically", text_cache_evict_correct),
 ];
 
 pub(crate) const FONT_PARSER: &[Case] = &[
-    case("truncated", "A truncated TTF fails to parse with an error instead of panicking", font_parser_truncated),
-    case("table-offsets", "Table offsets or lengths past the end of the file are rejected", font_parser_table_offsets),
-    case("loca-range", "A loca entry past the glyf table is rejected for that glyph only", font_parser_loca_range),
-    case("loca-order", "A loca table that is not monotonic is rejected", font_parser_loca_order),
-    case("numglyphs", "A glyph count that disagrees between maxp and loca is rejected", font_parser_numglyphs),
-    case("cmap4-segments", "A format 4 cmap whose segCountX2 is odd, or whose end codes are not sorted, is rejected", font_parser_cmap4_segments),
-    case("cmap4-odd-segments", "A valid format 4 cmap with an odd number of segments (39, as in the OpenType specification's example) maps 200 codepoints as the independently extracted table says", font_parser_cmap4_odd_segments),
-    case("cmap4-range-offset", "A format 4 idRangeOffset that points outside the table is rejected", font_parser_cmap4_range_offset),
-    case("cmap12-groups", "Overlapping or unsorted format 12 groups are rejected", font_parser_cmap12_groups),
-    case("glyf-endpoints", "Contour end points that do not increase are rejected", font_parser_glyf_endpoints),
-    case("glyf-points", "A point count above maxp's maximum is rejected", font_parser_glyf_points),
-    case("glyf-flags", "A flag repeat that runs past the glyph's data is rejected", font_parser_glyf_flags),
-    case("compound-depth", "A compound nested deeper than the limit is rejected for that glyph", font_parser_compound_depth),
-    case("compound-cycle", "A compound glyph that refers to itself, directly or through another, is rejected within bounded work", font_parser_compound_cycle),
-    case("compound-missing", "A component index past the glyph count is rejected", font_parser_compound_missing),
-    case("hmtx-compressed", "A valid hmtx with fewer long metrics than glyphs gives the remaining glyphs the last advance and their own left side bearings", font_parser_hmtx_compressed),
-    case("hmtx-truncated", "An hmtx shorter than 4 × numberOfHMetrics + 2 × (numGlyphs − numberOfHMetrics) bytes, or an hhea numberOfHMetrics of 0 or above the glyph count, is rejected", font_parser_hmtx_truncated),
-    case("units-per-em", "unitsPerEm of 0 or above 16,384 is rejected", font_parser_units_per_em),
-    case("coords-extreme", "Glyphs with coordinates at the i16 limits either flatten and rasterize within section 12.3's bounds by the work counter, or are refused with `GlyphTooComplex` or `GlyphTooExpensive` before any raster loop runs, never after it", font_parser_coords_extreme),
-    case("work-bound", "Every corpus file loads, or fails to, within section 12.3's step bounds for a load and for each glyph's outline, flattening and rasterization; and the independent 1,024 × 1,024 square fixture rasterizes in at least 8,388,608 and at most 10,699,844 steps", font_parser_work_bound),
-    case("alloc-bound", "No corpus file makes the parser allocate more than section 12.3's limits", font_parser_alloc_bound),
-    case("corpus", "Each of the 64 malformed corpus files yields its documented error, never a panic", font_parser_corpus),
+    pictured!("truncated", "A truncated TTF fails to parse with an error instead of panicking", font_parser_truncated),
+    pictured!("table-offsets", "Table offsets or lengths past the end of the file are rejected", font_parser_table_offsets),
+    pictured!("loca-range", "A loca entry past the glyf table is rejected for that glyph only", font_parser_loca_range),
+    pictured!("loca-order", "A loca table that is not monotonic is rejected", font_parser_loca_order),
+    pictured!("numglyphs", "A glyph count that disagrees between maxp and loca is rejected", font_parser_numglyphs),
+    pictured!("cmap4-segments", "A format 4 cmap whose segCountX2 is odd, or whose end codes are not sorted, is rejected", font_parser_cmap4_segments),
+    pictured!("cmap4-odd-segments", "A valid format 4 cmap with an odd number of segments (39, as in the OpenType specification's example) maps 200 codepoints as the independently extracted table says", font_parser_cmap4_odd_segments),
+    pictured!("cmap4-range-offset", "A format 4 idRangeOffset that points outside the table is rejected", font_parser_cmap4_range_offset),
+    pictured!("cmap12-groups", "Overlapping or unsorted format 12 groups are rejected", font_parser_cmap12_groups),
+    pictured!("glyf-endpoints", "Contour end points that do not increase are rejected", font_parser_glyf_endpoints),
+    pictured!("glyf-points", "A point count above maxp's maximum is rejected", font_parser_glyf_points),
+    pictured!("glyf-flags", "A flag repeat that runs past the glyph's data is rejected", font_parser_glyf_flags),
+    pictured!("compound-depth", "A compound nested deeper than the limit is rejected for that glyph", font_parser_compound_depth),
+    pictured!("compound-cycle", "A compound glyph that refers to itself, directly or through another, is rejected within bounded work", font_parser_compound_cycle),
+    pictured!("compound-missing", "A component index past the glyph count is rejected", font_parser_compound_missing),
+    pictured!("hmtx-compressed", "A valid hmtx with fewer long metrics than glyphs gives the remaining glyphs the last advance and their own left side bearings", font_parser_hmtx_compressed),
+    pictured!("hmtx-truncated", "An hmtx shorter than 4 × numberOfHMetrics + 2 × (numGlyphs − numberOfHMetrics) bytes, or an hhea numberOfHMetrics of 0 or above the glyph count, is rejected", font_parser_hmtx_truncated),
+    pictured!("units-per-em", "unitsPerEm of 0 or above 16,384 is rejected", font_parser_units_per_em),
+    pictured!("coords-extreme", "Glyphs with coordinates at the i16 limits either flatten and rasterize within section 12.3's bounds by the work counter, or are refused with `GlyphTooComplex` or `GlyphTooExpensive` before any raster loop runs, never after it", font_parser_coords_extreme),
+    pictured!("work-bound", "Every corpus file loads, or fails to, within section 12.3's step bounds for a load and for each glyph's outline, flattening and rasterization; and the independent 1,024 × 1,024 square fixture rasterizes in at least 8,388,608 and at most 10,699,844 steps", font_parser_work_bound),
+    pictured!("alloc-bound", "No corpus file makes the parser allocate more than section 12.3's limits", font_parser_alloc_bound),
+    pictured!("corpus", "Each of the 64 malformed corpus files yields its documented error, never a panic", font_parser_corpus),
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -421,6 +421,7 @@ fn raster_extreme_work_bound() -> CaseResult {
     const HALF: i32 = 1 << 30;
     type Extreme = (&'static str, Option<Rect>, Box<dyn Fn(&mut FrameBuf)>, Option<(i64, i64, i64, i64)>);
     let small_clip = Some(Rect::new(10, 8, 4, 3));
+    let pixel_clip = Some(Rect::new(10, 8, 1, 1));
     // Each call, an optional clip, and the clipped bounding rectangle the contract's damage
     // table gives it on a 32 × 24 surface (sections 6 and 7), worked out by hand.
     let calls: Vec<Extreme> = vec![
@@ -440,6 +441,7 @@ fn raster_extreme_work_bound() -> CaseResult {
         ("draw_circle(5, 5, 1000000)", None, Box::new(|fb| shapes::draw_circle(fb, 5, 5, 1_000_000, INK)), Some((0, 0, 32, 24))),
         ("draw_circle(16, 12, MAX)", None, Box::new(|fb| shapes::draw_circle(fb, 16, 12, MAX, INK)), Some((0, 0, 32, 24))),
         ("draw_circle(16, 12, 1000000) clipped to (10, 8, 4, 3)", small_clip, Box::new(|fb| shapes::draw_circle(fb, 16, 12, 1_000_000, INK)), Some((10, 8, 4, 3))),
+        ("draw_circle(16, 12, 1000000) clipped to (10, 8, 1, 1)", pixel_clip, Box::new(|fb| shapes::draw_circle(fb, 16, 12, 1_000_000, INK)), Some((10, 8, 1, 1))),
         ("draw_line(MIN/2, 3, MAX/2, 4)", None, Box::new(|fb| shapes::draw_line(fb, MIN / 2, 3, MAX / 2, 4, INK)), Some((0, 3, 32, 2))),
         ("draw_line(5, MIN/2, 6, MAX/2)", None, Box::new(|fb| shapes::draw_line(fb, 5, MIN / 2, 6, MAX / 2, INK)), Some((5, 0, 2, 24))),
         ("draw_line(MIN, MIN, MAX, MAX)", None, Box::new(|fb| shapes::draw_line(fb, MIN, MIN, MAX, MAX, INK)), Some((0, 0, 32, 24))),
@@ -1198,59 +1200,75 @@ fn raster_steps_bound(e: u64, h: u64, c: u64) -> u64 {
     e + h * (10 * c + 8 * e * (3 + log) + 17) + 64
 }
 
-/// A glyph's bytes and its points after compound expansion, read from the file here
-/// independently of libfont (the glyf record layout and component flags of the OpenType
-/// specification). Bytes count every record the expansion reads, components included.
-fn independent_glyph(file: &[u8], glyph: u16, depth: u32) -> Result<(u64, u64), String> {
-    let be16 = |o: usize| file.get(o..o + 2).map(|b| u16::from_be_bytes([b[0], b[1]])).ok_or_else(|| format!("read past the file at {o}"));
+/// The bytes and points of `glyph` by an independent reading of its records, for section 7's
+/// outline bounds: the bytes of every record its expansion reaches, each ending at the glyf
+/// table's end as section 10 scopes a record that runs past it, and the points the simple
+/// glyphs among them declare. A record that cannot be read further adds its bytes and
+/// nothing more, so a malformed glyph is held to what its own records hold. Expansion stops
+/// at depth 8 and after 256 components, as libfont's must.
+fn independent_glyph(file: &[u8], glyph: u16) -> Result<(u64, u64), String> {
     let (head_at, _) = ttf_table(file, b"head").ok_or("no head table")?;
     let (loca_at, _) = ttf_table(file, b"loca").ok_or("no loca table")?;
-    let (glyf_at, _) = ttf_table(file, b"glyf").ok_or("no glyf table")?;
-    let long = be16(head_at + 50)? == 1;
-    let entry = |i: usize| -> Result<usize, String> {
-        Ok(if long {
-            u32::from_be_bytes(file.get(loca_at + 4 * i..loca_at + 4 * i + 4).ok_or("loca past the file")?.try_into().unwrap()) as usize
+    let (glyf_at, glyf_len) = ttf_table(file, b"glyf").ok_or("no glyf table")?;
+    let be16 = |o: usize| file.get(o..o + 2).map(|b| u16::from_be_bytes([b[0], b[1]]));
+    let long = be16(head_at + 50) == Some(1);
+    let entry = |i: usize| -> Option<usize> {
+        if long {
+            file.get(loca_at + 4 * i..loca_at + 4 * i + 4).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as usize)
         } else {
-            2 * be16(loca_at + 2 * i)? as usize
-        })
+            be16(loca_at + 2 * i).map(|v| 2 * v as usize)
+        }
     };
-    let (start, end) = (entry(glyph as usize)?, entry(glyph as usize + 1)?);
-    if start == end || depth > 8 {
-        return Ok((0, 0));
-    }
-    let rec = glyf_at + start;
-    let contours = be16(rec)? as i16;
-    if contours >= 0 {
-        let points = if contours == 0 { 0 } else { be16(rec + 10 + 2 * (contours as usize - 1))? as u64 + 1 };
-        return Ok(((end - start) as u64, points));
-    }
-    let (mut bytes, mut points, mut p) = ((end - start) as u64, 0u64, rec + 10);
-    loop {
-        let (flags, child) = (be16(p)?, be16(p + 2)?);
-        p += 4 + if flags & 0x0001 != 0 { 4 } else { 2 };
-        p += if flags & 0x0008 != 0 { 2 } else if flags & 0x0040 != 0 { 4 } else if flags & 0x0080 != 0 { 8 } else { 0 };
-        let (b, n) = independent_glyph(file, child, depth + 1)?;
-        bytes += b;
-        points += n;
-        if flags & 0x0020 == 0 {
-            return Ok((bytes, points));
+    let mut components = 0usize;
+    let mut stack = vec![(glyph, 0u32)];
+    let (mut bytes, mut points) = (0u64, 0u64);
+    while let Some((g, depth)) = stack.pop() {
+        let (Some(start), Some(end)) = (entry(g as usize), entry(g as usize + 1)) else { continue };
+        let end = end.min(glyf_len);
+        if start >= end || depth > 8 {
+            continue;
+        }
+        let len = end - start;
+        bytes += len as u64;
+        // A two-byte read inside this record only.
+        let rd = |o: usize| if o + 2 <= len { be16(glyf_at + start + o) } else { None };
+        let Some(contours) = rd(0).map(|v| v as i16) else { continue };
+        if contours >= 0 {
+            if contours > 0 {
+                points += rd(10 + 2 * (contours as usize - 1)).map_or(0, |e| e as u64 + 1);
+            }
+            continue;
+        }
+        let mut p = 10;
+        while let (Some(flags), Some(child)) = (rd(p), rd(p + 2)) {
+            components += 1;
+            if components > 256 {
+                break;
+            }
+            stack.push((child, depth + 1));
+            p += 4 + if flags & 0x0001 != 0 { 4 } else { 2 };
+            p += if flags & 0x0008 != 0 { 2 } else if flags & 0x0040 != 0 { 4 } else if flags & 0x0080 != 0 { 8 } else { 0 };
+            if flags & 0x0020 == 0 {
+                break;
+            }
         }
     }
+    Ok((bytes, points))
 }
 
 /// Each stage of rasterizing `glyph` at `size` against section 7's bounds, by
-/// libfont::work: the outline within `16 × glyph bytes + 4,096`, the flattening within
+/// libfont::work: the outline within `16 × glyph bytes + 8 × P + 4,096`, the flattening within
 /// `1,028 × P`, and the grayscale and LCD rasterizations within the raster bound. The
 /// stages together give exactly `rasterize_glyph`'s bitmap.
 fn staged_within_bounds(font: &Font, file: &[u8], glyph: u16, size: f32, what: &str) -> Result<(), String> {
     use libfont::{work as fwork, GlyphLayout};
-    let (bytes, points) = independent_glyph(file, glyph, 0)?;
+    let (bytes, points) = independent_glyph(file, glyph)?;
     let size26 = Font::size26(size).map_err(|e| format!("{what}: size {size} refused: {e}"))?;
     fwork::reset();
     let outline = font.glyph_outline(glyph).map_err(|e| format!("{what}: no outline: {e}"))?;
     let steps = fwork::steps();
-    if steps > 16 * bytes + 4_096 {
-        return Err(format!("{what}: its outline took {steps} steps; section 7 allows 16 x {bytes} + 4096"));
+    if steps > 16 * bytes + 8 * points + 4_096 {
+        return Err(format!("{what}: its outline took {steps} steps; section 7 allows 16 x {bytes} + 8 x {points} + 4096"));
     }
     fwork::reset();
     let layout = font.layout_glyph(&outline, glyph, size26).map_err(|e| format!("{what}: no layout: {e}"))?;
@@ -1500,7 +1518,41 @@ fn text_ttf_kerning() -> CaseResult {
     let (av, a, v) = (ttf_font::text_width(&mut font, "AV", 32.0), ttf_font::text_width(&mut font, "A", 32.0),
         ttf_font::text_width(&mut font, "V", 32.0));
     ensure((av, a, v) == (42, 22, 22), "8.3, 8.5", format!(
-        "at 32 px \"AV\", \"A\" and \"V\" measure {av}, {a} and {v} px; the kern pair -131 gives 42, 22 and 22"))
+        "at 32 px \"AV\", \"A\" and \"V\" measure {av}, {a} and {v} px; the kern pair -131 gives 42, 22 and 22"))?;
+    // Literal kern tables, each subtable holding the pair (1, 2): every horizontal format 0
+    // subtable applies, adding its value, or replacing the sum so far with the override bit.
+    let kerned = |table: Vec<u8>| {
+        let mut t = Ttf::base();
+        t.kern = Some(table);
+        t.build()
+    };
+    for (what, subtables, want) in [
+        ("two additive subtables of -40 and -10", vec![(0x0001u16, -40i16), (0x0001, -10)], -50),
+        ("-40, an override subtable of -10, then -5", vec![(0x0001, -40), (0x0009, -10), (0x0001, -5)], -15),
+    ] {
+        let font = Font::parse(&kerned(kern_table(&subtables))).map_err(|e| format!("a font with {what} was rejected: {e}")).cite("8.3")?;
+        let got = font.kern_units(1, 2);
+        ensure(got == want, "8.3", format!("the pair (1, 2) under {what} kerns {got} units; the kern table gives {want}"))?;
+    }
+    // The first subtable's length (14) stops before its pair, which the next subtable's
+    // bytes would supply: a read past the subtable.
+    let mut short = kern_table(&[(0x0001, -40), (0x0001, -10)]);
+    short[6..8].copy_from_slice(&14u16.to_be_bytes());
+    rejected("10", "a kern subtable whose pair runs past its length", kerned(short))
+}
+
+/// A version 0 kern table of format 0 subtables `(coverage, value)`, each holding the
+/// single pair (1, 2).
+fn kern_table(subtables: &[(u16, i16)]) -> Vec<u8> {
+    let mut v = Vec::new();
+    be16(&mut v, 0);
+    be16(&mut v, subtables.len() as u16);
+    for &(coverage, value) in subtables {
+        for x in [0u16, 20, coverage, 1, 6, 0, 0, 1, 2, value as u16] {
+            be16(&mut v, x);
+        }
+    }
+    v
 }
 
 fn text_ttf_width() -> CaseResult {
@@ -1536,11 +1588,28 @@ fn translated(dx: i32, dy: i32, section: &str) -> CaseResult {
 }
 
 fn text_ttf_clip_left() -> CaseResult {
-    translated(-25, 0, "8.3")
+    translated(-25, 0, "8.3")?;
+    wholly_outside(&[(i32::MAX, 10), (i32::MIN, 10), (-20_000, 10), (64, 10)])
 }
 
 fn text_ttf_clip_top() -> CaseResult {
-    translated(0, -18, "8.3")
+    translated(0, -18, "8.3")?;
+    wholly_outside(&[(10, i32::MIN), (10, -1_000), (10, 1_000), (10, i32::MAX)])
+}
+
+/// 1,000 characters started at each position lie wholly outside a 64 × 32 surface: they are
+/// laid out but no glyph is rasterized, and no pixel changes (section 8.3).
+fn wholly_outside(starts: &[(i32, i32)]) -> CaseResult {
+    let line = "W".repeat(1_000);
+    for &(x, y) in starts {
+        let mut font = CachedFont::with_default_cache(parse_font(MONO_PATH).cite("8.5")?);
+        let g = white_on_black(64, 32, |fb| { ttf_font::draw_text(fb, &mut font, &line, x, y, 16.0, WHITE); });
+        let misses = font.cache_stats().misses;
+        ensure(misses == 0, "8.3", format!(
+            "1,000 characters at ({x}, {y}), wholly outside a 64 x 32 surface, rasterized {misses} glyphs; the contract rasterizes none"))?;
+        ensure(drawn_pixels(&g, Color::rgb(0, 0, 0)) == 0, "8.3", format!("1,000 characters at ({x}, {y}) changed pixels of a 64 x 32 surface"))?;
+    }
+    Ok(())
 }
 
 fn text_ttf_subpixel() -> CaseResult {
@@ -1678,14 +1747,29 @@ fn text_compound_glyph() -> CaseResult {
     let loca = |g: usize| u32::from_be_bytes(file[loca_at + 4 * g..loca_at + 4 * g + 4].try_into().unwrap());
     let font = Font::parse(&file).cite("8.5")?;
     let outline = font.glyph_outline(171).map_err(|e| format!("glyph 171 (é) does not resolve: {e}")).cite("10")?;
-    let got: Vec<(i32, i32)> = outline.contours.iter().flatten().map(|p| (p.x as i32, p.y as i32)).collect();
+    let got: Vec<(i32, i32)> = outline.points.iter().map(|p| (p.x as i32, p.y as i32)).collect();
     let mut want = simple_points(glyf, loca(72) as usize);
     want.extend(simple_points(glyf, loca(118) as usize).into_iter().map(|(x, y)| (x + 14, y)));
     ensure(want.len() > 8, "8.5", format!("the independent decoder found only {} points in e and acute", want.len()))?;
     ensure(got == want, "8.5", format!(
         "glyph 171 resolves to {} points; e (glyph 72) at (0, 0) and acute (glyph 118) at (14, 0) give {}{}",
         got.len(), want.len(),
-        got.iter().zip(&want).position(|(a, b)| a != b).map(|i| format!(", first differing at point {i}: {:?} vs {:?}", got[i], want[i])).unwrap_or_default()))
+        got.iter().zip(&want).position(|(a, b)| a != b).map(|i| format!(", first differing at point {i}: {:?} vs {:?}", got[i], want[i])).unwrap_or_default()))?;
+    // The square (glyph 1) as a component at scale 0.5 with offset (100, 40). The offset is in
+    // the compound's units, unless SCALED_COMPONENT_OFFSET (0x0800) alone puts it in the
+    // component's, where the scale applies to it too; UNSCALED_COMPONENT_OFFSET (0x1000), or
+    // both flags, keep the default.
+    for (flags, (dx, dy)) in [(0u16, (100, 40)), (0x0800, (50, 20)), (0x1000, (100, 40)), (0x1800, (100, 40))] {
+        let mut g = Vec::new();
+        be16(&mut g, 0xFFFF);
+        for b in [0i16, 0, 1000, 1000] { be16(&mut g, b as u16); }
+        for x in [0x0001 | 0x0002 | 0x0008 | flags, 1, 100, 40, 0x2000] { be16(&mut g, x); }
+        let font = Font::parse(&with_glyph2(g)).cite("10")?;
+        let got: Vec<(i32, i32)> = font.glyph_outline(2).cite("10")?.points.iter().map(|p| (p.x as i32, p.y as i32)).collect();
+        let want: Vec<(i32, i32)> = SQUARE.iter().map(|&(x, y)| (x as i32 / 2 + dx, y as i32 / 2 + dy)).collect();
+        ensure(got == want, "10", format!("the square at scale 0.5, offset (100, 40), flags {flags:#06x} resolves to {got:?}; the component offset rule gives {want:?}"))?;
+    }
+    Ok(())
 }
 
 fn text_compound_transform() -> CaseResult {
@@ -1921,9 +2005,10 @@ struct Ttf {
     units_per_em: u16,
     /// Raw glyf entries, one per glyph.
     glyphs: Vec<Vec<u8>>,
-    /// maxp numGlyphs (normally glyphs.len()) and maxPoints.
+    /// maxp numGlyphs (normally glyphs.len()), maxPoints and maxCompositePoints.
     num_glyphs: u16,
     max_points: u16,
+    max_composite_points: u16,
     /// hmtx: long metrics, then trailing left side bearings.
     long_metrics: Vec<(u16, i16)>,
     trailing_lsb: Vec<i16>,
@@ -1932,6 +2017,9 @@ struct Ttf {
     /// loca entries overriding the computed ones, and whole-table overrides.
     loca: Option<Vec<u32>>,
     hmtx: Option<Vec<u8>>,
+    /// An optional kern table, and directory records (tag, offset, length) after the tables.
+    kern: Option<Vec<u8>>,
+    records: Vec<([u8; 4], u32, u32)>,
 }
 
 fn be16(v: &mut Vec<u8>, x: u16) { v.extend_from_slice(&x.to_be_bytes()); }
@@ -2033,12 +2121,15 @@ impl Ttf {
             num_glyphs: glyphs.len() as u16,
             glyphs,
             max_points: 4,
+            max_composite_points: 8,
             long_metrics: vec![(700, 100), (700, 100), (720, 0), (800, 100)],
             trailing_lsb: Vec::new(),
             num_h_metrics: 4,
             cmap: cmap4(&[(0x41, 0x43, 1 - 0x41, None), (0xFFFF, 0xFFFF, 1, None)], None),
             loca: None,
             hmtx: None,
+            kern: None,
+            records: Vec::new(),
         }
     }
 
@@ -2079,7 +2170,7 @@ impl Ttf {
         be16(&mut maxp, self.num_glyphs);
         be16(&mut maxp, self.max_points);
         be16(&mut maxp, 4);
-        be16(&mut maxp, 8);
+        be16(&mut maxp, self.max_composite_points);
         be16(&mut maxp, 2);
         be16(&mut maxp, 2);
         maxp.extend_from_slice(&[0; 12]);
@@ -2091,13 +2182,18 @@ impl Ttf {
             for &l in &self.trailing_lsb { be16(&mut v, l as u16); }
             v
         });
-        let tables: [(&[u8; 4], &Vec<u8>); 7] = [(b"cmap", &self.cmap), (b"glyf", &glyf), (b"head", &head), (b"hhea", &hhea),
-            (b"hmtx", &hmtx), (b"loca", &loca_bytes), (b"maxp", &maxp)];
+        let mut tables: Vec<(&[u8; 4], &Vec<u8>)> = vec![(b"cmap", &self.cmap), (b"glyf", &glyf), (b"head", &head), (b"hhea", &hhea),
+            (b"hmtx", &hmtx)];
+        if let Some(k) = &self.kern {
+            tables.push((b"kern", k));
+        }
+        tables.extend([(b"loca", &loca_bytes), (b"maxp", &maxp)]);
+        let count = tables.len() + self.records.len();
         let mut out = Vec::new();
         be32(&mut out, 0x0001_0000);
-        be16(&mut out, tables.len() as u16);
+        be16(&mut out, count as u16);
         for x in [64u16, 2, 48] { be16(&mut out, x); }
-        let mut offset = 12 + 16 * tables.len();
+        let mut offset = 12 + 16 * count;
         let mut body = Vec::new();
         for (tag, data) in tables {
             out.extend_from_slice(tag);
@@ -2106,7 +2202,13 @@ impl Ttf {
             be32(&mut out, data.len() as u32);
             body.extend_from_slice(data);
             while body.len() % 4 != 0 { body.push(0); }
-            offset = 12 + 16 * tables.len() + body.len();
+            offset = 12 + 16 * count + body.len();
+        }
+        for &(tag, at_, len) in &self.records {
+            out.extend_from_slice(&tag);
+            be32(&mut out, 0);
+            be32(&mut out, at_);
+            be32(&mut out, len);
         }
         out.extend(body);
         out
@@ -2235,8 +2337,12 @@ fn font_parser_loca_range() -> CaseResult {
     let mut o = 0;
     for g in &t.glyphs[..3] { loca.push(o); o += g.len().div_ceil(4) as u32 * 4; }
     loca.extend([glyf_len + 40, glyf_len + 80]);
+    t.loca = Some(loca.clone());
+    glyph_rejected("10", "a font whose glyph 3 lies past the glyf table", t.build(), 3, &[1, 2])?;
+    // Equal entries past the table: glyph 3 would be empty if they were in range.
+    loca[3..].copy_from_slice(&[glyf_len + 40, glyf_len + 40]);
     t.loca = Some(loca);
-    glyph_rejected("10", "a font whose glyph 3 lies past the glyf table", t.build(), 3, &[1, 2])
+    glyph_rejected("10", "a font whose glyph 3 starts and ends past the glyf table", t.build(), 3, &[1, 2])
 }
 
 fn font_parser_loca_order() -> CaseResult {
@@ -2331,7 +2437,13 @@ fn font_parser_glyf_endpoints() -> CaseResult {
 
 fn font_parser_glyf_points() -> CaseResult {
     let g = simple_glyph(&[&[(0, 0), (10, 10), (20, 0), (30, 10), (40, 0), (50, 10)]]);
-    glyph_rejected("10", "glyph 2 with 6 points where maxp allows 4", with_glyph2(g), 2, &[1, 3])
+    glyph_rejected("10", "glyph 2 with 6 points where maxp allows 4", with_glyph2(g), 2, &[1, 3])?;
+    // A compound is held to maxCompositePoints: three squares, 12 points, where maxPoints is
+    // 16 and maxCompositePoints 8.
+    let mut t = Ttf::base();
+    t.glyphs[2] = compound_glyph(&[(1, 0, 0), (1, 100, 0), (1, 200, 0)]);
+    t.max_points = 16;
+    glyph_rejected("10", "glyph 2, a compound of 12 points where maxCompositePoints is 8", t.build(), 2, &[1, 3])
 }
 
 fn font_parser_glyf_flags() -> CaseResult {
@@ -2343,7 +2455,24 @@ fn font_parser_glyf_flags() -> CaseResult {
     // Four points, but the first flag repeats 200 times.
     g.extend_from_slice(&[0x01 | 0x08, 200]);
     g.extend_from_slice(&[0; 16]);
-    glyph_rejected("10", "glyph 2 whose flag repeat runs past its 4 points", with_glyph2(g), 2, &[1, 3])
+    glyph_rejected("10", "glyph 2 whose flag repeat runs past its 4 points", with_glyph2(g), 2, &[1, 3])?;
+    // A compound of the square with WE_HAVE_INSTRUCTIONS (0x0100) and byte arguments, so its
+    // record is 16 bytes with no padding after it, followed by `tail`.
+    let with_instructions = |tail: &[u8]| {
+        let mut g = Vec::new();
+        be16(&mut g, 0xFFFF);
+        for b in [0i16, 0, 1000, 1000] { be16(&mut g, b as u16); }
+        for x in [0x0002 | 0x0100, 1, 0] { be16(&mut g, x); }
+        g.extend_from_slice(tail);
+        with_glyph2(g)
+    };
+    glyph_rejected("10", "glyph 2, a compound declaring instructions that end at its last component", with_instructions(&[]), 2, &[1, 3])?;
+    glyph_rejected("10", "glyph 2, a compound whose 50 instruction bytes run past its record", with_instructions(&[0, 50, 1, 2]), 2, &[1, 3])?;
+    let file = with_instructions(&[0, 2, 1, 2]);
+    step("10", isolated("a compound with two instruction bytes", 3_000, move || {
+        let font = Font::parse(&file).map_err(|e| e.to_string())?;
+        font.rasterize_glyph(2, 24.0).map(|_| ()).map_err(|e| format!("glyph 2, a compound with its two instruction bytes, was rejected: {e}"))
+    }))
 }
 
 fn font_parser_compound_depth() -> CaseResult {
@@ -2453,12 +2582,12 @@ fn font_parser_coords_extreme() -> CaseResult {
             let name = format!("{what} at {size} px");
             step("7, 10", isolated(&name.clone(), 8_000, move || {
                 let font = Font::parse(&file).map_err(|e| format!("{name}: the font was rejected ({e})"))?;
-                let (bytes, points) = independent_glyph(&file, 2, 0)?;
+                let (bytes, points) = independent_glyph(&file, 2)?;
                 libfont::work::reset();
                 let outline = font.glyph_outline(2).map_err(|e| format!("{name}: no outline ({e})"))?;
                 let steps = libfont::work::steps();
-                if steps > 16 * bytes + 4_096 {
-                    return Err(format!("{name}: its outline took {steps} steps; section 7 allows {}", 16 * bytes + 4_096));
+                if steps > 16 * bytes + 8 * points + 4_096 {
+                    return Err(format!("{name}: its outline took {steps} steps; section 7 allows {}", 16 * bytes + 8 * points + 4_096));
                 }
                 let size26 = Font::size26(size).map_err(|e| e.to_string())?;
                 libfont::work::reset();
@@ -2530,18 +2659,76 @@ fn font_parser_work_bound() -> CaseResult {
             let size = entry.glyph.map_or(24.0, |(_, s)| s);
             for g in 0..font.num_glyphs() {
                 let what = format!("{name} glyph {g} at {size} px");
-                let (bytes, points) = independent_glyph(&file, g, 0).unwrap_or((file.len() as u64, 65_535));
+                let (bytes, points) = independent_glyph(&file, g)?;
                 libfont::work::reset();
                 match font.rasterize_glyph(g, size) {
                     Ok(_) => staged_within_bounds(&font, &file, g, size, &what)?,
                     Err(e) => {
                         let steps = libfont::work::steps();
-                        let bound = 16 * bytes + 4_096 + 1_028 * points;
+                        let bound = 16 * bytes + 8 * points + 4_096 + 1_028 * points;
                         if steps > bound {
                             return Err(format!("{what}: refusing it ({e}) took {steps} steps; its outline and flattening bounds allow {bound}"));
                         }
                     }
                 }
+            }
+            Ok(())
+        }))?;
+    }
+    // 4,096 Unicode cmap records all naming one 4,096-group format 12 subtable.
+    let mut cmap = Vec::new();
+    be16(&mut cmap, 0);
+    be16(&mut cmap, 4_096);
+    for _ in 0..4_096 {
+        for x in [3u16, 10] { be16(&mut cmap, x); }
+        be32(&mut cmap, 4 + 8 * 4_096);
+    }
+    for x in [12u32 << 16, 16 + 12 * 4_096, 0, 4_096] { be32(&mut cmap, x); }
+    for i in 0..4_096u32 {
+        for x in [2 * i, 2 * i, 1] { be32(&mut cmap, x); }
+    }
+    let mut t = Ttf::base();
+    t.cmap = cmap;
+    let file = t.build();
+    step("7", isolated("4,096 cmap records sharing one subtable", 8_000, move || {
+        libfont::work::reset();
+        let parsed = Font::parse(&file);
+        let steps = libfont::work::steps();
+        parsed.map_err(|e| format!("a font whose 4,096 cmap records share one valid subtable was rejected: {e}"))?;
+        let bound = 16 * file.len() as u64 + 65_536;
+        if steps > bound {
+            return Err(format!("4,096 cmap records sharing one 4,096-group subtable: loading took {steps} steps; section 7 allows {bound}"));
+        }
+        Ok(())
+    }))?;
+    // A 10-byte glyph declaring 32,767 contours, and one contour of 65,535 points in 526
+    // bytes (repeated flags; coordinates that repeat the previous one take no bytes).
+    let mut cut = Vec::new();
+    be16(&mut cut, 32_767);
+    cut.extend_from_slice(&[0; 8]);
+    let mut dense = Vec::new();
+    be16(&mut dense, 1);
+    dense.extend_from_slice(&[0; 8]);
+    be16(&mut dense, 65_534);
+    be16(&mut dense, 0);
+    for k in 0..256 {
+        dense.extend_from_slice(&[0x31 | 0x08, if k < 255 { 255 } else { 254 }]);
+    }
+    for (what, glyph) in [("a 10-byte glyph declaring 32,767 contours", cut), ("one contour of 65,535 points in 526 bytes", dense)] {
+        let mut t = Ttf::base();
+        t.glyphs[2] = glyph;
+        t.max_points = 65_535;
+        let file = t.build();
+        step("7", isolated(what, 8_000, move || {
+            let font = Font::parse(&file).map_err(|e| format!("{what}: the font was rejected ({e})"))?;
+            let (bytes, points) = independent_glyph(&file, 2)?;
+            libfont::work::reset();
+            let outline = font.glyph_outline(2);
+            let steps = libfont::work::steps();
+            let bound = 16 * bytes + 8 * points + 4_096;
+            if steps > bound {
+                return Err(format!("{what}: its outline took {steps} steps ({}); section 7 allows 16 x {bytes} + 8 x {points} + 4,096 = {bound}",
+                    outline.map_or_else(|e| e.to_string(), |o| format!("{} points", o.point_count()))));
             }
             Ok(())
         }))?;
@@ -2558,6 +2745,22 @@ fn font_parser_alloc_bound() -> CaseResult {
     for path in [MONO_PATH, SANS_PATH] {
         files.push((path.to_string(), read_file(path).cite("8.5")?));
     }
+    // A directory of 20,000 more records, and glyph 2 of 32,767 one-point contours.
+    let mut t = Ttf::base();
+    t.records = (0..20_000u32).map(|i| (*b"zz00", i % 64, 0)).collect();
+    files.push(("a font with 20,007 table records".to_string(), t.build()));
+    let mut many = Vec::new();
+    be16(&mut many, 32_767);
+    many.extend_from_slice(&[0; 8]);
+    for i in 0..32_767u16 { be16(&mut many, i); }
+    be16(&mut many, 0);
+    for k in 0..128 {
+        many.extend_from_slice(&[0x31 | 0x08, if k < 127 { 255 } else { 254 }]);
+    }
+    let mut t = Ttf::base();
+    t.glyphs[2] = many;
+    t.max_points = 32_767;
+    files.push(("a font whose glyph 2 has 32,767 one-point contours".to_string(), t.build()));
     for (name, file) in files {
         let before = ALLOC_BYTES.load(Relaxed);
         let parsed = Font::parse(&file);
@@ -2566,7 +2769,7 @@ fn font_parser_alloc_bound() -> CaseResult {
         ensure(allocated <= bound, "7", format!("{name}: loading allocated {allocated} bytes; section 7 allows 2 x {} + 64 KiB = {bound}", file.len()))?;
         let Ok(font) = parsed else { continue };
         for g in 0..font.num_glyphs().min(400) {
-            let (_, points) = independent_glyph(&file, g, 0).unwrap_or((0, 65_535));
+            let (_, points) = independent_glyph(&file, g).cite("7")?;
             let before = ALLOC_BYTES.load(Relaxed);
             let _ = font.glyph_outline(g);
             let allocated = ALLOC_BYTES.load(Relaxed) - before;

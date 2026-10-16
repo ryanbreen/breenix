@@ -22,9 +22,9 @@ impl<'a> LocaTable<'a> {
         if self.data.len() != entries * if self.long { 4 } else { 2 } {
             return Err(FontError::GlyphCountMismatch);
         }
-        work::add(entries as u64);
         let mut prev = 0u32;
         for i in 0..entries {
+            work::add(1);
             let o = self.entry(i).ok_or(FontError::Truncated)?;
             if o < prev {
                 return Err(FontError::BadLoca);

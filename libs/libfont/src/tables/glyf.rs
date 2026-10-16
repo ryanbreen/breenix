@@ -14,14 +14,16 @@ pub struct GlyphPoint {
     pub on_curve: bool,
 }
 
-/// A simple glyph: its header bounding box and contours of points in font units.
+/// A simple glyph: its header bounding box and its points in font units, with the index of
+/// each contour's last point (`endPtsOfContours`).
 #[derive(Debug, Clone)]
 pub struct SimpleGlyph {
     pub x_min: i16,
     pub y_min: i16,
     pub x_max: i16,
     pub y_max: i16,
-    pub contours: Vec<Vec<GlyphPoint>>,
+    pub end_points: Vec<u16>,
+    pub points: Vec<GlyphPoint>,
 }
 
 /// One component of a compound glyph.
@@ -59,6 +61,9 @@ pub const WE_HAVE_A_SCALE: u16 = 0x0008;
 pub const MORE_COMPONENTS: u16 = 0x0020;
 pub const WE_HAVE_AN_X_AND_Y_SCALE: u16 = 0x0040;
 pub const WE_HAVE_A_TWO_BY_TWO: u16 = 0x0080;
+pub const WE_HAVE_INSTRUCTIONS: u16 = 0x0100;
+pub const SCALED_COMPONENT_OFFSET: u16 = 0x0800;
+pub const UNSCALED_COMPONENT_OFFSET: u16 = 0x1000;
 
 /// Components in one compound record, at most.
 pub const MAX_COMPONENTS: usize = 256;
@@ -71,28 +76,30 @@ pub fn parse(data: &[u8], max_points: usize, num_glyphs: u16) -> Result<Glyph, F
     let b = |o| i16_at(data, o).ok_or(bad);
     let (x_min, y_min, x_max, y_max) = (b(2)?, b(4)?, b(6)?, b(8)?);
     if contours >= 0 {
-        parse_simple(data, contours as usize, max_points).map(|contours| Glyph::Simple(SimpleGlyph { x_min, y_min, x_max, y_max, contours }))
+        parse_simple(data, contours as usize, max_points)
+            .map(|(end_points, points)| Glyph::Simple(SimpleGlyph { x_min, y_min, x_max, y_max, end_points, points }))
     } else {
         parse_components(data, num_glyphs).map(|components| Glyph::Compound { x_min, y_min, x_max, y_max, components })
     }
 }
 
-fn parse_simple(data: &[u8], n_contours: usize, max_points: usize) -> Result<Vec<Vec<GlyphPoint>>, FontError> {
+fn parse_simple(data: &[u8], n_contours: usize, max_points: usize) -> Result<(Vec<u16>, Vec<GlyphPoint>), FontError> {
     let bad = FontError::BadGlyph;
     if n_contours == 0 {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
     let mut r = Reader::at(data, 10);
-    let mut ends = Vec::with_capacity(n_contours.min(data.len() / 2));
-    work::add(n_contours as u64);
+    // At most 32,767 entries of 2 bytes, whatever the record holds.
+    let mut ends: Vec<u16> = Vec::with_capacity(n_contours.min(data.len() / 2));
     for i in 0..n_contours {
+        work::add(1);
         let e = r.u16().ok_or(bad)?;
-        if i > 0 && e as usize <= ends[i - 1] {
+        if i > 0 && e <= ends[i - 1] {
             return Err(bad);
         }
-        ends.push(e as usize);
+        ends.push(e);
     }
-    let points = ends[n_contours - 1] + 1;
+    let points = ends[n_contours - 1] as usize + 1;
     if points > max_points || points > 65_535 {
         return Err(FontError::TooManyPoints);
     }
@@ -113,37 +120,41 @@ fn parse_simple(data: &[u8], n_contours: usize, max_points: usize) -> Result<Vec
             flags.extend(core::iter::repeat_n(f, n));
         }
     }
-    let mut coords = |short: u8, same: u8| -> Result<Vec<i16>, FontError> {
-        let mut v = 0i16;
-        let mut out = Vec::with_capacity(points);
-        work::add(points as u64);
-        for &f in &flags {
-            if f & short != 0 {
-                let d = r.u8().ok_or(bad)? as i16;
-                v = if f & same != 0 { v.wrapping_add(d) } else { v.wrapping_sub(d) };
-            } else if f & same == 0 {
-                v = v.wrapping_add(r.i16().ok_or(bad)?);
-            }
-            out.push(v);
-        }
-        Ok(out)
-    };
-    let xs = coords(X_SHORT, X_SAME_OR_POSITIVE)?;
-    let ys = coords(Y_SHORT, Y_SAME_OR_POSITIVE)?;
-    let mut out = Vec::with_capacity(n_contours);
-    let mut start = 0;
-    work::add(points as u64);
-    for &end in &ends {
-        out.push((start..=end).map(|i| GlyphPoint { x: xs[i], y: ys[i], on_curve: flags[i] & ON_CURVE != 0 }).collect());
-        start = end + 1;
+    // The x coordinates, then the y coordinates, each a run of deltas.
+    let mut out: Vec<GlyphPoint> = Vec::with_capacity(points);
+    let mut x = 0i16;
+    for &f in &flags {
+        work::add(1);
+        x = delta(&mut r, f, X_SHORT, X_SAME_OR_POSITIVE, x).ok_or(bad)?;
+        out.push(GlyphPoint { x, y: 0, on_curve: f & ON_CURVE != 0 });
     }
-    Ok(out)
+    let mut y = 0i16;
+    for (p, &f) in out.iter_mut().zip(&flags) {
+        work::add(1);
+        y = delta(&mut r, f, Y_SHORT, Y_SAME_OR_POSITIVE, y).ok_or(bad)?;
+        p.y = y;
+    }
+    Ok((ends, out))
+}
+
+/// The next coordinate after `v`: a one-byte delta whose sign `same` gives when `short` is
+/// set, else `v` itself when `same` is set, else a two-byte delta.
+fn delta(r: &mut Reader<'_>, f: u8, short: u8, same: u8, v: i16) -> Option<i16> {
+    Some(if f & short != 0 {
+        let d = r.u8()? as i16;
+        if f & same != 0 { v.wrapping_add(d) } else { v.wrapping_sub(d) }
+    } else if f & same == 0 {
+        v.wrapping_add(r.i16()?)
+    } else {
+        v
+    })
 }
 
 fn parse_components(data: &[u8], num_glyphs: u16) -> Result<Vec<Component>, FontError> {
     let bad = FontError::BadGlyph;
     let mut r = Reader::at(data, 10);
     let mut out = Vec::new();
+    let mut instructions = false;
     loop {
         work::add(1);
         if out.len() == MAX_COMPONENTS {
@@ -173,8 +184,15 @@ fn parse_components(data: &[u8], num_glyphs: u16) -> Result<Vec<Component>, Font
             (1.0, 0.0, 0.0, 1.0)
         };
         out.push(Component { glyph, flags, arg1, arg2, xx, xy: xy_, yx, yy });
+        instructions |= flags & WE_HAVE_INSTRUCTIONS != 0;
         if flags & MORE_COMPONENTS == 0 {
-            return Ok(out);
+            break;
         }
     }
+    // Instructions for the compound follow its last component: a length, then the bytes.
+    if instructions {
+        let n = r.u16().ok_or(bad)? as usize;
+        r.skip(n).ok_or(bad)?;
+    }
+    Ok(out)
 }

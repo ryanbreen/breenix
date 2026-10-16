@@ -269,7 +269,7 @@ wrapper, which counts calls and bytes per thread.
 |---|---|
 | a raster primitive at any coordinates | at most `2 × (A + R + C) + 64` steps, where `A`, `R` and `C` are the area, rows and columns of the primitive's clipped bounding rectangle; a primitive wholly outside the surface or clip does at most 64 |
 | font load | at most `16 × file bytes + 65,536` steps and `2 × file bytes + 64 KiB` allocated |
-| one glyph's outline | compound depth ≤ 8, ≤ 256 components, ≤ 65,535 points and no more than maxp declares, ≤ `16 × glyph bytes + 4,096` steps, ≤ `64 × points + 64 KiB` allocated |
+| one glyph's outline | compound depth ≤ 8, ≤ 256 components, ≤ 65,535 points and no more than maxp declares (`maxPoints` for a simple glyph, `maxCompositePoints` for a compound after expansion), ≤ `16 × glyph bytes + 8 × P + 4,096` steps for its `P` points after compound expansion, ≤ `64 × points + 64 KiB` allocated |
 | one glyph's flattening | quadratic subdivision depth ≤ 9 (≤ 512 segments per curve), ≤ 65,536 segments per glyph (else `GlyphTooComplex`), ≤ `1,028 × P` steps for `P` points after compound expansion |
 | one glyph's rasterization at `s` px | bitmap ≤ `4s × 4s`; ≤ `E + H × (10C + 8E × (3 + ⌈log₂(E + 1)⌉) + 17) + 64` steps and ≤ `H × C + 4C + 48E + 4,096` bytes, for `H` rows, `C` sampled columns (3× width for LCD) and `E` segments; a glyph whose bound exceeds 2²⁸ is refused with `GlyphTooExpensive` before any raster loop |
 | inflate | ≤ `4 × output + 16 × input + 1,024 × blocks` steps; 32 KiB window plus ≤ 64 KiB of tables besides the caller's output |
@@ -313,7 +313,9 @@ crate version libgfx draws from and reads the raster directly. A character the c
   `FontError::BadSize` and draws nothing. `size26 = round_half_away(size × 64)`.
 - **Advances and kerning** are 26.6 fixed point: `advance26(g) = round_half_away(advance_units(g) × size26 /
   unitsPerEm)` and `kern26(l, r) = round_half_away(kern_units(l, r) × size26 / unitsPerEm)`, using the legacy
-  `kern` table's format 0 pairs. Layout is one codepoint at a time: the pen starts at 0, glyph `i` is drawn
+  `kern` table's format 0 pairs. `kern_units` sums the pair's values over every horizontal, non-minimum,
+  non-cross-stream format 0 subtable in table order; a subtable with the override bit (coverage bit 3)
+  replaces the sum so far. Layout is one codepoint at a time: the pen starts at 0, glyph `i` is drawn
   with its origin at `x + floor((pen_i + 32) / 64)`, and `pen_{i+1} = pen_i + advance26(g_i) + kern26(g_i,
   g_{i+1})`. Advances are accumulated in 26.6 and rounded once per glyph position, never truncated per glyph.
 - **Width.** `draw_text` returns, and `text_width` equals, `floor((pen_end + 32) / 64)`: the distance from
@@ -321,7 +323,9 @@ crate version libgfx draws from and reads the raster directly. A character the c
   `ttf-kerning`).
 - **Translation.** A glyph's pixels depend on its pen position only by translation: drawing at
   `(x + dx, y + dy)` moves every pixel by `(dx, dy)`, and text starting off the left or top edge draws exactly
-  its visible part (`text/ttf-clip-left`, `ttf-clip-top`).
+  its visible part (`text/ttf-clip-left`, `ttf-clip-top`). A glyph whose bitmap rectangle, from its record
+  header, lies wholly outside the surface or clip is laid out (it still advances the pen) but is not
+  rasterized, so text wholly outside rasterizes no glyph.
 - **Missing glyphs.** A codepoint the font does not map draws glyph 0 (`.notdef`), never a substitute
   character.
 - **UTF-8.** `draw_text_bytes(fb, font, bytes, x, y, size, fg)` decodes UTF-8 and draws one U+FFFD for each
@@ -472,13 +476,20 @@ each one gives (`font-parser/*`):
 | cmap format 4: an `idRangeOffset` that points outside the subtable | font | `BadCmap` |
 | cmap format 12: groups unsorted, overlapping, or with start above end | font | `BadCmap` |
 | contour end points that do not increase | glyph | `BadGlyph` |
-| more points than `maxp.maxPoints`, or above 65,535 | glyph | `TooManyPoints` |
-| a flag repeat or coordinate run past the glyph's data or point count | glyph | `BadGlyph` |
+| more points than `maxp.maxPoints` in a simple glyph or `maxp.maxCompositePoints` in a compound after expansion, or above 65,535 | glyph | `TooManyPoints` |
+| a flag repeat or coordinate run past the glyph's data or point count, or a compound's instructions (`WE_HAVE_INSTRUCTIONS`) running past its record | glyph | `BadGlyph` |
 | compound nesting deeper than 8, or more than 256 components | glyph | `CompoundTooDeep` |
 | a compound that refers to itself, directly or through another | glyph | `CompoundCycle` |
 | a component index at or above `numGlyphs` | glyph | `BadComponent` |
 | `hmtx` shorter than `4 × numberOfHMetrics + 2 × (numGlyphs − numberOfHMetrics)` bytes, or `numberOfHMetrics` of 0 or above `numGlyphs` | font | `BadHmtx` |
 | a glyph past the flattening or rasterization bounds of section 7 | glyph | `GlyphTooComplex`, `GlyphTooExpensive` |
+
+A component's offset (`ARGS_ARE_XY_VALUES`) is in the compound's units; with `SCALED_COMPONENT_OFFSET` set and
+`UNSCALED_COMPONENT_OFFSET` clear, it is in the component's units and the component's scale or 2×2 transform
+applies to it as well (OpenType `glyf`). The cmap subtables read are the first Unicode subtable of each of
+formats 4 and 12; a kern subtable's pairs lie within its length (a format 0 subtable of more than 10,920 pairs
+cannot state its size in 16 bits, so a length equal to its size modulo 65,536 stands for that size), and a
+read past it is `Truncated`.
 
 A valid format 4 cmap with any number of segments, odd counts included (the OpenType specification's
 example has 39), maps exactly as the specification describes. A compressed `hmtx` gives glyphs past the

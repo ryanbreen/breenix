@@ -54,7 +54,9 @@ struct Crossing {
 }
 
 /// Sort `v` by x with a stable bottom-up merge sort that alternates between `v` and `tmp`,
-/// counting each element placed in each pass, and return the buffer holding the result.
+/// and return the buffer holding the result. Each pass is one loop over the `n` output
+/// slots, moving to the next pair of runs at each run boundary, so a pass counts `1 + n`
+/// steps.
 fn merge_sort<'a>(v: &'a mut [Crossing], tmp: &'a mut Vec<Crossing>) -> &'a [Crossing] {
     let n = v.len();
     if n < 2 {
@@ -64,22 +66,24 @@ fn merge_sort<'a>(v: &'a mut [Crossing], tmp: &'a mut Vec<Crossing>) -> &'a [Cro
     tmp.extend_from_slice(v);
     let (mut width, mut in_v) = (1, true);
     while width < n {
-        work::add(n as u64);
+        work::add(1 + n as u64);
         let (src, dst): (&[Crossing], &mut [Crossing]) = if in_v { (&*v, &mut tmp[..]) } else { (&tmp[..], &mut *v) };
-        let mut lo = 0;
-        while lo < n {
-            let (mid, hi) = ((lo + width).min(n), (lo + 2 * width).min(n));
-            let (mut i, mut j) = (lo, mid);
-            for slot in &mut dst[lo..hi] {
-                if j >= hi || (i < mid && src[i].x <= src[j].x) {
-                    *slot = src[i];
-                    i += 1;
-                } else {
-                    *slot = src[j];
-                    j += 1;
-                }
+        // The runs src[lo..mid] and src[mid..hi] merge into dst[lo..hi].
+        let (mut mid, mut hi) = (width.min(n), (2 * width).min(n));
+        let (mut i, mut j) = (0, mid);
+        for (k, slot) in dst.iter_mut().enumerate() {
+            if k == hi {
+                mid = (hi + width).min(n);
+                (i, j) = (hi, mid);
+                hi = (hi + 2 * width).min(n);
             }
-            lo = hi;
+            if j >= hi || (i < mid && src[i].x <= src[j].x) {
+                *slot = src[i];
+                i += 1;
+            } else {
+                *slot = src[j];
+                j += 1;
+            }
         }
         in_v = !in_v;
         width *= 2;

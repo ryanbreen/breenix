@@ -109,6 +109,10 @@ pub fn decode_bmp(data: &[u8]) -> Result<Bmp, BmpError> {
     if &data[..2] != b"BM" {
         return Err(BadSignature);
     }
+    // BITMAPFILEHEADER.bfSize is a file-size claim (contract §12).
+    if read_u32_le(data, 2) as usize > data.len() {
+        return Err(Truncated);
+    }
     let offset = read_u32_le(data, 10) as usize;
     let dib = read_u32_le(data, 14) as usize;
     if dib < 40 || 14usize.checked_add(dib).is_none_or(|end| end > data.len()) || offset < 14 + dib
