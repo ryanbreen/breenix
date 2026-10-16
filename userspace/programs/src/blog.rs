@@ -415,7 +415,7 @@ fn main() {
     theme.use_bitmap_font = true;
 
     let tab_rect = Rect::new(0, 0, WIN_W as i32, TAB_BAR_H);
-    let mut tab_bar = TabBar::new(tab_rect, vec![b"Kernel", b"Serial"]);
+    let mut tab_bar = TabBar::new(tab_rect, vec![b"Kernel", b"Serial"], &theme);
 
     let mut tabs = vec![
         LogTab::new("/var/log/kernel.log"),

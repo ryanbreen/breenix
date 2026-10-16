@@ -73,12 +73,17 @@ fn path_submission_scroll_and_error_remove_stale_entries() {
 }
 
 #[test]
-fn clicking_more_scrolls_instead_of_selecting_the_covered_row() {
+fn clicking_more_uses_the_rail_and_entry_rows_remain_selectable() {
     let mut p = picker(60);
-    assert_eq!(p.update(&press(150, 197, 1000)), FilePickerResult::Active);
+    assert_eq!(p.update(&press(270, 197, 1000)), FilePickerResult::Active);
     assert!(p.scroll_offset() > 0);
     assert!(p.selected_entry().is_none());
-    assert_eq!(p.update(&press(150, 27, 1500)), FilePickerResult::Active);
+    assert_eq!(p.update(&press(270, 27, 1500)), FilePickerResult::Active);
     assert_eq!(p.scroll_offset(), 0);
     assert!(p.selected_entry().is_none());
+    p.update(&press(50, 197, 2000));
+    assert!(p.selected_entry().is_some(), "last live row must select");
+    p.scroll(-1);
+    p.update(&press(50, 27, 2500));
+    assert_eq!(p.selected_entry().unwrap().name, b"file002", "top live row must select");
 }
