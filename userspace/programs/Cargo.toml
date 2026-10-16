@@ -751,5 +751,9 @@ name = "suite-sdk"
 path = "src/suite_sdk.rs"
 
 [[bin]]
+name = "suite-gpu"
+path = "src/suite_gpu.rs"
+
+[[bin]]
 name = "fifo_fs_test"
 path = "src/fifo_fs_test.rs"
