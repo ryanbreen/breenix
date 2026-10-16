@@ -463,15 +463,6 @@ impl Seeded {
     }
 }
 
-/// A reviewed reference image the contract's section 8.6 keeps for whole scenes.
-fn reference(name: &str) -> CaseResult {
-    let path = format!("/usr/local/test/share/breengel/frames/{name}");
-    match std::fs::metadata(&path) {
-        Ok(_) => fail(format!("the reviewed reference {path} exists, but the PNG decoder this case compares it with is absent ({CONTRACT} sections 8.6, 13)")),
-        Err(_) => missing(&format!("the reviewed reference {path} (tools/gfx-refgen, docs/suites/frames/PROVENANCE.json)"), "8.6"),
-    }
-}
-
 /// Where the guest reads the reviewed references (section 8.6).
 const FRAMES: &str = "/usr/local/test/share/breengel/frames";
 
