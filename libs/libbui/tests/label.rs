@@ -7,7 +7,7 @@ fn narrow_ellipsis_keeps_ink_only_when_dot_rows_are_inside() {
     let paper = Color::rgb(13, 27, 41);
     for height in [7, 3] {
         let mut pixels = vec![0u8; 80 * 40 * 4];
-        let mut fb = unsafe { FrameBuf::from_raw(pixels.as_mut_ptr(), 80, 40, 320, 4, true) };
+        let mut fb = unsafe { FrameBuf::from_raw(pixels.as_mut_ptr(), 80, 40, 320, 4, true) }.expect("valid surface");
         fb.clear(paper);
         Label::new(Rect::new(10, 8, 12, height), b"ABCDEFGHIJKLM").draw(&mut fb, &Theme::dark());
         let mut ink = 0;

@@ -21,6 +21,14 @@ fn shared_page_tracks_epochs_without_reading_real_time() {
     file.seek(SeekFrom::Start(16)).unwrap();
     file.write_all(&250_000_000u64.to_le_bytes()).unwrap();
     assert_eq!(clock::now_ns(), 250_000_000);
+    // A fresh session can replace the page at the very same configured path.
+    page[8..16].copy_from_slice(&8u64.to_le_bytes());
+    page[16..24].copy_from_slice(&987u64.to_le_bytes());
+    let replacement = path.with_extension("next");
+    std::fs::write(&replacement, page).unwrap();
+    std::fs::rename(replacement, &path).unwrap();
+    assert_eq!(clock::now_ns(), 987);
+    assert_eq!(clock::epoch(), 8);
     let before = clock::real_clock_reads();
     assert!(clock::real_now_ns() > 0);
     assert_eq!(clock::real_clock_reads(), before + 1);

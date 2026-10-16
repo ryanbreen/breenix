@@ -14,7 +14,7 @@ fn catalogue() -> Vec<Box<dyn Icon>> {
 }
 fn image(icon: &dyn Icon) -> Vec<u8> {
     let mut bytes = vec![0u8; 200 * 200 * 4];
-    let mut fb = unsafe { FrameBuf::from_raw(bytes.as_mut_ptr(), 200, 200, 800, 4, true) };
+    let mut fb = unsafe { FrameBuf::from_raw(bytes.as_mut_ptr(), 200, 200, 800, 4, true) }.expect("valid surface");
     icon.draw(&mut fb, 100, 100, 48);
     bytes
 }
@@ -126,4 +126,27 @@ fn hover_and_click_effects_settle_with_pointer_still_inside() {
             );
         }
     }
+}
+
+#[test]
+fn search_shimmer_restarts_on_each_hover() {
+    let mut icon = SearchIcon::new();
+    let mut hover = IconMouse::none(); hover.hovering = true;
+    icon.update(2_000_000, hover);
+    icon.update(2_000_000, IconMouse::none());
+    icon.update(251_000, hover);
+    let before = image(&icon);
+    icon.update(100_000, hover);
+    assert!(before != image(&icon), "second hover lost its shimmer");
+}
+
+#[test]
+fn a_subpixel_particle_box_never_panics_or_draws_outside_it() {
+    use libicon::particles::{Particle, ParticlePool};
+    let mut p = ParticlePool::with_bounds(1, 0.0, 0.0, 0.25, 0.5);
+    p.emit(Particle { x: 0.0, y: 0.0, vx: 2.0, vy: 2.0, life: 1.0,
+        max_life: 1.0, size: 2.0, color: libgfx::color::Color::WHITE,
+        gravity: 1.0, friction: 0.0 });
+    p.update(0.001);
+    assert_eq!(p.active_count(), 0, "no whole pixel fits in this box");
 }

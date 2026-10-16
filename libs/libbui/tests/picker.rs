@@ -71,3 +71,14 @@ fn path_submission_scroll_and_error_remove_stale_entries() {
     assert_eq!(p.error(), Some(&b"Permission denied"[..]));
     assert_eq!(p.key(&KeyInput::new(Key::Enter)), FilePickerResult::Active);
 }
+
+#[test]
+fn clicking_more_scrolls_instead_of_selecting_the_covered_row() {
+    let mut p = picker(60);
+    assert_eq!(p.update(&press(150, 197, 1000)), FilePickerResult::Active);
+    assert!(p.scroll_offset() > 0);
+    assert!(p.selected_entry().is_none());
+    assert_eq!(p.update(&press(150, 27, 1500)), FilePickerResult::Active);
+    assert_eq!(p.scroll_offset(), 0);
+    assert!(p.selected_entry().is_none());
+}
