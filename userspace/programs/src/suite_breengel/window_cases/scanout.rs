@@ -209,7 +209,9 @@ fn scanout_atomic_record() -> CaseResult {
         };
         // The window is at (600, 400); (x, y) is a pixel of it.
         let at_pixel = |x: u32, y: u32| ((400 + y) * 1280 + 600 + x) as usize * 4;
-        let want = pattern(commit as u32, 5, 7);
+        // Commit ids start at 1 (section 17.2); a window composed before its first commit
+        // shows its new buffers, which are all zero.
+        let want = if commit == 0 { [0; 4] } else { pattern(commit as u32, 5, 7) };
         if px[at_pixel(5, 7)..at_pixel(5, 7) + 3] != want[..3] {
             result = at("20.1", format!("readback serial {} names commit {commit} but its pixels are not commit {commit}'s", rec.serial));
             break;
