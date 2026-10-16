@@ -606,7 +606,7 @@ fn summary() {
         [0, 1, 2, 3].map(|c| SCHED_HOLD_N[c].load(Ordering::Relaxed)),
         [0, 1, 2, 3].map(|c| SCHED_HOLD_MAX[c].load(Ordering::Relaxed) / per),
     );
-    let mut top = [(0u64, 0usize); 14];
+    let mut top = [(0u64, 0usize); 24];
     for i in 0..SITES {
         let cyc = SITE_CYC[i].load(Ordering::Relaxed);
         if let Some(slot) = top.iter().position(|(c, _)| cyc > *c) {

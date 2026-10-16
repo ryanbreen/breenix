@@ -586,6 +586,11 @@ type SchedulerGuard = spin::MutexGuard<'static, Option<Scheduler>>;
 #[inline(always)]
 #[track_caller]
 fn lock_scheduler() -> SchedulerGuard {
+    lock_scheduler_at(core::panic::Location::caller())
+}
+
+#[inline(always)]
+fn lock_scheduler_at(site: &'static core::panic::Location<'static>) -> SchedulerGuard {
     #[cfg(target_arch = "x86_64")]
     let probe = crate::stall_probe::sched_wait_begin();
     #[cfg(target_arch = "x86_64")]
@@ -593,7 +598,7 @@ fn lock_scheduler() -> SchedulerGuard {
     #[cfg(not(target_arch = "x86_64"))]
     let guard = SCHEDULER.lock();
     #[cfg(target_arch = "x86_64")]
-    crate::stall_probe::sched_acquired_at(probe, core::panic::Location::caller());
+    crate::stall_probe::sched_acquired_at(probe, site);
     crate::tracing::providers::teardown::note_scheduler_acquire();
     #[cfg(target_arch = "x86_64")]
     let guard = SchedulerGuard::new(guard);
@@ -7629,8 +7634,9 @@ where
             CPU0_BREADCRUMB_ID.store(20, Ordering::Relaxed); // with_scheduler entry
         }
     }
+    let site = core::panic::Location::caller();
     without_interrupts(|| {
-        let mut scheduler_lock = lock_scheduler();
+        let mut scheduler_lock = lock_scheduler_at(site);
         let _scheduler_scope = crate::tracing::providers::teardown::SchedulerScope::enter();
         #[cfg(target_arch = "aarch64")]
         {
@@ -7762,8 +7768,9 @@ pub fn with_thread_mut<F, R>(thread_id: u64, f: F) -> Option<R>
 where
     F: FnOnce(&mut super::thread::Thread) -> R,
 {
+    let site = core::panic::Location::caller();
     without_interrupts(|| {
-        let mut scheduler_lock = lock_scheduler();
+        let mut scheduler_lock = lock_scheduler_at(site);
         scheduler_lock
             .as_mut()
             .and_then(|sched| sched.get_thread_mut(thread_id).map(f))
