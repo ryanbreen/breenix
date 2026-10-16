@@ -292,19 +292,22 @@ impl CommandBuffer {
         self.push(sub_ctx_id);
     }
 
-    /// Send a SET_TWEAKS command (Mesa compatibility hint to virglrenderer).
-    /// tweak_id=1: gles_emulate_bgra — enables BGRA texture emulation on GLES hosts
-    /// tweak_id=2: gles_apply_bgra_dest_swizzle — BGRA destination swizzle
-    pub fn set_tweaks(&mut self, tweak_id: u32, value: u32) {
-        self.push(Self::cmd0(ccmd::SET_TWEAKS, 0, 2));
-        self.push(tweak_id);
-        self.push(value);
+    /// A batch owns subcontext 1 only until its draw commands have executed.
+    /// CREATE/SET/DESTROY_SUB_CTX are published virgl_context_cmd commands.
+    /// No host tweaks or optional multisample commands are part of this profile.
+    pub fn begin_batch(&mut self) {
+        self.create_sub_ctx(1);
+        self.set_sub_ctx(1);
     }
 
-    /// Set minimum samples (Mesa sends this with value=1 for all draws).
-    pub fn set_min_samples(&mut self, value: u32) {
-        self.push(Self::cmd0(ccmd::SET_MIN_SAMPLES, 0, 1));
-        self.push(value);
+    pub fn end_batch(&mut self) {
+        self.set_sub_ctx(0);
+        self.push(Self::cmd0(ccmd::DESTROY_SUB_CTX, 0, 1));
+        self.push(1);
+    }
+
+    pub fn nop(&mut self) {
+        self.push(Self::cmd0(ccmd::NOP, 0, 0));
     }
 
     /// Create a surface object wrapping a resource.
