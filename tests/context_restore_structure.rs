@@ -810,14 +810,14 @@ fn validate_switch_source(source: &str) -> Result<(), String> {
         .ok_or_else(|| "missing fn switch_to_thread".to_string())?;
     let compact = normalized_code(switch_body).replace(' ', "");
     if !compact.contains(
-        "letresumes_in_kernel=scheduler::with_thread_mut(thread_id,|thread|{thread.blocked_in_syscall||saved_context_is_kernel_frame(thread)})",
+        "resumes_in_kernel:thread.blocked_in_syscall||saved_context_is_kernel_frame(thread),",
     ) {
         return Err(
             "switch_to_thread does not combine blocked_in_syscall with the saved-frame term"
                 .to_string(),
         );
     }
-    if !compact.contains("}elseifresumes_in_kernel{resume_kernel_context(") {
+    if !compact.contains("}elseifincoming.resumes_in_kernel{resume_kernel_context(") {
         return Err(
             "switch_to_thread does not resume a kernel-saved user thread in the kernel".to_string(),
         );
@@ -1198,14 +1198,14 @@ fn validate_blocked_syscall_dispatch_resolves_cr3(source: &str) -> Result<(), St
     let switch = function_body(source, "switch_to_thread")
         .ok_or_else(|| "missing fn switch_to_thread".to_string())?;
     if !normalized_code(switch).replace(' ', "").contains(
-        "}elseifresumes_in_kernel{resume_kernel_context(thread_id,resume_thread_id,saved_regs,interrupt_frame);",
+        "}elseifincoming.resumes_in_kernel{resume_kernel_context(thread_id,resume_thread_id,incoming.cached_root,saved_regs,interrupt_frame,);",
     ) {
         return Err("switch_to_thread has no blocked-in-syscall dispatch branch".to_string());
     }
     let body = function_body(source, "resume_kernel_context")
         .ok_or_else(|| "missing fn resume_kernel_context".to_string())?;
     let compact = normalized_code(body).replace(' ', "");
-    const RESOLVE: &str = "letroot=matchdispatch_root(thread_id){Ok(root)=>root,Err(refusal)=>{refuse_user_dispatch(thread_id,resume_thread_id,refusal,true,interrupt_frame);return;}};";
+    const RESOLVE: &str = "letroot=matchdispatch_root(thread_id,cached_root){Ok(root)=>root,Err(refusal)=>{refuse_user_dispatch(thread_id,resume_thread_id,refusal,true,interrupt_frame);return;}};";
     let resolve = compact
         .find(RESOLVE)
         .ok_or_else(|| "blocked-in-syscall dispatch does not bind the resolved root up front".to_string())?;
@@ -1337,7 +1337,7 @@ fn validate_no_cr3_dispatch_fails_closed(source: &str) -> Result<(), String> {
     ordered_in(
         &compact,
         &[
-            "letroot=matchdispatch_root(thread_id){Ok(root)=>root,Err(refusal)=>{refuse_user_dispatch(thread_id,resume_thread_id,refusal,false,interrupt_frame);return;}};",
+            "letroot=matchdispatch_root(thread_id,cached_root){Ok(root)=>root,Err(refusal)=>{refuse_user_dispatch(thread_id,resume_thread_id,refusal,false,interrupt_frame);return;}};",
             "setup_first_userspace_entry(thread_id,root,",
             "crate::per_cpu::set_next_cr3(root);",
         ],
@@ -1569,8 +1569,8 @@ fn dispatch_no_pm_validator_rejects_a_poll_before_the_cache() {
     let mutant = mutate_function(
         &source,
         "dispatch_root",
-        "    let cached =",
-        "    let _early = crate::process::poll_manager();\n    let cached =",
+        "    if cached != 0 {",
+        "    let _early = crate::process::poll_manager();\n    if cached != 0 {",
     );
     assert!(validate_dispatch_takes_no_process_manager(&mutant).is_err());
 }
@@ -1800,7 +1800,7 @@ fn blocked_syscall_dispatch_validator_rejects_late_no_cr3_refusal() {
         &source,
         "resume_kernel_context",
         "    // Restore interrupt frame with KERNEL context\n",
-        "    let _late = dispatch_root(thread_id);\n    // Restore interrupt frame with KERNEL context\n",
+        "    let _late = dispatch_root(thread_id, 0);\n    // Restore interrupt frame with KERNEL context\n",
     );
     assert!(validate_blocked_syscall_dispatch_resolves_cr3(&mutant).is_err());
     let mutant = mutate_function(
@@ -4607,15 +4607,25 @@ fn validate_interrupt_return_scheduler_acquisitions(source: &str) -> Result<(), 
         return Err("old-thread fields require more than one scheduler acquisition".to_string());
     }
 
-    // The incoming thread's routing reads blocked_in_syscall and its saved
-    // frame in one scheduler acquisition.
+    // The incoming thread is made current, and everything its routing needs
+    // is read, in one scheduler acquisition.
     let switch = function_body(source, "switch_to_thread")
         .ok_or_else(|| "missing fn switch_to_thread".to_string())?;
+    let switch_mask = code_mask(switch);
     let compact_switch = normalized_code(switch).replace(' ', "");
-    if compact_switch.matches(
-        "letresumes_in_kernel=scheduler::with_thread_mut(thread_id,|thread|{thread.blocked_in_syscall||saved_context_is_kernel_frame(thread)}).unwrap_or(false);",
-    ).count() != 1
-        || compact_switch.contains("letblocked_in_syscall=")
+    let acquisitions = ["with_scheduler", "with_thread_mut", "lock_scheduler"]
+        .iter()
+        .map(|name| call_offsets(switch, &switch_mask, name).len())
+        .sum::<usize>();
+    let idle_context_reads = compact_switch
+        .matches("scheduler::with_thread_mut(thread_id,|thread|{letidle_loop_addr")
+        .count();
+    if acquisitions - idle_context_reads != 1
+        || !compact_switch.contains("letincoming=scheduler::with_scheduler(|sched|{")
+        || !compact_switch.contains(
+            "resumes_in_kernel:thread.blocked_in_syscall||saved_context_is_kernel_frame(thread),",
+        )
+        || !compact_switch.contains("crate::per_cpu::set_current_thread(thread_ptr);")
     {
         return Err(
             "the incoming thread's routing fields take more than one scheduler acquisition"
@@ -4896,8 +4906,8 @@ fn interrupt_return_validator_rejects_a_locking_saved_frame_lookup() {
     let mutant = mutate_function(
         &source,
         "switch_to_thread",
-        "    let resumes_in_kernel = scheduler::with_thread_mut(thread_id, |thread| {\n        thread.blocked_in_syscall || saved_context_is_kernel_frame(thread)\n    })\n    .unwrap_or(false);",
-        "    let blocked_in_syscall = scheduler::with_thread_mut(thread_id, |thread| thread.blocked_in_syscall).unwrap_or(false);\n    let resumes_in_kernel = blocked_in_syscall || scheduler::with_thread_mut(thread_id, |thread| saved_context_is_kernel_frame(thread)).unwrap_or(false);",
+        "    // Switch TLS if needed (kernel threads don't have TLS)\n",
+        "    let _again = scheduler::with_thread_mut(thread_id, |thread| thread.has_started);\n    // Switch TLS if needed (kernel threads don't have TLS)\n",
     );
     assert!(validate_interrupt_return_scheduler_acquisitions(&mutant).is_err());
 }

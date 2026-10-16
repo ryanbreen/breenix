@@ -10,7 +10,8 @@
 //! deleted from `Scheduler::unblock_for_signal`, the two wait-path
 //! logs removed from `block_current_for_signal_with_context`, the routine
 //! scheduler and clock_settime lines, and the six that went with the
-//! process-manager save and restore code #1635 took out of the x86 dispatch). It is not
+//! process-manager save and restore code #1635 took out of the x86 dispatch,
+//! with the two trace records beside its scheduler lookups). It is not
 //! wired into any gate, so today the only thing that notices a NEW call
 //! creeping in is a human rereading 259 lines of grep output. This suite
 //! pins the census in Rust so a per-`(file, item-path)` INCREASE fails a
@@ -642,7 +643,9 @@ fn log_census(sources: &[(String, String)], patterns: &[&str]) -> Census {
 /// manager out of the dispatch, and the process-row save and restore code with
 /// it: `fn restore_userspace_thread_context`,
 /// `fn save_current_thread_context_with_guard` and `fn save_kthread_context`
-/// went to 0 (rows gone, six calls).
+/// went to 0 (rows gone, six calls), `fn switch_to_thread` from 2 to 1, and
+/// `fn check_need_resched_and_switch` to 0 (row gone), the two trace records
+/// whose scheduler lookups the dispatch no longer makes.
 const CRITICAL_PATH_LOG_ANCHORS: &[(&str, &str, usize)] = &[
     ("kernel/src/arch_impl/aarch64/context_switch.rs", "#[cfg(feature=boot_tests)] fn report_user_rsp_scratch_el_census", 1),
     ("kernel/src/arch_impl/aarch64/context_switch.rs", "fn drain_asm_resume_pc_refusals", 1),
@@ -653,9 +656,8 @@ const CRITICAL_PATH_LOG_ANCHORS: &[(&str, &str, usize)] = &[
     ("kernel/src/arch_impl/aarch64/exception.rs", "fn handle_syscall", 8),
     ("kernel/src/arch_impl/aarch64/timer_interrupt.rs", "fn dump_gic_state", 9),
     ("kernel/src/arch_impl/aarch64/timer_interrupt.rs", "fn init", 9),
-    ("kernel/src/interrupts/context_switch.rs", "fn check_need_resched_and_switch", 1),
     ("kernel/src/interrupts/context_switch.rs", "fn setup_idle_return", 1),
-    ("kernel/src/interrupts/context_switch.rs", "fn switch_to_thread", 2),
+    ("kernel/src/interrupts/context_switch.rs", "fn switch_to_thread", 1),
     ("kernel/src/per_cpu.rs", "fn can_schedule", 1),
     ("kernel/src/per_cpu.rs", "fn init", 9),
     ("kernel/src/per_cpu.rs", "fn set_kernel_cr3", 2),
@@ -706,9 +708,9 @@ const ESCAPED_SITE: (&str, &str, usize) = (
 /// the plan is written in, not only on the per-row diff.
 // Routine scheduler lines were removed by 3cdadb58 and 3bc5e91b;
 // clock_settime's diagnostic was removed by 8aae5ba0, and #1635's dispatch
-// rewrite removed six. Restoring any of those calls is still an unexpected
+// rewrite removed eight. Restoring any of those calls is still an unexpected
 // census entry.
-const CRITICAL_PATH_LOG_TOTAL: usize = 90;
+const CRITICAL_PATH_LOG_TOTAL: usize = 88;
 
 fn wider_anchors() -> Vec<(&'static str, &'static str, usize)> {
     let mut anchors = CRITICAL_PATH_LOG_ANCHORS.to_vec();

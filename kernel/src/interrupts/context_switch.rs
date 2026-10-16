@@ -594,13 +594,6 @@ pub extern "C" fn check_need_resched_and_switch(
         // Linux clears this in schedule_tail() after context switch.
         crate::per_cpu::clear_preempt_active();
 
-        // Log userspace transition
-        if scheduler::with_thread_mut(new_thread_id, |t| t.privilege == ThreadPrivilege::User)
-            .unwrap_or(false)
-        {
-            log::trace!("Restored userspace context for thread {}", new_thread_id);
-        }
-
         // Reset the timer quantum for the new thread
         super::timer::reset_quantum();
     }
@@ -764,6 +757,18 @@ fn saved_context_is_kernel_frame(thread: &crate::task::thread::Thread) -> bool {
     thread.privilege == ThreadPrivilege::User && is_kernel_code_selector(thread.context.cs)
 }
 
+/// What a switch needs to know about the thread it dispatches, read in the
+/// scheduler hold that makes it this CPU's current thread.
+struct Incoming {
+    is_idle: bool,
+    is_kernel_thread: bool,
+    /// Blocked in a syscall, or saved inside the kernel: it resumes there.
+    resumes_in_kernel: bool,
+    /// A user thread's cached page-table root, 0 until its first dispatch.
+    cached_root: u64,
+    has_started: bool,
+}
+
 /// Switch to a different thread
 fn switch_to_thread(
     thread_id: u64,
@@ -771,36 +776,55 @@ fn switch_to_thread(
     saved_regs: &mut SavedRegisters,
     interrupt_frame: &mut InterruptStackFrame,
 ) {
-    // Update per-CPU current thread and TSS.RSP0
-    // The x87/SSE registers follow the thread being dispatched.
-    scheduler::with_scheduler(|sched| {
-        crate::arch_impl::x86_64::fpu::hand_over(sched, Some(resume_thread_id), thread_id)
-    });
+    // The x87/SSE registers follow the thread being dispatched, and the
+    // per-CPU current thread and TSS.RSP0 are updated, in one scheduler hold
+    // that also reads how the thread resumes.
+    let incoming = scheduler::with_scheduler(|sched| {
+        crate::arch_impl::x86_64::fpu::hand_over(sched, Some(resume_thread_id), thread_id);
+        let is_idle = thread_id == sched.idle_thread();
+        let thread = sched.get_thread_mut(thread_id);
+        let incoming = thread.as_ref().map(|thread| Incoming {
+            is_idle,
+            is_kernel_thread: thread.privilege == ThreadPrivilege::Kernel,
+            // Check if thread was blocked inside a syscall (pause/waitpid)
+            // If so, we must NOT restore userspace context - the thread needs to
+            // continue executing the syscall code and return through the normal path.
+            // The saved CS is the authoritative record of the ring where the
+            // context was captured, even if a remote waker cleared
+            // blocked_in_syscall, so a saved kernel frame resumes in the kernel too.
+            resumes_in_kernel: thread.blocked_in_syscall || saved_context_is_kernel_frame(thread),
+            cached_root: thread.cached_ttbr0,
+            has_started: thread.has_started,
+        });
+        if let Some(thread) = thread {
+            // Update per-CPU current thread pointer
+            let thread_ptr = thread as *const _ as *mut crate::task::thread::Thread;
+            crate::per_cpu::set_current_thread(thread_ptr);
 
-    scheduler::with_thread_mut(thread_id, |thread| {
-        // Update per-CPU current thread pointer
-        let thread_ptr = thread as *const _ as *mut crate::task::thread::Thread;
-        crate::per_cpu::set_current_thread(thread_ptr);
-
-        // Update TSS.RSP0 with new thread's kernel stack top
-        // This is critical for interrupt/exception handling
-        if let Some(kernel_stack_top) = thread.kernel_stack_top {
-            crate::per_cpu::update_tss_rsp0(kernel_stack_top.as_u64());
-            log::trace!(
-                "sched: switch to thread {} rsp0={:#x}",
-                thread_id,
-                kernel_stack_top
-            );
+            // Update TSS.RSP0 with new thread's kernel stack top
+            // This is critical for interrupt/exception handling
+            if let Some(kernel_stack_top) = thread.kernel_stack_top {
+                crate::per_cpu::update_tss_rsp0(kernel_stack_top.as_u64());
+            }
         }
+        incoming.unwrap_or(Incoming {
+            is_idle,
+            is_kernel_thread: false,
+            resumes_in_kernel: false,
+            cached_root: 0,
+            has_started: false,
+        })
+    })
+    .unwrap_or(Incoming {
+        is_idle: false,
+        is_kernel_thread: false,
+        resumes_in_kernel: false,
+        cached_root: 0,
+        has_started: false,
     });
 
     // Switch TLS if needed (kernel threads don't have TLS)
-    let is_kernel_thread = scheduler::with_thread_mut(thread_id, |thread| {
-        thread.privilege == ThreadPrivilege::Kernel
-    })
-    .unwrap_or(false);
-
-    if !is_kernel_thread {
+    if !incoming.is_kernel_thread {
         if crate::tls::switch_tls(thread_id).is_err() {
             scheduler::abort_dispatch_and_resume(thread_id, resume_thread_id);
             trace_dispatch_abandon(DispatchAbandonSite::RollbackTls);
@@ -809,22 +833,7 @@ fn switch_to_thread(
         }
     }
 
-    // Check if this is the idle thread
-    let is_idle =
-        scheduler::with_scheduler(|sched| thread_id == sched.idle_thread()).unwrap_or(false);
-
-    // Check if thread was blocked inside a syscall (pause/waitpid)
-    // If so, we must NOT restore userspace context - the thread needs to
-    // continue executing the syscall code and return through the normal path.
-    // The saved CS is the authoritative record of the ring where the context
-    // was captured, even if a remote waker cleared blocked_in_syscall, so a
-    // saved kernel frame resumes in the kernel too. Both come from the one
-    // scheduler acquisition.
-    let resumes_in_kernel = scheduler::with_thread_mut(thread_id, |thread| {
-        thread.blocked_in_syscall || saved_context_is_kernel_frame(thread)
-    })
-    .unwrap_or(false);
-    if is_idle {
+    if incoming.is_idle {
         // Check if idle thread has a saved context to restore
         // If it was preempted while running actual code (not idle_loop), restore that context
         //
@@ -854,13 +863,26 @@ fn switch_to_thread(
             // No saved context or was in idle_loop - go to idle loop
             setup_idle_return(interrupt_frame);
         }
-    } else if is_kernel_thread {
+    } else if incoming.is_kernel_thread {
         // Set up to return to kernel thread
         setup_kernel_thread_return(thread_id, saved_regs, interrupt_frame);
-    } else if resumes_in_kernel {
-        resume_kernel_context(thread_id, resume_thread_id, saved_regs, interrupt_frame);
+    } else if incoming.resumes_in_kernel {
+        resume_kernel_context(
+            thread_id,
+            resume_thread_id,
+            incoming.cached_root,
+            saved_regs,
+            interrupt_frame,
+        );
     } else {
-        restore_userspace_thread_context(thread_id, resume_thread_id, saved_regs, interrupt_frame);
+        restore_userspace_thread_context(
+            thread_id,
+            resume_thread_id,
+            incoming.cached_root,
+            incoming.has_started,
+            saved_regs,
+            interrupt_frame,
+        );
     }
 }
 
@@ -875,18 +897,18 @@ enum RootRefusal {
     NoRoot,
 }
 
-/// The page-table root to dispatch user thread `thread_id` on.
+/// The page-table root to dispatch user thread `thread_id` on, given `cached`,
+/// the root its scheduler row caches (0 for none).
 ///
 /// It is cached in the thread's scheduler row, so a dispatch reads it under
-/// the scheduler lock alone. The cache is filled here from the process row,
+/// the scheduler lock alone, in the hold that makes the thread current. The cache is filled here from the process row,
 /// with PROCESS_MANAGER, the first time the thread is dispatched once that row
 /// is published, and exec replaces it (`ExecSchedCommit::apply`). Nothing else
 /// changes a live thread's root: a CLONE_VM thread shares its creator's for
 /// good, and exec is refused while another thread shares the old one.
 /// Retirement treats a cached root as live until its thread has terminated
 /// (`cached_root_is_live` in `process_task.rs`).
-fn dispatch_root(thread_id: u64) -> Result<u64, RootRefusal> {
-    let cached = scheduler::with_thread_mut(thread_id, |thread| thread.cached_ttbr0).unwrap_or(0);
+fn dispatch_root(thread_id: u64, cached: u64) -> Result<u64, RootRefusal> {
     if cached != 0 {
         return Ok(cached);
     }
@@ -977,10 +999,11 @@ fn refuse_user_dispatch(
 fn resume_kernel_context(
     thread_id: u64,
     resume_thread_id: u64,
+    cached_root: u64,
     saved_regs: &mut SavedRegisters,
     interrupt_frame: &mut InterruptStackFrame,
 ) {
-    let root = match dispatch_root(thread_id) {
+    let root = match dispatch_root(thread_id, cached_root) {
         Ok(root) => root,
         Err(refusal) => {
             refuse_user_dispatch(thread_id, resume_thread_id, refusal, true, interrupt_frame);
@@ -1197,10 +1220,12 @@ fn setup_kernel_thread_return(
 fn restore_userspace_thread_context(
     thread_id: u64,
     resume_thread_id: u64,
+    cached_root: u64,
+    has_started: bool,
     saved_regs: &mut SavedRegisters,
     interrupt_frame: &mut InterruptStackFrame,
 ) {
-    let root = match dispatch_root(thread_id) {
+    let root = match dispatch_root(thread_id, cached_root) {
         Ok(root) => root,
         Err(refusal) => {
             refuse_user_dispatch(thread_id, resume_thread_id, refusal, false, interrupt_frame);
@@ -1208,10 +1233,7 @@ fn restore_userspace_thread_context(
         }
     };
 
-    // Check if this thread has ever run before
-    let has_started =
-        scheduler::with_thread_mut(thread_id, |thread| thread.has_started).unwrap_or(false);
-
+    // Whether this thread has ever run before
     if !has_started {
         // CRITICAL: This is a brand new thread that has never run
         // We need to set up for its first entry to userspace

@@ -124,15 +124,17 @@ fn the_surviving_record_census_in_the_dispatch_path_is_pinned() {
     // Moved again by #1635, which took the process manager out of the
     // dispatch: the process-row save and restore code went, and with it the
     // `error` record for a restore that could not take the lock and five
-    // `trace` records. 10 -> 4, and the `error` row is gone.
+    // `trace` records, and two more `trace` records went with the scheduler
+    // lookups the dispatch no longer makes. 10 -> 2, and the `error` row is
+    // gone.
     assert_eq!(
         records.len(),
-        4,
+        2,
         "context_switch.rs record census moved: {histogram:?}"
     );
     assert_eq!(
         histogram,
-        vec![("trace".to_string(), 4),],
+        vec![("trace".to_string(), 2),],
         "context_switch.rs record level histogram moved"
     );
 }
