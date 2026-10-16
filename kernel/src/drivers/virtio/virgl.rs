@@ -158,6 +158,64 @@ pub mod swizzle {
     pub const IDENTITY: u32 = RED | (GREEN << 3) | (BLUE << 6) | (ALPHA << 9);
 }
 
+/// Breenix's shader roles: one colour attachment, clip-space vertices and
+/// perspective-correct RGBA sampling. No stream output or all-CBUFs broadcast.
+///
+/// Provenance (#1660): independently authored assembly from TGSI's language
+/// specification, sections "Declaration", "Semantics", "Interpolation",
+/// "MOV", "TEX" and "END": https://docs.mesa3d.org/gallium/tgsi.html
+/// Token accounting uses only the published token STRUCTURES at the same wire
+/// revision as this module (p_shader_tokens.h, not a compiler implementation):
+/// https://chromium.googlesource.com/chromiumos/third_party/virglrenderer/+/07a5bc398dfffdc36ad20a3476348753aa10a322/src/gallium/include/pipe/p_shader_tokens.h
+/// tgsi_header + tgsi_processor = 2 words; a declaration = declaration+range
+/// (2), plus semantic/interpolation/sampler-view words when specified. MOV is
+/// instruction+dst+src (3); TEX adds texture+second src (5); END is 1.
+/// The four roles replace all five old strings: the broadcast fragment variant
+/// is retired because SET_FRAMEBUFFER_STATE binds exactly one colour target.
+#[derive(Clone, Copy)]
+pub enum ShaderProgram {
+    Position,
+    UniformColour,
+    PositionUv,
+    SampleRgba,
+}
+
+impl ShaderProgram {
+    fn stage(self) -> u32 {
+        match self {
+            Self::Position | Self::PositionUv => pipe::SHADER_VERTEX,
+            Self::UniformColour | Self::SampleRgba => pipe::SHADER_FRAGMENT,
+        }
+    }
+
+    fn tokens(self) -> u32 {
+        match self {
+            // input, POSITION output, MOV, END.
+            Self::Position => 2 + 2 + 3 + 3 + 1,
+            // CONST, COLOR output, MOV, END; no properties.
+            Self::UniformColour => 2 + 2 + 3 + 3 + 1,
+            // input range, POSITION and GENERIC outputs, two MOVs, END.
+            Self::PositionUv => 2 + 2 + 3 + 3 + 3 + 3 + 1,
+            // sampler, view, GENERIC+PERSPECTIVE input, COLOR, TEX, END.
+            Self::SampleRgba => 2 + 2 + 3 + 4 + 3 + 5 + 1,
+        }
+    }
+
+    fn source(self) -> &'static [u8] {
+        match self {
+            // IN[0] is the caller's homogeneous clip position, unchanged.
+            Self::Position => b"VERT\nDCL OUT[0], POSITION\nDCL IN[0]\nMOV OUT[0].xyzw, IN[0].xyzw\nEND\n",
+            // Each fragment writes the per-draw constant, including alpha.
+            Self::UniformColour => b"FRAG\nDCL CONST[0]\nDCL OUT[0], COLOR[0]\nMOV OUT[0].xyzw, CONST[0].xyzw\nEND\n",
+            // IN[1] carries normalized UV; W is retained for interpolation.
+            Self::PositionUv => b"VERT\nDCL IN[0..1]\nDCL OUT[1], GENERIC[0]\nDCL OUT[0], POSITION\nMOV OUT[1].xyzw, IN[1].xyzw\nMOV OUT[0].xyzw, IN[0].xyzw\nEND\n",
+            // One 2D floating-point RGBA sample; sampler state supplies wrap
+            // and filtering. No colour transform, discard or alpha override.
+            Self::SampleRgba => b"FRAG\nDCL SAMP[0]\nDCL SVIEW[0], 2D, FLOAT\nDCL IN[0], GENERIC[0], PERSPECTIVE\nDCL OUT[0], COLOR[0]\nTEX OUT[0].xyzw, IN[0].xyzw, SAMP[0], 2D\nEND\n",
+        }
+    }
+}
+
 // =============================================================================
 // Command Buffer
 // =============================================================================
@@ -343,12 +401,14 @@ impl CommandBuffer {
         self.push(handle);
     }
 
-    /// Create a shader from TGSI text.
-    ///
-    /// `num_tokens` must be nonzero (Mesa uses the actual TGSI token count).
-    /// Parallels' VirGL silently rejects the entire batch if num_tokens=0.
-    /// Use 300 as a safe default if the actual token count is unknown.
-    pub fn create_shader(
+    /// Create a shader with exact metadata derived alongside its source.
+    pub fn create_profile_shader(&mut self, handle: u32, program: ShaderProgram) {
+        self.create_shader(handle, program.stage(), program.tokens(), program.source());
+    }
+
+    // VIRGL_OBJ_SHADER_{HDR_SIZE,OFFSET,NUM_TOKENS}: one NUL-terminated text
+    // chunk, no stream output, exact compiled token count including its header.
+    fn create_shader(
         &mut self,
         handle: u32,
         shader_type: u32,
@@ -727,6 +787,22 @@ fn f32_bits(f: f32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::CommandBuffer;
+
+    #[test]
+    fn shader_metadata_covers_each_declared_program_exactly() {
+        use super::ShaderProgram::*;
+        for (program, stage, count) in [(Position, 0, 11), (UniformColour, 1, 11),
+            (PositionUv, 0, 17), (SampleRgba, 1, 20)] {
+            let mut stream = CommandBuffer::new();
+            stream.create_profile_shader(23, program);
+            let words = stream.as_slice();
+            assert_eq!(&words[1..6], &[23, stage, program.source().len() as u32 + 1, count, 0]);
+            let packed: Vec<u8> = words[6..].iter().flat_map(|word| word.to_le_bytes()).collect();
+            assert_eq!(&packed[..program.source().len()], program.source());
+            assert!(packed[program.source().len()..].iter().all(|byte| *byte == 0));
+            assert_eq!((words[0] >> 16) as usize, words.len() - 1);
+        }
+    }
 
     #[test]
     fn colour_profile_disables_dither_and_unused_attachments() {

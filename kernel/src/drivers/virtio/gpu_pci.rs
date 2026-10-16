@@ -4843,12 +4843,10 @@ pub fn virgl_render_rects(
     cmdbuf.create_rasterizer_default(1);
     cmdbuf.bind_object(1, super::virgl::OBJ_RASTERIZER);
 
-    // Shaders (num_tokens=300 required by Parallels)
-    let vs_text = b"VERT\nDCL IN[0]\nDCL OUT[0], POSITION\n  0: MOV OUT[0], IN[0]\n  1: END\n";
-    cmdbuf.create_shader(1, pipe::SHADER_VERTEX, 300, vs_text);
+    // Single-target shaders with exact declared token counts.
+    cmdbuf.create_profile_shader(1, super::virgl::ShaderProgram::Position);
     cmdbuf.bind_shader(1, pipe::SHADER_VERTEX);
-    let fs_text = b"FRAG\nPROPERTY FS_COLOR0_WRITES_ALL_CBUFS 1\nDCL OUT[0], COLOR\nDCL CONST[0]\n  0: MOV OUT[0], CONST[0]\n  1: END\n";
-    cmdbuf.create_shader(2, pipe::SHADER_FRAGMENT, 300, fs_text);
+    cmdbuf.create_profile_shader(2, super::virgl::ShaderProgram::UniformColour);
     cmdbuf.bind_shader(2, pipe::SHADER_FRAGMENT);
 
     // Vertex elements
@@ -5146,12 +5144,10 @@ pub fn virgl_composite_frame_textured(
     cmdbuf.create_rasterizer_default(13);
     cmdbuf.bind_object(13, super::virgl::OBJ_RASTERIZER);
 
-    // Texture shaders (num_tokens=300 required by Parallels)
-    let tex_vs = b"VERT\nDCL IN[0]\nDCL IN[1]\nDCL OUT[0], POSITION\nDCL OUT[1], GENERIC[0]\n  0: MOV OUT[0], IN[0]\n  1: MOV OUT[1], IN[1]\n  2: END\n";
-    cmdbuf.create_shader(14, pipe::SHADER_VERTEX, 300, tex_vs);
+    // Position/UV and RGBA sample shaders from the specified catalogue.
+    cmdbuf.create_profile_shader(14, super::virgl::ShaderProgram::PositionUv);
     cmdbuf.bind_shader(14, pipe::SHADER_VERTEX);
-    let tex_fs = b"FRAG\nPROPERTY FS_COLOR0_WRITES_ALL_CBUFS 1\nDCL IN[0], GENERIC[0], LINEAR\nDCL OUT[0], COLOR\nDCL SAMP[0]\nDCL SVIEW[0], 2D, FLOAT\n  0: TEX OUT[0], IN[0], SAMP[0], 2D\n  1: END\n";
-    cmdbuf.create_shader(15, pipe::SHADER_FRAGMENT, 300, tex_fs);
+    cmdbuf.create_profile_shader(15, super::virgl::ShaderProgram::SampleRgba);
     cmdbuf.bind_shader(15, pipe::SHADER_FRAGMENT);
 
     cmdbuf.create_vertex_elements(
@@ -5298,11 +5294,9 @@ fn virgl_composite_single_quad(
     cmdbuf.create_rasterizer_default(13);
     cmdbuf.bind_object(13, super::virgl::OBJ_RASTERIZER);
 
-    let tex_vs = b"VERT\nDCL IN[0]\nDCL IN[1]\nDCL OUT[0], POSITION\nDCL OUT[1], GENERIC[0]\n  0: MOV OUT[0], IN[0]\n  1: MOV OUT[1], IN[1]\n  2: END\n";
-    cmdbuf.create_shader(14, pipe::SHADER_VERTEX, 300, tex_vs);
+    cmdbuf.create_profile_shader(14, super::virgl::ShaderProgram::PositionUv);
     cmdbuf.bind_shader(14, pipe::SHADER_VERTEX);
-    let tex_fs = b"FRAG\nPROPERTY FS_COLOR0_WRITES_ALL_CBUFS 1\nDCL IN[0], GENERIC[0], LINEAR\nDCL OUT[0], COLOR\nDCL SAMP[0]\nDCL SVIEW[0], 2D, FLOAT\n  0: TEX OUT[0], IN[0], SAMP[0], 2D\n  1: END\n";
-    cmdbuf.create_shader(15, pipe::SHADER_FRAGMENT, 300, tex_fs);
+    cmdbuf.create_profile_shader(15, super::virgl::ShaderProgram::SampleRgba);
     cmdbuf.bind_shader(15, pipe::SHADER_FRAGMENT);
 
     cmdbuf.create_vertex_elements(
@@ -6276,13 +6270,11 @@ pub fn virgl_init() -> Result<(), &'static str> {
         cmdbuf.create_rasterizer_default(1);
         cmdbuf.bind_object(1, super::virgl::OBJ_RASTERIZER);
 
-        // Shaders — num_tokens=300 REQUIRED (Parallels rejects num_tokens=0)
-        let vs_text = b"VERT\nDCL IN[0]\nDCL OUT[0], POSITION\n  0: MOV OUT[0], IN[0]\n  1: END\n";
-        cmdbuf.create_shader(1, pipe::SHADER_VERTEX, 300, vs_text);
+        // Single-target shaders with exact declared token counts.
+        cmdbuf.create_profile_shader(1, super::virgl::ShaderProgram::Position);
         cmdbuf.bind_shader(1, pipe::SHADER_VERTEX);
 
-        let fs_text = b"FRAG\nPROPERTY FS_COLOR0_WRITES_ALL_CBUFS 1\nDCL OUT[0], COLOR\nDCL CONST[0]\n  0: MOV OUT[0], CONST[0]\n  1: END\n";
-        cmdbuf.create_shader(2, pipe::SHADER_FRAGMENT, 300, fs_text);
+        cmdbuf.create_profile_shader(2, super::virgl::ShaderProgram::UniformColour);
         cmdbuf.bind_shader(2, pipe::SHADER_FRAGMENT);
 
         // Vertex elements
@@ -6487,8 +6479,7 @@ fn virgl_test_textured_quad() -> Result<(), &'static str> {
     cmdbuf.set_sub_ctx(1);
 
     // Texture fragment shader: samples from SAMP[0] instead of passing vertex color
-    let tex_fs = b"FRAG\nDCL IN[0], GENERIC[0], LINEAR\nDCL OUT[0], COLOR\nDCL SAMP[0]\nDCL SVIEW[0], 2D, FLOAT\n  0: TEX OUT[0], IN[0], SAMP[0], 2D\n  1: END\n";
-    cmdbuf.create_shader(3, pipe::SHADER_FRAGMENT, 20, tex_fs);
+    cmdbuf.create_profile_shader(3, super::virgl::ShaderProgram::SampleRgba);
 
     // Sampler view: bind texture resource for shader sampling
     cmdbuf.create_sampler_view(
