@@ -789,6 +789,16 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
     };
     JUDGED_RUNNER.store(process::getpid().map_or(0, |pid| pid.raw()) as u64, Ordering::Relaxed);
     JUDGED_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    // A prior interrupted boot may have left this PID/sequence on a reused disk.
+    for path in [judged_path(), std::format!("{}.new", judged_path())] {
+        if let Err(e) = std::fs::remove_file(path) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                let _ = (io::close(reader),io::close(writer));
+                if let Some((r,w)) = live { let _ = (io::close(r),io::close(w)); }
+                return Outcome::Fail{ms:0,msg:std::format!("cannot clear judged transport: {e}")};
+            }
+        }
+    }
     let start = monotonic_ns();
     match process::fork() {
         Ok(ForkResult::Child) => {
