@@ -1359,3 +1359,89 @@ pub(super) fn switch_in<R>(
     }
     Some(f(thread, is_idle))
 }
+
+// ------------------------------------------- the current thread's waits
+
+/// Block the thread this CPU runs, as `Scheduler::block_current_*` do, under
+/// this CPU's lock: it is this CPU's, as is any deadline it sleeps to.
+pub(super) enum Block {
+    /// `block_current` / `block_current_in_syscall`.
+    Plain { in_syscall: bool },
+    /// `block_current_for_timer`.
+    Timer { wake_time_ns: u64 },
+    /// `block_current_for_io_with_timeout`.
+    Io { wake_time_ns: Option<u64> },
+    /// `block_current_for_signal_with_context`.
+    Signal { context: Option<crate::task::thread::CpuContext> },
+    /// `block_current_for_child_exit`.
+    ChildExit,
+}
+
+/// Whether the current thread published the blocked state.
+pub(super) fn block_current(local: &mut Held, block: Block) -> bool {
+    let Some(tid) = local.state().current_thread else {
+        return false;
+    };
+    let mut push_deadline = None;
+    {
+        let Some(thread) = local.thread(tid) else {
+            return false;
+        };
+        if thread.must_not_sleep() {
+            return false;
+        }
+        thread.charge_cpu(crate::time::get_cpu_ticks());
+        match block {
+            Block::Plain { in_syscall } => {
+                thread.stop_timer_cpu();
+                thread.state = ThreadState::Blocked;
+                if in_syscall {
+                    thread.blocked_in_syscall = true;
+                }
+            }
+            Block::Timer { wake_time_ns } => {
+                let already_armed = thread.timer_pop.is_some_and(|record| {
+                    record.deadline_ns == wake_time_ns
+                        && record.own_entry == crate::task::thread::TimerPop::NotPopped
+                });
+                thread.stop_timer_cpu();
+                thread.state = ThreadState::BlockedOnTimer;
+                thread.wake_time_ns = Some(wake_time_ns);
+                if !already_armed {
+                    thread.timer_pop = Some(crate::task::thread::TimerPopRecord::armed(wake_time_ns));
+                    push_deadline = Some(wake_time_ns);
+                }
+                thread.blocked_in_syscall = thread.owner_pid.is_some();
+            }
+            Block::Io { wake_time_ns } => {
+                thread.stop_timer_cpu();
+                thread.state = ThreadState::BlockedOnIO;
+                thread.wake_time_ns = wake_time_ns;
+                thread.timer_pop = wake_time_ns.map(crate::task::thread::TimerPopRecord::armed);
+                thread.blocked_in_syscall = thread.owner_pid.is_some();
+                push_deadline = wake_time_ns;
+            }
+            Block::Signal { context } => {
+                if let Some(context) = context {
+                    thread.saved_userspace_context = Some(context);
+                }
+                thread.stop_timer_cpu();
+                thread.state = ThreadState::BlockedOnSignal;
+                thread.blocked_in_syscall = true;
+            }
+            Block::ChildExit => {
+                thread.stop_timer_cpu();
+                thread.state = ThreadState::BlockedOnChildExit;
+                thread.blocked_in_syscall = true;
+            }
+        }
+    }
+    if let Some(deadline) = push_deadline {
+        local.heap().push(Reverse((deadline, tid)));
+    }
+    local.queue().retain(|&queued| queued != tid);
+    // Publish the sleep state before later condition checks or schedule entry
+    // observe wakeups (`Scheduler::block_current_for_io_publish`).
+    core::sync::atomic::fence(Ordering::SeqCst);
+    true
+}

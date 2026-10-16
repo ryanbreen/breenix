@@ -2062,7 +2062,11 @@ pub fn x86_idle_pass() -> bool {
 /// for the next pass, which `timer_deadline_due` asks for again.
 #[cfg(target_arch = "x86_64")]
 fn whole_scheduler_housekeeping(cpu: usize) {
-    let signal_due = SIGNAL_TIMERS_NEXT.load(Ordering::Acquire) <= crate::signal::monotonic_nanos();
+    // Within a tick of now: the tick that asked for this pass claimed the
+    // deadline by moving it a tick later (`timer_deadline_due`).
+    let signal_due = SIGNAL_TIMERS_NEXT.load(Ordering::Acquire)
+        <= crate::signal::monotonic_nanos()
+            .saturating_add(crate::time::timer::MS_PER_TICK * 1_000_000);
     let kicks = EXIT_KICKS_WATCHED.load(Ordering::Acquire);
     let pinned = cpu < MAX_CPUS && PINNED_HOLDS_OUTSTANDING[cpu].load(Ordering::Relaxed) != 0;
     if !signal_due && !kicks && !pinned {
@@ -2158,6 +2162,148 @@ pub fn switch_in<R>(
         }
         f(thread.as_deref(), is_idle)
     })
+}
+
+/// The current thread's scheduler state, for a wait that blocks it, checks
+/// it, or expires the deadlines that end it. x86_64: under this CPU's
+/// run-queue lock (`rq`), or the whole scheduler before that exists; the
+/// methods are the `Scheduler` ones a wait uses, with the same meaning.
+#[cfg(target_arch = "x86_64")]
+pub struct CurrentSched<'a>(CurrentInner<'a>);
+
+#[cfg(target_arch = "x86_64")]
+enum CurrentInner<'a> {
+    Local(&'a mut rq::Held),
+    Whole(&'a mut Scheduler),
+}
+
+#[cfg(target_arch = "x86_64")]
+impl CurrentSched<'_> {
+    pub fn current_thread_mut(&mut self) -> Option<&mut Thread> {
+        match &mut self.0 {
+            CurrentInner::Local(held) => {
+                let tid = held.state().current_thread?;
+                held.thread(tid)
+            }
+            CurrentInner::Whole(sched) => sched.current_thread_mut(),
+        }
+    }
+
+    pub fn current_thread_id_inner(&mut self) -> Option<u64> {
+        match &mut self.0 {
+            CurrentInner::Local(held) => held.state().current_thread,
+            CurrentInner::Whole(sched) => sched.current_thread_id_inner(),
+        }
+    }
+
+    pub fn idle_thread(&mut self) -> u64 {
+        match &mut self.0 {
+            CurrentInner::Local(held) => held.state().idle_thread,
+            CurrentInner::Whole(sched) => sched.idle_thread(),
+        }
+    }
+
+    pub fn has_queued_work_here(&mut self) -> bool {
+        match &mut self.0 {
+            CurrentInner::Local(held) => !held.queue().is_empty(),
+            CurrentInner::Whole(sched) => sched.has_queued_work_here(),
+        }
+    }
+
+    fn block(&mut self, block: rq::Block) -> bool {
+        match &mut self.0 {
+            CurrentInner::Local(held) => rq::block_current(held, block),
+            CurrentInner::Whole(sched) => match block {
+                rq::Block::Plain { in_syscall: false } => {
+                    sched.block_current();
+                    true
+                }
+                rq::Block::Plain { in_syscall: true } => {
+                    sched.block_current_in_syscall();
+                    true
+                }
+                rq::Block::Timer { wake_time_ns } => {
+                    sched.block_current_for_timer(wake_time_ns);
+                    true
+                }
+                rq::Block::Io { wake_time_ns } => sched.block_current_for_io_with_timeout(wake_time_ns),
+                rq::Block::Signal { context } => {
+                    sched.block_current_for_signal_with_context(context);
+                    true
+                }
+                rq::Block::ChildExit => {
+                    sched.block_current_for_child_exit();
+                    true
+                }
+            },
+        }
+    }
+
+    pub fn block_current(&mut self) {
+        self.block(rq::Block::Plain { in_syscall: false });
+    }
+
+    pub fn block_current_in_syscall(&mut self) {
+        self.block(rq::Block::Plain { in_syscall: true });
+    }
+
+    pub fn block_current_for_timer(&mut self, wake_time_ns: u64) {
+        self.block(rq::Block::Timer { wake_time_ns });
+    }
+
+    pub fn block_current_for_io(&mut self) {
+        self.block(rq::Block::Io { wake_time_ns: None });
+    }
+
+    pub fn block_current_for_io_with_timeout(&mut self, wake_time_ns: Option<u64>) -> bool {
+        self.block(rq::Block::Io { wake_time_ns })
+    }
+
+    pub fn block_current_for_signal(&mut self) {
+        self.block(rq::Block::Signal { context: None });
+    }
+
+    pub fn block_current_for_signal_with_context(&mut self, context: Option<super::thread::CpuContext>) {
+        self.block(rq::Block::Signal { context });
+    }
+
+    pub fn block_current_for_child_exit(&mut self) {
+        self.block(rq::Block::ChildExit);
+    }
+
+    /// Expire due deadlines: this CPU's, and a stopped CPU's (`rq`). The
+    /// interval and POSIX timers are the whole scheduler's, expired at the
+    /// next scheduling pass.
+    pub fn wake_expired_timers(&mut self) {
+        match &mut self.0 {
+            CurrentInner::Local(held) => rq::expire_timers(held),
+            CurrentInner::Whole(sched) => sched.wake_expired_timers(),
+        }
+    }
+}
+
+/// Run `f` on the current thread's scheduler state (`CurrentSched`). x86_64:
+/// under this CPU's run-queue lock, so a wait does not stop when a peer's
+/// vCPU stops while holding its lock (#1649).
+#[cfg(target_arch = "x86_64")]
+#[track_caller]
+pub fn with_current<R>(f: impl FnOnce(&mut CurrentSched) -> R) -> Option<R> {
+    let mut f = Some(f);
+    let local = without_interrupts(|| {
+        let mut held = rq::local()?;
+        f.take().map(|f| f(&mut CurrentSched(CurrentInner::Local(&mut held))))
+    });
+    if local.is_some() {
+        return local;
+    }
+    let f = f?;
+    with_scheduler(|sched| f(&mut CurrentSched(CurrentInner::Whole(sched))))
+}
+
+/// Elsewhere the whole scheduler (`with_scheduler`).
+#[cfg(not(target_arch = "x86_64"))]
+pub fn with_current<R>(f: impl FnOnce(&mut Scheduler) -> R) -> Option<R> {
+    with_scheduler(f)
 }
 
 /// x86_64: the kernel stack top of this CPU's idle thread.
