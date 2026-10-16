@@ -660,7 +660,7 @@ fn main() {
         }
 
         // Pass mouse state to TabBar for tab switching
-        let input = InputState::from_raw(mouse_x, mouse_y, buttons, prev_buttons);
+        let input = InputState::from_raw(mouse_x, mouse_y, buttons, prev_buttons, breengel::clock::now_ns() / 1_000_000);
         if let WidgetEvent::ValueChanged(_) = tab_bar.update(&input) {
             let sel = tab_bar.selected();
             if let Some(tab) = tabs.get_mut(sel) {

@@ -559,6 +559,7 @@ fn main() {
                         mouse_y,
                         mouse_buttons,
                         old_buttons,
+                        breengel::clock::now_ns() / 1_000_000,
                     );
                     tab_bar.update(&input);
                 }

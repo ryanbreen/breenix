@@ -22,11 +22,12 @@ impl InputState {
     /// Construct from raw mouse_state() return values.
     ///
     /// `buttons` and `prev_buttons` are button bitmasks where bit 0 = left button.
-    pub fn from_raw(mx: i32, my: i32, buttons: u32, prev_buttons: u32) -> Self {
+    /// `time_ms` is the event's UI timestamp, supplied by the caller.
+    pub fn from_raw(mx: i32, my: i32, buttons: u32, prev_buttons: u32, time_ms: u64) -> Self {
         let down = (buttons & 1) != 0;
         let was_down = (prev_buttons & 1) != 0;
         Self {
-            time_ms: 0,
+            time_ms,
             mouse_x: mx,
             mouse_y: my,
             mouse_down: down,

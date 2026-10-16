@@ -33,7 +33,7 @@ use crate::theme::Theme;
 /// // Forward a scroll event's delta, then update mouse input.
 /// bar.scroll(-2);
 /// assert_eq!(bar.offset(), 80);
-/// let input = InputState::from_raw(0, 0, 0, 0);
+/// let input = InputState::from_raw(0, 0, 0, 0, 0);
 /// bar.update(&input);
 ///
 /// // When rendering content, subtract bar.offset() from all y positions.

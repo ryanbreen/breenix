@@ -22,7 +22,7 @@ fn picker(count: usize) -> FilePicker {
     )
 }
 fn press(x: i32, y: i32, t: u64) -> InputState {
-    InputState::from_raw(x, y, 1, 0).with_time(t)
+    InputState::from_raw(x, y, 1, 0, t)
 }
 #[test]
 fn sort_keys_and_timestamped_double_click() {
