@@ -5,12 +5,56 @@
 
 SOCKET is the path given to `scripts/boot-interactive.sh --qmp SOCKET`. Works with
 `-display none`: QEMU keeps the guest console's surface and dumps it on request.
+
+QEMU writes a screendump on its main loop while holding the lock every vCPU takes to
+leave the guest, which an ARM64 HVF guest does for each timer interrupt. A PNG dump of
+the 1280x800 console holds it about 17 ms, as long as it compresses; a PPM dump holds it
+about 3 ms. So QEMU writes PPM beside OUT and this process encodes the PNG.
 """
 
 import json
 import os
 import socket
+import struct
 import sys
+import tempfile
+import zlib
+
+
+def read_ppm(path):
+    """Width, height and RGB rows of a binary (P6) PPM with 8-bit samples."""
+    with open(path, "rb") as f:
+        data = f.read()
+    fields = []
+    at = 0
+    while len(fields) < 4:
+        while data[at:at + 1].isspace():
+            at += 1
+        end = at
+        while end < len(data) and not data[end:end + 1].isspace():
+            end += 1
+        fields.append(data[at:end])
+        at = end
+    magic, width, height, maxval = fields[0], int(fields[1]), int(fields[2]), int(fields[3])
+    if magic != b"P6" or maxval != 255:
+        raise ValueError("not an 8-bit P6 PPM")
+    pixels = data[at + 1:]
+    stride = width * 3
+    if len(pixels) < stride * height:
+        raise ValueError("PPM is shorter than its %dx%d header" % (width, height))
+    return width, height, [pixels[y * stride:(y + 1) * stride] for y in range(height)]
+
+
+def write_png(path, width, height, rows):
+    def chunk(kind, body):
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+
+    image = zlib.compress(b"".join(b"\0" + row for row in rows), 6)
+    with open(path, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n")
+        f.write(chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)))
+        f.write(chunk(b"IDAT", image))
+        f.write(chunk(b"IEND", b""))
 
 
 def main():
@@ -43,10 +87,16 @@ def main():
 
     json.loads(stream.readline())  # greeting
     command("qmp_capabilities")
-    msg = command("screendump", {"filename": out, "format": "png"})
-    if "error" in msg:
-        print("screendump failed: %s" % msg["error"].get("desc", msg), file=sys.stderr)
-        return 1
+    fd, ppm = tempfile.mkstemp(prefix=".screendump-", suffix=".ppm", dir=os.path.dirname(out))
+    os.close(fd)
+    try:
+        msg = command("screendump", {"filename": ppm, "format": "ppm"})
+        if "error" in msg:
+            print("screendump failed: %s" % msg["error"].get("desc", msg), file=sys.stderr)
+            return 1
+        write_png(out, *read_ppm(ppm))
+    finally:
+        os.unlink(ppm)
     print(out)
     return 0
 
