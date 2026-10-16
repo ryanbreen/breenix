@@ -143,13 +143,10 @@ pub fn sys_fbinfo(info_ptr: u64) -> SyscallResult {
         }
     };
 
-    // Copy to userspace (pointer already validated above)
-    unsafe {
-        let info_out = info_ptr as *mut FbInfo;
-        core::ptr::write(info_out, info);
+    match super::userptr::copy_to_user(info_ptr as *mut FbInfo, &info) {
+        Ok(()) => SyscallResult::Ok(0),
+        Err(e) => SyscallResult::Err(e),
     }
-
-    SyscallResult::Ok(0)
 }
 
 /// sys_fbinfo - production x86_64 form: the bootloader framebuffer the kernel
@@ -411,12 +408,8 @@ pub(super) fn framebuffer_op(cmd: FbDrawCmd) -> SyscallResult {
                                     + col_offset;
                                 let target_row_offset = y * fb_stride_bytes + col_offset;
                                 if target_row_offset + copy_row_bytes <= gop_buf.len() {
-                                    unsafe {
-                                        core::ptr::copy_nonoverlapping(
-                                            user_row_ptr as *const u8,
-                                            gop_buf[target_row_offset..].as_mut_ptr(),
-                                            copy_row_bytes,
-                                        );
+                                    if super::userptr::read_user_bytes(gop_buf[target_row_offset..].as_mut_ptr(), user_row_ptr as u64, copy_row_bytes).is_err() {
+                                        return SyscallResult::Err(super::ErrorCode::Fault as u64);
                                     }
                                 }
                             }
@@ -430,12 +423,8 @@ pub(super) fn framebuffer_op(cmd: FbDrawCmd) -> SyscallResult {
                                     + col_offset;
                                 let target_row_offset = y * fb_stride_bytes + col_offset;
                                 if target_row_offset + copy_row_bytes <= shadow.len() {
-                                    unsafe {
-                                        core::ptr::copy_nonoverlapping(
-                                            user_row_ptr as *const u8,
-                                            shadow[target_row_offset..].as_mut_ptr(),
-                                            copy_row_bytes,
-                                        );
+                                    if super::userptr::read_user_bytes(shadow[target_row_offset..].as_mut_ptr(), user_row_ptr as u64, copy_row_bytes).is_err() {
+                                        return SyscallResult::Err(super::ErrorCode::Fault as u64);
                                     }
                                 }
                             }
@@ -449,12 +438,8 @@ pub(super) fn framebuffer_op(cmd: FbDrawCmd) -> SyscallResult {
                             let target_row_offset = y * fb_stride_bytes;
 
                             if target_row_offset + row_bytes <= target_buf.len() {
-                                unsafe {
-                                    core::ptr::copy_nonoverlapping(
-                                        user_row_ptr as *const u8,
-                                        target_buf[target_row_offset..].as_mut_ptr(),
-                                        row_bytes,
-                                    );
+                                if super::userptr::read_user_bytes(target_buf[target_row_offset..].as_mut_ptr(), user_row_ptr as u64, row_bytes).is_err() {
+                                    return SyscallResult::Err(super::ErrorCode::Fault as u64);
                                 }
                             }
                         }
@@ -509,8 +494,11 @@ pub(super) fn framebuffer_op(cmd: FbDrawCmd) -> SyscallResult {
                     h: i32,
                 }
 
-                let rects =
-                    unsafe { core::slice::from_raw_parts(rects_ptr as *const FlushRect, count) };
+                let mut rect_storage = [FlushRect { x: 0, y: 0, w: 0, h: 0 }; 16];
+                if super::userptr::read_user_bytes(rect_storage.as_mut_ptr().cast(), rects_ptr, count * 16).is_err() {
+                    return SyscallResult::Err(super::ErrorCode::Fault as u64);
+                }
+                let rects = &rect_storage[..count];
 
                 let fb_mmap_info = fb_mmap_info_pre;
 
@@ -549,12 +537,8 @@ pub(super) fn framebuffer_op(cmd: FbDrawCmd) -> SyscallResult {
                                             + col_byte;
                                         let target_row_offset = y * fb_stride_bytes + col_byte;
                                         if target_row_offset + copy_row_bytes <= gop_buf.len() {
-                                            unsafe {
-                                                core::ptr::copy_nonoverlapping(
-                                                    user_row_ptr as *const u8,
-                                                    gop_buf[target_row_offset..].as_mut_ptr(),
-                                                    copy_row_bytes,
-                                                );
+                                            if super::userptr::read_user_bytes(gop_buf[target_row_offset..].as_mut_ptr(), user_row_ptr as u64, copy_row_bytes).is_err() {
+                                                return SyscallResult::Err(super::ErrorCode::Fault as u64);
                                             }
                                         }
                                     }
@@ -942,7 +926,9 @@ fn fbmmap(width_out: u64) -> SyscallResult {
 
     // The pointer was validated before mapping.
     if width_out != 0 {
-        let _ = crate::syscall::userptr::copy_to_user(width_out as *mut u64, &(pane_width as u64));
+        if let Err(e) = crate::syscall::userptr::copy_to_user(width_out as *mut u64, &(pane_width as u64)) {
+            return SyscallResult::Err(e);
+        }
     }
 
     log::info!(

@@ -546,6 +546,53 @@ fn isolation_efault_composite() -> CaseResult {
 }
 
 fn isolation_efault_mouse() -> CaseResult {
+    #[cfg(target_arch = "aarch64")]
+    step("17.5", child("legacy graphics EFAULT", 5_000, None, || {
+        use libbreenix::graphics::FbDrawCmd;
+        let bad = unmapped();
+        let draw = |op, p1, p2, p3, p4| {
+            let cmd = FbDrawCmd { op, p1, p2, p3, p4, color: 1 };
+            unsafe { raw::syscall1(SYS_FB_DRAW, &cmd as *const _ as u64) as i64 }
+        };
+        let lo = bad as u32 as i32;
+        let hi = (bad >> 32) as u32 as i32;
+        for (name, ret) in [
+            ("fbinfo", unsafe { raw::syscall1(SYS_FB_INFO, bad) as i64 }),
+            ("command", unsafe { raw::syscall1(SYS_FB_DRAW, bad) as i64 }),
+            ("composite pixels", draw(10, lo, hi, 1, 1)),
+            ("create output", draw(11, 8, 8, lo, hi)),
+            ("title", draw(12, 0, lo, hi, 8)),
+            ("event", draw(18, 0, lo, hi, 0)),
+            ("composite descriptor", draw(16, lo, hi, 0, 0)),
+            ("flush rectangles", draw(8, lo, hi, 1, 0)),
+        ] { errno_is(ret, EFAULT, "unmapped user page", name)?; }
+        let desc = [bad, 1u64 | (1u64 << 32), 1, 0, 0];
+        let ptr = desc.as_ptr() as u64;
+        errno_is(draw(16, ptr as i32, (ptr >> 32) as i32, 0, 0), EFAULT, "unmapped background", "composite")?;
+        let mut addr = 0u64;
+        let out = &mut addr as *mut u64 as u64;
+        let id = draw(11, 8, 8, out as i32, (out >> 32) as i32);
+        if id < 0 { return Err(format!("legacy create {}", outcome(id))); }
+        let title = b"fault-check";
+        let ptr = title.as_ptr() as u64;
+        if draw(12, id as i32, ptr as i32, (ptr >> 32) as i32, title.len() as i32) != 0 {
+            return Err("legacy register failed".into());
+        }
+        errno_is(draw(13, lo, hi, 1, 0), EFAULT, "unmapped list", "legacy LIST")?;
+        errno_is(draw(14, id as i32, lo, hi, 256), EFAULT, "unmapped pixels", "legacy READ")?;
+        let event = [1u16, 42, 0, 0, 0, 0];
+        let ptr = event.as_ptr() as u64;
+        if draw(18, id as i32, ptr as i32, (ptr >> 32) as i32, 0) != 0 {
+            return Err("legacy event write failed".into());
+        }
+        errno_is(draw(19, id as i32, lo, hi, 1), EFAULT, "unmapped event destination", "legacy READ_EVENTS")?;
+        let mut got = [0u16; 6];
+        let ptr = got.as_mut_ptr() as u64;
+        if draw(19, id as i32, ptr as i32, (ptr >> 32) as i32, 1) != 1 || got != event {
+            return Err("failed legacy event copy consumed or changed the event".into());
+        }
+        Ok(())
+    }))?;
     // SAFETY: the kernel checks the pointer.
     let r = unsafe { raw::syscall1(GET_MOUSE_POS, unmapped()) as i64 };
     ensure(r == -(EFAULT as i64), "17.5", format!("get_mouse_pos into an unmapped buffer {}; the contract gives EFAULT", outcome(r)))?;
