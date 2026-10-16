@@ -2299,7 +2299,24 @@ fn icons_assets() -> CaseResult {
     )?;
     let mut g = Guarded::bgrx(640, 512);
     g.reset(Color::rgb(12, 19, 31));
-    libicon::draw_catalogue(&mut g.fb());
+    // Drive the contract's schedules here, independently of the authoring tool.
+    let schedules: &[&[(u32, bool, bool)]] = &[
+        &[], &[(101_000, false, false)], &[(251_000, false, false)],
+        &[(251_000, false, false), (1_000, true, true), (50_000, true, false)],
+        &[(251_000, false, false), (1_000, true, true), (50_000, true, false),
+          (1_000, false, true), (120_000, false, false)],
+    ];
+    for (row, (_, make)) in catalogue().into_iter().enumerate() {
+        for (col, schedule) in schedules.iter().enumerate() {
+            let mut icon = make();
+            for &(dt, pressed, edge) in *schedule {
+                icon.update(dt, IconMouse { hovering: true, pressed,
+                    just_clicked: edge && pressed, just_released: edge && !pressed,
+                    rel_x: 0.0, rel_y: 0.0 });
+            }
+            icon.draw(&mut g.fb(), 64 + col as i32 * 128, 64 + row as i32 * 128, 48);
+        }
+    }
     for y in 0..512 {
         for x in 0..640 {
             let i = (y * 640 + x) * 4;

@@ -10,3 +10,4 @@ publish = false
 [dependencies]
 libgfx = { path = "../../libs/libgfx" }
 libfont = { path = "../../libs/libfont" }
+libicon = { path = "../../libs/libicon" }

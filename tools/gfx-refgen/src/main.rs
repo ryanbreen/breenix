@@ -101,8 +101,53 @@ fn raster_identical() -> String {
     sha256::hex(&sha256::digest(&bytes))
 }
 
+fn icons_assets() -> FrameBuf {
+    let mut fb = FrameBuf::new_filled(640, 512, Format::BGRX, Color::rgb(12, 19, 31)).unwrap();
+    draw_icon_reference(&mut fb);
+    fb
+}
+
+fn draw_icon_reference(fb: &mut libgfx::framebuf::FrameBuf) {
+    use std::boxed::Box;
+    use libicon::icon::{Icon, IconMouse};
+    for row in 0..4 {
+        for col in 0..5 {
+            let mut icon: Box<dyn Icon> = match row {
+                0 => Box::new(libicon::icons::home::HomeIcon::new()),
+                1 => Box::new(libicon::icons::search::SearchIcon::new()),
+                2 => Box::new(libicon::icons::save::SaveIcon::new()),
+                _ => Box::new(libicon::icons::arrow::ArrowIcon::new(true)),
+            };
+            let mut input = IconMouse::none(); input.hovering = true;
+            if col == 1 { icon.update(101_000,input); }
+            if col >= 2 { icon.update(251_000,input); }
+            if col >= 3 {
+                input.pressed = true; input.just_clicked = true;
+                icon.update(1_000,input); input.just_clicked = false;
+                icon.update(50_000,input);
+            }
+            if col == 4 {
+                input.pressed = false; input.just_released = true;
+                icon.update(1_000,input);input.just_released = false;
+                icon.update(120_000,input);
+            }
+            icon.draw(fb,64+col*128,64+row*128,48);
+        }
+    }
+}
+
 fn main() {
-    let out = std::env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| root().join("docs/suites/frames/breengel"));
+    let mut args = std::env::args().skip(1);
+    let first = args.next();
+    if first.as_deref() == Some("--icons-only") {
+        let out = args.next().map(PathBuf::from).expect("--icons-only needs an output directory");
+        std::fs::create_dir_all(out.join("icons")).unwrap();
+        let file = png::encode_rgb(&icons_assets());
+        std::fs::write(out.join("icons/assets.png"), &file).unwrap();
+        println!("icons/assets.png 640x512 sha256 {}", sha256::hex(&sha256::digest(&file)));
+        return;
+    }
+    let out = first.map(PathBuf::from).unwrap_or_else(|| root().join("docs/suites/frames/breengel"));
     let text = out.join("text");
     std::fs::create_dir_all(&text).expect("create the output directory");
     let scenes: [(&str, fn() -> FrameBuf); 4] = [
