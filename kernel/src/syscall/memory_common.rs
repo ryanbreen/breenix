@@ -123,6 +123,10 @@ pub fn cleanup_mapped_pages(
     }
 }
 
+/// Placements `place_below_hint` handed out that are not published yet, kept
+/// per address space.
+const PENDING_PLACEMENTS: usize = 32;
+
 /// The highest page-aligned range of `length` bytes in the mmap region that no
 /// VMA overlaps, as Linux's top-down allocator places mappings. A range munmap
 /// freed is used again, so a process that maps and unmaps over and over neither
@@ -130,11 +134,20 @@ pub fn cleanup_mapped_pages(
 /// unmapping does not free. The hint records the placement. None when no gap
 /// above `MMAP_REGION_START` is large enough, the floor `is_valid_user_range`'s
 /// mmap arm polices (#742). PROCESS_MANAGER held.
+///
+/// A caller may release PROCESS_MANAGER between placing a range and publishing
+/// its VMA (to allocate frames). The range stays in `mmap_pending` until
+/// `clear_for_mapping` publishes it or `release_placement` gives it back, and
+/// no other placement takes it meanwhile, so two threads mapping at once never
+/// pick the same gap.
 pub fn place_below_hint(process: &mut crate::process::Process, length: u64) -> Option<u64> {
     use crate::memory::vma::{MMAP_REGION_END, MMAP_REGION_START};
     let mut taken: alloc::vec::Vec<(u64, u64)> = alloc::vec::Vec::new();
-    if taken.try_reserve_exact(process.vmas.len()).is_err() {
-        // No room to sort the VMAs: place below the lowest placement instead.
+    if taken.try_reserve_exact(process.vmas.len() + process.mmap_pending.len()).is_err()
+        || process.mmap_pending.try_reserve(1).is_err()
+    {
+        // No room to sort the VMAs: place below the lowest placement instead,
+        // which no pending placement lies under.
         return place_below(process, process.mmap_hint, length);
     }
     taken.extend(
@@ -142,6 +155,7 @@ pub fn place_below_hint(process: &mut crate::process::Process, length: u64) -> O
             .vmas
             .iter()
             .map(|vma| (vma.start.as_u64(), vma.end.as_u64()))
+            .chain(process.mmap_pending.iter().copied())
             .filter(|&(start, end)| end > MMAP_REGION_START && start < MMAP_REGION_END),
     );
     // Highest first: the gaps are [end, top) between neighbours, from the top down.
@@ -150,7 +164,11 @@ pub fn place_below_hint(process: &mut crate::process::Process, length: u64) -> O
     for &(start, end) in taken.iter().chain(core::iter::once(&(0, MMAP_REGION_START))) {
         if let Some(candidate) = top.checked_sub(length).map(round_down_to_page) {
             if candidate >= end.max(MMAP_REGION_START) {
-                process.mmap_hint = candidate;
+                process.mmap_hint = process.mmap_hint.min(candidate);
+                if process.mmap_pending.len() == PENDING_PLACEMENTS {
+                    process.mmap_pending.remove(0);
+                }
+                process.mmap_pending.push((candidate, candidate + length));
                 return Some(candidate);
             }
         }
@@ -160,6 +178,17 @@ pub fn place_below_hint(process: &mut crate::process::Process, length: u64) -> O
         }
     }
     None
+}
+
+/// Forget the pending placements overlapping `[start, end)`: the range is being
+/// published, or the mapping it was placed for failed. PROCESS_MANAGER held.
+pub fn release_placement(process: &mut crate::process::Process, start: u64, end: u64) {
+    process.mmap_pending.retain(|&(s, e)| e <= start || end <= s);
+}
+
+/// Whether a pending placement overlaps `[start, end)`. PROCESS_MANAGER held.
+pub fn placement_pending(process: &crate::process::Process, start: u64, end: u64) -> bool {
+    process.mmap_pending.iter().any(|&(s, e)| s < end && start < e)
 }
 
 /// The highest page-aligned range of `length` bytes below `top` that no VMA

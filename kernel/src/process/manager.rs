@@ -2695,6 +2695,7 @@ impl ProcessManager {
         let memory_usage = core::mem::take(&mut from.memory_usage);
         let fb_mmap = from.fb_mmap.take();
         let (heap_start, heap_end, mmap_hint) = (from.heap_start, from.heap_end, from.mmap_hint);
+        let mmap_pending = core::mem::take(&mut from.mmap_pending);
         let (stack_bottom, stack_top) = (from.user_stack_bottom, from.user_stack_top);
         let (image_size, image_data_size) = (from.image_size, from.image_data_size);
         from.address_space_release_deferred = false;
@@ -2712,6 +2713,7 @@ impl ProcessManager {
         to.heap_start = heap_start;
         to.heap_end = heap_end;
         to.mmap_hint = mmap_hint;
+        to.mmap_pending = mmap_pending;
         to.user_stack_bottom = stack_bottom;
         to.user_stack_top = stack_top;
         to.image_size = image_size;
