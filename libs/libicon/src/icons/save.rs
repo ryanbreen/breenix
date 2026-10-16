@@ -143,7 +143,7 @@ impl SaveIcon {
             // Pressed: nudge toward slot.
             IconState::Pressed => 2.0,
             // Idle: subtle breathing ~1 px.
-            IconState::Idle => 0.0,
+            IconState::Idle => sin_approx(self.base.idle_time.min(500_000) as f32 / 1_000_000.0 * 2.0),
             _ => 0.0,
         };
 
@@ -333,6 +333,7 @@ impl Icon for SaveIcon {
     }
     fn settled(&self) -> bool {
         self.base.settled()
+            && self.base.idle_time >= 500_000
             && (self.base.state != IconState::Hovering || self.base.state_time >= 500_000)
             && self.scale.settled()
             && self.lift_y.settled()

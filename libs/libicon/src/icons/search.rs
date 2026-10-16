@@ -69,14 +69,19 @@ impl SearchIcon {
             }
         }
 
+        if (state_changed && self.base.state == IconState::HoverIn)
+            || mouse.just_clicked || mouse.just_released {
+            self.shimmer_time = 0;
+        }
         // Advance shimmer angle when hovering.
         if matches!(
             self.base.state,
             IconState::HoverIn | IconState::Hovering | IconState::Clicked
         ) {
             // Full orbit in ~2 seconds.
-            self.shimmer_time = self.shimmer_time.saturating_add(dt_us).min(2_000_000);
-            self.shimmer_angle = self.shimmer_time as f32 * (core::f32::consts::TAU / 2_000_000.0);
+            let advance = dt_us.min(2_000_000 - self.shimmer_time);
+            self.shimmer_time += advance;
+            self.shimmer_angle += advance as f32 * (core::f32::consts::TAU / 2_000_000.0);
         }
 
         // Scale targets.

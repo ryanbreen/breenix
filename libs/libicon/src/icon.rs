@@ -91,6 +91,8 @@ pub struct IconBase {
     /// Normalized transition progress 0.0..=1.0 for the current state.
     pub progress: f32,
     hover: f32,
+    previous_hover: bool,
+    previous_pressed: bool,
     remainder_us: u32,
     pending_click: bool,
     pending_release: bool,
@@ -103,6 +105,7 @@ impl IconBase {
             state_time: 0,
             idle_time: 0,
             progress: 0.0,
+            previous_hover: false, previous_pressed: false,
             hover: 0.0, remainder_us: 0, pending_click: false, pending_release: false,
         }
     }
@@ -134,6 +137,13 @@ impl IconBase {
     fn tick(&mut self, mouse: &IconMouse) -> bool {
         let dt_us = 1000;
         self.state_time = self.state_time.saturating_add(dt_us);
+        // Restart finite idle effects on input, not on internal timed transitions.
+        if mouse.hovering != self.previous_hover || mouse.pressed != self.previous_pressed
+            || mouse.just_clicked || mouse.just_released {
+            self.idle_time = 0;
+        }
+        self.previous_hover = mouse.hovering;
+        self.previous_pressed = mouse.pressed;
         // Idle effects reach a stable phase after input settles.
         self.idle_time = self.idle_time.saturating_add(dt_us).min(2_000_000);
         if mouse.hovering { self.hover = (self.hover + 0.004).min(1.0); }
@@ -215,6 +225,7 @@ impl IconBase {
         self.state_time = 0;
         self.idle_time = 0;
         self.progress = 0.0;
+        self.previous_hover = false; self.previous_pressed = false;
         self.hover = 0.0; self.remainder_us = 0; self.pending_click = false; self.pending_release = false;
     }
 }
