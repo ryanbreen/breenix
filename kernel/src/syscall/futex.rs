@@ -521,8 +521,30 @@ static FUTEX_QUEUES: Mutex<FutexTable> = Mutex::new(FutexTable::new());
 /// entering a futex call.
 fn with_table<R>(f: impl FnOnce(&mut FutexTable) -> R) -> R {
     crate::arch_without_interrupts(|| {
-        crate::task::scheduler::with_resched_ipis_deferred(|| f(&mut FUTEX_QUEUES.lock()))
+        crate::task::scheduler::with_resched_ipis_deferred(|| f(&mut lock_table()))
     })
+}
+
+/// The futex table, waited for. x86_64: a CPU that waits dispatches nothing
+/// meanwhile, so past a few microseconds its peers take what is queued on it
+/// (`task::scheduler::LockSpin`).
+fn lock_table() -> spin::MutexGuard<'static, FutexTable> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if let Some(table) = FUTEX_QUEUES.try_lock() {
+            return table;
+        }
+        let mut spin = crate::task::scheduler::LockSpin::new();
+        loop {
+            if let Some(table) = FUTEX_QUEUES.try_lock() {
+                return table;
+            }
+            spin.tick();
+            core::hint::spin_loop();
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    FUTEX_QUEUES.lock()
 }
 
 fn monotonic_ns() -> u64 {
