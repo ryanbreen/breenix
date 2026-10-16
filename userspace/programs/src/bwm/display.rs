@@ -113,9 +113,22 @@ pub fn write_window_input(id: u64, old: &WindowInputEvent) -> Result<(), Error> 
     event.serial = EVENT_SERIAL.fetch_add(1, Ordering::Relaxed) + 1;
     event.time_ns = libbreenix::time::now_monotonic().map_or(0, |v| v.as_nanos() as u64);
     event.modifiers = old.modifiers as u32;
-    event.keycode = old.keycode as u32;
-    event.x = old.mouse_x as i32;
-    event.y = old.mouse_y as i32;
+    if k == kind::KEY_PRESS || k == kind::KEY_RELEASE {
+        // The stdin parser puts the key's character in `mouse_x`; the event carries a Linux
+        // key code and, on a press, the text (section 19.1), and no pointer position.
+        let (code, shift, text) = linux_key(old.mouse_x as u8, old.keycode);
+        event.keycode = code;
+        if shift {
+            event.modifiers |= 1;
+        }
+        if let (true, Some(t)) = (k == kind::KEY_PRESS, text) {
+            event.text[0] = t;
+            event.text_len = 1;
+        }
+    } else {
+        event.x = old.mouse_x as i32;
+        event.y = old.mouse_y as i32;
+    }
     if k == kind::POINTER_BUTTON {
         event.button = abi::button::LEFT + old.keycode as u32;
         event.pressed = u32::from(old.scroll_y != 0);
@@ -130,6 +143,68 @@ pub fn write_window_input(id: u64, old: &WindowInputEvent) -> Result<(), Error> 
         reserved: 0,
     };
     win::call(op::WRITE_EVENTS, &mut write).map(|_| ())
+}
+/// The Linux key code, whether Shift produced it, and the text of a key from bwm's stdin
+/// parser: `ascii` is the character, and `hid` is the USB HID usage for Enter, Backspace,
+/// Tab and the arrows (which the parser gives ASCII 13, 8, 9 and 0), the control code for
+/// Ctrl+letter, and the character otherwise.
+fn linux_key(ascii: u8, hid: u16) -> (u32, bool, Option<u8>) {
+    match (ascii, hid) {
+        (13, 0x28) => return (28, false, Some(b'\n')),
+        (8, 0x2A) => return (14, false, Some(0x08)),
+        (9, 0x2B) => return (15, false, Some(b'\t')),
+        (0, 0x4F) => return (106, false, None),
+        (0, 0x50) => return (105, false, None),
+        (0, 0x51) => return (108, false, None),
+        (0, 0x52) => return (103, false, None),
+        _ => {}
+    }
+    // Ctrl+letter arrives as its control code.
+    let c = if (1..=26).contains(&ascii) { b'a' + ascii - 1 } else { ascii };
+    const LETTERS: [u32; 26] = [
+        30, 48, 46, 32, 18, 33, 34, 35, 23, 36, 37, 38, 50, 49, 24, 25, 16, 19, 31, 20, 22, 47, 17, 45, 21, 44,
+    ];
+    let (code, shift) = match c {
+        b'a'..=b'z' => (LETTERS[(c - b'a') as usize], false),
+        b'A'..=b'Z' => (LETTERS[(c - b'A') as usize], true),
+        b'1'..=b'9' => (2 + (c - b'1') as u32, false),
+        b'0' => (11, false),
+        b' ' => (57, false),
+        b'-' => (12, false),
+        b'=' => (13, false),
+        b'[' => (26, false),
+        b']' => (27, false),
+        b';' => (39, false),
+        b'\'' => (40, false),
+        b'`' => (41, false),
+        b'\\' => (43, false),
+        b',' => (51, false),
+        b'.' => (52, false),
+        b'/' => (53, false),
+        b'!' => (2, true),
+        b'@' => (3, true),
+        b'#' => (4, true),
+        b'$' => (5, true),
+        b'%' => (6, true),
+        b'^' => (7, true),
+        b'&' => (8, true),
+        b'*' => (9, true),
+        b'(' => (10, true),
+        b')' => (11, true),
+        b'_' => (12, true),
+        b'+' => (13, true),
+        b'{' => (26, true),
+        b'}' => (27, true),
+        b':' => (39, true),
+        b'"' => (40, true),
+        b'~' => (41, true),
+        b'|' => (43, true),
+        b'<' => (51, true),
+        b'>' => (52, true),
+        b'?' => (53, true),
+        _ => (0, false),
+    };
+    (code, shift, (ascii != 0).then_some(ascii))
 }
 pub fn compose_scene(pixels: &[u32], w: u32, h: u32, changed: bool) -> Result<(), Error> {
     compose_region(pixels, w, h, u32::from(changed), 0, 0, w, h)
