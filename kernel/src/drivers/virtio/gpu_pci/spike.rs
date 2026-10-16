@@ -541,6 +541,7 @@ static T0_US: AtomicU64 = AtomicU64::new(0);
 /// Scene B's backing, for the isolation check in the spike thread.
 static B_PTR: AtomicU64 = AtomicU64::new(0);
 static B_LEN: AtomicU64 = AtomicU64::new(0);
+static B_FNV: AtomicU64 = AtomicU64::new(0);
 
 struct Tally;
 
@@ -785,6 +786,20 @@ IMM[0] FLT32 {-128.0, 0.015625, 0.0625, 0.0}
   1: MUL TEMP[0].x, TEMP[0].xxxx, IMM[0].yyyy
   2: MUL TEMP[0].y, IN[0].yyyy, IMM[0].zzzz
   3: TEX OUT[0], TEMP[0], SAMP[0], 2D
+  4: END
+";
+
+const FS_PROBE_TXF0: &[u8] = b"FRAG
+DCL IN[0], POSITION, LINEAR
+DCL OUT[0], COLOR
+DCL SAMP[0]
+DCL SVIEW[0], 2D, FLOAT
+DCL TEMP[0..1]
+IMM[0] UINT32 {0, 0, 0, 0}
+  0: F2U TEMP[0].xy, IN[0].xyyy
+  1: MOV TEMP[0].zw, IMM[0].xxxx
+  2: TXF TEMP[1], TEMP[0], SAMP[0], 2D
+  3: MOV OUT[0], TEMP[1]
   4: END
 ";
 
@@ -1066,6 +1081,9 @@ fn late() {
     let mut tally = Tally;
     sleep_ms(2000);
     elapsed("late-begin");
+    if let Err(e) = r8_variants(&mut tally) {
+        tally.fail("r8-variants", e);
+    }
     if let Err(e) = big(&mut tally) {
         tally.fail("2560x1600", e);
     }
@@ -1332,6 +1350,7 @@ fn run_inner(tally: &mut Tally) -> Result<(), &'static str> {
     let b = scene_b();
     let vb = render_and_judge("sceneB", &b, RES_B, &bb, BW, BH, false, false, &scene_b_px)?;
     tally.record("sceneB-rgba8-all-regions", &vb, vb.mismatched == 0 && vb.poisoned == 0);
+    B_FNV.store(vb.fnv_got, Ordering::Relaxed);
 
     // Planted faults: each must be caught by the exact comparison.
     let fc = render_and_judge("fault-corrupt-pixel", &scene_a(Fault::CorruptPixel), RES_A, &ba, AW, AH, true, false, &want_a)?;
@@ -1395,7 +1414,9 @@ fn isolation(tally: &mut Tally) -> Result<(), &'static str> {
     bb.fill(POISON);
     transfer(cmd::TRANSFER_FROM_HOST_3D, RES_B, BW, BH, BW * 4)?;
     let vi = judge(&bb, BW, false, (0, 0, BW, BH), &scene_b_px);
-    tally.record("isolation-foreign-context-cannot-draw", &vi, vi.mismatched == 0);
+    let unchanged = vi.fnv_got == B_FNV.load(Ordering::Relaxed) && vi.poisoned == 0;
+    serial_println!("GPU_SPIKE isolation sceneB_bytes_unchanged={}", unchanged);
+    tally.record("isolation-foreign-context-cannot-draw", &vi, unchanged);
 
     Ok(())
 }
@@ -1485,5 +1506,98 @@ fn big(tally: &mut Tally) -> Result<(), &'static str> {
     serial_println!("GPU_SPIKE attest phase=idle2 begin");
     sleep_ms(8000);
     serial_println!("GPU_SPIKE attest phase=idle2 end");
+    Ok(())
+}
+
+/// R8_UNORM variants: (name, width, row pitch, bind render target, upload: 0 transfer, 1 inline, 2 GPU clear).
+const R8_VARIANTS: [(&str, u32, u32, bool, u32); 6] = [
+    ("r8-64-pitch64-transfer", 64, 64, false, 0),
+    ("r8-64-pitch256-transfer", 64, 256, false, 0),
+    ("r8-256-pitch256-transfer", 256, 256, false, 0),
+    ("r8-64-rendertarget-gpu-clear", 64, 64, true, 2),
+    ("r8-64-pitch64-inline-write", 64, 64, false, 1),
+    ("r8-64-rendertarget-transfer", 64, 64, true, 0),
+];
+
+fn r8_variants(tally: &mut Tally) -> Result<(), &'static str> {
+    const RES_PR: u32 = 316;
+    const S_PR: u32 = 5;
+    const H_FS_PROBE_TXF0: u32 = 60;
+    let bpr = backing((TW * TH * 4) as usize)?;
+    let rt = pipe::BIND_RENDER_TARGET | pipe::BIND_SAMPLER_VIEW;
+    create(RES_PR, pipe::TEXTURE_2D, vfmt::B8G8R8A8_UNORM, rt, TW, TH, Some(&bpr))?;
+    surface(S_PR, RES_PR)?;
+    let mut cb = Box::new(CommandBuffer::new());
+    cb.set_sub_ctx(1);
+    cb.create_shader(H_FS_PROBE_TXF0, pipe::SHADER_FRAGMENT, 300, FS_PROBE_TXF0);
+    submit(CTX, &cb)?;
+    for (i, &(name, w, pitch, as_rt, upload)) in R8_VARIANTS.iter().enumerate() {
+        let id = 310 + i as u32;
+        let view = 50 + i as u32;
+        let surf = 70 + i as u32;
+        let b = backing((pitch * TH) as usize)?;
+        let bind = if as_rt { rt } else { pipe::BIND_SAMPLER_VIEW };
+        create(id, pipe::TEXTURE_2D, vfmt::R8_UNORM, bind, w, TH, Some(&b))?;
+        let want = |x: u32, y: u32| if upload == 2 { 128 } else { t8(x, y) };
+        unsafe {
+            for y in 0..TH {
+                for x in 0..w {
+                    *b.ptr.add((y * pitch + x) as usize) = want(x, y) as u8;
+                }
+            }
+        }
+        dma_cache_clean(b.ptr, b.len);
+        let mut cb = Box::new(CommandBuffer::new());
+        cb.set_sub_ctx(1);
+        cb.create_sampler_view(view, id, vfmt::R8_UNORM, pipe::TEXTURE_2D, 0, 0, 0, 0, swizzle::IDENTITY);
+        let up = match upload {
+            0 => transfer(cmd::TRANSFER_TO_HOST_3D, id, w, TH, pitch).map(|(f, a, _)| a >= f),
+            1 => {
+                let mut words = alloc::vec![0u32; (w * TH / 4) as usize];
+                for y in 0..TH {
+                    for x in 0..w {
+                        words[((y * w + x) / 4) as usize] |= t8(x, y) << (8 * (x % 4));
+                    }
+                }
+                cb.resource_inline_write_2d(id, 0, 0, w, TH, w, &words);
+                Ok(true)
+            }
+            _ => {
+                cb.create_surface(surf, id, vfmt::R8_UNORM, 0, 0);
+                target(&mut cb, surf, w, TH);
+                cb.clear_color(128.0 / 255.0, 0.0, 0.0, 1.0);
+                Ok(true)
+            }
+        };
+        // Sample the variant by TXF into the probe target.
+        let mut v = Verts::new(TW, TH);
+        target(&mut cb, S_PR, TW, TH);
+        cb.bind_object(H_RAST, OBJ_RASTERIZER);
+        clear(&mut cb, CLR_A);
+        cb.bind_shader(H_FS_PROBE_TXF0, pipe::SHADER_FRAGMENT);
+        cb.set_sampler_views(pipe::SHADER_FRAGMENT, 0, &[view]);
+        cb.bind_sampler_states(pipe::SHADER_FRAGMENT, 0, &[H_SAMPLER]);
+        v.quad(&mut cb, 0, 0, TW, TH);
+        let probe = render_and_judge(name, &cb, RES_PR, &bpr, TW, TH, true, false, &|x, y| Some([want(x, y), 0, 0, 255]))?;
+        // Read the R8 resource itself back.
+        b.fill(POISON);
+        let (rf, ra, _) = transfer(cmd::TRANSFER_FROM_HOST_3D, id, w, TH, pitch)?;
+        dma_cache_invalidate(b.ptr, b.len);
+        let raw = b.bytes();
+        let bad = (0..TH)
+            .flat_map(|y| (0..w).map(move |x| (x, y)))
+            .filter(|&(x, y)| raw[(y * pitch + x) as usize] as u32 != want(x, y))
+            .count();
+        serial_println!(
+            "GPU_SPIKE r8-variant={} upload_ok={:?} readback_answered={} readback_mismatched={}/{} first8={:?}",
+            name,
+            up,
+            ra >= rf,
+            bad,
+            w * TH,
+            &raw[..8]
+        );
+        tally.record(name, &probe, probe.mismatched == 0 && bad == 0);
+    }
     Ok(())
 }
