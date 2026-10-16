@@ -197,7 +197,7 @@ impl Icon for ArrowIcon {
 
         // Draw speed-line particles (unit-normalised coords → scale by size).
         let scale = size as f32;
-        for p in &self.particles.particles {
+        for p in self.particles.particles() {
             if !p.alive() {
                 continue;
             }

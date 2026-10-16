@@ -60,8 +60,12 @@ impl Particle {
         let b = (self.color.b as f32 * alpha) as u8;
         let c = Color::rgb(r, g, b);
 
-        let px = self.x as i32 + offset_x;
-        let py = self.y as i32 + offset_y;
+        fn floor_pixel(v: f32) -> i32 {
+            let i = v as i32;
+            if v < i as f32 { i.saturating_sub(1) } else { i }
+        }
+        let px = floor_pixel(self.x).saturating_add(offset_x);
+        let py = floor_pixel(self.y).saturating_add(offset_y);
         // Shrink radius as the particle dies.
         let sz = (self.size * (0.5 + 0.5 * self.life)) as i32;
 
@@ -81,7 +85,7 @@ impl Particle {
 
 /// An automatically-recycling pool of particles.
 pub struct ParticlePool {
-    pub particles: Vec<Particle>,
+    particles: Vec<Particle>,
     max_particles: usize,
     // Lifetime is elapsed time, not repeated subtraction from an f32 fraction.
     remaining_ns: Vec<f64>,
@@ -99,8 +103,6 @@ impl ParticlePool {
         }
     }
 
-    /// Emit a particle. Finds a dead slot first; falls back to the oldest entry
-    /// when the pool is at capacity.
     /// Confine particle footprints to [left,right) × [top,bottom).
     pub fn with_bounds(capacity: usize, left: f32, top: f32, right: f32, bottom: f32) -> Self {
         assert!(left.is_finite() && top.is_finite() && right.is_finite() && bottom.is_finite()
@@ -122,6 +124,10 @@ impl ParticlePool {
             p.x = x; p.y = y;
         }
     }
+    /// Inspect particles without invalidating the pool's lifetime accounting.
+    pub fn particles(&self) -> &[Particle] { &self.particles }
+
+    /// Emit a particle. Reuse a dead slot, or the oldest entry at capacity.
     pub fn emit(&mut self, mut p: Particle) {
         if !p.max_life.is_finite() || p.max_life <= 0.0 || !p.x.is_finite() || !p.y.is_finite()
             || !p.vx.is_finite() || !p.vy.is_finite() || !p.size.is_finite()
@@ -180,9 +186,17 @@ impl ParticlePool {
 
     /// Draw all live particles.
     pub fn draw(&self, fb: &mut FrameBuf, offset_x: i32, offset_y: i32) {
-        for p in &self.particles {
-            p.draw(fb, offset_x, offset_y);
+        if let Some((l,t,r,b)) = self.bounds {
+            let ceil = |v: f32| { let i = v as i32; if v > i as f32 { i.saturating_add(1) } else { i } };
+            let floor = |v: f32| { let i = v as i32; if v < i as f32 { i.saturating_sub(1) } else { i } };
+            let left = ceil(l).saturating_add(offset_x);
+            let top = ceil(t).saturating_add(offset_y);
+            let right = floor(r).saturating_add(offset_x);
+            let bottom = floor(b).saturating_add(offset_y);
+            fb.push_clip(libgfx::framebuf::Rect::new(left, top, right.saturating_sub(left).max(0), bottom.saturating_sub(top).max(0)));
         }
+        for p in &self.particles { p.draw(fb, offset_x, offset_y); }
+        if self.bounds.is_some() { fb.pop_clip(); }
     }
 
     /// Kill all particles immediately.

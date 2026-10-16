@@ -306,7 +306,7 @@ impl Icon for SaveIcon {
         // ---------------------------------------------------------------
         // Sparkle particles — anchored at (cx, slot_y)
         // ---------------------------------------------------------------
-        for p in &self.particles.particles {
+        for p in self.particles.particles() {
             if !p.alive() {
                 continue;
             }

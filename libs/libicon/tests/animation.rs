@@ -179,3 +179,12 @@ fn particles_expire_at_their_lifetime_boundary() {
     pool.update(0.001);
     assert_eq!(pool.active_count(), 0);
 }
+
+#[test]
+fn undamped_spring_skips_exact_cycles_for_large_advances() {
+    let mut spring = Spring::new(0.0, 300.0, 0.0);
+    spring.set_target(1.0);
+    spring.update(f32::MAX);
+    assert!(spring.value.is_finite() && spring.velocity.is_finite());
+    assert!((-0.1..2.1).contains(&spring.value));
+}
