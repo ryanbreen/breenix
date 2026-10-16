@@ -8878,15 +8878,16 @@ pub fn terminate_thread(tid: u64) -> Option<()> {
 /// thread's own total, in ticks.
 pub fn charge_current_cpu() -> u64 {
     #[cfg(target_arch = "x86_64")]
-    if let Some(total) = without_interrupts(|| {
-        let mut local = rq::local()?;
-        let tid = local.state().current_thread?;
-        local.thread(tid).map(|thread| {
-            thread.charge_cpu(crate::time::get_cpu_ticks());
-            thread.cpu_ticks_total
+    if rq_live() {
+        return without_interrupts(|| {
+            let mut local = rq::local()?;
+            let tid = local.state().current_thread?;
+            local.thread(tid).map(|thread| {
+                thread.charge_cpu(crate::time::get_cpu_ticks());
+                thread.cpu_ticks_total
+            })
         })
-    }) {
-        return total;
+        .unwrap_or(0);
     }
     with_scheduler(|scheduler| {
         scheduler.current_thread_mut().map_or(0, |thread| {
