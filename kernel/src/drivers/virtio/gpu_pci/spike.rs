@@ -25,6 +25,7 @@ use crate::drivers::virtio::virgl::{
 use crate::serial_println;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 const CTX: u32 = 2;
 const CTX_FOREIGN: u32 = 3;
@@ -61,6 +62,8 @@ const H_FS_BLEND: u32 = 24;
 const H_FS_UNORM: u32 = 25;
 const H_FS_SOLID: u32 = 26;
 const H_FS_TRIPRED: u32 = 27;
+const H_FS_PROBE_TXF: u32 = 28;
+const H_FS_PROBE_TEX: u32 = 29;
 const V_T8: u32 = 30;
 const V_TB: u32 = 31;
 const V_COPY_A: u32 = 32;
@@ -124,10 +127,16 @@ fn now_us() -> u64 {
     ((c as u128) * 1_000_000 / (f as u128)) as u64
 }
 
-/// Waits `ms` milliseconds, in WFI when the CPU 0 timer is ticking, else by spinning.
+static NEVER: crate::task::completion::Completion = crate::task::completion::Completion::new();
+
+/// Sleeps `ms` milliseconds on a completion nobody completes (spike thread only).
+fn sleep_ms(ms: u64) {
+    let _ = NEVER.wait_timeout_uninterruptible(1, ms * 1_000_000);
+}
+
+/// Waits `ms` milliseconds in the boot thread, in WFI when the CPU 0 timer is ticking.
 fn idle_ms(ms: u64) -> &'static str {
     use crate::arch_impl::aarch64::timer_interrupt::TIMER_TICK_COUNT;
-    use core::sync::atomic::Ordering;
     let start = now_us();
     let ticks = TIMER_TICK_COUNT[0].load(Ordering::Relaxed);
     while now_us() - start < 50_000 && TIMER_TICK_COUNT[0].load(Ordering::Relaxed) == ticks {
@@ -380,6 +389,7 @@ fn scene_a_px(x: u32, y: u32, corrupt: bool) -> Option<[u32; 4]> {
     }
     let v = match y {
         0..16 if x < TW => texfetch_px(x, y),
+        0..16 if x < 192 => return None,
         16..32 => integer_px(x, y - 16),
         32..48 if x < TW => blend_px(x, y - 32),
         48..64 => unorm_px(x),
@@ -525,25 +535,37 @@ fn report(name: &str, v: &Verdict, pass: bool) {
     }
 }
 
-struct Tally {
-    passed: u32,
-    failed: u32,
-}
+static PASSED: AtomicU32 = AtomicU32::new(0);
+static FAILED: AtomicU32 = AtomicU32::new(0);
+static T0_US: AtomicU64 = AtomicU64::new(0);
+/// Scene B's backing, for the isolation check in the spike thread.
+static B_PTR: AtomicU64 = AtomicU64::new(0);
+static B_LEN: AtomicU64 = AtomicU64::new(0);
+
+struct Tally;
 
 impl Tally {
     fn record(&mut self, name: &str, v: &Verdict, pass: bool) {
         report(name, v, pass);
+        self.pass(pass);
+    }
+
+    fn pass(&mut self, pass: bool) {
         if pass {
-            self.passed += 1;
+            PASSED.fetch_add(1, Ordering::Relaxed);
         } else {
-            self.failed += 1;
+            FAILED.fetch_add(1, Ordering::Relaxed);
         }
     }
 
     fn fail(&mut self, name: &str, why: &str) {
         serial_println!("GPU_SPIKE check={} verdict=FAIL error={}", name, why);
-        self.failed += 1;
+        self.pass(false);
     }
+}
+
+fn elapsed(what: &str) {
+    serial_println!("GPU_SPIKE elapsed_ms={} at={}", (now_us() - T0_US.load(Ordering::Relaxed)) / 1000, what);
 }
 
 // ----------------------------------------------------------------------------- shaders
@@ -736,6 +758,36 @@ IMM[6] UINT32 {3, 0, 0, 0}
  18: END
 ";
 
+// Diagnostics for the R8 texture: all four TXF channels at x - 64, and a nearest TEX at x - 128.
+const FS_PROBE_TXF: &[u8] = b"FRAG
+DCL IN[0], POSITION, LINEAR
+DCL OUT[0], COLOR
+DCL SAMP[0]
+DCL SVIEW[0], 2D, FLOAT
+DCL TEMP[0..1]
+IMM[0] UINT32 {4294967232, 0, 0, 0}
+  0: F2U TEMP[0].xy, IN[0].xyyy
+  1: UADD TEMP[0].x, TEMP[0].xxxx, IMM[0].xxxx
+  2: MOV TEMP[0].zw, IMM[0].yyyy
+  3: TXF TEMP[1], TEMP[0], SAMP[0], 2D
+  4: MOV OUT[0], TEMP[1]
+  5: END
+";
+
+const FS_PROBE_TEX: &[u8] = b"FRAG
+DCL IN[0], POSITION, LINEAR
+DCL OUT[0], COLOR
+DCL SAMP[0]
+DCL SVIEW[0], 2D, FLOAT
+DCL TEMP[0]
+IMM[0] FLT32 {-128.0, 0.015625, 0.0625, 0.0}
+  0: ADD TEMP[0].x, IN[0].xxxx, IMM[0].xxxx
+  1: MUL TEMP[0].x, TEMP[0].xxxx, IMM[0].yyyy
+  2: MUL TEMP[0].y, IN[0].yyyy, IMM[0].zzzz
+  3: TEX OUT[0], TEMP[0], SAMP[0], 2D
+  4: END
+";
+
 // ----------------------------------------------------------------------------- encoding
 
 fn unorm(c: [u32; 4]) -> [f32; 4] {
@@ -841,6 +893,12 @@ fn scene_a(fault: Fault) -> Box<CommandBuffer> {
     cb.bind_object(H_RAST, OBJ_RASTERIZER);
     clear(&mut cb, CLR_A);
     profile_regions(&mut cb, &mut v, false, fault == Fault::SuppressDraw);
+    cb.bind_shader(H_FS_PROBE_TXF, pipe::SHADER_FRAGMENT);
+    cb.set_sampler_views(pipe::SHADER_FRAGMENT, 0, &[V_T8]);
+    cb.bind_sampler_states(pipe::SHADER_FRAGMENT, 0, &[H_SAMPLER]);
+    v.quad(&mut cb, 64, 0, 128, TH);
+    cb.bind_shader(H_FS_PROBE_TEX, pipe::SHADER_FRAGMENT);
+    v.quad(&mut cb, 128, 0, 192, TH);
     cb.bind_shader(H_FS_TRIPRED, pipe::SHADER_FRAGMENT);
     v.quad(&mut cb, 0, 64, 96, 96);
     cb.bind_shader(H_FS_SOLID, pipe::SHADER_FRAGMENT);
@@ -967,6 +1025,8 @@ fn setup_shaders() -> Box<CommandBuffer> {
     cb.create_shader(H_FS_UNORM, pipe::SHADER_FRAGMENT, 1024, FS_UNORM);
     cb.create_shader(H_FS_SOLID, pipe::SHADER_FRAGMENT, 300, FS_SOLID);
     cb.create_shader(H_FS_TRIPRED, pipe::SHADER_FRAGMENT, 1024, FS_TRIPRED);
+    cb.create_shader(H_FS_PROBE_TXF, pipe::SHADER_FRAGMENT, 300, FS_PROBE_TXF);
+    cb.create_shader(H_FS_PROBE_TEX, pipe::SHADER_FRAGMENT, 300, FS_PROBE_TEX);
     cb.bind_shader(H_VS, pipe::SHADER_VERTEX);
     cb
 }
@@ -975,12 +1035,44 @@ fn setup_shaders() -> Box<CommandBuffer> {
 
 /// Runs the spike once when VirGL owns the display.
 pub fn run() {
+    T0_US.store(now_us(), Ordering::Relaxed);
     serial_println!("GPU_SPIKE begin target=parallels ctx={}", CTX);
-    let mut tally = Tally { passed: 0, failed: 0 };
-    if let Err(e) = run_inner(&mut tally) {
-        tally.fail("run", e);
+    let mut tally = Tally;
+    match run_inner(&mut tally) {
+        Ok(()) => {
+            elapsed("boot-part-end");
+            if crate::task::kthread::kthread_run(late, "gpu-spike").is_err() {
+                tally.fail("spawn", "kthread_run failed");
+                done();
+            }
+        }
+        Err(e) => {
+            tally.fail("run", e);
+            done();
+        }
     }
-    serial_println!("GPU_SPIKE DONE passed={} failed={}", tally.passed, tally.failed);
+}
+
+fn done() {
+    serial_println!(
+        "GPU_SPIKE DONE passed={} failed={}",
+        PASSED.load(Ordering::Relaxed),
+        FAILED.load(Ordering::Relaxed)
+    );
+}
+
+/// The spike thread: 2560x1600, the attestation window and isolation, with real sleeps.
+fn late() {
+    let mut tally = Tally;
+    sleep_ms(2000);
+    elapsed("late-begin");
+    if let Err(e) = big(&mut tally) {
+        tally.fail("2560x1600", e);
+    }
+    if let Err(e) = isolation(&mut tally) {
+        tally.fail("isolation", e);
+    }
+    done();
 }
 
 fn capsets() {
@@ -1102,6 +1194,8 @@ fn run_inner(tally: &mut Tally) -> Result<(), &'static str> {
     create(RES_COPY_A, tex2d, vfmt::B8G8R8A8_UNORM, rt, TW, TH, Some(&bca))?;
     create(RES_VB, pipe::BUFFER, vfmt::R8_UNORM, pipe::BIND_VERTEX_BUFFER, VB_BYTES, 1, None)?;
     create(RES_B, tex2d, vfmt::R8G8B8A8_UNORM, rt, BW, BH, Some(&bb))?;
+    B_PTR.store(bb.ptr as u64, Ordering::Relaxed);
+    B_LEN.store(bb.len as u64, Ordering::Relaxed);
     create(RES_TR, tex2d, vfmt::R8G8B8A8_UNORM, tex, TW, TH, Some(&btr))?;
     create(RES_COPY_B, tex2d, vfmt::R8G8B8A8_UNORM, rt, TW, TH, Some(&bcb))?;
     serial_println!("GPU_SPIKE resources created and attached to ctx {} only", CTX);
@@ -1126,6 +1220,20 @@ fn run_inner(tally: &mut Tally) -> Result<(), &'static str> {
     transfer(cmd::TRANSFER_TO_HOST_3D, RES_TB, TW, TH, TW * 4)?;
     transfer(cmd::TRANSFER_TO_HOST_3D, RES_TR, TW, TH, TW * 4)?;
     serial_println!("GPU_SPIKE uploads textures=3 us={}", now_us() - t);
+    bt8.fill(POISON);
+    let (rf, ra, _) = transfer(cmd::TRANSFER_FROM_HOST_3D, RES_T8, TW, TH, TW)?;
+    dma_cache_invalidate(bt8.ptr, bt8.len);
+    let raw = bt8.bytes();
+    let bad = (0..TW * TH).filter(|&i| raw[i as usize] as u32 != t8(i % TW, i / TW)).count();
+    serial_println!(
+        "GPU_SPIKE check=r8-texture-readback bytes={} mismatched={} answered={} first16={:?} verdict={}",
+        TW * TH,
+        bad,
+        ra >= rf,
+        &raw[..16],
+        if bad == 0 && ra >= rf { "PASS" } else { "FAIL" }
+    );
+    tally.pass(bad == 0 && ra >= rf);
 
     let objects = setup_objects();
     let shaders = setup_shaders();
@@ -1139,7 +1247,7 @@ fn run_inner(tally: &mut Tally) -> Result<(), &'static str> {
     let v = render_and_judge("sceneA", &a, RES_A, &ba, AW, AH, true, false, &want_a)?;
     tally.record("sceneA-bgra8-all-regions", &v, v.mismatched == 0 && v.poisoned == 0);
     for (name, rect) in [
-        ("sceneA/clear", (64, 0, 256, 16)),
+        ("sceneA/clear", (192, 0, 256, 16)),
         ("sceneA/texfetch-r8-bgra", (0, 0, 64, 16)),
         ("sceneA/integer-two-word-mul", (0, 16, 256, 32)),
         ("sceneA/blend-dest-copy", (0, 32, 64, 48)),
@@ -1152,6 +1260,38 @@ fn run_inner(tally: &mut Tally) -> Result<(), &'static str> {
         let r = judge(&ba, AW, true, rect, &want_a);
         report(name, &r, r.mismatched == 0 && r.poisoned == 0);
     }
+    for (name, x0) in [("r8-probe-txf-rgba", 64u32), ("r8-probe-tex-nearest-rgba", 128)] {
+        let r = judge(&ba, AW, true, (x0, 0, x0 + TW, TH), &|x, y| Some([t8(x - x0, y), 0, 0, 255]));
+        report(name, &r, r.mismatched == 0);
+        let px = ba.bytes();
+        let at = |x: u32, y: u32| {
+            let o = ((y * AW + x) * 4) as usize;
+            [px[o + 2], px[o + 1], px[o], px[o + 3]]
+        };
+        serial_println!(
+            "GPU_SPIKE info={} samples (dx,dy,t8)->rgba: (1,0,{})->{:?} (2,0,{})->{:?} (6,3,{})->{:?} (63,15,{})->{:?}",
+            name,
+            t8(1, 0),
+            at(x0 + 1, 0),
+            t8(2, 0),
+            at(x0 + 2, 0),
+            t8(6, 3),
+            at(x0 + 6, 3),
+            t8(63, 15),
+            at(x0 + 63, 15)
+        );
+    }
+    let clean: Vec<u8> = ba.bytes().to_vec();
+    let diffs = |b: &Backing| -> Vec<(u32, u32)> {
+        b.bytes()
+            .chunks_exact(4)
+            .zip(clean.chunks_exact(4))
+            .enumerate()
+            .filter(|(_, (p, q))| p != q)
+            .map(|(i, _)| (i as u32 % AW, i as u32 / AW))
+            .collect()
+    };
+
     // Device-rasterized non-axis-aligned triangles: the profile makes no claim; recorded only.
     let mut ties = 0u64;
     let hw = judge(&ba, AW, true, (96, 64, 256, 96), &|x, y| {
@@ -1184,7 +1324,9 @@ fn run_inner(tally: &mut Tally) -> Result<(), &'static str> {
 
     // Determinism: the same stream again must give identical bytes.
     let v2 = render_and_judge("sceneA-again", &a, RES_A, &ba, AW, AH, true, false, &want_a)?;
-    tally.record("sceneA-determinism", &v2, v2.mismatched == 0 && v2.fnv_got == v.fnv_got);
+    let d2 = diffs(&ba);
+    serial_println!("GPU_SPIKE sceneA-again pixels_differing_from_first_run={}", d2.len());
+    tally.record("sceneA-determinism", &v2, d2.is_empty() && v2.fnv_got == v.fnv_got);
 
     // Scene B: R8G8B8A8 target and texture, same formulas, RGBA byte order.
     let b = scene_b();
@@ -1193,14 +1335,19 @@ fn run_inner(tally: &mut Tally) -> Result<(), &'static str> {
 
     // Planted faults: each must be caught by the exact comparison.
     let fc = render_and_judge("fault-corrupt-pixel", &scene_a(Fault::CorruptPixel), RES_A, &ba, AW, AH, true, false, &want_a)?;
-    let caught = fc.mismatched == 1 && fc.first.map(|f| (f.0, f.1)) == Some(CORRUPT_AT);
+    let dc = diffs(&ba);
+    let caught = fc.mismatched == v.mismatched + 1 && dc == [CORRUPT_AT];
+    serial_println!("GPU_SPIKE fault-corrupt-pixel pixels_differing_from_clean={} at={:?}", dc.len(), dc.first());
     tally.record("fault-corrupt-pixel-caught", &fc, caught);
     let fs = render_and_judge("fault-suppress-draw", &scene_a(Fault::SuppressDraw), RES_A, &ba, AW, AH, true, false, &want_a)?;
-    let differing = (0..TH).flat_map(|y| (0..TW).map(move |x| (x, y))).filter(|&(x, y)| texfetch_px(x, y) != CLR_A).count() as u64;
-    tally.record("fault-suppress-draw-caught", &fs, fs.mismatched == differing && differing > 0);
+    let ds = diffs(&ba);
+    let inside = ds.iter().all(|&(x, y)| x < TW && y < TH);
+    serial_println!("GPU_SPIKE fault-suppress-draw pixels_differing_from_clean={} all_in_texfetch_region={}", ds.len(), inside);
+    tally.record("fault-suppress-draw-caught", &fs, fs.mismatched > v.mismatched && !ds.is_empty() && inside);
     let fk = render_and_judge("fault-skip-transfer", &a, RES_A, &ba, AW, AH, true, true, &want_a)?;
     tally.record("fault-skip-transfer-caught", &fk, fk.poisoned == fk.judged && fk.judged > 0);
 
+    elapsed("before-present");
     if let Err(e) = present(tally, dw, dh) {
         tally.fail("present", e);
     }
@@ -1226,10 +1373,15 @@ fn run_inner(tally: &mut Tally) -> Result<(), &'static str> {
         lat[199]
     );
 
-    if let Err(e) = big(tally) {
-        tally.fail("2560x1600", e);
-    }
+    Ok(())
+}
 
+fn isolation(tally: &mut Tally) -> Result<(), &'static str> {
+    let bb = Backing {
+        ptr: B_PTR.load(Ordering::Relaxed) as *mut u8,
+        len: B_LEN.load(Ordering::Relaxed) as usize,
+        pages: Vec::new(),
+    };
     // Isolation: context 3 draws to scene B's target, which is not attached to it.
     with_device_state(|s| virgl_ctx_create_cmd(s, CTX_FOREIGN, b"gpu-spike-foreign"))?;
     let mut foreign = Box::new(CommandBuffer::new());
@@ -1260,7 +1412,7 @@ fn present(tally: &mut Tally, dw: u32, dh: u32) -> Result<(), &'static str> {
     let t = now_us();
     let bound = with_device_state(|s| set_scanout_resource(s, RES_P)).and_then(|_| flush(RES_P, dw, dh));
     serial_println!("GPU_SPIKE present set_scanout+flush ok={} us={} hold_begin", bound.is_ok(), now_us() - t);
-    let how = idle_ms(5000);
+    let how = idle_ms(2000);
     serial_println!("GPU_SPIKE present hold_end idle={}", how);
     bp.fill(POISON);
     let again = transfer(cmd::TRANSFER_FROM_HOST_3D, RES_P, dw, dh, dw * 4);
@@ -1314,9 +1466,9 @@ fn big(tally: &mut Tally) -> Result<(), &'static str> {
 
     // Host GPU-time attestation window: idle, full-screen integer load, idle.
     serial_println!("GPU_SPIKE attest phase=idle1 begin");
-    let how = idle_ms(8000);
+    sleep_ms(8000);
     let load = scene_g(4);
-    serial_println!("GPU_SPIKE attest phase=load begin idle={}", how);
+    serial_println!("GPU_SPIKE attest phase=load begin");
     let t = now_us();
     let mut n = 0u64;
     while now_us() - t < 8_000_000 {
@@ -1331,7 +1483,7 @@ fn big(tally: &mut Tally) -> Result<(), &'static str> {
         elapsed
     );
     serial_println!("GPU_SPIKE attest phase=idle2 begin");
-    idle_ms(8000);
+    sleep_ms(8000);
     serial_println!("GPU_SPIKE attest phase=idle2 end");
     Ok(())
 }
