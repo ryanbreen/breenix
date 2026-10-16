@@ -161,7 +161,14 @@ fn panel_stage_layout() -> CaseResult { stage_fixture("stage-layout") }
 fn panel_tile_stamps() -> CaseResult { stage_fixture("tile-stamps") }
 fn panel_tile_thumbnail() -> CaseResult { stage_fixture("tile-thumbnail") }
 fn panel_spotlight_picture() -> CaseResult { stage_fixture("spotlight-picture") }
-fn panel_spotlight_timing() -> CaseResult { stage_fixture("spotlight-timing") }
+fn panel_spotlight_timing() -> CaseResult {
+    // Retain the timing assertions and also cover the non-picture spotlight forms
+    // without adding or removing a manifest case.
+    for name in ["spotlight-timing","spotlight-input","spotlight-measurement"] {
+        crate::stage_fixtures::check_capture(name,|_|Ok(())).map_err(libbreenix::suite::CaseError::Fail)?;
+    }
+    stage_fixture("spotlight-timing")
+}
 fn panel_milestone_ribbon() -> CaseResult { stage_fixture("milestone-ribbon") }
 fn panel_finale() -> CaseResult { stage_fixture("finale") }
 fn panel_deterministic() -> CaseResult {
@@ -174,7 +181,7 @@ fn panel_deterministic() -> CaseResult {
         use stage::{Milestone, Observation, Run, Spotlight, Stamp, Tile};
         let tiles=[Tile{id:"clock/running",stamp:Stamp::Running,key:0,thumbnail:None}];
         let groups=[Milestone{id:"clock",first:0,end:1}];
-        let mut run=Run{suite:"clock",target:"ARM64 QEMU",case_number:1,ui_time_ms:0,fps:0,tiles:&tiles,milestones:&groups,selected:0,spotlight:Spotlight::None,finale:None,boundary:Observation{backend:1,flags:1,boundary:1}};
+        let mut run=Run{suite:"clock",target:"ARM64 QEMU",case_number:1,ui_time_ms:0,fps:0,tiles:&tiles,milestones:&groups,selected:0,input:None,spotlight:Spotlight::None,finale:None,boundary:Observation{backend:1,flags:1,boundary:1}};
         let mut a=FrameBuf::new(1280,800,libgfx::framebuf::Format::BGRX).map_err(|e|e.to_string())?;
         let mut b=FrameBuf::new(1280,800,libgfx::framebuf::Format::BGRX).map_err(|e|e.to_string())?;
         for fb in [&mut a,&mut b] {
@@ -187,7 +194,7 @@ fn panel_deterministic() -> CaseResult {
         page[16..24].copy_from_slice(&500_000_000u64.to_le_bytes());
         std::fs::write(&path,page).map_err(|e|e.to_string())?;
         libbreenix::suite::render_stage_at_ui_time(&mut b,&mut run).map_err(|e|format!("{e:?}"))?;
-        if run.ui_time_ms!=500 || a.get_pixel(16,112)==b.get_pixel(16,112) {return Err("stepping UI time did not change the stage pulse".into());}
+        if run.ui_time_ms!=500 || a.get_pixel(336,112)==b.get_pixel(336,112) {return Err("stepping UI time did not change the stage pulse".into());}
         if breengel::clock::now_ns()!=500_000_000 {return Err("stage and Breengel use different clock providers".into());}
         libbreenix::suite::judged(&b).map_err(|e|format!("{e:?}"))
     })();

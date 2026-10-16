@@ -24,7 +24,7 @@ fn text(fb:&FrameBuf,x:usize,y:usize,s:&str,scale:usize,background:(u8,u8,u8)) -
 }
 fn run<'a>(tiles:&'a [Tile<'a>],milestones:&'a [Milestone<'a>]) -> Run<'a> {
     Run { suite:"fixture",target:"qemu",case_number:3,ui_time_ms:250,fps:60,tiles,milestones,selected:1,
-        spotlight:Spotlight::None,finale:None,boundary:stage::Observation{backend:1,flags:1,boundary:1} }
+        input:None,spotlight:Spotlight::None,finale:None,boundary:stage::Observation{backend:1,flags:1,boundary:1} }
 }
 fn render(fb:&mut FrameBuf,run:&Run<'_>) -> Result<(),String> {
     stage::draw(fb,run).map_err(|e|format!("missing or invalid run stage (§23): {e:?}"))
@@ -63,7 +63,12 @@ pub fn check_capture(name:&str,capture:impl FnOnce(&FrameBuf)->Result<(),String>
             text(&fb,840,120,"CASE 2 / alpha",1,(18,29,44))?;
             text(&fb,840,132,"fail",1,(18,29,44))?;
             text(&fb,840,144,"key 9",1,(18,29,44))?;
-            rect(&fb,16,140,800,560,(12,19,31))?;
+            // Five cases expand to 152x96 tiles; the two category headings are visible.
+            text(&fb,18,114,"alpha",4,(24,39,59))?;
+            text(&fb,18,168,"1/2 pass",4,(24,39,59))?;
+            text(&fb,18,218,"beta",4,(24,39,59))?;
+            text(&fb,18,272,"0/3 pass",4,(24,39,59))?;
+            rect(&fb,16,320,800,380,(12,19,31))?;
             let mut ef=surface();
             for y in 776..783 {for x in 24..1280 {ef.put_pixel(x,y,Color::rgb(12,19,31));}}
             font::draw_text(&mut ef,b"host copy and window outside guest view",24,776,Color::rgb(161,183,204),1);
@@ -79,29 +84,58 @@ pub fn check_capture(name:&str,capture:impl FnOnce(&FrameBuf)->Result<(),String>
         }
         "tile-stamps" => {
             render(&mut fb,&model)?;
-            // Slot 2 is the gap between milestones, so beta starts in slot 3.
-            for (slot,key,color) in [(0,7,(26,112,77)),(1,9,(145,50,58)),(3,0,(57,67,80)),(5,12,(64,191,224))] {
-                let x=16+slot*40;
-                rect(&fb,x,112,38,1,color)?;rect(&fb,x,137,38,1,color)?;
-                rect(&fb,x,113,1,24,color)?;rect(&fb,x+37,113,1,24,color)?;
+            // Literal slots: alpha heading 0..2, cases 2,3; slot 4 is a wrap gap;
+            // beta heading 5..7, cases 7,8,9. All tiles are 152x96 at this case count.
+            for (x,y,key,color) in [(336,112,7,(26,112,77)),(496,112,9,(145,50,58)),(336,216,0,(57,67,80)),(656,216,12,(64,191,224))] {
+                rect(&fb,x,y,152,1,color)?;rect(&fb,x,y+95,152,1,color)?;
+                rect(&fb,x,y+1,1,94,color)?;rect(&fb,x+151,y+1,1,94,color)?;
                 let mut ef=surface();
-                for py in 127..137 {for px in x+1..x+37 {ef.put_pixel(px,py,Color::rgb(color.0,color.1,color.2));}}
-                font::draw_text(&mut ef,format!("{key}").as_bytes(),x+2,129,Color::WHITE,1);
-                for py in 127..137 {for px in x+1..x+37 {let p=ef.get_pixel(px,py);expect_pixel(&fb,px,py,(p.r,p.g,p.b))?;}}
+                for py in y+60..y+95 {for px in x+1..x+151 {ef.put_pixel(px,py,Color::rgb(color.0,color.1,color.2));}}
+                font::draw_text(&mut ef,format!("{key}").as_bytes(),x+8,y+64,Color::WHITE,4);
+                for py in y+60..y+95 {for px in x+1..x+151 {let p=ef.get_pixel(px,py);expect_pixel(&fb,px,py,(p.r,p.g,p.b))?;}}
             }
-            rect(&fb,96,112,38,26,(12,19,31))?;
-            rect(&fb,176,112,38,1,(48,67,96))?;
-            rect(&fb,176,137,38,1,(48,67,96))?;rect(&fb,176,113,1,24,(48,67,96))?;rect(&fb,213,113,1,24,(48,67,96))?;
-            rect(&fb,177,127,36,10,(12,19,31))?;
-            for (slot,ordinal) in [(0,1),(1,2),(3,3),(4,4),(5,5)] {
-                text(&fb,16+slot*40+20,114,&format!("{ordinal}"),1,(12,19,31))?;
+            rect(&fb,656,112,152,96,(12,19,31))?;
+            rect(&fb,496,216,152,1,(48,67,96))?;
+            rect(&fb,496,311,152,1,(48,67,96))?;
+            rect(&fb,496,217,1,94,(48,67,96))?;rect(&fb,647,217,1,94,(48,67,96))?;
+            rect(&fb,497,276,150,35,(12,19,31))?;
+            for (x,y,ordinal) in [(336,112,1),(496,112,2),(336,216,3),(496,216,4),(656,216,5)] {
+                text(&fb,x+80,y+8,&format!("{ordinal}"),4,(12,19,31))?;
             }
-            for key in [123456, 1024000, u64::MAX] {
-                cases[1].key=key; let m=run(&cases,&MILESTONES);render(&mut fb,&m)?;
-                text(&fb,58,129,">",1,(145,50,58))?;
-                rect(&fb,64,129,29,7,(145,50,58))?;
+            for key in [123456,1024000,u64::MAX] {
+                cases[1].key=key;let m=run(&cases,&MILESTONES);render(&mut fb,&m)?;
+                text(&fb,504,176,">",4,(145,50,58))?;
+                rect(&fb,528,176,119,28,(145,50,58))?;
                 text(&fb,840,144,&format!("key {key}"),1,(18,29,44))?;
-            } Ok(())
+            }
+            // The complete suite fits without dropping tiles or truncating category names.
+            let sizes=[40,37,22,21,9,31,7,23,19,12,39,38,27,32,15,21];
+            let ids:Vec<String>=sizes.iter().enumerate().flat_map(|(i,n)|(0..*n).map(move|k|format!("cat{i}/case{k}"))).collect();
+            let tiles:Vec<_>=ids.iter().map(|id|Tile{id,stamp:Stamp::Pending,key:0,thumbnail:None}).collect();
+            let wall=stage::Wall::for_tiles(&tiles).map_err(|e|format!("wall: {e:?}"))?;
+            if tiles.len()!=393 || wall.scale!=1 || wall.columns!=20 {return Err("full wall size or scale changed".into());}
+            for i in 0..393 {let (x,y)=wall.origin(wall.slot(&tiles,i));if x+38>816 || y+24>700{return Err(format!("tile {i} is outside wall"));}}
+            // Exercise the reported growth: two cases in existing groups and 13 in a new one.
+            let mut larger = ids.clone();
+            larger.insert(1,"cat0/extra0".into()); larger.insert(2,"cat0/extra1".into());
+            larger.extend((0..13).map(|i|format!("cat16/extra{i}")));
+            let bigger:Vec<_>=larger.iter().map(|id|Tile{id,stamp:Stamp::Pending,key:0,thumbnail:None}).collect();
+            let mut groups=Vec::new();let mut first=0;
+            for i in 1..=bigger.len() {
+                if i==bigger.len() || bigger[i].id.split('/').next()!=bigger[first].id.split('/').next() {
+                    groups.push(Milestone{id:bigger[first].id.split('/').next().unwrap(),first,end:i}); first=i;
+                }
+            }
+            let mut grown=run(&bigger,&groups);grown.selected=0;
+            render(&mut fb,&grown)?;
+            let packed=stage::Wall::for_tiles(&bigger).map_err(|e|format!("grown wall: {e:?}"))?;
+            for i in 0..408 {let (x,y)=packed.origin(packed.slot(&bigger,i));rect(&fb,x,y,38,1,(48,67,96))?;if y+24>700{return Err("grown wall overflow".into());}}
+            // A single category also supports more than the retired 420-case cap.
+            let many_ids:Vec<_>=(0..430).map(|i|format!("one/{i}")).collect();
+            let many:Vec<_>=many_ids.iter().map(|id|Tile{id,stamp:Stamp::Pending,key:0,thumbnail:None}).collect();
+            let one=[Milestone{id:"one",first:0,end:430}];let mut big=run(&many,&one);big.selected=0;
+            render(&mut fb,&big)?;
+            Ok(())
         }
         "tile-thumbnail" => {
             // Every 2x2 bin has four different pixels, so sampling cannot pass.
@@ -112,7 +146,7 @@ pub fn check_capture(name:&str,capture:impl FnOnce(&FrameBuf)->Result<(),String>
             cases[0].thumbnail=Some(Image{pixels:&pixels,width:32,height:24});
             let model=run(&cases,&MILESTONES);render(&mut fb,&model)?;
             for y in 0..12 { for x in 0..16 {
-                expect_pixel(&fb,18+x,114+y,((2*x+2*y+1) as u8,(2*y+1) as u8,(2*x+1) as u8))?;
+                for yy in 0..4 {for xx in 0..4 {expect_pixel(&fb,344+x*4+xx,120+y*4+yy,((2*x+2*y+1) as u8,(2*y+1) as u8,(2*x+1) as u8))?;}}
             } } Ok(())
         }
         "spotlight-picture" => {
@@ -134,14 +168,21 @@ pub fn check_capture(name:&str,capture:impl FnOnce(&FrameBuf)->Result<(),String>
                 expect_pixel(&fb,1128+x,168+y,colour)?;
             }}
             text(&fb,840,312,"1 pixels differ; bound 0",1,(18,29,44))?;
+            let points=[stage::InputPoint{x:10,y:20,pressed:false},stage::InputPoint{x:30,y:40,pressed:true}];
+            model.input=Some((&points,"button OK: Clicked"));
+            render(&mut fb,&model)?;
+            text(&fb,848,432,"INPUT / pointer trail and handler result",1,(18,29,44))?;
+            text(&fb,848,448,"button OK: Clicked",1,(18,29,44))?;
+            rect(&fb,862,514,5,5,(255,255,255))?;rect(&fb,1214,594,5,5,(26,112,77))?;
+            expect_pixel(&fb,1040,556,(64,160,224))?;
+            text(&fb,840,312,"1 pixels differ; bound 0",1,(18,29,44))?;
+            model.input=None;
             model.spotlight=Spotlight::Actual(Image{pixels:&actual,width:2,height:2});
             render(&mut fb,&model)?;
             text(&fb,840,152,"actual (reference not supplied)",1,(18,29,44))?;
-            rect(&fb,840,168,128,128,(18,29,44))?;
-            rect(&fb,1128,168,128,128,(18,29,44))?;
-            for y in 0..128 {for x in 0..128 {
-                let i=((y*2/128)*2+x*2/128)*4;
-                expect_pixel(&fb,984+x,168+y,(actual[i+2],actual[i+1],actual[i]))?;
+            for y in 0..250 {for x in 0..400 {
+                let i=((y*2/250)*2+x*2/400)*4;
+                expect_pixel(&fb,848+x,168+y,(actual[i+2],actual[i+1],actual[i]))?;
             }} Ok(())
         }
         "spotlight-timing" => {
@@ -157,6 +198,38 @@ pub fn check_capture(name:&str,capture:impl FnOnce(&FrameBuf)->Result<(),String>
                 expect_pixel(&fb,x,y,rgb)?;
             }}
             text(&fb,840,312,"frame times us; budget 1000",1,(18,29,44))
+        }
+        "spotlight-measurement" => {
+            model.spotlight=Spotlight::Measurement{name:"pixels checked",number:128,unit:"px",bound:Some((128,128))};
+            render(&mut fb,&model)?;
+            text(&fb,848,208,"pixels checked",2,(18,29,44))?;
+            text(&fb,848,280,"128 px",3,(18,29,44))?;
+            text(&fb,848,392,"Expected exactly 128 px",2,(18,29,44))?;
+            model.spotlight=Spotlight::Measurement{name:"Case execution time",number:12,unit:"ms",bound:Some((0,1000))};
+            render(&mut fb,&model)?;
+            text(&fb,848,392,"Bound: 0 to 1000 ms",2,(18,29,44))?;
+            Ok(())
+        }
+        "spotlight-input" => {
+            let points=[stage::InputPoint{x:10,y:20,pressed:false},stage::InputPoint{x:30,y:40,pressed:true}];
+            model.spotlight=Spotlight::Input{points:&points,hit:"button OK: Clicked"};
+            render(&mut fb,&model)?;
+            text(&fb,848,216,"button OK: Clicked",2,(18,29,44))?;
+            rect(&fb,862,334,5,5,(255,255,255))?;rect(&fb,1214,526,5,5,(26,112,77))?;
+            // Interior of the real segment must be blue, not just its two endpoints.
+            expect_pixel(&fb,1040,432,(64,160,224))?;
+            model.spotlight=Spotlight::Input{points:&[],hit:"checkbox: Space => Toggled(true)"};
+            render(&mut fb,&model)?;
+            text(&fb,848,360,"Events (no pointer)",2,(18,29,44))?;
+            text(&fb,848,184,"INPUT / events",2,(18,29,44))?;
+            rect(&fb,848,568,400,7,(18,29,44))?;
+            // Whole words move to the next line; the fifth line carries an ellipsis.
+            model.spotlight=Spotlight::Input{points:&[],hit:"None Modifiers None Modifiers None Modifiers None Modifiers None Modifiers None Modifiers None Modifiers None Modifiers None Modifiers None Modifiers None Modifiers None Modifiers"};
+            render(&mut fb,&model)?;
+            text(&fb,848,216,"None Modifiers None Modifiers",2,(18,29,44))?;
+            text(&fb,848,234,"None Modifiers None Modifiers",2,(18,29,44))?;
+            text(&fb,848,288,"None Modifiers None Modifiers...",2,(18,29,44))?;
+            Ok(())
         }
         "milestone-ribbon" => {
             cases[1].stamp=Stamp::Pass;

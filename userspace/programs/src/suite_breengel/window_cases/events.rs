@@ -85,10 +85,23 @@ fn setup(title: &[u8]) -> Result<(Helper, breengel::Window), libbreenix::suite::
 
 /// Dispatch until `n` events have been handled (within 2 s), every handler answering `answer`.
 fn collect(w: &mut breengel::Window, n: usize, answer: Handled) -> Result<Vec<Delivered>, libbreenix::suite::CaseError> {
+    let w_id=w.id();
+    let mut buttons=0u32;
     let mut got = Vec::new();
     let start = now_ms();
     while got.len() < n && since(start) < 2_000 {
         w.wait_dispatch(100_000_000, |d| {
+            match &d.event {
+                Event::MouseMove{x,y,..} => libbreenix::suite::input_step(*x,*y,buttons!=0,&format!("window {}: {:?}",w_id,d.event)),
+                Event::MouseButton{x,y,pressed,button} => {
+                    if (breengel::buttons::LEFT..=breengel::buttons::MIDDLE).contains(button) {
+                        let bit=1u32 << (*button-breengel::buttons::LEFT);
+                        if *pressed {buttons|=bit;}else{buttons&=!bit;}
+                    }
+                    libbreenix::suite::input_step(*x,*y,buttons!=0,&format!("window {}: {:?}",w_id,d.event));
+                }
+                _ => libbreenix::suite::input_key(&format!("window {}: {:?}",w_id,d.event)),
+            }
             got.push(d.clone());
             answer
         }).map_err(|e| format!("dispatch: {e}")).cite("19.4")?;

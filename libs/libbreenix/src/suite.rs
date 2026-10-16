@@ -292,6 +292,91 @@ fn collect_timing()->Result<Option<FrameTiming>,String> {
     Ok(Some(FrameTiming{frame_us,budget_us}))
 }
 
+/// Input evidence captured at the handler that the case actually exercises.
+#[derive(Clone, Default)]
+pub struct InputTrace { pub points: Vec<libgfx::stage::InputPoint>, pub hit: String }
+static INPUT_TRACE: std::sync::Mutex<Option<InputTrace>> = std::sync::Mutex::new(None);
+fn input_label(hit:&str)->String {
+    let mut label=hit.split_whitespace().collect::<Vec<_>>().join(" ");
+    if label.len()>192 {let mut end=189;while !label.is_char_boundary(end){end-=1;}label.truncate(end);label.push_str("...");}
+    label
+}
+pub fn input_step(x:i32,y:i32,pressed:bool,hit:&str) {
+    if !JUDGED_ENABLED.load(Ordering::Relaxed) {return;}
+    let mut trace=INPUT_TRACE.lock().unwrap();
+    let t=trace.get_or_insert_with(InputTrace::default);
+    if t.points.len()<256 {t.points.push(libgfx::stage::InputPoint{x,y,pressed});}
+    if !hit.is_empty() {t.hit=input_label(hit);}
+}
+pub fn input_key(hit:&str) {
+    if !JUDGED_ENABLED.load(Ordering::Relaxed) {return;}
+    INPUT_TRACE.lock().unwrap().get_or_insert_with(InputTrace::default).hit=input_label(hit);
+}
+fn publish_input()->CaseResult {
+    let Some(t)=INPUT_TRACE.lock().unwrap().take() else{return Ok(());};
+    let hit=if t.hit.is_empty(){std::format!("{}: no widget response",running_case().unwrap_or("input"))}else{t.hit};
+    let mut body=std::format!("{hit}\n");
+    for p in t.points {let _=writeln!(body,"{} {} {}",p.x,p.y,u8::from(p.pressed));}
+    let digest=libpixcheck::sha256(body.as_bytes());
+    let mut bytes=digest.to_vec();bytes.extend_from_slice(body.as_bytes());
+    std::fs::write(std::format!("{}.input",judged_path()),bytes).map_err(|e|CaseError::Fail(e.to_string()))
+}
+pub(super) fn collect_input()->Result<Option<InputTrace>,String> {
+    let path=std::format!("{}.input",judged_path());
+    let bytes=match std::fs::read(&path){Ok(v)=>v,Err(e) if e.kind()==std::io::ErrorKind::NotFound=>return Ok(None),Err(e)=>return Err(e.to_string())};
+    let _=std::fs::remove_file(path);
+    if bytes.len()<32 || libpixcheck::sha256(&bytes[32..])!=bytes[..32] {return Err("input snapshot hash differs".into());}
+    let text=core::str::from_utf8(&bytes[32..]).map_err(|_|"input snapshot not text")?;
+    let mut lines=text.lines();let hit=String::from(lines.next().ok_or("input target missing")?);
+    let mut points=Vec::new();
+    for line in lines {
+        let words=line.split_whitespace().map(str::parse).collect::<Result<Vec<i32>,_>>().map_err(|_|"invalid input point")?;
+        if words.len()!=3 || !(0..=1).contains(&words[2]) || words[..2].iter().any(|v|v.abs_diff(0)>1_000_000) || points.len()==256 {return Err("invalid input point".into());}
+        points.push(libgfx::stage::InputPoint{x:words[0],y:words[1],pressed:words[2]==1});
+    }
+    Ok(Some(InputTrace{points,hit}))
+}
+
+fn publish_values() -> CaseResult {
+    if !JUDGED_ENABLED.load(Ordering::Relaxed) { return Ok(()); }
+    let lines = VALUE_LINES.lock().unwrap();
+    let mut bytes = libpixcheck::sha256(lines.as_bytes()).to_vec();
+    bytes.extend_from_slice(lines.as_bytes());
+    std::fs::write(std::format!("{}.values", judged_path()), bytes).map_err(|e| CaseError::Fail(e.to_string()))
+}
+fn collect_values(suite: &str, case: &str) -> Result<Vec<Value>, String> {
+    let path = std::format!("{}.values", judged_path());
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e.to_string()),
+    };
+    let _ = std::fs::remove_file(path);
+    if bytes.len() < 32 || libpixcheck::sha256(&bytes[32..]) != bytes[..32] { return Err("VALUE snapshot hash differs".into()); }
+    let lines = core::str::from_utf8(&bytes[32..]).map_err(|_| "VALUE snapshot is not text")?;
+    let mut values = Vec::new();
+    for line in lines.lines() {
+        let words: Vec<_> = line.split_whitespace().collect();
+        let ["SUITE", id, "VALUE", name, quantity, rest @ ..] = words.as_slice() else { return Err("invalid VALUE record".into()); };
+        if *id != suite || *name != case || values.len() >= RECORDS_PER_CASE as usize { return Err("VALUE record belongs to another case or exceeds the serial cap".into()); }
+        let (name, quantity) = quantity.split_once('=').ok_or("invalid VALUE quantity")?;
+        let (number, unit) = number_unit(quantity).ok_or("invalid VALUE number")?;
+        let expect = match rest {
+            [] => None,
+            [range] => {
+                let (lo, hi) = range.strip_prefix("expect=").and_then(|v|v.split_once("..")).ok_or("invalid VALUE bound")?;
+                let lo = lo.parse().map_err(|_| "invalid VALUE lower bound")?;
+                let (hi, bound_unit) = number_unit(hi).ok_or("invalid VALUE upper bound")?;
+                if bound_unit != unit { return Err("VALUE bound unit differs".into()); }
+                Some((lo, hi))
+            }
+            _ => return Err("invalid VALUE suffix".into()),
+        };
+        values.push(Value { name: name.into(), number, unit: unit.into(), expect });
+    }
+    Ok(values)
+}
+
 fn frame_hash(frame: Option<&JudgedFrame>) -> String {
     let mut text = String::new();
     if let Some(frame) = frame {
@@ -379,6 +464,8 @@ static LIVE_FD: AtomicI32 = AtomicI32::new(-1);
 static RECORD_NAMES: OnceLock<(String, String)> = OnceLock::new();
 /// Records this process has printed.
 static RECORDS: AtomicU32 = AtomicU32::new(0);
+// Exact VALUE lines sent to serial, transported after the case timer stops.
+static VALUE_LINES: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
 /// The most VALUE and WAIT records one case process prints.
 pub const RECORDS_PER_CASE: u32 = 12;
@@ -392,6 +479,11 @@ fn record(kind: &str, rest: &str) {
     }
     let line = std::format!("{prefix}{kind} {name} {rest}");
     emit_to(Fd::from_raw(fd as u64), &line);
+    if kind == "VALUE" && JUDGED_ENABLED.load(Ordering::Relaxed) {
+        let mut lines = VALUE_LINES.lock().unwrap();
+        lines.push_str(&line);
+        lines.push('\n');
+    }
     let live = LIVE_FD.load(Ordering::Relaxed);
     if live >= 0 {
         // One write of a short line: whole or not at all, and never blocking the case.
@@ -500,7 +592,7 @@ impl Suite {
             .map(|category| category.cases.iter().map(|_| State::Pending).collect())
             .collect();
         let mut screen = Screen::open(self.gui);
-        if self.gui {crate::suite_stage::init(self);}
+        let pace_ms = if self.gui {crate::suite_stage::init(self)} else {0};
         let title = std::format!("BREENIX / {} SUITE", self.title.to_uppercase());
         let subtitle = match only {
             Some(name) => std::format!("suite {}: one case {name} (not suite evidence)", self.id),
@@ -510,7 +602,8 @@ impl Suite {
         let mut feed = Feed::default();
         let suite_start = monotonic_ns();
 
-        emit(&std::format!("SUITE {} START cases={}{}", self.id, total, suffix));
+        let pace_suffix = if pace_ms > 0 { std::format!(" pace_ms={pace_ms}") } else { String::new() };
+        emit(&std::format!("SUITE {} START cases={}{}{}", self.id, total, suffix, pace_suffix));
         if let Some(message) = &error {
             emit(&std::format!("SUITE {} ERROR {}", self.id, message));
             emit(&std::format!("SUITE {} DONE passed=0 failed=1 skipped=0 total={}{}", self.id, total, suffix));
@@ -540,13 +633,20 @@ impl Suite {
                 };
                 let mut line = make_line(&outcome);
                 if self.gui {
-                    let fps=feed.values.iter().rev().find(|v|v.name=="composites-per-second").and_then(|v|u32::try_from(v.number).ok());
-                    let recorded = crate::suite_stage::record(&line,&outcome,screen.judged.take(),screen.timing.take(),fps);
-                    let result = recorded.and_then(|()| if done + 1 == total {crate::suite_stage::finale()} else {Ok(())});
+                    // Use the exact emitted VALUE records, not the best-effort live pipe.
+                    let readings = match collect_values(self.id, &name) {
+                        Ok(values) => values,
+                        Err(error) => { outcome = with_note(outcome, &error); line = make_line(&outcome); Vec::new() }
+                    };
+                    let readings = readings.as_slice();
+                    let fps=readings.iter().rev().find(|v|v.name=="composites-per-second").and_then(|v|u32::try_from(v.number).ok());
+                    let input = collect_input();
+                    let recorded = input.and_then(|input| crate::suite_stage::record(&line,&outcome,screen.judged.take(),screen.timing.take(),fps,readings,limit_ms,input));
+                    let result = recorded.and_then(|()| crate::suite_stage::completed()).and_then(|()| if done + 1 == total {crate::suite_stage::finale()} else {Ok(())});
                     if let Err(error) = result {
                         outcome = with_note(outcome, &error);
                         line = make_line(&outcome);
-                        screen.stage_result(crate::suite_stage::record(&line,&outcome,None,None,fps));
+                        screen.stage_result(crate::suite_stage::record(&line,&outcome,None,None,fps,readings,limit_ms,None));
                         screen.stage_result(crate::suite_stage::redraw());
                     }
                 }
@@ -670,7 +770,7 @@ fn run_inline(case: &Case) -> Outcome {
     let start = monotonic_ns();
     let result = (case.run)();
     let ms = ms_since(start);
-    let result = result.and(publish_judged());
+    let result = result.and(publish_judged()).and(publish_input()).and(publish_values());
     match result {
         Ok(()) => Outcome::Pass { ms },
         Err(CaseError::Fail(msg)) => Outcome::Fail { ms, msg: plain(&msg) },
@@ -903,7 +1003,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
     JUDGED_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     // A prior interrupted boot may have left this PID/sequence on a reused disk.
     JUDGED_ENABLED.store(screen.gui, Ordering::Relaxed);
-    for path in [judged_path(), std::format!("{}.new", judged_path()), std::format!("{}.time",judged_path())].into_iter().filter(|_| screen.gui) {
+    for path in [judged_path(), std::format!("{}.new", judged_path()), std::format!("{}.time",judged_path()), std::format!("{}.input",judged_path()), std::format!("{}.values",judged_path())].into_iter().filter(|_| screen.gui) {
         if let Err(e) = std::fs::remove_file(path) {
             if e.kind() != std::io::ErrorKind::NotFound {
                 let _ = (io::close(reader),io::close(writer));
@@ -1025,11 +1125,12 @@ fn idle(screen: &mut Screen, feed: &Feed) -> ! {
 }
 
 /// A VALUE record as the live strip holds it.
-struct Value {
-    name: String,
-    number: i64,
-    unit: String,
-    expect: Option<(i64, i64)>,
+#[derive(Clone)]
+pub(super) struct Value {
+    pub(super) name: String,
+    pub(super) number: i64,
+    pub(super) unit: String,
+    pub(super) expect: Option<(i64, i64)>,
 }
 
 /// The most values the live strip keeps for one case.
@@ -1317,6 +1418,55 @@ mod judged_transport_tests {
         assert!(!std::path::Path::new(&judged_path()).exists(),"snapshot hashing/publication must wait until the timer stops");
         publish_judged().unwrap();
         assert_eq!(collect_judged().unwrap().unwrap().bound,1);
+        JUDGED_ENABLED.store(false,Ordering::Relaxed);
+    }
+
+    #[test]
+    fn input_snapshot_keeps_handlers_and_rejects_changed_bytes() {
+        let _serial = TRANSPORT.lock().unwrap();
+        JUDGED_ENABLED.store(true,Ordering::Relaxed);
+        JUDGED_RUNNER.store(std::process::id() as u64,Ordering::Relaxed);
+        JUDGED_SEQUENCE.store(u64::MAX-3,Ordering::Relaxed);
+        let path=std::format!("{}.input",judged_path());
+        let _=std::fs::remove_file(&path);
+        input_step(30,15,true,"button: Clicked");
+        input_step(31,16,false,"");
+        assert!(!std::path::Path::new(&path).exists(),"publication must wait for the case timer");
+        publish_input().unwrap();
+        let mut bytes=std::fs::read(&path).unwrap();
+        let trace=collect_input().unwrap().unwrap();
+        assert_eq!(trace.hit,"button: Clicked");
+        assert_eq!(trace.points,[libgfx::stage::InputPoint{x:30,y:15,pressed:true},libgfx::stage::InputPoint{x:31,y:16,pressed:false}]);
+        assert!(collect_input().unwrap().is_none());
+        bytes[32]^=1;
+        std::fs::write(&path,bytes).unwrap();
+        assert!(collect_input().err().unwrap().contains("hash"));
+        assert!(!std::path::Path::new(&path).exists());
+        JUDGED_ENABLED.store(false,Ordering::Relaxed);
+    }
+
+    #[test]
+    fn serial_value_snapshot_keeps_the_last_reading_and_checks_ownership_and_hash() {
+        let _serial = TRANSPORT.lock().unwrap();
+        JUDGED_ENABLED.store(true,Ordering::Relaxed);
+        JUDGED_RUNNER.store(std::process::id() as u64,Ordering::Relaxed);
+        JUDGED_SEQUENCE.store(u64::MAX-4,Ordering::Relaxed);
+        let lines=(0..RECORDS_PER_CASE).map(|i|std::format!("SUITE breengel VALUE test/values count={i}px expect=0..12px\n")).collect::<String>();
+        *VALUE_LINES.lock().unwrap()=lines.clone();
+        publish_values().unwrap();
+        let path=std::format!("{}.values",judged_path());
+        let mut bytes=std::fs::read(&path).unwrap();
+        assert_eq!(&bytes[32..],lines.as_bytes());
+        let values=collect_values("breengel","test/values").unwrap();
+        assert_eq!(values.len(),RECORDS_PER_CASE as usize);
+        assert_eq!(values.last().unwrap().number,11);
+        assert_eq!(values.last().unwrap().expect,Some((0,12)));
+        std::fs::write(&path,&bytes).unwrap();
+        assert!(collect_values("breengel","another/case").is_err());
+        bytes[32]^=1;std::fs::write(&path,bytes).unwrap();
+        assert!(collect_values("breengel","test/values").err().unwrap().contains("hash"));
+        assert!(!std::path::Path::new(&path).exists());
+        VALUE_LINES.lock().unwrap().clear();
         JUDGED_ENABLED.store(false,Ordering::Relaxed);
     }
 

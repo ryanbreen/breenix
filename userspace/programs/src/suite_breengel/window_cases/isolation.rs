@@ -680,10 +680,15 @@ fn isolation_efault_cross_page() -> CaseResult {
     let page = Pages::filled(1, 1, true, |b| b.fill(0xA5)).cite("17.5")?;
     want_errno(list_at(page.end_minus(entry), 2), EFAULT, "17.5", "LIST of two entries starting one entry before an unmapped page")?;
     ensure(page.bytes().iter().all(|&b| b == 0xA5), "17.5", "a LIST that failed with EFAULT wrote its first entry into the mapped page")?;
+    drop(page);
     let (mut k, _) = kiosk().cite("24")?;
     let wrote = k.ask(&format!("event {} {}", a.id(), event_hex(&key_event(45)))).cite("24")?;
     ensure(wrote.starts_with("ok 1 "), "19.2", format!("kiosk_test's WRITE_EVENTS answered `{wrote}`"))?;
     let size = core::mem::size_of::<abi::WindowEvent>();
+    // Helper startup and command strings allocate through mmap and can reuse an
+    // unmapped tail. Establish the same mapped/unmapped boundary after those
+    // allocations, immediately before the operation whose EFAULT we require.
+    let page = Pages::filled(1, 1, true, |b| b.fill(0xA5)).cite("17.5")?;
     want_errno(read_events_at(a.id(), page.end_minus(size / 2), 1), EFAULT, "17.5", "READ_EVENTS into a buffer running into an unmapped page")?;
     ensure(page.bytes().iter().all(|&b| b == 0xA5), "17.5", "a READ_EVENTS that failed with EFAULT wrote into the mapped page")?;
     let got = read_events(a.id()).map_err(|r| format!("READ_EVENTS {}", outcome(r))).cite("19.2")?;

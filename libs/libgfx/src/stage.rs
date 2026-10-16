@@ -46,7 +46,43 @@ pub enum Spotlight<'a> {
         frame_us: &'a [u32],
         budget_us: u32,
     },
+    Measurement { name: &'a str, number: i64, unit: &'a str, bound: Option<(i64, i64)> },
+    Input { points: &'a [InputPoint], hit: &'a str },
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InputPoint { pub x: i32, pub y: i32, pub pressed: bool }
+
+/// Category headings occupy two slots, followed immediately by their cases. The largest
+/// integer scale that fits the entire wall is used, without hiding a pending case.
+#[derive(Clone, Copy)]
+pub struct Wall { pub columns: usize, pub scale: usize }
+impl Wall {
+    pub fn for_tiles(tiles: &[Tile<'_>]) -> Result<Self, StageError> {
+        if tiles.is_empty() { return Err(StageError::Manifest); }
+        for scale in (1..=4).rev() {
+            let wall = Self { columns: 800 / (40 * scale), scale };
+            let slot = wall.slot(tiles, tiles.len() - 1);
+            if wall.origin(slot).1 + 24 * scale <= 700 { return Ok(wall); }
+        }
+        Err(StageError::Manifest)
+    }
+    pub fn slot(self, tiles: &[Tile<'_>], index: usize) -> usize {
+        let mut slot = 0;
+        for (i,t) in tiles[..=index].iter().enumerate() {
+            if i==0 || category(t.id)!=category(tiles[i-1].id) {
+                if slot % self.columns == self.columns-1 { slot += 1; }
+                slot += 2;
+            }
+            if i==index { return slot; }
+            slot += 1;
+        }
+        slot
+    }
+    pub fn origin(self, slot: usize) -> (usize,usize) {
+        (16 + 40*self.scale*(slot%self.columns),112 + (if self.scale == 1 { 24 } else { 26*self.scale })*(slot/self.columns))
+    }
+}
+fn category(id: &str) -> &str { id.split_once('/').map_or(id, |v| v.0) }
 #[derive(Clone, Copy)]
 pub struct Finale<'a> {
     pub started_ms: u64,
@@ -68,6 +104,7 @@ pub struct Run<'a> {
     pub milestones: &'a [Milestone<'a>],
     pub selected: usize,
     pub spotlight: Spotlight<'a>,
+    pub input: Option<(&'a [InputPoint], &'a str)>,
     pub finale: Option<Finale<'a>>,
     pub boundary: Observation,
 }
@@ -204,7 +241,6 @@ fn validate(fb: &FrameBuf, run: &Run<'_>) -> Result<(), StageError> {
         || run.case_number > run.tiles.len()
         || run.milestones.is_empty()
         || run.milestones.len() > 64
-        || run.tiles.len() + run.milestones.len() - 1 > 420
     {
         return Err(StageError::Manifest);
     }
@@ -263,8 +299,16 @@ fn validate(fb: &FrameBuf, run: &Run<'_>) -> Result<(), StageError> {
             }
         }
         Spotlight::Actual(image) => {if !image.valid(){return Err(StageError::Image);}}
-        Spotlight::None => {}
+        Spotlight::Input { points, hit } => {
+            if points.len()>256 || hit.len()>192 || points.iter().any(|p|p.x.abs_diff(0)>1_000_000 || p.y.abs_diff(0)>1_000_000) {return Err(StageError::Image);}
+        }
+        Spotlight::Measurement { bound: Some((lo,hi)), .. } if lo>hi => return Err(StageError::Timing),
+        Spotlight::Measurement { .. } | Spotlight::None => {}
     }
+    if run.input.is_some() && !matches!(run.spotlight, Spotlight::Picture { .. } | Spotlight::Actual(_)) { return Err(StageError::Image); }
+    if run.input.is_some_and(|(points,hit)|points.len()>256 || hit.len()>192 || points.iter().any(|p|p.x.abs_diff(0)>1_000_000 || p.y.abs_diff(0)>1_000_000)) {return Err(StageError::Image);}
+    let wall=Wall::for_tiles(run.tiles)?;
+    if wall.origin(wall.slot(run.tiles,run.tiles.len()-1)).1+24*wall.scale>700 {return Err(StageError::Manifest);}
     run.boundary.notice()?;
     Ok(())
 }
@@ -288,26 +332,31 @@ pub fn draw(fb: &mut FrameBuf, run: &Run<'_>) -> Result<(), StageError> {
     );
     text(fb, progress.bytes(), 24, 48, 1256, 1, Color::WHITE);
     text(fb, counts(run).bytes(), 24, 68, 1256, 2, Color::WHITE);
+    let wall = Wall::for_tiles(run.tiles)?;
+    let scale = wall.scale;
     for (i, tile) in run.tiles.iter().enumerate() {
-        let slot = i + run.milestones.iter().filter(|m| m.end <= i).count();
-        let (x, y) = (16 + 40 * (slot % 20), 112 + 28 * (slot / 20));
-        let c = stamp(tile.stamp, run.ui_time_ms);
-        fill(fb, x, y, 38, 1, c);
-        fill(fb, x, y + 25, 38, 1, c);
-        fill(fb, x, y + 1, 1, 24, c);
-        fill(fb, x + 37, y + 1, 1, 24, c);
-        fill(fb, x + 2, y + 2, 16, 12, INSET);
-        if let Some(image) = tile.thumbnail {
-            thumbnail(fb, image, x + 2, y + 2);
+        let slot=wall.slot(run.tiles,i);
+        if i==0 || category(tile.id)!=category(run.tiles[i-1].id) {
+            let (x,y)=wall.origin(slot-2);
+            let end=run.tiles[i..].iter().position(|t|category(t.id)!=category(tile.id)).map_or(run.tiles.len(),|n|i+n);
+            let passed=run.tiles[i..end].iter().filter(|t|t.stamp==Stamp::Pass).count();
+            fill(fb,x,y,78*scale,24*scale,HEADER);
+            text(fb,category(tile.id).as_bytes(),x+2,y+2,76*scale,scale,Color::WHITE);
+            let mut count=Text::new(); let _=write!(count,"{passed}/{} pass",end-i);
+            text(fb,count.bytes(),x+2,y+14*scale,76*scale,scale,Color::WHITE);
         }
-        let mut ordinal = Text::new();
-        let _ = write!(ordinal, "{}", i + 1);
-        text(fb, ordinal.bytes(), x + 20, y + 2, 18, 1, Color::WHITE);
-        if tile.stamp != Stamp::Pending {
-            fill(fb, x + 1, y + 15, 36, 10, c);
-            let mut key = Text::new();
-            if tile.key > 99999 { let _ = write!(key, ">"); } else { let _ = write!(key, "{}", tile.key); }
-            text(fb, key.bytes(), x + 2, y + 17, 34, 1, Color::WHITE);
+        let (x,y)=wall.origin(slot);
+        let c=stamp(tile.stamp,run.ui_time_ms);
+        fill(fb,x,y,38*scale,1,c);fill(fb,x,y+24*scale-1,38*scale,1,c);
+        fill(fb,x,y,1,24*scale,c);fill(fb,x+38*scale-1,y,1,24*scale,c);
+        fill(fb,x+2*scale,y+2*scale,16*scale,12*scale,INSET);
+        if let Some(image)=tile.thumbnail { thumbnail(fb,image,x+2*scale,y+2*scale,scale); }
+        let mut ordinal=Text::new();let _=write!(ordinal,"{}",i+1);
+        text(fb,ordinal.bytes(),x+20*scale,y+2*scale,18*scale,scale,Color::WHITE);
+        if tile.stamp!=Stamp::Pending {
+            fill(fb,x+1,y+15*scale,38*scale-2,9*scale-1,c);
+            let mut key=Text::new();if tile.key>99999{let _=write!(key,">");}else{let _=write!(key,"{}",tile.key);}
+            text(fb,key.bytes(),x+2*scale,y+16*scale,34*scale,scale,Color::WHITE);
         }
     }
     draw_spotlight(fb, run);
@@ -348,7 +397,7 @@ pub fn draw(fb: &mut FrameBuf, run: &Run<'_>) -> Result<(), StageError> {
     }
     Ok(())
 }
-fn thumbnail(fb: &mut FrameBuf, image: Image<'_>, left: usize, top: usize) {
+fn thumbnail(fb: &mut FrameBuf, image: Image<'_>, left: usize, top: usize, scale: usize) {
     let (w, h) = (image.width.min(16), image.height.min(12));
     for y in 0..h {
         for x in 0..w {
@@ -370,8 +419,29 @@ fn thumbnail(fb: &mut FrameBuf, image: Image<'_>, left: usize, top: usize) {
                 ((sum[2] + n / 2) / n) as u8,
                 255,
             ];
-            fb.put_pixel(left + x, top + y, color(p));
+            fill(fb,left+x*scale,top+y*scale,scale,scale,color(p));
         }
+    }
+}
+fn wrapped(fb:&mut FrameBuf,bytes:&[u8],x:usize,y:usize,width:usize,scale:usize) {
+    let count=width/(6*scale);
+    if count < 3 { return; }
+    let mut rest = bytes;
+    for line in 0..5 {
+        while rest.first().is_some_and(u8::is_ascii_whitespace) { rest = &rest[1..]; }
+        if rest.is_empty() { break; }
+        if line == 4 && rest.len() > count {
+            let mut end = count - 3;
+            if let Some(space) = rest[..end].iter().rposition(u8::is_ascii_whitespace) { end = space; }
+            text(fb,&rest[..end],x,y+line*9*scale,width,scale,Color::WHITE);
+            text(fb,b"...",x+end*6*scale,y+line*9*scale,width-end*6*scale,scale,Color::WHITE);
+            break;
+        }
+        let end = if rest.len() <= count { rest.len() } else {
+            rest[..=count].iter().rposition(u8::is_ascii_whitespace).filter(|n| *n > 0).unwrap_or(count)
+        };
+        text(fb,&rest[..end],x,y+line*9*scale,width,scale,Color::WHITE);
+        rest = &rest[end..];
     }
 }
 fn draw_spotlight(fb: &mut FrameBuf, run: &Run<'_>) {
@@ -385,11 +455,42 @@ fn draw_spotlight(fb: &mut FrameBuf, run: &Run<'_>) {
     let mut key = Text::new();
     let _ = write!(key, "key {}", selected.key);
     text(fb, key.bytes(), 840, 144, 424, 1, Color::WHITE);
+    text(fb,match selected.stamp {Stamp::Pass=>b"PASS",Stamp::Fail=>b"FAIL",Stamp::NotReached=>b"NOT REACHED",_=>b"RUNNING"},848,640,400,3,stamp(selected.stamp,run.ui_time_ms));
     match run.spotlight {
-        Spotlight::None => {}
+        Spotlight::None => {
+            text(fb,if selected.stamp == Stamp::NotReached {b"Case did not run"} else {b"Awaiting case result"},848,360,400,2,DIM);
+        }
+        Spotlight::Measurement { name, number, unit, bound } => {
+            wrapped(fb,name.as_bytes(),848,208,400,2);
+            let mut value=Text::new(); let _=write!(value,"{number} {unit}");
+            wrapped(fb,value.bytes(),848,280,400,3);
+            let mut label=Text::new();
+            match bound {
+                Some((lo,hi)) if lo==hi => {let _=write!(label,"Expected exactly {lo} {unit}");}
+                Some((lo,hi)) => {let _=write!(label,"Bound: {lo} to {hi} {unit}");}
+                None => {let _=write!(label,"No numeric bound supplied");}
+            }
+            wrapped(fb,label.bytes(),848,392,400,2);
+        }
+        Spotlight::Input { points, hit } => {
+            text(fb,if points.is_empty(){b"INPUT / events"}else{b"INPUT / pointer trail"},848,184,400,2,Color::WHITE);
+            wrapped(fb,hit.as_bytes(),848,216,400,2);
+            let min_x=points.iter().map(|p|p.x).min().unwrap_or(0) as i64;
+            let min_y=points.iter().map(|p|p.y).min().unwrap_or(0) as i64;
+            let dx=(points.iter().map(|p|p.x).max().unwrap_or(1) as i64-min_x).max(1);
+            let dy=(points.iter().map(|p|p.y).max().unwrap_or(1) as i64-min_y).max(1);
+            let mapped=|p:&InputPoint|(864+((p.x as i64-min_x)*352/dx) as usize,336+((p.y as i64-min_y)*192/dy) as usize);
+            for pair in points.windows(2) {
+                let (x,y)=mapped(&pair[0]);let (xx,yy)=mapped(&pair[1]);
+                shapes::draw_line(fb,x as i32,y as i32,xx as i32,yy as i32,BAR);
+            }
+            for p in points {let (x,y)=mapped(p);fill(fb,x-2,y-2,5,5,if p.pressed{PASS}else{Color::WHITE});}
+            if points.is_empty(){text(fb,b"Events (no pointer)",848,360,400,2,Color::WHITE);}
+            if !points.is_empty(){text(fb,b"green: pointer down / white: up",848,568,400,1,DIM);}
+        }
         Spotlight::Actual(image) => {
             text(fb,b"actual (reference not supplied)",840,152,424,1,Color::WHITE);
-            for y in 0..128 {for x in 0..128 {fb.put_pixel(984+x,168+y,color(image.pixel(x*image.width/128,y*image.height/128)));}}
+            for y in 0..250 {for x in 0..400 {fb.put_pixel(848+x,168+y,color(image.pixel(x*image.width/400,y*image.height/250)));}}
         }
         Spotlight::Picture {
             expected,
@@ -460,6 +561,21 @@ fn draw_spotlight(fb: &mut FrameBuf, run: &Run<'_>) {
             let _ = write!(label, "frame times us; budget {budget_us}");
             text(fb, label.bytes(), 840, 312, 424, 1, Color::WHITE);
         }
+    }
+    if let Some((points,hit))=run.input {
+        text(fb,if points.is_empty(){b"INPUT / events and handler result"}else{b"INPUT / pointer trail and handler result"},848,432,400,1,Color::WHITE);
+        wrapped(fb,hit.as_bytes(),848,448,400,1);
+        let min_x=points.iter().map(|p|p.x).min().unwrap_or(0) as i64;
+        let min_y=points.iter().map(|p|p.y).min().unwrap_or(0) as i64;
+        let dx=(points.iter().map(|p|p.x).max().unwrap_or(1) as i64-min_x).max(1);
+        let dy=(points.iter().map(|p|p.y).max().unwrap_or(1) as i64-min_y).max(1);
+        let mapped=|p:&InputPoint|(864+((p.x as i64-min_x)*352/dx) as usize,516+((p.y as i64-min_y)*80/dy) as usize);
+        for pair in points.windows(2) {
+            let (x,y)=mapped(&pair[0]);let (xx,yy)=mapped(&pair[1]);
+            shapes::draw_line(fb,x as i32,y as i32,xx as i32,yy as i32,BAR);
+        }
+        for p in points {let (x,y)=mapped(p);fill(fb,x-2,y-2,5,5,if p.pressed{PASS}else{Color::WHITE});}
+        if points.is_empty(){text(fb,b"Events (no pointer)",848,536,400,2,Color::WHITE);}
     }
 }
 /// Decode precisely the observation strength the record supports.

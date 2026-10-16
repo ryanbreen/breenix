@@ -687,6 +687,19 @@ fn widgets_button_draw() -> CaseResult {
     )
 }
 
+fn pointer_event<T: std::fmt::Debug>(target: &str, input: InputState, handle: impl FnOnce(&InputState) -> T) -> T {
+    let result = handle(&input);
+    let hit = format!("{} / {target}: {result:?}", libbreenix::suite::running_case().unwrap_or("widget"));
+    libbreenix::suite::input_step(input.mouse_x, input.mouse_y, input.mouse_down, &hit);
+    result
+}
+
+fn key_event<T: std::fmt::Debug>(target: &str, input: KeyInput<'_>, handle: impl FnOnce(&KeyInput<'_>) -> T) -> T {
+    let result = handle(&input);
+    libbreenix::suite::input_key(&format!("{} / {target}: {:?} => {result:?}", libbreenix::suite::running_case().unwrap_or("widget"), input.key));
+    result
+}
+
 /// Feed `inputs` to `update` and collect the events that are not `None`.
 fn events(
     mut update: impl FnMut(&InputState) -> WidgetEvent,
@@ -694,7 +707,13 @@ fn events(
 ) -> Vec<WidgetEvent> {
     inputs
         .iter()
-        .map(|i| update(i))
+        .map(|i| {
+            let event=update(i);
+            let target=libbreenix::suite::running_case().unwrap_or("widget");
+            let hit=if event==WidgetEvent::None {String::new()} else {format!("{target}: {event:?}")};
+            libbreenix::suite::input_step(i.mouse_x,i.mouse_y,i.mouse_down,&hit);
+            event
+        })
         .filter(|e| *e != WidgetEvent::None)
         .collect()
 }
@@ -809,24 +828,24 @@ fn widgets_checkbox_toggle() -> CaseResult {
 fn widgets_checkbox_space() -> CaseResult {
     let mut c = Checkbox::new(Rect::new(10, 10, 100, 20), b"Opt");
     ensure(
-        c.key(&KeyInput::new(Key::Space)) == WidgetEvent::None && !c.checked,
+        key_event("checkbox", KeyInput::new(Key::Space), |i| c.key(i)) == WidgetEvent::None && !c.checked,
         "14.3",
         "unfocused checkbox toggled",
     )?;
     c.set_focused(true);
     ensure(
-        c.key(&KeyInput::new(Key::Space)) == WidgetEvent::Toggled(true) && c.checked,
+        key_event("checkbox", KeyInput::new(Key::Space), |i| c.key(i)) == WidgetEvent::Toggled(true) && c.checked,
         "14.3",
         "Space did not toggle the focused checkbox",
     )?;
     ensure(
-        c.key(&KeyInput::new(Key::Space)) == WidgetEvent::Toggled(false) && !c.checked,
+        key_event("checkbox", KeyInput::new(Key::Space), |i| c.key(i)) == WidgetEvent::Toggled(false) && !c.checked,
         "14.3",
         "second Space did not toggle back",
     )?;
     c.set_enabled(false);
     ensure(
-        c.key(&KeyInput::new(Key::Space)) == WidgetEvent::None && !c.checked,
+        key_event("checkbox", KeyInput::new(Key::Space), |i| c.key(i)) == WidgetEvent::None && !c.checked,
         "14.2",
         "disabled checkbox toggled",
     )
@@ -884,7 +903,7 @@ fn widgets_slider_keys() -> CaseResult {
     let mut slider = Slider::new(Rect::new(0, 0, 112, 20), 10.0, 20.0);
     slider.set_step(3.0);
     ensure(
-        slider.key(&KeyInput::new(Key::Right)) == WidgetEvent::None,
+        key_event("slider", KeyInput::new(Key::Right), |i| slider.key(i)) == WidgetEvent::None,
         "14.3",
         "unfocused slider responded to a key",
     )?;
@@ -901,7 +920,7 @@ fn widgets_slider_keys() -> CaseResult {
         (Key::Left, 10.0, true),
         (Key::Left, 10.0, false),
     ] {
-        let got = slider.key(&KeyInput::new(key));
+        let got = key_event("slider", KeyInput::new(key), |i| slider.key(i));
         ensure(
             slider.mapped_value() == want
                 && got
@@ -998,8 +1017,8 @@ fn widgets_tabbar_overflow() -> CaseResult {
         vec![b"First", b"Second", b"Third", b"Fourth", b"Fifth"], &Theme::dark());
     for i in 0..5 {
         tabs.scroll_by(if i == 0 { 0 } else { 1 });
-        tabs.update(&press(20, 18));
-        let event = tabs.update(&release(20, 18));
+        pointer_event("tabs", press(20, 18), |i| tabs.update(i));
+        let event = pointer_event("tabs", release(20, 18), |i| tabs.update(i));
         ensure(
             tabs.selected() == i
                 && event
@@ -1016,7 +1035,7 @@ fn widgets_tabbar_overflow() -> CaseResult {
         )?;
     }
     tabs.scroll_by(-100);
-    tabs.update(&release(20, 18));
+    pointer_event("tabs", release(20, 18), |i| tabs.update(i));
     ensure(
         tabs.selected() == 0,
         "14.3",
@@ -1044,8 +1063,8 @@ fn widgets_tabbar_overflow() -> CaseResult {
 
 fn widgets_scrollbar_drag() -> CaseResult {
     let mut s = ScrollBar::new(Rect::new(0, 0, 12, 200), 1000, 200);
-    s.update(&press(6, 10));
-    s.update(&hold(6, 90));
+    pointer_event("scrollbar", press(6, 10), |i| s.update(i));
+    pointer_event("scrollbar", hold(6, 90), |i| s.update(i));
     // The thumb (40 px of a 160 px range) moved from 0 to 80: offset 80 / 160 × 800.
     ensure(
         s.offset() == 400,
@@ -1055,7 +1074,7 @@ fn widgets_scrollbar_drag() -> CaseResult {
             s.offset()
         ),
     )?;
-    s.update(&hold(6, 500));
+    pointer_event("scrollbar", hold(6, 500), |i| s.update(i));
     ensure(
         s.offset() == 800,
         "14.3",
@@ -1125,8 +1144,8 @@ fn open_menu() -> (MenuBar, Theme) {
     let theme = Theme::dark();
     let mut m = MenuBar::new(Rect::new(10, 5, 300, 22), test_menus());
     m.layout(&theme);
-    m.update(&press(30, 15), &theme);
-    m.update(&release(30, 15), &theme);
+    pointer_event("menu", press(30, 15), |i| m.update(i, &theme));
+    pointer_event("menu", release(30, 15), |i| m.update(i, &theme));
     (m, theme)
 }
 
@@ -1212,19 +1231,19 @@ fn widgets_menu_keys() -> CaseResult {
         (Key::Up, 4),
     ] {
         ensure(
-            menu.key(&KeyInput::new(key)) == MenuEvent::None && menu.highlighted() == Some(want),
+            key_event("menu", KeyInput::new(key), |i| menu.key(i)) == MenuEvent::None && menu.highlighted() == Some(want),
             "14.3",
             format!("menu {key:?} did not highlight enabled item {want}"),
         )?;
     }
     ensure(
-        menu.key(&KeyInput::new(Key::Enter)) == MenuEvent::Activated(4) && !menu.is_open(),
+        key_event("menu", KeyInput::new(Key::Enter), |i| menu.key(i)) == MenuEvent::Activated(4) && !menu.is_open(),
         "14.3",
         "Enter did not activate Quit and close",
     )?;
     let (mut menu, _) = open_menu();
     ensure(
-        menu.key(&KeyInput::new(Key::Escape)) == MenuEvent::None && !menu.is_open(),
+        key_event("menu", KeyInput::new(Key::Escape), |i| menu.key(i)) == MenuEvent::None && !menu.is_open(),
         "14.3",
         "Escape did not close without activation",
     )
@@ -1235,7 +1254,7 @@ fn widgets_menu_disabled() -> CaseResult {
     // Save, the disabled second item, is the row at y = 27 + 22 .. 27 + 44.
     let mut got = Vec::new();
     for i in [hover(40, 60), press(40, 60), release(40, 60)] {
-        let e = m.update(&i, &theme);
+        let e = pointer_event("menu", i, |i| m.update(i, &theme));
         if e != MenuEvent::None {
             got.push(e);
         }
@@ -1271,7 +1290,7 @@ fn widgets_menu_dismiss() -> CaseResult {
     let (mut m, theme) = open_menu();
     let mut got = Vec::new();
     for i in [hover(250, 130), press(250, 130), release(250, 130)] {
-        let e = m.update(&i, &theme);
+        let e = pointer_event("menu", i, |i| m.update(i, &theme));
         if e != MenuEvent::None {
             got.push(e);
         }
@@ -1348,31 +1367,31 @@ fn widgets_focus_ring() -> CaseResult {
 
 fn widgets_no_change_ack() -> CaseResult {
     let mut b = Button::new(Rect::new(10, 10, 80, 24), b"OK");
-    b.update(&hover(0, 0));
+    pointer_event("button OK", hover(0, 0), |i| b.update(i));
     ensure(
         !b.last_update_redraw(),
         "14.2",
         "unchanged outside pointer requested redraw",
     )?;
-    b.update(&hover(20, 20));
+    pointer_event("button OK", hover(20, 20), |i| b.update(i));
     ensure(
         b.last_update_redraw(),
         "14.2",
         "entering hover did not request redraw",
     )?;
-    b.update(&hover(21, 21));
+    pointer_event("button OK", hover(21, 21), |i| b.update(i));
     ensure(
         !b.last_update_redraw(),
         "14.2",
         "moving within hover requested redraw",
     )?;
-    b.update(&press(21, 21));
+    pointer_event("button OK", press(21, 21), |i| b.update(i));
     ensure(
         b.last_update_redraw(),
         "14.2",
         "press did not request redraw",
     )?;
-    b.update(&hold(22, 22));
+    pointer_event("button OK", hold(22, 22), |i| b.update(i));
     ensure(
         !b.last_update_redraw(),
         "14.2",
@@ -1380,68 +1399,68 @@ fn widgets_no_change_ack() -> CaseResult {
     )?;
     let mut c = Checkbox::new(Rect::new(10, 10, 80, 24), b"Opt");
     c.set_focused(true);
-    c.key(&KeyInput::new(Key::Left));
+    key_event("checkbox", KeyInput::new(Key::Left), |i| c.key(i));
     ensure(
         !c.last_update_redraw(),
         "14.2",
         "irrelevant checkbox key requested redraw",
     )?;
     let mut f = entry_field(10);
-    f.key(&KeyInput::new(Key::Left));
+    key_event("text field", KeyInput::new(Key::Left), |i| f.key(i));
     ensure(
         !f.last_update_redraw(),
         "14.2",
         "cursor clamped at start requested redraw",
     )?;
     let mut bar = ScrollBar::new(Rect::new(0, 0, 12, 200), 1000, 200);
-    bar.update(&hover(50, 50));
+    pointer_event("scrollbar", hover(50, 50), |i| bar.update(i));
     ensure(
         !bar.last_update_redraw(),
         "14.2",
         "unchanged scrollbar pointer requested redraw",
     )?;
-    bar.update(&press(6, 10));
+    pointer_event("scrollbar", press(6, 10), |i| bar.update(i));
     ensure(
         bar.last_update_redraw(),
         "14.2",
         "scrollbar drag colour did not request redraw",
     )?;
-    bar.update(&hold(6, 10));
+    pointer_event("scrollbar", hold(6, 10), |i| bar.update(i));
     ensure(
         !bar.last_update_redraw(),
         "14.2",
         "stationary thumb drag requested redraw",
     )?;
     let mut picker = picker_fixture(5);
-    picker.update(&hover(500, 500));
+    pointer_event("picker", hover(500, 500), |i| picker.update(i));
     ensure(
         !picker.last_update_redraw(),
         "14.2",
         "unchanged picker requested redraw",
     )?;
-    picker.update(&press(50, 30));
+    pointer_event("picker", press(50, 30), |i| picker.update(i));
     ensure(
         picker.last_update_redraw(),
         "14.2",
         "picker selection did not request redraw",
     )?;
-    picker.update(&release(50, 30));
+    pointer_event("picker", release(50, 30), |i| picker.update(i));
     ensure(
         !picker.last_update_redraw(),
         "14.2",
         "picker release without drawing change requested redraw",
     )?;
     let (mut menu, theme) = open_menu();
-    menu.update(&hover(500, 500), &theme);
-    menu.update(&hover(501, 501), &theme);
+    pointer_event("menu", hover(500, 500), |i| menu.update(i, &theme));
+    pointer_event("menu", hover(501, 501), |i| menu.update(i, &theme));
     ensure(
         !menu.last_update_redraw(),
         "14.2",
         "unchanged menu requested redraw",
     )?;
     let mut tabs = TabBar::new(Rect::new(10, 10, 200, 24), vec![b"One", b"Two"], &Theme::dark());
-    tabs.update(&hover(20, 20));
-    tabs.update(&hover(21, 20));
+    pointer_event("tabs", hover(20, 20), |i| tabs.update(i));
+    pointer_event("tabs", hover(21, 20), |i| tabs.update(i));
     ensure(
         !tabs.last_update_redraw(),
         "14.2",
@@ -1455,9 +1474,9 @@ fn widgets_no_change_ack() -> CaseResult {
 
 fn text_entry_insert() -> CaseResult {
     let mut f = entry_field(40);
-    f.key(&KeyInput::text("abcd"));
-    f.key(&KeyInput::new(Key::Left));
-    f.key(&KeyInput::text("XY"));
+    key_event("text field", KeyInput::text("abcd"), |i| f.key(i));
+    key_event("text field", KeyInput::new(Key::Left), |i| f.key(i));
+    key_event("text field", KeyInput::text("XY"), |i| f.key(i));
     ensure(
         f.text() == "abcXYd" && f.cursor() == 5,
         "15",
@@ -1467,23 +1486,23 @@ fn text_entry_insert() -> CaseResult {
 fn text_entry_delete() -> CaseResult {
     let mut f = entry_field(40);
     f.insert_str("abcde");
-    f.key(&KeyInput::new(Key::Left));
-    f.key(&KeyInput::new(Key::Backspace));
+    key_event("text field", KeyInput::new(Key::Left), |i| f.key(i));
+    key_event("text field", KeyInput::new(Key::Backspace), |i| f.key(i));
     ensure(
         f.text() == "abce" && f.cursor() == 3,
         "15",
         "Backspace did not remove d as one scalar",
     )?;
-    f.key(&KeyInput::new(Key::Delete));
+    key_event("text field", KeyInput::new(Key::Delete), |i| f.key(i));
     ensure(
         f.text() == "abc" && f.cursor() == 3,
         "15",
         "Delete did not remove e",
     )?;
-    f.key(&KeyInput::new(Key::End));
-    f.key(&KeyInput::new(Key::Delete));
-    f.key(&KeyInput::new(Key::Home));
-    f.key(&KeyInput::new(Key::Backspace));
+    key_event("text field", KeyInput::new(Key::End), |i| f.key(i));
+    key_event("text field", KeyInput::new(Key::Delete), |i| f.key(i));
+    key_event("text field", KeyInput::new(Key::Home), |i| f.key(i));
+    key_event("text field", KeyInput::new(Key::Backspace), |i| f.key(i));
     ensure(
         f.text() == "abc" && f.cursor() == 0,
         "15",
@@ -1502,7 +1521,7 @@ fn text_entry_move() -> CaseResult {
         (Key::Right, 4),
         (Key::Left, 3),
     ] {
-        f.key(&KeyInput::new(key));
+        key_event("text field", KeyInput::new(key), |i| f.key(i));
         ensure(
             f.cursor() == want,
             "15",
@@ -1514,14 +1533,14 @@ fn text_entry_move() -> CaseResult {
 fn text_entry_select() -> CaseResult {
     let mut f = entry_field(40);
     f.insert_str("abcdef");
-    f.key(&shift_key(Key::Left));
-    f.key(&shift_key(Key::Left));
+    key_event("text field", shift_key(Key::Left), |i| f.key(i));
+    key_event("text field", shift_key(Key::Left), |i| f.key(i));
     ensure(
         f.selection() == Some((4, 6)),
         "15",
         "Shift+Left did not select ef",
     )?;
-    f.key(&KeyInput::text("Q"));
+    key_event("text field", KeyInput::text("Q"), |i| f.key(i));
     ensure(
         f.text() == "abcdQ" && f.cursor() == 5 && f.selection().is_none(),
         "15",
@@ -1532,9 +1551,9 @@ fn text_entry_utf8() -> CaseResult {
     let mut f = entry_field(40);
     f.insert_str("aé中🦀");
     ensure(f.cursor() == 4, "15", "cursor counted UTF-8 bytes")?;
-    f.key(&KeyInput::new(Key::Backspace));
-    f.key(&KeyInput::new(Key::Left));
-    f.key(&KeyInput::new(Key::Delete));
+    key_event("text field", KeyInput::new(Key::Backspace), |i| f.key(i));
+    key_event("text field", KeyInput::new(Key::Left), |i| f.key(i));
+    key_event("text field", KeyInput::new(Key::Delete), |i| f.key(i));
     ensure(
         f.text() == "aé" && f.cursor() == 2,
         "15",
@@ -1557,7 +1576,7 @@ fn text_entry_maxlen() -> CaseResult {
         "15",
         "overflowing paste was partly inserted",
     )?;
-    f.key(&shift_key(Key::Left));
+    key_event("text field", shift_key(Key::Left), |i| f.key(i));
     ensure(
         !f.insert_str("abc") && f.selected_text() == "🦀",
         "15",
@@ -1577,7 +1596,7 @@ fn text_entry_scroll_to_cursor() -> CaseResult {
         "15",
         "end cursor not visible in 60px field",
     )?;
-    f.key(&KeyInput::new(Key::Home));
+    key_event("text field", KeyInput::new(Key::Home), |i| f.key(i));
     ensure(
         f.scroll_offset() == 0 && f.cursor_x() == 14,
         "15",
@@ -1606,9 +1625,9 @@ fn text_entry_scroll_to_cursor() -> CaseResult {
 fn text_entry_selection_text() -> CaseResult {
     let mut f = entry_field(40);
     f.insert_str("aé中🦀z");
-    f.key(&KeyInput::new(Key::Left));
+    key_event("text field", KeyInput::new(Key::Left), |i| f.key(i));
     for _ in 0..3 {
-        f.key(&shift_key(Key::Left));
+        key_event("text field", shift_key(Key::Left), |i| f.key(i));
     }
     ensure(
         f.selection() == Some((1, 4)) && f.selected_text() == "é中🦀",
@@ -1623,9 +1642,9 @@ fn text_entry_selection_text() -> CaseResult {
 fn text_entry_paste_insert() -> CaseResult {
     let mut f = entry_field(40);
     f.insert_str("abcde");
-    f.key(&KeyInput::new(Key::Left));
-    f.key(&shift_key(Key::Left));
-    f.key(&shift_key(Key::Left));
+    key_event("text field", KeyInput::new(Key::Left), |i| f.key(i));
+    key_event("text field", shift_key(Key::Left), |i| f.key(i));
+    key_event("text field", shift_key(Key::Left), |i| f.key(i));
     ensure(
         f.insert_str("é🦀中")
             && f.text() == "abé🦀中e"
@@ -1639,7 +1658,7 @@ fn text_entry_focus_tab() -> CaseResult {
     let mut f = focus_fixture();
     for want in [0, 1, 2, 0, 1] {
         ensure(
-            f.key(&KeyInput::new(Key::Tab)) == Some(want),
+            key_event("focus manager", KeyInput::new(Key::Tab), |i| f.key(i)) == Some(want),
             "15",
             format!("Tab did not focus {want}"),
         )?;
@@ -1650,7 +1669,7 @@ fn text_entry_focus_shift_tab() -> CaseResult {
     let mut f = focus_fixture();
     for want in [2, 1, 0, 2] {
         ensure(
-            f.key(&shift_key(Key::Tab)) == Some(want),
+            key_event("focus manager", shift_key(Key::Tab), |i| f.key(i)) == Some(want),
             "15",
             format!("Shift+Tab did not focus {want}"),
         )?;
@@ -1662,7 +1681,7 @@ fn text_entry_focus_skip_disabled() -> CaseResult {
     f.set_enabled(1, false);
     for want in [0, 2, 0, 2] {
         ensure(
-            f.key(&KeyInput::new(Key::Tab)) == Some(want),
+            key_event("focus manager", KeyInput::new(Key::Tab), |i| f.key(i)) == Some(want),
             "15",
             format!("Tab did not skip disabled 1 to {want}"),
         )?;
@@ -1670,7 +1689,7 @@ fn text_entry_focus_skip_disabled() -> CaseResult {
     f.set_enabled(0, false);
     f.set_enabled(2, false);
     ensure(
-        f.key(&KeyInput::new(Key::Tab)).is_none(),
+        key_event("focus manager", KeyInput::new(Key::Tab), |i| f.key(i)).is_none(),
         "15",
         "all-disabled chain retained a focus",
     )
@@ -1678,18 +1697,18 @@ fn text_entry_focus_skip_disabled() -> CaseResult {
 fn text_entry_focus_click() -> CaseResult {
     let mut f = focus_fixture();
     ensure(
-        f.update(&press(65, 15)) == Some(2),
+        pointer_event("focus manager", press(65, 15), |i| f.update(i)) == Some(2),
         "15",
         "press did not focus third widget",
     )?;
     f.set_enabled(1, false);
     ensure(
-        f.update(&press(35, 15)) == Some(2),
+        pointer_event("focus manager", press(35, 15), |i| f.update(i)) == Some(2),
         "15",
         "disabled widget stole focus",
     )?;
     ensure(
-        f.update(&release(5, 15)) == Some(2),
+        pointer_event("focus manager", release(5, 15), |i| f.update(i)) == Some(2),
         "15",
         "release moved focus without a press",
     )
@@ -1720,8 +1739,8 @@ fn text_entry_filepicker_list() -> CaseResult {
         .enumerate()
     {
         let y = 25 + 11 * row as i32 + 5;
-        p.update(&press(50, y));
-        p.update(&release(50, y));
+        pointer_event("file picker", press(50, y), |i| p.update(i));
+        pointer_event("file picker", release(50, y), |i| p.update(i));
         let got = p
             .selected_entry()
             .map(|e| String::from_utf8_lossy(&e.name).into_owned());
@@ -1732,7 +1751,7 @@ fn text_entry_filepicker_list() -> CaseResult {
 
 fn text_entry_filepicker_keys() -> CaseResult {
     let mut p = picker_fixture(5);
-    p.key(&KeyInput::new(Key::Down));
+    key_event("file picker", KeyInput::new(Key::Down), |i| p.key(i));
     ensure(
         p.selected_entry()
             .is_some_and(|e| e.is_dir && e.name == b"Dir"),
@@ -1740,17 +1759,17 @@ fn text_entry_filepicker_keys() -> CaseResult {
         "Down did not select first directory",
     )?;
     ensure(
-        p.key(&KeyInput::new(Key::Enter)) == FilePickerResult::NavigateDir(0),
+        key_event("file picker", KeyInput::new(Key::Enter), |i| p.key(i)) == FilePickerResult::NavigateDir(0),
         "15",
         "Enter did not open directory",
     )?;
-    p.key(&KeyInput::new(Key::Down));
+    key_event("file picker", KeyInput::new(Key::Down), |i| p.key(i));
     ensure(
-        p.key(&KeyInput::new(Key::Enter)) == FilePickerResult::Selected(1),
+        key_event("file picker", KeyInput::new(Key::Enter), |i| p.key(i)) == FilePickerResult::Selected(1),
         "15",
         "Enter did not open first file",
     )?;
-    p.key(&KeyInput::new(Key::Up));
+    key_event("file picker", KeyInput::new(Key::Up), |i| p.key(i));
     ensure(
         p.selected_entry().is_some_and(|e| e.name == b"Dir"),
         "15",
@@ -1760,12 +1779,12 @@ fn text_entry_filepicker_keys() -> CaseResult {
 
 fn text_entry_filepicker_path() -> CaseResult {
     let mut p = picker_fixture(5);
-    p.key(&KeyInput::new(Key::Tab));
-    p.key(&KeyInput::new(Key::Home));
-    p.key(&shift_key(Key::End));
-    p.key(&KeyInput::text("/new/é"));
+    key_event("file picker", KeyInput::new(Key::Tab), |i| p.key(i));
+    key_event("file picker", KeyInput::new(Key::Home), |i| p.key(i));
+    key_event("file picker", shift_key(Key::End), |i| p.key(i));
+    key_event("file picker", KeyInput::text("/new/é"), |i| p.key(i));
     ensure(
-        p.key(&KeyInput::new(Key::Enter))
+        key_event("file picker", KeyInput::new(Key::Enter), |i| p.key(i))
             == FilePickerResult::NavigatePath("/new/é".as_bytes().to_vec()),
         "15",
         "typed path did not emit exact navigation request",
@@ -1780,26 +1799,26 @@ fn text_entry_filepicker_mouse() -> CaseResult {
         (1801, 55, FilePickerResult::Active),
         (2201, 59, FilePickerResult::NavigateDir(0)),
     ] {
-        let got = p.update(&press(x, 30).with_time(time));
+        let got = pointer_event("file picker", press(x, 30).with_time(time), |i| p.update(i));
         ensure(
             got == want,
             "15",
             format!("press at {time}ms x={x} gave {got:?}, expected {want:?}"),
         )?;
-        p.update(&release(x, 30).with_time(time));
+        pointer_event("file picker", release(x, 30).with_time(time), |i| p.update(i));
     }
     Ok(())
 }
 
 fn text_entry_filepicker_scroll() -> CaseResult {
     let mut p = picker_fixture(60);
-    p.key(&KeyInput::new(Key::End));
+    key_event("file picker", KeyInput::new(Key::End), |i| p.key(i));
     ensure(
         p.selected_entry().is_some_and(|e| e.name == b"file059") && p.scroll_offset() > 0,
         "15",
         "End did not reveal final row",
     )?;
-    p.key(&KeyInput::new(Key::Home));
+    key_event("file picker", KeyInput::new(Key::Home), |i| p.key(i));
     ensure(p.scroll_offset() == 0, "15", "Home did not scroll to start")?;
     p.scroll(-1);
     ensure(
@@ -1809,13 +1828,13 @@ fn text_entry_filepicker_scroll() -> CaseResult {
     )?;
     p.scroll(1);
     ensure(p.scroll_offset() == 0, "15", "wheel up did not scroll back")?;
-    p.key(&KeyInput::new(Key::PageDown));
+    key_event("file picker", KeyInput::new(Key::PageDown), |i| p.key(i));
     ensure(
         p.scroll_offset() > 0,
         "15",
         "PageDown did not reveal selected row beyond first page",
     )?;
-    p.key(&KeyInput::new(Key::PageUp));
+    key_event("file picker", KeyInput::new(Key::PageUp), |i| p.key(i));
     ensure(
         p.scroll_offset() == 0,
         "15",
@@ -1855,7 +1874,7 @@ fn text_entry_filepicker_errors() -> CaseResult {
         }
     }
     ensure(
-        p.key(&KeyInput::new(Key::Enter)) == FilePickerResult::Active,
+        key_event("file picker", KeyInput::new(Key::Enter), |i| p.key(i)) == FilePickerResult::Active,
         "15",
         "Enter activated a stale entry under error",
     )?;

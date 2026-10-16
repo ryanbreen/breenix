@@ -15,6 +15,7 @@
 #   --program PATH       for --mode program: the absolute guest path /sbin/probe runs (probe --run PATH)
 #   --case CATEGORY/CASE  for --mode suite: run only this case (not full-suite evidence; not filed in Vigil)
 #   --suite ID           for --mode suite: the effort suite (docs/suites/ID.json) run as PID 1, /sbin/suite-ID
+#   --pace MS            hold each completed case on screen, outside its measured window (default 0)
 #   --qmp SOCKET         open a QMP socket so another process can screenshot the VM screen:
 #                        scripts/qmp-screendump.py SOCKET out.png (works with --no-display)
 #   --fbconsole log      draw kernel log lines on the VM screen instead of the boot screen
@@ -48,13 +49,14 @@ MODE=tests
 PROGRAM=
 SUITE=
 ONLY=
+PACE=
 QMP_SOCKET=
 QMP_REQUESTED=0
 FBCONSOLE=
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --mode|--program|--suite|--case|--serial-log|--idle-exit|--gate-timeout|--qmp|--fbconsole|--accel|--cpus)
+        --mode|--program|--suite|--case|--pace|--serial-log|--idle-exit|--gate-timeout|--qmp|--fbconsole|--accel|--cpus)
             [ "$#" -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; } ;;
     esac
     case "$1" in
@@ -63,6 +65,7 @@ while [ "$#" -gt 0 ]; do
         --program) PROGRAM="$2"; shift 2 ;;
         --suite) SUITE="$2"; shift 2 ;;
         --case) [ -n "$2" ] || { echo "--case needs a case id" >&2; exit 2; }; ONLY="$2"; shift 2 ;;
+        --pace) [ -n "$2" ] || { echo "--pace needs milliseconds" >&2; exit 2; }; PACE="$2"; shift 2 ;;
         --qmp) QMP_SOCKET="$2"; QMP_REQUESTED=1; shift 2 ;;
         --fbconsole) FBCONSOLE="$2"; shift 2 ;;
         --serial-log) SERIAL_LOG="$2"; shift 2 ;;
@@ -102,6 +105,13 @@ if [ -n "$ONLY" ]; then
     [ "$MODE" = suite ] && [[ "$ONLY" =~ ^[a-zA-Z0-9_./-]+$ ]] || {
         echo "--case needs --mode suite and a category/case id" >&2; exit 2;
     }
+fi
+if [ -n "$PACE" ]; then
+    [ "$MODE" = suite ] && [[ "$PACE" =~ ^[0-9]+$ ]] && [ "${#PACE}" -le 10 ] && [ "$PACE" -le 4294967295 ] || {
+        echo "--pace needs --mode suite and milliseconds from 0 to 4294967295" >&2; exit 2;
+    }
+    python3 "$ROOT/scripts/showcase-pace.py" --suite "$SUITE" --pace "$PACE" \
+        --cases "${ONLY:+1}" --gate-timeout "$GATE_TIMEOUT" --idle-exit "$IDLE_EXIT"
 fi
 case "$FBCONSOLE" in
     ""|log) ;;
@@ -150,6 +160,9 @@ fi
 if [ "$MODE" = suite ]; then
     MODE_ARGS+=(-fw_cfg "name=opt/breenix/suite,string=$SUITE")
     [ -z "$ONLY" ] || MODE_ARGS+=(-fw_cfg "name=opt/breenix/case,string=$ONLY")
+fi
+if [ -n "$PACE" ]; then
+    MODE_ARGS+=(-fw_cfg "name=opt/breenix/pace,string=$PACE")
 fi
 if [ -n "$FBCONSOLE" ]; then
     MODE_ARGS+=(-fw_cfg "name=opt/breenix/fbconsole,string=$FBCONSOLE")
@@ -228,11 +241,22 @@ fi
 # A one-case run is not registered: Vigil would score it as a suite boot.
 QEMU_PROFILE_ARGS=(-M virt,gic-version=3 -cpu max)
 QEMU_PROFILE=$(python3 "$ROOT/scripts/qemu-arm64.py" --print-profile "$QEMU" "${QEMU_PROFILE_ARGS[@]}")
+# A watched run is a distinct profile in Vigil's run.json.
+if [ "${PACE:-0}" -gt 0 ]; then QEMU_PROFILE="$QEMU_PROFILE-pace-${PACE}ms"; fi
 VIGIL_ID=
 # A boot with other than the default 4 processors is recorded with its count, so it never stands for main.
 VIGIL_CPUS=
 [ "$CPUS" = 4 ] || VIGIL_CPUS=$CPUS
 [ -n "$ONLY" ] || VIGIL_ID=$(BREENIX_VIGIL_CPUS="$VIGIL_CPUS" "$ROOT/scripts/vigil-record.sh" start qemu "$MODE" "$SUITE" "$SERIAL_LOG" "" "$QEMU_PROFILE")
+# Vigil currently discards --profile for non-beast platforms. Preserve the actual
+# watch configuration on the same record, without registering a second boot.
+if [ -n "$VIGIL_ID" ] && [ "${PACE:-0}" -gt 0 ]; then
+    VIGIL_HOME=${VIGIL_TEST_HOME:-$(python3 -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')}
+    python3 "$ROOT/scripts/showcase-pace.py" --suite "$SUITE" --pace "$PACE" \
+        --cases "${ONLY:+1}" --gate-timeout "$GATE_TIMEOUT" --idle-exit "$IDLE_EXIT" \
+        --record "$VIGIL_HOME/Library/Application Support/Vigil/breenix/boots/$VIGIL_ID/run.json" \
+        --profile "$QEMU_PROFILE"
+fi
 # Vigil's BreenixScreen looks for qmp.sock in the registered boot's folder, which vigil-cli makes under the
 # account's home as macOS reports it (VIGIL_TEST_HOME in Vigil's tests), not under $HOME.
 # Vigil's capture takes socket paths of at most 103 bytes, counted in UTF-8 (macOS itself allows 104).
