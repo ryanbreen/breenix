@@ -148,6 +148,8 @@ pub struct JudgedFrame {
     pub sha256: [u8; 32],
 }
 
+static JUDGED_ENABLED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
 static JUDGED_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static JUDGED_RUNNER: AtomicU64 = AtomicU64::new(0);
 
@@ -162,6 +164,7 @@ fn judged_path() -> String {
 /// the measured case window; the parent verifies length, canonical form and SHA-256.
 pub fn judged(frame: &FrameBuf) -> CaseResult {
     use std::io::Write;
+    check(JUDGED_ENABLED.load(Ordering::Relaxed), "judged transport is not enabled for this suite")?;
     check(running_case().is_some(), "judged() called outside a suite case")?;
     let size = frame.width.checked_mul(frame.height).and_then(|n| n.checked_mul(4))
         .filter(|&n| n <= i32::MAX as usize).ok_or("judged frame dimensions overflow")?;
@@ -191,6 +194,7 @@ pub fn judged(frame: &FrameBuf) -> CaseResult {
 
 fn collect_judged() -> Result<Option<JudgedFrame>, String> {
     use std::io::Read;
+    if !JUDGED_ENABLED.load(Ordering::Relaxed) { return Ok(None); }
     let path = judged_path();
     let result = (|| {
         let mut file = match std::fs::File::open(&path) {
@@ -791,7 +795,8 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
     JUDGED_RUNNER.store(process::getpid().map_or(0, |pid| pid.raw()) as u64, Ordering::Relaxed);
     JUDGED_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     // A prior interrupted boot may have left this PID/sequence on a reused disk.
-    for path in [judged_path(), std::format!("{}.new", judged_path())] {
+    JUDGED_ENABLED.store(suite == "breengel", Ordering::Relaxed);
+    for path in [judged_path(), std::format!("{}.new", judged_path())].into_iter().filter(|_| suite == "breengel") {
         if let Err(e) = std::fs::remove_file(path) {
             if e.kind() != std::io::ErrorKind::NotFound {
                 let _ = (io::close(reader),io::close(writer));
@@ -1147,6 +1152,7 @@ mod judged_transport_tests {
 
     #[test]
     fn changed_truncated_and_noncanonical_snapshots_are_rejected() {
+        JUDGED_ENABLED.store(true, Ordering::Relaxed);
         JUDGED_RUNNER.store(std::process::id() as u64, Ordering::Relaxed);
         JUDGED_SEQUENCE.store(u64::MAX, Ordering::Relaxed);
         let pixels = [1u8, 2, 3, 255];
