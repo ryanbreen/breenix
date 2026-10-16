@@ -34,7 +34,7 @@ when this was written.
 1. **A new effort, `gpu` ("GPU rendering"), goes into the path after `sdk` and before `breengel`.** It
    delivers the kernel GPU core, two independently written device backends (VirGL and SVGA3D DX), a
    Breenix-authored GL-style API (`libs/bgl`, "BGL"), display modes up to 2560×1600 with a scale factor,
-   present, and exact device readback on all four targets. Its suite is `gpu` (168 cases, 9 categories,
+   present, and exact device readback on ARM64 QEMU, Parallels and VMware. Its suite is `gpu` (168 cases, 9 categories,
    9 milestones).
 2. **Every target renders on a hardware GPU; no software renderer counts.** Each run carries a host-side
    renderer attestation (section 1.6.5), and the gate refuses a run whose renderer is software or unknown.
@@ -42,10 +42,10 @@ when this was written.
 3. **The macOS host for ARM64 QEMU uses UTM's matched graphics stack** (QEMU 10.0.12-utm with its ANGLE on
    Metal, epoxy and virglrenderer forks), built as a command-line binary that serves both the headless gate
    and the interactive window (section 1.6.1).
-4. **x86-64 needs a hardware GPU on the x86 gate host,** which has none a guest renderer can use today. The
-   proposal is a discrete card with an open Mesa driver and the x86 gate in a container on the gate host
-   sharing the host's render node. Until it is in place, x86-64 cannot complete the catch-up, and the effort is
-   not done (ruling R1, pending).
+4. **x86-64 is out of the GPU era for now (ruling R1).** The x86 gate host is VGA only, so x86-64 is
+   measured up to the shell and no further. `gpu`, `breengel`, `window-manager`, `ui-testing` and `gui-apps`
+   are measured on ARM64 QEMU, Parallels and VMware (their `targets` in `docs/efforts/path.json`); x86-64
+   joins them when a dedicated Breenix hardware box replaces the current x86 gate host (section 1.6.4).
 5. **Exactness comes from a declared deterministic rendering profile.** Exact pipelines draw integer-cornered
    rectangles, decide membership of non-rectangular shapes with integer predicates in the fragment shader,
    using multi-word integer arithmetic wherever the contract's input range needs more than 32 bits, read
@@ -71,7 +71,7 @@ when this was written.
     drawing layer. #1625 becomes a draft and lands later as the GPU-based BreenGL. #1654 stops.
 11. **Build on ARM64 QEMU first** (effort lanes run on ARM64 QEMU only), with Parallels and VMware
     feasibility spikes on `scratch/*` branches cut from main in G0, before the contract freezes (ruling R2).
-    The catch-up then goes Parallels, VMware, x86-64.
+    The catch-up then goes Parallels, then VMware.
 
 ## 1. The `gpu` effort
 
@@ -80,10 +80,11 @@ when this was written.
 - **id:** `gpu`
 - **title:** `GPU rendering`
 - **outcome:** "Breenix renders on the GPU on every target: a clean-room, GL-style Breenix API whose command
-  streams the kernel validates and bounds per process and translates for VirGL (ARM64 QEMU, Parallels and
-  x86-64) or SVGA3D DX (VMware), executed by a hardware GPU on each host, presented at 1280×800 and at
+  streams the kernel validates and bounds per process and translates for VirGL (ARM64 QEMU and Parallels)
+  or SVGA3D DX (VMware), executed by a hardware GPU on each host, presented at 1280×800 and at
   2560×1600 with HiDPI scaling, and read back from the device pixel-exact under a declared deterministic
   rendering profile."
+- **targets:** ARM64 QEMU, Parallels and VMware (decision 4).
 - **suite:** `gpu`; **subsystems:** 17 (Graphics & display), 22 (libbreenix), 25 (GUI stack). No POSIX
   `area`.
 
@@ -102,7 +103,7 @@ apps, bwm, the suite stage
             └─ syscall 416 `gpu(op, arg, len)` (new; 416 to 419 are free on both architectures)
                  └─ kernel/src/gpu/: handles, quotas, validation, work bounds, fences, watchdog, readback, present, display ownership
                       ├─ kernel/src/gpu/virgl/: VirGL + TGSI encoder → drivers/virtio/gpu_pci.rs (PCI virtio-gpu)
-                      │      ARM64 QEMU (virtio-gpu-gl-pci), Parallels (its virtio-gpu PCI), x86-64 (virtio-vga-gl)
+                      │      ARM64 QEMU (virtio-gpu-gl-pci), Parallels (its virtio-gpu PCI)
                       └─ kernel/src/gpu/svga/: SVGA3D DX + shader-token encoder → drivers/vmware/svga3.rs (VMware)
 ```
 
@@ -294,10 +295,9 @@ A profile violation is a failing case to fix, never a reason for a tolerance.
 |---|---|---|---|---|
 | ARM64 QEMU (macOS host) | `virtio-gpu-gl-pci` | VirGL over the PCI transport; the kernel has an ECAM PCI enumeration path on ARM64 (`kernel/src/drivers/mod.rs`, about line 169), which G1 confirms on QEMU's `virt` machine | virglrenderer on ANGLE's Metal backend in UTM's stack (section 1.6.1) | fenced `TRANSFER_FROM_HOST_3D` |
 | Parallels | its virtio-gpu PCI device with VirGL | the same VirGL backend; `gpu_pci.rs` already does capsets, contexts, fenced submission and full-scanout readback | Parallels' own, on the host's GPU | the same |
-| x86-64 | `virtio-vga-gl` | the same VirGL backend, after the PCI transport is generalized from ARM64 to x86-64 | virglrenderer on a hardware GPU's Mesa driver behind `egl-headless` (section 1.6.4; ruling R1) | the same |
 | VMware Fusion | SVGA3 | SVGA3D DX contexts and objects on `svga3.rs`'s command buffers, MOBs and GB surfaces | Fusion's own, on the host's GPU | GPU copy of the target into a dedicated readback surface, then `READBACK_GB_SURFACE` |
 
-**VirGL object handles (all three VirGL targets).** virglrenderer keeps one object-handle space per context,
+**VirGL object handles (both VirGL targets).** virglrenderer keeps one object-handle space per context,
 shared by every object type a command stream creates: blend, rasterizer and depth-stencil states, shaders,
 vertex elements, sampler views, sampler states, surfaces, queries and stream-output targets. The contract
 forbids reusing a handle across types: a handle the VirGL encoder has used for one object type is never used
@@ -401,41 +401,26 @@ report; a profile property VMware cannot meet changes the shared design then, no
 
 #### 1.6.4 x86-64
 
-The x86 gate host has no hardware GPU with a render node today. The gate's QEMU runs inside a virtual machine
-whose virtio GPU negotiates without `VIRTIO_GPU_F_VIRGL`, and that QEMU (8.2.2) failed to load its GL display
-module in a help probe (`undefined symbol: qemu_egl_display`). There is no hardware GPU anywhere in that
-chain, and a software renderer there would not satisfy the GPU-only rule (llvmpipe is limited to transport
-testing).
+x86-64 is out of the GPU era for now (ruling R1). The current x86 gate host has no hardware GPU a guest
+renderer can use: the gate's QEMU runs inside a virtual machine whose virtio GPU negotiates without
+`VIRTIO_GPU_F_VIRGL`, and that QEMU (8.2.2) failed to load its GL display module in a help probe
+(`undefined symbol: qemu_egl_display`). Its display stays VGA only, and x86-64 is measured up to the shell and
+no further. The GPU-era efforts list ARM64 QEMU, Parallels and VMware as their targets, so x86-64 neither
+counts toward them nor holds them back.
 
-- **The hardware (ruling R1, pending).** A discrete GPU on the x86 gate host with an open Mesa driver whose
-  virglrenderer path is well exercised. The x86 gate moves from its virtual machine into a container on the
-  gate host with the host's `/dev/kvm` and render node, which avoids the VM boundary that stops a render node
-  being shared and the nested virtualization. PCI passthrough of the card to the gate's virtual machine is the
-  alternative if the container move is refused; it needs IOMMU support that has not been established. The
-  other alternative, x86-64 under TCG on the macOS host through the same GL host stack, avoids new hardware
-  but runs the timing-bound suites without KVM; it is listed, not recommended.
-- **The host build.** QEMU 11.0.3 from source in the runner, `--enable-opengl --enable-virglrenderer
-  --enable-gbm --disable-modules` (built in, so the display module's load-order failure cannot occur), with
-  pinned virglrenderer 1.3.0 against the distribution's Mesa EGL and GBM for the card, into a per-pin
-  directory on the gate host. The gate replaces its VGA device with `-vga none -device
-  virtio-vga-gl,xres=2560,yres=1600 -display egl-headless,rendernode=<the card's render node>`.
-- **The x86-64 spike's acceptance** is G0's, item for item: the same guest workload, exact readback, the
-  attestation naming the card's Mesa driver, and a forced-llvmpipe run (`LIBGL_ALWAYS_SOFTWARE=1`) refused by
-  the gate. It runs once the card is installed.
-- **Until then:** x86-64 guest transport work (the generalized PCI transport, queues, DMA and interrupts) may
-  be exercised against llvmpipe on `scratch/*` branches. Those runs are not gate runs, store no evidence as an
-  x86-64 result, and do not start the x86-64 catch-up. x86-64 stays behind its catch-up until R1 is decided.
-- **Guest work:** generalize `gpu_pci.rs`'s modern PCI transport, queues, DMA allocation and cache handling
-  (they are ARM64-gated today) to x86-64; keep the kernel free of FPU use (section 1.3). The early console
-  keeps the firmware framebuffer that `virtio-vga-gl`'s VGA function provides until the GPU driver presents
-  its first frame.
+x86-64 joins those efforts when a dedicated Breenix hardware box replaces the current x86 gate host. Its GPU
+path is designed for that box then, to the bar every other target meets: a hardware GPU, a host renderer
+attestation (section 1.6.5) that refuses a software renderer, and an x86-64 spike whose acceptance is G0's,
+item for item. The guest side it will need is known now: `gpu_pci.rs`'s modern PCI transport, queues, DMA
+allocation and cache handling, ARM64-gated today, generalized to x86-64, with the kernel kept free of FPU use
+(section 1.3). Until the box is in place no x86-64 GPU work runs, on effort lanes or on `scratch/*` branches.
 
 #### 1.6.5 Host renderer attestation
 
 Nothing in the device protocols lets the guest tell a GPU from a software renderer, so the hardware claim
 rests on host-side evidence that the gate checks, recorded with every run:
 
-- **QEMU targets (ARM64 on the macOS host, x86-64).** A Breenix host patch in QEMU's VirGL glue writes the
+- **ARM64 QEMU (on the macOS host).** A Breenix host patch in QEMU's VirGL glue writes the
   `GL_VENDOR`, `GL_RENDERER` and `GL_VERSION` of the context that executes the guest's commands to
   `<run dir>/host-renderer.json`, at the creation of each renderer context and at its first `SUBMIT_3D`. It
   comes from the same process and context as the guest's workload, not from a separate probe. The gate
@@ -531,7 +516,7 @@ host is omitted), 31 `withhold-fence` (one fence's completion is ignored, so the
 hang cannot be induced from inside the profile, whose shader loops are all bounded, so this point simulates
 one).
 
-There is no planted missing-cache-invalidation fault: on all four targets the "device" is host software
+There is no planted missing-cache-invalidation fault: on every target the "device" is host software
 writing guest memory through the host's coherent memory system, so omitting the invalidation changes no
 bytes. The invalidation stays as required code, and a structure test checks that every readback path calls
 it between the transfer fence and the first read.
@@ -635,8 +620,8 @@ order where one depends on another:
 2. the macOS GL host stack and its acceptance (section 1.6.1), with the attestation patch (section 1.6.5);
 3. the entry spikes, one throwaway boot sequence per non-QEMU target on a `scratch/*` branch cut from main,
    so no effort-lane commit is involved and the target guard passes (ruling R2): Parallels (the profile's
-   capability set on a client render target, read back exactly), VMware (the whole profile, section 1.6.3),
-   and, once the x86 gate host has its GPU (ruling R1), x86-64 (section 1.6.4);
+   capability set on a client render target, read back exactly) and VMware (the whole profile, section
+   1.6.3);
 4. this document's contract, completed and frozen after the spikes report: BGL, syscall 416, the profile with
    its width derivations and closed-form proofs, the catalogue with each program's specification citations,
    record v2, the test-control points and the performance bounds;
@@ -661,10 +646,9 @@ everything its category's cases use):**
 
 **Catch-up (each target until all 168 pass there, with its attestation):** Parallels (the same backend;
 Parallels capset and display configuration), then VMware (the SVGA3D DX backend and its programs, designed
-against the G0 spike), then x86-64 (the PCI transport on x86-64 and the gate host build; it starts when the
-gate host has its GPU, ruling R1). The effort is done when one run per target has all 168 passing with an
-accepted attestation; `gpu`'s landing PR also switches every ARM64 gate to the GL binary (section 1.6.1,
-ruling R5).
+against the G0 spike). x86-64 is not in the catch-up (section 1.6.4). The effort is done when one run per
+target has all 168 passing with an accepted attestation; `gpu`'s landing PR also switches every ARM64 gate to
+the GL binary (section 1.6.1, ruling R5).
 
 **Sizing (planning guesses, not measurements and not budgets).** The `breengel` effort went from its plan
 (2026-10-15) to 393/393 on three targets (2026-10-16), with much of its library code already in the tree;
@@ -677,13 +661,11 @@ most of this work's code does not exist yet, and the items below are what makes 
 | G1–G2: kernel core, validation, work estimate, watchdog and reset, readback | 1.5 to 3 weeks |
 | G3–G5: uploads, the catalogue in TGSI including multi-word arithmetic, binary32 emulation, destination copies and the hazard rule | 2 to 4 weeks |
 | G6–G8: isolation, present and HiDPI, performance at 2560×1600 (four times the pixels of 1280×800) | 1.5 to 3 weeks |
-| Catch-up: Parallels; VMware's DX backend and SM4 programs; x86-64 after the gate host's GPU | 0.5 to 1; 2 to 4; 1 to 2 weeks |
+| Catch-up: Parallels; VMware's DX backend and SM4 programs | 0.5 to 1; 2 to 4 weeks |
 | BreenGL rebuild: drawing layer, text on `coverage_spans`, windows and GPU composition, `libgfx-ref` and its tests, porting 8 programs, catch-up on three targets | 4 to 8 weeks |
-| The x86 gate host's GPU | procurement and installation time, not estimable here |
 | Host stack upkeep (pins, UTM and macOS updates) | ongoing, after landing |
 
-Together, roughly 3.5 to 7 months of calendar time to #1625 landing, not counting the time to put a GPU in
-the x86 gate host. These are guesses until G0 and the spikes report, and are revised then.
+Together, roughly 3.5 to 7 months of calendar time to #1625 landing. These are guesses until G0 and the spikes report, and are revised then.
 
 ## 2. BreenGL rebuilt on the GPU
 
@@ -932,9 +914,8 @@ and `bcheck` and bind Super+Super to `blauncher` keep working throughout.
    in their own commits, failing for a specific reason, before the implementation (BreenGL's existing lane
    rules stand). The contract and manifest change in one DISPLAY-owned PR, carrying the GPU-only changes and
    R3's and R4's.
-6. **ARM64 QEMU green (399), then the catch-up** on Parallels, VMware and x86-64 (taking #1654's
-   arch-neutral window work, section 3.4).
-7. **#1625 lands** as the GPU-based BreenGL, retitled, with the four-target evidence and attestations.
+6. **ARM64 QEMU green (399), then the catch-up** on Parallels and VMware.
+7. **#1625 lands** as the GPU-based BreenGL, retitled, with the three-target evidence and attestations.
 
 ## 3. The path, the entries and the harvest
 
@@ -952,7 +933,9 @@ Inserted after `sdk`:
 {
   "id": "gpu",
   "title": "GPU rendering",
-  "outcome": "Breenix renders on the GPU on every target: a clean-room, GL-style Breenix API whose command streams the kernel validates and bounds per process and translates for VirGL (ARM64 QEMU, Parallels and x86-64) or SVGA3D DX (VMware), executed by a hardware GPU on each host, presented at 1280×800 and at 2560×1600 with HiDPI scaling, and read back from the device pixel-exact under a declared deterministic rendering profile.",
+  "outcome": "Breenix renders on the GPU on every target: a clean-room, GL-style Breenix API whose command streams the kernel validates and bounds per process and translates for VirGL (ARM64 QEMU and Parallels) or SVGA3D DX (VMware), executed by a hardware GPU on each host, presented at 1280×800 and at 2560×1600 with HiDPI scaling, and read back from the device pixel-exact under a declared deterministic rendering profile.",
+  "targets": ["arm64-qemu", "parallels", "vmware"],
+  "targetsNote": "x86-64 joins when the dedicated Breenix hardware box replaces the current x86 gate host.",
   "suite": "gpu",
   "subsystems": [17, 22, 25],
   "milestones": [
@@ -983,7 +966,8 @@ whose suites are not on main either (`docs/efforts/README.md`).
 The path's top-level outcome ends "…an SDK for building our own applications, and a GPU-rendered graphical
 desktop (GPU rendering, BreenGL, the window manager and its applications) tested to the same bar."
 
-`window-manager`, `ui-testing` and `gui-apps` keep their entries. Their plans gain one rule when each is
+`breengel`, `window-manager`, `ui-testing` and `gui-apps` carry the same `targets` and `targetsNote`.
+`window-manager`, `ui-testing` and `gui-apps` keep their entries otherwise. Their plans gain one rule when each is
 authored: bwm composes through BGL, and every app draws through BreenGL on the GPU.
 
 `docs/gui/plan.md` points here and states the GPU-only direction in its decisions; its CPU-rendering sections
@@ -1009,18 +993,18 @@ authored: bwm composes through BGL, and every app draws through BreenGL on the G
 
 - **#1625** becomes a draft, with a comment giving the ruling, the freeze tag and a pointer to this document,
   and stays the BreenGL integration branch. It does not merge until the GPU-based BreenGL passes its 399 cases
-  on four targets. Its title changes then.
+  on its three targets. Its title changes then.
 - **#1654** stops and stays a draft with a comment. Its GOP compositor and DISPI mode set are obsolete. Its
-  arch-neutral window-interface work for x86-64 (the 414/415 dispatch, the x86 window ops) is taken in
-  BreenGL's x86 catch-up by merging its branch into `breengel/suite` and deleting the GOP and DISPI display
-  code in the same PR; #1654 then closes as merged.
+  arch-neutral window-interface work for x86-64 (the 414/415 dispatch, the x86 window ops) is taken when
+  x86-64 joins BreenGL (section 1.6.4), by merging its branch into `breengel/suite` and deleting the GOP and
+  DISPI display code in the same PR; #1654 then closes as merged.
 
 ## 4. Risks
 
 | Risk | Why it is real | Mitigation, and what to check first |
 |---|---|---|
 | **The macOS host stack** | UTM builds QEMU as a library for its own app; turning it into a CLI binary with a headless gate mode is unproven; rendering with no SPICE client attached is unverified; it moves every ARM64 gate from QEMU 11.0.3 to 10.0.12-utm. | G0 first, pinned and scripted, with both frontends in its acceptance. The null-client fallback for headless; the sized SDL fallback. Every ARM64 suite must match main on the new binary before the gate switch (R5). |
-| **No GPU on the x86 gate host** | The gate host has no rendering GPU, the gate's virtual GPU negotiates no VirGL, and its QEMU's GL display module failed to load. | A GPU and a container runner (R1, pending); `--disable-modules`; the x86-64 spike's acceptance mirrors G0's. The effort cannot finish without it, which is stated, not hidden. |
+| **x86-64 has no GPU path yet** | The current x86 gate host has no rendering GPU, the gate's virtual GPU negotiates no VirGL, and its QEMU's GL display module failed to load. | x86-64 is out of the GPU-era efforts' targets until the dedicated Breenix hardware box replaces that host (R1); its spike's acceptance mirrors G0's then. |
 | **The hardware claim** | No protocol lets the guest tell a GPU from software. | Host attestation from the executing context on QEMU targets, refused when software or missing, with a planted software run; configuration plus host GPU time on Parallels and VMware, with a negative control, and the configuration check as the labelled basis where that cannot separate them (R6). |
 | **VMware DX complexity** | No DX draw has run; the shader token programs and signatures are hand-written; errors arrive only as command-buffer status; readback of a rendered target is unproven. | The G0 spike covers the whole profile before the contract freezes; one program at a time, each with a readback case; a Linux VM in Fusion as a black-box behaviour probe. |
 | **Exactness of GPU output** | Drivers may round UNORM conversion, blend or interpolate differently; ANGLE translates to Metal; native float precision varies. | The profile removes every place a driver chooses: integer predicates with multi-word arithmetic, integer fetches, shader blending with the hazard rule, integer-cornered rectangles, binary32 emulated in integers. `profile/*` checks each property per target. A target that cannot meet the profile fails; there is no tolerance. |
@@ -1028,7 +1012,7 @@ authored: bwm composes through BGL, and every app draws through BreenGL on the G
 | **Kernel complexity and isolation** | Validating and translating command streams in the kernel is new attack surface; the existing encoder stops silently at capacity. | Whole-stream validation, the work estimate and caps, the watchdog and reset, per-process contexts with only owned resources attached, hold sets, the fuzz case, no device addresses exposed. |
 | **Program migration** | Fourteen programs use the CPU APIs; retiring them early breaks the image. | Port or retire in the `gpu-apps` lane; the API removal lands with the last port, gated by the image build and a boot smoke of every graphical program. |
 | **Clean-room drift** | The existing VirGL code has a history that includes a byte-capture plan. | The audit is first and gates every harvest and reuse; sources listed per PR; host-stack lanes kept apart from guest GPU code. |
-| **Time** | BreenGL's visible result waits for a whole new effort plus a rebuild: roughly 3.5 to 7 months by section 1.11's guesses, plus the time to put a GPU in the x86 gate host. | The `gpu` suite is watchable from G2; the BreenGL rebuild keeps 348 cases' meaning and every codec, parser and window-protocol piece. The guesses are revised after G0. |
+| **Time** | BreenGL's visible result waits for a whole new effort plus a rebuild: roughly 3.5 to 7 months by section 1.11's guesses. | The `gpu` suite is watchable from G2; the BreenGL rebuild keeps 348 cases' meaning and every codec, parser and window-protocol piece. The guesses are revised after G0. |
 | **Readback cost at 2560×1600** | Each full readback moves 16 MB; slow uncached copies were seen on VMware before. | Readback MOBs and backings are cached guest RAM; `performance/readback-time-2560` holds it; cases read back the rectangle they judge when the contract allows, and the full destination where the contract requires it. |
 
 ## 5. First steps and rulings
@@ -1043,15 +1027,15 @@ authored: bwm composes through BGL, and every app draws through BreenGL on the G
 4. G1 onward on ARM64 QEMU.
 
 **Rulings, 2026-10-16, made under the operator's GPU-only ruling.** R2 to R8 are decided; R1 is the
-operator's and is pending.
+operator's.
 
-- **R1, x86-64's GPU: pending.** The options: a discrete GPU on the x86 gate host with the x86 gate in a
-  container sharing its render node (proposed); passthrough of the card to the gate's virtual machine; or
-  x86-64 under TCG on the macOS host's GL stack. There is no software-renderer option. Until the operator
-  decides, x86-64 stays behind its catch-up, and the effort is not done.
+- **R1, x86-64's GPU: decided (operator).** The current x86 gate host stays VGA only and x86-64 is measured
+  up to the shell. x86-64 leaves the GPU-era efforts (`gpu`, `breengel`, `window-manager`, `ui-testing`,
+  `gui-apps`) until a dedicated Breenix hardware box replaces that host, and joins them then (section 1.6.4).
+  There is no software-renderer option.
 - **R2, early spikes: decided, yes.** The Parallels and VMware spikes run in G0, before the contract freezes,
-  as scratch boots on `scratch/*` branches cut from main. The x86-64 spike follows when R1 puts a GPU on the
-  gate host.
+  as scratch boots on `scratch/*` branches cut from main. The x86-64 spike follows when the dedicated
+  Breenix hardware box is in place.
 - **R3, UI text: decided, yes.** UI and stage text moves to DejaVu Sans (15 changed cases with R4, 3 removed;
   section 2.2). The bitmap fonts stay in the API.
 - **R4, the GUI mode: decided, yes.** Every GUI suite boot runs at 2560×1600 at scale 2, and 1280×800 stays a

@@ -5,6 +5,9 @@
 //! categories and cases in the table its `main` runs (the `static` Suite in
 //! `userspace/programs/src/suite_<id>.rs`, read from the parsed source) are the
 //! manifest's, in the same order with the same titles. Every suite source has a manifest.
+//!
+//! The efforts in `docs/efforts/path.json` that name their targets name known ones (`targets`,
+//! docs/efforts/README.md).
 
 use std::collections::HashSet;
 use std::fs;
@@ -673,5 +676,102 @@ fn timing_classification_ignores_comments_and_literals() {
                    "fn case() { sc(nr::CLOCK_GETTIME, &[]); }",
                    "fn case() { std::thread::spawn(|| {}); }"] {
         assert!(uses_time_or_concurrency(source.parse().unwrap()));
+    }
+}
+
+/// The target ids an effort in `docs/efforts/path.json` may list, in the order a list gives them: the ids
+/// `scripts/effort-target-guard.py` uses (docs/efforts/README.md, "Targets").
+const TARGETS: [&str; 4] = ["arm64-qemu", "parallels", "vmware", "x86"];
+
+/// Problems with the efforts' optional `targets` and `targetsNote`: a list must be non-empty, known ids in
+/// `TARGETS` order without repeats; a note is one line of text and only sits beside a list; an effort
+/// without x86-64 has no `profiles` milestone, which is measured only there.
+fn effort_target_errors(path: &Value) -> Vec<String> {
+    let mut errors = Vec::new();
+    for effort in path["efforts"].as_array().into_iter().flatten() {
+        let id = effort["id"].as_str().unwrap_or("?");
+        let note = effort.get("targetsNote");
+        let Some(targets) = effort.get("targets") else {
+            if note.is_some() {
+                errors.push(format!("{id}: \"targetsNote\" without \"targets\""));
+            }
+            continue;
+        };
+        let names: Vec<&str> = match targets.as_array() {
+            Some(list) if !list.is_empty() => list.iter().map(|t| t.as_str().unwrap_or("")).collect(),
+            _ => {
+                errors.push(format!("{id}: \"targets\" must be a non-empty list"));
+                continue;
+            }
+        };
+        let positions: Vec<Option<usize>> = names.iter().map(|n| TARGETS.iter().position(|t| t == n)).collect();
+        for (name, position) in names.iter().zip(&positions) {
+            if position.is_none() {
+                errors.push(format!("{id}: unknown target {name:?} (expected one of {TARGETS:?})"));
+            }
+        }
+        let known: Vec<usize> = positions.into_iter().flatten().collect();
+        if known.windows(2).any(|pair| pair[0] >= pair[1]) {
+            errors.push(format!("{id}: targets {names:?} repeat or are out of the order {TARGETS:?}"));
+        }
+        match note {
+            None => {}
+            Some(Value::String(text)) if !text.trim().is_empty() && !text.contains('\n') => {}
+            Some(_) => errors.push(format!("{id}: \"targetsNote\" must be non-empty text on one line")),
+        }
+        if !names.contains(&"x86") {
+            for milestone in effort["milestones"].as_array().into_iter().flatten() {
+                if milestone["measure"].get("profiles").is_some() {
+                    errors.push(format!(
+                        "{id}: milestone {} measures x86-64 profiles, but x86 is not a target",
+                        milestone["id"]
+                    ));
+                }
+            }
+        }
+    }
+    errors
+}
+
+#[test]
+fn effort_targets_are_known_and_ordered() {
+    let root = repo_root();
+    let guard = fs::read_to_string(root.join("scripts/effort-target-guard.py")).unwrap();
+    let line = guard.lines().find(|line| line.starts_with("TARGETS = (")).expect("TARGETS in the guard");
+    let mut guarded: Vec<&str> = line.split('\'').skip(1).step_by(2).collect();
+    guarded.sort_unstable();
+    let mut ours = TARGETS.to_vec();
+    ours.sort_unstable();
+    assert_eq!(guarded, ours, "the guard's TARGETS and this test's differ");
+
+    let path: Value =
+        serde_json::from_str(&fs::read_to_string(root.join("docs/efforts/path.json")).unwrap()).unwrap();
+    let errors = effort_target_errors(&path);
+    assert!(errors.is_empty(), "docs/efforts/path.json targets:\n{}", errors.join("\n"));
+    let listed = path["efforts"].as_array().unwrap().iter().filter(|e| e.get("targets").is_some()).count();
+    assert!(listed > 0, "no effort lists targets, so the check above read nothing");
+}
+
+#[test]
+fn effort_target_lists_are_checked() {
+    let check = |effort: Value| effort_target_errors(&serde_json::json!({ "efforts": [effort] }));
+    let profiles = serde_json::json!([{ "id": "hw", "measure": { "profiles": "first-userspace" } }]);
+    assert!(check(serde_json::json!({ "id": "a" })).is_empty());
+    assert!(check(serde_json::json!({ "id": "a", "targets": ["arm64-qemu", "vmware"], "targetsNote": "later" }))
+        .is_empty());
+    assert!(check(serde_json::json!({ "id": "a", "targets": TARGETS, "milestones": profiles })).is_empty());
+    for bad in [
+        serde_json::json!({ "id": "a", "targetsNote": "no list" }),
+        serde_json::json!({ "id": "a", "targets": [] }),
+        serde_json::json!({ "id": "a", "targets": "vmware" }),
+        serde_json::json!({ "id": "a", "targets": ["qemu"] }),
+        serde_json::json!({ "id": "a", "targets": ["x86-64"] }),
+        serde_json::json!({ "id": "a", "targets": ["vmware", "parallels"] }),
+        serde_json::json!({ "id": "a", "targets": ["vmware", "vmware"] }),
+        serde_json::json!({ "id": "a", "targets": ["vmware"], "targetsNote": "" }),
+        serde_json::json!({ "id": "a", "targets": ["vmware"], "targetsNote": "two\nlines" }),
+        serde_json::json!({ "id": "a", "targets": ["vmware"], "milestones": profiles }),
+    ] {
+        assert_eq!(check(bad.clone()).len(), 1, "{bad}");
     }
 }

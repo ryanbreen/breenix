@@ -10,6 +10,12 @@ Since 2026-10-16 the platform is GPU only: the `gpu` effort (GPU rendering) come
 `breengel`, and BreenGL is rebuilt on it. `docs/gui/gpu.md` holds that effort's design and contract and governs
 wherever this summary or the plan describes CPU rendering or a software compositor.
 
+Since 2026-10-16 x86-64 is also out of the GUI efforts for now. The x86 gate host is VGA only, so x86-64 is
+measured up to the shell and no further; `gpu`, `breengel`, `window-manager`, `ui-testing` and `gui-apps` are
+measured on ARM64 QEMU, Parallels and VMware (their `targets` in `docs/efforts/path.json`). x86-64 joins them
+when a dedicated Breenix hardware box replaces the current x86 gate host, and the x86-64 items below wait for
+it.
+
 ## What exists today
 
 - **BreenGL is a window client, not a GL.** `libs/breengel` (about 650 lines) creates a window with a CPU
@@ -34,8 +40,8 @@ wherever this summary or the plan describes CPU rendering or a software composit
 
 ## The four efforts
 
-Each effort runs one suite, and a milestone is done when its cases pass on ARM64 QEMU, x86-64, Parallels and
-VMware with zero skips. Where a target cannot run a layer yet, getting it there is milestone work, never an
+Each effort runs one suite, and a milestone is done when its cases pass on ARM64 QEMU, Parallels and VMware
+with zero skips (x86-64 joins with the dedicated Breenix hardware box). Where a target cannot run a layer yet, getting it there is milestone work, never an
 exemption.
 
 | Effort | Milestones, in build order | Cases |
@@ -63,7 +69,7 @@ the clock epoch it drew. A buffer handed back for drawing is first brought up to
 missed, copied by the kernel inside `acquire` from a source it holds for the copy, so no other thread can recycle
 it mid-copy. The screen is read back from each display device with proof that the device received that frame.
 Checks compare against independent expectations (contract formulas and tables, the certified text renderer,
-reviewed images), exactly, with one reference for all four targets.
+reviewed images), exactly, with one reference for every target.
 
 **Nothing waits on wall time.** Mode and fonts are pinned. A UI clock moves only when the test steps it, and
 every app acknowledges each step, which never needs a new frame. Every input event ends in one recorded outcome:

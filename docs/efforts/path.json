@@ -1227,7 +1227,13 @@
     {
       "id": "gpu",
       "title": "GPU rendering",
-      "outcome": "Breenix renders on the GPU on every target: a clean-room, GL-style Breenix API whose command streams the kernel validates and bounds per process and translates for VirGL (ARM64 QEMU, Parallels and x86-64) or SVGA3D DX (VMware), executed by a hardware GPU on each host, presented at 1280×800 and at 2560×1600 with HiDPI scaling, and read back from the device pixel-exact under a declared deterministic rendering profile.",
+      "outcome": "Breenix renders on the GPU on every target: a clean-room, GL-style Breenix API whose command streams the kernel validates and bounds per process and translates for VirGL (ARM64 QEMU and Parallels) or SVGA3D DX (VMware), executed by a hardware GPU on each host, presented at 1280×800 and at 2560×1600 with HiDPI scaling, and read back from the device pixel-exact under a declared deterministic rendering profile.",
+      "targets": [
+        "arm64-qemu",
+        "parallels",
+        "vmware"
+      ],
+      "targetsNote": "x86-64 joins when the dedicated Breenix hardware box replaces the current x86 gate host.",
       "suite": "gpu",
       "subsystems": [
         17,
@@ -1331,6 +1337,12 @@
       "id": "breengel",
       "title": "BreenGL graphics library",
       "outcome": "Programs draw with BreenGL entirely on the GPU (clipped and alpha-blended shapes and blits, bitmap and TrueType text, PNG and BMP images, widgets and animated icons) exactly to its written contract, every installed graphical program draws through it, and the windows they commit through an authority-checked kernel interface are composed by the GPU and observed by device readback, pixel-exact on every target.",
+      "targets": [
+        "arm64-qemu",
+        "parallels",
+        "vmware"
+      ],
+      "targetsNote": "x86-64 joins when the dedicated Breenix hardware box replaces the current x86 gate host.",
       "suite": "breengel",
       "subsystems": [
         17,
@@ -1486,6 +1498,12 @@
       "id": "window-manager",
       "title": "Window manager",
       "outcome": "Independent programs share one desktop: keyboard and pointer events from every target's devices reach bwm through the kernel's input core, and bwm composes, stacks, focuses, moves, resizes and closes their windows, routes input and the clipboard between them with a recorded outcome for every event, and recovers from hung, crashed or misbehaving clients and from its own death, on every target.",
+      "targets": [
+        "arm64-qemu",
+        "parallels",
+        "vmware"
+      ],
+      "targetsNote": "x86-64 joins when the dedicated Breenix hardware box replaces the current x86 gate host.",
       "suite": "window-manager",
       "subsystems": [
         17,
@@ -1629,6 +1647,12 @@
       "id": "ui-testing",
       "title": "UI test framework",
       "outcome": "Any GUI program can be driven by scripted keyboard, pointer and text input from inside the guest and judged by its committed frames and semantic tree at acknowledged clock epochs and causal barriers, deterministically and identically on every target, with every check shown able to fail and every failure leaving its evidence.",
+      "targets": [
+        "arm64-qemu",
+        "parallels",
+        "vmware"
+      ],
+      "targetsNote": "x86-64 joins when the dedicated Breenix hardware box replaces the current x86 gate host.",
       "suite": "ui-testing",
       "subsystems": [
         18,
@@ -1732,6 +1756,12 @@
       "id": "gui-apps",
       "title": "GUI applications",
       "outcome": "Breenix's desktop applications (bterm, blauncher, bfontpicker, blog with blogd, Gus Kit and bcheck, with the graphics demos) do their jobs correctly through real input on a real desktop, on every target.",
+      "targets": [
+        "arm64-qemu",
+        "parallels",
+        "vmware"
+      ],
+      "targetsNote": "x86-64 joins when the dedicated Breenix hardware box replaces the current x86 gate host.",
       "suite": "gui-apps",
       "subsystems": [
         24,
