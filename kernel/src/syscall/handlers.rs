@@ -584,8 +584,12 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
     #[cfg(not(target_arch = "x86_64"))]
     let quick: Option<Option<WriteOperation>> = None;
     let write_op = match quick.flatten() {
-        Some(write_op) => write_op,
+        Some(write_op) => {
+            crate::stall_probe::fast(4);
+            write_op
+        }
         None => {
+            crate::stall_probe::fast(5);
             let manager_guard = crate::process::manager();
             let process = match &*manager_guard {
                 Some(manager) => match manager.find_process_by_thread(thread_id) {
@@ -1012,6 +1016,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             })
         })
     }) {
+        crate::stall_probe::fast(4);
         match found {
             None => return SyscallResult::Err(9), // EBADF
             Some(Some(QuickRead::Pipe(pipe_buffer, is_nonblocking))) => {

@@ -28,6 +28,8 @@ pub mod interrupts;
 pub mod memory;
 #[cfg(target_arch = "x86_64")]
 pub mod per_cpu;
+#[cfg(target_arch = "x86_64")]
+pub mod stall_probe;
 #[cfg(target_arch = "aarch64")]
 pub mod per_cpu_aarch64;
 #[cfg(target_arch = "aarch64")]
