@@ -96,15 +96,19 @@ fn read_window_input_events(buffer_id: u32, out_ptr: u64, max_count: usize) -> R
         return Err(super::ErrorCode::InvalidArgument as u64);
     };
 
+    let mut events = [WindowInputEvent::default(); INPUT_RING_SIZE];
+    let mut tail = buf.input_tail;
     let mut n = 0usize;
-    while n < max_count && buf.input_tail != buf.input_head {
-        let event = buf.input_ring[buf.input_tail];
-        unsafe {
-            core::ptr::write((out_ptr as *mut WindowInputEvent).add(n), event);
-        }
-        buf.input_tail = (buf.input_tail + 1) & (INPUT_RING_SIZE - 1);
+    while n < max_count && tail != buf.input_head {
+        events[n] = buf.input_ring[tail];
+        tail = (tail + 1) & (INPUT_RING_SIZE - 1);
         n += 1;
     }
+    super::userptr::write_user_bytes(
+        out_ptr, events.as_ptr().cast(), n * core::mem::size_of::<WindowInputEvent>(),
+    )?;
+    // Failed copies leave the queued events available to the next read.
+    buf.input_tail = tail;
 
     Ok(n)
 }
@@ -433,6 +437,16 @@ impl WindowRegistry {
 
 /// Framebuffer info structure returned by sys_fbinfo.
 
+/// Snapshot untrusted pixels before passing a slice to a graphics backend.
+#[cfg(target_arch = "aarch64")]
+fn copy_user_pixels(ptr: u64, count: usize) -> Result<alloc::vec::Vec<u32>, u64> {
+    let mut pixels = alloc::vec::Vec::new();
+    pixels.try_reserve_exact(count).map_err(|_| super::ErrorCode::OutOfMemory as u64)?;
+    pixels.resize(count, 0u32);
+    super::userptr::read_user_bytes(pixels.as_mut_ptr().cast(), ptr, count * 4)?;
+    Ok(pixels)
+}
+
 /// The version 1 window ops of `fb_draw` (10 to 26 and 31).
 #[cfg(target_arch = "aarch64")]
 pub(super) fn handle_op(cmd: &FbDrawCmd) -> SyscallResult {
@@ -457,8 +471,11 @@ pub(super) fn handle_op(cmd: &FbDrawCmd) -> SyscallResult {
                 crate::tracing::providers::virtgpu::trace_bwm_composite_frame_exit(1);
                 return SyscallResult::Err(super::ErrorCode::Fault as u64);
             }
-            let pixels =
-                unsafe { core::slice::from_raw_parts(buf_ptr as *const u32, pixel_count as usize) };
+            let pixels = match copy_user_pixels(buf_ptr, pixel_count as usize) {
+                Ok(pixels) => pixels,
+                Err(e) => return SyscallResult::Err(e),
+            };
+            let pixels = pixels.as_slice();
             match crate::graphics::compositor_backend() {
                 crate::graphics::CompositorBackend::VirGL => {
                     #[cfg(target_arch = "aarch64")]
@@ -559,11 +576,11 @@ pub(super) fn handle_op(cmd: &FbDrawCmd) -> SyscallResult {
             if title_len > 0 && (title_ptr == 0 || title_ptr >= USER_SPACE_MAX) {
                 return SyscallResult::Err(super::ErrorCode::Fault as u64);
             }
-            let title = if title_len > 0 {
-                unsafe { core::slice::from_raw_parts(title_ptr as *const u8, title_len) }
-            } else {
-                &[]
-            };
+            let mut title_storage = [0u8; MAX_TITLE_LEN];
+            if super::userptr::read_user_bytes(title_storage.as_mut_ptr(), title_ptr, title_len).is_err() {
+                return SyscallResult::Err(super::ErrorCode::Fault as u64);
+            }
+            let title = &title_storage[..title_len];
             let registered = {
                 let mut reg = WINDOW_REGISTRY.lock();
                 match reg.find_mut(buffer_id) {
@@ -604,10 +621,11 @@ pub(super) fn handle_op(cmd: &FbDrawCmd) -> SyscallResult {
             let reg = WINDOW_REGISTRY.lock();
             let windows = reg.registered_windows();
             let count = windows.len().min(max_entries as usize);
-            unsafe {
-                let dst = out_ptr as *mut WindowInfo;
-                for (i, info) in windows.iter().take(count).enumerate() {
-                    core::ptr::write(dst.add(i), *info);
+            for (i, info) in windows.iter().take(count).enumerate() {
+                if super::userptr::copy_to_user(
+                    (out_ptr + (i * core::mem::size_of::<WindowInfo>()) as u64) as *mut WindowInfo, info,
+                ).is_err() {
+                    return SyscallResult::Err(super::ErrorCode::Fault as u64);
                 }
             }
             SyscallResult::Ok(count as u64)
@@ -633,7 +651,6 @@ pub(super) fn handle_op(cmd: &FbDrawCmd) -> SyscallResult {
                     if buf.generation == buf.last_read_gen {
                         return SyscallResult::Ok(0); // 0 = no new data
                     }
-                    buf.last_read_gen = buf.generation;
                     let copy_bytes = buf.size.min(max_bytes as usize);
                     let phys_mem_offset = crate::memory::physical_memory_offset().as_u64();
                     // Copy page by page since MAP_SHARED pages are not contiguous
@@ -644,15 +661,12 @@ pub(super) fn handle_op(cmd: &FbDrawCmd) -> SyscallResult {
                         }
                         let chunk = (copy_bytes - offset).min(4096);
                         let src = (phys_mem_offset + page_phys) as *const u8;
-                        unsafe {
-                            core::ptr::copy_nonoverlapping(
-                                src,
-                                (dst_ptr as *mut u8).add(offset),
-                                chunk,
-                            );
+                        if super::userptr::write_user_bytes(dst_ptr + offset as u64, src, chunk).is_err() {
+                            return SyscallResult::Err(super::ErrorCode::Fault as u64);
                         }
                         offset += chunk;
                     }
+                    buf.last_read_gen = buf.generation;
                     SyscallResult::Ok(((buf.width as u64) << 32) | buf.height as u64)
                 }
                 None => SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
@@ -756,8 +770,10 @@ pub(super) fn handle_op(cmd: &FbDrawCmd) -> SyscallResult {
             if event_ptr == 0 || event_ptr >= USER_SPACE_MAX {
                 return SyscallResult::Err(super::ErrorCode::Fault as u64);
             }
-            let mut event: WindowInputEvent =
-                unsafe { core::ptr::read(event_ptr as *const WindowInputEvent) };
+            let mut event = match super::userptr::copy_from_user(event_ptr as *const WindowInputEvent) {
+                Ok(event) => event,
+                Err(e) => return SyscallResult::Err(e),
+            };
 
             // Inject accumulated scroll wheel delta into mouse events.
             // MOUSE_MOVE=3, MOUSE_SCROLL=9 (exclude MOUSE_BUTTON=4: scroll_y carries press state)
@@ -1014,6 +1030,7 @@ fn handle_compositor_wait(cmd: &FbDrawCmd) -> SyscallResult {
 ///   2 = partial background upload (only dirty_rect region changed)
 #[cfg(target_arch = "aarch64")]
 #[repr(C)]
+#[derive(Clone, Copy)]
 struct CompositeWindowsDesc {
     bg_pixels_ptr: u64,
     bg_width: u32,
@@ -1032,8 +1049,10 @@ struct CompositeWindowsDesc {
 /// to upload dirty textures and render all windows in a single SUBMIT_3D batch.
 #[cfg(target_arch = "aarch64")]
 fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
-    let desc: CompositeWindowsDesc =
-        unsafe { core::ptr::read(desc_ptr as *const CompositeWindowsDesc) };
+    let desc = match super::userptr::copy_from_user(desc_ptr as *const CompositeWindowsDesc) {
+        Ok(desc) => desc,
+        Err(e) => return SyscallResult::Err(e),
+    };
 
     // When bg_pixels_ptr=0 (direct-mapped compositor), get dimensions from active backend
     let (bg_width, bg_height) = if desc.bg_pixels_ptr == 0 {
@@ -1111,13 +1130,16 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
         }
     }
 
-    let bg_pixels = if desc.bg_pixels_ptr != 0 && desc.bg_pixels_ptr < USER_SPACE_MAX {
+    let bg_pixels = if desc.bg_pixels_ptr != 0 {
         let pixel_count = (bg_width as usize) * (bg_height as usize);
         let end = desc.bg_pixels_ptr + (pixel_count as u64) * 4;
         if end > USER_SPACE_MAX {
             return SyscallResult::Err(super::ErrorCode::Fault as u64);
         }
-        Some(unsafe { core::slice::from_raw_parts(desc.bg_pixels_ptr as *const u32, pixel_count) })
+        match copy_user_pixels(desc.bg_pixels_ptr, pixel_count) {
+            Ok(pixels) => Some(pixels),
+            Err(e) => return SyscallResult::Err(e),
+        }
     } else {
         None
     };
@@ -1197,7 +1219,7 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
     let result = match crate::graphics::compositor_backend() {
         crate::graphics::CompositorBackend::VirGL => {
             match crate::drivers::virtio::gpu_pci::virgl_composite_windows(
-                bg_pixels, bg_width, bg_height, bg_dirty, dirty_rect, &windows,
+                bg_pixels.as_deref(), bg_width, bg_height, bg_dirty, dirty_rect, &windows,
             ) {
                 Ok(()) => SyscallResult::Ok(0),
                 Err(e) => {
@@ -1287,6 +1309,12 @@ fn handle_create_window_buffer(width: u32, height: u32, out_addr_ptr: u64) -> Sy
     use crate::memory::arch_stub::VirtAddr;
     #[cfg(target_arch = "x86_64")]
     use x86_64::VirtAddr;
+
+    if out_addr_ptr != 0 {
+        if let Err(e) = super::userptr::copy_to_user(out_addr_ptr as *mut u64, &0u64) {
+            return SyscallResult::Err(e);
+        }
+    }
 
     let size = (width as usize) * (height as usize) * 4;
     let num_pages = (size + PAGE_SIZE as usize - 1) / PAGE_SIZE as usize;
@@ -1411,9 +1439,9 @@ fn handle_create_window_buffer(width: u32, height: u32, out_addr_ptr: u64) -> Sy
     );
 
     // Write full 64-bit mmap address to userspace output pointer
-    if out_addr_ptr != 0 && out_addr_ptr < USER_SPACE_MAX {
-        unsafe {
-            core::ptr::write(out_addr_ptr as *mut u64, new_addr);
+    if out_addr_ptr != 0 {
+        if super::userptr::copy_to_user(out_addr_ptr as *mut u64, &new_addr).is_err() {
+            return SyscallResult::Err(super::ErrorCode::Fault as u64);
         }
     }
 

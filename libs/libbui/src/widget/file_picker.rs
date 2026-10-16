@@ -46,6 +46,7 @@ pub struct FilePicker {
     scroll_offset: usize,
     visible_rows: usize,
     row_height: i32,
+    scroll_rail_width: i32,
     list_area: Rect,
     open_btn: Rect,
     cancel_btn: Rect,
@@ -95,6 +96,7 @@ impl FilePicker {
             scroll_offset: 0,
             visible_rows,
             row_height,
+            scroll_rail_width: (text::text_width(b"^ more ^", theme).max(text::text_width(b"v more v", theme)) + 8).min(list_area.w.max(0)),
             list_area,
             open_btn,
             cancel_btn,
@@ -184,6 +186,22 @@ impl FilePicker {
             && self.error.is_none()
             && self.list_area.contains(input.mouse_x, input.mouse_y)
         {
+            // Controls own the side rail, never an entry row.
+            let rail = self.scroll_rail();
+            if rail.contains(input.mouse_x, input.mouse_y)
+                && self.scroll_offset > 0 && input.mouse_y < rail.y + self.row_height {
+                self.scroll(1);
+                self.last_click = None;
+                return FilePickerResult::Active;
+            }
+            if rail.contains(input.mouse_x, input.mouse_y)
+                && self.scroll_offset + self.visible_rows < self.entries.len()
+                && input.mouse_y >= rail.y + rail.h - self.row_height {
+                self.scroll(-1);
+                self.last_click = None;
+                return FilePickerResult::Active;
+            }
+            if rail.contains(input.mouse_x, input.mouse_y) { return FilePickerResult::Active; }
             let row = ((input.mouse_y - self.list_area.y) / self.row_height) as usize;
             let idx = self.scroll_offset + row;
             if idx < self.entries.len() && row < self.visible_rows {
@@ -224,6 +242,10 @@ impl FilePicker {
         self.selected = None;
         self.scroll_offset = 0;
         self.last_click = None;
+    }
+    fn scroll_rail(&self) -> Rect {
+        let width = if self.entries.len() > self.visible_rows { self.scroll_rail_width } else { 0 };
+        Rect::new(self.list_area.x + self.list_area.w - width, self.list_area.y, width, self.list_area.h)
     }
     fn reveal(&mut self) {
         if let Some(i) = self.selected {
@@ -344,12 +366,15 @@ impl FilePicker {
                 theme,
             );
         }
-        // Draw entries
+        // Clip entry ink and selection to the area beside the controls.
+        let rail = self.scroll_rail();
+        let entry_width = self.list_area.w - rail.w;
+        fb.push_clip(libgfx::framebuf::Rect::new(self.list_area.x, self.list_area.y, entry_width, self.list_area.h));
         let end = (self.scroll_offset + self.visible_rows).min(self.entries.len());
         for i in self.scroll_offset..end {
             let row = (i - self.scroll_offset) as i32;
             let ry = self.list_area.y + row * self.row_height;
-            let row_rect = Rect::new(self.list_area.x, ry, self.list_area.w, self.row_height);
+            let row_rect = Rect::new(self.list_area.x, ry, entry_width, self.row_height);
 
             // Highlight selected row
             if self.selected == Some(i) {
@@ -394,27 +419,30 @@ impl FilePicker {
                 let size_len = format_file_size(entry.size, &mut size_buf);
                 let size_text = &size_buf[..size_len];
                 let sw = text::text_width(size_text, theme);
-                let sx = self.list_area.x + self.list_area.w - sw - ROW_PAD_LEFT;
+                let sx = self.list_area.x + entry_width - sw - ROW_PAD_LEFT;
                 text::draw_text(fb, size_text, sx, text_y, theme.text_secondary, theme);
             }
         }
 
-        // Scroll indicators
+        fb.pop_clip();
+        // Scroll indicators in their dedicated rail.
+        fb.push_clip(libgfx::framebuf::Rect::new(rail.x, rail.y, rail.w, rail.h));
         if self.scroll_offset > 0 {
             let indicator = b"^ more ^";
             let iw = text::text_width(indicator, theme);
-            let ix = self.list_area.x + (self.list_area.w - iw) / 2;
+            let ix = rail.x + (rail.w - iw) / 2;
             let iy = self.list_area.y + 1;
             text::draw_text(fb, indicator, ix, iy, theme.text_secondary, theme);
         }
         if self.scroll_offset + self.visible_rows < self.entries.len() {
             let indicator = b"v more v";
             let iw = text::text_width(indicator, theme);
-            let ix = self.list_area.x + (self.list_area.w - iw) / 2;
+            let ix = rail.x + (rail.w - iw) / 2;
             let iy = self.list_area.y + self.list_area.h - self.row_height + 1;
             text::draw_text(fb, indicator, ix, iy, theme.text_secondary, theme);
         }
 
+        fb.pop_clip();
         // Button bar separator
         let sep_y = self.rect.y + self.rect.h - BUTTON_BAR_H;
         shapes::draw_line(

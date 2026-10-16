@@ -22,7 +22,7 @@ fn picker(count: usize) -> FilePicker {
     )
 }
 fn press(x: i32, y: i32, t: u64) -> InputState {
-    InputState::from_raw(x, y, 1, 0).with_time(t)
+    InputState::from_raw(x, y, 1, 0, t)
 }
 #[test]
 fn sort_keys_and_timestamped_double_click() {
@@ -70,4 +70,20 @@ fn path_submission_scroll_and_error_remove_stale_entries() {
     assert!(p.selected_entry().is_none());
     assert_eq!(p.error(), Some(&b"Permission denied"[..]));
     assert_eq!(p.key(&KeyInput::new(Key::Enter)), FilePickerResult::Active);
+}
+
+#[test]
+fn clicking_more_uses_the_rail_and_entry_rows_remain_selectable() {
+    let mut p = picker(60);
+    assert_eq!(p.update(&press(270, 197, 1000)), FilePickerResult::Active);
+    assert!(p.scroll_offset() > 0);
+    assert!(p.selected_entry().is_none());
+    assert_eq!(p.update(&press(270, 27, 1500)), FilePickerResult::Active);
+    assert_eq!(p.scroll_offset(), 0);
+    assert!(p.selected_entry().is_none());
+    p.update(&press(50, 197, 2000));
+    assert!(p.selected_entry().is_some(), "last live row must select");
+    p.scroll(-1);
+    p.update(&press(50, 27, 2500));
+    assert_eq!(p.selected_entry().unwrap().name, b"file002", "top live row must select");
 }

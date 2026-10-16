@@ -34,10 +34,29 @@ impl Spring {
     pub fn update(&mut self, dt: f32) {
         if !dt.is_finite() || dt <= 0.0 { return; }
         self.remainder_ns = self.remainder_ns.saturating_add((dt as f64 * 1_000_000_000.0 + 0.5) as u64);
+        // Brent cycle detection uses exact f32 bits. A repeated recurrence
+        // state proves a whole cycle can be skipped without changing a quantum.
+        let mut checkpoint = (self.value.to_bits(), self.velocity.to_bits());
+        let mut power = 1u64;
+        let mut span = 0u64;
         while self.remainder_ns >= 1_000_000 {
             self.remainder_ns -= 1_000_000;
             self.velocity += (-self.stiffness*(self.value-self.target)-self.damping*self.velocity)*0.001;
             self.value += self.velocity*0.001;
+            span += 1;
+            let state = (self.value.to_bits(), self.velocity.to_bits());
+            if checkpoint == state {
+                let quanta = self.remainder_ns / 1_000_000;
+                self.remainder_ns = (quanta % span) * 1_000_000 + self.remainder_ns % 1_000_000;
+                // The remaining suffix is shorter than the proven cycle.
+                checkpoint = state;
+                power = 1;
+                span = 0;
+            } else if span == power {
+                checkpoint = state;
+                power = power.saturating_mul(2);
+                span = 0;
+            }
         }
     }
 

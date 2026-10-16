@@ -464,12 +464,11 @@ fn main() {
     let mut rows = (content_h as usize / cell_h).max(1);
 
     // Create tab bar
+    let theme = Theme::dark();
     let btop_label = make_static_label("btop");
     let mut tab_bar = TabBar::new(
         Rect::new(0, 0, WIN_WIDTH as i32, TAB_BAR_HEIGHT),
-        vec![btop_label],
-    );
-    let theme = Theme::dark();
+        vec![btop_label], &theme);
 
     // Spawn initial tabs: btop (default visible) + shell
     let mut tabs: Vec<Tab> = vec![spawn_tab_cmd(cols, rows, b"/bin/btop\0")];
@@ -660,7 +659,7 @@ fn main() {
         }
 
         // Pass mouse state to TabBar for tab switching
-        let input = InputState::from_raw(mouse_x, mouse_y, buttons, prev_buttons);
+        let input = InputState::from_raw(mouse_x, mouse_y, buttons, prev_buttons, breengel::clock::now_ns() / 1_000_000);
         if let WidgetEvent::ValueChanged(_) = tab_bar.update(&input) {
             let sel = tab_bar.selected();
             if let Some(tab) = tabs.get_mut(sel) {

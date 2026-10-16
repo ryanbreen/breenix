@@ -256,6 +256,7 @@ fn text_fontwatch_reload() -> CaseResult {
         .map_err(|e| format!("watcher startup: {e:?}"))
         .cite("9.3")?;
     let old = watch_frame(&mut w, true);
+    libbreenix::suite::judged(&old.fb())?;
     f.config("display.ttf", 16, "display.ttf", 24).cite("9.3")?;
     f.step(249_999_999).cite("9.1")?;
     ensure(w.poll() == Ok(None), "9.3", "watcher checked before 250ms")?;
@@ -276,13 +277,14 @@ fn text_fontwatch_reload() -> CaseResult {
         "changed font retained cached glyphs",
     )?;
     let new = watch_frame(&mut w, true);
+    libbreenix::suite::judged(&new.fb())?;
     ensure(
         same_pixels(&old, &new).is_some(),
         "9.3",
         "changing mono font left all pixels unchanged",
     )?;
     f.assert_frame(&new, "display.ttf", 16.0)?;
-    libbreenix::suite::judged(&new.fb())
+    Ok(())
 }
 
 fn text_fontwatch_size() -> CaseResult {
@@ -291,6 +293,7 @@ fn text_fontwatch_size() -> CaseResult {
         .map_err(|e| format!("watcher startup: {e:?}"))
         .cite("9.3")?;
     let old = watch_frame(&mut w, true);
+    libbreenix::suite::judged(&old.fb())?;
     f.config("mono.ttf", 32, "display.ttf", 24).cite("9.3")?;
     f.step(250_000_000).cite("9.1")?;
     ensure(
@@ -310,13 +313,14 @@ fn text_fontwatch_size() -> CaseResult {
         "size change retained old cache entries",
     )?;
     let new = watch_frame(&mut w, true);
+    libbreenix::suite::judged(&new.fb())?;
     ensure(
         same_pixels(&old, &new).is_some(),
         "9.3",
         "size change did not change rasterized pixels",
     )?;
     f.assert_frame(&new, "mono.ttf", 32.0)?;
-    libbreenix::suite::judged(&new.fb())
+    Ok(())
 }
 
 fn text_fontwatch_missing() -> CaseResult {
@@ -325,7 +329,9 @@ fn text_fontwatch_missing() -> CaseResult {
         .map_err(|e| format!("watcher startup: {e:?}"))
         .cite("9.3")?;
     let old = watch_frame(&mut w, true);
+    libbreenix::suite::judged(&old.fb())?;
     let old_display = watch_frame(&mut w, false);
+    libbreenix::suite::judged(&old_display.fb())?;
     f.config("display.ttf", 32, "absent.ttf", 40).cite("9.3")?;
     f.step(250_000_000).cite("9.1")?;
     ensure(
@@ -333,11 +339,15 @@ fn text_fontwatch_missing() -> CaseResult {
         "9.3",
         "missing second font did not report its path",
     )?;
+    let actual_mono = watch_frame(&mut w, true);
+    libbreenix::suite::judged(&actual_mono.fb())?;
+    ensure(same_pixels(&old, &actual_mono).is_none(), "9.3", "missing font changed mono pixels")?;
+    let actual_display = watch_frame(&mut w, false);
+    libbreenix::suite::judged(&actual_display.fb())?;
     ensure(
         w.mono_size() == 16.0
             && w.display_size() == 24.0
-            && same_pixels(&old, &watch_frame(&mut w, true)).is_none()
-            && same_pixels(&old_display, &watch_frame(&mut w, false)).is_none(),
+            && same_pixels(&old_display, &actual_display).is_none(),
         "9.3",
         "missing font partly changed previous fonts",
     )
@@ -349,6 +359,7 @@ fn text_fontwatch_malformed_config() -> CaseResult {
         .map_err(|e| format!("watcher startup: {e:?}"))
         .cite("9.3")?;
     let old = watch_frame(&mut w, true);
+    libbreenix::suite::judged(&old.fb())?;
     for (i, bad) in [
         "mono.font=/cut",
         "mono.font=x\nmono.size=16\ndisplay.font=x\ndisplay.size=NaN\n",
@@ -367,8 +378,10 @@ fn text_fontwatch_malformed_config() -> CaseResult {
             "9.2",
             format!("malformed config {i} was not rejected"),
         )?;
+        let actual = watch_frame(&mut w, true);
+        libbreenix::suite::judged(&actual.fb())?;
         ensure(
-            w.mono_size() == 16.0 && same_pixels(&old, &watch_frame(&mut w, true)).is_none(),
+            w.mono_size() == 16.0 && same_pixels(&old, &actual).is_none(),
             "9.3",
             "malformed configuration changed old pixels",
         )?;
@@ -428,8 +441,9 @@ fn text_fontwatch_repeated() -> CaseResult {
         )?;
     }
     let frame = watch_frame(&mut w, true);
+    libbreenix::suite::judged(&frame.fb())?;
     f.assert_frame(&frame, "mono.ttf", 24.0)?;
-    libbreenix::suite::judged(&frame.fb())
+    Ok(())
 }
 
 fn text_fontwatch_independent() -> CaseResult {
@@ -438,7 +452,9 @@ fn text_fontwatch_independent() -> CaseResult {
         .map_err(|e| format!("watcher startup: {e:?}"))
         .cite("9.3")?;
     let mono = watch_frame(&mut w, true);
+    libbreenix::suite::judged(&mono.fb())?;
     let display = watch_frame(&mut w, false);
+    libbreenix::suite::judged(&display.fb())?;
     f.config("mono.ttf", 16, "mono.ttf", 24).cite("9.2")?;
     f.step(250_000_000).cite("9.1")?;
     ensure(
@@ -450,15 +466,20 @@ fn text_fontwatch_independent() -> CaseResult {
         "9.3",
         "display change was not independent",
     )?;
+    let actual_mono = watch_frame(&mut w, true);
+    libbreenix::suite::judged(&actual_mono.fb())?;
+    ensure(same_pixels(&mono, &actual_mono).is_none(), "9.3", "display reload changed mono pixels")?;
+    let actual_display = watch_frame(&mut w, false);
+    libbreenix::suite::judged(&actual_display.fb())?;
     ensure(
-        same_pixels(&mono, &watch_frame(&mut w, true)).is_none()
-            && same_pixels(&display, &watch_frame(&mut w, false)).is_some(),
+        same_pixels(&display, &actual_display).is_some(),
         "9.3",
         "display reload changed mono pixels or failed to change display pixels",
     )?;
     let held_mono = w.take_mono_font();
     f.config("display.ttf", 16, "mono.ttf", 24).cite("9.2")?;
     let display = watch_frame(&mut w, false);
+    libbreenix::suite::judged(&display.fb())?;
     f.step(500_000_000).cite("9.1")?;
     ensure(
         w.poll()
@@ -471,33 +492,85 @@ fn text_fontwatch_independent() -> CaseResult {
     )?;
     w.put_mono_font(held_mono);
     let reloaded_mono = watch_frame(&mut w, true);
+    libbreenix::suite::judged(&reloaded_mono.fb())?;
     f.assert_frame(&reloaded_mono, "display.ttf", 16.0)?;
+    let actual_display = watch_frame(&mut w, false);
+    libbreenix::suite::judged(&actual_display.fb())?;
     ensure(
-        same_pixels(&display, &watch_frame(&mut w, false)).is_none(),
+        same_pixels(&display, &actual_display).is_none(),
         "9.3",
         "mono reload changed display pixels",
     )
 }
 
 fn text_fontwatch_idle() -> CaseResult {
-    missing(
-        "breengel::clock (the clock page named by BREENIX_UI_CLOCK) and the 250 ms FontWatcher",
-        "9.1, 9.3",
-    )
+    let f = FontFixture::new().cite("9.3")?;
+    let mut win = breengel::Window::new(b"idle font reload", 200, 70)
+        .map_err(|e| format!("create idle window: {e:?}")).cite("9.3")?;
+    // Drain startup notifications before the idle interval: no input is injected.
+    win.dispatch(|_| breengel::Handled::NoChange)
+        .map_err(|e| format!("drain startup: {e:?}")).cite("9.3")?;
+    f.config("display.ttf", 16, "display.ttf", 24).cite("9.3")?;
+    for (ns, expected_font, changed) in [
+        (249_999_999, "mono.ttf", false), (250_000_000, "display.ttf", true),
+    ] {
+        f.step(ns).cite("9.1")?;
+        let mut font_events = 0;
+        let mut input_events = 0;
+        win.dispatch(|delivered| {
+            if matches!(delivered.event, breengel::Event::FontChanged) { font_events += 1; }
+            else { input_events += 1; }
+            breengel::Handled::Redraw
+        }).map_err(|e| format!("idle dispatch: {e:?}")).cite("9.3")?;
+        ensure(input_events == 0 && font_events == usize::from(changed), "9.3",
+            format!("idle epoch {ns}: font events={font_events}, input events={input_events}"))?;
+        let mut font = win.take_mono_font().ok_or("idle window lost mono font").cite("9.3")?;
+        let size = win.mono_size();
+        let fb = win.framebuf();
+        fb.clear(PAPER);
+        ttf_font::draw_text(fb, &mut font, "Wi é A", 8, 40, size, Color::WHITE);
+        win.put_mono_font(Some(font));
+        let commit = win.commit(&[libbreenix::window::abi::Rect::new(0, 0, 200, 70)])
+            .map_err(|e| format!("idle commit: {e:?}")).cite("9.3")?;
+        let mut pixels = vec![0u8; 200 * 70 * 4];
+        let capture = libbreenix::window::capture(win.id(), &mut pixels, None)
+            .map_err(|e| format!("capture idle commit: {e:?}")).cite("9.3")?;
+        ensure(capture.commit_id == commit.commit_id, "9.3", "capture is not the first idle epoch commit")?;
+        let got = Guarded::bgrx(200, 70);
+        // CAPTURE supplied exactly the checked frame's extent.
+        unsafe { std::ptr::copy_nonoverlapping(pixels.as_ptr(), got.base, pixels.len()); }
+        f.assert_frame(&got, expected_font, 16.0)?;
+        libbreenix::suite::judged(&got.fb())?;
+    }
+    ensure(breengel::clock::real_clock_reads() == 0, "9.1", "idle reload read real time")
 }
 
 fn text_fontwatch_file_replaced() -> CaseResult {
     let f = FontFixture::new().cite("9.3")?;
+    use std::os::unix::fs::MetadataExt;
+    let mut original = std::fs::read(f.root.join("mono.ttf")).map_err(|e| e.to_string()).cite("9.3")?;
+    let size = std::fs::metadata(f.root.join("display.ttf")).map_err(|e| e.to_string()).cite("9.3")?.len();
+    original.resize(size as usize, 0);
+    std::fs::write(f.root.join("mono.ttf"), original).map_err(|e| e.to_string()).cite("9.3")?;
+    let before = std::fs::metadata(f.root.join("mono.ttf")).map_err(|e| e.to_string()).cite("9.3")?;
     let mut w = FontWatcher::try_new()
         .map_err(|e| format!("watcher startup: {e:?}"))
         .cite("9.3")?;
     let old = watch_frame(&mut w, true);
+    libbreenix::suite::judged(&old.fb())?;
     let config = std::fs::read(f.root.join("etc/fonts.conf"))
         .map_err(|e| format!("read config: {e}"))
         .cite("9.3")?;
     std::fs::copy(f.root.join("display.ttf"), f.root.join("pending.ttf"))
         .map_err(|e| format!("copy replacement: {e}"))
         .cite("9.3")?;
+    std::fs::File::options().write(true).open(f.root.join("pending.ttf"))
+        .and_then(|file| file.set_times(std::fs::FileTimes::new().set_modified(before.modified()?)))
+        .map_err(|e| format!("preserve replacement mtime: {e}")).cite("9.3")?;
+    let replacement = std::fs::metadata(f.root.join("pending.ttf")).map_err(|e| e.to_string()).cite("9.3")?;
+    ensure(before.ino() != replacement.ino() && before.len() == replacement.len()
+        && before.mtime() == replacement.mtime() && before.mtime_nsec() == replacement.mtime_nsec(),
+        "9.3", "replacement must differ only by inode in the watched metadata")?;
     std::fs::rename(f.root.join("pending.ttf"), f.root.join("mono.ttf"))
         .map_err(|e| format!("rename font: {e}"))
         .cite("9.3")?;
@@ -517,13 +590,14 @@ fn text_fontwatch_file_replaced() -> CaseResult {
         "fixture changed fonts.conf during same-path replacement",
     )?;
     let frame = watch_frame(&mut w, true);
+    libbreenix::suite::judged(&frame.fb())?;
     ensure(
         same_pixels(&old, &frame).is_some(),
         "9.3",
         "same-path replacement left old glyphs cached",
     )?;
     f.assert_frame(&frame, "display.ttf", 16.0)?;
-    libbreenix::suite::judged(&frame.fb())
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------------------
@@ -587,6 +661,7 @@ fn widgets_button_draw() -> CaseResult {
     let mut g = Guarded::bgrx(100, 40);
     g.reset(PAPER);
     Button::new(Rect::new(10, 8, 60, 20), b"OK").draw(&mut g.fb(), &theme);
+    libbreenix::suite::judged(&g.fb())?;
     same_as(
         &g,
         PAPER,
@@ -673,12 +748,13 @@ fn widgets_button_disabled() -> CaseResult {
     let mut g = Guarded::bgrx(100, 40);
     g.reset(PAPER);
     b.draw(&mut g.fb(), &theme);
+    libbreenix::suite::judged(&g.fb())?;
     same_as(&g, PAPER, "disabled button", "14.2", |fb| {
         shapes::fill_rect(fb, 10, 8, 60, 20, theme.widget_bg);
         shapes::draw_rect(fb, 10, 8, 60, 20, theme.border);
         font5x7::draw_text(fb, b"OK", 34, 14, theme.text_secondary, 1);
     })?;
-    libbreenix::suite::judged(&g.fb())
+    Ok(())
 }
 
 fn widgets_checkbox_toggle() -> CaseResult {
@@ -699,6 +775,7 @@ fn widgets_checkbox_toggle() -> CaseResult {
     let mut g = Guarded::bgrx(140, 40);
     g.reset(PAPER);
     c.draw(&mut g.fb(), &theme);
+    libbreenix::suite::judged(&g.fb())?;
     same_as(&g, PAPER, "a checked checkbox", "14.3", |fb| {
         let (bx, by) = (10, 13);
         shapes::fill_rect(fb, bx, by, 14, 14, theme.accent);
@@ -837,12 +914,14 @@ fn widgets_label_clip() -> CaseResult {
     let mut g = Guarded::bgrx(80, 40);
     g.reset(PAPER);
     Label::new(Rect::new(10, 8, 35, 7), b"ABCDEFGHIJKLM").draw(&mut g.fb(), &theme);
+    libbreenix::suite::judged(&g.fb())?;
     same_as(&g, PAPER, "35-pixel clipped label", "14.3", |fb| {
         font5x7::draw_text(fb, b"ABC...", 10, 8, theme.text_primary, 1);
     })?;
     let mut narrow = Guarded::bgrx(80, 40);
     narrow.reset(PAPER);
     Label::new(Rect::new(10, 8, 12, 7), b"ABCDEFGHIJKLM").draw(&mut narrow.fb(), &theme);
+    libbreenix::suite::judged(&narrow.fb())?;
     for y in 0..40 {
         for x in 0..80 {
             if !in_rect(x as i64, y as i64, 10, 8, 12, 7) {
@@ -859,13 +938,14 @@ fn widgets_label_clip() -> CaseResult {
         "14.3",
         "small label drew no visible ellipsis",
     )?;
-    // Operator ruling 2026-10-15: the narrow scene includes the dot rows;
+    // Coordinator ruling 2026-10-15 (confirmed by the operator brief): include the dot rows;
     // its clipped third dot has no ink inside the twelve-pixel width.
     same_as(&narrow, PAPER, "12x7 ellipsis", "14.3", |fb| {
         font5x7::draw_text(fb, b"..", 10, 8, theme.text_primary, 1);
     })?;
     narrow.reset(PAPER);
     Label::new(Rect::new(10, 8, 12, 3), b"ABCDEFGHIJKLM").draw(&mut narrow.fb(), &theme);
+    libbreenix::suite::judged(&narrow.fb())?;
     ensure(
         drawn_pixels(&narrow, PAPER) == 0,
         "14.3",
@@ -878,14 +958,13 @@ fn widgets_label_clip() -> CaseResult {
         "14.3",
         |_| {},
     )?;
-    libbreenix::suite::judged(&g.fb())
+    Ok(())
 }
 
 fn widgets_tabbar_select() -> CaseResult {
     let mut t = TabBar::new(
         Rect::new(0, 0, 300, 24),
-        vec![&b"One"[..], &b"Two"[..], &b"Three"[..]],
-    );
+        vec![&b"One"[..], &b"Two"[..], &b"Three"[..]], &Theme::dark());
     let got = events(|i| t.update(i), &[press(150, 12), release(150, 12)]);
     ensure(got == vec![WidgetEvent::ValueChanged(1.0)] && t.selected() == 1, "14.3",
         format!("clicking the second tab reported {got:?} and selected {}; the contract reports ValueChanged(1) and selects 1", t.selected()))?;
@@ -905,8 +984,7 @@ fn widgets_tabbar_select() -> CaseResult {
 fn widgets_tabbar_overflow() -> CaseResult {
     let mut tabs = TabBar::new(
         Rect::new(10, 8, 70, 24),
-        vec![b"First", b"Second", b"Third", b"Fourth", b"Fifth"],
-    );
+        vec![b"First", b"Second", b"Third", b"Fourth", b"Fifth"], &Theme::dark());
     for i in 0..5 {
         tabs.scroll_by(if i == 0 { 0 } else { 1 });
         tabs.update(&press(20, 18));
@@ -936,6 +1014,9 @@ fn widgets_tabbar_overflow() -> CaseResult {
     let mut g = Guarded::bgrx(100, 50);
     g.reset(PAPER);
     tabs.draw(&mut g.fb(), &Theme::dark());
+    libbreenix::suite::judged(&g.fb())?;
+    ensure(g.color(12, 10) == Theme::dark().widget_bg_active
+        && g.color(12, 30) == Theme::dark().accent, "14.3", "tab fill or selected highlight missing")?;
     for y in 0..50 {
         for x in 0..100 {
             if !in_rect(x as i64, y as i64, 10, 8, 70, 24) {
@@ -947,7 +1028,7 @@ fn widgets_tabbar_overflow() -> CaseResult {
             }
         }
     }
-    libbreenix::suite::judged(&g.fb())
+    Ok(())
 }
 
 fn widgets_scrollbar_drag() -> CaseResult {
@@ -996,6 +1077,7 @@ fn widgets_scrollbar_thumb() -> CaseResult {
         let mut g = Guarded::bgrx(20, 200);
         g.reset(PAPER);
         s.draw(&mut g.fb(), &Theme::dark());
+        libbreenix::suite::judged(&g.fb())?;
         let rows = (0..200)
             .filter(|&y| g.color(9, y) == Color::rgb(80, 85, 100))
             .count();
@@ -1047,6 +1129,7 @@ fn widgets_menubar_open() -> CaseResult {
     let mut g = Guarded::bgrx(330, 140);
     g.reset(PAPER);
     m.draw(&mut g.fb(), &theme);
+    libbreenix::suite::judged(&g.fb())?;
     // The dropdown is under the File title: its widest row, Save As with Ctrl+Shift+S, is
     // 18 + 24 + 41 + 24 + 71 + 8 = 186 wide, and four items and a separator are 97 tall.
     let (dx, dy, dw, dh) = (10usize, 27usize, 186usize, 97usize);
@@ -1150,6 +1233,7 @@ fn widgets_menu_disabled() -> CaseResult {
     let mut g = Guarded::bgrx(330, 140);
     g.reset(PAPER);
     m.draw(&mut g.fb(), &theme);
+    libbreenix::suite::judged(&g.fb())?;
     let mut want = Guarded::bgrx(23, 7);
     want.reset(theme.widget_bg);
     font5x7::draw_text(&mut want.fb(), b"Save", 0, 0, theme.text_secondary, 1);
@@ -1215,7 +1299,7 @@ fn widgets_focus_ring() -> CaseResult {
     let mut b = Button::new(rect, b"OK");
     let mut c = Checkbox::new(rect, b"Opt");
     let mut slider = Slider::new(rect, 0.0, 1.0);
-    let mut tabs = TabBar::new(rect, vec![b"One", b"Two"]);
+    let mut tabs = TabBar::new(rect, vec![b"One", b"Two"], &Theme::dark());
     let mut field = TextField::new(rect, 30);
     let mut g = Guarded::bgrx(150, 70);
     for focused in [false, true] {
@@ -1233,6 +1317,7 @@ fn widgets_focus_ring() -> CaseResult {
                 3 => tabs.draw(&mut g.fb(), &theme),
                 _ => field.draw(&mut g.fb(), &theme),
             };
+    libbreenix::suite::judged(&g.fb())?;
             for y in 18..46 {
                 for x in 18..122 {
                     if x == 18 || x == 121 || y == 18 || y == 45 {
@@ -1247,7 +1332,7 @@ fn widgets_focus_ring() -> CaseResult {
             }
         }
     }
-    libbreenix::suite::judged(&g.fb())
+    Ok(())
 }
 
 fn widgets_no_change_ack() -> CaseResult {
@@ -1343,7 +1428,7 @@ fn widgets_no_change_ack() -> CaseResult {
         "14.2",
         "unchanged menu requested redraw",
     )?;
-    let mut tabs = TabBar::new(Rect::new(10, 10, 200, 24), vec![b"One", b"Two"]);
+    let mut tabs = TabBar::new(Rect::new(10, 10, 200, 24), vec![b"One", b"Two"], &Theme::dark());
     tabs.update(&hover(20, 20));
     tabs.update(&hover(21, 20));
     ensure(
@@ -1490,6 +1575,10 @@ fn text_entry_scroll_to_cursor() -> CaseResult {
     let mut g = Guarded::bgrx(100, 50);
     g.reset(PAPER);
     f.draw(&mut g.fb(), &Theme::dark());
+    libbreenix::suite::judged(&g.fb())?;
+    ensure(g.color(10, 10) == Theme::dark().border
+        && g.color(14, 16) == Color::WHITE
+        && g.color(65, 12) == Theme::dark().widget_bg, "15", "focused field border or interior drawing missing")?;
     for y in 0..50 {
         for x in 0..100 {
             if !in_rect(x as i64, y as i64, 8, 8, 64, 24) {
@@ -1501,7 +1590,7 @@ fn text_entry_scroll_to_cursor() -> CaseResult {
             }
         }
     }
-    libbreenix::suite::judged(&g.fb())
+    Ok(())
 }
 fn text_entry_selection_text() -> CaseResult {
     let mut f = entry_field(40);
@@ -1734,6 +1823,7 @@ fn text_entry_filepicker_errors() -> CaseResult {
     let mut g = Guarded::bgrx(320, 250);
     g.reset(PAPER);
     p.draw(&mut g.fb(), &Theme::dark());
+    libbreenix::suite::judged(&g.fb())?;
     let mut expected = Guarded::bgrx(101, 7);
     expected.reset(Theme::dark().panel_bg);
     font5x7::draw_text(
@@ -1758,7 +1848,7 @@ fn text_entry_filepicker_errors() -> CaseResult {
         "15",
         "Enter activated a stale entry under error",
     )?;
-    libbreenix::suite::judged(&g.fb())
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1842,9 +1932,9 @@ fn catalogue() -> Vec<(&'static str, fn() -> Box<dyn Icon>)> {
 }
 
 fn drawn(icon: &dyn Icon, size: i32) -> Guarded {
-    let mut g = Guarded::bgrx(160, 160);
+    let mut g = Guarded::bgrx(256, 256);
     g.reset(PAPER);
-    icon.draw(&mut g.fb(), 80, 80, size);
+    icon.draw(&mut g.fb(), 128, 128, size);
     g
 }
 
@@ -1872,14 +1962,18 @@ fn icons_step_invariance() -> CaseResult {
                     icon.update(dt, mouse(true, false, false, false));
                 }
             }
-            results.push((label, icon.state(), drawn(icon.as_ref(), 48)));
+            let frame = drawn(icon.as_ref(), 48);
+            libbreenix::suite::judged(&frame.fb())?;
+            results.push((label, icon.state(), frame));
         }
+        libbreenix::suite::judged(&results[0].2.fb())?;
         ensure(
             drawn_pixels(&results[0].2, PAPER) > 0,
             "16",
             format!("{name} drew nothing after {}", results[0].0),
         )?;
         for (label, state, g) in &results[1..] {
+            libbreenix::suite::judged(&g.fb())?;
             ensure(
                 *state == results[0].1,
                 "16",
@@ -1906,34 +2000,36 @@ fn icons_settles() -> CaseResult {
             icon.update(1_000, mouse(true, false, false, true));
             icon.update(120_000, mouse(true, false, false, false));
             icon.update(2_000_000, mouse(hovering, false, false, false));
+            let frame = drawn(&*icon, 48);
+            libbreenix::suite::judged(&frame.fb())?;
             ensure(
                 icon.settled(),
                 "16",
                 format!("{name} did not settle within 2000ms of final input"),
             )?;
-            let frame = drawn(&*icon, 48);
             icon.update(100_000, mouse(hovering, false, false, false));
+            let later = drawn(&*icon, 48);
+            libbreenix::suite::judged(&later.fb())?;
             ensure(
-                same_pixels(&frame, &drawn(&*icon, 48)).is_none(),
+                same_pixels(&frame, &later).is_none(),
                 "16",
                 format!("{name} kept drawing animation after reporting settled"),
             )?;
+            libbreenix::suite::judged(&frame.fb())?;
             let half = 24 + icon.bounds_overflow();
-            for y in 0..160 {
-                for x in 0..160 {
+            for y in 0..256 {
+                for x in 0..256 {
                     if !in_rect(
                         x as i64,
                         y as i64,
-                        (80 - half) as i64,
-                        (80 - half) as i64,
+                        (128 - half) as i64,
+                        (128 - half) as i64,
                         (2 * half) as i64,
                         (2 * half) as i64,
                     ) {
-                        ensure(
-                            frame.color(x, y) == PAPER,
-                            "16",
-                            format!("settled {name} wrote outside its box at {x},{y}"),
-                        )?;
+                        if frame.color(x, y) != PAPER {
+                            return at("16", format!("settled {name} wrote outside its box at {x},{y}"));
+                        }
                     }
                 }
             }
@@ -2036,12 +2132,15 @@ fn icons_reset() -> CaseResult {
         icon.reset();
         let fresh = make();
         let fresh_drawing = drawn(fresh.as_ref(), 56);
+        libbreenix::suite::judged(&fresh_drawing.fb())?;
         ensure(
             drawn_pixels(&fresh_drawing, PAPER) > 0,
             "16",
             format!("a new {name} icon drew nothing at size 56"),
         )?;
-        if let Some((x, y)) = same_pixels(&drawn(icon.as_ref(), 56), &fresh_drawing) {
+        let actual = drawn(icon.as_ref(), 56);
+        libbreenix::suite::judged(&actual.fb())?;
+        if let Some((x, y)) = same_pixels(&actual, &fresh_drawing) {
             return at("16", format!("{name}: after reset pixel ({x},{y}) differs from a new icon drawn at the new size"));
         }
     }
@@ -2058,7 +2157,7 @@ fn icons_bounded() -> CaseResult {
                 || {
                     let mut icon = make();
                     let size = 32;
-                    let mut g = Guarded::bgrx(160, 160);
+                    let mut g = Guarded::bgrx(256, 256);
                     g.reset(PAPER);
                     let mut rng = Seeded(0x1C0_5EED ^ name.len() as u64);
                     let mut held = false;
@@ -2078,24 +2177,25 @@ fn icons_bounded() -> CaseResult {
                                 rel_y: (rng.next() % 200) as f32 / 100.0 - 1.0,
                             },
                         );
-                        icon.draw(&mut g.fb(), 80, 80, size);
+                        icon.draw(&mut g.fb(), 128, 128, size);
                     }
+                    libbreenix::suite::judged(&g.fb()).map_err(|e| format!("judged icon: {e:?}"))?;
                     if drawn_pixels(&g, PAPER) == 0 {
                         return Err(format!("{name} drew nothing in 10,000 steps"));
                     }
                     let half = size / 2 + icon.bounds_overflow();
-                    for y in 0..160i64 {
-                        for x in 0..160i64 {
+                    for y in 0..256i64 {
+                        for x in 0..256i64 {
                             if !in_rect(
                                 x,
                                 y,
-                                80 - half as i64,
-                                80 - half as i64,
+                                128 - half as i64,
+                                128 - half as i64,
                                 2 * half as i64,
                                 2 * half as i64,
                             ) && g.color(x as usize, y as usize) != PAPER
                             {
-                                return Err(format!("{name} drew pixel ({x},{y}), outside its box of half-width {half} around (80,80)"));
+                                return Err(format!("{name} drew pixel ({x},{y}), outside its box of half-width {half} around (128,128)"));
                             }
                         }
                     }
@@ -2201,7 +2301,7 @@ fn icons_particles_bounded() -> CaseResult {
     g.reset(PAPER);
     for _ in 0..1000 {
         pool.update(0.001);
-        for p in &pool.particles {
+        for p in pool.particles() {
             if p.alive() {
                 ensure(
                     p.x >= -11.0 && p.x <= 11.0 && p.y >= -9.0 && p.y <= 9.0,
@@ -2212,6 +2312,7 @@ fn icons_particles_bounded() -> CaseResult {
         }
         pool.draw(&mut g.fb(), 40, 40);
     }
+    libbreenix::suite::judged(&g.fb())?;
     ensure(
         drawn_pixels(&g, PAPER) > 0,
         "16",
@@ -2233,7 +2334,23 @@ fn icons_particles_bounded() -> CaseResult {
         "16",
         "expired particles remained live",
     )?;
-    libbreenix::suite::judged(&g.fb())
+    for edge in [0.0, -0.25, -3.0] {
+        let mut negative = ParticlePool::with_bounds(1, edge - 4.0, edge - 4.0, edge, edge);
+        negative.emit(Particle { x: edge, y: edge, vx: 0.0, vy: 0.0, life: 1.0,
+            max_life: 1.0, size: 1.0, color: Color::WHITE, gravity: 0.0, friction: 0.0 });
+        let mut frame = Guarded::bgrx(20, 20);
+        frame.reset(PAPER);
+        negative.draw(&mut frame.fb(), 10, 10);
+        libbreenix::suite::judged(&frame.fb())?;
+        ensure(drawn_pixels(&frame, PAPER) > 0, "16", "negative bounded pool drew nothing")?;
+        for y in 0..20 { for x in 0..20 {
+            if x as f32 >= edge + 10.0 || y as f32 >= edge + 10.0
+                || (x as f32) < edge + 6.0 || (y as f32) < edge + 6.0 {
+                ensure(frame.color(x,y) == PAPER, "16", "negative-edge particle escaped box")?;
+            }
+        }}
+    }
+    Ok(())
 }
 
 fn icons_assets() -> CaseResult {
@@ -2251,7 +2368,25 @@ fn icons_assets() -> CaseResult {
     )?;
     let mut g = Guarded::bgrx(640, 512);
     g.reset(Color::rgb(12, 19, 31));
-    libicon::draw_catalogue(&mut g.fb());
+    // Drive the contract's schedules here, independently of the authoring tool.
+    let schedules: &[&[(u32, bool, bool)]] = &[
+        &[], &[(101_000, false, false)], &[(251_000, false, false)],
+        &[(251_000, false, false), (1_000, true, true), (50_000, true, false)],
+        &[(251_000, false, false), (1_000, true, true), (50_000, true, false),
+          (1_000, false, true), (120_000, false, false)],
+    ];
+    for (row, (_, make)) in catalogue().into_iter().enumerate() {
+        for (col, schedule) in schedules.iter().enumerate() {
+            let mut icon = make();
+            for &(dt, pressed, edge) in *schedule {
+                icon.update(dt, IconMouse { hovering: true, pressed,
+                    just_clicked: edge && pressed, just_released: edge && !pressed,
+                    rel_x: 0.0, rel_y: 0.0 });
+            }
+            icon.draw(&mut g.fb(), 64 + col as i32 * 128, 64 + row as i32 * 128, 48);
+        }
+    }
+    libbreenix::suite::judged(&g.fb())?;
     for y in 0..512 {
         for x in 0..640 {
             let i = (y * 640 + x) * 4;
@@ -2260,18 +2395,14 @@ fn icons_assets() -> CaseResult {
                 reference.pixels[i + 1],
                 reference.pixels[i],
             );
-            ensure(
-                g.color(x, y) == want,
-                "8.6,16",
-                format!(
+            if g.color(x, y) != want {
+                return at("8.6,16", format!(
                     "catalogue differs from reviewed scene at {x},{y}: actual {} expected {}",
-                    hex(g.color(x, y)),
-                    hex(want)
-                ),
-            )?;
+                    hex(g.color(x, y)), hex(want)));
+            }
         }
     }
-    libbreenix::suite::judged(&g.fb())
+    Ok(())
 }
 const EASING_TABLE: &[(&str, [f64; 11])] = &[
     (

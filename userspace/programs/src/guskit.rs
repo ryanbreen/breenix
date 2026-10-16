@@ -1560,7 +1560,7 @@ impl GuskitState {
         // Build input state for file picker — synthesize button words from tracked state
         let buttons: u32 = if self.left_down { 1 } else { 0 };
         let prev_buttons: u32 = if self.was_down { 1 } else { 0 };
-        let input = libbui::InputState::from_raw(self.mx, self.my, buttons, prev_buttons);
+        let input = libbui::InputState::from_raw(self.mx, self.my, buttons, prev_buttons, breengel::clock::now_ns() / 1_000_000);
 
         // File picker modal handling — two-phase to avoid overlapping borrows:
         // Phase 1: update picker, extract result + any needed data while picker borrow is live.
@@ -1994,7 +1994,7 @@ fn main() {
         // 3. Menu bar mouse handling, then guarded process_input
         let buttons: u32 = if state.left_down { 1 } else { 0 };
         let prev_buttons: u32 = if state.was_down { 1 } else { 0 };
-        let menu_input = libbui::InputState::from_raw(state.mx, state.my, buttons, prev_buttons);
+        let menu_input = libbui::InputState::from_raw(state.mx, state.my, buttons, prev_buttons, breengel::clock::now_ns() / 1_000_000);
         if let MenuEvent::Activated(action) = menu_bar.update(&menu_input, &menu_theme) {
             handle_menu_action(&mut state, action);
         }

@@ -49,13 +49,12 @@ impl FontConfig {
         }
         let mut values: [Option<&str>; 4] = [None; 4];
         for line in contents.lines() {
-            let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
             let (key, value) = line.split_once('=').ok_or(FontWatchError::Config)?;
-            let value = value.trim();
-            let index = match key.trim() {
+            if value.trim() != value { return Err(FontWatchError::Config); }
+            let index = match key {
                 "mono.font" => 0,
                 "mono.size" => 1,
                 "display.font" => 2,
@@ -71,6 +70,12 @@ impl FontConfig {
             return Err(FontWatchError::Config);
         };
         let size = |s: &str| -> Result<f32, FontWatchError> {
+            let mut parts = s.split('.');
+            let digits = |p: &str| !p.is_empty() && p.bytes().all(|c| c.is_ascii_digit());
+            if !digits(parts.next().unwrap_or(""))
+                || parts.next().is_some_and(|p| !digits(p)) || parts.next().is_some() {
+                return Err(FontWatchError::Config);
+            }
             let n = s.parse::<f32>().map_err(|_| FontWatchError::Config)?;
             if !n.is_finite() || !(6.0..=72.0).contains(&n) {
                 return Err(FontWatchError::Config);

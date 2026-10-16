@@ -296,7 +296,7 @@ impl Icon for HomeIcon {
         // Since we can't rescale in-place (pool is immutable in draw), instead we
         // draw manually with the scale factor.
         let smoke_scale = size as f32;
-        for p in &self.particles.particles {
+        for p in self.particles.particles() {
             if !p.alive() {
                 continue;
             }

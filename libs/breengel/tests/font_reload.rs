@@ -16,6 +16,12 @@ fn reject_partial_duplicate_unknown_and_invalid_sizes() {
         good.replace("=16\n", "=NaN\n"),
         good.replace("=16\n", "=73\n"),
         good.replace("=16\n", "=5\n"),
+        good.replace("mono.size=16", " mono.size=16"),
+        good.replace("mono.size=16", "mono.size =16"),
+        good.replace("mono.size=16", "mono.size= 16"),
+        good.replace("mono.size=16", "mono.size=16 "),
+        good.replace("mono.size=16", "mono.size=+16"),
+        good.replace("mono.size=16", "mono.size=1e1"),
         good.replace("display.size=24\n", ""),
     ] {
         assert_eq!(
@@ -32,7 +38,9 @@ fn reload_is_paced_independent_atomic_and_tracks_inode_replacements() {
     std::fs::create_dir_all(dir.join("etc")).unwrap();
     let mono = dir.join("mono.ttf");
     let display = dir.join("display.ttf");
-    std::fs::write(&mono, include_bytes!("../../../fonts/DejaVuSansMono.ttf")).unwrap();
+    let mut original = include_bytes!("../../../fonts/DejaVuSansMono.ttf").to_vec();
+    original.resize(include_bytes!("../../../fonts/DejaVuSans.ttf").len(), 0);
+    std::fs::write(&mono, original).unwrap();
     std::fs::write(&display, include_bytes!("../../../fonts/DejaVuSans.ttf")).unwrap();
     let conf = dir.join("etc/fonts.conf");
     let config = |size| {
@@ -93,11 +101,18 @@ fn reload_is_paced_independent_atomic_and_tracks_inode_replacements() {
         );
         assert_eq!(w.mono_size(), (20 + i) as f32);
     }
+    let before = std::fs::metadata(&mono).unwrap();
     std::fs::write(
         dir.join("replacement"),
         include_bytes!("../../../fonts/DejaVuSans.ttf"),
     )
     .unwrap();
+    std::fs::File::options().write(true).open(dir.join("replacement")).unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(before.modified().unwrap())).unwrap();
+    let after = std::fs::metadata(dir.join("replacement")).unwrap();
+    use std::os::unix::fs::MetadataExt;
+    assert_eq!((before.len(), before.mtime(), before.mtime_nsec()), (after.len(), after.mtime(), after.mtime_nsec()));
+    assert_ne!(before.ino(), after.ino());
     std::fs::rename(dir.join("replacement"), &mono).unwrap();
     step(2_250_000_000);
     assert_eq!(

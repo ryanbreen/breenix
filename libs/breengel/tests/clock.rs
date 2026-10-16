@@ -21,6 +21,17 @@ fn shared_page_tracks_epochs_without_reading_real_time() {
     file.seek(SeekFrom::Start(16)).unwrap();
     file.write_all(&250_000_000u64.to_le_bytes()).unwrap();
     assert_eq!(clock::now_ns(), 250_000_000);
+    // A fresh session can replace the page at the very same configured path.
+    page[8..16].copy_from_slice(&8u64.to_le_bytes());
+    page[16..24].copy_from_slice(&987u64.to_le_bytes());
+    let replacement = path.with_extension("next");
+    std::fs::write(&replacement, page).unwrap();
+    std::fs::rename(replacement, &path).unwrap();
+    assert_eq!(clock::now_ns(), 987);
+    assert_eq!(clock::epoch(), 8);
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(clock::now_ns(), 987, "unlinked mapped clock remains usable");
+    assert_eq!(clock::epoch(), 8);
     let before = clock::real_clock_reads();
     assert!(clock::real_now_ns() > 0);
     assert_eq!(clock::real_clock_reads(), before + 1);
@@ -29,5 +40,13 @@ fn shared_page_tracks_epochs_without_reading_real_time() {
     assert!(clock::now_ns() >= first);
     assert_eq!(clock::epoch(), 0);
     assert!(clock::wall_ns() > 1_767_225_600_000_000_000);
-    std::fs::remove_file(path).unwrap();
+    // A cached inode still has to be long enough to hold the clock header.
+    std::fs::write(&path, page).unwrap();
+    std::env::set_var("BREENIX_UI_CLOCK", &path);
+    assert_eq!(clock::now_ns(), 987);
+    std::fs::OpenOptions::new().write(true).open(&path).unwrap().set_len(8).unwrap();
+    assert!(std::panic::catch_unwind(clock::now_ns).is_err(), "truncated cached page must be rejected");
+    std::env::remove_var("BREENIX_UI_CLOCK");
+    std::fs::remove_file(&path).unwrap();
+
 }

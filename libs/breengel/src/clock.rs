@@ -1,14 +1,15 @@
 //! UI time from the shared BGCLK001 page (BreenGL §9.1).
 //!
 //! A configured but invalid page is an error, never permission to switch a session
-//! to real time. The mapping is retained until the configured path changes.
+//! to real time. The mapping is retained until the configured path or backing file identity changes.
 use std::os::fd::AsRawFd;
+use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 static REAL_READS: AtomicU64 = AtomicU64::new(0);
-static PAGE: Mutex<Option<(PathBuf, Arc<Page>)>> = Mutex::new(None);
+static PAGE: Mutex<Option<(PathBuf, u64, u64, Arc<Page>)>> = Mutex::new(None);
 
 extern "C" {
     fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, off: i64) -> *mut u8;
@@ -33,18 +34,34 @@ impl Page {
 fn page() -> Option<Arc<Page>> {
     let path = std::env::var_os("BREENIX_UI_CLOCK").map(PathBuf::from)?;
     let mut cached = PAGE.lock().expect("UI clock mapping lock");
-    if let Some((old, mapping)) = cached.as_ref() {
-        if *old == path { return Some(mapping.clone()); }
+    // stat does not open a descriptor. An unlinked page remains a valid shared
+    // mapping; keep it until this path names a new inode or the session changes.
+    let meta = match std::fs::metadata(&path) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if let Some((old, _, _, mapping)) = cached.as_ref() {
+                if *old == path { return Some(mapping.clone()); }
+            }
+            panic!("BREENIX_UI_CLOCK cannot be opened: {e}");
+        }
+        Err(e) => panic!("UI clock metadata: {e}"),
+    };
+    assert!(meta.len() >= 64, "short UI clock page");
+    if let Some((old, dev, ino, mapping)) = cached.as_ref() {
+        if *old == path && *dev == meta.dev() && *ino == meta.ino() {
+            return Some(mapping.clone());
+        }
     }
     let file = std::fs::File::open(&path).expect("BREENIX_UI_CLOCK cannot be opened");
-    assert!(file.metadata().expect("UI clock metadata").len() >= 64, "short UI clock page");
+    let meta = file.metadata().expect("UI clock metadata");
+    assert!(meta.len() >= 64, "short UI clock page");
     // PROT_READ=1, MAP_SHARED=1 on Breenix and the supported Unix hosts.
     let ptr = unsafe { mmap(std::ptr::null_mut(), 64, 1, 1, file.as_raw_fd(), 0) };
     assert!(ptr as isize != -1 && !ptr.is_null(), "UI clock mmap failed");
     let mapping = Arc::new(Page(ptr));
     let magic = unsafe { std::slice::from_raw_parts(ptr, 8) };
     assert_eq!(magic, b"BGCLK001", "invalid UI clock magic");
-    *cached = Some((path, mapping.clone()));
+    *cached = Some((path, meta.dev(), meta.ino(), mapping.clone()));
     Some(mapping)
 }
 /// Monotonic UI nanoseconds. A stepped session performs no real-clock reads.

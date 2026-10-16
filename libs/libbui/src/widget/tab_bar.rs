@@ -15,6 +15,7 @@ use crate::theme::Theme;
 /// Tracks which tab is selected and returns `WidgetEvent::ValueChanged(index)`
 /// when the user clicks a different tab.
 pub struct TabBar {
+    bitmap_font: bool,
     enabled: bool,
     focused: bool,
     redraw: bool,
@@ -27,8 +28,9 @@ pub struct TabBar {
 
 impl TabBar {
     /// Create a tab bar occupying `rect` with the given tab labels.
-    pub fn new(rect: Rect, labels: Vec<&'static [u8]>) -> Self {
+    pub fn new(rect: Rect, labels: Vec<&'static [u8]>, theme: &Theme) -> Self {
         Self {
+            bitmap_font: theme.use_bitmap_font,
             enabled: true,
             focused: false,
             redraw: false,
@@ -92,8 +94,18 @@ impl TabBar {
         )
     }
 
+    /// Set layout metrics before input, including before the first draw.
+    pub fn layout(&mut self, theme: &Theme) {
+        if self.bitmap_font != theme.use_bitmap_font {
+            self.bitmap_font = theme.use_bitmap_font;
+            self.redraw = true;
+        }
+    }
+
     fn min_width(&self, index: usize) -> i32 {
-        (self.labels[index].len() as i32 * 6 - 1).max(0) + 16
+        let mut theme = Theme::dark();
+        theme.use_bitmap_font = self.bitmap_font;
+        text::text_width(self.labels[index], &theme).saturating_add(16)
     }
     fn overflowing(&self) -> bool {
         self.labels
@@ -172,6 +184,11 @@ impl TabBar {
 
     /// Draw the tab bar.
     pub fn draw(&self, fb: &mut FrameBuf, theme: &Theme) {
+        // Drawing and input share the font selected by layout().
+        let mut theme = *theme;
+        theme.use_bitmap_font = self.bitmap_font;
+        let theme = &theme;
+        fb.push_clip(libgfx::framebuf::Rect::new(self.rect.x, self.rect.y, self.rect.w, self.rect.h));
         // Background
         shapes::fill_rect(
             fb,
@@ -221,6 +238,7 @@ impl TabBar {
             };
             text::draw_text_centered(fb, label, &r, text_color, theme);
         }
+        fb.pop_clip();
         if self.focused && self.enabled {
             crate::widget::draw_focus_ring(fb, &self.rect, theme);
         }

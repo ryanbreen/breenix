@@ -60,8 +60,12 @@ impl Particle {
         let b = (self.color.b as f32 * alpha) as u8;
         let c = Color::rgb(r, g, b);
 
-        let px = self.x as i32 + offset_x;
-        let py = self.y as i32 + offset_y;
+        fn floor_pixel(v: f32) -> i32 {
+            let i = v as i32;
+            if v < i as f32 { i.saturating_sub(1) } else { i }
+        }
+        let px = floor_pixel(self.x).saturating_add(offset_x);
+        let py = floor_pixel(self.y).saturating_add(offset_y);
         // Shrink radius as the particle dies.
         let sz = (self.size * (0.5 + 0.5 * self.life)) as i32;
 
@@ -81,8 +85,10 @@ impl Particle {
 
 /// An automatically-recycling pool of particles.
 pub struct ParticlePool {
-    pub particles: Vec<Particle>,
+    particles: Vec<Particle>,
     max_particles: usize,
+    // Lifetime is elapsed time, not repeated subtraction from an f32 fraction.
+    remaining_ns: Vec<f64>,
     bounds: Option<(f32,f32,f32,f32)>,
     remainder_ns: u64,
 }
@@ -92,12 +98,11 @@ impl ParticlePool {
         Self {
             particles: Vec::with_capacity(max_particles),
             max_particles,
+            remaining_ns: Vec::with_capacity(max_particles),
             bounds: None, remainder_ns: 0,
         }
     }
 
-    /// Emit a particle. Finds a dead slot first; falls back to the oldest entry
-    /// when the pool is at capacity.
     /// Confine particle footprints to [left,right) × [top,bottom).
     pub fn with_bounds(capacity: usize, left: f32, top: f32, right: f32, bottom: f32) -> Self {
         assert!(left.is_finite() && top.is_finite() && right.is_finite() && bottom.is_finite()
@@ -108,6 +113,12 @@ impl ParticlePool {
     }
     fn confine(bounds: Option<(f32,f32,f32,f32)>, p: &mut Particle) {
         if let Some((l,t,r,b)) = bounds {
+            // Confine to full pixel cells, including fractional negative edges.
+            let ceil = |v: f32| { let i = v as i32; if v > i as f32 { i.saturating_add(1) } else { i } };
+            let floor = |v: f32| { let i = v as i32; if v < i as f32 { i.saturating_sub(1) } else { i } };
+            let (l,t,r,b) = (ceil(l) as f32, ceil(t) as f32, floor(r) as f32, floor(b) as f32);
+            // No whole pixel fits; retaining a live particle would violate the box.
+            if r-l < 1.0 || b-t < 1.0 { p.life = 0.0; return; }
             p.size = p.size.max(0.0).min(r-l).min(b-t);
             let half = p.size.max(1.0)/2.0;
             let x = p.x.clamp(l+half,r-half);
@@ -117,6 +128,10 @@ impl ParticlePool {
             p.x = x; p.y = y;
         }
     }
+    /// Inspect particles without invalidating the pool's lifetime accounting.
+    pub fn particles(&self) -> &[Particle] { &self.particles }
+
+    /// Emit a particle. Reuse a dead slot, or the oldest entry at capacity.
     pub fn emit(&mut self, mut p: Particle) {
         if !p.max_life.is_finite() || p.max_life <= 0.0 || !p.x.is_finite() || !p.y.is_finite()
             || !p.vx.is_finite() || !p.vy.is_finite() || !p.size.is_finite()
@@ -124,18 +139,22 @@ impl ParticlePool {
         p.life = p.life.clamp(0.0,1.0);
         Self::confine(self.bounds,&mut p);
         // Try to reuse a dead slot.
-        for slot in self.particles.iter_mut() {
+        let remaining = p.life as f64 * p.max_life as f64 * 1_000_000_000.0;
+        for (i, slot) in self.particles.iter_mut().enumerate() {
             if !slot.alive() {
                 *slot = p;
+                self.remaining_ns[i] = remaining;
                 return;
             }
         }
         // Under the cap — just push.
         if self.particles.len() < self.max_particles {
             self.particles.push(p);
+            self.remaining_ns.push(remaining);
         } else if !self.particles.is_empty() {
             // Overwrite the first slot (oldest by insertion order).
             self.particles[0] = p;
+            self.remaining_ns[0] = remaining;
         }
     }
 
@@ -145,18 +164,43 @@ impl ParticlePool {
         self.remainder_ns = self.remainder_ns.saturating_add((dt as f64 * 1_000_000_000.0 + 0.5) as u64);
         while self.remainder_ns >= 1_000_000 {
             self.remainder_ns -= 1_000_000;
-            for p in self.particles.iter_mut() {
+            let mut changed = false;
+            for (p, remaining) in self.particles.iter_mut().zip(self.remaining_ns.iter_mut()) {
+                let state = |p: &Particle| (p.x.to_bits(), p.y.to_bits(), p.vx.to_bits(), p.vy.to_bits(), p.life.to_bits());
+                let before = state(p);
                 p.update(0.001);
+                *remaining = (*remaining - 1_000_000.0).max(0.0);
+                p.life = (*remaining / (p.max_life as f64 * 1_000_000_000.0)) as f32;
                 Self::confine(self.bounds,p);
+                changed |= before != state(p);
+            }
+            // Dead particles and exact f32 fixed points cannot change in any
+            // later quantum until the caller emits or mutates a particle.
+            if !changed {
+                let skipped = (self.remainder_ns / 1_000_000 * 1_000_000) as f64;
+                for (p, remaining) in self.particles.iter_mut().zip(self.remaining_ns.iter_mut()) {
+                    *remaining = (*remaining - skipped).max(0.0);
+                    if p.alive() { p.life = (*remaining / (p.max_life as f64 * 1_000_000_000.0)) as f32; }
+                }
+                self.remainder_ns %= 1_000_000;
+                break;
             }
         }
     }
 
     /// Draw all live particles.
     pub fn draw(&self, fb: &mut FrameBuf, offset_x: i32, offset_y: i32) {
-        for p in &self.particles {
-            p.draw(fb, offset_x, offset_y);
+        if let Some((l,t,r,b)) = self.bounds {
+            let ceil = |v: f32| { let i = v as i32; if v > i as f32 { i.saturating_add(1) } else { i } };
+            let floor = |v: f32| { let i = v as i32; if v < i as f32 { i.saturating_sub(1) } else { i } };
+            let left = ceil(l).saturating_add(offset_x);
+            let top = ceil(t).saturating_add(offset_y);
+            let right = floor(r).saturating_add(offset_x);
+            let bottom = floor(b).saturating_add(offset_y);
+            fb.push_clip(libgfx::framebuf::Rect::new(left, top, right.saturating_sub(left).max(0), bottom.saturating_sub(top).max(0)));
         }
+        for p in &self.particles { p.draw(fb, offset_x, offset_y); }
+        if self.bounds.is_some() { fb.pop_clip(); }
     }
 
     /// Kill all particles immediately.
@@ -165,6 +209,7 @@ impl ParticlePool {
         for p in self.particles.iter_mut() {
             p.life = 0.0;
         }
+        self.remaining_ns.fill(0.0);
     }
 
     /// Number of currently live particles.

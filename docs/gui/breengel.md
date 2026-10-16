@@ -749,8 +749,8 @@ HoverIn, Hovering, Pressed and Clicked. Each icon is size 48, centred at
 - Pressed: 251,000 µs of hover, a 1,000 µs press edge with the button held, then 50,000 µs held.
 - Clicked: the Pressed schedule, a 1,000 µs release edge, then 120,000 µs of hover.
 
-`tools/gfx-refgen` renders this scene through `libicon::draw_catalogue` for review; the guest compares
-every pixel of its own rendering against the reviewed file. Icons are procedural drawings; no external
+`tools/gfx-refgen` renders this literal scene for review; the guest drives its own copy of these input
+schedules and compares every pixel of its own rendering against the reviewed file. Icons are procedural drawings; no external
 icon asset is used. The reference's redistribution licence and review are recorded in the frame provenance.
 
 ## 17. The window interface, version 2

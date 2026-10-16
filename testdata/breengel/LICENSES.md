@@ -22,3 +22,9 @@ Everything under `testdata/breengel/` is installed on the test disk at
 
 External codecs were used only at authoring time to record fixture bytes. The suite
 reads these pinned files and never invokes an external encoder or decoder.
+
+## Icon catalogue reference
+
+`docs/suites/frames/breengel/icons/assets.png` is original procedural Breenix artwork,
+rendered by `tools/gfx-refgen` from the section 16.1 scene. It has no third-party content and is redistributed with
+the repository on the same terms as its source; its review and SHA-256 are in the frame provenance.

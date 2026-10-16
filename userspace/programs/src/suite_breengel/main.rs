@@ -179,11 +179,6 @@ fn main() {
 /// The contract document every message cites.
 const CONTRACT: &str = "docs/gui/breengel.md";
 
-/// Fail naming a piece of the stack this case needs that does not exist.
-fn missing(what: &str, section: &str) -> CaseResult {
-    fail(format!("missing {what} ({CONTRACT} section {section})"))
-}
-
 /// Fail with a check's own message, citing its section.
 fn at(section: &str, msg: impl AsRef<str>) -> CaseResult {
     fail(format!("{} ({CONTRACT} section {section})", msg.as_ref()))
