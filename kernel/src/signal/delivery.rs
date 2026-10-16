@@ -608,6 +608,7 @@ fn install_user_handler_x86_64(
     action: &SignalAction,
 ) -> Result<(), PrepareWriteError> {
     use crate::arch_impl::x86_64::fpu;
+    crate::stall_probe::returned(2);
 
     const RED_ZONE: u64 = 128;
     let original_rsp = user_return.rsp;
