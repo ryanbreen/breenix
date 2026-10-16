@@ -297,13 +297,34 @@ pub fn sched_wait_begin() -> (u64, u64) {
     (rdtsc(), SCHED_HOLDER.load(Ordering::Relaxed))
 }
 
+/// Per CPU: when it took the scheduler lock, total cycles held, holds, and
+/// the longest hold in cycles.
+static SCHED_HOLD_AT: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+static SCHED_HOLD_SUM: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+static SCHED_HOLD_N: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+static SCHED_HOLD_MAX: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+static PROBE_T0: AtomicU64 = AtomicU64::new(0);
+
 pub fn sched_acquired(begin: (u64, u64)) {
     let cpu = crate::task::scheduler::current_cpu_id_raw();
     note_wait(1, begin.0, begin.1);
     SCHED_HOLDER.store(cpu as u64, Ordering::Relaxed);
+    if cpu < MAX_CPUS {
+        SCHED_HOLD_AT[cpu].store(rdtsc(), Ordering::Relaxed);
+    }
 }
 
 pub fn sched_released() {
+    let cpu = crate::task::scheduler::current_cpu_id_raw();
+    if cpu < MAX_CPUS {
+        let at = SCHED_HOLD_AT[cpu].swap(0, Ordering::Relaxed);
+        if at != 0 {
+            let held = rdtsc().saturating_sub(at);
+            SCHED_HOLD_SUM[cpu].fetch_add(held, Ordering::Relaxed);
+            SCHED_HOLD_N[cpu].fetch_add(1, Ordering::Relaxed);
+            SCHED_HOLD_MAX[cpu].fetch_max(held, Ordering::Relaxed);
+        }
+    }
     SCHED_HOLDER.store(u64::MAX, Ordering::Relaxed);
 }
 
@@ -462,6 +483,18 @@ fn summary() {
             waits[kind as usize - 1].1 = waits[kind as usize - 1].1.max(len);
         }
     }
+    if PROBE_T0.load(Ordering::Relaxed) == 0 {
+        PROBE_T0.store(rdtsc(), Ordering::Relaxed);
+    }
+    let since_us = rdtsc().saturating_sub(PROBE_T0.load(Ordering::Relaxed)) / cycles_per_us();
+    let per = cycles_per_us();
+    log::info!(
+        "SCHEDHOLD since_us={} held_us={:?} holds={:?} max_us={:?}",
+        since_us,
+        [0, 1, 2, 3].map(|c| SCHED_HOLD_SUM[c].load(Ordering::Relaxed) / per),
+        [0, 1, 2, 3].map(|c| SCHED_HOLD_N[c].load(Ordering::Relaxed)),
+        [0, 1, 2, 3].map(|c| SCHED_HOLD_MAX[c].load(Ordering::Relaxed) / per),
+    );
     let total: u64 = DISP_COUNT.iter().take(ncpus()).map(|c| c.load(Ordering::Relaxed)).sum();
     let elapsed_us = rdtsc().saturating_sub(FIRST_DISP_TSC.load(Ordering::Relaxed)) / cycles_per_us();
     log::info!(
