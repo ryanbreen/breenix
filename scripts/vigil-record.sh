@@ -34,10 +34,16 @@ case "${1:-}" in
         dirty=$(git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null | wc -l | tr -d ' ')
         args=(breenix start --platform "$platform" --commit "$commit" --checkout "$ROOT" --serial "$serial" --dirty "${dirty:-0}" --pid "${BREENIX_LAUNCHER_PID:-$PPID}")
         [ -z "${BREENIX_VIGIL_WORKTREE:-}" ] || args+=(--worktree "$BREENIX_VIGIL_WORKTREE")
+        # The installed CLI rejects the spelling default; its native-VM record
+        # constructor maps program to default. Keep the persisted mode accurate.
+        record_mode="$mode"
+        if [ "$mode" = default ] && { [ "$platform" = vmware ] || [ "$platform" = parallels ]; }; then
+            record_mode=program
+        fi
         if [ -n "$suite" ]; then
             args+=(--suite "$suite")
         elif [ -n "$mode" ]; then
-            args+=(--mode "$mode")
+            args+=(--mode "$record_mode")
         fi
         [ -z "$user" ] || args+=(--serial-user "$user")
         [ -z "$profile" ] || [ "$profile" = default ] || args+=(--profile "$profile")
