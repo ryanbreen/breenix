@@ -59,7 +59,7 @@ enum Device {
     /// SUBMIT_3D and read back by TRANSFER_FROM_HOST_3D.
     Virgl,
     /// The SVGA3 screen target (VMware): the MOB of the bound surface, updated per damaged
-    /// rectangle and fenced; it has no readback of the device's copy.
+    /// rectangle and fenced, and read back from a host-side copy of the bound surface.
     Svga3,
 }
 
@@ -173,12 +173,13 @@ impl Device {
     }
 
     /// The most damaged rectangles a record has room for: twelve completions, less the
-    /// final flush on virtio 2D, and the SUBMIT_3D and the readback transfer on VirGL.
+    /// final flush on virtio 2D, the SUBMIT_3D and the readback transfer on VirGL, and the
+    /// readback on SVGA3.
     fn max_rects(self) -> usize {
         match self {
             Device::Virtio2d => 11,
             Device::Virgl => 10,
-            Device::Svga3 => 12,
+            Device::Svga3 => 11,
         }
     }
 
@@ -209,8 +210,8 @@ impl Device {
     /// Section 20.2's observation flags and boundary code for this backend.
     fn boundary(self) -> (u32, u32) {
         match self {
-            Device::Virtio2d | Device::Svga3 => (abi::OBSERVATION_DEVICE_COPY_OUTSIDE, 1),
-            Device::Virgl => (0, 3),
+            Device::Virtio2d => (abi::OBSERVATION_DEVICE_COPY_OUTSIDE, 1),
+            Device::Virgl | Device::Svga3 => (0, 3),
         }
     }
 }
@@ -314,6 +315,10 @@ fn publish(s: &mut State, damage: &[Rect], faults: bool) -> Result<(), i32> {
             let a = (y * W + r.x as usize) * 4;
             let b = a + r.w as usize * 4;
             fb[a..b].copy_from_slice(&s.pixels[a..b]);
+            // X is 0xFF in every presented pixel: the SVGA3 readback refuses any other.
+            for px in fb[a..b].chunks_exact_mut(4) {
+                px[3] = 255;
+            }
         }
     }
     if masked {
@@ -326,7 +331,8 @@ fn publish(s: &mut State, damage: &[Rect], faults: bool) -> Result<(), i32> {
     let corrupt = faults && crate::test_control::take(point::CORRUPT_OUTSIDE_DAMAGE, 0).is_some();
     // The first pixel of the last row, outside the frame's damage. VirGL and SVGA3 present
     // the corrupted pixel to the device with the frame; virtio 2D writes it into the
-    // observed guest backing after the frame's transfers.
+    // observed guest backing after the frame's transfers. SVGA3 then restores its guest
+    // backing, so the corruption is only in the device's copy.
     let corner = (H - 1) * W * 4;
     let extra = (corrupt && device != Device::Virtio2d).then(|| {
         fb[corner] ^= 0xFF;
@@ -334,6 +340,9 @@ fn publish(s: &mut State, damage: &[Rect], faults: bool) -> Result<(), i32> {
         Rect::new(0, H as i32 - 1, 1, 1)
     });
     let (resource, answers) = device.present(damage, extra, skip, wrong, stale).map_err(|_| EIO)?;
+    if extra.is_some() && device == Device::Svga3 {
+        fb[corner] ^= 0xFF;
+    }
     s.record.resource = resource;
     s.record.completion_count = answers.len() as u32;
     s.record.completions = [abi::Completion {
@@ -556,12 +565,16 @@ impl Backend for Display {
         out.try_reserve_exact(LEN).map_err(|_| ENOMEM)?;
         match device {
             Device::Virtio2d => out.extend_from_slice(&gpu::framebuffer().ok_or(EIO)?[..LEN]),
-            Device::Svga3 => out.extend_from_slice(&svga3::compositor_backing().ok_or(EIO)?[..LEN]),
-            Device::Virgl => {
-                // The fenced TRANSFER_FROM_HOST_3D is this observation's own completion.
+            Device::Virgl | Device::Svga3 => {
+                // The fenced TRANSFER_FROM_HOST_3D (VirGL) or READBACK_GB_SURFACE (SVGA3) is
+                // this observation's own completion.
                 out.resize(LEN, 0);
                 if s.invalid == 0 {
-                    let done = gpu_pci::compositor_readback(&mut out).map_err(|_| EIO)?;
+                    let done = match device {
+                        Device::Virgl => gpu_pci::compositor_readback(&mut out),
+                        _ => svga3::compositor_readback(&mut out),
+                    }
+                    .map_err(|_| EIO)?;
                     let n = record.completion_count as usize;
                     if n >= record.completions.len() {
                         return Err(EIO);
