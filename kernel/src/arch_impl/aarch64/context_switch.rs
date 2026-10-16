@@ -7447,7 +7447,7 @@ pub(crate) fn check_and_deliver_signals_for_current_thread_arm64(frame: &mut Aar
 
         // Clean up window buffers so compositor stops reading freed pages
         if let Some(pid) = terminated_child_pid {
-            crate::syscall::graphics::cleanup_windows_for_pid(pid);
+            crate::syscall::window_v1::cleanup_windows_for_pid(pid);
         }
     }
 }

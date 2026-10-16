@@ -239,7 +239,7 @@ pub fn process_keyboard_report(report: &[u8]) {
         // Wake the compositor (same proven lock-free path the mouse latch uses)
         // so a Super tap triggers the hotkey check with low latency even when no
         // window is dirty and the mouse is idle.
-        crate::syscall::graphics::wake_compositor_if_waiting();
+        crate::syscall::window_v1::wake_compositor_if_waiting();
     }
 
     // Track Alt key state (bits 2/6)
@@ -424,7 +424,7 @@ pub fn process_mouse_report(report: &[u8], ep_idx: u8) {
             }
         }
 
-        crate::syscall::graphics::wake_compositor_if_waiting();
+        crate::syscall::window_v1::wake_compositor_if_waiting();
         return;
     }
 
@@ -461,7 +461,7 @@ pub fn process_mouse_report(report: &[u8], ep_idx: u8) {
     if wheel != 0 {
         MOUSE_WHEEL.fetch_add(wheel, Ordering::Relaxed);
     }
-    crate::syscall::graphics::wake_compositor_if_waiting();
+    crate::syscall::window_v1::wake_compositor_if_waiting();
 }
 
 // =============================================================================

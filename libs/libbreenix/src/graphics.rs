@@ -88,28 +88,13 @@ pub struct FbDrawCmd {
     pub color: u32,
 }
 
-/// Draw operation codes
+/// `fb_draw` operation codes. Ops 0 to 5, 7 and 9 were retired (docs/gui/breengel.md
+/// section 17.6); 27 to 30 exist only in `boot_tests` kernels.
 pub mod draw_op {
-    /// Clear the left pane with a color
-    pub const CLEAR: u32 = 0;
-    /// Fill a rectangle: x, y, width, height, color
-    pub const FILL_RECT: u32 = 1;
-    /// Draw rectangle outline: x, y, width, height, color
-    pub const DRAW_RECT: u32 = 2;
-    /// Fill a circle: cx, cy, radius, color
-    pub const FILL_CIRCLE: u32 = 3;
-    /// Draw circle outline: cx, cy, radius, color
-    pub const DRAW_CIRCLE: u32 = 4;
-    /// Draw a line: x1, y1, x2, y2, color
-    pub const DRAW_LINE: u32 = 5;
     /// Flush the framebuffer (for double-buffering)
     pub const FLUSH: u32 = 6;
-    /// Submit a VirGL GPU-rendered frame
-    pub const VIRGL_SUBMIT_FRAME: u32 = 7;
     /// Batch flush multiple dirty rects with one DSB barrier
     pub const FLUSH_BATCH: u32 = 8;
-    /// Submit VirGL GPU-rendered rectangles
-    pub const VIRGL_SUBMIT_RECTS: u32 = 9;
     /// Composite a pixel buffer as a full-screen GPU texture
     pub const VIRGL_COMPOSITE: u32 = 10;
     /// Create a shared window pixel buffer
@@ -154,25 +139,6 @@ pub mod draw_op {
     pub const WAIT_STRESS_STATS: u32 = 30;
 }
 
-/// Ball descriptor for VirGL GPU rendering.
-/// Must match kernel's VirglBall in drivers/virtio/gpu_pci.rs.
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-pub struct VirglBall {
-    pub x: f32,
-    pub y: f32,
-    pub radius: f32,
-    pub color: [f32; 4],
-}
-
-/// Frame descriptor passed to the VirglSubmitFrame syscall.
-#[repr(C)]
-pub struct VirglFrameDesc {
-    pub ball_count: u32,
-    pub _pad: u32,
-    pub balls: [VirglBall; 16],
-}
-
 /// Pack RGB color into u32
 #[inline]
 pub const fn rgb(r: u8, g: u8, b: u8) -> u32 {
@@ -184,19 +150,6 @@ fn fbdraw(cmd: &FbDrawCmd) -> Result<(), Error> {
     let ret = unsafe { raw::syscall1(nr::FBDRAW, cmd as *const FbDrawCmd as u64) as i64 };
     Error::from_syscall(ret)?;
     Ok(())
-}
-
-/// Clear the left pane with a color
-pub fn fb_clear(color: u32) -> Result<(), Error> {
-    let cmd = FbDrawCmd {
-        op: draw_op::CLEAR,
-        p1: 0,
-        p2: 0,
-        p3: 0,
-        p4: 0,
-        color,
-    };
-    fbdraw(&cmd)
 }
 
 /// Reset the F32c waitqueue stress counters and wake any stale waiter.
@@ -250,71 +203,6 @@ pub fn wait_stress_stats(out: &mut [u64; 4]) -> Result<(), Error> {
         p3: out.len() as i32,
         p4: 0,
         color: 0,
-    };
-    fbdraw(&cmd)
-}
-
-/// Fill a rectangle on the left pane
-pub fn fb_fill_rect(x: i32, y: i32, width: i32, height: i32, color: u32) -> Result<(), Error> {
-    let cmd = FbDrawCmd {
-        op: draw_op::FILL_RECT,
-        p1: x,
-        p2: y,
-        p3: width,
-        p4: height,
-        color,
-    };
-    fbdraw(&cmd)
-}
-
-/// Draw a rectangle outline on the left pane
-pub fn fb_draw_rect(x: i32, y: i32, width: i32, height: i32, color: u32) -> Result<(), Error> {
-    let cmd = FbDrawCmd {
-        op: draw_op::DRAW_RECT,
-        p1: x,
-        p2: y,
-        p3: width,
-        p4: height,
-        color,
-    };
-    fbdraw(&cmd)
-}
-
-/// Fill a circle on the left pane
-pub fn fb_fill_circle(cx: i32, cy: i32, radius: i32, color: u32) -> Result<(), Error> {
-    let cmd = FbDrawCmd {
-        op: draw_op::FILL_CIRCLE,
-        p1: cx,
-        p2: cy,
-        p3: radius,
-        p4: 0,
-        color,
-    };
-    fbdraw(&cmd)
-}
-
-/// Draw a circle outline on the left pane
-pub fn fb_draw_circle(cx: i32, cy: i32, radius: i32, color: u32) -> Result<(), Error> {
-    let cmd = FbDrawCmd {
-        op: draw_op::DRAW_CIRCLE,
-        p1: cx,
-        p2: cy,
-        p3: radius,
-        p4: 0,
-        color,
-    };
-    fbdraw(&cmd)
-}
-
-/// Draw a line on the left pane
-pub fn fb_draw_line(x1: i32, y1: i32, x2: i32, y2: i32, color: u32) -> Result<(), Error> {
-    let cmd = FbDrawCmd {
-        op: draw_op::DRAW_LINE,
-        p1: x1,
-        p2: y1,
-        p3: x2,
-        p4: y2,
-        color,
     };
     fbdraw(&cmd)
 }
@@ -402,79 +290,6 @@ pub fn fb_flush_rects(rects: &[FlushRect]) -> Result<(), Error> {
         p3: rects.len() as i32,
         p4: 0,
         color: 0,
-    };
-    fbdraw(&cmd)
-}
-
-/// Rectangle descriptor for VirGL GPU rendering.
-/// Must match kernel's VirglRect in drivers/virtio/gpu_pci.rs.
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-pub struct VirglRect {
-    pub x: f32,
-    pub y: f32,
-    pub w: f32,
-    pub h: f32,
-    pub r: f32,
-    pub g: f32,
-    pub b: f32,
-    pub a: f32,
-}
-
-/// Frame descriptor passed to the VirglSubmitRects syscall.
-#[repr(C)]
-pub struct VirglRectDesc {
-    pub rect_count: u32,
-    pub _pad: u32,
-    pub rects: [VirglRect; 60],
-}
-
-/// Submit GPU-rendered rectangles via VirGL DRAW_VBO.
-///
-/// Each rect is drawn as a colored quad on the GPU. Background is cleared
-/// to bg_color first. Zero guest CPU pixel writes.
-pub fn virgl_submit_rects(rects: &[VirglRect], bg_color: u32) -> Result<(), Error> {
-    let mut desc = VirglRectDesc {
-        rect_count: rects.len().min(60) as u32,
-        _pad: 0,
-        rects: [VirglRect::default(); 60],
-    };
-    for (i, rect) in rects.iter().take(60).enumerate() {
-        desc.rects[i] = *rect;
-    }
-    let desc_ptr = &desc as *const VirglRectDesc as u64;
-    let cmd = FbDrawCmd {
-        op: draw_op::VIRGL_SUBMIT_RECTS,
-        p1: desc_ptr as i32,
-        p2: (desc_ptr >> 32) as i32,
-        p3: 0,
-        p4: 0,
-        color: bg_color,
-    };
-    fbdraw(&cmd)
-}
-
-/// Submit a VirGL GPU-rendered frame.
-///
-/// Sends ball positions/colors to the kernel, which renders them via the host
-/// GPU and DMA-copies the result to display memory. Zero guest CPU pixel writes.
-pub fn virgl_submit_frame(balls: &[VirglBall], bg_color: u32) -> Result<(), Error> {
-    let mut desc = VirglFrameDesc {
-        ball_count: balls.len().min(16) as u32,
-        _pad: 0,
-        balls: [VirglBall::default(); 16],
-    };
-    for (i, ball) in balls.iter().take(16).enumerate() {
-        desc.balls[i] = *ball;
-    }
-    let desc_ptr = &desc as *const VirglFrameDesc as u64;
-    let cmd = FbDrawCmd {
-        op: draw_op::VIRGL_SUBMIT_FRAME,
-        p1: desc_ptr as i32,               // low 32 bits
-        p2: (desc_ptr >> 32) as i32,        // high 32 bits
-        p3: 0,
-        p4: 0,
-        color: bg_color,
     };
     fbdraw(&cmd)
 }

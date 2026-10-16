@@ -1346,6 +1346,25 @@ pub(crate) fn bind(
     Ok(Binding { id, handle })
 }
 
+fn is_window_vma(vma: &Vma) -> bool {
+    vma.shm
+        .as_ref()
+        .is_some_and(|m| m.origin() == crate::ipc::shmem::MappingOrigin::Window)
+}
+
+/// The ranges of `vmas` a fork leaves out of the child: window mappings, which the
+/// kernel marks do-not-copy.
+pub(crate) fn dontcopy_ranges(vmas: &[Vma]) -> Result<Vec<(u64, u64)>, &'static str> {
+    let mut ranges = Vec::new();
+    for vma in vmas.iter().filter(|v| is_window_vma(v)) {
+        ranges
+            .try_reserve(1)
+            .map_err(|_| "Out of memory for child VMAs")?;
+        ranges.push((vma.start.as_u64(), vma.end.as_u64()));
+    }
+    Ok(ranges)
+}
+
 /// Children's VMAs for fork. Each file VMA gets its own binding in the child's
 /// address space, sharing the parent's parked copies.
 pub(crate) fn fork_vmas(
@@ -1358,6 +1377,11 @@ pub(crate) fn fork_vmas(
         .try_reserve(vmas.len())
         .map_err(|_| "Out of memory for child VMAs")?;
     for parent in vmas {
+        // Window mappings are not inherited: the child gets neither the mapping nor its
+        // pages (`dontcopy_ranges`).
+        if is_window_vma(parent) {
+            continue;
+        }
         // Another thread is still installing this shared mapping's pages, and
         // the child would not share the ones installed after the fork. A
         // private mapping's pages not yet installed are zero, as the child's

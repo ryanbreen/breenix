@@ -552,7 +552,7 @@ file's error.
   `BadPaletteIndex`. Zero width or height and unknown compression, filter or interlace methods are
   `BadHeader`; a bad signature is `BadSignature`; a cut-off stream is `Truncated`.
 - **Limits**: section 7's dimension limits (`TooLarge`, before inflating) and decompressed size (`Bomb`).
-- `encode(image) -> Vec<u8>` writes RGB (opaque images) or RGBA at depth 8, filter 0 on every row, one
+- `encode(image) -> Result<Vec<u8>, PngError>` writes RGB (opaque images) or RGBA at depth 8, filter 0 on every row, one
   IDAT of stored or fixed-Huffman deflate blocks in a zlib stream with a correct Adler-32, and correct
   CRCs. Encoding the same image twice gives identical bytes. Images past the dimension limits are refused
   with `TooLarge`.
@@ -708,6 +708,24 @@ its label in `text_secondary`, its background unchanged, and reports no events.
   The reference is computed in the suite by a Taylor series in `f64`, independent of the library and of the
   C library's `sin`.
 
+### 16.1 Reviewed icon catalogue
+
+`icons/assets` compares a 640 × 512 scene, background (12, 19, 31), against
+`frames/icons/assets.png`. Rows are Home, Search, Save and Arrow Forward; columns are Idle,
+HoverIn, Hovering, Pressed and Clicked. Each icon is size 48, centred at
+`(64 + 128 × column, 64 + 128 × row)`. Each cell starts with a fresh icon. Hover input has
+`hovering = true`, `rel_x = rel_y = 0`; all other fields are initially false.
+
+- Idle: no update.
+- HoverIn: 101,000 µs of hover.
+- Hovering: 251,000 µs of hover.
+- Pressed: 251,000 µs of hover, a 1,000 µs press edge with the button held, then 50,000 µs held.
+- Clicked: the Pressed schedule, a 1,000 µs release edge, then 120,000 µs of hover.
+
+`tools/gfx-refgen` renders this scene through `libicon::draw_catalogue` for review; the guest compares
+every pixel of its own rendering against the reviewed file. Icons are procedural drawings; no external
+icon asset is used. The reference's redistribution licence and review are recorded in the frame provenance.
+
 ## 17. The window interface, version 2
 
 ### 17.1 The system call
@@ -752,6 +770,7 @@ architecture only.
 | 25 | `READ_REMNANT` | `Capture` (56) | 0 | ENOENT |
 | 26 | `RELEASE_REMNANT` | `WinId` (8) | 0 | ENOENT |
 | 27 | `GIVE_DISPLAY` | `Give` (8) | 0 | ESRCH no such process |
+| 28 | `READ_META` | `MetaQuery` (24) | 0 | ENOENT |
 
 Argument structures (offsets in bytes):
 
@@ -796,6 +815,8 @@ Argument structures (offsets in bytes):
 - `Cursor`: `shape: u32 @0` (0 arrow, 1 to 4 the resize shapes, 5 hidden), `visible: u32 @4`, `x: i32 @8`,
   `y: i32 @12`.
 - `Give`: `pid: u32 @0`, reserved `@4`.
+- `MetaQuery`: `id: u64 @0`, `meta: u64 @8` (pointer to a `Meta` the kernel fills), *out* `commit_id: u64 @16` (the
+  newest commit, `COMMIT` or `COMMIT_NO_CHANGE`, whose metadata it is; 0 before the first).
 
 ### 17.2 Ids, limits and lifetime
 
@@ -874,7 +895,7 @@ Principals: the **owner** (by kernel identity, never by PID number, so PID reuse
 | `READ_EVENTS`, `EVENT_FD` | yes | — | — | EPERM |
 | `WRITE_EVENTS`, `SET_GEOMETRY` | EPERM | yes | EPERM | EPERM |
 | `MAP_COMMITTED` | yes | yes | EPERM | EPERM |
-| `CAPTURE`, `MAP_TREE` | yes | yes | yes | EPERM |
+| `CAPTURE`, `MAP_TREE`, `READ_META` | yes | yes | yes | EPERM |
 | `COMPOSITE`, `COMPOSITE_RECORD`, `MAP_COMPOSITOR_TEXTURE`, `SET_CURSOR` | — | yes | EPERM | EPERM |
 | `CLAIM_COMPOSITOR` | — | — | yes if no live claim, else EBUSY | EPERM |
 | `SCANOUT_READBACK` | — | yes | yes | EPERM |
@@ -917,7 +938,8 @@ window ops (10 to 26 and 31) are removed when version 2 lands.
   `pixels = 0`. A commit is presented when a composite with its readback completion lists its window at a
   `pixel_gen` at or above the commit's.
 - **Failure.** A backend failure leaves the commit uncomposited, fails `COMPOSITE` with EIO and the record's
-  reason, and the next composite retries it.
+  reason, and the next composite retries it. The failed composite keeps its serial and has a record: `pixels`
+  0, no entries, and `flags` bit 0 set with the backend's reason code in bits 8 to 15.
 - **Cursor.** The compositor draws the cursor sprite above every window at its position. Moving it over a
   static scene restores every pixel it covered; hidden, no cursor pixel appears; content committed under a
   stationary cursor is shown with the cursor redrawn above it. Shapes 0 to 4 are the arrow and the four
@@ -971,8 +993,9 @@ meaning. Breengel maps an unknown kind to `Event::Unknown { kind }`, never to a 
 
 ### 19.2 Delivery
 
-- `WRITE_EVENTS` (compositor only) queues events on one window's ring of 64. A kind outside 1 to 14 (other
-  than those Breengel makes) or a `text_len` above 240 is EINVAL, and nothing in that call is delivered.
+- `WRITE_EVENTS` (compositor only) queues events on one window's ring of 64. A kind outside 1 to 14, the kind
+  Breengel makes (`FontChanged`), a kind the kernel makes (`Resized`, `ResizeFailed`, `CompositorChanged`,
+  `Overflow`) or a `text_len` above 240 is EINVAL, and nothing in that call is delivered.
   Writing to a destroyed window is ENOENT.
 - Events arrive in the order written. A full ring keeps the events it holds, counts the ones it could not
   queue, and delivers an `Overflow` event with the count before the next event; nothing is lost silently.
@@ -994,7 +1017,8 @@ whose handler returns after frame N was acquired is acknowledged by frame N + 1,
 polled but not yet handled is never acknowledged. For `commit_no_change`, it is the highest serial *s* such
 that every serial up to *s* handled since the last pixel commit returned `NoChange`: a `Redraw` stops it until
 a frame acquired after its handler returned is committed. Serials Breengel refused at dispatch are listed in
-`Meta.rejected` and count as finished. Raw clients set the watermark themselves.
+`Meta.rejected` and count as finished. Raw clients set the watermark themselves. `READ_META` reads back the
+metadata the newest commit published, with that commit's id.
 
 ## 20. Scanout observation
 
@@ -1012,7 +1036,7 @@ an `ObservationRecord` (512 bytes) produced atomically for one composite serial:
 | 32 | `resource: u64`: the scanout resource id, screen-target id or framebuffer address bound to the device |
 | 40 | `window_count: u32`, `completion_count: u32` |
 | 48 | `windows: [(id: u64, commit_id: u64); 16]` |
-| 304 | `completions: [(fence: u64, kind: u32, status: u32); 12]` |
+| 304 | `completions: [(fence: u64, kind: u32, status: u32); 12]`: `kind` is the command answered and `status` its answer, both nonzero; on virtio-gpu, the command's and the response's `type` (`TRANSFER_TO_HOST_2D` 0x0105, `RESOURCE_FLUSH` 0x0104, `RESP_OK_NODATA` 0x1100) |
 | 496 | `boundary: u32`: what stays outside the guest's view (section 20.2) |
 | 500 | reserved |
 
@@ -1053,15 +1077,21 @@ with the composition formula).
   it for the rest of the boot. In every other boot every op returns ENOSYS. In a suite boot only root may use
   them (EPERM otherwise).
 - Op 0 `STATE` returns 1 (enabled). Op 1 `ARM { point: u32 @0, reserved @4, target: u64 @8, param: u64 @16 }`
-  arms one one-shot fault; op 2 `DISARM_ALL`; op 3 `FIRED { point: u32 @0, reserved @4, out count: u64 @8 }`
-  reports how many times a point fired. There is no op that sets or clears the latch: op 4 `SET_LATCH` and
+  arms one one-shot fault; op 2 `DISARM_ALL` disarms every point and restarts the gauge
+  `display_irq_masked_max_us` at 0; op 3 `FIRED { point: u32 @0, reserved @4, out count: u64 @8 }`
+  reports how many times a point fired. Arming or reading a point this section does not define is EINVAL. There is no op that sets or clears the latch: op 4 `SET_LATCH` and
   every op above 4 are EINVAL.
 - Points: 1 `ignore-damage` (the next composite processes the whole window), 2 `irq-hold` (the next display
   copy holds IRQs masked for 2 ms), 3 `emit-diagnostic` (param: the writer path, section 22), 4
   `acquire-stall` (target: a window; the next `ACQUIRE` pauses after copying half its replay rows until
   released or 1 s), 5 `backend-error`, 6 `skip-transfer`, 7 `wrong-resource`, 8 `stale-fence`, 9
-  `corrupt-outside-damage`, 10 `panel-cursor-no-restore`, 11 `release-stall` (resumes a paused point).
-  Faults are branches in the real code paths, disarmed at case end by the suite.
+  `corrupt-outside-damage`, 10 `panel-cursor-no-restore`, 11 `release-stall` (resumes a paused point),
+  16 `composite-stall` (target: a window; the next composite that includes it pauses before the backend
+  composes, with every window's front pinned, until released, a signal reaches the compositor, or 1 s), 17
+  `move-pointer` (param: x in bits 0 to 31, y in bits 32 to 63; the next time the kernel reads the pointing
+  device's position, for the panel cursor, the position is (x, y), as if the device had moved there). Points
+  12 to 15 are the run stage's (section 23). Faults are branches in the real code paths, disarmed at case end
+  by the suite.
 - `init`, running as PID 1, checks that every op returns ENOSYS and prints `[init] test controls absent`; run
   as a child (in a suite boot) it prints `[init] not PID 1: test-control check skipped` and makes no absence
   claim.
@@ -1076,13 +1106,18 @@ per-CPU data, panic and double-fault paths, `emergency_print`) count in the trac
 newlines are not payload.
 
 `emit-diagnostic(path)` makes the calling thread's next window op write one fixed 32-byte payload,
-`BREENGEL-EMIT-DIAGNOSTIC-PAYLOAD!`, through the named writer: 1 `serial_println!`, 2 `log::warn!`,
+`BREENGEL-EMIT-DIAGNOSTIC-PAYLOAD`, through the named writer: 1 `serial_println!`, 2 `log::warn!`,
 3 `write_byte`, 4 `write_bytes_atomic`, 5 `try_print`, 6 `write_str_bounded`, 7 `_log_print`, 8 a notice
-posted by this thread and written out by another, 9 `emergency_print`. Each adds exactly 32 to the calling
-thread's counter, except `log::warn!`, which adds the logger's whole record, and `emergency_print`, which adds
-32 to `kernel_output_unattributed` and nothing to the thread. The logger's record is
-`[ WARN] test_control: ` followed by the payload and a newline: `[`, the level right-aligned in five columns,
-`] `, the target `test_control`, `: `, the payload, `\n`, which is 55 bytes.
+posted by this thread and written out by another, 9 `emergency_print`. Each adds exactly the bytes its writer
+commits, once: 32 for `write_byte` (32 one-byte records), `write_bytes_atomic`, `try_print`,
+`write_str_bounded` and `_log_print`, which write the payload as it is; 33 for `serial_println!` and the
+notice, which end the payload with a newline (a notice's line is posted with its newline, and it counts when
+posted); the logger's whole record for `log::warn!`; and for `emergency_print`, 32 to
+`kernel_output_unattributed` and nothing to the thread. The logger's record is `[ WARN] test_control: `
+followed by the payload and a newline: `[`, the level right-aligned in five columns, `] `, the target
+`test_control`, `: `, the payload, `\n`, which is 55 bytes. A newline a writer adds is output like any other
+byte; only the lead newline inserted before a record when another writer's line is open is not. The
+aarch64 kernel's `log` sink writes each warning and error as this record.
 
 ## 23. The suite panel
 
