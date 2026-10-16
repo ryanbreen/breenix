@@ -1,6 +1,6 @@
 {
   "title": "Path to a POSIX kernel with a userspace and a desktop you can build on",
-  "outcome": "Breenix runs real programs unmodified on ARM64 and x86-64: every POSIX system interface backed and behaving to the standard, a C library and Rust std on top, POSIX utilities, an SDK for building our own applications, and a graphical desktop (BreenGL, the window manager and its applications) tested to the same bar.",
+  "outcome": "Breenix runs real programs unmodified on ARM64 and x86-64: every POSIX system interface backed and behaving to the standard, a C library and Rust std on top, POSIX utilities, an SDK for building our own applications, and a GPU-rendered graphical desktop (GPU rendering, BreenGL, the window manager and its applications) tested to the same bar.",
   "efforts": [
     {
       "id": "kernel-bring-up",
@@ -1225,9 +1225,112 @@
       ]
     },
     {
+      "id": "gpu",
+      "title": "GPU rendering",
+      "outcome": "Breenix renders on the GPU on every target: a clean-room, GL-style Breenix API whose command streams the kernel validates and bounds per process and translates for VirGL (ARM64 QEMU, Parallels and x86-64) or SVGA3D DX (VMware), executed by a hardware GPU on each host, presented at 1280×800 and at 2560×1600 with HiDPI scaling, and read back from the device pixel-exact under a declared deterministic rendering profile.",
+      "suite": "gpu",
+      "subsystems": [
+        17,
+        22,
+        25
+      ],
+      "milestones": [
+        {
+          "id": "device",
+          "title": "3D device & capability profile",
+          "measure": {
+            "suite": "gpu",
+            "categories": [
+              "device"
+            ]
+          }
+        },
+        {
+          "id": "submit",
+          "title": "command submission & fences",
+          "measure": {
+            "suite": "gpu",
+            "categories": [
+              "submit"
+            ]
+          }
+        },
+        {
+          "id": "readback",
+          "title": "device readback",
+          "measure": {
+            "suite": "gpu",
+            "categories": [
+              "readback"
+            ]
+          }
+        },
+        {
+          "id": "textures",
+          "title": "textures & uploads",
+          "measure": {
+            "suite": "gpu",
+            "categories": [
+              "textures"
+            ]
+          }
+        },
+        {
+          "id": "profile",
+          "title": "deterministic rendering profile",
+          "measure": {
+            "suite": "gpu",
+            "categories": [
+              "profile"
+            ]
+          }
+        },
+        {
+          "id": "pipelines",
+          "title": "drawing pipelines",
+          "measure": {
+            "suite": "gpu",
+            "categories": [
+              "pipelines"
+            ]
+          }
+        },
+        {
+          "id": "isolation",
+          "title": "per-process GPU isolation",
+          "measure": {
+            "suite": "gpu",
+            "categories": [
+              "isolation"
+            ]
+          }
+        },
+        {
+          "id": "present",
+          "title": "display modes, HiDPI & present",
+          "measure": {
+            "suite": "gpu",
+            "categories": [
+              "present"
+            ]
+          }
+        },
+        {
+          "id": "performance",
+          "title": "frame rate & latency",
+          "measure": {
+            "suite": "gpu",
+            "categories": [
+              "performance"
+            ]
+          }
+        }
+      ]
+    },
+    {
       "id": "breengel",
       "title": "BreenGL graphics library",
-      "outcome": "Programs draw with BreenGL's 2D library (clipped and alpha-blended shapes and blits, TrueType and bitmap text, PNG and BMP images, widgets and animated icons) exactly to its written contract, and the windows they commit through an authority-checked kernel interface are composed and observed on the display pixel-exact on every target.",
+      "outcome": "Programs draw with BreenGL entirely on the GPU (clipped and alpha-blended shapes and blits, bitmap and TrueType text, PNG and BMP images, widgets and animated icons) exactly to its written contract, every installed graphical program draws through it, and the windows they commit through an authority-checked kernel interface are composed by the GPU and observed by device readback, pixel-exact on every target.",
       "suite": "breengel",
       "subsystems": [
         17,
