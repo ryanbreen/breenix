@@ -73,7 +73,7 @@ when this was written.
     drawing layer. #1625 becomes a draft and lands later as the GPU-based BreenGL. #1654 stops.
 11. **Build on ARM64 QEMU first** (effort lanes run on ARM64 QEMU only), with Parallels and VMware
     feasibility spikes on `scratch/*` branches cut from main in G0, before the contract froze (ruling R2).
-    Both spikes met the whole profile exactly (section 1.12). The catch-up then goes Parallels, then VMware.
+    The spikes exercised a subset of the profile (section 1.12). The catch-up then goes Parallels, then VMware.
 
 ## 1. The `gpu` effort
 
@@ -164,11 +164,14 @@ most 16,384), because neither kernel target uses the FPU.
 
 **Backing and row pitch.** Every guest backing the kernel owns for a GPU resource (targets, textures, buffers
 and readback bounce buffers) is whole frames from the frame allocator, attached to the device as a page
-list, never kernel heap: on Parallels the kernel heap is smaller than one 2560×1600 target. Its row pitch is
-`align_up(width × bytes per pixel, 256)` on every backend, because Parallels drops a 3D transfer whose pitch
-is not a multiple of 256 bytes, in both directions, answering `OK_NODATA` with its fence echoed and moving no
-bytes (section 1.12). The kernel copies rows between that pitch and the caller's `stride`, which the device
-never sees. The validator refuses nothing on this account; the translator aligns.
+list, never kernel heap. VirGL transfers use `align_up(width × bytes per pixel, 256)` row pitch as a
+conservative policy following the Parallels round-trip probes (section 1.12); those probes did not isolate
+which transfer direction failed. VMware's version 1 `DEFINE_GB_SURFACE` (1097) has no pitch field: its
+single-mip, single-sample, non-array surfaces use tightly packed rows of `width × bytes per pixel`, with
+only the MOB allocation rounded to whole pages. In particular BGRA width 48 uses 192-byte rows and R8
+width 64 uses 64-byte rows on VMware. The kernel copies rows between the backend's layout and the caller's
+`stride`, which the device never sees. The validator refuses nothing on this account; the translator
+supplies the backend's layout.
 
 **Copies.** A `copy` between two rectangles of one resource that overlap gives the result of copying the
 source as it was before the copy; the kernel stages it through a scratch texture.
@@ -211,9 +214,13 @@ and 415 (`652a4494`) was reverted (`0f53872e`) and is not reapplied.
   a resource not attached to the submitting context is answered `OK_NODATA` and does nothing (section 1.12).
   No case expects a device error code for a foreign handle.
 - **Program warm-up.** `CONTEXT_CREATE` creates every catalogue program in the new device context and draws
-  each once into a 1×1 scratch target, waiting for the fences, so no submission, watchdog budget or
-  performance bound includes a shader compile. A first submission with new programs took 28 to 108 ms on
-  Parallels, and the same submission again under 0.5 ms (section 1.12).
+  each once into a 1×1 scratch target, waiting for its fence. This is an explicit pre-measurement condition:
+  the performance bounds measure already-warmed contexts, not application startup. Creation, including all
+  warm-up, must finish within the suite runner's existing 10 s case deadline (`submit/context-create`).
+  Each warm-up fence is subject to the same 2 s watchdog as any submission; compile time is not exempt
+  from hang recovery. A kill during creation must end the caller within 250 ms, without waiting for all
+  programs to compile (`isolation/killable-wait`); queued work retains its resources until completion or
+  reset. The spike measured compilation of only its own programs, not the full catalogue (section 1.12).
 - **Execution and publication.** Every target a submission writes is *pending* until the submission's fence
   completes. Completed OK, the target's generation advances and its contents are published. Completed with a
   device error, or lost to a watchdog reset, every target the submission wrote is marked *invalid*: readback
@@ -253,7 +260,7 @@ and 415 (`652a4494`) was reverted (`0f53872e`) and is not reapplied.
 Device readback makes the pixels observable; the profile is what makes them the same on the three targets'
 host stacks. This section is the profile's contract. The closed forms' proofs are added to it before the
 `pipelines` cases that draw them are written (item 5), and the `profile` category checks it on each target.
-Both G0 spikes met every item exactly, with no change (section 1.12):
+The G0 spikes exercised a subset; binary32 emulation remains unproved (section 1.12):
 
 1. **Targets:** single sample, 8-bit UNORM, explicit channel order and top-left origin, no sRGB encoding or
    decoding, no dithering, no mipmaps.
@@ -270,7 +277,8 @@ Both G0 spikes met every item exactly, with no change (section 1.12):
 5. **Numbers.** Fragment programs compute with 32-bit integer words. Where the contract's input range (i32
    coordinates, sizes and radii, targets up to 16,384) needs more, values are carried as two or three words,
    with products built from 16 × 16-bit partial products (no reliance on a device's high-word multiply) and
-   division by restoring long division with a fixed iteration count, so each pipeline's per-fragment cost is
+   division by restoring long division with a fixed iteration count (96 steps for a three-word dividend,
+   as required by `profile/wide-arithmetic`), so each pipeline's per-fragment cost is
    constant. The width each pipeline needs (section 1.3's table):
    - `line`: `dx`, `dy` < 2³², the error terms < 2³⁴, the closed form's products < 2⁶⁵: three words.
    - `circle_fill`, `circle_outline`: a primitive whose clipped bounding rectangle is empty emits no draw, and
@@ -412,8 +420,8 @@ probe; the kernel aligns every pitch either way, so the result changes no rule h
 #### 1.6.3 VMware Fusion
 
 The largest guest change: `svga3.rs` has command buffers, object tables, MOBs, GB surfaces and screen
-targets, and no DX context, shader, view or draw. The G0 spike drew and read back through every step below
-(section 1.12). The backend, in order:
+targets, and no DX context, shader, view or draw. The G0 spike exercised the path below, with the
+present-readback limitation stated in section 1.12. The backend, in order:
 
 1. **Admission by the device-capability entries.** Read the DX-context entry (index 95) and the entry for
    every profile format: `B8G8R8A8_UNORM` (surface format 141, entry 240) and `R8G8B8A8_UNORM` (68, entry
@@ -439,7 +447,8 @@ targets, and no DX context, shader, view or draw. The G0 spike drew and read bac
    resource-register operand: a data-register writemask there makes the device refuse `DX_SET_SHADER`.
 6. **Draw** (`DX_DRAW` 1152); destination copies with `DX_PRED_COPY_REGION`. **Present** binds the drawn
    target's surface to the screen target and updates it; the device accepts a rendered `B8G8R8A8_UNORM`
-   target there, so no copy into a separate screen-target surface is needed.
+   target there. The spike checked command completion and source-surface readback, not screen-target
+   readback; the presented-scanout cases still require the latter (section 1.10).
 7. **Readback** through the host-copy sequence of section 1.8, fenced with `DX_MOB_FENCE_64`.
 
 #### 1.6.4 x86-64
@@ -477,8 +486,8 @@ rests on host-side evidence that the gate checks, recorded with every run:
   client process, and every GPU client the VM opens belongs to its VM process. The gate checks the VM's
   configuration has 3D acceleration on, reads that process's accumulated GPU time over an idle window just
   before the `performance` category and over the category itself, and requires the category's reading to
-  exceed the idle one by at least 10% of the category's length. The G0 spike's load added 1.78 to 2.07 s of
-  GPU time over 8.03 s windows (22% to 26%), with idle readings repeating within 2%. The negative control,
+  exceed the idle one by at least 10% of the category's length. This is a required acceptance threshold;
+  the spike serial does not establish host GPU-time deltas (section 1.12). The negative control,
   the same boot with 3D acceleration off, runs in the Parallels catch-up; the device is expected then not to
   offer VirGL, and initialization refuses naming the missing feature.
 - **VMware.** The accelerator statistics give no per-process figure for the VM, so under ruling R6 the
@@ -581,9 +590,14 @@ it between the transfer fence and the first read.
 ### 1.9 Clean room and provenance
 
 The rule is the libc rule applied to graphics. **Allowed:** the VirtIO 1.3 specification; the VirGL protocol
-definition header as interface facts (command numbers, field layouts); the TGSI documentation; VMware's
-published device headers (`svga3d_cmd.h`, `svga3d_dx.h`, `svga3d_devcaps.h` and their siblings in
-`device_include`); Microsoft's published shader token format; the OpenGL and Direct3D specifications for
+definition header as interface facts (command numbers, field layouts); Gallium's published
+[Tungsten Graphics Shader Infrastructure documentation](https://docs.mesa3d.org/gallium/tgsi.html), solely
+its language and instruction definitions, not Gallium implementation code; VMware's published interface
+headers (`svga3d_cmd.h`, `svga3d_dx.h`, `svga3d_devcaps.h` and siblings) in the
+[Linux source tree's `drivers/gpu/drm/vmwgfx/device_include` directory](https://github.com/torvalds/linux/tree/master/drivers/gpu/drm/vmwgfx/device_include)
+(the VMware-authored interface headers only, not the surrounding vmwgfx driver C code); Microsoft's
+[`DirectX-Headers/include/directx/D3D12TokenizedProgramFormat.hpp`](https://github.com/microsoft/DirectX-Headers/blob/main/include/directx/D3D12TokenizedProgramFormat.hpp)
+for SM4 instruction and operand encodings; the OpenGL and Direct3D specifications for
 rasterization, conversion and precision rules; IEEE 754 for binary32; Breenix's own code; black-box
 experiments (a Linux VM run as a device-behaviour probe, recorded as results). **Forbidden, including while
 debugging:** reading, porting or adapting Mesa (its VirGL and SVGA drivers, Gallium, the state trackers),
@@ -612,8 +626,9 @@ code, and names six parts to re-author from allowed sources before any reuse: Vi
 (#1661), the VirtIO owned-command DMA layer (#1662), SVGA command submission and recovery (#1663), and the
 SVGA object tables' sizes and capacities (#1664). libgfx, libfont's rasterizer and any shader outside those
 files still get their own audit before they move. The spikes' new code was written from the allowed list
-only: the VirGL protocol's interface facts and the TGSI documentation for Parallels, and VMware's published
-device headers and Microsoft's published SM4 token format for VMware.
+only: the VirGL protocol's interface facts and Gallium's TGSI language documentation for Parallels, and
+the VMware interface headers and Microsoft token-format header named above for VMware. These are
+interface facts; implementation code is not copied or adapted.
 
 ### 1.10 Suite `gpu`: outline
 
@@ -683,10 +698,9 @@ Notes on the cases that carry the most weight:
 
 **Performance bounds,** in the contract from G0 and held on every target. G8 may tighten a bound from
 measurement and never loosens one; a target that misses a bound has a slow path to fix. A device's answer to
-a submission is not proof the GPU did the work: on Parallels, full-screen opaque draws were answered in about
-0.25 ms each, either because a tile-based GPU shades only the last opaque draw over a pixel or because the
-answer does not wait for completion. So every measured interval ends with a dependent observation (a
-readback, or a draw that reads the result), and throughput cases use blended or discarding draws wherever
+a submission is not proof the GPU did the work: opaque overdraw may be culled, and a response need not
+prove pixel completion. Every measured interval ends with a dependent observation (a readback, or a draw
+that reads the result), and throughput cases use blended or discarding draws wherever
 opaque overdraw could be culled. Every bound is measured after context creation has warmed the programs
 (section 1.4.1).
 
@@ -714,7 +728,8 @@ order where one depends on another:
 3. the entry spikes, one throwaway boot sequence per non-QEMU target on a `scratch/*` branch cut from main,
    so no effort-lane commit is involved and the target guard passes (ruling R2): Parallels (the profile's
    capability set on a client render target, read back exactly) and VMware (the whole profile, section
-   1.6.3): done, both exact (section 1.12);
+   1.6.3): the device primitives were exercised, but full-profile acceptance remains unproved; section
+   1.12 lists the untested items. The acceptance requirement remains the whole profile;
 4. this document's contract, frozen after the spikes reported: BGL, syscall 416, the profile with its width
    derivations, the catalogue, record v2, the test-control points and the performance bounds. Two additions
    are due before the cases that need them, and change no frozen rule: the closed-form proofs of section
@@ -729,14 +744,19 @@ everything its category's cases use):**
 
 | Step | Milestone | Work |
 |---|---|---|
-| G1 | `device`, `submit` | `virtio-gpu-gl-pci` on the PCI transport; the existing PCI virtio-gpu display path (the one Parallels uses) running on QEMU so main's programs keep working; the kernel GPU core (`kernel/src/gpu/`): contexts, handles, validation, the work estimate, fences, waits, the watchdog and reset; syscall 416 on ARM64 |
-| G2 | `readback` | `READBACK` with record v2 and fault points; `solid`; target invalidation; the minimal scanout bind and status strip |
-| G3 | `textures` | uploads with purposes, region copies, `copy` |
-| G4 | `profile` | `probe_int` with the integer, multi-word, binary32 and shape-predicate routines; the profile checks |
+| G1 | `device`, `submit` | `virtio-gpu-gl-pci` on the PCI transport; the existing PCI virtio-gpu display path (the one Parallels uses) running on QEMU so main's programs keep working; the kernel GPU core (`kernel/src/gpu/`): contexts, handles, validation, the work estimate, fences, waits, the watchdog and reset; syscall 416 on ARM64; test points 20, 23, 27, 31 and the PID 1 guard for every reserved point 19–31 |
+| G2 | `readback` | `READBACK` with record v2 and points 19, 21, 22, 28 (reusing point 20 from G1); `solid`; target invalidation; single-target `PRESENT`, its fence and killable blocking path, scanout bind and status strip |
+| G3 | `textures` | uploads with purposes, region copies, `copy`; points 29, 30 |
+| G4 | `profile` | `probe_int` with the integer, multi-word, binary32 and shape-predicate routines; the profile checks; point 24 |
 | G5 | `pipelines` | the rest of the catalogue in TGSI, the destination copy and hazard rule, BGL's draw API |
 | G6 | `isolation` | quotas, reclamation at exit/exec/kill, the fuzzer, quiet errors, no addresses, the IRQ gauge over the GPU paths |
-| G7 | `present` | modes, scale, two-target present, the ownership stack on the GPU, the kernel console on the GPU, the firmware handoff |
+| G7 | `present` | modes, scale, two-target present, the ownership stack on the GPU, the kernel console on the GPU, the firmware handoff; points 25, 26 |
 | G8 | `performance` | measure against the bounds, fix the slow paths |
+
+G1 reserves points 19–31 and checks the latched PID 1 before decoding any of them, including points
+whose implementation is supplied later. `isolation/test-hooks-absent` checks that guard in G6 without
+requiring G7's present fault implementations. `isolation/killable-wait` uses G2's single-target PRESENT;
+G7 adds two-target flipping and mode changes, not the first PRESENT operation.
 
 **Catch-up (each target until all 170 pass there, with its attestation):** Parallels (the same backend;
 Parallels capset and display configuration), then VMware (the SVGA3D DX backend and its programs, designed
@@ -751,7 +771,7 @@ most of this work's code does not exist yet, and the items below are what makes 
 | Item | Guess |
 |---|---|
 | G0 host stack: UTM's build turned into a CLI binary, the attestation patch, signing, both frontends | 1 to 2 weeks (2 more if the SDL fallback is needed) |
-| G0 audit, spikes (VMware's covering the whole profile), contract and suite skeleton | 1 to 2 weeks, partly in parallel with the host stack |
+| G0 audit, full-profile spike acceptance, contract and suite skeleton | 1 to 2 weeks, partly in parallel with the host stack |
 | G1–G2: kernel core, validation, work estimate, watchdog and reset, readback | 1.5 to 3 weeks |
 | G3–G5: uploads, the catalogue in TGSI including multi-word arithmetic, binary32 emulation, destination copies and the hazard rule | 2 to 4 weeks |
 | G6–G8: isolation, present and HiDPI, performance at 2560×1600 (four times the pixels of 1280×800) | 1.5 to 3 weeks |
@@ -764,34 +784,49 @@ report, and are revised then.
 
 ### 1.12 What the G0 spikes changed
 
-Both spikes ran the deterministic profile on throwaway `scratch/*` branches cut from main, every result read
-back from the device and compared pixel for pixel with an integer formula the guest computed. **Parallels**
-(VirGL) passed all 12 judged checks with no mismatched pixel, including a 2560×1600 upload and render, and
-caught each of its three planted faults (a corrupted pixel, a suppressed draw, a skipped transfer).
-**VMware** (SVGA3D DX) passed 34 checks with none failed: 32 judgements of 256×256 targets across both
-target formats, each from two complementary-poison readbacks, with no mismatched byte, and a 33rd that caught
-its planted suppressed draw although the draw's fence completed. Every profile item (section 1.5) held on both; no rule, format or comparison needed
-relaxing. What they changed:
+The spikes are device-primitive experiments, not certification of the whole profile or catalogue.
+The Parallels source is `kernel/src/drivers/virtio/gpu_pci/spike.rs` on
+`scratch/gpu-spike-parallels`, commit `7be7d956b9a7436e7dbbf5cf5a480899d6da93dc`;
+Vigil run `20261016T205350Z-parallels` holds its serial. The VMware source is
+`kernel/src/drivers/vmware/svga3/spike.rs` on `scratch/gpu-spike-vmware`, rendering commit
+`f3d6f9c0f89ad0b6c7405a7149614076ebc4e739`; Vigil run `20261016T201245Z-vmware`
+holds its serial. These scratch branches are not merged into the effort.
 
-| Change | Where | Finding behind it |
+Parallels' `GPU_SPIKE DONE passed=12 failed=0` covers its judged scenes, including a 2560×1600
+upload and render, and catches corrupted-pixel, suppressed-draw and skipped-transfer faults.
+VMware's `GPU_SPIKE DONE passed=34 failed=0` counter comprises 32 normal pixel judgements,
+one suppressed-draw catch and one completed present submission counted without a pixel judgement.
+Only 33 entries are judgements. Its `presented-target` judgement reads the bound source surface,
+not the screen target, so it does not prove scanout contents. Normal VMware judgements use two
+complementary-poison observations of 256×256 targets.
+
+Neither spike implements profile item 6, integer emulation of binary32. Parallels exercises a
+two-word multiply and native `UDIV`, not the required multi-word restoring division. VMware
+exercises three-word restoring division, but neither spike proves every shape predicate, the
+future catalogue, isolation, recovery or performance bounds. Those remain required suite checks;
+no profile requirement is relaxed by these experiments.
+
+| Decision | Where | Observation and limit |
 |---|---|---|
-| Every 3D transfer's row pitch is a multiple of 256 bytes; the kernel aligns, the caller's stride is its own | section 1.3; cases `textures/unaligned-pitch`, `upload-stride`, `r8-atlas`, `readback/partial-rect`, `padded-stride` | Parallels drops a transfer whose pitch is not a multiple of 256 (64, 128, 192 and 320 bytes all failed; 256, 512, 1,024, 5,120 and 10,240 worked), in both directions, answering `OK_NODATA` with its fence echoed |
-| GPU backing is frame-allocated, never kernel heap | section 1.3 | On Parallels the kernel heap is smaller than one 2560×1600 target; frame-backed 16 MB backings were cache-maintained repeatedly without a fault |
-| Every readback makes two observations under complementary poisons; record v2's offset 164 becomes `unwritten` | section 1.8; `readback/poison-unwritten` | One poison cannot tell an unwritten byte from a pixel equal to it; the VMware spike judged every target this way, and Parallels' dropped transfers showed only through poison |
-| Uploads are proved by reading them back | `textures/upload-visibility` | A dropped upload samples as a texture of zeros with no error |
-| Foreign handles are refused only by the validator | section 1.4.1; `isolation/foreign-target-draw` | Parallels answered a draw on another context's resource `OK_NODATA` and did nothing; no error reaches the guest |
-| Context creation compiles and warms every catalogue program | sections 1.4 and 1.4.1; new case `performance/first-draw-latency` | The first Parallels submission with new programs took 28 to 108 ms, the same submission again under 0.5 ms |
-| Performance intervals end with a dependent observation, and throughput draws are blended or discarding | section 1.10's performance bounds | Parallels answered full-screen opaque draws in about 0.25 ms each, faster than the work, either by culling overdraw or by answering before completion |
-| The VirGL backend needs only `VIRGL` and `VERSION_1`, and keeps each capability set id once | section 1.6 | Parallels offers no blob resources, context-init or EDID, and lists its one VirGL 2 set at four indices |
-| VMware admits by device-capability entries, not the register's DX bit | section 1.6.3, item 1; `device/profile-formats` | With 3D off the register's DX bit stayed set while the DX-context entry read 0 |
-| VMware's wire path, programs and present are fixed | section 1.6.3 | The spike's working path: queue 0, the DX-context flag, page-table-backed object tables (range backing was refused), an 8,192-byte context MOB with seven context tables, version 1 surfaces, bare SM4 programs with VMware's signature trailer and no container, opaque resource declarations, and present by binding the rendered target to the screen target |
-| Attestation: Parallels measures GPU time per VM process; VMware's claim is configuration-based | section 1.6.5 | Parallels' load added 1.78 to 2.07 s of GPU time over 8 s windows, idle repeating within 2%; VMware's accelerator statistics gave only global counters, and its 3D-off control refused at the DX-context entry |
+| VirGL transfer pitch is aligned to 256 bytes; VMware surface rows stay packed | section 1.3; `textures/unaligned-pitch` and stride cases | Parallels' `pitch-probe` round trips fail at 128, 192 and 320 bytes and succeed at 256 and 512. Upload and readback use the same pitch, so these probes do not locate the failing direction. VMware's `surface` sizes its MOB from tightly packed pixels; descriptor 1097 has no pitch field. |
+| GPU backing is frame-allocated | section 1.3 | A full-size resource needs storage independent of kernel heap capacity. This is an allocation requirement, not a profile result. |
+| Every readback has complementary-poison observations; offset 164 is `unwritten` | section 1.8; `readback/poison-unwritten` | VMware's `judge` compares both observations; a single poison cannot distinguish an unwritten byte equal to that poison. The record change strengthens detection. |
+| Uploads are proved by reading them back | `textures/upload-visibility` | Parallels' `r8-64-pitch64-transfer` both samples zeros and leaves poisoned readback bytes. |
+| Foreign handles are refused by the validator | section 1.4.1; `isolation/foreign-target-draw` | Parallels' foreign-context probe receives `OK_NODATA` without the intended drawing. |
+| Context creation warms every catalogue program | sections 1.4, 1.4.1; `performance/first-draw-latency` | Parallels' `sceneA` first submission takes 28,365 µs, and `sceneA-again` takes 349 µs. These are the spike's programs, not the whole catalogue. Creation has its own deadline and kill requirement. |
+| Timed work ends with a dependent observation | section 1.10 | A command response alone cannot establish completed pixel work. Opaque overdraw may be culled; blended or discarding workloads must measure the required work. |
+| VirGL requires `VIRGL` and `VERSION_1`, deduplicating capability set IDs | section 1.6 | Parallels' capability enumeration lacks blob, context-init and EDID and repeats its VirGL 2 set at multiple indices. |
+| VMware admits by capability entries | section 1.6.3 | The 3D-off control refuses at `DXCONTEXT=0`; the register's DX bit alone is insufficient. |
+| VMware uses queue 0, page-table-backed tables, version 1 surfaces and bare SM4 tokens with signatures | section 1.6.3 | The cited rendering commit submits and reads these primitives back; present command completion is not scanout verification. |
+| Attestation remains mandatory for implemented GPU layers | section 1.6.5 | The Parallels spike includes idle/load phases, but the cited serial alone does not establish host GPU-time deltas. The at-least-10% threshold is a required acceptance criterion, not a result proved by this spike. VMware's attestation remains configuration-based under R6. |
 
-The suite has 170 cases, two more than the 168 planned: `textures/unaligned-pitch` gives the 256-byte rule
-a case of its own, so a regression in the kernel's alignment fails by name rather than inside four other
-cases, and `performance/first-draw-latency` holds the warm-up rule, which no planned case measured. The other
-cases changed only their wording, as the table says. The Parallels pitch rule is still to be reproduced on a
-Linux guest used as a black-box probe (section 1.6.2); the Parallels 3D-off control runs in its catch-up.
+The suite has 170 cases rather than the outline's 168. `textures/unaligned-pitch` requires exact
+round trips at widths that exercise the backend layouts. `performance/first-draw-latency` adds a
+10 ms first-draw bound after warm-up. The titles for poison detection, upload visibility and
+strides state the checks now required; main's ID-only outline cannot establish title equivalence.
+The offset-164 meaning and warm-up measurement condition are explicit contract changes, not
+wording-only edits. The Parallels pitch behaviour still needs a black-box Linux probe; its 3D-off
+control belongs to catch-up. Neither pending experiment changes the frozen pixel requirements.
 
 ## 2. BreenGL rebuilt on the GPU
 
@@ -1132,7 +1167,7 @@ is authored: bwm composes through BGL, and every app draws through BreenGL on th
 | **The macOS host stack** | It is a second QEMU (10.0.12-utm with UTM's patches, ANGLE and virglrenderer forks) that Breenix builds and keeps pinned, and it moves every ARM64 gate from QEMU 11.0.3 at `gpu`'s landing. | G0 built it as a self-contained, pinned command-line bundle with both frontends and the attestation (#1666); rendering needs no SPICE client. Every ARM64 suite must match main on it before the gate switch (R5). |
 | **x86-64 has no GPU path yet** | The current x86 gate host has no rendering GPU, the gate's virtual GPU negotiates no VirGL, and its QEMU's GL display module failed to load. | x86-64 is out of the GPU-era efforts' targets until the dedicated Breenix hardware box replaces that host (R1); its spike's acceptance mirrors G0's then. |
 | **The hardware claim** | No protocol lets the guest tell a GPU from software. | Host attestation from the executing context on ARM64 QEMU, refused when software or missing, with a planted software run; host GPU time per VM process on Parallels; on VMware the configuration check with its 3D-off control, labelled configuration-based (R6). |
-| **VMware DX complexity** | The shader token programs and signatures are hand-written, and errors arrive only as command-buffer status; the G0 spike ran 13 programs, not the whole catalogue. | The spike drew and read back the whole profile exactly (section 1.12) and fixed the wire path; the backend adds one program at a time, each with a readback case, with a Linux VM in Fusion as a black-box behaviour probe. |
+| **VMware DX complexity** | The shader token programs and signatures are hand-written, and errors arrive only as command-buffer status; the G0 spike ran 13 programs, not the whole catalogue. | The spike exercised the device primitives listed in section 1.12 and fixed the wire path; the backend adds one program at a time, each with a readback case, with a Linux VM in Fusion as a black-box behaviour probe. |
 | **Exactness of GPU output** | Drivers may round UNORM conversion, blend or interpolate differently; ANGLE translates to Metal; native float precision varies. | The profile removes every place a driver chooses: integer predicates with multi-word arithmetic, integer fetches, shader blending with the hazard rule, integer-cornered rectangles, binary32 emulated in integers. `profile/*` checks each property per target. A target that cannot meet the profile fails; there is no tolerance. |
 | **Shader cost of exactness** | Multi-word arithmetic, binary32 emulation and destination copies cost device time, at four times the pixels. | The work estimate makes the cost visible per draw; glyphs are rasterized once per size into an atlas; the performance bounds are set now and a miss is a slow path to fix. If emulated coverage cannot meet them after optimization, a change to §8.3's definition goes to the operator with measurements, as its own ruling. |
 | **Kernel complexity and isolation** | Validating and translating command streams in the kernel is new attack surface; the existing encoder stops silently at capacity. | Whole-stream validation, the work estimate and caps, the watchdog and reset, per-process contexts with only owned resources attached, hold sets, the fuzz case, no device addresses exposed. |
