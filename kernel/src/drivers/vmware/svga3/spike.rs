@@ -443,7 +443,10 @@ impl Shader {
         s.inst(101, &[dst(2, 0, 15)]);
         s.emit(104, &[24]);
         if texture {
-            s.inst(88 | (3 << 11), &[dst(7, 0, 15), vec![0x5555]]);
+            s.inst(
+                88 | (3 << 11),
+                &[vec![(7 << 12) | (1 << 20), 0], vec![0x5555]],
+            );
         }
         s.inst(28, &[dst(0, 0, 3), src(1, 0)]); // truncate positive half-integer fragment centres
         s.inst(54, &[dst(0, 0, 12), imm(0)]); // z and mip zero for ld
@@ -560,7 +563,7 @@ fn wide(high: bool) -> Shader {
     s
 }
 
-pub(super) fn run() {
+pub(super) fn run() -> ! {
     serial_println!("GPU_SPIKE START backend=svga3-dx size={}x{}", W, H);
     let mut p = Probe {
         next: 16,
@@ -582,6 +585,13 @@ pub(super) fn run() {
         p.failed,
         p.pixels
     );
+    // This is a standalone scratch workload, not a normal desktop boot.
+    // Leave the final GPU image visible without creating idle desktop load.
+    loop {
+        unsafe {
+            core::arch::asm!("wfi", options(nomem, nostack));
+        }
+    }
 }
 fn execute(p: &mut Probe) -> Result<()> {
     for (name, n, required) in [

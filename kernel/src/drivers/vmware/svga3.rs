@@ -693,8 +693,7 @@ pub fn init() -> Result<(), &'static str> {
 
     INITIALIZED.store(true, Ordering::Release);
     serial_println!("[svga3] SVGA3 driver initialized successfully");
-    spike::run();
-    Ok(())
+    spike::run()
 }
 
 /// Check if the SVGA3 driver is initialized.
