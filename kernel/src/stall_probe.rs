@@ -140,8 +140,9 @@ const HOLDS: usize = 32;
 static HOLD_WRITE: AtomicU64 = AtomicU64::new(0);
 static HOLD_READ: AtomicU64 = AtomicU64::new(0);
 /// at ns, answer us, holder | kind << 8 | waiter << 16 | flags << 24, rip,
-/// silent us (kind 3).
-static HOLD: [[AtomicU64; 5]; HOLDS] = [const { [const { AtomicU64::new(0) }; 5] }; HOLDS];
+/// silent us (kind 3), then up to six kernel-text words from the interrupted
+/// kernel stack.
+static HOLD: [[AtomicU64; 11]; HOLDS] = [const { [const { AtomicU64::new(0) }; 11] }; HOLDS];
 
 fn request_sample(kind: u64, holder: usize) {
     if holder >= MAX_CPUS || holder == cpu_now() {
@@ -185,7 +186,7 @@ pub fn pm_holder() -> u64 {
 }
 
 /// Top of the NMI handler.
-pub fn nmi_hook(cpu: usize, rip: u64, cs: u64, rflags: u64) {
+pub fn nmi_hook(cpu: usize, rip: u64, cs: u64, rflags: u64, rsp: u64) {
     if cpu < MAX_CPUS {
         let sent = SAMPLE_REQ[cpu].load(Ordering::Acquire);
         if sent != 0 {
@@ -199,6 +200,27 @@ pub fn nmi_hook(cpu: usize, rip: u64, cs: u64, rflags: u64) {
                 r[2].store(cpu as u64 | (who & 0xff) << 8 | (who >> 8 & 0xff) << 16 | flags << 24, Ordering::Relaxed);
                 r[3].store(rip, Ordering::Relaxed);
                 r[4].store(SAMPLE_SILENT_US[cpu].load(Ordering::Relaxed), Ordering::Relaxed);
+                for slot in &r[5..] {
+                    slot.store(0, Ordering::Relaxed);
+                }
+                if cs & 3 == 0 && rsp & 7 == 0 {
+                    // Kernel text lies within a few MB of this function.
+                    let here = nmi_hook as usize as u64;
+                    let (lo, hi) = (here.saturating_sub(8 << 20), here + (8 << 20));
+                    let end = (rsp & !0xfff) + 0x1000;
+                    let mut found = 0;
+                    let mut at = rsp;
+                    while at < end && found < 6 {
+                        // SAFETY: the words from RSP to the end of its page
+                        // are on the interrupted kernel stack, which is mapped.
+                        let word = unsafe { core::ptr::read_volatile(at as *const u64) };
+                        if word >= lo && word < hi {
+                            r[5 + found].store(word, Ordering::Relaxed);
+                            found += 1;
+                        }
+                        at += 8;
+                    }
+                }
             }
             SAMPLE_REQ[cpu].store(0, Ordering::Release);
         }
@@ -524,9 +546,9 @@ pub fn poll() {
         < HOLD_WRITE.load(Ordering::Relaxed).min(HOLD_READ.load(Ordering::Relaxed) + HOLDS as u64)
     {
         let n = HOLD_READ.load(Ordering::Relaxed);
-        let v: [u64; 5] = core::array::from_fn(|k| HOLD[n as usize % HOLDS][k].load(Ordering::Relaxed));
+        let v: [u64; 11] = core::array::from_fn(|k| HOLD[n as usize % HOLDS][k].load(Ordering::Relaxed));
         log::info!(
-            "HOLDSAMPLE at_ms={} answer_us={} holder={} kind={} waiter={} user={} if={} rip={:#x} silent_us={}",
+            "HOLDSAMPLE at_ms={} answer_us={} holder={} kind={} waiter={} user={} if={} rip={:#x} silent_us={} stack={:x?}",
             v[0] / 1_000_000,
             v[1],
             v[2] & 0xff,
@@ -536,6 +558,7 @@ pub fn poll() {
             v[2] >> 25 & 1,
             v[3],
             v[4],
+            &v[5..],
         );
         HOLD_READ.fetch_add(1, Ordering::Relaxed);
     }

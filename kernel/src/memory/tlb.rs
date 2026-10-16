@@ -456,7 +456,7 @@ mod shootdown {
             UNCLAIMED_NMIS.fetch_add(1, Ordering::Relaxed);
             return;
         };
-        crate::stall_probe::nmi_hook(cpu, frame.instruction_pointer.as_u64(), frame.code_segment.0 as u64, frame.cpu_flags.bits());
+        crate::stall_probe::nmi_hook(cpu, frame.instruction_pointer.as_u64(), frame.code_segment.0 as u64, frame.cpu_flags.bits(), frame.stack_pointer.as_u64());
         let pending = PENDING[cpu].load(Ordering::Acquire);
         if pending == 0 {
             UNCLAIMED_NMIS.fetch_add(1, Ordering::Relaxed);
