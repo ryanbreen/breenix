@@ -387,6 +387,26 @@ fn observation(s: &mut State) {
     s.record.flags = flags;
     s.record.boundary = boundary;
 }
+/// Cursor rectangles kept for the next composite; more are merged into their bounding
+/// rectangle, so any number of `SET_CURSOR` calls between composites holds bounded memory.
+const CURSOR_DAMAGE: usize = 8;
+
+/// Note that `r` must be recomposed for the cursor. A rectangle that cannot be recorded makes
+/// the next composite repair the whole screen instead.
+fn note_cursor_damage(s: &mut State, r: Rect) {
+    if s.cursor_damage.len() >= CURSOR_DAMAGE {
+        let mut merged = crate::window::bounds(&s.cursor_damage);
+        merged = crate::window::bounds(&[merged, r]);
+        s.cursor_damage.clear();
+        s.cursor_damage.push(merged);
+    } else if s.cursor_damage.try_reserve(1).is_ok() {
+        s.cursor_damage.push(r);
+    } else {
+        s.cursor_damage.clear();
+        s.repair = true;
+    }
+}
+
 fn bounded_damage(mut d: Vec<Rect>) -> Vec<Rect> {
     d = d.into_iter().filter_map(present::clip_to_screen).collect();
     // ObservationRecord has room for twelve completions (`Device::max_rects`). When
@@ -605,12 +625,11 @@ impl Backend for Display {
     fn set_cursor(&self, _caller: &Caller, c: &abi::Cursor) -> Result<(), i32> {
         let mut guard = STATE.lock();
         let s = state(&mut guard);
-        if s.cursor.visible != 0 {
-            s.cursor_damage.push(cursor_rect(&s.cursor));
-        }
+        let old = (s.cursor.visible != 0).then(|| cursor_rect(&s.cursor));
         s.cursor = *c;
-        if c.visible != 0 {
-            s.cursor_damage.push(cursor_rect(c));
+        let new = (c.visible != 0).then(|| cursor_rect(c));
+        for r in old.into_iter().chain(new) {
+            note_cursor_damage(s, r);
         }
         Ok(())
     }
