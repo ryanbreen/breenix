@@ -14,6 +14,7 @@ pub struct Spring {
     pub stiffness: f32,
     /// Damping (higher = less bouncy). Good range: 10–30.
     pub damping: f32,
+    remainder_ns: u64,
 }
 
 impl Spring {
@@ -25,15 +26,19 @@ impl Spring {
             target: initial,
             stiffness,
             damping,
+            remainder_ns: 0,
         }
     }
 
     /// Advance the spring by `dt` seconds.
     pub fn update(&mut self, dt: f32) {
-        let force = -self.stiffness * (self.value - self.target);
-        let damping_force = -self.damping * self.velocity;
-        self.velocity += (force + damping_force) * dt;
-        self.value += self.velocity * dt;
+        if !dt.is_finite() || dt <= 0.0 { return; }
+        self.remainder_ns = self.remainder_ns.saturating_add((dt as f64 * 1_000_000_000.0 + 0.5) as u64);
+        while self.remainder_ns >= 1_000_000 {
+            self.remainder_ns -= 1_000_000;
+            self.velocity += (-self.stiffness*(self.value-self.target)-self.damping*self.velocity)*0.001;
+            self.value += self.velocity*0.001;
+        }
     }
 
     /// Returns true if the spring has settled close to its target.
@@ -49,6 +54,7 @@ impl Spring {
 
     /// Instantly snap to a value and optionally add an impulse velocity.
     pub fn impulse(&mut self, value: f32, velocity: f32) {
+        self.remainder_ns = 0;
         self.value = value;
         self.velocity = velocity;
     }

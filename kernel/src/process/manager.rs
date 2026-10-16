@@ -164,6 +164,8 @@ pub(crate) struct ForkCopy {
     parent_thread: Thread,
     child_process: Process,
     vmas: Vec<crate::memory::vma::Vma>,
+    /// The parent's ranges the child gets no page of (window mappings).
+    skip: Vec<(u64, u64)>,
     child_page_table: crate::memory::process_memory::UnpublishedPageTable,
     /// The parent's table. Only the parent's own row can free or replace it,
     /// by exiting or exec'ing, and that row's thread is this fork, inside a
@@ -221,8 +223,13 @@ impl ForkCopy {
         // SAFETY: see `parent_page_table`.
         let parent = unsafe { &*self.parent_page_table };
         let copied =
-            super::fork::setup_cow_pages_with_vmas(parent, &mut self.child_page_table, &self.vmas)
-                .map(|_| ());
+            super::fork::setup_cow_pages_with_vmas(
+                parent,
+                &mut self.child_page_table,
+                &self.vmas,
+                &self.skip,
+            )
+            .map(|_| ());
         self.claim.end_copy();
         copied
     }
@@ -426,6 +433,13 @@ impl ProcessManager {
 
         self.designated_init = Some(pid);
         crate::tracing::providers::teardown::record_init_designation(true);
+        // The one place the suite-mode test-control latch is decided, before init runs.
+        crate::test_control::latch_init_program(
+            self.processes
+                .live_row(&pid)
+                .and_then(|process| process.exe_path.as_deref())
+                .map_or(&[][..], |path| path.as_slice()),
+        );
         Ok(InitPublication { pid, main_thread })
     }
 
@@ -2140,7 +2154,7 @@ impl ProcessManager {
 
             // Clean up window buffers so the compositor stops reading freed pages
             #[cfg(target_arch = "aarch64")]
-            crate::syscall::graphics::cleanup_windows_for_pid(pid.as_u64());
+            crate::syscall::window_v1::cleanup_windows_for_pid(pid.as_u64());
         }
 
         let children: Vec<ProcessId> = self
@@ -2681,6 +2695,7 @@ impl ProcessManager {
         let memory_usage = core::mem::take(&mut from.memory_usage);
         let fb_mmap = from.fb_mmap.take();
         let (heap_start, heap_end, mmap_hint) = (from.heap_start, from.heap_end, from.mmap_hint);
+        let mmap_pending = core::mem::take(&mut from.mmap_pending);
         let (stack_bottom, stack_top) = (from.user_stack_bottom, from.user_stack_top);
         let (image_size, image_data_size) = (from.image_size, from.image_data_size);
         from.address_space_release_deferred = false;
@@ -2698,6 +2713,7 @@ impl ProcessManager {
         to.heap_start = heap_start;
         to.heap_end = heap_end;
         to.mmap_hint = mmap_hint;
+        to.mmap_pending = mmap_pending;
         to.user_stack_bottom = stack_bottom;
         to.user_stack_top = stack_top;
         to.image_size = image_size;
@@ -2974,6 +2990,13 @@ impl ProcessManager {
             child_pid,
             &child_page_table,
         )?;
+        let skip = crate::memory::file_map::dontcopy_ranges(
+            &self
+                .processes
+                .live_row(&parent_pid)
+                .ok_or("Parent process not found")?
+                .vmas,
+        )?;
 
         log::info!(
             "Forking process {} '{}' -> child PID {}",
@@ -3022,6 +3045,7 @@ impl ProcessManager {
                 parent_page_table.as_mut(),
                 child_page_table.as_mut(),
                 &parent_vmas,
+                &skip,
             );
 
             // Restore the live parent before propagating a CoW setup error.
@@ -3109,6 +3133,7 @@ impl ProcessManager {
 
         // Each file VMA needs its own binding in the child's address space.
         let vmas = crate::memory::file_map::fork_vmas(&parent.vmas, child_pid, &child_page_table)?;
+        let skip = crate::memory::file_map::dontcopy_ranges(&parent.vmas)?;
 
         // The child starts at the parent's entry point, in the parent's
         // process group, session and working directory (POSIX), with the
@@ -3161,6 +3186,7 @@ impl ProcessManager {
             parent_thread,
             child_process,
             vmas,
+            skip,
             child_page_table,
             parent_page_table,
             claim: crate::memory::fork_copy::CopyClaim::take(root, child_space),
@@ -3772,6 +3798,13 @@ impl ProcessManager {
             child_pid,
             &child_page_table,
         )?;
+        let skip = crate::memory::file_map::dontcopy_ranges(
+            &self
+                .processes
+                .live_row(&parent_pid)
+                .ok_or("Parent process not found")?
+                .vmas,
+        )?;
 
         // COPY-ON-WRITE FORK: Share pages between parent and child
         {
@@ -3801,6 +3834,7 @@ impl ProcessManager {
                 parent_page_table.as_mut(),
                 child_page_table.as_mut(),
                 &parent_vmas,
+                &skip,
             );
 
             // Restore the live parent before propagating a CoW setup error.

@@ -48,42 +48,1099 @@ pub(crate) const WINDOWS: &[Case] = &[
 // windows: window lifecycle on every target (contract section 17)
 // ---------------------------------------------------------------------------------------
 
-fn windows_create() -> CaseResult { needs_window("17.1, 17.2", "CREATE's id and buffers of the requested size") }
-fn windows_create_zeroed() -> CaseResult { needs_window("17.2", "a new window's all-zero buffers") }
-fn windows_register_listed() -> CaseResult { needs_window("17.1, 17.2", "REGISTER and LIST's title, size and owner") }
-fn windows_title_limit() -> CaseResult { needs_window("17.2", "the 64-byte title limit (EINVAL past it)") }
-fn windows_title_utf8() -> CaseResult { needs_window("17.2", "a UTF-8 title stored byte for byte") }
-fn windows_title_change() -> CaseResult { needs_window("17.1", "SET_TITLE updating the listing") }
-fn windows_size_zero() -> CaseResult { needs_window("17.2", "EINVAL for a zero width or height") }
-fn windows_size_too_big() -> CaseResult { needs_window("17.2", "EINVAL for a dimension over 4,096") }
-fn windows_limit() -> CaseResult { needs_window("17.2", "EAGAIN for a seventeenth window") }
-fn windows_multi_window() -> CaseResult { needs_window("17.2", "four windows of one process drawn independently") }
-fn windows_destroy() -> CaseResult { needs_window("17.2", "DESTROY removing the window and its mappings") }
-fn windows_drop_destroys() -> CaseResult { needs_window("17.2", "Breengel's Window destroying its window on Drop") }
-fn windows_stale_id() -> CaseResult { needs_window("17.2", "ENOENT on a destroyed id and ids never reused") }
-fn windows_register_unwinds() -> CaseResult { needs_window("17.2", "Window::new freeing its window when registration fails") }
-fn windows_exit_cleanup() -> CaseResult { needs_window("17.2", "a process's windows destroyed at exit") }
-fn windows_exec_cleanup() -> CaseResult { needs_window("17.2", "a process's windows destroyed at exec") }
-fn windows_fork_no_mapping() -> CaseResult { needs_window("17.2", "window mappings not inherited across fork") }
-fn windows_fork_no_authority() -> CaseResult { needs_window("17.2, 17.4", "a forked child without authority over its parent's window") }
-fn windows_commit_swaps() -> CaseResult { needs_window("17.3", "COMMIT and ACQUIRE returning another buffer holding the committed pixels") }
-fn windows_acquire_replays_damage() -> CaseResult { needs_window("17.3", "the kernel's replay of missed damage inside ACQUIRE") }
-fn windows_acquire_full_copy() -> CaseResult { needs_window("17.3", "the whole-window replay for a buffer with no base or a lost damage log") }
-fn windows_stale_base_commit() -> CaseResult { needs_window("17.3, 21", "stale-base commits, widened damage and the acquire-stall control") }
-fn windows_commit_immutable() -> CaseResult { needs_window("17.3", "SIGSEGV on a write to a committed buffer") }
-fn windows_commit_busy() -> CaseResult { needs_window("17.3", "EBUSY for a second commit without an acquire") }
-fn windows_thread_commit() -> CaseResult { needs_window("17.3", "concurrent commits by two threads, with ordered ids") }
-fn windows_release_order() -> CaseResult { needs_window("17.3", "retired buffers freed only after their composite and capture") }
-fn windows_acquire_timeout() -> CaseResult { needs_window("17.3, 17.5", "ACQUIRE's ETIMEDOUT within its timeout plus 100 ms") }
-fn windows_resize() -> CaseResult { needs_window("17.1", "RESIZE keeping the old contents in the intersection") }
-fn windows_resize_error() -> CaseResult { needs_window("17.2, 19.2", "a refused resize reported, with no Resized event") }
-fn windows_resize_rlimit() -> CaseResult { needs_window("17.2", "ENOMEM against RLIMIT_AS with the old buffers intact") }
-fn windows_resize_rollback() -> CaseResult { needs_window("17.2", "rollback at every allocation step of CREATE and RESIZE") }
-fn windows_rlimit_accounting() -> CaseResult { needs_window("17.2", "window buffers counted against RLIMIT_AS") }
-fn windows_capture_across_destroy() -> CaseResult { needs_window("17.3", "a capture across destroy returning one whole commit and its tree") }
-fn windows_two_buffer_capture_load() -> CaseResult { needs_window("17.3", "no pins between system calls under continuous capture") }
-fn windows_remnant_on_death() -> CaseResult { needs_window("17.3", "remnants for a registered evidence holder") }
-fn windows_churn() -> CaseResult { needs_window("17.2, 18", "100 create and destroy cycles returning to the baseline") }
-fn windows_distinct_content() -> CaseResult { needs_window("18", "sixteen windows each composited from their own pixels") }
-fn windows_raw_client() -> CaseResult { needs_window("17.1, 24", "raw-window_test's create, commit and destroy") }
-fn windows_every_target() -> CaseResult { needs_window("17.1, 20.2", "WinInfo naming this target's backend") }
+use super::kit::*;
+use abi::op;
+use abi::Plain;
+
+fn windows_create() -> CaseResult {
+    interface()?;
+    for buffers in [2u32, 3] {
+        let w = W::new(64, 48, buffers)?;
+        ensure(w.id() >= 1, "17.2", format!("CREATE gave window id {}; ids start at 1", w.id()))?;
+        ensure(w.c.stride == 64 * 4, "17.1", format!("CREATE gave stride {} for a 64-pixel-wide window; BGRX rows are 256 bytes", w.c.stride))?;
+        for i in 0..3 {
+            let addr = w.c.buffer[i as usize];
+            if i < buffers {
+                ensure(addr != 0, "17.1", format!("CREATE with {buffers} buffers left buffer {i}'s address 0"))?;
+                let b = w.buf(i);
+                let (first, last) = (b[0], b[b.len() - 1]);
+                ensure(first == 0 && last == 0, "17.2", format!("buffer {i} of a new window holds {first}/{last} at its ends"))?;
+            } else {
+                ensure(addr == 0, "17.1", format!("CREATE with {buffers} buffers gave buffer {i} the address {addr:#x}; past `buffers` it is 0"))?;
+            }
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for i in 0..buffers {
+            let a = w.c.buffer[i as usize];
+            ensure(seen.insert(a), "17.3", format!("buffers of one window share the address {a:#x}"))?;
+            for j in 0..buffers {
+                let b = w.c.buffer[j as usize];
+                ensure(i == j || a + w.len() as u64 <= b || b + w.len() as u64 <= a, "17.3", format!("buffers {i} and {j} overlap"))?;
+            }
+        }
+        ensure(w.c.tree != 0 && w.c.tree_kib == 64, "17.1", format!("CREATE with tree_kib 0 gave tree {:#x} of {} KiB; 0 means 64", w.c.tree, w.c.tree_kib))?;
+    }
+    Ok(())
+}
+
+fn windows_create_zeroed() -> CaseResult {
+    interface()?;
+    let w = W::new(37, 29, 3)?;
+    for i in 0..3 {
+        if let Some(pos) = w.buf(i).iter().position(|&b| b != 0) {
+            return at("17.2", format!("buffer {i} of a new 37x29 window holds {:#04x} at byte {pos}; new buffers are all zero", w.buf(i)[pos]));
+        }
+        if let Some(pos) = w.tree(i).iter().position(|&b| b != 0) {
+            return at("17.2", format!("tree page {i} of a new window holds a nonzero byte at {pos}"));
+        }
+    }
+    Ok(())
+}
+
+fn windows_register_listed() -> CaseResult {
+    interface()?;
+    let w = W::new(33, 21, 2)?;
+    ensure(listed(w.id()).cite("17.1")?.is_none(), "17.2", "LIST shows a window that was never registered; it lists registered windows only")?;
+    want_ok(w.register(b"register-listed"), "17.1", "REGISTER")?;
+    let info = listed(w.id()).cite("17.1")?.ok_or("LIST does not show the window just registered (section 17.2)")?;
+    ensure(&info.title[..info.title_len as usize] == b"register-listed", "17.2", format!("LIST gives the title {:?}", String::from_utf8_lossy(&info.title[..info.title_len.min(64) as usize])))?;
+    ensure((info.width, info.height) == (33, 21), "17.1", format!("LIST gives the size {}x{}; it was created 33x21", info.width, info.height))?;
+    ensure(info.owner as u64 == getpid(), "17.1", format!("LIST gives the owner pid {}; this process is {}", info.owner, getpid()))?;
+    ensure(info.flags & abi::win_flags::REGISTERED != 0, "17.1", format!("LIST gives flags {:#x} without the registered bit", info.flags))
+}
+
+fn title_of(id: u64) -> Result<Vec<u8>, String> {
+    let info = listed(id)?.ok_or_else(|| String::from("the window is not listed"))?;
+    Ok(info.title[..(info.title_len as usize).min(64)].to_vec())
+}
+
+fn windows_title_limit() -> CaseResult {
+    interface()?;
+    let w = W::new(8, 8, 2)?;
+    let t64: Vec<u8> = (0..64).map(|i| b'a' + (i % 26) as u8).collect();
+    want_ok(w.register(&t64), "17.2", "REGISTER with a 64-byte title")?;
+    ensure(title_of(w.id()).cite("17.2")? == t64, "17.2", "LIST does not give the 64-byte title whole")?;
+    let t65: Vec<u8> = (0..65).map(|i| b'A' + (i % 26) as u8).collect();
+    want_errno(title_op(op::SET_TITLE, w.id(), t65.as_ptr() as u64, 65), EINVAL, "17.2", "SET_TITLE with a 65-byte title")?;
+    want_errno(w.register(&t65), EINVAL, "17.2", "REGISTER with a 65-byte title")?;
+    ensure(title_of(w.id()).cite("17.2")? == t64, "17.2", "a refused 65-byte title changed the listed title")
+}
+
+fn windows_title_utf8() -> CaseResult {
+    interface()?;
+    let w = W::new(8, 8, 2)?;
+    let title = "fenêtre ⊞ 窓 🪟".as_bytes();
+    want_ok(w.register(title), "17.2", "REGISTER with a UTF-8 title")?;
+    ensure(title_of(w.id()).cite("17.2")? == title, "17.2", "LIST does not give the UTF-8 title byte for byte")?;
+    let bad = [b'o', b'k', 0xC3, 0x28];
+    want_errno(title_op(op::SET_TITLE, w.id(), bad.as_ptr() as u64, 4), EINVAL, "17.2", "SET_TITLE with invalid UTF-8")?;
+    ensure(title_of(w.id()).cite("17.2")? == title, "17.2", "a refused invalid title changed the listed title")
+}
+
+fn windows_title_change() -> CaseResult {
+    interface()?;
+    let w = W::new(8, 8, 2)?;
+    want_ok(w.register(b"first"), "17.1", "REGISTER")?;
+    want_ok(title_op(op::SET_TITLE, w.id(), b"second".as_ptr() as u64, 6), "17.1", "SET_TITLE")?;
+    let got = title_of(w.id()).cite("17.1")?;
+    ensure(got == b"second", "17.1", format!("after SET_TITLE \"second\" LIST gives {:?}", String::from_utf8_lossy(&got)))
+}
+
+fn create_errno(width: u32, height: u32) -> i64 {
+    let mut c = abi::Create::ZERO;
+    c.width = width;
+    c.height = height;
+    c.buffers = 2;
+    let r = call(op::CREATE, &mut c);
+    if r >= 0 {
+        let _ = call_id(op::DESTROY, c.id);
+    }
+    r
+}
+
+fn windows_size_zero() -> CaseResult {
+    interface()?;
+    for (w, h) in [(0, 10), (10, 0), (0, 0)] {
+        want_errno(create_errno(w, h), EINVAL, "17.2", &format!("CREATE {w}x{h}"))?;
+    }
+    Ok(())
+}
+
+fn windows_size_too_big() -> CaseResult {
+    interface()?;
+    for (w, h) in [(4097, 10), (10, 4097), (u32::MAX, 1)] {
+        want_errno(create_errno(w, h), EINVAL, "17.2", &format!("CREATE {w}x{h}"))?;
+    }
+    want_ok(create_errno(4096, 1), "17.2", "CREATE 4096x1, the largest width")?;
+    want_ok(create_errno(1, 4096), "17.2", "CREATE 1x4096, the largest height").map(|_| ())
+}
+
+fn windows_limit() -> CaseResult {
+    interface()?;
+    let mut wins = Vec::new();
+    for i in 0..16 {
+        wins.push(W::new(8, 8, 2).map_err(|_| format!("CREATE of window {} of 16 failed; a process may own 16 (section 17.2)", i + 1))?);
+    }
+    want_errno(create_errno(8, 8), EAGAIN, "17.2", "the seventeenth CREATE")?;
+    for (i, w) in wins.iter().enumerate() {
+        w.frame(i as u32).map_err(|e| format!("window {} of the first sixteen after the refusal: {e} (section 17.2)", i + 1))?;
+    }
+    Ok(())
+}
+
+fn windows_multi_window() -> CaseResult {
+    interface()?;
+    let sizes = [(40u32, 30u32), (17, 23), (64, 8), (9, 50)];
+    let wins: Vec<W> = sizes.iter().map(|&(w, h)| W::new(w, h, 2)).collect::<Result<_, _>>()?;
+    for (i, w) in wins.iter().enumerate() {
+        w.frame(100 + i as u32).cite("17.3")?;
+    }
+    for (i, w) in wins.iter().enumerate() {
+        let (c, px) = capture(w.id(), w.c.width, w.c.height, None).map_err(|r| format!("CAPTURE of window {i} {}", outcome(r))).cite("17.3")?;
+        ensure((c.width, c.height) == (w.c.width, w.c.height), "17.3", format!("CAPTURE of window {i} reports {}x{}", c.width, c.height))?;
+        same(&px, w.c.width, w.c.height, false, &format!("window {i}"), "17.3", |x, y| pattern(100 + i as u32, x, y))?;
+    }
+    Ok(())
+}
+
+fn windows_destroy() -> CaseResult {
+    interface()?;
+    // In a child, so the read of the unmapped buffer faults the child, not the case.
+    let ended = child_end(5_000, || {
+        let Ok(mut w) = W::new(16, 16, 2) else { return 2 };
+        if w.register(b"destroy") < 0 || listed(w.id()).ok().flatten().is_none() {
+            return 3;
+        }
+        let addr = w.c.buffer[0] as *const u8;
+        // SAFETY: the buffer is mapped until DESTROY; this read is the positive control.
+        let _ = unsafe { core::ptr::read_volatile(addr) };
+        if w.destroy() < 0 || listed(w.id()).ok().flatten().is_some() {
+            return 4;
+        }
+        // SAFETY: deliberately reading the unmapped buffer; the case expects SIGSEGV.
+        let _ = unsafe { core::ptr::read_volatile(addr) };
+        5
+    }).cite("17.2")?;
+    match ended {
+        Ended::Signal(11) => Ok(()),
+        Ended::Exit(3) => at("17.2", "the registered window is not listed"),
+        Ended::Exit(4) => at("17.2", "after DESTROY the window is still listed, or DESTROY failed"),
+        Ended::Exit(5) => at("17.2", "after DESTROY its buffer is still mapped: reading it did not fault"),
+        Ended::Exit(c) => at("17.2", format!("the child exited {c} before DESTROY")),
+        Ended::Signal(s) => at("17.2", format!("the child died of signal {s}, not SIGSEGV from the unmapped buffer")),
+    }
+}
+
+fn windows_drop_destroys() -> CaseResult {
+    interface()?;
+    let id = {
+        let w = breengel::Window::new_without_fonts(b"drop-destroys", 24, 24).cite("17.2")?;
+        let id = w.id();
+        ensure(listed(id).cite("17.2")?.is_some(), "17.2", "a Breengel Window is not listed while it lives")?;
+        id
+    };
+    ensure(listed(id).cite("17.2")?.is_none(), "17.2", "after the Breengel Window was dropped its window is still listed")?;
+    want_errno(call_id(op::DESTROY, id), ENOENT, "17.2", "DESTROY of the dropped Window's id")
+}
+
+fn windows_stale_id() -> CaseResult {
+    interface()?;
+    let mut w = W::new(8, 8, 2)?;
+    let id = w.id();
+    want_ok(w.destroy(), "17.2", "DESTROY")?;
+    let mut fails = Vec::new();
+    let mut check = |name: &str, r: i64| if r != -(ENOENT as i64) { fails.push(format!("{name} {}", outcome(r))) };
+    check("DESTROY", call_id(op::DESTROY, id));
+    check("REGISTER", title_op(op::REGISTER, id, b"x".as_ptr() as u64, 1));
+    check("SET_TITLE", title_op(op::SET_TITLE, id, b"x".as_ptr() as u64, 1));
+    let mut a = abi::Acquire::ZERO;
+    a.id = id;
+    check("ACQUIRE", call(op::ACQUIRE, &mut a));
+    let mut c = abi::Commit::ZERO;
+    c.id = id;
+    check("COMMIT", call(op::COMMIT, &mut c));
+    let mut n = abi::NoChange::ZERO;
+    n.id = id;
+    check("COMMIT_NO_CHANGE", call(op::COMMIT_NO_CHANGE, &mut n));
+    let mut r = abi::Resize::ZERO;
+    r.id = id;
+    r.width = 4;
+    r.height = 4;
+    check("RESIZE", call(op::RESIZE, &mut r));
+    let mut ev = [abi::WindowEvent::ZERO; 1];
+    let mut re = abi::ReadEvents::ZERO;
+    re.id = id;
+    re.ptr = ev.as_mut_ptr() as u64;
+    re.capacity = 1;
+    check("READ_EVENTS", call(op::READ_EVENTS, &mut re));
+    check("EVENT_FD", call_id(op::EVENT_FD, id));
+    let mut m = abi::MapBuffers::ZERO;
+    m.id = id;
+    check("MAP_COMMITTED", call(op::MAP_COMMITTED, &mut m));
+    check("CAPTURE", capture(id, 8, 8, None).err().unwrap_or(0));
+    let mut t = abi::MapTree::ZERO;
+    t.id = id;
+    check("MAP_TREE", call(op::MAP_TREE, &mut t));
+    let mut meta = abi::Meta::ZERO;
+    let mut q = abi::MetaQuery { id, meta: &mut meta as *mut abi::Meta as u64, commit_id: 0 };
+    check("READ_META", call(op::READ_META, &mut q));
+    ensure(fails.is_empty(), "17.2", format!("on a destroyed window's id: {}; every op is ENOENT", fails.join(", ")))?;
+    let mut last = id;
+    for _ in 0..5 {
+        let w2 = W::new(8, 8, 2)?;
+        ensure(w2.id() > last, "17.2", format!("CREATE after window {last} gave id {}; ids are never reused in a boot", w2.id()))?;
+        last = w2.id();
+    }
+    Ok(())
+}
+
+fn windows_register_unwinds() -> CaseResult {
+    interface()?;
+    let probe = W::new(8, 8, 2)?;
+    let before = probe.id();
+    let long = [b't'; 65];
+    let result = breengel::Window::new_without_fonts(&long, 16, 16);
+    ensure(result.is_err(), "17.2", "Breengel's Window::new succeeded with a 65-byte title; registration must refuse it")?;
+    // Window::new created window `before + 1` (ids rise by one per CREATE in this case's
+    // boot-wide sequence) and must have destroyed it.
+    let after = W::new(8, 8, 2)?;
+    ensure(after.id() == before + 2, "17.2", format!(
+        "windows {before} and {} bracket Window::new, which should have created exactly one window in between", after.id()))?;
+    want_errno(call_id(op::DESTROY, before + 1), ENOENT, "17.2",
+        "DESTROY of the window Window::new created before its registration failed")
+}
+
+/// Window ids reported by a child on its output, one per line, then the child waits.
+fn ids_from(h: &mut Helper, n: usize) -> Result<Vec<u64>, String> {
+    (0..n).map(|_| h.line(5_000)?.parse::<u64>().map_err(|e| format!("the child sent a bad id: {e}"))).collect()
+}
+
+fn windows_exit_cleanup() -> CaseResult {
+    interface()?;
+    let mut body = || {
+        for t in [&b"exit-a"[..], b"exit-b"] {
+            let Ok(w) = W::new(16, 16, 2) else { return 2 };
+            if w.register(t) < 0 { return 3; }
+            let _ = io::write(libbreenix::types::Fd::STDOUT, format!("{}\n", w.id()).as_bytes());
+            core::mem::forget(w);
+        }
+        0
+    };
+    let mut h = Helper::call(&mut body).cite("17.2")?;
+    let ids = ids_from(&mut h, 2).cite("17.2")?;
+    let mut status = 0;
+    let _ = process::waitpid(h.pid, &mut status, 0);
+    h.pid = 0;
+    for id in ids {
+        ensure(listed(id).cite("17.2")?.is_none(), "17.2", format!("window {id} is still listed after its owner exited"))?;
+        want_errno(capture(id, 16, 16, None).err().unwrap_or(0), ENOENT, "17.2", &format!("CAPTURE of window {id} after its owner exited"))?;
+    }
+    Ok(())
+}
+
+fn windows_exec_cleanup() -> CaseResult {
+    interface()?;
+    let mut body = || {
+        let Ok(w) = W::new(16, 16, 2) else { return 2 };
+        if w.register(b"exec-cleanup") < 0 { return 3; }
+        let _ = io::write(libbreenix::types::Fd::STDOUT, format!("{}\n", w.id()).as_bytes());
+        core::mem::forget(w);
+        let argv = [b"raw-window_test\0".as_ptr(), core::ptr::null()];
+        let _ = process::execv(b"/usr/local/test/bin/raw-window_test\0", argv.as_ptr());
+        4
+    };
+    let mut h = Helper::call(&mut body).cite("17.2")?;
+    let id = ids_from(&mut h, 1).cite("17.2")?[0];
+    let ready = h.line(5_000).cite("17.2")?;
+    ensure(ready == "ready", "17.2", format!("the exec'd program said `{ready}`"))?;
+    ensure(listed(id).cite("17.2")?.is_none(), "17.2", format!("window {id} is still listed after its owner exec'd"))?;
+    let reply = h.ask(&format!("destroy {id}")).cite("17.2")?;
+    ensure(reply == "err 2", "17.2", format!("the exec'd image's DESTROY of its old window {id} answered `{reply}`; the window is gone (ENOENT)"))
+}
+
+fn windows_fork_no_mapping() -> CaseResult {
+    interface()?;
+    let w = W::new(16, 16, 2)?;
+    fill(w.buf(0), 16, 16, 7);
+    let addr = w.c.buffer[0];
+    let ended = child_end(5_000, move || {
+        // SAFETY: deliberately reading the parent's buffer address; the child has no mapping.
+        let _ = unsafe { core::ptr::read_volatile(addr as *const u8) };
+        0
+    }).cite("17.2")?;
+    match ended {
+        Ended::Signal(11) => Ok(()),
+        Ended::Exit(_) => at("17.2", "a forked child read its parent's window buffer; window mappings are not inherited"),
+        Ended::Signal(s) => at("17.2", format!("the child died of signal {s} instead of SIGSEGV")),
+    }
+}
+
+fn windows_fork_no_authority() -> CaseResult {
+    interface()?;
+    let w = W::new(16, 16, 2)?;
+    let a = w.acquire(1_000_000_000).map_err(|r| format!("ACQUIRE {}", outcome(r))).cite("17.3")?;
+    let (id, buffer) = (w.id(), a.buffer);
+    child("the forked child", 5_000, None, move || {
+        let mut fails = Vec::new();
+        let r = commit(id, buffer, &[], None).err().unwrap_or(0);
+        if r != -(EPERM as i64) { fails.push(format!("COMMIT {}", outcome(r))); }
+        let mut rs = abi::Resize::ZERO;
+        rs.id = id;
+        rs.width = 8;
+        rs.height = 8;
+        let r = call(op::RESIZE, &mut rs);
+        if r != -(EPERM as i64) { fails.push(format!("RESIZE {}", outcome(r))); }
+        let r = call_id(op::DESTROY, id);
+        if r != -(EPERM as i64) { fails.push(format!("DESTROY {}", outcome(r))); }
+        let r = acquire(id, 0).err().unwrap_or(0);
+        if r != -(EPERM as i64) { fails.push(format!("ACQUIRE {}", outcome(r))); }
+        if fails.is_empty() { Ok(()) } else { Err(format!("the forked child's {}; the contract gives EPERM (section 17.4)", fails.join(", "))) }
+    })?;
+    w.commit(buffer, &[full(&w.c)]).map_err(|r| format!("the parent's own COMMIT after the child's attempts {}", outcome(r))).cite("17.4")?;
+    Ok(())
+}
+
+fn windows_commit_swaps() -> CaseResult {
+    interface()?;
+    let w = W::new(20, 10, 2)?;
+    let a = w.acquire(1_000_000_000).map_err(|r| format!("ACQUIRE {}", outcome(r))).cite("17.3")?;
+    fill(w.buf(a.buffer), 20, 10, 5);
+    let c = w.commit(a.buffer, &[full(&w.c)]).map_err(|r| format!("COMMIT {}", outcome(r))).cite("17.3")?;
+    let b = w.acquire(1_000_000_000).map_err(|r| format!("the second ACQUIRE {}", outcome(r))).cite("17.3")?;
+    ensure(b.buffer != a.buffer, "17.3", format!("after committing buffer {} ACQUIRE returned it again; the committed buffer is the front", a.buffer))?;
+    ensure(b.base == c.commit_id, "17.3", format!("ACQUIRE gave base {}; the buffer holds commit {}", b.base, c.commit_id))?;
+    same(w.buf(b.buffer), 20, 10, false, "the acquired buffer", "17.3", |x, y| pattern(5, x, y))
+}
+
+/// Two-cell windows: cell 0 is x < 32, cell 1 is x >= 32, of a 64x16 window.
+const CELL_W: u32 = 32;
+
+fn cell(i: u32) -> abi::Rect {
+    abi::Rect::new((i * CELL_W) as i32, 0, CELL_W as i32, 16)
+}
+
+fn cells_expect(c0: u32, c1: u32) -> impl Fn(u32, u32) -> [u8; 4] {
+    move |x, y| pattern(if x < CELL_W { c0 } else { c1 }, x, y)
+}
+
+fn windows_acquire_replays_damage() -> CaseResult {
+    interface()?;
+    let w = W::new(64, 16, 3)?;
+    // Commit [1, 0]: cell 0 seed 1, cell 1 seed 0.
+    let a = w.acquire(1_000_000_000).map_err(|r| format!("ACQUIRE {}", outcome(r))).cite("17.3")?;
+    fill_rect(w.buf(a.buffer), 64, cell(0), 1);
+    fill_rect(w.buf(a.buffer), 64, cell(1), 0);
+    w.commit(a.buffer, &[full(&w.c)]).map_err(|r| format!("COMMIT {}", outcome(r))).cite("17.3")?;
+    let mut front = (1u32, 0u32);
+    for k in 0..300u32 {
+        let a = w.acquire(1_000_000_000).map_err(|r| format!("ACQUIRE {k} {}", outcome(r))).cite("17.3")?;
+        let (c0, c1) = front;
+        same(w.buf(a.buffer), 64, 16, false, &format!("acquire {k} (buffer {}, base {})", a.buffer, a.base), "17.3", cells_expect(c0, c1))?;
+        // Update one cell, alternating, and damage only that cell.
+        let which = k % 2 + if k == 0 { 1 } else { 0 };
+        let which = which % 2;
+        let seed = 2 + k;
+        fill_rect(w.buf(a.buffer), 64, cell(which), seed);
+        w.commit(a.buffer, &[cell(which)]).map_err(|r| format!("COMMIT {k} {}", outcome(r))).cite("17.3")?;
+        front = if which == 0 { (seed, c1) } else { (c0, seed) };
+    }
+    Ok(())
+}
+
+/// The frame a window's newest commit shows, by the seed this case drew it with.
+struct Front {
+    seed: u32,
+}
+
+/// Acquire, check the buffer equals the newest front, and note whether the kernel replayed a
+/// buffer more than eight pixel commits behind in full. ACQUIRE returns the buffer's base after
+/// its replay (the newest front), so the base it had before is tracked here: `holds[b]` is the
+/// commit buffer `b` held when it was last committed or replayed, 0 for none.
+fn acquire_checked(w: &W, front: &Front, newest: u64, holds: &mut [u64; 3], seen_overflow: &mut bool) -> Result<abi::Acquire, libbreenix::suite::CaseError> {
+    let a = w.acquire(1_000_000_000).map_err(|r| format!("ACQUIRE {}", outcome(r))).cite("17.3")?;
+    same(w.buf(a.buffer), w.c.width, w.c.height, false, &format!("buffer {} acquired at base {} (newest commit {newest})", a.buffer, a.base), "17.3", |x, y| pattern(front.seed, x, y))?;
+    ensure(a.base == newest, "17.3", format!("ACQUIRE returned buffer {} with base {}; after its replay it holds the newest commit {newest}", a.buffer, a.base))?;
+    let before = holds[a.buffer as usize];
+    if before != 0 && before + 8 < newest {
+        ensure(a.replay_full == 1, "17.3", format!("buffer {} held commit {before}, more than eight commits behind commit {newest}, and was replayed in {} rectangles, not in full", a.buffer, a.replay_count))?;
+        *seen_overflow = true;
+    }
+    holds[a.buffer as usize] = a.base;
+    Ok(a)
+}
+
+fn windows_acquire_full_copy() -> CaseResult {
+    interface()?;
+    // A buffer with no base: the second buffer acquired after the first commit.
+    let w = W::new(48, 12, 3)?;
+    let mut newest = w.frame(31).cite("17.3")?.commit_id;
+    let a = w.acquire(1_000_000_000).map_err(|r| format!("ACQUIRE {}", outcome(r))).cite("17.3")?;
+    ensure(a.base == newest && a.replay_full == 1, "17.3", format!(
+        "ACQUIRE of a buffer that never held a commit gave base {} with {} rectangles; it is replayed in full to commit {newest}", a.base, a.replay_count))?;
+    same(w.buf(a.buffer), 48, 12, false, "a buffer with no base after its replay", "17.3", |x, y| pattern(31, x, y))?;
+    let mut front = Front { seed: 32 };
+    fill(w.buf(a.buffer), 48, 12, 32);
+    newest = w.commit(a.buffer, &[full(&w.c)]).map_err(|r| format!("COMMIT {}", outcome(r))).cite("17.3")?.commit_id;
+    let mut holds = [0u64; 3];
+    holds[a.buffer as usize] = newest;
+    // Give every buffer a commit by holding two at a time, then commit one at a time: the
+    // free buffer ACQUIRE leaves unused falls behind. Ten single commits later, acquiring two
+    // at once reaches it.
+    let mut seen = false;
+    let mut based = std::collections::BTreeSet::new();
+    for _ in 0..6 {
+        let x = acquire_checked(&w, &front, newest, &mut holds, &mut seen)?;
+        let y = acquire_checked(&w, &front, newest, &mut holds, &mut seen)?;
+        for (b, s) in [(x.buffer, front.seed + 1), (y.buffer, front.seed + 2)] {
+            fill(w.buf(b), 48, 12, s);
+            newest = w.commit(b, &[full(&w.c)]).map_err(|r| format!("COMMIT {}", outcome(r))).cite("17.3")?.commit_id;
+            holds[b as usize] = newest;
+            based.insert(b);
+        }
+        front.seed += 2;
+    }
+    ensure(based.len() == 3, "17.3", format!("holding two buffers at a time committed only buffers {based:?} of three"))?;
+    for _ in 0..10 {
+        let x = acquire_checked(&w, &front, newest, &mut holds, &mut seen)?;
+        front.seed += 1;
+        fill(w.buf(x.buffer), 48, 12, front.seed);
+        newest = w.commit(x.buffer, &[full(&w.c)]).map_err(|r| format!("COMMIT {}", outcome(r))).cite("17.3")?.commit_id;
+        holds[x.buffer as usize] = newest;
+    }
+    let _first = acquire_checked(&w, &front, newest, &mut holds, &mut seen)?;
+    let _second = acquire_checked(&w, &front, newest, &mut holds, &mut seen)?;
+    ensure(seen, "17.3", "no ACQUIRE handed out a buffer more than eight commits behind, so the log-overflow replay was not reached")?;
+    // The same through a raw client: its buffer with no base after a commit.
+    let mut r = raw_client().cite("24")?;
+    let created = r.ask("create 48 12 3").cite("24")?;
+    let id: u64 = created.strip_prefix("ok ").and_then(|s| s.split(' ').next()).and_then(|s| s.parse().ok())
+        .ok_or_else(|| format!("raw-window_test create answered `{created}`")).cite("24")?;
+    let filled = r.ask(&format!("fill {id} 77")).cite("17.3")?;
+    ensure(filled.starts_with("ok "), "17.3", format!("raw-window_test fill answered `{filled}`"))?;
+    let verified = r.ask(&format!("verify {id} 77")).cite("17.3")?;
+    let parts: Vec<&str> = verified.split(' ').collect();
+    ensure(parts.first() == Some(&"ok") && parts.get(3) == Some(&"1"), "17.3", format!(
+        "the raw client's buffer with no base after a commit: `{verified}`; it must equal the front, replayed in full"))?;
+    // And through Breengel: the frame after the first holds the first.
+    let mut bw = breengel::Window::new_without_fonts(b"full-copy", 48, 12).cite("17.3")?;
+    {
+        let fb = bw.framebuf();
+        for y in 0..12u32 {
+            for x in 0..48u32 {
+                let p = pattern(55, x, y);
+                fb.put_pixel(x as usize, y as usize, libgfx::color::Color::rgb(p[2], p[1], p[0]));
+            }
+        }
+    }
+    bw.present().cite("17.3")?;
+    let info = bw.acquire(1_000_000_000).cite("17.3")?;
+    ensure(info.replay_full, "17.3", "Breengel's second frame, a buffer with no base, was not replayed in full")?;
+    let fb = bw.framebuf();
+    for y in 0..12u32 {
+        for x in 0..48u32 {
+            let p = pattern(55, x, y);
+            let got = fb.get_pixel(x as usize, y as usize);
+            ensure((got.r, got.g, got.b) == (p[2], p[1], p[0]), "17.3", format!("Breengel's acquired frame has {:?} at ({x},{y}); the committed frame has {:02x?}", got, &p[..3]))?;
+        }
+    }
+    Ok(())
+}
+
+fn windows_stale_base_commit() -> CaseResult {
+    interface()?;
+    let w = W::new(64, 16, 3)?;
+    let id = w.id();
+    // Front c1 = [1, 1].
+    w.frame(1).cite("17.3")?;
+    let a = w.acquire(1_000_000_000).map_err(|r| format!("ACQUIRE A {}", outcome(r))).cite("17.3")?;
+    let b = w.acquire(1_000_000_000).map_err(|r| format!("ACQUIRE B {}", outcome(r))).cite("17.3")?;
+    // A changes cell 0 and commits (c2 = [2, 1]); B, still at c1, changes cell 1 and commits.
+    fill_rect(w.buf(a.buffer), 64, cell(0), 2);
+    w.commit(a.buffer, &[cell(0)]).map_err(|r| format!("COMMIT A {}", outcome(r))).cite("17.3")?;
+    fill_rect(w.buf(b.buffer), 64, cell(1), 3);
+    let cb = w.commit(b.buffer, &[cell(1)]).map_err(|r| format!("COMMIT of the stale buffer B {}", outcome(r))).cite("17.3")?;
+    // The frame is B's whole content, [1, 3].
+    let (_, px) = capture(id, 64, 16, None).map_err(|r| format!("CAPTURE {}", outcome(r))).cite("17.3")?;
+    same(&px, 64, 16, false, "the frame after the stale commit", "17.3", cells_expect(1, 3))?;
+    // Its damage reaches cell 0 (changed back from 2 to 1): A's buffer (base c2) replays it.
+    let r = w.acquire(1_000_000_000).map_err(|r| format!("ACQUIRE after the stale commit {}", outcome(r))).cite("17.3")?;
+    same(w.buf(r.buffer), 64, 16, false, &format!("buffer {} replayed to the stale commit {}", r.buffer, cb.commit_id), "17.3", cells_expect(1, 3))?;
+    let covers0 = r.replay_full == 1 || r.replay[..r.replay_count as usize].iter().any(|rc| rc.x <= 0 && rc.x + rc.w >= CELL_W as i32);
+    ensure(r.base != 0 && covers0, "17.3", "the stale commit's damage, replayed, does not cover cell 0, which it changed")?;
+    w.commit(r.buffer, &[]).map_err(|e| format!("COMMIT {}", outcome(e))).cite("17.3")?;
+
+    // acquire-stall: thread 1's replay from front F pauses half way; thread 2 commits C and
+    // then acquires; it gets F's buffer only after the copy ends.
+    let w2 = std::sync::Arc::new(W::new(64, 64, 3)?);
+    w2.frame(10).cite("17.3")?; // front F = seed 10
+    let held = w2.acquire(1_000_000_000).map_err(|r| format!("ACQUIRE {}", outcome(r))).cite("17.3")?; // thread 2's buffer
+    // The third buffer has no base yet, so thread 1's ACQUIRE replays the whole window from F.
+    libbreenix::test_control::arm(abi::tc_point::ACQUIRE_STALL, w2.id(), 0).map_err(|e| format!("test_control(ARM acquire-stall): {e}")).cite("21")?;
+    let t1 = {
+        let w2 = w2.clone();
+        std::thread::spawn(move || w2.acquire(5_000_000_000))
+    };
+    let _ = time::sleep_ms(50);
+    fill(w2.buf(held.buffer), 64, 64, 11);
+    let cc = w2.commit(held.buffer, &[abi::Rect::new(0, 0, 64, 64)]).map_err(|r| format!("thread 2's COMMIT {}", outcome(r))).cite("17.3")?;
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let t2 = {
+        let (w2, done) = (w2.clone(), done.clone());
+        std::thread::spawn(move || {
+            let r = w2.acquire(5_000_000_000);
+            done.store(true, std::sync::atomic::Ordering::SeqCst);
+            r
+        })
+    };
+    let _ = time::sleep_ms(100);
+    let early = done.load(std::sync::atomic::Ordering::SeqCst);
+    let _ = libbreenix::test_control::arm(abi::tc_point::RELEASE_STALL, 0, 0);
+    let r1 = t1.join().map_err(|_| String::from("thread 1 panicked")).cite("17.3")?.map_err(|r| format!("thread 1's stalled ACQUIRE {}", outcome(r))).cite("17.3")?;
+    let r2 = t2.join().map_err(|_| String::from("thread 2 panicked")).cite("17.3")?.map_err(|r| format!("thread 2's ACQUIRE {}", outcome(r))).cite("17.3")?;
+    let _ = libbreenix::test_control::disarm_all();
+    let fired = libbreenix::test_control::fired(abi::tc_point::ACQUIRE_STALL).unwrap_or(0);
+    ensure(fired >= 1, "21", "the acquire-stall control never fired")?;
+    ensure(!early, "17.3", "thread 2's ACQUIRE returned while thread 1's replay from the old front was paused")?;
+    let base_seed = if r1.base == cc.commit_id { 11 } else { 10 };
+    same(w2.buf(r1.buffer), 64, 64, false, &format!("thread 1's buffer (base {})", r1.base), "17.3", |x, y| pattern(base_seed, x, y))?;
+    same(w2.buf(r2.buffer), 64, 64, false, "thread 2's buffer", "17.3", |x, y| pattern(11, x, y))?;
+    // More than eight commits after a held buffer's base: its commit gets whole-window damage.
+    let w3 = W::new(64, 16, 3)?;
+    w3.frame(1).cite("17.3")?;
+    let held = w3.acquire(1_000_000_000).map_err(|r| format!("ACQUIRE {}", outcome(r))).cite("17.3")?;
+    for s in 2..12 {
+        w3.frame(s).cite("17.3")?;
+    }
+    let c = w3.commit(held.buffer, &[cell(0)]).map_err(|r| format!("COMMIT of a buffer ten commits stale {}", outcome(r))).cite("17.3")?;
+    let next = w3.acquire(1_000_000_000).map_err(|r| format!("ACQUIRE {}", outcome(r))).cite("17.3")?;
+    ensure(next.base == c.commit_id && next.replay_full == 1, "17.3", format!(
+        "the next buffer's replay of a commit made ten commits after its buffer's base gave base {} with {} rectangles; the commit's damage is the whole window",
+        next.base, next.replay_count))?;
+    same(w3.buf(next.buffer), 64, 16, false, "the buffer after the stale commit", "17.3", |x, y| pattern(1, x, y))
+}
+
+fn windows_commit_immutable() -> CaseResult {
+    interface()?;
+    let ended = child_end(5_000, || {
+        let Ok(w) = W::new(16, 16, 2) else { return 2 };
+        let Ok(a) = w.acquire(1_000_000_000) else { return 3 };
+        w.buf(a.buffer)[0] = 1; // writable while acquired
+        if w.commit(a.buffer, &[full(&w.c)]).is_err() { return 4; }
+        w.buf(a.buffer)[0] = 2; // the committed buffer: must fault
+        5
+    }).cite("17.3")?;
+    match ended {
+        Ended::Signal(11) => Ok(()),
+        Ended::Exit(5) => at("17.3", "writing a committed buffer did not fault; it is read-only to its owner"),
+        Ended::Exit(c) => at("17.3", format!("the child exited {c} before the write")),
+        Ended::Signal(s) => at("17.3", format!("the child died of signal {s}, not SIGSEGV")),
+    }
+}
+
+fn windows_commit_busy() -> CaseResult {
+    interface()?;
+    let w = W::new(16, 16, 2)?;
+    let never = commit(w.id(), 1, &[], None).err().unwrap_or(0);
+    want_errno(never, EBUSY, "17.3", "COMMIT of a buffer never acquired")?;
+    let a = w.acquire(1_000_000_000).map_err(|r| format!("ACQUIRE {}", outcome(r))).cite("17.3")?;
+    w.commit(a.buffer, &[]).map_err(|r| format!("COMMIT {}", outcome(r))).cite("17.3")?;
+    want_errno(w.commit(a.buffer, &[]).err().unwrap_or(0), EBUSY, "17.3", "a second COMMIT of the same acquisition")
+}
+
+fn windows_thread_commit() -> CaseResult {
+    interface()?;
+    let w = std::sync::Arc::new(W::new(32, 32, 3)?);
+    for round in 0..50 {
+        let a = w.acquire(1_000_000_000).map_err(|r| format!("ACQUIRE {}", outcome(r))).cite("17.3")?;
+        let b = w.acquire(1_000_000_000).map_err(|r| format!("ACQUIRE {}", outcome(r))).cite("17.3")?;
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let go = |buffer: u32| {
+            let (w, barrier) = (w.clone(), barrier.clone());
+            std::thread::spawn(move || {
+                barrier.wait();
+                w.commit(buffer, &[abi::Rect::new(0, 0, 32, 32)])
+            })
+        };
+        let (t1, t2) = (go(a.buffer), go(b.buffer));
+        let c1 = t1.join().map_err(|_| String::from("a thread panicked")).cite("17.3")?.map_err(|r| format!("round {round}: a thread's COMMIT {}", outcome(r))).cite("17.3")?;
+        let c2 = t2.join().map_err(|_| String::from("a thread panicked")).cite("17.3")?.map_err(|r| format!("round {round}: a thread's COMMIT {}", outcome(r))).cite("17.3")?;
+        let (lo, hi) = (c1.commit_id.min(c2.commit_id), c1.commit_id.max(c2.commit_id));
+        ensure(hi == lo + 1, "17.3", format!("round {round}: concurrent commits got ids {} and {}; they are serialized, one apart", c1.commit_id, c2.commit_id))?;
+    }
+    Ok(())
+}
+
+fn windows_release_order() -> CaseResult {
+    interface()?;
+    // A two-buffer writer reuses each retired buffer as soon as it is free. If a buffer were freed
+    // while a capture was still copying it, the capture would mix two frames; every capture must be
+    // one whole commit. With kiosk_test composing every commit, composites pin the fronts too.
+    let (_kiosk, _) = kiosk().cite("24")?;
+    let w = std::sync::Arc::new(W::new(256, 128, 2)?);
+    want_ok(w.register(b"release-order"), "17.1", "REGISTER")?;
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let reader = {
+        let (w, stop) = (w.clone(), stop.clone());
+        std::thread::spawn(move || -> Result<u64, String> {
+            let mut n = 0;
+            while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                let (c, px) = capture(w.id(), 256, 128, None).map_err(|r| format!("CAPTURE {}", outcome(r)))?;
+                if c.commit_id == 0 { continue; }
+                let seed = c.commit_id as u32;
+                if let Some((x, y, got, want)) = first_diff(&px, 256, 128, false, |x, y| pattern(seed, x, y)) {
+                    return Err(format!("a capture of commit {} has {:02x?} at ({x},{y}) where that commit has {:02x?}: a buffer was reused while it was being copied", c.commit_id, got, want));
+                }
+                n += 1;
+            }
+            Ok(n)
+        })
+    };
+    for _ in 0..200 {
+        let a = w.acquire(2_000_000_000).map_err(|r| format!("ACQUIRE {}", outcome(r))).cite("17.3")?;
+        // Commit ids rise by one per commit from 1, so commit k carries pattern k.
+        let next = listed(w.id()).cite("17.3")?.map_or(0, |i| i.commit_id) + 1;
+        fill(w.buf(a.buffer), 256, 128, next as u32);
+        let c = w.commit(a.buffer, &[abi::Rect::new(0, 0, 256, 128)]).map_err(|r| format!("COMMIT {}", outcome(r))).cite("17.3")?;
+        ensure(c.commit_id == next, "17.3", format!("commit got id {} where {next} was next", c.commit_id))?;
+    }
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let captures = reader.join().map_err(|_| String::from("the reader panicked")).cite("17.3")?.cite("17.3")?;
+    value("captures", captures as i64, "", None);
+    ensure(captures > 0, "17.3", "the reader made no capture while 200 frames were committed")
+}
+
+fn windows_acquire_timeout() -> CaseResult {
+    interface()?;
+    let w = W::new(16, 16, 2)?;
+    let _a = w.acquire(1_000_000_000).map_err(|r| format!("ACQUIRE {}", outcome(r))).cite("17.3")?;
+    let _b = w.acquire(1_000_000_000).map_err(|r| format!("ACQUIRE {}", outcome(r))).cite("17.3")?;
+    let start = now_ms();
+    let r = w.acquire(200_000_000).err().unwrap_or(0);
+    let took = since(start);
+    value("timeout-wait", took as i64, "ms", Some((200, 300)));
+    want_errno(r, ETIMEDOUT, "17.3", "ACQUIRE with both buffers held and a 200 ms timeout")?;
+    ensure((200..=300).contains(&took), "17.5", format!("ACQUIRE timed out after {took} ms; a 200 ms timeout returns no earlier than 200 ms and no later than 300 ms"))
+}
+
+fn windows_resize() -> CaseResult {
+    interface()?;
+    let w = W::new(40, 30, 2)?;
+    want_ok(w.register(b"resize"), "17.1", "REGISTER")?;
+    w.frame(3).cite("17.3")?;
+    let mut r = abi::Resize::ZERO;
+    r.id = w.id();
+    r.width = 60;
+    r.height = 20;
+    want_ok(call(op::RESIZE, &mut r), "17.1", "RESIZE 40x30 to 60x20")?;
+    ensure(r.stride == 240, "17.1", format!("RESIZE gave stride {}; 60 pixels of BGRX are 240 bytes", r.stride))?;
+    let info = listed(w.id()).cite("17.1")?.ok_or("the resized window is not listed (section 17.2)")?;
+    ensure((info.width, info.height) == (60, 20), "17.1", format!("after RESIZE the window is listed {}x{}", info.width, info.height))?;
+    let a = w.acquire(1_000_000_000).map_err(|e| format!("ACQUIRE after RESIZE {}", outcome(e))).cite("17.3")?;
+    // SAFETY: RESIZE mapped each new buffer, 60x20x4 bytes, into the owner.
+    let buf = unsafe { core::slice::from_raw_parts(r.buffer[a.buffer as usize] as *const u8, 60 * 20 * 4) };
+    for y in 0..20u32 {
+        for x in 0..40u32 {
+            let at = ((y * 60 + x) * 4) as usize;
+            let want = pattern(3, x, y);
+            ensure(buf[at..at + 3] == want[..3], "17.1", format!("after RESIZE pixel ({x},{y}) is {:02x?}; the old contents are kept in the intersection, {:02x?}", &buf[at..at + 3], &want[..3]))?;
+        }
+    }
+    Ok(())
+}
+
+fn windows_resize_error() -> CaseResult {
+    interface()?;
+    let w = W::new(20, 10, 2)?;
+    let _ = read_events(w.id());
+    for (rw, rh) in [(0u32, 10u32), (5000, 10)] {
+        let mut r = abi::Resize::ZERO;
+        r.id = w.id();
+        r.width = rw;
+        r.height = rh;
+        want_errno(call(op::RESIZE, &mut r), EINVAL, "17.2", &format!("RESIZE to {rw}x{rh}"))?;
+        let events = read_events(w.id()).map_err(|e| format!("READ_EVENTS {}", outcome(e))).cite("19.2")?;
+        ensure(!events.iter().any(|e| e.kind == abi::event_kind::RESIZED), "19.2", format!("a refused RESIZE to {rw}x{rh} delivered Resized"))?;
+        let failed = events.iter().find(|e| e.kind == abi::event_kind::RESIZE_FAILED);
+        ensure(failed.is_some_and(|e| (e.width, e.height) == (20, 10)), "19.2", format!(
+            "a refused RESIZE to {rw}x{rh} delivered {:?}; ResizeFailed with the old 20x10 size is required", events.iter().map(|e| e.kind).collect::<Vec<_>>()))?;
+    }
+    Ok(())
+}
+
+fn windows_resize_rlimit() -> CaseResult {
+    interface()?;
+    child("the limited child", 10_000, None, || {
+        let w = W::new(64, 64, 2).map_err(|e| format!("{e:?}"))?;
+        w.frame(9)?;
+        let _ = read_events(w.id());
+        // VmSize is read just before and just after the RESIZE, so this child's own allocations
+        // (libc keeps small blocks mapped for reuse) fall outside the comparison.
+        let _ = vm_size()?;
+        let base = vm_size()?;
+        // Room for a little more, not for two 1024x1024 buffers.
+        if set_rlimit_as(base + 1024 * 1024) != 0 {
+            return Err(String::from("prlimit(RLIMIT_AS) failed"));
+        }
+        let mut r = abi::Resize::ZERO;
+        r.id = w.id();
+        r.width = 1024;
+        r.height = 1024;
+        let ret = call(op::RESIZE, &mut r);
+        let after = vm_size()?;
+        if ret != -(ENOMEM as i64) {
+            return Err(format!("RESIZE past RLIMIT_AS {}; the contract gives ENOMEM (section 17.2)", outcome(ret)));
+        }
+        if after != base {
+            return Err(format!("the refused RESIZE changed VmSize from {base} to {after} bytes (section 17.2)"));
+        }
+        let (_, px) = capture(w.id(), 64, 64, None).map_err(|e| format!("CAPTURE after the refused RESIZE {}", outcome(e)))?;
+        if let Some((x, y, _, _)) = first_diff(&px, 64, 64, false, |x, y| pattern(9, x, y)) {
+            return Err(format!("after the refused RESIZE the window's pixel ({x},{y}) changed; the old buffers stay intact (section 17.2)"));
+        }
+        let a = w.acquire(1_000_000_000).map_err(|e| format!("ACQUIRE after the refused RESIZE {}", outcome(e)))?;
+        if first_diff(w.buf(a.buffer), 64, 64, false, |x, y| pattern(9, x, y)).is_some() {
+            return Err(String::from("after the refused RESIZE an acquired old buffer no longer holds the frame (section 17.2)"));
+        }
+        let events = read_events(w.id()).map_err(|e| format!("READ_EVENTS {}", outcome(e)))?;
+        if !events.iter().any(|e| e.kind == abi::event_kind::RESIZE_FAILED && (e.width, e.height) == (64, 64)) {
+            return Err(String::from("the refused RESIZE did not deliver ResizeFailed with the old size (section 19.2)"));
+        }
+        Ok(())
+    }).cite("17.2")
+}
+
+fn windows_resize_rollback() -> CaseResult {
+    interface()?;
+    // CREATE of a 3-buffer 256x256 window allocates four pieces (three buffers, the tree pages);
+    // RESIZE to 512x512 allocates three. RLIMIT_AS set to stop each allocation in turn must leave
+    // the registry, the mappings (VmSize) and the next window id as they were. Each limit leaves
+    // `slack` for this child's own allocations (libc maps each one), less than any piece.
+    child("the limited child", 15_000, None, || {
+        let piece = 256 * 256 * 4u64;
+        let tree = 3 * 64 * 1024u64;
+        let slack = 64 * 1024u64;
+        // The slack must not fit any piece, or a step could succeed inside it.
+        if slack >= tree.min(piece) {
+            return Err(format!("the case's slack of {slack} bytes would fit a piece of {} bytes", tree.min(piece)));
+        }
+        let _ = vm_size()?;
+        let base = vm_size()?;
+        for step in 0..4u64 {
+            let room = if step < 3 { step * piece } else { 3 * piece } + slack;
+            if set_rlimit_as(base + room) != 0 { return Err(String::from("prlimit(RLIMIT_AS) failed")); }
+            let mut c = abi::Create::ZERO;
+            c.width = 256;
+            c.height = 256;
+            c.buffers = 3;
+            let r = call(op::CREATE, &mut c);
+            if r != -(ENOMEM as i64) {
+                return Err(format!("CREATE stopped at allocation step {step} {}; ENOMEM is required (section 17.2)", outcome(r)));
+            }
+            let now = vm_size()?;
+            if now != base {
+                return Err(format!("CREATE refused at step {step} left VmSize {now} bytes where it was {base} (section 17.2)"));
+            }
+        }
+        if set_rlimit_as(u64::MAX) != 0 { return Err(String::from("prlimit(RLIMIT_AS) failed")); }
+        let w = W::new(256, 256, 3).map_err(|e| format!("{e:?}"))?;
+        w.frame(4)?;
+        // The capture buffer is allocated before any limit is set.
+        let mut px = vec![0u8; 256 * 256 * 4];
+        let _ = vm_size()?;
+        let base = vm_size()?;
+        let big = 512 * 512 * 4u64;
+        for step in 0..3u64 {
+            if set_rlimit_as(base + step * big + slack) != 0 { return Err(String::from("prlimit(RLIMIT_AS) failed")); }
+            let mut r = abi::Resize::ZERO;
+            r.id = w.id();
+            r.width = 512;
+            r.height = 512;
+            let ret = call(op::RESIZE, &mut r);
+            if ret != -(ENOMEM as i64) {
+                return Err(format!("RESIZE stopped at allocation step {step} {}; ENOMEM is required (section 17.2)", outcome(ret)));
+            }
+            let now = vm_size()?;
+            if now != base {
+                return Err(format!("RESIZE refused at step {step} left VmSize {now} where it was {base} (section 17.2)"));
+            }
+            let mut c = abi::Capture::ZERO;
+            c.id = w.id();
+            c.dst = px.as_mut_ptr() as u64;
+            c.dst_len = px.len() as u64;
+            let got = call(op::CAPTURE, &mut c);
+            if got < 0 {
+                return Err(format!("CAPTURE after the refused RESIZE {}", outcome(got)));
+            }
+            if first_diff(&px, 256, 256, false, |x, y| pattern(4, x, y)).is_some() {
+                return Err(format!("RESIZE refused at step {step} changed the window's pixels (section 17.2)"));
+            }
+        }
+        Ok(())
+    }).cite("17.2")
+}
+
+fn windows_rlimit_accounting() -> CaseResult {
+    interface()?;
+    let before = vm_size().cite("17.2")?;
+    let mut w = W::new(128, 64, 3)?;
+    let during = vm_size().cite("17.2")?;
+    let want = 3 * 128 * 64 * 4 + 3 * 64 * 1024;
+    value("window-bytes", (during - before) as i64, "b", Some((want as i64, want as i64)));
+    ensure(during - before == want, "17.2", format!("a 128x64 window of three buffers raised VmSize by {} bytes; its buffers and tree pages are {want}", during - before))?;
+    want_ok(w.destroy(), "17.2", "DESTROY")?;
+    let after = vm_size().cite("17.2")?;
+    ensure(after == before, "17.2", format!("after DESTROY VmSize is {after}; it was {before} before the window"))
+}
+
+fn windows_capture_across_destroy() -> CaseResult {
+    interface()?;
+    // One reader thread for every round, so a thread's own memory stays out of the count.
+    let (to_reader, jobs) = std::sync::mpsc::channel::<u64>();
+    let (results, from_reader) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut tree = vec![0u8; 64 * 1024];
+        while let Ok(id) = jobs.recv() {
+            let got = capture(id, 512, 512, Some(&mut tree));
+            if results.send((got, tree[..8].to_vec())).is_err() {
+                break;
+            }
+        }
+    });
+    let round = |round: u32| -> CaseResult {
+        let mut w = W::new(512, 512, 2)?;
+        let seed = 40 + round;
+        let a = w.acquire(1_000_000_000).map_err(|r| format!("ACQUIRE {}", outcome(r))).cite("17.3")?;
+        fill(w.buf(a.buffer), 512, 512, seed);
+        w.tree(a.buffer)[..8].copy_from_slice(&(seed as u64).to_le_bytes());
+        w.commit(a.buffer, &[abi::Rect::new(0, 0, 512, 512)]).map_err(|r| format!("COMMIT {}", outcome(r))).cite("17.3")?;
+        to_reader.send(w.id()).map_err(|_| String::from("the reader thread is gone")).cite("17.3")?;
+        let _ = time::sleep_ms(round as u64 % 3);
+        want_ok(w.destroy(), "17.2", "DESTROY during a capture")?;
+        let (got, tree) = from_reader.recv().map_err(|_| String::from("the reader thread is gone")).cite("17.3")?;
+        match got {
+            Err(r) => want_errno(r, ENOENT, "17.3", "a capture that began after DESTROY"),
+            Ok((c, px)) => {
+                same(&px, 512, 512, false, &format!("round {round}: a capture across DESTROY"), "17.3", |x, y| pattern(seed, x, y))?;
+                let t = u64::from_le_bytes(tree[..8].try_into().unwrap());
+                ensure(t == seed as u64 && c.commit_id == 1, "17.3", format!("round {round}: the capture's tree page says {t} for commit {}", c.commit_id))
+            }
+        }
+    };
+    // Rounds first, so the page tables the rounds need exist before the baseline; the
+    // measured rounds must then return to it.
+    for r in 0..3 {
+        round(r)?;
+    }
+    let _ = mem_free_kb();
+    let free_before = mem_free_kb().cite("17.3")?;
+    let mut outcome_of_rounds = Ok(());
+    for r in 0..20 {
+        outcome_of_rounds = round(r);
+        if outcome_of_rounds.is_err() {
+            break;
+        }
+    }
+    let free_after = mem_free_kb().cite("17.3")?;
+    drop(to_reader);
+    let _ = reader.join();
+    outcome_of_rounds?;
+    value("mem-free-change", free_after as i64 - free_before as i64, "kb", None);
+    ensure(free_after + 64 >= free_before, "17.3", format!(
+        "after 20 windows of 2 MiB were destroyed under captures, {} kB fewer are free; the buffers are freed when the copy ends", free_before - free_after))
+}
+
+fn windows_two_buffer_capture_load() -> CaseResult {
+    interface()?;
+    let w = std::sync::Arc::new(W::new(512, 256, 2)?);
+    want_ok(w.register(b"capture-load"), "17.1", "REGISTER")?;
+    let id = w.id();
+    // An evidence holder: a root child that registers and stays alive.
+    let mut holder_body = || {
+        let r = call_id(op::HOLD_EVIDENCE, id);
+        let _ = io::write(libbreenix::types::Fd::STDOUT, format!("{r}\n").as_bytes());
+        let mut b = [0u8; 1];
+        let _ = io::read(libbreenix::types::Fd::STDIN, &mut b);
+        0
+    };
+    let mut holder = Helper::call(&mut holder_body).cite("17.3")?;
+    let held = holder.line(5_000).cite("17.3")?;
+    ensure(held == "0", "17.3", format!("HOLD_EVIDENCE by a root process answered {held}"))?;
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let reader = {
+        let stop = stop.clone();
+        std::thread::spawn(move || -> Result<(u64, u64), String> {
+            let (mut n, mut longest) = (0, 0);
+            while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                let t = now_ms();
+                capture(id, 512, 256, None).map_err(|r| format!("CAPTURE {}", outcome(r)))?;
+                longest = longest.max(since(t));
+                n += 1;
+            }
+            Ok((n, longest))
+        })
+    };
+    let mut longest_wait = 0;
+    for k in 0..300u32 {
+        let t = now_ms();
+        let a = w.acquire(2_000_000_000).map_err(|r| format!("ACQUIRE {k} {}", outcome(r))).cite("17.3")?;
+        longest_wait = longest_wait.max(since(t));
+        fill_rect(w.buf(a.buffer), 512, abi::Rect::new(0, (k % 256) as i32, 512, 1), k);
+        w.commit(a.buffer, &[abi::Rect::new(0, (k % 256) as i32, 512, 1)]).map_err(|r| format!("COMMIT {k} {}", outcome(r))).cite("17.3")?;
+    }
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let (captures, longest_capture) = reader.join().map_err(|_| String::from("the reader panicked")).cite("17.3")?.cite("17.3")?;
+    value("acquire-wait-max", longest_wait as i64, "ms", None);
+    value("capture-max", longest_capture as i64, "ms", None);
+    ensure(captures > 0, "17.3", "the reader made no capture")?;
+    // One capture copy (no compositor runs here) plus one scheduler time slice to be woken.
+    ensure(longest_wait <= longest_capture + 10, "17.3", format!(
+        "the longest ACQUIRE waited {longest_wait} ms; with captures of at most {longest_capture} ms it may wait one copy (plus 10 ms to be scheduled)"))
+}
+
+fn windows_remnant_on_death() -> CaseResult {
+    interface()?;
+    // The owner: a child that draws, writes its tree page, commits and waits to be killed.
+    let mut owner_body = || {
+        let Ok(w) = W::new(64, 32, 2) else { return 2 };
+        if w.register(b"remnant").is_negative() { return 3; }
+        let Ok(a) = w.acquire(1_000_000_000) else { return 4 };
+        fill(w.buf(a.buffer), 64, 32, 21);
+        w.tree(a.buffer)[..16].copy_from_slice(b"remnant-tree-ok!");
+        if w.commit(a.buffer, &[abi::Rect::new(0, 0, 64, 32)]).is_err() { return 5; }
+        let _ = io::write(libbreenix::types::Fd::STDOUT, format!("{}\n", w.id()).as_bytes());
+        core::mem::forget(w);
+        let mut b = [0u8; 1];
+        let _ = io::read(libbreenix::types::Fd::STDIN, &mut b);
+        0
+    };
+    let mut owner = Helper::call(&mut owner_body).cite("17.3")?;
+    let id = ids_from(&mut owner, 1).cite("17.3")?[0];
+    // This case's process is root and neither owner nor compositor: it is the holder.
+    let free_before = mem_free_kb().cite("17.3")?;
+    want_ok(call_id(op::HOLD_EVIDENCE, id), "17.3", "HOLD_EVIDENCE by root")?;
+    owner.kill();
+    let mut c = abi::Capture::ZERO;
+    let mut px = vec![0u8; 64 * 32 * 4];
+    let mut tree = vec![0u8; 64 * 1024];
+    c.id = id;
+    c.dst = px.as_mut_ptr() as u64;
+    c.dst_len = px.len() as u64;
+    c.tree_dst = tree.as_mut_ptr() as u64;
+    c.tree_len = tree.len() as u64;
+    want_ok(call(op::READ_REMNANT, &mut c), "17.3", "READ_REMNANT after the owner was killed")?;
+    same(&px, 64, 32, false, "the remnant", "17.3", |x, y| pattern(21, x, y))?;
+    ensure(&tree[..16] == b"remnant-tree-ok!", "17.3", "the remnant's tree page is not the dead owner's last tree")?;
+    want_ok(call_id(op::RELEASE_REMNANT, id), "17.3", "RELEASE_REMNANT")?;
+    want_errno(call(op::READ_REMNANT, &mut c), ENOENT, "17.3", "READ_REMNANT after RELEASE_REMNANT")?;
+    let free_after = mem_free_kb().cite("17.3")?;
+    value("mem-free-change", free_after as i64 - free_before as i64, "kb", None);
+    ensure(free_after + 16 >= free_before, "17.3", format!("after RELEASE_REMNANT {} kB fewer are free than before the owner died", free_before.saturating_sub(free_after)))
+}
+
+fn windows_churn() -> CaseResult {
+    interface()?;
+    // Cycles first, and every read below once, so page tables the mappings need, and the
+    // blocks the reads allocate (libc keeps small ones mapped), exist before the baseline.
+    let cycle = || -> CaseResult {
+        let mut w = W::new(64, 64, 2)?;
+        want_ok(w.register(b"churn"), "17.1", "REGISTER")?;
+        want_ok(w.destroy(), "17.2", "DESTROY").map(|_| ())
+    };
+    for _ in 0..10 {
+        cycle()?;
+    }
+    let _ = (list(), counter("window_buffer_allocs"), vm_size(), mem_free_kb());
+    let listed_before = list().cite("17.2")?.len();
+    let allocs_before = counter("window_buffer_allocs").cite("18")?;
+    let vm_before = vm_size().cite("17.2")?;
+    let free_before = mem_free_kb().cite("17.2")?;
+    for _ in 0..100 {
+        cycle()?;
+    }
+    let free_after = mem_free_kb().cite("17.2")?;
+    let allocs = counter("window_buffer_allocs").cite("18")? - allocs_before;
+    value("buffer-allocs", allocs as i64, "", Some((200, 200)));
+    ensure(allocs == 200, "18", format!("100 two-buffer windows counted {allocs} buffer allocations; each counts 2"))?;
+    ensure(list().cite("17.2")?.len() == listed_before, "17.2", "after 100 create and destroy cycles the registry lists a different number of windows")?;
+    ensure(vm_size().cite("17.2")? == vm_before, "17.2", "after 100 create and destroy cycles VmSize differs from its baseline")?;
+    value("mem-free-change", free_after as i64 - free_before as i64, "kb", None);
+    ensure(free_after + 16 >= free_before, "17.2", format!("after 100 cycles {} kB fewer are free", free_before.saturating_sub(free_after)))
+}
+
+fn windows_distinct_content() -> CaseResult {
+    interface()?;
+    let (mut kiosk, _) = kiosk().cite("24")?;
+    let _ = kiosk.ask("auto 0");
+    let wins: Vec<W> = (0..16).map(|_| W::new(80, 50, 2)).collect::<Result<_, _>>()?;
+    for (i, w) in wins.iter().enumerate() {
+        want_ok(w.register(b"distinct"), "17.1", "REGISTER")?;
+        w.frame(w.id() as u32).cite("17.3")?;
+        let (x, y) = (100 * (i as i32 % 4) + 10, 60 * (i as i32 / 4) + 10);
+        let r = kiosk.ask(&format!("place {} {x} {y} {i} 1", w.id())).cite("24")?;
+        ensure(r == "ok", "18", format!("kiosk_test place answered `{r}`"))?;
+    }
+    let r = kiosk.ask("composite").cite("24")?;
+    ensure(r.starts_with("ok "), "18", format!("COMPOSITE answered `{r}`"))?;
+    let screen = readback().cite("20.1")?;
+    for (i, w) in wins.iter().enumerate() {
+        let (ox, oy) = (100 * (i as u32 % 4) + 10, 60 * (i as u32 / 4) + 10);
+        for y in 0..50 {
+            for x in 0..80 {
+                let at = (((oy + y) * 1280 + ox + x) * 4) as usize;
+                let want = pattern(w.id() as u32, x, y);
+                ensure(screen[at..at + 3] == want[..3], "18", format!(
+                    "window {} (seed {}) at screen ({},{}) shows {:02x?}; its own pixel is {:02x?}", i, w.id(), ox + x, oy + y, &screen[at..at + 3], &want[..3]))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The composed screen, 1280x800 BGRX, by SCANOUT_READBACK (as root).
+pub(crate) fn readback() -> Result<Vec<u8>, String> {
+    let mut px = vec![0u8; 1280 * 800 * 4];
+    let mut rec = abi::ObservationRecord::ZERO;
+    let mut rb = abi::Readback::ZERO;
+    rb.dst = px.as_mut_ptr() as u64;
+    rb.dst_len = px.len() as u64;
+    rb.record = &mut rec as *mut abi::ObservationRecord as u64;
+    rb.record_len = core::mem::size_of::<abi::ObservationRecord>() as u32;
+    let r = call(op::SCANOUT_READBACK, &mut rb);
+    if r < 0 {
+        return Err(format!("SCANOUT_READBACK {}", outcome(r)));
+    }
+    Ok(px)
+}
+
+fn windows_raw_client() -> CaseResult {
+    interface()?;
+    let mut r = raw_client().cite("24")?;
+    let created = r.ask("create 32 16 2").cite("24")?;
+    let id: u64 = created.strip_prefix("ok ").and_then(|s| s.split(' ').next()).and_then(|s| s.parse().ok())
+        .ok_or_else(|| format!("raw-window_test create answered `{created}`")).cite("17.1")?;
+    let reg = r.ask(&format!("register {id} raw-client")).cite("17.1")?;
+    ensure(reg == "ok", "17.1", format!("raw-window_test register answered `{reg}`"))?;
+    let filled = r.ask(&format!("fill {id} 9")).cite("17.3")?;
+    ensure(filled.starts_with("ok 1 "), "17.3", format!("raw-window_test's first commit answered `{filled}`; commit ids start at 1"))?;
+    let info = listed(id).cite("17.1")?.ok_or("the raw client's window is not listed (section 17.2)")?;
+    ensure(info.owner as i32 == r.pid && &info.title[..info.title_len as usize] == b"raw-client", "17.1", format!("LIST gives owner {} title {:?}", info.owner, String::from_utf8_lossy(&info.title[..info.title_len.min(64) as usize])))?;
+    let (_, px) = capture(id, 32, 16, None).map_err(|e| format!("CAPTURE {}", outcome(e))).cite("17.3")?;
+    same(&px, 32, 16, false, "the raw client's committed frame", "17.3", |x, y| pattern(9, x, y))?;
+    let gone = r.ask(&format!("destroy {id}")).cite("17.2")?;
+    ensure(gone == "ok", "17.2", format!("raw-window_test destroy answered `{gone}`"))?;
+    ensure(listed(id).cite("17.2")?.is_none(), "17.2", "the raw client's destroyed window is still listed")
+}
+
+fn windows_every_target() -> CaseResult {
+    interface()?;
+    let w = W::new(16, 16, 2)?;
+    want_ok(w.register(b"every-target"), "17.1", "REGISTER")?;
+    let info = listed(w.id()).cite("17.1")?.ok_or("the window is not listed (section 17.2)")?;
+    let name = abi::backend::name(info.backend);
+    value("backend", info.backend as i64, "", Some((1, 4)));
+    #[cfg(target_arch = "aarch64")]
+    let allowed = [abi::backend::VIRTIO_GPU_2D, abi::backend::SVGA3_SCREEN_TARGET, abi::backend::VIRGL];
+    ensure(allowed.contains(&info.backend), "20.2", format!(
+        "WinInfo names backend {} ({name}); this architecture's targets use {:?}", info.backend,
+        allowed.iter().map(|&b| abi::backend::name(b)).collect::<Vec<_>>()))
+}

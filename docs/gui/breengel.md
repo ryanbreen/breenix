@@ -269,7 +269,7 @@ wrapper, which counts calls and bytes per thread.
 |---|---|
 | a raster primitive at any coordinates | at most `2 × (A + R + C) + 64` steps, where `A`, `R` and `C` are the area, rows and columns of the primitive's clipped bounding rectangle; a primitive wholly outside the surface or clip does at most 64 |
 | font load | at most `16 × file bytes + 65,536` steps and `2 × file bytes + 64 KiB` allocated |
-| one glyph's outline | compound depth ≤ 8, ≤ 256 components, ≤ 65,535 points and no more than maxp declares, ≤ `16 × glyph bytes + 4,096` steps, ≤ `64 × points + 64 KiB` allocated |
+| one glyph's outline | compound depth ≤ 8, ≤ 256 components, ≤ 65,535 points and no more than maxp declares (`maxPoints` for a simple glyph, `maxCompositePoints` for a compound after expansion), ≤ `16 × glyph bytes + 8 × P + 4,096` steps for its `P` points after compound expansion, ≤ `64 × points + 64 KiB` allocated |
 | one glyph's flattening | quadratic subdivision depth ≤ 9 (≤ 512 segments per curve), ≤ 65,536 segments per glyph (else `GlyphTooComplex`), ≤ `1,028 × P` steps for `P` points after compound expansion |
 | one glyph's rasterization at `s` px | bitmap ≤ `4s × 4s`; ≤ `E + H × (10C + 8E × (3 + ⌈log₂(E + 1)⌉) + 17) + 64` steps and ≤ `H × C + 4C + 48E + 4,096` bytes, for `H` rows, `C` sampled columns (3× width for LCD) and `E` segments; a glyph whose bound exceeds 2²⁸ is refused with `GlyphTooExpensive` before any raster loop |
 | inflate | ≤ `4 × output + 16 × input + 1,024 × blocks` steps; 32 KiB window plus ≤ 64 KiB of tables besides the caller's output |
@@ -313,7 +313,9 @@ crate version libgfx draws from and reads the raster directly. A character the c
   `FontError::BadSize` and draws nothing. `size26 = round_half_away(size × 64)`.
 - **Advances and kerning** are 26.6 fixed point: `advance26(g) = round_half_away(advance_units(g) × size26 /
   unitsPerEm)` and `kern26(l, r) = round_half_away(kern_units(l, r) × size26 / unitsPerEm)`, using the legacy
-  `kern` table's format 0 pairs. Layout is one codepoint at a time: the pen starts at 0, glyph `i` is drawn
+  `kern` table's format 0 pairs. `kern_units` sums the pair's values over every horizontal, non-minimum,
+  non-cross-stream format 0 subtable in table order; a subtable with the override bit (coverage bit 3)
+  replaces the sum so far. Layout is one codepoint at a time: the pen starts at 0, glyph `i` is drawn
   with its origin at `x + floor((pen_i + 32) / 64)`, and `pen_{i+1} = pen_i + advance26(g_i) + kern26(g_i,
   g_{i+1})`. Advances are accumulated in 26.6 and rounded once per glyph position, never truncated per glyph.
 - **Width.** `draw_text` returns, and `text_width` equals, `floor((pen_end + 32) / 64)`: the distance from
@@ -321,7 +323,9 @@ crate version libgfx draws from and reads the raster directly. A character the c
   `ttf-kerning`).
 - **Translation.** A glyph's pixels depend on its pen position only by translation: drawing at
   `(x + dx, y + dy)` moves every pixel by `(dx, dy)`, and text starting off the left or top edge draws exactly
-  its visible part (`text/ttf-clip-left`, `ttf-clip-top`).
+  its visible part (`text/ttf-clip-left`, `ttf-clip-top`). A glyph whose bitmap rectangle, from its record
+  header, lies wholly outside the surface or clip is laid out (it still advances the pen) but is not
+  rasterized, so text wholly outside rasterizes no glyph.
 - **Missing glyphs.** A codepoint the font does not map draws glyph 0 (`.notdef`), never a substitute
   character.
 - **UTF-8.** `draw_text_bytes(fb, font, bytes, x, y, size, fg)` decodes UTF-8 and draws one U+FFFD for each
@@ -472,13 +476,20 @@ each one gives (`font-parser/*`):
 | cmap format 4: an `idRangeOffset` that points outside the subtable | font | `BadCmap` |
 | cmap format 12: groups unsorted, overlapping, or with start above end | font | `BadCmap` |
 | contour end points that do not increase | glyph | `BadGlyph` |
-| more points than `maxp.maxPoints`, or above 65,535 | glyph | `TooManyPoints` |
-| a flag repeat or coordinate run past the glyph's data or point count | glyph | `BadGlyph` |
+| more points than `maxp.maxPoints` in a simple glyph or `maxp.maxCompositePoints` in a compound after expansion, or above 65,535 | glyph | `TooManyPoints` |
+| a flag repeat or coordinate run past the glyph's data or point count, or a compound's instructions (`WE_HAVE_INSTRUCTIONS`) running past its record | glyph | `BadGlyph` |
 | compound nesting deeper than 8, or more than 256 components | glyph | `CompoundTooDeep` |
 | a compound that refers to itself, directly or through another | glyph | `CompoundCycle` |
 | a component index at or above `numGlyphs` | glyph | `BadComponent` |
 | `hmtx` shorter than `4 × numberOfHMetrics + 2 × (numGlyphs − numberOfHMetrics)` bytes, or `numberOfHMetrics` of 0 or above `numGlyphs` | font | `BadHmtx` |
 | a glyph past the flattening or rasterization bounds of section 7 | glyph | `GlyphTooComplex`, `GlyphTooExpensive` |
+
+A component's offset (`ARGS_ARE_XY_VALUES`) is in the compound's units; with `SCALED_COMPONENT_OFFSET` set and
+`UNSCALED_COMPONENT_OFFSET` clear, it is in the component's units and the component's scale or 2×2 transform
+applies to it as well (OpenType `glyf`). The cmap subtables read are the first Unicode subtable of each of
+formats 4 and 12; a kern subtable's pairs lie within its length (a format 0 subtable of more than 10,920 pairs
+cannot state its size in 16 bits, so a length equal to its size modulo 65,536 stands for that size), and a
+read past it is `Truncated`.
 
 A valid format 4 cmap with any number of segments, odd counts included (the OpenType specification's
 example has 39), maps exactly as the specification describes. A compressed `hmtx` gives glyphs past the
@@ -504,6 +515,7 @@ file's error.
   30 and 31 are `BadSymbol`.
 - **Matches**: a distance before the start of the output is `DistanceTooFar`; distances up to 32,768 and
   lengths up to 258 decode.
+- Allocation failure is `OutOfMemory`; output growth is fallible and does not reserve past `limit`.
 - **Ends**: a stream cut off at any byte is `Truncated`. Output past `limit` is `OutputLimit`, and nothing is
   written past the limit.
 - **zlib**: a bad header check value, a preset dictionary, a method other than 8 and a window above 32 KiB
@@ -532,6 +544,9 @@ file's error.
   headers or pixel data claim), `BadSignature`, `Unsupported { bpp, compression }`, `TooLarge` (section 7's
   dimension limits) and `SizeOverflow` (a row or image size that overflows). `TooLarge` and `SizeOverflow`
   are found before any allocation; a rejection never panics.
+  `BadHeader` denotes zero dimensions, a DIB size below the supported header sizes, or a pixel
+  offset inside the headers. The 12-byte `BITMAPCOREHEADER` is supported alongside
+  `BITMAPINFOHEADER` and its extensions; its dimensions are unsigned 16-bit and its rows bottom-up.
 
 ## 13. PNG (`libimg::png`)
 
@@ -548,16 +563,28 @@ file's error.
   multiple of 3 and at most 2^depth entries (`BadPlte`); IDAT may be split across chunks, empty ones
   included; IEND required. Out of order is `ChunkOrder`; a bad CRC is `BadCrc`; a chunk length above
   2³¹ − 1 is `BadChunkLength`; an unknown critical chunk is `UnknownCritical`; gAMA, iCCP, sRGB, tEXt and
-  every other ancillary chunk are ignored (no colour management). A palette index past the palette is
+  other ancillary chunks are ignored (no colour management). Valid tRNS is processed as above;
+  invalid tRNS lengths and tRNS on colour types 4/6 are ignored. A palette tRNS before PLTE,
+  a repeated tRNS, or tRNS after IDAT is `ChunkOrder`. A palette index past the palette is
   `BadPaletteIndex`. Zero width or height and unknown compression, filter or interlace methods are
-  `BadHeader`; a bad signature is `BadSignature`; a cut-off stream is `Truncated`.
+  `BadHeader`; a bad signature is `BadSignature`; a cut-off stream is `Truncated`, including
+  EOF exactly at a chunk boundary before IEND and a truncated zlib stream in a complete IDAT.
+  IEND terminates the PNG datastream; bytes following it are ignored.
 - **Limits**: section 7's dimension limits (`TooLarge`, before inflating) and decompressed size (`Bomb`).
-- `encode(image) -> Vec<u8>` writes RGB (opaque images) or RGBA at depth 8, filter 0 on every row, one
+  Allocation failure is `OutOfMemory`; decoder allocations are fallible.
+- `encode(image) -> Result<Vec<u8>, PngError>` writes RGB (opaque images) or RGBA at depth 8, filter 0 on every row, one
   IDAT of stored or fixed-Huffman deflate blocks in a zlib stream with a correct Adler-32, and correct
   CRCs. Encoding the same image twice gives identical bytes. Images past the dimension limits are refused
   with `TooLarge`.
 - **Fixtures**: the public PngSuite images, with the pixels an independent decoder recorded at authoring
   time, under `/usr/local/test/share/breengel/png/`; `png-decode/from-disk` reads `pinned.png` there.
+
+The image error clarifications follow the operator's 2026-10-15 review-fix brief:
+`Vec<u8>` cannot express the required `TooLarge`, hence the `Result` encoding signature;
+PNG §11.3.1.1 specifies sample-depth tRNS masking, §§11.2.4 and 13.1 distinguish the
+end of the datastream and unexpected EOF, and §13.1 permits ignoring invalid ancillary
+payloads. These clarify error reporting and preserve the pixel formulas and dimension limits.
+BMP's published BITMAPCOREHEADER layout specifies the 12-byte header's 16-bit fields.
 
 ## 14. Widgets (`libbui`)
 
@@ -708,6 +735,24 @@ its label in `text_secondary`, its background unchanged, and reports no events.
   The reference is computed in the suite by a Taylor series in `f64`, independent of the library and of the
   C library's `sin`.
 
+### 16.1 Reviewed icon catalogue
+
+`icons/assets` compares a 640 × 512 scene, background (12, 19, 31), against
+`frames/icons/assets.png`. Rows are Home, Search, Save and Arrow Forward; columns are Idle,
+HoverIn, Hovering, Pressed and Clicked. Each icon is size 48, centred at
+`(64 + 128 × column, 64 + 128 × row)`. Each cell starts with a fresh icon. Hover input has
+`hovering = true`, `rel_x = rel_y = 0`; all other fields are initially false.
+
+- Idle: no update.
+- HoverIn: 101,000 µs of hover.
+- Hovering: 251,000 µs of hover.
+- Pressed: 251,000 µs of hover, a 1,000 µs press edge with the button held, then 50,000 µs held.
+- Clicked: the Pressed schedule, a 1,000 µs release edge, then 120,000 µs of hover.
+
+`tools/gfx-refgen` renders this scene through `libicon::draw_catalogue` for review; the guest compares
+every pixel of its own rendering against the reviewed file. Icons are procedural drawings; no external
+icon asset is used. The reference's redistribution licence and review are recorded in the frame provenance.
+
 ## 17. The window interface, version 2
 
 ### 17.1 The system call
@@ -752,6 +797,7 @@ architecture only.
 | 25 | `READ_REMNANT` | `Capture` (56) | 0 | ENOENT |
 | 26 | `RELEASE_REMNANT` | `WinId` (8) | 0 | ENOENT |
 | 27 | `GIVE_DISPLAY` | `Give` (8) | 0 | ESRCH no such process |
+| 28 | `READ_META` | `MetaQuery` (24) | 0 | ENOENT |
 
 Argument structures (offsets in bytes):
 
@@ -796,6 +842,8 @@ Argument structures (offsets in bytes):
 - `Cursor`: `shape: u32 @0` (0 arrow, 1 to 4 the resize shapes, 5 hidden), `visible: u32 @4`, `x: i32 @8`,
   `y: i32 @12`.
 - `Give`: `pid: u32 @0`, reserved `@4`.
+- `MetaQuery`: `id: u64 @0`, `meta: u64 @8` (pointer to a `Meta` the kernel fills), *out* `commit_id: u64 @16` (the
+  newest commit, `COMMIT` or `COMMIT_NO_CHANGE`, whose metadata it is; 0 before the first).
 
 ### 17.2 Ids, limits and lifetime
 
@@ -874,7 +922,7 @@ Principals: the **owner** (by kernel identity, never by PID number, so PID reuse
 | `READ_EVENTS`, `EVENT_FD` | yes | — | — | EPERM |
 | `WRITE_EVENTS`, `SET_GEOMETRY` | EPERM | yes | EPERM | EPERM |
 | `MAP_COMMITTED` | yes | yes | EPERM | EPERM |
-| `CAPTURE`, `MAP_TREE` | yes | yes | yes | EPERM |
+| `CAPTURE`, `MAP_TREE`, `READ_META` | yes | yes | yes | EPERM |
 | `COMPOSITE`, `COMPOSITE_RECORD`, `MAP_COMPOSITOR_TEXTURE`, `SET_CURSOR` | — | yes | EPERM | EPERM |
 | `CLAIM_COMPOSITOR` | — | — | yes if no live claim, else EBUSY | EPERM |
 | `SCANOUT_READBACK` | — | yes | yes | EPERM |
@@ -917,7 +965,8 @@ window ops (10 to 26 and 31) are removed when version 2 lands.
   `pixels = 0`. A commit is presented when a composite with its readback completion lists its window at a
   `pixel_gen` at or above the commit's.
 - **Failure.** A backend failure leaves the commit uncomposited, fails `COMPOSITE` with EIO and the record's
-  reason, and the next composite retries it.
+  reason, and the next composite retries it. The failed composite keeps its serial and has a record: `pixels`
+  0, no entries, and `flags` bit 0 set with the backend's reason code in bits 8 to 15.
 - **Cursor.** The compositor draws the cursor sprite above every window at its position. Moving it over a
   static scene restores every pixel it covered; hidden, no cursor pixel appears; content committed under a
   stationary cursor is shown with the cursor redrawn above it. Shapes 0 to 4 are the arrow and the four
@@ -971,8 +1020,9 @@ meaning. Breengel maps an unknown kind to `Event::Unknown { kind }`, never to a 
 
 ### 19.2 Delivery
 
-- `WRITE_EVENTS` (compositor only) queues events on one window's ring of 64. A kind outside 1 to 14 (other
-  than those Breengel makes) or a `text_len` above 240 is EINVAL, and nothing in that call is delivered.
+- `WRITE_EVENTS` (compositor only) queues events on one window's ring of 64. A kind outside 1 to 14, the kind
+  Breengel makes (`FontChanged`), a kind the kernel makes (`Resized`, `ResizeFailed`, `CompositorChanged`,
+  `Overflow`) or a `text_len` above 240 is EINVAL, and nothing in that call is delivered.
   Writing to a destroyed window is ENOENT.
 - Events arrive in the order written. A full ring keeps the events it holds, counts the ones it could not
   queue, and delivers an `Overflow` event with the count before the next event; nothing is lost silently.
@@ -994,7 +1044,8 @@ whose handler returns after frame N was acquired is acknowledged by frame N + 1,
 polled but not yet handled is never acknowledged. For `commit_no_change`, it is the highest serial *s* such
 that every serial up to *s* handled since the last pixel commit returned `NoChange`: a `Redraw` stops it until
 a frame acquired after its handler returned is committed. Serials Breengel refused at dispatch are listed in
-`Meta.rejected` and count as finished. Raw clients set the watermark themselves.
+`Meta.rejected` and count as finished. Raw clients set the watermark themselves. `READ_META` reads back the
+metadata the newest commit published, with that commit's id.
 
 ## 20. Scanout observation
 
@@ -1012,7 +1063,7 @@ an `ObservationRecord` (512 bytes) produced atomically for one composite serial:
 | 32 | `resource: u64`: the scanout resource id, screen-target id or framebuffer address bound to the device |
 | 40 | `window_count: u32`, `completion_count: u32` |
 | 48 | `windows: [(id: u64, commit_id: u64); 16]` |
-| 304 | `completions: [(fence: u64, kind: u32, status: u32); 12]` |
+| 304 | `completions: [(fence: u64, kind: u32, status: u32); 12]`: `kind` is the command answered and `status` its answer, both nonzero; on virtio-gpu, the command's and the response's `type` (`TRANSFER_TO_HOST_2D` 0x0105, `RESOURCE_FLUSH` 0x0104, `RESP_OK_NODATA` 0x1100) |
 | 496 | `boundary: u32`: what stays outside the guest's view (section 20.2) |
 | 500 | reserved |
 
@@ -1053,15 +1104,21 @@ with the composition formula).
   it for the rest of the boot. In every other boot every op returns ENOSYS. In a suite boot only root may use
   them (EPERM otherwise).
 - Op 0 `STATE` returns 1 (enabled). Op 1 `ARM { point: u32 @0, reserved @4, target: u64 @8, param: u64 @16 }`
-  arms one one-shot fault; op 2 `DISARM_ALL`; op 3 `FIRED { point: u32 @0, reserved @4, out count: u64 @8 }`
-  reports how many times a point fired. There is no op that sets or clears the latch: op 4 `SET_LATCH` and
+  arms one one-shot fault; op 2 `DISARM_ALL` disarms every point and restarts the gauge
+  `display_irq_masked_max_us` at 0; op 3 `FIRED { point: u32 @0, reserved @4, out count: u64 @8 }`
+  reports how many times a point fired. Arming or reading a point this section does not define is EINVAL. There is no op that sets or clears the latch: op 4 `SET_LATCH` and
   every op above 4 are EINVAL.
 - Points: 1 `ignore-damage` (the next composite processes the whole window), 2 `irq-hold` (the next display
   copy holds IRQs masked for 2 ms), 3 `emit-diagnostic` (param: the writer path, section 22), 4
   `acquire-stall` (target: a window; the next `ACQUIRE` pauses after copying half its replay rows until
   released or 1 s), 5 `backend-error`, 6 `skip-transfer`, 7 `wrong-resource`, 8 `stale-fence`, 9
-  `corrupt-outside-damage`, 10 `panel-cursor-no-restore`, 11 `release-stall` (resumes a paused point).
-  Faults are branches in the real code paths, disarmed at case end by the suite.
+  `corrupt-outside-damage`, 10 `panel-cursor-no-restore`, 11 `release-stall` (resumes a paused point),
+  16 `composite-stall` (target: a window; the next composite that includes it pauses before the backend
+  composes, with every window's front pinned, until released, a signal reaches the compositor, or 1 s), 17
+  `move-pointer` (param: x in bits 0 to 31, y in bits 32 to 63; the next time the kernel reads the pointing
+  device's position, for the panel cursor, the position is (x, y), as if the device had moved there). Points
+  12 to 15 are the run stage's (section 23). Faults are branches in the real code paths, disarmed at case end
+  by the suite.
 - `init`, running as PID 1, checks that every op returns ENOSYS and prints `[init] test controls absent`; run
   as a child (in a suite boot) it prints `[init] not PID 1: test-control check skipped` and makes no absence
   claim.
@@ -1076,13 +1133,18 @@ per-CPU data, panic and double-fault paths, `emergency_print`) count in the trac
 newlines are not payload.
 
 `emit-diagnostic(path)` makes the calling thread's next window op write one fixed 32-byte payload,
-`BREENGEL-EMIT-DIAGNOSTIC-PAYLOAD!`, through the named writer: 1 `serial_println!`, 2 `log::warn!`,
+`BREENGEL-EMIT-DIAGNOSTIC-PAYLOAD`, through the named writer: 1 `serial_println!`, 2 `log::warn!`,
 3 `write_byte`, 4 `write_bytes_atomic`, 5 `try_print`, 6 `write_str_bounded`, 7 `_log_print`, 8 a notice
-posted by this thread and written out by another, 9 `emergency_print`. Each adds exactly 32 to the calling
-thread's counter, except `log::warn!`, which adds the logger's whole record, and `emergency_print`, which adds
-32 to `kernel_output_unattributed` and nothing to the thread. The logger's record is
-`[ WARN] test_control: ` followed by the payload and a newline: `[`, the level right-aligned in five columns,
-`] `, the target `test_control`, `: `, the payload, `\n`, which is 55 bytes.
+posted by this thread and written out by another, 9 `emergency_print`. Each adds exactly the bytes its writer
+commits, once: 32 for `write_byte` (32 one-byte records), `write_bytes_atomic`, `try_print`,
+`write_str_bounded` and `_log_print`, which write the payload as it is; 33 for `serial_println!` and the
+notice, which end the payload with a newline (a notice's line is posted with its newline, and it counts when
+posted); the logger's whole record for `log::warn!`; and for `emergency_print`, 32 to
+`kernel_output_unattributed` and nothing to the thread. The logger's record is `[ WARN] test_control: `
+followed by the payload and a newline: `[`, the level right-aligned in five columns, `] `, the target
+`test_control`, `: `, the payload, `\n`, which is 55 bytes. A newline a writer adds is output like any other
+byte; only the lead newline inserted before a record when another writer's line is open is not. The
+aarch64 kernel's `log` sink writes each warning and error as this record.
 
 ## 23. The suite panel and run stage
 

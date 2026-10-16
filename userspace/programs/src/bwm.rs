@@ -1488,7 +1488,7 @@ fn main() {
         FrameBuf::from_raw(
             composite_buf.as_mut_ptr() as *mut u8,
             screen_w, screen_h, screen_w * bpp, bpp, info.is_bgr(),
-        )
+        ).expect("the framebuffer is a valid surface")
     };
 
     // VirGL direct-mapped texture writes are not visible until the explicit

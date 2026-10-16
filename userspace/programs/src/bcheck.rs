@@ -489,12 +489,12 @@ fn main() {
             match event {
                 Event::KeyPress { keycode, .. } => {
                     match keycode {
-                        0x52 => { scroll_bar.scroll(1); need_redraw = true; }
-                        0x51 => { scroll_bar.scroll(-1); need_redraw = true; }
+                        breengel::keys::UP => { scroll_bar.scroll(1); need_redraw = true; }
+                        breengel::keys::DOWN => { scroll_bar.scroll(-1); need_redraw = true; }
                         _ => {}
                     }
                 }
-                Event::Scroll { delta_y } => {
+                Event::Scroll { delta_y, .. } => {
                     scroll_bar.scroll(delta_y);
                     need_redraw = true;
                 }

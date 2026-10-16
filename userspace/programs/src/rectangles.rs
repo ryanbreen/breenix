@@ -1,15 +1,14 @@
-//! Bouncing rectangles demo for Breenix — GPU-accelerated via VirGL DRAW_VBO.
+//! Bouncing rectangles demo for Breenix.
 //!
-//! Renders colored rectangles at arbitrary positions using the VirGL 3D pipeline.
-//! Each rectangle is a DRAW_VBO call with a constant-color fragment shader.
-//! Falls back to mmap software rendering if VirGL is unavailable.
+//! Draws colored rectangles into a window buffer, or into the fb_mmap pane when no
+//! window can be created.
 //!
 //! Created for Gus!
 
 use std::process;
 
 use libbreenix::graphics;
-use libbreenix::graphics::{FlushRect, VirglRect};
+use libbreenix::graphics::FlushRect;
 
 use libbreenix::time;
 
@@ -160,20 +159,9 @@ fn main() {
     let width = info.left_pane_width() as i32;
 
     let mut rects = make_rects();
-    let bg_packed = graphics::rgb(15, 15, 30);
-
-    // Try VirGL GPU rendering first
-    let test_rects = build_virgl_rects(&rects);
-    let use_virgl = graphics::virgl_submit_rects(&test_rects[..NUM_RECTS], bg_packed).is_ok();
-
-    if use_virgl {
-        println!("Starting VirGL GPU-rendered rect demo ({} rects, {}x{}) [boot_id={:016x}]",
-                 NUM_RECTS, width, height, boot_id);
-        run_virgl_loop(&mut rects, width, height, bg_packed);
-    } else {
-        println!("VirGL unavailable, falling back to mmap rendering [boot_id={:016x}]", boot_id);
-        run_mmap_loop(&mut rects, width, height, &info);
-    }
+    println!("Starting mmap-rendered rect demo ({} rects, {}x{}) [boot_id={:016x}]",
+             NUM_RECTS, width, height, boot_id);
+    run_mmap_loop(&mut rects, width, height, &info);
 }
 
 fn make_rects() -> [AnimRect; NUM_RECTS] {
@@ -203,7 +191,7 @@ fn run_window_loop(win: &graphics::WindowBuffer, rects: &mut [AnimRect; NUM_RECT
             stride,
             bpp,
             true, // BGRA
-        )
+        ).expect("the framebuffer is a valid surface")
     };
 
     let mut fps = FpsCounter::new();
@@ -243,43 +231,7 @@ fn run_window_loop(win: &graphics::WindowBuffer, rects: &mut [AnimRect; NUM_RECT
     }
 }
 
-fn build_virgl_rects(rects: &[AnimRect; NUM_RECTS]) -> [VirglRect; NUM_RECTS] {
-    let mut vr = [VirglRect::default(); NUM_RECTS];
-    for (i, rect) in rects.iter().enumerate() {
-        let c = rect.color;
-        vr[i] = VirglRect {
-            x: rect.px() as f32,
-            y: rect.py() as f32,
-            w: rect.w as f32,
-            h: rect.h as f32,
-            r: c.r as f32 / 255.0,
-            g: c.g as f32 / 255.0,
-            b: c.b as f32 / 255.0,
-            a: 1.0,
-        };
-    }
-    vr
-}
-
-/// VirGL GPU rendering loop — all rendering on host GPU.
-fn run_virgl_loop(rects: &mut [AnimRect; NUM_RECTS], width: i32, height: i32, bg_packed: u32) {
-    const SUBSTEPS: i32 = 8;
-    let mut fps = FpsCounter::new();
-
-    loop {
-        for _ in 0..SUBSTEPS {
-            for rect in rects.iter_mut() { rect.step(SUBSTEPS); }
-            for rect in rects.iter_mut() { rect.bounce_walls(width, height); }
-        }
-
-        let vr = build_virgl_rects(rects);
-        let _ = graphics::virgl_submit_rects(&vr[..NUM_RECTS], bg_packed);
-
-        fps.tick();
-    }
-}
-
-/// Mmap software rendering loop — fallback when VirGL is unavailable.
+/// Mmap software rendering loop.
 fn run_mmap_loop(rects: &mut [AnimRect; NUM_RECTS], width: i32, height: i32, info: &graphics::FbInfo) {
     let bpp = info.bytes_per_pixel as usize;
     let bg = Color::rgb(15, 15, 30);
@@ -297,7 +249,7 @@ fn run_mmap_loop(rects: &mut [AnimRect; NUM_RECTS], width: i32, height: i32, inf
             (width as usize) * bpp,
             bpp,
             info.is_bgr(),
-        )
+        ).expect("the framebuffer is a valid surface")
     };
 
     println!("Starting collision demo ({} rects, {}x{}, mmap, batch flush)", NUM_RECTS, width, height);

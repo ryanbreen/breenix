@@ -326,6 +326,9 @@ pub struct ThreadSignals {
     /// CLOCK_THREAD_CPUTIME_ID and getrusage(RUSAGE_THREAD).
     pub user_ns: AtomicU64,
     pub system_ns: AtomicU64,
+    /// Bytes of kernel output this thread has committed (`crate::output_accounting`),
+    /// read as /proc/<pid>/task/<tid>/kernel_output.
+    pub kernel_output_bytes: AtomicU64,
     /// Signals of POSIX timers the scheduler expired with this thread as the
     /// recipient, not yet queued (`SignalState::collect_timer_signals`).
     pub posix_pending: AtomicU64,

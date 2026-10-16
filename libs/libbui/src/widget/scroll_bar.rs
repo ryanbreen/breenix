@@ -20,7 +20,7 @@ use crate::theme::Theme;
 ///
 /// ```
 /// use libbui::{InputState, Rect, Theme, widget::scroll_bar::ScrollBar};
-/// use libgfx::framebuf::FrameBuf;
+/// use libgfx::framebuf::{Format, FrameBuf};
 ///
 /// let (win_w, win_h) = (320, 240);
 /// let (content_height, visible_height) = (600, win_h);
@@ -38,23 +38,19 @@ use crate::theme::Theme;
 ///
 /// // When rendering content, subtract bar.offset() from all y positions.
 /// // Draw the bar last so it renders on top of content.
-/// let mut pixels = vec![0u8; win_w as usize * win_h as usize * 4];
-/// let mut fb = unsafe {
-///     FrameBuf::from_raw(pixels.as_mut_ptr(), win_w as usize, win_h as usize,
-///                        win_w as usize * 4, 4, false)
-/// };
+/// let mut fb = FrameBuf::new(win_w as usize, win_h as usize, Format::RGBX).expect("a valid surface");
 /// let theme = Theme::dark();
 /// bar.draw(&mut fb, &theme);
 /// // At offset 80, the 96px thumb starts at y=32; check its interior and
 /// // the track above and below it so a misplaced thumb fails the example.
 /// let pixel = |y: usize| {
-///     let start = (y * win_w as usize + (win_w - 6) as usize) * 4;
-///     &pixels[start..start + 3]
+///     let c = fb.get_pixel((win_w - 6) as usize, y);
+///     [c.r, c.g, c.b]
 /// };
-/// assert_eq!(pixel(20), &[40, 42, 48]);
-/// assert_eq!(pixel(40), &[80, 85, 100]);
-/// assert_eq!(pixel(120), &[80, 85, 100]);
-/// assert_eq!(pixel(140), &[40, 42, 48]);
+/// assert_eq!(pixel(20), [40, 42, 48]);
+/// assert_eq!(pixel(40), [80, 85, 100]);
+/// assert_eq!(pixel(120), [80, 85, 100]);
+/// assert_eq!(pixel(140), [40, 42, 48]);
 /// ```
 pub struct ScrollBar {
     /// Position and size of the scroll bar track.
@@ -69,6 +65,8 @@ pub struct ScrollBar {
     dragging: bool,
     /// Y offset within the thumb where the drag began.
     drag_anchor: i32,
+    enabled: bool,
+    redraw: bool,
 }
 
 impl ScrollBar {
@@ -90,6 +88,8 @@ impl ScrollBar {
             offset: 0,
             dragging: false,
             drag_anchor: 0,
+            enabled: true,
+            redraw: false,
         }
     }
 
@@ -119,15 +119,38 @@ impl ScrollBar {
     ///
     /// Each unit corresponds to approximately 3 rows of 13px text (about 40px).
     pub fn scroll(&mut self, delta_y: i32) {
-        self.offset -= delta_y * 40;
-        self.clamp_offset();
+        let before = self.offset;
+        if self.enabled {
+            self.offset = (i64::from(self.offset) - i64::from(delta_y) * 40)
+                .clamp(0, i64::from(self.max_scroll())) as i32;
+        }
+        self.redraw = before != self.offset;
     }
 
     /// Process mouse input for drag interaction.
     ///
     /// Returns `true` if the scrollbar consumed the event (the caller should
     /// not pass this input to widgets behind the scrollbar).
+    pub fn last_update_redraw(&self) -> bool {
+        self.redraw
+    }
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+        if !enabled {
+            self.dragging = false;
+        }
+    }
     pub fn update(&mut self, input: &InputState) -> bool {
+        self.redraw = false;
+        if !self.enabled {
+            return false;
+        }
+        let before = (self.offset, self.dragging);
+        let consumed = self.update_inner(input);
+        self.redraw = before != (self.offset, self.dragging);
+        consumed
+    }
+    fn update_inner(&mut self, input: &InputState) -> bool {
         let max_scroll = self.max_scroll();
         if max_scroll <= 0 {
             self.dragging = false;
@@ -180,7 +203,14 @@ impl ScrollBar {
 
         // Track background
         let track_color = Color::rgb(40, 42, 48);
-        shapes::fill_rect(fb, self.rect.x, self.rect.y, self.rect.w, self.rect.h, track_color);
+        shapes::fill_rect(
+            fb,
+            self.rect.x,
+            self.rect.y,
+            self.rect.w,
+            self.rect.h,
+            track_color,
+        );
 
         // Thumb — inset by 2px on sides, 1px top/bottom for a rounded appearance
         let thumb = self.thumb_rect();
@@ -230,14 +260,13 @@ impl ScrollBar {
         // Thumb height proportional to visible fraction of total content
         let ratio = self.view_height as f32 / self.content_height as f32;
         let thumb_h = ((ratio * self.rect.h as f32) as i32)
-            .max(20)      // minimum 20px so it's always clickable
+            .max(20) // minimum 20px so it's always clickable
             .min(self.rect.h);
 
         // Thumb Y position proportional to scroll offset
         let track_range = self.rect.h - thumb_h;
         let thumb_y = if max_scroll > 0 {
-            self.rect.y
-                + (self.offset as f32 / max_scroll as f32 * track_range as f32) as i32
+            self.rect.y + (self.offset as f32 / max_scroll as f32 * track_range as f32) as i32
         } else {
             self.rect.y
         };

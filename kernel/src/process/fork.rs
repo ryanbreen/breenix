@@ -153,13 +153,14 @@ pub fn setup_cow_pages(
     child_page_table: &mut ProcessPageTable,
 ) -> Result<usize, &'static str> {
     // No VMAs provided — treat all pages as MAP_PRIVATE (legacy behavior)
-    setup_cow_pages_with_vmas(parent_page_table, child_page_table, &[])
+    setup_cow_pages_with_vmas(parent_page_table, child_page_table, &[], &[])
 }
 
 /// Set up Copy-on-Write sharing, respecting MAP_SHARED VMAs.
 ///
 /// Pages in MAP_SHARED VMAs are shared directly (same physical frame,
-/// writable in both processes). All other pages use CoW.
+/// writable in both processes). Pages in the parent ranges `skip` (window
+/// mappings, which fork does not copy) are left out. All other pages use CoW.
 ///
 /// Called from both architectures' production fork path, `ForkCopy::copy`
 /// under `sys_fork`, so it is dead on no build configuration (#745).
@@ -172,11 +173,18 @@ pub fn setup_cow_pages_with_vmas(
     parent_page_table: &ProcessPageTable,
     child_page_table: &mut ProcessPageTable,
     vmas: &[Vma],
+    skip: &[(u64, u64)],
 ) -> Result<usize, &'static str> {
     let mut pages_shared = 0;
     parent_page_table.share_user_leaves(|virt_addr, phys_addr, flags| {
         // Only process user-accessible pages
         if !flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+            return Ok(None);
+        }
+
+        // Do-not-copy ranges (window mappings) give the child no page at all.
+        let addr = virt_addr.as_u64();
+        if skip.iter().any(|&(start, end)| start <= addr && addr < end) {
             return Ok(None);
         }
 

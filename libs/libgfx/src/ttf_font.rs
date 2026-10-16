@@ -1,265 +1,220 @@
-//! TrueType font rendering to FrameBuf using libfont.
+//! TrueType text on a FrameBuf through libfont (docs/gui/breengel.md section 8.3).
 //!
-//! Provides the same compositing pattern as `bitmap_font.rs` but with
-//! runtime-loaded TrueType fonts at any pixel size.
+//! Layout is one codepoint at a time in 26.6 fixed point: the pen starts at 0, glyph i is
+//! drawn with its origin at `x + floor((pen_i + 32) / 64)`, and
+//! `pen_{i+1} = pen_i + advance26(g_i) + kern26(g_i, g_{i+1})`. A codepoint the font does not
+//! map draws glyph 0 (`.notdef`). Each glyph pixel is the coverage blend of the foreground
+//! over the pixel already there, and each drawn glyph marks its bitmap rectangle. A glyph
+//! whose bitmap rectangle, from its record header, lies wholly outside the surface or clip
+//! is laid out but never rasterized.
 
-use libfont::CachedFont;
-use libfont::rasterizer::GlyphBitmap;
-use libfont::SubpixelBitmap;
+use libfont::{CachedFont, Font, GlyphBitmap, SubpixelBitmap};
+
+use crate::alpha::{blend, div255};
 use crate::color::Color;
-use crate::framebuf::FrameBuf;
+use crate::framebuf::{Box64, FrameBuf};
+use crate::work;
 
-/// Draw a single character with anti-aliased alpha blending.
-///
-/// Returns the advance width in pixels (how far to move x for the next char).
-pub fn draw_char(
-    fb: &mut FrameBuf,
-    font: &mut CachedFont,
-    ch: char,
-    x: i32,
-    y: i32,
-    size: f32,
-    fg: Color,
-) -> i32 {
-    let glyph_index = font.glyph_index(ch);
-    if glyph_index == 0 && ch != '\0' {
-        // Try '?' as fallback
-        let fallback = font.glyph_index('?');
-        if fallback != 0 {
-            return draw_glyph(fb, font, fallback, x, y, size, fg);
+/// U+FFFD REPLACEMENT CHARACTER.
+pub const REPLACEMENT: u32 = 0xFFFD;
+
+/// Decode UTF-8, giving one U+FFFD for each maximal invalid subpart (Unicode §3.9,
+/// "U+FFFD Substitution of Maximal Subparts", over the well-formed sequences of its
+/// Table 3-7).
+pub fn decode_utf8(bytes: &[u8]) -> impl Iterator<Item = u32> + '_ {
+    let mut i = 0;
+    core::iter::from_fn(move || {
+        if i >= bytes.len() {
+            return None;
         }
-    }
-    draw_glyph(fb, font, glyph_index, x, y, size, fg)
+        work::add(1);
+        let b0 = bytes[i];
+        // (sequence length, the range of the second byte) for each valid lead byte.
+        let (len, lo, hi) = match b0 {
+            0x00..=0x7F => {
+                i += 1;
+                return Some(b0 as u32);
+            }
+            0xC2..=0xDF => (2, 0x80, 0xBF),
+            0xE0 => (3, 0xA0, 0xBF),
+            0xE1..=0xEC | 0xEE..=0xEF => (3, 0x80, 0xBF),
+            0xED => (3, 0x80, 0x9F),
+            0xF0 => (4, 0x90, 0xBF),
+            0xF1..=0xF3 => (4, 0x80, 0xBF),
+            0xF4 => (4, 0x80, 0x8F),
+            _ => {
+                i += 1;
+                return Some(REPLACEMENT);
+            }
+        };
+        let mut cp = (b0 as u32) & (0x7F >> len);
+        for k in 1..len {
+            let (lo, hi) = if k == 1 { (lo, hi) } else { (0x80, 0xBF) };
+            match bytes.get(i + k) {
+                Some(&b) if (lo..=hi).contains(&b) => cp = (cp << 6) | (b & 0x3F) as u32,
+                _ => {
+                    // The maximal subpart is the lead and the k − 1 bytes that fit.
+                    i += k;
+                    return Some(REPLACEMENT);
+                }
+            }
+        }
+        i += len;
+        Some(cp)
+    })
 }
 
-fn draw_glyph(
-    fb: &mut FrameBuf,
-    font: &mut CachedFont,
-    glyph_index: u16,
-    x: i32,
-    y: i32,
-    size: f32,
-    fg: Color,
-) -> i32 {
-    let advance = font.advance_width(glyph_index, size);
-
-    let bitmap = match font.rasterize_glyph(glyph_index, size) {
-        Ok(bmp) => bmp,
-        Err(_) => return advance as i32,
-    };
-
-    if bitmap.height == 0 || bitmap.width == 0 {
-        return advance as i32;
-    }
-
-    blit_coverage(fb, bitmap, x, y, fg);
-    advance as i32
-}
-
-fn blit_coverage(
-    fb: &mut FrameBuf,
-    bitmap: &GlyphBitmap,
-    x: i32,
-    y: i32,
-    fg: Color,
-) {
-    let bx = x + bitmap.x_offset;
-    let by = y + bitmap.y_offset;
-
-    for row in 0..bitmap.height {
-        let py = by + row as i32;
-        if py < 0 || py >= fb.height as i32 {
-            continue;
-        }
-        for col in 0..bitmap.width {
-            let px = bx + col as i32;
-            if px < 0 || px >= fb.width as i32 {
-                continue;
-            }
-            let intensity = bitmap.coverage[row * bitmap.width + col];
-            if intensity == 0 {
-                continue;
-            }
-            let ux = px as usize;
-            let uy = py as usize;
-            if intensity == 255 {
-                fb.put_pixel(ux, uy, fg);
-            } else {
-                let bg = fb.get_pixel(ux, uy);
-                fb.put_pixel(ux, uy, fg.blend(bg, intensity));
+/// Blend a coverage bitmap at (x, y) + its offsets, inside the surface and clip.
+fn blit_coverage(fb: &mut FrameBuf, bitmap: &GlyphBitmap, x: i64, y: i64, fg: Color) {
+    let (bx, by) = (x + bitmap.x_offset as i64, y + bitmap.y_offset as i64);
+    let rect = Box64 { x0: bx, y0: by, x1: bx + bitmap.width as i64, y1: by + bitmap.height as i64 };
+    let v = rect.intersect(&fb.clip_box());
+    if !v.is_empty() {
+        work::add(v.height() as u64 * (1 + v.width() as u64));
+        for py in v.y0..v.y1 {
+            let row = ((py - by) as usize) * bitmap.width;
+            for px in v.x0..v.x1 {
+                let a = bitmap.coverage[row + (px - bx) as usize];
+                if a == 0 {
+                    continue;
+                }
+                let c = if a == 255 { fg } else { blend(fg, fb.get_pixel(px as usize, py as usize), a) };
+                let p = fb.opaque(c);
+                fb.write(px as usize, py as usize, p);
             }
         }
     }
+    fb.mark(rect);
 }
 
-/// Draw a text string, returning the total advance width in pixels.
-pub fn draw_text(
-    fb: &mut FrameBuf,
-    font: &mut CachedFont,
-    text: &str,
-    x: i32,
-    y: i32,
-    size: f32,
-    fg: Color,
-) -> i32 {
-    let mut cursor_x = x;
-    let mut prev_glyph: Option<u16> = None;
-
-    for ch in text.chars() {
-        let glyph_index = font.glyph_index(ch);
-
-        // Apply kerning
-        if let Some(prev) = prev_glyph {
-            let kern = font.kern(prev, glyph_index, size);
-            cursor_x += kern as i32;
-        }
-
-        let advance = draw_char(fb, font, ch, cursor_x, y, size, fg);
-        cursor_x += advance;
-        prev_glyph = Some(glyph_index);
-    }
-
-    cursor_x - x
-}
-
-/// Draw a single character with LCD subpixel rendering.
-///
-/// Returns the advance width in pixels.
-pub fn draw_char_subpixel(
-    fb: &mut FrameBuf,
-    font: &mut CachedFont,
-    ch: char,
-    x: i32,
-    y: i32,
-    size: f32,
-    fg: Color,
-) -> i32 {
-    let glyph_index = font.glyph_index(ch);
-    if glyph_index == 0 && ch != '\0' {
-        let fallback = font.glyph_index('?');
-        if fallback != 0 {
-            return draw_glyph_subpixel(fb, font, fallback, x, y, size, fg);
-        }
-    }
-    draw_glyph_subpixel(fb, font, glyph_index, x, y, size, fg)
-}
-
-fn draw_glyph_subpixel(
-    fb: &mut FrameBuf,
-    font: &mut CachedFont,
-    glyph_index: u16,
-    x: i32,
-    y: i32,
-    size: f32,
-    fg: Color,
-) -> i32 {
-    let advance = font.advance_width(glyph_index, size);
-
-    let bitmap = match font.font().rasterize_glyph_subpixel(glyph_index, size) {
-        Ok(bmp) => bmp,
-        Err(_) => return advance as i32,
-    };
-
-    if bitmap.height == 0 || bitmap.width == 0 {
-        return advance as i32;
-    }
-
-    blit_subpixel(fb, &bitmap, x, y, fg);
-    advance as i32
-}
-
-fn blit_subpixel(
-    fb: &mut FrameBuf,
-    bitmap: &SubpixelBitmap,
-    x: i32,
-    y: i32,
-    fg: Color,
-) {
-    let bx = x + bitmap.x_offset;
-    let by = y + bitmap.y_offset;
-
-    for row in 0..bitmap.height {
-        let py = by + row as i32;
-        if py < 0 || py >= fb.height as i32 {
-            continue;
-        }
-        for col in 0..bitmap.width {
-            let px = bx + col as i32;
-            if px < 0 || px >= fb.width as i32 {
-                continue;
+/// Blend an LCD bitmap at (x, y): each channel by its own coverage.
+fn blit_subpixel(fb: &mut FrameBuf, bitmap: &SubpixelBitmap, x: i64, y: i64, fg: Color) {
+    let (bx, by) = (x + bitmap.x_offset as i64, y + bitmap.y_offset as i64);
+    let rect = Box64 { x0: bx, y0: by, x1: bx + bitmap.width as i64, y1: by + bitmap.height as i64 };
+    let v = rect.intersect(&fb.clip_box());
+    if !v.is_empty() {
+        work::add(v.height() as u64 * (1 + v.width() as u64));
+        let ch = |f: u8, b: u8, a: u8| div255(f as u32 * a as u32 + b as u32 * (255 - a as u32));
+        for py in v.y0..v.y1 {
+            let row = ((py - by) as usize) * bitmap.width * 3;
+            for px in v.x0..v.x1 {
+                let o = row + (px - bx) as usize * 3;
+                let (r, g, b) = (bitmap.coverage[o], bitmap.coverage[o + 1], bitmap.coverage[o + 2]);
+                if r == 0 && g == 0 && b == 0 {
+                    continue;
+                }
+                let bg = fb.get_pixel(px as usize, py as usize);
+                let p = fb.opaque(Color::rgb(ch(fg.r, bg.r, r), ch(fg.g, bg.g, g), ch(fg.b, bg.b, b)));
+                fb.write(px as usize, py as usize, p);
             }
-            let base = (row * bitmap.width + col) * 3;
-            let r_cov = bitmap.coverage[base];
-            let g_cov = bitmap.coverage[base + 1];
-            let b_cov = bitmap.coverage[base + 2];
-            if r_cov == 0 && g_cov == 0 && b_cov == 0 {
-                continue;
-            }
-            let ux = px as usize;
-            let uy = py as usize;
-            let bg = fb.get_pixel(ux, uy);
-            // Per-channel alpha blending
-            let r = blend_channel(fg.r, bg.r, r_cov);
-            let g = blend_channel(fg.g, bg.g, g_cov);
-            let b = blend_channel(fg.b, bg.b, b_cov);
-            fb.put_pixel(ux, uy, Color::rgb(r, g, b));
         }
+    }
+    fb.mark(rect);
+}
+
+/// `floor((pen + 32) / 64)`: a 26.6 pen position rounded once to whole pixels.
+fn pixels(pen: i64) -> i64 {
+    (pen + 32).div_euclid(64)
+}
+
+/// Lay out `glyphs` from pen 0 at `size`, calling `draw(font, glyph, x)` with each glyph's
+/// pixel origin offset; returns the width, `floor((pen_end + 32) / 64)`. A size outside
+/// 1 to 1,024 lays out nothing.
+fn layout(font: &mut CachedFont, glyphs: impl Iterator<Item = u16>, size: f32,
+    mut draw: impl FnMut(&mut CachedFont, u16, i64)) -> i32 {
+    let Ok(size26) = Font::size26(size) else { return 0 };
+    let (mut pen, mut prev) = (0i64, None);
+    for g in glyphs {
+        work::add(1);
+        if let Some(p) = prev {
+            pen += font.font().kern26(p, g, size26) as i64;
+        }
+        draw(font, g, pixels(pen));
+        pen += font.font().advance26(g, size26) as i64;
+        prev = Some(g);
+    }
+    pixels(pen) as i32
+}
+
+fn glyphs_of<'a>(font: &'a CachedFont, cps: impl Iterator<Item = u32> + 'a) -> impl Iterator<Item = u16> + 'a {
+    cps.map(move |cp| font.font().glyph_for(cp))
+}
+
+/// Whether glyph `g` at `size26` with its pen at (x, y) can draw inside the clip. A glyph
+/// without contours, or whose record is bad, draws nothing, so it cannot.
+fn reaches_clip(fb: &FrameBuf, font: &CachedFont, g: u16, size26: i32, x: i64, y: i64) -> bool {
+    match font.font().glyph_box(g, size26) {
+        Ok(Some(b)) => {
+            let (x0, y0) = (x + b.x_offset as i64, y + b.y_offset as i64);
+            let rect = Box64 { x0, y0, x1: x0 + b.width as i64, y1: y0 + b.height as i64 };
+            !rect.intersect(&fb.clip_box()).is_empty()
+        }
+        _ => false,
     }
 }
 
-#[inline]
-fn blend_channel(fg: u8, bg: u8, alpha: u8) -> u8 {
-    if alpha == 255 { return fg; }
-    let fg = fg as u16;
-    let bg = bg as u16;
-    let a = alpha as u16;
-    ((fg * a + bg * (255 - a) + 128) / 255) as u8
-}
-
-/// Draw a text string with LCD subpixel rendering.
-pub fn draw_text_subpixel(
-    fb: &mut FrameBuf,
-    font: &mut CachedFont,
-    text: &str,
-    x: i32,
-    y: i32,
-    size: f32,
-    fg: Color,
-) -> i32 {
-    let mut cursor_x = x;
-    let mut prev_glyph: Option<u16> = None;
-
-    for ch in text.chars() {
-        let glyph_index = font.glyph_index(ch);
-        if let Some(prev) = prev_glyph {
-            let kern = font.kern(prev, glyph_index, size);
-            cursor_x += kern as i32;
+fn draw_glyphs(fb: &mut FrameBuf, font: &mut CachedFont, glyphs: alloc::vec::Vec<u16>, x: i32, y: i32, size: f32, fg: Color) -> i32 {
+    let size26 = Font::size26(size).unwrap_or(0);
+    layout(font, glyphs.into_iter(), size, |font, g, dx| {
+        if !reaches_clip(fb, font, g, size26, x as i64 + dx, y as i64) {
+            return;
         }
-        let advance = draw_char_subpixel(fb, font, ch, cursor_x, y, size, fg);
-        cursor_x += advance;
-        prev_glyph = Some(glyph_index);
-    }
-
-    cursor_x - x
+        if let Ok(bitmap) = font.rasterize_glyph(g, size) {
+            blit_coverage(fb, bitmap, x as i64 + dx, y as i64, fg);
+        }
+    })
 }
 
-/// Measure the pixel width of a text string without drawing.
+/// Draw one character (glyph 0 when unmapped); returns its advance in whole pixels.
+pub fn draw_char(fb: &mut FrameBuf, font: &mut CachedFont, ch: char, x: i32, y: i32, size: f32, fg: Color) -> i32 {
+    let g = font.glyph_index(ch);
+    draw_glyphs(fb, font, alloc::vec![g], x, y, size, fg)
+}
+
+/// Draw `text` with its pen starting at (x, y); returns the width section 8.3 gives.
+pub fn draw_text(fb: &mut FrameBuf, font: &mut CachedFont, text: &str, x: i32, y: i32, size: f32, fg: Color) -> i32 {
+    let glyphs = glyphs_of(font, text.chars().map(|c| c as u32)).collect();
+    draw_glyphs(fb, font, glyphs, x, y, size, fg)
+}
+
+/// Draw UTF-8 `bytes`, one U+FFFD for each maximal invalid subpart; never panics.
+pub fn draw_text_bytes(fb: &mut FrameBuf, font: &mut CachedFont, bytes: &[u8], x: i32, y: i32, size: f32, fg: Color) -> i32 {
+    let glyphs = glyphs_of(font, decode_utf8(bytes)).collect();
+    draw_glyphs(fb, font, glyphs, x, y, size, fg)
+}
+
+/// The width `draw_text` returns, without drawing.
 pub fn text_width(font: &mut CachedFont, text: &str, size: f32) -> i32 {
-    let mut width = 0i32;
-    let mut prev_glyph: Option<u16> = None;
+    let glyphs: alloc::vec::Vec<u16> = glyphs_of(font, text.chars().map(|c| c as u32)).collect();
+    layout(font, glyphs.into_iter(), size, |_, _, _| {})
+}
 
-    for ch in text.chars() {
-        let glyph_index = font.glyph_index(ch);
+/// The width `draw_text_bytes` returns, without drawing.
+pub fn text_width_bytes(font: &mut CachedFont, bytes: &[u8], size: f32) -> i32 {
+    let glyphs: alloc::vec::Vec<u16> = glyphs_of(font, decode_utf8(bytes)).collect();
+    layout(font, glyphs.into_iter(), size, |_, _, _| {})
+}
 
-        if let Some(prev) = prev_glyph {
-            let kern = font.kern(prev, glyph_index, size);
-            width += kern as i32;
+fn draw_glyphs_subpixel(fb: &mut FrameBuf, font: &mut CachedFont, glyphs: alloc::vec::Vec<u16>, x: i32, y: i32, size: f32, fg: Color) -> i32 {
+    let size26 = Font::size26(size).unwrap_or(0);
+    layout(font, glyphs.into_iter(), size, |font, g, dx| {
+        if !reaches_clip(fb, font, g, size26, x as i64 + dx, y as i64) {
+            return;
         }
+        if let Ok(bitmap) = font.font().rasterize_glyph_subpixel(g, size) {
+            blit_subpixel(fb, &bitmap, x as i64 + dx, y as i64, fg);
+        }
+    })
+}
 
-        let advance = font.advance_width(glyph_index, size);
-        width += advance as i32;
-        prev_glyph = Some(glyph_index);
-    }
+/// Draw one character with LCD subpixel rendering; returns its advance in whole pixels.
+pub fn draw_char_subpixel(fb: &mut FrameBuf, font: &mut CachedFont, ch: char, x: i32, y: i32, size: f32, fg: Color) -> i32 {
+    let g = font.glyph_index(ch);
+    draw_glyphs_subpixel(fb, font, alloc::vec![g], x, y, size, fg)
+}
 
-    width
+/// Draw `text` with LCD subpixel rendering; returns its width.
+pub fn draw_text_subpixel(fb: &mut FrameBuf, font: &mut CachedFont, text: &str, x: i32, y: i32, size: f32, fg: Color) -> i32 {
+    let glyphs = glyphs_of(font, text.chars().map(|c| c as u32)).collect();
+    draw_glyphs_subpixel(fb, font, glyphs, x, y, size, fg)
 }

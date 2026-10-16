@@ -83,6 +83,8 @@ impl Particle {
 pub struct ParticlePool {
     pub particles: Vec<Particle>,
     max_particles: usize,
+    bounds: Option<(f32,f32,f32,f32)>,
+    remainder_ns: u64,
 }
 
 impl ParticlePool {
@@ -90,12 +92,37 @@ impl ParticlePool {
         Self {
             particles: Vec::with_capacity(max_particles),
             max_particles,
+            bounds: None, remainder_ns: 0,
         }
     }
 
     /// Emit a particle. Finds a dead slot first; falls back to the oldest entry
     /// when the pool is at capacity.
-    pub fn emit(&mut self, p: Particle) {
+    /// Confine particle footprints to [left,right) × [top,bottom).
+    pub fn with_bounds(capacity: usize, left: f32, top: f32, right: f32, bottom: f32) -> Self {
+        assert!(left.is_finite() && top.is_finite() && right.is_finite() && bottom.is_finite()
+            && right > left && bottom > top);
+        let mut pool = Self::new(capacity);
+        pool.bounds = Some((left,top,right,bottom));
+        pool
+    }
+    fn confine(bounds: Option<(f32,f32,f32,f32)>, p: &mut Particle) {
+        if let Some((l,t,r,b)) = bounds {
+            p.size = p.size.max(0.0).min(r-l).min(b-t);
+            let half = p.size.max(1.0)/2.0;
+            let x = p.x.clamp(l+half,r-half);
+            let y = p.y.clamp(t+half,b-half);
+            if x != p.x { p.vx = 0.0; }
+            if y != p.y { p.vy = 0.0; }
+            p.x = x; p.y = y;
+        }
+    }
+    pub fn emit(&mut self, mut p: Particle) {
+        if !p.max_life.is_finite() || p.max_life <= 0.0 || !p.x.is_finite() || !p.y.is_finite()
+            || !p.vx.is_finite() || !p.vy.is_finite() || !p.size.is_finite()
+            || !p.gravity.is_finite() || !p.friction.is_finite() || !p.life.is_finite() { return; }
+        p.life = p.life.clamp(0.0,1.0);
+        Self::confine(self.bounds,&mut p);
         // Try to reuse a dead slot.
         for slot in self.particles.iter_mut() {
             if !slot.alive() {
@@ -114,8 +141,14 @@ impl ParticlePool {
 
     /// Step all particles forward by `dt` seconds.
     pub fn update(&mut self, dt: f32) {
-        for p in self.particles.iter_mut() {
-            p.update(dt);
+        if !dt.is_finite() || dt <= 0.0 { return; }
+        self.remainder_ns = self.remainder_ns.saturating_add((dt as f64 * 1_000_000_000.0 + 0.5) as u64);
+        while self.remainder_ns >= 1_000_000 {
+            self.remainder_ns -= 1_000_000;
+            for p in self.particles.iter_mut() {
+                p.update(0.001);
+                Self::confine(self.bounds,p);
+            }
         }
     }
 
@@ -128,6 +161,7 @@ impl ParticlePool {
 
     /// Kill all particles immediately.
     pub fn clear(&mut self) {
+        self.remainder_ns = 0;
         for p in self.particles.iter_mut() {
             p.life = 0.0;
         }
