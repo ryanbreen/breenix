@@ -32,7 +32,7 @@ pub fn drain() -> bool {
             if n <= 1024 {
                 let bytes = &scan.1[..n];
                 for (i, marker) in MARKERS.iter().enumerate() {
-                    if super::boot_producer::matches(bytes, marker) {
+                    if super::boot_producer::matches(bytes, marker, MARKERS) {
                         changed |= !REACHED[i].swap(true, Ordering::AcqRel);
                     }
                 }
