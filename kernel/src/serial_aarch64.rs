@@ -392,6 +392,34 @@ pub fn _log_print(args: fmt::Arguments) {
     _print(args);
 }
 
+/// The kernel's `log` sink: each warning and error is one record, `[`, the level right-aligned
+/// in five columns, `] `, the target, `: `, the message and a newline, written and counted like
+/// any other output (docs/gui/breengel.md section 22). Lower levels are not written.
+struct LogSink;
+
+impl log::Log for LogSink {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= log::Level::Warn
+    }
+
+    fn log(&self, record: &log::Record) {
+        if self.enabled(record.metadata()) {
+            _print(format_args!("[{:>5}] {}: {}\n", record.level(), record.target(), record.args()));
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+static LOG_SINK: LogSink = LogSink;
+
+/// Install the `log` sink, once serial output works.
+pub fn init_log_sink() {
+    if log::set_logger(&LOG_SINK).is_ok() {
+        log::set_max_level(log::LevelFilter::Warn);
+    }
+}
+
 // =============================================================================
 // Hardware output under UART ownership
 // =============================================================================
