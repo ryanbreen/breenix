@@ -974,7 +974,10 @@ window ops (10 to 26 and 31) are removed when version 2 lands.
 - **Display ownership** is a stack: `take_over_display` (431) pushes the caller as owner, `give_back_display`
   (432) pops it, and `GIVE_DISPLAY(pid)` hands it to another process, which becomes owner above the giver.
   When an owner dies the display returns to the process that gave it, never to the runner, and the previous
-  owner's frame is restored exactly.
+  owner's frame is restored exactly. Direct take-over requires uid 0; explicit GIVE_DISPLAY retains its
+  owner authority. On ARM64 QEMU the snapshot stack holds at most four covered owners; another push or a
+  cycle returns EBUSY without changing ownership, and allocation failure returns ENOMEM. This bounds
+  retained 1280×800×4 snapshots to 16,384,000 bytes on the 64 MiB kernel heap.
 - **The framebuffer.** In a GUI suite boot every target runs its display at **1280 × 800**: `fbinfo` (410)
   reports width 1280, height 800, 4 bytes per pixel, a stride of at least 1280 (`fbinfo` counts the stride in
   pixels per row) and a pixel format of RGB (0) or BGR (1). `fb_mmap` (412) gives the display owner the whole screen, every row of all 1280 columns,
@@ -1070,6 +1073,10 @@ an `ObservationRecord` (512 bytes) produced atomically for one composite serial:
 The full destination is read; no sampled band stands for the frame. A readback never returns pixels without
 its record. It refuses with EAGAIN while serial *S*'s completions are unanswered, and with EIO and a named
 reason when the device's binding differs from the composed resource or a fence belongs to another serial.
+The 16 entries in this fixed-size observation ABI are not a global window limit: the §17.2 limit is per
+process, and composition plus COMPOSITE_RECORD still cover every window. If more than 16 windows are in
+that frame, SCANOUT_READBACK returns EIO without copying a partial record or pixels; the fixed ABI cannot
+represent the complete observation. It never truncates a successful observation.
 RGB and BGR destinations read back as the same canonical pixels, and X is normalized to 0xFF in every
 capture (`CAPTURE` and `SCANOUT_READBACK`).
 
@@ -1199,6 +1206,7 @@ fail (145,50,58), not reached (57,67,80), pending outline (48,67,96), and timing
 | tile wall | (16,112,800,588) | 20 columns, 21 rows, as §23.3 |
 | spotlight | (832,112,432,588) | inset; §23.4 |
 | milestone ribbon | (16,728,1248,24) | §23.5 |
+| boot stage ribbon | (16,752,1248,16) | §23.7 |
 | observation boundary | (24,776), scale 1, dim | the record's boundary notice (§23.8) |
 
 `n` is one-based while a case runs and N at completion. Not reached counts only cases explicitly not reached;
@@ -1253,7 +1261,8 @@ The finale preserves the selected first-failure spotlight (or last case if no fa
 (48,240,720,240) with header colour. Text in white: `RUN COMPLETE` at (72,264), scale 3; the same counts
 as the header at (72,312), scale 2; `slowest <category>/<case> <ms> ms` at (72,352), scale 1.
 It remains up for at least 5,000 ms of UI time before the runner emits DONE. The stage renderer receives
-the finale start time; the hold is complete iff `ui_time_ms.saturating_sub(start_ms) >= 5000`.
+the finale start time; a stepped session must advance its UI clock through that hold. A stalled clock
+is a stage failure at the runner deadline, never a successful hold or a lost DONE. The hold is complete iff `ui_time_ms.saturating_sub(start_ms) >= 5000`.
 
 ### 23.7 Boot stage ribbon
 
@@ -1274,7 +1283,9 @@ reference may be handed off alongside it; it has the same dimensions and its own
 When a surface check has no reference (for example a structural predicate), the spotlight labels it
 `actual (reference not supplied)` and shows the actual pane alone; it never constructs a matching reference.
 A malformed or changed snapshot fails the case. A case with no picture has no hash field.
-The stage composes only between cases, never in a measured case window.
+Snapshot hashing and publication run after the case timer stops. The transported picture includes its
+comparison bound; the spotlight prints that bound. The stage composes only between cases, never in a
+measured case window. A stage error fails the affected case and preserves the serial DONE record.
 
 The stage's boundary notice is `host copy and window outside guest view` for boundary 1 on virtio 2D,
 `host scanning outside guest view` for boundary 2, and `host window outside guest view` for boundary 3.

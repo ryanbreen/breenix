@@ -17,15 +17,12 @@ pub fn showcase_check(name: &str) -> CaseResult {
             if faulty {
                 crate::test_control::arm(14, process::getpid()?.raw() as u64, 0)?;
             }
-            let a = now();
-            // Exactly the production GUI frame-tick branch, under a scoped measured interval.
-            let before = s.commits.len();
+            let pid = process::getpid()?.raw() as u64;
+            let before = kernel_serial(pid).map_err(crate::suite::CaseError::Fail)?;
             let bits = fault_bits();
             tick_show(&mut s, bits).map_err(crate::suite::CaseError::Fail)?;
-            let b = now();
-            let found = s.commits[before..]
-                .iter()
-                .any(|&(x, y, _)| x <= b && y >= a);
+            let after = kernel_serial(pid).map_err(crate::suite::CaseError::Fail)?;
+            let found = after != before;
             check(
                 found == faulty,
                 "runner in-window draw detection disagrees with the composite records",
@@ -33,6 +30,15 @@ pub fn showcase_check(name: &str) -> CaseResult {
             crate::test_control::disarm_all()?;
         }
         return Ok(());
+    }
+    if name == "judged-frame-shown" {
+        let pixels = std::vec![0,0,0,255];
+        let hash = libpixcheck::sha256(&pixels);
+        let line = std::format!("sha256={}", hash.iter().map(|b| std::format!("{b:02x}")).collect::<String>());
+        let mut frame = JudgedFrame { width:1,height:1,pixels,sha256:hash,expected:None,bound:0 };
+        verify_source(&line,&frame).map_err(crate::suite::CaseError::Fail)?;
+        frame.pixels[0] ^= 255;
+        check(verify_source(&line,&frame).is_err(), "wrong source selected at record() was accepted")?;
     }
     let point = match name {
         "judged-frame-shown" => Some(13),

@@ -99,6 +99,9 @@ mod images;
 mod raster;
 mod show;
 mod stage_fixtures;
+mod stage_serial;
+#[cfg(target_arch = "aarch64")]
+mod display_regressions;
 use libgfx::stage;
 mod widgets;
 mod window_cases;
@@ -312,6 +315,9 @@ fn isolated(what: &str, limit_ms: u64, f: impl FnOnce() -> Result<(), String>) -
     static PROBE_SEQUENCE:AtomicU64=AtomicU64::new(0);
     let path=format!("/dev/shm/isolated-frame-{}-{}",process::getpid().map_err(|e|e.to_string())?.raw(),PROBE_SEQUENCE.fetch_add(1,Relaxed));
     if let Err(e)=std::fs::remove_file(&path){if e.kind()!=std::io::ErrorKind::NotFound{return Err(e.to_string());}}
+    struct FrameFile<'a>(&'a str);
+    impl Drop for FrameFile<'_> { fn drop(&mut self) { let _=std::fs::remove_file(self.0); } }
+    let _frame_file=FrameFile(&path);
     let mut callback=Some(f);
     let mut body=|| {
         LAST_JUDGED.lock().unwrap_or_else(|e|e.into_inner()).take();
@@ -353,7 +359,9 @@ fn isolated(what: &str, limit_ms: u64, f: impl FnOnce() -> Result<(), String>) -
             let code = if process::wifexited(status) { Some(process::wexitstatus(status)) } else { None };
             if code.is_some_and(|c| c & HANDED_FRAME != 0) {
                 // The child's frame is newer than any this process holds.
-                import_isolated_frame(&path)?;
+                let imported=import_isolated_frame(&path);
+                let _=std::fs::remove_file(&path);
+                imported?;
             }
             let _=std::fs::remove_file(&path);
             if !exited {

@@ -1447,6 +1447,7 @@ fn main() {
 
     graphics::init(screen_w as u32,screen_h as u32).unwrap_or_else(|e|{eprintln!("[bwm] v2 compositor: {e}");process::exit(1)});
     let composite_buf=vec![0u32;screen_w*screen_h].leak();
+    #[cfg(not(target_arch = "aarch64"))]
     let direct_mapped=false;
 
     let mut fb = unsafe {
@@ -1538,25 +1539,10 @@ fn main() {
     #[cfg(not(target_arch = "aarch64"))]
     hotkey_mgr.load_config("/etc/hotkeys.conf");
 
-    // Initial composite. ARM64 uses the same op16 SUBMIT_3D compositor path as
-    // steady-state frames so presentation is gated by the GPU present fence.
+    // Publish the v2 chrome window before entering the input loop.
     #[cfg(target_arch = "aarch64")]
     {
-        if direct_mapped {
-            let _ = graphics::compose_region(
-                &[],
-                0,
-                0,
-                1,
-                0,
-                0,
-                screen_w as u32,
-                screen_h as u32,
-            );
-        } else {
-            let _ =
-                graphics::compose_scene(composite_buf, screen_w as u32, screen_h as u32, true);
-        }
+        let _ = graphics::compose_scene(composite_buf, screen_w as u32, screen_h as u32, true);
     }
     #[cfg(not(target_arch = "aarch64"))]
     {
@@ -2105,11 +2091,7 @@ fn main() {
         #[cfg(target_arch = "aarch64")]
         {
             if full_redraw || content_dirty || windows_dirty || mouse_moved_this_frame || cursor_dirty {
-                let (cbuf, cw, ch): (&[u32], u32, u32) = if direct_mapped {
-                    (&[], 0, 0)
-                } else {
-                    (&composite_buf, screen_w as u32, screen_h as u32)
-                };
+                let (cbuf, cw, ch): (&[u32], u32, u32) = (composite_buf, screen_w as u32, screen_h as u32);
                 if full_redraw {
                     let _ = graphics::compose_region(
                         cbuf,

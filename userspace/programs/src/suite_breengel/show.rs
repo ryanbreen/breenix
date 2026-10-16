@@ -45,6 +45,8 @@ pub(crate) fn fbinfo() -> Result<FbInfo, String> {
 }
 
 fn composition_fbinfo_geometry() -> CaseResult {
+    #[cfg(target_arch = "aarch64")]
+    crate::display_regressions::many_windows()?;
     let i = fbinfo().cite("18")?;
     value("fb-width", i.width as i64, "px", Some((1280, 1280)));
     value("fb-height", i.height as i64, "px", Some((800, 800)));
@@ -55,6 +57,8 @@ fn composition_fbinfo_geometry() -> CaseResult {
 }
 
 fn composition_fbmmap_pane() -> CaseResult {
+    #[cfg(target_arch = "aarch64")]
+    crate::display_regressions::ownership_and_flush()?;
     let info = fbinfo().cite("18")?;
     // SAFETY: neither call reads user memory.
     let took = unsafe { raw::syscall0(SYS_TAKE_OVER_DISPLAY) as i64 };
@@ -165,8 +169,29 @@ fn panel_deterministic() -> CaseResult {
     let mut page=[0u8;4096];page[..8].copy_from_slice(b"BGCLK001");page[16..24].copy_from_slice(&250_000_000u64.to_le_bytes());
     std::fs::write(&path,page).map_err(|e|e.to_string())?;
     let old=std::env::var_os("BREENIX_UI_CLOCK");std::env::set_var("BREENIX_UI_CLOCK",&path);
-    let result=crate::stage_fixtures::check_capture("deterministic",|fb|libbreenix::suite::judged(fb).map_err(|e|format!("{e:?}")));
-    let reads=libbreenix::suite::ui_clock::real_clock_reads()+breengel::clock::real_clock_reads();
+    let result=(|| -> Result<(),String> {
+        crate::stage_fixtures::check_capture("deterministic", |_|Ok(()))?;
+        use stage::{Milestone, Observation, Run, Spotlight, Stamp, Tile};
+        let tiles=[Tile{id:"clock/running",stamp:Stamp::Running,key:0,thumbnail:None}];
+        let groups=[Milestone{id:"clock",first:0,end:1}];
+        let mut run=Run{suite:"clock",target:"ARM64 QEMU",case_number:1,ui_time_ms:0,fps:0,tiles:&tiles,milestones:&groups,selected:0,spotlight:Spotlight::None,finale:None,boundary:Observation{backend:1,flags:1,boundary:1}};
+        let mut a=FrameBuf::new(1280,800,libgfx::framebuf::Format::BGRX).map_err(|e|e.to_string())?;
+        let mut b=FrameBuf::new(1280,800,libgfx::framebuf::Format::BGRX).map_err(|e|e.to_string())?;
+        for fb in [&mut a,&mut b] {
+            libbreenix::suite::render_stage_at_ui_time(fb,&mut run).map_err(|e|format!("{e:?}"))?;
+            if run.ui_time_ms!=250 {return Err("stage ignored the shared UI page".into());}
+        }
+        for y in 0..800 {for x in 0..1280 {
+            if a.get_pixel(x,y)!=b.get_pixel(x,y) {return Err("live clock boundary drew nondeterministic pixels".into());}
+        }}
+        page[16..24].copy_from_slice(&500_000_000u64.to_le_bytes());
+        std::fs::write(&path,page).map_err(|e|e.to_string())?;
+        libbreenix::suite::render_stage_at_ui_time(&mut b,&mut run).map_err(|e|format!("{e:?}"))?;
+        if run.ui_time_ms!=500 || a.get_pixel(16,112)==b.get_pixel(16,112) {return Err("stepping UI time did not change the stage pulse".into());}
+        if breengel::clock::now_ns()!=500_000_000 {return Err("stage and Breengel use different clock providers".into());}
+        libbreenix::suite::judged(&b).map_err(|e|format!("{e:?}"))
+    })();
+    let reads=libbreenix::suite::ui_clock::real_clock_reads();
     if let Some(v)=old{std::env::set_var("BREENIX_UI_CLOCK",v);}else{std::env::remove_var("BREENIX_UI_CLOCK");}
     let _=std::fs::remove_file(path);
     result.map_err(libbreenix::suite::CaseError::Fail)?;
@@ -182,7 +207,9 @@ fn panel_boot_ribbon() -> CaseResult {
         const EXPECTED:&[&str]=include!("stage_boot_markers.rs");
         let observed:Vec<_>=before.lines().filter_map(|line|line.split_once('|')).collect();
         ensure(observed.len()==EXPECTED.len() && observed.iter().zip(EXPECTED).all(|((lit,marker),expected)|(*lit=="0" || *lit=="1") && marker==expected),"23.7","kernel ribbon stages do not match the binding ARM64 manifest in order")?;
-        let reached:Vec<bool>=observed.iter().map(|(lit,_)|*lit=="1").collect();
+        let serial=std::fs::read_to_string("/proc/breenix/boot-serial").map_err(|e|format!("captured producer serial: {e}"))?;
+        let reached=crate::stage_serial::reached(&serial,EXPECTED);
+        ensure(observed.iter().zip(&reached).all(|((lit,_),want)|(*lit=="1")==*want),"23.7","kernel reached bits disagree with independently parsed serial producer lines")?;
         ensure(!reached.is_empty() && reached.iter().any(|v|*v),"23.7","no actual producer stages were observed")?;
         if faulty {libbreenix::test_control::arm(15,0,0)?;}
         ensure(give_back()>=0,"23.7","give back for kernel ribbon failed")?;

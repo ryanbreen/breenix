@@ -3,8 +3,8 @@
 use super::stage::{self, Finale, Image, Milestone, Run, Spotlight, Stamp, Tile};
 use libgfx::{color::Color, font, framebuf::FrameBuf};
 
-fn surface(bytes: &mut [u8]) -> FrameBuf {
-    unsafe { FrameBuf::from_raw(bytes.as_mut_ptr(),1280,800,5120,4,true).unwrap() }
+fn surface() -> FrameBuf {
+    FrameBuf::new(1280, 800, libgfx::framebuf::Format::BGRX).unwrap()
 }
 fn expect_pixel(fb:&FrameBuf,x:usize,y:usize,rgb:(u8,u8,u8)) -> Result<(),String> {
     let p=fb.get_pixel(x,y);
@@ -15,7 +15,7 @@ fn rect(fb:&FrameBuf,x:usize,y:usize,w:usize,h:usize,rgb:(u8,u8,u8)) -> Result<(
 }
 fn text(fb:&FrameBuf,x:usize,y:usize,s:&str,scale:usize,background:(u8,u8,u8)) -> Result<(),String> {
     let w=font::text_width(s.as_bytes(),scale); let h=7*scale;
-    let mut bytes=vec![0u8;1280*800*4]; let mut reference=surface(&mut bytes);
+    let mut reference=surface();
     for py in y..y+h { for px in x..x+w { reference.put_pixel(px,py,Color::rgb(background.0,background.1,background.2)); } }
     font::draw_text(&mut reference,s.as_bytes(),x,y,Color::WHITE,scale);
     for py in y..y+h { for px in x..x+w {
@@ -41,12 +41,18 @@ const MILESTONES:[Milestone<'static>;2]=[Milestone {id:"alpha",first:0,end:2},Mi
 #[cfg(test)]
 pub fn check(name:&str) -> Result<(),String> {check_capture(name,|_|Ok(()))}
 pub fn check_capture(name:&str,capture:impl FnOnce(&FrameBuf)->Result<(),String>) -> Result<(),String> {
-    let mut bytes=vec![0u8;1280*800*4]; let mut fb=surface(&mut bytes);
+    let mut fb=surface();
     let result=(|| {
     let mut cases=tiles(); let mut model=run(&cases,&MILESTONES);
     match name {
         "stage-layout" => {
             render(&mut fb,&model)?;
+            let mut header=surface();
+            libgfx::shapes::fill_rect(&mut header,0,0,1280,96,Color::rgb(24,39,59));
+            for (x,y,t,scale) in [(24,16,"BREENIX / fixture",3),(24,48,"qemu  case 3 of 5  elapsed 250 ms  fps 60",1),(24,68,"1 passed  1 failed  1 not reached",2)] {
+                font::draw_text(&mut header,t.as_bytes(),x,y,Color::WHITE,scale);
+            }
+            for y in 0..96 {for x in 0..1280 {let p=header.get_pixel(x,y);expect_pixel(&fb,x,y,(p.r,p.g,p.b))?;}}
             rect(&fb,0,0,1280,16,(24,39,59))?;
             rect(&fb,0,96,1280,16,(12,19,31))?;
             rect(&fb,832,112,432,8,(18,29,44))?;
@@ -58,10 +64,17 @@ pub fn check_capture(name:&str,capture:impl FnOnce(&FrameBuf)->Result<(),String>
             text(&fb,840,132,"fail",1,(18,29,44))?;
             text(&fb,840,144,"key 9",1,(18,29,44))?;
             rect(&fb,16,140,800,560,(12,19,31))?;
-            let mut expected=vec![0u8;1280*800*4];let mut ef=surface(&mut expected);
+            let mut ef=surface();
             for y in 776..783 {for x in 24..1280 {ef.put_pixel(x,y,Color::rgb(12,19,31));}}
             font::draw_text(&mut ef,b"host copy and window outside guest view",24,776,Color::rgb(161,183,204),1);
             for y in 776..783 {for x in 24..1280 {let p=ef.get_pixel(x,y);expect_pixel(&fb,x,y,(p.r,p.g,p.b))?;}}
+            let reached=[true,false,true];
+            stage::draw_boot_ribbon(&mut fb,&reached).map_err(|e|format!("{e:?}"))?;
+            for (i,lit) in reached.iter().enumerate() {
+                let a=16+1248*i/3;let b=16+1248*(i+1)/3;
+                rect(&fb,a,752,b-a-2,16,if *lit{(26,112,77)}else{(48,67,96)})?;
+                rect(&fb,b-2,752,2,16,(12,19,31))?;
+            }
             Ok(())
         }
         "tile-stamps" => {
@@ -71,7 +84,7 @@ pub fn check_capture(name:&str,capture:impl FnOnce(&FrameBuf)->Result<(),String>
                 let x=16+slot*40;
                 rect(&fb,x,112,38,1,color)?;rect(&fb,x,137,38,1,color)?;
                 rect(&fb,x,113,1,24,color)?;rect(&fb,x+37,113,1,24,color)?;
-                let mut reference=vec![0u8;1280*800*4];let mut ef=surface(&mut reference);
+                let mut ef=surface();
                 for py in 127..137 {for px in x+1..x+37 {ef.put_pixel(px,py,Color::rgb(color.0,color.1,color.2));}}
                 font::draw_text(&mut ef,format!("{key}").as_bytes(),x+2,129,Color::WHITE,1);
                 for py in 127..137 {for px in x+1..x+37 {let p=ef.get_pixel(px,py);expect_pixel(&fb,px,py,(p.r,p.g,p.b))?;}}
@@ -120,18 +133,29 @@ pub fn check_capture(name:&str,capture:impl FnOnce(&FrameBuf)->Result<(),String>
                 let colour=if cross {(255,255,255)} else if x>=64 && y<64 {(255,250,0)} else {(0,0,0)};
                 expect_pixel(&fb,1128+x,168+y,colour)?;
             }}
-            text(&fb,840,312,"1 pixels differ; bound 0",1,(18,29,44))
+            text(&fb,840,312,"1 pixels differ; bound 0",1,(18,29,44))?;
+            model.spotlight=Spotlight::Actual(Image{pixels:&actual,width:2,height:2});
+            render(&mut fb,&model)?;
+            text(&fb,840,152,"actual (reference not supplied)",1,(18,29,44))?;
+            rect(&fb,840,168,128,128,(18,29,44))?;
+            rect(&fb,1128,168,128,128,(18,29,44))?;
+            for y in 0..128 {for x in 0..128 {
+                let i=((y*2/128)*2+x*2/128)*4;
+                expect_pixel(&fb,984+x,168+y,(actual[i+2],actual[i+1],actual[i]))?;
+            }} Ok(())
         }
         "spotlight-timing" => {
             let times=[0,500,1000,2000];
             model.spotlight=Spotlight::Timing{frame_us:&times,budget_us:1000};render(&mut fb,&model)?;
-            rect(&fb,848,336,99,96,(18,29,44))?;
-            rect(&fb,848,433,99,95,(18,29,44))?;
-            rect(&fb,948,480,99,48,(64,160,224))?;
-            rect(&fb,1048,433,99,95,(64,160,224))?;
-            rect(&fb,1148,336,99,96,(145,50,58))?;
-            rect(&fb,848,432,400,1,(255,255,255))?;
-            for x in [947,1047,1147,1247] {rect(&fb,x,336,1,96,(18,29,44))?;rect(&fb,x,433,1,95,(18,29,44))?;}
+            for y in 336..528 {for x in 848..1248 {
+                let i=(x-848)/100;
+                let heights=[0,48,96,192];
+                let rgb=if y==432 {(255,255,255)}
+                    else if (x-848)%100!=99 && y>=528-heights[i] {
+                        if i==3 {(145,50,58)}else{(64,160,224)}
+                    }else{(18,29,44)};
+                expect_pixel(&fb,x,y,rgb)?;
+            }}
             text(&fb,840,312,"frame times us; budget 1000",1,(18,29,44))
         }
         "milestone-ribbon" => {
@@ -139,6 +163,8 @@ pub fn check_capture(name:&str,capture:impl FnOnce(&FrameBuf)->Result<(),String>
             let model=run(&cases,&MILESTONES);render(&mut fb,&model)?;
             rect(&fb,16,728,622,8,(26,112,77))?;rect(&fb,640,728,622,8,(48,67,96))?;
             rect(&fb,638,728,2,24,(12,19,31))?;
+            rect(&fb,16,743,622,9,(26,112,77))?;
+            rect(&fb,640,743,622,9,(48,67,96))?;
             text(&fb,20,736,"alpha",1,(26,112,77))?;text(&fb,644,736,"beta",1,(48,67,96))
         }
         "finale" => {
@@ -149,7 +175,7 @@ pub fn check_capture(name:&str,capture:impl FnOnce(&FrameBuf)->Result<(),String>
             text(&fb,72,264,"RUN COMPLETE",3,(24,39,59))?;
             text(&fb,72,312,"1 passed  1 failed  1 not reached",2,(24,39,59))?;
             text(&fb,72,352,"slowest alpha/fail 9 ms",1,(24,39,59))?;
-            let mut reference=vec![0u8;1280*800*4];let mut ef=surface(&mut reference);
+            let mut ef=surface();
             for y in 240..480 {for x in 48..768 {ef.put_pixel(x,y,Color::rgb(24,39,59));}}
             for (x,y,t,scale) in [(72,264,"RUN COMPLETE",3),(72,312,"1 passed  1 failed  1 not reached",2),(72,352,"slowest alpha/fail 9 ms",1)] {
                 font::draw_text(&mut ef,t.as_bytes(),x,y,Color::WHITE,scale);
@@ -159,12 +185,13 @@ pub fn check_capture(name:&str,capture:impl FnOnce(&FrameBuf)->Result<(),String>
             text(&fb,840,132,"fail",1,(18,29,44))
         }
         "deterministic" => {
-            bytes.fill(0x35);
-            let mut fb=surface(&mut bytes);render(&mut fb,&model)?;let before=bytes.clone();
+            let mut other=FrameBuf::new_filled(1280,800,libgfx::framebuf::Format::BGRX,Color::rgb(53,53,53)).map_err(|e|e.to_string())?;
+            render(&mut fb,&model)?;
             std::thread::sleep(std::time::Duration::from_millis(20));
-            bytes.fill(0xCA);
-            let mut fb=surface(&mut bytes);render(&mut fb,&model)?;
-            if bytes!=before { Err("same results and UI time drew different stage bytes".into()) } else { Ok(()) }
+            render(&mut other,&model)?;
+            for y in 0..800 {for x in 0..1280 {
+                let p=other.get_pixel(x,y);expect_pixel(&fb,x,y,(p.r,p.g,p.b))?;
+            }} Ok(())
         }
         _ => Err(format!("unknown stage fixture {name}")),
     }})();

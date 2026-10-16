@@ -68,6 +68,8 @@ pub mod ssh;
 #[cfg(feature = "std")]
 pub mod tls;
 pub mod time;
+#[cfg(feature = "std")]
+pub mod ui_clock;
 pub mod types;
 pub mod window;
 #[cfg(feature = "std")]

@@ -530,8 +530,10 @@ fn composition_no_change_commit() -> CaseResult {
 
 /// The pixels of `px` that differ from the formula, as (x, y).
 fn differing(px: &[u8], scene: &[Placed]) -> Vec<(u32, u32)> {
-    crate::remember_frame(px,1280,800,None);
     let f = formula(scene);
+    let mut reference=Vec::with_capacity(1280*800*4);
+    for y in 0..800 {for x in 0..1280 {reference.extend_from_slice(&f(x,y));}}
+    crate::remember_frame(px,1280,800,Some(reference));
     let mut out = Vec::new();
     for y in 0..800u32 {
         for x in 0..1280u32 {

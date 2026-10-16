@@ -15,8 +15,7 @@ use std::{
     vec::Vec,
 };
 
-#[path = "../../breengel/src/clock.rs"]
-pub mod clock;
+use crate::ui_clock as clock;
 static SHOW: Mutex<Option<Show>> = Mutex::new(None);
 #[derive(Clone)]
 struct Picture {
@@ -57,12 +56,9 @@ struct Show {
     started_ms: u64,
     finale: Option<u64>,
     fps: u32,
-    commits: Vec<(u64, u64, u64)>,
+
     windows: Vec<(u64, u64)>,
     measured: Option<u64>,
-}
-fn now() -> u64 {
-    time::now_monotonic().map_or(0, |t| t.as_nanos() as u64)
 }
 fn fault_bits() -> u32 {
     std::fs::read_to_string("/proc/breenix/stage-control")
@@ -156,7 +152,7 @@ fn present(fb: &FrameBuf) -> Result<(u64, abi::ObservationRecord), String> {
     Ok((c.serial, rec))
 }
 impl Show {
-    fn render(&self, fb: &mut FrameBuf, bits: u32, ui_ms: u64) -> Result<(), String> {
+    fn render(&self, fb: &mut FrameBuf, bits: u32) -> Result<(), String> {
         let mut tiles: Vec<Tile<'_>> = self
             .entries
             .iter()
@@ -235,7 +231,7 @@ impl Show {
                     actual,
                     first,
                     differing,
-                    bound: 0,
+                    bound: p.bound,
                 }
             } else {
                 Spotlight::Actual(actual)
@@ -250,13 +246,13 @@ impl Show {
                     budget_us: t.budget_us,
                 });
         let slow = self.entries.iter().max_by_key(|e| e.key).unwrap();
-        stage::draw(
+        render_at_ui_time(
             fb,
-            &stage::Run {
+            &mut stage::Run {
                 suite: &self.suite,
                 target: "ARM64 QEMU",
                 case_number: self.current + 1,
-                ui_time_ms: ui_ms.saturating_sub(self.started_ms),
+                ui_time_ms: 0,
                 fps: self.fps,
                 tiles: &tiles,
                 milestones: &groups,
@@ -269,6 +265,7 @@ impl Show {
                 }),
                 boundary: self.observation,
             },
+            self.started_ms,
         )
         .map_err(|e| std::format!("stage render: {e:?}"))?;
         let records =
@@ -278,22 +275,20 @@ impl Show {
     }
     fn draw(&mut self, bits: u32) -> Result<(), String> {
         let mut fb = FrameBuf::new(1280, 800, Format::BGRX).map_err(|e| e.to_string())?;
-        self.render(&mut fb, bits, clock::now_ns() / 1_000_000)?;
-        let start = now();
-        let (serial, rec) = present(&fb)?;
-        let end = now();
+        // Learn the actual backend before rendering the notice on this same frame.
+        let (_, rec) = snapshot()?;
+        self.observation = Observation { backend: rec.backend, flags: rec.flags, boundary: rec.boundary };
+        self.render(&mut fb, bits)?;
+        let (_, rec) = present(&fb)?;
         self.observation = Observation {
             backend: rec.backend,
             flags: rec.flags,
             boundary: rec.boundary,
         };
-        self.commits.push((start, end, serial));
         Ok(())
     }
     fn quiet(&self) -> bool {
-        self.windows
-            .iter()
-            .all(|&(a, b)| self.commits.iter().all(|&(x, y, _)| y < a || x > b))
+        self.windows.iter().all(|&(before, after)| before == after)
     }
 }
 pub(super) fn init(suite: &Suite) {
@@ -338,7 +333,6 @@ pub(super) fn init(suite: &Suite) {
         started_ms: clock::now_ns() / 1_000_000,
         finale: None,
         fps: 0,
-        commits: Vec::new(),
         windows: Vec::new(),
         measured: None,
     });
@@ -379,6 +373,7 @@ pub(super) fn record(
         Outcome::Skip { .. } => (Stamp::NotReached, 0),
     };
     if let Some(f) = frame {
+        verify_source(line, &f)?;
         let source = libpixcheck::Frame::new(
             &f.pixels,
             f.width,
@@ -393,12 +388,12 @@ pub(super) fn record(
         e.picture = Some(Picture {
             width,
             height,
-            source_hash: f.sha256,
+            source_hash: libpixcheck::sha256(&f.pixels),
             thumb_hash: libpixcheck::sha256(&pixels),
             pixels,
         });
         s.last = Some(Arc::new(f));
-    } else {
+    } else if s.selected != s.current {
         s.last = None;
     }
     if matches!(outcome, Outcome::Fail { .. }) && s.first_failure.is_none() {
@@ -407,17 +402,36 @@ pub(super) fn record(
     s.selected = s.current;
     Ok(())
 }
-pub(super) fn begin() {
-    if let Some(s) = SHOW.lock().unwrap().as_mut() {
-        s.measured = Some(now());
-    }
-}
-pub(super) fn end() {
-    if let Some(s) = SHOW.lock().unwrap().as_mut() {
-        if let Some(a) = s.measured.take() {
-            s.windows.push((a, now()));
+/// Count kernel-published records for a process, not calls or runner timestamps.
+fn kernel_serial(pid: u64) -> Result<u64, String> {
+    let text = std::fs::read_to_string("/proc/breenix/stage-composites").map_err(|e| e.to_string())?;
+    let mut last = 0;
+    for line in text.lines() {
+        let (owner, serial) = line.split_once(' ').ok_or("bad kernel composite record")?;
+        if owner.parse::<u64>().map_err(|_| "bad composite owner")? == pid {
+            last = serial.parse::<u64>().map_err(|_| "bad composite serial")?;
         }
     }
+    Ok(last)
+}
+fn verify_source(line: &str, f: &JudgedFrame) -> Result<(), String> {
+    let hash: String = libpixcheck::sha256(&f.pixels).iter().map(|b| std::format!("{b:02x}")).collect();
+    if !line.split_whitespace().any(|w| w == std::format!("sha256={hash}")) {
+        return Err("selected source pixels differ from the emitted CASE SHA-256".into());
+    }
+    Ok(())
+}
+pub(super) fn begin() -> Result<(), String> {
+    let serial = kernel_serial(process::getpid().map_err(|e| e.to_string())?.raw() as u64)?;
+    if let Some(s) = SHOW.lock().unwrap().as_mut() { s.measured = Some(serial); }
+    Ok(())
+}
+pub(super) fn end() -> Result<(), String> {
+    let serial = kernel_serial(process::getpid().map_err(|e| e.to_string())?.raw() as u64)?;
+    if let Some(s) = SHOW.lock().unwrap().as_mut() {
+        if let Some(a) = s.measured.take() { s.windows.push((a, serial)); }
+    }
+    Ok(())
 }
 fn tick_show(s: &mut Show, bits: u32) -> Result<(), String> {
     if bits & (1 << 14) != 0 {
@@ -429,6 +443,9 @@ pub(super) fn tick() -> Result<(), String> {
     let bits = fault_bits();
     tick_show(SHOW.lock().unwrap().as_mut().ok_or("stage missing")?, bits)
 }
+pub(super) fn redraw() -> Result<(), String> {
+    SHOW.lock().unwrap().as_mut().ok_or("stage missing")?.draw(0)
+}
 pub(super) fn finale() -> Result<(), String> {
     let start = clock::now_ns() / 1_000_000;
     {
@@ -437,7 +454,12 @@ pub(super) fn finale() -> Result<(), String> {
         s.finale = Some(start);
         s.draw(0)?;
     }
-    while clock::now_ns() / 1_000_000 < start.saturating_add(5000) {
+    let watchdog = time::now_monotonic().map_err(|e|e.to_string())?.as_nanos();
+    let finale = Finale { started_ms: start, slowest: "", slowest_ms: 0 };
+    while !finale.hold_complete(clock::now_ns() / 1_000_000) {
+        if time::now_monotonic().map_err(|e|e.to_string())?.as_nanos() - watchdog > 60_000_000_000 {
+            return Err("finale UI clock did not complete its 5000 ms hold within the runner deadline".into());
+        }
         time::sleep_ms(20).map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -445,3 +467,9 @@ pub(super) fn finale() -> Result<(), String> {
 
 mod checks;
 pub use checks::showcase_check;
+
+/// Render a fixture using the same clock boundary as the live stage.
+pub fn render_at_ui_time(fb: &mut FrameBuf, run: &mut stage::Run<'_>, started_ms: u64) -> Result<(), stage::StageError> {
+    run.ui_time_ms = (clock::now_ns() / 1_000_000).saturating_sub(started_ms);
+    stage::draw(fb, run)
+}
