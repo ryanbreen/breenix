@@ -337,6 +337,11 @@ fn scanout_boundary_stated() -> CaseResult {
     let want = boundary_of(rec.backend);
     ensure(want == Some(rec.boundary), "20.2", format!(
         "the record of backend {} ({}) states boundary {}; section 20.2 gives {want:?}", rec.backend, backend::name(rec.backend), rec.boundary))?;
-    ensure(rec.flags & abi::OBSERVATION_DEVICE_COPY_OUTSIDE != 0 || rec.backend == backend::GOP_FRAMEBUFFER, "20.1", format!(
-        "the record's flags {:#x} do not say the device's copy is outside the guest's view", rec.flags))
+    // Section 20.2: exactly DEVICE_COPY_OUTSIDE for virtio-gpu 2D and SVGA3, 0 for GOP and VirGL.
+    let flags = match rec.backend {
+        backend::VIRTIO_GPU_2D | backend::SVGA3_SCREEN_TARGET => abi::OBSERVATION_DEVICE_COPY_OUTSIDE,
+        _ => 0,
+    };
+    ensure(rec.flags == flags, "20.2", format!(
+        "the record of backend {} ({}) has flags {:#x}; section 20.2 gives exactly {flags:#x}", rec.backend, backend::name(rec.backend), rec.flags))
 }
