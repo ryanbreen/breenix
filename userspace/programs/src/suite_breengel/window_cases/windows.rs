@@ -634,6 +634,34 @@ fn windows_commit_immutable() -> CaseResult {
         Ended::Exit(5) => at("17.3", "writing a committed buffer did not fault; it is read-only to its owner"),
         Ended::Exit(c) => at("17.3", format!("the child exited {c} before the write")),
         Ended::Signal(s) => at("17.3", format!("the child died of signal {s}, not SIGSEGV")),
+    }?;
+    // A tree size below a page: acquiring the second buffer must not open the first
+    // buffer's committed tree page.
+    let ended = child_end(5_000, || {
+        let mut c = abi::Create::ZERO;
+        c.width = 16;
+        c.height = 16;
+        c.buffers = 2;
+        c.tree_kib = 1;
+        if call(op::CREATE, &mut c) < 0 { return 2; }
+        if c.tree_kib % 4 != 0 { return 6; }
+        let slot = |i: u32| (c.tree + i as u64 * c.tree_kib as u64 * 1024) as *mut u8;
+        let Ok(a) = acquire(c.id, 1_000_000_000) else { return 3 };
+        // SAFETY: CREATE mapped this buffer's tree page; it is writable while acquired.
+        unsafe { *slot(a.buffer) = 1 };
+        if commit(c.id, a.buffer, &[full(&c)], None).is_err() { return 4; }
+        let Ok(b) = acquire(c.id, 1_000_000_000) else { return 3 };
+        if b.buffer == a.buffer { return 3; }
+        // SAFETY: as above; the committed tree page must fault.
+        unsafe { core::ptr::write_volatile(slot(a.buffer), 2) };
+        5
+    }).cite("17.3")?;
+    match ended {
+        Ended::Signal(11) => Ok(()),
+        Ended::Exit(5) => at("17.3", "with tree_kib 1, writing the committed buffer's tree page after acquiring the other buffer did not fault"),
+        Ended::Exit(6) => at("17.1", "CREATE with tree_kib 1 reported a tree size that is not a whole number of 4 KiB pages"),
+        Ended::Exit(c) => at("17.3", format!("the tree-page child exited {c} before the write")),
+        Ended::Signal(s) => at("17.3", format!("the tree-page child died of signal {s}, not SIGSEGV")),
     }
 }
 

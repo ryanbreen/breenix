@@ -143,6 +143,10 @@ pub fn create(caller: &Caller, a: &mut Create) -> Result<u64, i32> {
     if tree_kib > limits::MAX_TREE_KIB {
         return Err(EINVAL);
     }
+    // Each buffer's tree page is sealed and opened with its buffer, by page: no two buffers
+    // may share one, so a size is rounded up to whole pages (and reported back).
+    let page_kib = (mem::PAGE_BYTES / 1024) as u32;
+    let tree_kib = tree_kib.div_ceil(page_kib) * page_kib;
     sweep_dead_owners();
     let owned = |reg: &super::Registry| reg.windows.values().filter(|w| w.owner == caller.tgid).count();
     if owned(&REGISTRY.lock()) >= limits::MAX_WINDOWS_PER_PROCESS {

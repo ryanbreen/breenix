@@ -19,6 +19,9 @@ use crate::ipc::shmem::{Frame, MappingOrigin, ShmObject};
 use crate::memory::vma::Protection;
 use crate::syscall::memory_common::PAGE_SIZE;
 
+/// Bytes of one page: protection changes by whole pages.
+pub const PAGE_BYTES: u64 = PAGE_SIZE;
+
 /// Allocated window memory, counted by the trace counter `window_buffer_allocs` per buffer.
 pub struct Mem {
     obj: Arc<ShmObject>,

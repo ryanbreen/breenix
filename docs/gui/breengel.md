@@ -803,9 +803,10 @@ Argument structures (offsets in bytes):
 
 - `WinId`: `id: u64 @0`.
 - `Create`: `width: u32 @0`, `height: u32 @4`, `buffers: u32 @8` (2 or 3), `tree_kib: u32 @12` (0 means 64;
-  at most 1,024), *out* `id: u64 @16`, *out* `stride: u32 @24`, reserved `@28`, *out* `buffer: [u64; 3] @32`
-  (the mapped address of each buffer, 0 past `buffers`), *out* `tree: u64 @56` (the first tree page; buffer
-  `i`'s page is `tree + i × tree_kib × 1024`).
+  at most 1,024; the kernel rounds it up to whole 4 KiB pages, so no two buffers share a tree page, and writes
+  the size it used back), *out* `id: u64 @16`, *out* `stride: u32 @24`, reserved `@28`, *out*
+  `buffer: [u64; 3] @32` (the mapped address of each buffer, 0 past `buffers`), *out* `tree: u64 @56` (the
+  first tree page; buffer `i`'s page is `tree + i × tree_kib × 1024`, with the `tree_kib` written back).
 - `Title`: `id: u64 @0`, `ptr: u64 @8`, `len: u32 @16`, reserved `@20`.
 - `List`: `ptr: u64 @0` (an array of `WinInfo`), `capacity: u32 @8`, reserved `@12`.
 - `WinInfo` (128): `id: u64 @0`, `owner: u32 @8` (pid), `flags: u32 @12` (bit 0 registered, 1 visible,
