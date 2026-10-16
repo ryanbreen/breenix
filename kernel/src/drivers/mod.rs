@@ -265,6 +265,12 @@ pub fn init() -> usize {
                 match virtio::gpu_pci::virgl_init() {
                     Ok(()) => {
                         serial_println!("[drivers] VirGL 3D acceleration active");
+                        #[cfg(feature = "testing")]
+                        {
+                            virtio::gpu_pci::test_shader_round_trip().expect("VirGL shader device round trip failed");
+                            serial_println!("VIRGL_SHADER_TEST_PASSED");
+                        }
+
                         crate::graphics::set_compositor_backend(
                             crate::graphics::CompositorBackend::VirGL,
                         );
