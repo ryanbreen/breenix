@@ -584,6 +584,7 @@ pub fn send_deferred_resched_ipis() {
 type SchedulerGuard = spin::MutexGuard<'static, Option<Scheduler>>;
 
 #[inline(always)]
+#[track_caller]
 fn lock_scheduler() -> SchedulerGuard {
     #[cfg(target_arch = "x86_64")]
     let probe = crate::stall_probe::sched_wait_begin();
@@ -592,7 +593,7 @@ fn lock_scheduler() -> SchedulerGuard {
     #[cfg(not(target_arch = "x86_64"))]
     let guard = SCHEDULER.lock();
     #[cfg(target_arch = "x86_64")]
-    crate::stall_probe::sched_acquired(probe);
+    crate::stall_probe::sched_acquired_at(probe, core::panic::Location::caller());
     crate::tracing::providers::teardown::note_scheduler_acquire();
     #[cfg(target_arch = "x86_64")]
     let guard = SchedulerGuard::new(guard);
@@ -600,10 +601,11 @@ fn lock_scheduler() -> SchedulerGuard {
 }
 
 #[inline(always)]
+#[track_caller]
 fn try_lock_scheduler() -> Option<SchedulerGuard> {
     let guard = SCHEDULER.try_lock()?;
     #[cfg(target_arch = "x86_64")]
-    crate::stall_probe::sched_acquired(crate::stall_probe::sched_wait_begin());
+    crate::stall_probe::sched_acquired_at(crate::stall_probe::sched_wait_begin(), core::panic::Location::caller());
     crate::tracing::providers::teardown::note_scheduler_acquire();
     #[cfg(target_arch = "x86_64")]
     let guard = SchedulerGuard::new(guard);
@@ -7613,6 +7615,7 @@ pub fn is_current_idle_thread() -> Option<bool> {
 
 /// Get access to the scheduler
 /// This function disables interrupts to prevent deadlock with timer interrupt
+#[track_caller]
 pub fn with_scheduler<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut Scheduler) -> R,
@@ -7754,6 +7757,7 @@ pub fn collect_idle_thread_ids(out: &mut [u64]) -> usize {
 
 /// Get mutable access to a specific thread (for timer interrupt handler)
 /// This function disables interrupts to prevent deadlock with timer interrupt
+#[track_caller]
 pub fn with_thread_mut<F, R>(thread_id: u64, f: F) -> Option<R>
 where
     F: FnOnce(&mut super::thread::Thread) -> R,

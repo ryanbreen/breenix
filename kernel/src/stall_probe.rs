@@ -330,6 +330,40 @@ static SCHED_HOLD_N: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_C
 static SCHED_HOLD_MAX: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 static PROBE_T0: AtomicU64 = AtomicU64::new(0);
 
+const SITES: usize = 128;
+static SITE_KEY: [AtomicU64; SITES] = [const { AtomicU64::new(0) }; SITES];
+static SITE_N: [AtomicU64; SITES] = [const { AtomicU64::new(0) }; SITES];
+static SITE_CYC: [AtomicU64; SITES] = [const { AtomicU64::new(0) }; SITES];
+static SITE_MAX: [AtomicU64; SITES] = [const { AtomicU64::new(0) }; SITES];
+static HOLD_SITE: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+
+fn site_slot(key: u64) -> Option<usize> {
+    let start = (key >> 3) as usize % SITES;
+    for k in 0..SITES {
+        let i = (start + k) % SITES;
+        let cur = SITE_KEY[i].load(Ordering::Relaxed);
+        if cur == key {
+            return Some(i);
+        }
+        if cur == 0 {
+            match SITE_KEY[i].compare_exchange(0, key, Ordering::AcqRel, Ordering::Relaxed) {
+                Ok(_) => return Some(i),
+                Err(now) if now == key => return Some(i),
+                Err(_) => continue,
+            }
+        }
+    }
+    None
+}
+
+pub fn sched_acquired_at(begin: (u64, u64), site: &'static core::panic::Location<'static>) {
+    let cpu = crate::task::scheduler::current_cpu_id_raw();
+    if cpu < MAX_CPUS {
+        HOLD_SITE[cpu].store(site as *const _ as u64, Ordering::Relaxed);
+    }
+    sched_acquired(begin);
+}
+
 pub fn sched_acquired(begin: (u64, u64)) {
     let cpu = crate::task::scheduler::current_cpu_id_raw();
     note_wait(1, begin.0, begin.1, 0);
@@ -348,6 +382,12 @@ pub fn sched_released() {
             SCHED_HOLD_SUM[cpu].fetch_add(held, Ordering::Relaxed);
             SCHED_HOLD_N[cpu].fetch_add(1, Ordering::Relaxed);
             SCHED_HOLD_MAX[cpu].fetch_max(held, Ordering::Relaxed);
+            let site = HOLD_SITE[cpu].swap(0, Ordering::Relaxed);
+            if let Some(i) = (site != 0).then(|| site_slot(site)).flatten() {
+                SITE_N[i].fetch_add(1, Ordering::Relaxed);
+                SITE_CYC[i].fetch_add(held, Ordering::Relaxed);
+                SITE_MAX[i].fetch_max(held, Ordering::Relaxed);
+            }
         }
     }
     SCHED_HOLDER.store(u64::MAX, Ordering::Relaxed);
@@ -566,6 +606,19 @@ fn summary() {
         [0, 1, 2, 3].map(|c| SCHED_HOLD_N[c].load(Ordering::Relaxed)),
         [0, 1, 2, 3].map(|c| SCHED_HOLD_MAX[c].load(Ordering::Relaxed) / per),
     );
+    let mut top = [(0u64, 0usize); 14];
+    for i in 0..SITES {
+        let cyc = SITE_CYC[i].load(Ordering::Relaxed);
+        if let Some(slot) = top.iter().position(|(c, _)| cyc > *c) {
+            let len = top.len();
+            top.copy_within(slot..len - 1, slot + 1);
+            top[slot] = (cyc, i);
+        }
+    }
+    let sites = top.map(|(cyc, i)| {
+        (Site(SITE_KEY[i].load(Ordering::Relaxed)), SITE_N[i].load(Ordering::Relaxed), cyc / per, SITE_MAX[i].load(Ordering::Relaxed) / per)
+    });
+    log::info!("SCHEDSITES (site,holds,us,max_us)={:?}", sites);
     let total: u64 = DISP_COUNT.iter().take(ncpus()).map(|c| c.load(Ordering::Relaxed)).sum();
     let elapsed_us = rdtsc().saturating_sub(FIRST_DISP_TSC.load(Ordering::Relaxed)) / cycles_per_us();
     log::info!(
