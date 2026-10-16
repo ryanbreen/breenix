@@ -1066,7 +1066,7 @@ an `ObservationRecord` (512 bytes) produced atomically for one composite serial:
 | 32 | `resource: u64`: the scanout resource id, screen-target id or framebuffer address bound to the device |
 | 40 | `window_count: u32`, `completion_count: u32` |
 | 48 | `windows: [(id: u64, commit_id: u64); 16]` |
-| 304 | `completions: [(fence: u64, kind: u32, status: u32); 12]`: `kind` is the command answered and `status` its answer, both nonzero; on virtio-gpu, the command's and the response's `type` (`TRANSFER_TO_HOST_2D` 0x0105, `RESOURCE_FLUSH` 0x0104, `RESP_OK_NODATA` 0x1100) |
+| 304 | `completions: [(fence: u64, kind: u32, status: u32); 12]`: `kind` is the command answered and `status` its answer, both nonzero; on virtio-gpu, the command's and the response's `type` (`TRANSFER_TO_HOST_2D` 0x0105, `RESOURCE_FLUSH` 0x0104, `RESP_OK_NODATA` 0x1100); on SVGA3, the SVGA3D command id (`UPDATE_GB_SCREENTARGET` 1127, `READBACK_GB_SURFACE` 1104) and the command buffer's status (`COMPLETED` 1) |
 | 496 | `boundary: u32`: what stays outside the guest's view (section 20.2) |
 | 500 | reserved |
 
@@ -1086,15 +1086,17 @@ capture (`CAPTURE` and `SCANOUT_READBACK`).
 |---|---|---|---|---|
 | ARM64 QEMU | virtio-gpu 2D | the full guest backing of the resource bound by `SET_SCANOUT` | a fenced `TRANSFER_TO_HOST_2D` per damaged rectangle of *S*, then a fenced `RESOURCE_FLUSH`, each answered `OK_NODATA` with its fence echoed | 1: the host's copy of the resource and the host window |
 | x86-64 | GOP framebuffer, 1280 × 800 set by the kernel through virtio-vga's DISPI registers | the complete framebuffer memory after the copy, converted from BGR | each damaged band's copy returned, with a store barrier | 2: the host's scanning of that memory into its window |
-| VMware | SVGA3 screen target, without readback (`READBACK_GB_SURFACE` does not return the device's copy) | the guest backing (MOB) of the surface bound by `DEFINE_GB_SCREENTARGET` | `UPDATE_GB_IMAGE` and `UPDATE_GB_SCREENTARGET` per damaged rectangle, followed by `SVGA_CMD_FENCE`, with `SVGA_REG_FENCE` reaching the fence | 1: the device's copy and the host window |
+| VMware | SVGA3 screen target, read back through a host-side copy | the surface bound to the screen target by `BIND_GB_SCREENTARGET`, copied on the host by `SURFACE_COPY` into a readback surface, which `READBACK_GB_SURFACE` writes into its own guest MOB, fenced; the MOB is cleared first and any pixel the device did not write is refused. `READBACK_GB_SURFACE` writes nothing for a surface whose contents came only from guest uploads, which is why the host copy comes first | `UPDATE_GB_IMAGE` and `UPDATE_GB_SCREENTARGET` per damaged rectangle, each followed by `SVGA_CMD_FENCE`, with `SVGA_REG_FENCE` reaching the fence; the readback's own fence, recorded as `READBACK_GB_SURFACE` | 3: the host window |
 | Parallels | VirGL | the scanout resource read back by a fenced `TRANSFER_FROM_HOST_3D` into a guest buffer | the composite's `SUBMIT_3D` fence and the transfer fence, both answered | 3: the host window |
 
-Observation flags are exactly 1 (`DEVICE_COPY_OUTSIDE`) for virtio-gpu 2D and SVGA3,
-and 0 for GOP and VirGL. Unknown flag bits or a different boundary code are invalid.
+Observation flags are exactly 1 (`DEVICE_COPY_OUTSIDE`) for virtio-gpu 2D,
+and 0 for GOP, SVGA3 and VirGL. Unknown flag bits or a different boundary code are invalid.
 
 The VirGL path reads X as 0xFF; nearest sampling, integer-aligned quads and no sRGB conversion are contract,
 so Parallels' frames use the same formula expectations as the software targets. Parallels runs at
-1280 × 800 like the others.
+1280 × 800 like the others. The SVGA3 path presents every pixel with X 0xFF, so its readback reads X as 0xFF
+too. On SVGA3, `corrupt-outside-damage` (section 20.3) presents the corrupted pixel to the device and then
+restores the guest backing, so only an observation of the device's copy finds it.
 
 ### 20.3 Planted faults
 
@@ -1288,8 +1290,8 @@ comparison bound; the spotlight prints that bound. The stage composes only betwe
 measured case window. A stage error fails the affected case and preserves the serial DONE record.
 
 The stage's boundary notice is `host copy and window outside guest view` for boundary 1 on virtio 2D,
-`host scanning outside guest view` for boundary 2, and `host window outside guest view` for boundary 3.
-On VMware (backend 3, flag bit 0 set, boundary 1) it is exactly `picture not host-verified`.
+`host scanning outside guest view` for boundary 2, and `host window outside guest view` for boundary 3
+(VirGL and SVGA3).
 An unknown or inconsistent backend/flags/boundary combination is an error, never a stronger observation.
 The live showcase checks arm the matching fault, require its detection, disarm it and require the clean result:
 12 `stage-lie`, 13 `stage-substitute-frame`, 14 `stage-draw-in-window`, 15 `ribbon-drop-stage`.

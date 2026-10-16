@@ -32,9 +32,9 @@ use abi::{backend, op, Plain};
 /// The boundary code section 20.2 gives each backend.
 fn boundary_of(code: u32) -> Option<u32> {
     match code {
-        backend::VIRTIO_GPU_2D | backend::SVGA3_SCREEN_TARGET => Some(1),
+        backend::VIRTIO_GPU_2D => Some(1),
         backend::GOP_FRAMEBUFFER => Some(2),
-        backend::VIRGL => Some(3),
+        backend::VIRGL | backend::SVGA3_SCREEN_TARGET => Some(3),
         _ => None,
     }
 }
@@ -164,6 +164,14 @@ fn scanout_completion() -> CaseResult {
             "virtio-gpu 2D answered commands {kinds:#06x?} for a composite of two damaged rectangles; it answers a TRANSFER_TO_HOST_2D (0x0105) per rectangle, then one RESOURCE_FLUSH (0x0104)"))?;
         ensure(done.iter().all(|c| c.status == RESP_OK_NODATA), "20.2", format!(
             "virtio-gpu 2D answered {:#06x?}; each command is answered OK_NODATA (0x1100)", done.iter().map(|c| c.status).collect::<Vec<_>>()))?;
+    }
+    if rec.backend == backend::SVGA3_SCREEN_TARGET {
+        use abi::completion::{SVGA3_CB_COMPLETED, SVGA3_READBACK_GB_SURFACE, SVGA3_UPDATE_GB_SCREENTARGET};
+        let kinds: Vec<u32> = done.iter().map(|c| c.kind).collect();
+        ensure(kinds == [SVGA3_UPDATE_GB_SCREENTARGET, SVGA3_UPDATE_GB_SCREENTARGET, SVGA3_READBACK_GB_SURFACE], "20.2", format!(
+            "SVGA3 answered commands {kinds:?} for a readback of a composite of two damaged rectangles; it answers an UPDATE_GB_SCREENTARGET (1127) per rectangle, then the readback's READBACK_GB_SURFACE (1104)"))?;
+        ensure(done.iter().all(|c| c.status == SVGA3_CB_COMPLETED), "20.2", format!(
+            "SVGA3 answered {:?}; each command buffer completes with status COMPLETED (1)", done.iter().map(|c| c.status).collect::<Vec<_>>()))?;
     }
     Ok(())
 }
@@ -339,9 +347,9 @@ fn scanout_boundary_stated() -> CaseResult {
     let want = boundary_of(rec.backend);
     ensure(want == Some(rec.boundary), "20.2", format!(
         "the record of backend {} ({}) states boundary {}; section 20.2 gives {want:?}", rec.backend, backend::name(rec.backend), rec.boundary))?;
-    // Section 20.2: exactly DEVICE_COPY_OUTSIDE for virtio-gpu 2D and SVGA3, 0 for GOP and VirGL.
+    // Section 20.2: exactly DEVICE_COPY_OUTSIDE for virtio-gpu 2D, 0 for GOP, SVGA3 and VirGL.
     let flags = match rec.backend {
-        backend::VIRTIO_GPU_2D | backend::SVGA3_SCREEN_TARGET => abi::OBSERVATION_DEVICE_COPY_OUTSIDE,
+        backend::VIRTIO_GPU_2D => abi::OBSERVATION_DEVICE_COPY_OUTSIDE,
         _ => 0,
     };
     ensure(rec.flags == flags, "20.2", format!(

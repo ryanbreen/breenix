@@ -523,12 +523,16 @@ pub struct Completion {
     pub status: u32,
 }
 
-/// `Completion.kind` and `Completion.status` on virtio-gpu (section 20.1): the type of the
+/// `Completion.kind` and `Completion.status` (section 20.1). On virtio-gpu: the type of the
 /// command answered and the type of its response, from the virtio specification's GPU device.
+/// On SVGA3: the SVGA3D command id and the command buffer's status.
 pub mod completion {
     pub const RESOURCE_FLUSH: u32 = 0x0104;
     pub const TRANSFER_TO_HOST_2D: u32 = 0x0105;
     pub const RESP_OK_NODATA: u32 = 0x1100;
+    pub const SVGA3_UPDATE_GB_SCREENTARGET: u32 = 1127;
+    pub const SVGA3_READBACK_GB_SURFACE: u32 = 1104;
+    pub const SVGA3_CB_COMPLETED: u32 = 1;
 }
 
 /// `ObservationRecord.flags` bit 0: the device's copy is outside the guest's view.

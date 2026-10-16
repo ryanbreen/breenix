@@ -471,8 +471,7 @@ pub fn boundary_notice(
     match (backend, flags, boundary) {
         (1, 1, 1) => Ok("host copy and window outside guest view"),
         (2, 0, 2) => Ok("host scanning outside guest view"),
-        (3, 1, 1) => Ok("picture not host-verified"),
-        (4, 0, 3) => Ok("host window outside guest view"),
+        (3 | 4, 0, 3) => Ok("host window outside guest view"),
         _ => Err(StageError::Boundary),
     }
 }

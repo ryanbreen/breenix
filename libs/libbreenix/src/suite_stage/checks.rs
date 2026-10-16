@@ -227,8 +227,7 @@ pub fn showcase_check(name: &str) -> CaseResult {
                 let notice = match (rec.backend, rec.flags, rec.boundary) {
                     (1, 1, 1) => "host copy and window outside guest view",
                     (2, 0, 2) => "host scanning outside guest view",
-                    (3, 1, 1) => "picture not host-verified",
-                    (4, 0, 3) => "host window outside guest view",
+                    (3 | 4, 0, 3) => "host window outside guest view",
                     _ => return Err("invalid observation boundary combination".into()),
                 };
                 let mut expected = FrameBuf::new_filled(
