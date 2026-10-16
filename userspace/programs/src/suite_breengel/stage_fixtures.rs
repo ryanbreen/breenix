@@ -123,7 +123,10 @@ pub fn check(name:&str) -> Result<(),String> {
             text(&fb,72,352,"slowest alpha/fail 9 ms",1,(24,39,59))
         }
         "deterministic" => {
-            render(&mut fb,&model)?;let before=bytes.clone();
+            bytes.fill(0x35);
+            let mut fb=surface(&mut bytes);render(&mut fb,&model)?;let before=bytes.clone();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            bytes.fill(0xCA);
             let mut fb=surface(&mut bytes);render(&mut fb,&model)?;
             if bytes!=before { Err("same results and UI time drew different stage bytes".into()) } else { Ok(()) }
         }
