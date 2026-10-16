@@ -757,10 +757,12 @@ pub fn resize(caller: &Caller, r: &mut Resize, out: u64) -> Result<u64, i32> {
             }
         }
     }
-    // Copy the front, pinned so it cannot change under the copy; a commit landing meanwhile
-    // makes a newer front, which is copied again.
+    // Copy the front, pinned so it cannot change under the copy, at the size it has now. A
+    // commit landing meanwhile makes a newer front, and another resize replaces the front's
+    // buffer (keeping its commit id): either way the copy is made again, from a cleared start.
+    let mut copied = false;
     let (old, waits) = loop {
-        let (front_commit, front, source) = {
+        let (front_commit, front, front_uid, source, src_w, src_h) = {
             let mut reg = REGISTRY.lock();
             let Some(w) = reg.windows.get_mut(&r.id) else {
                 drop(reg);
@@ -772,22 +774,29 @@ pub fn resize(caller: &Caller, r: &mut Resize, out: u64) -> Result<u64, i32> {
                 b.pins += 1;
                 Pin::new(w.id, b.uid, b.mem.clone())
             });
-            (w.front_commit, w.front, source)
+            let front_uid = w.front.map(|f| w.buffers[f].uid);
+            (w.front_commit, w.front, front_uid, source, w.width, w.height)
         };
+        if copied {
+            for b in buffers.iter() {
+                b.mem.zero();
+            }
+        }
         if let Some(src) = source.as_ref() {
-            let cols = old_w.min(r.width) as usize * 4;
-            for y in 0..old_h.min(r.height) as u64 {
+            let cols = src_w.min(r.width) as usize * 4;
+            for y in 0..src_h.min(r.height) as u64 {
                 let mut row = [0u8; 512];
                 let mut done = 0usize;
                 while done < cols {
                     let n = (cols - done).min(row.len());
-                    src.mem().read(y * old_w as u64 * 4 + done as u64, &mut row[..n]);
+                    src.mem().read(y * src_w as u64 * 4 + done as u64, &mut row[..n]);
                     for b in buffers.iter() {
                         b.mem.write(y * r.width as u64 * 4 + done as u64, &row[..n]);
                     }
                     done += n;
                 }
             }
+            copied = true;
         }
         drop(source);
         let mut reg = REGISTRY.lock();
@@ -796,7 +805,7 @@ pub fn resize(caller: &Caller, r: &mut Resize, out: u64) -> Result<u64, i32> {
             unmap_all(&buffers, None);
             return Err(ENOENT);
         };
-        if w.front_commit != front_commit {
+        if w.front_commit != front_commit || w.front.map(|f| w.buffers[f].uid) != front_uid {
             continue;
         }
         // The commit point.

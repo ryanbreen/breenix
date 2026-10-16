@@ -102,6 +102,14 @@ impl Mem {
         });
     }
 
+    /// Clear every byte.
+    pub fn zero(&self) {
+        for page in 0..self.frames.len() {
+            // SAFETY: the page is one of this memory's frames, held by `self`.
+            unsafe { core::ptr::write_bytes(self.page_ptr(page), 0, PAGE_SIZE as usize) }
+        }
+    }
+
     /// Copy `len` bytes at `offset` from `src` to the same offset here.
     pub fn copy_from(&self, src: &Mem, offset: u64, len: usize) {
         let mut row = [0u8; 256];

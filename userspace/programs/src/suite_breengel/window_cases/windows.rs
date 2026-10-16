@@ -745,7 +745,40 @@ fn windows_resize() -> CaseResult {
             ensure(buf[at..at + 3] == want[..3], "17.1", format!("after RESIZE pixel ({x},{y}) is {:02x?}; the old contents are kept in the intersection, {:02x?}", &buf[at..at + 3], &want[..3]))?;
         }
     }
-    Ok(())
+    resize_race()
+}
+
+/// Two threads of the owner resize one committed window, one to 64x64 and one to 1x1, 200
+/// times each. Every resize succeeds, and the window ends at one of the two sizes with its
+/// front's pixels in the intersection.
+fn resize_race() -> CaseResult {
+    let w = W::new(64, 64, 2)?;
+    want_ok(w.register(b"resize-race"), "17.1", "REGISTER")?;
+    w.frame(5).cite("17.3")?;
+    let id = w.id();
+    let resizer = move |size: u32| {
+        std::thread::spawn(move || -> Result<(), String> {
+            for i in 0..200 {
+                let mut r = abi::Resize::ZERO;
+                r.id = id;
+                r.width = size;
+                r.height = size;
+                let ret = call(op::RESIZE, &mut r);
+                if ret != 0 {
+                    return Err(format!("resize {i} to {size}x{size} while another thread resizes {}", outcome(ret)));
+                }
+            }
+            Ok(())
+        })
+    };
+    let (big, small) = (resizer(64), resizer(1));
+    for t in [big, small] {
+        t.join().map_err(|_| String::from("a resizing thread panicked")).cite("17.2")?.cite("17.2")?;
+    }
+    let info = listed(id).cite("17.2")?.map(|i| (i.width, i.height)).ok_or("the window is not listed after concurrent resizes").cite("17.2")?;
+    ensure(info == (64, 64) || info == (1, 1), "17.2", format!("after concurrent resizes the window is {}x{}; it is one of the two sizes asked for", info.0, info.1))?;
+    let (_, px) = capture(id, info.0, info.1, None).map_err(|e| format!("CAPTURE after concurrent resizes {}", outcome(e))).cite("17.3")?;
+    same(&px, 1, 1, false, "the top-left pixel after concurrent resizes", "17.2", |x, y| pattern(5, x, y))
 }
 
 fn windows_resize_error() -> CaseResult {
