@@ -6,6 +6,10 @@ the re-check's 10 new problems and the second re-check's 8 (Appendix A). No find
 the second re-check said to fix first are repaired in the plan. Each remaining contract names the milestone and
 case that closes it and belongs to a later effort (plan section 23). `breengel` has none open.
 
+Since 2026-10-16 the platform is GPU only: the `gpu` effort (GPU rendering) comes between `sdk` and
+`breengel`, and BreenGL is rebuilt on it. `docs/gui/gpu.md` holds that effort's design and contract and governs
+wherever this summary or the plan describes CPU rendering or a software compositor.
+
 ## What exists today
 
 - **BreenGL is a window client, not a GL.** `libs/breengel` (about 650 lines) creates a window with a CPU
