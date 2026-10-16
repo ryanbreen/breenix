@@ -1312,6 +1312,11 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     serial_println!("[boot] Initializing timer interrupt...");
     timer_interrupt::init();
     serial_println!("[boot] Timer interrupt initialized");
+    if kernel::drivers::virtio::gpu_pci::is_initialized()
+        && kernel::drivers::virtio::gpu_pci::is_virgl_enabled()
+    {
+        kernel::drivers::virtio::gpu_pci::spike::run();
+    }
     boot_screen::stage(Stage::TimerInterrupt);
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::AARCH64_TIMER_INIT);

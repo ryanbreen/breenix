@@ -159,6 +159,9 @@ impl Drop for CompositorPresentToken {
 // VirtIO GPU Protocol (same as gpu_mmio.rs)
 // =============================================================================
 
+/// Scratch G0 spike (branch scratch/gpu-spike-parallels, never merged).
+pub mod spike;
+
 /// VirtIO GPU command types
 #[allow(dead_code)]
 mod cmd {

@@ -537,6 +537,12 @@ impl CommandBuffer {
         self.push_slice(data);
     }
 
+    /// Append a command whose header and payload the caller encodes.
+    pub fn raw(&mut self, header: u32, words: &[u32]) {
+        self.push(header);
+        self.push_slice(words);
+    }
+
     /// Draw primitives.
     pub fn draw_vbo(&mut self, start: u32, count: u32, mode: u32, max_index: u32) {
         self.push(Self::cmd0(ccmd::DRAW_VBO, 0, 12));
