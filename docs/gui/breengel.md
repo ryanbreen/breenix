@@ -1082,6 +1082,9 @@ capture (`CAPTURE` and `SCANOUT_READBACK`).
 | VMware | SVGA3 screen target, without readback (`READBACK_GB_SURFACE` does not return the device's copy) | the guest backing (MOB) of the surface bound by `DEFINE_GB_SCREENTARGET` | `UPDATE_GB_IMAGE` and `UPDATE_GB_SCREENTARGET` per damaged rectangle, followed by `SVGA_CMD_FENCE`, with `SVGA_REG_FENCE` reaching the fence | 1: the device's copy and the host window |
 | Parallels | VirGL | the scanout resource read back by a fenced `TRANSFER_FROM_HOST_3D` into a guest buffer | the composite's `SUBMIT_3D` fence and the transfer fence, both answered | 3: the host window |
 
+Observation flags are exactly 1 (`DEVICE_COPY_OUTSIDE`) for virtio-gpu 2D and SVGA3,
+and 0 for GOP and VirGL. Unknown flag bits or a different boundary code are invalid.
+
 The VirGL path reads X as 0xFF; nearest sampling, integer-aligned quads and no sRGB conversion are contract,
 so Parallels' frames use the same formula expectations as the software targets. Parallels runs at
 1280 × 800 like the others.

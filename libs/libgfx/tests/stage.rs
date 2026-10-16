@@ -22,7 +22,7 @@ fn rejects_spotlight_statistics_that_disagree_with_pixels() {
     let run = Run{suite:"x",target:"qemu",case_number:1,ui_time_ms:0,fps:0,tiles:&tiles,
         milestones:&milestones,selected:0,spotlight:Spotlight::Picture{
         expected:Image{pixels:&image,width:1,height:1},actual:Image{pixels:&image,width:1,height:1},
-        first:Some((0,0)),differing:1,bound:0},finale:None,boundary:"host copy and window outside guest view"};
+        first:Some((0,0)),differing:1,bound:0},finale:None,boundary:stage::Observation{backend:1,flags:1,boundary:1}};
     let mut fb=framebuf::FrameBuf::new(1280,800,framebuf::Format::BGRX).unwrap();
     assert_eq!(draw(&mut fb,&run),Err(StageError::Image));
 }

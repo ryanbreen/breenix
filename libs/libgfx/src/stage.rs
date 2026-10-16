@@ -67,7 +67,15 @@ pub struct Run<'a> {
     pub selected: usize,
     pub spotlight: Spotlight<'a>,
     pub finale: Option<Finale<'a>>,
-    pub boundary: &'a str,
+    pub boundary: Observation,
+}
+/// The observation record fields that constrain the stage's boundary notice.
+#[derive(Clone, Copy)]
+pub struct Observation { pub backend: u32, pub flags: u32, pub boundary: u32 }
+impl Observation {
+    pub fn notice(self) -> Result<&'static str, StageError> {
+        boundary_notice(self.backend,self.flags,self.boundary)
+    }
 }
 #[derive(Debug, PartialEq, Eq)]
 pub enum StageError {
@@ -254,6 +262,7 @@ fn validate(fb: &FrameBuf, run: &Run<'_>) -> Result<(), StageError> {
         }
         Spotlight::None => {}
     }
+    run.boundary.notice()?;
     Ok(())
 }
 /// Draw between cases only. Validation happens before any pixel changes.
@@ -321,7 +330,7 @@ pub fn draw(fb: &mut FrameBuf, run: &Run<'_>) -> Result<(), StageError> {
             Color::WHITE,
         );
     }
-    text(fb, run.boundary.as_bytes(), 24, 776, 1256, 1, DIM);
+    text(fb, run.boundary.notice()?.as_bytes(), 24, 776, 1256, 1, DIM);
     if let Some(finale) = run.finale {
         fill(fb, 48, 240, 720, 240, HEADER);
         text(fb, b"RUN COMPLETE", 72, 264, 696, 3, Color::WHITE);

@@ -24,7 +24,7 @@ fn text(fb:&FrameBuf,x:usize,y:usize,s:&str,scale:usize,background:(u8,u8,u8)) -
 }
 fn run<'a>(tiles:&'a [Tile<'a>],milestones:&'a [Milestone<'a>]) -> Run<'a> {
     Run { suite:"fixture",target:"qemu",case_number:3,ui_time_ms:250,fps:60,tiles,milestones,selected:1,
-        spotlight:Spotlight::None,finale:None,boundary:"host copy and window outside guest view" }
+        spotlight:Spotlight::None,finale:None,boundary:stage::Observation{backend:1,flags:1,boundary:1} }
 }
 fn render(fb:&mut FrameBuf,run:&Run<'_>) -> Result<(),String> {
     stage::draw(fb,run).map_err(|e|format!("missing or invalid run stage (§23): {e:?}"))
