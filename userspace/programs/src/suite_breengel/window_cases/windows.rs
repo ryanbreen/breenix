@@ -1278,6 +1278,8 @@ fn windows_every_target() -> CaseResult {
     let info = listed(w.id()).cite("17.1")?.ok_or("the window is not listed (section 17.2)")?;
     let name = abi::backend::name(info.backend);
     value("backend", info.backend as i64, "", Some((1, 4)));
+    #[cfg(target_arch = "x86_64")]
+    let allowed = [abi::backend::GOP_FRAMEBUFFER];
     #[cfg(target_arch = "aarch64")]
     let allowed = [abi::backend::VIRTIO_GPU_2D, abi::backend::SVGA3_SCREEN_TARGET, abi::backend::VIRGL];
     ensure(allowed.contains(&info.backend), "20.2", format!(
