@@ -24,6 +24,7 @@ path = "src/lib.rs"
 test = false
 
 [features]
+gpu_spike = []  # G0 host-stack spike (scratch branch only)
 force_cpu_accounting_delay = []  # Masked first-dispatch delay for times-reset regression
 testing = []
 boot_tests = []  # Parallel boot test framework

@@ -186,6 +186,9 @@ pub fn init() -> usize {
         // Assign BAR addresses (QEMU virt has no firmware to do this)
         pci::assign_bars();
 
+        #[cfg(feature = "gpu_spike")]
+        virtio::gpu_spike::run();
+
         // Dump PCI devices (after BAR assignment so addresses are visible)
         if let Some(devices) = pci::get_devices() {
             for dev in &devices {

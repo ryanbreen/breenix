@@ -31,6 +31,8 @@ pub mod block_mmio;
 pub mod gpu_mmio;
 #[cfg(target_arch = "aarch64")]
 pub mod gpu_pci;
+#[cfg(all(target_arch = "aarch64", feature = "gpu_spike"))]
+pub mod gpu_spike;
 #[cfg(target_arch = "aarch64")]
 pub mod input_mmio;
 #[cfg(target_arch = "aarch64")]
