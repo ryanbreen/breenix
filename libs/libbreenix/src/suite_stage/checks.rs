@@ -9,22 +9,38 @@ pub fn showcase_check(name: &str) -> CaseResult {
         .clone()
         .ok_or("no runner stage evidence")?;
     if name == "quiet-window" {
+        // One measured window per case already recorded, with the runner's between-case
+        // composites visible around them; an empty or blind record would read as quiet.
+        let recorded = s.entries.iter().filter(|e| !e.line.is_empty()).count();
         check(
-            s.quiet(),
+            recorded > 0 && s.windows.len() == recorded,
+            "the runner did not measure a window for every earlier case",
+        )?;
+        check(
+            s.windows.first().is_some_and(|w| w.0 > 0)
+                && s.windows.windows(2).all(|pair| pair[1].0 > pair[0].1),
+            "the runner's between-case composites are missing from the kernel records",
+        )?;
+        check(
+            quiet(&s.windows),
             "a runner composite overlaps an earlier measured case",
         )?;
+        // The production window bracket and tick, with and without a planted in-window draw.
         for faulty in [true, false] {
             if faulty {
                 crate::test_control::arm(14, process::getpid()?.raw() as u64, 0)?;
             }
-            let pid = process::getpid()?.raw() as u64;
-            let before = kernel_serial(pid).map_err(crate::suite::CaseError::Fail)?;
-            let bits = fault_bits();
-            tick_show(&mut s, bits).map_err(crate::suite::CaseError::Fail)?;
-            let after = kernel_serial(pid).map_err(crate::suite::CaseError::Fail)?;
-            let found = after != before;
+            begin().map_err(crate::suite::CaseError::Fail)?;
+            tick().map_err(crate::suite::CaseError::Fail)?;
+            end().map_err(crate::suite::CaseError::Fail)?;
+            let planted = SHOW
+                .lock()
+                .unwrap()
+                .as_ref()
+                .and_then(|show| show.windows.last().copied())
+                .ok_or("the planted window was not measured")?;
             check(
-                found == faulty,
+                quiet(&[planted]) != faulty,
                 "runner in-window draw detection disagrees with the composite records",
             )?;
             crate::test_control::disarm_all()?;
@@ -39,6 +55,17 @@ pub fn showcase_check(name: &str) -> CaseResult {
         verify_source(&line,&frame).map_err(crate::suite::CaseError::Fail)?;
         frame.pixels[0] ^= 255;
         check(verify_source(&line,&frame).is_err(), "wrong source selected at record() was accepted")?;
+        // The latest judged frame is retained whole: its tile must be the thumbnail of
+        // exactly those pixels, under the digest its CASE record printed.
+        let last = s.last.clone().ok_or("no retained judged frame to recompute")?;
+        let entry = &s.entries[s.selected];
+        let stored = entry.picture.as_ref().ok_or("the retained judged frame has no tile")?;
+        verify_source(&entry.line, &last).map_err(crate::suite::CaseError::Fail)?;
+        let source = libpixcheck::Frame::new(&last.pixels, last.width, last.height, last.width * 4, libpixcheck::Format::Bgrx)
+            .map_err(|e| std::format!("thumbnail source: {e:?}"))?;
+        let thumb = libpixcheck::thumbnail(source, stored.width, stored.height)
+            .map_err(|e| std::format!("thumbnail: {e:?}"))?;
+        check(thumb == stored.pixels, "a tile thumbnail is not the box filter of its judged frame")?;
     }
     let point = match name {
         "judged-frame-shown" => Some(13),

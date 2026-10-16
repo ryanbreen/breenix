@@ -245,7 +245,7 @@ impl Show {
                     frame_us: &t.frame_us,
                     budget_us: t.budget_us,
                 });
-        let slow = self.entries.iter().max_by_key(|e| e.key).unwrap();
+        let slow = self.entries.iter().max_by_key(|e| e.key).ok_or("stage has no cases")?;
         render_at_ui_time(
             fb,
             &mut stage::Run {
@@ -287,9 +287,10 @@ impl Show {
         };
         Ok(())
     }
-    fn quiet(&self) -> bool {
-        self.windows.iter().all(|&(before, after)| before == after)
-    }
+}
+/// No composite by the runner completed inside any of these measured windows.
+fn quiet(windows: &[(u64, u64)]) -> bool {
+    windows.iter().all(|&(before, after)| before == after)
 }
 pub(super) fn init(suite: &Suite) {
     let mut entries = Vec::new();
