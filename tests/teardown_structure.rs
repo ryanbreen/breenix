@@ -6478,6 +6478,20 @@ fn validate_free_frame_capabilities(
     Ok(())
 }
 
+/// `allocator` with `insertion` placed where `allocate_candidate` has just popped `frame`
+/// off the free list, which the insertion names `free_list`.
+fn bypass_after_pop(allocator: &str, insertion: &str) -> String {
+    const ANCHOR: &str = "free_list.and_then(|list| list.pop())";
+    assert!(allocator.contains(ANCHOR), "mutation anchor moved: {ANCHOR}");
+    allocator.replacen(
+        ANCHOR,
+        &format!(
+            "free_list.and_then(|free_list| {{ let popped = free_list.pop(); if let Some(frame) = popped {{ {insertion} }} popped }})"
+        ),
+        1,
+    )
+}
+
 fn validate_frame_return_choke_point(
     sources: &[(String, String)],
 ) -> Result<(), Vec<String>> {
@@ -6816,13 +6830,11 @@ fn validate_frame_ledger_runtime_oracles(sources: &[(String, String)]) -> Result
     let stale = function_body(tests, "stale_lease_fixture");
     let gate = function_body(tests, "frame_custody_refusal_gate_test");
     let healthy_guard = function_body(tests, "frame_custody_healthy_counters_test");
-    // The contended return holds the list as this CPU's own nested holder:
-    // through `with_free_frames` on x86_64, where only that makes a return
-    // give up rather than wait, and by locking it elsewhere.
+    // The contended return holds the list as this CPU's own nested holder,
+    // through `with_free_frames` on every architecture: only that makes a
+    // return give up rather than wait.
     let held = function_body(tests, "with_free_list_held");
-    let held_split = held.find("#[cfg(not(target_arch = \"x86_64\"))]").ok_or(())?;
-    let (held_x86, held_other) = held.split_at(held_split);
-    if !held_x86.contains("#[cfg(target_arch = \"x86_64\")]") {
+    if held.contains("#[cfg(") || held.contains("FREE_FRAMES") {
         return Err(());
     }
     let above_top = function_body(tests, "above_top_of_ram_frame");
@@ -7006,9 +7018,7 @@ fn validate_frame_ledger_runtime_oracles(sources: &[(String, String)]) -> Result
         && gate.contains(DUPLICATE_CLEANUP)
         && gate.contains(DUPLICATE_OWNER_ASSERTION)
         && gate.contains("let outcome = with_free_list_held(|| return_lease(contended));")
-        && held_x86.contains("with_free_frames(|_| f())")
-        && held_other.contains("let _free_list = FREE_FRAMES.lock();")
-        && held_other.contains("f()")
+        && held.contains("with_free_frames(|_| f())")
         && gate.matches("healthy_round_trip()").count() == 5
         && gate.contains(AGGREGATE_ASSERTION)
         && refusal_def.contains("name: \"frame_custody_refusal_gate\"")
@@ -12198,11 +12208,7 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         "free_list /* trivia */ .insert(0, frame);",
         "free_list.push_within_capacity(frame);",
     ] {
-        let broken = allocator.replacen(
-            "if let Some(frame) = free_list.pop() {",
-            &format!("if let Some(frame) = free_list.pop() {{ {insertion}"),
-            1,
-        );
+        let broken = bypass_after_pop(&allocator, insertion);
         let broken = with_replaced_source(&sources, "kernel/src/memory/frame_allocator.rs", broken);
         assert!(validate_frame_return_choke_point(&broken).is_err());
     }
@@ -12231,52 +12237,32 @@ fn deliberately_broken_variants_fail_the_ratchet() {
             "closure bypass not caught: {mutation}"
         );
     }
-    let reborrowed = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { let list = &mut *free_list; list.insert(0, frame);",
-        1,
-    );
+    let reborrowed = bypass_after_pop(&allocator, "let list = &mut *free_list; list.insert(0, frame);");
     let reborrowed =
         with_replaced_source(&sources, "kernel/src/memory/frame_allocator.rs", reborrowed);
     assert!(validate_frame_return_choke_point(&reborrowed).is_err());
-    let typed_reborrow = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { let list: &mut Vec<PhysFrame> = &mut free_list; list.insert(0, frame);",
-        1,
-    );
+    let typed_reborrow = bypass_after_pop(&allocator, "let list: &mut Vec<PhysFrame> = &mut free_list; list.insert(0, frame);");
     let typed_reborrow = with_replaced_source(
         &sources,
         "kernel/src/memory/frame_allocator.rs",
         typed_reborrow,
     );
     assert!(validate_frame_return_choke_point(&typed_reborrow).is_err());
-    let parenthesized_reborrow = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { (*free_list).insert(0, frame);",
-        1,
-    );
+    let parenthesized_reborrow = bypass_after_pop(&allocator, "(*free_list).insert(0, frame);");
     let parenthesized_reborrow = with_replaced_source(
         &sources,
         "kernel/src/memory/frame_allocator.rs",
         parenthesized_reborrow,
     );
     assert!(validate_frame_return_choke_point(&parenthesized_reborrow).is_err());
-    let indexed_alias_store = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { if free_list.len() > 0 { free_list[0] = frame; }",
-        1,
-    );
+    let indexed_alias_store = bypass_after_pop(&allocator, "if free_list.len() > 0 { free_list[0] = frame; }");
     let indexed_alias_store = with_replaced_source(
         &sources,
         "kernel/src/memory/frame_allocator.rs",
         indexed_alias_store,
     );
     assert!(validate_frame_return_choke_point(&indexed_alias_store).is_err());
-    let deref_alias_store = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { *free_list = alloc::vec![frame, frame];",
-        1,
-    );
+    let deref_alias_store = bypass_after_pop(&allocator, "*free_list = alloc::vec![frame, frame];");
     let deref_alias_store = with_replaced_source(
         &sources,
         "kernel/src/memory/frame_allocator.rs",
@@ -12284,132 +12270,84 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_frame_return_choke_point(&deref_alias_store).is_err());
     // R1: the same physical bypass through an indexed, sliced or branch-selected alias.
-    let indexed_element_replace = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { core::mem::replace(&mut free_list[0], frame);",
-        1,
-    );
+    let indexed_element_replace = bypass_after_pop(&allocator, "core::mem::replace(&mut free_list[0], frame);");
     let indexed_element_replace = with_replaced_source(
         &sources,
         "kernel/src/memory/frame_allocator.rs",
         indexed_element_replace,
     );
     assert!(validate_frame_return_choke_point(&indexed_element_replace).is_err());
-    let indexed_element_swap = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { let mut spare = frame; core::mem::swap(&mut free_list[0], &mut spare);",
-        1,
-    );
+    let indexed_element_swap = bypass_after_pop(&allocator, "let mut spare = frame; core::mem::swap(&mut free_list[0], &mut spare);");
     let indexed_element_swap = with_replaced_source(
         &sources,
         "kernel/src/memory/frame_allocator.rs",
         indexed_element_swap,
     );
     assert!(validate_frame_return_choke_point(&indexed_element_swap).is_err());
-    let indexed_element_clone_from = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { free_list[0].clone_from(&frame);",
-        1,
-    );
+    let indexed_element_clone_from = bypass_after_pop(&allocator, "free_list[0].clone_from(&frame);");
     let indexed_element_clone_from = with_replaced_source(
         &sources,
         "kernel/src/memory/frame_allocator.rs",
         indexed_element_clone_from,
     );
     assert!(validate_frame_return_choke_point(&indexed_element_clone_from).is_err());
-    let sliced_copy_from_slice = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { free_list[..].copy_from_slice(&[frame]);",
-        1,
-    );
+    let sliced_copy_from_slice = bypass_after_pop(&allocator, "free_list[..].copy_from_slice(&[frame]);");
     let sliced_copy_from_slice = with_replaced_source(
         &sources,
         "kernel/src/memory/frame_allocator.rs",
         sliced_copy_from_slice,
     );
     assert!(validate_frame_return_choke_point(&sliced_copy_from_slice).is_err());
-    let sliced_fill = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { free_list[0..1].fill(frame);",
-        1,
-    );
+    let sliced_fill = bypass_after_pop(&allocator, "free_list[0..1].fill(frame);");
     let sliced_fill = with_replaced_source(
         &sources,
         "kernel/src/memory/frame_allocator.rs",
         sliced_fill,
     );
     assert!(validate_frame_return_choke_point(&sliced_fill).is_err());
-    let indexed_helper_export = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { publish_frame(&mut free_list[0], frame);",
-        1,
-    );
+    let indexed_helper_export = bypass_after_pop(&allocator, "publish_frame(&mut free_list[0], frame);");
     let indexed_helper_export = with_replaced_source(
         &sources,
         "kernel/src/memory/frame_allocator.rs",
         indexed_helper_export,
     );
     assert!(validate_frame_return_choke_point(&indexed_helper_export).is_err());
-    let conditional_branch_alias_store = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { let mut spare = alloc::vec![frame]; let dest = if free_list.len() > 1 { &mut spare } else { &mut *free_list }; *dest = alloc::vec![frame];",
-        1,
-    );
+    let conditional_branch_alias_store = bypass_after_pop(&allocator, "let mut spare = alloc::vec![frame]; let dest = if free_list.len() > 1 { &mut spare } else { &mut *free_list }; *dest = alloc::vec![frame];");
     let conditional_branch_alias_store = with_replaced_source(
         &sources,
         "kernel/src/memory/frame_allocator.rs",
         conditional_branch_alias_store,
     );
     assert!(validate_frame_return_choke_point(&conditional_branch_alias_store).is_err());
-    let conditional_branch_alias_method = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { let mut spare = alloc::vec![frame]; let dest = if free_list.len() > 1 { &mut spare } else { &mut *free_list }; dest.push(frame);",
-        1,
-    );
+    let conditional_branch_alias_method = bypass_after_pop(&allocator, "let mut spare = alloc::vec![frame]; let dest = if free_list.len() > 1 { &mut spare } else { &mut *free_list }; dest.push(frame);");
     let conditional_branch_alias_method = with_replaced_source(
         &sources,
         "kernel/src/memory/frame_allocator.rs",
         conditional_branch_alias_method,
     );
     assert!(validate_frame_return_choke_point(&conditional_branch_alias_method).is_err());
-    let helper_export = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { stash_frame(&mut free_list, frame);",
-        1,
-    );
+    let helper_export = bypass_after_pop(&allocator, "stash_frame(&mut free_list, frame);");
     let helper_export = with_replaced_source(
         &sources,
         "kernel/src/memory/frame_allocator.rs",
         helper_export,
     );
     assert!(validate_frame_return_choke_point(&helper_export).is_err());
-    let ufcs_export = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { Vec::insert(&mut free_list, 0, frame);",
-        1,
-    );
+    let ufcs_export = bypass_after_pop(&allocator, "Vec::insert(&mut free_list, 0, frame);");
     let ufcs_export = with_replaced_source(
         &sources,
         "kernel/src/memory/frame_allocator.rs",
         ufcs_export,
     );
     assert!(validate_frame_return_choke_point(&ufcs_export).is_err());
-    let renamed_alias = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { if let Some(mut aliased) = FREE_FRAMES.try_lock() { aliased.insert(0, frame); }",
-        1,
-    );
+    let renamed_alias = bypass_after_pop(&allocator, "if let Some(mut aliased) = FREE_FRAMES.try_lock() { aliased.insert(0, frame); }");
     let renamed_alias = with_replaced_source(
         &sources,
         "kernel/src/memory/frame_allocator.rs",
         renamed_alias,
     );
     assert!(validate_frame_return_choke_point(&renamed_alias).is_err());
-    let matched_alias = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { match FREE_FRAMES.try_lock() { Some(mut renamed) => renamed.insert(0, frame), None => {} }",
-        1,
-    );
+    let matched_alias = bypass_after_pop(&allocator, "match FREE_FRAMES.try_lock() { Some(mut renamed) => renamed.insert(0, frame), None => {} }");
     let matched_alias = with_replaced_source(
         &sources,
         "kernel/src/memory/frame_allocator.rs",
