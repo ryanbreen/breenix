@@ -373,9 +373,9 @@ pub struct SignalMirror {
     /// Base, size, flags.
     alt_stack: [AtomicU64; 3],
     /// The row's identity as a signal sender and target (`Identity`): real
-    /// and effective user ID, saved set-user-ID, session, thread group; and
-    /// whether it is published. Unpublished, a signal sender takes the
-    /// process-manager path.
+    /// and effective user ID, saved set-user-ID, session, thread group,
+    /// process group; and whether it is published. Unpublished, a signal
+    /// sender takes the process-manager path.
     identity: [AtomicU64; 3],
 }
 
@@ -389,6 +389,7 @@ pub struct Identity {
     pub suid: u32,
     pub sid: u32,
     pub tgid: u32,
+    pub pgid: u32,
 }
 
 impl Default for SignalMirror {
@@ -457,6 +458,7 @@ impl SignalMirror {
             suid: words[1] as u32,
             sid: (words[1] >> 32) as u32,
             tgid: words[2] as u32,
+            pgid: (words[2] >> 32) as u32 & 0x7fff_ffff,
         })
     }
 
@@ -465,7 +467,10 @@ impl SignalMirror {
         self.write(|| {
             self.identity[0].store(identity.uid as u64 | (identity.euid as u64) << 32, Ordering::Relaxed);
             self.identity[1].store(identity.suid as u64 | (identity.sid as u64) << 32, Ordering::Relaxed);
-            self.identity[2].store(identity.tgid as u64 | 1 << 63, Ordering::Relaxed);
+            self.identity[2].store(
+                identity.tgid as u64 | (identity.pgid as u64 & 0x7fff_ffff) << 32 | 1 << 63,
+                Ordering::Relaxed,
+            );
         });
     }
 

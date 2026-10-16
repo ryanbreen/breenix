@@ -600,8 +600,8 @@ impl Process {
     /// Publish this row's identity as a signal sender and target to its
     /// thread's signal mirror (`SignalMirror::identity`), which `kill` reads
     /// without PROCESS_MANAGER (#1650). PM held: called wherever a row joins
-    /// the process table and wherever its credentials, session or thread
-    /// group change.
+    /// the process table and wherever its credentials, session, process group
+    /// or thread group change.
     pub fn publish_identity(&self) {
         let id = self.id.as_u64();
         self.signals.thread.mirror.set_identity(&crate::signal::types::Identity {
@@ -610,6 +610,7 @@ impl Process {
             suid: self.cred.suid,
             sid: self.sid.as_u64() as u32,
             tgid: self.thread_group_id.unwrap_or(id) as u32,
+            pgid: self.pgid.as_u64() as u32,
         });
     }
 

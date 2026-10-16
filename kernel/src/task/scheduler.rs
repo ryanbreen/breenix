@@ -9198,6 +9198,23 @@ pub fn row_thread(pid: u64) -> Option<u64> {
     rq_live().then(|| rq::row_thread(pid)).flatten()
 }
 
+/// x86_64: every live thread with the process row it belongs to and its
+/// signal state, from the thread index without any lock.
+#[cfg(target_arch = "x86_64")]
+pub fn live_signals() -> alloc::vec::Vec<(u64, u64, alloc::sync::Arc<crate::signal::ThreadSignals>)> {
+    let mut out = alloc::vec::Vec::new();
+    if !rq_live() {
+        return out;
+    }
+    let pin = rq::Pin::new();
+    rq::each_live(|tid| {
+        if let Some((row, signals)) = rq::live_signals(&pin, tid) {
+            out.push((tid, row, signals));
+        }
+    });
+    out
+}
+
 /// x86_64: the live threads of `tid`'s thread group, `tid` included, with
 /// their signal state, from the thread index without any lock.
 #[cfg(target_arch = "x86_64")]

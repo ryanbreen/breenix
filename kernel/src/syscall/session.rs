@@ -326,6 +326,7 @@ pub fn sys_setpgid(pid: i32, pgid: i32) -> SyscallResult {
     for (_, row) in manager.iter_processes_mut() {
         if row.thread_group_id.unwrap_or(row.id.as_u64()) == target_pid.as_u64() {
             row.pgid = new_pgid;
+            row.publish_identity();
         }
     }
 
