@@ -1060,6 +1060,33 @@ fn validate_dispatch_takes_no_process_manager(source: &str) -> Result<(), String
     Ok(())
 }
 
+/// A due timer signal reaches its user handler without PROCESS_MANAGER
+/// (#1635): the interrupt-return adapter in `context_switch.rs` and the
+/// syscall-return adapter go through `deliver_current_timer_signal_lockless`,
+/// and neither it nor the delivery it calls takes the lock.
+fn validate_timer_delivery_takes_no_process_manager(source: &str) -> Result<(), String> {
+    const ACQUISITIONS: [&str; 4] = ["try_manager", "poll_manager", "manager", "with_process_manager"];
+    for (name, callee) in [
+        ("deliver_timer_signal_on_syscall_return", Some("deliver_current_timer_signal_lockless")),
+        ("deliver_current_timer_signal_lockless", Some("deliver_timer_signal_lockless")),
+        ("deliver_timer_signal_lockless", None),
+    ] {
+        let body = function_body(source, name).ok_or_else(|| format!("missing fn {name}"))?;
+        let mask = code_mask(body);
+        for acquisition in ACQUISITIONS {
+            if !call_offsets(body, &mask, acquisition).is_empty() {
+                return Err(format!("{name} takes the process manager through {acquisition}()"));
+            }
+        }
+        if let Some(callee) = callee {
+            if call_offsets(body, &mask, callee).len() != 1 {
+                return Err(format!("{name} does not deliver through {callee}()"));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_first_run_dispatch_has_no_logging(source: &str) -> Result<(), String> {
     fn log_path_offsets(scope: &str) -> Vec<usize> {
         let mask = code_mask(scope);
@@ -1605,6 +1632,31 @@ fn dispatch_no_pm_validator_rejects_ungated_delivery() {
         "",
     );
     assert!(validate_dispatch_takes_no_process_manager(&mutant).is_err());
+}
+
+#[test]
+fn timer_delivery_takes_no_process_manager() {
+    let source = repo_text("kernel/src/signal/delivery.rs");
+    assert_eq!(validate_timer_delivery_takes_no_process_manager(&source), Ok(()));
+}
+
+#[test]
+fn timer_delivery_validator_rejects_a_manager_acquisition() {
+    let source = repo_text("kernel/src/signal/delivery.rs");
+    let mutant = mutate_function(
+        &source,
+        "deliver_current_timer_signal_lockless",
+        "    let root = thread.cached_ttbr0;\n",
+        "    let _guard = crate::process::try_manager();\n    let root = thread.cached_ttbr0;\n",
+    );
+    assert!(validate_timer_delivery_takes_no_process_manager(&mutant).is_err());
+    let mutant = mutate_function(
+        &source,
+        "deliver_timer_signal_on_syscall_return",
+        "if !deliver_current_timer_signal_lockless(thread_id, &mut user_return, &mut regs) {",
+        "if crate::process::manager().is_some() {",
+    );
+    assert!(validate_timer_delivery_takes_no_process_manager(&mutant).is_err());
 }
 
 #[test]

@@ -1619,48 +1619,37 @@ fn deliver_signals_on_user_return(
 }
 
 /// Deliver a due timer signal to its user handler without PROCESS_MANAGER
-/// (`signal::delivery::deliver_timer_signal_lockless`), for current thread
-/// `thread_id`, writing the frame through its own page tables. Returns
-/// whether it did; otherwise the caller takes the process-manager path.
+/// (`signal::delivery::deliver_current_timer_signal_lockless`), for current
+/// thread `thread_id`, rewriting the interrupt return for the handler.
+/// Returns whether it did; otherwise the caller takes the process-manager
+/// path.
 fn deliver_timer_signal_lockless(
     thread_id: u64,
     saved_regs: &mut SavedRegisters,
     interrupt_frame: &mut InterruptStackFrame,
 ) -> bool {
-    let Some(thread) = crate::per_cpu::current_thread() else {
-        return false;
+    let mut user_return = crate::signal::delivery::X86UserReturn {
+        rip: interrupt_frame.instruction_pointer.as_u64(),
+        rsp: interrupt_frame.stack_pointer.as_u64(),
+        rflags: interrupt_frame.cpu_flags.bits(),
     };
-    // A CPU-limit signal or a deferred SIGKILL is the process-manager path's.
-    if thread.id != thread_id
-        || thread.cached_ttbr0 == 0
-        || thread.kill_pending()
-        || thread
-            .resource_limits
-            .as_ref()
-            .is_some_and(|limits| limits.has_pending_cpu_signals())
-    {
+    if !crate::signal::delivery::deliver_current_timer_signal_lockless(
+        thread_id,
+        &mut user_return,
+        saved_regs,
+    ) {
         return false;
     }
-    let root = thread.cached_ttbr0;
+    // The installer accepted both addresses as canonical.
     unsafe {
-        use x86_64::registers::control::{Cr3, Cr3Flags};
-        use x86_64::structures::paging::PhysFrame;
-        use x86_64::PhysAddr;
-        if Cr3::read().0.start_address().as_u64() != root & !0xfff {
-            crate::memory::tlb::note_root_load(root);
-            Cr3::write(
-                PhysFrame::containing_address(PhysAddr::new(root)),
-                Cr3Flags::empty(),
-            );
-        }
+        interrupt_frame.as_mut().update(|frame| {
+            frame.instruction_pointer = x86_64::VirtAddr::new(user_return.rip);
+            frame.stack_pointer = x86_64::VirtAddr::new(user_return.rsp);
+            frame.cpu_flags =
+                x86_64::registers::rflags::RFlags::from_bits_truncate(user_return.rflags);
+        });
     }
-    crate::signal::delivery::deliver_timer_signal_lockless(
-        thread_id,
-        &thread.signals,
-        thread.signal_timers.as_deref(),
-        interrupt_frame,
-        saved_regs,
-    )
+    true
 }
 
 /// Simple idle loop - made pub for exception handlers that need to jump to idle
