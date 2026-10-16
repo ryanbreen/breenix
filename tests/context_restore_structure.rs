@@ -1087,6 +1087,22 @@ fn validate_timer_delivery_takes_no_process_manager(source: &str) -> Result<(), 
     Ok(())
 }
 
+/// The syscall return offers a due timer signal to the lockless delivery
+/// before it takes PROCESS_MANAGER, and returns when that delivered it.
+fn validate_syscall_return_delivers_timer_signal_first(source: &str) -> Result<(), String> {
+    let body = function_body(source, "deliver_signals_on_syscall_return")
+        .ok_or_else(|| "missing fn deliver_signals_on_syscall_return".to_string())?;
+    let compact = normalized_code(body).replace(' ', "");
+    ordered_in(
+        &compact,
+        &[
+            "ifcrate::signal::delivery::deliver_timer_signal_on_syscall_return(current_thread_id,frame){returnfalse;}",
+            "crate::process::try_manager()",
+        ],
+        "the syscall return takes the process manager before the lockless timer delivery",
+    )
+}
+
 fn validate_first_run_dispatch_has_no_logging(source: &str) -> Result<(), String> {
     fn log_path_offsets(scope: &str) -> Vec<usize> {
         let mask = code_mask(scope);
@@ -1657,6 +1673,24 @@ fn timer_delivery_validator_rejects_a_manager_acquisition() {
         "if crate::process::manager().is_some() {",
     );
     assert!(validate_timer_delivery_takes_no_process_manager(&mutant).is_err());
+}
+
+#[test]
+fn syscall_return_delivers_timer_signal_before_the_manager() {
+    let source = repo_text("kernel/src/syscall/handler.rs");
+    assert_eq!(validate_syscall_return_delivers_timer_signal_first(&source), Ok(()));
+}
+
+#[test]
+fn syscall_return_validator_rejects_the_manager_first() {
+    let source = repo_text("kernel/src/syscall/handler.rs");
+    let mutant = mutate_function(
+        &source,
+        "deliver_signals_on_syscall_return",
+        "    if crate::signal::delivery::deliver_timer_signal_on_syscall_return(current_thread_id, frame) {\n        return false;\n    }\n",
+        "",
+    );
+    assert!(validate_syscall_return_delivers_timer_signal_first(&mutant).is_err());
 }
 
 #[test]
