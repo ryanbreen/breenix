@@ -250,7 +250,14 @@ impl Show {
             fb,
             &mut stage::Run {
                 suite: &self.suite,
-                target: "ARM64 QEMU",
+                // Each backend observes exactly one target (contract section 20.2).
+                target: match self.observation.backend {
+                    abi::backend::VIRTIO_GPU_2D => "ARM64 QEMU",
+                    abi::backend::GOP_FRAMEBUFFER => "x86-64 QEMU",
+                    abi::backend::SVGA3_SCREEN_TARGET => "VMware",
+                    abi::backend::VIRGL => "Parallels",
+                    _ => "unknown display",
+                },
                 case_number: self.current + 1,
                 ui_time_ms: 0,
                 fps: self.fps,

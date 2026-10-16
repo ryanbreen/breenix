@@ -148,6 +148,7 @@ pub fn flush_dirty_rect(x: u32, y: u32, w: u32, h: u32) -> Result<(), &'static s
         unsafe {
             core::arch::asm!("dsb sy", options(nostack, preserves_flags));
         }
+        super::display::canvas_presented(x, y, w, h);
         Ok(())
     } else if crate::drivers::virtio::gpu_pci::is_initialized() {
         crate::drivers::virtio::gpu_pci::flush_rect(x, y, w, h)
@@ -413,6 +414,7 @@ impl Arm64FrameBuffer {
             unsafe {
                 core::arch::asm!("dsb sy", options(nostack, preserves_flags));
             }
+            super::display::canvas_presented(0, 0, self.width as u32, self.height as u32);
             Ok(())
         } else if crate::drivers::virtio::gpu_pci::is_initialized() {
             crate::drivers::virtio::gpu_pci::flush()
@@ -427,6 +429,7 @@ impl Arm64FrameBuffer {
             unsafe {
                 core::arch::asm!("dsb sy", options(nostack, preserves_flags));
             }
+            super::display::canvas_presented(x, y, w, h);
             Ok(())
         } else if crate::drivers::virtio::gpu_pci::is_initialized() {
             crate::drivers::virtio::gpu_pci::flush_rect(x, y, w, h)

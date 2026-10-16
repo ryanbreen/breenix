@@ -226,6 +226,30 @@ pub fn is_display_taken() -> bool {
     DISPLAY_TAKEN.load(Ordering::Acquire)
 }
 
+/// The kernel's panel cursor (BreenGL §23): while a process owns the composed display and
+/// no compositor is claimed, the cursor follows the pointing device, or the position
+/// `move-pointer` plants. True when the composed display owns the cursor, so the
+/// framebuffer cursor stays off. Runs on the render thread, or on the screen presenter
+/// where VirGL has no render thread; never blocks on the display lock.
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn panel_pointer() -> bool {
+    if !(super::display::active() && is_display_taken()) {
+        return false;
+    }
+    static LAST_HARDWARE:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
+    let hardware=if crate::drivers::virtio::input_mmio::is_tablet_initialized(){crate::drivers::virtio::input_mmio::mouse_position()}
+        else if crate::drivers::usb::xhci::is_initialized(){crate::drivers::usb::hid::mouse_position()}else{(0,0)};
+    let packed=hardware.0 as u64 | (hardware.1 as u64)<<32;
+    let changed=LAST_HARDWARE.swap(packed,Ordering::Relaxed)!=packed;
+    let panel=crate::window::REGISTRY.try_lock().is_some_and(|r|r.claim.is_none());
+    if panel {
+        let moved=crate::test_control::take(breengel_abi::tc_point::MOVE_POINTER,0);
+        if let Some(p)=moved {super::display::panel_pointer(p as u32,(p>>32) as u32);}
+        else if changed && !crate::test_control::enabled() {super::display::panel_pointer(hardware.0,hardware.1);}
+    }
+    true
+}
+
 /// Update the mouse cursor on the framebuffer if a pointing device is active.
 ///
 /// Reads the current mouse position from whichever input driver is available:
@@ -234,18 +258,7 @@ pub fn is_display_taken() -> bool {
 /// the render thread's stack, not in interrupt context.
 #[cfg(target_arch = "aarch64")]
 fn update_mouse_cursor() {
-    if super::display::active() && is_display_taken() {
-        static LAST_HARDWARE:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
-        let hardware=if crate::drivers::virtio::input_mmio::is_tablet_initialized(){crate::drivers::virtio::input_mmio::mouse_position()}
-            else if crate::drivers::usb::xhci::is_initialized(){crate::drivers::usb::hid::mouse_position()}else{(0,0)};
-        let packed=hardware.0 as u64 | (hardware.1 as u64)<<32;
-        let changed=LAST_HARDWARE.swap(packed,Ordering::Relaxed)!=packed;
-        let panel=crate::window::REGISTRY.try_lock().is_some_and(|r|r.claim.is_none());
-        if panel {
-            let moved=crate::test_control::take(breengel_abi::tc_point::MOVE_POINTER,0);
-            if let Some(p)=moved {super::display::panel_pointer(p as u32,(p>>32) as u32);}
-            else if changed && !crate::test_control::enabled() {super::display::panel_pointer(hardware.0,hardware.1);}
-        }
+    if panel_pointer() {
         return;
     }
     let (mx, my) = if crate::drivers::virtio::input_mmio::is_tablet_initialized() {
