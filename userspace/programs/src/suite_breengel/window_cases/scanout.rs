@@ -80,8 +80,23 @@ fn scanout_device_path() -> CaseResult {
     ensure(rec.backend == listed.backend && boundary_of(rec.backend).is_some(), "20.2", format!(
         "the observation record names backend {} ({}) and WinInfo names {}; one of the four backends of section 20.2 observes this target",
         rec.backend, backend::name(rec.backend), listed.backend))?;
-    let arm64 = [backend::VIRTIO_GPU_2D, backend::SVGA3_SCREEN_TARGET, backend::VIRGL];
-    ensure(arm64.contains(&rec.backend), "20.2", format!("backend {} ({}) is not one of this architecture's", rec.backend, backend::name(rec.backend)))
+    // #1651 coordinator ruling: require this target's exact section 20.2 row.
+    // Platform identity comes from boot hardware detection, independently of readback.
+    #[cfg(target_arch = "x86_64")]
+    let expected = backend::GOP_FRAMEBUFFER;
+    #[cfg(target_arch = "aarch64")]
+    let expected = {
+        let platform = std::fs::read_to_string("/proc/breenix/platform").cite("20.2")?;
+        match platform.trim() {
+            "aarch64-qemu" => backend::VIRTIO_GPU_2D,
+            "aarch64-parallels" => backend::VIRGL,
+            "aarch64-vmware" => backend::SVGA3_SCREEN_TARGET,
+            other => return at("20.2", format!("unrecognized platform {other:?}")),
+        }
+    };
+    ensure(rec.backend == expected, "20.2", format!(
+        "backend {} ({}) must be this target's contracted backend {} ({})",
+        rec.backend, backend::name(rec.backend), expected, backend::name(expected)))
 }
 
 fn scanout_changing_scene() -> CaseResult {
