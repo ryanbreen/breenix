@@ -10,7 +10,21 @@ file from main and shows each milestone's state from live evidence; nothing in i
       "suite":      the effort's suite id (docs/suites/<id>.json), when it has one,
       "area":       the POSIX area its system interfaces belong to, as Vigil's syscall coverage names it,
       "subsystems": issue/merge taxonomy ids whose open issues and recent merges belong to this effort,
+      "targets":    the targets the effort is measured on, when not all four (see below),
+      "targetsNote": one line on why a target is missing and when it joins, only beside "targets",
       "milestones": [ { "id", "title", "measure" } ] }
+
+## Targets
+
+The targets are `arm64-qemu` (ARM64 QEMU), `parallels`, `vmware` and `x86` (x86-64), the ids
+`scripts/effort-target-guard.py` uses. An effort without `targets` is measured on all four. With it, a
+non-empty list in that order without repeats, the effort is measured only on the targets listed: wherever a
+measure below says "every target", it means those. A target left out neither counts toward the effort nor holds
+it back. An effort without `x86` measures `interfaces` on ARM64 only, and has no `profiles` milestones.
+
+`gpu`, `breengel`, `window-manager`, `ui-testing` and `gui-apps` list `arm64-qemu`, `parallels` and `vmware`:
+the x86-64 gate host is VGA only, so x86-64 is measured up to the shell, and it joins the GPU-era efforts when
+the dedicated Breenix hardware box replaces that host.
 
 ## Measures
 

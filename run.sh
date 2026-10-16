@@ -521,12 +521,40 @@ delete_vmware_bundle() {
         mv "$bundle" "$scratch/" || true
     fi
     # Fusion removes its known VM files but preserves our ownership marker.
-    # Remove only that marker and an empty directory, never unknown contents.
+    # Remove only that marker, the window frame we wrote and an empty
+    # directory, never unknown contents.
     if [ -d "$bundle" ] && [ ! -e "$vmx" ]; then
-        rm -f "$bundle/.breenix-run-owner"
+        rm -f "$bundle/.breenix-run-owner" "$bundle/$VM_NAME.plist"
         rmdir "$bundle" 2>/dev/null || echo "WARNING: keeping extra files in $bundle"
     fi
     rm -rf "$scratch"
+}
+
+# Fusion opens a VM's window at the frame saved in <name>.plist in its bundle and, unless
+# the VMX says otherwise, resizes the window to whatever display size the guest sets: a
+# guest that sets a 256x256 screen gets a 256-point window. Write a frame whose content
+# area shows WIDTH x HEIGHT points (shrunk to fit the screen, aspect kept), centred on the
+# main screen; the VMX's stretch mode then scales any guest display into it.
+write_vmware_window_frame() {
+    local plist="$1" width="$2" height="$3" frame
+    frame=$(/usr/bin/osascript -l JavaScript - "$width" "$height" <<'JS'
+ObjC.import('AppKit');
+function run(argv) {
+    const chrome = 52;
+    const screen = $.NSScreen.mainScreen.visibleFrame;
+    const width = Number(argv[0]), height = Number(argv[1]);
+    const scale = Math.min(1, screen.size.width / width, (screen.size.height - chrome) / height);
+    const w = Math.floor(width * scale), h = Math.floor(height * scale) + chrome;
+    const x = Math.floor(screen.origin.x + (screen.size.width - w) / 2);
+    const y = Math.floor(screen.origin.y + (screen.size.height - h) / 2);
+    return '{{' + x + ', ' + y + '}, {' + w + ', ' + h + '}}';
+}
+JS
+    ) || return 1
+    plutil -create xml1 "$plist" \
+        && plutil -insert singleWindowFrame -string "$frame" "$plist" \
+        && plutil -insert singleWindowIsZoomed -bool NO "$plist" \
+        && echo "  Window: $frame"
 }
 
 finish_vm_boot() {
@@ -1256,6 +1284,9 @@ VMXEOF
 
     cat >> "$VMX_FILE" <<VMXEOF
 gui.fitGuestUsingNativeDisplayResolution = "${VMWARE_NATIVE_RESOLUTION}"
+gui.perVMWindowAutofitMode = "stretch"
+gui.enableStretchGuest = "TRUE"
+gui.stretchGuestMode = "aspect"
 mks.enable3d = "TRUE"
 
 vmci0.present = "TRUE"
@@ -1271,6 +1302,10 @@ msg.autoAnswer = "TRUE"
 VMXEOF
 
     echo "  VMX: $VMX_FILE ($(wc -c < "$VMX_FILE") bytes)"
+    # The window shows the 1280x960 guest at two Retina pixels per guest pixel; the VMX's
+    # stretch mode keeps it that size whatever display the guest sets.
+    write_vmware_window_frame "$VM_BUNDLE/$VM_NAME.plist" 1280 960 \
+        || { echo "ERROR: could not write the VM window frame"; exit 1; }
 
     # Records the boot's start; a timing-sensitive suite first waits for a quiet host
     # (docs/boot-path.md, "Shared host slots").
