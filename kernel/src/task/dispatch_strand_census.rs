@@ -361,6 +361,8 @@ pub(crate) fn report_heartbeat_if_due() {
 fn census_thread_fn() {
     loop {
         report_heartbeat_if_due();
+        #[cfg(target_arch = "x86_64")]
+        crate::stall_probe::poll();
         let pending = crate::serial::drain_log_once();
         sleep_one_interval(if pending {
             DRAIN_RETRY_INTERVAL_NS

@@ -512,6 +512,7 @@ impl core::ops::DerefMut for SchedulerGuard {
 #[cfg(target_arch = "x86_64")]
 impl Drop for SchedulerGuard {
     fn drop(&mut self) {
+        crate::stall_probe::sched_released();
         if let Some(scheduler) = self.guard.as_ref() {
             let queued = scheduler
                 .per_cpu_queues
@@ -584,7 +585,11 @@ type SchedulerGuard = spin::MutexGuard<'static, Option<Scheduler>>;
 
 #[inline(always)]
 fn lock_scheduler() -> SchedulerGuard {
+    #[cfg(target_arch = "x86_64")]
+    let probe = crate::stall_probe::sched_wait_begin();
     let guard = SCHEDULER.lock();
+    #[cfg(target_arch = "x86_64")]
+    crate::stall_probe::sched_acquired(probe);
     crate::tracing::providers::teardown::note_scheduler_acquire();
     #[cfg(target_arch = "x86_64")]
     let guard = SchedulerGuard::new(guard);
@@ -594,6 +599,8 @@ fn lock_scheduler() -> SchedulerGuard {
 #[inline(always)]
 fn try_lock_scheduler() -> Option<SchedulerGuard> {
     let guard = SCHEDULER.try_lock()?;
+    #[cfg(target_arch = "x86_64")]
+    crate::stall_probe::sched_acquired(crate::stall_probe::sched_wait_begin());
     crate::tracing::providers::teardown::note_scheduler_acquire();
     #[cfg(target_arch = "x86_64")]
     let guard = SchedulerGuard::new(guard);
@@ -2942,6 +2949,8 @@ impl Scheduler {
     /// would overwrite the Terminated state that the dispatch path checks, so a
     /// selected Terminated thread would be dispatched anyway (#1173).
     fn set_selected_running(thread: &mut Thread, cpu: usize) {
+        #[cfg(target_arch = "x86_64")]
+        crate::stall_probe::dispatched(thread.id(), cpu);
         if thread.state == ThreadState::Terminated {
             panic!(
                 "scheduler: terminated thread {} selected on CPU {}",
@@ -4895,6 +4904,10 @@ impl Scheduler {
     /// unblocked to ensure it gets scheduled promptly. This is critical for pause()
     /// to wake up in a timely manner when a signal arrives.
     pub fn unblock_for_signal(&mut self, thread_id: u64) {
+        #[cfg(target_arch = "x86_64")]
+        if self.get_thread(thread_id).is_some_and(|t| t.state != ThreadState::Running && t.state != ThreadState::Ready) {
+            crate::stall_probe::signal_due(thread_id, None);
+        }
         if let Some(thread) = self.get_thread_mut(thread_id) {
             // Also wake threads blocked on I/O — they check signals in their
             // wait loop and will return EINTR when they resume.
@@ -5613,6 +5626,8 @@ impl Scheduler {
             }
             let user = user_ns / 1000;
             let system = system_ns / 1000;
+            #[cfg(target_arch = "x86_64")]
+            let probe_real_deadline = group.real.deadline_micros();
             let pending = [
                 (group.real.expire(wall), crate::signal::constants::SIGALRM),
                 (group.virtual_timer.expire(user), crate::signal::constants::SIGVTALRM),
@@ -5632,6 +5647,10 @@ impl Scheduler {
                     let eligible = ((!target.signals.blocked.load(Ordering::Relaxed)
                         | target.signals.wait_set.load(Ordering::Acquire)) & bit) != 0;
                     if eligible {
+                        #[cfg(target_arch = "x86_64")]
+                        if sig == crate::signal::constants::SIGALRM {
+                            crate::stall_probe::signal_due(recipient, probe_real_deadline.map(|us| us.saturating_mul(1000)));
+                        }
                         self.unblock_for_signal(recipient);
                         self.unblock_for_child_exit(recipient);
                     }
@@ -5743,6 +5762,8 @@ impl Scheduler {
             if !self.timer_entry_live(wake_time, tid) {
                 continue; // Stale entry — thread already woken or terminated
             }
+            #[cfg(target_arch = "x86_64")]
+            crate::stall_probe::timer_due(tid, wake_time);
 
             // SMP safety: Don't add to ready_queue if thread is currently
             // running on any CPU. Same protection as unblock() — a thread
@@ -5820,7 +5841,10 @@ impl Scheduler {
                 }
 
                 if !in_deferred_requeue && !is_idle && !already_queued {
-                    if let Some(target) = self.find_target_cpu_for_wakeup(tid) {
+                    let probe_target = self.find_target_cpu_for_wakeup(tid);
+                    #[cfg(target_arch = "x86_64")]
+                    crate::stall_probe::placed(tid, probe_target);
+                    if let Some(target) = probe_target {
                         trace_sched_diag(
                             TRACE_SCHED_DIAG_WAKE_TIMER_ENQUEUE,
                             tid,
@@ -8489,7 +8513,7 @@ pub fn isr_unblock_for_io(tid: u64) {
 /// data, which both GS bases name in kernel and user mode alike.
 /// Safe to call from ISR context.
 #[inline]
-fn current_cpu_id_raw() -> usize {
+pub fn current_cpu_id_raw() -> usize {
     #[cfg(target_arch = "aarch64")]
     {
         let mpidr: u64;
