@@ -2793,7 +2793,7 @@ fn note_pinned_hold(thread_id: u64, home: usize) {
     }
     let holds = PINNED_HOME_CPU_UNAVAILABLE.fetch_add(1, Ordering::Relaxed) + 1;
     if !PINNED_HOME_CPU_UNAVAILABLE_MARKED.swap(true, Ordering::Relaxed) {
-        let mut line = crate::tracing::output::Line::new();
+        let mut line = crate::tracing::output::Record::new();
         line.text("[PINNED_HOME_CPU_UNAVAILABLE:first:tid=");
         line.dec(thread_id);
         line.text(":home=");
@@ -6890,12 +6890,12 @@ impl Scheduler {
         }
         let holds = PINNED_HOME_CPU_UNAVAILABLE.fetch_add(1, Ordering::Relaxed) + 1;
         if !PINNED_HOME_CPU_UNAVAILABLE_MARKED.swap(true, Ordering::Relaxed) {
-            // Raw serial, one shot: this runs under the scheduler lock with
+            // One record, one shot: this runs under the scheduler lock with
             // interrupts masked, where the logger's lock would deadlock. The
             // tid and its home CPU are on the line because "something got held"
             // is not actionable and "this worker's home stopped dispatching"
             // is.
-            let mut line = crate::tracing::output::Line::new();
+            let mut line = crate::tracing::output::Record::new();
             line.text("[PINNED_HOME_CPU_UNAVAILABLE:first:tid=");
             line.dec(thread_id);
             line.text(":home=");

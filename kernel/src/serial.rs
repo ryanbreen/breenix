@@ -752,15 +752,27 @@ pub fn try_print(args: fmt::Arguments) -> Result<(), ()> {
 /// the holder's unit, which may be a line a boot-path stage depends on. Half
 /// the notices are kept for boot-path stage lines (`stage_lines`).
 pub fn write_str_bounded(s: &str) {
+    write_str_within(s, 1 << 20);
+}
+
+/// [`write_str_bounded`] for a line composed with run-queue or scheduler
+/// locks held: SERIAL1 is tried 2^10 times only, so a holder whose CPU has
+/// stopped holds up no other CPU's dispatch behind this one, and the line
+/// otherwise goes to the kernel log as a notice.
+pub fn write_str_briefly(s: &str) {
+    write_str_within(s, 1 << 10);
+}
+
+fn write_str_within(s: &str, attempts: u32) {
     use crate::log_notice::Node;
     use core::fmt::Write;
-    const ATTEMPTS: u32 = 1 << 20;
     static FALLBACK: [Node; 4] = [const { Node::new() }; 4];
 
     let stage = crate::stage_lines::contains(crate::STAGE_MARKERS, s.as_bytes());
     let line = s.strip_suffix('\n').unwrap_or(s);
+    let line = line.strip_suffix('\r').unwrap_or(line);
     crate::arch_without_interrupts(|| {
-        crate::log_notice::write_or_post(&FALLBACK, line, stage, ATTEMPTS, || {
+        crate::log_notice::write_or_post(&FALLBACK, line, stage, attempts, || {
             let Some(mut serial) = SERIAL1.try_lock() else {
                 return false;
             };
@@ -774,6 +786,83 @@ pub fn write_str_bounded(s: &str) {
             true
         })
     });
+}
+
+/// Bytes a [`Line`] assembles before it writes them as one piece.
+const LINE_BYTES: usize = 256;
+
+/// A kernel record assembled on the stack and written whole
+/// ([`write_str_briefly`]): a newline completes it, and dropping it writes any
+/// unterminated remainder. For records composed with run-queue or scheduler
+/// locks held and interrupts masked. Written to the port a byte at a time
+/// instead, without SERIAL1, a record lands inside whatever unit the transmit
+/// thread is sending, a suite record among them. The aarch64 counterpart is
+/// `serial_line::Line`.
+pub struct Line {
+    bytes: [u8; LINE_BYTES],
+    len: usize,
+}
+
+impl Line {
+    pub const fn new() -> Self {
+        Self { bytes: [0; LINE_BYTES], len: 0 }
+    }
+
+    pub fn char(&mut self, byte: u8) {
+        if self.len == LINE_BYTES {
+            self.flush();
+        }
+        self.bytes[self.len] = byte;
+        self.len += 1;
+        if byte == b'\n' {
+            self.flush();
+        }
+    }
+
+    pub fn text(&mut self, text: &str) {
+        for &byte in text.as_bytes() {
+            self.char(byte);
+        }
+    }
+
+    pub fn newline(&mut self) {
+        self.text("\r\n");
+    }
+
+    pub fn dec(&mut self, mut value: u64) {
+        let mut digits = [0; 20];
+        let mut start = digits.len();
+        loop {
+            start -= 1;
+            digits[start] = b'0' + (value % 10) as u8;
+            value /= 10;
+            if value == 0 {
+                break;
+            }
+        }
+        for &digit in &digits[start..] {
+            self.char(digit);
+        }
+    }
+
+    fn flush(&mut self) {
+        let bytes = &self.bytes[..self.len];
+        // A piece cut inside a multi-byte character writes its whole ones.
+        let text = match core::str::from_utf8(bytes) {
+            Ok(text) => text,
+            Err(error) => core::str::from_utf8(&bytes[..error.valid_up_to()]).unwrap_or(""),
+        };
+        if !text.is_empty() {
+            write_str_briefly(text);
+        }
+        self.len = 0;
+    }
+}
+
+impl Drop for Line {
+    fn drop(&mut self) {
+        self.flush();
+    }
 }
 
 /// Emergency print for panics - uses direct port I/O without locking
