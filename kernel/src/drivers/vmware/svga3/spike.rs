@@ -967,7 +967,18 @@ fn execute(p: &mut Probe) -> Result<()> {
     for source in [&bg, &rg] {
         let fixture: Vec<u8> = (0..W * H)
             .flat_map(|i| {
-                let mut c = [i as u8, (i / W) as u8, (i as u8) ^ 0x69, 255];
+                // RGBA must differ from the earlier GPU copy into it: otherwise
+                // a missing upload could accidentally preserve the expected image.
+                let mut c = if source.format == RGBA {
+                    [
+                        (i as u8) ^ 0x5a,
+                        ((i / W) as u8) ^ 0xa5,
+                        (i as u8) ^ 0xc3,
+                        255,
+                    ]
+                } else {
+                    [i as u8, (i / W) as u8, (i as u8) ^ 0x69, 255]
+                };
                 if source.format == BGRA {
                     c.swap(0, 2);
                 }
@@ -987,7 +998,13 @@ fn execute(p: &mut Probe) -> Result<()> {
             "ld-format-swizzle",
             target,
             read,
-            |x, y| [x as u8, y as u8, (x as u8) ^ 0x69, 255],
+            |x, y| {
+                if source.format == RGBA {
+                    [(x as u8) ^ 0x5a, (y as u8) ^ 0xa5, (x as u8) ^ 0xc3, 255]
+                } else {
+                    [x as u8, y as u8, (x as u8) ^ 0x69, 255]
+                }
+            },
             false,
         )?;
     }
