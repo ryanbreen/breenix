@@ -113,6 +113,10 @@ impl ParticlePool {
     }
     fn confine(bounds: Option<(f32,f32,f32,f32)>, p: &mut Particle) {
         if let Some((l,t,r,b)) = bounds {
+            // Confine to full pixel cells, including fractional negative edges.
+            let ceil = |v: f32| { let i = v as i32; if v > i as f32 { i.saturating_add(1) } else { i } };
+            let floor = |v: f32| { let i = v as i32; if v < i as f32 { i.saturating_sub(1) } else { i } };
+            let (l,t,r,b) = (ceil(l) as f32, ceil(t) as f32, floor(r) as f32, floor(b) as f32);
             // No whole pixel fits; retaining a live particle would violate the box.
             if r-l < 1.0 || b-t < 1.0 { p.life = 0.0; return; }
             p.size = p.size.max(0.0).min(r-l).min(b-t);

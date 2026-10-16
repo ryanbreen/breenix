@@ -188,3 +188,25 @@ fn undamped_spring_skips_exact_cycles_for_large_advances() {
     assert!(spring.value.is_finite() && spring.velocity.is_finite());
     assert!((-0.1..2.1).contains(&spring.value));
 }
+
+#[test]
+fn particles_at_fractional_negative_edges_remain_visible_inside_the_box() {
+    use libicon::particles::{Particle, ParticlePool};
+    use libgfx::{color::Color, framebuf::Format};
+    for edge in [0.0, -0.25, -3.0] {
+        let mut pool = ParticlePool::with_bounds(1, edge - 4.0, edge - 4.0, edge, edge);
+        pool.emit(Particle { x: edge, y: edge, vx: 0.0, vy: 0.0, life: 1.0,
+            max_life: 1.0, size: 1.0, color: Color::WHITE, gravity: 0.0, friction: 0.0 });
+        let mut fb = FrameBuf::new_filled(20, 20, Format::BGRX, Color::BLACK).unwrap();
+        pool.draw(&mut fb, 10, 10);
+        let mut ink = 0;
+        for y in 0..20 { for x in 0..20 {
+            if fb.get_pixel(x,y) != Color::BLACK {
+                ink += 1;
+                assert!((x as f32) >= edge + 6.0 && x as f32 + 1.0 <= edge + 10.0);
+                assert!((y as f32) >= edge + 6.0 && y as f32 + 1.0 <= edge + 10.0);
+            }
+        }}
+        assert_eq!(ink, 1, "a one-pixel particle must fit at edge {edge}");
+    }
+}
