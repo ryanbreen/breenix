@@ -178,16 +178,15 @@ pub fn judged(frame: &FrameBuf) -> CaseResult {
     } }
     let digest = libpixcheck::sha256(&pixels);
     let path = judged_path();
-    let temporary = std::format!("{path}.new");
     let write = || -> std::io::Result<()> {
-        let mut file = std::fs::File::create(&temporary)?;
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path)?;
         file.write_all(b"JDG1")?;
         file.write_all(&(frame.width as u32).to_le_bytes())?;
         file.write_all(&(frame.height as u32).to_le_bytes())?;
         file.write_all(&digest)?;
         file.write_all(&pixels)?;
         drop(file);
-        std::fs::rename(&temporary, &path)
+        Ok(())
     };
     write().map_err(|error| CaseError::Fail(std::format!("judged frame handoff: {error}")))
 }
