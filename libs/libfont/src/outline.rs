@@ -14,19 +14,33 @@ pub struct OutlinePoint {
     pub on_curve: bool,
 }
 
-/// A glyph's outline after compound expansion, with the glyph's header bounding box.
+/// A glyph's outline after compound expansion, with the glyph's header bounding box. The
+/// points of every contour are stored in one array; `ends[i]` is the index one past contour
+/// i's last point.
 #[derive(Debug, Clone)]
 pub struct Outline {
     pub x_min: i16,
     pub y_min: i16,
     pub x_max: i16,
     pub y_max: i16,
-    pub contours: Vec<Vec<OutlinePoint>>,
+    pub points: Vec<OutlinePoint>,
+    pub ends: Vec<u32>,
 }
 
 impl Outline {
-    pub fn points(&self) -> usize {
-        self.contours.iter().map(|c| c.len()).sum()
+    /// The number of points.
+    pub fn point_count(&self) -> usize {
+        self.points.len()
+    }
+
+    /// Each contour's points, in order.
+    pub fn contours(&self) -> impl Iterator<Item = &[OutlinePoint]> + '_ {
+        let mut start = 0usize;
+        self.ends.iter().map(move |&end| {
+            let c = &self.points[start..end as usize];
+            start = end as usize;
+            c
+        })
     }
 }
 
@@ -52,7 +66,7 @@ pub const MAX_SEGMENTS: usize = 65_536;
 pub fn flatten(outline: &Outline, scale: f32, x_off: f32, y_off: f32) -> Result<Vec<LineSegment>, FontError> {
     let mut out = Vec::new();
     let map = |p: &OutlinePoint| (p.x * scale + x_off, y_off - p.y * scale);
-    for contour in &outline.contours {
+    for contour in outline.contours() {
         work::add(1);
         if contour.len() < 2 {
             continue;

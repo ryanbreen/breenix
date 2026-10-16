@@ -1747,7 +1747,7 @@ fn text_compound_glyph() -> CaseResult {
     let loca = |g: usize| u32::from_be_bytes(file[loca_at + 4 * g..loca_at + 4 * g + 4].try_into().unwrap());
     let font = Font::parse(&file).cite("8.5")?;
     let outline = font.glyph_outline(171).map_err(|e| format!("glyph 171 (é) does not resolve: {e}")).cite("10")?;
-    let got: Vec<(i32, i32)> = outline.contours.iter().flatten().map(|p| (p.x as i32, p.y as i32)).collect();
+    let got: Vec<(i32, i32)> = outline.points.iter().map(|p| (p.x as i32, p.y as i32)).collect();
     let mut want = simple_points(glyf, loca(72) as usize);
     want.extend(simple_points(glyf, loca(118) as usize).into_iter().map(|(x, y)| (x + 14, y)));
     ensure(want.len() > 8, "8.5", format!("the independent decoder found only {} points in e and acute", want.len()))?;
@@ -1765,7 +1765,7 @@ fn text_compound_glyph() -> CaseResult {
         for b in [0i16, 0, 1000, 1000] { be16(&mut g, b as u16); }
         for x in [0x0001 | 0x0002 | 0x0008 | flags, 1, 100, 40, 0x2000] { be16(&mut g, x); }
         let font = Font::parse(&with_glyph2(g)).cite("10")?;
-        let got: Vec<(i32, i32)> = font.glyph_outline(2).cite("10")?.contours.iter().flatten().map(|p| (p.x as i32, p.y as i32)).collect();
+        let got: Vec<(i32, i32)> = font.glyph_outline(2).cite("10")?.points.iter().map(|p| (p.x as i32, p.y as i32)).collect();
         let want: Vec<(i32, i32)> = SQUARE.iter().map(|&(x, y)| (x as i32 / 2 + dx, y as i32 / 2 + dy)).collect();
         ensure(got == want, "10", format!("the square at scale 0.5, offset (100, 40), flags {flags:#06x} resolves to {got:?}; the component offset rule gives {want:?}"))?;
     }
@@ -2728,7 +2728,7 @@ fn font_parser_work_bound() -> CaseResult {
             let bound = 16 * bytes + 8 * points + 4_096;
             if steps > bound {
                 return Err(format!("{what}: its outline took {steps} steps ({}); section 7 allows 16 x {bytes} + 8 x {points} + 4,096 = {bound}",
-                    outline.map_or_else(|e| e.to_string(), |o| format!("{} points", o.points()))));
+                    outline.map_or_else(|e| e.to_string(), |o| format!("{} points", o.point_count()))));
             }
             Ok(())
         }))?;

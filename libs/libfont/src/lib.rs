@@ -28,7 +28,7 @@ use crate::float::{ceil, floor};
 use crate::outline::{flatten, Outline, OutlinePoint, MAX_DEPTH};
 use crate::rasterizer::{rasterize, rasterize_subpixel};
 use crate::tables::cmap::CmapTable;
-use crate::tables::glyf::{self, Glyph, ARGS_ARE_XY_VALUES};
+use crate::tables::glyf::{self, Glyph, ARGS_ARE_XY_VALUES, SCALED_COMPONENT_OFFSET, UNSCALED_COMPONENT_OFFSET};
 use crate::tables::head::HeadTable;
 use crate::tables::hhea::HheaTable;
 use crate::tables::hmtx::HmtxTable;
@@ -100,7 +100,10 @@ impl Font {
         LocaTable::new(&data[loca.clone()], head.index_to_loc_format).validate(maxp.num_glyphs)?;
         HmtxTable::new(&data[hmtx.clone()], hhea.num_h_metrics).validate(maxp.num_glyphs)?;
         let cmap = CmapTable::parse(data, cmap_range)?;
-        let kern = dir.find(b"kern").and_then(|r| KernTable::parse(data, r));
+        let kern = match dir.find(b"kern") {
+            Some(range) => KernTable::parse(data, range)?,
+            None => None,
+        };
         Ok(Font { data: Box::from(data), head, hhea, maxp, cmap, hmtx, loca, glyf, kern })
     }
 
@@ -130,8 +133,9 @@ impl Font {
         self.hmtx_table().advance_width(glyph)
     }
 
-    /// The kerning of a pair in font units, from the legacy `kern` table.
-    pub fn kern_units(&self, left: u16, right: u16) -> i16 {
+    /// The kerning of a pair in font units, from the legacy `kern` table: the sum over its
+    /// horizontal format 0 subtables, where an override subtable replaces the sum so far.
+    pub fn kern_units(&self, left: u16, right: u16) -> i32 {
         self.kern.as_ref().map_or(0, |k| k.value(&self.data, left, right))
     }
 
@@ -186,13 +190,17 @@ impl Font {
             _ => return Err(FontError::GlyphOutOfRange),
         };
         // A glyph's own loca entry places it: one starting past the glyf table is out of
-        // range, and a record the next entry would run past the table ends at the table's
-        // end (section 10 scopes a bad loca entry to its own glyph).
+        // range, even when the next entry equals it, and a record the next entry would run
+        // past the table ends at the table's end (section 10 scopes a bad loca entry to its
+        // own glyph).
         let glyf = &self.data[self.glyf.clone()];
+        if start > glyf.len() || start > end {
+            return Err(FontError::GlyphOutOfRange);
+        }
         if start == end {
             return Ok(None);
         }
-        if start >= glyf.len() || start > end {
+        if start == glyf.len() {
             return Err(FontError::GlyphOutOfRange);
         }
         Ok(Some(&glyf[start..end.min(glyf.len())]))
@@ -215,31 +223,43 @@ impl Font {
     }
 
     /// A glyph's outline with every compound expanded (section 10's glyph-scoped rules:
-    /// cycles, nesting deeper than 8, more than 256 components, bad component ids and point
-    /// counts above 65,535 or what `maxp` declares).
+    /// cycles, nesting deeper than 8, more than 256 components, bad component ids, and point
+    /// counts above 65,535 or what `maxp` declares: `maxPoints` for a simple glyph,
+    /// `maxCompositePoints` for a compound after expansion).
     pub fn glyph_outline(&self, glyph: u16) -> Result<Outline, FontError> {
         let m = self.glyph_metrics(glyph)?;
         let (x_min, y_min, x_max, y_max) = (m.x_min, m.y_min, m.x_max, m.y_max);
-        let mut budget = Budget { points: 0, components: 0 };
-        let mut contours = Vec::new();
-        self.expand(glyph, IDENTITY, &mut Vec::new(), &mut budget, &mut contours)?;
-        Ok(Outline { x_min, y_min, x_max, y_max, contours })
+        let mut budget = Budget { points: 0, components: 0, limit: 0 };
+        let mut out = Outline { x_min, y_min, x_max, y_max, points: Vec::new(), ends: Vec::new() };
+        self.expand(glyph, IDENTITY, &mut Vec::new(), &mut budget, &mut out)?;
+        Ok(out)
     }
 
     /// Append the contours of `glyph`, mapped by `t`, to `out`. `stack` holds the compounds
     /// being expanded, outermost first. Each point is stored once, in the outermost
     /// glyph's coordinates, whatever the nesting.
-    fn expand(&self, glyph: u16, t: Affine, stack: &mut Vec<u16>, budget: &mut Budget, out: &mut Vec<Vec<OutlinePoint>>) -> Result<(), FontError> {
+    fn expand(&self, glyph: u16, t: Affine, stack: &mut Vec<u16>, budget: &mut Budget, out: &mut Outline) -> Result<(), FontError> {
         work::add(1);
-        match self.parse_glyph(glyph)? {
+        let parsed = self.parse_glyph(glyph)?;
+        if stack.is_empty() {
+            // The outermost glyph sets the point limit maxp declares for its kind.
+            let declared = match parsed {
+                Some(Glyph::Compound { .. }) => self.maxp.max_composite_points,
+                _ => self.maxp.max_points,
+            };
+            budget.limit = (declared as usize).min(65_535);
+        }
+        match parsed {
             None => Ok(()),
             Some(Glyph::Simple(s)) => {
-                budget.add_points(s.contours.iter().map(|c| c.len()).sum(), &self.maxp)?;
-                work::add(s.contours.iter().map(|c| c.len() as u64).sum());
-                out.extend(s.contours.iter().map(|c| c.iter().map(|p| {
+                budget.add_points(s.points.len())?;
+                let base = out.points.len() as u32;
+                work::add(s.points.len() as u64 + s.end_points.len() as u64);
+                out.points.extend(s.points.iter().map(|p| {
                     let (x, y) = t.apply(p.x as f32, p.y as f32);
                     OutlinePoint { x, y, on_curve: p.on_curve }
-                }).collect()));
+                }));
+                out.ends.extend(s.end_points.iter().map(|&e| base + e as u32 + 1));
                 Ok(())
             }
             Some(Glyph::Compound { components, .. }) => {
@@ -247,7 +267,7 @@ impl Font {
                 if stack.len() > MAX_DEPTH {
                     return Err(FontError::CompoundTooDeep);
                 }
-                let first = out.len();
+                let first = out.points.len();
                 for c in components {
                     work::add(1);
                     budget.components += 1;
@@ -259,18 +279,24 @@ impl Font {
                     }
                     let local = Affine([c.xx, c.xy, c.yx, c.yy, 0.0, 0.0]);
                     if c.flags & ARGS_ARE_XY_VALUES != 0 {
-                        let moved = Affine([c.xx, c.xy, c.yx, c.yy, c.arg1 as f32, c.arg2 as f32]);
+                        // The offset is in the compound's units, unless SCALED_COMPONENT_OFFSET
+                        // alone puts it in the component's, where the component's transform
+                        // applies to it too (both flags set is invalid: the default holds).
+                        let (dx, dy) = (c.arg1 as f32, c.arg2 as f32);
+                        let scaled = c.flags & (SCALED_COMPONENT_OFFSET | UNSCALED_COMPONENT_OFFSET) == SCALED_COMPONENT_OFFSET;
+                        let (dx, dy) = if scaled { local.apply(dx, dy) } else { (dx, dy) };
+                        let moved = Affine([c.xx, c.xy, c.yx, c.yy, dx, dy]);
                         self.expand(c.glyph, t.then(moved), stack, budget, out)?;
                     } else {
                         // Point matching: the component's point arg2 lands on this compound's
                         // point arg1 (both counted from the start of their own points).
-                        let start = out.len();
+                        let start = out.points.len();
                         self.expand(c.glyph, t.then(local), stack, budget, out)?;
-                        let target = out[first..start].iter().flatten().nth(c.arg1 as usize).copied().ok_or(FontError::BadGlyph)?;
-                        let own = out[start..].iter().flatten().nth(c.arg2 as usize).copied().ok_or(FontError::BadGlyph)?;
+                        let target = *out.points[first..start].get(c.arg1 as usize).ok_or(FontError::BadGlyph)?;
+                        let own = *out.points[start..].get(c.arg2 as usize).ok_or(FontError::BadGlyph)?;
                         let (dx, dy) = (target.x - own.x, target.y - own.y);
-                        work::add(out[start..].iter().map(|k| k.len() as u64).sum());
-                        for p in out[start..].iter_mut().flatten() {
+                        work::add((out.points.len() - start) as u64);
+                        for p in &mut out.points[start..] {
                             p.x += dx;
                             p.y += dy;
                         }
@@ -291,20 +317,47 @@ impl Font {
         }
         let size = size26 as f32 / 64.0;
         let scale = size / self.head.units_per_em as f32;
-        if outline.contours.is_empty() {
+        if outline.ends.is_empty() {
             let advance = self.advance_units(glyph) as f32 * scale;
             return Ok(GlyphLayout::Empty { advance: ceil(advance) as usize });
         }
-        let baseline = (self.hhea.ascender as f32 * scale + 0.5) as i32;
-        let (x_min, y_min) = (outline.x_min as f32 * scale, outline.y_min as f32 * scale);
-        let (x_max, y_max) = (outline.x_max as f32 * scale, outline.y_max as f32 * scale);
-        let width = ceil(x_max - x_min) as usize + 2;
-        let height = ceil(y_max - y_min) as usize + 2;
-        if width as f32 > 4.0 * size || height as f32 > 4.0 * size {
+        let b = self.placement([outline.x_min, outline.y_min, outline.x_max, outline.y_max], scale);
+        if b.width as f32 > 4.0 * size || b.height as f32 > 4.0 * size {
             return Err(FontError::GlyphTooExpensive);
         }
+        let (x_min, y_max) = (outline.x_min as f32 * scale, outline.y_max as f32 * scale);
         let segments = flatten(outline, scale, -floor(x_min), ceil(y_max))?;
-        Ok(GlyphLayout::Outline { segments, width, height, x_offset: floor(x_min) as i32, y_offset: baseline - ceil(y_max) as i32 })
+        Ok(GlyphLayout::Outline { segments, width: b.width, height: b.height, x_offset: b.x_offset, y_offset: b.y_offset })
+    }
+
+    /// The bitmap rectangle of a glyph whose header box is `[x_min, y_min, x_max, y_max]`, at
+    /// `scale` pixels per unit.
+    fn placement(&self, [x_min, y_min, x_max, y_max]: [i16; 4], scale: f32) -> GlyphBox {
+        let baseline = (self.hhea.ascender as f32 * scale + 0.5) as i32;
+        let (x_min, y_min) = (x_min as f32 * scale, y_min as f32 * scale);
+        let (x_max, y_max) = (x_max as f32 * scale, y_max as f32 * scale);
+        GlyphBox {
+            x_offset: floor(x_min) as i32,
+            y_offset: baseline - ceil(y_max) as i32,
+            width: ceil(x_max - x_min) as usize + 2,
+            height: ceil(y_max - y_min) as usize + 2,
+        }
+    }
+
+    /// Where a glyph's bitmap would lie at `size26`, from its record header alone (no
+    /// outline, no loop): the rectangle `layout_glyph` gives a glyph with contours. `None`
+    /// for a glyph without contours, which draws nothing.
+    pub fn glyph_box(&self, glyph: u16, size26: i32) -> Result<Option<GlyphBox>, FontError> {
+        if !(64..=64 * 1024).contains(&size26) {
+            return Err(FontError::BadSize);
+        }
+        let Some(rec) = self.record(glyph)? else { return Ok(None) };
+        let h = |o: usize| rec.get(o..o + 2).map(|v| i16::from_be_bytes([v[0], v[1]])).ok_or(FontError::BadGlyph);
+        if h(0)? == 0 {
+            return Ok(None);
+        }
+        let scale = size26 as f32 / 64.0 / self.head.units_per_em as f32;
+        Ok(Some(self.placement([h(2)?, h(4)?, h(6)?, h(8)?], scale)))
     }
 
     /// Rasterize a glyph at `pixel_size` (section 8.3); `BadSize` outside 1 to 1,024.
@@ -335,6 +388,15 @@ impl Font {
     }
 }
 
+/// A glyph bitmap's offset from the pen position and its size, in pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GlyphBox {
+    pub x_offset: i32,
+    pub y_offset: i32,
+    pub width: usize,
+    pub height: usize,
+}
+
 /// Where a glyph's bitmap goes and what it is drawn from (`Font::layout_glyph`).
 #[derive(Debug, Clone)]
 pub enum GlyphLayout {
@@ -363,17 +425,18 @@ impl Affine {
     }
 }
 
-/// Points and components counted across one glyph's expansion.
+/// Points and components counted across one glyph's expansion, and the point limit for
+/// the outermost glyph's kind.
 struct Budget {
     points: usize,
     components: usize,
+    limit: usize,
 }
 
 impl Budget {
-    fn add_points(&mut self, n: usize, maxp: &MaxpTable) -> Result<(), FontError> {
+    fn add_points(&mut self, n: usize) -> Result<(), FontError> {
         self.points += n;
-        let limit = (maxp.max_points.max(maxp.max_composite_points) as usize).min(65_535);
-        if self.points > limit {
+        if self.points > self.limit {
             return Err(FontError::TooManyPoints);
         }
         Ok(())

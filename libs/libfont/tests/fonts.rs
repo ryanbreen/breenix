@@ -71,7 +71,7 @@ fn ascii_at_every_tested_size_stays_within_the_bounds() {
             for cp in 0x21..0x7F {
                 let g = font.glyph_for(cp);
                 let outline = font.glyph_outline(g).unwrap();
-                let p = outline.points() as u64;
+                let p = outline.point_count() as u64;
                 work::reset();
                 let scale = size / 2048.0;
                 let segs = libfont::outline::flatten(&outline, scale, 0.0, 0.0).unwrap();
@@ -124,4 +124,52 @@ fn the_cache_reports_hits_and_keeps_its_budgets() {
     }
     font.clear();
     assert_eq!(font.cache_stats().entries, 0);
+}
+
+#[test]
+fn glyph_box_is_the_rectangle_layout_gives() {
+    use libfont::{GlyphBox, GlyphLayout};
+    for data in [MONO, SANS] {
+        let font = Font::parse(data).unwrap();
+        for size in [6.0f32, 16.0, 72.0] {
+            let s26 = Font::size26(size).unwrap();
+            for g in 0..font.num_glyphs() {
+                let outline = font.glyph_outline(g).unwrap();
+                let want = match font.layout_glyph(&outline, g, s26).unwrap() {
+                    GlyphLayout::Outline { width, height, x_offset, y_offset, .. } => Some(GlyphBox { x_offset, y_offset, width, height }),
+                    GlyphLayout::Empty { .. } => None,
+                };
+                assert_eq!(font.glyph_box(g, s26).unwrap(), want, "glyph {g} at {size} px");
+            }
+        }
+    }
+}
+
+#[test]
+fn every_shipped_font_loads_and_its_glyphs_resolve() {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fonts");
+    let mut fonts = 0;
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|x| x != "ttf") {
+            continue;
+        }
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let font = Font::parse(&std::fs::read(&path).unwrap()).unwrap_or_else(|e| panic!("{name}: {e}"));
+        fonts += 1;
+        for g in 0..font.num_glyphs() {
+            match (font.glyph_outline(g), name.as_str(), g) {
+                (Ok(_), _, _) => {}
+                // A compound of more points than the font's own maxCompositePoints (164),
+                // refused by section 10; no codepoint maps to it.
+                (Err(FontError::TooManyPoints), "Ubuntu-Regular.ttf", 1260) => {}
+                (Err(e), _, _) => panic!("{name} glyph {g}: {e}"),
+            }
+        }
+    }
+    assert_eq!(fonts, 29);
+    // PT Serif's kern subtable states its 125,762 bytes modulo 65,536; its last pair is read.
+    let pt = Font::parse(&std::fs::read(format!("{dir}/PTSerif-Regular.ttf")).unwrap()).unwrap();
+    let (a, v) = (pt.glyph_for('A' as u32), pt.glyph_for('V' as u32));
+    assert_ne!(pt.kern_units(a, v), 0);
 }
