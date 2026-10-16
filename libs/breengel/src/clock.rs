@@ -46,6 +46,7 @@ fn page() -> Option<Arc<Page>> {
         }
         Err(e) => panic!("UI clock metadata: {e}"),
     };
+    assert!(meta.len() >= 64, "short UI clock page");
     if let Some((old, dev, ino, mapping)) = cached.as_ref() {
         if *old == path && *dev == meta.dev() && *ino == meta.ino() {
             return Some(mapping.clone());

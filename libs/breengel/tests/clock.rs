@@ -40,5 +40,13 @@ fn shared_page_tracks_epochs_without_reading_real_time() {
     assert!(clock::now_ns() >= first);
     assert_eq!(clock::epoch(), 0);
     assert!(clock::wall_ns() > 1_767_225_600_000_000_000);
+    // A cached inode still has to be long enough to hold the clock header.
+    std::fs::write(&path, page).unwrap();
+    std::env::set_var("BREENIX_UI_CLOCK", &path);
+    assert_eq!(clock::now_ns(), 987);
+    std::fs::OpenOptions::new().write(true).open(&path).unwrap().set_len(8).unwrap();
+    assert!(std::panic::catch_unwind(clock::now_ns).is_err(), "truncated cached page must be rejected");
+    std::env::remove_var("BREENIX_UI_CLOCK");
+    std::fs::remove_file(&path).unwrap();
 
 }
