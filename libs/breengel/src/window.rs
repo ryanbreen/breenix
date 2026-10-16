@@ -170,15 +170,30 @@ impl Window {
 
     /// Commit the acquired buffer with `damage` (at most 16 rectangles covering every pixel
     /// that differs from the previous frame). Its processed serial is the watermark recorded
-    /// when the buffer was acquired.
+    /// when the buffer was acquired (section 19.4): an event handled after that is acknowledged
+    /// by a later frame, never by this one. A commit the kernel refuses while the buffer stays
+    /// acquired (bad damage, say) keeps it held, so drawing can go on and commit again.
     pub fn commit(&mut self, damage: &[abi::Rect]) -> Result<Committed, Error> {
         let Some(h) = self.held.take() else {
             return self.no_change();
         };
-        let processed = h.handled_at_acquire.max(self.published);
+        let processed = h.handled_at_acquire;
         let meta = self.meta(processed);
         self.fb = None;
-        let c = window::commit(self.id, h.info.buffer, damage, Some(&meta))?;
+        let c = match window::commit(self.id, h.info.buffer, damage, Some(&meta)) {
+            Ok(c) => c,
+            Err(e) => {
+                // ENOENT: the window is gone; EBUSY and EPERM: the buffer is not this
+                // window's acquisition any more. Anything else left it acquired.
+                if !matches!(e, Error::Os(Errno::ENOENT | Errno::EBUSY | Errno::EPERM)) {
+                    if let Ok(fb) = self.frame_over(h.info.buffer) {
+                        self.fb = Some(fb);
+                        self.held = Some(h);
+                    }
+                }
+                return Err(e);
+            }
+        };
         self.published = processed;
         self.since_pixel.retain(|&(serial, _)| serial > processed);
         let done = Committed { commit_id: c.commit_id, pixel_gen: c.pixel_gen, processed_serial: processed };
@@ -287,19 +302,12 @@ impl Window {
         events
     }
 
-    /// Take what the window needs to know from an event: its new size, the compositor's epoch.
+    /// Take what the window needs to know from an event: the compositor's epoch. The window's
+    /// size is never taken from an event: it changes only with the buffers, in `apply_resize`,
+    /// which is what `Resized` reports.
     fn note(&mut self, event: &Event) {
-        match *event {
-            Event::Resized { width, height } => self.adopt_size(width, height),
-            Event::CompositorChanged { epoch } => self.epoch = epoch,
-            _ => {}
-        }
-    }
-
-    fn adopt_size(&mut self, width: u32, height: u32) {
-        if (width, height) != (self.width, self.height) {
-            self.width = width;
-            self.height = height;
+        if let Event::CompositorChanged { epoch } = *event {
+            self.epoch = epoch;
         }
     }
 

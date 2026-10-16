@@ -107,12 +107,14 @@ fn overflow(lost: u64) -> WindowEvent {
 }
 
 /// Whether a compositor may write `event` (section 19.2): a kind of 1 to 14 other than
-/// `FontChanged`, which Breengel makes, and `Overflow`, which the kernel makes; text of at
-/// most 240 bytes; the reserved field zero.
+/// `FontChanged`, which Breengel makes, and the four the kernel makes: `Resized` and
+/// `ResizeFailed` (only a `RESIZE` of the window's buffers reports them, so a size in one is
+/// always the buffers' size), `CompositorChanged` (each claim's epoch) and `Overflow`; text of
+/// at most 240 bytes; the reserved field zero.
 pub fn writable(event: &WindowEvent) -> bool {
-    (1..=event_kind::OVERFLOW).contains(&event.kind)
-        && event.kind != event_kind::FONT_CHANGED
-        && event.kind != event_kind::OVERFLOW
+    use event_kind::{COMPOSITOR_CHANGED, FONT_CHANGED, OVERFLOW, RESIZED, RESIZE_FAILED};
+    (1..=OVERFLOW).contains(&event.kind)
+        && ![FONT_CHANGED, RESIZED, RESIZE_FAILED, COMPOSITOR_CHANGED, OVERFLOW].contains(&event.kind)
         && event.text_len as usize <= limits::EVENT_TEXT
         && event.reserved == 0
 }
