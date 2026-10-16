@@ -53,18 +53,29 @@ pub fn check(name:&str) -> Result<(),String> {
             text(&fb,24,68,"1 passed  1 failed  1 not reached",2,(24,39,59))?;
             text(&fb,840,120,"CASE 2 / alpha",1,(18,29,44))?;
             text(&fb,840,132,"fail",1,(18,29,44))?;
-            text(&fb,840,144,"key 9",1,(18,29,44))
+            text(&fb,840,144,"key 9",1,(18,29,44))?;
+            rect(&fb,16,140,800,560,(12,19,31))?;
+            let mut expected=vec![0u8;1280*800*4];let mut ef=surface(&mut expected);
+            for y in 776..783 {for x in 24..1280 {ef.put_pixel(x,y,Color::rgb(12,19,31));}}
+            font::draw_text(&mut ef,b"host copy and window outside guest view",24,776,Color::rgb(161,183,204),1);
+            for y in 776..783 {for x in 24..1280 {let p=ef.get_pixel(x,y);expect_pixel(&fb,x,y,(p.r,p.g,p.b))?;}}
+            Ok(())
         }
         "tile-stamps" => {
             render(&mut fb,&model)?;
             // Slot 2 is the gap between milestones, so beta starts in slot 3.
             for (slot,key,color) in [(0,7,(26,112,77)),(1,9,(145,50,58)),(3,0,(57,67,80)),(5,12,(64,191,224))] {
                 let x=16+slot*40;
-                rect(&fb,x,112,38,1,color)?; rect(&fb,x+1,127,36,2,color)?;
-                text(&fb,x+2,129,&format!("{key}"),1,color)?;
+                rect(&fb,x,112,38,1,color)?;rect(&fb,x,137,38,1,color)?;
+                rect(&fb,x,113,1,24,color)?;rect(&fb,x+37,113,1,24,color)?;
+                let mut reference=vec![0u8;1280*800*4];let mut ef=surface(&mut reference);
+                for py in 127..137 {for px in x+1..x+37 {ef.put_pixel(px,py,Color::rgb(color.0,color.1,color.2));}}
+                font::draw_text(&mut ef,format!("{key}").as_bytes(),x+2,129,Color::WHITE,1);
+                for py in 127..137 {for px in x+1..x+37 {let p=ef.get_pixel(px,py);expect_pixel(&fb,px,py,(p.r,p.g,p.b))?;}}
             }
             rect(&fb,96,112,38,26,(12,19,31))?;
             rect(&fb,176,112,38,1,(48,67,96))?;
+            rect(&fb,176,137,38,1,(48,67,96))?;rect(&fb,176,113,1,24,(48,67,96))?;rect(&fb,213,113,1,24,(48,67,96))?;
             rect(&fb,177,127,36,10,(12,19,31))?;
             for (slot,ordinal) in [(0,1),(1,2),(3,3),(4,4),(5,5)] {
                 text(&fb,16+slot*40+20,114,&format!("{ordinal}"),1,(12,19,31))?;
@@ -100,6 +111,12 @@ pub fn check(name:&str) -> Result<(),String> {
             rect(&fb,1128,171,64,61,(0,0,0))?;
             rect(&fb,1195,171,61,61,(255,250,0))?;
             for (x,y) in [(1192,168),(1191,168),(1190,168),(1193,168),(1194,168),(1192,169),(1192,170)] { expect_pixel(&fb,x,y,(255,255,255))?; }
+            for (x,label) in [(840,"expected"),(984,"actual"),(1128,"difference")] {text(&fb,x,152,label,1,(18,29,44))?;}
+            for y in 0..128 {for x in 0..128 {
+                let cross=(y==0 && (62..=66).contains(&x)) || (x==64 && y<=2);
+                let colour=if cross {(255,255,255)} else if x>=64 && y<64 {(255,250,0)} else {(0,0,0)};
+                expect_pixel(&fb,1128+x,168+y,colour)?;
+            }}
             text(&fb,840,312,"1 pixels differ; bound 0",1,(18,29,44))
         }
         "spotlight-timing" => {
@@ -111,6 +128,7 @@ pub fn check(name:&str) -> Result<(),String> {
             rect(&fb,1048,433,99,95,(64,160,224))?;
             rect(&fb,1148,336,99,96,(145,50,58))?;
             rect(&fb,848,432,400,1,(255,255,255))?;
+            for x in [947,1047,1147,1247] {rect(&fb,x,336,1,96,(18,29,44))?;rect(&fb,x,433,1,95,(18,29,44))?;}
             text(&fb,840,312,"frame times us; budget 1000",1,(18,29,44))
         }
         "milestone-ribbon" => {
@@ -127,7 +145,15 @@ pub fn check(name:&str) -> Result<(),String> {
             rect(&fb,48,240,720,24,(24,39,59))?;
             text(&fb,72,264,"RUN COMPLETE",3,(24,39,59))?;
             text(&fb,72,312,"1 passed  1 failed  1 not reached",2,(24,39,59))?;
-            text(&fb,72,352,"slowest alpha/fail 9 ms",1,(24,39,59))
+            text(&fb,72,352,"slowest alpha/fail 9 ms",1,(24,39,59))?;
+            let mut reference=vec![0u8;1280*800*4];let mut ef=surface(&mut reference);
+            for y in 240..480 {for x in 48..768 {ef.put_pixel(x,y,Color::rgb(24,39,59));}}
+            for (x,y,t,scale) in [(72,264,"RUN COMPLETE",3),(72,312,"1 passed  1 failed  1 not reached",2),(72,352,"slowest alpha/fail 9 ms",1)] {
+                font::draw_text(&mut ef,t.as_bytes(),x,y,Color::WHITE,scale);
+            }
+            for y in 240..480 {for x in 48..768 {let p=ef.get_pixel(x,y);expect_pixel(&fb,x,y,(p.r,p.g,p.b))?;}}
+            text(&fb,840,120,"CASE 2 / alpha",1,(18,29,44))?;
+            text(&fb,840,132,"fail",1,(18,29,44))
         }
         "deterministic" => {
             bytes.fill(0x35);
