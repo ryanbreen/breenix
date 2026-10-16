@@ -230,3 +230,29 @@ fn thumbnail_partitions_odd_dimensions_without_sampling() {
     );
     assert_eq!(thumbnail(frame(&pixels, 3, 2), 4, 1), Err(Error::Geometry));
 }
+
+#[test]
+fn overlapping_region_keeps_pixels_masked_only_in_its_neighbor() {
+    let a=[0u8;40];let mut b=a;b[12]=1;
+    let regions=[Rect{x:0,y:0,w:8,h:1},Rect{x:3,y:0,w:7,h:1}];
+    let masks=[Mask{rect:Rect{x:2,y:0,w:2,h:1},reason:"region zero only"}];
+    let result=compare(frame(&a,10,1),frame(&b,10,1),Options{regions:&regions,masks:&masks,..Default::default()}).unwrap();
+    assert_eq!(result.compared,9);assert_eq!(result.differing,1);
+}
+#[test]
+fn structural_predicates_require_their_declared_effective_domains() {
+    let a=[0u8;32];let mut b=a;b[4]=1;
+    let regions=[Rect{x:0,y:0,w:4,h:1},Rect{x:4,y:0,w:4,h:1}];
+    let opts=Options{regions:&regions,..Default::default()};let f=frame(&a,8,1);
+    assert_eq!(structural(f,opts,Predicate::Uniform{region:0,colour:[0,0,0]},None),Ok(true));
+    assert_eq!(structural(frame(&b,8,1),opts,Predicate::Uniform{region:0,colour:[0,0,0]},None),Ok(false));
+    assert_eq!(structural(f,opts,Predicate::Outside{region:0,rect:Rect{x:1,y:0,w:1,h:1},colour:[255,255,255]},None),Ok(true));
+    assert_eq!(structural(f,opts,Predicate::Count{region:0,min:2,max:None},None),Ok(false));
+    assert_eq!(structural(frame(&b,8,1),opts,Predicate::Count{region:0,min:2,max:Some(2)},None),Ok(true));
+    assert_eq!(structural(f,opts,Predicate::EqualRegions{a:0,b:1},None),Ok(true));
+    assert_eq!(structural(frame(&b,8,1),opts,Predicate::EqualRegions{a:0,b:1},None),Ok(false));
+    assert_eq!(structural(frame(&b,8,1),opts,Predicate::DiffersFromPrevious{region:0,min_differing:1},Some(Previous{frame:f,options:opts})),Ok(true));
+    assert_eq!(structural(f,opts,Predicate::DiffersFromPrevious{region:0,min_differing:1},None),Err(Error::Predicate));
+    assert_eq!(structural(f,opts,Predicate::EqualRegions{a:0,b:0},None),Err(Error::Predicate));
+    assert_eq!(structural(f,opts,Predicate::Count{region:0,min:1,max:None},None),Err(Error::Predicate));
+}
