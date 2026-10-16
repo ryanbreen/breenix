@@ -549,7 +549,8 @@ fn present(mut guard: spin::MutexGuard<'_, arm64_fb::ShellFrameBuffer>) {
 
 /// Start the thread that presents the kernel's screen when a synchronous present
 /// could not, for displays with no render thread (VirGL: the render thread's
-/// cursor and dirty-rect flushes would overwrite the frames bwm composites).
+/// framebuffer cursor and dirty-rect flushes would overwrite the frames bwm
+/// composites). It also moves the composed display's panel cursor.
 ///
 /// A boot-screen update whose flush failed, or a diagnostics screen whose flush
 /// found the GPU lock busy, is left marked dirty; this thread presents it once
@@ -574,6 +575,8 @@ fn presenter_main() {
         let kernel_screen_up =
             DIAG_CLAIMED.load(Ordering::Acquire) || !HANDED_OVER.load(Ordering::Acquire);
         super::boot_ribbon::drain();
+        // The composed display's panel cursor: this thread stands in for the render thread.
+        super::render_task::panel_pointer();
         if kernel_screen_up && super::boot_ribbon::take_dirty() { refresh(); }
         if kernel_screen_up && timer::rdtsc() >= retry_at {
             if let Some((x, y, w, h)) = arm64_fb::take_dirty_rect() {
