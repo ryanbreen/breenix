@@ -1204,7 +1204,8 @@ case; the spotlight spells out that ordinal's full category and case id. A tile 
 
 - A one-pixel border, green for pass, red for our own failure, grey for not reached, dim for pending.
 - Its ordinal at tile+(20,2), scale 1, white; its key number at tile+(2,17), scale 1, white. The number is
-  the serial CASE's milliseconds unless the case supplies a named picture or timing measurement.
+  the serial CASE's milliseconds unless the case supplies a named picture or timing measurement. Keys with more than five decimal digits use `>` in the tile instead of a truncated
+  number; the selected case always shows `key <full decimal number>` at (840,144), scale 1, white.
 - A 16×12 thumbnail at tile+(2,2), or inset if the case has no judged frame. A smaller source is drawn at
   its own size in that rectangle. For destination coordinate (x,y), source bins are
   `[floor(xW/w),floor((x+1)W/w)) × [floor(yH/h),floor((y+1)H/h))`. Each colour is the bin's sum divided by its

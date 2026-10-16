@@ -52,7 +52,8 @@ pub fn check(name:&str) -> Result<(),String> {
             text(&fb,24,48,"qemu  case 3 of 5  elapsed 250 ms  fps 60",1,(24,39,59))?;
             text(&fb,24,68,"1 passed  1 failed  1 not reached",2,(24,39,59))?;
             text(&fb,840,120,"CASE 2 / alpha",1,(18,29,44))?;
-            text(&fb,840,132,"fail",1,(18,29,44))
+            text(&fb,840,132,"fail",1,(18,29,44))?;
+            text(&fb,840,144,"key 9",1,(18,29,44))
         }
         "tile-stamps" => {
             render(&mut fb,&model)?;
@@ -67,6 +68,12 @@ pub fn check(name:&str) -> Result<(),String> {
             rect(&fb,177,127,36,10,(12,19,31))?;
             for (slot,ordinal) in [(0,1),(1,2),(3,3),(4,4),(5,5)] {
                 text(&fb,16+slot*40+20,114,&format!("{ordinal}"),1,(12,19,31))?;
+            }
+            for key in [123456, 1024000, u64::MAX] {
+                cases[1].key=key; let m=run(&cases,&MILESTONES);render(&mut fb,&m)?;
+                text(&fb,58,129,">",1,(145,50,58))?;
+                rect(&fb,64,129,29,7,(145,50,58))?;
+                text(&fb,840,144,&format!("key {key}"),1,(18,29,44))?;
             } Ok(())
         }
         "tile-thumbnail" => {

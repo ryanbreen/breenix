@@ -284,7 +284,7 @@ pub fn draw(fb: &mut FrameBuf, run: &Run<'_>) -> Result<(), StageError> {
         if tile.stamp != Stamp::Pending {
             fill(fb, x + 1, y + 15, 36, 10, c);
             let mut key = Text::new();
-            let _ = write!(key, "{}", tile.key);
+            if tile.key > 99999 { let _ = write!(key, ">"); } else { let _ = write!(key, "{}", tile.key); }
             text(fb, key.bytes(), x + 2, y + 17, 34, 1, Color::WHITE);
         }
     }
@@ -360,6 +360,9 @@ fn draw_spotlight(fb: &mut FrameBuf, run: &Run<'_>) {
     let _ = write!(heading, "CASE {} / {}", run.selected + 1, group);
     text(fb, heading.bytes(), 840, 120, 416, 1, Color::WHITE);
     text(fb, id.as_bytes(), 840, 132, 416, 1, Color::WHITE);
+    let mut key = Text::new();
+    let _ = write!(key, "key {}", selected.key);
+    text(fb, key.bytes(), 840, 144, 424, 1, Color::WHITE);
     match run.spotlight {
         Spotlight::None => {}
         Spotlight::Picture {
