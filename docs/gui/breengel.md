@@ -1216,7 +1216,8 @@ case; the spotlight spells out that ordinal's full category and case id. A tile 
 
 ### 23.4 Spotlight
 
-The selected ordinal and category are at (840,120), and its case id at (840,132), scale 1, white.
+The heading `CASE <one-based ordinal> / <category>` is at (840,120), and its case id at (840,132),
+scale 1, white.
 A picture has `expected`, `actual`, `difference` labels at x=840,984,1128, y=152. Each pane is 128×128
 at those x coordinates, y=168. The complete source is nearest-scaled into its pane: source coordinate
 `(floor(xW/128),floor(yH/128))`. A difference pixel's largest absolute B,G,R channel difference d gives
