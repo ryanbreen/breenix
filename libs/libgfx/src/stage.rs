@@ -233,6 +233,15 @@ fn validate(fb: &FrameBuf, run: &Run<'_>) -> Result<(), StageError> {
             {
                 return Err(StageError::Image);
             }
+            let mut count = 0;
+            let mut first_pixel = None;
+            for y in 0..actual.height { for x in 0..actual.width {
+                if expected.pixel(x,y) != actual.pixel(x,y) {
+                    count += 1;
+                    first_pixel.get_or_insert((x,y));
+                }
+            } }
+            if differing != count || first != first_pixel { return Err(StageError::Image); }
         }
         Spotlight::Timing {
             frame_us,
