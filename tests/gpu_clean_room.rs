@@ -92,3 +92,29 @@ fn svga_submission_uses_byte_addresses_and_a_complete_64_byte_header() {
     assert!(Header::new(0x1040, 3).is_err());
     assert!(Header::new(0x1040, 512 * 1024 + 4).is_err());
 }
+
+#[path = "../kernel/src/drivers/vmware/tables.rs"]
+mod svga_tables;
+
+#[test]
+fn svga_tables_cover_live_ids_and_reject_depth_overflow() {
+    use svga_tables::*;
+    assert_eq!(
+        (MOB_ENTRY_BYTES, SURFACE_ENTRY_BYTES, SCREEN_ENTRY_BYTES),
+        (16, 64, 64)
+    );
+    assert_eq!(table_bytes(MOB_ENTRY_BYTES, 1).unwrap(), 32);
+    assert_eq!(table_bytes(SURFACE_ENTRY_BYTES, 1).unwrap(), 128);
+    assert_eq!(table_bytes(SCREEN_ENTRY_BYTES, 0).unwrap(), 64);
+    assert_eq!(table_bytes(MOB_ENTRY_BYTES, 2).unwrap(), 48);
+    assert_eq!(table_bytes(SURFACE_ENTRY_BYTES, 2).unwrap(), 192);
+    assert_eq!(table_bytes(MOB_ENTRY_BYTES, 255).unwrap(), 4096);
+    assert!(table_bytes(MOB_ENTRY_BYTES, 256).is_err());
+    assert!(table_bytes(64, u32::MAX).is_err());
+    assert_eq!((PT64_0, PT64_2), (4, 6));
+    assert_eq!(leaf_count(512).unwrap(), 1);
+    assert_eq!(leaf_count(513).unwrap(), 2);
+    assert_eq!(leaf_count(512 * 512).unwrap(), 512);
+    assert!(leaf_count(0).is_err());
+    assert!(leaf_count(512 * 512 + 1).is_err());
+}

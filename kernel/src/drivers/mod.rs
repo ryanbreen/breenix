@@ -303,6 +303,12 @@ pub fn init() -> usize {
         match vmware::svga3::init() {
             Ok(()) => {
                 serial_println!("[drivers] VMware SVGA3 GPU initialized");
+                #[cfg(feature = "testing")]
+                {
+                    vmware::svga3::test_stdu_lifecycle().expect("SVGA STDU device round trip failed");
+                    serial_println!("SVGA_STDU_TEST_PASSED");
+                }
+
                 // SVGA3 with VRAM traces provides GPU-level compositing:
                 // BWM writes pixels to VRAM, device monitors and updates display.
                 crate::graphics::set_compositor_backend(

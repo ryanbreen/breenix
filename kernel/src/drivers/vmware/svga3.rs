@@ -124,23 +124,8 @@ const SVGA_OTABLE_CONTEXT: u32 = 2;
 const SVGA_OTABLE_SHADER: u32 = 3;
 const SVGA_OTABLE_SCREENTARGET: u32 = 4;
 
-// OTable entry sizes (from Linux vmwgfx)
-const OTABLE_MOB_ENTRY_SIZE: usize = 16;
-const OTABLE_SURFACE_ENTRY_SIZE: usize = 64;
-const OTABLE_SCREENTARGET_ENTRY_SIZE: usize = 64;
-
-// Maximum entries per table (from Linux vmwgfx defaults)
-const OTABLE_MOB_MAX: usize = 256;
-const OTABLE_SURFACE_MAX: usize = 256;
-const OTABLE_SCREENTARGET_MAX: usize = 8;
-
-// ─── MOB format (ptDepth) ───────────────────────────────────────────────────
-
-/// Contiguous physical range starting at base PPN.
-const SVGA3D_MOBFMT_RANGE: u32 = 3;
-/// 1-level page table with 64-bit PPN entries.
-#[allow(dead_code)] // Part of the MOB format API — will be used for non-contiguous buffers
-const SVGA3D_MOBFMT_PT64_1: u32 = 5;
+#[path = "tables.rs"]
+mod tables;
 
 // ─── Surface formats ────────────────────────────────────────────────────────
 
@@ -215,10 +200,6 @@ const COMPOSITOR_MOB_ID: u32 = 1;
 const COMPOSITOR_SURFACE_ID: u32 = 1;
 /// Screen Target ID (primary display).
 const COMPOSITOR_STID: u32 = 0;
-
-/// Next available MOB ID for OTable backing MOBs.
-/// OTable MOBs use IDs 100-105 to avoid colliding with compositor MOB (1).
-const OTABLE_MOB_BASE_ID: u32 = 100;
 
 // ─── Register access ────────────────────────────────────────────────────────
 
@@ -748,7 +729,8 @@ pub fn sync() {
 
 // ─── STDU Compositing Pipeline ──────────────────────────────────────────────
 
-/// Allocate a page-aligned, contiguous block of memory for DMA.
+/// Allocate page-aligned virtual storage for DMA; callers translate every
+/// page independently when a device operation spans multiple pages.
 /// Returns (virtual_address, physical_address, size_in_bytes).
 fn alloc_dma_pages(num_pages: usize) -> Result<(u64, u64, usize), &'static str> {
     let size = num_pages * PAGE_SIZE;
@@ -762,25 +744,55 @@ fn alloc_dma_pages(num_pages: usize) -> Result<(u64, u64, usize), &'static str> 
     Ok((virt, phys, size))
 }
 
-/// Set up a single OTable: allocate backing MOB, submit DEFINE_GB_MOB64 + SET_OTABLE_BASE64.
+/// Install only the entries that this backend can index. SET_OTABLE_BASE64
+/// addresses the page directly (PT64_0); it does not require DEFINE_GB_MOB64.
+/// validSizeInBytes=0 means no previous host table contents are being restored.
 fn setup_otable(
     enc: &mut CmdEncoder,
     table_type: u32,
-    entry_size: usize,
-    max_entries: usize,
-    mob_id: u32,
+    entry_bytes: usize,
+    highest_id: u32,
 ) -> Result<(), &'static str> {
-    let table_size = entry_size * max_entries;
-    let num_pages = (table_size + PAGE_SIZE - 1) / PAGE_SIZE;
-    let (_, phys, size) = alloc_dma_pages(num_pages)?;
-    let ppn = phys >> 12;
-
-    // Define a MOB for this OTable's backing
-    enc.define_gb_mob64(mob_id, SVGA3D_MOBFMT_RANGE, ppn, size as u32);
-    // Register the OTable
-    enc.set_otable_base64(table_type, ppn, size as u32, 0, SVGA3D_MOBFMT_RANGE);
-
+    let used_bytes = tables::table_bytes(entry_bytes, highest_id)?;
+    let (virtual_address, physical, _) = alloc_dma_pages(1)?;
+    unsafe {
+        cache_clean_range(virtual_address, PAGE_SIZE);
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+    }
+    enc.set_otable_base64(table_type, physical >> 12, used_bytes, 0, tables::PT64_0);
     Ok(())
+}
+
+/// Independently construct a PT64_2 MOB from each data page's actual IPA.
+/// Heap virtual contiguity is not evidence of physical contiguity. Root and
+/// leaf PPNs are translated separately; no RANGE fallback is guessed.
+fn compositor_page_tree(buffer: u64, pages: usize) -> Result<u64, &'static str> {
+    let leaves = tables::leaf_count(pages)?;
+    let (root, root_physical, _) = alloc_dma_pages(1)?;
+    for index in 0..leaves {
+        let (leaf, leaf_physical, _) = alloc_dma_pages(1)?;
+        let first = index * 512;
+        for entry in 0..(pages - first).min(512) {
+            let address = buffer + ((first + entry) * PAGE_SIZE) as u64;
+            let physical = crate::platform_config::kernel_va_to_ipa(address);
+            if physical & (PAGE_SIZE as u64 - 1) != 0 {
+                return Err("SVGA backing page is unaligned");
+            }
+            unsafe {
+                core::ptr::write((leaf as *mut u64).add(entry), (physical >> 12).to_le());
+            }
+        }
+        unsafe {
+            core::ptr::write((root as *mut u64).add(index), (leaf_physical >> 12).to_le());
+            cache_clean_range(leaf, PAGE_SIZE);
+        }
+    }
+    unsafe {
+        cache_clean_range(root, PAGE_SIZE);
+        cache_clean_range(buffer, pages * PAGE_SIZE);
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+    }
+    Ok(root_physical >> 12)
 }
 
 /// Initialize the STDU compositing pipeline.
@@ -816,26 +828,23 @@ pub fn init_stdu() -> Result<(), &'static str> {
     // Phase 1: Set up OTables (MOB, Surface, ScreenTarget)
     let mut enc = CmdEncoder::new();
 
-    setup_otable(
-        &mut enc,
-        SVGA_OTABLE_MOB,
-        OTABLE_MOB_ENTRY_SIZE,
-        OTABLE_MOB_MAX,
-        OTABLE_MOB_BASE_ID,
-    )?;
+    // Production IDs: compositor MOB/surface 1 and primary screen 0.
+    // Testing adds one offscreen copy destination at MOB/surface 2. No
+    // table-backing MOB IDs are consumed. Size each profile from its last ID.
+    let last_mob = COMPOSITOR_MOB_ID + u32::from(cfg!(feature = "testing"));
+    let last_surface = COMPOSITOR_SURFACE_ID + u32::from(cfg!(feature = "testing"));
+    setup_otable(&mut enc, SVGA_OTABLE_MOB, tables::MOB_ENTRY_BYTES, last_mob)?;
     setup_otable(
         &mut enc,
         SVGA_OTABLE_SURFACE,
-        OTABLE_SURFACE_ENTRY_SIZE,
-        OTABLE_SURFACE_MAX,
-        OTABLE_MOB_BASE_ID + 1,
+        tables::SURFACE_ENTRY_BYTES,
+        last_surface,
     )?;
     setup_otable(
         &mut enc,
         SVGA_OTABLE_SCREENTARGET,
-        OTABLE_SCREENTARGET_ENTRY_SIZE,
-        OTABLE_SCREENTARGET_MAX,
-        OTABLE_MOB_BASE_ID + 2,
+        tables::SCREEN_ENTRY_BYTES,
+        COMPOSITOR_STID,
     )?;
 
     submit_commands(&enc.finish())?;
@@ -845,14 +854,8 @@ pub fn init_stdu() -> Result<(), &'static str> {
     let buf_size = (width as usize) * (height as usize) * 4;
     let buf_pages = (buf_size + PAGE_SIZE - 1) / PAGE_SIZE;
 
-    // For large buffers, we need a page table MOB. The compositor buffer
-    // may not be physically contiguous, so we allocate individual pages
-    // and build a 64-bit PPN page table.
-    //
-    // However, alloc_zeroed with page alignment typically returns contiguous
-    // memory from the kernel heap. Try contiguous first, fall back to
-    // page-table approach if needed.
     let (buf_virt, buf_phys, _) = alloc_dma_pages(buf_pages)?;
+    let root_ppn = compositor_page_tree(buf_virt, buf_pages)?;
 
     // Store compositor buffer location for later use
     COMPOSITOR_BUF_VIRT.store(buf_virt, Ordering::Release);
@@ -866,15 +869,14 @@ pub fn init_stdu() -> Result<(), &'static str> {
         buf_pages
     );
 
-    // Define MOB for compositor buffer (contiguous range)
+    // Define the compositor MOB using its explicit two-level page tree.
     let mut enc = CmdEncoder::new();
-    let ppn = buf_phys >> 12;
-    enc.define_gb_mob64(COMPOSITOR_MOB_ID, SVGA3D_MOBFMT_RANGE, ppn, buf_size as u32);
+    enc.define_gb_mob64(COMPOSITOR_MOB_ID, tables::PT64_2, root_ppn, buf_size as u32);
     submit_commands(&enc.finish())?;
     serial_println!(
         "[svga3-stdu] Compositor MOB defined (id={}, ppn={:#x})",
         COMPOSITOR_MOB_ID,
-        ppn
+        root_ppn
     );
 
     // Phase 3: Create GB Surface and bind to MOB
@@ -919,6 +921,145 @@ pub fn init_stdu() -> Result<(), &'static str> {
 
     STDU_READY.store(true, Ordering::Release);
     serial_println!("[svga3-stdu] STDU compositing pipeline ready");
+    Ok(())
+}
+
+/// Testing-kernel hardware check for the otherwise unused STDU API. This is
+/// an upload/readback round trip, not a command-creation assertion. Wire facts:
+/// svga3d_cmd.h SVGA3dCmdReadbackGBImage, DestroyGBScreenTarget,
+/// DestroyGBSurface and DestroyGBMob; svga_reg.h SVGADCCmdStartStop.
+#[cfg(feature = "testing")]
+pub fn test_stdu_lifecycle() -> Result<(), &'static str> {
+    init_stdu()?;
+    let width = unsafe { DISPLAY_WIDTH };
+    let height = unsafe { DISPLAY_HEIGHT };
+    let buffer = COMPOSITOR_BUF_VIRT.load(Ordering::Acquire);
+    let bytes = COMPOSITOR_BUF_SIZE.load(Ordering::Acquire) as usize;
+    let pixels = bytes / 4;
+    if pixels < 2 {
+        return Err("SVGA test framebuffer is empty");
+    }
+    let first_colour = 0x00123456u32;
+    let last_colour = 0x0098abcdu32;
+    unsafe {
+        core::ptr::write_volatile(buffer as *mut u32, first_colour);
+        core::ptr::write_volatile((buffer as *mut u32).add(pixels - 1), last_colour);
+        cache_clean_range(buffer, bytes);
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+    }
+    let mut upload = CmdEncoder::new();
+    upload.update_gb_image(COMPOSITOR_SURFACE_ID, 0, 0, width, height);
+    submit_commands(&upload.finish())?;
+    // VMware's published interface specifies dirty-content readback:
+    // https://github.com/torvalds/linux/blob/v4.19/drivers/gpu/drm/vmwgfx/device_include/svga3d_cmd.h
+    // anchors SVGA3dCmdReadbackGBImage and SVGA3dCmdSurfaceCopy. Uploading
+    // alone need not dirty a host image. Make a device-side copy into separate
+    // poisoned backing, then read that GPU-produced destination back.
+    let destination_mob = COMPOSITOR_MOB_ID + 1;
+    let destination_surface = COMPOSITOR_SURFACE_ID + 1;
+    let pages = bytes.div_ceil(PAGE_SIZE);
+    let (destination, _, _) = alloc_dma_pages(pages)?;
+    unsafe {
+        core::ptr::write_bytes(destination as *mut u8, 0xa5, bytes);
+    }
+    let destination_root = compositor_page_tree(destination, pages)?;
+    let mut copy = CmdEncoder::new();
+    copy.define_gb_mob64(
+        destination_mob,
+        tables::PT64_2,
+        destination_root,
+        bytes as u32,
+    );
+    copy.define_gb_surface_v2(
+        destination_surface,
+        0,
+        SVGA3D_B8G8R8X8_UNORM,
+        1,
+        0,
+        width,
+        height,
+        1,
+        0,
+        0,
+    );
+    copy.bind_gb_surface(destination_surface, destination_mob);
+    // SURFACE_COPY (1042): two SurfaceImageIds (24 bytes), then one
+    // CopyBox (x,y,z,w,h,d,srcx,srcy,srcz: 36 bytes), total payload 60.
+    copy.cmd_header(1042, 60);
+    for word in [
+        COMPOSITOR_SURFACE_ID,
+        0,
+        0,
+        destination_surface,
+        0,
+        0,
+        0,
+        0,
+        0,
+        width,
+        height,
+        1,
+        0,
+        0,
+        0,
+    ] {
+        copy.push_u32(word);
+    }
+    submit_commands(&copy.finish())?;
+    let mut readback = CmdEncoder::new();
+    readback.cmd_header(1103, 12); // READBACK_GB_IMAGE: SurfaceImageId
+    readback.push_u32(destination_surface);
+    readback.push_u32(0); // face
+    readback.push_u32(0); // mipmap
+    submit_commands(&readback.finish())?;
+    unsafe {
+        cache_invalidate_range(destination, bytes);
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+    }
+    // B8G8R8X8 defines RGB exactly; the X byte is not an alpha channel.
+    // The two distant nonzero pixels exercise the first and last MOB pages.
+    let exact = (0..pixels).all(|index| {
+        let expected = if index == 0 {
+            first_colour
+        } else if index == pixels - 1 {
+            last_colour
+        } else {
+            0
+        };
+        let actual = unsafe { core::ptr::read_volatile((destination as *const u32).add(index)) };
+        actual & 0x00ffffff == expected
+    });
+    // Remove the test display and its objects before the normal VRAM console
+    // resumes. Table and page-tree allocations remain device-safe for the boot.
+    let mut cleanup = CmdEncoder::new();
+    cleanup.cmd_header(1125, 4);
+    cleanup.push_u32(COMPOSITOR_STID);
+    for surface in [destination_surface, COMPOSITOR_SURFACE_ID] {
+        cleanup.cmd_header(1098, 4);
+        cleanup.push_u32(surface);
+    }
+    for mob in [destination_mob, COMPOSITOR_MOB_ID] {
+        cleanup.cmd_header(1094, 4);
+        cleanup.push_u32(mob);
+    }
+    submit_commands(&cleanup.finish())?;
+    {
+        let _guard = CB_LOCK.lock();
+        let stop: [u8; 12] = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        submit_commands_ctx(&stop, SVGA_CB_CONTEXT_DEVICE)?;
+        CB_READY.store(false, Ordering::Release);
+    }
+    STDU_READY.store(false, Ordering::Release);
+    COMPOSITOR_BUF_VIRT.store(0, Ordering::Release);
+    COMPOSITOR_BUF_SIZE.store(0, Ordering::Release);
+    unsafe {
+        reg_write(SVGA_REG_ENABLE, 1);
+        reg_write(SVGA_REG_CONFIG_DONE, 1);
+        reg_write(SVGA_REG_TRACES, 1);
+    }
+    if !exact {
+        return Err("SVGA STDU device readback differs from uploaded image");
+    }
     Ok(())
 }
 
