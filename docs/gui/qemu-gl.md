@@ -47,6 +47,7 @@ does not contain. A boot whose guest never creates a VirGL context has no attest
 refused.
 
 `scripts/qemu-gl/plant-software-renderer.sh DIR` builds the negative control: a copy of the bundle
-with the same executable and Homebrew Mesa's EGL and GLESv2, so the same binary renders on
-llvmpipe. Boot it with `BREENIX_QEMU_GL_BINARY=<printed path> EGL_PLATFORM=surfaceless` and
-`--gpu-gl --no-display`; the check refuses it, naming llvmpipe.
+with the same QEMU executable whose ANGLE renders on Apple's software OpenGL renderer. Boot it with
+`BREENIX_QEMU_GL_BINARY=<printed path> ANGLE_DEFAULT_PLATFORM=gl` and `--gpu-gl`; the check
+refuses it, naming the software renderer. (WebKit's ANGLE has no SwiftShader backend, and Mesa's
+llvmpipe cannot stand in: UTM's SPICE and Cocoa displays need ANGLE's IOSurface support.)
