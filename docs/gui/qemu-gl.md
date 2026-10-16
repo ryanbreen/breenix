@@ -18,7 +18,7 @@ or SHA-256 in the script, and the installed bundle's `PINS` file lists them.
   `~/Library/Caches/breenix/qemu-gl/<pin>/`, ad-hoc signed with the hypervisor entitlement, with
   App Nap off. `--print-path` prints the executable.
 - **Backend:** ANGLE runs on Metal only with `ANGLE_DEFAULT_PLATFORM=metal`, as UTM sets it;
-  without it ANGLE picks its OpenGL backend. The launcher sets it.
+  without it ANGLE picks its OpenGL backend. The launcher sets it unless the caller has.
 - **Not built:** Venus and Neptune (Vulkan and Direct3D) in virglrenderer, which VirGL does not
   use. Libraries with no graphics code (glib, pixman, libslirp, OpenSSL, libjpeg, Opus, libpng)
   come from Homebrew.
@@ -48,6 +48,7 @@ refused.
 
 `scripts/qemu-gl/plant-software-renderer.sh DIR` builds the negative control: a copy of the bundle
 with the same QEMU executable whose ANGLE renders on Apple's software OpenGL renderer. Boot it with
-`BREENIX_QEMU_GL_BINARY=<printed path> ANGLE_DEFAULT_PLATFORM=gl` and `--gpu-gl`; the check
+`BREENIX_QEMU_GL_BINARY=<printed path> ANGLE_DEFAULT_PLATFORM=` (empty: ANGLE's OpenGL backend)
+and `--gpu-gl`; the check
 refuses it, naming the software renderer. (WebKit's ANGLE has no SwiftShader backend, and Mesa's
 llvmpipe cannot stand in: UTM's SPICE and Cocoa displays need ANGLE's IOSurface support.)

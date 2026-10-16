@@ -135,8 +135,9 @@ if [ "$GPU_GL" -eq 1 ]; then
     }
     # Like QEMU-1x, the bundle draws one guest pixel per point and is kept out of App Nap (#1292).
     defaults write org.breenix.qemu-gl NSAppSleepDisabled -bool YES
-    # UTM's default ANGLE backend; ANGLE alone would pick its OpenGL backend.
-    export ANGLE_DEFAULT_PLATFORM="${ANGLE_DEFAULT_PLATFORM:-metal}"
+    # UTM's default ANGLE backend, Metal, unless the caller sets the variable (empty: ANGLE's own
+    # default, its OpenGL backend).
+    export ANGLE_DEFAULT_PLATFORM="${ANGLE_DEFAULT_PLATFORM-metal}"
     if [ "$DISPLAY_MODE" = cocoa ]; then
         DISPLAY_ARGS=(-display cocoa,gl=es)
     else

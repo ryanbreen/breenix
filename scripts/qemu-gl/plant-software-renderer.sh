@@ -5,8 +5,9 @@
 #
 #   scripts/qemu-gl/plant-software-renderer.sh DIR
 #
-# Prints the planted executable. Boot it with ANGLE's OpenGL backend:
-#   BREENIX_QEMU_GL_BINARY=<that path> ANGLE_DEFAULT_PLATFORM=gl \
+# Prints the planted executable. Boot it with ANGLE's OpenGL backend (an empty
+# ANGLE_DEFAULT_PLATFORM; ANGLE's "gl" is its OpenGL ES backend, which macOS lacks):
+#   BREENIX_QEMU_GL_BINARY=<that path> ANGLE_DEFAULT_PLATFORM= \
 #       scripts/boot-interactive.sh --gpu-gl ...
 # and scripts/check-host-renderer.py refuses the run, naming the software renderer.
 #
