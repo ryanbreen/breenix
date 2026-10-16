@@ -533,6 +533,9 @@ impl Held {
 impl Drop for Held {
     fn drop(&mut self) {
         self.publish();
+        if self.cpu == super::current_cpu_id_raw() {
+            crate::stall_probe::rq_released(self.cpu);
+        }
         RQ_LOCKS[self.cpu].unlock();
         let me = super::current_cpu_id_raw();
         if me < MAX_CPUS {
@@ -556,9 +559,14 @@ pub(super) fn local() -> Option<Held> {
     if SCHEDULER_HELD[cpu].load(Ordering::Relaxed) != 0 {
         panic!("scheduler: CPU {} took its run-queue lock while holding a scheduler lock", cpu);
     }
-    while !RQ_LOCKS[cpu].try_lock() {
-        core::hint::spin_loop();
+    if !RQ_LOCKS[cpu].try_lock() {
+        let t0 = crate::arch_impl::x86_64::timer::rdtsc();
+        while !RQ_LOCKS[cpu].try_lock() {
+            core::hint::spin_loop();
+        }
+        crate::stall_probe::rq_waited(t0);
     }
+    crate::stall_probe::rq_acquired(cpu);
     Some(Held::take(cpu, sched))
 }
 
@@ -566,7 +574,12 @@ pub(super) fn local() -> Option<Held> {
 /// vCPU has stopped while it holds its lock is passed over.
 pub(super) fn try_remote(cpu: usize) -> Option<Held> {
     let sched = LIVE.load(Ordering::Acquire);
-    if sched.is_null() || cpu >= MAX_CPUS || !RQ_LOCKS[cpu].try_lock() {
+    if sched.is_null() || cpu >= MAX_CPUS {
+        return None;
+    }
+    let taken = RQ_LOCKS[cpu].try_lock();
+    crate::stall_probe::rq_tried(taken);
+    if !taken {
         return None;
     }
     Some(Held::take(cpu, sched))
@@ -848,6 +861,7 @@ fn place_woken(local: &mut Held, source: Option<&mut Held>, tid: u64, target: Ta
     let home = match target {
         Target::Cpu(cpu, pinned) => match place(local, source, tid, cpu, promote, pinned) {
             Some(queued_on) => {
+                crate::stall_probe::placed(tid, Some(queued_on));
                 kick(queued_on);
                 return Some(queued_on);
             }
@@ -855,6 +869,7 @@ fn place_woken(local: &mut Held, source: Option<&mut Held>, tid: u64, target: Ta
         },
         Target::Hold(home) => home,
     };
+    crate::stall_probe::placed(tid, None);
     super::note_pinned_hold(tid, home);
     None
 }
@@ -959,6 +974,7 @@ fn expire_heap(local: &mut Held, mut source: Option<&mut Held>, now: u64) {
         if !timer_entry_live(held, wake_time, tid) {
             continue;
         }
+        crate::stall_probe::timer_due(tid, wake_time);
         let current_here = held.state().current_thread == Some(tid);
         let queued_len = held.queue().len() as u32;
         let Some(thread) = held.thread(tid) else {
@@ -1188,6 +1204,7 @@ pub(super) fn hold(tid: u64, bits: u64, home: usize) {
     let Some(slot) = find(tid) else {
         return;
     };
+    crate::stall_probe::fast(9);
     let mut word = slot.held.load(Ordering::Acquire);
     loop {
         if word != 0 && word >> HELD_TID_SHIFT != tid {
@@ -1735,8 +1752,21 @@ pub(super) fn with_thread<R>(tid: u64, f: impl FnOnce(&mut Held, &mut Thread) ->
                 Some(held) => held,
                 None if LIVE.load(Ordering::Acquire).is_null() => return None,
                 None => {
-                    core::hint::spin_loop();
-                    continue;
+                    let t0 = crate::arch_impl::x86_64::timer::rdtsc();
+                    let taken = loop {
+                        if let Some(held) = try_remote(owner) {
+                            break Some(held);
+                        }
+                        if self::owner(tid) != Some(owner) {
+                            break None;
+                        }
+                        core::hint::spin_loop();
+                    };
+                    crate::stall_probe::owner_waited(t0, owner);
+                    match taken {
+                        Some(held) => held,
+                        None => continue,
+                    }
                 }
             }
         };
@@ -1991,6 +2021,9 @@ fn notify_owned(local: &mut Held, mut source: Option<&mut Held>, tid: u64, notic
     let Some(state) = held.thread(tid).map(|thread| (thread.state, thread.blocked_in_syscall)) else {
         return;
     };
+    if matches!(notice, Notice::Signal) && !matches!(state.0, ThreadState::Running | ThreadState::Ready) {
+        crate::stall_probe::signal_due(tid, None);
+    }
     match (notice, state) {
         (Notice::Signal, (ThreadState::BlockedOnIO, _)) => {
             wake_owned(local, source.as_deref_mut(), tid, Wake::Io { from_isr_buffer: false });
