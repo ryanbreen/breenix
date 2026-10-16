@@ -43,6 +43,8 @@ const RES_COPY_B: u32 = 307;
 const RES_P: u32 = 308;
 const RES_G: u32 = 309;
 const VB_BYTES: u32 = 16384;
+/// Row pitch of the main R8 texture's backing: Parallels drops 3D transfers at a 64-byte pitch.
+const T8_PITCH: u32 = 256;
 
 // Object handles in CTX's sub-context 1 (one handle space for all object types).
 const S_A: u32 = 1;
@@ -1081,9 +1083,10 @@ fn late() {
     let mut tally = Tally;
     sleep_ms(2000);
     elapsed("late-begin");
-    if let Err(e) = r8_variants(&mut tally) {
-        tally.fail("r8-variants", e);
+    if let Err(e) = r8_variants() {
+        serial_println!("GPU_SPIKE info=r8-variants error={}", e);
     }
+    pitch_probes();
     if let Err(e) = big(&mut tally) {
         tally.fail("2560x1600", e);
     }
@@ -1197,7 +1200,7 @@ fn run_inner(tally: &mut Tally) -> Result<(), &'static str> {
     serial_println!("GPU_SPIKE ctx_create ctx={} us={}", CTX, now_us() - t);
 
     let ba = backing((AW * AH * 4) as usize)?;
-    let bt8 = backing((TW * TH) as usize)?;
+    let bt8 = backing((T8_PITCH * TH) as usize)?;
     let btb = backing((TW * TH * 4) as usize)?;
     let bca = backing((TW * TH * 4) as usize)?;
     let bb = backing((BW * BH * 4) as usize)?;
@@ -1223,7 +1226,7 @@ fn run_inner(tally: &mut Tally) -> Result<(), &'static str> {
         for y in 0..TH {
             for x in 0..TW {
                 let i = (y * TW + x) as usize;
-                *bt8.ptr.add(i) = t8(x, y) as u8;
+                *bt8.ptr.add((y * T8_PITCH + x) as usize) = t8(x, y) as u8;
                 let [r, g, b, a] = tb(x, y).map(|c| c as u8);
                 core::ptr::copy_nonoverlapping([b, g, r, a].as_ptr(), btb.ptr.add(i * 4), 4);
                 core::ptr::copy_nonoverlapping([r, g, b, a].as_ptr(), btr.ptr.add(i * 4), 4);
@@ -1234,15 +1237,17 @@ fn run_inner(tally: &mut Tally) -> Result<(), &'static str> {
         dma_cache_clean(b.ptr, b.len);
     }
     let t = now_us();
-    transfer(cmd::TRANSFER_TO_HOST_3D, RES_T8, TW, TH, TW)?;
+    transfer(cmd::TRANSFER_TO_HOST_3D, RES_T8, TW, TH, T8_PITCH)?;
     transfer(cmd::TRANSFER_TO_HOST_3D, RES_TB, TW, TH, TW * 4)?;
     transfer(cmd::TRANSFER_TO_HOST_3D, RES_TR, TW, TH, TW * 4)?;
     serial_println!("GPU_SPIKE uploads textures=3 us={}", now_us() - t);
     bt8.fill(POISON);
-    let (rf, ra, _) = transfer(cmd::TRANSFER_FROM_HOST_3D, RES_T8, TW, TH, TW)?;
+    let (rf, ra, _) = transfer(cmd::TRANSFER_FROM_HOST_3D, RES_T8, TW, TH, T8_PITCH)?;
     dma_cache_invalidate(bt8.ptr, bt8.len);
     let raw = bt8.bytes();
-    let bad = (0..TW * TH).filter(|&i| raw[i as usize] as u32 != t8(i % TW, i / TW)).count();
+    let bad = (0..TW * TH)
+        .filter(|&i| raw[((i / TW) * T8_PITCH + i % TW) as usize] as u32 != t8(i % TW, i / TW))
+        .count();
     serial_println!(
         "GPU_SPIKE check=r8-texture-readback bytes={} mismatched={} answered={} first16={:?} verdict={}",
         TW * TH,
@@ -1519,7 +1524,8 @@ const R8_VARIANTS: [(&str, u32, u32, bool, u32); 6] = [
     ("r8-64-rendertarget-transfer", 64, 64, true, 0),
 ];
 
-fn r8_variants(tally: &mut Tally) -> Result<(), &'static str> {
+/// Diagnostics, reported but not counted in the tally.
+fn r8_variants() -> Result<(), &'static str> {
     const RES_PR: u32 = 316;
     const S_PR: u32 = 5;
     const H_FS_PROBE_TXF0: u32 = 60;
@@ -1597,7 +1603,58 @@ fn r8_variants(tally: &mut Tally) -> Result<(), &'static str> {
             w * TH,
             &raw[..8]
         );
-        tally.record(name, &probe, probe.mismatched == 0 && bad == 0);
+        report(name, &probe, probe.mismatched == 0 && bad == 0);
     }
     Ok(())
+}
+
+/// Transfer round trips at several row pitches: (name, format, bytes per pixel, width, pitch).
+const PITCHES: [(&str, u32, u32, u32, u32); 7] = [
+    ("r8-w64-pitch128", vfmt::R8_UNORM, 1, 64, 128),
+    ("r8-w64-pitch320", vfmt::R8_UNORM, 1, 64, 320),
+    ("r8-w64-pitch512", vfmt::R8_UNORM, 1, 64, 512),
+    ("r8-w256-pitch256", vfmt::R8_UNORM, 1, 256, 256),
+    ("bgra-w48-pitch192", vfmt::B8G8R8A8_UNORM, 4, 48, 192),
+    ("bgra-w80-pitch320", vfmt::B8G8R8A8_UNORM, 4, 80, 320),
+    ("bgra-w64-pitch256", vfmt::B8G8R8A8_UNORM, 4, 64, 256),
+];
+
+/// Records, without judging the run, which row pitches a 3D transfer honours in each direction.
+fn pitch_probes() {
+    for (i, &(name, fmt, bpp, w, pitch)) in PITCHES.iter().enumerate() {
+        let id = 330 + i as u32;
+        let result = (|| -> Result<(usize, u32), &'static str> {
+            let b = backing((pitch * TH) as usize)?;
+            create(id, pipe::TEXTURE_2D, fmt, pipe::BIND_SAMPLER_VIEW, w, TH, Some(&b))?;
+            let byte = |x: u32, y: u32| ((x * 7 + y * 13 + 1) & 255) as u8;
+            unsafe {
+                for y in 0..TH {
+                    for x in 0..w * bpp {
+                        *b.ptr.add((y * pitch + x) as usize) = byte(x, y);
+                    }
+                }
+            }
+            dma_cache_clean(b.ptr, b.len);
+            transfer(cmd::TRANSFER_TO_HOST_3D, id, w, TH, pitch)?;
+            b.fill(POISON);
+            transfer(cmd::TRANSFER_FROM_HOST_3D, id, w, TH, pitch)?;
+            dma_cache_invalidate(b.ptr, b.len);
+            let raw = b.bytes();
+            let bad = (0..TH)
+                .flat_map(|y| (0..w * bpp).map(move |x| (x, y)))
+                .filter(|&(x, y)| raw[(y * pitch + x) as usize] != byte(x, y))
+                .count();
+            Ok((bad, w * bpp * TH))
+        })();
+        match result {
+            Ok((bad, total)) => serial_println!(
+                "GPU_SPIKE info=pitch-probe {} round_trip_mismatched_bytes={}/{} {}",
+                name,
+                bad,
+                total,
+                if bad == 0 { "HONOURED" } else { "DROPPED" }
+            ),
+            Err(e) => serial_println!("GPU_SPIKE info=pitch-probe {} error={}", name, e),
+        }
+    }
 }
