@@ -51,6 +51,11 @@ fn main() {
     )
     .expect("write stage_markers.rs");
 
+    if target.starts_with("aarch64") {
+        let ribbon=stage_markers::arm64_ribbon(repo_root).expect("ARM64 ribbon stages");
+        fs::write(PathBuf::from(&out_dir).join("boot_ribbon.rs"),format!("&{ribbon:?}")).expect("write ribbon stages");
+    }
+
     // Only build x86_64 assembly for x86_64 targets
     if target.contains("x86_64") {
         // Assemble syscall entry code

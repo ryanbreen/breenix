@@ -329,3 +329,22 @@ pub fn boot_path_markers(repo: &Path) -> Result<Vec<String>, String> {
     markers.sort_by(|a, b| (a.as_bytes().last(), a).cmp(&(b.as_bytes().last(), b)));
     Ok(markers)
 }
+
+/// ARM64-applicable stages, in the boot-path file's order (not marker sort order).
+pub fn arm64_ribbon(repo:&Path)->Result<Vec<String>,String> {
+    let path=read_json(&repo.join("docs/boot-path.json"))?;
+    let catalog=read_json(&catalog_path(repo,"aarch64"))?;
+    let names:BTreeMap<_,_>=catalog.get("stages").as_array().ok_or("no stages")?.iter()
+        .filter_map(|s|Some((s.get("name").as_str()?,s.get("marker").as_str()?))).collect();
+    let mut out=Vec::new();
+    for m in path.get("milestones").as_array().ok_or("no milestones")? {
+        if let Some(stages)=m.get("stages").get("aarch64").as_array() {
+            for s in stages {
+                let marker=if let Some(name)=s.as_str(){*names.get(name).ok_or_else(||format!("unknown stage {name}"))?}
+                    else{s.get("marker").as_str().ok_or("missing marker")?};
+                out.push(marker.to_owned());
+            }
+        }
+    }
+    Ok(out)
+}

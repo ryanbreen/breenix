@@ -720,6 +720,13 @@ fn fbmmap(width_out: u64) -> SyscallResult {
         None => return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64),
     };
 
+    // Repeated mapping queries return this process's existing pane, rather than
+    // failing after the caller has already used it to paint a previous frame.
+    if let Some(pane)=crate::process::with_process_manager(|m|m.find_process_by_thread(current_thread_id).and_then(|(_,p)|p.fb_mmap)).flatten() {
+        if width_out!=0 && crate::syscall::userptr::copy_to_user(width_out as *mut u64,&(pane.width as u64)).is_err(){return SyscallResult::Err(14);}
+        return SyscallResult::Ok(pane.user_addr);
+    }
+
     // Check the optional pane-width out pointer before mapping anything.
     if width_out != 0
         && crate::syscall::userptr::validate_user_ptr_write(width_out as *mut u64).is_err()

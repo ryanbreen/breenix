@@ -940,7 +940,7 @@ pub fn test_device() -> Result<(), &'static str> {
 
 /// A synchronous, fenced presentation. The record is copied from device answers, never
 /// inferred from queue submission. Caller serializes the backing and the readback record.
-pub fn present_damage(rects:&[breengel_abi::Rect], skip:bool, wrong:bool, stale:bool)
+pub fn present_damage(rects:&[breengel_abi::Rect], skip:bool, wrong:bool, stale:Option<u64>)
     -> Result<(u64, alloc::vec::Vec<breengel_abi::Completion>), &'static str>
 {
     with_device_state(|device,state| {
@@ -966,7 +966,7 @@ pub fn present_damage(rects:&[breengel_abi::Rect], skip:bool, wrong:bool, stale:
         if SCANOUT_RESOURCE.load(Ordering::Acquire)!=bound { bind_scanout(device,state,bound)?; }
         for (i,r) in rects.iter().enumerate() {
             if skip && i==0 { continue; }
-            if stale && i==0 { REUSE_FENCE.store(LAST_ANSWER.lock().fence,Ordering::Relaxed); }
+            if i==0 {if let Some(fence)=stale {REUSE_FENCE.store(fence,Ordering::Relaxed);}}
             transfer_to_host(device,state,r.x as u32,r.y as u32,r.w as u32,r.h as u32)?;
             done.push(*LAST_ANSWER.lock());
         }
@@ -982,3 +982,6 @@ pub fn present_damage(rects:&[breengel_abi::Rect], skip:bool, wrong:bool, stale:
 pub fn composed_resource() -> u64 {
     unsafe { (&*(&raw const GPU_DEVICE)).as_ref().map_or(0,|s| s.resource_id as u64) }
 }
+
+/// Most recently answered command fence, for initializing the observation high-water mark.
+pub fn last_answer_fence()->u64 {LAST_ANSWER.lock().fence}

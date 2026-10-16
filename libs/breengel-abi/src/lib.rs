@@ -667,7 +667,10 @@ pub mod tc_point {
     pub const CORRUPT_OUTSIDE_DAMAGE: u32 = 9;
     pub const PANEL_CURSOR_NO_RESTORE: u32 = 10;
     pub const RELEASE_STALL: u32 = 11;
-    // 12 to 15 are the run stage's points (section 23), which DISPLAY defines.
+    pub const STAGE_LIE:u32=12;
+    pub const STAGE_SUBSTITUTE_FRAME:u32=13;
+    pub const STAGE_DRAW_IN_WINDOW:u32=14;
+    pub const RIBBON_DROP_STAGE:u32=15;
     pub const COMPOSITE_STALL: u32 = 16;
     pub const MOVE_POINTER: u32 = 17;
     /// The highest point number section 21 defines.
@@ -675,7 +678,7 @@ pub mod tc_point {
 
     /// Whether section 21 defines `point`.
     pub const fn defined(point: u32) -> bool {
-        matches!(point, IGNORE_DAMAGE..=RELEASE_STALL | COMPOSITE_STALL | MOVE_POINTER)
+        matches!(point, IGNORE_DAMAGE..=MOVE_POINTER)
     }
 }
 
