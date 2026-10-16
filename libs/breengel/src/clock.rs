@@ -34,14 +34,26 @@ impl Page {
 fn page() -> Option<Arc<Page>> {
     let path = std::env::var_os("BREENIX_UI_CLOCK").map(PathBuf::from)?;
     let mut cached = PAGE.lock().expect("UI clock mapping lock");
-    let file = std::fs::File::open(&path).expect("BREENIX_UI_CLOCK cannot be opened");
-    let meta = file.metadata().expect("UI clock metadata");
-    assert!(meta.len() >= 64, "short UI clock page");
+    // stat does not open a descriptor. An unlinked page remains a valid shared
+    // mapping; keep it until this path names a new inode or the session changes.
+    let meta = match std::fs::metadata(&path) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if let Some((old, _, _, mapping)) = cached.as_ref() {
+                if *old == path { return Some(mapping.clone()); }
+            }
+            panic!("BREENIX_UI_CLOCK cannot be opened: {e}");
+        }
+        Err(e) => panic!("UI clock metadata: {e}"),
+    };
     if let Some((old, dev, ino, mapping)) = cached.as_ref() {
         if *old == path && *dev == meta.dev() && *ino == meta.ino() {
             return Some(mapping.clone());
         }
     }
+    let file = std::fs::File::open(&path).expect("BREENIX_UI_CLOCK cannot be opened");
+    let meta = file.metadata().expect("UI clock metadata");
+    assert!(meta.len() >= 64, "short UI clock page");
     // PROT_READ=1, MAP_SHARED=1 on Breenix and the supported Unix hosts.
     let ptr = unsafe { mmap(std::ptr::null_mut(), 64, 1, 1, file.as_raw_fd(), 0) };
     assert!(ptr as isize != -1 && !ptr.is_null(), "UI clock mmap failed");

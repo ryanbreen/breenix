@@ -29,6 +29,9 @@ fn shared_page_tracks_epochs_without_reading_real_time() {
     std::fs::rename(replacement, &path).unwrap();
     assert_eq!(clock::now_ns(), 987);
     assert_eq!(clock::epoch(), 8);
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(clock::now_ns(), 987, "unlinked mapped clock remains usable");
+    assert_eq!(clock::epoch(), 8);
     let before = clock::real_clock_reads();
     assert!(clock::real_now_ns() > 0);
     assert_eq!(clock::real_clock_reads(), before + 1);
@@ -37,5 +40,5 @@ fn shared_page_tracks_epochs_without_reading_real_time() {
     assert!(clock::now_ns() >= first);
     assert_eq!(clock::epoch(), 0);
     assert!(clock::wall_ns() > 1_767_225_600_000_000_000);
-    std::fs::remove_file(path).unwrap();
+
 }
