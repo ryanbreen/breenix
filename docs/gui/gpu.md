@@ -34,8 +34,8 @@ when this was written.
 1. **A new effort, `gpu` ("GPU rendering"), goes into the path after `sdk` and before `breengel`.** It
    delivers the kernel GPU core, two independently written device backends (VirGL and SVGA3D DX), a
    Breenix-authored GL-style API (`libs/bgl`, "BGL"), display modes up to 2560×1600 with a scale factor,
-   present, and exact device readback on ARM64 QEMU, Parallels and VMware. Its suite is `gpu` (168 cases, 9 categories,
-   9 milestones).
+   present, and exact device readback on ARM64 QEMU, Parallels and VMware. Its suite is `gpu` (168 cases,
+   9 categories, 9 milestones).
 2. **Every target renders on a hardware GPU; no software renderer counts.** Each run carries a host-side
    renderer attestation (section 1.6.5), and the gate refuses a run whose renderer is software or unknown.
    llvmpipe may exercise guest transport code on throwaway branches; it never produces a verdict.
@@ -665,7 +665,8 @@ most of this work's code does not exist yet, and the items below are what makes 
 | BreenGL rebuild: drawing layer, text on `coverage_spans`, windows and GPU composition, `libgfx-ref` and its tests, porting 8 programs, catch-up on three targets | 4 to 8 weeks |
 | Host stack upkeep (pins, UTM and macOS updates) | ongoing, after landing |
 
-Together, roughly 3.5 to 7 months of calendar time to #1625 landing. These are guesses until G0 and the spikes report, and are revised then.
+Together, roughly 3.5 to 7 months of calendar time to #1625 landing. These are guesses until G0 and the spikes
+report, and are revised then.
 
 ## 2. BreenGL rebuilt on the GPU
 
@@ -967,8 +968,8 @@ The path's top-level outcome ends "…an SDK for building our own applications, 
 desktop (GPU rendering, BreenGL, the window manager and its applications) tested to the same bar."
 
 `breengel`, `window-manager`, `ui-testing` and `gui-apps` carry the same `targets` and `targetsNote`.
-`window-manager`, `ui-testing` and `gui-apps` keep their entries otherwise. Their plans gain one rule when each is
-authored: bwm composes through BGL, and every app draws through BreenGL on the GPU.
+`window-manager`, `ui-testing` and `gui-apps` keep their entries otherwise. Their plans gain one rule when each
+is authored: bwm composes through BGL, and every app draws through BreenGL on the GPU.
 
 `docs/gui/plan.md` points here and states the GPU-only direction in its decisions; its CPU-rendering sections
 (§1 item 3, §4, §14, §20.1) and `docs/gui/summary.md` are rewritten with BreenGL's contract change (section
@@ -1026,8 +1027,8 @@ authored: bwm composes through BGL, and every app draws through BreenGL on the G
    reuse waits on it; the macOS host stack starts beside it, since it reuses no guest code.
 4. G1 onward on ARM64 QEMU.
 
-**Rulings, 2026-10-16, made under the operator's GPU-only ruling.** R2 to R8 are decided; R1 is the
-operator's.
+**Rulings, 2026-10-16, made under the operator's GPU-only ruling.** R1 to R8 are decided; R1 is the
+operator's own.
 
 - **R1, x86-64's GPU: decided (operator).** The current x86 gate host stays VGA only and x86-64 is measured
   up to the shell. x86-64 leaves the GPU-era efforts (`gpu`, `breengel`, `window-manager`, `ui-testing`,

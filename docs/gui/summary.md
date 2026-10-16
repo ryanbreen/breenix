@@ -41,8 +41,8 @@ it.
 ## The four efforts
 
 Each effort runs one suite, and a milestone is done when its cases pass on ARM64 QEMU, Parallels and VMware
-with zero skips (x86-64 joins with the dedicated Breenix hardware box). Where a target cannot run a layer yet, getting it there is milestone work, never an
-exemption.
+with zero skips (x86-64 joins with the dedicated Breenix hardware box). Where a target cannot run a layer yet,
+getting it there is milestone work, never an exemption.
 
 | Effort | Milestones, in build order | Cases |
 |---|---|---|
