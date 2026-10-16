@@ -248,6 +248,15 @@ VIGIL_ID=
 VIGIL_CPUS=
 [ "$CPUS" = 4 ] || VIGIL_CPUS=$CPUS
 [ -n "$ONLY" ] || VIGIL_ID=$(BREENIX_VIGIL_CPUS="$VIGIL_CPUS" "$ROOT/scripts/vigil-record.sh" start qemu "$MODE" "$SUITE" "$SERIAL_LOG" "" "$QEMU_PROFILE")
+# Vigil currently discards --profile for non-beast platforms. Preserve the actual
+# watch configuration on the same record, without registering a second boot.
+if [ -n "$VIGIL_ID" ] && [ "${PACE:-0}" -gt 0 ]; then
+    VIGIL_HOME=${VIGIL_TEST_HOME:-$(python3 -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')}
+    python3 "$ROOT/scripts/showcase-pace.py" --suite "$SUITE" --pace "$PACE" \
+        --cases "${ONLY:+1}" --gate-timeout "$GATE_TIMEOUT" --idle-exit "$IDLE_EXIT" \
+        --record "$VIGIL_HOME/Library/Application Support/Vigil/breenix/boots/$VIGIL_ID/run.json" \
+        --profile "$QEMU_PROFILE"
+fi
 # Vigil's BreenixScreen looks for qmp.sock in the registered boot's folder, which vigil-cli makes under the
 # account's home as macOS reports it (VIGIL_TEST_HOME in Vigil's tests), not under $HOME.
 # Vigil's capture takes socket paths of at most 103 bytes, counted in UTF-8 (macOS itself allows 104).

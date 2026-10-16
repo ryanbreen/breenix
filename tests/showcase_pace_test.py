@@ -61,6 +61,20 @@ class ShowcasePaceBudgetTest(unittest.TestCase):
             serial.write_text(text.replace("START cases=3", "START cases=3 pace_ms=400").replace("PASS ms=1", "FAIL ms=1 msg=broken", 1))
             self.assertFalse(module.verdict(manifest, serial, [serial])[0])
 
+    def test_pace_metadata_survives_a_cli_that_drops_arm_profiles(self):
+        import json
+        with tempfile.TemporaryDirectory() as directory:
+            record = Path(directory) / "run.json"
+            original = {"id": "real-run-shape", "platform": "qemu", "suite": "breengel", "startedAt": 123, "target": {"main": {}}}
+            record.write_text(json.dumps(original))
+            subprocess.run(["python3", str(ROOT / "scripts/showcase-pace.py"),
+                            "--suite", "breengel", "--pace", "400", "--gate-timeout", "1800",
+                            "--idle-exit", "300", "--record", str(record), "--profile", "hvf-host-pace-400ms"], check=True)
+            saved = json.loads(record.read_text())
+            self.assertEqual(saved["showcasePaceMS"], 400)
+            self.assertEqual(saved["profile"], "hvf-host-pace-400ms")
+            self.assertEqual({k: saved[k] for k in original}, original)
+
     def test_completion_and_idle_budgets(self):
         import importlib.util
         spec = importlib.util.spec_from_file_location("pace", ROOT / "scripts/showcase-pace.py")
