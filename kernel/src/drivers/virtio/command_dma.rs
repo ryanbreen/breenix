@@ -77,6 +77,23 @@ impl DmaRequest {
         self.device_owned = true;
     }
 
+    pub fn device_owned(&self) -> bool {
+        self.device_owned
+    }
+
+    /// The transport publishes at the avail-ring boundary, after preflight.
+    /// A failed send returns ownership only if it never published the request.
+    pub fn submit<T>(
+        &mut self,
+        send: impl FnOnce(&mut Self) -> Result<T, &'static str>,
+    ) -> Result<T, &'static str> {
+        let result = send(self);
+        if result.is_ok() {
+            self.returned();
+        }
+        result
+    }
+
     /// Caller has validated the exact descriptor-chain return. A device error
     /// response still returns ownership, although it must remain an error.
     pub fn returned(&mut self) {

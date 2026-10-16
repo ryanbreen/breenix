@@ -58,6 +58,10 @@ const SVGA_REG_BUSY: u32 = 22;
 const SVGA_REG_TRACES: u32 = 45;
 const SVGA_REG_COMMAND_LOW: u32 = 48;
 const SVGA_REG_COMMAND_HIGH: u32 = 49;
+const SVGA_REG_FIFO_CAPS: u32 = 68;
+const SVGA_REG_FENCE: u32 = 69;
+const SVGA_FIFO_CAP_FENCE: u32 = 1 << 0;
+const SVGA_CMD_FENCE: u32 = 30;
 
 // ─── SVGA capability bits ───────────────────────────────────────────────────
 
@@ -99,7 +103,7 @@ const SVGA_3D_CMD_SET_OTABLE_BASE64: u32 = 1115;
 /// Define a Guest-Backed Memory Object (64-bit PPN).
 const SVGA_3D_CMD_DEFINE_GB_MOB64: u32 = 1135;
 /// Destroy a MOB.
-#[allow(dead_code)]
+#[cfg(feature = "testing")]
 const SVGA_3D_CMD_DESTROY_GB_MOB: u32 = 1094;
 /// Define a Guest-Backed Surface.
 const SVGA_3D_CMD_DEFINE_GB_SURFACE_V2: u32 = 1134;
@@ -113,6 +117,14 @@ const SVGA_3D_CMD_DEFINE_GB_SCREENTARGET: u32 = 1124;
 const SVGA_3D_CMD_BIND_GB_SCREENTARGET: u32 = 1126;
 /// Present a dirty region of the Screen Target to the display.
 const SVGA_3D_CMD_UPDATE_GB_SCREENTARGET: u32 = 1127;
+#[cfg(feature = "testing")]
+const SVGA_3D_CMD_SURFACE_COPY: u32 = 1042;
+#[cfg(feature = "testing")]
+const SVGA_3D_CMD_READBACK_GB_IMAGE: u32 = 1103;
+#[cfg(feature = "testing")]
+const SVGA_3D_CMD_DESTROY_GB_SCREENTARGET: u32 = 1125;
+#[cfg(feature = "testing")]
+const SVGA_3D_CMD_DESTROY_GB_SURFACE: u32 = 1098;
 
 // ─── OTable types ───────────────────────────────────────────────────────────
 
@@ -159,8 +171,7 @@ const SVGA_CB_CONTEXT_DEVICE: u32 = 63;
 // any submission error/timeout -> Failed until a fresh device boot. No command
 // is retried, and a late device write cannot resurrect a failed context.
 static CB_LOCK: spin::Mutex<()> = spin::Mutex::new(());
-static CB_READY: AtomicBool = AtomicBool::new(false);
-static CB_FAILED: AtomicBool = AtomicBool::new(false);
+static CB_STATE: command::ContextState = command::ContextState::new();
 
 // ─── Driver state ───────────────────────────────────────────────────────────
 
@@ -278,9 +289,11 @@ fn submit_commands_ctx(cmds: &[u8], ctx: u32) -> Result<(), &'static str> {
                 // Conservatively retain the allocation for every error status,
                 // including unknown and PARTIAL_COMPLETE; no documented reset
                 // has returned ownership. The wrapper stops further commands.
+                CB_STATE.fail();
                 return Err("SVGA device rejected command buffer");
             }
             if crate::arch_impl::aarch64::timer::rdtsc().wrapping_sub(start) >= budget {
+                CB_STATE.fail();
                 return Err("SVGA command buffer timed out; DMA retained");
             }
             core::hint::spin_loop();
@@ -292,10 +305,10 @@ fn submit_commands_ctx(cmds: &[u8], ctx: u32) -> Result<(), &'static str> {
 /// The device context carries this control message, not SVGA3D packets.
 fn start_context0() -> Result<(), &'static str> {
     let _guard = CB_LOCK.lock();
-    if CB_FAILED.load(Ordering::Acquire) {
+    if CB_STATE.failed() {
         return Err("SVGA context failed; device reset required");
     }
-    if CB_READY.load(Ordering::Acquire) {
+    if CB_STATE.ready() {
         return Ok(());
     }
     let words = [1u32, 1, SVGA_CB_CONTEXT_0];
@@ -305,11 +318,11 @@ fn start_context0() -> Result<(), &'static str> {
     }
     match submit_commands_ctx(&bytes, SVGA_CB_CONTEXT_DEVICE) {
         Ok(()) => {
-            CB_READY.store(true, Ordering::Release);
+            CB_STATE.start()?;
             Ok(())
         }
         Err(error) => {
-            CB_FAILED.store(true, Ordering::Release);
+            CB_STATE.fail();
             Err(error)
         }
     }
@@ -344,27 +357,30 @@ unsafe fn cache_invalidate_range(virt: u64, size: usize) {
 /// check of this routing; a non-COMPLETED status remains a failure.
 fn submit_commands(cmds: &[u8]) -> Result<(), &'static str> {
     let _guard = CB_LOCK.lock();
-    if CB_FAILED.load(Ordering::Acquire) || !CB_READY.load(Ordering::Acquire) {
+    if CB_STATE.failed() || !CB_STATE.ready() {
         return Err("SVGA submission context is unavailable");
     }
     // svga_reg.h SVGA_CMD_FENCE (30), SVGA_REG_FENCE (69). Buffer
     // consumption alone does not prove that preceding GPU work is finished.
     // Select a value different from the register's current value; the lock
     // ensures no other Breenix submission can satisfy it prematurely.
-    let previous = unsafe { reg_read(69) };
+    if unsafe { reg_read(SVGA_REG_FIFO_CAPS) } & SVGA_FIFO_CAP_FENCE == 0 {
+        return Err("SVGA GPU fence capability is required");
+    }
+    let previous = unsafe { reg_read(SVGA_REG_FENCE) };
     let next = match previous.wrapping_add(1) {
         0 => 1,
         value => value,
     };
     let mut fenced = Vec::with_capacity(cmds.len() + 8);
     fenced.extend_from_slice(cmds);
-    fenced.extend_from_slice(&30u32.to_le_bytes());
+    fenced.extend_from_slice(&SVGA_CMD_FENCE.to_le_bytes());
     fenced.extend_from_slice(&next.to_le_bytes());
     let result = submit_commands_ctx(&fenced, SVGA_CB_CONTEXT_0).and_then(|()| {
         let start = crate::arch_impl::aarch64::timer::rdtsc();
         let budget = crate::arch_impl::aarch64::timer::frequency_hz() * 5;
         loop {
-            if unsafe { reg_read(69) } == next {
+            if unsafe { reg_read(SVGA_REG_FENCE) } == next {
                 return Ok(());
             }
             if crate::arch_impl::aarch64::timer::rdtsc().wrapping_sub(start) >= budget {
@@ -374,8 +390,8 @@ fn submit_commands(cmds: &[u8]) -> Result<(), &'static str> {
         }
     });
     if result.is_err() {
-        CB_FAILED.store(true, Ordering::Release);
-        CB_READY.store(false, Ordering::Release);
+        CB_STATE.fail();
+        CB_STATE.stop();
         STDU_READY.store(false, Ordering::Release);
     }
     result
@@ -930,6 +946,17 @@ pub fn init_stdu() -> Result<(), &'static str> {
 /// DestroyGBSurface and DestroyGBMob; svga_reg.h SVGADCCmdStartStop.
 #[cfg(feature = "testing")]
 pub fn test_stdu_lifecycle() -> Result<(), &'static str> {
+    let registers = [
+        SVGA_REG_ENABLE,
+        SVGA_REG_WIDTH,
+        SVGA_REG_HEIGHT,
+        SVGA_REG_BITS_PER_PIXEL,
+        SVGA_REG_CONFIG_DONE,
+        SVGA_REG_TRACES,
+    ];
+    let saved = registers.map(|register| unsafe { reg_read(register) });
+    let saved_stride = unsafe { reg_read(SVGA_REG_BYTES_PER_LINE) };
+    let saved_offset = unsafe { reg_read(SVGA_REG_FB_OFFSET) };
     init_stdu()?;
     let width = unsafe { DISPLAY_WIDTH };
     let height = unsafe { DISPLAY_HEIGHT };
@@ -985,7 +1012,7 @@ pub fn test_stdu_lifecycle() -> Result<(), &'static str> {
     copy.bind_gb_surface(destination_surface, destination_mob);
     // SURFACE_COPY (1042): two SurfaceImageIds (24 bytes), then one
     // CopyBox (x,y,z,w,h,d,srcx,srcy,srcz: 36 bytes), total payload 60.
-    copy.cmd_header(1042, 60);
+    copy.cmd_header(SVGA_3D_CMD_SURFACE_COPY, 60);
     for word in [
         COMPOSITOR_SURFACE_ID,
         0,
@@ -1007,7 +1034,7 @@ pub fn test_stdu_lifecycle() -> Result<(), &'static str> {
     }
     submit_commands(&copy.finish())?;
     let mut readback = CmdEncoder::new();
-    readback.cmd_header(1103, 12); // READBACK_GB_IMAGE: SurfaceImageId
+    readback.cmd_header(SVGA_3D_CMD_READBACK_GB_IMAGE, 12); // READBACK_GB_IMAGE: SurfaceImageId
     readback.push_u32(destination_surface);
     readback.push_u32(0); // face
     readback.push_u32(0); // mipmap
@@ -1032,14 +1059,14 @@ pub fn test_stdu_lifecycle() -> Result<(), &'static str> {
     // Remove the test display and its objects before the normal VRAM console
     // resumes. Table and page-tree allocations remain device-safe for the boot.
     let mut cleanup = CmdEncoder::new();
-    cleanup.cmd_header(1125, 4);
+    cleanup.cmd_header(SVGA_3D_CMD_DESTROY_GB_SCREENTARGET, 4);
     cleanup.push_u32(COMPOSITOR_STID);
     for surface in [destination_surface, COMPOSITOR_SURFACE_ID] {
-        cleanup.cmd_header(1098, 4);
+        cleanup.cmd_header(SVGA_3D_CMD_DESTROY_GB_SURFACE, 4);
         cleanup.push_u32(surface);
     }
     for mob in [destination_mob, COMPOSITOR_MOB_ID] {
-        cleanup.cmd_header(1094, 4);
+        cleanup.cmd_header(SVGA_3D_CMD_DESTROY_GB_MOB, 4);
         cleanup.push_u32(mob);
     }
     submit_commands(&cleanup.finish())?;
@@ -1047,15 +1074,34 @@ pub fn test_stdu_lifecycle() -> Result<(), &'static str> {
         let _guard = CB_LOCK.lock();
         let stop: [u8; 12] = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         submit_commands_ctx(&stop, SVGA_CB_CONTEXT_DEVICE)?;
-        CB_READY.store(false, Ordering::Release);
+        CB_STATE.stop();
     }
     STDU_READY.store(false, Ordering::Release);
     COMPOSITOR_BUF_VIRT.store(0, Ordering::Release);
     COMPOSITOR_BUF_SIZE.store(0, Ordering::Release);
+    // The fenced MOB destruction and completed context stop returned ownership
+    // of both full-screen buffers. Keep the small table/page-tree allocations
+    // until device reset, but release the data pages before resuming the boot.
     unsafe {
-        reg_write(SVGA_REG_ENABLE, 1);
-        reg_write(SVGA_REG_CONFIG_DONE, 1);
-        reg_write(SVGA_REG_TRACES, 1);
+        let layout = Layout::from_size_align(pages * PAGE_SIZE, PAGE_SIZE)
+            .map_err(|_| "SVGA test buffer layout")?;
+        alloc::alloc::dealloc(buffer as *mut u8, layout);
+        alloc::alloc::dealloc(destination as *mut u8, layout);
+        reg_write(SVGA_REG_ENABLE, 0);
+        for (register, value) in registers.iter().zip(saved) {
+            reg_write(*register, value);
+        }
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+        for (register, value) in registers.iter().zip(saved) {
+            if reg_read(*register) != value {
+                return Err("SVGA display register restore failed");
+            }
+        }
+        if reg_read(SVGA_REG_BYTES_PER_LINE) != saved_stride
+            || reg_read(SVGA_REG_FB_OFFSET) != saved_offset
+        {
+            return Err("SVGA framebuffer layout restore failed");
+        }
     }
     if !exact {
         return Err("SVGA STDU device readback differs from uploaded image");

@@ -11,7 +11,7 @@
 //! a single colour attachment, deterministic UNORM writes, no depth/stencil/alpha
 //! test, no culling, filled triangles and no multisampling. Rasterization uses
 //! half-integer pixel centres (OpenGL 4.6 core, section 14.6.1) and the bottom-edge
-//! convention for our negative-Y viewport. These are profile choices.
+//! convention selected explicitly by this profile (not implied by the viewport).
 //! https://registry.khronos.org/OpenGL/specs/gl/glspec46.core.pdf
 
 // =============================================================================
@@ -220,46 +220,64 @@ impl ShaderProgram {
 // Command Buffer
 // =============================================================================
 
+extern crate alloc;
+use alloc::vec::Vec;
+
+// 128 setup words + 60 * 52 rectangle words + teardown and documented tweaks.
+// Keep storage off the kernel stack and reject an oversized stream as a whole.
+const COMMAND_WORDS: usize = 4096;
+
 /// Fixed-capacity VirGL command buffer. Accumulates u32 DWORDs for submission
 /// via VIRTIO_GPU_CMD_SUBMIT_3D.
 pub struct CommandBuffer {
-    data: [u32; 3072], // 12KB — large enough for 12 circle draws with inline vertex data
-    len: usize,
+    data: Vec<u32>,
+    overflow: bool,
 }
 
 impl CommandBuffer {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
-            data: [0u32; 3072],
-            len: 0,
+            data: Vec::with_capacity(COMMAND_WORDS),
+            overflow: false,
         }
     }
 
     /// Reset the buffer for reuse.
     pub fn clear(&mut self) {
-        self.len = 0;
+        self.data.clear();
+        self.overflow = false;
     }
 
     /// Get the command data as a u32 slice.
     pub fn as_slice(&self) -> &[u32] {
-        &self.data[..self.len]
+        &self.data
+    }
+
+    /// Never submit a prefix of an overflowing command stream.
+    pub fn finish(&self) -> Result<&[u32], &'static str> {
+        if self.overflow {
+            Err("VirGL command buffer capacity exceeded")
+        } else {
+            Ok(&self.data)
+        }
     }
 
     /// Number of u32 DWORDs in the buffer.
     pub fn len(&self) -> usize {
-        self.len
+        self.data.len()
     }
 
     /// Size in bytes.
     pub fn byte_len(&self) -> usize {
-        self.len * 4
+        self.data.len() * 4
     }
 
     /// Push a single DWORD.
     fn push(&mut self, val: u32) {
-        if self.len < self.data.len() {
-            self.data[self.len] = val;
-            self.len += 1;
+        if self.data.len() < COMMAND_WORDS {
+            self.data.push(val);
+        } else {
+            self.overflow = true;
         }
     }
 
@@ -294,10 +312,18 @@ impl CommandBuffer {
 
     /// A batch owns subcontext 1 only until its draw commands have executed.
     /// CREATE/SET/DESTROY_SUB_CTX are published virgl_context_cmd commands.
-    /// No host tweaks or optional multisample commands are part of this profile.
+    /// The published virgl_tweak_type IDs 0/1 select GLES BGRA emulation and
+    /// destination swizzle. Enable both for our BGRA resources on GLES/ANGLE;
+    /// desktop GL ignores GLES-only controls. ID 2 scales transform-feedback
+    /// queries, which this profile never uses, so it is left at its default.
     pub fn begin_batch(&mut self) {
         self.create_sub_ctx(1);
         self.set_sub_ctx(1);
+        for id in [0, 1] {
+            self.push(Self::cmd0(ccmd::SET_TWEAKS, 0, 2));
+            self.push(id);
+            self.push(1);
+        }
     }
 
     pub fn end_batch(&mut self) {
@@ -393,8 +419,15 @@ impl CommandBuffer {
         // OFFSET_UNITS/SCALE/CLAMP=IEEE +0.0 (polygon offset disabled).
         self.push(Self::cmd0(ccmd::CREATE_OBJECT, obj::RASTERIZER, 9));
         self.push_slice(&[
-            handle, s0_flags, 1.0f32.to_bits(), 0, 0, 1.0f32.to_bits(),
-            0.0f32.to_bits(), 0.0f32.to_bits(), 0.0f32.to_bits(),
+            handle,
+            s0_flags,
+            1.0f32.to_bits(),
+            0,
+            0,
+            1.0f32.to_bits(),
+            0.0f32.to_bits(),
+            0.0f32.to_bits(),
+            0.0f32.to_bits(),
         ]);
     }
 
@@ -411,13 +444,7 @@ impl CommandBuffer {
 
     // VIRGL_OBJ_SHADER_{HDR_SIZE,OFFSET,NUM_TOKENS}: one NUL-terminated text
     // chunk, no stream output, exact compiled token count including its header.
-    fn create_shader(
-        &mut self,
-        handle: u32,
-        shader_type: u32,
-        num_tokens: u32,
-        tgsi_text: &[u8],
-    ) {
+    fn create_shader(&mut self, handle: u32, shader_type: u32, num_tokens: u32, tgsi_text: &[u8]) {
         let text_len = tgsi_text.len() + 1; // include null terminator
         let text_dwords = (text_len + 3) / 4;
         // Header DWORDs: handle, type, offset, num_tokens, num_so_outputs = 5
@@ -781,6 +808,29 @@ impl CommandBuffer {
     }
 }
 
+/// Colour pipeline with handles unique across all object types in subcontext 1.
+pub fn colour_batch(width: u32, height: u32, resource: u32) -> CommandBuffer {
+    use self::format as fmt;
+    let mut batch = CommandBuffer::new();
+    batch.begin_batch();
+    batch.create_surface(1, resource, fmt::B8G8R8X8_UNORM, 0, 0);
+    batch.set_framebuffer_state(0, &[1]);
+    batch.create_blend_simple(2);
+    batch.create_dsa_default(3);
+    batch.create_rasterizer_default(4);
+    batch.create_profile_shader(5, ShaderProgram::Position);
+    batch.create_profile_shader(6, ShaderProgram::UniformColour);
+    batch.create_vertex_elements(7, &[(0, 0, 0, fmt::R32G32B32A32_FLOAT)]);
+    batch.bind_object(2, OBJ_BLEND);
+    batch.bind_object(3, OBJ_DSA);
+    batch.bind_object(4, OBJ_RASTERIZER);
+    batch.bind_object(7, OBJ_VERTEX_ELEMENTS);
+    batch.bind_shader(5, pipe::SHADER_VERTEX);
+    batch.bind_shader(6, pipe::SHADER_FRAGMENT);
+    batch.set_viewport(width as f32, height as f32);
+    batch
+}
+
 /// Reinterpret f32 as u32 bits (IEEE 754).
 #[inline]
 fn f32_bits(f: f32) -> u32 {
@@ -794,15 +844,27 @@ mod tests {
     #[test]
     fn shader_metadata_covers_each_declared_program_exactly() {
         use super::ShaderProgram::*;
-        for (program, stage, count) in [(Position, 0, 11), (UniformColour, 1, 11),
-            (PositionUv, 0, 17), (SampleRgba, 1, 20)] {
+        for (program, stage, count) in [
+            (Position, 0, 11),
+            (UniformColour, 1, 11),
+            (PositionUv, 0, 17),
+            (SampleRgba, 1, 20),
+        ] {
             let mut stream = CommandBuffer::new();
             stream.create_profile_shader(23, program);
             let words = stream.as_slice();
-            assert_eq!(&words[1..6], &[23, stage, program.source().len() as u32 + 1, count, 0]);
-            let packed: Vec<u8> = words[6..].iter().flat_map(|word| word.to_le_bytes()).collect();
+            assert_eq!(
+                &words[1..6],
+                &[23, stage, program.source().len() as u32 + 1, count, 0]
+            );
+            let packed: Vec<u8> = words[6..]
+                .iter()
+                .flat_map(|word| word.to_le_bytes())
+                .collect();
             assert_eq!(&packed[..program.source().len()], program.source());
-            assert!(packed[program.source().len()..].iter().all(|byte| *byte == 0));
+            assert!(packed[program.source().len()..]
+                .iter()
+                .all(|byte| *byte == 0));
             assert_eq!((words[0] >> 16) as usize, words.len() - 1);
         }
     }
@@ -811,7 +873,10 @@ mod tests {
     fn colour_profile_disables_dither_and_unused_attachments() {
         let mut stream = CommandBuffer::new();
         stream.create_blend_simple(7);
-        assert_eq!(stream.as_slice(), &[0x000b0101, 7, 0, 0, 0x78000000, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            stream.as_slice(),
+            &[0x000b0101, 7, 0, 0, 0x78000000, 0, 0, 0, 0, 0, 0, 0]
+        );
         stream.clear();
         stream.create_dsa_default(9);
         assert_eq!(stream.as_slice(), &[0x00050301, 9, 0, 0, 0, 0]);
@@ -821,13 +886,19 @@ mod tests {
     fn rasterization_has_defined_unit_sizes_and_pixel_rules() {
         let mut stream = CommandBuffer::new();
         stream.create_rasterizer_default(3);
-        assert_eq!(stream.as_slice(), &[0x00090201, 3, 0x60000002, 0x3f800000, 0, 0, 0x3f800000, 0, 0, 0]);
+        assert_eq!(
+            stream.as_slice(),
+            &[0x00090201, 3, 0x60000002, 0x3f800000, 0, 0, 0x3f800000, 0, 0, 0]
+        );
     }
 
     #[test]
     fn colour_clear_does_not_request_depth_or_stencil() {
         let mut stream = CommandBuffer::new();
         stream.clear_color(1.0, 0.5, 0.0, 1.0);
-        assert_eq!(stream.as_slice(), &[0x00080007, 4, 0x3f800000, 0x3f000000, 0, 0x3f800000, 0, 0, 0]);
+        assert_eq!(
+            stream.as_slice(),
+            &[0x00080007, 4, 0x3f800000, 0x3f000000, 0, 0x3f800000, 0, 0, 0]
+        );
     }
 }

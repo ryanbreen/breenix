@@ -99,9 +99,7 @@ pub const FLUSH_CALLER_VIRGL_COMPOSITE_FRAME_TEXTURED: u8 = 7;
 pub const FLUSH_CALLER_VIRGL_COMPOSITE_SINGLE_QUAD: u8 = 8;
 pub const FLUSH_CALLER_VIRGL_FLUSH: u8 = 9;
 pub const FLUSH_CALLER_VIRGL_INIT_PRIME: u8 = 10;
-pub const FLUSH_CALLER_VIRGL_INIT_STEP7: u8 = 11;
 pub const FLUSH_CALLER_VIRGL_INIT_STEP10: u8 = 12;
-pub const FLUSH_CALLER_VIRGL_TEST_TEXTURED_QUAD: u8 = 13;
 
 #[no_mangle]
 pub static VIRTGPU_SUBMIT_TOTAL: TraceCounter =
@@ -309,21 +307,9 @@ pub static VIRTGPU_FLUSH_BY_CALLER_VIRGL_INIT_PRIME: TraceCounter = TraceCounter
 );
 
 #[no_mangle]
-pub static VIRTGPU_FLUSH_BY_CALLER_VIRGL_INIT_STEP7: TraceCounter = TraceCounter::new(
-    "VIRTGPU_FLUSH_BY_CALLER_VIRGL_INIT_STEP7",
-    "VirGL init step 7 flush calls",
-);
-
-#[no_mangle]
 pub static VIRTGPU_FLUSH_BY_CALLER_VIRGL_INIT_STEP10: TraceCounter = TraceCounter::new(
     "VIRTGPU_FLUSH_BY_CALLER_VIRGL_INIT_STEP10",
     "VirGL init step 10 flush calls",
-);
-
-#[no_mangle]
-pub static VIRTGPU_FLUSH_BY_CALLER_VIRGL_TEST_TEXTURED_QUAD: TraceCounter = TraceCounter::new(
-    "VIRTGPU_FLUSH_BY_CALLER_VIRGL_TEST_TEXTURED_QUAD",
-    "VirGL textured quad test flush calls",
 );
 
 /// Register the provider and counters.
@@ -364,9 +350,7 @@ pub fn init() {
     register_counter(&VIRTGPU_FLUSH_BY_CALLER_VIRGL_COMPOSITE_SINGLE_QUAD);
     register_counter(&VIRTGPU_FLUSH_BY_CALLER_VIRGL_FLUSH);
     register_counter(&VIRTGPU_FLUSH_BY_CALLER_VIRGL_INIT_PRIME);
-    register_counter(&VIRTGPU_FLUSH_BY_CALLER_VIRGL_INIT_STEP7);
     register_counter(&VIRTGPU_FLUSH_BY_CALLER_VIRGL_INIT_STEP10);
-    register_counter(&VIRTGPU_FLUSH_BY_CALLER_VIRGL_TEST_TEXTURED_QUAD);
 }
 
 #[inline(always)]
@@ -580,11 +564,7 @@ fn count_flush_caller(caller_tag: u8) {
         }
         FLUSH_CALLER_VIRGL_FLUSH => VIRTGPU_FLUSH_BY_CALLER_VIRGL_FLUSH.increment(),
         FLUSH_CALLER_VIRGL_INIT_PRIME => VIRTGPU_FLUSH_BY_CALLER_VIRGL_INIT_PRIME.increment(),
-        FLUSH_CALLER_VIRGL_INIT_STEP7 => VIRTGPU_FLUSH_BY_CALLER_VIRGL_INIT_STEP7.increment(),
         FLUSH_CALLER_VIRGL_INIT_STEP10 => VIRTGPU_FLUSH_BY_CALLER_VIRGL_INIT_STEP10.increment(),
-        FLUSH_CALLER_VIRGL_TEST_TEXTURED_QUAD => {
-            VIRTGPU_FLUSH_BY_CALLER_VIRGL_TEST_TEXTURED_QUAD.increment()
-        }
         _ => {}
     }
 }

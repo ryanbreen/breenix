@@ -52,3 +52,46 @@ impl Header {
         })
     }
 }
+
+/// A failed submission is sticky: neither a late completion nor a new start
+/// may publish the context as usable before an explicit device reset.
+pub struct ContextState(core::sync::atomic::AtomicU8);
+
+impl ContextState {
+    pub const fn new() -> Self {
+        Self(core::sync::atomic::AtomicU8::new(0))
+    }
+
+    pub fn ready(&self) -> bool {
+        self.0.load(core::sync::atomic::Ordering::Acquire) == 1
+    }
+
+    pub fn failed(&self) -> bool {
+        self.0.load(core::sync::atomic::Ordering::Acquire) == 2
+    }
+
+    pub fn start(&self) -> Result<(), &'static str> {
+        self.0
+            .compare_exchange(
+                0,
+                1,
+                core::sync::atomic::Ordering::AcqRel,
+                core::sync::atomic::Ordering::Acquire,
+            )
+            .map(|_| ())
+            .map_err(|_| "SVGA context cannot start without reset")
+    }
+
+    pub fn fail(&self) {
+        self.0.store(2, core::sync::atomic::Ordering::Release);
+    }
+
+    pub fn stop(&self) {
+        let _ = self.0.compare_exchange(
+            1,
+            0,
+            core::sync::atomic::Ordering::AcqRel,
+            core::sync::atomic::Ordering::Acquire,
+        );
+    }
+}

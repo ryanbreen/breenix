@@ -60,7 +60,8 @@ impl GpuPciLock {
                         self.waiters.finish_wait();
                         continue;
                     }
-                    crate::task::waitqueue::PrepareOutcome::PublishFailed | crate::task::waitqueue::PrepareOutcome::OutOfMemory => {}
+                    crate::task::waitqueue::PrepareOutcome::PublishFailed
+                    | crate::task::waitqueue::PrepareOutcome::OutOfMemory => {}
                 }
             }
 
@@ -593,7 +594,6 @@ const VERTS_PER_CIRCLE: usize = CIRCLE_SEGMENTS + 2;
 const BYTES_PER_VERTEX: usize = 32;
 /// Breenix quota: enough for MAX_CIRCLES circles at the largest supported stride.
 const VB_SIZE: usize = MAX_CIRCLES * VERTS_PER_CIRCLE * BYTES_PER_VERTEX;
-
 
 /// Resource ID for the compositor texture (BWM uploads pixel buffers here)
 const RESOURCE_COMPOSITE_TEX_ID: u32 = 5;
@@ -1760,6 +1760,15 @@ pub fn get_config_irq() -> Option<u32> {
 /// Discovers a VirtIO GPU device on the PCI bus, negotiates features,
 /// sets up the control virtqueue, and configures the framebuffer.
 pub fn init() -> Result<(), &'static str> {
+    let result = init_device();
+    if result.is_err() {
+        GPU_PCI_INITIALIZED.store(false, Ordering::Release);
+        VIRGL_ENABLED.store(false, Ordering::Release);
+    }
+    result
+}
+
+fn init_device() -> Result<(), &'static str> {
     // Check if already initialized
     if is_initialized() {
         crate::serial_println!("[virtio-gpu-pci] GPU device already initialized");
@@ -1994,22 +2003,25 @@ pub fn init() -> Result<(), &'static str> {
     }
 
     // VirtIO 1.3 CSD01 5.7.6.8: enumerate capability metadata, then
-    // request only the baseline VirGL capability set (ID 1, revision 1).
-    // Unrelated capsets are not handshakes and are not fetched speculatively.
+    // Both VIRGL (ID 1) and VIRGL2 (ID 2) carry virgl_caps_v1 as their
+    // prefix. VIRGL2 need not advertise ID 1 alongside it. Validate the same
+    // formats, primitives and bounds regardless of the enclosing capset.
     if virgl_on {
         let mut baseline = false;
         for index in 0..num_capsets {
             let (id, version, size) = get_capset_info(index)?;
-            if id == 1 && version >= 1 {
+            if (id == 1 || id == 2) && version >= 1 {
                 if size < 308 || size as usize > 1024 - core::mem::size_of::<VirtioGpuCtrlHdr>() {
                     return Err("VirGL baseline capset exceeds supported response bounds");
                 }
-                get_capset(1, 1)?;
+                get_capset(id, if id == 2 { version.min(2) } else { 1 })?;
                 baseline = true;
                 break;
             }
         }
-        if !baseline { return Err("VirGL baseline capset revision 1 is required"); }
+        if !baseline {
+            return Err("VirGL v1 capability prefix is required");
+        }
     }
 
     // Query display info to see what Parallels reports as native resolution.
@@ -2395,6 +2407,7 @@ fn send_command(
         resp_len,
         cmd_type,
         resource_id,
+        None,
     )?;
     Ok(())
 }
@@ -2407,6 +2420,7 @@ fn send_command_with_trace(
     resp_len: u32,
     cmd_type: u32,
     resource_id: u32,
+    ownership: Option<&mut DmaRequest>,
 ) -> Result<u32, &'static str> {
     if DMA_QUEUE_STOPPED.load(Ordering::Acquire) || polled_chain_outstanding() {
         return Err("GPU PCI control queue still holds a timed-out polled command");
@@ -2414,6 +2428,9 @@ fn send_command_with_trace(
     drain_stale_ctrlq_completions(state);
     let previous_used_idx = state.last_used_idx;
     prepare_ctrlq_completion_wait(previous_used_idx)?;
+    if let Some(request) = ownership {
+        request.publish();
+    }
 
     publish_ctrlq_2desc(cmd_phys, cmd_len, resp_phys, resp_len);
 
@@ -2529,6 +2546,7 @@ fn send_command_3desc(
         &raw const PCI_RESP_BUF as *const u8,
         cmd_type,
         resource_id,
+        None,
     )?;
 
     Ok((used_len, resp_type))
@@ -2545,6 +2563,7 @@ fn send_command_3desc_with_trace(
     resp_virt: *const u8,
     cmd_type: u32,
     resource_id: u32,
+    ownership: Option<&mut DmaRequest>,
 ) -> Result<(u32, u32), &'static str> {
     if DMA_QUEUE_STOPPED.load(Ordering::Acquire) || polled_chain_outstanding() {
         return Err("GPU PCI control queue still holds a timed-out polled command");
@@ -2552,6 +2571,9 @@ fn send_command_3desc_with_trace(
     drain_stale_ctrlq_completions(state);
     let previous_used_idx = state.last_used_idx;
     prepare_ctrlq_completion_wait(previous_used_idx)?;
+    if let Some(request) = ownership {
+        request.publish();
+    }
 
     unsafe {
         let q = &raw mut PCI_CTRL_QUEUE;
@@ -2742,27 +2764,51 @@ fn submit_dma_request(
     for segment in 0..3 {
         dma_cache_clean(request.ptr(segment), request.len(segment));
     }
-    request.publish();
-    let result = if payload.is_empty() {
-        send_command_with_trace(state,
-            virt_to_phys(request.ptr(0) as u64), request.len(0) as u32,
-            virt_to_phys(request.ptr(2) as u64), request.len(2) as u32,
-            cmd_type, resource_id)
-    } else {
-        send_command_3desc_with_trace(state,
-            virt_to_phys(request.ptr(0) as u64), request.len(0) as u32,
-            virt_to_phys(request.ptr(1) as u64), request.len(1) as u32,
-            virt_to_phys(request.ptr(2) as u64), request.len(2) as u32,
-            request.ptr(2), cmd_type, resource_id).map(|(length, _)| length)
-    };
+    let result = request.submit(|request| {
+        let command_address = virt_to_phys(request.ptr(0) as u64);
+        let response_address = virt_to_phys(request.ptr(2) as u64);
+        let command_length = request.len(0) as u32;
+        let response_length = request.len(2) as u32;
+        if payload.is_empty() {
+            send_command_with_trace(
+                state,
+                command_address,
+                command_length,
+                response_address,
+                response_length,
+                cmd_type,
+                resource_id,
+                Some(request),
+            )
+        } else {
+            send_command_3desc_with_trace(
+                state,
+                command_address,
+                command_length,
+                virt_to_phys(request.ptr(1) as u64),
+                request.len(1) as u32,
+                response_address,
+                response_length,
+                request.ptr(2),
+                cmd_type,
+                resource_id,
+                Some(request),
+            )
+            .map(|(length, _)| length)
+        }
+    });
     let used = match result {
-        Ok(length) => { request.returned(); length }
+        Ok(length) => length,
         Err(error) => {
-            DMA_QUEUE_STOPPED.store(true, Ordering::Release);
-            return Err(error); // Drop retains the published allocation.
+            if request.device_owned() {
+                DMA_QUEUE_STOPPED.store(true, Ordering::Release);
+            }
+            return Err(error);
         }
     };
-    if used < response_size as u32 { return Err("GPU DMA short response"); }
+    if used < response_size as u32 {
+        return Err("GPU DMA short response");
+    }
     #[cfg(target_arch = "aarch64")]
     unsafe {
         // Invalidate the response before reading the device's DMA writes
@@ -2775,10 +2821,13 @@ fn submit_dma_request(
     let sent = unsafe { core::ptr::read_unaligned(command.as_ptr() as *const VirtioGpuCtrlHdr) };
     virtgpu::trace_response(response.type_);
     virtgpu_note_resource2_response(cmd_type, resource_id, response.type_);
-    // Section 5.7.6: a fenced response echoes this request's fence. A later
-    // fence or an IRQ is not a substitute for that request's completion.
+    // Exact used-ring return already established DMA ownership. Transfers
+    // must echo their fence. SUBMIT_3D may report the last completed GPU
+    // fence on Parallels; its caller then requires the one-shot sync below.
     if sent.flags & VIRTIO_GPU_FLAG_FENCE != 0
-        && (response.flags & VIRTIO_GPU_FLAG_FENCE == 0 || response.fence_id != sent.fence_id) {
+        && (response.flags & VIRTIO_GPU_FLAG_FENCE == 0
+            || (sent.type_ != cmd::SUBMIT_3D && response.fence_id != sent.fence_id))
+    {
         return Err("GPU DMA fence response mismatch");
     }
     Ok((used, response))
@@ -2786,37 +2835,69 @@ fn submit_dma_request(
 
 fn command_bytes<T>(command: &T) -> &[u8] {
     // Callers use only repr(C) wire packets with all bytes initialized.
-    unsafe { core::slice::from_raw_parts(command as *const T as *const u8, core::mem::size_of::<T>()) }
+    unsafe {
+        core::slice::from_raw_parts(command as *const T as *const u8, core::mem::size_of::<T>())
+    }
 }
 
-fn send_owned_command_expect_ok<T>(state: &mut GpuPciDeviceState, command: &T)
-    -> Result<VirtioGpuCtrlHdr, &'static str> {
+fn send_owned_command_expect_ok<T>(
+    state: &mut GpuPciDeviceState,
+    command: &T,
+) -> Result<VirtioGpuCtrlHdr, &'static str> {
     let (_, response) = submit_dma_request(state, command_bytes(command), &[])?;
-    if response.type_ != cmd::RESP_OK_NODATA { return Err("GPU command failed"); }
+    if response.type_ != cmd::RESP_OK_NODATA {
+        return Err("GPU command failed");
+    }
     Ok(response)
 }
 
 fn send_owned_transfer_to_host_3d_expect_ok(
     state: &mut GpuPciDeviceState,
-    box_x: u32, box_y: u32, box_w: u32, box_h: u32,
-    offset: u64, resource_id: u32, stride: u32,
+    box_x: u32,
+    box_y: u32,
+    box_w: u32,
+    box_h: u32,
+    offset: u64,
+    resource_id: u32,
+    stride: u32,
 ) -> Result<VirtioGpuCtrlHdr, &'static str> {
     // A dependent draw must see the upload, so request processing completion.
     let fence_id = state.next_fence_id;
     state.next_fence_id = fence_id.checked_add(1).ok_or("GPU fence space exhausted")?;
     let command = VirtioGpuTransferHost3d {
-        hdr: VirtioGpuCtrlHdr { type_: cmd::TRANSFER_TO_HOST_3D,
-            flags: VIRTIO_GPU_FLAG_FENCE, fence_id, ctx_id: VIRGL_CTX_ID, padding: 0 },
-        box_x, box_y, box_z: 0, box_w, box_h, box_d: 1, offset,
-        resource_id, level: 0, stride, layer_stride: 0,
+        hdr: VirtioGpuCtrlHdr {
+            type_: cmd::TRANSFER_TO_HOST_3D,
+            flags: VIRTIO_GPU_FLAG_FENCE,
+            fence_id,
+            ctx_id: VIRGL_CTX_ID,
+            padding: 0,
+        },
+        box_x,
+        box_y,
+        box_z: 0,
+        box_w,
+        box_h,
+        box_d: 1,
+        offset,
+        resource_id,
+        level: 0,
+        stride,
+        layer_stride: 0,
     };
     send_owned_command_expect_ok(state, &command)
 }
 
-fn send_owned_3desc_command(state: &mut GpuPciDeviceState,
-    header: &VirtioGpuCmdSubmit, payload: &[u32])
-    -> Result<(u32, VirtioGpuCtrlHdr), &'static str> {
-    let bytes = unsafe { core::slice::from_raw_parts(payload.as_ptr() as *const u8, core::mem::size_of_val(payload)) };
+fn send_owned_3desc_command(
+    state: &mut GpuPciDeviceState,
+    header: &VirtioGpuCmdSubmit,
+    payload: &[u32],
+) -> Result<(u32, VirtioGpuCtrlHdr), &'static str> {
+    let bytes = unsafe {
+        core::slice::from_raw_parts(
+            payload.as_ptr() as *const u8,
+            core::mem::size_of_val(payload),
+        )
+    };
     submit_dma_request(state, command_bytes(header), bytes)
 }
 
@@ -2964,8 +3045,10 @@ fn get_capset_info(capset_index: u32) -> Result<(u32, u32, u32), &'static str> {
 }
 
 /// Retrieve and validate the baseline capability profile. Wire provenance:
-/// virgl_hw.h, virgl_supported_format_mask and virgl_caps_v1 at the pinned
-/// revision in virgl.rs. Four 16-word masks follow max_version; bset then
+/// virgl_hw.h, virgl_supported_format_mask and virgl_caps_v1 (also the
+/// first member of virgl_caps_v2):
+/// https://chromium.googlesource.com/chromiumos/third_party/virglrenderer/+/07a5bc398dfffdc36ad20a3476348753aa10a322/src/virgl_hw.h
+/// Four 16-word masks follow max_version; bset then
 /// eleven scalar words follow them (308 bytes total). Only fields consumed
 /// by this profile are required: sampler/render/vertex formats and triangle
 /// fans. Later optional capabilities cannot silently change this profile.
@@ -3026,12 +3109,24 @@ fn get_capset(capset_id: u32, capset_version: u32) -> Result<(), &'static str> {
             let resp_ptr = &raw const PCI_RESP_BUF;
             let resp = &*((*resp_ptr).data.as_ptr() as *const VirtioGpuRespCapset);
             let resp_type = core::ptr::read_volatile(&resp.hdr.type_);
-            if resp_type != cmd::RESP_OK_CAPSET { return Err("VirGL capset request failed"); }
-            let data = (*resp_ptr).data.as_ptr().add(core::mem::size_of::<VirtioGpuCtrlHdr>()) as *const u32;
+            if resp_type != cmd::RESP_OK_CAPSET {
+                return Err("VirGL capset request failed");
+            }
+            let data = (*resp_ptr)
+                .data
+                .as_ptr()
+                .add(core::mem::size_of::<VirtioGpuCtrlHdr>()) as *const u32;
             let word = |index: usize| core::ptr::read_volatile(data.add(index));
-            let format = |mask: usize, id: usize| word(1 + mask * 16 + id / 32) & (1 << (id % 32)) != 0;
-            if word(0) < 1 || !format(0, 1) || !format(0, 2) || !format(1, 2)
-                || !format(3, 31) || word(70) < 1 || word(72) & (1 << 6) == 0 {
+            let format =
+                |mask: usize, id: usize| word(1 + mask * 16 + id / 32) & (1 << (id % 32)) != 0;
+            if word(0) < 1
+                || !format(0, 1)
+                || !format(0, 2)
+                || !format(1, 2)
+                || !format(3, 31)
+                || word(70) < 1
+                || word(72) & (1 << 6) == 0
+            {
                 return Err("VirGL device does not meet the colour/texture profile");
             }
             Ok(())
@@ -3793,7 +3888,6 @@ fn virgl_submit_3d_cmd(
         _padding: 0,
     };
 
-
     // 3-descriptor chain: header (readable) + payload (readable) + response (writable)
     let (used_len, resp) = match send_owned_3desc_command(state, &header, cmds) {
         Ok(result) => result,
@@ -3851,7 +3945,7 @@ fn virgl_fence_sync(
     cmdbuf.clear();
     cmdbuf.nop();
 
-    let payload = cmdbuf.as_slice();
+    let payload = cmdbuf.finish()?;
     let payload_bytes = payload.len() * 4;
 
     let fence_id = state.next_fence_id;
@@ -3975,6 +4069,9 @@ pub fn compositor_texture_info() -> Option<(u64, u32, u32, u32)> {
 
 /// Get the framebuffer dimensions.
 pub fn dimensions() -> Option<(u32, u32)> {
+    if !is_initialized() {
+        return None;
+    }
     unsafe {
         let ptr = &raw const GPU_PCI_STATE;
         (*ptr).as_ref().map(|s| (s.width, s.height))
@@ -4219,7 +4316,9 @@ fn submit_polled<T>(
     command: &T,
     deadline: u64,
 ) -> bool {
-    if DMA_QUEUE_STOPPED.load(Ordering::Acquire) { return false; }
+    if DMA_QUEUE_STOPPED.load(Ordering::Acquire) {
+        return false;
+    }
     while ctrlq_in_flight() != 0 {
         if crate::arch_impl::aarch64::timer::rdtsc() >= deadline {
             return false;
@@ -4315,34 +4414,9 @@ pub struct VirglRect {
 /// contents -> batch creates its own subcontext, objects, bindings and draws ->
 /// release subcontext -> fenced completion -> SET_SCANOUT/RESOURCE_FLUSH.
 /// Objects never depend on an earlier draw batch. A command stream is not a
-/// renderer activation handshake. No undocumented tweak IDs are sent.
+/// renderer activation handshake. The documented GLES BGRA controls are set by begin_batch().
 /// Optional SET_MIN_SAMPLES is unnecessary for single-sample resources.
 ///
-/// Behavioural gap experiment: the normal Parallels boot exercises a clear
-/// and inline-vertex draw with no tweaks or inherited state; the probe's
-/// framebuffer remains usable after that draw. Host-specific requirements,
-/// if observed, are errors to investigate, not grounds for copying a stream.
-fn colour_batch(width: u32, height: u32) -> super::virgl::CommandBuffer {
-    use super::virgl::{format as fmt, pipe, CommandBuffer, ShaderProgram};
-    let mut batch = CommandBuffer::new();
-    batch.begin_batch();
-    batch.create_surface(1, RESOURCE_3D_ID, fmt::B8G8R8X8_UNORM, 0, 0);
-    batch.set_framebuffer_state(0, &[1]);
-    batch.create_blend_simple(1);
-    batch.create_dsa_default(1);
-    batch.create_rasterizer_default(1);
-    batch.create_profile_shader(1, ShaderProgram::Position);
-    batch.create_profile_shader(2, ShaderProgram::UniformColour);
-    batch.create_vertex_elements(1, &[(0, 0, 0, fmt::R32G32B32A32_FLOAT)]);
-    batch.bind_object(1, super::virgl::OBJ_BLEND);
-    batch.bind_object(1, super::virgl::OBJ_DSA);
-    batch.bind_object(1, super::virgl::OBJ_RASTERIZER);
-    batch.bind_object(1, super::virgl::OBJ_VERTEX_ELEMENTS);
-    batch.bind_shader(1, pipe::SHADER_VERTEX);
-    batch.bind_shader(2, pipe::SHADER_FRAGMENT);
-    batch.set_viewport(width as f32, height as f32);
-    batch
-}
 
 /// Render a frame with the VirGL GPU pipeline.
 ///
@@ -4383,7 +4457,7 @@ pub fn virgl_render_frame(
     let fw = width as f32;
     let fh = height as f32;
 
-    let mut cmdbuf = colour_batch(width, height);
+    let mut cmdbuf = super::virgl::colour_batch(width, height, RESOURCE_3D_ID);
 
     cmdbuf.clear_color(bg_r, bg_g, bg_b, 1.0);
 
@@ -4485,7 +4559,7 @@ pub fn virgl_render_frame(
         );
     }
     cmdbuf.end_batch();
-    match virgl_submit(cmdbuf.as_slice()) {
+    match virgl_submit(cmdbuf.finish()?) {
         Ok(_fence_id) => {
             if verbose {
                 crate::serial_println!("[virgl] frame #{}: SUBMIT_3D done", frame);
@@ -4544,15 +4618,13 @@ pub fn virgl_render_rects(
     let fw = width as f32;
     let fh = height as f32;
 
-    let mut cmdbuf = colour_batch(width, height);
+    let mut cmdbuf = super::virgl::colour_batch(width, height, RESOURCE_3D_ID);
 
     cmdbuf.clear_color(bg_r, bg_g, bg_b, 1.0);
 
     // Draw each rectangle as a quad (triangle fan, 4 verts, 16 bytes/vert)
-    // Limit to ~80 rects to stay within 3072 DW cmdbuf capacity.
-    // Per rect: inline_write(~20 DW) + set_constant_buffer(~8 DW) +
-    //           set_vertex_buffers(~6 DW) + draw_vbo(~13 DW) = ~47 DW
-    // Budget: (3072 - ~100 overhead) / 47 ≈ 63 rects max
+    // 60 * 52 words plus setup/teardown fits the 4096-word encoder.
+    // finish() rejects an oversized stream before any device submission.
     let rect_count = rects.len().min(60);
 
     for (i, rect) in rects[..rect_count].iter().enumerate() {
@@ -4616,7 +4688,7 @@ pub fn virgl_render_rects(
         );
     }
     cmdbuf.end_batch();
-    let _fence_id = virgl_submit(cmdbuf.as_slice())?;
+    let _fence_id = virgl_submit(cmdbuf.finish()?)?;
 
     // Breenix reasserts display ownership before flushing the rendered resource.
     // No transfer is issued: guest backing did not supply these pixels.
@@ -4759,9 +4831,8 @@ pub fn virgl_composite_frame(pixels: &[u32], width: u32, height: u32) -> Result<
 ///
 /// Uploads pixel data as a VirGL texture, then renders a full-screen textured quad.
 /// This is the end-goal approach for real GPU compositing (window decorations,
-/// alpha blending, transforms). Currently not working on Parallels — texture
-/// sampling produces black output despite successful SUBMIT_3D. Kept for future
-/// debugging and enablement.
+/// alpha blending, transforms). The testing-kernel round trip validates
+/// texture sampling by poisoning and reading back the destination.
 pub fn virgl_composite_frame_textured(
     pixels: &[u32],
     width: u32,
@@ -4821,8 +4892,6 @@ pub fn virgl_composite_frame_textured(
     //   16=VE, 17=sampler_view, 18=sampler_state
     let mut cmdbuf = CommandBuffer::new();
     cmdbuf.begin_batch();
-
-
 
     cmdbuf.create_surface(10, RESOURCE_3D_ID, vfmt::B8G8R8X8_UNORM, 0, 0);
     cmdbuf.set_framebuffer_state(0, &[10]);
@@ -4923,7 +4992,7 @@ pub fn virgl_composite_frame_textured(
         );
     }
     cmdbuf.end_batch();
-    let _fence_id = virgl_submit(cmdbuf.as_slice())?;
+    let _fence_id = virgl_submit(cmdbuf.finish()?)?;
 
     with_device_state(|state| {
         set_scanout_resource(state, RESOURCE_3D_ID)?;
@@ -4967,11 +5036,9 @@ fn virgl_composite_single_quad(
     let dw = display_w as f32;
     let dh = display_h as f32;
 
-    // Heap-allocate CommandBuffer (12KB) to avoid overflowing the 16KB kernel stack.
+    // CommandBuffer stores its bounded stream on the heap.
     let mut cmdbuf = alloc::boxed::Box::new(CommandBuffer::new());
     cmdbuf.begin_batch();
-
-
 
     cmdbuf.create_surface(10, RESOURCE_3D_ID, vfmt::B8G8R8X8_UNORM, 0, 0);
     cmdbuf.set_framebuffer_state(0, &[10]);
@@ -5360,7 +5427,7 @@ fn virgl_composite_single_quad(
 
     cmdbuf.end_batch();
     let flush_result = with_device_state(|state| {
-        virgl_submit_sync_locked(state, cmdbuf.as_slice())?;
+        virgl_submit_sync_locked(state, cmdbuf.finish()?)?;
         set_scanout_resource(state, RESOURCE_3D_ID)?;
         resource_flush_3d(
             state,
@@ -5675,7 +5742,13 @@ pub fn virgl_composite_windows(
 ///
 /// `cmds` is a slice of u32 DWORDs from a VirGL CommandBuffer.
 pub fn virgl_submit(cmds: &[u32]) -> Result<u64, &'static str> {
-    with_device_state(|state| virgl_submit_3d_cmd(state, VIRGL_CTX_ID, cmds).map(|r| r.submit_id))
+    with_device_state(|state| {
+        let result = virgl_submit_3d_cmd(state, VIRGL_CTX_ID, cmds)?;
+        if result.resp_fence < result.submit_id {
+            virgl_fence_sync(state, result.submit_id)?;
+        }
+        Ok(result.submit_id)
+    })
 }
 
 /// Submit VirGL commands and wait for the fence to complete before returning.
@@ -5900,10 +5973,21 @@ pub fn virgl_init() -> Result<(), &'static str> {
 
     // Step 8b removed: VB data is uploaded via RESOURCE_INLINE_WRITE in the batch below.
 
+    // Establish the 3D scanout before drawing, preserving the display setup
+    // sequence used by Parallels. This is separate from resource upload.
+    with_device_state(|state| {
+        set_scanout_resource(state, RESOURCE_3D_ID)?;
+        resource_flush_3d(
+            state,
+            RESOURCE_3D_ID,
+            virtgpu::FLUSH_CALLER_VIRGL_INIT_PRIME,
+        )
+    })?;
+
     // Step 9: Full pipeline + CLEAR + DRAW_VBO batch.
     // Expected: cornflower blue baseline from both CLEAR and DRAW_VBO.
     {
-        let mut cmdbuf = colour_batch(width, height);
+        let mut cmdbuf = super::virgl::colour_batch(width, height, RESOURCE_3D_ID);
 
         // CLEAR to the documented VirGL baseline color.
         cmdbuf.clear_color(0.392, 0.584, 0.929, 1.0);
@@ -5950,7 +6034,7 @@ pub fn virgl_init() -> Result<(), &'static str> {
             cmdbuf.len()
         );
         cmdbuf.end_batch();
-        virgl_submit_sync(cmdbuf.as_slice())?;
+        virgl_submit_sync(cmdbuf.finish()?)?;
     }
 
     // Step 10: Display VirGL-rendered content.
@@ -5977,37 +6061,41 @@ pub fn virgl_init() -> Result<(), &'static str> {
 // =============================================================================
 // VirGL Textured Quad Test (Phase 1: prove texture sampling works)
 // =============================================================================
-/// Testing-kernel check of the specified shader catalogue through actual GPU
-/// sampling and fenced device readback. VirtIO 1.3 CSD01 sections 5.7.6.5/9;
-/// TGSI TEX and the single-target profile documented in virgl.rs (#1660/1662).
 #[cfg(feature = "testing")]
-pub fn test_shader_round_trip() -> Result<(), &'static str> {
-    let (width, height) = dimensions().ok_or("GPU not initialized")?;
+fn test_readback_matches(
+    width: u32,
+    height: u32,
+    expected: impl Fn(usize) -> u32,
+) -> Result<bool, &'static str> {
     let count = width as usize * height as usize;
-    let expected_rgb = 0x003f7fbfu32;
-    // Reuse the initialized render backing as upload input. The compositor
-    // copies it into a distinct texture before drawing; no extra full-screen
-    // heap allocation competes with the preallocated window texture pool.
-    {
-        let backing = unsafe { PCI_3D_FB_PTR as *mut u32 };
-        for index in 0..count {
-            unsafe { core::ptr::write_volatile(backing.add(index), 0xff000000 | expected_rgb); }
-        }
-        let source = unsafe { core::slice::from_raw_parts(backing, count) };
-        virgl_composite_frame_textured(source, width, height)?;
-    }
-    let exact = with_device_state(|state| {
+    with_device_state(|state| {
         let backing = unsafe { PCI_3D_FB_PTR };
         let bytes = count * 4;
-        unsafe { core::ptr::write_bytes(backing, 0xa5, bytes); }
+        unsafe {
+            core::ptr::write_bytes(backing, 0xa5, bytes);
+        }
         dma_cache_clean(backing, bytes);
         let fence_id = state.next_fence_id;
         state.next_fence_id = fence_id.checked_add(1).ok_or("GPU fence space exhausted")?;
         let readback = VirtioGpuTransferHost3d {
-            hdr: VirtioGpuCtrlHdr { type_: cmd::TRANSFER_FROM_HOST_3D,
-                flags: VIRTIO_GPU_FLAG_FENCE, fence_id, ctx_id: VIRGL_CTX_ID, padding: 0 },
-            box_x: 0, box_y: 0, box_z: 0, box_w: width, box_h: height, box_d: 1,
-            offset: 0, resource_id: RESOURCE_3D_ID, level: 0, stride: width * 4, layer_stride: 0,
+            hdr: VirtioGpuCtrlHdr {
+                type_: cmd::TRANSFER_FROM_HOST_3D,
+                flags: VIRTIO_GPU_FLAG_FENCE,
+                fence_id,
+                ctx_id: VIRGL_CTX_ID,
+                padding: 0,
+            },
+            box_x: 0,
+            box_y: 0,
+            box_z: 0,
+            box_w: width,
+            box_h: height,
+            box_d: 1,
+            offset: 0,
+            resource_id: RESOURCE_3D_ID,
+            level: 0,
+            stride: width * 4,
+            layer_stride: 0,
         };
         send_owned_command_expect_ok(state, &readback)?;
         unsafe {
@@ -6020,9 +6108,65 @@ pub fn test_shader_round_trip() -> Result<(), &'static str> {
         // pixel must have been returned by the device, with no poison left.
         Ok((0..count).all(|index| {
             let actual = unsafe { core::ptr::read_volatile((backing as *const u32).add(index)) };
-            actual & 0x00ffffff == expected_rgb
+            actual & 0x00ffffff == expected(index)
         }))
-    })?;
+    })
+}
+
+/// Testing-kernel check of the specified shader catalogue through actual GPU
+/// sampling and fenced device readback. VirtIO 1.3 CSD01 sections 5.7.6.5/9;
+/// TGSI TEX and the single-target profile documented in virgl.rs (#1660/1662).
+#[cfg(feature = "testing")]
+pub fn test_shader_round_trip() -> Result<(), &'static str> {
+    let (width, height) = dimensions().ok_or("GPU not initialized")?;
+    let count = width as usize * height as usize;
+    let expected_rgb = 0x003f7fbfu32;
+    // Exercise the largest supported colour batch before the texture path.
+    // The clear is blue; all sixty rectangles draw the same central red area.
+    // Poisoned device readback distinguishes the draw from both clear and CPU
+    // backing, including the half-open rectangle edges.
+    let rect = VirglRect {
+        x: (width / 4) as f32,
+        y: (height / 4) as f32,
+        w: (width / 2) as f32,
+        h: (height / 2) as f32,
+        r: 1.0,
+        g: 0.0,
+        b: 0.0,
+        a: 1.0,
+    };
+    virgl_render_rects(&[rect; 60], 0.0, 0.0, 1.0)?;
+    if !test_readback_matches(width, height, |index| {
+        let x = index % width as usize;
+        let y = index / width as usize;
+        if x >= (width / 4) as usize
+            && x < (width / 4 + width / 2) as usize
+            && y >= (height / 4) as usize
+            && y < (height / 4 + height / 2) as usize
+        {
+            0x00ff0000
+        } else {
+            0x000000ff
+        }
+    })? {
+        return Err("VirGL colour batch device readback differs from rectangles");
+    }
+    crate::serial_println!("VIRGL_COLOUR_TEST_PASSED rects=60");
+
+    // Reuse the initialized render backing as upload input. The compositor
+    // copies it into a distinct texture before drawing; no extra full-screen
+    // heap allocation competes with the preallocated window texture pool.
+    {
+        let backing = unsafe { PCI_3D_FB_PTR as *mut u32 };
+        for index in 0..count {
+            unsafe {
+                core::ptr::write_volatile(backing.add(index), 0xff000000 | expected_rgb);
+            }
+        }
+        let source = unsafe { core::slice::from_raw_parts(backing, count) };
+        virgl_composite_frame_textured(source, width, height)?;
+    }
+    let exact = test_readback_matches(width, height, |_| expected_rgb)?;
     // Restore initialized CPU backing and texture contents before the normal
     // console starts. Only the render target retains the boot baseline colour.
     with_device_state(|state| {
@@ -6034,10 +6178,20 @@ pub fn test_shader_round_trip() -> Result<(), &'static str> {
         }
         dma_cache_clean(texture, texture_bytes);
         dma_cache_clean(unsafe { PCI_3D_FB_PTR }, count * 4);
-        transfer_to_host_3d(state, RESOURCE_COMPOSITE_TEX_ID, 0, 0, width, height, width * 4)
+        transfer_to_host_3d(
+            state,
+            RESOURCE_COMPOSITE_TEX_ID,
+            0,
+            0,
+            width,
+            height,
+            width * 4,
+        )
     })?;
     // A fresh solid batch after the texture batch also checks state isolation.
     virgl_render_rects(&[], 0.392, 0.584, 0.929)?;
-    if !exact { return Err("VirGL shader device readback differs from uploaded colour"); }
+    if !exact {
+        return Err("VirGL shader device readback differs from uploaded colour");
+    }
     Ok(())
 }

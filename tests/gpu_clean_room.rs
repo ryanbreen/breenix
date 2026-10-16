@@ -6,6 +6,12 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 #[path = "../kernel/src/drivers/virtio/command_dma.rs"]
 mod command_dma;
 
+// The standalone runner imports the complete public encoder API; individual
+// device-only entry points are intentionally unused by host tests.
+#[allow(dead_code)]
+#[path = "../kernel/src/drivers/virtio/virgl.rs"]
+mod virgl;
+
 struct TrackingAllocator;
 static WATCHED: AtomicUsize = AtomicUsize::new(0);
 static RELEASED: AtomicBool = AtomicBool::new(false);
@@ -117,4 +123,90 @@ fn svga_tables_cover_live_ids_and_reject_depth_overflow() {
     assert_eq!(leaf_count(512 * 512).unwrap(), 512);
     assert!(leaf_count(0).is_err());
     assert!(leaf_count(512 * 512 + 1).is_err());
+}
+
+#[test]
+fn failed_submission_retains_only_published_dma() {
+    use command_dma::DmaRequest;
+    for published in [false, true] {
+        let mut request = DmaRequest::new(&[1; 32], &[], 24).unwrap();
+        let pointer = request.ptr(0);
+        WATCHED.store(pointer as usize, Ordering::SeqCst);
+        RELEASED.store(false, Ordering::SeqCst);
+        let result: Result<(), _> = request.submit(|request| {
+            if published {
+                request.publish();
+            }
+            Err("transport failure")
+        });
+        assert_eq!(result, Err("transport failure"));
+        assert_eq!(request.device_owned(), published);
+        drop(request);
+        assert_eq!(RELEASED.load(Ordering::SeqCst), !published);
+        if published {
+            // Host teardown simulates a completed reset after proving retention.
+            unsafe { System.dealloc(pointer, Layout::from_size_align(128, 4096).unwrap()) };
+        }
+        WATCHED.store(0, Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn svga_error_stays_failed_after_late_completion_or_restart() {
+    let context = svga_command::ContextState::new();
+    assert!(!context.ready());
+    context.start().unwrap();
+    assert!(context.ready());
+    context.fail();
+    assert!(context.failed());
+    assert!(!context.ready());
+    context.stop();
+    assert!(context.start().is_err());
+    assert!(context.failed());
+    assert!(!context.ready());
+}
+
+#[test]
+fn colour_objects_have_unique_handles_and_sixty_draws_keep_teardown() {
+    let mut stream = virgl::colour_batch(1280, 960, 2);
+    stream.clear_color(0.0, 0.0, 1.0, 1.0);
+    for index in 0..60 {
+        stream.resource_inline_write(3, index * 64, 64, &[0; 16]);
+        stream.set_constant_buffer(1, 0, &[0; 4]);
+        stream.set_vertex_buffers(&[(16, index * 64, 3)]);
+        stream.draw_vbo(0, 4, 6, 3);
+    }
+    stream.end_batch();
+    let words = stream.finish().unwrap();
+    let mut handles = std::collections::HashSet::new();
+    let mut draws = 0;
+    let mut offset = 0;
+    while offset < words.len() {
+        let header = words[offset];
+        let length = (header >> 16) as usize;
+        assert!(offset + length < words.len());
+        match header & 0xff {
+            1 => assert!(handles.insert(words[offset + 1]), "colliding object handle"),
+            8 => draws += 1,
+            _ => {}
+        }
+        offset += length + 1;
+    }
+    assert_eq!(offset, words.len());
+    assert_eq!(handles.len(), 7);
+    assert_eq!(draws, 60);
+    assert_eq!(&words[words.len() - 4..], &[0x0001001c, 0, 0x0001001e, 1]);
+}
+
+#[test]
+fn overflowing_stream_is_unsubmittable_and_clear_restores_it() {
+    let mut stream = virgl::CommandBuffer::new();
+    for _ in 0..4097 {
+        stream.nop();
+    }
+    assert!(stream.finish().is_err());
+    stream.clear();
+    stream.begin_batch();
+    stream.end_batch();
+    assert!(stream.finish().is_ok());
 }
