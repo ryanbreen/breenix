@@ -632,8 +632,19 @@ pub(super) fn least_loaded(prefer: usize) -> usize {
     let online = (crate::arch_impl::x86_64::smp::cpus_online() as usize).clamp(1, MAX_CPUS);
     (0..online)
         .filter(|&cpu| accepts_wakeups(cpu))
-        .min_by_key(|&cpu| (CPU_LOAD[cpu].load(Ordering::Relaxed), cpu != prefer))
+        .min_by_key(|&cpu| (load(cpu), cpu != prefer))
         .unwrap_or(prefer)
+}
+
+/// `Scheduler::cpu_load` from the published summaries: the threads `cpu` has
+/// to run as of its last release, with a CPU whose idle loop is running
+/// housekeeping counted busy. That housekeeping holds preemption off, so a
+/// thread queued there waits for all of it; it starts and ends without the
+/// run-queue lock, so it is read here rather than published.
+fn load(cpu: usize) -> u32 {
+    let housekeeping =
+        CPU_IDLE[cpu].load(Ordering::Relaxed) && super::IDLE_HOUSEKEEPING[cpu].load(Ordering::Acquire);
+    CPU_LOAD[cpu].load(Ordering::Relaxed) + housekeeping as u32
 }
 
 // ------------------------------------------------------ the dispatch path
