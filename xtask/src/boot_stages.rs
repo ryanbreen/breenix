@@ -501,6 +501,12 @@ fn arm64_kernel_stages() -> Vec<BootStage> {
     vec![
         // === ARM64 Kernel Boot Stages ===
         BootStage {
+            name: "GPU device checks completed",
+            marker: "GPU_DEVICE_CHECKS_PASSED",
+            failure_meaning: "An enumerated PCI GPU failed initialization or its device round trip",
+            check_hint: "drivers::init_pci_graphics; per-device pass markers require device readback",
+        },
+        BootStage {
             name: "ARM64 kernel starting",
             marker: "Breenix ARM64 Kernel Starting",
             failure_meaning: "Kernel failed to start at all",

@@ -3,6 +3,12 @@
   "arch": "aarch64",
   "stages": [
     {
+      "name": "GPU device checks completed",
+      "marker": "GPU_DEVICE_CHECKS_PASSED",
+      "failureMeaning": "An enumerated PCI GPU failed initialization or its device round trip",
+      "checkHint": "drivers::init_pci_graphics; per-device pass markers require device readback"
+    },
+    {
       "name": "ARM64 kernel starting",
       "marker": "Breenix ARM64 Kernel Starting",
       "failureMeaning": "Kernel failed to start at all",

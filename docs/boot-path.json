@@ -4,6 +4,7 @@
   "gateArch": "aarch64",
   "bootProfile": "testing",
   "fatal": [
+    "GPU_DEVICE_TEST_FAILED",
     "panicked at kernel/src/",
     "!!! SOFT LOCKUP DETECTED !!!",
     "\\[(DATA|INSTRUCTION)_ABORT\\].*from_el0=0"
@@ -114,6 +115,7 @@
       "stages": {
         "aarch64": [
           "Device drivers initialized",
+          "GPU device checks completed",
           {
             "name": "Driver self-tests ran",
             "marker": "[drivers] Running post-init self-tests"

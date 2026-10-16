@@ -217,6 +217,7 @@ pub fn init() -> usize {
             }
         }
 
+        init_pci_graphics();
         serial_println!("[drivers] Driver subsystem initialized (hybrid MMIO+PCI)");
         return mmio_count + pci_count;
     }
@@ -258,33 +259,7 @@ pub fn init() -> usize {
             virtio_devices.len()
         );
 
-        match virtio::gpu_pci::init() {
-            Ok(()) => {
-                serial_println!("[drivers] VirtIO GPU (PCI) initialized");
-                // Attempt to initialize VirGL 3D acceleration if the device supports it
-                match virtio::gpu_pci::virgl_init() {
-                    Ok(()) => {
-                        serial_println!("[drivers] VirGL 3D acceleration active");
-                        #[cfg(feature = "testing")]
-                        {
-                            virtio::gpu_pci::test_shader_round_trip().expect("VirGL shader device round trip failed");
-                            serial_println!("VIRGL_SHADER_TEST_PASSED");
-                        }
-
-                        crate::graphics::set_compositor_backend(
-                            crate::graphics::CompositorBackend::VirGL,
-                        );
-                        serial_println!("[drivers] Compositor backend: VirGL");
-                        // Enable yielding during GPU command waits now that init is complete.
-                        // During runtime, GPU poll loops yield to the scheduler instead of
-                        // spinning, letting other tasks run during ~3.4ms GPU processing.
-                        virtio::gpu_pci::enable_gpu_yield();
-                    }
-                    Err(e) => serial_println!("[drivers] VirGL init skipped: {}", e),
-                }
-            }
-            Err(e) => serial_println!("[drivers] VirtIO GPU (PCI) init failed: {}", e),
-        }
+        init_pci_graphics();
 
         // Initialize VirtIO network driver (PCI transport) — Parallels
         match virtio::net_pci::init() {
@@ -297,26 +272,6 @@ pub fn init() -> usize {
                     Err(e2) => serial_println!("[drivers] e1000 init also failed: {}", e2),
                 }
             }
-        }
-
-        // Initialize VMware SVGA3 GPU if present (VMware Fusion on ARM64)
-        match vmware::svga3::init() {
-            Ok(()) => {
-                serial_println!("[drivers] VMware SVGA3 GPU initialized");
-                #[cfg(feature = "testing")]
-                {
-                    vmware::svga3::test_stdu_lifecycle().expect("SVGA STDU device round trip failed");
-                    serial_println!("SVGA_STDU_TEST_PASSED");
-                }
-
-                // SVGA3 with VRAM traces provides GPU-level compositing:
-                // BWM writes pixels to VRAM, device monitors and updates display.
-                crate::graphics::set_compositor_backend(
-                    crate::graphics::CompositorBackend::Svga3Stdu,
-                );
-                serial_println!("[drivers] Compositor backend: SVGA3 (VRAM traces)");
-            }
-            Err(e) => serial_println!("[drivers] SVGA3 init skipped: {}", e),
         }
 
         // EHCI USB 2.0 controller — initialization is handled inside xhci::init()
@@ -383,7 +338,98 @@ pub fn init() -> usize {
         device_count
     } else {
         // MMIO-based platform (QEMU virt): enumerate VirtIO MMIO
-        init_virtio_mmio()
+        let count = init_virtio_mmio();
+        init_pci_graphics();
+        count
+    }
+}
+
+/// PCI graphics also exists on QEMU's hybrid MMIO/PCI platform. Check only
+/// enumerated GPUs; an absent device is not evidence of its rendering path.
+#[cfg(target_arch = "aarch64")]
+fn init_pci_graphics() {
+    use crate::serial_println;
+    let mut passed = true;
+    let virgl = pci::find_device(0x1af4, 0x1050).is_some();
+    let svga = pci::find_device(
+        vmware::svga3::VMWARE_VENDOR_ID,
+        vmware::svga3::SVGA3_DEVICE_ID,
+    )
+    .is_some();
+    if virgl {
+        match virtio::gpu_pci::init() {
+            Ok(()) => {
+                serial_println!("[drivers] VirtIO GPU (PCI) initialized");
+                // Attempt to initialize VirGL 3D acceleration if the device supports it
+                match virtio::gpu_pci::virgl_init() {
+                    Ok(()) => {
+                        serial_println!("[drivers] VirGL 3D acceleration active");
+                        #[cfg(feature = "testing")]
+                        {
+                            match virtio::gpu_pci::test_shader_round_trip() {
+                                Ok(()) => serial_println!("VIRGL_SHADER_TEST_PASSED"),
+                                Err(error) => {
+                                    passed = false;
+                                    serial_println!("GPU_DEVICE_TEST_FAILED VirGL: {}", error);
+                                }
+                            }
+                        }
+
+                        crate::graphics::set_compositor_backend(
+                            crate::graphics::CompositorBackend::VirGL,
+                        );
+                        serial_println!("[drivers] Compositor backend: VirGL");
+                        // Enable yielding during GPU command waits now that init is complete.
+                        // During runtime, GPU poll loops yield to the scheduler instead of
+                        // spinning, letting other tasks run during ~3.4ms GPU processing.
+                        virtio::gpu_pci::enable_gpu_yield();
+                    }
+                    Err(e) => {
+                        passed = false;
+                        serial_println!("GPU_DEVICE_TEST_FAILED VirGL initialization: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                passed = false;
+                serial_println!("GPU_DEVICE_TEST_FAILED PCI GPU initialization: {}", e);
+            }
+        }
+    }
+    if svga {
+        // Initialize VMware SVGA3 GPU if present (VMware Fusion on ARM64)
+        match vmware::svga3::init() {
+            Ok(()) => {
+                serial_println!("[drivers] VMware SVGA3 GPU initialized");
+                #[cfg(feature = "testing")]
+                {
+                    match vmware::svga3::test_stdu_lifecycle() {
+                        Ok(()) => serial_println!("SVGA_STDU_TEST_PASSED"),
+                        Err(error) => {
+                            passed = false;
+                            serial_println!("GPU_DEVICE_TEST_FAILED SVGA: {}", error);
+                        }
+                    }
+                }
+
+                // SVGA3 with VRAM traces provides GPU-level compositing:
+                // BWM writes pixels to VRAM, device monitors and updates display.
+                crate::graphics::set_compositor_backend(
+                    crate::graphics::CompositorBackend::Svga3Stdu,
+                );
+                serial_println!("[drivers] Compositor backend: SVGA3 (VRAM traces)");
+            }
+            Err(e) => {
+                passed = false;
+                serial_println!("GPU_DEVICE_TEST_FAILED SVGA initialization: {}", e);
+            }
+        }
+    }
+    if passed {
+        serial_println!(
+            "GPU_DEVICE_CHECKS_PASSED devices={}",
+            u32::from(virgl) + u32::from(svga)
+        );
     }
 }
 
