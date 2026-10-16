@@ -18,6 +18,7 @@ import socket
 import struct
 import sys
 import tempfile
+import time
 import zlib
 
 
@@ -62,9 +63,20 @@ def main():
         print(__doc__.strip(), file=sys.stderr)
         return 2
     sock_path, out = sys.argv[1], os.path.abspath(sys.argv[2])
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    sock.settimeout(10)
-    sock.connect(sock_path)
+    # QEMU serves one QMP client at a time and queues one more; macOS refuses a connection
+    # beyond that, as when Vigil's capture and another overlap, so a refusal is retried.
+    deadline = time.monotonic() + 5
+    while True:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(10)
+        try:
+            sock.connect(sock_path)
+            break
+        except ConnectionRefusedError:
+            sock.close()
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(0.05)
     stream = sock.makefile("rw")
 
     def reply():

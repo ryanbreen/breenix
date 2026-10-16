@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import zlib
 
@@ -24,15 +25,21 @@ def pixel(x, y):
 class StubQmp(threading.Thread):
     """Answers one connection: greeting, capabilities, then a screendump it writes as QEMU's ppm_save does."""
 
-    def __init__(self, path, error=None):
+    def __init__(self, path, error=None, listen_after=0):
         super().__init__(daemon=True)
         self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.server.bind(path)
-        self.server.listen(1)
+        self.listen_after = listen_after
+        if not listen_after:
+            self.server.listen(1)
         self.error = error
         self.requests = []
 
     def run(self):
+        if self.listen_after:
+            # A bound socket that does not listen refuses connections, as a busy QMP socket does.
+            time.sleep(self.listen_after)
+            self.server.listen(1)
         conn, _ = self.server.accept()
         with conn, conn.makefile("rw") as stream:
             stream.write(json.dumps({"QMP": {"version": {}, "capabilities": []}}) + "\n")
@@ -102,6 +109,12 @@ class QmpScreendumpTest(unittest.TestCase):
         self.assertEqual((width, height), (WIDTH, HEIGHT))
         self.assertEqual(pixels, b"".join(pixel(x, y) for y in range(HEIGHT) for x in range(WIDTH)))
         self.assertEqual(os.listdir(self.out.parent), ["out.png"])
+
+    def test_a_refused_connection_is_retried(self):
+        stub = StubQmp(self.sock, listen_after=0.5)
+        result = self.dump(stub)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(decode_png(self.out.read_bytes())[:2], (WIDTH, HEIGHT))
 
     def test_a_refused_screendump_fails_and_leaves_nothing(self):
         result = self.dump(StubQmp(self.sock, error="no surface"))
