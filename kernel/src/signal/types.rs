@@ -1370,7 +1370,27 @@ impl IntervalTimer {
         old
     }
 
+    /// Expire ITIMER_REAL when `now` (monotonic) has reached it. A periodic
+    /// one keeps its phase and coalesces expirations it missed into this one,
+    /// as Linux restarts it with hrtimer_forward.
     pub fn expire(&self, now: u64) -> bool {
+        self.expire_with(now, |deadline, interval| {
+            // Preserve the periodic phase, coalescing missed expirations.
+            now.saturating_add(interval - (now - deadline) % interval)
+        })
+    }
+
+    /// Expire ITIMER_VIRTUAL or ITIMER_PROF when `now`, the CPU time it
+    /// counts, has reached it. A periodic one reloads by one interval, as
+    /// Linux's check_cpu_itimer does, so CPU time charged in one step -- a
+    /// vCPU the host stopped while the thread ran on it is charged as the
+    /// thread's time -- fires the periods it covered at the next checks
+    /// instead of losing all but one.
+    pub fn expire_cpu(&self, now: u64) -> bool {
+        self.expire_with(now, |deadline, interval| deadline.saturating_add(interval))
+    }
+
+    fn expire_with(&self, now: u64, reload: impl FnOnce(u64, u64) -> u64) -> bool {
         if !self.active.load(Ordering::Acquire) { return false; }
         let Some(mut value) = self.value.try_lock() else {
             return false;
@@ -1378,12 +1398,7 @@ impl IntervalTimer {
         if value.0 == 0 || now < value.0 {
             return false;
         }
-        value.0 = if value.1 == 0 {
-            0
-        } else {
-            // Preserve the periodic phase, coalescing missed expirations.
-            now.saturating_add(value.1 - (now - value.0) % value.1)
-        };
+        value.0 = if value.1 == 0 { 0 } else { reload(value.0, value.1) };
         self.set_active(value.0 != 0);
         true
     }

@@ -5615,8 +5615,8 @@ impl Scheduler {
             let system = system_ns / 1000;
             let pending = [
                 (group.real.expire(wall), crate::signal::constants::SIGALRM),
-                (group.virtual_timer.expire(user), crate::signal::constants::SIGVTALRM),
-                (group.prof.expire(user.saturating_add(system)), crate::signal::constants::SIGPROF),
+                (group.virtual_timer.expire_cpu(user), crate::signal::constants::SIGVTALRM),
+                (group.prof.expire_cpu(user.saturating_add(system)), crate::signal::constants::SIGPROF),
             ];
             for (expired, sig) in pending {
                 if !expired { continue; }
