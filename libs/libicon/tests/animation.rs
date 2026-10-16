@@ -166,3 +166,16 @@ fn huge_elapsed_time_skips_only_exact_fixed_points_and_dead_particles() {
     pool.update(f32::MAX);
     assert_eq!(pool.active_count(), 0);
 }
+
+#[test]
+fn particles_expire_at_their_lifetime_boundary() {
+    use libicon::particles::{Particle, ParticlePool};
+    let mut pool = ParticlePool::new(1);
+    pool.emit(Particle { x: 0.0, y: 0.0, vx: 2.0, vy: 2.0, life: 1.0,
+        max_life: 1.0, size: 2.0, color: libgfx::color::Color::WHITE,
+        gravity: 1.0, friction: 0.0 });
+    for _ in 0..999 { pool.update(0.001); }
+    assert_eq!(pool.active_count(), 1);
+    pool.update(0.001);
+    assert_eq!(pool.active_count(), 0);
+}
