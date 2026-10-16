@@ -643,10 +643,10 @@ impl Drop for PciOwnedDmaBuffer {
 const DEFAULT_FB_WIDTH: u32 = 1728;
 const DEFAULT_FB_HEIGHT: u32 = 1080;
 // Minimum resolution floor — with --high-resolution off, each guest pixel = 1 Mac point.
-// 1280x960 gives a reasonably large VM window on Retina displays and keeps the
-// per-frame DMA upload to ~4.9MB for good compositor FPS.
+// 1280x800 is the display every target runs in a GUI suite boot (BreenGL §18); Parallels
+// reports 1024x768 for both GET_DISPLAY_INFO and GOP, so the floor sets the mode.
 const MIN_FB_WIDTH: u32 = 1280;
-const MIN_FB_HEIGHT: u32 = 960;
+const MIN_FB_HEIGHT: u32 = 800;
 const FB_MAX_WIDTH: u32 = 2560;
 const FB_MAX_HEIGHT: u32 = 1600;
 const FB_SIZE: usize = (FB_MAX_WIDTH * FB_MAX_HEIGHT * 4) as usize;
@@ -2138,12 +2138,12 @@ pub fn init() -> Result<(), &'static str> {
     // On Retina Macs with --high-resolution off, Parallels maps 1 guest pixel to
     // 1 Mac screen point. GET_DISPLAY_INFO may report only 1024x768 in this mode,
     // but SET_SCANOUT at a larger resolution works fine (Linux does arbitrary mode
-    // changes via drmModeSetCrtc → SET_SCANOUT). We enforce a 1280x960 minimum
+    // changes via drmModeSetCrtc → SET_SCANOUT). We enforce a 1280x800 minimum
     // so the VM window is reasonably large on modern displays.
     let gop_w = crate::platform_config::fb_width();
     let gop_h = crate::platform_config::fb_height();
     let (disp_w, disp_h) = display_dims.unwrap_or((0, 0));
-    // Pick the widest valid resolution, with 1280x960 as floor
+    // Pick the widest valid resolution, with 1280x800 as floor
     // NOTE: DEFAULT_FB dimensions excluded for now — compositor texture stride
     // depends on matching the BWM buffer width. Needs coordinated fix.
     let candidates: [(u32, u32); 3] = [
