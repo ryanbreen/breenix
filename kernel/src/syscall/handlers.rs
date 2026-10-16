@@ -497,99 +497,124 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
     }
 
     let mut fifo_to_touch = None;
-    let write_op = {
-        let manager_guard = crate::process::manager();
-        let process = match &*manager_guard {
-            Some(manager) => match manager.find_process_by_thread(thread_id) {
-                Some((_pid, p)) => p,
-                None => {
-                    // Fall back to stdio behavior for kernel threads
-                    return write_to_stdio(fd, &buffer);
+    // What the descriptor is for this write, read from its table entry; None
+    // when that needs the process row (a regular file's write limits).
+    let classify = |fd_entry: &crate::ipc::fd::FileDescriptor,
+                    process: Option<&crate::process::Process>,
+                    fifo_to_touch: &mut Option<_>|
+     -> Option<WriteOperation> {
+        Some(
+            match &fd_entry.kind {
+                FdKind::Ipc(_) if !fd_entry.writable() => WriteOperation::Ebadf,
+                FdKind::Ipc(file) => {
+                    WriteOperation::Ipc {
+                        file: file.clone(),
+                        append: fd_entry.status_flags() & crate::ipc::fd::status_flags::O_APPEND != 0,
+                    }
                 }
-            },
-            None => {
-                // Fall back to stdio behavior for kernel threads
-                return write_to_stdio(fd, &buffer);
-            }
-        };
-
-        // Look up the file descriptor
-        let fd_entry = match process.fd_table.get(fd as i32) {
-            Some(entry) => entry,
-            None => {
-                return SyscallResult::Err(9); // EBADF
-            }
-        };
-
-        match &fd_entry.kind {
-            FdKind::Ipc(file) => {
-                if !fd_entry.writable() {
-                    return SyscallResult::Err(super::errno::EBADF as u64);
-                }
-                WriteOperation::Ipc {
-                    file: file.clone(),
-                    append: fd_entry.status_flags() & crate::ipc::fd::status_flags::O_APPEND != 0,
-                }
-            }
-            FdKind::StdIo(n) if *n == 1 || *n == 2 => WriteOperation::StdIo,
-            FdKind::StdIo(_) => WriteOperation::Ebadf, // stdin - can't write
-            FdKind::PipeWrite(pipe_buffer) => WriteOperation::Pipe {
-                pipe_buffer: pipe_buffer.clone(),
-                is_nonblocking: (fd_entry.status_flags()
-                    & crate::ipc::fd::status_flags::O_NONBLOCK)
-                    != 0,
-            },
-            FdKind::PipeRead(_) => WriteOperation::Ebadf,
-            FdKind::FifoWrite(_path, pipe_buffer, entry)
-            | FdKind::FifoReadWrite(_path, pipe_buffer, entry) => {
-                fifo_to_touch = Some(entry.clone());
-                WriteOperation::Fifo {
+                FdKind::StdIo(n) if *n == 1 || *n == 2 => WriteOperation::StdIo,
+                FdKind::StdIo(_) => WriteOperation::Ebadf, // stdin - can't write
+                FdKind::PipeWrite(pipe_buffer) => WriteOperation::Pipe {
                     pipe_buffer: pipe_buffer.clone(),
                     is_nonblocking: (fd_entry.status_flags()
                         & crate::ipc::fd::status_flags::O_NONBLOCK)
                         != 0,
+                },
+                FdKind::PipeRead(_) => WriteOperation::Ebadf,
+                FdKind::FifoWrite(_path, pipe_buffer, entry)
+                | FdKind::FifoReadWrite(_path, pipe_buffer, entry) => {
+                    *fifo_to_touch = Some(entry.clone());
+                    WriteOperation::Fifo {
+                        pipe_buffer: pipe_buffer.clone(),
+                        is_nonblocking: (fd_entry.status_flags()
+                            & crate::ipc::fd::status_flags::O_NONBLOCK)
+                            != 0,
+                    }
                 }
+                FdKind::FifoRead(_, _, _) => WriteOperation::Ebadf,
+                FdKind::Socket(socket) => WriteOperation::Socket {
+                    socket: socket.clone(),
+                    is_nonblocking: (fd_entry.status_flags()
+                        & crate::ipc::fd::status_flags::O_NONBLOCK)
+                        != 0,
+                },
+                // A description opened O_RDONLY is not writable (EBADF).
+                FdKind::RegularFile(_) if !fd_entry.writable() => WriteOperation::Ebadf,
+                FdKind::RegularFile(file) => WriteOperation::RegularFile {
+                    file: file.clone(),
+                    append: (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_APPEND) != 0,
+                    unprivileged: !process?.cred.privileged(),
+                    size_limit: process?.limits.get(crate::process::limits::FSIZE).soft,
+                },
+                FdKind::Directory(_) => WriteOperation::Eisdir,
+                FdKind::Device(device_type) => WriteOperation::Device {
+                    device_type: device_type.clone(),
+                },
+                FdKind::DevfsDirectory { .. } => WriteOperation::Eisdir,
+                FdKind::DevptsDirectory { .. } => WriteOperation::Eisdir,
+                // A description opened O_RDONLY is not writable (EBADF).
+                FdKind::PtyMaster(_) | FdKind::PtySlave(_) if !fd_entry.writable() => WriteOperation::Ebadf,
+                FdKind::PtyMaster(pair) => WriteOperation::PtyMaster {
+                    hold: crate::tty::pty::PtyHold::master(pair),
+                    is_nonblocking: (fd_entry.status_flags()
+                        & crate::ipc::fd::status_flags::O_NONBLOCK)
+                        != 0,
+                },
+                FdKind::PtySlave(pair) => WriteOperation::PtySlave {
+                    hold: crate::tty::pty::PtyHold::slave(pair),
+                    is_nonblocking: (fd_entry.status_flags()
+                        & crate::ipc::fd::status_flags::O_NONBLOCK)
+                        != 0,
+                },
+                FdKind::ProcfsFile { .. } => WriteOperation::Ebadf,
+                FdKind::ProcfsDirectory { .. } => WriteOperation::Eisdir,
+                FdKind::Epoll(_) => WriteOperation::Ebadf,
             }
-            FdKind::FifoRead(_, _, _) => WriteOperation::Ebadf,
-            FdKind::Socket(socket) => WriteOperation::Socket {
-                socket: socket.clone(),
-                is_nonblocking: (fd_entry.status_flags()
-                    & crate::ipc::fd::status_flags::O_NONBLOCK)
-                    != 0,
-            },
-            // A description opened O_RDONLY is not writable (EBADF).
-            FdKind::RegularFile(_) if !fd_entry.writable() => WriteOperation::Ebadf,
-            FdKind::RegularFile(file) => WriteOperation::RegularFile {
-                file: file.clone(),
-                append: (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_APPEND) != 0,
-                unprivileged: !process.cred.privileged(),
-                size_limit: process.limits.get(crate::process::limits::FSIZE).soft,
-            },
-            FdKind::Directory(_) => WriteOperation::Eisdir,
-            FdKind::Device(device_type) => WriteOperation::Device {
-                device_type: device_type.clone(),
-            },
-            FdKind::DevfsDirectory { .. } => WriteOperation::Eisdir,
-            FdKind::DevptsDirectory { .. } => WriteOperation::Eisdir,
-            // A description opened O_RDONLY is not writable (EBADF).
-            FdKind::PtyMaster(_) | FdKind::PtySlave(_) if !fd_entry.writable() => WriteOperation::Ebadf,
-            FdKind::PtyMaster(pair) => WriteOperation::PtyMaster {
-                hold: crate::tty::pty::PtyHold::master(pair),
-                is_nonblocking: (fd_entry.status_flags()
-                    & crate::ipc::fd::status_flags::O_NONBLOCK)
-                    != 0,
-            },
-            FdKind::PtySlave(pair) => WriteOperation::PtySlave {
-                hold: crate::tty::pty::PtyHold::slave(pair),
-                is_nonblocking: (fd_entry.status_flags()
-                    & crate::ipc::fd::status_flags::O_NONBLOCK)
-                    != 0,
-            },
-            FdKind::ProcfsFile { .. } => WriteOperation::Ebadf,
-            FdKind::ProcfsDirectory { .. } => WriteOperation::Eisdir,
-            FdKind::Epoll(_) => WriteOperation::Ebadf,
+        )
+    };
+    // x86_64: the descriptor from the thread's own reference to its table,
+    // without PROCESS_MANAGER (#1650), unless the write needs the row.
+    #[cfg(target_arch = "x86_64")]
+    let quick = current_fd_table().and_then(|table| {
+        table.try_read_lockless(|inner| match inner.get(fd as i32) {
+            Some(fd_entry) => classify(fd_entry, None, &mut fifo_to_touch),
+            None => Some(WriteOperation::Ebadf),
+        })
+    });
+    #[cfg(not(target_arch = "x86_64"))]
+    let quick: Option<Option<WriteOperation>> = None;
+    let write_op = match quick.flatten() {
+        Some(write_op) => write_op,
+        None => {
+            let manager_guard = crate::process::manager();
+            let process = match &*manager_guard {
+                Some(manager) => match manager.find_process_by_thread(thread_id) {
+                    Some((_pid, p)) => p,
+                    None => {
+                        // Fall back to stdio behavior for kernel threads
+                        return write_to_stdio(fd, &buffer);
+                    }
+                },
+                None => {
+                    // Fall back to stdio behavior for kernel threads
+                    return write_to_stdio(fd, &buffer);
+                }
+            };
+
+            // Look up the file descriptor
+            let fd_entry = match process.fd_table.get(fd as i32) {
+                Some(entry) => entry,
+                None => {
+                    return SyscallResult::Err(9); // EBADF
+                }
+            };
+
+            match classify(fd_entry, Some(process), &mut fifo_to_touch) {
+                Some(write_op) => write_op,
+                None => WriteOperation::Ebadf,
+            }
+            // manager_guard dropped here, releasing the lock before I/O
         }
-        // manager_guard dropped here, releasing the lock before I/O
     };
 
     // Now perform the actual I/O operation without holding the manager lock
@@ -780,6 +805,167 @@ fn write_to_stdio(fd: u64, buffer: &[u8]) -> SyscallResult {
 /// sys_read - Read from a file descriptor
 ///
 /// Supports stdin (with blocking), stdout/stderr (error), and pipe read ends.
+/// A pipe's read end, read without PROCESS_MANAGER held: what is buffered,
+/// or a wait for data, end of file or a signal (`sys_read`).
+fn read_pipe(
+    pipe_buffer_clone: alloc::sync::Arc<spin::Mutex<crate::ipc::pipe::PipeBuffer>>,
+    is_nonblocking: bool,
+    buf_ptr: u64,
+    count: u64,
+) -> SyscallResult {
+    let mut user_buf = alloc::vec::Vec::new();
+    if user_buf.try_reserve_exact(count as usize).is_err() {
+        return SyscallResult::Err(12);
+    }
+    user_buf.resize(count as usize, 0);
+
+    // Try to read - if empty and blocking, we'll enter blocking path
+    loop {
+        let read_result = {
+            let mut pipe = pipe_buffer_clone.lock();
+            pipe.read(&mut user_buf)
+        };
+
+        match read_result {
+            Ok(n) => {
+                if n > 0 {
+                    if copy_to_user(buf_ptr, user_buf.as_ptr() as u64, n).is_err() {
+                        return SyscallResult::Err(14); // EFAULT
+                    }
+                }
+                log::debug!("sys_read: Read {} bytes from pipe", n);
+                return SyscallResult::Ok(n as u64);
+            }
+            Err(11) => {
+                // EAGAIN - buffer empty but writers exist
+                if is_nonblocking {
+                    log::debug!("sys_read: Pipe empty, O_NONBLOCK set - returning EAGAIN");
+                    return SyscallResult::Err(11); // EAGAIN
+                }
+
+                // === BLOCKING PATH ===
+                let thread_id = match crate::task::scheduler::current_thread_id() {
+                    Some(tid) => tid,
+                    None => return SyscallResult::Err(3), // ESRCH
+                };
+
+                log::debug!(
+                    "sys_read: Pipe empty, thread {} entering blocking path",
+                    thread_id
+                );
+
+                // Register as waiter BEFORE setting blocked state (race condition fix)
+                {
+                    let mut pipe = pipe_buffer_clone.lock();
+                    pipe.add_read_waiter(thread_id);
+                }
+
+                // Block the thread
+                crate::task::scheduler::with_current(|sched| {
+                    sched.block_current_in_syscall();
+                });
+
+                // Check if data arrived during setup (race condition fix)
+                let data_ready = {
+                    let pipe = pipe_buffer_clone.lock();
+                    pipe.has_data_or_eof()
+                };
+
+                if data_ready {
+                    // Data arrived during setup - unblock and retry immediately
+                    crate::task::scheduler::with_current(|sched| {
+                        if let Some(thread) = sched.current_thread_mut() {
+                            thread.blocked_in_syscall = false;
+                            thread.set_ready();
+                        }
+                    });
+                    continue; // Retry read
+                }
+
+                // Preemption stays disabled until the signal check below has run (#1230):
+                // see `blocking_io::wait_prepared`.
+
+                // HLT loop - wait for data or EOF
+                loop {
+                    // Check for pending signals that should interrupt this syscall
+                    if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
+                        // Signal pending - clean up and return EINTR
+                        {
+                            let mut pipe = pipe_buffer_clone.lock();
+                            pipe.remove_read_waiter(thread_id);
+                        }
+                        crate::task::scheduler::with_current(|sched| {
+                            if let Some(thread) = sched.current_thread_mut() {
+                                thread.blocked_in_syscall = false;
+                                thread.set_ready();
+                            }
+                        });
+                        log::debug!(
+                            "sys_read: Pipe thread {} interrupted by signal (EINTR)",
+                            thread_id
+                        );
+                        return SyscallResult::Err(e as u64);
+                    }
+
+                    crate::per_cpu::preempt_enable();
+                    crate::task::scheduler::yield_current();
+                    crate::arch_halt_while_blocked();
+                    crate::per_cpu::preempt_disable();
+
+                    let still_blocked = crate::task::scheduler::with_current(|sched| {
+                        if let Some(thread) = sched.current_thread_mut() {
+                            thread.state == crate::task::thread::ThreadState::Blocked
+                        } else {
+                            false
+                        }
+                    })
+                    .unwrap_or(false);
+
+                    if !still_blocked {
+                        log::debug!(
+                            "sys_read: Pipe thread {} woken from blocking",
+                            thread_id
+                        );
+                        break;
+                    }
+                }
+
+                // Clear blocked state
+                crate::task::scheduler::with_current(|sched| {
+                    if let Some(thread) = sched.current_thread_mut() {
+                        thread.blocked_in_syscall = false;
+                    }
+                });
+                reset_quantum();
+                crate::task::scheduler::check_and_clear_need_resched();
+
+                // Continue loop to retry read
+                continue;
+            }
+            Err(e) => {
+                log::debug!("sys_read: Pipe read error: {}", e);
+                return SyscallResult::Err(e as u64);
+            }
+        }
+    }
+}
+
+/// x86_64: what `sys_read` found without PROCESS_MANAGER.
+#[cfg(target_arch = "x86_64")]
+enum QuickRead {
+    Pipe(alloc::sync::Arc<spin::Mutex<crate::ipc::pipe::PipeBuffer>>, bool),
+    Ipc(alloc::sync::Arc<dyn crate::ipc::object::IpcFile>),
+}
+
+/// x86_64: the calling thread's descriptor table, from the reference its row
+/// publishes (`Process::publish_fd_table`), without PROCESS_MANAGER (#1650).
+#[cfg(target_arch = "x86_64")]
+fn current_fd_table() -> Option<crate::ipc::FdTable> {
+    let thread = crate::per_cpu::current_thread()?;
+    let reference = thread.signals.fd_table.try_lock()?.clone()?;
+    reference.upgrade()
+}
+
 pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
     use crate::ipc::FdKind;
 
@@ -811,6 +997,35 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             return SyscallResult::Ok(0);
         }
     };
+    // x86_64: a pipe or IPC object's descriptor from the thread's own
+    // reference to its table, without PROCESS_MANAGER (#1650).
+    #[cfg(target_arch = "x86_64")]
+    if let Some(found) = current_fd_table().and_then(|table| {
+        table.try_read_lockless(|inner| {
+            inner.get(fd as i32).map(|fd_entry| match &fd_entry.kind {
+                FdKind::PipeRead(pipe_buffer) => Some(QuickRead::Pipe(
+                    pipe_buffer.clone(),
+                    fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK != 0,
+                )),
+                FdKind::Ipc(file) if fd_entry.readable() => Some(QuickRead::Ipc(file.clone())),
+                _ => None,
+            })
+        })
+    }) {
+        match found {
+            None => return SyscallResult::Err(9), // EBADF
+            Some(Some(QuickRead::Pipe(pipe_buffer, is_nonblocking))) => {
+                return read_pipe(pipe_buffer, is_nonblocking, buf_ptr, count);
+            }
+            Some(Some(QuickRead::Ipc(file))) => {
+                return match file.read(buf_ptr, count as usize) {
+                    Ok(n) => SyscallResult::Ok(n),
+                    Err(e) => SyscallResult::Err(e),
+                };
+            }
+            Some(None) => {}
+        }
+    }
     let manager_guard = crate::process::manager();
     // #821 keeps `reader_pid`: the stdin arm below is the console's
     // thread-context consumer, and the pid the input IRQ entry must not block
@@ -1002,141 +1217,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             // process that needs to write to the pipe).
             drop(manager_guard);
 
-            let mut user_buf = alloc::vec::Vec::new();
-            if user_buf.try_reserve_exact(count as usize).is_err() {
-                return SyscallResult::Err(12);
-            }
-            user_buf.resize(count as usize, 0);
-
-            // Try to read - if empty and blocking, we'll enter blocking path
-            loop {
-                let read_result = {
-                    let mut pipe = pipe_buffer_clone.lock();
-                    pipe.read(&mut user_buf)
-                };
-
-                match read_result {
-                    Ok(n) => {
-                        if n > 0 {
-                            if copy_to_user(buf_ptr, user_buf.as_ptr() as u64, n).is_err() {
-                                return SyscallResult::Err(14); // EFAULT
-                            }
-                        }
-                        log::debug!("sys_read: Read {} bytes from pipe", n);
-                        return SyscallResult::Ok(n as u64);
-                    }
-                    Err(11) => {
-                        // EAGAIN - buffer empty but writers exist
-                        if is_nonblocking {
-                            log::debug!("sys_read: Pipe empty, O_NONBLOCK set - returning EAGAIN");
-                            return SyscallResult::Err(11); // EAGAIN
-                        }
-
-                        // === BLOCKING PATH ===
-                        let thread_id = match crate::task::scheduler::current_thread_id() {
-                            Some(tid) => tid,
-                            None => return SyscallResult::Err(3), // ESRCH
-                        };
-
-                        log::debug!(
-                            "sys_read: Pipe empty, thread {} entering blocking path",
-                            thread_id
-                        );
-
-                        // Register as waiter BEFORE setting blocked state (race condition fix)
-                        {
-                            let mut pipe = pipe_buffer_clone.lock();
-                            pipe.add_read_waiter(thread_id);
-                        }
-
-                        // Block the thread
-                        crate::task::scheduler::with_current(|sched| {
-                            sched.block_current_in_syscall();
-                        });
-
-                        // Check if data arrived during setup (race condition fix)
-                        let data_ready = {
-                            let pipe = pipe_buffer_clone.lock();
-                            pipe.has_data_or_eof()
-                        };
-
-                        if data_ready {
-                            // Data arrived during setup - unblock and retry immediately
-                            crate::task::scheduler::with_current(|sched| {
-                                if let Some(thread) = sched.current_thread_mut() {
-                                    thread.blocked_in_syscall = false;
-                                    thread.set_ready();
-                                }
-                            });
-                            continue; // Retry read
-                        }
-
-                        // Preemption stays disabled until the signal check below has run (#1230):
-                        // see `blocking_io::wait_prepared`.
-
-                        // HLT loop - wait for data or EOF
-                        loop {
-                            // Check for pending signals that should interrupt this syscall
-                            if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
-                                // Signal pending - clean up and return EINTR
-                                {
-                                    let mut pipe = pipe_buffer_clone.lock();
-                                    pipe.remove_read_waiter(thread_id);
-                                }
-                                crate::task::scheduler::with_current(|sched| {
-                                    if let Some(thread) = sched.current_thread_mut() {
-                                        thread.blocked_in_syscall = false;
-                                        thread.set_ready();
-                                    }
-                                });
-                                log::debug!(
-                                    "sys_read: Pipe thread {} interrupted by signal (EINTR)",
-                                    thread_id
-                                );
-                                return SyscallResult::Err(e as u64);
-                            }
-
-                            crate::per_cpu::preempt_enable();
-                            crate::task::scheduler::yield_current();
-                            crate::arch_halt_while_blocked();
-                            crate::per_cpu::preempt_disable();
-
-                            let still_blocked = crate::task::scheduler::with_current(|sched| {
-                                if let Some(thread) = sched.current_thread_mut() {
-                                    thread.state == crate::task::thread::ThreadState::Blocked
-                                } else {
-                                    false
-                                }
-                            })
-                            .unwrap_or(false);
-
-                            if !still_blocked {
-                                log::debug!(
-                                    "sys_read: Pipe thread {} woken from blocking",
-                                    thread_id
-                                );
-                                break;
-                            }
-                        }
-
-                        // Clear blocked state
-                        crate::task::scheduler::with_current(|sched| {
-                            if let Some(thread) = sched.current_thread_mut() {
-                                thread.blocked_in_syscall = false;
-                            }
-                        });
-                        reset_quantum();
-                        crate::task::scheduler::check_and_clear_need_resched();
-
-                        // Continue loop to retry read
-                        continue;
-                    }
-                    Err(e) => {
-                        log::debug!("sys_read: Pipe read error: {}", e);
-                        return SyscallResult::Err(e as u64);
-                    }
-                }
-            }
+            read_pipe(pipe_buffer_clone, is_nonblocking, buf_ptr, count)
         }
         FdKind::PipeWrite(_) => {
             // Can't read from write end of pipe
@@ -3692,6 +3773,7 @@ fn change_credentials(
         for peer in peers.into_iter().chain(core::iter::once(pid)) {
             if let Some(row) = manager.get_process_mut(peer) {
                 row.cred = credentials.clone();
+                row.publish_identity();
             }
         }
         SyscallResult::Ok(0)

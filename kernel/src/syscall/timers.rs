@@ -28,14 +28,19 @@ struct SigEvent {
 /// struct itimerspec: the interval's seconds and nanoseconds, then the value's.
 type Itimerspec = [i64; 4];
 
-/// What a timer syscall needs of the calling process, read under the process
-/// manager and used after it is released.
+/// What a timer syscall needs of the calling process: its timers and the CPU
+/// account they count. x86_64: from the calling thread, which holds both,
+/// without the process manager (#1650); elsewhere from its row, under it.
 struct Caller {
     timers: Arc<IntervalTimers>,
     cpu: Arc<CpuAccount>,
 }
 
 fn caller() -> Result<Caller, u64> {
+    #[cfg(target_arch = "x86_64")]
+    if let Some((timers, cpu)) = crate::task::scheduler::current_signal_timers() {
+        return Ok(Caller { timers, cpu });
+    }
     let tid = crate::task::scheduler::current_thread_id().ok_or(ESRCH as u64)?;
     let guard = crate::process::manager();
     let (_, process) = guard

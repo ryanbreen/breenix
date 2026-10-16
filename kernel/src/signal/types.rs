@@ -340,6 +340,20 @@ pub struct ThreadSignals {
     /// The PROCESS_MANAGER-owned signal state of this thread's row, copied
     /// where a wait loop or an interrupt return can read it without that lock.
     pub mirror: SignalMirror,
+    /// Standard signals kill and tgkill generated for this thread without
+    /// PROCESS_MANAGER (#1650), not yet queued on its row
+    /// (`SignalState::collect_timer_signals`), as `timer_pending` holds the
+    /// timers'. Each has its sender in `sent_info` (si_pid, si_uid), and a
+    /// bit in `sent_to_thread` when tgkill named this thread.
+    pub sent: AtomicU64,
+    /// Signals a sender is filling in (`post_sent`).
+    sent_claim: AtomicU64,
+    sent_to_thread: AtomicU64,
+    sent_info: [AtomicU64; 32],
+    /// The descriptor table of this thread's row, as the row last published
+    /// it (`Process::publish_fd_table`): what read and write look a
+    /// descriptor up in without PROCESS_MANAGER (#1650).
+    pub fd_table: spin::Mutex<Option<crate::ipc::fd::FdTableRef>>,
 }
 
 /// Lock-free copies, which the row's `SignalState` keeps current under
@@ -358,6 +372,23 @@ pub struct SignalMirror {
     actions: [[AtomicU64; 4]; 64],
     /// Base, size, flags.
     alt_stack: [AtomicU64; 3],
+    /// The row's identity as a signal sender and target (`Identity`): real
+    /// and effective user ID, saved set-user-ID, session, thread group; and
+    /// whether it is published. Unpublished, a signal sender takes the
+    /// process-manager path.
+    identity: [AtomicU64; 3],
+}
+
+/// What a signal's permission check (`kill`'s, POSIX) and its siginfo read of
+/// a process: published by the row under PROCESS_MANAGER whenever one of
+/// them changes (`Process::publish_identity`), read without it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Identity {
+    pub uid: u32,
+    pub euid: u32,
+    pub suid: u32,
+    pub sid: u32,
+    pub tgid: u32,
 }
 
 impl Default for SignalMirror {
@@ -369,6 +400,7 @@ impl Default for SignalMirror {
             seq: AtomicU64::new(0),
             actions: [const { [const { AtomicU64::new(0) }; 4] }; 64],
             alt_stack: [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(SS_DISABLE as u64)],
+            identity: [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)],
         }
     }
 }
@@ -408,6 +440,33 @@ impl SignalMirror {
             restorer: slot[2].load(Ordering::Relaxed),
             mask: slot[3].load(Ordering::Relaxed),
         })
+    }
+
+    /// The row's identity, None while it is unpublished or being rewritten.
+    pub fn identity(&self) -> Option<Identity> {
+        let words = self.try_read(|| {
+            [
+                self.identity[0].load(Ordering::Relaxed),
+                self.identity[1].load(Ordering::Relaxed),
+                self.identity[2].load(Ordering::Relaxed),
+            ]
+        })?;
+        (words[2] & 1 << 63 != 0).then(|| Identity {
+            uid: words[0] as u32,
+            euid: (words[0] >> 32) as u32,
+            suid: words[1] as u32,
+            sid: (words[1] >> 32) as u32,
+            tgid: words[2] as u32,
+        })
+    }
+
+    /// Publish the row's identity. PM held: one writer.
+    pub fn set_identity(&self, identity: &Identity) {
+        self.write(|| {
+            self.identity[0].store(identity.uid as u64 | (identity.euid as u64) << 32, Ordering::Relaxed);
+            self.identity[1].store(identity.suid as u64 | (identity.sid as u64) << 32, Ordering::Relaxed);
+            self.identity[2].store(identity.tgid as u64 | 1 << 63, Ordering::Relaxed);
+        });
     }
 
     /// The row's alternate stack. None while it is being rewritten.
@@ -480,7 +539,8 @@ impl SignalMirror {
     pub fn deliverable(&self, thread: &ThreadSignals) -> u64 {
         let ignored = self.ignored();
         let expired = thread.timer_pending.load(Ordering::Acquire)
-            | thread.posix_pending.load(Ordering::Acquire);
+            | thread.posix_pending.load(Ordering::Acquire)
+            | thread.sent.load(Ordering::Acquire);
         (self.pending() | (expired & !ignored)) & !thread.blocked.load(Ordering::Relaxed) & !ignored
     }
 
@@ -518,9 +578,62 @@ impl SignalMirror {
 }
 
 impl ThreadSignals {
+    /// Generate standard signal `sig`, from the process `pid` of real user
+    /// `uid`, for this thread without PROCESS_MANAGER (`sent`): sent to the
+    /// process, or with `to_thread` to this thread (tkill, tgkill). A signal
+    /// already pending here, on the row or in `sent`, is not generated again
+    /// and keeps its first sender, as a standard signal does.
+    pub fn post_sent(&self, sig: u32, pid: u32, uid: u32, to_thread: bool) {
+        let bit = sig_mask(sig);
+        if is_realtime(sig) || !is_valid_signal(sig) || sig > 32 {
+            return;
+        }
+        if (self.mirror.pending() | self.sent.load(Ordering::Acquire)) & bit != 0
+            || self.sent_claim.fetch_or(bit, Ordering::AcqRel) & bit != 0
+        {
+            return;
+        }
+        if self.sent.load(Ordering::Acquire) & bit == 0 {
+            self.sent_info[(sig - 1) as usize].store(pid as u64 | (uid as u64) << 32, Ordering::Relaxed);
+            if to_thread {
+                self.sent_to_thread.fetch_or(bit, Ordering::Relaxed);
+            } else {
+                self.sent_to_thread.fetch_and(!bit, Ordering::Relaxed);
+            }
+            self.sent.fetch_or(bit, Ordering::Release);
+            self.return_work.store(true, Ordering::Release);
+        }
+        self.sent_claim.fetch_and(!bit, Ordering::Release);
+    }
+
+    /// Take `sig` out of `sent`: its siginfo, and whether it was sent to the
+    /// process. None when it is not there, or another taker had it first.
+    /// A sender does not refill a signal's information while it is in
+    /// `sent`, so what is read before the take is that signal's.
+    pub fn take_sent(&self, sig: u32) -> Option<(SigInfo, bool)> {
+        let bit = sig_mask(sig);
+        if !is_valid_signal(sig) || sig > 32 || self.sent.load(Ordering::Acquire) & bit == 0 {
+            return None;
+        }
+        let word = self.sent_info[(sig - 1) as usize].load(Ordering::Acquire);
+        let to_thread = self.sent_to_thread.load(Ordering::Acquire) & bit != 0;
+        if self.sent.fetch_and(!bit, Ordering::AcqRel) & bit == 0 {
+            return None;
+        }
+        let code = if to_thread { super::constants::SI_TKILL } else { super::constants::SI_USER };
+        Some((SigInfo::sender(code, word as u32, (word >> 32) as u32), !to_thread))
+    }
+
+    /// Put back a signal `take_sent` took and could not hand over.
+    pub fn restore_sent(&self, sig: u32, info: &SigInfo, process: bool) {
+        let word = info.fields[0];
+        self.post_sent(sig, word as u32, (word >> 32) as u32, !process);
+    }
+
     pub fn needs_return_check(&self) -> bool {
         self.return_work.load(Ordering::Acquire)
             || self.timer_pending.load(Ordering::Acquire) != 0
+            || self.sent.load(Ordering::Acquire) != 0
             || self.posix_pending.load(Ordering::Acquire) != 0
             || self.posix_retry.load(Ordering::Acquire)
     }
@@ -689,7 +802,8 @@ impl SignalState {
 
     pub fn pending_set(&self) -> u64 {
         let expired = self.thread.timer_pending.load(Ordering::Acquire)
-            | self.thread.posix_pending.load(Ordering::Acquire);
+            | self.thread.posix_pending.load(Ordering::Acquire)
+            | self.thread.sent.load(Ordering::Acquire);
         self.pending | (expired & !self.ignored)
     }
 
@@ -703,6 +817,7 @@ impl SignalState {
             pending &= !sig_mask(sig);
             self.set_process_pending(sig);
         }
+        self.collect_sent_signals();
         let due = self.thread.posix_pending.swap(0, Ordering::AcqRel) != 0;
         if due || self.thread.posix_retry.swap(false, Ordering::AcqRel) {
             loop {
@@ -716,6 +831,20 @@ impl SignalState {
                     break;
                 };
                 self.queue_timer_signal(sig, info, process, timer);
+            }
+        }
+    }
+
+    /// Queue the standard signals kill and tgkill generated for this row's
+    /// thread without PROCESS_MANAGER (`ThreadSignals::sent`), with their
+    /// senders.
+    pub fn collect_sent_signals(&mut self) {
+        let mut sent = self.thread.sent.load(Ordering::Acquire);
+        while sent != 0 {
+            let sig = sent.trailing_zeros() + 1;
+            sent &= !sig_mask(sig);
+            if let Some((info, process)) = self.thread.take_sent(sig) {
+                self.generate(sig, info, process);
             }
         }
     }
@@ -982,6 +1111,9 @@ impl SignalState {
     /// siginfo, which `pending_info` also reports until the next take. A
     /// realtime signal with more instances queued stays pending.
     pub fn take(&mut self, sig: u32) -> SigInfo {
+        if let Some((info, process)) = self.thread.take_sent(sig) {
+            self.generate(sig, info, process);
+        }
         if let Some(at) = self.queued.iter().position(|i| i.sig == sig) {
             let instance = self.queued.remove(at);
             let info = match instance.timer {
@@ -1085,6 +1217,7 @@ impl SignalState {
         self.pending &= !mask;
         self.process_pending &= !mask;
         self.thread.timer_pending.fetch_and(!mask, Ordering::AcqRel);
+        self.thread.sent.fetch_and(!mask, Ordering::AcqRel);
         self.drop_instances(|i| sig_mask(i.sig) & mask != 0);
         self.sync_mirror();
     }
@@ -1157,6 +1290,7 @@ impl SignalState {
                 // whether blocked or unblocked.
                 self.pending &= !bit;
                 self.process_pending &= !bit;
+                self.thread.sent.fetch_and(!bit, Ordering::AcqRel);
                 self.drop_instances(|i| i.sig == sig);
             } else {
                 self.ignored &= !bit;

@@ -597,6 +597,30 @@ impl Process {
         }
     }
 
+    /// Publish this row's identity as a signal sender and target to its
+    /// thread's signal mirror (`SignalMirror::identity`), which `kill` reads
+    /// without PROCESS_MANAGER (#1650). PM held: called wherever a row joins
+    /// the process table and wherever its credentials, session or thread
+    /// group change.
+    pub fn publish_identity(&self) {
+        let id = self.id.as_u64();
+        self.signals.thread.mirror.set_identity(&crate::signal::types::Identity {
+            uid: self.cred.uid,
+            euid: self.cred.euid,
+            suid: self.cred.suid,
+            sid: self.sid.as_u64() as u32,
+            tgid: self.thread_group_id.unwrap_or(id) as u32,
+        });
+    }
+
+    /// Publish this row's descriptor table to its thread's signal state
+    /// (`ThreadSignals::fd_table`), which read and write use without
+    /// PROCESS_MANAGER (#1650). PM held: called wherever a row joins the
+    /// process table and wherever its table is replaced.
+    pub fn publish_fd_table(&self) {
+        *self.signals.thread.fd_table.lock() = Some(self.fd_table.downgrade());
+    }
+
     /// Mark process as running
     pub fn set_running(&mut self) {
         self.state = ProcessState::Running;
@@ -787,6 +811,7 @@ impl Process {
         // row lets go of it and closes nothing.
         if self.fd_table.is_shared() {
             self.fd_table = crate::ipc::fd::FdTable::empty();
+            self.publish_fd_table();
             return alloc::vec::Vec::new();
         }
         let entries = self.fd_table.take_all();
@@ -814,6 +839,7 @@ impl Process {
         // row lets go of it and closes nothing.
         if self.fd_table.is_shared() {
             self.fd_table = crate::ipc::fd::FdTable::empty();
+            self.publish_fd_table();
             return;
         }
         use crate::ipc::FdKind;
@@ -888,6 +914,7 @@ impl Process {
         // row lets go of it and closes nothing.
         if self.fd_table.is_shared() {
             self.fd_table = crate::ipc::fd::FdTable::empty();
+            self.publish_fd_table();
             return;
         }
         use crate::ipc::FdKind;

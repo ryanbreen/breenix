@@ -705,14 +705,16 @@ impl HandlerTarget for LocklessTarget<'_> {
 }
 
 /// Deliver a due timer signal -- an interval timer's, or a POSIX timer's --
-/// to its user handler on the way back to Ring 3, from the current thread's
-/// own signal state and without PROCESS_MANAGER, so a CPU that stopped while
-/// holding that lock does not hold the handler up (#1635). Returns whether it
-/// did. It declines, leaving the signal due, whenever the process-manager
-/// path is needed: the row holds a pending signal or a stop, more than one
-/// timer signal is due, the action is a default one or SA_RESETHAND, the
-/// dispositions are being rewritten, the timer table is busy, or the frame
-/// cannot be written without a fault resolved.
+/// or a standard signal kill or tgkill generated without PROCESS_MANAGER
+/// (`ThreadSignals::sent`) to its user handler on the way back to Ring 3,
+/// from the current thread's own signal state and without PROCESS_MANAGER,
+/// so a CPU that stopped while holding that lock does not hold the handler up
+/// (#1635, #1650). Returns whether it did. It declines, leaving the signal
+/// due, whenever the process-manager path is needed: the row holds a pending
+/// signal or a stop, more than one such signal is due, the action is a
+/// default one or SA_RESETHAND, the dispositions are being rewritten, the
+/// timer table is busy, or the frame cannot be written without a fault
+/// resolved.
 #[cfg(target_arch = "x86_64")]
 fn deliver_timer_signal_lockless(
     thread_id: u64,
@@ -733,16 +735,31 @@ fn deliver_timer_signal_lockless(
     let blocked = signals.blocked.load(Ordering::Relaxed);
     let itimer = signals.timer_pending.load(Ordering::Acquire) & !ignored & !blocked;
     let posix = signals.posix_pending.load(Ordering::Acquire) & !ignored & !blocked;
-    if (itimer | posix).count_ones() != 1 || (itimer != 0 && posix != 0) {
+    let sent = signals.sent.load(Ordering::Acquire) & !ignored & !blocked;
+    if (itimer | posix | sent).count_ones() != 1 || [itimer, posix, sent].iter().filter(|&&due| due != 0).count() != 1 {
         return false;
     }
-    let sig = (itimer | posix).trailing_zeros() + 1;
+    let sig = (itimer | posix | sent).trailing_zeros() + 1;
     let bit = sig_mask(sig);
     let (Some(action), Some(alt)) = (mirror.action(sig), mirror.alt_stack()) else {
         return false;
     };
     if !action.is_handler() || action.flags & SA_RESETHAND != 0 {
         return false;
+    }
+
+    if sent != 0 {
+        let Some((info, process)) = signals.take_sent(sig) else {
+            return false;
+        };
+        let mut target = LocklessTarget { signals, thread_id, info, alt };
+        let installed =
+            install_user_handler_x86_64(&mut target, user_return, saved_regs, sig, action.handler, &action);
+        if installed.is_err() {
+            signals.restore_sent(sig, &info, process);
+            return false;
+        }
+        return true;
     }
 
     if itimer != 0 {

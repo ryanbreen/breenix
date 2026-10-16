@@ -1893,6 +1893,8 @@ impl ProcessManager {
     /// Insert a fully-constructed process into the manager
     pub fn insert_process(&mut self, pid: ProcessId, process: Process) {
         crate::task::exit_tally::record_start();
+        process.publish_identity();
+        process.publish_fd_table();
         self.processes.insert(pid, process);
     }
 
@@ -3479,6 +3481,8 @@ impl ProcessManager {
         // published in it only now: a failure above leaves the table in
         // unpublished custody, released after the PM unlock.
         Self::publish_child_memory(&mut child_process, memory);
+        child_process.publish_identity();
+        child_process.publish_fd_table();
         crate::task::exit_tally::record_start();
         self.processes.insert(child_pid, child_process);
 
@@ -3678,6 +3682,8 @@ impl ProcessManager {
         // published in it only now: a failure above leaves the table in
         // unpublished custody, released after the PM unlock.
         Self::publish_child_memory(&mut child_process, memory);
+        child_process.publish_identity();
+        child_process.publish_fd_table();
         crate::task::exit_tally::record_start();
         self.processes.insert(child_pid, child_process);
 
@@ -3971,6 +3977,8 @@ impl ProcessManager {
             }
 
             // Add the child process to the process table
+            child_process.publish_identity();
+            child_process.publish_fd_table();
             crate::task::exit_tally::record_start();
             self.processes.insert(child_pid, child_process);
 
@@ -4234,6 +4242,7 @@ impl ProcessManager {
         let heap_base = loaded_elf.segments_end;
         process.cred.suid = process.cred.euid;
         process.cred.sgid = process.cred.egid;
+        process.publish_identity();
         process.image_size = loaded_elf.image_size;
         process.image_data_size = loaded_elf.data_size;
         process.heap_start = heap_base;
@@ -4257,6 +4266,7 @@ impl ProcessManager {
         // (CLONE_FILES) is copied first, so exec leaves that thread's
         // descriptors alone.
         process.fd_table.unshare();
+        process.publish_fd_table();
         // Close FD_CLOEXEC file descriptors per POSIX
         let ipc_close_pid = crate::ipc::object::close_owner(process.id, process.thread_group_id);
         process.fd_table.close_cloexec(ipc_close_pid, closes);
@@ -4284,6 +4294,7 @@ impl ProcessManager {
         process.address_space_lifetime = Some(new_address_space_lifetime);
         process.thread_group_id = None;
         process.exec_id = super::process::next_exec_id();
+        process.publish_identity();
 
         // Replace the stack
         process.stack = Some(Box::new(new_stack));
@@ -4740,6 +4751,7 @@ impl ProcessManager {
         // (CLONE_FILES) is copied first, so exec leaves that thread's
         // descriptors alone.
         process.fd_table.unshare();
+        process.publish_fd_table();
         // Close FD_CLOEXEC file descriptors per POSIX
         let ipc_close_pid = crate::ipc::object::close_owner(process.id, process.thread_group_id);
         process.fd_table.close_cloexec(ipc_close_pid, closes);
@@ -4762,6 +4774,7 @@ impl ProcessManager {
         process.thread_group_id = None;
         process.exec_id = super::process::next_exec_id();
         process.cred = cred;
+        process.publish_identity();
         let new_cr3 = process
             .page_table
             .as_ref()
@@ -5159,6 +5172,7 @@ impl ProcessManager {
         // (CLONE_FILES) is copied first, so exec leaves that thread's
         // descriptors alone.
         process.fd_table.unshare();
+        process.publish_fd_table();
         // Close FD_CLOEXEC file descriptors per POSIX
         let ipc_close_pid = crate::ipc::object::close_owner(process.id, process.thread_group_id);
         process.fd_table.close_cloexec(ipc_close_pid, closes);
@@ -5182,6 +5196,7 @@ impl ProcessManager {
         process.thread_group_id = None;
         process.exec_id = super::process::next_exec_id();
         process.cred = cred;
+        process.publish_identity();
         let new_ttbr0 = process
             .page_table
             .as_ref()
@@ -5503,6 +5518,7 @@ impl ProcessManager {
         let heap_base = loaded_elf.segments_end;
         process.cred.suid = process.cred.euid;
         process.cred.sgid = process.cred.egid;
+        process.publish_identity();
         process.image_size = loaded_elf.image_size;
         process.image_data_size = loaded_elf.data_size;
         process.heap_start = heap_base;
@@ -5524,6 +5540,7 @@ impl ProcessManager {
         // (CLONE_FILES) is copied first, so exec leaves that thread's
         // descriptors alone.
         process.fd_table.unshare();
+        process.publish_fd_table();
         // Close FD_CLOEXEC file descriptors per POSIX
         let ipc_close_pid = crate::ipc::object::close_owner(process.id, process.thread_group_id);
         process.fd_table.close_cloexec(ipc_close_pid, closes);
@@ -5552,6 +5569,7 @@ impl ProcessManager {
         process.address_space_lifetime = Some(new_address_space_lifetime);
         process.thread_group_id = None;
         process.exec_id = super::process::next_exec_id();
+        process.publish_identity();
         let new_ttbr0 = process
             .page_table
             .as_ref()

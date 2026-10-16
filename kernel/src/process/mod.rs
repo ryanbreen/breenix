@@ -206,8 +206,20 @@ impl core::ops::DerefMut for ProcessManagerGuard {
 /// Global process manager
 static PROCESS_MANAGER: Mutex<Option<ProcessManager>> = Mutex::new(None);
 
+/// The hold of PROCESS_MANAGER in progress, numbered from 1, or 0 while the
+/// lock is free. A file-descriptor table changed in a hold is closed to
+/// readers that do not take the lock until that hold ends (`FdTable`).
+static PM_HOLD: AtomicU64 = AtomicU64::new(0);
+static PM_HOLDS: AtomicU64 = AtomicU64::new(0);
+
+/// The PROCESS_MANAGER hold in progress (`PM_HOLD`).
+pub fn process_manager_hold() -> u64 {
+    PM_HOLD.load(Ordering::Acquire)
+}
+
 #[inline(always)]
 fn note_process_manager_lock_acquired() {
+    PM_HOLD.store(PM_HOLDS.fetch_add(1, Ordering::Relaxed) + 1, Ordering::Release);
     let (cpu, tid) = current_process_manager_owner_identity();
     PROCESS_MANAGER_OWNER_TID.store(tid, Ordering::Relaxed);
     PROCESS_MANAGER_OWNER_CPU.store(cpu, Ordering::Release);
@@ -232,6 +244,7 @@ fn note_process_manager_lock_released(mutated: bool) {
     }
     PROCESS_MANAGER_OWNER_TID.store(PM_LOCK_OWNER_NONE, Ordering::Relaxed);
     PROCESS_MANAGER_OWNER_CPU.store(PM_LOCK_OWNER_NONE, Ordering::Release);
+    PM_HOLD.store(0, Ordering::Release);
 }
 
 /// x86_64: per CPU, nonzero while it holds PROCESS_MANAGER taken with
