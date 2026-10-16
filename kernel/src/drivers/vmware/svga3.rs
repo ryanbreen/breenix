@@ -28,6 +28,8 @@
 
 extern crate alloc;
 
+mod spike;
+
 use alloc::alloc::Layout;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
@@ -691,6 +693,7 @@ pub fn init() -> Result<(), &'static str> {
 
     INITIALIZED.store(true, Ordering::Release);
     serial_println!("[svga3] SVGA3 driver initialized successfully");
+    spike::run();
     Ok(())
 }
 
