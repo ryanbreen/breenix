@@ -907,7 +907,7 @@ fn widgets_label_clip() -> CaseResult {
         "14.3",
         "small label drew no visible ellipsis",
     )?;
-    // Operator ruling 2026-10-15: the narrow scene includes the dot rows;
+    // Coordinator ruling 2026-10-15 (confirmed by the operator brief): include the dot rows;
     // its clipped third dot has no ink inside the twelve-pixel width.
     same_as(&narrow, PAPER, "12x7 ellipsis", "14.3", |fb| {
         font5x7::draw_text(fb, b"..", 10, 8, theme.text_primary, 1);
