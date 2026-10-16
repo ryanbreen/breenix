@@ -1183,6 +1183,11 @@ pub(super) fn schedule(local: &mut Held) -> Option<(u64, u64)> {
             let will_add = !is_terminated && !is_blocked && !in_queue;
             outgoing_holds_head = settle_outgoing(local, current_id, published_ready);
             if will_add {
+                // `retain_affine` may queue it on its home CPU, whose lock is
+                // released at once: that CPU must find this one still on its
+                // stack, or it dispatches the thread from a context not yet
+                // saved while this CPU runs on its kernel stack.
+                LEAVING_STACK[cpu].store(current_id, Ordering::Release);
                 if !retain_affine(local, current_id, cpu) {
                     local.enqueue(current_id, outgoing_holds_head);
                 }
