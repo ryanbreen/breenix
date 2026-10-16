@@ -107,6 +107,24 @@ mod signal {
         }
 
         #[test]
+        fn pending_overrun_is_what_delivery_reports_and_records_nothing() {
+            let timer = TimerSignal::new(1);
+            assert!(timer.expire(3));
+            assert_eq!(timer.pending_overrun(), 2);
+            // A claim that is dropped undelivered leaves no snapshot behind:
+            // expiries counted after it still join this notification.
+            assert!(!timer.expire(2));
+            assert_eq!(timer.pending_overrun(), 4);
+            assert_eq!(timer.deliver(), 4);
+            assert!(!timer.is_pending());
+            assert!(timer.expire(1));
+            assert_eq!(timer.overrun(), 0);
+            assert!(!timer.expire(2));
+            assert_eq!(timer.pending_overrun(), 0);
+            assert_eq!(timer.deliver(), 0);
+        }
+
+        #[test]
         fn overrun_saturates_at_the_abi_maximum() {
             let timer = TimerSignal::new(1);
             assert!(timer.expire(u64::MAX));
