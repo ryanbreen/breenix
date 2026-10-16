@@ -183,21 +183,34 @@ fn scanout_atomic_record() -> CaseResult {
     let w = std::sync::Arc::new(W::new(64, 64, 2)?);
     want_ok(w.register(b"atomic-record"), "17.1", "REGISTER")?;
     place(&mut k, w.id(), &Placed::new(600, 400, 64, 64, 0, 0), abi::geometry_flags::VISIBLE)?;
+    // Commit n shows pattern n, so the pixels name the commit they belong to. Commit 1 is
+    // composed before the continuous commits start, so every readback names a commit.
+    w.frame(1).cite("17.3")?;
+    let start = now_ms();
+    loop {
+        let (r, _, rec) = readback_raw();
+        let listed = rec.windows[..(rec.window_count as usize).min(16)].iter().any(|o| o.id == w.id() && o.commit_id >= 1);
+        if r == 0 && listed {
+            break;
+        }
+        if since(start) > 1_000 {
+            return at("20.1", "no readback listed the window's first commit within 1 s");
+        }
+        let _ = time::sleep_ms(5);
+    }
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let client = {
         let (w, stop) = (w.clone(), stop.clone());
-        // Commit n shows pattern n, so the pixels name the commit they belong to.
-        std::thread::spawn(move || {
-            let mut n = 1;
+        std::thread::spawn(move || -> Result<u32, String> {
+            let mut n = 2;
             while !stop.load(std::sync::atomic::Ordering::SeqCst) {
-                if w.frame(n).is_err() {
-                    break;
-                }
+                w.frame(n).map_err(|e| format!("commit {n}: {e}"))?;
                 n += 1;
             }
+            Ok(n - 2)
         })
     };
-    let mut checked = 0;
+    let (mut checked, mut last, mut seen) = (0, 0u64, Vec::new());
     let mut result = Ok(());
     for _ in 0..20 {
         let _ = time::sleep_ms(10);
@@ -215,21 +228,33 @@ fn scanout_atomic_record() -> CaseResult {
             result = at("20.1", format!("the record of serial {} does not list the committing window", rec.serial));
             break;
         };
-        // The window is at (600, 400); (x, y) is a pixel of it.
-        let at_pixel = |x: u32, y: u32| ((400 + y) * 1280 + 600 + x) as usize * 4;
-        // Commit ids start at 1 (section 17.2); a window composed before its first commit
-        // shows its new buffers, which are all zero.
-        let want = if commit == 0 { [0; 4] } else { pattern(commit as u32, 5, 7) };
-        if px[at_pixel(5, 7)..at_pixel(5, 7) + 3] != want[..3] {
-            result = at("20.1", format!("readback serial {} names commit {commit} but its pixels are not commit {commit}'s", rec.serial));
+        if commit < last.max(1) {
+            result = at("20.1", format!("readback serial {} names commit {commit} after a readback named commit {last}", rec.serial));
             break;
+        }
+        // The window is at (600, 400); every one of its pixels must be the named commit's.
+        let differ = (0..64u32).flat_map(|y| (0..64u32).map(move |x| (x, y))).find(|&(x, y)| {
+            let at = ((400 + y) * 1280 + 600 + x) as usize * 4;
+            px[at..at + 3] != pattern(commit as u32, x, y)[..3]
+        });
+        if let Some((x, y)) = differ {
+            result = at("20.1", format!("readback serial {} names commit {commit}, but the window's pixel ({x},{y}) is not commit {commit}'s", rec.serial));
+            break;
+        }
+        last = commit;
+        if !seen.contains(&commit) {
+            seen.push(commit);
         }
         checked += 1;
     }
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
-    let _ = client.join();
+    let made = client.join().map_err(|_| String::from("the committing thread panicked")).cite("17.3")?;
     result?;
-    ensure(checked >= 10, "20.1", format!("only {checked} of 20 readbacks under continuous commits returned pixels"))
+    let made = made.cite("17.3")?;
+    value("distinct-commits", seen.len() as i64, "", Some((5, 20)));
+    ensure(checked >= 10, "20.1", format!("only {checked} of 20 readbacks under continuous commits returned pixels"))?;
+    ensure(seen.len() >= 5, "20.1", format!(
+        "{checked} readbacks named only {} distinct commits ({seen:?}) while the client made {made}; under continuous commits the scanout moves on", seen.len()))
 }
 
 fn scanout_window_commits() -> CaseResult {
