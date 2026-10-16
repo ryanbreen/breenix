@@ -248,8 +248,10 @@ pub(super) fn insert(thread: &mut Thread, owner: usize) {
 /// thread only once none does (`unpinned`).
 pub(super) fn remove(tid: u64) {
     if let Some(slot) = find(tid) {
-        if slot.held.swap(0, Ordering::AcqRel) != 0 {
+        let word = slot.held.swap(0, Ordering::AcqRel);
+        if word != 0 {
             HELD_SLOTS.fetch_sub(1, Ordering::AcqRel);
+            release_held_place(word);
         }
         slot.root.store(0, Ordering::Release);
         slot.group.store(0, Ordering::Release);
@@ -645,8 +647,19 @@ pub(super) fn least_loaded(prefer: usize) -> usize {
     let online = (crate::arch_impl::x86_64::smp::cpus_online() as usize).clamp(1, MAX_CPUS);
     (0..online)
         .filter(|&cpu| accepts_wakeups(cpu))
-        .min_by_key(|&cpu| (CPU_LOAD[cpu].load(Ordering::Relaxed), cpu != prefer))
+        .min_by_key(|&cpu| (load(cpu), cpu != prefer))
         .unwrap_or(prefer)
+}
+
+/// `Scheduler::cpu_load` from the published summaries: the threads `cpu` has
+/// to run as of its last release, with a CPU whose idle loop is running
+/// housekeeping counted busy. That housekeeping holds preemption off, so a
+/// thread queued there waits for all of it; it starts and ends without the
+/// run-queue lock, so it is read here rather than published.
+fn load(cpu: usize) -> u32 {
+    let housekeeping =
+        CPU_IDLE[cpu].load(Ordering::Relaxed) && super::IDLE_HOUSEKEEPING[cpu].load(Ordering::Acquire);
+    CPU_LOAD[cpu].load(Ordering::Relaxed) + housekeeping as u32
 }
 
 // ------------------------------------------------------ the dispatch path
@@ -1250,12 +1263,20 @@ pub(super) fn take_held(mut apply: impl FnMut(u64, u64, usize)) {
             continue;
         }
         HELD_SLOTS.fetch_sub(1, Ordering::AcqRel);
-        let home = ((word >> HELD_HOME_SHIFT) & 0xff) as usize;
-        if word & HELD_PLACE != 0 && home < MAX_CPUS {
-            let _ = super::PINNED_HOLDS_OUTSTANDING[home]
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |holds| holds.checked_sub(1));
-        }
-        apply(word >> HELD_TID_SHIFT, word & HELD_BITS, home);
+        release_held_place(word);
+        apply(word >> HELD_TID_SHIFT, word & HELD_BITS, ((word >> HELD_HOME_SHIFT) & 0xff) as usize);
+    }
+}
+
+/// Uncount a held placement that `word`, just taken off its slot, carries.
+/// `hold` counted it for its home CPU, which treats itself as having work
+/// until the count is back to zero: a count left behind kept that CPU's idle
+/// loop from ever halting, and every sched_yield from taking its shortcut.
+fn release_held_place(word: u64) {
+    let home = ((word >> HELD_HOME_SHIFT) & 0xff) as usize;
+    if word & HELD_PLACE != 0 && home < MAX_CPUS {
+        let _ = super::PINNED_HOLDS_OUTSTANDING[home]
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |holds| holds.checked_sub(1));
     }
 }
 
