@@ -1060,11 +1060,40 @@ fn validate_dispatch_takes_no_process_manager(source: &str) -> Result<(), String
     Ok(())
 }
 
+/// Offsets of `return` statements written directly in a function body,
+/// outside every inner block: a return no condition guards.
+fn unconditional_returns(body: &str) -> Vec<usize> {
+    let mask = code_mask(body);
+    let bytes = body.as_bytes();
+    let mut depth = 0usize;
+    let mut depths = vec![0usize; bytes.len()];
+    for index in 0..bytes.len() {
+        if mask[index] && bytes[index] == b'{' {
+            depth += 1;
+        }
+        depths[index] = depth;
+        if mask[index] && bytes[index] == b'}' {
+            depth = depth.saturating_sub(1);
+        }
+    }
+    identifier_offsets(body, &mask, "return")
+        .into_iter()
+        .filter(|offset| depths[*offset] == 1)
+        .collect()
+}
+
 /// A due timer signal reaches its user handler without PROCESS_MANAGER
-/// (#1635): the interrupt-return adapter in `context_switch.rs` and the
-/// syscall-return adapter go through `deliver_current_timer_signal_lockless`,
-/// and neither it nor the delivery it calls takes the lock.
-fn validate_timer_delivery_takes_no_process_manager(source: &str) -> Result<(), String> {
+/// (#1635), and the path that does it is live: the interrupt return in
+/// `context_switch.rs` and the syscall return go through
+/// `deliver_current_timer_signal_lockless` and act on its answer; it calls
+/// `deliver_timer_signal_lockless`, whose interval-timer and POSIX-timer
+/// arms each write the handler frame and report the delivery, the POSIX arm
+/// committing its claim only after the frame is written; no return in any
+/// of them is unconditional; and none takes the lock.
+fn validate_timer_delivery_takes_no_process_manager(
+    source: &str,
+    context_switch: &str,
+) -> Result<(), String> {
     const ACQUISITIONS: [&str; 4] = ["try_manager", "poll_manager", "manager", "with_process_manager"];
     for (name, callee) in [
         ("deliver_timer_signal_on_syscall_return", Some("deliver_current_timer_signal_lockless")),
@@ -1083,8 +1112,104 @@ fn validate_timer_delivery_takes_no_process_manager(source: &str) -> Result<(), 
                 return Err(format!("{name} does not deliver through {callee}()"));
             }
         }
+        if !unconditional_returns(body).is_empty() {
+            return Err(format!("{name} returns before it delivers, whatever is due"));
+        }
     }
-    Ok(())
+
+    let syscall_adapter = function_body(source, "deliver_timer_signal_on_syscall_return")
+        .ok_or_else(|| "missing fn deliver_timer_signal_on_syscall_return".to_string())?;
+    ordered_in(
+        &normalized_code(syscall_adapter).replace(' ', ""),
+        &[
+            "if!deliver_current_timer_signal_lockless(thread_id,&mutuser_return,&mutregs){returnfalse;}",
+            "frame.rip=user_return.rip;",
+            "true}",
+        ],
+        "the syscall-return adapter does not act on the lockless delivery",
+    )?;
+
+    let leaf = function_body(source, "deliver_timer_signal_lockless")
+        .ok_or_else(|| "missing fn deliver_timer_signal_lockless".to_string())?;
+    let compact_leaf = normalized_code(leaf).replace(' ', "");
+    if !compact_leaf.ends_with("claim.commit();true}") {
+        return Err("deliver_timer_signal_lockless does not end by committing a delivery".to_string());
+    }
+    ordered_in(
+        &compact_leaf,
+        &[
+            "let(Some(action),Some(alt))=(mirror.action(sig),mirror.alt_stack())else{returnfalse;};",
+            "ifitimer!=0{",
+            "ifsignals.timer_pending.fetch_and(!bit,Ordering::AcqRel)&bit==0{returnfalse;}",
+            "letmuttarget=LocklessTarget{signals,thread_id,info:SigInfo::kernel(),alt};",
+            "letinstalled=install_user_handler_x86_64(&muttarget,user_return,saved_regs,sig,action.handler,&action);",
+            "ifinstalled.is_err(){signals.timer_pending.fetch_or(bit,Ordering::AcqRel);returnfalse;}returntrue;}",
+            "letSome(claim)=timers.and_then(|timers|timers.posix.try_claim_due(signals))else{returnfalse;};",
+            "letmuttarget=LocklessTarget{signals,thread_id,info:claim.info(),alt};",
+            "letinstalled=install_user_handler_x86_64(&muttarget,user_return,saved_regs,sig,action.handler,&action);",
+            "ifinstalled.is_err(){returnfalse;}claim.commit();true}",
+        ],
+        "deliver_timer_signal_lockless does not write and report both timer deliveries",
+    )?;
+
+    let user_return = function_body(context_switch, "deliver_signals_on_user_return")
+        .ok_or_else(|| "missing fn deliver_signals_on_user_return".to_string())?;
+    ordered_in(
+        &normalized_code(user_return).replace(' ', ""),
+        &[
+            "ifdeliver_timer_signal_lockless(thread_id,saved_regs,interrupt_frame){return;}",
+            "crate::process::poll_manager()",
+        ],
+        "the interrupt return takes the process manager before the lockless timer delivery",
+    )?;
+    let interrupt_adapter = function_body(context_switch, "deliver_timer_signal_lockless")
+        .ok_or_else(|| "missing fn deliver_timer_signal_lockless in context_switch.rs".to_string())?;
+    if !unconditional_returns(interrupt_adapter).is_empty() {
+        return Err("the interrupt-return adapter returns before it delivers".to_string());
+    }
+    ordered_in(
+        &normalized_code(interrupt_adapter).replace(' ', ""),
+        &[
+            "if!crate::signal::delivery::deliver_current_timer_signal_lockless(thread_id,&mutuser_return,saved_regs,){returnfalse;}",
+            "frame.instruction_pointer=x86_64::VirtAddr::new(user_return.rip);",
+            "true}",
+        ],
+        "the interrupt-return adapter does not act on the lockless delivery",
+    )
+}
+
+/// The mirror's reader gives up after a bounded number of attempts rather
+/// than wait for its writer, the PROCESS_MANAGER holder, whose vCPU can stop
+/// mid-write (#1635): nothing in `impl SignalMirror` loops without a bound.
+fn validate_signal_mirror_reader_is_bounded(source: &str) -> Result<(), String> {
+    let mask = code_mask(source);
+    let at = code_offsets(source, &mask, "impl SignalMirror {");
+    let [at] = at.as_slice() else {
+        return Err("expected one `impl SignalMirror` block".to_string());
+    };
+    let block = braced_block(source, &mask, *at).ok_or_else(|| "unclosed impl SignalMirror".to_string())?;
+    let block_mask = code_mask(block);
+    for keyword in ["loop", "while"] {
+        if !identifier_offsets(block, &block_mask, keyword).is_empty() {
+            return Err(format!("impl SignalMirror has an unbounded `{keyword}`"));
+        }
+    }
+    if !normalized_code(block)
+        .replace(' ', "")
+        .contains("fntry_read<T>(&self,read:implFn()->T)->Option<T>{")
+    {
+        return Err("the mirror reader cannot report that it gave up".to_string());
+    }
+    let read = function_body(block, "try_read").ok_or_else(|| "missing fn try_read".to_string())?;
+    ordered_in(
+        &normalized_code(read).replace(' ', ""),
+        &[
+            "for_in0..READ_ATTEMPTS{",
+            "returnSome(value);",
+            "None}",
+        ],
+        "the mirror reader is not a bounded attempt that can give up",
+    )
 }
 
 /// The syscall return offers a due timer signal to the lockless delivery
@@ -1653,26 +1778,96 @@ fn dispatch_no_pm_validator_rejects_ungated_delivery() {
 #[test]
 fn timer_delivery_takes_no_process_manager() {
     let source = repo_text("kernel/src/signal/delivery.rs");
-    assert_eq!(validate_timer_delivery_takes_no_process_manager(&source), Ok(()));
+    let context_switch = repo_text("kernel/src/interrupts/context_switch.rs");
+    assert_eq!(validate_timer_delivery_takes_no_process_manager(&source, &context_switch), Ok(()));
 }
 
 #[test]
 fn timer_delivery_validator_rejects_a_manager_acquisition() {
     let source = repo_text("kernel/src/signal/delivery.rs");
+    let context_switch = repo_text("kernel/src/interrupts/context_switch.rs");
     let mutant = mutate_function(
         &source,
         "deliver_current_timer_signal_lockless",
         "    let root = thread.cached_ttbr0;\n",
         "    let _guard = crate::process::try_manager();\n    let root = thread.cached_ttbr0;\n",
     );
-    assert!(validate_timer_delivery_takes_no_process_manager(&mutant).is_err());
+    assert!(validate_timer_delivery_takes_no_process_manager(&mutant, &context_switch).is_err());
     let mutant = mutate_function(
         &source,
         "deliver_timer_signal_on_syscall_return",
         "if !deliver_current_timer_signal_lockless(thread_id, &mut user_return, &mut regs) {",
         "if crate::process::manager().is_some() {",
     );
-    assert!(validate_timer_delivery_takes_no_process_manager(&mutant).is_err());
+    assert!(validate_timer_delivery_takes_no_process_manager(&mutant, &context_switch).is_err());
+}
+
+#[test]
+fn timer_delivery_validator_rejects_disabled_delivery() {
+    let source = repo_text("kernel/src/signal/delivery.rs");
+    let context_switch = repo_text("kernel/src/interrupts/context_switch.rs");
+    let leaf = function_body(&source, "deliver_timer_signal_lockless").unwrap();
+    let open = leaf.find('{').unwrap();
+    let start = leaf.as_ptr() as usize - source.as_ptr() as usize;
+    let disabled = format!(
+        "{}{{\n    false\n}}{}",
+        &source[..start + open],
+        &source[start + leaf.len()..]
+    );
+    assert!(validate_timer_delivery_takes_no_process_manager(&disabled, &context_switch).is_err());
+    let mutant = mutate_function(
+        &source,
+        "deliver_timer_signal_lockless",
+        "    let mirror = &signals.mirror;\n",
+        "    return false;\n    let mirror = &signals.mirror;\n",
+    );
+    assert!(validate_timer_delivery_takes_no_process_manager(&mutant, &context_switch).is_err());
+    let mutant = mutate_function(
+        &source,
+        "deliver_timer_signal_lockless",
+        "    claim.commit();\n",
+        "",
+    );
+    assert!(validate_timer_delivery_takes_no_process_manager(&mutant, &context_switch).is_err());
+    let mutant = mutate_function(
+        &context_switch,
+        "deliver_signals_on_user_return",
+        "    if deliver_timer_signal_lockless(thread_id, saved_regs, interrupt_frame) {\n        return;\n    }\n",
+        "",
+    );
+    assert!(validate_timer_delivery_takes_no_process_manager(&source, &mutant).is_err());
+    let mutant = mutate_function(
+        &context_switch,
+        "deliver_timer_signal_lockless",
+        "    let mut user_return = crate::signal::delivery::X86UserReturn {",
+        "    return false;\n    let mut user_return = crate::signal::delivery::X86UserReturn {",
+    );
+    assert!(validate_timer_delivery_takes_no_process_manager(&source, &mutant).is_err());
+}
+
+#[test]
+fn signal_mirror_reader_is_bounded() {
+    let source = repo_text("kernel/src/signal/types.rs");
+    assert_eq!(validate_signal_mirror_reader_is_bounded(&source), Ok(()));
+}
+
+#[test]
+fn signal_mirror_validator_rejects_a_reader_that_waits_for_the_writer() {
+    let source = repo_text("kernel/src/signal/types.rs");
+    let mutant = mutate_function(
+        &source,
+        "try_read",
+        "for _ in 0..READ_ATTEMPTS {",
+        "loop {",
+    );
+    assert!(validate_signal_mirror_reader_is_bounded(&mutant).is_err());
+    let mutant = mutate_function(
+        &source,
+        "try_read",
+        "for _ in 0..READ_ATTEMPTS {",
+        "for _ in 0.. {",
+    );
+    assert!(validate_signal_mirror_reader_is_bounded(&mutant).is_err());
 }
 
 #[test]

@@ -462,53 +462,29 @@ impl PosixTimers {
         Some((timer.signo, super::types::SigInfo::timer(timer.signal.id, timer.value), process, timer.signal.clone()))
     }
 
+    /// Claim the oldest signal of this process's timers due for the thread
+    /// whose signal state is `signals`, for an interrupt or syscall return
+    /// delivering it without PROCESS_MANAGER. The claim holds the table
+    /// until it is committed or dropped, so no syscall deletes, rearms or
+    /// rebinds the timer while the handler frame is written, and a claim
+    /// dropped uncommitted leaves the signal due exactly as it was. None,
+    /// claiming nothing, when the table is busy or nothing is due.
+    pub fn try_claim_due<'a>(&'a self, signals: &'a ThreadSignals) -> Option<DueClaim<'a>> {
+        let me = signals as *const ThreadSignals as usize;
+        let table = self.table.try_lock()?;
+        let index = table
+            .timers
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.signal.due_for.load(Ordering::Acquire) == me)
+            .min_by_key(|(_, t)| t.signal.due_order())?
+            .0;
+        Some(DueClaim { table, index, signals })
+    }
+
     /// The oldest due SIGCONT or stop signal of this process's timers, as
     /// (signal, siginfo, the thread SIGEV_THREAD_ID names, timer), its due
     /// mark cleared. None too when a syscall holds the table.
-    /// `take_next_due` for a caller that cannot wait for the table: an
-    /// interrupt return taking a signal without PROCESS_MANAGER. None, taking
-    /// nothing, when the table is busy too.
-    pub fn try_take_next_due(&self, signals: &ThreadSignals) -> Option<(u32, super::types::SigInfo, Arc<TimerSignal>)> {
-        let me = signals as *const ThreadSignals as usize;
-        let table = self.table.try_lock()?;
-        let timer = table
-            .timers
-            .iter()
-            .filter(|t| t.signal.due_for.load(Ordering::Acquire) == me)
-            .min_by_key(|t| t.signal.due_order())?;
-        timer.signal.due_for.store(0, Ordering::Release);
-        Some((timer.signo, super::types::SigInfo::timer(timer.signal.id, timer.value), timer.signal.clone()))
-    }
-
-    /// Undo `try_take_next_due` for `signals`, whose delivery of `timer`'s
-    /// signal `sig` did not go ahead: it is due for that thread again.
-    pub fn return_due(&self, signals: &ThreadSignals, timer: &TimerSignal, sig: u32) {
-        timer.due_for.store(signals as *const ThreadSignals as usize, Ordering::Release);
-        signals.posix_pending.fetch_or(super::constants::sig_mask(sig), Ordering::Release);
-    }
-
-    /// Clear `sig` from the thread's due POSIX timer signals after one was
-    /// delivered, unless another timer's `sig` is still due for it. A timer
-    /// made due meanwhile sets the bit again after its mark, so it is never
-    /// left due with the bit clear. None when the table is busy: the bit
-    /// stays, and the next signal check finds what is due.
-    pub fn settle_due(&self, signals: &ThreadSignals, sig: u32) -> Option<()> {
-        let me = signals as *const ThreadSignals as usize;
-        let bit = super::constants::sig_mask(sig);
-        let still_due = || -> Option<bool> {
-            let table = self.table.try_lock()?;
-            Some(table.timers.iter().any(|t| t.signo == sig && t.signal.due_for.load(Ordering::Acquire) == me))
-        };
-        if still_due()? {
-            return Some(());
-        }
-        signals.posix_pending.fetch_and(!bit, Ordering::AcqRel);
-        if still_due().unwrap_or(true) {
-            signals.posix_pending.fetch_or(bit, Ordering::Release);
-        }
-        Some(())
-    }
-
     fn take_job_due(&self) -> Option<(u32, super::types::SigInfo, Option<u64>, Arc<TimerSignal>)> {
         let table = self.table.try_lock()?;
         let timer = table
@@ -529,6 +505,51 @@ impl PosixTimers {
     fn redo_job_due(&self, timer: &TimerSignal) {
         timer.due_for.store(JOB, Ordering::Release);
         JOB_DUE.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+/// A due POSIX timer signal claimed for delivery (`PosixTimers::try_claim_due`),
+/// with the process's timer table held.
+pub struct DueClaim<'a> {
+    table: spin::MutexGuard<'a, Table>,
+    index: usize,
+    signals: &'a ThreadSignals,
+}
+
+impl DueClaim<'_> {
+    /// The signal the timer sends.
+    pub fn sig(&self) -> u32 {
+        self.table.timers[self.index].signo
+    }
+
+    /// The siginfo the handler is given: SI_TIMER, the timer's ID, its
+    /// sigev_value and the overruns so far, which stay as they are while the
+    /// table is held.
+    pub fn info(&self) -> super::types::SigInfo {
+        let timer = &self.table.timers[self.index];
+        super::types::SigInfo::timer(timer.signal.id, timer.value)
+            .with_overrun(timer.signal.pending_overrun())
+    }
+
+    /// The handler frame is written: the signal is delivered. The thread's
+    /// due bit for it is cleared unless another of its timers' signal of the
+    /// same number is due for it too.
+    pub fn commit(self) {
+        let me = self.signals as *const ThreadSignals as usize;
+        let timer = &self.table.timers[self.index];
+        let sig = timer.signo;
+        timer.signal.due_for.store(0, Ordering::Release);
+        timer.signal.deliver();
+        let still_due = self
+            .table
+            .timers
+            .iter()
+            .any(|t| t.signo == sig && t.signal.due_for.load(Ordering::Acquire) == me);
+        if !still_due {
+            self.signals
+                .posix_pending
+                .fetch_and(!super::constants::sig_mask(sig), Ordering::AcqRel);
+        }
     }
 }
 

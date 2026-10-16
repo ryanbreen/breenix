@@ -661,11 +661,11 @@ fn signal_wait_signals() -> Option<alloc::sync::Arc<crate::signal::ThreadSignals
 pub fn check_signals_for_wait() -> Option<i32> {
     // With no stop to take, the thread's copies of its row's signal state
     // decide it without PROCESS_MANAGER, unless the signal is one the row
-    // must consume.
+    // must consume or its disposition is being rewritten.
     let signals = signal_wait_signals()?;
     if !signals.mirror.stop_possible() {
         let sig = signals.mirror.next_deliverable(&signals)?;
-        if signals.mirror.action(sig).is_handler()
+        if signals.mirror.action(sig).is_some_and(|action| action.is_handler())
             || crate::signal::delivery::fatal_exit_code(sig).is_some()
         {
             return Some(errno::EINTR);
@@ -698,14 +698,13 @@ pub fn check_signals_for_wait() -> Option<i32> {
 /// re-execution of the syscall once any handler has run.
 pub fn check_signals_for_restartable_wait() -> Option<i32> {
     // A deliverable signal decides it from the thread's copies of its row's
-    // signal state, without PROCESS_MANAGER; only a possible stop reads the row.
+    // signal state, without PROCESS_MANAGER; a possible stop, or a
+    // disposition being rewritten, reads the row.
     let signals = signal_wait_signals()?;
     if signals.mirror.interrupting(&signals) {
-        return Some(if signals.mirror.restarts(&signals) {
-            errno::ERESTARTSYS
-        } else {
-            errno::EINTR
-        });
+        if let Some(restarts) = signals.mirror.restarts(&signals) {
+            return Some(if restarts { errno::ERESTARTSYS } else { errno::EINTR });
+        }
     }
     let thread_id = signal_wait_thread()?;
 

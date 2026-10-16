@@ -654,20 +654,22 @@ impl HandlerTarget for RowTarget<'_, '_> {
 }
 
 /// The current thread's own signal state (`ThreadSignals::mirror`), for a
-/// signal already taken off its timer, with the siginfo that goes with it.
-/// The frame is written with this CPU on the thread's page tables, and a
-/// write that would fault is refused rather than resolved.
+/// timer's signal, with the siginfo that goes with it and the alternate
+/// stack read from the mirror beforehand. The frame is written with this CPU
+/// on the thread's page tables, and a write that would fault is refused
+/// rather than resolved.
 #[cfg(target_arch = "x86_64")]
 struct LocklessTarget<'a> {
     signals: &'a ThreadSignals,
     thread_id: u64,
     info: SigInfo,
+    alt: AltStack,
 }
 
 #[cfg(target_arch = "x86_64")]
 impl HandlerTarget for LocklessTarget<'_> {
     fn alt_stack(&self) -> AltStack {
-        self.signals.mirror.alt_stack()
+        self.alt
     }
 
     fn info(&self, _sig: u32) -> SigInfo {
@@ -706,10 +708,11 @@ impl HandlerTarget for LocklessTarget<'_> {
 /// to its user handler on the way back to Ring 3, from the current thread's
 /// own signal state and without PROCESS_MANAGER, so a CPU that stopped while
 /// holding that lock does not hold the handler up (#1635). Returns whether it
-/// did. It declines, taking nothing, whenever the process-manager path is
-/// needed: the row holds a pending signal or a stop, more than one timer
-/// signal is due, the action is a default one or SA_RESETHAND, the timer
-/// table is busy, or the frame cannot be written without a fault resolved.
+/// did. It declines, leaving the signal due, whenever the process-manager
+/// path is needed: the row holds a pending signal or a stop, more than one
+/// timer signal is due, the action is a default one or SA_RESETHAND, the
+/// dispositions are being rewritten, the timer table is busy, or the frame
+/// cannot be written without a fault resolved.
 #[cfg(target_arch = "x86_64")]
 fn deliver_timer_signal_lockless(
     thread_id: u64,
@@ -735,54 +738,44 @@ fn deliver_timer_signal_lockless(
     }
     let sig = (itimer | posix).trailing_zeros() + 1;
     let bit = sig_mask(sig);
-    let action = mirror.action(sig);
+    let (Some(action), Some(alt)) = (mirror.action(sig), mirror.alt_stack()) else {
+        return false;
+    };
     if !action.is_handler() || action.flags & SA_RESETHAND != 0 {
         return false;
     }
-    let (info, posix_timer) = if itimer != 0 {
+
+    if itimer != 0 {
         if signals.timer_pending.fetch_and(!bit, Ordering::AcqRel) & bit == 0 {
             return false;
         }
-        (SigInfo::kernel(), None)
-    } else {
-        let Some(timers) = timers else {
-            return false;
-        };
-        match timers.posix.try_take_next_due(signals) {
-            Some((due, info, timer)) if due == sig => (info.with_overrun(timer.overrun()), Some(timer)),
-            Some((due, _, timer)) => {
-                timers.posix.return_due(signals, &timer, due);
-                return false;
-            }
-            None => return false,
-        }
-    };
-
-    let mut target = LocklessTarget { signals, thread_id, info };
-    let installed = install_user_handler_x86_64(
-        &mut target,
-        user_return,
-        saved_regs,
-        sig,
-        action.handler,
-        &action,
-    );
-    match (installed, &posix_timer, timers) {
-        (Ok(()), Some(timer), Some(timers)) => {
-            timer.deliver();
-            let _ = timers.posix.settle_due(signals, sig);
-        }
-        (Ok(()), _, _) => {}
-        (Err(_), None, _) => {
+        let mut target = LocklessTarget { signals, thread_id, info: SigInfo::kernel(), alt };
+        let installed =
+            install_user_handler_x86_64(&mut target, user_return, saved_regs, sig, action.handler, &action);
+        if installed.is_err() {
             signals.timer_pending.fetch_or(bit, Ordering::AcqRel);
             return false;
         }
-        (Err(_), Some(timer), Some(timers)) => {
-            timers.posix.return_due(signals, timer, sig);
-            return false;
-        }
-        (Err(_), Some(_), None) => return false,
+        return true;
     }
+
+    // The claim holds the process's timer table until the frame is written,
+    // so a timer_delete or timer_settime in a sibling thread waits for the
+    // outcome; a claim dropped undelivered leaves the signal due for the
+    // process-manager path, as if it had never been claimed.
+    let Some(claim) = timers.and_then(|timers| timers.posix.try_claim_due(signals)) else {
+        return false;
+    };
+    if claim.sig() != sig {
+        return false;
+    }
+    let mut target = LocklessTarget { signals, thread_id, info: claim.info(), alt };
+    let installed =
+        install_user_handler_x86_64(&mut target, user_return, saved_regs, sig, action.handler, &action);
+    if installed.is_err() {
+        return false;
+    }
+    claim.commit();
     true
 }
 

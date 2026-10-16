@@ -395,12 +395,14 @@ impl SignalMirror {
     }
 
     /// The action for signal `sig`, as `SignalState::get_handler` returns it.
-    pub fn action(&self, sig: u32) -> SignalAction {
+    /// None while the row's PM holder is rewriting the dispositions
+    /// (`try_read`): the caller reads the row instead.
+    pub fn action(&self, sig: u32) -> Option<SignalAction> {
         if !is_valid_signal(sig) {
-            return SignalAction::default();
+            return Some(SignalAction::default());
         }
         let slot = &self.actions[(sig - 1) as usize];
-        self.read(|| SignalAction {
+        self.try_read(|| SignalAction {
             handler: slot[0].load(Ordering::Relaxed),
             flags: slot[1].load(Ordering::Relaxed),
             restorer: slot[2].load(Ordering::Relaxed),
@@ -408,19 +410,24 @@ impl SignalMirror {
         })
     }
 
-    /// The row's alternate stack.
-    pub fn alt_stack(&self) -> AltStack {
-        self.read(|| AltStack {
+    /// The row's alternate stack. None while it is being rewritten.
+    pub fn alt_stack(&self) -> Option<AltStack> {
+        self.try_read(|| AltStack {
             base: self.alt_stack[0].load(Ordering::Relaxed),
             size: self.alt_stack[1].load(Ordering::Relaxed) as usize,
             flags: self.alt_stack[2].load(Ordering::Relaxed) as u32,
         })
     }
 
-    /// A consistent read of the dispositions or the alternate stack: retried
-    /// while the single writer, the row's PM holder, rewrites them.
-    fn read<T>(&self, read: impl Fn() -> T) -> T {
-        loop {
+    /// A consistent read of the dispositions or the alternate stack, or None
+    /// when the single writer, the row's PM holder, is still rewriting them
+    /// after `READ_ATTEMPTS` tries. A writer runs a handful of stores, but
+    /// its vCPU can stop in the middle of them, and a reader on an interrupt
+    /// return that waited for it would be held for as long as the holder is
+    /// (#1635): a reader that gets None declines and takes the PM path.
+    fn try_read<T>(&self, read: impl Fn() -> T) -> Option<T> {
+        const READ_ATTEMPTS: usize = 64;
+        for _ in 0..READ_ATTEMPTS {
             let before = self.seq.load(Ordering::Acquire);
             if before & 1 != 0 {
                 core::hint::spin_loop();
@@ -429,9 +436,10 @@ impl SignalMirror {
             let value = read();
             core::sync::atomic::fence(Ordering::Acquire);
             if self.seq.load(Ordering::Relaxed) == before {
-                return value;
+                return Some(value);
             }
         }
+        None
     }
 
     /// Rewrite the dispositions or the alternate stack. PM held: one writer.
@@ -490,14 +498,15 @@ impl SignalMirror {
     }
 
     /// Whether a restartable wait this thread's next deliverable signal
-    /// interrupts is resumed: `SignalState::interruption_restarts`.
-    pub fn restarts(&self, thread: &ThreadSignals) -> bool {
+    /// interrupts is resumed: `SignalState::interruption_restarts`. None
+    /// while the dispositions are being rewritten.
+    pub fn restarts(&self, thread: &ThreadSignals) -> Option<bool> {
         match self.next_deliverable(thread) {
             Some(sig) => {
-                let action = self.action(sig);
-                !action.is_handler() || action.flags & SA_RESTART != 0
+                let action = self.action(sig)?;
+                Some(!action.is_handler() || action.flags & SA_RESTART != 0)
             }
-            None => true,
+            None => Some(true),
         }
     }
 

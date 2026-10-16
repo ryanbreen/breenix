@@ -101,20 +101,32 @@ fn main() {
 
             // Step 3: Call pause() to wait for signal. The child keeps
             // signalling until the pipe closes, so a signal arrives after
-            // pause() blocks whenever the first one came earlier.
+            // pause() blocks whenever the first one came earlier. The flag is
+            // cleared first, so only a handler that ran after this point,
+            // the one that ends pause(), can set it for step 4.
             println!("\nStep 3: Calling pause() to wait for signal...");
+            SIGUSR1_RECEIVED.store(false, Ordering::SeqCst);
             let pause_result = libbreenix::signal::pause();
             let _ = io::close(done_w);
 
-            // pause() always returns Err with EINTR when a signal is caught
+            // pause() returns only when a caught signal's handler has run,
+            // and then fails with EINTR.
             println!("[PARENT] pause() returned");
 
-            if pause_result.is_err() {
-                println!("  PASS: pause() correctly returned after signal");
-            } else {
-                println!("  FAIL: pause() should return error (EINTR)");
-                println!("PAUSE_TEST_FAILED");
-                std::process::exit(1);
+            match pause_result {
+                Err(libbreenix::error::Error::Os(libbreenix::Errno::EINTR)) => {
+                    println!("  PASS: pause() returned EINTR after the signal");
+                }
+                Err(error) => {
+                    println!("  FAIL: pause() failed with {:?}, not EINTR", error);
+                    println!("PAUSE_TEST_FAILED");
+                    std::process::exit(1);
+                }
+                Ok(()) => {
+                    println!("  FAIL: pause() returned success, not EINTR");
+                    println!("PAUSE_TEST_FAILED");
+                    std::process::exit(1);
+                }
             }
 
             // Step 4: Verify signal handler was called
