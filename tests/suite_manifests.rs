@@ -189,7 +189,7 @@ fn table_error(what: &str) -> String {
     format!(
         "{what}; a suite's source must run its table from main as `NAME.run()` and declare it as \
          `static NAME: Suite = suite(\"id\", \"Title\", &[category(\"id\", \"Title\", &[case(\"id\", \"Title\", function), ...]), ...])`, \
-         optionally followed by `.case_limit_ms(N)`, with no attributes inside it"
+         optionally followed by `.case_limit_ms(N)` and `.gui()`, with no attributes inside it"
     )
 }
 
@@ -293,8 +293,15 @@ fn source_suite_files(files: &[(String, String)]) -> Result<(Entry, Vec<Category
         return Err(table_error(&format!("static {name} has attributes")));
     }
     let mut expr = &*table.expr;
+    // Builder flags that leave the table as it is: a case time limit, and `gui` (the suite's
+    // cases never skip, `gui_suites_never_skip`).
     while let syn::Expr::MethodCall(method) = expr {
-        if method.method != "case_limit_ms" || method.args.len() != 1 || !method.attrs.is_empty() {
+        let arity = match method.method.to_string().as_str() {
+            "case_limit_ms" => 1,
+            "gui" => 0,
+            _ => usize::MAX,
+        };
+        if method.args.len() != arity || !method.attrs.is_empty() {
             return Err(table_error(&format!("unexpected method .{}(...)", method.method)));
         }
         expr = &method.receiver;
@@ -311,6 +318,24 @@ fn source_suite_files(files: &[(String, String)]) -> Result<(Entry, Vec<Category
     Ok((suite, categories))
 }
 
+/// One case of a table: `case("id", "Title", f)`, or the breengel suite's
+/// `pictured!("id", "Title", f)`, which expands to a `case` with the same id and title whose
+/// body hands the case's judged frame to the runner.
+fn case_entry(expr: &syn::Expr) -> Result<Entry, String> {
+    if let syn::Expr::Macro(mac) = expr {
+        if mac.attrs.is_empty() && mac.mac.path.is_ident("pictured") {
+            let args = mac
+                .mac
+                .parse_body_with(syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated)
+                .map_err(|error| table_error(&format!("pictured!(...) does not parse: {error}")))?;
+            let args: Vec<&syn::Expr> = args.iter().collect();
+            return id_and_title(&args, "pictured!", 3);
+        }
+    }
+    let case_args = call(expr, "case")?;
+    id_and_title(&case_args, "case", 3)
+}
+
 /// The cases of a category's table expression, read in module `module`.
 fn case_table(expr: &syn::Expr, module: &str, parsed: &[(String, syn::File)], depth: usize) -> Result<Vec<Entry>, String> {
     if depth > 4 {
@@ -319,8 +344,7 @@ fn case_table(expr: &syn::Expr, module: &str, parsed: &[(String, syn::File)], de
     if let Ok(elems) = slice(expr) {
         let mut cases = Vec::new();
         for case_expr in elems {
-            let case_args = call(case_expr, "case")?;
-            cases.push(id_and_title(&case_args, "case", 3)?);
+            cases.push(case_entry(case_expr)?);
         }
         return Ok(cases);
     }
