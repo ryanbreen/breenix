@@ -1070,8 +1070,9 @@ fails with what the kernel answered, for example `missing READBACK and record v2
 syscall 416 VERSION returned ENOSYS`. Once VERSION answers, a case whose check is not written
 yet fails saying so. No case skips. `device/version` is already its real check. Each lane
 writes its category's checks from the contract, in their own commits, before the code they
-measure. Cases judge device readbacks against formulas and literal tables computed in the
-suite, never against BGL or the kernel, and never draw with the CPU.
+measure. Cases judge device readbacks against in-suite formulas and literal tables, or
+`libgfx-ref` output for the coverage-span cases (contract section 1.10), never against BGL
+or the kernel. CPU reference output is only an oracle; the GPU draws the scene.
 
 ARM64 QEMU boots of this suite use the GL QEMU (`--gpu-gl`; `docs/gui/qemu-gl.md`), whose
 host renderer attestation is judged after the VM stops: a boot whose guest never creates a

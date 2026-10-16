@@ -33,7 +33,7 @@ static SUITE: Suite = suite("gpu", "GPU rendering", &[
         case("device-error-reported", "A forced device error reaches the submitting context as EIO naming the device's answer", device_device_error_reported),
     ]),
     category("submit", "command submission & fences", &[
-        case("context-create", "CONTEXT_CREATE returns a context the caller owns", submit_context_create),
+        case("context-create", "CONTEXT_CREATE, including all catalogue warm-up, returns an owned context within 10 s", submit_context_create),
         case("context-destroy", "CONTEXT_DESTROY frees the context once its submitted work has completed", submit_context_destroy),
         case("context-limit", "Creating a context past the per-process quota returns EAGAIN", submit_context_limit),
         case("stream-validate", "A malformed command stream returns EINVAL with the failing command's index", submit_stream_validate),
@@ -173,7 +173,7 @@ static SUITE: Suite = suite("gpu", "GPU rendering", &[
         case("quiet-errors", "No GPU error path prints kernel output", isolation_quiet_errors),
         case("unknown-op", "An unknown op returns EINVAL", isolation_unknown_op),
         case("test-hooks-absent", "Test-control points 19 to 31 are refused to every process but the latched PID 1", isolation_test_hooks_absent),
-        case("killable-wait", "SIGKILL ends a process blocked in WAIT, READBACK or PRESENT within 250 ms", isolation_killable_wait),
+        case("killable-wait", "SIGKILL ends a process blocked in CONTEXT_CREATE warm-up, WAIT, READBACK or PRESENT within 250 ms", isolation_killable_wait),
         case("client-cannot-scanout", "A process that is not the display owner can neither present nor set a mode", isolation_client_cannot_scanout),
         case("irq-masked-bound", "The longest IRQ-masked interval in the GPU paths stays within 500 us under a full-screen workload", isolation_irq_masked_bound),
     ]),
@@ -319,7 +319,7 @@ needs! {
     readback_fence_identity => READBACK;
     readback_ordered_after_draws => READBACK;
     readback_fault_skip_transfer => "test-control point 19 skip-transfer (G2)";
-    readback_fault_stale_fence => "test-control point 20 stale-fence (G2)";
+    readback_fault_stale_fence => "READBACK (G2) using test-control point 20 stale-fence (G1)";
     readback_fault_wrong_resource => "test-control point 21 wrong-resource (G2)";
     readback_fault_corrupt_pixel => "test-control point 22 corrupt-pixel (G2)";
     readback_fault_suppress_draw => "test-control point 28 suppress-draw (G2)";
@@ -368,10 +368,10 @@ needs! {
     profile_filtered_sampler_refused => PROBE;
     profile_fixed_blend_off => PROBE;
     profile_profile_violation_detected => "test-control point 24 profile-violation (G4)";
-    pipelines_solid_rects => "the solid pipeline (G5)";
-    pipelines_rect_batch => "the solid pipeline (G5)";
-    pipelines_copy => "the copy pipeline (G5)";
-    pipelines_copy_clip => "the copy pipeline (G5)";
+    pipelines_solid_rects => "the solid pipeline (G2)";
+    pipelines_rect_batch => "the solid pipeline (G2)";
+    pipelines_copy => "the copy pipeline (G3)";
+    pipelines_copy_clip => "the copy pipeline (G3)";
     pipelines_copy_scaled => "the copy_scaled pipeline (G5)";
     pipelines_over_premultiplied => "the over pipeline (G5)";
     pipelines_over_straight => "the over_straight pipeline (G5)";
@@ -393,7 +393,7 @@ needs! {
     pipelines_box_filter => "the box_filter pipeline (G5)";
     pipelines_nearest_scale => "the nearest_scaled pipeline (G5)";
     pipelines_clip_nested => "the clip stack (G5)";
-    pipelines_order => "the solid pipeline (G5)";
+    pipelines_order => "the solid pipeline (G2)";
     isolation_handle_private => ISOL;
     isolation_handle_guess => ISOL;
     isolation_fork_no_handles => ISOL;
@@ -415,8 +415,8 @@ needs! {
     isolation_efault_readonly => ISOL;
     isolation_quiet_errors => ISOL;
     isolation_unknown_op => CORE;
-    isolation_test_hooks_absent => "test-control points 19 to 31 (G6)";
-    isolation_killable_wait => QUOTA;
+    isolation_test_hooks_absent => "the PID 1 test-control guard (G1) and isolation checks (G6)";
+    isolation_killable_wait => "killable context warm-up and WAIT (G1), READBACK and single-target PRESENT (G2), reclamation (G6)";
     isolation_client_cannot_scanout => ISOL;
     isolation_irq_masked_bound => IRQ;
     present_modes_listed => MODES;

@@ -28,7 +28,7 @@
       "id": "submit",
       "title": "command submission & fences",
       "cases": [
-        { "id": "context-create", "title": "CONTEXT_CREATE returns a context the caller owns" },
+        { "id": "context-create", "title": "CONTEXT_CREATE, including all catalogue warm-up, returns an owned context within 10 s" },
         { "id": "context-destroy", "title": "CONTEXT_DESTROY frees the context once its submitted work has completed" },
         { "id": "context-limit", "title": "Creating a context past the per-process quota returns EAGAIN" },
         { "id": "stream-validate", "title": "A malformed command stream returns EINVAL with the failing command's index" },
@@ -188,7 +188,7 @@
         { "id": "quiet-errors", "title": "No GPU error path prints kernel output" },
         { "id": "unknown-op", "title": "An unknown op returns EINVAL" },
         { "id": "test-hooks-absent", "title": "Test-control points 19 to 31 are refused to every process but the latched PID 1" },
-        { "id": "killable-wait", "title": "SIGKILL ends a process blocked in WAIT, READBACK or PRESENT within 250 ms" },
+        { "id": "killable-wait", "title": "SIGKILL ends a process blocked in CONTEXT_CREATE warm-up, WAIT, READBACK or PRESENT within 250 ms" },
         { "id": "client-cannot-scanout", "title": "A process that is not the display owner can neither present nor set a mode" },
         { "id": "irq-masked-bound", "title": "The longest IRQ-masked interval in the GPU paths stays within 500 us under a full-screen workload" }
       ]
