@@ -109,6 +109,30 @@ impl Device {
         (c.len() >= LEN).then_some(c)
     }
 
+    /// Copy `src`, part of the canvas, into `dst`. The SVGA3 canvas is the GOP framebuffer
+    /// in VRAM, device memory where every access is uncached: a byte-wise copy of the whole
+    /// screen takes seconds there, so it is read in aligned eight-byte loads.
+    fn copy_canvas(self, dst: &mut [u8], src: &[u8]) {
+        if self != Device::Svga3 {
+            dst.copy_from_slice(src);
+            return;
+        }
+        let mut i = 0;
+        while i < dst.len() {
+            let at = src[i..].as_ptr();
+            if at as usize % 8 == 0 && dst.len() - i >= 8 {
+                let v = unsafe { core::ptr::read_volatile(at.cast::<u64>()) };
+                dst[i..i + 8].copy_from_slice(&v.to_ne_bytes());
+                i += 8;
+            } else {
+                // Rows and pixels are four-byte aligned.
+                let v = unsafe { core::ptr::read_volatile(at.cast::<u32>()) };
+                dst[i..i + 4].copy_from_slice(&v.to_ne_bytes());
+                i += 4;
+            }
+        }
+    }
+
     /// Where `publish` copies composed rows before presenting them.
     fn destination(self) -> Option<&'static mut [u8]> {
         let d = match self {
@@ -225,7 +249,10 @@ pub fn init() {
 fn state(s: &mut Option<State>) -> &mut State {
     s.get_or_insert_with(|| {
         let d = Device::get().or_else(Device::detect);
-        let pixels = d.and_then(Device::canvas).map_or_else(|| vec![0; LEN], |p| p[..LEN].to_vec());
+        let mut pixels = vec![0; LEN];
+        if let Some((d, canvas)) = d.and_then(|d| Some((d, d.canvas()?))) {
+            d.copy_canvas(&mut pixels, &canvas[..LEN]);
+        }
         State {
             pixels,
             record: abi::ObservationRecord::ZERO,
@@ -603,9 +630,10 @@ fn take_from(pid: u64, expected: Option<u64>) -> Result<(), i32> {
     if device == Device::Virtio2d {
         snapshot.extend_from_slice(&gpu::framebuffer().ok_or(EIO)?[..LEN]);
     } else {
-        // While the kernel owns the display its screen is the canvas; afterwards it is
-        // what the owners composed.
-        if previous == 0 {
+        // On VirGL the kernel presents its own screen straight from the canvas, so while the
+        // kernel owns the display the screen is the canvas. The SVGA3 screen target shows only
+        // what was published from `s.pixels`, which `canvas_presented` keeps current.
+        if previous == 0 && device == Device::Virgl {
             let canvas = device.canvas().ok_or(EIO)?;
             s.pixels.copy_from_slice(&canvas[..LEN]);
         }
@@ -646,8 +674,8 @@ pub fn back(pid: u64) -> Result<(), i32> {
     s.panel_cursor = None;
     if previous == 0 {
         super::boot_ribbon::draw(&mut s.pixels);
-        // The kernel draws its screen on the canvas again: start it from what is shown.
-        if let Some(canvas) = Device::get().filter(|d| *d != Device::Virtio2d).and_then(Device::canvas) {
+        // On VirGL the kernel presents from its canvas again: start it from what is shown.
+        if let Some(canvas) = Device::get().filter(|d| *d == Device::Virgl).and_then(Device::canvas) {
             canvas[..LEN].copy_from_slice(&s.pixels);
         }
     }
@@ -781,7 +809,7 @@ pub fn canvas_presented(x: u32, y: u32, w: u32, h: u32) {
     for y in r.y as usize..(r.y + r.h) as usize {
         let a = (y * W + r.x as usize) * 4;
         let b = a + r.w as usize * 4;
-        s.pixels[a..b].copy_from_slice(&canvas[a..b]);
+        Device::Svga3.copy_canvas(&mut s.pixels[a..b], &canvas[a..b]);
     }
     let _ = publish(s, &[r], false);
 }
