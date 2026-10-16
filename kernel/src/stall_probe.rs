@@ -23,7 +23,7 @@ use crate::task::scheduler::MAX_CPUS;
 /// 0: record only. 1: HOSTSTALL, a random CPU unavailable 50 ms every
 /// 300-500 ms. 2: PMHOLD, a CPU that has just taken PROCESS_MANAGER with
 /// interrupts masked unavailable 50 ms, at most every 300-500 ms.
-pub const FORCE_KIND: u32 = 2;
+pub const FORCE_KIND: u32 = 0;
 const FORCING: bool = FORCE_KIND == 1;
 const STALL_MS: u64 = 50;
 const LATE_NS: u64 = 10_000_000;
