@@ -599,6 +599,7 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
     // yield() would never receive the signal (it would only get delivered on timer
     // interrupt, which might not fire for several milliseconds).
     check_and_deliver_signals_on_syscall_return(frame);
+    crate::stall_probe::returned(1);
     crate::task::thread::resume_user_time();
 
     // CRITICAL FIX: Update TSS.RSP0 before returning to userspace

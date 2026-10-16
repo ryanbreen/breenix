@@ -521,7 +521,18 @@ static FUTEX_QUEUES: Mutex<FutexTable> = Mutex::new(FutexTable::new());
 /// entering a futex call.
 fn with_table<R>(f: impl FnOnce(&mut FutexTable) -> R) -> R {
     crate::arch_without_interrupts(|| {
+<<<<<<< ours
         crate::task::scheduler::with_resched_ipis_deferred(|| f(&mut lock_table()))
+=======
+        crate::task::scheduler::with_resched_ipis_deferred(|| {
+            let begin = crate::stall_probe::futex_wait_begin();
+            let mut table = FUTEX_QUEUES.lock();
+            crate::stall_probe::futex_acquired(begin);
+            let result = f(&mut table);
+            crate::stall_probe::futex_released();
+            result
+        })
+>>>>>>> theirs
     })
 }
 

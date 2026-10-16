@@ -186,6 +186,7 @@ pub(super) fn expire() {
             }
             let user = user_ns / 1000;
             let system = system_ns / 1000;
+            let probe_real_deadline = timers.real.deadline_micros();
             let pending = [
                 (timers.real.expire(wall), crate::signal::constants::SIGALRM),
                 (timers.virtual_timer.expire_cpu(user), crate::signal::constants::SIGVTALRM),
@@ -193,6 +194,12 @@ pub(super) fn expire() {
             ];
             for (expired, sig) in pending {
                 if expired {
+                    if sig == crate::signal::constants::SIGALRM {
+                        let bit = crate::signal::constants::sig_mask(sig);
+                        if let Some(tid) = rq::group_recipient(&pin, group, bit) {
+                            crate::stall_probe::signal_due(tid, probe_real_deadline.map(|us| us.saturating_mul(1000)));
+                        }
+                    }
                     deliver(&pin, group, sig);
                 }
             }

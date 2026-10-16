@@ -570,6 +570,7 @@ impl core::ops::DerefMut for SchedulerGuard {
 #[cfg(target_arch = "x86_64")]
 impl Drop for SchedulerGuard {
     fn drop(&mut self) {
+        crate::stall_probe::sched_released();
         if let Some(scheduler) = self.guard.as_ref() {
             let queued = scheduler
                 .per_cpu_queues
@@ -643,8 +644,21 @@ pub fn send_deferred_resched_ipis() {
 type SchedulerGuard = spin::MutexGuard<'static, Option<Scheduler>>;
 
 #[inline(always)]
+#[track_caller]
 fn lock_scheduler() -> SchedulerGuard {
+    lock_scheduler_at(core::panic::Location::caller())
+}
+
+#[inline(always)]
+fn lock_scheduler_at(site: &'static core::panic::Location<'static>) -> SchedulerGuard {
+    #[cfg(target_arch = "x86_64")]
+    let probe = crate::stall_probe::sched_wait_begin();
+    #[cfg(target_arch = "x86_64")]
+    let guard = crate::stall_probe::spin_acquire(1, crate::stall_probe::sched_holder, || SCHEDULER.try_lock());
+    #[cfg(not(target_arch = "x86_64"))]
     let guard = SCHEDULER.lock();
+    #[cfg(target_arch = "x86_64")]
+    crate::stall_probe::sched_acquired_at(probe, site);
     crate::tracing::providers::teardown::note_scheduler_acquire();
     #[cfg(target_arch = "x86_64")]
     let guard = SchedulerGuard::new(guard);
@@ -707,6 +721,7 @@ fn try_lock_scheduler_list() -> Option<spin::MutexGuard<'static, Option<Schedule
 }
 
 #[inline(always)]
+#[track_caller]
 fn try_lock_scheduler() -> Option<SchedulerGuard> {
     let guard = SCHEDULER.try_lock()?;
     // x86_64: the whole scheduler is every run-queue lock too, each tried.
@@ -714,6 +729,8 @@ fn try_lock_scheduler() -> Option<SchedulerGuard> {
     if !rq::try_lock_all() {
         return None;
     }
+    #[cfg(target_arch = "x86_64")]
+    crate::stall_probe::sched_acquired_at(crate::stall_probe::sched_wait_begin(), core::panic::Location::caller());
     crate::tracing::providers::teardown::note_scheduler_acquire();
     #[cfg(target_arch = "x86_64")]
     let guard = SchedulerGuard::holding_all(guard);
@@ -3495,6 +3512,8 @@ impl Scheduler {
     /// would overwrite the Terminated state that the dispatch path checks, so a
     /// selected Terminated thread would be dispatched anyway (#1173).
     fn set_selected_running(thread: &mut Thread, cpu: usize) {
+        #[cfg(target_arch = "x86_64")]
+        crate::stall_probe::dispatched(thread.id(), cpu);
         if thread.state == ThreadState::Terminated {
             panic!(
                 "scheduler: terminated thread {} selected on CPU {}",
@@ -5448,6 +5467,10 @@ impl Scheduler {
     /// unblocked to ensure it gets scheduled promptly. This is critical for pause()
     /// to wake up in a timely manner when a signal arrives.
     pub fn unblock_for_signal(&mut self, thread_id: u64) {
+        #[cfg(target_arch = "x86_64")]
+        if self.get_thread(thread_id).is_some_and(|t| t.state != ThreadState::Running && t.state != ThreadState::Ready) {
+            crate::stall_probe::signal_due(thread_id, None);
+        }
         if let Some(thread) = self.get_thread_mut(thread_id) {
             // Also wake threads blocked on I/O — they check signals in their
             // wait loop and will return EINTR when they resume.
@@ -6192,6 +6215,8 @@ impl Scheduler {
             }
             let user = user_ns / 1000;
             let system = system_ns / 1000;
+            #[cfg(target_arch = "x86_64")]
+            let probe_real_deadline = group.real.deadline_micros();
             let pending = [
                 (group.real.expire(wall), crate::signal::constants::SIGALRM),
                 (group.virtual_timer.expire_cpu(user), crate::signal::constants::SIGVTALRM),
@@ -6211,6 +6236,10 @@ impl Scheduler {
                     let eligible = ((!target.signals.blocked.load(Ordering::Relaxed)
                         | target.signals.wait_set.load(Ordering::Acquire)) & bit) != 0;
                     if eligible {
+                        #[cfg(target_arch = "x86_64")]
+                        if sig == crate::signal::constants::SIGALRM {
+                            crate::stall_probe::signal_due(recipient, probe_real_deadline.map(|us| us.saturating_mul(1000)));
+                        }
                         self.unblock_for_signal(recipient);
                         self.unblock_for_child_exit(recipient);
                     }
@@ -6322,6 +6351,8 @@ impl Scheduler {
             if !self.timer_entry_live(wake_time, tid) {
                 continue; // Stale entry — thread already woken or terminated
             }
+            #[cfg(target_arch = "x86_64")]
+            crate::stall_probe::timer_due(tid, wake_time);
 
             // SMP safety: Don't add to ready_queue if thread is currently
             // running on any CPU. Same protection as unblock() — a thread
@@ -6399,7 +6430,20 @@ impl Scheduler {
                 }
 
                 if !in_deferred_requeue && !is_idle && !already_queued {
-                    if let Some(target) = self.find_target_cpu_for_wakeup(tid) {
+                    let probe_target = self.find_target_cpu_for_wakeup(tid);
+                    #[cfg(target_arch = "x86_64")]
+                    {
+                        let info = probe_target.map_or(0, |t| {
+                            let cur = self.cpu_state[t].current_thread.unwrap_or(0);
+                            let qlen = self.per_cpu_queues[t].len().min(255) as u64;
+                            let promo = self.timer_wake_promotion_open(t) as u64;
+                            let idle = (cur == self.cpu_state[t].idle_thread) as u64;
+                            let rank = u64::from(self.sched_rank(cur));
+                            (cur & 0xfffff) | qlen << 20 | promo << 28 | idle << 29 | rank << 32
+                        });
+                        crate::stall_probe::placed_info(tid, probe_target, info);
+                    }
+                    if let Some(target) = probe_target {
                         trace_sched_diag(
                             TRACE_SCHED_DIAG_WAKE_TIMER_ENQUEUE,
                             tid,
@@ -8306,6 +8350,7 @@ pub fn is_current_idle_thread() -> Option<bool> {
 
 /// Get access to the scheduler
 /// This function disables interrupts to prevent deadlock with timer interrupt
+#[track_caller]
 pub fn with_scheduler<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut Scheduler) -> R,
@@ -8319,8 +8364,9 @@ where
             CPU0_BREADCRUMB_ID.store(20, Ordering::Relaxed); // with_scheduler entry
         }
     }
+    let site = core::panic::Location::caller();
     without_interrupts(|| {
-        let mut scheduler_lock = lock_scheduler();
+        let mut scheduler_lock = lock_scheduler_at(site);
         let _scheduler_scope = crate::tracing::providers::teardown::SchedulerScope::enter();
         #[cfg(target_arch = "aarch64")]
         {
@@ -8447,10 +8493,12 @@ pub fn collect_idle_thread_ids(out: &mut [u64]) -> usize {
 
 /// Get mutable access to a specific thread (for timer interrupt handler)
 /// This function disables interrupts to prevent deadlock with timer interrupt
+#[track_caller]
 pub fn with_thread_mut<F, R>(thread_id: u64, f: F) -> Option<R>
 where
     F: FnOnce(&mut super::thread::Thread) -> R,
 {
+    let site = core::panic::Location::caller();
     // x86_64: under the lock of the CPU that owns the thread, which covers its
     // fields, never the whole scheduler (#1649).
     #[cfg(target_arch = "x86_64")]
@@ -8458,7 +8506,7 @@ where
         return without_interrupts(|| rq::with_thread(thread_id, |_, thread| f(thread)));
     }
     without_interrupts(|| {
-        let mut scheduler_lock = lock_scheduler();
+        let mut scheduler_lock = lock_scheduler_at(site);
         scheduler_lock
             .as_mut()
             .and_then(|sched| sched.get_thread_mut(thread_id).map(f))
@@ -9784,7 +9832,7 @@ pub fn isr_unblock_for_io(tid: u64) {
 /// data, which both GS bases name in kernel and user mode alike.
 /// Safe to call from ISR context.
 #[inline]
-fn current_cpu_id_raw() -> usize {
+pub fn current_cpu_id_raw() -> usize {
     #[cfg(target_arch = "aarch64")]
     {
         let mpidr: u64;

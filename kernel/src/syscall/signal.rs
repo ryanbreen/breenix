@@ -403,6 +403,7 @@ fn send_signal_lockless(target: ProcessId, sig: u32, sender: &Sender, info: &Sig
         }
     }
     let word = info.fields[0];
+    crate::stall_probe::fast(0);
     signals.post_sent(sig, word as u32, (word >> 32) as u32, to == Recipient::Thread);
     // A stopped process runs nothing until SIGCONT; otherwise the recipient
     // is woken when the signal interrupts it or it waits for it.
@@ -466,6 +467,7 @@ fn send_signal(target: ProcessId, sig: u32, sender: Sender, info: SigInfo, to: R
         return result;
     }
     let caller_tid = crate::task::scheduler::current_thread_id();
+    crate::stall_probe::fast(1);
     let mut manager_guard = manager();
 
     if let Some(ref mut manager) = *manager_guard {
@@ -1611,6 +1613,7 @@ fn caller_timers() -> Option<(
 )> {
     #[cfg(target_arch = "x86_64")]
     if let Some(found) = crate::task::scheduler::current_signal_timers() {
+        crate::stall_probe::fast(6);
         return Some(found);
     }
     let tid = crate::task::scheduler::current_thread_id()?;
@@ -2108,6 +2111,7 @@ pub fn sys_sigtimedwait(set_ptr: u64, info_ptr: u64, timeout_ptr: u64, size: u64
     });
     #[cfg(not(target_arch = "x86_64"))]
     let registered = false;
+    crate::stall_probe::fast(if registered { 7 } else { 8 });
     if !registered {
         let mut guard = manager();
         let Some(m) = guard.as_mut() else {
@@ -2145,8 +2149,12 @@ pub fn sys_sigtimedwait(set_ptr: u64, info_ptr: u64, timeout_ptr: u64, size: u64
         #[cfg(not(target_arch = "x86_64"))]
         let quick: Option<Option<(u32, SigInfo, Accepted)>> = None;
         let accepted = match quick {
-            Some(found) => found,
+            Some(found) => {
+                crate::stall_probe::fast(2);
+                found
+            }
             None => {
+                crate::stall_probe::fast(3);
                 let mut guard = manager();
                 let Some((_, p)) = guard.as_mut().and_then(|m| m.find_process_by_thread_mut(tid)) else {
                     break SyscallResult::Err(3);
