@@ -127,10 +127,7 @@ impl ScrollBar {
         self.redraw = before != self.offset;
     }
 
-    /// Process mouse input for drag interaction.
-    ///
-    /// Returns `true` if the scrollbar consumed the event (the caller should
-    /// not pass this input to widgets behind the scrollbar).
+    /// Whether the most recent input changed the scrollbar's drawing.
     pub fn last_update_redraw(&self) -> bool {
         self.redraw
     }
@@ -140,6 +137,8 @@ impl ScrollBar {
             self.dragging = false;
         }
     }
+    /// Process mouse input for drag interaction.
+    /// Returns true when consumed; callers should not pass it to widgets behind the bar.
     pub fn update(&mut self, input: &InputState) -> bool {
         self.redraw = false;
         if !self.enabled {
