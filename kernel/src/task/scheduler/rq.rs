@@ -601,44 +601,104 @@ fn retain_affine(source: &mut Held, tid: u64, taking: usize) -> bool {
         return false;
     }
     count_pinned_migration_refusal(tid);
-    if pin.cpu != source.cpu {
-        if let Some(mut home) = try_remote(pin.cpu) {
-            home.enqueue(tid, false);
-            drop(home);
-            request_resched_x86(pin.cpu);
-            return true;
-        }
+    if pin.cpu == source.cpu {
+        source.enqueue(tid, false);
+        return true;
     }
-    source.enqueue(tid, false);
+    if let Some(mut home) = try_home(pin.cpu) {
+        home.enqueue(tid, false);
+        drop(home);
+        request_resched_x86(pin.cpu);
+        return true;
+    }
+    // Its home's lock stayed busy: hold the wake for it rather than queue a
+    // pinned thread anywhere else.
+    super::note_pinned_hold(tid, pin.cpu);
+    request_resched_x86(pin.cpu);
     true
+}
+
+/// How many times a pinned thread's placement tries its home CPU's lock
+/// before it holds the wake for that CPU instead.
+const HOME_TRIES: usize = 256;
+
+/// `cpu`'s lock, tried `HOME_TRIES` times: a pinned thread may run nowhere
+/// else, so a briefly held lock is worth waiting out, a stopped holder not.
+fn try_home(cpu: usize) -> Option<Held> {
+    for _ in 0..HOME_TRIES {
+        if let Some(held) = try_remote(cpu) {
+            return Some(held);
+        }
+        core::hint::spin_loop();
+    }
+    None
+}
+
+/// Where a woken thread goes.
+enum Target {
+    /// This CPU's queue; true when the thread is pinned to it.
+    Cpu(usize, bool),
+    /// Nowhere yet: it is pinned to this CPU, which does not accept wakeups,
+    /// and its wake is held for it.
+    Hold(usize),
 }
 
 /// Where a woken thread `tid`, owned by `source`'s CPU and current on no CPU,
 /// runs: `Scheduler::find_target_cpu_for_wakeup`, from the published
-/// summaries. None for a per-CPU worker whose home does not accept wakeups.
-fn wake_target(source: &mut Held, tid: u64) -> Option<usize> {
+/// summaries.
+fn wake_target(source: &mut Held, tid: u64) -> Target {
     let me = super::current_cpu_id_raw();
     if let Some(pin) = source.thread(tid).and_then(|thread| thread.cpu_affinity) {
         if pin.cpu < online() && (pin.cpu == me || accepts_wakeups(pin.cpu)) {
-            return Some(pin.cpu);
+            return Target::Cpu(pin.cpu, pin.per_cpu_worker);
         }
         if pin.per_cpu_worker {
-            return None;
+            return Target::Hold(pin.cpu);
         }
         PINNED_HOLD_PEN_MIGRATED.fetch_add(1, Ordering::Relaxed);
     }
-    Some(least_loaded(me))
+    Target::Cpu(least_loaded(me), false)
 }
 
-/// Queue the woken thread `tid`, owned by `source`'s CPU, on `target`, or on
-/// `local` or `source` when `target`'s lock is busy; with `promote`, at the
-/// head when `target`'s promotion is open (a late timer wake, #766). Returns
-/// the CPU it was queued on, which the caller interrupts.
-fn place(local: &mut Held, source: Option<&mut Held>, tid: u64, target: usize, promote: bool) -> usize {
+/// Place a woken thread where `target` says (`place`), or hold its wake, and
+/// interrupt the CPU it went to. Returns the CPU it was queued on.
+fn place_woken(local: &mut Held, source: Option<&mut Held>, tid: u64, target: Target, promote: bool) -> Option<usize> {
+    let home = match target {
+        Target::Cpu(cpu, pinned) => match place(local, source, tid, cpu, promote, pinned) {
+            Some(queued_on) => {
+                kick(queued_on);
+                return Some(queued_on);
+            }
+            None => cpu,
+        },
+        Target::Hold(home) => home,
+    };
+    super::note_pinned_hold(tid, home);
+    None
+}
+
+/// Queue the woken thread `tid`, owned by `source`'s CPU (`local`'s when
+/// None), on `target`; with `promote`, at the head when `target`'s promotion
+/// is open (a late timer wake, #766). An unpinned thread goes to `local`'s
+/// queue when `target`'s lock is busy; a `pinned` one runs nowhere but
+/// `target`, and None says its lock stayed busy, for the caller to hold the
+/// wake. Returns the CPU it was queued on, which the caller interrupts.
+fn place(
+    local: &mut Held,
+    mut source: Option<&mut Held>,
+    tid: u64,
+    target: usize,
+    promote: bool,
+    pinned: bool,
+) -> Option<usize> {
     let ranked = POLICIES_IN_USE.load(Ordering::Acquire);
+    let rank_of = match source.as_deref_mut() {
+        Some(source) => rank(source, tid),
+        None => rank(local, tid),
+    };
     let put = |held: &mut Held| {
         let front = promote
-            && !(ranked && rank_any(held, tid) > SchedPolicy::DEFAULT.rank())
+            && !(ranked && rank_of > SchedPolicy::DEFAULT.rank())
             && promotion_open(held);
         held.enqueue(tid, front);
         if front {
@@ -646,52 +706,20 @@ fn place(local: &mut Held, source: Option<&mut Held>, tid: u64, target: usize, p
         }
         held.cpu
     };
-    match source {
-        Some(source) => {
-            let rank_of = rank(source, tid);
-            let put_ranked = |held: &mut Held| {
-                let front = promote
-                    && !(ranked && rank_of > SchedPolicy::DEFAULT.rank())
-                    && promotion_open(held);
-                held.enqueue(tid, front);
-                if front {
-                    held.state().promoted_wake = Some(tid);
-                }
-                held.cpu
-            };
-            if target == source.cpu {
-                put_ranked(source)
-            } else if target == local.cpu {
-                put_ranked(local)
-            } else if let Some(mut remote) = try_remote(target) {
-                put_ranked(&mut remote)
-            } else {
-                put_ranked(local)
-            }
-        }
-        None => {
-            if target == local.cpu {
-                put(local)
-            } else if let Some(mut remote) = try_remote(target) {
-                let rank_of = rank(local, tid);
-                let front = promote
-                    && !(ranked && rank_of > SchedPolicy::DEFAULT.rank())
-                    && promotion_open(&mut remote);
-                remote.enqueue(tid, front);
-                if front {
-                    remote.state().promoted_wake = Some(tid);
-                }
-                remote.cpu
-            } else {
-                put(local)
-            }
+    if let Some(source) = source {
+        if target == source.cpu {
+            return Some(put(source));
         }
     }
-}
-
-/// The rank of `tid` when `held`'s CPU owns it, or 0.
-fn rank_any(held: &mut Held, tid: u64) -> u8 {
-    rank(held, tid)
+    if target == local.cpu {
+        return Some(put(local));
+    }
+    let remote = if pinned { try_home(target) } else { try_remote(target) };
+    match remote {
+        Some(mut remote) => Some(put(&mut remote)),
+        None if pinned => None,
+        None => Some(put(local)),
+    }
 }
 
 /// Ask `cpu` to pick up what was queued for it.
@@ -794,23 +822,27 @@ fn expire_heap(local: &mut Held, mut source: Option<&mut Held>, now: u64) {
         if idle {
             continue;
         }
-        let target = wake_target(held, tid).unwrap_or(held.cpu);
+        let target = wake_target(held, tid);
+        let target_cpu = match target {
+            Target::Cpu(cpu, _) | Target::Hold(cpu) => cpu,
+        };
         trace_sched_diag(
             TRACE_SCHED_DIAG_WAKE_TIMER_ENQUEUE,
             tid,
             tid,
-            target as u64,
-            ((was_blocked_on_io as u32) << 31) | ((target as u32 & 0xF) << 16) | queued_len,
+            target_cpu as u64,
+            ((was_blocked_on_io as u32) << 31) | ((target_cpu as u32 & 0xF) << 16) | queued_len,
         );
-        let queued_on = match source.as_deref_mut() {
-            Some(source) => place(local, Some(source), tid, target, true),
-            None => place(local, None, tid, target, true),
+        // Discovery must preempt even a busy destination, which placement
+        // interrupts; otherwise its remaining quantum delays this deadline.
+        let queued = match source.as_deref_mut() {
+            Some(source) => place_woken(local, Some(source), tid, target, true),
+            None => place_woken(local, None, tid, target, true),
         };
-        // Discovery must preempt even a busy destination; otherwise its
-        // remaining quantum delays this deadline.
-        kick(queued_on);
-        ENQUEUE_TIMER_WAKE.fetch_add(1, Ordering::Relaxed);
-        ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
+        if queued.is_some() {
+            ENQUEUE_TIMER_WAKE.fetch_add(1, Ordering::Relaxed);
+            ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
+        }
     }
 }
 
@@ -922,16 +954,17 @@ fn wake_owned(local: &mut Held, mut source: Option<&mut Held>, tid: u64, kind: W
     } else if held.queue().contains(&tid) {
         ENQUEUE_ALREADY_QUEUED_OK.fetch_add(1, Ordering::Relaxed);
     } else if !idle {
-        let target = wake_target(held, tid).unwrap_or(held_cpu);
-        let queued_on = match source.as_deref_mut() {
-            Some(source) => place(local, Some(source), tid, target, false),
-            None => place(local, None, tid, target, false),
+        let target = wake_target(held, tid);
+        let queued = match source.as_deref_mut() {
+            Some(source) => place_woken(local, Some(source), tid, target, false),
+            None => place_woken(local, None, tid, target, false),
         };
-        match kind {
-            Wake::Io { from_isr_buffer: true } => ENQUEUE_ISR_BUFFER_DRAINED_OK.fetch_add(1, Ordering::Relaxed),
-            _ => ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed),
-        };
-        kick(queued_on);
+        if queued.is_some() {
+            match kind {
+                Wake::Io { from_isr_buffer: true } => ENQUEUE_ISR_BUFFER_DRAINED_OK.fetch_add(1, Ordering::Relaxed),
+                _ => ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed),
+            };
+        }
     }
     if let Wake::Io { .. } = kind {
         super::set_need_resched();
@@ -1560,13 +1593,14 @@ fn mark_ready_and_place(
     } else if held.queue().contains(&tid) {
         ENQUEUE_ALREADY_QUEUED_OK.fetch_add(1, Ordering::Relaxed);
     } else if !idle {
-        let target = wake_target(held, tid).unwrap_or(held.cpu);
-        let queued_on = match source.as_deref_mut() {
-            Some(source) => place(local, Some(source), tid, target, false),
-            None => place(local, None, tid, target, false),
+        let target = wake_target(held, tid);
+        let queued = match source.as_deref_mut() {
+            Some(source) => place_woken(local, Some(source), tid, target, false),
+            None => place_woken(local, None, tid, target, false),
         };
-        ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
-        kick(queued_on);
+        if queued.is_some() {
+            ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
+        }
     }
 }
 
