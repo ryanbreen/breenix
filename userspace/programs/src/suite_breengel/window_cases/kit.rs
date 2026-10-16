@@ -393,6 +393,9 @@ pub(crate) fn child(what: &str, limit_ms: u64, uid: Option<u32>, f: impl FnOnce(
     let (rd, wr) = io::pipe().map_err(|e| format!("pipe: {e}"))?;
     let mut f = Some(f);
     let mut body = || {
+        // Only `isolated` hands a child's judged frame to the runner. A copy kept here would
+        // never be shown, and would count against limits this child sets (RLIMIT_AS).
+        crate::PICTURES.store(false, core::sync::atomic::Ordering::Relaxed);
         let report = Fd::from_raw(3);
         let result = match uid {
             Some(u) if setuid(u) != 0 => Err(format!("setuid({u}) failed")),
