@@ -33,9 +33,10 @@ case "${1:-}" in
         [ -n "$commit" ] || commit=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null) || exit 0
         dirty=$(git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null | wc -l | tr -d ' ')
         args=(breenix start --platform "$platform" --commit "$commit" --checkout "$ROOT" --serial "$serial" --dirty "${dirty:-0}" --pid "${BREENIX_LAUNCHER_PID:-$PPID}")
+        [ -z "${BREENIX_VIGIL_WORKTREE:-}" ] || args+=(--worktree "$BREENIX_VIGIL_WORKTREE")
         if [ -n "$suite" ]; then
             args+=(--suite "$suite")
-        elif [ -n "$mode" ] && [ "$mode" != default ]; then
+        elif [ -n "$mode" ]; then
             args+=(--mode "$mode")
         fi
         [ -z "$user" ] || args+=(--serial-user "$user")
