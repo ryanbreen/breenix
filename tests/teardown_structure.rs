@@ -4245,6 +4245,20 @@ const BLOCKING_PRIMITIVES: &[(&str, &str, usize)] = &[
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_ready_user_thread", 1),
     ("kernel/src/task/waitqueue.rs", "impl WaitQueueHead::fn prepare_to_wait", 1),
     ("kernel/src/task/waitqueue.rs", "impl WaitQueueHead::fn prepare_to_wait_checked", 1),
+    // #1649: x86_64 blocks the current thread under its own CPU's run-queue
+    // lock. `rq::block_current` is the one body that publishes every blocked
+    // kind there and departs the thread from the one queue a thread this CPU
+    // owns can be on; `CurrentSched`'s members forward to it, or to the
+    // `Scheduler` primitive of the same name under the whole scheduler.
+    ("kernel/src/task/scheduler/rq.rs", "fn block_current", 1),
+    ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] impl CurrentSched<'_>::fn block_current", 1),
+    ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] impl CurrentSched<'_>::fn block_current_for_child_exit", 1),
+    ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] impl CurrentSched<'_>::fn block_current_for_io", 1),
+    ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] impl CurrentSched<'_>::fn block_current_for_io_with_timeout", 1),
+    ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] impl CurrentSched<'_>::fn block_current_for_signal", 1),
+    ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] impl CurrentSched<'_>::fn block_current_for_signal_with_context", 1),
+    ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] impl CurrentSched<'_>::fn block_current_for_timer", 1),
+    ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] impl CurrentSched<'_>::fn block_current_in_syscall", 1),
 ];
 /// Census A: every right-hand-side publication of a `ThreadState::Blocked*`
 /// value under `kernel/src`. The production rows are all blocking-family
@@ -4261,6 +4275,8 @@ const BLOCKED_STATE_PUBLICATIONS: &[(&str, &str, usize)] = &[
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_timer", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_inner", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_ready_user_thread", 1),
+    // #1649: the x86_64 run-queue-lock block publishes each of its five kinds.
+    ("kernel/src/task/scheduler/rq.rs", "fn block_current", 5),
 ];
 /// Census B: stores into a field named `state` whose right-hand side is opaque
 /// (not a path), the shape that would launder a blocked publication past census
@@ -4552,6 +4568,9 @@ const REMOVE_FROM_READY_QUEUE_CALL_SITES: &[(&str, &str, usize)] = &[
     // rather than the one before it. Boot-tests only, and the probe is
     // published and withdrawn inside 1 scheduler-lock acquisition.
     ("kernel/src/task/scheduler.rs", "impl Scheduler::#[cfg(all(target_arch=aarch64,feature=boot_tests))] fn run_pin_guard_oracle", 3),
+    // #1649: the x86_64 run-queue-lock block departs its thread from this
+    // CPU's queue (`rq::Held::remove_from_ready_queue`).
+    ("kernel/src/task/scheduler/rq.rs", "fn block_current", 1),
     ("kernel/src/test_exec.rs", "fn test_exec_real_userspace", 1),
     ("kernel/src/test_exec.rs", "fn test_exec_without_scheduling", 1),
     ("kernel/src/test_exec.rs", "fn test_shell_fork_exec", 1),

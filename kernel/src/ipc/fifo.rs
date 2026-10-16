@@ -86,9 +86,7 @@ impl FifoEntry {
         // Wake writers waiting for a reader
         let waiters = core::mem::take(&mut self.write_waiters);
         for tid in waiters {
-            crate::task::scheduler::with_scheduler(|sched| {
-                sched.unblock(tid);
-            });
+            crate::task::scheduler::unblock_thread(tid);
         }
     }
 
@@ -99,9 +97,7 @@ impl FifoEntry {
         // Wake readers waiting for a writer
         let waiters = core::mem::take(&mut self.read_waiters);
         for tid in waiters {
-            crate::task::scheduler::with_scheduler(|sched| {
-                sched.unblock(tid);
-            });
+            crate::task::scheduler::unblock_thread(tid);
         }
     }
 

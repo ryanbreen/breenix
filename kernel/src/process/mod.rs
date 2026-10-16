@@ -604,10 +604,7 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
     }
 
     if let Some(tid) = signal_wake {
-        crate::task::scheduler::with_scheduler(|s| {
-            s.unblock_for_signal(tid);
-            s.unblock_for_child_exit(tid);
-        });
+        crate::task::scheduler::wake_for_signal(tid, true);
     }
     if let Some(mut receipt) = receipt {
         if let Some(reclaim) = receipt.take_contents() {

@@ -367,7 +367,7 @@ impl FutexTable {
             } else {
                 deadline.wake_ns()
             };
-            let published = crate::task::scheduler::with_scheduler(|sched| {
+            let published = crate::task::scheduler::with_current(|sched| {
                 if let Some(thread) = sched.current_thread_mut() {
                     thread.realtime_sleep = realtime;
                 }
@@ -739,7 +739,7 @@ fn futex_lock_pi(uaddr: u64, trylock: bool, deadline: Deadline, private: bool) -
                 }
             });
         }
-        let still_waiting = crate::task::scheduler::with_scheduler(|sched| {
+        let still_waiting = crate::task::scheduler::with_current(|sched| {
             sched.wake_expired_timers();
             sched
                 .current_thread_mut()
@@ -877,7 +877,7 @@ fn futex_wait_until(
             return Prepared::Expired;
         }
         table.enqueue(key, Waiter { tid: thread_id, bitset });
-        let published = crate::task::scheduler::with_scheduler(|sched| {
+        let published = crate::task::scheduler::with_current(|sched| {
             if let Some(thread) = sched.current_thread_mut() {
                 thread.realtime_sleep = realtime;
             }
@@ -912,7 +912,7 @@ fn futex_wait_until(
                 SyscallResult::Ok(0)
             };
         }
-        let still_waiting = crate::task::scheduler::with_scheduler(|sched| {
+        let still_waiting = crate::task::scheduler::with_current(|sched| {
             sched.wake_expired_timers();
             sched
                 .current_thread_mut()
@@ -931,7 +931,7 @@ fn futex_wait_until(
                     return Some(SyscallResult::Err(super::errno::ETIMEDOUT as u64));
                 }
                 // Not yet: wait again, to the deadline as it now stands.
-                let published = crate::task::scheduler::with_scheduler(|sched| {
+                let published = crate::task::scheduler::with_current(|sched| {
                     sched.block_current_for_io_with_timeout(deadline.wake_ns())
                 })
                 .unwrap_or(false);
@@ -1197,7 +1197,7 @@ fn futex_wait(
                 bitset: FUTEX_BITSET_MATCH_ANY,
             },
         );
-        let published = crate::task::scheduler::with_scheduler(|sched| {
+        let published = crate::task::scheduler::with_current(|sched| {
             sched.block_current_for_io_with_timeout(effective_wake_time_ns)
         })
         .unwrap_or(false);
@@ -1280,7 +1280,7 @@ fn futex_wait(
                 }
 
                 let (still_waiting, pop_observation) =
-                    crate::task::scheduler::with_scheduler(|sched| {
+                    crate::task::scheduler::with_current(|sched| {
                         sched.wake_expired_timers();
                         sched
                             .current_thread_mut()

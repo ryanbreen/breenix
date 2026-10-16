@@ -1658,7 +1658,7 @@ pub fn idle_loop() -> ! {
         // allocation, and nothing on the context-switch path itself.
         #[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
         crate::tracing::providers::teardown::x86_settled_tombstone_census();
-        crate::task::scheduler::reclaim_terminated_threads();
+        crate::task::scheduler::reclaim_terminated_threads_from_idle();
         // Try to flush any pending IRQ logs while idle
         crate::irq_log::flush_local_try();
         crate::task::scheduler::set_idle_housekeeping(false);

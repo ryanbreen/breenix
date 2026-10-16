@@ -622,10 +622,7 @@ fn generate_job_control(_: crate::task::softirqd::SoftirqType) {
         row.signals.queue_timer_signal(sig, info, thread.is_none(), timer);
         let wake = row.main_thread.as_ref().filter(|_| row.job.stopped.is_none()).map(|t| t.id);
         if let Some(tid) = wake {
-            crate::task::scheduler::with_scheduler(|scheduler| {
-                scheduler.unblock_for_signal(tid);
-                scheduler.unblock_for_child_exit(tid);
-            });
+            crate::task::scheduler::wake_for_signal(tid, true);
         }
     }
 }

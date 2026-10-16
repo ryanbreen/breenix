@@ -1994,12 +1994,15 @@ pub fn release_outgoing_stack_from_idle() {
     unsafe {
         core::arch::asm!("mov {}, rsp", out(reg) rsp, options(nomem, nostack, preserves_flags));
     }
-    with_scheduler(|scheduler| {
-        let idle = scheduler.cpu_state[cpu].idle_thread;
+    with_current(|scheduler| {
+        let idle = scheduler.idle_thread();
         let leaving = LEAVING_STACK[cpu].load(Ordering::Acquire);
-        let on_idle_stack = scheduler
-            .get_thread(idle)
-            .and_then(|thread| thread.kernel_stack_top)
+        let idle_top = if scheduler.current_thread_id_inner() == Some(idle) {
+            scheduler.current_thread_mut().and_then(|thread| thread.kernel_stack_top)
+        } else {
+            None
+        };
+        let on_idle_stack = idle_top
             .is_some_and(|top| crate::memory::kernel_stack::kernel_stack_contains(top.as_u64(), rsp));
         if leaving != 0 && leaving != idle && on_idle_stack {
             release_leaving_stack(cpu, leaving);
@@ -3223,6 +3226,10 @@ impl Scheduler {
             for &tid in reclaimed_ids.iter() {
                 rq::remove(tid);
             }
+            TERMINATED_UNRECLAIMED.store(
+                terminated_ids.len().saturating_sub(reclaimed_ids.len()) as u64,
+                Ordering::Release,
+            );
         }
         self.retirement_grace
             .retain(|grace| !reclaimed_ids.contains(&grace.thread_id));
@@ -7628,6 +7635,53 @@ pub fn spawn_front(thread: Box<Thread>) {
     });
 }
 
+/// x86_64: how many threads may be Terminated and not yet reclaimed. Raised
+/// when a thread terminates, and set to the exact count by each reclamation
+/// pass, so the idle loop reclaims only when there is something to reclaim.
+#[cfg(target_arch = "x86_64")]
+static TERMINATED_UNRECLAIMED: AtomicU64 = AtomicU64::new(0);
+
+/// x86_64: the tick each CPU's idle loop last tried to reclaim at.
+#[cfg(target_arch = "x86_64")]
+static IDLE_RECLAIM_TICK: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(u64::MAX) }; MAX_CPUS];
+
+/// x86_64: a thread has just been marked Terminated (`Thread::set_terminated`).
+#[cfg(target_arch = "x86_64")]
+pub fn note_thread_terminated() {
+    TERMINATED_UNRECLAIMED.fetch_add(1, Ordering::Release);
+}
+
+/// x86_64: the idle loop's reclamation. Reclaiming needs the whole scheduler,
+/// which is every run-queue lock, so the idle loop takes it only while a
+/// thread waits to be reclaimed, at most once a tick per CPU, and only when it
+/// is free: an idle CPU stopped while it held the whole scheduler on every
+/// pass would stop every CPU's dispatch (#1649).
+#[cfg(target_arch = "x86_64")]
+pub fn reclaim_terminated_threads_from_idle() {
+    if TERMINATED_UNRECLAIMED.load(Ordering::Acquire) == 0 {
+        return;
+    }
+    let cpu = current_cpu_id_raw();
+    let tick = crate::time::get_ticks();
+    if cpu < MAX_CPUS && IDLE_RECLAIM_TICK[cpu].swap(tick, Ordering::Relaxed) == tick {
+        return;
+    }
+    crate::per_cpu::preempt_disable();
+    let reclaimed_threads = without_interrupts(|| {
+        let Some(mut scheduler_lock) = try_lock_scheduler() else {
+            return alloc::vec::Vec::new();
+        };
+        match scheduler_lock.as_mut() {
+            Some(scheduler) => scheduler.reclaim_terminated_threads(),
+            None => alloc::vec::Vec::new(),
+        }
+    });
+    #[cfg(feature = "testing")]
+    idle_release_probe::hold();
+    release_reclaimed_threads(reclaimed_threads);
+    crate::per_cpu::preempt_enable();
+}
+
 pub fn reclaim_terminated_threads() {
     // x86 resumes idle at its entry point after a dispatch, abandoning the
     // interrupted continuation. Keep custody of detached threads through their
@@ -8402,7 +8456,71 @@ pub fn adopt_legacy_exec(row_thread: &Thread, root: u64) {
 /// The caller must not be in interrupt context; hard IRQ paths must use
 /// `isr_unblock_for_io` so they never spin on the scheduler lock.
 pub fn wake_waitqueue_thread(tid: u64) {
+    #[cfg(target_arch = "x86_64")]
+    if owner_wake(tid, rq::Wake::Io { from_isr_buffer: false }).is_some() {
+        return;
+    }
     with_scheduler(|sched| sched.wake_waitqueue_thread(tid));
+}
+
+/// x86_64: wake `tid` under the lock of the CPU that owns it, with this CPU's
+/// for placement (#1649). None when that lock is busy, or before the
+/// run-queue locks exist: the caller takes the whole scheduler.
+#[cfg(target_arch = "x86_64")]
+fn owner_wake(tid: u64, kind: rq::Wake) -> Option<UnblockOutcome> {
+    without_interrupts(|| {
+        let mut local = rq::local()?;
+        match rq::wake(&mut local, tid, kind) {
+            rq::Woken::Done(outcome) => Some(outcome),
+            rq::Woken::Busy => None,
+        }
+    })
+}
+
+/// `Scheduler::unblock` for `tid`. x86_64: under the lock of the CPU that
+/// owns it, the whole scheduler only when that lock is busy.
+pub fn unblock_thread(tid: u64) -> Option<UnblockOutcome> {
+    #[cfg(target_arch = "x86_64")]
+    if let Some(outcome) = owner_wake(tid, rq::Wake::Generic) {
+        return Some(outcome);
+    }
+    with_scheduler(|sched| sched.unblock(tid))
+}
+
+/// Wake `tid` for a signal (`Scheduler::unblock_for_signal`) and, with
+/// `child_exit`, for a child's exit too (`unblock_for_child_exit`). x86_64:
+/// under the lock of the CPU that owns it, the whole scheduler only when that
+/// lock is busy.
+pub fn wake_for_signal(tid: u64, child_exit: bool) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let done = without_interrupts(|| {
+            rq::local().map(|mut local| {
+                rq::notify(&mut local, tid, rq::Notice::Signal)
+                    && (!child_exit || rq::notify(&mut local, tid, rq::Notice::ChildExit))
+            })
+        });
+        if done == Some(true) {
+            return;
+        }
+    }
+    with_scheduler(|sched| {
+        sched.unblock_for_signal(tid);
+        if child_exit {
+            sched.unblock_for_child_exit(tid);
+        }
+    });
+}
+
+/// Wake `tid` for a child's exit (`Scheduler::unblock_for_child_exit`).
+pub fn wake_for_child_exit(tid: u64) {
+    #[cfg(target_arch = "x86_64")]
+    if without_interrupts(|| rq::local().map(|mut local| rq::notify(&mut local, tid, rq::Notice::ChildExit)))
+        == Some(true)
+    {
+        return;
+    }
+    with_scheduler(|sched| sched.unblock_for_child_exit(tid));
 }
 
 /// Mark `tid` Terminated. If it is running, the interval it is running in is
@@ -8624,7 +8742,7 @@ pub fn note_sched_yield() {
     if !POLICIES_IN_USE.load(Ordering::Acquire) {
         return;
     }
-    with_scheduler(|scheduler| {
+    with_current(|scheduler| {
         if let Some(thread) = scheduler.current_thread_mut() {
             thread.sched.yielded = true;
         }

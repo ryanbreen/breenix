@@ -297,6 +297,12 @@ impl Held {
         unsafe { (owned_thread(a, self.cpu), owned_thread(b, self.cpu)) }
     }
 
+    /// Take `tid` off the ready queue: this CPU's, the only one a thread it
+    /// owns can be on.
+    pub(super) fn remove_from_ready_queue(&mut self, tid: u64) {
+        self.queue().retain(|&queued| queued != tid);
+    }
+
     /// Queue `tid`, a thread this CPU now owns, at the back or the front.
     pub(super) fn enqueue(&mut self, tid: u64, front: bool) {
         set_owner(tid, self.cpu);
@@ -1439,9 +1445,143 @@ pub(super) fn block_current(local: &mut Held, block: Block) -> bool {
     if let Some(deadline) = push_deadline {
         local.heap().push(Reverse((deadline, tid)));
     }
-    local.queue().retain(|&queued| queued != tid);
+    local.remove_from_ready_queue(tid);
     // Publish the sleep state before later condition checks or schedule entry
     // observe wakeups (`Scheduler::block_current_for_io_publish`).
     core::sync::atomic::fence(Ordering::SeqCst);
     true
+}
+
+// --------------------------------------------- signal and child-exit wakes
+
+/// What a wake for a signal or a child's exit does to `tid`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Notice {
+    /// `Scheduler::unblock_for_signal`.
+    Signal,
+    /// `Scheduler::unblock_for_child_exit`.
+    ChildExit,
+}
+
+/// Apply `notice` to `tid` under the lock of the CPU that owns it: `local`'s,
+/// or a peer's taken without waiting. False when that lock is busy.
+pub(super) fn notify(local: &mut Held, tid: u64, notice: Notice) -> bool {
+    let Some(owner) = owner(tid) else {
+        return true;
+    };
+    if owner == local.cpu {
+        notify_owned(local, None, tid, notice);
+        return true;
+    }
+    let Some(mut remote) = try_remote(owner) else {
+        return false;
+    };
+    if self::owner(tid) != Some(owner) {
+        return false;
+    }
+    notify_owned(local, Some(&mut remote), tid, notice);
+    true
+}
+
+fn notify_owned(local: &mut Held, mut source: Option<&mut Held>, tid: u64, notice: Notice) {
+    let held: &mut Held = match source.as_deref_mut() {
+        Some(source) => source,
+        None => &mut *local,
+    };
+    let Some(state) = held.thread(tid).map(|thread| (thread.state, thread.blocked_in_syscall)) else {
+        return;
+    };
+    match (notice, state) {
+        (Notice::Signal, (ThreadState::BlockedOnIO, _)) => {
+            wake_owned(local, source.as_deref_mut(), tid, Wake::Io { from_isr_buffer: false });
+            expedite(local, source, tid);
+        }
+        (Notice::Signal, (ThreadState::Blocked, true)) | (Notice::Signal, (ThreadState::BlockedOnTimer, _)) => {
+            wake_owned(local, source.as_deref_mut(), tid, Wake::Generic);
+            expedite(local, source, tid);
+        }
+        (Notice::Signal, (ThreadState::BlockedOnSignal, _)) => {
+            mark_ready_and_place(local, source.as_deref_mut(), tid, &super::WAKE_SITE_SIGNAL, super::READY_SITE_SIGNAL);
+            super::set_need_resched();
+            expedite(local, source, tid);
+        }
+        (Notice::Signal, _) => expedite(local, source, tid),
+        (Notice::ChildExit, (ThreadState::BlockedOnChildExit, _)) => {
+            mark_ready_and_place(
+                local,
+                source.as_deref_mut(),
+                tid,
+                &super::WAKE_SITE_CHILD_EXIT,
+                super::READY_SITE_CHILD_EXIT,
+            );
+            super::set_need_resched();
+        }
+        (Notice::ChildExit, _) => {}
+    }
+}
+
+/// Make `tid`, blocked and owned by `source`'s CPU (`local`'s when None),
+/// Ready, and queue it unless it is still current there or already queued:
+/// the shared arm of the signal and child-exit wakes.
+fn mark_ready_and_place(
+    local: &mut Held,
+    mut source: Option<&mut Held>,
+    tid: u64,
+    site: &AtomicU64,
+    ready_site: u64,
+) {
+    let held: &mut Held = match source.as_deref_mut() {
+        Some(source) => source,
+        None => &mut *local,
+    };
+    let current_here = held.state().current_thread == Some(tid);
+    let idle = held.state().idle_thread == tid;
+    let Some(thread) = held.thread(tid) else {
+        return;
+    };
+    thread.set_ready();
+    site.fetch_add(1, Ordering::Relaxed);
+    record_ready_site(tid, ready_site);
+    if current_here {
+        ENQUEUE_DEFERRED.fetch_add(1, Ordering::Relaxed);
+    } else if held.queue().contains(&tid) {
+        ENQUEUE_ALREADY_QUEUED_OK.fetch_add(1, Ordering::Relaxed);
+    } else if !idle {
+        let target = wake_target(held, tid).unwrap_or(held.cpu);
+        let queued_on = match source.as_deref_mut() {
+            Some(source) => place(local, Some(source), tid, target, false),
+            None => place(local, None, tid, target, false),
+        };
+        ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
+        kick(queued_on);
+    }
+}
+
+/// `Scheduler::expedite_signal_recipient` for a thread `source`'s CPU owns.
+fn expedite(local: &mut Held, mut source: Option<&mut Held>, tid: u64) {
+    let held: &mut Held = match source.as_deref_mut() {
+        Some(source) => source,
+        None => &mut *local,
+    };
+    let cpu = held.cpu;
+    let me = super::current_cpu_id_raw();
+    if held.state().current_thread == Some(tid) {
+        if cpu != me {
+            send_reschedule_vector_x86(cpu);
+        }
+        return;
+    }
+    if !held.queue().contains(&tid) {
+        return;
+    }
+    if !retain_affine(held, tid, cpu) && promotion_open(held) {
+        held.queue().retain(|&queued| queued != tid);
+        held.queue().push_front(tid);
+        held.state().promoted_wake = Some(tid);
+    }
+    if cpu == me {
+        super::set_need_resched();
+    } else {
+        request_resched_x86(cpu);
+    }
 }

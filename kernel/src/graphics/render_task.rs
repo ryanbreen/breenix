@@ -159,7 +159,7 @@ fn wait_for_next_tick() {
         .saturating_mul(1_000_000_000)
         .saturating_add(nanos)
         .saturating_add(TICK_NS);
-    scheduler::with_scheduler(|sched| sched.block_current_for_timer(wake_at));
+    scheduler::with_current(|sched| sched.block_current_for_timer(wake_at));
     loop {
         // The switch below answers any reschedule asked of this CPU, as the
         // idle loop's does; left set, the request would preempt the thread
