@@ -80,7 +80,7 @@ pub struct Composed {
     pub per_window: Vec<u64>,
 }
 
-/// A composite the backend could not complete, with the record's reason.
+/// A composite the backend could not complete, with the record's reason (0 to 255).
 pub struct Failure {
     pub reason: u32,
 }
@@ -132,6 +132,8 @@ pub struct WindowPresent {
     pub pending: Damage,
     /// Where the window was last composed, if it was on screen.
     pub shown: Option<Rect>,
+    /// Its stacking position when it was last composed.
+    pub shown_z: u32,
 }
 
 impl WindowPresent {
@@ -139,14 +141,17 @@ impl WindowPresent {
         WindowPresent {
             pending: Damage::none(),
             shown: None,
+            shown_z: 0,
         }
     }
 }
 
-/// A completed composite, kept for `COMPOSITE_RECORD`.
+/// A composite, completed or failed, kept for `COMPOSITE_RECORD`.
 pub struct Record {
     pub serial: u64,
     pub pixels: u64,
+    /// `breengel_abi::record_flags`.
+    pub flags: u32,
     pub entries: Vec<CompositeEntry>,
 }
 
@@ -238,6 +243,13 @@ pub fn composite(caller: &Caller) -> Result<(u64, u64), i32> {
             return Err(breengel_abi::errno::EINTR);
         }
     };
+    // `composite-stall`: a composite that includes the armed window pauses here, its pins held.
+    let stalled = frame.windows.iter().any(|w| {
+        crate::test_control::take(breengel_abi::tc_point::COMPOSITE_STALL, w.id).is_some()
+    });
+    if stalled {
+        super::ops::stall();
+    }
     let result = backend.map_or(Err(Failure { reason: 0 }), |b| b.composite(&frame));
     let outcome = finish(frame, result);
     IN_FLIGHT.wake_up();
@@ -248,33 +260,42 @@ pub fn composite(caller: &Caller) -> Result<(u64, u64), i32> {
 /// pin every presentation-required window's front.
 fn begin(reg: &mut super::Registry) -> Result<Frame, i32> {
     let mut damage = Vec::new();
-    let full = !reg.present.composed_once || reg.present.force_full;
-    if full {
-        damage.push(screen());
-    } else {
+    let mut full = !reg.present.composed_once || reg.present.force_full;
+    if !full {
+        // A rectangle that cannot be recorded makes the frame the whole screen.
+        let mut kept = true;
         for r in reg.present.uncovered.iter() {
-            push_rect(&mut damage, *r);
+            kept &= push_rect(&mut damage, *r);
         }
         for w in reg.windows.values() {
             let now = w.screen_rect();
-            if w.present.shown != now {
+            // Moved, resized, shown, hidden or restacked: both places change, the second
+            // because what is over what there is different now.
+            if w.present.shown != now || (now.is_some() && w.present.shown_z != w.z) {
                 if let Some(r) = w.present.shown {
-                    push_rect(&mut damage, r);
+                    kept &= push_rect(&mut damage, r);
                 }
                 if let Some(r) = now {
-                    push_rect(&mut damage, r);
+                    kept &= push_rect(&mut damage, r);
                 }
             } else if let Some(at) = now {
                 for r in w.present.pending.rects(w.width, w.height) {
-                    push_rect(&mut damage, Rect::new(at.x + r.x, at.y + r.y, r.w, r.h));
+                    kept &= push_rect(&mut damage, Rect::new(at.x + r.x, at.y + r.y, r.w, r.h));
                 }
             }
         }
-        if damage.len() > 64 {
+        if !kept {
+            full = true;
+        } else if damage.len() > 64 {
             let b = super::bounds(&damage);
             damage.clear();
             damage.push(b);
         }
+    }
+    if full {
+        damage.clear();
+        damage.try_reserve_exact(1).map_err(|_| EBUSY)?;
+        damage.push(screen());
     }
     let mut order: Vec<(u32, u64)> = reg
         .windows
@@ -309,6 +330,7 @@ fn begin(reg: &mut super::Registry) -> Result<Frame, i32> {
     for w in reg.windows.values_mut() {
         w.present.pending = Damage::none();
         w.present.shown = w.screen_rect();
+        w.present.shown_z = w.z;
     }
     reg.present.uncovered.clear();
     reg.present.force_full = false;
@@ -322,44 +344,58 @@ fn begin(reg: &mut super::Registry) -> Result<Frame, i32> {
     })
 }
 
-fn push_rect(damage: &mut Vec<Rect>, r: Rect) {
-    if let Some(r) = clip_to_screen(r) {
-        if damage.try_reserve(1).is_ok() {
-            damage.push(r);
-        }
+/// Add `r`, clipped to the screen, to `damage`. False when it could not be recorded.
+fn push_rect(damage: &mut Vec<Rect>, r: Rect) -> bool {
+    let Some(r) = clip_to_screen(r) else {
+        return true;
+    };
+    if damage.try_reserve(1).is_err() {
+        return false;
     }
+    damage.push(r);
+    true
 }
 
 /// Record a composite's result and release its pins. A failed composite leaves its damage to
-/// the next one, which composes the whole screen.
+/// the next one, which composes the whole screen, and is recorded with its reason, 0 pixels and
+/// no windows.
 fn finish(frame: Frame, result: Result<Composed, Failure>) -> Result<(u64, u64), i32> {
+    use breengel_abi::record_flags::{FAILED, REASON_SHIFT};
     let outcome = {
         let mut reg = REGISTRY.lock();
         reg.present.busy = false;
+        let (pixels, flags) = match &result {
+            Ok(done) => (done.pixels, 0),
+            Err(failure) => (0, FAILED | (failure.reason & 0xFF) << REASON_SHIFT),
+        };
+        // A failed frame is correct for no window's generation, so it lists none.
+        let mut entries = Vec::new();
+        if let Ok(done) = &result {
+            if entries.try_reserve_exact(frame.windows.len()).is_ok() {
+                for (i, w) in frame.windows.iter().enumerate() {
+                    entries.push(CompositeEntry {
+                        id: w.id,
+                        commit_id: w.commit_id,
+                        pixel_gen: w.pixel_gen,
+                        pixels: done.per_window.get(i).copied().unwrap_or(0),
+                    });
+                }
+            }
+        }
+        if reg.present.records.len() == RECORDS {
+            reg.present.records.pop_front();
+        }
+        if reg.present.records.try_reserve(1).is_ok() {
+            reg.present.records.push_back(Record {
+                serial: frame.serial,
+                pixels,
+                flags,
+                entries,
+            });
+        }
         match &result {
             Ok(done) => {
                 reg.present.composed_once = true;
-                let mut entries = Vec::new();
-                if entries.try_reserve_exact(frame.windows.len()).is_ok() {
-                    for (i, w) in frame.windows.iter().enumerate() {
-                        entries.push(CompositeEntry {
-                            id: w.id,
-                            commit_id: w.commit_id,
-                            pixel_gen: w.pixel_gen,
-                            pixels: done.per_window.get(i).copied().unwrap_or(0),
-                        });
-                    }
-                }
-                if reg.present.records.len() == RECORDS {
-                    reg.present.records.pop_front();
-                }
-                if reg.present.records.try_reserve(1).is_ok() {
-                    reg.present.records.push_back(Record {
-                        serial: frame.serial,
-                        pixels: done.pixels,
-                        entries,
-                    });
-                }
                 Ok((frame.serial, done.pixels))
             }
             Err(_) => {
@@ -391,6 +427,7 @@ pub fn record(caller: &Caller, serial: u64) -> Result<(CompositeRecordHeader, Ve
     header.serial = r.serial;
     header.pixels = r.pixels;
     header.count = r.entries.len() as u32;
+    header.flags = r.flags;
     let mut entries = Vec::new();
     entries.try_reserve_exact(r.entries.len()).map_err(|_| EBUSY)?;
     entries.extend_from_slice(&r.entries);

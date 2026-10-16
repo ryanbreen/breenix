@@ -178,7 +178,7 @@ pub fn sys_test_control(op: u64, arg: u64, len: u64) -> SyscallResult {
                 Ok(a) => a,
                 Err(e) => return err(e),
             };
-            if a.reserved != 0 || a.point == 0 || a.point > tc_point::LAST {
+            if a.reserved != 0 || !tc_point::defined(a.point) {
                 return err(EINVAL);
             }
             let p = &POINT_TABLE[a.point as usize];
@@ -192,6 +192,8 @@ pub fn sys_test_control(op: u64, arg: u64, len: u64) -> SyscallResult {
             for p in POINT_TABLE.iter() {
                 p.armed.store(false, Ordering::Release);
             }
+            // A case's measurements start clean: the IRQ-masked gauge restarts at 0.
+            crate::tracing::providers::window::reset_irq_masked();
             SyscallResult::Ok(0)
         }
         tc_op::FIRED => {
@@ -199,7 +201,7 @@ pub fn sys_test_control(op: u64, arg: u64, len: u64) -> SyscallResult {
                 Ok(f) => f,
                 Err(e) => return err(e),
             };
-            if f.reserved != 0 || f.point == 0 || f.point > tc_point::LAST {
+            if f.reserved != 0 || !tc_point::defined(f.point) {
                 return err(EINVAL);
             }
             f.count = POINT_TABLE[f.point as usize].fired.load(Ordering::Acquire);

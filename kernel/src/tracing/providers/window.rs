@@ -22,12 +22,22 @@ pub static WINDOW_DAMAGE_RECTS: TraceCounter =
 pub static WINDOW_BUFFER_ALLOCS: TraceCounter =
     TraceCounter::new("window_buffer_allocs", "Window buffers allocated");
 
+/// A gauge: the longest interval, in microseconds, the display copy has held IRQs masked
+/// since boot or the last `DISARM_ALL` (sections 18 and 21). It lives in CPU 0's slot, so the
+/// sum `/proc/trace/counters` prints is the maximum itself.
+#[no_mangle]
+pub static DISPLAY_IRQ_MASKED_MAX_US: TraceCounter = TraceCounter::new(
+    "display_irq_masked_max_us",
+    "Longest IRQ-masked interval in the display copy, microseconds",
+);
+
 pub fn init() {
     for counter in [
         &WINDOW_COMPOSITES,
         &WINDOW_COMPOSITE_PIXELS,
         &WINDOW_DAMAGE_RECTS,
         &WINDOW_BUFFER_ALLOCS,
+        &DISPLAY_IRQ_MASKED_MAX_US,
     ] {
         assert!(
             register_counter(counter).is_some(),
@@ -50,4 +60,20 @@ pub fn count_damage_rects(rects: u64) {
 #[inline]
 pub fn count_buffer_alloc() {
     WINDOW_BUFFER_ALLOCS.increment();
+}
+
+/// The display copy held IRQs masked for `us` microseconds: raise the gauge to it. Display
+/// copies run one at a time (composites are serialized), so the read and the raise do not race.
+#[inline]
+pub fn record_irq_masked(us: u64) {
+    let now = DISPLAY_IRQ_MASKED_MAX_US.get_cpu(0);
+    if us > now {
+        DISPLAY_IRQ_MASKED_MAX_US.add_cpu(0, us - now);
+    }
+}
+
+/// Restart the IRQ-masked gauge at 0.
+#[inline]
+pub fn reset_irq_masked() {
+    DISPLAY_IRQ_MASKED_MAX_US.reset();
 }
