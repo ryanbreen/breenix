@@ -211,7 +211,7 @@ pub(super) fn framebuffer_op(cmd: FbDrawCmd) -> SyscallResult {
         if let (Some(pane),Ok(caller))=(fb_mmap_info_pre,crate::window::Caller::current()) {
             let rect=if cmd.p3>0 && cmd.p4>0 {breengel_abi::Rect::new(cmd.p1,cmd.p2,cmd.p3,cmd.p4)}
                 else {breengel_abi::Rect::new(0,0,pane.width as i32,pane.height as i32)};
-            return match crate::graphics::display::flush(caller.tgid,pane.user_addr,pane.user_stride,rect) {
+            return match crate::graphics::display::flush(caller.tgid,pane,rect) {
                 Ok(())=>SyscallResult::Ok(0),Err(e)=>SyscallResult::Err(e as u64)
             };
         }

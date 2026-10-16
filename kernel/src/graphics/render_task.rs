@@ -68,7 +68,7 @@ fn render_thread_main_kthread() {
         // The cursor is drawn directly into the framebuffer VRAM; SVGA3 VRAM
         // traces detect the pixel writes and update the display automatically.
         #[cfg(target_arch = "aarch64")]
-        update_mouse_cursor();
+        { super::boot_ribbon::drain(); update_mouse_cursor(); }
 
         // When BWM owns the display, the render thread only handles cursor.
         // BWM handles text drawing, terminal content, and GPU flushing via
@@ -244,7 +244,7 @@ fn update_mouse_cursor() {
         if panel {
             let moved=crate::test_control::take(breengel_abi::tc_point::MOVE_POINTER,0);
             if let Some(p)=moved {super::display::panel_pointer(p as u32,(p>>32) as u32);}
-            else if changed {super::display::panel_pointer(hardware.0,hardware.1);}
+            else if changed && !crate::test_control::enabled() {super::display::panel_pointer(hardware.0,hardware.1);}
         }
         return;
     }

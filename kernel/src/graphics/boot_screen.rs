@@ -573,6 +573,8 @@ fn presenter_main() {
     while !crate::task::kthread::kthread_should_stop() {
         let kernel_screen_up =
             DIAG_CLAIMED.load(Ordering::Acquire) || !HANDED_OVER.load(Ordering::Acquire);
+        super::boot_ribbon::drain();
+        if kernel_screen_up && super::boot_ribbon::take_dirty() { refresh(); }
         if kernel_screen_up && timer::rdtsc() >= retry_at {
             if let Some((x, y, w, h)) = arm64_fb::take_dirty_rect() {
                 // Non-blocking: the GPU lock may be held for good by a CPU that

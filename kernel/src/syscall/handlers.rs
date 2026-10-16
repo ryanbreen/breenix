@@ -3342,7 +3342,11 @@ pub struct CowStatsResult {
 pub fn sys_take_over_display() -> SyscallResult {
     #[cfg(target_arch = "aarch64")]
     if crate::graphics::display::active() {
-        if let Ok(caller)=crate::window::Caller::current() {
+        let caller = match crate::window::Caller::current() {
+            Ok(caller) => caller, Err(e) => return SyscallResult::Err(e as u64),
+        };
+        if !caller.is_root() { return SyscallResult::Err(1); }
+        {
             crate::graphics::display::init();
             if let Err(e)=crate::graphics::display::take(caller.tgid) {return SyscallResult::Err(e as u64);}
         }

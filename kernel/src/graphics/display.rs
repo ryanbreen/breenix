@@ -15,6 +15,18 @@ use spin::Mutex;
 const W: usize = 1280;
 const H: usize = 800;
 const LEN: usize = W * H * 4;
+const MAX_OWNERS: usize = 4;
+static COMPOSITES: Mutex<Vec<(u64, u64)>> = Mutex::new(Vec::new());
+
+/// Kernel-published completed composite serials, independent of runner timestamps.
+pub fn composite_records() -> alloc::string::String {
+    use core::fmt::Write;
+    let mut out = alloc::string::String::new();
+    for (pid, serial) in COMPOSITES.lock().iter() {
+        let _ = writeln!(out, "{pid} {serial}");
+    }
+    out
+}
 static DISPLAY: Display = Display;
 static STATE: Mutex<Option<State>> = Mutex::new(None);
 static OWNER: AtomicU64 = AtomicU64::new(0);
@@ -210,13 +222,14 @@ impl Backend for Display {
         }
         let mut guard = STATE.lock();
         let s = state(&mut guard);
-        s.panel_cursor = None;
+        let panel_damage = restore_panel(s);
         let mut damage = if s.repair {
             s.repair = false;
             vec![full()]
         } else {
             f.damage.clone()
         };
+        if let Some(r) = panel_damage { damage.push(r); }
         damage.append(&mut s.cursor_damage);
         if s.cursor.visible != 0 {
             damage.push(cursor_rect(&s.cursor));
@@ -299,19 +312,25 @@ impl Backend for Display {
             id: 0,
             commit_id: 0,
         }; 16];
-        for (i, w) in f.windows.iter().enumerate() {
-            s.record.windows[i] = abi::ObservedWindow {
+        for (slot, w) in s.record.windows.iter_mut().zip(&f.windows) {
+            *slot = abi::ObservedWindow {
                 id: w.id,
                 commit_id: w.commit_id,
             };
         }
         publish(s, &bounded_damage(damage), true).map_err(|e| Failure { reason: e as u32 })?;
+        let caller = Caller::current().map_err(|e| Failure { reason: e as u32 })?;
+        let mut records = COMPOSITES.lock();
+        if records.len() == 2048 { records.remove(0); }
+        records.push((caller.tgid, f.serial));
         Ok(Composed { pixels, per_window })
     }
     fn readback(&self, _caller: &Caller, rb: &mut abi::Readback) -> Result<(), i32> {
         let mut guard = STATE.lock();
         let s = state(&mut guard);
         observation(s);
+        // A fixed ABI record cannot describe a larger frame. Composition still succeeds.
+        if s.record.window_count as usize > s.record.windows.len() { return Err(EIO); }
         // Read the entire actual bound resource's backing, under the same lock as
         // composite publication, with X normalized. Never a sampled band.
         let source = gpu::framebuffer().ok_or(EIO)?;
@@ -353,13 +372,24 @@ impl Backend for Display {
 
 /// Push caller ownership, saving exactly the display it covered.
 pub fn take(pid: u64) -> Result<(), i32> {
+    take_from(pid, None)
+}
+fn take_from(pid: u64, expected: Option<u64>) -> Result<(), i32> {
     let mut guard = STATE.lock();
+    if expected.is_some_and(|owner| OWNER.load(Ordering::Acquire) != owner) { return Err(EPERM); }
     let s = state(&mut guard);
     let previous = OWNER.load(Ordering::Acquire);
     if previous == pid {
         return Ok(());
     }
-    let snapshot = gpu::framebuffer().ok_or(EIO)?[..LEN].to_vec();
+    if s.owners.len() >= MAX_OWNERS || s.owners.iter().any(|(owner, _, _)| *owner == pid) {
+        return Err(EBUSY);
+    }
+    s.owners.try_reserve(1).map_err(|_| ENOMEM)?;
+    let mut snapshot = Vec::new();
+    snapshot.try_reserve_exact(LEN).map_err(|_| ENOMEM)?;
+    if let Some(r) = restore_panel(s) { publish(s, &[r], false)?; }
+    snapshot.extend_from_slice(&gpu::framebuffer().ok_or(EIO)?[..LEN]);
     s.owners.push((previous, snapshot, s.record));
     OWNER.store(pid, Ordering::Release);
     crate::syscall::fb::DISPLAY_OWNER_PID.store(pid, Ordering::Release);
@@ -369,7 +399,7 @@ pub fn give(from:u64,to:u64)->Result<(),i32> {
     if OWNER.load(Ordering::Acquire)!=from{return Err(EPERM);}
     let live=crate::process::with_process_manager(|m|m.get_process(crate::process::ProcessId::new(to)).is_some_and(|p|!p.is_terminated())).unwrap_or(false);
     if !live{return Err(ESRCH);}
-    take(to)?;
+    take_from(to, Some(from))?;
     let live=crate::process::with_process_manager(|m|{
         m.get_process_mut(crate::process::ProcessId::new(to)).is_some_and(|p|{
             if p.is_terminated(){return false;}
@@ -407,30 +437,51 @@ pub fn gone(pid: u64) {
 }
 
 /// Copy a caller's private mmap pane, clipped before touching any pixels.
-pub fn flush(pid: u64, ptr: u64, stride: usize, rect: Rect) -> Result<(), i32> {
-    if OWNER.load(Ordering::Acquire) != pid {
-        return Err(EPERM);
+pub fn flush(pid: u64, pane: crate::process::process::FbMmapInfo, rect: Rect) -> Result<(), i32> {
+    if pane.whole_screen && OWNER.load(Ordering::Acquire) != pid { return Err(EPERM); }
+    let Some(r) = present::intersect(rect, Rect::new(0, 0, pane.width as i32, pane.height as i32))
+        .and_then(present::clip_to_screen) else { return Ok(()); };
+    // Finish every fallible user copy before changing backing, cursor or record.
+    let row = r.w as usize * 4;
+    let mut incoming = Vec::new();
+    incoming.try_reserve_exact(row * r.h as usize).map_err(|_| ENOMEM)?;
+    incoming.resize(row * r.h as usize, 0);
+    for y in 0..r.h as usize {
+        let src = pane.user_addr.checked_add((r.y as usize + y) as u64 * pane.user_stride as u64)
+            .and_then(|p| p.checked_add(r.x as u64 * 4)).ok_or(EFAULT)?;
+        crate::syscall::userptr::read_user_bytes(incoming[y * row..].as_mut_ptr(), src, row)
+            .map_err(|_| EFAULT)?;
     }
-    let Some(r) = present::clip_to_screen(rect) else {
-        return Ok(());
-    };
+    for p in incoming.chunks_exact_mut(4) { p[3] = 255; }
     let mut guard = STATE.lock();
+    if pane.whole_screen && OWNER.load(Ordering::Acquire) != pid { return Err(EPERM); }
     let s = state(&mut guard);
-    s.panel_cursor = None;
+    let previous = restore_panel(s);
+    for y in 0..r.h as usize {
+        let a = ((r.y as usize + y) * W + r.x as usize) * 4;
+        s.pixels[a..a + row].copy_from_slice(&incoming[y * row..(y + 1) * row]);
+    }
     s.record.serial = 0;
     s.record.window_count = 0;
-    for y in r.y as usize..(r.y + r.h) as usize {
-        let a = (y * W + r.x as usize) * 4;
-        let b = a + r.w as usize * 4;
-        let src = ptr + y as u64 * stride as u64 + r.x as u64 * 4;
-        crate::syscall::userptr::read_user_bytes(s.pixels[a..b].as_mut_ptr(), src, b - a)
-            .map_err(|_| EFAULT)?;
-        for p in s.pixels[a..b].chunks_exact_mut(4) {
-            p[3] = 255;
-        }
-    }
     observation(s);
-    publish(s, &[r], false)
+    let mut damage = vec![r];
+    if let Some(r) = previous { damage.push(r); }
+    publish(s, &damage, false)
+}
+
+/// Remove an overlay before changing its underlying pixels or saving an owner.
+fn restore_panel(s: &mut State) -> Option<Rect> {
+    let (px, py, saved, no_restore) = s.panel_cursor.take()?;
+    if !no_restore {
+        for yy in 0..18usize { for xx in 0..18usize {
+            if px as usize + xx < W && py as usize + yy < H {
+                let o = ((py as usize + yy) * W + px as usize + xx) * 4;
+                let i = (yy * 18 + xx) * 4;
+                s.pixels[o..o + 4].copy_from_slice(&saved[i..i + 4]);
+            }
+        }}
+    }
+    Some(Rect::new(px as i32, py as i32, 18, 18))
 }
 
 /// Panel cursor runs only on the render thread and never blocks on the display lock.
@@ -446,20 +497,7 @@ pub fn panel_pointer(x: u32, y: u32) {
         return;
     }
     let mut damage = Vec::new();
-    if let Some((px, py, saved, no_restore)) = s.panel_cursor.take() {
-        if !no_restore {
-            for yy in 0..18usize {
-                for xx in 0..18usize {
-                    if px as usize + xx < W && py as usize + yy < H {
-                        let o = ((py as usize + yy) * W + px as usize + xx) * 4;
-                        let i = (yy * 18 + xx) * 4;
-                        s.pixels[o..o + 4].copy_from_slice(&saved[i..i + 4]);
-                    }
-                }
-            }
-        }
-        damage.push(Rect::new(px as i32, py as i32, 18, 18));
-    }
+    if let Some(r) = restore_panel(s) { damage.push(r); }
     let mut saved = vec![0; 18 * 18 * 4];
     for yy in 0..18usize {
         for xx in 0..18usize {

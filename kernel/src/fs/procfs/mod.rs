@@ -95,6 +95,8 @@ pub enum ProcEntryType {
     StageControl,
     /// Actual producer markers reached in boot-path order.
     BootRibbon,
+    BootSerial,
+    StageComposites,
     /// /proc/breenix/ext2 - mounted ext2 allocation counters
     Ext2,
     /// /proc/pids - list of all process IDs
@@ -159,6 +161,8 @@ impl ProcEntryType {
             ProcEntryType::BreenixTesting => "testing",
             ProcEntryType::StageControl => "stage-control",
             ProcEntryType::BootRibbon => "boot-ribbon",
+            ProcEntryType::BootSerial => "boot-serial",
+            ProcEntryType::StageComposites => "stage-composites",
             ProcEntryType::Ext2 => "ext2",
             ProcEntryType::Pids => "pids",
             ProcEntryType::Kmsg => "kmsg",
@@ -205,6 +209,8 @@ impl ProcEntryType {
             ProcEntryType::BreenixTesting => "/proc/breenix/testing",
             ProcEntryType::StageControl => "/proc/breenix/stage-control",
             ProcEntryType::BootRibbon => "/proc/breenix/boot-ribbon",
+            ProcEntryType::BootSerial => "/proc/breenix/boot-serial",
+            ProcEntryType::StageComposites => "/proc/breenix/stage-composites",
             ProcEntryType::Ext2 => "/proc/breenix/ext2",
             ProcEntryType::Pids => "/proc/pids",
             ProcEntryType::Kmsg => "/proc/kmsg",
@@ -252,6 +258,8 @@ impl ProcEntryType {
             ProcEntryType::BreenixTesting => 201,
             ProcEntryType::StageControl => 203,
             ProcEntryType::BootRibbon => 204,
+            ProcEntryType::BootSerial => 205,
+            ProcEntryType::StageComposites => 206,
             ProcEntryType::Ext2 => 202,
             ProcEntryType::Pids => 9,
             ProcEntryType::Kmsg => 10,
@@ -369,6 +377,8 @@ pub fn init() {
 
     procfs.entries.push(ProcEntry::new(ProcEntryType::StageControl));
     procfs.entries.push(ProcEntry::new(ProcEntryType::BootRibbon));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::BootSerial));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::StageComposites));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Ext2));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Pids));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Kmsg));
@@ -634,7 +644,7 @@ pub fn list_breenix_entries() -> Vec<String> {
     procfs
         .entries
         .iter()
-        .filter(|e| matches!(e.entry_type, ProcEntryType::BreenixTesting|ProcEntryType::StageControl|ProcEntryType::BootRibbon))
+        .filter(|e| matches!(e.entry_type, ProcEntryType::BreenixTesting|ProcEntryType::StageControl|ProcEntryType::BootRibbon|ProcEntryType::BootSerial|ProcEntryType::StageComposites))
         .map(|e| String::from(e.entry_type.name()))
         .collect()
 }
@@ -664,6 +674,18 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         ProcEntryType::BootRibbon => {
             #[cfg(target_arch="aarch64")]
             {text(crate::graphics::boot_ribbon::records())}
+            #[cfg(not(target_arch="aarch64"))]
+            {Err(-38)}
+        }
+        ProcEntryType::BootSerial => {
+            #[cfg(target_arch="aarch64")]
+            { crate::graphics::boot_ribbon::serial().map(|s| s.into_bytes()) }
+            #[cfg(not(target_arch="aarch64"))]
+            {Err(-38)}
+        }
+        ProcEntryType::StageComposites => {
+            #[cfg(target_arch="aarch64")]
+            {text(crate::graphics::display::composite_records())}
             #[cfg(not(target_arch="aarch64"))]
             {Err(-38)}
         }
