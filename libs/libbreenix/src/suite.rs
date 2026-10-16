@@ -152,12 +152,13 @@ static JUDGED_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static JUDGED_RUNNER: AtomicU64 = AtomicU64::new(0);
 
 fn judged_path() -> String {
-    std::format!("/tmp/.suite-judged-{}-{}", JUDGED_RUNNER.load(Ordering::Relaxed), JUDGED_SEQUENCE.load(Ordering::Relaxed))
+    let dir = if cfg!(target_os = "breenix") { "/dev/shm" } else { "/tmp" };
+    std::format!("{dir}/.suite-judged-{}-{}", JUDGED_RUNNER.load(Ordering::Relaxed), JUDGED_SEQUENCE.load(Ordering::Relaxed))
 }
 
 /// Hand off the exact surface just judged, before it is modified or dropped.
-/// Call after the comparison even when it failed. File transport avoids a full-frame
-/// pipe blocking the child while its parent waits for it to exit. Collection is outside
+/// Call after the comparison even when it failed. In-memory shared-file transport avoids a full-frame
+/// pipe blocking the child while its parent waits for it to exit; no disk I/O is measured. Collection is outside
 /// the measured case window; the parent verifies length, canonical form and SHA-256.
 pub fn judged(frame: &FrameBuf) -> CaseResult {
     use std::io::Write;
