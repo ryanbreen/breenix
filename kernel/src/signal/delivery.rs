@@ -711,11 +711,11 @@ impl HandlerTarget for LocklessTarget<'_> {
 /// signal is due, the action is a default one or SA_RESETHAND, the timer
 /// table is busy, or the frame cannot be written without a fault resolved.
 #[cfg(target_arch = "x86_64")]
-pub fn deliver_timer_signal_lockless(
+fn deliver_timer_signal_lockless(
     thread_id: u64,
     signals: &ThreadSignals,
     timers: Option<&super::IntervalTimers>,
-    interrupt_frame: &mut x86_64::structures::idt::InterruptStackFrame,
+    user_return: &mut X86UserReturn,
     saved_regs: &mut crate::task::process_context::SavedRegisters,
 ) -> bool {
     use core::sync::atomic::Ordering;
@@ -759,14 +759,9 @@ pub fn deliver_timer_signal_lockless(
     };
 
     let mut target = LocklessTarget { signals, thread_id, info };
-    let mut user_return = X86UserReturn {
-        rip: interrupt_frame.instruction_pointer.as_u64(),
-        rsp: interrupt_frame.stack_pointer.as_u64(),
-        rflags: interrupt_frame.cpu_flags.bits(),
-    };
     let installed = install_user_handler_x86_64(
         &mut target,
-        &mut user_return,
+        user_return,
         saved_regs,
         sig,
         action.handler,
@@ -788,15 +783,105 @@ pub fn deliver_timer_signal_lockless(
         }
         (Err(_), Some(_), None) => return false,
     }
-    // The installer accepted both addresses as canonical.
-    unsafe {
-        interrupt_frame.as_mut().update(|frame| {
-            frame.instruction_pointer = x86_64::VirtAddr::new(user_return.rip);
-            frame.stack_pointer = x86_64::VirtAddr::new(user_return.rsp);
-            frame.cpu_flags =
-                x86_64::registers::rflags::RFlags::from_bits_truncate(user_return.rflags);
-        });
+    true
+}
+
+/// `deliver_timer_signal_lockless` for current thread `thread_id`, on its
+/// return to Ring 3 at `user_return` with `saved_regs`, writing the frame
+/// through the thread's own page tables. It declines for a thread with no
+/// cached root, a deferred SIGKILL or a CPU-limit signal pending: those are
+/// the process-manager path's.
+#[cfg(target_arch = "x86_64")]
+pub fn deliver_current_timer_signal_lockless(
+    thread_id: u64,
+    user_return: &mut X86UserReturn,
+    saved_regs: &mut crate::task::process_context::SavedRegisters,
+) -> bool {
+    let Some(thread) = crate::per_cpu::current_thread() else {
+        return false;
+    };
+    if thread.id != thread_id
+        || thread.cached_ttbr0 == 0
+        || thread.kill_pending()
+        || thread
+            .resource_limits
+            .as_ref()
+            .is_some_and(|limits| limits.has_pending_cpu_signals())
+    {
+        return false;
     }
+    let root = thread.cached_ttbr0;
+    unsafe {
+        use x86_64::registers::control::{Cr3, Cr3Flags};
+        use x86_64::structures::paging::PhysFrame;
+        use x86_64::PhysAddr;
+        if Cr3::read().0.start_address().as_u64() != root & !0xfff {
+            crate::memory::tlb::note_root_load(root);
+            Cr3::write(
+                PhysFrame::containing_address(PhysAddr::new(root)),
+                Cr3Flags::empty(),
+            );
+        }
+    }
+    deliver_timer_signal_lockless(
+        thread_id,
+        &thread.signals,
+        thread.signal_timers.as_deref(),
+        user_return,
+        saved_regs,
+    )
+}
+
+/// `deliver_current_timer_signal_lockless` on a syscall return: the handler
+/// frame is installed from, and the return is rewritten in, the syscall frame.
+#[cfg(target_arch = "x86_64")]
+pub fn deliver_timer_signal_on_syscall_return(
+    thread_id: u64,
+    frame: &mut crate::syscall::handler::SyscallFrame,
+) -> bool {
+    let mut user_return = X86UserReturn {
+        rip: frame.rip,
+        rsp: frame.rsp,
+        rflags: frame.rflags,
+    };
+    let mut regs = crate::task::process_context::SavedRegisters {
+        rax: frame.rax,
+        rbx: frame.rbx,
+        rcx: frame.rcx,
+        rdx: frame.rdx,
+        rsi: frame.rsi,
+        rdi: frame.rdi,
+        rbp: frame.rbp,
+        r8: frame.r8,
+        r9: frame.r9,
+        r10: frame.r10,
+        r11: frame.r11,
+        r12: frame.r12,
+        r13: frame.r13,
+        r14: frame.r14,
+        r15: frame.r15,
+    };
+    if !deliver_current_timer_signal_lockless(thread_id, &mut user_return, &mut regs) {
+        return false;
+    }
+    frame.rip = user_return.rip;
+    frame.rsp = user_return.rsp;
+    frame.rflags = user_return.rflags;
+    frame.rax = regs.rax;
+    frame.rbx = regs.rbx;
+    frame.rcx = regs.rcx;
+    frame.rdx = regs.rdx;
+    frame.rsi = regs.rsi;
+    frame.rdi = regs.rdi;
+    frame.rbp = regs.rbp;
+    frame.r8 = regs.r8;
+    frame.r9 = regs.r9;
+    frame.r10 = regs.r10;
+    frame.r11 = regs.r11;
+    frame.r12 = regs.r12;
+    frame.r13 = regs.r13;
+    frame.r14 = regs.r14;
+    frame.r15 = regs.r15;
     true
 }
 
