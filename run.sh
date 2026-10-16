@@ -1245,12 +1245,13 @@ usb_xhci:6.port = "6"
 svga.vramSize = "268435456"
 VMXEOF
 
-    # Keep the default scaled viewport bounded; --retina retains GOP autodetection.
+    # Keep the default scaled viewport bounded at the 1280x800 display every target runs
+    # in a GUI suite boot (BreenGL contract section 18); --retina retains GOP autodetection.
     if [ "${RETINA:-false}" != true ]; then
         cat >> "$VMX_FILE" <<VMXEOF
 svga.autodetect = "FALSE"
 svga.maxWidth = "1280"
-svga.maxHeight = "960"
+svga.maxHeight = "800"
 VMXEOF
     fi
 
