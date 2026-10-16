@@ -1166,6 +1166,9 @@ impl Thread {
     #[cfg(target_arch = "x86_64")]
     pub(crate) fn set_dispatch_root(&mut self, root: u64) {
         self.cached_ttbr0 = root;
+        if self.state != ThreadState::Terminated {
+            crate::task::scheduler::publish_cached_root(self, root);
+        }
     }
 }
 
@@ -1855,6 +1858,7 @@ impl Thread {
         #[cfg(target_arch = "x86_64")]
         if self.state != ThreadState::Terminated {
             crate::task::scheduler::note_thread_terminated();
+            crate::task::scheduler::publish_cached_root(self, 0);
         }
         self.state = ThreadState::Terminated;
     }

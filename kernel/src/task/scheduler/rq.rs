@@ -102,6 +102,13 @@ struct Slot {
     key: AtomicU64,
     thread: AtomicPtr<Thread>,
     owner: AtomicU32,
+    /// The page-table root the thread caches (`Thread::cached_ttbr0`) while
+    /// it has not terminated, and 0 once it has: what `any_cached_root` reads,
+    /// with no lock.
+    root: AtomicU64,
+    /// A buffered I/O wake for the thread is held for a later pass: its CPU
+    /// had its lock held when the wake was applied (`hold_io_wake`).
+    io_wake: AtomicBool,
 }
 
 static INDEX: [Slot; SLOTS] = [const {
@@ -109,6 +116,8 @@ static INDEX: [Slot; SLOTS] = [const {
         key: AtomicU64::new(EMPTY),
         thread: AtomicPtr::new(core::ptr::null_mut()),
         owner: AtomicU32::new(0),
+        root: AtomicU64::new(0),
+        io_wake: AtomicBool::new(false),
     }
 }; SLOTS];
 
@@ -134,9 +143,11 @@ fn find(tid: u64) -> Option<&'static Slot> {
 /// not yet visible to any other CPU.
 pub(super) fn insert(thread: &mut Thread, owner: usize) {
     let tid = thread.id();
+    let root = if thread.state == ThreadState::Terminated { 0 } else { thread.cached_ttbr0 };
     if let Some(slot) = find(tid) {
         slot.thread.store(thread, Ordering::Release);
         slot.owner.store(owner as u32, Ordering::Release);
+        slot.root.store(root, Ordering::Release);
         return;
     }
     let start = home(tid);
@@ -146,6 +157,7 @@ pub(super) fn insert(thread: &mut Thread, owner: usize) {
         if key == EMPTY || key == REMOVED {
             slot.thread.store(thread, Ordering::Relaxed);
             slot.owner.store(owner as u32, Ordering::Relaxed);
+            slot.root.store(root, Ordering::Relaxed);
             slot.key.store(tid.wrapping_add(1), Ordering::Release);
             return;
         }
@@ -158,6 +170,22 @@ pub(super) fn remove(tid: u64) {
     if let Some(slot) = find(tid) {
         slot.key.store(REMOVED, Ordering::Release);
         slot.thread.store(core::ptr::null_mut(), Ordering::Release);
+        slot.root.store(0, Ordering::Release);
+        if slot.io_wake.swap(false, Ordering::AcqRel) {
+            HELD_IO_WAKES.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+}
+
+/// Publish `root` as the page-table root `thread` caches, 0 once it has
+/// terminated. The caller writes the thread under its owner's lock, or the
+/// whole scheduler. A thread not in the live index (not yet added, or one a
+/// test builds) publishes nothing: `insert` reads its root.
+pub(super) fn publish_root(thread: &Thread, root: u64) {
+    if let Some(slot) = find(thread.id()) {
+        if core::ptr::eq(slot.thread.load(Ordering::Acquire), thread) {
+            slot.root.store(root, Ordering::Release);
+        }
     }
 }
 
@@ -471,10 +499,10 @@ fn promote_best_of(held: &mut Held, count: usize) {
     if !POLICIES_IN_USE.load(Ordering::Acquire) {
         return;
     }
-    let queued: alloc::vec::Vec<u64> = held.queue().iter().take(count).copied().collect();
     let mut best = 0;
     let mut best_rank = None;
-    for (index, tid) in queued.into_iter().enumerate() {
+    for index in 0..count.min(held.queue().len()) {
+        let tid = held.queue()[index];
         let rank = rank(held, tid);
         if best_rank.map_or(true, |best_rank| rank > best_rank) {
             best = index;
@@ -488,17 +516,17 @@ fn promote_best_of(held: &mut Held, count: usize) {
 
 /// `Scheduler::best_queued_rank` on `held`'s queue.
 fn best_queued_rank(held: &mut Held, except: Option<u64>) -> u8 {
-    let queued: alloc::vec::Vec<u64> = held.queue().iter().copied().collect();
-    queued
-        .into_iter()
-        .filter(|&tid| Some(tid) != except)
-        .filter_map(|tid| {
-            held.thread(tid)
-                .filter(|thread| thread.state != ThreadState::Terminated)
-                .map(|thread| thread.sched.rank())
-        })
-        .max()
-        .unwrap_or(0)
+    let mut best = 0;
+    for index in 0..held.queue().len() {
+        let tid = held.queue()[index];
+        if Some(tid) == except {
+            continue;
+        }
+        if let Some(thread) = held.thread(tid).filter(|thread| thread.state != ThreadState::Terminated) {
+            best = best.max(thread.sched.rank());
+        }
+    }
+    best
 }
 
 /// `Scheduler::policy_keeps_cpu` on `held`'s CPU.
@@ -964,19 +992,55 @@ fn wake_owned(local: &mut Held, mut source: Option<&mut Held>, tid: u64, kind: W
     UnblockOutcome::Transitioned
 }
 
-/// Apply the wakes interrupt handlers buffered (`Scheduler::apply_isr_wakeups`):
-/// one whose thread is owned by a CPU whose lock is busy goes back into a
-/// buffer, for the next pass.
-pub(super) fn apply_isr_wakeups(local: &mut Held) {
-    let mut wakeups = alloc::vec::Vec::new();
-    for buffer in ISR_WAKEUP_BUFFERS.iter() {
-        buffer.drain(&mut wakeups);
+/// How many index slots hold an I/O wake (`io_wake`), counted before the
+/// mark is set and after it is cleared, so it is never below their number.
+static HELD_IO_WAKES: AtomicU32 = AtomicU32::new(0);
+
+/// Hold the buffered I/O wake of `tid` for a later pass, marked on its index
+/// slot: unlike a wake buffer, which producers can fill meanwhile, the slot
+/// always has room for it. A tid not indexed has no thread to wake.
+fn hold_io_wake(tid: u64) {
+    let Some(slot) = find(tid) else {
+        return;
+    };
+    HELD_IO_WAKES.fetch_add(1, Ordering::AcqRel);
+    if slot.io_wake.swap(true, Ordering::AcqRel) {
+        HELD_IO_WAKES.fetch_sub(1, Ordering::AcqRel);
     }
-    for tid in wakeups {
-        if let Woken::Busy = wake(local, tid, Wake::Io { from_isr_buffer: true }) {
-            super::rebuffer_isr_wakeup(tid);
+}
+
+/// Take each held I/O wake (`hold_io_wake`) and pass its tid to `apply`. The
+/// caller holds a run-queue lock, so no slot is removed or reused meanwhile:
+/// removal takes every lock.
+pub(super) fn take_held_io_wakes(mut apply: impl FnMut(u64)) {
+    if HELD_IO_WAKES.load(Ordering::Acquire) == 0 {
+        return;
+    }
+    for slot in INDEX.iter() {
+        if !slot.io_wake.load(Ordering::Relaxed) || !slot.io_wake.swap(false, Ordering::AcqRel) {
+            continue;
+        }
+        HELD_IO_WAKES.fetch_sub(1, Ordering::AcqRel);
+        let key = slot.key.load(Ordering::Acquire);
+        if key != EMPTY && key != REMOVED {
+            apply(key.wrapping_sub(1));
         }
     }
+}
+
+/// Apply the wakes interrupt handlers buffered (`Scheduler::apply_isr_wakeups`),
+/// and those held by earlier passes: one whose thread is owned by a CPU whose
+/// lock is busy is held for the next pass (`hold_io_wake`).
+pub(super) fn apply_isr_wakeups(local: &mut Held) {
+    let mut apply = |tid| {
+        if let Woken::Busy = wake(local, tid, Wake::Io { from_isr_buffer: true }) {
+            hold_io_wake(tid);
+        }
+    };
+    for buffer in ISR_WAKEUP_BUFFERS.iter() {
+        buffer.take_each(&mut apply);
+    }
+    take_held_io_wakes(apply);
 }
 
 /// Move what is queued on CPUs that have stopped scheduling, or are offline,
@@ -1073,8 +1137,8 @@ fn steal_higher_ranked(local: &mut Held, floor: u8, stack_waits: &mut u64) -> Op
         let Some(mut remote) = try_remote(cpu) else {
             continue;
         };
-        let queued: alloc::vec::Vec<u64> = remote.queue().iter().copied().collect();
-        for tid in queued {
+        for index in 0..remote.queue().len() {
+            let tid = remote.queue()[index];
             let Some(thread) = remote.thread(tid) else {
                 continue;
             };
@@ -1398,8 +1462,9 @@ pub(super) fn switch_in<R>(
 ) -> Option<R> {
     let is_idle = local.state().idle_thread == incoming;
     local.thread(incoming)?;
+    let cpu = local.cpu;
     crate::arch_impl::x86_64::fpu::hand_over_with(outgoing, incoming, |tid| {
-        local.thread(tid).map(|thread| thread as *mut Thread)
+        local.thread(tid).map(|thread| thread as *mut Thread).or_else(|| leaving_thread(cpu, tid))
     });
     let thread = local.thread(incoming)?;
     crate::per_cpu::set_current_thread(thread as *mut Thread);
@@ -1407,6 +1472,22 @@ pub(super) fn switch_in<R>(
         crate::per_cpu::update_tss_rsp0(top.as_u64());
     }
     Some(f(thread, is_idle))
+}
+
+/// `tid`, the thread `cpu` is switching away from, when another CPU owns it
+/// already: the scheduling pass queued it on its home CPU (`retain_affine`),
+/// or a wake moved it once the pass released this CPU's lock. Its x87/SSE
+/// registers are still this CPU's to save. Only its `fpu` image may be
+/// written through the pointer: no other CPU dispatches the thread while
+/// `LEAVING_STACK` names it here, and every other reader of that image holds
+/// the whole scheduler, as does reclamation; this CPU's lock, which the
+/// caller holds, is part of that.
+fn leaving_thread(cpu: usize, tid: u64) -> Option<*mut Thread> {
+    if tid == 0 || LEAVING_STACK[cpu].load(Ordering::Acquire) != tid {
+        return None;
+    }
+    let thread = find(tid)?.thread.load(Ordering::Acquire);
+    (!thread.is_null()).then_some(thread)
 }
 
 // ------------------------------------------- the current thread's waits
@@ -1601,13 +1682,26 @@ fn mark_ready_and_place(
     }
 }
 
-/// `Scheduler::expedite_signal_recipient` for a thread `source`'s CPU owns.
-fn expedite(local: &mut Held, mut source: Option<&mut Held>, tid: u64) {
-    let held: &mut Held = match source.as_deref_mut() {
-        Some(source) => source,
-        None => &mut *local,
+/// `Scheduler::expedite_signal_recipient` for `tid`, on the CPU that owns it
+/// now: the wake before this can have queued it on another CPU than
+/// `source`'s (`local`'s when None), `local`'s included. A third CPU's lock is
+/// only tried; when it is busy that CPU is asked to reschedule.
+fn expedite(local: &mut Held, source: Option<&mut Held>, tid: u64) {
+    let Some(cpu) = owner(tid) else {
+        return;
     };
-    let cpu = held.cpu;
+    let mut remote = None;
+    let held: &mut Held = match source {
+        Some(source) if source.cpu == cpu => source,
+        _ if local.cpu == cpu => local,
+        _ => match try_remote(cpu) {
+            Some(taken) if owner(tid) == Some(cpu) => remote.insert(taken),
+            _ => {
+                kick(cpu);
+                return;
+            }
+        },
+    };
     let me = super::current_cpu_id_raw();
     if held.state().current_thread == Some(tid) {
         if cpu != me {
@@ -1633,30 +1727,17 @@ fn expedite(local: &mut Held, mut source: Option<&mut Held>, tid: u64) {
 // ------------------------------------------------------- whole-index scans
 
 /// Whether a thread that has not terminated caches a page-table root
-/// `matches` accepts (`Scheduler::any_cached_ttbr0_matches`), read from the
-/// thread index. `local` pins every indexed thread: reclamation, the only
-/// path that frees one, takes every run-queue lock. The fields are read
-/// without their owners' locks, which suits the caller: a dead process's
-/// roots are cached by fewer threads over time, never more, and retirement
-/// asks again until none is.
-pub(super) fn any_cached_root(_local: &mut Held, mut matches: impl FnMut(u64) -> bool) -> bool {
-    INDEX.iter().any(|slot| {
+/// `matches` accepts (`Scheduler::any_cached_ttbr0_matches`), from the roots
+/// the thread index publishes (`publish_root`), without any lock. None before
+/// the live scheduler exists. A dead process's roots are cached by fewer
+/// threads over time, never more, and retirement asks again until none is.
+pub(super) fn any_cached_root(mut matches: impl FnMut(u64) -> bool) -> Option<bool> {
+    if LIVE.load(Ordering::Acquire).is_null() {
+        return None;
+    }
+    Some(INDEX.iter().any(|slot| {
         let key = slot.key.load(Ordering::Acquire);
-        if key == EMPTY || key == REMOVED {
-            return false;
-        }
-        let thread = slot.thread.load(Ordering::Acquire);
-        if thread.is_null() {
-            return false;
-        }
-        // SAFETY: `_local` keeps the thread from being freed, and the fields
-        // are read with volatile loads, each of one aligned word.
-        let (state, root) = unsafe {
-            (
-                core::ptr::read_volatile(core::ptr::addr_of!((*thread).state)),
-                core::ptr::read_volatile(core::ptr::addr_of!((*thread).cached_ttbr0)),
-            )
-        };
-        state != ThreadState::Terminated && root != 0 && matches(root)
-    })
+        let root = slot.root.load(Ordering::Acquire);
+        key != EMPTY && key != REMOVED && root != 0 && matches(root)
+    }))
 }

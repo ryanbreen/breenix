@@ -226,12 +226,13 @@ impl IsrWakeupBuffer {
         IsrWakePush::Full
     }
 
-    /// Drain all entries (called from scheduler under lock).
-    fn drain(&self, out: &mut alloc::vec::Vec<u64>) {
+    /// Take each entry out and pass it to `apply`, in place: the scheduler's
+    /// passes call this under their locks, where nothing may allocate.
+    fn take_each(&self, mut apply: impl FnMut(u64)) {
         for slot in &self.slots {
             let tid = slot.swap(ISR_WAKEUP_EMPTY, Ordering::AcqRel);
             if tid != ISR_WAKEUP_EMPTY {
-                out.push(tid);
+                apply(tid);
             }
         }
     }
@@ -1945,24 +1946,25 @@ pub fn any_thread_queued() -> bool {
 }
 
 /// Whether a scheduler thread that has not terminated still caches a
-/// page-table root `matches` accepts. x86_64: read from the thread index
-/// under this CPU's run-queue lock, not the whole scheduler (#1649).
+/// page-table root `matches` accepts. x86_64: read from the roots the thread
+/// index publishes, with no lock, not the whole scheduler (#1649).
 pub(crate) fn any_cached_root_matches(matches: impl FnMut(u64) -> bool) -> bool {
     #[cfg(target_arch = "x86_64")]
     let matches = {
-        let mut matches = Some(matches);
-        if let Some(found) = without_interrupts(|| {
-            let mut local = rq::local()?;
-            matches.take().map(|matches| rq::any_cached_root(&mut local, matches))
-        }) {
+        let mut matches = matches;
+        if let Some(found) = rq::any_cached_root(&mut matches) {
             return found;
         }
-        match matches {
-            Some(matches) => matches,
-            None => return false,
-        }
+        matches
     };
     with_scheduler(|scheduler| scheduler.any_cached_ttbr0_matches(matches)).unwrap_or(false)
+}
+
+/// x86_64: publish the page-table root `thread` caches for the lock-free
+/// `any_cached_root_matches`; 0 once it has terminated.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn publish_cached_root(thread: &Thread, root: u64) {
+    rq::publish_root(thread, root);
 }
 
 /// x86_64: CPUs to send a reschedule IPI when this CPU clears its
@@ -2131,20 +2133,6 @@ fn whole_scheduler_housekeeping(cpu: usize) {
             scheduler.deliver_pinned_wakes_for_this_cpu();
         }
     });
-}
-
-/// x86_64: put a buffered ISR wake back for a later pass, in any CPU's
-/// buffer with room, when the thread's CPU had its lock held.
-#[cfg(target_arch = "x86_64")]
-fn rebuffer_isr_wakeup(tid: u64) {
-    let start = current_cpu_id_raw().min(ISR_WAKEUP_BUFFERS.len() - 1);
-    for offset in 0..ISR_WAKEUP_BUFFERS.len() {
-        let buffer = &ISR_WAKEUP_BUFFERS[(start + offset) % ISR_WAKEUP_BUFFERS.len()];
-        if !matches!(buffer.push(tid), IsrWakePush::Full) {
-            return;
-        }
-    }
-    ENQUEUE_ISR_BUFFER_FULL.fetch_add(1, Ordering::Relaxed);
 }
 
 /// x86_64: whether this CPU's current thread is blocked or terminated, so the
@@ -5804,13 +5792,16 @@ impl Scheduler {
     /// Apply the wakes interrupt handlers buffered with
     /// `isr_unblock_for_io()`. Every CPU's buffer is drained, because the
     /// completing interrupt may have run on any CPU.
+    ///
+    /// x86_64: the wakes a run-queue pass held because the thread's CPU had
+    /// its lock held (`rq::take_held_io_wakes`) are applied too.
     fn apply_isr_wakeups(&mut self) {
-        let mut wakeups = alloc::vec::Vec::new();
         for buf in ISR_WAKEUP_BUFFERS.iter() {
-            buf.drain(&mut wakeups);
+            buf.take_each(|tid| self.unblock_for_io_from_isr_buffer(tid));
         }
-        for tid in wakeups {
-            self.unblock_for_io_from_isr_buffer(tid);
+        #[cfg(target_arch = "x86_64")]
+        if rq::is_live(self) {
+            rq::take_held_io_wakes(|tid| self.unblock_for_io_from_isr_buffer(tid));
         }
     }
 
@@ -8549,6 +8540,8 @@ fn owner_wake(tid: u64, kind: rq::Wake) -> Option<UnblockOutcome> {
 pub fn unblock_thread(tid: u64) -> Option<UnblockOutcome> {
     #[cfg(target_arch = "x86_64")]
     if let Some(outcome) = owner_wake(tid, rq::Wake::Generic) {
+        // Counted as `Scheduler::unblock` counts the calls it takes.
+        UNBLOCK_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
         return Some(outcome);
     }
     with_scheduler(|sched| sched.unblock(tid))
