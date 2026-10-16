@@ -55,8 +55,10 @@ case "${1:-}" in
         if [ -n "$suite" ]; then args+=(--suite "$suite"); else args+=(--mode "$mode"); fi
         [ -z "$profile" ] || args+=(--profile "$profile")
         # A timed-out start may already have published this exact id. Finish it
-        # instead of creating a second record or letting the importer assign zero.
-        if [ -f "$HOME/Library/Application Support/Vigil/breenix/boots/$id/run.json" ]; then
+        # instead of creating a second record or letting the importer assign zero. vigil-cli keeps boots under the
+        # account's home as macOS reports it (VIGIL_TEST_HOME in Vigil's tests), not under $HOME.
+        vigil_home=${VIGIL_TEST_HOME:-$(python3 -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')}
+        if [ -f "$vigil_home/Library/Application Support/Vigil/breenix/boots/$id/run.json" ]; then
             "$CLI" breenix finish --id "$id" --exit-status "$status" --ended "$ended"
         else
             "$CLI" "${args[@]}"
