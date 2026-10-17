@@ -25,7 +25,7 @@ test = false
 
 [features]
 force_cpu_accounting_delay = []  # Masked first-dispatch delay for times-reset regression
-force_reclaim_queue_contention = ["testing"] # Cross-CPU CLONE_VM receipt publication regression
+force_reclaim_queue_contention = ["testing"] # A peer holds the pending queue while a killed victim publishes its receipt
 force_exit_report_reap_race = ["testing"] # Parent reaps a killed row before its exit report is claimed
 testing = []
 boot_tests = []  # Parallel boot test framework
