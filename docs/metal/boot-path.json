@@ -63,7 +63,12 @@
             "marker": "Jumping to kernel entry point at"
           }
         ]
-      }
+      },
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root"
+      ]
     },
     {
       "id": "first-light",
@@ -93,7 +98,12 @@
             "marker": "[metal] kernel idle"
           }
         ]
-      }
+      },
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root"
+      ]
     },
     {
       "id": "interrupts-time",
@@ -116,7 +126,12 @@
             "marker": "[timer] tick rate agrees with the TSC"
           }
         ]
-      }
+      },
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root"
+      ]
     },
     {
       "id": "smp",
@@ -135,7 +150,12 @@
             "marker": "[smp] timer ticks on each online CPU"
           }
         ]
-      }
+      },
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root"
+      ]
     },
     {
       "id": "ramdisk-root",
@@ -157,7 +177,11 @@
             "marker": "[block] hardware disks read-only"
           }
         ]
-      }
+      },
+      "bootShapes": [
+        "ramdisk",
+        "install"
+      ]
     },
     {
       "id": "first-userspace",
@@ -174,7 +198,12 @@
             "marker": "[init] Boot script completed"
           }
         ]
-      }
+      },
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root"
+      ]
     },
     {
       "id": "shell",
@@ -196,7 +225,12 @@
             "match": "line"
           }
         ]
-      }
+      },
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root"
+      ]
     },
     {
       "id": "nic",
@@ -230,7 +264,12 @@
             "marker": "[bcm5720] reply received: "
           }
         ]
-      }
+      },
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root"
+      ]
     },
     {
       "id": "dhcp-gateway",
@@ -251,7 +290,12 @@
             "marker": "[dns] answer received"
           }
         ]
-      }
+      },
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root"
+      ]
     },
     {
       "id": "real-host",
@@ -265,7 +309,12 @@
             "marker": "PROBE metal-fetch OK"
           }
         ]
-      }
+      },
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root"
+      ]
     },
     {
       "id": "suite-finished",
@@ -278,7 +327,12 @@
             "marker": "SUITE crypto DONE|SUITE directories DONE|SUITE files-io DONE|SUITE gpu DONE|SUITE ipc DONE|SUITE libc DONE|SUITE memory DONE|SUITE networking DONE|SUITE processes DONE|SUITE rust-std DONE|SUITE sdk DONE|SUITE signals DONE|SUITE smoke DONE|SUITE terminals DONE|SUITE threads DONE|SUITE time DONE|SUITE utilities DONE"
           }
         ]
-      }
+      },
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root"
+      ]
     },
     {
       "id": "sata-ahci",
@@ -299,7 +353,12 @@
             "marker": "[ahci] first sectors read by MSI: "
           }
         ]
-      }
+      },
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root"
+      ]
     },
     {
       "id": "disk-io",
@@ -320,7 +379,10 @@
             "marker": "[storage] read back identical: "
           }
         ]
-      }
+      },
+      "bootShapes": [
+        "install"
+      ]
     },
     {
       "id": "disk-filesystem",
@@ -349,7 +411,10 @@
             "marker": "PROBE dir OK"
           }
         ]
-      }
+      },
+      "bootShapes": [
+        "disk-root"
+      ]
     }
   ],
   "firsts": [

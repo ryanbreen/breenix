@@ -642,3 +642,16 @@ Hardware-specific ACPI signatures, register values, TSC rates, processor identit
 remain in private evidence. The boots above exercised the ACPI census, clock cross-checks, processor bring-up,
 per-CPU tick windows and external NMI reporting. The external NMI reached the boot CPU only; delivery to the other CPUs remains unmeasured. Historical tick-arrival measurements used overlapping pinned windows;
 subsequent review tightens the upper bound and staggers those windows, requiring fresh boot evidence.
+
+### Storage evidence and boot shapes
+
+Each metal milestone declares `bootShapes`: `ramdisk`, `install` or `disk-root`.
+The driver and retained `milestone-verdict.json` score only milestones that the boot's shape can measure.
+An install measures the RAM-disk root and disk copy; a disk-root boot measures the installed filesystem.
+Missing stages of a measured milestone still fail the boot. The RAM-disk root contract remains three stages.
+
+A disk-root boot requires a verified install from the requested commit; install that commit first when it changes.
+The driver rejects an install size or digest mismatch and a root record that differs from that verified install.
+A reinstall invalidates and flushes the previous root record before replacing data, then writes the new record last.
+Physical boots keep the global write refusal, granting only the selected backend device permission to write;
+other discovered disks and the index-based home mount retain that refusal.

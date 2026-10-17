@@ -36,14 +36,12 @@ import metal_lib as m  # noqa: E402
 import metal_image  # noqa: E402
 import metal_census  # noqa: E402
 import metal_root  # noqa: E402
+import metal_score  # noqa: E402
+from metal_score import boot_shape  # noqa: E402
 
 # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
 MODES = ('default', 'shell', 'probe', 'suite')
 DISK_ACTIONS = ('install', 'root')
-# Milestones a boot cannot produce, by its disk action: only an install writes the disk, only a disk-root boot
-# mounts it as root, and a disk-root boot has no RAM disk (README, "The disks").
-DISK_SKIPS = {None: ('disk-io', 'disk-filesystem'), 'install': ('disk-filesystem',),
-              'root': ('ramdisk-root', 'disk-io')}
 READ_BACK_LINE = re.compile(r'\[storage\] read back identical: (\d+) bytes, sha256 after the record sector ([0-9a-f]{64})')
 ROOT_RECORD_LINE = re.compile(r'\[storage\] root record: installed by boot ([A-Za-z0-9-]+), (\d+) bytes, sha256 ([0-9a-f]{64})')
 PAYLOADS = ('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux')
@@ -293,6 +291,8 @@ class Driver:
             installed = m.read_json(m.STATE / 'disk.json')
             if not installed:
                 raise Finish(m.EXIT_CANCELLED, 'no verified install is recorded for the disk')
+            if installed.get('commit') != self.args.commit:
+                raise Finish(m.EXIT_CANCELLED, 'the recorded install is from a different commit; install this commit first')
             self.delivery['diskRoot'] = installed
             self.event('disk-root-expected', installedBy=installed.get('installedBy'), bytes=installed.get('bytes'))
         else:
@@ -337,9 +337,9 @@ class Driver:
         self.fatal_patterns = [re.compile(p) for p in (source or {}).get('fatal', [])]
         if metal:
             catalog = m.read_json(definition / 'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json', {})
-            skip = DISK_SKIPS[getattr(self.args, 'disk', None)]
-            self.final_marker = final_marker(metal, self.args.mode, catalog, skip)
-            self.required_stages = measured_stages(metal, self.args.mode, catalog, skip)
+            shape = boot_shape(getattr(self.args, 'disk', None))
+            self.final_marker = final_marker(metal, self.args.mode, catalog, shape)
+            self.required_stages = measured_stages(metal, self.args.mode, catalog, shape)
         if self.args.mode == 'suite':
             self.final_marker = ('SUITE ' + self.args.suite + ' DONE ', 'contains')
         self.event('definition', metalPath=bool(metal), fatalPatterns=len(self.fatal_patterns),
@@ -602,7 +602,9 @@ class Driver:
         if (self.final_marker and marker_matches(self.final_marker, line)
                 and (self.args.mode != 'shell' or self.shell_sent)):
             self.final_seen = True
+        disk_evidence = {None: None, 'install': 'disk-write', 'root': 'disk-root'}[getattr(self.args, 'disk', None)]
         if (self.final_marker and self.final_seen and not any(self.required_stages)
+                and (disk_evidence is None or disk_evidence in self.seen)
                 and self.fatal_at is None and not self.completion_reported):
             self.completion_reported = True
             self.event('final-marker', observed_at=observed_at, seconds=seconds)
@@ -617,9 +619,10 @@ class Driver:
             write = self.delivery['root']['diskWrite']
             matched = int(found.group(1)) == write['bytes'] and found.group(2) == write['sha256AfterRecord']
             self.event('disk-write-verified', observed_at=observed_at, match=matched, bytes=int(found.group(1)))
-            if matched:
-                # The disk now holds this boot's root: a later disk-root boot expects this install.
-                m.write_json(m.STATE / 'disk.json', dict(write, commit=self.args.commit, verifiedAt=observed_at))
+            if not matched:
+                raise Finish(m.EXIT_SHORT, 'the installed bytes or digest differ from the staged image')
+            # The disk now holds this boot's root: a later disk-root boot expects this install.
+            m.write_json(m.STATE / 'disk.json', dict(write, commit=self.args.commit, verifiedAt=observed_at))
         if disk == 'root' and 'disk-root' not in self.seen and (found := ROOT_RECORD_LINE.search(line)):
             self.seen.add('disk-root')
             installed = self.delivery['diskRoot']
@@ -627,6 +630,8 @@ class Driver:
                        and found.group(3) == installed.get('sha256AfterRecord'))
             self.event('disk-root-record', observed_at=observed_at, matchesLastInstall=matched,
                        installedBy=found.group(1))
+            if not matched:
+                raise Finish(m.EXIT_SHORT, 'the disk root record differs from the recorded install')
 
     # The HTTP server's log.
     def pump_http(self):
@@ -940,6 +945,17 @@ class Driver:
             if self.t0 is not None:
                 self.power_off(False)
             status = m.EXIT_INCOMPLETE if self.t0 is not None else m.EXIT_CANCELLED
+        if (self.dir / 'definition/docs/metal/boot-path.json').is_file():
+            try:
+                verdict = metal_score.score(self.dir)
+                m.write_json(self.dir / 'milestone-verdict.json', verdict)
+                if status == m.EXIT_DONE and (not verdict['captureComplete'] or
+                        any(not milestone['passed'] for milestone in verdict['milestones'].values())):
+                    status = m.EXIT_SHORT
+            except (OSError, ValueError, KeyError) as error:
+                self.event('milestone-verdict-error', error=error.__class__.__name__)
+                if status == m.EXIT_DONE:
+                    status = m.EXIT_SHORT
         self.cleanup(status)
         return status
 
@@ -961,13 +977,13 @@ def marker_matches(spec, line):
 
 
 # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
-def measured_stages(metal, mode, catalog, skip=()):
+def measured_stages(metal, mode, catalog, shape='ramdisk'):
     """Track each measured milestone in its own print order, including delayed kernel producers. Milestones in
-    `skip` are ones this boot's shape cannot produce."""
+    the definition select which boot shapes can measure them."""
     markers = {stage['name']: stage for stage in catalog.get('stages', [])}
     groups = []
     for milestone in metal.get('milestones', []):
-        if milestone.get('stub') or milestone.get('id') in skip:
+        if milestone.get('stub') or not metal_score.measures(milestone, shape):
             continue
         lists = milestone.get('stages', {})
         listed = lists.get(mode, lists.get(metal['gateArch'], []) if milestone.get('kernel') else [])
@@ -984,13 +1000,13 @@ def measured_stages(metal, mode, catalog, skip=()):
     return groups
 
 
-def final_marker(metal, mode, catalog, skip=()):
+def final_marker(metal, mode, catalog, shape='ramdisk'):
     """Resolve the final measured serial stage and preserve its matching contract. A stub milestone's markers are
     proposals its producing lane has not landed (docs/metal/boot-path.json), so no boot measures it yet, and a
-    milestone in `skip` is one this boot's shape cannot produce."""
+    milestone excluded by `bootShapes` cannot be measured by this boot."""
     markers = {stage['name']: stage for stage in catalog.get('stages', []) if 'marker' in stage}
     milestones = [milestone for milestone in reversed(metal.get('milestones', []))
-                  if not milestone.get('stub') and milestone.get('id') not in skip]
+                  if not milestone.get('stub') and metal_score.measures(milestone, shape)]
     scoped = [milestone.get('stages', {}).get(mode) for milestone in milestones]
     scoped = [listed for listed in scoped if listed]
     if not scoped:
