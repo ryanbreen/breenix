@@ -980,15 +980,6 @@ fn clk_monotonic_fine() -> CaseResult {
     check(repeats <= 100, &format!("{repeats} of 10000 consecutive reads repeated the one before: the clock moves in steps coarser than a system call"))
 }
 
-/// Read CLOCK_MONOTONIC and `clock` together: the other clock and the monotonic reading
-/// halfway across it.
-fn paired(clock: i32) -> Result<(i64, i64), String> {
-    let before = clock_ns(CLOCK_MONOTONIC)?;
-    let other = clock_ns(clock)?;
-    let after = clock_ns(CLOCK_MONOTONIC)?;
-    Ok((other, before + (after - before) / 2))
-}
-
 /// Parts per million by which `measured` differs from `reference`.
 fn ppm(measured: i64, reference: i64) -> i64 {
     if reference == 0 { return i64::MAX; }
@@ -1059,8 +1050,7 @@ const COUNTER_WAIT_MS: u64 = 19_000;
 #[cfg(target_arch = "aarch64")]
 const COUNTER_WAIT_MS: u64 = 2000;
 
-/// The RTC's time of day in seconds, read from the CMOS clock through RTC_RD_TIME.
-#[cfg(target_arch = "x86_64")]
+/// The RTC's time of day in seconds, read through RTC_RD_TIME.
 fn rtc_seconds(fd: Fd) -> Result<i64, String> {
     let mut tm = [0i32; 9];
     zero("ioctl(RTC_RD_TIME)", sc(nr::IOCTL, &[fd.raw(), RTC_RD_TIME, tm.as_mut_ptr() as u64]))?;
@@ -1068,7 +1058,6 @@ fn rtc_seconds(fd: Fd) -> Result<i64, String> {
 }
 
 mod rtc_counter;
-#[cfg(target_arch = "x86_64")]
 use rtc_counter::{RtcEdge, RtcPoll};
 
 /// Include the entire last old-second read and first new-second read in the
@@ -1395,35 +1384,60 @@ fn clk_counter_trap_caught() -> CaseResult {
     { user_timer_msr::trap_caught() }
 }
 
-/// The RTC's time as Linux's RTC_RD_TIME reports it: seconds of the day and the seconds field.
-fn rtc_read(fd: Fd) -> Result<i32, String> {
-    let mut tm = [0i32; 9];
-    zero("ioctl(RTC_RD_TIME)", sc(nr::IOCTL, &[fd.raw(), RTC_RD_TIME, tm.as_mut_ptr() as u64]))?;
-    Ok(tm[0])
+/// clocks/rate-rtc measures between RTC seconds edges at least this many
+/// RTC seconds apart, each bracketed within RTC_EDGE_MAX_NS of CLOCK_REALTIME:
+/// two such brackets bound the rate to 1000 ppm, half the 2000 ppm tolerance.
+/// It passes over at most two edges whose reads took longer.
+const RTC_RATE_SECONDS: i64 = 3;
+const RTC_EDGE_MAX_NS: u64 = 3_000_000;
+const RTC_EDGE_PASS_OVER: u32 = 2;
+/// Wake this long before an expected edge, then read the RTC until it changes.
+const RTC_EDGE_LEAD_NS: u64 = 50_000_000;
+/// The first edge, the three-second span and two passed-over edges.
+const RTC_RATE_WAIT_MS: u64 = 6000;
+
+/// CLOCK_REALTIME in nanoseconds since the epoch.
+fn realtime_now() -> Result<u64, String> {
+    u64::try_from(clock_ns(CLOCK_REALTIME)?).map_err(|_| "CLOCK_REALTIME reads before the epoch".to_string())
 }
 
-/// Wait for the RTC's seconds field to change; CLOCK_REALTIME and CLOCK_MONOTONIC when it did.
-fn rtc_edge(fd: Fd, ms: u64) -> Result<(i64, i64), String> {
-    let first = rtc_read(fd)?;
-    let start = now_ms();
-    loop {
-        let (real, mono_at) = paired(CLOCK_REALTIME)?;
-        if rtc_read(fd)? != first { return Ok((real, mono_at)); }
-        if now_ms().saturating_sub(start) >= ms { return Err(format!("the RTC's seconds did not change within {ms} ms")); }
-        nap();
+/// The next RTC seconds edge in CLOCK_REALTIME, bounded by the whole of the
+/// last read that returned the old second and of the first that returned the
+/// new one: a read delayed anywhere widens the bracket instead of moving the
+/// edge. Given when the edge is expected, sleep until shortly before it first.
+fn rtc_realtime_edge(fd: Fd, expected: Option<u64>) -> Result<RtcEdge, String> {
+    if let Some(at) = expected {
+        let wake = at.saturating_sub(RTC_EDGE_LEAD_NS);
+        let now = realtime_now()?;
+        if wake > now { pause_ms((wake - now) / MS as u64); }
     }
+    let read = || {
+        let before = realtime_now()?;
+        let second = rtc_seconds(fd)?;
+        Ok(RtcPoll { second, before, after: realtime_now()? })
+    };
+    let first = read()?;
+    let start = now_ms();
+    rtc_counter::next_edge(first, read, || now_ms().saturating_sub(start) >= 1500)
 }
 
 fn clk_rate_rtc() -> CaseResult {
     let fd = libbreenix::fs::open("/dev/rtc0", libbreenix::fs::O_RDONLY).map_err(|e| format!("open(/dev/rtc0) failed: {e}"))?;
     let result = (|| -> CaseResult {
-        let (r0, _) = rtc_edge(fd, 1500)?;
-        wait_for(3000, "drift");
-        let mut r1 = r0;
-        for _ in 0..3 { r1 = rtc_edge(fd, 1500)?.0; }
-        let drift = ppm(r1 - r0, 3 * NS);
+        wait_for(RTC_RATE_WAIT_MS, "drift");
+        let (first, last, passed_over) = rtc_counter::span_edges(RTC_RATE_SECONDS, NS as u64, RTC_EDGE_MAX_NS,
+            RTC_EDGE_PASS_OVER, |expected| rtc_realtime_edge(fd, expected))?;
+        let (rate, lower, upper) = rtc_counter::frequency(first, last)?;
+        let (drift_lower, drift_upper) = rtc_counter::ppm_interval(lower, upper, NS as u64);
+        let drift = ppm(rate as i64, NS);
+        let seconds = (last.second - first.second).rem_euclid(86_400);
+        value("start-edge", (first.width / 1000) as i64, "us", None);
+        value("end-edge", (last.width / 1000) as i64, "us", None);
+        value("passed-over", i64::from(passed_over), "", None);
         value("drift", drift, "ppm", Some((-2000, 2000)));
-        check(drift.abs() <= 2000, &format!("over three RTC seconds CLOCK_REALTIME advanced {} us: {drift} ppm apart", (r1 - r0) / 1000))
+        value("drift-lower", drift_lower, "ppm", Some((-2000, 2000)));
+        value("drift-upper", drift_upper, "ppm", Some((-2000, 2000)));
+        check(drift_lower >= -2000 && drift_upper <= 2000, &format!("over {seconds} RTC seconds CLOCK_REALTIME advanced {} us: midpoint {drift} ppm, interval {drift_lower}..{drift_upper} ppm", (last.at - first.at) / 1000))
     })();
     let _ = io::close(fd);
     result
@@ -2758,7 +2772,7 @@ static SUITE: Suite = suite(
             case("counter-cpus", "Linux ABI: user mode reads the processor's counter (ARM64 CNTVCT_EL0, x86-64 the TSC) on every online processor, from a thread pinned there by sched_setaffinity and found there by getcpu", clk_counter_cpus),
             case("counter-trap-default", "Linux ABI: denied counter and timer register reads kill user mode with SIGILL on ARM64 (CNTPCT_EL0, CNTV_CTL_EL0, CNTP_CTL_EL0) and SIGSEGV on x86-64 (RDMSR of IA32_TSC, IA32_TSC_DEADLINE, X2APIC_INITIAL_COUNT)", clk_counter_trap_default),
             case("counter-trap-caught", "Linux ABI: caught denied counter and timer register reads carry ILL_ILLOPC and si_addr on ARM64, SI_KERNEL and faulting RIP on x86-64, and resume past the instruction; granted counter reads do not trap", clk_counter_trap_caught),
-            case("rate-rtc", "Linux ABI: CLOCK_REALTIME advances at the rate of the RTC, read through /dev/rtc0 RTC_RD_TIME, over 3 seconds", clk_rate_rtc),
+            case("rate-rtc", "Linux ABI: CLOCK_REALTIME advances at the rate of the RTC, read through /dev/rtc0 RTC_RD_TIME, between seconds edges at least 3 seconds apart", clk_rate_rtc),
             case("cputime-process", "CLOCK_PROCESS_CPUTIME_ID advances while the process computes and not while it sleeps", clk_cputime_process),
             case("cputime-thread", "CLOCK_THREAD_CPUTIME_ID counts only the calling thread's CPU time", clk_cputime_thread),
             case("invalid", "clock_gettime of an unknown clock fails with EINVAL", clk_invalid),
