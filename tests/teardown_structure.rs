@@ -14343,6 +14343,28 @@ fn check_kernel_stack_drop_release_order(kernel_stack: &str) -> Result<(), Strin
     Ok(())
 }
 
+/// x86 `release_batch` frees several stacks with one flush: each is refused
+/// while live before anything of it is unmapped, and frames and slots go back
+/// only after the flush that follows the unmaps (#1712).
+fn check_kernel_stack_batch_release_order(kernel_stack: &str) -> Result<(), String> {
+    let body = function_body(kernel_stack, "release_batch");
+    let mask = code_mask(body);
+    let live = code_offset_once(body, "if is_kernel_stack_slot_live(")?;
+    let unmap = code_offset_once(body, "unmap_kernel_page(")?;
+    let flush = code_offset_once(body, "flush_all()")?;
+    let deallocate = code_offset_once(body, "deallocate_frame(")?;
+    let slot = code_offset_once(body, "return_slot()")?;
+    if !(live < unmap && unmap < flush && flush < deallocate && flush < slot) {
+        return Err("release_batch frees a frame or slot before refusing a live stack or flushing".to_owned());
+    }
+    let refusal = braced_block(body, &mask, live)
+        .ok_or_else(|| "release_batch live-slot refusal is not braced".to_owned())?;
+    if !refusal.contains("KSTACK_DROP_REFUSED_LIVE.fetch_add(") || !refusal.contains("continue;") {
+        return Err("release_batch live-slot check is not a counted refusal".to_owned());
+    }
+    Ok(())
+}
+
 fn check_kernel_stack_map_refusal_order(kernel_page_table: &str) -> Result<(), String> {
     let map_body = function_body(kernel_page_table, "map_kernel_page");
     let map_mask = code_mask(map_body);
@@ -14565,6 +14587,7 @@ fn validate_kernel_stack_release_mechanism(
     scheduler: &str,
 ) -> Result<(), String> {
     check_kernel_stack_drop_release_order(kernel_stack)?;
+    check_kernel_stack_batch_release_order(kernel_stack)?;
     check_kernel_stack_map_refusal_order(kernel_page_table)?;
     check_kernel_stack_allocator_live_guards(kernel_stack)?;
     check_reclaimed_threads_release_is_arch_scoped(scheduler)
@@ -14643,6 +14666,22 @@ fn kernel_stack_release_validator_rejects_unsafe_mutations() {
     );
     assert!(validate_kernel_stack_release_mechanism(
         &free_before_check,
+        &kernel_page_table,
+        &scheduler,
+    )
+    .is_err());
+
+    let batch_free_before_flush = kernel_stack.replacen(
+        "    if !frames.is_empty() {\n        crate::memory::tlb::flush_all();\n    }\n    for frame in frames {\n        deallocate_frame(frame);",
+        "    for frame in frames.drain(..) {\n        deallocate_frame(frame);\n    }\n    if !frames.is_empty() {\n        crate::memory::tlb::flush_all();\n    }\n    for frame in frames {\n        let _ = frame;",
+        1,
+    );
+    assert_ne!(
+        batch_free_before_flush, kernel_stack,
+        "batch release order mutation applied"
+    );
+    assert!(validate_kernel_stack_release_mechanism(
+        &batch_free_before_flush,
         &kernel_page_table,
         &scheduler,
     )

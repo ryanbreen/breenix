@@ -8177,7 +8177,18 @@ fn release_reclaimed_threads(reclaimed_threads: alloc::vec::Vec<Box<Thread>>) {
 /// `interrupts/context_switch.rs`, buying nothing. Mask what correctness
 /// requires and no more.
 #[cfg(not(target_arch = "aarch64"))]
-fn release_reclaimed_threads(reclaimed_threads: alloc::vec::Vec<Box<Thread>>) {
+fn release_reclaimed_threads(mut reclaimed_threads: alloc::vec::Vec<Box<Thread>>) {
+    // Their kernel stacks go together, with one flush for the batch; without
+    // memory for the list, each goes with its thread.
+    let mut stacks = alloc::vec::Vec::new();
+    if stacks.try_reserve_exact(reclaimed_threads.len()).is_ok() {
+        stacks.extend(
+            reclaimed_threads
+                .iter_mut()
+                .filter_map(|thread| thread.kernel_stack_allocation.take()),
+        );
+    }
+    crate::memory::kernel_stack::release_batch(stacks);
     drop(reclaimed_threads);
 }
 
