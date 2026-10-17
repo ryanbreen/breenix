@@ -89,6 +89,11 @@ const LINK_TIMEOUT_MS: u64 = 15_000;
 const CENSUS_TIMEOUT_MS: u64 = 60_000;
 const SEND_TIMEOUT_MS: u64 = 1_000;
 const REPLY_TIMEOUT_MS: u64 = 15_000;
+/// The DISCOVER is sent again after 4 s and 8 s without an offer.
+const DISCOVER_RETRIES: u64 = 2;
+const DISCOVER_RETRY_MS: u64 = 4_000;
+/// Received frames the probe describes, after the first.
+const FRAMES_DESCRIBED: u64 = 16;
 
 /// Each attached port's register window, for its interrupt handler, which
 /// takes no lock; 0 until the port's rings are live.
@@ -384,6 +389,9 @@ struct Port {
     autoneg_started_ms: u64,
     /// The Receive BD Initiator Mode register before initialization set it.
     rbdi_at_init: u32,
+    /// Return ring entries flagged in error, and the last one's error flags.
+    rx_errored: u32,
+    rx_last_error_flags: u32,
 }
 
 impl Port {
@@ -426,6 +434,8 @@ impl Port {
             return_consumer: 0,
             autoneg_started_ms: 0,
             rbdi_at_init: 0,
+            rx_errored: 0,
+            rx_last_error_flags: 0,
         };
         port.initialize();
         port.f.phy_start_autonegotiation()?;
@@ -802,6 +812,10 @@ impl Port {
                         )
                     };
                     each(frame);
+                } else {
+                    self.rx_errored += 1;
+                    self.rx_last_error_flags =
+                        (self.return_ring.word(base + 5) >> 16) | (flags << 16);
                 }
                 self.describe_receive_buffer(self.std_producer, buffer);
                 self.std_producer = (self.std_producer + 1) % STD_RING_ENTRIES;
@@ -963,12 +977,19 @@ impl Port {
 
         let mut frames = 0u64;
         let mut answered = false;
-        let mut first_frame_reported = false;
         let mac = self.mac;
         let slot = self.slot;
         let mut seen_interrupts = 0;
+        let mut resent = 0;
         let start = now_ms();
         while !answered && now_ms() - start < REPLY_TIMEOUT_MS {
+            // RFC 2131 section 4.1: a client retransmits an unanswered DISCOVER.
+            if resent < DISCOVER_RETRIES && now_ms() - start > (resent + 1) * DISCOVER_RETRY_MS {
+                resent += 1;
+                if let Err(error) = self.send(&frame) {
+                    log::warn!("[bcm5720] {bdf}: retransmission failed: {error}");
+                }
+            }
             let interrupts = INTERRUPTS[slot].load(Ordering::Acquire);
             if interrupts == seen_interrupts && self.status.word(0) & STATUS_WORD_UPDATED == 0 {
                 sleep_ms(1);
@@ -977,20 +998,32 @@ impl Port {
             seen_interrupts = interrupts;
             self.service(|data| {
                 frames += 1;
-                if !first_frame_reported {
-                    first_frame_reported = true;
-                    let ethertype = data.get(12..14).map_or(0, |b| u16::from_be_bytes([b[0], b[1]]));
+                let summary = FrameSummary::of(data, mac);
+                if frames == 1 {
                     log::info!(
-                        "[bcm5720] first frame received: {} bytes, EtherType {:#06x}, after {} MSI interrupt(s)",
-                        data.len(),
-                        ethertype,
+                        "[bcm5720] first frame received: {}, after {} MSI interrupt(s)",
+                        summary,
                         INTERRUPTS[slot].load(Ordering::Acquire)
                     );
+                } else if frames <= FRAMES_DESCRIBED {
+                    log::info!("[bcm5720] frame {frames} received: {summary}");
                 }
-                if !answered && is_offer_frame(data, xid, mac) {
-                    answered = true;
+                if summary.from_dhcp_server() {
+                    let offer = is_offer_frame(data, xid, mac);
+                    log::info!(
+                        "[bcm5720] frame {frames} is from the DHCP server port; an offer for this transaction: {}",
+                        if offer { "yes" } else { "no" }
+                    );
+                    answered |= offer;
                 }
             });
+        }
+        if self.rx_errored != 0 {
+            log::info!(
+                "[bcm5720] {bdf}: {} return ring entries flagged in error, the last with flags {:#x}",
+                self.rx_errored,
+                self.rx_last_error_flags
+            );
         }
         if answered {
             log::info!(
@@ -1005,6 +1038,75 @@ impl Port {
             });
         }
         crate::arch_without_interrupts(|| ATTACHED.lock().push(self));
+    }
+}
+
+/// What a received frame is, without its addresses: length, EtherType,
+/// whether it was broadcast, multicast or sent to this port, and for IPv4
+/// its protocol and UDP ports.
+struct FrameSummary {
+    length: usize,
+    ethertype: u16,
+    destination: &'static str,
+    protocol: Option<u8>,
+    ports: Option<(u16, u16)>,
+}
+
+impl FrameSummary {
+    fn of(data: &[u8], mac: [u8; 6]) -> Self {
+        let mut summary = Self {
+            length: data.len(),
+            ethertype: 0,
+            destination: "short",
+            protocol: None,
+            ports: None,
+        };
+        let Some(frame) = ethernet::EthernetFrame::parse(data) else {
+            return summary;
+        };
+        summary.ethertype = frame.ethertype;
+        summary.destination = if frame.dst_mac == ethernet::BROADCAST_MAC {
+            "broadcast"
+        } else if frame.dst_mac == mac {
+            "to this port"
+        } else if frame.dst_mac[0] & 1 != 0 {
+            "multicast"
+        } else {
+            "to another station"
+        };
+        if frame.ethertype != ethernet::ETHERTYPE_IPV4 {
+            return summary;
+        }
+        let Some(ip) = ipv4::Ipv4Packet::parse(frame.payload) else {
+            return summary;
+        };
+        summary.protocol = Some(ip.protocol);
+        if ip.protocol == ipv4::PROTOCOL_UDP {
+            summary.ports = udp::UdpHeader::parse(ip.payload)
+                .map(|(header, _)| (header.src_port, header.dst_port));
+        }
+        summary
+    }
+
+    fn from_dhcp_server(&self) -> bool {
+        self.ports == Some((dhcp::SERVER_PORT, dhcp::CLIENT_PORT))
+    }
+}
+
+impl fmt::Display for FrameSummary {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} bytes, EtherType {:#06x}, {}",
+            self.length, self.ethertype, self.destination
+        )?;
+        if let Some(protocol) = self.protocol {
+            write!(f, ", IPv4 protocol {protocol}")?;
+        }
+        if let Some((source, destination)) = self.ports {
+            write!(f, ", UDP {source} to {destination}")?;
+        }
+        Ok(())
     }
 }
 
