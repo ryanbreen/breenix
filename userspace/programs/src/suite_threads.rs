@@ -1224,6 +1224,52 @@ fn lc_detach_many() -> CaseResult {
     })
 }
 
+/// The kernel heap's free space in kB, as /proc/meminfo reports it.
+fn kernel_heap_free_kb() -> Result<i64, CaseError> {
+    let text = std::fs::read_to_string("/proc/meminfo").map_err(|e| format!("reading /proc/meminfo failed: {e}"))?;
+    text.lines().find_map(|line| line.strip_prefix("KernelHeapFree:"))
+        .and_then(|value| value.split_whitespace().next())
+        .and_then(|value| value.parse().ok())
+        .ok_or_else(|| CaseError::Fail("/proc/meminfo has no KernelHeapFree line".into()))
+}
+
+extern "C" fn rt_nothing(_: *mut u8) -> *mut u8 { null_mut() }
+
+/// A thread's kernel row, about 28 KiB of kernel heap, used to stay resident after the
+/// thread was joined, until the process that created it had been reaped and init next
+/// waited (#1712). Each round of 1,000 threads must give its heap back.
+fn lc_rows_released() -> CaseResult {
+    const N: usize = 10_000;
+    const ROUND: usize = 1_000;
+    const BATCH: usize = 16;
+    const SLACK_KB: i64 = 1024;
+    trial(|| {
+        let before = kernel_heap_free_kb()?;
+        let mut after = before;
+        let mut threads = Vec::with_capacity(BATCH);
+        for round in 1..=N / ROUND {
+            for _ in 0..ROUND / BATCH {
+                for _ in 0..BATCH { threads.push(create(rt_nothing, null_mut())?); }
+                for t in threads.drain(..) { rc("pthread_join", pthread_join(t, null_mut())?)?; }
+            }
+            // A joined thread's row is retired a little after the join returns.
+            let start = now_ms();
+            loop {
+                after = kernel_heap_free_kb()?;
+                if after + SLACK_KB >= before { break; }
+                if now_ms().saturating_sub(start) >= bounded(1000, CLEANUP_MS) {
+                    return err(format!("after {} threads were joined the kernel heap had {after} kB free, {before} kB before", round * ROUND));
+                }
+                nap();
+            }
+        }
+        value("threads", N as i64, "", Some((N as i64, N as i64)));
+        value("heap-free-before", before, "kb", None);
+        value("heap-free-after", after, "kb", None);
+        Ok(())
+    })
+}
+
 fn lc_attr_default() -> CaseResult {
     trial_ms(3000, || {
         let a = new_attr()?;
@@ -4358,6 +4404,7 @@ static SUITE: Suite = suite("threads", "Threads", &[
         case("detach-running", "pthread_detach of a running thread returns 0 and the thread runs to the end", lc_detach_running),
         case("detach-ended", "pthread_detach of a thread that has ended returns 0", lc_detach_ended),
         case("detach-many", "Linux policy: 256 detached threads that ended leave the process's resident memory within 1 MiB", lc_detach_many),
+        case("rows-released", "10,000 threads created and joined leave the kernel heap within 1 MiB of where it started", lc_rows_released),
         case("attr-default", "A new thread attribute object is PTHREAD_CREATE_JOINABLE", lc_attr_default),
         case("attr-detached", "PTHREAD_CREATE_DETACHED reads back and a thread created with it runs", lc_attr_detached),
         case("attr-stacksize", "An 8 MiB pthread_attr_setstacksize reads back and its thread can use 6 MiB of stack", lc_attr_stacksize),
