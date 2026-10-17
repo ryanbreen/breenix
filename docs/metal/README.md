@@ -140,6 +140,48 @@ The kernel takes one path on each firmware it boots on, QEMU's included (`kernel
   `[smp] timer ticks on each online CPU` when each range is. The census runs only where the idle marker prints
   (no fw_cfg). It is the `smp` milestone's last stage, so the driver ends a default boot there.
 
+## The network port
+
+The server's onboard controller is a Broadcom BCM5720: two ports, each its own PCI function with its own DMA
+engines, MAC and PHY. `kernel/src/drivers/bcm5720` drives one function per port and is written only from Broadcom's
+"BCM5718 Family Programmer's Reference Guide" (5718-PG107-R, which covers the BCM5719 and BCM5720), the PCI
+specifications and IEEE 802.3 clauses 22, 28 and 40; its comments cite the guide's section and page for each value.
+
+- **Which ports attach.** At driver initialization the driver reads each function's PHY status and attaches the
+  functions with link at handoff. A function without link is put back as the firmware left it, so the second port
+  can attach later without redesign.
+- **Reset.** The guide's device reset procedure, including its handshake with the controller's bootcode through
+  the firmware mailbox in internal memory: the driver writes the magic value before the core-clock reset and
+  waits for the bootcode's answer. The management firmware's routing bits in the EMAC and Mode Control registers
+  are kept as it set them, and the management processor's register block, which the guide does not specify, is
+  not touched.
+- **Initialization.** The guide's initialization procedure, step by step, with one host send ring (64 entries), one
+  standard receive producer ring (64) and receive return ring 0 (128), each ring, the status block and each
+  buffer in a page of its own. Interrupts are MSI through the local APIC (`kernel/src/arch_impl/x86_64/msi.rs`).
+  The PHY is reset and autonegotiates 10, 100 and 1000 Mb/s.
+- **The bring-up probe.** A kernel thread waits for link and, where the tick census runs, for the census to
+  report, so its lines follow the `smp` milestone's. It sends one DHCPDISCOVER, checks that the controller consumed
+  the send descriptor and that the MAC counted a broadcast frame, takes received frames by MSI, and stops at the
+  DHCPOFFER that answers its transaction. It requests no lease, and the network stack does not see these frames:
+  the stack's DHCP client, addressing and production rings arrive with the networking lane.
+
+The `nic` milestone's stages are the driver's lines: `[bcm5720] found`, `[bcm5720] reset complete`,
+`[bcm5720] link up 1000 Mb/s full duplex`, `[bcm5720] frame sent:`, `[bcm5720] first frame received` and
+`[bcm5720] reply received:`. The last is the default mode's final marker.
+
+Measured on the lane's boots (in-progress evidence, not main's code), in the default mode with the RAM-disk image.
+The uncabled function reported no link at handoff and was left alone; the cabled one attached with MSI vector
+0x50, and its bootcode answered the reset mailbox in 201-202 ms. The guide's register table gives the Receive BD
+Initiator's reset value as Enable, but the driver found it disabled (0x0) after the reset in 3 of 3 boots that
+recorded it; the first boot, which left it as found, received no frame into host memory while the MAC counted 28
+broadcast frames in. With it enabled, `20261017T104536Z-metal` (046f9264) and `20261017T105217Z-metal` (daf298b1)
+ended with exit 0 at the `nic` milestone's last stage: link at 1000 Mb/s full duplex 3.6-3.8 s after
+autonegotiation started, the DISCOVER consumed and counted by the MAC (346 octets with the FCS), frames by MSI, and
+a DHCPOFFER for the transaction 4018-4024 ms after the first send. In both, the offer answered the retransmission
+sent 4 s after the first DISCOVER. claim-lint:ok: 2 of 2 boots with every `delivery`, `first-light`,
+`interrupts-time`, `smp` and `nic` stage, scored with each boot's own definition copy; 3 of 3 boots that recorded
+the initiator's value.
+
 ## One boot
 
 `metal-run boot` (on the boot host) starts the driver as `metal-boot-<id>` in the service container and returns as
