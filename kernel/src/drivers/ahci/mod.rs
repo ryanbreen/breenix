@@ -197,7 +197,10 @@ static AHCI_CONTROLLER: Mutex<Option<AhciController>> = Mutex::new(None);
 /// 0 = driver not yet initialised.
 static AHCI_ABAR: AtomicU64 = AtomicU64::new(0);
 
-/// AHCI interrupt: ARM64 GIC SPI or x86 PIC line. 0 = polling mode.
+/// The controller's Ports Implemented mask, for the interrupt handler.
+static AHCI_PORTS_IMPLEMENTED: AtomicU32 = AtomicU32::new(0);
+
+/// AHCI interrupt: ARM64 GIC SPI, x86 PIC line or x86 MSI vector. 0 = polling mode.
 static AHCI_IRQ: AtomicU32 = AtomicU32::new(0);
 
 /// Return the AHCI interrupt number, or 0 when no interrupt is registered.
@@ -213,8 +216,8 @@ static AHCI_IRQ_EDGE: AtomicBool = AtomicBool::new(true);
 /// Per-port, per-slot completion primitives.
 /// Outer index = port number, inner index = slot number.
 /// The ISR calls complete() on the appropriate slot; issue_cmd_slot0 waits on slot 0.
-static AHCI_COMPLETIONS: [[Completion; AHCI_MAX_CONCURRENT]; MAX_AHCI_PORTS] =
-    [const { [const { Completion::new() }; AHCI_MAX_CONCURRENT] }; MAX_AHCI_PORTS];
+static AHCI_COMPLETIONS: [[Completion; AHCI_MAX_CONCURRENT]; MAX_PORTS] =
+    [const { [const { Completion::new() }; AHCI_MAX_CONCURRENT] }; MAX_PORTS];
 
 /// Count ISR invocations (for diagnostic/timeout reporting).
 static AHCI_ISR_COUNT: AtomicU32 = AtomicU32::new(0);
@@ -236,24 +239,24 @@ static AHCI_ISR_LAST_MPIDR: AtomicU64 = AtomicU64::new(0xDEAD);
 /// Count commands issued via issue_cmd_slot0 (for diagnostic/timeout reporting).
 static AHCI_CMD_COUNT: AtomicU32 = AtomicU32::new(0);
 /// Per-port token for the command currently issued in slot 0. 0 = none.
-static PORT_ACTIVE_CMD_NUM: [AlignedAtomicU32; MAX_AHCI_PORTS] =
-    [const { AlignedAtomicU32::new(0) }; MAX_AHCI_PORTS];
+static PORT_ACTIVE_CMD_NUM: [AlignedAtomicU32; MAX_PORTS] =
+    [const { AlignedAtomicU32::new(0) }; MAX_PORTS];
 /// Per-port bitmask of in-flight command slots, indexed by port number.
 /// Bit N = slot N is currently in flight (PORT_CI bit N was set by us).
 /// Written by setup_cmd_slot0 (sets bit), cleared by handle_interrupt.
 /// AtomicU32 for lock-free access from the ISR.
-static PORT_ACTIVE_MASK: [AlignedAtomicU32; MAX_AHCI_PORTS] =
-    [const { AlignedAtomicU32::new(0) }; MAX_AHCI_PORTS];
+static PORT_ACTIVE_MASK: [AlignedAtomicU32; MAX_PORTS] =
+    [const { AlignedAtomicU32::new(0) }; MAX_PORTS];
 
 /// Per-port ISR hit counter: incremented each time the ISR sees PORT_IS != 0 for a port.
-static AHCI_ISR_PORT_HIT: [AlignedAtomicU32; MAX_AHCI_PORTS] =
-    [const { AlignedAtomicU32::new(0) }; MAX_AHCI_PORTS];
+static AHCI_ISR_PORT_HIT: [AlignedAtomicU32; MAX_PORTS] =
+    [const { AlignedAtomicU32::new(0) }; MAX_PORTS];
 /// Per-port empty-status global acknowledgements, inspectable through GDB.
-static AHCI_ISR_STALE_ACK: [AlignedAtomicU32; MAX_AHCI_PORTS] =
-    [const { AlignedAtomicU32::new(0) }; MAX_AHCI_PORTS];
+static AHCI_ISR_STALE_ACK: [AlignedAtomicU32; MAX_PORTS] =
+    [const { AlignedAtomicU32::new(0) }; MAX_PORTS];
 /// Per-port completion hit counter: incremented each time the ISR calls complete() for a port.
-static AHCI_ISR_COMPLETE_HIT: [AlignedAtomicU32; MAX_AHCI_PORTS] =
-    [const { AlignedAtomicU32::new(0) }; MAX_AHCI_PORTS];
+static AHCI_ISR_COMPLETE_HIT: [AlignedAtomicU32; MAX_PORTS] =
+    [const { AlignedAtomicU32::new(0) }; MAX_PORTS];
 /// ICC_PMR_EL1 value captured at ISR entry (last invocation).
 static AHCI_ISR_LAST_PMR: AtomicU64 = AtomicU64::new(0);
 /// PORT_IS value seen by the ISR for port 1 (last invocation that saw port 1 active).
@@ -282,7 +285,7 @@ static AHCI_TIMEOUT_TRACE_DUMPED: AtomicBool = AtomicBool::new(false);
 ///
 /// Unlike `AHCI_CONTROLLER` (which guards the controller struct) this lock is
 /// granular to a single port, allowing future multi-port parallelism.
-static PORT_IO_LOCK: [Mutex<()>; MAX_AHCI_PORTS] = [const { Mutex::new(()) }; MAX_AHCI_PORTS];
+static PORT_IO_LOCK: [Mutex<()>; MAX_PORTS] = [const { Mutex::new(()) }; MAX_PORTS];
 
 #[inline]
 fn next_cmd_num() -> u32 {
@@ -307,14 +310,14 @@ fn next_cmd_num() -> u32 {
 /// sleeps, then re-acquires the lock for the finish step before clearing the
 /// flag. Contenders spin outside the mutex until the full setup/wait/finish
 /// sequence is retired.
-static PORT_IO_IN_PROGRESS: [AtomicBool; MAX_AHCI_PORTS] =
-    [const { AtomicBool::new(false) }; MAX_AHCI_PORTS];
+static PORT_IO_IN_PROGRESS: [AtomicBool; MAX_PORTS] =
+    [const { AtomicBool::new(false) }; MAX_PORTS];
 
 // A syscall holds the preemption brake. Spinning on an owner that sleeps for
 // I/O prevents that owner from ever running to retire its request once every
 // CPU is held by a spinning contender.
-static PORT_IO_WAITERS: [crate::task::waitqueue::WaitQueueHead; MAX_AHCI_PORTS] =
-    [const { crate::task::waitqueue::WaitQueueHead::new() }; MAX_AHCI_PORTS];
+static PORT_IO_WAITERS: [crate::task::waitqueue::WaitQueueHead; MAX_PORTS] =
+    [const { crate::task::waitqueue::WaitQueueHead::new() }; MAX_PORTS];
 
 #[cfg(target_arch = "aarch64")]
 #[inline]
@@ -648,17 +651,18 @@ struct PortDmaMem {
 /// slot for now; the array layout is ready for multi-slot NCQ later.
 const AHCI_MAX_CONCURRENT: usize = 4;
 
-/// Static DMA memory for up to 4 ports.
+/// DMA memory for up to 4 attached ports, indexed by `AhciPort::dma_index`
+/// rather than by port number: a controller may implement any of its 32 ports.
 /// These are page-aligned for DMA safety.
-const MAX_AHCI_PORTS: usize = 4;
-static PORT_DMA: Mutex<[Option<&'static mut PortDmaMem>; MAX_AHCI_PORTS]> =
-    Mutex::new([const { None }; MAX_AHCI_PORTS]);
+const MAX_DMA_PORTS: usize = 4;
+static PORT_DMA: Mutex<[Option<&'static mut PortDmaMem>; MAX_DMA_PORTS]> =
+    Mutex::new([const { None }; MAX_DMA_PORTS]);
 
 // We use a static array for DMA memory so we know the physical addresses.
 #[repr(C, align(4096))]
 #[cfg(target_arch = "aarch64")]
 struct PortDmaStorage {
-    ports: [PortDmaMem; MAX_AHCI_PORTS],
+    ports: [PortDmaMem; MAX_DMA_PORTS],
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -1081,12 +1085,16 @@ impl AhciController {
         let num_cmd_slots = ((cap >> 8) & 0x1F) + 1;
         let num_ports = (cap & 0x1F) + 1;
         let ports_implemented = hba_read(abar_virt, HBA_PI);
+        AHCI_PORTS_IMPLEMENTED.store(ports_implemented, Ordering::Release);
         let version = hba_read(abar_virt, HBA_VS);
 
+        // VS holds the major version in bits 31:16 and the minor version's two
+        // digits in bits 15:8 and 7:0 (0x0001_0301 is 1.3.1).
         crate::serial_println!(
-            "[ahci] HBA version {}.{}, {} ports, {} cmd slots, PI={:#010x}",
+            "[ahci] HBA version {:x}.{:x}.{:x}, {} ports, {} cmd slots, PI={:#010x}",
             version >> 16,
-            version & 0xFFFF,
+            (version >> 8) & 0xFF,
+            version & 0xFF,
             num_ports,
             num_cmd_slots,
             ports_implemented,
@@ -1097,7 +1105,7 @@ impl AhciController {
         {
             let dma_storage_ptr = &raw mut DMA_STORAGE;
             let mut dma_lock = PORT_DMA.lock();
-            for i in 0..MAX_AHCI_PORTS {
+            for i in 0..MAX_DMA_PORTS {
                 dma_lock[i] = Some(unsafe { &mut (*dma_storage_ptr).ports[i] });
             }
             drop(dma_lock);
@@ -1124,15 +1132,8 @@ impl AhciController {
                 if port_read(abar_virt, port_num, PORT_CMD) & (PORT_CMD_CR | PORT_CMD_FR) != 0 {
                     return Err("AHCI: firmware port engine did not stop");
                 }
-                if port_num >= MAX_AHCI_PORTS {
-                    crate::serial_println!(
-                        "[ahci] Skipping unsupported physical port {}",
-                        port_num
-                    );
-                    continue;
-                }
             }
-            if dma_index >= MAX_AHCI_PORTS {
+            if dma_index >= MAX_DMA_PORTS {
                 crate::serial_println!(
                     "[ahci] Warning: more ports than DMA slots, skipping port {}",
                     port_num
@@ -1367,7 +1368,7 @@ impl AhciController {
         }
 
         // --- Determine wait mode BEFORE arming completions ---
-        let has_irq = AHCI_IRQ.load(Ordering::Relaxed) != 0 && port < MAX_AHCI_PORTS;
+        let has_irq = AHCI_IRQ.load(Ordering::Relaxed) != 0 && port < MAX_PORTS;
 
         let scheduler_running = scheduler_sleep_ready(has_irq);
 
@@ -1528,7 +1529,7 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
         "[ahci]   isr_count={} cmd#={} completion_done={} PMR={:#x} RPR={:#x}",
         isr_count,
         cmd_num,
-        if port < MAX_AHCI_PORTS {
+        if port < MAX_PORTS {
             AHCI_COMPLETIONS[port][0].done.load(Ordering::Relaxed)
         } else {
             0
@@ -2598,7 +2599,11 @@ pub fn handle_interrupt() {
         return;
     }
 
-    for port in 0..MAX_AHCI_PORTS {
+    let implemented = AHCI_PORTS_IMPLEMENTED.load(Ordering::Relaxed);
+    for port in 0..MAX_PORTS {
+        if (implemented & (1 << port)) == 0 {
+            continue;
+        }
         // For MSI: only check ports with HBA_IS bits set.
         // For wired: check all ports (the HBA_IS may not be set).
         if !check_all && (hba_is & (1 << port)) == 0 {
