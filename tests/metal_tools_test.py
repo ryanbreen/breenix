@@ -743,6 +743,40 @@ class RootStagingTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 metal_root.stage_root(image, 'default', None, {'GUEST_PASSWORD': 'fixture'})
 
+    def test_install_boot_stages_probe_and_the_install_record_and_names_what_will_be_written(self):
+        import metal_root
+        prefix = Path('/opt/homebrew/opt/e2fsprogs/sbin')
+        mke2fs = shutil.which('mke2fs') or str(prefix / 'mke2fs')
+        debugfs = shutil.which('debugfs') or str(prefix / 'debugfs')
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            tree = root / 'tree'
+            (tree / 'sbin').mkdir(parents=True)
+            (tree / 'etc/breenix').mkdir(parents=True)
+            (tree / 'sbin/probe').write_bytes(b'\x7fELFprobe')
+            image = root / 'root.img'
+            subprocess.run([mke2fs, '-q', '-t', 'ext2', '-d', str(tree), '-F', str(image), '4096'],
+                           check=True, capture_output=True)
+            facts = metal_root.stage_root(image, 'probe', None, {}, install='20261017T000013Z-metal')
+            data = image.read_bytes()
+            record = b'BREENIX-STORAGE 1\ninstall-root 20261017T000013Z-metal\n'
+            self.assertEqual(data[:512], record + bytes(512 - len(record)))
+            write = facts['diskWrite']
+            self.assertEqual((write['installedBy'], write['lba'], write['bytes']),
+                             ('20261017T000013Z-metal', 0, len(data)))
+            self.assertEqual(write['sha256AfterRecord'], hashlib.sha256(data[512:]).hexdigest())
+            root_record = metal_root.root_record('20261017T000013Z-metal', len(data), write['sha256AfterRecord'])
+            self.assertEqual(write['rootRecordSha256'], hashlib.sha256(root_record).hexdigest())
+            self.assertEqual(root_record[:18], b'BREENIX-STORAGE 1\n')
+            # The filesystem is untouched by the record, and a second install request is refused.
+            target = subprocess.run([debugfs, '-R', 'cat /etc/breenix/boot-target', str(image)],
+                                    check=True, capture_output=True).stdout
+            self.assertEqual(target, b'probe\n')
+            with self.assertRaises(ValueError):
+                metal_root.write_install_record(image, '20261017T000014Z-metal')
+            with self.assertRaises(ValueError):
+                metal_root.install_record('bad/id')
+
 
 class DriverTest(StateTest):
     def setUp(self):
@@ -780,6 +814,47 @@ class DriverTest(StateTest):
         d.on_line('print("metal-console-ok", 6*7)')
         d.on_line('bsh /> metal-console-ok 42')
         self.finish(lambda: d.on_line('metal-console-ok 42'), m.EXIT_DONE)
+
+    def test_install_records_a_verified_write_only_when_the_kernel_reports_the_staged_bytes(self):
+        d = self.driver
+        d.args.mode, d.args.disk, d.args.commit = 'probe', 'install', 'c' * 40
+        d.delivery['root'] = {'diskWrite': {'installedBy': d.id, 'lba': 0, 'bytes': 1024, 'sha256AfterRecord': 'a' * 64}}
+        d.on_disk_line('[storage] read back identical: 1024 bytes, sha256 after the record sector ' + 'b' * 64 + ' (3 ms)', 1)
+        self.assertIsNone(m.read_json(m.STATE / 'disk.json'))
+        d.event.assert_called_with('disk-write-verified', observed_at=1, match=False, bytes=1024)
+        d.seen.discard('disk-write')
+        d.on_disk_line('[storage] read back identical: 1024 bytes, sha256 after the record sector ' + 'a' * 64 + ' (3 ms)', 2)
+        installed = m.read_json(m.STATE / 'disk.json')
+        self.assertEqual((installed['installedBy'], installed['commit'], installed['verifiedAt']), (d.id, 'c' * 40, 2))
+
+    def test_disk_root_boot_checks_the_record_against_the_last_install(self):
+        d = self.driver
+        d.args.mode, d.args.disk = 'probe', 'root'
+        d.delivery['diskRoot'] = {'installedBy': '20261017T000013Z-metal', 'bytes': 1024, 'sha256AfterRecord': 'a' * 64}
+        d.on_disk_line('[storage] root record: installed by boot 20261017T000013Z-metal, 1024 bytes, sha256 ' + 'a' * 64, 3)
+        d.event.assert_called_with('disk-root-record', observed_at=3, matchesLastInstall=True,
+                                   installedBy='20261017T000013Z-metal')
+
+    def test_storage_boots_wait_only_for_what_their_shape_can_produce(self):
+        root = TOOLS.parents[1]
+        metal = json.loads((root / 'docs/metal/boot-path.json').read_text())
+        catalog = json.loads((root / 'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json').read_text())
+        markers = lambda groups: {marker for group in groups for marker, _ in group}
+        install = boot.measured_stages(metal, 'probe', catalog, boot.DISK_SKIPS['install'])
+        disk_root = boot.measured_stages(metal, 'probe', catalog, boot.DISK_SKIPS['root'])
+        self.assertIn('[storage] read back identical: ', markers(install))
+        self.assertIn('[block] ramdisk ', markers(install))
+        self.assertNotIn('[fs] root mounted from the installed disk', markers(install))
+        self.assertIn('[fs] root mounted from the installed disk', markers(disk_root))
+        self.assertNotIn('[block] ramdisk ', markers(disk_root))
+        self.assertNotIn('[storage] wrote ', markers(disk_root))
+        self.assertIn('[ahci] first sectors read by MSI: ', markers(install) & markers(disk_root))
+        self.assertEqual(boot.final_marker(metal, 'probe', catalog, boot.DISK_SKIPS['install']),
+                         ('[storage] read back identical: ', 'contains'))
+        self.assertEqual(boot.final_marker(metal, 'probe', catalog, boot.DISK_SKIPS['root']),
+                         ('PROBE dir OK', 'contains'))
+        self.assertEqual(boot.final_marker(metal, 'default', catalog, boot.DISK_SKIPS[None]),
+                         ('[init] Boot script completed', 'contains'))
 
     def test_mode_completion_waits_for_delayed_kernel_producers(self):
         d = self.driver

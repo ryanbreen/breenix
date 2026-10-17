@@ -301,7 +301,8 @@ the POST budget, recent machine events, and the power draw as "not reported by t
 (platform `metal`, arch `x86_64`, mode, target, payload, `kind` = `boot` or `fault-test`, the deployed tools'
 commit), `commit`, `dirty` (0: builds use a clean clone), `console.log`, `serial.txt`, `exit-status`, `ended`; plus
 `serial.raw`, `serial.ts`, `events.jsonl`, `delivery.json` (image facts, build facts, baseline, POST and transfer
-times), `ended-by`, `claim.json` and `definition/`. `finished.jsonl` lists the closed records with their sequence
+times), `ended-by`, `claim.json` and `definition/`, and for an install boot `disk-write.json`. The service keeps the newest
+verified install in `disk.json` beside the boot records. `finished.jsonl` lists the closed records with their sequence
 numbers, written after `ended` by whichever of the driver, the reaper or reconciliation closed the record, so an
 importer that asks for the entries above the lowest sequence it lacks catches up without gaps. Fault tests (`kind: fault-test`)
 have no definition and are not scored.
@@ -338,9 +339,53 @@ hardware-disk write policy. Discovered physical disks also receive a read-only b
 test checks that single-block and multi-block writes never reach the backend
 (`kernel/src/block/read_only.rs`, `discovered_hardware_refuses_writes_before_reaching_backend`; claim-lint:ok: #1702). The disk marker reports `detected` and `gated` counts of attached block devices, including zero
 when a controller has no attached block backend. It does not claim physical-drive discovery from policy alone. RAM-disk byte copies hold their spin mutex only
-inside an interrupt-masked window. The storage lane will add its explicit disk-writing mode separately (issue #1702).
+inside an interrupt-masked window.
 Controller, port and drive observations belong in the private recon and platform facts; site identifiers stay
 out of this repository.
+
+### The SATA controller
+
+The AHCI driver takes its completions by MSI through the local APIC whenever the APIC is active, the FADT allows
+MSI and the controller has an MSI capability (PCI Local Bus 3.0, 6.8.1; `kernel/src/arch_impl/x86_64/msi.rs`).
+This needs no knowledge of how the firmware wires INTx, which on this machine is unknown (the controller's
+Interrupt Line reads 0xFF). Without MSI the driver keeps its earlier rule: INTx on line 10 or 11 where that routing
+is known (QEMU), and no attach otherwise. On x86 the driver then reports each SATA drive's size from IDENTIFY
+DEVICE and reads its first 34 sectors (the protective MBR, the GPT header and its entries), saying whether the
+completion arrived by MSI, which kind of partition table is present, and whether a Breenix storage record is.
+It prints neither the sectors' bytes nor the drive's model or serial number. Writes are native multi-sector
+commands of up to 128 sectors (64 KiB), as reads already were.
+
+### Writing the disk: install and disk-root boots
+
+The write refusal above is lifted only by the storage lane, explicitly, for one disk and one purpose, by a
+storage record in a disk's first sector (`kernel/src/block/install.rs`). ext2 leaves its first 1024 bytes unused,
+so the record has that sector to itself. A record is the line `BREENIX-STORAGE 1`, one record line, and NUL
+padding to the end of the sector.
+
+- **Install boot** (`metal-run boot --mode probe --disk install`). Staging writes `install-root <boot id>` into
+  the RAM-disk image's first sector (`metal_root.write_install_record`, which refuses an image whose first sector
+  is not empty) and records in `disk-write.json` what the kernel will write: the image's size, LBA 0, the SHA-256
+  of the image after its first sector, and the SHA-256 of the root record that will precede it. Before root
+  mounts, while the RAM disk is still as delivered, the kernel finds the request, refuses unless exactly one
+  hardware disk is attached and it is at least as large, grants hardware writes, copies sectors 1 onwards, writes
+  `root <boot id> <bytes> <sha256>` into sector 0 last and flushes, then revokes the grant. An interrupted copy
+  therefore leaves no root record. It then reads the copied sectors back, compares them with the RAM disk and the record,
+  and prints `[storage] read back identical: <bytes> bytes, sha256 after the record sector <hex>`. The driver
+  compares that line with `disk-write.json` (event `disk-write-verified`) and, when they agree, records the disk's
+  contents in the service's `disk.json`. Root then mounts from the RAM disk, the hardware disks are read-only
+  again, and the `ramdisk-root` milestone's stages print as on any RAM-disk boot.
+- **Disk-root boot** (`metal-run boot --mode probe --disk root`). The image carries no RAM disk; the driver
+  refuses to start one when `disk.json` records no verified install. The kernel reads the first sector of each
+  attached hardware disk, needs exactly one root record, reports it, says whether the image after the record still has the
+  recorded SHA-256 (true on the first boot after an install; later boots write the root, so this is a report, not a
+  refusal), grants writes for that disk, and mounts it as root. Init and the probe run from the disk; the probe's
+  ext2 file and directory round trips are its writes. The driver checks the reported record against `disk.json`
+  (event `disk-root-record`).
+
+Each boot shape lacks a milestone the other produces: an install's root is the RAM disk, and a disk-root boot has no
+RAM disk. The driver therefore does not wait for `disk-filesystem` on an install boot, for `disk-io` or
+`ramdisk-root` on a disk-root boot, or for either storage milestone on a probe boot without `--disk`
+(`DISK_SKIPS` in `metal-boot`).
 
 ## Clean-room rule
 
@@ -419,6 +464,8 @@ python3 ~/.local/share/breenix-metal/metal-run boot --ramdisk            # expli
 python3 ~/.local/share/breenix-metal/metal-run boot --mode shell
 python3 ~/.local/share/breenix-metal/metal-run boot --mode suite --suite smoke
 python3 ~/.local/share/breenix-metal/metal-run boot --mode suite --suite time
+python3 ~/.local/share/breenix-metal/metal-run boot --mode probe --disk install   # copy the RAM-disk root onto the disk
+python3 ~/.local/share/breenix-metal/metal-run boot --mode probe --disk root      # boot from the disk the install wrote
 python3 ~/.local/share/breenix-metal/metal-run boot --branch NAME        # a pushed branch (in-progress evidence)
 python3 ~/.local/share/breenix-metal/metal-run boot --branch NAME --nmi  # NMI before power-off even when it finished
 python3 ~/.local/share/breenix-metal/metal-run boot --payload hang       # metal-hang.efi
@@ -431,8 +478,9 @@ python3 ~/.local/share/breenix-metal/metal-run follow ID | stop ID | status
 ```
 
 `--inject forceoff-fail` makes the driver skip its own ForceOff and report it failed, which quarantines the lease
-with the machine on; the reaper's retry then powers it off and lifts the quarantine. Only the default boot mode is
-implemented here; the shell, probe and suite modes arrive with the lanes that write their boot targets.
+with the machine on; the reaper's retry then powers it off and lifts the quarantine. The default, shell and suite
+modes stage their boot targets as described under "RAM-disk userspace"; probe mode stages `probe`, and its storage
+boots are described under "The disks".
 
 ## Redaction
 

@@ -10,10 +10,13 @@
   metal-boot status                 the lease, the machine reading and the newest records, as JSON
 
 # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
-Run options: --payload image|hang|none, --mode default, --commit SHA, --target main|branch:NAME, --task NAME,
---no-wait, --inject forceoff-fail, --ramdisk. A Breenix boot (payload image) waits for its inputs (the kernel
-build's UEFI image, the ext2 root, the delivery stub and the commit's definition files) in its stage folder, and
-serves boot.efi: the stub with the boot disk appended (the ext2 root joins the disk as `ramdisk` by default).
+Run options: --payload image|hang|none, --mode default|shell|probe|suite, --commit SHA, --target main|branch:NAME,
+--task NAME, --no-wait, --inject forceoff-fail, --ramdisk, --disk install|root. A Breenix boot (payload image) waits
+for its inputs (the kernel build's UEFI image, the ext2 root, the delivery stub and the commit's definition files) in
+its stage folder, and serves boot.efi: the stub with the boot disk appended (the ext2 root joins the disk as
+`ramdisk` by default). `--disk install` (probe mode) stages the install request on the RAM disk, so the kernel copies
+it onto the machine's disk; `--disk root` (probe mode) delivers no RAM disk, so the kernel boots from the disk the
+last install wrote (README, "The disks").
 """
 import argparse
 import contextlib
@@ -35,10 +38,17 @@ import metal_census  # noqa: E402
 import metal_root  # noqa: E402
 
 # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
-MODES = ('default', 'shell', 'suite')
+MODES = ('default', 'shell', 'probe', 'suite')
+DISK_ACTIONS = ('install', 'root')
+# Milestones a boot cannot produce, by its disk action: only an install writes the disk, only a disk-root boot
+# mounts it as root, and a disk-root boot has no RAM disk (README, "The disks").
+DISK_SKIPS = {None: ('disk-io', 'disk-filesystem'), 'install': ('disk-filesystem',),
+              'root': ('ramdisk-root', 'disk-io')}
+READ_BACK_LINE = re.compile(r'\[storage\] read back identical: (\d+) bytes, sha256 after the record sector ([0-9a-f]{64})')
+ROOT_RECORD_LINE = re.compile(r'\[storage\] root record: installed by boot ([A-Za-z0-9-]+), (\d+) bytes, sha256 ([0-9a-f]{64})')
 PAYLOADS = ('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux')
-CEILING_SECONDS = {'default': 900, 'shell': 900, 'suite': 1320}
-MODE_DEADLINE_SECONDS = {'default': 300, 'shell': 180, 'suite': 420}
+CEILING_SECONDS = {'default': 900, 'shell': 900, 'probe': 900, 'suite': 1320}
+MODE_DEADLINE_SECONDS = {'default': 300, 'shell': 180, 'probe': 300, 'suite': 420}
 INPUT_DEADLINE_SECONDS = 2 * 3600
 CONSOLE_BANNER = b'[SOL Session operational'
 CONSOLE_WAIT_SECONDS = 20
@@ -158,7 +168,7 @@ class Driver:
         run = {'id': self.id, 'platform': 'metal', 'arch': 'x86_64', 'mode': self.args.mode, 'target': target,
                'taskName': self.args.task or self.id, 'watch': False, 'display': False, 'startedAt': m.now(),
                'payload': self.args.payload, 'kind': kind, 'suite': getattr(self.args, 'suite', None), 'inject': self.args.inject or None,
-               'toolsCommit': tools_commit()}
+               'disk': getattr(self.args, 'disk', None), 'toolsCommit': tools_commit()}
         m.write_json(self.dir / 'run.json', run)
         m.write_text(self.dir / 'commit', (self.args.commit or 'none') + '\n')
         m.write_text(self.dir / 'dirty', '0\n')
@@ -277,12 +287,26 @@ class Driver:
             manifest = self.dir / 'definition/docs/suites' / (self.args.suite + '.json')
             if not manifest.is_file() or m.read_json(manifest).get('id') != self.args.suite:
                 raise Finish(m.EXIT_CANCELLED, 'the suite manifest is missing or differs')
-        self.delivery['root'] = metal_root.stage_root(inputs / 'ext2.img', self.args.mode,
-                                                       getattr(self.args, 'suite', None), self.site)
+        disk = getattr(self.args, 'disk', None)
+        if disk == 'root':
+            # The root is the disk the last install wrote; nothing is staged onto it.
+            installed = m.read_json(m.STATE / 'disk.json')
+            if not installed:
+                raise Finish(m.EXIT_CANCELLED, 'no verified install is recorded for the disk')
+            self.delivery['diskRoot'] = installed
+            self.event('disk-root-expected', installedBy=installed.get('installedBy'), bytes=installed.get('bytes'))
+        else:
+            self.delivery['root'] = metal_root.stage_root(inputs / 'ext2.img', self.args.mode,
+                                                           getattr(self.args, 'suite', None), self.site,
+                                                           install=self.id if disk == 'install' else None)
+            if disk == 'install':
+                write = self.delivery['root']['diskWrite']
+                m.write_json(self.dir / 'disk-write.json', write)
+                self.event('disk-write-requested', bytes=write['bytes'], sha256=write['sha256AfterRecord'])
         self.phase('Assembling the image')
         extracted = self.stage / 'esp'
         files = metal_image.extract_esp(inputs / 'uefi.img', extracted)
-        if self.args.ramdisk:
+        if self.args.ramdisk and disk != 'root':
             files['ramdisk'] = inputs / 'ext2.img'
         disk = self.stage / 'boot-disk.img'
         facts = metal_image.assemble(disk, files)
@@ -300,7 +324,7 @@ class Driver:
                                   'disk': {'size': facts['size'], 'sha256': facts['sha256'],
                                            'components': facts['components']}}
         self.event('image-assembled', size=wrapped['size'], sha256=wrapped['sha256'], disk=facts['size'],
-                   ramdisk=bool(self.args.ramdisk))
+                   ramdisk='ramdisk' in files)
         self.load_definition()
 
     # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
@@ -313,8 +337,9 @@ class Driver:
         self.fatal_patterns = [re.compile(p) for p in (source or {}).get('fatal', [])]
         if metal:
             catalog = m.read_json(definition / 'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json', {})
-            self.final_marker = final_marker(metal, self.args.mode, catalog)
-            self.required_stages = measured_stages(metal, self.args.mode, catalog)
+            skip = DISK_SKIPS[getattr(self.args, 'disk', None)]
+            self.final_marker = final_marker(metal, self.args.mode, catalog, skip)
+            self.required_stages = measured_stages(metal, self.args.mode, catalog, skip)
         if self.args.mode == 'suite':
             self.final_marker = ('SUITE ' + self.args.suite + ' DONE ', 'contains')
         self.event('definition', metalPath=bool(metal), fatalPatterns=len(self.fatal_patterns),
@@ -569,6 +594,7 @@ class Driver:
             self.event('fatal', observed_at=observed_at, seconds=seconds)
         if '[init] shell ready' in line:
             self.shell_ready = True
+        self.on_disk_line(line, observed_at)
         self.challenge_shell(line)
         for stages in self.required_stages:
             if stages and marker_matches(stages[0], line):
@@ -581,6 +607,26 @@ class Driver:
             self.completion_reported = True
             self.event('final-marker', observed_at=observed_at, seconds=seconds)
             raise Finish(m.EXIT_DONE, 'the mode and its kernel stages finished')
+
+    # claim-lint:ok: #1680 Reviewed tool contract against this function and the host tests in tests/metal_tools_test.py.
+    def on_disk_line(self, line, observed_at):
+        """Check the kernel's account of the disk against what this boot asked for (README, "The disks")."""
+        disk = getattr(self.args, 'disk', None)
+        if disk == 'install' and 'disk-write' not in self.seen and (found := READ_BACK_LINE.search(line)):
+            self.seen.add('disk-write')
+            write = self.delivery['root']['diskWrite']
+            matched = int(found.group(1)) == write['bytes'] and found.group(2) == write['sha256AfterRecord']
+            self.event('disk-write-verified', observed_at=observed_at, match=matched, bytes=int(found.group(1)))
+            if matched:
+                # The disk now holds this boot's root: a later disk-root boot expects this install.
+                m.write_json(m.STATE / 'disk.json', dict(write, commit=self.args.commit, verifiedAt=observed_at))
+        if disk == 'root' and 'disk-root' not in self.seen and (found := ROOT_RECORD_LINE.search(line)):
+            self.seen.add('disk-root')
+            installed = self.delivery['diskRoot']
+            matched = (found.group(1) == installed.get('installedBy') and int(found.group(2)) == installed.get('bytes')
+                       and found.group(3) == installed.get('sha256AfterRecord'))
+            self.event('disk-root-record', observed_at=observed_at, matchesLastInstall=matched,
+                       installedBy=found.group(1))
 
     # The HTTP server's log.
     def pump_http(self):
@@ -915,12 +961,13 @@ def marker_matches(spec, line):
 
 
 # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
-def measured_stages(metal, mode, catalog):
-    """Track each measured milestone in its own print order, including delayed kernel producers."""
+def measured_stages(metal, mode, catalog, skip=()):
+    """Track each measured milestone in its own print order, including delayed kernel producers. Milestones in
+    `skip` are ones this boot's shape cannot produce."""
     markers = {stage['name']: stage for stage in catalog.get('stages', [])}
     groups = []
     for milestone in metal.get('milestones', []):
-        if milestone.get('stub'):
+        if milestone.get('stub') or milestone.get('id') in skip:
             continue
         lists = milestone.get('stages', {})
         listed = lists.get(mode, lists.get(metal['gateArch'], []) if milestone.get('kernel') else [])
@@ -937,11 +984,13 @@ def measured_stages(metal, mode, catalog):
     return groups
 
 
-def final_marker(metal, mode, catalog):
+def final_marker(metal, mode, catalog, skip=()):
     """Resolve the final measured serial stage and preserve its matching contract. A stub milestone's markers are
-    proposals its producing lane has not landed (docs/metal/boot-path.json), so no boot measures it yet."""
+    proposals its producing lane has not landed (docs/metal/boot-path.json), so no boot measures it yet, and a
+    milestone in `skip` is one this boot's shape cannot produce."""
     markers = {stage['name']: stage for stage in catalog.get('stages', []) if 'marker' in stage}
-    milestones = [milestone for milestone in reversed(metal.get('milestones', [])) if not milestone.get('stub')]
+    milestones = [milestone for milestone in reversed(metal.get('milestones', []))
+                  if not milestone.get('stub') and milestone.get('id') not in skip]
     scoped = [milestone.get('stages', {}).get(mode) for milestone in milestones]
     scoped = [listed for listed in scoped if listed]
     if not scoped:
@@ -1015,6 +1064,8 @@ def main():
         p.add_argument('--nmi', action='store_true',
                        help='send the NMI and capture for 5 s before powering off a started kernel, finished or not')
         p.add_argument('--ramdisk', action='store_true', default=True, help='put the ext2 root on the boot disk as `ramdisk`')
+        p.add_argument('--disk', choices=DISK_ACTIONS,
+                       help='probe mode: install the RAM-disk root on the disk, or boot from the installed root')
         p.add_argument('--content-type', choices=('application/octet-stream',),
                        help='a test payload served with this type instead of its form\'s own')
         p.add_argument('--serve-as', choices=('boot.iso', 'boot.efi'),
@@ -1036,6 +1087,8 @@ def main():
             parser.error('--suite needs suite mode')
         if args.payload != 'image' and args.mode != 'default':
             parser.error('boot modes need an image payload')
+        if args.disk and args.mode != 'probe':
+            parser.error('--disk needs probe mode')
     if args.command == 'launch':
         extra = sys.argv[2:]
         if args.id:
