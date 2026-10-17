@@ -1,5 +1,6 @@
 #![no_std]
 
+pub mod phys_memory;
 pub mod uefi_time;
 
 /// High-half direct-map base used by the ARM64 loader and kernel.

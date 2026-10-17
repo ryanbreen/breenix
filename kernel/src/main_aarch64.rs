@@ -796,17 +796,35 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // the high half -- the ADRP relocation would be out of range (~281 TB).
     // Instead, read the current TTBR0_EL1 to get the physical address and
     // access it through the HHDM.
-    // Initialize memory management for ARM64
-    // ARM64 QEMU virt machine: RAM starts at 0x40000000
-    // Frame allocator range from platform_config (QEMU defaults or HardwareConfig)
-    let fa_start = kernel::platform_config::frame_alloc_start();
-    let fa_end = kernel::platform_config::frame_alloc_end();
+    // Initialize memory management for ARM64. The frame pool is the RAM the
+    // firmware describes (the loader's UEFI map, or QEMU's device tree) less
+    // the kernel's fixed ranges.
+    let frame_pool = kernel::platform_config::frame_pool();
+    match frame_pool.source {
+        kernel::platform_config::FramePoolSource::UefiMemoryMap => {
+            serial_println!("[boot] Frame pool from the UEFI memory map:")
+        }
+        kernel::platform_config::FramePoolSource::DeviceTree => {
+            serial_println!("[boot] Frame pool from the device tree:")
+        }
+        kernel::platform_config::FramePoolSource::FixedWindow(reason) => {
+            serial_println!("[boot] WARNING: {}; frame pool is the fixed window:", reason)
+        }
+    }
+    for range in frame_pool.ranges.as_slice() {
+        serial_println!("[boot]   {:#x}-{:#x}", range.start, range.end);
+    }
     serial_println!(
-        "[boot] Initializing memory management ({:#x}-{:#x})...",
-        fa_start,
-        fa_end
+        "[boot] Initializing memory management ({} MiB in {} ranges{})...",
+        frame_pool.ranges.total_bytes() >> 20,
+        frame_pool.ranges.as_slice().len(),
+        if frame_pool.ranges.truncated() {
+            ", firmware map truncated"
+        } else {
+            ""
+        }
     );
-    kernel::memory::frame_allocator::init_aarch64(fa_start, fa_end);
+    kernel::memory::frame_allocator::init_aarch64(frame_pool.ranges.as_slice());
     kernel::memory::init_aarch64_heap();
     kernel::memory::frame_allocator::init_frame_ledger();
     kernel::memory::kernel_stack::init();

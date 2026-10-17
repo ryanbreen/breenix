@@ -845,39 +845,26 @@ pub fn init(memory_regions: &'static MemoryRegions) {
     }
 }
 
-/// Initialize the frame allocator for ARM64 with a simple memory range
-/// This is used during ARM64 boot where we don't have bootloader memory info.
-///
-/// # Arguments
-/// * `start` - Start address of usable memory (must be page-aligned)
-/// * `end` - End address of usable memory (exclusive)
+/// Initialize the frame allocator for ARM64 from the frame pool's ranges:
+/// page-aligned, ascending and disjoint (see `platform_config::frame_pool`).
 #[cfg(target_arch = "aarch64")]
-pub fn init_aarch64(start: u64, end: u64) {
+pub fn init_aarch64(ranges: &[arm64_boot_contract::phys_memory::PhysRange]) {
     let mut regions = [None; MAX_REGIONS];
-
-    // Page-align the start address (round up)
-    let aligned_start = (start + 0xFFF) & !0xFFF;
-    debug_assert_eq!(aligned_start % 4096, 0);
-    debug_assert_eq!(end % 4096, 0);
-
-    regions[0] = Some(UsableRegion {
-        start: aligned_start,
-        end,
-    });
-
-    let total_memory = end - aligned_start;
+    let mut region_count = 0;
+    for range in ranges.iter().take(MAX_REGIONS) {
+        debug_assert_eq!(range.start % 4096, 0);
+        debug_assert_eq!(range.end % 4096, 0);
+        regions[region_count] = Some(UsableRegion {
+            start: range.start,
+            end: range.end,
+        });
+        region_count += 1;
+    }
 
     MEMORY_INFO.call_once(|| MemoryInfo {
         regions,
-        region_count: 1,
+        region_count,
     });
-
-    log::info!(
-        "ARM64 frame allocator initialized: {:#x}..{:#x} ({} MiB)",
-        aligned_start,
-        end,
-        total_memory / (1024 * 1024)
-    );
 }
 
 /// Allocate a physical frame
