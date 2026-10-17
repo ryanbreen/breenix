@@ -354,10 +354,16 @@ impl PendingProcessReclaim {
     }
 }
 
-// Each holder of these queues masks local interrupts and takes neither
-// PROCESS_MANAGER, a scheduler lock nor the other queue while it holds one, so
-// a peer's hold is short. Publishers wait for it: a failed try-lock used to
-// abandon the receipt, and its row was settled without a reclaim (#1693).
+// A hold of these queues runs to its end. `IrqSafeMutex` masks local
+// interrupts for the whole hold, so the holder cannot be preempted or
+// abandoned mid-hold; that is how the plain `spin::Mutex` queues of 6c5be902
+// were left held, and why their non-owning paths try-locked. A holder takes
+// neither PROCESS_MANAGER, a scheduler lock nor the other queue. It may
+// allocate (`try_reserve`), which takes the heap lock, and the heap does not
+// touch these queues. The drain's scan checks each receipt with atomics only,
+// so its hold is O(queue length). Publishers therefore wait for a peer's hold:
+// a failed try-lock used to abandon the receipt, and its row was settled
+// without a reclaim (#1693).
 static PENDING_PROCESS_RECLAIMS: crate::irq_safe_mutex::IrqSafeMutex<
     alloc::vec::Vec<PendingProcessReclaim>,
 > = crate::irq_safe_mutex::IrqSafeMutex::new(alloc::vec::Vec::new());
