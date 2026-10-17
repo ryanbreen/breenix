@@ -330,3 +330,36 @@ vertex baseline unless it says otherwise; the vertex baseline is `VERT`, `DCL IN
 | Full readback is staged until every band passed both complementary-poison observations; no pixels on any refusal | O: gpu.md sections 1.4 and 1.8 |
 | Uncertain scanout bindings hold every candidate resource until a later completed bind/flush or confirmed reset; serialization survives interrupted device waits | O: gpu.md section 1.4.1, device-access hold sets |
 | Status view 2560x1600; category rows at y=48+160r, case tiles at x=48+80c, size 64x112; background 0xFF181512, pending 0xFF484542, running 0xFF3894F2, pass 0xFF45C46A, fail 0xFFE84D42 | O: G2 display sizing and palette choices implementing gpu.md section 1.10; every tile uses the existing solid pipeline |
+
+## B5: G2 device confirmation
+
+The committed G2 checks are `userspace/programs/src/suite_gpu/readback.rs`, with the common scene
+builder and exact canvas comparison in `common.rs`. Reproduce with the ARM64 production build and
+`scripts/boot-interactive.sh --mode suite --suite gpu --gpu-gl --display --serial-log SERIAL`, where
+SERIAL is a new output file chosen by the operator. The GL host stack and renderer pins are those of
+section 1.6.1 and P above. No temporary experiment code, captured driver stream or new shader grammar
+is used. The host renderer attestation was accepted.
+
+The confirming source commit is `fca02d03be856b7ab0079e469169c92f94277ca2`, Vigil run
+`20261017T044658Z-qemu`. Its producer printed `SUITE gpu DONE passed=53 failed=117 skipped=0 total=170`:
+device 12/12, submit 22/22 and readback 19/19; the 117 failures are the unwritten G3–G8 checks, so this
+is G2 acceptance, not a green full suite. The preceding run, `20261017T044322Z-qemu` at
+`e587733f055a3b05631520d4b76d5e81be5689f8`, had all 19 readback checks passing but submit 21/22:
+PRESENT rejected a valid new target before its first writer. The confirming commit repairs that
+Breenix restriction and preserves `submit/fence-wait`'s generation-zero check.
+
+| Inputs and committed check | Output establishing the fact | Fact and limit |
+|---|---|---|
+| `full_target`: BGRA target 47x13, target bind bits 1, 3 and 18; clear to BGRA (17,83,209,127). `present` sends SET_SCANOUT with rect (0,0,47,13), scanout 0 and the created resource, then RESOURCE_FLUSH for the same resource and rect. Each request carries a distinct fence, whose returned FENCE flag and echo are checked before accepting it. | `SUITE gpu CASE readback/full-target PASS`; `record-fields PASS` (with the same case-line prefix below) | Both specified requests are accepted as OK_NODATA (0x1100), and their fenced completions allow publication of the binding. This is the guest/device boundary; it makes no claim about the host window. |
+| `record_fields`: a 17x9 BGRA target, clear plus overlapping solid rectangles, then present and read. Checks every defined field, nonzero identities, the scanout flag, actual present/readback/render command answers, all reserved/window bytes and the CAPS renderer string; repeats for monotonic observation serials. | `SUITE gpu CASE readback/record-fields PASS` | Record v2 and its zero reserved regions match section 1.8 for a presented target; this confirms the encoder and bookkeeping, not a new wire layout. |
+| `format_canonical`: BGRA and RGBA targets 13x7, background 0x3C5AA5C3, rectangles (1,1,4,3) in BGRA (17,83,209,127) and (3,2,7,5) in (241,7,61,0). | `SUITE gpu CASE readback/format-canonical PASS` | Both formats, alpha included, return the exact canonical BGRA canvas. The solid programs and grammar are unchanged from G1. |
+| `partial_rect`, `padded_stride`: target 73x17; boxes (1,1,3,4), (2,2,48,7), (72,16,1,1), (0,0,73,17); caller stride is 4w, or 4w+13. Device pitch remains 512. | `SUITE gpu CASE readback/partial-rect PASS`; `SUITE gpu CASE readback/padded-stride PASS` | Multiple rows and natural rows below or not aligned to 256 bytes are exact, with caller padding and tail guards untouched. This confirms the existing B3 transfer layout for these inputs. |
+| `poison_unwritten`: pixels equal to the poison, its complement and a third colour; `refused`: separate owned targets and one armed transfer/fence/resource fault, then clean recovery before any explicit disarm. `fault_corrupt_pixel` and `fault_suppress_draw` compare actual device bytes with independent canvases. | `SUITE gpu CASE readback/poison-unwritten PASS`; `fault-skip-transfer PASS`, `fault-stale-fence PASS`, `fault-wrong-resource PASS`, `fault-corrupt-pixel PASS`, `fault-suppress-draw PASS` with the same case-line prefix | Two observations agree on written pixels, omitted transfers expose differing bytes, wrong identity is refused with its named reason, corruption differs at exactly (0,0), and a completed fence with a suppressed draw fails the exact comparison. Each armed point fires once and clean recovery succeeds. |
+| `large_target`: full 2560x1600 target, background (17,83,209,127), one-pixel left/right/bottom edges and a 2x2 centre rectangle, as specified in the committed check. | `SUITE gpu CASE readback/large-target PASS` | Every pixel across all transfer bands is exact at the required 2560x1600 target size. No timing or later performance claim is made. |
+
+The only new header value these requests need is H:648's SCANOUT bind bit; the two VirtIO request
+layouts and command numbers above come from V. All other geometry, colours, reason codes, palette,
+allocation sizes and hold-set decisions are Breenix choices, not policies learned from the host renderer.
+The cache-invalidation boundary has two targeted host checks in `kernel/src/gpu/observation.rs`:
+noncoherent memory exposes stale poison without invalidation, and the required structure check routes
+both readback observations through that boundary. Both pass; no other host-test set was run for G2.
