@@ -97,6 +97,11 @@ context is.
 | 3 DEVICE_RESET | the device was reset with it outstanding; resets happen only for a device fault or the watchdog's no-progress condition (`docs/gui/gpu.md` section 1.4.1) |
 | 4 FENCE_MISMATCH | the device's answer carried another submission's fence |
 
+These statuses describe the caller-visible result, not permission to release DMA backing. In particular,
+DEVICE_HUNG and DEVICE_RESET do not themselves prove that device access has ended. Backing remains held
+until actual device completion or a successfully confirmed reset supplies that proof; a failed reset
+leaves it held, including after a timeout, kill or EIO return (section 1.4.1 of `docs/gui/gpu.md`).
+
 **`READBACK` (64 bytes):** `target: u64`, `x, y, width, height: u32`, `pixels: u64` (address),
 `pixels_len: u64`, `stride: u32`, 4 reserved, `record: u64` (address of 1,024 bytes), 8 reserved. Waits
 for every accepted submission that writes the target, then reads the rectangle as canonical BGRA rows

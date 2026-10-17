@@ -250,8 +250,12 @@ and 415 (`652a4494`) was reverted (`0f53872e`) and is not reapplied.
   makes no progress for another 2 s after that quarantine, the kernel resets the device (virtio-gpu reset and
   reinitialization; SVGA3's restart in the VMware backend), every context gets EIO `device-reset`, and the
   display owner and compositor recreate their resources; the console is redrawn. virtio-gpu defines no
-  per-context cancellation, so destroying a context is not assumed to stop host work; only the reset is.
-  The watchdog examines the outstanding submissions at least once every 250 ms.
+  per-context cancellation, so destroying a context is not assumed to stop host work. Completing a fence
+  with EIO reports failure to callers; it does not prove that device access has ended. DMA backing remains
+  held until actual device completion or a successfully confirmed reset proves that the device can no
+  longer access it. A reset request or an unsuccessful reset supplies no such proof; if reset fails, the
+  backing stays held, even after callers have received EIO. The watchdog examines the outstanding
+  submissions at least once every 250 ms.
 - **Device errors quarantine one context; resets are for the device.** A submission the device answers with
   an error completes its fence with EIO `device-error`, and its targets become invalid. Two consecutive
   submissions of one context completing with device errors (no OK completion between them, in fence order)
@@ -266,8 +270,9 @@ and 415 (`652a4494`) was reverted (`0f53872e`) and is not reapplied.
   the same terms when the catch-up writes it. Test-control point 27 follows the same rule (section 1.8).
 - **Synchronous device work.** Every device wait the kernel makes on a caller's behalf, not only `WAIT`, is
   enrolled in the watchdog and ends within 250 ms of a kill: catalogue warm-up in `CONTEXT_CREATE` from G1,
-  `READBACK`'s transfers from G2, and every later one. Its DMA backing stays held until its fence completes
-  or the device is reset.
+  `READBACK`'s transfers from G2, and every later one. Its DMA backing stays held until actual device
+  completion or a successfully confirmed reset proves that device access has ended. Reporting EIO, a
+  timeout or a kill to the caller does not release that backing; a failed reset leaves it held.
 - **Buffers are snapshotted at submission.** `SUBMIT` copies each buffer range the stream names once, before
   validation; validation, the work estimate and translation read only that copy, so neither a later
   `UPLOAD` (from G3) nor a concurrent write can change what was validated. Charging that copy against a
@@ -294,13 +299,18 @@ and 415 (`652a4494`) was reverted (`0f53872e`) and is not reapplied.
   finds all four fences incomplete (`WAIT` with timeout 0 returns ETIMEDOUT for each) before it submits the
   fifth, the fifth `SUBMIT` waits for room, and then all five complete OK in order.
 - **Kills.** `WAIT` returns within 250 ms of a kill, but the killed process's queued GPU work is not cancelled:
-  its contexts are quarantined, and its resources stay held until their fences complete or the watchdog
-  resets the device, and are freed then (`isolation/killed-work-drains`).
+  its contexts are quarantined, and its resources stay held until actual device completion or a
+  successfully confirmed reset proves that device access has ended (`isolation/killed-work-drains`).
+  Caller-visible fence errors do not drain this work or release its holds; a failed reset leaves them held.
+  Resources are freed only when the handle is dropped and all holds have ended.
 - **Hold sets.** A resource is freed only when its handle is dropped and its hold set is empty. Holders: each
   submission that reads or writes it (until its fence), a committed window buffer and a remnant (until
   retired), the compositor's sampling submission (until its fence), the scanout binding (until another
   target is presented and that present's fence completes), a capture or readback (until its transfer fence),
-  and an `ACQUIRE` replay copy (until its fence).
+  and an `ACQUIRE` replay copy (until its fence). For every device-access hold above, "until its fence"
+  means actual device completion, not a caller-visible error synthesized at quarantine or reset. A
+  successfully confirmed reset that proves device access has ended can also retire these holds; merely
+  requesting reset or failing to reset cannot. Reporting EIO never by itself empties a hold set.
 - **The render-completion handoff** (used by BreenGL's windows, section 2.1): each target records the fence of
   the last accepted submission that writes it. `COMMIT` records that fence with the commit and from then on
   refuses submissions that write the committed buffer. The compositor samples a commit only after that fence
