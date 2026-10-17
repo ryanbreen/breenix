@@ -131,6 +131,20 @@ class RedactorTest(unittest.TestCase):
         redact = m.Redactor({'IDRAC_USER': 'u', 'IDRAC_PASSWORD': 'p', 'REDACT_IDENTIFIERS': 'x'})
         self.assertEqual(redact('user=u password=p host=x'), 'user=<site> password=<site> host=<site>')
 
+    def test_digits_and_commit_ids_survive_site_configuration(self):
+        text = ('3 13 33 1234 82403 12:34:56 1.2.3 ratio 3:2 seconds=3 '
+                'commit=3abc8240def12345 0193b1d86dd372ec891bae799f6da20deef16fc1')
+        self.assertEqual(self.redact(text), text)
+        event = {'event': 'power-on', 'seconds': 3, 'commit': '3abc8240def12345'}
+        self.assertEqual(json.loads(self.redact(json.dumps(event))), event)
+
+    def test_identifiers_match_whole_tokens(self):
+        for name in ('fixturehost', 'fixture-container', 'FX12345', 'fixtureauto',
+                     self.site['IDRAC_PASSWORD']):
+            self.assertEqual(self.redact('name="' + name + '"'), 'name="<site>"')
+            self.assertEqual(self.redact('prefix' + name + 'suffix'), 'prefix' + name + 'suffix')
+        self.assertEqual(self.redact('http://fixturehost:8240/'), 'http://<site>:<site>/')
+
     def test_url_path_components_are_private(self):
         redact = m.Redactor({'BOOT_URL': 'http://fixture.invalid/private-folder/payload.efi'})
         for text in ('http://fixture.invalid/private-folder/payload.efi', 'fixture.invalid',
@@ -495,10 +509,16 @@ class ReaperTest(StateTest):
 class QueueTest(unittest.TestCase):
     def test_requests_are_spaced_and_power_off_goes_first(self):
         order = []
+        entered = threading.Event()
+        release = threading.Event()
 
         class Controller:
             def redfish(self, method, path, body):
                 order.append((path, time.monotonic()))
+                if path == '/read0':
+                    entered.set()
+                    if not release.wait(10):
+                        raise RuntimeError('test request was not released')
                 time.sleep(0.05)
                 return {'ok': True}
         saved = machine.SPACING_SECONDS
@@ -508,20 +528,44 @@ class QueueTest(unittest.TestCase):
             threads = [threading.Thread(target=queue.submit, args=({'op': 'redfish', 'method': 'GET',
                                                                      'path': f'/read{i}', 'priority': 1},))
                        for i in range(3)]
-            for thread in threads:
+            threads[0].start()
+            self.assertTrue(entered.wait(10))
+            for thread in threads[1:]:
                 thread.start()
-                time.sleep(0.01)
             off = threading.Thread(target=queue.submit, args=({'op': 'redfish', 'method': 'POST', 'path': '/off',
                                                                 'priority': 0},))
             off.start()
+            with queue.condition:
+                self.assertTrue(queue.condition.wait_for(lambda: len(queue.heap) == 3, timeout=10))
+            release.set()
             for thread in threads + [off]:
                 thread.join()
         finally:
+            release.set()
             machine.SPACING_SECONDS = saved
         self.assertEqual(len(order), 4)
         self.assertEqual(order[1][0], '/off')
         gaps = [later[1] - earlier[1] for earlier, later in zip(order, order[1:])]
         self.assertTrue(all(gap >= 0.2 for gap in gaps), gaps)
+
+    def test_power_off_overtakes_read_during_pacing(self):
+        order = []
+        controller = Mock()
+        controller.redfish.side_effect = lambda method, path, body: (order.append(path) or {'ok': True})
+        queue = machine.Queue(controller)
+        queue.last_end = time.monotonic() + 1
+        read = threading.Thread(target=queue.submit, args=({'op': 'redfish', 'method': 'GET',
+                                                          'path': '/read', 'priority': 1},))
+        read.start()
+        # The worker must leave the read in the queue until dispatch, even while pacing.
+        with queue.condition:
+            self.assertTrue(queue.condition.wait_for(lambda: len(queue.heap) == 1, timeout=10))
+        off = threading.Thread(target=queue.submit, args=({'op': 'redfish', 'method': 'POST',
+                                                         'path': '/off', 'priority': 0},))
+        off.start()
+        read.join(15)
+        off.join(15)
+        self.assertEqual(order, ['/off', '/read'])
 
 
 class PayloadTest(unittest.TestCase):
@@ -672,6 +716,67 @@ class DriverTest(StateTest):
             call()
         self.assertEqual(raised.exception.status, status)
         return raised.exception
+
+    def test_linux_completion_requires_checked_census(self):
+        import metal_census
+        from metal_census_test import capture
+        d = self.driver
+        d.census = metal_census.Census()
+        lines, _ = capture()
+        for line in lines[:-1]:
+            d.on_line(line)
+        self.assertIsNotNone(d.kernel_started)
+        self.finish(lambda: d.on_line(lines[-1]), m.EXIT_DONE)
+        d.census = metal_census.Census()
+        d.on_line('metal-linux-start')
+        self.finish(lambda: d.on_line('metal-linux-ok'), m.EXIT_SHORT)
+
+    def test_linux_evidence_write_failure_still_closes_record(self):
+        d = self.driver
+        d.census = Mock()
+        d.census.write.side_effect = OSError('fixture storage failure')
+        with patch.object(d, 'create_record'), patch.object(d, 'claim'), \
+             patch.object(d, 'prepare_payload'), patch.object(d, 'preflight'), \
+             patch.object(d, 'do_stage'), patch.object(d, 'start_console'), \
+             patch.object(d, 'power_on'), patch.object(d, 'watch', side_effect=boot.Finish(m.EXIT_DONE, 'done')), \
+             patch.object(d, 'power_off', return_value=True) as off, patch.object(d, 'cleanup') as cleanup:
+            self.assertEqual(d.run(), m.EXIT_INCOMPLETE)
+        off.assert_called_once_with(False)
+        cleanup.assert_called_once_with(m.EXIT_INCOMPLETE)
+
+    def test_linux_payload_rejects_tampered_efi_before_staging(self):
+        d = self.driver
+        d.args.payload = 'linux'
+        inputs = d.stage / 'inputs'
+        inputs.mkdir(parents=True)
+        (inputs / 'ready').touch()
+        (inputs / 'metal-linux.efi').write_bytes(b'changed')
+        m.write_json(inputs / 'build.json', {'files': {'efi': {'size': 7, 'sha256': 'bad'}}})
+        self.finish(d.prepare_payload, m.EXIT_CANCELLED)
+        self.assertIsNone(d.payload_facts)
+
+    def test_linux_payload_checks_config_and_retains_manifest(self):
+        d = self.driver
+        d.args.payload = 'linux'
+        inputs = d.stage / 'inputs'
+        inputs.mkdir(parents=True)
+        (inputs / 'ready').touch()
+        import metal_census
+        image = b'MZfixture'
+        config = ('\n'.join('CONFIG_' + name + '=y' for name in metal_census.REQUIRED_CONFIG) +
+                  '\nCONFIG_INITRAMFS_SOURCE="fixture"\n').encode()
+        (inputs / 'metal-linux.efi').write_bytes(image)
+        (inputs / 'config').write_bytes(config)
+        manifest = {'files': {'efi': {'size': len(image), 'sha256': hashlib.sha256(image).hexdigest()},
+                              'config': {'size': len(config), 'sha256': 'bad'}}}
+        m.write_json(inputs / 'build.json', manifest)
+        self.finish(d.prepare_payload, m.EXIT_CANCELLED)
+        manifest['files']['config']['sha256'] = hashlib.sha256(config).hexdigest()
+        m.write_json(inputs / 'build.json', manifest)
+        d.prepare_payload()
+        self.assertEqual(d.payload_facts['contentType'], 'application/efi')
+        self.assertEqual((d.dir / 'linux-config').read_bytes(), config)
+        self.assertEqual(m.read_json(d.dir / 'linux-build.json'), manifest)
 
     def test_deadlines_require_the_actual_phase_evidence(self):
         d = self.driver

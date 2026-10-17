@@ -1,0 +1,52 @@
+#!/bin/sh
+# RAM-only platform census; emits bytes rather than driver observations.
+export PATH=/bin
+/bin/busybox --install -s /bin
+mount -t devtmpfs devtmpfs /dev
+exec </dev/ttyS0 >/dev/ttyS0 2>&1
+stty -F /dev/ttyS0 115200 raw -echo
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+failed=0
+: > /tmp/inventory
+emit() {
+    name=$1
+    source=$2
+    if ! cat "$source" > /tmp/value; then failed=1; return; fi
+    size=$(wc -c < /tmp/value)
+    hash=$(sha256sum /tmp/value)
+    hash=${hash%% *}
+    printf '%s %s %s\n' "$name" "$size" "$hash" >> /tmp/inventory
+    printf 'FILE %s %s %s\nBEGIN %s\n' "$name" "$size" "$hash" "$name"
+    base64 /tmp/value
+    printf 'END %s\n' "$name"
+}
+printf 'metal-linux-start\n'
+find /sys/firmware/acpi/tables -type f | sort > /tmp/tables
+while read -r path; do emit "acpi/${path#/sys/firmware/acpi/tables/}" "$path"; done < /tmp/tables
+for path in /sys/firmware/memmap/*; do
+    [ -d "$path" ] || continue
+    for field in start end type; do emit "memmap/${path##*/}/$field" "$path/$field"; done
+done
+for path in /sys/bus/pci/devices/*; do
+    [ -d "$path" ] || continue
+    for field in config vendor device class revision irq resource; do emit "pci/${path##*/}/$field" "$path/$field"; done
+    case $(cat "$path/class") in
+        0x01*|0x02*|0x0c03*)
+            if [ -L "$path/driver" ]; then printf 'unexpected-device-driver\n'; failed=1; fi ;;
+    esac
+done
+/bin/cpuid > /tmp/cpuid
+emit cpu/cpuid /tmp/cpuid
+emit proc/cpuinfo /proc/cpuinfo
+emit proc/iomem /proc/iomem
+emit proc/interrupts /proc/interrupts
+emit proc/cmdline /proc/cmdline
+dmesg > /tmp/dmesg
+emit kernel/dmesg /tmp/dmesg
+grep -iE 'ACPI|APIC|CPU|tsc|hpet' /tmp/dmesg > /tmp/platform-log
+emit kernel/platform-log /tmp/platform-log
+emit census/manifest /tmp/inventory
+printf 'metal-linux-files-done\n'
+if [ "$failed" = 0 ]; then printf 'metal-linux-ok\n'; else printf 'metal-linux-failed\n'; fi
+while :; do sleep 60; done

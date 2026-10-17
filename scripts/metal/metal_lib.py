@@ -511,7 +511,7 @@ class Redactor:
             else:
                 # Colons delimit named identifiers (host:port, user:name),
                 # but join digits in clock times and ratios.
-                joiner = r'[./:@%+~-]' if len(value) < 4 or value.isdecimal() else r'[./@%+~-]'
+                joiner = r'[./:@%+~-]' if len(value) < 4 else r'[./@%+~-]'
                 patterns.append(rf'(?<!\w)(?<!\w{joiner}){re.escape(value)}(?!\w|{joiner}\w)')
         self.pattern = re.compile('|'.join(patterns), re.I) if patterns else None
         # One pass protects addresses from short site literals and replacement labels from later substitutions.

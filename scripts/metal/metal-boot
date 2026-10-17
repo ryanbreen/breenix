@@ -30,10 +30,11 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import metal_lib as m  # noqa: E402
 import metal_image  # noqa: E402
+import metal_census  # noqa: E402
 
 # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
 MODES = ('default',)
-PAYLOADS = ('image', 'hang', 'hang-img', 'hang-iso', 'none')
+PAYLOADS = ('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux')
 CEILING_SECONDS = {'default': 900}
 MODE_DEADLINE_SECONDS = {'default': 300}
 INPUT_DEADLINE_SECONDS = 2 * 3600
@@ -124,6 +125,7 @@ class Driver:
         self.lease_ceiling = None
         self.post_budget = m.DEFAULT_POST_BUDGET
         self.stopping = threading.Event()
+        self.census = metal_census.Census() if args.payload == 'linux' else None
 
     # claim-lint:ok: #1680 Reviewed tool contract against this function and the host tests in tests/metal_tools_test.py.
     # Record helpers: event text is always a fixed template or redacted.
@@ -144,7 +146,7 @@ class Driver:
         target = {'main': {}}
         if self.args.target.startswith('branch:'):
             target = {'branch': {'name': self.args.target.split(':', 1)[1]}}
-        kind = 'boot' if self.args.payload == 'image' else 'fault-test'
+        kind = {'image': 'boot', 'linux': 'platform-census'}.get(self.args.payload, 'fault-test')
         run = {'id': self.id, 'platform': 'metal', 'arch': 'x86_64', 'mode': self.args.mode, 'target': target,
                'taskName': self.args.task or self.id, 'watch': False, 'display': False, 'startedAt': m.now(),
                'payload': self.args.payload, 'kind': kind, 'inject': self.args.inject or None,
@@ -232,6 +234,29 @@ class Driver:
             if m.now() > deadline:
                 raise Finish(m.EXIT_CANCELLED, 'the image build did not deliver its inputs in time')
             time.sleep(2)
+        if self.args.payload == 'linux':
+            manifest = m.read_json(inputs / 'build.json', {})
+            image = inputs / 'metal-linux.efi'
+            expected = manifest.get('files', {}).get('efi', {})
+            if (image.stat().st_size != expected.get('size') or
+                    metal_image.sha256(image) != expected.get('sha256')):
+                raise Finish(m.EXIT_CANCELLED, 'Linux payload checksum mismatch')
+            config = inputs / 'config'
+            config_facts = manifest.get('files', {}).get('config', {})
+            if (config.stat().st_size != config_facts.get('size') or
+                    metal_image.sha256(config) != config_facts.get('sha256')):
+                raise Finish(m.EXIT_CANCELLED, 'Linux configuration checksum mismatch')
+            try:
+                metal_census.validate_config(config.read_text())
+            except ValueError:
+                raise Finish(m.EXIT_CANCELLED, 'Linux configuration violates instrument constraints')
+            shutil.copyfile(inputs / 'build.json', self.dir / 'linux-build.json')
+            shutil.copyfile(inputs / 'config', self.dir / 'linux-config')
+            self.payload_facts = {'path': image, 'size': expected['size'], 'sha256': expected['sha256'],
+                                  'contentType': metal_image.CONTENT_TYPES['efi'], 'name': 'metal-linux.efi'}
+            self.delivery['image'] = {k: v for k, v in self.payload_facts.items() if k != 'path'}
+            self.event('linux-payload-ready', sha256=expected['sha256'], size=expected['size'])
+            return
         build = m.read_json(inputs / 'build.json', {})
         self.delivery['build'] = build
         self.event('build-delivered', commit=build.get('commit'), guard=build.get('guardTarget'))
@@ -438,6 +463,19 @@ class Driver:
         if STUB_FAILED_LINE in line and self.kernel_started is None:
             self.event('stub-failed', observed_at=observed_at, seconds=seconds)
             raise Finish(m.EXIT_DELIVERY, 'the delivery stub could not start the bootloader')
+
+        if self.census:
+            if line == 'metal-linux-start' and self.kernel_started is None:
+                self.kernel_started = observed_at
+                self.last_stage = 'Linux census started'
+                self.event('linux-started', observed_at=observed_at, seconds=seconds)
+            try:
+                done = self.census.feed(line)
+            except ValueError:
+                raise Finish(m.EXIT_SHORT, 'platform facts failed validation')
+            if done:
+                self.event('linux-census-validated', observed_at=observed_at, files=len(self.census.files))
+                raise Finish(m.EXIT_DONE, 'platform facts validated')
         if BOOTLOADER_LINE in line and self.kernel_started is not None:
             raise Finish(m.EXIT_SHORT, 'the machine reset after the kernel started')
         if BOOTLOADER_LINE in line and 'bootloader' not in self.seen:
@@ -741,7 +779,16 @@ class Driver:
             self.event('decided', status=status, reason=finish.reason)
             self.phase(('Stopped: ' if status else 'Done: ') + finish.reason)
             if self.t0 is not None:
-                self.power_off(finish.hung)
+                off = self.power_off(finish.hung)
+                if self.census and status == m.EXIT_DONE:
+                    if off and not self.gap:
+                        try:
+                            self.census.write(self.dir / 'platform-facts')
+                        except (ValueError, OSError):
+                            self.event('linux-evidence-write-failed')
+                            status = m.EXIT_INCOMPLETE
+                    else:
+                        status = m.EXIT_INCOMPLETE
             if self.gap and status != m.EXIT_BUSY:
                 status = m.EXIT_INCOMPLETE
                 self.event('capture-incomplete', why='console gap')

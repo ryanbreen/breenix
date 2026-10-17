@@ -125,10 +125,10 @@ class Queue:
             with self.condition:
                 while not self.heap:
                     self.condition.wait()
+                # Choose at dispatch time so power-off can overtake reads during pacing.
+                while (delay := self.last_end + SPACING_SECONDS - time.monotonic()) > 0:
+                    self.condition.wait(delay)
                 _, _, request, done, slot = heapq.heappop(self.heap)
-            delay = self.last_end + SPACING_SECONDS - time.monotonic()
-            if delay > 0:
-                time.sleep(delay)
             started_at = m.now()
             try:
                 if request.get('op') == 'redfish':
