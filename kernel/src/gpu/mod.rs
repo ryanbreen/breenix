@@ -31,6 +31,7 @@ pub mod virgl;
 use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::cell::Cell;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use gpu_abi::errno::{EAGAIN, EDQUOT, EFAULT, EINTR, EINVAL, EIO, ENODEV, ENOMEM, ENOSYS, ETIMEDOUT};
@@ -1715,19 +1716,43 @@ fn destroy_resource(tgid: u64, handle: u64) -> bool {
     .unwrap_or(false)
 }
 
+/// One of the process's resources as `SUBMIT` sees it.
+struct Entry {
+    handle: u64,
+    id: u32,
+    kind: u32,
+    format: u32,
+    width: u32,
+    height: u32,
+    size: u64,
+    invalid: bool,
+    /// A buffer's backing, read once into the submission's snapshot.
+    backing: Option<Arc<Pages>>,
+}
+
 /// The process's resources as the validator and translator see them.
 struct View {
-    entries: Vec<(u64, u32, u32, u32, u32, u32, u64, bool, Arc<Pages>)>,
+    entries: Vec<Entry>,
 }
 
 impl View {
     fn of(c: &Core, tgid: u64) -> View {
         let mut entries = Vec::new();
         if let Some(p) = c.procs.get(&tgid) {
-            for (&h, id) in &p.resources {
-                if let Some(r) = c.resources.get(id) {
+            for (&handle, &id) in &p.resources {
+                if let Some(r) = c.resources.get(&id) {
                     if !r.lost {
-                        entries.push((h, *id, r.kind, r.format, r.width, r.height, r.size, r.invalid, r.backing.clone()));
+                        entries.push(Entry {
+                            handle,
+                            id,
+                            kind: r.kind,
+                            format: r.format,
+                            width: r.width,
+                            height: r.height,
+                            size: r.size,
+                            invalid: r.invalid,
+                            backing: (r.kind == kind::BUFFER).then(|| r.backing.clone()),
+                        });
                     }
                 }
             }
@@ -1735,43 +1760,126 @@ impl View {
         View { entries }
     }
 
-    fn get(&self, handle: u64) -> Option<&(u64, u32, u32, u32, u32, u32, u64, bool, Arc<Pages>)> {
-        self.entries.iter().find(|e| e.0 == handle)
+    fn get(&self, handle: u64) -> Option<&Entry> {
+        self.entries.iter().find(|e| e.handle == handle)
+    }
+
+}
+
+/// One buffer range a stream names, copied into the snapshot at word `first`.
+struct Range {
+    handle: u64,
+    offset: u64,
+    bytes: u64,
+    first: usize,
+}
+
+/// The buffer ranges a stream names, copied once at `SUBMIT` before validation:
+/// validation, the work estimate and translation all read this copy, never the buffer
+/// (`docs/gui/gpu.md` section 1.4.1, buffers are snapshotted at submission).
+struct Snapshot {
+    ranges: Vec<Range>,
+    words: WordBuf,
+    /// The range the last lookup found: commands read their ranges in stream order.
+    hint: Cell<usize>,
+}
+
+impl Snapshot {
+    /// Copy every `DRAW_BUFFER` range of `stream` that lies inside a buffer the process
+    /// owns. The copy stops at the first malformed command, where validation refuses the
+    /// stream, and takes at most the instance limit's rectangles, which bounds every range
+    /// validation reads.
+    fn take(stream: &WordBuf, view: &View) -> Result<Snapshot, i64> {
+        let mut snap = Snapshot { ranges: Vec::new(), words: WordBuf::new(), hint: Cell::new(0) };
+        let total = stream.len();
+        let mut rects = 0u64;
+        let mut at = 0usize;
+        while total - at >= 2 {
+            let code = stream.word(at);
+            let len = stream.word(at + 1) as usize;
+            if len < 2 || len > total - at {
+                break;
+            }
+            if code == stream::cmd::DRAW_BUFFER && len == 8 {
+                let handle = stream.word(at + 4) as u64 | (stream.word(at + 5) as u64) << 32;
+                let offset = stream.word(at + 6) as u64;
+                let count = stream.word(at + 7) as u64;
+                let bytes = 16 * count;
+                let fits = |e: &&Entry| offset % 16 == 0 && offset + bytes <= e.size && rects + count <= limits::INSTANCES;
+                if let Some(backing) = view.get(handle).filter(fits).and_then(|e| e.backing.as_ref()) {
+                    snap.ranges.try_reserve(1).map_err(|_| ENOMEM)?;
+                    let first = snap.words.len();
+                    let mut chunk = [0u8; 256];
+                    let mut done = 0u64;
+                    while done < bytes {
+                        let n = (bytes - done).min(chunk.len() as u64) as usize;
+                        backing.read((offset + done) as usize, &mut chunk[..n]);
+                        for w in chunk[..n].chunks_exact(4) {
+                            if !snap.words.push(u32::from_le_bytes([w[0], w[1], w[2], w[3]])) {
+                                return Err(ENOMEM);
+                            }
+                        }
+                        done += n as u64;
+                    }
+                    snap.ranges.push(Range { handle, offset, bytes, first });
+                    rects += count;
+                }
+            }
+            at += len;
+        }
+        Ok(snap)
+    }
+
+    /// The rectangle at byte `offset` of buffer `handle`, from the copy.
+    fn rect(&self, handle: u64, offset: u64) -> [i32; 4] {
+        let inside = |r: &Range| r.handle == handle && offset >= r.offset && offset + 16 <= r.offset + r.bytes;
+        let hint = self.hint.get();
+        let found = [hint, hint + 1]
+            .into_iter()
+            .find(|&i| self.ranges.get(i).is_some_and(inside))
+            .or_else(|| self.ranges.iter().position(inside));
+        let Some(i) = found else { return [0; 4] };
+        self.hint.set(i);
+        let r = &self.ranges[i];
+        let w = r.first + ((offset - r.offset) / 4) as usize;
+        [0, 1, 2, 3].map(|k| self.words.word(w + k) as i32)
     }
 }
 
-impl Resolver for View {
+/// The view's handles with the snapshot's buffer contents.
+struct Resolved<'a> {
+    view: &'a View,
+    snap: &'a Snapshot,
+}
+
+impl Resolver for Resolved<'_> {
     fn target(&self, handle: u64) -> Option<TargetInfo> {
-        let e = self.get(handle)?;
-        (e.2 == kind::TARGET).then_some(TargetInfo { width: e.4, height: e.5, invalid: e.7 })
+        let e = self.view.get(handle)?;
+        (e.kind == kind::TARGET).then_some(TargetInfo { width: e.width, height: e.height, invalid: e.invalid })
     }
 
     fn buffer_size(&self, handle: u64) -> Option<u64> {
-        let e = self.get(handle)?;
-        (e.2 == kind::BUFFER).then_some(e.6)
+        let e = self.view.get(handle)?;
+        (e.kind == kind::BUFFER).then_some(e.size)
     }
 
     fn buffer_rect(&self, handle: u64, offset: u64) -> [i32; 4] {
-        let Some(e) = self.get(handle) else { return [0; 4] };
-        let mut b = [0u8; 16];
-        e.8.read(offset as usize, &mut b);
-        let w = |i: usize| i32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]);
-        [w(0), w(4), w(8), w(12)]
+        self.snap.rect(handle, offset)
     }
 }
 
-impl encode::Bindings for View {
+impl encode::Bindings for Resolved<'_> {
     fn target(&self, handle: u64) -> Option<encode::TargetRes> {
-        let e = self.get(handle)?;
-        if e.2 != kind::TARGET {
+        let e = self.view.get(handle)?;
+        if e.kind != kind::TARGET {
             return None;
         }
-        let vformat = if e.3 == format::R8G8B8A8 { wire::format::R8G8B8A8_UNORM } else { wire::format::B8G8R8A8_UNORM };
-        Some(encode::TargetRes { id: e.1, format: vformat, info: TargetInfo { width: e.4, height: e.5, invalid: e.7 } })
+        let vformat = if e.format == format::R8G8B8A8 { wire::format::R8G8B8A8_UNORM } else { wire::format::B8G8R8A8_UNORM };
+        Some(encode::TargetRes { id: e.id, format: vformat, info: TargetInfo { width: e.width, height: e.height, invalid: e.invalid } })
     }
 
     fn buffer_rect(&self, handle: u64, offset: u64) -> [i32; 4] {
-        Resolver::buffer_rect(self, handle, offset)
+        self.snap.rect(handle, offset)
     }
 }
 
@@ -1787,8 +1895,8 @@ fn named(words: &WordBuf, view: &View) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
         let len = words.word(at + 1) as usize;
         let handle = |i: usize| words.word(at + i) as u64 | (words.word(at + i + 1) as u64) << 32;
         let found = match code {
-            stream::cmd::BEGIN => view.get(handle(2)).map(|e| (e.1, true)),
-            stream::cmd::DRAW_BUFFER => view.get(handle(4)).map(|e| (e.1, false)),
+            stream::cmd::BEGIN => view.get(handle(2)).map(|e| (e.id, true)),
+            stream::cmd::DRAW_BUFFER => view.get(handle(4)).map(|e| (e.id, false)),
             _ => None,
         };
         if code == stream::cmd::BEGIN {
@@ -1836,7 +1944,9 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
     .ok_or(ENODEV)??;
     let words = WordBuf::from_user(a.stream, a.length as usize)?;
     let view = with_core(|c| View::of(c, tgid)).ok_or(ENODEV)?;
-    let plan = match stream::validate(&words, &view) {
+    let snap = Snapshot::take(&words, &view)?;
+    let resolved = Resolved { view: &view, snap: &snap };
+    let plan = match stream::validate(&words, &resolved) {
         Ok(plan) => plan,
         Err(r) => {
             let errno = if r.is_work_limit() { EDQUOT } else { EINVAL };
@@ -1898,7 +2008,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         return Err(EIO);
     };
     let mut enc = encode::Enc::new();
-    encode::translate(&mut enc, &mut objects, &words, &view, vertex_buffer.unwrap_or(default_vb), FLIP_Y);
+    encode::translate(&mut enc, &mut objects, &words, &resolved, vertex_buffer.unwrap_or(default_vb), FLIP_Y);
     let chunks = enc.finish();
     let mut held = named_ids.clone();
     if let Some(vb) = vertex_buffer {

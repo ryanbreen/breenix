@@ -90,7 +90,9 @@ pub trait Resolver {
     fn target(&self, handle: u64) -> Option<TargetInfo>;
     /// The size of the buffer `handle` names, if the process owns one by that handle.
     fn buffer_size(&self, handle: u64) -> Option<u64>;
-    /// The rectangle at byte `offset` of a buffer the resolver already named.
+    /// The rectangle at byte `offset` of a buffer the resolver already named, read from
+    /// the submission's one copy of that range, taken before validation
+    /// (`docs/gui/gpu.md` section 1.4.1: buffers are snapshotted at submission).
     fn buffer_rect(&self, handle: u64, offset: u64) -> [i32; 4];
 }
 
