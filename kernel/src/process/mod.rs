@@ -582,6 +582,9 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
         crate::task::process_task::redeem_exit_report(pid, reported_exit_code, report_claimer);
     }
 
+    #[cfg(all(target_arch = "aarch64", feature = "force_exit_report_reap_race"))]
+    force_exit_report_reap_race(pid);
+
     // The two-phase path finishes the thread's exit. Its report claim finds
     // the report already claimed, here or by a natural exit that committed
     // first, and leaves it to that claimer.
@@ -593,6 +596,40 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
     }
 
     outcome
+}
+
+/// Hold the first killed `sigkill_teardown_test` row's exit, after its parent
+/// was woken and before `handle_thread_exit`, until the parent has reaped it.
+/// This changes only when the killer runs; the parent reaps through the
+/// production wait path and the userspace test keeps its report requirement.
+#[cfg(all(target_arch = "aarch64", feature = "force_exit_report_reap_race"))]
+fn force_exit_report_reap_race(pid: ProcessId) {
+    use core::sync::atomic::AtomicBool;
+    static ARMED: AtomicBool = AtomicBool::new(true);
+    fn counter() -> u64 {
+        let value: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, cntvct_el0", out(reg) value, options(nomem, nostack));
+        }
+        value
+    }
+    let victim = with_process_manager(|pm| {
+        pm.get_process(pid)
+            .is_some_and(|row| row.name.contains("sigkill_teardown_test"))
+    })
+    .unwrap_or(false);
+    if !victim || !ARMED.swap(false, Ordering::AcqRel) {
+        return;
+    }
+    let limit = crate::arch_impl::aarch64::timer::frequency_hz() / 20;
+    let start = counter();
+    while counter().wrapping_sub(start) < limit {
+        if with_process_manager(|pm| pm.get_process(pid).is_none()).unwrap_or(true) {
+            return;
+        }
+        core::hint::spin_loop();
+    }
+    panic!("parent did not reap the held victim within 50 ms");
 }
 
 /// Execute a function with the process manager while interrupts are disabled (ARM64)
