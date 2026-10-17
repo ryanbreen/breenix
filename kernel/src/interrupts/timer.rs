@@ -51,7 +51,7 @@ pub extern "C" fn timer_interrupt_handler(_from_userspace: u8, reschedule_ipi: u
     // Uses the TICKS counter value as payload for timing analysis
     // Reschedule IPIs and retry self-IPIs share this return path, but are
     // not timer ticks.
-    if reschedule_ipi == 0 && scheduler::timer_vector_entry_was_tick_x86() {
+    if reschedule_ipi == 0 {
         trace_timer_tick(now);
     }
 
