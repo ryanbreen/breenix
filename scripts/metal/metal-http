@@ -2,10 +2,11 @@
 """The single-transfer boot image server (docs/metal/README.md, "Delivery").
 
 # claim-lint:ok: #1680 Reviewed tool contract against this function and the host tests in tests/metal_tools_test.py.
-One route. While a boot has an image staged and it has not yet been sent in full, the route answers HEAD and GET
+The firmware route answers HEAD and GET while a boot has an image staged and it has not yet been sent in full
 (whole, or one byte range at a time) with that file; a transfer that breaks off can be retried; once the whole file
 has been sent, in one response or across ranges, and while nothing is staged, requests get 404, so a machine that resets cannot boot the same image again. Every request and
 transfer is logged to STATE/http.jsonl, without the client's address.
+The independent probe-file route does not consume the firmware transfer.
 """
 import hashlib
 import http.server

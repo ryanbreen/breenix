@@ -299,7 +299,7 @@
     {
       "id": "real-host",
       "title": "Fetch from a real host",
-      "summary": "The production probe fetches the site file over TCP and verifies its SHA-256 checksum.",
+      "summary": "The production probe fetches a known boot-server file over TCP and verifies its SHA-256 checksum.",
       "stages": {
         "probe": [
           {
