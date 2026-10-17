@@ -6,16 +6,16 @@ use spin::{Mutex, Once};
 use super::{BlockDevice, BlockError};
 
 const SECTOR_SIZE: usize = 512;
-static DISK: Once<RamDisk> = Once::new();
+static DISK: Once<RamDisk<'static>> = Once::new();
 
 #[derive(Clone)]
-struct RamDisk {
-    bytes: Arc<Mutex<&'static mut [u8]>>,
+struct RamDisk<'a> {
+    bytes: Arc<Mutex<&'a mut [u8]>>,
     len: usize,
 }
 
-impl RamDisk {
-    fn new(bytes: &'static mut [u8]) -> Result<Self, &'static str> {
+impl<'a> RamDisk<'a> {
+    fn new(bytes: &'a mut [u8]) -> Result<Self, &'static str> {
         if bytes.is_empty() || bytes.len() % SECTOR_SIZE != 0 {
             return Err("RAM disk must contain whole nonempty sectors");
         }
@@ -33,7 +33,7 @@ impl RamDisk {
     }
 }
 
-impl BlockDevice for RamDisk {
+impl BlockDevice for RamDisk<'_> {
     fn identity(&self) -> usize { Arc::as_ptr(&self.bytes) as usize }
     fn read_block(&self, block: u64, buf: &mut [u8]) -> Result<(), BlockError> {
         self.read_blocks(block, 1, buf)
@@ -87,13 +87,10 @@ pub fn device() -> Option<Box<dyn BlockDevice>> {
 mod tests {
     use super::*;
 
-    fn disk() -> RamDisk {
-        RamDisk::new(Box::leak(alloc::vec![0; 2048].into_boxed_slice())).unwrap()
-    }
-
     #[test]
     fn shared_writes_and_multisector_reads() {
-        let disk = disk();
+        let mut storage = [0; 2048];
+        let disk = RamDisk::new(&mut storage).unwrap();
         let other = disk.clone();
         assert_eq!(disk.identity(), other.identity());
         let input = [0x5a; 1024];
@@ -107,7 +104,8 @@ mod tests {
 
     #[test]
     fn refused_writes_preserve_data() {
-        let disk = disk();
+        let mut storage = [0; 2048];
+        let disk = RamDisk::new(&mut storage).unwrap();
         for (start, count, capacity) in [(3, 2, 1024), (u64::MAX, 1, 512), (0, usize::MAX, 512), (0, 2, 512)] {
             assert!(disk.write_blocks(start, count, &alloc::vec![0x5a; capacity]).is_err());
         }
@@ -120,8 +118,9 @@ mod tests {
 
     #[test]
     fn rejects_empty_and_partial_sector_images() {
+        let mut storage = [0; 513];
         for len in [0, 1, 511, 513] {
-            assert!(RamDisk::new(Box::leak(alloc::vec![0; len].into_boxed_slice())).is_err());
+            assert!(RamDisk::new(&mut storage[..len]).is_err());
         }
     }
 }
