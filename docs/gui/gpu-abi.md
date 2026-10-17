@@ -19,8 +19,8 @@ and completes like any other, and its fence is lost to the caller; `READBACK` is
 
 ## Admission
 
-The device is admitted when it has every capability of the profile (`docs/gui/gpu.md` section 1.5,
-item 8). Until it is, every op other than `VERSION` and `CAPS` returns ENODEV before its argument is
+The device is admitted when it has the capabilities required by the profile (`docs/gui/gpu.md` section 1.5,
+item 8). Until it is, ops other than `VERSION` and `CAPS` return ENODEV before their argument is
 decoded, and `CAPS` reports why. Ops the effort has not built yet (`MODES` and `SET_MODE`, until
 G7) return ENOSYS. An op number above 13 is EINVAL.
 
@@ -108,6 +108,10 @@ and makes it visible to the submissions sent after the call returns.
   adds the source bytes read, `cw × ch × bpp`, to the purpose's upload bytes.
 - The source rows are read before anything is sent: an unmapped or unreadable source returns EFAULT before
   anything is sent, written or counted.
+- Temporary upload staging uses guest-backing frames, charged like `READBACK` staging to the process's
+  192 MiB guest-backing quota and `RLIMIT_AS`. `UPLOAD` returns ENOMEM if staging cannot be allocated or
+  charged, before device work is sent or the resource is changed. `COUNTERS.resource_bytes` includes
+  this staging while held; the charge is released when the staging is freed.
 - An upload waits for a readback or upload of the same resource in progress, and for the submissions of the
   caller's other contexts that name the resource to complete. It does not wait for submissions of its own
   context: the device executes one context's commands in the order they were sent (which
@@ -121,6 +125,12 @@ and makes it visible to the submissions sent after the call returns.
   error, the watchdog ending it or a reset decided while it was outstanding returns EIO and leaves the
   texture invalid, as a failed submission leaves its targets: sampling it is refused and reading it back
   returns EIO target-invalid, naming the upload, until an upload of the whole texture completes OK.
+- A signal interrupting an upload wait returns EINTR, and a kill ends the caller within 250 ms. If the
+  upload request has been sent, EINTR leaves its texture invalid with the same sampling refusal,
+  readback error and whole-upload recovery as EIO above. Interruption before the request is sent leaves
+  the resource unchanged. Returning EINTR does not cancel device work or release its holds: device-access
+  holds last until the fence is published and actual device completion or a successfully confirmed reset
+  has ended device access (`docs/gui/gpu.md` section 1.4.1).
 
 **`SUBMIT` (64 bytes):** `context: u64`, `stream: u64` (address), `length: u64` (bytes, a multiple of
 4, 1 to 80 MiB), `fence: u64` out, `error_index: u32` out, `error: u32` out, `estimate: u64` out, 16
@@ -152,10 +162,10 @@ leaves it held, including after a timeout, kill or EIO return (section 1.4.1 of 
 
 **`READBACK` (64 bytes):** `target: u64`, `x, y, width, height: u32`, `pixels: u64` (address),
 `pixels_len: u64`, `stride: u32`, `reason: u32` out at 44, `record: u64` (address of 1,024 bytes),
-`failed_submission: u64` out at 56. Waits for every accepted submission that writes the target, then reads
+`failed_submission: u64` out at 56. Waits for the accepted submissions that write the target, then reads
 the rectangle as canonical BGRA rows at `stride` with record v2 (`docs/gui/gpu.md` section 1.8).
 `target` names a target or a texture. An R8 texture reads back one byte per pixel, so its rows are `width`
-bytes (record `canonical` 1); every other format reads back as canonical BGRA, four bytes per pixel
+bytes (record `canonical` 1); the other formats read back as canonical BGRA, four bytes per pixel
 (`canonical` 0). A texture's record describes its last completed upload in the fields that describe a
 target's last submission: `context` is the upload's device context, `render_serial` its serial (numbered as
 a submission's), `render_fence` the fence its transfer carried, `render_status` the device's answer and
@@ -163,7 +173,7 @@ a submission's), `render_fence` the fence its transfer carried, `render_status` 
 Temporary whole-rectangle staging uses guest-backing frames, charged to the process's 192 MiB
 guest-backing quota and `RLIMIT_AS`. `READBACK` may fail with ENOMEM when staging cannot be charged to
 the process's guest-backing quota or `RLIMIT_AS`. `COUNTERS.resource_bytes` includes the staging while
-it is held; the charge is released when the staging is freed. Every EIO writes its reason to `reason`,
+it is held; the charge is released when the staging is freed. An EIO writes its reason to `reason`,
 and only that reason:
 
 | `reason` | Name | Meaning |
@@ -216,7 +226,7 @@ readbacks 64, ring waits 72 (submissions that waited because four were in flight
 state 88 (a context's: 0 live, 1 quarantined, 2 reset), contexts 96 (the process's live handles),
 device contexts 104 (the process's device contexts not yet destroyed, including destroyed handles whose
 work is outstanding), resources 112, resource bytes 120 (`resource_bytes`: guest backing held,
-including temporary `READBACK` staging charged to the process), warmed 128; reserved to 256.
+including temporary `UPLOAD` and `READBACK` staging charged to the process), warmed 128; reserved to 256.
 A clear counts as one draw of one instance covering the target.
 
 ## The BGL command stream
@@ -237,8 +247,8 @@ its index is its position in the stream.
 A 24 to 31. Rectangles are clipped to the target; one with `x1 < x0` or `y1 < y0` is refused. Any drawing
 command may draw into a target the device left invalid; the target becomes valid again only when a
 submission that writes it whole (a `CLEAR`, or a `COPY` whose clipped rectangle is the whole target)
-completes OK. `DRAW_BUFFER` reads its rectangles from the submission's snapshot of the buffer, never from
-the buffer after `SUBMIT`.
+completes OK. `DRAW_BUFFER` reads its rectangles only from the submission's snapshot of the buffer,
+rather than from the buffer after `SUBMIT`.
 
 `COPY` needs no `BEGIN` and leaves the current target as it is. Its source is a target or texture and its
 destination a target, both the process's (code 4 otherwise), of the same format (code 15 otherwise); the
