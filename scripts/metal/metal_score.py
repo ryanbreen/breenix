@@ -8,7 +8,8 @@ def boot_shape(disk):
 
 
 def measures(milestone, shape):
-    return shape in milestone['bootShapes']
+    # Commits preceding shape metadata describe the original RAM-disk boots.
+    return shape in milestone.get('bootShapes', ['ramdisk'])
 
 
 def score(directory):
