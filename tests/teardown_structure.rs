@@ -4245,6 +4245,23 @@ const BLOCKING_PRIMITIVES: &[(&str, &str, usize)] = &[
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_ready_user_thread", 1),
     ("kernel/src/task/waitqueue.rs", "impl WaitQueueHead::fn prepare_to_wait", 1),
     ("kernel/src/task/waitqueue.rs", "impl WaitQueueHead::fn prepare_to_wait_checked", 1),
+    // #1649: x86_64 blocks the current thread under its own CPU's run-queue
+    // lock. `rq::block_current` is the one body that publishes every blocked
+    // kind there and departs the thread from the one queue a thread this CPU
+    // owns can be on; `CurrentSched`'s members forward to it, or to the
+    // `Scheduler` primitive of the same name under the whole scheduler.
+    ("kernel/src/task/scheduler/rq.rs", "fn block_current", 1),
+    // #1649: a job stop parks a Ready user thread under the lock of the CPU
+    // that owns it (`scheduler::park_for_stop`), not the whole scheduler.
+    ("kernel/src/task/scheduler/rq.rs", "fn block_ready_user_thread", 1),
+    ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] impl CurrentSched<'_>::fn block_current", 1),
+    ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] impl CurrentSched<'_>::fn block_current_for_child_exit", 1),
+    ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] impl CurrentSched<'_>::fn block_current_for_io", 1),
+    ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] impl CurrentSched<'_>::fn block_current_for_io_with_timeout", 1),
+    ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] impl CurrentSched<'_>::fn block_current_for_signal", 1),
+    ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] impl CurrentSched<'_>::fn block_current_for_signal_with_context", 1),
+    ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] impl CurrentSched<'_>::fn block_current_for_timer", 1),
+    ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] impl CurrentSched<'_>::fn block_current_in_syscall", 1),
 ];
 /// Census A: every right-hand-side publication of a `ThreadState::Blocked*`
 /// value under `kernel/src`. The production rows are all blocking-family
@@ -4261,6 +4278,9 @@ const BLOCKED_STATE_PUBLICATIONS: &[(&str, &str, usize)] = &[
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_timer", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_inner", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_ready_user_thread", 1),
+    // #1649: the x86_64 run-queue-lock block publishes each of its five kinds.
+    ("kernel/src/task/scheduler/rq.rs", "fn block_current", 5),
+    ("kernel/src/task/scheduler/rq.rs", "fn block_ready_user_thread", 1),
 ];
 /// Census B: stores into a field named `state` whose right-hand side is opaque
 /// (not a path), the shape that would launder a blocked publication past census
@@ -4352,6 +4372,9 @@ const THREAD_STATE_ALIASES: &[(&str, &str, usize)] = &[
 const RAW_SCHEDULER_LOCK_SITES: &[(&str, &str, usize)] = &[
     ("kernel/src/task/scheduler.rs", "fn lock_scheduler", 1),
     ("kernel/src/task/scheduler.rs", "fn try_lock_scheduler", 1),
+    // #1649: x86_64 reclamation takes the scheduler-wide lock without the
+    // run-queue locks, through this instrumented wrapper.
+    ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] fn try_lock_scheduler_list", 1),
 ];
 #[rustfmt::skip]
 const PROCESS_MEMORY_FRAME_RETURNS: &[(&str, &str, usize)] = &[
@@ -4552,6 +4575,16 @@ const REMOVE_FROM_READY_QUEUE_CALL_SITES: &[(&str, &str, usize)] = &[
     // rather than the one before it. Boot-tests only, and the probe is
     // published and withdrawn inside 1 scheduler-lock acquisition.
     ("kernel/src/task/scheduler.rs", "impl Scheduler::#[cfg(all(target_arch=aarch64,feature=boot_tests))] fn run_pin_guard_oracle", 3),
+    // #1649: the x86_64 run-queue-lock block departs its thread from this
+    // CPU's queue (`rq::Held::remove_from_ready_queue`).
+    ("kernel/src/task/scheduler/rq.rs", "fn block_current", 1),
+    // #1649: under the run-queue lock of the CPU that owns the thread, a job
+    // stop parks a Ready user thread off its queue, reclamation drops a freed
+    // thread from it, and a new pin moves a thread queued on a CPU it no
+    // longer allows to its home.
+    ("kernel/src/task/scheduler/rq.rs", "fn block_ready_user_thread", 1),
+    ("kernel/src/task/scheduler/rq.rs", "fn reclaim", 1),
+    ("kernel/src/task/scheduler/rq.rs", "fn repin", 1),
     ("kernel/src/test_exec.rs", "fn test_exec_real_userspace", 1),
     ("kernel/src/test_exec.rs", "fn test_exec_without_scheduling", 1),
     ("kernel/src/test_exec.rs", "fn test_shell_fork_exec", 1),
@@ -7953,11 +7986,17 @@ fn validate_leaf_custody(sources: &[(String, String)]) -> Result<(), ()> {
     Ok(())
 }
 
-/// Q2's asymmetric cached-root proof is intentional: x86 has no per-thread
-/// cached CR3 writer. Discover assignments structurally, then require every
-/// writer to belong to the one aarch64 setter used by both cache and clear.
+/// Each architecture has one per-thread cached-root writer, and the cached
+/// leg of the retirement proof reads both: aarch64's setter, used by both
+/// cache and clear, and x86_64's `Thread::set_dispatch_root`, the root a user
+/// thread is dispatched on, set by the dispatch's first lookup and by exec
+/// (#1635). Discover assignments structurally, then require every writer to
+/// belong to one of those two setters.
 fn validate_cached_ttbr0_single_writer(sources: &[(String, String)]) -> Result<(), ()> {
-    const ALLOWED_PATH: &str = "kernel/src/arch_impl/aarch64/context_switch.rs";
+    const ALLOWED: [(&str, &str); 2] = [
+        ("kernel/src/arch_impl/aarch64/context_switch.rs", "set_thread_cached_ttbr0"),
+        ("kernel/src/task/thread.rs", "set_dispatch_root"),
+    ];
     let mut writers = Vec::new();
     for (path, module) in sources {
         let mask = code_mask(module);
@@ -7967,14 +8006,22 @@ fn validate_cached_ttbr0_single_writer(sources: &[(String, String)]) -> Result<(
                 .map(|offset| (path.as_str(), offset)),
         );
     }
-    if writers.len() != 1 || writers[0].0 != ALLOWED_PATH {
+    if writers.len() != ALLOWED.len() {
         return Err(());
     }
-    let module = source(sources, ALLOWED_PATH);
-    function_span(module, "set_thread_cached_ttbr0")
-        .contains(&writers[0].1)
-        .then_some(())
-        .ok_or(())
+    for (path, setter) in ALLOWED {
+        let module = source(sources, path);
+        let span = function_span(module, setter);
+        if writers
+            .iter()
+            .filter(|(writer_path, offset)| *writer_path == path && span.contains(offset))
+            .count()
+            != 1
+        {
+            return Err(());
+        }
+    }
+    Ok(())
 }
 
 /// The shared proof must dispatch to both architectures' real hardware and
@@ -17601,8 +17648,9 @@ fn try_manager_mask_ratchet_is_not_vacuous() {
     // the release reddens on the release-presence failure whatever the ordering
     // is, so it reads release presence rather than ordering. This one lifts the
     // release block out and re-inserts it below both restores, which is the
-    // regression shape the guard's comment warns against.
-    let release_block = "        unsafe {\n            core::mem::ManuallyDrop::drop(&mut self.guard);\n        }\n\n";
+    // regression shape the guard's comment warns against. The x86 deferred
+    // reschedule-IPI send follows the release and moves with it.
+    let release_block = "        unsafe {\n            core::mem::ManuallyDrop::drop(&mut self.guard);\n        }\n        #[cfg(target_arch = \"x86_64\")]\n        crate::task::scheduler::send_deferred_resched_ipis();\n\n";
     let x86_restore_block = "        #[cfg(target_arch = \"x86_64\")]\n        if self.interrupts_were_enabled {\n            unsafe {\n                crate::arch_enable_interrupts();\n            }\n        }\n";
     let reordered_drop = drop_impl
         .replacen(release_block, "", 1)

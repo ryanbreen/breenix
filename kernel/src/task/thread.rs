@@ -825,6 +825,8 @@ pub struct Thread {
     /// Last known good TTBR0/CR3 value for this thread's userspace address space.
     /// On ARM64 this lets the scheduler resume blocked-in-syscall threads without
     /// taking PROCESS_MANAGER in the hot dispatch path when the lock is contended.
+    /// On x86_64 it is the root a user thread is dispatched on, filled at its
+    /// first dispatch and replaced by exec (`interrupts::context_switch`).
     pub cached_ttbr0: u64,
 
     /// How many times this thread has parked on one of the kernel's halt
@@ -862,6 +864,11 @@ pub struct Thread {
     /// compare-and-swap on this one word, so a thread is never killed inside a
     /// section and never enters one once claimed. See `KillCustody`.
     pub kill_custody: AtomicU64,
+    /// x86_64: the key group of this thread's private futexes, plus one: its
+    /// address space's lifetime id, or its pid. 0 until a futex call has read
+    /// it from the process row; exec clears it. A private futex call that
+    /// finds it set keys the word without PROCESS_MANAGER (#1650).
+    pub futex_group: AtomicU64,
 
     /// Optional CPU target: `Some(pin)` pins the thread; the empty state permits
     /// migration.
@@ -1154,15 +1161,14 @@ impl Thread {
         self.kill_custody.load(Ordering::Acquire) & KILL_PENDING != 0
     }
 
-    /// Close every section the thread's syscall had open, for a syscall whose
-    /// kernel stack is discarded instead of unwound: x86-64 returns a pause or
-    /// sigsuspend that a signal ends to user mode straight from the context
-    /// switch, so the syscall's `KillCustody` guards are never dropped. Left
-    /// open, they would refuse every later kill claim and make every later
-    /// syscall look nested.
+    /// x86_64: cache `root` as the page-table root this user thread is
+    /// dispatched on: the dispatch's first lookup and exec's commit set it.
     #[cfg(target_arch = "x86_64")]
-    pub(crate) fn abandon_syscall_custody(&self) {
-        self.kill_custody.fetch_and(!CUSTODY_COUNT, Ordering::AcqRel);
+    pub(crate) fn set_dispatch_root(&mut self, root: u64) {
+        self.cached_ttbr0 = root;
+        if self.state != ThreadState::Terminated {
+            crate::task::scheduler::publish_cached_root(self, root);
+        }
     }
 }
 
@@ -1338,6 +1344,8 @@ impl Clone for Thread {
             // as a backwards jump.
             wait_loop_iters: AtomicU64::new(self.wait_loop_iters.load(Ordering::Relaxed)),
             kill_custody: AtomicU64::new(self.kill_custody.load(Ordering::Acquire)),
+            // Looked up again by the copy's first futex call.
+            futex_group: AtomicU64::new(0),
             cpu_affinity: self.cpu_affinity,
         }
     }
@@ -1460,6 +1468,7 @@ impl Thread {
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
             kill_custody: core::sync::atomic::AtomicU64::new(0),
+            futex_group: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         })
     }
@@ -1536,6 +1545,7 @@ impl Thread {
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
             kill_custody: core::sync::atomic::AtomicU64::new(0),
+            futex_group: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         })
     }
@@ -1599,6 +1609,7 @@ impl Thread {
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
             kill_custody: core::sync::atomic::AtomicU64::new(0),
+            futex_group: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         }
     }
@@ -1661,6 +1672,7 @@ impl Thread {
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
             kill_custody: core::sync::atomic::AtomicU64::new(0),
+            futex_group: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         }
     }
@@ -1736,6 +1748,7 @@ impl Thread {
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
             kill_custody: core::sync::atomic::AtomicU64::new(0),
+            futex_group: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         }
     }
@@ -1806,6 +1819,7 @@ impl Thread {
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
             kill_custody: core::sync::atomic::AtomicU64::new(0),
+            futex_group: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         }
     }
@@ -1841,6 +1855,10 @@ impl Thread {
     pub fn set_terminated(&mut self) {
         self.stop_timer_cpu();
         self.realtime_sleep = false;
+        #[cfg(target_arch = "x86_64")]
+        if self.state != ThreadState::Terminated {
+            crate::task::scheduler::note_thread_terminated(self);
+        }
         self.state = ThreadState::Terminated;
     }
 
@@ -1902,6 +1920,7 @@ impl Thread {
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
             kill_custody: core::sync::atomic::AtomicU64::new(0),
+            futex_group: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         }
     }
@@ -1960,6 +1979,7 @@ impl Thread {
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
             kill_custody: core::sync::atomic::AtomicU64::new(0),
+            futex_group: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         }
     }

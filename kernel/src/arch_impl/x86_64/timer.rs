@@ -129,6 +129,22 @@ const PIT_HZ: u64 = 1_193_182;
 ///
 /// Must be called after PIT is initialized but before interrupts are enabled.
 pub fn calibrate() {
+    // Under KVM the host's own TSC rate is read, not measured: a measurement
+    // the host interrupts by stopping this vCPU across an edge has been left
+    // 0.1 to 0.6% off, past the 1000 ppm the time suite allows (#1495).
+    if let Some(frequency_hz) = kvmclock_tsc_hz() {
+        TSC_FREQUENCY_HZ.store(frequency_hz, Ordering::SeqCst);
+        TSC_BASE.store(rdtsc_serialized(), Ordering::SeqCst);
+        TSC_CALIBRATED.store(true, Ordering::SeqCst);
+        log::info!(
+            "TSC calibration complete: {} MHz ({} Hz), from the KVM paravirtual clock",
+            frequency_hz / 1_000_000,
+            frequency_hz
+        );
+        log::info!("HAL_TIMER_CALIBRATED: TSC calibration via HAL complete");
+        return;
+    }
+
     // PIT channel 2 runs as a square wave of ~50 ms periods, and the TSC times
     // its rising edges. An edge is seen between the last poll that read OUT low
     // and the first that read it high; a port access is a VM exit of tens of
@@ -238,6 +254,77 @@ pub fn calibrate() {
 
     // HAL boot stage marker - proves HAL timer operations are working
     log::info!("HAL_TIMER_CALIBRATED: TSC calibration via HAL complete");
+}
+
+/// The TSC frequency, in Hz, that KVM's paravirtual clock reports when this
+/// kernel runs as a KVM guest offering one: the rate the host calibrated and
+/// converts this vCPU's TSC with, which Linux also takes for a KVM guest's
+/// TSC rate. None elsewhere, or when the host never fills the structure.
+fn kvmclock_tsc_hz() -> Option<u64> {
+    use core::arch::x86_64::__cpuid;
+    use x86_64::registers::model_specific::Msr;
+
+    // CPUID 0x40000000 names the hypervisor: "KVMKVMKVM\0\0\0".
+    // SAFETY: CPUID is available on every x86_64 processor.
+    let signature = unsafe { __cpuid(0x4000_0000) };
+    if [signature.ebx, signature.ecx, signature.edx] != [0x4b4d_564b, 0x564b_4d56, 0x0000_004d]
+        || signature.eax < 0x4000_0001
+    {
+        return None;
+    }
+    // SAFETY: as above; the leaf exists, since the maximum leaf covers it.
+    let features = unsafe { __cpuid(0x4000_0001) }.eax;
+    let msr = if features & (1 << 3) != 0 {
+        0x4b56_4d01 // MSR_KVM_SYSTEM_TIME_NEW (KVM_FEATURE_CLOCKSOURCE2)
+    } else if features & 1 != 0 {
+        0x12 // MSR_KVM_SYSTEM_TIME (KVM_FEATURE_CLOCKSOURCE)
+    } else {
+        return None;
+    };
+
+    // The host fills a struct pvclock_vcpu_time_info at the physical address
+    // the MSR names: version (u32) at 0, tsc_to_system_mul (u32) at 24 and
+    // tsc_shift (i8) at 28. A version that is odd, or that changes across the
+    // read, is an update in progress.
+    let frame = crate::memory::frame_allocator::allocate_frame()?;
+    let physical = frame.start_address().as_u64();
+    let info = (crate::memory::physical_memory_offset().as_u64() + physical) as *mut u8;
+    let mut register = Msr::new(msr);
+    // SAFETY: `info` maps the frame just allocated, which nothing else uses,
+    // and enabling the clock only makes the host write that frame.
+    unsafe {
+        core::ptr::write_bytes(info, 0, 32);
+        register.write(physical | 1);
+    }
+    let mut frequency_hz = None;
+    for _ in 0..1000 {
+        // SAFETY: as above; the reads are of the frame's first 32 bytes.
+        let (version, mul, shift, again) = unsafe {
+            let version = core::ptr::read_volatile(info as *const u32);
+            core::sync::atomic::fence(Ordering::Acquire);
+            let mul = core::ptr::read_volatile(info.add(24) as *const u32);
+            let shift = core::ptr::read_volatile(info.add(28) as *const i8);
+            core::sync::atomic::fence(Ordering::Acquire);
+            (version, mul, shift, core::ptr::read_volatile(info as *const u32))
+        };
+        if version != 0 && version & 1 == 0 && version == again && mul != 0 {
+            // ns = ((tsc shifted by tsc_shift) * mul) >> 32.
+            let mut hz = (1_000_000_000u128 << 32) / u128::from(mul);
+            if shift < 0 {
+                hz <<= u32::from(shift.unsigned_abs());
+            } else {
+                hz >>= u32::from(shift.unsigned_abs());
+            }
+            frequency_hz = u64::try_from(hz).ok();
+            break;
+        }
+        core::hint::spin_loop();
+    }
+    // SAFETY: disabling the clock stops the host's writes to the frame before
+    // it is freed.
+    unsafe { register.write(0) };
+    crate::memory::frame_allocator::deallocate_frame(frame);
+    frequency_hz
 }
 
 /// CPUID leaves 0, 15H and 16H as `tsc_rate` reads them.

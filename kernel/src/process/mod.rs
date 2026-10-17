@@ -117,6 +117,8 @@ impl Drop for TryProcessManagerGuard {
         unsafe {
             core::mem::ManuallyDrop::drop(&mut self.guard);
         }
+        #[cfg(target_arch = "x86_64")]
+        crate::task::scheduler::send_deferred_resched_ipis();
 
         #[cfg(target_arch = "aarch64")]
         unsafe {
@@ -165,6 +167,8 @@ impl Drop for ProcessManagerGuard {
         unsafe {
             core::mem::ManuallyDrop::drop(&mut self._guard);
         }
+        #[cfg(target_arch = "x86_64")]
+        crate::task::scheduler::send_deferred_resched_ipis();
 
         #[cfg(target_arch = "aarch64")]
         unsafe {
@@ -202,19 +206,70 @@ impl core::ops::DerefMut for ProcessManagerGuard {
 /// Global process manager
 static PROCESS_MANAGER: Mutex<Option<ProcessManager>> = Mutex::new(None);
 
+/// The hold of PROCESS_MANAGER in progress, numbered from 1, or 0 while the
+/// lock is free. A file-descriptor table changed in a hold is closed to
+/// readers that do not take the lock until that hold ends (`FdTable`).
+static PM_HOLD: AtomicU64 = AtomicU64::new(0);
+static PM_HOLDS: AtomicU64 = AtomicU64::new(0);
+
+/// The PROCESS_MANAGER hold in progress (`PM_HOLD`).
+pub fn process_manager_hold() -> u64 {
+    PM_HOLD.load(Ordering::Acquire)
+}
+
 #[inline(always)]
 fn note_process_manager_lock_acquired() {
+    PM_HOLD.store(PM_HOLDS.fetch_add(1, Ordering::Relaxed) + 1, Ordering::Release);
     let (cpu, tid) = current_process_manager_owner_identity();
     PROCESS_MANAGER_OWNER_TID.store(tid, Ordering::Relaxed);
     PROCESS_MANAGER_OWNER_CPU.store(cpu, Ordering::Release);
     crate::tracing::providers::teardown::note_process_manager_acquire();
+    #[cfg(target_arch = "x86_64")]
+    if (cpu as usize) < crate::task::scheduler::MAX_CPUS
+        && crate::per_cpu::is_initialized()
+        && !crate::arch_interrupts_enabled()
+    {
+        PM_MASKED_HOLD[cpu as usize].store(masked_hold_context(), Ordering::Relaxed);
+    }
 }
 
 #[inline(always)]
 fn note_process_manager_lock_released(mutated: bool) {
     PROCESS_MANAGER_MUTATIONS.release(mutated);
+    #[cfg(target_arch = "x86_64")]
+    if let Some(cpu) = process_manager_owner_snapshot().map(|(cpu, _)| cpu as usize) {
+        if cpu < crate::task::scheduler::MAX_CPUS {
+            PM_MASKED_HOLD[cpu].store(0, Ordering::Relaxed);
+        }
+    }
     PROCESS_MANAGER_OWNER_TID.store(PM_LOCK_OWNER_NONE, Ordering::Relaxed);
     PROCESS_MANAGER_OWNER_CPU.store(PM_LOCK_OWNER_NONE, Ordering::Release);
+    PM_HOLD.store(0, Ordering::Release);
+}
+
+/// x86_64: per CPU, nonzero while it holds PROCESS_MANAGER taken with
+/// interrupts masked, so that until the release nothing but the holder runs
+/// there: 1 for a holder in thread context, 2 for one in interrupt context.
+/// A reschedule IPI the holder asks for is sent once the lock is released
+/// (`defers_resched_ipis`). Sent under the lock, a slow APIC write held every
+/// CPU waiting for it, for up to 30 ms when forced.
+#[cfg(target_arch = "x86_64")]
+static PM_MASKED_HOLD: [core::sync::atomic::AtomicU8; crate::task::scheduler::MAX_CPUS] =
+    [const { core::sync::atomic::AtomicU8::new(0) }; crate::task::scheduler::MAX_CPUS];
+
+#[cfg(target_arch = "x86_64")]
+fn masked_hold_context() -> u8 {
+    1 + crate::per_cpu::in_interrupt() as u8
+}
+
+/// x86_64: whether a reschedule IPI asked for now on CPU `cpu` comes from
+/// the context holding PROCESS_MANAGER there with interrupts masked, and so
+/// is sent after the release. An interrupt handler that runs on a holder
+/// which unmasked interrupts is a different context and sends at once.
+#[cfg(target_arch = "x86_64")]
+pub fn defers_resched_ipis(cpu: usize) -> bool {
+    let hold = PM_MASKED_HOLD[cpu].load(Ordering::Relaxed);
+    hold != 0 && hold == masked_hold_context()
 }
 
 /// Releases of holders that exposed mutable access. Read-only holders cannot
@@ -387,13 +442,32 @@ pub fn manager() -> ProcessManagerGuard {
         if preempt_braked {
             crate::per_cpu::preempt_disable();
         }
-        let guard = PROCESS_MANAGER.lock();
+        let guard = lock_process_manager();
         note_process_manager_lock_acquired();
         ProcessManagerGuard {
             _guard: core::mem::ManuallyDrop::new(guard),
             mutated: false,
             preempt_braked,
         }
+    }
+}
+
+/// x86_64: PROCESS_MANAGER, waited for. The waiting CPU dispatches nothing
+/// meanwhile, so past a few microseconds its peers take what is queued on it
+/// (`task::scheduler::LockSpin`): a holder whose vCPU has stopped then holds
+/// up the waiter alone, not every thread queued behind it (#1650).
+#[cfg(target_arch = "x86_64")]
+fn lock_process_manager() -> spin::MutexGuard<'static, Option<ProcessManager>> {
+    if let Some(guard) = PROCESS_MANAGER.try_lock() {
+        return guard;
+    }
+    let mut spin = crate::task::scheduler::LockSpin::new();
+    loop {
+        if let Some(guard) = PROCESS_MANAGER.try_lock() {
+            return guard;
+        }
+        spin.tick();
+        core::hint::spin_loop();
     }
 }
 
@@ -467,7 +541,7 @@ where
     // #821, for the same reason as `manager()`.
     note_blocking_process_manager_acquisition();
     x86_64::instructions::interrupts::without_interrupts(|| {
-        let mut manager_lock = PROCESS_MANAGER.lock();
+        let mut manager_lock = lock_process_manager();
         note_process_manager_lock_acquired();
         let result = manager_lock.as_mut().map(|manager| {
             let result = f(manager);
@@ -476,6 +550,7 @@ where
         });
         note_process_manager_lock_released(true);
         drop(manager_lock);
+        crate::task::scheduler::send_deferred_resched_ipis();
         result
     })
 }
@@ -561,10 +636,7 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
     }
 
     if let Some(tid) = signal_wake {
-        crate::task::scheduler::with_scheduler(|s| {
-            s.unblock_for_signal(tid);
-            s.unblock_for_child_exit(tid);
-        });
+        crate::task::scheduler::wake_for_signal(tid, true);
     }
     if let Some(mut receipt) = receipt {
         if let Some(reclaim) = receipt.take_contents() {

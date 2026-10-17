@@ -129,7 +129,7 @@ fn trace_wait_timeout_stage(stage: u16) {
 /// that does arrive later finds the thread running and does nothing.
 #[inline]
 fn finish_wait_current() {
-    crate::task::scheduler::with_scheduler(|sched| {
+    crate::task::scheduler::with_current(|sched| {
         if let Some(thread) = sched.current_thread_mut() {
             thread.blocked_in_syscall = false;
             if thread.state == crate::task::thread::ThreadState::BlockedOnIO {
@@ -172,7 +172,7 @@ fn idle_halt_wait_available(tid: Option<u64>) -> bool {
     #[cfg(target_arch = "aarch64")]
     let idle_poll_available = crate::arch_impl::aarch64::timer_interrupt::is_initialized();
     idle_poll_available
-        && crate::task::scheduler::with_scheduler(|sched| Some(sched.idle_thread()) == tid)
+        && crate::task::scheduler::with_current(|sched| Some(sched.idle_thread()) == tid)
             == Some(true)
 }
 
@@ -459,7 +459,7 @@ impl Completion {
                     // the ISR already set done=expected_token (don't block)
                     // or we call
                     // block_current_for_io() (sets state=BlockedOnIO).
-                    let already_done = crate::task::scheduler::with_scheduler(|sched| {
+                    let already_done = crate::task::scheduler::with_current(|sched| {
                         if self.done.load(Ordering::Acquire) == expected_token {
                             true
                         } else {

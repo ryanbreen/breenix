@@ -218,7 +218,7 @@ fn sleeper_body() {
     let deadline = now_ns().saturating_add(SLEEP_MS * 1_000_000);
     let give_up = deadline.saturating_add(SLEEP_BACKSTOP_MS * 1_000_000);
 
-    scheduler::with_scheduler(|sched| sched.block_current_for_timer(deadline));
+    scheduler::with_current(|sched| sched.block_current_for_timer(deadline));
     scheduler::yield_current();
 
     loop {

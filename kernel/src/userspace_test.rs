@@ -901,7 +901,7 @@ fn test_exec_on_process(pid: crate::process::ProcessId) {
 
     let mut manager_guard = crate::process::manager();
     if let Some(ref mut manager) = *manager_guard {
-        match manager.exec_process(pid, &exec_elf_data, None, &mut closes) {
+        match crate::test_exec::exec_legacy(manager, pid, &exec_elf_data, None, &mut closes) {
             Ok(entry_point) => {
                 log::info!(
                     "🎉 EXEC SUCCESS: Process {} replaced with entry point {:#x}",

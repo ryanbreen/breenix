@@ -69,10 +69,19 @@ assert m.score(line()+'\n'+line())[0] == 1
 fn park_final_check_and_unpark_flag_share_scheduler_serialization() {
     let source = read("kernel/src/task/kthread.rs");
     let park = source.split("pub fn kthread_park_if").nth(1).unwrap().split("pub fn kthread_unpark").next().unwrap();
-    let block = park.split("scheduler::with_scheduler(|sched| {").nth(1).unwrap();
+    // The park reads the flag and blocks in one hold of its CPU's run-queue
+    // lock (`with_current`). On x86-64 the unpark stores the flag and then
+    // wakes under the lock of the CPU that owns the thread
+    // (`unblock_thread`), the park's own: a park that read the flag before
+    // the store is blocked by the time the wake gets that lock. Elsewhere the
+    // store and the wake take the whole scheduler, which includes that lock.
+    let block = park.split("scheduler::with_current(|sched| {").nth(1).unwrap();
     assert!(block.find("parked.load(Ordering::Acquire)").unwrap() < block.find("sched.block_current()").unwrap());
     let wake = source.split("pub fn kthread_unpark").nth(1).unwrap().split("/// Test-only").next().unwrap();
-    assert!(wake.find("scheduler::with_scheduler(|sched| {").unwrap() < wake.find("parked.store(false").unwrap());
+    let x86 = wake.split("#[cfg(target_arch = \"x86_64\")]").nth(1).unwrap().split("#[cfg(not(target_arch").next().unwrap();
+    assert!(x86.find("parked.store(false").unwrap() < x86.find("scheduler::unblock_thread(").unwrap());
+    let other = wake.split("#[cfg(not(target_arch = \"x86_64\"))]").nth(1).unwrap();
+    assert!(other.find("scheduler::with_scheduler(|sched| {").unwrap() < other.find("parked.store(false").unwrap());
 }
 #[test]
 fn boot_cpu_daemon_is_published_only_after_boot_preemption_pin_is_released() {

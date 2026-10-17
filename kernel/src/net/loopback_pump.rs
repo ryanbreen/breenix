@@ -73,13 +73,11 @@ fn loopback_pump_fn() {
         }
 
         without_interrupts(|| {
-            scheduler::with_scheduler(|sched| {
+            scheduler::with_current(|sched| {
                 sched.block_current();
             });
             if !super::loopback_queue_is_empty() {
-                scheduler::with_scheduler(|sched| {
-                    sched.unblock(my_tid);
-                });
+                scheduler::unblock_thread(my_tid);
             }
         });
         scheduler::yield_current();

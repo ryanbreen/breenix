@@ -286,6 +286,35 @@ pub fn write_user_bytes(dst: u64, src: *const u8, len: usize) -> Result<(), u64>
     }
 }
 
+/// Set, per CPU, while `write_user_bytes_nofault` copies: the fault handler
+/// takes the copy's fault exit at once instead of resolving the fault.
+#[cfg(target_arch = "x86_64")]
+static NOFAULT: [core::sync::atomic::AtomicBool; crate::task::scheduler::MAX_CPUS] =
+    [const { core::sync::atomic::AtomicBool::new(false) }; crate::task::scheduler::MAX_CPUS];
+
+/// `write_user_bytes` for a caller with interrupts masked that cannot wait
+/// for what resolving a fault takes (PROCESS_MANAGER, a frame): a fault on
+/// any page -- copy-on-write, a stack page not grown yet, an unmapped one --
+/// ends the copy with EFAULT, the bytes before it written, and the caller
+/// takes the path that can wait.
+#[cfg(target_arch = "x86_64")]
+pub fn write_user_bytes_nofault(dst: u64, src: *const u8, len: usize) -> Result<(), u64> {
+    let flag = &NOFAULT[crate::per_cpu::cpu_id()];
+    flag.store(true, core::sync::atomic::Ordering::Relaxed);
+    let result = write_user_bytes(dst, src, len);
+    flag.store(false, core::sync::atomic::Ordering::Relaxed);
+    result
+}
+
+/// Whether this CPU is inside `write_user_bytes_nofault`. Called from the
+/// page fault handler: no locks, no allocation, no output.
+#[cfg(target_arch = "x86_64")]
+pub fn uaccess_nofault() -> bool {
+    NOFAULT
+        .get(crate::per_cpu::cpu_id())
+        .is_some_and(|flag| flag.load(core::sync::atomic::Ordering::Relaxed))
+}
+
 /// Copy up to `len` bytes from the kernel buffer `src` to user address `dst`,
 /// stopping at the first byte the process cannot write, and return how many
 /// were written (Linux's copy_to_user reports the rest): `len` when all were,

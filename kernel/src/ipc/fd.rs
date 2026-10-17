@@ -6,7 +6,7 @@
 
 use crate::memory::slab::{SlabBox, FD_TABLE_SLAB};
 use alloc::sync::{Arc, Weak};
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use spin::Mutex;
 
 /// Maximum number of file descriptors per process
@@ -397,15 +397,52 @@ pub struct FdTable {
 
 /// The table behind every `FdTable` handle that shares it.
 ///
-/// A handle is only ever reached through its `Process` row, and rows are only
-/// ever reached under PROCESS_MANAGER, which therefore serializes every access
-/// to a table however many rows' handles share it: the lock is the table's
-/// lock. A `&`/`&mut` borrow taken through one handle lives no longer than the
-/// call that took it, and no caller holds borrows through two rows of one
-/// thread group at once.
-struct SharedFdTable(core::cell::UnsafeCell<FdTableInner>);
+/// A handle is reached through its `Process` row, and rows are only ever
+/// reached under PROCESS_MANAGER, which therefore serializes every access to a
+/// table through a row, however many rows' handles share it. A `&`/`&mut`
+/// borrow taken through one handle lives no longer than the call that took
+/// it, and no caller holds borrows through two rows of one thread group at
+/// once.
+///
+/// A thread also reads its own table without that lock (`try_read_lockless`,
+/// #1650), and `access` keeps such a reader and a change apart: a change made
+/// under PROCESS_MANAGER marks the table with that hold (`process_manager_hold`)
+/// and closes it to these readers until the hold ends, and a change waits
+/// out a reader, which holds the table only while it copies what it needs.
+struct SharedFdTable {
+    inner: core::cell::UnsafeCell<FdTableInner>,
+    /// 0 when no reader holds the table and no hold in progress has changed
+    /// it; `LOCKLESS_READER` while a reader holds it; otherwise the hold that
+    /// changed it, shifted left by one.
+    access: AtomicU64,
+}
 
-// SAFETY: see `SharedFdTable`: PROCESS_MANAGER serializes all access.
+/// `SharedFdTable::access`: a reader without PROCESS_MANAGER holds the table.
+const LOCKLESS_READER: u64 = 1;
+
+impl SharedFdTable {
+    /// Close the table to readers without PROCESS_MANAGER for the rest of the
+    /// hold in progress, waiting out one that holds it now.
+    fn claim_for_change(&self) {
+        let mine = crate::process::process_manager_hold() << 1;
+        loop {
+            let now = self.access.load(Ordering::Acquire);
+            if now == mine {
+                return;
+            }
+            if now == LOCKLESS_READER {
+                core::hint::spin_loop();
+                continue;
+            }
+            if self.access.compare_exchange(now, mine, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+                return;
+            }
+        }
+    }
+}
+
+// SAFETY: see `SharedFdTable`: PROCESS_MANAGER serializes access through rows,
+// and `access` keeps lock-free readers and changes apart.
 unsafe impl Sync for SharedFdTable {}
 // SAFETY: the table owns its descriptors; it may move to another CPU's context.
 unsafe impl Send for SharedFdTable {}
@@ -414,14 +451,27 @@ impl core::ops::Deref for FdTable {
     type Target = FdTableInner;
     fn deref(&self) -> &FdTableInner {
         // SAFETY: see `SharedFdTable`.
-        unsafe { &*self.shared.0.get() }
+        unsafe { &*self.shared.inner.get() }
     }
 }
 
 impl core::ops::DerefMut for FdTable {
     fn deref_mut(&mut self) -> &mut FdTableInner {
+        self.shared.claim_for_change();
         // SAFETY: see `SharedFdTable`.
-        unsafe { &mut *self.shared.0.get() }
+        unsafe { &mut *self.shared.inner.get() }
+    }
+}
+
+/// A thread's reference to its process's descriptor table, which does not
+/// keep the table alive (`ThreadSignals::fd_table`).
+#[derive(Clone)]
+pub struct FdTableRef(alloc::sync::Weak<SharedFdTable>);
+
+impl FdTableRef {
+    /// The table, while its process still holds it.
+    pub fn upgrade(&self) -> Option<FdTable> {
+        self.0.upgrade().map(|shared| FdTable { shared })
     }
 }
 
@@ -442,8 +492,46 @@ impl Clone for FdTable {
 impl FdTable {
     fn from_inner(inner: FdTableInner) -> Self {
         Self {
-            shared: Arc::new(SharedFdTable(core::cell::UnsafeCell::new(inner))),
+            shared: Arc::new(SharedFdTable {
+                inner: core::cell::UnsafeCell::new(inner),
+                access: AtomicU64::new(0),
+            }),
         }
+    }
+
+    /// A reference to this table that does not keep it alive.
+    pub fn downgrade(&self) -> FdTableRef {
+        FdTableRef(Arc::downgrade(&self.shared))
+    }
+
+    /// Run `read` on the table without PROCESS_MANAGER (#1650). None when a
+    /// hold of that lock in progress has changed the table, or another such
+    /// reader keeps it past a few tries: the caller takes the lock.
+    pub fn try_read_lockless<R>(&self, read: impl FnOnce(&FdTableInner) -> R) -> Option<R> {
+        const TRIES: usize = 64;
+        let shared = &self.shared;
+        for _ in 0..TRIES {
+            let now = shared.access.load(Ordering::Acquire);
+            if now == LOCKLESS_READER {
+                core::hint::spin_loop();
+                continue;
+            }
+            if now != 0 && now >> 1 == crate::process::process_manager_hold() {
+                return None;
+            }
+            if shared
+                .access
+                .compare_exchange(now, LOCKLESS_READER, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                // SAFETY: no change is in progress and none starts until the
+                // reader releases the table (`claim_for_change`).
+                let result = read(unsafe { &*shared.inner.get() });
+                shared.access.store(0, Ordering::Release);
+                return Some(result);
+            }
+        }
+        None
     }
 
     /// Create a new file descriptor table with standard I/O pre-allocated

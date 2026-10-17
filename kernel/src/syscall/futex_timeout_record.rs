@@ -7,15 +7,15 @@
 //! queue looked like at the moment of the decision. This module emits that
 //! record, once per failed timed wait, from the futex syscall path only.
 //!
-//! It is deliberately lock-free: the raw serial writers below take no lock and
-//! allocate nothing, so the record is safe on any path the futex wait can
-//! reach. It is also budgeted, so a systemic failure degrades into a counter
+//! It allocates nothing and never waits on the serial port for long: the
+//! record is assembled on the stack and written whole (`output::Record`), so
+//! it is safe on any path the futex wait can reach. It is also budgeted, so a systemic failure degrades into a counter
 //! rather than a serial storm that would itself hide the evidence.
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::task::thread::{TimerPop, TimerPopRecord};
-use crate::tracing::output::Line;
+use crate::tracing::output::Record;
 
 /// The grep anchor. Present exactly when a timed futex wait arbitrated to
 /// something other than `ETIMEDOUT` after its deadline or without a waker.
@@ -54,9 +54,9 @@ pub fn record(record: &TimedWaitRecord) {
         return;
     }
 
-    // Aarch64 collects these fields into one owned UART record; x86 keeps
-    // the existing raw-byte output implementation.
-    let mut line = Line::new();
+    // One record on both architectures, so another CPU's output cannot land
+    // inside it.
+    let mut line = Record::new();
     line.text(MARKER);
     line.text(" tid=");
     line.dec(record.thread_id);

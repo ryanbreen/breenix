@@ -343,7 +343,7 @@ fn can_park_for_port_io() -> bool {
         crate::per_cpu_aarch64::in_interrupt(),
     );
     let tid = crate::task::scheduler::current_thread_id();
-    let idle = crate::task::scheduler::with_scheduler(|sched| Some(sched.idle_thread()) == tid);
+    let idle = crate::task::scheduler::with_current(|sched| Some(sched.idle_thread()) == tid);
     tid.is_some() && idle == Some(false) && preempt_count == 1 && !in_interrupt
 }
 

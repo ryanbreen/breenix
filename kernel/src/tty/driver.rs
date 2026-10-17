@@ -908,9 +908,7 @@ impl TtyDevice {
                         drop(manager);
 
                         // Wake the thread if it's blocked on a signal
-                        crate::task::scheduler::with_scheduler(|sched| {
-                            sched.unblock_for_signal(thread_id);
-                        });
+                        crate::task::scheduler::wake_for_signal(thread_id, false);
                     }
                 }
             }
@@ -981,9 +979,7 @@ impl TtyDevice {
                         let thread_id = thread.id;
                         drop(manager);
 
-                        crate::task::scheduler::with_scheduler(|sched| {
-                            sched.unblock(thread_id);
-                        });
+                        crate::task::scheduler::unblock_thread(thread_id);
                     }
                 }
                 // No diagnostic for "process not found" in IRQ context --
@@ -1044,9 +1040,7 @@ impl TtyDevice {
         let mut readers = BLOCKED_READERS.lock();
         while let Some(thread_id) = readers.pop_front() {
             // Wake the thread using the scheduler
-            crate::task::scheduler::with_scheduler(|sched| {
-                sched.unblock(thread_id);
-            });
+            crate::task::scheduler::unblock_thread(thread_id);
         }
     }
 
@@ -1065,9 +1059,7 @@ impl TtyDevice {
 
             for thread_id in thread_ids {
                 // Wake without blocking - the with_scheduler closure runs synchronously
-                crate::task::scheduler::with_scheduler(|sched| {
-                    sched.unblock(thread_id);
-                });
+                crate::task::scheduler::unblock_thread(thread_id);
             }
 
             // Trigger reschedule so the woken thread runs soon

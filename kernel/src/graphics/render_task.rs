@@ -159,20 +159,14 @@ fn wait_for_next_tick() {
         .saturating_mul(1_000_000_000)
         .saturating_add(nanos)
         .saturating_add(TICK_NS);
-    scheduler::with_scheduler(|sched| sched.block_current_for_timer(wake_at));
+    scheduler::with_current(|sched| sched.block_current_for_timer(wake_at));
     loop {
         // The switch below answers any reschedule asked of this CPU, as the
         // idle loop's does; left set, the request would preempt the thread
         // this CPU switches to.
         let _ = scheduler::check_and_clear_need_resched();
         scheduler::schedule();
-        let asleep = scheduler::with_scheduler(|sched| {
-            sched
-                .get_thread(tid)
-                .is_some_and(|thread| thread.state == ThreadState::BlockedOnTimer)
-        })
-        .unwrap_or(false);
-        if !asleep {
+        if scheduler::thread_state(tid) != Some(ThreadState::BlockedOnTimer) {
             break;
         }
     }

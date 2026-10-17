@@ -1799,14 +1799,15 @@ impl ProcessPageTable {
         }
 
         // The translations are dropped once for the whole table, as Linux
-        // flushes once at the end of a fork's copy: on x86_64 every other
-        // online CPU answers a flush by NMI, and on ARM64 a broadcast
-        // invalidation per page cost the first fork of a 48 MB process about
-        // 100 ms. Until then another CPU may still write through a stale
-        // writable entry, which is a write racing the fork, as on Linux; the
-        // forking thread itself writes no user memory before this returns.
+        // flushes once at the end of a fork's copy: on x86_64 every other CPU
+        // that may cache this address space answers a flush by NMI, and on
+        // ARM64 a broadcast invalidation per page cost the first fork of a
+        // 48 MB process about 100 ms. Until then another CPU may still write
+        // through a stale writable entry, which is a write racing the fork, as
+        // on Linux; the forking thread itself writes no user memory before
+        // this returns.
         if lowered {
-            crate::memory::tlb::flush_all();
+            crate::memory::tlb::flush_user_all(self.level_4_frame.start_address().as_u64());
         }
         result
     }
@@ -2092,7 +2093,10 @@ impl ProcessPageTable {
     fn break_descriptor(&mut self, page: Page<Size4KiB>) -> RevokeFailed {
         crate::trace_count!(crate::tracing::providers::teardown::LEAF_CUSTODY_REFUSED);
         if self.mapper.unmap(page).is_ok() {
-            crate::memory::tlb::flush_page(page.start_address());
+            crate::memory::tlb::flush_user_page(
+                self.level_4_frame.start_address().as_u64(),
+                page.start_address(),
+            );
         }
         RevokeFailed
     }
@@ -2417,7 +2421,10 @@ impl ProcessPageTable {
                 );
             }
             #[cfg(target_arch = "x86_64")]
-            crate::memory::tlb::flush_page(faulting_addr);
+            crate::memory::tlb::flush_user_page(
+                self.level_4_frame.start_address().as_u64(),
+                faulting_addr,
+            );
             cow_stats::SOLE_OWNER_OPT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             crate::tracing::providers::process::trace_cow_copy(pid as u16, (far >> 12) as u16);
             return true;
@@ -3746,26 +3753,11 @@ pub unsafe fn switch_to_kernel_page_table() {
 /// Caller must ensure this is called from a safe context
 #[cfg(target_arch = "x86_64")]
 pub unsafe fn switch_to_kernel_page_table() {
-    // Use the master kernel PML4 which has all kernel mappings including stacks.
-    // The bootloader's KERNEL_PAGE_TABLE_FRAME (0x101000) doesn't have the
-    // kernel stack region at 0xffffc90000000000 mapped, which would cause
-    // a page fault when switching.
-    if let Some(kernel_frame) = crate::memory::kernel_page_table::master_kernel_pml4() {
-        let (current_frame, flags) = Cr3::read();
-        if current_frame != kernel_frame {
-            log::trace!(
-                "Switching to master kernel PML4: {:?} -> {:?}",
-                current_frame,
-                kernel_frame
-            );
-            crate::memory::tlb::note_root_load(kernel_frame.start_address().as_u64());
-            Cr3::write(kernel_frame, flags);
-            // Ensure TLB consistency after page table switch
-            super::tlb::flush_after_page_table_switch();
-        }
-    } else {
-        log::error!("Master kernel PML4 not initialized!");
-    }
+    // The master kernel PML4 has every kernel mapping, stacks included; the
+    // bootloader's KERNEL_PAGE_TABLE_FRAME (0x101000) does not map the kernel
+    // stack region at 0xffffc90000000000. Announced once loaded, so a root
+    // release need not wait for this CPU (`tlb::load_kernel_root`).
+    crate::memory::tlb::load_kernel_root(crate::per_cpu::cpu_id());
 }
 
 // NOTE: This function is no longer needed with global kernel page tables

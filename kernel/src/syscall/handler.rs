@@ -680,6 +680,11 @@ fn deliver_signals_on_syscall_return(frame: &mut SyscallFrame) -> bool {
         return false;
     }
 
+    // A due timer signal for a user handler needs no process manager.
+    if crate::signal::delivery::deliver_timer_signal_on_syscall_return(current_thread_id, frame) {
+        return false;
+    }
+
     // Try to acquire process manager lock (non-blocking)
     let mut manager_guard = match crate::process::try_manager() {
         Some(guard) => guard,
