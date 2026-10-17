@@ -677,17 +677,17 @@ impl Core {
 
     /// Queue a request nobody waits for.
     fn background(&mut self, req: Request) {
-        self.background_in(self.epoch, req);
+        let _ = self.background_in(self.epoch, req);
     }
 
     /// Queue a request nobody waits for that names objects of reset epoch `epoch`. A request
     /// for objects from before a reset decision is queued in their epoch, so the confirmed
     /// reset retires it with them instead of sending it to the restarted device, which no
     /// longer has them and would refuse it as a fault; a failed reset keeps it held.
-    fn background_in(&mut self, epoch: u64, mut req: Request) {
+    fn background_in(&mut self, epoch: u64, mut req: Request) -> Option<u64> {
         if !self.can_queue(&req) {
             self.unsendable(req);
-            return;
+            return None;
         }
         let serial = self.serial();
         req.tag = Tag::Sync(serial);
@@ -697,6 +697,7 @@ impl Core {
         });
         self.backlog.push_back((epoch.min(self.epoch), req));
         self.flush();
+        Some(serial)
     }
 
     /// A request that can no longer reach a device: kept for ever while a device that may
@@ -1067,21 +1068,26 @@ impl Core {
 
     /// Free a resource whose handle is gone and that nothing holds.
     fn free_if_unused(&mut self, id: u32) {
-        let Some(r) = self.resources.get(&id) else { return };
+        let _ = self.retire_if_unused(id);
+    }
+
+    /// Return an unref receipt when removing an unused resource from the core.
+    fn retire_if_unused(&mut self, id: u32) -> Option<u64> {
+        let r = self.resources.get(&id)?;
         if !r.dropped || r.holds > 0 || r.writers > 0 || r.reading {
-            return;
+            return None;
         }
-        let Some(r) = self.resources.remove(&id) else { return };
+        let r = self.resources.remove(&id)?;
         gauge(&GPU_RESOURCES, -1);
         // Backing owns its charges, including through other CPU or device holds.
         if r.lost {
             // A confirmed reset ended the device's use of it.
-            return;
+            return None;
         }
         // The device may use the backing until it answers the unref, which keeps it.
         let epoch = r.epoch;
         let req = virgl::resource_unref(Tag::Background, id, Some(r.backing));
-        self.background_in(epoch, req);
+        self.background_in(epoch, req)
     }
 
     /// Destroy the device context of a context that is dropped or quarantined once none of
@@ -2160,7 +2166,7 @@ fn op_resource_create(arg: u64, len: u64) -> Result<u64, i64> {
     outcome?;
     a.handle = handle.ok_or(ENODEV)?;
     if let Err(e) = write_arg(arg, &a) {
-        destroy_resource(tgid, a.handle);
+        let _ = destroy_resource(tgid, a.handle);
         return Err(e);
     }
     Ok(0)
@@ -2172,24 +2178,34 @@ fn op_resource_destroy(arg: u64, len: u64) -> Result<u64, i64> {
         return Err(EINVAL);
     }
     let tgid = caller()?;
-    if destroy_resource(tgid, a.handle) {
-        Ok(0)
-    } else {
-        Err(EINVAL)
+    let retiring = destroy_resource(tgid, a.handle).ok_or(EINVAL)?;
+    // With no work holding the resource, completion of DESTROY includes its unref:
+    // the next allocation can reuse the released quota without undercounting DMA backing.
+    // A handle destroyed while work holds it still returns immediately.
+    if let Some(serial) = retiring {
+        match wait_for(None, true, |c| match c.syncs.get(&serial) {
+            None => Some(Ok(())),
+            Some(s) if s.failed => Some(Err(EIO)),
+            Some(_) => None,
+        }) {
+            Ok(result) => result?,
+            Err(_) => return Err(EINTR),
+        }
     }
+    Ok(0)
 }
 
-/// Drop a resource handle; storage goes when nothing holds it (section 1.4.1, hold sets).
-fn destroy_resource(tgid: u64, handle: u64) -> bool {
+/// Remove a resource handle and retire storage after its hold set drains (section 1.4.1).
+/// An unused resource returns the unref receipt; a held resource has no receipt yet.
+fn destroy_resource(tgid: u64, handle: u64) -> Option<Option<u64>> {
     with_core(|c| {
-        let Some(id) = c.procs.get_mut(&tgid).and_then(|p| p.resources.remove(&handle)) else { return false };
+        let id = c.procs.get_mut(&tgid)?.resources.remove(&handle)?;
         if let Some(r) = c.resources.get_mut(&id) {
             r.dropped = true;
         }
-        c.free_if_unused(id);
-        true
+        Some(c.retire_if_unused(id))
     })
-    .unwrap_or(false)
+    .flatten()
 }
 
 /// One of the process's resources as `SUBMIT` sees it.
