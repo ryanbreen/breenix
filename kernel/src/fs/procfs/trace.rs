@@ -259,6 +259,15 @@ pub fn generate_counters() -> String {
         parked,
         crate::memory::heap::free_bytes(),
     ));
+    let (st, sterm, sgrace) = crate::task::scheduler::probe_scheduler_detail().unwrap_or((usize::MAX, usize::MAX, usize::MAX));
+    output.push_str(&format!(
+        "probe_sched: threads={} terminated={} grace={} size_thread={} size_threadsignals={} size_cpuaccount={} size_process={}\n",
+        st, sterm, sgrace,
+        core::mem::size_of::<crate::task::thread::Thread>(),
+        core::mem::size_of::<crate::signal::ThreadSignals>(),
+        core::mem::size_of::<crate::task::thread::CpuAccount>(),
+        core::mem::size_of::<crate::process::Process>(),
+    ));
     output.push_str("probe_live:");
     for (class, live) in crate::memory::heap::PROBE_LIVE.iter().enumerate() {
         let live = live.load(core::sync::atomic::Ordering::Relaxed);

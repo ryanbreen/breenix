@@ -1255,6 +1255,12 @@ fn probe_report(tag: &str, base: &std::collections::BTreeMap<i64, i64>) {
     let text = probe_text();
     value(&format!("{tag}-heap"), kernel_heap_free_kb().unwrap_or(-1), "kb", None);
     value(&format!("{tag}-tomb"), probe_num(&text, "TOMBSTONE_RESIDENT:"), "", None);
+    for key in ["threads=", "terminated=", "grace=", "size_thread=", "size_threadsignals=", "size_cpuaccount=", "size_process="] {
+        let v = text.lines().find(|l| l.starts_with("probe_sched:")).and_then(|l| l.split_whitespace().find_map(|w| w.strip_prefix(key))).and_then(|v| v.parse::<i64>().ok()).unwrap_or(-1);
+        if tag == "start" || !key.starts_with("size") {
+            value(&format!("{tag}-{}", key.trim_end_matches('=').replace('_', "-")), v, "", None);
+        }
+    }
     value(&format!("{tag}-pids"), std::fs::read_to_string("/proc/pids").map(|t| t.split_whitespace().count() as i64).unwrap_or(-1), "", None);
     let live = probe_live(&text);
     let mut grown: Vec<(i64, i64)> = live.iter().map(|(&k, &v)| (k, v - base.get(&k).copied().unwrap_or(0)))

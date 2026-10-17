@@ -7923,6 +7923,21 @@ pub fn probe_scheduler_threads() -> Option<usize> {
     without_interrupts(|| SCHEDULER.try_lock().and_then(|s| s.as_ref().map(|s| s.threads.len())))
 }
 
+/// Scratch probe (#1712): (threads, terminated, grace entries) the scheduler holds.
+pub fn probe_scheduler_detail() -> Option<(usize, usize, usize)> {
+    without_interrupts(|| {
+        SCHEDULER.try_lock().and_then(|s| {
+            s.as_ref().map(|s| {
+                (
+                    s.threads.len(),
+                    s.threads.iter().filter(|t| t.state == ThreadState::Terminated).count(),
+                    s.retirement_grace.len(),
+                )
+            })
+        })
+    })
+}
+
 /// x86_64: the tick each CPU's idle loop last tried to reclaim at.
 #[cfg(target_arch = "x86_64")]
 static IDLE_RECLAIM_TICK: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(u64::MAX) }; MAX_CPUS];
