@@ -14,6 +14,7 @@ import re
 import socket
 import subprocess
 import time
+from urllib.parse import urlsplit
 
 SITE_PATH = Path(os.environ.get('BREENIX_METAL_SITE', '/etc/breenix-metal/site.env'))
 STATE = Path(os.environ.get('BREENIX_METAL_STATE', '/var/lib/breenix-metal'))
@@ -479,14 +480,21 @@ def _ipv4(match):
     return '<ip>'
 
 
+# Site keys whose values are generic (a port number, an addressing mode, a firmware interface name, a slot number):
+# masking them would only corrupt ordinary text.
+PUBLIC_SITE_KEYS = {'HTTP_LISTEN_PORT', 'HTTP_DEV_ADDRESSING', 'HTTP_DEV_INTERFACE', 'IDRAC_ACCOUNT_SLOT',
+                    'REDACT_IDENTIFIERS'}
+
+
 class Redactor:
     def __init__(self, site):
-        literals = {value for key, value in site.items() if value and len(value) >= 3 and key != 'REDACT_IDENTIFIERS'}
+        literals = {value for key, value in site.items()
+                    if value and len(value) >= 3 and key not in PUBLIC_SITE_KEYS}
         for value in list(literals):
-            # A URL's host and path parts are identifiers on their own, too.
-            for part in re.split(r'[/:@]+', value):
-                if len(part) >= 4 and not part.isdigit() and part not in ('http', 'https'):
-                    literals.add(part)
+            # A URL is masked whole, and so is its host on its own; its path is the repository's.
+            if '://' in value:
+                parts = urlsplit(value)
+                literals.update(part for part in (parts.netloc, parts.hostname) if part)
         self.identifiers = sorted(identifier_list(site), key=len, reverse=True)
         self.literals = sorted(literals | set(self.identifiers), key=len, reverse=True)
 

@@ -107,7 +107,8 @@ class RedactorTest(unittest.TestCase):
         self.assertNotIn('/var/lib/breenix-metal', out)
 
     def test_ordinary_text_is_kept(self):
-        for text in ('at 12:34:56', 'version 1.2.3', 'ratio 3:2', 'code 0x7f', '[timer] 1000 Hz'):
+        for text in ('at 12:34:56', 'version 1.2.3', 'ratio 3:2', 'code 0x7f', '[timer] 1000 Hz',
+                     'Breenix boot.img over DHCP on port 8240', 'HTTP device NIC.Embedded.2-1-1'):
             self.assertEqual(self.redact(text), text)
 
     def test_list_never_carries_a_credential(self):
