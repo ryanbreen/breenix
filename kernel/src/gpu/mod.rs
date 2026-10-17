@@ -61,9 +61,6 @@ const FLIP_Y: bool = false;
 const RESET_BUDGET_NS: u64 = 100_000_000;
 /// The watchdog examines outstanding work at least this often (section 1.4.1).
 const EXAMINE_NS: u64 = 250_000_000;
-/// Failed fences a live context keeps answers for; one more quarantines it.
-const OUTCOMES_MAX: usize = 256;
-
 static CORE: spin::Mutex<Option<Core>> = spin::Mutex::new(None);
 /// Counts interrupts and state changes; a waiter sleeps only while it is unchanged.
 static EVENTS: AtomicU64 = AtomicU64::new(0);
@@ -167,7 +164,7 @@ struct Sub {
     n: u32,
     fence: u64,
     /// When `SUBMIT` handed it to the device's queue; the watchdog's clock.
-    sent_ns: u64,
+    sent_ns: Option<u64>,
     error: Option<u32>,
     mismatch: bool,
     /// Its requests the device or the backlog still holds.
@@ -190,7 +187,7 @@ struct Sub {
 struct SyncReq {
     /// The device context it runs in, 0 for none.
     ctx: u32,
-    sent_ns: u64,
+    sent_ns: Option<u64>,
     /// Resources it holds until the device returns it.
     holds: Vec<u32>,
     /// A readback's target, whose `reading` mark the request keeps if its waiter leaves.
@@ -555,16 +552,6 @@ impl Core {
         (self.dev.is_some() || self.resetting) && req.segment_count() <= self.queue_size
     }
 
-    /// Queue `req` behind everything already queued and hand the device what fits.
-    fn enqueue(&mut self, req: Request) -> Result<(), Request> {
-        if !self.can_queue(&req) {
-            return Err(req);
-        }
-        self.backlog.push_back((self.epoch, req));
-        self.flush();
-        Ok(())
-    }
-
     /// Move queued requests into the control queue, in order, while they fit; nothing
     /// more once a device fault has asked for a reset.
     fn flush(&mut self) {
@@ -572,23 +559,52 @@ impl Core {
             return;
         }
         let Some(dev) = self.dev.as_mut() else { return };
+        let mut sent = false;
         while let Some((_, req)) = self.backlog.front() {
             if !dev.has_room(req.segment_count()) {
                 break;
             }
             let Some((epoch, req)) = self.backlog.pop_front() else { break };
+            let tag = req.tag;
             if let Err(req) = dev.send(req) {
                 self.backlog.push_front((epoch, req));
                 break;
             }
+            let now = now_ns();
+            match tag {
+                Tag::Sync(serial) => {
+                    if let Some(s) = self.syncs.get_mut(&serial) {
+                        s.sent_ns = Some(now);
+                    }
+                }
+                Tag::Submit { serial, .. } => {
+                    if let Some(s) = self.subs.get_mut(&serial) {
+                        s.sent_ns.get_or_insert(now);
+                    }
+                }
+                Tag::Background => {}
+            }
+            sent = true;
+        }
+        if sent {
+            wake_reaper();
         }
     }
 
     /// Queue a request nobody waits for.
-    fn background(&mut self, req: Request) {
-        if let Err(req) = self.enqueue(req) {
+    fn background(&mut self, mut req: Request) {
+        if !self.can_queue(&req) {
             self.unsendable(req);
+            return;
         }
+        let serial = self.serial();
+        req.tag = Tag::Sync(serial);
+        self.syncs.insert(serial, SyncReq {
+            ctx: 0, sent_ns: None, holds: Vec::new(), reading: None,
+            abandoned: true, failed: false,
+        });
+        self.backlog.push_back((self.epoch, req));
+        self.flush();
     }
 
     /// A request that can no longer reach a device: kept for ever while a device that may
@@ -610,7 +626,7 @@ impl Core {
                 r.holds += 1;
             }
         }
-        self.syncs.insert(serial, SyncReq { ctx, sent_ns: now_ns(), holds: holds.to_vec(), reading, abandoned: false, failed: false });
+        self.syncs.insert(serial, SyncReq { ctx, sent_ns: None, holds: holds.to_vec(), reading, abandoned: false, failed: false });
         self.backlog.push_back((self.epoch, req));
         self.flush();
         Ok(())
@@ -681,7 +697,11 @@ impl Core {
         match d.tag {
             Tag::Sync(serial) => self.sync_ended(serial, Some(d)),
             Tag::Submit { serial, last, .. } => self.submit_returned(serial, last, d.answer, d.echoed),
-            Tag::Background => {}
+            Tag::Background => {
+                if !virgl::ok(d.answer) {
+                    self.fault();
+                }
+            }
         }
     }
 
@@ -706,6 +726,9 @@ impl Core {
     /// after a confirmed reset.
     fn sync_ended(&mut self, serial: u64, d: Option<Done>) {
         let Some(s) = self.syncs.remove(&serial) else { return };
+        if s.ctx == 0 && d.as_ref().is_some_and(|d| !virgl::ok(d.answer)) {
+            self.fault();
+        }
         for id in &s.holds {
             self.unhold(*id);
         }
@@ -804,9 +827,8 @@ impl Core {
                     p.totals.device_errors += 1;
                 }
             }
-            // Two device errors in a row quarantine this context and no other; so does
-            // keeping more failed answers than a live context may.
-            if ctx.state == CtxState::Live && (ctx.errors_in_row >= 2 || ctx.outcomes.len() > OUTCOMES_MAX) {
+            // Only two consecutive device errors quarantine this context.
+            if ctx.state == CtxState::Live && ctx.errors_in_row >= 2 {
                 ctx.state = CtxState::Quarantined;
             }
         }
@@ -939,7 +961,7 @@ impl Core {
         let hung: Vec<u32> = self
             .subs
             .values()
-            .filter(|s| !s.published && now.saturating_sub(s.sent_ns) >= limits::WATCHDOG_NS)
+            .filter(|s| !s.published && s.sent_ns.is_some_and(|at| now.saturating_sub(at) >= limits::WATCHDOG_NS))
             .map(|s| s.ctx)
             .collect();
         for ctx in hung {
@@ -948,7 +970,7 @@ impl Core {
         let late: Vec<u64> = self
             .syncs
             .iter()
-            .filter(|(_, s)| !s.failed && now.saturating_sub(s.sent_ns) >= limits::WATCHDOG_NS)
+            .filter(|(_, s)| !s.failed && s.sent_ns.is_some_and(|at| now.saturating_sub(at) >= limits::WATCHDOG_NS))
             .map(|(&serial, _)| serial)
             .collect();
         for serial in late {
@@ -986,8 +1008,8 @@ impl Core {
 
     /// The earliest time the watchdog has something to decide.
     fn next_deadline(&self, now: u64) -> Option<u64> {
-        let hangs = self.subs.values().filter(|s| !s.published).map(|s| s.sent_ns);
-        let waits = self.syncs.values().filter(|s| !s.failed).map(|s| s.sent_ns);
+        let hangs = self.subs.values().filter(|s| !s.published).filter_map(|s| s.sent_ns);
+        let waits = self.syncs.values().filter(|s| !s.failed).filter_map(|s| s.sent_ns);
         let progress = self.quarantined_at.map(|q| q.max(self.last_progress));
         let at = hangs.chain(waits).chain(progress).min()?;
         Some((at + limits::WATCHDOG_NS).min(now + EXAMINE_NS))
@@ -1126,7 +1148,8 @@ fn wait_for<T>(deadline: Option<u64>, interruptible: bool, mut f: impl FnMut(&mu
         if interruptible && crate::syscall::check_signals_for_wait().is_some() {
             return Err(Stop::Interrupted);
         }
-        let outcome = WAITERS.prepare_to_wait_checked(ThreadState::BlockedOnIO, deadline, || {
+        let wake = Some(deadline.unwrap_or(u64::MAX).min(now_ns().saturating_add(EXAMINE_NS)));
+        let outcome = WAITERS.prepare_to_wait_checked(ThreadState::BlockedOnIO, wake, || {
             EVENTS.load(Ordering::Acquire) == seen
         });
         if crate::syscall::blocking_io::wait_prepared(&WAITERS, outcome).is_err() && interruptible {
@@ -1141,6 +1164,9 @@ fn wait_for<T>(deadline: Option<u64>, interruptible: bool, mut f: impl FnMut(&mu
 /// or a kill ends it (EINTR); either way the request keeps its holds, and `reading`'s
 /// mark, until the device returns it or a confirmed reset ends it.
 fn exec_req(serial: u64, req: Request, ctx: u32, holds: &[u32], reading: Option<u32>) -> Result<Done, i64> {
+    if !ensure_reaper() {
+        return Err(ENOMEM);
+    }
     with_core(|c| c.start_sync(serial, req, ctx, holds, reading)).unwrap_or(Err(ENODEV))?;
     let outcome = wait_for(None, true, |c| {
         if let Some(d) = c.done.remove(&serial) {
@@ -1677,36 +1703,34 @@ fn op_resource_create(arg: u64, len: u64) -> Result<u64, i64> {
     let frames = (bytes as usize).div_ceil(PAGE);
     let charge = (frames * PAGE) as u64;
     sweep();
-    // Guest backing counts against RLIMIT_AS with the process's mappings (section 1.4).
-    let (mapped, as_limit) = crate::process::with_process_manager(|m| {
-        m.get_process(crate::process::ProcessId::new(tgid))
-            .map(|p| (p.mapped_bytes(), p.limits.get(crate::process::limits::AS).soft))
-    })
-    .flatten()
-    .ok_or(EINVAL)?;
+    // Reserve against mappings while holding the same process lock as mmap/brk.
+    // The Pages object carries the reservation until its last DMA hold ends.
+    let charged_limits = crate::process::with_process_manager(|m| {
+        let p = m.get_process(crate::process::ProcessId::new(tgid)).ok_or(EINVAL)?;
+        if !p.reserve_gpu_bytes(charge) {
+            return Err(ENOMEM);
+        }
+        Ok(p.limits.clone())
+    }).ok_or(EINVAL)??;
+    let Some(mut pages) = Pages::new(frames) else {
+        charged_limits.release_gpu_bytes(charge);
+        return Err(ENOMEM);
+    };
+    pages.charge_to(charged_limits);
+    let pages = Arc::new(pages);
     let id = with_core(|c| {
         let p = c.proc_mut(tgid);
         if p.resources.len() >= RESOURCE_QUOTA {
             return Err(EAGAIN);
         }
-        if p.bytes + charge > MEMORY_QUOTA || mapped.saturating_add(p.bytes).saturating_add(charge) > as_limit {
+        if p.bytes.saturating_add(charge) > MEMORY_QUOTA {
             return Err(ENOMEM);
         }
         p.bytes += charge;
         let id = c.next_res;
         c.next_res += 1;
         Ok(id)
-    })
-    .ok_or(ENODEV)??;
-    let Some(pages) = Pages::new(frames) else {
-        with_core(|c| {
-            if let Some(p) = c.procs.get_mut(&tgid) {
-                p.bytes = p.bytes.saturating_sub(charge);
-            }
-        });
-        return Err(ENOMEM);
-    };
-    let pages = Arc::new(pages);
+    }).ok_or(ENODEV)??;
     let width = if a.kind == kind::BUFFER { a.size as u32 } else { a.width };
     let height = if a.kind == kind::BUFFER { 1 } else { a.height };
     // The record exists, held by its creation and without a handle, from before the
@@ -1717,8 +1741,7 @@ fn op_resource_create(arg: u64, len: u64) -> Result<u64, i64> {
         c.resources.insert(id, r);
     });
     let mut outcome = exec_ok(|t| Some(virgl::resource_create(t, id, vtarget, vformat, bind, width, height)), 0, &[])
-        .map(drop)
-        .map_err(|e| if e == EIO { EINVAL } else { e });
+        .map(drop);
     if outcome.is_ok() {
         outcome = exec_ok(|t| virgl::attach_backing(t, id, pages.clone()), 0, &[]).map(drop);
     }
@@ -1970,12 +1993,12 @@ fn named(words: &WordBuf, view: &View) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
         let len = words.word(at + 1) as usize;
         let handle = |i: usize| words.word(at + i) as u64 | (words.word(at + i + 1) as u64) << 32;
         let found = match code {
-            stream::cmd::BEGIN => view.get(handle(2)).map(|e| (e.id, true)),
-            stream::cmd::DRAW_BUFFER => view.get(handle(4)).map(|e| (e.id, false)),
+            stream::cmd::BEGIN => view.get(handle(2)).map(|e| e.id),
+            stream::cmd::DRAW_BUFFER => view.get(handle(4)).map(|e| e.id),
             _ => None,
         };
         if code == stream::cmd::BEGIN {
-            target = found.map(|(id, _)| id);
+            target = found;
         } else if code == stream::cmd::CLEAR {
             if let Some(id) = target {
                 if !whole.contains(&id) {
@@ -1983,10 +2006,17 @@ fn named(words: &WordBuf, view: &View) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
                 }
             }
         }
-        if let Some((id, write)) = found {
-            if write && !written.contains(&id) {
-                written.push(id);
+        let writes = code == stream::cmd::CLEAR
+            || (code == stream::cmd::DRAW && words.word(at + 4) > 0)
+            || (code == stream::cmd::DRAW_BUFFER && words.word(at + 7) > 0);
+        if writes {
+            if let Some(id) = target {
+                if !written.contains(&id) {
+                    written.push(id);
+                }
             }
+        }
+        if let Some(id) = found {
             if !all.contains(&id) {
                 all.push(id);
             }
@@ -2036,6 +2066,9 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         if ctx.state != CtxState::Live || ctx.dropped {
             return Some(Err(EIO));
         }
+        if written.iter().any(|rid| c.resources.get(rid).is_some_and(|r| r.reading)) {
+            return None;
+        }
         if ctx.inflight.len() >= limits::IN_FLIGHT {
             waited = true;
             if ctx.depth.is_some() {
@@ -2047,6 +2080,11 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             return None;
         }
         ctx.busy = true;
+        for rid in &written {
+            if let Some(r) = c.resources.get_mut(rid) {
+                r.writers += 1;
+            }
+        }
         Some(Ok(()))
     });
     match admitted {
@@ -2054,8 +2092,16 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         Ok(Err(e)) => return Err(e),
         Err(_) => return Err(EINTR),
     }
-    let release_slot = || {
+    let release_slot = |accepted: bool| {
         with_core(|c| {
+            if !accepted {
+                for rid in &written {
+                    if let Some(r) = c.resources.get_mut(rid) {
+                        r.writers = r.writers.saturating_sub(1);
+                    }
+                    c.free_if_unused(*rid);
+                }
+            }
             if let Some(ctx) = c.contexts.get_mut(&id) {
                 ctx.busy = false;
             }
@@ -2068,7 +2114,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
     let vertex_buffer = match vertex_buffer_for(id, encode::vertex_bytes(plan.drawn)) {
         Ok(vb) => vb,
         Err(e) => {
-            release_slot();
+            release_slot(false);
             return Err(e);
         }
     };
@@ -2082,7 +2128,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
     let state = with_core(|c| c.contexts.get(&id).map(|ctx| (ctx.objects.clone(), ctx.vb, ctx.scratch))).flatten();
     let Some((mut objects, default_vb, scratch)) = state else {
         drop_vertex_buffer();
-        release_slot();
+        release_slot(false);
         return Err(EIO);
     };
     let stale: Vec<u32> = objects.surfaces.keys().copied().filter(|&rid| rid != scratch && !view.has_id(rid)).collect();
@@ -2169,16 +2215,11 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
                 r.holds += 1;
             }
         }
-        for rid in &written {
-            if let Some(r) = c.resources.get_mut(rid) {
-                r.writers += 1;
-            }
-        }
         c.subs.insert(serial, Sub {
             ctx: id,
             n,
             fence,
-            sent_ns: now_ns(),
+            sent_ns: None,
             error: None,
             mismatch: false,
             requests: reqs.len() as u32,
@@ -2196,7 +2237,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         Ok((ns as u64) << 32 | n as u64)
     })
     .unwrap_or(Err(ENODEV));
-    release_slot();
+    release_slot(prepared.is_ok());
     let bgl_fence = match prepared {
         Ok(f) => f,
         Err(e) => {

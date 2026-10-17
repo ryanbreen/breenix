@@ -7,7 +7,9 @@
 //! request that hands a buffer to the device keeps it until the device returns the
 //! request or the device is reset (VirtIO 1.3, section 2.7.13 and 2.4).
 
-use alloc::boxed::Box;
+use alloc::alloc::{alloc_zeroed, dealloc, handle_alloc_error, Layout};
+use alloc::sync::Arc;
+use core::ptr::NonNull;
 use alloc::vec::Vec;
 
 use crate::memory::arch_stub::PhysFrame;
@@ -69,16 +71,34 @@ fn maintain(va: u64, len: usize, invalidate: bool) {
 
 /// A small, physically contiguous, zeroed buffer for command headers and responses.
 pub struct DmaBox {
-    bytes: Box<[u64]>,
+    bytes: NonNull<u8>,
+    layout: Layout,
     len: usize,
+}
+
+// SAFETY: uniquely owned allocation, with access serialized by the GPU core.
+unsafe impl Send for DmaBox {}
+
+impl Drop for DmaBox {
+    fn drop(&mut self) {
+        // SAFETY: the original allocator and layout; DMA ownership ended before Drop.
+        unsafe { dealloc(self.bytes.as_ptr(), self.layout) };
+    }
 }
 
 impl DmaBox {
     /// A zeroed buffer of `len` bytes. The ARM64 kernel heap is one physically contiguous
     /// range of the direct map, so the device sees the buffer as one contiguous range.
     pub fn new(len: usize) -> DmaBox {
-        let words = len.div_ceil(8).max(1);
-        DmaBox { bytes: alloc::vec![0u64; words].into_boxed_slice(), len }
+        // The entire first and last cache lines belong to this allocation, so
+        // invalidating a device response cannot discard a neighbour's CPU writes.
+        let line = dcache_line() as usize;
+        let layout = Layout::from_size_align(len.max(1).next_multiple_of(line), line)
+            .expect("DMA buffer layout");
+        // SAFETY: nonzero layout; the allocation is owned until Drop.
+        let raw = unsafe { alloc_zeroed(layout) };
+        let bytes = NonNull::new(raw).unwrap_or_else(|| handle_alloc_error(layout));
+        DmaBox { bytes, layout, len }
     }
 
     pub fn len(&self) -> usize {
@@ -87,12 +107,12 @@ impl DmaBox {
 
     pub fn as_mut(&mut self) -> &mut [u8] {
         // SAFETY: the u64 slice holds at least `len` bytes.
-        unsafe { core::slice::from_raw_parts_mut(self.bytes.as_mut_ptr() as *mut u8, self.len) }
+        unsafe { core::slice::from_raw_parts_mut(self.bytes.as_ptr(), self.len) }
     }
 
     pub fn as_ref(&self) -> &[u8] {
         // SAFETY: as above.
-        unsafe { core::slice::from_raw_parts(self.bytes.as_ptr() as *const u8, self.len) }
+        unsafe { core::slice::from_raw_parts(self.bytes.as_ptr(), self.len) }
     }
 
     pub fn va(&self) -> u64 {
@@ -133,13 +153,15 @@ impl DmaBox {
 /// Whole frames, in order, owned until dropped.
 pub struct Pages {
     frames: Vec<PhysFrame>,
+    /// RLIMIT_AS charge follows the backing through requests and confirmed reset.
+    charge: Option<Arc<crate::process::limits::Limits>>,
 }
 
 impl Pages {
     /// `count` zeroed frames, or `None` (with every frame taken returned) when the
     /// allocator runs out.
     pub fn new(count: usize) -> Option<Pages> {
-        let mut pages = Pages { frames: Vec::new() };
+        let mut pages = Pages { frames: Vec::new(), charge: None };
         if pages.frames.try_reserve_exact(count).is_err() {
             return None;
         }
@@ -154,7 +176,12 @@ impl Pages {
 
     /// No frames: for a resource the device keeps without guest backing.
     pub fn none() -> Pages {
-        Pages { frames: Vec::new() }
+        Pages { frames: Vec::new(), charge: None }
+    }
+
+    /// Adopt a reservation already made under PROCESS_MANAGER.
+    pub fn charge_to(&mut self, limits: Arc<crate::process::limits::Limits>) {
+        self.charge = Some(limits);
     }
 
     pub fn count(&self) -> usize {
@@ -276,6 +303,9 @@ impl Pages {
 
 impl Drop for Pages {
     fn drop(&mut self) {
+        if let Some(limits) = self.charge.take() {
+            limits.release_gpu_bytes(self.bytes() as u64);
+        }
         for frame in self.frames.drain(..) {
             frame_allocator::deallocate_frame(frame);
         }

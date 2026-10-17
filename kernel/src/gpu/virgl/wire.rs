@@ -125,7 +125,7 @@ pub const fn cmd0(cmd: u32, obj: u32, len: u32) -> u32 {
 }
 
 /// The longest payload one command header can carry.
-pub const CMD0_MAX_LEN: u32 = 0xFFFF;
+pub const CMD0_MAX_LEN: u32 = 65_532;
 
 /// Gallium enumerants VirGL commands carry (`p_defines.h`).
 pub mod pipe {

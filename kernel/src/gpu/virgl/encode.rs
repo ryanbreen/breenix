@@ -54,7 +54,10 @@ impl Enc {
 
     /// Append one command whose payload is `head` then `tail`.
     fn cmd_with(&mut self, command: u32, object: u32, head: &[u32], tail: &[u32]) {
-        let len = head.len() + tail.len();
+        let Some(len) = head.len().checked_add(tail.len()).filter(|&len| len <= wire::CMD0_MAX_LEN as usize) else {
+            self.oom = true;
+            return;
+        };
         if self.cur.len() > 0 && self.cur.len() + 1 + len > CHUNK_WORDS {
             let full = core::mem::replace(&mut self.cur, WordBuf::new());
             self.chunks.push(full);
