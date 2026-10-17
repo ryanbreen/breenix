@@ -128,7 +128,8 @@ def host_stall_ns(record, start, end, vcpus, rate):
         outside = max(0, start - before["tsc"]) + max(0, after["tsc"] - end)
         # Round the uncertain margin up so conversion cannot add evidence.
         outside_ns = (outside * 1_000_000 + rate - 1) // rate
-        for vcpu in vcpus:
+        interval_stall = 0
+        for vcpu in set(vcpus):
             if vcpu not in before["vcpu"] or vcpu not in after["vcpu"]:
                 return None, f"the host stall record lost vCPU {vcpu} inside the window"
             delay = after["vcpu"][vcpu][0] - before["vcpu"][vcpu][0]
@@ -142,7 +143,11 @@ def host_stall_ns(record, start, end, vcpus, rate):
                 if stolen < 0:
                     return None, "the host steal counter went backwards"
                 blocked += stolen * tick_ns
-            stall += max(0, min(elapsed, blocked) - outside_ns)
+            inside = max(0, min(elapsed, blocked) - outside_ns)
+            # Per-vCPU totals do not locate their overlap. The larger lower
+            # bound is a lower bound on elapsed starvation; their sum is not.
+            interval_stall = max(interval_stall, inside)
+        stall += interval_stall
     return stall, None
 
 
