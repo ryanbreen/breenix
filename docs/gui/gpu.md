@@ -22,7 +22,7 @@ exists), and those that answer the request for real text and display scale, whic
 have run; the effort's lanes land into `gpu/integration` (section 1.11). Sections 1.3 to 1.10 are the
 contract, frozen after the spikes reported. Section 1.12 records what the spikes changed and why, section
 1.13 the amendment G1's review required, section 1.14 the amendment G2's review required, and section 1.15
-the interface G3 needs. A later change to a frozen section is a contract change: it is made
+the interface G3 needs, and section 1.16 the interfaces G6 needs. A later change to a frozen section is a contract change: it is made
 in its own PR, with its reason, before the lane that needs it, separately from the code,
 checks or thresholds that conform to it. The suite,
 `docs/suites/gpu.json` and `/sbin/suite-gpu`, measures this contract; its 170 cases fail, each naming the
@@ -1120,6 +1120,82 @@ defines it, in its own PR before the lane's code (ruling 9):
 | The stream gains `COPY`, a region copy between resources of one format into a target, staged when the rectangles overlap in one resource, and `DRAW_SAMPLED`, whose instances name a destination rectangle and a source origin; refusal codes 15 to 17 | section 1.3; `docs/gui/gpu-abi.md` |
 | Sampling converts by channel, with an R8 texel `r` read as (`r`, 0, 0, 255), and clips each rectangle to the texels the texture has | section 1.3; `docs/gui/gpu-abi.md` |
 | Points 29 (`wrong-texture`) and 30 (`skip-upload-visibility`) take a texture handle and are defined in full | section 1.8; `docs/gui/gpu-abi.md` |
+
+### 1.16 What G6 needs
+
+G6 (`isolation`) measures what one process can do to another and to the kernel through syscall 416.
+Sections 1.4, 1.4.1, 1.10 and 1.11 name its cases and leave how several of them are observed to the
+implementation. This amendment states those interfaces, in its own PR before the lane's code (ruling 9):
+
+<!-- claim-lint:ok: Normative G6 interface requirement stated by this amendment, docs/gui/gpu.md section 1.16, not a measured result. -->
+- **Reclamation at exit, exec and kill.** When the last thread of a process exits, normally or by a signal,
+  the GPU core drops every handle the process holds, as `CONTEXT_DESTROY` and `RESOURCE_DESTROY` of each
+  would. A successful exec does the same before the new image runs. Dropping a
+  handle does not cancel work: a context's device context is destroyed once its submitted work has completed,
+  and a resource is freed when its hold set is empty (section 1.4.1, kills and hold sets). The new image of an
+  exec holds no GPU handles: every handle from before the exec is EINVAL, and `COUNTERS` for the process
+  reports no contexts, no resources and no resource bytes until the new image creates some.
+<!-- claim-lint:ok: Normative G6 interface requirement stated by this amendment, docs/gui/gpu.md section 1.16, not a measured result. -->
+- **Global GPU counters.** `/proc/trace/counters` reports three gauges over every process and the kernel:
+  `gpu_contexts`, the contexts the core holds, including destroyed handles whose work is outstanding;
+  `gpu_resources`, the resources it holds, including the kernel's own per-context and per-submission
+  resources and dropped resources still held; and `gpu_resource_bytes`, the bytes charged to processes' GPU
+  memory quotas (below) that have not been released. After a process with no work outstanding exits and its
+  parent has reaped it, the three return to their values from before its first GPU call within 250 ms (K,
+  section 1.4.1). After a process with work outstanding is killed, they stay above those values until that
+  work's fences complete, by the device or by the watchdog, and return to them within 250 ms after.
+<!-- claim-lint:ok: Normative G6 interface requirement stated by this amendment, docs/gui/gpu.md section 1.16, not a measured result. -->
+- **Per-submission copy quotas.** `SUBMIT`'s private copies (the copy of the stream, the snapshot of the
+  buffer ranges it names and the translated device command chunks) and the device vertex storage it creates
+  are charged to the process's 192 MiB GPU memory quota and to `RLIMIT_AS` while they are held, like `UPLOAD`
+  and `READBACK` staging, and `COUNTERS.resource_bytes` and `gpu_resource_bytes` include them. The stream copy
+  and the snapshot are released when `SUBMIT` returns; the chunks and the vertex storage when the device has
+  returned the submission's requests or a confirmed reset has ended them. A charge that cannot be made returns
+  ENOMEM, with error code 22 at index 0, before anything is sent.
+<!-- claim-lint:ok: Normative G6 interface requirement stated by this amendment, docs/gui/gpu.md section 1.16, not a measured result. -->
+- **No addresses.** A handle is a 64-bit value whose top byte is neither 0x00 nor 0xFF, so no handle has the
+  form of a user, kernel or physical address on either architecture. Each value an op writes back is a handle,
+  a context fence (`ns << 32 | n`), a device id below 2³², a count, a size, a serial, a generation, a status,
+  an answer or a reason, a capability value, a string, or bytes of the caller's own pixels.
+<!-- claim-lint:ok: Normative G6 interface requirement stated by this amendment, docs/gui/gpu.md section 1.16, not a measured result. -->
+- **`SET_MODE` before G7.** Until G7 builds it, `SET_MODE` refuses a caller that is not the display owner
+  with EPERM before its argument is decoded and returns ENOSYS to the owner; `MODES` returns ENOSYS.
+<!-- claim-lint:ok: Normative G6 interface requirement stated by this amendment, docs/gui/gpu.md section 1.16, not a measured result. -->
+- **Bounded validation.** Validation does work proportional to the stream's length, with the buffer
+  ranges it reads bounded by the snapshot limits of section 1.4.1. The `coverage_spans` crossing tables one
+  submission names in a buffer, each distinct table counted once, total at most that buffer's `data_bytes`
+  (EINVAL, code 8, otherwise), so overlapping tables cannot make validation read the snapshot again for
+  each instance. `isolation/bounded-validation` builds
+  streams of 1 MiB and 16 MiB from the same mix of commands, each refused at its last command, and requires
+  the 16 MiB stream's time per word to be at most twice the 1 MiB stream's (each the least of three runs),
+  and a stream of the 80 MiB maximum to be refused within 1 s.
+<!-- claim-lint:ok: Normative G6 interface requirement stated by this amendment, docs/gui/gpu.md section 1.16, not a measured result. -->
+- **Quiet errors.** Kernel output is accounted per thread as BreenGL's contract, section 22, defines:
+  `/proc/<pid>/task/<tid>/kernel_output` is the decimal count of bytes the kernel committed for output on
+  that thread's behalf. `isolation/quiet-errors` makes 1,000 failing GPU calls, covering each op's refusals,
+  and requires the calling thread's count to stay unchanged; test-control point 3, `emit-diagnostic`, shows
+  first that a GPU call's output does reach the count.
+<!-- claim-lint:ok: Normative G6 interface requirement stated by this amendment, docs/gui/gpu.md section 1.16, not a measured result. -->
+- **The IRQ gauge over the GPU paths.** The trace counter `gpu_irq_masked_max_us` is the longest interval,
+  in microseconds, that a CPU held IRQs masked while it ran a GPU path, since boot or the last `DISARM_ALL`,
+  which restarts it at 0. A GPU path is a thread inside syscall 416, the GPU worker `kgpu`, the exit and exec
+  reclamation above, or the GPU's interrupt handler. Every interval opened by the kernel's IRQ-masking
+  primitives (`without_interrupts` and the IRQ-safe locks) on a thread in a GPU path counts, from the mask to
+  the restore, as does the GPU interrupt handler from its entry to its return. The context switch itself is
+  the scheduler's and is not a GPU path. Test-control point 2, `irq-hold` (BreenGL's contract, section 21),
+  makes the next `SUBMIT` hold IRQs masked for 2 ms during its validation, through the same primitive, so
+  `isolation/irq-masked-bound` first shows the gauge reads that hold.
+
+| Rule | Where |
+|---|---|
+| Exit, kill and exec drop the process's GPU handles, without cancelling its work; the exec'd image starts with no handles | section 1.4.1; `docs/gui/gpu-abi.md` |
+| `gpu_contexts`, `gpu_resources` and `gpu_resource_bytes` in `/proc/trace/counters`, with the 250 ms return after exit and after killed work drains | section 1.4.1; `docs/gui/gpu-abi.md` |
+| `SUBMIT`'s copies and vertex storage are charged to the GPU memory quota and `RLIMIT_AS`; ENOMEM, code 22 | sections 1.4, 1.4.1; `docs/gui/gpu-abi.md` |
+| Handles have no address's form; returned values are of stated kinds | section 1.4; `docs/gui/gpu-abi.md` |
+| `SET_MODE` refuses non-owners with EPERM before G7 | section 1.4; `docs/gui/gpu-abi.md` |
+| The bounded-validation measurement; one submission's distinct coverage tables in a buffer total at most its `data_bytes` (code 8) | section 1.10; `docs/gui/gpu-abi.md` |
+| Per-thread kernel output, and point 3 `emit-diagnostic` for the GPU core | sections 1.4, 1.8; `docs/gui/gpu-abi.md` |
+| `gpu_irq_masked_max_us`, the GPU paths it covers, and point 2 `irq-hold` | sections 1.8, 1.10; `docs/gui/gpu-abi.md` |
 
 ## 2. BreenGL rebuilt on the GPU
 
