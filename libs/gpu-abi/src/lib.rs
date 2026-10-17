@@ -410,26 +410,46 @@ pub struct Readback {
     pub failed_submission: u64,
 }
 
-/// READBACK's named EIO reasons (Breenix ABI choices implementing contract section 1.8).
+/// `READBACK`'s EIO reasons (`docs/gui/gpu-abi.md`, the `READBACK` table). Every EIO
+/// names exactly one; none is reported under another's name.
 pub mod readback_reason {
     pub const NONE: u32 = 0;
+    /// The two complementary-poison observations differ.
     pub const UNWRITTEN: u32 = 1;
+    /// A transfer's answer lacks the fence flag or echoes another fence.
     pub const FENCE_MISMATCH: u32 = 2;
+    /// An observation claiming the scanout names a resource other than the confirmed binding.
     pub const RESOURCE_MISMATCH: u32 = 3;
+    /// The target is invalid; `failed_submission` names the submission that made it so.
     pub const TARGET_INVALID: u32 = 4;
+    /// The device answered a readback transfer with an error.
     pub const DEVICE_ERROR: u32 = 5;
+    /// The watchdog ended a transfer the device had not answered.
+    pub const DEVICE_HUNG: u32 = 6;
+    /// A device reset was decided while a transfer was outstanding.
+    pub const DEVICE_RESET: u32 = 7;
+    /// The target was lost to an earlier device reset.
+    pub const TARGET_LOST: u32 = 8;
+    /// The target's handle was destroyed while the readback waited for its writers.
+    pub const TARGET_DROPPED: u32 = 9;
+    /// A `PRESENT` binding or replacing the target was sent and has not completed.
+    pub const BINDING_UNKNOWN: u32 = 10;
 }
 
-/// Minimal G2 `PRESENT` (32 bytes), completed synchronously by the device.
+/// `PRESENT` (32 bytes). Binds the whole target to scanout 0 and flushes it in
+/// `context`, one of the caller's live contexts.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Present {
     pub target: u64,
-    /// Out: the device's flush fence and answer; zero on input.
+    /// Out: a fence of `context` (`ns << 32 | n`, in sequence with its `SUBMIT`s);
+    /// zero on input.
     pub fence: u64,
+    /// Out: the device's answer to the flush; zero on input.
     pub answer: u32,
-    pub reserved0: u32,
-    pub reserved: u64,
+    pub reserved: u32,
+    /// In: the context the bind and flush are sent in.
+    pub context: u64,
 }
 
 /// `COUNTERS` (256 bytes).
@@ -606,7 +626,12 @@ const _: () = {
     assert!(core::mem::size_of::<Submit>() == 64);
     assert!(core::mem::size_of::<Wait>() == 48);
     assert!(core::mem::size_of::<Readback>() == 64);
+    assert!(core::mem::offset_of!(Readback, reason) == 44);
+    assert!(core::mem::offset_of!(Readback, failed_submission) == 56);
     assert!(core::mem::size_of::<Present>() == 32);
+    assert!(core::mem::offset_of!(Present, fence) == 8);
+    assert!(core::mem::offset_of!(Present, answer) == 16);
+    assert!(core::mem::offset_of!(Present, context) == 24);
     assert!(core::mem::size_of::<Counters>() == 256);
     assert!(core::mem::size_of::<TcArm>() == 24);
     assert!(core::mem::size_of::<TcFired>() == 16);

@@ -153,6 +153,9 @@ struct Ctx {
     errors_in_row: u32,
     /// Test point 31's fence-depth mode on this context.
     depth: Option<Depth>,
+    /// The flush answers of completed `PRESENT`s by fence number, until their callers take
+    /// them; at most `limits::IN_FLIGHT`, the most a context can have outstanding.
+    flushes: BTreeMap<u32, u32>,
 }
 
 /// Test point 31's fence-depth mode: how many more submissions to keep, and the ones kept.
@@ -183,6 +186,8 @@ struct Sub {
     written: Vec<u32>,
     whole: Vec<u32>,
     held: Vec<u32>,
+    /// A `PRESENT`'s bind and flush rather than a `SUBMIT`.
+    present: Option<display::Presenting>,
 }
 
 /// A synchronous request a thread waits on.
@@ -192,12 +197,16 @@ struct SyncReq {
     sent_ns: Option<u64>,
     /// Resources it holds until the device returns it.
     holds: Vec<u32>,
-    /// A readback's target, whose `reading` mark the request keeps if its waiter leaves.
-    reading: Option<u32>,
+    /// The resources whose `reading` mark the request keeps if its waiter leaves: a
+    /// readback's target, and the resource its transfer names when that is another.
+    reading: Vec<u32>,
     /// Its waiter has left; its answer is dropped when it comes.
     abandoned: bool,
     /// The watchdog or a reset has failed its wait.
     failed: bool,
+    /// Why: `fence_status::DEVICE_HUNG` (the watchdog) or `DEVICE_RESET` (a reset decided
+    /// while it was outstanding, whether the reset then completed or failed).
+    why: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -604,8 +613,8 @@ impl Core {
         let serial = self.serial();
         req.tag = Tag::Sync(serial);
         self.syncs.insert(serial, SyncReq {
-            ctx: 0, sent_ns: None, holds: Vec::new(), reading: None,
-            abandoned: true, failed: false,
+            ctx: 0, sent_ns: None, holds: Vec::new(), reading: Vec::new(),
+            abandoned: true, failed: false, why: 0,
         });
         self.backlog.push_back((self.epoch, req));
         self.flush();
@@ -621,7 +630,7 @@ impl Core {
     }
 
     /// Register synchronous request `serial`, take its holds and queue it.
-    fn start_sync(&mut self, serial: u64, req: Request, ctx: u32, holds: &[u32], reading: Option<u32>) -> Result<(), i64> {
+    fn start_sync(&mut self, serial: u64, req: Request, ctx: u32, holds: &[u32], reading: &[u32]) -> Result<(), i64> {
         if !self.can_queue(&req) {
             return Err(EIO);
         }
@@ -630,7 +639,9 @@ impl Core {
                 r.holds += 1;
             }
         }
-        self.syncs.insert(serial, SyncReq { ctx, sent_ns: None, holds: holds.to_vec(), reading, abandoned: false, failed: false });
+        self.syncs.insert(serial, SyncReq {
+            ctx, sent_ns: None, holds: holds.to_vec(), reading: reading.to_vec(), abandoned: false, failed: false, why: 0,
+        });
         self.backlog.push_back((self.epoch, req));
         self.flush();
         Ok(())
@@ -736,16 +747,14 @@ impl Core {
         for id in &s.holds {
             self.unhold(*id);
         }
-        if self.display.sync == Some(serial) {
-            self.display.sync = None;
-            if self.display.abandoned { self.display.busy = false; }
-        }
         if s.abandoned {
-            if let Some(id) = s.reading {
-                if let Some(r) = self.resources.get_mut(&id) {
-                    r.reading = false;
+            for id in s.reading {
+                if !self.syncs.values().any(|o| o.reading.contains(&id)) {
+                    if let Some(r) = self.resources.get_mut(&id) {
+                        r.reading = false;
+                    }
+                    self.free_if_unused(id);
                 }
-                self.free_if_unused(id);
             }
         } else {
             let d = d.unwrap_or_else(|| Done { tag: Tag::Sync(serial), fence: None, answer: 0, echoed: 0, resp: dma::DmaBox::new(wire::HDR) });
@@ -763,8 +772,9 @@ impl Core {
         }
         if last {
             let mut echoed = echoed;
+            let submitted = sub.present.is_none();
             // Test point 20, `stale-fence`: the answer claims another submission's fence.
-            if crate::test_control::take(test_point::STALE_FENCE, 0).is_some() {
+            if submitted && crate::test_control::take(test_point::STALE_FENCE, 0).is_some() {
                 echoed = sub.fence + 1;
             }
             if sub.error.is_none() && echoed != sub.fence {
@@ -778,7 +788,11 @@ impl Core {
             let (ctx, kept) = (sub.ctx, sub.kept);
             // Test point 31, `withhold-fence`, parameters 0 and 1: ignore this completion,
             // or every completion from now until the device is reset.
-            let withheld = crate::test_control::take_if(test_point::WITHHOLD_FENCE, 0, |p| p != test_point::WITHHOLD_DEPTH);
+            let withheld = if submitted {
+                crate::test_control::take_if(test_point::WITHHOLD_FENCE, 0, |p| p != test_point::WITHHOLD_DEPTH)
+            } else {
+                None
+            };
             match withheld {
                 Some(p) => {
                     if p == test_point::WITHHOLD_ALL {
@@ -810,7 +824,7 @@ impl Core {
             return;
         }
         sub.published = true;
-        let (ctx_id, n, fence, retired) = (sub.ctx, sub.n, sub.fence, sub.retired);
+        let (ctx_id, n, fence, retired, presenting) = (sub.ctx, sub.n, sub.fence, sub.retired, sub.present);
         let written = core::mem::take(&mut sub.written);
         let whole = core::mem::take(&mut sub.whole);
         let ok = status == fence_status::OK;
@@ -839,6 +853,16 @@ impl Core {
             if ctx.state == CtxState::Live && ctx.errors_in_row >= 2 {
                 ctx.state = CtxState::Quarantined;
             }
+            if presenting.is_some() && ok {
+                ctx.flushes.insert(n, answer);
+                while ctx.flushes.len() > limits::IN_FLIGHT {
+                    ctx.flushes.pop_first();
+                }
+            }
+        }
+        if let Some(p) = presenting {
+            let ns = self.contexts.get(&ctx_id).map_or(0, |c| c.ns);
+            self.presented(p, ok, (ns as u64) << 32 | n as u64, answer);
         }
         for id in &written {
             if let Some(r) = self.resources.get_mut(id) {
@@ -984,6 +1008,7 @@ impl Core {
         for serial in late {
             let Some(s) = self.syncs.get_mut(&serial) else { continue };
             s.failed = true;
+            s.why = fence_status::DEVICE_HUNG;
             let ctx = s.ctx;
             if ctx != 0 {
                 self.quarantine(ctx, now);
@@ -1043,7 +1068,10 @@ impl Core {
             self.publish(serial, fence_status::DEVICE_RESET, 0);
         }
         for s in self.syncs.values_mut() {
-            s.failed = true;
+            if !s.failed {
+                s.failed = true;
+                s.why = fence_status::DEVICE_RESET;
+            }
         }
         notify();
         self.dev.take()
@@ -1071,10 +1099,7 @@ impl Core {
             }
             self.free_if_unused(id);
         }
-        let scanouts = core::mem::take(&mut self.display.holds);
-        self.display.binding = None;
-        self.display.known = true;
-        for id in scanouts { self.unhold(id); }
+        self.display_reset();
         self.resetting = false;
         match up {
             Ok(()) => self.dev = Some(dev),
@@ -1106,7 +1131,10 @@ impl Core {
         self.status = abi::status::DEVICE_FAILED;
         self.reason = "virtio-gpu reset did not complete";
         for s in self.syncs.values_mut() {
-            s.failed = true;
+            if !s.failed {
+                s.failed = true;
+                s.why = fence_status::DEVICE_RESET;
+            }
         }
         notify();
     }
@@ -1173,26 +1201,35 @@ fn wait_for<T>(deadline: Option<u64>, interruptible: bool, mut f: impl FnMut(&mu
 /// Send synchronous request `serial` (built with `Tag::Sync(serial)`) in device context
 /// `ctx` (0 for none), holding `holds` until the device returns it, and wait for its
 /// answer. The watchdog fails the wait 2 s after the request was sent (EIO), and a signal
-/// or a kill ends it (EINTR); either way the request keeps its holds, and `reading`'s
-/// mark, until the device returns it or a confirmed reset ends it.
-fn exec_req(serial: u64, req: Request, ctx: u32, holds: &[u32], reading: Option<u32>) -> Result<Done, i64> {
+/// or a kill ends it (EINTR); either way the request keeps its holds, and the `reading`
+/// marks, until the device returns it or a confirmed reset ends it.
+fn exec_req(serial: u64, req: Request, ctx: u32, holds: &[u32], reading: &[u32]) -> Result<Done, i64> {
+    exec_req_why(serial, req, ctx, holds, reading).map_err(|(e, _)| e)
+}
+
+/// [`exec_req`], with an EIO's cause: `fence_status::DEVICE_HUNG` when the watchdog ended
+/// the wait, `DEVICE_RESET` when a reset was decided with the request outstanding or the
+/// device is out after one, else 0.
+fn exec_req_why(serial: u64, req: Request, ctx: u32, holds: &[u32], reading: &[u32]) -> Result<Done, (i64, u32)> {
     if !ensure_reaper() {
-        return Err(ENOMEM);
+        return Err((ENOMEM, 0));
     }
-    with_core(|c| c.start_sync(serial, req, ctx, holds, reading)).unwrap_or(Err(ENODEV))?;
+    with_core(|c| c.start_sync(serial, req, ctx, holds, reading))
+        .unwrap_or(Err(ENODEV))
+        .map_err(|e| (e, if e == EIO { fence_status::DEVICE_RESET } else { 0 }))?;
     let outcome = wait_for(None, true, |c| {
         if let Some(d) = c.done.remove(&serial) {
             return Some(Ok(d));
         }
-        c.syncs.get(&serial).filter(|s| s.failed).map(|_| Err(EIO))
+        c.syncs.get(&serial).filter(|s| s.failed).map(|s| Err(s.why))
     });
     match outcome {
         Ok(Ok(d)) => Ok(d),
         other => {
             with_core(|c| c.abandon(serial));
             Err(match other {
-                Ok(Err(e)) => e,
-                _ => EINTR,
+                Ok(Err(why)) => (EIO, why),
+                _ => (EINTR, 0),
             })
         }
     }
@@ -1202,7 +1239,7 @@ fn exec_req(serial: u64, req: Request, ctx: u32, holds: &[u32], reading: Option<
 fn exec_ok(build: impl FnOnce(Tag) -> Option<Request>, ctx: u32, holds: &[u32]) -> Result<Done, i64> {
     let serial = with_core(|c| c.serial()).ok_or(ENODEV)?;
     let req = build(Tag::Sync(serial)).ok_or(ENOMEM)?;
-    let d = exec_req(serial, req, ctx, holds, None)?;
+    let d = exec_req(serial, req, ctx, holds, &[])?;
     if virgl::ok(d.answer) {
         Ok(d)
     } else {
@@ -1522,6 +1559,7 @@ fn op_context_create(arg: u64, len: u64) -> Result<u64, i64> {
             warmed: 0,
             errors_in_row: 0,
             depth: None,
+            flushes: BTreeMap::new(),
         });
         Ok((id, vb, scratch))
     })
@@ -1644,7 +1682,7 @@ fn create_device_context(tgid: u64, id: u32, vb: u32, scratch: u32, vb_pages: &A
     })
     .flatten()
     .ok_or(ENOMEM)?;
-    let d = exec_req(serial, req, id, &[vb, scratch], None)?;
+    let d = exec_req(serial, req, id, &[vb, scratch], &[])?;
     if !virgl::ok(d.answer) || d.echoed != fence {
         return Err(EIO);
     }
@@ -2124,8 +2162,13 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
     };
     // The submission's own vertex buffer: no other submission writes it, and it is
     // freed when the submission no longer holds it.
-    let corrupt = !written.is_empty() && crate::test_control::take(test_point::CORRUPT_PIXEL, 0).is_some();
-    let vertex_buffer = match vertex_buffer_for(id, encode::vertex_bytes(plan.drawn + u64::from(corrupt))) {
+    // Test point 22, `corrupt-pixel`, armed for one of the targets this submission writes
+    // (or for any): that target gets one extra draw.
+    let corrupt = view.entries.iter()
+        .filter(|e| written.contains(&e.id))
+        .map(|e| e.handle)
+        .find(|&handle| crate::test_control::take(test_point::CORRUPT_PIXEL, handle).is_some());
+    let vertex_buffer = match vertex_buffer_for(id, encode::vertex_bytes(plan.drawn + u64::from(corrupt.is_some()))) {
         Ok(vb) => vb,
         Err(e) => {
             release_slot(false);
@@ -2244,6 +2287,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             written: written.clone(),
             whole,
             held,
+            present: None,
         });
         let epoch = c.epoch;
         c.backlog.extend(reqs.into_iter().map(|r| (epoch, r)));
@@ -2345,9 +2389,6 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
         if r.kind != kind::TARGET {
             return Err(EINVAL);
         }
-        if r.lost {
-            return Err(EIO);
-        }
         Ok((id, r.format, r.width, r.height, r.pitch, r.backing.clone()))
     })
     .ok_or(ENODEV)??;
@@ -2359,19 +2400,49 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
     if (a.stride as u64) < row || a.pixels_len < (h - 1) * a.stride as u64 + row {
         return Err(EINVAL);
     }
-    // Fault every output page before issuing device work or publishing either output.
-    probe_output(arg, core::mem::size_of::<abi::Readback>())?;
-    probe_output(a.record, record::SIZE)?;
-    probe_output(a.pixels, ((h - 1) * a.stride as u64 + row) as usize)?;
-    if let Err(e) = display::readable(tgid, id) {
-        if e == EIO { a.reason = readback_reason::RESOURCE_MISMATCH; write_arg(arg, &a)?; }
-        return Err(e);
+    // Every page of the argument, the record and the pixel rows is mapped and writable
+    // before any device work, serial or count (gpu-abi.md, READBACK's EFAULT).
+    probe_writable(arg, core::mem::size_of::<abi::Readback>())?;
+    probe_writable(a.record, record::SIZE)?;
+    // The rows' span is a user range, so the row arithmetic below cannot overflow; only the
+    // rows' own pages are probed, never the gaps a wider stride leaves between them.
+    if !crate::memory::layout::is_valid_user_range(a.pixels, ((h - 1) * a.stride as u64 + row) as usize) {
+        return Err(EFAULT);
     }
+    let mut probed = u64::MAX;
+    for ry in 0..h {
+        let start = a.pixels + ry * a.stride as u64;
+        let first = start / PAGE as u64;
+        let from = if first == probed { (first + 1) * PAGE as u64 } else { start };
+        if from < start + row {
+            probe_writable(from, (start + row - from) as usize)?;
+        }
+        probed = (start + row - 1) / PAGE as u64;
+    }
+    let refuse = |a: &mut abi::Readback, reason: u32, failed: u64| -> Result<u64, i64> {
+        a.reason = reason;
+        a.failed_submission = failed;
+        write_arg(arg, a)?;
+        Err(EIO)
+    };
+    match with_core(|c| display::readable(c, tgid, id)).ok_or(ENODEV)? {
+        Ok(()) => {}
+        Err(EIO) => return refuse(&mut a, readback_reason::BINDING_UNKNOWN, 0),
+        Err(e) => return Err(e),
+    }
+    let staging = Staging::new(tgid, (row * h) as usize)?;
     // Wait for every accepted write of the target to complete, then take it for reading.
+    // The handle is looked up each time: one destroyed meanwhile is target-dropped.
     let taken = wait_for(None, true, |c| {
-        let Some(r) = c.resources.get_mut(&id) else { return Some(Err(EIO)); };
-        if r.lost || r.dropped {
-            return Some(Err(EIO));
+        if c.res_of(tgid, a.target) != Some(id) {
+            return Some(Err(readback_reason::TARGET_DROPPED));
+        }
+        let r = c.resources.get_mut(&id)?;
+        if r.lost {
+            return Some(Err(readback_reason::TARGET_LOST));
+        }
+        if r.dropped {
+            return Some(Err(readback_reason::TARGET_DROPPED));
         }
         if r.writers > 0 || r.reading {
             return None;
@@ -2381,14 +2452,14 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
     });
     let (invalid, invalidated_by, generation, last) = match taken {
         Ok(Ok(t)) => t,
-        Ok(Err(e)) => return Err(e),
+        Ok(Err(reason)) => return refuse(&mut a, reason, 0),
         Err(_) => return Err(EINTR),
     };
     // The target is ours to poison and read until every transfer into it has ended; a
     // transfer whose waiter left keeps the mark until the device returns it.
     let release = || {
         with_core(|c| {
-            if !c.syncs.values().any(|s| s.reading == Some(id)) {
+            if !c.syncs.values().any(|s| s.reading.contains(&id)) {
                 if let Some(r) = c.resources.get_mut(&id) {
                     r.reading = false;
                 }
@@ -2399,50 +2470,44 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
     };
     if invalid {
         release();
-        a.reason = readback_reason::TARGET_INVALID;
-        a.failed_submission = invalidated_by;
-        write_arg(arg, &a)?;
-        return Err(EIO);
+        return refuse(&mut a, readback_reason::TARGET_INVALID, invalidated_by);
     }
-    let outcome = observe(tgid, id, last, &backing, pitch, fmt, a);
-    let observation = match outcome {
+    let observation = match observe(tgid, id, last, &backing, pitch, fmt, a, &staging.pages) {
         Ok(o) => o,
         Err((errno, reason)) => {
             release();
-            if errno == EIO {
-                a.reason = reason;
-                write_arg(arg, &a)?;
-            }
-            return Err(errno);
+            return if errno == EIO { refuse(&mut a, reason, 0) } else { Err(errno) };
         }
     };
     let (unwritten, transfer_fence, transfer_answer) = (observation.unwritten, observation.fence, observation.answer);
     let mut rec = [0u8; record::SIZE];
     let put32 = |rec: &mut [u8; record::SIZE], at: usize, v: u32| rec[at..at + 4].copy_from_slice(&v.to_le_bytes());
     let put64 = |rec: &mut [u8; record::SIZE], at: usize, v: u64| rec[at..at + 8].copy_from_slice(&v.to_le_bytes());
-    let (serial, renderer) = with_core(|c| {
+    let made = with_core(|c| {
+        // The binding is read with the serial: a PRESENT sent during the observation
+        // leaves the scanout unknown, and the observation is refused naming that.
+        let binding = display::binding(c, tgid, id)?;
         let s = c.next_obs;
         c.next_obs += 1;
-        (s, c.caps.renderer)
+        Ok((s, c.caps.renderer, binding))
     })
     .ok_or(ENODEV)?;
+    let (serial, renderer, binding) = match made {
+        Ok(m) => m,
+        Err(e) => {
+            release();
+            return if e == EIO { refuse(&mut a, readback_reason::BINDING_UNKNOWN, 0) } else { Err(e) };
+        }
+    };
     put32(&mut rec, record::VERSION_OFF, record::VERSION);
     put32(&mut rec, record::SIZE_OFF, record::SIZE as u32);
     put64(&mut rec, record::SERIAL, serial);
     put32(&mut rec, record::BACKEND, abi::backend::VIRGL);
     put32(&mut rec, record::BOUNDARY, record::BOUNDARY_HOST);
-    let binding = match display::binding(tgid, id) {
-        Ok(b) => b,
-        Err(e) => {
-            release();
-            if e == EIO { a.reason = readback_reason::RESOURCE_MISMATCH; write_arg(arg, &a)?; }
-            return Err(e);
-        }
-    };
-    if let Some((fence, answer)) = binding {
+    if let Some(b) = binding {
         put32(&mut rec, record::FLAGS, 1);
-        put64(&mut rec, record::PRESENT_FENCE, fence);
-        put32(&mut rec, record::PRESENT_STATUS, answer);
+        put64(&mut rec, record::PRESENT_FENCE, b.fence);
+        put32(&mut rec, record::PRESENT_STATUS, b.answer);
     }
     put32(&mut rec, record::FORMAT, fmt);
     put32(&mut rec, record::X, a.x);
@@ -2471,10 +2536,17 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
     // Nothing reaches pixels until the complete rectangle passed both observations.
     let output = (|| {
         if unwritten == 0 {
-            let row = a.width as usize * 4;
-            for y in 0..a.height as usize {
-                crate::syscall::userptr::write_user_bytes(a.pixels + y as u64 * a.stride as u64,
-                    observation.pixels[y * row..].as_ptr(), row).map_err(|_| EFAULT)?;
+            let row = row as usize;
+            let mut chunk = [0u8; STAGING_CHUNK];
+            for ry in 0..h as usize {
+                let mut done = 0;
+                while done < row {
+                    let n = (row - done).min(STAGING_CHUNK);
+                    staging.pages.read(ry * row + done, &mut chunk[..n]);
+                    let dst = a.pixels + ry as u64 * a.stride as u64 + done as u64;
+                    crate::syscall::userptr::write_user_bytes(dst, chunk.as_ptr(), n).map_err(|_| EFAULT)?;
+                    done += n;
+                }
             }
         }
         crate::syscall::userptr::write_user_bytes(a.record, rec.as_ptr(), record::SIZE).map_err(|_| EFAULT)
@@ -2482,9 +2554,7 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
     release();
     output?;
     if unwritten != 0 {
-        a.reason = readback_reason::UNWRITTEN;
-        write_arg(arg, &a)?;
-        return Err(EIO);
+        return refuse(&mut a, readback_reason::UNWRITTEN, 0);
     }
     with_core(|c| {
         if let Some(l) = last {
@@ -2497,39 +2567,138 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
     Ok(0)
 }
 
-/// Touch a byte in each output page with the recoverable user-access routines. The
-/// write preserves its value, resolves COW, and rejects read-only/unmapped pages before
-/// any observation or output. The GPU paths never use unchecked user pointers.
-fn probe_output(addr: u64, len: usize) -> Result<(), i64> {
+/// Fail with EFAULT unless every page of `[addr, addr + len)` is mapped and writable by
+/// the caller. Each page is tested with an atomic compare-and-exchange of one of its words
+/// with the value it holds, through the recoverable user-access routine: a read-only or
+/// unmapped page faults, a copy-on-write page is copied, and no byte the caller's other
+/// threads store meanwhile is lost, because the exchange only stores the value it read and
+/// retries when the word changed.
+fn probe_writable(addr: u64, len: usize) -> Result<(), i64> {
     if len == 0 || !crate::memory::layout::is_valid_user_range(addr, len) {
         return Err(EFAULT);
     }
     let end = addr.checked_add(len as u64).ok_or(EFAULT)?;
     let mut at = addr;
     while at < end {
-        if crate::syscall::check_signals_for_wait().is_some() { return Err(EINTR); }
-        let mut byte = 0u8;
-        crate::syscall::userptr::read_user_bytes(&mut byte, at, 1).map_err(|_| EFAULT)?;
-        crate::syscall::userptr::write_user_bytes(at, &byte, 1).map_err(|_| EFAULT)?;
+        if crate::syscall::check_signals_for_wait().is_some() {
+            return Err(EINTR);
+        }
+        let word = at & !3;
+        let mut seen = crate::syscall::userptr::read_user_u32(word).map_err(|_| EFAULT)?;
+        loop {
+            match crate::syscall::userptr::cmpxchg_user_u32(word, seen, seen) {
+                Ok(v) if v == seen => break,
+                Ok(v) => seen = v,
+                Err(_) => return Err(EFAULT),
+            }
+        }
         at = (at | (PAGE as u64 - 1)).saturating_add(1);
     }
     Ok(())
 }
 
+/// Bytes moved through the stack at a time between staging, device backing and the caller.
+const STAGING_CHUNK: usize = 512;
+
+/// A readback's staged rectangle: whole frames charged to the process's GPU quota (the
+/// guest-backing quota and `RLIMIT_AS`, as resource backing is), never kernel heap. The
+/// device never touches it, so it is freed with the call.
+struct Staging {
+    pages: Pages,
+    tgid: u64,
+    charge: u64,
+}
+
+impl Staging {
+    fn new(tgid: u64, bytes: usize) -> Result<Staging, i64> {
+        let frames = bytes.div_ceil(PAGE);
+        let charge = (frames * PAGE) as u64;
+        with_core(|c| {
+            let p = c.proc_mut(tgid);
+            if p.bytes.saturating_add(charge) > MEMORY_QUOTA {
+                return Err(ENOMEM);
+            }
+            p.bytes += charge;
+            Ok(())
+        })
+        .ok_or(ENODEV)??;
+        let uncharge = || {
+            with_core(|c| {
+                if let Some(p) = c.procs.get_mut(&tgid) {
+                    p.bytes = p.bytes.saturating_sub(charge);
+                }
+            });
+        };
+        let limits = crate::process::with_process_manager(|m| {
+            let p = m.get_process(crate::process::ProcessId::new(tgid)).ok_or(EINVAL)?;
+            if !p.reserve_gpu_bytes(charge) {
+                return Err(ENOMEM);
+            }
+            Ok(p.limits.clone())
+        })
+        .unwrap_or(Err(EINVAL));
+        let limits = match limits {
+            Ok(l) => l,
+            Err(e) => {
+                uncharge();
+                return Err(e);
+            }
+        };
+        let Some(mut pages) = Pages::new(frames) else {
+            limits.release_gpu_bytes(charge);
+            uncharge();
+            return Err(ENOMEM);
+        };
+        pages.charge_to(limits);
+        Ok(Staging { pages, tgid, charge })
+    }
+}
+
+impl Drop for Staging {
+    fn drop(&mut self) {
+        let (tgid, charge) = (self.tgid, self.charge);
+        with_core(|c| {
+            if let Some(p) = c.procs.get_mut(&tgid) {
+                p.bytes = p.bytes.saturating_sub(charge);
+            }
+        });
+    }
+}
+
 struct Observation {
-    pixels: Vec<u8>,
     unwritten: u32,
     fence: u64,
     answer: u32,
 }
 
-/// Read a rectangle of target `id` into the caller's pixels, band by band: each band is
-/// transferred twice, into the poison and into its complement, and the bytes that differ
-/// between the two are counted as unwritten (section 1.8). Every transfer is a
-/// synchronous request under the watchdog that holds the target, and its backing, until
-/// the device returns it. Returns that count and the first transfer's fence and answer.
+/// Test point 21's resource: another live target of the process, idle, with the same row
+/// pitch, that contains the transfer's box, so the box the device is sent never extends
+/// past the resource it names (section 1.4.1). It is marked as read for the transfer, so
+/// no writer or other readback uses its backing meanwhile, and the request holds the
+/// backing the device writes. None leaves the point armed.
+fn wrong_resource(tgid: u64, id: u32, pitch: u32, x: u32, y: u32, w: u32, h: u32, target: u64) -> Option<(u32, Arc<Pages>)> {
+    with_core(|c| {
+        let (&rid, _) = c.resources.iter().find(|(rid, r)| {
+            **rid != id && r.owner == tgid && r.kind == kind::TARGET && !r.dropped && !r.lost
+                && !r.reading && r.writers == 0 && r.pitch == pitch
+                && r.width >= x + w && r.height >= y + h
+        })?;
+        crate::test_control::take(test_point::WRONG_RESOURCE, target)?;
+        let r = c.resources.get_mut(&rid)?;
+        r.reading = true;
+        Some((rid, r.backing.clone()))
+    })
+    .flatten()
+}
+
+/// Read a rectangle of target `id` into `staging`, band by band: each band is transferred
+/// twice, into the poison and into its complement, and the bytes that differ between the
+/// two are counted as unwritten (section 1.8). Every transfer is a synchronous request
+/// under the watchdog that holds the resource it names and the backing the device writes,
+/// until the device returns it. Returns that count and the first transfer's fence and
+/// answer. The reason of an EIO comes only from what the kernel observes.
 #[allow(clippy::too_many_arguments)]
-fn observe(tgid: u64, id: u32, last: Option<LastWrite>, backing: &Arc<Pages>, pitch: u32, fmt: u32, a: abi::Readback) -> Result<Observation, (i64, u32)> {
+fn observe(tgid: u64, id: u32, last: Option<LastWrite>, backing: &Arc<Pages>, pitch: u32, fmt: u32, a: abi::Readback, staging: &Pages) -> Result<Observation, (i64, u32)> {
     let ctx = with_core(|c| {
         let mine = |cid: &u32| c.contexts.get(cid).is_some_and(|x| x.owner == tgid && x.state == CtxState::Live && x.device_alive);
         last.map(|l| l.ctx)
@@ -2539,11 +2708,9 @@ fn observe(tgid: u64, id: u32, last: Option<LastWrite>, backing: &Arc<Pages>, pi
     .flatten()
     .ok_or((EINVAL, readback_reason::NONE))?;
     let row = a.width as usize * 4;
-    let mut pixels = Vec::new();
-    pixels.try_reserve_exact(row * a.height as usize).map_err(|_| (ENOMEM, readback_reason::NONE))?;
-    let band_rows = (READBACK_BAND / row).max(1).min(a.height as usize);
-    let mut temp = alloc::vec![0u8; band_rows * row];
-    let mut second = alloc::vec![0u8; row];
+    let band_rows = (READBACK_BAND / pitch as usize).max(1).min(a.height as usize);
+    let mut chunk = [0u8; STAGING_CHUNK];
+    let mut kept = [0u8; STAGING_CHUNK];
     let mut unwritten = 0u32;
     let mut first: Option<(u64, u32)> = None;
     let mut by = 0usize;
@@ -2557,62 +2724,80 @@ fn observe(tgid: u64, id: u32, last: Option<LastWrite>, backing: &Arc<Pages>, pi
             }
             backing.maintain(offset, (rows - 1) * pitch as usize + row, false);
             let skip = crate::test_control::take(test_point::SKIP_TRANSFER, a.target).is_some();
-            let actual = if crate::test_control::take(test_point::WRONG_RESOURCE, a.target).is_some() {
-                with_core(|c| c.resources.iter().find(|(rid, r)| **rid != id && r.owner == tgid
-                    && r.kind == kind::TARGET && !r.dropped && !r.lost
-                    && r.width >= a.x + a.width && r.height >= a.y + a.height).map(|(&rid, _)| rid))
-                    .flatten().ok_or((EIO, readback_reason::RESOURCE_MISMATCH))?
-            } else { id };
             if !skip {
+                let other = wrong_resource(tgid, id, pitch, a.x, ty as u32, a.width, rows as u32, a.target);
+                let (named, written) = other.clone().unwrap_or((id, backing.clone()));
                 let (serial, fence) = with_core(|c| (c.serial(), c.device_fence())).ok_or((ENODEV, readback_reason::NONE))?;
-                let req = virgl::transfer_from_host(
-                    Tag::Sync(serial),
-                    ctx,
-                    fence,
-                    actual,
-                    backing.clone(),
-                    a.x,
-                    ty as u32,
-                    a.width,
-                    rows as u32,
-                    offset as u64,
-                    pitch,
-                );
-                let mut d = exec_req(serial, req, ctx, &[id, actual], Some(id)).map_err(|e| (e, readback_reason::DEVICE_ERROR))?;
+                let req = virgl::transfer_from_host(Tag::Sync(serial), ctx, fence, named, written, a.x, ty as u32, a.width, rows as u32, offset as u64, pitch);
+                // The target, and the other resource when the transfer names one.
+                let both = [id, named];
+                let marks = if named == id { &both[..1] } else { &both[..] };
+                let done = exec_req_why(serial, req, ctx, marks, marks);
+                if let Some((rid, _)) = other {
+                    // The mark stays with the request if its waiter left before the answer.
+                    with_core(|c| {
+                        if !c.syncs.values().any(|s| s.reading.contains(&rid)) {
+                            if let Some(r) = c.resources.get_mut(&rid) {
+                                r.reading = false;
+                            }
+                            c.free_if_unused(rid);
+                        }
+                    });
+                    notify();
+                }
+                let mut d = done.map_err(|(e, status)| match status {
+                    fence_status::DEVICE_HUNG => (e, readback_reason::DEVICE_HUNG),
+                    fence_status::DEVICE_RESET => (e, readback_reason::DEVICE_RESET),
+                    _ => (e, readback_reason::NONE),
+                })?;
+                // Test point 20, `stale-fence`: the answer is taken as echoing the next fence.
                 if crate::test_control::take(test_point::STALE_FENCE, a.target).is_some() {
                     d.echoed = d.echoed.wrapping_add(1);
                 }
-                if !virgl::ok(d.answer) { return Err((EIO, readback_reason::DEVICE_ERROR)); }
+                if !virgl::ok(d.answer) {
+                    return Err((EIO, readback_reason::DEVICE_ERROR));
+                }
                 if d.echoed != fence || d.resp.u32_at(wire::HDR_FLAGS) & wire::FLAG_FENCE == 0 {
                     return Err((EIO, readback_reason::FENCE_MISMATCH));
                 }
-                if actual != id { return Err((EIO, readback_reason::RESOURCE_MISMATCH)); }
                 first.get_or_insert((fence, d.answer));
             }
             for r in 0..rows {
-                let dst = &mut temp[r * row..(r + 1) * row];
-                if pass == 0 {
-                    observation::read(backing.as_ref(), offset + r * pitch as usize, dst);
-                } else {
-                    observation::read(backing.as_ref(), offset + r * pitch as usize, &mut second);
-                    unwritten += dst.iter().zip(second.iter()).filter(|(p, q)| p != q).count() as u32;
+                let mut done = 0;
+                while done < row {
+                    let n = (row - done).min(STAGING_CHUNK);
+                    let at = (by + r) * row + done;
+                    if pass == 0 {
+                        observation::read(backing.as_ref(), offset + r * pitch as usize + done, &mut chunk[..n]);
+                        staging.write(at, &chunk[..n]);
+                    } else {
+                        observation::read(backing.as_ref(), offset + r * pitch as usize + done, &mut chunk[..n]);
+                        staging.read(at, &mut kept[..n]);
+                        unwritten += chunk[..n].iter().zip(kept[..n].iter()).filter(|(p, q)| p != q).count() as u32;
+                    }
+                    done += n;
                 }
             }
         }
-        for r in 0..rows {
-            let src = &mut temp[r * row..(r + 1) * row];
-            if fmt == format::R8G8B8A8 {
-                // Canonical bytes are BGRA (record v2's `canonical` 0).
-                for px in src.chunks_exact_mut(4) {
+        if fmt == format::R8G8B8A8 {
+            // Canonical bytes are BGRA (record v2's `canonical` 0).
+            let bytes = rows * row;
+            let mut done = 0;
+            while done < bytes {
+                let n = (bytes - done).min(STAGING_CHUNK);
+                let at = by * row + done;
+                staging.read(at, &mut chunk[..n]);
+                for px in chunk[..n].chunks_exact_mut(4) {
                     px.swap(0, 2);
                 }
+                staging.write(at, &chunk[..n]);
+                done += n;
             }
-            pixels.extend_from_slice(src);
         }
         by += rows;
     }
     let (fence, answer) = first.unwrap_or((0, 0));
-    Ok(Observation { pixels, unwritten, fence, answer })
+    Ok(Observation { unwritten, fence, answer })
 }
 
 fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {

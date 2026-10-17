@@ -120,9 +120,10 @@ pub fn readback(target: u64, rect: [u32; 4], pixels: &mut [u8], stride: u32, rec
     call_with(op::READBACK, &mut a)
 }
 
-/// Bind and flush a drawn target; the returned fence is the device's completed fence.
-pub fn present(target: u64) -> (i64, abi::Present) {
-    let mut a = abi::Present { target, ..abi::Present::ZERO };
+/// `PRESENT` of `target` in `context`: bind it to scanout 0 and flush it. The returned
+/// fence is a fence of `context`, already complete when the call returns 0.
+pub fn present(context: u64, target: u64) -> (i64, abi::Present) {
+    let mut a = abi::Present { target, context, ..abi::Present::ZERO };
     let r = call_with(op::PRESENT, &mut a);
     (r, a)
 }

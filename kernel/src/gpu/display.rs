@@ -1,120 +1,193 @@
-//! G2's minimal scanout binding. No mode policy or ownership stack (G7).
+//! G2's minimal scanout binding (`docs/gui/gpu.md` section 1.7, `PRESENT` in
+//! `docs/gui/gpu-abi.md`). No mode policy or ownership stack (G7).
+//!
+//! A `PRESENT` is a fenced operation of the context it names: SET_SCANOUT and a fenced
+//! RESOURCE_FLUSH, numbered in that context's fence sequence with its `SUBMIT`s, so its
+//! fence is a context fence `WAIT` accepts and record offset 184 carries.
 use super::*;
 use abi::errno::EPERM;
 
 #[derive(Clone, Copy)]
 pub(super) struct Binding {
     pub id: u32,
+    /// The context fence of the `PRESENT` whose flush completed this binding.
     pub fence: u64,
     pub answer: u32,
 }
 
 pub(super) struct State {
+    /// The binding the last completed `PRESENT` made, while no later one is outstanding.
     pub binding: Option<Binding>,
-    /// All resources a sent bind could have installed, until a later completed flush.
+    /// Every resource a sent bind could have installed, each held, until a later sent
+    /// bind's flush completes or a confirmed reset ends device access.
     pub holds: BTreeSet<u32>,
+    /// Whether the kernel knows what the scanout shows: no bind is outstanding and the
+    /// last one completed OK, or a confirmed reset cleared it.
     pub known: bool,
-    pub busy: bool,
-    pub sync: Option<u64>,
-    pub abandoned: bool,
+    /// `PRESENT`s sent, in order; the latest one decides the binding once it completes.
+    pub sent: u64,
+    /// `PRESENT`s sent whose flush has not completed.
+    pub outstanding: u32,
+    /// The latest sent `PRESENT` completed OK (true while none was sent).
+    pub latest_ok: bool,
 }
 impl State {
     pub const fn new() -> Self {
-        Self { binding: None, holds: BTreeSet::new(), known: true, busy: false, sync: None, abandoned: false }
+        Self { binding: None, holds: BTreeSet::new(), known: true, sent: 0, outstanding: 0, latest_ok: true }
     }
 }
-fn owner(tgid: u64) -> bool {
-    crate::syscall::graphics::DISPLAY_OWNER_PID.load(Ordering::Acquire) == tgid
+
+/// What a `PRESENT` sub carries: the target it binds and its place among sent presents.
+#[derive(Clone, Copy)]
+pub(super) struct Presenting {
+    pub id: u32,
+    pub seq: u64,
 }
 
-pub(super) fn readable(tgid: u64, id: u32) -> Result<(), i64> {
-    with_core(|c| {
-        if c.display.holds.contains(&id) {
-            if !owner(tgid) { return Err(EPERM); }
-            if !c.display.known { return Err(EIO); }
+/// Whether thread group `tgid` owns the display now. Ownership is recorded per thread
+/// group with the take-over, so this reads one word and takes no lock.
+pub(super) fn owner(tgid: u64) -> bool {
+    crate::syscall::graphics::DISPLAY_OWNER_GROUP.load(Ordering::Acquire) == tgid
+}
+
+/// Whether `tgid` may observe target `id`: a possible scanout is the display owner's, and
+/// only while its binding is known. EIO carries reason 10, binding-unknown.
+pub(super) fn readable(c: &Core, tgid: u64, id: u32) -> Result<(), i64> {
+    if c.display.holds.contains(&id) {
+        if !owner(tgid) { return Err(EPERM); }
+        if !c.display.known { return Err(EIO); }
+    }
+    Ok(())
+}
+
+/// The completed binding of `id`, for record v2's flags bit 0 and offsets 184 and 192.
+pub(super) fn binding(c: &Core, tgid: u64, id: u32) -> Result<Option<Binding>, i64> {
+    readable(c, tgid, id)?;
+    Ok(c.display.binding.filter(|b| b.id == id))
+}
+
+impl Core {
+    /// A `PRESENT`'s flush came back: the latest one, completed OK, makes its binding
+    /// known and ends the holds of every resource only an earlier bind could have shown.
+    /// The binding is known again once nothing is outstanding and the latest completed OK.
+    pub(super) fn presented(&mut self, p: Presenting, ok: bool, fence: u64, answer: u32) {
+        let d = &mut self.display;
+        d.outstanding = d.outstanding.saturating_sub(1);
+        let latest = p.seq == d.sent;
+        if latest {
+            d.latest_ok = ok;
         }
-        Ok(())
-    }).ok_or(ENODEV)?
-}
-pub(super) fn binding(tgid: u64, id: u32) -> Result<Option<(u64, u32)>, i64> {
-    readable(tgid, id)?;
-    with_core(|c| c.display.binding.filter(|b| b.id == id).map(|b| (b.fence, b.answer))).ok_or(ENODEV)
-}
+        d.known = d.outstanding == 0 && d.latest_ok;
+        if !(latest && ok) {
+            return;
+        }
+        d.binding = Some(Binding { id: p.id, fence, answer });
+        let old: Vec<u32> = d.holds.iter().copied().filter(|&rid| rid != p.id).collect();
+        for rid in old {
+            self.display.holds.remove(&rid);
+            self.unhold(rid);
+        }
+    }
 
-struct Guard(u32);
-impl Drop for Guard {
-    fn drop(&mut self) {
-        with_core(|c| {
-            c.display.abandoned = true;
-            if c.display.sync.is_none() { c.display.busy = false; }
-            if !c.syncs.values().any(|s| s.reading == Some(self.0)) {
-                if let Some(r) = c.resources.get_mut(&self.0) { r.reading = false; }
-                c.free_if_unused(self.0);
-            }
-        });
-        notify();
+    /// A confirmed reset ended device access: nothing is bound, and that is known.
+    pub(super) fn display_reset(&mut self) {
+        let held = core::mem::take(&mut self.display.holds);
+        self.display.binding = None;
+        self.display.known = true;
+        self.display.outstanding = 0;
+        self.display.latest_ok = true;
+        for id in held {
+            self.unhold(id);
+        }
     }
 }
 
 pub(super) fn present(arg: u64, len: u64) -> Result<u64, i64> {
     let mut a: abi::Present = read_arg(arg, len)?;
-    if a.fence != 0 || a.answer != 0 || a.reserved0 != 0 || a.reserved != 0 { return Err(EINVAL); }
+    if a.fence != 0 || a.answer != 0 || a.reserved != 0 {
+        return Err(EINVAL);
+    }
     let tgid = caller()?;
     if !owner(tgid) { return Err(EPERM); }
-    probe_output(arg, core::mem::size_of::<abi::Present>())?;
-    let (id, ctx, width, height) = wait_for(None, true, |c| {
+    // Wait for the target's writers and the context's room, then send the bind and the
+    // flush in the same critical section that checks ownership: SET_SCANOUT is queued only
+    // while the caller owns the display.
+    let sent = wait_for(None, true, |c| {
         if !owner(tgid) { return Some(Err(EPERM)); }
+        let Some(ctx_id) = c.ctx_of(tgid, a.context) else { return Some(Err(EINVAL)) };
         let Some(id) = c.res_of(tgid, a.target) else { return Some(Err(EINVAL)) };
         let Some(r) = c.resources.get(&id) else { return Some(Err(EINVAL)) };
         if r.kind != kind::TARGET { return Some(Err(EINVAL)); }
         if r.lost || r.dropped { return Some(Err(EIO)); }
-        if r.writers > 0 || r.reading || c.display.busy { return None; }
+        let (width, height, writers) = (r.width, r.height, r.writers);
+        let Some(ctx) = c.contexts.get(&ctx_id) else { return Some(Err(EINVAL)) };
+        if ctx.state != CtxState::Live || !ctx.device_alive || ctx.dropped { return Some(Err(EIO)); }
+        if writers > 0 { return None; }
+        if ctx.inflight.len() >= limits::IN_FLIGHT {
+            if ctx.depth.is_some() { c.release_depth(ctx_id); }
+            return None;
+        }
+        if ctx.busy { return None; }
+        let r = c.resources.get(&id)?;
         if r.invalid { return Some(Err(EIO)); }
-        let live = |id: &u32| c.contexts.get(id).is_some_and(|x| x.owner == tgid && x.state == CtxState::Live && x.device_alive);
-        let ctx = r.last.map(|l| l.ctx).filter(live).or_else(||
-            c.procs.get(&tgid).and_then(|p| p.contexts.values().copied().find(live)));
-        let Some(ctx) = ctx else { return Some(Err(EIO)); };
-        let result = (id, ctx, r.width, r.height);
-        c.display.busy = true;
-        c.display.abandoned = false;
-        c.resources.get_mut(&id).unwrap().reading = true;
-        Some(Ok(result))
-    }).map_err(|_| EINTR)??;
-    let _guard = Guard(id);
-    with_core(|c| {
-        // A possible scanout binding is a device-access hold, independent of whether
-        // its waiter lives to see the answer. It outlives handle/context destruction.
+        // A target nothing has written has no contents to show.
+        if r.last.is_none() { return Some(Err(EINVAL)); }
+        if c.queue_size < 2 { return Some(Err(ENOMEM)); }
+        let serial = c.serial();
+        let fence = c.device_fence();
+        c.display.sent += 1;
+        c.display.outstanding += 1;
+        c.display.known = false;
+        let seq = c.display.sent;
+        let ctx = c.contexts.get_mut(&ctx_id)?;
+        ctx.issued += 1;
+        let n = ctx.issued;
+        let bgl_fence = (ctx.ns as u64) << 32 | n as u64;
+        ctx.inflight.push_back(serial);
+        // The sub holds the target until the device returns both requests; the binding
+        // holds it until a later bind's flush completes or a confirmed reset.
+        if let Some(r) = c.resources.get_mut(&id) { r.holds += 1; }
         if c.display.holds.insert(id) {
             if let Some(r) = c.resources.get_mut(&id) { r.holds += 1; }
         }
-        c.display.known = false;
+        c.subs.insert(serial, Sub {
+            ctx: ctx_id,
+            n,
+            fence,
+            sent_ns: None,
+            error: None,
+            mismatch: false,
+            requests: 2,
+            published: false,
+            retired: false,
+            kept: false,
+            result: None,
+            written: Vec::new(),
+            whole: Vec::new(),
+            held: alloc::vec![id],
+            present: Some(Presenting { id, seq }),
+        });
+        let epoch = c.epoch;
+        c.backlog.push_back((epoch, virgl::set_scanout(Tag::Submit { ctx: ctx_id, serial, last: false }, ctx_id, id, width, height)));
+        c.backlog.push_back((epoch, virgl::flush_resource(Tag::Submit { ctx: ctx_id, serial, last: true }, ctx_id, fence, id, width, height)));
+        c.flush();
+        Some(Ok((ctx_id, n, bgl_fence)))
     });
-    for flush in [false, true] {
-        let (serial, fence) = with_core(|c| {
-            let serial = c.serial();
-            c.display.sync = Some(serial);
-            (serial, c.device_fence())
-        }).ok_or(ENODEV)?;
-        let req = if flush { virgl::flush_resource(Tag::Sync(serial), ctx, fence, id, width, height) }
-            else { virgl::set_scanout(Tag::Sync(serial), ctx, fence, id, width, height) };
-        let result = exec_req(serial, req, ctx, &[id], Some(id));
-        // exec_req may fail before it enqueues anything (for example a dead context).
-        with_core(|c| { if !c.syncs.contains_key(&serial) { c.display.sync = None; } });
-        let d = result?;
-        if !virgl::ok(d.answer) || d.echoed != fence || d.resp.u32_at(wire::HDR_FLAGS) & wire::FLAG_FENCE == 0 {
-            return Err(EIO);
-        }
-        if flush {
-            a.fence = fence;
-            a.answer = d.answer;
-            with_core(|c| {
-                c.display.binding = Some(Binding { id, fence, answer: d.answer });
-                c.display.known = true;
-                let old: Vec<u32> = c.display.holds.iter().copied().filter(|&rid| rid != id).collect();
-                for rid in old { c.display.holds.remove(&rid); c.unhold(rid); }
-            });
-        }
-    }
+    let (ctx_id, n, bgl_fence) = match sent {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => return Err(e),
+        Err(_) => return Err(EINTR),
+    };
+    // The fence is the caller's from here on, even if the wait below is interrupted.
+    a.fence = bgl_fence;
     write_arg(arg, &a)?;
-    Ok(0)
+    let outcome = wait_for(None, true, |c| {
+        let Some(ctx) = c.contexts.get_mut(&ctx_id) else { return Some((fence_status::DEVICE_RESET, 0)) };
+        if n > ctx.done_upto { return None; }
+        let answer = ctx.flushes.remove(&n);
+        Some(ctx.outcomes.get(&n).copied().unwrap_or((fence_status::OK, answer.unwrap_or(0))))
+    }).map_err(|_| EINTR)?;
+    a.answer = outcome.1;
+    write_arg(arg, &a)?;
+    if outcome.0 == fence_status::OK { Ok(0) } else { Err(EIO) }
 }
