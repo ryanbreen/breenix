@@ -225,6 +225,8 @@ static SUITE: Suite = suite("gpu", "GPU rendering", &[
 // The layers cases need, each with the build step that supplies it.
 const CORE: &str = "the kernel GPU core and syscall 416 (G1)";
 const PROBE: &str = "probe_int and the profile checks (G4)";
+const PIPELINES: &str = "the pipelines checks (G5)";
+const ISOLATION: &str = "the isolation checks (G6)";
 const QUOTA: &str = "GPU quotas and reclamation (G6)";
 const ISOL: &str = "per-process GPU handles (G6)";
 const FUZZ: &str = "the stream fuzzer (G6)";
@@ -233,6 +235,7 @@ const MODES: &str = "display modes and scale (G7)";
 const PRESENT: &str = "two-target present (G7)";
 const OWNER: &str = "the GPU display ownership stack (G7)";
 const CONSOLE: &str = "the kernel console on the GPU (G7)";
+const PRESENT_CHECKS: &str = "the present checks (G7)";
 const PERF: &str = "the 2560x1600 performance work (G8)";
 
 /// Syscall 416, `gpu(op, arg, len)` (`docs/gui/gpu.md` section 1.4).
@@ -303,8 +306,8 @@ needs! {
     profile_filtered_sampler_refused => PROBE;
     profile_fixed_blend_off => PROBE;
     profile_profile_violation_detected => "test-control point 24 profile-violation (G4)";
-    pipelines_solid_rects => "the solid pipeline (G2)";
-    pipelines_rect_batch => "the solid pipeline (G2)";
+    pipelines_solid_rects => PIPELINES;
+    pipelines_rect_batch => PIPELINES;
     pipelines_copy_clip => "the clip stack (G5)";
     pipelines_copy_scaled => "the copy_scaled pipeline (G5)";
     pipelines_over_premultiplied => "the over pipeline (G5)";
@@ -327,7 +330,7 @@ needs! {
     pipelines_box_filter => "the box_filter pipeline (G5)";
     pipelines_nearest_scale => "the nearest_scaled pipeline (G5)";
     pipelines_clip_nested => "the clip stack (G5)";
-    pipelines_order => "the solid pipeline (G2)";
+    pipelines_order => PIPELINES;
     isolation_handle_private => ISOL;
     isolation_handle_guess => ISOL;
     isolation_fork_no_handles => ISOL;
@@ -348,16 +351,16 @@ needs! {
     isolation_efault_submit => ISOL;
     isolation_efault_readonly => ISOL;
     isolation_quiet_errors => ISOL;
-    isolation_unknown_op => CORE;
-    isolation_test_hooks_absent => "the PID 1 test-control guard (G1) and isolation checks (G6)";
-    isolation_killable_wait => "killable context warm-up and WAIT (G1), READBACK and single-target PRESENT (G2), reclamation (G6)";
+    isolation_unknown_op => ISOLATION;
+    isolation_test_hooks_absent => ISOLATION;
+    isolation_killable_wait => ISOLATION;
     isolation_client_cannot_scanout => ISOL;
     isolation_irq_masked_bound => IRQ;
     present_modes_listed => MODES;
     present_mode_1280x800 => MODES;
     present_mode_2560x1600 => MODES;
     present_scale_reported => MODES;
-    present_scanout_bind => "the minimal scanout bind (G2)";
+    present_scanout_bind => PRESENT_CHECKS;
     present_flip => PRESENT;
     present_present_completion => PRESENT;
     present_present_owner_only => PRESENT;
