@@ -489,6 +489,9 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
     crate::ipc::sysv::row_exit(pid);
     let released = with_process_manager(|pm| pm.get_process_mut(pid).map(|process| process.cwd.release()));
     drop(released);
+    // Captured before PM, as `handle_thread_exit` does: no scheduler state is
+    // consulted while PM is held.
+    let report_claimer = crate::task::scheduler::current_thread_id().unwrap_or(0);
     let mut fifo_opens = alloc::vec::Vec::new();
     let locked = with_process_manager(|pm| {
         // A FIFO open the row's thread was parked in when a kill terminated
@@ -506,6 +509,7 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
                 alloc::vec::Vec::new(),
                 None,
                 None,
+                false,
             );
         };
         let outcome = if process.is_terminated() {
@@ -521,6 +525,12 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
             .get_process(pid)
             .and_then(|process| process.exit_code)
             .unwrap_or(exit_code);
+        // The row is reapable once PM is released, and a reaped row is gone
+        // from `handle_thread_exit`'s lookup: claim the report in this same
+        // hold, so a parent that reaps first cannot leave it unredeemed.
+        let report_claimed = pm
+            .get_process_mut(pid)
+            .is_some_and(|process| process.exit_notifications.claim_report(report_claimer));
         // Groups this exit leaves orphaned with a stopped member, asked once
         // per row whichever exit path gets here first.
         let orphaned_groups = pm.groups_orphaned_by_exit(pid, &children);
@@ -532,6 +542,7 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
             orphaned_groups,
             signal_wake,
             terminal_exit,
+            report_claimed,
         )
     });
 
@@ -539,7 +550,7 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
         crate::ipc::fifo::abandon_fifo_open(open);
     }
 
-    let Some((outcome, receipt, thread_id, reported_exit_code, orphaned_groups, signal_wake, terminal_exit)) = locked else {
+    let Some((outcome, receipt, thread_id, reported_exit_code, orphaned_groups, signal_wake, terminal_exit, report_claimed)) = locked else {
         return ExitOutcome::Missing;
     };
     if let Some(exit) = terminal_exit {
@@ -567,9 +578,16 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
         crate::syscall::signal::signal_orphaned_group(pgid);
     }
 
-    // The unchanged btrt effect remains in handle_thread_exit. Calling the
-    // existing two-phase path here lets a remote commit race a natural thread
-    // exit for the row's report claim without ever invoking SERIAL under PM.
+    if report_claimed {
+        crate::task::process_task::redeem_exit_report(pid, reported_exit_code, report_claimer);
+    }
+
+    #[cfg(all(target_arch = "aarch64", feature = "force_exit_report_reap_race"))]
+    force_exit_report_reap_race(pid);
+
+    // The two-phase path finishes the thread's exit. Its report claim finds
+    // the report already claimed, here or by a natural exit that committed
+    // first, and leaves it to that claimer.
     if let Some(thread_id) = thread_id {
         crate::task::process_task::ProcessScheduler::handle_thread_exit(
             thread_id,
@@ -578,6 +596,50 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
     }
 
     outcome
+}
+
+/// Hold the first killed `sigkill_teardown_test` row's exit, after its parent
+/// was woken and before `handle_thread_exit`, until the parent has reaped it.
+/// A row killed by its own parent is skipped: holding that killer holds the
+/// reaper. This changes only when the killer runs; the parent reaps through the
+/// production wait path and the userspace test keeps its report requirement.
+#[cfg(all(target_arch = "aarch64", feature = "force_exit_report_reap_race"))]
+fn force_exit_report_reap_race(pid: ProcessId) {
+    use core::sync::atomic::AtomicBool;
+    static ARMED: AtomicBool = AtomicBool::new(true);
+    fn counter() -> u64 {
+        let value: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, cntvct_el0", out(reg) value, options(nomem, nostack));
+        }
+        value
+    }
+    let killer_thread = crate::task::scheduler::current_thread_id();
+    let victim = with_process_manager(|pm| {
+        let killer = killer_thread
+            .and_then(|thread| pm.find_process_by_thread(thread))
+            .map(|(killer, _)| killer);
+        pm.get_process(pid).is_some_and(|row| {
+            row.name.contains("sigkill_teardown_test") && row.parent != killer
+        })
+    })
+    .unwrap_or(false);
+    if !victim || !ARMED.swap(false, Ordering::AcqRel) {
+        return;
+    }
+    let limit = crate::arch_impl::aarch64::timer::frequency_hz() / 20;
+    let start = counter();
+    while counter().wrapping_sub(start) < limit {
+        if with_process_manager(|pm| pm.get_process(pid).is_none()).unwrap_or(true) {
+            crate::serial_println!(
+                "FORCED_EXIT_REPORT_REAP_RACE: pid={} was reaped while its killer was held",
+                pid.as_u64()
+            );
+            return;
+        }
+        core::hint::spin_loop();
+    }
+    panic!("parent did not reap the held victim within 50 ms");
 }
 
 /// Execute a function with the process manager while interrupts are disabled (ARM64)
