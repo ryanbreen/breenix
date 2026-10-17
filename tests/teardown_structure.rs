@@ -4157,10 +4157,11 @@ const ROW_DESTRUCTOR_CALLS: &[(&str, &str, usize)] = &[
 /// The join's reap arm. `complete_wait` is the one wait4/waitid implementation
 /// both arches dispatch to — that is DEBT-4 (ii)'s "on BOTH arches", and
 /// deleting it is a `-` row. The other production reaper is the exit path's
-/// reap for a parent that declines zombies (SIGCHLD ignored or SA_NOCLDWAIT).
+/// reap of a row no wait will report: a thread's row, or a child whose parent
+/// declines zombies (SIGCHLD ignored or SA_NOCLDWAIT).
 #[rustfmt::skip]
 const JOIN_REAP_ARM_CALLS: &[(&str, &str, usize)] = &[
-    ("kernel/src/process/manager.rs", "impl ProcessManager::fn reap_if_parent_declines", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::fn reap_if_unwaited", 1),
     ("kernel/src/syscall/wait.rs", "fn complete_wait", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn tombstone_join_oracle_test::fn reap", 1),
 ];
