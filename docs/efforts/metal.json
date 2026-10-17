@@ -1,6 +1,6 @@
 {
   "title": "Path to Breenix on bare-metal x86-64",
-  "outcome": "A production kernel reaches a console shell on a RAM-disk root and passes the networking suite on physical x86-64 hardware without writing hardware disks.",
+  "outcome": "A production kernel reaches a console shell on a RAM-disk root, passes the networking suite, and supports SATA/AHCI storage and the Breenix filesystem on physical x86-64 hardware.",
   "efforts": [
     {
       "id": "metal-bring-up",
@@ -43,7 +43,7 @@
     {
       "id": "metal-userspace",
       "title": "Bare-metal userspace",
-      "outcome": "Userspace runs from a RAM-disk root with the hardware disks untouched: a shell answers over the remote console, and the suite machinery and real-hardware timers pass.",
+      "outcome": "Userspace runs from a RAM-disk root without depending on hardware disks: a shell answers over the remote console, and the suite machinery and real-hardware timers pass.",
       "targets": [
         "x86-metal"
       ],
@@ -186,6 +186,45 @@
           }
         }
       ]
+    },
+    {
+      "id": "metal-storage",
+      "title": "Bare-metal storage",
+      "outcome": "A clean-room SATA/AHCI path discovers the controller, port and drive, reads and writes the disk, and mounts the Breenix filesystem. Scheduled after metal-userspace, in parallel with metal-network.",
+      "targets": [
+        "x86-metal"
+      ],
+      "milestones": [
+        {
+          "id": "sata-ahci",
+          "title": "SATA/AHCI discovery",
+          "measure": {
+            "bootPath": "sata-ahci"
+          }
+        },
+        {
+          "id": "disk-io",
+          "title": "Disk reads and writes",
+          "measure": {
+            "bootPath": "disk-io"
+          }
+        },
+        {
+          "id": "disk-filesystem",
+          "title": "Breenix filesystem on disk",
+          "measure": {
+            "bootPath": "disk-filesystem"
+          }
+        }
+      ]
+    }
+  ],
+  "later": [
+    {
+      "id": "metal-link-aggregation",
+      "after": "metal-network",
+      "scheduled": false,
+      "outcome": "Both ports cabled and bonded as one virtual link using IEEE 802.1AX/LACP from the published standard; the BCM5720 driver stays per-function so a second port attaches without redesign."
     }
   ]
 }

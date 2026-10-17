@@ -818,6 +818,9 @@ fn metal_definition_errors(root: &Path, main: &Value, metal: &Value, boot: &Valu
         if !is_id(id) || !milestones.insert(id) {
             errors.push(format!("duplicate or invalid metal boot milestone {id:?}"));
         }
+        if milestone.get("stub").is_some_and(|stub| stub != true) {
+            errors.push(format!("{id}: stub must be true or absent when finalized"));
+        }
         let lists = milestone["stages"].as_object().unwrap();
         if lists.is_empty() {
             errors.push(format!("{id}: stages must not be empty, including stubs"));
@@ -930,14 +933,32 @@ fn metal_stream_is_independent_and_resolves_its_measures() {
     let errors = metal_definition_errors(&root, &main, &metal, &boot);
     assert!(errors.is_empty(), "metal definitions:\n{}", errors.join("\n"));
     assert_eq!(metal["efforts"].as_array().unwrap().iter().map(|e| e["id"].as_str().unwrap())
-        .collect::<Vec<_>>(), ["metal-bring-up", "metal-userspace", "metal-network"]);
+        .collect::<Vec<_>>(), ["metal-bring-up", "metal-userspace", "metal-network", "metal-storage"]);
     assert_eq!(boot["milestones"][0]["id"], "delivery");
     assert_eq!(boot["milestones"][1]["id"], "first-light");
     assert!(boot["milestones"][0].get("stub").is_none());
     assert!(boot["milestones"][1].get("stub").is_none());
-    for milestone in boot["milestones"].as_array().unwrap().iter().skip(2) {
-        assert_eq!(milestone["stub"], true);
+    let milestone = |id: &str| boot["milestones"].as_array().unwrap().iter()
+        .find(|m| m["id"] == id).unwrap();
+    assert_eq!(milestone("smp")["stages"]["x86_64"][1]["marker"], "[smp] online=4 reported=4");
+    assert_eq!(boot["firsts"][2]["stage"], "Four CPUs online and reported");
+    assert_eq!(milestone("ramdisk-root")["stages"]["x86_64"].as_array().unwrap().len(), 2);
+    for id in ["sata-ahci", "disk-io", "disk-filesystem"] {
+        assert!(metal["efforts"][3]["milestones"].as_array().unwrap().iter()
+            .any(|m| m["measure"]["bootPath"] == id));
+        assert!(!milestone(id)["stages"]["probe"].as_array().unwrap().is_empty());
     }
+    let suite_markers: HashSet<&str> = milestone("suite-finished")["stages"]["suite"][0]["marker"]
+        .as_str().unwrap().split('|').collect();
+    let expected_markers: HashSet<String> = fs::read_dir(root.join("docs/suites")).unwrap()
+        .map(Result::unwrap).map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+        .map(|path| {
+            let manifest: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+            format!("SUITE {} DONE", manifest["id"].as_str().unwrap())
+        }).collect();
+    assert_eq!(suite_markers, expected_markers.iter().map(String::as_str).collect());
+    assert_eq!(boot["firsts"].as_array().unwrap().last().unwrap()["suite"], "networking");
     assert_eq!(boot["milestones"][0]["stages"]["x86_64"].as_array().unwrap().iter()
         .filter_map(|s| s["host"].as_str()).collect::<Vec<_>>(),
         ["console-ready", "power-on", "firmware-text", "post", "image-complete"]);
@@ -963,7 +984,13 @@ fn metal_definition_contract_rejects_invalid_inputs() {
         *bad.pointer_mut(pointer).unwrap() = value;
         assert!(!metal_definition_errors(&root, &main, &bad, &boot).is_empty(), "{pointer}");
     }
+    let mut finalized = boot.clone();
+    for milestone in finalized["milestones"].as_array_mut().unwrap() {
+        milestone.as_object_mut().unwrap().remove("stub");
+    }
+    assert!(metal_definition_errors(&root, &main, &metal, &finalized).is_empty());
     for (pointer, value) in [
+        ("/milestones/2/stub", serde_json::json!("true")),
         ("/scoring", serde_json::json!("arch")),
         ("/gateArch", serde_json::json!("aarch64")),
         ("/milestones/0/stages/x86_64/0/host", serde_json::json!("missing")),

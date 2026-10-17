@@ -33,7 +33,12 @@ main targets above; it does not include metal. The main and metal paths advance 
 
 `metal.json` uses the same effort schema with exactly `["x86-metal"]` on its efforts. Its `bootPath`
 measures resolve against `docs/metal/boot-path.json`; suite measures use the existing manifests.
-Storage is outside this stream until the operator opens a storage effort.
+Storage is scheduled after `metal-userspace`, in parallel with `metal-network`. The linear display
+order keeps networking first, followed by storage, so Vigil continues to show networking as the
+current step; this order is not a dependency between them. SATA remains enabled in AHCI mode,
+and storage includes disk writes and the Breenix filesystem. Earlier boots use the RAM-disk root
+and do not depend on the disk. The top-level `later` list records unscheduled work and is not
+part of the effort sequence; link aggregation follows networking when scheduled.
 
 ### Metal definitions and evidence
 

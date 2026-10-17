@@ -122,19 +122,23 @@
     {
       "id": "smp",
       "title": "Every CPU online",
-      "summary": "Stub for SMP bring-up; the producing lane adds its exact online census.",
+      "summary": "Stub for SMP bring-up, including the four-CPU platform census independently of the firmware table.",
       "kernel": true,
       "stub": true,
       "stages": {
         "x86_64": [
-          "All reported CPUs online"
+          "All reported CPUs online",
+          {
+            "name": "Four CPUs online and reported",
+            "marker": "[smp] online=4 reported=4"
+          }
         ]
       }
     },
     {
       "id": "ramdisk-root",
       "title": "RAM-disk root",
-      "summary": "Stub for a RAM-only root and the hardware-disk write prohibition.",
+      "summary": "Stub for a RAM-disk root that boots independently of hardware disks.",
       "kernel": true,
       "stub": true,
       "stages": {
@@ -146,10 +150,6 @@
           {
             "name": "Root mounted from RAM disk",
             "marker": "[fs] root mounted from the RAM disk"
-          },
-          {
-            "name": "Hardware disks protected",
-            "marker": "[block] hardware disks read-only|[block] no hardware disks"
           }
         ]
       }
@@ -258,15 +258,65 @@
       }
     },
     {
-      "id": "networking-suite",
-      "title": "Networking suite finished",
-      "summary": "Stub for the suite ribbon; a first additionally requires a complete passing manifest verdict, not this line alone.",
+      "id": "suite-finished",
+      "title": "Suite finished",
+      "summary": "Stub for any manifest suite ribbon; a networking first additionally requires the complete passing networking manifest verdict.",
       "stub": true,
       "stages": {
         "suite": [
           {
-            "name": "Networking suite finished",
-            "marker": "SUITE networking DONE"
+            "name": "Suite finished",
+            "marker": "SUITE crypto DONE|SUITE directories DONE|SUITE files-io DONE|SUITE gpu DONE|SUITE ipc DONE|SUITE libc DONE|SUITE memory DONE|SUITE networking DONE|SUITE processes DONE|SUITE rust-std DONE|SUITE sdk DONE|SUITE signals DONE|SUITE smoke DONE|SUITE terminals DONE|SUITE threads DONE|SUITE time DONE|SUITE utilities DONE"
+          }
+        ]
+      }
+    },
+    {
+      "id": "sata-ahci",
+      "title": "SATA/AHCI discovery",
+      "summary": "Stub for the storage lane to finalize with its implementation.",
+      "stub": true,
+      "stages": {
+        "probe": [
+          {
+            "name": "AHCI controller discovered",
+            "marker": "[ahci] controller discovered"
+          },
+          {
+            "name": "SATA port and drive identified",
+            "marker": "[ahci] port and drive identified"
+          }
+        ]
+      }
+    },
+    {
+      "id": "disk-io",
+      "title": "Disk reads and writes",
+      "summary": "Stub for the storage lane to finalize with its implementation.",
+      "stub": true,
+      "stages": {
+        "probe": [
+          {
+            "name": "Disk read verified",
+            "marker": "PROBE metal-disk-read OK"
+          },
+          {
+            "name": "Disk write verified",
+            "marker": "PROBE metal-disk-write OK"
+          }
+        ]
+      }
+    },
+    {
+      "id": "disk-filesystem",
+      "title": "Breenix filesystem on disk",
+      "summary": "Stub for the storage lane to finalize with its implementation.",
+      "stub": true,
+      "stages": {
+        "probe": [
+          {
+            "name": "Disk filesystem mounted",
+            "marker": "PROBE metal-disk-filesystem OK"
           }
         ]
       }
@@ -286,7 +336,7 @@
     {
       "id": "every-cpu",
       "title": "Every CPU online",
-      "stage": "All reported CPUs online"
+      "stage": "Four CPUs online and reported"
     },
     {
       "id": "first-shell",
@@ -306,7 +356,7 @@
     {
       "id": "networking-suite",
       "title": "Networking suite passes on real hardware",
-      "stage": "Networking suite finished",
+      "stage": "Suite finished",
       "suite": "networking"
     }
   ]
