@@ -396,3 +396,162 @@ archived automatically by `vigil-record.sh` before finishing. No historical reco
 relabelled. Both launchers exited 1: later G3–G8 checks remain unwritten, so neither result
 is acceptance of the full GPU effort. The unrelated launcher-order expectation conflict
 was tracked in #1697; ruling 21 subsequently authorized GL-first ordering in its check.
+
+## G3 ABI
+
+| Value or layout | Source |
+|---|---|
+| UPLOAD: 64 bytes, `context` 0, `resource` 8, `x, y, width, height` 16 to 28, `pixels` 32, `pixels_len` 40, `stride` 48, `source` 52, `purpose` 56, reserved 60; sources 0 B8G8R8A8, 1 R8G8B8A8, 2 R8, 3 B8G8R8, 4 R8G8B8; purposes 1 Image, 2 Fixture | O: `docs/gui/gpu-abi.md` `UPLOAD` (contract PR #1700) |
+| Record v2 `canonical` 1: one byte per pixel of an R8 texture; a texture's render fields name its last upload, `render_kind` 0x0205 | O: `docs/gui/gpu.md` section 1.8, `docs/gui/gpu-abi.md` `READBACK` (#1700) |
+| Stream commands COPY 5 (12 words) and DRAW_SAMPLED 6 (6 + 6n words); refusal codes 15 format mismatch, 16 wrong command, 17 samples its target; `copy` 1 step per fragment, a COPY 1 step per pixel per device copy | O: `docs/gui/gpu-abi.md`, the BGL command stream (#1700) |
+| Test points 29 (`wrong-texture`, armed by texture handle; the process's other live texture created first) and 30 (`skip-upload-visibility`, armed by texture handle) | O: `docs/gui/gpu-abi.md`, test-control points (#1700) |
+| An R8 texel `r` sampled as (R `r`, G 0, B 0, A 255) | A: [OpenGL ES 3.0.6](https://registry.khronos.org/OpenGL/specs/es/3.0/es_spec_3.0.pdf), section 3.9.2.1, table 3.24 (RED maps to R, 0, 0, 1); [Direct3D HLSL Texture Object](https://learn.microsoft.com/en-us/windows/win32/direct3dhlsl/dx-graphics-hlsl-to-type), Remarks, paragraph beginning "The default value for missing components"; O: `docs/gui/gpu.md` section 1.3, sampling (#1700); B: B8 and B9 below |
+
+## G3 VirtIO and VirGL values
+
+| Value or layout | Source |
+|---|---|
+| TRANSFER_TO_HOST_3D 0x0205 | V §5.7.6.7, `enum virtio_gpu_ctrl_type` |
+| TRANSFER_TO_HOST_3D's request layout: the 3D transfer layout of U (lines 249–261) that TRANSFER_FROM_HOST_3D uses, box, offset, resource_id, level, stride and layer_stride | U, as in the four-layout table above; B9 confirms it on the device |
+| Object types SAMPLER_VIEW 6, SAMPLER_STATE 7 | P:61–69 |
+| Context commands SET_SAMPLER_VIEWS 10, RESOURCE_COPY_REGION 17, BIND_SAMPLER_STATES 18 | P:78–97 |
+| Sampler state: 9 words: handle, S0, LOD bias, minimum and maximum LOD, four border-colour words; S0 wrap S, T and R at bits 0, 3 and 6 (3 bits each), minifying filter bit 9, mip filter bits 11–12, magnifying filter bit 13, compare mode bit 15, compare function bits 16–18, seamless cube map bit 19, anisotropy bits 20–24 | P:390–407 |
+| Sampler view: 6 words: handle, resource, format, first and last layer (word 4), first and last level (word 5), swizzle with R, G, B and A selectors of 3 bits from bits 0, 3, 6 and 9 | P:411–423 |
+| SET_SAMPLER_VIEWS: shader type, start slot, then the view handles | P:426–429 |
+| BIND_SAMPLER_STATES: shader type, start slot, then the state handles | P:432–435 |
+| RESOURCE_COPY_REGION: 13 words: destination resource, level, x, y, z, then source resource, level, x, y, z, width, height, depth | P:453–466 |
+| Wrap CLAMP_TO_EDGE 2, the mip filter that selects no mip level 2, filter NEAREST 0 | D:181–184, D:194–197, D:202–203 |
+| Swizzle selectors X 0, Y 1, Z 2, W 3: the identity swizzle word 0x688 | T:679–682 numbers TGSI's selectors X to W 0 to 3; that the sampler view's selectors read the same numbers is B: B8 and B9, where each channel of B8G8R8A8, R8G8B8A8 and R8 textures lands in its own byte |
+| Texture bind SAMPLER_VIEW only; copy scratch textures RENDER_TARGET and SAMPLER_VIEW; neither has guest backing | H:636–638 for the bits; O: no transfer names either resource |
+
+## G3 Breenix values
+
+| Value | Source |
+|---|---|
+| Uploads stage the clipped source rows through 768-byte stack chunks in frames charged to both guest-backing quota and RLIMIT_AS, before converting or writing backing; EFAULT leaves textures and buffers unchanged | O: G3 sizing choice; `docs/gui/gpu-abi.md` `UPLOAD`, EFAULT |
+| One device draw per DRAW_SAMPLED instance, each with its own texel-offset constant; up to 1,024 instances' vertices per inline write | O: G3 geometry choice; the vertex-region rule of G1 |
+| A submission whose copies overlap within one target gets one device-only scratch texture per target format, sized to the largest such copy, created and attached like its vertex buffer and held with it | O: `docs/gui/gpu.md` section 1.3, copies |
+| Each context has a third internal resource, a device-only 1×1 B8G8R8A8 texture that warm-up's `copy` draw samples; contexts warm 4 programs (`solid`'s and `copy`'s pairs) | O: `docs/gui/gpu.md` section 1.4.1, program warm-up |
+| A submission's holds end once the device has returned its requests and its fence is published (or a confirmed reset ends them), so a fence kept unpublished keeps the resources it names | O: `docs/gui/gpu.md` section 1.4.1, hold sets |
+| A texture upload takes the texture's backing for itself (the readback mark) and waits for unretired submissions of the process's other contexts that hold the texture | O: `docs/gui/gpu.md` section 1.4.1, uploads are ordered (#1700) |
+
+## G3 shader programs
+
+| Program | Instructions, declarations and semantics (L) | Token layout (T) |
+|---|---|---|
+| `copy` vertex: `VERT`, `DCL IN[0]`, `DCL OUT[0], POSITION`, `MOV OUT[0], IN[0]`, `END` | as `solid`'s vertex program, derived the same way: each catalogue pipeline is its own program pair (`docs/gui/gpu.md` section 1.3) | 11 tokens, as `solid`'s |
+| `copy` fragment: `FRAG`, `DCL IN[0], POSITION, LINEAR`, `DCL OUT[0], COLOR`, `DCL SAMP[0]`, `DCL SVIEW[0], 2D, FLOAT`, `DCL CONST[0]`, `DCL TEMP[0]`, `IMM[0] INT32 {0, 0, 0, 0}`, `MOV TEMP[0], IMM[0]`, `F2I TEMP[0].xy, IN[0]`, `UADD TEMP[0].xy, TEMP[0], CONST[0]`, `TXF OUT[0], TEMP[0], SAMP[0], 2D`, `END` | TGSI_SEMANTIC_POSITION for a fragment input: the fragment's window position (L, "TGSI_SEMANTIC_POSITION"); F2I truncates toward 0 (L, "F2I - Float to Signed Integer"), so a pixel centre `p + 0.5` gives `p`; UADD returns the low 32 bits of the sum (L, "UADD - Integer Add"); TXF fetches one texel at an integer coordinate and level, ignoring the sampler state (L, "TXF - Texel Fetch"); SVIEW declares the sampler view and its return type (L, "Declaration Sampler View") | 39 tokens: header and processor (2); input declaration, range, interpolation (T:166–169, the declaration's Interpolate flag T:145) and semantic (4); output declaration, range and semantic (3); sampler declaration and range (2); sampler-view declaration, range and sampler-view token (T:253–259) (3); constant declaration and range (2); temporary declaration and range (2); immediate (T:284–290) and four values (T:292) (5); MOV, a destination and a source (3); F2I (3); UADD, a destination and two sources (4); TXF, its texture token (T:714–718, the instruction's Texture flag T:658), a destination and two sources (5); END (1). Files TEMPORARY 4, SAMPLER 5, IMMEDIATE 7, SAMPLER_VIEW 11 (T:77–84); LINEAR (T:111); FLOAT (T:249); INT32 (T:278); opcodes TXF, F2I, UADD (T:450, 476, 486); TEXTURE_2D (T:694) |
+
+The fragment program's L sections are in the pinned `tgsi.rst`: TXF at line 858, F2I at 1024, UADD at 1056,
+TGSI_SEMANTIC_POSITION at 3043 and Declaration Sampler View at 3508. The constant holds the draw's texel
+offset `(sx − x0, sy − y0)` as 32-bit integers (SET_CONSTANT_BUFFER carries raw words, P:330–332), one
+draw per DRAW_SAMPLED instance. With pixel centres at half-integers the truncated window position is the
+pixel, and since the texel the sum names lies inside the texture, the 32-bit wrapping sum is exact.
+
+## G3 shader-grammar facts
+
+The renderer was the unmodified virglrenderer at P's pin, run on 2026-10-17 at 08:22:59 UTC with checkout
+commit `84651e17df7c2e8c31c4c5b0057499462c935abc` (the source tested, not a commit containing the harness), through the same public-API harness pattern as G1's
+(ruling 11): a host-only Python ctypes harness, committed at `tools/gpu-experiments/g3-egl.py`, with `exp-grammar.py`, `exp-render.py` and `copy_fs.txt` in the same directory, that loads virglrenderer and ANGLE EGL,
+creates a 1×1 pbuffer and GLES contexts with the version-1 callbacks, and submits words with
+`virgl_renderer_submit_cmd`. To reproduce with the committed harness (experiments `exp-grammar`
+and `exp-render`), without machine-specific directory prefixes, use
+`DYLD_LIBRARY_PATH="$QEMU_GL_FRAMEWORKS" DYLD_FRAMEWORK_PATH="$QEMU_GL_FRAMEWORKS" QEMU_GL_FRAMEWORKS="$QEMU_GL_FRAMEWORKS" python3 tools/gpu-experiments/g3-egl.py tools/gpu-experiments/<experiment>.py`
+with `ANGLE_DEFAULT_PLATFORM=metal`, `QEMU_GL_FRAMEWORKS` denoting the pinned QEMU GL bundle's Frameworks
+directory. Each candidate went to a fresh context as one CREATE_OBJECT SHADER (handle 1, the fragment
+stage, the text's length with its NUL, the stated token count), the text packed into little-endian words
+with 0 bytes as padding; 0 is acceptance and 22 refusal. The baseline is the committed `copy` fragment program
+above with 39 tokens.
+
+| Change from the baseline | Result | Fact established |
+|---|---|---|
+| (the baseline itself) | accepted (0) | `POSITION, LINEAR` on a fragment input, `SAMP`, `SVIEW[0], 2D, FLOAT`, `TEMP`, `IMM[0] INT32 {…}`, swizzled `.xy` destinations, F2I, UADD and four-operand TXF are accepted together |
+| token count 38, and 100 | accepted (0) both | acceptance does not check the token count, so the count comes from T, not from acceptance |
+| `, LINEAR` removed | accepted (0) | the interpolation qualifier is optional to the parser; the program keeps it from L |
+| `DCL SVIEW[0], 2D, FLOAT` removed | accepted (0) | the parser does not require the view declaration; the program keeps it, as L asks for typed views |
+| `INT32` removed from `IMM[0]` | refused (22, "Expected immediate type") | an immediate names its type |
+| `INT32` replaced with `UINT32` | accepted (0) | UINT32 is also an immediate type |
+| `, 2D` removed from TXF | refused (22, "Expected `,`") | TXF names its texture target as its last operand |
+| `FLOAT` replaced with `UNORM` in SVIEW | accepted (0) | the return-type word is parsed from L's list |
+
+## B8: G3 host-renderer pixel experiments
+
+The same harness and run, experiment `exp-render`. Its resources come from
+`virgl_renderer_resource_create` and join the contexts through `virgl_renderer_ctx_attach_resource`;
+their memory comes from `virgl_renderer_resource_attach_iov`, and their transfers from
+`virgl_renderer_transfer_write_iov` and `virgl_renderer_transfer_read_iov` at a 256-byte stride. The command words follow the
+encoder's layout for each step: the context's state objects, the `copy` program pair, a sampler state with S0
+`sampler_s0(2, 0, 2)`, a sampler view with the identity swizzle, and per draw SET_CONSTANT_BUFFER with the
+offset, RESOURCE_INLINE_WRITE of six vertices and DRAW_VBO. Bytes are given B, G, R, A for B8G8R8A8.
+
+| Inputs | Output excerpt | Fact |
+|---|---|---|
+| A 5×3 B8G8R8A8 texture, texel (x, y) = (40x + 1, 80y + 2, 7, 255 − x), uploaded whole; an 8×6 B8G8R8A8 target cleared to (0x33, 0x33, 0x33, 0xFF); one `copy` draw of the rectangle (2, 1)–(6, 4) with offset (−1, −1) | `write 0`, `submit 0`, `read 0`; row 1 `333333ff 333333ff 290207fe 510207fd 790207fc a10207fb 333333ff 333333ff`, rows 2 and 3 the same texels with G 0x52 and 0xA2 | pixel (x, y) reads texel (x − 1, y − 1): the truncated window position is the pixel, row 0 is the target's top row (the same orientation as `solid`), the constant is read as integers, and B8G8R8A8 texels keep their bytes |
+| A 64×2 R8 texture with bytes 0 to 63 and 100 to 163, a 4×2 R8G8B8A8 target, one `copy` draw of (0, 0)–(4, 2) with offset (60, 0) | `3c0000ff 3d0000ff 3e0000ff 3f0000ff`, `a00000ff a10000ff a20000ff a30000ff` (R8G8B8A8 bytes R, G, B, A) | an R8 texel `r` reads as (R `r`, G 0, B 0, A 255), and an R8 row of 64 bytes transfers at a 256-byte stride |
+| RESOURCE_COPY_REGION within the 8×6 target: source (2, 1) 3×2, destination (0, 4) | rows 4 and 5 `290207fe 510207fd 790207fc 333333ff …` and `295207fe 515207fd 795207fc …` | the 13 words are read as laid out: exactly the named 3×2 rectangle moves |
+| The texture's row 0 re-uploaded as (9, 9, 9, 9) in context 1, then a `copy` draw of (6, 0)–(8, 2) with offset (−6, 0) in context 2, which the texture, target and vertex buffer were also joined to | context 2's readback row 0 ends `09090909 09090909`, row 1 `015207ff 295207fe` | an upload made in one context is visible to a later draw in another on this renderer; the contract still has `UPLOAD` wait for other contexts' submissions naming the texture, since the device states no order between contexts |
+
+## B9: G3 device confirmation
+
+The committed G3 checks are `userspace/programs/src/suite_gpu/textures.rs`. Each boot below was built and
+booted in a worktree whose Rust fork was set up with `scripts/rust-fork.sh sync`, with
+`CARGO_BUILD_JOBS=4` exported, by `taskpolicy -b "$CHECKOUT/userspace/programs/build.sh" --arch aarch64`,
+`taskpolicy -b "$CHECKOUT/scripts/create_ext2_disk.sh" --arch aarch64` and, from CHECKOUT,
+`taskpolicy -b cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64`,
+then
+`BREENIX_QUIET=0 "$CHECKOUT/scripts/boot-interactive.sh" --no-build --mode suite --suite gpu --gpu-gl --display --serial-log "$RUN/serial.txt" --gate-timeout 900 < /dev/null`.
+CHECKOUT is the absolute checkout of the source commit and RUN a fresh absolute output directory. Each
+record reports `display:true` and dirty 0, and each run folder keeps `host-renderer.json`; the launcher
+accepted the attestation, `ANGLE Metal Renderer`, with 170 records for the first two runs, 178 for the
+third, whose added case steps create more contexts, and 180 for the fourth. The fourth run was built and
+booted in one step by
+`CARGO_BUILD_JOBS=4 BREENIX_BUILD_BACKGROUND=1 "$CHECKOUT/scripts/boot-interactive.sh" --mode suite --suite gpu --gpu-gl --display --serial-log "$RUN/serial.txt" < /dev/null`,
+which runs the same three builds under `taskpolicy -b` before booting.
+
+| Source commit and Vigil run | Producer output |
+|---|---|
+| `309ade3b02459d78daf6677e3e5ebbf6104acc85`, `20261017T083611Z-qemu` | `SUITE gpu DONE passed=71 failed=99 skipped=0 total=170`: device 12/12, submit 22/22, readback 19/19, textures 17/19, `pipelines/copy` PASS. `textures/quota FAIL … RESOURCE_CREATE of a 4096x4096 texture in format 0 returned ENOMEM`; `textures/readback-uploaded FAIL … CONTEXT_CREATE returned ENOMEM` |
+| `b71c5aa7a39993f26c3384e3a06684c46e833457`, `20261017T084718Z-qemu` | `SUITE gpu DONE passed=71 failed=99 skipped=0 total=170`: device 12/12, submit 22/22, readback 19/19, textures 17/19, `pipelines/copy` PASS. `textures/quota FAIL … the case crashed: killed by signal 11`; `textures/fault-skip-upload FAIL … CONTEXT_CREATE returned ENOMEM` |
+| `9afc54cded748521ec09e9478fb0a779d65d08e0`, `20261017T112047Z-qemu` | `SUITE gpu DONE passed=73 failed=97 skipped=0 total=170`: device 12/12, submit 22/22, readback 19/19, textures 19/19, `pipelines/copy` PASS. `SUITE gpu VALUE textures/upload-visibility hung-upload-ms=2000ms`, `reset-ms=4006ms`; `SUITE gpu CASE textures/upload-visibility PASS ms=4116`; `SUITE gpu CASE textures/quota PASS ms=62` |
+| `507d7515977d99c523a15cd4c8504608f10ec667`, `20261017T122823Z-qemu` | `SUITE gpu DONE passed=73 failed=97 skipped=0 total=170`: device 12/12, submit 22/22, readback 19/19, textures 19/19, `pipelines/copy` PASS. `SUITE gpu VALUE textures/immutable-while-pinned ordering-upload-ms=13ms`, `ordering-in-flight-after-upload=0`, `ordering-draws=1024`; `SUITE gpu CASE textures/immutable-while-pinned PASS ms=4021` |
+
+Facts the passing cases establish on the device, beyond B8's: TRANSFER_TO_HOST_3D with U's layout writes
+the box at `offset` = y × pitch + x × bytes per pixel with the 256-byte-aligned pitch as stride, including
+B8G8R8A8 textures 48 wide and R8 textures 64 wide, whose natural rows of 192 and 64 bytes are not multiples
+of 256 (`upload-full`,
+`upload-subrect`, `upload-clip`, `upload-stride`, `unaligned-pitch`, `readback-uploaded`); TRANSFER_FROM_HOST_3D
+reads textures as it reads targets; RESOURCE_COPY_REGION between and within targets, and through a scratch
+texture for overlapping rectangles (`copy-region`, `copy-overlap`); a submission whose fence is retained unpublished samples earlier texels and buffer snapshots
+(`immutable-while-pinned`); because the depth point may hold an already completed answer, this is not
+evidence that commands execute in context order; points 29 and 30 are caught only by the
+exact comparison and by reading the texture back (`fault-wrong-texture`, `fault-skip-upload`).
+
+The failed-upload experiment (ruling 25) is `upload-visibility`'s last part, from the third run. Point 31 with
+parameter 1, armed before a submission of another context, stops the kernel taking the device's answers once that
+submission's answer arrives, which the case sees as the point's FIRED count rising. A whole-texture `UPLOAD` then
+sends its TRANSFER_TO_HOST_3D, and a 30 ms ITIMER_REAL signal interrupts its wait: EINTR. A second whole-texture
+`UPLOAD` is ended by the watchdog: EIO after `hung-upload-ms=2000ms`. After each, a submission of a third,
+live context naming the texture as a `COPY` source or a `DRAW_SAMPLED` texture is refused with code 14
+(`INVALID_TARGET`), so a sent and failed upload leaves its texture invalid on this device. The stall
+ends in the watchdog's device reset (`reset-ms=4006ms`), after which a new context draws and reads back exactly.
+Readback of either texture cannot show the invalid state in that window: it waits for the outstanding transfer,
+which only the reset ends, and the reset marks the texture lost.
+
+The same-context ordering experiment (ruling 26) is `immutable-while-pinned`'s first part, from the fourth run.
+No point is armed. One context sends a submission of 1024 `copy` draws, each sampling the whole of a 1024×1024
+texture into a 1024×1024 target (2^30 fragment-steps). A zero-timeout `WAIT` on its fence immediately
+before a one-texel `UPLOAD` to that texture in the same context returned ETIMEDOUT, so the upload was issued
+while the submission was unanswered. The target then read back exactly as the texture was before the
+upload, and a submission sent after the upload returned read the new texel. On this device, then, a
+submission sent before an upload in the same context samples the texture as it was before. The submission's
+fence had been answered by the time the `UPLOAD` returned (`ordering-in-flight-after-upload=0`), so the run
+does not show whether the device answers a transfer before the work sent ahead of it in that context.
+Had the fence already been answered at the `WAIT`, the case would have reported that run as
+`ordering-finished-early-draws` and repeated it once with 2048 draws (2^31, the work cap), failing if that run
+too were answered first.
+
+The first two runs' quota failures came from ARM64's frame allocator then spanning 0x4400_0000 to 0x5000_0000
+(`[boot] Initializing memory management (0x44000000-0x50000000)`), 192 MiB for the whole kernel, equal to the
+per-process quota, so the failed case's textures starved the next case until the reclamation sweep. With the frame
+pool taken from the firmware's memory description (ruling 23, #1704), `textures/quota` passes in the third run.
+These runs are G3 evidence, not a green full suite: the G4–G8 checks are still unwritten.

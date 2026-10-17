@@ -1,6 +1,6 @@
 use super::{with_core, Pages, EINVAL, ENODEV, ENOMEM, MEMORY_QUOTA, PAGE};
 
-/// A readback's staged rectangle: whole frames charged to the process's GPU quota (the
+/// An upload's or readback's staged rectangle: whole frames charged to the process's GPU quota (the
 /// guest-backing quota and `RLIMIT_AS`, as resource backing is), rather than heap pixel buffers.
 /// Frame descriptors remain heap metadata. The staging is CPU-only and freed with the call.
 pub(super) struct Staging {

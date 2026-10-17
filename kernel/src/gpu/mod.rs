@@ -118,6 +118,8 @@ struct Totals {
     readbacks: u64,
     ring_waits: u64,
     device_errors: u64,
+    uploads_image: u64,
+    uploads_fixture: u64,
 }
 
 struct Proc {
@@ -151,6 +153,8 @@ struct Ctx {
     objects: encode::Objects,
     vb: u32,
     scratch: u32,
+    /// The 1x1 texture warm-up's `copy` draw samples.
+    scratch_texture: u32,
     warmed: u32,
     /// Device errors in a row, in fence order.
     errors_in_row: u32,
@@ -179,15 +183,14 @@ struct Sub {
     requests: u32,
     /// Its result has reached callers.
     published: bool,
-    /// Its holds have ended: the device returned every request, or a confirmed reset
-    /// ended them.
-    retired: bool,
     /// Kept by test point 31's fence-depth mode.
     kept: bool,
     /// A kept submission's result, until it is published.
     result: Option<(u32, u32)>,
     written: Vec<u32>,
     whole: Vec<u32>,
+    /// Resources it holds until the device has returned its requests and its result has
+    /// reached callers, or a confirmed reset has ended them.
     held: Vec<u32>,
     /// A `PRESENT`'s bind and flush rather than a `SUBMIT`.
     present: Option<display::Presenting>,
@@ -198,6 +201,8 @@ struct SyncReq {
     /// The device context it runs in, 0 for none.
     ctx: u32,
     sent_ns: Option<u64>,
+    /// Texture upload and expected fence; completion accounting survives an interrupted waiter.
+    upload: Option<(u32, u64)>,
     /// Resources it holds until the device returns it.
     holds: Vec<u32>,
     /// The resources whose `reading` mark the request keeps if its waiter leaves: a
@@ -218,6 +223,8 @@ struct LastWrite {
     fence: u64,
     serial: u64,
     answer: u32,
+    /// The command answered: SUBMIT_3D for a submission, TRANSFER_TO_HOST_3D for an upload.
+    kind: u32,
 }
 
 struct Res {
@@ -390,7 +397,7 @@ impl Core {
         for (slot, s) in c.scanouts.iter_mut().zip(dev.info.scanouts.iter()) {
             *slot = abi::ScanoutInfo { enabled: s.enabled as u32, width: s.width, height: s.height, reserved: 0 };
         }
-        c.pipelines = 1 << abi::pipeline::SOLID;
+        c.pipelines = 1 << abi::pipeline::SOLID | 1 << abi::pipeline::COPY;
         self.have[capability::FEATURE_3D as usize] = c.features & abi::feature::VIRGL != 0;
         let empty = Vec::new();
         let bytes = dev.info.capset.as_ref().map_or(&empty, |s| &s.2);
@@ -618,7 +625,7 @@ impl Core {
         let serial = self.serial();
         req.tag = Tag::Sync(serial);
         self.syncs.insert(serial, SyncReq {
-            ctx: 0, sent_ns: None, holds: Vec::new(), reading: Vec::new(),
+            ctx: 0, sent_ns: None, upload: None, holds: Vec::new(), reading: Vec::new(),
             abandoned: true, failed: false, why: 0,
         });
         self.backlog.push_back((self.epoch, req));
@@ -644,8 +651,10 @@ impl Core {
                 r.holds += 1;
             }
         }
+        let upload = (req.command_type() == wire::cmd::TRANSFER_TO_HOST_3D)
+            .then(|| holds.first().copied().zip(req.fence)).flatten();
         self.syncs.insert(serial, SyncReq {
-            ctx, sent_ns: None, holds: holds.to_vec(), reading: reading.to_vec(), abandoned: false, failed: false, why: 0,
+            upload, ctx, sent_ns: None, holds: holds.to_vec(), reading: reading.to_vec(), abandoned: false, failed: false, why: 0,
         });
         self.backlog.push_back((self.epoch, req));
         self.flush();
@@ -749,6 +758,32 @@ impl Core {
         if s.ctx == 0 && d.as_ref().is_some_and(|d| !virgl::ok(d.answer)) {
             self.fault();
         }
+        if let Some((id, fence)) = s.upload {
+            if let Some(d) = &d {
+                let device_error = !virgl::ok(d.answer);
+                let ok = !device_error && d.echoed == fence
+                    && d.resp.u32_at(wire::HDR_FLAGS) & wire::FLAG_FENCE != 0;
+                if !ok {
+                    if let Some(r) = self.resources.get_mut(&id) {
+                        completion::finish_write(&mut r.invalid, &mut r.invalidated_by, serial, false, false);
+                    }
+                }
+                if let Some(ctx) = self.contexts.get_mut(&s.ctx) {
+                    if device_error {
+                        ctx.totals.device_errors += 1;
+                        if let Some(p) = self.procs.get_mut(&ctx.owner) {
+                            p.totals.device_errors += 1;
+                        }
+                        ctx.errors_in_row += 1;
+                        if ctx.state == CtxState::Live && ctx.errors_in_row >= 2 {
+                            ctx.state = CtxState::Quarantined;
+                        }
+                    } else if ok {
+                        ctx.errors_in_row = 0;
+                    }
+                }
+            }
+        }
         for id in &s.holds {
             self.unhold(*id);
         }
@@ -764,6 +799,9 @@ impl Core {
         } else {
             let d = d.unwrap_or_else(|| Done { tag: Tag::Sync(serial), fence: None, answer: 0, echoed: 0, resp: dma::DmaBox::new(wire::HDR) });
             self.done.insert(serial, d);
+        }
+        if s.upload.is_some() {
+            self.settle(s.ctx);
         }
         notify();
     }
@@ -822,14 +860,14 @@ impl Core {
 
     /// Give submission `serial`'s result to its callers: its fence, its targets'
     /// publication or invalidation, and its context's error count. Its holds are not
-    /// touched: they end when the device is done with it.
+    /// touched: they end after device completion and fence publication.
     fn publish(&mut self, serial: u64, status: u32, answer: u32) {
         let Some(sub) = self.subs.get_mut(&serial) else { return };
         if sub.published {
             return;
         }
         sub.published = true;
-        let (ctx_id, n, fence, retired, presenting) = (sub.ctx, sub.n, sub.fence, sub.retired, sub.present);
+        let (ctx_id, n, fence, presenting) = (sub.ctx, sub.n, sub.fence, sub.present);
         let written = core::mem::take(&mut sub.written);
         let whole = core::mem::take(&mut sub.whole);
         let ok = status == fence_status::OK;
@@ -872,35 +910,31 @@ impl Core {
                 completion::finish_write(&mut r.invalid, &mut r.invalidated_by, serial, ok, whole.contains(id));
                 if ok {
                     r.generation += 1;
-                    r.last = Some(LastWrite { ctx: ctx_id, fence, serial, answer });
+                    r.last = Some(LastWrite { ctx: ctx_id, fence, serial, answer, kind: wire::cmd::SUBMIT_3D });
                 }
             }
         }
         for id in written {
             self.free_if_unused(id);
         }
-        if retired {
-            self.subs.remove(&serial);
-        }
+        self.retire_if_done(serial);
         self.settle(ctx_id);
         notify();
     }
 
-    /// End submission `serial`'s holds once the device holds none of its requests.
+    /// End submission `serial`'s holds once the device holds no request of it and its
+    /// result has reached callers: a resource it names, its handle destroyed, is freed after
+    /// both the device's completion and the submission's fence (section 1.4.1, hold sets),
+    /// so a fence kept unpublished keeps its resources too.
     fn retire_if_done(&mut self, serial: u64) {
         let Some(sub) = self.subs.get_mut(&serial) else { return };
-        if sub.requests > 0 {
+        if sub.requests > 0 || !sub.published {
             return;
         }
-        if !sub.retired {
-            sub.retired = true;
-            let held = core::mem::take(&mut sub.held);
-            for id in held {
-                self.unhold(id);
-            }
-        }
-        if self.subs.get(&serial).is_some_and(|s| s.published) {
-            self.subs.remove(&serial);
+        let held = core::mem::take(&mut sub.held);
+        self.subs.remove(&serial);
+        for id in held {
+            self.unhold(id);
         }
     }
 
@@ -961,7 +995,7 @@ impl Core {
         }
         if dropped {
             if let Some(c) = self.contexts.remove(&id) {
-                for internal in [c.vb, c.scratch] {
+                for internal in [c.vb, c.scratch, c.scratch_texture] {
                     if let Some(r) = self.resources.get_mut(&internal) {
                         r.dropped = true;
                     }
@@ -1437,12 +1471,13 @@ pub fn sys_gpu(op: u64, arg: u64, len: u64) -> SyscallResult {
                 abi::op::CONTEXT_DESTROY => op_context_destroy(arg, len),
                 abi::op::RESOURCE_CREATE => op_resource_create(arg, len),
                 abi::op::RESOURCE_DESTROY => op_resource_destroy(arg, len),
+                abi::op::UPLOAD => op_upload(arg, len),
                 abi::op::SUBMIT => op_submit(arg, len),
                 abi::op::WAIT => op_wait(arg, len),
                 abi::op::READBACK => op_readback(arg, len),
                 abi::op::PRESENT => display::present(arg, len),
                 abi::op::COUNTERS => op_counters(arg, len),
-                // UPLOAD (G3), MODES and SET_MODE (G7) are not built yet.
+                // MODES and SET_MODE (G7) are not built yet.
                 _ => Err(ENOSYS),
             },
         },
@@ -1527,7 +1562,7 @@ fn op_context_create(arg: u64, len: u64) -> Result<u64, i64> {
     // Reserve the context and its internal resources.
     let vb_pages = Arc::new(Pages::new(encode::VERTEX_BUFFER_BYTES as usize / PAGE).ok_or(ENOMEM)?);
     let scratch_pages = Arc::new(Pages::new(1).ok_or(ENOMEM)?);
-    let (id, vb, scratch) = with_core(|c| {
+    let (id, vb, scratch, scratch_texture) = with_core(|c| {
         let p = c.proc_mut(tgid);
         if p.contexts.len() >= limits::CONTEXTS {
             return Err(EAGAIN);
@@ -1538,10 +1573,13 @@ fn op_context_create(arg: u64, len: u64) -> Result<u64, i64> {
         c.next_ns += 1;
         let vb = c.next_res;
         let scratch = c.next_res + 1;
-        c.next_res += 2;
+        let scratch_texture = c.next_res + 2;
+        c.next_res += 3;
         let epoch = c.epoch;
         c.resources.insert(vb, new_res(0, kind::BUFFER, format::B8G8R8A8, 0, 0, encode::VERTEX_BUFFER_BYTES as u64, 256, vb_pages.clone(), epoch));
         c.resources.insert(scratch, new_res(0, kind::TARGET, format::B8G8R8A8, 1, 1, 0, 256, scratch_pages.clone(), epoch));
+        // Device-only: no transfer names it, so it has no guest backing.
+        c.resources.insert(scratch_texture, new_res(0, kind::TEXTURE, format::B8G8R8A8, 1, 1, 0, 256, Arc::new(Pages::none()), epoch));
         c.contexts.insert(id, Ctx {
             id,
             owner: tgid,
@@ -1559,15 +1597,16 @@ fn op_context_create(arg: u64, len: u64) -> Result<u64, i64> {
             objects: encode::Objects::new(),
             vb,
             scratch,
+            scratch_texture,
             warmed: 0,
             errors_in_row: 0,
             depth: None,
             flushes: present_answers::Answers::new(),
         });
-        Ok((id, vb, scratch))
+        Ok((id, vb, scratch, scratch_texture))
     })
     .ok_or(ENODEV)??;
-    let created = create_device_context(tgid, id, vb, scratch, &vb_pages, &scratch_pages).and_then(|()| {
+    let created = create_device_context(tgid, id, [vb, scratch, scratch_texture], &vb_pages, &scratch_pages).and_then(|()| {
         with_core(|c| {
             // The watchdog or a reset may have ended the context while it was created.
             if !c.contexts.get(&id).is_some_and(|x| x.state == CtxState::Creating && x.device_alive) {
@@ -1611,7 +1650,8 @@ fn op_context_create(arg: u64, len: u64) -> Result<u64, i64> {
 /// attached, then compile and warm the catalogue's programs and wait for the warm-up's
 /// fence. Every wait here is a synchronous device request under the watchdog, ended by a
 /// kill (section 1.4.1, program warm-up).
-fn create_device_context(tgid: u64, id: u32, vb: u32, scratch: u32, vb_pages: &Arc<Pages>, scratch_pages: &Arc<Pages>) -> Result<(), i64> {
+fn create_device_context(tgid: u64, id: u32, internal: [u32; 3], vb_pages: &Arc<Pages>, scratch_pages: &Arc<Pages>) -> Result<(), i64> {
+    let [vb, scratch, scratch_texture] = internal;
     // Counted as alive from the request on, so a failed creation queues CTX_DESTROY
     // behind it whatever the device made of it.
     with_core(|c| {
@@ -1644,6 +1684,12 @@ fn create_device_context(tgid: u64, id: u32, vb: u32, scratch: u32, vb_pages: &A
     )?;
     exec_ok(|t| virgl::attach_backing(t, scratch, scratch_pages.clone()), 0, &[])?;
     exec_ok(|t| Some(virgl::ctx_attach(t, id, scratch)), id, &[])?;
+    exec_ok(
+        |t| Some(virgl::resource_create(t, scratch_texture, wire::target::TEXTURE_2D, wire::format::B8G8R8A8_UNORM, wire::bind::SAMPLER_VIEW, 1, 1)),
+        0,
+        &[],
+    )?;
+    exec_ok(|t| Some(virgl::ctx_attach(t, id, scratch_texture)), id, &[])?;
     // The process's live resources, held so none is freed before it is attached.
     let theirs: Vec<u32> = with_core(|c| {
         let ids: Vec<u32> = c
@@ -1674,7 +1720,7 @@ fn create_device_context(tgid: u64, id: u32, vb: u32, scratch: u32, vb_pages: &A
     let (serial, fence, req) = with_core(|c| {
         let mut enc = encode::Enc::new();
         let ctx = c.contexts.get_mut(&id)?;
-        encode::warm_up(&mut enc, &mut ctx.objects, vb, scratch, wire::format::B8G8R8A8_UNORM, FLIP_Y);
+        encode::warm_up(&mut enc, &mut ctx.objects, vb, scratch, scratch_texture, wire::format::B8G8R8A8_UNORM, FLIP_Y);
         let mut chunks = enc.finish()?;
         if chunks.len() != 1 {
             return None;
@@ -1685,7 +1731,7 @@ fn create_device_context(tgid: u64, id: u32, vb: u32, scratch: u32, vb_pages: &A
     })
     .flatten()
     .ok_or(ENOMEM)?;
-    let d = exec_req(serial, req, id, &[vb, scratch], &[])?;
+    let d = exec_req(serial, req, id, &[vb, scratch, scratch_texture], &[])?;
     if !virgl::ok(d.answer) || d.echoed != fence {
         return Err(EIO);
     }
@@ -2008,10 +2054,25 @@ struct Resolved<'a> {
     snap: &'a Snapshot,
 }
 
+/// The VirGL format of a BGL format.
+fn virgl_format(f: u32) -> u32 {
+    match f {
+        format::R8G8B8A8 => wire::format::R8G8B8A8_UNORM,
+        format::R8 => wire::format::R8_UNORM,
+        _ => wire::format::B8G8R8A8_UNORM,
+    }
+}
+
 impl Resolver for Resolved<'_> {
     fn target(&self, handle: u64) -> Option<TargetInfo> {
         let e = self.view.get(handle)?;
-        (e.kind == kind::TARGET).then_some(TargetInfo { width: e.width, height: e.height, invalid: e.invalid })
+        (e.kind == kind::TARGET).then_some(TargetInfo { width: e.width, height: e.height, invalid: e.invalid, format: e.format })
+    }
+
+    fn source(&self, handle: u64) -> Option<stream::SourceInfo> {
+        let e = self.view.get(handle)?;
+        matches!(e.kind, kind::TARGET | kind::TEXTURE)
+            .then_some(stream::SourceInfo { width: e.width, height: e.height, format: e.format, invalid: e.invalid })
     }
 
     fn buffer_size(&self, handle: u64) -> Option<u64> {
@@ -2030,8 +2091,14 @@ impl encode::Bindings for Resolved<'_> {
         if e.kind != kind::TARGET {
             return None;
         }
-        let vformat = if e.format == format::R8G8B8A8 { wire::format::R8G8B8A8_UNORM } else { wire::format::B8G8R8A8_UNORM };
-        Some(encode::TargetRes { id: e.id, format: vformat, info: TargetInfo { width: e.width, height: e.height, invalid: e.invalid } })
+        let info = TargetInfo { width: e.width, height: e.height, invalid: e.invalid, format: e.format };
+        Some(encode::TargetRes { id: e.id, format: virgl_format(e.format), info })
+    }
+
+    fn source(&self, handle: u64) -> Option<encode::SourceRes> {
+        let e = self.view.get(handle)?;
+        matches!(e.kind, kind::TARGET | kind::TEXTURE)
+            .then_some(encode::SourceRes { id: e.id, format: virgl_format(e.format), width: e.width, height: e.height })
     }
 
     fn buffer_rect(&self, handle: u64, offset: u64) -> [i32; 4] {
@@ -2050,34 +2117,48 @@ fn named(words: &WordBuf, view: &View) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
         let code = words.word(at);
         let len = words.word(at + 1) as usize;
         let handle = |i: usize| words.word(at + i) as u64 | (words.word(at + i + 1) as u64) << 32;
+        let add = |list: &mut Vec<u32>, id: u32| {
+            if !list.contains(&id) {
+                list.push(id);
+            }
+        };
         let found = match code {
             stream::cmd::BEGIN => view.get(handle(2)).map(|e| e.id),
             stream::cmd::DRAW_BUFFER => view.get(handle(4)).map(|e| e.id),
+            stream::cmd::DRAW_SAMPLED => view.get(handle(3)).map(|e| e.id),
+            stream::cmd::COPY => view.get(handle(2)).map(|e| e.id),
             _ => None,
         };
         if code == stream::cmd::BEGIN {
             target = found;
         } else if code == stream::cmd::CLEAR {
             if let Some(id) = target {
-                if !whole.contains(&id) {
-                    whole.push(id);
+                add(&mut whole, id);
+            }
+        } else if code == stream::cmd::COPY {
+            // A copy writes its destination, the whole of it when its clipped rectangle is.
+            if let (Some(src), Some(dst)) = (view.get(handle(2)), view.get(handle(8))) {
+                add(&mut written, dst.id);
+                add(&mut all, dst.id);
+                let r = [4, 5, 6, 7, 10, 11].map(|k| words.word(at + k));
+                if let Some([_, _, w, h, dx, dy]) = stream::copy_clip(r, [src.width, src.height], [dst.width, dst.height]) {
+                    if dx == 0 && dy == 0 && w == dst.width && h == dst.height {
+                        add(&mut whole, dst.id);
+                    }
                 }
             }
         }
         let writes = code == stream::cmd::CLEAR
             || (code == stream::cmd::DRAW && words.word(at + 4) > 0)
-            || (code == stream::cmd::DRAW_BUFFER && words.word(at + 7) > 0);
+            || (code == stream::cmd::DRAW_BUFFER && words.word(at + 7) > 0)
+            || (code == stream::cmd::DRAW_SAMPLED && words.word(at + 5) > 0);
         if writes {
             if let Some(id) = target {
-                if !written.contains(&id) {
-                    written.push(id);
-                }
+                add(&mut written, id);
             }
         }
         if let Some(id) = found {
-            if !all.contains(&id) {
-                all.push(id);
-            }
+            add(&mut all, id);
         }
         at += len.max(2);
     }
@@ -2116,7 +2197,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             return refuse(&mut a, r.index, r.error, errno);
         }
     };
-    let (written, named_ids, whole) = named(&words, &view);
+    let (written, mut named_ids, whole) = named(&words, &view);
     // Take the context's submission slot: one sender at a time, at most four in flight.
     let mut waited = false;
     let admitted = wait_for(None, true, |c| {
@@ -2186,24 +2267,49 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             return Err(e);
         }
     };
-    let drop_vertex_buffer = || {
-        if let Some(vb) = vertex_buffer {
-            with_core(|c| c.unhold(vb));
+    // The submission's scratch textures for copies within one target that overlap
+    // (`docs/gui/gpu.md` section 1.3), one per target format, sized for its largest.
+    let mut copy_scratch = [0u32; 2];
+    for (slot, (f, [w, h])) in [format::B8G8R8A8, format::R8G8B8A8].into_iter().zip(plan.scratch).enumerate() {
+        if w == 0 || h == 0 {
+            continue;
         }
+        match scratch_for(id, virgl_format(f), w, h) {
+            Ok(rid) => copy_scratch[slot] = rid,
+            Err(e) => {
+                with_core(|c| {
+                    for rid in vertex_buffer.into_iter().chain(copy_scratch.into_iter().filter(|&r| r != 0)) {
+                        c.unhold(rid);
+                    }
+                });
+                release_slot(false);
+                return Err(e);
+            }
+        }
+    }
+    let extras: Vec<u32> = vertex_buffer.into_iter().chain(copy_scratch.into_iter().filter(|&r| r != 0)).collect();
+    let drop_vertex_buffer = || {
+        with_core(|c| {
+            for &rid in &extras {
+                c.unhold(rid);
+            }
+        });
     };
     // The context's busy slot serializes object allocation; translation can allocate
     // and process a large stream without holding the global core lock.
-    let state = with_core(|c| c.contexts.get(&id).map(|ctx| (ctx.objects.clone(), ctx.vb, ctx.scratch))).flatten();
-    let Some((mut objects, default_vb, scratch)) = state else {
+    let state = with_core(|c| c.contexts.get(&id).map(|ctx| (ctx.objects.clone(), ctx.vb, ctx.scratch, ctx.scratch_texture))).flatten();
+    let Some((mut objects, default_vb, scratch, scratch_texture)) = state else {
         drop_vertex_buffer();
         release_slot(false);
         return Err(EIO);
     };
-    let stale: Vec<u32> = objects.surfaces.keys().copied().filter(|&rid| rid != scratch && !view.has_id(rid)).collect();
+    let stale: Vec<u32> = objects.resources().filter(|&rid| rid != scratch && rid != scratch_texture && !view.has_id(rid)).collect();
     let mut enc = encode::Enc::new();
     encode::forget_surfaces(&mut enc, &mut objects, &stale);
     let mut suppression = None;
     let mut suppress = None;
+    let mut swapping = None;
+    let mut swap = None;
     let mut target = None;
     let mut at = 0;
     while at < words.len() {
@@ -2215,16 +2321,43 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
                     if suppression.is_some() { suppress = Some(handle); }
                 }
             }
+            // Test point 29, `wrong-texture`: the next DRAW_SAMPLED of the texture it is armed
+            // for samples another of the process's live textures, the first created; a process
+            // with one texture leaves the point armed.
+            stream::cmd::DRAW_SAMPLED if swapping.is_none() && target.is_some() => {
+                let named = words.word(at + 3) as u64 | (words.word(at + 4) as u64) << 32;
+                let own = view.get(named).map(|e| e.id);
+                let other = view.entries.iter()
+                    .filter(|e| e.kind == kind::TEXTURE && Some(e.id) != own)
+                    .min_by_key(|e| e.id);
+                if let Some(e) = other {
+                    swapping = crate::test_control::reserve(test_point::WRONG_TEXTURE, named);
+                    if swapping.is_some() {
+                        swap = Some((at, encode::SourceRes { id: e.id, format: virgl_format(e.format), width: e.width, height: e.height }));
+                    }
+                }
+            }
             _ => {}
         }
         at += words.word(at + 1) as usize;
     }
-    encode::translate(&mut enc, &mut objects, &words, &resolved, vertex_buffer.unwrap_or(default_vb), FLIP_Y, corrupt, suppress);
+    encode::translate(&mut enc, &mut objects, &words, &resolved, encode::Extras {
+        vertex_buffer: vertex_buffer.unwrap_or(default_vb),
+        scratch: copy_scratch,
+        flip_y: FLIP_Y,
+        corrupt,
+        suppress,
+        swap,
+    });
     let chunks = enc.finish();
-    let mut held = named_ids.clone();
-    if let Some(vb) = vertex_buffer {
-        held.push(vb);
+    // Point 29's texture is named, held and rechecked like the stream's own resources.
+    if let Some((_, other)) = swap {
+        if !named_ids.contains(&other.id) {
+            named_ids.push(other.id);
+        }
     }
+    let mut held = named_ids.clone();
+    held.extend(extras.iter().copied());
     // Recheck the context and the resources after translation, then hand the whole
     // submission to the device's queue at once: nothing of a refused submission is sent,
     // and nothing of an accepted one is left unsent.
@@ -2309,7 +2442,6 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             mismatch: false,
             requests: reqs.len() as u32,
             published: false,
-            retired: false,
             kept,
             result: None,
             written: written.clone(),
@@ -2322,6 +2454,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         // No fallible preparation remains: these faults now affect a queued submission.
         if let Some(fault) = corruption { fault.fire(); }
         if let Some(fault) = suppression { fault.fire(); }
+        if let Some(fault) = swapping { fault.fire(); }
         c.flush();
         Ok((ns as u64) << 32 | n as u64)
     })
@@ -2374,6 +2507,33 @@ fn vertex_buffer_for(ctx: u32, bytes: u64) -> Result<Option<u32>, i64> {
     }
 }
 
+/// A device texture of `w` by `h` pixels in VirGL format `vformat` for one submission's
+/// staged copies, attached to the context and held for the submission. Like the vertex
+/// buffer it has no guest backing (no transfer names it) and is freed once the submission no
+/// longer holds it.
+fn scratch_for(ctx: u32, vformat: u32, w: u32, h: u32) -> Result<u32, i64> {
+    let id = with_core(|c| {
+        let id = c.next_res;
+        c.next_res += 1;
+        let mut r = new_res(0, kind::TEXTURE, format::B8G8R8A8, w, h, 0, 0, Arc::new(Pages::none()), c.epoch);
+        r.dropped = true;
+        r.holds = 1;
+        c.resources.insert(id, r);
+        id
+    })
+    .ok_or(ENODEV)?;
+    let bind = wire::bind::RENDER_TARGET | wire::bind::SAMPLER_VIEW;
+    let made = exec_ok(|t| Some(virgl::resource_create(t, id, wire::target::TEXTURE_2D, vformat, bind, w, h)), 0, &[])
+        .and_then(|_| exec_ok(|t| Some(virgl::ctx_attach(t, ctx, id)), ctx, &[]));
+    match made {
+        Ok(_) => Ok(id),
+        Err(e) => {
+            with_core(|c| c.unhold(id));
+            Err(e)
+        }
+    }
+}
+
 fn op_wait(arg: u64, len: u64) -> Result<u64, i64> {
     let mut a: abi::Wait = read_arg(arg, len)?;
     if a.status != 0 || a.answer != 0 || a.reserved != [0; 2] {
@@ -2408,6 +2568,203 @@ fn op_wait(arg: u64, len: u64) -> Result<u64, i64> {
     }
 }
 
+/// Source bytes read from the caller at a time by `UPLOAD`, on the stack.
+const UPLOAD_CHUNK: usize = 768;
+
+/// `UPLOAD` (`docs/gui/gpu-abi.md`): the caller's pixels into a texture, by a fenced
+/// TRANSFER_TO_HOST_3D in the named context, or bytes into a buffer's backing.
+fn op_upload(arg: u64, len: u64) -> Result<u64, i64> {
+    let a: abi::Upload = read_arg(arg, len)?;
+    if a.reserved != 0 || !matches!(a.purpose, abi::purpose::IMAGE | abi::purpose::FIXTURE) || a.width == 0 || a.height == 0 {
+        return Err(EINVAL);
+    }
+    let tgid = caller()?;
+    let (ctx, id, rkind, fmt, extent, pitch, backing) = with_core(|c| {
+        let ctx = c.ctx_of(tgid, a.context).ok_or(EINVAL)?;
+        let x = c.contexts.get(&ctx).ok_or(EINVAL)?;
+        if x.state != CtxState::Live || !x.device_alive || x.dropped {
+            return Err(EIO);
+        }
+        let id = c.res_of(tgid, a.resource).ok_or(EINVAL)?;
+        let r = c.resources.get(&id).ok_or(EINVAL)?;
+        if !abi::upload_source::fits(a.source, r.kind, r.format) {
+            return Err(EINVAL);
+        }
+        if r.lost {
+            return Err(EIO);
+        }
+        let extent = if r.kind == kind::BUFFER { [r.size, 1] } else { [r.width as u64, r.height as u64] };
+        Ok((ctx, id, r.kind, r.format, extent, r.pitch as u64, r.backing.clone()))
+    })
+    .ok_or(ENODEV)??;
+    if rkind == kind::BUFFER && (a.y != 0 || a.height != 1) {
+        return Err(EINVAL);
+    }
+    // Clip to the resource; pixels that land outside it are neither read nor written.
+    let (x, y) = (a.x as u64, a.y as u64);
+    if x >= extent[0] || y >= extent[1] {
+        return Err(EINVAL);
+    }
+    let cw = (a.width as u64).min(extent[0] - x);
+    let ch = (a.height as u64).min(extent[1] - y);
+    let bpp = abi::upload_source::bytes(a.source) as u64;
+    let stride = a.stride as u64;
+    let row = cw * bpp;
+    if stride < row || a.pixels_len < (ch - 1) * stride + row {
+        return Err(EINVAL);
+    }
+    if !crate::memory::layout::is_valid_user_range(a.pixels, ((ch - 1) * stride + row) as usize) {
+        return Err(EFAULT);
+    }
+    let count = |c: &mut Core| {
+        let n = cw * ch * bpp;
+        let add = |t: &mut Totals| {
+            if a.purpose == abi::purpose::FIXTURE {
+                t.uploads_fixture += n;
+            } else {
+                t.uploads_image += n;
+            }
+        };
+        if let Some(x) = c.contexts.get_mut(&ctx) {
+            add(&mut x.totals);
+        }
+        add(&mut c.proc_mut(tgid).totals);
+    };
+    // Stage the clipped source rows before changing any backing or sending a request.
+    // Frames count against both guest-backing quota and RLIMIT_AS for this call.
+    let stage = Staging::new(tgid, (row * ch) as usize)?;
+    let mut input = [0u8; UPLOAD_CHUNK];
+    for j in 0..ch {
+        let mut done = 0usize;
+        while done < row as usize {
+            let n = (row as usize - done).min(UPLOAD_CHUNK);
+            crate::syscall::userptr::read_user_bytes(input.as_mut_ptr(), a.pixels + j * stride + done as u64, n)
+                .map_err(|_| EFAULT)?;
+            stage.pages.write(j as usize * row as usize + done, &input[..n]);
+            done += n;
+        }
+    }
+    // The backing is the upload's alone until its transfer has ended. Submissions of other
+    // contexts that name the texture finish first: the device states no order between
+    // contexts. This context's own earlier commands are ahead of the transfer in its queue.
+    let taken = wait_for(None, true, |c| {
+        if c.res_of(tgid, a.resource) != Some(id) {
+            return Some(Err(EINVAL));
+        }
+        let r = c.resources.get(&id)?;
+        if r.reading || r.writers > 0 || c.subs.values().any(|s| s.ctx != ctx && s.held.contains(&id)) {
+            return None;
+        }
+        c.resources.get_mut(&id)?.reading = true;
+        Some(Ok(()))
+    });
+    match taken {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => return Err(e),
+        Err(_) => return Err(EINTR),
+    }
+    let release = || {
+        with_core(|c| {
+            if !c.syncs.values().any(|s| s.reading.contains(&id)) {
+                if let Some(r) = c.resources.get_mut(&id) {
+                    r.reading = false;
+                }
+                c.free_if_unused(id);
+            }
+        });
+        notify();
+    };
+    if rkind == kind::BUFFER {
+        let mut chunk = [0u8; STAGING_CHUNK];
+        let mut done = 0usize;
+        while done < cw as usize {
+            let n = (cw as usize - done).min(STAGING_CHUNK);
+            stage.pages.read(done, &mut chunk[..n]);
+            backing.write(x as usize + done, &chunk[..n]);
+            done += n;
+        }
+        with_core(count);
+        release();
+        return Ok(0);
+    }
+    // Rows into the backing at its pitch, converted into the texture's format by channel.
+    let tbpp = format::bytes(fmt) as u64;
+    let per = (UPLOAD_CHUNK as u64 / bpp).min(cw);
+    let mut output = [0u8; UPLOAD_CHUNK * 4 / 3 + 4];
+    for j in 0..ch {
+        let mut px = 0u64;
+        while px < cw {
+            let n = per.min(cw - px);
+            stage.pages.read((j * row + px * bpp) as usize, &mut input[..(n * bpp) as usize]);
+            for k in 0..n as usize {
+                let at = k * bpp as usize;
+                if fmt == format::R8 {
+                    output[k] = input[at];
+                } else {
+                    let [b, g, r, al] = abi::upload_source::channels(a.source, &input[at..]);
+                    let out = if fmt == format::R8G8B8A8 { [r, g, b, al] } else { [b, g, r, al] };
+                    output[k * 4..k * 4 + 4].copy_from_slice(&out);
+                }
+            }
+            backing.write(((y + j) * pitch + (x + px) * tbpp) as usize, &output[..(n * tbpp) as usize]);
+            px += n;
+        }
+    }
+    let offset = y * pitch + x * tbpp;
+    backing.maintain(offset as usize, ((ch - 1) * pitch + cw * tbpp) as usize, false);
+    // Test point 30, `skip-upload-visibility`: the transfer is not sent; the upload returns
+    // as a completed one.
+    let skip = crate::test_control::take(test_point::SKIP_UPLOAD_VISIBILITY, a.resource).is_some();
+    let sent = if skip {
+        with_core(|c| (c.serial(), 0, wire::resp::OK_NODATA)).ok_or((ENODEV, 0))
+    } else {
+        match with_core(|c| (c.serial(), c.device_fence())) {
+            None => Err((ENODEV, 0)),
+            Some((serial, fence)) => {
+                let req = virgl::transfer_to_host(Tag::Sync(serial), ctx, fence, id, backing.clone(), x as u32, y as u32, cw as u32, ch as u32, offset, pitch as u32);
+                match exec_req_why(serial, req, ctx, &[id], &[id]) {
+                    Ok(d) if virgl::ok(d.answer) && d.echoed == fence && d.resp.u32_at(wire::HDR_FLAGS) & wire::FLAG_FENCE != 0 => {
+                        Ok((serial, fence, d.answer))
+                    }
+                    Ok(_) => Err((EIO, serial)),
+                    Err((e @ (EIO | EINTR), _)) => Err((e, serial)),
+                    Err((e, _)) => Err((e, 0)),
+                }
+            }
+        }
+    };
+    // The upload's result is published before its `reading` mark is released: the
+    // device-access hold lasts until the fence is published (section 1.4.1, hold sets).
+    let whole = cw == extent[0] && ch == extent[1];
+    let result = match sent {
+        Ok((serial, fence, answer)) => {
+            with_core(|c| {
+                if let Some(r) = c.resources.get_mut(&id) {
+                    completion::finish_write(&mut r.invalid, &mut r.invalidated_by, serial, true, whole);
+                    r.generation += 1;
+                    r.last = Some(LastWrite { ctx, fence, serial, answer, kind: wire::cmd::TRANSFER_TO_HOST_3D });
+                }
+                count(c);
+            });
+            Ok(0)
+        }
+        Err((e, serial)) => {
+            // A transfer refused, interrupted after queueing, or ended by a watchdog/reset leaves the
+            // texture's contents unknown: it is invalid until a whole upload completes OK.
+            if serial != 0 {
+                with_core(|c| {
+                    if let Some(r) = c.resources.get_mut(&id) {
+                        completion::finish_write(&mut r.invalid, &mut r.invalidated_by, serial, false, whole);
+                    }
+                });
+            }
+            Err(e)
+        }
+    };
+    release();
+    result
+}
+
 fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
     let mut a: abi::Readback = read_arg(arg, len)?;
     if a.reason != 0 || a.failed_submission != 0 {
@@ -2417,7 +2774,7 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
     let (id, fmt, tw, th, pitch, backing) = with_core(|c| {
         let id = c.res_of(tgid, a.target).ok_or(EINVAL)?;
         let r = c.resources.get(&id).ok_or(EINVAL)?;
-        if r.kind != kind::TARGET {
+        if !matches!(r.kind, kind::TARGET | kind::TEXTURE) {
             return Err(EINVAL);
         }
         Ok((id, r.format, r.width, r.height, r.pitch, r.backing.clone()))
@@ -2427,7 +2784,8 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
     if w == 0 || h == 0 || x + w > tw as u64 || y + h > th as u64 {
         return Err(EINVAL);
     }
-    let row = w * 4;
+    // Canonical BGRA, or one byte per pixel of an R8 texture (record `canonical` 1).
+    let row = w * format::bytes(fmt) as u64;
     if (a.stride as u64) < row || a.pixels_len < (h - 1) * a.stride as u64 + row {
         return Err(EINVAL);
     }
@@ -2541,6 +2899,9 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
         put32(&mut rec, record::PRESENT_STATUS, b.answer);
     }
     put32(&mut rec, record::FORMAT, fmt);
+    if fmt == format::R8 {
+        put32(&mut rec, record::CANONICAL, record::CANONICAL_R8);
+    }
     put32(&mut rec, record::X, a.x);
     put32(&mut rec, record::Y, a.y);
     put32(&mut rec, record::WIDTH, a.width);
@@ -2556,7 +2917,7 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
         put64(&mut rec, record::RENDER_SERIAL, l.serial);
         put64(&mut rec, record::RENDER_FENCE, l.fence);
         put32(&mut rec, record::RENDER_STATUS, l.answer);
-        put32(&mut rec, record::RENDER_KIND, wire::cmd::SUBMIT_3D);
+        put32(&mut rec, record::RENDER_KIND, l.kind);
     }
     put64(&mut rec, record::READBACK_FENCE, transfer_fence);
     put32(&mut rec, record::READBACK_STATUS, transfer_answer);
@@ -2674,7 +3035,8 @@ fn observe(tgid: u64, id: u32, last: Option<LastWrite>, backing: &Arc<Pages>, pi
     })
     .flatten()
     .ok_or((EINVAL, readback_reason::NONE))?;
-    let row = a.width as usize * 4;
+    let px = format::bytes(fmt) as usize;
+    let row = a.width as usize * px;
     let band_rows = (READBACK_BAND / pitch as usize).max(1).min(a.height as usize);
     let mut chunk = [0u8; STAGING_CHUNK];
     let mut kept = [0u8; STAGING_CHUNK];
@@ -2684,7 +3046,7 @@ fn observe(tgid: u64, id: u32, last: Option<LastWrite>, backing: &Arc<Pages>, pi
     while by < a.height as usize {
         let rows = band_rows.min(a.height as usize - by);
         let ty = a.y as usize + by;
-        let offset = ty * pitch as usize + a.x as usize * 4;
+        let offset = ty * pitch as usize + a.x as usize * px;
         for (pass, pattern) in [POISON, !POISON].into_iter().enumerate() {
             for r in 0..rows {
                 backing.fill(offset + r * pitch as usize, row, pattern);
@@ -2786,6 +3148,8 @@ fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {
             out.readbacks = t.readbacks;
             out.ring_waits = t.ring_waits;
             out.device_errors = t.device_errors;
+            out.uploads_image = t.uploads_image;
+            out.uploads_fixture = t.uploads_fixture;
         };
         let mut out = abi::Counters::ZERO;
         out.context = a.context;

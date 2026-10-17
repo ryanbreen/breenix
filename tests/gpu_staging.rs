@@ -107,3 +107,19 @@ fn process_limit_and_frame_failure_roll_back_the_quota() {
     drop(staging::Staging::new(1, 1).unwrap());
     assert_eq!(held(), (8192, 0));
 }
+
+#[test]
+fn concurrent_upload_staging_cannot_escape_the_process_budget() {
+    const UPLOAD: usize = 64 << 20;
+    setup(UPLOAD as u64, u64::MAX);
+    let first = staging::Staging::new(1, UPLOAD).unwrap();
+    let second = staging::Staging::new(1, UPLOAD).unwrap();
+    assert_eq!(held(), (MEMORY_QUOTA, 2 * UPLOAD as u64));
+    assert!(matches!(staging::Staging::new(1, UPLOAD), Err(ENOMEM)));
+    assert_eq!(held(), (MEMORY_QUOTA, 2 * UPLOAD as u64));
+    drop(first);
+    let replacement = staging::Staging::new(1, UPLOAD).unwrap();
+    drop(second);
+    drop(replacement);
+    assert_eq!(held(), (UPLOAD as u64, 0));
+}

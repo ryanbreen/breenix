@@ -13,7 +13,9 @@
 //! own commit, from the contract, before the implementation it measures.
 //!
 //! `device/version` was the first real check; the `device` and `submit` categories' checks
-//! (G1) are in `suite_gpu/device.rs` and `suite_gpu/submit.rs`.
+//! (G1) are in `suite_gpu/device.rs` and `suite_gpu/submit.rs`, `readback`'s (G2) in
+//! `suite_gpu/readback.rs`, and `textures`' with `pipelines/copy` (G3) in
+//! `suite_gpu/textures.rs`.
 
 use libbreenix::suite::{case, category, check, fail, suite, CaseResult, Suite};
 use libbreenix::syscall::raw;
@@ -26,6 +28,8 @@ mod device;
 mod submit;
 #[path = "suite_gpu/readback.rs"]
 mod readback;
+#[path = "suite_gpu/textures.rs"]
+mod textures;
 
 static SUITE: Suite = suite("gpu", "GPU rendering", &[
     category("device", "3D device & capability profile", &[
@@ -88,25 +92,25 @@ static SUITE: Suite = suite("gpu", "GPU rendering", &[
         case("large-target", "A 2560x1600 target reads back exactly", readback::large_target),
     ]),
     category("textures", "textures & uploads", &[
-        case("create-formats", "Textures are created in B8G8R8A8, R8G8B8A8 and R8, and other formats are refused", textures_create_formats),
-        case("create-limits", "Sizes from 1x1 to the device maximum are created, and zero or larger sizes are refused", textures_create_limits),
-        case("upload-full", "A full upload reads back exactly", textures_upload_full),
-        case("upload-subrect", "A sub-rectangle upload changes only that rectangle", textures_upload_subrect),
-        case("upload-clip", "An upload past the texture edge is clipped by pixel, never past a row's end", textures_upload_clip),
-        case("upload-stride", "Uploads with caller strides, including ones not a multiple of 256 bytes, read back exactly", textures_upload_stride),
-        case("upload-3byte", "3-byte pixel uploads expand to 4 bytes with alpha 255", textures_upload_3byte),
-        case("upload-visibility", "An upload is visible to the next submission, both read back and sampled", textures_upload_visibility),
-        case("unaligned-pitch", "R8 64 wide and BGRA 48 wide, rows not a multiple of 256 bytes, round-trip exactly", textures_unaligned_pitch),
-        case("copy-region", "A GPU region copy moves exactly the named rectangle", textures_copy_region),
-        case("copy-overlap", "A copy between overlapping rectangles of one target gives the source as it was before the copy", textures_copy_overlap),
-        case("immutable-while-pinned", "An upload to a texture an in-flight submission samples does not change what it samples", textures_immutable_while_pinned),
-        case("destroy-deferred", "A destroyed texture still held by a submission is freed only after its fence completes", textures_destroy_deferred),
-        case("quota", "Textures past the GPU memory quota return ENOMEM, and freeing them restores the counter", textures_quota),
-        case("r8-atlas", "An R8 atlas, including one whose rows are not a multiple of 256 bytes, samples exactly", textures_r8_atlas),
-        case("readback-uploaded", "An uploaded texture reads back unchanged", textures_readback_uploaded),
-        case("efault-upload", "An upload from unmapped memory returns EFAULT with no side effect", textures_efault_upload),
-        case("fault-wrong-texture", "A draw bound to another of the process's textures fails the exact comparison", textures_fault_wrong_texture),
-        case("fault-skip-upload", "An upload whose transfer to the host is omitted is caught by reading the texture back", textures_fault_skip_upload),
+        case("create-formats", "Textures are created in B8G8R8A8, R8G8B8A8 and R8, and other formats are refused", textures::create_formats),
+        case("create-limits", "Sizes from 1x1 to the device maximum are created, and zero or larger sizes are refused", textures::create_limits),
+        case("upload-full", "A full upload reads back exactly", textures::upload_full),
+        case("upload-subrect", "A sub-rectangle upload changes only that rectangle", textures::upload_subrect),
+        case("upload-clip", "An upload past the texture edge is clipped by pixel, never past a row's end", textures::upload_clip),
+        case("upload-stride", "Uploads with caller strides, including ones not a multiple of 256 bytes, read back exactly", textures::upload_stride),
+        case("upload-3byte", "3-byte pixel uploads expand to 4 bytes with alpha 255", textures::upload_3byte),
+        case("upload-visibility", "An upload is visible to the next submission, both read back and sampled", textures::upload_visibility),
+        case("unaligned-pitch", "R8 64 wide and BGRA 48 wide, rows not a multiple of 256 bytes, round-trip exactly", textures::unaligned_pitch),
+        case("copy-region", "A GPU region copy moves exactly the named rectangle", textures::copy_region),
+        case("copy-overlap", "A copy between overlapping rectangles of one target gives the source as it was before the copy", textures::copy_overlap),
+        case("immutable-while-pinned", "An upload to a texture an in-flight submission samples does not change what it samples", textures::immutable_while_pinned),
+        case("destroy-deferred", "A destroyed texture still held by a submission is freed only after its fence completes", textures::destroy_deferred),
+        case("quota", "Textures past the GPU memory quota return ENOMEM, and freeing them restores the counter", textures::quota),
+        case("r8-atlas", "An R8 atlas, including one whose rows are not a multiple of 256 bytes, samples exactly", textures::r8_atlas),
+        case("readback-uploaded", "An uploaded texture reads back unchanged", textures::readback_uploaded),
+        case("efault-upload", "An upload from unmapped memory returns EFAULT with no side effect", textures::efault_upload),
+        case("fault-wrong-texture", "A draw bound to another of the process's textures fails the exact comparison", textures::fault_wrong_texture),
+        case("fault-skip-upload", "An upload whose transfer to the host is omitted is caught by reading the texture back", textures::fault_skip_upload),
     ]),
     category("profile", "deterministic rendering profile", &[
         case("clear-exact", "A clear writes its four bytes to every pixel of both formats", profile_clear_exact),
@@ -135,7 +139,7 @@ static SUITE: Suite = suite("gpu", "GPU rendering", &[
     category("pipelines", "drawing pipelines", &[
         case("solid-rects", "solid fills half-open integer rectangles in one colour", pipelines_solid_rects),
         case("rect-batch", "Rectangles batched in one draw equal the same rectangles drawn one by one", pipelines_rect_batch),
-        case("copy", "copy places a texture rectangle at a target point, converting format by channel", pipelines_copy),
+        case("copy", "copy places a texture rectangle at a target point, converting format by channel", textures::pipeline_copy),
         case("copy-clip", "copy clips to the target and to the clip rectangle", pipelines_copy_clip),
         case("copy-scaled", "copy_scaled replicates texels by an integer factor exactly", pipelines_copy_scaled),
         case("over-premultiplied", "over matches the contract's source-over for all 65536 colour and alpha pairs on four backgrounds", pipelines_over_premultiplied),
@@ -220,10 +224,9 @@ static SUITE: Suite = suite("gpu", "GPU rendering", &[
 
 // The layers cases need, each with the build step that supplies it.
 const CORE: &str = "the kernel GPU core and syscall 416 (G1)";
-const UPLOAD: &str = "uploads with purposes (G3)";
-const COPY: &str = "GPU region copies (G3)";
-const HOLD: &str = "resource hold sets (G3)";
 const PROBE: &str = "probe_int and the profile checks (G4)";
+const PIPELINES: &str = "the pipelines checks (G5)";
+const ISOLATION: &str = "the isolation checks (G6)";
 const QUOTA: &str = "GPU quotas and reclamation (G6)";
 const ISOL: &str = "per-process GPU handles (G6)";
 const FUZZ: &str = "the stream fuzzer (G6)";
@@ -232,6 +235,7 @@ const MODES: &str = "display modes and scale (G7)";
 const PRESENT: &str = "two-target present (G7)";
 const OWNER: &str = "the GPU display ownership stack (G7)";
 const CONSOLE: &str = "the kernel console on the GPU (G7)";
+const PRESENT_CHECKS: &str = "the present checks (G7)";
 const PERF: &str = "the 2560x1600 performance work (G8)";
 
 /// Syscall 416, `gpu(op, arg, len)` (`docs/gui/gpu.md` section 1.4).
@@ -280,25 +284,6 @@ fn device_version() -> CaseResult {
 }
 
 needs! {
-    textures_create_formats => UPLOAD;
-    textures_create_limits => UPLOAD;
-    textures_upload_full => UPLOAD;
-    textures_upload_subrect => UPLOAD;
-    textures_upload_clip => UPLOAD;
-    textures_upload_stride => UPLOAD;
-    textures_upload_3byte => UPLOAD;
-    textures_upload_visibility => UPLOAD;
-    textures_unaligned_pitch => UPLOAD;
-    textures_copy_region => COPY;
-    textures_copy_overlap => COPY;
-    textures_immutable_while_pinned => HOLD;
-    textures_destroy_deferred => HOLD;
-    textures_quota => UPLOAD;
-    textures_r8_atlas => UPLOAD;
-    textures_readback_uploaded => UPLOAD;
-    textures_efault_upload => UPLOAD;
-    textures_fault_wrong_texture => "test-control point 29 wrong-texture (G3)";
-    textures_fault_skip_upload => "test-control point 30 skip-upload-visibility (G3)";
     profile_clear_exact => PROBE;
     profile_unorm_roundtrip => PROBE;
     profile_texel_fetch_exact => PROBE;
@@ -321,10 +306,9 @@ needs! {
     profile_filtered_sampler_refused => PROBE;
     profile_fixed_blend_off => PROBE;
     profile_profile_violation_detected => "test-control point 24 profile-violation (G4)";
-    pipelines_solid_rects => "the solid pipeline (G2)";
-    pipelines_rect_batch => "the solid pipeline (G2)";
-    pipelines_copy => "the copy pipeline (G3)";
-    pipelines_copy_clip => "the copy pipeline (G3)";
+    pipelines_solid_rects => PIPELINES;
+    pipelines_rect_batch => PIPELINES;
+    pipelines_copy_clip => "the clip stack (G5)";
     pipelines_copy_scaled => "the copy_scaled pipeline (G5)";
     pipelines_over_premultiplied => "the over pipeline (G5)";
     pipelines_over_straight => "the over_straight pipeline (G5)";
@@ -346,7 +330,7 @@ needs! {
     pipelines_box_filter => "the box_filter pipeline (G5)";
     pipelines_nearest_scale => "the nearest_scaled pipeline (G5)";
     pipelines_clip_nested => "the clip stack (G5)";
-    pipelines_order => "the solid pipeline (G2)";
+    pipelines_order => PIPELINES;
     isolation_handle_private => ISOL;
     isolation_handle_guess => ISOL;
     isolation_fork_no_handles => ISOL;
@@ -367,16 +351,16 @@ needs! {
     isolation_efault_submit => ISOL;
     isolation_efault_readonly => ISOL;
     isolation_quiet_errors => ISOL;
-    isolation_unknown_op => CORE;
-    isolation_test_hooks_absent => "the PID 1 test-control guard (G1) and isolation checks (G6)";
-    isolation_killable_wait => "killable context warm-up and WAIT (G1), READBACK and single-target PRESENT (G2), reclamation (G6)";
+    isolation_unknown_op => ISOLATION;
+    isolation_test_hooks_absent => ISOLATION;
+    isolation_killable_wait => ISOLATION;
     isolation_client_cannot_scanout => ISOL;
     isolation_irq_masked_bound => IRQ;
     present_modes_listed => MODES;
     present_mode_1280x800 => MODES;
     present_mode_2560x1600 => MODES;
     present_scale_reported => MODES;
-    present_scanout_bind => "the minimal scanout bind (G2)";
+    present_scanout_bind => PRESENT_CHECKS;
     present_flip => PRESENT;
     present_present_completion => PRESENT;
     present_present_owner_only => PRESENT;

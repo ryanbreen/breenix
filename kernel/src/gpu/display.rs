@@ -159,7 +159,6 @@ pub(super) fn present(arg: u64, len: u64) -> Result<u64, i64> {
             mismatch: false,
             requests: 2,
             published: false,
-            retired: false,
             kept: false,
             result: None,
             written: Vec::new(),

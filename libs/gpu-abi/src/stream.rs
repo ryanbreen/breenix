@@ -26,6 +26,13 @@ pub mod cmd {
     /// `[DRAW_BUFFER, 8, pipeline, colour, buffer_lo, buffer_hi, offset, n]`: `n`
     /// rectangles read from a buffer at a byte offset (16 bytes each, as in `DRAW`).
     pub const DRAW_BUFFER: u32 = 4;
+    /// `[COPY, 12, source_lo, source_hi, sx, sy, w, h, destination_lo, destination_hi, dx,
+    /// dy]`: a region copy of the source rectangle to the destination point, unsigned.
+    pub const COPY: u32 = 5;
+    /// `[DRAW_SAMPLED, 6 + 6n, pipeline, texture_lo, texture_hi, n, (x0, y0, x1, y1, sx,
+    /// sy) * n]`: `n` half-open rectangles of the current target drawn from the texture,
+    /// pixel `(x, y)` reading texel `(sx + x - x0, sy + y - y0)`; signed 32-bit.
+    pub const DRAW_SAMPLED: u32 = 6;
 }
 
 /// Why a stream was refused (`Submit::error`).
@@ -34,7 +41,7 @@ pub mod error {
     /// A command's length runs past the stream's end or is shorter than its layout.
     pub const TRUNCATED: u32 = 1;
     pub const UNKNOWN_COMMAND: u32 = 2;
-    /// A drawing command before any `BEGIN`.
+    /// A drawing command other than `COPY` before any `BEGIN`.
     pub const NO_TARGET: u32 = 3;
     /// A handle that names nothing this process owns.
     pub const BAD_HANDLE: u32 = 4;
@@ -53,10 +60,17 @@ pub mod error {
     pub const WORK_LIMIT: u32 = 12;
     /// The stream is longer than `limits::STREAM_BYTES`, empty, or not whole words.
     pub const STREAM_LENGTH: u32 = 13;
-    /// A command that samples a target the device left invalid (`docs/gui/gpu.md`
-    /// section 1.4.1). Drawing into an invalid target is allowed; no G1 command samples,
-    /// so G1 never reports it.
+    /// A command that samples a target or texture the device left invalid (`docs/gui/gpu.md`
+    /// section 1.4.1): a `COPY` source or a `DRAW_SAMPLED` texture. Drawing into an
+    /// invalid target is allowed.
     pub const INVALID_TARGET: u32 = 14;
+    /// A `COPY` between resources of different formats.
+    pub const FORMAT_MISMATCH: u32 = 15;
+    /// A sampling pipeline in `DRAW` or `DRAW_BUFFER`, or another pipeline in
+    /// `DRAW_SAMPLED`.
+    pub const WRONG_COMMAND: u32 = 16;
+    /// A `DRAW_SAMPLED` whose texture is the target it draws into.
+    pub const SAMPLES_TARGET: u32 = 17;
 }
 
 /// The words of a stream the kernel has copied out of user memory.
@@ -82,12 +96,26 @@ pub struct TargetInfo {
     /// The device left it invalid: it may be drawn into, and sampling it is refused
     /// until a whole write completes OK.
     pub invalid: bool,
+    /// Its BGL format.
+    pub format: u32,
+}
+
+/// A target or texture a command reads from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceInfo {
+    pub width: u32,
+    pub height: u32,
+    pub format: u32,
+    /// The device left it invalid, so it may not be sampled.
+    pub invalid: bool,
 }
 
 /// The submitting process's resources, as the validator sees them.
 pub trait Resolver {
     /// The target `handle` names, if the process owns one by that handle.
     fn target(&self, handle: u64) -> Option<TargetInfo>;
+    /// The target or texture `handle` names, if the process owns one by that handle.
+    fn source(&self, handle: u64) -> Option<SourceInfo>;
     /// The size of the buffer `handle` names, if the process owns one by that handle.
     fn buffer_size(&self, handle: u64) -> Option<u64>;
     /// The rectangle at byte `offset` of a buffer the resolver already named, read from
@@ -106,6 +134,9 @@ pub struct Plan {
     pub area: u64,
     /// Rectangles that keep pixels after clipping: the ones the device draws.
     pub drawn: u64,
+    /// The largest copy that goes through a scratch texture, per target format
+    /// (B8G8R8A8, R8G8B8A8): width and height, 0 when no copy in that format is staged.
+    pub scratch: [[u32; 2]; 2],
     /// Fragment-steps (section 1.4.1).
     pub estimate: u64,
     /// Bytes of the distinct buffers the stream names.
@@ -142,6 +173,46 @@ pub fn clip(rect: [i32; 4], width: u32, height: u32) -> Option<[u32; 4]> {
     Some([cx0 as u32, cy0 as u32, cx1 as u32, cy1 as u32])
 }
 
+/// A `COPY`'s rectangle after clipping: the source rectangle `[sx, sx + w) x [sy, sy + h)`
+/// clipped to a `source` sized resource, then, anchored at `(dx, dy)`, to a `destination`
+/// sized one. Returns `(sx, sy, w, h, dx, dy)`, or no rectangle when the clipped one is empty.
+pub fn copy_clip(r: [u32; 6], source: [u32; 2], destination: [u32; 2]) -> Option<[u32; 6]> {
+    let [sx, sy, w, h, dx, dy] = r.map(|v| v as u64);
+    let (sw, sh, dw, dh) = (source[0] as u64, source[1] as u64, destination[0] as u64, destination[1] as u64);
+    if sx >= sw || sy >= sh || dx >= dw || dy >= dh {
+        return None;
+    }
+    let w = w.min(sw - sx).min(dw - dx);
+    let h = h.min(sh - sy).min(dh - dy);
+    if w == 0 || h == 0 {
+        return None;
+    }
+    Some([sx as u32, sy as u32, w as u32, h as u32, dx as u32, dy as u32])
+}
+
+/// Whether a copy within one resource reads pixels it also writes.
+pub fn copy_overlaps(c: [u32; 6]) -> bool {
+    let [sx, sy, w, h, dx, dy] = c;
+    sx < dx + w && dx < sx + w && sy < dy + h && dy < sy + h
+}
+
+/// A `DRAW_SAMPLED` instance `(x0, y0, x1, y1, sx, sy)` clipped to a `width` x `height`
+/// target and to the footprint of a `tw` x `th` texture placed so pixel `(x0, y0)` reads
+/// texel `(sx, sy)`, or no rectangle when the clipped one is empty.
+pub fn sampled_clip(i: [i32; 6], width: u32, height: u32, tw: u32, th: u32) -> Option<[u32; 4]> {
+    let [x0, y0, x1, y1, sx, sy] = i.map(|v| v as i64);
+    let fx0 = x0 - sx;
+    let fy0 = y0 - sy;
+    let x0 = x0.max(fx0).clamp(0, width as i64);
+    let y0 = y0.max(fy0).clamp(0, height as i64);
+    let x1 = x1.min(fx0 + tw as i64).clamp(0, width as i64);
+    let y1 = y1.min(fy0 + th as i64).clamp(0, height as i64);
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    Some([x0 as u32, y0 as u32, x1 as u32, y1 as u32])
+}
+
 fn handle_at(words: &(impl Words + ?Sized), at: usize) -> u64 {
     words.word(at) as u64 | (words.word(at + 1) as u64) << 32
 }
@@ -151,6 +222,7 @@ pub fn validate(words: &(impl Words + ?Sized), resolver: &impl Resolver) -> Resu
     let total = words.len();
     let mut plan = Plan::default();
     let mut target: Option<TargetInfo> = None;
+    let mut target_handle = 0u64;
     let mut named: [u64; MAX_NAMED_BUFFERS] = [0; MAX_NAMED_BUFFERS];
     let mut named_count = 0usize;
     let mut at = 0usize;
@@ -173,7 +245,8 @@ pub fn validate(words: &(impl Words + ?Sized), resolver: &impl Resolver) -> Resu
                 if len != 4 {
                     return refuse(error::BAD_LENGTH);
                 }
-                match resolver.target(handle_at(words, at + 2)) {
+                target_handle = handle_at(words, at + 2);
+                match resolver.target(target_handle) {
                     Some(t) => target = Some(t),
                     None => return refuse(error::BAD_HANDLE),
                 }
@@ -193,6 +266,9 @@ pub fn validate(words: &(impl Words + ?Sized), resolver: &impl Resolver) -> Resu
                 let Some(t) = target else { return refuse(error::NO_TARGET) };
                 let pipe = words.word(at + 2);
                 let Some(steps) = pipeline::steps(pipe) else { return refuse(error::BAD_PIPELINE) };
+                if pipeline::samples(pipe) {
+                    return refuse(error::WRONG_COMMAND);
+                }
                 let mut area = 0u64;
                 let count;
                 if code == cmd::DRAW {
@@ -256,6 +332,71 @@ pub fn validate(words: &(impl Words + ?Sized), resolver: &impl Resolver) -> Resu
                 }
                 count_draw(&mut plan, index, count as u64, area, steps)?;
             }
+            cmd::COPY => {
+                if len != 12 {
+                    return refuse(error::BAD_LENGTH);
+                }
+                let source = handle_at(words, at + 2);
+                let destination = handle_at(words, at + 8);
+                let Some(s) = resolver.source(source) else { return refuse(error::BAD_HANDLE) };
+                let Some(d) = resolver.target(destination) else { return refuse(error::BAD_HANDLE) };
+                if s.format != d.format {
+                    return refuse(error::FORMAT_MISMATCH);
+                }
+                if s.invalid {
+                    return refuse(error::INVALID_TARGET);
+                }
+                let r = [4, 5, 6, 7, 10, 11].map(|k| words.word(at + k));
+                let (area, copies) = match copy_clip(r, [s.width, s.height], [d.width, d.height]) {
+                    Some(c) => {
+                        let staged = source == destination && copy_overlaps(c);
+                        if staged {
+                            let slot = &mut plan.scratch[usize::from(d.format == crate::format::R8G8B8A8)];
+                            slot[0] = slot[0].max(c[2]);
+                            slot[1] = slot[1].max(c[3]);
+                        }
+                        (c[2] as u64 * c[3] as u64, if staged { 2 } else { 1 })
+                    }
+                    None => (0, 1),
+                };
+                count_draw(&mut plan, index, 1, area, copies)?;
+            }
+            cmd::DRAW_SAMPLED => {
+                if len < 6 {
+                    return refuse(error::TRUNCATED);
+                }
+                let Some(t) = target else { return refuse(error::NO_TARGET) };
+                let pipe = words.word(at + 2);
+                let Some(steps) = pipeline::steps(pipe) else { return refuse(error::BAD_PIPELINE) };
+                if !pipeline::samples(pipe) {
+                    return refuse(error::WRONG_COMMAND);
+                }
+                let count = words.word(at + 5) as usize;
+                if len != 6 + 6 * count {
+                    return refuse(error::BAD_LENGTH);
+                }
+                let texture = handle_at(words, at + 3);
+                let Some(src) = resolver.source(texture) else { return refuse(error::BAD_HANDLE) };
+                if texture == target_handle {
+                    return refuse(error::SAMPLES_TARGET);
+                }
+                if src.invalid {
+                    return refuse(error::INVALID_TARGET);
+                }
+                let mut area = 0u64;
+                for r in 0..count {
+                    let base = at + 6 + 6 * r;
+                    let i = [0, 1, 2, 3, 4, 5].map(|k| words.word(base + k) as i32);
+                    if i[2] < i[0] || i[3] < i[1] {
+                        return refuse(error::BAD_RECT);
+                    }
+                    if let Some([x0, y0, x1, y1]) = sampled_clip(i, t.width, t.height, src.width, src.height) {
+                        area += (x1 - x0) as u64 * (y1 - y0) as u64;
+                        plan.drawn += 1;
+                    }
+                }
+                count_draw(&mut plan, index, count as u64, area, steps)?;
+            }
             _ => return refuse(error::UNKNOWN_COMMAND),
         }
         at += len;
@@ -306,6 +447,20 @@ pub mod encode {
     pub fn draw_buffer(out: &mut impl Extend<u32>, pipeline: u32, colour: u32, buffer: u64, offset: u32, count: u32) {
         out.extend([cmd::DRAW_BUFFER, 8, pipeline, colour, buffer as u32, (buffer >> 32) as u32, offset, count]);
     }
+
+    /// `rect` is `(sx, sy, w, h)` of `source`; it lands at `point` of `destination`.
+    pub fn copy(out: &mut impl Extend<u32>, source: u64, rect: [u32; 4], destination: u64, point: [u32; 2]) {
+        out.extend([cmd::COPY, 12, source as u32, (source >> 32) as u32, rect[0], rect[1], rect[2], rect[3]]);
+        out.extend([destination as u32, (destination >> 32) as u32, point[0], point[1]]);
+    }
+
+    /// `instances` are `(x0, y0, x1, y1, sx, sy)`.
+    pub fn draw_sampled(out: &mut impl Extend<u32>, pipeline: u32, texture: u64, instances: &[[i32; 6]]) {
+        out.extend([cmd::DRAW_SAMPLED, 6 + 6 * instances.len() as u32, pipeline, texture as u32, (texture >> 32) as u32, instances.len() as u32]);
+        for i in instances {
+            out.extend(i.iter().map(|&v| v as u32));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -320,11 +475,18 @@ mod tests {
         height: u32,
         invalid: bool,
         buffers: Vec<(u64, u64)>,
+        textures: Vec<(u64, SourceInfo)>,
     }
 
     impl Resolver for One {
         fn target(&self, handle: u64) -> Option<TargetInfo> {
-            (handle == self.target).then_some(TargetInfo { width: self.width, height: self.height, invalid: self.invalid })
+            (handle == self.target).then_some(TargetInfo { width: self.width, height: self.height, invalid: self.invalid, format: crate::format::B8G8R8A8 })
+        }
+        fn source(&self, handle: u64) -> Option<SourceInfo> {
+            if handle == self.target {
+                return Some(SourceInfo { width: self.width, height: self.height, format: crate::format::B8G8R8A8, invalid: self.invalid });
+            }
+            self.textures.iter().find(|t| t.0 == handle).map(|t| t.1)
         }
         fn buffer_size(&self, handle: u64) -> Option<u64> {
             self.buffers.iter().find(|b| b.0 == handle).map(|b| b.1)
@@ -335,7 +497,7 @@ mod tests {
     }
 
     fn one() -> One {
-        One { target: 0x1234_5678_9abc, width: 64, height: 32, invalid: false, buffers: Vec::new() }
+        One { target: 0x1234_5678_9abc, width: 64, height: 32, invalid: false, buffers: Vec::new(), textures: Vec::new() }
     }
 
     #[test]
@@ -391,7 +553,7 @@ mod tests {
 
     #[test]
     fn limits_refuse_the_command_that_passes_them() {
-        let r = One { target: 7, width: 16_384, height: 16_384, invalid: false, buffers: std::vec![(9, 40 << 20), (10, 30 << 20)] };
+        let r = One { target: 7, width: 16_384, height: 16_384, invalid: false, buffers: std::vec![(9, 40 << 20), (10, 30 << 20)], textures: Vec::new() };
         let mut s = Vec::new();
         encode::begin(&mut s, 7);
         for _ in 0..limits::DRAWS {
@@ -438,6 +600,107 @@ mod tests {
         let plan = validate(&s[..], &r).unwrap();
         assert_eq!(plan.draws, 3);
         assert_eq!(plan.area, 16 + 64 * 32 + 1);
+    }
+
+    fn with_textures() -> One {
+        let tex = |w, h, format, invalid| SourceInfo { width: w, height: h, format, invalid };
+        One {
+            textures: std::vec![
+                (0x51, tex(10, 6, crate::format::B8G8R8A8, false)),
+                (0x52, tex(4, 4, crate::format::R8G8B8A8, false)),
+                (0x53, tex(4, 4, crate::format::B8G8R8A8, true)),
+                (0x54, tex(64, 2, crate::format::R8, false)),
+            ],
+            ..one()
+        }
+    }
+
+    #[test]
+    fn copies_are_clipped_counted_and_staged_when_they_overlap() {
+        let r = with_textures();
+        let mut s = Vec::new();
+        // Before any BEGIN: clipped by the 10x6 source to 7x5, then at x 60 by the target to 4x5.
+        encode::copy(&mut s, 0x51, [3, 1, 8, 9], r.target, [60, 0]);
+        // Within the target, overlapping: staged.
+        encode::copy(&mut s, r.target, [0, 0, 10, 10], r.target, [5, 5]);
+        // Within the target, disjoint: direct.
+        encode::copy(&mut s, r.target, [0, 0, 4, 4], r.target, [10, 0]);
+        // Clipped away: counted, with no pixel copied.
+        encode::copy(&mut s, 0x51, [10, 0, 4, 4], r.target, [0, 0]);
+        let plan = validate(&s[..], &r).unwrap();
+        assert_eq!(plan.draws, 4);
+        assert_eq!(plan.instances, 4);
+        assert_eq!(plan.area, 4 * 5 + 100 + 16);
+        assert_eq!(plan.estimate, 20 + 2 * 100 + 16);
+        assert_eq!(plan.scratch, [[10, 10], [0, 0]]);
+        assert_eq!(plan.drawn, 0);
+        assert_eq!(copy_clip([3, 1, 8, 9, 60, 0], [10, 6], [64, 32]), Some([3, 1, 4, 5, 60, 0]));
+        assert_eq!(copy_clip([0, 0, 8, 8, 0, 0], [10, 6], [64, 32]), Some([0, 0, 8, 6, 0, 0]));
+        assert_eq!(copy_clip([10, 0, 1, 1, 0, 0], [10, 6], [64, 32]), None);
+        assert_eq!(copy_clip([0, 0, 1, 1, 64, 0], [10, 6], [64, 32]), None);
+        assert_eq!(copy_clip([u32::MAX, 0, u32::MAX, 1, 0, 0], [10, 6], [64, 32]), None);
+        assert!(copy_overlaps([0, 0, 10, 10, 5, 5]) && !copy_overlaps([0, 0, 4, 4, 4, 0]) && copy_overlaps([1, 0, 4, 1, 0, 0]));
+    }
+
+    #[test]
+    fn copy_refusals() {
+        let r = with_textures();
+        let mut s = Vec::new();
+        encode::copy(&mut s, 0x52, [0, 0, 1, 1], r.target, [0, 0]);
+        assert_eq!(validate(&s[..], &r), Err(Refusal { index: 0, error: error::FORMAT_MISMATCH }));
+        let mut s = Vec::new();
+        encode::copy(&mut s, 0x53, [0, 0, 1, 1], r.target, [0, 0]);
+        assert_eq!(validate(&s[..], &r), Err(Refusal { index: 0, error: error::INVALID_TARGET }));
+        let mut s = Vec::new();
+        encode::copy(&mut s, r.target, [0, 0, 1, 1], 0x51, [0, 0]);
+        assert_eq!(validate(&s[..], &r), Err(Refusal { index: 0, error: error::BAD_HANDLE }));
+        let mut s = Vec::new();
+        encode::copy(&mut s, 0x99, [0, 0, 1, 1], r.target, [0, 0]);
+        assert_eq!(validate(&s[..], &r), Err(Refusal { index: 0, error: error::BAD_HANDLE }));
+        let mut s = Vec::new();
+        s.extend([cmd::COPY, 11, 0x51, 0, 0, 0, 1, 1, r.target as u32, (r.target >> 32) as u32, 0]);
+        assert_eq!(validate(&s[..], &r), Err(Refusal { index: 0, error: error::BAD_LENGTH }));
+    }
+
+    #[test]
+    fn sampled_draws_clip_to_the_texture() {
+        let r = with_textures();
+        let mut s = Vec::new();
+        encode::begin(&mut s, r.target);
+        // 10x6 texture placed at (-2, 3): pixel (x, y) reads texel (x + 2, y - 3).
+        encode::draw_sampled(&mut s, pipeline::COPY, 0x51, &[[-100, -100, 100, 100, -98, -103], [0, 0, 0, 5, 0, 0]]);
+        let plan = validate(&s[..], &r).unwrap();
+        assert_eq!(plan.area, 8 * 6);
+        assert_eq!(plan.drawn, 1);
+        assert_eq!(plan.instances, 2);
+        assert_eq!(sampled_clip([-100, -100, 100, 100, -98, -103], 64, 32, 10, 6), Some([0, 3, 8, 9]));
+        assert_eq!(sampled_clip([60, 30, 70, 40, 0, 0], 64, 32, 10, 6), Some([60, 30, 64, 32]));
+        assert_eq!(sampled_clip([0, 0, 4, 4, 10, 0], 64, 32, 10, 6), None);
+        assert_eq!(sampled_clip([i32::MIN, i32::MIN, i32::MAX, i32::MAX, i32::MAX, i32::MAX], 64, 32, 10, 6), None);
+    }
+
+    #[test]
+    fn sampled_draw_refusals() {
+        let r = with_textures();
+        let refusal = |body: &dyn Fn(&mut Vec<u32>)| {
+            let mut s = Vec::new();
+            encode::begin(&mut s, r.target);
+            body(&mut s);
+            validate(&s[..], &r).unwrap_err()
+        };
+        let at1 = |error| Refusal { index: 1, error };
+        assert_eq!(refusal(&|s| encode::draw_sampled(s, pipeline::SOLID, 0x51, &[])), at1(error::WRONG_COMMAND));
+        assert_eq!(refusal(&|s| encode::draw(s, pipeline::COPY, 0, &[[0, 0, 1, 1]])), at1(error::WRONG_COMMAND));
+        assert_eq!(refusal(&|s| encode::draw_buffer(s, pipeline::COPY, 0, 9, 0, 1)), at1(error::WRONG_COMMAND));
+        assert_eq!(refusal(&|s| encode::draw_sampled(s, pipeline::COPY_SCALED, 0x51, &[])), at1(error::BAD_PIPELINE));
+        assert_eq!(refusal(&|s| encode::draw_sampled(s, pipeline::COPY, r.target, &[])), at1(error::SAMPLES_TARGET));
+        assert_eq!(refusal(&|s| encode::draw_sampled(s, pipeline::COPY, 0x53, &[])), at1(error::INVALID_TARGET));
+        assert_eq!(refusal(&|s| encode::draw_sampled(s, pipeline::COPY, 0x77, &[])), at1(error::BAD_HANDLE));
+        assert_eq!(refusal(&|s| encode::draw_sampled(s, pipeline::COPY, 0x51, &[[3, 0, 2, 1, 0, 0]])), at1(error::BAD_RECT));
+        assert_eq!(refusal(&|s| s.extend([cmd::DRAW_SAMPLED, 7, pipeline::COPY, 0x51, 0, 1, 0])), at1(error::BAD_LENGTH));
+        let mut s = Vec::new();
+        encode::draw_sampled(&mut s, pipeline::COPY, 0x51, &[]);
+        assert_eq!(validate(&s[..], &r), Err(Refusal { index: 0, error: error::NO_TARGET }));
     }
 
     #[test]

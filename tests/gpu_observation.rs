@@ -80,3 +80,15 @@ fn readback_probe_never_stores_a_byte_it_did_not_read() {
     assert!(!probe.contains("write_user_bytes"));
     assert!(probe.contains("cmpxchg_user_u32(word, seen, seen)"));
 }
+
+#[test]
+fn upload_stages_before_writing_resource_backing() {
+    // EFAULT's atomicity includes guest backing, not just the device texture.
+    let upload = CORE.split("fn op_upload(").nth(1).unwrap().split("fn op_readback(").next().unwrap();
+    assert!(!upload.contains("Pages::new("), "upload frames bypass the charged allocator");
+    let staged = upload.find("Staging::new(").unwrap();
+    let read = upload.find("read_user_bytes(").unwrap();
+    let write = upload.find("backing.write(").unwrap();
+    assert!(staged < read && read < write);
+    assert_eq!(upload.matches("read_user_bytes(").count(), 1, "a later fault could leave a partial write");
+}
