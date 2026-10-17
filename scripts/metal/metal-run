@@ -3,7 +3,7 @@
 
   # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
   metal-run boot [--payload image|hang|none] [--sha SHA | --branch NAME] [--no-wait] [--inject forceoff-fail] [--nmi]
-                 [--ramdisk]
+                 [--ramdisk] [--mode default|shell|probe|suite] [--disk install|root]
   metal-run stop ID
   metal-run status
   metal-run follow ID
@@ -111,6 +111,8 @@ def boot(args):
         command += ['--content-type', args.content_type]
     if args.ramdisk:
         command.append('--ramdisk')
+    if args.disk:
+        command += ['--disk', args.disk]
     result = in_metal(env, *command, capture_output=True, text=True)
     print(result.stdout.strip() or result.stderr.strip(), flush=True)
     if result.returncode != 0:
@@ -200,7 +202,9 @@ def main():
     p = sub.add_parser('boot')
     p.add_argument('--payload', choices=('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux'), default='image')
     p.add_argument('--linux-directory', help='prebuilt Linux instrument directory on the boot host')
-    p.add_argument('--mode', choices=('default', 'shell', 'suite'), default='default')
+    p.add_argument('--mode', choices=('default', 'shell', 'probe', 'suite'), default='default')
+    p.add_argument('--disk', choices=('install', 'root'),
+                   help='probe mode: install the RAM-disk root on the disk, or boot from the installed root')
     p.add_argument('--suite')
     p.add_argument('--sha')
     p.add_argument('--branch')

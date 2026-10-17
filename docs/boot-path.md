@@ -72,7 +72,9 @@ instructions cannot be emulated by this QEMU version.
   from a boot-target file containing `probe` on a copy of the ext2 disk. These
   runners request Vigil mode `probe` ([vigil#2](https://github.com/ryanbreen/vigil/issues/2)
   tracks the constructor overriding it to `default`), wait for `PROBE DONE`, stop
-  the VM, and exit nonzero for a missing completion or `failed>0`.
+  the VM, and exit nonzero for a missing completion or `failed>0`. The x86-64
+  production kernel runs `/sbin/probe` for the same boot-target file (the x86-metal
+  storage boots use it; `docs/metal/README.md`, "The disks").
 - `shell`: the production kernel runs `/sbin/init shell`, a bsh prompt on the serial
   console you can type into.
 - `desktop`: the production kernel runs `/sbin/init desktop`, the window manager and a

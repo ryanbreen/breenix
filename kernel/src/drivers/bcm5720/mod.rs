@@ -977,6 +977,15 @@ impl Port {
         // Only interrupts delivered after this probe baseline may authorize
         // receive servicing; a DMA status update alone is not MSI evidence.
         let mut seen_interrupts = INTERRUPTS[self.slot].load(Ordering::Acquire);
+        // Frames that arrived while the probe waited for link and the census
+        // hold the standard ring's buffers, and the controller raises no
+        // further interrupt until the block is serviced. Return them to the
+        // ring, uncounted, so the reply has a buffer to land in.
+        let mut recycled = 0u64;
+        self.service(|_| recycled += 1);
+        if recycled != 0 {
+            log::info!("[bcm5720] {bdf}: {recycled} frame(s) that arrived before the discover recycled, uncounted");
+        }
         if let Err(error) = self.send(&frame) {
             log::warn!("[bcm5720] {bdf}: send failed: {error}");
             return;
