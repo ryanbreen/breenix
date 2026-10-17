@@ -761,9 +761,17 @@ pub fn immutable_while_pinned() -> CaseResult {
     pass()
 }
 
-/// Black-box ordering experiment with no withheld answers: the heavy sampling fence
-/// must still be unanswered immediately before UPLOAD. If it has already completed,
-/// fail rather than accepting a run without observed outstanding work.
+/// The sampling draws of each run of the ordering experiment, lightest first: each draw
+/// samples all 2^20 texels, so the runs cost 2^26 to 2^31 fragment-steps, the last at the
+/// contract's work cap (`docs/gui/gpu-abi.md`). A run is heavier only when the one before it
+/// finished too soon, so no run outlasts the watchdog where a lighter one did not.
+const ORDERING_DRAWS: [u32; 6] = [64, 128, 256, 512, 1024, 2048];
+
+/// Same-context ordering through existing interfaces, with no point armed (ruling 26): a
+/// sampling submission still unanswered when the UPLOAD is issued must read the texture as
+/// it was before the upload. A run whose submission is already answered at that moment shows
+/// nothing about ordering: it is reported, never passed, and the experiment repeats with a
+/// heavier submission; the case fails when no run up to the work cap is still in flight.
 fn same_context_ordering() -> CaseResult {
     let ctx = context()?;
     let tex = texture(format::B8G8R8A8, 1024, 1024)?;
@@ -771,34 +779,45 @@ fn same_context_ordering() -> CaseResult {
     let old = Image::filled(format::B8G8R8A8, 1024, 1024, &[17, 43, 89, 255]);
     upload_all(ctx, tex, format::B8G8R8A8, &old)?;
     let inst = [[0, 0, 1024, 1024, 0, 0]];
-    let mut s = Vec::new();
-    encode::begin(&mut s, x);
-    // 2^30 fragment-steps, below the contract's unchanged 2^31 work cap.
-    for _ in 0..1024 {
-        encode::draw_sampled(&mut s, pipeline::COPY, tex, &inst);
-    }
-    let f = submit(ctx, &s)?;
     let patch = [101, 37, 211, 255];
-    let start = now_ns();
-    // No test point is armed: ETIMEDOUT here cannot be an answer held by point 31.
-    let (pending, _) = gpu::wait(ctx, f, 0);
-    ensure(pending == -ETIMEDOUT,
-        || format!("ordering experiment's sampling fence already answered: {}", errno(pending)))?;
-    let (r, _) = gpu::upload(ctx, tex, [0, 0, 1, 1], &patch, 4, src::B8G8R8A8, purpose::IMAGE);
-    ensure(r == 0, || format!("ordering experiment's UPLOAD returned {}", errno(r)))?;
-    value("ordering-upload-ms", ms_since(start) as i64, "ms", None);
-    wait_ok(ctx, f, 2_000)?;
-    expect_image(x, format::B8G8R8A8, &old, "sampling outstanding before the same-context upload")?;
-    frame(ctx, &sampled_frame(x, BG, tex, &inst))?;
-    let mut new = old;
-    new.set(0, 0, &patch);
-    expect_image(x, format::B8G8R8A8, &new, "sampling sent after the same-context upload")?;
-    // Release this experiment's resources before the publication/snapshot experiment.
-    for resource in [tex, x] {
-        ensure(gpu::resource_destroy(resource) == 0, || "ordering resource destroy".to_string())?;
+    for draws in ORDERING_DRAWS {
+        let mut s = Vec::new();
+        encode::begin(&mut s, x);
+        for _ in 0..draws {
+            encode::draw_sampled(&mut s, pipeline::COPY, tex, &inst);
+        }
+        let f = submit(ctx, &s)?;
+        let start = now_ns();
+        // No test point is armed: ETIMEDOUT here cannot be an answer held by point 31.
+        let (pending, _) = gpu::wait(ctx, f, 0);
+        if pending == 0 {
+            value("ordering-finished-early-draws", draws as i64, "", None);
+            continue;
+        }
+        ensure(pending == -ETIMEDOUT,
+            || format!("ordering experiment's {draws}-draw sampling submission answered {}", errno(pending)))?;
+        let (r, _) = gpu::upload(ctx, tex, [0, 0, 1, 1], &patch, 4, src::B8G8R8A8, purpose::IMAGE);
+        ensure(r == 0, || format!("ordering experiment's UPLOAD returned {}", errno(r)))?;
+        value("ordering-upload-ms", ms_since(start) as i64, "ms", None);
+        let still = gpu::wait(ctx, f, 0).0 == -ETIMEDOUT;
+        value("ordering-in-flight-after-upload", still as i64, "", None);
+        value("ordering-draws", draws as i64, "", None);
+        wait_ok(ctx, f, 2_000)?;
+        expect_image(x, format::B8G8R8A8, &old, "sampling in flight when the same-context UPLOAD was issued")?;
+        frame(ctx, &sampled_frame(x, BG, tex, &inst))?;
+        let mut new = old;
+        new.set(0, 0, &patch);
+        expect_image(x, format::B8G8R8A8, &new, "sampling sent after the same-context upload")?;
+        // Release this experiment's resources before the publication/snapshot experiment.
+        for resource in [tex, x] {
+            ensure(gpu::resource_destroy(resource) == 0, || "ordering resource destroy".to_string())?;
+        }
+        ensure(gpu::context_destroy(ctx) == 0, || "ordering context destroy".to_string())?;
+        return pass();
     }
-    ensure(gpu::context_destroy(ctx) == 0, || "ordering context destroy".to_string())?;
-    pass()
+    Err(fail_msg(format!(
+        "no ordering run demonstrated ordering: each sampling submission, {} to {} draws, was answered before its UPLOAD was issued",
+        ORDERING_DRAWS[0], ORDERING_DRAWS[ORDERING_DRAWS.len() - 1])))
 }
 
 pub fn destroy_deferred() -> CaseResult {
