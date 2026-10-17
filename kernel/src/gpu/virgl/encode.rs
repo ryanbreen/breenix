@@ -308,8 +308,8 @@ fn shader(enc: &mut Enc, handle: u32, p: &Program) {
             &[handle, p.kind, offset, p.tokens, 0],
             part,
         );
-        enc.flush();
     }
+    enc.flush();
 }
 
 /// The four binary32 channel values of a BGRA-packed colour, in RGBA order.

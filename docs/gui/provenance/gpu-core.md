@@ -142,7 +142,7 @@ the target.
 | Rasterizer: 9 words: handle, S0, point size, sprite coordinate enable, S3, line width, offset units, scale and clamp; half-pixel centre S0 bit 29, every other S0 bit 0 (fill, cull none, no scissor, multisample or smoothing) | P:217–260 |
 | CLEAR: 8 words: buffers, four colour words, depth as two words of a double, stencil | P:262–270 |
 | Shader object: handle, type, offset word (the text's byte length in bits 0–30 initially; subsequent commands carry byte offset with continuation bit 31 set), token count, stream-output count 0, then text | P:273–282 |
-| Shader fragments occupy at most one 4096-byte DMA page, including the command header and five shader fields, and each fragment ends its submission chunk | O: core sizing choice; P:273–282 supplies continuation framing |
+| Shader commands carry at most 4096 bytes including the command header and five shader fields; a program's ordered continuation commands share submission chunks up to the encoder's 64 KiB limit | O: core sizing choice; P:273–282 supplies continuation framing |
 | SET_VIEWPORT_STATE: start slot, then scale x, y, z and translate x, y, z of one viewport | P:294–301 |
 | SET_FRAMEBUFFER_STATE: colour buffer count, depth surface handle (0, none), colour surface handles | P:304–307 |
 | Vertex elements: handle, then per element source offset, instance divisor, vertex buffer index, source format | P:310–315 |
@@ -763,13 +763,21 @@ The generator's output was compared byte for byte with the kernel's included fil
 | coverage_spans | Per-row eight-sub-scanline traversal of the snapshotted crossing lists; winding and fill_start follow section 2.1; span subtraction, ordered accumulation, multiplication and truncation use G4's IEEE-754 integer model |
 | UNORM boundary conversion | L:111 MUL, 124 ADD, 1040 F2U: floor(v*255+0.5); O: #1714's fetch boundary. Output uses L:1009 U2F and MUL by binary32 1/255, as G4. Native float operations do not compute span coverage. |
 
+<!-- claim-lint:ok: Literal selection is implemented by integer_words in tools/gpu-profile/math.rs and checked by integer_rewrites_use_a_declared_zero_literal in tools/gpu-profile/emitted_tests.rs. -->
+The G5 integer lowering selects an actual declared zero immediate for its word-copy UADD and
+selection USNE. The model's live literals can place a sign bit or UINT_MAX in the first slot;
+that slot is not an implicit zero. The emitted-ISA regression
+`integer_rewrites_use_a_declared_zero_literal` checks the zero-radius circle's centre result.
+
 The token accounting retains T's header, processor, declaration/range, immediate, instruction,
 register and optional flow-label layouts recorded above. The programs declare samplers and sampler views individually after B14
 showed that accepted range text did not produce a working sampler-0 draw. Branches guard the body containing texture reads and loops;
 KILL is used for discarded output, not as an assumed early return. L:661–670 defines discard and states
 that execution may continue. A warm-up span draw puts its fragment outside the glyph's bounds, so that
 body is guarded off while the program is compiled. Shader upload continuation retains G4's one-page
-fragments. Warm-up encoding occurs outside the core lock and each G5 rendering draw ends a fenced chunk.
+commands, grouped into the encoder's existing bounded submission chunks. A program boundary ends
+the chunk; a continuation boundary does not require a separate fence. This keeps the P:273–282 offsets
+and order while avoiding a synchronous device round trip for each page. Warm-up encoding occurs outside the core lock and each G5 rendering draw ends a fenced chunk.
 
 The suite's coverage expectation uses the frozen `breengel-cpu-393` rasterizer in `libs/libgfx-ref`.
 Its rasterizer, float helpers, work counter and error definitions are byte-identical to that tag's

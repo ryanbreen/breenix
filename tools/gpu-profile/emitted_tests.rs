@@ -280,6 +280,23 @@ fn emitted_division_loop_matches_native_quotient_and_remainder() {
 }
 
 #[test]
+fn integer_rewrites_use_a_declared_zero_literal() {
+    let mut code = Code::default();
+    let cx = code.input(0);
+    let cy = code.input(1);
+    let radius = code.input(2);
+    let x = code.input(16);
+    let y = code.input(17);
+    let result = code.circle(&[x, y, cx, cy, radius], false);
+    let (text, mut tokens, registers) = tgsi(&code, &[result]);
+    let text = expand_sources(&text);
+    let text = integer_words(&text, registers, &mut tokens);
+    let (text, _) = integer_constants(&text, registers + 3, &mut tokens);
+    let shader = Shader::parse(&text);
+    assert_eq!(shader.run(0, 0, &[0; 18]), 1);
+}
+
+#[test]
 fn integer_rewrites_preserve_nan_shaped_words_and_aliasing() {
     let (p, out) = program(0);
     let (baseline, mut tokens, _) = tgsi(&p, &out);

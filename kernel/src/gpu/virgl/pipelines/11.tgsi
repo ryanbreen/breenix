@@ -23,7 +23,7 @@ UADD TEMP[2].x, TEMP[0].xxxx, TEMP[1].xxxx
 XOR TEMP[1].x, TEMP[0].xxxx, TEMP[19].xxxx
 UADD TEMP[4].x, IMM[0].zzzz, TEMP[1].xxxx
 UADD TEMP[1].x, CONST[0].xxxx, TEMP[4].xxxx
-USNE TEMP[17].x, TEMP[3].xxxx, IMM[0].xxxx
+USNE TEMP[17].x, TEMP[3].xxxx, IMM[0].wwww
 XOR TEMP[18].x, TEMP[1].xxxx, TEMP[2].xxxx
 AND TEMP[18].x, TEMP[18].xxxx, TEMP[17].xxxx
 XOR TEMP[4].x, TEMP[18].xxxx, TEMP[2].xxxx
@@ -37,7 +37,7 @@ UADD TEMP[1].x, TEMP[0].yyyy, TEMP[2].xxxx
 XOR TEMP[2].x, TEMP[0].yyyy, TEMP[19].xxxx
 UADD TEMP[5].x, IMM[0].zzzz, TEMP[2].xxxx
 UADD TEMP[2].x, CONST[0].yyyy, TEMP[5].xxxx
-USNE TEMP[17].x, TEMP[3].xxxx, IMM[0].xxxx
+USNE TEMP[17].x, TEMP[3].xxxx, IMM[0].wwww
 XOR TEMP[18].x, TEMP[2].xxxx, TEMP[1].xxxx
 AND TEMP[18].x, TEMP[18].xxxx, TEMP[17].xxxx
 XOR TEMP[5].x, TEMP[18].xxxx, TEMP[1].xxxx
@@ -116,7 +116,7 @@ USLT TEMP[9].x, TEMP[7].xxxx, TEMP[6].xxxx
 AND TEMP[9].x, TEMP[9].xxxx, IMM[0].zzzz
 USEQ TEMP[11].x, TEMP[6].xxxx, TEMP[7].xxxx
 AND TEMP[11].x, TEMP[11].xxxx, IMM[0].zzzz
-USNE TEMP[17].x, TEMP[11].xxxx, IMM[0].xxxx
+USNE TEMP[17].x, TEMP[11].xxxx, IMM[0].wwww
 XOR TEMP[18].x, IMM[0].wwww, TEMP[9].xxxx
 AND TEMP[18].x, TEMP[18].xxxx, TEMP[17].xxxx
 XOR TEMP[7].x, TEMP[18].xxxx, TEMP[9].xxxx
@@ -124,7 +124,7 @@ USLT TEMP[9].x, TEMP[10].xxxx, TEMP[8].xxxx
 AND TEMP[9].x, TEMP[9].xxxx, IMM[0].zzzz
 USEQ TEMP[11].x, TEMP[8].xxxx, TEMP[10].xxxx
 AND TEMP[11].x, TEMP[11].xxxx, IMM[0].zzzz
-USNE TEMP[17].x, TEMP[11].xxxx, IMM[0].xxxx
+USNE TEMP[17].x, TEMP[11].xxxx, IMM[0].wwww
 XOR TEMP[18].x, TEMP[7].xxxx, TEMP[9].xxxx
 AND TEMP[18].x, TEMP[18].xxxx, TEMP[17].xxxx
 XOR TEMP[10].x, TEMP[18].xxxx, TEMP[9].xxxx
@@ -135,16 +135,16 @@ AND TEMP[10].x, TEMP[10].xxxx, IMM[0].zzzz
 OR TEMP[7].x, TEMP[4].xxxx, TEMP[5].xxxx
 USEQ TEMP[5].x, IMM[0].wwww, TEMP[7].xxxx
 AND TEMP[5].x, TEMP[5].xxxx, IMM[0].zzzz
-USNE TEMP[17].x, TEMP[10].xxxx, IMM[0].xxxx
+USNE TEMP[17].x, TEMP[10].xxxx, IMM[0].wwww
 XOR TEMP[18].x, TEMP[5].xxxx, TEMP[9].xxxx
 AND TEMP[18].x, TEMP[18].xxxx, TEMP[17].xxxx
 XOR TEMP[7].x, TEMP[18].xxxx, TEMP[9].xxxx
 AND TEMP[9].x, IMM[0].zzzz, TEMP[1].xxxx
 AND TEMP[1].x, TEMP[3].xxxx, TEMP[9].xxxx
 AND TEMP[9].x, TEMP[7].xxxx, TEMP[1].xxxx
-UADD TEMP[13].x, TEMP[9].xxxx, IMM[0].xxxx
+UADD TEMP[13].x, TEMP[9].xxxx, IMM[0].wwww
 UIF TEMP[13].xxxx
-UADD OUT[0], CONST[5], IMM[0].xxxx
+UADD OUT[0], CONST[5], IMM[0].wwww
 ELSE
 KILL
 ENDIF
