@@ -5,9 +5,12 @@
 //! positions named in the comments). The state objects are Breenix's deterministic
 //! rendering profile (`docs/gui/gpu.md` section 1.5): single sample, no blending, no
 //! dithering, every colour channel written, no depth or stencil test, no culling, pixel
-//! centres at half-integers. Programs are TGSI text (Gallium's TGSI language
-//! documentation); each records how many tokens it translates to, counted from the
-//! one-token-per-structure layout of TGSI's binary form (`p_shader_tokens.h`).
+//! centres at half-integers. Programs are written from the TGSI documentation's
+//! instruction, declaration and semantic definitions, in the text form the device was
+//! seen to accept; each records how many tokens it translates to, counted from the
+//! one-token-per-structure layout of TGSI's binary form (`p_shader_tokens.h`). Each
+//! program's derivation and each grammar fact it relies on, with the experiment that
+//! showed it, is in `docs/gui/provenance/gpu-core.md`.
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
@@ -84,24 +87,25 @@ pub struct Program {
     pub tokens: u32,
 }
 
-/// `solid`'s vertex program: the position passes through.
+/// `solid`'s vertex program: input 0 moves to the POSITION output, then END.
 ///
 /// Tokens: header and processor (2); `DCL IN[0]`, a declaration and its range (2);
 /// `DCL OUT[0], POSITION`, a declaration, its range and its semantic (3); `MOV`, an
 /// instruction with one destination and one source register (3); `END` (1). 11 in all.
 pub const SOLID_VS: Program = Program {
     kind: pipe::SHADER_VERTEX,
-    text: b"VERT\nDCL IN[0]\nDCL OUT[0], POSITION\n  0: MOV OUT[0], IN[0]\n  1: END\n\0",
+    text: b"VERT\nDCL IN[0]\nDCL OUT[0], POSITION\nMOV OUT[0], IN[0]\nEND\n\0",
     tokens: 11,
 };
 
-/// `solid`'s fragment program: every fragment takes constant 0, the draw's colour.
+/// `solid`'s fragment program: constant 0, the draw's colour, moves to the COLOR output,
+/// then END.
 ///
 /// Tokens: header and processor (2); `DCL OUT[0], COLOR` (3); `DCL CONST[0]` (2); `MOV`
 /// with one destination and one source (3); `END` (1). 11 in all.
 pub const SOLID_FS: Program = Program {
     kind: pipe::SHADER_FRAGMENT,
-    text: b"FRAG\nDCL OUT[0], COLOR\nDCL CONST[0]\n  0: MOV OUT[0], CONST[0]\n  1: END\n\0",
+    text: b"FRAG\nDCL OUT[0], COLOR\nDCL CONST[0]\nMOV OUT[0], CONST[0]\nEND\n\0",
     tokens: 11,
 };
 
