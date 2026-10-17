@@ -921,3 +921,12 @@ tracked in #1739; this run does not establish the earlier categories as green.
 | `console_restored`: user frame, give-back, retake before presenting; current-scanout transfer of the 19-character header compared channel-by-channel with the independent built-in font coverage formula | `SUITE gpu CASE present/console-restored PASS`. The observed resource is the private console target and its glyph pixels match; completed bitmap draws and fixture transfers are reported. |
 | `firmware_handoff`: compare retained firmware memory's hash at handoff and after GPU console restore, and observe the console header again | `SUITE gpu VALUE present/firmware-handoff handoff=1 expect=1..1`; `SUITE gpu CASE present/firmware-handoff PASS`. The legacy memory is unchanged during these console transitions. This measures those transitions, not programs using the legacy framebuffer API. |
 | Point 25 omits a flush; point 26 binds the other live 47x13 scanout target, whose colour differs | `SUITE gpu CASE present/fault-skip-flush PASS`; `SUITE gpu CASE present/fault-wrong-scanout PASS`. An omitted flush returns EIO and binding-unknown without a completion; the wrong bind is distinguished by its actual resource, pixels and the requested target's offscreen flag. Both recover on the next ordinary present. |
+
+The handle-0 correction was checked at `85891e63711db85e6fa639b7d63f4df199df9b76`
+with the same ARM64 disk and this boot invocation:
+`BREENIX_QUIET=0 "$CHECKOUT/scripts/boot-interactive.sh" --mode suite --suite gpu --case isolation/handle-guess --gpu-gl --display --no-build --serial-log "$RUN/serial.log" < /dev/null`.
+It produced `SUITE gpu VALUE isolation/handle-guess guesses=615`,
+`SUITE gpu CASE isolation/handle-guess PASS ms=2108` and
+`SUITE gpu DONE passed=1 failed=0 skipped=0 total=1 only=isolation/handle-guess`.
+The host renderer attestation was accepted. This was a focused check of the changed errno;
+the two inherited pre-G7 expectations above remain unchanged and need a ruling.
