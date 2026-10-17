@@ -2961,24 +2961,41 @@ fn cv_futex_requeue() -> CaseResult {
 // rwlock-barrier
 
 fn rw_readers_share() -> CaseResult {
+    // SCRATCH (never lands): the case body 400 times in one process, reporting
+    // each reader's identity at its rdlock and at its failed unlock.
     trial(|| {
-        let rw = new_rwlock()?;
-        let holding = Arc::new(AtomicU32::new(0));
-        let mut threads = Vec::new();
-        for i in 0..3 {
-            let h = holding.clone();
-            threads.push(spawn(&format!("reader {i}"), move || -> Result<bool, CaseError> {
-                rc("pthread_rwlock_rdlock", pthread_rwlock_rdlock(rw.p())?)?;
-                h.fetch_add(1, SeqCst);
-                let all = until(1000, || h.load(SeqCst) == 3);
-                rc("pthread_rwlock_unlock", pthread_rwlock_unlock(rw.p())?)?;
-                Ok(all)
-            })?);
+        for iter in 0..400 {
+            let rw = new_rwlock()?;
+            let holding = Arc::new(AtomicU32::new(0));
+            let mut threads = Vec::new();
+            for i in 0..3 {
+                let h = holding.clone();
+                threads.push(spawn(&format!("reader {i}"), move || -> Result<bool, CaseError> {
+                    let cpu = || { let mut c = 0u32; sc(nr::GETCPU, &[&mut c as *mut u32 as u64, 0, 0]); c };
+                    let (t0, s0, p0, c0) = (gettid(), pthread_self()?, thread_pointer()?, cpu());
+                    rc("pthread_rwlock_rdlock", pthread_rwlock_rdlock(rw.p())?)?;
+                    h.fetch_add(1, SeqCst);
+                    let all = until(1000, || h.load(SeqCst) == 3);
+                    let (t1, s1, p1, c1) = (gettid(), pthread_self()?, thread_pointer()?, cpu());
+                    let r = pthread_rwlock_unlock(rw.p())?;
+                    if r != 0 {
+                        return err(format!(
+                            "iter {iter} reader {i}: unlock {} tid {t0}/{t1} self {s0:#x}/{s1:#x} tp {p0:#x}/{p1:#x} cpu {c0}/{c1}",
+                            rc_text(r)
+                        ));
+                    }
+                    Ok(all)
+                })?);
+            }
+            let mut all = true;
+            for th in threads {
+                let handle = th.handle;
+                all &= th.wait(3000)??;
+                rc("pthread_join", pthread_join(handle, null_mut())?)?;
+            }
+            check(all, &format!("iter {iter}: three readers could not all hold the read lock at once"))?;
         }
-        let mut all = true;
-        for th in threads { all &= th.wait(3000)??; }
-        value("readers", holding.load(SeqCst) as i64, "", Some((3, 3)));
-        check(all, "three readers could not all hold the read lock at once")
+        Ok(())
     })
 }
 
