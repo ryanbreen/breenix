@@ -3274,7 +3274,7 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
     }
     let tgid = caller()?;
     let _scanout = if a.target == 0 {
-        if !display::owner(tgid) { return Err(abi::errno::EPERM); }
+        if !display::owner(tgid) { return Err(EINVAL); }
         wait_for(None, true, |c| (!console::restoring()).then_some(c.display.known)).map_err(|_| EINTR)?;
         Some(display::Transition::for_observation(tgid)?)
     } else { None };
