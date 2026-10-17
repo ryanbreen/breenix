@@ -587,3 +587,34 @@ fn an_spcr_the_console_rule_cannot_use_names_no_port() {
     assert_eq!(spcr_port(&image), None, "no SPCR");
     assert_eq!(read_spcr_port(None, image.physical_memory_offset()), None, "no RSDP");
 }
+
+const MCFG: u64 = IMAGE_BASE + 0x0500;
+
+fn mcfg_image(base: u64, first: u8, last: u8, length: u32) -> Image {
+    let mut image = Image::new();
+    put_sdt_header(&mut image, MCFG, b"MCFG", length);
+    image.put_u64(MCFG + 44, base);
+    image.put(MCFG + 52, &[2, 0, first, last]);
+    image.seal(MCFG, length, MCFG + 9);
+    put_xsdt(&mut image, XSDT, &[MCFG]);
+    put_rsdp_v2(&mut image, RSDT, XSDT, 36);
+    image
+}
+
+#[test]
+fn mcfg_inventory_reports_firmware_apertures_and_refuses_invalid_tables() {
+    let image = mcfg_image(0xe0000000, 32, 63, 60);
+    let mut entries = Vec::new();
+    assert_eq!(acpi::read_mcfg(Some(RSDP), image.physical_memory_offset(), |e| entries.push(e)), Some(1));
+    assert_eq!(entries, vec![acpi::McfgAllocation { base: 0xe0000000, segment: 2, first_bus: 32, last_bus: 63 }]);
+    for (base, first, last, length) in [(0, 0, 255, 60), (0xe0000001, 0, 255, 60),
+        (0xe0000000, 64, 63, 60), (0xe0000000, 0, 255, 43), (0xe0000000, 0, 255, 59),
+        (0xfffffffffff00000, 0, 255, 60)] {
+        let image = mcfg_image(base, first, last, length);
+        assert_eq!(acpi::read_mcfg(Some(RSDP), image.physical_memory_offset(), |_| panic!("published invalid entry")), None);
+    }
+    let mut image = mcfg_image(0xe0000000, 0, 255, 60);
+    image.put(MCFG + 40, &[1]);
+    assert_eq!(acpi::read_mcfg(Some(RSDP), image.physical_memory_offset(), |_| panic!("bad checksum")), None);
+    assert_eq!(acpi::read_mcfg(None, image.physical_memory_offset(), |_| panic!("absent RSDP")), None);
+}

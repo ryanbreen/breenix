@@ -561,6 +561,48 @@ pub fn read_spcr_port(rsdp_phys: Option<u64>, physical_memory_offset: u64) -> Op
     u16::try_from(address).ok().filter(|&port| port != 0)
 }
 
+/// One firmware-described PCI configuration aperture (PCI Firmware
+/// Specification, MCFG allocation structure). Reading this is inventory only;
+/// it does not map ECAM or replace the PCI configuration mechanism.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct McfgAllocation {
+    pub base: u64,
+    pub segment: u16,
+    pub first_bus: u8,
+    pub last_bus: u8,
+}
+
+/// Visit the allocations in a checksum-validated MCFG, refusing malformed
+/// lengths, reversed bus ranges, unaligned bases and overflowing apertures.
+pub fn read_mcfg(
+    rsdp_phys: Option<u64>,
+    physical_memory_offset: u64,
+    mut visit: impl FnMut(McfgAllocation),
+) -> Option<usize> {
+    let reader = PhysReader::new(physical_memory_offset);
+    let (table, length) = find_table(&reader, rsdp_phys?, b"MCFG")?;
+    if length < 44 || (length - 44) % 16 != 0 {
+        return None;
+    }
+    let count = (length - 44) / 16;
+    // Validate the table before publishing allocations.
+    let allocation = |index: u32| -> Option<McfgAllocation> {
+        let at = table + 44 + u64::from(index) * 16;
+        let base = reader.u64_at(at)?;
+        let segment = u16::from_le_bytes([reader.u8_at(at + 8)?, reader.u8_at(at + 9)?]);
+        let first_bus = reader.u8_at(at + 10)?;
+        let last_bus = reader.u8_at(at + 11)?;
+        if base == 0 || base & 0xfffff != 0 || first_bus > last_bus {
+            return None;
+        }
+        base.checked_add((u64::from(last_bus) + 1) << 20)?;
+        Some(McfgAllocation { base, segment, first_bus, last_bus })
+    };
+    for index in 0..count { allocation(index)?; }
+    for index in 0..count { visit(allocation(index)?); }
+    Some(count as usize)
+}
+
 /// The first root-table entry carrying `signature` whose header and checksum
 /// are sound, with its declared length. The walk is capped by
 /// `MAX_ROOT_ENTRIES`, as `read_madt`'s is.
