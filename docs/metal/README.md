@@ -100,6 +100,46 @@ arrival time and byte offset. A dropped session is reopened within two seconds a
 boot with a gap ends with exit 137 and is not evidence. claim-lint:ok: `spawn_console` and `heal_console` in
 `scripts/metal/metal-boot`; the cleaner's rules are five tests in `tests/metal_tools_test.py`.
 
+## Interrupts, time and processors
+
+The kernel takes one path on each firmware it boots on, QEMU's included (`kernel/src/arch_impl/x86_64/irq.rs`):
+
+- **The controller comes from the MADT.** When it describes an I/O APIC and a local APIC, and no structure the
+  kernel cannot honour, the ISA interrupts are routed through the I/O APIC with the MADT's interrupt source
+  overrides (polarity and trigger from their flags, else from the ELCR), the 8259s are masked, and each CPU's local
+  APIC runs the scheduler tick at 200 Hz in the mode the processor offers (x2APIC when CPUID has it, as this
+  machine's firmware already hands over). The kernel prints `Interrupt delivery: x2APIC + IOAPIC; 8259 masked` and
+  an `[irq]` line with the controller counts. Otherwise the 8259 and the PIT deliver, on the boot CPU only.
+- **PCI INTx is not guessed.** Which I/O APIC input a function's INTx drives is ACPI `_PRT`, which the kernel does
+  not interpret. The config-space Interrupt Line is trusted only on QEMU's PIIX and ICH9 machines; elsewhere a
+  driver that needs an interrupt uses MSI (`kernel/src/arch_impl/x86_64/msi.rs`, from the PCI Local Bus
+  specification and the Intel SDM): one vector from 0x50-0x5f per function, delivered to the same CPU as the I/O
+  APIC's routes, unless the FADT's boot flags forbid MSI. AHCI, which completes on INTx, does not attach where the
+  routing is unknown. The e1000 driver uses MSI on functions that have it (QEMU's 82574L).
+- **NMI.** Each CPU programs the local interrupt pin the MADT's Local APIC NMI structures name (LINT1 on this
+  machine) for NMI delivery, so the BMC's NMI reaches the kernel. An NMI that is not one of the kernel's own TLB
+  shootdowns prints `[nmi] external NMI #<n> cpu=<n> apic_id=<n> rip=... cs=... rflags=... rsp=... port61=...`
+  straight to the log UART, taking no lock, at most 16 times per boot. The driver's NMI to a hung boot
+  (step 8 below) records the interrupted state of each CPU it reaches; delivery to other CPUs is not implied.
+- **TSC.** PIT channel 2 measures the TSC as before. CPUID leaf 15H (crystal times ratio) or, without a crystal,
+  leaf 16H (base frequency) supplies a candidate rate, which is used when the PIT agrees within 200 ppm; otherwise the PIT's
+  measurement is the rate. `[tsc] pit=... cpuid-16h=... apart=... using=...` records the choice, and a second
+  line the rate the FADT's PM timer implies, as an independent check.
+- **The FADT** is read once before calibration: `[acpi] fadt rev=... sci=... pm_timer=... reset=... boot_arch=...
+  msi=...`, after the `[acpi] tables:` census of the tables the root table lists.
+- **Processors.** Each processor the MADT lists as enabled is started with INIT-SIPI-SIPI in MADT order; the kernel
+  prints `[smp] online=<n> reported=<n>` and, when they match, `[smp] every reported CPU is online`. claim-lint:ok:
+  the marker text is the catalog's, from `report_bring_up` in `kernel/src/arch_impl/x86_64/smp.rs`.
+- **Ticks on each CPU.** Each CPU measures its own LAPIC timer's countdown against the TSC as it starts it. At
+  `[metal] kernel idle` a census thread pins one thread to each CPU in turn, which spins there for 500 ms with preemption
+  off and interrupts on, completing one window before starting the next so other CPUs remain available to userspace.
+  Retry and reschedule interrupts use separate gates. IPIs explicitly sent through the timer gate are counted per
+  destination (`TIMER_GATE_IPI_SENT`). Each `[timer] cpu<n>` line gives the measured rate and the range the ticks
+  taken lie in (gate entries less IPIs sent, to gate entries). `[timer] tick rate agrees with the TSC` follows
+  when each CPU's rate is within 5000 ppm of 200 Hz and each range is within 2 ticks of the expected count, and
+  `[smp] timer ticks on each online CPU` when each range is. The census runs only where the idle marker prints
+  (no fw_cfg). It is the `smp` milestone's last stage, so the driver ends a default boot there.
+
 ## One boot
 
 `metal-run boot` (on the boot host) starts the driver as `metal-boot-<id>` in the service container and returns as
@@ -248,7 +288,7 @@ when each row matches). They are firmware and controller settings; they write no
 | `SerialComm` | `OnConRedirCom1` | Firmware text on the SOL UART (`SerialPortAddress=Serial1Com2Serial2Com1`, kept, puts the SOL device at COM1) |
 | `ErrPrompt` | Disabled | POST does not stop for an error prompt |
 | `AcPwrRcvry` | Off | After a power cut the machine stays off |
-| `EmbSata` | Site `SATA_MODE` (default `AhciMode`) | The current operator policy selects `Off`; pre-flight checks the selected value |
+| `EmbSata` | Site `SATA_MODE` (default `AhciMode`) | The operator's ruling keeps SATA on in AHCI mode; pre-flight checks the selected value. The kernel sends the SSD no commands: AHCI does not attach where PCI INTx routing is unknown |
 | IPMI over LAN | Enabled | SOL's transport and the reaper's second power-off path |
 | Lifecycle Controller `CollectSystemInventoryOnRestart` | Disabled | Shorter POST |
 | An automation account | Administrator role, SOL and IPMI LAN privilege | Revocable apart from the operator's own login; its credential lives only in the site file |
@@ -276,7 +316,7 @@ seen after 3 of 3 settings jobs in L0's setup records.
 ## Files
 
 The **site file** (inside the service container, 0600): `IDRAC_HOST`, `IDRAC_USER`, `IDRAC_PASSWORD`,
-`IDRAC_ACCOUNT_SLOT`, `SATA_MODE` (`Off` for the current disk policy), `BOOT_URL`, `HTTP_LISTEN_PORT`, `HTTP_DEV_INTERFACE`, `HTTP_DEV_ADDRESSING` (`dhcp`, or
+`IDRAC_ACCOUNT_SLOT`, `SATA_MODE` (`AhciMode` under the current disk policy), `BOOT_URL`, `HTTP_LISTEN_PORT`, `HTTP_DEV_INTERFACE`, `HTTP_DEV_ADDRESSING` (`dhcp`, or
 `static` with `HTTP_DEV_IP`, `HTTP_DEV_MASK`, `HTTP_DEV_GATEWAY`) and `REDACT_IDENTIFIERS`. It must also be valid
 `sh`, because `metal-sol` sources it.
 
@@ -298,6 +338,7 @@ On the boot host:
 python3 ~/.local/share/breenix-metal/metal-run boot                      # origin/main's kernel as boot.efi
 python3 ~/.local/share/breenix-metal/metal-run boot --ramdisk            # explicit spelling of the default RAM-disk root
 python3 ~/.local/share/breenix-metal/metal-run boot --branch NAME        # a pushed branch (in-progress evidence)
+python3 ~/.local/share/breenix-metal/metal-run boot --branch NAME --nmi  # NMI before power-off even when it finished
 python3 ~/.local/share/breenix-metal/metal-run boot --payload hang       # metal-hang.efi
 python3 ~/.local/share/breenix-metal/metal-run boot --payload none       # nothing staged
 python3 ~/.local/share/breenix-metal/metal-run boot --payload none --inject forceoff-fail
@@ -458,3 +499,16 @@ scripts/metal/metal-linux-extract "$PRIVATE_BOOT_RECORD" "$PRIVATE_EVIDENCE_DIRE
 Extraction requires `ended`, exit 0 and no console-gap event. Raw captures, inventory, payloads, configuration,
 build logs and the platform-facts report remain private. The public repository contains only the recipe,
 protocol tooling, documentation and synthetic tests.
+
+## Interrupts and SMP on the machine
+
+Measured on boots of `metal-bring-up/interrupts-smp` (in-progress evidence, not main's code), in the default mode
+with the RAM-disk image. `20261017T063006Z-metal` (2aa11ef9) and `20261017T064333Z-metal` (d4276fd7) both ended
+with exit 0 at the `smp` milestone's last stage, clean production builds with intact payloads and no console gaps:
+`first-light` 11 of 11, `interrupts-time` 4 of 4, `smp` 3 of 3. claim-lint:ok: 2 of 2 boots, scored with each
+boot's own definition copy.
+
+Hardware-specific ACPI signatures, register values, TSC rates, processor identities and interrupt topology
+remain in private evidence. The boots above exercised the ACPI census, clock cross-checks, processor bring-up,
+per-CPU tick windows and external NMI reporting. The external NMI reached the boot CPU only; delivery to the other CPUs remains unmeasured. Historical tick-arrival measurements used overlapping pinned windows;
+subsequent review tightens the upper bound and staggers those windows, requiring fresh boot evidence.

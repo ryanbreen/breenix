@@ -171,6 +171,11 @@ pub fn init_idt() {
         idt[InterruptIndex::Serial.as_u8()].set_handler_fn(serial_interrupt_handler);
         idt[InterruptIndex::Irq10.as_u8()].set_handler_fn(irq10_handler);
         idt[InterruptIndex::Irq11.as_u8()].set_handler_fn(irq11_handler);
+        // Message-signalled device interrupts, one gate per vector.
+        use crate::arch_impl::x86_64::msi;
+        for (index, entry) in msi::ENTRIES.iter().enumerate() {
+            idt[msi::FIRST_VECTOR + index as u8].set_handler_fn(*entry);
+        }
 
         // System call handler (INT 0x80)
         // Use assembly handler for proper syscall dispatching
@@ -233,6 +238,7 @@ pub fn init_idt() {
                 && i != InterruptIndex::Irq11.as_u8()
                 && i != SYSCALL_INTERRUPT_ID
                 && i != RESCHEDULE_VECTOR
+                && !(msi::FIRST_VECTOR..msi::FIRST_VECTOR + msi::VECTORS as u8).contains(&i)
                 && i != RETRY_VECTOR
             {
                 idt[i].set_handler_fn(generic_handler);

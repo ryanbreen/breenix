@@ -156,7 +156,8 @@ class Driver:
         m.write_text(self.dir / 'dirty', '0\n')
         (self.dir / 'console.log').touch()
         (self.dir / 'events.jsonl').touch()
-        self.event('created', payload=self.args.payload, mode=self.args.mode, inject=self.args.inject or 'none')
+        self.event('created', payload=self.args.payload, mode=self.args.mode, inject=self.args.inject or 'none',
+                   nmi=bool(getattr(self.args, 'nmi', False)))
 
     def claim_status(self, status, text=''):
         m.write_json(self.dir / 'claim.json', {'status': status, 'text': text, 't': m.now()})
@@ -715,8 +716,9 @@ class Driver:
             time.sleep(0.25)
 
     def power_off(self, hung):
-        """NMI first when a started kernel or payload hung, then ForceOff; quarantine if it does not go Off."""
-        if hung and self.kernel_started:
+        """NMI first when a started kernel or payload hung (or `--nmi` asks for it), then ForceOff; quarantine if it
+        does not go Off."""
+        if (hung or getattr(self.args, 'nmi', False)) and self.kernel_started:
             try:
                 m.rf('POST', m.SYSTEM + '/Actions/ComputerSystem.Reset', {'ResetType': 'Nmi'}, priority=0)
                 self.event('nmi')
@@ -892,6 +894,8 @@ def main():
         p.add_argument('--task', default='')
         p.add_argument('--no-wait', action='store_true')
         p.add_argument('--inject', choices=('forceoff-fail',))
+        p.add_argument('--nmi', action='store_true',
+                       help='send the NMI and capture for 5 s before powering off a started kernel, finished or not')
         p.add_argument('--ramdisk', action='store_true', default=True, help='put the ext2 root on the boot disk as `ramdisk`')
         p.add_argument('--content-type', choices=('application/octet-stream',),
                        help='a test payload served with this type instead of its form\'s own')

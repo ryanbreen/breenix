@@ -1,11 +1,13 @@
-//! Fixed-table ACPI reader: RSDP -> RSDT/XSDT -> MADT processor entries, and
-//! the SPCR's console UART.
+//! Fixed-table ACPI reader: RSDP -> RSDT/XSDT -> MADT processor entries, the
+//! SPCR's console UART, the MCFG apertures and the FADT's timer and reset
+//! register.
 //!
 //! Scope, stated so the boundary is not inferred from the name: this module
-//! READS five fixed tables and reports what they say. It programs no APIC
+//! READS fixed tables and reports what they say. It programs no APIC
 //! register, starts no processor, installs no mapping, and interprets no AML.
 //! It supplies processor enumeration and interrupt topology to `smp` and `irq`,
-//! and the console UART to `serial` (`read_spcr_port`).
+//! the console UART to `serial` (`read_spcr_port`), and the root table's
+//! census and the FADT to `platform`.
 //!
 //! ## Why it needs no mapping of its own
 //!
@@ -83,6 +85,24 @@ pub struct SourceOverride {
     pub flags: u16,
 }
 
+/// How many Local APIC NMI structures (MADT types 4 and 10) one census keeps.
+pub const MAX_LOCAL_NMIS: usize = MAX_ENUMERATED_CPUS;
+
+/// The processor UID a Local APIC NMI structure uses to name each processor at
+/// once: 0xFF in a type-4 entry and 0xFFFFFFFF in a type-10 entry, both
+/// recorded as this value.
+pub const ALL_PROCESSORS: u32 = u32::MAX;
+
+/// One Local APIC NMI structure: which processor's local interrupt pin
+/// (`lint`, 0 or 1) the platform wires to NMI, with the MPS INTI polarity and
+/// trigger flags (ACPI 6.5, 5.2.12.7 and 5.2.12.13).
+#[derive(Clone, Copy)]
+pub struct LocalNmi {
+    pub uid: u32,
+    pub flags: u16,
+    pub lint: u8,
+}
+
 /// Physical addresses at or above this are refused rather than read. See the
 /// module comment: below 4 GiB is the part of the bootloader's
 /// physical-memory window this module can rely on without reading the memory
@@ -125,11 +145,15 @@ const MADT_MIN_LENGTH: u32 = SDT_HEADER_LENGTH + MADT_BODY_HEADER_LENGTH;
 
 /// MADT interrupt-controller structure types this reader decodes.
 const MADT_TYPE_LOCAL_APIC: u8 = 0;
+const MADT_TYPE_LOCAL_APIC_NMI: u8 = 4;
 const MADT_TYPE_LOCAL_X2APIC: u8 = 9;
+const MADT_TYPE_LOCAL_X2APIC_NMI: u8 = 10;
 
 /// Declared length of the two structures above, per ACPI 6.5 table 5.22/5.28.
 const MADT_LOCAL_APIC_LENGTH: u8 = 8;
 const MADT_LOCAL_X2APIC_LENGTH: u8 = 16;
+const MADT_LOCAL_APIC_NMI_LENGTH: u8 = 6;
+const MADT_LOCAL_X2APIC_NMI_LENGTH: u8 = 12;
 
 /// Smallest legal MADT entry: the type and length bytes themselves.
 const MADT_MIN_ENTRY_LENGTH: u8 = 2;
@@ -158,10 +182,18 @@ pub struct MadtCensus {
     pub qemu_firmware: bool,
     pub overrides: [SourceOverride; 16],
     pub override_count: usize,
+    /// Local APIC NMI structures, in MADT order; entries past
+    /// `MAX_LOCAL_NMIS`, and ones naming a pin other than LINT0 or LINT1, are
+    /// not kept.
+    pub local_nmis: [LocalNmi; MAX_LOCAL_NMIS],
+    pub local_nmi_count: usize,
     /// How many of `apic_ids` are populated.
     pub recorded: usize,
     /// APIC ids in MADT order, for the first `recorded` processor entries.
     pub apic_ids: [u32; MAX_ENUMERATED_CPUS],
+    /// ACPI processor UIDs of those entries, which Local APIC NMI structures
+    /// name processors by.
+    pub apic_uids: [u32; MAX_ENUMERATED_CPUS],
     /// Whether each of those entries carries the Enabled flag.
     pub apic_enabled: [bool; MAX_ENUMERATED_CPUS],
 }
@@ -187,13 +219,42 @@ impl MadtCensus {
                 flags: 0,
             }; 16],
             override_count: 0,
+            local_nmis: [LocalNmi {
+                uid: 0,
+                flags: 0,
+                lint: 0,
+            }; MAX_LOCAL_NMIS],
+            local_nmi_count: 0,
             recorded: 0,
             apic_ids: [0; MAX_ENUMERATED_CPUS],
+            apic_uids: [0; MAX_ENUMERATED_CPUS],
             apic_enabled: [false; MAX_ENUMERATED_CPUS],
         }
     }
 
-    fn record(&mut self, apic_id: u32, flags: u32, is_x2apic: bool) {
+    /// The Local APIC NMI structure that applies to the processor with local
+    /// APIC id `apic_id`: the first one naming its UID or `ALL_PROCESSORS`. A
+    /// processor this census did not record matches only an `ALL_PROCESSORS`
+    /// entry.
+    pub fn local_nmi_for(&self, apic_id: u32) -> Option<LocalNmi> {
+        let uid = (0..self.recorded)
+            .find(|&index| self.apic_ids[index] == apic_id)
+            .map(|index| self.apic_uids[index]);
+        self.local_nmis[..self.local_nmi_count]
+            .iter()
+            .copied()
+            .find(|entry| entry.uid == ALL_PROCESSORS || Some(entry.uid) == uid)
+    }
+
+    fn record_local_nmi(&mut self, uid: u32, flags: u16, lint: u8) {
+        if lint > 1 || self.local_nmi_count == MAX_LOCAL_NMIS {
+            return;
+        }
+        self.local_nmis[self.local_nmi_count] = LocalNmi { uid, flags, lint };
+        self.local_nmi_count += 1;
+    }
+
+    fn record(&mut self, apic_id: u32, uid: u32, flags: u32, is_x2apic: bool) {
         self.processor_entries = self.processor_entries.saturating_add(1);
         if flags & MADT_FLAG_ENABLED != 0 {
             self.enabled_entries = self.enabled_entries.saturating_add(1);
@@ -203,6 +264,7 @@ impl MadtCensus {
         }
         if self.recorded < MAX_ENUMERATED_CPUS {
             self.apic_ids[self.recorded] = apic_id;
+            self.apic_uids[self.recorded] = uid;
             self.apic_enabled[self.recorded] = flags & MADT_FLAG_ENABLED != 0;
             self.recorded += 1;
         }
@@ -444,13 +506,16 @@ fn census_of_madt(
         }
         match entry_type {
             MADT_TYPE_LOCAL_APIC if entry_length >= MADT_LOCAL_APIC_LENGTH => {
+                let uid = reader
+                    .u8_at(madt_phys + cursor + 2)
+                    .ok_or(MadtRefusal::MadtHeader)?;
                 let apic_id = reader
                     .u8_at(madt_phys + cursor + 3)
                     .ok_or(MadtRefusal::MadtHeader)?;
                 let flags = reader
                     .u32_at(madt_phys + cursor + 4)
                     .ok_or(MadtRefusal::MadtHeader)?;
-                census.record(u32::from(apic_id), flags, false);
+                census.record(u32::from(apic_id), u32::from(uid), flags, false);
             }
             MADT_TYPE_LOCAL_X2APIC if entry_length >= MADT_LOCAL_X2APIC_LENGTH => {
                 let x2apic_id = reader
@@ -459,7 +524,37 @@ fn census_of_madt(
                 let flags = reader
                     .u32_at(madt_phys + cursor + 8)
                     .ok_or(MadtRefusal::MadtHeader)?;
-                census.record(x2apic_id, flags, true);
+                let uid = reader
+                    .u32_at(madt_phys + cursor + 12)
+                    .ok_or(MadtRefusal::MadtHeader)?;
+                census.record(x2apic_id, uid, flags, true);
+            }
+            MADT_TYPE_LOCAL_APIC_NMI if entry_length >= MADT_LOCAL_APIC_NMI_LENGTH => {
+                let uid = reader
+                    .u8_at(madt_phys + cursor + 2)
+                    .ok_or(MadtRefusal::MadtHeader)?;
+                let flags = u16::from_le_bytes([
+                    reader.u8_at(madt_phys + cursor + 3).ok_or(MadtRefusal::MadtHeader)?,
+                    reader.u8_at(madt_phys + cursor + 4).ok_or(MadtRefusal::MadtHeader)?,
+                ]);
+                let lint = reader
+                    .u8_at(madt_phys + cursor + 5)
+                    .ok_or(MadtRefusal::MadtHeader)?;
+                let uid = if uid == 0xff { ALL_PROCESSORS } else { u32::from(uid) };
+                census.record_local_nmi(uid, flags, lint);
+            }
+            MADT_TYPE_LOCAL_X2APIC_NMI if entry_length >= MADT_LOCAL_X2APIC_NMI_LENGTH => {
+                let flags = u16::from_le_bytes([
+                    reader.u8_at(madt_phys + cursor + 2).ok_or(MadtRefusal::MadtHeader)?,
+                    reader.u8_at(madt_phys + cursor + 3).ok_or(MadtRefusal::MadtHeader)?,
+                ]);
+                let uid = reader
+                    .u32_at(madt_phys + cursor + 4)
+                    .ok_or(MadtRefusal::MadtHeader)?;
+                let lint = reader
+                    .u8_at(madt_phys + cursor + 8)
+                    .ok_or(MadtRefusal::MadtHeader)?;
+                census.record_local_nmi(uid, flags, lint);
             }
             1 if entry_length >= 12 => {
                 if census.io_apic_count == MAX_IO_APICS {
@@ -682,4 +777,159 @@ pub fn read_madt(
     }
 
     Err(MadtRefusal::NoMadtInRootTable)
+}
+
+/// Visit the signature of each table the root table points at, in root-table
+/// order, after the root table's own (`RSDT` or `XSDT`). A pointer this reader
+/// cannot read is skipped. Returns how many signatures were visited; no value
+/// when the RSDP or root table is refused. The walk is capped by
+/// `MAX_ROOT_ENTRIES`, as `read_madt`'s is.
+pub fn visit_table_signatures(
+    rsdp_phys: Option<u64>,
+    physical_memory_offset: u64,
+    mut visit: impl FnMut([u8; 4]),
+) -> Option<usize> {
+    let reader = PhysReader::new(physical_memory_offset);
+    let (root_phys, entry_width) = root_table(&reader, rsdp_phys?).ok()?;
+    let root_signature: &[u8; 4] = if entry_width == 8 { b"XSDT" } else { b"RSDT" };
+    let root_length = sdt_length(&reader, root_phys, root_signature)?;
+    visit(*root_signature);
+    let mut visited = 1;
+    let entry_count = ((root_length - SDT_HEADER_LENGTH) as u64 / entry_width) as usize;
+    for index in 0..entry_count.min(MAX_ROOT_ENTRIES) {
+        let entry_at = root_phys + u64::from(SDT_HEADER_LENGTH) + (index as u64) * entry_width;
+        let table_phys = if entry_width == 8 {
+            reader.u64_at(entry_at)?
+        } else {
+            u64::from(reader.u32_at(entry_at)?)
+        };
+        if !reader.readable(table_phys, u64::from(SDT_HEADER_LENGTH)) {
+            continue;
+        }
+        let mut signature = [0u8; 4];
+        for (offset, byte) in signature.iter_mut().enumerate() {
+            *byte = reader.u8_at(table_phys + offset as u64)?;
+        }
+        visit(signature);
+        visited += 1;
+    }
+    Some(visited)
+}
+
+/// An ACPI Generic Address Structure (ACPI 6.5, 5.2.3.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GenericAddress {
+    /// 0 system memory, 1 system I/O, others as the specification lists.
+    pub space: u8,
+    pub bit_width: u8,
+    pub bit_offset: u8,
+    pub access_size: u8,
+    pub address: u64,
+}
+
+/// What this kernel reads from the Fixed ACPI Description Table (ACPI 6.5,
+/// 5.2.9): the power-management timer, the reset register, the SCI and the
+/// IA-PC boot architecture flags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Fadt {
+    pub revision: u8,
+    pub sci_interrupt: u16,
+    /// The PM timer block: the 64-bit `X_PM_TMR_BLK` when the table has one
+    /// with a nonzero address, else the 32-bit `PM_TMR_BLK` as a system I/O
+    /// port when `PM_TMR_LEN` is 4; empty when neither is present.
+    pub pm_timer: Option<GenericAddress>,
+    /// `TMR_VAL_EXT`: the timer counts 32 bits rather than 24.
+    pub pm_timer_32bit: bool,
+    /// `RESET_REG` and `RESET_VALUE`, when `RESET_REG_SUP` is set and the
+    /// table is long enough to hold them.
+    pub reset: Option<(GenericAddress, u8)>,
+    pub boot_arch: u16,
+    pub flags: u32,
+}
+
+impl Fadt {
+    /// IA-PC boot architecture flag 3: the OS must not enable MSI on this
+    /// platform.
+    pub fn msi_not_supported(&self) -> bool {
+        self.boot_arch & (1 << 3) != 0
+    }
+
+    /// Flag 20: the platform has no fixed ACPI hardware, the PM timer included.
+    pub fn hardware_reduced(&self) -> bool {
+        self.flags & (1 << 20) != 0
+    }
+}
+
+/// FADT field offsets, from ACPI 6.5 table 5.9.
+const FADT_SCI_INT: u64 = 46;
+const FADT_PM_TMR_BLK: u64 = 76;
+const FADT_PM_TMR_LEN: u64 = 91;
+const FADT_IAPC_BOOT_ARCH: u64 = 109;
+const FADT_FLAGS: u64 = 112;
+const FADT_RESET_REG: u64 = 116;
+const FADT_RESET_VALUE: u64 = 128;
+const FADT_X_PM_TMR_BLK: u64 = 208;
+/// The ACPI 1.0 table ends after the flags word; the reset register and value
+/// need 129 bytes, the extended timer block 220.
+const FADT_MIN_LENGTH: u32 = 116;
+const FADT_TMR_VAL_EXT: u32 = 1 << 8;
+const FADT_RESET_REG_SUP: u32 = 1 << 10;
+
+fn generic_address(reader: &PhysReader, at: u64) -> Option<GenericAddress> {
+    Some(GenericAddress {
+        space: reader.u8_at(at)?,
+        bit_width: reader.u8_at(at + 1)?,
+        bit_offset: reader.u8_at(at + 2)?,
+        access_size: reader.u8_at(at + 3)?,
+        address: reader.u64_at(at + 4)?,
+    })
+}
+
+/// Read the checksum-validated FADT (signature `FACP`); no value when the
+/// table is absent, refused or shorter than the ACPI 1.0 layout.
+pub fn read_fadt(rsdp_phys: Option<u64>, physical_memory_offset: u64) -> Option<Fadt> {
+    let reader = PhysReader::new(physical_memory_offset);
+    let (table, length) = find_table(&reader, rsdp_phys?, b"FACP")?;
+    if length < FADT_MIN_LENGTH {
+        return None;
+    }
+    let length = u64::from(length);
+    let flags = reader.u32_at(table + FADT_FLAGS)?;
+    let extended_timer = if length >= FADT_X_PM_TMR_BLK + 12 {
+        Some(generic_address(&reader, table + FADT_X_PM_TMR_BLK)?).filter(|gas| gas.address != 0)
+    } else {
+        None
+    };
+    let legacy_timer = reader.u32_at(table + FADT_PM_TMR_BLK)?;
+    let pm_timer = extended_timer.or_else(|| {
+        (legacy_timer != 0 && reader.u8_at(table + FADT_PM_TMR_LEN) == Some(4)).then_some(GenericAddress {
+            space: 1,
+            bit_width: 32,
+            bit_offset: 0,
+            access_size: 0,
+            address: u64::from(legacy_timer),
+        })
+    });
+    let reset = if flags & FADT_RESET_REG_SUP != 0 && length > FADT_RESET_VALUE {
+        let register = generic_address(&reader, table + FADT_RESET_REG)?;
+        let value = reader.u8_at(table + FADT_RESET_VALUE)?;
+        (register.address != 0).then_some((register, value))
+    } else {
+        None
+    };
+    Some(Fadt {
+        revision: reader.u8_at(table + 8)?,
+        sci_interrupt: u16::from_le_bytes([
+            reader.u8_at(table + FADT_SCI_INT)?,
+            reader.u8_at(table + FADT_SCI_INT + 1)?,
+        ]),
+        pm_timer,
+        pm_timer_32bit: flags & FADT_TMR_VAL_EXT != 0,
+        reset,
+        boot_arch: u16::from_le_bytes([
+            reader.u8_at(table + FADT_IAPC_BOOT_ARCH)?,
+            reader.u8_at(table + FADT_IAPC_BOOT_ARCH + 1)?,
+        ]),
+        flags,
+    })
 }

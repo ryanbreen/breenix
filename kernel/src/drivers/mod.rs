@@ -72,9 +72,19 @@ pub fn init() -> usize {
         Ok(()) => {
             log::info!("E1000 network driver initialized successfully");
 
-            // Enable E1000 IRQ now that driver is initialized
-            // E1000 uses IRQ 10 in QEMU's PCI configuration
-            crate::interrupts::enable_irq10();
+            // MSI where the function has it; otherwise IRQ 10, the line
+            // QEMU's PCI configuration gives the E1000.
+            match e1000::interrupt_by_msi() {
+                Ok(vector) => log::info!("E1000: interrupts by MSI vector {vector:#x}"),
+                Err(reason) => {
+                    if crate::arch_impl::x86_64::irq::pci_intx_routing_known() {
+                        log::info!("E1000: interrupts on IRQ 10 ({reason})");
+                        crate::interrupts::enable_irq10();
+                    } else {
+                        log::info!("E1000: INTx remains masked: routing unknown ({reason})");
+                    }
+                }
+            }
         }
         Err(e) => {
             log::warn!("E1000 network driver initialization failed: {}", e);
@@ -114,6 +124,10 @@ fn init_other_network_device() {
             }
         },
     };
+    if !crate::arch_impl::x86_64::irq::pci_intx_routing_known() {
+        log::info!("Network INTx remains masked: routing unknown");
+        return;
+    }
     match line {
         Some(10) => crate::interrupts::enable_irq10(),
         Some(11) => crate::interrupts::enable_irq11(),
@@ -129,13 +143,18 @@ pub fn run_post_init_self_tests() {
     // PIC initialization remaps/masks IRQs, so enable the VirtIO legacy INTx
     // lines after PIC setup and after the drivers exist. QEMU routes the boot
     // virtio-blk disk on IRQ11 and additional VirtIO devices on IRQ10/IRQ11.
-    crate::interrupts::enable_irq10();
-    crate::interrupts::enable_virtio_irq();
+
+    // Where PCI INTx routing is unknown, what drives those two lines is
+    // unknown too, so they stay masked.
+    if crate::arch_impl::x86_64::irq::pci_intx_routing_known() {
+        crate::interrupts::enable_irq10();
+        crate::interrupts::enable_virtio_irq();
+    }
 
     // AHCI IDENTIFY needs a calibrated clock even before IRQ completions exist.
     // This runs after time/PIC setup and before root mounting.
     if let Err(e) = ahci::init() {
-        log::debug!("AHCI initialization: {}", e);
+        log::info!("AHCI initialization: {e}");
     }
 
     if let Err(e) = virtio::block::test_read() {

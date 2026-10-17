@@ -218,6 +218,7 @@ pub fn start_application_processors() {
     if last != 0 {
         if let Some(apic_id) = smp::cpu_apic_id(last) {
             super::ioapic::set_destination(apic_id);
+            super::msi::set_destination(apic_id);
             log::info!(
                 "[smp] device interrupts routed to CPU {} (APIC id {})",
                 last,
