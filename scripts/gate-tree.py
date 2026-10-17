@@ -16,8 +16,8 @@ import time
 
 GIB = 1024 ** 3
 # Private to the gate VM: names the x86 build container where its gate runs build
-# (scripts/x86-gate-build.py). Without it, or for a commit whose tree lacks that
-# builder, the gate builds where it runs.
+# (scripts/x86-gate-build.py). Missing configuration or an unsupported commit
+# must fail closed: builds must never fall back to the gate VM's reserved CPUs.
 BUILD_HOST = Path.home() / '.config/breenix-gate/build-host.env'
 
 
@@ -235,17 +235,12 @@ def main():
             with timing('clone-fetch'):
                 checkout(canonical, tree, sha, lane)
             builder = tree / 'scripts/x86-gate-build.py'
-            container = BUILD_HOST.exists() and builder.exists()
-            if os.environ.get('BREENIX_RUST_FORK') and not container:
-                snapshot_fork(os.environ['BREENIX_RUST_FORK'], tree / 'gate-rust-fork')
-            print(f'[gate-tree] tree={tree} fresh={str(fresh).lower()} build={"container" if container else "here"}', flush=True)
+            if not BUILD_HOST.is_file():
+                raise RuntimeError('x86 build container is not configured; refusing to build in the gate VM')
+            if not builder.is_file():
+                raise RuntimeError('target commit lacks the x86 container builder; refusing to build in the gate VM')
+            print(f'[gate-tree] tree={tree} fresh={str(fresh).lower()} build=container', flush=True)
             environment = dict(os.environ, BREENIX_REPO_DIR=str(tree), BREENIX_GATE_CACHE_DIR=str(root), CARGO_BUILD_JOBS='4')
-            if os.environ.get('BREENIX_RUST_FORK') and not container:
-                environment.update(BREENIX_RUST_FORK=str(tree / 'gate-rust-fork'))
-            if not (tree / 'scripts/host-slots.py').exists():
-                helper = str(Path(output) / 'host-slots.py')
-                run(['python3', helper, 'acquire', 'x86-build'])
-                run(['python3', helper, 'acquire', 'x86-boot'])
             current, cancelled = [], []
             def stop(number, frame):
                 # The host-slot supervisor also signals descendants. Keep this
@@ -267,15 +262,14 @@ def main():
                     except subprocess.TimeoutExpired:
                         pass
                 return current[-1].returncode
-            if container:
-                building = time.monotonic()
-                status = supervised([sys.executable, str(builder), 'remote', str(BUILD_HOST), str(root), str(tree),
-                                     lane, sha, run_id, mode, output])
-                phase('container-build', building, status)
-                if status:
-                    return status
-                built = json.loads((Path(output) / 'x86-build.json').read_text())
-                environment.update(BREENIX_GATE_PHASE='boot', BREENIX_GATE_BUILD_SECS=str(built['build_seconds']))
+            building = time.monotonic()
+            status = supervised([sys.executable, str(builder), 'remote', str(BUILD_HOST), str(root), str(tree),
+                                 lane, sha, run_id, mode, output])
+            phase('container-build', building, status)
+            if status:
+                return status
+            built = json.loads((Path(output) / 'x86-build.json').read_text())
+            environment.update(BREENIX_GATE_PHASE='boot', BREENIX_GATE_BUILD_SECS=str(built['build_seconds']))
             return supervised([str(tree / 'docker/qemu/run-x86-gate.sh'), boots, mode])
         finally:
             if fresh and tree.exists():
