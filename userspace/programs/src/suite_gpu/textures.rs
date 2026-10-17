@@ -6,6 +6,7 @@
 use libbreenix::gpu::{self, abi, abi::Plain};
 use libbreenix::suite::{CaseError, CaseResult};
 use libbreenix::{graphics, memory};
+use libbreenix::signal::{self, Itimerval, Sigaction, Timeval, ITIMER_REAL, SIGALRM};
 use super::common::*;
 use abi::{purpose, upload_source as src};
 
@@ -473,8 +474,45 @@ pub fn upload_visibility() -> CaseResult {
     frame(ctx, &s)?;
     show(ctx, x)?;
     expect(x, &scene_canvas(24, 12, BG, &[(rect, 0xFF00_FF00)]), "the uploaded buffer's rectangle")?;
+    // Keep another context's submission unpublished. Upload must wait, and a signal
+    // must interrupt that pre-transfer wait without changing generation or counters.
+    signal::sigaction(SIGALRM, Some(&Sigaction::new(on_upload_alarm)), None)
+        .map_err(|e| fail_msg(format!("sigaction: {e}")))?;
+    let filler = target(format::B8G8R8A8, 4, 4)?;
+    for buffer in [false, true] {
+        arm(test_point::WITHHOLD_FENCE, test_point::WITHHOLD_DEPTH)?;
+        let s = if buffer {
+            let mut s = scene(x, BG, &[]);
+            encode::draw_buffer(&mut s, pipeline::SOLID, 0xFF00_FF00, buf, 32, 1);
+            s
+        } else {
+            sampled_frame(x, BG, tex, &[[0, 0, 16, 8, 0, 0]])
+        };
+        let f = submit(second, &s)?;
+        ensure(gpu::wait(second, f, 0).0 == -ETIMEDOUT, || "other context's fence was not held".to_string())?;
+        let before = counters(ctx)?.uploads_image;
+        let timer = Itimerval { it_interval: Timeval { tv_sec: 0, tv_usec: 0 },
+            it_value: Timeval { tv_sec: 0, tv_usec: 30_000 } };
+        signal::setitimer(ITIMER_REAL, &timer, None).map_err(|e| fail_msg(format!("setitimer: {e}")))?;
+        let (r, _) = if buffer {
+            gpu::upload(ctx, buf, [32, 0, 16, 1], &bytes, 16, src::R8, purpose::IMAGE)
+        } else {
+            gpu::upload(ctx, tex, [0, 0, 1, 1], &[1, 2, 3, 4], 4, src::B8G8R8A8, purpose::IMAGE)
+        };
+        // Cancel the timer even if the call incorrectly returned before the signal.
+        signal::setitimer(ITIMER_REAL, &Itimerval { it_interval: Timeval { tv_sec: 0, tv_usec: 0 },
+            it_value: Timeval { tv_sec: 0, tv_usec: 0 } }, None).map_err(|e| fail_msg(format!("cancel timer: {e}")))?;
+        ensure(r == -EINTR && counters(ctx)?.uploads_image == before,
+            || format!("upload before other-context completion (buffer={buffer}): {}", errno(r)))?;
+        release_depth(second, filler, 1)?;
+        wait_ok(second, f, 2_000)?;
+    }
+    let img = Image::pattern(format::B8G8R8A8, 16, 8, 71);
+    expect_image(tex, format::B8G8R8A8, &img, "texture unchanged after pre-transfer EINTR")?;
     pass()
 }
+
+extern "C" fn on_upload_alarm(_sig: i32) {}
 
 pub fn unaligned_pitch() -> CaseResult {
     let _case = begin()?;
@@ -541,7 +579,29 @@ pub fn copy_region() -> CaseResult {
     // The copied area is counted once per draw.
     let k = counters(ctx)?;
     // Two clears, the whole copy, the 10x7 copy and the copy clipped to 5x4.
-    ensure(k.draws == 5 && k.fragment_area == 2 * 600 + 600 + 70 + 20, || format!("copies counted {} draws over {} pixels", k.draws, k.fragment_area))
+    ensure(k.draws == 5 && k.fragment_area == 2 * 600 + 600 + 70 + 20, || format!("copies counted {} draws over {} pixels", k.draws, k.fragment_area))?;
+    // A real device refusal invalidates its written target; neither source command may
+    // then sample it. A later whole-target COPY recovers it, with exact pixels checked.
+    arm(test_point::DEVICE_ERROR, 0)?;
+    let failed = submit(ctx, &scene(a, BG, &[]))?;
+    ensure(gpu::wait(ctx, failed, 2_000_000_000).0 == -EIO, || "device error did not invalidate the copy source".to_string())?;
+    for sampled in [false, true] {
+        let mut refused = Vec::new();
+        if sampled {
+            encode::begin(&mut refused, b);
+            encode::draw_sampled(&mut refused, pipeline::COPY, a, &[[0, 0, 30, 20, 0, 0]]);
+        } else {
+            encode::copy(&mut refused, a, [0, 0, 30, 20], b, [0, 0]);
+        }
+        let (r, sub) = gpu::submit(ctx, &refused);
+        ensure(r == -EINVAL && sub.error == stream::error::INVALID_TARGET,
+            || format!("invalid source (sampled={sampled}): {} code {}", errno(r), sub.error))?;
+    }
+    let mut recover = Vec::new();
+    encode::copy(&mut recover, tex, [0, 0, 30, 20], a, [0, 0]);
+    frame(ctx, &recover)?;
+    expect_image(a, format::B8G8R8A8, &img, "whole COPY recovers the invalid target")?;
+    pass()
 }
 
 pub fn copy_overlap() -> CaseResult {
@@ -606,7 +666,8 @@ pub fn immutable_while_pinned() -> CaseResult {
     encode::draw_buffer(&mut s, pipeline::SOLID, 0xFF00_00FF, buf, 0, 1);
     let pinned = submit(ctx, &s)?;
     ensure(gpu::wait(ctx, pinned, 0).0 == -ETIMEDOUT, || "the sampling submission is not in flight".to_string())?;
-    // Both uploads return while that submission is in flight.
+    // Both uploads return while its fence is unpublished. The device may already have
+    // completed it: this checks publication and snapshots, not device execution ordering.
     upload_all(ctx, tex, format::B8G8R8A8, &new)?;
     let second: Vec<u8> = [6i32, 2, 9, 5].iter().flat_map(|v| v.to_le_bytes()).collect();
     let (r, _) = gpu::upload(ctx, buf, [0, 0, 16, 1], &second, 16, src::R8, purpose::IMAGE);
@@ -802,9 +863,9 @@ pub fn fault_wrong_texture() -> CaseResult {
     let _case = begin()?;
     let ctx = context()?;
     let a = texture(format::B8G8R8A8, 10, 6)?;
-    let b = texture(format::B8G8R8A8, 10, 6)?;
+    let b = texture(format::B8G8R8A8, 4, 3)?;
     let ia = Image::pattern(format::B8G8R8A8, 10, 6, 170);
-    let ib = Image::pattern(format::B8G8R8A8, 10, 6, 171);
+    let ib = Image::pattern(format::B8G8R8A8, 4, 3, 171);
     upload_all(ctx, a, format::B8G8R8A8, &ia)?;
     upload_all(ctx, b, format::B8G8R8A8, &ib)?;
     let x = scanout_target(format::B8G8R8A8, 10, 6)?;

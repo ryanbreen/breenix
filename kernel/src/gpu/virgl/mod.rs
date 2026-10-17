@@ -66,6 +66,11 @@ pub struct Done {
 }
 
 impl Request {
+    /// The wire command type, used to retain upload completion accounting.
+    pub(super) fn command_type(&self) -> u32 {
+        self.hdr.u32_at(wire::HDR_TYPE)
+    }
+
     /// A command of `len` header bytes (the control header and the command's fields)
     /// with a response of `resp_len` bytes.
     fn new(tag: Tag, ty: u32, ctx: u32, fence: Option<u64>, len: usize, resp_len: usize) -> Request {

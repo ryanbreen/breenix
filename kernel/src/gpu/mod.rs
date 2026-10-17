@@ -201,6 +201,8 @@ struct SyncReq {
     /// The device context it runs in, 0 for none.
     ctx: u32,
     sent_ns: Option<u64>,
+    /// Texture upload and expected fence; completion accounting survives an interrupted waiter.
+    upload: Option<(u32, u64)>,
     /// Resources it holds until the device returns it.
     holds: Vec<u32>,
     /// The resources whose `reading` mark the request keeps if its waiter leaves: a
@@ -623,7 +625,7 @@ impl Core {
         let serial = self.serial();
         req.tag = Tag::Sync(serial);
         self.syncs.insert(serial, SyncReq {
-            ctx: 0, sent_ns: None, holds: Vec::new(), reading: Vec::new(),
+            ctx: 0, sent_ns: None, upload: None, holds: Vec::new(), reading: Vec::new(),
             abandoned: true, failed: false, why: 0,
         });
         self.backlog.push_back((self.epoch, req));
@@ -649,8 +651,10 @@ impl Core {
                 r.holds += 1;
             }
         }
+        let upload = (req.command_type() == wire::cmd::TRANSFER_TO_HOST_3D)
+            .then(|| holds.first().copied().zip(req.fence)).flatten();
         self.syncs.insert(serial, SyncReq {
-            ctx, sent_ns: None, holds: holds.to_vec(), reading: reading.to_vec(), abandoned: false, failed: false, why: 0,
+            upload, ctx, sent_ns: None, holds: holds.to_vec(), reading: reading.to_vec(), abandoned: false, failed: false, why: 0,
         });
         self.backlog.push_back((self.epoch, req));
         self.flush();
@@ -754,6 +758,32 @@ impl Core {
         if s.ctx == 0 && d.as_ref().is_some_and(|d| !virgl::ok(d.answer)) {
             self.fault();
         }
+        if let Some((id, fence)) = s.upload {
+            if let Some(d) = &d {
+                let device_error = !virgl::ok(d.answer);
+                let ok = !device_error && d.echoed == fence
+                    && d.resp.u32_at(wire::HDR_FLAGS) & wire::FLAG_FENCE != 0;
+                if !ok {
+                    if let Some(r) = self.resources.get_mut(&id) {
+                        completion::finish_write(&mut r.invalid, &mut r.invalidated_by, serial, false, false);
+                    }
+                }
+                if let Some(ctx) = self.contexts.get_mut(&s.ctx) {
+                    if device_error {
+                        ctx.totals.device_errors += 1;
+                        if let Some(p) = self.procs.get_mut(&ctx.owner) {
+                            p.totals.device_errors += 1;
+                        }
+                        ctx.errors_in_row += 1;
+                        if ctx.state == CtxState::Live && ctx.errors_in_row >= 2 {
+                            ctx.state = CtxState::Quarantined;
+                        }
+                    } else if ok {
+                        ctx.errors_in_row = 0;
+                    }
+                }
+            }
+        }
         for id in &s.holds {
             self.unhold(*id);
         }
@@ -769,6 +799,9 @@ impl Core {
         } else {
             let d = d.unwrap_or_else(|| Done { tag: Tag::Sync(serial), fence: None, answer: 0, echoed: 0, resp: dma::DmaBox::new(wire::HDR) });
             self.done.insert(serial, d);
+        }
+        if s.upload.is_some() {
+            self.settle(s.ctx);
         }
         notify();
     }
@@ -827,7 +860,7 @@ impl Core {
 
     /// Give submission `serial`'s result to its callers: its fence, its targets'
     /// publication or invalidation, and its context's error count. Its holds are not
-    /// touched: they end when the device is done with it.
+    /// touched: they end after device completion and fence publication.
     fn publish(&mut self, serial: u64, status: u32, answer: u32) {
         let Some(sub) = self.subs.get_mut(&serial) else { return };
         if sub.published {
@@ -2289,7 +2322,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
                 }
             }
             // Test point 29, `wrong-texture`: the next DRAW_SAMPLED of the texture it is armed
-            // for samples another of the process's textures, the first created; a process
+            // for samples another of the process's valid textures, the first created; a process
             // with one texture leaves the point armed.
             stream::cmd::DRAW_SAMPLED if swapping.is_none() && target.is_some() => {
                 let named = words.word(at + 3) as u64 | (words.word(at + 4) as u64) << 32;
@@ -2597,26 +2630,19 @@ fn op_upload(arg: u64, len: u64) -> Result<u64, i64> {
         }
         add(&mut c.proc_mut(tgid).totals);
     };
-    if rkind == kind::BUFFER {
-        // Read the whole range before changing the buffer, so a fault leaves it as it was;
-        // `SUBMIT` snapshots the buffer, so a submission sent earlier keeps what it read.
-        let frames = (cw as usize).div_ceil(PAGE);
-        let stage = Pages::new(frames).ok_or(ENOMEM)?;
-        for i in 0..frames {
-            let n = PAGE.min(cw as usize - i * PAGE);
-            crate::syscall::userptr::read_user_bytes(stage.page_va(i) as *mut u8, a.pixels + (i * PAGE) as u64, n)
-                .map_err(|_| EFAULT)?;
-        }
-        let mut chunk = [0u8; STAGING_CHUNK];
+    // Stage the clipped source rows before changing any backing or sending a request.
+    // Frames count against both guest-backing quota and RLIMIT_AS for this call.
+    let stage = Staging::new(tgid, (row * ch) as usize)?;
+    let mut input = [0u8; UPLOAD_CHUNK];
+    for j in 0..ch {
         let mut done = 0usize;
-        while done < cw as usize {
-            let n = (cw as usize - done).min(STAGING_CHUNK);
-            stage.read(done, &mut chunk[..n]);
-            backing.write(x as usize + done, &chunk[..n]);
+        while done < row as usize {
+            let n = (row as usize - done).min(UPLOAD_CHUNK);
+            crate::syscall::userptr::read_user_bytes(input.as_mut_ptr(), a.pixels + j * stride + done as u64, n)
+                .map_err(|_| EFAULT)?;
+            stage.pages.write(j as usize * row as usize + done, &input[..n]);
             done += n;
         }
-        with_core(count);
-        return Ok(0);
     }
     // The backing is the upload's alone until its transfer has ended. Submissions of other
     // contexts that name the texture finish first: the device states no order between
@@ -2648,20 +2674,28 @@ fn op_upload(arg: u64, len: u64) -> Result<u64, i64> {
         });
         notify();
     };
+    if rkind == kind::BUFFER {
+        let mut chunk = [0u8; STAGING_CHUNK];
+        let mut done = 0usize;
+        while done < cw as usize {
+            let n = (cw as usize - done).min(STAGING_CHUNK);
+            stage.pages.read(done, &mut chunk[..n]);
+            backing.write(x as usize + done, &chunk[..n]);
+            done += n;
+        }
+        with_core(count);
+        release();
+        return Ok(0);
+    }
     // Rows into the backing at its pitch, converted into the texture's format by channel.
     let tbpp = format::bytes(fmt) as u64;
     let per = (UPLOAD_CHUNK as u64 / bpp).min(cw);
-    let mut input = [0u8; UPLOAD_CHUNK];
     let mut output = [0u8; UPLOAD_CHUNK * 4 / 3 + 4];
     for j in 0..ch {
         let mut px = 0u64;
         while px < cw {
             let n = per.min(cw - px);
-            let src = a.pixels + j * stride + px * bpp;
-            if crate::syscall::userptr::read_user_bytes(input.as_mut_ptr(), src, (n * bpp) as usize).is_err() {
-                release();
-                return Err(EFAULT);
-            }
+            stage.pages.read((j * row + px * bpp) as usize, &mut input[..(n * bpp) as usize]);
             for k in 0..n as usize {
                 let at = k * bpp as usize;
                 if fmt == format::R8 {
@@ -2693,7 +2727,7 @@ fn op_upload(arg: u64, len: u64) -> Result<u64, i64> {
                         Ok((serial, fence, d.answer))
                     }
                     Ok(_) => Err((EIO, serial)),
-                    Err((EIO, _)) => Err((EIO, serial)),
+                    Err((e @ (EIO | EINTR), _)) => Err((e, serial)),
                     Err((e, _)) => Err((e, 0)),
                 }
             }
@@ -2714,7 +2748,7 @@ fn op_upload(arg: u64, len: u64) -> Result<u64, i64> {
             Ok(0)
         }
         Err((e, serial)) => {
-            // A transfer the device refused, or the watchdog or a reset ended, leaves the
+            // A transfer refused, interrupted after queueing, or ended by a watchdog/reset leaves the
             // texture's contents unknown: it is invalid until a whole upload completes OK.
             if serial != 0 {
                 with_core(|c| {

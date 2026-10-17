@@ -533,8 +533,8 @@ pub fn translate(enc: &mut Enc, o: &mut Objects, words: &(impl Words + ?Sized), 
                         let base = at + 6 + 6 * done;
                         let i = [0, 1, 2, 3, 4, 5].map(|k| words.word(base + k) as i32);
                         done += 1;
-                        // Clipped by the named texture's size, as validation clipped it.
-                        let Some(clipped) = stream::sampled_clip(i, t.info.width, t.info.height, own.width, own.height) else {
+                        // Preserve validation's named bounds and also bound fetches in a substitute.
+                        let Some(clipped) = stream::sampled_clip(i, t.info.width, t.info.height, own.width.min(tex.width), own.height.min(tex.height)) else {
                             continue;
                         };
                         verts.extend_from_slice(&quad(clipped));
