@@ -212,10 +212,12 @@ pub mod fence_status {
     /// The device completed the submission.
     pub const OK: u32 = 0;
     /// The device answered the submission with an error; `Wait::answer` is its answer.
+    /// Two in a row on one context quarantine that context only.
     pub const DEVICE_ERROR: u32 = 1;
     /// The watchdog found the submission hung and quarantined its context.
     pub const DEVICE_HUNG: u32 = 2;
-    /// The device was reset with the submission outstanding.
+    /// The device was reset with the submission outstanding (a device fault, or the
+    /// watchdog's no-progress condition).
     pub const DEVICE_RESET: u32 = 3;
     /// The device answered the submission with another submission's fence.
     pub const FENCE_MISMATCH: u32 = 4;
@@ -224,7 +226,8 @@ pub mod fence_status {
 /// A context's state, as `Counters::state` reports it.
 pub mod context_state {
     pub const LIVE: u64 = 0;
-    /// The watchdog quarantined it: further submissions are refused with EIO.
+    /// The watchdog, or two device errors in a row, quarantined it: further submissions
+    /// are refused with EIO.
     pub const QUARANTINED: u64 = 1;
     /// The device was reset under it: every op on it is refused with EIO.
     pub const RESET: u64 = 2;

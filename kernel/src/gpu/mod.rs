@@ -8,7 +8,8 @@
 //! kernel makes, submissions and its own synchronous requests alike, that quarantines the
 //! context of one the device has not answered 2 s after it was sent and resets the device
 //! when its queue then makes no progress for another 2 s, or when the device faults
-//! (section 1.4.1). The device is the VirGL backend (`virgl`), on ARM64 QEMU in this milestone.
+//! (section 1.4.1). Two device errors in a row on one context quarantine that context only.
+//! The device is the VirGL backend (`virgl`), on ARM64 QEMU in this milestone.
 //!
 //! A fence's result reaching its callers and the device's use of the memory behind it
 //! ending are separate events. Every request goes through one queue in order (the backlog,
@@ -146,6 +147,8 @@ struct Ctx {
     vb: u32,
     scratch: u32,
     warmed: u32,
+    /// Device errors in a row, in fence order.
+    errors_in_row: u32,
 }
 
 struct Sub {
@@ -760,6 +763,12 @@ impl Core {
             ctx.early.insert(n);
             while ctx.early.remove(&(ctx.done_upto + 1)) {
                 ctx.done_upto += 1;
+                // In fence order, an OK ends a run of device errors.
+                match ctx.outcomes.get(&ctx.done_upto) {
+                    None => ctx.errors_in_row = 0,
+                    Some(&(fence_status::DEVICE_ERROR, _)) => ctx.errors_in_row += 1,
+                    Some(_) => {}
+                }
             }
             ctx.inflight.retain(|&s| s != serial);
             if status == fence_status::DEVICE_ERROR {
@@ -767,6 +776,10 @@ impl Core {
                 if let Some(p) = self.procs.get_mut(&ctx.owner) {
                     p.totals.device_errors += 1;
                 }
+            }
+            // Two device errors in a row quarantine this context and no other.
+            if ctx.state == CtxState::Live && ctx.errors_in_row >= 2 {
+                ctx.state = CtxState::Quarantined;
             }
         }
         for id in &written {
@@ -1425,6 +1438,7 @@ fn op_context_create(arg: u64, len: u64) -> Result<u64, i64> {
             vb,
             scratch,
             warmed: 0,
+            errors_in_row: 0,
         });
         Ok((id, vb, scratch))
     })
