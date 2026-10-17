@@ -19,6 +19,8 @@ HELPER = Path(__file__).resolve().parents[1] / 'scripts' / 'host-slots.py'
 spec = importlib.util.spec_from_file_location('host_slots', HELPER)
 slots = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(slots)
+# These tests model the gate VM's two build leases; build_slots() sizes them to the host it runs on.
+slots.RESOURCES['x86-build'] = 2
 
 
 class HostSlotsTest(unittest.TestCase):
@@ -94,6 +96,7 @@ for i in range(100):
 spec = importlib.util.spec_from_file_location('host_slots', {str(HELPER)!r})
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 m.SLOT_DIR = m.Path({str(self.root / 'locks')!r})
+m.RESOURCES['x86-build'] = 2
 m.mac_vms = lambda: []
 m.x86_vms = lambda: []
 m.vcpu_gap_ms = lambda seconds: 0.0
@@ -142,6 +145,13 @@ sys.exit(m.supervise(['bash', '-c', sys.argv[1]]))'''
                 if not chunk:
                     break
         self.fail(f'missing {text!r}: {collected.decode()}')
+
+    def test_build_slots_fit_the_machines_cpus_and_memory(self):
+        for cpus, memory, expected in ((24, 8 * 1024 ** 3, 2), (24, 64 * 1024 ** 3, 6), (8, 64 * 1024 ** 3, 2), (2, 1024 ** 3, 1)):
+            with self.subTest(cpus=cpus, memory=memory), \
+                    mock.patch.object(slots.os, 'sched_getaffinity', lambda pid: set(range(cpus)), create=True), \
+                    mock.patch.object(slots.Path, 'read_text', lambda self: str(memory)):
+                self.assertEqual(slots.build_slots(), expected)
 
     def test_two_builders_and_one_waiter(self):
         command = self.request('acquire', 'x86-build') + '; echo READY; read -r release'
