@@ -1,0 +1,207 @@
+#!/usr/bin/env python3
+"""The single-transfer boot image server (docs/metal/README.md, "Delivery").
+
+# claim-lint:ok: #1680 Reviewed tool contract against this function and the host tests in tests/metal_tools_test.py.
+One route. While a boot has an image staged and it has not yet been sent in full, the route answers HEAD and GET
+(whole, or one byte range at a time) with that file; a transfer that breaks off can be retried; once the whole file
+has been sent, in one response or across ranges, and while nothing is staged, requests get 404, so a machine that resets cannot boot the same image again. Every request and
+transfer is logged to STATE/http.jsonl, without the client's address.
+"""
+import hashlib
+import http.server
+from pathlib import Path
+import re
+import sys
+import threading
+import time
+from urllib.parse import urlsplit
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import metal_lib as m  # noqa: E402
+
+CHUNK = 1 << 20
+RANGE = re.compile(r'bytes=(\d*)-(\d*)')
+PROGRESS_SECONDS = 1.0
+
+
+def log(**fields):
+    m.append_jsonl(m.STATE / 'http.jsonl', dict(fields, t=round(m.now(), 3)))
+
+
+# claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
+def current():
+    staged = m.read_json(m.STATE / 'stage' / 'current.json')
+    if not staged or staged.get('served') or not Path(staged.get('path', '')).is_file():
+        return None
+    return staged
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    server_version = 'breenix-metal'
+    sys_version = ''
+    protocol_version = 'HTTP/1.1'
+
+    def log_message(self, *_):
+        pass
+
+    def not_found(self, staged_id):
+        log(event='404', method=self.command, route=urlsplit(self.path).path.startswith(self.server.prefix),
+            id=staged_id)
+        self.send_response(404)
+        self.send_header('Content-Length', '0')
+        self.end_headers()
+
+    # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
+    def headers_for(self, staged, span=None):
+        start, end = span or (0, staged['size'] - 1)
+        self.send_response(206 if span else 200)
+        self.send_header('Content-Type', staged['contentType'])
+        self.send_header('Content-Length', str(end - start + 1))
+        if span:
+            self.send_header('Content-Range', f"bytes {start}-{end}/{staged['size']}")
+        self.send_header('Accept-Ranges', 'bytes')
+        self.end_headers()
+
+    # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
+    def resolve(self):
+        """The staged file this request names, after answering the route's redirect when one is staged."""
+        path = urlsplit(self.path).path
+        staged = current()
+        if staged and staged.get('redirect'):
+            if path == self.server.route:
+                log(event='redirect', method=self.command, id=staged['id'])
+                self.send_response(302)
+                self.send_header('Location', f"http://{self.headers.get('Host', '')}{staged['redirect']}")
+                self.send_header('Content-Length', '0')
+                self.end_headers()
+                return None, True
+            return (staged if path == staged['redirect'] else None), False
+        return (staged if path == self.server.route else None), False
+
+    # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
+    def do_HEAD(self):
+        staged, answered = self.resolve()
+        if answered:
+            return
+        if not staged:
+            return self.not_found(None)
+        log(event='head', id=staged['id'])
+        self.headers_for(staged)
+
+    # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
+    def do_GET(self):
+        staged, answered = self.resolve()
+        if answered:
+            return
+        if not staged:
+            return self.not_found(None)
+        size = staged['size']
+        span = parse_range(self.headers.get('Range'), size)
+        if span == 'invalid':
+            log(event='range-invalid', id=staged['id'], range=self.headers.get('Range'))
+            self.send_response(416)
+            self.send_header('Content-Range', f'bytes */{size}')
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return
+        first, last = span or (0, size - 1)
+        log(event='start', id=staged['id'], total=size, range=self.headers.get('Range'))
+        self.headers_for(staged, span)
+        whole = span is None or (first == 0 and last == size - 1)
+        digest = hashlib.sha256()
+        sent = 0
+        wanted = last - first + 1
+        progress = time.monotonic()
+        try:
+            with open(staged['path'], 'rb') as source:
+                source.seek(first)
+                while sent < wanted and (chunk := source.read(min(CHUNK, wanted - sent))):
+                    self.wfile.write(chunk)
+                    if whole:
+                        digest.update(chunk)
+                    sent += len(chunk)
+                    if time.monotonic() - progress >= PROGRESS_SECONDS:
+                        progress = time.monotonic()
+                        log(event='progress', id=staged['id'], bytes=sent, total=size)
+            self.wfile.flush()
+        except OSError as error:
+            log(event='broken', id=staged['id'], bytes=sent, total=size, error=error.__class__.__name__)
+            self.close_connection = True
+            return
+        if sent < wanted:
+            log(event='short', id=staged['id'], bytes=sent, total=size, sha256=None, matches=False)
+            return
+        if not self.server.cover(staged['id'], first, last + 1, size):
+            log(event='range-done', id=staged['id'], bytes=sent, total=size, first=first)
+            return
+        # The whole image has been sent, in one response or across ranges.
+        sha256 = digest.hexdigest() if whole else file_sha256(staged['path'])
+        with m.locked('stage'):
+            latest = m.read_json(m.STATE / 'stage' / 'current.json')
+            if latest and latest.get('id') == staged['id']:
+                latest.update(served=True, servedAt=m.now(), servedSha256=sha256)
+                m.write_json(m.STATE / 'stage' / 'current.json', latest)
+        log(event='complete', id=staged['id'], bytes=sent, total=size, sha256=sha256,
+            matches=sha256 == staged['sha256'], ranged=not whole)
+
+
+# claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
+def parse_range(header, size):
+    """None without a Range header; (first, last) for one satisfiable byte range; 'invalid' otherwise."""
+    if not header:
+        return None
+    match = RANGE.fullmatch(header.strip())
+    if not match or match.groups() == ('', ''):
+        return 'invalid'
+    first, last = match.groups()
+    if first == '':
+        start, end = max(size - int(last), 0), size - 1
+    else:
+        start, end = int(first), min(int(last), size - 1) if last else size - 1
+    return (start, end) if start < size and start <= end else 'invalid'
+
+
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as source:
+        while chunk := source.read(CHUNK):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+class Server(http.server.ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.coverage = {}
+        self.coverage_lock = threading.Lock()
+
+    def cover(self, staged_id, start, end, size):
+        """Records [start, end) as sent for a staged image; True once its sent ranges cover the whole file."""
+        with self.coverage_lock:
+            spans = sorted(self.coverage.get(staged_id, []) + [(start, end)])
+            merged = []
+            for first, last in spans:
+                if merged and first <= merged[-1][1]:
+                    merged[-1] = (merged[-1][0], max(merged[-1][1], last))
+                else:
+                    merged.append((first, last))
+            self.coverage[staged_id] = merged
+            return merged == [(0, size)]
+
+
+def main():
+    site = m.load_site()
+    url = urlsplit(site['BOOT_URL'])
+    port = int(site.get('HTTP_LISTEN_PORT') or url.port or 80)
+    server = Server(('127.0.0.1', port), Handler)
+    server.route = url.path
+    server.prefix = url.path.rsplit('/', 1)[0] + '/'
+    log(event='listening')
+    server.serve_forever()
+
+
+if __name__ == '__main__':
+    main()
