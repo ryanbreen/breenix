@@ -1421,6 +1421,7 @@ fn test_timer_delay() -> TestResult {
                     core::arch::asm!("mrs {}, daif", out(reg) daif, options(nomem, nostack));
                     core::arch::asm!("msr daifset, #3", "isb", options(nomem, nostack));
                 }
+                crate::arch_impl::aarch64::irq_mask_account::opened();
                 Self(daif)
             }
 
@@ -1432,6 +1433,7 @@ fn test_timer_delay() -> TestResult {
 
         impl Drop for TimerDelayMaskGuard {
             fn drop(&mut self) {
+                crate::arch_impl::aarch64::irq_mask_account::restoring(self.0);
                 unsafe {
                     core::arch::asm!("msr daif, {}", "isb", in(reg) self.0, options(nomem, nostack));
                 }
@@ -1478,6 +1480,7 @@ fn test_timer_delay() -> TestResult {
             let mut counters = counter_snapshot(cpu);
 
             if may_open_windows {
+                crate::arch_impl::aarch64::irq_mask_account::closing();
                 unsafe {
                     core::arch::asm!("msr daifclr, #3", "isb", options(nomem, nostack));
                 }
@@ -1505,6 +1508,7 @@ fn test_timer_delay() -> TestResult {
                 unsafe {
                     core::arch::asm!("msr daifset, #3", "isb", options(nomem, nostack));
                 }
+                crate::arch_impl::aarch64::irq_mask_account::opened();
                 counters = counter_snapshot(cpu);
             }
 

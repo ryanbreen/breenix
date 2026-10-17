@@ -2565,6 +2565,7 @@ fn panic(info: &PanicInfo) -> ! {
     unsafe {
         core::arch::asm!("msr DAIFSet, #0x3", options(nomem, nostack));
     }
+    kernel::arch_impl::aarch64::irq_mask_account::opened();
 
     serial_println!();
     serial_println!("========================================");

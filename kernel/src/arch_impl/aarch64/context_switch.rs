@@ -5244,6 +5244,7 @@ pub extern "C" fn aarch64_resume_user_time(frame: &Aarch64ExceptionFrame) {
     if (frame.spsr & 0xF) == 0 {
         crate::task::thread::resume_user_time();
     }
+    super::irq_mask_account::returning(frame.spsr);
 }
 
 // =============================================================================
@@ -5260,6 +5261,9 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     frame: &mut Aarch64ExceptionFrame,
     from_el0: bool,
 ) {
+    // The syscall return masks just before this call; the IRQ return is
+    // already counted from its entry.
+    super::irq_mask_account::opened();
     crate::task::process_task::drain_deferred_fault_sigsegv_exits();
 
     // ── Lock-free pre-checks ──────────────────────────────────────
@@ -5904,6 +5908,8 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         if user {
             crate::task::user_dispatch::note(cpu_id);
         }
+        // aarch64_ret_to_kernel_context enables interrupts before its ret.
+        super::irq_mask_account::closing();
         unsafe {
             aarch64_ret_to_kernel_context(ctx_ptr, resume_pc);
         }
@@ -6329,6 +6335,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
             PivotHalf::Exception,
             3,
         );
+        super::irq_mask_account::closing();
         unsafe {
             core::arch::asm!(
                 "mov sp, {stack}",
@@ -6484,6 +6491,8 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         if user {
             crate::task::user_dispatch::note(cpu_id);
         }
+        // aarch64_ret_to_kernel_context enables interrupts before its ret.
+        super::irq_mask_account::closing();
         unsafe {
             aarch64_ret_to_kernel_context(ctx_ptr, resume_pc);
         }
@@ -6595,6 +6604,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
             PivotHalf::Exception,
             2,
         );
+        super::irq_mask_account::closing();
         unsafe {
             core::arch::asm!(
                 "mov sp, {stack}",
@@ -6722,6 +6732,7 @@ pub fn schedule_from_kernel() {
     let sched = match guard.as_mut() {
         Some(s) => s,
         None => {
+            super::irq_mask_account::closing();
             unsafe {
                 core::arch::asm!("msr daifclr, #3; isb", options(nomem, nostack));
             }
@@ -6774,6 +6785,7 @@ pub fn schedule_from_kernel() {
     cpu0_breadcrumb(cpu_id, 4); // after schedule_deferred_requeue
     let Some((old_id, new_id, should_requeue_old)) = schedule_result else {
         drop(guard);
+        super::irq_mask_account::closing();
         unsafe {
             core::arch::asm!("msr daifclr, #3; isb", options(nomem, nostack));
         }
@@ -6791,6 +6803,7 @@ pub fn schedule_from_kernel() {
             sched.requeue_thread_after_save(old_id);
         }
         drop(guard);
+        super::irq_mask_account::closing();
         unsafe {
             core::arch::asm!("msr daifclr, #3; isb", options(nomem, nostack));
         }
@@ -6855,6 +6868,7 @@ pub fn schedule_from_kernel() {
         }
         None => {
             drop(guard);
+            super::irq_mask_account::closing();
             unsafe {
                 core::arch::asm!("msr daifclr, #3; isb", options(nomem, nostack));
             }
@@ -6937,6 +6951,7 @@ pub fn schedule_from_kernel() {
         // of the caller's IRQ state. This prevents the CPU 0 IRQ death bug
         // where a thread resumes inside a without_interrupts block and
         // re-masks DAIF.I permanently.
+        super::irq_mask_account::closing();
         core::arch::asm!("msr daifclr, #3; isb", options(nomem, nostack));
     }
     let cpu_id_after = Aarch64PerCpu::cpu_id() as usize;
@@ -7258,6 +7273,7 @@ pub extern "C" fn idle_loop_arm64() -> ! {
             // has been reached and completed.
             core::arch::asm!("msr daifset, #0xf", "isb", options(nomem, nostack));
         }
+        super::irq_mask_account::opened();
 
         // Diagnostic: track idle loop iterations per CPU.
         if cpu_id < 8 {
@@ -7295,6 +7311,9 @@ pub extern "C" fn idle_loop_arm64() -> ! {
             continue;
         }
 
+        // A pending interrupt wakes the masked WFI, and the unmask after it
+        // takes the interrupt.
+        super::irq_mask_account::closing();
         unsafe {
             core::arch::asm!(
                 "dsb sy", // Match Linux cpu_do_idle() before WFI

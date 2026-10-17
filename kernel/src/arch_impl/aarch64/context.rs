@@ -43,6 +43,8 @@ pub unsafe fn return_to_userspace(entry: u64, user_sp: u64) -> ! {
         panic!("first-entry resume PC {entry:#x} failed EL0 admission");
     }
 
+    // The ERET below enters EL0 with interrupts enabled.
+    crate::arch_impl::aarch64::irq_mask_account::closing();
     asm!(
         // Set up ELR_EL1 (return address)
         "msr elr_el1, {entry}",

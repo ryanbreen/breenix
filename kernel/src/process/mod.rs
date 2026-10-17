@@ -122,6 +122,7 @@ impl Drop for TryProcessManagerGuard {
 
         #[cfg(target_arch = "aarch64")]
         unsafe {
+            crate::arch_impl::aarch64::irq_mask_account::restoring(self.saved_daif);
             core::arch::asm!(
                 "msr daif, {}",
                 in(reg) self.saved_daif,
@@ -172,6 +173,7 @@ impl Drop for ProcessManagerGuard {
 
         #[cfg(target_arch = "aarch64")]
         unsafe {
+            crate::arch_impl::aarch64::irq_mask_account::restoring(self.saved_daif);
             core::arch::asm!(
                 "msr daif, {}",
                 in(reg) self.saved_daif,
@@ -428,6 +430,7 @@ pub fn manager() -> ProcessManagerGuard {
             core::arch::asm!("mrs {}, daif", out(reg) saved_daif, options(nomem, nostack));
             core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
         }
+        crate::arch_impl::aarch64::irq_mask_account::opened();
         let guard = PROCESS_MANAGER.lock();
         note_process_manager_lock_acquired();
         ProcessManagerGuard {
@@ -757,7 +760,9 @@ pub fn try_manager() -> Option<TryProcessManagerGuard> {
             core::arch::asm!("mrs {}, daif", out(reg) saved_daif, options(nomem, nostack));
             core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
         }
+        crate::arch_impl::aarch64::irq_mask_account::opened();
         let Some(guard) = PROCESS_MANAGER.try_lock() else {
+            crate::arch_impl::aarch64::irq_mask_account::restoring(saved_daif);
             unsafe {
                 core::arch::asm!(
                     "msr daif, {}",
