@@ -950,7 +950,7 @@ secondary_cpu_entry:
 
     // Compute relocation delta: on VMware, the kernel is loaded at a different
     // physical address than the linker expects (RAM at 0x80000000 vs link at
-    // 0x40080000). All `ldr Xn, =symbol` loads get the linker address from the
+    // 0x40200000). All `ldr Xn, =symbol` loads get the linker address from the
     // literal pool; we must add the delta to dereference them correctly.
     // x21 = (actual PC of this label) - (linker address of this label)
     adr x21, secondary_cpu_entry

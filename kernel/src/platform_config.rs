@@ -96,8 +96,8 @@ static FIRMWARE_CPU_COUNT: AtomicU64 = AtomicU64::new(0);
 
 // Fixed physical layout, relative to a RAM base of 0x4000_0000 (on VMware the
 // loader moves this layout up by ram_base_offset):
-// DTB (QEMU):     0x4000_0000 - 0x4008_0000 (below the kernel's load address)
-// Kernel image:   0x4008_0000 - 0x41E0_0000 (image + BSS incl. PCI_3D_FRAMEBUFFER)
+// DTB (QEMU):     0x4000_0000 - 0x4010_0000 (below the kernel's load address)
+// Kernel image:   0x4020_0000 - 0x41E0_0000 (image + BSS incl. PCI_3D_FRAMEBUFFER)
 // Loader stack:   0x41E0_0000 - 0x4200_0000
 // SMP stacks:     0x4300_0000 - 0x4400_0000 (16 MB, 8 CPUs × 2 MB each)
 // DMA (NC):       0x5000_0000 - 0x501F_FFFF (2 MB, Non-Cacheable for xHCI)
@@ -136,12 +136,13 @@ const _: () = {
 #[cfg(target_arch = "aarch64")]
 const DIRECT_MAP_RAM_END: u64 = 0x1_0000_0000;
 
-/// QEMU's virt machine places the DTB of an ELF guest at the start of RAM and
-/// refuses to start if it does not fit below the kernel's load address.
+/// QEMU's virt machine places the DTB of an ELF guest at the start of RAM when
+/// it fits below the kernel's load address (0x4020_0000; its DTB is 1 MiB) and
+/// otherwise boots without one.
 #[cfg(target_arch = "aarch64")]
 const QEMU_DTB_PHYS: u64 = arm64_boot_contract::LINKED_RAM_START;
 #[cfg(target_arch = "aarch64")]
-const QEMU_DTB_MAX_SIZE: usize = 0x8_0000;
+const QEMU_DTB_MAX_SIZE: usize = 0x20_0000;
 
 /// Where the frame pool's description of RAM came from.
 #[cfg(target_arch = "aarch64")]
