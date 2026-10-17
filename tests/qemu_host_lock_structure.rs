@@ -133,9 +133,22 @@ fn is_qemu_aarch64_launch_line(line: &str) -> bool {
     if trimmed_start.starts_with('#') {
         return false;
     }
+    // A build tool given the binary as its target builds QEMU and launches
+    // nothing (`scripts/build-qemu-gl.sh`'s `ninja -j "$JOBS" qemu-system-aarch64`).
+    if matches!(trimmed_start.split_whitespace().next(), Some("ninja" | "make")) {
+        return false;
+    }
     let trimmed_end = line.trim_end();
     let without_continuation = trimmed_end.strip_suffix('\\').unwrap_or(trimmed_end).trim_end();
     without_continuation.ends_with("qemu-system-aarch64")
+}
+
+#[test]
+fn a_build_target_is_not_an_aarch64_launch() {
+    assert!(!is_qemu_aarch64_launch_line("    ninja -j \"$JOBS\" qemu-system-aarch64"));
+    assert!(!is_qemu_aarch64_launch_line("make -C build qemu-system-aarch64"));
+    assert!(is_qemu_aarch64_launch_line("    \"$QEMU_UI\" qemu-system-aarch64 \\"));
+    assert!(is_qemu_aarch64_launch_line("timeout 300 qemu-system-aarch64 \\"));
 }
 
 fn launches_qemu_aarch64(script: &str) -> bool {
