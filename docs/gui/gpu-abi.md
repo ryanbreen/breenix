@@ -21,8 +21,8 @@ and completes like any other, and its fence is lost to the caller; `READBACK` is
 
 The device is admitted when it has every capability of the profile (`docs/gui/gpu.md` section 1.5,
 item 8). Until it is, every op other than `VERSION` and `CAPS` returns ENODEV before its argument is
-decoded, and `CAPS` reports why. Ops the effort has not built yet (`UPLOAD` until G3, `MODES`,
-`SET_MODE` and `PRESENT` until G2 and G7) return ENOSYS. An op number above 13 is EINVAL.
+decoded, and `CAPS` reports why. Ops the effort has not built yet (`MODES` and `SET_MODE`, until
+G7) return ENOSYS. An op number above 13 is EINVAL.
 
 Capability ids, in the order admission checks them (the first missing one is reported):
 
@@ -85,6 +85,43 @@ created without it with EINVAL. Targets are B8G8R8A8 or R8G8B8A8; textures add R
 ENOMEM past 192 MiB of guest backing per process; EAGAIN past 256 resource handles. A new resource is
 attached to every context of the process, and a new context to every resource.
 
+**`UPLOAD` (64 bytes):** `context: u64`, `resource: u64`, `x, y, width, height: u32` at 16, `pixels: u64`
+(address) at 32, `pixels_len: u64` at 40, `stride: u32` at 48, `source: u32` at 52, `purpose: u32` at 56,
+4 reserved. Copies a rectangle of the caller's pixels into a texture, or a range of bytes into a buffer,
+and makes it visible to the submissions sent after the call returns.
+
+- `context` is one of the caller's contexts (EINVAL otherwise) and must be live (EIO otherwise); the
+  upload's transfer is sent in it and its bytes are counted to it and to the process. `resource` is a
+  texture or buffer the caller holds; a target, or any other handle, is EINVAL.
+- `source` is the layout of the caller's pixels: 0 B8G8R8A8 (bytes B, G, R, A), 1 R8G8B8A8 (R, G, B, A),
+  2 R8 (one byte), 3 B8G8R8 (B, G, R) and 4 R8G8B8 (R, G, B). A B8G8R8A8 or R8G8B8A8 texture takes
+  sources 0, 1, 3 and 4, converted channel by channel into the texture's format, with alpha 255 for a
+  3-byte source; an R8 texture and a buffer take source 2 only. Any other pairing is EINVAL.
+- For a buffer, `x` is the first byte, `width` the number of bytes, `y` 0 and `height` 1.
+- `width` and `height` are at least 1. The rectangle `[x, x + width) × [y, y + height)` is clipped to the
+  resource: pixel `(i, j)` of the source, at `pixels + j × stride + i × bpp` (`bpp` the source's bytes per
+  pixel), lands at `(x + i, y + j)`, and pixels that land outside the resource are neither read nor
+  written, so no row is written past its end. A rectangle whose clipped part is empty is EINVAL.
+  With the clipped size `cw × ch`, `stride` must be at least `cw × bpp` and `pixels_len` at least
+  `(ch − 1) × stride + cw × bpp` (EINVAL otherwise).
+- `purpose` is 1 `Image` or 2 `Fixture` (`docs/gui/gpu.md` section 2.4; EINVAL otherwise). `COUNTERS`
+  adds the source bytes read, `cw × ch × bpp`, to the purpose's upload bytes.
+- The source rows are read before anything is sent: an unmapped or unreadable source returns EFAULT before
+  anything is sent, written or counted.
+- An upload waits for a readback or upload of the same resource in progress, and for the submissions of the
+  caller's other contexts that name the resource to complete. It does not wait for submissions of its own
+  context: the device executes one context's commands in the order they were sent (which
+  `textures/immutable-while-pinned` checks), so a submission sent before the upload samples the texture as it
+  was before, and one sent after it returns sees it.
+- On VirGL a texture upload writes the clipped rows into the texture's backing at its 256-byte-aligned
+  pitch (`docs/gui/gpu.md` section 1.3) and sends one fenced `TRANSFER_TO_HOST_3D` of the clipped box in
+  `context`, a synchronous device wait under the watchdog. A buffer upload is a copy into the buffer's
+  backing, which `SUBMIT` snapshots (`docs/gui/gpu.md` section 1.4.1).
+- A completed texture upload advances the texture's generation. The device answering the transfer with an
+  error, the watchdog ending it or a reset decided while it was outstanding returns EIO and leaves the
+  texture invalid, as a failed submission leaves its targets: sampling it is refused and reading it back
+  returns EIO target-invalid, naming the upload, until an upload of the whole texture completes OK.
+
 **`SUBMIT` (64 bytes):** `context: u64`, `stream: u64` (address), `length: u64` (bytes, a multiple of
 4, 1 to 80 MiB), `fence: u64` out, `error_index: u32` out, `error: u32` out, `estimate: u64` out, 16
 reserved. Each buffer range the stream names is copied once, before validation, and validation and
@@ -117,6 +154,12 @@ leaves it held, including after a timeout, kill or EIO return (section 1.4.1 of 
 `pixels_len: u64`, `stride: u32`, `reason: u32` out at 44, `record: u64` (address of 1,024 bytes),
 `failed_submission: u64` out at 56. Waits for every accepted submission that writes the target, then reads
 the rectangle as canonical BGRA rows at `stride` with record v2 (`docs/gui/gpu.md` section 1.8).
+`target` names a target or a texture. An R8 texture reads back one byte per pixel, so its rows are `width`
+bytes (record `canonical` 1); every other format reads back as canonical BGRA, four bytes per pixel
+(`canonical` 0). A texture's record describes its last completed upload in the fields that describe a
+target's last submission: `context` is the upload's device context, `render_serial` its serial (numbered as
+a submission's), `render_fence` the fence its transfer carried, `render_status` the device's answer and
+`render_kind` `TRANSFER_TO_HOST_3D` (0x0205); they are 0 before its first upload.
 Temporary whole-rectangle staging uses guest-backing frames, charged to the process's 192 MiB
 guest-backing quota and `RLIMIT_AS`. `READBACK` may fail with ENOMEM when staging cannot be charged to
 the process's guest-backing quota or `RLIMIT_AS`. `COUNTERS.resource_bytes` includes the staging while
@@ -167,7 +210,8 @@ confirmed reset ends device access (`docs/gui/gpu.md` section 1.4.1). G2 builds 
 operation; G7 adds modes, flipping and the ownership stack.
 
 **`COUNTERS` (256 bytes):** `context: u64` in (0 for the calling process), then `u64`s: submissions 8,
-draws 16, instances 24, fragment area 32, work estimate 40, image uploads 48, fixture uploads 56,
+draws 16, instances 24, fragment area 32, work estimate 40, image upload bytes 48, fixture upload bytes 56
+(the source bytes `UPLOAD` read, by purpose),
 readbacks 64, ring waits 72 (submissions that waited because four were in flight), device errors 80,
 state 88 (a context's: 0 live, 1 quarantined, 2 reset), contexts 96 (the process's live handles),
 device contexts 104 (the process's device contexts not yet destroyed, including destroyed handles whose
@@ -186,12 +230,33 @@ its index is its position in the stream.
 | 2 | `CLEAR` | `2, 3, colour`: every pixel of the current target becomes `colour` |
 | 3 | `DRAW` | `3, 5 + 4n, pipeline, colour, n`, then `n` rectangles `x0, y0, x1, y1` (signed 32-bit, half-open) |
 | 4 | `DRAW_BUFFER` | `4, 8, pipeline, colour, buffer_lo, buffer_hi, offset, n`: `n` rectangles read from a buffer, 16 bytes each from `offset` |
+| 5 | `COPY` | `5, 12, source_lo, source_hi, sx, sy, w, h, destination_lo, destination_hi, dx, dy`: a GPU region copy of the source rectangle `[sx, sx + w) × [sy, sy + h)` to the point `(dx, dy)` of the destination (unsigned) |
+| 6 | `DRAW_SAMPLED` | `6, 6 + 6n, pipeline, texture_lo, texture_hi, n`, then `n` instances `x0, y0, x1, y1, sx, sy` (signed 32-bit): each half-open rectangle of the current target drawn from the texture, pixel `(x, y)` reading texel `(sx + x − x0, sy + y − y0)` |
 
 `colour` is the canonical BGRA bytes as a little-endian word: B in bits 0 to 7, G 8 to 15, R 16 to 23,
 A 24 to 31. Rectangles are clipped to the target; one with `x1 < x0` or `y1 < y0` is refused. Any drawing
 command may draw into a target the device left invalid; the target becomes valid again only when a
-submission that writes it whole (a `CLEAR`) completes OK. `DRAW_BUFFER` reads its rectangles from the
-submission's snapshot of the buffer, never from the buffer after `SUBMIT`.
+submission that writes it whole (a `CLEAR`, or a `COPY` whose clipped rectangle is the whole target)
+completes OK. `DRAW_BUFFER` reads its rectangles from the submission's snapshot of the buffer, never from
+the buffer after `SUBMIT`.
+
+`COPY` needs no `BEGIN` and leaves the current target as it is. Its source is a target or texture and its
+destination a target, both the process's (code 4 otherwise), of the same format (code 15 otherwise); the
+bytes are copied as they are, with no conversion. The source rectangle is clipped to the source, and the
+copied rectangle, anchored at `(dx, dy)`, to the destination; what is clipped away is not copied, and a
+copy whose clipped rectangle is empty sends no device command. When source and destination are one resource and the
+two rectangles overlap, the copy goes through a scratch texture, so the destination receives the source as
+it was before the copy (`docs/gui/gpu.md` section 1.3). On VirGL each device copy is a
+`RESOURCE_COPY_REGION`.
+
+`DRAW_SAMPLED` draws with a pipeline that samples a texture: `copy` from G3 (`docs/gui/gpu.md` section
+1.3). A sampling pipeline in `DRAW` or `DRAW_BUFFER`, or another pipeline in `DRAW_SAMPLED`, is code 16.
+The texture is a texture or target of the process (code 4 otherwise) other than the current target (code
+17). Each rectangle is clipped to the target and to the texture's footprint at the rectangle,
+`[x0 − sx, x0 − sx + texture width) × [y0 − sy, y0 − sy + texture height)`, so each pixel drawn reads a
+texel inside the texture. `copy` writes each texel converted channel by channel into the target's format:
+B8G8R8A8 and R8G8B8A8 texels keep their four channels, and an R8 texel `r` reads as R `r`, G 0, B 0 and A
+255 (section 1.3 of `docs/gui/gpu.md`, sampling).
 
 Validation walks the whole stream before anything reaches the device. Its codes (`error`):
 
@@ -199,7 +264,7 @@ Validation walks the whole stream before anything reaches the device. Its codes 
 |---|---|
 | 1 | a command's length runs past the stream or is shorter than two words |
 | 2 | an unknown command |
-| 3 | a drawing command before any `BEGIN` |
+| 3 | a drawing command other than `COPY` before any `BEGIN` |
 | 4 | a handle the process does not own, or of the wrong kind, or destroyed |
 | 5 | a pipeline outside the catalogue, or not built yet |
 | 6 | an inverted rectangle |
@@ -210,9 +275,14 @@ Validation walks the whole stream before anything reaches the device. Its codes 
 | 11 | more than 64 MiB of distinct buffers named, or more than 64 buffers |
 | 12 | more than 2³¹ estimated fragment-steps (EDQUOT) |
 | 13 | a stream length of 0, not a multiple of 4, or over 80 MiB (index 0) |
-| 14 | a command that samples a target the device left invalid; no G1 command samples, so G1 never reports it |
+| 14 | a command that samples a target or texture the device left invalid: a `COPY` source or a `DRAW_SAMPLED` texture |
+| 15 | a `COPY` between resources of different formats |
+| 16 | a pipeline used with the wrong drawing command: a sampling pipeline in `DRAW` or `DRAW_BUFFER`, or another pipeline in `DRAW_SAMPLED` |
+| 17 | a `DRAW_SAMPLED` whose texture is the target it draws into |
 
-The work estimate is, per draw, the clipped area times the pipeline's per-fragment steps (`solid`: 1).
+The work estimate is, per draw, the clipped area times the pipeline's per-fragment steps (`solid` and
+`copy`: 1). A `COPY` counts as one draw of one instance writing its clipped rectangle, at one step per pixel
+for each device copy it makes: one, or two when it goes through a scratch texture.
 
 ## Test-control points
 
@@ -228,6 +298,13 @@ defined; the ones G1 builds:
 | 23 | `mask-capability` | the next admission decision counts the capability id in `param` as absent; one-shot (above) |
 | 27 | `device-error` | the next submission ends with fenced command type `0x02FF`, which is undefined by VirtIO and answered with an error. Armed before each of two consecutive submissions of one context, it quarantines that context only, as two ordinary device errors do; it never resets the device |
 | 31 | `withhold-fence` | `param` 0: the next submission's completion is ignored, so the watchdog finds it hung; `param` 1: no completion is taken from the device until it is reset; `param` 2, fence depth: the answers to the next context's first four submissions are taken and kept unpublished, so their fences stay incomplete, until a fifth `SUBMIT` on that context waits at the four-in-flight limit; then the four are published in fence order and the fifth is admitted. No completion is invented and no watchdog deadline changes |
+
+G3 builds two more. `target` is the texture handle the point is armed for, 0 for any:
+
+| Point | Name | Effect |
+|---|---|---|
+| 29 | `wrong-texture` | the next `DRAW_SAMPLED` of the texture samples another texture of the process instead: of its live textures other than the named one, the first created. With no other texture the point does not fire and stays armed. The draw's fence completes as any other's |
+| 30 | `skip-upload-visibility` | the next texture `UPLOAD` writes the texture's backing and returns as a completed upload does, counted and with the generation advanced, but its `TRANSFER_TO_HOST_3D` is not sent, so the device keeps the texture's previous contents |
 
 Every point is one-shot: it affects the next occurrence of its event, counts one firing and disarms
 itself. The other points arm and do nothing until their milestone builds them.
