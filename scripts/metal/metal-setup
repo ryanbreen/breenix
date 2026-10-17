@@ -87,7 +87,8 @@ def account(args):
 def readback(write=True):
     site = m.load_site()
     rows, baseline = m.machine_checks(site, include_lc=True)
-    pending = m.rf_get(m.SYSTEM + '/Bios/Settings').get('Attributes', {})
+    current = m.rf_get(m.SYSTEM + '/Bios').get('Attributes', {})
+    pending = changes(m.rf_get(m.SYSTEM + '/Bios/Settings').get('Attributes', {}), current)
     protocol = m.rf_get(m.MANAGER + '/NetworkProtocol').get('IPMI', {})
     slot = site.get('IDRAC_ACCOUNT_SLOT')
     if slot:
@@ -108,6 +109,12 @@ def readback(write=True):
     return 0 if not failed else 1
 
 
+def changes(pending, current):
+    """The pending BIOS values that would change something. The controller also lists attributes whose pending value
+    equals the current one; those change nothing."""
+    return {name: value for name, value in pending.items() if current.get(name) != value}
+
+
 def refresh_poll(job, state, expected, started, note):
     """One poll of the settings job and the controller's BIOS values: (True, state) once the controller reports
     every expected value with nothing pending, (False, state) when the job failed, (None, state) to keep waiting."""
@@ -123,12 +130,30 @@ def refresh_poll(job, state, expected, started, note):
         if state != 'Completed':
             return None, state
     values = m.rf_get(m.SYSTEM + '/Bios').get('Attributes', {})
-    pending = m.rf_get(m.SYSTEM + '/Bios/Settings').get('Attributes', {})
+    pending = changes(m.rf_get(m.SYSTEM + '/Bios/Settings').get('Attributes', {}), values)
     if all(values.get(k) == v for k, v in expected.items()) and not pending:
         progress = m.rf_get(m.SYSTEM + '?$select=BootProgress').get('BootProgress', {})
         note('bios-values-refreshed', seconds=round(m.now() - started), progress=progress.get('LastState'))
         return True, state
     return None, state
+
+
+CLEAR_PENDING = m.SYSTEM + '/Bios/Settings/Actions/Oem/DellManager.ClearPending'
+DELETE_JOB = '/redfish/v1/Dell/Managers/iDRAC.Embedded.1/DellJobService/Actions/DellJobService.DeleteJobQueue'
+
+
+def forget_completed_settings_jobs(note, only=None):
+    """Deletes the records of completed BIOS settings jobs (`only` one, when given). After such a job the controller
+    keeps listing a few attributes as pending at their current values, and refuses a new settings job or a clear,
+    until the completed job's record is gone. Scheduled or running jobs are never touched."""
+    jobs = m.rf_get(m.MANAGER + '/Jobs?$expand=*($levels=1)').get('Members', [])
+    for job in jobs:
+        if job.get('JobType') != 'BIOSConfiguration' or job.get('JobState') != 'Completed':
+            continue
+        if only and job.get('Id') != only:
+            continue
+        m.rf('POST', DELETE_JOB, {'JobID': job['Id']})
+        note('completed-job-record-deleted', job=job['Id'])
 
 
 def apply(args):
@@ -153,10 +178,18 @@ def apply(args):
             reply = m.rf('PATCH', m.MANAGER_ATTRIBUTES, {'Attributes': {'IPMILan.1.Enable': 'Enabled'}})
             note('ipmi-lan-enabled', status=reply.get('status'))
         current = m.rf_get(m.SYSTEM + '/Bios').get('Attributes', {})
-        pending = m.rf_get(m.SYSTEM + '/Bios/Settings').get('Attributes', {})
+        listed = m.rf_get(m.SYSTEM + '/Bios/Settings').get('Attributes', {})
+        pending = changes(listed, current)
         expected = m.expected_bios(site)
         wanted = {k: v for k, v in expected.items() if current.get(k) != v}
         note('bios-diff', attributes=sorted(wanted), pending=sorted(pending))
+        if wanted and listed and not pending:
+            # Listed values that change nothing still block a new settings job; clearing them discards nothing.
+            note('committed-values', attributes=sorted(listed))
+            forget_completed_settings_jobs(note)
+            if m.rf_get(m.SYSTEM + '/Bios/Settings').get('Attributes'):
+                m.rf('POST', CLEAR_PENDING, {})
+                note('cleared-no-op-pending', attributes=sorted(listed))
         if wanted or pending or args.refresh:
             # The controller refreshes its copy of the BIOS values only while it collects inventory on restart,
             # so collection is on for this power cycle and off again afterwards.
@@ -191,6 +224,8 @@ def apply(args):
                     break
             off = m.force_off_and_wait()
             note('power-off', off=off, seconds=round(m.now() - started))
+            if job and state == 'Completed':
+                forget_completed_settings_jobs(note, only=job.rsplit('/', 1)[-1])
             m.rf('PATCH', m.LC_ATTRIBUTES, {'Attributes': {csior: 'Disabled'}})
             note('inventory-on-restart', value='Disabled')
             if job and state != 'Completed':
