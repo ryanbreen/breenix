@@ -422,6 +422,10 @@ const HBA_PI: usize = 0x0C;
 /// Version
 const HBA_VS: usize = 0x10;
 
+/// CAP.SSS: the HBA supports staggered spin-up (AHCI 1.3.1, 3.1.1).
+#[cfg(target_arch = "x86_64")]
+const CAP_SSS: u32 = 1 << 27;
+
 /// GHC bits
 const GHC_HR: u32 = 1 << 0; // HBA Reset
 const GHC_IE: u32 = 1 << 1; // Interrupt Enable
@@ -462,6 +466,10 @@ const PORT_CI: usize = 0x38;
 
 /// PORT_CMD bits
 const PORT_CMD_ST: u32 = 1 << 0; // Start
+#[cfg(target_arch = "x86_64")]
+const PORT_CMD_SUD: u32 = 1 << 1; // Spin-Up Device
+#[cfg(target_arch = "x86_64")]
+const PORT_CMD_POD: u32 = 1 << 2; // Power On Device (read-only 1 without cold presence detection)
 const PORT_CMD_FRE: u32 = 1 << 4; // FIS Receive Enable
 const PORT_CMD_FR: u32 = 1 << 14; // FIS Receive Running
 const PORT_CMD_CR: u32 = 1 << 15; // Command List Running
@@ -1118,6 +1126,9 @@ impl AhciController {
             ports: core::array::from_fn(|_| None),
         };
 
+        #[cfg(target_arch = "x86_64")]
+        spin_up_ports(abar_virt, cap, ports_implemented);
+
         // Discover and initialize ports
         let mut dma_index = 0;
         for port_num in 0..MAX_PORTS {
@@ -1238,6 +1249,13 @@ impl AhciController {
 
         // Start command engine
         self.start_cmd(port_num);
+
+        // A freshly linked device reports its signature in its first D2H
+        // Register FIS, which clears PxTFD.STS.BSY (AHCI 1.3.1, 10.1.2).
+        #[cfg(target_arch = "x86_64")]
+        if self.wait_ready(port_num).is_err() {
+            crate::serial_println!("[ahci] Port {}: no signature from the device", port_num);
+        }
 
         // Determine device type from signature
         let sig = port_read(abar, port_num, PORT_SIG);
@@ -3060,6 +3078,35 @@ pub fn init() -> Result<usize, &'static str> {
     }
 
     Ok(sata_count)
+}
+
+/// After the HBA reset, a controller with staggered spin-up (CAP.SSS) holds
+/// each port's device unspun until software sets PxCMD.SUD (AHCI 1.3.1,
+/// 10.10.1). Spin each implemented port up, then wait up to a second for the
+/// implemented ports to establish Phy communication (PxSSTS.DET = 3); ports
+/// with no device never do, so they cost the full wait.
+#[cfg(target_arch = "x86_64")]
+fn spin_up_ports(abar: u64, cap: u32, ports_implemented: u32) {
+    if cap & CAP_SSS == 0 {
+        return;
+    }
+    let ports = (0..MAX_PORTS).filter(|&port| ports_implemented & (1 << port) != 0);
+    for port in ports.clone() {
+        let cmd = port_read(abar, port, PORT_CMD);
+        port_write(abar, port, PORT_CMD, cmd | PORT_CMD_SUD | PORT_CMD_POD);
+    }
+    let (start, freq) = read_cntpct_and_freq();
+    // P12 allowlist: bounded link-establishment wait, one second of TSC time.
+    while read_cntpct().wrapping_sub(start) < freq {
+        if ports.clone().all(|port| port_read(abar, port, PORT_SSTS) & SSTS_DET_MASK == SSTS_DET_PRESENT) {
+            break;
+        }
+        core::hint::spin_loop();
+    }
+    let linked = ports
+        .filter(|&port| port_read(abar, port, PORT_SSTS) & SSTS_DET_MASK == SSTS_DET_PRESENT)
+        .fold(0u32, |mask, port| mask | 1 << port);
+    crate::serial_println!("[ahci] staggered spin-up: links established on ports {:#010x}", linked);
 }
 
 /// Whether this x86 controller takes its completions by MSI: the local APIC
