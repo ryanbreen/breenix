@@ -2330,7 +2330,7 @@ fn kernel_main_continue() -> ! {
     // This is part of the same check as PRECONDITION 1
     if idt_valid {
         log::info!("PRECONDITION 2: Timer handler registered ✓ PASS");
-        log::info!("  The IDT entry for IRQ0 (vector 32) is properly configured");
+        log::info!("  The IDT entry for IRQ0 (vector 48) is properly configured");
     } else {
         log::error!("PRECONDITION 2: Timer handler registered ✗ FAIL");
         log::error!("  IDT entry validation failed (see PRECONDITION 1)");

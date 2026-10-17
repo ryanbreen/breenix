@@ -9,7 +9,7 @@ pub fn redirection(
     source_override: Option<(u32, u16)>,
 ) -> (u32, u32, u32) {
     let mut gsi = u32::from(irq);
-    let mut low = u32::from(32 + irq) | MASKED;
+    let mut low = u32::from(super::constants::PIC_IRQ_OFFSET + irq) | MASKED;
     if let Some((override_gsi, flags)) = source_override {
         gsi = override_gsi;
         if flags & 3 == 3 {

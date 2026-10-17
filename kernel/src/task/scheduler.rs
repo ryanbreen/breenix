@@ -114,9 +114,9 @@ fn observe_exit_kick(thread_pid: u64) -> bool {
     use crate::tracing::providers::teardown::{EXIT_KICK_BUCKETS, EXIT_KICK_SLOTS};
 
     let slot = &EXIT_KICK_SLOTS[thread_pid as usize % EXIT_KICK_BUCKETS];
-    if let Some(observation) = slot.observe_from_peer(thread_pid) {
+    if let Some((observation, window)) = slot.observe_from_peer(thread_pid) {
         let interval = crate::tracing::trace_timestamp().wrapping_sub(observation.at);
-        crate::tracing::providers::teardown::record_exit_kick_observed(thread_pid, interval);
+        crate::tracing::providers::teardown::record_exit_kick_observed(thread_pid, interval, window);
         true
     } else {
         slot.is_observed_for(thread_pid)
@@ -1952,7 +1952,8 @@ fn send_reschedule_vector_x86(cpu: usize) {
     send_vector_x86(cpu, crate::interrupts::RESCHEDULE_VECTOR);
 }
 
-/// x86_64: send `vector`, whose gate is the timer entry, to `cpu`.
+/// x86_64: send a retry or reschedule IPI vector to `cpu`.
+/// Both return through `check_need_resched_and_switch`.
 #[cfg(target_arch = "x86_64")]
 fn send_vector_x86(cpu: usize, vector: u8) {
     use crate::arch_impl::x86_64::{apic, smp};

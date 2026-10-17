@@ -10,7 +10,7 @@ use libbreenix::process::{
     self, fork, getpid, waitpid, wifexited, wifsignaled, wtermsig, ForkResult,
 };
 use libbreenix::signal::{kill, pause, sigaction, Sigaction, SIGCHLD, SIGKILL};
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 
 const EXIT_KICK_BUCKETS: u64 = 64;
 const CHILD_STACK_SIZE: usize = 64 * 1024;
@@ -114,6 +114,11 @@ struct Evidence {
     sgi_sent: u64,
     kick_observed: u64,
     kick_interval: u64,
+    kick_ticks: u64,
+    kick_all_ticks: u64,
+    kick_cpu: u64,
+    kick_sender_cpu: u64,
+    counter_ticks_per_ms: u64,
     tick_period: u64,
     masked_frames_walked: u64,
     report: u64,
@@ -149,6 +154,11 @@ fn evidence(pid: i32) -> Evidence {
         sgi_sent: parse_value(&contents, "sgi_sent"),
         kick_observed: parse_value(&contents, "kick_observed"),
         kick_interval: parse_value(&contents, "kick_interval"),
+        kick_ticks: parse_value(&contents, "kick_ticks"),
+        kick_all_ticks: parse_value(&contents, "kick_all_ticks"),
+        kick_cpu: parse_value(&contents, "kick_cpu"),
+        kick_sender_cpu: parse_value(&contents, "kick_sender_cpu"),
+        counter_ticks_per_ms: parse_value(&contents, "counter_ticks_per_ms"),
         tick_period: parse_value(&contents, "tick_period"),
         masked_frames_walked: parse_value(&contents, "masked_frames_walked"),
         report: parse_value(&contents, "report"),
@@ -164,7 +174,37 @@ fn counter(name: &str) -> u64 {
     parse_value(&contents, name)
 }
 
+/// Reclaim-pipeline counters an evidence timeout prints as deltas over its
+/// wait, so a receipt still unretired at the timeout shows what held it.
+const RECLAIM_COUNTERS: [&str; 12] = [
+    "ROOT_PROOF_BLOCKED_EPOCH",
+    "ROOT_PROOF_BLOCKED_HW",
+    "ROOT_PROOF_BLOCKED_SHADOW",
+    "ROOT_PROOF_BLOCKED_CACHED",
+    "ROOT_PROOF_BLOCKED_LIVE_ROW",
+    "RECLAIM_PASS_SKIPPED",
+    "RECLAIM_DRAIN_NESTED_REFUSED",
+    "RECLAIM_CONTEXT_VIOLATIONS",
+    "RECLAIM_PARKED",
+    "RECLAIM_PARK_RESIDENT",
+    "PT_RETIRE_BUDGET_REQUEUED",
+    "RECLAIM_ABANDONED_UNQUEUED",
+];
+
+/// The reclaim counters, each left unread when it cannot be read: reporting
+/// a timeout must not itself fail on a missing field.
+fn reclaim_counters() -> [Option<u64>; 12] {
+    let contents = std::fs::read_to_string("/proc/trace/counters").unwrap_or_default();
+    RECLAIM_COUNTERS.map(|name| {
+        contents.lines().find_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            (key.trim() == name).then(|| value.split_whitespace().next()?.parse().ok()).flatten()
+        })
+    })
+}
+
 fn wait_for_evidence(pid: i32) -> Evidence {
+    let reclaim_before = reclaim_counters();
     let mut current = Evidence::default();
     for _ in 0..20_000 {
         current = evidence(pid);
@@ -180,15 +220,79 @@ fn wait_for_evidence(pid: i32) -> Evidence {
         let _ = process::yield_now();
     }
     eprintln!(
-        "SIGKILL_TEARDOWN_TEST: evidence timeout pid={pid} defer={} reclaim={} quarantine={} sgi={} observed={} report={}",
+        "SIGKILL_TEARDOWN_TEST: evidence timeout pid={pid} defer={} reclaim={} quarantine={} sgi={} observed={} report={} counter_interval={} observer_ticks={} all_ticks={} kick_cpu={} sender_cpu={}",
         current.defer,
         current.reclaim,
         current.quarantine,
         current.sgi_sent,
         current.kick_observed,
-        current.report
+        current.report,
+        current.kick_interval,
+        current.kick_ticks,
+        current.kick_all_ticks,
+        current.kick_cpu,
+        current.kick_sender_cpu
     );
+    let reclaim_after = reclaim_counters();
+    let deltas: Vec<String> = RECLAIM_COUNTERS
+        .iter()
+        .zip(reclaim_before.iter().zip(reclaim_after.iter()))
+        .map(|(name, pair)| match pair {
+            (Some(before), Some(after)) => format!("{name}={}+{}", before, after.wrapping_sub(*before)),
+            _ => format!("{name}=unread"),
+        })
+        .collect();
+    eprintln!("SIGKILL_TEARDOWN_TEST: reclaim counters over the wait (total+delta): {}", deltas.join(" "));
     fail("timed out waiting for per-PID teardown pairing")
+}
+
+/// Counter time per delivered timer tick above which a window was starved by
+/// the host: SOFTIRQ_DEFERRAL_ORACLE's threshold, its 15 s backstop over its
+/// 250-tick budget (`WALL_LIMIT_NS / WAIT_TICKS` in
+/// kernel/src/task/softirq_tests.rs).
+const STARVED_NS_PER_TICK: u128 = 15_000_000_000 / 250;
+
+/// Kick windows this run found starved. Any starved window makes the whole
+/// run inconclusive: neither a pass nor a kernel failure.
+static STARVED_WINDOWS: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KickVerdict {
+    Pass,
+    Starved,
+    Fail,
+}
+
+/// The send-to-observe bound: `0 < interval < tick_period` on the
+/// free-running counter. An interval of a tick or more is starved only when
+/// the counter ran more than `STARVED_NS_PER_TICK` per delivered tick both on
+/// the observing CPU and averaged over the online CPUs; a silent observer timer while
+/// other CPUs tick is a failure.
+fn kick_verdict(current: &Evidence) -> KickVerdict {
+    if current.kick_interval == 0 {
+        return KickVerdict::Fail;
+    }
+    if current.kick_interval < current.tick_period {
+        return KickVerdict::Pass;
+    }
+    let interval_ns =
+        u128::from(current.kick_interval) * 1_000_000 / u128::from(current.counter_ticks_per_ms);
+    let observer_starved = interval_ns > STARVED_NS_PER_TICK * u128::from(current.kick_ticks);
+    let all_starved = interval_ns * u128::from(current.online_cpus)
+        > STARVED_NS_PER_TICK * u128::from(current.kick_all_ticks);
+    if observer_starved && all_starved {
+        KickVerdict::Starved
+    } else {
+        KickVerdict::Fail
+    }
+}
+
+/// Counter microseconds per delivered tick, as `ms.mmm`, for the evidence line.
+fn ms_per_tick(interval_us: u128, ticks: u64) -> String {
+    match interval_us.checked_div(u128::from(ticks)) {
+        Some(us) => format!("{}.{:03}", us / 1_000, us % 1_000),
+        None => String::from("unbounded"),
+    }
 }
 
 fn assert_kill_evidence(pid: i32, current: Evidence) {
@@ -199,9 +303,43 @@ fn assert_kill_evidence(pid: i32, current: Evidence) {
     if current.quarantine != 1 || current.sgi_sent != peer_kick || current.kick_observed != peer_kick {
         fail("quarantine/send/observe were not attributed exactly once to victim");
     }
-    if (peer_kick == 1 && (current.kick_interval == 0 || current.kick_interval >= current.tick_period))
-        || (peer_kick == 0 && current.kick_interval != 0) {
-        fail("send-to-observe interval was not strictly shorter than one tick");
+    if current.counter_ticks_per_ms == 0 || current.tick_period == 0 {
+        fail("counter rate or tick period was not measured");
+    }
+    if peer_kick == 0 {
+        if current.kick_interval != 0 {
+            fail("a single-CPU kill recorded a send-to-observe interval");
+        }
+    } else {
+        if current.kick_cpu == current.kick_sender_cpu {
+            fail("kick was observed on the CPU that sent it");
+        }
+        let verdict = kick_verdict(&current);
+        let interval_us = u128::from(current.kick_interval) * 1_000
+            / u128::from(current.counter_ticks_per_ms);
+        let tick_us =
+            u128::from(current.tick_period) * 1_000 / u128::from(current.counter_ticks_per_ms);
+        println!(
+            "SIGKILL_TEARDOWN_TEST: pid={pid} defer={} reclaim={} kick_cpu={} sender_cpu={} counter_interval={} tick_period={} counter_ticks_per_ms={} interval_us={} tick_us={} observer_ticks={} all_ticks={} online_cpus={} observer_ms_per_tick={} all_ms_per_tick={} starved_ms_per_tick={} verdict={}",
+            current.defer, current.reclaim, current.kick_cpu, current.kick_sender_cpu,
+            current.kick_interval, current.tick_period, current.counter_ticks_per_ms,
+            interval_us, tick_us, current.kick_ticks, current.kick_all_ticks, current.online_cpus,
+            ms_per_tick(interval_us, current.kick_ticks),
+            ms_per_tick(interval_us * u128::from(current.online_cpus), current.kick_all_ticks),
+            STARVED_NS_PER_TICK / 1_000_000,
+            match verdict {
+                KickVerdict::Pass => "pass",
+                KickVerdict::Starved => "STARVED",
+                KickVerdict::Fail => "fail",
+            }
+        );
+        match verdict {
+            KickVerdict::Pass => {}
+            KickVerdict::Starved => {
+                STARVED_WINDOWS.fetch_add(1, Ordering::Relaxed);
+            }
+            KickVerdict::Fail => fail("send-to-observe interval was not strictly shorter than one tick"),
+        }
     }
     if current.masked_frames_walked != 0 {
         fail("SIGKILL path walked frames while PM was held");
@@ -209,10 +347,6 @@ fn assert_kill_evidence(pid: i32, current: Evidence) {
     if current.report != 1 {
         fail("report obligation was not redeemed exactly once");
     }
-    println!(
-        "SIGKILL_TEARDOWN_TEST: pid={pid} defer={} reclaim={} kick_interval={} tick_period={}",
-        current.defer, current.reclaim, current.kick_interval, current.tick_period
-    );
 }
 
 fn wait_killed(pid: i32) {
@@ -665,5 +799,11 @@ fn main() {
         fail("P2 zero-only lock-order, fault, receipt, or later-phase counters moved");
     }
 
+    let starved = STARVED_WINDOWS.load(Ordering::Relaxed);
+    if starved != 0 {
+        // The other assertions held, but a starved window is not evidence.
+        println!("SIGKILL_TEARDOWN_TEST: STARVED windows={starved}: host-starved, not evidence; rerun the boot");
+        std::process::exit(2);
+    }
     println!("SIGKILL_TEARDOWN_TEST_PASSED");
 }
