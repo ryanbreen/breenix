@@ -769,6 +769,16 @@ class DriverTest(StateTest):
         d.on_line('bsh /> metal-console-ok 42')
         self.finish(lambda: d.on_line('metal-console-ok 42'), m.EXIT_DONE)
 
+    def test_mode_completion_waits_for_delayed_kernel_producers(self):
+        d = self.driver
+        d.final_marker = ('mode done', 'line')
+        d.required_stages = [[('cpu started', 'line'), ('timer measured', 'line')]]
+        d.on_line('mode done')
+        d.on_line('timer measured')  # out of order cannot count
+        d.on_line('cpu started')
+        self.assertEqual(d.required_stages, [[('timer measured', 'line')]])
+        self.finish(lambda: d.on_line('timer measured'), m.EXIT_DONE)
+
     def test_final_marker_cannot_override_a_fatal(self):
         d = self.driver
         d.final_marker = ('done', 'line')

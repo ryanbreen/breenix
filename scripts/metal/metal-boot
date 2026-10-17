@@ -117,6 +117,9 @@ class Driver:
         self.fatal_at = None
         self.fatal_patterns = []
         self.final_marker = None
+        self.final_seen = False
+        self.completion_reported = False
+        self.required_stages = []
         self.shell_ready = False
         self.shell_sent = False
         self.delivery = {}
@@ -307,8 +310,9 @@ class Driver:
         source = metal or main
         self.fatal_patterns = [re.compile(p) for p in (source or {}).get('fatal', [])]
         if metal:
-            self.final_marker = final_marker(metal, self.args.mode,
-                                             m.read_json(definition / 'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json', {}))
+            catalog = m.read_json(definition / 'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json', {})
+            self.final_marker = final_marker(metal, self.args.mode, catalog)
+            self.required_stages = measured_stages(metal, self.args.mode, catalog)
         if self.args.mode == 'suite':
             self.final_marker = ('SUITE ' + self.args.suite + ' DONE ', 'contains')
         self.event('definition', metalPath=bool(metal), fatalPatterns=len(self.fatal_patterns),
@@ -533,10 +537,17 @@ class Driver:
         if '[init] shell ready' in line:
             self.shell_ready = True
         self.challenge_shell(line)
+        for stages in self.required_stages:
+            if stages and marker_matches(stages[0], line):
+                stages.pop(0)
         if (self.final_marker and marker_matches(self.final_marker, line)
-                and (self.args.mode != 'shell' or self.shell_sent) and self.fatal_at is None):
+                and (self.args.mode != 'shell' or self.shell_sent)):
+            self.final_seen = True
+        if (self.final_marker and self.final_seen and not any(self.required_stages)
+                and self.fatal_at is None and not self.completion_reported):
+            self.completion_reported = True
             self.event('final-marker', observed_at=observed_at, seconds=seconds)
-            raise Finish(m.EXIT_DONE, 'the mode finished')
+            raise Finish(m.EXIT_DONE, 'the mode and its kernel stages finished')
 
     # The HTTP server's log.
     def pump_http(self):
@@ -857,6 +868,28 @@ def marker_matches(spec, line):
 
 
 # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
+def measured_stages(metal, mode, catalog):
+    """Track each measured milestone in its own print order, including delayed kernel producers."""
+    markers = {stage['name']: stage for stage in catalog.get('stages', [])}
+    groups = []
+    for milestone in metal.get('milestones', []):
+        if milestone.get('stub'):
+            continue
+        lists = milestone.get('stages', {})
+        listed = lists.get(mode, lists.get(metal['gateArch'], []) if milestone.get('kernel') else [])
+        group = []
+        for stage in listed:
+            spec = markers.get(stage, {}) if isinstance(stage, str) else stage
+            if 'host' in spec:
+                continue  # These are checked by preflight, delivery and console setup.
+            if not spec.get('marker'):
+                raise ValueError('unresolved measured serial stage')
+            group.append((spec['marker'], spec.get('match', 'contains')))
+        if group:
+            groups.append(group)
+    return groups
+
+
 def final_marker(metal, mode, catalog):
     """Resolve the final measured serial stage and preserve its matching contract. A stub milestone's markers are
     proposals its producing lane has not landed (docs/metal/boot-path.json), so no boot measures it yet."""

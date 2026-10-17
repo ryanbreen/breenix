@@ -268,7 +268,8 @@ through SOL and requires the whole answer line `metal-console-ok 42` after sendi
 manifest and verdict tool into the boot record, waits for that suite's DONE line, then runs the manifest verdict
 against the captured serial. A DONE with failed, missing, out-of-order or skipped cases fails the boot. Shell has a
 180-second handoff deadline; suite mode uses the 420-second suite deadline and a further 900-second absolute budget
-for firmware and delivery. The console-gap and fatal-output vetoes apply (issue #1702).
+for firmware and delivery. The driver also waits for the measured kernel stages, including the delayed per-CPU timer census, before accepting
+the mode result. The console-gap and fatal-output vetoes apply (issue #1702).
 
 ## The disks
 

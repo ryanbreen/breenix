@@ -20,7 +20,7 @@ def stage_root(image, mode, suite, site):
         if not key.startswith('GUEST_'):
             continue
         if (not re.fullmatch(r'GUEST_[A-Z][A-Z0-9_]*', key)
-                or re.search(r'PASS|SECRET|TOKEN|CREDENTIAL|PRIVATE_KEY', key)
+                or re.search(r'PASS|SECRET|TOKEN|CREDENTIAL|KEY', key)
                 or any(char in value for char in '\r\n\x00')):
             raise ValueError('invalid guest site field')
         lines.append(key.removeprefix('GUEST_') + '=' + value + '\n')
