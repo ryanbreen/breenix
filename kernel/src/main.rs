@@ -2631,7 +2631,7 @@ fn kernel_main_continue() -> ! {
         // the bracket, so the line cannot be stranded the way the census
         // below once was.
         if !drivers::fw_cfg::present() {
-            // The tick census reports a second from now, after this line.
+            // The tick census reports after its staggered per-CPU windows.
             kernel::arch_impl::x86_64::tick_census::start();
             log::info!("[metal] kernel idle");
         }

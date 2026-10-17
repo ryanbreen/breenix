@@ -12,14 +12,15 @@
 //!   counting the entries through the timer's gate (`TIMER_TICK_TOTAL`, which
 //!   the tick handler increments per CPU).
 //!
-//! The timer's gate is shared: reschedule and retry IPIs and the idle loop's
-//! and wait loops' software interrupts enter it too. While the pinned thread
-//! spins, the CPU runs neither loop and makes no return to Ring 3, so the only
-//! other entries are IPIs other CPUs send it, which `TIMER_GATE_IPI_SENT`
-//! counts per destination. The ticks the CPU took therefore lie between the
-//! entries less the IPIs sent to it and the entries; arrival passes when that
-//! range lies within `ARRIVAL_TICKS` of the expected count.
+//! Retry and reschedule interrupts have separate gates. For any IPI sent
+//! explicitly through the timer gate, `TIMER_GATE_IPI_SENT` counts it per
+//! destination. The pinned window runs no idle/wait loop or Ring 3 return.
+//! Its ticks therefore lie between entries less timer-gate IPIs and entries;
+//! arrival passes only when that whole range fits `ARRIVAL_TICKS`.
 use core::sync::atomic::{AtomicU64, Ordering};
+
+#[path = "tick_bounds.rs"]
+mod bounds;
 
 use super::{apic, smp};
 use crate::task::scheduler::MAX_CPUS;
@@ -53,7 +54,7 @@ static WINDOW_US: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS
 /// Measure and record the executing CPU's tick rate. Called by `cpu_init`
 /// once the CPU's LAPIC timer is running.
 pub fn record_local_rate(cpu: usize) {
-    if cpu >= MAX_CPUS || !apic::active() {
+    if crate::drivers::fw_cfg::present() || cpu >= MAX_CPUS || !apic::active() {
         return;
     }
     if let Some(rate) = apic::measured_tick_millihz() {
@@ -61,7 +62,7 @@ pub fn record_local_rate(cpu: usize) {
     }
 }
 
-/// Start the census thread. Its report arrives about a second later.
+/// Start the census thread. Its windows run one CPU at a time.
 pub fn start() {
     if let Err(error) = crate::task::kthread::kthread_run(run, "ktickcensus") {
         log::warn!("[timer] tick census not started: {error:?}");
@@ -90,17 +91,24 @@ fn window(cpu: usize) {
 fn run() {
     let online = (smp::cpus_online() as usize).min(MAX_CPUS);
     let tsc_hz = super::timer::frequency_hz();
-    for cpu in 0..online {
+    for (cpu, window_us) in WINDOW_US.iter().enumerate().take(online) {
         let pinned = crate::task::kthread::kthread_run_on_cpu(move || window(cpu), "ktickwindow", cpu);
         if let Err(error) = pinned {
             log::warn!("[timer] cpu{cpu} tick window not started: {error:?}");
+            continue;
         }
-    }
-    let deadline = super::timer::rdtsc() + tsc_hz * COLLECT_MS / 1000;
-    while (0..online).any(|cpu| WINDOW_US[cpu].load(Ordering::Acquire) == 0)
-        && super::timer::rdtsc() < deadline
-    {
-        crate::arch_halt_with_interrupts();
+        // Finish this CPU before pinning another, leaving the other CPUs
+        // available to userspace throughout the census.
+        let deadline = super::timer::rdtsc() + tsc_hz * COLLECT_MS / 1000;
+        while window_us.load(Ordering::Acquire) == 0
+            && super::timer::rdtsc() < deadline
+        {
+            crate::arch_halt_with_interrupts();
+        }
+        if window_us.load(Ordering::Acquire) == 0 {
+            // Do not start overlapping windows after a stalled CPU.
+            break;
+        }
     }
 
     let mut rates_agree = true;
@@ -112,8 +120,7 @@ fn run() {
         let expected = elapsed_us * TICK_HZ / 1_000_000;
         let fewest = entries.saturating_sub(ipis);
         let arrived = elapsed_us != 0
-            && fewest + ARRIVAL_TICKS >= expected
-            && entries <= expected + ARRIVAL_TICKS + ipis;
+            && bounds::arrival_in_bounds(entries, ipis, expected, ARRIVAL_TICKS);
         every_cpu_ticked &= arrived;
         let rate = LOCAL_RATE_MILLIHZ[cpu].load(Ordering::Acquire);
         let measured = if apic::active() {

@@ -9,18 +9,17 @@
 //!   crystal frequency in Hz. With ECX nonzero the TSC rate is
 //!   `ECX * EBX / EAX`.
 //! - With ECX 0 the crystal is not enumerated. Leaf 16H EAX then gives the
-//!   processor base frequency in MHz, which is the rate the TSC counts at on
-//!   processors with an invariant TSC.
+//!   processor base frequency in MHz. It is only a candidate TSC rate:
+//!   invariant TSC alone does not establish equality to this frequency.
 //!
 //! Neither is trusted alone: `choose` takes a stated rate only when it agrees
 //! with the rate the PIT measured, so a hypervisor or a part whose leaves do
 //! not describe its TSC falls back to the measurement.
 
 /// The most a stated rate and the PIT measurement may differ by, in parts per
-/// million, for the stated rate to be taken: a millisecond a second. On the one
-/// physical machine measured so far the PIT read 22 ppm from the stated rate
-/// (`tests/x86_tsc_rate.rs` keeps that pair).
-pub const AGREEMENT_PPM: u64 = 1000;
+/// million, for the stated rate to be taken. The PIT must agree within
+/// 200 ppm; hardware observations belong in private evidence.
+pub const AGREEMENT_PPM: u64 = 200;
 
 /// CPUID values the stated rate is derived from. A leaf the processor does not
 /// implement (above `max_leaf`) is read as 0.

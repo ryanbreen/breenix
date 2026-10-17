@@ -132,7 +132,7 @@ impl TxDesc {
 /// E1000 driver state
 pub struct E1000 {
     /// PCI device information
-    #[allow(dead_code)] // Stored for future use (interrupt routing, power management)
+    #[cfg_attr(target_arch = "aarch64", allow(dead_code))] // ARM64 uses polling.
     pci_device: Device,
     /// PCI device ID (0x100E = 82540EM, 0x10D3 = 82574L)
     device_id: u16,
@@ -824,11 +824,10 @@ pub fn init() -> Result<(), &'static str> {
 /// MSI capability). Returns the vector, or why the caller keeps INTx.
 #[cfg(target_arch = "x86_64")]
 pub fn interrupt_by_msi() -> Result<u8, &'static str> {
-    // The function `init` chose, by the same preference.
-    let device = pci::find_device(INTEL_VENDOR_ID, E1000_DEVICE_ID)
-        .or_else(|| pci::find_device(INTEL_VENDOR_ID, E1000E_DEVICE_ID))
-        .ok_or("E1000 device not found on PCI bus")?;
-    crate::arch_impl::x86_64::msi::enable(&device, handle_interrupt)
+    with_driver(|driver| {
+        crate::arch_impl::x86_64::msi::enable(&driver.pci_device, handle_interrupt)
+    })
+    .ok_or("E1000 driver not initialized")?
 }
 
 /// Check if the E1000 driver is initialized

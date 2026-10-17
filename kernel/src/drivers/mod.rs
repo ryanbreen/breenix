@@ -77,8 +77,12 @@ pub fn init() -> usize {
             match e1000::interrupt_by_msi() {
                 Ok(vector) => log::info!("E1000: interrupts by MSI vector {vector:#x}"),
                 Err(reason) => {
-                    log::info!("E1000: interrupts on IRQ 10 ({reason})");
-                    crate::interrupts::enable_irq10();
+                    if crate::arch_impl::x86_64::irq::pci_intx_routing_known() {
+                        log::info!("E1000: interrupts on IRQ 10 ({reason})");
+                        crate::interrupts::enable_irq10();
+                    } else {
+                        log::info!("E1000: INTx remains masked: routing unknown ({reason})");
+                    }
                 }
             }
         }
@@ -120,6 +124,10 @@ fn init_other_network_device() {
             }
         },
     };
+    if !crate::arch_impl::x86_64::irq::pci_intx_routing_known() {
+        log::info!("Network INTx remains masked: routing unknown");
+        return;
+    }
     match line {
         Some(10) => crate::interrupts::enable_irq10(),
         Some(11) => crate::interrupts::enable_irq11(),
@@ -146,7 +154,7 @@ pub fn run_post_init_self_tests() {
     // AHCI IDENTIFY needs a calibrated clock even before IRQ completions exist.
     // This runs after time/PIC setup and before root mounting.
     if let Err(e) = ahci::init() {
-        log::debug!("AHCI initialization: {}", e);
+        log::info!("AHCI initialization: {e}");
     }
 
     if let Err(e) = virtio::block::test_read() {

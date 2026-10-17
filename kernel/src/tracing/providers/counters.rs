@@ -79,9 +79,9 @@ pub static CTX_SWITCH_TOTAL: TraceCounter =
 pub static TIMER_TICK_TOTAL: TraceCounter =
     TraceCounter::new("TIMER_TICK_TOTAL", "Total timer tick interrupts");
 
-/// x86_64: IPIs sent through the timer's gate (the reschedule and retry
-/// vectors), counted per DESTINATION CPU. `TIMER_TICK_TOTAL` counts these too,
-/// so the tick census subtracts them to bound the ticks a CPU took.
+/// x86_64: IPIs explicitly sent through the timer gate, counted per
+/// DESTINATION CPU. Retry and reschedule vectors use separate gates. The
+/// tick census subtracts only timer-gate IPIs to bound the ticks a CPU took.
 ///
 /// GDB: `print TIMER_GATE_IPI_SENT`
 #[no_mangle]

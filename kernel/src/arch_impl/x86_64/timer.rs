@@ -225,7 +225,7 @@ pub fn calibrate() {
         ),
         None => log::info!("[tsc] pit={} Hz cpuid=none using={}", measured_hz, chosen.source),
     }
-    if let Some((port, wide)) = super::platform::pm_timer() {
+    if let Some((port, wide)) = super::platform::pm_timer().filter(|_| !crate::drivers::fw_cfg::present()) {
         match unsafe { pm_timer_rate(port, wide, measured_hz) } {
             Some(by_pm) => log::info!(
                 "[tsc] pm_timer={} Hz apart={} ppm from the rate in use",

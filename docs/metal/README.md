@@ -120,9 +120,9 @@ The kernel takes one path on each firmware it boots on, QEMU's included (`kernel
   machine) for NMI delivery, so the BMC's NMI reaches the kernel. An NMI that is not one of the kernel's own TLB
   shootdowns prints `[nmi] external NMI #<n> cpu=<n> apic_id=<n> rip=... cs=... rflags=... rsp=... port61=...`
   straight to the log UART, taking no lock, at most 16 times per boot. The driver's NMI to a hung boot
-  (step 8 below) therefore records where each CPU was.
+  (step 8 below) records the interrupted state of each CPU it reaches; delivery to other CPUs is not implied.
 - **TSC.** PIT channel 2 measures the TSC as before. CPUID leaf 15H (crystal times ratio) or, without a crystal,
-  leaf 16H (base frequency) states a rate, which is used when the PIT agrees within 1000 ppm; otherwise the PIT's
+  leaf 16H (base frequency) supplies a candidate rate, which is used when the PIT agrees within 200 ppm; otherwise the PIT's
   measurement is the rate. `[tsc] pit=... cpuid-16h=... apart=... using=...` records the choice, and a second
   line the rate the FADT's PM timer implies, as an independent check.
 - **The FADT** is read once before calibration: `[acpi] fadt rev=... sci=... pm_timer=... reset=... boot_arch=...
@@ -131,9 +131,9 @@ The kernel takes one path on each firmware it boots on, QEMU's included (`kernel
   prints `[smp] online=<n> reported=<n>` and, when they match, `[smp] every reported CPU is online`. claim-lint:ok:
   the marker text is the catalog's, from `report_bring_up` in `kernel/src/arch_impl/x86_64/smp.rs`.
 - **Ticks on each CPU.** Each CPU measures its own LAPIC timer's countdown against the TSC as it starts it. At
-  `[metal] kernel idle` a census thread pins one thread to each CPU, which spins there for 500 ms with preemption
-  off and interrupts on. The timer's gate is shared with reschedule and retry IPIs and the idle loop's software
-  interrupt; during the spin only IPIs from other CPUs can add entries, and the scheduler counts those per
+  `[metal] kernel idle` a census thread pins one thread to each CPU in turn, which spins there for 500 ms with preemption
+  off and interrupts on, completing one window before starting the next so other CPUs remain available to userspace.
+  Retry and reschedule interrupts use separate gates. IPIs explicitly sent through the timer gate are counted per
   destination (`TIMER_GATE_IPI_SENT`). Each `[timer] cpu<n>` line gives the measured rate and the range the ticks
   taken lie in (gate entries less IPIs sent, to gate entries). `[timer] tick rate agrees with the TSC` follows
   when each CPU's rate is within 5000 ppm of 200 Hz and each range is within 2 ticks of the expected count, and
@@ -508,16 +508,7 @@ with exit 0 at the `smp` milestone's last stage, clean production builds with in
 `first-light` 11 of 11, `interrupts-time` 4 of 4, `smp` 3 of 3. claim-lint:ok: 2 of 2 boots, scored with each
 boot's own definition copy.
 
-| Fact | Observed |
-|---|---|
-| ACPI tables | `XSDT FACP SSDT SSDT SSDT WD__ SLIC HPET APIC MCFG SSDT LPIT WSMT SSDT DBGP DBG2 DMAR HEST BERT ERST EINJ SPCR` |
-| FADT | revision 6, SCI 9, PM timer at I/O 0x508 (24-bit), reset register I/O 0xcf9 value 0x6, IA-PC boot flags 0x0011, MSI allowed |
-| TSC | PIT 3,599,974,778 Hz; CPUID 16H 3,600,000,000 Hz, 7 ppm apart, so the stated rate is used; the PM timer implies 3,599,991,574 Hz, 2 ppm from it |
-| Interrupt delivery | `x2APIC + IOAPIC; 8259 masked`: one I/O APIC, 2 source overrides (IRQ 0 to GSI 2, IRQ 9 to GSI 9 level), 16 Local APIC NMI structures; PCI INTx routing unknown, so AHCI does not attach and IRQ 10/11 stay masked |
-| Processors | APIC ids 0, 2, 4 and 6 online as CPUs 0-3 (`[smp] online=4 reported=4`); device interrupts routed to CPU 3 |
-| Tick | each CPU's LAPIC countdown 199.94 Hz (199.91 Hz on the earlier boot); 99 to 101 ticks per CPU in each 500 ms window against 100 expected, with at most 1 IPI sent to a CPU during its window |
-| NMI | with `--nmi`, the BMC's NMI after the boot finished reached CPU 0 only: `[nmi] external NMI #1 cpu=0 apic_id=0 ... port61=0x30` |
-
-An earlier boot of this branch (`20261017T061920Z-metal`, exit 1) counted timer-gate entries over one second on
-each of its 4 CPUs and found 220 to 764 a second: the reschedule and retry IPIs and the idle loop's software interrupt share
-the gate. The pinned windows above replace that count. claim-lint:ok: boot 20261017T061920Z-metal.
+Hardware-specific ACPI signatures, register values, TSC rates, processor identities and interrupt topology
+remain in private evidence. The boots above exercised the ACPI census, clock cross-checks, processor bring-up,
+per-CPU tick windows and external NMI reporting. The external NMI reached the boot CPU only; delivery to the other CPUs remains unmeasured. Historical tick-arrival measurements used overlapping pinned windows;
+subsequent review tightens the upper bound and staggers those windows, requiring fresh boot evidence.

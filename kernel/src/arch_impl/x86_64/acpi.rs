@@ -86,7 +86,7 @@ pub struct SourceOverride {
 }
 
 /// How many Local APIC NMI structures (MADT types 4 and 10) one census keeps.
-pub const MAX_LOCAL_NMIS: usize = 16;
+pub const MAX_LOCAL_NMIS: usize = MAX_ENUMERATED_CPUS;
 
 /// The processor UID a Local APIC NMI structure uses to name each processor at
 /// once: 0xFF in a type-4 entry and 0xFFFFFFFF in a type-10 entry, both

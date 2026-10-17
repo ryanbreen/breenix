@@ -80,7 +80,7 @@ pub fn init(rsdp: Option<u64>, physical_memory_offset: u64) {
     match visited {
         Some(_) if cut => log::info!("{} (and more)", line.as_str()),
         Some(_) => log::info!("{}", line.as_str()),
-        None => log::info!("[acpi] tables: none (no usable RSDP or root table)"),
+        None => log::info!("[acpi] table census unavailable (no usable RSDP or root table)"),
     }
 
     let Some(fadt) = acpi::read_fadt(rsdp, physical_memory_offset) else {

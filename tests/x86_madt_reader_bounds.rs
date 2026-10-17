@@ -780,3 +780,17 @@ fn a_fadt_too_short_or_with_a_bad_checksum_is_refused() {
     let image = spcr_behind_the_rsdt(0x00, 1, 0x3f8, 80);
     assert_eq!(fadt_of(&image), None, "no FADT");
 }
+
+#[test]
+fn nmi_entries_cover_the_full_processor_capacity() {
+    let mut entries = Vec::new();
+    for cpu in 0..acpi::MAX_ENUMERATED_CPUS as u8 {
+        entries.extend_from_slice(&local_apic_entry(cpu, cpu, ENABLED));
+        entries.extend_from_slice(&local_apic_nmi_entry(cpu, 0, 1));
+    }
+    let census = census_of(&madt_behind_the_rsdt(&entries));
+    assert_eq!(census.local_nmi_count, acpi::MAX_ENUMERATED_CPUS);
+    for cpu in 0..acpi::MAX_ENUMERATED_CPUS as u32 {
+        assert!(census.local_nmi_for(cpu).is_some(), "missing NMI pin for CPU {cpu}");
+    }
+}
