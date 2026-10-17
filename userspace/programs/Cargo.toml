@@ -759,3 +759,7 @@ path = "src/suite_gpu.rs"
 [[bin]]
 name = "fifo_fs_test"
 path = "src/fifo_fs_test.rs"
+
+[[bin]]
+name = "gpu-exec-probe"
+path = "src/gpu_exec_probe.rs"

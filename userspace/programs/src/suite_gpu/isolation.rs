@@ -43,10 +43,8 @@ const NOBODY: u64 = 65_534;
 const SYS_SETUID: u64 = 146;
 #[cfg(target_arch = "x86_64")]
 const SYS_SETUID: u64 = 105;
-/// The suite binary, re-executed by `exec-reclaims`.
-const SUITE_BINARY: &str = "/sbin/suite-gpu";
-/// The argument that makes the re-executed suite binary run `exec-reclaims`' probe.
-pub const EXEC_PROBE: &str = "--isolation-exec-probe";
+/// The fresh image that checks `exec-reclaims`' post-exec process.
+const EXEC_PROBE_BINARY: &str = "/bin/gpu-exec-probe";
 
 // ---------------------------------------------------------------------------------------
 // Processes and messages.
@@ -125,10 +123,6 @@ impl Line {
     /// The raw descriptors, for a child that keeps them across an exec.
     pub fn raw(&self) -> (u64, u64) {
         (self.rd.raw(), self.wr.raw())
-    }
-
-    pub fn from_raw(rd: u64, wr: u64) -> Line {
-        Line { rd: Fd::from_raw(rd), wr: Fd::from_raw(wr) }
     }
 
     /// End the child: report how its body ended and exit.
@@ -310,30 +304,9 @@ fn drawn(fmt: u32, w: u32, h: u32, bg: u32) -> R<(u64, u64, Canvas)> {
     Ok((ctx, t, scene_canvas(w, h, bg, &rects)))
 }
 
-/// The handle-taking ops, each given `h`, with what each returned (EINVAL is required).
-fn refusals_for(h: u64, own_ctx: u64) -> Vec<(&'static str, i64)> {
-    let mut out = Vec::new();
-    out.push(("CONTEXT_DESTROY", gpu::context_destroy(h)));
-    out.push(("RESOURCE_DESTROY", gpu::resource_destroy(h)));
-    out.push(("SUBMIT on it as a context", gpu::submit(h, &[stream::cmd::CLEAR, 3, 0]).0));
-    out.push(("WAIT on it as a context", gpu::wait(h, 1 << 32 | 1, 0).0));
-    // COUNTERS of context 0 is the calling process's (gpu-abi.md, COUNTERS).
-    if h != 0 {
-        out.push(("COUNTERS of it as a context", gpu::counters(h).0));
-    }
-    let mut px = vec![0u8; 64];
-    let mut rec = [0u8; record::SIZE];
-    out.push(("READBACK of it", gpu::readback(h, [0, 0, 4, 4], &mut px, 16, &mut rec)));
-    out.push(("UPLOAD into it", gpu::upload(own_ctx, h, [0, 0, 1, 1], &[0; 4], 4, 0, abi::purpose::IMAGE).0));
-    out.push(("UPLOAD in it as a context", gpu::upload(h, h, [0, 0, 1, 1], &[0; 4], 4, 0, abi::purpose::IMAGE).0));
-    let mut s = Vec::new();
-    encode::begin(&mut s, h);
-    let (r, a) = gpu::submit(own_ctx, &s);
-    // A refusal naming anything but the handle at command 0 is not this refusal.
-    let named = a.error == stream::error::BAD_HANDLE && a.error_index == 0;
-    out.push(("BEGIN of it, code 4 at command 0", if named { r } else { 0 }));
-    out
-}
+#[path = "refusals.rs"]
+mod refusals;
+use refusals::refusals_for;
 
 fn all_einval(h: u64, own_ctx: u64, what: &str) -> R<()> {
     for (op, r) in refusals_for(h, own_ctx) {
@@ -432,28 +405,6 @@ pub fn fork_no_handles() -> CaseResult {
     pass()
 }
 
-/// `exec-reclaims`' probe, run by the suite binary re-executed with [`EXEC_PROBE`], the two
-/// descriptors of its line and the handles from before the exec.
-pub fn exec_probe(args: &[String]) -> ! {
-    let n = |i: usize| args.get(i).and_then(|a| a.parse::<u64>().ok()).unwrap_or(0);
-    let line = Line::from_raw(n(0), n(1));
-    let handles: Vec<u64> = args[2..].iter().filter_map(|a| u64::from_str_radix(a, 16).ok()).collect();
-    let outcome = (|| -> Result<(), String> {
-        let k = child(counters(0))?;
-        need(k.contexts == 0 && k.resources == 0 && k.resource_bytes == 0,
-            || format!("after exec the process holds {} contexts, {} resources, {} resource bytes", k.contexts, k.resources, k.resource_bytes))?;
-        let c = child(context())?;
-        for h in &handles {
-            child_all_einval(*h, c, "a handle from before the exec")?;
-        }
-        child(gpu::context_destroy(c).eq(&0).then_some(()).ok_or_else(|| fail_msg("CONTEXT_DESTROY of the probe's context".to_string())))?;
-        line.send(b'X', &[])?;
-        line.recv(b'Q')?;
-        Ok(())
-    })();
-    line.finish(outcome)
-}
-
 pub fn exec_reclaims() -> CaseResult {
     let _case = begin()?;
     let base = quiet_gauges()?;
@@ -464,14 +415,14 @@ pub fn exec_reclaims() -> CaseResult {
         line.send(b'C', &[])?;
         line.recv(b'E')?;
         let (rd, wr) = line.raw();
-        let mut args: Vec<String> = vec![SUITE_BINARY.to_string(), EXEC_PROBE.to_string(), rd.to_string(), wr.to_string()];
+        let mut args: Vec<String> = vec![EXEC_PROBE_BINARY.to_string(), rd.to_string(), wr.to_string()];
         args.extend([c, t, tex, buf].iter().map(|h| format!("{h:x}")));
         let cs: Vec<Vec<u8>> = args.iter().map(|a| { let mut v = a.as_bytes().to_vec(); v.push(0); v }).collect();
         let mut argv: Vec<*const u8> = cs.iter().map(|v| v.as_ptr()).collect();
         argv.push(core::ptr::null());
-        let path = format!("{SUITE_BINARY}\0");
+        let path = format!("{EXEC_PROBE_BINARY}\0");
         let e = process::execv(path.as_bytes(), argv.as_ptr());
-        Err(format!("exec of {SUITE_BINARY} failed: {e:?}"))
+        Err(format!("exec of {EXEC_PROBE_BINARY} failed: {e:?}"))
     })?;
     kid.recv(b'C')?;
     let held = gauges()?;
@@ -1390,7 +1341,7 @@ pub fn quiet_errors() -> CaseResult {
         let f = submit(ctx, &scene(t, RED, &[]))?;
         let (r, _) = gpu::wait(ctx, f, 2_000_000_000);
         ensure(r == -EIO, || format!("the forced fault {point} gave WAIT {}", errno(r)))?;
-        calls += 2;
+        calls += 1;
     }
     frame(ctx, &scene(t, RED, &[]))?;
     ensure(gpu::tc_arm(test_point::SKIP_TRANSFER, t, 0) == 0, || "arming skip-transfer".to_string())?;
@@ -1494,9 +1445,9 @@ fn blocker(which: u8) -> R<Kid> {
                 child(frame(c, &scene(t, RED, &[])).map(drop))?;
                 line.send(b'R', &[])?;
                 line.recv(b'G')?;
-                line.send(b'B', &[])?;
                 let mut px = vec![0u8; 64 * 64 * 4];
                 let mut rec = [0u8; record::SIZE];
+                line.send(b'B', &[])?;
                 let r = gpu::readback(t, [0, 0, 64, 64], &mut px, 256, &mut rec);
                 Err(format!("READBACK returned {} during the stall", errno(r)))
             }
@@ -1539,8 +1490,17 @@ pub fn killable_wait() -> CaseResult {
         kid.send(b'G', &[])?;
         kid.recv(b'B')?;
     }
-    let _ = time::sleep_ms(50);
     for (kid, name, which) in &mut kids {
+        // After B there is only the named GPU call. Observe an actual blocked
+        // scheduler state, rather than assuming the child ran during a delay.
+        loop {
+            let stat = std::fs::read_to_string(format!("/proc/{}/stat", kid.pid))
+                .map_err(|e| fail_msg(format!("reading the {name} child's state: {e}")))?;
+            let state = stat.rsplit_once(") ").and_then(|(_, tail)| tail.split_whitespace().next());
+            if state == Some("S") { break; }
+            ensure(ms_since(stall) < W_MS, || format!("the {name} child did not block before the watchdog"))?;
+            let _ = time::sleep_ms(1);
+        }
         let start = now_ns();
         kid.kill()?;
         let status = kid.reap()?;

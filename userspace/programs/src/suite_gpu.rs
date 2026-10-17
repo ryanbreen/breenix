@@ -317,10 +317,5 @@ needs! {
 }
 
 fn main() {
-    // `isolation/exec-reclaims` re-executes this binary to look at the process after exec.
-    let args: Vec<String> = std::env::args().collect();
-    if args.get(1).map(String::as_str) == Some(isolation::EXEC_PROBE) {
-        isolation::exec_probe(&args[2..]);
-    }
     SUITE.run()
 }
