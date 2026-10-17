@@ -165,6 +165,11 @@ specifications and IEEE 802.3 clauses 22, 28 and 40; its comments cite the guide
   DHCPOFFER that answers its transaction. It requests no lease, and the network stack does not see these frames:
   the stack's DHCP client, addressing and production rings arrive with the networking lane.
 
+The APE coexistence requirement remains open: the bootcode reset mailbox and preserved management routing
+bits do not implement the driver-and-APE handshake. The published guide used here documents the APE access
+range but no handshake protocol. A documented protocol and coexistence evidence are required before this
+lane can land; packet exchange and management power-off alone do not close that requirement.
+
 The `nic` milestone's stages are the driver's lines: `[bcm5720] found`, `[bcm5720] reset complete`,
 `[bcm5720] link up 1000 Mb/s full duplex`, `[bcm5720] frame sent:`, `[bcm5720] first frame received` and
 `[bcm5720] reply received:`. The last is the default mode's final marker.
@@ -176,8 +181,9 @@ Initiator's reset value as Enable, but the driver found it disabled (0x0) after 
 recorded it; the first boot, which left it as found, received no frame into host memory while the MAC counted 28
 broadcast frames in. With it enabled, `20261017T104536Z-metal` (046f9264) and `20261017T105217Z-metal` (daf298b1)
 ended with exit 0 at the `nic` milestone's last stage: link at 1000 Mb/s full duplex 3.6-3.8 s after
-autonegotiation started, the DISCOVER consumed and counted by the MAC (346 octets with the FCS), frames by MSI, and
-a DHCPOFFER for the transaction 4018-4024 ms after the first send. In both, the offer answered the retransmission
+autonegotiation started, the DISCOVER consumed and counted by the MAC (346 octets with the FCS), received frames, and
+a DHCPOFFER for the transaction 4018-4024 ms after the first send. These earlier boots allowed status polling
+to service receive rings, so they do not prove MSI delivery. In both, the offer answered the retransmission
 sent 4 s after the first DISCOVER. claim-lint:ok: 2 of 2 boots with every `delivery`, `first-light`,
 `interrupts-time`, `smp` and `nic` stage, scored with each boot's own definition copy; 3 of 3 boots that recorded
 the initiator's value.
