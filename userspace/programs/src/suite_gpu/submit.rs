@@ -593,7 +593,8 @@ pub fn device_reset_recovers() -> CaseResult {
         let (r, _) = gpu::submit(ctx, &scene(ta, GREEN, &[]));
         ensure(r == -EIO, || format!("a submission to context {name} after the reset returned {}", errno(r)))?;
     }
-    let d = context()?;
+    // A context made after the reset draws while its catalogue warms (state 3).
+    let d = gpu::context_create().map_err(|e| fail_msg(format!("CONTEXT_CREATE after the reset returned {}", errno(e))))?;
     let td = target(format::B8G8R8A8, 16, 16)?;
     let rects = [([2, 2, 14, 7], GREEN)];
     frame(d, &scene(td, GREY, &rects))?;

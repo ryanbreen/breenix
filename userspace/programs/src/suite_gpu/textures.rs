@@ -573,7 +573,8 @@ fn failed_uploads_invalidate(ctx: u64, second: u64, x: u64) -> CaseResult {
         let _ = time::sleep_ms(10);
     }
     value("reset-ms", ms_since(start) as i64, "ms", None);
-    let fresh = context()?;
+    // A context made after the reset draws while its catalogue warms (state 3).
+    let fresh = gpu::context_create().map_err(|e| fail_msg(format!("CONTEXT_CREATE after the reset returned {}", errno(e))))?;
     let after = target(format::B8G8R8A8, 4, 4)?;
     frame(fresh, &scene(after, BG, &[]))?;
     expect(after, &scene_canvas(4, 4, BG, &[]), "new work after the reset")?;
