@@ -1240,8 +1240,8 @@ pub unsafe fn copy_to_display(
     true
 }
 
-/// Read one hardware framebuffer pixel as 0x00RRGGBB, never from a pane or shadow
-/// buffer. Returns None for an invalid coordinate or a busy/unavailable display.
+/// Read one hardware framebuffer pixel as 0x00RRGGBB directly from device memory.
+/// Invalid coordinates and busy/unavailable displays return an empty result.
 #[cfg(not(feature = "interactive"))]
 pub fn read_display_pixel(x: usize, y: usize) -> Option<u32> {
     let framebuffer = LOG_FRAMEBUFFER.get()?;

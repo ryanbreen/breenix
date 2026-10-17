@@ -210,7 +210,7 @@ fn framebuffer_check(info: &graphics::FbInfo) -> Result<(), &'static str> {
     let h = fb.height.min(2);
     let x = fb.width - w;
     let y = fb.height - h;
-    // Complement every pixel for the second flush: stale contents cannot pass both.
+    // Complement the 2x2 pattern for the second flush to detect stale contents.
     for mask in [0, 0x00ff_ffff] {
         for row in 0..h {
             for col in 0..w {
@@ -230,7 +230,14 @@ fn framebuffer_check(info: &graphics::FbInfo) -> Result<(), &'static str> {
             }
         }
     }
-    Ok(())
+    // This supervised child still owns the display and its pane after dropping root.
+    // Readback must refuse it even though those ownership checks still pass.
+    extern "C" { fn setuid(uid: u32) -> i32; }
+    if unsafe { setuid(65534) } != 0 { return Err("readback privilege drop failed"); }
+    match graphics::fb_read_pixel(x as i32, y as i32) {
+        Err(libbreenix::error::Error::Os(libbreenix::Errno::EPERM)) => Ok(()),
+        _ => Err("unprivileged framebuffer readback was not denied"),
+    }
 }
 
 fn exec_check(path: &[u8], argv: Option<&[*const u8; 3]>) -> Result<(), &'static str> {
@@ -254,7 +261,7 @@ fn exec_check(path: &[u8], argv: Option<&[*const u8; 3]>) -> Result<(), &'static
 /// and without a supervising child nothing could stop them hanging the probe.
 const INLINE_SAFE: [bool; 16] = [
     true, true, false, true, true, false, false, false,
-    false, false, true, false, false, true, false, true,
+    false, false, true, false, false, true, false, cfg!(target_arch = "aarch64"),
 ];
 const LIMIT_NS: i128 = 2_000_000_000;
 const REAP_LIMIT_NS: i128 = 500_000_000;

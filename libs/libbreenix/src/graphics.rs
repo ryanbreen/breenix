@@ -350,7 +350,7 @@ pub fn fb_mmap_pane() -> Result<(*mut u8, u64), Error> {
 }
 
 /// Read a hardware framebuffer pixel as 0x00RRGGBB (production x86_64 only).
-/// The caller must own the display and have a whole-screen mapped pane.
+/// The caller must have effective UID 0, own the display, and have a whole-screen mapped pane.
 /// This reads the device framebuffer, not the caller's mapped drawing buffer.
 #[cfg(target_arch = "x86_64")]
 pub fn fb_read_pixel(x: i32, y: i32) -> Result<u32, Error> {
