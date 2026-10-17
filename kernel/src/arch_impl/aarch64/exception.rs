@@ -2536,6 +2536,12 @@ fn dispatch_irq_action(irq_id: u32, frame: *const Aarch64ExceptionFrame) {
                     crate::drivers::virtio::gpu_pci::handle_interrupt();
                 }
             }
+            // GPU core interrupt dispatch (virtio-gpu-gl-pci INTx on QEMU)
+            if let Some(gpu_core_irq) = crate::gpu::irq() {
+                if irq_id == gpu_core_irq {
+                    crate::gpu::handle_interrupt();
+                }
+            }
             // VirtIO network PCI interrupt dispatch (GICv2m MSI)
             if let Some(net_pci_irq) = crate::drivers::virtio::net_pci::get_irq() {
                 if irq_id == net_pci_irq {

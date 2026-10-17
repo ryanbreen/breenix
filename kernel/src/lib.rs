@@ -58,6 +58,12 @@ pub mod syscall;
 // Unix domain sockets are fully arch-independent
 pub mod net;
 pub mod socket;
+// Suite-mode test controls (syscall 415) and the GPU core (syscall 416): ARM64 only
+// until x86-64 joins the GPU era (docs/gui/gpu.md section 1.6.4).
+#[cfg(target_arch = "aarch64")]
+pub mod gpu;
+#[cfg(target_arch = "aarch64")]
+pub mod test_control;
 #[cfg(target_arch = "x86_64")]
 pub mod test_exec;
 pub mod time;

@@ -426,6 +426,14 @@ impl ProcessManager {
 
         self.designated_init = Some(pid);
         crate::tracing::providers::teardown::record_init_designation(true);
+        // The one place the suite-mode test-control latch is decided, before init runs.
+        #[cfg(target_arch = "aarch64")]
+        crate::test_control::latch_init_program(
+            self.processes
+                .live_row(&pid)
+                .and_then(|process| process.exe_path.as_deref())
+                .map_or(&[][..], |path| path.as_slice()),
+        );
         Ok(InitPublication { pid, main_thread })
     }
 
