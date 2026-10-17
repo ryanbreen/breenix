@@ -1162,7 +1162,10 @@ implementation. This amendment states those interfaces, in its own PR before the
   with EPERM before its argument is decoded and returns ENOSYS to the owner; `MODES` returns ENOSYS.
 <!-- claim-lint:ok: Normative G6 interface requirement stated by this amendment, docs/gui/gpu.md section 1.16, not a measured result. -->
 - **Bounded validation.** Validation does work proportional to the stream's length, with the buffer
-  ranges it reads bounded by the snapshot limits of section 1.4.1. `isolation/bounded-validation` builds
+  ranges it reads bounded by the snapshot limits of section 1.4.1. The `coverage_spans` crossing tables one
+  submission names in a buffer, each distinct table counted once, total at most that buffer's `data_bytes`
+  (EINVAL, code 8, otherwise), so overlapping tables cannot make validation read the snapshot again for
+  each instance. `isolation/bounded-validation` builds
   streams of 1 MiB and 16 MiB from the same mix of commands, each refused at its last command, and requires
   the 16 MiB stream's time per word to be at most twice the 1 MiB stream's (each the least of three runs),
   and a stream of the 80 MiB maximum to be refused within 1 s.
@@ -1190,7 +1193,7 @@ implementation. This amendment states those interfaces, in its own PR before the
 | `SUBMIT`'s copies and vertex storage are charged to the GPU memory quota and `RLIMIT_AS`; ENOMEM, code 22 | sections 1.4, 1.4.1; `docs/gui/gpu-abi.md` |
 | Handles have no address's form; returned values are of stated kinds | section 1.4; `docs/gui/gpu-abi.md` |
 | `SET_MODE` refuses non-owners with EPERM before G7 | section 1.4; `docs/gui/gpu-abi.md` |
-| The bounded-validation measurement | section 1.10 |
+| The bounded-validation measurement; one submission's distinct coverage tables in a buffer total at most its `data_bytes` (code 8) | section 1.10; `docs/gui/gpu-abi.md` |
 | Per-thread kernel output, and point 3 `emit-diagnostic` for the GPU core | sections 1.4, 1.8; `docs/gui/gpu-abi.md` |
 | `gpu_irq_masked_max_us`, the GPU paths it covers, and point 2 `irq-hold` | sections 1.8, 1.10; `docs/gui/gpu-abi.md` |
 

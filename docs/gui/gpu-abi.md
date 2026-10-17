@@ -424,7 +424,11 @@ offset, `8*height+1` u32 offsets into the following crossing entries. Each entry
 u32s: finite binary32 x bits and signed winding (+1 or -1). Offsets start at zero, are
 monotonic and end at the entry count; entries on each sub-scanline are sorted by x.
 The validator reads those offsets in O(rows*8) for the estimate and validates the bounded
-crossing entries. The shader visits crossings in order on each of the eight sub-scanlines,
+crossing entries. A table is identified by its buffer, byte offset and height; one submission may name a
+table any number of times, and the tables it names in one buffer, each counted once, have a total size,
+`4*(8*height+1) + 8*entries` bytes each, of at most that buffer's `data_bytes` (EINVAL, code 8, at the
+first table past it), so validation reads each snapshot word of the tables a bounded number of times
+(`docs/gui/gpu.md` section 1.16). The shader visits crossings in order on each of the eight sub-scanlines,
 using section 2.1's fill_start, winding, binary32 accumulation, span and to_byte order.
 No coverage pixel is computed or uploaded by the CPU.
 
