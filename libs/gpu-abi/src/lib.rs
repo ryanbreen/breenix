@@ -575,7 +575,8 @@ pub struct Counters {
     pub resources: u64,
     /// Guest backing bytes the process's resources hold.
     pub resource_bytes: u64,
-    /// For a context: how many catalogue programs its creation warmed.
+    /// For a context: how many programs it has warmed: the fixed rendering catalogue at
+    /// creation, and `probe_int`'s pair from its first PROBE.
     pub warmed: u64,
     pub reserved: [u64; 15],
 }

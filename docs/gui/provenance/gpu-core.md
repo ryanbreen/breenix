@@ -563,7 +563,7 @@ These runs are G3 evidence, not a green full suite: the G4–G8 checks are still
 |---|---|
 | PROBE 7, SCISSOR 8, their word layouts, routine selectors 0–24, result-word selection, operand domains, refusal codes 18 and 19, filtered modifier bit 31 and point 24's validator injection | O: proposed contract PR #1709, `docs/gui/gpu-abi.md`, BGL command stream. G4 depends on that contract PR. |
 | Probe work weight 65,536 steps per pixel; scissor clips drawing but leaves COPY independent; BEGIN restores target bounds | O: #1709; the weight budgets the bounded arithmetic program, rather than a host-renderer policy |
-| Six warmed programs: solid, copy and probe each have a vertex and fragment program | O: `docs/gui/gpu.md` sections 1.3 and 1.4.1; the probe is one fragment program with 25 integer-selected branches |
+| Creation warms four programs, `solid`'s and `copy`'s vertex and fragment pairs; a context's first PROBE creates `probe_int`'s pair in that submission, and its draw warms them | O: `docs/gui/gpu.md` sections 1.3 and 1.4.1 as amended by #1709; the probe is one fragment program with 25 integer-selected branches |
 | Probe result bytes: extract bits 16–23, 8–15, 0–7 and 24–31 for the R, G, B and A output components, convert unsigned integers to floats, multiply by binary32 `1/255` (0x3B808081) | O: #1709's canonical BGRA word; A: IEEE 754 binary32 round-to-nearest-even; L: U2F and MUL |
 | NaN result 0x7FC00000, finite truncation domain, signed-zero and gradual-underflow rules | O: #1709; A: IEEE 754-2019 sections 3.4 and 4.3.1 <!-- claim-lint:ok: #1709 numerical requirements, not measured results. --> |
 
@@ -617,7 +617,7 @@ tokens (T:649–688). The text plus terminator was 252,216 bytes, below P:157–
 The review revision eliminates repeated expressions and constant operations, and uses low-word UMUL for
 terms discarded above bit 95. The generator prints the revised size and token budget when run; the
 emitted-ISA host tests execute that generated text, including loops and integer rewrites. Shader text now
-uses the continuation framing above rather than requiring one large command. Catalogue warm-up retains section 1.4.1's requirement for each context; startup compilation is still charged to the existing fence and case deadlines.
+uses the continuation framing above rather than requiring one large command. Context creation warms only the fixed rendering catalogue (section 1.4.1); the probe program's compilation is charged to its context's first PROBE, under the same watchdog and case deadlines.
 The earlier B10 candidate at `09922c96` had capacity 21,940 and 240,200 text bytes including its terminator;
 its rejected 21,257 field omitted 130×5 immediate words and the label allowance. B10 records those original
 inputs; B11 records the integer-only selection program at `41766187`, and B12 the runtime literal construction. These capacities are layout-derived

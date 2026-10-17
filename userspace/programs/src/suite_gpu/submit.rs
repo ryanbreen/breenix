@@ -23,14 +23,29 @@ pub fn context_create() -> CaseResult {
     ensure(ms <= 10_000, || format!("CONTEXT_CREATE took {ms} ms"))?;
     ensure(ctx != 0, || "CONTEXT_CREATE returned handle 0".to_string())?;
     let c = caps()?;
-    let programs = 2 * c.pipelines.count_ones() as u64;
+    // Creation warms the fixed rendering catalogue; the profile-only `probe_int` pair
+    // waits for the context's first PROBE (gpu-abi.md, CONTEXT_CREATE).
+    let probe = c.pipelines & 1 << pipeline::PROBE_INT != 0;
+    let programs = 2 * (c.pipelines & !(1 << pipeline::PROBE_INT)).count_ones() as u64;
     let k = counters(ctx)?;
-    ensure(k.warmed == programs, || format!("creation warmed {} programs; the catalogue built so far has {programs}", k.warmed))?;
+    ensure(k.warmed == programs, || format!("creation warmed {} programs; the fixed rendering catalogue built so far has {programs}", k.warmed))?;
     ensure(k.state == context_state::LIVE, || format!("the new context's state is {}", k.state))?;
     // Owned: it draws and its work completes.
     let t = target(format::B8G8R8A8, 4, 4)?;
     frame(ctx, &scene(t, GREEN, &[]))?;
     expect(t, &scene_canvas(4, 4, GREEN, &[]), "the new context's first frame")?;
+    if probe {
+        // The first PROBE compiles and warms `probe_int`: integer addition into one pixel.
+        let mut s = scene(t, GREEN, &[]);
+        s.extend_from_slice(&[stream::cmd::PROBE, 24, 0, 0, 1, 1, 2, 2, 0x1234_0000, 0x5678]);
+        s.resize(s.len() + 14, 0);
+        let start = now_ns();
+        frame(ctx, &s)?;
+        value("first-probe-ms", ms_since(start) as i64, "ms", None);
+        expect(t, &scene_canvas(4, 4, GREEN, &[([1, 1, 2, 2], 0x1234_5678)]), "the context's first PROBE")?;
+        let k = counters(ctx)?;
+        ensure(k.warmed == programs + 2, || format!("after the first PROBE the context has {} programs, expected {}", k.warmed, programs + 2))?;
+    }
     pass()
 }
 

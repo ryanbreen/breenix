@@ -1647,9 +1647,9 @@ fn op_context_create(arg: u64, len: u64) -> Result<u64, i64> {
 }
 
 /// Create device context `id` with its internal resources and the process's resources
-/// attached, then compile and warm the catalogue's programs and wait for the warm-up's
-/// fence. Every wait here is a synchronous device request under the watchdog, ended by a
-/// kill (section 1.4.1, program warm-up).
+/// attached, then compile and warm the fixed catalogue's programs and wait for the
+/// warm-up's fence; `probe_int` waits for the first PROBE. Each wait here is a synchronous
+/// device request under the watchdog, ended by a kill (section 1.4.1, program warm-up).
 fn create_device_context(tgid: u64, id: u32, internal: [u32; 3], vb_pages: &Arc<Pages>, scratch_pages: &Arc<Pages>) -> Result<(), i64> {
     let [vb, scratch, scratch_texture] = internal;
     // Counted as alive from the request on, so a failed creation queues CTX_DESTROY
@@ -2533,6 +2533,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             _ => false,
         };
         ctx.objects = objects;
+        ctx.warmed = ctx.objects.programs();
         ctx.issued += 1;
         let n = ctx.issued;
         let ns = ctx.ns;

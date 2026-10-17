@@ -152,8 +152,12 @@ pub const COPY_FS: Program = Program {
     tokens: 39,
 };
 
-/// Catalogue program pairs: solid, copy, and the integer probe.
-pub const CATALOGUE_PROGRAMS: u32 = 6;
+/// Programs context creation compiles and warms: `solid`'s and `copy`'s pairs, the fixed
+/// rendering catalogue. The profile-only `probe_int` pair is created by the context's first
+/// PROBE (`docs/gui/gpu.md` section 1.4.1, program warm-up).
+pub const CATALOGUE_PROGRAMS: u32 = 4;
+/// Programs `probe_int` adds once a context's first PROBE has created them.
+pub const PROBE_PROGRAMS: u32 = 2;
 
 /// The per-context VirGL object handles, from one allocator that never reuses a handle
 /// across object types (`docs/gui/gpu.md` section 1.6, VirGL object handles).
@@ -202,6 +206,12 @@ impl Objects {
         self.surfaces.keys().chain(self.views.keys()).copied()
     }
 
+    /// The programs this context has compiled: the fixed catalogue, plus `probe_int`'s
+    /// pair once a PROBE created it.
+    pub fn programs(&self) -> u32 {
+        CATALOGUE_PROGRAMS + if self.probe_fs != 0 { PROBE_PROGRAMS } else { 0 }
+    }
+
     fn take(&mut self) -> u32 {
         let h = self.next;
         self.next += 1;
@@ -209,7 +219,8 @@ impl Objects {
     }
 }
 
-/// Create and bind the context's fixed state and programs, and its vertex buffer.
+/// Create and bind the context's fixed state, the fixed catalogue's programs, and its
+/// vertex buffer.
 pub fn setup(enc: &mut Enc, o: &mut Objects, vertex_buffer: u32) {
     o.blend = o.take();
     // Blend (VIRGL_OBJ_BLEND_SIZE = 11): handle, S0 (no independent blend, no logic op,
@@ -243,10 +254,6 @@ pub fn setup(enc: &mut Enc, o: &mut Objects, vertex_buffer: u32) {
     shader(enc, o.copy_vs, &COPY_VS);
     o.copy_fs = o.take();
     shader(enc, o.copy_fs, &COPY_FS);
-    o.probe_vs = o.take();
-    shader(enc, o.probe_vs, &SOLID_VS);
-    o.probe_fs = o.take();
-    shader(enc, o.probe_fs, &profile::FS);
     o.sampler = o.take();
     // Sampler state (VIRGL_OBJ_SAMPLER_STATE_SIZE = 9): handle, S0 (clamp to edge, nearest,
     // no mip filter, no compare), LOD bias, minimum and maximum LOD 0, border colour 0. `TXF`
@@ -640,6 +647,14 @@ pub fn translate(enc: &mut Enc, o: &mut Objects, words: &(impl Words + ?Sized), 
                 };
                 let r = [4, 5, 6, 7].map(|k| words.word(at + k) as i32);
                 if let Some(r) = stream::clipped(r, t.info.width, t.info.height, scissor) {
+                    if o.probe_fs == 0 {
+                        // The context's first PROBE compiles `probe_int`; this draw warms it.
+                        // The objects are kept only if the submission is sent.
+                        o.probe_vs = o.take();
+                        shader(enc, o.probe_vs, &SOLID_VS);
+                        o.probe_fs = o.take();
+                        shader(enc, o.probe_fs, &profile::FS);
+                    }
                     bind_programs(enc, o, &mut programs, Bound::Probe);
                     let mut constants = Vec::with_capacity(22);
                     constants.extend_from_slice(&[pipe::SHADER_FRAGMENT, 0]);
@@ -676,9 +691,10 @@ fn corrupt_pixel(enc: &mut Enc, o: &Objects, programs: &mut Bound, bound: &mut b
     draw_vertices(enc, vertex_buffer, offset, &quad([0, 0, 1, 1]), 1)
 }
 
-/// Context creation's warm-up: the fixed state and programs, then one draw with each
-/// pipeline into the 1x1 scratch target `scratch`, `copy` sampling the 1x1 texture
-/// `scratch_texture` and the probe selecting integer addition (`docs/gui/gpu.md` section 1.4.1, program warm-up).
+/// Context creation's warm-up: the fixed state and catalogue programs, then one draw with
+/// each into the 1x1 scratch target `scratch`, `copy` sampling the 1x1 texture
+/// `scratch_texture`. `probe_int` is left to the first PROBE (`docs/gui/gpu.md` section
+/// 1.4.1, program warm-up).
 pub fn warm_up(
     enc: &mut Enc,
     o: &mut Objects,
@@ -714,11 +730,6 @@ pub fn warm_up(
         0,
         &[pipe::SHADER_FRAGMENT, 0, 0, 0, 0, 0],
     );
-    let next = draw_vertices(enc, vertex_buffer, next, &quad([0, 0, 1, 1]), 1);
-    bind_programs(enc, o, &mut programs, Bound::Probe);
-    let mut constants = [0u32; 22];
-    constants[0] = pipe::SHADER_FRAGMENT;
-    enc.cmd(ccmd::SET_CONSTANT_BUFFER, 0, &constants);
     draw_vertices(enc, vertex_buffer, next, &quad([0, 0, 1, 1]), 1);
 }
 

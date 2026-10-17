@@ -701,6 +701,9 @@ fn filtered(inject: bool) -> CaseResult {
     if let Some(o) = other {
         frame(run.ctx, &scene(o, BG, &[]))?;
     }
+    // A refusal changes no counters, generations or pixels (gpu-abi.md, point 24).
+    let generation = |t: u64| read(t, 17, 9).map(|(_, rec)| u64_at(&rec, record::GENERATION));
+    let generations = (generation(t)?, other.map(generation).transpose()?);
     let before = counters(run.ctx)?;
     let mut s = Vec::new();
     if let Some(o) = other {
@@ -731,30 +734,58 @@ fn filtered(inject: bool) -> CaseResult {
             a.error
         )
     })?;
-    ensure(counters(run.ctx)?.submissions == before.submissions, || {
-        "refused filtered draw sent a submission".to_string()
+    let after = counters(run.ctx)?;
+    let gpu_counters = |k: &abi::Counters| {
+        (k.submissions, k.draws, k.instances, k.fragment_area, k.work_estimate, k.device_errors)
+    };
+    ensure(gpu_counters(&after) == gpu_counters(&before), || {
+        format!(
+            "refused filtered draw changed the context's counters from {:?} to {:?}",
+            gpu_counters(&before),
+            gpu_counters(&after)
+        )
     })?;
     if inject {
         ensure(fired(24) == 1, || {
             format!("profile-violation fired {} times", fired(24))
         })?;
     }
-    expect(
+    let rec = expect(
         t,
         &scene_canvas(17, 9, BG, &[]),
         "filtered refusal atomicity",
     )?;
+    let mut now = (u64_at(&rec, record::GENERATION), None);
     if let Some(o) = other {
-        expect(
+        let rec = expect(
             o,
             &scene_canvas(17, 9, BG, &[]),
-            "draw before targeted profile refusal",
+            "draw on another target before the planted refusal",
         )?;
+        now.1 = Some(u64_at(&rec, record::GENERATION));
+    }
+    ensure(now == generations, || {
+        format!("refused filtered draw moved generations from {generations:?} to {now:?}")
+    })?;
+    if inject {
+        // Point 24's event target is 0, so an arm naming a resource does not match it (gpu-abi.md).
+        let r = gpu::tc_arm(24, t, 0);
+        ensure(r == 0, || format!("profile point with a target: {}", errno(r)))?;
     }
     let mut clean = Vec::new();
     encode::begin(&mut clean, t);
     encode::draw_sampled(&mut clean, pipeline::COPY, tex, &[[1, 1, 7, 5, 0, 0]]);
-    frame(run.ctx, &clean)?;
+    let r = frame(run.ctx, &clean);
+    if inject {
+        let fired = fired(24);
+        ensure(gpu::tc_disarm_all() == 0, || "DISARM_ALL refused".to_string())?;
+        r?;
+        ensure(fired == 1, || {
+            format!("profile-violation armed for target {t:#x} fired; {fired} firings in all")
+        })?;
+    } else {
+        r?;
+    }
     expect(
         t,
         &scene_canvas(17, 9, BG, &[([1, 1, 5, 5], FG)]),

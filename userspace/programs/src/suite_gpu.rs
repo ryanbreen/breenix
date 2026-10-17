@@ -49,7 +49,7 @@ static SUITE: Suite = suite("gpu", "GPU rendering", &[
         case("device-error-reported", "A forced device error reaches the submitting context as EIO naming the device's answer", device::device_error_reported),
     ]),
     category("submit", "command submission & fences", &[
-        case("context-create", "CONTEXT_CREATE, including all catalogue warm-up, returns an owned context within 10 s", submit::context_create),
+        case("context-create", "CONTEXT_CREATE, including the fixed rendering catalogue's warm-up, returns an owned context within 10 s, and its first PROBE warms probe_int", submit::context_create),
         case("context-destroy", "CONTEXT_DESTROY frees the context once its submitted work has completed", submit::context_destroy),
         case("context-limit", "Creating a context past the per-process quota returns EAGAIN", submit::context_limit),
         case("stream-validate", "A malformed command stream returns EINVAL with the failing command's index", submit::stream_validate),
@@ -215,7 +215,7 @@ static SUITE: Suite = suite("gpu", "GPU rendering", &[
         case("clear-rate-2560", "At least 60 full-screen 2560x1600 clears per second, each presented", performance_clear_rate_2560),
         case("rect-throughput", "10000 solid 16x16 rectangles in one submission complete within 50 ms", performance_rect_throughput),
         case("submit-latency", "An empty submission's fence: median at most 2 ms and maximum at most 10 ms over 1000", performance_submit_latency),
-        case("first-draw-latency", "A new context's first draw with each catalogue pipeline completes within 10 ms", performance_first_draw_latency),
+        case("first-draw-latency", "A new context's first draw with each fixed rendering-catalogue pipeline (excluding probe_int) completes within 10 ms", performance_first_draw_latency),
         case("readback-time-2560", "A full 2560x1600 readback completes within 100 ms", performance_readback_time_2560),
         case("upload-bandwidth", "A 16 MiB upload is visible to the next submission within 100 ms", performance_upload_bandwidth),
         case("coverage-throughput", "A full-screen 2560x1600 coverage blend from an R8 mask completes within 16.7 ms", performance_coverage_throughput),
