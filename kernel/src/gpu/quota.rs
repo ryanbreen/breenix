@@ -14,31 +14,47 @@ use crate::tracing::providers::gpu::{gauge, GPU_RESOURCE_BYTES};
 
 use super::{with_core, EINVAL, ENODEV, ENOMEM, MEMORY_QUOTA};
 
-/// One process's charged bytes.
-pub(super) type Quota = Arc<AtomicU64>;
+/// One process's charged bytes: everything the quota limits, and the part of it that is
+/// `SUBMIT`'s copies and vertex storage (`COUNTERS.copy_bytes`; the rest is `resource_bytes`).
+#[derive(Default)]
+pub(super) struct Counts {
+    pub(super) held: AtomicU64,
+    pub(super) copies: AtomicU64,
+}
+
+pub(super) type Quota = Arc<Counts>;
 
 /// Bytes charged to one quota, released when dropped.
 pub(super) struct QuotaCharge {
     quota: Quota,
     bytes: u64,
+    copy: bool,
 }
 
 impl QuotaCharge {
-    /// Charge `bytes` to `quota`, unless the quota cannot take them.
-    pub(super) fn try_new(quota: &Quota, bytes: u64) -> Option<QuotaCharge> {
+    /// Charge `bytes` to `quota`, unless the quota cannot take them; `copy` for `SUBMIT`'s
+    /// copies and vertex storage.
+    pub(super) fn try_new(quota: &Quota, bytes: u64, copy: bool) -> Option<QuotaCharge> {
         quota
+            .held
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |held| {
                 held.checked_add(bytes).filter(|&total| total <= MEMORY_QUOTA)
             })
             .ok()?;
+        if copy {
+            quota.copies.fetch_add(bytes, Ordering::AcqRel);
+        }
         gauge(&GPU_RESOURCE_BYTES, bytes as i64);
-        Some(QuotaCharge { quota: quota.clone(), bytes })
+        Some(QuotaCharge { quota: quota.clone(), bytes, copy })
     }
 }
 
 impl Drop for QuotaCharge {
     fn drop(&mut self) {
-        self.quota.fetch_sub(self.bytes, Ordering::AcqRel);
+        if self.copy {
+            self.quota.copies.fetch_sub(self.bytes, Ordering::AcqRel);
+        }
+        self.quota.held.fetch_sub(self.bytes, Ordering::AcqRel);
         gauge(&GPU_RESOURCE_BYTES, -(self.bytes as i64));
     }
 }
@@ -53,9 +69,10 @@ pub(super) struct Charge {
 
 impl Charge {
     /// Charge `bytes` to process `tgid`; ENOMEM when its quota or `RLIMIT_AS` cannot take them.
-    pub(super) fn new(tgid: u64, bytes: u64) -> Result<Charge, i64> {
+    /// `copy` for `SUBMIT`'s copies and vertex storage, reported apart from staging.
+    pub(super) fn new(tgid: u64, bytes: u64, copy: bool) -> Result<Charge, i64> {
         let quota = with_core(|c| c.proc_mut(tgid).quota.clone()).ok_or(ENODEV)?;
-        let charged = QuotaCharge::try_new(&quota, bytes).ok_or(ENOMEM)?;
+        let charged = QuotaCharge::try_new(&quota, bytes, copy).ok_or(ENOMEM)?;
         let limits = crate::process::with_process_manager(|m| {
             let p = m.get_process(crate::process::ProcessId::new(tgid)).ok_or(EINVAL)?;
             if !p.reserve_gpu_bytes(bytes) {

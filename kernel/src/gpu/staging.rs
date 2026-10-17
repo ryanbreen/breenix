@@ -13,7 +13,7 @@ pub(super) struct Staging {
 impl Staging {
     pub(super) fn new(tgid: u64, bytes: usize) -> Result<Staging, i64> {
         let frames = bytes.div_ceil(PAGE);
-        let charge = Charge::new(tgid, (frames * PAGE) as u64)?;
+        let charge = Charge::new(tgid, (frames * PAGE) as u64, false)?;
         let pages = Pages::new(frames).ok_or(ENOMEM)?;
         Ok(Staging { pages, _charge: charge })
     }

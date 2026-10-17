@@ -586,7 +586,10 @@ pub struct Counters {
     /// catalogue's as its asynchronous warm-up proceeds, and `probe_int`'s pair from its
     /// first PROBE.
     pub warmed: u64,
-    pub reserved: [u64; 15],
+    /// `SUBMIT`'s private copies and device vertex storage charged to the process while they
+    /// are held; the GPU memory quota limits `resource_bytes` and this together.
+    pub copy_bytes: u64,
+    pub reserved: [u64; 14],
 }
 
 /// Record v2 (`docs/gui/gpu.md` section 1.8), as raw bytes with its field offsets.

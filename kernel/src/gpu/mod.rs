@@ -136,7 +136,6 @@ struct Proc {
     contexts: BTreeMap<u64, u32>,
     resources: BTreeMap<u64, u32>,
     totals: Totals,
-    seq: u64,
     /// Bytes charged to the process's GPU memory quota (`quota`): resource backing,
     /// staging, and `SUBMIT`'s copies and vertex storage while they are held.
     quota: Quota,
@@ -323,6 +322,8 @@ struct Core {
     next_fence: u64,
     next_ns: u32,
     next_obs: u64,
+    /// The sequence handles are drawn from (`handle`).
+    handle_seq: u64,
     key: u64,
     stalled: bool,
     quarantined_at: Option<u64>,
@@ -413,6 +414,7 @@ impl Core {
             next_fence: 1,
             next_ns: 1,
             next_obs: 1,
+            handle_seq: 0,
             key: 0,
             stalled: false,
             quarantined_at: None,
@@ -579,13 +581,16 @@ impl Core {
     }
 
     /// A new handle for process `tgid`, unique among its handles, whose top byte is neither
-    /// 0x00 nor 0xFF: no handle has the form of an address (section 1.16).
+    /// 0x00 nor 0xFF: no handle has the form of an address (section 1.16). The sequence it is
+    /// drawn from is the core's, so a process's handles after an exec, which starts its GPU
+    /// state again, are not the ones it held before.
     fn handle(&mut self, tgid: u64) -> u64 {
         let key = self.key;
-        let p = self.proc_mut(tgid);
         loop {
-            p.seq += 1;
-            let mut z = key ^ tgid.rotate_left(29) ^ p.seq.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            self.handle_seq += 1;
+            let seq = self.handle_seq;
+            let p = self.proc_mut(tgid);
+            let mut z = key ^ tgid.rotate_left(29) ^ seq.wrapping_mul(0x9E37_79B9_7F4A_7C15);
             z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
             z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
             z ^= z >> 31;
@@ -613,7 +618,6 @@ impl Core {
             contexts: BTreeMap::new(),
             resources: BTreeMap::new(),
             totals: Totals::default(),
-            seq: 0,
             quota: Quota::default(),
             creating: false,
         })
@@ -2140,7 +2144,7 @@ fn op_resource_create(arg: u64, len: u64) -> Result<u64, i64> {
         if p.resources.len() >= RESOURCE_QUOTA {
             return Err(EAGAIN);
         }
-        let q = QuotaCharge::try_new(&p.quota, charge).ok_or(ENOMEM)?;
+        let q = QuotaCharge::try_new(&p.quota, charge, false).ok_or(ENOMEM)?;
         let id = c.next_res;
         c.next_res += 1;
         Ok((id, q))
@@ -2351,7 +2355,7 @@ impl Snapshot {
         snap.ranges.truncate(used);
         let total: u64 = snap.ranges.iter().map(|r| r.bytes).sum();
         if total > 0 {
-            snap._charge = Some(Charge::new(tgid, total.div_ceil(PAGE as u64) * PAGE as u64)?);
+            snap._charge = Some(Charge::new(tgid, total.div_ceil(PAGE as u64) * PAGE as u64, true)?);
         }
         let mut copied = 0u64;
         for r in &mut snap.ranges {
@@ -2619,7 +2623,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
     // The stream's copy and the buffer snapshot are charged to the process while the call
     // holds them (section 1.16); a charge that cannot be made is ENOMEM, code 22 at 0.
     let pages = |bytes: u64| bytes.div_ceil(PAGE as u64) * PAGE as u64;
-    let _stream_charge = match Charge::new(tgid, pages(a.length)) {
+    let _stream_charge = match Charge::new(tgid, pages(a.length), true) {
         Ok(c) => c,
         Err(ENOMEM) => return refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM),
         Err(e) => return Err(e),
@@ -2843,7 +2847,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
     let chunk_charge = if chunk_bytes == 0 {
         None
     } else {
-        match Charge::new(tgid, chunk_bytes) {
+        match Charge::new(tgid, chunk_bytes, true) {
             Ok(c) => Some(c),
             Err(e) => {
                 drop_vertex_buffer();
@@ -2989,7 +2993,7 @@ fn vertex_buffer_for(tgid: u64, ctx: u32, bytes: u64) -> Result<Option<u32>, i64
     }
     let size = u32::try_from(bytes).map_err(|_| ENOMEM)?;
     // The device's vertex storage is charged to the process until the buffer is freed.
-    let charge = Charge::new(tgid, bytes)?;
+    let charge = Charge::new(tgid, bytes, true)?;
     let id = with_core(|c| {
         let id = c.next_res;
         c.next_res += 1;
@@ -3667,7 +3671,9 @@ fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {
                 fill(&mut out, &p.totals);
                 out.contexts = p.contexts.len() as u64;
                 out.resources = p.resources.len() as u64;
-                out.resource_bytes = p.quota.load(Ordering::Acquire);
+                let (held, copies) = (p.quota.held.load(Ordering::Acquire), p.quota.copies.load(Ordering::Acquire));
+                out.resource_bytes = held.saturating_sub(copies);
+                out.copy_bytes = copies;
             }
         } else {
             let id = c.ctx_of(tgid, a.context)?;
@@ -3683,7 +3689,9 @@ fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {
             if let Some(p) = proc_live {
                 out.contexts = p.contexts.len() as u64;
                 out.resources = p.resources.len() as u64;
-                out.resource_bytes = p.quota.load(Ordering::Acquire);
+                let (held, copies) = (p.quota.held.load(Ordering::Acquire), p.quota.copies.load(Ordering::Acquire));
+                out.resource_bytes = held.saturating_sub(copies);
+                out.copy_bytes = copies;
             }
         }
         out.device_contexts = c.contexts.values().filter(|x| x.owner == tgid && x.device_alive).count() as u64;
