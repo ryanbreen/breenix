@@ -24,14 +24,14 @@
 #[path = "../kernel/src/arch_impl/x86_64/acpi.rs"]
 mod acpi;
 
-use acpi::{read_madt, refusal_token, MadtCensus, MadtRefusal};
+use acpi::{read_madt, read_spcr_port, refusal_token, MadtCensus, MadtRefusal};
 
 /// The fake physical address the synthetic image's first byte stands at. Well
 /// below the reader's `PHYS_READ_CEILING`, so a refusal in this file is a
 /// length decision rather than a ceiling one.
 const IMAGE_BASE: u64 = 0x0002_0000;
 
-/// Bytes of synthetic physical memory: room for the 5 tables laid out below.
+/// Bytes of synthetic physical memory: room for the 6 tables laid out below.
 const IMAGE_LENGTH: usize = 4096;
 
 /// Where each synthetic table sits, as a fake physical address.
@@ -517,4 +517,73 @@ fn unsupported_interrupt_entries_do_not_refuse_processor_enumeration() {
     assert_eq!(census.io_apic_count, 16);
     assert_eq!(census.override_count, 16);
     assert!(!census.interrupt_topology_supported);
+}
+
+/// Where a synthetic SPCR sits, as a fake physical address.
+const SPCR: u64 = IMAGE_BASE + 0x0400;
+
+/// An SPCR whose header declares `declared_length`, naming a UART of
+/// `interface` type at `address` in Generic Address Structure space `space`,
+/// with its checksum sealed over the declared bytes.
+fn put_spcr(image: &mut Image, interface: u8, space: u8, address: u64, declared_length: u32) {
+    put_sdt_header(image, SPCR, b"SPCR", declared_length);
+    image.put(SPCR + 36, &[interface]);
+    image.put(SPCR + 40, &[space, 8, 0, 1]);
+    image.put_u64(SPCR + 44, address);
+    image.put(SPCR + 52, &[1, 4]); // interrupt type 8259, IRQ 4
+    image.put(SPCR + 58, &[7]); // 115200 baud
+    image.seal(SPCR, declared_length, SPCR + 9);
+}
+
+/// A MADT and an SPCR behind an RSDT.
+fn spcr_behind_the_rsdt(interface: u8, space: u8, address: u64, declared_length: u32) -> Image {
+    let mut image = Image::new();
+    put_madt(&mut image, MADT, 0xFEE0_0000, &[], 44);
+    put_spcr(&mut image, interface, space, address, declared_length);
+    put_rsdt(&mut image, RSDT, &[MADT, SPCR]);
+    put_rsdp_v1(&mut image, RSDT);
+    image
+}
+
+fn spcr_port(image: &Image) -> Option<u16> {
+    read_spcr_port(Some(RSDP), image.physical_memory_offset())
+}
+
+/// ANTI-VACUITY for the refusals below: an SPCR naming a 16550-class UART in
+/// I/O space gives that UART's port, for each interface type a 16550 driver
+/// serves, behind an RSDT and behind an XSDT.
+#[test]
+fn an_spcr_naming_a_16550_in_io_space_gives_its_port() {
+    for interface in [0x00, 0x01, 0x12] {
+        let image = spcr_behind_the_rsdt(interface, 1, 0x3f8, 80);
+        assert_eq!(spcr_port(&image), Some(0x3f8), "interface type {interface:#x}");
+    }
+    let mut image = Image::new();
+    put_madt(&mut image, MADT, 0xFEE0_0000, &[], 44);
+    put_spcr(&mut image, 0x00, 1, 0x2f8, 80);
+    put_xsdt(&mut image, XSDT, &[MADT, SPCR]);
+    put_rsdp_v2(&mut image, RSDT, XSDT, 36);
+    assert_eq!(spcr_port(&image), Some(0x2f8), "behind the XSDT");
+}
+
+/// The console rule falls back to its default for an SPCR it cannot use: a
+/// UART in memory space or of another kind, a port 0 or wider than an I/O
+/// port, a table too short for its base address or with a bad checksum, and
+/// a root table with no SPCR.
+#[test]
+fn an_spcr_the_console_rule_cannot_use_names_no_port() {
+    assert_eq!(spcr_port(&spcr_behind_the_rsdt(0x00, 0, 0xfe03_2000, 80)), None, "memory space");
+    assert_eq!(spcr_port(&spcr_behind_the_rsdt(0x03, 1, 0x3f8, 80)), None, "a PL011");
+    assert_eq!(spcr_port(&spcr_behind_the_rsdt(0x00, 1, 0, 80)), None, "port 0");
+    assert_eq!(spcr_port(&spcr_behind_the_rsdt(0x00, 1, 0x1_0000, 80)), None, "wider than a port");
+    assert_eq!(spcr_port(&spcr_behind_the_rsdt(0x00, 1, 0x3f8, 51)), None, "too short");
+    let mut image = spcr_behind_the_rsdt(0x00, 1, 0x3f8, 80);
+    image.put(SPCR + 70, &[0x5a]);
+    assert_eq!(spcr_port(&image), None, "a bad checksum");
+    let mut image = Image::new();
+    put_madt(&mut image, MADT, 0xFEE0_0000, &[], 44);
+    put_rsdt(&mut image, RSDT, &[MADT]);
+    put_rsdp_v1(&mut image, RSDT);
+    assert_eq!(spcr_port(&image), None, "no SPCR");
+    assert_eq!(read_spcr_port(None, image.physical_memory_offset()), None, "no RSDP");
 }
