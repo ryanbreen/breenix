@@ -225,7 +225,8 @@ and 415 (`652a4494`) was reverted (`0f53872e`) and is not reapplied.
   completes. Completed OK, the target's generation advances and its contents are published. Completed with a
   device error, or lost to a watchdog reset, every target the submission wrote is marked *invalid*: readback
   returns EIO naming the submission, sampling it in a later submission is refused, and it becomes valid again
-  only when a later submission writes it whole (a full clear, a full copy or a full upload). No partial result
+  only when a later submission writes it whole (a full clear, a full copy or a full upload). Drawing into
+  an invalid target is allowed; sampling it is refused. A partial draw leaves it invalid. No partial result
   of a failed submission is ever observed as valid.
 - **The work estimate.** For each draw the validator computes fragments × per-fragment steps, where the
   per-fragment steps are a constant of the pipeline, except `coverage_spans`, whose steps for a row are the
@@ -240,6 +241,21 @@ and 415 (`652a4494`) was reverted (`0f53872e`) and is not reapplied.
   SVGA3 restart path the VMware corrections already carry), every context gets EIO `device-reset`, and the
   display owner and compositor recreate their resources; the console is redrawn. virtio-gpu defines no
   per-context cancellation, so destroying a context is not assumed to stop host work; only the reset is.
+- **Context errors.** Two consecutive device errors on one context quarantine only that context, including
+  twice-armed point 27. Other processes and contexts remain live. Device resets are for a device fault or
+  the watchdog's no-progress condition, never for repeated errors by one process.
+- **Timing checks.** Let W = 2,000 ms (the watchdog period), K = 250 ms (the kill bound),
+  and R = 100 ms (the reset/reinitialization budget, including status acknowledgement). A 50 ms timed
+  wait must return ETIMEDOUT in [50, 100] ms: no early return and at most one further timeout interval.
+  A signal due 30 ms into a wait must produce EINTR before W/4 = 500 ms. Watchdog quarantine must
+  occur in [W, W + 2K] = [2,000, 2,500] ms; no-progress reset and reinitialization must complete in
+  [2W, 2W + 2K + R] = [4,000, 4,600] ms from the stall. These are maximum tolerances, not extensions
+  to the 250 ms kill requirement, and checks may be tighter. Ring backpressure proves four incomplete
+  submissions through their fences and a fifth admission wait; it must not depend on renderer speed.
+- **Synchronous device work.** Readback transfers and catalogue warm-up use the same watchdog quarantine
+  and no-progress reset path now, retain DMA backing until completion or reset, and honor a kill within
+  250 ms. Before validation, submission takes one immutable snapshot of each referenced buffer;
+  validation and translation use that same snapshot, including after G3 enables uploads.
 - **Kills.** `WAIT` returns within 250 ms of a kill, but the killed process's queued GPU work is not cancelled:
   its contexts are quarantined, and its resources stay held until their fences complete or the watchdog
   resets the device, and are freed then (`isolation/killed-work-drains`).
@@ -325,7 +341,7 @@ A profile violation is a failing case to fix, never a reason for a tolerance.
 | Target | Device | Guest backend | Host renderer | Readback (section 1.8) |
 |---|---|---|---|---|
 | ARM64 QEMU (macOS host) | `virtio-gpu-gl-pci` | VirGL over the PCI transport; the kernel has an ECAM PCI enumeration path on ARM64 (`kernel/src/drivers/mod.rs`, about line 169), which G1 confirms on QEMU's `virt` machine | virglrenderer on ANGLE's Metal backend in UTM's stack (section 1.6.1) | fenced `TRANSFER_FROM_HOST_3D` |
-| Parallels | its virtio-gpu PCI device with VirGL | the same VirGL backend, on `gpu_pci.rs`'s transport once the parts the provenance audit names are re-authored (section 1.9) | Parallels' own, on the host's GPU | the same |
+| Parallels | its virtio-gpu PCI device with VirGL | the clean-room VirGL backend and PCI transport, supplied by catch-up (section 1.9) | Parallels' own, on the host's GPU | the same |
 | VMware Fusion | SVGA3 | SVGA3D DX contexts, objects and SM4 programs on SVGA3 command buffers, MOBs and GB surfaces (section 1.6.3) | Fusion's own, on the host's GPU | GPU copy of the target into a dedicated readback surface, then `READBACK_GB_SURFACE` |
 
 **VirGL object handles (both VirGL targets).** virglrenderer keeps one object-handle space per context,
@@ -573,14 +589,18 @@ the whole surface. The VMware spike read shader-rendered targets back exactly th
 **Planted faults** (test controls, §21, new points 19 to 31), each with a `gpu` case that requires the exact
 reason and then the clean result once disarmed: 19 `skip-transfer` (a skipped transfer-back), 20
 `stale-fence` (a fence answered for another submission), 21 `wrong-resource` (readback of another resource),
-22 `corrupt-pixel` (a pixel outside the draw corrupted on the device), 23 `mask-capability`, 24
+22 `corrupt-pixel` (a pixel outside the draw corrupted on the device), 23 `mask-capability` (one admission or CAPS query only, one-shot like every point in §21), 24
 `profile-violation` (one draw with filtered sampling), 25 `skip-present-flush`, 26 `wrong-scanout`, 27
-`device-error` (a forced device error, escalating to a reset when armed twice), 28 `suppress-draw` (the
+`device-error` (a forced device error; two consecutive errors quarantine only that context), 28 `suppress-draw` (the
 translator drops one draw from the device stream while the fence still completes), 29 `wrong-texture` (one
 draw binds another texture the same process owns), 30 `skip-upload-visibility` (one upload's transfer to the
 host is omitted), 31 `withhold-fence` (one fence's completion is ignored, so the watchdog fires; a real host
 hang cannot be induced from inside the profile, whose shader loops are all bounded, so this point simulates
-one).
+one). Point 31 also has a named fence-depth mode: withhold publication of the next context's
+first four completion fences until a fifth submission encounters the four-in-flight admission limit,
+then release the saved real completions. It does not invent successful fences or alter watchdog deadlines.
+`submit/ring-backpressure` checks all four fences are incomplete before submitting the fifth, then waits
+for all five real completions and checks admission accounting and final pixels.
 
 There is no planted missing-cache-invalidation fault: on every target the "device" is host software
 writing guest memory through the host's coherent memory system, so omitting the invalidation changes no
@@ -590,7 +610,13 @@ it between the transfer fence and the first read.
 ### 1.9 Clean room and provenance
 
 The rule is the libc rule applied to graphics. **Allowed:** the VirtIO 1.3 specification; the VirGL protocol
-definition header as interface facts (command numbers, field layouts); Gallium's published
+definition header `virgl_protocol.h` as interface facts (command numbers, field layouts), plus the
+public interface definitions `virgl_hw.h` (capset layouts), `p_defines.h` and `p_shader_tokens.h`
+(the enumerations and token layouts carried by VirGL). These headers authorize numeric values,
+enumerations and structure layouts only, never implementation, control flow or policy. Every value the
+core uses cites its header and line range in `docs/gui/provenance/gpu-core.md`. Linux's uapi
+`virtio_gpu.h` is not a source: virtio-gpu commands, structures and flags cite VirtIO specification
+sections instead; Gallium's published
 [Tungsten Graphics Shader Infrastructure documentation](https://docs.mesa3d.org/gallium/tgsi.html), solely
 its language and instruction definitions, not Gallium implementation code; VMware's published interface
 headers (`svga3d_cmd.h`, `svga3d_dx.h`, `svga3d_devcaps.h` and siblings) in the
@@ -744,14 +770,20 @@ everything its category's cases use):**
 
 | Step | Milestone | Work |
 |---|---|---|
-| G1 | `device`, `submit` | `virtio-gpu-gl-pci` on the PCI transport; the existing PCI virtio-gpu display path (the one Parallels uses) running on QEMU so main's programs keep working; the kernel GPU core (`kernel/src/gpu/`): contexts, handles, validation, the work estimate, fences, waits, the watchdog and reset; syscall 416 on ARM64; test points 20, 23, 27, 31 and the PID 1 guard for every reserved point 19–31 |
+| G1 | `device`, `submit` | `virtio-gpu-gl-pci` on the PCI transport; the existing MMIO virtio-gpu display stays in use on ARM64 QEMU until G7; the kernel GPU core (`kernel/src/gpu/`): contexts, handles, validation, the work estimate, fences, waits, the watchdog and reset; syscall 416 on ARM64; test points 20, 23, 27, 31 and the PID 1 guard for every reserved point 19–31 |
 | G2 | `readback` | `READBACK` with record v2 and points 19, 21, 22, 28 (reusing point 20 from G1); `solid`; target invalidation; single-target `PRESENT`, its fence and killable blocking path, scanout bind and status strip |
 | G3 | `textures` | uploads with purposes, region copies, `copy`; points 29, 30 |
 | G4 | `profile` | `probe_int` with the integer, multi-word, binary32 and shape-predicate routines; the profile checks; point 24 |
 | G5 | `pipelines` | the rest of the catalogue in TGSI, the destination copy and hazard rule, BGL's draw API |
-| G6 | `isolation` | quotas, reclamation at exit/exec/kill, the fuzzer, quiet errors, no addresses, the IRQ gauge over the GPU paths |
+| G6 | `isolation` | per-submission copy quotas (the private command stream, immutable buffer snapshots, translated chunks and device vertex storage), other quotas, reclamation at exit/exec/kill, the fuzzer, quiet errors, no addresses, the IRQ gauge over the GPU paths |
 | G7 | `present` | modes, scale, two-target present, the ownership stack on the GPU, the kernel console on the GPU, the firmware handoff; points 25, 26 |
 | G8 | `performance` | measure against the bounds, fix the slow paths |
+
+The effort builds its own clean-room core in `kernel/src/gpu/`; it never uses `gpu_pci.rs`,
+`virgl.rs` or `svga3.rs`. Issue #1673's in-place legacy rewrite is closed. Per-submission copy
+quota charging is explicitly G6 work; immutable snapshots and watchdog-enrolled waits are G1 work.
+Effort lanes land into `gpu/integration`; main receives the effort after ARM64 QEMU, Parallels and
+VMware pass. x86-64 GPU work waits for the dedicated hardware and its catch-up brief.
 
 G1 reserves points 19–31 and checks the latched PID 1 before decoding any of them, including points
 whose implementation is supplied later. `isolation/test-hooks-absent` checks that guard in G6 without
@@ -1039,7 +1071,7 @@ driver runs, and nowhere else (ruling R7); after the driver starts, the console 
 
 Fourteen installed programs use `FrameBuf`, `fb_mmap` or `libgfx` today, on main and on `breengel/suite`
 (found by search on 2026-10-16). Between `gpu`'s landing and BreenGL's they keep running on the existing
-display path, which G1 keeps working on QEMU's PCI device. In the BreenGL rebuild each is either ported to
+display path, which remains MMIO on ARM64 QEMU until G7. In the BreenGL rebuild each is either ported to
 BreenGL on BGL, in a new `breengel/gpu-apps` lane, or retired from the tree and the image:
 
 | Program | What it is | Disposition |
