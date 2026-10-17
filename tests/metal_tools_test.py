@@ -779,7 +779,8 @@ class RootStagingTest(unittest.TestCase):
             image = root / 'root.img'
             subprocess.run([mke2fs, '-q', '-t', 'ext2', '-d', str(tree), '-F', str(image), '4096'],
                            check=True, capture_output=True)
-            facts = metal_root.stage_root(image, 'probe', None, {}, install='20261017T000013Z-metal')
+            site = {'BOOT_URL': 'http://fixture.invalid/breenix/boot.img'}
+            facts = metal_root.stage_root(image, 'probe', None, site, install='20261017T000013Z-metal')
             data = image.read_bytes()
             record = b'BREENIX-STORAGE 1\ninstall-root 20261017T000013Z-metal\n'
             self.assertEqual(data[:512], record + bytes(512 - len(record)))
