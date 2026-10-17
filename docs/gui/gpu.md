@@ -394,8 +394,13 @@ The G0 spikes exercised a subset; binary32 emulation remains unproved (section 1
      `h − 1 < 2³¹`: two words. (`255 × h` alone overflows 32 bits.)
    - `triangle`: edge functions of i32 vertices are below 2⁶⁵ in magnitude: three words.
    - `box_filter`: a bin sum is at most `2²⁸ × 255`: two words.
-   Floats carry only integers below 2²⁴ (the fragment position, before `floor`) and the final conversion of an
-   8-bit value `k` as `k / 255`, which both APIs' UNORM conversion rules round back to `k`.
+   <!-- claim-lint:ok: Normative arithmetic and conversion requirements in docs/gui/gpu.md section 1.5, proposed by #1714. -->
+   Native floats are confined to fragment/vertex positions below 2²⁴, the UNORM fetch boundary and the
+   final conversion of an 8-bit value `k` as `k / 255`, which both APIs' UNORM conversion rules round back
+   to `k`. A fetched UNORM channel `v` is converted to its integer byte by `floor(v * 255 + 0.5)`;
+   subsequent blending and coverage accumulation use integer words. This boundary conversion does not
+   change the required texel byte or permit a tolerance. `coverage_spans` uses native float conversion
+   only for its integer pixel coordinates and parameter-buffer texel fetches, not coverage arithmetic.
    `profile/unorm-roundtrip` checks all 256 values per channel; `profile/integer-ops` and
    `profile/wide-arithmetic` run every routine through `probe_int` against literal results, including the
    extremes of each range; `profile/large-coordinates` runs each shape's predicate routine through `probe_int`
