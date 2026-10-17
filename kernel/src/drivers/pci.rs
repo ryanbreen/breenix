@@ -63,19 +63,34 @@ pub const PCI_CAP_ID_MSI: u8 = 0x05;
 pub const PCI_CAP_ID_MSIX: u8 = 0x11;
 
 const PCI_COMMAND_OFFSET: u8 = 0x04;
+/// Command register bit 10, Interrupt Disable (PCI Local Bus 3.0, 6.2.2).
 const PCI_COMMAND_INTX_DISABLE: u16 = 1 << 10;
-const PCI_MSI_FLAGS_OFFSET: u8 = 0x02;
-const PCI_MSI_ADDRESS_LO_OFFSET: u8 = 0x04;
-const PCI_MSI_ADDRESS_HI_OFFSET: u8 = 0x08;
-const PCI_MSI_DATA_32_OFFSET: u8 = 0x08;
-const PCI_MSI_DATA_64_OFFSET: u8 = 0x0c;
-const PCI_MSI_MASK_32_OFFSET: u8 = 0x0c;
-const PCI_MSI_MASK_64_OFFSET: u8 = 0x10;
-const PCI_MSI_FLAGS_ENABLE: u16 = 1 << 0;
-const PCI_MSI_FLAGS_QSIZE: u16 = 0x0070;
-const PCI_MSI_FLAGS_64BIT: u16 = 1 << 7;
-const PCI_MSI_FLAGS_MASKBIT: u16 = 1 << 8;
-const PCI_MSI_VECTOR0_MASK: u32 = 1;
+
+// The MSI capability structure (PCI Local Bus 3.0, 6.8.1). Offsets are from
+// the capability's first byte.
+/// Message Control.
+const MSI_MESSAGE_CONTROL: u8 = 0x02;
+/// Message Address, bits 31:2 of a DWORD-aligned address.
+const MSI_MESSAGE_ADDRESS: u8 = 0x04;
+/// Message Upper Address, present when the function is 64-bit capable.
+const MSI_MESSAGE_UPPER_ADDRESS: u8 = 0x08;
+/// Message Data follows the address: after Message Address, or after
+/// Message Upper Address in the 64-bit layout.
+const MSI_MESSAGE_DATA_32: u8 = 0x08;
+const MSI_MESSAGE_DATA_64: u8 = 0x0c;
+/// Mask Bits, present when the function is per-vector masking capable.
+const MSI_MASK_BITS_32: u8 = 0x0c;
+const MSI_MASK_BITS_64: u8 = 0x10;
+/// Message Control bit 0, MSI Enable.
+const MSI_CONTROL_ENABLE: u16 = 1 << 0;
+/// Message Control bits 6:4, Multiple Message Enable: 000 grants one message.
+const MSI_CONTROL_MULTIPLE_MESSAGE_ENABLE: u16 = 0b111 << 4;
+/// Message Control bit 7, 64 bit address capable.
+const MSI_CONTROL_64BIT: u16 = 1 << 7;
+/// Message Control bit 8, per-vector masking capable.
+const MSI_CONTROL_PER_VECTOR_MASKING: u16 = 1 << 8;
+/// Mask Bits bit 0 masks the first (here the only) message.
+const MSI_MASK_FIRST_MESSAGE: u32 = 1;
 
 /// Intel vendor ID (for reference - common in QEMU)
 pub const INTEL_VENDOR_ID: u16 = 0x8086;
@@ -346,98 +361,71 @@ impl Device {
         None
     }
 
-    /// Configure and enable PCI MSI with a 32-bit message address.
+    /// Program the MSI capability at `cap_offset` to send one message, with
+    /// message address `address` (a DWORD-aligned 32-bit address) and message
+    /// data `data`, and enable it in place of INTx.
     ///
-    /// `cap_offset`: config space offset of the MSI capability
-    /// `address`: MSI target address (e.g., GICv2m doorbell register)
-    /// `data`: MSI data value (e.g., SPI number)
+    /// From the MSI capability structure (PCI Local Bus 3.0, 6.8.1): MSI is
+    /// off while the message is programmed, and where the function can mask
+    /// its messages the one message stays masked until MSI is on. Multiple
+    /// Message Enable 000 grants one message, so the function sends `data`
+    /// unchanged. A 64-bit capable function's upper address is written as 0. INTx is
+    /// disabled in the command register as well (PCI Local Bus 3.0, 6.2.2).
     pub fn configure_msi(&self, cap_offset: u8, address: u32, data: u16) {
-        let msg_ctrl = pci_read_config_word(
-            self.bus,
-            self.device,
-            self.function,
-            cap_offset + PCI_MSI_FLAGS_OFFSET,
-        );
-        let is_64bit = (msg_ctrl & PCI_MSI_FLAGS_64BIT) != 0;
-        let has_mask = (msg_ctrl & PCI_MSI_FLAGS_MASKBIT) != 0;
-        let data_offset = if is_64bit {
-            cap_offset + PCI_MSI_DATA_64_OFFSET
+        let (bus, device, function) = (self.bus, self.device, self.function);
+        let control = pci_read_config_word(bus, device, function, cap_offset + MSI_MESSAGE_CONTROL);
+        let wide = control & MSI_CONTROL_64BIT != 0;
+        let maskable = control & MSI_CONTROL_PER_VECTOR_MASKING != 0;
+        let (data_at, mask_at) = if wide {
+            (
+                cap_offset + MSI_MESSAGE_DATA_64,
+                cap_offset + MSI_MASK_BITS_64,
+            )
         } else {
-            cap_offset + PCI_MSI_DATA_32_OFFSET
-        };
-        let mask_offset = if is_64bit {
-            cap_offset + PCI_MSI_MASK_64_OFFSET
-        } else {
-            cap_offset + PCI_MSI_MASK_32_OFFSET
+            (
+                cap_offset + MSI_MESSAGE_DATA_32,
+                cap_offset + MSI_MASK_BITS_32,
+            )
         };
 
-        // Linux disables MSI before setup, masks vectors, writes the message,
-        // flushes by reading flags, disables INTx, enables MSI, then unmasks:
-        // /tmp/linux-v6.8/drivers/pci/msi/msi.c:359-389 and :184-204.
-        let disabled_ctrl = msg_ctrl & !PCI_MSI_FLAGS_ENABLE;
+        let one_message = control & !(MSI_CONTROL_ENABLE | MSI_CONTROL_MULTIPLE_MESSAGE_ENABLE);
         pci_write_config_word(
-            self.bus,
-            self.device,
-            self.function,
-            cap_offset + PCI_MSI_FLAGS_OFFSET,
-            disabled_ctrl,
+            bus,
+            device,
+            function,
+            cap_offset + MSI_MESSAGE_CONTROL,
+            one_message,
         );
-
-        if has_mask {
-            pci_write_config_dword(
-                self.bus,
-                self.device,
-                self.function,
-                mask_offset,
-                PCI_MSI_VECTOR0_MASK,
-            );
+        if maskable {
+            pci_write_config_dword(bus, device, function, mask_at, MSI_MASK_FIRST_MESSAGE);
         }
-
-        let single_vector_ctrl = disabled_ctrl & !PCI_MSI_FLAGS_QSIZE;
-        pci_write_config_word(
-            self.bus,
-            self.device,
-            self.function,
-            cap_offset + PCI_MSI_FLAGS_OFFSET,
-            single_vector_ctrl,
-        );
-
         pci_write_config_dword(
-            self.bus,
-            self.device,
-            self.function,
-            cap_offset + PCI_MSI_ADDRESS_LO_OFFSET,
-            address,
+            bus,
+            device,
+            function,
+            cap_offset + MSI_MESSAGE_ADDRESS,
+            address & !0b11,
         );
-        if is_64bit {
+        if wide {
             pci_write_config_dword(
-                self.bus,
-                self.device,
-                self.function,
-                cap_offset + PCI_MSI_ADDRESS_HI_OFFSET,
+                bus,
+                device,
+                function,
+                cap_offset + MSI_MESSAGE_UPPER_ADDRESS,
                 0,
             );
         }
-        pci_write_config_word(self.bus, self.device, self.function, data_offset, data);
-
-        pci_read_config_word(
-            self.bus,
-            self.device,
-            self.function,
-            cap_offset + PCI_MSI_FLAGS_OFFSET,
-        );
+        pci_write_config_word(bus, device, function, data_at, data);
         self.disable_intx();
-
         pci_write_config_word(
-            self.bus,
-            self.device,
-            self.function,
-            cap_offset + PCI_MSI_FLAGS_OFFSET,
-            single_vector_ctrl | PCI_MSI_FLAGS_ENABLE,
+            bus,
+            device,
+            function,
+            cap_offset + MSI_MESSAGE_CONTROL,
+            one_message | MSI_CONTROL_ENABLE,
         );
-
-        if has_mask {
-            pci_write_config_dword(self.bus, self.device, self.function, mask_offset, 0);
+        if maskable {
+            pci_write_config_dword(bus, device, function, mask_at, 0);
         }
     }
 
@@ -544,38 +532,27 @@ impl Device {
         None
     }
 
-    /// Transition device to D0 power state via PM capability (cap ID 0x01).
-    /// This is what Linux's pci_enable_device() does internally via pci_set_power_state().
-    /// Returns the previous power state (0=D0, 1=D1, 2=D2, 3=D3hot), or None if no PM cap.
+    /// Put the function in D0 through its power management capability (ID
+    /// 0x01): PowerState, bits 1:0 of the PMCSR at capability + 4 (PCI Bus
+    /// Power Management Interface specification). Returns the previous state
+    /// (0=D0, 1=D1, 2=D2, 3=D3hot) when the function has the capability.
     pub fn set_power_state_d0(&self) -> Option<u8> {
-        let pm_cap = self.find_capability(0x01)?; // PCI_CAP_ID_PM = 0x01
-                                                  // PMCSR (Power Management Control/Status Register) is at PM_cap + 4
+        let pm_cap = self.find_capability(0x01)?;
         let pmcsr = pci_read_config_word(self.bus, self.device, self.function, pm_cap + 4);
         let current_state = (pmcsr & 0x03) as u8; // Bits [1:0] = power state
         if current_state != 0 {
             // Not in D0 — transition to D0 by clearing bits [1:0]
             let new_pmcsr = pmcsr & !0x03;
             pci_write_config_word(self.bus, self.device, self.function, pm_cap + 4, new_pmcsr);
-            // PCI spec PM 3.0 §5.4.2 requires 10ms delay after D3hot->D0 transition.
-            // Hardware-settle delay (NOT event polling) — Linux uses msleep(10) at the
-            // equivalent pci_set_power_state() site. Allowlisted per docs/polling-allowlist.md.
+            // The power management specification allows the function 10 ms
+            // after a D3hot to D0 transition before it is accessed.
+            // Hardware-settle delay (NOT event polling). Allowlisted per
+            // docs/polling-allowlist.md.
             for _ in 0..10_000_000u64 {
                 core::hint::spin_loop();
             }
         }
         Some(current_state)
-    }
-
-    /// Set Cache Line Size register (offset 0x0C).
-    /// Linux sets this based on the CPU's cache line size (typically 64 bytes = 16 DWORDs).
-    pub fn set_cache_line_size(&self, size_dwords: u8) {
-        pci_write_config_byte(self.bus, self.device, self.function, 0x0C, size_dwords);
-    }
-
-    /// Set Latency Timer register (offset 0x0D).
-    /// Linux's pci_set_master() sets this to 64 on conventional PCI if it's < 16.
-    pub fn set_latency_timer(&self, timer: u8) {
-        pci_write_config_byte(self.bus, self.device, self.function, 0x0D, timer);
     }
 
     /// Dump all PCI capabilities for diagnostics (prints to serial).
@@ -642,62 +619,6 @@ impl Device {
         }
     }
 
-    /// Full Linux-style PCI device enable: D0 transition + bus master + memory space + INTx disable.
-    /// This replicates what Linux's pci_enable_device() + pci_set_master() does.
-    pub fn linux_style_enable(&self) {
-        // 1. Transition to D0 power state (like pci_set_power_state(dev, PCI_D0))
-        if let Some(prev_state) = self.set_power_state_d0() {
-            crate::serial_println!(
-                "[pci] {:02x}:{:02x}.{}: PM D{} -> D0",
-                self.bus,
-                self.device,
-                self.function,
-                prev_state
-            );
-        } else {
-            crate::serial_println!(
-                "[pci] {:02x}:{:02x}.{}: no PM capability",
-                self.bus,
-                self.device,
-                self.function
-            );
-        }
-
-        // 2. Set Cache Line Size (64 bytes = 16 DWORDs, standard for ARM64)
-        self.set_cache_line_size(16);
-
-        // 3. Set Latency Timer (Linux uses 64 for conventional PCI)
-        self.set_latency_timer(64);
-
-        // 4. Enable Memory Space + Bus Master + Disable INTx (all in one write)
-        let command = pci_read_config_word(self.bus, self.device, self.function, 0x04);
-        // Bit 1: Memory Space, Bit 2: Bus Master, Bit 10: INTx Disable
-        let new_command = command | 0x0406;
-        pci_write_config_word(self.bus, self.device, self.function, 0x04, new_command);
-        crate::serial_println!(
-            "[pci] {:02x}:{:02x}.{}: cmd 0x{:04x} -> 0x{:04x}",
-            self.bus,
-            self.device,
-            self.function,
-            command,
-            new_command
-        );
-
-        // 5. Clear any error bits in Status register (write-1-to-clear)
-        let status = pci_read_config_word(self.bus, self.device, self.function, 0x06);
-        if status & 0xF900 != 0 {
-            // Clear error bits: SERR (14), Parity (15), Sig Target Abort (11),
-            // Rcvd Target Abort (12), Rcvd Master Abort (13), Sig System Error (14), Parity (15)
-            pci_write_config_word(self.bus, self.device, self.function, 0x06, status);
-            crate::serial_println!(
-                "[pci] {:02x}:{:02x}.{}: cleared status errors 0x{:04x}",
-                self.bus,
-                self.device,
-                self.function,
-                status & 0xF900
-            );
-        }
-    }
 }
 
 impl fmt::Display for Device {

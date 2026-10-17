@@ -17,7 +17,7 @@
 //! destination. The pinned window runs no idle/wait loop or Ring 3 return.
 //! Its ticks therefore lie between entries less timer-gate IPIs and entries;
 //! arrival passes only when that whole range fits `ARRIVAL_TICKS`.
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 #[path = "tick_bounds.rs"]
 mod bounds;
@@ -50,6 +50,15 @@ static LOCAL_RATE_MILLIHZ: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) };
 static WINDOW_ENTRIES: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 static WINDOW_IPIS: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 static WINDOW_US: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+
+/// Set once the census has printed its result lines.
+static REPORTED: AtomicBool = AtomicBool::new(false);
+
+/// Whether the census has printed its result lines. Work that reports after
+/// boot is idle waits for this, so its lines follow the census's.
+pub fn reported() -> bool {
+    REPORTED.load(Ordering::Acquire)
+}
 
 /// Measure and record the executing CPU's tick rate. Called by `cpu_init`
 /// once the CPU's LAPIC timer is running.
@@ -153,4 +162,5 @@ fn run() {
     } else {
         log::warn!("[smp] at least one online CPU missed timer ticks");
     }
+    REPORTED.store(true, Ordering::Release);
 }

@@ -4924,8 +4924,9 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
     let early_irq = setup_xhci_msi(pci_dev);
 
     // 14. Create state with IRQ already set.
-    // F32t: Now that configure_msi() uses Linux ordering (disable → mask →
-    // write → flush → INTx off → enable → unmask) no MSI storm is expected,
+    // F32t: configure_msi() programs the message with MSI off and the vector
+    // masked, then disables INTx, enables MSI and unmasks (PCI Local Bus 3.0,
+    // 6.8.1), so no MSI storm is expected,
     // so the deferred SPI activation path can enable this irq (was irq: 0
     // as a workaround since commit 488d2fc2).
     let mut xhci_state = XhciState {

@@ -470,3 +470,25 @@ fn delayed_ack_does_not_add_time_to_initial_or_renewed_lease() {
         REQUEST_TIME.load(Ordering::Relaxed) + 60_000_000_000
     );
 }
+
+#[test]
+fn a_bring_up_discover_is_answered_only_by_its_own_offer() {
+    let mac = [0x02, 0, 0, 0, 0, 0x5a];
+    let xid = 0x1234_5678;
+    let discover = dhcp::discover_message(xid, mac);
+    assert_eq!(discover[0], 1, "BOOTREQUEST");
+    assert_eq!(&discover[4..8], &xid.to_be_bytes());
+    assert_eq!(&discover[28..34], &mac);
+    assert_eq!(&discover[236..243], &[99, 130, 83, 99, 53, 1, 1], "cookie, then DHCPDISCOVER");
+    assert!(!dhcp::is_offer(&discover, xid, mac), "a request is not a reply");
+
+    let mut offer = discover;
+    offer[0] = 2;
+    offer[242] = 2;
+    assert!(dhcp::is_offer(&offer, xid, mac));
+    assert!(!dhcp::is_offer(&offer, xid ^ 1, mac), "another transaction");
+    assert!(!dhcp::is_offer(&offer, xid, [0x02, 0, 0, 0, 0, 0x5b]), "another client");
+    let mut ack = offer;
+    ack[242] = 5;
+    assert!(!dhcp::is_offer(&ack, xid, mac), "an ACK is not an offer");
+}
