@@ -360,9 +360,32 @@ to the stream-definition change, #1676; L0 documents the same ordering here with
 
 One initial signal command reported an auxiliary-process control error after killing the driver. Its record and
 reaper recovery are retained privately; the explicit main-process signal rerun passed the same deadline and status
-checks. Rows (b)–(f) are the approved L0 landing scope; L3's stub must supply row (a), tracked in #1681.
+checks. Rows (b)–(f) are the approved L0 landing scope; row (a) is supplied by the delivery stub (#1681), below.
 
 Marker resolution prefers a mode's explicit terminal stage, with kernel stages as the fallback for definitions
 without one. Pipe-separated markers are literal alternatives; `match: line` requires the complete cleaned serial
 line. Host tests cover this contract, the driver's deadline phases, HTTP accounting, reset detection, serial reads
 that finish mid-buffer, cancellation and the recovery paths.
+
+### Delivery stub and first light
+
+The firmware has no RAM disk protocol (`LocateProtocol` answers not found), so on every stub boot so far the stub
+installed its own read-only block device; the firmware's partition and FAT drivers bound to it, and the stub found
+one file system, the boot disk's ESP. claim-lint:ok: 3 of 3 stub boots in the table below.
+
+| Row | Boot | Reached | Exit |
+|---|---|---|---|
+| (a) Main's kernel through the stub (origin/main 6e3fcda8) | The image request 35.1 s after power-on; `boot.efi` (35.7 MB, the disk without a RAM disk) sent in 0.52 s with its sha256; the stub's first line at 35.9 s, the bootloader at 36.5 s, its handoff at 37.5 s. Main's kernel then printed only its COM1 lines (the PCI census, the clock, a timer-scale check) with its log on COM2, so the driver stopped it after 120 s of silence | delivery | 124 |
+| `first-light` (this lane, before the final-marker fix) | 11 of 11 `first-light` stages, kernel entry 35.1 s after power-on and idle 5.5 s later; the boot ran on to the mode deadline because the default mode's final marker was then a stub milestone's | `first-light` | 1 |
+| `first-light` with `--ramdisk` (this lane's kernel and tools) | `boot.efi` (308 MB, carrying the 256 MB ext2 root) sent in 5.39 s; the bootloader printed `Loaded ramdisk`; kernel entry 40.1 s after power-on, `[metal] kernel idle` 5.4 s later, where the driver ended the boot | `first-light` | 0 |
+
+On this firmware the console rule takes its UART from the SPCR (`[console] uart 0x3f8 source=spcr`), and the
+firmware hands over the local APIC enabled in x2APIC mode at the architectural base
+(`[apic] handoff base=0xfee00000 mode=x2apic`). The scheduler tick runs under the 8259 and PIT fallback at 200 Hz.
+
+**Log volume.** From `Kernel entry point reached` to `[metal] kernel idle` the production kernel writes 379 log
+lines, 28,952 bytes on the wire with CR LF line ends: 2.51 s of the UART at 115200 baud, within the 5.3 s from entry
+to idle. That is within the few seconds the plan allows, so the console has no quiet level. After idle the kernel's
+dispatch census adds one line a second, about 330 bytes, 2.9% of the UART; the suites' lanes weigh that against
+their own output once a root exists. claim-lint:ok: measured on the `--ramdisk` first-light boot above.
+
