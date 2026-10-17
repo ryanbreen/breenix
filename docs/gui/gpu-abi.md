@@ -453,8 +453,10 @@ The existing 2^31 work cap and all deadlines are unchanged.
 ## Test-control points
 
 System call 415 takes its latch and ops from BreenGL's contract, section 21: enabled only in a boot
-whose first PID 1 is a `/sbin/suite-*` binary, for root, with the latch and caller checked before any
-argument is decoded; ENOSYS otherwise. `ARM` is `point: u32, reserved: u32, target: u64, param: u64`
+whose first PID 1 is a `/sbin/suite-*` binary. The boot latch plus a root caller are required, with both
+checked before any argument is decoded. An unlatched boot returns ENOSYS; in a latched boot, STATE,
+ARM, FIRED and DISARM_ALL return EPERM to a non-root caller, even with malformed arguments.
+The caller need not be PID 1. `ARM` is `point: u32, reserved: u32, target: u64, param: u64`
 (24 bytes); `FIRED` is `point: u32, reserved: u32, count: u64` out (16 bytes). Points 19 to 31 are
 defined; the ones G1 builds:
 
