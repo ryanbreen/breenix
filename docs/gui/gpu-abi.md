@@ -103,10 +103,27 @@ until actual device completion or a successfully confirmed reset supplies that p
 leaves it held, including after a timeout, kill or EIO return (section 1.4.1 of `docs/gui/gpu.md`).
 
 **`READBACK` (64 bytes):** `target: u64`, `x, y, width, height: u32`, `pixels: u64` (address),
-`pixels_len: u64`, `stride: u32`, 4 reserved, `record: u64` (address of 1,024 bytes), 8 reserved. Waits
+`pixels_len: u64`, `stride: u32`, `reason: u32` out at 44, `record: u64` (address of 1,024 bytes),
+`failed_submission: u64` out at 56. Both output fields must be zero on input. Waits
 for every accepted submission that writes the target, then reads the rectangle as canonical BGRA rows
 at `stride` with record v2 (`docs/gui/gpu.md` section 1.8). EIO for an invalid or lost target, or when
 the two complementary-poison observations differ (`unwritten` in the record is the count).
+G2 assigns the previously reserved output words to name EIO refusals without changing record v2:
+`reason` 0 none, 1 unwritten (including skip-transfer), 2 fence-mismatch, 3 resource-mismatch,
+4 target-invalid, 5 device-error. `failed_submission` names the invalidating submission for reason 4;
+otherwise zero. Refused observations publish no pixels. A completed but unwritten observation returns a
+complete diagnostic record with its differing-byte count; identity refusals and invalid targets leave the
+record untouched. EFAULT leaves the arguments, pixels, record and readback counters unchanged. All three
+output ranges are preflighted before a transfer or observation serial is issued.
+
+**`PRESENT` (32 bytes, minimal G2 binding):** `target: u64`, `fence: u64` out, `answer: u32` out,
+4 reserved, `reserved: u64`. Outputs and reserved fields are zero on input. Only the process that most
+recently called `take_over_display` may present (EPERM otherwise). Waits for the target's writers, refuses
+invalid/lost targets, binds the full target to scanout 0, then flushes it with a device fence. Returns only
+once the fenced flush answers, with its fence and answer. The binding holds the resource until a later
+binding's flush completes or a confirmed reset ends device access. Record flag 1 and present fence/status
+name that binding when reading its target; another display owner cannot read it. G7 adds modes, flipping
+and the ownership stack; this operation does not claim those features.
 
 **`COUNTERS` (256 bytes):** `context: u64` in (0 for the calling process), then `u64`s: submissions 8,
 draws 16, instances 24, fragment area 32, work estimate 40, image uploads 48, fixture uploads 56,

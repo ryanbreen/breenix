@@ -308,3 +308,10 @@ vertex baseline unless it says otherwise; the vertex baseline is `VERT`, `DCL IN
 | Pages of 4,096 bytes; the device address of a kernel virtual address | O: Breenix's ARM64 memory API |
 | Data cache line 4 << CTR_EL0.DminLine (bits 19:16); DC CVAC to clean, DC CIVAC to clean and invalidate, DSB SY after | A: Arm Architecture Reference Manual, CTR_EL0, DC CVAC, DC CIVAC, DSB |
 | The virtual counter CNTVCT_EL0 seeds the handle key | A: Arm Architecture Reference Manual, CNTVCT_EL0 |
+
+## G2 ABI choices
+
+| Value or layout | Source |
+|---|---|
+| READBACK reason at 44 (0 none, 1 unwritten, 2 fence-mismatch, 3 resource-mismatch, 4 target-invalid, 5 device-error); invalidating submission at 56 | O: `docs/gui/gpu-abi.md`, naming the refusals required by gpu.md sections 1.4.1 and 1.8; zero inputs, no change to record v2 |
+| PRESENT argument: 32 bytes, target at 0, completed flush fence at 8, answer at 16, zero padding at 20 and 24 | O: `docs/gui/gpu-abi.md`, implementing the minimal G2 bind of gpu.md sections 1.7 and 1.11 |

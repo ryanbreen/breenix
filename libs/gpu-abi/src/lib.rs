@@ -402,9 +402,33 @@ pub struct Readback {
     pub pixels: u64,
     pub pixels_len: u64,
     pub stride: u32,
-    pub reserved0: u32,
+    /// Out on EIO: one of `readback_reason`; zero on input.
+    pub reason: u32,
     /// Where the 1,024-byte record v2 goes.
     pub record: u64,
+    /// Out on target-invalid: the submission that invalidated it; zero on input.
+    pub failed_submission: u64,
+}
+
+/// READBACK's named EIO reasons (Breenix ABI choices implementing contract section 1.8).
+pub mod readback_reason {
+    pub const NONE: u32 = 0;
+    pub const UNWRITTEN: u32 = 1;
+    pub const FENCE_MISMATCH: u32 = 2;
+    pub const RESOURCE_MISMATCH: u32 = 3;
+    pub const TARGET_INVALID: u32 = 4;
+    pub const DEVICE_ERROR: u32 = 5;
+}
+
+/// Minimal G2 `PRESENT` (32 bytes), completed synchronously by the device.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Present {
+    pub target: u64,
+    /// Out: the device's flush fence and answer; zero on input.
+    pub fence: u64,
+    pub answer: u32,
+    pub reserved0: u32,
     pub reserved: u64,
 }
 
@@ -565,7 +589,7 @@ macro_rules! plain {
     };
 }
 
-plain!(Caps, ContextCreate, Handle, ResourceCreate, Submit, Wait, Readback, Counters, TcArm, TcFired);
+plain!(Caps, ContextCreate, Handle, ResourceCreate, Submit, Wait, Readback, Present, Counters, TcArm, TcFired);
 
 const _: () = {
     assert!(core::mem::size_of::<FormatCaps>() == 8);
@@ -582,6 +606,7 @@ const _: () = {
     assert!(core::mem::size_of::<Submit>() == 64);
     assert!(core::mem::size_of::<Wait>() == 48);
     assert!(core::mem::size_of::<Readback>() == 64);
+    assert!(core::mem::size_of::<Present>() == 32);
     assert!(core::mem::size_of::<Counters>() == 256);
     assert!(core::mem::size_of::<TcArm>() == 24);
     assert!(core::mem::size_of::<TcFired>() == 16);

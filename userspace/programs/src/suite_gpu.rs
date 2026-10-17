@@ -24,6 +24,8 @@ mod common;
 mod device;
 #[path = "suite_gpu/submit.rs"]
 mod submit;
+#[path = "suite_gpu/readback.rs"]
+mod readback;
 
 static SUITE: Suite = suite("gpu", "GPU rendering", &[
     category("device", "3D device & capability profile", &[
@@ -65,25 +67,25 @@ static SUITE: Suite = suite("gpu", "GPU rendering", &[
         case("device-reset-recovers", "A device with no progress is reset: every context gets EIO device-reset and new work renders exactly", submit::device_reset_recovers),
     ]),
     category("readback", "device readback", &[
-        case("full-target", "A full-target readback after a clear equals the clear colour in every byte", readback_full_target),
-        case("poison-unwritten", "Each readback is two transfers into complementary poisons that must agree, so no byte is unwritten", readback_poison_unwritten),
-        case("scenes-aba", "Scenes A, B, A read back as A, B, A exactly", readback_scenes_aba),
-        case("partial-rect", "Partial rectangles, including rows that are not a multiple of 256 bytes, read back exactly", readback_partial_rect),
-        case("padded-stride", "Caller strides wider than the row, including ones not a multiple of 256 bytes, read back exactly", readback_padded_stride),
-        case("format-canonical", "Both target formats read back as canonical BGRA bytes", readback_format_canonical),
-        case("record-fields", "Record v2 is 1024 bytes with every field set as the contract defines and reserved bytes zero", readback_record_fields),
-        case("device-path", "The record names the backend's readback sequence and its answers", readback_device_path),
-        case("fence-identity", "The record's render and readback fences are the ones the device answered for them", readback_fence_identity),
-        case("ordered-after-draws", "A readback after a submission sees every draw of it", readback_ordered_after_draws),
-        case("fault-skip-transfer", "A skipped transfer-back is refused naming it, and reads back exactly once disarmed", readback_fault_skip_transfer),
-        case("fault-stale-fence", "A transfer fence answered for another transfer is refused naming it", readback_fault_stale_fence),
-        case("fault-wrong-resource", "A readback of another resource is refused naming it", readback_fault_wrong_resource),
-        case("fault-corrupt-pixel", "A pixel corrupted outside the draw fails the exact comparison at that pixel", readback_fault_corrupt_pixel),
-        case("fault-suppress-draw", "A draw dropped from the device stream while its fence completes fails the exact comparison", readback_fault_suppress_draw),
-        case("error-invalidates-targets", "A failed submission's targets read back EIO until a later submission writes them whole", readback_error_invalidates_targets),
-        case("owner-only", "Only the display owner reads back the scanout", readback_owner_only),
-        case("efault", "A readback into unmapped or read-only memory returns EFAULT with no side effect", readback_efault),
-        case("large-target", "A 2560x1600 target reads back exactly", readback_large_target),
+        case("full-target", "A full-target readback after a clear equals the clear colour in every byte", readback::full_target),
+        case("poison-unwritten", "Each readback is two transfers into complementary poisons that must agree, so no byte is unwritten", readback::poison_unwritten),
+        case("scenes-aba", "Scenes A, B, A read back as A, B, A exactly", readback::scenes_aba),
+        case("partial-rect", "Partial rectangles, including rows that are not a multiple of 256 bytes, read back exactly", readback::partial_rect),
+        case("padded-stride", "Caller strides wider than the row, including ones not a multiple of 256 bytes, read back exactly", readback::padded_stride),
+        case("format-canonical", "Both target formats read back as canonical BGRA bytes", readback::format_canonical),
+        case("record-fields", "Record v2 is 1024 bytes with every field set as the contract defines and reserved bytes zero", readback::record_fields),
+        case("device-path", "The record names the backend's readback sequence and its answers", readback::device_path),
+        case("fence-identity", "The record's render and readback fences are the ones the device answered for them", readback::fence_identity),
+        case("ordered-after-draws", "A readback after a submission sees every draw of it", readback::ordered_after_draws),
+        case("fault-skip-transfer", "A skipped transfer-back is refused naming it, and reads back exactly once disarmed", readback::fault_skip_transfer),
+        case("fault-stale-fence", "A transfer fence answered for another transfer is refused naming it", readback::fault_stale_fence),
+        case("fault-wrong-resource", "A readback of another resource is refused naming it", readback::fault_wrong_resource),
+        case("fault-corrupt-pixel", "A pixel corrupted outside the draw fails the exact comparison at that pixel", readback::fault_corrupt_pixel),
+        case("fault-suppress-draw", "A draw dropped from the device stream while its fence completes fails the exact comparison", readback::fault_suppress_draw),
+        case("error-invalidates-targets", "A failed submission's targets read back EIO until a later submission writes them whole", readback::error_invalidates_targets),
+        case("owner-only", "Only the display owner reads back the scanout", readback::owner_only),
+        case("efault", "A readback into unmapped or read-only memory returns EFAULT with no side effect", readback::efault),
+        case("large-target", "A 2560x1600 target reads back exactly", readback::large_target),
     ]),
     category("textures", "textures & uploads", &[
         case("create-formats", "Textures are created in B8G8R8A8, R8G8B8A8 and R8, and other formats are refused", textures_create_formats),
@@ -218,8 +220,6 @@ static SUITE: Suite = suite("gpu", "GPU rendering", &[
 
 // The layers cases need, each with the build step that supplies it.
 const CORE: &str = "the kernel GPU core and syscall 416 (G1)";
-const READBACK: &str = "READBACK and record v2 (G2)";
-const INVALID: &str = "target invalidation (G2)";
 const UPLOAD: &str = "uploads with purposes (G3)";
 const COPY: &str = "GPU region copies (G3)";
 const HOLD: &str = "resource hold sets (G3)";
@@ -278,25 +278,6 @@ fn device_version() -> CaseResult {
 }
 
 needs! {
-    readback_full_target => READBACK;
-    readback_poison_unwritten => READBACK;
-    readback_scenes_aba => READBACK;
-    readback_partial_rect => READBACK;
-    readback_padded_stride => READBACK;
-    readback_format_canonical => READBACK;
-    readback_record_fields => READBACK;
-    readback_device_path => READBACK;
-    readback_fence_identity => READBACK;
-    readback_ordered_after_draws => READBACK;
-    readback_fault_skip_transfer => "test-control point 19 skip-transfer (G2)";
-    readback_fault_stale_fence => "READBACK (G2) using test-control point 20 stale-fence (G1)";
-    readback_fault_wrong_resource => "test-control point 21 wrong-resource (G2)";
-    readback_fault_corrupt_pixel => "test-control point 22 corrupt-pixel (G2)";
-    readback_fault_suppress_draw => "test-control point 28 suppress-draw (G2)";
-    readback_error_invalidates_targets => INVALID;
-    readback_owner_only => READBACK;
-    readback_efault => READBACK;
-    readback_large_target => READBACK;
     textures_create_formats => UPLOAD;
     textures_create_limits => UPLOAD;
     textures_upload_full => UPLOAD;

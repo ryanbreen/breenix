@@ -2321,7 +2321,7 @@ fn op_wait(arg: u64, len: u64) -> Result<u64, i64> {
 
 fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
     let a: abi::Readback = read_arg(arg, len)?;
-    if a.reserved0 != 0 || a.reserved != 0 {
+    if a.reason != 0 || a.failed_submission != 0 {
         return Err(EINVAL);
     }
     let tgid = caller()?;
