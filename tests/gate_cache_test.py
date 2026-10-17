@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('artifacts', ROOT / 'scripts/gate-artifacts.py')
@@ -254,6 +254,57 @@ class CacheTests(unittest.TestCase):
         with patch.object(artifacts, 'build', side_effect=self.build), patch.dict(os.environ, BREENIX_GATE_FRESH='1'):
             with self.assertRaisesRegex(RuntimeError, 'requires a verified cache entry'):
                 self.call()
+
+    def test_gate_refuses_missing_container_configuration_or_builder(self):
+        lane = 'a' * 64
+        tree = self.cache / 'trees' / lane
+        (tree / 'scripts').mkdir(parents=True)
+        host = self.root / 'build-host.env'
+        builder = tree / 'scripts/x86-gate-build.py'
+        for missing in ('host', 'builder'):
+            with self.subTest(missing=missing):
+                host.write_text('configured')
+                builder.touch()
+                (host if missing == 'host' else builder).unlink()
+                with patch.object(trees, 'BUILD_HOST', host), \
+                        patch.object(trees, 'reclaim_legacy'), \
+                        patch.object(trees, 'checkout'), \
+                        patch.object(trees.subprocess, 'Popen') as child, \
+                        patch.object(trees.sys, 'argv', ['gate-tree.py', 'repo', lane, 'b' * 40,
+                                                       str(self.logs), '1', 'full']):
+                    with self.assertRaisesRegex(RuntimeError, 'refusing to build in the gate VM'):
+                        trees.main()
+                    child.assert_not_called()
+
+    def test_gate_runs_container_then_boot_only(self):
+        lane = 'a' * 64
+        tree = self.cache / 'trees' / lane
+        (tree / 'scripts').mkdir(parents=True)
+        (tree / 'scripts/x86-gate-build.py').touch()
+        host = self.root / 'build-host.env'
+        host.touch()
+        commands = []
+
+        def launch(command, **kwargs):
+            commands.append((command, dict(kwargs['env'])))
+            if len(commands) == 1:
+                (self.logs / 'x86-build.json').write_text(json.dumps({'build_seconds': 42}))
+            child = Mock(returncode=0)
+            child.poll.return_value = 0
+            return child
+
+        with patch.object(trees, 'BUILD_HOST', host), \
+                patch.object(trees, 'reclaim_legacy'), patch.object(trees, 'checkout'), \
+                patch.object(trees.signal, 'signal'), \
+                patch.object(trees.subprocess, 'Popen', side_effect=launch), \
+                patch.object(trees.sys, 'argv', ['gate-tree.py', 'repo', lane, 'b' * 40,
+                                               str(self.logs), '1', 'full']):
+            self.assertEqual(trees.main(), 0)
+        self.assertEqual(len(commands), 2)
+        self.assertEqual(commands[0][0][1:3], [str(tree / 'scripts/x86-gate-build.py'), 'remote'])
+        self.assertEqual(commands[1][0], [str(tree / 'docker/qemu/run-x86-gate.sh'), '1', 'full'])
+        self.assertEqual(commands[1][1]['BREENIX_GATE_PHASE'], 'boot')
+        self.assertEqual(commands[1][1]['BREENIX_GATE_BUILD_SECS'], '42')
 
 
 

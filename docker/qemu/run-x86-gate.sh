@@ -41,7 +41,7 @@
 #                       ("suite <id>") written onto a copy of the ext2 disk so the
 #                       kernel runs /sbin/suite-<id> as PID 1, stops the VM a few
 #                       seconds after the suite's `SUITE <id> DONE` line, and scores
-#                       the boot with scripts/suite-verdict.py: one START, every
+#                       the boot with scripts/suite-verdict.py: one START, each
 #                       manifest case's CASE line in order, a DONE agreeing with
 #                       them with failed=0, skipped=0 and passed=total=the manifest count,
 #                       and no fatal kernel output.
@@ -55,6 +55,14 @@
 #                       mkdir could clobber another lane's in-flight run and
 #                       score its serial as its own; a concurrent-lane
 #                       launcher sets this to a per-clone directory instead.
+#   BREENIX_GATE_PHASE  all (default): build, then boot. build: only the build half;
+#                       it writes the files the boot half needs and its kernel build
+#                       seconds as JSON to BREENIX_GATE_OUTPUTS, then exits.
+#                       scripts/x86-gate-build.py runs this phase in the x86 build
+#                       container, off the gate VM's cores, and installs those files
+#                       in the VM's tree. boot: only the boot half, on those installed
+#                       files, reporting BREENIX_GATE_BUILD_SECS as the build time.
+#                       claim-lint:ok: `all` is a phase value, parsed by the PHASE case in docker/qemu/run-x86-gate.sh.
 #
 # Fetch/checkout stays outside the tree in scripts/gate-tree.py.
 # Something outside the working tree has to put the code there before a script
@@ -95,6 +103,12 @@ BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
 case "$BREENIX_GATE_TMP" in
     /*) ;;
     *) echo "GATE: FAIL (BREENIX_GATE_TMP must be an absolute path, got: $BREENIX_GATE_TMP)"; exit 1 ;;
+esac
+PHASE="${BREENIX_GATE_PHASE:-all}"
+case "$PHASE" in
+  all|boot) ;;
+  build) [[ "${BREENIX_GATE_OUTPUTS:-}" == /* ]] || { echo "GATE: FAIL (the build phase needs an absolute BREENIX_GATE_OUTPUTS)"; exit 1; } ;;
+  *) echo "GATE: FAIL (BREENIX_GATE_PHASE must be all, build or boot, got: $PHASE)"; exit 1 ;;
 esac
 
 # Non-interactive shells don't source .bashrc/.profile, so put cargo on PATH.
@@ -156,7 +170,7 @@ fi
 export BREENIX_QEMU_ACCEL BREENIX_QEMU_CPU
 echo "[gate] accel=$BREENIX_QEMU_ACCEL cpu=$BREENIX_QEMU_CPU"
 
-if [ -n "${BREENIX_RUST_FORK:-}" ]; then
+if [ -n "${BREENIX_RUST_FORK:-}" ] && [ "$PHASE" != boot ]; then
   echo "[gate] repointing rust-fork at $BREENIX_RUST_FORK (not committed)"
   rm -f rust-fork
   # A fork inside this tree is linked relatively: gate-artifacts.py builds the
@@ -203,12 +217,6 @@ fi
 # Seconds the VM stays up after the suite's DONE line, so its final screen can be captured.
 SUITE_HOLD_SECS="${BREENIX_SUITE_HOLD:-5}"
 
-# Build userspace, disks and the launcher under the build lease.
-# Pinned Cargo can leak its mutation lock when cache GC races a downloader,
-# deadlocking nested Cargo builds. Seed a private cache, with independent locks.
-# Keep it outside gate-tmp: credentials/cache files must not enter run records.
-GATE_CARGO_HOME=$(python3 "$HOST_SLOTS_HELPER" cargo-home "${CARGO_HOME:-$HOME/.cargo}" "$REPO_DIR/target") || { echo "GATE: FAIL (private Cargo home creation failed)"; exit 1; }
-export CARGO_HOME="$GATE_CARGO_HOME"
 export HOST_SLOTS_HELPER
 HOST_STALL_PID=""
 # Stop this boot's host stall sampler and wait for its last record.
@@ -222,41 +230,47 @@ gate_cleanup() {
   status=$?
   [ -z "${PHASE_NAME:-}" ] || phase_end "$status"
   host_stall_stop
-  rm -rf "$GATE_CARGO_HOME"
+  [ -z "${GATE_CARGO_HOME:-}" ] || rm -rf "$GATE_CARGO_HOME"
 }
 trap gate_cleanup EXIT
 mkdir -p "$BREENIX_GATE_TMP" || exit 1
-GATE_BUILD_LOG_DIR=$(mktemp -d "$BREENIX_GATE_TMP/build-logs.XXXXXX") || exit 1
-if ! python3 "$REPO_DIR/scripts/gate-artifacts.py" "$REPO_DIR" "$GATE_BUILD_LOG_DIR"; then
-  exit 1
-fi
-if [ -n "$SUITE" ]; then
-  for suite_id in "${SUITES[@]}"; do
-    if [ ! -f "$REPO_DIR/userspace/programs/suite-$suite_id.elf" ]; then
-      echo "GATE: FAIL (missing suite binary: $suite_id)"; exit 1
+if [ "$PHASE" != boot ]; then
+  # Build userspace, disks and the launcher under the build lease.
+  # Pinned Cargo can leak its mutation lock when cache GC races a downloader,
+  # deadlocking nested Cargo builds. Seed a private cache, with independent locks.
+  # Keep it outside gate-tmp: credentials/cache files must not enter run records.
+  GATE_CARGO_HOME=$(python3 "$HOST_SLOTS_HELPER" cargo-home "${CARGO_HOME:-$HOME/.cargo}" "$REPO_DIR/target") || { echo "GATE: FAIL (private Cargo home creation failed)"; exit 1; }
+  export CARGO_HOME="$GATE_CARGO_HOME"
+  GATE_BUILD_LOG_DIR=$(mktemp -d "$BREENIX_GATE_TMP/build-logs.XXXXXX") || exit 1
+  if ! python3 "$REPO_DIR/scripts/gate-artifacts.py" "$REPO_DIR" "$GATE_BUILD_LOG_DIR"; then
+    exit 1
+  fi
+  if [ -n "$SUITE" ]; then
+    for suite_id in "${SUITES[@]}"; do
+      if [ ! -f "$REPO_DIR/userspace/programs/suite-$suite_id.elf" ]; then
+        echo "GATE: FAIL (missing suite binary: $suite_id)"; exit 1
+      fi
+    done
+    # The boot target goes on a copy: qemu-uefi.rs copies BREENIX_EXT2_SOURCE (default
+    # testdata/ext2.img) to target/ext2.img for each boot, and testdata/ext2.img stays clean.
+    # write-boot-target.sh also checks that the copy's /sbin/suite-$SUITE is the binary
+    # just built, so a stale or partial copy does not boot.
+    phase_start boot-target
+    rm -f target/ext2-boot-target.img
+    if ! cp testdata/ext2.img target/ext2-boot-target.img; then
+      echo "GATE: FAIL (could not copy testdata/ext2.img for the boot target)"; exit 1
     fi
-  done
-  # The boot target goes on a copy: qemu-uefi.rs copies BREENIX_EXT2_SOURCE (default
-  # testdata/ext2.img) to target/ext2.img for each boot, and testdata/ext2.img stays clean.
-  # write-boot-target.sh also checks that the copy's /sbin/suite-$SUITE is the binary
-  # just built, so a stale or partial copy is never booted.
-  phase_start boot-target
-  rm -f target/ext2-boot-target.img
-  if ! cp testdata/ext2.img target/ext2-boot-target.img; then
-    echo "GATE: FAIL (could not copy testdata/ext2.img for the boot target)"; exit 1
+    if ! "$REPO_DIR/scripts/write-boot-target.sh" "$REPO_DIR/target/ext2-boot-target.img" "${SUITES[0]}" "$REPO_DIR/userspace/programs/suite-${SUITES[0]}.elf" "$SUITE"; then
+      echo "GATE: FAIL (could not write the boot target onto the ext2 disk)"; exit 1
+    fi
+    phase_end
   fi
-  if ! "$REPO_DIR/scripts/write-boot-target.sh" "$REPO_DIR/target/ext2-boot-target.img" "${SUITES[0]}" "$REPO_DIR/userspace/programs/suite-${SUITES[0]}.elf" "$SUITE"; then
-    echo "GATE: FAIL (could not write the boot target onto the ext2 disk)"; exit 1
-  fi
-  phase_end
-  export BREENIX_EXT2_SOURCE="$REPO_DIR/target/ext2-boot-target.img"
-fi
 
-phase_start build-slot-wait
-host_slot_acquire x86-build || { phase_end 1; exit 1; }
-phase_end
-if [ -n "${BREENIX_GATE_CACHE_DIR:-}" ]; then
-  if ! python3 - "$REPO_DIR/scripts/gate-tree.py" "$BREENIX_GATE_CACHE_DIR" "$REPO_DIR" <<'PYSPACE'
+  phase_start build-slot-wait
+  host_slot_acquire x86-build || { phase_end 1; exit 1; }
+  phase_end
+  if [ -n "${BREENIX_GATE_CACHE_DIR:-}" ]; then
+    if ! python3 - "$REPO_DIR/scripts/gate-tree.py" "$BREENIX_GATE_CACHE_DIR" "$REPO_DIR" <<'PYSPACE'
 import importlib.util, pathlib, sys
 spec = importlib.util.spec_from_file_location('tree', sys.argv[1])
 module = importlib.util.module_from_spec(spec)
@@ -267,47 +281,80 @@ except (OSError, RuntimeError) as error:
     print(f'GATE: FAIL ({error})')
     sys.exit(1)
 PYSPACE
-  then exit 1; fi
-fi
+    then exit 1; fi
+  fi
 
-# Explicit regression/profile legs append features without changing normal gates.
-if [ -n "${BREENIX_GATE_KERNEL_FEATURES:-}" ]; then
-  [[ "$BREENIX_GATE_KERNEL_FEATURES" =~ ^[a-zA-Z0-9_-]+(,[a-zA-Z0-9_-]+)*$ ]] || { echo "GATE: FAIL (invalid kernel features)"; exit 1; }
-  FEATURES="${FEATURES:+$FEATURES,}$BREENIX_GATE_KERNEL_FEATURES"
-fi
-echo "[gate] === Building (release, features=${FEATURES:-none}) ==="
-BUILD_START=$SECONDS
-phase_start kernel-build
-FEATURE_ARGS=()
-[ -n "$FEATURES" ] && FEATURE_ARGS=(--features "$FEATURES")
-if ! cargo build --release ${FEATURE_ARGS[@]+"${FEATURE_ARGS[@]}"} --bin qemu-uefi > "$GATE_BUILD_LOG_DIR/gate-build.log" 2>&1; then
-  echo "GATE: FAIL (build failed) - see $GATE_BUILD_LOG_DIR/gate-build.log"
-  tail -40 "$GATE_BUILD_LOG_DIR/gate-build.log"
-  exit 1
-fi
-if grep -qE "^(warning|error)" "$GATE_BUILD_LOG_DIR/gate-build.log"; then
-  echo "GATE: FAIL (build produced warnings/errors) - see $GATE_BUILD_LOG_DIR/gate-build.log"
-  grep -E "^(warning|error)" "$GATE_BUILD_LOG_DIR/gate-build.log"
-  exit 1
-fi
-phase_end
-BUILD_SECS=$((SECONDS - BUILD_START))
-echo "[gate] Build clean (0 warnings) in ${BUILD_SECS}s"
-if [[ ",$SUITE," == *",sdk,"* ]]; then
-  # The Developer SDK suite's host side builds the SDK and its test apps, inside the
-  # build slot, and stages them onto the boot-target copy (docs/suites/README.md).
-  phase_start sdk-suite-stage
-  if ! python3 "$REPO_DIR/scripts/sdk-suite.py" --arch x86_64 --image "$REPO_DIR/target/ext2-boot-target.img" \
-      > "$GATE_BUILD_LOG_DIR/sdk-suite.log" 2>&1; then
-    echo "GATE: FAIL (the SDK suite's host harness could not stage the disk) - see $GATE_BUILD_LOG_DIR/sdk-suite.log"
-    tail -20 "$GATE_BUILD_LOG_DIR/sdk-suite.log"
-    phase_end 1
+  # Explicit regression/profile legs append features without changing normal gates.
+  if [ -n "${BREENIX_GATE_KERNEL_FEATURES:-}" ]; then
+    [[ "$BREENIX_GATE_KERNEL_FEATURES" =~ ^[a-zA-Z0-9_-]+(,[a-zA-Z0-9_-]+)*$ ]] || { echo "GATE: FAIL (invalid kernel features)"; exit 1; }
+    FEATURES="${FEATURES:+$FEATURES,}$BREENIX_GATE_KERNEL_FEATURES"
+  fi
+  echo "[gate] === Building (release, features=${FEATURES:-none}) ==="
+  BUILD_START=$SECONDS
+  phase_start kernel-build
+  FEATURE_ARGS=()
+  [ -n "$FEATURES" ] && FEATURE_ARGS=(--features "$FEATURES")
+  if ! cargo build --release ${FEATURE_ARGS[@]+"${FEATURE_ARGS[@]}"} --bin qemu-uefi > "$GATE_BUILD_LOG_DIR/gate-build.log" 2>&1; then
+    echo "GATE: FAIL (build failed) - see $GATE_BUILD_LOG_DIR/gate-build.log"
+    tail -40 "$GATE_BUILD_LOG_DIR/gate-build.log"
+    exit 1
+  fi
+  if grep -qE "^(warning|error)" "$GATE_BUILD_LOG_DIR/gate-build.log"; then
+    echo "GATE: FAIL (build produced warnings/errors) - see $GATE_BUILD_LOG_DIR/gate-build.log"
+    grep -E "^(warning|error)" "$GATE_BUILD_LOG_DIR/gate-build.log"
     exit 1
   fi
   phase_end
+  BUILD_SECS=$((SECONDS - BUILD_START))
+  echo "[gate] Build clean (0 warnings) in ${BUILD_SECS}s"
+  if [[ ",$SUITE," == *",sdk,"* ]]; then
+    # The Developer SDK suite's host side builds the SDK and its test apps, inside the
+    # build slot, and stages them onto the boot-target copy (docs/suites/README.md).
+    phase_start sdk-suite-stage
+    if ! python3 "$REPO_DIR/scripts/sdk-suite.py" --arch x86_64 --image "$REPO_DIR/target/ext2-boot-target.img" \
+        > "$GATE_BUILD_LOG_DIR/sdk-suite.log" 2>&1; then
+      echo "GATE: FAIL (the SDK suite's host harness could not stage the disk) - see $GATE_BUILD_LOG_DIR/sdk-suite.log"
+      tail -20 "$GATE_BUILD_LOG_DIR/sdk-suite.log"
+      phase_end 1
+      exit 1
+    fi
+    phase_end
+  fi
+  host_slot_release x86-build || exit 1
 fi
+if [ "$PHASE" = build ]; then
+  # The files the boot half reads: the launcher, the UEFI image whose path the launcher
+  # has compiled in (target/ keeps one per feature set built), the disks and the ELFs.
+  if ! python3 - "$REPO_DIR" "$BUILD_SECS" "$BREENIX_GATE_OUTPUTS" ${SUITE:+target/ext2-boot-target.img} <<'PYOUTPUTS'
+import json, pathlib, sys
+repo, seconds, output, extra = pathlib.Path(sys.argv[1]), int(sys.argv[2]), pathlib.Path(sys.argv[3]), sys.argv[4:]
+launcher = (repo / 'target/release/qemu-uefi').read_bytes()
+images = [path for path in sorted(repo.glob('target/release/build/breenix-*/out/breenix-uefi.img'))
+          if str(path).encode() in launcher or str(path.resolve()).encode() in launcher]
+if len(images) != 1:
+    print(f'GATE: FAIL (the launcher names {len(images)} of the built UEFI images, not one)')
+    sys.exit(1)
+programs = repo / 'userspace/programs'
+files = ['target/release/qemu-uefi', str(images[0].relative_to(repo)), 'target/test_binaries.img', 'testdata/ext2.img', *extra]
+files += [str(path.relative_to(repo)) for path in sorted(programs.glob('*.elf')) + sorted(programs.glob('libc-busybox.links'))]
+output.write_text(json.dumps({'build_seconds': seconds, 'files': files}) + '\n')
+PYOUTPUTS
+  then
+    exit 1
+  fi
+  echo "[gate] build phase done in $((SECONDS - TOTAL_START))s; the boot's inputs are listed in $BREENIX_GATE_OUTPUTS"
+  exit 0
+fi
+if [ "$PHASE" = boot ]; then
+  BUILD_SECS="${BREENIX_GATE_BUILD_SECS:-0}"
+  [[ "$BUILD_SECS" =~ ^[0-9]+$ ]] || { echo "GATE: FAIL (BREENIX_GATE_BUILD_SECS must be a whole number of seconds)"; exit 1; }
+  for input in target/release/qemu-uefi target/test_binaries.img testdata/ext2.img ${SUITE:+target/ext2-boot-target.img}; do
+    [ -f "$input" ] || { echo "GATE: FAIL (the boot phase has no $input; the build phase installs it)"; exit 1; }
+  done
+  echo "[gate] boot phase: inputs installed from a build phase that built the kernel in ${BUILD_SECS}s"
+fi
+[ -z "$SUITE" ] || export BREENIX_EXT2_SOURCE="$REPO_DIR/target/ext2-boot-target.img"
 export BREENIX_TEST_DISK_PREBUILT=1
-host_slot_release x86-build || exit 1
 
 # Ask the launcher for the selected hardware's census, rather than counting
 # source strings (AHCI/NVMe attach no VirtIO block devices).

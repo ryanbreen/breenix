@@ -18,15 +18,19 @@ import time
 
 # Never checkout-relative or configurable by a launcher's environment.
 SLOT_DIR = Path('/tmp/breenix-host-slots')
-# A metal build runs in the boot host's build container, outside the x86 gate VM: the
-# container's cpuset is the host's shared CPUs, so its builds leave the gate VM's
-# reserved cores alone and no x86 lease covers them. Each build runs METAL_BUILD_JOBS
-# Cargo jobs and peaks near METAL_BUILD_MEMORY; the container holds as many as both fit.
-METAL_BUILD_JOBS = 4
-METAL_BUILD_MEMORY = 4 * 1024 ** 3
+# x86 gate builds and metal builds run in the boot host's build containers, outside the
+# x86 gate VM: each container's cpuset is the host's shared CPUs, so its builds leave the
+# gate VM's reserved cores alone, and its slot directory is its own, so no lease in the
+# gate VM covers them. Each build runs BUILD_JOBS Cargo jobs and peaks near BUILD_MEMORY;
+# the machine a helper runs on holds as many builds as both fit (build_slots), which in
+# the gate VM itself is its 8 vCPUs at 4 jobs each.
+BUILD_JOBS = 4
+BUILD_MEMORY = 4 * 1024 ** 3
+# scripts/metal/metal-build sets its Cargo jobs from this name.
+METAL_BUILD_JOBS = BUILD_JOBS
 
 
-def metal_build_slots():
+def build_slots():
     try:
         cpus = len(os.sched_getaffinity(1))  # the container's cpuset, whatever this process is pinned to
     except (AttributeError, OSError):
@@ -37,17 +41,22 @@ def metal_build_slots():
         try:
             memory = os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES')
         except (AttributeError, OSError, ValueError):
-            memory = METAL_BUILD_MEMORY
-    return max(1, min(cpus // METAL_BUILD_JOBS, memory // METAL_BUILD_MEMORY))
+            memory = BUILD_MEMORY
+    return max(1, min(cpus // BUILD_JOBS, memory // BUILD_MEMORY))
 
 
-RESOURCES = {'x86-build': 2, 'x86-boot': 1, 'mac-boot': 1, 'metal-build': metal_build_slots()}
-# An x86 boot shares its VM with the build leases. Builds there left the gate guest's
-# vCPU threads waiting on the VM's run queue for up to ~100 ms despite the boot's higher
-# priority (#1368), so a boot first holds every build lease, then its boot lease, and
-# keeps both until it ends. A boot request queues for both in one step, so every queue
-# orders two boots the same way, and a session that holds a build lease gives it up
-# while it waits for all of them, so two such sessions never wait on each other.
+RESOURCES = {'x86-build': build_slots(), 'x86-boot': 1, 'mac-boot': 1, 'metal-build': build_slots()}
+# A build inside the gate VM shares the VM's vCPUs with its boots. Builds there left the
+# gate guest's vCPU threads waiting on the VM's run queue for up to ~100 ms despite the
+# boot's higher priority (#1368), so a boot first holds every build lease in the VM, then
+# its boot lease, and keeps both until it ends. A boot request queues for both in one
+# step, so every queue orders two boots the same way, and a session that holds a build
+# lease gives it up while it waits for all of them, so two such sessions never wait on
+# each other. Gate builds of commits whose gate has a build phase run in the x86 build
+# container (scripts/x86-gate-build.py) and take its leases, which no boot excludes; only
+# builds still inside the VM (a commit older than that phase, a launcher sourcing
+# docker/qemu/lib/qemu-host-lock.sh there) take the VM's leases.
+# claim-lint:ok: tests/host_slots_test.py test_boot_holds_every_build_lease_until_it_ends.
 EXCLUDES = {'x86-boot': 'x86-build'}
 WAIT_MESSAGE_SECONDS = 60
 # A guest's vCPUs are host threads. A busy host leaves them unscheduled for tens of
