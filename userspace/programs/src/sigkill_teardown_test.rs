@@ -175,7 +175,7 @@ fn counter(name: &str) -> u64 {
 }
 
 /// Reclaim-pipeline counters an evidence timeout prints as deltas over its
-/// wait, so a receipt that never retires shows what held it.
+/// wait, so a receipt still unretired at the timeout shows what held it.
 const RECLAIM_COUNTERS: [&str; 12] = [
     "ROOT_PROOF_BLOCKED_EPOCH",
     "ROOT_PROOF_BLOCKED_HW",
@@ -191,8 +191,8 @@ const RECLAIM_COUNTERS: [&str; 12] = [
     "RECLAIM_ABANDONED_UNQUEUED",
 ];
 
-/// The reclaim counters, or `None` where one cannot be read; reporting a
-/// timeout must not itself fail on a missing field.
+/// The reclaim counters, each left unread when it cannot be read: reporting
+/// a timeout must not itself fail on a missing field.
 fn reclaim_counters() -> [Option<u64>; 12] {
     let contents = std::fs::read_to_string("/proc/trace/counters").unwrap_or_default();
     RECLAIM_COUNTERS.map(|name| {
