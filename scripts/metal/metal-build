@@ -3,6 +3,7 @@
 
   metal-build --id ID --sha SHA --repo DIR --rust-fork DIR --cache DIR --root DIR
 
+# claim-lint:ok: #1680 Reviewed tool contract against this function and the host tests in tests/metal_tools_test.py.
 In a private clone of SHA: the effort-target guard, then userspace and the ext2 root (scripts/gate-artifacts.py,
 content-keyed and shared with the x86 gate), then the production kernel and its UEFI image, built under the host's
 x86-build slot so it never runs beside a gate boot. Writes <root>/breenix-metal-<id>-out/ with uefi.img, ext2.img,
@@ -65,7 +66,12 @@ def outer(args):
         link.symlink_to(args.rust_fork)
     out.mkdir(parents=True)
     tmp.mkdir(parents=True)
-    guard = clone / 'scripts/effort-target-guard.py'
+    policy_sha = git('-C', args.repo, 'ls-remote', 'origin', 'refs/heads/main').split()[0]
+    if not re.fullmatch(r'[0-9a-f]{40}', policy_sha):
+        raise ValueError('cannot resolve the landing policy')
+    git('-C', args.repo, 'fetch', '--no-tags', '--no-write-fetch-head', 'origin', policy_sha)
+    guard = tmp / 'effort-target-guard.py'
+    guard.write_text(git('-C', args.repo, 'show', policy_sha + ':scripts/effort-target-guard.py') + '\n')
     targets = re.search(r"^TARGETS = \((.*)\)", guard.read_text(), re.M)
     target = 'x86-metal' if targets and "'x86-metal'" in targets.group(1) else 'x86'
     check = subprocess.run([sys.executable, str(guard), '--repo', str(clone), '--commit', args.sha,

@@ -137,12 +137,14 @@ def machine_ready():
     return True
 
 
-def claim_lease(holder, wait, poll=5.0, on_wait=None):
+def claim_lease(holder, wait, poll=5.0, on_wait=None, checkpoint=None):
     """Takes the lease for `holder` (a dict with `id` and `unit` or `pid`). Raises Busy (when not waiting),
     Quarantined, or NotReady (no reconciled machine service)."""
     announced = False
     while True:
         with locked('lease'):
+            if checkpoint:
+                checkpoint()
             if not machine_ready():
                 raise NotReady('the machine service has not finished its startup reconciliation')
             lease = read_lease()
@@ -480,32 +482,37 @@ def _ipv4(match):
     return '<ip>'
 
 
-# Site keys whose values are generic (a port number, an addressing mode, a firmware interface name, a slot number):
-# masking them would only corrupt ordinary text.
-PUBLIC_SITE_KEYS = {'HTTP_LISTEN_PORT', 'HTTP_DEV_ADDRESSING', 'HTTP_DEV_INTERFACE', 'IDRAC_ACCOUNT_SLOT',
-                    'REDACT_IDENTIFIERS'}
-
-
 class Redactor:
     def __init__(self, site):
         literals = {value for key, value in site.items()
-                    if value and len(value) >= 3 and key not in PUBLIC_SITE_KEYS}
+                    if value}
         for value in list(literals):
-            # A URL is masked whole, and so is its host on its own; its path is the repository's.
+            # The complete URL, host and path are site literals independently.
             if '://' in value:
                 parts = urlsplit(value)
-                literals.update(part for part in (parts.netloc, parts.hostname) if part)
+                literals.update(part for part in (parts.netloc, parts.hostname, parts.path) if part and part != "/")
         self.identifiers = sorted(identifier_list(site), key=len, reverse=True)
         self.literals = sorted(literals | set(self.identifiers), key=len, reverse=True)
+        self.pattern = re.compile('|'.join(re.escape(value) for value in self.literals), re.I) if self.literals else None
+        # One pass protects addresses from short site literals and replacement labels from later substitutions.
+        mac = MAC.pattern.replace('([:-])', '(?P<mac_sep>[:-])').replace(r'\1', '(?P=mac_sep)')
+        patterns = [('path', PRIVATE_PATH.pattern), ('mac', mac), ('ip6', IPV6.pattern), ('ip', IPV4.pattern)]
+        if self.pattern:
+            patterns.append(('site', self.pattern.pattern))
+        self.tokens = re.compile('|'.join(f'(?P<{kind}>{pattern})' for kind, pattern in patterns), re.I)
 
     def __call__(self, text):
-        text = MAC.sub('<mac>', text)
-        text = PRIVATE_PATH.sub('<path>', text)
-        for literal in self.literals:
-            text = re.sub(re.escape(literal), '<site>', text, flags=re.I)
-        text = IPV6.sub(_ipv6, text)
-        text = IPV4.sub(_ipv4, text)
-        return text
+        def replace(match):
+            kind, value = match.lastgroup, match.group()
+            if kind == 'site' or value.lower() in {literal.lower() for literal in self.literals}:
+                return '<site>'
+            if kind in ('path', 'mac'):
+                return '<' + kind + '>'
+            address = _ipv6(match) if kind == 'ip6' else _ipv4(match)
+            if address != value:
+                return address
+            return self.pattern.sub('<site>', value) if self.pattern else value
+        return self.tokens.sub(replace, text)
 
 
 def identifier_list(site):
@@ -525,7 +532,7 @@ def expected_bios(site):
     expected = {
         'HttpDev1EnDis': 'Enabled', 'HttpDev1Interface': site['HTTP_DEV_INTERFACE'], 'HttpDev1Protocol': 'IPv4',
         'HttpDev1VlanEnDis': 'Disabled', 'HttpDev1TlsMode': 'None', 'HttpDev1Uri': site['BOOT_URL'],
-        'SerialComm': 'OnConRedirCom1', 'ErrPrompt': 'Disabled', 'AcPwrRcvry': 'Off', 'EmbSata': 'Off',
+        'SerialComm': 'OnConRedirCom1', 'ErrPrompt': 'Disabled', 'AcPwrRcvry': 'Off', 'EmbSata': 'AhciMode',
     }
     if site.get('HTTP_DEV_ADDRESSING', 'dhcp') == 'static':
         expected.update(HttpDev1DhcpEnDis='Disabled', HttpDev1DnsDhcpEnDis='Disabled', HttpDev1Ip=site['HTTP_DEV_IP'],
@@ -543,7 +550,7 @@ EXPECTED_MANAGER = {'IPMILan.1.Enable': 'Enabled', 'IPMISOL.1.Enable': 'Enabled'
 EXPECTED_LC = {'LCAttributes.1.CollectSystemInventoryOnRestart': 'Disabled'}
 
 
-def machine_checks(site, include_lc=False):
+def machine_checks(site, include_lc=True):
     """Read-only: every setting and state a boot depends on, as (name, expected, actual) rows, plus the facts
     a boot records as its baseline (power state, boot progress, POST code)."""
     system = rf_get(SYSTEM)

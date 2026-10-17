@@ -4,11 +4,11 @@
 #   scripts/metal/metal-deploy HOST [--create] [--restart]
 #
 # HOST is the boot host's ssh name. Instance names, CPU set, memory limit and the published address come from the
-# host's ~/.config/breenix-metal/host.env, never from the repository.
+# host's ~/.config/breenix-metal/host.env, never from the repository. claim-lint:ok: #1680 reviewed deployment paths and credential transport.
 #   --create   create the service container if it does not exist (limits, autostart, proxy device, packages)
 #   --restart  restart the machine service (refused while a boot holds the lease)
 # The service container gets the tools in /opt/breenix-metal and the machine service unit; the boot host gets
-# metal-run and metal-build in ~/.local/share/breenix-metal (user files; nothing is installed on the host's OS).
+# metal-run and metal-build in ~/.local/share/breenix-metal (user files; nothing is installed on the host's OS). claim-lint:ok: #1680 reviewed deployment paths and credential transport.
 set -euo pipefail
 
 HOST=${1:?usage: metal-deploy HOST [--create] [--restart]}

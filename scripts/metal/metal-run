@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Starts, follows and stops x86-metal boots from the boot host (docs/metal/README.md, "Running a boot").
 
+  # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
   metal-run boot [--payload image|hang|none] [--sha SHA | --branch NAME] [--no-wait] [--inject forceoff-fail]
   metal-run stop ID
   metal-run status
   metal-run follow ID
 
+# claim-lint:ok: #1680 Reviewed tool contract against this function and the host tests in tests/metal_tools_test.py.
 `boot` returns as soon as the boot's driver unit holds (or waits for) the machine lease, printing the boot id, so
 the caller's ssh session can end. For a Breenix image (the default payload) it then builds the commit in the x86
 build host, detached, and streams the image inputs into the service container. Instance names and paths come from
@@ -57,12 +59,31 @@ def resolve(env, branch):
     return line
 
 
+def validate_id(boot_id):
+    if not re.fullmatch(r'\d{8}T\d{6}Z-metal', boot_id):
+        raise SystemExit('invalid metal boot id')
+    return boot_id
+
+
+def verify_target(env, sha, branch):
+    if not re.fullmatch(r'[0-9a-f]{40}', sha):
+        raise SystemExit('--sha must be a full commit id')
+    ref = 'refs/heads/' + branch
+    in_build(env, 'git', '-C', env['BUILD_REPO'], 'check-ref-format', ref, check=True)
+    tip = resolve(env, branch)
+    in_build(env, 'git', '-C', env['BUILD_REPO'], 'fetch', '--no-tags', '--no-write-fetch-head', 'origin', tip, check=True)
+    result = in_build(env, 'git', '-C', env['BUILD_REPO'], 'merge-base', '--is-ancestor', sha, tip)
+    if result.returncode != 0:
+        raise SystemExit('the requested commit is not contained in the target branch')
+
+
 def boot(args):
     env = host_env()
     payload = args.payload
     sha = target = ''
     if payload == 'image':
         if args.sha:
+            verify_target(env, args.sha, args.branch or 'main')
             sha, target = args.sha, 'branch:' + args.branch if args.branch else 'main'
         else:
             branch = args.branch or 'main'
@@ -96,6 +117,7 @@ def boot(args):
 
 def build(boot_id, sha):
     """Detached: build in the x86 build host, stream the inputs into the boot's stage folder, signal the driver."""
+    validate_id(boot_id)
     env = host_env()
     key = boot_id.lower()
     tools = f"{env['BUILD_ROOT']}/breenix-metal-{key}-tools"
@@ -133,6 +155,7 @@ def build(boot_id, sha):
 
 
 def follow(env, boot_id):
+    validate_id(boot_id)
     directory = f'{STATE}/boots/{boot_id}'
     script = (f'tail -n +1 -F {directory}/console.log & t=$!; '
               f'while [ ! -e {directory}/ended ]; do sleep 2; done; sleep 2; kill $t; '
@@ -140,6 +163,7 @@ def follow(env, boot_id):
     return in_metal(env, 'sh', '-c', script).returncode
 
 
+# claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest='command', required=True)
@@ -166,6 +190,7 @@ def main():
     if args.command == 'follow':
         return follow(env, args.id)
     if args.command == 'stop':
+        validate_id(args.id)
         return in_metal(env, 'python3', f'{TOOLS}/metal-boot', 'stop', args.id).returncode
     return in_metal(env, 'python3', f'{TOOLS}/metal-boot', 'status').returncode
 

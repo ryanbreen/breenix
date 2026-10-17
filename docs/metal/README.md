@@ -30,23 +30,19 @@ start of the next, power requests ahead of the rest. claim-lint:ok: the queue is
 The server's firmware HTTP boot device has a **fixed URI**, set once in the BIOS; it takes its own address by DHCP,
 so the network's DHCP server is left as it is. Each boot changes what that URI serves, not the BIOS.
 
-The URI serves a **RAM-disk image**, not a bare EFI file. The pinned bootloader finds the kernel by opening a FAT
-filesystem on the device it was loaded from, which a bare EFI binary fetched over HTTP lacks. So `boot.img` is a GPT
-disk with one FAT32 EFI system partition holding the bootloader (`efi/boot/bootx64.efi`), `kernel-x86_64` and
-`boot.json` from the kernel build's UEFI image, plus the bootloader's optional `ramdisk` file holding the ext2 root.
-The firmware downloads the image, registers it as a RAM disk and starts its bootloader, which then loads the kernel,
-its configuration and the RAM disk from its own device. The server sends `Content-Type: application/vnd.efi-img`
-(`application/efi` for a bare EFI test payload), so the firmware's image-type check does not depend on the URI's
-extension.
-
-**This target's firmware does not take the RAM-disk forms.** Its HTTP boot fetches and starts a bare EFI binary
-(`application/efi`), and answers both RAM-disk forms with a `HEAD` and then "Boot Failed", reading none of the image:
-a 323 MB Breenix `boot.img` and a 34 MB `.img` holding `metal-hang.efi` (`application/vnd.efi-img`), and a 34 MB El
-Torito ISO holding it (`application/vnd.efi-iso`) at a URI ending `.img`, behind a redirect to `.iso` (the firmware
-does not follow redirects), at a URI ending `.iso`, typed `application/octet-stream`, and with byte ranges offered.
-The form Breenix is served in on this target is therefore an open ruling (a licensed virtual-media path, or a Breenix
-EFI loader that carries the ESP's files itself); until then a Breenix boot ends in delivery with exit 2.
+The firmware accepts a bare EFI binary (`application/efi`). The pinned bootloader expects its kernel,
+`boot.json` and optional `ramdisk` on a FAT device. The original delivery probe packed those files into a GPT
+`boot.img` with one FAT32 EFI system partition. This firmware refused that RAM-disk form on `HEAD`, before a
+`GET`; the ISO and redirect probes were refused too. Bare `metal-hang.efi` was fetched and started.
 claim-lint:ok: 7 of 7 RAM-disk boots refused and 4 of 4 bare-EFI boots fetched, in "Measured".
+
+The coordinator's delivery ruling approves a clean-room Breenix EFI stub, written from the UEFI specification,
+served as `application/efi`. It will register the ESP image through `EFI_RAM_DISK_PROTOCOL` and connect controllers
+when that firmware protocol is available; otherwise it will expose BlockIo and a device path itself. The image
+may be embedded or fetched through firmware HTTP. L3 builds the stub first and must demonstrate row (a), main's kernel
+reaching delivery. L0 lands on the machine proofs for rows (b)–(f). The Enterprise licence remains deferred.
+The current `image` payload is the original RAM-disk probe and still ends in delivery with exit 2; it is not a
+working Breenix delivery path until L3 integrates the stub.
 
 The image server (`metal-http`) has one route. While a boot has an image staged that has not yet been sent in full,
 the route answers `HEAD` and `GET` (whole, or one byte range per request: `206` with `Content-Range`, `416` for a
@@ -86,7 +82,7 @@ soon as the unit holds, or waits for, the machine lease, so the caller's ssh ses
    holds it; a quarantined lease refuses new boots). The lease carries the boot id, the driver's unit, a heartbeat refreshed
    each 5 s and, from power-on, the attempt's absolute ceiling.
 2. **Gets its payload.** For a Breenix boot, `metal-build` runs in the x86 build host: a private clone of the commit,
-   the effort-target guard (`--target x86-metal` once the commit's guard knows that target; until then
+   the effort-target guard from a freshly fetched origin/main (`--target x86-metal` once origin/main's guard knows that target; until then
    `--target x86`, recorded as the stand-in), the pinned Rust library snapshotted into the tree as the x86 gate does,
    userspace and the ext2 root through `scripts/gate-artifacts.py` (content-keyed and shared with the x86 gate), then
    the production kernel (no features) and its UEFI image, refused on any warning. The inputs are streamed into the
@@ -98,7 +94,8 @@ soon as the unit holds, or waits for, the machine lease, so the caller's ssh ses
    enabled, the HTTP port's link (only while the machine is on: the port has no standby link when it is off, and the
    firmware's image request shows the link during delivery), and the BIOS settings of the one-time setup. It records
    the baseline boot progress and POST code, so a state left from an earlier power cycle is not read as this boot's.
-   A failed check ends the boot with exit 2 before power-on.
+   Inventory-on-restart must be disabled too, including after an interrupted setup.
+   A failed check ends the boot with exit 2 before power-on; failed pre-flight power-off quarantines the lease.
 4. **Stages** the payload, or makes sure the route answers 404.
 5. **Opens the console** and waits for its banner (20 s, one retry, else exit 2 before power-on).
 6. **Points and powers**: a one-time `UefiHttp` boot override, read back, then power on. Power-on starts the
@@ -154,7 +151,7 @@ the measurement.
 `breenix-metal-machine.service` (`metal-machine`, `Restart=always`) owns the controller queue (a Unix socket the
 driver, the reaper and the setup tool submit to), the sensor sampler and the reaper. It starts the image server, and
 reports itself ready, only after **startup reconciliation**: before a boot can take the lease or the firmware can
-fetch an image, it unstages, stops leftover driver units, closes each boot folder without `ended` as exit 137
+fetch an image, it stops leftover driver units, unstages, closes each boot folder without `ended` as exit 137
 (`ended-by: reconciliation`), and powers the machine off if it is on. claim-lint:ok: `reconcile` in
 `scripts/metal/metal-machine`; 1 of 1 container-restart fault boots in "Measured".
 
@@ -164,13 +161,13 @@ The reaper runs each 15 s, independently of the drivers:
 |---|---|
 | A lease whose heartbeat is older than 30 s, or whose holder is gone (unit stopped, crashed or killed) | Ends the boot: ForceOff and poll Off, clear the override, unstage, close SOL, close the record with exit **137** and `ended-by: reaper`, release the lease |
 | A lease past its attempt ceiling, whatever its driver reports | The same, exit **124** |
-| The machine on with no lease (checked each 60 s while idle) | ForceOff, and a `stray-power-on` event in `machine.json` |
+| The machine on with no lease or an unpowered lease (checked each 60 s) | ForceOff, and a `stray-power-on` event in `machine.json` |
 | A quarantined lease | Retries Redfish ForceOff each 60 s, adds IPMI `chassis power off` from the fourth retry, and lifts the quarantine when a read shows the power Off |
 
 **When power-off fails** (the driver's, the reaper's or reconciliation's), the lease is quarantined: new boots are
 refused (exit 75), and the machine may still be on. The agent that owns the stream reports it. While the container
 itself is down, the machine stays as it is until the container returns and reconciliation powers it off first;
-meanwhile SATA is off, the URI answers 404 until a boot stages an image, and the BIOS keeps the machine off after a
+the URI answers 404 until a boot stages an image, and the BIOS keeps the machine off after a
 power cut. claim-lint:ok: `Machine.reap` in `scripts/metal/metal-machine`, eight reaper tests in
 `tests/metal_tools_test.py`, and the fault boots in "Measured".
 
@@ -191,9 +188,11 @@ have no definition and are not scored.
 
 ## The disks
 
-The kernel and its root arrive in RAM, the delivery path does not address the server's disk, and the BIOS keeps the
-embedded SATA controller **off**, so it is not on the PCI bus. Only a storage effort the operator opens, naming what
-may be overwritten, could change that.
+Embedded SATA stays enabled in **AHCI mode**, not RAID. The stream owns the disk; `metal-storage` is scheduled
+after `metal-userspace`, in parallel with `metal-network`, to implement SATA/AHCI and the Breenix filesystem on it.
+Boot delivery and the planned root arrive in RAM and do not depend on that disk before the storage effort needs it.
+Controller, port and drive observations belong in the private recon and platform facts; site identifiers stay
+out of this repository.
 
 ## Clean-room rule
 
@@ -220,7 +219,7 @@ when each row matches). They are firmware and controller settings; they write no
 | `SerialComm` | `OnConRedirCom1` | Firmware text on the SOL UART (`SerialPortAddress=Serial1Com2Serial2Com1`, kept, puts the SOL device at COM1) |
 | `ErrPrompt` | Disabled | POST does not stop for an error prompt |
 | `AcPwrRcvry` | Off | After a power cut the machine stays off |
-| `EmbSata` | Off | The disk controller is off the bus |
+| `EmbSata` | `AhciMode` | SATA enabled without RAID |
 | IPMI over LAN | Enabled | SOL's transport and the reaper's second power-off path |
 | Lifecycle Controller `CollectSystemInventoryOnRestart` | Disabled | Shorter POST |
 | An automation account | Administrator role, SOL and IPMI LAN privilege | Revocable apart from the operator's own login; its credential lives only in the site file |
@@ -296,8 +295,8 @@ redaction tests in `tests/metal_tools_test.py`.
 ## Measured
 
 POST, from power-on to the firmware's image request, over L0's 11 boots that reached a request: 32.6 to 33.1 s on 9,
-and 104.6 and 106.2 s on the 2 first power-ons after a settings job. The first three set the POST budget at 212.4 s
-(twice the longest).
+and 104.6 and 106.2 s on the 2 first power-ons after a settings job. These measurements had SATA disabled and
+are historical; the 212.4 s budget must be re-timed with AHCI enabled before landing.
 
 L0's boots, one per row of the lane:
 

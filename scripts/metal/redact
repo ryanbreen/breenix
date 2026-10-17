@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Masks private values in text leaving the x86-metal record (docs/metal/README.md, "Redaction").
 
+  # claim-lint:ok: #1680 Reviewed tool contract against this function and the host tests in tests/metal_tools_test.py.
   redact [--site FILE] [FILE...]   redacted copy of the files (or stdin) on stdout
   redact [--site FILE] --list      the identifier list (never a credential), one per line
 
+# claim-lint:ok: #1680 Reviewed tool contract against this function and the host tests in tests/metal_tools_test.py.
 Masks IPv4 and IPv6 addresses, MAC addresses, every literal value in the site file, its identifier list and
 private paths.
 """

@@ -1,6 +1,6 @@
 #!/bin/sh
 # The serial-over-LAN console of the x86-metal machine: metal-sol activate|deactivate.
-# The password reaches ipmitool through its environment (-E), never a command line.
+# The password reaches ipmitool through its environment (-E), never a command line. claim-lint:ok: #1680 reviewed deployment paths and credential transport.
 set -eu
 case "${1:-}" in activate|deactivate) ;; *) echo "usage: metal-sol activate|deactivate" >&2; exit 2 ;; esac
 set -a

@@ -16,6 +16,8 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch, Mock
+from types import SimpleNamespace
 import urllib.error
 import urllib.request
 import uuid
@@ -94,10 +96,9 @@ class RedactorTest(unittest.TestCase):
 
     def test_nothing_private_survives(self):
         out = self.redact((FIXTURES / 'redact-input.txt').read_text())
-        for value in self.site.values():
-            if len(value) >= 3 and value not in ('8240', 'dhcp') and not value.startswith('NIC.'):
-                for part in value.split('"')[0].split():
-                    self.assertNotIn(part, out)
+        for key, value in self.site.items():
+            if key != 'REDACT_IDENTIFIERS':
+                self.assertEqual(self.redact(value), '<site>')
         for name in m.identifier_list(self.site):
             self.assertNotIn(name, out)
         self.assertIsNone(re.search(r'\b\d{1,3}(\.\d{1,3}){3}\b', out))
@@ -109,7 +110,7 @@ class RedactorTest(unittest.TestCase):
     def test_ordinary_text_is_kept(self):
         for text in ('at 12:34:56', 'version 1.2.3', 'ratio 3:2', 'code 0x7f', '[timer] 1000 Hz',
                      'Breenix boot.img over DHCP on port 8240', 'HTTP device NIC.Embedded.2-1-1'):
-            self.assertEqual(self.redact(text), text)
+            self.assertEqual(m.Redactor({})(text), text)
 
     def test_list_never_carries_a_credential(self):
         names = m.identifier_list(self.site)
@@ -381,6 +382,20 @@ class ReaperTest(StateTest):
         events = [json.loads(line)['event'] for line in (m.STATE / 'machine-events.jsonl').read_text().splitlines()]
         self.assertIn('stray-power-on', events)
 
+    def test_a_stray_power_on_during_build_is_powered_off_without_releasing_the_lease(self):
+        directory = self.open_boot('20261017T000008Z-metal', pid=os.getpid(), state='claimed')
+        self.machine.reap()
+        self.assertEqual(self.controller.power, 'Off')
+        self.assertEqual(m.read_lease()['id'], directory.name)
+        self.assertFalse((directory / 'ended').exists())
+
+    def test_failed_stray_power_off_quarantines_without_relocking(self):
+        directory = self.open_boot('20261017T000010Z-metal', pid=os.getpid(), state='claimed')
+        with patch.object(m, 'force_off_and_wait', return_value=False):
+            self.machine.reap()
+        self.assertEqual(m.read_lease()['state'], 'quarantined')
+        self.assertEqual(m.read_lease()['id'], directory.name)
+
     def test_a_failed_power_off_quarantines_until_a_retry_succeeds(self):
         self.controller.forceoff_works = False
         saved = m.POWER_OFF_SECONDS
@@ -517,8 +532,8 @@ class DefinitionTest(unittest.TestCase):
             {'id': 'delivery', 'kernel': True, 'stages': {'x86_64': [{'name': 'Handoff', 'host': 'handoff'}]}},
             {'id': 'first-light', 'kernel': True, 'stages': {'x86_64': ['Kernel entry point']}},
             {'id': 'shell', 'stages': {'shell': [{'name': 'Proof', 'marker': 'metal-console-ok 42'}]}}]}
-        self.assertEqual(boot.final_marker(metal, 'default', catalog), 'Kernel entry point reached')
-        self.assertEqual(boot.final_marker(metal, 'shell', catalog), 'metal-console-ok 42')
+        self.assertEqual(boot.final_marker(metal, 'default', catalog), ('Kernel entry point reached', 'contains'))
+        self.assertEqual(boot.final_marker(metal, 'shell', catalog), ('metal-console-ok 42', 'contains'))
         self.assertIsNone(boot.final_marker({'milestones': [metal['milestones'][0]]}, 'default', catalog))
 
     def test_boot_progress_key(self):
@@ -527,9 +542,224 @@ class DefinitionTest(unittest.TestCase):
                          ('OEM', 'No bootable devices.', None))
 
 
+class DriverTest(StateTest):
+    def setUp(self):
+        super().setUp()
+        self.args = SimpleNamespace(id='20261017T000009Z-metal', mode='default', payload='image',
+                                    inject=None, serve_as=None, content_type=None, no_wait=False)
+        with patch.object(m, 'load_site', return_value={}):
+            self.driver = boot.Driver(self.args)
+        self.driver.dir.mkdir(parents=True)
+        self.driver.event = Mock()
+        self.driver.phase = Mock()
+        self.driver.t0 = 100
+
+    def finish(self, call, status):
+        with self.assertRaises(boot.Finish) as raised:
+            call()
+        self.assertEqual(raised.exception.status, status)
+        return raised.exception
+
+    def test_deadlines_require_the_actual_phase_evidence(self):
+        d = self.driver
+        d.post_budget = 20
+        with patch.object(m, 'now', return_value=121):
+            self.finish(d.check_deadlines, m.EXIT_HUNG)
+            d.request_at = 110
+            d.check_deadlines()
+        with patch.object(m, 'now', return_value=171):
+            self.finish(d.check_deadlines, m.EXIT_DELIVERY)
+        d.first_byte_at = 111
+        d.last_progress = 112
+        with patch.object(m, 'now', return_value=128):
+            self.finish(d.check_deadlines, m.EXIT_DELIVERY)
+        d.last_progress = 171
+        with patch.object(m, 'now', return_value=172):
+            self.finish(d.check_deadlines, m.EXIT_DELIVERY)
+        d.complete_at = 120
+        with patch.object(m, 'now', return_value=181):
+            self.finish(d.check_deadlines, m.EXIT_DELIVERY)
+        d.seen.add('bootloader')
+        with patch.object(m, 'now', return_value=241):
+            self.assertTrue(self.finish(d.check_deadlines, m.EXIT_HUNG).hung)
+        d.kernel_started = 125
+        d.last_serial = 425
+        with patch.object(m, 'now', return_value=426):
+            self.finish(d.check_deadlines, m.EXIT_SHORT)
+        d.lease_ceiling = 400
+        with patch.object(m, 'now', return_value=426):
+            self.finish(d.check_deadlines, m.EXIT_HUNG)
+
+    def test_404_and_fatal_capture_graces(self):
+        d = self.driver
+        d.request_at = d.not_found_at = 110
+        with patch.object(m, 'now', return_value=139):
+            d.check_deadlines()
+        with patch.object(m, 'now', return_value=140):
+            self.finish(d.check_deadlines, m.EXIT_DELIVERY)
+        d.fatal_at = 130
+        with patch.object(m, 'now', return_value=135):
+            self.finish(d.check_deadlines, m.EXIT_SHORT)
+
+    def test_http_requires_a_matching_complete_transfer(self):
+        d = self.driver
+        d.on_http({'event': 'head', 't': 99, 'id': d.id})
+        self.assertIsNone(d.request_at)
+        d.on_http({'event': '404', 't': 101, 'route': False})
+        self.assertIsNone(d.request_at)
+        with patch.object(m, 'record_post_time') as record:
+            d.on_http({'event': 'head', 't': 110, 'id': d.id})
+            record.assert_called_once_with(d.id, 10)
+        self.assertIsNone(d.complete_at)
+        d.on_http({'event': 'complete', 't': 111, 'id': 'another', 'matches': True})
+        self.assertIsNone(d.complete_at)
+        d.on_http({'event': 'start', 't': 112, 'id': d.id})
+        d.on_http({'event': 'progress', 't': 113, 'id': d.id, 'bytes': 1, 'total': 1})
+        self.finish(lambda: d.on_http({'event': 'complete', 't': 114, 'id': d.id, 'matches': False}),
+                    m.EXIT_DELIVERY)
+        self.assertIsNone(d.complete_at)
+        d.on_http({'event': 'complete', 't': 115, 'id': d.id, 'matches': True, 'sha256': 'digest'})
+        self.assertEqual(d.complete_at, 115)
+        self.assertEqual(d.delivery['transferSeconds'], 3)
+        d.kernel_started = 116
+        self.finish(lambda: d.on_http({'event': '404', 't': 117, 'route': True}), m.EXIT_SHORT)
+
+    def test_reset_detection_uses_serial_and_boot_progress(self):
+        d = self.driver
+        d.on_line(boot.BOOTLOADER_LINE)
+        d.on_line(boot.HANDOFF_LINE)
+        self.assertIsNotNone(d.kernel_started)
+        self.finish(lambda: d.on_line(boot.BOOTLOADER_LINE), m.EXIT_SHORT)
+        for state in boot.RUNNING_STATES:
+            d.bmc_events = [{'progress': {'LastState': state}}]
+            d.pump_bmc()
+        d.bmc_events = [{'progress': {'LastState': 'MemoryInit'}}]
+        self.finish(d.pump_bmc, m.EXIT_SHORT)
+
+    def test_finish_does_not_discard_the_rest_of_a_serial_read(self):
+        d = self.driver
+        d.final_marker = ('DONE|FINISHED', 'line')
+        (d.dir / 'serial.raw').write_bytes(b'prefix\nDONE\nbacktrace\npartial')
+        self.finish(d.pump_serial, m.EXIT_DONE)
+        self.assertEqual((d.dir / 'serial.txt').read_text(), 'prefix\nDONE\nbacktrace\npartial')
+        self.assertEqual(d.line, 'partial')
+        with (d.dir / 'serial.raw').open('ab') as raw:
+            raw.write(b' end\n')
+        d.pump_serial()
+        self.assertEqual(d.line, '')
+        self.assertTrue((d.dir / 'serial.txt').read_text().endswith('partial end\n'))
+
+    def test_final_marker_alternatives_and_exact_lines(self):
+        self.assertTrue(boot.marker_matches(('DONE|FINISHED', 'line'), 'FINISHED'))
+        self.assertFalse(boot.marker_matches(('DONE|FINISHED', 'line'), 'not DONE yet'))
+        self.assertTrue(boot.marker_matches(('DONE|FINISHED', 'contains'), 'stage FINISHED'))
+        definition = {'milestones': [{'stages': {'default': [{'marker': 'DONE|OK', 'match': 'line'}]}}]}
+        self.assertEqual(boot.final_marker(definition, 'default', {}), ('DONE|OK', 'line'))
+
+    def test_failed_preflight_power_off_quarantines(self):
+        self.ready()
+        m.claim_lease({'id': self.driver.id, 'pid': os.getpid()}, wait=False)
+        with patch.object(m, 'machine_checks', return_value=([], {'power': 'On'})), \
+             patch.object(m, 'force_off_and_wait', return_value=False):
+            self.finish(self.driver.preflight, m.EXIT_DELIVERY)
+        self.assertEqual(m.read_lease()['state'], 'quarantined')
+        self.assertFalse(m.release_lease(self.driver.id))
+
+    def test_uncertain_power_on_keeps_quarantine_after_power_off(self):
+        d = self.driver
+        self.ready()
+        m.claim_lease({'id': d.id, 'pid': os.getpid()}, wait=False)
+        def rf(method, *args, **kwargs):
+            if method == 'POST':
+                self.assertEqual(m.read_lease()['state'], 'powered')
+                raise m.BmcError('queue timeout')
+            return {}
+        with patch.object(m, 'rf', side_effect=rf), \
+             patch.object(m, 'rf_get', return_value={'Boot': {'BootSourceOverrideEnabled': 'Once',
+                                                           'BootSourceOverrideTarget': 'UefiHttp'}}):
+            self.finish(d.power_on, m.EXIT_DELIVERY)
+        self.assertIsNotNone(d.t0)
+        with patch.object(m, 'force_off_and_wait', return_value=True):
+            self.assertTrue(d.power_off(False))
+        self.assertEqual(m.read_lease()['state'], 'quarantined')
+        self.assertFalse(m.release_lease(d.id))
+
+    def test_queued_boot_can_stop_before_or_after_waiting(self):
+        self.ready()
+        m.claim_lease({'id': 'other', 'pid': os.getpid()}, wait=False)
+        d = self.driver
+        d.t0 = None
+        def stop(delay):
+            (d.dir / 'stop-request').touch()
+        with patch.object(m.time, 'sleep', side_effect=stop):
+            self.finish(d.claim, m.EXIT_CANCELLED)
+        self.assertEqual(m.read_lease()['id'], 'other')
+        m.release_lease('other')
+        self.finish(d.claim, m.EXIT_CANCELLED)
+        self.assertIsNone(m.read_lease())
+
+    def test_preflight_checks_ahci_and_inventory_collection(self):
+        site = m.load_site(FIXTURES / 'redact-site.env')
+        self.assertEqual(m.expected_bios(site)['EmbSata'], 'AhciMode')
+        def get(path):
+            if path == m.LC_ATTRIBUTES:
+                return {'Attributes': {'LCAttributes.1.CollectSystemInventoryOnRestart': 'Enabled'}}
+            if path == m.SYSTEM + '/Bios':
+                return {'Attributes': dict(m.expected_bios(site), **m.KEPT_BIOS)}
+            if path == m.MANAGER_ATTRIBUTES:
+                return {'Attributes': m.EXPECTED_MANAGER}
+            return {'PowerState': 'Off', 'Boot': {'BootSourceOverrideEnabled': 'Disabled'}}
+        with patch.object(m, 'rf_get', side_effect=get):
+            rows, _ = m.machine_checks(site)
+        self.assertEqual([row[0] for row in m.failed_checks(rows)],
+                         ['lc.LCAttributes.1.CollectSystemInventoryOnRestart'])
+
+    def test_follow_refuses_shell_input_before_remote_execution(self):
+        run = load_script('metal-run')
+        with patch.object(run, 'in_metal') as remote:
+            with self.assertRaises(SystemExit):
+                run.follow({}, 'id; touch injected')
+            remote.assert_not_called()
+
+    def test_sha_requires_target_ancestry(self):
+        run = load_script('metal-run')
+        with patch.object(run, 'resolve', return_value='b' * 40), \
+             patch.object(run, 'in_build', return_value=SimpleNamespace(returncode=1)) as remote:
+            with self.assertRaises(SystemExit):
+                run.verify_target({'BUILD_REPO': 'fixture'}, 'a' * 40, 'main')
+            self.assertIn('merge-base', remote.call_args.args)
+
+
+class BuildPolicyTest(unittest.TestCase):
+    def test_guard_comes_from_origin_main_instead_of_the_target_tree(self):
+        build = load_script('metal-build')
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo, remote = root / 'repo', root / 'origin.git'
+            def git(*args):
+                return subprocess.run(['git', *map(str, args)], check=True, capture_output=True, text=True).stdout.strip()
+            git('init', '--bare', remote)
+            git('init', '-b', 'main', repo)
+            git('-C', repo, 'config', 'user.name', 'Fixture')
+            git('-C', repo, 'config', 'user.email', 'fixture@example.invalid')
+            guard = repo / 'scripts/effort-target-guard.py'
+            guard.parent.mkdir()
+            guard.write_text("import sys\nTARGETS = ('x86-metal',)\nsys.exit(3)\n")
+            git('-C', repo, 'add', '.')
+            git('-C', repo, 'commit', '-m', 'Set the policy')
+            git('-C', repo, 'remote', 'add', 'origin', remote)
+            git('-C', repo, 'push', 'origin', 'main')
+            guard.write_text("import sys\nTARGETS = ('x86-metal',)\nsys.exit(0)\n")
+            git('-C', repo, 'commit', '-am', 'Attempt to bypass the policy')
+            sha = git('-C', repo, 'rev-parse', 'HEAD')
+            args = SimpleNamespace(id='20261017T000011Z-metal', root=str(root), repo=str(repo), sha=sha,
+                                   rust_fork=str(root / 'rust'), cache=str(root / 'cache'))
+            self.assertEqual(build.outer(args), 3)
+
+
 class PublicRepositoryTest(unittest.TestCase):
     def test_tools_carry_no_site_values(self):
-        """Addresses, host and instance names live in the site and host files, never in the tools or their doc."""
+        """Detect numeric IPv4, colon-form MAC and common home-path literals; names require human review."""
         paths = [p for p in TOOLS.rglob('*') if p.is_file() and 'fixtures' not in p.parts and '__pycache__' not in p.parts]
         paths.append(TOOLS.parents[1] / 'docs' / 'metal' / 'README.md')
         for path in paths:

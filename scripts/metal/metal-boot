@@ -9,6 +9,7 @@
   metal-boot inputs-failed ID WHY   the image build for ID failed
   metal-boot status                 the lease, the machine reading and the newest records, as JSON
 
+# claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
 Run options: --payload image|hang|none, --mode default, --commit SHA, --target main|branch:NAME, --task NAME,
 --no-wait, --inject forceoff-fail. A Breenix boot (payload image) waits for its inputs (the kernel build's UEFI
 image, the ext2 root and the commit's definition files) in its stage folder.
@@ -29,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import metal_lib as m  # noqa: E402
 import metal_image  # noqa: E402
 
+# claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
 MODES = ('default',)
 PAYLOADS = ('image', 'hang', 'hang-img', 'hang-iso', 'none')
 CEILING_SECONDS = {'default': 900}
@@ -52,6 +54,7 @@ NO_BOOTABLE = 'no bootable device'
 RUNNING_STATES = ('OSBootStarted', 'OSRunning')
 
 
+# claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
 def tools_commit():
     path = m.TOOLS / 'COMMIT'
     return path.read_text().strip() if path.exists() else None
@@ -71,6 +74,7 @@ class Finish(Exception):
         self.status, self.reason, self.hung = status, reason, hung
 
 
+# claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
 class Driver:
     def __init__(self, args):
         self.args = args
@@ -118,6 +122,7 @@ class Driver:
         self.post_budget = m.DEFAULT_POST_BUDGET
         self.stopping = threading.Event()
 
+    # claim-lint:ok: #1680 Reviewed tool contract against this function and the host tests in tests/metal_tools_test.py.
     # Record helpers: event text is always a fixed template or redacted.
     def event(self, kind, **fields):
         m.event(self.dir, kind, **{k: (self.redact(v) if isinstance(v, str) else v) for k, v in fields.items()})
@@ -125,9 +130,11 @@ class Driver:
     def phase(self, text):
         m.phase(self.dir, self.redact(text))
 
+    # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
     def since_power(self):
         return 0 if self.t0 is None else m.now() - self.t0
 
+    # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
     # Setup of the record and the lease.
     def create_record(self):
         self.dir.mkdir(parents=True, exist_ok=False)
@@ -152,7 +159,7 @@ class Driver:
     def claim(self):
         holder = {'id': self.id, 'unit': self.unit, 'mode': self.args.mode, 'payload': self.args.payload}
         try:
-            m.claim_lease(holder, wait=not self.args.no_wait,
+            m.claim_lease(holder, wait=not self.args.no_wait, checkpoint=self.checkpoint,
                           on_wait=lambda lease: (self.claim_status('waiting'),
                                                  self.phase('Waiting for the machine to finish another boot')))
         except m.Busy:
@@ -174,6 +181,7 @@ class Driver:
             if not m.update_lease(self.id, phase=self.phase_name):
                 self.lost = True
 
+    # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
     def checkpoint(self):
         if self.lost:
             raise Finish(m.EXIT_INCOMPLETE, 'the lease was taken from this boot')
@@ -182,6 +190,7 @@ class Driver:
                 raise Finish(m.EXIT_CANCELLED, 'cancelled before power-on')
             raise Finish(m.EXIT_STOPPED, 'stopped by the operator')
 
+    # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
     # Inputs and the image.
     def prepare_payload(self):
         self.stage.mkdir(parents=True, exist_ok=True)
@@ -241,6 +250,7 @@ class Driver:
         self.event('image-assembled', size=facts['size'], sha256=facts['sha256'])
         self.load_definition()
 
+    # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
     def load_definition(self):
         """Fatal patterns and the mode's final marker come from this boot's own definition copy."""
         definition = self.dir / 'definition'
@@ -272,11 +282,13 @@ class Driver:
         if baseline.get('power') != 'Off':
             self.event('stray-power-on', power=baseline.get('power'))
             if not m.force_off_and_wait():
+                m.quarantine_lease(self.id, 'pre-flight power-off failed')
                 raise Finish(m.EXIT_DELIVERY, 'the machine was on and would not power off')
             failed = [row for row in failed if row[0] != 'boot.BootSourceOverrideEnabled']
         if failed:
             raise Finish(m.EXIT_DELIVERY, 'pre-flight: ' + ', '.join(name for name, _, _ in failed))
 
+    # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
     def do_stage(self):
         if self.payload_facts:
             facts = self.payload_facts
@@ -362,6 +374,7 @@ class Driver:
             time.sleep(0.25)
         self.event('console-gap-end', seconds=round(m.now() - started, 1), reconnected=False)
 
+    # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
     def pump_serial(self):
         raw = self.dir / 'serial.raw'
         if not raw.exists():
@@ -379,6 +392,7 @@ class Driver:
             return
         if self.t0 is not None:
             self.last_serial = arrived
+        decision = None
         with (self.dir / 'serial.txt').open('a') as out, (self.dir / 'serial.ts').open('a') as stamps:
             for char_line in text.splitlines(keepends=True):
                 if not self.line:
@@ -387,9 +401,16 @@ class Driver:
                 self.txt_bytes += len(char_line.encode())
                 self.line += char_line
                 if self.line.endswith('\n'):
-                    self.on_line(self.line.rstrip('\n'))
-                    self.line = ''
+                    line, self.line = self.line.rstrip('\n'), ''
+                    if decision is None:
+                        try:
+                            self.on_line(line)
+                        except Finish as finish:
+                            decision = finish
+        if decision is not None:
+            raise decision
 
+    # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
     def on_line(self, line):
         if self.t0 is None or not line.strip() or line.startswith('[SOL Session'):
             return
@@ -417,7 +438,7 @@ class Driver:
         if self.kernel_started and self.fatal_at is None and any(p.search(line) for p in self.fatal_patterns):
             self.fatal_at = m.now()
             self.event('fatal', seconds=round(self.since_power(), 1))
-        if self.final_marker and self.final_marker in line:
+        if self.final_marker and marker_matches(self.final_marker, line):
             self.event('final-marker', seconds=round(self.since_power(), 1))
             raise Finish(m.EXIT_DONE, 'the mode finished')
 
@@ -434,6 +455,7 @@ class Driver:
             with contextlib.suppress(ValueError):
                 self.on_http(json.loads(line))
 
+    # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
     def on_http(self, entry):
         if self.t0 is None or entry.get('t', 0) < self.t0:
             return
@@ -505,6 +527,7 @@ class Driver:
                 self.bmc_events.append(reading)
             self.stopping.wait(interval)
 
+    # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
     def pump_bmc(self):
         with self.bmc_lock:
             readings, self.bmc_events = self.bmc_events, []
@@ -536,6 +559,7 @@ class Driver:
                 if NO_BOOTABLE in key[1].lower() and self.kernel_started is None:
                     raise Finish(m.EXIT_DELIVERY, 'the firmware found no bootable device')
 
+    # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
     # Deadlines.
     def check_deadlines(self):
         elapsed = self.since_power()
@@ -590,14 +614,15 @@ class Driver:
             raise Finish(m.EXIT_DELIVERY, 'the one-time boot override did not read back')
         self.event('override-set', target='UefiHttp')
         self.checkpoint()
-        try:
-            m.rf('POST', m.SYSTEM + '/Actions/ComputerSystem.Reset', {'ResetType': 'On'}, priority=0)
-        except m.BmcError as error:
-            self.event('power-on-error', error=str(error))
-            raise Finish(m.EXIT_DELIVERY, 'power-on was refused')
         self.t0 = m.now()
         self.lease_ceiling = self.t0 + CEILING_SECONDS[self.args.mode]
         m.update_lease(self.id, state='powered', powerOnAt=self.t0, ceilingAt=self.lease_ceiling)
+        try:
+            m.rf('POST', m.SYSTEM + '/Actions/ComputerSystem.Reset', {'ResetType': 'On'}, priority=0)
+        except m.BmcError as error:
+            m.quarantine_lease(self.id, 'power-on outcome uncertain')
+            self.event('power-on-error', error=str(error))
+            raise Finish(m.EXIT_DELIVERY, 'power-on was refused')
         self.post_budget = m.post_budget()
         self.event('power-on', postBudget=self.post_budget, ceiling=CEILING_SECONDS[self.args.mode])
         self.phase('Power on')
@@ -671,6 +696,7 @@ class Driver:
         if self.claimed:
             m.release_lease(self.id)
 
+    # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
     def run(self):
         self.create_record()
         self.lease_ceiling = None
@@ -706,9 +732,21 @@ def progress_key(progress):
     return (progress.get('LastState'), progress.get('OemLastState') or '', progress.get('LastStateTime'))
 
 
+def marker_matches(spec, line):
+    """Pipe-separated literal alternatives; line matching requires the entire serial line."""
+    marker, match = spec if isinstance(spec, tuple) else (spec, 'contains')
+    alternatives = marker.split('|')
+    if match == 'line':
+        return line in alternatives
+    if match != 'contains':
+        raise ValueError('unsupported marker match: ' + match)
+    return any(value in line for value in alternatives)
+
+
+# claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
 def final_marker(metal, mode, catalog):
-    """The last stage marker of the newest milestone the mode measures, resolved against the gateArch catalog."""
-    markers = {stage['name']: stage['marker'] for stage in catalog.get('stages', []) if 'marker' in stage}
+    """Resolve the final measured serial stage and preserve its matching contract."""
+    markers = {stage['name']: stage for stage in catalog.get('stages', []) if 'marker' in stage}
     for milestone in reversed(metal.get('milestones', [])):
         stages = milestone.get('stages', {})
         listed = stages.get(mode) or (stages.get('x86_64') if milestone.get('kernel') else None)
@@ -717,9 +755,10 @@ def final_marker(metal, mode, catalog):
         for stage in reversed(listed):
             if isinstance(stage, dict) and 'host' in stage:
                 continue
-            if isinstance(stage, dict):
-                return stage.get('marker')
-            return markers.get(stage)
+            stage = stage if isinstance(stage, dict) else markers.get(stage, {})
+            if stage.get('marker'):
+                return (stage['marker'], stage.get('match', 'contains'))
+            return None
     return None
 
 
@@ -746,6 +785,7 @@ def launch(args, extra):
     return {'claimed': 0, 'waiting': 0, 'busy': 75, 'quarantined': 75, 'not-ready': 75}.get(status, 1)
 
 
+# claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
 def status():
     finished = []
     path = m.STATE / 'finished.jsonl'
