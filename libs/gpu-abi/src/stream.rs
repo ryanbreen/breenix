@@ -33,6 +33,10 @@ pub mod cmd {
     /// sy) * n]`: `n` half-open rectangles of the current target drawn from the texture,
     /// pixel `(x, y)` reading texel `(sx + x - x0, sy + y - y0)`; signed 32-bit.
     pub const DRAW_SAMPLED: u32 = 6;
+    /// G4's integer routine, result word, rectangle, and sixteen operands.
+    pub const PROBE: u32 = 7;
+    /// Set the half-open drawing scissor; BEGIN restores the target bounds.
+    pub const SCISSOR: u32 = 8;
 }
 
 /// Why a stream was refused (`Submit::error`).
@@ -71,6 +75,8 @@ pub mod error {
     pub const WRONG_COMMAND: u32 = 16;
     /// A `DRAW_SAMPLED` whose texture is the target it draws into.
     pub const SAMPLES_TARGET: u32 = 17;
+    pub const BAD_PROBE: u32 = 18;
+    pub const FILTERED_SAMPLER: u32 = 19;
 }
 
 /// The words of a stream the kernel has copied out of user memory.
@@ -223,6 +229,7 @@ pub fn validate(words: &(impl Words + ?Sized), resolver: &impl Resolver) -> Resu
     let mut plan = Plan::default();
     let mut target: Option<TargetInfo> = None;
     let mut target_handle = 0u64;
+    let mut scissor = None;
     let mut named: [u64; MAX_NAMED_BUFFERS] = [0; MAX_NAMED_BUFFERS];
     let mut named_count = 0usize;
     let mut at = 0usize;
@@ -247,7 +254,7 @@ pub fn validate(words: &(impl Words + ?Sized), resolver: &impl Resolver) -> Resu
                 }
                 target_handle = handle_at(words, at + 2);
                 match resolver.target(target_handle) {
-                    Some(t) => target = Some(t),
+                    Some(t) => { target = Some(t); scissor = None; },
                     None => return refuse(error::BAD_HANDLE),
                 }
             }
@@ -256,7 +263,9 @@ pub fn validate(words: &(impl Words + ?Sized), resolver: &impl Resolver) -> Resu
                     return refuse(error::BAD_LENGTH);
                 }
                 let Some(t) = target else { return refuse(error::NO_TARGET) };
-                let area = t.width as u64 * t.height as u64;
+                let clipped = clipped([0, 0, t.width as i32, t.height as i32], t.width, t.height, scissor);
+                let area = clipped.map_or(0, |[x0,y0,x1,y1]| (x1-x0) as u64 * (y1-y0) as u64);
+                if scissor.is_some() && area > 0 { plan.drawn += 1; }
                 count_draw(&mut plan, index, 1, area, 1)?;
             }
             cmd::DRAW | cmd::DRAW_BUFFER => {
@@ -264,8 +273,11 @@ pub fn validate(words: &(impl Words + ?Sized), resolver: &impl Resolver) -> Resu
                     return refuse(error::TRUNCATED);
                 }
                 let Some(t) = target else { return refuse(error::NO_TARGET) };
-                let pipe = words.word(at + 2);
+                let raw = words.word(at + 2);
+                let pipe = raw & 0x7FFF_FFFF;
                 let Some(steps) = pipeline::steps(pipe) else { return refuse(error::BAD_PIPELINE) };
+                if raw & 0x8000_0000 != 0 { return refuse(error::FILTERED_SAMPLER); }
+                if pipe == pipeline::PROBE_INT { return refuse(error::WRONG_COMMAND); }
                 if pipeline::samples(pipe) {
                     return refuse(error::WRONG_COMMAND);
                 }
@@ -287,7 +299,7 @@ pub fn validate(words: &(impl Words + ?Sized), resolver: &impl Resolver) -> Resu
                         if rect[2] < rect[0] || rect[3] < rect[1] {
                             return refuse(error::BAD_RECT);
                         }
-                        if let Some([x0, y0, x1, y1]) = clip(rect, t.width, t.height) {
+                        if let Some([x0, y0, x1, y1]) = clipped(rect, t.width, t.height, scissor) {
                             area += (x1 - x0) as u64 * (y1 - y0) as u64;
                             plan.drawn += 1;
                         }
@@ -324,7 +336,7 @@ pub fn validate(words: &(impl Words + ?Sized), resolver: &impl Resolver) -> Resu
                         if rect[2] < rect[0] || rect[3] < rect[1] {
                             return refuse(error::BAD_RECT);
                         }
-                        if let Some([x0, y0, x1, y1]) = clip(rect, t.width, t.height) {
+                        if let Some([x0, y0, x1, y1]) = clipped(rect, t.width, t.height, scissor) {
                             area += (x1 - x0) as u64 * (y1 - y0) as u64;
                             plan.drawn += 1;
                         }
@@ -366,8 +378,11 @@ pub fn validate(words: &(impl Words + ?Sized), resolver: &impl Resolver) -> Resu
                     return refuse(error::TRUNCATED);
                 }
                 let Some(t) = target else { return refuse(error::NO_TARGET) };
-                let pipe = words.word(at + 2);
+                let raw = words.word(at + 2);
+                let pipe = raw & 0x7FFF_FFFF;
                 let Some(steps) = pipeline::steps(pipe) else { return refuse(error::BAD_PIPELINE) };
+                if raw & 0x8000_0000 != 0 { return refuse(error::FILTERED_SAMPLER); }
+                if pipe == pipeline::PROBE_INT { return refuse(error::WRONG_COMMAND); }
                 if !pipeline::samples(pipe) {
                     return refuse(error::WRONG_COMMAND);
                 }
@@ -390,12 +405,34 @@ pub fn validate(words: &(impl Words + ?Sized), resolver: &impl Resolver) -> Resu
                     if i[2] < i[0] || i[3] < i[1] {
                         return refuse(error::BAD_RECT);
                     }
-                    if let Some([x0, y0, x1, y1]) = sampled_clip(i, t.width, t.height, src.width, src.height) {
+                    if let Some([x0, y0, x1, y1]) = sampled_clip(i, t.width, t.height, src.width, src.height).and_then(|r| clipped(r.map(|v|v as i32), t.width, t.height, scissor)) {
                         area += (x1 - x0) as u64 * (y1 - y0) as u64;
                         plan.drawn += 1;
                     }
                 }
                 count_draw(&mut plan, index, count as u64, area, steps)?;
+            }
+            cmd::SCISSOR => {
+                if len != 6 { return refuse(error::BAD_LENGTH); }
+                if target.is_none() { return refuse(error::NO_TARGET); }
+                let r = [2,3,4,5].map(|k| words.word(at+k) as i32);
+                if r[2]<r[0] || r[3]<r[1] { return refuse(error::BAD_RECT); }
+                scissor = Some(r);
+            }
+            cmd::PROBE => {
+                if len != 24 { return refuse(error::BAD_LENGTH); }
+                let Some(t) = target else { return refuse(error::NO_TARGET) };
+                let a = core::array::from_fn(|i| words.word(at+8+i));
+                if !crate::probe::valid(words.word(at+2), words.word(at+3), &a) {
+                    return refuse(error::BAD_PROBE);
+                }
+                let r = [4,5,6,7].map(|k| words.word(at+k) as i32);
+                if r[2]<r[0] || r[3]<r[1] { return refuse(error::BAD_RECT); }
+                let area = clipped(r,t.width,t.height,scissor).map_or(0, |[x0,y0,x1,y1]| {
+                    plan.drawn += 1;
+                    (x1-x0) as u64 * (y1-y0) as u64
+                });
+                count_draw(&mut plan,index,1,area,crate::probe::STEPS)?;
             }
             _ => return refuse(error::UNKNOWN_COMMAND),
         }
@@ -708,5 +745,143 @@ mod tests {
         assert_eq!(clip([-10, -10, 5, 5], 4, 4), Some([0, 0, 4, 4]));
         assert_eq!(clip([4, 0, 9, 9], 4, 4), None);
         assert_eq!(clip([i32::MIN, i32::MIN, i32::MAX, i32::MAX], 7, 3), Some([0, 0, 7, 3]));
+    }
+}
+
+/// Target and scissor intersection, shared by validation and geometry translation.
+pub fn clipped(
+    r: [i32; 4],
+    width: u32,
+    height: u32,
+    scissor: Option<[i32; 4]>,
+) -> Option<[u32; 4]> {
+    let r = if let Some(s) = scissor {
+        [
+            r[0].max(s[0]),
+            r[1].max(s[1]),
+            r[2].min(s[2]),
+            r[3].min(s[3]),
+        ]
+    } else {
+        r
+    };
+    clip(r, width, height)
+}
+
+#[cfg(test)]
+mod profile_tests {
+    extern crate std;
+    use self::std::vec::Vec;
+    use super::*;
+    struct Resources;
+    impl Resolver for Resources {
+        fn target(&self, h: u64) -> Option<TargetInfo> {
+            if h == 1 {
+                Some(TargetInfo {
+                    width: 16384,
+                    height: 3,
+                    format: 0,
+                    invalid: false,
+                })
+            } else {
+                None
+            }
+        }
+        fn source(&self, h: u64) -> Option<SourceInfo> {
+            if h == 2 {
+                Some(SourceInfo {
+                    width: 16384,
+                    height: 3,
+                    format: 0,
+                    invalid: false,
+                })
+            } else {
+                None
+            }
+        }
+        fn buffer_size(&self, h: u64) -> Option<u64> {
+            if h == 3 {
+                Some(16)
+            } else {
+                None
+            }
+        }
+        fn buffer_rect(&self, _h: u64, _o: u64) -> [i32; 4] {
+            [0, 0, 16384, 3]
+        }
+    }
+    fn probe(s: &mut Vec<u32>, r: [u32; 4]) {
+        s.extend([7, 24, 0, 0]);
+        s.extend(r);
+        s.extend([0; 16]);
+    }
+    #[test]
+    fn scissor_accounts_for_clear_draw_and_probe_geometry() {
+        let mut s = Vec::new();
+        encode::begin(&mut s, 1);
+        s.extend([8, 6, 3, 1, 10, 3]);
+        encode::clear(&mut s, 0);
+        encode::draw(&mut s, 0, 0, &[[0, 0, 16384, 3]]);
+        probe(&mut s, [0, 0, 16384, 3]);
+        let p = validate(&s[..], &Resources).unwrap();
+        assert_eq!((p.draws, p.instances, p.area, p.drawn), (3, 3, 42, 3));
+        assert_eq!(p.estimate, 14 * 65536 + 28);
+        encode::begin(&mut s, 1);
+        encode::clear(&mut s, 0);
+        let p = validate(&s[..], &Resources).unwrap();
+        assert_eq!(p.area, 42 + 49152);
+        assert_eq!(p.drawn, 3);
+    }
+    #[test]
+    fn filtered_modifier_is_refused_for_drawing_commands() {
+        for (cmd, tail) in [
+            (3, &[0, 1, 0, 0, 1, 1][..]),
+            (4, &[0, 3, 0, 0, 1][..]),
+            (6, &[2, 0, 1, 0, 0, 1, 1, 0, 0][..]),
+        ] {
+            let mut s = Vec::new();
+            encode::begin(&mut s, 1);
+            s.extend([
+                cmd,
+                3 + tail.len() as u32,
+                0x80000000 | if cmd == 6 { 1 } else { 0 },
+            ]);
+            s.extend_from_slice(tail);
+            let r = validate(&s[..], &Resources).unwrap_err();
+            assert_eq!((r.index, r.error), (1, 19));
+        }
+    }
+    #[test]
+    fn probe_work_limit_is_exact_and_invalid_operands_are_refused() {
+        let mut s = Vec::new();
+        encode::begin(&mut s, 1);
+        probe(&mut s, [0, 0, 16384, 2]);
+        assert_eq!(validate(&s[..], &Resources).unwrap().estimate, 1 << 31);
+        probe(&mut s, [0, 2, 1, 3]);
+        assert_eq!(
+            validate(&s[..], &Resources),
+            Err(Refusal {
+                index: 2,
+                error: 12
+            })
+        );
+        s.truncate(28);
+        s[6] = 25;
+        assert_eq!(
+            validate(&s[..], &Resources),
+            Err(Refusal {
+                index: 1,
+                error: 18
+            })
+        );
+        s[6] = 0;
+        s[27] = 1;
+        assert_eq!(
+            validate(&s[..], &Resources),
+            Err(Refusal {
+                index: 1,
+                error: 18
+            })
+        );
     }
 }

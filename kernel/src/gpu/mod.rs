@@ -397,7 +397,7 @@ impl Core {
         for (slot, s) in c.scanouts.iter_mut().zip(dev.info.scanouts.iter()) {
             *slot = abi::ScanoutInfo { enabled: s.enabled as u32, width: s.width, height: s.height, reserved: 0 };
         }
-        c.pipelines = 1 << abi::pipeline::SOLID | 1 << abi::pipeline::COPY;
+        c.pipelines = 1 << abi::pipeline::SOLID | 1 << abi::pipeline::COPY | 1 << abi::pipeline::PROBE_INT;
         self.have[capability::FEATURE_3D as usize] = c.features & abi::feature::VIRGL != 0;
         let empty = Vec::new();
         let bytes = dev.info.capset.as_ref().map_or(&empty, |s| &s.2);
@@ -2112,6 +2112,8 @@ fn named(words: &WordBuf, view: &View) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
     let mut all = Vec::new();
     let mut whole = Vec::new();
     let mut target = None;
+    let mut whole_clip = true;
+    let mut size = [0u32;2];
     let mut at = 0;
     while at < words.len() {
         let code = words.word(at);
@@ -2131,7 +2133,12 @@ fn named(words: &WordBuf, view: &View) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
         };
         if code == stream::cmd::BEGIN {
             target = found;
-        } else if code == stream::cmd::CLEAR {
+            whole_clip = true;
+            if let Some(e)=view.get(handle(2)) {size=[e.width,e.height];}
+        } else if code == stream::cmd::SCISSOR {
+            let r=[2,3,4,5].map(|k|words.word(at+k) as i32);
+            whole_clip=stream::clipped([0,0,size[0] as i32,size[1] as i32],size[0],size[1],Some(r)) == Some([0,0,size[0],size[1]]);
+        } else if code == stream::cmd::CLEAR && whole_clip {
             if let Some(id) = target {
                 add(&mut whole, id);
             }
@@ -2148,7 +2155,7 @@ fn named(words: &WordBuf, view: &View) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
                 }
             }
         }
-        let writes = code == stream::cmd::CLEAR
+        let writes = code == stream::cmd::CLEAR || code == stream::cmd::PROBE
             || (code == stream::cmd::DRAW && words.word(at + 4) > 0)
             || (code == stream::cmd::DRAW_BUFFER && words.word(at + 7) > 0)
             || (code == stream::cmd::DRAW_SAMPLED && words.word(at + 5) > 0);
@@ -2163,6 +2170,46 @@ fn named(words: &WordBuf, view: &View) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
         at += len.max(2);
     }
     (written, all, whole)
+}
+
+/// Read-only validator view for point 24's planted pipeline modifier.
+struct ProfileWords<'a> {
+    words: &'a WordBuf,
+    filtered: Option<usize>,
+}
+impl stream::Words for ProfileWords<'_> {
+    fn len(&self) -> usize {
+        self.words.len()
+    }
+    fn word(&self, i: usize) -> u32 {
+        self.words.word(i)
+            | if self.filtered == Some(i) {
+                0x8000_0000
+            } else {
+                0
+            }
+    }
+}
+
+fn reserve_profile_violation(words: &WordBuf) -> Option<(usize, u32, crate::test_control::Reservation<'static>)> {
+    if !crate::test_control::enabled() { return None; }
+    let (mut at, mut index, mut target) = (0usize, 0u32, 0u64);
+    while words.len() - at >= 2 {
+        let code = words.word(at);
+        let len = words.word(at + 1) as usize;
+        if len < 2 || len > words.len() - at { return None; }
+        if code == stream::cmd::BEGIN && len == 4 {
+            target = words.word(at + 2) as u64 | (words.word(at + 3) as u64) << 32;
+        }
+        if matches!(code, stream::cmd::DRAW | stream::cmd::DRAW_BUFFER | stream::cmd::DRAW_SAMPLED) && len >= 3 {
+            if let Some(point) = crate::test_control::reserve(test_point::PROFILE_VIOLATION, target) {
+                return Some((at + 2, index, point));
+            }
+        }
+        at += len;
+        index += 1;
+    }
+    None
 }
 
 fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
@@ -2190,9 +2237,14 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
     let view = with_core(|c| View::of(c, tgid)).ok_or(ENODEV)?;
     let snap = Snapshot::take(&words, &view)?;
     let resolved = Resolved { view: &view, snap: &snap };
-    let plan = match stream::validate(&words, &resolved) {
+    let injection = reserve_profile_violation(&words);
+    let validation = ProfileWords {words:&words, filtered:injection.as_ref().map(|(word,_,_)|*word)};
+    let plan = match stream::validate(&validation, &resolved) {
         Ok(plan) => plan,
         Err(r) => {
+            if let Some((_,index,point))=injection {
+                if index==r.index && r.error==stream::error::FILTERED_SAMPLER {point.fire();}
+            }
             let errno = if r.is_work_limit() { EDQUOT } else { EINVAL };
             return refuse(&mut a, r.index, r.error, errno);
         }

@@ -13,6 +13,7 @@
 
 pub mod float;
 pub mod stream;
+pub mod probe;
 
 /// `test_control(op, arg, len)` (`docs/gui/gpu.md` section 1.8, BreenGL contract section 21).
 pub const SYS_TEST_CONTROL: u64 = 415;
@@ -195,6 +196,7 @@ pub mod pipeline {
     pub const fn steps(pipeline: u32) -> Option<u64> {
         match pipeline {
             SOLID | COPY => Some(1),
+            PROBE_INT => Some(crate::probe::STEPS),
             _ => None,
         }
     }
