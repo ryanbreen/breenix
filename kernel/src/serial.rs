@@ -752,18 +752,29 @@ pub fn try_print(args: fmt::Arguments) -> Result<(), ()> {
 /// the holder's unit, which may be a line a boot-path stage depends on. Half
 /// the notices are kept for boot-path stage lines (`stage_lines`).
 pub fn write_str_bounded(s: &str) {
-    write_str_within(s, 1 << 20);
+    write_str_within(s, 1 << 20, true);
 }
 
 /// [`write_str_bounded`] for a line composed with run-queue or scheduler
 /// locks held: SERIAL1 is tried 2^10 times only, so a holder whose CPU has
-/// stopped holds up no other CPU's dispatch behind this one, and the line
-/// otherwise goes to the kernel log as a notice.
+/// stopped holds up no other CPU's dispatch behind this one, and the line is
+/// queued only when the transmit queue has room for all of it and the
+/// transmit thread sends it, so nothing here waits on the UART. Otherwise it
+/// goes to the kernel log as a notice.
 pub fn write_str_briefly(s: &str) {
-    write_str_within(s, 1 << 10);
+    write_str_within(s, 1 << 10, false);
 }
 
-fn write_str_within(s: &str, attempts: u32) {
+/// Whether `s`, written by `writer`, fits in what `queue` has free, as
+/// `Unit::write_str` queues it: the line break it may lead with, and three
+/// bytes for each backspace or DEL (`queue_byte`).
+fn unit_fits(queue: &TxQueue, writer: Writer, s: &str) -> bool {
+    let lead = crate::serial_writer::lead(writer, s.as_bytes()).len();
+    let wire: usize = s.as_bytes().iter().map(|&byte| if byte == 0x08 || byte == 0x7f { 3 } else { 1 }).sum();
+    lead + wire <= TX_QUEUE_BYTES - queue.len
+}
+
+fn write_str_within(s: &str, attempts: u32, wait_for_uart: bool) {
     use crate::log_notice::Node;
     use core::fmt::Write;
     static FALLBACK: [Node; 4] = [const { Node::new() }; 4];
@@ -776,6 +787,9 @@ fn write_str_within(s: &str, attempts: u32) {
             let Some(mut serial) = SERIAL1.try_lock() else {
                 return false;
             };
+            if !wait_for_uart && (TX_THREAD.get().is_none() || !unit_fits(&serial.queue, Writer::Kernel, s)) {
+                return false;
+            }
             let _ = Unit {
                 queue: &mut serial.queue,
                 writer: Writer::Kernel,
