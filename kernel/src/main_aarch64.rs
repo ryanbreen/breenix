@@ -2581,6 +2581,8 @@ fn panic(info: &PanicInfo) -> ! {
     unsafe {
         core::arch::asm!("msr DAIFSet, #0x3", options(nomem, nostack));
     }
+    // Output from here on names no thread (docs/gui/breengel.md section 22).
+    kernel::output_accounting::panicking();
 
     serial_println!();
     serial_println!("========================================");
