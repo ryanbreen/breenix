@@ -209,7 +209,7 @@ ARM64; x86-64's dispatch arrives when x86-64 joins (section 1.6.4).
 |---|---|---|
 | 0 | `VERSION` | returns 1 |
 | 1 | `CAPS` | the profile record: backend, feature bits, formats, maximum sizes, catalogue version, the device's host renderer string where its capability set carries one |
-| 2, 3 | `CONTEXT_CREATE`, `CONTEXT_DESTROY` | per-process; EAGAIN past the quota; creation compiles and warms every catalogue program (section 1.4.1) |
+| 2, 3 | `CONTEXT_CREATE`, `CONTEXT_DESTROY` | per-process; EAGAIN past the quota; creation compiles and warms the fixed rendering catalogue, excluding the profile-only `probe_int` program, which warms on its first PROBE (section 1.4.1) |
 | 4, 5 | `RESOURCE_CREATE`, `RESOURCE_DESTROY` | targets, textures, buffers; a scanout flag declares scanout targets at creation (section 1.7); ENOMEM against the GPU memory quota and `RLIMIT_AS` for guest backing; destroy drops the handle, and storage is freed when the resource's hold set is empty (section 1.4.1) |
 | 6 | `UPLOAD` | user bytes to a texture or buffer rectangle, clipped, with its `purpose`, sent in a named context; visible to later submissions only; EINTR on an interrupted wait, ENOMEM if staging cannot be allocated or charged to the process's guest-backing quota or `RLIMIT_AS` |
 | 7 | `SUBMIT` | a BGL command stream, validated whole before anything is sent (EINVAL with the failing command's index), with its work estimate checked (EDQUOT past the cap); returns a fence |
@@ -247,13 +247,17 @@ and 415 (`652a4494`) was reverted (`0f53872e`) and is not reapplied.
   either command: the validator refuses foreign handles, every resource is attached to every context of its
   process, and every transfer box the kernel builds (`READBACK`'s rectangle, its bands, test-control point
   21's transfer, `UPLOAD` from G3) is checked against the resource it names before it is sent.
-- **Program warm-up.** `CONTEXT_CREATE` creates every catalogue program in the new device context and draws
-  each once into a 1×1 scratch target, waiting for its fence. This is an explicit pre-measurement condition:
-  the performance bounds measure already-warmed contexts, not application startup. Creation, including all
-  warm-up, must finish within the suite runner's existing 10 s case deadline (`submit/context-create`).
+- **Program warm-up.** `CONTEXT_CREATE` creates the fixed rendering catalogue in the new device context,
+  excluding the profile-only `probe_int` measuring program, and draws each rendering program once into a
+  1×1 scratch target, waiting for its fence. `probe_int` is compiled and warmed on the first PROBE in that
+  context. That first PROBE's cost is excluded from performance bounds; later PROBEs use the warmed program.
+  This is an explicit pre-measurement condition: performance bounds measure warmed programs, excluding
+  application startup and that first PROBE. Creation, including its rendering-catalogue warm-up, must
+  finish within the suite runner's existing 10 s case deadline (`submit/context-create`).
   Each warm-up fence is subject to the same 2 s watchdog as any submission; compile time is not exempt
-  from hang recovery. A kill during creation must end the caller within 250 ms, without waiting for all
-  programs to compile (`isolation/killable-wait`); queued work retains its resources until completion or
+  from hang recovery. A kill during creation must end the caller within 250 ms, without waiting for remaining
+  programs to compile (`isolation/killable-wait`); the first PROBE has the same watchdog and kill bounds.
+  Queued work retains its resources until completion or
   reset. The spike measured compilation of only its own programs, not the full catalogue (section 1.12).
 - **Execution and publication.** Each target a submission writes is *pending* until the submission's fence
   completes. Completed OK, the target's generation advances and its contents are published. Completed with a
@@ -704,6 +708,7 @@ The VMware row extends the sequence BreenGL recorded for host-modified contents 
 writes nothing for a surface whose contents came only from guest uploads, and a host copy first makes it write
 the whole surface. The VMware spike read shader-rendered targets back exactly through this sequence.
 
+<!-- claim-lint:ok: Normative one-shot fault requirements from docs/gui/breengl.md section 21 and the GPU contract #1709, not measured results. -->
 **Planted faults** (test controls, §21, new points 19 to 31), each with a `gpu` case that requires the exact
 reason and then the clean result once disarmed. Every point is one-shot, as every point of §21 is: arming it
 affects the next occurrence of its event, the point then counts one firing and disarms itself, and a check
@@ -716,7 +721,9 @@ unwritten, and the readback refuses with reason unwritten (1), the reason `readb
 requires; resource mismatch (3) is not observable for this fault, as stated above), 22 `corrupt-pixel` (a pixel outside the draw corrupted on the device), 23 `mask-capability` (the
 next admission decision, made by a `CAPS` query or by any other op that admission gates, counts the named
 capability as absent, so that op fails naming it; the op after it sees the device's real capabilities, with no
-`DISARM_ALL`), 24 `profile-violation` (one draw with filtered sampling), 25 `skip-present-flush`, 26
+`DISARM_ALL`), 24 `profile-violation` (the next DRAW, DRAW_BUFFER or DRAW_SAMPLED is refused by validation
+for filtered sampling; arm with target 0 and parameter 0, with no BEGIN-target filter, as defined in
+`docs/gui/gpu-abi.md`), 25 `skip-present-flush`, 26
 `wrong-scanout`, 27 `device-error` (the next submission is answered with a device error; armed before each of
 two consecutive submissions of one context, it quarantines that context only and never resets the device,
 section 1.4.1), 28 `suppress-draw` (the translator drops one draw from the device stream while the fence still
@@ -875,20 +882,22 @@ Notes on the cases that carry the most weight:
   existing `irq-hold` point has shown the gauge reads a 2 ms hold, as `breengel`'s
   `composition/flush-irq-bound` does.
 
+<!-- claim-lint:ok: Normative performance measurement requirements in docs/gui/gpu.md sections 1.4.1 and 1.10, amended by contract #1709, not measured results. -->
 **Performance bounds,** in the contract from G0 and held on every target. G8 may tighten a bound from
 measurement and never loosens one; a target that misses a bound has a slow path to fix. A device's answer to
 a submission is not proof the GPU did the work: opaque overdraw may be culled, and a response need not
 prove pixel completion. Every measured interval ends with a dependent observation (a readback, or a draw
 that reads the result), and throughput cases use blended or discarding draws wherever
-opaque overdraw could be culled. Every bound is measured after context creation has warmed the programs
-(section 1.4.1).
+opaque overdraw could be culled. Every bound is measured after context creation has warmed the fixed
+rendering catalogue. The profile-only program warms on the first PROBE in its context, whose cost is
+excluded from performance bounds (section 1.4.1).
 
 | Case | Bound |
 |---|---|
 | `clear-rate-2560` | at least 60 full-screen 2560×1600 clears, each presented, per second |
 | `rect-throughput` | 10,000 solid 16×16 rectangles in one submission complete within 50 ms |
 | `submit-latency` | an empty submission's fence: median at most 2 ms, maximum at most 10 ms over 1,000 |
-| `first-draw-latency` | a new context's first draw with each catalogue pipeline, each completing within 10 ms |
+| `first-draw-latency` | a new context's first draw with each fixed rendering-catalogue pipeline (excluding `probe_int`), each completing within 10 ms |
 | `readback-time-2560` | a full 2560×1600 readback within 100 ms |
 | `upload-bandwidth` | a 16 MiB texture upload visible to the next submission within 100 ms |
 | `coverage-throughput` | a full-screen 2560×1600 `coverage` blend from an R8 mask within 16.7 ms |
@@ -999,7 +1008,7 @@ no profile requirement is relaxed by these experiments.
 | Every readback has complementary-poison observations; offset 164 is `unwritten` | section 1.8; `readback/poison-unwritten` | VMware's `judge` compares both observations; a single poison cannot distinguish an unwritten byte equal to that poison. The record change strengthens detection. |
 | Uploads are proved by reading them back | `textures/upload-visibility` | Parallels' `r8-64-pitch64-transfer` both samples zeros and leaves poisoned readback bytes. |
 | Foreign handles are refused by the validator | section 1.4.1; `isolation/foreign-target-draw` | Parallels' foreign-context probe receives `OK_NODATA` without the intended drawing. |
-| Context creation warms every catalogue program | sections 1.4, 1.4.1; `performance/first-draw-latency` | Parallels' `sceneA` first submission takes 28,365 µs, and `sceneA-again` takes 349 µs. These are the spike's programs, not the whole catalogue. Creation has its own deadline and kill requirement. |
+| Context creation warms the fixed rendering catalogue; `probe_int` warms on its first PROBE | sections 1.4, 1.4.1; `performance/first-draw-latency` | Parallels' `sceneA` first submission takes 28,365 µs, and `sceneA-again` takes 349 µs. These are the spike's programs, not the whole catalogue. Creation has its own deadline and kill requirement; the first PROBE's cost is excluded from performance bounds. |
 | Timed work ends with a dependent observation | section 1.10 | A command response alone cannot establish completed pixel work. Opaque overdraw may be culled; blended or discarding workloads must measure the required work. |
 | VirGL requires `VIRGL` and `VERSION_1`, deduplicating capability set IDs | section 1.6 | Parallels' capability enumeration lacks blob, context-init and EDID and repeats its VirGL 2 set at multiple indices. |
 | VMware admits by capability entries | section 1.6.3 | The 3D-off control refuses at `DXCONTEXT=0`; the register's DX bit alone is insufficient. |

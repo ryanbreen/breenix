@@ -70,7 +70,10 @@ Pipelines are numbered in the catalogue table's order (`docs/gui/gpu.md` section
 `format` uses the same numbers).
 
 **`CONTEXT_CREATE` (32 bytes):** `handle: u64` out, `flags: u32` (0), `warmed: u32` out (the
-catalogue programs creation compiled and warmed), 16 reserved. EAGAIN past 8 contexts per process.
+fixed rendering-catalogue programs creation compiled and warmed, excluding `probe_int`), 16 reserved.
+EAGAIN past 8 contexts per process. The profile-only `probe_int` program is compiled and warmed on the
+first PROBE in that context; that first PROBE's cost is excluded from performance bounds. The watchdog
+and kill bounds still apply (`docs/gui/gpu.md` section 1.4.1).
 
 **`CONTEXT_DESTROY`, `RESOURCE_DESTROY` (16 bytes):** `handle: u64`, 8 reserved. EINVAL for a handle the
 process does not hold.
@@ -242,6 +245,60 @@ its index is its position in the stream.
 | 4 | `DRAW_BUFFER` | `4, 8, pipeline, colour, buffer_lo, buffer_hi, offset, n`: `n` rectangles read from a buffer, 16 bytes each from `offset` |
 | 5 | `COPY` | `5, 12, source_lo, source_hi, sx, sy, w, h, destination_lo, destination_hi, dx, dy`: a GPU region copy of the source rectangle `[sx, sx + w) × [sy, sy + h)` to the point `(dx, dy)` of the destination (unsigned) |
 | 6 | `DRAW_SAMPLED` | `6, 6 + 6n, pipeline, texture_lo, texture_hi, n`, then `n` instances `x0, y0, x1, y1, sx, sy` (signed 32-bit): each half-open rectangle of the current target drawn from the texture, pixel `(x, y)` reading texel `(sx + x − x0, sy + y − y0)` |
+| 7 | `PROBE` | `7, 24, routine, word, x0, y0, x1, y1, a0, …, a15`: draw one rectangle using `probe_int`; the sixteen input words are integer bit patterns |
+| 8 | `SCISSOR` | `8, 6, x0, y0, x1, y1`: intersect later draws with this half-open rectangle, until another SCISSOR or BEGIN; BEGIN restores the whole target |
+
+<!-- claim-lint:ok: Proposed interface requirements implementing docs/gui/gpu.md section 1.5. -->
+G4 defines PROBE and SCISSOR before their implementation. PROBE needs a current target and
+an ordered rectangle, like DRAW. It emits one instance; its area is the rectangle intersected with
+the target and scissor. It writes the selected result word as canonical BGRA bytes, least significant
+byte first, using integer byte extraction and the final `k / 255` conversion. No result is computed
+on the CPU. Inputs not used by a routine must be zero; word selects one of the result words below.
+An unknown routine, an out-of-range word selector, an operand outside its stated input domain, or a nonzero unused input returns EINVAL, code 18.
+The PROBE work estimate is 65,536 steps per pixel, a conservative budget for the fixed arithmetic
+program including its 96 division iterations. SCISSOR itself counts no draw, instance or work.
+SCISSOR needs a current target, refuses inverted rectangles (code 6), and clips CLEAR as well as
+DRAW, DRAW_BUFFER, DRAW_SAMPLED and PROBE. COPY remains independent of drawing state.
+
+<!-- claim-lint:ok: Numerical requirements from docs/gui/gpu.md section 1.5. -->
+
+| Routine | Inputs | Result words, least significant first |
+|---|---|---|
+| 0 add, 1 subtract, 2 multiply | a0, a1 | wrapping 32-bit result |
+| 3 shift left, 4 shift right, 5 arithmetic shift right | a0, a1 (0–31) | shifted word; arithmetic shift interprets a0 as i32 |
+| 6 signed less, 7 unsigned less | a0, a1 | 1 when less, otherwise 0 |
+| 8 div255 | a0 (0–65,025) | floor((a0 + 127) / 255) |
+| 9 multiply two words | a0, a1 | exact unsigned 64-bit product (2 words) |
+| 10 multiply three words | a0, a1 (one u64), a2 (u32) | exact unsigned 96-bit product (3 words) |
+| 11 divide three words | a0–a2 dividend, a3–a5 nonzero divisor | unsigned quotient (words 0–2), remainder (3–5), restoring division in exactly 96 iterations |
+| 12 binary32 add, 13 subtract, 14 multiply | a0, a1 | IEEE-754 binary32 result bits, round to nearest, ties to even |
+| 15 binary32 truncate | a0 | signed i32, toward 0; only finite inputs whose truncated value fits i32 |
+| 16 binary32 ceil | a0 | binary32 bits of the least integral value not below the input |
+| 17 binary32 less | a0, a1 | 1 when less, otherwise 0 |
+| 18 fragment x, 19 fragment y | no inputs | floor of the fragment's window coordinate |
+| 20 circle fill, 21 circle outline | a0,a1 pixel; a2,a3 centre; a4 radius | membership, 0 or 1, in §5.4 or §5.5's pixel set |
+| 22 rounded rectangle | a0,a1 pixel; a2,a3 origin; a4,a5 width,height; a6 radius | membership in §5.6's pixel set |
+| 23 triangle | a0,a1 pixel; a2–a7 three integer vertices | membership by edge functions at the pixel centre, with the top-left rule |
+| 24 line | a0,a1 pixel; a2–a5 start and end | membership in §5.3's unclipped walk, both endpoints included |
+
+<!-- claim-lint:ok: Proposed numerical requirements implementing docs/gui/gpu.md section 1.5, not measured results. -->
+Binary32 arithmetic preserves gradual underflow and signed zero; a NaN result is canonical
+0x7FC00000. The suite checks literal finite, subnormal, tie, cancellation and range-end vectors;
+the host model is checked against native f32 before the corresponding shader is written
+(`gpu.md` section 1.5). Shape inputs are signed i32; nonpositive sizes and negative circle radii
+produce empty sets; a rounded rectangle with a nonpositive radius is a plain rectangle. Shape predicates use two or three words as section 1.5 requires,
+including coordinate differences that exceed i32. This interface leaves the promised G5
+closed-form proofs and the pixel sets unchanged. A triangle with zero signed area is empty;
+for positive winding, an edge is inclusive when its dy is negative or its dy is zero and dx
+positive (top-left in the top-left coordinate system); negative winding reverses the vertices.
+
+Bit 31 of a drawing command's pipeline word requests a filtered sampler. Exact pipelines refuse
+that modifier with EINVAL, code 19, before sending commands. Point 24 injects that modifier into
+the next DRAW, DRAW_BUFFER or DRAW_SAMPLED during validation, consumes one firing and returns
+code 19 with that draw's index. Arm point 24 with target 0 and parameter 0. Its event target is 0:
+it does not filter by the resource named by BEGIN, and a nonzero armed target does not match the event.
+The failed submission sends no commands and changes no GPU counters, generations or pixels; the
+test-control firing count advances once. The refusal is from the same pipeline check as an explicit modifier.
 
 `colour` is the canonical BGRA bytes as a little-endian word: B in bits 0 to 7, G 8 to 15, R 16 to 23,
 A 24 to 31. Rectangles are clipped to the target; one with `x1 < x0` or `y1 < y0` is refused. Any drawing
