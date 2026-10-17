@@ -334,12 +334,15 @@ GUEST_PRIORITY=(nice -n -10)
 PASS=0
 FAIL=0
 BOOT_SECS=0
-for i in $(seq 1 "$COUNT"); do
+i=1
+attempt=0
+while [ "$i" -le "$COUNT" ]; do
+  attempt=$((attempt+1))
   # The gate always queues; the manual escape hatch only applies to Mac boots.
   phase_start boot-slot-wait
   host_slot_acquire x86-boot || { phase_end 1; exit 1; }
   phase_end
-  OUTDIR="$BREENIX_GATE_TMP/breenix_gate_$i"
+  OUTDIR="$BREENIX_GATE_TMP/breenix_gate_$attempt"
   rm -rf "$OUTDIR"; mkdir -p "$OUTDIR"
   host_slot_serial "$OUTDIR/serial_kernel.log" || exit 1
   # Suites print their DONE line on COM1: the supervisor records the verdict's load from it.
@@ -462,6 +465,7 @@ for i in $(seq 1 "$COUNT"); do
   # and the census reads whichever argument the markers are in -- it selects by
   # snapshot `seq`, not by argument order.
   # claim-lint:ok: #775 ruling R134 defines the census input contract.
+  verdict_status=0
   if [ -n "$SUITE" ]; then
     verdict_ok=true
     verdict_reason=""
@@ -513,6 +517,12 @@ for i in $(seq 1 "$COUNT"); do
     PASS=$((PASS+1))
     INSPECTOR_VERDICT=PASS
     INSPECTOR_STATUS=0
+  elif [ "$verdict_status" -eq 2 ] && [ "$census_ok" = true ] \
+      && [ "$scoring_deadline_missed" != true ] && [ "$boot_completed" = true ] \
+      && [ "$utc_clock_failed" != true ]; then
+    echo "  Test $i: STARVED ($verdict_reason)"
+    INSPECTOR_VERDICT=STARVED
+    INSPECTOR_STATUS=2
   else
     combined_reason="$verdict_reason"
     if [ "$census_ok" != true ]; then
@@ -534,6 +544,11 @@ with open(sys.argv[1], 'w') as output:
 PYTIMES
   breenix_runs_import_nonfatal "$OUTDIR" x86_64 gate "$INSPECTOR_VERDICT" "$INSPECTOR_STATUS" "$INSPECTOR_START_MS" "${BREENIX_RUNS_GATE_ARGV[@]}" || :
   host_slot_release x86-boot || exit 1
+  if [ "$INSPECTOR_STATUS" -eq 2 ]; then
+    echo "  Rerunning test $i; STARVED attempt is not evidence"
+  else
+    i=$((i+1))
+  fi
 done
 TOTAL_SECS=$((SECONDS - TOTAL_START))
 

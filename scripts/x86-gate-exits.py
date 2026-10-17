@@ -3,6 +3,7 @@
 import pathlib
 import re
 import sys
+import importlib.util
 
 
 def classify_serial(serial, allowlist):
@@ -20,6 +21,10 @@ def classify_serial(serial, allowlist):
         if any(c[:2] == contract[:2] for c in contracts):
             raise ValueError(f'duplicate allowlist entry: {line}')
         contracts.append(contract)
+    spec = importlib.util.spec_from_file_location("sigkill_score", pathlib.Path(__file__).with_name("score-sigkill-teardown.py"))
+    scorer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(scorer)
+    sigkill_starved = scorer.score(serial)[0] == 2
     lines = serial.splitlines()
     if any(re.search(r'\bSKIP\b', line) for line in lines):
         raise ValueError('completed boot contains a skipped check')
@@ -46,6 +51,8 @@ def classify_serial(serial, allowlist):
             continue
         reason = next((why for pattern, code, why in contracts
                        if code == status and re.fullmatch(pattern, name)), None)
+        if name == 'sigkill_teardown_test' and status == 2 and sigkill_starved:
+            reason = 'STARVED window verified from counters; boot must be rerun'
         failures.append((name, status, reason))
     started = re.search(r'\bstarted=(\d+)', tail)
     require_publications = True

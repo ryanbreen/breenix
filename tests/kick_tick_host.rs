@@ -20,3 +20,8 @@ fn sigkill_kick_window_verdict_and_scorer() {
 fn x86_timer_vector_counts_only_timer_expiries() {
     run("tests/x86_timer_ticks_host.py");
 }
+
+#[test]
+fn starved_boots_are_replaced_without_hiding_failures() {
+    run("tests/starvation_retry_host.py");
+}
