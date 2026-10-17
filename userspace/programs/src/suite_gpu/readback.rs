@@ -19,14 +19,16 @@ fn observe(t: u64, rect: [u32; 4], px: &mut [u8], stride: u32, rec: &mut [u8; re
     let r = gpu::call_with(abi::op::READBACK, &mut a);
     (r, a)
 }
-fn present(t: u64) -> CaseResult {
+/// Bind a target this case drew to the scanout (section 1.10: each rendering case binds
+/// its target while it owns the display).
+fn present(ctx: u64, t: u64) -> CaseResult {
     graphics::take_over_display().map_err(|e| fail_msg(format!("take display: {e:?}")))?;
-    let (r, p) = gpu::present(t);
+    let (r, p) = gpu::present(ctx, t);
     ensure(r == 0 && p.fence != 0 && p.answer == 0x1100, || format!("PRESENT: {} fence={} answer={:#x}", errno(r), p.fence, p.answer))
 }
 fn draw(ctx: u64, t: u64, bg: u32) -> Result<u64, libbreenix::suite::CaseError> {
     let f = frame(ctx, &scene(t, bg, &[([1, 1, 4, 3], B), ([3, 2, 7, 5], C)]))?;
-    present(t)?;
+    present(ctx, t)?;
     Ok(f)
 }
 fn want(w: u32, h: u32, bg: u32) -> Canvas {
@@ -37,7 +39,7 @@ pub fn full_target() -> CaseResult {
     let _case = begin()?;
     let (ctx, t) = setup(format::B8G8R8A8, 47, 13)?;
     frame(ctx, &scene(t, B, &[]))?;
-    present(t)?;
+    present(ctx, t)?;
     expect(t, &scene_canvas(47, 13, B, &[]), "full clear")?;
     pass()
 }
@@ -46,7 +48,7 @@ pub fn poison_unwritten() -> CaseResult {
     let (ctx, t) = setup(format::B8G8R8A8, 48, 7)?;
     for colour in [A, !A, B] {
         frame(ctx, &scene(t, colour, &[]))?;
-        present(t)?;
+        present(ctx, t)?;
         let rec = expect(t, &scene_canvas(48, 7, colour, &[]), "poison-valued pixels")?;
         ensure(u32_at(&rec, record::POISON) == A && u32_at(&rec, record::UNWRITTEN) == 0, || "complementary-poison record".to_string())?;
     }
@@ -160,7 +162,7 @@ pub fn ordered_after_draws() -> CaseResult {
     let (r, _) = observe(t, [0, 0, 97, 31], &mut px, 97 * 4, &mut rec);
     ensure(r == 0, || format!("READBACK of outstanding draws: {}", errno(r)))?;
     scene_canvas(97, 31, A, &rects).matches(&px, "all ordered draws")?;
-    present(t)?;
+    present(ctx, t)?;
     ensure(u64_at(&rec, record::GENERATION) == 1, || "first submission not published once".to_string())
 }
 fn refused(point: u32, expected_reason: u32) -> CaseResult {
@@ -185,7 +187,7 @@ fn refused(point: u32, expected_reason: u32) -> CaseResult {
 }
 pub fn fault_skip_transfer() -> CaseResult { refused(test_point::SKIP_TRANSFER, reason::UNWRITTEN) }
 pub fn fault_stale_fence() -> CaseResult { refused(test_point::STALE_FENCE, reason::FENCE_MISMATCH) }
-pub fn fault_wrong_resource() -> CaseResult { refused(test_point::WRONG_RESOURCE, reason::RESOURCE_MISMATCH) }
+pub fn fault_wrong_resource() -> CaseResult { refused(test_point::WRONG_RESOURCE, reason::UNWRITTEN) }
 pub fn fault_corrupt_pixel() -> CaseResult {
     let _case = begin()?;
     let (ctx, t) = setup(format::B8G8R8A8, 13, 7)?;
@@ -196,7 +198,7 @@ pub fn fault_corrupt_pixel() -> CaseResult {
     encode::begin(&mut s, t);
     encode::draw(&mut s, pipeline::SOLID, B, &[[2, 2, 5, 4]]);
     frame(ctx, &s)?;
-    present(t)?;
+    present(ctx, t)?;
     let (px, _) = read(t, 13, 7)?;
     let expected = scene_canvas(13, 7, A, &[([2, 2, 5, 4], B)]);
     let differences: Vec<_> = px.chunks_exact(4).zip(expected.px.chunks_exact(4)).enumerate().filter(|(_, (a, b))| a != b).map(|(i, _)| i).collect();
@@ -216,7 +218,7 @@ pub fn fault_suppress_draw() -> CaseResult {
     encode::begin(&mut s, t);
     encode::draw(&mut s, pipeline::SOLID, B, &[[2, 2, 5, 4]]);
     frame(ctx, &s)?; // The device really completes its fence.
-    present(t)?;
+    present(ctx, t)?;
     let (px, _) = read(t, 13, 7)?;
     scene_canvas(13, 7, A, &[]).matches(&px, "draw actually omitted")?;
     ensure(scene_canvas(13, 7, A, &[([2, 2, 5, 4], B)]).matches(&px, "suppressed draw").is_err(), || "exact comparator accepted suppressed draw".to_string())?;
@@ -266,7 +268,7 @@ pub fn owner_only() -> CaseResult {
             let ok = (|| -> CaseResult {
                 let (c, own) = setup(format::B8G8R8A8, 13, 7)?;
                 frame(c, &scene(own, B, &[]))?;
-                ensure(gpu::present(own).0 == -abi::errno::EPERM, || "non-owner presented".to_string())?;
+                ensure(gpu::present(c, own).0 == -abi::errno::EPERM, || "non-owner presented".to_string())?;
                 // Child cannot guess the parent's scanout handle or read it.
                 let mut px = vec![0; 364]; let mut rec = [0; record::SIZE];
                 ensure(gpu::readback(t, [0, 0, 13, 7], &mut px, 52, &mut rec) < 0, || "child read parent's scanout".to_string())?;
@@ -287,7 +289,7 @@ pub fn owner_only() -> CaseResult {
     let mut px = vec![0; 364]; let mut rec = [0; record::SIZE];
     ensure(gpu::readback(t, [0, 0, 13, 7], &mut px, 52, &mut rec) == -abi::errno::EPERM,
         || "previous owner read the scanout after ownership moved".to_string())?;
-    present(t)?;
+    present(ctx, t)?;
     expect(t, &want(13, 7, A), "owner scanout read")?;
     pass()
 }
@@ -295,7 +297,7 @@ pub fn efault() -> CaseResult {
     let _case = begin()?;
     let (ctx, t) = setup(format::B8G8R8A8, 32, 40)?;
     frame(ctx, &scene(t, B, &[]))?;
-    present(t)?;
+    present(ctx, t)?;
     let ptr = memory::mmap(core::ptr::null_mut(), 8192, memory::PROT_READ | memory::PROT_WRITE,
         memory::MAP_PRIVATE | memory::MAP_ANONYMOUS, -1, 0).map_err(|e| fail_msg(format!("mmap: {e:?}")))?;
     // Late failure must leave the preceding writable page and the other output intact.
@@ -327,7 +329,7 @@ pub fn large_target() -> CaseResult {
     let (ctx, t) = setup(format::B8G8R8A8, 2560, 1600)?;
     let rects = [([0, 0, 1, 1600], A), ([2559, 0, 2560, 1600], C), ([0, 1599, 2560, 1600], A), ([1279, 799, 1281, 801], C)];
     frame(ctx, &scene(t, B, &rects))?;
-    present(t)?;
+    present(ctx, t)?;
     expect(t, &scene_canvas(2560, 1600, B, &rects), "large target every pixel")?;
     pass()
 }

@@ -51,20 +51,25 @@ impl Drop for Case {
     }
 }
 
+/// The layer every case that renders needs: the core, with a device admitted to the
+/// profile (`docs/gui/gpu.md` sections 1.5 and 1.11).
+const DEVICE_LAYER: &str = "the GPU core with a device admitted to the profile (G1)";
+
 /// Start a case that needs the GPU core: no point left armed by an earlier case, syscall
-/// 416 answering, and the device admitted to the profile.
+/// 416 answering, and the device admitted to the profile. Without them the case fails
+/// naming that layer and what the kernel answered (section 1.10).
 pub fn begin() -> Result<Case, CaseError> {
     let _ = gpu::tc_disarm_all();
     let v = gpu::version();
     if v != abi::INTERFACE_VERSION {
-        return Err(fail_msg(format!("syscall 416 VERSION returned {}, expected 1", errno(v))));
+        return Err(fail_msg(format!("missing {DEVICE_LAYER}: syscall 416 VERSION returned {}, expected 1", errno(v))));
     }
     let (r, c) = gpu::caps();
     if r != 0 {
-        return Err(fail_msg(format!("CAPS returned {}", errno(r))));
+        return Err(fail_msg(format!("missing {DEVICE_LAYER}: CAPS returned {}", errno(r))));
     }
     if c.status != abi::status::ADMITTED {
-        return Err(fail_msg(format!("the device is not admitted: status {} ({})", c.status, text(&c.reason))));
+        return Err(fail_msg(format!("missing {DEVICE_LAYER}: CAPS status {} ({})", c.status, text(&c.reason))));
     }
     Ok(Case)
 }
@@ -124,9 +129,6 @@ pub fn frame(ctx: u64, s: &[u32]) -> Result<u64, CaseError> {
 
 /// A whole-target readback: the canonical BGRA bytes and record v2.
 pub fn read(t: u64, w: u32, h: u32) -> Result<(Vec<u8>, [u8; record::SIZE]), CaseError> {
-    libbreenix::graphics::take_over_display().map_err(|e| fail_msg(format!("take display: {e:?}")))?;
-    let (present, _) = gpu::present(t);
-    ensure(present == 0, || format!("PRESENT before observation returned {}", errno(present)))?;
     let mut px = vec![0u8; (w * h * 4) as usize];
     let mut rec = [0u8; record::SIZE];
     let r = gpu::readback(t, [0, 0, w, h], &mut px, w * 4, &mut rec);
