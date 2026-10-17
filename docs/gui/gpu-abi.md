@@ -139,7 +139,8 @@ and makes it visible to the submissions sent after the call returns.
 4, 1 to 80 MiB), `fence: u64` out, `error_index: u32` out, `error: u32` out, `estimate: u64` out, 16
 reserved. Each buffer range the stream names is copied once, before validation, and validation and
 translation read only that copy (`docs/gui/gpu.md` section 1.4.1). A refused stream returns EINVAL, or
-EDQUOT for the work cap, with the failing command's index and its code written back. A context that is not
+EDQUOT for the work cap, with the failing command's index and its code written back.
+Validation scratch allocation is fallible: exhaustion returns ENOMEM with error code 22. A context that is not
 live (quarantined or reset) returns EIO. With four submissions in flight the call waits for one to
 complete; a signal ends that wait with EINTR, and a kill within 250 ms.
 

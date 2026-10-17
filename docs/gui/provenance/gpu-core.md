@@ -743,7 +743,7 @@ results on this revised candidate, including `G4 combined baseline ACCEPT 0` at 
 | Pipeline parameter domains, clipped source footprints, destination snapshots, scratch size and work weights | O: #1714 and `docs/gui/gpu.md` sections 1.3–1.5; clipping uses wide integer geometry, rather than CPU pixels |
 | Fragment constants 0–3: the sixteen parameters; 4: integer 0 seed; 5: draw colour; 6: texture dimensions; 7 reserved | O: encoder layout for #1714; shape colours use G1's binary32 UNORM encodings, other programs receive the packed BGRA word |
 | Sampler slots 0 source, 1 destination snapshot, 2 crossing data; nearest states bound in those slots | O: encoder bookkeeping; the commands, states and view layouts retain the P/D/H/T rows above |
-| Crossing data in a temporary RGBA8 texture: one u32 per texel, 16,384 texels per row, row pitch 65,536 bytes, inline writes of at most 1,024 words | O: parameter storage choice; format 67 is H:108, RESOURCE_INLINE_WRITE is P:521–532; data words are geometry, not a coverage image |
+| Crossing data in a temporary RGBA8 texture: one u32 per texel, a power-of-two row width no larger than the reported device maximum, four bytes per texel, inline writes of at most 1,024 words | O: parameter storage choice; format 67 is H:108, RESOURCE_INLINE_WRITE is P:521–532; data words are geometry, not a coverage image |
 | Context creation's sixteen rendering pairs (32 programs); probe_int's two programs remain lazy | O: `docs/gui/gpu.md` section 1.4.1 and #1714; the existing context-create case checks the count and reports creation time against 10 s |
 
 The new vertex programs use the same L-derived position pass-through as G1, each with its own device
@@ -775,9 +775,8 @@ showed that accepted range text did not produce a working sampler-0 draw. Branch
 KILL is used for discarded output, not as an assumed early return. L:661–670 defines discard and states
 that execution may continue. A warm-up span draw puts its fragment outside the glyph's bounds, so that
 body is guarded off while the program is compiled. Shader upload continuation retains G4's one-page
-commands, grouped into the encoder's existing bounded submission chunks. A program boundary ends
-the chunk; a continuation boundary does not require a separate fence. This keeps the P:273–282 offsets
-and order while avoiding a synchronous device round trip for each page. Warm-up encoding occurs outside the core lock and each G5 rendering draw ends a fenced chunk.
+commands, grouped into the encoder's existing bounded submission chunks. The encoder packs commands from successive programs into bounded chunks; neither program nor continuation boundaries require a separate fence. This keeps the P:273–282 offsets
+and order while avoiding a synchronous device round trip for each page. Warm-up encoding occurs outside the core lock; completion of the bounded chunks warms the catalogue.
 
 The suite's coverage expectation uses the frozen `breengel-cpu-393` rasterizer in `libs/libgfx-ref`.
 Its rasterizer, float helpers, work counter and error definitions are byte-identical to that tag's
@@ -787,6 +786,8 @@ only by the suite's comparison and is not uploaded. The reference-comment claim-
 an operator ruling; the imported files have not been annotated or exempted.
 
 ## B13: G5 shader-text grammar
+
+Experiment source revision: `819e749b52e8fb616b86a9f24c80659e36891db2` (the included catalogue and harness).
 
 The experiment is `tools/gpu-experiments/g5-grammar.py`, through B10's public API harness and the
 unmodified renderer at P's pin, with ANGLE's Metal backend. Reproduce with
@@ -817,6 +818,8 @@ establish that its pixels were written.
 
 ## B14: sampler declarations at draw time
 
+Experiment source revision: `3211c7a83563ea8be041a0b3cb1b7e84d8bc195e`.
+
 B13 establishes parser acceptance only. The first G5 device boot exposed a shader compilation error
 when a range declaration was used with a fetch from sampler 0. The independent reproduction is
 `tools/gpu-experiments/g5-samplers.py`, run with B13's invocation and environment, replacing
@@ -840,6 +843,8 @@ explanation for the renderer's behavior and not a waiver of the required pixels.
 
 
 ## B15: box-filter source bounds
+
+Experiment source revision: `c159c73c32c74becd52ae713bf38a869b6455fa5`; the baseline below is a separate input.
 
 The contract's outside-source discard rule applies to the complete box-filter bin. Its last
 texel must be inside the texture before the shader enters the fetch loop. The generator
