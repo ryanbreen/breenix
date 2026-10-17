@@ -761,16 +761,17 @@ pub fn immutable_while_pinned() -> CaseResult {
     pass()
 }
 
-/// The sampling draws of each run of the ordering experiment: each draw samples all 2^20
-/// texels, so the runs cost 2^30 and then 2^31 fragment-steps, the contract's work cap for
-/// one submission (`docs/gui/gpu-abi.md`). The heavier run is sent only when the first one
-/// finished too soon, so it cannot outlast the watchdog where the first stayed inside it.
+/// The sampling draws of each run of the ordering experiment: each draw samples the 2^20
+/// texels of a 1024×1024 texture, so the runs cost 2^30 and then 2^31 fragment-steps, the
+/// contract's work cap for one submission (`docs/gui/gpu-abi.md`). The heavier run is sent
+/// only when the first one finished too soon, so it cannot outlast the watchdog where the
+/// first stayed inside it.
 const ORDERING_DRAWS: [u32; 2] = [1024, 2048];
 
 /// Same-context ordering through existing interfaces, with no point armed (ruling 26): a
 /// sampling submission still unanswered when the UPLOAD is issued must read the texture as
-/// it was before the upload. A run whose submission is already answered at that moment shows
-/// nothing about ordering: it is reported, never passed, and the experiment repeats with a
+/// it was before the upload. A run whose submission is already answered at that moment does
+/// not show ordering: it is reported instead of passed, and the experiment repeats with a
 /// heavier submission; the case fails when no run up to the work cap is still in flight.
 fn same_context_ordering() -> CaseResult {
     let ctx = context()?;
