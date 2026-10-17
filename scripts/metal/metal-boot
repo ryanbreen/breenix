@@ -340,6 +340,8 @@ class Driver:
             shape = boot_shape(getattr(self.args, 'disk', None))
             self.final_marker = final_marker(metal, self.args.mode, catalog, shape)
             self.required_stages = measured_stages(metal, self.args.mode, catalog, shape)
+        if self.args.mode == 'probe':
+            self.final_marker = ('PROBE DONE ', 'contains')
         if self.args.mode == 'suite':
             self.final_marker = ('SUITE ' + self.args.suite + ' DONE ', 'contains')
         self.event('definition', metalPath=bool(metal), fatalPatterns=len(self.fatal_patterns),
@@ -592,6 +594,8 @@ class Driver:
         if self.kernel_started and self.fatal_at is None and any(p.search(line) for p in self.fatal_patterns):
             self.fatal_at = observed_at
             self.event('fatal', observed_at=observed_at, seconds=seconds)
+        if self.args.mode == 'probe' and re.fullmatch(r'PROBE DONE passed=\d+ failed=[1-9]\d*', line):
+            raise Finish(m.EXIT_SHORT, 'the production probe reported a failed check')
         if '[init] shell ready' in line:
             self.shell_ready = True
         self.on_disk_line(line, observed_at)

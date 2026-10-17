@@ -92,6 +92,7 @@ struct Peer {
     conflict: bool,
     no_router: bool,
     silent: bool,
+    drop_first_discover: bool,
     no_buffers: bool,
     nak: bool,
     pending: Option<Vec<u8>>,
@@ -106,6 +107,7 @@ static PEER: Mutex<Peer> = Mutex::new(Peer {
     conflict: false,
     no_router: false,
     silent: false,
+    drop_first_discover: false,
     no_buffers: false,
     nak: false,
     pending: None,
@@ -144,6 +146,9 @@ fn send(src: [u8; 4], dst: [u8; 4], data: &[u8]) -> Result<(), &'static str> {
     p.sent.push((dst, msg.to_vec()));
     if kind == 4 {
         p.declines += 1;
+        return Ok(());
+    }
+    if p.drop_first_discover && kind == 1 && p.sent.iter().filter(|(_, msg)| msg[242] == 1).count() == 1 {
         return Ok(());
     }
     if p.silent {
@@ -491,4 +496,19 @@ fn a_bring_up_discover_is_answered_only_by_its_own_offer() {
     let mut ack = offer;
     ack[242] = 5;
     assert!(!dhcp::is_offer(&ack, xid, mac), "an ACK is not an offer");
+}
+
+#[test]
+fn lost_first_discover_retransmits_after_four_seconds_and_acquires_lease() {
+    let _guard = setup();
+    PEER.lock().unwrap().drop_first_discover = true;
+    let start = CLOCK.load(Ordering::Relaxed);
+    let lease = dhcp::acquire(MAC).expect("the second DISCOVER must complete DORA");
+    let peer = PEER.lock().unwrap();
+    let discovers: Vec<_> = peer.sent.iter().filter(|(_, message)| message[242] == 1).collect();
+    assert_eq!(discovers.len(), 2);
+    assert_eq!(&discovers[0].1[4..8], &discovers[1].1[4..8]);
+    assert!(REQUEST_TIME.load(Ordering::Relaxed) - start >= 4_000_000_000);
+    assert_eq!(lease.ip_addr, ADDRESS);
+    assert_eq!(lease.nameservers[0], Some([192, 0, 2, 53]));
 }

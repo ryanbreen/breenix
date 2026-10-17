@@ -182,7 +182,7 @@ pub fn run_post_init_self_tests() {
     }
 
     // BCM5720 bring-up probes wait for link and take frames by MSI.
-    bcm5720::start_probes();
+    bcm5720::start_networking();
 }
 
 /// Initialize the driver subsystem (ARM64 version)
