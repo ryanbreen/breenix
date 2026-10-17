@@ -420,7 +420,7 @@ metal-setup apply                                 # in the container, under the 
 The build container is made once on the boot host from the same image as the service container: `limits.cpu` set
 to the shared CPUs (the service container's `METAL_CPUS`), `limits.cpu.priority=0`, a memory limit of 4 GiB per
 build slot and `boot.autostart=true`. It needs build-essential, clang, llvm, curl, e2fsprogs, gdisk, git, make,
-patch, pkg-config, python3 and xz-utils; rustup with the repository's pinned nightly and its components and
+nasm, patch, pkg-config, python3 and xz-utils; rustup with the repository's pinned nightly and its components and
 targets; a clone of the repository at `BUILD_REPO`; the Rust fork at `BUILD_RUST_FORK` with the pinned commit and its
 `library/` submodules checked out; and an empty `BUILD_CACHE`.
 
