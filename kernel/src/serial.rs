@@ -522,7 +522,10 @@ fn queue_log_line() -> Burst {
             None => Burst::Busy,
             Some(mut serial) => {
                 let queue = &mut serial.queue;
-                let mut ring = LOG_RING.lock();
+                let Some(mut ring) = LOG_RING.try_lock() else {
+                    LOG_PRINTER.store(false, Ordering::Release);
+                    return Burst::Busy;
+                };
                 let line = ring.line_len();
                 if line == 0 {
                     drop(ring);
