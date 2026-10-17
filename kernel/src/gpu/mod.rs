@@ -1400,12 +1400,15 @@ fn ensure_reaper() -> bool {
     }
 }
 
-/// Block `kgpu` until `wake` (or indefinitely) or until a GPU event after `seen`.
+/// Block `kgpu` until `wake` (or indefinitely) or until a GPU event after `seen`. It
+/// blocks for I/O: the scheduler applies a wake from interrupt context, such as
+/// `handle_interrupt`'s, only to a thread blocked for I/O, so a timer block would leave
+/// the device's answers waiting for the next deadline. Once woken it returns without
+/// halting for a further interrupt.
 fn reaper_block(tid: u64, seen: u64, wake: Option<u64>) {
     crate::arch_without_interrupts(|| {
-        crate::task::scheduler::with_scheduler(|sched| match wake {
-            Some(at) => sched.block_current_for_timer(at),
-            None => sched.block_current(),
+        crate::task::scheduler::with_scheduler(|sched| {
+            sched.block_current_for_io_with_timeout(wake);
         });
         if EVENTS.load(Ordering::Acquire) != seen {
             crate::task::scheduler::with_scheduler(|sched| {
@@ -1414,7 +1417,7 @@ fn reaper_block(tid: u64, seen: u64, wake: Option<u64>) {
         }
     });
     crate::task::scheduler::yield_current();
-    crate::arch_halt_with_interrupts();
+    crate::arch_halt_while_blocked();
 }
 
 /// `kgpu`: takes completions nobody is waiting for, runs the watchdog at its deadlines
