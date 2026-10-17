@@ -643,9 +643,10 @@ answers a readback transfer with an error, when the watchdog ends a transfer the
 completes or fails (device reset), when the target was lost to an earlier device reset (target lost), when
 the target's handle was destroyed while the readback waited for its writers (target dropped), and when the
 target may be the scanout but the scanout's binding is not known because a `PRESENT` that binds it or
-replaces it was sent and has not completed, or failed (binding unknown). Every EIO a readback returns names
-one of these reasons; none is reported under another's name. More than 16 windows in a composite returns EIO
-without a partial record, as v1 does.
+replaces it was sent and has not completed, or failed (binding unknown), and when a composite has more than
+16 windows (composite-overflow; its code is assigned with composite observations, which come after G2).
+Every EIO a readback returns names one of these reasons; none is reported under another's name.
+Composite overflow returns no partial record, as v1 does.
 
 **A fault is detected from what can be observed, never from the fault variable.** A readback's reason comes
 from what the kernel observes: the two observations, the answer and fence echo the device returns, and the

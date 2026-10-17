@@ -131,6 +131,11 @@ writes its reason to `reason`, and only that reason:
 
 `failed_submission` is zero for every other reason. Both output fields are zero on input.
 
+Composite observations come after G2. A composite with more than 16 windows returns EIO with reason
+`composite-overflow` and no partial record. Its distinct numeric code is assigned with that extension,
+alongside the code for a composed window's render fence not having completed OK before the composite was
+sent (`docs/gui/gpu.md` section 1.8); neither failure reuses reasons 1 to 10.
+
 EFAULT is atomic only as far as the kernel can guarantee it. Before sending any device work, `READBACK`
 checks that every page of its argument, of its record and of its pixel rows at `stride` is mapped and
 writable by the caller; a failure there returns EFAULT with nothing sent, no observation serial used, and
