@@ -650,20 +650,40 @@ pub(super) fn accepts_wakeups(cpu: usize) -> bool {
     crate::time::get_ticks().wrapping_sub(last) <= super::CPU_STALL_TICKS
 }
 
+/// Whether `cpu` can dispatch a thread queued on it now: it accepts wakeups,
+/// and it has entered the scheduler, or returned from an interrupt with
+/// preemption on, within `CPU_STALL_TICKS`. A CPU whose interrupts return with
+/// preemption held off, as through its idle housekeeping, still runs and
+/// still takes the threads pinned to it, but its queue waits for the section
+/// to end: under the x86 gate an idle CPU in its housekeeping went 1.6 s
+/// without entering the scheduler, interrupts returning all the while, with a
+/// woken unpinned thread on its queue. Placement passes that CPU over for
+/// unpinned threads, and peers take its unpinned queued ones.
+pub(super) fn dispatching(cpu: usize) -> bool {
+    if !accepts_wakeups(cpu) {
+        return false;
+    }
+    if cpu == super::current_cpu_id_raw() {
+        return true;
+    }
+    let last = CPU_LAST_SCHEDULE[cpu].load(Ordering::Relaxed).max(super::last_dispatchable_return_tick(cpu));
+    crate::time::get_ticks().wrapping_sub(last) <= super::CPU_STALL_TICKS
+}
+
 /// Whether `cpu` runs its idle thread and no idle housekeeping, as of its last
 /// release.
 pub(super) fn is_idle(cpu: usize) -> bool {
     CPU_IDLE[cpu].load(Ordering::Relaxed) && !super::IDLE_HOUSEKEEPING[cpu].load(Ordering::Acquire)
 }
 
-/// The least loaded CPU that accepts wakeups, `prefer` among equals; `prefer`
-/// when none does.
+/// The least loaded CPU that is dispatching, `prefer` among equals; else the
+/// least loaded that accepts wakeups; `prefer` when none does.
 pub(super) fn least_loaded(prefer: usize) -> usize {
     let online = (crate::arch_impl::x86_64::smp::cpus_online() as usize).clamp(1, MAX_CPUS);
-    (0..online)
-        .filter(|&cpu| accepts_wakeups(cpu))
-        .min_by_key(|&cpu| (load(cpu), cpu != prefer))
-        .unwrap_or(prefer)
+    let pick = |usable: fn(usize) -> bool| {
+        (0..online).filter(|&cpu| usable(cpu)).min_by_key(|&cpu| (load(cpu), cpu != prefer))
+    };
+    pick(dispatching).or_else(|| pick(accepts_wakeups)).unwrap_or(prefer)
 }
 
 /// `Scheduler::cpu_load` from the published summaries: the threads `cpu` has
@@ -1466,8 +1486,9 @@ pub(super) fn notify_or_hold(tid: u64, notices: &[Notice]) -> bool {
 }
 
 /// Move what is queued on CPUs that have stopped scheduling, or are offline,
-/// onto this one (`Scheduler::reclaim_unschedulable_cpu_queues`). A CPU whose
-/// lock is held is passed over.
+/// onto this one (`Scheduler::reclaim_unschedulable_cpu_queues`), and the
+/// unpinned threads queued on CPUs that are not dispatching (`dispatching`).
+/// A CPU whose lock is held is passed over.
 fn reclaim_stalled(local: &mut Held) {
     let online = online();
     for cpu in 0..MAX_CPUS {
@@ -1475,7 +1496,8 @@ fn reclaim_stalled(local: &mut Held) {
             continue;
         }
         let offline = cpu >= online;
-        if !offline && accepts_wakeups(cpu) {
+        let accepting = !offline && accepts_wakeups(cpu);
+        if accepting && dispatching(cpu) {
             continue;
         }
         if offline && CPU_LOAD[cpu].load(Ordering::Relaxed) == 0 {
@@ -1490,6 +1512,10 @@ fn reclaim_stalled(local: &mut Held) {
             let Some(tid) = remote.queue().pop_front() else {
                 break;
             };
+            if accepting && remote.thread(tid).is_some_and(|thread| thread.cpu_affinity.is_some()) {
+                remote.queue().push_back(tid);
+                continue;
+            }
             if retain_on_home(&mut remote, tid) || retain_affine(&mut remote, tid, local.cpu) {
                 continue;
             }

@@ -485,6 +485,21 @@ fn last_interrupt_return_tick(_cpu: usize) -> u64 {
     0
 }
 
+/// x86_64: the tick at which each CPU last returned from an interrupt with
+/// preemption on, a return through which it could switch to a queued thread.
+/// Returns taken with preemption held off, as through the idle loop's
+/// housekeeping, show the CPU running but not that it can dispatch.
+#[cfg(target_arch = "x86_64")]
+static DISPATCHABLE_RETURN_TICK: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+
+/// x86_64: the tick at which `cpu` last returned from an interrupt with
+/// preemption on (`DISPATCHABLE_RETURN_TICK`).
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn last_dispatchable_return_tick(cpu: usize) -> u64 {
+    DISPATCHABLE_RETURN_TICK[cpu].load(Ordering::Relaxed)
+}
+
 #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
 static BOOT_TEST_CPU_AFFINITY: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 
@@ -2047,7 +2062,8 @@ static LEAVING_STACK_WAITERS: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0)
 static RESCHED_REQUESTED: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
 
 /// x86_64: called first on every entry to `check_need_resched_and_switch`,
-/// after the scheduling epoch. Credits this CPU's elapsed and idle ticks; this
+/// after the scheduling epoch. Credits this CPU's elapsed and idle ticks;
+/// stamps the return when preemption is on (`DISPATCHABLE_RETURN_TICK`); this
 /// CPU is no longer on the stack of the thread it last switched away from; and
 /// it takes any reschedule requested of it.
 #[cfg(target_arch = "x86_64")]
@@ -2056,6 +2072,11 @@ pub fn note_x86_interrupt_return(cpu: usize) {
         return;
     }
     crate::arch_impl::x86_64::smp::credit_ticks(cpu, crate::per_cpu::running_idle_thread());
+    // Bits 0-28 of the preempt count: the preempt, softirq, hardirq and NMI
+    // counts and PREEMPT_ACTIVE.
+    if crate::per_cpu::preempt_count() & 0x1FFF_FFFF == 0 {
+        DISPATCHABLE_RETURN_TICK[cpu].store(crate::time::get_ticks(), Ordering::Relaxed);
+    }
     let leaving = LEAVING_STACK[cpu].load(Ordering::Relaxed);
     if leaving != 0 {
         release_leaving_stack(cpu, leaving);
