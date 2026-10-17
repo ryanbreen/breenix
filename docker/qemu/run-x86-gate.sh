@@ -472,11 +472,17 @@ for i in $(seq 1 "$COUNT"); do
   elif [ "$MODE" = "full" ]; then
     # #1119 measured 181 exits before rebasing; also require publication/exit
     # equality, which detects unfinished processes without relying on a floor.
-    if EXPECTED_EXITS="${BREENIX_EXPECTED_EXITS:-181}" \
+    verdict_status=0
+    EXPECTED_EXITS="${BREENIX_EXPECTED_EXITS:-181}" \
         "$REPO_DIR/scripts/x86-gate-verdict.sh" \
-        "$OUTDIR/serial_user.log" "$OUTDIR/serial_kernel.log"; then
+        "$OUTDIR/serial_user.log" "$OUTDIR/serial_kernel.log" || verdict_status=$?
+    if [ "$verdict_status" -eq 0 ]; then
       verdict_ok=true
       verdict_reason=""
+    elif [ "$verdict_status" -eq 2 ]; then
+      # A scorer's starvation verdict: not a pass, and not kernel evidence.
+      verdict_ok=false
+      verdict_reason="STARVED: host-starved window, not kernel evidence; rerun the boot; see $OUTDIR/serial_user.log"
     else
       verdict_ok=false
       verdict_reason="see $OUTDIR/serial_kernel.log"

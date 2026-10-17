@@ -29,6 +29,7 @@ exit_contracts_ok=true
 python3 "$SCRIPT_DIR/x86-gate-exits.py" "$@" || exit_contracts_ok=false
 
 python3 "$SCRIPT_DIR/score-softirq-deferral.py" "$@" || exit $?
+python3 "$SCRIPT_DIR/score-sigkill-teardown.py" "$@" || exit $?
 
 # Run the strand census first. The kernel emits a ledger snapshot from two
 # rate-limited contexts -- the loopback pump and the `kstrandd` census kthread

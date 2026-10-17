@@ -885,6 +885,7 @@ for i in $(seq 1 "$COUNT"); do
     echo "  $FACTS_LINE"
 
     python3 "$BREENIX_ROOT/scripts/score-softirq-deferral.py" "$OUTPUT_DIR/serial_kernel.txt" "$OUTPUT_DIR/serial_user.txt"
+    python3 "$BREENIX_ROOT/scripts/score-sigkill-teardown.py" "$OUTPUT_DIR/serial_kernel.txt" "$OUTPUT_DIR/serial_user.txt"
 
     # Device-enumeration census leg (green arc 5, bus+NIC blended). Placed
     # BEFORE the passed-flag check below (and before the ~40 marker-count

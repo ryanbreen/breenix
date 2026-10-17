@@ -542,6 +542,7 @@ score_serial() {
         return 1
     fi
     python3 "$BREENIX_ROOT/scripts/score-softirq-deferral.py" "$serial_file" || return $?
+    python3 "$BREENIX_ROOT/scripts/score-sigkill-teardown.py" "$serial_file" || return $?
     if ! grep -qE "(breenix>|bsh |\[bwm\] Display:|\[bcheck\] Complete:|\[heartbeat\])" \
         "$serial_file" 2>/dev/null; then
         echo "Userspace not detected"

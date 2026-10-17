@@ -216,11 +216,39 @@ pub(crate) struct KickSlot {
     pub(crate) pid: AtomicU64,
     pub(crate) at: AtomicU64,
     sender_cpu: AtomicU64,
-    // Covered by the same publication generation as pid/at. Only the
-    // observing CPU's delivered timer interrupts spend the one-tick budget.
+    // Testing evidence, covered by the same publication generation as
+    // pid/at: each CPU's delivered timer ticks when the kick was published.
+    #[cfg(any(feature = "boot_tests", feature = "testing"))]
     ticks_at_publish: [AtomicU64; crate::task::scheduler::MAX_CPUS],
     pub(crate) state: AtomicU64,
 }
+
+/// Delivered timer ticks between a kick's publication and its observation,
+/// on the observing CPU and summed over the CPUs, and the publishing CPU.
+/// Only testing kernels count the ticks.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct KickWindow {
+    pub(crate) observer_ticks: u64,
+    pub(crate) all_ticks: u64,
+    pub(crate) sender_cpu: u64,
+}
+
+#[cfg(any(feature = "boot_tests", feature = "testing"))]
+type TickBaseline = [u64; crate::task::scheduler::MAX_CPUS];
+#[cfg(not(any(feature = "boot_tests", feature = "testing")))]
+type TickBaseline = ();
+
+#[cfg(any(feature = "boot_tests", feature = "testing"))]
+#[inline(always)]
+fn tick_baseline() -> TickBaseline {
+    core::array::from_fn(|cpu| {
+        crate::tracing::providers::counters::TIMER_TICK_TOTAL.get_cpu(cpu)
+    })
+}
+
+#[cfg(not(any(feature = "boot_tests", feature = "testing")))]
+#[inline(always)]
+fn tick_baseline() -> TickBaseline {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum KickPublishResult {
@@ -247,6 +275,7 @@ impl KickSlot {
             pid: AtomicU64::new(0),
             at: AtomicU64::new(0),
             sender_cpu: AtomicU64::new(u64::MAX),
+            #[cfg(any(feature = "boot_tests", feature = "testing"))]
             ticks_at_publish: [const { AtomicU64::new(0) }; crate::task::scheduler::MAX_CPUS],
             state: AtomicU64::new(0),
         }
@@ -279,6 +308,7 @@ impl KickSlot {
         None
     }
 
+    #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
     #[inline(always)]
     pub(crate) fn commit(
         &self,
@@ -286,18 +316,26 @@ impl KickSlot {
         pid: u64,
         at: u64,
     ) -> KickPublishResult {
+        self.commit_with_ticks(reservation, pid, at, tick_baseline())
+    }
+
+    #[inline(always)]
+    fn commit_with_ticks(
+        &self,
+        reservation: KickReservation,
+        pid: u64,
+        at: u64,
+        ticks: TickBaseline,
+    ) -> KickPublishResult {
         let displaced = reservation.displaced_state >> 2 != 0
             && reservation.displaced_state & EXIT_KICK_OBSERVED_BIT == 0
             && self.pid.load(Ordering::Relaxed) != pid;
-        // Sample before the release publication and the expedite broadcast.
-        // The free-running counter can advance while no vCPU runs; it remains
-        // diagnostic evidence, never the guest execution budget.
-        for (cpu, ticks) in self.ticks_at_publish.iter().enumerate() {
-            ticks.store(
-                crate::tracing::providers::counters::TIMER_TICK_TOTAL.get_cpu(cpu),
-                Ordering::Relaxed,
-            );
+        #[cfg(any(feature = "boot_tests", feature = "testing"))]
+        for (slot, ticks) in self.ticks_at_publish.iter().zip(ticks) {
+            slot.store(ticks, Ordering::Relaxed);
         }
+        #[cfg(not(any(feature = "boot_tests", feature = "testing")))]
+        let () = ticks;
         self.pid.store(pid, Ordering::Relaxed);
         self.at.store(at, Ordering::Relaxed);
         self.sender_cpu.store(
@@ -314,18 +352,24 @@ impl KickSlot {
 
     #[inline(always)]
     pub(crate) fn publish(&self, pid: u64, at: u64) -> KickPublishResult {
+        // Taken next to the caller's `at`, before the reservation and the
+        // test hold, so the tick window and the counter interval share a start.
+        let ticks = tick_baseline();
         match self.reserve() {
             Some(reservation) => {
                 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
                 hold_exit_kick_test_publisher(pid);
-                self.commit(reservation, pid, at)
+                self.commit_with_ticks(reservation, pid, at, ticks)
             }
             None => KickPublishResult::ReservationLost,
         }
     }
 
     #[inline(always)]
-    pub(crate) fn observe_from_peer(&self, expected_pid: u64) -> Option<(KickObservation, u64)> {
+    pub(crate) fn observe_from_peer(
+        &self,
+        expected_pid: u64,
+    ) -> Option<(KickObservation, KickWindow)> {
         self.observe_inner(expected_pid, true)
     }
 
@@ -337,7 +381,11 @@ impl KickSlot {
     }
 
     #[inline(always)]
-    fn observe_inner(&self, expected_pid: u64, require_peer: bool) -> Option<(KickObservation, u64)> {
+    fn observe_inner(
+        &self,
+        expected_pid: u64,
+        require_peer: bool,
+    ) -> Option<(KickObservation, KickWindow)> {
         let first_state = self.state.load(Ordering::Acquire);
         if first_state >> 2 == 0 || first_state & (EXIT_KICK_LOCK | EXIT_KICK_OBSERVED_BIT) != 0 {
             return None;
@@ -347,7 +395,9 @@ impl KickSlot {
         let at = self.at.load(Ordering::Relaxed);
         let sender_cpu = self.sender_cpu.load(Ordering::Relaxed);
         let cpu = crate::task::scheduler::current_cpu();
-        let ticks_at_publish = self.ticks_at_publish[cpu].load(Ordering::Relaxed);
+        #[cfg(any(feature = "boot_tests", feature = "testing"))]
+        let ticks_at_publish: TickBaseline =
+            core::array::from_fn(|cpu| self.ticks_at_publish[cpu].load(Ordering::Relaxed));
         let second_state = self.state.load(Ordering::Acquire);
         if second_state != first_state
             || pid != expected_pid
@@ -365,12 +415,24 @@ impl KickSlot {
             )
             .ok()
             .map(|_| {
-                let ticks = crate::tracing::providers::counters::TIMER_TICK_TOTAL
-                    .get_cpu(cpu)
-                    .wrapping_sub(ticks_at_publish);
+                #[cfg(any(feature = "boot_tests", feature = "testing"))]
+                let (observer_ticks, all_ticks) = ticks_at_publish.iter().enumerate().fold(
+                    (0u64, 0u64),
+                    |(observer, all), (other, baseline)| {
+                        let delivered = crate::tracing::providers::counters::TIMER_TICK_TOTAL
+                            .get_cpu(other)
+                            .wrapping_sub(*baseline);
+                        (
+                            if other == cpu { delivered } else { observer },
+                            all.saturating_add(delivered),
+                        )
+                    },
+                );
+                #[cfg(not(any(feature = "boot_tests", feature = "testing")))]
+                let (observer_ticks, all_ticks) = (0, 0);
                 (
                     KickObservation { generation: first_state >> 2, pid, at },
-                    ticks,
+                    KickWindow { observer_ticks, all_ticks, sender_cpu },
                 )
             })
     }
@@ -991,7 +1053,9 @@ struct BootTestPidCountSlot {
     kick_observed_count: AtomicU64,
     kick_observed_interval: AtomicU64,
     kick_observed_ticks: AtomicU64,
+    kick_observed_all_ticks: AtomicU64,
     kick_observed_cpu: AtomicU64,
+    kick_sender_cpu: AtomicU64,
     masked_frames_walked: AtomicU64,
     report_count: AtomicU64,
     table_frames_recorded: AtomicU64,
@@ -1013,7 +1077,9 @@ impl BootTestPidCountSlot {
             kick_observed_count: AtomicU64::new(0),
             kick_observed_interval: AtomicU64::new(0),
             kick_observed_ticks: AtomicU64::new(0),
+            kick_observed_all_ticks: AtomicU64::new(0),
             kick_observed_cpu: AtomicU64::new(0),
+            kick_sender_cpu: AtomicU64::new(0),
             masked_frames_walked: AtomicU64::new(0),
             report_count: AtomicU64::new(0),
             table_frames_recorded: AtomicU64::new(0),
@@ -1048,7 +1114,7 @@ enum BootTestPidCountKind {
     Reclaim,
     Quarantine,
     SgiSent,
-    KickObserved { interval: u64, ticks: u64, cpu: u64 },
+    KickObserved { interval: u64, window: KickWindow, cpu: u64 },
     MaskedFramesWalked,
     Report,
     TableFramesRecorded(u64),
@@ -1083,11 +1149,16 @@ fn record_boot_test_pid_count(pid: u64, kind: BootTestPidCountKind) {
                 BootTestPidCountKind::SgiSent => {
                     slot.sgi_sent_count.fetch_add(1, Ordering::Relaxed);
                 }
-                BootTestPidCountKind::KickObserved { interval, ticks, cpu } => {
+                BootTestPidCountKind::KickObserved { interval, window, cpu } => {
                     slot.kick_observed_interval
                         .store(interval, Ordering::Relaxed);
-                    slot.kick_observed_ticks.store(ticks, Ordering::Relaxed);
+                    slot.kick_observed_ticks
+                        .store(window.observer_ticks, Ordering::Relaxed);
+                    slot.kick_observed_all_ticks
+                        .store(window.all_ticks, Ordering::Relaxed);
                     slot.kick_observed_cpu.store(cpu, Ordering::Relaxed);
+                    slot.kick_sender_cpu
+                        .store(window.sender_cpu, Ordering::Relaxed);
                     slot.kick_observed_count.fetch_add(1, Ordering::Release);
                 }
                 BootTestPidCountKind::MaskedFramesWalked => {
@@ -1134,7 +1205,9 @@ fn reset_boot_test_pid_counts() -> BootTestPidCountsGuard {
         slot.kick_observed_count.store(0, Ordering::Relaxed);
         slot.kick_observed_interval.store(0, Ordering::Relaxed);
         slot.kick_observed_ticks.store(0, Ordering::Relaxed);
+        slot.kick_observed_all_ticks.store(0, Ordering::Relaxed);
         slot.kick_observed_cpu.store(0, Ordering::Relaxed);
+        slot.kick_sender_cpu.store(0, Ordering::Relaxed);
         slot.masked_frames_walked.store(0, Ordering::Relaxed);
         slot.report_count.store(0, Ordering::Relaxed);
         slot.table_frames_recorded.store(0, Ordering::Relaxed);
@@ -1301,7 +1374,7 @@ pub fn record_exit_kick_collision(bucket: usize) {
 }
 
 #[inline(always)]
-pub fn record_exit_kick_observed(pid: u64, interval: u64, ticks: u64) {
+pub(crate) fn record_exit_kick_observed(pid: u64, interval: u64, window: KickWindow) {
     crate::trace_count!(EXIT_KICK_OBSERVED);
     EXIT_KICK_BUCKET_OBSERVED_COUNTS[pid as usize % EXIT_KICK_BUCKETS]
         .fetch_add(1, Ordering::Relaxed);
@@ -1311,12 +1384,12 @@ pub fn record_exit_kick_observed(pid: u64, interval: u64, ticks: u64) {
         pid,
         BootTestPidCountKind::KickObserved {
             interval,
-            ticks,
+            window,
             cpu: crate::task::scheduler::current_cpu() as u64,
         },
     );
     #[cfg(not(any(feature = "boot_tests", feature = "testing")))]
-    let _ = (interval, ticks);
+    let _ = (interval, window);
 }
 
 #[inline(always)]
@@ -1346,7 +1419,9 @@ pub struct TeardownPidEvidence {
     pub kick_observed_count: u64,
     pub kick_observed_interval: u64,
     pub kick_observed_ticks: u64,
+    pub kick_observed_all_ticks: u64,
     pub kick_observed_cpu: u64,
+    pub kick_sender_cpu: u64,
     pub masked_frames_walked: u64,
     pub report_count: u64,
     pub bucket_published_count: u64,
@@ -1375,7 +1450,9 @@ pub fn teardown_pid_evidence(pid: u64) -> Option<TeardownPidEvidence> {
         kick_observed_count: slot.kick_observed_count.load(Ordering::Acquire),
         kick_observed_interval: slot.kick_observed_interval.load(Ordering::Acquire),
         kick_observed_ticks: slot.kick_observed_ticks.load(Ordering::Acquire),
+        kick_observed_all_ticks: slot.kick_observed_all_ticks.load(Ordering::Acquire),
         kick_observed_cpu: slot.kick_observed_cpu.load(Ordering::Acquire),
+        kick_sender_cpu: slot.kick_sender_cpu.load(Ordering::Acquire),
         masked_frames_walked: slot.masked_frames_walked.load(Ordering::Acquire),
         report_count: slot.report_count.load(Ordering::Acquire),
         bucket_published_count: EXIT_KICK_BUCKET_PUBLISH_COUNTS[bucket].load(Ordering::Acquire),

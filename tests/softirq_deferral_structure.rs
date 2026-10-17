@@ -29,6 +29,7 @@ fn oracle_requires_daemon_dispatch_and_guest_ticks() {
 fn scorers_require_oracle() {
     for path in ["docker/qemu/run-aarch64-boot-test-strict.sh", "docker/qemu/run-x86-boot-tests.sh", "scripts/x86-gate-verdict.sh"] {
         assert!(read(path).contains("score-softirq-deferral.py"), "{path}");
+        assert!(read(path).contains("score-sigkill-teardown.py"), "{path}");
     }
 }
 #[test]

@@ -838,7 +838,7 @@ fn a_census_that_exits_zero_without_a_summary_line_is_not_a_pass() {
         stub_dir.join("x86-gate-verdict.sh"),
     )
     .expect("copy the verdict script beside the stub");
-    for helper in ["x86-gate-exits.py", "score-softirq-deferral.py"] {
+    for helper in ["x86-gate-exits.py", "score-softirq-deferral.py", "score-sigkill-teardown.py"] {
         fs::copy(
             repo_root().join("scripts").join(helper),
             stub_dir.join(helper),
