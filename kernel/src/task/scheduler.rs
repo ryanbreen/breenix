@@ -8002,10 +8002,13 @@ pub fn reclaim_terminated_threads_from_idle() {
 }
 
 pub fn reclaim_terminated_threads() {
-    // x86 resumes idle at its entry point after a dispatch, abandoning the
-    // interrupted continuation. Keep custody of detached threads through their
-    // destruction so idle cannot abandon a stack teardown while holding a lock.
-    #[cfg(target_arch = "x86_64")]
+    // Between the harvest and the release, the harvested threads are held only
+    // on this caller's stack, so the caller keeps its CPU until it has freed
+    // them. x86 resumes idle at its entry point after a dispatch, abandoning the
+    // interrupted continuation. On ARM64 the caller may be a thread that has
+    // exited, on its way out through `schedule`: a timer interrupt in between
+    // switched away from it for good, and the threads it harvested stayed
+    // allocated (#1712).
     crate::per_cpu::preempt_disable();
 
     // Harvest with interrupts masked, then release outside the scheduler lock.
@@ -8028,7 +8031,6 @@ pub fn reclaim_terminated_threads() {
     #[cfg(all(target_arch = "x86_64", feature = "testing"))]
     idle_release_probe::hold();
     release_reclaimed_threads(reclaimed_threads);
-    #[cfg(target_arch = "x86_64")]
     crate::per_cpu::preempt_enable();
 }
 

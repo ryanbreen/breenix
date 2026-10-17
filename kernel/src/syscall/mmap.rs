@@ -849,25 +849,8 @@ pub fn sys_munmap(addr: u64, length: u64) -> SyscallResult {
     };
 
     match unmap_range(process, addr, end_addr) {
-        Ok(()) => {
-            reopen_below_hint(process, end_addr);
-            SyscallResult::Ok(0)
-        }
+        Ok(()) => SyscallResult::Ok(0),
         Err(errno) => SyscallResult::Err(errno),
-    }
-}
-
-/// Let the next mapping placed below the hint reuse the range munmap freed,
-/// which ends at `end`, as Linux's top-down placement takes the highest hole
-/// that fits. Left alone the hint only descends, so a process that keeps
-/// mapping and unmapping (a stack for each thread it creates) lands each new
-/// mapping on address space it had not used before, and the page tables and
-/// custody records of each new span stay until the address space is torn
-/// down (#1712).
-fn reopen_below_hint(process: &mut crate::process::Process, end: u64) {
-    let end = end.min(crate::memory::vma::MMAP_REGION_END);
-    if end > process.mmap_hint {
-        process.mmap_hint = end;
     }
 }
 
