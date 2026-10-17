@@ -2322,13 +2322,13 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
                 }
             }
             // Test point 29, `wrong-texture`: the next DRAW_SAMPLED of the texture it is armed
-            // for samples another of the process's valid textures, the first created; a process
+            // for samples another of the process's live textures, the first created; a process
             // with one texture leaves the point armed.
             stream::cmd::DRAW_SAMPLED if swapping.is_none() && target.is_some() => {
                 let named = words.word(at + 3) as u64 | (words.word(at + 4) as u64) << 32;
                 let own = view.get(named).map(|e| e.id);
                 let other = view.entries.iter()
-                    .filter(|e| e.kind == kind::TEXTURE && Some(e.id) != own && !e.invalid)
+                    .filter(|e| e.kind == kind::TEXTURE && Some(e.id) != own)
                     .min_by_key(|e| e.id);
                 if let Some(e) = other {
                     swapping = crate::test_control::reserve(test_point::WRONG_TEXTURE, named);
@@ -2733,9 +2733,10 @@ fn op_upload(arg: u64, len: u64) -> Result<u64, i64> {
             }
         }
     };
-    release();
+    // The upload's result is published before its `reading` mark is released: the
+    // device-access hold lasts until the fence is published (section 1.4.1, hold sets).
     let whole = cw == extent[0] && ch == extent[1];
-    match sent {
+    let result = match sent {
         Ok((serial, fence, answer)) => {
             with_core(|c| {
                 if let Some(r) = c.resources.get_mut(&id) {
@@ -2759,7 +2760,9 @@ fn op_upload(arg: u64, len: u64) -> Result<u64, i64> {
             }
             Err(e)
         }
-    }
+    };
+    release();
+    result
 }
 
 fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {

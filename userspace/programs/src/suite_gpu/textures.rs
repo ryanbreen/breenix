@@ -4,8 +4,8 @@
 //! pixel here, not taken from the kernel or from the shared ABI crate's helpers.
 
 use libbreenix::gpu::{self, abi, abi::Plain};
-use libbreenix::suite::{CaseError, CaseResult};
-use libbreenix::{graphics, memory};
+use libbreenix::suite::{case_ms_left, value, wait_for, CaseError, CaseResult};
+use libbreenix::{graphics, memory, time};
 use libbreenix::signal::{self, Itimerval, Sigaction, Timeval, ITIMER_REAL, SIGALRM};
 use super::common::*;
 use abi::{purpose, upload_source as src};
@@ -509,6 +509,74 @@ pub fn upload_visibility() -> CaseResult {
     }
     let img = Image::pattern(format::B8G8R8A8, 16, 8, 71);
     expect_image(tex, format::B8G8R8A8, &img, "texture unchanged after pre-transfer EINTR")?;
+    failed_uploads_invalidate(ctx, second, x)
+}
+
+/// A texture upload whose transfer was sent and then failed leaves the texture invalid
+/// (`docs/gui/gpu.md` section 1.4.1): point 31's stall keeps the device's answers from being
+/// taken, so each transfer is still outstanding when a signal interrupts its wait (EINTR) and
+/// when the watchdog ends it (EIO). Sampling either texture is then refused. The stall ends
+/// in the watchdog's device reset, which the case waits out.
+fn failed_uploads_invalidate(ctx: u64, second: u64, x: u64) -> CaseResult {
+    let checker = context()?;
+    let img = Image::pattern(format::B8G8R8A8, 8, 4, 72);
+    let interrupted = texture(format::B8G8R8A8, 8, 4)?;
+    let hung = texture(format::B8G8R8A8, 8, 4)?;
+    for t in [interrupted, hung] {
+        upload_all(ctx, t, format::B8G8R8A8, &img)?;
+    }
+    let refused = |t: u64, what: &str| -> CaseResult {
+        for sampled in [false, true] {
+            let mut s = Vec::new();
+            if sampled {
+                encode::begin(&mut s, x);
+                encode::draw_sampled(&mut s, pipeline::COPY, t, &[[0, 0, 8, 4, 0, 0]]);
+            } else {
+                encode::copy(&mut s, t, [0, 0, 8, 4], x, [0, 0]);
+            }
+            let (r, sub) = gpu::submit(checker, &s);
+            ensure(r == -EINVAL && sub.error == stream::error::INVALID_TARGET,
+                || format!("{what} (sampled={sampled}): {} code {}", errno(r), sub.error))?;
+        }
+        Ok(())
+    };
+    // The stall starts when the device answers this submission.
+    let stall = target(format::B8G8R8A8, 4, 4)?;
+    let before = fired(test_point::WITHHOLD_FENCE);
+    arm(test_point::WITHHOLD_FENCE, test_point::WITHHOLD_ALL)?;
+    let start = now_ns();
+    submit(second, &scene(stall, BG, &[]))?;
+    while fired(test_point::WITHHOLD_FENCE) == before {
+        ensure(case_ms_left() > 1_000, || "the stalling submission's answer did not arrive".to_string())?;
+        let _ = time::sleep_ms(1);
+    }
+    let pixels = encode_pixels(&img, 8, 4, src::B8G8R8A8, 32);
+    let timer = Itimerval { it_interval: Timeval { tv_sec: 0, tv_usec: 0 },
+        it_value: Timeval { tv_sec: 0, tv_usec: 30_000 } };
+    signal::setitimer(ITIMER_REAL, &timer, None).map_err(|e| fail_msg(format!("setitimer: {e}")))?;
+    let (r, _) = gpu::upload(ctx, interrupted, [0, 0, 8, 4], &pixels, 32, src::B8G8R8A8, purpose::IMAGE);
+    signal::setitimer(ITIMER_REAL, &Itimerval { it_interval: Timeval { tv_sec: 0, tv_usec: 0 },
+        it_value: Timeval { tv_sec: 0, tv_usec: 0 } }, None).map_err(|e| fail_msg(format!("cancel timer: {e}")))?;
+    ensure(r == -EINTR, || format!("an upload interrupted after its transfer was sent returned {}", errno(r)))?;
+    refused(interrupted, "sampling a texture whose upload was interrupted after sending")?;
+    // The watchdog ends this transfer 2 s after it was sent, about 2 s before the reset.
+    wait_for(2_000, "hung-upload-ms");
+    let sent = now_ns();
+    let (r, _) = gpu::upload(ctx, hung, [0, 0, 8, 4], &pixels, 32, src::B8G8R8A8, purpose::IMAGE);
+    value("hung-upload-ms", ms_since(sent) as i64, "ms", None);
+    ensure(r == -EIO, || format!("an upload the watchdog ended returned {}", errno(r)))?;
+    refused(hung, "sampling a texture whose upload the watchdog ended")?;
+    // Wait out the device reset the stall ends in, so later cases start on a working device.
+    wait_for(3_000, "reset-ms");
+    while counters(checker)?.state != context_state::RESET {
+        ensure(case_ms_left() > 1_000, || "the stalled device was not reset".to_string())?;
+        let _ = time::sleep_ms(10);
+    }
+    value("reset-ms", ms_since(start) as i64, "ms", None);
+    let fresh = context()?;
+    let after = target(format::B8G8R8A8, 4, 4)?;
+    frame(fresh, &scene(after, BG, &[]))?;
+    expect(after, &scene_canvas(4, 4, BG, &[]), "new work after the reset")?;
     pass()
 }
 
