@@ -125,11 +125,11 @@
       "kernel": true,
       "stages": {
         "x86_64": [
-          "All reported CPUs online",
           {
             "name": "Four CPUs online and reported",
             "marker": "[smp] online=4 reported=4"
           },
+          "All reported CPUs online",
           {
             "name": "Timer ticks on each CPU",
             "marker": "[smp] timer ticks on each online CPU"
