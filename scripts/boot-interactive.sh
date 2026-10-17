@@ -145,6 +145,7 @@ if [ "$GPU_GL" -eq 1 ]; then
         SPICE_SOCKET="/tmp/breenix-spice-$$.sock"
         DISPLAY_ARGS=(-display none -spice "unix=on,addr=$SPICE_SOCKET,disable-ticketing=on,gl=es")
     fi
+    # Register this display before MMIO below, so PRESENT updates console 0 in the window.
     GPU_ARGS=(-device virtio-gpu-gl-pci)
 elif [ "$DISPLAY_MODE" = cocoa ] && [ "$(uname -s)" = Darwin ]; then
     # Draw the window at one guest pixel per point, as large as a VMware or Parallels window
@@ -262,6 +263,10 @@ VIGIL_ID=
 # A boot with other than the default 4 processors is recorded with its count, so it never stands for main.
 VIGIL_CPUS=
 [ "$CPUS" = 4 ] || VIGIL_CPUS=$CPUS
+# This is the effective display selection, including the desktop default, not
+# whether --display happened to be spelled on the command line.
+export BREENIX_VIGIL_DISPLAY=false
+[ "$DISPLAY_MODE" != none ] && export BREENIX_VIGIL_DISPLAY=true
 [ -n "$ONLY" ] || VIGIL_ID=$(BREENIX_VIGIL_CPUS="$VIGIL_CPUS" "$ROOT/scripts/vigil-record.sh" start qemu "$MODE" "$SUITE" "$SERIAL_LOG" "" "$QEMU_PROFILE")
 # Vigil's BreenixScreen looks for qmp.sock in the registered boot's folder, which vigil-cli makes under the
 # account's home as macOS reports it (VIGIL_TEST_HOME in Vigil's tests), not under $HOME.
@@ -299,8 +304,8 @@ python3 "$ROOT/scripts/watch-qemu.py" --serial "$SERIAL_LOG" --mode "$MODE" \
     "${DISPLAY_ARGS[@]}" -no-reboot \
     ${MODE_ARGS[@]+"${MODE_ARGS[@]}"} \
     ${QMP_ARGS[@]+"${QMP_ARGS[@]}"} \
-    -device virtio-gpu-device \
     ${GPU_ARGS[@]+"${GPU_ARGS[@]}"} \
+    -device virtio-gpu-device \
     -device virtio-keyboard-device \
     -device virtio-tablet-device \
     -device virtio-blk-device,drive=ext2 \

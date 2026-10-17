@@ -541,3 +541,20 @@ pub fn submit(tag: Tag, ctx: u32, fence: Option<u64>, words: WordBuf) -> Request
 pub fn ok(answer: u32) -> bool {
     (resp::OK_NODATA..resp::ERR_UNSPEC).contains(&answer)
 }
+
+/// SET_SCANOUT (VirtIO 1.3 section 5.7.6.8): r (x, y, width, height), scanout_id,
+/// resource_id: the whole resource on scanout 0, unfenced; the flush after it carries the
+/// fence.
+pub fn set_scanout(tag: Tag, ctx: u32, resource: u32, width: u32, height: u32) -> Request {
+    Request::new(tag, cmd::SET_SCANOUT, ctx, None, wire::HDR + 24, wire::HDR)
+        .field(0, 0).field(4, 0).field(8, width).field(12, height)
+        .field(16, 0).field(20, resource)
+}
+
+/// RESOURCE_FLUSH (VirtIO 1.3 section 5.7.6.8): r (x, y, width, height), resource_id,
+/// padding: the resource's whole rectangle, fenced.
+pub fn flush_resource(tag: Tag, ctx: u32, fence: u64, resource: u32, width: u32, height: u32) -> Request {
+    Request::new(tag, cmd::RESOURCE_FLUSH, ctx, Some(fence), wire::HDR + 24, wire::HDR)
+        .field(0, 0).field(4, 0).field(8, width).field(12, height)
+        .field(16, resource).field(20, 0)
+}

@@ -389,3 +389,12 @@ impl gpu_abi::stream::Words for WordBuf {
         WordBuf::word(self, index)
     }
 }
+
+impl super::observation::Memory for Pages {
+    fn invalidate(&self, offset: usize, length: usize) {
+        self.maintain(offset, length, true);
+    }
+    fn copy(&self, offset: usize, out: &mut [u8]) {
+        self.read(offset, out);
+    }
+}

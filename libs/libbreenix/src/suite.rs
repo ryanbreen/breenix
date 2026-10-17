@@ -324,7 +324,7 @@ impl Suite {
         let mut states: Vec<Vec<State>> = self.categories.iter()
             .map(|category| category.cases.iter().map(|_| State::Pending).collect())
             .collect();
-        let mut screen = Screen::open();
+        let mut screen = Screen::open(self.id == "gpu");
         let title = std::format!("BREENIX / {} SUITE", self.title.to_uppercase());
         let subtitle = match only {
             Some(name) => std::format!("suite {}: one case {name} (not suite evidence)", self.id),
@@ -948,9 +948,15 @@ impl Feed {
     }
 }
 
+#[path = "suite_gpu_screen.rs"]
+mod gpu_screen;
+
 /// The suite's view of the display, when there is one to draw on.
 struct Screen {
     fb: Option<FrameBuf>,
+    gpu: Option<gpu_screen::GpuScreen>,
+    /// Why the GPU view was last not drawn, so each failure is reported once.
+    gpu_failure: Option<String>,
     /// Whether the live strip is drawn (see `/etc/breenix/suite-live`).
     live: bool,
     /// Where the last full draw put the live strip.
@@ -960,7 +966,10 @@ struct Screen {
 impl Screen {
     /// Take the display and map all of it. Without a framebuffer the suite still
     /// runs and prints its serial lines; on a small one the panel draws what fits.
-    fn open() -> Screen {
+    fn open(gpu: bool) -> Screen {
+        if gpu {
+            return Screen { fb: None, gpu: Some(gpu_screen::GpuScreen::new()), gpu_failure: None, live: false, area: None };
+        }
         let fb = (|| {
             let info = graphics::fbinfo().ok()?;
             if !(3..=4).contains(&info.bytes_per_pixel) {
@@ -975,7 +984,7 @@ impl Screen {
             })
         })();
         let off = std::fs::read_to_string("/etc/breenix/suite-live").is_ok_and(|text| text.trim() == "off");
-        Screen { live: fb.is_some() && !off, fb, area: None }
+        Screen { live: fb.is_some() && !off, fb, gpu: None, gpu_failure: None, area: None }
     }
 
     fn live_on(&self) -> bool { self.live }
@@ -1010,6 +1019,17 @@ impl Screen {
 
     fn draw(&mut self, suite: &Suite, title: &str, subtitle: &str, states: &[Vec<State>], verdict: Verdict<'_>,
         feed: &Feed, only: Option<&str>) {
+        if let Some(gpu) = self.gpu.as_mut() {
+            // A GPU view failure is reported separately: without that view the suite cases still
+            // run and fail naming the layers they need. A failure is reported once
+            // each time it changes, on a line that is not a suite record.
+            let shown = gpu.draw(states).err();
+            if shown.is_some() && shown != self.gpu_failure {
+                emit(&std::format!("gpu suite view not drawn: {}", shown.as_deref().unwrap_or("")));
+            }
+            self.gpu_failure = shown;
+            return;
+        }
         let live_on = self.live;
         let Some(fb) = self.fb.as_mut() else { return; };
         let details: Vec<Vec<String>> = states.iter()

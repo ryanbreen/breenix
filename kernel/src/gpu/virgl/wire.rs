@@ -18,6 +18,8 @@ pub const CFG_NUM_CAPSETS: usize = 12;
 pub mod cmd {
     pub const GET_DISPLAY_INFO: u32 = 0x0100;
     pub const RESOURCE_UNREF: u32 = 0x0102;
+    pub const SET_SCANOUT: u32 = 0x0103;
+    pub const RESOURCE_FLUSH: u32 = 0x0104;
     pub const RESOURCE_ATTACH_BACKING: u32 = 0x0106;
     pub const GET_CAPSET_INFO: u32 = 0x0108;
     pub const GET_CAPSET: u32 = 0x0109;
@@ -85,6 +87,7 @@ pub mod bind {
     pub const RENDER_TARGET: u32 = 1 << 1;
     pub const SAMPLER_VIEW: u32 = 1 << 3;
     pub const VERTEX_BUFFER: u32 = 1 << 4;
+    pub const SCANOUT: u32 = 1 << 18;
 }
 
 /// Gallium texture targets as the wire carries them (`enum pipe_texture_target`).

@@ -253,12 +253,15 @@ pub trait Bindings {
     fn buffer_rect(&self, handle: u64, offset: u64) -> [i32; 4];
 }
 
-/// Translate a validated stream into `enc`, writing every draw's vertices into its own
+/// Translate a validated stream into `enc`, writing a draw's vertices into its own
 /// region of `vertex_buffer`, which the submission alone uses: the device has been seen
 /// to let a later write to a region change what an earlier draw of the same submission
 /// read from it, so no region is written twice. `flip_y` selects the viewport's vertical
-/// direction so that row 0 is the target's top row on this device. Returns the device ids
-/// of the targets the stream writes.
+/// direction so that row 0 is the target's top row on this device. `corrupt` is the target
+/// handle test point 22 fired for, whose pixel (0,0) gets one extra draw after the stream's
+/// commands for it. The reserved `suppress` handle omits one draw; firing is counted only once queued. Returns the
+/// device ids of the targets the stream writes.
+#[allow(clippy::too_many_arguments)]
 pub fn translate(
     enc: &mut Enc,
     o: &mut Objects,
@@ -266,9 +269,13 @@ pub fn translate(
     b: &impl Bindings,
     vertex_buffer: u32,
     flip_y: bool,
+    corrupt: Option<u64>,
+    mut suppress: Option<u64>,
 ) -> Vec<u32> {
     let mut written: Vec<u32> = Vec::new();
     let mut current: Option<TargetRes> = None;
+    let mut current_handle = 0u64;
+    let mut corrupted = false;
     let mut at = 0usize;
     let mut verts: Vec<u32> = Vec::with_capacity(RECTS_PER_WRITE * 12);
     let mut offset = 0u32;
@@ -279,6 +286,10 @@ pub fn translate(
         match code {
             bgl::BEGIN => {
                 let handle = words.word(at + 2) as u64 | (words.word(at + 3) as u64) << 32;
+                if !corrupted && current.is_some() && corrupt == Some(current_handle) {
+                    offset = corrupt_pixel(enc, &mut bound, vertex_buffer, offset);
+                    corrupted = true;
+                }
                 if let Some(t) = b.target(handle) {
                     let surface = match o.surfaces.get(&t.id) {
                         Some(&s) => s,
@@ -295,6 +306,7 @@ pub fn translate(
                         written.push(t.id);
                     }
                     current = Some(t);
+                    current_handle = handle;
                 }
             }
             bgl::CLEAR => {
@@ -303,6 +315,11 @@ pub fn translate(
                 enc.cmd(ccmd::CLEAR, 0, &[pipe::CLEAR_COLOR0, f[0], f[1], f[2], f[3], 0, 0, 0]);
             }
             bgl::DRAW | bgl::DRAW_BUFFER => {
+                if current.is_some() && suppress == Some(current_handle) {
+                    suppress = None;
+                    at += len;
+                    continue;
+                }
                 let Some(t) = current.as_ref() else {
                     at += len;
                     continue;
@@ -344,7 +361,20 @@ pub fn translate(
         }
         at += len;
     }
+    if !corrupted && current.is_some() && corrupt == Some(current_handle) {
+        corrupt_pixel(enc, &mut bound, vertex_buffer, offset);
+    }
     written
+}
+
+/// Point 22: an extra GPU draw of the current target's pixel (0,0) with the solid program.
+/// No CPU write reaches device pixels. Returns the next free vertex offset.
+fn corrupt_pixel(enc: &mut Enc, bound: &mut bool, vertex_buffer: u32, offset: u32) -> u32 {
+    let f = rgba_floats(!super::super::POISON);
+    enc.cmd(ccmd::SET_CONSTANT_BUFFER, 0, &[pipe::SHADER_FRAGMENT, 0, f[0], f[1], f[2], f[3]]);
+    let (c0, c1) = (clip_coord(0), clip_coord(1));
+    bind_vertices(enc, bound, vertex_buffer);
+    draw_vertices(enc, vertex_buffer, offset, &[c0, c0, c1, c0, c0, c1, c1, c0, c1, c1, c0, c1], 1)
 }
 
 /// Context creation's warm-up: the fixed state and programs, then one `solid` draw of

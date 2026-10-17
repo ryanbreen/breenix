@@ -51,20 +51,25 @@ impl Drop for Case {
     }
 }
 
+/// The prerequisite for rendering cases: the core, with a device admitted to the
+/// profile (`docs/gui/gpu.md` sections 1.5 and 1.11).
+const DEVICE_LAYER: &str = "the GPU core with a device admitted to the profile (G1)";
+
 /// Start a case that needs the GPU core: no point left armed by an earlier case, syscall
-/// 416 answering, and the device admitted to the profile.
+/// 416 answering, and the device admitted to the profile. Without them the case fails
+/// naming that layer and what the kernel answered (section 1.10).
 pub fn begin() -> Result<Case, CaseError> {
     let _ = gpu::tc_disarm_all();
     let v = gpu::version();
     if v != abi::INTERFACE_VERSION {
-        return Err(fail_msg(format!("syscall 416 VERSION returned {}, expected 1", errno(v))));
+        return Err(fail_msg(format!("missing {DEVICE_LAYER}: syscall 416 VERSION returned {}, expected 1", errno(v))));
     }
     let (r, c) = gpu::caps();
     if r != 0 {
-        return Err(fail_msg(format!("CAPS returned {}", errno(r))));
+        return Err(fail_msg(format!("missing {DEVICE_LAYER}: CAPS returned {}", errno(r))));
     }
     if c.status != abi::status::ADMITTED {
-        return Err(fail_msg(format!("the device is not admitted: status {} ({})", c.status, text(&c.reason))));
+        return Err(fail_msg(format!("missing {DEVICE_LAYER}: CAPS status {} ({})", c.status, text(&c.reason))));
     }
     Ok(Case)
 }
@@ -100,6 +105,22 @@ pub fn context() -> Result<u64, CaseError> {
 
 pub fn target(fmt: u32, w: u32, h: u32) -> Result<u64, CaseError> {
     gpu::target_create(fmt, w, h).map_err(|e| fail_msg(format!("RESOURCE_CREATE of a {w}x{h} target returned {}", errno(e))))
+}
+
+pub fn scanout_target(fmt: u32, w: u32, h: u32) -> Result<u64, CaseError> {
+    // Literal wire offsets from gpu-abi.md, independent of the shared Rust layout.
+    let mut a = [0u8; 48];
+    for (offset, value) in [(0, 1u32), (4, fmt), (8, w), (12, h), (32, 1)] {
+        a[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    let r = resource_create(&mut a);
+    ensure(r == 0, || format!("RESOURCE_CREATE of a {w}x{h} scanout target returned {}", errno(r)))?;
+    Ok(u64_at(&a, 24))
+}
+
+pub fn resource_create(arg: &mut [u8; 48]) -> i64 {
+    // SAFETY: a live read/write argument of the contract's exact size.
+    unsafe { gpu::call(abi::op::RESOURCE_CREATE, arg.as_mut_ptr(), arg.len()) }
 }
 
 /// Submit and return the fence.

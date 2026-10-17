@@ -353,7 +353,15 @@ pub struct ResourceCreate {
     pub size: u64,
     /// Out: the new resource's handle.
     pub handle: u64,
-    pub reserved: [u64; 2],
+    /// Creation intent from [`resource_flag`].
+    pub flags: u32,
+    pub reserved: [u32; 3],
+}
+
+/// `RESOURCE_CREATE` flags (`docs/gui/gpu-abi.md`).
+pub mod resource_flag {
+    /// A target that may be presented. Invalid for textures and buffers.
+    pub const SCANOUT: u32 = 1;
 }
 
 /// `SUBMIT` (64 bytes).
@@ -402,10 +410,54 @@ pub struct Readback {
     pub pixels: u64,
     pub pixels_len: u64,
     pub stride: u32,
-    pub reserved0: u32,
+    /// Out on EIO: one of `readback_reason`; 0 on input.
+    pub reason: u32,
     /// Where the 1,024-byte record v2 goes.
     pub record: u64,
-    pub reserved: u64,
+    /// Out on target-invalid: the submission that invalidated it; 0 on input.
+    pub failed_submission: u64,
+}
+
+/// `READBACK`'s EIO reasons (`docs/gui/gpu-abi.md`, the `READBACK` table).
+/// An EIO reports the reason selected from the observed failure.
+pub mod readback_reason {
+    pub const NONE: u32 = 0;
+    /// The two complementary-poison observations differ.
+    pub const UNWRITTEN: u32 = 1;
+    /// A transfer's answer lacks the fence flag or echoes another fence.
+    pub const FENCE_MISMATCH: u32 = 2;
+    /// An observation claiming the scanout names a resource other than the confirmed binding.
+    pub const RESOURCE_MISMATCH: u32 = 3;
+    /// The target is invalid; `failed_submission` names the submission that made it so.
+    pub const TARGET_INVALID: u32 = 4;
+    /// The device answered a readback transfer with an error.
+    pub const DEVICE_ERROR: u32 = 5;
+    /// The watchdog ended a transfer the device had not answered.
+    pub const DEVICE_HUNG: u32 = 6;
+    /// A device reset was decided while a transfer was outstanding.
+    pub const DEVICE_RESET: u32 = 7;
+    /// The target was lost to an earlier device reset.
+    pub const TARGET_LOST: u32 = 8;
+    /// The target's handle was destroyed while the readback waited for its writers.
+    pub const TARGET_DROPPED: u32 = 9;
+    /// A `PRESENT` binding or replacing the target was sent and has not completed.
+    pub const BINDING_UNKNOWN: u32 = 10;
+}
+
+/// `PRESENT` (32 bytes). Binds the whole target to scanout 0 and flushes it in
+/// `context`, one of the caller's live contexts.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Present {
+    pub target: u64,
+    /// Out: a fence of `context` (`ns << 32 | n`, in sequence with its `SUBMIT`s);
+    /// 0 on input.
+    pub fence: u64,
+    /// Out: the device's answer to the flush; 0 on input.
+    pub answer: u32,
+    pub reserved: u32,
+    /// In: the context the bind and flush are sent in.
+    pub context: u64,
 }
 
 /// `COUNTERS` (256 bytes).
@@ -522,7 +574,7 @@ pub mod test_point {
     /// arm (behind the same latch and caller checks) and do nothing until their layer
     /// is built.
     pub const fn built(point: u32) -> bool {
-        matches!(point, STALE_FENCE | MASK_CAPABILITY | DEVICE_ERROR | WITHHOLD_FENCE)
+        matches!(point, SKIP_TRANSFER | STALE_FENCE | WRONG_RESOURCE | CORRUPT_PIXEL | MASK_CAPABILITY | DEVICE_ERROR | SUPPRESS_DRAW | WITHHOLD_FENCE)
     }
 }
 
@@ -565,7 +617,7 @@ macro_rules! plain {
     };
 }
 
-plain!(Caps, ContextCreate, Handle, ResourceCreate, Submit, Wait, Readback, Counters, TcArm, TcFired);
+plain!(Caps, ContextCreate, Handle, ResourceCreate, Submit, Wait, Readback, Present, Counters, TcArm, TcFired);
 
 const _: () = {
     assert!(core::mem::size_of::<FormatCaps>() == 8);
@@ -579,9 +631,17 @@ const _: () = {
     assert!(core::mem::size_of::<ContextCreate>() == 32);
     assert!(core::mem::size_of::<Handle>() == 16);
     assert!(core::mem::size_of::<ResourceCreate>() == 48);
+    assert!(core::mem::offset_of!(ResourceCreate, flags) == 32);
+    assert!(core::mem::offset_of!(ResourceCreate, reserved) == 36);
     assert!(core::mem::size_of::<Submit>() == 64);
     assert!(core::mem::size_of::<Wait>() == 48);
     assert!(core::mem::size_of::<Readback>() == 64);
+    assert!(core::mem::offset_of!(Readback, reason) == 44);
+    assert!(core::mem::offset_of!(Readback, failed_submission) == 56);
+    assert!(core::mem::size_of::<Present>() == 32);
+    assert!(core::mem::offset_of!(Present, fence) == 8);
+    assert!(core::mem::offset_of!(Present, answer) == 16);
+    assert!(core::mem::offset_of!(Present, context) == 24);
     assert!(core::mem::size_of::<Counters>() == 256);
     assert!(core::mem::size_of::<TcArm>() == 24);
     assert!(core::mem::size_of::<TcFired>() == 16);
