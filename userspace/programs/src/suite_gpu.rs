@@ -195,7 +195,7 @@ static SUITE: Suite = suite("gpu", "GPU rendering", &[
         case("efault-readonly", "A readback record into read-only memory returns EFAULT with no side effect", isolation_efault_readonly),
         case("quiet-errors", "No GPU error path prints kernel output", isolation_quiet_errors),
         case("unknown-op", "An unknown op returns EINVAL", isolation_unknown_op),
-        case("test-hooks-absent", "Test-control points 19 to 31 are refused to every process but the latched PID 1", isolation_test_hooks_absent),
+        case("test-hooks-absent", "Test-control points 19 to 31 are refused to every non-root process", isolation_test_hooks_absent),
         case("killable-wait", "SIGKILL ends a process blocked in CONTEXT_CREATE warm-up, WAIT, READBACK or PRESENT within 250 ms", isolation_killable_wait),
         case("client-cannot-scanout", "A process that is not the display owner can neither present nor set a mode", isolation_client_cannot_scanout),
         case("irq-masked-bound", "The longest IRQ-masked interval in the GPU paths stays within 500 us under a full-screen workload", isolation_irq_masked_bound),

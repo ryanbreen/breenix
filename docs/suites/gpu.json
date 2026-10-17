@@ -187,7 +187,7 @@
         { "id": "efault-readonly", "title": "A readback record into read-only memory returns EFAULT with no side effect" },
         { "id": "quiet-errors", "title": "No GPU error path prints kernel output" },
         { "id": "unknown-op", "title": "An unknown op returns EINVAL" },
-        { "id": "test-hooks-absent", "title": "Test-control points 19 to 31 are refused to every process but the latched PID 1" },
+        { "id": "test-hooks-absent", "title": "Test-control points 19 to 31 are refused to every non-root process" },
         { "id": "killable-wait", "title": "SIGKILL ends a process blocked in CONTEXT_CREATE warm-up, WAIT, READBACK or PRESENT within 250 ms" },
         { "id": "client-cannot-scanout", "title": "A process that is not the display owner can neither present nor set a mode" },
         { "id": "irq-masked-bound", "title": "The longest IRQ-masked interval in the GPU paths stays within 500 us under a full-screen workload" }

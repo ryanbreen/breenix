@@ -23,7 +23,8 @@ and completes like any other, and its fence is lost to the caller; `READBACK` is
 The device is admitted when it has the capabilities required by the profile (`docs/gui/gpu.md` section 1.5,
 item 8). Until it is, ops other than `VERSION` and `CAPS` return ENODEV before their argument is
 decoded, and `CAPS` reports why. Ops the effort has not built yet (`MODES` and `SET_MODE`, until
-G7) return ENOSYS. An op number above 13 is EINVAL.
+G7) return ENOSYS, except that `SET_MODE` refuses a caller that is not the display owner with EPERM
+before its argument is decoded. An op number above 13 is EINVAL.
 
 Capability ids, in the order admission checks them (the first missing one is reported):
 
@@ -78,6 +79,21 @@ Query `COUNTERS` with this context's handle to observe warm-up completion (state
 context is live and still warming. The profile-only `probe_int` program is compiled and warmed on the
 first PROBE in that context; that first PROBE's cost is excluded from performance bounds. The watchdog
 and kill bounds still apply (`docs/gui/gpu.md` section 1.4.1).
+
+<!-- claim-lint:ok: Normative G6 interface requirement from docs/gui/gpu.md section 1.16, not a measured result. -->
+**Handles.** `CONTEXT_CREATE` and `RESOURCE_CREATE` return handles private to the process: a value
+another process holds names nothing here. A handle's top byte is neither 0x00 nor 0xFF, so no handle has
+the form of a user, kernel or physical address. No op writes back a kernel or device address: each output
+is a handle, a context fence, a device id below 2³² (record v2's `context` and `resource`), a count, a
+size, a serial, a generation, a status, an answer or a reason, a capability value, a string, or bytes of
+the caller's own pixels.
+
+<!-- claim-lint:ok: Normative G6 interface requirement from docs/gui/gpu.md section 1.16, not a measured result. -->
+**Reclamation.** The exit of a process's last thread, normal or by a signal, drops every handle the
+process holds, as `CONTEXT_DESTROY` and `RESOURCE_DESTROY` of each would; a successful exec does the same
+before the new image runs. The global counters below return to their earlier values within 250 ms of the
+parent reaping a process that had no work outstanding (`docs/gui/gpu.md` section 1.16). Dropping a handle cancels nothing: the device context goes when its work
+has completed, and a resource when its hold set is empty (`docs/gui/gpu.md` section 1.4.1).
 
 **`CONTEXT_DESTROY`, `RESOURCE_DESTROY` (16 bytes):** `handle: u64`, 8 reserved. EINVAL for a handle the
 process does not hold.
@@ -144,7 +160,13 @@ and makes it visible to the submissions sent after the call returns.
 reserved. Each buffer range the stream names is copied once, before validation, and validation and
 translation read only that copy (`docs/gui/gpu.md` section 1.4.1). A refused stream returns EINVAL, or
 EDQUOT for the work cap, with the failing command's index and its code written back.
-Validation scratch allocation is fallible: exhaustion returns ENOMEM with error code 22. A context that is not
+Validation scratch allocation is fallible: exhaustion returns ENOMEM with error code 22. The submission's
+private copies (the stream copy, the buffer snapshot and the translated device chunks) and the device
+vertex storage it creates are charged to the process's 192 MiB GPU memory quota and `RLIMIT_AS` while they
+are held; `COUNTERS.copy_bytes` reports them. The stream copy and the snapshot are released when the
+call returns, the chunks and the vertex storage when the device has returned the submission's requests or a
+confirmed reset has ended them. A charge that cannot be made returns ENOMEM with error code 22 at index 0
+before anything is sent. A context that is not
 live (quarantined or reset) returns EIO. With four submissions in flight the call waits for one to
 complete; a signal ends that wait with EINTR, and a kill within 250 ms. A warming context accepts
 submissions: a draw waits only for its own pipeline if that pipeline is still warming, without a
@@ -239,7 +261,9 @@ state 88 (a context's: 0 live with catalogue warm-up complete, 1 quarantined, 2 
 3 live with catalogue warm-up in progress), contexts 96 (the process's live handles),
 device contexts 104 (the process's device contexts not yet destroyed, including destroyed handles whose
 work is outstanding), resources 112, resource bytes 120 (`resource_bytes`: guest backing held,
-including temporary `UPLOAD` and `READBACK` staging charged to the process), warmed 128; reserved to 256.
+including temporary `UPLOAD` and `READBACK` staging charged to the process), warmed 128, copy bytes 136
+(`copy_bytes`: `SUBMIT`'s private copies and device vertex storage charged to the process while they are
+held; the GPU memory quota limits `resource_bytes` and `copy_bytes` together); reserved to 256.
 For a context, `warmed` counts programs whose warm-up completed, including `probe_int` after its first
 PROBE; it is not the completion signal for the rendering catalogue. A query with a nonzero context handle
 reports that context's warm-up state without waiting for warm-up. State 0 is reported only once its
@@ -402,7 +426,11 @@ offset, `8*height+1` u32 offsets into the following crossing entries. Each entry
 u32s: finite binary32 x bits and signed winding (+1 or -1). Offsets start at zero, are
 monotonic and end at the entry count; entries on each sub-scanline are sorted by x.
 The validator reads those offsets in O(rows*8) for the estimate and validates the bounded
-crossing entries. The shader visits crossings in order on each of the eight sub-scanlines,
+crossing entries. A table is identified by its buffer, byte offset and height; one submission may name a
+table any number of times, and the tables it names in one buffer, each counted once, have a total size,
+`4*(8*height+1) + 8*entries` bytes each, of at most that buffer's `data_bytes` (EINVAL, code 8, at the
+first table past it), so validation reads each snapshot word of the tables a bounded number of times
+(`docs/gui/gpu.md` section 1.16). The shader visits crossings in order on each of the eight sub-scanlines,
 using section 2.1's fill_start, winding, binary32 accumulation, span and to_byte order.
 No coverage pixel is computed or uploaded by the CPU.
 
@@ -425,8 +453,10 @@ The existing 2^31 work cap and all deadlines are unchanged.
 ## Test-control points
 
 System call 415 takes its latch and ops from BreenGL's contract, section 21: enabled only in a boot
-whose first PID 1 is a `/sbin/suite-*` binary, for root, with the latch and caller checked before any
-argument is decoded; ENOSYS otherwise. `ARM` is `point: u32, reserved: u32, target: u64, param: u64`
+whose first PID 1 is a `/sbin/suite-*` binary. The boot latch plus a root caller are required, with both
+checked before any argument is decoded. An unlatched boot returns ENOSYS; in a latched boot, STATE,
+ARM, FIRED and DISARM_ALL return EPERM to a non-root caller, even with malformed arguments.
+The caller need not be PID 1. `ARM` is `point: u32, reserved: u32, target: u64, param: u64`
 (24 bytes); `FIRED` is `point: u32, reserved: u32, count: u64` out (16 bytes). Points 19 to 31 are
 defined; the ones G1 builds:
 
@@ -444,8 +474,31 @@ G3 builds two more. `target` is the texture handle the point is armed for, 0 for
 | 29 | `wrong-texture` | the next `DRAW_SAMPLED` of the texture samples another texture of the process instead: of its live textures other than the named one, the first created. With no other texture the point does not fire and stays armed. The draw's fence completes as any other's |
 | 30 | `skip-upload-visibility` | the next texture `UPLOAD` writes the texture's backing and returns as a completed upload does, counted and with the generation advanced, but its `TRANSFER_TO_HOST_3D` is not sent, so the device keeps the texture's previous contents |
 
-Every point is one-shot: it affects the next occurrence of its event, counts one firing and disarms
-itself. The other points arm and do nothing until their milestone builds them.
+G6 builds two of BreenGL's points (BreenGL's contract, section 21) for the GPU core, and the gauge
+`DISARM_ALL` restarts:
+
+| Point | Name | Effect |
+|---|---|---|
+| 2 | `irq-hold` | the next `SUBMIT` holds IRQs masked for 2 ms during its validation, through the kernel's `without_interrupts`, so `gpu_irq_masked_max_us` reads at least 2,000 |
+| 3 | `emit-diagnostic` | the next syscall 416 call, from any thread, writes BreenGL's 32-byte payload `BREENGEL-EMIT-DIAGNOSTIC-PAYLOAD` and a newline through `serial_println!` before it does anything else, 33 bytes counted toward that thread; armed with `param` 1, the `serial_println!` writer |
+
+<!-- claim-lint:ok: Normative G6 interface requirement from docs/gui/gpu.md section 1.16, not a measured result. -->
+`DISARM_ALL` also restarts `gpu_irq_masked_max_us` at 0. Every point is one-shot: it affects the next
+occurrence of its event, counts one firing and disarms itself. The other points arm and do nothing until
+their milestone builds them.
+
+## Observation outside syscall 416
+
+<!-- claim-lint:ok: Normative G6 interface requirement from docs/gui/gpu.md section 1.16, not a measured result. -->
+- `/proc/trace/counters` lists, one `name: value` line each: `gpu_contexts` (the contexts the core holds
+  for every process, including destroyed handles whose work is outstanding), `gpu_resources` (the resources
+  it holds, including the kernel's per-context and per-submission ones and dropped resources still held),
+  `gpu_resource_bytes` (bytes charged to processes' GPU memory quotas and not yet released: resource backing,
+  staging, and `SUBMIT`'s copies and vertex storage) and `gpu_irq_masked_max_us` (`docs/gui/gpu.md` section
+  1.16).
+- `/proc/<pid>/task/<tid>/kernel_output` is the decimal count of bytes the kernel committed for output on
+  thread `tid`'s behalf (BreenGL's contract, section 22). No syscall 416 path writes kernel output, except
+  point 3 above.
 
 ## Provenance and reproduction
 
