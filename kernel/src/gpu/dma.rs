@@ -139,17 +139,17 @@ impl Pages {
     /// `count` zeroed frames, or `None` (with every frame taken returned) when the
     /// allocator runs out.
     pub fn new(count: usize) -> Option<Pages> {
-        let mut frames = Vec::new();
-        if frames.try_reserve_exact(count).is_err() {
+        let mut pages = Pages { frames: Vec::new() };
+        if pages.frames.try_reserve_exact(count).is_err() {
             return None;
         }
         for _ in 0..count {
             let frame = frame_allocator::allocate_frame()?;
             // SAFETY: a fresh frame in the direct map, owned here.
             unsafe { core::ptr::write_bytes(frame_va(&frame) as *mut u8, 0, PAGE) };
-            frames.push(frame);
+            pages.frames.push(frame);
         }
-        Some(Pages { frames })
+        Some(pages)
     }
 
     /// No frames: for a resource the device keeps without guest backing.
@@ -169,7 +169,7 @@ impl Pages {
     pub fn runs(&self) -> Vec<(u64, u32)> {
         let mut runs: Vec<(u64, u32)> = Vec::new();
         for f in &self.frames {
-            let addr = f.start_address().as_u64();
+            let addr = device_addr(frame_va(f));
             match runs.last_mut() {
                 Some((start, len)) if *start + *len as u64 == addr && (*len as usize) < (1 << 30) => {
                     *len += PAGE as u32;
@@ -187,7 +187,7 @@ impl Pages {
 
     /// The device address of frame `i`.
     pub fn page_addr(&self, i: usize) -> u64 {
-        self.frames[i].start_address().as_u64()
+        device_addr(self.page_va(i))
     }
 
     /// Copy `src` in at byte `offset`.
