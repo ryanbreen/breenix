@@ -7,8 +7,43 @@
 use core::fmt;
 
 #[cfg(target_arch = "x86_64")]
+mod read_only;
+
+#[cfg(target_arch = "x86_64")]
 pub mod nvme;
+#[cfg(target_arch = "x86_64")]
+pub mod ramdisk;
 pub mod virtio;
+
+// Fail closed until early boot identifies the platform, before any driver starts.
+#[cfg(target_arch = "x86_64")]
+static HARDWARE_READ_ONLY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
+
+#[cfg(target_arch = "x86_64")]
+pub fn init_hardware_policy(qemu: bool) {
+    HARDWARE_READ_ONLY.store(!qemu, core::sync::atomic::Ordering::Release);
+}
+
+/// Hardware writes are reserved for the storage lane on physical x86 boots.
+/// RAM-disk writes do not pass through hardware drivers.
+pub fn hardware_read_only() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    { HARDWARE_READ_ONLY.load(core::sync::atomic::Ordering::Acquire) }
+    #[cfg(not(target_arch = "x86_64"))]
+    { false }
+}
+
+/// Prefer a supplied bootloader RAM disk; refuse hardware root fallback on physical x86 (issue #1702).
+#[cfg(target_arch = "x86_64")]
+pub fn root_devices() -> alloc::vec::Vec<alloc::boxed::Box<dyn BlockDevice>> {
+    if let Some(device) = ramdisk::device() {
+        alloc::vec![device]
+    } else if hardware_read_only() {
+        alloc::vec::Vec::new()
+    } else {
+        devices()
+    }
+}
 
 /// Enumerate usable x86 disks in backend order: VirtIO block devices, AHCI
 /// SATA disks, then NVMe namespaces. Consumers identify disk contents,
@@ -31,7 +66,11 @@ pub fn devices() -> alloc::vec::Vec<alloc::boxed::Box<dyn BlockDevice>> {
             devices.push(alloc::boxed::Box::new(device));
         }
     }
-    devices
+    if hardware_read_only() {
+        devices.into_iter().map(read_only::device).collect()
+    } else {
+        devices
+    }
 }
 
 /// The x86-64 disk at `index` in `devices()` order.

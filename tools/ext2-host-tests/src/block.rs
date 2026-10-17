@@ -130,3 +130,9 @@ impl From<&'static str> for BlockError {
         }
     }
 }
+
+#[path = "../../../kernel/src/block/ramdisk.rs"]
+pub mod ramdisk;
+
+#[path = "../../../kernel/src/block/read_only.rs"]
+pub mod read_only;

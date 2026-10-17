@@ -2879,6 +2879,7 @@ impl BlockDevice for AhciBlockDevice {
     }
 
     fn write_block(&self, block_num: u64, buf: &[u8]) -> Result<(), BlockError> {
+        if crate::block::hardware_read_only() { return Err(BlockError::IoError); }
         if block_num >= self.sector_count {
             return Err(BlockError::OutOfBounds);
         }
@@ -2927,6 +2928,7 @@ impl BlockDevice for AhciBlockDevice {
     }
 
     fn flush(&self) -> Result<(), BlockError> {
+        if crate::block::hardware_read_only() { return Ok(()); }
         // ── PHASE 1: lock + setup (PORT_IO_IN_PROGRESS=true) ─────────────────
         let port_guard = begin_port_io(self.port_num)?;
         let setup_result: Result<CmdToken, BlockError> = {

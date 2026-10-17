@@ -140,9 +140,8 @@
     {
       "id": "ramdisk-root",
       "title": "RAM-disk root",
-      "summary": "Stub for a RAM-disk root that boots independently of hardware disks.",
+      "summary": "A RAM-disk root that boots independently of hardware disks.",
       "kernel": true,
-      "stub": true,
       "stages": {
         "x86_64": [
           {
@@ -152,6 +151,10 @@
           {
             "name": "Root mounted from RAM disk",
             "marker": "[fs] root mounted from the RAM disk"
+          },
+          {
+            "name": "Hardware disks read-only",
+            "marker": "[block] hardware disks read-only"
           }
         ]
       }
@@ -159,8 +162,7 @@
     {
       "id": "first-userspace",
       "title": "First userspace process",
-      "summary": "Stub for init running its boot script.",
-      "stub": true,
+      "summary": "Init running its boot script.",
       "stages": {
         "default": [
           {
@@ -177,8 +179,7 @@
     {
       "id": "shell",
       "title": "Console shell",
-      "summary": "Stub for an interactive shell; the result must be a whole line, distinct from echoed input.",
-      "stub": true,
+      "summary": "An interactive shell; the result must be a whole line, distinct from echoed input.",
       "stages": {
         "shell": [
           {
@@ -269,8 +270,7 @@
     {
       "id": "suite-finished",
       "title": "Suite finished",
-      "summary": "Stub for any manifest suite ribbon; a networking first additionally requires the complete passing networking manifest verdict.",
-      "stub": true,
+      "summary": "Any manifest suite ribbon; a networking first additionally requires the complete passing networking manifest verdict.",
       "stages": {
         "suite": [
           {
