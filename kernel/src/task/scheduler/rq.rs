@@ -1200,6 +1200,11 @@ static HELD_SLOTS: AtomicU32 = AtomicU32::new(0);
 /// names the tid, so a mark left on a slot that a later thread reuses wakes
 /// no one: the tid it names is no longer indexed. A tid not indexed has no
 /// thread to wake.
+///
+/// The counts a word carries (`HELD_SLOTS`, and a held placement's home's
+/// `PINNED_HOLDS_OUTSTANDING`) are raised before the word is visible, as a
+/// taker may lower them the moment it is, and a placement this one replaces
+/// gives its home's count back once it is off the slot.
 pub(super) fn hold(tid: u64, bits: u64, home: usize) {
     let Some(slot) = find(tid) else {
         return;
@@ -1210,23 +1215,37 @@ pub(super) fn hold(tid: u64, bits: u64, home: usize) {
             // The slot was reused by another thread meanwhile: this one is gone.
             return;
         }
-        let home_field = if bits & HELD_PLACE != 0 {
+        let places = bits & HELD_PLACE != 0;
+        let home_field = if places {
             (home as u64 & 0xff) << HELD_HOME_SHIFT
         } else {
             word & (0xff << HELD_HOME_SHIFT)
         };
         let next = tid << HELD_TID_SHIFT | home_field | (word & HELD_BITS) | bits;
+        let counts_slot = word == 0;
+        let counts_home = places && home < MAX_CPUS;
+        if counts_slot {
+            HELD_SLOTS.fetch_add(1, Ordering::AcqRel);
+        }
+        if counts_home {
+            super::PINNED_HOLDS_OUTSTANDING[home].fetch_add(1, Ordering::AcqRel);
+        }
         match slot.held.compare_exchange(word, next, Ordering::AcqRel, Ordering::Acquire) {
             Ok(_) => {
-                if word == 0 {
-                    HELD_SLOTS.fetch_add(1, Ordering::AcqRel);
-                }
-                if bits & HELD_PLACE != 0 && word & HELD_PLACE == 0 && home < MAX_CPUS {
-                    super::PINNED_HOLDS_OUTSTANDING[home].fetch_add(1, Ordering::AcqRel);
+                if places {
+                    release_held_place(word);
                 }
                 return;
             }
-            Err(now) => word = now,
+            Err(now) => {
+                if counts_slot {
+                    HELD_SLOTS.fetch_sub(1, Ordering::AcqRel);
+                }
+                if counts_home {
+                    release_held_place(next);
+                }
+                word = now;
+            }
         }
     }
 }
