@@ -990,7 +990,7 @@ fn metal_definition_contract_rejects_invalid_inputs() {
     }
     assert!(metal_definition_errors(&root, &main, &metal, &finalized).is_empty());
     for (pointer, value) in [
-        ("/milestones/2/stub", serde_json::json!("true")),
+        ("/milestones/4/stub", serde_json::json!("true")),
         ("/scoring", serde_json::json!("arch")),
         ("/gateArch", serde_json::json!("aarch64")),
         ("/milestones/0/stages/x86_64/0/host", serde_json::json!("missing")),
