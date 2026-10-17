@@ -317,7 +317,10 @@ fn refusals_for(h: u64, own_ctx: u64) -> Vec<(&'static str, i64)> {
     out.push(("RESOURCE_DESTROY", gpu::resource_destroy(h)));
     out.push(("SUBMIT on it as a context", gpu::submit(h, &[stream::cmd::CLEAR, 3, 0]).0));
     out.push(("WAIT on it as a context", gpu::wait(h, 1 << 32 | 1, 0).0));
-    out.push(("COUNTERS of it as a context", gpu::counters(h).0));
+    // COUNTERS of context 0 is the calling process's (gpu-abi.md, COUNTERS).
+    if h != 0 {
+        out.push(("COUNTERS of it as a context", gpu::counters(h).0));
+    }
     let mut px = vec![0u8; 64];
     let mut rec = [0u8; record::SIZE];
     out.push(("READBACK of it", gpu::readback(h, [0, 0, 4, 4], &mut px, 16, &mut rec)));
@@ -669,7 +672,8 @@ pub fn quota_memory() -> CaseResult {
         || format!("a {}-byte stream with {room} bytes of quota left returned {} (command {} error {})", big.len() * 4, errno(r), a.error_index, a.error))?;
     let after = counters(ctx)?;
     ensure(after.submissions == before.submissions, || "the refused submission was counted".to_string())?;
-    ensure(counters(0)?.resource_bytes == full, || "the refused submission left a charge".to_string())?;
+    let k = counters(0)?;
+    ensure(k.resource_bytes == full && k.copy_bytes == 0, || format!("the refused submission left {} resource bytes and {} copy bytes charged", k.resource_bytes - full, k.copy_bytes))?;
     // A readback whose staging cannot be charged (ruling 18).
     let mut px = vec![0u8; 1024 * 512 * 4];
     let mut rec = [0u8; record::SIZE];
@@ -1379,7 +1383,7 @@ pub fn quiet_errors() -> CaseResult {
     // Not the display owner: PRESENT and SET_MODE refuse.
     let _ = graphics::give_back_display();
     let start = kernel_output()?;
-    let mut calls = failing_calls(ctx, t, 38)?;
+    let mut calls = failing_calls(ctx, t, 40)?;
     // Device-side errors: a forced device error, a stale fence and a skipped transfer.
     for point in [test_point::DEVICE_ERROR, test_point::STALE_FENCE] {
         arm(point, 0)?;
@@ -1460,7 +1464,9 @@ pub fn test_hooks_absent() -> CaseResult {
 }
 
 /// A child set up to block in one op once told `G`; it reports `B` just before the op.
-/// The WAIT child's submission is the one whose withheld completion starts the stall.
+/// The WAIT child's submission is the one whose withheld completion starts the stall. The
+/// children draw while their catalogues warm (ruling 33): the stall takes most of the case's
+/// time.
 fn blocker(which: u8) -> R<Kid> {
     spawn(move |line| {
         match which {
@@ -1472,7 +1478,7 @@ fn blocker(which: u8) -> R<Kid> {
                 Err(format!("CONTEXT_CREATE returned {r:?} during the stall"))
             }
             b'w' => {
-                let c = child(context())?;
+                let c = gpu::context_create().map_err(|e| format!("CONTEXT_CREATE: {}", errno(e)))?;
                 let t = child(target(format::B8G8R8A8, 8, 8))?;
                 line.send(b'R', &[])?;
                 line.recv(b'G')?;
@@ -1483,7 +1489,7 @@ fn blocker(which: u8) -> R<Kid> {
                 Err(format!("WAIT returned {} during the stall", errno(r)))
             }
             b'r' => {
-                let c = child(context())?;
+                let c = gpu::context_create().map_err(|e| format!("CONTEXT_CREATE: {}", errno(e)))?;
                 let t = child(target(format::B8G8R8A8, 64, 64))?;
                 child(frame(c, &scene(t, RED, &[])).map(drop))?;
                 line.send(b'R', &[])?;
@@ -1495,7 +1501,7 @@ fn blocker(which: u8) -> R<Kid> {
                 Err(format!("READBACK returned {} during the stall", errno(r)))
             }
             _ => {
-                let c = child(context())?;
+                let c = gpu::context_create().map_err(|e| format!("CONTEXT_CREATE: {}", errno(e)))?;
                 let t = child(scanout_target(format::B8G8R8A8, 64, 64))?;
                 child(frame(c, &scene(t, RED, &[])).map(drop))?;
                 graphics::take_over_display().map_err(|e| format!("take display: {e:?}"))?;
@@ -1516,7 +1522,7 @@ pub fn killable_wait() -> CaseResult {
     for (which, name) in [(b'w', "WAIT"), (b'c', "CONTEXT_CREATE"), (b'r', "READBACK"), (b'p', "PRESENT")] {
         let kid = blocker(which)?;
         kid.recv(b'R')?;
-        kids.push((kid, name));
+        kids.push((kid, name, which));
     }
     // Withhold completions from the next one on (the WAIT child's submission): the device's
     // answers stay untaken until the watchdog resets it, so each child's op blocks.
@@ -1529,17 +1535,18 @@ pub fn killable_wait() -> CaseResult {
         ensure(ms_since(stall) < 500, || "withhold-fence did not fire within 500 ms".to_string())?;
         let _ = time::sleep_ms(2);
     }
-    for (kid, _) in &kids[1..] {
+    for (kid, _, _) in &kids[1..] {
         kid.send(b'G', &[])?;
         kid.recv(b'B')?;
     }
     let _ = time::sleep_ms(50);
-    for (kid, name) in &mut kids {
+    for (kid, name, which) in &mut kids {
         let start = now_ns();
         kid.kill()?;
         let status = kid.reap()?;
         let ms = ms_since(start);
-        value(&format!("{}-exit-ms", name.to_lowercase()), ms as i64, "ms", Some((0, K_MS as i64)));
+        let label = match which { b'w' => "wait-exit-ms", b'c' => "create-exit-ms", b'r' => "readback-exit-ms", _ => "present-exit-ms" };
+        value(label, ms as i64, "ms", Some((0, K_MS as i64)));
         ensure(process::wifsignaled(status) && process::wtermsig(status) == SIGKILL,
             || format!("the child blocked in {name} ended with status {status:#x}, not by SIGKILL"))?;
         ensure(ms <= K_MS, || format!("the child blocked in {name} took {ms} ms to exit after SIGKILL"))?;
@@ -1556,8 +1563,15 @@ pub fn killable_wait() -> CaseResult {
         let _ = time::sleep_ms(20);
     }
     value("reset-ms", ms_since(stall) as i64, "ms", None);
-    let (_c2, t2, want2) = drawn(format::B8G8R8A8, 9, 7, GREEN)?;
-    expect(t2, &want2, "a new context after the reset")?;
+    let start = now_ns();
+    let made = gpu::context_create();
+    let ms = ms_since(start);
+    value("recreate-ms", ms as i64, "ms", None);
+    let c2 = made.map_err(|e| fail_msg(format!("CONTEXT_CREATE after the reset returned {} after {ms} ms", errno(e))))?;
+    // A context draws while its catalogue warms (ruling 33); this case's time is the stall's.
+    let t2 = target(format::B8G8R8A8, 9, 7)?;
+    frame(c2, &scene(t2, GREEN, &[([1, 1, 3, 3], RED)]))?;
+    expect(t2, &scene_canvas(9, 7, GREEN, &[([1, 1, 3, 3], RED)]), "a new context after the reset")?;
     pass()
 }
 
