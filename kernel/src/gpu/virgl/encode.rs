@@ -21,6 +21,8 @@ use gpu_abi::stream::{self, cmd as bgl, TargetInfo, Words};
 use super::wire::{self, ccmd, cmd0, obj, pipe};
 #[path = "profile/mod.rs"]
 mod profile;
+#[path = "shader_chunks.rs"]
+mod shader_chunks;
 use crate::gpu::dma::WordBuf;
 
 /// The most words one SUBMIT_3D carries: 16 frames.
@@ -60,6 +62,10 @@ impl Enc {
             self.oom = true;
             return;
         };
+        if 1 + len > CHUNK_WORDS {
+            self.oom = true;
+            return;
+        }
         if self.cur.len() > 0 && self.cur.len() + 1 + len > CHUNK_WORDS {
             let full = core::mem::replace(&mut self.cur, WordBuf::new());
             self.chunks.push(full);
@@ -70,6 +76,13 @@ impl Enc {
         }
         if !ok {
             self.oom = true;
+        }
+    }
+
+    fn flush(&mut self) {
+        if self.cur.len() > 0 {
+            self.chunks
+                .push(core::mem::replace(&mut self.cur, WordBuf::new()));
         }
     }
 
@@ -255,23 +268,31 @@ pub fn setup(enc: &mut Enc, o: &mut Objects, vertex_buffer: u32) {
 }
 
 /// CREATE_OBJECT SHADER: handle, type, offset word (its value the text's whole length in
-/// bytes, no continuation), token count, no stream-output, then the NUL-terminated text.
+/// bytes initially, then continuation offsets), token count, no stream-output, then text.
 fn shader(enc: &mut Enc, handle: u32, p: &Program) {
-    let terminated=p.text.ends_with(&[0]);
-    let bytes=p.text.len()+usize::from(!terminated);
+    let terminated = p.text.ends_with(&[0]);
+    let bytes = p.text.len() + usize::from(!terminated);
     let mut text: Vec<u32> = Vec::with_capacity(bytes.div_ceil(4));
     for chunk in p.text.chunks(4) {
         let mut b = [0u8; 4];
         b[..chunk.len()].copy_from_slice(chunk);
         text.push(u32::from_le_bytes(b));
     }
-    if !terminated && p.text.len()%4==0 {text.push(0);}
-    enc.cmd_with(
-        ccmd::CREATE_OBJECT,
-        obj::SHADER,
-        &[handle, p.kind, bytes as u32 & 0x7FFF_FFFF, p.tokens, 0],
-        &text,
-    );
+    if !terminated && p.text.len() % 4 == 0 {
+        text.push(0);
+    }
+    // P:273–282: the first offset carries the entire byte length; following
+    // commands carry the byte offset and OFFSET_CONT. Leave room for the header.
+    enc.flush();
+    for (offset, part) in shader_chunks::fragments(&text, bytes) {
+        enc.cmd_with(
+            ccmd::CREATE_OBJECT,
+            obj::SHADER,
+            &[handle, p.kind, offset, p.tokens, 0],
+            part,
+        );
+        enc.flush();
+    }
 }
 
 /// The four binary32 channel values of a BGRA-packed colour, in RGBA order.
@@ -450,20 +471,33 @@ pub fn translate(enc: &mut Enc, o: &mut Objects, words: &(impl Words + ?Sized), 
                     }
                     current = Some(t);
                     current_handle = handle;
-                scissor = None;
+                    scissor = None;
                 }
             }
             bgl::CLEAR => {
                 let f = rgba_floats(words.word(at + 2));
                 // CLEAR: buffers, colour (four words), depth (a double), stencil.
                 if scissor.is_none() {
-                    enc.cmd(ccmd::CLEAR, 0, &[pipe::CLEAR_COLOR0, f[0], f[1], f[2], f[3], 0, 0, 0]);
+                    enc.cmd(
+                        ccmd::CLEAR,
+                        0,
+                        &[pipe::CLEAR_COLOR0, f[0], f[1], f[2], f[3], 0, 0, 0],
+                    );
                 } else if let Some(t) = current.as_ref() {
-                    if let Some(r) = stream::clipped([0,0,t.info.width as i32,t.info.height as i32], t.info.width,t.info.height,scissor) {
-                        bind_programs(enc,o,&mut programs,Bound::Solid);
-                        enc.cmd(ccmd::SET_CONSTANT_BUFFER,0,&[pipe::SHADER_FRAGMENT,0,f[0],f[1],f[2],f[3]]);
-                        bind_vertices(enc,&mut bound,vertex_buffer);
-                        offset=draw_vertices(enc,vertex_buffer,offset,&quad(r),1);
+                    if let Some(r) = stream::clipped(
+                        [0, 0, t.info.width as i32, t.info.height as i32],
+                        t.info.width,
+                        t.info.height,
+                        scissor,
+                    ) {
+                        bind_programs(enc, o, &mut programs, Bound::Solid);
+                        enc.cmd(
+                            ccmd::SET_CONSTANT_BUFFER,
+                            0,
+                            &[pipe::SHADER_FRAGMENT, 0, f[0], f[1], f[2], f[3]],
+                        );
+                        bind_vertices(enc, &mut bound, vertex_buffer);
+                        offset = draw_vertices(enc, vertex_buffer, offset, &quad(r), 1);
                     }
                 }
             }
@@ -493,7 +527,8 @@ pub fn translate(enc: &mut Enc, o: &mut Objects, words: &(impl Words + ?Sized), 
                     } else {
                         b.buffer_rect(buffer, source + 16 * r as u64)
                     };
-                    let Some(clipped) = stream::clipped(rect, t.info.width, t.info.height, scissor) else {
+                    let Some(clipped) = stream::clipped(rect, t.info.width, t.info.height, scissor)
+                    else {
                         continue;
                     };
                     verts.extend_from_slice(&quad(clipped));
@@ -563,7 +598,21 @@ pub fn translate(enc: &mut Enc, o: &mut Objects, words: &(impl Words + ?Sized), 
                         let i = [0, 1, 2, 3, 4, 5].map(|k| words.word(base + k) as i32);
                         done += 1;
                         // Preserve validation's named bounds and also bound fetches in a substitute.
-                        let Some(clipped) = stream::sampled_clip(i, t.info.width, t.info.height, own.width.min(tex.width), own.height.min(tex.height)).and_then(|r| stream::clipped(r.map(|v| v as i32),t.info.width,t.info.height,scissor)) else {
+                        let Some(clipped) = stream::sampled_clip(
+                            i,
+                            t.info.width,
+                            t.info.height,
+                            own.width.min(tex.width),
+                            own.height.min(tex.height),
+                        )
+                        .and_then(|r| {
+                            stream::clipped(
+                                r.map(|v| v as i32),
+                                t.info.width,
+                                t.info.height,
+                                scissor,
+                            )
+                        }) else {
                             continue;
                         };
                         verts.extend_from_slice(&quad(clipped));
@@ -583,19 +632,22 @@ pub fn translate(enc: &mut Enc, o: &mut Objects, words: &(impl Words + ?Sized), 
                     }
                 }
             }
-            bgl::SCISSOR => scissor=Some([2,3,4,5].map(|k|words.word(at+k) as i32)),
+            bgl::SCISSOR => scissor = Some([2, 3, 4, 5].map(|k| words.word(at + k) as i32)),
             bgl::PROBE => {
-                let Some(t)=current.as_ref() else {at+=len;continue;};
-                let r=[4,5,6,7].map(|k|words.word(at+k) as i32);
-                if let Some(r)=stream::clipped(r,t.info.width,t.info.height,scissor) {
-                    bind_programs(enc,o,&mut programs,Bound::Probe);
-                    let mut constants=Vec::with_capacity(22);
-                    constants.extend_from_slice(&[pipe::SHADER_FRAGMENT,0]);
-                    constants.extend((8..24).map(|k|words.word(at+k)));
-                    constants.extend_from_slice(&[words.word(at+3),words.word(at+2),0,0]);
-                    enc.cmd(ccmd::SET_CONSTANT_BUFFER,0,&constants);
-                    bind_vertices(enc,&mut bound,vertex_buffer);
-                    offset=draw_vertices(enc,vertex_buffer,offset,&quad(r),1);
+                let Some(t) = current.as_ref() else {
+                    at += len;
+                    continue;
+                };
+                let r = [4, 5, 6, 7].map(|k| words.word(at + k) as i32);
+                if let Some(r) = stream::clipped(r, t.info.width, t.info.height, scissor) {
+                    bind_programs(enc, o, &mut programs, Bound::Probe);
+                    let mut constants = Vec::with_capacity(22);
+                    constants.extend_from_slice(&[pipe::SHADER_FRAGMENT, 0]);
+                    constants.extend((8..24).map(|k| words.word(at + k)));
+                    constants.extend_from_slice(&[words.word(at + 3), words.word(at + 2), 0, 0]);
+                    enc.cmd(ccmd::SET_CONSTANT_BUFFER, 0, &constants);
+                    bind_vertices(enc, &mut bound, vertex_buffer);
+                    offset = draw_vertices(enc, vertex_buffer, offset, &quad(r), 1);
                 }
             }
             _ => {}
@@ -627,7 +679,15 @@ fn corrupt_pixel(enc: &mut Enc, o: &Objects, programs: &mut Bound, bound: &mut b
 /// Context creation's warm-up: the fixed state and programs, then one draw with each
 /// pipeline into the 1x1 scratch target `scratch`, `copy` sampling the 1x1 texture
 /// `scratch_texture` and the probe selecting integer addition (`docs/gui/gpu.md` section 1.4.1, program warm-up).
-pub fn warm_up(enc: &mut Enc, o: &mut Objects, vertex_buffer: u32, scratch: u32, scratch_texture: u32, format: u32, flip_y: bool) {
+pub fn warm_up(
+    enc: &mut Enc,
+    o: &mut Objects,
+    vertex_buffer: u32,
+    scratch: u32,
+    scratch_texture: u32,
+    format: u32,
+    flip_y: bool,
+) {
     setup(enc, o, vertex_buffer);
     let s = o.take();
     enc.cmd(ccmd::CREATE_OBJECT, obj::SURFACE, &[s, scratch, format, 0, 0]);
@@ -639,13 +699,27 @@ pub fn warm_up(enc: &mut Enc, o: &mut Objects, vertex_buffer: u32, scratch: u32,
     enc.cmd(ccmd::SET_CONSTANT_BUFFER, 0, &[pipe::SHADER_FRAGMENT, 0, f[0], f[1], f[2], f[3]]);
     let next = draw_vertices(enc, vertex_buffer, 0, &quad([0, 0, 1, 1]), 1);
     bind_programs(enc, o, &mut programs, Bound::Copy);
-    bind_view(enc, o, &SourceRes { id: scratch_texture, format, width: 1, height: 1 });
-    enc.cmd(ccmd::SET_CONSTANT_BUFFER, 0, &[pipe::SHADER_FRAGMENT, 0, 0, 0, 0, 0]);
-    let next=draw_vertices(enc, vertex_buffer, next, &quad([0, 0, 1, 1]), 1);
-    bind_programs(enc,o,&mut programs,Bound::Probe);
-    let mut constants=[0u32;22];constants[0]=pipe::SHADER_FRAGMENT;
-    enc.cmd(ccmd::SET_CONSTANT_BUFFER,0,&constants);
-    draw_vertices(enc,vertex_buffer,next,&quad([0,0,1,1]),1);
+    bind_view(
+        enc,
+        o,
+        &SourceRes {
+            id: scratch_texture,
+            format,
+            width: 1,
+            height: 1,
+        },
+    );
+    enc.cmd(
+        ccmd::SET_CONSTANT_BUFFER,
+        0,
+        &[pipe::SHADER_FRAGMENT, 0, 0, 0, 0, 0],
+    );
+    let next = draw_vertices(enc, vertex_buffer, next, &quad([0, 0, 1, 1]), 1);
+    bind_programs(enc, o, &mut programs, Bound::Probe);
+    let mut constants = [0u32; 22];
+    constants[0] = pipe::SHADER_FRAGMENT;
+    enc.cmd(ccmd::SET_CONSTANT_BUFFER, 0, &constants);
+    draw_vertices(enc, vertex_buffer, next, &quad([0, 0, 1, 1]), 1);
 }
 
 /// Bytes of vertex data a stream with `drawn` drawn rectangles needs.

@@ -1,7 +1,7 @@
 //! Breenix integer arithmetic model, authored from IEEE 754 and gpu.md section 1.5.
 //! Values are SSA nodes so the same operations can later be encoded as TGSI.
 use std::collections::HashMap;
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Op {
     Input(usize),
     Lit(u32),
@@ -25,11 +25,11 @@ type V = usize;
 #[derive(Default)]
 struct Code {
     nodes: Vec<Node>,
+    expressions: HashMap<(Op, [V; 3]), V>,
+    expanding_division: bool,
     literals: HashMap<u32, V>,
-    #[cfg(not(test))]
     divisions: Vec<Division>,
 }
-#[cfg(not(test))]
 struct Division {
     start: usize,
     end: usize,
@@ -38,9 +38,62 @@ struct Division {
     out: Vec<V>,
 }
 impl Code {
-    fn node(&mut self, op: Op, args: [V; 3]) -> V {
+    fn node(&mut self, op: Op, mut args: [V; 3]) -> V {
+        if !self.expanding_division {
+            let literal = |v: V| match self.nodes[v].op {
+                Op::Lit(k) => Some(k),
+                _ => None,
+            };
+            if !matches!(op, Op::Input(_) | Op::Lit(_)) {
+                let a = literal(args[0]);
+                let b = literal(args[1]);
+                if let (Some(a), Some(b)) = (a, b) {
+                    let value = match op {
+                        Op::Add => Some(a.wrapping_add(b)),
+                        Op::Mul => Some(a.wrapping_mul(b)),
+                        Op::And => Some(a & b),
+                        Op::Or => Some(a | b),
+                        Op::Xor => Some(a ^ b),
+                        Op::Shl => Some(a.wrapping_shl(b)),
+                        Op::Shr => Some(a.wrapping_shr(b)),
+                        Op::Lt => Some(u32::from(a < b)),
+                        Op::Eq => Some(u32::from(a == b)),
+                        _ => None,
+                    };
+                    if let Some(value) = value {
+                        return self.k(value);
+                    }
+                }
+                match op {
+                    Op::Add | Op::Or | Op::Xor if b == Some(0) => return args[0],
+                    Op::Add | Op::Or | Op::Xor if a == Some(0) => return args[1],
+                    Op::Mul | Op::And if a == Some(0) || b == Some(0) => return self.k(0),
+                    Op::Mul if b == Some(1) => return args[0],
+                    Op::Mul if a == Some(1) => return args[1],
+                    Op::And if b == Some(u32::MAX) => return args[0],
+                    Op::And if a == Some(u32::MAX) => return args[1],
+                    Op::Shl | Op::Shr if b == Some(0) => return args[0],
+                    Op::Select if args[1] == args[2] => return args[1],
+                    Op::Select if a.is_some() => {
+                        return if a == Some(0) { args[2] } else { args[1] }
+                    }
+                    _ => {}
+                }
+            }
+            if matches!(op, Op::Add | Op::Mul | Op::And | Op::Or | Op::Xor | Op::Eq)
+                && args[0] > args[1]
+            {
+                args.swap(0, 1);
+            }
+            if let Some(&v) = self.expressions.get(&(op, args)) {
+                return v;
+            }
+        }
         let v = self.nodes.len();
         self.nodes.push(Node { op, args });
+        if !self.expanding_division {
+            self.expressions.insert((op, args), v);
+        }
         v
     }
     fn input(&mut self, n: usize) -> V {
@@ -221,8 +274,8 @@ impl Code {
         lt
     }
     fn div96(&mut self, a: [V; 3], b: [V; 3]) -> Vec<V> {
-        #[cfg(not(test))]
         let start = self.nodes.len();
+        self.expanding_division = true;
         let z = self.k(0);
         let one = self.k(1);
         let mut r = vec![z; 3];
@@ -249,7 +302,7 @@ impl Code {
             q[bit / 32] = self.or(q[bit / 32], mask);
         }
         q.extend(r);
-        #[cfg(not(test))]
+        self.expanding_division = false;
         self.divisions.push(Division {
             start,
             end: self.nodes.len(),
@@ -260,7 +313,7 @@ impl Code {
         q
     }
     /// Shift right with a sticky low bit, including shifts of 32 or more.
-    fn jam(&mut self, a: V, n: V) -> V {
+    fn sticky_shift(&mut self, a: V, n: V) -> V {
         let k31 = self.k(31);
         let large = self.lt(k31, n);
         let s = self.sel(large, k31, n);
@@ -294,7 +347,7 @@ impl Code {
         let one = self.k(1);
         let low = self.slt(e, one);
         let n = self.sub(one, e);
-        let j = self.jam(m, n);
+        let j = self.sticky_shift(m, n);
         m = self.sel(low, j, m);
         e = self.sel(low, one, e);
         let rem = self.andk(m, 7);
@@ -335,14 +388,14 @@ impl Code {
         let mh = self.shlk(mh, 3);
         let ml = self.shlk(ml, 3);
         let diff = self.sub(e, el);
-        let ml = self.jam(ml, diff);
+        let ml = self.sticky_shift(ml, diff);
         let same = self.eq(sign, sl);
         let plus = self.add(mh, ml);
         let minus = self.sub(mh, ml);
         let mut m = self.sel(same, plus, minus);
         let over = self.shrk(m, 27);
         let one = self.k(1);
-        let shift = self.jam(m, one);
+        let shift = self.sticky_shift(m, one);
         m = self.sel(over, shift, m);
         e = self.add(e, over);
         for _ in 0..26 {
@@ -402,7 +455,7 @@ impl Code {
         let sticky = self.nz(low);
         let m = self.or(m, sticky);
         let one = self.k(1);
-        let shift = self.jam(m, one);
+        let shift = self.sticky_shift(m, one);
         let m = self.sel(high, shift, m);
         let e = self.add(ea, eb);
         let e = self.addk(e, 0u32.wrapping_sub(127));
@@ -684,7 +737,7 @@ impl Code {
             mid = sum;
         }
         for (x, y) in [(a[0], b[2]), (a[1], b[1]), (a[2], b[0])] {
-            let low = self.product(x, y)[0];
+            let low = self.mul(x, y);
             high = self.add(high, low);
         }
         vec![lo, mid, high]
@@ -1072,7 +1125,6 @@ mod predicate_tests {
     }
 }
 
-#[cfg(not(test))]
 impl Node {
     fn arity(&self) -> usize {
         match self.op {
@@ -1085,7 +1137,6 @@ impl Node {
 
 /// Encode the modeled integer operations using L's opcode definitions. Physical
 /// temporary registers are reused after their SSA value's last use.
-#[cfg(not(test))]
 fn tgsi(code: &Code, outputs: &[V]) -> (String, u32, usize) {
     use std::fmt::Write;
     let mut live = vec![false; code.nodes.len()];
@@ -1299,12 +1350,8 @@ fn tgsi(code: &Code, outputs: &[V]) -> (String, u32, usize) {
     (text, tokens, next)
 }
 
-#[cfg(not(test))]
-fn main() {
+fn generated() -> (String, u32) {
     use std::fmt::Write;
-    let destination = std::env::args().nth(1).expect("output directory");
-    let destination = std::path::Path::new(&destination);
-    std::fs::create_dir_all(destination).unwrap();
     let mut pieces = Vec::new();
     let mut max_registers = 0;
     for r in 0..25 {
@@ -1357,12 +1404,6 @@ fn main() {
     text.push_str(&bodies);
     text.push_str("END\n\0");
 
-    for old in std::fs::read_dir(destination).unwrap() {
-        let p = old.unwrap().path();
-        if p.extension().is_some_and(|e| e == "tgsi") {
-            std::fs::remove_file(p).unwrap();
-        }
-    }
     let text = expand_sources(&text);
     let text = integer_words(&text, max_registers, &mut tokens);
     let (text, constant_registers) = integer_constants(&text, max_registers + 3, &mut tokens);
@@ -1381,15 +1422,26 @@ fn main() {
         text.len(),
         max_registers + 3 + constant_registers
     );
+    (text, tokens)
+}
+
+#[cfg(not(test))]
+fn main() {
+    let destination = std::env::args().nth(1).expect("output directory");
+    let destination = std::path::Path::new(&destination);
+    std::fs::create_dir_all(destination).unwrap();
+    let (text, tokens) = generated();
     std::fs::write(
         destination.join("profile.tgsi"),
         text.trim_end_matches('\0'),
     )
     .unwrap();
-    std::fs::write(destination.join("mod.rs"),format!("// Generated by tools/gpu-profile/math.rs.\nuse super::{{Program, pipe}};\npub const FS: Program = Program {{ kind: pipe::SHADER_FRAGMENT, text: include_bytes!(\"profile.tgsi\"), tokens: {tokens} }};\n")).unwrap();
+    std::fs::write(
+        destination.join("mod.rs"),
+        format!("// Generated by tools/gpu-profile/math.rs.\nuse super::{{pipe, Program}};\n\npub const FS: Program = Program {{\n    kind: pipe::SHADER_FRAGMENT,\n    text: include_bytes!(\"profile.tgsi\"),\n    tokens: {tokens},\n}};\n"),
+    ).unwrap();
 }
 
-#[cfg(not(test))]
 fn renumber(line: &str, offset: usize) -> String {
     let mut result = String::new();
     let mut rest = line;
@@ -1405,7 +1457,6 @@ fn renumber(line: &str, offset: usize) -> String {
     result
 }
 
-#[cfg(not(test))]
 fn allocate(free: &mut Vec<usize>, next: &mut usize) -> usize {
     free.pop().unwrap_or_else(|| {
         let r = *next;
@@ -1416,7 +1467,6 @@ fn allocate(free: &mut Vec<usize>, next: &mut usize) -> usize {
 
 /// Encode the model's restoring-division recurrence as a bounded loop. The arithmetic
 /// model above unrolls that same recurrence for comparison with native u128.
-#[cfg(not(test))]
 fn emit_division(
     body: &mut String,
     a: &[String; 3],
@@ -1511,7 +1561,6 @@ fn emit_division(
     (result, tokens)
 }
 
-#[cfg(not(test))]
 fn expand_sources(text: &str) -> String {
     fn expand(s: &str) -> String {
         if s.len() > 2
@@ -1548,7 +1597,6 @@ fn expand_sources(text: &str) -> String {
 
 /// Keep probe words in the integer ISA, including conditional selection and copies.
 /// With m = (condition != 0 ? UINT_MAX : 0), b ^ ((a ^ b) & m) selects word bits.
-#[cfg(not(test))]
 fn integer_words(text: &str, control: usize, tokens: &mut u32) -> String {
     use std::fmt::Write;
     let mask = control + 1;
@@ -1587,7 +1635,6 @@ fn integer_words(text: &str, control: usize, tokens: &mut u32) -> String {
 /// Keep NaN-shaped literal words out of the renderer's floating constant folding.
 /// The encoder supplies CONST[4].z as integer 0. Starting from that uniform,
 /// construct each such word from two finite 16-bit immediates using L's integer ISA.
-#[cfg(not(test))]
 fn integer_constants(text: &str, first: usize, tokens: &mut u32) -> (String, usize) {
     use std::fmt::Write;
     let mut values = Vec::new();
@@ -1675,3 +1722,7 @@ fn integer_constants(text: &str, first: usize, tokens: &mut u32) -> (String, usi
     declarations.push('\0');
     (declarations, values.len())
 }
+
+#[cfg(test)]
+#[path = "emitted_tests.rs"]
+mod emitted_tests;
