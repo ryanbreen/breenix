@@ -46,6 +46,7 @@ pub fn init_cpu(cpu: usize) {
             let id = apic::id();
             smp::set_cpu_apic_id(cpu, id);
             apic::start_local_timer();
+            super::tick_census::record_local_rate(cpu);
             id
         } else {
             // PIC delivery: the PIT tick is machine-wide and arrives at the

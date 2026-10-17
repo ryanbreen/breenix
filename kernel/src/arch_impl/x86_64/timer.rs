@@ -190,7 +190,13 @@ pub fn calibrate() {
     let periods = (best.1 - best.0) as u64;
     let tsc_elapsed = last.at - first.at;
     let pit_ticks = periods * PERIOD_TICKS as u64;
-    let frequency_hz = tsc_elapsed * PIT_HZ / pit_ticks;
+    let measured_hz = tsc_elapsed * PIT_HZ / pit_ticks;
+
+    // The rate the processor states (CPUID 15H/16H) is taken when the PIT
+    // measurement agrees with it; otherwise the measurement is the rate.
+    let stated = super::tsc_rate::stated(cpuid_leaves());
+    let chosen = super::tsc_rate::choose(measured_hz, stated);
+    let frequency_hz = chosen.hz;
 
     TSC_FREQUENCY_HZ.store(frequency_hz, Ordering::SeqCst);
     TSC_BASE.store(first.at, Ordering::SeqCst);
@@ -208,9 +214,80 @@ pub fn calibrate() {
         tsc_elapsed,
         first.width + last.width
     );
+    match stated {
+        Some(stated) => log::info!(
+            "[tsc] pit={} Hz {}={} Hz apart={} ppm using={}",
+            measured_hz,
+            stated.source,
+            stated.hz,
+            super::tsc_rate::ppm_apart(stated.hz, measured_hz),
+            chosen.source
+        ),
+        None => log::info!("[tsc] pit={} Hz cpuid=none using={}", measured_hz, chosen.source),
+    }
+    if let Some((port, wide)) = super::platform::pm_timer().filter(|_| !crate::drivers::fw_cfg::present()) {
+        match unsafe { pm_timer_rate(port, wide, measured_hz) } {
+            Some(by_pm) => log::info!(
+                "[tsc] pm_timer={} Hz apart={} ppm from the rate in use",
+                by_pm,
+                super::tsc_rate::ppm_apart(by_pm, frequency_hz)
+            ),
+            None => log::info!("[tsc] pm_timer did not count"),
+        }
+    }
 
     // HAL boot stage marker - proves HAL timer operations are working
     log::info!("HAL_TIMER_CALIBRATED: TSC calibration via HAL complete");
+}
+
+/// CPUID leaves 0, 15H and 16H as `tsc_rate` reads them.
+fn cpuid_leaves() -> super::tsc_rate::Leaves {
+    use core::arch::x86_64::__cpuid;
+    // SAFETY: leaf 0 is architectural on x86-64, and each further leaf is read
+    // only when leaf 0 says the processor implements it.
+    unsafe {
+        let max_leaf = __cpuid(0).eax;
+        let (ratio_denominator, ratio_numerator, crystal_hz) = if max_leaf >= 0x15 {
+            let leaf = __cpuid(0x15);
+            (leaf.eax, leaf.ebx, leaf.ecx)
+        } else {
+            (0, 0, 0)
+        };
+        super::tsc_rate::Leaves {
+            max_leaf,
+            ratio_denominator,
+            ratio_numerator,
+            crystal_hz,
+            base_mhz: if max_leaf >= 0x16 { __cpuid(0x16).eax } else { 0 },
+        }
+    }
+}
+
+/// The ACPI power-management timer's fixed rate, in Hz (ACPI 6.5, 4.8.3.3).
+const PM_TIMER_HZ: u64 = 3_579_545;
+
+/// The TSC rate the PM timer at `port` implies over about 50 ms, timed with
+/// the PIT-measured rate `measured_hz`. Each PM timer read is bracketed by TSC
+/// reads and placed at their midpoint. No value when the timer did not advance.
+unsafe fn pm_timer_rate(port: u16, wide: bool, measured_hz: u64) -> Option<u64> {
+    use x86_64::instructions::port::Port;
+    let mask: u32 = if wide { u32::MAX } else { 0x00ff_ffff };
+    let mut timer = Port::<u32>::new(port);
+    let mut sample = || {
+        let before = rdtsc_serialized();
+        let value = timer.read() & mask;
+        let after = rdtsc_serialized();
+        (value, before + (after - before) / 2)
+    };
+    let (start, start_at) = sample();
+    let deadline = start_at + measured_hz / 20;
+    while rdtsc() < deadline {
+        core::hint::spin_loop();
+    }
+    let (end, end_at) = sample();
+    // One wrap at most: a 24-bit timer wraps after 4.7 s.
+    let counted = u64::from(end.wrapping_sub(start) & mask);
+    (counted != 0).then(|| (end_at - start_at) * PM_TIMER_HZ / counted)
 }
 
 /// A rising edge of PIT channel 2's OUT, timed by the TSC.
