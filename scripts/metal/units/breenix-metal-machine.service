@@ -4,6 +4,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
+# claim-lint:ok: #1680 systemd Restart=always is a directive token, not an empirical quantifier.
 Type=notify
 NotifyAccess=main
 Environment=BREENIX_METAL_SITE=/etc/breenix-metal/site.env

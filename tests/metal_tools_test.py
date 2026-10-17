@@ -554,6 +554,13 @@ class DefinitionTest(unittest.TestCase):
         self.assertEqual(boot.final_marker(metal, 'shell', catalog), ('metal-console-ok 42', 'contains'))
         self.assertIsNone(boot.final_marker({'milestones': [metal['milestones'][0]]}, 'default', catalog))
 
+    def test_explicit_mode_terminal_precedes_later_kernel_milestones(self):
+        definition = {'milestones': [
+            {'stages': {'default': [{'marker': 'INIT DONE|INIT COMPLETE', 'match': 'line'}]}},
+            {'kernel': True, 'stages': {'x86_64': [{'marker': 'NETWORK READY'}]}}]}
+        self.assertEqual(boot.final_marker(definition, 'default', {}),
+                         ('INIT DONE|INIT COMPLETE', 'line'))
+
     def test_boot_progress_key(self):
         self.assertEqual(boot.progress_key(None), (None, '', None))
         self.assertEqual(boot.progress_key({'LastState': 'OEM', 'OemLastState': 'No bootable devices.'}),

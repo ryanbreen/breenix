@@ -747,9 +747,13 @@ def marker_matches(spec, line):
 def final_marker(metal, mode, catalog):
     """Resolve the final measured serial stage and preserve its matching contract."""
     markers = {stage['name']: stage for stage in catalog.get('stages', []) if 'marker' in stage}
-    for milestone in reversed(metal.get('milestones', [])):
-        stages = milestone.get('stages', {})
-        listed = stages.get(mode) or (stages.get('x86_64') if milestone.get('kernel') else None)
+    milestones = list(reversed(metal.get('milestones', [])))
+    scoped = [milestone.get('stages', {}).get(mode) for milestone in milestones]
+    scoped = [listed for listed in scoped if listed]
+    if not scoped:
+        scoped = [milestone.get('stages', {}).get(metal.get('gateArch', 'x86_64'))
+                  for milestone in milestones if milestone.get('kernel')]
+    for listed in scoped:
         if not listed:
             continue
         for stage in reversed(listed):
