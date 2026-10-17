@@ -382,6 +382,8 @@ struct Port {
     std_producer: u32,
     return_consumer: u32,
     autoneg_started_ms: u64,
+    /// The Receive BD Initiator Mode register before initialization set it.
+    rbdi_at_init: u32,
 }
 
 impl Port {
@@ -423,6 +425,7 @@ impl Port {
             std_producer: 0,
             return_consumer: 0,
             autoneg_started_ms: 0,
+            rbdi_at_init: 0,
         };
         port.initialize();
         port.f.phy_start_autonegotiation()?;
@@ -430,6 +433,7 @@ impl Port {
         port.post_receive_buffers();
         IRQ_REGS[slot].store(port.f.regs, Ordering::Release);
         port.enable_interrupts();
+        port.report_receive_state("after initialization");
         log::info!(
             "[bcm5720] {}: MSI vector {:#x}; send ring {}, standard receive ring {}, return ring {}; autonegotiation started",
             port.f.bdf(),
@@ -617,7 +621,11 @@ impl Port {
         f.write32(READ_DMA_MODE, read_dma | READ_DMA_LSO_BURST_4K);
         // 55. 4 KiB bursts for standard frames.
         f.set_bits(READ_DMA_CORRUPTION_CONTROL, READ_DMA_NON_LSO_BURST_4K);
-        // 56-62. The remaining receive and send blocks.
+        // 56-62. The remaining receive and send blocks. The receive BD
+        //        initiator, which the procedure leaves at its reset value, is
+        //        enabled explicitly, its value as found recorded first.
+        self.rbdi_at_init = f.read32(RX_BD_INITIATOR_MODE);
+        f.set_bits(RX_BD_INITIATOR_MODE, MODE_ENABLE);
         f.write32(RX_DATA_COMPLETION_MODE, MODE_ENABLE | MODE_ATTN_ENABLE);
         f.write32(SEND_DATA_COMPLETION_MODE, MODE_ENABLE);
         f.write32(SEND_BD_COMPLETION_MODE, MODE_ENABLE | MODE_ATTN_ENABLE);
@@ -813,8 +821,43 @@ impl Port {
         }
     }
 
+    /// The receive path's registers: the standard ring's control block and
+    /// producer mailbox as read back, the controller's own indices, the receive
+    /// engines' status and the receive list placement counters.
+    fn report_receive_state(&self, when: &str) {
+        let f = &self.f;
+        log::info!(
+            "[bcm5720] {} receive state {when}: std rcb {:#x} {:#x} {:#x} {:#x}, std producer mailbox {:#x}, rbdi mode {:#x} (found {:#x}), rbdi status {:#x}, rdi mode {:#x}, rdi status {:#x}, rlp status {:#x}, rx mac mode {:#x}, rx mac status {:#x}",
+            f.bdf(),
+            f.read32(STD_RING_RCB + RCB_HOST_HIGH as usize),
+            f.read32(STD_RING_RCB + RCB_HOST_LOW as usize),
+            f.read32(STD_RING_RCB + RCB_LENGTH_FLAGS as usize),
+            f.read32(STD_RING_RCB + RCB_NIC_ADDRESS as usize),
+            f.read32(MBOX_STD_PRODUCER),
+            f.read32(RX_BD_INITIATOR_MODE),
+            self.rbdi_at_init,
+            f.read32(RX_BD_INITIATOR_STATUS),
+            f.read32(RX_DATA_BD_INITIATOR_MODE),
+            f.read32(RX_DATA_BD_INITIATOR_STATUS),
+            f.read32(RX_LIST_PLACEMENT_STATUS),
+            f.read32(RX_MAC_MODE),
+            f.read32(RX_MAC_STATUS)
+        );
+        log::info!(
+            "[bcm5720] {} receive indices {when}: nic std consumer {}, rdi local std consumer {:#x}, nic return 0 producer {}, no more rx bds {}, discards {}, errors {}",
+            f.bdf(),
+            f.read32(NIC_STD_CONSUMER),
+            f.read32(RDI_LOCAL_STD_CONSUMER),
+            f.read32(NIC_RETURN_0_PRODUCER),
+            f.read32(STAT_NO_MORE_RX_BDS),
+            f.read32(STAT_IN_DISCARDS),
+            f.read32(STAT_IN_ERRORS)
+        );
+    }
+
     /// Controller state worth recording when the probe stops short.
     fn report_state(&self, what: &str) {
+        self.report_receive_state("when the probe stopped");
         log::warn!(
             "[bcm5720] {}: {what}; status word {:#x}, send consumer {}, return producer {}, standard consumer {}, MSI interrupts {}, emac status {:#x}, tx mac status {:#x}, read dma status {:#x}, write dma status {:#x}, flow attention {:#x}",
             self.f.bdf(),
