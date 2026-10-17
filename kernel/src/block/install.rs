@@ -158,6 +158,8 @@ pub fn install(
             disk.write_blocks(sector, count, chunk).map_err(io)?;
             sector += count as u64;
         }
+        // Make the replacement data durable before publishing its root record.
+        disk.flush().map_err(io)?;
         let record = Record::Root { boot: String::from(boot), bytes, sha256: hasher.finalize() }.sector();
         disk.write_block(0, &record).map_err(io)?;
         disk.flush().map_err(io)?;
@@ -251,6 +253,8 @@ mod tests {
         writable: Arc<Mutex<bool>>,
         writes: Arc<Mutex<usize>>,
         fail_write_at: Option<u64>,
+        flushes: Mutex<usize>,
+        fail_flush_at: Option<usize>,
     }
 
     impl Disk {
@@ -260,6 +264,8 @@ mod tests {
                 writable: Arc::new(Mutex::new(false)),
                 writes: Arc::new(Mutex::new(0)),
                 fail_write_at: None,
+                flushes: Mutex::new(0),
+                fail_flush_at: None,
             }
         }
     }
@@ -291,7 +297,11 @@ mod tests {
         }
         fn block_size(&self) -> usize { SECTOR }
         fn num_blocks(&self) -> u64 { (self.bytes.lock().len() / SECTOR) as u64 }
-        fn flush(&self) -> Result<(), BlockError> { Ok(()) }
+        fn flush(&self) -> Result<(), BlockError> {
+            let mut flushes = self.flushes.lock();
+            *flushes += 1;
+            if self.fail_flush_at == Some(*flushes) { Err(BlockError::IoError) } else { Ok(()) }
+        }
     }
 
     fn image(sectors: usize) -> Disk {
@@ -360,6 +370,24 @@ mod tests {
         assert!(!*disk.writable.lock());
         assert!(disk.bytes.lock()[..SECTOR].iter().all(|&b| b == 0));
         assert!(find_root(vec![Box::new(disk) as Box<dyn BlockDevice>]).is_err());
+    }
+
+    #[test]
+    fn failed_flush_does_not_publish_a_root_over_uncommitted_data() {
+        for failure in [1, 2] {
+            let ram = image(300);
+            let mut disk = Disk::new(400);
+            install(&ram, &disk, "previous-install", &mut gate(&disk)).unwrap();
+            *disk.flushes.lock() = 0;
+            *disk.writes.lock() = 0;
+            disk.fail_flush_at = Some(failure);
+            assert!(install(&ram, &disk, "replacement", &mut gate(&disk)).is_err());
+            assert!(!*disk.writable.lock());
+            assert_eq!(Record::parse(&disk.bytes.lock()[..SECTOR]), None);
+            if failure == 1 {
+                assert_eq!(*disk.writes.lock(), 1, "no data write before invalidation is flushed");
+            }
+        }
     }
 
     #[test]
