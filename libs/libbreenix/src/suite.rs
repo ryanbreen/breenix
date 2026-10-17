@@ -1020,8 +1020,8 @@ impl Screen {
     fn draw(&mut self, suite: &Suite, title: &str, subtitle: &str, states: &[Vec<State>], verdict: Verdict<'_>,
         feed: &Feed, only: Option<&str>) {
         if let Some(gpu) = self.gpu.as_mut() {
-            // No CPU fallback, and never an abort: without a GPU view every case still
-            // runs and fails naming the layer it needs. A failure is reported once
+            // A GPU view failure is reported separately: without that view the suite cases still
+            // run and fail naming the layers they need. A failure is reported once
             // each time it changes, on a line that is not a suite record.
             let shown = gpu.draw(states).err();
             if shown.is_some() && shown != self.gpu_failure {

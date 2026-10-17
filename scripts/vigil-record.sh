@@ -9,8 +9,8 @@
 # omitted; COMMIT defaults to this checkout's HEAD. The calling script is the boot's runner: Vigil counts the boot running while that process lives.
 # BREENIX_VIGIL_DISPLAY=true|false is the launcher's effective window selection;
 # start records it before the VM starts. Finish retains BREENIX_HOST_RENDERER_JSON.
-# Does nothing, successfully, when Vigil started the boot itself (VIGIL_BOOT_ID), when no vigil-cli with the
-# breenix command is installed, or off macOS. It never fails the caller.
+# Returns success without recording when Vigil started the boot itself (VIGIL_BOOT_ID), when no vigil-cli with the
+# breenix command is installed, or off macOS. Recording failures are reported without failing the caller.
 set -u
 
 [ "$(uname -s)" = Darwin ] || exit 0

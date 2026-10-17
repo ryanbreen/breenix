@@ -1201,7 +1201,7 @@ fn wait_for<T>(deadline: Option<u64>, interruptible: bool, mut f: impl FnMut(&mu
 }
 
 /// Send synchronous request `serial` (built with `Tag::Sync(serial)`) in device context
-/// `ctx` (0 for none), holding `holds` until the device returns it, and wait for its
+/// `ctx` (0 for no context), holding `holds` until the device returns it, and wait for its
 /// answer. The watchdog fails the wait 2 s after the request was sent (EIO), and a signal
 /// or a kill ends it (EINTR); either way the request keeps its holds, and the `reading`
 /// marks, until the device returns it or a confirmed reset ends it.
@@ -2431,12 +2431,12 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
     if (a.stride as u64) < row || a.pixels_len < (h - 1) * a.stride as u64 + row {
         return Err(EINVAL);
     }
-    // Every page of the argument, the record and the pixel rows is mapped and writable
+    // The argument, record and pixel-row pages are checked for mapping and writability
     // before any device work, serial or count (gpu-abi.md, READBACK's EFAULT).
     probe_writable(arg, core::mem::size_of::<abi::Readback>())?;
     probe_writable(a.record, record::SIZE)?;
     // The rows' span is a user range, so the row arithmetic below cannot overflow; only the
-    // rows' own pages are probed, never the gaps a wider stride leaves between them.
+    // rows' own pages are probed, excluding the gaps a wider stride leaves between them.
     if !crate::memory::layout::is_valid_user_range(a.pixels, ((h - 1) * a.stride as u64 + row) as usize) {
         return Err(EFAULT);
     }
@@ -2462,7 +2462,7 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
         Err(e) => return Err(e),
     }
     let staging = Staging::new(tgid, (row * h) as usize)?;
-    // Wait for every accepted write of the target to complete, then take it for reading.
+    // Wait for the target's accepted writes to complete, then take it for reading.
     // The handle is looked up each time: one destroyed meanwhile is target-dropped.
     let taken = wait_for(None, true, |c| {
         if c.res_of(tgid, a.target) != Some(id) {
@@ -2564,7 +2564,7 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
     put32(&mut rec, record::POISON, POISON);
     put32(&mut rec, record::UNWRITTEN, unwritten);
     rec[record::RENDERER..record::RENDERER + 64].copy_from_slice(&renderer);
-    // Nothing reaches pixels until the complete rectangle passed both observations.
+    // Publish pixels after the complete rectangle passed both observations.
     let output = (|| {
         if unwritten == 0 {
             let row = row as usize;
@@ -2598,7 +2598,7 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
     Ok(0)
 }
 
-/// Fail with EFAULT unless every page of `[addr, addr + len)` is mapped and writable by
+/// Fail with EFAULT unless the pages of `[addr, addr + len)` are mapped and writable by
 /// the caller. Each page is tested with an atomic compare-and-exchange of one of its words
 /// with the value it holds, through the recoverable user-access routine: a read-only or
 /// unmapped page faults, a copy-on-write page is copied, and no byte the caller's other
@@ -2639,10 +2639,10 @@ struct Observation {
 }
 
 /// Test point 21's resource: another live target of the process, idle, with the same row
-/// pitch, that contains the transfer's box, so the box the device is sent never extends
-/// past the resource it names (section 1.4.1). It is marked as read for the transfer, so
+/// pitch, that contains the transfer's box, so the box sent to the device stays
+/// within the resource it names (section 1.4.1). It is marked as read for the transfer, so
 /// no writer or other readback uses its backing meanwhile, and the request holds the
-/// backing the device writes. None leaves the point armed.
+/// backing the device writes. No matching target leaves the point armed.
 fn wrong_resource(tgid: u64, id: u32, pitch: u32, x: u32, y: u32, w: u32, h: u32, target: u64) -> Option<(u32, Arc<Pages>)> {
     with_core(|c| {
         let (&rid, _) = c.resources.iter().find(|(rid, r)| {
@@ -2660,7 +2660,7 @@ fn wrong_resource(tgid: u64, id: u32, pitch: u32, x: u32, y: u32, w: u32, h: u32
 
 /// Read a rectangle of target `id` into `staging`, band by band: each band is transferred
 /// twice, into the poison and into its complement, and the bytes that differ between the
-/// two are counted as unwritten (section 1.8). Every transfer is a synchronous request
+/// two are counted as unwritten (section 1.8). A transfer is a synchronous request
 /// under the watchdog that holds the resource it names and the backing the device writes,
 /// until the device returns it. Returns that count and the first transfer's fence and
 /// answer. The reason of an EIO comes only from what the kernel observes.

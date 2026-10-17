@@ -51,7 +51,7 @@ impl Drop for Case {
     }
 }
 
-/// The layer every case that renders needs: the core, with a device admitted to the
+/// The prerequisite for rendering cases: the core, with a device admitted to the
 /// profile (`docs/gui/gpu.md` sections 1.5 and 1.11).
 const DEVICE_LAYER: &str = "the GPU core with a device admitted to the profile (G1)";
 

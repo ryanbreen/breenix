@@ -253,7 +253,7 @@ pub trait Bindings {
     fn buffer_rect(&self, handle: u64, offset: u64) -> [i32; 4];
 }
 
-/// Translate a validated stream into `enc`, writing every draw's vertices into its own
+/// Translate a validated stream into `enc`, writing a draw's vertices into its own
 /// region of `vertex_buffer`, which the submission alone uses: the device has been seen
 /// to let a later write to a region change what an earlier draw of the same submission
 /// read from it, so no region is written twice. `flip_y` selects the viewport's vertical

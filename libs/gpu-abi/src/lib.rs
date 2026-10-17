@@ -410,16 +410,16 @@ pub struct Readback {
     pub pixels: u64,
     pub pixels_len: u64,
     pub stride: u32,
-    /// Out on EIO: one of `readback_reason`; zero on input.
+    /// Out on EIO: one of `readback_reason`; 0 on input.
     pub reason: u32,
     /// Where the 1,024-byte record v2 goes.
     pub record: u64,
-    /// Out on target-invalid: the submission that invalidated it; zero on input.
+    /// Out on target-invalid: the submission that invalidated it; 0 on input.
     pub failed_submission: u64,
 }
 
-/// `READBACK`'s EIO reasons (`docs/gui/gpu-abi.md`, the `READBACK` table). Every EIO
-/// names exactly one; none is reported under another's name.
+/// `READBACK`'s EIO reasons (`docs/gui/gpu-abi.md`, the `READBACK` table).
+/// An EIO reports the reason selected from the observed failure.
 pub mod readback_reason {
     pub const NONE: u32 = 0;
     /// The two complementary-poison observations differ.
@@ -451,9 +451,9 @@ pub mod readback_reason {
 pub struct Present {
     pub target: u64,
     /// Out: a fence of `context` (`ns << 32 | n`, in sequence with its `SUBMIT`s);
-    /// zero on input.
+    /// 0 on input.
     pub fence: u64,
-    /// Out: the device's answer to the flush; zero on input.
+    /// Out: the device's answer to the flush; 0 on input.
     pub answer: u32,
     pub reserved: u32,
     /// In: the context the bind and flush are sent in.

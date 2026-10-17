@@ -1,5 +1,5 @@
-//! The readback observation boundary (`docs/gui/gpu.md` section 1.8): every CPU read of
-//! device-written backing invalidates first, and the readback path stages through frames
+//! The readback observation boundary (`docs/gui/gpu.md` section 1.8): tested CPU reads
+//! invalidate device-written backing first, and the readback path stages through frames
 //! rather than kernel heap pixel buffers. Source checks cover the direct path only;
 //! Pages frame descriptors and request hold lists still use heap metadata.
 #[path = "../kernel/src/gpu/observation.rs"]
@@ -60,7 +60,7 @@ fn readback_has_no_cpu_read_outside_the_observation_boundary() {
 
 #[test]
 fn readback_stages_through_charged_frames_not_heap() {
-    // Structural guard on direct pixel staging, not a transitive allocator proof.
+    // Structural guard on direct pixel staging, excluding transitive allocations.
     let path = readback_path();
     let staging = include_str!("../kernel/src/gpu/staging.rs");
     for heap in ["Vec", "vec!", "try_reserve", "Box::"] {

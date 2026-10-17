@@ -58,7 +58,7 @@ pub fn full_target() -> CaseResult {
     ensure(u32_at(&rec, record::FLAGS) == 0, || "offscreen target claims scanout".to_string())?;
     let (r, p) = gpu::present(ctx, offscreen);
     ensure(r == -EINVAL && p.fence == 0 && p.answer == 0, || format!("offscreen PRESENT: {} fence={} answer={:#x}", errno(r), p.fence, p.answer))?;
-    // Unknown flags, non-target scanout and every reserved word stay invalid.
+    // Unknown flags, non-target scanout and the three reserved words stay invalid.
     for (kind, flags, reserved) in [
         (abi::kind::TARGET, 2, [0; 3]),
         (abi::kind::TEXTURE, 1, [0; 3]),
@@ -92,7 +92,7 @@ pub fn poison_unwritten() -> CaseResult {
         let rec = expect(t, &scene_canvas(48, 7, colour, &[]), "poison-valued pixels")?;
         ensure(u32_at(&rec, record::POISON) == A && u32_at(&rec, record::UNWRITTEN) == 0, || "complementary-poison record".to_string())?;
     }
-    // One omitted pass must be detected even when every pixel equals its poison.
+    // One omitted pass must be detected even when the target is filled with its poison.
     fault_skip_transfer()
 }
 pub fn scenes_aba() -> CaseResult {

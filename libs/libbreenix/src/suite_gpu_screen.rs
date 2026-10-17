@@ -1,5 +1,5 @@
 //! The GPU effort's runner view: a solid tile per case, rendered by syscall 416.
-//! Expectations and judged pixels never pass through this display helper.
+//! This display helper takes case states, rather than expectations or judged pixels.
 use super::{State, Outcome};
 use crate::{gpu::{self, abi::{self, stream::encode}}, graphics};
 use std::string::String;

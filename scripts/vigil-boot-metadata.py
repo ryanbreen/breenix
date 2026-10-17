@@ -48,8 +48,8 @@ def complete(action, boot_id, checkout):
         renderer = os.environ.get("BREENIX_HOST_RENDERER_JSON")
         if renderer:
             source = Path(renderer)
-            # The launcher creates a fresh file beside this boot's serial. Never
-            # import an attestation from a different run or alter its contents.
+            # The launcher creates a fresh file beside this boot's serial. Use that
+            # run's attestation and retain its original bytes.
             if source.parent.resolve() != (folder / "serial.txt").resolve().parent:
                 raise ValueError("renderer does not belong to the serial's run folder")
             destination = folder / "host-renderer.json"

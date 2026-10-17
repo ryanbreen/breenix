@@ -18,7 +18,7 @@ pub(super) struct Binding {
 pub(super) struct State {
     /// The binding the last completed `PRESENT` made, while no later one is outstanding.
     pub binding: Option<Binding>,
-    /// Every resource a sent bind could have installed, each held, until a later sent
+    /// Resources a sent bind could have installed, held until a later sent
     /// bind's flush completes or a confirmed reset ends device access.
     pub holds: BTreeSet<u32>,
     /// Whether the kernel knows what the scanout shows: no bind is outstanding and the
@@ -28,7 +28,7 @@ pub(super) struct State {
     pub sent: u64,
     /// `PRESENT`s sent whose flush has not completed.
     pub outstanding: u32,
-    /// The latest sent `PRESENT` completed OK (true while none was sent).
+    /// The latest sent `PRESENT` completed OK (initially true before a send).
     pub latest_ok: bool,
 }
 impl State {
@@ -68,8 +68,8 @@ pub(super) fn binding(c: &Core, tgid: u64, id: u32) -> Result<Option<Binding>, i
 
 impl Core {
     /// A `PRESENT`'s flush came back: the latest one, completed OK, makes its binding
-    /// known and ends the holds of every resource only an earlier bind could have shown.
-    /// The binding is known again once nothing is outstanding and the latest completed OK.
+    /// known and ends the holds of resources only an earlier bind could have shown.
+    /// The binding is known again once the outstanding count is 0 and the latest completed OK.
     pub(super) fn presented(&mut self, p: Presenting, ok: bool, fence: u64, answer: u32) {
         let d = &mut self.display;
         d.outstanding = d.outstanding.saturating_sub(1);
@@ -89,7 +89,7 @@ impl Core {
         }
     }
 
-    /// A confirmed reset ended device access: nothing is bound, and that is known.
+    /// A confirmed reset ended device access: the binding is cleared and marked known.
     pub(super) fn display_reset(&mut self) {
         let held = core::mem::take(&mut self.display.holds);
         self.display.binding = None;
@@ -129,7 +129,7 @@ pub(super) fn present(arg: u64, len: u64) -> Result<u64, i64> {
         if ctx.busy { return None; }
         let r = c.resources.get(&id)?;
         if r.invalid { return Some(Err(EIO)); }
-        // A target nothing has written has no contents to show.
+        // A target without a completed write has no contents to show.
         if r.last.is_none() { return Some(Err(EINVAL)); }
         if c.queue_size < 2 { return Some(Err(ENOMEM)); }
         let serial = c.serial();

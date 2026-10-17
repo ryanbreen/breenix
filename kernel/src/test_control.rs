@@ -9,8 +9,8 @@
 //!
 //! The points defined here are the GPU effort's, 19 to 31. Each is a branch in the real
 //! code path that asks `take` (or `take_if`) whether its point is armed; both read the
-//! latch first, so outside a suite boot a point costs one load and can never fire. Every
-//! point is one-shot: it affects the next occurrence of its event, counts one firing and
+//! latch first, so outside a suite boot a point costs one load and cannot fire while
+//! disabled. A point is one-shot: it affects the next occurrence of its event, counts one firing and
 //! disarms itself. Fallible submission preparation reserves points 22 and 28, counting
 //! them only when queued and restoring their arm when preparation fails.
 
@@ -62,7 +62,7 @@ static POINT_TABLE: [Point; POINTS] = [const { Point::new() }; POINTS];
 
 /// Reserve a one-shot while fallible preparation runs. Dropping it leaves it armed;
 /// `fire` commits the firing once the device work has been queued. Only points 22 and
-/// 28 reserve across preparation, always in that order and outside the core lock.
+/// 28 reserve across preparation, in that order and outside the core lock.
 pub fn reserve(point: u32, target: u64) -> Option<Reservation<'static>> {
     if !enabled() { return None; }
     POINT_TABLE.get(point as usize)?.reserve(target, |_| true)
