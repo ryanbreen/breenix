@@ -607,9 +607,12 @@ pub fn sys_clone_thread(
             .state = crate::task::thread::ThreadState::Ready;
     }
 
-    // Add child process as parent's child
-    if let Some(parent) = manager.get_process_mut(parent_pid) {
-        parent.children.push(child_pid);
+    // A new process is its creator's child. A thread is not, so wait does not
+    // select it; its exit hook reaps its row (`reap_if_unwaited`, #1712).
+    if flags & CLONE_THREAD == 0 {
+        if let Some(parent) = manager.get_process_mut(parent_pid) {
+            parent.children.push(child_pid);
+        }
     }
 
     // Get the thread from the newly inserted process to add to scheduler

@@ -2173,8 +2173,9 @@ impl ProcessManager {
                 .map(crate::signal::delivery::child_exit_info);
             // A leader whose other threads still run has not exited as a
             // process: its parent is told when the last of them ends
-            // (`group_exited`).
-            let withheld = self.leader_waits_for_group(pid);
+            // (`group_exited`). A thread's row is nobody's child.
+            let withheld = self.leader_waits_for_group(pid)
+                || self.processes.live_row(&pid).is_some_and(Process::is_non_leader_thread);
             if let (Some(parent_pid), Some(info), false) = (parent_pid, child_info, withheld) {
                 signal_wake = self.queue_process_signal(parent_pid, crate::signal::constants::SIGCHLD, info);
             }
@@ -2344,27 +2345,38 @@ impl ProcessManager {
         groups
     }
 
-    /// Reap `child`, which has terminated, at once when its parent has SIGCHLD
-    /// ignored or set with SA_NOCLDWAIT: that parent's children do not become
-    /// zombies, so no wait can report them. Returns the row when the join
-    /// removed it, for the caller to drop after releasing PM (condition C8).
+    /// Reap `child`, which has terminated, at once when no wait will: it is a
+    /// thread of another row's process (`Process::is_non_leader_thread`), or
+    /// its parent has SIGCHLD ignored or set with SA_NOCLDWAIT, whose children
+    /// do not become zombies. Returns the row when the join removed it, for
+    /// the caller to drop after releasing PM (condition C8).
     #[must_use]
-    pub(crate) fn reap_if_parent_declines(&mut self, child: ProcessId) -> Option<Process> {
+    pub(crate) fn reap_if_unwaited(&mut self, child: ProcessId) -> Option<Process> {
         let row = self.processes.live_row(&child)?;
         if !row.is_terminated() || self.leader_waits_for_group(child) {
             return None;
         }
-        let parent_pid = row.parent?;
         let status = row.exit_code.unwrap_or(0);
-        let parent = self.processes.live_row_mut(&parent_pid)?;
-        let action = parent
-            .signals
-            .get_handler(crate::signal::constants::SIGCHLD);
-        if !action.is_ignore() && action.flags & crate::signal::constants::SA_NOCLDWAIT == 0 {
-            return None;
-        }
-        parent.children.retain(|&id| id != child);
-        match self.reap_row(child, parent_pid, status) {
+        let reaper = match row.thread_group_id.filter(|_| row.is_non_leader_thread()) {
+            // The leader's row stands as reaper; a thread's reap carries no
+            // CPU time (`reap_row`), so it is credited to nobody.
+            Some(group) => ProcessId::new(group),
+            None => {
+                let parent_pid = row.parent?;
+                let parent = self.processes.live_row_mut(&parent_pid)?;
+                let action = parent
+                    .signals
+                    .get_handler(crate::signal::constants::SIGCHLD);
+                if !action.is_ignore()
+                    && action.flags & crate::signal::constants::SA_NOCLDWAIT == 0
+                {
+                    return None;
+                }
+                parent.children.retain(|&id| id != child);
+                parent_pid
+            }
+        };
+        match self.reap_row(child, reaper, status) {
             ReapOutcome::Claimed(evicted) => evicted,
             ReapOutcome::Refused => None,
         }
@@ -2610,7 +2622,7 @@ impl ProcessManager {
             .and_then(|parent| self.processes.live_row(&parent))
             .and_then(|row| row.main_thread.as_ref())
             .map(|thread| thread.id);
-        let reaped = self.reap_if_parent_declines(leader);
+        let reaped = self.reap_if_unwaited(leader);
         GroupExited {
             signal_wake,
             parent_tid,

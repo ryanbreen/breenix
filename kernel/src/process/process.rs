@@ -1044,6 +1044,13 @@ impl Process {
         matches!(self.row_state(), RowState::Tombstone)
     }
 
+    /// A row `clone(CLONE_THREAD)` made for a thread of another row's
+    /// process. It is no process's child: it raises no SIGCHLD, no wait can
+    /// report it, and it is reaped as it exits (Linux's `exit_signal` of -1).
+    pub fn is_non_leader_thread(&self) -> bool {
+        self.thread_group_id.is_some_and(|group| group != self.id.as_u64())
+    }
+
     /// Reap arm of the two-event join: record `(reaper, status)` exactly once.
     ///
     /// Returns `true` only for the caller that installed the claim. That return
