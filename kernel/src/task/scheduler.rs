@@ -7923,6 +7923,15 @@ pub fn probe_scheduler_threads() -> Option<usize> {
     without_interrupts(|| SCHEDULER.try_lock().and_then(|s| s.as_ref().map(|s| s.threads.len())))
 }
 
+/// Scratch probe (#1712): whether the scheduler's thread list holds the box at `addr`.
+pub fn probe_holds_box(addr: usize) -> Option<bool> {
+    without_interrupts(|| {
+        SCHEDULER.try_lock().and_then(|s| {
+            s.as_ref().map(|s| s.threads.iter().any(|t| (&**t as *const Thread as usize) == addr))
+        })
+    })
+}
+
 /// Scratch probe (#1712): (threads, terminated, grace entries) the scheduler holds.
 pub fn probe_scheduler_detail() -> Option<(usize, usize, usize)> {
     without_interrupts(|| {

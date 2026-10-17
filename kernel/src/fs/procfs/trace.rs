@@ -283,6 +283,22 @@ pub fn generate_counters() -> String {
         for ((size, ra), n) in groups.iter() {
             crate::serial_println!("PROBE_TRACK size={} n={} ra={:x},{:x},{:x},{:x},{:x},{:x},{:x},{:x}", size, n, ra[0], ra[1], ra[2], ra[3], ra[4], ra[5], ra[6], ra[7]);
         }
+        let in_sched = |addr: usize| crate::task::scheduler::probe_holds_box(addr);
+        let mut shown = 0;
+        for slot in 0..PROBE_PTR.len() {
+            let p = PROBE_PTR[slot].load(Relaxed);
+            if p == 0 || p == usize::MAX || shown >= 40 { continue; }
+            let size = PROBE_SIZE[slot].load(Relaxed);
+            if size == 1472 {
+                let t = unsafe { &*(p as *const crate::task::thread::Thread) };
+                crate::serial_println!("PROBE_OBJ thread ptr={:x} id={} state={:?} owner={:?} user={} in_sched={:?}", p, t.id(), t.state, t.owner_pid, t.privilege == crate::task::thread::ThreadPrivilege::User, in_sched(p));
+                shown += 1;
+            } else if size == 2528 {
+                let words = unsafe { core::slice::from_raw_parts(p as *const usize, 2) };
+                crate::serial_println!("PROBE_OBJ signals ptr={:x} strong={} weak={}", p, words[0], words[1]);
+                shown += 1;
+            }
+        }
         crate::serial_println!("PROBE_TRACK_END");
     }
     output.push_str("probe_live:");
