@@ -53,9 +53,9 @@ class CacheTests(unittest.TestCase):
         (repo / 'userspace/programs/target').mkdir(exist_ok=True)
         (repo / 'userspace/programs/target/stale').write_text('not a clean build')
 
-    def call(self):
+    def call(self, *flags):
         with patch.object(artifacts, 'checked'), patch.object(artifacts, 'key', return_value='a' * 64), patch.object(artifacts.sys, 'argv',
-                ['gate-artifacts.py', str(self.repo), str(self.logs)]):
+                ['gate-artifacts.py', *flags, str(self.repo), str(self.logs)]):
             artifacts.main()
 
     def test_clean_verified_once_then_hit_restores_bytes_and_removes_obsolete_elf(self):
@@ -220,6 +220,24 @@ class CacheTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'below safe floor'):
                 trees.prune(self.cache, protected=(self.repo,))
             trees.prune(self.cache, protected=(self.repo,), required=False)
+
+    def test_metal_builds_once_and_its_entry_is_never_verified_for_the_x86_gate(self):
+        helper = patch.dict(os.environ, HOST_SLOTS_HELPER='/nonexistent', BREENIX_SLOT_SESSION='/nonexistent')
+        with helper, patch.object(artifacts, 'build', side_effect=self.build) as build, \
+                patch.object(artifacts.subprocess, 'run') as slot:
+            self.call('--metal')
+            self.assertEqual([call.args[2] for call in build.call_args_list], ['metal'])
+            slot.assert_not_called()  # the metal caller holds its metal-build lease
+            entry = self.cache / 'metal-artifacts' / ('a' * 64)
+            self.assertTrue((entry / 'built-once.json').exists())
+            self.assertFalse((self.cache / 'artifacts' / ('a' * 64)).exists())
+            (self.repo / 'userspace/programs/example.elf').write_bytes(b'stale')
+            self.call('--metal')
+            self.assertEqual(build.call_count, 1)
+            self.assertEqual((self.repo / 'userspace/programs/example.elf').read_bytes(), b'ELF bytes')
+            # The same inputs at the x86 gate still build twice and verify.
+            self.call()
+            self.assertEqual([call.args[2] for call in build.call_args_list[1:]], ['candidate', 'clean-verification'])
 
     def test_fresh_without_verified_entry_fails_explicitly(self):
         with patch.object(artifacts, 'build', side_effect=self.build), patch.dict(os.environ, BREENIX_GATE_FRESH='1'):

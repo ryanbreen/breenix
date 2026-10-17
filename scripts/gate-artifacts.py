@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Content-keyed x86 userspace/disks, published only after byte-identical clean verification."""
+"""Content-keyed x86 userspace/disks, published only after byte-identical clean verification.
+
+  gate-artifacts.py REPO LOGS            the x86 gate: a miss builds twice and publishes verified.json
+  gate-artifacts.py --metal REPO LOGS    a metal boot: a miss builds once, in the boot's fresh clone, and
+                                         publishes built-once.json under metal-artifacts/, which the x86
+                                         gate never reads; the caller holds its metal-build lease
+"""
 import hashlib
 import json
 import os
@@ -215,11 +221,74 @@ def build_slot(acquire):
         subprocess.run(['python3', helper, 'acquire' if acquire else 'release', 'x86-build'], check=True)
 
 
+def cached_manifest(entry, name, cache_key):
+    manifest = json.loads((entry / name).read_text())
+    if not isinstance(manifest, dict) or not {'target/test_binaries.img', 'testdata/ext2.img'} <= manifest.keys() or not any(name.startswith('userspace/programs/') and name.endswith('.elf') for name in manifest):
+        raise RuntimeError('invalid verified artifact inventory')
+    if any(Path(name).is_absolute() or '..' in Path(name).parts for name in manifest):
+        raise RuntimeError('invalid verified artifact path')
+    if any(not (entry / name).is_file() or digest(entry / name) != checksum for name, checksum in manifest.items()):
+        raise RuntimeError(f'corrupt artifact cache {cache_key}; refusing cached inputs')
+    return manifest
+
+
+def resolve_key(repo, logs):
+    # These workspaces historically ignore their lockfiles. Resolve as a clean
+    # checkout would, then include exact package versions/checksums in the key.
+    with tree_cache.timing('dependency-resolution'):
+        for manifest in ('Cargo.toml', 'userspace/programs/Cargo.toml'):
+            checked(['cargo', 'generate-lockfile', '--manifest-path', str(repo / manifest)],
+                    repo, logs / (Path(manifest).parent.name + '-resolve.log'))
+    with tree_cache.timing('userspace-input-key'):
+        return key(repo)
+
+
+def metal_build(repo, logs, root, cache_key):
+    """A metal boot's userspace, built once.
+
+    The boot's checkout is a fresh clone with empty Cargo target directories, so its one
+    build is already a clean build; the x86 gate's second, comparing build guards its
+    shared verified entries, which a metal entry never becomes.
+    """
+    entry = root / 'metal-artifacts' / cache_key
+    with tree_cache.lease(root, 'metal-artifacts-' + cache_key):
+        start = time.monotonic()
+        if (entry / 'built-once.json').exists():
+            manifest = cached_manifest(entry, 'built-once.json', cache_key)
+            install(entry, repo, manifest)
+            os.utime(entry, None)
+            print(f'[gate-cache] HIT key={cache_key} built-once=true', flush=True)
+            tree_cache.phase('userspace-cache', start)
+            return
+        print(f'[gate-cache] MISS key={cache_key} metal', flush=True)
+        tree_cache.prune(root, protected=(repo, entry), reserve=0)
+        if entry.exists():
+            shutil.rmtree(entry)
+        entry.mkdir(parents=True)
+        for elf in (repo / 'userspace/programs').glob('*.elf'):
+            elf.unlink()
+        build(repo, logs, 'metal')
+        manifest = inventory(repo)
+        for name in manifest:
+            target = entry / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(repo / name, target)
+        if key(repo) != cache_key:
+            raise RuntimeError('userspace inputs changed during build; refusing cache publication')
+        (entry / 'built-once.json').write_text(json.dumps(manifest, sort_keys=True) + '\n')
+        print(f'[gate-cache] BUILT-ONCE key={cache_key} files={len(manifest)}', flush=True)
+        tree_cache.phase('userspace-build-once', start)
+
+
 def main():
-    repo, logs = map(Path, sys.argv[1:])
+    arguments = sys.argv[1:]
+    metal = arguments[:1] == ['--metal']
+    repo, logs = map(Path, arguments[1:] if metal else arguments)
     if 'BREENIX_GATE_CACHE_DIR' in os.environ and sys.platform != 'linux':
         raise RuntimeError('artifact reuse requires Linux private mount namespaces')
-    if os.environ.get('BREENIX_GATE_FRESH') == '1' or 'BREENIX_GATE_CACHE_DIR' not in os.environ:
+    if metal and 'BREENIX_GATE_CACHE_DIR' not in os.environ:
+        raise RuntimeError('a metal build needs its build container\'s cache directory')
+    if not metal and (os.environ.get('BREENIX_GATE_FRESH') == '1' or 'BREENIX_GATE_CACHE_DIR' not in os.environ):
         build_slot(True)
         build(repo, logs, 'uncached')
         build_slot(False)
@@ -243,27 +312,16 @@ def main():
                         print(f'[gate-cache] FRESH key={cache_key} matches-verified=true', flush=True)
         return
     root = Path(os.environ['BREENIX_GATE_CACHE_DIR'])
-    # These workspaces historically ignore their lockfiles. Resolve as a clean
-    # checkout would, then include exact package versions/checksums in the key.
-    with tree_cache.timing('dependency-resolution'):
-        for manifest in ('Cargo.toml', 'userspace/programs/Cargo.toml'):
-            checked(['cargo', 'generate-lockfile', '--manifest-path', str(repo / manifest)],
-                    repo, logs / (Path(manifest).parent.name + '-resolve.log'))
-    with tree_cache.timing('userspace-input-key'):
-        cache_key = key(repo)
+    cache_key = resolve_key(repo, logs)
+    if metal:
+        return metal_build(repo, logs, root, cache_key)
     entry = root / 'artifacts' / cache_key
     wait = time.monotonic()
     with tree_cache.lease(root, 'artifacts-' + cache_key):
         tree_cache.phase('artifact-slot-wait', wait)
         start = time.monotonic()
         if (entry / 'verified.json').exists():
-            manifest = json.loads((entry / 'verified.json').read_text())
-            if not isinstance(manifest, dict) or not {'target/test_binaries.img', 'testdata/ext2.img'} <= manifest.keys() or not any(name.startswith('userspace/programs/') and name.endswith('.elf') for name in manifest):
-                raise RuntimeError('invalid verified artifact inventory')
-            if any(Path(name).is_absolute() or '..' in Path(name).parts for name in manifest):
-                raise RuntimeError('invalid verified artifact path')
-            if any(not (entry / name).is_file() or digest(entry / name) != checksum for name, checksum in manifest.items()):
-                raise RuntimeError(f'corrupt artifact cache {cache_key}; refusing cached inputs')
+            manifest = cached_manifest(entry, 'verified.json', cache_key)
             install(entry, repo, manifest)
             os.utime(entry, None)
             print(f'[gate-cache] HIT key={cache_key} clean-verified=true', flush=True)

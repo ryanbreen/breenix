@@ -10,8 +10,8 @@
 
 # claim-lint:ok: #1680 Reviewed tool contract against this function and the host tests in tests/metal_tools_test.py.
 `boot` returns as soon as the boot's driver unit holds (or waits for) the machine lease, printing the boot id, so
-the caller's ssh session can end. For a Breenix image (the default payload) it then builds the commit in the x86
-build host, detached, and streams the image inputs into the service container. Instance names and paths come from
+the caller's ssh session can end. For a Breenix image (the default payload) it then builds the commit in the metal
+build container, detached, and streams the image inputs into the service container. Instance names and paths come from
 the host file named by BREENIX_METAL_HOST_ENV (default ~/.config/breenix-metal/host.env), never from the repository.
 """
 import argparse
@@ -137,7 +137,7 @@ def boot(args):
 
 
 def build(boot_id, sha):
-    """Detached: build in the x86 build host, stream the inputs into the boot's stage folder, signal the driver."""
+    """Detached: build in the metal build container, stream the inputs into the boot's stage folder, signal the driver."""
     validate_id(boot_id)
     env = host_env()
     key = boot_id.lower()
@@ -152,7 +152,11 @@ def build(boot_id, sha):
         return 1
     in_build(env, 'rm', '-rf', tools, check=True)
     in_build(env, 'mkdir', '-p', tools, check=True)
-    incus('file', 'push', str(HERE / 'metal-build'), f"{env['BUILD_INSTANCE']}{tools}/metal-build", check=True)
+    # The slot and artifact helpers travel with metal-build: a commit builds under the deployed tools' rules.
+    for name in ('metal-build', 'host-slots.py', 'gate-artifacts.py', 'gate-tree.py'):
+        # Deployed, they sit beside metal-run; in a checkout the helpers are in scripts/.
+        source = HERE / name if (HERE / name).exists() else HERE.parent / name
+        incus('file', 'push', str(source), f"{env['BUILD_INSTANCE']}{tools}/{name}", check=True)
     # Push source files only: an old target tree or ignored local files must never reach staging.
     stub = HERE / 'efi-stub'
     for name in ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'src/main.rs'):

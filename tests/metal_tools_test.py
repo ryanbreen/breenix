@@ -1158,10 +1158,11 @@ class StagingTest(unittest.TestCase):
              patch.object(run.subprocess, 'Popen', return_value=sender), \
              patch.object(run.subprocess, 'run', return_value=SimpleNamespace(returncode=0)):
             self.assertEqual(run.build('20261017T000009Z-metal', 'a' * 40), 0)
-        sources = [Path(call.args[2]).relative_to(run.HERE).as_posix()
-                   for call in push.call_args_list if call.args[:2] == ('file', 'push')]
-        self.assertEqual(sources, ['metal-build', 'efi-stub/Cargo.toml', 'efi-stub/Cargo.lock',
-                                   'efi-stub/rust-toolchain.toml', 'efi-stub/src/main.rs'])
+        pushed = [call.args[2:4] for call in push.call_args_list if call.args[:2] == ('file', 'push')]
+        self.assertEqual([target.split('-tools/', 1)[1] for _, target in pushed],
+                         ['metal-build', 'host-slots.py', 'gate-artifacts.py', 'gate-tree.py', 'efi-stub/Cargo.toml',
+                          'efi-stub/Cargo.lock', 'efi-stub/rust-toolchain.toml', 'efi-stub/src/main.rs'])
+        self.assertTrue(all(Path(source).is_file() for source, _ in pushed))
         calls = [call.args[1:] for call in service.call_args_list]
         stage = '/var/lib/breenix-metal/stage/20261017T000009Z-metal/inputs'
         self.assertLess(calls.index(('rm', '-rf', stage)), calls.index(('mkdir', '-p', stage)))
@@ -1193,6 +1194,42 @@ class BuildPolicyTest(unittest.TestCase):
             args = SimpleNamespace(id='20261017T000011Z-metal', root=str(root), repo=str(repo), sha=sha,
                                    rust_fork=str(root / 'rust'), cache=str(root / 'cache'))
             self.assertEqual(build.outer(args), 3)
+
+
+class BuildSlotTest(unittest.TestCase):
+    def test_one_metal_build_lease_covers_a_single_userspace_build_and_the_kernel(self):
+        build = load_script('metal-build')
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            args = SimpleNamespace(id='20261017T000012Z-metal', root=str(root), repo=str(root / 'repo'), sha='a' * 40,
+                                   rust_fork=str(root / 'rust'), cache=str(root / 'cache'), stub=str(root / 'stub'),
+                                   guard_target='x86-metal')
+            clone, out, tmp = build.paths(args)
+            out.mkdir(parents=True)
+            image = clone / 'target/release/build/breenix-0/out/breenix-uefi.img'
+            stub = tmp / 'stub-target' / build.STUB_TARGET / 'release/metal-efi-stub.efi'
+            for path in (image, stub, clone / 'testdata/ext2.img'):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b'bytes')
+            helper = []
+            def run(command, **options):
+                helper.append(command[2:])
+                return SimpleNamespace(returncode=0, stdout=str(root / 'cargo-home') + '\n')
+            calls = []
+            def call(command, **options):
+                calls.append(command)
+                return 0
+            with patch.dict(build.os.environ, CARGO_BUILD_JOBS='4'), \
+                 patch.object(build.subprocess, 'run', side_effect=run), \
+                 patch.object(build.subprocess, 'call', side_effect=call):
+                self.assertEqual(build.inner(args), 0)
+        self.assertEqual(helper, [['cargo-home', str(Path.home() / '.cargo'), str(clone / 'target')],
+                                  ['acquire', 'metal-build'], ['release', 'metal-build']])
+        # The deployed helpers beside metal-build, not the commit's copies.
+        self.assertEqual(calls[0][1:], [str(build.ARTIFACTS), '--metal', str(clone), str(tmp / 'logs')])
+        self.assertFalse(build.ARTIFACTS.is_relative_to(clone))
+        self.assertEqual(calls[1][:3], ['cargo', 'build', '--release'])
+        self.assertEqual(len(calls), 3)
 
 
 class PublicRepositoryTest(unittest.TestCase):
