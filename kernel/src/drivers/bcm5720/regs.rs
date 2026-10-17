@@ -130,6 +130,8 @@ pub const LOW_WATERMARK_MAX_RX_FRAMES: usize = 0x0504;
 // MAC statistics, clear-on-read (Section 13, "Statistics Registers",
 // pp. 341-345).
 pub const STAT_OUT_BROADCAST: usize = 0x0874;
+pub const STAT_IN_OCTETS: usize = 0x0880;
+pub const STAT_IN_DISCARDS: usize = 0x2250;
 
 // Send and receive engines (Section 13): each mode register has Enable in bit
 // 1 and, where it exists, Attention Enable in bit 2.

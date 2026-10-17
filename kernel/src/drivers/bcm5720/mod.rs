@@ -926,6 +926,24 @@ impl Port {
             crate::net::dns_probe::run(lease);
         } else {
             log::warn!("[dhcp] no lease acquired; interface remains unconfigured");
+            // A bounded failure snapshot in thread context, after the exchange.
+            // Release the port and BH guards before using the logger.
+            let snapshot = {
+                let _guard = crate::net::net_lock_guard();
+                let ports = ATTACHED.lock();
+                ports.iter().find(|port| port.mac == mac).map(|port| (
+                    INTERRUPTS[port.slot].load(Ordering::Acquire),
+                    port.status.word(0), port.status.word(4), port.return_consumer,
+                    port.std_producer, port.rx_errored, port.rx_last_error_flags,
+                    port.f.read32(STAT_IN_OCTETS), port.f.read32(STAT_IN_DISCARDS),
+                    port.f.read32(RX_BD_INITIATOR_MODE), port.f.read32(RX_MAC_MODE),
+                    port.f.phy_link(),
+                ))
+            };
+            if let Some((irqs, status, indices, consumer, producer, errors, flags,
+                         octets, discards, rbdi, rx_mode, carrier)) = snapshot {
+                log::warn!("[bcm5720] DHCP failure: MSI={irqs} status={status:#x} indices={indices:#x} return={consumer} posted={producer} errors={errors} flags={flags:#x} rx_octets={octets} discards={discards} rbdi={rbdi:#x} rx_mode={rx_mode:#x} carrier={carrier:?}");
+            }
         }
         loop {
             let carrier = {
