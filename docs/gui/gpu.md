@@ -394,8 +394,13 @@ The G0 spikes exercised a subset; binary32 emulation remains unproved (section 1
      `h − 1 < 2³¹`: two words. (`255 × h` alone overflows 32 bits.)
    - `triangle`: edge functions of i32 vertices are below 2⁶⁵ in magnitude: three words.
    - `box_filter`: a bin sum is at most `2²⁸ × 255`: two words.
-   Floats carry only integers below 2²⁴ (the fragment position, before `floor`) and the final conversion of an
-   8-bit value `k` as `k / 255`, which both APIs' UNORM conversion rules round back to `k`.
+   <!-- claim-lint:ok: Normative arithmetic and conversion requirements in docs/gui/gpu.md section 1.5, proposed by #1714. -->
+   Native floats are confined to fragment/vertex positions below 2²⁴, the UNORM fetch boundary and the
+   final conversion of an 8-bit value `k` as `k / 255`, which both APIs' UNORM conversion rules round back
+   to `k`. A fetched UNORM channel `v` is converted to its integer byte by `floor(v * 255 + 0.5)`;
+   subsequent blending and coverage accumulation use integer words. This boundary conversion does not
+   change the required texel byte or permit a tolerance. `coverage_spans` uses native float conversion
+   only for its integer pixel coordinates and parameter-buffer texel fetches, not coverage arithmetic.
    `profile/unorm-roundtrip` checks all 256 values per channel; `profile/integer-ops` and
    `profile/wide-arithmetic` run every routine through `probe_int` against literal results, including the
    extremes of each range; `profile/large-coordinates` runs each shape's predicate routine through `probe_int`
@@ -425,6 +430,35 @@ The G0 spikes exercised a subset; binary32 emulation remains unproved (section 1
    Nothing falls back.
 
 A profile violation is a failing case to fix, never a reason for a tolerance.
+
+#### 1.5.1 Closed forms for G5
+
+<!-- claim-lint:ok: Algebraic derivation of docs/gui/gpu.md section 1.5 item 5; input domain and formula stated here. -->
+For a line, let M be the larger absolute endpoint displacement, m the smaller, and k
+its major-axis step from the first endpoint. For M > 0 the minor displacement is
+`floor((2*k*m + M)/(2*M))`, for `0 <= k <= M`, with each axis following its endpoint's
+sign. M = 0 writes the one endpoint. This is the unclipped walk: clipping intersects
+its pixel set and never restarts its error accumulator.
+
+<!-- claim-lint:ok: Inductive derivation for docs/gui/gpu.md section 1.5 item 5, with base and recurrence stated here. -->
+To prove the formula, write `k*m = q*M + r`, with `0 <= r < M`. The midpoint decision
+chooses q when `2*r < M`, otherwise q+1. The initial step has q=r=0. Advancing k adds m
+to r, subtracts M at a carry and advances q; its midpoint comparison is exactly the
+walk's error comparison, including its equality choice. Induction establishes the
+formula for every step and either choice of major axis. The doubled product fits
+three words even when both displacements approach 2^32; clipping does not narrow
+those operands before the predicate is evaluated.
+
+For the circle outline, reflect the candidate into the first octant, `X >= Y >= 0`.
+For radius r >= 1 its membership is
+`X*X - X + Y*Y <= r*r < (X+1)*(X+1) - (X+1) + Y*Y`.
+At Y=0 the largest satisfying X is r. The expression is strictly increasing in X
+for X >= 1, so there is a unique largest satisfying X. Incrementing Y changes it
+by `2*Y+1`; decrementing X changes it by `-2*X+2`. Those are the outline walk's
+midpoint-error increments, with its equality retained on the lower side. Induction
+therefore gives the same recorded X at each Y until X < Y. Reflection gives exactly
+the walk's eight symmetric pixels. Radius 0 writes the centre; negative radii are
+empty. Both inequalities use two words after bounding |dx| and |dy| by r.
 
 ### 1.6 Per-target backends
 
