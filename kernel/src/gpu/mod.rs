@@ -676,7 +676,15 @@ impl Core {
     }
 
     /// Queue a request nobody waits for.
-    fn background(&mut self, mut req: Request) {
+    fn background(&mut self, req: Request) {
+        self.background_in(self.epoch, req);
+    }
+
+    /// Queue a request nobody waits for that names objects of reset epoch `epoch`. A request
+    /// for objects from before a reset decision is queued in their epoch, so the confirmed
+    /// reset retires it with them instead of sending it to the restarted device, which no
+    /// longer has them and would refuse it as a fault; a failed reset keeps it held.
+    fn background_in(&mut self, epoch: u64, mut req: Request) {
         if !self.can_queue(&req) {
             self.unsendable(req);
             return;
@@ -687,7 +695,7 @@ impl Core {
             ctx: 0, sent_ns: None, upload: None, holds: Vec::new(), reading: Vec::new(),
             abandoned: true, failed: false, why: 0, warm: None,
         });
-        self.backlog.push_back((self.epoch, req));
+        self.backlog.push_back((epoch.min(self.epoch), req));
         self.flush();
     }
 
@@ -1067,8 +1075,9 @@ impl Core {
             return;
         }
         // The device may use the backing until it answers the unref, which keeps it.
+        let epoch = r.epoch;
         let req = virgl::resource_unref(Tag::Background, id, Some(r.backing));
-        self.background(req);
+        self.background_in(epoch, req);
     }
 
     /// Destroy the device context of a context that is dropped or quarantined once none of
