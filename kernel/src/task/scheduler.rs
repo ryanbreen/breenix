@@ -9944,6 +9944,12 @@ pub fn requeue_refused_dispatch(thread_id: u64) {
 /// Running and dequeued. The scheduler's current_thread still records the context
 /// IRETQ will actually resume; handing the CPU to idle here would strand whatever
 /// lock the interrupted thread holds - which is the condition that aborts dispatch.
+///
+/// The dispatch may already have loaded the undispatched thread's user FS base
+/// (`switch_tls`), so a resumed user thread gets its own back. Without that it
+/// returned to user mode on the other thread's thread pointer: a thread
+/// creating threads went on with a new thread's, and faulted once that thread
+/// ended and its stack and descriptor were unmapped.
 #[cfg(target_arch = "x86_64")]
 pub fn abort_dispatch_and_resume(aborted_thread_id: u64, resume_thread_id: u64) {
     if without_interrupts(|| {
@@ -9951,6 +9957,7 @@ pub fn abort_dispatch_and_resume(aborted_thread_id: u64, resume_thread_id: u64) 
             rq::abort_dispatch_and_resume(&mut local, aborted_thread_id, resume_thread_id)
         })
     }) {
+        restore_resumed_fs_base(resume_thread_id);
         return;
     }
     with_scheduler(|sched| {
@@ -10025,6 +10032,21 @@ pub fn abort_dispatch_and_resume(aborted_thread_id: u64, resume_thread_id: u64) 
             crate::per_cpu::update_tss_rsp0(kernel_stack_top.as_u64());
         }
     });
+    restore_resumed_fs_base(resume_thread_id);
+}
+
+/// x86_64: load the user FS base of `resume_thread_id`, a thread an aborted
+/// dispatch handed this CPU back to, when it is the current user thread again.
+#[cfg(target_arch = "x86_64")]
+fn restore_resumed_fs_base(resume_thread_id: u64) {
+    let resumed_user = crate::per_cpu::current_thread().is_some_and(|thread| {
+        thread.id == resume_thread_id && thread.privilege == super::thread::ThreadPrivilege::User
+    });
+    if resumed_user && crate::tls::switch_tls(resume_thread_id).is_err() {
+        // No TLS block to restore, as after an exec that left none
+        // (`install_exec_fs_base`): no base rather than the other thread's.
+        x86_64::registers::model_specific::FsBase::write(x86_64::VirtAddr::new(0));
+    }
 }
 
 /// Best-effort thread termination for EL1 crash recovery.
