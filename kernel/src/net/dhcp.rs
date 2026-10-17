@@ -7,8 +7,8 @@ use spin::Mutex;
 
 use super::{ethernet, ipv4, udp};
 
-const CLIENT_PORT: u16 = 68;
-const SERVER_PORT: u16 = 67;
+pub(crate) const CLIENT_PORT: u16 = 68;
+pub(crate) const SERVER_PORT: u16 = 67;
 
 /// RFC 2131 section 3: the options field starts with this cookie.
 const MAGIC_COOKIE: [u8; 4] = [99, 130, 83, 99];
@@ -375,6 +375,21 @@ fn take_reply() -> Option<Reply> {
     let _guard = super::net_lock_guard();
     let reply = REPLY.lock().take();
     reply
+}
+
+/// A DHCPDISCOVER from `mac` in transaction `xid`, for a driver that checks
+/// its first frame reaches the network and is answered. It is the client's
+/// own message; the exchange that would take a lease is not run.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn discover_message(xid: u32, mac: [u8; 6]) -> [u8; MIN_MESSAGE_LEN] {
+    build_message(DHCPDISCOVER, xid, mac, None)
+}
+
+/// Whether `message`, a UDP payload from the server port to the client port,
+/// is an OFFER answering transaction `xid` for `mac`.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn is_offer(message: &[u8], xid: u32, mac: [u8; 6]) -> bool {
+    parse_reply(message, xid, mac).is_some_and(|reply| reply.kind == DHCPOFFER)
 }
 
 fn build_message(

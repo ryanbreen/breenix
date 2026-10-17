@@ -4,6 +4,8 @@
 //! PCI enumeration and device-specific drivers.
 
 pub mod ahci;
+#[cfg(target_arch = "x86_64")]
+pub mod bcm5720;
 pub mod e1000;
 pub mod fw_cfg;
 #[cfg(target_arch = "x86_64")]
@@ -92,6 +94,12 @@ pub fn init() -> usize {
         }
     }
 
+    // Broadcom BCM5720 ports with link at handoff (bare-metal x86).
+    let bcm5720_ports = bcm5720::init();
+    if bcm5720_ports > 0 {
+        log::info!("BCM5720 driver attached {bcm5720_ports} port(s)");
+    }
+
     // Initialize VirtIO sound driver
     match virtio::sound::init() {
         Ok(()) => {
@@ -172,6 +180,9 @@ pub fn run_post_init_self_tests() {
             log::warn!("VirtIO sound test failed: {}", e);
         }
     }
+
+    // BCM5720 bring-up probes wait for link and take frames by MSI.
+    bcm5720::start_probes();
 }
 
 /// Initialize the driver subsystem (ARM64 version)
