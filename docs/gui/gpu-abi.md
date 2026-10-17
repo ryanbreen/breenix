@@ -398,10 +398,10 @@ The copy sees earlier draws in the same context. The estimate includes its copie
 in addition to the pipeline's fragment work. No blend uses fixed-function blending.
 
 <!-- claim-lint:ok: Proposed budgets implementing docs/gui/gpu.md section 1.4.1. -->
-Per-fragment weights are: copy_scaled and nearest_scaled 512; over and over_straight 128;
+Per-fragment weights are: copy_scaled and nearest_scaled 8192; over and over_straight 128;
 coverage and bitmap_text 256; circle_fill and circle_outline 2048; rounded_rect and
-triangle 4096; line 8192; gradient_v 2048. box_filter budgets 512 steps per texel in its
-bin plus 512 for mapping and division. coverage_spans budgets 8192 steps per crossing
+triangle 4096; line 8192; gradient_v 32768. box_filter budgets 512 steps per texel in its
+bin plus 16384 for mapping and division. coverage_spans budgets 8192 steps per crossing
 on that row's eight sub-scanlines plus 8192 per pixel for accumulation and conversion.
 The existing 2^31 work cap and all deadlines are unchanged.
 
@@ -437,3 +437,19 @@ black-box experiment records the commit, the Vigil run id or harness invocation,
 output excerpt that showed the fact. Reproduce commands match the runs they cite: the provenance
 record's commands use exactly the flags the cited runs used, run folders keep `host-renderer.json`, and
 `scripts/vigil-record.sh` records whether the boot had a display window.
+
+### G5 fractional-square literal
+
+<!-- claim-lint:ok: Normative input and expected bytes implementing docs/gui/gpu.md section 2.1; not a measured result. -->
+For the closed square with corners (0.25,0.25), (3.75,0.25), (3.75,3.75),
+(0.25,3.75), the four-by-four coverage bytes, after eight sub-scanlines and
+section 2.1's binary32 to_byte order, are:
+
+```text
+143 191 191 143
+191 255 255 191
+191 255 255 191
+143 191 191 143
+```
+
+`pipelines/coverage-spans-square` compares the coverage blend of these literal bytes.
