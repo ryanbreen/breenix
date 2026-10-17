@@ -4655,44 +4655,38 @@ impl Scheduler {
             KickPublishResult, EXIT_KICK_BUCKETS, EXIT_KICK_PUBLISHED, EXIT_KICK_SLOTS,
         };
 
-        // Keep publication and notification on one dispatch of the sender.
-        // A timer must not deschedule it after the timestamp is visible but
-        // before its peers have been kicked (issue #1703). The production path
-        // has bounded atomic bookkeeping and at most MAX_CPUS interrupt sends.
-        crate::arch_without_interrupts(|| {
-            let bucket = victim_pid as usize % EXIT_KICK_BUCKETS;
-            let slot = &EXIT_KICK_SLOTS[bucket];
-            let at = crate::tracing::trace_timestamp();
-            match slot.publish(victim_pid, at) {
-                KickPublishResult::Published { displaced, .. } => {
-                    if displaced {
-                        crate::tracing::providers::teardown::record_exit_kick_collision(bucket);
-                    }
-                    crate::trace_count!(EXIT_KICK_PUBLISHED);
-                    crate::tracing::providers::teardown::record_exit_kick_published(bucket);
-                }
-                KickPublishResult::ReservationLost => {
+        let bucket = victim_pid as usize % EXIT_KICK_BUCKETS;
+        let slot = &EXIT_KICK_SLOTS[bucket];
+        let at = crate::tracing::trace_timestamp();
+        match slot.publish(victim_pid, at) {
+            KickPublishResult::Published { displaced, .. } => {
+                if displaced {
                     crate::tracing::providers::teardown::record_exit_kick_collision(bucket);
                 }
+                crate::trace_count!(EXIT_KICK_PUBLISHED);
+                crate::tracing::providers::teardown::record_exit_kick_published(bucket);
             }
-            let current_cpu = Self::current_cpu_id();
-            #[cfg(target_arch = "aarch64")]
-            {
-                use crate::arch_impl::aarch64::{constants::SGI_RESCHEDULE, gic, smp};
-                let online = smp::cpus_online() as usize;
-                for cpu in 0..online.min(MAX_CPUS) {
-                    if cpu != current_cpu {
-                        gic::send_sgi(SGI_RESCHEDULE as u8, cpu as u8);
-                    }
+            KickPublishResult::ReservationLost => {
+                crate::tracing::providers::teardown::record_exit_kick_collision(bucket);
+            }
+        }
+        let current_cpu = Self::current_cpu_id();
+        #[cfg(target_arch = "aarch64")]
+        {
+            use crate::arch_impl::aarch64::{constants::SGI_RESCHEDULE, gic, smp};
+            let online = smp::cpus_online() as usize;
+            for cpu in 0..online.min(MAX_CPUS) {
+                if cpu != current_cpu {
+                    gic::send_sgi(SGI_RESCHEDULE as u8, cpu as u8);
                 }
             }
-            #[cfg(target_arch = "x86_64")]
-            for cpu in 0..MAX_CPUS {
-                if cpu != current_cpu && crate::arch_impl::x86_64::smp::is_cpu_online(cpu) {
-                    request_resched_x86(cpu);
-                }
+        }
+        #[cfg(target_arch = "x86_64")]
+        for cpu in 0..MAX_CPUS {
+            if cpu != current_cpu && crate::arch_impl::x86_64::smp::is_cpu_online(cpu) {
+                request_resched_x86(cpu);
             }
-        });
+        }
         // One request may send to several peers; account only after the sends.
         crate::trace_count!(crate::tracing::providers::teardown::EXIT_SGI_SENT);
         crate::tracing::providers::teardown::record_exit_sgi_sent(victim_pid, batch.as_u64());
