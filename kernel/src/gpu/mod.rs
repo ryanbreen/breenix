@@ -1717,23 +1717,24 @@ fn create_device_context(tgid: u64, id: u32, internal: [u32; 3], vb_pages: &Arc<
         }
     });
     attached?;
-    let (serial, fence, req) = with_core(|c| {
+    let chunks = with_core(|c| {
         let mut enc = encode::Enc::new();
         let ctx = c.contexts.get_mut(&id)?;
         encode::warm_up(&mut enc, &mut ctx.objects, vb, scratch, scratch_texture, wire::format::B8G8R8A8_UNORM, FLIP_Y);
-        let mut chunks = enc.finish()?;
-        if chunks.len() != 1 {
-            return None;
+        enc.finish().filter(|chunks| !chunks.is_empty())
+    }).flatten().ok_or(ENOMEM)?;
+    for chunk in chunks {
+        let (serial, fence) = with_core(|c| {
+            if !c.contexts.get(&id).is_some_and(|ctx| ctx.state == CtxState::Creating && ctx.device_alive) {
+                return Err(EIO);
+            }
+            Ok((c.serial(), c.device_fence()))
+        }).ok_or(ENODEV)??;
+        let req = virgl::submit(Tag::Sync(serial), id, Some(fence), chunk);
+        let d = exec_req(serial, req, id, &[vb, scratch, scratch_texture], &[])?;
+        if !virgl::ok(d.answer) || d.echoed != fence {
+            return Err(EIO);
         }
-        let serial = c.serial();
-        let fence = c.device_fence();
-        Some((serial, fence, virgl::submit(Tag::Sync(serial), id, Some(fence), chunks.remove(0))))
-    })
-    .flatten()
-    .ok_or(ENOMEM)?;
-    let d = exec_req(serial, req, id, &[vb, scratch, scratch_texture], &[])?;
-    if !virgl::ok(d.answer) || d.echoed != fence {
-        return Err(EIO);
     }
     Ok(())
 }
