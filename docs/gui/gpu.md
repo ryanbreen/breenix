@@ -992,9 +992,13 @@ Deferred by name, not dropped: per-submission copy quota charging is G6's (above
 buffer snapshots and the watchdog over warm-up waits now, and G2 enrolls `READBACK`'s transfers when it adds
 them, because those bound the work and the kill path from the first lane that has them.
 
-G1 reserves points 19–31 and checks the latched PID 1 before decoding any of them, including points
-whose implementation is supplied later. `isolation/test-hooks-absent` checks that guard in G6 without
-requiring G7's present fault implementations. `isolation/killable-wait` uses G2's single-target PRESENT;
+<!-- claim-lint:ok: Normative test-control guard required by ruling 34 for contract PR #1729, not a measured result. -->
+G1 reserves points 19–31 and checks the boot latch plus a root caller before decoding any argument,
+including for points whose implementation is supplied later. `isolation/test-hooks-absent` requires these
+points to be refused to every non-root process: STATE, ARM, FIRED and DISARM_ALL return EPERM to a
+non-root caller, even with malformed arguments. The boot latch is set when the first PID 1 is a
+`/sbin/suite-*` binary; the caller need not be PID 1. G6 checks this guard without requiring G7's present
+fault implementations. `isolation/killable-wait` uses G2's single-target PRESENT;
 G7 adds two-target flipping and mode changes, not the first PRESENT operation.
 
 **Catch-up (each target until all 170 pass there, with its attestation):** Parallels (the same clean-room
