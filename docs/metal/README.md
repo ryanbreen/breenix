@@ -385,7 +385,7 @@ padding to the end of the sector.
 Each boot shape lacks a milestone the other produces: an install's root is the RAM disk, and a disk-root boot has no
 RAM disk. The driver therefore does not wait for `disk-filesystem` on an install boot, for `disk-io` or
 `ramdisk-root` on a disk-root boot, or for either storage milestone on a probe boot without `--disk`
-(`DISK_SKIPS` in `metal-boot`).
+(`bootShapes` in `docs/metal/boot-path.json`, used by the driver and retained scorer).
 
 ## Clean-room rule
 
