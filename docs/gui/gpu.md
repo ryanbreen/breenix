@@ -270,8 +270,8 @@ and 415 (`652a4494`) was reverted (`0f53872e`) and is not reapplied.
   (section 1.8), including `RLIMIT_AS` and `COUNTERS.resource_bytes`; inability to allocate or charge it
   returns ENOMEM before device work is sent or the resource is changed.
 - **Uploads are ordered, not blocking.** An `UPLOAD` is sent behind everything its context sent before it, and
-  the device executes one context's commands in the order they were sent (which
-  `textures/immutable-while-pinned` checks), so a submission of that context sent before the upload samples
+  the device executes one context's commands in the order they were sent,
+  so a submission of that context sent before the upload samples
   the texture as it was before, and the submissions sent after the upload returns see it. It waits for a
   readback or upload of the same resource in progress and for submissions of the process's other contexts that
   name the resource, whose order against it the device does not state.

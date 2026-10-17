@@ -114,8 +114,8 @@ and makes it visible to the submissions sent after the call returns.
   this staging while held; the charge is released when the staging is freed.
 - An upload waits for a readback or upload of the same resource in progress, and for the submissions of the
   caller's other contexts that name the resource to complete. It does not wait for submissions of its own
-  context: the device executes one context's commands in the order they were sent (which
-  `textures/immutable-while-pinned` checks), so a submission sent before the upload samples the texture as it
+  context: the device executes one context's commands in the order they were sent,
+  so a submission sent before the upload samples the texture as it
   was before, and one sent after it returns sees it.
 - On VirGL a texture upload writes the clipped rows into the texture's backing at its 256-byte-aligned
   pitch (`docs/gui/gpu.md` section 1.3) and sends one fenced `TRANSFER_TO_HOST_3D` of the clipped box in
