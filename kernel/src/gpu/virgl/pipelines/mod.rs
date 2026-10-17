@@ -7,7 +7,7 @@ pub const CATALOGUE: &[(u32, Program)] = &[
 (5, Program {kind: pipe::SHADER_FRAGMENT, text: include_bytes!("5.tgsi"), tokens: 199}),
 (6, Program {kind: pipe::SHADER_FRAGMENT, text: include_bytes!("6.tgsi"), tokens: 223}),
 (7, Program {kind: pipe::SHADER_FRAGMENT, text: include_bytes!("7.tgsi"), tokens: 255}),
-(8, Program {kind: pipe::SHADER_FRAGMENT, text: include_bytes!("8.tgsi"), tokens: 9521}),
+(8, Program {kind: pipe::SHADER_FRAGMENT, text: include_bytes!("8.tgsi"), tokens: 9601}),
 (9, Program {kind: pipe::SHADER_FRAGMENT, text: include_bytes!("9.tgsi"), tokens: 723}),
 (10, Program {kind: pipe::SHADER_FRAGMENT, text: include_bytes!("10.tgsi"), tokens: 1215}),
 (11, Program {kind: pipe::SHADER_FRAGMENT, text: include_bytes!("11.tgsi"), tokens: 591}),

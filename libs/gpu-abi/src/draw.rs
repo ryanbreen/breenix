@@ -243,17 +243,25 @@ pub fn encode(
 /// clipped to the device maximum, so range updates have at most fourteen levels.
 /// End events sort before starts at the same x, preserving half-open edges.
 #[cfg(any(feature = "alloc", test))]
-pub fn disjoint(rectangles: &[[u32; 4]]) -> bool {
-    use alloc::vec;
+pub fn disjoint(rectangles: &[[u32; 4]]) -> Result<bool, alloc::collections::TryReserveError> {
     use alloc::vec::Vec;
-    let mut events = Vec::with_capacity(rectangles.len() * 2);
+    if rectangles.len() < 2 { return Ok(true); }
+    let mut events = Vec::new();
+    events.try_reserve_exact(rectangles.len() * 2)?;
     for r in rectangles {
         events.push((r[0], 1i32, r[1], r[3]));
         events.push((r[2], -1i32, r[1], r[3]));
     }
     events.sort_unstable();
-    let mut maximum = vec![0i32; 65536];
-    let mut lazy = vec![0i32; 65536];
+    let bottom = rectangles.iter().map(|r| r[1]).min().unwrap();
+    let top = rectangles.iter().map(|r| r[3]).max().unwrap();
+    let side = (top - bottom).next_power_of_two();
+    let mut maximum = Vec::new();
+    let mut lazy = Vec::new();
+    maximum.try_reserve_exact(4 * side as usize)?;
+    lazy.try_reserve_exact(4 * side as usize)?;
+    maximum.resize(4 * side as usize, 0i32);
+    lazy.resize(4 * side as usize, 0i32);
     fn update(
         maximum: &mut [i32],
         lazy: &mut [i32],
@@ -278,12 +286,12 @@ pub fn disjoint(rectangles: &[[u32; 4]]) -> bool {
         maximum[node] = lazy[node] + maximum[node * 2].max(maximum[node * 2 + 1]);
     }
     for (_, delta, y0, y1) in events {
-        update(&mut maximum, &mut lazy, 1, 0, 16384, y0, y1, delta);
+        update(&mut maximum, &mut lazy, 1, 0, side, y0-bottom, y1-bottom, delta);
         if maximum[1] > 1 {
-            return false;
+            return Ok(false);
         }
     }
-    true
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -351,10 +359,10 @@ mod g5_tests {
     }
     #[test]
     fn g5_sweep_checks_both_axes_and_half_open_edges() {
-        assert!(disjoint(&[[0, 0, 5, 5], [0, 5, 5, 10], [5, 0, 10, 10]]));
-        assert!(!disjoint(&[[0, 0, 5, 5], [4, 4, 8, 8]]));
+        assert!(disjoint(&[[0, 0, 5, 5], [0, 5, 5, 10], [5, 0, 10, 10]]).unwrap());
+        assert!(!disjoint(&[[0, 0, 5, 5], [4, 4, 8, 8]]).unwrap());
         let rs: Vec<_> = (0..16384).map(|x| [x, 0, x + 1, 16384]).collect();
-        assert!(disjoint(&rs));
+        assert!(disjoint(&rs).unwrap());
     }
     #[test]
     fn g5_parameters_and_unused_handles_are_atomic_refusals() {

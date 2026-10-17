@@ -81,13 +81,6 @@ impl Enc {
         }
     }
 
-    fn flush(&mut self) {
-        if self.cur.len() > 0 {
-            self.chunks
-                .push(core::mem::replace(&mut self.cur, WordBuf::new()));
-        }
-    }
-
     /// The chunks, or `None` when a frame could not be allocated.
     pub fn finish(mut self) -> Option<Vec<WordBuf>> {
         if self.oom {
@@ -300,7 +293,6 @@ fn shader(enc: &mut Enc, handle: u32, p: &Program) {
     }
     // P:273–282: the first offset carries the entire byte length; following
     // commands carry the byte offset and OFFSET_CONT. Leave room for the header.
-    enc.flush();
     for (offset, part) in shader_chunks::fragments(&text, bytes) {
         enc.cmd_with(
             ccmd::CREATE_OBJECT,
@@ -309,7 +301,6 @@ fn shader(enc: &mut Enc, handle: u32, p: &Program) {
             part,
         );
     }
-    enc.flush();
 }
 
 /// The four binary32 channel values of a BGRA-packed colour, in RGBA order.
@@ -436,6 +427,7 @@ pub struct Extras {
     pub vertex_buffer: u32,
     pub scratch: [u32; 2],
     pub data: u32,
+    pub data_width: u32,
     pub flip_y: bool,
     /// The target handle test point 22 fired for.
     pub corrupt: Option<u64>,
@@ -457,12 +449,42 @@ pub struct Extras {
 /// constants a draw uses are bound by the draw's own commands, so a draw does not depend on
 /// what an earlier submission left bound. Returns the device ids of the targets the stream writes.
 pub fn translate(enc: &mut Enc, o: &mut Objects, words: &(impl Words + ?Sized), b: &impl Bindings, x: Extras) -> Vec<u32> {
-    let Extras { vertex_buffer, scratch, data, flip_y, corrupt, mut suppress, swap } = x;
+    let Extras { vertex_buffer, scratch, data, data_width, flip_y, corrupt, mut suppress, swap } = x;
     let mut written: Vec<u32> = Vec::new();
     let mut current: Option<TargetRes> = None;
     let mut current_handle = 0u64;
     let mut scissor = None;
     let mut corrupted = false;
+    // Pack each distinct crossing buffer once, before any draw can sample it.
+    let mut tables = [(0u64, 0u32, 0u32); stream::MAX_NAMED_BUFFERS];
+    let mut table_count = 0;
+    let mut scan = 0;
+    while scan < words.len() {
+        if words.word(scan) == gpu_abi::draw::COMMAND && words.word(scan+2) == gpu_abi::pipeline::COVERAGE_SPANS {
+            let h = words.word(scan+6) as u64 | (words.word(scan+7) as u64)<<32;
+            let bytes = words.word(scan+8);
+            let i = tables[..table_count].iter().position(|&(v,_,_)|v==h).unwrap_or_else(|| {
+                let i=table_count; table_count+=1; tables[i].0=h; i
+            });
+            tables[i].1 = tables[i].1.max(bytes);
+        }
+        scan += words.word(scan+1) as usize;
+    }
+    let mut data_words = 0;
+    for entry in &mut tables[..table_count] {
+        entry.2 = data_words;
+        let (h, bytes, base) = *entry;
+        let mut first = 0;
+        while first < bytes/4 {
+            let dest = base+first;
+            let n = (bytes/4-first).min(1024).min(data_width-dest%data_width);
+            let mut values = [0u32;1024];
+            for i in 0..n { values[i as usize] = b.buffer_word(h,((first+i)*4) as u64); }
+            enc.cmd_with(ccmd::RESOURCE_INLINE_WRITE,0,&[data,0,0,data_width*4,0,dest%data_width,dest/data_width,0,n,1,1],&values[..n as usize]);
+            first += n;
+        }
+        data_words += bytes/4;
+    }
     let mut at = 0usize;
     let mut verts: Vec<u32> = Vec::with_capacity(RECTS_PER_WRITE * 12);
     let mut offset = 0u32;
@@ -683,15 +705,7 @@ pub fn translate(enc: &mut Enc, o: &mut Objects, words: &(impl Words + ?Sized), 
                     }
                 }
                 if p == gpu_abi::pipeline::COVERAGE_SPANS && bytes != 0 {
-                    // Data words retain their bytes in RGBA_UNORM; this is geometry,
-                    // not a coverage image. The shader reconstructs each fetched word.
-                    let total=bytes as usize/4;
-                    for first in (0..total).step_by(1024) {
-                        let n=(total-first).min(1024).min(16384-first%16384);
-                        let values: Vec<u32>=(first..first+n).map(|i|b.buffer_word(buffer,(i*4) as u64)).collect();
-                        enc.cmd_with(ccmd::RESOURCE_INLINE_WRITE,0,&[data,0,0,65536,0,(first%16384) as u32,(first/16384) as u32,0,n as u32,1,1],&values);
-                    }
-                    bind_view_at(enc,o,&SourceRes{id:data,format:wire::format::R8G8B8A8_UNORM,width:16384,height:(bytes/4).div_ceil(16384)},2);
+                    bind_view_at(enc,o,&SourceRes{id:data,format:wire::format::R8G8B8A8_UNORM,width:data_width,height:data_words.div_ceil(data_width)},2);
                 }
                 for n in 0..count {
                     let base=at+d::HEADER+d::INSTANCE*n;
@@ -703,7 +717,8 @@ pub fn translate(enc: &mut Enc, o: &mut Objects, words: &(impl Words + ?Sized), 
                     constants.extend([0;4]);
                     if p>=10 && p!=gpu_abi::pipeline::GRADIENT_V {constants.extend(rgba_floats(words.word(at+3)));}
                     else {constants.extend([words.word(at+3),0,0,0]);}
-                    constants.extend([tex.map_or(0,|x|x.width),tex.map_or(0,|x|x.height),0,0]);
+                    constants.extend([tex.map_or(0,|x|x.width),tex.map_or(0,|x|x.height),
+                        tables[..table_count].iter().find(|&&(h,_,_)|h==buffer).map_or(0,|e|e.2),data_width.trailing_zeros()]);
                     constants.extend([0;4]);
                     enc.cmd(ccmd::SET_CONSTANT_BUFFER,0,&constants);
                     bind_vertices(enc,&mut bound,vertex_buffer);
@@ -824,7 +839,6 @@ pub fn warm_up(
         bind_view_at(enc,o,&SourceRes{id:scratch_texture,format,width:1,height:1},1);
         bind_view_at(enc,o,&SourceRes{id:scratch_texture,format,width:1,height:1},2);
         draw_vertices(enc,vertex_buffer,next+(p-1)*48,&quad([0,0,1,1]),1);
-        enc.flush();
     }
 
 }

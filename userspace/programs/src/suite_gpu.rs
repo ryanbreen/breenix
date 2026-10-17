@@ -17,6 +17,11 @@
 //! `suite_gpu/readback.rs`, and `textures`' with `pipelines/copy` (G3) in
 //! `suite_gpu/textures.rs`.
 
+extern crate alloc;
+#[path = "suite_gpu/expectations.rs"]
+pub mod expectations;
+pub use expectations::{error, float, outline, work};
+
 use libbreenix::suite::{case, category, check, fail, suite, CaseResult, Suite};
 use libbreenix::syscall::raw;
 

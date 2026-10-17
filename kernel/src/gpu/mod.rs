@@ -2042,33 +2042,58 @@ impl Snapshot {
                 let count = if parameters {0} else {stream.word(at + 7) as u64};
                 let bytes = if parameters {stream.word(at+8) as u64} else {16 * count};
                 let fits = |e: &&Entry| offset % 16 == 0 && offset + bytes <= e.size && bytes <= limits::BUFFER_BYTES && bytes % 4 == 0 && rects + count <= limits::INSTANCES;
-                if let Some(backing) = view.get(handle).filter(fits).and_then(|e| e.backing.as_ref()) {
+                if view.get(handle).filter(fits).and_then(|e| e.backing.as_ref()).is_some() {
                     snap.ranges.try_reserve(1).map_err(|_| ENOMEM)?;
-                    let first = snap.words.len();
-                    let mut chunk = [0u8; 256];
-                    let mut done = 0u64;
-                    while done < bytes {
-                        let n = (bytes - done).min(chunk.len() as u64) as usize;
-                        backing.read((offset + done) as usize, &mut chunk[..n]);
-                        for w in chunk[..n].chunks_exact(4) {
-                            if !snap.words.push(u32::from_le_bytes([w[0], w[1], w[2], w[3]])) {
-                                return Err(ENOMEM);
-                            }
-                        }
-                        done += n as u64;
-                    }
-                    snap.ranges.push(Range { handle, offset, bytes, first });
+                    snap.ranges.push(Range { handle, offset, bytes, first: 0 });
                     rects += count;
                 }
             }
             at += len;
         }
+        // Merge overlapping requests before copying, including repeated parameter buffers.
+        snap.ranges.sort_unstable_by_key(|r| (r.handle, r.offset));
+        let mut used = 0usize;
+        for i in 0..snap.ranges.len() {
+            if used > 0 && snap.ranges[used-1].handle == snap.ranges[i].handle
+                && snap.ranges[i].offset <= snap.ranges[used-1].offset + snap.ranges[used-1].bytes {
+                let end = (snap.ranges[i].offset + snap.ranges[i].bytes)
+                    .max(snap.ranges[used-1].offset + snap.ranges[used-1].bytes);
+                snap.ranges[used-1].bytes = end - snap.ranges[used-1].offset;
+            } else {
+                snap.ranges.swap(used, i);
+                used += 1;
+            }
+        }
+        snap.ranges.truncate(used);
+        let mut copied = 0u64;
+        for r in &mut snap.ranges {
+            copied = copied.checked_add(r.bytes).ok_or(EINVAL)?;
+            if copied > limits::BUFFER_BYTES { return Err(EINVAL); }
+            r.first = snap.words.len();
+            let backing = view.get(r.handle).and_then(|e| e.backing.as_ref()).ok_or(EINVAL)?;
+            let mut chunk = [0u8; 256];
+            let mut done = 0u64;
+            while done < r.bytes {
+                let n = (r.bytes-done).min(chunk.len() as u64) as usize;
+                backing.read((r.offset+done) as usize, &mut chunk[..n]);
+                for w in chunk[..n].chunks_exact(4) {
+                    if !snap.words.push(u32::from_le_bytes(w.try_into().unwrap())) { return Err(ENOMEM); }
+                }
+                done += n as u64;
+            }
+        }
         Ok(snap)
     }
 
     fn word(&self, handle: u64, offset: u64) -> u32 {
-        self.ranges.iter().find(|r|r.handle==handle && offset>=r.offset && offset+4<=r.offset+r.bytes)
-            .map_or(0,|r|self.words.word(r.first+((offset-r.offset)/4) as usize))
+        let inside = |r: &Range| r.handle == handle && offset >= r.offset && offset+4 <= r.offset+r.bytes;
+        let hint = self.hint.get();
+        let found = self.ranges.get(hint).filter(|r| inside(r)).map(|_| hint)
+            .or_else(|| self.ranges.iter().position(inside));
+        let Some(i) = found else { return 0; };
+        self.hint.set(i);
+        let r = &self.ranges[i];
+        self.words.word(r.first+((offset-r.offset)/4) as usize)
     }
 
     /// The rectangle at byte `offset` of buffer `handle`, from the copy.
@@ -2317,7 +2342,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
                     point.fire();
                 }
             }
-            let errno = if r.is_work_limit() { EDQUOT } else { EINVAL };
+            let errno = if r.is_work_limit() { EDQUOT } else if r.error == stream::error::NO_MEMORY { ENOMEM } else { EINVAL };
             return refuse(&mut a, r.index, r.error, errno);
         }
     };
@@ -2413,8 +2438,10 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             }
         }
     }
+    let data_width = with_core(|c| c.caps.max_width).unwrap_or(0).min(16384);
+    let data_width = 1u32 << (31-data_width.leading_zeros());
     let data_texture = if plan.data_bytes > 0 {
-        match scratch_for(id, wire::format::R8G8B8A8_UNORM, 16384, (plan.data_bytes/4).div_ceil(16384)) {
+        match scratch_for(id, wire::format::R8G8B8A8_UNORM, data_width, (plan.data_bytes/4).div_ceil(data_width)) {
             Ok(rid)=>rid,
             Err(e)=>{
                 with_core(|c|for rid in vertex_buffer.into_iter().chain(copy_scratch.into_iter().filter(|&r|r!=0)){c.unhold(rid);});
@@ -2492,6 +2519,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         vertex_buffer: vertex_buffer.unwrap_or(default_vb),
         scratch: copy_scratch,
         data: data_texture,
+        data_width,
         flip_y: FLIP_Y,
         corrupt,
         suppress,

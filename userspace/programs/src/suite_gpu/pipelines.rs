@@ -1123,7 +1123,7 @@ fn spans_draw(
     pass()
 }
 fn reference(ctx: u64, t: u64, w: u32, h: u32, segments: &[LineSegment]) -> CaseResult {
-    let raster = libgfx_ref::rasterizer::rasterize(segments, w as usize, h as usize, 0, 0)
+    let raster = super::expectations::rasterize(segments, w as usize, h as usize, 0, 0)
         .map_err(|e| fail_msg(format!("reference rasterizer: {e}")))?;
     expect_draw(
         ctx,
@@ -1226,7 +1226,7 @@ pub fn coverage_spans_corpus() -> CaseResult {
                     .map_err(fail_msg)?;
                 if w != 0 && h != 0 {
                     spans_draw(ctx, t, buffer, w as u32, h as u32, &s)?;
-                    let raster = libgfx_ref::rasterizer::rasterize(&s, w, h, 0, 0)
+                    let raster = super::expectations::rasterize(&s, w, h, 0, 0)
                         .map_err(|e| fail_msg(format!("{name} {size} {cp}: {e}")))?;
                     let mut want = scene_canvas(72, 72, BG, &[]);
                     for y in 0..h {

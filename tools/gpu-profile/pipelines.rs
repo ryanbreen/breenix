@@ -477,11 +477,13 @@ impl Asm {
     }
     fn data_word(&mut self, d: &str, index: &str) {
         let z = self.k(0);
-        let mask = self.k(16383);
-        let shift = self.k(14);
+        let one = self.k(1);
+        self.op("SHL", "TEMP[43].x", &one, "CONST[6].w");
+        self.sub("TEMP[43].x", "TEMP[43].x", &one);
+        self.op("UADD", "TEMP[43].y", index, "CONST[6].z");
         self.mov("TEMP[40]", &z);
-        self.op("AND", "TEMP[40].x", index, &mask);
-        self.op("USHR", "TEMP[40].y", index, &shift);
+        self.op("AND", "TEMP[40].x", "TEMP[43].y", "TEMP[43].x");
+        self.op("USHR", "TEMP[40].y", "TEMP[43].y", "CONST[6].w");
         self.fetch("TEMP[41]", "TEMP[40]", 2);
         self.mov(d, "TEMP[41].x");
         for (component, bits) in [("y", 8), ("z", 16), ("w", 24)] {

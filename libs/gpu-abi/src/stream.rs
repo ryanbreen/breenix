@@ -6,11 +6,11 @@
 //! `docs/gui/gpu-abi.md`; this module is their single definition.
 //!
 //! [`validate`] walks a whole stream before anything is sent (`docs/gui/gpu.md` section
-//! 1.4.1, validation atomicity): it resolves every handle through the caller's
-//! [`Resolver`], clips every rectangle to its target, totals draws, instances, named
+//! 1.4.1, validation atomicity): it resolves handles through the caller's
+//! [`Resolver`], clips rectangles to their targets, totals draws, instances, named
 //! buffer bytes and the work estimate against [`crate::limits`], and returns the first
-//! refusal with its command's index. Its cost is linear in the stream's length plus the
-//! rectangles it reads from buffers, which the instance limit bounds.
+//! refusal with its command's index. Coverage tables are checked once per distinct
+//! buffer, byte offset and height. Blended rectangles use an endpoint sweep.
 
 use crate::{limits, pipeline};
 
@@ -77,6 +77,8 @@ pub mod error {
     pub const SAMPLES_TARGET: u32 = 17;
     pub const BAD_PROBE: u32 = 18;
     pub const FILTERED_SAMPLER: u32 = 19;
+    /// Fallible validation scratch allocation failed (ENOMEM).
+    pub const NO_MEMORY: u32 = 22;
 }
 
 /// The words of a stream the kernel has copied out of user memory.
@@ -228,15 +230,59 @@ fn handle_at(words: &(impl Words + ?Sized), at: usize) -> u64 {
     words.word(at) as u64 | (words.word(at + 1) as u64) << 32
 }
 
+/// Fallibly allocated open-addressed set of immutable coverage tables.
+#[cfg(any(feature = "alloc", test))]
+#[derive(Default)]
+struct CoverageTables {
+    slots: alloc::vec::Vec<Option<[u64; 3]>>,
+    len: usize,
+}
+#[cfg(any(feature = "alloc", test))]
+impl CoverageTables {
+    fn hash(key: [u64; 3]) -> usize {
+        let mut h = 0x9e3779b97f4a7c15u64;
+        for v in key { h = (h ^ v).wrapping_mul(0xbf58476d1ce4e5b9); h ^= h >> 31; }
+        h as usize
+    }
+    fn insert(&mut self, key: [u64; 3]) -> Result<bool, alloc::collections::TryReserveError> {
+        if self.slots.is_empty() || self.len * 2 >= self.slots.len() {
+            let size = (self.slots.len() * 2).max(16);
+            let mut slots = alloc::vec::Vec::new();
+            slots.try_reserve_exact(size)?;
+            slots.resize(size, None);
+            for k in self.slots.iter().flatten() {
+                let mut i = Self::hash(*k) & (size-1);
+                while slots[i].is_some() { i = (i+1) & (size-1); }
+                slots[i] = Some(*k);
+            }
+            self.slots = slots;
+        }
+        let mut i = Self::hash(key) & (self.slots.len()-1);
+        while let Some(k) = self.slots[i] {
+            if k == key { return Ok(false); }
+            i = (i+1) & (self.slots.len()-1);
+        }
+        self.slots[i] = Some(key);
+        self.len += 1;
+        Ok(true)
+    }
+}
+
 /// Walk `words` and return its plan, or the first refusal.
 pub fn validate(words: &(impl Words + ?Sized), resolver: &impl Resolver) -> Result<Plan, Refusal> {
     let total = words.len();
     let mut plan = Plan::default();
+    #[cfg(any(feature = "alloc", test))]
+    let mut coverage_tables = CoverageTables::default();
     let mut target: Option<TargetInfo> = None;
     let mut target_handle = 0u64;
     let mut scissor = None;
     let mut named: [u64; MAX_NAMED_BUFFERS] = [0; MAX_NAMED_BUFFERS];
     let mut named_count = 0usize;
+    #[cfg(any(feature = "alloc", test))]
+    let mut data_buffers = [(0u64, 0u32); MAX_NAMED_BUFFERS];
+    #[cfg(any(feature = "alloc", test))]
+    let mut data_count = 0usize;
     let mut at = 0usize;
     let mut index: u32 = 0;
     if total == 0 {
@@ -283,10 +329,14 @@ pub fn validate(words: &(impl Words + ?Sized), resolver: &impl Resolver) -> Resu
                         if named_count == MAX_NAMED_BUFFERS { return refuse(error::BUFFER_LIMIT); }
                         named[named_count] = buffer;
                         named_count += 1;
-                        plan.buffer_bytes += bytes as u64;
+                        plan.buffer_bytes += size;
                         if plan.buffer_bytes > limits::BUFFER_BYTES { return refuse(error::BUFFER_LIMIT); }
                     }
-                    plan.data_bytes = plan.data_bytes.max(bytes);
+                    let i = if let Some(i) = data_buffers[..data_count].iter().position(|&(h,_)| h == buffer) { i }
+                        else { let i = data_count; data_count += 1; data_buffers[i].0 = buffer; i };
+                    let previous = data_buffers[i].1;
+                    data_buffers[i].1 = previous.max(bytes);
+                    plan.data_bytes += data_buffers[i].1 - previous;
                 } else if buffer != 0 || bytes != 0 { return refuse(d::PARAMETERS); }
                 let mut area = 0u64;
                 let mut work = 0u64;
@@ -298,8 +348,15 @@ pub fn validate(words: &(impl Words + ?Sized), resolver: &impl Resolver) -> Resu
                     let a: [u32; 16] = core::array::from_fn(|k| words.word(base + 4 + k));
                     if rect[2] < rect[0] || rect[3] < rect[1] { return refuse(error::BAD_RECT); }
                     if !d::valid(pipe, &a, source) { return refuse(d::PARAMETERS); }
-                    let mut crossings = 0u64;
                     if pipe == pipeline::COVERAGE_SPANS {
+                        let rows = 8 * a[3] as u64;
+                        let start = a[4] as u64;
+                        if start + 4*(rows+1) > bytes as u64 { return refuse(error::BAD_RANGE); }
+                        let end = resolver.buffer_word(buffer, start + 4*rows) as u64;
+                        if start + 4*(rows+1) + 8*end > bytes as u64 { return refuse(error::BAD_RANGE); }
+                    }
+                    let mut crossings = 0u64;
+                    if pipe == pipeline::COVERAGE_SPANS && coverage_tables.insert([buffer, a[4] as u64, a[3] as u64]).map_err(|_| Refusal { index, error: error::NO_MEMORY })? {
                         let start = a[4] as u64;
                         let rows = 8 * a[3] as u64;
                         if start + 4 * (rows + 1) > bytes as u64 { return refuse(error::BAD_RANGE); }
@@ -324,7 +381,6 @@ pub fn validate(words: &(impl Words + ?Sized), resolver: &impl Resolver) -> Resu
                     if let Some(r) = d::source_clip(pipe, d::Instance { rect, params:a }, source).and_then(|i|d::clip(pipe,i,t.width,t.height,scissor)) {
                         let pixels = (r[2]-r[0]) as u64 * (r[3]-r[1]) as u64;
                         if d::blended(pipe) {
-                            blend_rects.push(r);
                             union = Some(match union { None => r, Some(u) => [u[0].min(r[0]),u[1].min(r[1]),u[2].max(r[2]),u[3].max(r[3])] });
                         }
                         let cost = if pipe == pipeline::COVERAGE_SPANS {
@@ -344,10 +400,15 @@ pub fn validate(words: &(impl Words + ?Sized), resolver: &impl Resolver) -> Resu
                         } else { pixels.saturating_mul(weight) };
                         area += pixels;
                         work = work.saturating_add(cost);
+                        if plan.estimate.saturating_add(work) > limits::WORK { return refuse(error::WORK_LIMIT); }
+                        if d::blended(pipe) {
+                            blend_rects.try_reserve(1).map_err(|_| Refusal { index, error: error::NO_MEMORY })?;
+                            blend_rects.push(r);
+                        }
                         plan.drawn += 1;
                     }
                 }
-                if !blend_rects.is_empty() && !d::disjoint(&blend_rects) { return refuse(d::OVERLAP); }
+                if !d::disjoint(&blend_rects).map_err(|_| Refusal { index, error: error::NO_MEMORY })? { return refuse(d::OVERLAP); }
                 count_draw(&mut plan,index,count as u64,area,0)?;
                 if let Some(u) = union {
                     let slot = usize::from(t.format == crate::format::R8G8B8A8);

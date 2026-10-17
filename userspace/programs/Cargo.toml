@@ -10,7 +10,6 @@ description = "Userspace programs and utilities for Breenix"
 [dependencies]
 noto-sans-mono-bitmap = { version = "0.3", default-features = false, features = ["size_16", "regular", "unicode-basic-latin", "unicode-specials"] }
 bgl = { path = "../../libs/bgl" }
-libgfx-ref = { path = "../../libs/libgfx-ref" }
 libbreenix = { path = "../../libs/libbreenix", features = ["std", "suite"] }
 breengel = { path = "../../libs/breengel" }
 libcollab = { path = "../../libs/libcollab" }

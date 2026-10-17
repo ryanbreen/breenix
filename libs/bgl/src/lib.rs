@@ -101,28 +101,35 @@ impl Context {
             return;
         }
         let clip = self.clips.last().copied().unwrap_or(self.bounds);
-        let mut first = 0;
-        let mut rects: Vec<[u32; 4]> = Vec::new();
-        for (n, i) in instances.iter().enumerate() {
+        let rects: Vec<_> = instances.iter().enumerate().filter_map(|(n,i)| {
             let r = intersect(intersect(i.rect, clip), self.bounds);
-            if r[0] >= r[2] || r[1] >= r[3] {
-                continue;
+            (r[0]<r[2] && r[1]<r[3]).then_some((n,r.map(|v|v as u32)))
+        }).collect();
+        let mut first = 0;
+        let mut start = 0;
+        while start < rects.len() {
+            let disjoint = |end| {
+                let rs: Vec<_> = rects[start..end].iter().map(|&(_,r)|r).collect();
+                draw::disjoint(&rs).expect("BGL split scratch allocation")
+            };
+            // Exponentially grow a disjoint prefix, then locate its first overlap.
+            // Prefix disjointness is monotone, so this avoids pairwise comparisons.
+            let mut good = start+1;
+            let mut end = (start+2).min(rects.len());
+            while end > good && disjoint(end) {
+                good=end;
+                end=(start+2*(end-start)).min(rects.len());
             }
-            let r = r.map(|v| v as u32);
-            if rects.iter().any(|&p| draw::overlap(p, r)) {
-                draw::encode(
-                    &mut self.words,
-                    pipeline,
-                    colour,
-                    texture,
-                    buffer,
-                    data_bytes,
-                    &instances[first..n],
-                );
-                first = n;
-                rects.clear();
+            if good == rects.len() { break; }
+            let mut bad=end;
+            while good+1 < bad {
+                let mid=good+(bad-good)/2;
+                if disjoint(mid) { good=mid; } else { bad=mid; }
             }
-            rects.push(r);
+            let split=rects[good].0;
+            draw::encode(&mut self.words,pipeline,colour,texture,buffer,data_bytes,&instances[first..split]);
+            first=split;
+            start=good;
         }
         if first < instances.len() {
             draw::encode(
