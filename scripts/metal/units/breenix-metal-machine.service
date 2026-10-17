@@ -1,0 +1,19 @@
+[Unit]
+Description=x86-metal machine service: management-controller queue, reconciliation, reaper, sampler, image server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# claim-lint:ok: #1680 systemd Restart=always is a directive token, not an empirical quantifier.
+Type=notify
+NotifyAccess=main
+Environment=BREENIX_METAL_SITE=/etc/breenix-metal/site.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /opt/breenix-metal/metal-machine
+Restart=always
+RestartSec=2
+TimeoutStartSec=900
+MemoryMax=192M
+
+[Install]
+WantedBy=multi-user.target
