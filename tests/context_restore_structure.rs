@@ -1085,7 +1085,8 @@ fn unconditional_returns(body: &str) -> Vec<usize> {
 /// A due timer signal reaches its user handler without PROCESS_MANAGER
 /// (#1635), and the path that does it is live: the interrupt return in
 /// `context_switch.rs` and the syscall return go through
-/// `deliver_current_timer_signal_lockless` and act on its answer; it calls
+/// `deliver_current_lockless` and act on its answer, the syscall return
+/// without a POSIX timer claim, which tries the timer table lock; it calls
 /// `deliver_timer_signal_lockless`, whose interval-timer and POSIX-timer
 /// arms each write the handler frame and report the delivery, the POSIX arm
 /// committing its claim only after the frame is written; no return in any
@@ -1096,8 +1097,9 @@ fn validate_timer_delivery_takes_no_process_manager(
 ) -> Result<(), String> {
     const ACQUISITIONS: [&str; 4] = ["try_manager", "poll_manager", "manager", "with_process_manager"];
     for (name, callee) in [
-        ("deliver_timer_signal_on_syscall_return", Some("deliver_current_timer_signal_lockless")),
-        ("deliver_current_timer_signal_lockless", Some("deliver_timer_signal_lockless")),
+        ("deliver_timer_signal_on_syscall_return", Some("deliver_current_lockless")),
+        ("deliver_current_timer_signal_lockless", Some("deliver_current_lockless")),
+        ("deliver_current_lockless", Some("deliver_timer_signal_lockless")),
         ("deliver_timer_signal_lockless", None),
     ] {
         let body = function_body(source, name).ok_or_else(|| format!("missing fn {name}"))?;
@@ -1122,7 +1124,7 @@ fn validate_timer_delivery_takes_no_process_manager(
     ordered_in(
         &normalized_code(syscall_adapter).replace(' ', ""),
         &[
-            "if!deliver_current_timer_signal_lockless(thread_id,&mutuser_return,&mutregs){returnfalse;}",
+            "if!deliver_current_lockless(thread_id,&mutuser_return,&mutregs,false){returnfalse;}",
             "frame.rip=user_return.rip;",
             "true}",
         ],
@@ -1788,7 +1790,7 @@ fn timer_delivery_validator_rejects_a_manager_acquisition() {
     let context_switch = repo_text("kernel/src/interrupts/context_switch.rs");
     let mutant = mutate_function(
         &source,
-        "deliver_current_timer_signal_lockless",
+        "deliver_current_lockless",
         "    let root = thread.cached_ttbr0;\n",
         "    let _guard = crate::process::try_manager();\n    let root = thread.cached_ttbr0;\n",
     );
@@ -1796,8 +1798,17 @@ fn timer_delivery_validator_rejects_a_manager_acquisition() {
     let mutant = mutate_function(
         &source,
         "deliver_timer_signal_on_syscall_return",
-        "if !deliver_current_timer_signal_lockless(thread_id, &mut user_return, &mut regs) {",
+        "if !deliver_current_lockless(thread_id, &mut user_return, &mut regs, false) {",
         "if crate::process::manager().is_some() {",
+    );
+    assert!(validate_timer_delivery_takes_no_process_manager(&mutant, &context_switch).is_err());
+    // The syscall return claims no POSIX timer, which would try the timer
+    // table's lock.
+    let mutant = mutate_function(
+        &source,
+        "deliver_timer_signal_on_syscall_return",
+        "if !deliver_current_lockless(thread_id, &mut user_return, &mut regs, false) {",
+        "if !deliver_current_lockless(thread_id, &mut user_return, &mut regs, true) {",
     );
     assert!(validate_timer_delivery_takes_no_process_manager(&mutant, &context_switch).is_err());
 }

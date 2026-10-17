@@ -807,6 +807,19 @@ pub fn deliver_current_timer_signal_lockless(
     user_return: &mut X86UserReturn,
     saved_regs: &mut crate::task::process_context::SavedRegisters,
 ) -> bool {
+    deliver_current_lockless(thread_id, user_return, saved_regs, true)
+}
+
+/// `deliver_current_timer_signal_lockless`; with `claim_posix` false it
+/// declines a POSIX timer's signal, whose claim tries the process's timer
+/// table lock, and so takes no lock at all.
+#[cfg(target_arch = "x86_64")]
+fn deliver_current_lockless(
+    thread_id: u64,
+    user_return: &mut X86UserReturn,
+    saved_regs: &mut crate::task::process_context::SavedRegisters,
+    claim_posix: bool,
+) -> bool {
     let Some(thread) = crate::per_cpu::current_thread() else {
         return false;
     };
@@ -836,7 +849,7 @@ pub fn deliver_current_timer_signal_lockless(
     deliver_timer_signal_lockless(
         thread_id,
         &thread.signals,
-        thread.signal_timers.as_deref(),
+        thread.signal_timers.as_deref().filter(|_| claim_posix),
         user_return,
         saved_regs,
     )
@@ -844,6 +857,10 @@ pub fn deliver_current_timer_signal_lockless(
 
 /// `deliver_current_timer_signal_lockless` on a syscall return: the handler
 /// frame is installed from, and the return is rewritten in, the syscall frame.
+/// A POSIX timer's signal is left to the process-manager path that follows
+/// (`syscall::handler`'s `deliver_signals_on_syscall_return`): claiming it
+/// tries the process's timer table lock, and the syscall return takes none
+/// whose fallback is not direct.
 #[cfg(target_arch = "x86_64")]
 pub fn deliver_timer_signal_on_syscall_return(
     thread_id: u64,
@@ -871,7 +888,7 @@ pub fn deliver_timer_signal_on_syscall_return(
         r14: frame.r14,
         r15: frame.r15,
     };
-    if !deliver_current_timer_signal_lockless(thread_id, &mut user_return, &mut regs) {
+    if !deliver_current_lockless(thread_id, &mut user_return, &mut regs, false) {
         return false;
     }
     frame.rip = user_return.rip;
