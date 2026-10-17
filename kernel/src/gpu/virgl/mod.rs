@@ -522,6 +522,28 @@ pub fn transfer_from_host(
     r
 }
 
+/// TRANSFER_TO_HOST_3D of a box from the attached `backing` at `offset`, with `stride` bytes
+/// per row; fenced. The same layout as [`transfer_from_host`] (the interface header's
+/// `virtio_gpu_transfer_host_3d`, used by both directions).
+#[allow(clippy::too_many_arguments)]
+pub fn transfer_to_host(
+    tag: Tag,
+    ctx: u32,
+    fence: u64,
+    id: u32,
+    backing: Arc<Pages>,
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+    offset: u64,
+    stride: u32,
+) -> Request {
+    let mut r = transfer_from_host(tag, ctx, fence, id, backing, x, y, w, h, offset, stride);
+    r.hdr.put_u32(wire::HDR_TYPE, cmd::TRANSFER_TO_HOST_3D);
+    r
+}
+
 /// A fenced command of a type section 5.7.6.7 does not define (the last of the 3D range's
 /// unassigned numbers): test point 27's way to make the device answer with an error.
 pub fn undefined_command(tag: Tag, ctx: u32, fence: u64) -> Request {

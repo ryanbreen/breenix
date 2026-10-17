@@ -27,6 +27,7 @@ pub mod cmd {
     pub const CTX_DESTROY: u32 = 0x0201;
     pub const CTX_ATTACH_RESOURCE: u32 = 0x0202;
     pub const RESOURCE_CREATE_3D: u32 = 0x0204;
+    pub const TRANSFER_TO_HOST_3D: u32 = 0x0205;
     pub const TRANSFER_FROM_HOST_3D: u32 = 0x0206;
     pub const SUBMIT_3D: u32 = 0x0207;
 }
@@ -107,7 +108,10 @@ pub mod ccmd {
     pub const CLEAR: u32 = 7;
     pub const DRAW_VBO: u32 = 8;
     pub const RESOURCE_INLINE_WRITE: u32 = 9;
+    pub const SET_SAMPLER_VIEWS: u32 = 10;
     pub const SET_CONSTANT_BUFFER: u32 = 12;
+    pub const RESOURCE_COPY_REGION: u32 = 17;
+    pub const BIND_SAMPLER_STATES: u32 = 18;
     pub const BIND_SHADER: u32 = 31;
 }
 
@@ -118,6 +122,8 @@ pub mod obj {
     pub const DSA: u32 = 3;
     pub const SHADER: u32 = 4;
     pub const VERTEX_ELEMENTS: u32 = 5;
+    pub const SAMPLER_VIEW: u32 = 6;
+    pub const SAMPLER_STATE: u32 = 7;
     pub const SURFACE: u32 = 8;
 }
 
@@ -137,7 +143,21 @@ pub mod pipe {
     pub const PRIM_TRIANGLES: u32 = 4;
     pub const CLEAR_COLOR0: u32 = 1 << 2;
     pub const MASK_RGBA: u32 = 0xF;
+    pub const TEX_WRAP_CLAMP_TO_EDGE: u32 = 2;
+    pub const TEX_FILTER_NEAREST: u32 = 0;
+    pub const TEX_MIPFILTER_NONE: u32 = 2;
 }
+
+/// Sampler state word 0 (`VIRGL_OBJ_SAMPLE_STATE_S0_*`): wrap S, T and R at bits 0, 3 and 6,
+/// the minifying filter at bit 9, the mip filter at bits 11-12 and the magnifying filter at
+/// bit 13; compare mode, seamless cube maps and anisotropy 0.
+pub const fn sampler_s0(wrap: u32, filter: u32, mip: u32) -> u32 {
+    (wrap & 7) | (wrap & 7) << 3 | (wrap & 7) << 6 | (filter & 1) << 9 | (mip & 3) << 11 | (filter & 1) << 13
+}
+
+/// A sampler view's swizzle word (`VIRGL_OBJ_SAMPLER_VIEW_SWIZZLE_R..A`, three bits each from
+/// bit 0) selecting each channel from itself: X, Y, Z and W, numbered 0 to 3.
+pub const SWIZZLE_IDENTITY: u32 = 1 << 3 | 2 << 6 | 3 << 9;
 
 /// Rasterizer state word 0 (`VIRGL_OBJ_RS_S0_*`).
 pub const RS_S0_HALF_PIXEL_CENTER: u32 = 1 << 29;
