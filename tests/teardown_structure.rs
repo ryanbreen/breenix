@@ -9735,12 +9735,8 @@ fn phase_one_retirement_fence_and_lock_domains_are_structural() {
     assert!(!park.contains("reclaim.after_epoch"));
     let unpark = function_body(process, "unpark_sweep_with_snapshot");
     assert!(
-        unpark
-            .find("reclaim_queue(&PARKED_PROCESS_RECLAIMS)")
-            .unwrap()
-            < unpark
-                .find("reclaim_queue(&PENDING_PROCESS_RECLAIMS)")
-                .unwrap()
+        unpark.find("PARKED_PROCESS_RECLAIMS.lock()").unwrap()
+            < unpark.find("PENDING_PROCESS_RECLAIMS.lock()").unwrap()
     );
 
     assert!(scheduler.contains("pub(crate) struct RetirementFence"));
@@ -13576,46 +13572,63 @@ fn gate_producer_validator_rejects_arch_any_double_registration() {
     assert!(validate_single_gate_producer_per_arch(main, registry).is_err());
 }
 
-/// Each non-owning reclaim-queue path acquires its queue through
-/// `reclaim_queue` and handles its `None` by abandoning or returning. That
-/// helper is the one place the acquisition policy lives: aarch64 try-locks,
-/// x86_64 waits for a holder on another CPU (every hold masks interrupts and
-/// is short, and abandoning a reclaim for contention leaked its address space
-/// with four CPUs online).
+/// Each non-owning reclaim-queue path waits for its queue's lock on both
+/// architectures. A holder of either queue masks local interrupts and takes
+/// neither PROCESS_MANAGER, a scheduler lock nor the other queue, so a peer's
+/// hold is short; a failed try-lock used to abandon the receipt, and its row was
+/// settled while its address space leaked (#1693). A receipt is given
+/// up only when queue memory cannot be reserved, and only by
+/// `push_pending_or_abandon`, which counts it and settles its row; the other
+/// paths hand a receipt they cannot queue to it.
 fn validate_nonowning_reclaim_queue_acquisitions(process_task: &str) -> Result<(), ()> {
-    for name in [
-        "push_pending_or_abandon",
-        "park_reclaim",
-        "unpark_sweep_with_snapshot",
+    for (name, locks, refusal) in [
+        (
+            "push_pending_or_abandon",
+            &["PENDING_PROCESS_RECLAIMS.lock()"][..],
+            "if reservation.is_err() { false } else {",
+        ),
+        (
+            "park_reclaim",
+            &["PARKED_PROCESS_RECLAIMS.lock()"][..],
+            "if parked.try_reserve(1).is_err() { false } else {",
+        ),
+        (
+            "unpark_sweep_with_snapshot",
+            &[
+                "PARKED_PROCESS_RECLAIMS.lock()",
+                "PENDING_PROCESS_RECLAIMS.lock()",
+            ][..],
+            "if pending.try_reserve(ready_len).is_err() { false } else {",
+        ),
     ] {
-        let body = function_body(process_task, name);
-        let code = normalized_code(body);
-        if code.contains(".lock()")
-            || code.contains(".try_lock()")
-            || !code.contains("reclaim_queue(&")
+        let code = normalized_code(function_body(process_task, name));
+        let offsets = locks
+            .iter()
+            .map(|lock| code.find(lock).ok_or(()))
+            .collect::<Result<Vec<_>, _>>()?;
+        if code.contains("try_lock")
+            || code.contains("target_arch")
+            || code.matches(".lock()").count() != locks.len()
+            || !offsets.windows(2).all(|pair| pair[0] < pair[1])
+            || code.matches("false").count() != 1
+            || !code.contains(refusal)
+        {
+            return Err(());
+        }
+        let owner = name == "push_pending_or_abandon";
+        if code.contains("abandon_unqueued_reclaim") != owner
+            || (!owner && !code.contains("push_pending_or_abandon("))
         {
             return Err(());
         }
     }
-    let helper = function_body(process_task, "reclaim_queue");
-    let x86 = helper.find("#[cfg(target_arch = \"x86_64\")]").ok_or(())?;
-    let other = helper
-        .find("#[cfg(not(target_arch = \"x86_64\"))]")
-        .ok_or(())?;
-    if !(x86 < other
-        && helper[x86..other].contains("queue.lock()")
-        && helper[other..].contains("queue.try_lock()")
-        && !helper[other..].contains("queue.lock()"))
-    {
-        return Err(());
-    }
-    let push = function_body(process_task, "push_pending_or_abandon");
-    let park = function_body(process_task, "park_reclaim");
-    let unpark = function_body(process_task, "unpark_sweep_with_snapshot");
-    (push.contains("abandon_unqueued_reclaim")
-        && park.contains("push_pending_or_abandon")
-        && unpark.contains("return false")
-        && unpark.contains("abandon_unqueued_reclaim"))
+    let push = normalized_code(function_body(process_task, "push_pending_or_abandon"));
+    let refused = push.find("if !queued {").ok_or(())?;
+    let tail = &push[refused..];
+    (!push[..refused].contains("abandon_unqueued_reclaim")
+        && tail.contains("RECLAIM_ABANDONED_UNQUEUED")
+        && tail.contains("abandon_unqueued_reclaim(reclaim);")
+        && tail.contains("settle_abandoned_retirement(pid);"))
     .then_some(())
     .ok_or(())
 }
@@ -13631,22 +13644,39 @@ fn nonowning_reclaim_queue_paths_are_bounded_and_fail_closed() {
 }
 
 #[test]
-fn reclaim_queue_validator_rejects_a_blocking_enqueue_lock() {
-    let synthetic = r#"
-        fn push_pending_or_abandon(reclaim: Reclaim) {
-            let mut pending = PENDING_PROCESS_RECLAIMS.lock();
-            abandon_unqueued_reclaim(reclaim);
-        }
-        fn park_reclaim(reclaim: Reclaim) {
-            let Some(mut parked) = PARKED_PROCESS_RECLAIMS.try_lock() else { return; };
-            push_pending_or_abandon(reclaim);
-        }
-        fn unpark_sweep_with_snapshot() {
-            let Some(mut parked) = PARKED_PROCESS_RECLAIMS.try_lock() else { return false; };
-            abandon_unqueued_reclaim(parked.pop());
-        }
-    "#;
-    assert!(validate_nonowning_reclaim_queue_acquisitions(synthetic).is_err());
+fn reclaim_queue_validator_rejects_contention_abandonment() {
+    let process_task = repo_text("kernel/src/task/process_task.rs");
+    let mutate = |from: &str, to: &str| {
+        let mutated = process_task.replacen(from, to, 1);
+        assert_ne!(mutated, process_task, "mutation anchor: {from}");
+        validate_nonowning_reclaim_queue_acquisitions(&mutated)
+    };
+    // #1693's producer: the publisher try-locks and gives the receipt up when a
+    // peer holds the queue.
+    assert!(mutate(
+        "let mut pending = PENDING_PROCESS_RECLAIMS.lock();\n        #[cfg(feature = \"boot_tests\")]",
+        "let Some(mut pending) = PENDING_PROCESS_RECLAIMS.try_lock() else {\n            return false;\n        };\n        #[cfg(feature = \"boot_tests\")]",
+    )
+    .is_err());
+    // The same try-lock confined to one architecture.
+    assert!(mutate(
+        "let mut parked = PARKED_PROCESS_RECLAIMS.lock();\n        if parked.try_reserve(1).is_err() {",
+        "#[cfg(target_arch = \"aarch64\")]\n        let Some(mut parked) = PARKED_PROCESS_RECLAIMS.try_lock() else {\n            return false;\n        };\n        #[cfg(target_arch = \"x86_64\")]\n        let mut parked = PARKED_PROCESS_RECLAIMS.lock();\n        if parked.try_reserve(1).is_err() {",
+    )
+    .is_err());
+    // A sweep that drops receipts the pending queue cannot take, uncounted and
+    // with their rows unsettled.
+    assert!(mutate(
+        "                push_pending_or_abandon(reclaim);\n            }\n        }\n    }\n}",
+        "                abandon_unqueued_reclaim(reclaim);\n            }\n        }\n    }\n}",
+    )
+    .is_err());
+    // A give-up that is no longer counted.
+    assert!(mutate(
+        "        crate::trace_count!(crate::tracing::providers::teardown::RECLAIM_ABANDONED_UNQUEUED);\n        abandon_unqueued_reclaim(reclaim);",
+        "        abandon_unqueued_reclaim(reclaim);",
+    )
+    .is_err());
 }
 
 fn validate_reclaim_nesting_counter(process_task: &str, provider: &str) -> Result<(), ()> {
