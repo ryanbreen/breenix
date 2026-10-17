@@ -194,9 +194,14 @@ pub mod pipeline {
     /// (section 1.4.1, the work estimate). `None` for pipelines not built yet.
     pub const fn steps(pipeline: u32) -> Option<u64> {
         match pipeline {
-            SOLID => Some(1),
+            SOLID | COPY => Some(1),
             _ => None,
         }
+    }
+
+    /// Whether a pipeline samples a texture, and so is drawn with `DRAW_SAMPLED`.
+    pub const fn samples(pipeline: u32) -> bool {
+        matches!(pipeline, COPY | COPY_SCALED | NEAREST_SCALED | BOX_FILTER | OVER | OVER_STRAIGHT | COVERAGE | BITMAP_TEXT)
     }
 }
 
@@ -358,6 +363,84 @@ pub struct ResourceCreate {
     pub reserved: [u32; 3],
 }
 
+/// `UPLOAD` (64 bytes): a rectangle of the caller's pixels into a texture, or a byte range
+/// into a buffer, sent in `context` (`docs/gui/gpu-abi.md`, `UPLOAD`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Upload {
+    pub context: u64,
+    pub resource: u64,
+    /// The rectangle, clipped to the resource; for a buffer `x` is the first byte, `width`
+    /// the byte count, `y` 0 and `height` 1.
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+    /// The caller's pixels, how many bytes are there, and the row stride.
+    pub pixels: u64,
+    pub pixels_len: u64,
+    pub stride: u32,
+    /// One of [`upload_source`].
+    pub source: u32,
+    /// One of [`purpose`].
+    pub purpose: u32,
+    pub reserved: u32,
+}
+
+/// `Upload::source`: the layout of the caller's pixels.
+pub mod upload_source {
+    /// Bytes B, G, R, A.
+    pub const B8G8R8A8: u32 = 0;
+    /// Bytes R, G, B, A.
+    pub const R8G8B8A8: u32 = 1;
+    /// One byte: an R8 texel, or a buffer byte.
+    pub const R8: u32 = 2;
+    /// Bytes B, G, R; alpha 255.
+    pub const B8G8R8: u32 = 3;
+    /// Bytes R, G, B; alpha 255.
+    pub const R8G8B8: u32 = 4;
+
+    /// Bytes per source pixel, 0 for an unknown layout.
+    pub const fn bytes(source: u32) -> u32 {
+        match source {
+            B8G8R8A8 | R8G8B8A8 => 4,
+            R8 => 1,
+            B8G8R8 | R8G8B8 => 3,
+            _ => 0,
+        }
+    }
+
+    /// Whether a resource of `kind` and BGL `format` takes this source.
+    pub const fn fits(source: u32, kind: u32, format: u32) -> bool {
+        match kind {
+            crate::kind::BUFFER => source == R8,
+            crate::kind::TEXTURE => match format {
+                crate::format::R8 => source == R8,
+                crate::format::B8G8R8A8 | crate::format::R8G8B8A8 => matches!(source, B8G8R8A8 | R8G8B8A8 | B8G8R8 | R8G8B8),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    /// The `(b, g, r, a)` channels of the source pixel at the start of `px`.
+    pub fn channels(source: u32, px: &[u8]) -> [u8; 4] {
+        match source {
+            B8G8R8A8 => [px[0], px[1], px[2], px[3]],
+            R8G8B8A8 => [px[2], px[1], px[0], px[3]],
+            B8G8R8 => [px[0], px[1], px[2], 255],
+            R8G8B8 => [px[2], px[1], px[0], 255],
+            _ => [0, 0, px[0], 255],
+        }
+    }
+}
+
+/// `Upload::purpose` (`docs/gui/gpu.md` section 2.4).
+pub mod purpose {
+    pub const IMAGE: u32 = 1;
+    pub const FIXTURE: u32 = 2;
+}
+
 /// `RESOURCE_CREATE` flags (`docs/gui/gpu-abi.md`).
 pub mod resource_flag {
     /// A target that may be presented. Invalid for textures and buffers.
@@ -471,6 +554,7 @@ pub struct Counters {
     pub instances: u64,
     pub fragment_area: u64,
     pub work_estimate: u64,
+    /// Source bytes `UPLOAD` read with purpose Image, and with purpose Fixture.
     pub uploads_image: u64,
     pub uploads_fixture: u64,
     pub readbacks: u64,
@@ -538,6 +622,9 @@ pub mod record {
     pub const WINDOWS: usize = 200;
     pub const RENDERER: usize = 712;
     pub const RESERVED: usize = 776;
+    /// `canonical`: four BGRA bytes per pixel; one byte per pixel of an R8 texture.
+    pub const CANONICAL_BGRA: u32 = 0;
+    pub const CANONICAL_R8: u32 = 1;
     /// Boundary code 4: the host renderer and window are outside the guest's view.
     pub const BOUNDARY_HOST: u32 = 4;
 }
@@ -574,7 +661,11 @@ pub mod test_point {
     /// arm (behind the same latch and caller checks) and do nothing until their layer
     /// is built.
     pub const fn built(point: u32) -> bool {
-        matches!(point, SKIP_TRANSFER | STALE_FENCE | WRONG_RESOURCE | CORRUPT_PIXEL | MASK_CAPABILITY | DEVICE_ERROR | SUPPRESS_DRAW | WITHHOLD_FENCE)
+        matches!(
+            point,
+            SKIP_TRANSFER | STALE_FENCE | WRONG_RESOURCE | CORRUPT_PIXEL | MASK_CAPABILITY | DEVICE_ERROR | SUPPRESS_DRAW
+                | WRONG_TEXTURE | SKIP_UPLOAD_VISIBILITY | WITHHOLD_FENCE
+        )
     }
 }
 
@@ -617,7 +708,7 @@ macro_rules! plain {
     };
 }
 
-plain!(Caps, ContextCreate, Handle, ResourceCreate, Submit, Wait, Readback, Present, Counters, TcArm, TcFired);
+plain!(Caps, ContextCreate, Handle, ResourceCreate, Upload, Submit, Wait, Readback, Present, Counters, TcArm, TcFired);
 
 const _: () = {
     assert!(core::mem::size_of::<FormatCaps>() == 8);
@@ -633,6 +724,12 @@ const _: () = {
     assert!(core::mem::size_of::<ResourceCreate>() == 48);
     assert!(core::mem::offset_of!(ResourceCreate, flags) == 32);
     assert!(core::mem::offset_of!(ResourceCreate, reserved) == 36);
+    assert!(core::mem::size_of::<Upload>() == 64);
+    assert!(core::mem::offset_of!(Upload, x) == 16);
+    assert!(core::mem::offset_of!(Upload, pixels) == 32);
+    assert!(core::mem::offset_of!(Upload, stride) == 48);
+    assert!(core::mem::offset_of!(Upload, source) == 52);
+    assert!(core::mem::offset_of!(Upload, purpose) == 56);
     assert!(core::mem::size_of::<Submit>() == 64);
     assert!(core::mem::size_of::<Wait>() == 48);
     assert!(core::mem::size_of::<Readback>() == 64);
