@@ -1,0 +1,11 @@
+#!/bin/sh
+# The serial-over-LAN console of the x86-metal machine: metal-sol activate|deactivate.
+# The password reaches ipmitool through its environment (-E), never a command line. claim-lint:ok: #1680 reviewed deployment paths and credential transport.
+set -eu
+case "${1:-}" in activate|deactivate) ;; *) echo "usage: metal-sol activate|deactivate" >&2; exit 2 ;; esac
+set -a
+. "${BREENIX_METAL_SITE:-/etc/breenix-metal/site.env}"
+set +a
+IPMI_PASSWORD="$IDRAC_PASSWORD"
+export IPMI_PASSWORD
+exec ipmitool -I lanplus -C 17 -H "$IDRAC_HOST" -U "$IDRAC_USER" -E sol "$1"

@@ -1,0 +1,446 @@
+#!/usr/bin/env python3
+"""The x86-metal machine service (docs/metal/README.md, "The machine service").
+
+Owns the only queue to the server's management controller (one request in flight, at least two seconds between
+requests, power-off requests first), runs startup reconciliation before anything can take the lease or fetch an
+image, then the reaper, the sensor sampler and the single-transfer HTTP server.
+"""
+import base64
+import contextlib
+import heapq
+import itertools
+import json
+import os
+from pathlib import Path
+import signal
+import socket
+import socketserver
+import ssl
+import subprocess
+import sys
+import threading
+import time
+import urllib.error
+import urllib.request
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import metal_lib as m  # noqa: E402
+
+SPACING_SECONDS = 2.0
+REAPER_SECONDS = 15
+QUARANTINE_RETRY_SECONDS = 60
+IDLE_POWER_CHECK_SECONDS = 60
+IDLE_SAMPLE_SECONDS = 300
+WATCHED_SAMPLE_SECONDS = 60
+BOOT_SAMPLE_SECONDS = 30
+WATCH_FRESH_SECONDS = 120
+QUARANTINE_SETTLE_SECONDS = 4
+
+
+def log(text):
+    print(text, flush=True)
+
+
+class Controller:
+    """Executes requests against the management controller. Only the queue worker calls it."""
+
+    def __init__(self, site):
+        self.site = site
+        self.base = 'https://' + site['IDRAC_HOST']
+        token = base64.b64encode(f"{site['IDRAC_USER']}:{site['IDRAC_PASSWORD']}".encode()).decode()
+        self.authorization = 'Basic ' + token
+        # The controller presents a self-signed certificate on the private LAN.
+        self.context = ssl.create_default_context()
+        self.context.check_hostname = False
+        self.context.verify_mode = ssl.CERT_NONE
+
+    # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
+    def redfish(self, method, path, body):
+        data = None if body is None else json.dumps(body).encode()
+        request = urllib.request.Request(self.base + path, data=data, method=method)
+        request.add_header('Authorization', self.authorization)
+        request.add_header('Accept', 'application/json')
+        if data is not None:
+            request.add_header('Content-Type', 'application/json')
+        try:
+            with urllib.request.urlopen(request, context=self.context, timeout=60) as response:
+                status, headers, raw = response.status, dict(response.headers), response.read()
+        except urllib.error.HTTPError as error:
+            status, headers, raw = error.code, dict(error.headers), error.read()
+        except (urllib.error.URLError, OSError) as error:
+            return {'ok': False, 'error': f'{error.__class__.__name__}: {getattr(error, "reason", error)}'}
+        try:
+            parsed = json.loads(raw) if raw else None
+        except ValueError:
+            parsed = None
+        reply = {'ok': 200 <= status < 300, 'status': status, 'body': parsed,
+                 'location': headers.get('Location') or headers.get('location')}
+        if not reply['ok']:
+            messages = []
+            for info in ((parsed or {}).get('error') or {}).get('@Message.ExtendedInfo', []):
+                messages.append(info.get('Message', ''))
+            reply['error'] = f'HTTP {status}: ' + '; '.join(messages)[:500]
+        return reply
+
+    # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
+    def ipmi(self, arguments):
+        command = ['ipmitool', '-I', 'lanplus', '-C', '17', '-H', self.site['IDRAC_HOST'],
+                   '-U', self.site['IDRAC_USER'], '-E'] + arguments
+        environment = dict(os.environ, IPMI_PASSWORD=self.site['IDRAC_PASSWORD'])
+        try:
+            result = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            return {'ok': False, 'error': 'ipmitool timed out'}
+        output = (result.stdout + result.stderr).strip()
+        return {'ok': result.returncode == 0, 'output': output[-2000:],
+                'error': None if result.returncode == 0 else output[-500:]}
+
+
+class Queue:
+    """One worker; at least SPACING_SECONDS from the end of one request to the start of the next."""
+
+    def __init__(self, controller):
+        self.controller = controller
+        self.heap = []
+        self.counter = itertools.count()
+        self.condition = threading.Condition()
+        self.last_end = 0.0
+        self.count = 0
+        threading.Thread(target=self.work, daemon=True, name='bmc-queue').start()
+
+    def submit(self, request, timeout=180):
+        done = threading.Event()
+        slot = {}
+        priority = 0 if request.get('priority') == 0 else 1
+        with self.condition:
+            heapq.heappush(self.heap, (priority, next(self.counter), request, done, slot))
+            self.condition.notify()
+        if not done.wait(timeout):
+            return {'ok': False, 'error': 'queue timeout'}
+        return slot['reply']
+
+    # claim-lint:ok: #1680 Reviewed tool contract against this function and the host tests in tests/metal_tools_test.py.
+    def work(self):
+        while True:
+            with self.condition:
+                while not self.heap:
+                    self.condition.wait()
+                _, _, request, done, slot = heapq.heappop(self.heap)
+            delay = self.last_end + SPACING_SECONDS - time.monotonic()
+            if delay > 0:
+                time.sleep(delay)
+            try:
+                if request.get('op') == 'redfish':
+                    reply = self.controller.redfish(request['method'], request['path'], request.get('body'))
+                elif request.get('op') == 'ipmi':
+                    reply = self.controller.ipmi([str(a) for a in request.get('args', [])])
+                else:
+                    reply = {'ok': False, 'error': 'unknown op'}
+            except Exception as error:  # a malformed request never stops the queue
+                reply = {'ok': False, 'error': f'{error.__class__.__name__}: {error}'}
+            self.last_end = time.monotonic()
+            self.count += 1
+            slot['reply'] = reply
+            done.set()
+
+
+class Handler(socketserver.StreamRequestHandler):
+    def handle(self):
+        line = self.rfile.readline()
+        try:
+            request = json.loads(line)
+        except ValueError:
+            reply = {'ok': False, 'error': 'bad request'}
+        else:
+            reply = self.server.queue.submit(request)
+        self.wfile.write(json.dumps(reply).encode() + b'\n')
+
+
+class Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+    daemon_threads = True
+
+
+def machine_event(kind, **fields):
+    entry = dict(fields, t=round(m.now(), 3), event=kind)
+    m.append_jsonl(m.STATE / 'machine-events.jsonl', entry)
+    log(f'[machine] {kind} ' + json.dumps(fields, sort_keys=True))
+    return entry
+
+
+# claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
+def notify_ready():
+    # Taken out of the environment, so no child (the image server, ipmitool, systemctl) can notify for us.
+    address = os.environ.pop('NOTIFY_SOCKET', None)
+    if not address:
+        return
+    if address.startswith('@'):
+        address = '\0' + address[1:]
+    with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as notify:
+        notify.connect(address)
+        notify.sendall(b'READY=1')
+
+
+def stop_driver_units():
+    try:
+        listing = subprocess.run(['systemctl', 'list-units', '--plain', '--no-legend', '--type=service',
+                                  'metal-boot-*'], capture_output=True, text=True).stdout
+    except FileNotFoundError:
+        return
+    for line in listing.splitlines():
+        unit = line.split()[0] if line.split() else ''
+        if unit.startswith('metal-boot-'):
+            subprocess.run(['systemctl', 'kill', '-s', 'KILL', unit], capture_output=True)
+            subprocess.run(['systemctl', 'stop', unit], capture_output=True)
+
+
+# claim-lint:ok: #1680 Reviewed tool contract against this function and the host tests in tests/metal_tools_test.py.
+def end_session_side_effects():
+    """What every ending does after power-off, whoever ends it: override cleared, nothing staged, SOL closed."""
+    m.clear_override()
+    m.unstage()
+    with contextlib.suppress(m.BmcError):
+        m.sol_deactivate()
+    # An interrupted setup may have left inventory collection enabled for its refresh cycle.
+    with contextlib.suppress(m.BmcError):
+        m.rf('PATCH', m.LC_ATTRIBUTES, {'Attributes': m.EXPECTED_LC})
+
+
+# claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
+def reconcile():
+    """Before the lease or the HTTP server is available: unstage, close open records, power off."""
+    started = m.now()
+    with m.locked('lease'):
+        machine_event('reconciliation-start')
+        stop_driver_units()
+        m.unstage()
+        for directory in m.open_records():
+            m.event(directory, 'reconciliation', text='Closed by the machine service at startup')
+            m.phase(directory, 'Closed at startup: capture incomplete')
+            m.close_record(directory, m.EXIT_INCOMPLETE, 'reconciliation')
+            machine_event('record-closed', id=directory.name, status=m.EXIT_INCOMPLETE, endedBy='reconciliation')
+        power = None
+        with contextlib.suppress(m.BmcError):
+            power = m.power_state(priority=0)
+        off = True
+        if power != 'Off':
+            off = m.force_off_and_wait()
+            machine_event('reconciliation-power-off', before=power, off=off)
+        end_session_side_effects()
+        lease = m.read_lease()
+        if off:
+            if lease:
+                machine_event('lease-dropped', id=lease.get('id'), state=lease.get('state'))
+            with contextlib.suppress(FileNotFoundError):
+                (m.STATE / m.LEASE).unlink()
+        else:
+            holder = (lease or {}).get('id', 'reconciliation')
+            m.write_json(m.STATE / m.LEASE,
+                         m.quarantined_record(lease, holder, 'power-off failed at startup reconciliation'))
+            machine_event('quarantined', id=holder, reason='startup power-off failed')
+        machine_event('reconciliation-done', seconds=round(m.now() - started, 1), powerBefore=power, off=off)
+        m.RUN.mkdir(parents=True, exist_ok=True)
+        m.write_json(m.RUN / 'ready.json', {'pid': os.getpid(), 'ready': m.now()})
+
+
+# claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
+class Machine:
+    def __init__(self, site):
+        self.site = site
+        self.last_power_check = 0.0
+        self.last_sample = 0.0
+        self.sample = {}
+        self.events = []
+        self.http = None
+        self.stopping = False
+
+    def remember(self, entry):
+        self.events = (self.events + [entry])[-20:]
+
+    # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
+    # The reaper.
+    def reap(self):
+        lease = m.read_lease()
+        if lease and lease.get('state') == 'quarantined':
+            return self.retry_quarantine(lease)
+        if lease:
+            stale = m.now() - float(lease.get('heartbeat', 0)) > m.STALE_HEARTBEAT_SECONDS
+            gone = not m.holder_alive(lease)
+            ceiling = lease.get('ceilingAt')
+            over = ceiling is not None and m.now() > float(ceiling)
+            if stale or gone:
+                return self.end_boot(lease, m.EXIT_INCOMPLETE, 'stale heartbeat' if stale else 'driver gone')
+            if over:
+                return self.end_boot(lease, m.EXIT_HUNG, 'attempt ceiling')
+            if lease.get('state') != 'claimed':
+                return None
+        if m.now() - self.last_power_check >= IDLE_POWER_CHECK_SECONDS:
+            self.last_power_check = m.now()
+            try:
+                power = m.power_state()
+            except m.BmcError:
+                return None
+            if power == 'On':
+                with m.locked('lease'):
+                    current = m.read_lease()
+                    if current and (current.get('state') != 'claimed'):
+                        return None
+                    off = m.force_off_and_wait()
+                    self.remember(machine_event('stray-power-on', off=off))
+                    if not current:
+                        end_session_side_effects()
+                    if not off:
+                        m.write_json(m.STATE / m.LEASE, m.quarantined_record(
+                            current, (current or {}).get('id', 'stray-power-on'),
+                            'power-off of a stray power-on failed'))
+        return None
+
+    def end_boot(self, lease, status, why):
+        holder = lease['id']
+        self.remember(machine_event('reaper-ending', id=holder, why=why, status=status))
+        if lease.get('unit') and m.unit_active(lease['unit']):
+            subprocess.run(['systemctl', 'kill', '-s', 'KILL', lease['unit']], capture_output=True)
+        started = m.now()
+        off = m.force_off_and_wait()
+        self.remember(machine_event('reaper-power-off', id=holder, off=off, seconds=round(m.now() - started, 1)))
+        end_session_side_effects()
+        directory = m.boot_dir(holder)
+        if directory.is_dir():
+            m.event(directory, 'reaper', why=why, off=off)
+            m.phase(directory, 'Ended by the reaper: ' + why)
+            m.close_record(directory, status, 'reaper')
+        if off:
+            with m.locked('lease'):
+                current = m.read_lease()
+                if current and current.get('id') == holder:
+                    (m.STATE / m.LEASE).unlink()
+        else:
+            m.quarantine_lease(holder, 'reaper power-off failed')
+            self.remember(machine_event('quarantined', id=holder, reason='reaper power-off failed'))
+
+    # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
+    def retry_quarantine(self, lease):
+        last = float(lease.get('lastRetry', lease.get('quarantined', 0)))
+        if m.now() - last < QUARANTINE_RETRY_SECONDS:
+            return
+        retries = int(lease.get('retries', 0)) + 1
+        attempt = {'redfish': None, 'ipmi': None}
+        try:
+            m.rf('POST', m.SYSTEM + '/Actions/ComputerSystem.Reset', {'ResetType': 'ForceOff'}, priority=0)
+            attempt['redfish'] = 'sent'
+        except m.BmcError as error:
+            attempt['redfish'] = str(error)[:200]
+        if retries > 3:
+            reply = m.ipmi(['chassis', 'power', 'off'], priority=0)
+            attempt['ipmi'] = 'sent' if reply.get('ok') else (reply.get('error') or 'failed')[:200]
+        time.sleep(QUARANTINE_SETTLE_SECONDS)
+        power = None
+        with contextlib.suppress(m.BmcError):
+            power = m.power_state(priority=0)
+        self.remember(machine_event('quarantine-retry', id=lease.get('id'), retry=retries, power=power, **attempt))
+        with m.locked('lease'):
+            current = m.read_lease()
+            if not current or current.get('id') != lease.get('id'):
+                return
+            if power == 'Off':
+                (m.STATE / m.LEASE).unlink()
+                end_session_side_effects()
+                self.remember(machine_event('quarantine-lifted', id=lease.get('id'), retries=retries))
+            else:
+                current.update(retries=retries, lastRetry=m.now())
+                m.write_json(m.STATE / m.LEASE, current)
+
+    # The sensor sampler.
+    def due_sample(self):
+        lease = m.read_lease()
+        if lease and lease.get('state') in ('powered', 'quarantined'):
+            return BOOT_SAMPLE_SECONDS
+        watching = m.STATE / 'watching'
+        if watching.exists() and m.now() - watching.stat().st_mtime < WATCH_FRESH_SECONDS:
+            return WATCHED_SAMPLE_SECONDS
+        return IDLE_SAMPLE_SECONDS
+
+    def take_sample(self):
+        self.last_sample = m.now()
+        reading = {'t': round(m.now(), 1)}
+        try:
+            thermal = m.rf_get(m.CHASSIS + '/Thermal')
+            reading['temperatures'] = [{'name': t.get('Name'), 'celsius': t.get('ReadingCelsius')}
+                                       for t in thermal.get('Temperatures', [])]
+            reading['fans'] = [{'name': f.get('Name'), 'rpm': f.get('Reading')} for f in thermal.get('Fans', [])]
+            reading['power'] = m.power_state()
+        except m.BmcError as error:
+            reading['error'] = str(error)[:200]
+        self.sample = reading
+
+    # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
+    def publish(self):
+        lease = m.read_lease()
+        summary = None
+        if lease:
+            summary = {k: lease.get(k) for k in ('id', 'state', 'mode', 'claimed', 'powerOnAt', 'ceilingAt',
+                                                  'phase', 'reason')}
+        m.write_json(m.STATE / 'machine.json', {
+            'updated': round(m.now(), 1), 'sample': self.sample, 'powerDraw': None,
+            'powerDrawNote': 'not reported by this machine', 'lease': summary,
+            'quarantined': bool(lease and lease.get('state') == 'quarantined'),
+            'postBudgetSeconds': m.post_budget(), 'events': self.events,
+            'queueRequests': self.queue.count,
+        })
+
+    # The HTTP server, started only after reconciliation; restarted if it exits.
+    def supervise_http(self):
+        while not self.stopping:
+            self.http = subprocess.Popen([sys.executable, str(m.TOOLS / 'metal-http')])
+            machine_event('http-started', pid=self.http.pid)
+            self.http.wait()
+            if not self.stopping:
+                machine_event('http-exited', status=self.http.returncode)
+                time.sleep(2)
+
+    # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
+    def run(self):
+        m.STATE.mkdir(parents=True, exist_ok=True)
+        m.RUN.mkdir(parents=True, exist_ok=True)
+        with contextlib.suppress(FileNotFoundError):
+            (m.RUN / 'ready.json').unlink()
+        socket_path = m.RUN / 'bmc.sock'
+        with contextlib.suppress(FileNotFoundError):
+            socket_path.unlink()
+        notify_address = os.environ.pop('NOTIFY_SOCKET', None)
+        self.queue = Queue(Controller(self.site))
+        server = Server(str(socket_path), Handler)
+        server.queue = self.queue
+        os.chmod(socket_path, 0o600)
+        threading.Thread(target=server.serve_forever, daemon=True, name='bmc-socket').start()
+        machine_event('service-start', pid=os.getpid())
+        reconcile()
+        threading.Thread(target=self.supervise_http, daemon=True, name='http').start()
+        if notify_address:
+            os.environ['NOTIFY_SOCKET'] = notify_address
+        notify_ready()
+        machine_event('ready')
+
+        # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
+        def stop(*_):
+            self.stopping = True
+            if self.http and self.http.poll() is None:
+                self.http.terminate()
+            sys.exit(0)
+        signal.signal(signal.SIGTERM, stop)
+        while True:
+            try:
+                self.reap()
+                if m.now() - self.last_sample >= self.due_sample():
+                    self.take_sample()
+                self.publish()
+            except Exception as error:  # the reaper keeps running whatever one pass hit
+                machine_event('reaper-error', error=f'{error.__class__.__name__}: {error}'[:300])
+            time.sleep(REAPER_SECONDS)
+
+
+def main():
+    Machine(m.load_site()).run()
+
+
+if __name__ == '__main__':
+    main()
