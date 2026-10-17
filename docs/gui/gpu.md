@@ -20,8 +20,8 @@ exists), and those that answer the request for real text and display scale, whic
 
 **Status.** A plan and a frozen contract. G0's host stack, provenance audit and Parallels and VMware spikes
 have run; the effort's lanes land into `gpu/integration` (section 1.11). Sections 1.3 to 1.10 are the
-contract, frozen after the spikes reported. Section 1.12 records what the spikes changed and why, and section
-1.13 the amendment G1's review required. A later change to a frozen section is a contract change: it is made
+contract, frozen after the spikes reported. Section 1.12 records what the spikes changed and why, section
+1.13 the amendment G1's review required, and section 1.14 the amendment G2's review required. A later change to a frozen section is a contract change: it is made
 in its own PR, with its reason, before the lane that needs it, and never in the same change as the code,
 checks or thresholds that conform to it. The suite,
 `docs/suites/gpu.json` and `/sbin/suite-gpu`, measures this contract; its 170 cases fail, each naming the
@@ -189,8 +189,11 @@ source as it was before the copy; the kernel stages it through a scratch texture
 
 `gpu(op: u32, arg: *mut u8, len: usize) -> isize`, numbered the same on both architectures, with the window
 interface's conventions (§17.1): `len` must equal the argument size, reserved fields zero, negative errno
-returns, `copy_from_user`/`copy_to_user` everywhere with no side effect on EFAULT, and no kernel output on
-any path (§22). An op number the table does not list returns EINVAL. The GPU-era targets dispatch it on
+returns, `copy_from_user`/`copy_to_user` everywhere, and no kernel output on any path (§22). EFAULT is atomic
+only as far as the kernel can guarantee it: a fault reading the argument returns EFAULT before the op does
+anything, but results are written back after the op acts, and the kernel cannot hold the caller's pages
+against the caller's own threads, so what an EFAULT while writing them leaves behind is stated per op in
+`docs/gui/gpu-abi.md`. An op number the table does not list returns EINVAL. The GPU-era targets dispatch it on
 ARM64; x86-64's dispatch arrives when x86-64 joins (section 1.6.4).
 
 | Op | Name | Notes |
@@ -204,7 +207,7 @@ ARM64; x86-64's dispatch arrives when x86-64 joins (section 1.6.4).
 | 8 | `WAIT` | fence wait with timeout; ETIMEDOUT, EINTR, EIO for an errored or reset fence; killable within 250 ms |
 | 9 | `READBACK` | a target rectangle into user memory, with a 1,024-byte `ObservationRecord` version 2 (section 1.8) |
 | 10, 11 | `MODES`, `SET_MODE` | display owner only for `SET_MODE` |
-| 12 | `PRESENT` | display owner only; returns the present fence |
+| 12 | `PRESENT` | display owner only; returns a fence of the context it names, never a raw device fence number (section 1.7) |
 | 13 | `COUNTERS` | per-context submissions, draws, instances, fragment area, work estimate, uploads by purpose, readbacks |
 
 **Dispatch without a Tier-1 edit.** 416 is not added to `SyscallNumber`; it is dispatched in
@@ -220,8 +223,21 @@ and 415 (`652a4494`) was reverted (`0f53872e`) and is not reapplied.
   validation only; it says nothing about execution.
 - **Foreign handles are the validator's to refuse.** A stream naming a resource or context the process does
   not own is refused with EINVAL before anything is sent. The device gives no such error: a VirGL command on
-  a resource not attached to the submitting context is answered `OK_NODATA` and does nothing (section 1.12).
-  No case expects a device error code for a foreign handle.
+  a resource not attached to the submitting context is answered `OK_NODATA` and does nothing (section 1.12),
+  and disables its context as the next item states. No case expects a device error code for a foreign handle.
+- **Two commands answer OK and silently disable their context.** These are device facts, observed on ARM64
+  QEMU's VirGL device (`docs/gui/provenance/gpu-core.md`, experiments B1 to B4), not rules Breenix chose:
+  - a `SUBMIT_3D` naming a resource not attached to the submitting context;
+  - a transfer whose box extends past the resource (observed with a `TRANSFER_FROM_HOST_3D` box one pixel
+    past the resource's width).
+
+  Each is answered `OK_NODATA`, and from then on every command in that device context, transfers included,
+  is answered `OK_NODATA` and does nothing. The device reports no error, so no fence status,
+  `COUNTERS` state or quarantine can show it; only an observation can. A readback in such a context leaves the
+  target's poisoned backing unwritten (`READBACK` reason 1, section 1.8). The kernel therefore never sends
+  either command: the validator refuses foreign handles, every resource is attached to every context of its
+  process, and every transfer box the kernel builds (`READBACK`'s rectangle, its bands, test-control point
+  21's transfer, `UPLOAD` from G3) is checked against the resource it names before it is sent.
 - **Program warm-up.** `CONTEXT_CREATE` creates every catalogue program in the new device context and draws
   each once into a 1×1 scratch target, waiting for its fence. This is an explicit pre-measurement condition:
   the performance bounds measure already-warmed contexts, not application startup. Creation, including all
@@ -572,7 +588,10 @@ rests on host-side evidence that the gate checks, recorded with every run:
   string at scale 2 from the outline at 32 px, never replicated from a 16 px raster).
 - **Present.** Two scanout targets per display owner. `PRESENT` binds the drawn one (`SET_SCANOUT` and
   `RESOURCE_FLUSH` on virtio-gpu; the screen-target update on SVGA3) and returns a fence that completes when
-  the device has answered. There is no vblank on these devices; the present rate is measured, not assumed.
+  the device has answered. That fence is a context fence: `PRESENT` names one of the caller's live contexts,
+  and its fence is `ns << 32 | n` in that context's fence sequence, shared with its `SUBMIT`s, so `WAIT` on
+  that context accepts it and it orders after the context's earlier fences. `PRESENT` never returns a raw
+  device-wide fence number, and neither does the observation record (offset 184, section 1.8). There is no vblank on these devices; the present rate is measured, not assumed.
   A minimal scanout bind of the current case's target arrives in G2 (section 1.11), so runs are watchable from
   then; modes, flipping and the ownership stack arrive in G7.
 - **Ownership.** The display ownership stack (`take_over_display` 431, `give_back_display` 432, §18) keeps
@@ -607,15 +626,35 @@ little-endian, reserved bytes zero, produced atomically with the pixels it descr
 | 152 | `copy_kind: u32`, `copy_status: u32`: VMware's host copy into the readback surface; 0 on VirGL |
 | 160 | `poison: u32`: the first observation's poison pattern (the second's is its complement); `unwritten: u32` at 164: bytes whose two observations differ, which must be 0 |
 | 168 | `commit: u64`, `composite_serial: u64` at 176: for a window or composite observation, else 0 |
-| 184 | `present_fence: u64`; `present_status: u32`, `window_count: u32` at 192 |
+| 184 | `present_fence: u64`: when bit 0 of `flags` is set, the context fence `PRESENT` returned for the completed binding that made the observed target the scanout (section 1.7), never a raw device fence number; else 0. `present_status: u32`, `window_count: u32` at 192 |
 | 200 | `windows: [(window: u64, commit: u64, render_fence: u64, generation: u64); 16]`: every window in the composite, the commit sampled, the render fence that commit carried and the generation sampled |
 | 712 | `renderer: [u8; 64]`: the device's renderer string from its capability set, NUL-padded, empty if none |
 | 776 | reserved |
 
-A readback refuses with EIO and a named reason when a composed window's render fence had not completed OK
-before the composite was sent, when any recorded fence belongs to another submission, when the device's
-binding differs from the observed resource, or when the target is invalid (section 1.4.1). More than 16
-windows in a composite returns EIO without a partial record, as v1 does.
+A readback refuses with EIO and a named reason (the codes are in `docs/gui/gpu-abi.md`) when the two
+complementary-poison observations differ (unwritten), when any recorded fence belongs to another submission
+(fence mismatch), when a composed window's render fence had not completed OK before the composite was sent
+(its code is assigned with composite observations, which come after G2), when
+an observation claiming the scanout (record `flags` bit 0 set) names a resource that differs from the
+device's confirmed scanout binding (resource mismatch), when the target is invalid (section 1.4.1; the
+reason names the submission that invalidated it), when the device
+answers a readback transfer with an error, when the watchdog ends a transfer the device has not answered
+(device hung), when a device reset is decided while a transfer is outstanding, whether the reset then
+completes or fails (device reset), when the target was lost to an earlier device reset (target lost), when
+the target's handle was destroyed while the readback waited for its writers (target dropped), and when the
+target may be the scanout but the scanout's binding is not known because a `PRESENT` that binds it or
+replaces it was sent and has not completed, or failed (binding unknown), and when a composite has more than
+16 windows (composite-overflow; its code is assigned with composite observations, which come after G2).
+Every EIO a readback returns names one of these reasons; none is reported under another's name.
+Composite overflow returns no partial record, as v1 does.
+
+**A fault is detected from what can be observed, never from the fault variable.** A readback's reason comes
+from what the kernel observes: the two observations, the answer and fence echo the device returns, and the
+kernel's own record of the target and the binding. It never comes from knowing that a test-control point
+fired. The device's transfer answer carries no resource identity, so the kernel cannot know which resource
+the device copied from: a transfer that names the wrong resource writes that resource's backing, the
+observed target's poisoned backing stays unwritten, and the readback refuses with reason unwritten (1).
+Resource mismatch (3) is not observable for that fault.
 
 | Target | Sequence the guest runs |
 |---|---|
@@ -637,8 +676,12 @@ the whole surface. The VMware spike read shader-rendered targets back exactly th
 reason and then the clean result once disarmed. Every point is one-shot, as every point of §21 is: arming it
 affects the next occurrence of its event, the point then counts one firing and disarms itself, and a check
 that needs the fault on several operations arms it before each. 19 `skip-transfer` (a skipped transfer-back),
-20 `stale-fence` (a fence answered for another submission), 21 `wrong-resource` (readback of another
-resource), 22 `corrupt-pixel` (a pixel outside the draw corrupted on the device), 23 `mask-capability` (the
+20 `stale-fence` (a fence answered for another submission), 21 `wrong-resource` (the next readback transfer
+names another target of the same process that contains the transfer's box, so the box never extends past the
+resource it names, section 1.4.1; the case creates that target, and with none the point does not fire and
+stays armed. The device writes that target's backing, the observed target's poisoned backing stays
+unwritten, and the readback refuses with reason unwritten (1), the reason `readback/fault-wrong-resource`
+requires; resource mismatch (3) is not observable for this fault, as stated above), 22 `corrupt-pixel` (a pixel outside the draw corrupted on the device), 23 `mask-capability` (the
 next admission decision, made by a `CAPS` query or by any other op that admission gates, counts the named
 capability as absent, so that op fails naming it; the op after it sees the device's real capabilities, with no
 `DISARM_ALL`), 24 `profile-violation` (one draw with filtered sampling), 25 `skip-present-flush`, 26
@@ -952,6 +995,21 @@ conforming to it. The amendment:
 | Per-submission copy quotas are G6's; buffer snapshots and the watchdog over synchronous device waits are G1's | sections 1.4.1, 1.11 |
 
 `docs/gui/gpu-abi.md`, the layouts and codes of syscall 416, follows the same rules.
+
+### 1.14 What G2's review changed
+
+G2's review (#1687, #1688) and G1's black-box experiments (#1684) found device behaviour and readback
+semantics the contract did not state. The coordinator ruled on 2026-10-17 (rulings 13 to 15) that they enter
+the contract in this contract PR, before G2's code conforms to it, and never together with code, checks or
+thresholds. The amendment:
+
+| Rule | Where |
+|---|---|
+| A `SUBMIT_3D` naming an unattached resource, or a transfer box past the resource, is answered OK and silently disables its device context; the kernel never sends either | section 1.4.1 |
+| A fault is detected from what can be observed, never from the fault variable; fault-wrong-resource is detected as unwritten backing, reason 1, and `readback/fault-wrong-resource` requires reason 1 | section 1.8; `docs/gui/gpu-abi.md` |
+| Readback names every EIO it returns, including a lost or dropped target, a transfer ended by a device reset (completed or failed), a transfer the watchdog ended and an unknown scanout binding | section 1.8; `docs/gui/gpu-abi.md` |
+| EFAULT is atomic only as far as the kernel can guarantee it; what an EFAULT while writing results leaves behind is stated per op | section 1.4; `docs/gui/gpu-abi.md` |
+| `PRESENT` and record offset 184 carry a context fence, never a raw device-wide fence number | sections 1.4, 1.7, 1.8; `docs/gui/gpu-abi.md` |
 
 ## 2. BreenGL rebuilt on the GPU
 
