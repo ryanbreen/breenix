@@ -86,7 +86,8 @@ another process holds names nothing here. A handle's top byte is neither 0x00 no
 the form of a user, kernel or physical address. No op writes back a kernel or device address: each output
 is a handle, a context fence, a device id below 2³² (record v2's `context` and `resource`), a count, a
 size, a serial, a generation, a status, an answer or a reason, a capability value, a string, or bytes of
-the caller's own pixels.
+the caller's own pixels. G7 additionally reports the current scanout's pixels to its display owner
+and the FNV memory fingerprints defined in the G7 display interface.
 
 <!-- claim-lint:ok: Normative G6 interface requirement from docs/gui/gpu.md section 1.16, not a measured result. -->
 **Reclamation.** The exit of a process's last thread, normal or by a signal, drops every handle the

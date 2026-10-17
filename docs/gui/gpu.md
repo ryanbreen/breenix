@@ -1167,6 +1167,8 @@ implementation. This amendment states those interfaces, in its own PR before the
   form of a user, kernel or physical address on either architecture. Each value an op writes back is a handle,
   a context fence (`ns << 32 | n`), a device id below 2³², a count, a size, a serial, a generation, a status,
   an answer or a reason, a capability value, a string, or bytes of the caller's own pixels.
+  G7 also exposes the current scanout's pixels to its display owner and the FNV memory fingerprints
+  specified in `gpu-abi.md`, G7 display interface.
 <!-- claim-lint:ok: Normative G6 interface requirement stated by this amendment, docs/gui/gpu.md section 1.16, not a measured result. -->
 - **`SET_MODE` before G7.** Until G7 builds it, `SET_MODE` refuses a caller that is not the display owner
   with EPERM before its argument is decoded and returns ENOSYS to the owner; `MODES` returns ENOSYS.
