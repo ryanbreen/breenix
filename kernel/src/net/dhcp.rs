@@ -380,14 +380,14 @@ fn take_reply() -> Option<Reply> {
 /// A DHCPDISCOVER from `mac` in transaction `xid`, for a driver that checks
 /// its first frame reaches the network and is answered. It is the client's
 /// own message; the exchange that would take a lease is not run.
-#[cfg(target_arch = "x86_64")]
+#[cfg_attr(target_arch = "aarch64", allow(dead_code))] // The BCM5720 driver is x86-only.
 pub(crate) fn discover_message(xid: u32, mac: [u8; 6]) -> [u8; MIN_MESSAGE_LEN] {
     build_message(DHCPDISCOVER, xid, mac, None)
 }
 
 /// Whether `message`, a UDP payload from the server port to the client port,
 /// is an OFFER answering transaction `xid` for `mac`.
-#[cfg(target_arch = "x86_64")]
+#[cfg_attr(target_arch = "aarch64", allow(dead_code))] // The BCM5720 driver is x86-only.
 pub(crate) fn is_offer(message: &[u8], xid: u32, mac: [u8; 6]) -> bool {
     parse_reply(message, xid, mac).is_some_and(|reply| reply.kind == DHCPOFFER)
 }
