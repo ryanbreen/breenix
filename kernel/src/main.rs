@@ -1271,18 +1271,14 @@ fn x86_boot_suite() -> Option<kernel::boot::target::SuiteTarget> {
     match fw_cfg::read_string("opt/breenix/mode").as_deref() {
         None | Some("") => match target::read() {
             Ok(Some(target::Target::Suite(suite))) => Some(suite),
-            Ok(Some(target::Target::Default | target::Target::Shell)) => None,
-            Ok(Some(target::Target::Probe)) => {
-                log::warn!("[boot] Ignoring probe boot target: x86-64 runs default, shell and suite");
-                None
-            }
+            Ok(Some(target::Target::Default | target::Target::Shell | target::Target::Probe)) => None,
             Ok(None) => None,
             Err(why) => {
                 log::warn!("[boot] Ignoring boot target {}: {}", target::PATH, why);
                 None
             }
         },
-        Some("default" | "shell") => None,
+        Some("default" | "shell" | "probe") => None,
         Some("suite") => match fw_cfg::read_string("opt/breenix/suite") {
             Some(id) if target::is_suite_id(&id) => {
                 match target::SuiteTarget::new(id, fw_cfg::read_string("opt/breenix/case")) {
@@ -1309,7 +1305,7 @@ fn x86_boot_suite() -> Option<kernel::boot::target::SuiteTarget> {
         },
         Some(other) => {
             log::warn!(
-                "[boot] Ignoring boot mode {:?}: x86-64 runs only default and suite",
+                "[boot] Ignoring boot mode {:?}: x86-64 runs default, shell, probe and suite",
                 other
             );
             None
@@ -1327,9 +1323,19 @@ fn x86_boot_shell() -> bool {
     }
 }
 
+/// Select the production probe through the fw_cfg-before-file rule.
+#[cfg(all(target_arch = "x86_64", not(any(feature = "testing", feature = "interactive", feature = "disable_x86_prod_init"))))]
+fn x86_boot_probe() -> bool {
+    match drivers::fw_cfg::read_string("opt/breenix/mode").as_deref() {
+        Some("probe") => true,
+        None | Some("") => matches!(kernel::boot::target::read(), Ok(Some(kernel::boot::target::Target::Probe))),
+        _ => false,
+    }
+}
+
 /// Read the program the production kernel runs as PID 1 from the ext2 root:
-/// `/sbin/suite-<id>` when `x86_boot_suite` names a suite whose binary reads
-/// and is a loadable ELF, otherwise `/sbin/init`. Returns its process name,
+/// `/sbin/probe` in probe mode, `/sbin/suite-<id>` for a selected suite,
+/// otherwise `/sbin/init`. Selected binaries must be loadable ELFs. Returns its process name,
 /// physical pathname and ELF. A suite binary that cannot be used is noted and
 /// the default init runs.
 #[cfg(all(
@@ -1344,6 +1350,17 @@ fn read_x86_production_init(
 ) -> Result<(alloc::string::String, alloc::vec::Vec<u8>, alloc::vec::Vec<u8>, Option<alloc::string::String>, bool), &'static str> {
     use kernel::boot::{init_image::read_init_from_ext2, target};
 
+    if x86_boot_probe() {
+        match read_init_from_ext2("/sbin/probe")
+            .and_then(|(elf_data, exe_path)| target::check_elf(&elf_data).map(|()| (elf_data, exe_path)))
+        {
+            Ok((elf_data, exe_path)) => {
+                log::info!("[boot] Boot mode: probe");
+                return Ok((alloc::string::String::from("probe"), exe_path, elf_data, None, false));
+            }
+            Err(error) => log::warn!("[boot] Probe could not be loaded ({error}); running default init"),
+        }
+    }
     if let Some(suite) = x86_boot_suite() {
         let id = suite.id;
         let path = target::suite_path(&id);
