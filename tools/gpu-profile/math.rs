@@ -1733,4 +1733,5 @@ fn integer_constants(text: &str, first: usize, tokens: &mut u32) -> (String, usi
 #[path = "emitted_tests.rs"]
 mod emitted_tests;
 
+#[cfg(not(test))]
 mod pipelines;

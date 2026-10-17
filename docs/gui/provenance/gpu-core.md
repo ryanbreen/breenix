@@ -764,8 +764,8 @@ The generator's output was compared byte for byte with the kernel's included fil
 | UNORM boundary conversion | L:111 MUL, 124 ADD, 1040 F2U: floor(v*255+0.5); O: #1714's fetch boundary. Output uses L:1009 U2F and MUL by binary32 1/255, as G4. Native float operations do not compute span coverage. |
 
 The token accounting retains T's header, processor, declaration/range, immediate, instruction,
-register and optional flow-label layouts recorded above. Sampler and sampler-view ranges have the same
-range token as the single-view declarations. Branches guard the body containing texture reads and loops;
+register and optional flow-label layouts recorded above. The programs declare samplers and sampler views individually after B14
+showed that accepted range text did not produce a working sampler-0 draw. Branches guard the body containing texture reads and loops;
 KILL is used for discarded output, not as an assumed early return. L:661–670 defines discard and states
 that execution may continue. A warm-up span draw puts its fragment outside the glyph's bounds, so that
 body is guarded off while the program is compiled. Shader upload continuation retains G4's one-page
@@ -805,3 +805,27 @@ baseline adds one SAMP and one typed 2D SVIEW declaration to the small baseline.
 The committed experiment reads the kernel's included text and capacities rather than maintaining a
 second copy. An accepted candidate still has to pass its GPU suite readbacks; a response alone does not
 establish that its pixels were written.
+
+
+## B14: sampler declarations at draw time
+
+B13 establishes parser acceptance only. The first G5 device boot exposed a shader compilation error
+when a range declaration was used with a fetch from sampler 0. The independent reproduction is
+`tools/gpu-experiments/g5-samplers.py`, run with B13's invocation and environment, replacing
+`g5-grammar.py` with `g5-samplers.py`. It calls the same unmodified public renderer API at P's pin.
+
+The script uploads the one BGRA texel (17,34,51,68), builds a one-pixel target and a six-vertex quad,
+and draws a minimal fragment program consisting of COLOR, SAMP/SVIEW declarations, an integer-0
+coordinate, TXF of sampler 0 and END, capacity 64. The first candidate declares SAMP[0..2] and
+SVIEW[0..2]. The second changes just those ranges to individual declarations for 0, 1 and 2. Both
+SUBMIT and transfer calls return 0. The first produces pixel 00000000, with the compiler diagnostic
+`'fssamp0' : undeclared identifier`; the second produces the fixture's exact BGRA word:
+
+```text
+G5 range submit=0 transfer=0 pixel=00000000
+G5 individual submit=0 transfer=0 pixel=44332211
+```
+
+The core emits the individual declarations, each using T's declaration and range tokens. The added
+four declarations add ten tokens. This is a text-form/device observation, not an implementation-source
+explanation for the renderer's behavior and not a waiver of the required pixels.

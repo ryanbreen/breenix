@@ -154,8 +154,7 @@ pub const COPY_FS: Program = Program {
     tokens: 39,
 };
 
-/// Programs context creation compiles and warms: `solid`'s and `copy`'s pairs, the fixed
-/// rendering catalogue. The profile-only `probe_int` pair is created by the context's first
+/// Programs context creation compiles and warms: the sixteen rendering pairs. The profile-only `probe_int` pair is created by the context's first
 /// PROBE (`docs/gui/gpu.md` section 1.4.1, program warm-up).
 pub const CATALOGUE_PROGRAMS: u32 = 4 + 2 * pipelines::CATALOGUE.len() as u32;
 /// Programs `probe_int` adds once a context's first PROBE has created them.

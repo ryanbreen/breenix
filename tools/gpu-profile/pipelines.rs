@@ -176,7 +176,9 @@ impl Asm {
         let inv = self.k(0x3b808081);
         self.emit(format!("U2F TEMP[48], {a}"));
         self.op("MUL", "OUT[0]", "TEMP[48]", &inv);
-        for _ in 0..self.guards { self.emit("ELSE\nKILL\nENDIF"); }
+        for _ in 0..self.guards {
+            self.emit("ELSE\nKILL\nENDIF");
+        }
         self.guards = 0;
         self.emit("END");
     }
@@ -190,7 +192,7 @@ impl Asm {
             .unwrap_or(61)
             .max(61)
             + 1;
-        let mut text=String::from("FRAG\nDCL IN[0], POSITION, LINEAR\nDCL OUT[0], COLOR\nDCL CONST[0..7]\nDCL TEMP[0..61]\nDCL SAMP[0..2]\nDCL SVIEW[0..2], 2D, FLOAT\n");
+        let mut text=String::from("FRAG\nDCL IN[0], POSITION, LINEAR\nDCL OUT[0], COLOR\nDCL CONST[0..7]\nDCL TEMP[0..61]\nDCL SAMP[0]\nDCL SAMP[1]\nDCL SAMP[2]\nDCL SVIEW[0], 2D, FLOAT\nDCL SVIEW[1], 2D, FLOAT\nDCL SVIEW[2], 2D, FLOAT\n");
         for (i, v) in self.constants.chunks(4).enumerate() {
             let mut k = [0; 4];
             k[..v.len()].copy_from_slice(v);
@@ -203,7 +205,7 @@ impl Asm {
         }
         text = text.replace("DCL TEMP[0..61]", &format!("DCL TEMP[0..{maxreg}]"));
         text.push_str(&self.body);
-        let mut tokens = 2 + 4 + 3 + 2 + 2 + 2 + 3 + self.constants.len().div_ceil(4) as u32 * 5;
+        let mut tokens = 2 + 4 + 3 + 2 + 2 + 6 + 9 + self.constants.len().div_ceil(4) as u32 * 5;
         for l in self.body.lines() {
             let operands = l.matches(',').count() + usize::from(l.contains(' '));
             tokens += 1 + operands as u32;

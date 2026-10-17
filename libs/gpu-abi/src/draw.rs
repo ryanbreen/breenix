@@ -417,4 +417,47 @@ mod g5_tests {
         )
         .is_none());
     }
+    #[test]
+    fn g5_crossing_sort_treats_both_signed_zeros_as_equal() {
+        struct Buffer(Vec<u32>);
+        impl Resolver for Buffer {
+            fn target(&self, h: u64) -> Option<TargetInfo> {
+                Resources.target(h)
+            }
+            fn source(&self, h: u64) -> Option<SourceInfo> {
+                Resources.source(h)
+            }
+            fn buffer_size(&self, h: u64) -> Option<u64> {
+                (h == 3).then_some(self.0.len() as u64 * 4)
+            }
+            fn buffer_rect(&self, _h: u64, _o: u64) -> [i32; 4] {
+                panic!("word-addressed crossing data")
+            }
+            fn buffer_word(&self, _h: u64, o: u64) -> u32 {
+                self.0[o as usize / 4]
+            }
+        }
+        let r = Buffer(alloc::vec![
+            0,
+            2,
+            2,
+            2,
+            2,
+            2,
+            2,
+            2,
+            2,
+            0,
+            1,
+            0x80000000,
+            u32::MAX
+        ]);
+        let mut i = instance([0, 0, 1, 1]);
+        i.params[2] = 1;
+        i.params[3] = 1;
+        let mut s = Vec::new();
+        encode::begin(&mut s, 1);
+        super::encode(&mut s, p::COVERAGE_SPANS, 0, 0, 3, 52, &[i]);
+        assert!(stream::validate(&s[..], &r).is_ok());
+    }
 }

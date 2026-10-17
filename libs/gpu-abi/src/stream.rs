@@ -315,7 +315,7 @@ pub fn validate(words: &(impl Words + ?Sized), resolver: &impl Resolver) -> Resu
                                 let x = resolver.buffer_word(buffer, offset);
                                 let winding = resolver.buffer_word(buffer, offset+4);
                                 if x & 0x7f800000 == 0x7f800000 || !matches!(winding, 1 | u32::MAX) { return refuse(d::PARAMETERS); }
-                                let ordered = if x >> 31 != 0 { !x } else { x ^ 0x80000000 };
+                                let ordered = if x & 0x7fffffff == 0 { 0x80000000 } else if x >> 31 != 0 { !x } else { x ^ 0x80000000 };
                                 if previous.is_some_and(|p| p > ordered) { return refuse(d::PARAMETERS); }
                                 previous = Some(ordered);
                             }
