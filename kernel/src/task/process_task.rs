@@ -1530,8 +1530,10 @@ fn unpark_sweep_with_snapshot(snapshot: scheduler::RetirementSnapshot, row_epoch
             }
         });
         if !queued {
+            // One at a time: each receipt the queue still cannot take is
+            // counted and its row's retirement settled, not left a tombstone.
             for reclaim in ready.take().expect("unqueued ready reclaims retained") {
-                abandon_unqueued_reclaim(reclaim);
+                push_pending_or_abandon(reclaim);
             }
         }
     }
