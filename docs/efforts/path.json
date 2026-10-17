@@ -1,6 +1,6 @@
 {
   "title": "Path to a POSIX kernel with a userspace and a desktop you can build on",
-  "outcome": "Breenix runs real programs unmodified on ARM64 and x86-64: every POSIX system interface backed and behaving to the standard, a C library and Rust std on top, POSIX utilities, an SDK for building our own applications, and a graphical desktop (BreenGL, the window manager and its applications) tested to the same bar.",
+  "outcome": "Breenix runs real programs unmodified on ARM64 and x86-64: every POSIX system interface backed and behaving to the standard, a C library and Rust std on top, POSIX utilities, an SDK for building our own applications, and a GPU-rendered graphical desktop (GPU rendering, BreenGL, the window manager and its applications) tested to the same bar.",
   "efforts": [
     {
       "id": "kernel-bring-up",
@@ -1225,9 +1225,124 @@
       ]
     },
     {
+      "id": "gpu",
+      "title": "GPU rendering",
+      "outcome": "Breenix renders on the GPU on every target: a clean-room, GL-style Breenix API whose command streams the kernel validates and bounds per process and translates for VirGL (ARM64 QEMU and Parallels) or SVGA3D DX (VMware), executed by a hardware GPU on each host, presented at 1280×800 and at 2560×1600 with HiDPI scaling, and read back from the device pixel-exact under a declared deterministic rendering profile.",
+      "targets": [
+        "arm64-qemu",
+        "parallels",
+        "vmware"
+      ],
+      "targetsNote": "x86-64 joins when the dedicated Breenix hardware box replaces the current x86 gate host.",
+      "suite": "gpu",
+      "subsystems": [
+        17,
+        22,
+        25
+      ],
+      "milestones": [
+        {
+          "id": "device",
+          "title": "3D device & capability profile",
+          "measure": {
+            "suite": "gpu",
+            "categories": [
+              "device"
+            ]
+          }
+        },
+        {
+          "id": "submit",
+          "title": "command submission & fences",
+          "measure": {
+            "suite": "gpu",
+            "categories": [
+              "submit"
+            ]
+          }
+        },
+        {
+          "id": "readback",
+          "title": "device readback",
+          "measure": {
+            "suite": "gpu",
+            "categories": [
+              "readback"
+            ]
+          }
+        },
+        {
+          "id": "textures",
+          "title": "textures & uploads",
+          "measure": {
+            "suite": "gpu",
+            "categories": [
+              "textures"
+            ]
+          }
+        },
+        {
+          "id": "profile",
+          "title": "deterministic rendering profile",
+          "measure": {
+            "suite": "gpu",
+            "categories": [
+              "profile"
+            ]
+          }
+        },
+        {
+          "id": "pipelines",
+          "title": "drawing pipelines",
+          "measure": {
+            "suite": "gpu",
+            "categories": [
+              "pipelines"
+            ]
+          }
+        },
+        {
+          "id": "isolation",
+          "title": "per-process GPU isolation",
+          "measure": {
+            "suite": "gpu",
+            "categories": [
+              "isolation"
+            ]
+          }
+        },
+        {
+          "id": "present",
+          "title": "display modes, HiDPI & present",
+          "measure": {
+            "suite": "gpu",
+            "categories": [
+              "present"
+            ]
+          }
+        },
+        {
+          "id": "performance",
+          "title": "frame rate & latency",
+          "measure": {
+            "suite": "gpu",
+            "categories": [
+              "performance"
+            ]
+          }
+        }
+      ]
+    },
+    {
       "id": "breengel",
       "title": "BreenGL graphics library",
-      "outcome": "Programs draw with BreenGL's 2D library (clipped and alpha-blended shapes and blits, TrueType and bitmap text, PNG and BMP images, widgets and animated icons) exactly to its written contract, and the windows they commit through an authority-checked kernel interface are composed and observed on the display pixel-exact on every target.",
+      "outcome": "Programs draw with BreenGL entirely on the GPU (clipped and alpha-blended shapes and blits, bitmap and TrueType text, PNG and BMP images, widgets and animated icons) exactly to its written contract, every installed graphical program draws through it, and the windows they commit through an authority-checked kernel interface are composed by the GPU and observed by device readback, pixel-exact on every target.",
+      "targets": [
+        "arm64-qemu",
+        "parallels",
+        "vmware"
+      ],
+      "targetsNote": "x86-64 joins when the dedicated Breenix hardware box replaces the current x86 gate host.",
       "suite": "breengel",
       "subsystems": [
         17,
@@ -1383,6 +1498,12 @@
       "id": "window-manager",
       "title": "Window manager",
       "outcome": "Independent programs share one desktop: keyboard and pointer events from every target's devices reach bwm through the kernel's input core, and bwm composes, stacks, focuses, moves, resizes and closes their windows, routes input and the clipboard between them with a recorded outcome for every event, and recovers from hung, crashed or misbehaving clients and from its own death, on every target.",
+      "targets": [
+        "arm64-qemu",
+        "parallels",
+        "vmware"
+      ],
+      "targetsNote": "x86-64 joins when the dedicated Breenix hardware box replaces the current x86 gate host.",
       "suite": "window-manager",
       "subsystems": [
         17,
@@ -1526,6 +1647,12 @@
       "id": "ui-testing",
       "title": "UI test framework",
       "outcome": "Any GUI program can be driven by scripted keyboard, pointer and text input from inside the guest and judged by its committed frames and semantic tree at acknowledged clock epochs and causal barriers, deterministically and identically on every target, with every check shown able to fail and every failure leaving its evidence.",
+      "targets": [
+        "arm64-qemu",
+        "parallels",
+        "vmware"
+      ],
+      "targetsNote": "x86-64 joins when the dedicated Breenix hardware box replaces the current x86 gate host.",
       "suite": "ui-testing",
       "subsystems": [
         18,
@@ -1629,6 +1756,12 @@
       "id": "gui-apps",
       "title": "GUI applications",
       "outcome": "Breenix's desktop applications (bterm, blauncher, bfontpicker, blog with blogd, Gus Kit and bcheck, with the graphics demos) do their jobs correctly through real input on a real desktop, on every target.",
+      "targets": [
+        "arm64-qemu",
+        "parallels",
+        "vmware"
+      ],
+      "targetsNote": "x86-64 joins when the dedicated Breenix hardware box replaces the current x86 gate host.",
       "suite": "gui-apps",
       "subsystems": [
         24,

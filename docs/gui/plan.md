@@ -16,6 +16,18 @@ library and the kernel window interface), **`window-manager`** (bwm and the kern
 (the UI test framework, as its own effort) and **`gui-apps`** (every GUI application in one effort, the
 destination). Nothing in this revision splits, merges or reorders them.
 
+**The platform is GPU only (operator's ruling, 2026-10-16).** The GPU effort comes before BreenGL lands, and
+every pixel the platform draws is drawn by a GPU. A new effort, **`gpu`** (GPU rendering), now sits between
+`sdk` and `breengel`; its design and contract, and the plan for rebuilding BreenGL on it, are in
+[`docs/gui/gpu.md`](gpu.md). Where this plan makes BreenGL a CPU 2D library, gives it a software compositor
+(section 1, item 3; section 4) or defers GPU rendering, `docs/gui/gpu.md` governs.
+
+**x86-64 is out of the GUI efforts for now (operator's ruling, 2026-10-16).** The x86 gate host is VGA only,
+so x86-64 is measured up to the shell and no further. `gpu`, `breengel`, `window-manager`, `ui-testing` and
+`gui-apps` are measured on ARM64 QEMU, Parallels and VMware (their `targets` in `docs/efforts/path.json`), and
+x86-64 joins them when a dedicated Breenix hardware box replaces the current x86 gate host (`docs/gui/gpu.md`,
+section 1.6.4). Where this plan says "four targets" or plans x86-64 work, read the three targets.
+
 ## 0. What changed from the first design, in one paragraph
 
 The order, the single applications effort, the destination and the path JSON shapes are unchanged. What
@@ -38,7 +50,9 @@ rewritten: **1,142 cases** in place of 803.
 
 1. **BreenGL is a 2D library and window client, not a GL.** Its effort also owns the kernel window interface,
    the software compositor and the display observation path, because nothing above it reaches four targets
-   until they exist. GPU or 3D client rendering is a later, separate effort.
+   until they exist. The platform is GPU only: BreenGL draws through BGL, the GL-style API the `gpu` effort
+   delivers before it, and its windows are composed by the GPU and observed by device readback
+   (`docs/gui/gpu.md`).
 2. **Windows commit immutable buffers** (section 3.1). A client draws into a back buffer and `commit()`s it.
    The kernel publishes pixels, tree, processed-input watermark, clock epoch and damage as one transaction,
    and keeps the committed buffer immutable until the compositor and any capture in progress are done with
@@ -73,8 +87,8 @@ rewritten: **1,142 cases** in place of 803.
 12. **Fault points live in the real components.** Kernel fault controls work only in suite boots, as the
     operator decided (section 3.4); app fault modes live in separately installed `*_test` builds of the real
     program. There is no parallel fake renderer or runner.
-13. **The four-target bar has no exemption mechanism.** Where a layer cannot reach a target yet, reaching it is
-    named milestone work (section 2.4). One reference image serves all four targets. A divergence between
+13. **The every-target bar has no exemption mechanism.** Where a layer cannot reach a target yet, reaching it is
+    named milestone work (section 2.4). One reference image serves every target. A divergence between
     targets is a failing case until someone fixes it.
 
 ## 2. The bar
@@ -122,9 +136,10 @@ host capture as evidence, or let a host timeout stand in for a guest verdict. Th
 reads bytes from the stopped image with debugfs, is not used by any GUI suite. Persistence is proved inside the
 guest (section 18, Gus Kit and bfontpicker).
 
-### 2.4 Four targets: milestones, not exemptions
+### 2.4 Three targets: milestones, not exemptions
 
-Every case runs on ARM64 QEMU (HVF), x86-64 QEMU on a Linux host, Parallels and VMware. Where a layer cannot
+Every case runs on ARM64 QEMU (HVF), Parallels and VMware; x86-64 joins when the dedicated Breenix hardware box
+replaces the current x86 gate host, and is not a target until then. Where a layer cannot
 reach a target today, the plan names the work that gets it there and the milestone whose cases fail until it
 lands:
 
@@ -132,11 +147,9 @@ lands:
 |---|---|---|
 | Window, registry, input and mouse syscalls compiled only for aarch64 | arch-neutral window interface | `breengel/windows` |
 | ARM64 QEMU has no compositor backend; bwm exits | software compositor on virtio-gpu 2D | `breengel/composition` |
-| x86-64 has no window interface and no compositor | software compositor on the GOP framebuffer | `breengel/composition` |
 | VMware never composes client pixels (#1047) | software compositor into the SVGA3 screen target | `breengel/composition` |
 | Parallels has no proven in-guest observation of the composed frame | entry gate, then device readback or the software path (section 4.2) | `breengel/scanout` |
 | Modes differ per target (VMware observed at 1920x1200) | 1280x800 mode set on every backend | `breengel/scanout` |
-| x86-64 has no pointer device or driver | `virtio-tablet-pci` on the gate and the revived PCI virtio-input driver | `window-manager/input-devices` |
 | virtio-keyboard modifiers never reach bwm | modifier state derived in the input core | `window-manager/input-core` |
 
 A case that cannot run on a target prints FAIL with the reason. The design's allowance for a "per-target
@@ -665,7 +678,7 @@ metadata-only commit is presented by the composite that already holds its pixels
 ### 7.2 Capture points
 
 1. **Surface:** a case renders into a surface in its own process. Used for BreenGL's library categories, it
-   works on all four targets from the first day.
+   works on every target from the first day.
 2. **Window:** `capture_window` of a committed generation (section 3.1).
 3. **Screen:** `scanout_readback` with its observation record (section 4.1).
 
@@ -1159,8 +1172,8 @@ that commits a byte for output on the producing thread, below every wrapper and 
 ### 12.2 Numerical contracts
 
 Functional cases use deterministic counts: frames, epochs, operations, bytes. Real performance lives only in the
-`performance` categories and in the few named cases below. Every bound uses `CLOCK_MONOTONIC`, holds on all four
-targets, and is the contract. Changing a number takes an operator ruling recorded in this plan. A failing run
+`performance` categories and in the few named cases below. Every bound uses `CLOCK_MONOTONIC`, holds on every
+target, and is the contract. Changing a number takes an operator ruling recorded in this plan. A failing run
 is fixed by making the system faster, never by relaxing the bound. Boots run under the existing shared-host
 rules: `timingSensitive` records host load and does not wait for a quiet host (`docs/suites/README.md`).
 
@@ -1311,7 +1324,7 @@ Instead:
   vacuous `[bwm] Breenix Window Manager starting` marker is replaced by `[bwm] composited client frame`, which
   bwm prints only after a composite record lists a client commit. `[bterm] prompt composited` is printed only
   after bterm recognizes its shell's fixed prompt in a committed, composited frame. Desktop mode becomes a row
-  in the clean-main matrix on all four targets, and that row also requires `[init] test controls absent`, the
+  in the clean-main matrix on every GUI target, and that row also requires `[init] test controls absent`, the
   stage PID-1 init prints after it has verified that every test-control op returns ENOSYS (section 3.4). These
   stages are health signals, not effort measures; the production absence of test controls is checked by that
   row and by the production-profile boot gate, both on the real boot path.
@@ -1329,8 +1342,8 @@ gui-apps:                  terminal-emulation ─ bterm ─ blauncher ─ bfontp
                            ─ guskit-collab ─ bcheck ─ demos ─ desktop (integration last)
 ```
 
-Each effort starts after the previous one's milestones pass on all four targets. Within an effort the order
-above is the planned build order. A milestone counts as done when its cases pass on all four targets,
+Each effort starts after the previous one's milestones pass on every target it lists. Within an effort the order
+above is the planned build order. A milestone counts as done when its cases pass on every target the effort lists,
 whatever order the work landed in.
 
 ### 14.3 Early cases and what they rely on

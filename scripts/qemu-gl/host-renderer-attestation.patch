@@ -1,0 +1,141 @@
+Breenix host renderer attestation for the GL QEMU (scripts/build-qemu-gl.sh).
+
+When BREENIX_HOST_RENDERER_JSON names a file, QEMU's VirGL glue records the
+GL_VENDOR, GL_RENDERER and GL_VERSION of the GL context virglrenderer left
+current after creating each guest renderer context and after that context's
+first SUBMIT_3D, with the EGL display's vendor and version. The strings come
+from the process and context that execute the guest's commands.
+scripts/check-host-renderer.py judges the file. Without the variable QEMU
+behaves as UTM's build does.
+
+This patch modifies QEMU and is under QEMU's licence, GPL-2.0-or-later.
+
+--- a/hw/display/virtio-gpu-virgl.c
++++ b/hw/display/virtio-gpu-virgl.c
+@@ -561,6 +561,87 @@
+     QTAILQ_REMOVE(&g->reslist, &res->base, next);
+ 
+     g_free(res);
++}
++
++/*
++ * Breenix host renderer attestation.  When BREENIX_HOST_RENDERER_JSON names a
++ * file, record the GL_VENDOR, GL_RENDERER and GL_VERSION of the GL context that
++ * virglrenderer left current after creating each guest renderer context and
++ * after that context's first SUBMIT_3D: the context that executes the guest's
++ * commands, read in this process.  The file is rewritten whole after each record.
++ */
++static GString *breenix_attest_records;
++static GHashTable *breenix_attest_submitted;
++
++static void breenix_attest_json_str(GString *out, const char *s)
++{
++    if (!s) {
++        g_string_append(out, "null");
++        return;
++    }
++    g_string_append_c(out, '"');
++    for (; *s; s++) {
++        unsigned char c = *s;
++        if (c == '"' || c == '\\') {
++            g_string_append_c(out, '\\');
++            g_string_append_c(out, c);
++        } else if (c < 0x20) {
++            g_string_append_printf(out, "\\u%04x", c);
++        } else {
++            g_string_append_c(out, c);
++        }
++    }
++    g_string_append_c(out, '"');
++}
++
++static void breenix_attest(const char *event, uint32_t ctx_id)
++{
++    const char *path = getenv("BREENIX_HOST_RENDERER_JSON");
++    const char *vendor = NULL, *renderer = NULL, *version = NULL;
++    const char *egl_vendor = NULL, *egl_version = NULL;
++    g_autofree char *tmp = NULL;
++    g_autoptr(GString) doc = NULL;
++    GString *rec;
++
++    if (!path || !*path) {
++        return;
++    }
++    if (qemu_egl_display && eglGetCurrentContext() != EGL_NO_CONTEXT) {
++        vendor = (const char *)glGetString(GL_VENDOR);
++        renderer = (const char *)glGetString(GL_RENDERER);
++        version = (const char *)glGetString(GL_VERSION);
++        egl_vendor = eglQueryString(qemu_egl_display, EGL_VENDOR);
++        egl_version = eglQueryString(qemu_egl_display, EGL_VERSION);
++    }
++    if (!breenix_attest_records) {
++        breenix_attest_records = g_string_new(NULL);
++    }
++    rec = breenix_attest_records;
++    if (rec->len) {
++        g_string_append(rec, ",\n");
++    }
++    g_string_append_printf(rec, "    {\"event\": \"%s\", \"ctx_id\": %u, "
++                           "\"gl_vendor\": ", event, ctx_id);
++    breenix_attest_json_str(rec, vendor);
++    g_string_append(rec, ", \"gl_renderer\": ");
++    breenix_attest_json_str(rec, renderer);
++    g_string_append(rec, ", \"gl_version\": ");
++    breenix_attest_json_str(rec, version);
++    g_string_append(rec, ", \"egl_vendor\": ");
++    breenix_attest_json_str(rec, egl_vendor);
++    g_string_append(rec, ", \"egl_version\": ");
++    breenix_attest_json_str(rec, egl_version);
++    g_string_append(rec, "}");
++
++    doc = g_string_new(NULL);
++    g_string_append_printf(doc, "{\n  \"format\": 1,\n  \"pid\": %d,\n"
++                           "  \"records\": [\n%s\n  ]\n}\n",
++                           (int)getpid(), rec->str);
++    tmp = g_strdup_printf("%s.tmp", path);
++    if (!g_file_set_contents(tmp, doc->str, doc->len, NULL) ||
++        rename(tmp, path) != 0) {
++        error_report("virtio-gpu: cannot write %s", path);
++    }
+ }
+ 
+ static void virgl_cmd_context_create(VirtIOGPU *g,
+@@ -585,11 +666,13 @@
+                                                  cc.context_init,
+                                                  cc.nlen,
+                                                  cc.debug_name);
++        breenix_attest("context-create", cc.hdr.ctx_id);
+         return;
+ #endif
+     }
+ 
+     virgl_renderer_context_create(cc.hdr.ctx_id, cc.nlen, cc.debug_name);
++    breenix_attest("context-create", cc.hdr.ctx_id);
+ }
+ 
+ static void virgl_cmd_context_destroy(VirtIOGPU *g,
+@@ -601,6 +684,10 @@
+     trace_virtio_gpu_cmd_ctx_destroy(cd.hdr.ctx_id);
+ 
+     virgl_renderer_context_destroy(cd.hdr.ctx_id);
++    if (breenix_attest_submitted) {
++        g_hash_table_remove(breenix_attest_submitted,
++                            GUINT_TO_POINTER(cd.hdr.ctx_id));
++    }
+ }
+ 
+ static void virtio_gpu_rect_update(VirtIOGPU *g, int idx, int x, int y,
+@@ -748,6 +835,13 @@
+     }
+ 
+     virgl_renderer_submit_cmd(buf, cs.hdr.ctx_id, cs.size / 4);
++    if (!breenix_attest_submitted) {
++        breenix_attest_submitted = g_hash_table_new(NULL, NULL);
++    }
++    if (g_hash_table_add(breenix_attest_submitted,
++                         GUINT_TO_POINTER(cs.hdr.ctx_id))) {
++        breenix_attest("first-submit-3d", cs.hdr.ctx_id);
++    }
+ 
+ out:
+     g_free(buf);
