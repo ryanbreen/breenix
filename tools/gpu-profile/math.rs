@@ -1365,6 +1365,7 @@ fn main() {
     }
     let text = expand_sources(&text);
     let text = integer_words(&text, max_registers, &mut tokens);
+    let (text, constant_registers) = integer_constants(&text, max_registers + 3, &mut tokens);
     // T:649-688: a flow instruction may carry one instruction-label token.
     tokens += text
         .lines()
@@ -1378,7 +1379,7 @@ fn main() {
     println!(
         "combined bytes={} tokens={tokens} registers={}",
         text.len(),
-        max_registers + 3
+        max_registers + 3 + constant_registers
     );
     std::fs::write(
         destination.join("profile.tgsi"),
@@ -1581,4 +1582,96 @@ fn integer_words(text: &str, control: usize, tokens: &mut u32) -> String {
         }
     }
     out
+}
+
+/// Keep NaN-shaped literal words out of the renderer's floating constant folding.
+/// The encoder supplies CONST[4].z as integer 0. Starting from that uniform,
+/// construct each such word from two finite 16-bit immediates using L's integer ISA.
+#[cfg(not(test))]
+fn integer_constants(text: &str, first: usize, tokens: &mut u32) -> (String, usize) {
+    use std::fmt::Write;
+    let mut values = Vec::new();
+    let mut replacements = Vec::new();
+    let mut immediates = 0;
+    let mut declarations = String::new();
+    let mut body = String::new();
+    for line in text.trim_end_matches('\0').lines() {
+        if let Some(rest) = line.strip_prefix("IMM[") {
+            let end = rest.find(']').unwrap();
+            let index = rest[..end].parse::<usize>().unwrap();
+            immediates = immediates.max(index + 1);
+            let start = line.find('{').unwrap();
+            let end = line.find('}').unwrap();
+            let mut words: Vec<u32> = line[start + 1..end]
+                .split(", ")
+                .map(|s| s.parse().unwrap())
+                .collect();
+            for (component, word) in words.iter_mut().enumerate() {
+                if *word & 0x7f800000 == 0x7f800000 && *word & 0x7fffff != 0 {
+                    let slot = values.iter().position(|v| v == word).unwrap_or_else(|| {
+                        values.push(*word);
+                        values.len() - 1
+                    });
+                    let c = ["xxxx", "yyyy", "zzzz", "wwww"][component];
+                    replacements.push((
+                        format!("IMM[{index}].{c}"),
+                        format!("TEMP[{}].xxxx", first + slot),
+                    ));
+                    *word = 0;
+                }
+            }
+            writeln!(
+                declarations,
+                "{}{{{}, {}, {}, {}}}",
+                &line[..start],
+                words[0],
+                words[1],
+                words[2],
+                words[3]
+            )
+            .unwrap();
+        } else if line.starts_with("FRAG") || line.starts_with("DCL") {
+            writeln!(declarations, "{line}").unwrap();
+        } else {
+            writeln!(body, "{line}").unwrap();
+        }
+    }
+    for (old, new) in replacements {
+        body = body.replace(&old, &new);
+    }
+    let mut initialization = String::new();
+    for (i, word) in values.iter().enumerate() {
+        let immediate = immediates + i;
+        writeln!(
+            declarations,
+            "IMM[{immediate}] UINT32 {{{}, {}, 16, 0}}",
+            word >> 16,
+            word & 65535
+        )
+        .unwrap();
+        let r = first + i;
+        writeln!(
+            initialization,
+            "UADD TEMP[{r}].x, CONST[4].zzzz, IMM[{immediate}].xxxx"
+        )
+        .unwrap();
+        writeln!(
+            initialization,
+            "SHL TEMP[{r}].x, TEMP[{r}].xxxx, IMM[{immediate}].zzzz"
+        )
+        .unwrap();
+        writeln!(
+            initialization,
+            "OR TEMP[{r}].x, TEMP[{r}].xxxx, IMM[{immediate}].yyyy"
+        )
+        .unwrap();
+        *tokens += 5 + 3 * 4;
+    }
+    let old = format!("DCL TEMP[0..{}]", first - 1);
+    let new = format!("DCL TEMP[0..{}]", first + values.len() - 1);
+    declarations = declarations.replace(&old, &new);
+    declarations.push_str(&initialization);
+    declarations.push_str(&body);
+    declarations.push('\0');
+    (declarations, values.len())
 }

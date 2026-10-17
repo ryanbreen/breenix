@@ -606,12 +606,12 @@ replicated swizzle, as B10 establishes. The file is generated with
 `taskpolicy -b "$GENERATOR" "$CHECKOUT/kernel/src/gpu/virgl/profile"`, with CARGO_BUILD_JOBS=4 exported; GENERATOR and CHECKOUT are absolute paths.
 The integer model and generator share operations; the suite's literal expectations share neither.
 
-The current token capacity is 23,165: 13 header/declaration words, 137×5 immediate words,
-22,434 instruction/register words, and a 33-word allowance for the control instructions' optional label
-tokens (T:649–688). The text plus terminator is 251,697 bytes, below P:157–158's command payload limit.
+The current token capacity is 23,233: 13 header/declaration words, 141×5 immediate words,
+22,482 instruction/register words, and a 33-word allowance for the control instructions' optional label
+tokens (T:649–688). The text plus terminator is 252,216 bytes, below P:157–158's command payload limit.
 The earlier B10 candidate at `09922c96` had capacity 21,940 and 240,200 text bytes including its terminator;
 its rejected 21,257 field omitted 130×5 immediate words and the label allowance. B10 records those original
-inputs; B11 records the revised integer-only selection program. These capacities are layout-derived
+inputs; B11 records the integer-only selection program at `41766187`, and B12 the runtime literal construction. These capacities are layout-derived
 allocation budgets, not pixel-correctness claims.
 
 ## B10: G4 shader-text grammar experiments
@@ -665,10 +665,48 @@ Its partial products remain 16×16 (section 1.5); dropping terms above bit 95 ch
 native product test above checks this truncation. This reduction leaves room for the integer selection
 instructions within one VirGL command, without changing the probe's work limit or its literal expectations.
 
-The public renderer harness, pin, environment and invocation are B10's, with CHECKOUT denoting the current
-source. `profile-grammar.py` adds one change to the small B10 baseline: replace its UADD opcode with USNE
+The public renderer harness, pin, environment and invocation are B10's, with CHECKOUT denoting commit `41766187` in this section. `profile-grammar.py` adds one change to the small B10 baseline: replace its UADD opcode with USNE
 (capacity 25). Output: `G4 unsigned inequality ACCEPT 0`. L defines USNE at line 1481; its enumeration is
 T:497 and its instruction and operand layouts are T:649–661 and 752–803. The six other experiments return
-their B10 results; `G4 combined baseline ACCEPT 0` now refers to the current generated text, capacity
+their B10 results; `G4 combined baseline ACCEPT 0` here refers to that commit’s generated text, capacity
 23,165, 44 temporary registers and 251,697 bytes including the NUL. This is grammar acceptance, not a
 substitute for the profile cases' device readback.
+
+
+## B12: NaN-shaped word literals
+
+A renderer behavior experiment isolated an expression whose inputs are integer immediates:
+`150 XOR 0xffffffff` returned `0x7fc00000`, rather than the integer result `0xffffff69`.
+The public API experiment is `tools/gpu-experiments/profile-words.py`, run with B10's unmodified renderer,
+pin and environment. Reproduce with
+`QEMU_GL_FRAMEWORKS="$FRAMEWORKS" DYLD_LIBRARY_PATH="$FRAMEWORKS" DYLD_FRAMEWORK_PATH="$FRAMEWORKS" taskpolicy -b python3 "$CHECKOUT/tools/gpu-experiments/g3-egl.py" "$CHECKOUT/tools/gpu-experiments/profile-words.py"`.
+The harness creates a one-pixel BGRA render target, draws a rectangle, transfers that device pixel through
+the public read API, and decodes its raw word. The packet fields retain their P/D/H sources above.
+
+The first candidate is the literal `header + immediates + XOR + pack` in that file: integer immediate
+150, UINT_MAX, integer XOR, byte extraction by USHR and AND, U2F and normalization by binary32 1/255.
+Its capacity is 68 tokens: header/declarations 9, three immediates 15, XOR 4, eight byte-extraction
+instructions 32, U2F 3, MUL 4 and END 1. The second candidate changes the UINT_MAX immediate to 0 and
+constructs that operand with UADD of the uniform containing 0 and 65535, SHL by 16, and OR with 65535; its capacity
+is 80. The output was:
+
+```text
+G4 raw literal XOR 7fc00000
+G4 runtime literal XOR ffffff69
+G4 repaired routine 15 80000000
+G4 repaired routine 21 00000001
+```
+
+The last two lines use the committed combined shader, with the exact operands specified in the script:
+binary32 truncation of `0xcf000000`, and outline membership at `(INT_MAX,1)` for a circle centred at (0,0)
+with radius INT_MAX. These observations localize the literal-expression hazard; attributing it to floating
+constant folding is an inference, not implementation-code evidence. They do not change the required word
+results or substitute for the guest suite.
+
+The generator now replaces references to the four NaN-shaped literal words (UINT_MAX, `0x7fffffff`,
+`0x7fc00000` and `0xffffff81`) with dedicated temporaries, constructing their bits from finite 16-bit
+immediates using the second candidate's integer sequence. CONST[4].z is the draw's supplied 0 word;
+its seed keeps the construction at runtime. The old immediate components become 0. Four registers
+above the model and selection registers hold these words, giving 48 temporaries in the combined shader.
+Its capacity and byte length are recorded above. The seven B11 grammar experiments returned their stated
+results on this revised candidate, including `G4 combined baseline ACCEPT 0` at capacity 23,233.
