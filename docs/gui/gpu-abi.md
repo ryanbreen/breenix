@@ -2,9 +2,10 @@
 
 `docs/gui/gpu.md` section 1.4 fixes syscall 416's ops, their errno rules and what each op does. This
 document fixes what that section leaves to the implementation: each op's argument layout, the BGL
-command stream `SUBMIT` carries, and the codes the kernel reports. It adds to the contract and changes
-none of its rules. The single definition in code is the `gpu-abi` crate (`libs/gpu-abi`, from G1), which
-the kernel and libbreenix share; the suite checks the layouts at the offsets given here.
+command stream `SUBMIT` carries, and the codes the kernel reports. It specifies the layouts alongside
+the contract; the asynchronous catalogue warm-up amendment (ruling 33, #1725) is stated in both documents.
+The single definition in code is the `gpu-abi` crate (`libs/gpu-abi`, from G1), which the kernel and
+libbreenix share; the suite checks the layouts at the offsets given here.
 
 Every structure is little-endian with the offsets shown. `len` must equal the structure's size;
 reserved fields and output fields are zero on the way in (EINVAL otherwise) and the kernel writes
@@ -70,8 +71,11 @@ Pipelines are numbered in the catalogue table's order (`docs/gui/gpu.md` section
 `format` uses the same numbers).
 
 **`CONTEXT_CREATE` (32 bytes):** `handle: u64` out, `flags: u32` (0), `warmed: u32` out (the
-fixed rendering-catalogue programs creation compiled and warmed, excluding `probe_int`), 16 reserved.
-EAGAIN past 8 contexts per process. The profile-only `probe_int` program is compiled and warmed on the
+number of fixed rendering-catalogue programs warmed at the time of the result, excluding `probe_int`),
+16 reserved. EAGAIN past 8 contexts per process. Creation queues catalogue compilation and warm-up on the
+GPU worker and returns without waiting for it; `warmed` is a progress snapshot, not the completion signal.
+Query `COUNTERS` with this context's handle to observe warm-up completion (state 0); state 3 means the
+context is live and still warming. The profile-only `probe_int` program is compiled and warmed on the
 first PROBE in that context; that first PROBE's cost is excluded from performance bounds. The watchdog
 and kill bounds still apply (`docs/gui/gpu.md` section 1.4.1).
 
@@ -142,7 +146,11 @@ translation read only that copy (`docs/gui/gpu.md` section 1.4.1). A refused str
 EDQUOT for the work cap, with the failing command's index and its code written back.
 Validation scratch allocation is fallible: exhaustion returns ENOMEM with error code 22. A context that is not
 live (quarantined or reset) returns EIO. With four submissions in flight the call waits for one to
-complete; a signal ends that wait with EINTR, and a kill within 250 ms.
+complete; a signal ends that wait with EINTR, and a kill within 250 ms. A warming context accepts
+submissions: a draw waits only for its own pipeline if that pipeline is still warming, without a
+catalogue-wide barrier or a wait for unrelated pipelines. The same watchdog and kill bounds apply to
+this wait. Work-estimate weights, case deadlines and `WAIT`/fence semantics are unchanged (ruling 33,
+#1725).
 
 **`WAIT` (48 bytes):** `context: u64`, `fence: u64`, `timeout_ns: u64` (0 polls), `status: u32` out,
 `answer: u32` out, 16 reserved. Returns 0 when the fence completed OK; EIO with `status` and `answer`
@@ -227,10 +235,18 @@ operation; G7 adds modes, flipping and the ownership stack.
 draws 16, instances 24, fragment area 32, work estimate 40, image upload bytes 48, fixture upload bytes 56
 (the source bytes `UPLOAD` read, by purpose),
 readbacks 64, ring waits 72 (submissions that waited because four were in flight), device errors 80,
-state 88 (a context's: 0 live, 1 quarantined, 2 reset), contexts 96 (the process's live handles),
+state 88 (a context's: 0 live with catalogue warm-up complete, 1 quarantined, 2 reset,
+3 live with catalogue warm-up in progress), contexts 96 (the process's live handles),
 device contexts 104 (the process's device contexts not yet destroyed, including destroyed handles whose
 work is outstanding), resources 112, resource bytes 120 (`resource_bytes`: guest backing held,
 including temporary `UPLOAD` and `READBACK` staging charged to the process), warmed 128; reserved to 256.
+For a context, `warmed` counts programs whose warm-up completed, including `probe_int` after its first
+PROBE; it is not the completion signal for the rendering catalogue. A query with a nonzero context handle
+reports that context's warm-up state without waiting for warm-up. State 0 is reported only once its
+fixed rendering catalogue has warmed; state 3 permits the same operations as state 0, with the
+per-pipeline draw wait described above. A warm-up failure follows the existing quarantine/reset rules
+and does not report completion. `performance/first-draw-latency` measures a draw issued after the context
+reports state 0; neither its 10 ms bound nor case deadlines or work-estimate weights change.
 A clear counts as one draw of one instance covering the target.
 
 ## The BGL command stream
