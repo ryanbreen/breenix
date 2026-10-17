@@ -304,8 +304,9 @@ def boot_dir(boot_id):
     return STATE / 'boots' / boot_id
 
 
-def event(directory, kind, **fields):
-    append_jsonl(Path(directory) / 'events.jsonl', dict(fields, t=round(now(), 3), event=kind))
+def event(directory, kind, *, observed_at=None, **fields):
+    stamp = now() if observed_at is None else observed_at
+    append_jsonl(Path(directory) / 'events.jsonl', dict(fields, t=round(stamp, 3), event=kind))
 
 
 def phase(directory, text):
@@ -488,17 +489,31 @@ def _ipv4(match):
 
 class Redactor:
     def __init__(self, site):
+        self.identifiers = sorted(identifier_list(site), key=len, reverse=True)
+        # Short configuration values (slots, switches, counters) do not name
+        # a private entity. Explicit identifiers and credentials still count.
         literals = {value for key, value in site.items()
-                    if value}
+                    if value and (len(value) >= 4 or SECRET_KEYS.search(key) or value in self.identifiers)}
         for value in list(literals):
             # The complete URL, host and path are site literals independently.
             if '://' in value:
                 parts = urlsplit(value)
                 literals.update(part for part in (parts.netloc, parts.hostname, parts.path, *parts.path.split("/"))
                                 if part and part != "/")
-        self.identifiers = sorted(identifier_list(site), key=len, reverse=True)
         self.literals = sorted(literals | set(self.identifiers), key=len, reverse=True)
-        self.pattern = re.compile('|'.join(re.escape(value) for value in self.literals), re.I) if self.literals else None
+        # Match site values as complete tokens, preserving clock times and hashes.
+        # Keep punctuation inside a token (host names, paths and credential strings included).
+        secrets = {value for key, value in site.items() if SECRET_KEYS.search(key) and value}
+        patterns = []
+        for value in self.literals:
+            if value in secrets and len(value) >= 4:
+                patterns.append(rf'(?<!\w){re.escape(value)}(?!\w)')
+            else:
+                # Colons delimit named identifiers (host:port, user:name),
+                # but join digits in clock times and ratios.
+                joiner = r'[./:@%+~-]' if len(value) < 4 or value.isdecimal() else r'[./@%+~-]'
+                patterns.append(rf'(?<!\w)(?<!\w{joiner}){re.escape(value)}(?!\w|{joiner}\w)')
+        self.pattern = re.compile('|'.join(patterns), re.I) if patterns else None
         # One pass protects addresses from short site literals and replacement labels from later substitutions.
         mac = MAC.pattern.replace('([:-])', '(?P<mac_sep>[:-])').replace(r'\1', '(?P=mac_sep)')
         patterns = [('path', PRIVATE_PATH.pattern), ('mac', mac), ('ip6', IPV6.pattern), ('ip', IPV4.pattern)]
@@ -537,7 +552,7 @@ def expected_bios(site):
     expected = {
         'HttpDev1EnDis': 'Enabled', 'HttpDev1Interface': site['HTTP_DEV_INTERFACE'], 'HttpDev1Protocol': 'IPv4',
         'HttpDev1VlanEnDis': 'Disabled', 'HttpDev1TlsMode': 'None', 'HttpDev1Uri': site['BOOT_URL'],
-        'SerialComm': 'OnConRedirCom1', 'ErrPrompt': 'Disabled', 'AcPwrRcvry': 'Off', 'EmbSata': 'AhciMode',
+        'SerialComm': 'OnConRedirCom1', 'ErrPrompt': 'Disabled', 'AcPwrRcvry': 'Off', 'EmbSata': site.get('SATA_MODE', 'AhciMode'),
     }
     if site.get('HTTP_DEV_ADDRESSING', 'dhcp') == 'static':
         expected.update(HttpDev1DhcpEnDis='Disabled', HttpDev1DnsDhcpEnDis='Disabled', HttpDev1Ip=site['HTTP_DEV_IP'],

@@ -129,6 +129,7 @@ class Queue:
             delay = self.last_end + SPACING_SECONDS - time.monotonic()
             if delay > 0:
                 time.sleep(delay)
+            started_at = m.now()
             try:
                 if request.get('op') == 'redfish':
                     reply = self.controller.redfish(request['method'], request['path'], request.get('body'))
@@ -140,6 +141,7 @@ class Queue:
                 reply = {'ok': False, 'error': f'{error.__class__.__name__}: {error}'}
             self.last_end = time.monotonic()
             self.count += 1
+            reply.update(startedAt=started_at, completedAt=m.now())
             slot['reply'] = reply
             done.set()
 

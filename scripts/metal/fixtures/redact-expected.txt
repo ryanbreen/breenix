@@ -6,4 +6,4 @@ logged in using <site> from <site>
 password <site> leaked
 host <site> container <site> service tag <site> model <site>
 paths <path> <path> <path> <path> <path>
-kept: at 12:<site>4:56 the kernel printed [timer] 1000 Hz, version 1.2.<site>, ratio <site>:2, code 0x7f
+kept: at 12:34:56 the kernel printed [timer] 1000 Hz, version 1.2.3, ratio 3:2, code 0x7f

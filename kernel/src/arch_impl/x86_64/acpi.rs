@@ -1,9 +1,11 @@
-//! Fixed-table ACPI reader: RSDP -> RSDT/XSDT -> MADT processor entries.
+//! Fixed-table ACPI reader: RSDP -> RSDT/XSDT -> MADT processor entries, and
+//! the SPCR's console UART.
 //!
 //! Scope, stated so the boundary is not inferred from the name: this module
-//! READS four fixed tables and reports what they say. It programs no APIC
+//! READS five fixed tables and reports what they say. It programs no APIC
 //! register, starts no processor, installs no mapping, and interprets no AML.
-//! It supplies processor enumeration and interrupt topology to `smp` and `irq`.
+//! It supplies processor enumeration and interrupt topology to `smp` and `irq`,
+//! and the console UART to `serial` (`read_spcr_port`).
 //!
 //! ## Why it needs no mapping of its own
 //!
@@ -527,6 +529,103 @@ fn census_of_madt(
     }
 
     Ok(census)
+}
+
+/// Bytes of an SPCR through its base address: the SDT header, the interface
+/// type, three reserved bytes and the 12-byte Generic Address Structure, per
+/// Microsoft's published Serial Port Console Redirection Table specification.
+const SPCR_MIN_LENGTH: u32 = 52;
+
+/// SPCR interface types a 16550 driver serves: a full 16550, a full 16450, and
+/// a 16550-compatible UART whose registers the base address describes.
+const SPCR_16550_INTERFACES: [u8; 3] = [0x00, 0x01, 0x12];
+
+/// The Generic Address Structure's address space id for system I/O ports.
+const GAS_SYSTEM_IO: u8 = 1;
+
+/// The I/O port of the console UART the firmware's SPCR names, when it names a
+/// 16550-class UART in I/O space. An absent SPCR, a UART of another kind or in
+/// memory space, and a refused table give no port
+/// (`tests/x86_madt_reader_bounds.rs`).
+pub fn read_spcr_port(rsdp_phys: Option<u64>, physical_memory_offset: u64) -> Option<u16> {
+    let reader = PhysReader::new(physical_memory_offset);
+    let (spcr, length) = find_table(&reader, rsdp_phys?, b"SPCR")?;
+    if length < SPCR_MIN_LENGTH {
+        return None;
+    }
+    let interface = reader.u8_at(spcr + 36)?;
+    if !SPCR_16550_INTERFACES.contains(&interface) || reader.u8_at(spcr + 40)? != GAS_SYSTEM_IO {
+        return None;
+    }
+    let address = reader.u64_at(spcr + 44)?;
+    u16::try_from(address).ok().filter(|&port| port != 0)
+}
+
+/// One firmware-described PCI configuration aperture (PCI Firmware
+/// Specification, MCFG allocation structure). Reading this is inventory only;
+/// it does not map ECAM or replace the PCI configuration mechanism.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct McfgAllocation {
+    pub base: u64,
+    pub segment: u16,
+    pub first_bus: u8,
+    pub last_bus: u8,
+}
+
+/// Visit the allocations in a checksum-validated MCFG, refusing malformed
+/// lengths, reversed bus ranges, unaligned bases and overflowing apertures.
+pub fn read_mcfg(
+    rsdp_phys: Option<u64>,
+    physical_memory_offset: u64,
+    mut visit: impl FnMut(McfgAllocation),
+) -> Option<usize> {
+    let reader = PhysReader::new(physical_memory_offset);
+    let (table, length) = find_table(&reader, rsdp_phys?, b"MCFG")?;
+    if length < 44 || (length - 44) % 16 != 0 {
+        return None;
+    }
+    let count = (length - 44) / 16;
+    // Validate the table before publishing allocations.
+    let allocation = |index: u32| -> Option<McfgAllocation> {
+        let at = table + 44 + u64::from(index) * 16;
+        let base = reader.u64_at(at)?;
+        let segment = u16::from_le_bytes([reader.u8_at(at + 8)?, reader.u8_at(at + 9)?]);
+        let first_bus = reader.u8_at(at + 10)?;
+        let last_bus = reader.u8_at(at + 11)?;
+        if base == 0 || base & 0xfffff != 0 || first_bus > last_bus {
+            return None;
+        }
+        base.checked_add((u64::from(last_bus) + 1) << 20)?;
+        Some(McfgAllocation { base, segment, first_bus, last_bus })
+    };
+    for index in 0..count { allocation(index)?; }
+    for index in 0..count { visit(allocation(index)?); }
+    Some(count as usize)
+}
+
+/// The first root-table entry carrying `signature` whose header and checksum
+/// are sound, with its declared length. The walk is capped by
+/// `MAX_ROOT_ENTRIES`, as `read_madt`'s is.
+fn find_table(reader: &PhysReader, rsdp_phys: u64, signature: &[u8; 4]) -> Option<(u64, u32)> {
+    let (root_phys, entry_width) = root_table(reader, rsdp_phys).ok()?;
+    let root_signature: &[u8; 4] = if entry_width == 8 { b"XSDT" } else { b"RSDT" };
+    let root_length = sdt_length(reader, root_phys, root_signature)?;
+    let entry_count = ((root_length - SDT_HEADER_LENGTH) as u64 / entry_width) as usize;
+    for index in 0..entry_count.min(MAX_ROOT_ENTRIES) {
+        let entry_at = root_phys + u64::from(SDT_HEADER_LENGTH) + (index as u64) * entry_width;
+        let table_phys = if entry_width == 8 {
+            reader.u64_at(entry_at)?
+        } else {
+            u64::from(reader.u32_at(entry_at)?)
+        };
+        if !reader.readable(table_phys, u64::from(SDT_HEADER_LENGTH)) {
+            continue;
+        }
+        if reader.signature_is(table_phys, signature) == Some(true) {
+            return sdt_length(reader, table_phys, signature).map(|length| (table_phys, length));
+        }
+    }
+    None
 }
 
 /// Read the firmware's processor enumeration.

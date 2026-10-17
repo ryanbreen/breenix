@@ -30,19 +30,33 @@ start of the next, power requests ahead of the rest. claim-lint:ok: the queue is
 The server's firmware HTTP boot device has a **fixed URI**, set once in the BIOS; it takes its own address by DHCP,
 so the network's DHCP server is left as it is. Each boot changes what that URI serves, not the BIOS.
 
-The firmware accepts a bare EFI binary (`application/efi`). The pinned bootloader expects its kernel,
-`boot.json` and optional `ramdisk` on a FAT device. The original delivery probe packed those files into a GPT
-`boot.img` with one FAT32 EFI system partition. This firmware refused that RAM-disk form on `HEAD`, before a
-`GET`; the ISO and redirect probes were refused too. Bare `metal-hang.efi` was fetched and started.
-claim-lint:ok: 7 of 7 RAM-disk boots refused and 4 of 4 bare-EFI boots fetched, in "Measured".
+The firmware boots only a bare EFI binary (`application/efi`) over HTTP: it refused the RAM-disk image and ISO forms
+on `HEAD`, before a `GET`, and fetched and started bare `metal-hang.efi`. claim-lint:ok: 7 of 7 RAM-disk and ISO
+boots refused and 4 of 4 bare-EFI boots fetched, in "Measured". The pinned bootloader, though, loads its kernel,
+`boot.json` and `ramdisk` from the FAT file system on the device it was itself loaded from. So a Breenix boot
+serves **`boot.efi`**: the delivery stub, `metal-efi-stub` (`scripts/metal/efi-stub`), with the boot disk appended.
 
-The coordinator's delivery ruling approves a clean-room Breenix EFI stub, written from the UEFI specification,
-served as `application/efi`. It will register the ESP image through `EFI_RAM_DISK_PROTOCOL` and connect controllers
-when that firmware protocol is available; otherwise it will expose BlockIo and a device path itself. The image
-may be embedded or fetched through firmware HTTP. L3 builds the stub first and must demonstrate row (a), main's kernel
-reaching delivery. L0 lands on the machine proofs for rows (b)–(f). The Enterprise licence remains ruled "not yet"; the stub work is tracked in #1681.
-The current `image` payload is the original RAM-disk probe and still ends in delivery with exit 2; it is not a
-working Breenix delivery path until L3 integrates the stub.
+- **The boot disk** is a GPT disk with one FAT EFI system partition holding the bootloader as
+  `efi/boot/bootx64.efi`, `kernel-x86_64` and `boot.json` (copied out of the kernel build's UEFI image) and
+  the ext2 root as `ramdisk` by default, including before the kernel consumes it. The root image determines
+  the payload size.
+- **The stub** is a PE32+ EFI application written only from the UEFI and PE/COFF specifications. `metal-build`
+  builds it from the deployed tools' copy, not the commit's, so any commit's kernel is delivered the same way. The
+  image step (`stub_efi` in `scripts/metal/metal_image.py`) appends the disk as a read-only section, `.bimg`, and
+  fills in a record in the stub's data with the disk's distance from the record and its length.
+- **At boot** the stub registers the disk with the firmware's RAM disk protocol (`EFI_RAM_DISK_PROTOCOL`, as a
+  virtual disk) when the firmware has one; otherwise it installs a read-only Block I/O protocol and a RAM disk
+  device path for the disk itself. It connects the disk's controller recursively, so the firmware's partition and
+  FAT drivers bind to it, finds the file system whose device path extends the disk's, and loads and starts
+  `\EFI\BOOT\BOOTX64.EFI` from it by device path. The bootloader's own device is then that FAT volume, and it
+  finds its files there unchanged.
+- **Its lines** start `metal-stub:` and go to COM1, the SOL UART: the firmware vendor and revision and the disk's
+  size, which path attached the disk, the drivers' connection, the volume, and `starting the bootloader`. A step
+  that fails prints `metal-stub: FAILED: status ...` and halts; the driver ends the boot there as a delivery failure
+  (exit 2).
+
+The Enterprise licence remains ruled "not yet". The RAM-disk and ISO probe payloads (`hang-img`, `hang-iso`) remain
+for re-probing the firmware's image forms.
 
 The image server (`metal-http`) has one route. While a boot has an image staged that has not yet been sent in full,
 the route answers `HEAD` and `GET` (whole, or one byte range per request: `206` with `Content-Range`, `416` for a
@@ -61,9 +75,22 @@ was removed from `post-times.json`.
 ## The console
 
 SOL reads the server's console UART, COM1 at I/O port 0x3F8. POST and firmware text reach it (BIOS console
-redirection on COM1), and so does the bootloader's log. The kernel's own log and its boot-path stage markers go to
-COM2 today (`kernel/src/serial.rs`), so after the bootloader's handoff a production kernel is silent on SOL; moving
-the kernel log onto the console UART is the `first-light` lane's work.
+redirection on COM1), and so do the delivery stub's and the bootloader's lines.
+
+**The kernel log follows the console rule** (`select_log_port` in `kernel/src/serial.rs`), decided before the
+kernel's first log line is written out:
+
+1. The 16550-class UART the firmware's ACPI SPCR names in I/O space (`read_spcr_port` in
+   `kernel/src/arch_impl/x86_64/acpi.rs`, from Microsoft's published SPCR specification).
+2. Without a usable SPCR, under QEMU (fw_cfg present), COM2, apart from the user console on COM1.
+3. Otherwise COM1, where the firmware and the bootloader already print.
+
+The kernel reports the choice as `[console] uart <port> source=<fw_cfg|spcr|default>`. When the log shares COM1 with
+the user console, whole log lines move from the log ring into COM1's transmit queue as kernel units, with CR LF line
+ends for the remote terminal: the UART has one writer, and output from userspace or the kernel's serial console
+starts a fresh line rather than landing inside a log line (`queue_log_line`). A boot-path stage line is still never
+dropped by the ring (`log_ring`). claim-lint:ok: 0 of 683 kernel-side lines split in first-light boot
+20261017T040009Z-metal, in "Measured".
 
 The driver clears any stale SOL session, opens one in a tmux pane it owns, and powers on only after the session's
 banner has arrived in its capture files. The pane is held silent until its output is piped to the capture, so
@@ -85,9 +112,10 @@ soon as the unit holds, or waits for, the machine lease, so the caller's ssh ses
    the effort-target guard from a freshly fetched origin/main (`--target x86-metal` once origin/main's guard knows that target; until then
    `--target x86`, recorded as the stand-in), the pinned Rust library snapshotted into the tree as the x86 gate does,
    userspace and the ext2 root through `scripts/gate-artifacts.py` (content-keyed and shared with the x86 gate), then
-   the production kernel (no features) and its UEFI image, refused on any warning. The inputs are streamed into the
-   boot's stage folder; the driver assembles `boot.img`, reads each component back out of it and records sizes and
-   sha256s. The commit's definition files (`docs/metal/boot-path.json` when it exists, `docs/boot-path.json`,
+   the production kernel (no features) and its UEFI image, then the delivery stub from the deployed tools, each
+   refused on any warning. The inputs are streamed into the boot's stage folder; the driver assembles the boot disk,
+   reads each component back out of it, appends the disk to the stub as `boot.efi` and records sizes and sha256s.
+   The commit's definition files (`docs/metal/boot-path.json` when it exists, `docs/boot-path.json`,
    `xtask/src/boot_stages.rs`, the x86 stage export) are copied into the boot's `definition/`. Test payloads need no
    build: `metal-hang.efi` (below), or an empty stage.
 3. **Pre-flight**, read-only: the power state, the boot override clear, the management NIC dedicated, IPMI and SOL
@@ -120,10 +148,10 @@ in "Measured".
 | Power-on to the image request | Firmware text, POST code, boot progress | The POST budget passes with no request; or a boot-progress state new since power-on reads "No bootable devices" | 124, 2 |
 | The request was refused (no image staged) | — | 30 s of capture after the 404 | 2 |
 | Download | Bytes moving in the server's log | No bytes for 15 s; not complete 60 s after the first byte; a complete transfer with the wrong sha256 | 2 |
-| Download to bootloader | `UEFI bootloader started` (a test payload: its own line) | Not seen within 60 s of a complete transfer | 2 |
+| Download to bootloader | `UEFI bootloader started` (a test payload: its own line) | Not seen within 60 s of a complete transfer; the delivery stub's `metal-stub: FAILED` line | 2 |
 | Bootloader to handoff | New console bytes | 120 s of silence | 124 |
 | Kernel (after `Jumping to kernel entry point at`) | New console bytes | 120 s of silence; a `fatal` pattern from the boot's own definition (stopped 5 s later, so the backtrace lands); a reset: a second bootloader banner, an image request after the transfer, or boot progress returning to a state other than `OSBootStarted` or `OSRunning` (which the firmware reports once a boot option runs) | 124, 1, 1 |
-| Mode finished | The mode's final marker, from the boot's own `docs/metal/boot-path.json` | Boot mode: 5 minutes after handoff with the marker missing | 0, else 1 |
+| Mode finished | The mode's final marker, from the boot's own `docs/metal/boot-path.json`: the last stage of the newest milestone the mode measures, a stub milestone excepted | Boot mode: 5 minutes after handoff with the marker missing | 0, else 1 |
 | Whole attempt | — | 15 minutes from power-on (enforced by the reaper as well) | 124 |
 
 **The POST budget** is 10 minutes from power-on until three power-on-to-request intervals are measured, then twice
@@ -220,7 +248,7 @@ when each row matches). They are firmware and controller settings; they write no
 | `SerialComm` | `OnConRedirCom1` | Firmware text on the SOL UART (`SerialPortAddress=Serial1Com2Serial2Com1`, kept, puts the SOL device at COM1) |
 | `ErrPrompt` | Disabled | POST does not stop for an error prompt |
 | `AcPwrRcvry` | Off | After a power cut the machine stays off |
-| `EmbSata` | `AhciMode` | SATA enabled without RAID |
+| `EmbSata` | Site `SATA_MODE` (default `AhciMode`) | The current operator policy selects `Off`; pre-flight checks the selected value |
 | IPMI over LAN | Enabled | SOL's transport and the reaper's second power-off path |
 | Lifecycle Controller `CollectSystemInventoryOnRestart` | Disabled | Shorter POST |
 | An automation account | Administrator role, SOL and IPMI LAN privilege | Revocable apart from the operator's own login; its credential lives only in the site file |
@@ -248,7 +276,7 @@ seen after 3 of 3 settings jobs in L0's setup records.
 ## Files
 
 The **site file** (inside the service container, 0600): `IDRAC_HOST`, `IDRAC_USER`, `IDRAC_PASSWORD`,
-`IDRAC_ACCOUNT_SLOT`, `BOOT_URL`, `HTTP_LISTEN_PORT`, `HTTP_DEV_INTERFACE`, `HTTP_DEV_ADDRESSING` (`dhcp`, or
+`IDRAC_ACCOUNT_SLOT`, `SATA_MODE` (`Off` for the current disk policy), `BOOT_URL`, `HTTP_LISTEN_PORT`, `HTTP_DEV_INTERFACE`, `HTTP_DEV_ADDRESSING` (`dhcp`, or
 `static` with `HTTP_DEV_IP`, `HTTP_DEV_MASK`, `HTTP_DEV_GATEWAY`) and `REDACT_IDENTIFIERS`. It must also be valid
 `sh`, because `metal-sol` sources it.
 
@@ -267,7 +295,8 @@ metal-setup apply                                 # in the container, under the 
 On the boot host:
 
 ```
-python3 ~/.local/share/breenix-metal/metal-run boot                      # origin/main's kernel as boot.img
+python3 ~/.local/share/breenix-metal/metal-run boot                      # origin/main's kernel as boot.efi
+python3 ~/.local/share/breenix-metal/metal-run boot --ramdisk            # explicit spelling of the default RAM-disk root
 python3 ~/.local/share/breenix-metal/metal-run boot --branch NAME        # a pushed branch (in-progress evidence)
 python3 ~/.local/share/breenix-metal/metal-run boot --payload hang       # metal-hang.efi
 python3 ~/.local/share/breenix-metal/metal-run boot --payload none       # nothing staged
@@ -286,7 +315,9 @@ implemented here; the shell, probe and suite modes arrive with the lanes that wr
 
 `scripts/metal/redact` masks IPv4 and IPv6 addresses, MAC addresses, the literal values in the site file (and the
 host and path parts of its URLs), its identifier list (`REDACT_IDENTIFIERS`, plus the site's user and host names) and
-private paths (home folders, `/root`, the boot store, the site folder, clone paths). It is applied wherever text
+private paths (home folders, `/root`, the boot store, the site folder, clone paths). Site literals match whole
+tokens. Short non-identifying settings such as numeric account slots are kept; explicit identifiers and credentials
+remain masked even when short. It is applied wherever text
 leaves the private record: phone payloads, notifications, attempt rows and lines quoted in a pull request or issue.
 `redact --list` prints the identifier list without the credential. The shared fixture is `redact-site.env`,
 `redact-input.txt` and `redact-expected.txt` in `scripts/metal/fixtures/`: each category passes through the
@@ -330,9 +361,50 @@ to the stream-definition change, #1676; L0 documents the same ordering here with
 
 One initial signal command reported an auxiliary-process control error after killing the driver. Its record and
 reaper recovery are retained privately; the explicit main-process signal rerun passed the same deadline and status
-checks. Rows (b)–(f) are the approved L0 landing scope; L3's stub must supply row (a), tracked in #1681.
+checks. Rows (b)–(f) are the approved L0 landing scope; row (a) is supplied by the delivery stub (#1681), below.
 
 Marker resolution prefers a mode's explicit terminal stage, with kernel stages as the fallback for definitions
 without one. Pipe-separated markers are literal alternatives; `match: line` requires the complete cleaned serial
 line. Host tests cover this contract, the driver's deadline phases, HTTP accounting, reset detection, serial reads
 that finish mid-buffer, cancellation and the recovery paths.
+
+### Delivery stub and first light
+
+The firmware has no RAM disk protocol (`LocateProtocol` answers not found), so on every stub boot so far the stub
+installed its own read-only block device; the firmware's partition and FAT drivers bound to it, and the stub found
+one file system, the boot disk's ESP. claim-lint:ok: 3 of 3 stub boots in the table below.
+
+| Row | Boot | Reached | Exit |
+|---|---|---|---|
+| (a) Main's kernel through the stub (origin/main 6e3fcda8) | The image request 35.1 s after power-on; `boot.efi` (35.7 MB, the disk without a RAM disk) sent in 0.52 s with its sha256; the stub's first line at 35.9 s, the bootloader at 36.5 s, its handoff at 37.5 s. Main's kernel then printed only its COM1 lines (the PCI census, the clock, a timer-scale check) with its log on COM2, so the driver stopped it after 120 s of silence | delivery | 124 |
+| `first-light` (this lane, before the final-marker fix) | 11 of 11 `first-light` stages, kernel entry 35.1 s after power-on and idle 5.5 s later; the boot ran on to the mode deadline because the default mode's final marker was then a stub milestone's | `first-light` | 1 |
+| `first-light` with `--ramdisk` (this lane's kernel and tools) | `boot.efi` (308 MB, carrying the 256 MB ext2 root) sent in 5.39 s; the bootloader printed `Loaded ramdisk`; kernel entry 40.1 s after power-on, `[metal] kernel idle` 5.4 s later, where the driver ended the boot | `first-light` | 0 |
+
+On this firmware the console rule takes its UART from the SPCR (`[console] uart 0x3f8 source=spcr`), and the
+firmware hands over the local APIC enabled in x2APIC mode at the architectural base
+(`[apic] handoff base=0xfee00000 mode=x2apic`). The scheduler tick runs under the 8259 and PIT fallback at 200 Hz.
+
+**Log volume.** From `Kernel entry point reached` to `[metal] kernel idle` the production kernel writes 379 log
+lines, 28,952 bytes on the wire with CR LF line ends: 2.51 s of the UART at 115200 baud, within the 5.3 s from entry
+to idle. That is within the few seconds the plan allows, so the console has no quiet level. After idle the kernel's
+dispatch census adds one line a second, about 330 bytes, 2.9% of the UART; the suites' lanes weigh that against
+their own output once a root exists. claim-lint:ok: measured on the `--ramdisk` first-light boot above.
+
+
+## First-light review repairs
+
+The shared console queues complete ring lines without waiting on the UART under the log ring or printer
+role. The queue holds a maximum ring line plus its leading CR LF and final CR; ring bytes already include
+backspace/delete expansion and are copied without expanding them again. Queue pressure drains one ready byte
+between retries. Panic flushing follows the same writer lead and CR LF path. The additional queue storage is
+49,155 bytes per kernel, with no heap allocation.
+
+The console and APIC handoff lines precede the serial-initialized line, in the metal definition's order.
+The metal idle marker is emitted only without fw_cfg. Read-only MCFG inventory reports the firmware's ECAM
+allocations without mapping or using them. Breenix payloads include their RAM-disk root by default;
+consuming that root remains the userspace lane's work.
+
+HTTP events retain the server's observation time, serial events retain the capture read's arrival time,
+and power-on uses the machine queue's dispatch time. Polling latency does not change these timestamps.
+Build staging replaces old inputs and copies only the stub's source, manifests, toolchain and tracked lockfile.
+The ARM64 runner prints its source commit and dirty state before building.
