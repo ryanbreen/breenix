@@ -205,7 +205,8 @@ soon as the unit holds, or waits for, the machine lease, so the caller's ssh ses
    then, under one `metal-build` lease, userspace and the ext2 root through `scripts/gate-artifacts.py --metal`, the
    production kernel (no features) and its UEFI image, and the delivery stub from the deployed tools, each refused on
    any warning. The metal mode builds userspace once: the clone is fresh, so that build is already a clean one. It is
-   content-keyed in the container's own cache under `metal-artifacts/` with `built-once.json`; the x86 gate reads
+   content-keyed, including the deployed artifact builder's contents, in the container's own cache under
+   `metal-artifacts/` with `built-once.json`; the x86 gate reads
    only its own `artifacts/<key>/verified.json`, which it publishes after its second, comparing build, so it does not
    take a metal build as verified. The slot and artifact helpers are the deployed tools' copies, so a
    commit builds the same way whatever its own copies say. `build.json` records the phase timings (`slot_wait`,
@@ -668,3 +669,17 @@ The driver rejects an install size or digest mismatch and a root record that dif
 A reinstall invalidates and flushes the previous root record before replacing data, then writes the new record last.
 Physical boots keep the global write refusal, granting only the selected backend device permission to write;
 other discovered disks and the index-based home mount retain that refusal.
+
+The build-lane integration of storage merge `a466be23` was measured at `cad77796`, after merging that main
+into the lane. Both probe boots ended with exit 0, complete captures and power off, scored with their retained
+definitions. claim-lint:ok: 2 of 2 retained boot records and milestone-verdict.json files.
+
+| Boot | Shape | sata-ahci | disk-io | disk-filesystem |
+|---|---|---|---|---|
+| `20261017T211521Z-metal` | install | 3/3 | 3/3 | unmeasured |
+| `20261017T212823Z-metal` | disk-root | 3/3 | unmeasured | 5/5 |
+
+Both builds acquired `metal-build` with zero wait. The install built userspace once; the root boot reused that
+entry. The root record identified the install boot above. The later conflict-free main integration `4f5e0540`
+brought in thread retention changes; these storage measurements describe `cad77796`, not that later kernel.
+claim-lint:ok: 2 of 2 retained host build logs report acquired metal-build waited=0.0s and record userspace cache provenance.
