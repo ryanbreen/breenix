@@ -163,7 +163,7 @@ EDQUOT for the work cap, with the failing command's index and its code written b
 Validation scratch allocation is fallible: exhaustion returns ENOMEM with error code 22. The submission's
 private copies (the stream copy, the buffer snapshot and the translated device chunks) and the device
 vertex storage it creates are charged to the process's 192 MiB GPU memory quota and `RLIMIT_AS` while they
-are held; `COUNTERS.resource_bytes` includes them. The stream copy and the snapshot are released when the
+are held; `COUNTERS.copy_bytes` reports them. The stream copy and the snapshot are released when the
 call returns, the chunks and the vertex storage when the device has returned the submission's requests or a
 confirmed reset has ended them. A charge that cannot be made returns ENOMEM with error code 22 at index 0
 before anything is sent. A context that is not
@@ -261,7 +261,9 @@ state 88 (a context's: 0 live with catalogue warm-up complete, 1 quarantined, 2 
 3 live with catalogue warm-up in progress), contexts 96 (the process's live handles),
 device contexts 104 (the process's device contexts not yet destroyed, including destroyed handles whose
 work is outstanding), resources 112, resource bytes 120 (`resource_bytes`: guest backing held,
-including temporary `UPLOAD` and `READBACK` staging charged to the process), warmed 128; reserved to 256.
+including temporary `UPLOAD` and `READBACK` staging charged to the process), warmed 128, copy bytes 136
+(`copy_bytes`: `SUBMIT`'s private copies and device vertex storage charged to the process while they are
+held; the GPU memory quota limits `resource_bytes` and `copy_bytes` together); reserved to 256.
 For a context, `warmed` counts programs whose warm-up completed, including `probe_int` after its first
 PROBE; it is not the completion signal for the rendering catalogue. A query with a nonzero context handle
 reports that context's warm-up state without waiting for warm-up. State 0 is reported only once its

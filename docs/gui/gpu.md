@@ -1148,7 +1148,9 @@ implementation. This amendment states those interfaces, in its own PR before the
 - **Per-submission copy quotas.** `SUBMIT`'s private copies (the copy of the stream, the snapshot of the
   buffer ranges it names and the translated device command chunks) and the device vertex storage it creates
   are charged to the process's 192 MiB GPU memory quota and to `RLIMIT_AS` while they are held, like `UPLOAD`
-  and `READBACK` staging, and `COUNTERS.resource_bytes` and `gpu_resource_bytes` include them. The stream copy
+  and `READBACK` staging. `COUNTERS` reports them in their own field, `copy_bytes` at offset 136, so
+  `resource_bytes` keeps its meaning (guest backing and staging), and `gpu_resource_bytes` includes both. The
+  quota limits the sum of `resource_bytes` and `copy_bytes`. The stream copy
   and the snapshot are released when `SUBMIT` returns; the chunks and the vertex storage when the device has
   returned the submission's requests or a confirmed reset has ended them. A charge that cannot be made returns
   ENOMEM, with error code 22 at index 0, before anything is sent.
@@ -1190,7 +1192,7 @@ implementation. This amendment states those interfaces, in its own PR before the
 |---|---|
 | Exit, kill and exec drop the process's GPU handles, without cancelling its work; the exec'd image starts with no handles | section 1.4.1; `docs/gui/gpu-abi.md` |
 | `gpu_contexts`, `gpu_resources` and `gpu_resource_bytes` in `/proc/trace/counters`, with the 250 ms return after exit and after killed work drains | section 1.4.1; `docs/gui/gpu-abi.md` |
-| `SUBMIT`'s copies and vertex storage are charged to the GPU memory quota and `RLIMIT_AS`; ENOMEM, code 22 | sections 1.4, 1.4.1; `docs/gui/gpu-abi.md` |
+| `SUBMIT`'s copies and vertex storage are charged to the GPU memory quota and `RLIMIT_AS`, reported as `COUNTERS.copy_bytes`; ENOMEM, code 22 | sections 1.4, 1.4.1; `docs/gui/gpu-abi.md` |
 | Handles have no address's form; returned values are of stated kinds | section 1.4; `docs/gui/gpu-abi.md` |
 | `SET_MODE` refuses non-owners with EPERM before G7 | section 1.4; `docs/gui/gpu-abi.md` |
 | The bounded-validation measurement; one submission's distinct coverage tables in a buffer total at most its `data_bytes` (code 8) | section 1.10; `docs/gui/gpu-abi.md` |
