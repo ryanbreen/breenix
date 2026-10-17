@@ -128,6 +128,9 @@ pub trait Resolver {
     /// the submission's one copy of that range, taken before validation
     /// (`docs/gui/gpu.md` section 1.4.1: buffers are snapshotted at submission).
     fn buffer_rect(&self, handle: u64, offset: u64) -> [i32; 4];
+    fn buffer_word(&self, handle: u64, offset: u64) -> u32 {
+        self.buffer_rect(handle, offset & !15)[((offset & 15) / 4) as usize] as u32
+    }
 }
 
 /// What a valid stream will do, for the counters and the translator.
@@ -147,6 +150,8 @@ pub struct Plan {
     pub estimate: u64,
     /// Bytes of the distinct buffers the stream names.
     pub buffer_bytes: u64,
+    /// Largest snapshotted parameter buffer encoded as a device data texture.
+    pub data_bytes: u32,
 }
 
 /// A refusal: the command's index and its [`error`] code.
@@ -248,6 +253,112 @@ pub fn validate(words: &(impl Words + ?Sized), resolver: &impl Resolver) -> Resu
             return refuse(error::TRUNCATED);
         }
         match code {
+            #[cfg(any(feature = "alloc", test))]
+            crate::draw::COMMAND => {
+                use crate::draw as d;
+                if len < d::HEADER { return refuse(error::BAD_LENGTH); }
+                let Some(t) = target else { return refuse(error::NO_TARGET); };
+                let pipe = words.word(at + 2);
+                if pipe & 0x8000_0000 != 0 { return refuse(error::FILTERED_SAMPLER); }
+                let Some(weight) = d::steps(pipe) else { return refuse(error::BAD_PIPELINE); };
+                let texture = handle_at(words, at + 4);
+                let buffer = handle_at(words, at + 6);
+                let bytes = words.word(at + 8);
+                let count = words.word(at + 9) as usize;
+                if len != d::HEADER + d::INSTANCE * count { return refuse(error::BAD_LENGTH); }
+                if plan.instances + count as u64 > limits::INSTANCES { return refuse(error::INSTANCE_LIMIT); }
+                let source = if d::sampled(pipe) {
+                    let Some(s) = resolver.source(texture) else { return refuse(error::BAD_HANDLE); };
+                    if texture == target_handle { return refuse(error::SAMPLES_TARGET); }
+                    if s.invalid { return refuse(error::INVALID_TARGET); }
+                    Some(s)
+                } else {
+                    if texture != 0 { return refuse(d::PARAMETERS); }
+                    None
+                };
+                if pipe == pipeline::COVERAGE_SPANS {
+                    let Some(size) = resolver.buffer_size(buffer) else { return refuse(error::BAD_HANDLE); };
+                    if bytes == 0 || bytes % 4 != 0 || bytes as u64 > size { return refuse(error::BAD_RANGE); }
+                    if !named[..named_count].contains(&buffer) {
+                        if named_count == MAX_NAMED_BUFFERS { return refuse(error::BUFFER_LIMIT); }
+                        named[named_count] = buffer;
+                        named_count += 1;
+                        plan.buffer_bytes += bytes as u64;
+                        if plan.buffer_bytes > limits::BUFFER_BYTES { return refuse(error::BUFFER_LIMIT); }
+                    }
+                    plan.data_bytes = plan.data_bytes.max(bytes);
+                } else if buffer != 0 || bytes != 0 { return refuse(d::PARAMETERS); }
+                let mut area = 0u64;
+                let mut work = 0u64;
+                let mut union: Option<[u32; 4]> = None;
+                let mut blend_rects = alloc::vec::Vec::new();
+                for n in 0..count {
+                    let base = at + d::HEADER + d::INSTANCE * n;
+                    let rect = core::array::from_fn(|k| words.word(base + k) as i32);
+                    let a: [u32; 16] = core::array::from_fn(|k| words.word(base + 4 + k));
+                    if rect[2] < rect[0] || rect[3] < rect[1] { return refuse(error::BAD_RECT); }
+                    if !d::valid(pipe, &a, source) { return refuse(d::PARAMETERS); }
+                    let mut crossings = 0u64;
+                    if pipe == pipeline::COVERAGE_SPANS {
+                        let start = a[4] as u64;
+                        let rows = 8 * a[3] as u64;
+                        if start + 4 * (rows + 1) > bytes as u64 { return refuse(error::BAD_RANGE); }
+                        let read = |i| resolver.buffer_word(buffer, start + 4*i);
+                        let end = read(rows) as u64;
+                        if read(0) != 0 || start + 4*(rows+1) + 8*end > bytes as u64 { return refuse(error::BAD_RANGE); }
+                        for row in 0..rows {
+                            let (lo, hi) = (read(row), read(row+1));
+                            if lo > hi || hi as u64 > end { return refuse(d::PARAMETERS); }
+                            let mut previous = None;
+                            for j in lo..hi {
+                                let offset = start + 4*(rows+1) + 8*j as u64;
+                                let x = resolver.buffer_word(buffer, offset);
+                                let winding = resolver.buffer_word(buffer, offset+4);
+                                if x & 0x7f800000 == 0x7f800000 || !matches!(winding, 1 | u32::MAX) { return refuse(d::PARAMETERS); }
+                                let ordered = if x >> 31 != 0 { !x } else { x ^ 0x80000000 };
+                                if previous.is_some_and(|p| p > ordered) { return refuse(d::PARAMETERS); }
+                                previous = Some(ordered);
+                            }
+                        }
+                    }
+                    if let Some(r) = d::source_clip(pipe, d::Instance { rect, params:a }, source).and_then(|i|d::clip(pipe,i,t.width,t.height,scissor)) {
+                        let pixels = (r[2]-r[0]) as u64 * (r[3]-r[1]) as u64;
+                        if d::blended(pipe) {
+                            blend_rects.push(r);
+                            union = Some(match union { None => r, Some(u) => [u[0].min(r[0]),u[1].min(r[1]),u[2].max(r[2]),u[3].max(r[3])] });
+                        }
+                        let cost = if pipe == pipeline::COVERAGE_SPANS {
+                            for y in r[1]..r[3] {
+                                let row = y as i64 - a[1] as i32 as i64;
+                                if row >= 0 && row < a[3] as i64 {
+                                    let off = a[4] as u64 + row as u64 * 32;
+                                    let lo = resolver.buffer_word(buffer,off);
+                                    let hi = resolver.buffer_word(buffer,off+32);
+                                    crossings += (hi-lo) as u64 * (r[2]-r[0]) as u64;
+                                }
+                            }
+                            pixels.saturating_add(crossings).saturating_mul(weight)
+                        } else if pipe == pipeline::BOX_FILTER {
+                            let bin = (a[6] as u64).div_ceil(a[2] as u64) * (a[7] as u64).div_ceil(a[3] as u64);
+                            pixels.saturating_mul(16384u64.saturating_add(bin.saturating_mul(weight)))
+                        } else { pixels.saturating_mul(weight) };
+                        area += pixels;
+                        work = work.saturating_add(cost);
+                        plan.drawn += 1;
+                    }
+                }
+                if !blend_rects.is_empty() && !d::disjoint(&blend_rects) { return refuse(d::OVERLAP); }
+                count_draw(&mut plan,index,count as u64,area,0)?;
+                if let Some(u) = union {
+                    let slot = usize::from(t.format == crate::format::R8G8B8A8);
+                    // Preserve pixel coordinates in the destination view.
+                    plan.scratch[slot][0] = plan.scratch[slot][0].max(u[2]);
+                    plan.scratch[slot][1] = plan.scratch[slot][1].max(u[3]);
+                    work = work.saturating_add((u[2]-u[0]) as u64 * (u[3]-u[1]) as u64);
+                }
+                plan.estimate = plan.estimate.saturating_add(work);
+                if plan.estimate > limits::WORK { return refuse(error::WORK_LIMIT); }
+            }
             cmd::BEGIN => {
                 if len != 4 {
                     return refuse(error::BAD_LENGTH);

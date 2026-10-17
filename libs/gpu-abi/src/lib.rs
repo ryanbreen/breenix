@@ -10,6 +10,8 @@
 //! patterns from integers with integer arithmetic, for a kernel that never touches the FPU.
 
 #![no_std]
+#[cfg(any(feature = "alloc", test))]
+extern crate alloc;
 
 pub mod float;
 pub mod stream;
@@ -746,3 +748,6 @@ const _: () = {
     assert!(core::mem::size_of::<TcArm>() == 24);
     assert!(core::mem::size_of::<TcFired>() == 16);
 };
+
+/// Fixed parameterized drawing catalogue.
+pub mod draw;

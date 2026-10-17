@@ -28,6 +28,10 @@ rust-os-gdb
 
 # Ignore most of libs directory (except libraries we maintain)
 libs/*
+!libs/bgl/
+!libs/bgl/**
+!libs/libgfx-ref/
+!libs/libgfx-ref/**
 !libs/arm64-boot-contract/
 !libs/arm64-boot-contract/**
 !libs/gpu-abi/
