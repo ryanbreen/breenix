@@ -1677,12 +1677,19 @@ fn op_resource_create(arg: u64, len: u64) -> Result<u64, i64> {
     let frames = (bytes as usize).div_ceil(PAGE);
     let charge = (frames * PAGE) as u64;
     sweep();
+    // Guest backing counts against RLIMIT_AS with the process's mappings (section 1.4).
+    let (mapped, as_limit) = crate::process::with_process_manager(|m| {
+        m.get_process(crate::process::ProcessId::new(tgid))
+            .map(|p| (p.mapped_bytes(), p.limits.get(crate::process::limits::AS).soft))
+    })
+    .flatten()
+    .ok_or(EINVAL)?;
     let id = with_core(|c| {
         let p = c.proc_mut(tgid);
         if p.resources.len() >= RESOURCE_QUOTA {
             return Err(EAGAIN);
         }
-        if p.bytes + charge > MEMORY_QUOTA {
+        if p.bytes + charge > MEMORY_QUOTA || mapped.saturating_add(p.bytes).saturating_add(charge) > as_limit {
             return Err(ENOMEM);
         }
         p.bytes += charge;
