@@ -408,7 +408,7 @@ pub fn build_page_tables(
     // On VMware, PCI ECAM is at IPA 0x40000000 — overlapping the kernel's
     // expected load range. We remap ECAM to VA 0x20000000 (in the L1[0]
     // device region) so the kernel can access ECAM without conflicting
-    // with kernel code at VA 0x40080000+.
+    // with kernel code at VA 0x40200000+.
     if ram_base_offset > 0
         && config.ecam_ipa >= 0x4000_0000
         && config.ecam_ipa < 0x8000_0000
@@ -452,7 +452,7 @@ pub fn build_page_tables(
     // On QEMU/Parallels (offset=0): simple 1GB block, identity mapped.
     //
     // On VMware (offset=0x40000000): L2 table with selective mapping.
-    // The kernel linker puts code at VA 0x40080000, but VMware RAM starts
+    // The kernel linker puts code at VA 0x40200000, but VMware RAM starts
     // at IPA 0x80000000. We remap kernel VA blocks to IPA 0x80000000+ while
     // identity-mapping device regions (framebuffer at 0x70000000, etc.).
     if ram_base_offset > 0 {

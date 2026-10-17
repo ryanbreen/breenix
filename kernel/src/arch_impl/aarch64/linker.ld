@@ -3,7 +3,9 @@
  *
  * Memory layout for ARM64 (QEMU virt machine or Parallels).
  * Physical RAM starts at 0x4000_0000
- * Kernel is loaded at 0x4008_0000 to leave room for DTB
+ * Kernel is loaded at 0x4020_0000: QEMU places the DTB of an ELF guest at
+ * the start of RAM only when it fits below the kernel, and its virt
+ * machine's DTB is 1 MiB
  *
  * Boot code stays in low physical memory and sets up the MMU.
  * The main kernel is linked in the higher half and mapped via TTBR1.
@@ -14,7 +16,7 @@ OUTPUT_ARCH(aarch64)
 ENTRY(_start)
 
 /* Physical load base and virtual base for high-half kernel */
-KERNEL_PHYS_BASE = 0x40080000;
+KERNEL_PHYS_BASE = 0x40200000;
 KERNEL_VIRT_BASE = 0xFFFF000000000000; /* HHDM base */
 VMLINUX_OFFSET   = KERNEL_VIRT_BASE;
 L2_BLOCK_SIZE    = 2M;
