@@ -165,10 +165,13 @@ specifications and IEEE 802.3 clauses 22, 28 and 40; its comments cite the guide
   DHCPOFFER that answers its transaction. It requests no lease, and the network stack does not see these frames:
   the stack's DHCP client, addressing and production rings arrive with the networking lane.
 
-The APE coexistence requirement remains open: the bootcode reset mailbox and preserved management routing
-bits do not implement the driver-and-APE handshake. The published guide used here documents the APE access
-range but no handshake protocol. A documented protocol and coexistence evidence are required before this
-lane can land; packet exchange and management power-off alone do not close that requirement.
+The driver implements no driver/APE handshake and never resets or writes APE state. The published guide
+documents the APE register window but supplies no driver/APE handshake protocol; the bootcode reset mailbox
+handshake above is retained. The coordinator's 2026-10-17 ruling accepts this policy with hardware coexistence
+proof: the dedicated management controller must answer Redfish service-root polls throughout a boot that brings
+the NIC up and exchanges traffic, and after that boot. The private evidence records the poll interval, responses
+and boot verdict. Packet exchange or management power-off alone does not establish that proof. claim-lint:ok: #1707
+coordinator ruling of 2026-10-17 defines the APE policy and the hardware experiment required to accept it.
 
 The `nic` milestone's stages are the driver's lines: `[bcm5720] found`, `[bcm5720] reset complete`,
 `[bcm5720] link up 1000 Mb/s full duplex`, `[bcm5720] frame sent:`, `[bcm5720] first frame received` and

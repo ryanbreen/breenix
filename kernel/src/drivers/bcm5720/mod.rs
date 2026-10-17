@@ -25,13 +25,17 @@
 //! lease, and the network stack does not see these frames: the stack's DHCP client,
 //! addressing and production rings arrive with the networking lane.
 //!
-//! The management firmware: the guide's driver/firmware handshake is the
+//! Management coexistence: this driver implements no driver/APE handshake,
+//! and never resets or writes APE state. The guide documents the APE register
+//! window but supplies no driver/APE handshake protocol. The retained
+//! driver/bootcode handshake is the
 //! bootcode mailbox at internal memory 0x0b50 around each reset (Section 7,
 //! p. 147; Section 10, "Firmware Mailbox", p. 219). The guide does not specify
 //! the management processor's own register block (Table 97 gives only its
 //! range, 0x10000-0x18fff, p. 271), so the driver does not touch it, and it
 //! keeps the EMAC and Mode Control bits that route management traffic as the
-//! firmware set them.
+//! firmware set them. claim-lint:ok: #1707 coordinator ruling of 2026-10-17;
+//! APE access is excluded by this driver's register definitions and reset path.
 
 mod phy;
 mod regs;
