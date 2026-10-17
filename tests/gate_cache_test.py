@@ -228,7 +228,7 @@ class CacheTests(unittest.TestCase):
             self.call('--metal')
             self.assertEqual([call.args[2] for call in build.call_args_list], ['metal'])
             slot.assert_not_called()  # the metal caller holds its metal-build lease
-            entry = self.cache / 'metal-artifacts' / ('a' * 64)
+            entry = self.cache / 'metal-artifacts' / artifacts.metal_cache_key('a' * 64)
             self.assertTrue((entry / 'built-once.json').exists())
             self.assertFalse((self.cache / 'artifacts' / ('a' * 64)).exists())
             (self.repo / 'userspace/programs/example.elf').write_bytes(b'stale')
@@ -238,6 +238,17 @@ class CacheTests(unittest.TestCase):
             # The same inputs at the x86 gate still build twice and verify.
             self.call()
             self.assertEqual([call.args[2] for call in build.call_args_list[1:]], ['candidate', 'clean-verification'])
+
+    def test_redeployed_metal_builder_cannot_reuse_previous_artifacts(self):
+        helper = self.root / 'deployed-gate-artifacts.py'
+        helper.write_text('builder version one')
+        with patch.object(artifacts, '__file__', str(helper)), \
+                patch.object(artifacts, 'build', side_effect=self.build) as build:
+            self.call('--metal')
+            helper.write_text('builder version two')
+            self.call('--metal')
+            self.assertEqual(build.call_count, 2)
+            self.assertEqual(len(list((self.cache / 'metal-artifacts').glob('*/built-once.json'))), 2)
 
     def test_fresh_without_verified_entry_fails_explicitly(self):
         with patch.object(artifacts, 'build', side_effect=self.build), patch.dict(os.environ, BREENIX_GATE_FRESH='1'):

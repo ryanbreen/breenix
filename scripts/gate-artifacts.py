@@ -243,13 +243,19 @@ def resolve_key(repo, logs):
         return key(repo)
 
 
-def metal_build(repo, logs, root, cache_key):
+def metal_cache_key(input_key):
+    # Metal executes this deployed helper, which may differ from the checkout.
+    return hashlib.sha256((input_key + '\0' + digest(Path(__file__))).encode()).hexdigest()
+
+
+def metal_build(repo, logs, root, input_key):
     """A metal boot's userspace, built once.
 
     The boot's checkout is a fresh clone with empty Cargo target directories, so its one
     build is already a clean build; the x86 gate's second, comparing build guards its
     shared verified entries, which a metal entry never becomes.
     """
+    cache_key = metal_cache_key(input_key)
     entry = root / 'metal-artifacts' / cache_key
     with tree_cache.lease(root, 'metal-artifacts-' + cache_key):
         start = time.monotonic()
@@ -273,7 +279,7 @@ def metal_build(repo, logs, root, cache_key):
             target = entry / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(repo / name, target)
-        if key(repo) != cache_key:
+        if key(repo) != input_key:
             raise RuntimeError('userspace inputs changed during build; refusing cache publication')
         (entry / 'built-once.json').write_text(json.dumps(manifest, sort_keys=True) + '\n')
         print(f'[gate-cache] BUILT-ONCE key={cache_key} files={len(manifest)}', flush=True)
