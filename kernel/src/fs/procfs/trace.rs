@@ -271,7 +271,19 @@ pub fn generate_teardown_pid(pid: u64) -> String {
             .load(Ordering::Acquire);
         #[cfg(target_arch = "x86_64")]
         let tick_period = crate::time::tsc::frequency_hz() * crate::time::timer::MS_PER_TICK / 1000;
-        return format!(
+        let (diag_pending, diag_parked, diag_active, diag_pass) =
+            crate::task::process_task::diag_reclaim_location(pid);
+        use core::sync::atomic::Ordering as O;
+        let diag = format!(
+            "diag_in_pending: {}\ndiag_in_parked: {}\ndiag_drain_active: {}\ndiag_pass_id: {}\ndiag_detached_pid: {}\ndiag_last_abandoned_pid: {}\ndiag_unpark_abandoned: {}\ndiag_push_trylock_failed: {}\ndiag_passes_completed: {}\n",
+            diag_pending, diag_parked, diag_active as u8, diag_pass,
+            crate::task::process_task::DIAG_DETACHED_PID.load(O::Relaxed),
+            crate::task::process_task::DIAG_LAST_ABANDONED_PID.load(O::Relaxed),
+            crate::task::process_task::DIAG_UNPARK_ABANDONED.load(O::Relaxed),
+            crate::task::process_task::DIAG_PUSH_TRYLOCK_FAILED.load(O::Relaxed),
+            crate::task::process_task::DIAG_PASSES_COMPLETED.load(O::Relaxed),
+        );
+        return diag + &format!(
             "online_cpus: {}\npid: {}\ndefer: {}\nreclaim: {}\nquarantine: {}\nsgi_sent: {}\nkick_observed: {}\nkick_interval: {}\nkick_ticks: {}\nkick_all_ticks: {}\nkick_cpu: {}\nkick_sender_cpu: {}\ncounter_ticks_per_ms: {}\ntick_period: {}\nmasked_frames_walked: {}\nreport: {}\nbucket_published: {}\nbucket_observed: {}\nbucket_collision: {}\n",
             crate::task::scheduler::online_cpus(),
             pid,

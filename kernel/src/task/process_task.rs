@@ -381,6 +381,19 @@ fn reclaim_queue<T>(
 
 static RECLAIM_PASS_ID: AtomicU32 = AtomicU32::new(0);
 static ROW_REMOVAL_EPOCH: AtomicU64 = AtomicU64::new(0);
+pub static DIAG_DETACHED_PID: AtomicU64 = AtomicU64::new(0);
+pub static DIAG_LAST_ABANDONED_PID: AtomicU64 = AtomicU64::new(0);
+pub static DIAG_UNPARK_ABANDONED: AtomicU64 = AtomicU64::new(0);
+pub static DIAG_PUSH_TRYLOCK_FAILED: AtomicU64 = AtomicU64::new(0);
+pub static DIAG_PASSES_COMPLETED: AtomicU64 = AtomicU64::new(0);
+pub fn diag_reclaim_location(pid: u64) -> (u8, u8, bool, u32) {
+    let (pending, parked) = crate::arch_without_interrupts(|| {
+        let pending = PENDING_PROCESS_RECLAIMS.lock().iter().filter(|r| r.pid == pid).count() as u8;
+        let parked = PARKED_PROCESS_RECLAIMS.lock().iter().filter(|r| r.pid == pid).count() as u8;
+        (pending, parked)
+    });
+    (pending, parked, RECLAIM_DRAIN_ACTIVE.load(Ordering::Acquire), RECLAIM_PASS_ID.load(Ordering::Relaxed))
+}
 
 /// Set while a production drain owns the deferred-reclaim queues.
 ///
@@ -783,6 +796,7 @@ fn push_pending_or_abandon(reclaim: PendingProcessReclaim) {
     let mut reclaim = Some(reclaim);
     let queued = crate::arch_without_interrupts(|| {
         let Some(mut pending) = reclaim_queue(&PENDING_PROCESS_RECLAIMS) else {
+            DIAG_PUSH_TRYLOCK_FAILED.fetch_add(1, Ordering::Relaxed);
             return false;
         };
         #[cfg(feature = "boot_tests")]
@@ -803,6 +817,7 @@ fn push_pending_or_abandon(reclaim: PendingProcessReclaim) {
     if !queued {
         let reclaim = reclaim.take().expect("unqueued reclaim retained");
         let pid = reclaim.pid;
+        DIAG_LAST_ABANDONED_PID.store(pid, Ordering::Relaxed);
         crate::trace_count!(crate::tracing::providers::teardown::RECLAIM_ABANDONED_UNQUEUED);
         abandon_unqueued_reclaim(reclaim);
         settle_abandoned_retirement(pid);
@@ -1486,6 +1501,8 @@ fn unpark_sweep_with_snapshot(snapshot: scheduler::RetirementSnapshot, row_epoch
         });
         if !queued {
             for reclaim in ready.take().expect("unqueued ready reclaims retained") {
+                DIAG_UNPARK_ABANDONED.fetch_add(1, Ordering::Relaxed);
+                DIAG_LAST_ABANDONED_PID.store(reclaim.pid, Ordering::Relaxed);
                 abandon_unqueued_reclaim(reclaim);
             }
         }
@@ -1604,6 +1621,7 @@ pub fn reclaim_deferred_process_resources() {
     // refusal.
     crate::socket::object::drain_release_queue();
     reclaim_deferred_process_resources_for_pass(my_pass, false);
+    DIAG_PASSES_COMPLETED.fetch_add(1, Ordering::Relaxed);
     RECLAIM_DRAIN_ACTIVE.store(false, Ordering::Release);
     reclaim_preempt_enable();
 }
@@ -1651,6 +1669,7 @@ fn reclaim_deferred_process_resources_for_pass(my_pass: u32, boot_test_owned: bo
 
         match reclaim {
             Some(mut reclaim) => {
+                DIAG_DETACHED_PID.store(reclaim.pid, Ordering::Relaxed);
                 boot_note_reclaim_selection(boot_test_owned);
                 let snapshot = scheduler::RetirementSnapshot::capture();
                 let mut proof = reclaim.lock_free_root_proof(&snapshot, true);
@@ -1721,6 +1740,7 @@ fn reclaim_deferred_process_resources_for_pass(my_pass: u32, boot_test_owned: bo
                     push_pending_or_abandon(reclaim);
                 }
 
+                DIAG_DETACHED_PID.store(0, Ordering::Relaxed);
                 if !boot_test_owned {
                     production_selections = production_selections.saturating_add(1);
                     // Idle cannot be preempted inside this ownership bracket.
