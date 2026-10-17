@@ -832,6 +832,15 @@ class DriverTest(StateTest):
         d.completion_reported = False
         self.finish(lambda: d.on_line('PROBE DONE passed=16 failed=1'), m.EXIT_SHORT)
 
+    def test_failed_probe_keeps_failure_and_waits_for_kernel_producers(self):
+        d = self.driver
+        d.args.mode = 'probe'
+        d.final_marker = ('PROBE DONE ', 'contains')
+        d.required_stages = [[('DNS answer', 'line')]]
+        d.on_line('PROBE DONE passed=16 failed=1')
+        self.assertFalse(d.completion_reported)
+        self.finish(lambda: d.on_line('DNS answer'), m.EXIT_SHORT)
+
     def test_final_marker_cannot_override_a_fatal(self):
         d = self.driver
         d.final_marker = ('done', 'line')
