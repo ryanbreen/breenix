@@ -12,8 +12,8 @@
 //! written yet still fails, and says that. No case skips. A lane writes a case's check in its
 //! own commit, from the contract, before the implementation it measures.
 //!
-//! `device/version` was the first real check; the `device` category's checks (G1) are in
-//! `suite_gpu/device.rs`.
+//! `device/version` was the first real check; the `device` and `submit` categories' checks
+//! (G1) are in `suite_gpu/device.rs` and `suite_gpu/submit.rs`.
 
 use libbreenix::suite::{case, category, check, fail, suite, CaseResult, Suite};
 use libbreenix::syscall::raw;
@@ -22,6 +22,8 @@ use libbreenix::syscall::raw;
 mod common;
 #[path = "suite_gpu/device.rs"]
 mod device;
+#[path = "suite_gpu/submit.rs"]
+mod submit;
 
 static SUITE: Suite = suite("gpu", "GPU rendering", &[
     category("device", "3D device & capability profile", &[
@@ -39,28 +41,28 @@ static SUITE: Suite = suite("gpu", "GPU rendering", &[
         case("device-error-reported", "A forced device error reaches the submitting context as EIO naming the device's answer", device::device_error_reported),
     ]),
     category("submit", "command submission & fences", &[
-        case("context-create", "CONTEXT_CREATE, including all catalogue warm-up, returns an owned context within 10 s", submit_context_create),
-        case("context-destroy", "CONTEXT_DESTROY frees the context once its submitted work has completed", submit_context_destroy),
-        case("context-limit", "Creating a context past the per-process quota returns EAGAIN", submit_context_limit),
-        case("stream-validate", "A malformed command stream returns EINVAL with the failing command's index", submit_stream_validate),
-        case("validation-atomic", "A stream that fails validation sends nothing: its targets keep their generation and bytes", submit_validation_atomic),
-        case("stream-overflow", "A stream past the draw, instance or buffer limits is refused whole, never truncated", submit_stream_overflow),
-        case("fence-order", "One context's fences complete in submission order", submit_fence_order),
-        case("fence-wait", "WAIT returns 0 once its fence completes, and the target it wrote is published", submit_fence_wait),
-        case("wait-timeout", "WAIT on an incomplete fence returns ETIMEDOUT at its timeout", submit_wait_timeout),
-        case("wait-eintr", "A signal interrupts WAIT with EINTR", submit_wait_eintr),
-        case("wait-killable", "A process killed in WAIT exits within 250 ms", submit_wait_killable),
-        case("fence-foreign", "WAIT on another context's fence is refused", submit_fence_foreign),
-        case("multi-context", "Two contexts of one process submit independently and both read back exactly", submit_multi_context),
-        case("ring-backpressure", "A fifth submission while four are in flight waits for room, and none is lost", submit_ring_backpressure),
-        case("device-error-eio", "A submission the device answers with an error completes its fence with EIO", submit_device_error_eio),
-        case("recovery-after-error", "After a device error the next valid frame renders and reads back exactly", submit_recovery_after_error),
-        case("frame-one-syscall", "A frame of any number of draws is one SUBMIT call", submit_frame_one_syscall),
-        case("freed-resource-refused", "A stream naming a destroyed resource returns EINVAL", submit_freed_resource_refused),
-        case("fence-echo-checked", "A fence answered for another submission is not taken as completion", submit_fence_echo_checked),
-        case("counters", "COUNTERS reports submissions, draws, instances, area, work estimate, uploads and readbacks exactly", submit_counters),
-        case("watchdog-quarantine", "A fence withheld for 2 s quarantines its context, whose fences fail with EIO device-hung", submit_watchdog_quarantine),
-        case("device-reset-recovers", "A device with no progress is reset: every context gets EIO device-reset and new work renders exactly", submit_device_reset_recovers),
+        case("context-create", "CONTEXT_CREATE, including all catalogue warm-up, returns an owned context within 10 s", submit::context_create),
+        case("context-destroy", "CONTEXT_DESTROY frees the context once its submitted work has completed", submit::context_destroy),
+        case("context-limit", "Creating a context past the per-process quota returns EAGAIN", submit::context_limit),
+        case("stream-validate", "A malformed command stream returns EINVAL with the failing command's index", submit::stream_validate),
+        case("validation-atomic", "A stream that fails validation sends nothing: its targets keep their generation and bytes", submit::validation_atomic),
+        case("stream-overflow", "A stream past the draw, instance or buffer limits is refused whole, never truncated", submit::stream_overflow),
+        case("fence-order", "One context's fences complete in submission order", submit::fence_order),
+        case("fence-wait", "WAIT returns 0 once its fence completes, and the target it wrote is published", submit::fence_wait),
+        case("wait-timeout", "WAIT on an incomplete fence returns ETIMEDOUT at its timeout", submit::wait_timeout),
+        case("wait-eintr", "A signal interrupts WAIT with EINTR", submit::wait_eintr),
+        case("wait-killable", "A process killed in WAIT exits within 250 ms", submit::wait_killable),
+        case("fence-foreign", "WAIT on another context's fence is refused", submit::fence_foreign),
+        case("multi-context", "Two contexts of one process submit independently and both read back exactly", submit::multi_context),
+        case("ring-backpressure", "A fifth submission while four are in flight waits for room, and none is lost", submit::ring_backpressure),
+        case("device-error-eio", "A submission the device answers with an error completes its fence with EIO", submit::device_error_eio),
+        case("recovery-after-error", "After a device error the next valid frame renders and reads back exactly", submit::recovery_after_error),
+        case("frame-one-syscall", "A frame of any number of draws is one SUBMIT call", submit::frame_one_syscall),
+        case("freed-resource-refused", "A stream naming a destroyed resource returns EINVAL", submit::freed_resource_refused),
+        case("fence-echo-checked", "A fence answered for another submission is not taken as completion", submit::fence_echo_checked),
+        case("counters", "COUNTERS reports submissions, draws, instances, area, work estimate, uploads and readbacks exactly", submit::counters_exact),
+        case("watchdog-quarantine", "A fence withheld for 2 s quarantines its context, whose fences fail with EIO device-hung", submit::watchdog_quarantine),
+        case("device-reset-recovers", "A device with no progress is reset: every context gets EIO device-reset and new work renders exactly", submit::device_reset_recovers),
     ]),
     category("readback", "device readback", &[
         case("full-target", "A full-target readback after a clear equals the clear colour in every byte", readback_full_target),
@@ -216,10 +218,6 @@ static SUITE: Suite = suite("gpu", "GPU rendering", &[
 
 // The layers cases need, each with the build step that supplies it.
 const CORE: &str = "the kernel GPU core and syscall 416 (G1)";
-const SUBMIT: &str = "validated submission and fences (G1)";
-const WAIT: &str = "fence waits (G1)";
-const COUNTERS: &str = "the COUNTERS op (G1)";
-const WATCHDOG: &str = "the GPU watchdog and device reset (G1)";
 const READBACK: &str = "READBACK and record v2 (G2)";
 const INVALID: &str = "target invalidation (G2)";
 const UPLOAD: &str = "uploads with purposes (G3)";
@@ -280,28 +278,6 @@ fn device_version() -> CaseResult {
 }
 
 needs! {
-    submit_context_create => SUBMIT;
-    submit_context_destroy => SUBMIT;
-    submit_context_limit => SUBMIT;
-    submit_stream_validate => SUBMIT;
-    submit_validation_atomic => SUBMIT;
-    submit_stream_overflow => SUBMIT;
-    submit_fence_order => SUBMIT;
-    submit_fence_wait => WAIT;
-    submit_wait_timeout => WAIT;
-    submit_wait_eintr => WAIT;
-    submit_wait_killable => WAIT;
-    submit_fence_foreign => WAIT;
-    submit_multi_context => SUBMIT;
-    submit_ring_backpressure => SUBMIT;
-    submit_device_error_eio => "test-control point 27 device-error (G1)";
-    submit_recovery_after_error => "test-control point 27 device-error (G1)";
-    submit_frame_one_syscall => SUBMIT;
-    submit_freed_resource_refused => SUBMIT;
-    submit_fence_echo_checked => "test-control point 20 stale-fence (G1)";
-    submit_counters => COUNTERS;
-    submit_watchdog_quarantine => "test-control point 31 withhold-fence (G1)";
-    submit_device_reset_recovers => WATCHDOG;
     readback_full_target => READBACK;
     readback_poison_unwritten => READBACK;
     readback_scenes_aba => READBACK;

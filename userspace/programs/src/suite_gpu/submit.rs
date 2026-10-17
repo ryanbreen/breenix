@@ -1,0 +1,545 @@
+//! `submit`: command submission and fences (`docs/gui/gpu.md` section 1.4.1; layouts and
+//! codes in `docs/gui/gpu-abi.md`).
+
+use libbreenix::gpu;
+use libbreenix::process::{self, ForkResult};
+use libbreenix::signal::{self, Itimerval, Sigaction, Timeval, ITIMER_REAL, SIGALRM, SIGKILL};
+use libbreenix::suite::{value, wait_for, CaseResult};
+use libbreenix::{io, time};
+
+use super::common::*;
+
+const RED: u32 = bgra(0, 0, 0xFF, 0xFF);
+const GREEN: u32 = bgra(0, 0xFF, 0, 0xFF);
+const BLUE: u32 = bgra(0xFF, 0, 0, 0xFF);
+const GREY: u32 = bgra(0x40, 0x40, 0x40, 0xFF);
+
+pub fn context_create() -> CaseResult {
+    let _case = begin()?;
+    let start = now_ns();
+    let ctx = context()?;
+    let ms = ms_since(start);
+    value("create-ms", ms as i64, "ms", Some((0, 10_000)));
+    ensure(ms <= 10_000, || format!("CONTEXT_CREATE took {ms} ms"))?;
+    ensure(ctx != 0, || "CONTEXT_CREATE returned handle 0".to_string())?;
+    let c = caps()?;
+    let programs = 2 * c.pipelines.count_ones() as u64;
+    let k = counters(ctx)?;
+    ensure(k.warmed == programs, || format!("creation warmed {} programs; the catalogue built so far has {programs}", k.warmed))?;
+    ensure(k.state == context_state::LIVE, || format!("the new context's state is {}", k.state))?;
+    // Owned: it draws and its work completes.
+    let t = target(format::B8G8R8A8, 4, 4)?;
+    frame(ctx, &scene(t, GREEN, &[]))?;
+    expect(t, &scene_canvas(4, 4, GREEN, &[]), "the new context's first frame")?;
+    pass()
+}
+
+pub fn context_destroy() -> CaseResult {
+    let _case = begin()?;
+    let ctx = context()?;
+    let t = target(format::B8G8R8A8, 8, 8)?;
+    // Hold the submission's completion back so its work is known to be outstanding.
+    arm(test_point::WITHHOLD_FENCE, test_point::WITHHOLD_ONE)?;
+    let f = submit(ctx, &scene(t, RED, &[]))?;
+    ensure(gpu::context_destroy(ctx) == 0, || "CONTEXT_DESTROY refused a live context".to_string())?;
+    let (r, _) = gpu::wait(ctx, f, 0);
+    ensure(r == -EINVAL, || format!("WAIT on a destroyed context's handle returned {}", errno(r)))?;
+    let p = counters(0)?;
+    ensure(p.contexts == 0, || format!("{} context handles remain", p.contexts))?;
+    ensure(p.device_contexts == 1, || format!("{} device contexts while the destroyed context's work is outstanding, expected 1", p.device_contexts))?;
+    // The watchdog ends the withheld work at 2 s; then the context goes.
+    let start = now_ns();
+    wait_for(3_000, "freed-ms");
+    loop {
+        let p = counters(0)?;
+        if p.device_contexts == 0 {
+            break;
+        }
+        if ms_since(start) > 3_000 {
+            return Err(fail_msg(format!("{} device contexts 3 s after the work's deadline", p.device_contexts)));
+        }
+        let _ = time::sleep_ms(20);
+    }
+    value("freed-ms", ms_since(start) as i64, "ms", None);
+    ensure(gpu::context_destroy(ctx) == -EINVAL, || "a second CONTEXT_DESTROY of the handle was accepted".to_string())
+}
+
+pub fn context_limit() -> CaseResult {
+    let _case = begin()?;
+    let mut ctxs = Vec::new();
+    for i in 0..limits::CONTEXTS {
+        ctxs.push(gpu::context_create().map_err(|e| fail_msg(format!("context {i} of the quota: {}", errno(e))))?);
+    }
+    let r = gpu::context_create();
+    ensure(r == Err(-EAGAIN), || format!("a context past the quota of {}: {r:?}", limits::CONTEXTS))?;
+    ensure(gpu::context_destroy(ctxs[0]) == 0, || "CONTEXT_DESTROY refused".to_string())?;
+    let again = gpu::context_create();
+    ensure(again.is_ok(), || format!("after one was destroyed, CONTEXT_CREATE returned {again:?}"))
+}
+
+pub fn stream_validate() -> CaseResult {
+    let _case = begin()?;
+    let ctx = context()?;
+    let t = target(format::B8G8R8A8, 8, 8)?;
+    let mut cases: Vec<(&str, Vec<u32>, u32, u32)> = Vec::new();
+    let mut s = scene(t, RED, &[]);
+    s.extend([0x77, 2]);
+    cases.push(("an unknown command", s, 2, stream::error::UNKNOWN_COMMAND));
+    let mut s = Vec::new();
+    encode::begin(&mut s, t);
+    s.extend([stream::cmd::CLEAR, 40, RED]);
+    cases.push(("a command longer than the stream", s, 1, stream::error::TRUNCATED));
+    let mut s = Vec::new();
+    encode::clear(&mut s, RED);
+    cases.push(("a clear before any target", s, 0, stream::error::NO_TARGET));
+    let mut s = Vec::new();
+    encode::begin(&mut s, t ^ 0x5555);
+    cases.push(("a handle the process does not own", s, 0, stream::error::BAD_HANDLE));
+    let mut s = scene(t, RED, &[]);
+    encode::draw(&mut s, pipeline::SOLID, BLUE, &[[1, 1, 2, 2], [5, 5, 4, 6]]);
+    cases.push(("an inverted rectangle", s, 2, stream::error::BAD_RECT));
+    let mut s = scene(t, RED, &[]);
+    encode::draw(&mut s, pipeline::COUNT + 3, BLUE, &[[1, 1, 2, 2]]);
+    cases.push(("a pipeline outside the catalogue", s, 2, stream::error::BAD_PIPELINE));
+    let mut s = scene(t, RED, &[]);
+    s.extend([stream::cmd::DRAW, 9, pipeline::SOLID, BLUE, 2, 0, 0, 1, 1]);
+    cases.push(("a draw whose length disagrees with its count", s, 2, stream::error::BAD_LENGTH));
+    for (what, s, index, error) in &cases {
+        let (r, a) = gpu::submit(ctx, s);
+        ensure(r == -EINVAL, || format!("{what}: SUBMIT returned {}", errno(r)))?;
+        ensure(a.error_index == *index && a.error == *error, || {
+            format!("{what}: refused at command {} with code {}, expected command {index} code {error}", a.error_index, a.error)
+        })?;
+    }
+    let s = scene(t, RED, &[]);
+    let (r, a) = gpu::submit_raw(ctx, s.as_ptr() as u64, 10);
+    ensure(r == -EINVAL && a.error == stream::error::STREAM_LENGTH, || format!("a 10-byte stream: {} code {}", errno(r), a.error))?;
+    let (r, a) = gpu::submit_raw(ctx, s.as_ptr() as u64, 0);
+    ensure(r == -EINVAL && a.error == stream::error::STREAM_LENGTH, || format!("an empty stream: {} code {}", errno(r), a.error))?;
+    ensure(counters(ctx)?.submissions == 0, || "a refused stream was counted as a submission".to_string())
+}
+
+pub fn validation_atomic() -> CaseResult {
+    let _case = begin()?;
+    let ctx = context()?;
+    let t = target(format::B8G8R8A8, 32, 32)?;
+    frame(ctx, &scene(t, GREEN, &[]))?;
+    let (_, rec) = read(t, 32, 32)?;
+    let generation = u64_at(&rec, record::GENERATION);
+    let mut bad = scene(t, RED, &[([0, 0, 16, 16], BLUE)]);
+    encode::draw(&mut bad, pipeline::SOLID, BLUE, &[[9, 9, 3, 3]]);
+    let (r, a) = gpu::submit(ctx, &bad);
+    ensure(r == -EINVAL && a.error_index == 3, || format!("the stream with a bad fourth command: {} at command {}", errno(r), a.error_index))?;
+    ensure(counters(ctx)?.submissions == 1, || "the refused stream reached the device's count".to_string())?;
+    let rec = expect(t, &scene_canvas(32, 32, GREEN, &[]), "after the refused stream")?;
+    let g = u64_at(&rec, record::GENERATION);
+    ensure(g == generation, || format!("the target's generation moved from {generation} to {g}"))
+}
+
+pub fn stream_overflow() -> CaseResult {
+    let _case = begin()?;
+    let ctx = context()?;
+    let t = target(format::B8G8R8A8, 16, 16)?;
+    frame(ctx, &scene(t, GREEN, &[]))?;
+    // Draws: 65,536 are a submission; one more is refused at that command.
+    let mut s = Vec::new();
+    encode::begin(&mut s, t);
+    for _ in 0..limits::DRAWS {
+        encode::draw(&mut s, pipeline::SOLID, RED, &[]);
+    }
+    frame(ctx, &s)?;
+    encode::draw(&mut s, pipeline::SOLID, RED, &[[0, 0, 16, 16]]);
+    let (r, a) = gpu::submit(ctx, &s);
+    ensure(r == -EINVAL && a.error == stream::error::DRAW_LIMIT && a.error_index == limits::DRAWS as u32 + 1, || {
+        format!("{} draws: {} code {} at command {}", limits::DRAWS + 1, errno(r), a.error, a.error_index)
+    })?;
+    // Instances: 1,048,576 rectangles are a submission; one more is refused.
+    // `cover`: the first rectangle covers the target, so a truncated stream would show.
+    let many = |n: usize, cover: bool| {
+        let mut s = Vec::with_capacity(9 + 4 * n);
+        encode::begin(&mut s, t);
+        s.extend([stream::cmd::DRAW, 5 + 4 * n as u32, pipeline::SOLID, RED, n as u32]);
+        if cover {
+            s.extend([0, 0, 16, 16]);
+        }
+        s.resize(9 + 4 * n, 0);
+        s
+    };
+    let s = many(limits::INSTANCES as usize, false);
+    frame(ctx, &s)?;
+    drop(s);
+    let s = many(limits::INSTANCES as usize + 1, true);
+    let (r, a) = gpu::submit(ctx, &s);
+    ensure(r == -EINVAL && a.error == stream::error::INSTANCE_LIMIT && a.error_index == 1, || {
+        format!("{} instances: {} code {} at command {}", limits::INSTANCES + 1, errno(r), a.error, a.error_index)
+    })?;
+    // Buffers: two buffers of 33 and 32 MiB pass the 64 MiB a submission may name.
+    let b1 = gpu::buffer_create(33 << 20).map_err(|e| fail_msg(format!("a 33 MiB buffer: {}", errno(e))))?;
+    let b2 = gpu::buffer_create(32 << 20).map_err(|e| fail_msg(format!("a 32 MiB buffer: {}", errno(e))))?;
+    let mut s = Vec::new();
+    encode::begin(&mut s, t);
+    encode::draw_buffer(&mut s, pipeline::SOLID, RED, b1, 0, 1);
+    frame(ctx, &s)?;
+    encode::draw_buffer(&mut s, pipeline::SOLID, RED, b2, 0, 1);
+    let (r, a) = gpu::submit(ctx, &s);
+    ensure(r == -EINVAL && a.error == stream::error::BUFFER_LIMIT && a.error_index == 2, || {
+        format!("65 MiB of buffers: {} code {} at command {}", errno(r), a.error, a.error_index)
+    })?;
+    // Refused whole: nothing of the refused streams drew, and they were not counted.
+    ensure(counters(ctx)?.submissions == 4, || format!("{} submissions counted, expected the 4 accepted", counters(ctx).map_or(0, |c| c.submissions)))?;
+    expect(t, &scene_canvas(16, 16, GREEN, &[]), "after the refused streams")?;
+    pass()
+}
+
+pub fn fence_order() -> CaseResult {
+    let _case = begin()?;
+    let ctx = context()?;
+    let t = target(format::B8G8R8A8, 16, 16)?;
+    let colours: Vec<u32> = (0..8u8).map(|i| bgra(i * 30, 0x80, 0xFF - i * 30, 0xFF)).collect();
+    let mut fences = Vec::new();
+    for &c in &colours {
+        fences.push(submit(ctx, &scene(t, c, &[]))?);
+    }
+    ensure(fences.windows(2).all(|w| w[0] < w[1]), || format!("fences are not increasing: {fences:x?}"))?;
+    wait_ok(ctx, *fences.last().unwrap_or(&0), 2_000)?;
+    for (i, &f) in fences.iter().enumerate() {
+        let (r, _) = gpu::wait(ctx, f, 0);
+        ensure(r == 0, || format!("the last fence completed but fence {i} answers {}", errno(r)))?;
+    }
+    expect(t, &scene_canvas(16, 16, colours[7], &[]), "after eight frames")?;
+    pass()
+}
+
+pub fn fence_wait() -> CaseResult {
+    let _case = begin()?;
+    let ctx = context()?;
+    let t = target(format::B8G8R8A8, 24, 12)?;
+    let (_, rec) = read(t, 24, 12)?;
+    let g0 = u64_at(&rec, record::GENERATION);
+    let rects = [([2, 3, 20, 9], BLUE)];
+    let f = submit(ctx, &scene(t, GREY, &rects))?;
+    let (r, _) = gpu::wait(ctx, f, 2_000_000_000);
+    ensure(r == 0, || format!("WAIT returned {}", errno(r)))?;
+    let rec = expect(t, &scene_canvas(24, 12, GREY, &rects), "the frame WAIT completed")?;
+    let g = u64_at(&rec, record::GENERATION);
+    ensure(g == g0 + 1, || format!("the target's generation is {g}, expected {}", g0 + 1))?;
+    ensure(u64_at(&rec, record::RENDER_FENCE) != 0, || "the record names no render fence".to_string())
+}
+
+pub fn wait_timeout() -> CaseResult {
+    let _case = begin()?;
+    let ctx = context()?;
+    let t = target(format::B8G8R8A8, 8, 8)?;
+    arm(test_point::WITHHOLD_FENCE, test_point::WITHHOLD_ONE)?;
+    let f = submit(ctx, &scene(t, RED, &[]))?;
+    let start = now_ns();
+    let (r, _) = gpu::wait(ctx, f, 50_000_000);
+    let ms = ms_since(start);
+    value("wait-ms", ms as i64, "ms", Some((50, 100)));
+    ensure(r == -ETIMEDOUT, || format!("WAIT on the incomplete fence returned {}", errno(r)))?;
+    ensure((50..=100).contains(&ms), || format!("the 50 ms WAIT returned after {ms} ms"))
+}
+
+extern "C" fn on_alarm(_sig: i32) {}
+
+pub fn wait_eintr() -> CaseResult {
+    let _case = begin()?;
+    let ctx = context()?;
+    let t = target(format::B8G8R8A8, 8, 8)?;
+    signal::sigaction(SIGALRM, Some(&Sigaction::new(on_alarm)), None).map_err(|e| fail_msg(format!("sigaction: {e}")))?;
+    arm(test_point::WITHHOLD_FENCE, test_point::WITHHOLD_ONE)?;
+    let f = submit(ctx, &scene(t, RED, &[]))?;
+    let timer = Itimerval { it_interval: Timeval { tv_sec: 0, tv_usec: 0 }, it_value: Timeval { tv_sec: 0, tv_usec: 30_000 } };
+    signal::setitimer(ITIMER_REAL, &timer, None).map_err(|e| fail_msg(format!("setitimer: {e}")))?;
+    let start = now_ns();
+    let (r, _) = gpu::wait(ctx, f, 1_000_000_000);
+    let ms = ms_since(start);
+    value("interrupted-ms", ms as i64, "ms", Some((25, 500)));
+    ensure(r == -EINTR, || format!("WAIT with SIGALRM due at 30 ms returned {} after {ms} ms", errno(r)))?;
+    ensure(ms < 500, || format!("the signal ended WAIT only after {ms} ms"))
+}
+
+pub fn wait_killable() -> CaseResult {
+    let _case = begin()?;
+    let (rd, wr) = io::pipe().map_err(|e| fail_msg(format!("pipe: {e}")))?;
+    match process::fork().map_err(|e| fail_msg(format!("fork: {e}")))? {
+        ForkResult::Child => {
+            let ok = (|| -> Result<u64, ()> {
+                let ctx = gpu::context_create().map_err(|_| ())?;
+                let t = gpu::target_create(format::B8G8R8A8, 8, 8).map_err(|_| ())?;
+                if gpu::tc_arm(test_point::WITHHOLD_FENCE, 0, test_point::WITHHOLD_ONE) != 0 {
+                    return Err(());
+                }
+                let (r, a) = gpu::submit(ctx, &scene(t, RED, &[]));
+                if r != 0 {
+                    return Err(());
+                }
+                let _ = io::write(wr, b"w");
+                let _ = gpu::wait(ctx, a.fence, 10_000_000_000);
+                Ok(ctx)
+            })();
+            if ok.is_err() {
+                let _ = io::write(wr, b"x");
+            }
+            process::exit(3);
+        }
+        ForkResult::Parent(child) => {
+            let _ = io::close(wr);
+            let mut b = [0u8; 1];
+            let n = io::read(rd, &mut b).unwrap_or(0);
+            if n != 1 || b[0] != b'w' {
+                let _ = signal::kill(child.raw() as i32, SIGKILL);
+                let _ = process::waitpid(child.raw() as i32, core::ptr::null_mut(), 0);
+                return Err(fail_msg("the child could not submit its withheld frame".to_string()));
+            }
+            // Give the child time to be blocked in WAIT, then kill it.
+            let _ = time::sleep_ms(50);
+            let start = now_ns();
+            signal::kill(child.raw() as i32, SIGKILL).map_err(|e| fail_msg(format!("kill: {e}")))?;
+            let mut status = 0i32;
+            process::waitpid(child.raw() as i32, &mut status, 0).map_err(|e| fail_msg(format!("waitpid: {e}")))?;
+            let ms = ms_since(start);
+            value("exit-ms", ms as i64, "ms", Some((0, 250)));
+            ensure(process::wifsignaled(status) && process::wtermsig(status) == SIGKILL, || format!("the child ended with status {status:#x}, not by SIGKILL"))?;
+            ensure(ms <= 250, || format!("the child killed in WAIT took {ms} ms to exit"))
+        }
+    }
+}
+
+pub fn fence_foreign() -> CaseResult {
+    let _case = begin()?;
+    let a = context()?;
+    let b = context()?;
+    let t = target(format::B8G8R8A8, 8, 8)?;
+    let fb = submit(b, &scene(t, RED, &[]))?;
+    let (r, _) = gpu::wait(a, fb, 1_000_000_000);
+    ensure(r == -EINVAL, || format!("WAIT on context A with context B's fence returned {}", errno(r)))?;
+    let (r, _) = gpu::wait(b, fb + 1000, 0);
+    ensure(r == -EINVAL, || format!("WAIT on a fence context B never issued returned {}", errno(r)))?;
+    wait_ok(b, fb, 2_000)
+}
+
+pub fn multi_context() -> CaseResult {
+    let _case = begin()?;
+    let a = context()?;
+    let b = context()?;
+    let ta = target(format::B8G8R8A8, 32, 24)?;
+    let tb = target(format::R8G8B8A8, 24, 32)?;
+    let ra = [([3, 4, 20, 11], BLUE), ([25, 0, 40, 30], GREEN)];
+    let rb = [([0, 0, 5, 5], RED), ([10, 20, 24, 32], BLUE)];
+    let mut fences = Vec::new();
+    for round in 0..3u8 {
+        let bg = bgra(round * 40, 0x20, 0x10, 0xFF);
+        fences.push((a, submit(a, &scene(ta, bg, &ra))?));
+        fences.push((b, submit(b, &scene(tb, bg ^ 0x00FF_FF00, &rb))?));
+    }
+    for (ctx, f) in fences {
+        wait_ok(ctx, f, 2_000)?;
+    }
+    let last = bgra(80, 0x20, 0x10, 0xFF);
+    expect(ta, &scene_canvas(32, 24, last, &ra), "context A's target")?;
+    expect(tb, &scene_canvas(24, 32, last ^ 0x00FF_FF00, &rb), "context B's target")?;
+    pass()
+}
+
+/// Heavy frame `frame`: 512 draws over the whole 2048x2048 target, each in its own
+/// colour, together the 2^31 fragment-steps the work cap allows.
+fn heavy(t: u64, frame: u32) -> (Vec<u32>, u32) {
+    let mut s = Vec::new();
+    encode::begin(&mut s, t);
+    let mut last = 0;
+    for i in 0..512u32 {
+        last = bgra(i as u8, (i >> 8) as u8, frame as u8 * 40, 0xFF);
+        encode::draw(&mut s, pipeline::SOLID, last, &[[0, 0, 2048, 2048]]);
+    }
+    (s, last)
+}
+
+pub fn ring_backpressure() -> CaseResult {
+    let _case = begin()?;
+    let ctx = context()?;
+    let t = target(format::B8G8R8A8, 2048, 2048)?;
+    let frames: Vec<(Vec<u32>, u32)> = (0..5).map(|f| heavy(t, f)).collect();
+    let start = now_ns();
+    let mut fences = Vec::new();
+    for (f, _) in &frames[..4] {
+        fences.push(submit(ctx, f)?);
+    }
+    // Four in flight: the first has not completed when the fifth is submitted.
+    let (r, _) = gpu::wait(ctx, fences[0], 0);
+    ensure(r == -ETIMEDOUT, || format!("the first frame had completed ({}) before the fifth was submitted: the frames do not keep four in flight", errno(r)))?;
+    fences.push(submit(ctx, &frames[4].0)?);
+    let submit_ms = ms_since(start);
+    for &f in &fences {
+        wait_ok(ctx, f, 3_000)?;
+    }
+    value("five-frames-ms", ms_since(start) as i64, "ms", None);
+    value("submit-ms", submit_ms as i64, "ms", None);
+    let k = counters(ctx)?;
+    ensure(k.ring_waits >= 1, || "the fifth submission did not wait for room: no ring wait counted".to_string())?;
+    ensure(k.submissions == 5 && k.draws == 5 * 512, || format!("{} submissions and {} draws counted, expected 5 and {}", k.submissions, k.draws, 5 * 512))?;
+    // None is lost: the target shows the fifth frame's last draw.
+    expect(t, &scene_canvas(2048, 2048, frames[4].1, &[]), "the fifth frame")?;
+    pass()
+}
+
+pub fn device_error_eio() -> CaseResult {
+    let _case = begin()?;
+    let ctx = context()?;
+    let t = target(format::B8G8R8A8, 8, 8)?;
+    arm(test_point::DEVICE_ERROR, 0)?;
+    let f = submit(ctx, &scene(t, RED, &[]))?;
+    let (r, w) = gpu::wait(ctx, f, 2_000_000_000);
+    ensure(r == -EIO && w.status == fence_status::DEVICE_ERROR, || format!("WAIT returned {} status {}", errno(r), w.status))?;
+    let k = counters(ctx)?;
+    ensure(k.device_errors == 1, || format!("{} device errors counted", k.device_errors))
+}
+
+pub fn recovery_after_error() -> CaseResult {
+    let _case = begin()?;
+    let ctx = context()?;
+    let t = target(format::B8G8R8A8, 20, 20)?;
+    arm(test_point::DEVICE_ERROR, 0)?;
+    let f = submit(ctx, &scene(t, RED, &[]))?;
+    let (r, _) = gpu::wait(ctx, f, 2_000_000_000);
+    ensure(r == -EIO, || format!("the forced error's WAIT returned {}", errno(r)))?;
+    let rects = [([1, 1, 9, 19], GREEN), ([12, 2, 20, 6], BLUE)];
+    frame(ctx, &scene(t, GREY, &rects))?;
+    expect(t, &scene_canvas(20, 20, GREY, &rects), "the frame after the device error")?;
+    pass()
+}
+
+pub fn frame_one_syscall() -> CaseResult {
+    let _case = begin()?;
+    let ctx = context()?;
+    let t = target(format::B8G8R8A8, 64, 64)?;
+    let rects: Vec<([i32; 4], u32)> = (0..1000u32)
+        .map(|i| {
+            let x = (i * 11) % 60;
+            let y = (i * 17) % 60;
+            ([x as i32, y as i32, x as i32 + 4, y as i32 + 4], bgra(i as u8, (i >> 8) as u8 * 50, 0x77, 0xFF))
+        })
+        .collect();
+    frame(ctx, &scene(t, GREY, &rects))?;
+    let k = counters(ctx)?;
+    ensure(k.submissions == 1, || format!("{} submissions for one SUBMIT", k.submissions))?;
+    ensure(k.draws == 1001, || format!("{} draws counted, expected a clear and 1000 draws", k.draws))?;
+    expect(t, &scene_canvas(64, 64, GREY, &rects), "the 1000-draw frame")?;
+    pass()
+}
+
+pub fn freed_resource_refused() -> CaseResult {
+    let _case = begin()?;
+    let ctx = context()?;
+    let t = target(format::B8G8R8A8, 8, 8)?;
+    let keep = target(format::B8G8R8A8, 8, 8)?;
+    let buf = gpu::buffer_create(4096).map_err(|e| fail_msg(format!("a buffer: {}", errno(e))))?;
+    frame(ctx, &scene(t, RED, &[]))?;
+    ensure(gpu::resource_destroy(t) == 0 && gpu::resource_destroy(buf) == 0, || "RESOURCE_DESTROY refused".to_string())?;
+    let (r, a) = gpu::submit(ctx, &scene(t, GREEN, &[]));
+    ensure(r == -EINVAL && a.error_index == 0 && a.error == stream::error::BAD_HANDLE, || format!("a stream naming the destroyed target: {} at {} code {}", errno(r), a.error_index, a.error))?;
+    let mut s = scene(keep, GREEN, &[]);
+    encode::draw_buffer(&mut s, pipeline::SOLID, RED, buf, 0, 1);
+    let (r, a) = gpu::submit(ctx, &s);
+    ensure(r == -EINVAL && a.error_index == 2 && a.error == stream::error::BAD_HANDLE, || format!("a stream naming the destroyed buffer: {} at {} code {}", errno(r), a.error_index, a.error))?;
+    ensure(gpu::resource_destroy(t) == -EINVAL, || "a second RESOURCE_DESTROY was accepted".to_string())
+}
+
+pub fn fence_echo_checked() -> CaseResult {
+    let _case = begin()?;
+    let ctx = context()?;
+    let ta = target(format::B8G8R8A8, 8, 8)?;
+    let tb = target(format::B8G8R8A8, 8, 8)?;
+    let before = fired(test_point::STALE_FENCE);
+    arm(test_point::STALE_FENCE, 0)?;
+    // A's answer is made to claim the next fence, B's: neither may be taken as done by it.
+    let fa = submit(ctx, &scene(ta, RED, &[]))?;
+    let fb = submit(ctx, &scene(tb, BLUE, &[]))?;
+    let (r, w) = gpu::wait(ctx, fa, 2_000_000_000);
+    ensure(fired(test_point::STALE_FENCE) == before + 1, || "the stale-fence point did not fire".to_string())?;
+    ensure(r == -EIO && w.status == fence_status::FENCE_MISMATCH, || format!("WAIT on the fence answered for another submission returned {} status {}", errno(r), w.status))?;
+    wait_ok(ctx, fb, 2_000)?;
+    expect(tb, &scene_canvas(8, 8, BLUE, &[]), "the other submission's target")?;
+    pass()
+}
+
+pub fn counters_exact() -> CaseResult {
+    let _case = begin()?;
+    let ctx = context()?;
+    let t = target(format::B8G8R8A8, 32, 16)?;
+    let mut s = Vec::new();
+    encode::begin(&mut s, t);
+    encode::clear(&mut s, GREY);
+    // 16 pixels, then 4 and 4 after clipping to the 32x16 target.
+    encode::draw(&mut s, pipeline::SOLID, RED, &[[0, 0, 4, 4], [-2, -2, 2, 2], [30, 14, 40, 20]]);
+    frame(ctx, &s)?;
+    read(t, 32, 16)?;
+    read(t, 32, 16)?;
+    let area = 32 * 16 + 16 + 4 + 4;
+    for (scope, k) in [("the context", counters(ctx)?), ("the process", counters(0)?)] {
+        let got = [k.submissions, k.draws, k.instances, k.fragment_area, k.work_estimate, k.uploads_image, k.uploads_fixture, k.readbacks, k.ring_waits, k.device_errors];
+        let want = [1, 2, 4, area, area, 0, 0, 2, 0, 0];
+        ensure(got == want, || format!("{scope}'s counters are {got:?}, expected {want:?} (submissions, draws, instances, area, estimate, uploads, fixture uploads, readbacks, ring waits, device errors)"))?;
+    }
+    let p = counters(0)?;
+    ensure(p.contexts == 1 && p.resources == 1 && p.resource_bytes == 4096, || {
+        format!("the process holds {} contexts, {} resources and {} bytes, expected 1, 1 and 4096", p.contexts, p.resources, p.resource_bytes)
+    })
+}
+
+pub fn watchdog_quarantine() -> CaseResult {
+    let _case = begin()?;
+    let hung = context()?;
+    let other = context()?;
+    let t = target(format::B8G8R8A8, 8, 8)?;
+    let u = target(format::B8G8R8A8, 8, 8)?;
+    arm(test_point::WITHHOLD_FENCE, test_point::WITHHOLD_ONE)?;
+    let start = now_ns();
+    let f = submit(hung, &scene(t, RED, &[]))?;
+    wait_for(2_000, "quarantined-ms");
+    let (r, w) = gpu::wait(hung, f, 3_000_000_000);
+    let ms = ms_since(start);
+    value("quarantined-ms", ms as i64, "ms", Some((2_000, 2_500)));
+    ensure(r == -EIO && w.status == fence_status::DEVICE_HUNG, || format!("WAIT on the withheld fence returned {} status {}", errno(r), w.status))?;
+    ensure((2_000..=2_500).contains(&ms), || format!("the watchdog fired {ms} ms after the submission, expected 2 s"))?;
+    ensure(counters(hung)?.state == context_state::QUARANTINED, || "the hung context is not quarantined".to_string())?;
+    let (r, _) = gpu::submit(hung, &scene(t, GREEN, &[]));
+    ensure(r == -EIO, || format!("a submission to the quarantined context returned {}", errno(r)))?;
+    frame(other, &scene(u, BLUE, &[]))?;
+    expect(u, &scene_canvas(8, 8, BLUE, &[]), "the other context's frame")?;
+    pass()
+}
+
+pub fn device_reset_recovers() -> CaseResult {
+    let _case = begin()?;
+    let a = context()?;
+    let b = context()?;
+    let c = context()?;
+    let ta = target(format::B8G8R8A8, 8, 8)?;
+    let tb = target(format::B8G8R8A8, 8, 8)?;
+    arm(test_point::WITHHOLD_FENCE, test_point::WITHHOLD_ALL)?;
+    let start = now_ns();
+    let fa = submit(a, &scene(ta, RED, &[]))?;
+    wait_for(4_000, "reset-ms");
+    let (r, w) = gpu::wait(a, fa, 3_000_000_000);
+    ensure(r == -EIO && w.status == fence_status::DEVICE_HUNG, || format!("the stalled submission's WAIT returned {} status {}", errno(r), w.status))?;
+    // The device now makes no progress: B's work stays outstanding until the reset.
+    let fb = submit(b, &scene(tb, BLUE, &[]))?;
+    let (r, w) = gpu::wait(b, fb, 4_000_000_000);
+    let ms = ms_since(start);
+    value("reset-ms", ms as i64, "ms", Some((4_000, 4_600)));
+    ensure(r == -EIO && w.status == fence_status::DEVICE_RESET, || format!("WAIT across the reset returned {} status {}", errno(r), w.status))?;
+    ensure((4_000..=4_600).contains(&ms), || format!("the device was reset {ms} ms after the stall began, expected 4 s"))?;
+    for (name, ctx) in [("A", a), ("B", b), ("C", c)] {
+        let k = counters(ctx)?;
+        ensure(k.state == context_state::RESET, || format!("context {name}'s state after the reset is {}", k.state))?;
+        let (r, _) = gpu::submit(ctx, &scene(ta, GREEN, &[]));
+        ensure(r == -EIO, || format!("a submission to context {name} after the reset returned {}", errno(r)))?;
+    }
+    let d = context()?;
+    let td = target(format::B8G8R8A8, 16, 16)?;
+    let rects = [([2, 2, 14, 7], GREEN)];
+    frame(d, &scene(td, GREY, &rects))?;
+    expect(td, &scene_canvas(16, 16, GREY, &rects), "new work after the reset")?;
+    pass()
+}
