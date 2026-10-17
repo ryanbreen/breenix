@@ -845,9 +845,9 @@ class DriverTest(StateTest):
         d = self.driver
         d.args.mode, d.args.disk, d.args.commit = 'probe', 'install', 'c' * 40
         d.delivery['root'] = {'diskWrite': {'installedBy': d.id, 'lba': 0, 'bytes': 1024, 'sha256AfterRecord': 'a' * 64}}
-        self.finish(lambda: d.on_line('[storage] read back identical: 1024 bytes, sha256 after the record sector ' + 'b' * 64 + ' (3 ms)'), m.EXIT_SHORT)
+        self.finish(lambda: d.on_line('[storage] read back identical: 1024 bytes, sha256 after the record sector ' + 'b' * 64 + ' (3 ms)', observed_at=1), m.EXIT_SHORT)
         self.assertIsNone(m.read_json(m.STATE / 'disk.json'))
-        self.assertEqual(d.event.call_args.kwargs['match'], False)
+        d.event.assert_called_with('disk-write-verified', observed_at=1, match=False, bytes=1024)
         d.seen.discard('disk-write')
         d.on_disk_line('[storage] read back identical: 1024 bytes, sha256 after the record sector ' + 'a' * 64 + ' (3 ms)', 2)
         installed = m.read_json(m.STATE / 'disk.json')
