@@ -244,6 +244,7 @@ fn wait_idle_completion(completion: &Completion, expected_token: u32, timeout_ns
             if secs * 1_000_000_000 + nanos >= deadline {
                 break false;
             }
+            crate::arch_impl::aarch64::irq_mask_account::closing();
             unsafe {
                 core::arch::asm!(
                     "wfi",
@@ -253,6 +254,7 @@ fn wait_idle_completion(completion: &Completion, expected_token: u32, timeout_ns
                     options(nostack)
                 );
             }
+            crate::arch_impl::aarch64::irq_mask_account::opened();
         };
         crate::per_cpu_aarch64::preempt_enable();
         completed

@@ -1,4 +1,8 @@
-"""Write boot-specific files onto a staged ext2 RAM disk and verify their bytes."""
+"""Write boot-specific files onto a staged ext2 RAM disk and verify their bytes.
+
+An install boot (docs/metal/README.md, "The disks") also gets the storage record `install-root <boot>` in the
+image's first sector, which ext2 leaves unused: it asks the kernel to copy the RAM disk onto the machine's disk.
+"""
 from pathlib import Path
 import re
 import hashlib
@@ -8,8 +12,51 @@ import subprocess
 import tempfile
 
 
-def stage_root(image, mode, suite, site, writer=None):
-    if mode not in ('default', 'shell', 'suite'):
+RECORD_MAGIC = b'BREENIX-STORAGE 1\n'
+SECTOR = 512
+
+
+def install_record(boot_id):
+    """The first sector asking the kernel to install this RAM disk on the hardware disk."""
+    if not re.fullmatch(r'[A-Za-z0-9-]{1,64}', boot_id or ''):
+        raise ValueError('an install needs a boot id')
+    line = RECORD_MAGIC + f'install-root {boot_id}\n'.encode()
+    return line + bytes(SECTOR - len(line))
+
+
+def root_record(boot_id, size, digest):
+    """The first sector the kernel writes last when that install succeeds."""
+    line = RECORD_MAGIC + f'root {boot_id} {size} {digest}\n'.encode()
+    return line + bytes(SECTOR - len(line))
+
+
+def write_install_record(image, boot_id):
+    """Put the install request in sector 0 and return what the kernel will write to the disk."""
+    record = install_record(boot_id)
+    with open(image, 'r+b') as handle:
+        first = handle.read(SECTOR)
+        handle.seek(1024 + 56)
+        magic = handle.read(2)
+        if len(first) != SECTOR or any(first) or magic != b'\x53\xef':
+            raise ValueError('the root image has no unused first sector before its ext2 superblock')
+        handle.seek(0)
+        handle.write(record)
+    with open(image, 'rb') as handle:
+        if handle.read(SECTOR) != record:
+            raise ValueError('the install record readback differs')
+        digest = hashlib.sha256()
+        while chunk := handle.read(1 << 20):
+            digest.update(chunk)
+    size = Path(image).stat().st_size
+    if size % SECTOR or size <= SECTOR:
+        raise ValueError('the root image is not a whole number of sectors')
+    digest = digest.hexdigest()
+    return {'installedBy': boot_id, 'lba': 0, 'bytes': size, 'sha256AfterRecord': digest,
+            'rootRecordSha256': hashlib.sha256(root_record(boot_id, size, digest)).hexdigest()}
+
+
+def stage_root(image, mode, suite, site, writer=None, install=None):
+    if mode not in ('default', 'shell', 'probe', 'suite'):
         raise ValueError('unsupported RAM-disk boot mode')
     if mode == 'suite' and not re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*', suite or ''):
         raise ValueError('suite mode needs a suite id')
@@ -55,10 +102,13 @@ def stage_root(image, mode, suite, site, writer=None):
                                     check=True, capture_output=True)
             if result.stdout != text.encode():
                 raise ValueError('RAM-disk boot configuration readback differs')
-        binary = f'/sbin/suite-{suite}' if mode == 'suite' else '/sbin/init'
+        binary = {'suite': f'/sbin/suite-{suite}', 'probe': '/sbin/probe'}.get(mode, '/sbin/init')
         installed = scratch / 'pid1'
         subprocess.run([debugfs, '-R', f'dump {binary} {installed}', str(image)],
                        check=True, capture_output=True)
         if not installed.is_file() or installed.read_bytes()[:4] != b'\x7fELF':
             raise ValueError('RAM disk has no selected PID 1 ELF')
-    return {'mode': mode, 'suite': suite or None, 'siteFields': len(lines), 'writerSha256': writer_hash}
+    facts = {'mode': mode, 'suite': suite or None, 'siteFields': len(lines), 'writerSha256': writer_hash}
+    if install:
+        facts['diskWrite'] = write_install_record(image, install)
+    return facts

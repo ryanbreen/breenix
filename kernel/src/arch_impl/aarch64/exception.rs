@@ -450,6 +450,7 @@ fn handle_unhandled_el1_exception(frame: &Aarch64ExceptionFrame, ec: u32, esr: u
     unsafe {
         core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
     }
+    super::irq_mask_account::opened();
 
     let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
     let first_fault = cpu_id < EL1_UNHANDLED_FAULT_LATCHED.len()
@@ -834,6 +835,9 @@ mod exception_class {
 /// - x2 = FAR_EL1 (Fault Address Register)
 #[no_mangle]
 pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: u64, far: u64) {
+    // The CPU takes the exception masked; the return restores the frame's
+    // DAIF.
+    let _masked = super::irq_mask_account::ExceptionStretch::begin(frame);
     // Per-CPU sync exception counter — increment FIRST, before any branching.
     let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
     if cpu_id < 8 {
@@ -2028,6 +2032,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             unsafe {
                 core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
             }
+            super::irq_mask_account::opened();
             let frame_ref = unsafe { &mut *frame };
             let fatal_uart_guard = acquire_fatal_postmortem_uart();
             // Use lock-free raw UART — serial_println! acquires a spinlock that may be
@@ -2585,6 +2590,7 @@ impl Drop for KernelTime {
 /// This is the main IRQ dispatch point for ARM64.
 #[no_mangle]
 pub extern "C" fn handle_irq(frame: *const Aarch64ExceptionFrame) {
+    super::irq_mask_account::taken_irq();
     crate::tracing::providers::counters::count_irq();
     let have_percpu = crate::per_cpu_aarch64::is_initialized();
 
@@ -2614,6 +2620,7 @@ pub extern "C" fn handle_irq(frame: *const Aarch64ExceptionFrame) {
             && interrupted_context_had_irqs_unmasked(frame)
             && !gic::is_spi_level_triggered(irq_id);
         if reopen_nested_irq_window {
+            super::irq_mask_account::closing();
             unsafe {
                 core::arch::asm!("msr daifclr, #3", "isb", options(nomem, nostack));
             }
@@ -2625,6 +2632,7 @@ pub extern "C" fn handle_irq(frame: *const Aarch64ExceptionFrame) {
             unsafe {
                 core::arch::asm!("msr daifset, #3", "isb", options(nomem, nostack));
             }
+            super::irq_mask_account::opened();
         }
 
         // Mask IRQs before deactivation: a level source may already be

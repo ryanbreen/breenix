@@ -152,7 +152,12 @@ fn observe_exit_kick(thread_pid: u64) -> bool {
     let slot = &EXIT_KICK_SLOTS[thread_pid as usize % EXIT_KICK_BUCKETS];
     if let Some((observation, window)) = slot.observe_from_peer(thread_pid) {
         let interval = crate::tracing::trace_timestamp().wrapping_sub(observation.at);
-        crate::tracing::providers::teardown::record_exit_kick_observed(thread_pid, interval, window);
+        crate::tracing::providers::teardown::record_exit_kick_observed(
+            thread_pid,
+            observation.at,
+            interval,
+            window,
+        );
         true
     } else {
         slot.is_observed_for(thread_pid)

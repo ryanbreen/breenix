@@ -667,11 +667,11 @@ class DefinitionTest(unittest.TestCase):
     def test_final_marker_skips_stub_milestones(self):
         catalog = {'stages': [{'name': 'Kernel entry point', 'marker': 'Kernel entry point reached'}]}
         metal = {'milestones': [
-            {'id': 'first-light', 'kernel': True, 'stages': {'x86_64': [
+            {'id': 'first-light', 'bootShapes': ['ramdisk'], 'kernel': True, 'stages': {'x86_64': [
                 'Kernel entry point', {'name': 'Kernel idle', 'marker': '[metal] kernel idle'}]}},
-            {'id': 'smp', 'kernel': True, 'stub': True, 'stages': {'x86_64': [
+            {'id': 'smp', 'bootShapes': ['ramdisk'], 'kernel': True, 'stub': True, 'stages': {'x86_64': [
                 {'name': 'Four CPUs', 'marker': '[smp] online=4 reported=4'}]}},
-            {'id': 'first-userspace', 'stub': True, 'stages': {'default': [
+            {'id': 'first-userspace', 'bootShapes': ['ramdisk'], 'stub': True, 'stages': {'default': [
                 {'name': 'Boot script completed', 'marker': '[init] Boot script completed'}]}}]}
         self.assertEqual(boot.final_marker(metal, 'default', catalog), ('[metal] kernel idle', 'contains'))
         metal['milestones'][2].pop('stub')
@@ -680,17 +680,17 @@ class DefinitionTest(unittest.TestCase):
     def test_final_marker_is_the_last_stage_of_the_newest_milestone_the_mode_measures(self):
         catalog = {'stages': [{'name': 'Kernel entry point', 'marker': 'Kernel entry point reached'}]}
         metal = {'milestones': [
-            {'id': 'delivery', 'kernel': True, 'stages': {'x86_64': [{'name': 'Handoff', 'host': 'handoff'}]}},
-            {'id': 'first-light', 'kernel': True, 'stages': {'x86_64': ['Kernel entry point']}},
-            {'id': 'shell', 'stages': {'shell': [{'name': 'Proof', 'marker': 'metal-console-ok 42'}]}}]}
+            {'id': 'delivery', 'bootShapes': ['ramdisk'], 'kernel': True, 'stages': {'x86_64': [{'name': 'Handoff', 'host': 'handoff'}]}},
+            {'id': 'first-light', 'bootShapes': ['ramdisk'], 'kernel': True, 'stages': {'x86_64': ['Kernel entry point']}},
+            {'id': 'shell', 'bootShapes': ['ramdisk'], 'stages': {'shell': [{'name': 'Proof', 'marker': 'metal-console-ok 42'}]}}]}
         self.assertEqual(boot.final_marker(metal, 'default', catalog), ('Kernel entry point reached', 'contains'))
         self.assertEqual(boot.final_marker(metal, 'shell', catalog), ('metal-console-ok 42', 'contains'))
         self.assertIsNone(boot.final_marker({'milestones': [metal['milestones'][0]]}, 'default', catalog))
 
     def test_explicit_mode_terminal_precedes_later_kernel_milestones(self):
         definition = {'milestones': [
-            {'stages': {'default': [{'marker': 'INIT DONE|INIT COMPLETE', 'match': 'line'}]}},
-            {'kernel': True, 'stages': {'x86_64': [{'marker': 'NETWORK READY'}]}}]}
+            {'bootShapes': ['ramdisk'], 'stages': {'default': [{'marker': 'INIT DONE|INIT COMPLETE', 'match': 'line'}]}},
+            {'kernel': True, 'bootShapes': ['ramdisk'], 'stages': {'x86_64': [{'marker': 'NETWORK READY'}]}}]}
         self.assertEqual(boot.final_marker(definition, 'default', {}),
                          ('INIT DONE|INIT COMPLETE', 'line'))
 
@@ -743,6 +743,66 @@ class RootStagingTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 metal_root.stage_root(image, 'default', None, {'GUEST_PASSWORD': 'fixture'})
 
+    def test_install_boot_stages_probe_and_the_install_record_and_names_what_will_be_written(self):
+        import metal_root
+        prefix = Path('/opt/homebrew/opt/e2fsprogs/sbin')
+        mke2fs = shutil.which('mke2fs') or str(prefix / 'mke2fs')
+        debugfs = shutil.which('debugfs') or str(prefix / 'debugfs')
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            tree = root / 'tree'
+            (tree / 'sbin').mkdir(parents=True)
+            (tree / 'etc/breenix').mkdir(parents=True)
+            (tree / 'sbin/probe').write_bytes(b'\x7fELFprobe')
+            image = root / 'root.img'
+            subprocess.run([mke2fs, '-q', '-t', 'ext2', '-d', str(tree), '-F', str(image), '4096'],
+                           check=True, capture_output=True)
+            facts = metal_root.stage_root(image, 'probe', None, {}, install='20261017T000013Z-metal')
+            data = image.read_bytes()
+            record = b'BREENIX-STORAGE 1\ninstall-root 20261017T000013Z-metal\n'
+            self.assertEqual(data[:512], record + bytes(512 - len(record)))
+            write = facts['diskWrite']
+            self.assertEqual((write['installedBy'], write['lba'], write['bytes']),
+                             ('20261017T000013Z-metal', 0, len(data)))
+            self.assertEqual(write['sha256AfterRecord'], hashlib.sha256(data[512:]).hexdigest())
+            root_record = metal_root.root_record('20261017T000013Z-metal', len(data), write['sha256AfterRecord'])
+            self.assertEqual(write['rootRecordSha256'], hashlib.sha256(root_record).hexdigest())
+            self.assertEqual(root_record[:18], b'BREENIX-STORAGE 1\n')
+            # The filesystem is untouched by the record, and a second install request is refused.
+            target = subprocess.run([debugfs, '-R', 'cat /etc/breenix/boot-target', str(image)],
+                                    check=True, capture_output=True).stdout
+            self.assertEqual(target, b'probe\n')
+            with self.assertRaises(ValueError):
+                metal_root.write_install_record(image, '20261017T000014Z-metal')
+            with self.assertRaises(ValueError):
+                metal_root.install_record('bad/id')
+
+
+class MilestoneScoreTest(StateTest):
+    def test_scores_only_measurable_shapes_and_still_rejects_missing_stages(self):
+        import metal_score
+        root = TOOLS.parents[1]
+        directory = m.STATE / 'boot'
+        directory.mkdir()
+        for name in ('docs/metal/boot-path.json',
+                     'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json'):
+            dest = directory / 'definition' / name
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(root / name, dest)
+        (directory / 'serial.txt').write_text('')
+        (directory / 'events.jsonl').write_text('')
+        for disk, measured, excluded in [
+            ('install', 'disk-io', 'disk-filesystem'),
+            ('root', 'disk-filesystem', 'disk-io'),
+        ]:
+            m.write_json(directory / 'run.json', {'disk': disk, 'mode': 'probe'})
+            verdict = metal_score.score(directory)
+            self.assertIn(measured, verdict['milestones'])
+            self.assertNotIn(excluded, verdict['milestones'])
+            self.assertFalse(verdict['milestones'][measured]['passed'])
+            if disk == 'root':
+                self.assertNotIn('ramdisk-root', verdict['milestones'])
+
 
 class DriverTest(StateTest):
     def setUp(self):
@@ -780,6 +840,78 @@ class DriverTest(StateTest):
         d.on_line('print("metal-console-ok", 6*7)')
         d.on_line('bsh /> metal-console-ok 42')
         self.finish(lambda: d.on_line('metal-console-ok 42'), m.EXIT_DONE)
+
+    def test_install_records_a_verified_write_only_when_the_kernel_reports_the_staged_bytes(self):
+        d = self.driver
+        d.args.mode, d.args.disk, d.args.commit = 'probe', 'install', 'c' * 40
+        d.delivery['root'] = {'diskWrite': {'installedBy': d.id, 'lba': 0, 'bytes': 1024, 'sha256AfterRecord': 'a' * 64}}
+        self.finish(lambda: d.on_line('[storage] read back identical: 1024 bytes, sha256 after the record sector ' + 'b' * 64 + ' (3 ms)', observed_at=1), m.EXIT_SHORT)
+        self.assertIsNone(m.read_json(m.STATE / 'disk.json'))
+        d.event.assert_called_with('disk-write-verified', observed_at=1, match=False, bytes=1024)
+        d.seen.discard('disk-write')
+        d.on_disk_line('[storage] read back identical: 1024 bytes, sha256 after the record sector ' + 'a' * 64 + ' (3 ms)', 2)
+        installed = m.read_json(m.STATE / 'disk.json')
+        self.assertEqual((installed['installedBy'], installed['commit'], installed['verifiedAt']), (d.id, 'c' * 40, 2))
+
+    def test_disk_root_boot_checks_the_record_against_the_last_install(self):
+        d = self.driver
+        d.args.mode, d.args.disk = 'probe', 'root'
+        d.delivery['diskRoot'] = {'installedBy': '20261017T000013Z-metal', 'bytes': 1024, 'sha256AfterRecord': 'a' * 64}
+        d.on_disk_line('[storage] root record: installed by boot 20261017T000013Z-metal, 1024 bytes, sha256 ' + 'a' * 64, 3)
+        d.event.assert_called_with('disk-root-record', observed_at=3, matchesLastInstall=True,
+                                   installedBy='20261017T000013Z-metal')
+
+    def test_truncated_storage_prefix_cannot_complete_a_boot(self):
+        d = self.driver
+        d.args.disk = 'install'
+        d.final_marker = ('[storage] read back identical: ', 'contains')
+        d.on_line('[storage] read back identical: truncated')
+        self.assertFalse(d.completion_reported)
+
+    def test_disk_root_refuses_a_different_commit_before_assembling_the_payload(self):
+        d = self.driver
+        d.args.disk, d.args.commit = 'root', 'b' * 40
+        inputs = d.stage / 'inputs'
+        inputs.mkdir(parents=True)
+        (inputs / 'ready').touch()
+        m.write_json(inputs / 'build.json', {'commit': d.args.commit, 'profile': 'production', 'features': []})
+        m.write_json(m.STATE / 'disk.json', {'commit': 'a' * 40})
+        self.finish(d.prepare_payload, m.EXIT_CANCELLED)
+        self.assertNotIn('diskRoot', d.delivery)
+
+    def test_disk_mismatch_rejects_the_boot_before_prefix_completion(self):
+        d = self.driver
+        for action, line in [
+            ('install', '[storage] read back identical: 2048 bytes, sha256 after the record sector ' + 'a' * 64),
+            ('root', '[storage] root record: installed by boot wrong-install, 1024 bytes, sha256 ' + 'a' * 64),
+        ]:
+            d.args.disk = action
+            d.delivery = {'root': {'diskWrite': {'bytes': 1024, 'sha256AfterRecord': 'a' * 64}},
+                          'diskRoot': {'installedBy': 'correct-install', 'bytes': 1024, 'sha256AfterRecord': 'a' * 64}}
+            d.final_marker = (line.split(':')[0], 'contains')
+            self.finish(lambda: d.on_line(line), m.EXIT_SHORT)
+            self.assertFalse(d.completion_reported)
+
+    def test_storage_boots_wait_only_for_what_their_shape_can_produce(self):
+        root = TOOLS.parents[1]
+        metal = json.loads((root / 'docs/metal/boot-path.json').read_text())
+        catalog = json.loads((root / 'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json').read_text())
+        markers = lambda groups: {marker for group in groups for marker, _ in group}
+        install = boot.measured_stages(metal, 'probe', catalog, 'install')
+        disk_root = boot.measured_stages(metal, 'probe', catalog, 'disk-root')
+        self.assertIn('[storage] read back identical: ', markers(install))
+        self.assertIn('[block] ramdisk ', markers(install))
+        self.assertNotIn('[fs] root mounted from the installed disk', markers(install))
+        self.assertIn('[fs] root mounted from the installed disk', markers(disk_root))
+        self.assertNotIn('[block] ramdisk ', markers(disk_root))
+        self.assertNotIn('[storage] wrote ', markers(disk_root))
+        self.assertIn('[ahci] first sectors read by MSI: ', markers(install) & markers(disk_root))
+        self.assertEqual(boot.final_marker(metal, 'probe', catalog, 'install'),
+                         ('[storage] read back identical: ', 'contains'))
+        self.assertEqual(boot.final_marker(metal, 'probe', catalog, 'disk-root'),
+                         ('PROBE dir OK', 'contains'))
+        self.assertEqual(boot.final_marker(metal, 'default', catalog, 'ramdisk'),
+                         ('[init] Boot script completed', 'contains'))
 
     def test_mode_completion_waits_for_delayed_kernel_producers(self):
         d = self.driver
@@ -1050,7 +1182,7 @@ class DriverTest(StateTest):
         self.assertTrue(boot.marker_matches(('DONE|FINISHED', 'line'), 'FINISHED'))
         self.assertFalse(boot.marker_matches(('DONE|FINISHED', 'line'), 'not DONE yet'))
         self.assertTrue(boot.marker_matches(('DONE|FINISHED', 'contains'), 'stage FINISHED'))
-        definition = {'milestones': [{'stages': {'default': [{'marker': 'DONE|OK', 'match': 'line'}]}}]}
+        definition = {'milestones': [{'bootShapes': ['ramdisk'], 'stages': {'default': [{'marker': 'DONE|OK', 'match': 'line'}]}}]}
         self.assertEqual(boot.final_marker(definition, 'default', {}), ('DONE|OK', 'line'))
 
     def test_failed_preflight_power_off_quarantines(self):

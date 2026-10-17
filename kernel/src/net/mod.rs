@@ -88,6 +88,7 @@ pub(crate) fn net_lock_guard() -> NetLockGuard {
             core::arch::asm!("mrs {}, daif", out(reg) saved_daif, options(nomem, nostack));
             core::arch::asm!("msr daifset, #2", options(nomem, nostack));
         }
+        crate::arch_impl::aarch64::irq_mask_account::opened();
         NetLockGuard {
             saved_daif,
             _not_send_or_sync: PhantomData,
@@ -111,6 +112,7 @@ impl Drop for NetLockGuard {
 
         #[cfg(target_arch = "aarch64")]
         unsafe {
+            crate::arch_impl::aarch64::irq_mask_account::restoring(self.saved_daif);
             core::arch::asm!(
                 "msr daif, {}",
                 in(reg) self.saved_daif,

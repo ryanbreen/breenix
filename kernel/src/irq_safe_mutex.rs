@@ -28,6 +28,7 @@ impl IrqState {
                 core::arch::asm!("mrs {}, daif", out(reg) daif, options(nomem, nostack));
                 core::arch::asm!("msr daifset, #3", options(nomem, nostack));
             }
+            crate::arch_impl::aarch64::irq_mask_account::opened();
             Self { daif }
         }
         #[cfg(target_arch = "x86_64")]
@@ -46,6 +47,7 @@ impl IrqState {
     fn restore(&self) {
         #[cfg(target_arch = "aarch64")]
         unsafe {
+            crate::arch_impl::aarch64::irq_mask_account::restoring(self.daif);
             core::arch::asm!("msr daif, {}", in(reg) self.daif, options(nomem, nostack));
         }
         #[cfg(target_arch = "x86_64")]

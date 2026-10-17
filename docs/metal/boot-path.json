@@ -63,7 +63,12 @@
             "marker": "Jumping to kernel entry point at"
           }
         ]
-      }
+      },
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root"
+      ]
     },
     {
       "id": "first-light",
@@ -93,7 +98,12 @@
             "marker": "[metal] kernel idle"
           }
         ]
-      }
+      },
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root"
+      ]
     },
     {
       "id": "interrupts-time",
@@ -116,7 +126,12 @@
             "marker": "[timer] tick rate agrees with the TSC"
           }
         ]
-      }
+      },
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root"
+      ]
     },
     {
       "id": "smp",
@@ -135,7 +150,12 @@
             "marker": "[smp] timer ticks on each online CPU"
           }
         ]
-      }
+      },
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root"
+      ]
     },
     {
       "id": "ramdisk-root",
@@ -157,7 +177,11 @@
             "marker": "[block] hardware disks read-only"
           }
         ]
-      }
+      },
+      "bootShapes": [
+        "ramdisk",
+        "install"
+      ]
     },
     {
       "id": "first-userspace",
@@ -174,7 +198,12 @@
             "marker": "[init] Boot script completed"
           }
         ]
-      }
+      },
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root"
+      ]
     },
     {
       "id": "shell",
@@ -196,7 +225,12 @@
             "match": "line"
           }
         ]
-      }
+      },
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root"
+      ]
     },
     {
       "id": "nic",
@@ -230,7 +264,12 @@
             "marker": "[bcm5720] reply received: "
           }
         ]
-      }
+      },
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root"
+      ]
     },
     {
       "id": "dhcp-gateway",
@@ -251,7 +290,12 @@
             "marker": "[dns] answer received"
           }
         ]
-      }
+      },
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root"
+      ]
     },
     {
       "id": "real-host",
@@ -265,7 +309,12 @@
             "marker": "PROBE metal-fetch OK"
           }
         ]
-      }
+      },
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root"
+      ]
     },
     {
       "id": "suite-finished",
@@ -278,57 +327,94 @@
             "marker": "SUITE crypto DONE|SUITE directories DONE|SUITE files-io DONE|SUITE gpu DONE|SUITE ipc DONE|SUITE libc DONE|SUITE memory DONE|SUITE networking DONE|SUITE processes DONE|SUITE rust-std DONE|SUITE sdk DONE|SUITE signals DONE|SUITE smoke DONE|SUITE terminals DONE|SUITE threads DONE|SUITE time DONE|SUITE utilities DONE"
           }
         ]
-      }
+      },
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root"
+      ]
     },
     {
       "id": "sata-ahci",
-      "title": "SATA/AHCI discovery",
-      "summary": "Stub for the storage lane to finalize with its implementation.",
-      "stub": true,
+      "title": "SATA disk read by MSI",
+      "summary": "The AHCI controller takes its completions by MSI through the local APIC instead of a wired INTx line whose routing is unknown on this firmware, IDENTIFY DEVICE gives the drive's size, and a read of the disk's first sectors completes by MSI; only the kind of partition table and whether a Breenix storage record is present are reported.",
       "stages": {
         "probe": [
           {
-            "name": "AHCI controller discovered",
-            "marker": "[ahci] controller discovered"
+            "name": "AHCI attached by MSI",
+            "marker": "[ahci] attached by MSI: "
           },
           {
-            "name": "SATA port and drive identified",
-            "marker": "[ahci] port and drive identified"
+            "name": "SATA drive identified",
+            "marker": "[ahci] drive identified: "
+          },
+          {
+            "name": "First sectors read by MSI",
+            "marker": "[ahci] first sectors read by MSI: "
           }
         ]
-      }
+      },
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root"
+      ]
     },
     {
       "id": "disk-io",
-      "title": "Disk reads and writes",
-      "summary": "Stub for the storage lane to finalize with its implementation.",
-      "stub": true,
+      "title": "Disk written and read back",
+      "summary": "An install boot copies its RAM-disk root onto the disk from sector 0 with multi-sector writes under an explicit, revoked write grant, writes the root record last, and reads every sector back identical; the SHA-256 it reports is the one the boot loop recorded for what it asked to be written.",
       "stages": {
         "probe": [
           {
-            "name": "Disk read verified",
-            "marker": "PROBE metal-disk-read OK"
+            "name": "Install requested",
+            "marker": "[storage] install requested by boot "
           },
           {
-            "name": "Disk write verified",
-            "marker": "PROBE metal-disk-write OK"
+            "name": "Disk written",
+            "marker": "[storage] wrote "
+          },
+          {
+            "name": "Disk read back identical",
+            "marker": "[storage] read back identical: "
           }
         ]
-      }
+      },
+      "bootShapes": [
+        "install"
+      ]
     },
     {
       "id": "disk-filesystem",
-      "title": "Breenix filesystem on disk",
-      "summary": "Stub for the storage lane to finalize with its implementation.",
-      "stub": true,
+      "title": "Booted from an ext2 root on the disk",
+      "summary": "A boot delivered without a RAM disk finds the root record the install wrote, grants writes for that disk alone, mounts its ext2 filesystem as root and runs userspace from it: the probe's ext2 file and directory round trips pass on the disk.",
       "stages": {
         "probe": [
           {
-            "name": "Disk filesystem mounted",
-            "marker": "PROBE metal-disk-filesystem OK"
+            "name": "Root record found",
+            "marker": "[storage] root record: installed by boot "
+          },
+          {
+            "name": "Writes granted for the installed root",
+            "marker": "[block] hardware disk writes granted: the root the storage lane installed"
+          },
+          {
+            "name": "Root mounted from the disk",
+            "marker": "[fs] root mounted from the installed disk"
+          },
+          {
+            "name": "Ext2 file round trip on the disk",
+            "marker": "PROBE file OK"
+          },
+          {
+            "name": "Ext2 directory round trip on the disk",
+            "marker": "PROBE dir OK"
           }
         ]
-      }
+      },
+      "bootShapes": [
+        "disk-root"
+      ]
     }
   ],
   "firsts": [
@@ -361,6 +447,11 @@
       "id": "first-lease",
       "title": "First DHCP lease",
       "stage": "DHCP lease acquired"
+    },
+    {
+      "id": "first-disk-root",
+      "title": "First boot from a disk Breenix wrote",
+      "stage": "Root mounted from the disk"
     },
     {
       "id": "networking-suite",

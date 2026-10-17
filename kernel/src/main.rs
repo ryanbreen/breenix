@@ -654,12 +654,18 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     x86_64::instructions::interrupts::enable();
     drivers::run_post_init_self_tests();
 
+    // A storage-lane install copies the RAM disk to the hardware disk while the
+    // RAM disk is still unmounted, so the copy is the image as delivered.
+    kernel::block::install_requested_root();
+
     // Initialize ext2 root filesystem once IRQ-driven block completions can arrive.
     match kernel::fs::ext2::init_root_fs() {
         Ok(()) => {
             log::info!("ext2 root filesystem mounted");
             if kernel::block::ramdisk::device().is_some() {
                 log::info!("[fs] root mounted from the RAM disk");
+            } else if kernel::block::root_on_installed_disk() {
+                log::info!("[fs] root mounted from the installed disk");
             }
             if kernel::block::hardware_read_only() {
                 let count = kernel::block::devices().len();
@@ -1251,10 +1257,24 @@ fn launch_x86_production_init(
     Ok(())
 }
 
-/// Which suite, if any, the production kernel runs as PID 1 instead of
+/// A PID 1 other than `/sbin/init` that the x86-64 production kernel runs.
+#[cfg(all(
+    target_arch = "x86_64",
+    not(any(
+        feature = "testing",
+        feature = "interactive",
+        feature = "disable_x86_prod_init"
+    ))
+))]
+enum X86BootTarget {
+    Suite(kernel::boot::target::SuiteTarget),
+    Probe,
+}
+
+/// Which suite or probe, if any, the production kernel runs as PID 1 instead of
 /// `/sbin/init`: fw_cfg first (`opt/breenix/mode=suite` with
 /// `opt/breenix/suite=<id>`; `default` runs `/sbin/init` whatever the disk says),
-/// then the boot-target file (`kernel::boot::target`), else none. A request that
+/// then the boot-target file (`kernel::boot::target`), else `/sbin/init`. A request that
 /// cannot be used is noted on its own line and the default runs.
 #[cfg(all(
     target_arch = "x86_64",
@@ -1264,18 +1284,15 @@ fn launch_x86_production_init(
         feature = "disable_x86_prod_init"
     ))
 ))]
-fn x86_boot_suite() -> Option<kernel::boot::target::SuiteTarget> {
+fn x86_boot_target() -> Option<X86BootTarget> {
     use kernel::boot::target;
     use kernel::drivers::fw_cfg;
 
     match fw_cfg::read_string("opt/breenix/mode").as_deref() {
         None | Some("") => match target::read() {
-            Ok(Some(target::Target::Suite(suite))) => Some(suite),
+            Ok(Some(target::Target::Suite(suite))) => Some(X86BootTarget::Suite(suite)),
             Ok(Some(target::Target::Default | target::Target::Shell)) => None,
-            Ok(Some(target::Target::Probe)) => {
-                log::warn!("[boot] Ignoring probe boot target: x86-64 runs default, shell and suite");
-                None
-            }
+            Ok(Some(target::Target::Probe)) => Some(X86BootTarget::Probe),
             Ok(None) => None,
             Err(why) => {
                 log::warn!("[boot] Ignoring boot target {}: {}", target::PATH, why);
@@ -1286,7 +1303,7 @@ fn x86_boot_suite() -> Option<kernel::boot::target::SuiteTarget> {
         Some("suite") => match fw_cfg::read_string("opt/breenix/suite") {
             Some(id) if target::is_suite_id(&id) => {
                 match target::SuiteTarget::new(id, fw_cfg::read_string("opt/breenix/case")) {
-                    Ok(suite) => Some(suite),
+                    Ok(suite) => Some(X86BootTarget::Suite(suite)),
                     Err(why) => {
                         log::warn!("[boot] Ignoring boot mode \"suite\": {}", why);
                         None
@@ -1328,10 +1345,10 @@ fn x86_boot_shell() -> bool {
 }
 
 /// Read the program the production kernel runs as PID 1 from the ext2 root:
-/// `/sbin/suite-<id>` when `x86_boot_suite` names a suite whose binary reads
-/// and is a loadable ELF, otherwise `/sbin/init`. Returns its process name,
-/// physical pathname and ELF. A suite binary that cannot be used is noted and
-/// the default init runs.
+/// `/sbin/suite-<id>` or `/sbin/probe` when `x86_boot_target` names one whose
+/// binary reads and is a loadable ELF, otherwise `/sbin/init`. Returns its
+/// process name, physical pathname and ELF. A binary that cannot be used is
+/// noted and the default init runs.
 #[cfg(all(
     target_arch = "x86_64",
     not(any(
@@ -1344,7 +1361,23 @@ fn read_x86_production_init(
 ) -> Result<(alloc::string::String, alloc::vec::Vec<u8>, alloc::vec::Vec<u8>, Option<alloc::string::String>, bool), &'static str> {
     use kernel::boot::{init_image::read_init_from_ext2, target};
 
-    if let Some(suite) = x86_boot_suite() {
+    let suite = match x86_boot_target() {
+        Some(X86BootTarget::Suite(suite)) => Some(suite),
+        Some(X86BootTarget::Probe) => {
+            match read_init_from_ext2("/sbin/probe")
+                .and_then(|(elf_data, exe_path)| target::check_elf(&elf_data).map(|()| (elf_data, exe_path)))
+            {
+                Ok((elf_data, exe_path)) => {
+                    log::info!("[boot] Boot mode: probe");
+                    return Ok((alloc::string::String::from("probe"), exe_path, elf_data, None, false));
+                }
+                Err(e) => log::warn!("[boot] Ignoring boot mode \"probe\": /sbin/probe could not be loaded ({})", e),
+            }
+            None
+        }
+        None => None,
+    };
+    if let Some(suite) = suite {
         let id = suite.id;
         let path = target::suite_path(&id);
         match read_init_from_ext2(&path)

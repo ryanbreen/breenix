@@ -821,6 +821,12 @@ fn metal_definition_errors(root: &Path, main: &Value, metal: &Value, boot: &Valu
         if milestone.get("stub").is_some_and(|stub| stub != true) {
             errors.push(format!("{id}: stub must be true or absent when finalized"));
         }
+        let shapes = milestone["bootShapes"].as_array();
+        if !shapes.is_some_and(|shapes| !shapes.is_empty()
+            && shapes.iter().all(|shape| matches!(shape.as_str(), Some("ramdisk" | "install" | "disk-root")))
+            && shapes.iter().collect::<HashSet<_>>().len() == shapes.len()) {
+            errors.push(format!("{id}: bootShapes must name unique supported boot shapes"));
+        }
         let lists = milestone["stages"].as_object().unwrap();
         if lists.is_empty() {
             errors.push(format!("{id}: stages must not be empty, including stubs"));
@@ -990,6 +996,7 @@ fn metal_definition_contract_rejects_invalid_inputs() {
     }
     assert!(metal_definition_errors(&root, &main, &metal, &finalized).is_empty());
     for (pointer, value) in [
+        ("/milestones/0/bootShapes", serde_json::json!(["unknown"])),
         ("/milestones/8/stub", serde_json::json!("true")),
         ("/scoring", serde_json::json!("arch")),
         ("/gateArch", serde_json::json!("aarch64")),
