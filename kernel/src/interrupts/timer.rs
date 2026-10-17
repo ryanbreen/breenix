@@ -36,7 +36,7 @@ const TIME_QUANTUM: u32 = 10;
 ///
 /// @param from_userspace: 1 if interrupted userspace, 0 if interrupted kernel (unused)
 #[no_mangle]
-pub extern "C" fn timer_interrupt_handler(_from_userspace: u8) {
+pub extern "C" fn timer_interrupt_handler(_from_userspace: u8, reschedule_ipi: u8) {
     // Enter hardware IRQ context (increments HARDIRQ count)
     crate::per_cpu::irq_enter();
 
@@ -49,7 +49,10 @@ pub extern "C" fn timer_interrupt_handler(_from_userspace: u8) {
 
     // Trace timer tick - compiles to ~5 instructions when disabled
     // Uses the TICKS counter value as payload for timing analysis
-    trace_timer_tick(now);
+    // A reschedule IPI shares this return path, but is not a timer tick.
+    if reschedule_ipi == 0 {
+        trace_timer_tick(now);
+    }
 
     // Decrement this CPU's quantum and check for reschedule.
     // Only reschedule when quantum expires - NOT every tick
