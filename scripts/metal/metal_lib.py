@@ -494,7 +494,8 @@ class Redactor:
             # The complete URL, host and path are site literals independently.
             if '://' in value:
                 parts = urlsplit(value)
-                literals.update(part for part in (parts.netloc, parts.hostname, parts.path) if part and part != "/")
+                literals.update(part for part in (parts.netloc, parts.hostname, parts.path, *parts.path.split("/"))
+                                if part and part != "/")
         self.identifiers = sorted(identifier_list(site), key=len, reverse=True)
         self.literals = sorted(literals | set(self.identifiers), key=len, reverse=True)
         self.pattern = re.compile('|'.join(re.escape(value) for value in self.literals), re.I) if self.literals else None

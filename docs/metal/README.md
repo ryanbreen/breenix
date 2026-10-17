@@ -40,7 +40,7 @@ The coordinator's delivery ruling approves a clean-room Breenix EFI stub, writte
 served as `application/efi`. It will register the ESP image through `EFI_RAM_DISK_PROTOCOL` and connect controllers
 when that firmware protocol is available; otherwise it will expose BlockIo and a device path itself. The image
 may be embedded or fetched through firmware HTTP. L3 builds the stub first and must demonstrate row (a), main's kernel
-reaching delivery. L0 lands on the machine proofs for rows (b)–(f). The Enterprise licence remains deferred.
+reaching delivery. L0 lands on the machine proofs for rows (b)–(f). The Enterprise licence remains ruled "not yet"; the stub work is tracked in #1681.
 The current `image` payload is the original RAM-disk probe and still ends in delivery with exit 2; it is not a
 working Breenix delivery path until L3 integrates the stub.
 
@@ -168,7 +168,8 @@ The reaper runs each 15 s, independently of the drivers:
 refused (exit 75), and the machine may still be on. The agent that owns the stream reports it. While the container
 itself is down, the machine stays as it is until the container returns and reconciliation powers it off first;
 the URI answers 404 until a boot stages an image, and the BIOS keeps the machine off after a
-power cut. claim-lint:ok: `Machine.reap` in `scripts/metal/metal-machine`, eight reaper tests in
+power cut. Reaper and startup cleanup restore inventory-on-restart to Disabled after an interrupted setup;
+pre-flight checks it before a boot. claim-lint:ok: `Machine.reap` in `scripts/metal/metal-machine`, reaper tests in
 `tests/metal_tools_test.py`, and the fault boots in "Measured".
 
 The sampler writes `machine.json`: power state, temperatures and fans from the controller's thermal resource (each
@@ -289,23 +290,49 @@ private paths (home folders, `/root`, the boot store, the site folder, clone pat
 leaves the private record: phone payloads, notifications, attempt rows and lines quoted in a pull request or issue.
 `redact --list` prints the identifier list without the credential. The shared fixture is `redact-site.env`,
 `redact-input.txt` and `redact-expected.txt` in `scripts/metal/fixtures/`: each category passes through the
-redactor and the tests fail on a survivor; Vigil's redaction tests use the same files. claim-lint:ok: five
-redaction tests in `tests/metal_tools_test.py`.
+redactor and the tests fail on a survivor; Vigil's redaction tests use the same files. claim-lint:ok: redaction
+tests in `tests/metal_tools_test.py`.
 
 ## Measured
 
 POST, from power-on to the firmware's image request, over L0's 11 boots that reached a request: 32.6 to 33.1 s on 9,
 and 104.6 and 106.2 s on the 2 first power-ons after a settings job. These measurements had SATA disabled and
-are historical; the 212.4 s budget must be re-timed with AHCI enabled before landing.
+are historical. The AHCI re-timing below replaces the 212.4 s SATA-off budget; the historical intervals are
+archived separately and do not contribute to the current budget.
 
-L0's boots, one per row of the lane:
+Original SATA-off boots and delivery probes (retained as historical evidence):
 
 | Row | Boot | Reached | Exit |
 |---|---|---|---|
-| Main's kernel as `boot.img` (origin/main 970f5174) | Built in a private clone (guard with the `x86` stand-in, userspace from the gate cache, production kernel in 88 s, no warnings), assembled as a 323 MB image read back component by component. The firmware sent a `HEAD` 32.8 s after power-on and no `GET`, and reported "Boot Failed" | delivery: console ready, power-on, firmware text, POST, image request | 2 |
+| Main's kernel as `boot.img` (origin/main 970f5174) | Built in a private clone (guard with the `x86` stand-in, userspace from the gate cache, production kernel in 88 s, no warnings), assembled as a 323 MB image read back component by component. The firmware sent a `HEAD` 32.8 s after power-on and no `GET`, and reported "Boot Failed" | delivery incomplete (HEAD only); row (a) now belongs to L3 under the delivery ruling | 2 |
 | Delivery ladder (main's image failed delivery) | Six probes, `metal-hang.efi` in a 34 MB `.img` and in a 34 MB ISO (at the `.img` URI, behind a redirect, at an `.iso` URI, typed `application/octet-stream`, with byte ranges): `HEAD` only, then "Boot Failed", each time | delivery up to the request | 2 |
 | No image staged | `HEAD` and `GET` answered 404 at 106 s; "No bootable devices" at 119 s; off 6.7 s after the decision | delivery up to the request | 2 |
 | `metal-hang.efi` (bare EFI) | Fetched in 0.02 s with its sha256; its line on SOL at 33 s; 120 s of silence; the NMI reached the firmware's exception handler, not the payload; off 21.6 s after the NMI capture | the payload's own line | 124 |
 | Driver killed (SIGKILL) 15 s into POST | The reaper saw the driver gone 9.2 s after the kill, read Off at 14.1 s and closed the record at 18.4 s | POST | 137, `ended-by: reaper` |
 | Container restarted 10 s into POST | The machine service started 8.9 s after the restart, closed the record, read Off at 16.2 s, and reported ready (lease and image server) at 23.1 s; the URL refused connections until then | POST | 137, `ended-by: reconciliation` |
 | Injected ForceOff failure | The lease quarantined with the machine on; a second boot 11 s later was refused (exit 75); the reaper's first retry, 74 s after the quarantine, read Off and lifted it | delivery up to the 404 | 2, then 75 |
+
+### AHCI review reruns
+
+`metal-setup apply` and the final read-back passed 30 of 30 rows with `EmbSata=AhciMode`, inventory-on-restart
+Disabled and power Off. The controller, port and SSD observations are recorded in the private hardware recon.
+Three firmware-request intervals with AHCI enabled replaced the archived SATA-off timing baseline. The resulting
+budget is in `post-times.json` and `machine.json` in the private boot store. The scheduled storage entry belongs
+to the stream-definition change, #1676; L0 documents the same ordering here without duplicating that file.
+
+| Row | Review rerun result |
+|---|---|
+| (b) No image staged | Firmware HEAD/GET refused; delivery failure; power Off and lease released |
+| (c) Bare EFI hang payload | Intact fetch and SOL marker; silence decision; NMI capture; ForceOff confirmed Off |
+| (d) Driver SIGKILL during POST | Reaper confirmed Off and closed the record as capture-incomplete within the required 45 seconds |
+| (e) Container restarted during POST | Reconciliation closed the record as capture-incomplete and confirmed Off before readiness; lease released |
+| (f) Injected ForceOff failure | Lease quarantined; the next boot was refused specifically for quarantine; the reaper confirmed Off and lifted quarantine |
+
+One initial signal command reported an auxiliary-process control error after killing the driver. Its record and
+reaper recovery are retained privately; the explicit main-process signal rerun passed the same deadline and status
+checks. Rows (b)–(f) are the approved L0 landing scope; L3's stub must supply row (a), tracked in #1681.
+
+Marker resolution prefers a mode's explicit terminal stage, with kernel stages as the fallback for definitions
+without one. Pipe-separated markers are literal alternatives; `match: line` requires the complete cleaned serial
+line. Host tests cover this contract, the driver's deadline phases, HTTP accounting, reset detection, serial reads
+that finish mid-buffer, cancellation and the recovery paths.

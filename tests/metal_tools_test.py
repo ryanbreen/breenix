@@ -112,6 +112,12 @@ class RedactorTest(unittest.TestCase):
                      'Breenix boot.img over DHCP on port 8240', 'HTTP device NIC.Embedded.2-1-1'):
             self.assertEqual(m.Redactor({})(text), text)
 
+    def test_url_path_components_are_private(self):
+        redact = m.Redactor({'BOOT_URL': 'http://fixture.invalid/private-folder/payload.efi'})
+        for text in ('http://fixture.invalid/private-folder/payload.efi', 'fixture.invalid',
+                     '/private-folder/payload.efi', 'private-folder', 'payload.efi'):
+            self.assertEqual(redact(text), '<site>')
+
     def test_list_never_carries_a_credential(self):
         names = m.identifier_list(self.site)
         self.assertIn('fixtureauto', names)
