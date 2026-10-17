@@ -90,6 +90,38 @@ pub fn resource_destroy(handle: u64) -> i64 {
     call_with(op::RESOURCE_DESTROY, &mut a)
 }
 
+/// `RESOURCE_CREATE` of a texture.
+pub fn texture_create(format: u32, width: u32, height: u32) -> Result<u64, i64> {
+    image_create(abi::kind::TEXTURE, format, width, height)
+}
+
+/// `UPLOAD` of the rectangle `rect` (`x, y, width, height`) of `pixels`, laid out as `source`
+/// at `stride`, into `resource`, sent in `context`: the return and the argument.
+pub fn upload(context: u64, resource: u64, rect: [u32; 4], pixels: &[u8], stride: u32, source: u32, purpose: u32) -> (i64, abi::Upload) {
+    upload_raw(context, resource, rect, pixels.as_ptr() as u64, pixels.len() as u64, stride, source, purpose)
+}
+
+/// `UPLOAD` from an arbitrary address and length.
+#[allow(clippy::too_many_arguments)]
+pub fn upload_raw(context: u64, resource: u64, rect: [u32; 4], pixels: u64, pixels_len: u64, stride: u32, source: u32, purpose: u32) -> (i64, abi::Upload) {
+    let mut a = abi::Upload {
+        context,
+        resource,
+        x: rect[0],
+        y: rect[1],
+        width: rect[2],
+        height: rect[3],
+        pixels,
+        pixels_len,
+        stride,
+        source,
+        purpose,
+        reserved: 0,
+    };
+    let r = call_with(op::UPLOAD, &mut a);
+    (r, a)
+}
+
 /// `SUBMIT` of `stream` on `context`: the return and the argument as the kernel left it
 /// (its fence, or its refusal's index and code).
 pub fn submit(context: u64, stream: &[u32]) -> (i64, abi::Submit) {
