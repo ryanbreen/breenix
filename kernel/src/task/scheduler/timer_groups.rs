@@ -45,9 +45,10 @@ static GROUPS: [Group; SLOTS] = [const {
     }
 }; SLOTS];
 
-/// Raised by every registration: a pass that computed the next check before
-/// one finished asks for another pass rather than publish a check that misses
-/// the newly armed timer.
+/// Raised by every registration once its slot is live: a pass that read the
+/// count before a registration raised it asks for another pass rather than
+/// publish a check that misses the newly armed timer, and a pass that read it
+/// after sees the slot live.
 static REGISTRATIONS: AtomicU64 = AtomicU64::new(0);
 
 /// A group the table had no room for went to the scheduler's own list,
@@ -65,10 +66,19 @@ const PASS_TAKEOVER_NS: u64 = 2_000_000;
 /// changed them, and ask for a pass at the next tick, which publishes the
 /// group's next check. False when the table is full: the caller registers
 /// the group with the scheduler instead.
+///
+/// The arming before this call and the slot reads in `listed` are ordered
+/// against a pass retiring the slot (`expire`): either `listed` sees the slot
+/// retired and claims another, or the pass sees the timer armed and keeps it.
+/// The count and the check are sequentially consistent with the pass's two
+/// reads of the count and its publication of the check, so a pass that
+/// missed this slot either reads the raised count after publishing, or
+/// publishes before this check is cleared.
 pub(super) fn register(timers: &Arc<IntervalTimers>, account: &Arc<CpuAccount>) -> bool {
-    REGISTRATIONS.fetch_add(1, Ordering::AcqRel);
+    core::sync::atomic::fence(Ordering::SeqCst);
     let added = !timers.is_active() || listed(timers) || claim(timers, account);
-    super::SIGNAL_TIMERS_NEXT.store(0, Ordering::Release);
+    REGISTRATIONS.fetch_add(1, Ordering::SeqCst);
+    super::SIGNAL_TIMERS_NEXT.store(0, Ordering::SeqCst);
     added
 }
 
@@ -143,7 +153,7 @@ pub(super) fn expire() {
         return;
     }
     super::SIGNAL_PASS_REQUESTED.store(false, Ordering::Release);
-    let registrations = REGISTRATIONS.load(Ordering::Acquire);
+    let registrations = REGISTRATIONS.load(Ordering::SeqCst);
     release_retired();
     crate::signal::timers::retry_job_control();
     let wall = crate::signal::monotonic_micros();
@@ -170,8 +180,19 @@ pub(super) fn expire() {
                 timers.disarm_all();
             }
             if !timers.is_active() {
-                let _ = slot.state.compare_exchange(LIVE, RETIRED, Ordering::AcqRel, Ordering::Relaxed);
-                continue;
+                if slot.state.compare_exchange(LIVE, RETIRED, Ordering::AcqRel, Ordering::Relaxed).is_err() {
+                    continue;
+                }
+                // A timer armed since the check above may have been
+                // registered against this slot while it was still live
+                // (`register`): it stays live then. The pin held here keeps
+                // `release_retired` from freeing it meanwhile.
+                core::sync::atomic::fence(Ordering::SeqCst);
+                if !timers.is_active()
+                    || slot.state.compare_exchange(RETIRED, LIVE, Ordering::AcqRel, Ordering::Relaxed).is_err()
+                {
+                    continue;
+                }
             }
             // A timer counting CPU time reads the account its threads are
             // charged to, so the threads running on any CPU are charged first.
@@ -208,9 +229,9 @@ pub(super) fn expire() {
     if OVERFLOWED.load(Ordering::Acquire) {
         next = next.min(now.saturating_add(tick_ns));
     }
-    super::SIGNAL_TIMERS_NEXT.store(next, Ordering::Release);
-    if REGISTRATIONS.load(Ordering::Acquire) != registrations {
-        super::SIGNAL_TIMERS_NEXT.store(0, Ordering::Release);
+    super::SIGNAL_TIMERS_NEXT.store(next, Ordering::SeqCst);
+    if REGISTRATIONS.load(Ordering::SeqCst) != registrations {
+        super::SIGNAL_TIMERS_NEXT.store(0, Ordering::SeqCst);
     }
     let _ = PASS_STARTED.compare_exchange(now.max(1), 0, Ordering::AcqRel, Ordering::Relaxed);
 }
