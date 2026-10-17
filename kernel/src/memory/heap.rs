@@ -64,12 +64,25 @@ impl IrqSafeLockedHeap {
     }
 }
 
+/// Scratch probe (#1712): live allocations per 16-byte size class.
+pub static PROBE_LIVE: [core::sync::atomic::AtomicI64; 257] =
+    [const { core::sync::atomic::AtomicI64::new(0) }; 257];
+
+fn probe_class(size: usize) -> usize {
+    (size / 16).min(256)
+}
+
 unsafe impl GlobalAlloc for IrqSafeLockedHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        self.with_inner(|inner| unsafe { GlobalAlloc::alloc(inner, layout) })
+        let ptr = self.with_inner(|inner| unsafe { GlobalAlloc::alloc(inner, layout) });
+        if !ptr.is_null() {
+            PROBE_LIVE[probe_class(layout.size())].fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        }
+        ptr
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        PROBE_LIVE[probe_class(layout.size())].fetch_sub(1, core::sync::atomic::Ordering::Relaxed);
         self.with_inner(|inner| unsafe {
             GlobalAlloc::dealloc(inner, ptr, layout);
         });

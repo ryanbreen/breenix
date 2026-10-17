@@ -259,6 +259,14 @@ pub fn generate_counters() -> String {
         parked,
         crate::memory::heap::free_bytes(),
     ));
+    output.push_str("probe_live:");
+    for (class, live) in crate::memory::heap::PROBE_LIVE.iter().enumerate() {
+        let live = live.load(core::sync::atomic::Ordering::Relaxed);
+        if live != 0 {
+            output.push_str(&format!(" {}={}", class * 16, live));
+        }
+    }
+    output.push('\n');
     if count == 0 {
         output.push_str("# (no counters registered)\n");
     }

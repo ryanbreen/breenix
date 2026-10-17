@@ -211,7 +211,7 @@ static RECORD_NAMES: OnceLock<(String, String)> = OnceLock::new();
 static RECORDS: AtomicU32 = AtomicU32::new(0);
 
 /// The most VALUE and WAIT records one case process prints.
-pub const RECORDS_PER_CASE: u32 = 12;
+pub const RECORDS_PER_CASE: u32 = 400;
 
 /// Print one record for the running case; nothing outside a case or past the cap.
 fn record(kind: &str, rest: &str) {

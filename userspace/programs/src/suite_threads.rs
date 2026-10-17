@@ -1238,39 +1238,51 @@ extern "C" fn rt_nothing(_: *mut u8) -> *mut u8 { null_mut() }
 /// A thread's kernel row, about 28 KiB of kernel heap, used to stay resident after the
 /// thread was joined, until the process that created it had been reaped and init next
 /// waited (#1712). Each round of 1,000 threads must give its heap back.
-fn probe_sample() -> String {
-    let text = std::fs::read_to_string("/proc/trace/counters").unwrap_or_default();
-    let num = |name: &str| -> i64 {
-        text.lines().find_map(|l| l.strip_prefix(name)).and_then(|v| v.trim().split_whitespace().next()).and_then(|v| v.parse::<u64>().ok()).map(|v| v as i64).unwrap_or(-1)
-    };
-    let field = |name: &str| -> String {
-        text.lines().find(|l| l.starts_with("probe_1712:")).and_then(|l| l.split_whitespace().find_map(|w| w.strip_prefix(name))).unwrap_or("?").to_string()
-    };
-    let pids = std::fs::read_to_string("/proc/pids").map(|t| t.split_whitespace().count()).unwrap_or(0);
-    format!("{}/{}/t{}/d{}/r{}/u{}/s{}/q{}/k{}", kernel_heap_free_kb().unwrap_or(-1), pids, num("TOMBSTONE_RESIDENT:"), num("TEARDOWN_DEFER:"), num("TEARDOWN_RECLAIM:"),
-        field("terminated_unreclaimed="), field("sched_threads="), field("pending_reclaims="), field("parked_reclaims="))
+fn probe_text() -> String {
+    std::fs::read_to_string("/proc/trace/counters").unwrap_or_default()
+}
+
+fn probe_num(text: &str, name: &str) -> i64 {
+    text.lines().find_map(|l| l.strip_prefix(name)).and_then(|v| v.trim().split_whitespace().next()).and_then(|v| v.parse::<u64>().ok()).map(|v| v as i64).unwrap_or(-1)
+}
+
+fn probe_live(text: &str) -> std::collections::BTreeMap<i64, i64> {
+    text.lines().find_map(|l| l.strip_prefix("probe_live:")).unwrap_or("").split_whitespace()
+        .filter_map(|kv| { let (k, v) = kv.split_once('=')?; Some((k.parse().ok()?, v.parse().ok()?)) }).collect()
+}
+
+fn probe_report(tag: &str, base: &std::collections::BTreeMap<i64, i64>) {
+    let text = probe_text();
+    value(&format!("{tag}-heap"), kernel_heap_free_kb().unwrap_or(-1), "kb", None);
+    value(&format!("{tag}-tomb"), probe_num(&text, "TOMBSTONE_RESIDENT:"), "", None);
+    value(&format!("{tag}-pids"), std::fs::read_to_string("/proc/pids").map(|t| t.split_whitespace().count() as i64).unwrap_or(-1), "", None);
+    let live = probe_live(&text);
+    let mut grown: Vec<(i64, i64)> = live.iter().map(|(&k, &v)| (k, v - base.get(&k).copied().unwrap_or(0)))
+        .chain(base.iter().filter(|(k, _)| !live.contains_key(k)).map(|(&k, &v)| (k, -v)))
+        .filter(|&(_, d)| d != 0).collect();
+    grown.sort_by_key(|&(k, d)| (-(d * k.max(8)).abs(), k));
+    for (k, d) in grown.into_iter().take(6) {
+        value(&format!("{tag}-class-{k}"), d, "", None);
+    }
 }
 
 fn lc_rows_released() -> CaseResult {
-    const N: usize = 10_000;
     const ROUND: usize = 1_000;
     const BATCH: usize = 16;
     trial_ms(80_000, || {
-        let mut report = format!("PROBE1712 heapkB/pids/tomb/defer/reclaim/termUnrecl/schedThreads/pending/parked start={}", probe_sample());
+        sleep_ms(500);
+        let base = probe_live(&probe_text());
+        probe_report("start", &base);
         let mut threads = Vec::with_capacity(BATCH);
-        for round in 1..=N / ROUND {
-            let t0 = now_ms();
+        for round in 1..=4 {
             for _ in 0..ROUND / BATCH {
                 for _ in 0..BATCH { threads.push(create(rt_nothing, null_mut())?); }
                 for t in threads.drain(..) { rc("pthread_join", pthread_join(t, null_mut())?)?; }
             }
-            report.push_str(&format!(" R{round}({}ms)={}", now_ms() - t0, probe_sample()));
-            for wait in [100u64, 900, 2000] {
-                sleep_ms(wait);
-                report.push_str(&format!(",+{wait}={}", probe_sample()));
-            }
+            sleep_ms(2000);
+            probe_report(&format!("r{round}"), &base);
         }
-        err(report)
+        err("probe done")
     })
 }
 
