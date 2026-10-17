@@ -600,6 +600,19 @@ class PayloadTest(unittest.TestCase):
 
 
 class DefinitionTest(unittest.TestCase):
+    def test_final_marker_skips_stub_milestones(self):
+        catalog = {'stages': [{'name': 'Kernel entry point', 'marker': 'Kernel entry point reached'}]}
+        metal = {'milestones': [
+            {'id': 'first-light', 'kernel': True, 'stages': {'x86_64': [
+                'Kernel entry point', {'name': 'Kernel idle', 'marker': '[metal] kernel idle'}]}},
+            {'id': 'smp', 'kernel': True, 'stub': True, 'stages': {'x86_64': [
+                {'name': 'Four CPUs', 'marker': '[smp] online=4 reported=4'}]}},
+            {'id': 'first-userspace', 'stub': True, 'stages': {'default': [
+                {'name': 'Boot script completed', 'marker': '[init] Boot script completed'}]}}]}
+        self.assertEqual(boot.final_marker(metal, 'default', catalog), ('[metal] kernel idle', 'contains'))
+        metal['milestones'][2].pop('stub')
+        self.assertEqual(boot.final_marker(metal, 'default', catalog), ('[init] Boot script completed', 'contains'))
+
     def test_final_marker_is_the_last_stage_of_the_newest_milestone_the_mode_measures(self):
         catalog = {'stages': [{'name': 'Kernel entry point', 'marker': 'Kernel entry point reached'}]}
         metal = {'milestones': [

@@ -75,9 +75,23 @@ was removed from `post-times.json`.
 ## The console
 
 SOL reads the server's console UART, COM1 at I/O port 0x3F8. POST and firmware text reach it (BIOS console
-redirection on COM1), and so does the bootloader's log. The kernel's own log and its boot-path stage markers go to
-COM2 today (`kernel/src/serial.rs`), so after the bootloader's handoff a production kernel is silent on SOL; moving
-the kernel log onto the console UART is the `first-light` lane's work.
+redirection on COM1), and so do the delivery stub's and the bootloader's lines.
+
+**The kernel log follows the console rule** (`select_log_port` in `kernel/src/serial.rs`), decided before the
+kernel's first log line is written out:
+
+1. Under QEMU (its fw_cfg device answers with the `QEMU` signature) the log stays on COM2, apart from the user
+   console on COM1, so the QEMU gates' two serial files are as they were.
+2. Otherwise the 16550-class UART the firmware's ACPI SPCR names in I/O space (`read_spcr_port` in
+   `kernel/src/arch_impl/x86_64/acpi.rs`, from Microsoft's published SPCR specification).
+3. Otherwise COM1, where the firmware and the bootloader already print.
+
+The kernel reports the choice as `[console] uart <port> source=<fw_cfg|spcr|default>`. When the log shares COM1 with
+the user console, whole log lines move from the log ring into COM1's transmit queue as kernel units, with CR LF line
+ends for the remote terminal: the UART has one writer, and output from userspace or the kernel's serial console
+starts a fresh line rather than landing inside a log line (`queue_log_line`). A boot-path stage line is still never
+dropped by the ring (`log_ring`). claim-lint:ok: 0 of 683 kernel-side lines split in first-light boot
+20261017T040009Z-metal, in "Measured".
 
 The driver clears any stale SOL session, opens one in a tmux pane it owns, and powers on only after the session's
 banner has arrived in its capture files. The pane is held silent until its output is piped to the capture, so
@@ -135,10 +149,10 @@ in "Measured".
 | Power-on to the image request | Firmware text, POST code, boot progress | The POST budget passes with no request; or a boot-progress state new since power-on reads "No bootable devices" | 124, 2 |
 | The request was refused (no image staged) | — | 30 s of capture after the 404 | 2 |
 | Download | Bytes moving in the server's log | No bytes for 15 s; not complete 60 s after the first byte; a complete transfer with the wrong sha256 | 2 |
-| Download to bootloader | `UEFI bootloader started` (a test payload: its own line) | Not seen within 60 s of a complete transfer | 2 |
+| Download to bootloader | `UEFI bootloader started` (a test payload: its own line) | Not seen within 60 s of a complete transfer; the delivery stub's `metal-stub: FAILED` line | 2 |
 | Bootloader to handoff | New console bytes | 120 s of silence | 124 |
 | Kernel (after `Jumping to kernel entry point at`) | New console bytes | 120 s of silence; a `fatal` pattern from the boot's own definition (stopped 5 s later, so the backtrace lands); a reset: a second bootloader banner, an image request after the transfer, or boot progress returning to a state other than `OSBootStarted` or `OSRunning` (which the firmware reports once a boot option runs) | 124, 1, 1 |
-| Mode finished | The mode's final marker, from the boot's own `docs/metal/boot-path.json` | Boot mode: 5 minutes after handoff with the marker missing | 0, else 1 |
+| Mode finished | The mode's final marker, from the boot's own `docs/metal/boot-path.json`: the last stage of the newest milestone the mode measures, a stub milestone excepted | Boot mode: 5 minutes after handoff with the marker missing | 0, else 1 |
 | Whole attempt | — | 15 minutes from power-on (enforced by the reaper as well) | 124 |
 
 **The POST budget** is 10 minutes from power-on until three power-on-to-request intervals are measured, then twice

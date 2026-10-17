@@ -763,9 +763,10 @@ def marker_matches(spec, line):
 
 # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
 def final_marker(metal, mode, catalog):
-    """Resolve the final measured serial stage and preserve its matching contract."""
+    """Resolve the final measured serial stage and preserve its matching contract. A stub milestone's markers are
+    proposals its producing lane has not landed (docs/metal/boot-path.json), so no boot measures it yet."""
     markers = {stage['name']: stage for stage in catalog.get('stages', []) if 'marker' in stage}
-    milestones = list(reversed(metal.get('milestones', [])))
+    milestones = [milestone for milestone in reversed(metal.get('milestones', [])) if not milestone.get('stub')]
     scoped = [milestone.get('stages', {}).get(mode) for milestone in milestones]
     scoped = [listed for listed in scoped if listed]
     if not scoped:
