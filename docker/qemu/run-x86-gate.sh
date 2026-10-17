@@ -69,7 +69,7 @@
 
 set -uo pipefail
 
-: "${CARGO_BUILD_JOBS:=6}"
+: "${CARGO_BUILD_JOBS:=4}"
 export CARGO_BUILD_JOBS
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

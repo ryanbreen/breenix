@@ -233,7 +233,7 @@ def main():
             if os.environ.get('BREENIX_RUST_FORK'):
                 snapshot_fork(os.environ['BREENIX_RUST_FORK'], tree / 'gate-rust-fork')
             print(f'[gate-tree] tree={tree} fresh={str(fresh).lower()}', flush=True)
-            environment = dict(os.environ, BREENIX_REPO_DIR=str(tree), BREENIX_GATE_CACHE_DIR=str(root), CARGO_BUILD_JOBS='6')
+            environment = dict(os.environ, BREENIX_REPO_DIR=str(tree), BREENIX_GATE_CACHE_DIR=str(root), CARGO_BUILD_JOBS='4')
             if os.environ.get('BREENIX_RUST_FORK'):
                 environment.update(BREENIX_RUST_FORK=str(tree / 'gate-rust-fork'))
             if not (tree / 'scripts/host-slots.py').exists():
