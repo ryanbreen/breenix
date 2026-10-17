@@ -1564,11 +1564,33 @@ fn create_device_context(tgid: u64, id: u32, vb: u32, scratch: u32, vb_pages: &A
     )?;
     exec_ok(|t| virgl::attach_backing(t, scratch, scratch_pages.clone()), 0, &[])?;
     exec_ok(|t| Some(virgl::ctx_attach(t, id, scratch)), id, &[])?;
-    let theirs: Vec<u32> = with_core(|c| c.procs.get(&tgid).map(|p| p.resources.values().copied().collect()).unwrap_or_default())
-        .unwrap_or_default();
-    for rid in theirs {
-        exec_ok(|t| Some(virgl::ctx_attach(t, id, rid)), id, &[])?;
+    // The process's live resources, held so none is freed before it is attached.
+    let theirs: Vec<u32> = with_core(|c| {
+        let ids: Vec<u32> = c
+            .procs
+            .get(&tgid)
+            .map(|p| p.resources.values().copied().filter(|rid| c.resources.get(rid).is_some_and(|r| !r.lost && !r.dropped)).collect())
+            .unwrap_or_default();
+        for rid in &ids {
+            if let Some(r) = c.resources.get_mut(rid) {
+                r.holds += 1;
+            }
+        }
+        ids
+    })
+    .unwrap_or_default();
+    let mut attached = Ok(());
+    for &rid in &theirs {
+        if attached.is_ok() {
+            attached = exec_ok(|t| Some(virgl::ctx_attach(t, id, rid)), id, &[]).map(drop);
+        }
     }
+    with_core(|c| {
+        for &rid in &theirs {
+            c.unhold(rid);
+        }
+    });
+    attached?;
     let (serial, fence, req) = with_core(|c| {
         let mut enc = encode::Enc::new();
         let ctx = c.contexts.get_mut(&id)?;
