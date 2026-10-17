@@ -30,6 +30,8 @@ mod submit;
 mod readback;
 #[path = "suite_gpu/textures.rs"]
 mod textures;
+#[path = "suite_gpu/profile.rs"]
+mod profile;
 
 static SUITE: Suite = suite("gpu", "GPU rendering", &[
     category("device", "3D device & capability profile", &[
@@ -47,7 +49,7 @@ static SUITE: Suite = suite("gpu", "GPU rendering", &[
         case("device-error-reported", "A forced device error reaches the submitting context as EIO naming the device's answer", device::device_error_reported),
     ]),
     category("submit", "command submission & fences", &[
-        case("context-create", "CONTEXT_CREATE, including all catalogue warm-up, returns an owned context within 10 s", submit::context_create),
+        case("context-create", "CONTEXT_CREATE, including the fixed rendering catalogue's warm-up, returns an owned context within 10 s, and its first PROBE warms probe_int", submit::context_create),
         case("context-destroy", "CONTEXT_DESTROY frees the context once its submitted work has completed", submit::context_destroy),
         case("context-limit", "Creating a context past the per-process quota returns EAGAIN", submit::context_limit),
         case("stream-validate", "A malformed command stream returns EINVAL with the failing command's index", submit::stream_validate),
@@ -113,28 +115,28 @@ static SUITE: Suite = suite("gpu", "GPU rendering", &[
         case("fault-skip-upload", "An upload whose transfer to the host is omitted is caught by reading the texture back", textures::fault_skip_upload),
     ]),
     category("profile", "deterministic rendering profile", &[
-        case("clear-exact", "A clear writes its four bytes to every pixel of both formats", profile_clear_exact),
-        case("unorm-roundtrip", "All 256 values of each channel round-trip through the shader's UNORM conversion", profile_unorm_roundtrip),
-        case("texel-fetch-exact", "Integer texel fetch returns each texel's bytes from all three formats", profile_texel_fetch_exact),
-        case("integer-ops", "The 32-bit integer routines return their literal results, range ends included", profile_integer_ops),
-        case("wide-arithmetic", "Two- and three-word products and 96-step division return their literal results", profile_wide_arithmetic),
-        case("binary32-emulation", "The emulated binary32 routines return their literal results bit for bit", profile_binary32_emulation),
-        case("int-float-exact", "Integers below 2^24 pass through float vertex positions exactly", profile_int_float_exact),
-        case("fragcoord-integer", "The floor of each fragment's position is its pixel's integer coordinates", profile_fragcoord_integer),
-        case("rect-coverage", "A two-triangle rectangle writes every pixel inside it and none outside", profile_rect_coverage),
-        case("rect-edges", "Rectangles one pixel wide or tall, and at the target's edges, write exactly their pixels", profile_rect_edges),
-        case("scissor-exact", "A scissor clips to exactly its half-open rectangle", profile_scissor_exact),
-        case("viewport-exact", "Integer corners map to exactly their pixels with a top-left origin", profile_viewport_exact),
-        case("alpha-write", "Alpha is written as given, 0 and partial values included, with blending off", profile_alpha_write),
-        case("swizzle-bgra-rgba", "Each channel lands in its own byte in both target formats", profile_swizzle_bgra_rgba),
-        case("no-dither", "A uniform colour writes identical pixels everywhere: no dithering", profile_no_dither),
-        case("no-srgb", "Values are written without sRGB encoding or decoding", profile_no_srgb),
-        case("determinism", "The same stream rendered twice reads back identical bytes", profile_determinism),
-        case("cross-context", "The same stream in two contexts reads back identical bytes", profile_cross_context),
-        case("large-coordinates", "Each shape predicate routine returns its literal results at coordinates near 2^31", profile_large_coordinates),
-        case("filtered-sampler-refused", "A filtered sampler in an exact pipeline returns EINVAL", profile_filtered_sampler_refused),
-        case("fixed-blend-off", "Fixed-function blending is off in every exact pipeline", profile_fixed_blend_off),
-        case("profile-violation-detected", "A planted filtered-sampling draw is refused naming the violation", profile_profile_violation_detected),
+        case("clear-exact", "A clear writes its four bytes to every pixel of both formats", profile::clear_exact),
+        case("unorm-roundtrip", "All 256 values of each channel round-trip through the shader's UNORM conversion", profile::unorm_roundtrip),
+        case("texel-fetch-exact", "Integer texel fetch returns each texel's bytes from all three formats", profile::texel_fetch_exact),
+        case("integer-ops", "The 32-bit integer routines return their literal results, range ends included", profile::integer_ops),
+        case("wide-arithmetic", "Two- and three-word products and 96-step division return their literal results", profile::wide_arithmetic),
+        case("binary32-emulation", "The emulated binary32 routines return their literal results bit for bit", profile::binary32_emulation),
+        case("int-float-exact", "Integers below 2^24 pass through float vertex positions exactly", profile::int_float_exact),
+        case("fragcoord-integer", "The floor of each fragment's position is its pixel's integer coordinates", profile::fragcoord_integer),
+        case("rect-coverage", "A two-triangle rectangle writes every pixel inside it and none outside", profile::rect_coverage),
+        case("rect-edges", "Rectangles one pixel wide or tall, and at the target's edges, write exactly their pixels", profile::rect_edges),
+        case("scissor-exact", "A scissor clips to exactly its half-open rectangle", profile::scissor_exact),
+        case("viewport-exact", "Integer corners map to exactly their pixels with a top-left origin", profile::viewport_exact),
+        case("alpha-write", "Alpha is written as given, 0 and partial values included, with blending off", profile::alpha_write),
+        case("swizzle-bgra-rgba", "Each channel lands in its own byte in both target formats", profile::swizzle_bgra_rgba),
+        case("no-dither", "A uniform colour writes identical pixels everywhere: no dithering", profile::no_dither),
+        case("no-srgb", "Values are written without sRGB encoding or decoding", profile::no_srgb),
+        case("determinism", "The same stream rendered twice reads back identical bytes", profile::determinism),
+        case("cross-context", "The same stream in two contexts reads back identical bytes", profile::cross_context),
+        case("large-coordinates", "Each shape predicate routine returns its literal results at coordinates near 2^31", profile::large_coordinates),
+        case("filtered-sampler-refused", "A filtered sampler in an exact pipeline returns EINVAL", profile::filtered_sampler_refused),
+        case("fixed-blend-off", "Fixed-function blending is off in every exact pipeline", profile::fixed_blend_off),
+        case("profile-violation-detected", "A planted filtered-sampling draw is refused naming the violation", profile::profile_violation_detected),
     ]),
     category("pipelines", "drawing pipelines", &[
         case("solid-rects", "solid fills half-open integer rectangles in one colour", pipelines_solid_rects),
@@ -213,7 +215,7 @@ static SUITE: Suite = suite("gpu", "GPU rendering", &[
         case("clear-rate-2560", "At least 60 full-screen 2560x1600 clears per second, each presented", performance_clear_rate_2560),
         case("rect-throughput", "10000 solid 16x16 rectangles in one submission complete within 50 ms", performance_rect_throughput),
         case("submit-latency", "An empty submission's fence: median at most 2 ms and maximum at most 10 ms over 1000", performance_submit_latency),
-        case("first-draw-latency", "A new context's first draw with each catalogue pipeline completes within 10 ms", performance_first_draw_latency),
+        case("first-draw-latency", "A new context's first draw with each fixed rendering-catalogue pipeline (excluding probe_int) completes within 10 ms", performance_first_draw_latency),
         case("readback-time-2560", "A full 2560x1600 readback completes within 100 ms", performance_readback_time_2560),
         case("upload-bandwidth", "A 16 MiB upload is visible to the next submission within 100 ms", performance_upload_bandwidth),
         case("coverage-throughput", "A full-screen 2560x1600 coverage blend from an R8 mask completes within 16.7 ms", performance_coverage_throughput),
@@ -224,7 +226,6 @@ static SUITE: Suite = suite("gpu", "GPU rendering", &[
 
 // The layers cases need, each with the build step that supplies it.
 const CORE: &str = "the kernel GPU core and syscall 416 (G1)";
-const PROBE: &str = "probe_int and the profile checks (G4)";
 const PIPELINES: &str = "the pipelines checks (G5)";
 const ISOLATION: &str = "the isolation checks (G6)";
 const QUOTA: &str = "GPU quotas and reclamation (G6)";
@@ -284,28 +285,6 @@ fn device_version() -> CaseResult {
 }
 
 needs! {
-    profile_clear_exact => PROBE;
-    profile_unorm_roundtrip => PROBE;
-    profile_texel_fetch_exact => PROBE;
-    profile_integer_ops => PROBE;
-    profile_wide_arithmetic => PROBE;
-    profile_binary32_emulation => PROBE;
-    profile_int_float_exact => PROBE;
-    profile_fragcoord_integer => PROBE;
-    profile_rect_coverage => PROBE;
-    profile_rect_edges => PROBE;
-    profile_scissor_exact => PROBE;
-    profile_viewport_exact => PROBE;
-    profile_alpha_write => PROBE;
-    profile_swizzle_bgra_rgba => PROBE;
-    profile_no_dither => PROBE;
-    profile_no_srgb => PROBE;
-    profile_determinism => PROBE;
-    profile_cross_context => PROBE;
-    profile_large_coordinates => PROBE;
-    profile_filtered_sampler_refused => PROBE;
-    profile_fixed_blend_off => PROBE;
-    profile_profile_violation_detected => "test-control point 24 profile-violation (G4)";
     pipelines_solid_rects => PIPELINES;
     pipelines_rect_batch => PIPELINES;
     pipelines_copy_clip => "the clip stack (G5)";

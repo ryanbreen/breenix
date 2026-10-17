@@ -141,7 +141,8 @@ the target.
 | DSA: 5 words: handle, S0 (depth and alpha tests off), S1 and S2 (stencil off), alpha reference | P:197–214 |
 | Rasterizer: 9 words: handle, S0, point size, sprite coordinate enable, S3, line width, offset units, scale and clamp; half-pixel centre S0 bit 29, every other S0 bit 0 (fill, cull none, no scissor, multisample or smoothing) | P:217–260 |
 | CLEAR: 8 words: buffers, four colour words, depth as two words of a double, stencil | P:262–270 |
-| Shader object: handle, type, offset word (the text's byte length in bits 0–30, continuation bit 31 clear), token count, stream-output count 0, then the text | P:273–282 |
+| Shader object: handle, type, offset word (the text's byte length in bits 0–30 initially; subsequent commands carry byte offset with continuation bit 31 set), token count, stream-output count 0, then text | P:273–282 |
+| Shader fragments occupy at most one 4096-byte DMA page, including the command header and five shader fields, and each fragment ends its submission chunk | O: core sizing choice; P:273–282 supplies continuation framing |
 | SET_VIEWPORT_STATE: start slot, then scale x, y, z and translate x, y, z of one viewport | P:294–301 |
 | SET_FRAMEBUFFER_STATE: colour buffer count, depth surface handle (0, none), colour surface handles | P:304–307 |
 | Vertex elements: handle, then per element source offset, instance divisor, vertex buffer index, source format | P:310–315 |
@@ -466,7 +467,7 @@ above with 39 tokens.
 | Change from the baseline | Result | Fact established |
 |---|---|---|
 | (the baseline itself) | accepted (0) | `POSITION, LINEAR` on a fragment input, `SAMP`, `SVIEW[0], 2D, FLOAT`, `TEMP`, `IMM[0] INT32 {…}`, swizzled `.xy` destinations, F2I, UADD and four-operand TXF are accepted together |
-| token count 38, and 100 | accepted (0) both | acceptance does not check the token count, so the count comes from T, not from acceptance |
+| token count 38, and 100 | accepted (0) both | these two capacities are accepted for this small program; they do not establish acceptance of an arbitrarily small capacity (B10); the layout count comes from T |
 | `, LINEAR` removed | accepted (0) | the interpolation qualifier is optional to the parser; the program keeps it from L |
 | `DCL SVIEW[0], 2D, FLOAT` removed | accepted (0) | the parser does not require the view declaration; the program keeps it, as L asks for typed views |
 | `INT32` removed from `IMM[0]` | refused (22, "Expected immediate type") | an immediate names its type |
@@ -555,3 +556,181 @@ The first two runs' quota failures came from ARM64's frame allocator then spanni
 per-process quota, so the failed case's textures starved the next case until the reclamation sweep. With the frame
 pool taken from the firmware's memory description (ruling 23, #1704), `textures/quota` passes in the third run.
 These runs are G3 evidence, not a green full suite: the G4–G8 checks are still unwritten.
+
+## G4 profile inputs and arithmetic
+
+| Value or layout | Source |
+|---|---|
+| PROBE 7, SCISSOR 8, their word layouts, routine selectors 0–24, result-word selection, operand domains, refusal codes 18 and 19, filtered modifier bit 31 and point 24's validator injection | O: proposed contract PR #1709, `docs/gui/gpu-abi.md`, BGL command stream. G4 depends on that contract PR. |
+| Probe work weight 65,536 steps per pixel; scissor clips drawing but leaves COPY independent; BEGIN restores target bounds | O: #1709; the weight budgets the bounded arithmetic program, rather than a host-renderer policy |
+| Creation warms four programs, `solid`'s and `copy`'s vertex and fragment pairs; a context's first PROBE creates `probe_int`'s pair in that submission, and its draw warms them | O: `docs/gui/gpu.md` sections 1.3 and 1.4.1 as amended by #1709; the probe is one fragment program with 25 integer-selected branches |
+| Probe result bytes: extract bits 16–23, 8–15, 0–7 and 24–31 for the R, G, B and A output components, convert unsigned integers to floats, multiply by binary32 `1/255` (0x3B808081) | O: #1709's canonical BGRA word; A: IEEE 754 binary32 round-to-nearest-even; L: U2F and MUL |
+| NaN result 0x7FC00000, finite truncation domain, signed-zero and gradual-underflow rules | O: #1709; A: IEEE 754-2019 sections 3.4 and 4.3.1 <!-- claim-lint:ok: #1709 numerical requirements, not measured results. --> |
+
+`tools/gpu-profile/math.rs` is Breenix's integer model and TGSI generator. It was written from the
+contract's formulas and IEEE 754, without implementation sources. It constructs SSA operations, evaluates
+those operations for the host model, and emits them using L's instruction definitions. Comparisons are
+normalized to 0 or 1 with AND; final word selection uses integer bit operations (B11). Products use 16×16 partial products with explicit carries.
+The three-word division model unrolls 96 restoring steps; its shader encoder expresses that recurrence as a
+96-iteration loop, retaining the shifted-out remainder bit for a divisor with its high bit set.
+
+The sticky-bit shift is derived here by OR-reducing discarded bits into the low retained bit so
+rounding preserves whether any discarded bit was nonzero; the former name `jam` named that operation,
+not an implementation source. The routine is now named `sticky_shift`.
+
+Binary32 add/subtract align significands with guard, round and sticky bits, normalize, and round ties to
+even; multiplication uses the two-word significand product and the same rounding step. The model's native
+f32 comparisons were run before shader emission: `binary32_model_matches_native_arithmetic` checks 14×14
+special-value pairs and 2,000 seeded pairs for add, subtract and multiply;
+`binary32_ceil_truncate_and_comparisons` checks 4,000 seeded pairs (truncation for inputs in its domain).
+The other model checks compare wide arithmetic with u128, line and circle membership with the contract's
+walks, and large-coordinate literals. The truncated three-word product also has 1,000 seeded comparisons
+with native wrapping u128 multiplication before its revised shader is emitted. These host checks are reproducible with CARGO_BUILD_JOBS=4 exported and
+`taskpolicy -b rustc --edition=2021 --test -O "$CHECKOUT/tools/gpu-profile/math.rs" -o "$MODEL_TESTS"` and
+`taskpolicy -b "$MODEL_TESTS" --test-threads=1`, where MODEL_TESTS is an absolute temporary output filename and CHECKOUT is absolute.
+They validate the model; device readback remains the profile suite's judgment of the shader.
+
+The predicates use the contract's widths. Line membership uses the major-axis step k and minor displacement
+`floor((2*k*minor + major)/(2*major))`, with endpoint bounds and direction checked; a point line is handled
+separately. Circles use section 1.5's squared-distance and outline predicates. Rounded corners use §5.6's
+pixel-centre formula. Triangles use signed three-word edge functions at pixel centres and the top-left rule.
+These probe routines do not supply G5's promised closed-form proofs or drawing pipelines.
+
+## G4 shader derivation
+
+| Program or operation | Published definition | Token layout |
+|---|---|---|
+| Probe vertex program | L: MOV (line 71), POSITION declaration; the pass-through is derived as solid's is | T:37–56, 137–158, 174–175, 226–234, 649–661, 752–764, 796–803; 11 tokens |
+| `kernel/src/gpu/virgl/profile/profile.tgsi` | L: MUL 111; U2F 1009; F2I 1024; UADD 1056; UMUL 1088; AND 1192; OR 1205; XOR 1218; SHL 1283; USHR 1313; USLT 1384; USEQ 1453; USNE 1481; BGNLOOP 1643; ENDLOOP 1653; BRK 1668; UIF 1684; ENDIF 1698; the declarations and POSITION/COLOR semantics used by solid and copy | T:37–56 header/processor; 137–169 declaration/range/interpolation; 226–234 semantics; 274–292 UINT32 immediates and their values; 649–688 instructions and optional label; 752–803 registers. TEMPORARY 4 and IMMEDIATE 7 are T:77–80; the opcode enumeration is T:434–518. |
+
+The generated text is a reviewable file without a NUL; the shader encoder supplies its wire terminator.
+Its header declares the five constant vectors (sixteen operands, result-word selector and routine selector),
+window position, colour output and temporaries. Sources selecting one component use a four-component
+replicated swizzle, as B10 establishes. The file is generated with
+`taskpolicy -b rustc --edition=2021 -O "$CHECKOUT/tools/gpu-profile/math.rs" -o "$GENERATOR"`, then
+`taskpolicy -b "$GENERATOR" "$CHECKOUT/kernel/src/gpu/virgl/profile"`, with CARGO_BUILD_JOBS=4 exported; GENERATOR and CHECKOUT are absolute paths.
+The integer model and generator share operations; the suite's literal expectations share neither.
+
+At `a66cc5986b0e70f85098572e4565e3eb630460fc`, the token capacity was 23,233: 13 header/declaration words, 141×5 immediate words,
+22,482 instruction/register words, and a 33-word allowance for the control instructions' optional label
+tokens (T:649–688). The text plus terminator was 252,216 bytes, below P:157–158's command payload limit.
+The review revision eliminates repeated expressions and constant operations, and uses low-word UMUL for
+terms discarded above bit 95. The generator prints the revised size and token budget when run; the
+emitted-ISA host tests execute that generated text, including loops and integer rewrites. Shader text now
+uses the continuation framing above rather than requiring one large command. Context creation warms only the fixed rendering catalogue (section 1.4.1); the probe program's compilation is charged to its context's first PROBE, under the same watchdog and case deadlines.
+The earlier B10 candidate at `09922c96` had capacity 21,940 and 240,200 text bytes including its terminator;
+its rejected 21,257 field omitted 130×5 immediate words and the label allowance. B10 records those original
+inputs; B11 records the integer-only selection program at `41766187`, and B12 the runtime literal construction. These capacities are layout-derived
+allocation budgets, not pixel-correctness claims.
+
+## B10: G4 shader-text grammar experiments
+
+This section records the candidate and six-experiment script at commit `09922c96`; CHECKOUT below denotes
+that checkout when reproducing B10. B11 uses the revised current program.
+
+The unmodified renderer is P's pin, with ANGLE on Metal, through the public API harness
+`tools/gpu-experiments/g3-egl.py` (ruling 11). The committed experiment is
+`tools/gpu-experiments/profile-grammar.py`. From the checkout, reproduce with
+`QEMU_GL_FRAMEWORKS="$FRAMEWORKS" DYLD_LIBRARY_PATH="$FRAMEWORKS" DYLD_FRAMEWORK_PATH="$FRAMEWORKS" taskpolicy -b python3 "$CHECKOUT/tools/gpu-experiments/g3-egl.py" "$CHECKOUT/tools/gpu-experiments/profile-grammar.py"`.
+CHECKOUT is absolute; FRAMEWORKS is the pinned GL bundle's Frameworks directory. Each candidate goes to a
+fresh context as a CREATE_OBJECT SHADER, fragment stage, no stream output, text length including its NUL,
+packed little-endian with padding. Return 0 is acceptance, 22 refusal. Acceptance establishes grammar and
+capacity for these inputs; it does not establish pixels.
+
+The small baseline is the literal `base` string in the experiment: FRAG, COLOR output, CONST[0], TEMP[0],
+UINT32 immediate `{0, 1, 4294967295, 0}`, MOV, UADD with a scalar destination and replicated sources,
+U2F and END. Its stated capacity is 25 tokens. The combined baseline is the generated text above with
+capacity 21,940. Renderer diagnostic output between the named results is omitted here.
+
+| Candidate, one change from its baseline | Result | Fact established |
+|---|---|---|
+| Small baseline itself | `G4 replicated scalar baseline ACCEPT 0` | UINT32's unsigned decimal maximum, a scalar destination and four-component replicated source swizzles are accepted together |
+| `CONST[0].xxxx` changed to `CONST[0].x` | `G4 scalar source shorthand REFUSE 22`, `Expected register swizzle component` | A single-component source shorthand is refused; the generator replicates the component |
+| Before U2F, insert `UIF IMM[0].yyyy`, `MOV TEMP[0], IMM[0]`, `ENDIF` (capacity 31) | `G4 integer conditional ACCEPT 0` | The integer conditional block's text form is accepted |
+| Before U2F, insert `BGNLOOP`, `BRK`, `ENDLOOP` (capacity 28) | `G4 bounded loop syntax ACCEPT 0` | Those loop delimiters and break text are accepted |
+| Combined baseline itself | `G4 combined baseline ACCEPT 0` | The generated program, constant/temporary ranges and sequential immediates are accepted together at the corrected capacity |
+| First `IMM[0] UINT32` changed to `IMM[0]` | `G4 missing immediate type REFUSE 22`, `Expected immediate type` | The immediate type remains required in this program |
+
+The capacity defect was isolated without changing the candidate text: the combined program with capacity
+21,257 was refused 22, and with capacity 50,000 was accepted 0. Its individual branches 0, 11, 12, 23 and 24,
+with the same declarations and capacity 50,000, were accepted 0. The T-based recount above repaired the
+omitted fields. B7's small-program count variations therefore do not establish that an arbitrarily small
+capacity is accepted. The committed `tools/gpu-experiments/profile-capacity.py` reconstructs those exact candidates from
+`09922c9652d3820b82e1c1cad007180a7f08f25a`. Run it with B10's invocation, replacing
+`profile-grammar.py` with `profile-capacity.py`. Its named outputs are `G4 B10 capacity 21257 REFUSE 22`
+and `G4 B10 capacity 50000 ACCEPT 0`; it also reconstructs the five branch candidates
+with their original declarations and capacity.
+
+## B11: integer word selection
+
+The emitted word copy is UADD with an integer 0. Word selection uses the identity
+`b XOR ((a XOR b) AND m)`, where USNE of the condition and 0 supplies m (0 or UINT_MAX).
+This expresses selection in L's integer ISA, including operands whose bits encode floating-point NaNs;
+there is no untyped MOV or UCMP in the final fragment text. The final byte conversion and the fragment
+position conversion retain their specified floating-point operations. Two temporary registers are reserved
+above the modeled program's registers for the mask and difference, so a selection whose destination aliases
+an input reads that input before overwriting it.
+
+The three-word product computes the low product, accumulates the two middle-word cross products with their
+carries into the high word, and adds only the low words of the three remaining high-word cross products.
+Its partial products remain 16×16 (section 1.5); dropping terms above bit 95 changes no returned bit. The
+native product test above checks this truncation. This reduction leaves room for the integer selection
+instructions within one VirGL command, without changing the probe's work limit or its literal expectations.
+
+The public renderer harness, pin, environment and invocation are B10's, with CHECKOUT denoting commit `41766187` in this section. `profile-grammar.py` adds one change to the small B10 baseline: replace its UADD opcode with USNE
+(capacity 25). Output: `G4 unsigned inequality ACCEPT 0`. L defines USNE at line 1481; its enumeration is
+T:497 and its instruction and operand layouts are T:649–661 and 752–803. The complete named output at that commit was:
+
+```text
+G4 replicated scalar baseline ACCEPT 0
+G4 scalar source shorthand REFUSE 22
+G4 integer conditional ACCEPT 0
+G4 bounded loop syntax ACCEPT 0
+G4 unsigned inequality ACCEPT 0
+G4 combined baseline ACCEPT 0
+G4 missing immediate type REFUSE 22
+```
+
+`G4 combined baseline ACCEPT 0` here refers to that commit’s generated text, capacity
+23,165, 44 temporary registers and 251,697 bytes including the NUL. This is grammar acceptance, not a
+substitute for the profile cases' device readback.
+
+
+## B12: NaN-shaped word literals
+
+CHECKOUT in this section denotes commit `a66cc5986b0e70f85098572e4565e3eb630460fc`.
+A renderer behavior experiment isolated an expression whose inputs are integer immediates:
+`150 XOR 0xffffffff` returned `0x7fc00000`, rather than the integer result `0xffffff69`.
+The public API experiment is `tools/gpu-experiments/profile-words.py`, run with B10's unmodified renderer,
+pin and environment. Reproduce with
+`QEMU_GL_FRAMEWORKS="$FRAMEWORKS" DYLD_LIBRARY_PATH="$FRAMEWORKS" DYLD_FRAMEWORK_PATH="$FRAMEWORKS" taskpolicy -b python3 "$CHECKOUT/tools/gpu-experiments/g3-egl.py" "$CHECKOUT/tools/gpu-experiments/profile-words.py"`.
+The harness creates a one-pixel BGRA render target, draws a rectangle, transfers that device pixel through
+the public read API, and decodes its raw word. The packet fields retain their P/D/H sources above.
+
+The first candidate is the literal `header + immediates + XOR + pack` in that file: integer immediate
+150, UINT_MAX, integer XOR, byte extraction by USHR and AND, U2F and normalization by binary32 1/255.
+Its capacity is 68 tokens: header/declarations 9, three immediates 15, XOR 4, eight byte-extraction
+instructions 32, U2F 3, MUL 4 and END 1. The second candidate changes the UINT_MAX immediate to 0 and
+constructs that operand with UADD of the uniform containing 0 and 65535, SHL by 16, and OR with 65535; its capacity
+is 80. The output was:
+
+```text
+G4 raw literal XOR 7fc00000
+G4 runtime literal XOR ffffff69
+G4 repaired routine 15 80000000
+G4 repaired routine 21 00000001
+```
+
+The last two lines use the committed combined shader, with the exact operands specified in the script:
+binary32 truncation of `0xcf000000`, and outline membership at `(INT_MAX,1)` for a circle centred at (0,0)
+with radius INT_MAX. These observations localize the literal-expression hazard; attributing it to floating
+constant folding is an inference, not implementation-code evidence. They do not change the required word
+results or substitute for the guest suite.
+
+The generator now replaces references to the four NaN-shaped literal words (UINT_MAX, `0x7fffffff`,
+`0x7fc00000` and `0xffffff81`) with dedicated temporaries, constructing their bits from finite 16-bit
+immediates using the second candidate's integer sequence. CONST[4].z is the draw's supplied 0 word;
+its seed keeps the construction at runtime. The old immediate components become 0. Four registers
+above the model and selection registers hold these words, giving 48 temporaries in the combined shader.
+Its capacity and byte length are recorded above. The seven B11 grammar experiments returned their stated
+results on this revised candidate, including `G4 combined baseline ACCEPT 0` at capacity 23,233.

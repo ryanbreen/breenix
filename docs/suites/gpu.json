@@ -28,7 +28,7 @@
       "id": "submit",
       "title": "command submission & fences",
       "cases": [
-        { "id": "context-create", "title": "CONTEXT_CREATE, including all catalogue warm-up, returns an owned context within 10 s" },
+        { "id": "context-create", "title": "CONTEXT_CREATE, including the fixed rendering catalogue's warm-up, returns an owned context within 10 s, and its first PROBE warms probe_int" },
         { "id": "context-destroy", "title": "CONTEXT_DESTROY frees the context once its submitted work has completed" },
         { "id": "context-limit", "title": "Creating a context past the per-process quota returns EAGAIN" },
         { "id": "stream-validate", "title": "A malformed command stream returns EINVAL with the failing command's index" },
@@ -222,7 +222,7 @@
         { "id": "clear-rate-2560", "title": "At least 60 full-screen 2560x1600 clears per second, each presented" },
         { "id": "rect-throughput", "title": "10000 solid 16x16 rectangles in one submission complete within 50 ms" },
         { "id": "submit-latency", "title": "An empty submission's fence: median at most 2 ms and maximum at most 10 ms over 1000" },
-        { "id": "first-draw-latency", "title": "A new context's first draw with each catalogue pipeline completes within 10 ms" },
+        { "id": "first-draw-latency", "title": "A new context's first draw with each fixed rendering-catalogue pipeline (excluding probe_int) completes within 10 ms" },
         { "id": "readback-time-2560", "title": "A full 2560x1600 readback completes within 100 ms" },
         { "id": "upload-bandwidth", "title": "A 16 MiB upload is visible to the next submission within 100 ms" },
         { "id": "coverage-throughput", "title": "A full-screen 2560x1600 coverage blend from an R8 mask completes within 16.7 ms" },
