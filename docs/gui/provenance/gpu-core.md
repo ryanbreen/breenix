@@ -25,7 +25,7 @@ different revision records it here first.
 | D | `src/gallium/include/pipe/p_defines.h` in virglrenderer | as P | enumeration values the VirGL wire carries (targets, shader stages, primitives, masks) |
 | T | `src/gallium/include/pipe/p_shader_tokens.h` in virglrenderer | as P | TGSI token layouts, register files and semantic enumerations |
 | L | [TGSI documentation](https://docs.mesa3d.org/gallium/tgsi.html) | Mesa revision `7e5b708afd421c1944aeca74d4be6b7996674378`, `docs/gallium/tgsi.rst` ([immutable text](https://chromium.googlesource.com/external/gitlab.freedesktop.org/mesa/mesa/+/7e5b708afd421c1944aeca74d4be6b7996674378/docs/gallium/tgsi.rst)) | instruction, register, declaration and semantic definitions, from which programs are written |
-| B | black-box experiments on the device or the unmodified host renderer | the experiment's date, renderer pin and inputs | shader-text grammar facts, and confirmation of each U layout |
+| B | black-box experiments on the device or the unmodified host renderer | the experiment's commit, run id or harness invocation, renderer pin, inputs and output excerpt below | shader-text grammar facts, and confirmation of each U layout |
 | O | Breenix's own design: `docs/gui/gpu.md`, `docs/gui/gpu-abi.md`, Breenix's syscall ABI and memory API | the contract section | policies, limits, sizes, bookkeeping and the syscall 416 ABI |
 | A | other published specifications: PCI Local Bus, the Arm Architecture Reference Manual, IEEE 754, Khronos GLSL | the document and section | configuration-header offsets, cache maintenance, float encodings, shading-language levels |
 
@@ -194,15 +194,69 @@ pass-throughs and match the tree's older text up to its labels and indentation; 
 older text, produced them, and the experiments below establish that the unlabelled, unindented form is
 accepted.
 
-## Experiment evidence limitation
+## Experiment provenance and host-library use
 
-The B1–B4 runs used temporary, uncommitted experiment code on top of
-`c28938bc0ef4b4e5ea8709c3fae13f833bd13905`. Their inputs and observations below do not identify a
-replayable committed harness. They therefore remain an open provenance requirement under section 1.9,
-not completed reproducibility evidence. The shader-grammar host harness also consulted
-`virglrenderer.h` at P's pin for the host API and callback ABI. That header is outside section 1.9's
-allowlist; it supplied no guest wire values, but its use needs an explicit source ruling. The
-uncommitted harness and its historical acceptance results cannot establish that ruling.
+Coordinator addendum 2 (2026-10-17), rulings 11–13, settles finding 8 of #1677:
+host tools may call third-party libraries through their public APIs, and each black-box experiment
+records its commit, Vigil run id or harness invocation, and the output that established the fact.
+The device experiments below used temporary, uncommitted experiment code on top of the named commit;
+the commit identifies their base, not a committed harness. Their request inputs are specified in B1–B4
+above. These are individual device observations, not a passing suite or boot-path gate.
+
+| Run | Base commit | Vigil run id | Use |
+|---|---|---|---|
+| Run 1 | `c28938bc0ef4b4e5ea8709c3fae13f833bd13905` | `20261017T023742Z-qemu` | B2's channel-order comparison and B3's offset/stride observation, before the unattached-resource submit |
+| Run 2 | `c28938bc0ef4b4e5ea8709c3fae13f833bd13905` | `20261017T032249Z-qemu` | B1, B2's last-pixel observation, B3's last-pixel offset and B4's size comparison |
+
+The following are excerpts from those runs' `[gpu-exp]` serial output. Byte spans retain their poison
+bytes so the data written and its boundaries remain distinguishable.
+
+| Experiment | Run and output excerpt |
+|---|---|
+| B1 | Run 2: `CTX_ATTACH_RESOURCE d to context 3 -> 0x1100 echoed=0`; `TRANSFER_FROM_HOST_3D d in context 3 (attached) -> 0x1100 echoed=11`; bytes at offset 260: `a5 a5 a5 a5 a5 a5 a5 a5 [11 22 33 44 11 22 33 44] a5 a5 a5 a5 a5 a5 a5 a5`. `TRANSFER_FROM_HOST_3D d in context 2 (never attached) -> 0x1100 echoed=12`; its entire 24-byte excerpt stayed `a5`. Brackets delimit the written bytes here; the serial printed a comma-separated array. |
+| B2 | Run 1: `RESOURCE_CREATE_3D id=0xf001 format=1 4x3 -> 0x1100 echoed=0`; `RESOURCE_CREATE_3D id=0xf002 format=67 4x3 -> 0x1100 echoed=0`; the respective transfer excerpts at offset 260 contain `11, 22, 33, 44, 11, 22, 33, 44` and `33, 22, 11, 44, 33, 22, 11, 44`. Run 2: `TRANSFER_FROM_HOST_3D a box(3,2,1,1) last pixel -> 0x1100 echoed=5`; bytes at offset 524: eight `a5`, `ff, 00, 00, ff`, twelve `a5`. |
+| B3 | Run 1: `TRANSFER_FROM_HOST_3D a box(1,1,2,1) -> 0x1100 echoed=2`; `bytes at offset 260-8..+16: [a5, a5, a5, a5, a5, a5, a5, a5, 11, 22, 33, 44, 11, 22, 33, 44, a5, a5, a5, a5, a5, a5, a5, a5]`. Run 2's offset-524 excerpt is the B2 last-pixel observation above. |
+| B4 | Run 2: `SUBMIT_3D green+blue, size 76 of 112 -> 0x1100 echoed=1`; `TRANSFER_FROM_HOST_3D a after short submit -> 0x1100 echoed=2`; written bytes `00, ff, 00, ff, 00, ff, 00, ff`. `SUBMIT_3D green+blue, full size -> 0x1100 echoed=3`; `TRANSFER_FROM_HOST_3D a after full submit -> 0x1100 echoed=4`; written bytes `ff, 00, 00, ff, ff, 00, 00, ff`. Both offset-260 excerpts retain eight `a5` on each side. |
+
+B3's additional multi-row confirmation and the committed shader programs' drawing confirmation are
+from commit `41fea50111f7d9d3dc2e8e3794167dcf275a83c2`, Vigil `20261017T041050Z-qemu`:
+`SUITE gpu DONE passed=34 failed=136 skipped=0 total=170`, with device 12/12 and submit 22/22.
+The 136 failures are the explicitly unwritten later-milestone checks; this is not a green full suite.
+
+The shader-grammar experiment ran at 2026-10-17 01:13:49 UTC with checkout commit
+`ec18d1bbc66726d14328a0e3c26174a72befaa6d`, using the unmodified renderer at P's pin. Its host-only
+Python ctypes harness, named `g1-egl.py`, loaded virglrenderer and ANGLE EGL, created a 1×1 pbuffer and
+GLES contexts, and supplied the renderer's version-1 fence/create/destroy/make-current callbacks.
+It used `src/virglrenderer.h` at P's pin for public function signatures and the callback/context-parameter
+ABI: `virgl_renderer_init`, `virgl_renderer_context_create`, `virgl_renderer_submit_cmd`,
+`virgl_renderer_context_destroy` and `virgl_renderer_cleanup`. This is ordinary host-library use under
+ruling 11. It supplies no guest wire values, code, control flow or policy to Breenix; nothing from the
+host API header or harness is copied into the kernel, libraries or programs. Guest packet fields and
+shader semantics retain their P, D, T and L sources above.
+
+The harness invocation, rendered without machine-specific directory prefixes, was
+`DYLD_LIBRARY_PATH="$QEMU_GL_FRAMEWORKS" DYLD_FRAMEWORK_PATH="$QEMU_GL_FRAMEWORKS" python3 g1-egl.py`,
+where `QEMU_GL_FRAMEWORKS` denotes the pinned QEMU GL bundle's Frameworks directory; the harness set
+`ANGLE_DEFAULT_PLATFORM=metal`. The next section specifies each candidate and packing procedure.
+Its output excerpt (renderer diagnostics between these lines omitted) was:
+
+```text
+EGL 1 5
+renderer init 0
+vertex decimal labels ACCEPT 0
+fragment decimal labels ACCEPT 0
+no labels ACCEPT 0
+word label REFUSE 22
+wrong stage REFUSE 22
+missing comma REFUSE 22
+numbered declarations REFUSE 22
+register brackets absent REFUSE 22
+missing output semantic ACCEPT 0
+no trailing newline ACCEPT 0
+```
+
+The unattached-resource submit and out-of-bounds transfer observations above are device facts for the
+next contract PR under ruling 13. Recording their provenance here does not amend the contract.
 
 ## Shader-grammar facts
 
