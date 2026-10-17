@@ -1,0 +1,313 @@
+{
+  "version": 1,
+  "catalog": "xtask/src/boot_stages.rs",
+  "gateArch": "x86_64",
+  "bootProfile": "production",
+  "scoring": "modes",
+  "fatal": [
+    "panicked at kernel/src/",
+    "!!! SOFT LOCKUP DETECTED !!!"
+  ],
+  "modes": {
+    "default": {
+      "title": "Boot",
+      "summary": "Boot the production kernel and init from the RAM disk."
+    },
+    "shell": {
+      "title": "Shell",
+      "summary": "Run an interactive shell over the remote serial console."
+    },
+    "probe": {
+      "title": "Probe",
+      "summary": "Run the production probe against real hardware and hosts."
+    },
+    "suite": {
+      "title": "Suite",
+      "summary": "Run a manifest suite as PID 1 from the RAM disk."
+    }
+  },
+  "milestones": [
+    {
+      "id": "delivery",
+      "title": "Delivery",
+      "summary": "The console precedes power-on, the image arrives intact, and the bootloader reaches its handoff; kernel execution is measured separately.",
+      "kernel": true,
+      "stages": {
+        "x86_64": [
+          {
+            "name": "Console ready",
+            "host": "console-ready"
+          },
+          {
+            "name": "Power on",
+            "host": "power-on"
+          },
+          {
+            "name": "Firmware output",
+            "host": "firmware-text"
+          },
+          {
+            "name": "POST",
+            "host": "post"
+          },
+          {
+            "name": "Image fetched",
+            "host": "image-complete"
+          },
+          {
+            "name": "UEFI bootloader started",
+            "marker": "UEFI bootloader started"
+          },
+          {
+            "name": "Bootloader handoff",
+            "marker": "Jumping to kernel entry point at"
+          }
+        ]
+      }
+    },
+    {
+      "id": "first-light",
+      "title": "First light",
+      "summary": "The kernel executes, selects its console, records firmware APIC state before changes, initializes memory and PCI, and reaches idle.",
+      "kernel": true,
+      "stages": {
+        "x86_64": [
+          "Kernel entry point",
+          {
+            "name": "Console UART selected",
+            "marker": "[console] uart 0x3f8 source="
+          },
+          {
+            "name": "Firmware APIC handoff",
+            "marker": "[apic] handoff base="
+          },
+          "Serial port initialized",
+          "GDT and IDT initialized",
+          "Physical memory available",
+          "Frame allocator initialized",
+          "Kernel heap initialized",
+          "HAL timer calibrated",
+          "PCI bus enumerated",
+          {
+            "name": "Kernel idle",
+            "marker": "[metal] kernel idle"
+          }
+        ]
+      }
+    },
+    {
+      "id": "interrupts-time",
+      "title": "Interrupts and time",
+      "summary": "Stub for interrupt bring-up: the producing lane finalizes these proposed markers with its implementation.",
+      "kernel": true,
+      "stub": true,
+      "stages": {
+        "x86_64": [
+          {
+            "name": "ACPI table census",
+            "marker": "[acpi] tables:"
+          },
+          {
+            "name": "IOAPIC delivery",
+            "marker": "+ IOAPIC; 8259 masked"
+          },
+          "Timer initialized",
+          {
+            "name": "Timer tick agrees with TSC",
+            "marker": "[timer] tick rate agrees with the TSC"
+          }
+        ]
+      }
+    },
+    {
+      "id": "smp",
+      "title": "Every CPU online",
+      "summary": "Stub for SMP bring-up; the producing lane adds its exact online census.",
+      "kernel": true,
+      "stub": true,
+      "stages": {
+        "x86_64": [
+          "All reported CPUs online"
+        ]
+      }
+    },
+    {
+      "id": "ramdisk-root",
+      "title": "RAM-disk root",
+      "summary": "Stub for a RAM-only root and the hardware-disk write prohibition.",
+      "kernel": true,
+      "stub": true,
+      "stages": {
+        "x86_64": [
+          {
+            "name": "RAM disk attached",
+            "marker": "[block] ramdisk "
+          },
+          {
+            "name": "Root mounted from RAM disk",
+            "marker": "[fs] root mounted from the RAM disk"
+          },
+          {
+            "name": "Hardware disks protected",
+            "marker": "[block] hardware disks read-only|[block] no hardware disks"
+          }
+        ]
+      }
+    },
+    {
+      "id": "first-userspace",
+      "title": "First userspace process",
+      "summary": "Stub for init running its boot script.",
+      "stub": true,
+      "stages": {
+        "default": [
+          {
+            "name": "Init started",
+            "marker": "[init] Breenix init starting (PID 1)"
+          },
+          {
+            "name": "Boot script completed",
+            "marker": "[init] Boot script completed"
+          }
+        ]
+      }
+    },
+    {
+      "id": "shell",
+      "title": "Console shell",
+      "summary": "Stub for an interactive shell; the result must be a whole line, distinct from echoed input.",
+      "stub": true,
+      "stages": {
+        "shell": [
+          {
+            "name": "Shell ready",
+            "marker": "[init] shell ready"
+          },
+          {
+            "name": "Shell prompt",
+            "marker": "bsh />"
+          },
+          {
+            "name": "Console computation answered",
+            "marker": "metal-console-ok 42",
+            "match": "line"
+          }
+        ]
+      }
+    },
+    {
+      "id": "nic",
+      "title": "NIC link and first frame",
+      "summary": "Stub for clean-room BCM5720 bring-up; the producing lane finalizes the markers.",
+      "kernel": true,
+      "stub": true,
+      "stages": {
+        "x86_64": [
+          {
+            "name": "BCM5720 found",
+            "marker": "[bcm5720] found "
+          },
+          {
+            "name": "BCM5720 reset complete",
+            "marker": "[bcm5720] reset complete"
+          },
+          {
+            "name": "NIC link up",
+            "marker": "[bcm5720] link up 1000 Mb/s full duplex"
+          },
+          {
+            "name": "First frame received",
+            "marker": "[bcm5720] first frame received"
+          }
+        ]
+      }
+    },
+    {
+      "id": "dhcp-gateway",
+      "title": "DHCP, gateway and DNS",
+      "summary": "Stub for a lease and reachable network services.",
+      "kernel": true,
+      "stub": true,
+      "stages": {
+        "x86_64": [
+          {
+            "name": "DHCP lease acquired",
+            "marker": "[dhcp] lease acquired"
+          },
+          "ARP reply received and gateway MAC resolved",
+          "ICMP echo reply received from gateway",
+          {
+            "name": "DNS answer received",
+            "marker": "[dns] answer received"
+          }
+        ]
+      }
+    },
+    {
+      "id": "real-host",
+      "title": "Fetch from a real host",
+      "summary": "Stub for a checksummed TCP fetch by the probe program.",
+      "stub": true,
+      "stages": {
+        "probe": [
+          {
+            "name": "Metal fetch passed",
+            "marker": "PROBE metal-fetch OK"
+          }
+        ]
+      }
+    },
+    {
+      "id": "networking-suite",
+      "title": "Networking suite finished",
+      "summary": "Stub for the suite ribbon; a first additionally requires a complete passing manifest verdict, not this line alone.",
+      "stub": true,
+      "stages": {
+        "suite": [
+          {
+            "name": "Networking suite finished",
+            "marker": "SUITE networking DONE"
+          }
+        ]
+      }
+    }
+  ],
+  "firsts": [
+    {
+      "id": "first-line",
+      "title": "First Breenix line on real hardware",
+      "stage": "Kernel entry point"
+    },
+    {
+      "id": "first-tick",
+      "title": "First timer tick on real hardware",
+      "stage": "Timer tick agrees with TSC"
+    },
+    {
+      "id": "every-cpu",
+      "title": "Every CPU online",
+      "stage": "All reported CPUs online"
+    },
+    {
+      "id": "first-shell",
+      "title": "First shell on real hardware",
+      "stage": "Console computation answered"
+    },
+    {
+      "id": "first-packet",
+      "title": "First packet",
+      "stage": "First frame received"
+    },
+    {
+      "id": "first-lease",
+      "title": "First DHCP lease",
+      "stage": "DHCP lease acquired"
+    },
+    {
+      "id": "networking-suite",
+      "title": "Networking suite passes on real hardware",
+      "stage": "Networking suite finished",
+      "suite": "networking"
+    }
+  ]
+}

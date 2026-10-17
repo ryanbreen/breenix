@@ -5,10 +5,10 @@
 #   scripts/vigil-record.sh start PLATFORM MODE SUITE SERIAL [USER_SERIAL] [PROFILE] [ID] [COMMIT]   prints the boot id
 #   scripts/vigil-record.sh finish ID EXIT_STATUS
 #
-# PLATFORM is qemu, parallels, vmware or beast; MODE is a boot mode (suite when SUITE is set); empty arguments are
+# PLATFORM is qemu, parallels, vmware, beast or metal; MODE is a boot mode (suite when SUITE is set); empty arguments are
 # omitted; COMMIT defaults to this checkout's HEAD. The calling script is the boot's runner: Vigil counts the boot running while that process lives.
-# Does nothing, successfully, when Vigil started the boot itself (VIGIL_BOOT_ID), when no vigil-cli with the
-# breenix command is installed, or off macOS. It never fails the caller.
+# Skips registration when Vigil started the boot itself (VIGIL_BOOT_ID), when no vigil-cli with the
+# breenix command is installed, or off macOS. Start and finish are best effort; record returns the CLI status.
 set -u
 
 [ "$(uname -s)" = Darwin ] || exit 0

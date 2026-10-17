@@ -11,6 +11,10 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+The independent bare-metal x86-64 stream is defined in [metal.json](../efforts/metal.json),
+with its production boot stages in [the metal boot path](../metal/boot-path.json).
+It advances from delivery to a RAM-disk shell and networking, separately from the main effort path.
+
 ARM64 QEMU uses HVF on native Apple Silicon hosts in [#1452](https://github.com/ryanbreen/breenix/issues/1452),
 with the testing kernel, production probe and effort suites as its gates. Native
 launchers retain the shared QoS launcher and explicit TCG selection

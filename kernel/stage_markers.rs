@@ -1,11 +1,12 @@
-//! The serial markers of every stage `docs/boot-path.json` lists.
+//! The serial markers listed by the main and metal boot paths.
 //!
 //! A milestone names its stages; their markers are in the boot-stage catalog
 //! (`xtask/src/boot_stages.rs`), read here from its committed exports in
 //! `tools/breenix-runs/Sources/BreenixRuns/Resources/`, which a host test keeps
 //! equal to the live catalog. A stage listed with its own marker carries it
 //! inline. A list keyed by an arch resolves against that arch's catalog; a
-//! mode's list resolves against both, since a mode is scored on either arch.
+//! main-path mode resolves against both catalogs; a modes-scored path uses
+//! its gateArch catalog. Host events do not have guest serial markers.
 //! A `|` separates alternative markers.
 //!
 //! `kernel/build.rs` compiles these markers into the kernel (`stage_lines`),
@@ -17,13 +18,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const ARCHES: [&str; 2] = ["aarch64", "x86_64"];
+const BOOT_PATHS: [&str; 2] = ["docs/boot-path.json", "docs/metal/boot-path.json"];
 
 /// The longest marker the kernel's scanner matches (`stage_lines::MAX_MARKER`).
 pub const MAX_MARKER: usize = 128;
 
 /// The files the markers are read from, relative to the repository root.
 pub fn sources(repo: &Path) -> Vec<PathBuf> {
-    let mut files = vec![repo.join("docs/boot-path.json")];
+    let mut files: Vec<PathBuf> = BOOT_PATHS.iter().map(|path| repo.join(path)).collect();
     files.extend(ARCHES.iter().map(|arch| catalog_path(repo, arch)));
     files
 }
@@ -253,7 +255,7 @@ fn split(marker: &str, into: &mut BTreeSet<String>) {
     );
 }
 
-/// Every marker of every stage `docs/boot-path.json` lists, each once, sorted
+/// The serial markers from both boot paths, deduplicated and sorted
 /// by last byte as `stage_lines` looks them up.
 pub fn boot_path_markers(repo: &Path) -> Result<Vec<String>, String> {
     let mut catalogs: BTreeMap<&str, BTreeMap<String, String>> = BTreeMap::new();
@@ -275,49 +277,63 @@ pub fn boot_path_markers(repo: &Path) -> Result<Vec<String>, String> {
         catalogs.insert(arch, names);
     }
 
-    let path = repo.join("docs/boot-path.json");
-    let boot_path = read_json(&path)?;
-    let milestones = boot_path
-        .get("milestones")
-        .as_array()
-        .ok_or_else(|| format!("{}: no milestones array", path.display()))?;
-
     let mut markers = BTreeSet::new();
-    for milestone in milestones {
-        let id = milestone.get("id").as_str().unwrap_or("?");
-        let lists = milestone
-            .get("stages")
-            .as_object()
-            .ok_or_else(|| format!("milestone {id}: stages is not an object"))?;
-        for (key, list) in lists {
-            let arches: Vec<&str> = match ARCHES.iter().find(|arch| **arch == key.as_str()) {
-                Some(arch) => vec![*arch],
-                None => ARCHES.to_vec(),
-            };
-            let list = list
-                .as_array()
-                .ok_or_else(|| format!("milestone {id}: stages.{key} is not a list"))?;
-            for stage in list {
-                if let Some(name) = stage.as_str() {
-                    let mut found = false;
-                    for arch in &arches {
-                        if let Some(marker) = catalogs[arch].get(name) {
-                            split(marker, &mut markers);
-                            found = true;
+    for file in BOOT_PATHS {
+        let path = repo.join(file);
+        let boot_path = read_json(&path)?;
+        let milestones = boot_path
+            .get("milestones")
+            .as_array()
+            .ok_or_else(|| format!("{}: no milestones array", path.display()))?;
+
+        for milestone in milestones {
+            let id = milestone.get("id").as_str().unwrap_or("?");
+            let lists = milestone
+                .get("stages")
+                .as_object()
+                .ok_or_else(|| format!("milestone {id}: stages is not an object"))?;
+            for (key, list) in lists {
+                let arches: Vec<&str> = match ARCHES.iter().find(|arch| **arch == key.as_str()) {
+                    Some(arch) => vec![*arch],
+                    None if boot_path.get("scoring").as_str() == Some("modes") => {
+                        let arch = boot_path
+                            .get("gateArch")
+                            .as_str()
+                            .ok_or("missing gateArch")?;
+                        if !catalogs.contains_key(arch) {
+                            return Err(format!("unknown gateArch {arch}"));
                         }
+                        vec![arch]
                     }
-                    if !found {
+                    None => ARCHES.to_vec(),
+                };
+                let list = list
+                    .as_array()
+                    .ok_or_else(|| format!("milestone {id}: stages.{key} is not a list"))?;
+                for stage in list {
+                    if let Some(name) = stage.as_str() {
+                        let mut found = false;
+                        for arch in &arches {
+                            if let Some(marker) = catalogs[arch].get(name) {
+                                split(marker, &mut markers);
+                                found = true;
+                            }
+                        }
+                        if !found {
+                            return Err(format!(
+                                "milestone {id}: stage {name:?} ({key}) is not in the {} catalog",
+                                arches.join(" or ")
+                            ));
+                        }
+                    } else if let Some(marker) = stage.get("marker").as_str() {
+                        split(marker, &mut markers);
+                    } else if stage.get("host").as_str().is_some() {
+                        // Host events have no guest serial marker to protect.
+                    } else {
                         return Err(format!(
-                            "milestone {id}: stage {name:?} ({key}) is not in the {} catalog",
-                            arches.join(" or ")
+                            "milestone {id}: stages.{key} has an entry with no marker"
                         ));
                     }
-                } else if let Some(marker) = stage.get("marker").as_str() {
-                    split(marker, &mut markers);
-                } else {
-                    return Err(format!(
-                        "milestone {id}: stages.{key} has an entry with no marker"
-                    ));
                 }
             }
         }

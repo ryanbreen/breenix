@@ -36,6 +36,7 @@ class EffortTargetGuardTest(unittest.TestCase):
         self.configure(self.repo)
         (self.repo / 'docs/efforts').mkdir(parents=True)
         shutil.copy(ROOT / 'docs/efforts/path.json', self.repo / 'docs/efforts/path.json')
+        shutil.copy(ROOT / 'docs/efforts/metal.json', self.repo / 'docs/efforts/metal.json')
         self.main = self.commit('main')
         self.git('switch', '-qc', 'breengel/suite')
         self.effort = self.commit('effort')
@@ -121,6 +122,113 @@ class EffortTargetGuardTest(unittest.TestCase):
         result = self.policy(self.main, env=dict(self.env, BREENIX_CATCHUP='maybe'))
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('BREENIX_CATCHUP must be', result.stderr)
+
+    def metal_lane(self, name='metal-bring-up/first-light', base='main'):
+        self.git('switch', '-qc', name, base)
+        sha = self.commit(name)
+        self.git('push', '-q', 'origin', name)
+        return sha
+
+    def merge(self, branch):
+        # Independent paths let these test graphs merge without content conflicts.
+        self.git('merge', '-q', '--no-ff', '-s', 'ours', branch, '-m', 'merge test history')
+        return self.git('rev-parse', 'HEAD')
+
+    def test_guard_table_for_both_streams(self):
+        metal = self.metal_lane()
+        for target in guard.TARGETS:
+            for catchup in (False, True):
+                for sha in (self.main, self.fix, self.scratch, self.effort, metal):
+                    with self.subTest(target=target, catchup=catchup, sha=sha):
+                        expected = (sha != self.effort or target == 'arm64-qemu' or
+                                    (catchup and target != 'x86-metal'))
+                        if target == 'x86-metal' and sha in (self.fix, self.scratch):
+                            expected = False  # Positive ancestry rule also applies to unlabelled work.
+                        result = self.policy(sha, target, *(['--catchup'] if catchup else []))
+                        self.assertEqual(result.returncode == 0, expected, result.stdout + result.stderr)
+                        if expected:
+                            self.assertEqual(result.stdout.strip(), sha)
+
+    def test_metal_requires_published_first_parent_history(self):
+        self.git('switch', '-qc', 'metal-stream/definition', 'main')
+        local = self.commit('definition')
+        for extra in ([], ['--catchup']):
+            result = self.policy(local, 'x86-metal', *extra)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('not first-parent reachable', result.stderr)
+        self.git('push', '-q', 'origin', 'metal-stream/definition')
+        self.assertEqual(self.policy(local, 'x86-metal').returncode, 0)
+        self.git('switch', '-qc', 'scratch/renamed-metal')
+        self.git('branch', '-D', 'metal-stream/definition')
+        self.assertEqual(self.policy(local, 'x86-metal').returncode, 0)
+        self.git('push', '-q', 'origin', 'HEAD:refs/heads/scratch/renamed-metal')
+        self.git('push', '-q', 'origin', '--delete', 'metal-stream/definition')
+        self.assertIn('not first-parent reachable', self.policy(local, 'x86-metal').stderr)
+
+    def test_deleted_or_renamed_second_parent_is_refused(self):
+        for rename in (False, True):
+            with self.subTest(rename=rename):
+                name = 'metal-bring-up/merge-' + str(rename)
+                self.metal_lane(name)
+                merged = self.merge('scratch/probe')
+                self.git('push', '-q', 'origin', name)
+                if rename:
+                    self.git('branch', '-m', 'scratch/probe', 'fix/renamed')
+                    self.git('push', '-q', 'origin', 'fix/renamed')
+                else:
+                    self.git('branch', '-D', 'scratch/probe')
+                self.git('push', '-q', 'origin', '--delete', 'scratch/probe')
+                for extra in ([], ['--catchup']):
+                    result = self.policy(merged, 'x86-metal', *extra)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn('not first-parent reachable', result.stderr)
+                if not rename:
+                    self.git('branch', 'scratch/probe', self.scratch)
+                    self.git('push', '-q', 'origin', 'scratch/probe')
+
+    def test_metal_and_main_second_parents_are_accepted(self):
+        other = self.metal_lane('metal-userspace/ramdisk')
+        name = 'metal-network/integration'
+        self.metal_lane(name)
+        merged = self.merge(other)
+        self.git('push', '-q', 'origin', name)
+        self.assertEqual(self.policy(merged, 'x86-metal').returncode, 0)
+        self.git('switch', '-q', 'main')
+        main = self.commit('new main')
+        self.git('push', '-q', 'origin', 'main')
+        self.git('switch', '-q', name)
+        merged = self.merge(main)
+        self.git('push', '-q', 'origin', name)
+        self.assertEqual(self.policy(merged, 'x86-metal').returncode, 0)
+
+    def test_main_path_lane_cannot_hide_on_metal_first_parent(self):
+        name = 'metal-bring-up/contaminated'
+        self.metal_lane(name, 'breengel/window')
+        for extra in ([], ['--catchup']):
+            result = self.policy('HEAD', 'x86-metal', *extra)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('main-path effort work cannot run on metal', result.stderr)
+
+    def test_deleted_main_effort_second_parent_still_refuses_metal(self):
+        name = 'metal-bring-up/deleted-parent'
+        self.metal_lane(name)
+        merged = self.merge('breengel/window')
+        self.git('push', '-q', 'origin', name)
+        self.git('branch', '-D', 'breengel/suite', 'breengel/window')
+        self.git('push', '-q', 'origin', '--delete', 'breengel/suite', 'breengel/window')
+        for extra in ([], ['--catchup']):
+            result = self.policy(merged, 'x86-metal', *extra)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('not first-parent reachable', result.stderr)
+
+    def test_local_main_path_lane_and_unavailable_origin_refuse_metal(self):
+        self.git('switch', '-qc', 'breengel/local-metal', 'main')
+        local = self.commit('local main effort')
+        self.git('push', '-q', 'origin', 'HEAD:refs/heads/metal-bring-up/shared')
+        self.assertIn('effort lane breengel/local-metal', self.policy(local, 'x86-metal').stderr)
+        self.git('remote', 'set-url', 'origin', str(self.base / 'unavailable'))
+        for extra in ([], ['--catchup']):
+            self.assertIn('cannot read origin', self.policy(self.main, 'x86-metal', *extra).stderr)
 
     def test_requested_sha_need_not_be_a_lane_tip(self):
         self.git('branch', '-D', 'breengel/suite')
