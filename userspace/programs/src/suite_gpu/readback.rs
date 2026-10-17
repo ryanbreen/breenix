@@ -10,7 +10,7 @@ const B: u32 = bgra(17, 83, 209, 127);
 const C: u32 = bgra(241, 7, 61, 0);
 
 fn setup(fmt: u32, w: u32, h: u32) -> Result<(u64, u64), libbreenix::suite::CaseError> {
-    Ok((context()?, target(fmt, w, h)?))
+    Ok((context()?, scanout_target(fmt, w, h)?))
 }
 fn observe(t: u64, rect: [u32; 4], px: &mut [u8], stride: u32, rec: &mut [u8; record::SIZE]) -> (i64, abi::Readback) {
     let mut a = abi::Readback { target: t, x: rect[0], y: rect[1], width: rect[2], height: rect[3],
@@ -44,8 +44,42 @@ fn want(w: u32, h: u32, bg: u32) -> Canvas {
 pub fn full_target() -> CaseResult {
     let _case = begin()?;
     let (ctx, t) = setup(format::B8G8R8A8, 47, 13)?;
-    frame(ctx, &scene(t, B, &[]))?;
-    present(ctx, t)?;
+    graphics::take_over_display().map_err(|e| fail_msg(format!("take display: {e:?}")))?;
+    let before = counters(ctx)?.submissions;
+    let (r, p) = gpu::present(ctx, t);
+    ensure(r == -EINVAL && p.fence == 0 && p.answer == 0, || format!("unwritten PRESENT: {} fence={} answer={:#x}", errno(r), p.fence, p.answer))?;
+    ensure(counters(ctx)?.submissions == before, || "unwritten PRESENT changed the submission count".to_string())?;
+    // Creation intent is explicit: an ordinary target renders and reads offscreen,
+    // but even after a completed write it cannot be presented.
+    let offscreen = target(format::B8G8R8A8, 47, 13)?;
+    let first = frame(ctx, &scene(offscreen, B, &[]))?;
+    ensure(first as u32 == 1, || "unwritten PRESENT consumed a context fence".to_string())?;
+    let rec = expect(offscreen, &scene_canvas(47, 13, B, &[]), "offscreen clear")?;
+    ensure(u32_at(&rec, record::FLAGS) == 0, || "offscreen target claims scanout".to_string())?;
+    let (r, p) = gpu::present(ctx, offscreen);
+    ensure(r == -EINVAL && p.fence == 0 && p.answer == 0, || format!("offscreen PRESENT: {} fence={} answer={:#x}", errno(r), p.fence, p.answer))?;
+    // Unknown flags, non-target scanout and every reserved word stay invalid.
+    for (kind, flags, reserved) in [
+        (abi::kind::TARGET, 2, [0; 3]),
+        (abi::kind::TEXTURE, 1, [0; 3]),
+        (abi::kind::BUFFER, 1, [0; 3]),
+        (abi::kind::TARGET, 1, [1, 0, 0]),
+        (abi::kind::TARGET, 1, [0, 1, 0]),
+        (abi::kind::TARGET, 1, [0, 0, 1]),
+    ] {
+        let buffer = kind == abi::kind::BUFFER;
+        let mut a = [0u8; 48];
+        for (offset, value) in [(0, kind), (8, u32::from(!buffer)), (12, u32::from(!buffer)),
+            (16, u32::from(buffer)), (32, flags), (36, reserved[0]), (40, reserved[1]), (44, reserved[2])] {
+            a[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        let r = resource_create(&mut a);
+        ensure(r == -EINVAL && u64_at(&a, 24) == 0, || format!("invalid RESOURCE_CREATE: {} handle={}", errno(r), u64_at(&a, 24)))?;
+    }
+    let second = frame(ctx, &scene(t, B, &[]))?;
+    ensure(second as u32 == 2, || "offscreen PRESENT consumed a context fence".to_string())?;
+    let presented = present_fence(ctx, t)?;
+    ensure(presented as u32 == 3, || "PRESENT did not follow the context's submissions".to_string())?;
     expect(t, &scene_canvas(47, 13, B, &[]), "full clear")?;
     pass()
 }
@@ -339,5 +373,29 @@ pub fn large_target() -> CaseResult {
     frame(ctx, &scene(t, B, &rects))?;
     present(ctx, t)?;
     expect(t, &scene_canvas(2560, 1600, B, &rects), "large target every pixel")?;
+    // The staging charge must honor RLIMIT_AS, leave no charge or observation on
+    // refusal, and be released after a successful read. Allocate outputs beforehand.
+    let mut px = [0xD7; 4];
+    let mut rec = [0xD7; record::SIZE];
+    let before = counters(0)?;
+    let mut old = [0u64; 2];
+    let limit = [0u64, u64::MAX];
+    // ARM64's prlimit64, resource 9 (RLIMIT_AS), pid 0 (the caller).
+    let r = unsafe { libbreenix::syscall::raw::syscall4(libbreenix::syscall::nr::PRLIMIT64,
+        0, 9, limit.as_ptr() as u64, old.as_mut_ptr() as u64) } as i64;
+    ensure(r == 0, || format!("set RLIMIT_AS: {}", errno(r)))?;
+    let (r, a) = observe(t, [0, 0, 1, 1], &mut px, 4, &mut rec);
+    let restored = unsafe { libbreenix::syscall::raw::syscall4(libbreenix::syscall::nr::PRLIMIT64,
+        0, 9, old.as_ptr() as u64, 0) } as i64;
+    ensure(restored == 0, || format!("restore RLIMIT_AS: {}", errno(restored)))?;
+    ensure(r == -abi::errno::ENOMEM && a.reason == reason::NONE && a.failed_submission == 0,
+        || format!("staging over RLIMIT_AS: {} reason={}", errno(r), a.reason))?;
+    ensure(px == [0xD7; 4] && rec == [0xD7; record::SIZE], || "ENOMEM changed readback outputs".to_string())?;
+    let after = counters(0)?;
+    ensure(after.resource_bytes == before.resource_bytes && after.readbacks == before.readbacks,
+        || "ENOMEM leaked staging or counted an observation".to_string())?;
+    let (r, _) = observe(t, [0, 0, 1, 1], &mut px, 4, &mut rec);
+    ensure(r == 0 && px == A.to_le_bytes(), || format!("readback after restoring RLIMIT_AS: {}", errno(r)))?;
+    ensure(counters(0)?.resource_bytes == before.resource_bytes, || "successful readback leaked staging".to_string())?;
     pass()
 }

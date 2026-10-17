@@ -107,6 +107,22 @@ pub fn target(fmt: u32, w: u32, h: u32) -> Result<u64, CaseError> {
     gpu::target_create(fmt, w, h).map_err(|e| fail_msg(format!("RESOURCE_CREATE of a {w}x{h} target returned {}", errno(e))))
 }
 
+pub fn scanout_target(fmt: u32, w: u32, h: u32) -> Result<u64, CaseError> {
+    // Literal wire offsets from gpu-abi.md, independent of the shared Rust layout.
+    let mut a = [0u8; 48];
+    for (offset, value) in [(0, 1u32), (4, fmt), (8, w), (12, h), (32, 1)] {
+        a[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    let r = resource_create(&mut a);
+    ensure(r == 0, || format!("RESOURCE_CREATE of a {w}x{h} scanout target returned {}", errno(r)))?;
+    Ok(u64_at(&a, 24))
+}
+
+pub fn resource_create(arg: &mut [u8; 48]) -> i64 {
+    // SAFETY: a live read/write argument of the contract's exact size.
+    unsafe { gpu::call(abi::op::RESOURCE_CREATE, arg.as_mut_ptr(), arg.len()) }
+}
+
 /// Submit and return the fence.
 pub fn submit(ctx: u64, s: &[u32]) -> Result<u64, CaseError> {
     let (r, a) = gpu::submit(ctx, s);
