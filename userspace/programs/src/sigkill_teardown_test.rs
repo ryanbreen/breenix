@@ -114,7 +114,9 @@ struct Evidence {
     sgi_sent: u64,
     kick_observed: u64,
     kick_interval: u64,
-    tick_period: u64,
+    kick_ticks: u64,
+    kick_cpu: u64,
+    counter_ticks_per_ms: u64,
     masked_frames_walked: u64,
     report: u64,
     bucket_published: u64,
@@ -149,7 +151,9 @@ fn evidence(pid: i32) -> Evidence {
         sgi_sent: parse_value(&contents, "sgi_sent"),
         kick_observed: parse_value(&contents, "kick_observed"),
         kick_interval: parse_value(&contents, "kick_interval"),
-        tick_period: parse_value(&contents, "tick_period"),
+        kick_ticks: parse_value(&contents, "kick_ticks"),
+        kick_cpu: parse_value(&contents, "kick_cpu"),
+        counter_ticks_per_ms: parse_value(&contents, "counter_ticks_per_ms"),
         masked_frames_walked: parse_value(&contents, "masked_frames_walked"),
         report: parse_value(&contents, "report"),
         bucket_published: parse_value(&contents, "bucket_published"),
@@ -199,8 +203,14 @@ fn assert_kill_evidence(pid: i32, current: Evidence) {
     if current.quarantine != 1 || current.sgi_sent != peer_kick || current.kick_observed != peer_kick {
         fail("quarantine/send/observe were not attributed exactly once to victim");
     }
-    if (peer_kick == 1 && (current.kick_interval == 0 || current.kick_interval >= current.tick_period))
-        || (peer_kick == 0 && current.kick_interval != 0) {
+    println!(
+        "SIGKILL_TEARDOWN_TEST: pid={pid} defer={} reclaim={} kick_ticks={} kick_cpu={} counter_interval={} counter_ticks_per_ms={}",
+        current.defer, current.reclaim, current.kick_ticks, current.kick_cpu,
+        current.kick_interval, current.counter_ticks_per_ms
+    );
+    // Strictly less than one delivered timer tick on the observing CPU.
+    // Observation count above proves the zero is an observation, not absence.
+    if current.kick_ticks >= 1 || (peer_kick == 0 && current.kick_interval != 0) {
         fail("send-to-observe interval was not strictly shorter than one tick");
     }
     if current.masked_frames_walked != 0 {
@@ -209,10 +219,6 @@ fn assert_kill_evidence(pid: i32, current: Evidence) {
     if current.report != 1 {
         fail("report obligation was not redeemed exactly once");
     }
-    println!(
-        "SIGKILL_TEARDOWN_TEST: pid={pid} defer={} reclaim={} kick_interval={} tick_period={}",
-        current.defer, current.reclaim, current.kick_interval, current.tick_period
-    );
 }
 
 fn wait_killed(pid: i32) {

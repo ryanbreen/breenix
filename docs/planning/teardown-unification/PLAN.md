@@ -1141,8 +1141,13 @@ teardown-only `Scheduler::send_exit_expedite_sgi(victim_pid, batch)` and by no o
 peer's observation is recorded with the same pid as `EXIT_KICK_OBSERVED{pid}`, via the `EXIT_KICK`
 bucket table of DESIGN §2.7** — published by the helper before the broadcast, consumed by one
 `compare_exchange` at the peer scheduler pass that declines to dispatch the quarantined victim; and
-the send→observe interval carried by that CAS is **measured strictly shorter than the victim's tick
-period**. A bare "`EXIT_SGI_SENT > 0`" gate is explicitly rejected, because the P0 baseline proves the
+the send→observe interval carried by that CAS is **strictly less than one delivered timer tick
+on the observing CPU**, measured from that CPU's timer-interrupt count sampled before kick
+publication to its count at observation. The publication generation protects the per-CPU baseline
+alongside the pid and counter timestamp. CNTVCT (ARM64) or TSC (x86-64) interval and counter ticks
+per millisecond are reported diagnostically, including on starved boots; their advance while a
+vCPU is descheduled does not spend the guest-tick budget. A bare "`EXIT_SGI_SENT > 0`" gate is
+explicitly rejected, because the P0 baseline proves the
 generic reschedule IPIs alone would satisfy it. Three sub-assertions keep the proxy honest:
 `EXIT_KICK_PUBLISHED == EXIT_KICK_OBSERVED == 1` for this single-victim workload;
 `EXIT_KICK_BUCKET_COLLISION == 0`; and `EXIT_REQUEST_OBSERVED == 0`, since the boundary hook does not
@@ -1196,7 +1201,8 @@ neither carries a revert story of its own.)*
    the test **prints and asserts both pids and the congruence itself**, because a reuse test that
    cannot prove it reused the bucket is vacuous — then kills `V2` and asserts:
    (i) `EXIT_KICK_OBSERVED{V2}` fires, per-pid, with its **own** measured send→observe interval
-   strictly shorter than the victim's tick period (not merely that a global counter advanced);
+   strictly less than one delivered timer tick on the observing CPU, measured as in gate (e)
+   (not merely that a global counter advanced);
    (ii) for the two-victim workload, `EXIT_KICK_PUBLISHED{bucket} == 2` and `EXIT_KICK_OBSERVED == 2`;
    (iii) `EXIT_KICK_BUCKET_COLLISION == 0` — `V1`'s generation was observed *before* `V2` published, so
    the displacement arm must **not** fire, which simultaneously proves that arm does not over-count.

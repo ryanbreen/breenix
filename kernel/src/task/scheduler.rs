@@ -114,9 +114,9 @@ fn observe_exit_kick(thread_pid: u64) -> bool {
     use crate::tracing::providers::teardown::{EXIT_KICK_BUCKETS, EXIT_KICK_SLOTS};
 
     let slot = &EXIT_KICK_SLOTS[thread_pid as usize % EXIT_KICK_BUCKETS];
-    if let Some(observation) = slot.observe_from_peer(thread_pid) {
+    if let Some((observation, ticks)) = slot.observe_from_peer(thread_pid) {
         let interval = crate::tracing::trace_timestamp().wrapping_sub(observation.at);
-        crate::tracing::providers::teardown::record_exit_kick_observed(thread_pid, interval);
+        crate::tracing::providers::teardown::record_exit_kick_observed(thread_pid, interval, ticks);
         true
     } else {
         slot.is_observed_for(thread_pid)
