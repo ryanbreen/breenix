@@ -675,6 +675,10 @@ rests on host-side evidence that the gate checks, recorded with every run:
   from its built-in font tables (`purpose` `Fixture`) through `bitmap_text`. Before it starts, the boot
   console and panic screen are CPU-written on the firmware framebuffer, and nowhere else (ruling R7).
 
+G7's argument layouts, ownership transitions, console observation, firmware-memory hashes and
+present fault effects are defined in `gpu-abi.md`, "G7 display interface". These definitions
+supply the observability for the existing present cases; their case counts and expectations stay fixed.
+
 ### 1.8 Observation by device readback
 
 `READBACK` and BreenGL's `SCANOUT_READBACK` share one record, `ObservationRecord` version 2: 1,024 bytes,
