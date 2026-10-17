@@ -52,7 +52,7 @@ def classify_serial(serial, allowlist):
         reason = next((why for pattern, code, why in contracts
                        if code == status and re.fullmatch(pattern, name)), None)
         if name == 'sigkill_teardown_test' and status == 2 and sigkill_starved:
-            reason = 'STARVED window verified from counters; boot must be rerun'
+            reason = 'STARVED window confirmed by the host stall record; boot must be rerun'
         failures.append((name, status, reason))
     started = re.search(r'\bstarted=(\d+)', tail)
     require_publications = True

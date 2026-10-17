@@ -182,6 +182,13 @@ ones) and at release, and whether a quiet host was required and found. On Linux 
 carries the vCPU gap at the start and the steal time from the start to the verdict: the
 physical host's contention as the gate VM saw it.
 
+Each x86 gate boot also keeps `host-stall.jsonl` beside its serials, written by
+`scripts/x86-gate-host-stall-sampler.py` while the boot runs, sampled at a 20 ms period: the guest's TSC
+(this host's TSC plus KVM's offset for the guest), each gate VM CPU's steal, and each of the
+guest's vCPU threads' run delay, run time, host CPU and state. The guest cannot write it.
+`scripts/score-sigkill-teardown.py` reads it to decide whether a SIGKILL kick window the
+guest calls starved was starved by the host.
+
 Use `scripts/boot-interactive.sh` or `run.sh` for a Mac boot. The shared helper
 queues QEMU, Parallels and VMware behind one Mac lease. VM deployment and the
 suite panel are part of that lifetime. Stop the run to stop its VM and free the

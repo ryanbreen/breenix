@@ -64,9 +64,14 @@ impl SerialFixture {
             .arg(second)
             .current_dir(repo_root())
             .env_remove("EXPECTED_EXITS")
-            .env_remove("REQUIRE_PROCESS_ACCOUNTING");
+            .env_remove("REQUIRE_PROCESS_ACCOUNTING")
+            .env_remove("BREENIX_HOST_STALL_RECORD");
         if let Some(expected_exits) = expected_exits {
             command.env("EXPECTED_EXITS", expected_exits);
+        }
+        let host_record = self.directory.join("host-stall.jsonl");
+        if host_record.exists() {
+            command.env("BREENIX_HOST_STALL_RECORD", host_record);
         }
         command.output().expect("run scripts/x86-gate-verdict.sh")
     }
@@ -1055,8 +1060,23 @@ fn full_accounting_requires_a_publication_count() {
     assert!(text.contains("published process count is absent"), "{text}");
 }
 
+/// A 100 ms kick window on a 2.4 GHz counter with 5 ms ticks, opened at guest
+/// TSC 24e9, that only the host's record can call starved.
 fn starved_sigkill_log() -> &'static str {
-    "SIGKILL_TEARDOWN_TEST: pid=17 defer=1 reclaim=1 kick_cpu=1 sender_cpu=0 counter_interval=100000 tick_period=1000 counter_ticks_per_ms=1000 interval_us=100000 tick_us=1000 observer_ticks=0 all_ticks=0 online_cpus=4 observer_ms_per_tick=inf all_ms_per_tick=inf starved_ms_per_tick=60 verdict=STARVED\nSIGKILL_TEARDOWN_TEST: STARVED windows=1: host-starved, not evidence; rerun the boot\n"
+    "SIGKILL_TEARDOWN_TEST: pid=17 defer=1 reclaim=1 kick_cpu=1 sender_cpu=0 counter_interval=240000000 tick_period=12000000 counter_ticks_per_ms=2400000 interval_us=100000 tick_us=5000 observer_ticks=0 all_ticks=0 online_cpus=4 observer_ms_per_tick=unbounded all_ms_per_tick=unbounded starved_ms_per_tick=60 kick_at=24000000000 observer_vcpu=1 sender_vcpu=0 masked_cpus=0 starvation_check=host verdict=STARVED\nSIGKILL_TEARDOWN_TEST: STARVED windows=1: host-starved, not evidence; rerun the boot\n"
+}
+
+/// The host sampler's record of that window: vCPU 1 waited 150 ms to run.
+fn starving_host_record(fixture: &SerialFixture) {
+    let mut lines = vec![
+        r#"{"kind":"start","clk_tck":100,"period":0.02}"#.to_string(),
+        r#"{"kind":"guest","pid":77,"vcpus":{"0":"100","1":"101"},"tsc_offsets":{"0":-5,"1":-5},"tsc_scaling":{}}"#.to_string(),
+    ];
+    for (index, tsc) in (23_952_000_000u64..=24_288_000_000).step_by(48_000_000).enumerate() {
+        let delay = if tsc > 24_000_000_000 { 30_000_000 * (index as u64 - 1).min(5) } else { 0 };
+        lines.push(format!(r#"{{"t":{index},"tsc":{tsc},"steal":[0,0],"vcpu":{{"0":[0,{index},0,"R"],"1":[{delay},{index},1,"R"]}}}}"#));
+    }
+    fs::write(fixture.directory.join("host-stall.jsonl"), lines.join("\n") + "\n").expect("write host stall record");
 }
 
 #[test]
@@ -1065,6 +1085,7 @@ fn starvation_does_not_hide_an_independent_exit_failure() {
         .replace("nonzero=0 failed=[]", "nonzero=2 failed=[sigkill_teardown_test:2,other_test:1]")
         .replace("🏁 TEST RUNNER: All tests passed", "TEST RUNNER: FAILED");
     let fixture = SerialFixture::new(&log, starved_sigkill_log());
+    starving_host_record(&fixture);
     let output = fixture.run(Some("10"));
     assert_eq!(output.status.code(), Some(1), "{}", output_text(&output));
     assert!(output_text(&output).contains("other_test"));
@@ -1076,6 +1097,19 @@ fn consistent_starvation_is_inconclusive_after_all_checks() {
         .replace("nonzero=0 failed=[]", "nonzero=1 failed=[sigkill_teardown_test:2]")
         .replace("🏁 TEST RUNNER: All tests passed", "TEST RUNNER: FAILED");
     let fixture = SerialFixture::new(&log, starved_sigkill_log());
+    starving_host_record(&fixture);
     let output = fixture.run(Some("10"));
     assert_eq!(output.status.code(), Some(2), "{}", output_text(&output));
+}
+
+#[test]
+fn starvation_the_host_record_does_not_show_fails() {
+    let log = green_log()
+        .replace("nonzero=0 failed=[]", "nonzero=1 failed=[sigkill_teardown_test:2]")
+        .replace("🏁 TEST RUNNER: All tests passed", "TEST RUNNER: FAILED");
+    let fixture = SerialFixture::new(&log, starved_sigkill_log());
+    let output = fixture.run(Some("10"));
+    let text = output_text(&output);
+    assert_eq!(output.status.code(), Some(1), "{text}");
+    assert!(text.contains("no host stall record"), "{text}");
 }

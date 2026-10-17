@@ -224,13 +224,45 @@ pub(crate) struct KickSlot {
 }
 
 /// Delivered timer ticks between a kick's publication and its observation,
-/// on the observing CPU and summed over the CPUs, and the publishing CPU.
-/// Only testing kernels count the ticks.
+/// on the observing CPU and summed over the CPUs, the CPUs that were masked
+/// across the window (`masked_across_window`), and the publishing CPU. Only
+/// testing kernels count the ticks and the masked CPUs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct KickWindow {
     pub(crate) observer_ticks: u64,
     pub(crate) all_ticks: u64,
+    pub(crate) masked_cpus: u64,
     pub(crate) sender_cpu: u64,
+}
+
+/// The CPUs, as a bit mask, that were masked across the window opened at
+/// counter value `at` and closing now: each is in a masked stretch that began
+/// no later than one tick after `at`. A CPU that ran with interrupts enabled
+/// after that point took the tick that fell before it; one that took none and
+/// is not counted here did not run. Zero where `MASKED_ACCOUNTING` is false.
+/// claim-lint:ok: the stretch starts are kernel/src/arch_impl/aarch64/irq_mask_account.rs's
+/// (#1715).
+#[cfg(any(feature = "boot_tests", feature = "testing"))]
+#[inline(always)]
+fn masked_across_window(at: u64) -> u64 {
+    #[cfg(target_arch = "aarch64")]
+    {
+        let tick = crate::arch_impl::aarch64::timer_interrupt::TICKS_PER_INTERRUPT
+            .load(Ordering::Relaxed);
+        (0..crate::task::scheduler::MAX_CPUS).fold(0, |mask, cpu| {
+            let since = crate::arch_impl::aarch64::irq_mask_account::masked_since(cpu);
+            if since != 0 && since.saturating_sub(at) <= tick {
+                mask | 1 << cpu
+            } else {
+                mask
+            }
+        })
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        let _ = at;
+        0
+    }
 }
 
 #[cfg(any(feature = "boot_tests", feature = "testing"))]
@@ -426,8 +458,10 @@ impl KickSlot {
                         )
                     },
                 );
+                #[cfg(any(feature = "boot_tests", feature = "testing"))]
+                let masked_cpus = masked_across_window(at);
                 #[cfg(not(any(feature = "boot_tests", feature = "testing")))]
-                let (observer_ticks, all_ticks) = (0, 0);
+                let (observer_ticks, all_ticks, masked_cpus) = (0, 0, 0);
                 (
                     KickObservation {
                         generation: first_state >> 2,
@@ -437,6 +471,7 @@ impl KickSlot {
                     KickWindow {
                         observer_ticks,
                         all_ticks,
+                        masked_cpus,
                         sender_cpu,
                     },
                 )
@@ -1058,8 +1093,10 @@ struct BootTestPidCountSlot {
     sgi_sent_count: AtomicU64,
     kick_observed_count: AtomicU64,
     kick_observed_interval: AtomicU64,
+    kick_observed_at: AtomicU64,
     kick_observed_ticks: AtomicU64,
     kick_observed_all_ticks: AtomicU64,
+    kick_observed_masked_cpus: AtomicU64,
     kick_observed_cpu: AtomicU64,
     kick_sender_cpu: AtomicU64,
     masked_frames_walked: AtomicU64,
@@ -1082,8 +1119,10 @@ impl BootTestPidCountSlot {
             sgi_sent_count: AtomicU64::new(0),
             kick_observed_count: AtomicU64::new(0),
             kick_observed_interval: AtomicU64::new(0),
+            kick_observed_at: AtomicU64::new(0),
             kick_observed_ticks: AtomicU64::new(0),
             kick_observed_all_ticks: AtomicU64::new(0),
+            kick_observed_masked_cpus: AtomicU64::new(0),
             kick_observed_cpu: AtomicU64::new(0),
             kick_sender_cpu: AtomicU64::new(0),
             masked_frames_walked: AtomicU64::new(0),
@@ -1121,6 +1160,7 @@ enum BootTestPidCountKind {
     Quarantine,
     SgiSent,
     KickObserved {
+        at: u64,
         interval: u64,
         window: KickWindow,
         cpu: u64,
@@ -1160,12 +1200,16 @@ fn record_boot_test_pid_count(pid: u64, kind: BootTestPidCountKind) {
                     slot.sgi_sent_count.fetch_add(1, Ordering::Relaxed);
                 }
                 BootTestPidCountKind::KickObserved {
+                    at,
                     interval,
                     window,
                     cpu,
                 } => {
                     slot.kick_observed_interval
                         .store(interval, Ordering::Relaxed);
+                    slot.kick_observed_at.store(at, Ordering::Relaxed);
+                    slot.kick_observed_masked_cpus
+                        .store(window.masked_cpus, Ordering::Relaxed);
                     slot.kick_observed_ticks
                         .store(window.observer_ticks, Ordering::Relaxed);
                     slot.kick_observed_all_ticks
@@ -1218,8 +1262,10 @@ fn reset_boot_test_pid_counts() -> BootTestPidCountsGuard {
         slot.sgi_sent_count.store(0, Ordering::Relaxed);
         slot.kick_observed_count.store(0, Ordering::Relaxed);
         slot.kick_observed_interval.store(0, Ordering::Relaxed);
+        slot.kick_observed_at.store(0, Ordering::Relaxed);
         slot.kick_observed_ticks.store(0, Ordering::Relaxed);
         slot.kick_observed_all_ticks.store(0, Ordering::Relaxed);
+        slot.kick_observed_masked_cpus.store(0, Ordering::Relaxed);
         slot.kick_observed_cpu.store(0, Ordering::Relaxed);
         slot.kick_sender_cpu.store(0, Ordering::Relaxed);
         slot.masked_frames_walked.store(0, Ordering::Relaxed);
@@ -1387,8 +1433,12 @@ pub fn record_exit_kick_collision(bucket: usize) {
     EXIT_KICK_BUCKET_COLLISION_COUNTS[bucket].fetch_add(1, Ordering::Relaxed);
 }
 
+/// Whether this kernel accounts interrupt masking per CPU, so a kick window
+/// can say which CPUs were masked across it (`irq_mask_account`).
+pub(crate) const MASKED_ACCOUNTING: bool = cfg!(target_arch = "aarch64");
+
 #[inline(always)]
-pub(crate) fn record_exit_kick_observed(pid: u64, interval: u64, window: KickWindow) {
+pub(crate) fn record_exit_kick_observed(pid: u64, at: u64, interval: u64, window: KickWindow) {
     crate::trace_count!(EXIT_KICK_OBSERVED);
     EXIT_KICK_BUCKET_OBSERVED_COUNTS[pid as usize % EXIT_KICK_BUCKETS]
         .fetch_add(1, Ordering::Relaxed);
@@ -1397,13 +1447,14 @@ pub(crate) fn record_exit_kick_observed(pid: u64, interval: u64, window: KickWin
     record_boot_test_pid_count(
         pid,
         BootTestPidCountKind::KickObserved {
+            at,
             interval,
             window,
             cpu: crate::task::scheduler::current_cpu() as u64,
         },
     );
     #[cfg(not(any(feature = "boot_tests", feature = "testing")))]
-    let _ = (interval, window);
+    let _ = (at, interval, window);
 }
 
 #[inline(always)]
@@ -1432,8 +1483,10 @@ pub struct TeardownPidEvidence {
     pub sgi_sent_count: u64,
     pub kick_observed_count: u64,
     pub kick_observed_interval: u64,
+    pub kick_observed_at: u64,
     pub kick_observed_ticks: u64,
     pub kick_observed_all_ticks: u64,
+    pub kick_observed_masked_cpus: u64,
     pub kick_observed_cpu: u64,
     pub kick_sender_cpu: u64,
     pub masked_frames_walked: u64,
@@ -1463,8 +1516,10 @@ pub fn teardown_pid_evidence(pid: u64) -> Option<TeardownPidEvidence> {
         sgi_sent_count: slot.sgi_sent_count.load(Ordering::Acquire),
         kick_observed_count: slot.kick_observed_count.load(Ordering::Acquire),
         kick_observed_interval: slot.kick_observed_interval.load(Ordering::Acquire),
+        kick_observed_at: slot.kick_observed_at.load(Ordering::Acquire),
         kick_observed_ticks: slot.kick_observed_ticks.load(Ordering::Acquire),
         kick_observed_all_ticks: slot.kick_observed_all_ticks.load(Ordering::Acquire),
+        kick_observed_masked_cpus: slot.kick_observed_masked_cpus.load(Ordering::Acquire),
         kick_observed_cpu: slot.kick_observed_cpu.load(Ordering::Acquire),
         kick_sender_cpu: slot.kick_sender_cpu.load(Ordering::Acquire),
         masked_frames_walked: slot.masked_frames_walked.load(Ordering::Acquire),
