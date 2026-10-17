@@ -251,7 +251,7 @@ an ordered rectangle, like DRAW. It emits one instance; its area is the rectangl
 the target and scissor. It writes the selected result word as canonical BGRA bytes, least significant
 byte first, using integer byte extraction and the final `k / 255` conversion. No result is computed
 on the CPU. Inputs not used by a routine must be zero; word selects one of the result words below.
-An unknown routine, an out-of-range word selector or a nonzero unused input returns EINVAL, code 18.
+An unknown routine, an out-of-range word selector, an operand outside its stated input domain, or a nonzero unused input returns EINVAL, code 18.
 The PROBE work estimate is 65,536 steps per pixel, a conservative budget for the fixed arithmetic
 program including its 96 division iterations. SCISSOR itself counts no draw, instance or work.
 SCISSOR needs a current target, refuses inverted rectangles (code 6), and clips CLEAR as well as
@@ -282,8 +282,8 @@ DRAW, DRAW_BUFFER, DRAW_SAMPLED and PROBE. COPY remains independent of drawing s
 Binary32 arithmetic preserves gradual underflow and signed zero; a NaN result is canonical
 0x7FC00000. The suite checks literal finite, subnormal, tie, cancellation and range-end vectors;
 the host model is checked against native f32 before the corresponding shader is written
-(`gpu.md` section 1.5). Shape inputs are signed i32; nonpositive sizes and negative radii
-produce empty sets. Shape predicates use two or three words as section 1.5 requires,
+(`gpu.md` section 1.5). Shape inputs are signed i32; nonpositive sizes and negative circle radii
+produce empty sets; a rounded rectangle with a nonpositive radius is a plain rectangle. Shape predicates use two or three words as section 1.5 requires,
 including coordinate differences that exceed i32. This interface leaves the promised G5
 closed-form proofs and the pixel sets unchanged. A triangle with zero signed area is empty;
 for positive winding, an edge is inclusive when its dy is negative or its dy is zero and dx
