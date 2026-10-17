@@ -39,11 +39,23 @@ its configuration and the RAM disk from its own device. The server sends `Conten
 (`application/efi` for a bare EFI test payload), so the firmware's image-type check does not depend on the URI's
 extension.
 
+**This target's firmware does not take the RAM-disk forms.** Its HTTP boot fetches and starts a bare EFI binary
+(`application/efi`), and answers both RAM-disk forms with a `HEAD` and then "Boot Failed", reading none of the image:
+a 323 MB Breenix `boot.img` and a 34 MB `.img` holding `metal-hang.efi` (`application/vnd.efi-img`), and a 34 MB El
+Torito ISO holding it (`application/vnd.efi-iso`) at a URI ending `.img`, behind a redirect to `.iso` (the firmware
+does not follow redirects), at a URI ending `.iso`, typed `application/octet-stream`, and with byte ranges offered.
+The form Breenix is served in on this target is therefore an open ruling (a licensed virtual-media path, or a Breenix
+EFI loader that carries the ESP's files itself); until then a Breenix boot ends in delivery with exit 2.
+claim-lint:ok: 7 of 7 RAM-disk boots refused and 4 of 4 bare-EFI boots fetched, in "Measured".
+
 The image server (`metal-http`) has one route. While a boot has an image staged that has not yet been sent in full,
-the route answers `HEAD` and `GET`, and a transfer that breaks off can be retried. After one complete transfer, and
-while nothing is staged, the route answers 404, so a machine that resets cannot boot the same image again and a stray
-power-on boots nothing. Requests and transfers are logged without the client's address. claim-lint:ok: the
-single-transfer rule is `scripts/metal/metal-http`, exercised by four HTTP tests in `tests/metal_tools_test.py`.
+the route answers `HEAD` and `GET` (whole, or one byte range per request: `206` with `Content-Range`, `416` for a
+range it cannot satisfy), and a transfer that breaks off can be retried. Once the whole file has been sent, in one
+response or across ranges, and while nothing is staged, the route answers 404, so a machine that resets cannot boot the same image again and a stray
+power-on boots nothing. Requests and transfers are logged without the client's address. A boot can also stage its
+file behind a `302` from the route to a name beside it (`--serve-as boot.iso`), for probing whether a firmware types
+images by the URI's name. claim-lint:ok: the single-transfer rule is `scripts/metal/metal-http`, exercised by six
+HTTP tests in `tests/metal_tools_test.py`.
 
 **Only the firmware may fetch or `HEAD` the boot URL while a boot runs.** The proxy hides the client's address,
 so the driver takes the first request after power-on as the firmware's: a probe would end the POST measurement early,
@@ -224,6 +236,15 @@ collection off again; `metal-setup apply --refresh` runs the same cycle without 
 while it collects inventory; the setup tool retries. claim-lint:ok: observed on L0's setup, where the job completed
 and the values read stale until one refresh cycle; the read-back then matched 30 of 30 rows.
 
+**After a settings job, the controller keeps a completed job's record and with it a short list of "pending" values
+equal to the current ones** (`BootMode`, `EmbSata`, `SecureBoot`, `SecureBootMode`, `SecureBootPolicy` here). While
+that list stands it refuses a new settings job and a clear ("pending configuration values are already committed"),
+and it may apply the list as a job of its own on the next power-on. So `apply` deletes its own completed job's record
+after the refresh, and when it meets such a list it deletes the records of completed BIOS-configuration jobs (never a
+scheduled or running one) before creating a job. Pending values that equal the current ones count as no change in
+the read-back. The first power-on after a settings job runs POST twice (about 105 s instead of 33 s). claim-lint:ok:
+seen after 3 of 3 settings jobs in L0's setup records.
+
 ## Files
 
 The **site file** (inside the service container, 0600): `IDRAC_HOST`, `IDRAC_USER`, `IDRAC_PASSWORD`,
@@ -251,6 +272,9 @@ python3 ~/.local/share/breenix-metal/metal-run boot --branch NAME        # a pus
 python3 ~/.local/share/breenix-metal/metal-run boot --payload hang       # metal-hang.efi
 python3 ~/.local/share/breenix-metal/metal-run boot --payload none       # nothing staged
 python3 ~/.local/share/breenix-metal/metal-run boot --payload none --inject forceoff-fail
+python3 ~/.local/share/breenix-metal/metal-run boot --payload hang-img   # metal-hang.efi in a small RAM-disk image
+python3 ~/.local/share/breenix-metal/metal-run boot --payload hang-iso [--serve-as boot.iso] \
+    [--content-type application/octet-stream]                           # ... in a small El Torito ISO
 python3 ~/.local/share/breenix-metal/metal-run follow ID | stop ID | status
 ```
 
@@ -271,22 +295,18 @@ redaction tests in `tests/metal_tools_test.py`.
 
 ## Measured
 
-POST, from power-on to the firmware's image request, set the POST budget at 212.4 s (twice the longest of the
-first three):
-
-| Boot | Payload | Power-on to request |
-|---|---|---|
-| 1 | no image staged | 106.2 s (the first boot after the settings job; POST restarted once, at about 76 s) |
-| 2 | `metal-hang.efi` | 32.7 s |
-| 3 | `metal-hang.efi` | 32.8 s |
-| 4 | no image staged, injected power-off failure | 32.7 s |
+POST, from power-on to the firmware's image request, over L0's 11 boots that reached a request: 32.6 to 33.1 s on 9,
+and 104.6 and 106.2 s on the 2 first power-ons after a settings job. The first three set the POST budget at 212.4 s
+(twice the longest).
 
 L0's boots, one per row of the lane:
 
 | Row | Boot | Reached | Exit |
 |---|---|---|---|
-| No image staged | `HEAD` and `GET` answered 404 at 106 s; "No bootable devices" at 119 s; off 6.7 s after the decision | delivery: console ready, power-on, firmware text, POST, image request | 2 |
-| `metal-hang.efi` | Fetched in 0.02 s with its sha256; its line on SOL at 33 s; 120 s of silence; the NMI reached the firmware's exception handler, not the payload; off 21.6 s after the NMI capture | the payload's own line | 124 |
+| Main's kernel as `boot.img` (origin/main 970f5174) | Built in a private clone (guard with the `x86` stand-in, userspace from the gate cache, production kernel in 88 s, no warnings), assembled as a 323 MB image read back component by component. The firmware sent a `HEAD` 32.8 s after power-on and no `GET`, and reported "Boot Failed" | delivery: console ready, power-on, firmware text, POST, image request | 2 |
+| Delivery ladder (main's image failed delivery) | Six probes, `metal-hang.efi` in a 34 MB `.img` and in a 34 MB ISO (at the `.img` URI, behind a redirect, at an `.iso` URI, typed `application/octet-stream`, with byte ranges): `HEAD` only, then "Boot Failed", each time | delivery up to the request | 2 |
+| No image staged | `HEAD` and `GET` answered 404 at 106 s; "No bootable devices" at 119 s; off 6.7 s after the decision | delivery up to the request | 2 |
+| `metal-hang.efi` (bare EFI) | Fetched in 0.02 s with its sha256; its line on SOL at 33 s; 120 s of silence; the NMI reached the firmware's exception handler, not the payload; off 21.6 s after the NMI capture | the payload's own line | 124 |
 | Driver killed (SIGKILL) 15 s into POST | The reaper saw the driver gone 9.2 s after the kill, read Off at 14.1 s and closed the record at 18.4 s | POST | 137, `ended-by: reaper` |
 | Container restarted 10 s into POST | The machine service started 8.9 s after the restart, closed the record, read Off at 16.2 s, and reported ready (lease and image server) at 23.1 s; the URL refused connections until then | POST | 137, `ended-by: reconciliation` |
 | Injected ForceOff failure | The lease quarantined with the machine on; a second boot 11 s later was refused (exit 75); the reaper's first retry, 74 s after the quarantine, read Off and lifted it | delivery up to the 404 | 2, then 75 |
