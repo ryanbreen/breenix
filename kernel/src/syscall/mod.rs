@@ -910,6 +910,8 @@ pub fn dispatch_numbered(number: u64, a: [u64; 6]) -> Option<SyscallResult> {
         SYSINFO_SYSCALL_NUMBER => sysinfo::sys_sysinfo(a[0]),
         #[cfg(target_arch = "aarch64")]
         gpu_abi::SYS_TEST_CONTROL => crate::test_control::sys_test_control(a[0], a[1], a[2]),
+        #[cfg(target_arch = "aarch64")]
+        gpu_abi::SYS_GPU => crate::gpu::sys_gpu(a[0], a[1], a[2]),
         _ => return None,
     })
 }

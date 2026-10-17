@@ -207,6 +207,9 @@ pub fn init() -> usize {
             }
         }
 
+        // The GPU core's device: QEMU's virtio-gpu-gl-pci, when the boot attaches one.
+        crate::gpu::init_qemu();
+
         // Initialize AHCI from PCI
         match ahci::init() {
             Ok(count) => {
