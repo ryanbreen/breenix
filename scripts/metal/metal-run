@@ -132,9 +132,15 @@ def build(boot_id, sha):
         in_metal(env, 'python3', f'{TOOLS}/metal-boot', 'inputs-failed', boot_id, why)
         in_build(env, 'rm', '-rf', tools, out)
         return 1
+    in_build(env, 'rm', '-rf', tools, check=True)
     in_build(env, 'mkdir', '-p', tools, check=True)
     incus('file', 'push', str(HERE / 'metal-build'), f"{env['BUILD_INSTANCE']}{tools}/metal-build", check=True)
-    incus('file', 'push', '-r', str(HERE / 'efi-stub'), f"{env['BUILD_INSTANCE']}{tools}/", check=True)
+    # Push source files only: an old target tree or ignored local files must never reach staging.
+    stub = HERE / 'efi-stub'
+    for name in ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'src/main.rs'):
+        target = f'{tools}/efi-stub/{name}'
+        in_build(env, 'mkdir', '-p', str(Path(target).parent), check=True)
+        incus('file', 'push', str(stub / name), f"{env['BUILD_INSTANCE']}{target}", check=True)
     started = time.time()
     status = in_build(env, 'python3', f'{tools}/metal-build', '--id', boot_id, '--sha', sha,
                       '--repo', env['BUILD_REPO'], '--rust-fork', env['BUILD_RUST_FORK'],
@@ -145,6 +151,7 @@ def build(boot_id, sha):
         return failed('the effort-target guard refused the commit')
     if status != 0:
         return failed(f'the build failed (exit {status})')
+    in_metal(env, 'rm', '-rf', stage, check=True)
     in_metal(env, 'mkdir', '-p', stage, check=True)
     sender = subprocess.Popen(['sudo', '-n', 'incus', 'exec', env['BUILD_INSTANCE'], '--', 'tar', '-C', out, '-cf',
                                '-', '.'], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE)
@@ -180,7 +187,7 @@ def main():
     p.add_argument('--inject', choices=('forceoff-fail',))
     p.add_argument('--serve-as', choices=('boot.iso', 'boot.efi'))
     p.add_argument('--content-type', choices=('application/octet-stream',))
-    p.add_argument('--ramdisk', action='store_true', help='a Breenix image also carries the ext2 root as `ramdisk`')
+    p.add_argument('--ramdisk', action='store_true', default=True, help='a Breenix image also carries the ext2 root as `ramdisk`')
     for name in ('stop', 'follow'):
         sub.add_parser(name).add_argument('id')
     sub.add_parser('status')

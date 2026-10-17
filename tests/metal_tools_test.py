@@ -112,6 +112,18 @@ class RedactorTest(unittest.TestCase):
                      'Breenix boot.img over DHCP on port 8240', 'HTTP device NIC.Embedded.2-1-1'):
             self.assertEqual(m.Redactor({})(text), text)
 
+    def test_digits_and_commit_ids_survive(self):
+        for text in ('0123456789', 'commit 14a0ff0c', 'sha256 ' + '3a7b' * 16,
+                     '{"t": 1792203213.123, "seconds": 3.2}', 'ratio 3:2', 'v1.2.3'):
+            self.assertEqual(self.redact(text), text)
+
+    def test_private_values_are_whole_tokens(self):
+        for value in (self.site['IDRAC_PASSWORD'], 'fixturehost', 'FX12345', 'fixtureauto'):
+            self.assertEqual(self.redact('value="' + value + '"'), 'value="<site>"')
+            self.assertEqual(self.redact('prefix' + value + 'suffix'), 'prefix' + value + 'suffix')
+            self.assertEqual(self.redact('value=' + value + '.'), 'value=<site>.')
+            self.assertEqual(self.redact('value:' + value), 'value:<site>')
+
     def test_url_path_components_are_private(self):
         redact = m.Redactor({'BOOT_URL': 'http://fixture.invalid/private-folder/payload.efi'})
         for text in ('http://fixture.invalid/private-folder/payload.efi', 'fixture.invalid',
@@ -718,6 +730,42 @@ class DriverTest(StateTest):
         d.kernel_started = 116
         self.finish(lambda: d.on_http({'event': '404', 't': 117, 'route': True}), m.EXIT_SHORT)
 
+    def redactor_for_events(self):
+        return m.Redactor(m.load_site(FIXTURES / 'redact-site.env'))
+
+    def test_host_events_keep_source_times_after_delayed_polling(self):
+        d = self.driver
+        d.event = boot.Driver.event.__get__(d, boot.Driver)
+        d.redact = self.redactor_for_events()
+        with patch.object(m, 'now', return_value=130), patch.object(m, 'record_post_time'):
+            d.on_http({'event': 'start', 't': 110, 'id': d.id})
+            d.on_http({'event': 'complete', 't': 111, 'id': d.id, 'matches': True, 'sha256': '3a' * 32})
+            d.on_line(boot.HANDOFF_LINE, observed_at=112)
+        events = [json.loads(line) for line in (d.dir / 'events.jsonl').read_text().splitlines()]
+        stamps = {event['event']: event['t'] for event in events}
+        self.assertEqual(stamps['image-request'], 110)
+        self.assertEqual(stamps['image-complete'], 111)
+        self.assertEqual(stamps['handoff'], 112)
+        self.assertEqual(d.kernel_started, 112)
+        complete = next(event for event in events if event['event'] == 'image-complete')
+        self.assertEqual(complete['seconds'], 11)
+        self.assertEqual(complete['sha256'], '3a' * 32)
+
+    def test_power_on_uses_queue_dispatch_time(self):
+        d = self.driver
+        d.event = boot.Driver.event.__get__(d, boot.Driver)
+        self.ready()
+        m.claim_lease({'id': d.id, 'pid': os.getpid()}, wait=False)
+        with patch.object(m, 'rf', return_value={'startedAt': 105, 'completedAt': 106}), \
+             patch.object(m, 'rf_get', return_value={'Boot': {'BootSourceOverrideEnabled': 'Once',
+                                                           'BootSourceOverrideTarget': 'UefiHttp'}}), \
+             patch.object(m, 'now', return_value=108):
+            d.power_on()
+        self.assertEqual(d.t0, 105)
+        self.assertEqual(m.read_lease()['powerOnAt'], 105)
+        events = [json.loads(line) for line in (d.dir / 'events.jsonl').read_text().splitlines()]
+        self.assertEqual(next(event['t'] for event in events if event['event'] == 'power-on'), 105)
+
     def test_reset_detection_uses_serial_and_boot_progress(self):
         d = self.driver
         d.on_line(boot.BOOTLOADER_LINE)
@@ -725,9 +773,9 @@ class DriverTest(StateTest):
         self.assertIsNotNone(d.kernel_started)
         self.finish(lambda: d.on_line(boot.BOOTLOADER_LINE), m.EXIT_SHORT)
         for state in boot.RUNNING_STATES:
-            d.bmc_events = [{'progress': {'LastState': state}}]
+            d.bmc_events = [{'t': 120, 'progress': {'LastState': state}}]
             d.pump_bmc()
-        d.bmc_events = [{'progress': {'LastState': 'MemoryInit'}}]
+        d.bmc_events = [{'t': 120, 'progress': {'LastState': 'MemoryInit'}}]
         self.finish(d.pump_bmc, m.EXIT_SHORT)
 
     def test_finish_does_not_discard_the_rest_of_a_serial_read(self):
@@ -808,6 +856,11 @@ class DriverTest(StateTest):
         self.assertEqual([row[0] for row in m.failed_checks(rows)],
                          ['lc.LCAttributes.1.CollectSystemInventoryOnRestart'])
 
+    def test_sata_off_policy_is_checked_explicitly(self):
+        site = m.load_site(FIXTURES / 'redact-site.env')
+        site['SATA_MODE'] = 'Off'
+        self.assertEqual(m.expected_bios(site)['EmbSata'], 'Off')
+
     def test_follow_refuses_shell_input_before_remote_execution(self):
         run = load_script('metal-run')
         with patch.object(run, 'in_metal') as remote:
@@ -822,6 +875,30 @@ class DriverTest(StateTest):
             with self.assertRaises(SystemExit):
                 run.verify_target({'BUILD_REPO': 'fixture'}, 'a' * 40, 'main')
             self.assertIn('merge-base', remote.call_args.args)
+
+
+class StagingTest(unittest.TestCase):
+    def test_build_pushes_only_stub_sources_and_replaces_stage(self):
+        run = load_script('metal-run')
+        env = dict(BUILD_ROOT='/fixture', BUILD_INSTANCE='builder', METAL_INSTANCE='service',
+                   BUILD_REPO='/repo', BUILD_RUST_FORK='/rust', BUILD_CACHE='/cache')
+        import io
+        sender = Mock(stdout=io.BytesIO(), wait=Mock(return_value=0))
+        with patch.object(run, 'host_env', return_value=env), \
+             patch.object(run, 'in_build', return_value=SimpleNamespace(returncode=0)) as builder, \
+             patch.object(run, 'in_metal', return_value=SimpleNamespace(returncode=0)) as service, \
+             patch.object(run, 'incus') as push, \
+             patch.object(run.subprocess, 'Popen', return_value=sender), \
+             patch.object(run.subprocess, 'run', return_value=SimpleNamespace(returncode=0)):
+            self.assertEqual(run.build('20261017T000009Z-metal', 'a' * 40), 0)
+        sources = [Path(call.args[2]).relative_to(run.HERE).as_posix()
+                   for call in push.call_args_list if call.args[:2] == ('file', 'push')]
+        self.assertEqual(sources, ['metal-build', 'efi-stub/Cargo.toml', 'efi-stub/Cargo.lock',
+                                   'efi-stub/rust-toolchain.toml', 'efi-stub/src/main.rs'])
+        calls = [call.args[1:] for call in service.call_args_list]
+        stage = '/var/lib/breenix-metal/stage/20261017T000009Z-metal/inputs'
+        self.assertLess(calls.index(('rm', '-rf', stage)), calls.index(('mkdir', '-p', stage)))
+        self.assertEqual(builder.call_args_list[0].args[1:3], ('rm', '-rf'))
 
 
 class BuildPolicyTest(unittest.TestCase):
