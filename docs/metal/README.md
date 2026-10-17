@@ -33,13 +33,13 @@ so the network's DHCP server is left as it is. Each boot changes what that URI s
 The firmware boots only a bare EFI binary (`application/efi`) over HTTP: it refused the RAM-disk image and ISO forms
 on `HEAD`, before a `GET`, and fetched and started bare `metal-hang.efi`. claim-lint:ok: 7 of 7 RAM-disk and ISO
 boots refused and 4 of 4 bare-EFI boots fetched, in "Measured". The pinned bootloader, though, loads its kernel,
-`boot.json` and optional `ramdisk` from the FAT file system on the device it was itself loaded from. So a Breenix boot
+`boot.json` and `ramdisk` from the FAT file system on the device it was itself loaded from. So a Breenix boot
 serves **`boot.efi`**: the delivery stub, `metal-efi-stub` (`scripts/metal/efi-stub`), with the boot disk appended.
 
 - **The boot disk** is a GPT disk with one FAT EFI system partition holding the bootloader as
-  `efi/boot/bootx64.efi`, `kernel-x86_64` and `boot.json` (copied out of the kernel build's UEFI image) and, with
-  `--ramdisk`, the ext2 root as `ramdisk`. The root joins by default once a kernel reads it; until then the disk is
-  a few tens of megabytes.
+  `efi/boot/bootx64.efi`, `kernel-x86_64` and `boot.json` (copied out of the kernel build's UEFI image) and
+  the ext2 root as `ramdisk` by default, including before the kernel consumes it. The root image determines
+  the payload size.
 - **The stub** is a PE32+ EFI application written only from the UEFI and PE/COFF specifications. `metal-build`
   builds it from the deployed tools' copy, not the commit's, so any commit's kernel is delivered the same way. The
   image step (`stub_efi` in `scripts/metal/metal_image.py`) appends the disk as a read-only section, `.bimg`, and
@@ -80,10 +80,9 @@ redirection on COM1), and so do the delivery stub's and the bootloader's lines.
 **The kernel log follows the console rule** (`select_log_port` in `kernel/src/serial.rs`), decided before the
 kernel's first log line is written out:
 
-1. Under QEMU (its fw_cfg device answers with the `QEMU` signature) the log stays on COM2, apart from the user
-   console on COM1, so the QEMU gates' two serial files are as they were.
-2. Otherwise the 16550-class UART the firmware's ACPI SPCR names in I/O space (`read_spcr_port` in
+1. The 16550-class UART the firmware's ACPI SPCR names in I/O space (`read_spcr_port` in
    `kernel/src/arch_impl/x86_64/acpi.rs`, from Microsoft's published SPCR specification).
+2. Without a usable SPCR, under QEMU (fw_cfg present), COM2, apart from the user console on COM1.
 3. Otherwise COM1, where the firmware and the bootloader already print.
 
 The kernel reports the choice as `[console] uart <port> source=<fw_cfg|spcr|default>`. When the log shares COM1 with
@@ -249,7 +248,7 @@ when each row matches). They are firmware and controller settings; they write no
 | `SerialComm` | `OnConRedirCom1` | Firmware text on the SOL UART (`SerialPortAddress=Serial1Com2Serial2Com1`, kept, puts the SOL device at COM1) |
 | `ErrPrompt` | Disabled | POST does not stop for an error prompt |
 | `AcPwrRcvry` | Off | After a power cut the machine stays off |
-| `EmbSata` | `AhciMode` | SATA enabled without RAID |
+| `EmbSata` | Site `SATA_MODE` (default `AhciMode`) | The current operator policy selects `Off`; pre-flight checks the selected value |
 | IPMI over LAN | Enabled | SOL's transport and the reaper's second power-off path |
 | Lifecycle Controller `CollectSystemInventoryOnRestart` | Disabled | Shorter POST |
 | An automation account | Administrator role, SOL and IPMI LAN privilege | Revocable apart from the operator's own login; its credential lives only in the site file |
@@ -277,7 +276,7 @@ seen after 3 of 3 settings jobs in L0's setup records.
 ## Files
 
 The **site file** (inside the service container, 0600): `IDRAC_HOST`, `IDRAC_USER`, `IDRAC_PASSWORD`,
-`IDRAC_ACCOUNT_SLOT`, `BOOT_URL`, `HTTP_LISTEN_PORT`, `HTTP_DEV_INTERFACE`, `HTTP_DEV_ADDRESSING` (`dhcp`, or
+`IDRAC_ACCOUNT_SLOT`, `SATA_MODE` (`Off` for the current disk policy), `BOOT_URL`, `HTTP_LISTEN_PORT`, `HTTP_DEV_INTERFACE`, `HTTP_DEV_ADDRESSING` (`dhcp`, or
 `static` with `HTTP_DEV_IP`, `HTTP_DEV_MASK`, `HTTP_DEV_GATEWAY`) and `REDACT_IDENTIFIERS`. It must also be valid
 `sh`, because `metal-sol` sources it.
 
@@ -297,7 +296,7 @@ On the boot host:
 
 ```
 python3 ~/.local/share/breenix-metal/metal-run boot                      # origin/main's kernel as boot.efi
-python3 ~/.local/share/breenix-metal/metal-run boot --ramdisk            # ... with the ext2 root as `ramdisk`
+python3 ~/.local/share/breenix-metal/metal-run boot --ramdisk            # explicit spelling of the default RAM-disk root
 python3 ~/.local/share/breenix-metal/metal-run boot --branch NAME        # a pushed branch (in-progress evidence)
 python3 ~/.local/share/breenix-metal/metal-run boot --payload hang       # metal-hang.efi
 python3 ~/.local/share/breenix-metal/metal-run boot --payload none       # nothing staged
@@ -389,3 +388,21 @@ to idle. That is within the few seconds the plan allows, so the console has no q
 dispatch census adds one line a second, about 330 bytes, 2.9% of the UART; the suites' lanes weigh that against
 their own output once a root exists. claim-lint:ok: measured on the `--ramdisk` first-light boot above.
 
+
+## First-light review repairs
+
+The shared console queues complete ring lines without waiting on the UART under the log ring or printer
+role. The queue holds a maximum ring line plus its leading CR LF and final CR; ring bytes already include
+backspace/delete expansion and are copied without expanding them again. Queue pressure drains one ready byte
+between retries. Panic flushing follows the same writer lead and CR LF path. The additional queue storage is
+49,155 bytes per kernel, with no heap allocation.
+
+The console and APIC handoff lines precede the serial-initialized line, in the metal definition's order.
+The metal idle marker is emitted only without fw_cfg. Read-only MCFG inventory reports the firmware's ECAM
+allocations without mapping or using them. Breenix payloads include their RAM-disk root by default;
+consuming that root remains the userspace lane's work.
+
+HTTP events retain the server's observation time, serial events retain the capture read's arrival time,
+and power-on uses the machine queue's dispatch time. Polling latency does not change these timestamps.
+Build staging replaces old inputs and copies only the stub's source, manifests, toolchain and tracked lockfile.
+The ARM64 runner prints its source commit and dirty state before building.
