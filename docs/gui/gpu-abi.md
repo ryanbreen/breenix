@@ -76,8 +76,12 @@ catalogue programs creation compiled and warmed), 16 reserved. EAGAIN past 8 con
 process does not hold.
 
 **`RESOURCE_CREATE` (48 bytes):** `kind: u32` (1 target, 2 texture, 3 buffer), `format: u32`, `width:
-u32`, `height: u32`, `size: u64` (bytes, buffers only), `handle: u64` out, 16 reserved. Targets are
-B8G8R8A8 or R8G8B8A8; textures add R8; sides are 1 to `max_width`. Buffers are 1 byte to 128 MiB.
+u32`, `height: u32`, `size: u64` (bytes, buffers only), `handle: u64` out, `flags: u32` at 32,
+12 reserved. `flags` bit 0 is scanout; all other bits must be zero (EINVAL otherwise). The scanout flag
+is valid only for targets (EINVAL for textures or buffers). Scanout targets are declared at creation:
+only targets created with this flag get the device's `SCANOUT` bind, and `PRESENT` refuses a target
+created without it with EINVAL. Targets are B8G8R8A8 or R8G8B8A8; textures add R8; sides are 1 to
+`max_width`. Buffers are 1 byte to 128 MiB.
 ENOMEM past 192 MiB of guest backing per process; EAGAIN past 256 resource handles. A new resource is
 attached to every context of the process, and a new context to every resource.
 
@@ -112,8 +116,12 @@ leaves it held, including after a timeout, kill or EIO return (section 1.4.1 of 
 **`READBACK` (64 bytes):** `target: u64`, `x, y, width, height: u32`, `pixels: u64` (address),
 `pixels_len: u64`, `stride: u32`, `reason: u32` out at 44, `record: u64` (address of 1,024 bytes),
 `failed_submission: u64` out at 56. Waits for every accepted submission that writes the target, then reads
-the rectangle as canonical BGRA rows at `stride` with record v2 (`docs/gui/gpu.md` section 1.8). Every EIO
-writes its reason to `reason`, and only that reason:
+the rectangle as canonical BGRA rows at `stride` with record v2 (`docs/gui/gpu.md` section 1.8).
+Temporary whole-rectangle staging uses guest-backing frames, charged to the process's 192 MiB
+guest-backing quota and `RLIMIT_AS`. `READBACK` may fail with ENOMEM when staging cannot be charged to
+the process's guest-backing quota or `RLIMIT_AS`. `COUNTERS.resource_bytes` includes the staging while
+it is held; the charge is released when the staging is freed. Every EIO writes its reason to `reason`,
+and only that reason:
 
 | `reason` | Name | Meaning |
 |---|---|---|
@@ -147,7 +155,9 @@ belongs to an observation that passed both poisons.
 **`PRESENT` (32 bytes):** `target: u64`, `fence: u64` out at 8, `answer: u32` out at 16, 4 reserved,
 `context: u64` at 24. Display owner only (EPERM otherwise). `context` is one of the caller's contexts
 (EINVAL otherwise) and must be live (EIO otherwise); the bind and flush are sent in it. Waits for every
-accepted submission that writes the target, refuses an invalid or lost target with EIO, binds the whole
+accepted submission that writes the target. `PRESENT` of a never-written target (no completed write
+after that wait) is refused with EINVAL, and a target created without `RESOURCE_CREATE`'s scanout flag
+is refused with EINVAL. An invalid or lost target is refused with EIO. Otherwise it binds the whole
 target to scanout 0 and flushes it, and returns once the flush is answered, with `answer` the flush's
 response. `fence` is a context fence of `context` (`ns << 32 | n`, numbered in sequence with its
 `SUBMIT`s, above), so `WAIT` on that context accepts it and reports the flush's outcome; it is never a raw
@@ -161,7 +171,8 @@ draws 16, instances 24, fragment area 32, work estimate 40, image uploads 48, fi
 readbacks 64, ring waits 72 (submissions that waited because four were in flight), device errors 80,
 state 88 (a context's: 0 live, 1 quarantined, 2 reset), contexts 96 (the process's live handles),
 device contexts 104 (the process's device contexts not yet destroyed, including destroyed handles whose
-work is outstanding), resources 112, resource bytes 120 (guest backing held), warmed 128; reserved to 256.
+work is outstanding), resources 112, resource bytes 120 (`resource_bytes`: guest backing held,
+including temporary `READBACK` staging charged to the process), warmed 128; reserved to 256.
 A clear counts as one draw of one instance covering the target.
 
 ## The BGL command stream
@@ -220,3 +231,11 @@ defined; the ones G1 builds:
 
 Every point is one-shot: it affects the next occurrence of its event, counts one firing and disarms
 itself. The other points arm and do nothing until their milestone builds them.
+
+## Provenance and reproduction
+
+The provenance rule in `docs/gui/gpu.md` section 1.9 applies to these layouts and device facts. Every
+black-box experiment records the commit, the Vigil run id or harness invocation, and the serial or
+output excerpt that showed the fact. Reproduce commands match the runs they cite: the provenance
+record's commands use exactly the flags the cited runs used, run folders keep `host-renderer.json`, and
+`scripts/vigil-record.sh` records whether the boot had a display window.
