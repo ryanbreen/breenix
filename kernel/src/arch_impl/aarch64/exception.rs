@@ -837,14 +837,7 @@ mod exception_class {
 pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: u64, far: u64) {
     // The CPU takes the exception masked; the return restores the frame's
     // DAIF.
-    super::irq_mask_account::opened();
-    handle_sync_exception_masked(frame, esr, far);
-    // SAFETY: the assembly entry passes the frame it saved, which the handler
-    // leaves in place for the return.
-    super::irq_mask_account::returning(unsafe { (*frame).spsr });
-}
-
-fn handle_sync_exception_masked(frame: *mut Aarch64ExceptionFrame, esr: u64, far: u64) {
+    let _masked = super::irq_mask_account::ExceptionStretch::begin(frame);
     // Per-CPU sync exception counter — increment FIRST, before any branching.
     let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
     if cpu_id < 8 {

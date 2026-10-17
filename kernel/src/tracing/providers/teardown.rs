@@ -247,8 +247,8 @@ pub(crate) struct KickWindow {
 fn masked_across_window(at: u64) -> u64 {
     #[cfg(target_arch = "aarch64")]
     {
-        let tick = crate::arch_impl::aarch64::timer_interrupt::TICKS_PER_INTERRUPT
-            .load(Ordering::Relaxed);
+        let tick =
+            crate::arch_impl::aarch64::timer_interrupt::TICKS_PER_INTERRUPT.load(Ordering::Relaxed);
         (0..crate::task::scheduler::MAX_CPUS).fold(0, |mask, cpu| {
             let since = crate::arch_impl::aarch64::irq_mask_account::masked_since(cpu);
             if since != 0 && since.saturating_sub(at) <= tick {

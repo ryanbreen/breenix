@@ -130,3 +130,25 @@ pub fn returning(spsr: u64) {
         closing();
     }
 }
+
+/// A synchronous exception handler's stretch: opened when the handler
+/// begins, and closed on each of its returns if the frame it returns to has
+/// interrupts enabled.
+pub struct ExceptionStretch(*const super::exception_frame::Aarch64ExceptionFrame);
+
+impl ExceptionStretch {
+    #[inline(always)]
+    pub fn begin(frame: *const super::exception_frame::Aarch64ExceptionFrame) -> Self {
+        opened();
+        Self(frame)
+    }
+}
+
+impl Drop for ExceptionStretch {
+    #[inline(always)]
+    fn drop(&mut self) {
+        // SAFETY: the assembly entry passed the frame it saved, and it stays
+        // in place until the exception returns.
+        returning(unsafe { (*self.0).spsr });
+    }
+}
