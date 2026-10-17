@@ -130,12 +130,15 @@ The kernel takes one path on each firmware it boots on, QEMU's included (`kernel
 - **Processors.** Each processor the MADT lists as enabled is started with INIT-SIPI-SIPI in MADT order; the kernel
   prints `[smp] online=<n> reported=<n>` and, when they match, `[smp] every reported CPU is online`. claim-lint:ok:
   the marker text is the catalog's, from `report_bring_up` in `kernel/src/arch_impl/x86_64/smp.rs`.
-- **Ticks on each CPU.** Each CPU measures its own LAPIC timer's countdown against the TSC as it starts it. One
-  second after `[metal] kernel idle` a census thread prints a `[timer] cpu<n>` line per CPU (measured rate and the
-  interrupts it took in that second), then `[timer] tick rate agrees with the TSC` when each CPU's rate is within
-  5000 ppm of 200 Hz and each count within 10% of the expected, and `[smp] timer ticks on each online CPU` when
-  each count is. The census runs only where the idle marker prints (no fw_cfg). It is the `smp` milestone's last
-  stage, so the driver ends a default boot there.
+- **Ticks on each CPU.** Each CPU measures its own LAPIC timer's countdown against the TSC as it starts it. At
+  `[metal] kernel idle` a census thread pins one thread to each CPU, which spins there for 500 ms with preemption
+  off and interrupts on. The timer's gate is shared with reschedule and retry IPIs and the idle loop's software
+  interrupt; during the spin only IPIs from other CPUs can add entries, and the scheduler counts those per
+  destination (`TIMER_GATE_IPI_SENT`). Each `[timer] cpu<n>` line gives the measured rate and the range the ticks
+  taken lie in (gate entries less IPIs sent, to gate entries). `[timer] tick rate agrees with the TSC` follows
+  when each CPU's rate is within 5000 ppm of 200 Hz and each range is within 2 ticks of the expected count, and
+  `[smp] timer ticks on each online CPU` when each range is. The census runs only where the idle marker prints
+  (no fw_cfg). It is the `smp` milestone's last stage, so the driver ends a default boot there.
 
 ## One boot
 

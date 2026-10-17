@@ -7,18 +7,23 @@
 //!   records it here (`record_local_rate`). The LAPIC was calibrated against
 //!   the PIT and the TSC rate comes from CPUID or the PIT, so agreement is a
 //!   cross-check between clocks, not a value compared with itself.
-//! - **Arrival.** A kernel thread started when boot goes idle counts the timer
-//!   interrupts each CPU took (`TIMER_TICK_TOTAL`, which the tick handler
-//!   increments per CPU) over one second of TSC time.
+//! - **Arrival.** A kernel thread pinned to each CPU spins there for
+//!   `WINDOW_MS` of TSC time with preemption disabled and interrupts enabled,
+//!   counting the entries through the timer's gate (`TIMER_TICK_TOTAL`, which
+//!   the tick handler increments per CPU).
 //!
-//! `TIMER_TICK_TOTAL` also counts reschedule IPIs, which share the timer's
-//! entry, so arrival is checked within `ARRIVAL_PERCENT` either way and the
-//! rate itself only from the countdown.
+//! The timer's gate is shared: reschedule and retry IPIs and the idle loop's
+//! and wait loops' software interrupts enter it too. While the pinned thread
+//! spins, the CPU runs neither loop and makes no return to Ring 3, so the only
+//! other entries are IPIs other CPUs send it, which `TIMER_GATE_IPI_SENT`
+//! counts per destination. The ticks the CPU took therefore lie between the
+//! entries less the IPIs sent to it and the entries; arrival passes when that
+//! range lies within `ARRIVAL_TICKS` of the expected count.
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::{apic, smp};
 use crate::task::scheduler::MAX_CPUS;
-use crate::tracing::providers::counters::TIMER_TICK_TOTAL;
+use crate::tracing::providers::counters::{TIMER_GATE_IPI_SENT, TIMER_TICK_TOTAL};
 
 /// The tick rate each CPU is programmed for, in Hz.
 const TICK_HZ: u64 = 1000 / crate::time::timer::MS_PER_TICK;
@@ -26,14 +31,24 @@ const TICK_HZ: u64 = 1000 / crate::time::timer::MS_PER_TICK;
 /// How far a CPU's measured rate may be from `TICK_HZ`, in parts per million.
 const RATE_PPM: u64 = 5000;
 
-/// How far a CPU's interrupt count may be from the expected count, in percent.
-const ARRIVAL_PERCENT: u64 = 10;
+/// How far the ticks a CPU took may be from the expected count: one tick of
+/// phase at each end of the window.
+const ARRIVAL_TICKS: u64 = 2;
 
-/// How long arrival is counted for, in milliseconds.
-const WINDOW_MS: u64 = 1000;
+/// How long each CPU's arrival window lasts, in milliseconds.
+const WINDOW_MS: u64 = 500;
+
+/// How long the census waits for the pinned windows to report.
+const COLLECT_MS: u64 = 5000;
 
 /// Each CPU's measured tick rate in millihertz; 0 until measured.
 static LOCAL_RATE_MILLIHZ: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+
+/// Each CPU's window: gate entries, IPIs sent to it, and the window's length
+/// in microseconds, published last (0 until the window has run).
+static WINDOW_ENTRIES: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+static WINDOW_IPIS: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+static WINDOW_US: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 
 /// Measure and record the executing CPU's tick rate. Called by `cpu_init`
 /// once the CPU's LAPIC timer is running.
@@ -46,52 +61,79 @@ pub fn record_local_rate(cpu: usize) {
     }
 }
 
-/// Start the census thread. Its report arrives `WINDOW_MS` later.
+/// Start the census thread. Its report arrives about a second later.
 pub fn start() {
     if let Err(error) = crate::task::kthread::kthread_run(run, "ktickcensus") {
         log::warn!("[timer] tick census not started: {:?}", error);
     }
 }
 
-fn run() {
-    let online = (smp::cpus_online() as usize).min(MAX_CPUS);
+/// One CPU's arrival window, on a thread pinned to `cpu`.
+fn window(cpu: usize) {
+    crate::per_cpu::preempt_disable();
+    x86_64::instructions::interrupts::enable();
     let tsc_hz = super::timer::frequency_hz();
-    let mut before = [0u64; MAX_CPUS];
-    for (cpu, count) in before.iter_mut().enumerate().take(online) {
-        *count = TIMER_TICK_TOTAL.get_cpu(cpu);
-    }
+    let entries = TIMER_TICK_TOTAL.get_cpu(cpu);
+    let ipis = TIMER_GATE_IPI_SENT.get_cpu(cpu);
     let start = super::timer::rdtsc();
     let deadline = start + tsc_hz * WINDOW_MS / 1000;
     while super::timer::rdtsc() < deadline {
-        crate::arch_halt_with_interrupts();
+        core::hint::spin_loop();
     }
     let elapsed = super::timer::rdtsc() - start;
-    let elapsed_us = elapsed * 1_000_000 / tsc_hz;
-    let expected = elapsed_us * TICK_HZ / 1_000_000;
+    WINDOW_ENTRIES[cpu].store(TIMER_TICK_TOTAL.get_cpu(cpu) - entries, Ordering::Relaxed);
+    WINDOW_IPIS[cpu].store(TIMER_GATE_IPI_SENT.get_cpu(cpu) - ipis, Ordering::Relaxed);
+    WINDOW_US[cpu].store((elapsed * 1_000_000 / tsc_hz).max(1), Ordering::Release);
+    crate::per_cpu::preempt_enable();
+}
+
+fn run() {
+    let online = (smp::cpus_online() as usize).min(MAX_CPUS);
+    let tsc_hz = super::timer::frequency_hz();
+    for cpu in 0..online {
+        let pinned = crate::task::kthread::kthread_run_on_cpu(move || window(cpu), "ktickwindow", cpu);
+        if let Err(error) = pinned {
+            log::warn!("[timer] cpu{} tick window not started: {:?}", cpu, error);
+        }
+    }
+    let deadline = super::timer::rdtsc() + tsc_hz * COLLECT_MS / 1000;
+    while (0..online).any(|cpu| WINDOW_US[cpu].load(Ordering::Acquire) == 0)
+        && super::timer::rdtsc() < deadline
+    {
+        crate::arch_halt_with_interrupts();
+    }
 
     let mut rates_agree = true;
     let mut every_cpu_ticked = true;
-    for (cpu, &first) in before.iter().enumerate().take(online) {
-        let ticks = TIMER_TICK_TOTAL.get_cpu(cpu) - first;
-        let arrived = ticks.abs_diff(expected) * 100 <= expected * ARRIVAL_PERCENT;
+    for cpu in 0..online {
+        let elapsed_us = WINDOW_US[cpu].load(Ordering::Acquire);
+        let entries = WINDOW_ENTRIES[cpu].load(Ordering::Relaxed);
+        let ipis = WINDOW_IPIS[cpu].load(Ordering::Relaxed);
+        let expected = elapsed_us * TICK_HZ / 1_000_000;
+        let fewest = entries.saturating_sub(ipis);
+        let arrived = elapsed_us != 0
+            && fewest + ARRIVAL_TICKS >= expected
+            && entries <= expected + ARRIVAL_TICKS + ipis;
         every_cpu_ticked &= arrived;
         let rate = LOCAL_RATE_MILLIHZ[cpu].load(Ordering::Acquire);
         let measured = if apic::active() {
-            rate != 0
-                && super::tsc_rate::ppm_apart(rate, TICK_HZ * 1000) <= RATE_PPM
+            rate != 0 && super::tsc_rate::ppm_apart(rate, TICK_HZ * 1000) <= RATE_PPM
         } else {
             arrived
         };
         rates_agree &= measured;
         log::info!(
-            "[timer] cpu{} apic_id={} rate={}.{:03} Hz ticks={} in {} ms (expected {})",
+            "[timer] cpu{} apic_id={} rate={}.{:03} Hz ticks={}..{} in {} us (expected {}; gate entries {}, IPIs sent {})",
             cpu,
             smp::cpu_apic_id(cpu).unwrap_or(u32::MAX),
             rate / 1000,
             rate % 1000,
-            ticks,
-            elapsed_us / 1000,
-            expected
+            fewest,
+            entries,
+            elapsed_us,
+            expected,
+            entries,
+            ipis
         );
     }
     if rates_agree && every_cpu_ticked {

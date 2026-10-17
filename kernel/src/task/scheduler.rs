@@ -1967,6 +1967,7 @@ fn send_vector_x86(cpu: usize, vector: u8) {
         0,
         (((cpu as u32) & 0xFFFF) << 16) | ((current_cpu_id_raw() as u32) & 0xFFFF),
     );
+    crate::tracing::providers::counters::TIMER_GATE_IPI_SENT.increment_cpu(cpu);
     let _ = apic::send_ipi(apic_id, apic::Ipi::Fixed(vector));
 }
 
