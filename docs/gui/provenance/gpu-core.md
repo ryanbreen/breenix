@@ -500,14 +500,16 @@ booted in a worktree whose Rust fork was set up with `scripts/rust-fork.sh sync`
 `taskpolicy -b cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64`,
 then
 `BREENIX_QUIET=0 "$CHECKOUT/scripts/boot-interactive.sh" --no-build --mode suite --suite gpu --gpu-gl --display --serial-log "$RUN/serial.txt" --gate-timeout 900 < /dev/null`.
-CHECKOUT is the absolute checkout of the source commit and RUN a fresh absolute output directory. Both
-records report `display:true` and dirty 0, and both run folders keep `host-renderer.json`; the launcher
-accepted the attestation, `ANGLE Metal Renderer`, with 170 records.
+CHECKOUT is the absolute checkout of the source commit and RUN a fresh absolute output directory. Each
+record reports `display:true` and dirty 0, and each run folder keeps `host-renderer.json`; the launcher
+accepted the attestation, `ANGLE Metal Renderer`, with 170 records for the first two runs and 178 for the
+third, whose added case steps create more contexts.
 
 | Source commit and Vigil run | Producer output |
 |---|---|
 | `309ade3b02459d78daf6677e3e5ebbf6104acc85`, `20261017T083611Z-qemu` | `SUITE gpu DONE passed=71 failed=99 skipped=0 total=170`: device 12/12, submit 22/22, readback 19/19, textures 17/19, `pipelines/copy` PASS. `textures/quota FAIL … RESOURCE_CREATE of a 4096x4096 texture in format 0 returned ENOMEM`; `textures/readback-uploaded FAIL … CONTEXT_CREATE returned ENOMEM` |
 | `b71c5aa7a39993f26c3384e3a06684c46e833457`, `20261017T084718Z-qemu` | `SUITE gpu DONE passed=71 failed=99 skipped=0 total=170`: device 12/12, submit 22/22, readback 19/19, textures 17/19, `pipelines/copy` PASS. `textures/quota FAIL … the case crashed: killed by signal 11`; `textures/fault-skip-upload FAIL … CONTEXT_CREATE returned ENOMEM` |
+| `9afc54cded748521ec09e9478fb0a779d65d08e0`, `20261017T112047Z-qemu` | `SUITE gpu DONE passed=73 failed=97 skipped=0 total=170`: device 12/12, submit 22/22, readback 19/19, textures 19/19, `pipelines/copy` PASS. `SUITE gpu VALUE textures/upload-visibility hung-upload-ms=2000ms`, `reset-ms=4006ms`; `SUITE gpu CASE textures/upload-visibility PASS ms=4116`; `SUITE gpu CASE textures/quota PASS ms=62` |
 
 Facts the passing cases establish on the device, beyond B8's: TRANSFER_TO_HOST_3D with U's layout writes
 the box at `offset` = y × pitch + x × bytes per pixel with the 256-byte-aligned pitch as stride, including
@@ -520,8 +522,19 @@ texture for overlapping rectangles (`copy-region`, `copy-overlap`); a submission
 evidence that commands execute in context order; points 29 and 30 are caught only by the
 exact comparison and by reading the texture back (`fault-wrong-texture`, `fault-skip-upload`).
 
-Both failures come from one platform limit, recorded as an open finding: ARM64's frame allocator spans
-0x4400_0000 to 0x5000_0000 (`[boot] Initializing memory management (0x44000000-0x50000000)`), 192 MiB for the
-whole kernel, so the 192 MiB per-process quota is reached only by exhausting the kernel's frames, and the failed
-case's textures then starve the next case until the reclamation sweep. These runs are G3 evidence, not a green
-full suite: the G4–G8 checks are still unwritten.
+The failed-upload experiment (ruling 25) is `upload-visibility`'s last part, from the third run. Point 31 with
+parameter 1, armed before a submission of another context, stops the kernel taking the device's answers once that
+submission's answer arrives, which the case sees as the point's FIRED count rising. A whole-texture `UPLOAD` then
+sends its TRANSFER_TO_HOST_3D, and a 30 ms ITIMER_REAL signal interrupts its wait: EINTR. A second whole-texture
+`UPLOAD` is ended by the watchdog: EIO after `hung-upload-ms=2000ms`. After each, a submission of a third,
+live context naming the texture as a `COPY` source or a `DRAW_SAMPLED` texture is refused with code 14
+(`INVALID_TARGET`), so a sent and failed upload leaves its texture invalid on this device. The stall
+ends in the watchdog's device reset (`reset-ms=4006ms`), after which a new context draws and reads back exactly.
+Readback of either texture cannot show the invalid state in that window: it waits for the outstanding transfer,
+which only the reset ends, and the reset marks the texture lost.
+
+The first two runs' quota failures came from ARM64's frame allocator then spanning 0x4400_0000 to 0x5000_0000
+(`[boot] Initializing memory management (0x44000000-0x50000000)`), 192 MiB for the whole kernel, equal to the
+per-process quota, so the failed case's textures starved the next case until the reclamation sweep. With the frame
+pool taken from the firmware's memory description (ruling 23, #1704), `textures/quota` passes in the third run.
+These runs are G3 evidence, not a green full suite: the G4–G8 checks are still unwritten.
