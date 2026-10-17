@@ -7912,7 +7912,10 @@ static TERMINATED_UNRECLAIMED: AtomicU64 = AtomicU64::new(0);
 
 /// Scratch probe (#1712): terminated threads the last x86 harvest kept.
 pub fn probe_terminated_unreclaimed() -> u64 {
-    TERMINATED_UNRECLAIMED.load(Ordering::Acquire)
+    #[cfg(target_arch = "x86_64")]
+    return TERMINATED_UNRECLAIMED.load(Ordering::Acquire);
+    #[cfg(not(target_arch = "x86_64"))]
+    0
 }
 
 /// Scratch probe (#1712): threads the scheduler holds.
