@@ -138,18 +138,15 @@ fn marker(seq: u32, tick: u32, ms: u32, saved: u32, stranded: u32, tids: &str) -
     )
 }
 
-/// The ten `DispatchLogFact` fields PR-1 of the critical-path logging drain
-/// appends after `ledger_overflow`, in the order
+/// The five `DispatchLogFact` fields the census line appends after
+/// `ledger_overflow`, in the order
 /// `kernel/src/task/dispatch_strand_census.rs`'s `FACT_FIELD_NAMES` prints
 /// them.
-const FACT_TAIL: &str = ":save_no_thread=1:save_no_proc=1:save_no_pm=1\
-                         :sig_pending_blocked=1:sig_ctx_blocked=1\
-                         :sig_delivered_blocked=1:idle_no_stack=1\
-                         :kthread_no_info=1:user_no_kstack=1\
-                         :sig_deliverable_user=1";
+const FACT_TAIL: &str = ":save_no_thread=1:idle_no_stack=1:kthread_no_info=1\
+                         :user_no_kstack=1:sig_deliverable_user=1";
 
-/// The same snapshot in the EIGHTEEN-field shape a kernel built after PR-1
-/// emits.
+/// The same snapshot in the thirteen-field shape a kernel that appends the
+/// fact fields emits.
 fn marker_with_facts(
     seq: u32,
     tick: u32,
@@ -876,43 +873,44 @@ fn a_census_that_exits_zero_without_a_summary_line_is_not_a_pass() {
     );
 }
 
-/// PR-1 of the critical-path logging drain appends ten `DispatchLogFact`
-/// fields to the census line. This tool computes the STRAND verdict, which
-/// those 10 fields do not contribute to, so it accepts them and keeps reading
-/// the 8 fields it does own by name. Without the widening the whole
-/// eighteen-field population scores malformed and each post-PR-1 boot reports
-/// "census unavailable"; this test is what says the widening is load-bearing
-/// and that the 8 readings survive it unchanged.
+/// The kernel appends five `DispatchLogFact` fields to the census line
+/// (PR-1 of the critical-path logging drain added ten; #1635 took five of them
+/// away with the dispatch's process-manager dependency). This tool computes
+/// the STRAND verdict, which those fields do not contribute to, so it accepts
+/// them and keeps reading the 8 fields it does own by name. Without the
+/// widening the whole widened population scores malformed and each such boot
+/// reports "census unavailable"; this test is what says the widening is
+/// load-bearing and that the 8 readings survive it unchanged.
 #[test]
-fn the_census_reads_the_eighteen_field_line_exactly_as_the_eight_field_one() {
+fn the_census_reads_the_widened_line_exactly_as_the_eight_field_one() {
     let eight = format!(
         "{}\n{}",
         marker(1, 200, 1000, 11, 0, "-"),
         tail_pass_with(&marker(2, 400, 2000, 11, 0, "-"))
     );
-    let eighteen = format!(
+    let widened = format!(
         "{}\n{}",
         marker_with_facts(1, 200, 1000, 11, 0, "-"),
         tail_pass_with(&marker_with_facts(2, 400, 2000, 11, 0, "-"))
     );
 
     let eight_fixture = SerialFixture::new(&eight, "");
-    let eighteen_fixture = SerialFixture::new(&eighteen, "");
+    let widened_fixture = SerialFixture::new(&widened, "");
     let eight_output = eight_fixture.run(Some("10"));
-    let eighteen_output = eighteen_fixture.run(Some("10"));
+    let widened_output = widened_fixture.run(Some("10"));
 
     let eight_text = output_text(&eight_output);
-    let eighteen_text = output_text(&eighteen_output);
+    let widened_text = output_text(&widened_output);
     assert!(
-        eighteen_output.status.success(),
-        "the eighteen-field census line was not accepted: {eighteen_text}"
+        widened_output.status.success(),
+        "the widened census line was not accepted: {widened_text}"
     );
     assert!(
-        !eighteen_text.contains("malformed marker"),
-        "the appended fact fields were scored malformed: {eighteen_text}"
+        !widened_text.contains("malformed marker"),
+        "the appended fact fields were scored malformed: {widened_text}"
     );
     assert_eq!(
-        eight_text, eighteen_text,
+        eight_text, widened_text,
         "the appended fact fields changed a reading this tool owns"
     );
 }

@@ -1779,7 +1779,10 @@ pub(crate) fn resolve_page(
     if let Some((_, flags)) = pt.get_page_info(page) {
         if entry_permits(flags, access) {
             // Installed by a racing fault after this one was taken.
-            crate::syscall::memory_common::flush_tlb(page.start_address());
+            crate::memory::tlb::flush_user_page(
+                pt.level_4_frame().start_address().as_u64(),
+                page.start_address(),
+            );
             return FaultOutcome::Resolved;
         }
         return FaultOutcome::NotFile;

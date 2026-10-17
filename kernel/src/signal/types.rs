@@ -245,7 +245,7 @@ impl SigInfo {
     }
 
     /// This timer siginfo with `overrun` as its si_overrun.
-    fn with_overrun(self, overrun: i32) -> Self {
+    pub(crate) fn with_overrun(self, overrun: i32) -> Self {
         Self { fields: [self.fields[0] & 0xffff_ffff | (overrun as u32 as u64) << 32, self.fields[1]], ..self }
     }
 
@@ -337,12 +337,324 @@ pub struct ThreadSignals {
     /// its scan. Zero when there is none.
     pub quiet_wait_query: AtomicU64,
     pub quiet_wait_mutations: AtomicU64,
+    /// The PROCESS_MANAGER-owned signal state of this thread's row, copied
+    /// where a wait loop or an interrupt return can read it without that lock.
+    pub mirror: SignalMirror,
+    /// Standard signals kill and tgkill generated for this thread without
+    /// PROCESS_MANAGER (#1650), not yet queued on its row
+    /// (`SignalState::collect_timer_signals`), as `timer_pending` holds the
+    /// timers'. Each has its sender in `sent_info` (si_pid, si_uid), and a
+    /// bit in `sent_to_thread` when tgkill named this thread.
+    pub sent: AtomicU64,
+    /// Signals a sender is filling in (`post_sent`).
+    sent_claim: AtomicU64,
+    sent_to_thread: AtomicU64,
+    sent_info: [AtomicU64; 32],
+    /// The descriptor table of this thread's row, as the row last published
+    /// it (`Process::publish_fd_table`): what read and write look a
+    /// descriptor up in without PROCESS_MANAGER (#1650).
+    pub fd_table: spin::Mutex<Option<crate::ipc::fd::FdTableRef>>,
+}
+
+/// Lock-free copies, which the row's `SignalState` keeps current under
+/// PROCESS_MANAGER, of what deciding on and delivering a signal reads: the
+/// pending and ignored sets, whether the process is stopped, the
+/// dispositions and the alternate stack. A thread whose signal comes due
+/// while the CPU holding PROCESS_MANAGER has stopped is then not held up
+/// behind it (#1635).
+pub struct SignalMirror {
+    pending: AtomicU64,
+    ignored: AtomicU64,
+    job_stopped: AtomicBool,
+    /// Odd while the dispositions or the alternate stack are being rewritten.
+    seq: AtomicU64,
+    /// Per signal: handler, flags, restorer, mask.
+    actions: [[AtomicU64; 4]; 64],
+    /// Base, size, flags.
+    alt_stack: [AtomicU64; 3],
+    /// The row's identity as a signal sender and target (`Identity`): real
+    /// and effective user ID, saved set-user-ID, session, thread group,
+    /// process group; and whether it is published. Unpublished, a signal
+    /// sender takes the process-manager path.
+    identity: [AtomicU64; 3],
+}
+
+/// What a signal's permission check (`kill`'s, POSIX) and its siginfo read of
+/// a process: published by the row under PROCESS_MANAGER whenever one of
+/// them changes (`Process::publish_identity`), read without it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Identity {
+    pub uid: u32,
+    pub euid: u32,
+    pub suid: u32,
+    pub sid: u32,
+    pub tgid: u32,
+    pub pgid: u32,
+}
+
+impl Default for SignalMirror {
+    fn default() -> Self {
+        Self {
+            pending: AtomicU64::new(0),
+            ignored: AtomicU64::new(0),
+            job_stopped: AtomicBool::new(false),
+            seq: AtomicU64::new(0),
+            actions: [const { [const { AtomicU64::new(0) }; 4] }; 64],
+            alt_stack: [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(SS_DISABLE as u64)],
+            identity: [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)],
+        }
+    }
+}
+
+impl SignalMirror {
+    /// The row's pending set (`SignalState::pending`).
+    pub fn pending(&self) -> u64 {
+        self.pending.load(Ordering::Acquire)
+    }
+
+    /// The signals the row's dispositions ignore.
+    pub fn ignored(&self) -> u64 {
+        self.ignored.load(Ordering::Acquire)
+    }
+
+    /// Whether the process is stopped (`job.stopped`).
+    pub fn job_stopped(&self) -> bool {
+        self.job_stopped.load(Ordering::Acquire)
+    }
+
+    /// Record whether the process is stopped. PM held.
+    pub fn set_job_stopped(&self, stopped: bool) {
+        self.job_stopped.store(stopped, Ordering::Release);
+    }
+
+    /// The action for signal `sig`, as `SignalState::get_handler` returns it.
+    /// None while the row's PM holder is rewriting the dispositions
+    /// (`try_read`): the caller reads the row instead.
+    pub fn action(&self, sig: u32) -> Option<SignalAction> {
+        if !is_valid_signal(sig) {
+            return Some(SignalAction::default());
+        }
+        let slot = &self.actions[(sig - 1) as usize];
+        self.try_read(|| SignalAction {
+            handler: slot[0].load(Ordering::Relaxed),
+            flags: slot[1].load(Ordering::Relaxed),
+            restorer: slot[2].load(Ordering::Relaxed),
+            mask: slot[3].load(Ordering::Relaxed),
+        })
+    }
+
+    /// How many times the dispositions and the alternate stack have been
+    /// rewritten, doubled; None while the row's PM holder is rewriting them.
+    /// A reader that reads the same count again saw no rewrite in between.
+    pub fn generation(&self) -> Option<u64> {
+        let seq = self.seq.load(Ordering::SeqCst);
+        (seq & 1 == 0).then_some(seq)
+    }
+
+    /// The row's identity, None while it is unpublished or being rewritten.
+    pub fn identity(&self) -> Option<Identity> {
+        let words = self.try_read(|| {
+            [
+                self.identity[0].load(Ordering::Relaxed),
+                self.identity[1].load(Ordering::Relaxed),
+                self.identity[2].load(Ordering::Relaxed),
+            ]
+        })?;
+        (words[2] & 1 << 63 != 0).then(|| Identity {
+            uid: words[0] as u32,
+            euid: (words[0] >> 32) as u32,
+            suid: words[1] as u32,
+            sid: (words[1] >> 32) as u32,
+            tgid: words[2] as u32,
+            pgid: (words[2] >> 32) as u32 & 0x7fff_ffff,
+        })
+    }
+
+    /// Publish the row's identity. PM held: one writer.
+    pub fn set_identity(&self, identity: &Identity) {
+        self.write(|| {
+            self.identity[0].store(identity.uid as u64 | (identity.euid as u64) << 32, Ordering::Relaxed);
+            self.identity[1].store(identity.suid as u64 | (identity.sid as u64) << 32, Ordering::Relaxed);
+            self.identity[2].store(
+                identity.tgid as u64 | (identity.pgid as u64 & 0x7fff_ffff) << 32 | 1 << 63,
+                Ordering::Relaxed,
+            );
+        });
+    }
+
+    /// The row's alternate stack. None while it is being rewritten.
+    pub fn alt_stack(&self) -> Option<AltStack> {
+        self.try_read(|| AltStack {
+            base: self.alt_stack[0].load(Ordering::Relaxed),
+            size: self.alt_stack[1].load(Ordering::Relaxed) as usize,
+            flags: self.alt_stack[2].load(Ordering::Relaxed) as u32,
+        })
+    }
+
+    /// A consistent read of the dispositions or the alternate stack, or None
+    /// when the single writer, the row's PM holder, is still rewriting them
+    /// after `READ_ATTEMPTS` tries. A writer runs a handful of stores, but
+    /// its vCPU can stop in the middle of them, and a reader on an interrupt
+    /// return that waited for it would be held for as long as the holder is
+    /// (#1635): a reader that gets None declines and takes the PM path.
+    fn try_read<T>(&self, read: impl Fn() -> T) -> Option<T> {
+        const READ_ATTEMPTS: usize = 64;
+        for _ in 0..READ_ATTEMPTS {
+            let before = self.seq.load(Ordering::Acquire);
+            if before & 1 != 0 {
+                core::hint::spin_loop();
+                continue;
+            }
+            let value = read();
+            core::sync::atomic::fence(Ordering::Acquire);
+            if self.seq.load(Ordering::Relaxed) == before {
+                return Some(value);
+            }
+        }
+        None
+    }
+
+    /// Rewrite the dispositions or the alternate stack. PM held: one writer.
+    fn write(&self, write: impl FnOnce()) {
+        self.seq.fetch_add(1, Ordering::AcqRel);
+        core::sync::atomic::fence(Ordering::Release);
+        write();
+        self.seq.fetch_add(1, Ordering::Release);
+    }
+
+    fn set_action(&self, sig: u32, action: &SignalAction) {
+        let slot = &self.actions[(sig - 1) as usize];
+        self.write(|| {
+            slot[0].store(action.handler, Ordering::Relaxed);
+            slot[1].store(action.flags, Ordering::Relaxed);
+            slot[2].store(action.restorer, Ordering::Relaxed);
+            slot[3].store(action.mask, Ordering::Relaxed);
+        });
+    }
+
+    fn set_alt_stack(&self, alt: &AltStack) {
+        self.write(|| {
+            self.alt_stack[0].store(alt.base, Ordering::Relaxed);
+            self.alt_stack[1].store(alt.size as u64, Ordering::Relaxed);
+            self.alt_stack[2].store(u64::from(alt.flags), Ordering::Relaxed);
+        });
+    }
+
+    /// Whether a signal this thread can take is pending, from the copies:
+    /// `SignalState::has_deliverable_signals`.
+    pub fn interrupting(&self, thread: &ThreadSignals) -> bool {
+        self.deliverable(thread) != 0
+    }
+
+    /// The pending, unblocked, unignored signals, timer signals not yet
+    /// collected included: `SignalState::pending_set` less the blocked and
+    /// ignored ones.
+    pub fn deliverable(&self, thread: &ThreadSignals) -> u64 {
+        let ignored = self.ignored();
+        let expired = thread.timer_pending.load(Ordering::Acquire)
+            | thread.posix_pending.load(Ordering::Acquire)
+            | thread.sent.load(Ordering::Acquire);
+        (self.pending() | (expired & !ignored)) & !thread.blocked.load(Ordering::Relaxed) & !ignored
+    }
+
+    /// The signal delivery would take next, a fault's first and then the
+    /// lowest number: `SignalState::next_deliverable_signal`.
+    pub fn next_deliverable(&self, thread: &ThreadSignals) -> Option<u32> {
+        let mut deliverable = self.deliverable(thread);
+        if deliverable == 0 {
+            return None;
+        }
+        if deliverable & SYNCHRONOUS_SIGNALS != 0 {
+            deliverable &= SYNCHRONOUS_SIGNALS;
+        }
+        Some(deliverable.trailing_zeros() + 1)
+    }
+
+    /// Whether a restartable wait this thread's next deliverable signal
+    /// interrupts is resumed: `SignalState::interruption_restarts`. None
+    /// while the dispositions are being rewritten.
+    pub fn restarts(&self, thread: &ThreadSignals) -> Option<bool> {
+        match self.next_deliverable(thread) {
+            Some(sig) => {
+                let action = self.action(sig)?;
+                Some(!action.is_handler() || action.flags & SA_RESTART != 0)
+            }
+            None => Some(true),
+        }
+    }
+
+    /// Whether a stop is in force or a stop signal is pending: what makes a
+    /// wait or a return to user mode hold the thread, which reads the row.
+    pub fn stop_possible(&self) -> bool {
+        self.job_stopped() || self.pending() & STOP_SIGNALS != 0
+    }
 }
 
 impl ThreadSignals {
+    /// Generate standard signal `sig`, from the process `pid` of real user
+    /// `uid`, for this thread without PROCESS_MANAGER (`sent`): sent to the
+    /// process, or with `to_thread` to this thread (tkill, tgkill). A signal
+    /// already pending here, on the row, in `sent` or from an interval timer
+    /// (`timer_pending`), is not generated again and keeps its first
+    /// instance, as a standard signal does. Returns whether it generated it.
+    pub fn post_sent(&self, sig: u32, pid: u32, uid: u32, to_thread: bool) -> bool {
+        let bit = sig_mask(sig);
+        if is_realtime(sig) || !is_valid_signal(sig) || sig > 32 {
+            return false;
+        }
+        if (self.mirror.pending() | self.sent.load(Ordering::Acquire) | self.timer_pending.load(Ordering::Acquire))
+            & bit
+            != 0
+            || self.sent_claim.fetch_or(bit, Ordering::AcqRel) & bit != 0
+        {
+            return false;
+        }
+        let posted = self.sent.load(Ordering::Acquire) & bit == 0;
+        if posted {
+            self.sent_info[(sig - 1) as usize].store(pid as u64 | (uid as u64) << 32, Ordering::Relaxed);
+            if to_thread {
+                self.sent_to_thread.fetch_or(bit, Ordering::Relaxed);
+            } else {
+                self.sent_to_thread.fetch_and(!bit, Ordering::Relaxed);
+            }
+            // Acquire too: a discard that cleared `sent` before this post
+            // (`SignalState::set_handler`) is then visible to the sender's
+            // check that the dispositions did not change meanwhile.
+            self.sent.fetch_or(bit, Ordering::AcqRel);
+            self.return_work.store(true, Ordering::Release);
+        }
+        self.sent_claim.fetch_and(!bit, Ordering::Release);
+        posted
+    }
+
+    /// Take `sig` out of `sent`: its siginfo, and whether it was sent to the
+    /// process. None when it is not there, or another taker had it first.
+    /// A sender does not refill a signal's information while it is in
+    /// `sent`, so what is read before the take is that signal's.
+    pub fn take_sent(&self, sig: u32) -> Option<(SigInfo, bool)> {
+        let bit = sig_mask(sig);
+        if !is_valid_signal(sig) || sig > 32 || self.sent.load(Ordering::Acquire) & bit == 0 {
+            return None;
+        }
+        let word = self.sent_info[(sig - 1) as usize].load(Ordering::Acquire);
+        let to_thread = self.sent_to_thread.load(Ordering::Acquire) & bit != 0;
+        if self.sent.fetch_and(!bit, Ordering::AcqRel) & bit == 0 {
+            return None;
+        }
+        let code = if to_thread { super::constants::SI_TKILL } else { super::constants::SI_USER };
+        Some((SigInfo::sender(code, word as u32, (word >> 32) as u32), !to_thread))
+    }
+
+    /// Put back a signal `take_sent` took and could not hand over.
+    pub fn restore_sent(&self, sig: u32, info: &SigInfo, process: bool) {
+        let word = info.fields[0];
+        let _ = self.post_sent(sig, word as u32, (word >> 32) as u32, !process);
+    }
+
     pub fn needs_return_check(&self) -> bool {
         self.return_work.load(Ordering::Acquire)
             || self.timer_pending.load(Ordering::Acquire) != 0
+            || self.sent.load(Ordering::Acquire) != 0
             || self.posix_pending.load(Ordering::Acquire) != 0
             || self.posix_retry.load(Ordering::Acquire)
     }
@@ -385,8 +697,9 @@ impl ThreadSignals {
 /// stored inline.
 #[derive(Clone)]
 pub struct SignalState {
-    /// Pending signals bitmap (signals waiting to be delivered)
-    pub pending: u64,
+    /// Pending signals bitmap (signals waiting to be delivered). Every change
+    /// is published to the thread's `mirror` (`sync_mirror`).
+    pending: u64,
     /// Which pending bits are process-directed and may move to another thread.
     pub process_pending: u64,
     /// The executing thread's masks and wait state, shared with its scheduler row.
@@ -396,8 +709,9 @@ pub struct SignalState {
     handlers: SlabBox<SignalTable>,
     /// Cached disposition mask, maintained alongside the private handler table.
     ignored: u64,
-    /// Alternate signal stack configuration
-    pub alt_stack: AltStack,
+    /// Alternate signal stack configuration, published to the thread's
+    /// `mirror` by `set_alt_stack`.
+    alt_stack: AltStack,
     /// Signals whose SA_RESETHAND action delivery reset in this row and not
     /// yet in the other rows of its thread group (`mark_group_reset`).
     group_resets: u64,
@@ -455,7 +769,7 @@ impl Default for SignalState {
         } else {
             SlabBox::from_box(alloc::boxed::Box::new(SignalTable::new()))
         };
-        SignalState {
+        let state = SignalState {
             pending: 0,
             process_pending: 0,
             thread: Arc::new(ThreadSignals::with_mask(0)),
@@ -464,7 +778,9 @@ impl Default for SignalState {
             alt_stack: AltStack::default(),
             group_resets: 0,
             queued: Vec::new(),
-        }
+        };
+        state.publish_mirror();
+        state
     }
 }
 
@@ -473,16 +789,53 @@ impl SignalState {
         self.thread.blocked.load(Ordering::Relaxed)
     }
 
+    /// The pending set: signals waiting to be delivered.
+    pub fn pending(&self) -> u64 {
+        self.pending
+    }
+
+    /// The alternate signal stack.
+    pub fn alt_stack(&self) -> &AltStack {
+        &self.alt_stack
+    }
+
+    /// Configure the alternate signal stack.
+    pub fn set_alt_stack(&mut self, alt: AltStack) {
+        self.alt_stack = alt;
+        self.thread.mirror.set_alt_stack(&alt);
+    }
+
+    /// Publish the pending and ignored sets to the thread's mirror, after
+    /// either changed.
+    fn sync_mirror(&self) {
+        self.thread.mirror.pending.store(self.pending, Ordering::Release);
+        self.thread.mirror.ignored.store(self.ignored, Ordering::Release);
+    }
+
+    /// Publish all of the mirrored state, for a newly made state.
+    fn publish_mirror(&self) {
+        self.sync_mirror();
+        for sig in 1..=NSIG {
+            self.thread.mirror.set_action(sig, &self.handlers.actions[(sig - 1) as usize]);
+        }
+        self.thread.mirror.set_alt_stack(&self.alt_stack);
+    }
+
     pub fn pending_set(&self) -> u64 {
         let expired = self.thread.timer_pending.load(Ordering::Acquire)
-            | self.thread.posix_pending.load(Ordering::Acquire);
+            | self.thread.posix_pending.load(Ordering::Acquire)
+            | self.thread.sent.load(Ordering::Acquire);
         self.pending | (expired & !self.ignored)
     }
 
     /// Queue the signals of the process's timers the scheduler expired with
     /// this row's thread as recipient: the interval timers' (`timers`, which
     /// is the process's), and the POSIX timers' due here, in expiry order.
+    /// The kills generated without PROCESS_MANAGER go first: a kill does not
+    /// generate a signal an interval timer already has due (`post_sent`), so
+    /// when both have one, the kill's came first and keeps its siginfo.
     pub fn collect_timer_signals(&mut self, timers: &IntervalTimers) {
+        self.collect_sent_signals();
         let mut pending = self.thread.timer_pending.swap(0, Ordering::AcqRel);
         while pending != 0 {
             let sig = pending.trailing_zeros() + 1;
@@ -502,6 +855,20 @@ impl SignalState {
                     break;
                 };
                 self.queue_timer_signal(sig, info, process, timer);
+            }
+        }
+    }
+
+    /// Queue the standard signals kill and tgkill generated for this row's
+    /// thread without PROCESS_MANAGER (`ThreadSignals::sent`), with their
+    /// senders.
+    pub fn collect_sent_signals(&mut self) {
+        let mut sent = self.thread.sent.load(Ordering::Acquire);
+        while sent != 0 {
+            let sig = sent.trailing_zeros() + 1;
+            sent &= !sig_mask(sig);
+            if let Some((info, process)) = self.thread.take_sent(sig) {
+                self.generate(sig, info, process);
             }
         }
     }
@@ -533,6 +900,7 @@ impl SignalState {
         if process {
             self.process_pending |= bit;
         }
+        self.sync_mirror();
     }
 
     /// Before an instance of standard signal `sig` is queued: an ordinary
@@ -574,6 +942,7 @@ impl SignalState {
                 self.process_pending &= !bit;
             }
         }
+        self.sync_mirror();
     }
 
     /// Create a new signal state with default handlers
@@ -712,6 +1081,7 @@ impl SignalState {
         if process {
             self.process_pending |= bit;
         }
+        self.sync_mirror();
         true
     }
 
@@ -738,6 +1108,7 @@ impl SignalState {
         if process {
             self.process_pending |= bit;
         }
+        self.sync_mirror();
     }
 
     /// The siginfo delivery hands the handler of `sig`: a pending standard
@@ -764,6 +1135,9 @@ impl SignalState {
     /// siginfo, which `pending_info` also reports until the next take. A
     /// realtime signal with more instances queued stays pending.
     pub fn take(&mut self, sig: u32) -> SigInfo {
+        if let Some((info, process)) = self.thread.take_sent(sig) {
+            self.generate(sig, info, process);
+        }
         if let Some(at) = self.queued.iter().position(|i| i.sig == sig) {
             let instance = self.queued.remove(at);
             let info = match instance.timer {
@@ -828,6 +1202,7 @@ impl SignalState {
         self.pending |= sig_mask(sig);
         self.thread.return_work.store(true, Ordering::Release);
         self.process_pending |= sig_mask(sig);
+        self.sync_mirror();
     }
 
     /// After an instance of `sig` was taken off the queue: `sig` stays
@@ -866,7 +1241,9 @@ impl SignalState {
         self.pending &= !mask;
         self.process_pending &= !mask;
         self.thread.timer_pending.fetch_and(!mask, Ordering::AcqRel);
+        self.thread.sent.fetch_and(!mask, Ordering::AcqRel);
         self.drop_instances(|i| sig_mask(i.sig) & mask != 0);
+        self.sync_mirror();
     }
 
     /// Remove the queued instances `doomed` selects, telling the timers of
@@ -930,16 +1307,19 @@ impl SignalState {
         if is_valid_signal(sig) && sig_mask(sig) & UNCATCHABLE_SIGNALS == 0 {
             let bit = sig_mask(sig);
             self.handlers.actions[(sig - 1) as usize] = action;
+            self.thread.mirror.set_action(sig, &action);
             if action.is_ignore() || (action.is_default() && DEFAULT_IGNORED_SIGNALS & bit != 0) {
                 self.ignored |= bit;
                 // POSIX 2.4.3: installing ignore discards a pending signal,
                 // whether blocked or unblocked.
                 self.pending &= !bit;
                 self.process_pending &= !bit;
+                self.thread.sent.fetch_and(!bit, Ordering::AcqRel);
                 self.drop_instances(|i| i.sig == sig);
             } else {
                 self.ignored &= !bit;
             }
+            self.sync_mirror();
         }
     }
 
@@ -974,7 +1354,7 @@ impl SignalState {
     /// Pending signals are NOT inherited, but handlers, mask, and alt stack are
     #[allow(dead_code)] // Will be used when fork() implementation is complete
     pub fn fork(&self) -> Self {
-        SignalState {
+        let state = SignalState {
             pending: 0,
             process_pending: 0, // Child starts with no pending signals
             thread: Arc::new(ThreadSignals::with_mask(self.blocked())),
@@ -983,7 +1363,9 @@ impl SignalState {
             alt_stack: self.alt_stack, // Alt stack is inherited per POSIX
             group_resets: 0,
             queued: Vec::new(),
-        }
+        };
+        state.publish_mirror();
+        state
     }
 
     /// Record that delivery reset `sig`'s action to SIG_DFL in this row for
@@ -1004,10 +1386,9 @@ impl SignalState {
     /// thread's dispositions and mask, nothing pending and no alternate stack
     /// (POSIX pthread_create).
     pub fn new_thread(&self) -> Self {
-        SignalState {
-            alt_stack: AltStack::default(),
-            ..self.fork()
-        }
+        let mut state = self.fork();
+        state.set_alt_stack(AltStack::default());
+        state
     }
 
     /// Reset signal handlers to default after exec
@@ -1022,7 +1403,7 @@ impl SignalState {
     /// The blocked mask and the entire pending set survive exec, including a
     /// SIGKILL queued while the old image was reading from ext2.
     pub fn exec_reset(&mut self) {
-        self.alt_stack = AltStack::default();
+        self.set_alt_stack(AltStack::default());
         for sig in 1..=NSIG {
             if self.get_handler(sig).is_handler() {
                 self.set_handler(sig, SignalAction::default());
@@ -1370,7 +1751,27 @@ impl IntervalTimer {
         old
     }
 
+    /// Expire ITIMER_REAL when `now` (monotonic) has reached it. A periodic
+    /// one keeps its phase and coalesces expirations it missed into this one,
+    /// as Linux restarts it with hrtimer_forward.
     pub fn expire(&self, now: u64) -> bool {
+        self.expire_with(now, |deadline, interval| {
+            // Preserve the periodic phase, coalescing missed expirations.
+            now.saturating_add(interval - (now - deadline) % interval)
+        })
+    }
+
+    /// Expire ITIMER_VIRTUAL or ITIMER_PROF when `now`, the CPU time it
+    /// counts, has reached it. A periodic one reloads by one interval, as
+    /// Linux's check_cpu_itimer does, so CPU time charged in one step -- a
+    /// vCPU the host stopped while the thread ran on it is charged as the
+    /// thread's time -- fires the periods it covered at the next checks
+    /// instead of losing all but one.
+    pub fn expire_cpu(&self, now: u64) -> bool {
+        self.expire_with(now, |deadline, interval| deadline.saturating_add(interval))
+    }
+
+    fn expire_with(&self, now: u64, reload: impl FnOnce(u64, u64) -> u64) -> bool {
         if !self.active.load(Ordering::Acquire) { return false; }
         let Some(mut value) = self.value.try_lock() else {
             return false;
@@ -1378,12 +1779,7 @@ impl IntervalTimer {
         if value.0 == 0 || now < value.0 {
             return false;
         }
-        value.0 = if value.1 == 0 {
-            0
-        } else {
-            // Preserve the periodic phase, coalescing missed expirations.
-            now.saturating_add(value.1 - (now - value.0) % value.1)
-        };
+        value.0 = if value.1 == 0 { 0 } else { reload(value.0, value.1) };
         self.set_active(value.0 != 0);
         true
     }

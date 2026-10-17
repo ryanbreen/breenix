@@ -236,47 +236,6 @@ impl SavedRegisters {
 // Note: switch_with_privilege function removed as part of spawn mechanism cleanup
 // The new architecture doesn't need kernel-to-userspace transitions
 
-/// Save userspace context from interrupt (x86_64)
-/// Called from timer interrupt when preempting userspace
-#[cfg(target_arch = "x86_64")]
-pub fn save_userspace_context(
-    thread: &mut Thread,
-    interrupt_frame: &InterruptStackFrame,
-    saved_regs: &SavedRegisters,
-) {
-    // NOTE: No logging here per CLAUDE.md - this is called from interrupt context
-    // Update thread's context from interrupt frame
-    thread.context.rax = saved_regs.rax;
-    thread.context.rbx = saved_regs.rbx;
-    thread.context.rcx = saved_regs.rcx;
-    thread.context.rdx = saved_regs.rdx;
-    thread.context.rsi = saved_regs.rsi;
-    thread.context.rdi = saved_regs.rdi;
-    thread.context.rbp = saved_regs.rbp;
-    thread.context.r8 = saved_regs.r8;
-    thread.context.r9 = saved_regs.r9;
-    thread.context.r10 = saved_regs.r10;
-    thread.context.r11 = saved_regs.r11;
-    thread.context.r12 = saved_regs.r12;
-    thread.context.r13 = saved_regs.r13;
-    thread.context.r14 = saved_regs.r14;
-    thread.context.r15 = saved_regs.r15;
-
-    // From interrupt frame
-    thread.context.rip = interrupt_frame.instruction_pointer.as_u64();
-    thread.context.rsp = interrupt_frame.stack_pointer.as_u64();
-    thread.context.rflags = interrupt_frame.cpu_flags.bits();
-    thread.context.cs = interrupt_frame.code_segment.0 as u64;
-    thread.context.ss = interrupt_frame.stack_segment.0 as u64;
-    log::trace!(
-        "Saved userspace context for thread {}: RIP={:#x}, RSP={:#x}, RAX={:#x}",
-        thread.id,
-        thread.context.rip,
-        thread.context.rsp,
-        thread.context.rax
-    );
-}
-
 /// True when `cs` is a supervisor code selector (RPL 0), i.e. the context it
 /// came from was captured in ring 0. A zero selector means "no context saved
 /// yet" and is not a kernel frame.

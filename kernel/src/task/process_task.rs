@@ -267,18 +267,11 @@ impl PendingProcessReclaim {
         RootProof::default()
     }
 
+    /// Whether a thread that has not terminated still caches one of this
+    /// receipt's roots: ARM64 keeps its last TTBR0 there, and x86_64
+    /// dispatches a user thread on the root cached there.
     fn cached_root_is_live(&self) -> bool {
-        #[cfg(target_arch = "aarch64")]
-        {
-            scheduler::with_scheduler(|scheduler| {
-                scheduler.any_cached_ttbr0_matches(|cached| self.any_root_matches(cached))
-            })
-            .unwrap_or(false)
-        }
-        #[cfg(not(target_arch = "aarch64"))]
-        {
-            false
-        }
+        scheduler::any_cached_root_matches(|cached| self.any_root_matches(cached))
     }
 
     /// x86_64 switches CR3 lazily: idle keeps running on the tables of
@@ -1243,19 +1236,14 @@ impl ProcessScheduler {
             }
 
             if let Some(tid) = signal_wake {
-                scheduler::with_scheduler(|s| {
-                    s.unblock_for_signal(tid);
-                    s.unblock_for_child_exit(tid);
-                });
+                scheduler::wake_for_signal(tid, true);
             }
             // Wake the parent's thread if it waits in waitpid. An interruptible
             // wait (pause, a futex wait) is woken only by `signal_wake` above,
             // which is set when the SIGCHLD is one the parent will act on: an
             // ignored SIGCHLD is discarded without waking anybody, as on Linux.
             if let Some(parent_tid) = parent_tid {
-                scheduler::with_scheduler(|sched| {
-                    sched.unblock_for_child_exit(parent_tid);
-                });
+                scheduler::wake_for_child_exit(parent_tid);
                 crate::tracing::providers::process::trace_waitpid_wake(
                     parent_tid as u16,
                     pid.as_u64() as u16,
@@ -1316,17 +1304,14 @@ pub(crate) fn redeem_exit_report(pid: ProcessId, exit_code: i32, claimer: u64) {
 /// Called with PROCESS_MANAGER released (condition C8).
 fn wake_group_parent(exited: crate::process::manager::GroupExited) {
     drop(exited.reaped);
-    scheduler::with_scheduler(|sched| {
-        if let Some(tid) = exited.signal_wake {
-            sched.unblock_for_signal(tid);
-            sched.unblock_for_child_exit(tid);
-        }
-        // As for a single-threaded child's exit: waitpid only, never an
-        // interruptible wait for a SIGCHLD the parent discards.
-        if let Some(tid) = exited.parent_tid {
-            sched.unblock_for_child_exit(tid);
-        }
-    });
+    if let Some(tid) = exited.signal_wake {
+        scheduler::wake_for_signal(tid, true);
+    }
+    // As for a single-threaded child's exit: waitpid only, never an
+    // interruptible wait for a SIGCHLD the parent discards.
+    if let Some(tid) = exited.parent_tid {
+        scheduler::wake_for_child_exit(tid);
+    }
 }
 
 fn next_reclaim_pass_id(mut pass: u32) -> u32 {
@@ -1375,7 +1360,7 @@ pub fn defer_fault_exit(thread_id: u64, exit_code: i32) -> bool {
     if let Some(daemon) = FAULT_EXIT_DAEMON.get() {
         crate::task::kthread::kthread_unpark(daemon);
         // Publishing a fatal signal's status cannot wait a busy CPU's quantum.
-        scheduler::with_scheduler(|s| s.expedite_signal_recipient(daemon.tid()));
+        scheduler::expedite_thread(daemon.tid());
     }
     queued
 }

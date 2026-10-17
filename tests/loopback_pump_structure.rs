@@ -882,7 +882,9 @@ fn validate_io_wake_buffers_before_thread_context_overflow_fallback(
         .ok_or_else(|| "full-buffer arm does not inspect interrupt context".to_string())?;
     let thread_context = braced_block(full, &code_mask(full), interrupt_offset)
         .ok_or_else(|| "cannot parse thread-context overflow arm".to_string())?;
-    for required in ["with_scheduler", "unblock", "Applied", "AlreadyRunnable"] {
+    // `unblock_thread` applies the wake inline: under the scheduler lock, or
+    // on x86-64 under the lock of the CPU that owns the thread (#1649).
+    for required in ["unblock_thread", "Applied", "AlreadyRunnable"] {
         if !has_identifier(thread_context, required) {
             return Err(format!("thread-context overflow arm is missing {required}"));
         }
@@ -900,7 +902,9 @@ fn validate_io_wake_buffers_before_thread_context_overflow_fallback(
             return Err(format!("real-interrupt overflow arm is missing {required}"));
         }
     }
-    if has_identifier(interrupt_context, "with_scheduler") {
+    if has_identifier(interrupt_context, "with_scheduler")
+        || has_identifier(interrupt_context, "unblock_thread")
+    {
         return Err("real-interrupt overflow arm takes the scheduler lock".to_string());
     }
     Ok(())
@@ -4380,8 +4384,9 @@ static ENQUEUE_STALLED_RECLAIMED: AtomicU64 = AtomicU64::new(0);
 mod thread { pub static CPU_PINS_STAMPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1); }
 mod time { pub fn get_ticks() -> u64 { 100 } }
 mod arch_impl { pub mod aarch64 { pub mod constants { pub fn percpu_stack_slot_of(sp: u64) -> Option<usize> { assert_eq!(sp, 0); None } } } }
-mod tracing { pub mod output { pub struct Line; impl Line { pub fn new() -> Self { Self } pub fn text(&mut self, s: &str) { print!("{s}"); } pub fn dec(&mut self, n: u64) { print!("{n}"); } } } }
+mod tracing { pub mod output { pub struct Record; impl Record { pub fn new() -> Self { Self } pub fn text(&mut self, s: &str) { print!("{s}"); } pub fn dec(&mut self, n: u64) { print!("{n}"); } } } }
 fn arch_can_dispatch_here() -> bool { true }
+fn last_interrupt_return_tick(_cpu: usize) -> u64 { 0 }
 #[derive(Clone, Copy, PartialEq)] enum ThreadState { Ready, Terminated }
 #[derive(Clone, Copy)] struct CpuPin { cpu: usize, per_cpu_worker: bool }
 struct Context { sp: u64 }
@@ -4534,7 +4539,7 @@ static PINNED_WAKES_DELIVERED: AtomicU64 = AtomicU64::new(0);
 static ENQUEUE_SAME_LOCK_OK: AtomicU64 = AtomicU64::new(0);
 static CURRENT_CPU: AtomicUsize = AtomicUsize::new(0);
 static LOOKUPS: AtomicU64 = AtomicU64::new(0);
-mod tracing { pub mod output { pub struct Line; impl Line { pub fn new() -> Self { Self } pub fn text(&mut self, s: &str) { print!("{s}"); } pub fn dec(&mut self, n: u64) { print!("{n}"); } } } }
+mod tracing { pub mod output { pub struct Record; impl Record { pub fn new() -> Self { Self } pub fn text(&mut self, s: &str) { print!("{s}"); } pub fn dec(&mut self, n: u64) { print!("{n}"); } } } }
 #[derive(Clone, Copy, PartialEq)] enum ThreadState { Ready, Blocked }
 #[derive(Clone, Copy)] struct CpuPin { cpu: usize, per_cpu_worker: bool }
 struct Thread { tid: u64, state: ThreadState, cpu_affinity: Option<CpuPin> }

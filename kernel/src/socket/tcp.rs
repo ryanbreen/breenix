@@ -162,7 +162,7 @@ fn apply_options(sk: &Socket, conn: &ConnectionId) {
 fn linger_close(sk: &Socket, conn: &ConnectionId, seconds: u32) {
     // Only a process's own close lingers: a kernel thread that dropped the
     // last reference (ktcptimerd delivering a notice) must not stall on it.
-    let user_thread = crate::task::scheduler::with_scheduler(|sched| {
+    let user_thread = crate::task::scheduler::with_current(|sched| {
         sched
             .current_thread_mut()
             .is_some_and(|thread| thread.privilege == crate::task::thread::ThreadPrivilege::User)

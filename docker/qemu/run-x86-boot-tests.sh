@@ -458,11 +458,12 @@ TTY_IRQ_FG_ORACLE_PATTERN='\[TTY_IRQ_FG_ORACLE:x86:fg_known=822:target_absent=1:
 # PR-1 deleted 16 `log::*!` calls from kernel/src/interrupts/context_switch.rs;
 # ten of the arms had no counter of any kind, so each got one relaxed
 # `DispatchLogFact` counter, appended to the `[DISPATCH_STRAND_CENSUS:...]`
-# line as its own named field. This oracle
+# line as its own named field. Five of those arms went with the dispatch's
+# process-manager dependency (#1635), leaving five facts. This oracle
 # (kernel/src/test_framework/registry.rs, run_x86_dispatch_fact_oracle) drives
 # exactly one leg per fact between two forced census snapshots and reports how
-# many of the ten moved by EXACTLY one leg. `moved_wrong=0` is the
-# independence claim -- ten counters that all alias one cell would report
+# many of the five moved by EXACTLY one leg. `moved_wrong=0` is the
+# independence claim -- five counters that all alias one cell would report
 # moved_by_one=1 -- and `irqs_enabled_before=1` is the claim that it read the
 # census through the reporter's real emission boundary, which refuses to run
 # with interrupts disabled. Pinned as an exact literal, so a FAIL emission
@@ -470,10 +471,10 @@ TTY_IRQ_FG_ORACLE_PATTERN='\[TTY_IRQ_FG_ORACLE:x86:fg_known=822:target_absent=1:
 # count of 1 below, so a deleted call site cannot pass by silence.
 #
 # What it does NOT show: that any site in context_switch.rs calls the counter.
-# Seven of the ten arms are defensive arms this tree cannot reach on a running
+# Four of the five arms are defensive arms this tree cannot reach on a running
 # kernel. tests/dispatch_fact_census_structure.rs pins the site-to-counter
 # binding at source, per site.
-DISPATCH_FACT_ORACLE_LITERAL='[DISPATCH_FACT_ORACLE:x86:facts=10:legs=10:moved_by_one=10:moved_wrong=0:irqs_enabled_before=1:PASS]'
+DISPATCH_FACT_ORACLE_LITERAL='[DISPATCH_FACT_ORACLE:x86:facts=5:legs=5:moved_by_one=5:moved_wrong=0:irqs_enabled_before=1:PASS]'
 # The boot-test oracle deliberately drives the detector exactly once; the forbidden exact marker is separately pinned absent below.
 CREATION_LOCK_ORDER_INJECTED_LITERAL='[CREATION_LOCK_ORDER:INJECTED:PM_HELD]'
 CREATION_LOCK_ORDER_VIOLATION_LITERAL='[CREATION_LOCK_ORDER:VIOLATION:PM_HELD]'
