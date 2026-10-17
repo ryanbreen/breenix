@@ -618,3 +618,165 @@ fn mcfg_inventory_reports_firmware_apertures_and_refuses_invalid_tables() {
     assert_eq!(acpi::read_mcfg(Some(RSDP), image.physical_memory_offset(), |_| panic!("bad checksum")), None);
     assert_eq!(acpi::read_mcfg(None, image.physical_memory_offset(), |_| panic!("absent RSDP")), None);
 }
+
+/// A type-4 Local APIC NMI structure.
+fn local_apic_nmi_entry(uid: u8, flags: u16, lint: u8) -> [u8; 6] {
+    let flags = flags.to_le_bytes();
+    [4, 6, uid, flags[0], flags[1], lint]
+}
+
+/// A type-10 Local x2APIC NMI structure.
+fn local_x2apic_nmi_entry(flags: u16, uid: u32, lint: u8) -> [u8; 12] {
+    let mut entry = [0u8; 12];
+    entry[0] = 10;
+    entry[1] = 12;
+    entry[2..4].copy_from_slice(&flags.to_le_bytes());
+    entry[4..8].copy_from_slice(&uid.to_le_bytes());
+    entry[8] = lint;
+    entry
+}
+
+fn madt_behind_the_rsdt(entries: &[u8]) -> Image {
+    let mut image = Image::new();
+    put_madt(&mut image, MADT, 0xfee0_0000, entries, 44 + entries.len() as u32);
+    put_rsdt(&mut image, RSDT, &[MADT]);
+    put_rsdp_v1(&mut image, RSDT);
+    image
+}
+
+/// A server-shaped MADT: four enabled processors whose UIDs differ from their
+/// APIC ids, disabled placeholders, and one LINT1 NMI structure per UID. Each
+/// processor's NMI pin is found through its UID.
+#[test]
+fn local_nmi_structures_are_matched_to_processors_by_uid() {
+    let mut entries = Vec::new();
+    for (uid, apic_id) in [(1u8, 0u8), (2, 2), (3, 4), (4, 6)] {
+        entries.extend_from_slice(&local_apic_entry(uid, apic_id, ENABLED));
+    }
+    for uid in 5..=6u8 {
+        entries.extend_from_slice(&local_apic_entry(uid, 0xff, 0));
+    }
+    for uid in 1..=6u8 {
+        entries.extend_from_slice(&local_apic_nmi_entry(uid, 0x0005, 1));
+    }
+    let census = census_of(&madt_behind_the_rsdt(&entries));
+    assert_eq!(census.enabled_entries, 4);
+    assert_eq!(census.local_nmi_count, 6);
+    assert_eq!(&census.apic_uids[..4], &[1, 2, 3, 4]);
+    for apic_id in [0, 2, 4, 6] {
+        let entry = census.local_nmi_for(apic_id).expect("an NMI pin for every enabled processor");
+        assert_eq!((entry.lint, entry.flags), (1, 0x0005), "APIC id {apic_id}");
+    }
+    assert!(census.local_nmi_for(8).is_none(), "a processor the MADT does not list has no structure");
+}
+
+/// A structure naming each processor at once (UID 0xFF, or 0xFFFFFFFF in type
+/// 10) applies to each processor, recorded or not; a structure naming a pin other than LINT0
+/// or LINT1 is not kept; and the first matching structure wins.
+#[test]
+fn every_processor_and_x2apic_nmi_structures_apply_and_bad_pins_are_dropped() {
+    let mut entries = Vec::new();
+    entries.extend_from_slice(&local_apic_entry(0, 0, ENABLED));
+    entries.extend_from_slice(&local_apic_nmi_entry(0, 0x000f, 2));
+    entries.extend_from_slice(&local_apic_nmi_entry(0xff, 0, 1));
+    entries.extend_from_slice(&local_x2apic_nmi_entry(0x000d, u32::MAX, 0));
+    let census = census_of(&madt_behind_the_rsdt(&entries));
+    assert_eq!(census.local_nmi_count, 2, "the LINT2 structure is dropped");
+    assert_eq!(census.local_nmis[0].uid, acpi::ALL_PROCESSORS);
+    assert_eq!(census.local_nmis[1].uid, acpi::ALL_PROCESSORS);
+    let entry = census.local_nmi_for(0).unwrap();
+    assert_eq!((entry.lint, entry.flags), (1, 0));
+    let unlisted = census.local_nmi_for(77).unwrap();
+    assert_eq!((unlisted.lint, unlisted.flags), (1, 0));
+
+    let x2apic = [local_x2apic_entry(300, ENABLED, 9).as_slice(), &local_x2apic_nmi_entry(0x000f, 9, 0)].concat();
+    let census = census_of(&madt_behind_the_rsdt(&x2apic));
+    assert_eq!(census.apic_uids[0], 9);
+    let entry = census.local_nmi_for(300).unwrap();
+    assert_eq!((entry.lint, entry.flags), (0, 0x000f));
+}
+
+#[test]
+fn the_table_census_lists_the_root_table_then_each_table_in_order() {
+    let mut image = spcr_behind_the_rsdt(0x00, 1, 0x3f8, 80);
+    let mut signatures = Vec::new();
+    let visited = acpi::visit_table_signatures(Some(RSDP), image.physical_memory_offset(), |signature| {
+        signatures.push(signature)
+    });
+    assert_eq!(visited, Some(3));
+    assert_eq!(signatures, vec![*b"RSDT", *b"APIC", *b"SPCR"]);
+    // A root table with a bad checksum gives no census.
+    image.put(RSDT + 30, &[0x77]);
+    assert_eq!(acpi::visit_table_signatures(Some(RSDP), image.physical_memory_offset(), |_| {}), None);
+    assert_eq!(acpi::visit_table_signatures(None, image.physical_memory_offset(), |_| {}), None);
+}
+
+const FADT: u64 = IMAGE_BASE + 0x0600;
+
+/// A FADT of `length` bytes with a PM timer at I/O port `pm_port`, `flags`,
+/// IA-PC boot flags `boot_arch`, the reset register at I/O 0xcf9 with value 6,
+/// and the extended timer block at `x_pm` when the table reaches it.
+fn fadt_image(length: u32, pm_port: u32, flags: u32, boot_arch: u16, x_pm: u64) -> Image {
+    let mut image = Image::new();
+    put_sdt_header(&mut image, FADT, b"FACP", length);
+    image.put(FADT + 46, &9u16.to_le_bytes());
+    image.put_u32(FADT + 76, pm_port);
+    image.put(FADT + 91, &[4]);
+    image.put(FADT + 109, &boot_arch.to_le_bytes());
+    image.put_u32(FADT + 112, flags);
+    if length > 128 {
+        image.put(FADT + 116, &[1, 8, 0, 1]);
+        image.put_u64(FADT + 120, 0xcf9);
+        image.put(FADT + 128, &[6]);
+    }
+    if length >= 220 {
+        image.put(FADT + 208, &[1, 32, 0, 3]);
+        image.put_u64(FADT + 212, x_pm);
+    }
+    image.seal(FADT, length, FADT + 9);
+    put_rsdt(&mut image, RSDT, &[FADT]);
+    put_rsdp_v1(&mut image, RSDT);
+    image
+}
+
+fn fadt_of(image: &Image) -> Option<acpi::Fadt> {
+    acpi::read_fadt(Some(RSDP), image.physical_memory_offset())
+}
+
+#[test]
+fn the_fadt_gives_its_pm_timer_reset_register_and_boot_flags() {
+    // An ACPI 6 table: the extended timer block wins over the 32-bit one.
+    let fadt = fadt_of(&fadt_image(276, 0x408, (1 << 8) | (1 << 10), 0, 0x508)).unwrap();
+    assert_eq!(fadt.sci_interrupt, 9);
+    assert_eq!(fadt.pm_timer.map(|gas| (gas.space, gas.address)), Some((1, 0x508)));
+    assert!(fadt.pm_timer_32bit);
+    assert_eq!(fadt.reset.map(|(gas, value)| (gas.space, gas.address, value)), Some((1, 0xcf9, 6)));
+    assert!(!fadt.msi_not_supported() && !fadt.hardware_reduced());
+
+    // An extended block of address 0 falls back to PM_TMR_BLK; no RESET_REG_SUP, no reset.
+    let fadt = fadt_of(&fadt_image(276, 0x608, 0, 1 << 3, 0)).unwrap();
+    assert_eq!(fadt.pm_timer.map(|gas| (gas.space, gas.address)), Some((1, 0x608)));
+    assert!(!fadt.pm_timer_32bit);
+    assert_eq!(fadt.reset, None);
+    assert!(fadt.msi_not_supported());
+
+    // An ACPI 1.0 table (116 bytes) has a timer and no reset register.
+    let fadt = fadt_of(&fadt_image(116, 0x608, 1 << 10, 0, 0)).unwrap();
+    assert_eq!(fadt.pm_timer.map(|gas| gas.address), Some(0x608));
+    assert_eq!(fadt.reset, None);
+
+    // No timer at all, and a hardware-reduced platform.
+    let fadt = fadt_of(&fadt_image(276, 0, 1 << 20, 0, 0)).unwrap();
+    assert_eq!(fadt.pm_timer, None);
+    assert!(fadt.hardware_reduced());
+}
+
+#[test]
+fn a_fadt_too_short_or_with_a_bad_checksum_is_refused() {
+    assert_eq!(fadt_of(&fadt_image(115, 0x608, 0, 0, 0)), None, "shorter than ACPI 1.0");
+    let mut image = fadt_image(276, 0x608, 0, 0, 0);
+    image.put(FADT + 200, &[0x42]);
+    assert_eq!(fadt_of(&image), None, "a bad checksum");
+    let image = spcr_behind_the_rsdt(0x00, 1, 0x3f8, 80);
+    assert_eq!(fadt_of(&image), None, "no FADT");
+}
