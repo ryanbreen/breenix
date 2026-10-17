@@ -224,7 +224,19 @@ impl Device {
         dev.inflight.resize_with(dev.queue.size() as usize, || None);
         dev.enable_queue();
         dev.info.features = dev.pci.device_features() & WANTED;
-        dev.read_info()?;
+        if let Err(error) = dev.read_info() {
+            // DRIVER_OK made the ring and request buffers DMA-visible. Only a
+            // confirmed status-zero reset ends that ownership (VirtIO 2.4.2).
+            dev.begin_reset();
+            let start = crate::signal::monotonic_nanos();
+            while !dev.reset_done() && crate::signal::monotonic_nanos().saturating_sub(start) < 100_000_000 {
+                core::hint::spin_loop();
+            }
+            if !dev.reset_done() {
+                core::mem::forget(dev);
+            }
+            return Err(error);
+        }
         Ok(dev)
     }
 
