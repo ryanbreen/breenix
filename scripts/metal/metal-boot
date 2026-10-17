@@ -129,6 +129,7 @@ class Driver:
         self.final_marker = None
         self.final_seen = False
         self.completion_reported = False
+        self.probe_failed = False
         self.required_stages = []
         self.shell_ready = False
         self.shell_sent = False
@@ -595,7 +596,7 @@ class Driver:
             self.fatal_at = observed_at
             self.event('fatal', observed_at=observed_at, seconds=seconds)
         if self.args.mode == 'probe' and re.fullmatch(r'PROBE DONE passed=\d+ failed=[1-9]\d*', line):
-            raise Finish(m.EXIT_SHORT, 'the production probe reported a failed check')
+            self.probe_failed = True
         if '[init] shell ready' in line:
             self.shell_ready = True
         self.on_disk_line(line, observed_at)
@@ -612,6 +613,8 @@ class Driver:
                 and self.fatal_at is None and not self.completion_reported):
             self.completion_reported = True
             self.event('final-marker', observed_at=observed_at, seconds=seconds)
+            if self.probe_failed:
+                raise Finish(m.EXIT_SHORT, 'the production probe reported a failed check')
             raise Finish(m.EXIT_DONE, 'the mode and its kernel stages finished')
 
     # claim-lint:ok: #1680 Reviewed tool contract against this function and the host tests in tests/metal_tools_test.py.
