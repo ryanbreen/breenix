@@ -315,7 +315,9 @@ implemented here; the shell, probe and suite modes arrive with the lanes that wr
 
 `scripts/metal/redact` masks IPv4 and IPv6 addresses, MAC addresses, the literal values in the site file (and the
 host and path parts of its URLs), its identifier list (`REDACT_IDENTIFIERS`, plus the site's user and host names) and
-private paths (home folders, `/root`, the boot store, the site folder, clone paths). It is applied wherever text
+private paths (home folders, `/root`, the boot store, the site folder, clone paths). Site literals match whole
+tokens. Short non-identifying settings such as numeric account slots are kept; explicit identifiers and credentials
+remain masked even when short. It is applied wherever text
 leaves the private record: phone payloads, notifications, attempt rows and lines quoted in a pull request or issue.
 `redact --list` prints the identifier list without the credential. The shared fixture is `redact-site.env`,
 `redact-input.txt` and `redact-expected.txt` in `scripts/metal/fixtures/`: each category passes through the

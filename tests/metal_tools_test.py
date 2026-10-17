@@ -98,7 +98,10 @@ class RedactorTest(unittest.TestCase):
         out = self.redact((FIXTURES / 'redact-input.txt').read_text())
         for key, value in self.site.items():
             if key != 'REDACT_IDENTIFIERS':
-                self.assertEqual(self.redact(value), '<site>')
+                if len(value) >= 4 or m.SECRET_KEYS.search(key) or value in m.identifier_list(self.site):
+                    self.assertEqual(self.redact(value), '<site>')
+                else:
+                    self.assertEqual(self.redact(value), value)
         for name in m.identifier_list(self.site):
             self.assertNotIn(name, out)
         self.assertIsNone(re.search(r'\b\d{1,3}(\.\d{1,3}){3}\b', out))
@@ -113,7 +116,7 @@ class RedactorTest(unittest.TestCase):
             self.assertEqual(m.Redactor({})(text), text)
 
     def test_digits_and_commit_ids_survive(self):
-        for text in ('0123456789', 'commit 14a0ff0c', 'sha256 ' + '3a7b' * 16,
+        for text in ('0123456789', '0 1 2 3 4 5 6 7 8 9', 'commit 14a0ff0c', 'sha256 ' + '3a7b' * 16,
                      '{"t": 1792203213.123, "seconds": 3.2}', 'ratio 3:2', 'v1.2.3'):
             self.assertEqual(self.redact(text), text)
 
@@ -123,6 +126,10 @@ class RedactorTest(unittest.TestCase):
             self.assertEqual(self.redact('prefix' + value + 'suffix'), 'prefix' + value + 'suffix')
             self.assertEqual(self.redact('value=' + value + '.'), 'value=<site>.')
             self.assertEqual(self.redact('value:' + value), 'value:<site>')
+
+    def test_short_explicit_identifiers_and_credentials_still_mask(self):
+        redact = m.Redactor({'IDRAC_USER': 'u', 'IDRAC_PASSWORD': 'p', 'REDACT_IDENTIFIERS': 'x'})
+        self.assertEqual(redact('user=u password=p host=x'), 'user=<site> password=<site> host=<site>')
 
     def test_url_path_components_are_private(self):
         redact = m.Redactor({'BOOT_URL': 'http://fixture.invalid/private-folder/payload.efi'})

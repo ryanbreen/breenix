@@ -489,15 +489,17 @@ def _ipv4(match):
 
 class Redactor:
     def __init__(self, site):
+        self.identifiers = sorted(identifier_list(site), key=len, reverse=True)
+        # Short configuration values (slots, switches, counters) do not name
+        # a private entity. Explicit identifiers and credentials still count.
         literals = {value for key, value in site.items()
-                    if value}
+                    if value and (len(value) >= 4 or SECRET_KEYS.search(key) or value in self.identifiers)}
         for value in list(literals):
             # The complete URL, host and path are site literals independently.
             if '://' in value:
                 parts = urlsplit(value)
                 literals.update(part for part in (parts.netloc, parts.hostname, parts.path, *parts.path.split("/"))
                                 if part and part != "/")
-        self.identifiers = sorted(identifier_list(site), key=len, reverse=True)
         self.literals = sorted(literals | set(self.identifiers), key=len, reverse=True)
         # Match site values as complete tokens, preserving clock times and hashes.
         # Keep punctuation inside a token (host names, paths and credential strings included).
