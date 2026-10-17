@@ -135,8 +135,13 @@ pub fn run_post_init_self_tests() {
     // PIC initialization remaps/masks IRQs, so enable the VirtIO legacy INTx
     // lines after PIC setup and after the drivers exist. QEMU routes the boot
     // virtio-blk disk on IRQ11 and additional VirtIO devices on IRQ10/IRQ11.
-    crate::interrupts::enable_irq10();
-    crate::interrupts::enable_virtio_irq();
+
+    // Where PCI INTx routing is unknown, what drives those two lines is
+    // unknown too, so they stay masked.
+    if crate::arch_impl::x86_64::irq::pci_intx_routing_known() {
+        crate::interrupts::enable_irq10();
+        crate::interrupts::enable_virtio_irq();
+    }
 
     // AHCI IDENTIFY needs a calibrated clock even before IRQ completions exist.
     // This runs after time/PIC setup and before root mounting.
