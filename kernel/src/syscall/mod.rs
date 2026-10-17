@@ -908,6 +908,8 @@ pub fn dispatch_numbered(number: u64, a: [u64; 6]) -> Option<SyscallResult> {
         ACCEPT4_SYSCALL_NUMBER => socket::sys_accept4(a[0], a[1], a[2], a[3]),
         CHROOT_SYSCALL_NUMBER => chroot::sys_chroot(a[0]),
         SYSINFO_SYSCALL_NUMBER => sysinfo::sys_sysinfo(a[0]),
+        #[cfg(target_arch = "aarch64")]
+        gpu_abi::SYS_TEST_CONTROL => crate::test_control::sys_test_control(a[0], a[1], a[2]),
         _ => return None,
     })
 }
