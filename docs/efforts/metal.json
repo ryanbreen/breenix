@@ -1,0 +1,230 @@
+{
+  "title": "Path to Breenix on bare-metal x86-64",
+  "outcome": "A production kernel reaches a console shell on a RAM-disk root, passes the networking suite, and supports SATA/AHCI storage and the Breenix filesystem on physical x86-64 hardware.",
+  "efforts": [
+    {
+      "id": "metal-bring-up",
+      "title": "Bare-metal bring-up",
+      "outcome": "The production kernel, delivered over the network, boots to idle with its log on the remote console, interrupts and timers working, and every CPU online.",
+      "targets": [
+        "x86-metal"
+      ],
+      "milestones": [
+        {
+          "id": "delivery",
+          "title": "Firmware delivery and handoff",
+          "measure": {
+            "bootPath": "delivery"
+          }
+        },
+        {
+          "id": "first-light",
+          "title": "First Breenix lines",
+          "measure": {
+            "bootPath": "first-light"
+          }
+        },
+        {
+          "id": "interrupts-time",
+          "title": "Interrupts and time",
+          "measure": {
+            "bootPath": "interrupts-time"
+          }
+        },
+        {
+          "id": "smp",
+          "title": "Every CPU online",
+          "measure": {
+            "bootPath": "smp"
+          }
+        }
+      ]
+    },
+    {
+      "id": "metal-userspace",
+      "title": "Bare-metal userspace",
+      "outcome": "Userspace runs from a RAM-disk root without depending on hardware disks: a shell answers over the remote console, and the suite machinery and real-hardware timers pass.",
+      "targets": [
+        "x86-metal"
+      ],
+      "milestones": [
+        {
+          "id": "ramdisk-root",
+          "title": "RAM-disk root",
+          "measure": {
+            "bootPath": "ramdisk-root"
+          }
+        },
+        {
+          "id": "first-userspace",
+          "title": "First userspace process",
+          "measure": {
+            "bootPath": "first-userspace"
+          }
+        },
+        {
+          "id": "shell",
+          "title": "Interactive console shell",
+          "measure": {
+            "bootPath": "shell"
+          }
+        },
+        {
+          "id": "smoke",
+          "title": "Suite machinery",
+          "measure": {
+            "suite": "smoke",
+            "categories": [
+              "process",
+              "memory"
+            ]
+          }
+        },
+        {
+          "id": "time",
+          "title": "Real-hardware timers",
+          "measure": {
+            "suite": "time",
+            "categories": [
+              "clocks",
+              "sleep",
+              "timers",
+              "itimers"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "metal-network",
+      "title": "Bare-metal networking",
+      "outcome": "A clean-room BCM5720 driver brings up link, DHCP and real hosts, and the networking suite passes on physical hardware.",
+      "targets": [
+        "x86-metal"
+      ],
+      "suite": "networking",
+      "milestones": [
+        {
+          "id": "nic",
+          "title": "NIC link and first frame",
+          "measure": {
+            "bootPath": "nic"
+          }
+        },
+        {
+          "id": "dhcp-gateway",
+          "title": "DHCP, gateway and DNS",
+          "measure": {
+            "bootPath": "dhcp-gateway"
+          }
+        },
+        {
+          "id": "real-host",
+          "title": "Fetch from a real host",
+          "measure": {
+            "bootPath": "real-host"
+          }
+        },
+        {
+          "id": "udp",
+          "title": "UDP",
+          "measure": {
+            "suite": "networking",
+            "categories": [
+              "udp"
+            ]
+          }
+        },
+        {
+          "id": "tcp",
+          "title": "TCP",
+          "measure": {
+            "suite": "networking",
+            "categories": [
+              "tcp"
+            ]
+          }
+        },
+        {
+          "id": "unix",
+          "title": "Unix sockets",
+          "measure": {
+            "suite": "networking",
+            "categories": [
+              "unix"
+            ]
+          }
+        },
+        {
+          "id": "options",
+          "title": "Socket options",
+          "measure": {
+            "suite": "networking",
+            "categories": [
+              "options"
+            ]
+          }
+        },
+        {
+          "id": "multiplex",
+          "title": "Multiplexing",
+          "measure": {
+            "suite": "networking",
+            "categories": [
+              "multiplex"
+            ]
+          }
+        },
+        {
+          "id": "resolve",
+          "title": "Name resolution",
+          "measure": {
+            "suite": "networking",
+            "categories": [
+              "resolve"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "metal-storage",
+      "title": "Bare-metal storage",
+      "outcome": "A clean-room SATA/AHCI path discovers the controller, port and drive, reads and writes the disk, and mounts the Breenix filesystem. Scheduled after metal-userspace, in parallel with metal-network.",
+      "targets": [
+        "x86-metal"
+      ],
+      "milestones": [
+        {
+          "id": "sata-ahci",
+          "title": "SATA/AHCI discovery",
+          "measure": {
+            "bootPath": "sata-ahci"
+          }
+        },
+        {
+          "id": "disk-io",
+          "title": "Disk reads and writes",
+          "measure": {
+            "bootPath": "disk-io"
+          }
+        },
+        {
+          "id": "disk-filesystem",
+          "title": "Breenix filesystem on disk",
+          "measure": {
+            "bootPath": "disk-filesystem"
+          }
+        }
+      ]
+    }
+  ],
+  "later": [
+    {
+      "id": "metal-link-aggregation",
+      "after": "metal-network",
+      "scheduled": false,
+      "outcome": "Both ports cabled and bonded as one virtual link using IEEE 802.1AX/LACP from the published standard; the BCM5720 driver stays per-function so a second port attaches without redesign."
+    }
+  ]
+}
