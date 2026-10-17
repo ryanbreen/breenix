@@ -12,25 +12,31 @@
 //! written yet still fails, and says that. No case skips. A lane writes a case's check in its
 //! own commit, from the contract, before the implementation it measures.
 //!
-//! `device/version` is already its real check.
+//! `device/version` was the first real check; the `device` category's checks (G1) are in
+//! `suite_gpu/device.rs`.
 
 use libbreenix::suite::{case, category, check, fail, suite, CaseResult, Suite};
 use libbreenix::syscall::raw;
 
+#[path = "suite_gpu/common.rs"]
+mod common;
+#[path = "suite_gpu/device.rs"]
+mod device;
+
 static SUITE: Suite = suite("gpu", "GPU rendering", &[
     category("device", "3D device & capability profile", &[
         case("version", "Syscall 416's VERSION op returns 1", device_version),
-        case("feature-negotiated", "The device's 3D feature is negotiated: VirGL, or SVGA3D DX contexts", device_feature_negotiated),
-        case("caps-parsed", "CAPS returns the profile record from the device's capability set, each capability id once", device_caps_parsed),
-        case("profile-formats", "B8G8R8A8 and R8G8B8A8 render and sample, and R8 samples, by the device's own capability entries", device_profile_formats),
-        case("profile-integer-ops", "The device reports integer shader operations, integer texel fetch and region copies", device_profile_integer_ops),
-        case("profile-limits", "CAPS reports a maximum target size of at least 2560x1600 and at most 16384", device_profile_limits),
-        case("profile-record", "The CAPS record has its documented version and size, with reserved fields zero", device_profile_record),
-        case("missing-capability-fails", "A masked profile capability fails initialization naming it", device_missing_capability_fails),
-        case("no-fallback", "With a capability masked every op refuses with that reason and nothing renders another way", device_no_fallback),
-        case("display-info", "The device reports its scanouts and their sizes", device_display_info),
-        case("backend-named", "CAPS names backend 4 (VirGL) or 5 (SVGA3D DX), the device found on the bus", device_backend_named),
-        case("device-error-reported", "A forced device error reaches the submitting context as EIO naming the device's answer", device_device_error_reported),
+        case("feature-negotiated", "The device's 3D feature is negotiated: VirGL, or SVGA3D DX contexts", device::feature_negotiated),
+        case("caps-parsed", "CAPS returns the profile record from the device's capability set, each capability id once", device::caps_parsed),
+        case("profile-formats", "B8G8R8A8 and R8G8B8A8 render and sample, and R8 samples, by the device's own capability entries", device::profile_formats),
+        case("profile-integer-ops", "The device reports integer shader operations, integer texel fetch and region copies", device::profile_integer_ops),
+        case("profile-limits", "CAPS reports a maximum target size of at least 2560x1600 and at most 16384", device::profile_limits),
+        case("profile-record", "The CAPS record has its documented version and size, with reserved fields zero", device::profile_record),
+        case("missing-capability-fails", "A masked profile capability fails initialization naming it", device::missing_capability_fails),
+        case("no-fallback", "With a capability masked every op refuses with that reason and nothing renders another way", device::no_fallback),
+        case("display-info", "The device reports its scanouts and their sizes", device::display_info),
+        case("backend-named", "CAPS names backend 4 (VirGL) or 5 (SVGA3D DX), the device found on the bus", device::backend_named),
+        case("device-error-reported", "A forced device error reaches the submitting context as EIO naming the device's answer", device::device_error_reported),
     ]),
     category("submit", "command submission & fences", &[
         case("context-create", "CONTEXT_CREATE, including all catalogue warm-up, returns an owned context within 10 s", submit_context_create),
@@ -210,7 +216,6 @@ static SUITE: Suite = suite("gpu", "GPU rendering", &[
 
 // The layers cases need, each with the build step that supplies it.
 const CORE: &str = "the kernel GPU core and syscall 416 (G1)";
-const CAPS: &str = "CAPS and the capability profile (G1)";
 const SUBMIT: &str = "validated submission and fences (G1)";
 const WAIT: &str = "fence waits (G1)";
 const COUNTERS: &str = "the COUNTERS op (G1)";
@@ -275,17 +280,6 @@ fn device_version() -> CaseResult {
 }
 
 needs! {
-    device_feature_negotiated => CAPS;
-    device_caps_parsed => CAPS;
-    device_profile_formats => CAPS;
-    device_profile_integer_ops => CAPS;
-    device_profile_limits => CAPS;
-    device_profile_record => CAPS;
-    device_missing_capability_fails => "test-control point 23 mask-capability (G1)";
-    device_no_fallback => "test-control point 23 mask-capability (G1)";
-    device_display_info => CORE;
-    device_backend_named => CAPS;
-    device_device_error_reported => "test-control point 27 device-error (G1)";
     submit_context_create => SUBMIT;
     submit_context_destroy => SUBMIT;
     submit_context_limit => SUBMIT;
