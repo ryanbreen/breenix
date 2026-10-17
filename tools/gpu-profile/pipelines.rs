@@ -300,6 +300,11 @@ fn sampled(pipe: u32) -> (String, u32) {
         s.mov("TEMP[12]", &z);
         s.mov("TEMP[6].xy", "TEMP[1]");
         s.op("UADD", "TEMP[4].xy", "TEMP[4]", "CONST[1]");
+        // A bin must fit in the source before its first texel is fetched.
+        s.op("USLT", "TEMP[2].xy", "CONST[6]", "TEMP[4]");
+        s.op("OR", "TEMP[2].x", "TEMP[2].x", "TEMP[2].y");
+        s.op("USEQ", "TEMP[2].x", "TEMP[2].x", &z);
+        s.kill_zero("TEMP[2].x");
         s.emit("BGNLOOP\nBGNLOOP");
         s.fetch("TEMP[10]", "TEMP[1]", 0);
         s.op("UADD", "TEMP[13]", "TEMP[11]", "TEMP[10]");

@@ -183,6 +183,10 @@ UADD TEMP[11], IMM[0].xxxx, IMM[0].xxxx
 UADD TEMP[12], IMM[0].xxxx, IMM[0].xxxx
 UADD TEMP[6].xy, TEMP[1], IMM[0].xxxx
 UADD TEMP[4].xy, TEMP[4], CONST[1]
+USLT TEMP[2].xy, CONST[6], TEMP[4]
+OR TEMP[2].x, TEMP[2].xxxx, TEMP[2].yyyy
+USEQ TEMP[2].x, TEMP[2].xxxx, IMM[0].xxxx
+UIF TEMP[2].xxxx
 BGNLOOP
 BGNLOOP
 TXF TEMP[10], TEMP[1], SAMP[0], 2D
@@ -350,6 +354,9 @@ UADD TEMP[10].w, TEMP[51].yyyy, IMM[0].xxxx
 UADD TEMP[10].w, IMM[1].xxxx, IMM[0].xxxx
 U2F TEMP[48], TEMP[10]
 MUL OUT[0], TEMP[48], IMM[2].zzzz
+ELSE
+KILL
+ENDIF
 ELSE
 KILL
 ENDIF

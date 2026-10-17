@@ -3,7 +3,7 @@ use super::{pipe, Program};
 pub const CATALOGUE: &[(u32, Program)] = &[
 (2, Program {kind: pipe::SHADER_FRAGMENT, text: include_bytes!("2.tgsi"), tokens: 517}),
 (3, Program {kind: pipe::SHADER_FRAGMENT, text: include_bytes!("3.tgsi"), tokens: 413}),
-(4, Program {kind: pipe::SHADER_FRAGMENT, text: include_bytes!("4.tgsi"), tokens: 1293}),
+(4, Program {kind: pipe::SHADER_FRAGMENT, text: include_bytes!("4.tgsi"), tokens: 1313}),
 (5, Program {kind: pipe::SHADER_FRAGMENT, text: include_bytes!("5.tgsi"), tokens: 199}),
 (6, Program {kind: pipe::SHADER_FRAGMENT, text: include_bytes!("6.tgsi"), tokens: 223}),
 (7, Program {kind: pipe::SHADER_FRAGMENT, text: include_bytes!("7.tgsi"), tokens: 255}),

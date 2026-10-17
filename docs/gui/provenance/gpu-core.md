@@ -829,3 +829,27 @@ G5 individual submit=0 transfer=0 pixel=44332211
 The core emits the individual declarations, each using T's declaration and range tokens. The added
 four declarations add ten tokens. This is a text-form/device observation, not an implementation-source
 explanation for the renderer's behavior and not a waiver of the required pixels.
+
+
+## B15: box-filter source bounds
+
+The contract's outside-source discard rule applies to the complete box-filter bin. Its last
+texel must be inside the texture before the shader enters the fetch loop. The generator
+compares the exclusive bin end with the texture dimensions, using L's USLT, OR and USEQ,
+and guards the loop as it guards other outside-source fragments. This is integer geometry;
+it does not change the bin means or pixel expectations.
+
+`tools/gpu-experiments/g5-box-bounds.py` reproduces the defect and repair through B13's
+public API harness, renderer pin, environment and invocation (substitute this script's name).
+The baseline is the included box-filter text at `3211c7a8`; the repaired candidate is the
+checkout's included text. Both use token capacity 10,000, no other differing packet fields.
+A three-by-one BGRA texture contains three copies of (17,34,51,255). A one-pixel destination
+is cleared to BGRA (25,39,49,255). The draw maps source origin (1,0), extent (3,1) to that
+pixel, so the bin's exclusive x end is 4, past texture width 3. Submission and readback
+return 0 for both candidates. The baseline changes the pixel; the guarded program leaves
+the clear colour intact:
+
+```text
+G5 box baseline submit=0 transfer=0 pixel=ff22170b
+G5 box bounded submit=0 transfer=0 pixel=ff312719
+```
