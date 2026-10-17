@@ -625,6 +625,10 @@ fn force_exit_report_reap_race(pid: ProcessId) {
     let start = counter();
     while counter().wrapping_sub(start) < limit {
         if with_process_manager(|pm| pm.get_process(pid).is_none()).unwrap_or(true) {
+            crate::serial_println!(
+                "FORCED_EXIT_REPORT_REAP_RACE: pid={} was reaped while its killer was held",
+                pid.as_u64()
+            );
             return;
         }
         core::hint::spin_loop();

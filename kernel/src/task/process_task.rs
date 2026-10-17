@@ -821,15 +821,19 @@ pub(crate) fn enqueue_process_reclaim(reclaim: PendingProcessReclaim) {
         crate::trace_count!(crate::tracing::providers::teardown::RECLAIM_ENQUEUE_UNDER_PM);
     }
     #[cfg(all(target_arch = "aarch64", feature = "force_reclaim_queue_contention"))]
-    force_reclaim_queue_contention(&reclaim);
+    let forced = force_reclaim_queue_contention(&reclaim).then_some(reclaim.pid);
     push_pending_or_abandon(reclaim);
+    #[cfg(all(target_arch = "aarch64", feature = "force_reclaim_queue_contention"))]
+    if let Some(pid) = forced {
+        crate::serial_println!("FORCED_RECLAIM_QUEUE_CONTENTION: a peer held the pending queue across pid={pid}'s publication");
+    }
 }
 
 /// Hold the real publication queue on a peer for a bounded interval. This
 /// changes only scheduling of the holder; the victim takes the production
 /// enqueue path and the userspace test keeps its ordinary pairing requirement.
 #[cfg(all(target_arch = "aarch64", feature = "force_reclaim_queue_contention"))]
-fn force_reclaim_queue_contention(reclaim: &PendingProcessReclaim) {
+fn force_reclaim_queue_contention(reclaim: &PendingProcessReclaim) -> bool {
     static ARMED: AtomicBool = AtomicBool::new(true);
     static HELD: AtomicBool = AtomicBool::new(false);
     static ATTEMPT: AtomicBool = AtomicBool::new(false);
@@ -841,7 +845,7 @@ fn force_reclaim_queue_contention(reclaim: &PendingProcessReclaim) {
         value
     }
     if reclaim.page_table.is_some() || !reclaim.old_page_tables.is_empty() {
-        return;
+        return false;
     }
     let victim = crate::process::with_process_manager(|manager| {
         manager
@@ -850,7 +854,7 @@ fn force_reclaim_queue_contention(reclaim: &PendingProcessReclaim) {
     })
     .unwrap_or(false);
     if !victim || !ARMED.swap(false, Ordering::AcqRel) {
-        return;
+        return false;
     }
     let online = crate::arch_impl::aarch64::smp::cpus_online() as usize;
     assert!(
@@ -889,6 +893,7 @@ fn force_reclaim_queue_contention(reclaim: &PendingProcessReclaim) {
         "peer did not hold reclaim queue"
     );
     ATTEMPT.store(true, Ordering::Release);
+    true
 }
 
 /// Close extracted file descriptor entries outside the PM lock.
