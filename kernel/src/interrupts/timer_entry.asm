@@ -6,6 +6,7 @@
 ; 3. Clear separation of concerns
 
 global timer_interrupt_entry
+global reschedule_interrupt_entry
 extern timer_interrupt_handler
 extern check_need_resched_and_switch
 extern log_timer_frame_from_userspace
@@ -21,7 +22,10 @@ bits 64
 %define SAVED_REGS_COUNT 15
 %define SAVED_REGS_SIZE (SAVED_REGS_COUNT * 8)
 
-timer_interrupt_entry:
+; Keep the register frame and interrupt-return path identical for both gates.
+; The second argument distinguishes timer delivery from a reschedule IPI.
+%macro INTERRUPT_ENTRY 2
+%1:
     ; CRITICAL: Disable interrupts BEFORE saving any registers
     ; This prevents race condition where another interrupt fires during register save
     ; Even though timer interrupt is an interrupt gate (IF cleared by CPU), we ensure
@@ -106,6 +110,7 @@ timer_interrupt_entry:
     ; Stack is aligned (16 pushes = 128 bytes = 16-byte aligned)
     ; Call the timer handler with from_userspace parameter
     ; This ONLY updates ticks, quantum, and sets need_resched flag
+    mov esi, %2                        ; 0 = timer, 1 = reschedule IPI
     call timer_interrupt_handler
     
     ; Now check if we need to reschedule
@@ -376,3 +381,8 @@ timer_interrupt_entry:
 
     ; Return from interrupt to kernel
     iretq
+
+%endmacro
+
+INTERRUPT_ENTRY timer_interrupt_entry, 0
+INTERRUPT_ENTRY reschedule_interrupt_entry, 1
