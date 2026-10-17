@@ -278,8 +278,7 @@ class Driver:
             if not manifest.is_file() or m.read_json(manifest).get('id') != self.args.suite:
                 raise Finish(m.EXIT_CANCELLED, 'the suite manifest is missing or differs')
         self.delivery['root'] = metal_root.stage_root(inputs / 'ext2.img', self.args.mode,
-                                                       getattr(self.args, 'suite', None), self.site,
-                                                       self.dir / 'definition/scripts/write-boot-target.sh')
+                                                       getattr(self.args, 'suite', None), self.site)
         self.phase('Assembling the image')
         extracted = self.stage / 'esp'
         files = metal_image.extract_esp(inputs / 'uefi.img', extracted)

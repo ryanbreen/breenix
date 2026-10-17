@@ -257,10 +257,11 @@ have no definition and are not scored.
 
 ## RAM-disk userspace
 
-At staging, `metal_root.stage_root` calls the commit's `scripts/write-boot-target.sh` to write
+At staging, `metal_root.stage_root` calls the deployed copy of `scripts/write-boot-target.sh` to write
 `/etc/breenix/boot-target` as `default`, `shell`, or `suite <id>` onto the boot's ext2 image, remove a stale suite
 sequence, and verify the configuration bytes and selected PID 1 ELF with host debugfs. Metal staging requires
-debugfs in the service container and does not launch a fallback container. Site fields prefixed `GUEST_` become lines in `/etc/breenix/site.env` without that prefix; management
+debugfs in the service container and does not launch a fallback container. Deployment carries the current shared
+writer, including when the selected kernel predates its default/shell options, and records the writer checksum. Site fields prefixed `GUEST_` become lines in `/etc/breenix/site.env` without that prefix; management
 credentials are not guest fields. The staging helper refuses guest field names containing secret-related words.
 The delivered image records the resulting component checksums; the cached base root is not edited.
 

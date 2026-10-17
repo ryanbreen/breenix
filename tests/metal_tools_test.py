@@ -726,6 +726,18 @@ class RootStagingTest(unittest.TestCase):
                                           check=True, capture_output=True).stdout.decode()
                 self.assertEqual(read('boot-target'), expected + '\n')
                 self.assertEqual(read('site.env'), 'FETCH_URL=fixture-value\n')
+            # Exercise the deployed layout, outside the repository's scripts directory.
+            package = root / 'deployed'
+            package.mkdir()
+            shutil.copyfile(TOOLS / 'metal_root.py', package / 'metal_root.py')
+            shutil.copyfile(TOOLS.parent / 'write-boot-target.sh', package / 'write-boot-target.sh')
+            spec = importlib.util.spec_from_file_location('deployed_root', package / 'metal_root.py')
+            deployed = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(deployed)
+            facts = deployed.stage_root(image, 'default', None, site)
+            self.assertEqual(read('boot-target'), 'default\n')
+            self.assertEqual(facts['writerSha256'], hashlib.sha256(
+                (TOOLS.parent / 'write-boot-target.sh').read_bytes()).hexdigest())
             with self.assertRaises(ValueError):
                 metal_root.stage_root(image, 'suite', 'absent', site)
             with self.assertRaises(ValueError):

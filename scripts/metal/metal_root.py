@@ -1,6 +1,7 @@
 """Write boot-specific files onto a staged ext2 RAM disk and verify their bytes."""
 from pathlib import Path
 import re
+import hashlib
 import os
 import shutil
 import subprocess
@@ -28,7 +29,10 @@ def stage_root(image, mode, suite, site, writer=None):
     if not debugfs:
         raise ValueError('staging needs debugfs')
     image = Path(image).resolve()
-    writer = Path(writer) if writer else Path(__file__).resolve().parents[1] / 'write-boot-target.sh'
+    packaged = Path(__file__).resolve().with_name('write-boot-target.sh')
+    writer = Path(writer) if writer else (packaged if packaged.is_file() else
+                                         Path(__file__).resolve().parents[1] / 'write-boot-target.sh')
+    writer_hash = hashlib.sha256(writer.read_bytes()).hexdigest()
     target = suite if mode == 'suite' else '--' + mode
     try:
         subprocess.run(['bash', str(writer), str(image), target], check=True, capture_output=True,
@@ -57,4 +61,4 @@ def stage_root(image, mode, suite, site, writer=None):
                        check=True, capture_output=True)
         if not installed.is_file() or installed.read_bytes()[:4] != b'\x7fELF':
             raise ValueError('RAM disk has no selected PID 1 ELF')
-    return {'mode': mode, 'suite': suite or None, 'siteFields': len(lines)}
+    return {'mode': mode, 'suite': suite or None, 'siteFields': len(lines), 'writerSha256': writer_hash}
