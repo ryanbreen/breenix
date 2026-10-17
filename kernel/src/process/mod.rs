@@ -600,7 +600,8 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
 
 /// Hold the first killed `sigkill_teardown_test` row's exit, after its parent
 /// was woken and before `handle_thread_exit`, until the parent has reaped it.
-/// This changes only when the killer runs; the parent reaps through the
+/// A row killed by its own parent is skipped: holding that killer holds the
+/// reaper. This changes only when the killer runs; the parent reaps through the
 /// production wait path and the userspace test keeps its report requirement.
 #[cfg(all(target_arch = "aarch64", feature = "force_exit_report_reap_race"))]
 fn force_exit_report_reap_race(pid: ProcessId) {
@@ -613,9 +614,14 @@ fn force_exit_report_reap_race(pid: ProcessId) {
         }
         value
     }
+    let killer_thread = crate::task::scheduler::current_thread_id();
     let victim = with_process_manager(|pm| {
-        pm.get_process(pid)
-            .is_some_and(|row| row.name.contains("sigkill_teardown_test"))
+        let killer = killer_thread
+            .and_then(|thread| pm.find_process_by_thread(thread))
+            .map(|(killer, _)| killer);
+        pm.get_process(pid).is_some_and(|row| {
+            row.name.contains("sigkill_teardown_test") && row.parent != killer
+        })
     })
     .unwrap_or(false);
     if !victim || !ARMED.swap(false, Ordering::AcqRel) {

@@ -863,11 +863,13 @@ fn probe_forced_contention(pid: Option<u64>) {
 }
 
 /// Hold the real publication queue on a peer until the publisher's probe has
-/// found it held, once for the first `sigkill_teardown_test` receipt that
-/// carries page tables (a forked victim) and once for the first without them
-/// (a CLONE_VM victim). This changes only scheduling of the holder; the
-/// victim takes the production enqueue path and the userspace test keeps its
-/// ordinary pairing requirement.
+/// found it held. This forces the first `sigkill_teardown_test` victim killed
+/// by its own parent whose receipt carries page tables (the forked V2), and
+/// the first whose receipt carries no page tables (the CLONE_VM victim). V1 is
+/// killed by a helper and is left to `force_exit_report_reap_race`, which
+/// needs its parent free to reap. This changes only scheduling of the holder;
+/// the victim takes the production enqueue path and the userspace test keeps
+/// its ordinary pairing requirement.
 #[cfg(all(target_arch = "aarch64", feature = "force_reclaim_queue_contention"))]
 fn force_reclaim_queue_contention(reclaim: &PendingProcessReclaim) -> bool {
     static ROOTED_ARMED: AtomicBool = AtomicBool::new(true);
@@ -880,10 +882,18 @@ fn force_reclaim_queue_contention(reclaim: &PendingProcessReclaim) -> bool {
         }
         value
     }
+    let publisher = scheduler::current_thread_id();
     let victim = crate::process::with_process_manager(|manager| {
+        let killer = publisher
+            .and_then(|thread| manager.find_process_by_thread(thread))
+            .map(|(pid, _)| pid);
         manager
             .get_process(ProcessId::new(reclaim.pid))
-            .is_some_and(|row| row.name.contains("sigkill_teardown_test"))
+            .is_some_and(|row| {
+                row.name.contains("sigkill_teardown_test")
+                    && row.parent.is_some()
+                    && row.parent == killer
+            })
     })
     .unwrap_or(false);
     if !victim {
