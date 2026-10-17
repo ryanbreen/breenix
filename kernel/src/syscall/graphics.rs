@@ -2914,15 +2914,17 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
     SyscallResult::Ok(0)
 }
 
-/// sys_fbdraw - production x86_64 form. Only Flush (op 6) is supported: it copies
+/// sys_fbdraw - production x86_64 form. Flush (op 6) copies
 /// the display owner's whole-screen fb_mmap pane (or the rectangle p1-p4 of it,
 /// when p3 and p4 are non-zero) onto the screen. The drawing ops draw on the
 /// interactive kernel's shell framebuffer, which this kernel does not have.
+/// ReadPixel (op 32) returns the hardware pixel at (p1, p2) as 0x00RRGGBB,
+/// allowing the display owner to verify that a flush reached the framebuffer.
 ///
 /// # Returns
-/// * 0 on success
+/// * 0 on Flush success, or the RGB pixel for ReadPixel
 /// * -EFAULT if cmd_ptr is invalid
-/// * -EINVAL for any op but Flush, or a caller with no fb_mmap pane
+/// * -EINVAL for an unsupported op, invalid pixel coordinate, or no fb_mmap pane
 /// * -EPERM if the caller does not own the display
 /// * -EBUSY if the kernel's log sink holds the framebuffer (flush again)
 #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
@@ -2934,7 +2936,7 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
         Ok(cmd) => cmd,
         Err(_) => return SyscallResult::Err(super::ErrorCode::Fault as u64),
     };
-    if cmd.op != 6 {
+    if cmd.op != 6 && cmd.op != 32 {
         return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
     }
     let (fb_mmap, caller_owns_display) = match get_current_thread_id() {
@@ -2953,6 +2955,15 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
     let Some(pane) = fb_mmap.filter(|pane| pane.whole_screen) else {
         return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
     };
+    if cmd.op == 32 {
+        if cmd.p1 < 0 || cmd.p2 < 0 || cmd.p1 as usize >= pane.width || cmd.p2 as usize >= pane.height {
+            return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
+        }
+        return match crate::logger::read_display_pixel(cmd.p1 as usize, cmd.p2 as usize) {
+            Some(pixel) => SyscallResult::Ok(pixel as u64),
+            None => SyscallResult::Err(super::ErrorCode::Busy as u64),
+        };
+    }
     let (rows, columns) = if cmd.p3 > 0 && cmd.p4 > 0 {
         let (x, y) = (cmd.p1.max(0) as usize, cmd.p2.max(0) as usize);
         (
