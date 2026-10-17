@@ -28,7 +28,7 @@
       "id": "submit",
       "title": "command submission & fences",
       "cases": [
-        { "id": "context-create", "title": "CONTEXT_CREATE, including the fixed rendering catalogue's warm-up, returns an owned context within 10 s, and its first PROBE warms probe_int" },
+        { "id": "context-create", "title": "CONTEXT_CREATE returns an owned context within 10 s that draws while its fixed rendering catalogue warms, reports the warm-up complete, and its first PROBE warms probe_int" },
         { "id": "context-destroy", "title": "CONTEXT_DESTROY frees the context once its submitted work has completed" },
         { "id": "context-limit", "title": "Creating a context past the per-process quota returns EAGAIN" },
         { "id": "stream-validate", "title": "A malformed command stream returns EINVAL with the failing command's index" },

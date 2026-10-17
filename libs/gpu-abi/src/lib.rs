@@ -234,12 +234,16 @@ pub mod fence_status {
 
 /// A context's state, as `Counters::state` reports it.
 pub mod context_state {
+    /// Live, with its fixed rendering catalogue's warm-up complete.
     pub const LIVE: u64 = 0;
     /// The watchdog, or two device errors in a row, quarantined it: further submissions
     /// are refused with EIO.
     pub const QUARANTINED: u64 = 1;
     /// The device was reset under it: every op on it is refused with EIO.
     pub const RESET: u64 = 2;
+    /// Live, with its fixed rendering catalogue still warming on the GPU worker; it accepts
+    /// the same operations as `LIVE` (ruling 33, #1725).
+    pub const WARMING: u64 = 3;
 }
 
 /// Limits of section 1.4.1 and the kernel's quotas.
@@ -334,7 +338,8 @@ pub struct ContextCreate {
     pub handle: u64,
     /// In: 0.
     pub flags: u32,
-    /// Out: how many catalogue programs creation compiled and warmed.
+    /// Out: how many fixed rendering-catalogue programs had warmed when creation returned;
+    /// a progress snapshot, not the completion signal (`Counters::state`).
     pub warmed: u32,
     pub reserved: [u64; 2],
 }
@@ -577,8 +582,9 @@ pub struct Counters {
     pub resources: u64,
     /// Guest backing bytes the process's resources hold.
     pub resource_bytes: u64,
-    /// For a context: how many programs it has warmed: the fixed rendering catalogue at
-    /// creation, and `probe_int`'s pair from its first PROBE.
+    /// For a context: how many programs whose warm-up has completed: the fixed rendering
+    /// catalogue's as its asynchronous warm-up proceeds, and `probe_int`'s pair from its
+    /// first PROBE.
     pub warmed: u64,
     pub reserved: [u64; 15],
 }

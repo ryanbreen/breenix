@@ -17,23 +17,29 @@ const GREY: u32 = bgra(0x40, 0x40, 0x40, 0xFF);
 pub fn context_create() -> CaseResult {
     let _case = begin()?;
     let start = now_ns();
-    let ctx = context()?;
+    let ctx = gpu::context_create().map_err(|e| fail_msg(format!("CONTEXT_CREATE returned {}", errno(e))))?;
     let ms = ms_since(start);
     value("create-ms", ms as i64, "ms", Some((0, 10_000)));
     ensure(ms <= 10_000, || format!("CONTEXT_CREATE took {ms} ms"))?;
     ensure(ctx != 0, || "CONTEXT_CREATE returned handle 0".to_string())?;
     let c = caps()?;
-    // Creation warms the fixed rendering catalogue; the profile-only `probe_int` pair
-    // waits for the context's first PROBE (gpu-abi.md, CONTEXT_CREATE).
+    // Creation queues the fixed rendering catalogue's warm-up on the GPU worker and returns;
+    // the profile-only `probe_int` pair waits for the context's first PROBE (gpu-abi.md,
+    // CONTEXT_CREATE and COUNTERS; ruling 33, #1725).
     let probe = c.pipelines & 1 << pipeline::PROBE_INT != 0;
     let programs = 2 * (c.pipelines & !(1 << pipeline::PROBE_INT)).count_ones() as u64;
     let k = counters(ctx)?;
-    ensure(k.warmed == programs, || format!("creation warmed {} programs; the fixed rendering catalogue built so far has {programs}", k.warmed))?;
-    ensure(k.state == context_state::LIVE, || format!("the new context's state is {}", k.state))?;
-    // Owned: it draws and its work completes.
+    ensure(k.state == context_state::WARMING || k.state == context_state::LIVE, || format!("the new context's state is {}", k.state))?;
+    ensure(k.warmed <= programs, || format!("the new context reports {} programs warmed; the catalogue has {programs}", k.warmed))?;
+    // Owned: it draws while its catalogue warms, and its work completes.
     let t = target(format::B8G8R8A8, 4, 4)?;
     frame(ctx, &scene(t, GREEN, &[]))?;
     expect(t, &scene_canvas(4, 4, GREEN, &[]), "the new context's first frame")?;
+    // The warm-up completes: state 0, with the rendering catalogue's programs warmed.
+    warmed(ctx)?;
+    value("warm-ms", ms_since(start) as i64, "ms", None);
+    let k = counters(ctx)?;
+    ensure(k.warmed == programs, || format!("the completed warm-up warmed {} programs; the fixed rendering catalogue built so far has {programs}", k.warmed))?;
     if probe {
         // The first PROBE compiles and warms `probe_int`: integer addition into one pixel.
         let mut s = scene(t, GREEN, &[]);

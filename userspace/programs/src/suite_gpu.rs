@@ -56,7 +56,7 @@ static SUITE: Suite = suite("gpu", "GPU rendering", &[
         case("device-error-reported", "A forced device error reaches the submitting context as EIO naming the device's answer", device::device_error_reported),
     ]),
     category("submit", "command submission & fences", &[
-        case("context-create", "CONTEXT_CREATE, including the fixed rendering catalogue's warm-up, returns an owned context within 10 s, and its first PROBE warms probe_int", submit::context_create),
+        case("context-create", "CONTEXT_CREATE returns an owned context within 10 s that draws while its fixed rendering catalogue warms, reports the warm-up complete, and its first PROBE warms probe_int", submit::context_create),
         case("context-destroy", "CONTEXT_DESTROY frees the context once its submitted work has completed", submit::context_destroy),
         case("context-limit", "Creating a context past the per-process quota returns EAGAIN", submit::context_limit),
         case("stream-validate", "A malformed command stream returns EINVAL with the failing command's index", submit::stream_validate),
