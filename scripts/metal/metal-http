@@ -2,10 +2,11 @@
 """The single-transfer boot image server (docs/metal/README.md, "Delivery").
 
 # claim-lint:ok: #1680 Reviewed tool contract against this function and the host tests in tests/metal_tools_test.py.
-One route. While a boot has an image staged and it has not yet been sent in full, the route answers HEAD and GET
+The firmware route answers HEAD and GET while a boot has an image staged and it has not yet been sent in full
 (whole, or one byte range at a time) with that file; a transfer that breaks off can be retried; once the whole file
 has been sent, in one response or across ranges, and while nothing is staged, requests get 404, so a machine that resets cannot boot the same image again. Every request and
 transfer is logged to STATE/http.jsonl, without the client's address.
+The independent probe-file route does not consume the firmware transfer.
 """
 import hashlib
 import http.server
@@ -18,6 +19,8 @@ from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import metal_lib as m  # noqa: E402
+
+from metal_probe import PROBE_PATH, PROBE_BODY
 
 CHUNK = 1 << 20
 RANGE = re.compile(r'bytes=(\d*)-(\d*)')
@@ -90,6 +93,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
     def do_GET(self):
+        if urlsplit(self.path).path == PROBE_PATH:
+            log(event='probe-get')
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/octet-stream')
+            self.send_header('Content-Length', str(len(PROBE_BODY)))
+            self.send_header('Connection', 'close')
+            self.end_headers()
+            self.wfile.write(PROBE_BODY)
+            self.wfile.flush()
+            log(event='probe-complete', bytes=len(PROBE_BODY))
+            self.close_connection = True
+            return
         staged, answered = self.resolve()
         if answered:
             return

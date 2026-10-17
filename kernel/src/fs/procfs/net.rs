@@ -26,6 +26,7 @@ pub(super) fn generate_pnp() -> Result<String, i32> {
             let [a, b, c, d] = lease.server;
             let _ = writeln!(text, "bootserver {}.{}.{}.{}", a, b, c, d);
         }
+        None if crate::net::dhcp::configuration_required() => text.push_str("#PROTO: DHCP\n"),
         None => text.push_str("#MANUAL\n"),
     }
     Ok(text)
