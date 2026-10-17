@@ -502,14 +502,18 @@ then
 `BREENIX_QUIET=0 "$CHECKOUT/scripts/boot-interactive.sh" --no-build --mode suite --suite gpu --gpu-gl --display --serial-log "$RUN/serial.txt" --gate-timeout 900 < /dev/null`.
 CHECKOUT is the absolute checkout of the source commit and RUN a fresh absolute output directory. Each
 record reports `display:true` and dirty 0, and each run folder keeps `host-renderer.json`; the launcher
-accepted the attestation, `ANGLE Metal Renderer`, with 170 records for the first two runs and 178 for the
-third, whose added case steps create more contexts.
+accepted the attestation, `ANGLE Metal Renderer`, with 170 records for the first two runs, 178 for the
+third, whose added case steps create more contexts, and 180 for the fourth. The fourth run was built and
+booted in one step by
+`CARGO_BUILD_JOBS=4 BREENIX_BUILD_BACKGROUND=1 "$CHECKOUT/scripts/boot-interactive.sh" --mode suite --suite gpu --gpu-gl --display --serial-log "$RUN/serial.txt" < /dev/null`,
+which runs the same three builds under `taskpolicy -b` before booting.
 
 | Source commit and Vigil run | Producer output |
 |---|---|
 | `309ade3b02459d78daf6677e3e5ebbf6104acc85`, `20261017T083611Z-qemu` | `SUITE gpu DONE passed=71 failed=99 skipped=0 total=170`: device 12/12, submit 22/22, readback 19/19, textures 17/19, `pipelines/copy` PASS. `textures/quota FAIL … RESOURCE_CREATE of a 4096x4096 texture in format 0 returned ENOMEM`; `textures/readback-uploaded FAIL … CONTEXT_CREATE returned ENOMEM` |
 | `b71c5aa7a39993f26c3384e3a06684c46e833457`, `20261017T084718Z-qemu` | `SUITE gpu DONE passed=71 failed=99 skipped=0 total=170`: device 12/12, submit 22/22, readback 19/19, textures 17/19, `pipelines/copy` PASS. `textures/quota FAIL … the case crashed: killed by signal 11`; `textures/fault-skip-upload FAIL … CONTEXT_CREATE returned ENOMEM` |
 | `9afc54cded748521ec09e9478fb0a779d65d08e0`, `20261017T112047Z-qemu` | `SUITE gpu DONE passed=73 failed=97 skipped=0 total=170`: device 12/12, submit 22/22, readback 19/19, textures 19/19, `pipelines/copy` PASS. `SUITE gpu VALUE textures/upload-visibility hung-upload-ms=2000ms`, `reset-ms=4006ms`; `SUITE gpu CASE textures/upload-visibility PASS ms=4116`; `SUITE gpu CASE textures/quota PASS ms=62` |
+| `507d7515977d99c523a15cd4c8504608f10ec667`, `20261017T122823Z-qemu` | `SUITE gpu DONE passed=73 failed=97 skipped=0 total=170`: device 12/12, submit 22/22, readback 19/19, textures 19/19, `pipelines/copy` PASS. `SUITE gpu VALUE textures/immutable-while-pinned ordering-upload-ms=13ms`, `ordering-in-flight-after-upload=0`, `ordering-draws=1024`; `SUITE gpu CASE textures/immutable-while-pinned PASS ms=4021` |
 
 Facts the passing cases establish on the device, beyond B8's: TRANSFER_TO_HOST_3D with U's layout writes
 the box at `offset` = y × pitch + x × bytes per pixel with the 256-byte-aligned pitch as stride, including
@@ -532,6 +536,19 @@ live context naming the texture as a `COPY` source or a `DRAW_SAMPLED` texture i
 ends in the watchdog's device reset (`reset-ms=4006ms`), after which a new context draws and reads back exactly.
 Readback of either texture cannot show the invalid state in that window: it waits for the outstanding transfer,
 which only the reset ends, and the reset marks the texture lost.
+
+The same-context ordering experiment (ruling 26) is `immutable-while-pinned`'s first part, from the fourth run.
+No point is armed. One context sends a submission of 1024 `copy` draws, each sampling the whole of a 1024×1024
+texture into a 1024×1024 target (2^30 fragment-steps). A zero-timeout `WAIT` on its fence immediately
+before a one-texel `UPLOAD` to that texture in the same context returned ETIMEDOUT, so the upload was issued
+while the submission was unanswered. The target then read back exactly as the texture was before the
+upload, and a submission sent after the upload returned read the new texel. On this device, then, a
+submission sent before an upload in the same context samples the texture as it was before. The submission's
+fence had been answered by the time the `UPLOAD` returned (`ordering-in-flight-after-upload=0`), so the run
+does not show whether the device answers a transfer before the work sent ahead of it in that context.
+Had the fence already been answered at the `WAIT`, the case would have reported that run as
+`ordering-finished-early-draws` and repeated it once with 2048 draws (2^31, the work cap), failing if that run
+too were answered first.
 
 The first two runs' quota failures came from ARM64's frame allocator then spanning 0x4400_0000 to 0x5000_0000
 (`[boot] Initializing memory management (0x44000000-0x50000000)`), 192 MiB for the whole kernel, equal to the
