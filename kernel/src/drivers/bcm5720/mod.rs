@@ -970,6 +970,9 @@ impl Port {
         // The MAC's counters clear on read: read them before the frame.
         let _ = self.f.read32(STAT_OUT_OCTETS);
         let _ = self.f.read32(STAT_OUT_BROADCAST);
+        // Only interrupts delivered after this probe baseline may authorize
+        // receive servicing; a DMA status update alone is not MSI evidence.
+        let mut seen_interrupts = INTERRUPTS[self.slot].load(Ordering::Acquire);
         if let Err(error) = self.send(&frame) {
             log::warn!("[bcm5720] {bdf}: send failed: {error}");
             return;
@@ -999,7 +1002,6 @@ impl Port {
         let mut answered = false;
         let mac = self.mac;
         let slot = self.slot;
-        let mut seen_interrupts = 0;
         let mut resent = 0;
         let start = now_ms();
         while !answered && now_ms() - start < REPLY_TIMEOUT_MS {
@@ -1011,7 +1013,7 @@ impl Port {
                 }
             }
             let interrupts = INTERRUPTS[slot].load(Ordering::Acquire);
-            if interrupts == seen_interrupts && self.status.word(0) & STATUS_WORD_UPDATED == 0 {
+            if interrupts == seen_interrupts {
                 sleep_ms(1);
                 continue;
             }
