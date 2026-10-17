@@ -546,7 +546,7 @@ pub mod test_point {
     /// arm (behind the same latch and caller checks) and do nothing until their layer
     /// is built.
     pub const fn built(point: u32) -> bool {
-        matches!(point, STALE_FENCE | MASK_CAPABILITY | DEVICE_ERROR | WITHHOLD_FENCE)
+        matches!(point, SKIP_TRANSFER | STALE_FENCE | WRONG_RESOURCE | CORRUPT_PIXEL | MASK_CAPABILITY | DEVICE_ERROR | SUPPRESS_DRAW | WITHHOLD_FENCE)
     }
 }
 

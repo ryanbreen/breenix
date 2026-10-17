@@ -189,3 +189,16 @@ defined; the ones G1 builds:
 
 Every point is one-shot: it affects the next occurrence of its event, counts one firing and disarms
 itself. The other points arm and do nothing until their milestone builds them.
+
+G2 additionally builds these one-shot events (the target argument is the observed target handle for
+readback events, or 0 for any):
+
+| Point | Name | Effect |
+|---|---|---|
+| 19 | skip-transfer | omit the next transfer-back; the two observations expose unwritten bytes |
+| 20 | stale-fence, extended | change the next readback transfer's returned echo; the identity check returns reason 2 |
+| 21 | wrong-resource | transfer a different owned target of sufficient size; refuse its resource identity with reason 3 |
+| 22 | corrupt-pixel | append a GPU solid draw changing pixel (0,0) of the last written target to the complement of the poison; the exact comparison detects this outside the case's interior draw |
+| 28 | suppress-draw | omit one DRAW or DRAW_BUFFER during translation, while its real device fence still completes |
+
+The shader grammar, formats and byte order are unchanged from G1.

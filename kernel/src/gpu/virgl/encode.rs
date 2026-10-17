@@ -266,6 +266,7 @@ pub fn translate(
     b: &impl Bindings,
     vertex_buffer: u32,
     flip_y: bool,
+    corrupt: bool,
 ) -> Vec<u32> {
     let mut written: Vec<u32> = Vec::new();
     let mut current: Option<TargetRes> = None;
@@ -303,6 +304,10 @@ pub fn translate(
                 enc.cmd(ccmd::CLEAR, 0, &[pipe::CLEAR_COLOR0, f[0], f[1], f[2], f[3], 0, 0, 0]);
             }
             bgl::DRAW | bgl::DRAW_BUFFER => {
+                if crate::test_control::take(gpu_abi::test_point::SUPPRESS_DRAW, 0).is_some() {
+                    at += len;
+                    continue;
+                }
                 let Some(t) = current.as_ref() else {
                     at += len;
                     continue;
@@ -343,6 +348,15 @@ pub fn translate(
             _ => {}
         }
         at += len;
+    }
+    if corrupt && current.is_some() {
+        // Point 22: an extra GPU draw, outside the case's interior rectangle. No CPU
+        // write to device pixels: the normal solid program changes just pixel (0,0).
+        let f = rgba_floats(!super::super::POISON);
+        enc.cmd(ccmd::SET_CONSTANT_BUFFER, 0, &[pipe::SHADER_FRAGMENT, 0, f[0], f[1], f[2], f[3]]);
+        let (c0, c1) = (clip_coord(0), clip_coord(1));
+        bind_vertices(enc, &mut bound, vertex_buffer);
+        draw_vertices(enc, vertex_buffer, offset, &[c0, c0, c1, c0, c0, c1, c1, c0, c1, c1, c0, c1], 1);
     }
     written
 }

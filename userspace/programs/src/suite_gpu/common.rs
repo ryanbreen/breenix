@@ -124,6 +124,9 @@ pub fn frame(ctx: u64, s: &[u32]) -> Result<u64, CaseError> {
 
 /// A whole-target readback: the canonical BGRA bytes and record v2.
 pub fn read(t: u64, w: u32, h: u32) -> Result<(Vec<u8>, [u8; record::SIZE]), CaseError> {
+    libbreenix::graphics::take_over_display().map_err(|e| fail_msg(format!("take display: {e:?}")))?;
+    let (present, _) = gpu::present(t);
+    ensure(present == 0, || format!("PRESENT before observation returned {}", errno(present)))?;
     let mut px = vec![0u8; (w * h * 4) as usize];
     let mut rec = [0u8; record::SIZE];
     let r = gpu::readback(t, [0, 0, w, h], &mut px, w * 4, &mut rec);

@@ -315,3 +315,18 @@ vertex baseline unless it says otherwise; the vertex baseline is `VERT`, `DCL IN
 |---|---|
 | READBACK reason at 44 (0 none, 1 unwritten, 2 fence-mismatch, 3 resource-mismatch, 4 target-invalid, 5 device-error); invalidating submission at 56 | O: `docs/gui/gpu-abi.md`, naming the refusals required by gpu.md sections 1.4.1 and 1.8; zero inputs, no change to record v2 |
 | PRESENT argument: 32 bytes, target at 0, completed flush fence at 8, answer at 16, zero padding at 20 and 24 | O: `docs/gui/gpu-abi.md`, implementing the minimal G2 bind of gpu.md sections 1.7 and 1.11 |
+
+## G2 scanout and readback implementation values
+
+| Value or layout | Source |
+|---|---|
+| SET_SCANOUT 0x0103, RESOURCE_FLUSH 0x0104; OK_NODATA 0x1100 | V section 5.7.6.7, `virtio_gpu_ctrl_type` |
+| SET_SCANOUT after the 24-byte header: rect x/y/width/height (four le32, offsets 0/4/8/12), scanout_id le32 at 16, resource_id le32 at 20 | V section 5.7.6.8, `virtio_gpu_rect` and `virtio_gpu_set_scanout`; scanout 0 and the full target rectangle are G2 choices |
+| RESOURCE_FLUSH after the header: the same rect, resource_id le32 at 16, padding le32 at 20 (zero) | V section 5.7.6.8, `virtio_gpu_resource_flush` |
+| VIRGL_BIND_SCANOUT bit 18 | H:648 at the pinned revision; targets add it to their existing render/sample flags for section 1.7 |
+| Record scanout flag bit 0 and present fence/status at 184/192; resource/context ids and published generation/fences | O: gpu.md section 1.8; recorded only after both bind and flush answers with checked fence echoes |
+| Output preflight one unchanged byte per 4,096-byte page through recoverable user access; tight staged BGRA output independent of caller stride | O: Breenix user-access and page APIs, implementing gpu.md section 1.4 EFAULT atomicity and section 1.8; padding is never published |
+| Point 19 omits one transfer; 20 alters one returned transfer echo; 21 transfers a different owned resource; 22 appends a solid 1x1 draw at (0,0) in the complement of the poison; 28 omits one DRAW or DRAW_BUFFER | O: gpu.md section 1.8; the existing solid program/vertex grammar and wire values above encode the device draws |
+| Full readback is staged until every band passed both complementary-poison observations; no pixels on any refusal | O: gpu.md sections 1.4 and 1.8 |
+| Uncertain scanout bindings hold every candidate resource until a later completed bind/flush or confirmed reset; serialization survives interrupted device waits | O: gpu.md section 1.4.1, device-access hold sets |
+| Status view 2560x1600; category rows at y=48+160r, case tiles at x=48+80c, size 64x112; background 0xFF181512, pending 0xFF484542, running 0xFF3894F2, pass 0xFF45C46A, fail 0xFFE84D42 | O: G2 display sizing and palette choices implementing gpu.md section 1.10; every tile uses the existing solid pipeline |

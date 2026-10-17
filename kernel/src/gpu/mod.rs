@@ -25,6 +25,8 @@
 //! (section 1.4: no kernel output on any path).
 
 mod completion;
+mod display;
+mod observation;
 pub mod dma;
 pub mod virgl;
 
@@ -36,7 +38,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use gpu_abi::errno::{EAGAIN, EDQUOT, EFAULT, EINTR, EINVAL, EIO, ENODEV, ENOMEM, ENOSYS, ETIMEDOUT};
 use gpu_abi::stream::{self, Resolver, TargetInfo};
-use gpu_abi::{self as abi, capability, fence_status, format, kind, limits, record, test_point, Plain};
+use gpu_abi::{self as abi, readback_reason, capability, fence_status, format, kind, limits, record, test_point, Plain};
 
 use crate::syscall::SyscallResult;
 use crate::task::thread::ThreadState;
@@ -230,6 +232,7 @@ struct Res {
 
 struct Core {
     dev: Option<Device>,
+    display: display::State,
     /// The control queue's size, kept while the device is out for a reset.
     queue_size: usize,
     /// A device whose reset was never confirmed, with every request it was given or that
@@ -324,6 +327,7 @@ impl Core {
         caps.catalogue_version = abi::CATALOGUE_VERSION;
         Core {
             dev: None,
+            display: display::State::new(),
             queue_size: 0,
             wedged: None,
             status: abi::status::NO_DEVICE,
@@ -732,6 +736,10 @@ impl Core {
         for id in &s.holds {
             self.unhold(*id);
         }
+        if self.display.sync == Some(serial) {
+            self.display.sync = None;
+            if self.display.abandoned { self.display.busy = false; }
+        }
         if s.abandoned {
             if let Some(id) = s.reading {
                 if let Some(r) = self.resources.get_mut(&id) {
@@ -1063,6 +1071,10 @@ impl Core {
             }
             self.free_if_unused(id);
         }
+        let scanouts = core::mem::take(&mut self.display.holds);
+        self.display.binding = None;
+        self.display.known = true;
+        for id in scanouts { self.unhold(id); }
         self.resetting = false;
         match up {
             Ok(()) => self.dev = Some(dev),
@@ -1389,8 +1401,9 @@ pub fn sys_gpu(op: u64, arg: u64, len: u64) -> SyscallResult {
                 abi::op::SUBMIT => op_submit(arg, len),
                 abi::op::WAIT => op_wait(arg, len),
                 abi::op::READBACK => op_readback(arg, len),
+                abi::op::PRESENT => display::present(arg, len),
                 abi::op::COUNTERS => op_counters(arg, len),
-                // UPLOAD (G3), MODES, SET_MODE and PRESENT (G2, G7) are not built yet.
+                // UPLOAD (G3), MODES and SET_MODE (G7) are not built yet.
                 _ => Err(ENOSYS),
             },
         },
@@ -1686,7 +1699,7 @@ fn op_resource_create(arg: u64, len: u64) -> Result<u64, i64> {
             // Transfers use rows aligned to 256 bytes (section 1.3, backing and row pitch).
             let pitch = (a.width * format::bytes(a.format)).next_multiple_of(256);
             let bind = if a.kind == kind::TARGET {
-                wire::bind::RENDER_TARGET | wire::bind::SAMPLER_VIEW
+                wire::bind::RENDER_TARGET | wire::bind::SAMPLER_VIEW | wire::bind::SCANOUT
             } else {
                 wire::bind::SAMPLER_VIEW
             };
@@ -2111,7 +2124,8 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
     };
     // The submission's own vertex buffer: no other submission writes it, and it is
     // freed when the submission no longer holds it.
-    let vertex_buffer = match vertex_buffer_for(id, encode::vertex_bytes(plan.drawn)) {
+    let corrupt = !written.is_empty() && crate::test_control::take(test_point::CORRUPT_PIXEL, 0).is_some();
+    let vertex_buffer = match vertex_buffer_for(id, encode::vertex_bytes(plan.drawn + u64::from(corrupt))) {
         Ok(vb) => vb,
         Err(e) => {
             release_slot(false);
@@ -2134,7 +2148,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
     let stale: Vec<u32> = objects.surfaces.keys().copied().filter(|&rid| rid != scratch && !view.has_id(rid)).collect();
     let mut enc = encode::Enc::new();
     encode::forget_surfaces(&mut enc, &mut objects, &stale);
-    encode::translate(&mut enc, &mut objects, &words, &resolved, vertex_buffer.unwrap_or(default_vb), FLIP_Y);
+    encode::translate(&mut enc, &mut objects, &words, &resolved, vertex_buffer.unwrap_or(default_vb), FLIP_Y, corrupt);
     let chunks = enc.finish();
     let mut held = named_ids.clone();
     if let Some(vb) = vertex_buffer {
@@ -2320,7 +2334,7 @@ fn op_wait(arg: u64, len: u64) -> Result<u64, i64> {
 }
 
 fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
-    let a: abi::Readback = read_arg(arg, len)?;
+    let mut a: abi::Readback = read_arg(arg, len)?;
     if a.reason != 0 || a.failed_submission != 0 {
         return Err(EINVAL);
     }
@@ -2345,9 +2359,17 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
     if (a.stride as u64) < row || a.pixels_len < (h - 1) * a.stride as u64 + row {
         return Err(EINVAL);
     }
+    // Fault every output page before issuing device work or publishing either output.
+    probe_output(arg, core::mem::size_of::<abi::Readback>())?;
+    probe_output(a.record, record::SIZE)?;
+    probe_output(a.pixels, ((h - 1) * a.stride as u64 + row) as usize)?;
+    if let Err(e) = display::readable(tgid, id) {
+        if e == EIO { a.reason = readback_reason::RESOURCE_MISMATCH; write_arg(arg, &a)?; }
+        return Err(e);
+    }
     // Wait for every accepted write of the target to complete, then take it for reading.
     let taken = wait_for(None, true, |c| {
-        let r = c.resources.get_mut(&id)?;
+        let Some(r) = c.resources.get_mut(&id) else { return Some(Err(EIO)); };
         if r.lost || r.dropped {
             return Some(Err(EIO));
         }
@@ -2355,9 +2377,9 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
             return None;
         }
         r.reading = true;
-        Some(Ok((r.invalid, r.generation, r.last)))
+        Some(Ok((r.invalid, r.invalidated_by, r.generation, r.last)))
     });
-    let (invalid, generation, last) = match taken {
+    let (invalid, invalidated_by, generation, last) = match taken {
         Ok(Ok(t)) => t,
         Ok(Err(e)) => return Err(e),
         Err(_) => return Err(EINTR),
@@ -2377,11 +2399,24 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
     };
     if invalid {
         release();
+        a.reason = readback_reason::TARGET_INVALID;
+        a.failed_submission = invalidated_by;
+        write_arg(arg, &a)?;
         return Err(EIO);
     }
     let outcome = observe(tgid, id, last, &backing, pitch, fmt, a);
-    release();
-    let (unwritten, transfer_fence, transfer_answer) = outcome?;
+    let observation = match outcome {
+        Ok(o) => o,
+        Err((errno, reason)) => {
+            release();
+            if errno == EIO {
+                a.reason = reason;
+                write_arg(arg, &a)?;
+            }
+            return Err(errno);
+        }
+    };
+    let (unwritten, transfer_fence, transfer_answer) = (observation.unwritten, observation.fence, observation.answer);
     let mut rec = [0u8; record::SIZE];
     let put32 = |rec: &mut [u8; record::SIZE], at: usize, v: u32| rec[at..at + 4].copy_from_slice(&v.to_le_bytes());
     let put64 = |rec: &mut [u8; record::SIZE], at: usize, v: u64| rec[at..at + 8].copy_from_slice(&v.to_le_bytes());
@@ -2396,6 +2431,19 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
     put64(&mut rec, record::SERIAL, serial);
     put32(&mut rec, record::BACKEND, abi::backend::VIRGL);
     put32(&mut rec, record::BOUNDARY, record::BOUNDARY_HOST);
+    let binding = match display::binding(tgid, id) {
+        Ok(b) => b,
+        Err(e) => {
+            release();
+            if e == EIO { a.reason = readback_reason::RESOURCE_MISMATCH; write_arg(arg, &a)?; }
+            return Err(e);
+        }
+    };
+    if let Some((fence, answer)) = binding {
+        put32(&mut rec, record::FLAGS, 1);
+        put64(&mut rec, record::PRESENT_FENCE, fence);
+        put32(&mut rec, record::PRESENT_STATUS, answer);
+    }
     put32(&mut rec, record::FORMAT, fmt);
     put32(&mut rec, record::X, a.x);
     put32(&mut rec, record::Y, a.y);
@@ -2420,7 +2468,24 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
     put32(&mut rec, record::POISON, POISON);
     put32(&mut rec, record::UNWRITTEN, unwritten);
     rec[record::RENDERER..record::RENDERER + 64].copy_from_slice(&renderer);
-    crate::syscall::userptr::write_user_bytes(a.record, rec.as_ptr(), record::SIZE).map_err(|_| EFAULT)?;
+    // Nothing reaches pixels until the complete rectangle passed both observations.
+    let output = (|| {
+        if unwritten == 0 {
+            let row = a.width as usize * 4;
+            for y in 0..a.height as usize {
+                crate::syscall::userptr::write_user_bytes(a.pixels + y as u64 * a.stride as u64,
+                    observation.pixels[y * row..].as_ptr(), row).map_err(|_| EFAULT)?;
+            }
+        }
+        crate::syscall::userptr::write_user_bytes(a.record, rec.as_ptr(), record::SIZE).map_err(|_| EFAULT)
+    })();
+    release();
+    output?;
+    if unwritten != 0 {
+        a.reason = readback_reason::UNWRITTEN;
+        write_arg(arg, &a)?;
+        return Err(EIO);
+    }
     with_core(|c| {
         if let Some(l) = last {
             if let Some(ctx) = c.contexts.get_mut(&l.ctx) {
@@ -2429,10 +2494,33 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
         }
         c.proc_mut(tgid).totals.readbacks += 1;
     });
-    if unwritten != 0 {
-        return Err(EIO);
-    }
     Ok(0)
+}
+
+/// Touch a byte in each output page with the recoverable user-access routines. The
+/// write preserves its value, resolves COW, and rejects read-only/unmapped pages before
+/// any observation or output. The GPU paths never use unchecked user pointers.
+fn probe_output(addr: u64, len: usize) -> Result<(), i64> {
+    if len == 0 || !crate::memory::layout::is_valid_user_range(addr, len) {
+        return Err(EFAULT);
+    }
+    let end = addr.checked_add(len as u64).ok_or(EFAULT)?;
+    let mut at = addr;
+    while at < end {
+        if crate::syscall::check_signals_for_wait().is_some() { return Err(EINTR); }
+        let mut byte = 0u8;
+        crate::syscall::userptr::read_user_bytes(&mut byte, at, 1).map_err(|_| EFAULT)?;
+        crate::syscall::userptr::write_user_bytes(at, &byte, 1).map_err(|_| EFAULT)?;
+        at = (at | (PAGE as u64 - 1)).saturating_add(1);
+    }
+    Ok(())
+}
+
+struct Observation {
+    pixels: Vec<u8>,
+    unwritten: u32,
+    fence: u64,
+    answer: u32,
 }
 
 /// Read a rectangle of target `id` into the caller's pixels, band by band: each band is
@@ -2441,7 +2529,7 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
 /// synchronous request under the watchdog that holds the target, and its backing, until
 /// the device returns it. Returns that count and the first transfer's fence and answer.
 #[allow(clippy::too_many_arguments)]
-fn observe(tgid: u64, id: u32, last: Option<LastWrite>, backing: &Arc<Pages>, pitch: u32, fmt: u32, a: abi::Readback) -> Result<(u32, u64, u32), i64> {
+fn observe(tgid: u64, id: u32, last: Option<LastWrite>, backing: &Arc<Pages>, pitch: u32, fmt: u32, a: abi::Readback) -> Result<Observation, (i64, u32)> {
     let ctx = with_core(|c| {
         let mine = |cid: &u32| c.contexts.get(cid).is_some_and(|x| x.owner == tgid && x.state == CtxState::Live && x.device_alive);
         last.map(|l| l.ctx)
@@ -2449,8 +2537,10 @@ fn observe(tgid: u64, id: u32, last: Option<LastWrite>, backing: &Arc<Pages>, pi
             .or_else(|| c.procs.get(&tgid).and_then(|p| p.contexts.values().copied().find(mine)))
     })
     .flatten()
-    .ok_or(EINVAL)?;
+    .ok_or((EINVAL, readback_reason::NONE))?;
     let row = a.width as usize * 4;
+    let mut pixels = Vec::new();
+    pixels.try_reserve_exact(row * a.height as usize).map_err(|_| (ENOMEM, readback_reason::NONE))?;
     let band_rows = (READBACK_BAND / row).max(1).min(a.height as usize);
     let mut temp = alloc::vec![0u8; band_rows * row];
     let mut second = alloc::vec![0u8; row];
@@ -2466,32 +2556,45 @@ fn observe(tgid: u64, id: u32, last: Option<LastWrite>, backing: &Arc<Pages>, pi
                 backing.fill(offset + r * pitch as usize, row, pattern);
             }
             backing.maintain(offset, (rows - 1) * pitch as usize + row, false);
-            let (serial, fence) = with_core(|c| (c.serial(), c.device_fence())).ok_or(ENODEV)?;
-            let req = virgl::transfer_from_host(
-                Tag::Sync(serial),
-                ctx,
-                fence,
-                id,
-                backing.clone(),
-                a.x,
-                ty as u32,
-                a.width,
-                rows as u32,
-                offset as u64,
-                pitch,
-            );
-            let d = exec_req(serial, req, ctx, &[id], Some(id))?;
-            if !virgl::ok(d.answer) || d.echoed != fence {
-                return Err(EIO);
+            let skip = crate::test_control::take(test_point::SKIP_TRANSFER, a.target).is_some();
+            let actual = if crate::test_control::take(test_point::WRONG_RESOURCE, a.target).is_some() {
+                with_core(|c| c.resources.iter().find(|(rid, r)| **rid != id && r.owner == tgid
+                    && r.kind == kind::TARGET && !r.dropped && !r.lost
+                    && r.width >= a.x + a.width && r.height >= a.y + a.height).map(|(&rid, _)| rid))
+                    .flatten().ok_or((EIO, readback_reason::RESOURCE_MISMATCH))?
+            } else { id };
+            if !skip {
+                let (serial, fence) = with_core(|c| (c.serial(), c.device_fence())).ok_or((ENODEV, readback_reason::NONE))?;
+                let req = virgl::transfer_from_host(
+                    Tag::Sync(serial),
+                    ctx,
+                    fence,
+                    actual,
+                    backing.clone(),
+                    a.x,
+                    ty as u32,
+                    a.width,
+                    rows as u32,
+                    offset as u64,
+                    pitch,
+                );
+                let mut d = exec_req(serial, req, ctx, &[id, actual], Some(id)).map_err(|e| (e, readback_reason::DEVICE_ERROR))?;
+                if crate::test_control::take(test_point::STALE_FENCE, a.target).is_some() {
+                    d.echoed = d.echoed.wrapping_add(1);
+                }
+                if !virgl::ok(d.answer) { return Err((EIO, readback_reason::DEVICE_ERROR)); }
+                if d.echoed != fence || d.resp.u32_at(wire::HDR_FLAGS) & wire::FLAG_FENCE == 0 {
+                    return Err((EIO, readback_reason::FENCE_MISMATCH));
+                }
+                if actual != id { return Err((EIO, readback_reason::RESOURCE_MISMATCH)); }
+                first.get_or_insert((fence, d.answer));
             }
-            first.get_or_insert((fence, d.answer));
-            backing.maintain(offset, (rows - 1) * pitch as usize + row, true);
             for r in 0..rows {
                 let dst = &mut temp[r * row..(r + 1) * row];
                 if pass == 0 {
-                    backing.read(offset + r * pitch as usize, dst);
+                    observation::read(backing.as_ref(), offset + r * pitch as usize, dst);
                 } else {
-                    backing.read(offset + r * pitch as usize, &mut second);
+                    observation::read(backing.as_ref(), offset + r * pitch as usize, &mut second);
                     unwritten += dst.iter().zip(second.iter()).filter(|(p, q)| p != q).count() as u32;
                 }
             }
@@ -2504,13 +2607,12 @@ fn observe(tgid: u64, id: u32, last: Option<LastWrite>, backing: &Arc<Pages>, pi
                     px.swap(0, 2);
                 }
             }
-            let dst = a.pixels + ((by + r) as u64) * a.stride as u64;
-            crate::syscall::userptr::write_user_bytes(dst, src.as_ptr(), row).map_err(|_| EFAULT)?;
+            pixels.extend_from_slice(src);
         }
         by += rows;
     }
     let (fence, answer) = first.unwrap_or((0, 0));
-    Ok((unwritten, fence, answer))
+    Ok(Observation { pixels, unwritten, fence, answer })
 }
 
 fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {
