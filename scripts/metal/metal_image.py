@@ -62,13 +62,20 @@ def extract_esp(uefi_image, directory):
     return {name: directory / name for name in ESP_FILES}
 
 
+def esp_layout(payload):
+    """The ESP's size and FAT type: FAT32 (at least 65525 clusters of 4 KiB, so 260 MiB or more) for a kernel image,
+    FAT16 (2 KiB clusters, 32 MiB) for a payload of a few megabytes."""
+    if payload <= 16 << 20:
+        return 32 << 20, ['-F', '16', '-s', '4']
+    esp_bytes = max(payload + payload // 32 + (32 << 20), 260 << 20)
+    return (esp_bytes + (1 << 20) - 1) // (1 << 20) << 20, ['-F', '32', '-s', '8']
+
+
 def assemble(output, files):
-    """Writes a GPT disk with one FAT32 ESP holding `files` ({path in the ESP: source}); returns the image facts."""
+    """Writes a GPT disk with one FAT ESP holding `files` ({path in the ESP: source}); returns the image facts."""
     output = Path(output)
     payload = sum(Path(source).stat().st_size for source in files.values())
-    # FAT32 needs at least 65525 clusters; at 4 KiB clusters that is 256 MiB, so small payloads get that floor.
-    esp_bytes = max(payload + payload // 32 + (32 << 20), 260 << 20)
-    esp_bytes = (esp_bytes + (1 << 20) - 1) // (1 << 20) << 20
+    esp_bytes, fat = esp_layout(payload)
     total = ESP_START * SECTOR + esp_bytes + (1 << 20)
     output.unlink(missing_ok=True)
     with output.open('wb') as disk:
@@ -76,8 +83,8 @@ def assemble(output, files):
     last = ESP_START + esp_bytes // SECTOR - 1
     run('sgdisk', '--clear', f'--new=1:{ESP_START}:{last}', '--typecode=1:EF00', '--change-name=1:EFI system',
         str(output))
-    run('mkfs.fat', '-F', '32', '-S', str(SECTOR), '-s', '8', '-n', 'BREENIX', '--offset', str(ESP_START),
-        str(output), str(esp_bytes // 1024))
+    run('mkfs.fat', *fat, '-S', str(SECTOR), '-n', 'BREENIX', '--offset', str(ESP_START), str(output),
+        str(esp_bytes // 1024))
     target = f'{output}@@{ESP_START * SECTOR}'
     made = set()
     for name in sorted(files):
@@ -89,6 +96,39 @@ def assemble(output, files):
                 made.add(parent)
         run('mcopy', '-i', target, str(files[name]), '::/' + name)
     return verify(output, files)
+
+
+def esp_image(output, files):
+    """A bare FAT filesystem image (no partition table) holding `files`: an El Torito EFI boot image."""
+    output = Path(output)
+    payload = sum(Path(source).stat().st_size for source in files.values())
+    esp_bytes, fat = esp_layout(payload)
+    output.unlink(missing_ok=True)
+    with output.open('wb') as disk:
+        disk.truncate(esp_bytes)
+    run('mkfs.fat', *fat, '-S', str(SECTOR), '-n', 'BREENIX', str(output))
+    made = set()
+    for name in sorted(files):
+        parent = ''
+        for part in Path(name).parent.parts:
+            parent = f'{parent}/{part}'
+            if parent not in made:
+                run('mmd', '-i', str(output), '::' + parent)
+                made.add(parent)
+        run('mcopy', '-i', str(output), str(files[name]), '::/' + name)
+
+
+def iso(output, files, scratch):
+    """An ISO 9660 image whose El Torito EFI boot entry is a FAT image holding `files`. The boot entry's sector
+    count is left for xorriso to set; the FAT filesystem carries its own size."""
+    root = Path(scratch) / 'iso-root'
+    root.mkdir(parents=True, exist_ok=True)
+    esp_image(root / 'efi.img', files)
+    Path(output).unlink(missing_ok=True)
+    run('xorriso', '-as', 'mkisofs', '-quiet', '-V', 'BREENIX', '-e', 'efi.img', '-no-emul-boot', '-o', str(output),
+        str(root))
+    (root / 'efi.img').unlink()
+    return {'size': Path(output).stat().st_size, 'sha256': sha256(output)}
 
 
 def verify(output, files):

@@ -45,7 +45,7 @@ fi
 sudo -n incus config set "$METAL_INSTANCE" limits.cpu="$METAL_CPUS" limits.memory="$METAL_MEMORY" boot.autostart=true </dev/null
 sudo -n incus exec "$METAL_INSTANCE" -- sh -c "DEBIAN_FRONTEND=noninteractive apt-get update -qq && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ipmitool tmux mtools dosfstools \
-    gdisk e2fsprogs ca-certificates >/dev/null" </dev/null
+    gdisk e2fsprogs xorriso ca-certificates >/dev/null" </dev/null
 echo "metal-deploy: service container ready"'
 fi
 

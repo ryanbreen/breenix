@@ -163,6 +163,12 @@ class HttpServerTest(StateTest):
     def log(self):
         return [json.loads(line) for line in (m.STATE / 'http.jsonl').read_text().splitlines()]
 
+    def wait_complete(self):
+        """The client holds the body before the server has recorded the transfer; wait for its log entry."""
+        deadline = time.time() + 10
+        while time.time() < deadline and not any(e['event'] == 'complete' for e in self.log()):
+            time.sleep(0.02)
+
     def test_nothing_staged_is_404(self):
         self.assertEqual(self.request()[0], 404)
         self.assertEqual(self.request('HEAD')[0], 404)
@@ -175,6 +181,7 @@ class HttpServerTest(StateTest):
         self.assertEqual(int(headers['Content-Length']), 3 << 20)
         status, _, body = self.request()
         self.assertEqual((status, hashlib.sha256(body).hexdigest()), (200, self.digest))
+        self.wait_complete()
         self.assertEqual(self.request()[0], 404)
         self.assertEqual(self.request('HEAD')[0], 404)
         complete = [entry for entry in self.log() if entry['event'] == 'complete']
@@ -193,7 +200,36 @@ class HttpServerTest(StateTest):
         self.assertTrue(any(e['event'] == 'broken' for e in self.log()))
         status, _, body = self.request()
         self.assertEqual((status, hashlib.sha256(body).hexdigest()), (200, self.digest))
+        self.wait_complete()
         self.assertEqual(self.request()[0], 404)
+
+    def test_byte_ranges_count_once_the_whole_file_is_covered(self):
+        m.stage('20261017T000000Z-metal', self.image, self.digest, self.image.stat().st_size, 'application/efi')
+        size = self.image.stat().st_size
+        data = self.image.read_bytes()
+        parts = []
+        for header in (f'bytes=0-{(1 << 20) - 1}', f'bytes={1 << 20}-'):
+            request = urllib.request.Request(self.url, headers={'Range': header})
+            with urllib.request.urlopen(request, timeout=10) as reply:
+                self.assertEqual(reply.status, 206)
+                parts.append(reply.read())
+                self.assertIn('Content-Range', reply.headers)
+        self.assertEqual(b''.join(parts), data)
+        self.wait_complete()
+        self.assertEqual(self.request()[0], 404)
+        complete = [entry for entry in self.log() if entry['event'] == 'complete']
+        self.assertEqual(len(complete), 1)
+        self.assertTrue(complete[0]['matches'] and complete[0]['ranged'])
+        self.assertEqual(size, 3 << 20)
+
+    def test_an_unsatisfiable_range_is_416(self):
+        m.stage('20261017T000000Z-metal', self.image, self.digest, self.image.stat().st_size, 'application/efi')
+        request = urllib.request.Request(self.url, headers={'Range': f'bytes={4 << 20}-'})
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(request, timeout=10)
+        with caught.exception:
+            self.assertEqual(caught.exception.code, 416)
+        self.assertEqual(self.request()[0], 200)
 
     def test_other_paths_are_404(self):
         m.stage('20261017T000000Z-metal', self.image, self.digest, self.image.stat().st_size, 'application/efi')

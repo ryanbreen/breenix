@@ -274,11 +274,13 @@ def stage_dir(boot_id):
     return STATE / 'stage' / boot_id
 
 
-def stage(boot_id, path, sha256, size, content_type):
+def stage(boot_id, path, sha256, size, content_type, redirect=None):
+    """Stages one file for the route. With `redirect` (a path beside the route, such as /breenix/boot.iso), the route
+    answers 302 to that path and the file is served there: the URI's file name can then match the image form."""
     with locked('stage'):
         write_json(STATE / 'stage' / 'current.json', {'id': boot_id, 'path': str(path), 'sha256': sha256,
                                                       'size': size, 'contentType': content_type,
-                                                      'served': False, 'staged': now()})
+                                                      'redirect': redirect, 'served': False, 'staged': now()})
 
 
 def unstage(boot_id=None):

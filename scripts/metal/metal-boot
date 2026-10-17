@@ -30,7 +30,7 @@ import metal_lib as m  # noqa: E402
 import metal_image  # noqa: E402
 
 MODES = ('default',)
-PAYLOADS = ('image', 'hang', 'none')
+PAYLOADS = ('image', 'hang', 'hang-img', 'hang-iso', 'none')
 CEILING_SECONDS = {'default': 900}
 MODE_DEADLINE_SECONDS = {'default': 300}
 INPUT_DEADLINE_SECONDS = 2 * 3600
@@ -188,13 +188,23 @@ class Driver:
         if self.args.payload == 'none':
             self.event('nothing-staged')
             return
-        if self.args.payload == 'hang':
-            path = self.stage / 'metal-hang.efi'
-            path.write_bytes(metal_image.hang_efi())
+        if self.args.payload.startswith('hang'):
+            # metal-hang.efi bare, or as \EFI\BOOT\BOOTX64.EFI in a small RAM-disk image or ISO: the delivery
+            # ladder's probes of which image forms the firmware accepts.
+            efi = self.stage / 'metal-hang.efi'
+            efi.write_bytes(metal_image.hang_efi())
+            path, form = efi, 'efi'
+            if self.args.payload == 'hang-img':
+                path, form = self.stage / 'metal-hang.img', 'img'
+                metal_image.assemble(path, {'efi/boot/bootx64.efi': efi})
+            elif self.args.payload == 'hang-iso':
+                path, form = self.stage / 'metal-hang.iso', 'iso'
+                metal_image.iso(path, {'efi/boot/bootx64.efi': efi}, self.stage)
             self.payload_facts = {'path': path, 'size': path.stat().st_size, 'sha256': metal_image.sha256(path),
-                                  'contentType': metal_image.CONTENT_TYPES['efi'], 'name': 'metal-hang.efi'}
+                                  'contentType': self.args.content_type or metal_image.CONTENT_TYPES[form],
+                                  'name': path.name}
             self.delivery['image'] = {k: v for k, v in self.payload_facts.items() if k != 'path'}
-            self.event('payload-ready', name='metal-hang.efi', size=self.payload_facts['size'],
+            self.event('payload-ready', name=path.name, size=self.payload_facts['size'],
                        sha256=self.payload_facts['sha256'])
             return
         self.phase_name = 'building'
@@ -270,8 +280,13 @@ class Driver:
     def do_stage(self):
         if self.payload_facts:
             facts = self.payload_facts
-            m.stage(self.id, facts['path'], facts['sha256'], facts['size'], facts['contentType'])
-            self.event('staged', name=facts['name'], size=facts['size'], sha256=facts['sha256'])
+            redirect = None
+            if self.args.serve_as:
+                redirect = m.load_site()['BOOT_URL'].split('://', 1)[1].split('/', 1)[1].rsplit('/', 1)[0]
+                redirect = '/' + redirect + '/' + self.args.serve_as
+            m.stage(self.id, facts['path'], facts['sha256'], facts['size'], facts['contentType'], redirect)
+            self.event('staged', name=facts['name'], size=facts['size'], sha256=facts['sha256'],
+                       redirectedTo=self.args.serve_as or None)
         else:
             m.unstage()
         log = m.STATE / 'http.jsonl'
@@ -394,7 +409,7 @@ class Driver:
             self.event('handoff', seconds=round(self.since_power(), 1))
             self.phase('Handoff: the kernel is starting')
             self.last_stage = 'Bootloader handoff'
-        if self.args.payload == 'hang' and HANG_LINE in line and self.kernel_started is None:
+        if self.args.payload.startswith('hang') and HANG_LINE in line and self.kernel_started is None:
             self.kernel_started = m.now()
             self.event('payload-started', seconds=round(self.since_power(), 1))
             self.phase('Test payload running: interrupts masked, halted')
@@ -423,7 +438,8 @@ class Driver:
         if self.t0 is None or entry.get('t', 0) < self.t0:
             return
         kind = entry.get('event')
-        if kind not in ('head', 'start', 'progress', 'complete', 'short', 'broken', '404'):
+        if kind not in ('redirect', 'head', 'start', 'progress', 'range-done', 'complete', 'short', 'broken', '404',
+                        'range-invalid'):
             return
         if kind == '404' and not entry.get('route'):
             return
@@ -446,16 +462,20 @@ class Driver:
             return
         if entry.get('id') != self.id:
             return
-        if kind == 'start':
+        if kind == 'redirect':
+            self.event('image-redirect', method=entry.get('method'))
+        elif kind == 'start':
             self.first_byte_at = self.first_byte_at or entry['t']
             self.last_progress = entry['t']
             self.broken_at = None
             self.event('image-start', total=entry.get('total'))
-        elif kind == 'progress':
+        elif kind in ('progress', 'range-done'):
             self.last_progress = entry['t']
             if m.now() - self.last_phase_progress >= 5:
                 self.last_phase_progress = m.now()
                 self.phase(f"Fetching boot image · {entry['bytes'] >> 20} of {entry['total'] >> 20} MB")
+        elif kind == 'range-invalid':
+            self.event('image-range-invalid', range=entry.get('range'))
         elif kind == 'broken':
             self.broken_at = entry['t']
             self.event('image-broken', bytes=entry.get('bytes'))
@@ -753,6 +773,10 @@ def main():
         p.add_argument('--task', default='')
         p.add_argument('--no-wait', action='store_true')
         p.add_argument('--inject', choices=('forceoff-fail',))
+        p.add_argument('--content-type', choices=('application/octet-stream',),
+                       help='a test payload served with this type instead of its form\'s own')
+        p.add_argument('--serve-as', choices=('boot.iso', 'boot.efi'),
+                       help='answer the fixed URI with a redirect to this name beside it, and serve the file there')
     p = sub.add_parser('stop')
     p.add_argument('id')
     p = sub.add_parser('inputs-ready')

@@ -76,6 +76,10 @@ def boot(args):
         command.append('--no-wait')
     if args.inject:
         command += ['--inject', args.inject]
+    if args.serve_as:
+        command += ['--serve-as', args.serve_as]
+    if args.content_type:
+        command += ['--content-type', args.content_type]
     result = in_metal(env, *command, capture_output=True, text=True)
     print(result.stdout.strip() or result.stderr.strip(), flush=True)
     if result.returncode != 0:
@@ -140,11 +144,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest='command', required=True)
     p = sub.add_parser('boot')
-    p.add_argument('--payload', choices=('image', 'hang', 'none'), default='image')
+    p.add_argument('--payload', choices=('image', 'hang', 'hang-img', 'hang-iso', 'none'), default='image')
     p.add_argument('--sha')
     p.add_argument('--branch')
     p.add_argument('--no-wait', action='store_true')
     p.add_argument('--inject', choices=('forceoff-fail',))
+    p.add_argument('--serve-as', choices=('boot.iso', 'boot.efi'))
+    p.add_argument('--content-type', choices=('application/octet-stream',))
     for name in ('stop', 'follow'):
         sub.add_parser(name).add_argument('id')
     sub.add_parser('status')
