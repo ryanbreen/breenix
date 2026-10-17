@@ -33,6 +33,7 @@
 mod completion;
 mod present_answers;
 mod display;
+pub mod console;
 mod observation;
 mod quota;
 mod staging;
@@ -1295,6 +1296,7 @@ impl Core {
     /// Release everything process `tgid` holds: contexts are destroyed once their work
     /// has completed, resources are freed once nothing holds them.
     fn reclaim(&mut self, tgid: u64) {
+        display::ended(self, tgid);
         let Some(p) = self.procs.remove(&tgid) else { return };
         for (_, id) in p.contexts {
             if let Some(c) = self.contexts.get_mut(&id) {
@@ -1539,7 +1541,7 @@ fn warm_next() {
             && c.quarantined_at.is_none()
             && !c.procs.values().any(|p| p.creating)
     };
-    let warming = |x: &Ctx| x.state == CtxState::Live && x.device_alive && !x.dropped && x.warm != encode::ALL_WARM;
+    let warming = |x: &Ctx| x.owner != 0 && x.state == CtxState::Live && x.device_alive && !x.dropped && x.warm != encode::ALL_WARM;
     if !with_core(|c| ready(c) && c.contexts.values().any(warming)).unwrap_or(false) {
         return;
     }
@@ -1611,7 +1613,7 @@ fn sweep() {
         return;
     }
     let dead: Vec<u64> = crate::process::with_process_manager(|m| {
-        tgids.into_iter().filter(|&tgid| !group_live(m, tgid, None)).collect()
+        tgids.into_iter().filter(|&tgid| tgid != 0 && !group_live(m, tgid, None)).collect()
     })
     .unwrap_or_default();
     if !dead.is_empty() {
@@ -1724,14 +1726,8 @@ pub fn sys_gpu(op: u64, arg: u64, len: u64) -> SyscallResult {
                 abi::op::READBACK => op_readback(arg, len),
                 abi::op::PRESENT => display::present(arg, len),
                 abi::op::COUNTERS => op_counters(arg, len),
-                // SET_MODE (G7) is not built yet; before its argument it refuses a caller
-                // that is not the display owner (section 1.16).
-                abi::op::SET_MODE => match caller() {
-                    Ok(tgid) if display::owner(tgid) => Err(ENOSYS),
-                    Ok(_) => Err(abi::errno::EPERM),
-                    Err(e) => Err(e),
-                },
-                // MODES (G7) is not built yet.
+                abi::op::SET_MODE => display::set_mode(arg, len),
+                abi::op::MODES => display::modes(arg, len),
                 _ => Err(ENOSYS),
             },
         },
@@ -1804,10 +1800,15 @@ fn new_res(owner: u64, kind_: u32, format_: u32, width: u32, height: u32, size: 
 
 fn op_context_create(arg: u64, len: u64) -> Result<u64, i64> {
     let mut a: abi::ContextCreate = read_arg(arg, len)?;
-    if a.flags != 0 || a.handle != 0 || a.warmed != 0 || a.reserved != [0; 2] {
-        return Err(EINVAL);
-    }
+    if a.flags != 0 || a.handle != 0 || a.warmed != 0 || a.reserved != [0; 2] { return Err(EINVAL); }
     let tgid = caller()?;
+    let (handle, warmed) = create_context(tgid)?;
+    a.handle = handle; a.warmed = warmed;
+    if let Err(e) = write_arg(arg, &a) { destroy_context(tgid, handle); return Err(e); }
+    Ok(0)
+}
+
+fn create_context(tgid: u64) -> Result<(u64,u32), i64> {
     let _creation = CreationGuard::acquire(tgid)?;
     sweep();
     if !ensure_reaper() {
@@ -1890,13 +1891,7 @@ fn op_context_create(arg: u64, len: u64) -> Result<u64, i64> {
             return Err(e);
         }
     };
-    a.handle = handle;
-    a.warmed = warmed;
-    if let Err(e) = write_arg(arg, &a) {
-        destroy_context(tgid, handle);
-        return Err(e);
-    }
-    Ok(0)
+    Ok((handle,warmed))
 }
 
 /// Create device context `id` with its internal resources and the process's resources
@@ -3278,8 +3273,19 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
         return Err(EINVAL);
     }
     let tgid = caller()?;
+    let _scanout = if a.target == 0 {
+        if !display::owner(tgid) { return Err(abi::errno::EPERM); }
+        wait_for(None, true, |c| (!console::restoring()).then_some(c.display.known)).map_err(|_| EINTR)?;
+        Some(display::Transition::for_observation(tgid)?)
+    } else { None };
+    if a.target == 0 && !with_core(|c| c.display.known && c.display.binding.is_some()).unwrap_or(false) {
+        a.reason = readback_reason::BINDING_UNKNOWN; write_arg(arg, &a)?; return Err(EIO);
+    }
     let (id, fmt, tw, th, pitch, backing) = with_core(|c| {
-        let id = c.res_of(tgid, a.target).ok_or(EINVAL)?;
+        let id = if a.target == 0 {
+            if !display::owner(tgid) { return Err(abi::errno::EPERM); }
+            c.display.binding.ok_or(EIO)?.id
+        } else { c.res_of(tgid, a.target).ok_or(EINVAL)? };
         let r = c.resources.get(&id).ok_or(EINVAL)?;
         if !matches!(r.kind, kind::TARGET | kind::TEXTURE) {
             return Err(EINVAL);
@@ -3330,14 +3336,18 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
     // Wait for the target's accepted writes to complete, then take it for reading.
     // The handle is looked up each time: one destroyed meanwhile is target-dropped.
     let taken = wait_for(None, true, |c| {
-        if c.res_of(tgid, a.target) != Some(id) {
+        if a.target == 0 {
+            if !display::owner(tgid) || !c.display.known || c.display.binding.is_none_or(|b| b.id != id) {
+                return Some(Err(readback_reason::BINDING_UNKNOWN));
+            }
+        } else if c.res_of(tgid, a.target) != Some(id) {
             return Some(Err(readback_reason::TARGET_DROPPED));
         }
         let r = c.resources.get_mut(&id)?;
         if r.lost {
             return Some(Err(readback_reason::TARGET_LOST));
         }
-        if r.dropped {
+        if r.dropped && a.target != 0 {
             return Some(Err(readback_reason::TARGET_DROPPED));
         }
         if r.writers > 0 || r.reading {
@@ -3534,14 +3544,14 @@ fn wrong_resource(tgid: u64, id: u32, pitch: u32, x: u32, y: u32, w: u32, h: u32
 /// answer. The reason of an EIO comes only from what the kernel observes.
 #[allow(clippy::too_many_arguments)]
 fn observe(tgid: u64, id: u32, last: Option<LastWrite>, backing: &Arc<Pages>, pitch: u32, fmt: u32, a: abi::Readback, staging: &Pages) -> Result<Observation, (i64, u32)> {
-    let ctx = with_core(|c| {
+    let ctx = if a.target == 0 { console::observation_context(id).map_err(|e|(e,readback_reason::NONE))? } else { with_core(|c| {
         let mine = |cid: &u32| c.contexts.get(cid).is_some_and(|x| x.owner == tgid && x.state == CtxState::Live && x.device_alive);
         last.map(|l| l.ctx)
             .filter(mine)
             .or_else(|| c.procs.get(&tgid).and_then(|p| p.contexts.values().copied().find(mine)))
     })
     .flatten()
-    .ok_or((EINVAL, readback_reason::NONE))?;
+    .ok_or((EINVAL, readback_reason::NONE))? };
     let px = format::bytes(fmt) as usize;
     let row = a.width as usize * px;
     let band_rows = (READBACK_BAND / pitch as usize).max(1).min(a.height as usize);
@@ -3701,3 +3711,21 @@ fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {
         None => Err(EINVAL),
     }
 }
+
+/// Whether the clean-room device owns this ARM64 display path.
+pub fn display_active() -> bool { display::active() }
+pub fn take_display() -> SyscallResult {
+    let _path = GpuPath::enter();
+    let tid = match crate::task::scheduler::current_thread_id() { Some(t) => t, None => return result(Err(EINVAL)) };
+    let identity = crate::process::with_process_manager(|m| m.find_process_by_thread(tid).map(|(pid,p)| (pid.as_u64(),p.thread_group_id.unwrap_or(pid.as_u64()),p.cred.euid)) ).flatten();
+    let Some((pid,group,uid)) = identity else { return result(Err(EINVAL)) };
+    if uid != 0 { return result(Err(abi::errno::EPERM)); }
+    let outcome = display::take(group, pid);
+    if outcome.is_ok() {
+        crate::process::with_process_manager(|m| {
+            if let Some(p) = m.get_process_mut(crate::process::ProcessId::new(pid)) { p.has_display_ownership = true; }
+        });
+    }
+    result(outcome.map(|()| 0))
+}
+pub fn give_display() -> SyscallResult { let _path = GpuPath::enter(); result(caller().and_then(display::back).map(|()|0)) }

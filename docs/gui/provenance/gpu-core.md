@@ -886,3 +886,17 @@ G5 box bounded submit=0 transfer=0 pixel=ff312719
 | A request nobody waits for that names objects of an earlier reset epoch is queued in that epoch, so the confirmed reset retires it | O: `docs/gui/gpu.md` section 1.4.1, the device reset |
 | Coverage tables: per data buffer, the bytes of each distinct table, `4*(8*height+1) + 8*entries`, are summed and compared with the largest `data_bytes` named for that buffer | O: `docs/gui/gpu-abi.md`, G5 parameterized draws, as G6 amends it |
 | Snapshot ranges, sorted by buffer and offset and disjoint, and a submission's view of the process's resources, in handle order, are searched by bisection | O: `docs/gui/gpu.md` section 1.16, bounded validation |
+
+## G7 display values
+
+| Value or design | Source |
+|---|---|
+| MODES 256-byte record, two 16-byte modes, SET_MODE 16-byte input; 1280x800 scale 1 and 2560x1600 scale 2; default index 1 | O: `docs/gui/gpu.md` section 1.7 and contract PR #1738, `gpu-abi.md` G7 display interface |
+| Display stack of four userspace owners, root direct take-over, EBUSY 16 for overflow or a cycle, EPERM 1 for a foreign give-back; saved mode and last binding; idempotent current-owner take | O: `docs/gui/gpu.md` section 1.7, its reference to BreenGL section 18, and contract PR #1738 |
+| Current-scanout READBACK target 0; explicit foreign handles remain outside the caller's resource table; the private console context attaches the bound resource for observation | O: contract PR #1738; the transfer, attachment and complementary-poison layouts retain the V/U/B sources above |
+| Points 25 and 26: omitted flush leaves binding unknown; wrong-target bind chooses the first-created other live scanout target, and completion records that command's actual resource | O: `docs/gui/gpu.md` section 1.8 and contract PR #1738; SET_SCANOUT and RESOURCE_FLUSH retain V section 5.7.6.8's fields |
+| GPU console target 2560x1600 BGRA; font atlas of printable ASCII 32 through 126, 16 rows, R8 coverage, 256-byte transfer pitch; source bytes counted as fixture bytes | O: `gpu.md` section 1.7, built-in font tables; Breenix's existing Noto Sans Mono bitmap dependency, `get_raster` at Regular/Size16; atlas arrangement is core bookkeeping |
+| Header `Breenix GPU console` at physical (16,16), background 0xFF181512 and foreground 0xFFE8EDF2; sixteen log rows of 96 columns below y=48, row spacing 18; 128 KiB console vertex buffer | O: contract PR #1738 for the observed header; log layout and buffer size are kernel-console sizing choices |
+| Glyphs use the existing bitmap_text coverage-table variant, with destination copies and integer shader blending; the full target is cleared by the existing solid pipeline | O: `gpu.md` sections 1.3 and 1.5; the existing G5 program derivations and wire values above, with no new shader text or grammar |
+| FNV-1a offset basis 14695981039346656037 and multiplier 1099511628211 over retained legacy framebuffer memory; boot-screen and render-thread console writers retire under the framebuffer lock before the console's first scanout bind | O: contract PR #1738's observation definition; the framebuffer retains its memory address at initialization, and the observation uses volatile reads of that memory |
+| Display transition serialization covers takeover, give-back, restore and console redraw; owner sequence detects an exit that changes the destination during a restore | O: core concurrency bookkeeping for `gpu.md` section 1.7 |

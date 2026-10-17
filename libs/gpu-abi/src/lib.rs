@@ -536,6 +536,27 @@ pub mod readback_reason {
     pub const BINDING_UNKNOWN: u32 = 10;
 }
 
+/// One display mode (gpu-abi.md, G7 display interface).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Mode { pub width: u32, pub height: u32, pub scale: u32, pub reserved: u32 }
+/// MODES output. Device identities describe the display; they are not resource handles.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Modes {
+    pub version: u32, pub size: u32, pub count: u32, pub current: u32,
+    pub max_width: u32, pub max_height: u32, pub owner_depth: u32, pub binding_known: u32,
+    pub modes: [Mode; 2],
+    pub scanout_resource: u64, pub console_resource: u64,
+    pub console_draws: u64, pub console_fixture_bytes: u64, pub handoff: u64,
+    pub firmware_hash_at_handoff: u64, pub firmware_hash_now: u64,
+    pub reserved: [u64; 17],
+}
+/// SET_MODE input.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SetMode { pub index: u32, pub reserved: [u32; 3] }
+
 /// `PRESENT` (32 bytes). Binds the whole target to scanout 0 and flushes it in
 /// `context`, one of the caller's live contexts.
 #[repr(C)]
@@ -727,7 +748,7 @@ macro_rules! plain {
     };
 }
 
-plain!(Caps, ContextCreate, Handle, ResourceCreate, Upload, Submit, Wait, Readback, Present, Counters, TcArm, TcFired);
+plain!(Mode, Modes, SetMode, Caps, ContextCreate, Handle, ResourceCreate, Upload, Submit, Wait, Readback, Present, Counters, TcArm, TcFired);
 
 const _: () = {
     assert!(core::mem::size_of::<FormatCaps>() == 8);
@@ -765,3 +786,11 @@ const _: () = {
 
 /// Fixed parameterized drawing catalogue.
 pub mod draw;
+
+const _: () = {
+    assert!(core::mem::size_of::<Modes>() == 256);
+    assert!(core::mem::offset_of!(Modes, modes) == 32);
+    assert!(core::mem::offset_of!(Modes, scanout_resource) == 64);
+    assert!(core::mem::offset_of!(Modes, firmware_hash_now) == 112);
+    assert!(core::mem::size_of::<SetMode>() == 16);
+};

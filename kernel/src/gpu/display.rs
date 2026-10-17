@@ -1,5 +1,4 @@
-//! G2's minimal scanout binding (`docs/gui/gpu.md` section 1.7, `PRESENT` in
-//! `docs/gui/gpu-abi.md`). No mode policy or ownership stack (G7).
+//! GPU scanout binding, modes and the ownership stack (gpu.md section 1.7).
 //!
 //! A `PRESENT` is a fenced operation of the context it names: SET_SCANOUT and a fenced
 //! RESOURCE_FLUSH, numbered in that context's fence sequence with its `SUBMIT`s, so its
@@ -15,7 +14,18 @@ pub(super) struct Binding {
     pub answer: u32,
 }
 
+pub(super) struct Owner {
+    pub group: u64,
+    pub pid: u64,
+    pub mode: u32,
+    pub last: Option<Binding>,
+}
+
 pub(super) struct State {
+    pub stack: Vec<Owner>,
+    pub mode: u32,
+    pub changing: bool,
+    pub owner_sequence: u64,
     /// The binding the last completed `PRESENT` made, while no later one is outstanding.
     pub binding: Option<Binding>,
     /// Resources a sent bind could have installed, held until a later sent
@@ -33,7 +43,18 @@ pub(super) struct State {
 }
 impl State {
     pub const fn new() -> Self {
-        Self { binding: None, holds: BTreeSet::new(), known: true, sent: 0, outstanding: 0, latest_ok: true }
+        Self {
+            stack: Vec::new(),
+            mode: 1,
+            changing: false,
+            owner_sequence: 0,
+            binding: None,
+            holds: BTreeSet::new(),
+            known: true,
+            sent: 0,
+            outstanding: 0,
+            latest_ok: true,
+        }
     }
 }
 
@@ -42,6 +63,7 @@ impl State {
 pub(super) struct Presenting {
     pub id: u32,
     pub seq: u64,
+    pub owner: u64,
 }
 
 /// Whether thread group `tgid` owns the display now. Ownership is recorded per thread
@@ -53,9 +75,18 @@ pub(super) fn owner(tgid: u64) -> bool {
 /// Whether `tgid` may observe target `id`: a possible scanout is the display owner's, and
 /// only while its binding is known. EIO carries reason 10, binding-unknown.
 pub(super) fn readable(c: &Core, tgid: u64, id: u32) -> Result<(), i64> {
-    if c.display.holds.contains(&id) {
-        if !owner(tgid) { return Err(EPERM); }
-        if !c.display.known { return Err(EIO); }
+    if c.display.holds.contains(&id)
+        || c.display
+            .stack
+            .iter()
+            .any(|o| o.last.is_some_and(|b| b.id == id))
+    {
+        if !owner(tgid) {
+            return Err(EPERM);
+        }
+        if !c.display.known {
+            return Err(EIO);
+        }
     }
     Ok(())
 }
@@ -81,8 +112,29 @@ impl Core {
         if !(latest && ok) {
             return;
         }
-        d.binding = Some(Binding { id: p.id, fence, answer });
+        d.binding = Some(Binding {
+            id: p.id,
+            fence,
+            answer,
+        });
+        let saved = d.stack.last_mut().filter(|o| o.group == p.owner).map(|o| {
+            o.last.replace(Binding {
+                id: p.id,
+                fence,
+                answer,
+            })
+        });
         let old: Vec<u32> = d.holds.iter().copied().filter(|&rid| rid != p.id).collect();
+        if let Some(previous) = saved {
+            if previous.map(|b| b.id) != Some(p.id) {
+                if let Some(r) = self.resources.get_mut(&p.id) {
+                    r.holds += 1;
+                }
+                if let Some(b) = previous {
+                    self.unhold(b.id);
+                }
+            }
+        }
         for rid in old {
             self.display.holds.remove(&rid);
             self.unhold(rid);
@@ -96,6 +148,15 @@ impl Core {
         self.display.known = true;
         self.display.outstanding = 0;
         self.display.latest_ok = true;
+        let saved: Vec<u32> = self
+            .display
+            .stack
+            .iter_mut()
+            .filter_map(|o| o.last.take().map(|b| b.id))
+            .collect();
+        for id in saved {
+            self.unhold(id);
+        }
         for id in held {
             self.unhold(id);
         }
@@ -108,30 +169,110 @@ pub(super) fn present(arg: u64, len: u64) -> Result<u64, i64> {
         return Err(EINVAL);
     }
     let tgid = caller()?;
-    if !owner(tgid) { return Err(EPERM); }
+    if !owner(tgid) {
+        return Err(EPERM);
+    }
     // Wait for the target's writers and the context's room, then send the bind and the
     // flush in the same critical section that checks ownership: SET_SCANOUT is queued only
     // while the caller owns the display.
     let sent = wait_for(None, true, |c| {
-        if !owner(tgid) { return Some(Err(EPERM)); }
-        let Some(ctx_id) = c.ctx_of(tgid, a.context) else { return Some(Err(EINVAL)) };
-        let Some(id) = c.res_of(tgid, a.target) else { return Some(Err(EINVAL)) };
-        let Some(r) = c.resources.get(&id) else { return Some(Err(EINVAL)) };
-        if r.kind != kind::TARGET || !r.scanout { return Some(Err(EINVAL)); }
-        if r.lost || r.dropped { return Some(Err(EIO)); }
+        if !owner(tgid) {
+            return Some(Err(EPERM));
+        }
+        if c.display.changing {
+            return None;
+        }
+        let Some(ctx_id) = c.ctx_of(tgid, a.context) else {
+            return Some(Err(EINVAL));
+        };
+        let Some(id) = c.res_of(tgid, a.target) else {
+            return Some(Err(EINVAL));
+        };
+        let Some(r) = c.resources.get(&id) else {
+            return Some(Err(EINVAL));
+        };
+        if r.kind != kind::TARGET || !r.scanout {
+            return Some(Err(EINVAL));
+        }
+        if r.lost || r.dropped {
+            return Some(Err(EIO));
+        }
         let (width, height, writers) = (r.width, r.height, r.writers);
-        let Some(ctx) = c.contexts.get(&ctx_id) else { return Some(Err(EINVAL)) };
-        if ctx.state != CtxState::Live || !ctx.device_alive || ctx.dropped { return Some(Err(EIO)); }
-        if writers > 0 { return None; }
+        let Some(ctx) = c.contexts.get(&ctx_id) else {
+            return Some(Err(EINVAL));
+        };
+        if ctx.state != CtxState::Live || !ctx.device_alive || ctx.dropped {
+            return Some(Err(EIO));
+        }
+        if writers > 0 {
+            return None;
+        }
         if ctx.inflight.len() >= limits::IN_FLIGHT {
             return None;
         }
-        if ctx.busy { return None; }
+        if ctx.busy {
+            return None;
+        }
         let r = c.resources.get(&id)?;
-        if r.invalid { return Some(Err(EIO)); }
+        if r.invalid {
+            return Some(Err(EIO));
+        }
         // A target without a completed write has no contents to show.
-        if r.last.is_none() { return Some(Err(EINVAL)); }
-        if c.queue_size < 2 { return Some(Err(ENOMEM)); }
+        if r.last.is_none() {
+            return Some(Err(EINVAL));
+        }
+        if c.queue_size < 2 {
+            return Some(Err(ENOMEM));
+        }
+        let skip = crate::test_control::take(test_point::SKIP_PRESENT_FLUSH, a.target).is_some();
+        let other = c.procs.get(&tgid).and_then(|p| {
+            p.resources
+                .values()
+                .copied()
+                .filter(|&rid| rid != id)
+                .filter(|rid| {
+                    c.resources.get(rid).is_some_and(|r| {
+                        r.scanout
+                            && !r.lost
+                            && !r.dropped
+                            && !r.invalid
+                            && r.last.is_some()
+                            && r.writers == 0
+                    })
+                })
+                .min()
+        });
+        let id = if let Some(other) = other {
+            if crate::test_control::take(test_point::WRONG_SCANOUT, a.target).is_some() {
+                other
+            } else {
+                id
+            }
+        } else {
+            id
+        };
+        let (width, height) = c
+            .resources
+            .get(&id)
+            .map(|r| (r.width, r.height))
+            .unwrap_or((width, height));
+        if skip {
+            if c.display.holds.insert(id) {
+                if let Some(r) = c.resources.get_mut(&id) {
+                    r.holds += 1;
+                }
+            }
+            c.display.known = false;
+            c.display.latest_ok = false;
+            c.background(virgl::set_scanout(
+                Tag::Background,
+                ctx_id,
+                id,
+                width,
+                height,
+            ));
+            return Some(Err(EIO));
+        }
         let serial = c.serial();
         let fence = c.device_fence();
         c.display.sent += 1;
@@ -146,30 +287,68 @@ pub(super) fn present(arg: u64, len: u64) -> Result<u64, i64> {
         ctx.flushes.register(n);
         // The sub holds the target until the device returns both requests; the binding
         // holds it until a later bind's flush completes or a confirmed reset.
-        if let Some(r) = c.resources.get_mut(&id) { r.holds += 1; }
-        if c.display.holds.insert(id) {
-            if let Some(r) = c.resources.get_mut(&id) { r.holds += 1; }
+        if let Some(r) = c.resources.get_mut(&id) {
+            r.holds += 1;
         }
-        c.subs.insert(serial, Sub {
-            ctx: ctx_id,
-            n,
-            fence,
-            sent_ns: None,
-            error: None,
-            mismatch: false,
-            requests: 2,
-            published: false,
-            kept: false,
-            result: None,
-            written: Vec::new(),
-            whole: Vec::new(),
-            held: alloc::vec![id],
-            present: Some(Presenting { id, seq }),
-            _charge: None,
-        });
+        if c.display.holds.insert(id) {
+            if let Some(r) = c.resources.get_mut(&id) {
+                r.holds += 1;
+            }
+        }
+        c.subs.insert(
+            serial,
+            Sub {
+                ctx: ctx_id,
+                n,
+                fence,
+                sent_ns: None,
+                error: None,
+                mismatch: false,
+                requests: 2,
+                published: false,
+                kept: false,
+                result: None,
+                written: Vec::new(),
+                whole: Vec::new(),
+                held: alloc::vec![id],
+                present: Some(Presenting {
+                    id,
+                    seq,
+                    owner: tgid,
+                }),
+                _charge: None,
+            },
+        );
         let epoch = c.epoch;
-        c.backlog.push_back((epoch, virgl::set_scanout(Tag::Submit { ctx: ctx_id, serial, last: false }, ctx_id, id, width, height)));
-        c.backlog.push_back((epoch, virgl::flush_resource(Tag::Submit { ctx: ctx_id, serial, last: true }, ctx_id, fence, id, width, height)));
+        c.backlog.push_back((
+            epoch,
+            virgl::set_scanout(
+                Tag::Submit {
+                    ctx: ctx_id,
+                    serial,
+                    last: false,
+                },
+                ctx_id,
+                id,
+                width,
+                height,
+            ),
+        ));
+        c.backlog.push_back((
+            epoch,
+            virgl::flush_resource(
+                Tag::Submit {
+                    ctx: ctx_id,
+                    serial,
+                    last: true,
+                },
+                ctx_id,
+                fence,
+                id,
+                width,
+                height,
+            ),
+        ));
         c.flush();
         Some(Ok((ctx_id, n, bgl_fence)))
     });
@@ -182,24 +361,262 @@ pub(super) fn present(arg: u64, len: u64) -> Result<u64, i64> {
     a.fence = bgl_fence;
     let forget = || {
         with_core(|c| {
-            if let Some(ctx) = c.contexts.get_mut(&ctx_id) { ctx.flushes.take(n); }
+            if let Some(ctx) = c.contexts.get_mut(&ctx_id) {
+                ctx.flushes.take(n);
+            }
         });
     };
-    if let Err(e) = write_arg(arg, &a) { forget(); return Err(e); }
+    if let Err(e) = write_arg(arg, &a) {
+        forget();
+        return Err(e);
+    }
     let outcome = wait_for(None, true, |c| {
-        let Some(ctx) = c.contexts.get_mut(&ctx_id) else { return Some((fence_status::DEVICE_RESET, 0)) };
-        if n > ctx.done_upto { return None; }
+        let Some(ctx) = c.contexts.get_mut(&ctx_id) else {
+            return Some((fence_status::DEVICE_RESET, 0));
+        };
+        if n > ctx.done_upto {
+            return None;
+        }
         let answer = ctx.flushes.take(n);
-        Some(ctx.outcomes.get(&n).copied().unwrap_or_else(|| match answer {
-            Some(answer) => (fence_status::OK, answer),
-            None => (fence_status::DEVICE_ERROR, 0),
-        }))
+        Some(
+            ctx.outcomes
+                .get(&n)
+                .copied()
+                .unwrap_or_else(|| match answer {
+                    Some(answer) => (fence_status::OK, answer),
+                    None => (fence_status::DEVICE_ERROR, 0),
+                }),
+        )
     });
     let outcome = match outcome {
         Ok(o) => o,
-        Err(_) => { forget(); return Err(EINTR); }
+        Err(_) => {
+            forget();
+            return Err(EINTR);
+        }
     };
     a.answer = outcome.1;
     write_arg(arg, &a)?;
-    if outcome.0 == fence_status::OK { Ok(0) } else { Err(EIO) }
+    if outcome.0 == fence_status::OK {
+        Ok(0)
+    } else {
+        Err(EIO)
+    }
+}
+
+pub(super) fn modes(arg: u64, len: u64) -> Result<u64, i64> {
+    let input: abi::Modes = read_arg(arg, len)?;
+    if input != abi::Modes::ZERO {
+        return Err(EINVAL);
+    }
+    let mut a = with_core(|c| {
+        let mut a = abi::Modes::ZERO;
+        a.version = 1;
+        a.size = 256;
+        a.count = 2;
+        a.current = c.display.mode;
+        a.max_width = c.caps.max_width;
+        a.max_height = c.caps.max_height;
+        a.owner_depth = c.display.stack.len() as u32;
+        a.binding_known = c.display.known as u32;
+        a.modes = [
+            abi::Mode {
+                width: 1280,
+                height: 800,
+                scale: 1,
+                reserved: 0,
+            },
+            abi::Mode {
+                width: 2560,
+                height: 1600,
+                scale: 2,
+                reserved: 0,
+            },
+        ];
+        a.scanout_resource = c
+            .display
+            .binding
+            .filter(|_| c.display.known)
+            .map_or(0, |b| b.id as u64);
+        a
+    })
+    .ok_or(ENODEV)?;
+    super::console::describe(&mut a);
+    write_arg(arg, &a)?;
+    Ok(0)
+}
+pub(super) fn set_mode(arg: u64, len: u64) -> Result<u64, i64> {
+    let tgid = caller()?;
+    if !owner(tgid) {
+        return Err(EPERM);
+    }
+    let a: abi::SetMode = read_arg(arg, len)?;
+    if a.index > 1 || a.reserved != [0; 3] {
+        return Err(EINVAL);
+    }
+    with_core(|c| {
+        if !owner(tgid) {
+            return Err(EPERM);
+        }
+        c.display.mode = a.index;
+        if let Some(o) = c.display.stack.last_mut() {
+            o.mode = a.index;
+        }
+        Ok(0)
+    })
+    .ok_or(ENODEV)?
+}
+
+pub(super) fn active() -> bool {
+    with_core(|c| c.status == abi::status::ADMITTED).unwrap_or(false)
+}
+fn publish_owner(c: &mut Core) {
+    c.display.owner_sequence += 1;
+    let (group, pid, mode) = c
+        .display
+        .stack
+        .last()
+        .map_or((0, 0, 1), |o| (o.group, o.pid, o.mode));
+    c.display.mode = mode;
+    crate::syscall::graphics::DISPLAY_OWNER_GROUP.store(group, Ordering::Release);
+    crate::syscall::graphics::DISPLAY_OWNER_PID.store(pid, Ordering::Release);
+}
+
+pub(super) struct Transition;
+impl Transition {
+    pub(super) fn for_observation(group: u64) -> Result<Self, i64> {
+        let guard = Self::acquire()?;
+        if !owner(group) {
+            return Err(EPERM);
+        }
+        Ok(guard)
+    }
+    pub(super) fn for_console() -> Option<Self> {
+        with_core(|c| {
+            if c.display.changing || c.display.outstanding != 0 || !c.display.stack.is_empty() {
+                return None;
+            }
+            c.display.changing = true;
+            Some(Self)
+        })
+        .flatten()
+    }
+    fn acquire() -> Result<Self, i64> {
+        wait_for(None, true, |c| {
+            if c.display.changing || c.display.outstanding > 0 {
+                return None;
+            }
+            c.display.changing = true;
+            Some(())
+        })
+        .map_err(|_| EINTR)?;
+        Ok(Self)
+    }
+}
+impl Drop for Transition {
+    fn drop(&mut self) {
+        with_core(|c| c.display.changing = false);
+        notify();
+    }
+}
+
+pub(super) fn take(group: u64, pid: u64) -> Result<(), i64> {
+    let _transition = Transition::acquire()?;
+    super::console::ensure()?;
+    with_core(|c| {
+        if c.display.stack.last().is_some_and(|o| o.group == group) {
+            return Ok(());
+        }
+        if c.display.stack.len() >= 4 || c.display.stack.iter().any(|o| o.group == group) {
+            return Err(16);
+        }
+        c.display.stack.push(Owner {
+            group,
+            pid,
+            mode: c.display.mode,
+            last: None,
+        });
+        publish_owner(c);
+        Ok(())
+    })
+    .ok_or(ENODEV)?
+}
+
+pub(super) fn back(group: u64) -> Result<(), i64> {
+    let _transition = Transition::acquire()?;
+    let removed = with_core(|c| {
+        if !owner(group) {
+            return Err(EPERM);
+        }
+        let o = c.display.stack.pop().ok_or(EPERM)?;
+        publish_owner(c);
+        Ok(o.last)
+    })
+    .ok_or(ENODEV)??;
+    let outcome = restore();
+    if let Some(b) = removed {
+        with_core(|c| c.unhold(b.id));
+    }
+    outcome
+}
+
+/// Remove an ended owner and ask the render thread to restore a displaced frame.
+pub(super) fn ended(c: &mut Core, group: u64) {
+    let was_top = c.display.stack.last().is_some_and(|o| o.group == group);
+    if let Some(i) = c.display.stack.iter().position(|o| o.group == group) {
+        let o = c.display.stack.remove(i);
+        if let Some(b) = o.last {
+            c.unhold(b.id);
+        }
+        if was_top {
+            publish_owner(c);
+            c.display.known = false;
+            super::console::request_restore();
+        }
+    }
+}
+
+pub(super) fn restore() -> Result<(), i64> {
+    let saved = with_core(|c| c.display.stack.last().and_then(|o| o.last)).flatten();
+    match saved {
+        Some(b) => super::console::bind_saved(b),
+        None => super::console::redraw(),
+    }
+}
+
+/// Publish a synchronous restore only after its flush echoed the requested fence.
+pub(super) fn restored(b: Binding) {
+    with_core(|c| {
+        let old: Vec<u32> = c
+            .display
+            .holds
+            .iter()
+            .copied()
+            .filter(|&id| id != b.id)
+            .collect();
+        if c.display.holds.insert(b.id) {
+            if let Some(r) = c.resources.get_mut(&b.id) {
+                r.holds += 1;
+            }
+        }
+        c.display.binding = Some(b);
+        c.display.known = true;
+        c.display.latest_ok = true;
+        for id in old {
+            c.display.holds.remove(&id);
+            c.unhold(id);
+        }
+    });
+}
+
+pub(super) fn restore_pending() -> Result<(), i64> {
+    let _transition = Transition::acquire()?;
+    let seq = with_core(|c| c.display.owner_sequence).ok_or(ENODEV)?;
+    let outcome = restore();
+    with_core(|c| {
+        if c.display.owner_sequence == seq {
+            super::console::restored_pending();
+        }
+    });
+    outcome
 }

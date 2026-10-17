@@ -303,6 +303,8 @@ pub fn show() {
     let Some(mut guard) = fb.try_lock() else {
         return;
     };
+    // The GPU console owns kernel output after handoff; the firmware canvas stops here.
+    if crate::gpu::console::active() { return; }
     let canvas = &mut *guard;
     let layout = Layout::of(canvas);
     fill_rect(
@@ -348,6 +350,8 @@ fn refresh() {
     let Some(mut guard) = fb.try_lock() else {
         return;
     };
+    // The GPU console owns kernel output after handoff; the firmware canvas stops here.
+    if crate::gpu::console::active() { return; }
     if HANDED_OVER.load(Ordering::Acquire) {
         return;
     }
@@ -821,6 +825,8 @@ fn show_diagnostics(title: &str, headline: &str, details: &[(&str, &str)], recen
     let Some(mut guard) = fb.try_lock() else {
         return;
     };
+    // The GPU console owns kernel output after handoff; the firmware canvas stops here.
+    if crate::gpu::console::active() { return; }
     ACTIVE.store(false, Ordering::Release);
     HANDED_OVER.store(true, Ordering::Release);
     super::log_console::stop();

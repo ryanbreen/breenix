@@ -212,3 +212,15 @@ pub fn tc_fired(point: u32) -> Result<u64, i64> {
         e => Err(e),
     }
 }
+
+/// Supported display modes, scale and current binding.
+pub fn modes() -> (i64, abi::Modes) {
+    let mut a = abi::Modes::ZERO;
+    let r = call_with(op::MODES, &mut a);
+    (r, a)
+}
+/// Select the display owner's mode for subsequent full-screen targets.
+pub fn set_mode(index: u32) -> i64 {
+    let mut a = abi::SetMode { index, reserved: [0; 3] };
+    call_with(op::SET_MODE, &mut a)
+}
