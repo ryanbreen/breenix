@@ -263,6 +263,10 @@ VIGIL_ID=
 # A boot with other than the default 4 processors is recorded with its count, so it never stands for main.
 VIGIL_CPUS=
 [ "$CPUS" = 4 ] || VIGIL_CPUS=$CPUS
+# This is the effective display selection, including the desktop default, not
+# whether --display happened to be spelled on the command line.
+export BREENIX_VIGIL_DISPLAY=false
+[ "$DISPLAY_MODE" != none ] && export BREENIX_VIGIL_DISPLAY=true
 [ -n "$ONLY" ] || VIGIL_ID=$(BREENIX_VIGIL_CPUS="$VIGIL_CPUS" "$ROOT/scripts/vigil-record.sh" start qemu "$MODE" "$SUITE" "$SERIAL_LOG" "" "$QEMU_PROFILE")
 # Vigil's BreenixScreen looks for qmp.sock in the registered boot's folder, which vigil-cli makes under the
 # account's home as macOS reports it (VIGIL_TEST_HOME in Vigil's tests), not under $HOME.

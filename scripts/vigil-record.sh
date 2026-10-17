@@ -7,6 +7,8 @@
 #
 # PLATFORM is qemu, parallels, vmware or beast; MODE is a boot mode (suite when SUITE is set); empty arguments are
 # omitted; COMMIT defaults to this checkout's HEAD. The calling script is the boot's runner: Vigil counts the boot running while that process lives.
+# BREENIX_VIGIL_DISPLAY=true|false is the launcher's effective window selection;
+# start records it before the VM starts. Finish retains BREENIX_HOST_RENDERER_JSON.
 # Does nothing, successfully, when Vigil started the boot itself (VIGIL_BOOT_ID), when no vigil-cli with the
 # breenix command is installed, or off macOS. It never fails the caller.
 set -u
@@ -45,7 +47,11 @@ case "${1:-}" in
         # machine; Vigil keeps it out of main's evidence.
         [ -z "${BREENIX_VIGIL_CPUS:-}" ] || args+=(--cpus "$BREENIX_VIGIL_CPUS")
         # A registration Vigil refuses leaves the boot unrecorded; it never stops the boot.
-        "$CLI" "${args[@]}" || exit 0
+        id=$("$CLI" "${args[@]}") || exit 0
+        if [ -n "$id" ] && [ -n "${BREENIX_VIGIL_DISPLAY:-}" ]; then
+            python3 "$ROOT/scripts/vigil-boot-metadata.py" start "$id" "$ROOT" >&2 || true
+        fi
+        printf '%s\n' "$id"
         exit 0
         ;;
     record)
@@ -67,6 +73,9 @@ case "${1:-}" in
         ;;
     finish)
         [ -n "${2:-}" ] || exit 0
+        if [ -n "${BREENIX_HOST_RENDERER_JSON:-}" ]; then
+            python3 "$ROOT/scripts/vigil-boot-metadata.py" finish "$2" "$ROOT" >&2 || true
+        fi
         "$CLI" breenix finish --id "$2" --exit-status "${3:-0}" >/dev/null 2>&1 || true
         ;;
 esac
