@@ -10,6 +10,13 @@ Every structure is little-endian with the offsets shown. `len` must equal the st
 reserved fields and output fields are zero on the way in (EINVAL otherwise) and the kernel writes
 reserved fields zero. `VERSION` takes no argument (`len` 0).
 
+**EFAULT, as far as the kernel can guarantee it.** A fault reading the argument, or anything else the op
+reads from the caller, returns EFAULT before the op has done anything. Results are written back after the
+op acts, and the kernel cannot hold the caller's pages against the caller's own threads, so an EFAULT while
+writing them reports that the results were not delivered, not that nothing happened: `CONTEXT_CREATE` and
+`RESOURCE_CREATE` destroy the handle they made; a `SUBMIT` whose results cannot be written back has been sent
+and completes like any other, and its fence is lost to the caller; `READBACK` is below.
+
 ## Admission
 
 The device is admitted when it has every capability of the profile (`docs/gui/gpu.md` section 1.5,
@@ -85,9 +92,9 @@ complete; a signal ends that wait with EINTR, and a kill within 250 ms.
 **`WAIT` (48 bytes):** `context: u64`, `fence: u64`, `timeout_ns: u64` (0 polls), `status: u32` out,
 `answer: u32` out, 16 reserved. Returns 0 when the fence completed OK; EIO with `status` and `answer`
 written back when it completed otherwise; ETIMEDOUT at the timeout; EINTR on a signal. A fence names its
-context: `fence` is `ns << 32 | n` for the context's `n`th submission, and a fence of another context,
-or one the context never issued, is EINVAL. A fence is complete only when every earlier fence of its
-context is.
+context: `fence` is `ns << 32 | n` for the context's `n`th fenced operation, a `SUBMIT` or a `PRESENT`
+(below), and a fence of another context, or one the context never issued, is EINVAL. A fence is
+complete only when every earlier fence of its context is.
 
 | `status` | Meaning |
 |---|---|
@@ -103,10 +110,51 @@ until actual device completion or a successfully confirmed reset supplies that p
 leaves it held, including after a timeout, kill or EIO return (section 1.4.1 of `docs/gui/gpu.md`).
 
 **`READBACK` (64 bytes):** `target: u64`, `x, y, width, height: u32`, `pixels: u64` (address),
-`pixels_len: u64`, `stride: u32`, 4 reserved, `record: u64` (address of 1,024 bytes), 8 reserved. Waits
-for every accepted submission that writes the target, then reads the rectangle as canonical BGRA rows
-at `stride` with record v2 (`docs/gui/gpu.md` section 1.8). EIO for an invalid or lost target, or when
-the two complementary-poison observations differ (`unwritten` in the record is the count).
+`pixels_len: u64`, `stride: u32`, `reason: u32` out at 44, `record: u64` (address of 1,024 bytes),
+`failed_submission: u64` out at 56. Waits for every accepted submission that writes the target, then reads
+the rectangle as canonical BGRA rows at `stride` with record v2 (`docs/gui/gpu.md` section 1.8). Every EIO
+writes its reason to `reason`, and only that reason:
+
+| `reason` | Name | Meaning |
+|---|---|---|
+| 0 | none | the call did not return EIO |
+| 1 | unwritten | the two complementary-poison observations differ (`unwritten` in the record is the count). This is how an omitted transfer (point 19), a transfer naming another resource (point 21) and a transfer in a context the device disabled (`docs/gui/gpu.md` section 1.4.1) show |
+| 2 | fence-mismatch | a transfer's answer lacks the fence flag or echoes another fence, or a recorded fence belongs to another submission |
+| 3 | resource-mismatch | an observation claiming the scanout (record `flags` bit 0 set) names a resource that differs from the device's confirmed scanout binding. An offscreen observation (bit 0 clear) does not require its resource to match the scanout. The transfer answer carries no resource identity, so a transfer the device took from another resource is never reported this way; it is reason 1 |
+| 4 | target-invalid | the target is invalid (`docs/gui/gpu.md` section 1.4.1); `failed_submission` is the serial of the submission that invalidated it, numbered as the record's `render_serial` |
+| 5 | device-error | the device answered a readback transfer with an error |
+| 6 | device-hung | the watchdog ended a transfer the device had not answered 2 s after it was sent; its context is quarantined, as for a submission |
+| 7 | device-reset | a device reset was decided while a transfer was outstanding, whether the reset then completed or failed; a failed reset leaves the target's backing held (`docs/gui/gpu.md` section 1.4.1) |
+| 8 | target-lost | the target was lost to an earlier device reset; the process must create it again |
+| 9 | target-dropped | the target's handle was destroyed (by another thread, or by the process's exit) while the readback waited for its writers |
+| 10 | binding-unknown | the target may be the scanout, and a `PRESENT` that binds it or replaces it was sent and has not completed, or failed, so the kernel does not know what the scanout shows; a later completed `PRESENT` or a confirmed reset makes the binding known again |
+
+`failed_submission` is zero for every other reason. Both output fields are zero on input.
+
+Composite observations come after G2. A composite with more than 16 windows returns EIO with reason
+`composite-overflow` and no partial record. Its distinct numeric code is assigned with that extension,
+alongside the code for a composed window's render fence not having completed OK before the composite was
+sent (`docs/gui/gpu.md` section 1.8); neither failure reuses reasons 1 to 10.
+
+EFAULT is atomic only as far as the kernel can guarantee it. Before sending any device work, `READBACK`
+checks that every page of its argument, of its record and of its pixel rows at `stride` is mapped and
+writable by the caller; a failure there returns EFAULT with nothing sent, no observation serial used, and
+nothing written or counted. The kernel cannot hold those pages against the caller's own threads: if one is
+unmapped or made read-only after that check, the call returns EFAULT, the readback is not counted, and the
+contents of the three output ranges are unspecified, except that every byte the kernel wrote to the pixels
+belongs to an observation that passed both poisons.
+
+**`PRESENT` (32 bytes):** `target: u64`, `fence: u64` out at 8, `answer: u32` out at 16, 4 reserved,
+`context: u64` at 24. Display owner only (EPERM otherwise). `context` is one of the caller's contexts
+(EINVAL otherwise) and must be live (EIO otherwise); the bind and flush are sent in it. Waits for every
+accepted submission that writes the target, refuses an invalid or lost target with EIO, binds the whole
+target to scanout 0 and flushes it, and returns once the flush is answered, with `answer` the flush's
+response. `fence` is a context fence of `context` (`ns << 32 | n`, numbered in sequence with its
+`SUBMIT`s, above), so `WAIT` on that context accepts it and reports the flush's outcome; it is never a raw
+device-wide fence number. Record v2 offset 184 carries the same context fence when the observed target is
+the scanout. The binding holds the target's resource until a later binding's flush completes or a
+confirmed reset ends device access (`docs/gui/gpu.md` section 1.4.1). G2 builds this single-target
+operation; G7 adds modes, flipping and the ownership stack.
 
 **`COUNTERS` (256 bytes):** `context: u64` in (0 for the calling process), then `u64`s: submissions 8,
 draws 16, instances 24, fragment area 32, work estimate 40, image uploads 48, fixture uploads 56,
