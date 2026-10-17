@@ -170,6 +170,7 @@ pub const DEFAULT_CASE_LIMIT_MS: u64 = 10_000;
 /// allow reporter headroom without extending any other time-suite case.
 pub const NAMED_CASE_ALLOWANCES: &[(&str, &str, u64)] = &[
     ("time", "clocks/rate-counter", 25_000),
+    ("threads", "lifecycle/rows-released", 90_000),
 ];
 
 /// In a case's process, when its limit passes, in monotonic nanoseconds; 0 elsewhere.

@@ -1238,35 +1238,39 @@ extern "C" fn rt_nothing(_: *mut u8) -> *mut u8 { null_mut() }
 /// A thread's kernel row, about 28 KiB of kernel heap, used to stay resident after the
 /// thread was joined, until the process that created it had been reaped and init next
 /// waited (#1712). Each round of 1,000 threads must give its heap back.
+fn probe_sample() -> String {
+    let text = std::fs::read_to_string("/proc/trace/counters").unwrap_or_default();
+    let num = |name: &str| -> i64 {
+        text.lines().find_map(|l| l.strip_prefix(name)).and_then(|v| v.trim().split_whitespace().next()).and_then(|v| v.parse::<u64>().ok()).map(|v| v as i64).unwrap_or(-1)
+    };
+    let field = |name: &str| -> String {
+        text.lines().find(|l| l.starts_with("probe_1712:")).and_then(|l| l.split_whitespace().find_map(|w| w.strip_prefix(name))).unwrap_or("?").to_string()
+    };
+    let pids = std::fs::read_to_string("/proc/pids").map(|t| t.split_whitespace().count()).unwrap_or(0);
+    format!("{}/{}/t{}/d{}/r{}/u{}/s{}/q{}/k{}", kernel_heap_free_kb().unwrap_or(-1), pids, num("TOMBSTONE_RESIDENT:"), num("TEARDOWN_DEFER:"), num("TEARDOWN_RECLAIM:"),
+        field("terminated_unreclaimed="), field("sched_threads="), field("pending_reclaims="), field("parked_reclaims="))
+}
+
 fn lc_rows_released() -> CaseResult {
     const N: usize = 10_000;
     const ROUND: usize = 1_000;
     const BATCH: usize = 16;
-    const SLACK_KB: i64 = 1024;
-    trial(|| {
-        let before = kernel_heap_free_kb()?;
-        let mut after = before;
+    trial_ms(80_000, || {
+        let mut report = format!("PROBE1712 heapkB/pids/tomb/defer/reclaim/termUnrecl/schedThreads/pending/parked start={}", probe_sample());
         let mut threads = Vec::with_capacity(BATCH);
         for round in 1..=N / ROUND {
+            let t0 = now_ms();
             for _ in 0..ROUND / BATCH {
                 for _ in 0..BATCH { threads.push(create(rt_nothing, null_mut())?); }
                 for t in threads.drain(..) { rc("pthread_join", pthread_join(t, null_mut())?)?; }
             }
-            // A joined thread's row is retired a little after the join returns.
-            let start = now_ms();
-            loop {
-                after = kernel_heap_free_kb()?;
-                if after + SLACK_KB >= before { break; }
-                if now_ms().saturating_sub(start) >= bounded(1000, CLEANUP_MS) {
-                    return err(format!("after {} threads were joined the kernel heap had {after} kB free, {before} kB before", round * ROUND));
-                }
-                nap();
+            report.push_str(&format!(" R{round}({}ms)={}", now_ms() - t0, probe_sample()));
+            for wait in [100u64, 900, 2000] {
+                sleep_ms(wait);
+                report.push_str(&format!(",+{wait}={}", probe_sample()));
             }
         }
-        value("threads", N as i64, "", Some((N as i64, N as i64)));
-        value("heap-free-before", before, "kb", None);
-        value("heap-free-after", after, "kb", None);
-        Ok(())
+        err(report)
     })
 }
 

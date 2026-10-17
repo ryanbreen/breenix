@@ -7910,6 +7910,16 @@ pub fn spawn_front(thread: Box<Thread>) {
 #[cfg(target_arch = "x86_64")]
 static TERMINATED_UNRECLAIMED: AtomicU64 = AtomicU64::new(0);
 
+/// Scratch probe (#1712): terminated threads the last x86 harvest kept.
+pub fn probe_terminated_unreclaimed() -> u64 {
+    TERMINATED_UNRECLAIMED.load(Ordering::Acquire)
+}
+
+/// Scratch probe (#1712): threads the scheduler holds.
+pub fn probe_scheduler_threads() -> Option<usize> {
+    without_interrupts(|| SCHEDULER.try_lock().and_then(|s| s.as_ref().map(|s| s.threads.len())))
+}
+
 /// x86_64: the tick each CPU's idle loop last tried to reclaim at.
 #[cfg(target_arch = "x86_64")]
 static IDLE_RECLAIM_TICK: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(u64::MAX) }; MAX_CPUS];

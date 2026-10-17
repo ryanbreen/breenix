@@ -364,6 +364,14 @@ static PARKED_PROCESS_RECLAIMS: crate::irq_safe_mutex::IrqSafeMutex<
     alloc::vec::Vec<PendingProcessReclaim>,
 > = crate::irq_safe_mutex::IrqSafeMutex::new(alloc::vec::Vec::new());
 static RECLAIM_PASS_ID: AtomicU32 = AtomicU32::new(0);
+
+/// Scratch probe (#1712): queued and parked reclaim receipts.
+pub fn probe_reclaim_queues() -> (Option<usize>, Option<usize>) {
+    (
+        PENDING_PROCESS_RECLAIMS.try_lock().map(|q| q.len()),
+        PARKED_PROCESS_RECLAIMS.try_lock().map(|q| q.len()),
+    )
+}
 static ROW_REMOVAL_EPOCH: AtomicU64 = AtomicU64::new(0);
 
 /// Set while a production drain owns the deferred-reclaim queues.

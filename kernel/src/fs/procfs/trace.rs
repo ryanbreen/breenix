@@ -250,6 +250,15 @@ pub fn generate_counters() -> String {
     #[cfg(target_arch = "aarch64")]
     append_net_pci_diag(&mut output);
 
+    let (pending, parked) = crate::task::process_task::probe_reclaim_queues();
+    output.push_str(&format!(
+        "probe_1712: terminated_unreclaimed={} sched_threads={:?} pending_reclaims={:?} parked_reclaims={:?} heap_free={}\n",
+        crate::task::scheduler::probe_terminated_unreclaimed(),
+        crate::task::scheduler::probe_scheduler_threads(),
+        pending,
+        parked,
+        crate::memory::heap::free_bytes(),
+    ));
     if count == 0 {
         output.push_str("# (no counters registered)\n");
     }
