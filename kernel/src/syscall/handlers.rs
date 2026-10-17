@@ -1773,6 +1773,11 @@ fn sys_fork_with_parent_context(
         }
     };
 
+    // The child's thread-index slot, held until it is published.
+    let Some(_thread_slot) = crate::task::scheduler::reserve_thread_slot() else {
+        return SyscallResult::Err(super::errno::EAGAIN as u64);
+    };
+
     // Window 2: take what the fork needs from the parent under the PM lock
     // and claim the parent's address space for the copy (`begin_fork`,
     // `memory::fork_copy`).
@@ -2511,6 +2516,11 @@ pub fn sys_spawn(path_ptr: u64, argv_ptr: u64) -> SyscallResult {
         .trim_end_matches(".elf");
     let process_name = alloc::string::String::from(short_name);
     let argv_slices: Vec<&[u8]> = argv_vec.iter().map(|v| v.as_slice()).collect();
+
+    // The child's thread-index slot, held until it is published.
+    let Some(_thread_slot) = crate::task::scheduler::reserve_thread_slot() else {
+        return SyscallResult::Err(super::errno::EAGAIN as u64);
+    };
 
     // Window 2: create the child under the PM lock. No arch_without_interrupts
     // / without_interrupts wrapper here — matches creation.rs's documented

@@ -241,6 +241,10 @@ pub fn sys_clone_thread(
         Some(id) => id,
         None => return SyscallResult::Err(super::errno::ESRCH as u64),
     };
+    // The new thread's thread-index slot, held until it is published.
+    let Some(_thread_slot) = crate::task::scheduler::reserve_thread_slot() else {
+        return SyscallResult::Err(super::errno::EAGAIN as u64);
+    };
     let mut manager_guard = crate::process::manager();
     let manager = match manager_guard.as_mut() {
         Some(m) => m,

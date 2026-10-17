@@ -7666,6 +7666,29 @@ fn spawn_x86(thread: Box<Thread>, front: bool) -> Result<(), Box<Thread>> {
     Ok(())
 }
 
+/// A thread-index slot reserved for a user thread that a fork, clone or spawn
+/// is creating (x86_64 `rq::reserve`; nothing on aarch64, whose scheduler
+/// has no fixed index). Held until the thread is published or abandoned.
+pub struct ThreadSlot(());
+
+/// Reserve a slot for a user thread about to be created. None when the
+/// x86_64 thread index has only its kernel-thread reserve left: the creation
+/// fails with EAGAIN, as Linux's does past `threads-max`.
+pub fn reserve_thread_slot() -> Option<ThreadSlot> {
+    #[cfg(target_arch = "x86_64")]
+    if !rq::reserve() {
+        return None;
+    }
+    Some(ThreadSlot(()))
+}
+
+impl Drop for ThreadSlot {
+    fn drop(&mut self) {
+        #[cfg(target_arch = "x86_64")]
+        rq::unreserve();
+    }
+}
+
 /// Add a thread to the scheduler
 pub fn spawn(thread: Box<Thread>) {
     note_scheduler_publication();

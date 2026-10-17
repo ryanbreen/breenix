@@ -109,6 +109,32 @@ const REMOVED: u64 = u64::MAX;
 /// An entry an insert is filling in: lookups probe past it.
 const CLAIMED: u64 = u64::MAX - 1;
 
+/// Slots kept for kernel threads, which are indexed without a reservation:
+/// a fork or clone is refused once only these are left (`reserve`).
+const KERNEL_RESERVE: u32 = 256;
+
+/// Slots indexed, plus those reserved for threads a fork or clone is still
+/// creating (`reserve`).
+static TAKEN: AtomicU32 = AtomicU32::new(0);
+
+/// Reserve a slot for a user thread about to be created, as Linux's
+/// `copy_process` refuses a task past `max_threads` with EAGAIN, so creating
+/// threads cannot fill the index. False when only the kernel's reserve is
+/// left. The caller gives the reservation back (`unreserve`) once the thread
+/// is indexed, or once it is not created: the slot counts twice meanwhile.
+pub(crate) fn reserve() -> bool {
+    TAKEN
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |taken| {
+            (taken < SLOTS as u32 - KERNEL_RESERVE).then_some(taken + 1)
+        })
+        .is_ok()
+}
+
+/// Give back a reservation `reserve` made.
+pub(crate) fn unreserve() {
+    TAKEN.fetch_sub(1, Ordering::AcqRel);
+}
+
 /// `Slot::flags`: the thread runs user code.
 const USER: u8 = 1;
 /// `Slot::flags`: the thread has terminated.
@@ -233,6 +259,7 @@ pub(super) fn insert(thread: &mut Thread, owner: usize) {
         if (key == EMPTY || key == REMOVED)
             && slot.key.compare_exchange(key, CLAIMED, Ordering::AcqRel, Ordering::Acquire).is_ok()
         {
+            TAKEN.fetch_add(1, Ordering::AcqRel);
             fill(slot, thread, owner);
             slot.key.store(tid.wrapping_add(1), Ordering::Release);
             return;
@@ -259,6 +286,7 @@ pub(super) fn remove(tid: u64) {
         slot.flags.store(0, Ordering::Release);
         slot.thread.store(core::ptr::null_mut(), Ordering::SeqCst);
         slot.key.store(REMOVED, Ordering::Release);
+        TAKEN.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
