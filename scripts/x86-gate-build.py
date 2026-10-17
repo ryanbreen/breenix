@@ -218,55 +218,53 @@ def container(root, lane, sha, run_id, mode, repo, rust_fork):
     status, started, wall = 1, time.time(), time.monotonic()
     shutil.rmtree(run, ignore_errors=True)
     tmp.mkdir(parents=True)
-    try:
-        with trees.lease(root, name) as lane_lock:
+    with trees.lease(root, name) as lane_lock:
+        try:
             trees.phase('container-lane-wait', wall)
             trees.owner(root, name, run_id, tree, started)
-            try:
-                trees.prune(root, protected=(tree,))
-                with trees.timing('container-clone-fetch'):
-                    trees.checkout(repo, tree, sha, lane)
-                trees.snapshot_fork(rust_fork, tree / 'gate-rust-fork')
-                environment = dict(os.environ, BREENIX_REPO_DIR=str(tree), BREENIX_GATE_CACHE_DIR=str(root),
-                                   CARGO_BUILD_JOBS='4', BREENIX_RUST_FORK=str(tree / 'gate-rust-fork'),
-                                   BREENIX_GATE_PHASE='build', BREENIX_GATE_TMP=str(tmp),
-                                   BREENIX_GATE_OUTPUTS=str(outputs))
-                if not cancelled.is_set():
-                    child = subprocess.Popen([str(tree / 'docker/qemu/run-x86-gate.sh'), '1', mode], env=environment,
-                                             cwd=tree, stdin=subprocess.DEVNULL, pass_fds=(lane_lock.fileno(),))
-                    while child.poll() is None:
-                        trees.owner(root, name, run_id, tree, started)
-                        try:
-                            child.wait(timeout=5)
-                        except subprocess.TimeoutExpired:
-                            pass
-                    status = child.returncode
-            finally:
-                trees.owner(root, name, run_id, tree, started, 'finished')
-        listed = json.loads(outputs.read_text()) if status == 0 else {'files': [], 'build_seconds': 0}
-        files = {name: (tree / relative(name)).stat().st_size for name in listed['files']}
-    except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as error:
-        print(f'GATE: FAIL (x86 build container: {error})', flush=True)
-        status, files, listed = status or 1, {}, {'build_seconds': 0}
-    slots = load(tree / 'scripts/host-slots.py') if (tree / 'scripts/host-slots.py').exists() else None
-    result = {'status': status, 'seconds': round(time.monotonic() - wall, 1), 'build_seconds': listed['build_seconds'],
-              'files': files, 'cpus': cpu_list(os.sched_getaffinity(0)),
-              'cpuset': Path('/sys/fs/cgroup/cpuset.cpus.effective').read_text().strip()
-              if Path('/sys/fs/cgroup/cpuset.cpus.effective').exists() else 'unknown',
-              'slots': slots.RESOURCES['x86-build'] if slots else 'unknown'}
-    try:
-        send(stream, tmp, tree, files, result)
-        stream.close()
-    except BrokenPipeError:
-        pass  # the gate VM went away; nothing is waiting for the result
-    finally:
-        if fresh:
-            shutil.rmtree(tree, ignore_errors=True)
-        shutil.rmtree(run, ignore_errors=True)
+            trees.prune(root, protected=(tree,))
+            with trees.timing('container-clone-fetch'):
+                trees.checkout(repo, tree, sha, lane)
+            trees.snapshot_fork(rust_fork, tree / 'gate-rust-fork')
+            environment = dict(os.environ, BREENIX_REPO_DIR=str(tree), BREENIX_GATE_CACHE_DIR=str(root),
+                               CARGO_BUILD_JOBS='4', BREENIX_RUST_FORK=str(tree / 'gate-rust-fork'),
+                               BREENIX_GATE_PHASE='build', BREENIX_GATE_TMP=str(tmp),
+                               BREENIX_GATE_OUTPUTS=str(outputs))
+            if not cancelled.is_set():
+                child = subprocess.Popen([str(tree / 'docker/qemu/run-x86-gate.sh'), '1', mode], env=environment,
+                                         cwd=tree, stdin=subprocess.DEVNULL, pass_fds=(lane_lock.fileno(),))
+                while child.poll() is None:
+                    trees.owner(root, name, run_id, tree, started)
+                    try:
+                        child.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        pass
+                status = child.returncode
+            listed = json.loads(outputs.read_text()) if status == 0 else {'files': [], 'build_seconds': 0}
+            files = {name: (tree / relative(name)).stat().st_size for name in listed['files']}
+        except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as error:
+            print(f'GATE: FAIL (x86 build container: {error})', flush=True)
+            status, files, listed = status or 1, {}, {'build_seconds': 0}
+        slots = load(tree / 'scripts/host-slots.py') if (tree / 'scripts/host-slots.py').exists() else None
+        result = {'status': status, 'seconds': round(time.monotonic() - wall, 1), 'build_seconds': listed['build_seconds'],
+                  'files': files, 'cpus': cpu_list(os.sched_getaffinity(0)),
+                  'cpuset': Path('/sys/fs/cgroup/cpuset.cpus.effective').read_text().strip()
+                  if Path('/sys/fs/cgroup/cpuset.cpus.effective').exists() else 'unknown',
+                  'slots': slots.RESOURCES['x86-build'] if slots else 'unknown'}
         try:
-            trees.prune(root, protected=() if fresh else (tree,), required=False)
-        except OSError as error:
-            print(f'[gate-cache] cleanup warning: {error}', flush=True)
+            send(stream, tmp, tree, files, result)
+            stream.close()
+        except BrokenPipeError:
+            pass  # the gate VM went away; nothing is waiting for the result
+        finally:
+            trees.owner(root, name, run_id, tree, started, 'finished')
+            if fresh:
+                shutil.rmtree(tree, ignore_errors=True)
+            shutil.rmtree(run, ignore_errors=True)
+            try:
+                trees.prune(root, protected=() if fresh else (tree,), required=False)
+            except OSError as error:
+                print(f'[gate-cache] cleanup warning: {error}', flush=True)
     return status
 
 

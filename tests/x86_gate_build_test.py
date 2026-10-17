@@ -7,6 +7,7 @@ from pathlib import Path
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('x86_gate_build', ROOT / 'scripts/x86-gate-build.py')
@@ -83,6 +84,55 @@ class TransferTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'unsafe path'):
             build.receive(io.BytesIO(stream.getvalue()), self.vm, self.logs)
         self.assertFalse((self.root / 'escaped').exists())
+
+    def test_container_keeps_checkout_leased_until_reply_is_sent(self):
+        trees = build.load(ROOT / 'scripts/gate-tree.py')
+        real_send = build.send
+        for fresh in (False, True):
+            with self.subTest(fresh=fresh):
+                cache = self.root / ('fresh-cache' if fresh else 'cache')
+                lane, sha, run_id = 'a' * 64, 'b' * 40, 'transfer'
+                tree = cache / ('fresh' if fresh else 'trees') / (run_id if fresh else lane)
+                reply = []
+
+                def checkout(*args):
+                    tree.mkdir(parents=True)
+                    (tree / 'output').write_bytes(b'build output')
+                    (cache / 'builds' / run_id / 'outputs.json').write_text(
+                        json.dumps({'files': ['output'], 'build_seconds': 1}))
+
+                def send(stream, logs, tree, files, result):
+                    # Model another lane's prune under cache pressure with no
+                    # protected paths; only the real flock can save this tree.
+                    trees.prune(cache)
+                    self.assertTrue(tree.exists())
+                    real_send(stream, logs, tree, files, result)
+                    reply.append(stream.getvalue())
+
+                child = Mock(returncode=0)
+                child.poll.return_value = 0
+                with patch.dict(build.os.environ, BREENIX_GATE_FRESH=str(int(fresh)),
+                                BREENIX_GATE_CACHE_GB='0', BREENIX_GATE_FREE_GB='0'), \
+                        patch.object(build, 'load', return_value=trees), \
+                        patch.object(trees, 'checkout', side_effect=checkout), \
+                        patch.object(trees, 'snapshot_fork'), \
+                        patch.object(trees, 'size', return_value=1), \
+                        patch.object(build.os, 'dup', return_value=99), \
+                        patch.object(build.os, 'dup2'), \
+                        patch.object(build.os, 'fdopen', side_effect=[io.BytesIO(), io.StringIO()]), \
+                        patch.object(build.sys, 'stdout', io.StringIO()), \
+                        patch.object(build.threading.Thread, 'start'), \
+                        patch.object(build.os, 'sched_getaffinity', return_value={0}, create=True), \
+                        patch.object(build.subprocess, 'Popen', return_value=child), \
+                        patch.object(build, 'send', side_effect=send):
+                    self.assertEqual(build.container(cache, lane, sha, run_id, 'full', 'repo', 'fork'), 0)
+                destination = self.root / ('fresh-vm' if fresh else 'cached-vm')
+                self.assertEqual(build.receive(io.BytesIO(reply[0]), destination, self.logs)['status'], 0)
+                self.assertEqual((destination / 'output').read_bytes(), b'build output')
+                # Cleanup must also release the lease.
+                handle = trees.lease(cache, ('fresh-' + run_id) if fresh else ('trees-' + lane), blocking=False)
+                self.assertIsNotNone(handle)
+                handle.close()
 
 
 if __name__ == '__main__':
