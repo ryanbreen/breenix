@@ -1427,7 +1427,13 @@ fn generated() -> (String, u32) {
 
 #[cfg(not(test))]
 fn main() {
-    let destination = std::env::args().nth(1).expect("output directory");
+    let mut args = std::env::args().skip(1);
+    let first = args.next().expect("output directory or --pipelines");
+    if first == "--pipelines" {
+        pipelines::generate(std::path::Path::new(&args.next().expect("output directory")));
+        return;
+    }
+    let destination = first;
     let destination = std::path::Path::new(&destination);
     std::fs::create_dir_all(destination).unwrap();
     let (text, tokens) = generated();
@@ -1599,6 +1605,16 @@ fn expand_sources(text: &str) -> String {
 /// With m = (condition != 0 ? UINT_MAX : 0), b ^ ((a ^ b) & m) selects word bits.
 fn integer_words(text: &str, control: usize, tokens: &mut u32) -> String {
     use std::fmt::Write;
+    let zero = text.lines().find_map(|line| {
+        let declaration = line.strip_prefix("IMM[")?;
+        let index = declaration.split_once(']')?.0;
+        let values = line.split_once('{')?.1.split_once('}')?.0;
+        values.split(", ").enumerate().find_map(|(lane, word)| {
+            (word.trim() == "0").then(|| {
+                format!("IMM[{index}].{}", ["xxxx", "yyyy", "zzzz", "wwww"][lane])
+            })
+        })
+    }).expect("integer lowering requires a declared zero word");
     let mask = control + 1;
     let difference = control + 2;
     let old = format!("DCL TEMP[0..{control}]");
@@ -1610,7 +1626,7 @@ fn integer_words(text: &str, control: usize, tokens: &mut u32) -> String {
         } else if let Some(args) = line.strip_prefix("UCMP ") {
             let p: Vec<_> = args.split(", ").collect();
             assert_eq!(p.len(), 4);
-            writeln!(out, "USNE TEMP[{mask}].x, {}, IMM[0].xxxx", p[1]).unwrap();
+            writeln!(out, "USNE TEMP[{mask}].x, {}, {zero}", p[1]).unwrap();
             writeln!(out, "XOR TEMP[{difference}].x, {}, {}", p[2], p[3]).unwrap();
             writeln!(
                 out,
@@ -1620,7 +1636,7 @@ fn integer_words(text: &str, control: usize, tokens: &mut u32) -> String {
             write!(out, "XOR {}, TEMP[{difference}].xxxx, {}", p[0], p[3]).unwrap();
             *tokens += 11;
         } else if let Some(args) = line.strip_prefix("MOV ") {
-            write!(out, "UADD {args}, IMM[0].xxxx").unwrap();
+            write!(out, "UADD {args}, {zero}").unwrap();
             *tokens += 1;
         } else {
             out.push_str(line);
@@ -1726,3 +1742,6 @@ fn integer_constants(text: &str, first: usize, tokens: &mut u32) -> (String, usi
 #[cfg(test)]
 #[path = "emitted_tests.rs"]
 mod emitted_tests;
+
+#[cfg(not(test))]
+mod pipelines;

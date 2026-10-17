@@ -179,3 +179,11 @@ docs/planning/green-program/sweeps/network-483-465-2026-09-07/round3/evidence/**
 
 # Preserve original serial and transcript bytes for the 813 PR B audit.
 docs/planning/green-program/ipc/serials/813-b/** -text
+
+# Frozen reference copies (ruling 30, #1719): byte-identical to breengel-cpu-393, so
+# `git diff --check` skips them. This list must equal scripts/frozen-copies.json;
+# scripts/check-frozen-copies.py fails otherwise.
+libs/libgfx-ref/src/error.rs -whitespace
+libs/libgfx-ref/src/float.rs -whitespace
+libs/libgfx-ref/src/rasterizer.rs -whitespace
+libs/libgfx-ref/src/work.rs -whitespace

@@ -17,6 +17,11 @@
 //! `suite_gpu/readback.rs`, and `textures`' with `pipelines/copy` (G3) in
 //! `suite_gpu/textures.rs`.
 
+extern crate alloc;
+#[path = "suite_gpu/expectations.rs"]
+pub mod expectations;
+pub use expectations::{error, float, outline, work};
+
 use libbreenix::suite::{case, category, check, fail, suite, CaseResult, Suite};
 use libbreenix::syscall::raw;
 
@@ -32,6 +37,8 @@ mod readback;
 mod textures;
 #[path = "suite_gpu/profile.rs"]
 mod profile;
+#[path = "suite_gpu/pipelines.rs"]
+mod pipelines;
 
 static SUITE: Suite = suite("gpu", "GPU rendering", &[
     category("device", "3D device & capability profile", &[
@@ -49,7 +56,7 @@ static SUITE: Suite = suite("gpu", "GPU rendering", &[
         case("device-error-reported", "A forced device error reaches the submitting context as EIO naming the device's answer", device::device_error_reported),
     ]),
     category("submit", "command submission & fences", &[
-        case("context-create", "CONTEXT_CREATE, including the fixed rendering catalogue's warm-up, returns an owned context within 10 s, and its first PROBE warms probe_int", submit::context_create),
+        case("context-create", "CONTEXT_CREATE returns an owned context within 10 s that draws while its fixed rendering catalogue warms, reports the warm-up complete, and its first PROBE warms probe_int", submit::context_create),
         case("context-destroy", "CONTEXT_DESTROY frees the context once its submitted work has completed", submit::context_destroy),
         case("context-limit", "Creating a context past the per-process quota returns EAGAIN", submit::context_limit),
         case("stream-validate", "A malformed command stream returns EINVAL with the failing command's index", submit::stream_validate),
@@ -139,32 +146,32 @@ static SUITE: Suite = suite("gpu", "GPU rendering", &[
         case("profile-violation-detected", "A planted filtered-sampling draw is refused naming the violation", profile::profile_violation_detected),
     ]),
     category("pipelines", "drawing pipelines", &[
-        case("solid-rects", "solid fills half-open integer rectangles in one colour", pipelines_solid_rects),
-        case("rect-batch", "Rectangles batched in one draw equal the same rectangles drawn one by one", pipelines_rect_batch),
+        case("solid-rects", "solid fills half-open integer rectangles in one colour", pipelines::solid_rects),
+        case("rect-batch", "Rectangles batched in one draw equal the same rectangles drawn one by one", pipelines::rect_batch),
         case("copy", "copy places a texture rectangle at a target point, converting format by channel", textures::pipeline_copy),
-        case("copy-clip", "copy clips to the target and to the clip rectangle", pipelines_copy_clip),
-        case("copy-scaled", "copy_scaled replicates texels by an integer factor exactly", pipelines_copy_scaled),
-        case("over-premultiplied", "over matches the contract's source-over for all 65536 colour and alpha pairs on four backgrounds", pipelines_over_premultiplied),
-        case("over-straight", "over_straight premultiplies once, then matches over", pipelines_over_straight),
-        case("over-overlap", "Overlapping blended primitives in one draw give the sequential source-over result", pipelines_over_overlap),
-        case("coverage-blend", "coverage blends an R8 mask with a colour by the contract's coverage rule", pipelines_coverage_blend),
-        case("coverage-lcd", "coverage's LCD variant blends each channel by its own coverage", pipelines_coverage_lcd),
-        case("coverage-spans-square", "coverage_spans matches the contract's literal table for the square", pipelines_coverage_spans_square),
-        case("coverage-spans-winding", "coverage_spans matches the reference rasterizer bit for bit on the winding cases", pipelines_coverage_spans_winding),
-        case("coverage-spans-corpus", "coverage_spans matches the reference rasterizer on every printable glyph at the five reference sizes", pipelines_coverage_spans_corpus),
-        case("bitmap-text", "bitmap_text draws the 5x7 and 16 px fonts exactly at integer scales", pipelines_bitmap_text),
-        case("line-bresenham", "line matches the contract's literal line tables", pipelines_line_bresenham),
-        case("line-clip", "A clipped line draws exactly the in-target pixels of the unclipped walk", pipelines_line_clip),
-        case("line-extreme", "Lines with endpoints near 2^31 draw exactly their in-target pixels", pipelines_line_extreme),
-        case("circle-fill", "circle_fill draws exactly the contract's filled-circle pixel set", pipelines_circle_fill),
-        case("circle-outline", "circle_outline draws exactly the contract's outline pixel set", pipelines_circle_outline),
-        case("rounded-rect", "rounded_rect draws exactly the contract's rounded-rectangle pixel set", pipelines_rounded_rect),
-        case("gradient", "gradient_v matches the contract's integer interpolation at every height", pipelines_gradient),
-        case("triangle-integer", "triangle draws integer-vertex triangles by edge functions with the top-left rule", pipelines_triangle_integer),
-        case("box-filter", "box_filter downscales by the contract's bin means, rounded half up", pipelines_box_filter),
-        case("nearest-scale", "nearest_scaled maps each pixel by the contract's floor(xW/w)", pipelines_nearest_scale),
-        case("clip-nested", "Nested clips intersect, and popping one restores the clip before it", pipelines_clip_nested),
-        case("order", "Overlapping unblended primitives land in submission order", pipelines_order),
+        case("copy-clip", "copy clips to the target and to the clip rectangle", pipelines::copy_clip),
+        case("copy-scaled", "copy_scaled replicates texels by an integer factor exactly", pipelines::copy_scaled),
+        case("over-premultiplied", "over matches the contract's source-over for all 65536 colour and alpha pairs on four backgrounds", pipelines::over_premultiplied),
+        case("over-straight", "over_straight premultiplies once, then matches over", pipelines::over_straight),
+        case("over-overlap", "Overlapping blended primitives in one draw give the sequential source-over result", pipelines::over_overlap),
+        case("coverage-blend", "coverage blends an R8 mask with a colour by the contract's coverage rule", pipelines::coverage_blend),
+        case("coverage-lcd", "coverage's LCD variant blends each channel by its own coverage", pipelines::coverage_lcd),
+        case("coverage-spans-square", "coverage_spans matches the contract's literal table for the square", pipelines::coverage_spans_square),
+        case("coverage-spans-winding", "coverage_spans matches the reference rasterizer bit for bit on the winding cases", pipelines::coverage_spans_winding),
+        case("coverage-spans-corpus", "coverage_spans matches the reference rasterizer on every printable glyph at the five reference sizes", pipelines::coverage_spans_corpus),
+        case("bitmap-text", "bitmap_text draws the 5x7 and 16 px fonts exactly at integer scales", pipelines::bitmap_text),
+        case("line-bresenham", "line matches the contract's literal line tables", pipelines::line_bresenham),
+        case("line-clip", "A clipped line draws exactly the in-target pixels of the unclipped walk", pipelines::line_clip),
+        case("line-extreme", "Lines with endpoints near 2^31 draw exactly their in-target pixels", pipelines::line_extreme),
+        case("circle-fill", "circle_fill draws exactly the contract's filled-circle pixel set", pipelines::circle_fill),
+        case("circle-outline", "circle_outline draws exactly the contract's outline pixel set", pipelines::circle_outline),
+        case("rounded-rect", "rounded_rect draws exactly the contract's rounded-rectangle pixel set", pipelines::rounded_rect),
+        case("gradient", "gradient_v matches the contract's integer interpolation at every height", pipelines::gradient),
+        case("triangle-integer", "triangle draws integer-vertex triangles by edge functions with the top-left rule", pipelines::triangle_integer),
+        case("box-filter", "box_filter downscales by the contract's bin means, rounded half up", pipelines::box_filter),
+        case("nearest-scale", "nearest_scaled maps each pixel by the contract's floor(xW/w)", pipelines::nearest_scale),
+        case("clip-nested", "Nested clips intersect, and popping one restores the clip before it", pipelines::clip_nested),
+        case("order", "Overlapping unblended primitives land in submission order", pipelines::order),
     ]),
     category("isolation", "per-process GPU isolation", &[
         case("handle-private", "Handles are per process: another process's handle numbers name nothing here", isolation_handle_private),
@@ -226,7 +233,6 @@ static SUITE: Suite = suite("gpu", "GPU rendering", &[
 
 // The layers cases need, each with the build step that supplies it.
 const CORE: &str = "the kernel GPU core and syscall 416 (G1)";
-const PIPELINES: &str = "the pipelines checks (G5)";
 const ISOLATION: &str = "the isolation checks (G6)";
 const QUOTA: &str = "GPU quotas and reclamation (G6)";
 const ISOL: &str = "per-process GPU handles (G6)";
@@ -285,31 +291,6 @@ fn device_version() -> CaseResult {
 }
 
 needs! {
-    pipelines_solid_rects => PIPELINES;
-    pipelines_rect_batch => PIPELINES;
-    pipelines_copy_clip => "the clip stack (G5)";
-    pipelines_copy_scaled => "the copy_scaled pipeline (G5)";
-    pipelines_over_premultiplied => "the over pipeline (G5)";
-    pipelines_over_straight => "the over_straight pipeline (G5)";
-    pipelines_over_overlap => "the over pipeline (G5)";
-    pipelines_coverage_blend => "the coverage pipeline (G5)";
-    pipelines_coverage_lcd => "the coverage pipeline (G5)";
-    pipelines_coverage_spans_square => "the coverage_spans pipeline (G5)";
-    pipelines_coverage_spans_winding => "the coverage_spans pipeline (G5)";
-    pipelines_coverage_spans_corpus => "the coverage_spans pipeline (G5)";
-    pipelines_bitmap_text => "the bitmap_text pipeline (G5)";
-    pipelines_line_bresenham => "the line pipeline (G5)";
-    pipelines_line_clip => "the line pipeline (G5)";
-    pipelines_line_extreme => "the line pipeline (G5)";
-    pipelines_circle_fill => "the circle_fill pipeline (G5)";
-    pipelines_circle_outline => "the circle_outline pipeline (G5)";
-    pipelines_rounded_rect => "the rounded_rect pipeline (G5)";
-    pipelines_gradient => "the gradient_v pipeline (G5)";
-    pipelines_triangle_integer => "the triangle pipeline (G5)";
-    pipelines_box_filter => "the box_filter pipeline (G5)";
-    pipelines_nearest_scale => "the nearest_scaled pipeline (G5)";
-    pipelines_clip_nested => "the clip stack (G5)";
-    pipelines_order => PIPELINES;
     isolation_handle_private => ISOL;
     isolation_handle_guess => ISOL;
     isolation_fork_no_handles => ISOL;

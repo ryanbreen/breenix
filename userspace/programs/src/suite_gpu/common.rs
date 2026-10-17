@@ -99,8 +99,31 @@ pub fn caps() -> Result<abi::Caps, CaseError> {
     Ok(c)
 }
 
+/// A new context whose fixed rendering catalogue has warmed. Creation returns while the
+/// catalogue still warms on the GPU worker (ruling 33, #1725); the cases measure warmed
+/// contexts, as the performance bounds do (`docs/gui/gpu.md` section 1.10), and a warm-up
+/// step outstanding across a case's deliberate device stall would rightly be quarantined.
 pub fn context() -> Result<u64, CaseError> {
-    gpu::context_create().map_err(|e| fail_msg(format!("CONTEXT_CREATE returned {}", errno(e))))
+    let ctx = gpu::context_create().map_err(|e| fail_msg(format!("CONTEXT_CREATE returned {}", errno(e))))?;
+    warmed(ctx)?;
+    Ok(ctx)
+}
+
+/// Wait until `ctx` reports its fixed rendering catalogue's warm-up complete: COUNTERS
+/// state 0, from state 3 while it warms (`docs/gui/gpu-abi.md`, COUNTERS).
+pub fn warmed(ctx: u64) -> Result<(), CaseError> {
+    loop {
+        let k = counters(ctx)?;
+        match k.state {
+            context_state::LIVE => return Ok(()),
+            context_state::WARMING => {}
+            s => return Err(fail_msg(format!("the context's state became {s} while its catalogue warmed"))),
+        }
+        ensure(libbreenix::suite::case_ms_left() > 100, || {
+            format!("the context's catalogue warm-up had not completed ({} programs warmed) before the case's deadline", k.warmed)
+        })?;
+        let _ = libbreenix::time::sleep_ms(5);
+    }
 }
 
 pub fn target(fmt: u32, w: u32, h: u32) -> Result<u64, CaseError> {

@@ -19,6 +19,8 @@ use gpu_abi::float::{ratio_bits, scaled_int_bits};
 use gpu_abi::stream::{self, cmd as bgl, TargetInfo, Words};
 
 use super::wire::{self, ccmd, cmd0, obj, pipe};
+#[path = "pipelines/mod.rs"]
+mod pipelines;
 #[path = "profile/mod.rs"]
 mod profile;
 #[path = "shader_chunks.rs"]
@@ -76,13 +78,6 @@ impl Enc {
         }
         if !ok {
             self.oom = true;
-        }
-    }
-
-    fn flush(&mut self) {
-        if self.cur.len() > 0 {
-            self.chunks
-                .push(core::mem::replace(&mut self.cur, WordBuf::new()));
         }
     }
 
@@ -152,10 +147,14 @@ pub const COPY_FS: Program = Program {
     tokens: 39,
 };
 
-/// Programs context creation compiles and warms: `solid`'s and `copy`'s pairs, the fixed
-/// rendering catalogue. The profile-only `probe_int` pair is created by the context's first
-/// PROBE (`docs/gui/gpu.md` section 1.4.1, program warm-up).
-pub const CATALOGUE_PROGRAMS: u32 = 4;
+/// The fixed rendering catalogue's pipelines, `solid` (0) to `triangle` (15); the
+/// profile-only `probe_int` is not one of them.
+pub const RENDERING_PIPELINES: u32 = 2 + pipelines::CATALOGUE.len() as u32;
+/// A context's warm-up mask with each rendering pipeline's bit set. The catalogue's
+/// asynchronous warm-up compiles and warms a pair of programs per rendering pipeline; the
+/// profile-only `probe_int` pair is created by the context's first PROBE (`docs/gui/gpu.md`
+/// section 1.4.1, program warm-up).
+pub const ALL_WARM: u32 = (1 << RENDERING_PIPELINES) - 1;
 /// Programs `probe_int` adds once a context's first PROBE has created them.
 pub const PROBE_PROGRAMS: u32 = 2;
 
@@ -171,6 +170,7 @@ pub struct Objects {
     pub fs: u32,
     pub copy_vs: u32,
     pub copy_fs: u32,
+    pub catalogue: [(u32, u32); 14],
     pub probe_vs: u32,
     pub probe_fs: u32,
     pub sampler: u32,
@@ -192,6 +192,7 @@ impl Objects {
             fs: 0,
             copy_vs: 0,
             copy_fs: 0,
+            catalogue: [(0,0); 14],
             probe_vs: 0,
             probe_fs: 0,
             sampler: 0,
@@ -206,10 +207,9 @@ impl Objects {
         self.surfaces.keys().chain(self.views.keys()).copied()
     }
 
-    /// The programs this context has compiled: the fixed catalogue, plus `probe_int`'s
-    /// pair once a PROBE created it.
-    pub fn programs(&self) -> u32 {
-        CATALOGUE_PROGRAMS + if self.probe_fs != 0 { PROBE_PROGRAMS } else { 0 }
+    /// Whether a PROBE has created `probe_int`'s pair in this context.
+    pub fn has_probe(&self) -> bool {
+        self.probe_fs != 0
     }
 
     fn take(&mut self) -> u32 {
@@ -219,9 +219,9 @@ impl Objects {
     }
 }
 
-/// Create and bind the context's fixed state, the fixed catalogue's programs, and its
-/// vertex buffer.
-pub fn setup(enc: &mut Enc, o: &mut Objects, vertex_buffer: u32) {
+/// Create and bind the context's fixed state and its vertex buffer. Programs are created
+/// by the first command that binds them (`bind_programs`).
+fn setup(enc: &mut Enc, o: &mut Objects, vertex_buffer: u32) {
     o.blend = o.take();
     // Blend (VIRGL_OBJ_BLEND_SIZE = 11): handle, S0 (no independent blend, no logic op,
     // no dither, no alpha-to-coverage), S1 (logic op unused), then one S2 per colour
@@ -246,14 +246,6 @@ pub fn setup(enc: &mut Enc, o: &mut Objects, vertex_buffer: u32) {
         obj::RASTERIZER,
         &[o.rasterizer, wire::RS_S0_HALF_PIXEL_CENTER, one, 0, 0, one, 0, 0, 0],
     );
-    o.vs = o.take();
-    shader(enc, o.vs, &SOLID_VS);
-    o.fs = o.take();
-    shader(enc, o.fs, &SOLID_FS);
-    o.copy_vs = o.take();
-    shader(enc, o.copy_vs, &COPY_VS);
-    o.copy_fs = o.take();
-    shader(enc, o.copy_fs, &COPY_FS);
     o.sampler = o.take();
     // Sampler state (VIRGL_OBJ_SAMPLER_STATE_SIZE = 9): handle, S0 (clamp to edge, nearest,
     // no mip filter, no compare), LOD bias, minimum and maximum LOD 0, border colour 0. `TXF`
@@ -269,7 +261,7 @@ pub fn setup(enc: &mut Enc, o: &mut Objects, vertex_buffer: u32) {
     enc.cmd(ccmd::BIND_OBJECT, obj::RASTERIZER, &[o.rasterizer]);
     enc.cmd(ccmd::BIND_OBJECT, obj::VERTEX_ELEMENTS, &[o.elements]);
     // BIND_SAMPLER_STATES: shader type, start slot, then the states.
-    enc.cmd(ccmd::BIND_SAMPLER_STATES, 0, &[pipe::SHADER_FRAGMENT, 0, o.sampler]);
+    enc.cmd(ccmd::BIND_SAMPLER_STATES, 0, &[pipe::SHADER_FRAGMENT, 0, o.sampler, o.sampler, o.sampler]);
     // SET_VERTEX_BUFFERS: stride, offset, resource, per buffer.
     enc.cmd(ccmd::SET_VERTEX_BUFFERS, 0, &[8, 0, vertex_buffer]);
 }
@@ -290,7 +282,6 @@ fn shader(enc: &mut Enc, handle: u32, p: &Program) {
     }
     // P:273–282: the first offset carries the entire byte length; following
     // commands carry the byte offset and OFFSET_CONT. Leave room for the header.
-    enc.flush();
     for (offset, part) in shader_chunks::fragments(&text, bytes) {
         enc.cmd_with(
             ccmd::CREATE_OBJECT,
@@ -298,7 +289,6 @@ fn shader(enc: &mut Enc, handle: u32, p: &Program) {
             &[handle, p.kind, offset, p.tokens, 0],
             part,
         );
-        enc.flush();
     }
 }
 
@@ -348,18 +338,46 @@ enum Bound {
     Solid,
     Copy,
     Probe,
+    Catalogue(u32),
 }
 
-/// Bind `want`'s programs unless they are bound already.
-fn bind_programs(enc: &mut Enc, o: &Objects, bound: &mut Bound, want: Bound) {
+/// The handles of `want`'s programs in this context, 0 while they are not created.
+fn handles(o: &Objects, want: Bound) -> (u32, u32) {
+    match want {
+        Bound::Copy => (o.copy_vs, o.copy_fs),
+        Bound::Probe => (o.probe_vs, o.probe_fs),
+        Bound::Catalogue(p) => o.catalogue[(p - 2) as usize],
+        _ => (o.vs, o.fs),
+    }
+}
+
+/// Bind `want`'s programs unless they are bound already, creating them first when no
+/// earlier command of this context did: a draw needs only its own pipeline's programs,
+/// whatever the catalogue's warm-up has reached (`docs/gui/gpu.md` section 1.4.1, program
+/// warm-up). Each pipeline is its own pair of programs (section 1.3).
+fn bind_programs(enc: &mut Enc, o: &mut Objects, bound: &mut Bound, want: Bound) {
     if *bound == want {
         return;
     }
-    let (vs, fs) = match want {
-        Bound::Copy => (o.copy_vs, o.copy_fs),
-        Bound::Probe => (o.probe_vs, o.probe_fs),
-        _ => (o.vs, o.fs),
-    };
+    let (mut vs, mut fs) = handles(o, want);
+    if fs == 0 {
+        let (vp, fp): (&Program, &Program) = match want {
+            Bound::Copy => (&COPY_VS, &COPY_FS),
+            Bound::Probe => (&SOLID_VS, &profile::FS),
+            Bound::Catalogue(p) => (&SOLID_VS, &pipelines::CATALOGUE[(p - 2) as usize].1),
+            _ => (&SOLID_VS, &SOLID_FS),
+        };
+        vs = o.take();
+        shader(enc, vs, vp);
+        fs = o.take();
+        shader(enc, fs, fp);
+        match want {
+            Bound::Copy => (o.copy_vs, o.copy_fs) = (vs, fs),
+            Bound::Probe => (o.probe_vs, o.probe_fs) = (vs, fs),
+            Bound::Catalogue(p) => o.catalogue[(p - 2) as usize] = (vs, fs),
+            _ => (o.vs, o.fs) = (vs, fs),
+        }
+    }
     // BIND_SHADER: handle, shader type.
     enc.cmd(ccmd::BIND_SHADER, 0, &[vs, pipe::SHADER_VERTEX]);
     enc.cmd(ccmd::BIND_SHADER, 0, &[fs, pipe::SHADER_FRAGMENT]);
@@ -368,6 +386,9 @@ fn bind_programs(enc: &mut Enc, o: &Objects, bound: &mut Bound, want: Bound) {
 
 /// Sample `res` from fragment sampler view slot 0, creating its view on first use.
 fn bind_view(enc: &mut Enc, o: &mut Objects, res: &SourceRes) {
+    bind_view_at(enc,o,res,0);
+}
+fn bind_view_at(enc: &mut Enc, o: &mut Objects, res: &SourceRes, slot: u32) {
     let view = match o.views.get(&res.id) {
         Some(&v) => v,
         None => {
@@ -380,7 +401,7 @@ fn bind_view(enc: &mut Enc, o: &mut Objects, res: &SourceRes) {
         }
     };
     // SET_SAMPLER_VIEWS: shader type, start slot, then the views.
-    enc.cmd(ccmd::SET_SAMPLER_VIEWS, 0, &[pipe::SHADER_FRAGMENT, 0, view]);
+    enc.cmd(ccmd::SET_SAMPLER_VIEWS, 0, &[pipe::SHADER_FRAGMENT, slot, view]);
 }
 
 /// RESOURCE_COPY_REGION of a `w` x `h` box at level 0, layer 0: destination resource,
@@ -411,6 +432,7 @@ pub trait Bindings {
     fn target(&self, handle: u64) -> Option<TargetRes>;
     fn source(&self, handle: u64) -> Option<SourceRes>;
     fn buffer_rect(&self, handle: u64, offset: u64) -> [i32; 4];
+    fn buffer_word(&self, handle: u64, offset: u64) -> u32;
 }
 
 /// What a translation is given besides the stream: the submission's vertex buffer, its
@@ -419,6 +441,8 @@ pub trait Bindings {
 pub struct Extras {
     pub vertex_buffer: u32,
     pub scratch: [u32; 2],
+    pub data: u32,
+    pub data_width: u32,
     pub flip_y: bool,
     /// The target handle test point 22 fired for.
     pub corrupt: Option<u64>,
@@ -440,12 +464,42 @@ pub struct Extras {
 /// constants a draw uses are bound by the draw's own commands, so a draw does not depend on
 /// what an earlier submission left bound. Returns the device ids of the targets the stream writes.
 pub fn translate(enc: &mut Enc, o: &mut Objects, words: &(impl Words + ?Sized), b: &impl Bindings, x: Extras) -> Vec<u32> {
-    let Extras { vertex_buffer, scratch, flip_y, corrupt, mut suppress, swap } = x;
+    let Extras { vertex_buffer, scratch, data, data_width, flip_y, corrupt, mut suppress, swap } = x;
     let mut written: Vec<u32> = Vec::new();
     let mut current: Option<TargetRes> = None;
     let mut current_handle = 0u64;
     let mut scissor = None;
     let mut corrupted = false;
+    // Pack each distinct crossing buffer once, before any draw can sample it.
+    let mut tables = [(0u64, 0u32, 0u32); stream::MAX_NAMED_BUFFERS];
+    let mut table_count = 0;
+    let mut scan = 0;
+    while scan < words.len() {
+        if words.word(scan) == gpu_abi::draw::COMMAND && words.word(scan+2) == gpu_abi::pipeline::COVERAGE_SPANS {
+            let h = words.word(scan+6) as u64 | (words.word(scan+7) as u64)<<32;
+            let bytes = words.word(scan+8);
+            let i = tables[..table_count].iter().position(|&(v,_,_)|v==h).unwrap_or_else(|| {
+                let i=table_count; table_count+=1; tables[i].0=h; i
+            });
+            tables[i].1 = tables[i].1.max(bytes);
+        }
+        scan += words.word(scan+1) as usize;
+    }
+    let mut data_words = 0;
+    for entry in &mut tables[..table_count] {
+        entry.2 = data_words;
+        let (h, bytes, base) = *entry;
+        let mut first = 0;
+        while first < bytes/4 {
+            let dest = base+first;
+            let n = (bytes/4-first).min(1024).min(data_width-dest%data_width);
+            let mut values = [0u32;1024];
+            for i in 0..n { values[i as usize] = b.buffer_word(h,((first+i)*4) as u64); }
+            enc.cmd_with(ccmd::RESOURCE_INLINE_WRITE,0,&[data,0,0,data_width*4,0,dest%data_width,dest/data_width,0,n,1,1],&values[..n as usize]);
+            first += n;
+        }
+        data_words += bytes/4;
+    }
     let mut at = 0usize;
     let mut verts: Vec<u32> = Vec::with_capacity(RECTS_PER_WRITE * 12);
     let mut offset = 0u32;
@@ -639,6 +693,53 @@ pub fn translate(enc: &mut Enc, o: &mut Objects, words: &(impl Words + ?Sized), 
                     }
                 }
             }
+            gpu_abi::draw::COMMAND => {
+                use gpu_abi::draw as d;
+                let Some(t) = current.as_ref() else { at += len; continue; };
+                let p = words.word(at+2);
+                let texture = words.word(at+4) as u64 | (words.word(at+5) as u64)<<32;
+                let buffer = words.word(at+6) as u64 | (words.word(at+7) as u64)<<32;
+                let bytes = words.word(at+8);
+                let count = words.word(at+9) as usize;
+                bind_programs(enc,o,&mut programs,Bound::Catalogue(p));
+                let tex = b.source(texture);
+                if let Some(tex) = tex { bind_view_at(enc,o,&tex,0); }
+                if d::blended(p) {
+                    let via = scratch[usize::from(t.info.format == gpu_abi::format::R8G8B8A8)];
+                    let mut union: Option<[u32;4]> = None;
+                    for n in 0..count {
+                        let base=at+d::HEADER+d::INSTANCE*n;
+                        let i=d::Instance { rect:core::array::from_fn(|k|words.word(base+k) as i32), params:core::array::from_fn(|k|words.word(base+4+k)) };
+                        if let Some(r)=d::source_clip(p,i,tex.map(|s|stream::SourceInfo{width:s.width,height:s.height,format:0,invalid:false})).and_then(|i|d::clip(p,i,t.info.width,t.info.height,scissor)) {
+                            union=Some(match union {None=>r,Some(u)=>[u[0].min(r[0]),u[1].min(r[1]),u[2].max(r[2]),u[3].max(r[3])]});
+                        }
+                    }
+                    if let Some(u)=union {
+                        copy_region(enc,via,u[0],u[1],t.id,u[0],u[1],u[2]-u[0],u[3]-u[1]);
+                        bind_view_at(enc,o,&SourceRes{id:via,format:t.format,width:t.info.width,height:t.info.height},1);
+                    }
+                }
+                if p == gpu_abi::pipeline::COVERAGE_SPANS && bytes != 0 {
+                    bind_view_at(enc,o,&SourceRes{id:data,format:wire::format::R8G8B8A8_UNORM,width:data_width,height:data_words.div_ceil(data_width)},2);
+                }
+                for n in 0..count {
+                    let base=at+d::HEADER+d::INSTANCE*n;
+                    let i=d::Instance { rect:core::array::from_fn(|k|words.word(base+k) as i32), params:core::array::from_fn(|k|words.word(base+4+k)) };
+                    let Some(r)=d::source_clip(p,i,tex.map(|s|stream::SourceInfo{width:s.width,height:s.height,format:0,invalid:false})).and_then(|i|d::clip(p,i,t.info.width,t.info.height,scissor)) else {continue;};
+                    let mut constants=Vec::with_capacity(34);
+                    constants.extend([pipe::SHADER_FRAGMENT,0]);
+                    constants.extend(i.params);
+                    constants.extend([0;4]);
+                    if p>=10 && p!=gpu_abi::pipeline::GRADIENT_V {constants.extend(rgba_floats(words.word(at+3)));}
+                    else {constants.extend([words.word(at+3),0,0,0]);}
+                    constants.extend([tex.map_or(0,|x|x.width),tex.map_or(0,|x|x.height),
+                        tables[..table_count].iter().find(|&&(h,_,_)|h==buffer).map_or(0,|e|e.2),data_width.trailing_zeros()]);
+                    constants.extend([0;4]);
+                    enc.cmd(ccmd::SET_CONSTANT_BUFFER,0,&constants);
+                    bind_vertices(enc,&mut bound,vertex_buffer);
+                    offset=draw_vertices(enc,vertex_buffer,offset,&quad(r),1);
+                }
+            }
             bgl::SCISSOR => scissor = Some([2, 3, 4, 5].map(|k| words.word(at + k) as i32)),
             bgl::PROBE => {
                 let Some(t) = current.as_ref() else {
@@ -647,14 +748,8 @@ pub fn translate(enc: &mut Enc, o: &mut Objects, words: &(impl Words + ?Sized), 
                 };
                 let r = [4, 5, 6, 7].map(|k| words.word(at + k) as i32);
                 if let Some(r) = stream::clipped(r, t.info.width, t.info.height, scissor) {
-                    if o.probe_fs == 0 {
-                        // The context's first PROBE compiles `probe_int`; this draw warms it.
-                        // The objects are kept only if the submission is sent.
-                        o.probe_vs = o.take();
-                        shader(enc, o.probe_vs, &SOLID_VS);
-                        o.probe_fs = o.take();
-                        shader(enc, o.probe_fs, &profile::FS);
-                    }
+                    // The context's first PROBE compiles `probe_int`; this draw warms it.
+                    // The objects are kept only if the submission is sent.
                     bind_programs(enc, o, &mut programs, Bound::Probe);
                     let mut constants = Vec::with_capacity(22);
                     constants.extend_from_slice(&[pipe::SHADER_FRAGMENT, 0]);
@@ -683,7 +778,7 @@ fn quad([x0, y0, x1, y1]: [u32; 4]) -> [u32; 12] {
 
 /// Point 22: an extra GPU draw of the current target's pixel (0,0) with the solid program.
 /// No CPU write reaches device pixels. Returns the next free vertex offset.
-fn corrupt_pixel(enc: &mut Enc, o: &Objects, programs: &mut Bound, bound: &mut bool, vertex_buffer: u32, offset: u32) -> u32 {
+fn corrupt_pixel(enc: &mut Enc, o: &mut Objects, programs: &mut Bound, bound: &mut bool, vertex_buffer: u32, offset: u32) -> u32 {
     bind_programs(enc, o, programs, Bound::Solid);
     let f = rgba_floats(!super::super::POISON);
     enc.cmd(ccmd::SET_CONSTANT_BUFFER, 0, &[pipe::SHADER_FRAGMENT, 0, f[0], f[1], f[2], f[3]]);
@@ -691,11 +786,24 @@ fn corrupt_pixel(enc: &mut Enc, o: &Objects, programs: &mut Bound, bound: &mut b
     draw_vertices(enc, vertex_buffer, offset, &quad([0, 0, 1, 1]), 1)
 }
 
-/// Context creation's warm-up: the fixed state and catalogue programs, then one draw with
-/// each into the 1x1 scratch target `scratch`, `copy` sampling the 1x1 texture
-/// `scratch_texture`. `probe_int` is left to the first PROBE (`docs/gui/gpu.md` section
-/// 1.4.1, program warm-up).
-pub fn warm_up(
+/// Context creation's part of the warm-up: the fixed state, and the surface of the 1x1
+/// scratch target `scratch` the catalogue's warm-up draws into. It compiles no program
+/// (`docs/gui/gpu.md` section 1.4.1, program warm-up).
+pub fn warm_base(enc: &mut Enc, o: &mut Objects, vertex_buffer: u32, scratch: u32, format: u32) {
+    setup(enc, o, vertex_buffer);
+    let s = o.take();
+    enc.cmd(ccmd::CREATE_OBJECT, obj::SURFACE, &[s, scratch, format, 0, 0]);
+    o.surfaces.insert(scratch, s);
+}
+
+/// One step of the catalogue's asynchronous warm-up: rendering pipeline `p`'s programs,
+/// created unless a submission already did, and one draw with them into the scratch target
+/// `scratch` (its surface made by `warm_base`), sampling slots 0 to 2 reading the 1x1 texture
+/// `scratch_texture`. Each pipeline draws in its own region of the vertex buffer, so no
+/// step rewrites another's vertices. Like a submission, the step binds everything its draw
+/// uses.
+#[allow(clippy::too_many_arguments)]
+pub fn warm_pipeline(
     enc: &mut Enc,
     o: &mut Objects,
     vertex_buffer: u32,
@@ -703,34 +811,55 @@ pub fn warm_up(
     scratch_texture: u32,
     format: u32,
     flip_y: bool,
+    p: u32,
 ) {
-    setup(enc, o, vertex_buffer);
-    let s = o.take();
-    enc.cmd(ccmd::CREATE_OBJECT, obj::SURFACE, &[s, scratch, format, 0, 0]);
-    o.surfaces.insert(scratch, s);
-    bind_target(enc, s, flip_y);
+    let Some(&surface) = o.surfaces.get(&scratch) else {
+        enc.oom = true;
+        return;
+    };
+    bind_target(enc, surface, flip_y);
     let mut programs = Bound::None;
-    bind_programs(enc, o, &mut programs, Bound::Solid);
-    let f = rgba_floats(0xFF00_0000);
-    enc.cmd(ccmd::SET_CONSTANT_BUFFER, 0, &[pipe::SHADER_FRAGMENT, 0, f[0], f[1], f[2], f[3]]);
-    let next = draw_vertices(enc, vertex_buffer, 0, &quad([0, 0, 1, 1]), 1);
-    bind_programs(enc, o, &mut programs, Bound::Copy);
-    bind_view(
-        enc,
-        o,
-        &SourceRes {
-            id: scratch_texture,
-            format,
-            width: 1,
-            height: 1,
-        },
-    );
-    enc.cmd(
-        ccmd::SET_CONSTANT_BUFFER,
-        0,
-        &[pipe::SHADER_FRAGMENT, 0, 0, 0, 0, 0],
-    );
-    draw_vertices(enc, vertex_buffer, next, &quad([0, 0, 1, 1]), 1);
+    let want = match p {
+        gpu_abi::pipeline::SOLID => Bound::Solid,
+        gpu_abi::pipeline::COPY => Bound::Copy,
+        p => Bound::Catalogue(p),
+    };
+    bind_programs(enc, o, &mut programs, want);
+    let texel = SourceRes { id: scratch_texture, format, width: 1, height: 1 };
+    for slot in 0..3 {
+        bind_view_at(enc, o, &texel, slot);
+    }
+    match want {
+        Bound::Solid => {
+            let f = rgba_floats(0xFF00_0000);
+            enc.cmd(ccmd::SET_CONSTANT_BUFFER, 0, &[pipe::SHADER_FRAGMENT, 0, f[0], f[1], f[2], f[3]]);
+        }
+        Bound::Copy => enc.cmd(ccmd::SET_CONSTANT_BUFFER, 0, &[pipe::SHADER_FRAGMENT, 0, 0, 0, 0, 0]),
+        _ => {
+            // Valid, minimal constants exercise shader compilation on a one-pixel quad.
+            let mut constants = [0u32; 34];
+            constants[0] = pipe::SHADER_FRAGMENT;
+            let params: &[u32] = match p {
+                2 => &[0, 0, 0, 0, 1],
+                3 | 4 => &[0, 0, 1, 1, 0, 0, 1, 1],
+                // This off-glyph fragment reaches the coverage predicate's discard
+                // before the dummy data-view fetch.
+                8 => &[2, 2, 1, 1, 0],
+                9 => &[0, 0, 0, 0, 1, 1, 1, 1],
+                13 => &[0, 0, 1, 1, 0],
+                14 => &[0, 1, 0],
+                15 => &[0, 0, 1, 0, 0, 1],
+                _ => &[],
+            };
+            constants[2..2 + params.len()].copy_from_slice(params);
+            constants[26] = 1;
+            constants[27] = 1;
+            enc.cmd(ccmd::SET_CONSTANT_BUFFER, 0, &constants);
+        }
+    }
+    let mut bound = false;
+    bind_vertices(enc, &mut bound, vertex_buffer);
+    draw_vertices(enc, vertex_buffer, p * 48, &quad([0, 0, 1, 1]), 1);
 }
 
 /// Bytes of vertex data a stream with `drawn` drawn rectangles needs.

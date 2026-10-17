@@ -11,6 +11,12 @@
 //! (section 1.4.1). Two device errors in a row on one context quarantine that context only.
 //! The device is the VirGL backend (`virgl`), on ARM64 QEMU in this milestone.
 //!
+//! `CONTEXT_CREATE` sends only the context's fixed state; `kgpu` warms the fixed rendering
+//! catalogue afterwards, one pipeline per step and one step on the device at a time, and
+//! not while a process is creating a context or resource, so creation and other requests wait
+//! behind at most one step. A draw whose pipeline has not warmed creates its programs in its
+//! own submission and waits for no other pipeline (ruling 33, #1725).
+//!
 //! A fence's result reaching its callers and the device's use of the memory behind it
 //! ending are separate events. Every request goes through one queue in order (the backlog,
 //! then the control queue), so nothing is dropped when the control queue is full, and each
@@ -86,13 +92,14 @@ fn with_core<R>(f: impl FnOnce(&mut Core) -> R) -> Option<R> {
     r
 }
 
-/// Tell every waiter that something changed.
+/// Tell the waiters and `kgpu` that something changed.
 fn notify() {
     EVENTS.fetch_add(1, Ordering::AcqRel);
     WAITERS.wake_up();
+    wake_reaper();
 }
 
-/// Wake `kgpu` for work only it does: a reset.
+/// Wake `kgpu` for work only it does: a reset, or the catalogue's next warm-up step.
 fn wake_reaper() {
     let tid = REAPER.load(Ordering::Acquire);
     if tid != 0 {
@@ -153,9 +160,13 @@ struct Ctx {
     objects: encode::Objects,
     vb: u32,
     scratch: u32,
-    /// The 1x1 texture warm-up's `copy` draw samples.
+    /// The 1x1 texture the warm-up's sampling draws read.
     scratch_texture: u32,
-    warmed: u32,
+    /// The rendering pipelines whose warm-up step completed, one bit each
+    /// (`encode::ALL_WARM` when the catalogue's warm-up is complete).
+    warm: u32,
+    /// Warm-up steps the device refused in a row; two quarantine the context.
+    warm_failures: u32,
     /// Device errors in a row, in fence order.
     errors_in_row: u32,
     /// Test point 31's fence-depth mode on this context.
@@ -163,6 +174,24 @@ struct Ctx {
     /// The flush answers of completed `PRESENT`s by fence number, until their callers take
     /// them. Pending callers register before sending; interrupted callers unregister.
     flushes: present_answers::Answers,
+}
+
+impl Ctx {
+    /// Programs whose warm-up completed: two per warmed rendering pipeline, and
+    /// `probe_int`'s pair from its first PROBE.
+    fn warmed(&self) -> u32 {
+        2 * self.warm.count_ones() + if self.objects.has_probe() { encode::PROBE_PROGRAMS } else { 0 }
+    }
+}
+
+/// The catalogue warm-up step on the device: one pipeline of one context, its requests not
+/// yet returned, and whether the device refused any of them or a reset ended one.
+struct WarmStep {
+    ctx: u32,
+    pipeline: u32,
+    left: u32,
+    refused: bool,
+    lost: bool,
 }
 
 /// Test point 31's fence-depth mode: how many more submissions to keep, and the ones kept.
@@ -215,6 +244,8 @@ struct SyncReq {
     /// Why: `fence_status::DEVICE_HUNG` (the watchdog) or `DEVICE_RESET` (a reset decided
     /// while it was outstanding, whether the reset then completed or failed).
     why: u32,
+    /// A request of the warm-up step, with its fence: its answer goes to the step.
+    warm: Option<u64>,
 }
 
 #[derive(Clone, Copy)]
@@ -287,6 +318,8 @@ struct Core {
     last_progress: u64,
     reset_wanted: bool,
     resetting: bool,
+    /// The one catalogue warm-up step the device has, if any.
+    warm_step: Option<WarmStep>,
 }
 
 // ---------------------------------------------------------------------------------------
@@ -375,6 +408,7 @@ impl Core {
             last_progress: 0,
             reset_wanted: false,
             resetting: false,
+            warm_step: None,
         }
     }
 
@@ -397,7 +431,7 @@ impl Core {
         for (slot, s) in c.scanouts.iter_mut().zip(dev.info.scanouts.iter()) {
             *slot = abi::ScanoutInfo { enabled: s.enabled as u32, width: s.width, height: s.height, reserved: 0 };
         }
-        c.pipelines = 1 << abi::pipeline::SOLID | 1 << abi::pipeline::COPY | 1 << abi::pipeline::PROBE_INT;
+        c.pipelines = (1 << abi::pipeline::COUNT) - 1;
         self.have[capability::FEATURE_3D as usize] = c.features & abi::feature::VIRGL != 0;
         let empty = Vec::new();
         let bytes = dev.info.capset.as_ref().map_or(&empty, |s| &s.2);
@@ -626,7 +660,7 @@ impl Core {
         req.tag = Tag::Sync(serial);
         self.syncs.insert(serial, SyncReq {
             ctx: 0, sent_ns: None, upload: None, holds: Vec::new(), reading: Vec::new(),
-            abandoned: true, failed: false, why: 0,
+            abandoned: true, failed: false, why: 0, warm: None,
         });
         self.backlog.push_back((self.epoch, req));
         self.flush();
@@ -655,6 +689,7 @@ impl Core {
             .then(|| holds.first().copied().zip(req.fence)).flatten();
         self.syncs.insert(serial, SyncReq {
             upload, ctx, sent_ns: None, holds: holds.to_vec(), reading: reading.to_vec(), abandoned: false, failed: false, why: 0,
+            warm: None,
         });
         self.backlog.push_back((self.epoch, req));
         self.flush();
@@ -668,6 +703,38 @@ impl Core {
                 s.abandoned = true;
             }
         }
+    }
+
+    /// A request of the warm-up step came back: `ok` is whether the device accepted it, absent
+    /// when a confirmed reset ended it. When the step's last request is back, a step the
+    /// device accepted warms its pipeline; one it refused counts toward the context's two
+    /// refused steps in a row, which quarantine it, and is retried otherwise. A failed
+    /// warm-up does not report completion (ruling 33, #1725).
+    fn warm_returned(&mut self, ok: Option<bool>) {
+        let Some(step) = self.warm_step.as_mut() else { return };
+        step.left = step.left.saturating_sub(1);
+        match ok {
+            Some(false) => step.refused = true,
+            None => step.lost = true,
+            Some(true) => {}
+        }
+        if step.left > 0 {
+            return;
+        }
+        let Some(step) = self.warm_step.take() else { return };
+        if let Some(ctx) = self.contexts.get_mut(&step.ctx) {
+            if step.refused {
+                ctx.warm_failures += 1;
+                if ctx.state == CtxState::Live && ctx.warm_failures >= 2 {
+                    ctx.state = CtxState::Quarantined;
+                }
+            } else if !step.lost {
+                ctx.warm |= 1 << step.pipeline;
+                ctx.warm_failures = 0;
+            }
+        }
+        self.settle(step.ctx);
+        notify();
     }
 
     // -----------------------------------------------------------------------------------
@@ -757,6 +824,9 @@ impl Core {
         let Some(s) = self.syncs.remove(&serial) else { return };
         if s.ctx == 0 && d.as_ref().is_some_and(|d| !virgl::ok(d.answer)) {
             self.fault();
+        }
+        if let Some(fence) = s.warm {
+            self.warm_returned(d.as_ref().map(|d| virgl::ok(d.answer) && d.echoed == fence));
         }
         if let Some((id, fence)) = s.upload {
             if let Some(d) = &d {
@@ -1330,12 +1400,15 @@ fn ensure_reaper() -> bool {
     }
 }
 
-/// Block `kgpu` until `wake` (or indefinitely) or until a GPU event after `seen`.
+/// Block `kgpu` until `wake` (or indefinitely) or until a GPU event after `seen`. It
+/// blocks for I/O: the scheduler applies a wake from interrupt context, such as
+/// `handle_interrupt`'s, only to a thread blocked for I/O, so a timer block would leave
+/// the device's answers waiting for the next deadline. Once woken it returns without
+/// halting for a further interrupt.
 fn reaper_block(tid: u64, seen: u64, wake: Option<u64>) {
     crate::arch_without_interrupts(|| {
-        crate::task::scheduler::with_scheduler(|sched| match wake {
-            Some(at) => sched.block_current_for_timer(at),
-            None => sched.block_current(),
+        crate::task::scheduler::with_scheduler(|sched| {
+            sched.block_current_for_io_with_timeout(wake);
         });
         if EVENTS.load(Ordering::Acquire) != seen {
             crate::task::scheduler::with_scheduler(|sched| {
@@ -1344,13 +1417,13 @@ fn reaper_block(tid: u64, seen: u64, wake: Option<u64>) {
         }
     });
     crate::task::scheduler::yield_current();
-    crate::arch_halt_with_interrupts();
+    crate::arch_halt_while_blocked();
 }
 
 /// `kgpu`: takes completions nobody is waiting for, runs the watchdog at its deadlines
-/// and at least every 250 ms while work is outstanding, resets the device when the
-/// watchdog or a device fault asks for it, and reclaims what exited processes left, once
-/// a second while any process holds GPU state.
+/// and at least once per 250 ms while work is outstanding, resets the device when the
+/// watchdog or a device fault asks for it, sends the fixed catalogue's warm-up steps, and
+/// reclaims what exited processes left, once a second while any process holds GPU state.
 fn reaper() {
     let Some(tid) = crate::task::scheduler::current_thread_id() else { return };
     let mut next_sweep = now_ns();
@@ -1370,6 +1443,7 @@ fn reaper() {
             sweep();
             next_sweep = now + 1_000_000_000;
         }
+        warm_next();
         let wake = match (deadline, busy) {
             (Some(d), true) => Some(d.min(next_sweep)),
             (Some(d), false) => Some(d),
@@ -1397,6 +1471,81 @@ fn reset_device(tid: u64) {
     } else {
         with_core(move |c| c.reset_failed(dev));
     }
+}
+
+/// On `kgpu`: send the next step of the fixed rendering catalogue's warm-up (ruling 33,
+/// #1725), the lowest-numbered context's first pipeline not yet warmed. One step is on the
+/// device at a time, and no step starts while a process is creating a context or resource,
+/// or while the device is resetting or suspected hung, so other requests wait behind at
+/// most one step. The step takes the context's submission slot while it is encoded and
+/// queued, like a SUBMIT, so its objects and the context's submissions reach the device in
+/// the order their objects were allocated. Its requests are synchronous requests of the
+/// context under the watchdog that nobody waits on; their answers go to `warm_returned`.
+fn warm_next() {
+    let ready = |c: &Core| {
+        c.warm_step.is_none()
+            && c.dev.is_some()
+            && !c.reset_wanted
+            && !c.resetting
+            && !c.stalled
+            && c.quarantined_at.is_none()
+            && !c.procs.values().any(|p| p.creating)
+    };
+    let warming = |x: &Ctx| x.state == CtxState::Live && x.device_alive && !x.dropped && x.warm != encode::ALL_WARM;
+    if !with_core(|c| ready(c) && c.contexts.values().any(warming)).unwrap_or(false) {
+        return;
+    }
+    // A context whose process has exited is not warmed.
+    sweep();
+    let picked = with_core(|c| {
+        if !ready(c) {
+            return None;
+        }
+        let ctx = c.contexts.values_mut().find(|x| warming(x) && !x.busy)?;
+        ctx.busy = true;
+        let pipeline = (!ctx.warm).trailing_zeros();
+        Some((ctx.id, pipeline, ctx.objects.clone(), [ctx.vb, ctx.scratch, ctx.scratch_texture]))
+    })
+    .flatten();
+    let Some((id, pipeline, mut objects, internal)) = picked else { return };
+    let [vb, scratch, scratch_texture] = internal;
+    let mut enc = encode::Enc::new();
+    encode::warm_pipeline(&mut enc, &mut objects, vb, scratch, scratch_texture, wire::format::B8G8R8A8_UNORM, FLIP_Y, pipeline);
+    // After an allocation failure no request is sent; the step is tried again later.
+    let chunks = enc.finish().filter(|v| !v.is_empty());
+    with_core(|c| {
+        let live = c.contexts.get(&id).is_some_and(|x| x.state == CtxState::Live && x.device_alive && !x.dropped);
+        if let Some(chunks) = chunks.filter(|_| live && ready(c)) {
+            if chunks.iter().any(|w| w.page_count() + 2 > c.queue_size) {
+                // A step the queue cannot carry is refused like one the device refuses.
+                c.warm_step = Some(WarmStep { ctx: id, pipeline, left: 1, refused: true, lost: false });
+                c.warm_returned(Some(false));
+            } else {
+                if let Some(ctx) = c.contexts.get_mut(&id) {
+                    ctx.objects = objects;
+                }
+                c.warm_step = Some(WarmStep { ctx: id, pipeline, left: chunks.len() as u32, refused: false, lost: false });
+                for words in chunks {
+                    let serial = c.serial();
+                    let fence = c.device_fence();
+                    let req = virgl::submit(Tag::Sync(serial), id, Some(fence), words);
+                    if c.start_sync(serial, req, id, &internal, &[]).is_err() {
+                        c.warm_returned(None);
+                        continue;
+                    }
+                    if let Some(sync) = c.syncs.get_mut(&serial) {
+                        sync.abandoned = true;
+                        sync.warm = Some(fence);
+                    }
+                }
+            }
+        }
+        if let Some(ctx) = c.contexts.get_mut(&id) {
+            ctx.busy = false;
+        }
+        c.settle(id);
+    });
+    notify();
 }
 
 /// Reclaim the GPU state of processes that have exited (PIDs are never reused).
@@ -1598,7 +1747,8 @@ fn op_context_create(arg: u64, len: u64) -> Result<u64, i64> {
             vb,
             scratch,
             scratch_texture,
-            warmed: 0,
+            warm: 0,
+            warm_failures: 0,
             errors_in_row: 0,
             depth: None,
             flushes: present_answers::Answers::new(),
@@ -1614,15 +1764,13 @@ fn op_context_create(arg: u64, len: u64) -> Result<u64, i64> {
             }
             let h = c.handle(tgid);
             c.proc_mut(tgid).contexts.insert(h, id);
-            if let Some(ctx) = c.contexts.get_mut(&id) {
-                ctx.state = CtxState::Live;
-                ctx.warmed = encode::CATALOGUE_PROGRAMS;
-            }
-            Ok(h)
+            let ctx = c.contexts.get_mut(&id).ok_or(EIO)?;
+            ctx.state = CtxState::Live;
+            Ok((h, ctx.warmed()))
         })
         .unwrap_or(Err(ENODEV))
     });
-    let handle = match created {
+    let (handle, warmed) = match created {
         Ok(h) => h,
         Err(e) => {
             with_core(|c| {
@@ -1638,7 +1786,7 @@ fn op_context_create(arg: u64, len: u64) -> Result<u64, i64> {
         }
     };
     a.handle = handle;
-    a.warmed = encode::CATALOGUE_PROGRAMS;
+    a.warmed = warmed;
     if let Err(e) = write_arg(arg, &a) {
         destroy_context(tgid, handle);
         return Err(e);
@@ -1647,9 +1795,10 @@ fn op_context_create(arg: u64, len: u64) -> Result<u64, i64> {
 }
 
 /// Create device context `id` with its internal resources and the process's resources
-/// attached, then compile and warm the fixed catalogue's programs and wait for the
-/// warm-up's fence; `probe_int` waits for the first PROBE. Each wait here is a synchronous
-/// device request under the watchdog, ended by a kill (section 1.4.1, program warm-up).
+/// attached, then send its fixed state and wait for its fence. The catalogue's programs
+/// are warmed afterwards on `kgpu` (`warm_next`), and `probe_int` by the first PROBE. Each
+/// wait here is a synchronous device request under the watchdog, ended by a kill (section
+/// 1.4.1, program warm-up).
 fn create_device_context(tgid: u64, id: u32, internal: [u32; 3], vb_pages: &Arc<Pages>, scratch_pages: &Arc<Pages>) -> Result<(), i64> {
     let [vb, scratch, scratch_texture] = internal;
     // Counted as alive from the request on, so a failed creation queues CTX_DESTROY
@@ -1743,22 +1892,11 @@ fn create_device_context(tgid: u64, id: u32, internal: [u32; 3], vb_pages: &Arc<
         }
     });
     attached?;
-    let chunks = with_core(|c| {
-        let mut enc = encode::Enc::new();
-        let ctx = c.contexts.get_mut(&id)?;
-        encode::warm_up(
-            &mut enc,
-            &mut ctx.objects,
-            vb,
-            scratch,
-            scratch_texture,
-            wire::format::B8G8R8A8_UNORM,
-            FLIP_Y,
-        );
-        enc.finish().filter(|chunks| !chunks.is_empty())
-    })
-    .flatten()
-    .ok_or(ENOMEM)?;
+    let mut objects = with_core(|c| c.contexts.get(&id).map(|ctx| ctx.objects.clone())).flatten().ok_or(EIO)?;
+    let mut enc = encode::Enc::new();
+    encode::warm_base(&mut enc, &mut objects, vb, scratch, wire::format::B8G8R8A8_UNORM);
+    let chunks = enc.finish().filter(|v| !v.is_empty()).ok_or(ENOMEM)?;
+    with_core(|c| if let Some(ctx) = c.contexts.get_mut(&id) { ctx.objects = objects; });
     for chunk in chunks {
         let (serial, fence) = with_core(|c| {
             if !c
@@ -2044,34 +2182,67 @@ impl Snapshot {
             if len < 2 || len > total - at {
                 break;
             }
-            if code == stream::cmd::DRAW_BUFFER && len == 8 {
-                let handle = stream.word(at + 4) as u64 | (stream.word(at + 5) as u64) << 32;
-                let offset = stream.word(at + 6) as u64;
-                let count = stream.word(at + 7) as u64;
-                let bytes = 16 * count;
-                let fits = |e: &&Entry| offset % 16 == 0 && offset + bytes <= e.size && rects + count <= limits::INSTANCES;
-                if let Some(backing) = view.get(handle).filter(fits).and_then(|e| e.backing.as_ref()) {
+            if (code == stream::cmd::DRAW_BUFFER && len == 8)
+                || (code == abi::draw::COMMAND && len >= abi::draw::HEADER && stream.word(at+2) == abi::pipeline::COVERAGE_SPANS) {
+                let parameters = code == abi::draw::COMMAND;
+                let hi = if parameters {6} else {4};
+                let handle = stream.word(at + hi) as u64 | (stream.word(at + hi+1) as u64) << 32;
+                let offset = if parameters {0} else {stream.word(at + 6) as u64};
+                let count = if parameters {0} else {stream.word(at + 7) as u64};
+                let bytes = if parameters {stream.word(at+8) as u64} else {16 * count};
+                let fits = |e: &&Entry| offset % 16 == 0 && offset + bytes <= e.size && bytes <= limits::BUFFER_BYTES && bytes % 4 == 0 && rects + count <= limits::INSTANCES;
+                if view.get(handle).filter(fits).and_then(|e| e.backing.as_ref()).is_some() {
                     snap.ranges.try_reserve(1).map_err(|_| ENOMEM)?;
-                    let first = snap.words.len();
-                    let mut chunk = [0u8; 256];
-                    let mut done = 0u64;
-                    while done < bytes {
-                        let n = (bytes - done).min(chunk.len() as u64) as usize;
-                        backing.read((offset + done) as usize, &mut chunk[..n]);
-                        for w in chunk[..n].chunks_exact(4) {
-                            if !snap.words.push(u32::from_le_bytes([w[0], w[1], w[2], w[3]])) {
-                                return Err(ENOMEM);
-                            }
-                        }
-                        done += n as u64;
-                    }
-                    snap.ranges.push(Range { handle, offset, bytes, first });
+                    snap.ranges.push(Range { handle, offset, bytes, first: 0 });
                     rects += count;
                 }
             }
             at += len;
         }
+        // Merge overlapping requests before copying, including repeated parameter buffers.
+        snap.ranges.sort_unstable_by_key(|r| (r.handle, r.offset));
+        let mut used = 0usize;
+        for i in 0..snap.ranges.len() {
+            if used > 0 && snap.ranges[used-1].handle == snap.ranges[i].handle
+                && snap.ranges[i].offset <= snap.ranges[used-1].offset + snap.ranges[used-1].bytes {
+                let end = (snap.ranges[i].offset + snap.ranges[i].bytes)
+                    .max(snap.ranges[used-1].offset + snap.ranges[used-1].bytes);
+                snap.ranges[used-1].bytes = end - snap.ranges[used-1].offset;
+            } else {
+                snap.ranges.swap(used, i);
+                used += 1;
+            }
+        }
+        snap.ranges.truncate(used);
+        let mut copied = 0u64;
+        for r in &mut snap.ranges {
+            copied = copied.checked_add(r.bytes).ok_or(EINVAL)?;
+            if copied > limits::BUFFER_BYTES { return Err(EINVAL); }
+            r.first = snap.words.len();
+            let backing = view.get(r.handle).and_then(|e| e.backing.as_ref()).ok_or(EINVAL)?;
+            let mut chunk = [0u8; 256];
+            let mut done = 0u64;
+            while done < r.bytes {
+                let n = (r.bytes-done).min(chunk.len() as u64) as usize;
+                backing.read((r.offset+done) as usize, &mut chunk[..n]);
+                for w in chunk[..n].chunks_exact(4) {
+                    if !snap.words.push(u32::from_le_bytes(w.try_into().unwrap())) { return Err(ENOMEM); }
+                }
+                done += n as u64;
+            }
+        }
         Ok(snap)
+    }
+
+    fn word(&self, handle: u64, offset: u64) -> u32 {
+        let inside = |r: &Range| r.handle == handle && offset >= r.offset && offset+4 <= r.offset+r.bytes;
+        let hint = self.hint.get();
+        let found = self.ranges.get(hint).filter(|r| inside(r)).map(|_| hint)
+            .or_else(|| self.ranges.iter().position(inside));
+        let Some(i) = found else { return 0; };
+        self.hint.set(i);
+        let r = &self.ranges[i];
+        self.words.word(r.first+((offset-r.offset)/4) as usize)
     }
 
     /// The rectangle at byte `offset` of buffer `handle`, from the copy.
@@ -2125,6 +2296,8 @@ impl Resolver for Resolved<'_> {
     fn buffer_rect(&self, handle: u64, offset: u64) -> [i32; 4] {
         self.snap.rect(handle, offset)
     }
+
+    fn buffer_word(&self, handle:u64, offset:u64)->u32 { self.snap.word(handle,offset) }
 }
 
 impl encode::Bindings for Resolved<'_> {
@@ -2146,6 +2319,8 @@ impl encode::Bindings for Resolved<'_> {
     fn buffer_rect(&self, handle: u64, offset: u64) -> [i32; 4] {
         self.snap.rect(handle, offset)
     }
+
+    fn buffer_word(&self, handle:u64, offset:u64)->u32 { self.snap.word(handle,offset) }
 }
 
 /// The resources a validated stream names: written targets, every resource, full clears.
@@ -2204,7 +2379,13 @@ fn named(words: &WordBuf, view: &View) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
                 }
             }
         }
-        let writes = code == stream::cmd::CLEAR
+        if code == abi::draw::COMMAND {
+            for k in [4,6] {
+                if let Some(e)=view.get(handle(k)) {add(&mut all,e.id);}
+            }
+        }
+        let writes = (code == abi::draw::COMMAND && words.word(at+9)>0)
+            || code == stream::cmd::CLEAR
             || code == stream::cmd::PROBE
             || (code == stream::cmd::DRAW && words.word(at + 4) > 0)
             || (code == stream::cmd::DRAW_BUFFER && words.word(at + 7) > 0)
@@ -2256,7 +2437,7 @@ fn reserve_profile_violation(
         }
         if matches!(
             code,
-            stream::cmd::DRAW | stream::cmd::DRAW_BUFFER | stream::cmd::DRAW_SAMPLED
+            stream::cmd::DRAW | stream::cmd::DRAW_BUFFER | stream::cmd::DRAW_SAMPLED | abi::draw::COMMAND
         ) && len >= 3
         {
             if let Some(point) = crate::test_control::reserve(test_point::PROFILE_VIOLATION, 0) {
@@ -2310,7 +2491,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
                     point.fire();
                 }
             }
-            let errno = if r.is_work_limit() { EDQUOT } else { EINVAL };
+            let errno = if r.is_work_limit() { EDQUOT } else if r.error == stream::error::NO_MEMORY { ENOMEM } else { EINVAL };
             return refuse(&mut a, r.index, r.error, errno);
         }
     };
@@ -2406,7 +2587,18 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             }
         }
     }
-    let extras: Vec<u32> = vertex_buffer.into_iter().chain(copy_scratch.into_iter().filter(|&r| r != 0)).collect();
+    let data_width = with_core(|c| c.caps.max_width).unwrap_or(0).min(16384);
+    let data_width = 1u32 << (31-data_width.leading_zeros());
+    let data_texture = if plan.data_bytes > 0 {
+        match scratch_for(id, wire::format::R8G8B8A8_UNORM, data_width, (plan.data_bytes/4).div_ceil(data_width)) {
+            Ok(rid)=>rid,
+            Err(e)=>{
+                with_core(|c|for rid in vertex_buffer.into_iter().chain(copy_scratch.into_iter().filter(|&r|r!=0)){c.unhold(rid);});
+                release_slot(false);return Err(e);
+            }
+        }
+    } else {0};
+    let extras: Vec<u32> = vertex_buffer.into_iter().chain(copy_scratch.into_iter().filter(|&r| r != 0)).chain((data_texture!=0).then_some(data_texture)).collect();
     let drop_vertex_buffer = || {
         with_core(|c| {
             for &rid in &extras {
@@ -2475,6 +2667,8 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
     encode::translate(&mut enc, &mut objects, &words, &resolved, encode::Extras {
         vertex_buffer: vertex_buffer.unwrap_or(default_vb),
         scratch: copy_scratch,
+        data: data_texture,
+        data_width,
         flip_y: FLIP_Y,
         corrupt,
         suppress,
@@ -2533,7 +2727,6 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             _ => false,
         };
         ctx.objects = objects;
-        ctx.warmed = ctx.objects.programs();
         ctx.issued += 1;
         let n = ctx.issued;
         let ns = ctx.ns;
@@ -3302,9 +3495,10 @@ fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {
             out.state = match ctx.state {
                 CtxState::Quarantined => abi::context_state::QUARANTINED,
                 CtxState::Reset => abi::context_state::RESET,
-                _ => abi::context_state::LIVE,
+                _ if ctx.warm == encode::ALL_WARM => abi::context_state::LIVE,
+                _ => abi::context_state::WARMING,
             };
-            out.warmed = ctx.warmed as u64;
+            out.warmed = ctx.warmed() as u64;
             if let Some(p) = proc_live {
                 out.contexts = p.contexts.len() as u64;
                 out.resources = p.resources.len() as u64;
