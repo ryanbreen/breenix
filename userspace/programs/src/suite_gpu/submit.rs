@@ -16,6 +16,7 @@ const GREY: u32 = bgra(0x40, 0x40, 0x40, 0xFF);
 
 pub fn context_create() -> CaseResult {
     let _case = begin()?;
+    let t = target(format::B8G8R8A8, 4, 4)?;
     let start = now_ns();
     let ctx = gpu::context_create().map_err(|e| fail_msg(format!("CONTEXT_CREATE returned {}", errno(e))))?;
     let ms = ms_since(start);
@@ -28,13 +29,17 @@ pub fn context_create() -> CaseResult {
     // CONTEXT_CREATE and COUNTERS; ruling 33, #1725).
     let probe = c.pipelines & 1 << pipeline::PROBE_INT != 0;
     let programs = 2 * (c.pipelines & !(1 << pipeline::PROBE_INT)).count_ones() as u64;
+    // Use a late catalogue pipeline so this draw creates programs before its warm-up step.
+    let mut first = scene(t, GREEN, &[]);
+    let mut params = [0; 16];
+    params[..3].copy_from_slice(&[1, 1, RED]);
+    gpu::abi::draw::encode(&mut first, pipeline::GRADIENT_V, RED, 0, 0, 0,
+        &[gpu::abi::draw::Instance { rect: [1, 1, 3, 2], params }]);
     let k = counters(ctx)?;
-    ensure(k.state == context_state::WARMING || k.state == context_state::LIVE, || format!("the new context's state is {}", k.state))?;
-    ensure(k.warmed <= programs, || format!("the new context reports {} programs warmed; the catalogue has {programs}", k.warmed))?;
-    // Owned: it draws while its catalogue warms, and its work completes.
-    let t = target(format::B8G8R8A8, 4, 4)?;
-    frame(ctx, &scene(t, GREEN, &[]))?;
-    expect(t, &scene_canvas(4, 4, GREEN, &[]), "the new context's first frame")?;
+    ensure(k.state == context_state::WARMING, || format!("the context finished warming before its first draw (state {})", k.state))?;
+    ensure(k.warmed < 2 * pipeline::GRADIENT_V as u64, || format!("{} programs warmed before the gradient draw; its pipeline must still be cold", k.warmed))?;
+    frame(ctx, &first)?;
+    expect(t, &scene_canvas(4, 4, GREEN, &[([1, 1, 3, 2], RED)]), "the new context's first pipeline draw")?;
     // The warm-up completes: state 0, with the rendering catalogue's programs warmed.
     warmed(ctx)?;
     value("warm-ms", ms_since(start) as i64, "ms", None);
