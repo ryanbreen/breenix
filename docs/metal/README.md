@@ -16,9 +16,9 @@ site's identifiers live in the **site file** (`BREENIX_METAL_SITE`, default `/et
 
 | Where | What |
 |---|---|
-| The boot host | An always-on Linux host on the server's network segment. It runs the service container and the x86 build host; its user account holds `metal-run` and `metal-build` (`~/.local/share/breenix-metal`). No package or service is installed on its operating system. |
+| The boot host | An always-on Linux host on the server's network segment. It runs the service container, the build container and the x86 gate VM; its user account holds `metal-run`, `metal-build` and the slot and artifact helpers `metal-build` runs with (`~/.local/share/breenix-metal`). No package or service is installed on its operating system. |
 | The service container | A small container on the host's shared CPUs (not the CPUs reserved for the x86 gate) with a low memory limit and autostart. It holds the tools (`/opt/breenix-metal`), the site file, `breenix-metal-machine.service`, each boot's driver as its own transient unit (`metal-boot-<id>`, memory ceiling 256 MB) and the authoritative boot store (`/var/lib/breenix-metal`). A proxy device publishes its HTTP port on the host's LAN address. |
-| The x86 build host | The VM where x86 Breenix builds already run. A metal build is a private clone per boot, built under the host's `x86-build` slot, so it waits while a gate boot holds that host, and removed afterwards. |
+| The build container | A container on the host's shared CPUs (its cpuset is the shared CPUs, outside those reserved for the x86 gate VM) at the lowest CPU priority, with its own memory limit and autostart. A metal build is a private clone per boot, built under one of the container's `metal-build` slots and removed afterwards. Its slots are its own: no x86 gate lease covers them, so a metal build does not wait on an x86 gate build or boot, and the gate VM's timing runs do not share their cores with it. `scripts/host-slots.py` sizes the slots to the container: its CPU count over each build's 4 Cargo jobs, bounded by its memory limit over 4 GiB a build. It holds the pinned toolchain, a clone of the repository, the pinned Rust fork and the metal artifact cache. |
 
 Only the machine service talks to the management controller (Redfish over HTTPS, IPMI over LAN with cipher suite 17
 only), through one queue: at most one request in flight, at least two seconds from the end of one request to the
@@ -199,12 +199,17 @@ soon as the unit holds, or waits for, the machine lease, so the caller's ssh ses
 1. **Claims the lease** (`lease.json` under a flock; one holder at a time; `--no-wait` gets exit 75 when another boot
    holds it; a quarantined lease refuses new boots). The lease carries the boot id, the driver's unit, a heartbeat refreshed
    each 5 s and, from power-on, the attempt's absolute ceiling.
-2. **Gets its payload.** For a Breenix boot, `metal-build` runs in the x86 build host: a private clone of the commit,
+2. **Gets its payload.** For a Breenix boot, `metal-build` runs in the build container: a private clone of the commit,
    the effort-target guard from a freshly fetched origin/main (`--target x86-metal` once origin/main's guard knows that target; until then
    `--target x86`, recorded as the stand-in), the pinned Rust library snapshotted into the tree as the x86 gate does,
-   userspace and the ext2 root through `scripts/gate-artifacts.py` (content-keyed and shared with the x86 gate), then
-   the production kernel (no features) and its UEFI image, then the delivery stub from the deployed tools, each
-   refused on any warning. The inputs are streamed into the boot's stage folder; the driver assembles the boot disk,
+   then, under one `metal-build` lease, userspace and the ext2 root through `scripts/gate-artifacts.py --metal`, the
+   production kernel (no features) and its UEFI image, and the delivery stub from the deployed tools, each refused on
+   any warning. The metal mode builds userspace once: the clone is fresh, so that build is already a clean one. It is
+   content-keyed in the container's own cache under `metal-artifacts/` with `built-once.json`; the x86 gate reads
+   only its own `artifacts/<key>/verified.json`, which it publishes after its second, comparing build, so it does not
+   take a metal build as verified. The slot and artifact helpers are the deployed tools' copies, so a
+   commit builds the same way whatever its own copies say. `build.json` records the phase timings (`slot_wait`,
+   `userspace`, `kernel`, `stub`), the CPUs the build ran on and its Cargo jobs. The inputs are streamed into the boot's stage folder; the driver assembles the boot disk,
    reads each component back out of it, appends the disk to the stub as `boot.efi` and records sizes and sha256s.
    The commit's definition files (`docs/metal/boot-path.json` when it exists, `docs/boot-path.json`,
    `xtask/src/boot_stages.rs`, the x86 stage export) are copied into the boot's `definition/`. Test payloads need no
@@ -445,16 +450,24 @@ The **site file** (inside the service container, 0600): `IDRAC_HOST`, `IDRAC_USE
 `sh`, because `metal-sol` sources it.
 
 The **host file** (on the boot host): `METAL_INSTANCE`, `METAL_IMAGE`, `METAL_CPUS`, `METAL_MEMORY`, `METAL_LISTEN`
-(the published address and port), `BUILD_INSTANCE`, `BUILD_REPO`, `BUILD_RUST_FORK`, `BUILD_CACHE`, `BUILD_ROOT`.
+(the published address and port), and the build container's `BUILD_INSTANCE`, `BUILD_REPO`, `BUILD_RUST_FORK`,
+`BUILD_CACHE`, `BUILD_ROOT`.
 
 ## Deploying and running
 
 ```
 scripts/metal/metal-deploy HOST --create         # once: the service container, its limits, proxy and packages
-scripts/metal/metal-deploy HOST [--restart]      # the tools, the unit, metal-run/metal-build on the host
+scripts/metal/metal-deploy HOST [--restart]      # the tools, the unit, metal-run/metal-build and helpers on the host
 metal-setup account --slot N --name NAME          # in the container; three lines on stdin (see its --help)
 metal-setup apply                                 # in the container, under the lease; then the read-back
 ```
+
+The build container is made once on the boot host from the same image as the service container: `limits.cpu` set
+to the shared CPUs (the service container's `METAL_CPUS`), `limits.cpu.priority=0`, a memory limit of 4 GiB per
+build slot and `boot.autostart=true`. It needs build-essential, clang, llvm, curl, e2fsprogs, gdisk, git, make,
+nasm, patch, pkg-config, python3 and xz-utils; rustup with the repository's pinned nightly and its components and
+targets; a clone of the repository at `BUILD_REPO`; the Rust fork at `BUILD_RUST_FORK` with the pinned commit and its
+`library/` submodules checked out; and an empty `BUILD_CACHE`.
 
 On the boot host:
 
