@@ -408,3 +408,53 @@ HTTP events retain the server's observation time, serial events retain the captu
 and power-on uses the machine queue's dispatch time. Polling latency does not change these timestamps.
 Build staging replaces old inputs and copies only the stub's source, manifests, toolchain and tracked lockfile.
 The ARM64 runner prints its source commit and dirty state before building.
+
+## Linux platform census
+
+`metal-linux` builds a pinned Linux 6.12.1 EFI-stub kernel with its initramfs embedded. It is a measuring
+instrument under the ground-truth ruling, not a driver reference or a Breenix boot. Its source archive is pinned
+by the SHA-256 published in kernel.org's `v6.x/sha256sums.asc`. Build it on a low-priority Linux host restricted to
+shared CPUs, outside the gate VM, with a small memory ceiling. Dependencies: gcc, make, flex, bison, bc,
+libelf-dev, libssl-dev, xz-utils and busybox-static. Export `CARGO_BUILD_JOBS=4`; the recipe permits one or two
+compiler jobs (one by default) and runs compilation at nice 15. The artifact directory must be outside the public checkout.
+
+```sh
+scripts/metal/metal-linux "$PRIVATE_BUILD_DIRECTORY" --jobs 1
+```
+
+The recipe starts from `tinyconfig`, disables modules, networking, block devices, ATA, SCSI, NVMe and USB, and
+checks the resolved configuration before compiling and again before staging. CPU hotplug remains enabled
+as required by this Linux version with SMP; it does not enable device drivers. The forced console is `ttyS0` at 115200 baud. The initramfs
+contains a static BusyBox, the census init and a small raw CPUID reader. It mounts proc, sysfs and devtmpfs in RAM;
+no disk root or network connection is used. Readback of a bound PCI network, storage or USB-controller driver
+fails the census. Linux's interrupt-controller initialization means this census cannot establish firmware's APIC
+handoff mode; that observation belongs to Breenix first light.
+
+Copy `metal-linux.efi`, `config` and `build.json` to a private directory on the boot host. After deploying the tools,
+start through the existing driver and machine lease:
+
+```sh
+metal-run boot --payload linux --linux-directory "$PRIVATE_PAYLOAD_DIRECTORY" --no-wait
+```
+
+The driver verifies the staged EFI's size and SHA-256 against `build.json`, retains the build manifest and kernel
+configuration in the private boot record, serves it as `application/efi`, and uses the existing console, pre-flight,
+deadline, reaper and power-off paths. The record kind is `platform-census`, separate from Breenix milestone evidence.
+
+`metal-linux-init` emits ACPI table bytes, firmware memory-map entries, PCI configuration and resource files,
+CPU flags and raw CPUID leaves, the physical map and interrupt listing, and the kernel log with a separate
+ACPI/APIC/CPU/timer selection. A file has a `FILE name size sha256` header, `BEGIN name`, base64 bytes and `END name`.
+`census/manifest` lists the preceding files. Completion requires `metal-linux-files-done` followed by the exact
+line `metal-linux-ok`. `metal_census.py` checks framing, paths, sizes, hashes, the final manifest and required
+observations before the driver accepts completion. Unexpected text inside the census fails validation.
+
+After successful power-off with a complete capture, the driver reassembles `platform-facts/` in the private boot
+record. To copy the facts from an archived record to a new private evidence directory:
+
+```sh
+scripts/metal/metal-linux-extract "$PRIVATE_BOOT_RECORD" "$PRIVATE_EVIDENCE_DIRECTORY"
+```
+
+Extraction requires `ended`, exit 0 and no console-gap event. Raw captures, inventory, payloads, configuration,
+build logs and the platform-facts report remain private. The public repository contains only the recipe,
+protocol tooling, documentation and synthetic tests.

@@ -98,6 +98,8 @@ def boot(args):
         command.append('--no-wait')
     if args.inject:
         command += ['--inject', args.inject]
+    if payload == 'linux' and not args.linux_directory:
+        raise SystemExit('Linux payload needs --linux-directory')
     if args.serve_as:
         command += ['--serve-as', args.serve_as]
     if args.content_type:
@@ -108,6 +110,17 @@ def boot(args):
     print(result.stdout.strip() or result.stderr.strip(), flush=True)
     if result.returncode != 0:
         return result.returncode
+    if payload == 'linux':
+        source = Path(args.linux_directory).resolve()
+        stage = f'{STATE}/stage/{boot_id}/inputs'
+        try:
+            in_metal(env, 'mkdir', '-p', stage, check=True)
+            for name in ('metal-linux.efi', 'config', 'build.json'):
+                incus('file', 'push', str(source / name), f"{env['METAL_INSTANCE']}{stage}/{name}", check=True)
+            in_metal(env, 'python3', f'{TOOLS}/metal-boot', 'inputs-ready', boot_id, check=True)
+        except Exception:
+            in_metal(env, 'python3', f'{TOOLS}/metal-boot', 'inputs-failed', boot_id, 'Linux staging failed')
+            raise
     if payload == 'image':
         logs = Path.home() / '.local/state/breenix-metal'
         logs.mkdir(parents=True, exist_ok=True)
@@ -180,7 +193,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest='command', required=True)
     p = sub.add_parser('boot')
-    p.add_argument('--payload', choices=('image', 'hang', 'hang-img', 'hang-iso', 'none'), default='image')
+    p.add_argument('--payload', choices=('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux'), default='image')
+    p.add_argument('--linux-directory', help='prebuilt Linux instrument directory on the boot host')
     p.add_argument('--sha')
     p.add_argument('--branch')
     p.add_argument('--no-wait', action='store_true')
