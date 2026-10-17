@@ -41,11 +41,10 @@ pub enum InterruptIndex {
 /// System call interrupt vector (INT 0x80)
 pub const SYSCALL_INTERRUPT_ID: u8 = 0x80;
 
-/// Reschedule IPI vector. Its gate is the timer entry, so a reschedule IPI
-/// returns through `check_need_resched_and_switch`, the interrupt-return path
-/// that performs context switches, exactly as a tick does. The tick handler it
-/// also runs charges this CPU's quantum by elapsed ticks and reads the tick
-/// count from the TSC, so an extra entry changes neither.
+/// Reschedule IPI vector. Its entry shares the timer's register frame and
+/// interrupt-return scheduling path, but identifies itself as an IPI so it
+/// does not increment the delivered timer-tick counter. Quantum and time
+/// accounting still read elapsed time, so an extra entry changes neither.
 pub const RESCHEDULE_VECTOR: u8 = 0xf0;
 
 /// Self-IPI vector for retrying an interrupt-return step deferred because the
@@ -143,10 +142,12 @@ pub fn init_idt() {
         // CRITICAL: Use high-half alias for timer entry so it remains accessible after CR3 switch
         extern "C" {
             fn timer_interrupt_entry();
+            fn reschedule_interrupt_entry();
         }
         unsafe {
             // Convert low-half address to high-half alias
             let timer_entry_low = timer_interrupt_entry as u64;
+            let reschedule_entry_low = reschedule_interrupt_entry as u64;
 
             // CRITICAL: Validate the address is in expected range before conversion
             if timer_entry_low < 0x100000 || timer_entry_low > 0x40000000 {
@@ -157,7 +158,7 @@ pub fn init_idt() {
                 // For now, use the low address directly - it should work since we preserve PML4[0]
                 log::warn!("Using low-half address for timer entry (temporary workaround)");
                 idt[InterruptIndex::Timer.as_u8()].set_handler_addr(VirtAddr::new(timer_entry_low));
-                idt[RESCHEDULE_VECTOR].set_handler_addr(VirtAddr::new(timer_entry_low));
+                idt[RESCHEDULE_VECTOR].set_handler_addr(VirtAddr::new(reschedule_entry_low));
             } else {
                 let timer_entry_high = crate::memory::layout::high_alias_from_low(timer_entry_low);
                 log::info!(
@@ -167,7 +168,9 @@ pub fn init_idt() {
                 );
                 idt[InterruptIndex::Timer.as_u8()]
                     .set_handler_addr(VirtAddr::new(timer_entry_high));
-                idt[RESCHEDULE_VECTOR].set_handler_addr(VirtAddr::new(timer_entry_high));
+                idt[RESCHEDULE_VECTOR].set_handler_addr(VirtAddr::new(
+                    crate::memory::layout::high_alias_from_low(reschedule_entry_low),
+                ));
             }
         }
         idt[InterruptIndex::Keyboard.as_u8()].set_handler_fn(keyboard_interrupt_handler);
