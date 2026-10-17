@@ -168,7 +168,7 @@ def inner(args):
         shutil.copyfile(images[-1], out / 'uefi.img')
         shutil.copyfile(clone / 'testdata/ext2.img', out / 'ext2.img')
         copied = []
-        definition_files = list(DEFINITION) + ['scripts/suite-verdict.py']
+        definition_files = list(DEFINITION) + ['scripts/suite-verdict.py', 'scripts/write-boot-target.sh']
         definition_files += [str(path.relative_to(clone)) for path in sorted((clone / 'docs/suites').glob('*.json'))]
         for name in definition_files:
             source = clone / name

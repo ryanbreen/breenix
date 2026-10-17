@@ -24,6 +24,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -48,6 +49,7 @@ SILENCE_SECONDS = 120
 NMI_CAPTURE_SECONDS = 5
 FATAL_GRACE_SECONDS = 5
 NOT_FOUND_CAPTURE_SECONDS = 30
+SUITE_VERDICT_SECONDS = 20
 POST_POLL_SECONDS = 10
 RUNNING_POLL_SECONDS = 30
 BOOTLOADER_LINE = 'UEFI bootloader started'
@@ -276,7 +278,8 @@ class Driver:
             if not manifest.is_file() or m.read_json(manifest).get('id') != self.args.suite:
                 raise Finish(m.EXIT_CANCELLED, 'the suite manifest is missing or differs')
         self.delivery['root'] = metal_root.stage_root(inputs / 'ext2.img', self.args.mode,
-                                                       getattr(self.args, 'suite', None), self.site)
+                                                       getattr(self.args, 'suite', None), self.site,
+                                                       self.dir / 'definition/scripts/write-boot-target.sh')
         self.phase('Assembling the image')
         extracted = self.stage / 'esp'
         files = metal_image.extract_esp(inputs / 'uefi.img', extracted)
@@ -465,15 +468,46 @@ class Driver:
         if self.fatal_at is not None and decision is not None and decision.status == m.EXIT_DONE:
             return  # The fatal grace interval captures its backtrace before failing.
         if decision is not None:
-            if self.args.mode == 'suite' and decision.status == m.EXIT_DONE:
-                definition = self.dir / 'definition'
-                verdict = subprocess.run([sys.executable, str(definition / 'scripts/suite-verdict.py'),
-                                          str(definition / 'docs/suites' / (self.args.suite + '.json')),
-                                          str(self.dir / 'serial.txt')], capture_output=True, text=True)
-                m.write_text(self.dir / 'suite-verdict.txt', self.redact(verdict.stdout + verdict.stderr))
-                if verdict.returncode != 0:
-                    raise Finish(m.EXIT_SHORT, 'the suite verdict failed')
             raise decision
+
+    def score_suite(self):
+        """Run the commit's scorer after power-off, without site files or management access."""
+        definition = self.dir / 'definition'
+        with tempfile.TemporaryDirectory(prefix='metal-verdict-') as temporary:
+            root = Path(temporary)
+            root.chmod(0o755)
+            for name in ('scripts/suite-verdict.py', 'docs/boot-path.json',
+                         'docs/suites/' + self.args.suite + '.json'):
+                target = root / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(definition / name, target)
+                target.chmod(0o644)
+            shutil.copyfile(self.dir / 'serial.txt', root / 'serial.txt')
+            (root / 'serial.txt').chmod(0o644)
+            sandbox = Path('/run/metal-verdict-input')
+            command = ['systemd-run', '--quiet', '--wait', '--pipe', '--collect',
+                       '--property=DynamicUser=yes', '--property=PrivateTmp=yes', '--property=PrivateNetwork=yes',
+                       '--property=BindReadOnlyPaths=' + str(root) + ':' + str(sandbox),
+                       '--property=RestrictAddressFamilies=AF_UNIX',
+                       '--property=ProtectSystem=strict', '--property=ProtectHome=yes',
+                       '--property=NoNewPrivileges=yes', '--property=RestrictSUIDSGID=yes',
+                       '--property=CapabilityBoundingSet=', '--property=WorkingDirectory=/',
+                       '--property=InaccessiblePaths=/etc/breenix-metal /var/lib/breenix-metal /run/breenix-metal',
+                       '--property=RuntimeMaxSec=' + str(SUITE_VERDICT_SECONDS),
+                       '--property=TimeoutStopSec=2', '--property=KillMode=control-group',
+                       sys.executable, '-I', str(sandbox / 'scripts/suite-verdict.py'),
+                       str(sandbox / 'docs/suites' / (self.args.suite + '.json')), str(sandbox / 'serial.txt')]
+            try:
+                verdict = subprocess.run(command, capture_output=True, text=True,
+                                         timeout=SUITE_VERDICT_SECONDS + 5,
+                                         env={'PATH': os.defpath, 'LANG': 'C.UTF-8'}, cwd='/')
+            except subprocess.TimeoutExpired:
+                self.event('suite-verdict-timeout')
+                m.write_text(self.dir / 'suite-verdict.txt', 'FAIL: suite verdict timed out\n')
+                return False
+            m.write_text(self.dir / 'suite-verdict.txt', self.redact(verdict.stdout + verdict.stderr))
+            self.event('suite-verdict', status=verdict.returncode)
+            return verdict.returncode == 0
 
     def challenge_shell(self, text):
         if (self.args.mode == 'shell' and self.shell_ready and not self.shell_sent
@@ -830,6 +864,20 @@ class Driver:
             self.phase(('Stopped: ' if status else 'Done: ') + finish.reason)
             if self.t0 is not None:
                 off = self.power_off(finish.hung)
+                if not off:
+                    status = m.EXIT_INCOMPLETE
+                if self.args.mode == 'suite' and status == m.EXIT_DONE:
+                    with contextlib.suppress(Finish):
+                        self.pump_serial()
+                    if self.gap:
+                        status = m.EXIT_INCOMPLETE
+                    else:
+                        try:
+                            if not self.score_suite():
+                                status = m.EXIT_SHORT
+                        except Exception as error:
+                            self.event('suite-verdict-error', error=error.__class__.__name__)
+                            status = m.EXIT_SHORT
                 if self.census and status == m.EXIT_DONE:
                     if off and not self.gap:
                         try:

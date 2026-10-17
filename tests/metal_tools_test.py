@@ -789,6 +789,65 @@ class DriverTest(StateTest):
         with patch.object(m, 'now', return_value=d.fatal_at + boot.FATAL_GRACE_SECONDS):
             self.finish(d.check_deadlines, m.EXIT_SHORT)
 
+    def test_suite_scoring_is_bounded_and_has_no_management_environment(self):
+        d = self.driver
+        d.args.mode, d.args.suite = 'suite', 'smoke'
+        definition = d.dir / 'definition'
+        for name in ('scripts/suite-verdict.py', 'docs/boot-path.json', 'docs/suites/smoke.json'):
+            path = definition / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('fixture')
+        (d.dir / 'serial.txt').write_text('fixture')
+        def scorer(command, **options):
+            self.assertEqual(options['timeout'], boot.SUITE_VERDICT_SECONDS + 5)
+            self.assertEqual(options['env'], {'PATH': os.defpath, 'LANG': 'C.UTF-8'})
+            self.assertIn('--property=DynamicUser=yes', command)
+            self.assertIn('--property=PrivateNetwork=yes', command)
+            self.assertIn('--property=RestrictAddressFamilies=AF_UNIX', command)
+            self.assertTrue(any(arg.startswith('--property=BindReadOnlyPaths=') for arg in command))
+            self.assertIn('--property=RuntimeMaxSec=' + str(boot.SUITE_VERDICT_SECONDS), command)
+            self.assertIn('--property=InaccessiblePaths=/etc/breenix-metal /var/lib/breenix-metal /run/breenix-metal', command)
+            raise subprocess.TimeoutExpired(command, options['timeout'])
+        with patch.object(boot.subprocess, 'run', side_effect=scorer):
+            self.assertFalse(d.score_suite())
+        self.assertIn('timed out', (d.dir / 'suite-verdict.txt').read_text())
+
+    def test_suite_scoring_only_runs_after_confirmed_power_off(self):
+        d = self.driver
+        d.args.mode, d.args.suite = 'suite', 'smoke'
+        for confirmed, expected in [(True, m.EXIT_DONE), (False, m.EXIT_INCOMPLETE)]:
+            order = []
+            def off(hung):
+                order.append('off')
+                return confirmed
+            def score():
+                self.assertEqual(order, ['off'])
+                order.append('score')
+                return True
+            with patch.object(d, 'create_record'), patch.object(d, 'claim'), \
+                 patch.object(d, 'prepare_payload'), patch.object(d, 'preflight'), \
+                 patch.object(d, 'do_stage'), patch.object(d, 'start_console'), \
+                 patch.object(d, 'power_on'), patch.object(d, 'pump_serial'), \
+                 patch.object(d, 'watch', side_effect=boot.Finish(m.EXIT_DONE, 'done')), \
+                 patch.object(d, 'power_off', side_effect=off), \
+                 patch.object(d, 'score_suite', side_effect=score), patch.object(d, 'cleanup'):
+                self.assertEqual(d.run(), expected)
+            self.assertEqual(order, ['off', 'score'] if confirmed else ['off'])
+
+    def test_scorer_launch_failure_still_releases_the_boot(self):
+        d = self.driver
+        d.args.mode, d.args.suite = 'suite', 'smoke'
+        with patch.object(d, 'create_record'), patch.object(d, 'claim'), \
+             patch.object(d, 'prepare_payload'), patch.object(d, 'preflight'), \
+             patch.object(d, 'do_stage'), patch.object(d, 'start_console'), \
+             patch.object(d, 'power_on'), patch.object(d, 'pump_serial'), \
+             patch.object(d, 'watch', side_effect=boot.Finish(m.EXIT_DONE, 'done')), \
+             patch.object(d, 'power_off', return_value=True), \
+             patch.object(d, 'score_suite', side_effect=OSError('fixture')), \
+             patch.object(d, 'cleanup') as cleanup:
+            self.assertEqual(d.run(), m.EXIT_SHORT)
+        cleanup.assert_called_once_with(m.EXIT_SHORT)
+
     def test_linux_completion_requires_checked_census(self):
         import metal_census
         from metal_census_test import capture

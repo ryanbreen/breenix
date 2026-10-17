@@ -1,19 +1,19 @@
 """Write boot-specific files onto a staged ext2 RAM disk and verify their bytes."""
 from pathlib import Path
 import re
+import os
 import shutil
 import subprocess
 import tempfile
 
 
-def stage_root(image, mode, suite, site):
+def stage_root(image, mode, suite, site, writer=None):
     if mode not in ('default', 'shell', 'suite'):
         raise ValueError('unsupported RAM-disk boot mode')
     if mode == 'suite' and not re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*', suite or ''):
         raise ValueError('suite mode needs a suite id')
     if mode != 'suite' and suite:
         raise ValueError('a suite needs suite mode')
-    target = f'suite {suite}' if mode == 'suite' else mode
     # Only explicitly guest-designated values cross from the host's site file.
     lines = []
     for key, value in sorted(site.items()):
@@ -26,16 +26,19 @@ def stage_root(image, mode, suite, site):
         lines.append(key.removeprefix('GUEST_') + '=' + value + '\n')
     debugfs = shutil.which('debugfs')
     if not debugfs:
-        candidate = Path('/opt/homebrew/opt/e2fsprogs/sbin/debugfs')
-        if candidate.is_file():
-            debugfs = str(candidate)
-    if not debugfs:
         raise ValueError('staging needs debugfs')
     image = Path(image).resolve()
+    writer = Path(writer) if writer else Path(__file__).resolve().parents[1] / 'write-boot-target.sh'
+    target = suite if mode == 'suite' else '--' + mode
+    try:
+        subprocess.run(['bash', str(writer), str(image), target], check=True, capture_output=True,
+                       env=dict(os.environ, BREENIX_REQUIRE_DEBUGFS='1'))
+    except subprocess.CalledProcessError as error:
+        raise ValueError('RAM-disk boot-target staging failed') from error
     with tempfile.TemporaryDirectory(prefix='metal-root-') as scratch:
         scratch = Path(scratch)
-        files = {'boot-target': target + '\n', 'site.env': ''.join(lines)}
-        commands = ['mkdir /etc/breenix', 'rm /etc/breenix/suite-sequence']
+        files = {'site.env': ''.join(lines)}
+        commands = []
         for name, text in files.items():
             source = scratch / name
             source.write_text(text)

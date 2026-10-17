@@ -7,6 +7,9 @@
 use core::fmt;
 
 #[cfg(target_arch = "x86_64")]
+mod read_only;
+
+#[cfg(target_arch = "x86_64")]
 pub mod nvme;
 #[cfg(target_arch = "x86_64")]
 pub mod ramdisk;
@@ -30,7 +33,7 @@ pub fn hardware_read_only() -> bool {
     { false }
 }
 
-/// Select only the bootloader RAM disk on physical boots (issue #1702).
+/// Prefer a supplied bootloader RAM disk; refuse hardware root fallback on physical x86 (issue #1702).
 #[cfg(target_arch = "x86_64")]
 pub fn root_devices() -> alloc::vec::Vec<alloc::boxed::Box<dyn BlockDevice>> {
     if let Some(device) = ramdisk::device() {
@@ -63,7 +66,11 @@ pub fn devices() -> alloc::vec::Vec<alloc::boxed::Box<dyn BlockDevice>> {
             devices.push(alloc::boxed::Box::new(device));
         }
     }
-    devices
+    if hardware_read_only() {
+        devices.into_iter().map(read_only::device).collect()
+    } else {
+        devices
+    }
 }
 
 /// The x86-64 disk at `index` in `devices()` order.

@@ -130,14 +130,15 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // written out (docs/metal/README.md, "The console"). The SPCR is read
     // through the bootloader's physical-memory window, which is mapped from
     // entry.
+    let qemu = drivers::fw_cfg::present();
     let (log_port, log_port_source) = serial::select_log_port(
-        drivers::fw_cfg::present(),
+        qemu,
         boot_info.physical_memory_offset.into_option().and_then(|offset| {
             kernel::arch_impl::x86_64::acpi::read_spcr_port(boot_info.rsdp_addr.into_option(), offset)
         }),
     );
 
-    kernel::block::init_hardware_policy(drivers::fw_cfg::present());
+    kernel::block::init_hardware_policy(qemu);
 
     // Initialize serial port
     log::info!("Initializing serial port...");
@@ -157,7 +158,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         apic_handoff.msr
     );
     log::info!("Serial port initialized and buffer flushed");
-    if !drivers::fw_cfg::present() {
+    if !qemu {
         let mcfg = boot_info.physical_memory_offset.into_option().and_then(|offset| {
             kernel::arch_impl::x86_64::acpi::read_mcfg(boot_info.rsdp_addr.into_option(), offset, |entry| {
                 log::info!("[acpi] MCFG base={:#x} segment={} buses={:02x}-{:02x}",
@@ -661,7 +662,8 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
                 log::info!("[fs] root mounted from the RAM disk");
             }
             if kernel::block::hardware_read_only() {
-                log::info!("[block] hardware disks read-only");
+                let count = kernel::block::devices().len();
+                log::info!("[block] hardware disks read-only: detected={} gated={}", count, count);
             }
             #[cfg(feature = "btrt")]
             kernel::test_framework::btrt::pass(kernel::test_framework::catalog::EXT2_MOUNT);

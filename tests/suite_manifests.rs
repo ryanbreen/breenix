@@ -942,7 +942,7 @@ fn metal_stream_is_independent_and_resolves_its_measures() {
         .find(|m| m["id"] == id).unwrap();
     assert_eq!(milestone("smp")["stages"]["x86_64"][1]["marker"], "[smp] online=4 reported=4");
     assert_eq!(boot["firsts"][2]["stage"], "Four CPUs online and reported");
-    assert_eq!(milestone("ramdisk-root")["stages"]["x86_64"].as_array().unwrap().len(), 2);
+    assert_eq!(milestone("ramdisk-root")["stages"]["x86_64"].as_array().unwrap().len(), 3);
     for id in ["sata-ahci", "disk-io", "disk-filesystem"] {
         assert!(metal["efforts"][3]["milestones"].as_array().unwrap().iter()
             .any(|m| m["measure"]["bootPath"] == id));
@@ -990,7 +990,7 @@ fn metal_definition_contract_rejects_invalid_inputs() {
     }
     assert!(metal_definition_errors(&root, &main, &metal, &finalized).is_empty());
     for (pointer, value) in [
-        ("/milestones/4/stub", serde_json::json!("true")),
+        ("/milestones/7/stub", serde_json::json!("true")),
         ("/scoring", serde_json::json!("arch")),
         ("/gateArch", serde_json::json!("aarch64")),
         ("/milestones/0/stages/x86_64/0/host", serde_json::json!("missing")),

@@ -257,17 +257,19 @@ have no definition and are not scored.
 
 ## RAM-disk userspace
 
-At staging, `metal_root.stage_root` writes `/etc/breenix/boot-target` as `default`, `shell`, or `suite <id>` onto
-the boot's ext2 image, removes a stale suite sequence, and verifies the configuration bytes and selected PID 1 ELF
-with debugfs. Site fields prefixed `GUEST_` become lines in `/etc/breenix/site.env` without that prefix; management
+At staging, `metal_root.stage_root` calls the commit's `scripts/write-boot-target.sh` to write
+`/etc/breenix/boot-target` as `default`, `shell`, or `suite <id>` onto the boot's ext2 image, remove a stale suite
+sequence, and verify the configuration bytes and selected PID 1 ELF with host debugfs. Metal staging requires
+debugfs in the service container and does not launch a fallback container. Site fields prefixed `GUEST_` become lines in `/etc/breenix/site.env` without that prefix; management
 credentials are not guest fields. The staging helper refuses guest field names containing secret-related words.
 The delivered image records the resulting component checksums; the cached base root is not edited.
 
 Shell mode starts `/sbin/init shell`; the serial input task feeds its bytes into the console TTY instead of the
 kernel debug-command parser. When the prompt arrives, the driver sends `print("metal-console-ok", 6*7)`
 through SOL and requires the whole answer line `metal-console-ok 42` after sending it. Suite mode copies the commit's
-manifest and verdict tool into the boot record, waits for that suite's DONE line, then runs the manifest verdict
-against the captured serial. A DONE with failed, missing, out-of-order or skipped cases fails the boot. Shell has a
+manifest and verdict tool into the boot record, waits for that suite's DONE line, and confirms power-off before
+running the manifest verdict against the captured serial. The scorer runs as a transient unprivileged user with
+management files hidden, no network, a clean environment, a 20-second runtime limit and a 25-second caller timeout. A DONE with failed, missing, out-of-order or skipped cases fails the boot. Shell has a
 180-second handoff deadline; suite mode uses the 420-second suite deadline and a further 900-second absolute budget
 for firmware and delivery. The driver also waits for the measured kernel stages, including the delayed per-CPU timer census, before accepting
 the mode result. The console-gap and fatal-output vetoes apply (issue #1702).
@@ -280,7 +282,11 @@ Boot delivery and root arrive in RAM. The kernel installs the bootloader RAM dis
 block device; ext2 uses that device for root. On physical x86 boots (no QEMU fw_cfg signature), root candidates
 contain only that RAM device, and the home-disk-by-index rule is disabled. Hardware write entry points in VirtIO,
 AHCI and NVMe refuse writes; flushes on these read-only devices submit no command. QEMU and ARM64 retain their
-hardware-disk write policy. The storage lane will add its explicit disk-writing mode separately (issue #1702).
+hardware-disk write policy. Discovered physical disks also receive a read-only block wrapper; its refused-write
+test checks that single-block and multi-block writes never reach the backend
+(`kernel/src/block/read_only.rs`, `discovered_hardware_refuses_writes_before_reaching_backend`; claim-lint:ok: #1702). The disk marker reports `detected` and `gated` counts of attached block devices, including zero
+when a controller has no attached block backend. It does not claim physical-drive discovery from policy alone. RAM-disk byte copies hold their spin mutex only
+inside an interrupt-masked window. The storage lane will add its explicit disk-writing mode separately (issue #1702).
 Controller, port and drive observations belong in the private recon and platform facts; site identifiers stay
 out of this repository.
 

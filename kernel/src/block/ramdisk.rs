@@ -1,5 +1,5 @@
 //! A writable block device over the bootloader's reserved, writable RAM mapping.
-//! Reads and writes copy bytes under the device mutex (issue #1702).
+//! Reads and writes mask interrupts around the device mutex and byte copy (issue #1702).
 
 use alloc::{boxed::Box, sync::Arc};
 use spin::{Mutex, Once};
@@ -40,7 +40,9 @@ impl BlockDevice for RamDisk<'_> {
     }
     fn read_blocks(&self, start: u64, count: usize, buf: &mut [u8]) -> Result<(), BlockError> {
         let range = self.range(start, count, buf.len())?;
-        buf[..range.len()].copy_from_slice(&self.bytes.lock()[range]);
+        crate::arch_without_interrupts(|| {
+            buf[..range.len()].copy_from_slice(&self.bytes.lock()[range]);
+        });
         Ok(())
     }
     fn write_block(&self, block: u64, buf: &[u8]) -> Result<(), BlockError> {
@@ -48,7 +50,9 @@ impl BlockDevice for RamDisk<'_> {
     }
     fn write_blocks(&self, start: u64, count: usize, buf: &[u8]) -> Result<(), BlockError> {
         let range = self.range(start, count, buf.len())?;
-        self.bytes.lock()[range.clone()].copy_from_slice(&buf[..range.len()]);
+        crate::arch_without_interrupts(|| {
+            self.bytes.lock()[range.clone()].copy_from_slice(&buf[..range.len()]);
+        });
         Ok(())
     }
     fn block_size(&self) -> usize { SECTOR_SIZE }
