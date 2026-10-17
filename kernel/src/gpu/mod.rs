@@ -397,7 +397,7 @@ impl Core {
         for (slot, s) in c.scanouts.iter_mut().zip(dev.info.scanouts.iter()) {
             *slot = abi::ScanoutInfo { enabled: s.enabled as u32, width: s.width, height: s.height, reserved: 0 };
         }
-        c.pipelines = 1 << abi::pipeline::SOLID | 1 << abi::pipeline::COPY | 1 << abi::pipeline::PROBE_INT;
+        c.pipelines = (1 << abi::pipeline::COUNT) - 1;
         self.have[capability::FEATURE_3D as usize] = c.features & abi::feature::VIRGL != 0;
         let empty = Vec::new();
         let bytes = dev.info.capset.as_ref().map_or(&empty, |s| &s.2);
@@ -1743,22 +1743,11 @@ fn create_device_context(tgid: u64, id: u32, internal: [u32; 3], vb_pages: &Arc<
         }
     });
     attached?;
-    let chunks = with_core(|c| {
-        let mut enc = encode::Enc::new();
-        let ctx = c.contexts.get_mut(&id)?;
-        encode::warm_up(
-            &mut enc,
-            &mut ctx.objects,
-            vb,
-            scratch,
-            scratch_texture,
-            wire::format::B8G8R8A8_UNORM,
-            FLIP_Y,
-        );
-        enc.finish().filter(|chunks| !chunks.is_empty())
-    })
-    .flatten()
-    .ok_or(ENOMEM)?;
+    let mut objects = with_core(|c|c.contexts.get(&id).map(|ctx|ctx.objects.clone())).flatten().ok_or(EIO)?;
+    let mut enc=encode::Enc::new();
+    encode::warm_up(&mut enc,&mut objects,vb,scratch,scratch_texture,wire::format::B8G8R8A8_UNORM,FLIP_Y);
+    let chunks=enc.finish().filter(|v|!v.is_empty()).ok_or(ENOMEM)?;
+    with_core(|c|if let Some(ctx)=c.contexts.get_mut(&id){ctx.objects=objects;});
     for chunk in chunks {
         let (serial, fence) = with_core(|c| {
             if !c
@@ -2044,12 +2033,15 @@ impl Snapshot {
             if len < 2 || len > total - at {
                 break;
             }
-            if code == stream::cmd::DRAW_BUFFER && len == 8 {
-                let handle = stream.word(at + 4) as u64 | (stream.word(at + 5) as u64) << 32;
-                let offset = stream.word(at + 6) as u64;
-                let count = stream.word(at + 7) as u64;
-                let bytes = 16 * count;
-                let fits = |e: &&Entry| offset % 16 == 0 && offset + bytes <= e.size && rects + count <= limits::INSTANCES;
+            if (code == stream::cmd::DRAW_BUFFER && len == 8)
+                || (code == abi::draw::COMMAND && len >= abi::draw::HEADER && stream.word(at+2) == abi::pipeline::COVERAGE_SPANS) {
+                let parameters = code == abi::draw::COMMAND;
+                let hi = if parameters {6} else {4};
+                let handle = stream.word(at + hi) as u64 | (stream.word(at + hi+1) as u64) << 32;
+                let offset = if parameters {0} else {stream.word(at + 6) as u64};
+                let count = if parameters {0} else {stream.word(at + 7) as u64};
+                let bytes = if parameters {stream.word(at+8) as u64} else {16 * count};
+                let fits = |e: &&Entry| offset % 16 == 0 && offset + bytes <= e.size && bytes <= limits::BUFFER_BYTES && bytes % 4 == 0 && rects + count <= limits::INSTANCES;
                 if let Some(backing) = view.get(handle).filter(fits).and_then(|e| e.backing.as_ref()) {
                     snap.ranges.try_reserve(1).map_err(|_| ENOMEM)?;
                     let first = snap.words.len();
@@ -2072,6 +2064,11 @@ impl Snapshot {
             at += len;
         }
         Ok(snap)
+    }
+
+    fn word(&self, handle: u64, offset: u64) -> u32 {
+        self.ranges.iter().find(|r|r.handle==handle && offset>=r.offset && offset+4<=r.offset+r.bytes)
+            .map_or(0,|r|self.words.word(r.first+((offset-r.offset)/4) as usize))
     }
 
     /// The rectangle at byte `offset` of buffer `handle`, from the copy.
@@ -2125,6 +2122,8 @@ impl Resolver for Resolved<'_> {
     fn buffer_rect(&self, handle: u64, offset: u64) -> [i32; 4] {
         self.snap.rect(handle, offset)
     }
+
+    fn buffer_word(&self, handle:u64, offset:u64)->u32 { self.snap.word(handle,offset) }
 }
 
 impl encode::Bindings for Resolved<'_> {
@@ -2146,6 +2145,8 @@ impl encode::Bindings for Resolved<'_> {
     fn buffer_rect(&self, handle: u64, offset: u64) -> [i32; 4] {
         self.snap.rect(handle, offset)
     }
+
+    fn buffer_word(&self, handle:u64, offset:u64)->u32 { self.snap.word(handle,offset) }
 }
 
 /// The resources a validated stream names: written targets, every resource, full clears.
@@ -2204,7 +2205,13 @@ fn named(words: &WordBuf, view: &View) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
                 }
             }
         }
-        let writes = code == stream::cmd::CLEAR
+        if code == abi::draw::COMMAND {
+            for k in [4,6] {
+                if let Some(e)=view.get(handle(k)) {add(&mut all,e.id);}
+            }
+        }
+        let writes = (code == abi::draw::COMMAND && words.word(at+9)>0)
+            || code == stream::cmd::CLEAR
             || code == stream::cmd::PROBE
             || (code == stream::cmd::DRAW && words.word(at + 4) > 0)
             || (code == stream::cmd::DRAW_BUFFER && words.word(at + 7) > 0)
@@ -2256,7 +2263,7 @@ fn reserve_profile_violation(
         }
         if matches!(
             code,
-            stream::cmd::DRAW | stream::cmd::DRAW_BUFFER | stream::cmd::DRAW_SAMPLED
+            stream::cmd::DRAW | stream::cmd::DRAW_BUFFER | stream::cmd::DRAW_SAMPLED | abi::draw::COMMAND
         ) && len >= 3
         {
             if let Some(point) = crate::test_control::reserve(test_point::PROFILE_VIOLATION, 0) {
@@ -2406,7 +2413,16 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             }
         }
     }
-    let extras: Vec<u32> = vertex_buffer.into_iter().chain(copy_scratch.into_iter().filter(|&r| r != 0)).collect();
+    let data_texture = if plan.data_bytes > 0 {
+        match scratch_for(id, wire::format::R8G8B8A8_UNORM, 16384, (plan.data_bytes/4).div_ceil(16384)) {
+            Ok(rid)=>rid,
+            Err(e)=>{
+                with_core(|c|for rid in vertex_buffer.into_iter().chain(copy_scratch.into_iter().filter(|&r|r!=0)){c.unhold(rid);});
+                release_slot(false);return Err(e);
+            }
+        }
+    } else {0};
+    let extras: Vec<u32> = vertex_buffer.into_iter().chain(copy_scratch.into_iter().filter(|&r| r != 0)).chain((data_texture!=0).then_some(data_texture)).collect();
     let drop_vertex_buffer = || {
         with_core(|c| {
             for &rid in &extras {
@@ -2475,6 +2491,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
     encode::translate(&mut enc, &mut objects, &words, &resolved, encode::Extras {
         vertex_buffer: vertex_buffer.unwrap_or(default_vb),
         scratch: copy_scratch,
+        data: data_texture,
         flip_y: FLIP_Y,
         corrupt,
         suppress,

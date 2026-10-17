@@ -1427,7 +1427,13 @@ fn generated() -> (String, u32) {
 
 #[cfg(not(test))]
 fn main() {
-    let destination = std::env::args().nth(1).expect("output directory");
+    let mut args = std::env::args().skip(1);
+    let first = args.next().expect("output directory or --pipelines");
+    if first == "--pipelines" {
+        pipelines::generate(std::path::Path::new(&args.next().expect("output directory")));
+        return;
+    }
+    let destination = first;
     let destination = std::path::Path::new(&destination);
     std::fs::create_dir_all(destination).unwrap();
     let (text, tokens) = generated();
@@ -1726,3 +1732,5 @@ fn integer_constants(text: &str, first: usize, tokens: &mut u32) -> (String, usi
 #[cfg(test)]
 #[path = "emitted_tests.rs"]
 mod emitted_tests;
+
+mod pipelines;
