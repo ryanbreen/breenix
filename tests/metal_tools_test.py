@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import socket
+import shutil
 import socketserver
 import struct
 import subprocess
@@ -699,6 +700,50 @@ class DefinitionTest(unittest.TestCase):
                          ('OEM', 'No bootable devices.', None))
 
 
+class RootStagingTest(unittest.TestCase):
+    def test_modes_and_guest_site_are_read_back_from_the_staged_image(self):
+        import metal_root
+        prefix = Path('/opt/homebrew/opt/e2fsprogs/sbin')
+        mke2fs = shutil.which('mke2fs') or str(prefix / 'mke2fs')
+        debugfs = shutil.which('debugfs') or str(prefix / 'debugfs')
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            tree = root / 'tree'
+            (tree / 'sbin').mkdir(parents=True)
+            (tree / 'etc/breenix').mkdir(parents=True)
+            (tree / 'sbin/init').write_bytes(b'\x7fELFfixture')
+            (tree / 'sbin/suite-smoke').write_bytes(b'\x7fELFsuite')
+            image = root / 'root.img'
+            subprocess.run([mke2fs, '-q', '-t', 'ext2', '-d', str(tree), '-F', str(image), '4096'],
+                           check=True, capture_output=True)
+            site = {'GUEST_FETCH_URL': 'fixture-value', 'IDRAC_PASSWORD': 'private-fixture'}
+            for mode, suite, expected in [('default', None, 'default'), ('shell', None, 'shell'),
+                                          ('suite', 'smoke', 'suite smoke')]:
+                facts = metal_root.stage_root(image, mode, suite, site)
+                self.assertEqual(facts['siteFields'], 1)
+                def read(name):
+                    return subprocess.run([debugfs, '-R', 'cat /etc/breenix/' + name, str(image)],
+                                          check=True, capture_output=True).stdout.decode()
+                self.assertEqual(read('boot-target'), expected + '\n')
+                self.assertEqual(read('site.env'), 'FETCH_URL=fixture-value\n')
+            # Exercise the deployed layout, outside the repository's scripts directory.
+            package = root / 'deployed'
+            package.mkdir()
+            shutil.copyfile(TOOLS / 'metal_root.py', package / 'metal_root.py')
+            shutil.copyfile(TOOLS.parent / 'write-boot-target.sh', package / 'write-boot-target.sh')
+            spec = importlib.util.spec_from_file_location('deployed_root', package / 'metal_root.py')
+            deployed = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(deployed)
+            facts = deployed.stage_root(image, 'default', None, site)
+            self.assertEqual(read('boot-target'), 'default\n')
+            self.assertEqual(facts['writerSha256'], hashlib.sha256(
+                (TOOLS.parent / 'write-boot-target.sh').read_bytes()).hexdigest())
+            with self.assertRaises(ValueError):
+                metal_root.stage_root(image, 'suite', 'absent', site)
+            with self.assertRaises(ValueError):
+                metal_root.stage_root(image, 'default', None, {'GUEST_PASSWORD': 'fixture'})
+
+
 class DriverTest(StateTest):
     def setUp(self):
         super().setUp()
@@ -716,6 +761,104 @@ class DriverTest(StateTest):
             call()
         self.assertEqual(raised.exception.status, status)
         return raised.exception
+
+    def test_shell_sends_challenge_once_at_partial_prompt_and_requires_whole_answer(self):
+        d = self.driver
+        d.args.mode = 'shell'
+        d.final_marker = ('metal-console-ok 42', 'line')
+        d.on_line('metal-console-ok 42')  # unsolicited text is not an answer
+        raw = d.dir / 'serial.raw'
+        d.on_line('[init] shell ready')
+        raw.write_bytes(b'bsh /> ')
+        with patch.object(boot.subprocess, 'run') as send:
+            d.pump_serial()
+            self.assertTrue(d.shell_sent)
+            self.assertEqual(send.call_count, 2)
+            self.assertIn('print("metal-console-ok", 6*7)', send.call_args_list[0].args[0])
+            d.pump_serial()
+            self.assertEqual(send.call_count, 2)
+        d.on_line('print("metal-console-ok", 6*7)')
+        d.on_line('bsh /> metal-console-ok 42')
+        self.finish(lambda: d.on_line('metal-console-ok 42'), m.EXIT_DONE)
+
+    def test_mode_completion_waits_for_delayed_kernel_producers(self):
+        d = self.driver
+        d.final_marker = ('mode done', 'line')
+        d.required_stages = [[('cpu started', 'line'), ('timer measured', 'line')]]
+        d.on_line('mode done')
+        d.on_line('timer measured')  # out of order cannot count
+        d.on_line('cpu started')
+        self.assertEqual(d.required_stages, [[('timer measured', 'line')]])
+        self.finish(lambda: d.on_line('timer measured'), m.EXIT_DONE)
+
+    def test_final_marker_cannot_override_a_fatal(self):
+        d = self.driver
+        d.final_marker = ('done', 'line')
+        d.fatal_patterns = [re.compile('fatal')]
+        d.kernel_started = 120
+        d.on_line('fatal')
+        d.on_line('done')
+        with patch.object(m, 'now', return_value=d.fatal_at + boot.FATAL_GRACE_SECONDS):
+            self.finish(d.check_deadlines, m.EXIT_SHORT)
+
+    def test_suite_scoring_is_bounded_and_has_no_management_environment(self):
+        d = self.driver
+        d.args.mode, d.args.suite = 'suite', 'smoke'
+        definition = d.dir / 'definition'
+        for name in ('scripts/suite-verdict.py', 'docs/boot-path.json', 'docs/suites/smoke.json'):
+            path = definition / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('fixture')
+        (d.dir / 'serial.txt').write_text('fixture')
+        def scorer(command, **options):
+            self.assertEqual(options['timeout'], boot.SUITE_VERDICT_SECONDS + 5)
+            self.assertEqual(options['env'], {'PATH': os.defpath, 'LANG': 'C.UTF-8'})
+            self.assertIn('--property=DynamicUser=yes', command)
+            self.assertIn('--property=PrivateNetwork=yes', command)
+            self.assertIn('--property=RestrictAddressFamilies=AF_UNIX', command)
+            self.assertTrue(any(arg.startswith('--property=BindReadOnlyPaths=') for arg in command))
+            self.assertIn('--property=RuntimeMaxSec=' + str(boot.SUITE_VERDICT_SECONDS), command)
+            self.assertIn('--property=InaccessiblePaths=/etc/breenix-metal /var/lib/breenix-metal /run/breenix-metal', command)
+            raise subprocess.TimeoutExpired(command, options['timeout'])
+        with patch.object(boot.subprocess, 'run', side_effect=scorer):
+            self.assertFalse(d.score_suite())
+        self.assertIn('timed out', (d.dir / 'suite-verdict.txt').read_text())
+
+    def test_suite_scoring_only_runs_after_confirmed_power_off(self):
+        d = self.driver
+        d.args.mode, d.args.suite = 'suite', 'smoke'
+        for confirmed, expected in [(True, m.EXIT_DONE), (False, m.EXIT_INCOMPLETE)]:
+            order = []
+            def off(hung):
+                order.append('off')
+                return confirmed
+            def score():
+                self.assertEqual(order, ['off'])
+                order.append('score')
+                return True
+            with patch.object(d, 'create_record'), patch.object(d, 'claim'), \
+                 patch.object(d, 'prepare_payload'), patch.object(d, 'preflight'), \
+                 patch.object(d, 'do_stage'), patch.object(d, 'start_console'), \
+                 patch.object(d, 'power_on'), patch.object(d, 'pump_serial'), \
+                 patch.object(d, 'watch', side_effect=boot.Finish(m.EXIT_DONE, 'done')), \
+                 patch.object(d, 'power_off', side_effect=off), \
+                 patch.object(d, 'score_suite', side_effect=score), patch.object(d, 'cleanup'):
+                self.assertEqual(d.run(), expected)
+            self.assertEqual(order, ['off', 'score'] if confirmed else ['off'])
+
+    def test_scorer_launch_failure_still_releases_the_boot(self):
+        d = self.driver
+        d.args.mode, d.args.suite = 'suite', 'smoke'
+        with patch.object(d, 'create_record'), patch.object(d, 'claim'), \
+             patch.object(d, 'prepare_payload'), patch.object(d, 'preflight'), \
+             patch.object(d, 'do_stage'), patch.object(d, 'start_console'), \
+             patch.object(d, 'power_on'), patch.object(d, 'pump_serial'), \
+             patch.object(d, 'watch', side_effect=boot.Finish(m.EXIT_DONE, 'done')), \
+             patch.object(d, 'power_off', return_value=True), \
+             patch.object(d, 'score_suite', side_effect=OSError('fixture')), \
+             patch.object(d, 'cleanup') as cleanup:
+            self.assertEqual(d.run(), m.EXIT_SHORT)
+        cleanup.assert_called_once_with(m.EXIT_SHORT)
 
     def test_linux_completion_requires_checked_census(self):
         import metal_census

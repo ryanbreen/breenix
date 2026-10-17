@@ -2,7 +2,7 @@
 # Write the boot-target file onto an ext2 disk image, so a production kernel booted
 # from it selects a suite or probe as PID 1 (docs/boot-path.md, "Boot modes"):
 #
-#   scripts/write-boot-target.sh IMAGE SUITE_ID|--probe [PID1_ELF] [SEQUENCE] [CATEGORY/CASE]
+#   scripts/write-boot-target.sh IMAGE SUITE_ID|--probe|--default|--shell [PID1_ELF] [SEQUENCE] [CATEGORY/CASE]
 #
 # IMAGE gets /etc/breenix/boot-target containing "suite SUITE_ID" or "probe",
 # replacing the prior target. Use a copy so ordinary boots keep their disk.
@@ -11,6 +11,7 @@
 #
 # Uses debugfs (e2fsprogs) when it is on PATH or in Homebrew's keg-only e2fsprogs,
 # and otherwise runs debugfs in an Alpine container.
+# BREENIX_REQUIRE_DEBUGFS=1 refuses that fallback for service-container staging.
 
 set -euo pipefail
 
@@ -25,7 +26,10 @@ SEQUENCE="${4:-}"
 ONLY="${5:-}"
 BOOT_TARGET="suite $SUITE"
 BINARY="/sbin/suite-$SUITE"
-if [ "$SUITE" = --probe ]; then
+if [ "$SUITE" = --default ] || [ "$SUITE" = --shell ]; then
+    BOOT_TARGET="${SUITE#--}"
+    BINARY=/sbin/init
+elif [ "$SUITE" = --probe ]; then
     BOOT_TARGET=probe
     BINARY=/sbin/probe
 elif [[ ! "$SUITE" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
@@ -33,7 +37,7 @@ elif [[ ! "$SUITE" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
     exit 2
 fi
 if [ -n "$ONLY" ]; then
-    if [ "$SUITE" = --probe ] || [ -n "$SEQUENCE" ] || [[ ! "$ONLY" =~ ^[a-zA-Z0-9_./-]+$ ]]; then
+    if [[ "$SUITE" = --* ]] || [ -n "$SEQUENCE" ] || [[ ! "$ONLY" =~ ^[a-zA-Z0-9_./-]+$ ]]; then
         echo "write-boot-target: one case needs a suite, no sequence, and category/case" >&2
         exit 2
     fi
@@ -90,6 +94,9 @@ if [ -n "$DEBUGFS" ]; then
 else
     if [ -f "$WORK/suite-sequence" ]; then
         echo "write-boot-target: suite sequences require host debugfs" >&2; exit 1
+    fi
+    if [ "${BREENIX_REQUIRE_DEBUGFS:-0}" = 1 ]; then
+        echo "write-boot-target: staging requires host debugfs" >&2; exit 1
     fi
     command -v docker >/dev/null 2>&1 || { echo "write-boot-target: needs debugfs (e2fsprogs) or docker" >&2; exit 1; }
     image_dir="$(cd "$(dirname "$IMAGE")" && pwd)"
