@@ -19,7 +19,7 @@ stalled on a lock, so a candidate needs evidence the guest cannot fake:
 * `starvation_check=host`: the host's own record of the boot
   (scripts/x86-gate-host-stall-sampler.py, given by --host-record or
   BREENIX_HOST_STALL_RECORD) shows the observing and sending vCPUs kept from
-  running, inside the samples around the window, for more than one tick and
+  running inside the window, for more than one tick and
   for at least the time by which the window exceeded one tick. No record, or
   one that does not cover the window, fails it.
 
@@ -88,11 +88,13 @@ def load_host_record(path):
     return record
 
 
-def host_stall_ns(record, start, end, vcpus):
-    """Time the host kept `vcpus` from running between the last sample at or
-    before guest TSC `start` and the first at or after `end`: run delay, plus
-    the steal of the host CPU a vCPU ran on in any period it was runnable.
-    Returns (ns, None), or (None, why the record cannot say)."""
+def host_stall_ns(record, start, end, vcpus, rate):
+    """Lower bound on host stall inside the guest TSC window.
+
+    Sample counters do not locate a stall within a sampling interval. Charge
+    all time outside the window against its stall before crediting any of it.
+    Returns (ns, None), or (None, why the record cannot say).
+    """
     if record is None:
         return None, "no host stall record for this boot"
     if record["start"] is None:
@@ -120,15 +122,27 @@ def host_stall_ns(record, start, end, vcpus):
     tick_ns = 1_000_000_000 // record["start"]["clk_tck"]
     stall = 0
     for before, after in zip(samples, samples[1:]):
+        elapsed = (after["tsc"] - before["tsc"]) * 1_000_000 // rate
+        if elapsed <= 0:
+            return None, "the host samples do not advance in guest TSC"
+        outside = max(0, start - before["tsc"]) + max(0, after["tsc"] - end)
+        # Round the uncertain margin up so conversion cannot add evidence.
+        outside_ns = (outside * 1_000_000 + rate - 1) // rate
         for vcpu in vcpus:
             if vcpu not in before["vcpu"] or vcpu not in after["vcpu"]:
                 return None, f"the host stall record lost vCPU {vcpu} inside the window"
             delay = after["vcpu"][vcpu][0] - before["vcpu"][vcpu][0]
             ran = after["vcpu"][vcpu][1] - before["vcpu"][vcpu][1]
-            stall += delay
+            if delay < 0 or ran < 0:
+                return None, "the host vCPU counters went backwards"
+            blocked = delay
             if delay or ran or after["vcpu"][vcpu][3] == "R":
                 cpu = after["vcpu"][vcpu][2]
-                stall += (after["steal"][cpu] - before["steal"][cpu]) * tick_ns
+                stolen = after["steal"][cpu] - before["steal"][cpu]
+                if stolen < 0:
+                    return None, "the host steal counter went backwards"
+                blocked += stolen * tick_ns
+            stall += max(0, min(elapsed, blocked) - outside_ns)
     return stall, None
 
 
@@ -140,13 +154,13 @@ def host_confirms(window, record):
     start = int(window["at"])
     end = start + int(window["interval"])
     vcpus = [window["observer_vcpu"], window["sender_vcpu"]]
-    stall, why = host_stall_ns(record, start, end, vcpus)
+    stall, why = host_stall_ns(record, start, end, vcpus, rate)
     if stall is None:
         return False, why
     needed = max(tick_ns + 1, interval_ns - tick_ns)
     if stall < needed:
         return False, (f"the host kept vCPUs {vcpus[0]} and {vcpus[1]} from running for {stall // 1000} us"
-                       f" around a {interval_ns // 1000} us window; starvation needs {needed // 1000} us")
+                       f" inside a {interval_ns // 1000} us window; starvation needs {needed // 1000} us")
     return True, None
 
 
