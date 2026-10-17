@@ -499,3 +499,25 @@ scripts/metal/metal-linux-extract "$PRIVATE_BOOT_RECORD" "$PRIVATE_EVIDENCE_DIRE
 Extraction requires `ended`, exit 0 and no console-gap event. Raw captures, inventory, payloads, configuration,
 build logs and the platform-facts report remain private. The public repository contains only the recipe,
 protocol tooling, documentation and synthetic tests.
+
+## Interrupts and SMP on the machine
+
+Measured on boots of `metal-bring-up/interrupts-smp` (in-progress evidence, not main's code), in the default mode
+with the RAM-disk image. `20261017T063006Z-metal` (2aa11ef9) and `20261017T064333Z-metal` (d4276fd7) both ended
+with exit 0 at the `smp` milestone's last stage, clean production builds with intact payloads and no console gaps:
+`first-light` 11 of 11, `interrupts-time` 4 of 4, `smp` 3 of 3. claim-lint:ok: 2 of 2 boots, scored with each
+boot's own definition copy.
+
+| Fact | Observed |
+|---|---|
+| ACPI tables | `XSDT FACP SSDT SSDT SSDT WD__ SLIC HPET APIC MCFG SSDT LPIT WSMT SSDT DBGP DBG2 DMAR HEST BERT ERST EINJ SPCR` |
+| FADT | revision 6, SCI 9, PM timer at I/O 0x508 (24-bit), reset register I/O 0xcf9 value 0x6, IA-PC boot flags 0x0011, MSI allowed |
+| TSC | PIT 3,599,974,778 Hz; CPUID 16H 3,600,000,000 Hz, 7 ppm apart, so the stated rate is used; the PM timer implies 3,599,991,574 Hz, 2 ppm from it |
+| Interrupt delivery | `x2APIC + IOAPIC; 8259 masked`: one I/O APIC, 2 source overrides (IRQ 0 to GSI 2, IRQ 9 to GSI 9 level), 16 Local APIC NMI structures; PCI INTx routing unknown, so AHCI does not attach and IRQ 10/11 stay masked |
+| Processors | APIC ids 0, 2, 4 and 6 online as CPUs 0-3 (`[smp] online=4 reported=4`); device interrupts routed to CPU 3 |
+| Tick | each CPU's LAPIC countdown 199.94 Hz (199.91 Hz on the earlier boot); 99 to 101 ticks per CPU in each 500 ms window against 100 expected, with at most 1 IPI sent to a CPU during its window |
+| NMI | with `--nmi`, the BMC's NMI after the boot finished reached CPU 0 only: `[nmi] external NMI #1 cpu=0 apic_id=0 ... port61=0x30` |
+
+An earlier boot of this branch (`20261017T061920Z-metal`, exit 1) counted timer-gate entries over one second on
+each of its 4 CPUs and found 220 to 764 a second: the reschedule and retry IPIs and the idle loop's software interrupt share
+the gate. The pinned windows above replace that count. claim-lint:ok: boot 20261017T061920Z-metal.
