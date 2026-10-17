@@ -819,6 +819,18 @@ pub fn init() -> Result<(), &'static str> {
     Ok(())
 }
 
+/// Deliver the initialized function's interrupts by MSI, where it has the
+/// capability and the platform allows it (the 82574L does; the 82540EM has no
+/// MSI capability). Returns the vector, or why the caller keeps INTx.
+#[cfg(target_arch = "x86_64")]
+pub fn interrupt_by_msi() -> Result<u8, &'static str> {
+    // The function `init` chose, by the same preference.
+    let device = pci::find_device(INTEL_VENDOR_ID, E1000_DEVICE_ID)
+        .or_else(|| pci::find_device(INTEL_VENDOR_ID, E1000E_DEVICE_ID))
+        .ok_or("E1000 device not found on PCI bus")?;
+    crate::arch_impl::x86_64::msi::enable(&device, handle_interrupt)
+}
+
 /// Check if the E1000 driver is initialized
 #[allow(dead_code)] // Public API for network stack
 pub fn is_initialized() -> bool {

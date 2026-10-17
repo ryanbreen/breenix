@@ -72,9 +72,15 @@ pub fn init() -> usize {
         Ok(()) => {
             log::info!("E1000 network driver initialized successfully");
 
-            // Enable E1000 IRQ now that driver is initialized
-            // E1000 uses IRQ 10 in QEMU's PCI configuration
-            crate::interrupts::enable_irq10();
+            // MSI where the function has it; otherwise IRQ 10, the line
+            // QEMU's PCI configuration gives the E1000.
+            match e1000::interrupt_by_msi() {
+                Ok(vector) => log::info!("E1000: interrupts by MSI vector {:#x}", vector),
+                Err(reason) => {
+                    log::info!("E1000: interrupts on IRQ 10 ({})", reason);
+                    crate::interrupts::enable_irq10();
+                }
+            }
         }
         Err(e) => {
             log::warn!("E1000 network driver initialization failed: {}", e);
