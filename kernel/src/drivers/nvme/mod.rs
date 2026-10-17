@@ -854,6 +854,7 @@ impl NvmeController {
 
     /// Write up to eight consecutive sectors from `buffer`.
     pub fn write_sectors(&self, sector: u64, buffer: &[u8]) -> Result<(), &'static str> {
+        if crate::block::hardware_read_only() { return Err("Hardware disks are read-only"); }
         if buffer.is_empty() || buffer.len() % SECTOR_SIZE != 0 {
             return Err("Buffer size must be a non-zero multiple of 512");
         }
@@ -886,6 +887,7 @@ impl NvmeController {
 
     /// Commit the volatile write cache, when the controller has one.
     pub fn flush(&self) -> Result<(), &'static str> {
+        if crate::block::hardware_read_only() { return Ok(()); }
         if !self.volatile_write_cache {
             return Ok(());
         }

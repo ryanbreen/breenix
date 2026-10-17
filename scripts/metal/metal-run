@@ -92,6 +92,9 @@ def boot(args):
             target = 'main' if branch == 'main' else 'branch:' + branch
     boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
     command = ['python3', f'{TOOLS}/metal-boot', 'launch', '--id', boot_id, '--payload', payload]
+    command += ['--mode', args.mode]
+    if args.suite:
+        command += ['--suite', args.suite]
     if sha:
         command += ['--commit', sha, '--target', target]
     if args.no_wait:
@@ -197,6 +200,8 @@ def main():
     p = sub.add_parser('boot')
     p.add_argument('--payload', choices=('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux'), default='image')
     p.add_argument('--linux-directory', help='prebuilt Linux instrument directory on the boot host')
+    p.add_argument('--mode', choices=('default', 'shell', 'suite'), default='default')
+    p.add_argument('--suite')
     p.add_argument('--sha')
     p.add_argument('--branch')
     p.add_argument('--no-wait', action='store_true')

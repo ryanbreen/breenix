@@ -2700,7 +2700,7 @@ pub fn init_root_fs() -> Result<(), &'static str> {
     #[cfg(target_arch = "aarch64")]
     let fs = Ext2Fs::new(device, mount_id)?;
     #[cfg(target_arch = "x86_64")]
-    let fs = crate::block::devices()
+    let fs = crate::block::root_devices()
         .into_iter()
         .find_map(|device| {
             if device.block_size() != 512 {

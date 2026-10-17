@@ -1393,16 +1393,11 @@ while [ "$i" -le "$COUNT" ]; do
     # STARVED and rerun, a passing one as PASS. Failures import from the trap.
     if $timing_starved; then
         echo "x86 frame-custody gate run $i: STARVED; rerunning; attempt $attempt is not evidence"
-        ATTEMPT_VERDICT=STARVED
-        ATTEMPT_STATUS=2
+        breenix_runs_import_nonfatal "$OUTPUT_DIR" x86_64 boot-tests STARVED 2 "$HOST_MS_START" "${BREENIX_RUNS_GATE_ARGV[@]}" || :
     else
         echo "x86 frame-custody gate run $i: PASS"
         printf '%s\n' "$CAPTURE_LINES"
-        ATTEMPT_VERDICT=PASS
-        ATTEMPT_STATUS=0
-    fi
-    breenix_runs_import_nonfatal "$OUTPUT_DIR" x86_64 boot-tests "$ATTEMPT_VERDICT" "$ATTEMPT_STATUS" "$HOST_MS_START" "${BREENIX_RUNS_GATE_ARGV[@]}" || :
-    if [ "$ATTEMPT_STATUS" -eq 0 ]; then
+        breenix_runs_import_nonfatal "$OUTPUT_DIR" x86_64 boot-tests PASS 0 "$HOST_MS_START" "${BREENIX_RUNS_GATE_ARGV[@]}" || :
         i=$((i+1))
     fi
 done
