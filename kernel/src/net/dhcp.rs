@@ -46,6 +46,8 @@ const DHCPNAK: u8 = 6;
 /// earlier copy after that copy's wait still counts.
 const ATTEMPT_TIMEOUTS_MS: [u64; 3] = [4_000, 4_000, 2_000];
 
+/// DHCP policy remains in force before acquisition and after lease expiry.
+static REQUIRED: AtomicBool = AtomicBool::new(false);
 /// The reply the running exchange waits for; zero while none runs, so the
 /// receive hook costs one atomic load on every other boot.
 static AWAITED: AtomicU8 = AtomicU8::new(0);
@@ -92,9 +94,19 @@ struct Reply {
     rebinding: Option<u32>,
 }
 
+/// Mark an interface as DHCP-managed before carrier and discovery finish.
+pub fn require_configuration() {
+    REQUIRED.store(true, Ordering::Release);
+}
+
+pub fn configuration_required() -> bool {
+    REQUIRED.load(Ordering::Acquire)
+}
+
 /// Obtain a lease for the interface whose hardware address is `mac`.
 /// Returns `None` when no server completed the exchange.
 pub fn acquire(mac: [u8; 6]) -> Option<Lease> {
+    require_configuration();
     CLIENT_MAC.store(mac_to_u64(mac), Ordering::Relaxed);
     let seed = crate::time::tsc::nanoseconds_since_base().unwrap_or(0) as u32;
     XID.store(

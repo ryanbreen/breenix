@@ -512,3 +512,11 @@ fn lost_first_discover_retransmits_after_four_seconds_and_acquires_lease() {
     assert_eq!(lease.ip_addr, ADDRESS);
     assert_eq!(lease.nameservers[0], Some([192, 0, 2, 53]));
 }
+
+#[test]
+fn procfs_marks_dhcp_policy_while_no_lease_is_usable() {
+    let _guard = setup();
+    dhcp::require_configuration();
+    dhcp::maintain(MAC, false);
+    assert_eq!(proc_net::generate_pnp().unwrap(), "#PROTO: DHCP\n");
+}

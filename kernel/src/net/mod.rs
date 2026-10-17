@@ -881,6 +881,7 @@ pub fn init() {
 fn init_common() {
     #[cfg(target_arch = "x86_64")]
     if uses_dhcp() {
+        dhcp::require_configuration();
         arp::init();
         net_log!("Network stack initialized; awaiting DHCP after carrier");
         return;
