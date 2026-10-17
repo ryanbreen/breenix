@@ -382,6 +382,7 @@ struct Port {
     tx_buffers: Vec<DmaPage>,
     tx_reported: bool,
     rx_reported: bool,
+    rx_irq_baseline: u64,
     send_producer: u32,
     std_producer: u32,
     return_consumer: u32,
@@ -435,6 +436,7 @@ impl Port {
             tx_buffers,
             tx_reported: false,
             rx_reported: false,
+            rx_irq_baseline: 0,
             send_producer: 0,
             std_producer: 0,
             return_consumer: 0,
@@ -793,11 +795,14 @@ impl Port {
     /// One bounded return-ring drain (guide Section 11, pp. 231-234).
     /// Packet delivery happens after releasing the port lock, so replies can TX.
     fn receive(&mut self, output: &mut [u8]) -> Option<usize> {
-        if INTERRUPTS[self.slot].load(Ordering::Acquire) == 0 { return None; }
+        self.drain(output, true)
+    }
+
+    fn drain(&mut self, output: &mut [u8], report: bool) -> Option<usize> {
         self.f.write32(MBOX_INTERRUPT_0, 1);
         self.status.set_word(0, self.status.word(0) & !STATUS_WORD_UPDATED);
         fence(Ordering::SeqCst);
-        if !self.tx_reported && self.send_consumer() != 0
+        if report && !self.tx_reported && self.send_consumer() != 0
             && self.f.read32(STAT_OUT_BROADCAST) != 0 {
             self.tx_reported = true;
             static SENT: crate::log_notice::Node = crate::log_notice::Node::new();
@@ -847,7 +852,8 @@ impl Port {
             self.f.write32(MBOX_RETURN_0_CONSUMER, self.return_consumer);
             self.f.write32(MBOX_STD_PRODUCER, self.std_producer);
             if good {
-                if !self.rx_reported && self.tx_reported {
+                if report && !self.rx_reported && self.tx_reported
+                    && INTERRUPTS[self.slot].load(Ordering::Acquire) > self.rx_irq_baseline {
                     self.rx_reported = true;
                     static RECEIVED: crate::log_notice::Node = crate::log_notice::Node::new();
                     RECEIVED.post_again("[bcm5720] first frame received");
@@ -859,9 +865,8 @@ impl Port {
         None
     }
 
-    /// The bring-up probe: link, one frame sent, frames received by MSI, and a
-    /// reply to the frame sent.
-    fn run(self) {
+    /// Bring the port into service and maintain its DHCP configuration.
+    fn run(mut self) {
         let bdf = self.f.bdf();
         let link = loop {
             match self.f.phy_resolved() {
@@ -902,6 +907,19 @@ impl Port {
 
         let mac = self.mac;
         let _ = self.f.read32(STAT_OUT_BROADCAST);
+        // Frames queued during link negotiation and the census already own
+        // receive buffers, even when no interrupt has been recorded yet.
+        // Return them before DHCP with runtime reporting disabled.
+        let mut scratch = [0u8; RX_BUFFER_SIZE as usize];
+        let mut recycled = 0;
+        for _ in 0..RETURN_RING_ENTRIES {
+            if self.drain(&mut scratch, false).is_none() { break; }
+            recycled += 1;
+        }
+        self.rx_irq_baseline = INTERRUPTS[self.slot].load(Ordering::Acquire);
+        if recycled != 0 {
+            log::info!("[bcm5720] {recycled} startup frames recycled, uncounted");
+        }
         {
             let _guard = crate::net::net_lock_guard();
             ATTACHED.lock().push(self);
