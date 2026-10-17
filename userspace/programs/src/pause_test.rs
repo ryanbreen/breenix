@@ -98,12 +98,13 @@ fn main() {
 
             // Signal the parent each time it is blocked, which after the
             // ready byte it can only be in pause(), until it closes the pipe,
-            // for at most 5 s.
+            // for at most 5 s in all.
             println!(
                 "[CHILD] Sending SIGUSR1 to parent (PID {}) once it blocks in pause()...",
                 parent_pid
             );
-            for _ in 0..5000 {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while std::time::Instant::now() < deadline {
                 if parent_blocked(parent_pid) {
                     if kill(parent_pid, SIGUSR1).is_err() {
                         println!("[CHILD] kill() failed");
@@ -114,6 +115,9 @@ fn main() {
                         if let Ok(0) = io::read(done_r, &mut byte) {
                             println!("[CHILD] Parent's pause() returned; exiting with code 0");
                             std::process::exit(0);
+                        }
+                        if std::time::Instant::now() >= deadline {
+                            break;
                         }
                     }
                     continue;
