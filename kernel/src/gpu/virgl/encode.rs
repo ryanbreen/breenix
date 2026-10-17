@@ -257,15 +257,15 @@ pub fn setup(enc: &mut Enc, o: &mut Objects, vertex_buffer: u32) {
 /// CREATE_OBJECT SHADER: handle, type, offset word (its value the text's whole length in
 /// bytes, no continuation), token count, no stream-output, then the NUL-terminated text.
 fn shader(enc: &mut Enc, handle: u32, p: &Program) {
-    let mut text: Vec<u32> = Vec::with_capacity(p.text.len().div_ceil(4));
+    let terminated=p.text.ends_with(&[0]);
+    let bytes=p.text.len()+usize::from(!terminated);
+    let mut text: Vec<u32> = Vec::with_capacity(bytes.div_ceil(4));
     for chunk in p.text.chunks(4) {
         let mut b = [0u8; 4];
         b[..chunk.len()].copy_from_slice(chunk);
         text.push(u32::from_le_bytes(b));
     }
-    let terminated=p.text.ends_with(&[0]);
     if !terminated && p.text.len()%4==0 {text.push(0);}
-    let bytes=p.text.len()+usize::from(!terminated);
     enc.cmd_with(
         ccmd::CREATE_OBJECT,
         obj::SHADER,

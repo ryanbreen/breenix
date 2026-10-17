@@ -541,6 +541,26 @@ mod tests {
         }
     }
     #[test]
+    fn three_word_product_matches_native_low_96_bits() {
+        let mut p = Code::default();
+        let a: Vec<_> = (0..6).map(|i| p.input(i)).collect();
+        let out = p.product96(&a[..3], &a[3..]);
+        let mut seed = 0x1963A517u32;
+        for _ in 0..1000 {
+            let mut args = [0; 6];
+            for v in &mut args {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                *v = seed;
+            }
+            let left = args[0] as u128 | (args[1] as u128) << 32 | (args[2] as u128) << 64;
+            let right = args[3] as u128 | (args[4] as u128) << 32 | (args[5] as u128) << 64;
+            let product = left.wrapping_mul(right);
+            for (i, word) in p.eval(&args, &out).into_iter().enumerate() {
+                assert_eq!(word, (product >> (32 * i)) as u32);
+            }
+        }
+    }
+    #[test]
     fn wide_model_matches_native_products_and_division() {
         for routine in [9, 10, 11] {
             let (p, os) = program(routine);
@@ -653,20 +673,21 @@ impl Code {
         vec![a, sign, sign]
     }
     fn product96(&mut self, a: &[V], b: &[V]) -> Vec<V> {
-        let zero = self.k(0);
-        let mut r = vec![zero; 3];
-        for i in 0..3 {
-            for j in 0..3 - i {
-                let [lo, hi] = self.product(a[i], b[j]);
-                let mut p = vec![zero; 3];
-                p[i + j] = lo;
-                if i + j + 1 < 3 {
-                    p[i + j + 1] = hi;
-                }
-                r = self.addwide(&r, &p);
-            }
+        let [lo, mut mid] = self.product(a[0], b[0]);
+        let mut high = self.k(0);
+        for (x, y) in [(a[0], b[1]), (a[1], b[0])] {
+            let [part, top] = self.product(x, y);
+            let sum = self.add(mid, part);
+            let carry = self.lt(sum, mid);
+            high = self.add(high, top);
+            high = self.add(high, carry);
+            mid = sum;
         }
-        r
+        for (x, y) in [(a[0], b[2]), (a[1], b[1]), (a[2], b[0])] {
+            let low = self.product(x, y)[0];
+            high = self.add(high, low);
+        }
+        vec![lo, mid, high]
     }
     fn bool_and(&mut self, conditions: &[V]) -> V {
         let mut out = self.k(1);
@@ -1343,6 +1364,7 @@ fn main() {
         }
     }
     let text = expand_sources(&text);
+    let text = integer_words(&text, max_registers, &mut tokens);
     // T:649-688: a flow instruction may carry one instruction-label token.
     tokens += text
         .lines()
@@ -1356,7 +1378,7 @@ fn main() {
     println!(
         "combined bytes={} tokens={tokens} registers={}",
         text.len(),
-        max_registers + 1
+        max_registers + 3
     );
     std::fs::write(
         destination.join("profile.tgsi"),
@@ -1515,6 +1537,44 @@ fn expand_sources(text: &str) -> String {
                 out.push_str(", ");
                 out.push_str(&expand(source));
             }
+        }
+        if !line.ends_with('\0') {
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Keep probe words in the integer ISA, including conditional selection and copies.
+/// With m = (condition != 0 ? UINT_MAX : 0), b ^ ((a ^ b) & m) selects word bits.
+#[cfg(not(test))]
+fn integer_words(text: &str, control: usize, tokens: &mut u32) -> String {
+    use std::fmt::Write;
+    let mask = control + 1;
+    let difference = control + 2;
+    let old = format!("DCL TEMP[0..{control}]");
+    let new = format!("DCL TEMP[0..{difference}]");
+    let mut out = String::new();
+    for line in text.lines() {
+        if line == old {
+            out.push_str(&new);
+        } else if let Some(args) = line.strip_prefix("UCMP ") {
+            let p: Vec<_> = args.split(", ").collect();
+            assert_eq!(p.len(), 4);
+            writeln!(out, "USNE TEMP[{mask}].x, {}, IMM[0].xxxx", p[1]).unwrap();
+            writeln!(out, "XOR TEMP[{difference}].x, {}, {}", p[2], p[3]).unwrap();
+            writeln!(
+                out,
+                "AND TEMP[{difference}].x, TEMP[{difference}].xxxx, TEMP[{mask}].xxxx"
+            )
+            .unwrap();
+            write!(out, "XOR {}, TEMP[{difference}].xxxx, {}", p[0], p[3]).unwrap();
+            *tokens += 11;
+        } else if let Some(args) = line.strip_prefix("MOV ") {
+            write!(out, "UADD {args}, IMM[0].xxxx").unwrap();
+            *tokens += 1;
+        } else {
+            out.push_str(line);
         }
         if !line.ends_with('\0') {
             out.push('\n');

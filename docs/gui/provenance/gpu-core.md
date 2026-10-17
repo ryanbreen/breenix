@@ -569,7 +569,7 @@ These runs are G3 evidence, not a green full suite: the G4–G8 checks are still
 `tools/gpu-profile/math.rs` is Breenix's integer model and TGSI generator. It was written from the
 contract's formulas and IEEE 754, without implementation sources. It constructs SSA operations, evaluates
 those operations for the host model, and emits them using L's instruction definitions. Comparisons are
-normalized to 0 or 1 with AND; select uses UCMP. Products use 16×16 partial products with explicit carries.
+normalized to 0 or 1 with AND; final word selection uses integer bit operations (B11). Products use 16×16 partial products with explicit carries.
 The three-word division model unrolls 96 restoring steps; its shader encoder expresses that recurrence as a
 96-iteration loop, retaining the shifted-out remainder bit for a divisor with its high bit set.
 
@@ -579,7 +579,8 @@ f32 comparisons were run before shader emission: `binary32_model_matches_native_
 special-value pairs and 2,000 seeded pairs for add, subtract and multiply;
 `binary32_ceil_truncate_and_comparisons` checks 4,000 seeded pairs (truncation for inputs in its domain).
 The other model checks compare wide arithmetic with u128, line and circle membership with the contract's
-walks, and large-coordinate literals. These host checks are reproducible with CARGO_BUILD_JOBS=4 exported and
+walks, and large-coordinate literals. The truncated three-word product also has 1,000 seeded comparisons
+with native wrapping u128 multiplication before its revised shader is emitted. These host checks are reproducible with CARGO_BUILD_JOBS=4 exported and
 `taskpolicy -b rustc --edition=2021 --test -O "$CHECKOUT/tools/gpu-profile/math.rs" -o "$MODEL_TESTS"` and
 `taskpolicy -b "$MODEL_TESTS" --test-threads=1`, where MODEL_TESTS is an absolute temporary output filename and CHECKOUT is absolute.
 They validate the model; device readback remains the profile suite's judgment of the shader.
@@ -595,7 +596,7 @@ These probe routines do not supply G5's promised closed-form proofs or drawing p
 | Program or operation | Published definition | Token layout |
 |---|---|---|
 | Probe vertex program | L: MOV (line 71), POSITION declaration; the pass-through is derived as solid's is | T:37–56, 137–158, 174–175, 226–234, 649–661, 752–764, 796–803; 11 tokens |
-| `kernel/src/gpu/virgl/profile/profile.tgsi` | L: MOV 71; MUL 111; U2F 1009; F2I 1024; UADD 1056; UMUL 1088; AND 1192; OR 1205; XOR 1218; SHL 1283; USHR 1313; UCMP 1328; USLT 1384; USEQ 1453; BGNLOOP 1643; ENDLOOP 1653; BRK 1668; UIF 1684; ENDIF 1698; the declarations and POSITION/COLOR semantics used by solid and copy | T:37–56 header/processor; 137–169 declaration/range/interpolation; 226–234 semantics; 274–292 UINT32 immediates and their values; 649–688 instructions and optional label; 752–803 registers. TEMPORARY 4 and IMMEDIATE 7 are T:77–80; the opcode enumeration is T:434–518. |
+| `kernel/src/gpu/virgl/profile/profile.tgsi` | L: MUL 111; U2F 1009; F2I 1024; UADD 1056; UMUL 1088; AND 1192; OR 1205; XOR 1218; SHL 1283; USHR 1313; USLT 1384; USEQ 1453; USNE 1481; BGNLOOP 1643; ENDLOOP 1653; BRK 1668; UIF 1684; ENDIF 1698; the declarations and POSITION/COLOR semantics used by solid and copy | T:37–56 header/processor; 137–169 declaration/range/interpolation; 226–234 semantics; 274–292 UINT32 immediates and their values; 649–688 instructions and optional label; 752–803 registers. TEMPORARY 4 and IMMEDIATE 7 are T:77–80; the opcode enumeration is T:434–518. |
 
 The generated text is a reviewable file without a NUL; the shader encoder supplies its wire terminator.
 Its header declares the five constant vectors (sixteen operands, result-word selector and routine selector),
@@ -605,13 +606,18 @@ replicated swizzle, as B10 establishes. The file is generated with
 `taskpolicy -b "$GENERATOR" "$CHECKOUT/kernel/src/gpu/virgl/profile"`, with CARGO_BUILD_JOBS=4 exported; GENERATOR and CHECKOUT are absolute paths.
 The integer model and generator share operations; the suite's literal expectations share neither.
 
-The token capacity is 21,940: 13 header/declaration words, 137×5 immediate words, 21,209 instruction/register
-words, and a 33-word allowance for the control instructions' optional label tokens (T:649–688). The earlier
-21,257 field accidentally omitted 130×5 immediate words and that label allowance; B10 refused it. The
-corrected field is accepted. The capacity is a layout-derived allocation budget, not a pixel-correctness
-claim. The shader's text plus terminator is 240,200 bytes, below P:157–158's command payload limit.
+The current token capacity is 23,165: 13 header/declaration words, 137×5 immediate words,
+22,434 instruction/register words, and a 33-word allowance for the control instructions' optional label
+tokens (T:649–688). The text plus terminator is 251,697 bytes, below P:157–158's command payload limit.
+The earlier B10 candidate at `09922c96` had capacity 21,940 and 240,200 text bytes including its terminator;
+its rejected 21,257 field omitted 130×5 immediate words and the label allowance. B10 records those original
+inputs; B11 records the revised integer-only selection program. These capacities are layout-derived
+allocation budgets, not pixel-correctness claims.
 
 ## B10: G4 shader-text grammar experiments
+
+This section records the candidate and six-experiment script at commit `09922c96`; CHECKOUT below denotes
+that checkout when reproducing B10. B11 uses the revised current program.
 
 The unmodified renderer is P's pin, with ANGLE on Metal, through the public API harness
 `tools/gpu-experiments/g3-egl.py` (ruling 11). The committed experiment is
@@ -642,3 +648,27 @@ with the same declarations and capacity 50,000, were accepted 0. The T-based rec
 omitted fields. B7's small-program count variations therefore do not establish that an arbitrarily small
 capacity is accepted. To reproduce these two combined candidates, pass the committed text through the
 harness's `grammar` function once with 21,257 and once with 50,000.
+
+## B11: integer word selection
+
+The emitted word copy is UADD with an integer 0. Word selection uses the identity
+`b XOR ((a XOR b) AND m)`, where USNE of the condition and 0 supplies m (0 or UINT_MAX).
+This expresses selection in L's integer ISA, including operands whose bits encode floating-point NaNs;
+there is no untyped MOV or UCMP in the final fragment text. The final byte conversion and the fragment
+position conversion retain their specified floating-point operations. Two temporary registers are reserved
+above the modeled program's registers for the mask and difference, so a selection whose destination aliases
+an input reads that input before overwriting it.
+
+The three-word product computes the low product, accumulates the two middle-word cross products with their
+carries into the high word, and adds only the low words of the three remaining high-word cross products.
+Its partial products remain 16×16 (section 1.5); dropping terms above bit 95 changes no returned bit. The
+native product test above checks this truncation. This reduction leaves room for the integer selection
+instructions within one VirGL command, without changing the probe's work limit or its literal expectations.
+
+The public renderer harness, pin, environment and invocation are B10's, with CHECKOUT denoting the current
+source. `profile-grammar.py` adds one change to the small B10 baseline: replace its UADD opcode with USNE
+(capacity 25). Output: `G4 unsigned inequality ACCEPT 0`. L defines USNE at line 1481; its enumeration is
+T:497 and its instruction and operand layouts are T:649–661 and 752–803. The six other experiments return
+their B10 results; `G4 combined baseline ACCEPT 0` now refers to the current generated text, capacity
+23,165, 44 temporary registers and 251,697 bytes including the NUL. This is grammar acceptance, not a
+substitute for the profile cases' device readback.

@@ -10,6 +10,7 @@ assert grammar('G4 replicated scalar baseline', base, 25) == 0
 assert grammar('G4 scalar source shorthand', base.replace('CONST[0].xxxx', 'CONST[0].x'), 25) == 22
 assert grammar('G4 integer conditional', base.replace('U2F OUT', 'UIF IMM[0].yyyy\nMOV TEMP[0], IMM[0]\nENDIF\nU2F OUT'), 31) == 0
 assert grammar('G4 bounded loop syntax', base.replace('U2F OUT', 'BGNLOOP\nBRK\nENDLOOP\nU2F OUT'), 28) == 0
+assert grammar('G4 unsigned inequality', base.replace('UADD TEMP[0].x', 'USNE TEMP[0].x'), 25) == 0
 root = Path(__file__).resolve().parents[2]
 source = root / 'kernel/src/gpu/virgl/profile'
 text = (source / 'profile.tgsi').read_bytes().rstrip(b'\0').decode()
