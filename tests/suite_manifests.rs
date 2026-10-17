@@ -940,7 +940,7 @@ fn metal_stream_is_independent_and_resolves_its_measures() {
     assert!(boot["milestones"][1].get("stub").is_none());
     let milestone = |id: &str| boot["milestones"].as_array().unwrap().iter()
         .find(|m| m["id"] == id).unwrap();
-    assert_eq!(milestone("smp")["stages"]["x86_64"][0]["marker"], "[smp] online=4 reported=4");
+    assert_eq!(milestone("smp")["stages"]["x86_64"][1]["marker"], "[smp] online=4 reported=4");
     assert_eq!(boot["firsts"][2]["stage"], "Four CPUs online and reported");
     assert_eq!(milestone("ramdisk-root")["stages"]["x86_64"].as_array().unwrap().len(), 2);
     for id in ["sata-ahci", "disk-io", "disk-filesystem"] {
