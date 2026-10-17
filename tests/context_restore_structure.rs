@@ -1146,7 +1146,7 @@ fn validate_timer_delivery_takes_no_process_manager(
             "letmuttarget=LocklessTarget{signals,thread_id,info:SigInfo::kernel(),alt};",
             "letinstalled=install_user_handler_x86_64(&muttarget,user_return,saved_regs,sig,action.handler,&action);",
             "ifinstalled.is_err(){signals.timer_pending.fetch_or(bit,Ordering::AcqRel);returnfalse;}returntrue;}",
-            "letSome(claim)=timers.and_then(|timers|timers.posix.try_claim_due(signals))else{returnfalse;};",
+            "letSome(claim)=timers.and_then(|timers|timers.posix.try_claim_due(signals,bit))else{returnfalse;};",
             "letmuttarget=LocklessTarget{signals,thread_id,info:claim.info(),alt};",
             "letinstalled=install_user_handler_x86_64(&muttarget,user_return,saved_regs,sig,action.handler,&action);",
             "ifinstalled.is_err(){returnfalse;}claim.commit();true}",

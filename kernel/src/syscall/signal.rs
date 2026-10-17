@@ -387,13 +387,16 @@ fn send_signal_lockless(target: ProcessId, sig: u32, sender: &Sender, info: &Sig
     let accepts = |signals: &crate::signal::ThreadSignals| {
         (!signals.blocked.load(Ordering::Relaxed) | signals.wait_set.load(Ordering::Acquire)) & bit != 0
     };
-    let (recipient, signals) = match to {
-        Recipient::Thread => (tid, signals),
+    let (recipient, signals, fallback) = match to {
+        Recipient::Thread => (tid, signals, false),
         Recipient::Process => crate::task::scheduler::group_signals(tid)
             .into_iter()
             .find(|(_, member)| accepts(member))
-            .unwrap_or((tid, signals)),
+            .map_or((tid, signals, true), |(member, signals)| (member, signals, false)),
     };
+    // Read before the dispositions: an unchanged count after the post shows
+    // that no ignore was installed, and the signal discarded, meanwhile.
+    let generation = signals.mirror.generation()?;
     // Discarded at generation when ignored, unless it is blocked and its
     // action is the default (`SignalState::discards`).
     if signals.mirror.ignored() & bit != 0 {
@@ -403,7 +406,25 @@ fn send_signal_lockless(target: ProcessId, sig: u32, sender: &Sender, info: &Sig
         }
     }
     let word = info.fields[0];
-    signals.post_sent(sig, word as u32, (word >> 32) as u32, to == Recipient::Thread);
+    let posted = signals.post_sent(sig, word as u32, (word >> 32) as u32, to == Recipient::Thread);
+    // What the choice and the discard check read may have changed before the
+    // post was visible: a sibling's sigaction installed ignore, whose discard
+    // missed this signal, or, when no thread accepted it, another thread
+    // registered a wait for it and found nothing pending (`sys_sigtimedwait`,
+    // whose registration is ordered against this post by the same kind of
+    // fence). Then the signal is taken back, if it is still there, and the
+    // process-manager path, which serializes with both, generates it.
+    core::sync::atomic::fence(Ordering::SeqCst);
+    if posted
+        && (signals.mirror.generation() != Some(generation)
+            || (fallback
+                && crate::task::scheduler::group_signals(tid)
+                    .iter()
+                    .any(|(member, other)| *member != recipient && accepts(other))))
+        && signals.take_sent(sig).is_some()
+    {
+        return None;
+    }
     // A stopped process runs nothing until SIGCONT; otherwise the recipient
     // is woken when the signal interrupts it or it waits for it.
     if !signals.mirror.job_stopped()
@@ -2009,7 +2030,7 @@ fn siblings_hold_none_of(tid: u64, set: u64) -> bool {
 #[cfg(target_arch = "x86_64")]
 fn accept_posix_lockless(signals: &crate::signal::ThreadSignals, set: u64, info_ptr: u64) -> Option<u32> {
     let (timers, _) = crate::task::scheduler::current_signal_timers()?;
-    let claim = timers.posix.try_claim_due(signals)?;
+    let claim = timers.posix.try_claim_due(signals, set)?;
     let sig = claim.sig();
     if sig_mask(sig) & set == 0 {
         return None;
@@ -2024,22 +2045,23 @@ fn accept_posix_lockless(signals: &crate::signal::ThreadSignals, set: u64, info_
 }
 
 /// x86_64: rt_sigtimedwait's acceptance from the thread's own state, without
-/// PROCESS_MANAGER: the lowest signal of `set` that an interval timer or a
-/// lock-free kill made pending here, taken with its siginfo. Some(None) when
-/// none of `set` is pending; None when the row or a POSIX timer holds one of
-/// them, or one is ignored, which the process-manager path decides.
+/// PROCESS_MANAGER: the lowest signal of `set` that an interval timer, a
+/// POSIX timer or a lock-free kill made pending here, taken with its siginfo;
+/// a POSIX timer's is only named here (`Accepted::Posix`) and claimed from
+/// its table by `accept_posix_lockless`. Some(None) when none of `set` is
+/// pending; None when the row holds one of them, a POSIX timer's signal and
+/// another instance of the same signal are both due, or one is ignored,
+/// which the process-manager path decides.
 #[cfg(target_arch = "x86_64")]
 fn accept_lockless(signals: &crate::signal::ThreadSignals, set: u64) -> Option<Option<(u32, SigInfo, Accepted)>> {
     use core::sync::atomic::Ordering;
     if signals.mirror.pending() & set != 0 || signals.posix_retry.load(Ordering::Acquire) {
         return None;
     }
-    if signals.posix_pending.load(Ordering::Acquire) & set != 0 {
-        return Some(Some((0, SigInfo::kernel(), Accepted::Posix)));
-    }
+    let posix = signals.posix_pending.load(Ordering::Acquire) & set;
     let timers = signals.timer_pending.load(Ordering::Acquire) & set;
     let sent = signals.sent.load(Ordering::Acquire) & set;
-    let due = timers | sent;
+    let due = posix | timers | sent;
     if due == 0 {
         return Some(None);
     }
@@ -2048,17 +2070,25 @@ fn accept_lockless(signals: &crate::signal::ThreadSignals, set: u64) -> Option<O
     }
     let sig = due.trailing_zeros() + 1;
     let bit = sig_mask(sig);
-    if timers & bit != 0 {
-        if signals.timer_pending.fetch_and(!bit, Ordering::AcqRel) & bit == 0 {
+    if posix & bit != 0 {
+        if (timers | sent) & bit != 0 {
             return None;
         }
-        // The timer's and a kill's instance of one standard signal coalesce,
-        // the timer's first, as `collect_timer_signals` queues them.
-        let _ = signals.take_sent(sig);
-        return Some(Some((sig, SigInfo::kernel(), Accepted::Timer)));
+        return Some(Some((sig, SigInfo::kernel(), Accepted::Posix)));
     }
-    let (info, process) = signals.take_sent(sig)?;
-    Some(Some((sig, info, Accepted::Sent(process))))
+    // The timer's and a kill's instance of one standard signal coalesce into
+    // the first. A kill does not generate a signal a timer already has due
+    // (`ThreadSignals::post_sent`), so when both are here the kill's came
+    // first, as `collect_timer_signals` also takes it.
+    if sent & bit != 0 {
+        let (info, process) = signals.take_sent(sig)?;
+        signals.timer_pending.fetch_and(!bit, Ordering::AcqRel);
+        return Some(Some((sig, info, Accepted::Sent(process))));
+    }
+    if signals.timer_pending.fetch_and(!bit, Ordering::AcqRel) & bit == 0 {
+        return None;
+    }
+    Some(Some((sig, SigInfo::kernel(), Accepted::Timer)))
 }
 
 /// Linux rt_sigtimedwait: accept one signal without invoking its handler.
@@ -2104,6 +2134,11 @@ pub fn sys_sigtimedwait(set_ptr: u64, info_ptr: u64, timeout_ptr: u64, size: u64
     #[cfg(target_arch = "x86_64")]
     let registered = own.as_ref().is_some_and(|signals| {
         signals.wait_set.store(set, Ordering::Release);
+        // Ordered against a lock-free kill's post and its second look at the
+        // threads' wait sets (`send_signal_lockless`): either the kill sees
+        // this wait and takes the process-manager path, or this scan sees
+        // the signal it posted on another thread.
+        core::sync::atomic::fence(Ordering::SeqCst);
         siblings_hold_none_of(tid, set)
     });
     #[cfg(not(target_arch = "x86_64"))]
@@ -2134,8 +2169,8 @@ pub fn sys_sigtimedwait(set_ptr: u64, info_ptr: u64, timeout_ptr: u64, size: u64
         // lock-free delivery does (`PosixTimers::try_claim_due`).
         #[cfg(target_arch = "x86_64")]
         let quick = match own.as_ref().and_then(|signals| accept_lockless(signals, set)) {
-            Some(Some((_, _, Accepted::Posix))) => {
-                match own.as_ref().and_then(|signals| accept_posix_lockless(signals, set, info_ptr)) {
+            Some(Some((sig, _, Accepted::Posix))) => {
+                match own.as_ref().and_then(|signals| accept_posix_lockless(signals, sig_mask(sig), info_ptr)) {
                     Some(sig) => break SyscallResult::Ok(sig as u64),
                     None => None,
                 }

@@ -780,7 +780,7 @@ fn deliver_timer_signal_lockless(
     // so a timer_delete or timer_settime in a sibling thread waits for the
     // outcome; a claim dropped undelivered leaves the signal due for the
     // process-manager path, as if it had never been claimed.
-    let Some(claim) = timers.and_then(|timers| timers.posix.try_claim_due(signals)) else {
+    let Some(claim) = timers.and_then(|timers| timers.posix.try_claim_due(signals, bit)) else {
         return false;
     };
     if claim.sig() != sig {

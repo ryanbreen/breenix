@@ -462,22 +462,26 @@ impl PosixTimers {
         Some((timer.signo, super::types::SigInfo::timer(timer.signal.id, timer.value), process, timer.signal.clone()))
     }
 
-    /// Claim the oldest signal of this process's timers due for the thread
-    /// whose signal state is `signals`, for an interrupt or syscall return
-    /// delivering it without PROCESS_MANAGER. The claim holds the table
-    /// until it is committed or dropped, so no syscall deletes, rearms or
-    /// rebinds the timer while the handler frame is written, and a claim
+    /// Claim a signal of `set` that this process's timers have due for the
+    /// thread whose signal state is `signals`, the lowest-numbered, and of
+    /// that signal's the oldest, as delivery and sigtimedwait take the lowest
+    /// pending signal first; for an interrupt return or rt_sigtimedwait
+    /// taking it without PROCESS_MANAGER. The claim holds the table until it
+    /// is committed or dropped, so no syscall deletes, rearms or rebinds the
+    /// timer while the handler frame or the siginfo is written, and a claim
     /// dropped uncommitted leaves the signal due exactly as it was. None,
-    /// claiming nothing, when the table is busy or nothing is due.
-    pub fn try_claim_due<'a>(&'a self, signals: &'a ThreadSignals) -> Option<DueClaim<'a>> {
+    /// claiming nothing, when the table is busy or nothing of `set` is due.
+    pub fn try_claim_due<'a>(&'a self, signals: &'a ThreadSignals, set: u64) -> Option<DueClaim<'a>> {
         let me = signals as *const ThreadSignals as usize;
         let table = self.table.try_lock()?;
         let index = table
             .timers
             .iter()
             .enumerate()
-            .filter(|(_, t)| t.signal.due_for.load(Ordering::Acquire) == me)
-            .min_by_key(|(_, t)| t.signal.due_order())?
+            .filter(|(_, t)| {
+                super::constants::sig_mask(t.signo) & set != 0 && t.signal.due_for.load(Ordering::Acquire) == me
+            })
+            .min_by_key(|(_, t)| (t.signo, t.signal.due_order()))?
             .0;
         Some(DueClaim { table, index, signals })
     }

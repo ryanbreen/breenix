@@ -443,6 +443,14 @@ impl SignalMirror {
         })
     }
 
+    /// How many times the dispositions and the alternate stack have been
+    /// rewritten, doubled; None while the row's PM holder is rewriting them.
+    /// A reader that reads the same count again saw no rewrite in between.
+    pub fn generation(&self) -> Option<u64> {
+        let seq = self.seq.load(Ordering::SeqCst);
+        (seq & 1 == 0).then_some(seq)
+    }
+
     /// The row's identity, None while it is unpublished or being rewritten.
     pub fn identity(&self) -> Option<Identity> {
         let words = self.try_read(|| {
@@ -586,29 +594,37 @@ impl ThreadSignals {
     /// Generate standard signal `sig`, from the process `pid` of real user
     /// `uid`, for this thread without PROCESS_MANAGER (`sent`): sent to the
     /// process, or with `to_thread` to this thread (tkill, tgkill). A signal
-    /// already pending here, on the row or in `sent`, is not generated again
-    /// and keeps its first sender, as a standard signal does.
-    pub fn post_sent(&self, sig: u32, pid: u32, uid: u32, to_thread: bool) {
+    /// already pending here, on the row, in `sent` or from an interval timer
+    /// (`timer_pending`), is not generated again and keeps its first
+    /// instance, as a standard signal does. Returns whether it generated it.
+    pub fn post_sent(&self, sig: u32, pid: u32, uid: u32, to_thread: bool) -> bool {
         let bit = sig_mask(sig);
         if is_realtime(sig) || !is_valid_signal(sig) || sig > 32 {
-            return;
+            return false;
         }
-        if (self.mirror.pending() | self.sent.load(Ordering::Acquire)) & bit != 0
+        if (self.mirror.pending() | self.sent.load(Ordering::Acquire) | self.timer_pending.load(Ordering::Acquire))
+            & bit
+            != 0
             || self.sent_claim.fetch_or(bit, Ordering::AcqRel) & bit != 0
         {
-            return;
+            return false;
         }
-        if self.sent.load(Ordering::Acquire) & bit == 0 {
+        let posted = self.sent.load(Ordering::Acquire) & bit == 0;
+        if posted {
             self.sent_info[(sig - 1) as usize].store(pid as u64 | (uid as u64) << 32, Ordering::Relaxed);
             if to_thread {
                 self.sent_to_thread.fetch_or(bit, Ordering::Relaxed);
             } else {
                 self.sent_to_thread.fetch_and(!bit, Ordering::Relaxed);
             }
-            self.sent.fetch_or(bit, Ordering::Release);
+            // Acquire too: a discard that cleared `sent` before this post
+            // (`SignalState::set_handler`) is then visible to the sender's
+            // check that the dispositions did not change meanwhile.
+            self.sent.fetch_or(bit, Ordering::AcqRel);
             self.return_work.store(true, Ordering::Release);
         }
         self.sent_claim.fetch_and(!bit, Ordering::Release);
+        posted
     }
 
     /// Take `sig` out of `sent`: its siginfo, and whether it was sent to the
@@ -632,7 +648,7 @@ impl ThreadSignals {
     /// Put back a signal `take_sent` took and could not hand over.
     pub fn restore_sent(&self, sig: u32, info: &SigInfo, process: bool) {
         let word = info.fields[0];
-        self.post_sent(sig, word as u32, (word >> 32) as u32, !process);
+        let _ = self.post_sent(sig, word as u32, (word >> 32) as u32, !process);
     }
 
     pub fn needs_return_check(&self) -> bool {
@@ -815,14 +831,17 @@ impl SignalState {
     /// Queue the signals of the process's timers the scheduler expired with
     /// this row's thread as recipient: the interval timers' (`timers`, which
     /// is the process's), and the POSIX timers' due here, in expiry order.
+    /// The kills generated without PROCESS_MANAGER go first: a kill does not
+    /// generate a signal an interval timer already has due (`post_sent`), so
+    /// when both have one, the kill's came first and keeps its siginfo.
     pub fn collect_timer_signals(&mut self, timers: &IntervalTimers) {
+        self.collect_sent_signals();
         let mut pending = self.thread.timer_pending.swap(0, Ordering::AcqRel);
         while pending != 0 {
             let sig = pending.trailing_zeros() + 1;
             pending &= !sig_mask(sig);
             self.set_process_pending(sig);
         }
-        self.collect_sent_signals();
         let due = self.thread.posix_pending.swap(0, Ordering::AcqRel) != 0;
         if due || self.thread.posix_retry.swap(false, Ordering::AcqRel) {
             loop {
