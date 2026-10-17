@@ -2338,11 +2338,20 @@ pub(super) fn spawn(thread: Box<Thread>, front: bool) -> Result<usize, Box<Threa
 
 // ------------------------------------------------------------- reclamation
 
-/// Free one terminated thread whose stack no CPU can still be on: the
-/// scheduler-wide lock is held (`scheduler`), and only the run-queue lock of
-/// the CPU that owns the thread is taken, without waiting. A thread dropped
-/// from the index while a pin is held is kept until none is
-/// (`Scheduler::unpinned_free`). Returns the threads to free.
+/// Terminated threads one reclamation pass takes. An x86 idle dispatch
+/// restarts the idle loop rather than resuming it, so a pass's
+/// non-preemptible release stays bounded; taking more than one lets their
+/// kernel stacks share one flush of the kernel's translations
+/// (`kernel_stack::release_batch`), most of what freeing a thread costs. One
+/// a pass freed about 150 threads a second on the x86 gate, and a process
+/// creating threads faster than that ran out of thread slots (#1712).
+const RECLAIM_BATCH: usize = 16;
+
+/// Free up to `RECLAIM_BATCH` terminated threads whose stacks a CPU can no
+/// longer be on: the scheduler-wide lock is held (`scheduler`), and only the
+/// run-queue lock of the CPU that owns each thread is taken, without waiting.
+/// A thread dropped from the index while a pin is held is kept until the last
+/// pin is released (`Scheduler::unpinned_free`). Returns the threads to free.
 pub(super) fn reclaim(scheduler: &mut Scheduler) -> alloc::vec::Vec<Box<Thread>> {
     splice_spawned(scheduler);
     let mut freed = alloc::vec::Vec::new();
@@ -2366,8 +2375,11 @@ pub(super) fn reclaim(scheduler: &mut Scheduler) -> alloc::vec::Vec<Box<Thread>>
         }
     }
     let me = super::current_cpu_id_raw();
-    let mut reclaimed = None;
+    let mut reclaimed = alloc::vec::Vec::with_capacity(RECLAIM_BATCH);
     for &tid in dead.iter() {
+        if reclaimed.len() == RECLAIM_BATCH {
+            break;
+        }
         let elapsed = scheduler
             .retirement_grace
             .iter()
@@ -2406,22 +2418,17 @@ pub(super) fn reclaim(scheduler: &mut Scheduler) -> alloc::vec::Vec<Box<Thread>>
         remove(tid);
         drop(held);
         scheduler.retirement_grace.retain(|grace| grace.thread_id != tid);
-        reclaimed = Some(scheduler.threads.remove(at));
-        // One per pass: an x86 idle dispatch restarts the idle loop rather
-        // than resuming it, so its non-preemptible release stays bounded.
-        break;
+        reclaimed.push(scheduler.threads.remove(at));
     }
-    let reclaimed_one = reclaimed.is_some() as usize;
-    if let Some(thread) = reclaimed {
-        if unpinned() {
-            freed.push(thread);
-        } else {
-            scheduler.unpinned_free.push(thread);
-        }
+    let reclaimed_count = reclaimed.len();
+    if unpinned() {
+        freed.append(&mut reclaimed);
+    } else {
+        scheduler.unpinned_free.append(&mut reclaimed);
     }
     // What is left to do: terminated threads still indexed, and threads
     // waiting for the last pin to go.
-    let left = dead.len() - reclaimed_one + scheduler.unpinned_free.len();
+    let left = dead.len() - reclaimed_count + scheduler.unpinned_free.len();
     super::TERMINATED_UNRECLAIMED.store(left as u64, Ordering::Release);
     freed
 }

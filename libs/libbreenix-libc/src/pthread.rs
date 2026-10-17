@@ -166,6 +166,8 @@ struct Thread {
     attr: Attr,
     mapping: *mut u8,
     mapping_len: usize,
+    // The inaccessible bytes at the bottom of the mapping.
+    mapping_guard: usize,
     tp: usize,
     errno: i32,
     h_errno: i32,
@@ -204,8 +206,54 @@ unsafe fn control_len() -> Option<usize> {
         .and_then(|v| rounded(v, PAGE))
 }
 
+/// Mappings of threads that have ended, kept for later threads to reuse, as
+/// glibc keeps up to 40 MiB of stacks. The kernel keeps the page tables and
+/// custody records of each span of address space a process has used until the
+/// process ends, so a mapping made for each new thread grew that with each
+/// thread the process created (#1712).
+const STACK_CACHE_SLOTS: usize = 32;
+const STACK_CACHE_BYTES: usize = 40 * 1024 * 1024;
+/// Each kept mapping as (base, length, guard); an empty slot has a null base.
+static mut STACK_CACHE: [(*mut u8, usize, usize); STACK_CACHE_SLOTS] =
+    [(null_mut(), 0, 0); STACK_CACHE_SLOTS];
+static mut STACK_CACHE_USED: usize = 0;
+static STACK_CACHE_LOCK: Lock = Lock::new();
+
+/// A kept mapping of `len` bytes whose bottom `guard` bytes are inaccessible,
+/// taken out of the cache.
+unsafe fn cached_mapping(len: usize, guard: usize) -> *mut u8 {
+    STACK_CACHE_LOCK.lock();
+    let cache = &mut *core::ptr::addr_of_mut!(STACK_CACHE);
+    let mut base = null_mut();
+    if let Some(slot) = cache.iter_mut().find(|e| !e.0.is_null() && e.1 == len && e.2 == guard) {
+        base = slot.0;
+        *slot = (null_mut(), 0, 0);
+        STACK_CACHE_USED -= len;
+    }
+    STACK_CACHE_LOCK.unlock();
+    base
+}
+
+/// Keep a mapping no thread uses any more for a later thread; false when the
+/// cache is full, and the caller unmaps it.
+unsafe fn keep_mapping(base: *mut u8, len: usize, guard: usize) -> bool {
+    STACK_CACHE_LOCK.lock();
+    let cache = &mut *core::ptr::addr_of_mut!(STACK_CACHE);
+    let mut kept = false;
+    if STACK_CACHE_USED + len <= STACK_CACHE_BYTES {
+        if let Some(slot) = cache.iter_mut().find(|e| e.0.is_null()) {
+            *slot = (base, len, guard);
+            STACK_CACHE_USED += len;
+            kept = true;
+        }
+    }
+    STACK_CACHE_LOCK.unlock();
+    kept
+}
+
 /// Map `guard` inaccessible bytes, `stack` bytes of stack and the thread's
-/// control area above it, and initialize the descriptor and static TLS.
+/// control area above it, or reuse a kept mapping of that shape, and
+/// initialize the descriptor and static TLS.
 unsafe fn alloc_thread(guard: usize, stack: usize) -> *mut Thread {
     let Some(len) = control_len()
         .and_then(|c| c.checked_add(stack))
@@ -213,15 +261,22 @@ unsafe fn alloc_thread(guard: usize, stack: usize) -> *mut Thread {
     else {
         return null_mut();
     };
-    let base = map(len, 3);
+    let mut base = cached_mapping(len, guard);
     if base.is_null() {
-        return null_mut();
-    }
-    if guard != 0
-        && (raw::syscall3(nr::MPROTECT, base as u64, guard as u64, 0) as i64) < 0
-    {
-        unmap(base, len);
-        return null_mut();
+        base = map(len, 3);
+        if base.is_null() {
+            return null_mut();
+        }
+        if guard != 0
+            && (raw::syscall3(nr::MPROTECT, base as u64, guard as u64, 0) as i64) < 0
+        {
+            unmap(base, len);
+            return null_mut();
+        }
+    } else {
+        // Static TLS beyond the initialization image starts zeroed, as the
+        // control area of a new mapping is.
+        core::ptr::write_bytes(base.add(guard + stack), 0, len - guard - stack);
     }
     let p = base.add(guard + stack) as *mut Thread;
     core::ptr::write(
@@ -239,6 +294,7 @@ unsafe fn alloc_thread(guard: usize, stack: usize) -> *mut Thread {
             attr: Attr::new(),
             mapping: base,
             mapping_len: len,
+            mapping_guard: guard,
             tp: 0,
             errno: 0,
             h_errno: 0,
@@ -289,6 +345,7 @@ unsafe fn alloc_thread(guard: usize, stack: usize) -> *mut Thread {
 unsafe fn free_thread(p: *mut Thread) {
     let mapping = (*p).mapping;
     let len = (*p).mapping_len;
+    let guard = (*p).mapping_guard;
     let mut values = (*p).extra_values;
     while !values.is_null() {
         let next = (*values).next;
@@ -301,7 +358,9 @@ unsafe fn free_thread(p: *mut Thread) {
         unmap(reads as *mut u8, PAGE);
         reads = next;
     }
-    unmap(mapping, len);
+    if !keep_mapping(mapping, len, guard) {
+        unmap(mapping, len);
+    }
 }
 unsafe fn set_tp(tp: usize) {
     #[cfg(target_arch = "aarch64")]
@@ -450,6 +509,7 @@ pub unsafe extern "C" fn __breenix_after_fork() {
     let survivor = descriptor_from_tp();
     REGISTRY.0.store(0, Relaxed);
     KEY_LOCK.0.store(0, Relaxed);
+    STACK_CACHE_LOCK.0.store(0, Relaxed);
     HEAD = survivor;
     if !survivor.is_null() {
         let id = tid();

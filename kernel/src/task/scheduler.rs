@@ -7970,10 +7970,13 @@ pub fn reclaim_terminated_threads_from_idle() {
 }
 
 pub fn reclaim_terminated_threads() {
-    // x86 resumes idle at its entry point after a dispatch, abandoning the
-    // interrupted continuation. Keep custody of detached threads through their
-    // destruction so idle cannot abandon a stack teardown while holding a lock.
-    #[cfg(target_arch = "x86_64")]
+    // Between the harvest and the release, the harvested threads are held only
+    // on this caller's stack, so the caller keeps its CPU until it has freed
+    // them. x86 resumes idle at its entry point after a dispatch, abandoning the
+    // interrupted continuation. On ARM64 the caller may be a thread that has
+    // exited, on its way out through `schedule`: a timer interrupt in between
+    // switched away from it for good, and the threads it harvested stayed
+    // allocated (#1712).
     crate::per_cpu::preempt_disable();
 
     // Harvest with interrupts masked, then release outside the scheduler lock.
@@ -7996,7 +7999,6 @@ pub fn reclaim_terminated_threads() {
     #[cfg(all(target_arch = "x86_64", feature = "testing"))]
     idle_release_probe::hold();
     release_reclaimed_threads(reclaimed_threads);
-    #[cfg(target_arch = "x86_64")]
     crate::per_cpu::preempt_enable();
 }
 
@@ -8180,7 +8182,18 @@ fn release_reclaimed_threads(reclaimed_threads: alloc::vec::Vec<Box<Thread>>) {
 /// `interrupts/context_switch.rs`, buying nothing. Mask what correctness
 /// requires and no more.
 #[cfg(not(target_arch = "aarch64"))]
-fn release_reclaimed_threads(reclaimed_threads: alloc::vec::Vec<Box<Thread>>) {
+fn release_reclaimed_threads(mut reclaimed_threads: alloc::vec::Vec<Box<Thread>>) {
+    // Their kernel stacks go together, with one flush for the batch; without
+    // memory for the list, each goes with its thread.
+    let mut stacks = alloc::vec::Vec::new();
+    if stacks.try_reserve_exact(reclaimed_threads.len()).is_ok() {
+        stacks.extend(
+            reclaimed_threads
+                .iter_mut()
+                .filter_map(|thread| thread.kernel_stack_allocation.take()),
+        );
+    }
+    crate::memory::kernel_stack::release_batch(stacks);
     drop(reclaimed_threads);
 }
 

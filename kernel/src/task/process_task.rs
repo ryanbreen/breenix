@@ -1050,10 +1050,15 @@ impl ProcessScheduler {
                 let group_wake = manager.last_group_row_exiting(thread_id);
                 // A leader whose other threads still run has not exited as a
                 // process: its parent gets SIGCHLD when the last of them ends
-                // (`group_exited`), not now.
-                let sigchld_withheld = manager
+                // (`group_exited`), not now. A thread's row is nobody's child:
+                // its exit is not reported, and no parent waits for it.
+                let thread_row = manager
                     .find_process_by_thread(thread_id)
-                    .is_some_and(|(pid, _)| manager.leader_waits_for_group(pid));
+                    .is_some_and(|(_, row)| row.is_non_leader_thread());
+                let sigchld_withheld = thread_row
+                    || manager
+                        .find_process_by_thread(thread_id)
+                        .is_some_and(|(pid, _)| manager.leader_waits_for_group(pid));
                 let terminal_exit = manager.find_process_by_thread(thread_id)
                     .map(|(pid, _)| pid)
                     .and_then(|pid| crate::tty::ctty::on_exit_locked(manager, pid));
@@ -1140,7 +1145,7 @@ impl ProcessScheduler {
                         .get_process(pid)
                         .map(crate::signal::delivery::child_exit_info);
                     let mut signal_wake = None;
-                    let parent_tid = if let Some(parent_pid) = parent_pid {
+                    let parent_tid = if let Some(parent_pid) = parent_pid.filter(|_| !thread_row) {
                         if let (true, Some(info)) = (sigchld_pending && !sigchld_withheld, child_info) {
                             signal_wake = manager.queue_process_signal(parent_pid, crate::signal::constants::SIGCHLD, info);
                         }
@@ -1165,9 +1170,10 @@ impl ProcessScheduler {
                     // per row: a signal death has already terminated the row
                     // (`already_terminated`), and this is still its first ask.
                     let orphaned_groups = manager.groups_orphaned_by_exit(pid, &children);
-                    // A parent that declines zombies reaps the row now; it is
-                    // dropped after PM is released.
-                    let auto_reaped = manager.reap_if_parent_declines(pid);
+                    // A thread's row, or a child whose parent declines
+                    // zombies, is reaped now; it is dropped after PM is
+                    // released.
+                    let auto_reaped = manager.reap_if_unwaited(pid);
                     // The group's last row has ended after its leader: the
                     // process has now exited, so its parent may reap it.
                     let group_exited = group_wake.map(|leader| manager.group_exited(leader));
