@@ -354,31 +354,15 @@ impl PendingProcessReclaim {
     }
 }
 
+// Queue holders mask local interrupts and never nest these locks or take PM
+// or scheduler locks while holding them. Wait for a peer's short hold: losing
+// a try-lock race must not discard the receipt or its retirement obligation.
 static PENDING_PROCESS_RECLAIMS: crate::irq_safe_mutex::IrqSafeMutex<
     alloc::vec::Vec<PendingProcessReclaim>,
 > = crate::irq_safe_mutex::IrqSafeMutex::new(alloc::vec::Vec::new());
 static PARKED_PROCESS_RECLAIMS: crate::irq_safe_mutex::IrqSafeMutex<
     alloc::vec::Vec<PendingProcessReclaim>,
 > = crate::irq_safe_mutex::IrqSafeMutex::new(alloc::vec::Vec::new());
-/// A reclaim queue for publishing into or sweeping. x86_64 waits for a holder
-/// on another CPU: every hold is short and masks interrupts, so it always
-/// finishes, and the try-lock's `None` -- park nothing, sweep nothing, abandon
-/// the reclaim and leak its address space -- was the answer for nesting on one
-/// CPU, not for contention between CPUs, which with four CPUs leaked a dead
-/// process's page tables at a time. aarch64 keeps its try-lock.
-fn reclaim_queue<T>(
-    queue: &crate::irq_safe_mutex::IrqSafeMutex<T>,
-) -> Option<crate::irq_safe_mutex::IrqSafeMutexGuard<'_, T>> {
-    #[cfg(target_arch = "x86_64")]
-    {
-        Some(queue.lock())
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        queue.try_lock()
-    }
-}
-
 static RECLAIM_PASS_ID: AtomicU32 = AtomicU32::new(0);
 static ROW_REMOVAL_EPOCH: AtomicU64 = AtomicU64::new(0);
 
@@ -782,9 +766,7 @@ fn boot_forces_reclaim_reserve_failure() -> bool {
 fn push_pending_or_abandon(reclaim: PendingProcessReclaim) {
     let mut reclaim = Some(reclaim);
     let queued = crate::arch_without_interrupts(|| {
-        let Some(mut pending) = reclaim_queue(&PENDING_PROCESS_RECLAIMS) else {
-            return false;
-        };
+        let mut pending = PENDING_PROCESS_RECLAIMS.lock();
         #[cfg(feature = "boot_tests")]
         let reservation = if boot_forces_reclaim_reserve_failure() {
             pending.try_reserve(usize::MAX)
@@ -838,7 +820,75 @@ pub(crate) fn enqueue_process_reclaim(reclaim: PendingProcessReclaim) {
     if crate::process::process_manager_held_on_current_cpu() {
         crate::trace_count!(crate::tracing::providers::teardown::RECLAIM_ENQUEUE_UNDER_PM);
     }
+    #[cfg(all(target_arch = "aarch64", feature = "force_reclaim_queue_contention"))]
+    force_reclaim_queue_contention(&reclaim);
     push_pending_or_abandon(reclaim);
+}
+
+/// Hold the real publication queue on a peer for a bounded interval. This
+/// changes only scheduling of the holder; the victim takes the production
+/// enqueue path and the userspace test keeps its ordinary pairing requirement.
+#[cfg(all(target_arch = "aarch64", feature = "force_reclaim_queue_contention"))]
+fn force_reclaim_queue_contention(reclaim: &PendingProcessReclaim) {
+    static ARMED: AtomicBool = AtomicBool::new(true);
+    static HELD: AtomicBool = AtomicBool::new(false);
+    static ATTEMPT: AtomicBool = AtomicBool::new(false);
+    fn counter() -> u64 {
+        let value: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, cntvct_el0", out(reg) value, options(nomem, nostack));
+        }
+        value
+    }
+    if reclaim.page_table.is_some() || !reclaim.old_page_tables.is_empty() {
+        return;
+    }
+    let victim = crate::process::with_process_manager(|manager| {
+        manager
+            .get_process(ProcessId::new(reclaim.pid))
+            .is_some_and(|row| row.name.contains("sigkill_teardown_test"))
+    })
+    .unwrap_or(false);
+    if !victim || !ARMED.swap(false, Ordering::AcqRel) {
+        return;
+    }
+    let online = crate::arch_impl::aarch64::smp::cpus_online() as usize;
+    assert!(
+        online > 1,
+        "queue contention regression requires a peer CPU"
+    );
+    let cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
+    let frequency = crate::arch_impl::aarch64::timer::frequency_hz();
+    crate::task::kthread::kthread_run_on_cpu(
+        move || {
+            let _queue = PENDING_PROCESS_RECLAIMS.lock();
+            HELD.store(true, Ordering::Release);
+            let start = counter();
+            while !ATTEMPT.load(Ordering::Acquire) && counter().wrapping_sub(start) < frequency {
+                core::hint::spin_loop();
+            }
+            assert!(
+                ATTEMPT.load(Ordering::Acquire),
+                "publisher did not reach contention window"
+            );
+            let start = counter();
+            while counter().wrapping_sub(start) < frequency / 1000 {
+                core::hint::spin_loop();
+            }
+        },
+        "reclaim-queue-holder",
+        (cpu + 1) % online,
+    )
+    .expect("queue contention holder");
+    let start = counter();
+    while !HELD.load(Ordering::Acquire) && counter().wrapping_sub(start) < frequency {
+        core::hint::spin_loop();
+    }
+    assert!(
+        HELD.load(Ordering::Acquire),
+        "peer did not hold reclaim queue"
+    );
+    ATTEMPT.store(true, Ordering::Release);
 }
 
 /// Close extracted file descriptor entries outside the PM lock.
@@ -1416,9 +1466,7 @@ fn park_reclaim(mut reclaim: PendingProcessReclaim) {
     reclaim.parked = Some(park_record);
     let mut reclaim = Some(reclaim);
     let parked = crate::arch_without_interrupts(|| {
-        let Some(mut parked) = reclaim_queue(&PARKED_PROCESS_RECLAIMS) else {
-            return false;
-        };
+        let mut parked = PARKED_PROCESS_RECLAIMS.lock();
         if parked.try_reserve(1).is_err() {
             false
         } else {
@@ -1441,10 +1489,8 @@ fn park_reclaim(mut reclaim: PendingProcessReclaim) {
 
 fn unpark_sweep_with_snapshot(snapshot: scheduler::RetirementSnapshot, row_epoch: u64) {
     let mut ready = alloc::vec::Vec::new();
-    let swept = crate::arch_without_interrupts(|| {
-        let Some(mut parked) = reclaim_queue(&PARKED_PROCESS_RECLAIMS) else {
-            return false;
-        };
+    crate::arch_without_interrupts(|| {
+        let mut parked = PARKED_PROCESS_RECLAIMS.lock();
         let mut index = 0;
         while index < parked.len() {
             let reason = parked[index]
@@ -1465,17 +1511,11 @@ fn unpark_sweep_with_snapshot(snapshot: scheduler::RetirementSnapshot, row_epoch
                 index += 1;
             }
         }
-        true
     });
-    if !swept {
-        return;
-    }
     if !ready.is_empty() {
         let mut ready = Some(ready);
         let queued = crate::arch_without_interrupts(|| {
-            let Some(mut pending) = reclaim_queue(&PENDING_PROCESS_RECLAIMS) else {
-                return false;
-            };
+            let mut pending = PENDING_PROCESS_RECLAIMS.lock();
             let ready_len = ready.as_ref().expect("ready reclaims retained").len();
             if pending.try_reserve(ready_len).is_err() {
                 false

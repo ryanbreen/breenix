@@ -25,6 +25,7 @@ test = false
 
 [features]
 force_cpu_accounting_delay = []  # Masked first-dispatch delay for times-reset regression
+force_reclaim_queue_contention = ["testing"] # Cross-CPU CLONE_VM receipt publication regression
 testing = []
 boot_tests = []  # Parallel boot test framework
 force_eret_dispatch_596 = ["boot_tests"]  # #596 forced-repro knob
