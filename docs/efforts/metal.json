@@ -1,6 +1,6 @@
 {
   "title": "Path to Breenix on bare-metal x86-64",
-  "outcome": "A production kernel reaches a console shell on a RAM-disk root, passes the networking suite, and supports SATA/AHCI storage and the Breenix filesystem on physical x86-64 hardware.",
+  "outcome": "A production kernel reaches a console shell on a RAM-disk root, passes the networking suite, and supports SATA/AHCI storage and the Breenix filesystem on physical x86-64 hardware, and a user logs in at the machine's own console and keyboard.",
   "efforts": [
     {
       "id": "metal-bring-up",
@@ -214,6 +214,44 @@
           "title": "Breenix filesystem on disk",
           "measure": {
             "bootPath": "disk-filesystem"
+          }
+        }
+      ]
+    },
+    {
+      "id": "metal-console",
+      "title": "Bare-metal local console",
+      "outcome": "At the machine's own monitor and USB keyboard, Breenix draws its console on the firmware framebuffer, takes keystrokes through a clean-room xHCI and HID boot-keyboard path interrupting by MSI, and logs a user in at a login prompt to the shell.",
+      "targets": [
+        "x86-metal"
+      ],
+      "milestones": [
+        {
+          "id": "fb-console",
+          "title": "Framebuffer console",
+          "measure": {
+            "bootPath": "fb-console"
+          }
+        },
+        {
+          "id": "xhci",
+          "title": "USB controller by MSI",
+          "measure": {
+            "bootPath": "xhci"
+          }
+        },
+        {
+          "id": "usb-keyboard",
+          "title": "USB keyboard into the console",
+          "measure": {
+            "bootPath": "usb-keyboard"
+          }
+        },
+        {
+          "id": "console-login",
+          "title": "Login at the machine's own console",
+          "measure": {
+            "bootPath": "console-login"
           }
         }
       ]

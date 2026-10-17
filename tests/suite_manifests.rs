@@ -803,8 +803,8 @@ fn metal_definition_errors(root: &Path, main: &Value, metal: &Value, boot: &Valu
     let modes = boot["modes"].as_object().unwrap();
     let mut mode_names: Vec<&str> = modes.keys().map(String::as_str).collect();
     mode_names.sort_unstable();
-    if mode_names != ["default", "probe", "shell", "suite"] {
-        errors.push("metal modes must be default, probe, shell and suite".into());
+    if mode_names != ["console", "default", "probe", "shell", "suite"] {
+        errors.push("metal modes must be console, default, probe, shell and suite".into());
     }
     let catalog = read_definition(root,
         "tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json");
@@ -939,7 +939,7 @@ fn metal_stream_is_independent_and_resolves_its_measures() {
     let errors = metal_definition_errors(&root, &main, &metal, &boot);
     assert!(errors.is_empty(), "metal definitions:\n{}", errors.join("\n"));
     assert_eq!(metal["efforts"].as_array().unwrap().iter().map(|e| e["id"].as_str().unwrap())
-        .collect::<Vec<_>>(), ["metal-bring-up", "metal-userspace", "metal-network", "metal-storage"]);
+        .collect::<Vec<_>>(), ["metal-bring-up", "metal-userspace", "metal-network", "metal-storage", "metal-console"]);
     assert_eq!(boot["milestones"][0]["id"], "delivery");
     assert_eq!(boot["milestones"][1]["id"], "first-light");
     assert!(boot["milestones"][0].get("stub").is_none());
@@ -964,7 +964,13 @@ fn metal_stream_is_independent_and_resolves_its_measures() {
             format!("SUITE {} DONE", manifest["id"].as_str().unwrap())
         }).collect();
     assert_eq!(suite_markers, expected_markers.iter().map(String::as_str).collect());
-    assert_eq!(boot["firsts"].as_array().unwrap().last().unwrap()["suite"], "networking");
+    assert_eq!(boot["firsts"][7]["suite"], "networking");
+    assert_eq!(boot["firsts"].as_array().unwrap().last().unwrap()["stage"], "Logged-in computation answered");
+    for id in ["fb-console", "xhci", "usb-keyboard", "console-login"] {
+        assert!(metal["efforts"][4]["milestones"].as_array().unwrap().iter()
+            .any(|m| m["measure"]["bootPath"] == id));
+        assert_eq!(milestone(id)["bootShapes"], serde_json::json!(["ramdisk", "install", "disk-root"]));
+    }
     assert_eq!(boot["milestones"][0]["stages"]["x86_64"].as_array().unwrap().iter()
         .filter_map(|s| s["host"].as_str()).collect::<Vec<_>>(),
         ["console-ready", "power-on", "firmware-text", "post", "image-complete"]);
@@ -997,7 +1003,11 @@ fn metal_definition_contract_rejects_invalid_inputs() {
     assert!(metal_definition_errors(&root, &main, &metal, &finalized).is_empty());
     for (pointer, value) in [
         ("/milestones/0/bootShapes", serde_json::json!(["unknown"])),
-        ("/milestones/8/stub", serde_json::json!("true")),
+        ("/milestones/0", {
+            let mut invalid = boot["milestones"][0].clone();
+            invalid["stub"] = serde_json::json!("true");
+            invalid
+        }),
         ("/scoring", serde_json::json!("arch")),
         ("/gateArch", serde_json::json!("aarch64")),
         ("/milestones/0/stages/x86_64/0/host", serde_json::json!("missing")),

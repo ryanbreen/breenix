@@ -552,6 +552,8 @@ def expected_bios(site):
     expected = {
         'HttpDev1EnDis': 'Enabled', 'HttpDev1Interface': site['HTTP_DEV_INTERFACE'], 'HttpDev1Protocol': 'IPv4',
         'HttpDev1VlanEnDis': 'Disabled', 'HttpDev1TlsMode': 'None', 'HttpDev1Uri': site['BOOT_URL'],
+        'UsbPorts': 'AllOn', 'GenericUsbBoot': 'Disabled', 'EmbVideo': 'Enabled',
+        'InternalUsb': site['INTERNAL_USB'], 'UsbManagedPort': site['USB_MANAGED_PORT'],
         'SerialComm': 'OnConRedirCom1', 'ErrPrompt': 'Disabled', 'AcPwrRcvry': 'Off', 'EmbSata': site.get('SATA_MODE', 'AhciMode'),
     }
     if site.get('HTTP_DEV_ADDRESSING', 'dhcp') == 'static':

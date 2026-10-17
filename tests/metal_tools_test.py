@@ -1306,6 +1306,28 @@ class DriverTest(StateTest):
         self.assertEqual([row[0] for row in m.failed_checks(rows)],
                          ['lc.LCAttributes.1.CollectSystemInventoryOnRestart'])
 
+    def test_preflight_rejects_usb_and_video_drift(self):
+        site = m.load_site(FIXTURES / 'redact-site.env')
+        site.update(INTERNAL_USB='Off', USB_MANAGED_PORT='Off')
+        expected = m.expected_bios(site)
+        self.assertEqual({key: expected[key] for key in
+                          ('UsbPorts', 'GenericUsbBoot', 'EmbVideo', 'InternalUsb', 'UsbManagedPort')},
+                         {'UsbPorts': 'AllOn', 'GenericUsbBoot': 'Disabled', 'EmbVideo': 'Enabled',
+                          'InternalUsb': 'Off', 'UsbManagedPort': 'Off'})
+        def get(path):
+            if path == m.SYSTEM + '/Bios':
+                return {'Attributes': dict(expected, **m.KEPT_BIOS,
+                                           UsbPorts='AllOff', GenericUsbBoot='Enabled', EmbVideo='Disabled')}
+            if path == m.MANAGER_ATTRIBUTES:
+                return {'Attributes': m.EXPECTED_MANAGER}
+            if path == m.LC_ATTRIBUTES:
+                return {'Attributes': m.EXPECTED_LC}
+            return {'Boot': {'BootSourceOverrideEnabled': 'Disabled'}}
+        with patch.object(m, 'rf_get', side_effect=get):
+            rows, _ = m.machine_checks(site)
+        self.assertEqual([name for name, _, _ in m.failed_checks(rows)],
+                         ['bios.UsbPorts', 'bios.GenericUsbBoot', 'bios.EmbVideo'])
+
     def test_sata_off_policy_is_checked_explicitly(self):
         site = m.load_site(FIXTURES / 'redact-site.env')
         site['SATA_MODE'] = 'Off'
@@ -1325,6 +1347,46 @@ class DriverTest(StateTest):
             with self.assertRaises(SystemExit):
                 run.verify_target({'BUILD_REPO': 'fixture'}, 'a' * 40, 'main')
             self.assertIn('merge-base', remote.call_args.args)
+
+
+class SetupOriginalsTest(StateTest):
+    def test_original_receipt_retains_pending_values_including_no_ops(self):
+        setup = load_script('metal-setup')
+        current = {'UsbPorts': 'AllOff', 'GenericUsbBoot': 'Disabled', 'EmbVideo': 'Enabled'}
+        pending = {'UsbPorts': 'BackOnly', 'EmbVideo': 'Enabled'}
+        path = setup.save_originals('fixture-setup', current, pending,
+                                    {'IPMILan.1.Enable': 'Enabled', 'Users.1.Password': 'not-copied'},
+                                    m.EXPECTED_LC, {'UsbPorts': 'AllOn'})
+        saved = m.read_json(path)
+        self.assertEqual(saved['bios'], current)
+        self.assertEqual(saved['pending'], pending)
+        self.assertEqual(saved['requested'], {'UsbPorts': 'AllOn'})
+        self.assertEqual(saved['manager'], {'IPMILan.1.Enable': 'Enabled'})
+        self.assertEqual(saved['lc'], m.EXPECTED_LC)
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_apply_preserves_unapplied_bios_changes(self):
+        setup = load_script('metal-setup')
+        site = m.load_site(FIXTURES / 'redact-site.env')
+        self.ready()
+        current = dict(m.expected_bios(site), UsbPorts='AllOff')
+        pending = {'EmbVideo': 'Disabled'}
+        def get(path):
+            if path == m.SYSTEM + '/Bios':
+                return {'Attributes': current}
+            if path == m.SYSTEM + '/Bios/Settings':
+                return {'Attributes': pending}
+            return {'Attributes': {}}
+        with patch.object(m, 'load_site', return_value=site), patch.object(m, 'rf_get', side_effect=get), \
+             patch.object(m, 'rf') as write, patch.object(m, 'force_off_and_wait', return_value=True), \
+             patch.object(m, 'clear_override'):
+            with self.assertRaisesRegex(SystemExit, 'unapplied BIOS settings'):
+                setup.apply(SimpleNamespace(refresh=False))
+        self.assertFalse(any(call.args[1] == m.SYSTEM + '/Bios/Settings' for call in write.call_args_list))
+        originals = list((m.STATE / 'setup').glob('*-original.json'))
+        self.assertEqual(len(originals), 1)
+        self.assertEqual(m.read_json(originals[0])['pending'], pending)
+        self.assertIsNone(m.read_lease())
 
 
 class StagingTest(unittest.TestCase):
