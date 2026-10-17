@@ -366,3 +366,33 @@ allocation sizes and hold-set decisions are Breenix choices, not policies learne
 The cache-invalidation boundary and the readback path have host checks in `tests/gpu_observation.rs`:
 noncoherent memory exposes stale poison without invalidation, both readback observations go through
 that boundary. Source structure checks inspect the direct readback path for pixel-byte staging through charged frames and preflight compare-and-exchange. They do not prove the absence of heap metadata: `Pages` owns a frame-descriptor `Vec`, and `start_sync` copies hold lists with `to_vec()`. Only pixel bytes avoid heap vectors; the structure checks are distinct from the behavioral noncoherent-memory test.
+
+## B6: contract-3 confirmation
+
+Both profiles booted the clean source commit `396535337916928b836f08490091168e36c3ea54`
+with the same ARM64 production kernel and disk, built once. The build commands were
+`taskpolicy -b "$CHECKOUT/userspace/programs/build.sh" --arch aarch64`,
+`taskpolicy -b "$CHECKOUT/scripts/create_ext2_disk.sh" --arch aarch64`, and, from CHECKOUT,
+`taskpolicy -b cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64`,
+with `CARGO_BUILD_JOBS=4` exported. CHECKOUT is the absolute checkout of that source commit;
+GL_RUN and NO_GL_RUN are separate, fresh absolute output directories. The exact boot
+flags and quiet-wait setting used by the cited runs were:
+
+```sh
+BREENIX_QUIET=0 "$CHECKOUT/scripts/boot-interactive.sh" --no-build --mode suite --suite gpu --gpu-gl --display --serial-log "$GL_RUN/serial.txt" --gate-timeout 900 < /dev/null
+BREENIX_QUIET=0 "$CHECKOUT/scripts/boot-interactive.sh" --no-build --mode suite --suite gpu --display --serial-log "$NO_GL_RUN/serial.txt" --gate-timeout 900 < /dev/null
+```
+
+| Profile and Vigil run | Producer output and retained metadata |
+|---|---|
+| GL, `20261017T071145Z-qemu` | `SUITE gpu DONE passed=53 failed=117 skipped=0 total=170`; device 12/12, submit 22/22, readback 19/19. `SUITE gpu CASE readback/full-target PASS ms=8` includes the new unwritten/offscreen PRESENT refusals, context-fence sequence and invalid creation flags. `SUITE gpu CASE readback/large-target PASS ms=125` includes staging ENOMEM under RLIMIT_AS, unchanged outputs/counters, recovery and released charges. Host renderer attestation accepted, 128 records. |
+| Without GL, `20261017T071227Z-qemu` | `SUITE gpu DONE passed=0 failed=170 skipped=0 total=170`; all 170 case records fail naming a missing layer `(G1)` through `(G8)`. |
+
+Both native QEMU windows were observed open. The GL window displayed the GPU status tiles,
+including the three green G1/G2 rows. The recorder stored `display:true` before each VM
+started; both records have zero dirty files and the source commit above. The GL run retains
+`host-renderer.json` beside its serial and a byte-identical copy in its Vigil run folder,
+archived automatically by `vigil-record.sh` before finishing. No historical record was
+relabelled. Both launchers exited 1: later G3–G8 checks remain unwritten, so neither result
+is acceptance of the full GPU effort. The unrelated launcher-order expectation conflict
+is tracked in #1697; its check was not changed.
