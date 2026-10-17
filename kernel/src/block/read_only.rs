@@ -10,6 +10,8 @@ pub(super) fn device(device: Box<dyn BlockDevice>) -> Box<dyn BlockDevice> {
 }
 
 impl BlockDevice for ReadOnly {
+    fn hardware_disk(&self) -> Option<super::HardwareDisk> { self.0.hardware_disk() }
+
     fn identity(&self) -> usize { self.0.identity() }
     fn read_block(&self, block: u64, buf: &mut [u8]) -> Result<(), BlockError> {
         self.0.read_block(block, buf)

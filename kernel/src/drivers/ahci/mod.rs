@@ -2833,6 +2833,10 @@ pub struct AhciBlockDevice {
 }
 
 impl BlockDevice for AhciBlockDevice {
+    fn hardware_disk(&self) -> Option<crate::block::HardwareDisk> {
+        Some(crate::block::HardwareDisk::Ahci(self.port_num))
+    }
+
     fn read_block(&self, block_num: u64, buf: &mut [u8]) -> Result<(), BlockError> {
         self.read_blocks(block_num, 1, buf)
     }
@@ -2937,7 +2941,7 @@ impl BlockDevice for AhciBlockDevice {
     }
 
     fn write_blocks(&self, start_block: u64, block_count: usize, buf: &[u8]) -> Result<(), BlockError> {
-        if crate::block::hardware_read_only() { return Err(BlockError::IoError); }
+        if crate::block::hardware_disk_read_only(crate::block::HardwareDisk::Ahci(self.port_num)) { return Err(BlockError::IoError); }
         if block_count == 0 {
             return Ok(());
         }
@@ -2999,7 +3003,7 @@ impl BlockDevice for AhciBlockDevice {
     }
 
     fn flush(&self) -> Result<(), BlockError> {
-        if crate::block::hardware_read_only() { return Ok(()); }
+        if crate::block::hardware_disk_read_only(crate::block::HardwareDisk::Ahci(self.port_num)) { return Ok(()); }
         // ── PHASE 1: lock + setup (PORT_IO_IN_PROGRESS=true) ─────────────────
         let port_guard = begin_port_io(self.port_num)?;
         let setup_result: Result<CmdToken, BlockError> = {

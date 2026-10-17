@@ -116,7 +116,7 @@ fn io(_: BlockError) -> &'static str {
     "disk I/O failed"
 }
 
-/// Copy `ram` onto `disk` from sector 0: sectors 1 onwards first, then the root
+/// Copy `ram` onto `disk`: invalidate and flush sector 0 first, then sectors 1 onwards, then the root
 /// record in sector 0, then a flush, so an interrupted copy leaves no root
 /// record. `writes(true)` is called just before the first write and
 /// `writes(false)` once writing ends, whether it succeeded or not. Then the
@@ -146,6 +146,9 @@ pub fn install(
     let bytes = sectors * SECTOR as u64;
     writes(true);
     let written = (|| {
+        // A reinstall must revoke the old record durably before replacing any data.
+        disk.write_block(0, &[0u8; SECTOR]).map_err(io)?;
+        disk.flush().map_err(io)?;
         let mut sector = 1;
         while sector < sectors {
             let count = (sectors - sector).min(CHUNK_SECTORS as u64) as usize;
@@ -349,6 +352,8 @@ mod tests {
     fn interrupted_install_leaves_no_root_record_and_revokes_writes() {
         let ram = image(300);
         let mut disk = Disk::new(400);
+        install(&image(300), &disk, "previous-install", &mut gate(&disk)).unwrap();
+        assert!(Record::parse(&disk.bytes.lock()[..SECTOR]).is_some());
         disk.fail_write_at = Some(200);
         let writable = disk.writable.clone();
         assert!(install(&ram, &disk, "20261017T000000Z-metal", &mut |granted| *writable.lock() = granted).is_err());

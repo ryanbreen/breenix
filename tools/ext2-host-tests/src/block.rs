@@ -5,6 +5,8 @@ use core::fmt;
 /// Block sizes are device-specific (typically 512 bytes for raw sectors,
 /// but filesystems may use 1024, 2048, or 4096 byte blocks).
 pub trait BlockDevice: Send + Sync {
+    fn hardware_disk(&self) -> Option<HardwareDisk> { None }
+
     /// Stable allocation-quarantine identity, retained by operation-local wrappers.
     fn identity(&self) -> usize { self as *const Self as *const () as usize }
 
@@ -139,3 +141,7 @@ pub mod read_only;
 
 #[path = "../../../kernel/src/block/install.rs"]
 pub mod install;
+
+#[path = "../../../kernel/src/block/write_policy.rs"]
+pub mod write_policy;
+pub use write_policy::HardwareDisk;

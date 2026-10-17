@@ -24,6 +24,10 @@ impl NvmeBlockDevice {
 }
 
 impl BlockDevice for NvmeBlockDevice {
+    fn hardware_disk(&self) -> Option<super::HardwareDisk> {
+        Some(super::HardwareDisk::Nvme(Arc::as_ptr(&self.controller) as usize))
+    }
+
     fn read_block(&self, block_num: u64, buf: &mut [u8]) -> Result<(), BlockError> {
         if buf.len() < SECTOR_SIZE {
             return Err(BlockError::IoError);

@@ -17,40 +17,16 @@ pub mod nvme;
 pub mod ramdisk;
 pub mod virtio;
 
-// Fail closed until early boot identifies the platform, before any driver starts.
+mod write_policy;
+pub use write_policy::{hardware_read_only, hardware_disk_read_only, HardwareDisk};
 #[cfg(target_arch = "x86_64")]
-static HARDWARE_READ_ONLY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
+pub use write_policy::init_hardware_policy;
+#[cfg(target_arch = "x86_64")]
+use write_policy::hardware_writes;
 
 /// Whether this boot's root is the installed hardware disk (`install`).
 #[cfg(target_arch = "x86_64")]
 static ROOT_ON_INSTALLED_DISK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-
-#[cfg(target_arch = "x86_64")]
-pub fn init_hardware_policy(qemu: bool) {
-    HARDWARE_READ_ONLY.store(!qemu, core::sync::atomic::Ordering::Release);
-}
-
-/// Hardware writes are reserved for the storage lane on physical x86 boots.
-/// RAM-disk writes do not pass through hardware drivers.
-pub fn hardware_read_only() -> bool {
-    #[cfg(target_arch = "x86_64")]
-    { HARDWARE_READ_ONLY.load(core::sync::atomic::Ordering::Acquire) }
-    #[cfg(not(target_arch = "x86_64"))]
-    { false }
-}
-
-/// The storage lane's explicit lift of the physical-boot write refusal, and
-/// its return. Only `install_requested_root` and `installed_root` call it,
-/// each after checking that one disk is the subject (`install`).
-#[cfg(target_arch = "x86_64")]
-fn hardware_writes(granted: bool, purpose: &str) {
-    HARDWARE_READ_ONLY.store(!granted, core::sync::atomic::Ordering::Release);
-    if granted {
-        log::info!("[block] hardware disk writes granted: {}", purpose);
-    } else {
-        log::info!("[block] hardware disk writes revoked: {}", purpose);
-    }
-}
 
 /// Prefer a supplied bootloader RAM disk; refuse hardware root fallback on physical x86 (issue #1702),
 /// except for the one disk the storage lane installed a root on.
@@ -94,7 +70,8 @@ fn installed_root() -> Option<alloc::boxed::Box<dyn BlockDevice>> {
         Ok(false) => log::info!("[storage] root image differs from its install record: written since"),
         Err(why) => log::warn!("[storage] root image unreadable: {}", why),
     }
-    hardware_writes(true, "the root the storage lane installed");
+    hardware_writes(disk.hardware_disk()?, true);
+    log::info!("[block] hardware disk writes granted: the root the storage lane installed");
     ROOT_ON_INSTALLED_DISK.store(true, core::sync::atomic::Ordering::Release);
     Some(disk)
 }
@@ -115,11 +92,15 @@ pub fn install_requested_root() {
         log::warn!("[storage] install refused: {} hardware disks, expected exactly one", disks.len());
         return;
     }
+    let Some(target) = disks[0].hardware_disk() else {
+        log::warn!("[storage] install refused: disk has no hardware identity");
+        return;
+    };
     let bytes = ram.num_blocks() * install::SECTOR as u64;
     log::info!("[storage] install requested by boot {}: {} bytes onto the hardware disk", boot, bytes);
     let started = crate::time::get_monotonic_time();
     let result = install::install(&*ram, &*disks[0], &boot, &mut |granted| {
-        hardware_writes(granted, "install the RAM-disk root")
+        hardware_writes(target, granted)
     });
     let elapsed = crate::time::get_monotonic_time().saturating_sub(started);
     match result {
@@ -196,6 +177,9 @@ pub fn disk(index: usize) -> Option<alloc::boxed::Box<dyn BlockDevice>> {
 /// but filesystems may use 1024, 2048, or 4096 byte blocks).
 #[allow(dead_code)] // Part of public block device API, will be used by ext2 filesystem
 pub trait BlockDevice: Send + Sync {
+    /// Hardware backend used for a device-specific write grant.
+    fn hardware_disk(&self) -> Option<HardwareDisk> { None }
+
     /// Stable allocation-quarantine identity, retained by operation-local wrappers.
     fn identity(&self) -> usize { self as *const Self as *const () as usize }
 
