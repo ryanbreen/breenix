@@ -1,9 +1,10 @@
-"""The x86-metal boot image and test payloads (docs/metal/README.md, "What is served").
+"""The x86-metal boot payload and test payloads (docs/metal/README.md, "Delivery").
 
-boot.img is a GPT disk with one FAT32 EFI system partition holding the pinned bootloader's
-efi/boot/bootx64.efi, kernel-x86_64 and boot.json (taken from the UEFI image the kernel build makes) plus the
-bootloader's optional `ramdisk` file. Firmware HTTP boot registers the downloaded image as a RAM disk and starts its
-bootloader, which then finds the kernel, its configuration and the RAM disk on its own device.
+The boot disk is a GPT disk with one FAT EFI system partition holding the pinned bootloader's
+efi/boot/bootx64.efi, kernel-x86_64 and boot.json (taken from the UEFI image the kernel build makes), plus the
+bootloader's optional `ramdisk` file. The server's firmware boots only a bare EFI application over HTTP, so the
+served payload is boot.efi: metal-efi-stub with the boot disk appended (`stub_efi`). The stub makes the disk a block
+device and starts its bootloader, which then finds the kernel, its configuration and the RAM disk on its own device.
 """
 import hashlib
 import os
@@ -129,6 +130,75 @@ def iso(output, files, scratch):
         str(root))
     (root / 'efi.img').unlink()
     return {'size': Path(output).stat().st_size, 'sha256': sha256(output)}
+
+
+# The served Breenix payload: metal-efi-stub (scripts/metal/efi-stub) with the boot disk appended as a section. The
+# stub finds the disk through a record in its data that this step fills in: the record's magic, then the signed
+# distance from the record to the disk and the disk's length, both as the image is loaded.
+
+STUB_MAGIC = b'BREENIX-METAL-STUB-PAYLOAD-V1\0\0\0'
+STUB_SECTION = b'.bimg\0\0\0'
+SECTION_HEADER = '<8sIIIIIIHHI'
+
+
+def align(value, alignment):
+    return (value + alignment - 1) // alignment * alignment
+
+
+def stub_efi(stub, disk, output):
+    """Writes `stub` with `disk` appended as a read-only initialized-data section named .bimg, its payload record
+    filled in; returns the facts of the result, the stub and the disk. The disk is streamed, never held in memory."""
+    data = bytearray(Path(stub).read_bytes())
+    disk_size = Path(disk).stat().st_size
+    if data[:2] != b'MZ':
+        raise ValueError('the stub is not a PE image')
+    coff = struct.unpack_from('<I', data, 0x3c)[0] + 4
+    if data[coff - 4:coff] != b'PE\0\0':
+        raise ValueError('the stub is not a PE image')
+    count, optional_size = struct.unpack_from('<H', data, coff + 2)[0], struct.unpack_from('<H', data, coff + 16)[0]
+    optional = coff + 20
+    if struct.unpack_from('<H', data, optional)[0] != 0x20b:
+        raise ValueError('the stub is not a PE32+ image')
+    section_align, file_align = struct.unpack_from('<II', data, optional + 32)
+    headers_size = struct.unpack_from('<I', data, optional + 60)[0]
+    table = optional + optional_size
+    sections = [struct.unpack_from(SECTION_HEADER, data, table + 40 * index) for index in range(count)]
+    if any(section[0] == STUB_SECTION for section in sections):
+        raise ValueError('the stub already carries a boot disk')
+    first_raw = min((section[4] for section in sections if section[3]), default=headers_size)
+    if table + 40 * (count + 1) > min(headers_size, first_raw):
+        raise ValueError('the stub has no room for another section header')
+    raw_end = max(section[4] + section[3] for section in sections)
+    if len(data) > raw_end:
+        raise ValueError('the stub has data after its last section')
+    if data.count(STUB_MAGIC) != 1:
+        raise ValueError('the stub has no single payload record')
+    record = data.find(STUB_MAGIC)
+    holder = [section for section in sections if section[4] <= record < section[4] + section[3]]
+    if not holder:
+        raise ValueError('the payload record is outside every section')
+    record_rva = holder[0][2] + record - holder[0][4]
+    disk_rva = align(max(section[2] + max(section[1], section[3]) for section in sections), section_align)
+    disk_raw = align(raw_end, file_align)
+    disk_raw_size = align(disk_size, file_align)
+    struct.pack_into(SECTION_HEADER, data, table + 40 * count, STUB_SECTION, disk_size, disk_rva, disk_raw_size,
+                     disk_raw, 0, 0, 0, 0, 0x40000040)
+    struct.pack_into('<H', data, coff + 2, count + 1)
+    initialized = struct.unpack_from('<I', data, optional + 8)[0]
+    struct.pack_into('<I', data, optional + 8, initialized + disk_raw_size)
+    struct.pack_into('<I', data, optional + 56, align(disk_rva + disk_size, section_align))
+    struct.pack_into('<I', data, optional + 64, 0)  # CheckSum: not computed, and UEFI does not check it
+    struct.pack_into('<qQ', data, record + len(STUB_MAGIC), disk_rva - record_rva, disk_size)
+    output = Path(output)
+    with output.open('wb') as out, open(disk, 'rb') as source:
+        out.write(data)
+        out.write(b'\0' * (disk_raw - len(data)))
+        while chunk := source.read(1 << 20):
+            out.write(chunk)
+        out.write(b'\0' * (disk_raw_size - disk_size))
+    return {'size': output.stat().st_size, 'sha256': sha256(output),
+            'stub': {'size': Path(stub).stat().st_size, 'sha256': sha256(stub)},
+            'disk': {'size': disk_size, 'sha256': sha256(disk)}}
 
 
 def verify(output, files):

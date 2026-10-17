@@ -1,0 +1,24 @@
+[package]
+name = "metal-efi-stub"
+version = "0.1.0"
+edition = "2021"
+description = "The x86-metal boot payload: a bare EFI application that serves its embedded boot disk to the pinned bootloader"
+publish = false
+
+[[bin]]
+name = "metal-efi-stub"
+path = "src/main.rs"
+test = false
+bench = false
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+codegen-units = 1
+lto = true
+
+# Built on its own for x86_64-unknown-uefi (scripts/metal/metal-build), outside the kernel's workspace.
+[workspace]

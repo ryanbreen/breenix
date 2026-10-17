@@ -30,19 +30,33 @@ start of the next, power requests ahead of the rest. claim-lint:ok: the queue is
 The server's firmware HTTP boot device has a **fixed URI**, set once in the BIOS; it takes its own address by DHCP,
 so the network's DHCP server is left as it is. Each boot changes what that URI serves, not the BIOS.
 
-The firmware accepts a bare EFI binary (`application/efi`). The pinned bootloader expects its kernel,
-`boot.json` and optional `ramdisk` on a FAT device. The original delivery probe packed those files into a GPT
-`boot.img` with one FAT32 EFI system partition. This firmware refused that RAM-disk form on `HEAD`, before a
-`GET`; the ISO and redirect probes were refused too. Bare `metal-hang.efi` was fetched and started.
-claim-lint:ok: 7 of 7 RAM-disk boots refused and 4 of 4 bare-EFI boots fetched, in "Measured".
+The firmware boots only a bare EFI binary (`application/efi`) over HTTP: it refused the RAM-disk image and ISO forms
+on `HEAD`, before a `GET`, and fetched and started bare `metal-hang.efi`. claim-lint:ok: 7 of 7 RAM-disk and ISO
+boots refused and 4 of 4 bare-EFI boots fetched, in "Measured". The pinned bootloader, though, loads its kernel,
+`boot.json` and optional `ramdisk` from the FAT file system on the device it was itself loaded from. So a Breenix boot
+serves **`boot.efi`**: the delivery stub, `metal-efi-stub` (`scripts/metal/efi-stub`), with the boot disk appended.
 
-The coordinator's delivery ruling approves a clean-room Breenix EFI stub, written from the UEFI specification,
-served as `application/efi`. It will register the ESP image through `EFI_RAM_DISK_PROTOCOL` and connect controllers
-when that firmware protocol is available; otherwise it will expose BlockIo and a device path itself. The image
-may be embedded or fetched through firmware HTTP. L3 builds the stub first and must demonstrate row (a), main's kernel
-reaching delivery. L0 lands on the machine proofs for rows (b)–(f). The Enterprise licence remains ruled "not yet"; the stub work is tracked in #1681.
-The current `image` payload is the original RAM-disk probe and still ends in delivery with exit 2; it is not a
-working Breenix delivery path until L3 integrates the stub.
+- **The boot disk** is a GPT disk with one FAT EFI system partition holding the bootloader as
+  `efi/boot/bootx64.efi`, `kernel-x86_64` and `boot.json` (copied out of the kernel build's UEFI image) and, with
+  `--ramdisk`, the ext2 root as `ramdisk`. The root joins by default once a kernel reads it; until then the disk is
+  a few tens of megabytes.
+- **The stub** is a PE32+ EFI application written only from the UEFI and PE/COFF specifications. `metal-build`
+  builds it from the deployed tools' copy, not the commit's, so any commit's kernel is delivered the same way. The
+  image step (`stub_efi` in `scripts/metal/metal_image.py`) appends the disk as a read-only section, `.bimg`, and
+  fills in a record in the stub's data with the disk's distance from the record and its length.
+- **At boot** the stub registers the disk with the firmware's RAM disk protocol (`EFI_RAM_DISK_PROTOCOL`, as a
+  virtual disk) when the firmware has one; otherwise it installs a read-only Block I/O protocol and a RAM disk
+  device path for the disk itself. It connects the disk's controller recursively, so the firmware's partition and
+  FAT drivers bind to it, finds the file system whose device path extends the disk's, and loads and starts
+  `\EFI\BOOT\BOOTX64.EFI` from it by device path. The bootloader's own device is then that FAT volume, and it
+  finds its files there unchanged.
+- **Its lines** start `metal-stub:` and go to COM1, the SOL UART: the firmware vendor and revision and the disk's
+  size, which path attached the disk, the drivers' connection, the volume, and `starting the bootloader`. A step
+  that fails prints `metal-stub: FAILED: status ...` and halts; the driver ends the boot there as a delivery failure
+  (exit 2).
+
+The Enterprise licence remains ruled "not yet". The RAM-disk and ISO probe payloads (`hang-img`, `hang-iso`) remain
+for re-probing the firmware's image forms.
 
 The image server (`metal-http`) has one route. While a boot has an image staged that has not yet been sent in full,
 the route answers `HEAD` and `GET` (whole, or one byte range per request: `206` with `Content-Range`, `416` for a
@@ -85,9 +99,10 @@ soon as the unit holds, or waits for, the machine lease, so the caller's ssh ses
    the effort-target guard from a freshly fetched origin/main (`--target x86-metal` once origin/main's guard knows that target; until then
    `--target x86`, recorded as the stand-in), the pinned Rust library snapshotted into the tree as the x86 gate does,
    userspace and the ext2 root through `scripts/gate-artifacts.py` (content-keyed and shared with the x86 gate), then
-   the production kernel (no features) and its UEFI image, refused on any warning. The inputs are streamed into the
-   boot's stage folder; the driver assembles `boot.img`, reads each component back out of it and records sizes and
-   sha256s. The commit's definition files (`docs/metal/boot-path.json` when it exists, `docs/boot-path.json`,
+   the production kernel (no features) and its UEFI image, then the delivery stub from the deployed tools, each
+   refused on any warning. The inputs are streamed into the boot's stage folder; the driver assembles the boot disk,
+   reads each component back out of it, appends the disk to the stub as `boot.efi` and records sizes and sha256s.
+   The commit's definition files (`docs/metal/boot-path.json` when it exists, `docs/boot-path.json`,
    `xtask/src/boot_stages.rs`, the x86 stage export) are copied into the boot's `definition/`. Test payloads need no
    build: `metal-hang.efi` (below), or an empty stage.
 3. **Pre-flight**, read-only: the power state, the boot override clear, the management NIC dedicated, IPMI and SOL
@@ -267,7 +282,8 @@ metal-setup apply                                 # in the container, under the 
 On the boot host:
 
 ```
-python3 ~/.local/share/breenix-metal/metal-run boot                      # origin/main's kernel as boot.img
+python3 ~/.local/share/breenix-metal/metal-run boot                      # origin/main's kernel as boot.efi
+python3 ~/.local/share/breenix-metal/metal-run boot --ramdisk            # ... with the ext2 root as `ramdisk`
 python3 ~/.local/share/breenix-metal/metal-run boot --branch NAME        # a pushed branch (in-progress evidence)
 python3 ~/.local/share/breenix-metal/metal-run boot --payload hang       # metal-hang.efi
 python3 ~/.local/share/breenix-metal/metal-run boot --payload none       # nothing staged

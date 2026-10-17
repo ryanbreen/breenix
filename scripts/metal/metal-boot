@@ -11,8 +11,9 @@
 
 # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
 Run options: --payload image|hang|none, --mode default, --commit SHA, --target main|branch:NAME, --task NAME,
---no-wait, --inject forceoff-fail. A Breenix boot (payload image) waits for its inputs (the kernel build's UEFI
-image, the ext2 root and the commit's definition files) in its stage folder.
+--no-wait, --inject forceoff-fail, --ramdisk. A Breenix boot (payload image) waits for its inputs (the kernel
+build's UEFI image, the ext2 root, the delivery stub and the commit's definition files) in its stage folder, and
+serves boot.efi: the stub with the boot disk appended (the ext2 root joins the disk as `ramdisk` with --ramdisk).
 """
 import argparse
 import contextlib
@@ -50,6 +51,8 @@ RUNNING_POLL_SECONDS = 30
 BOOTLOADER_LINE = 'UEFI bootloader started'
 HANDOFF_LINE = 'Jumping to kernel entry point at'
 HANG_LINE = 'metal-hang: interrupts masked, halting'
+STUB_LINE = 'metal-stub: started'
+STUB_FAILED_LINE = 'metal-stub: FAILED'
 NO_BOOTABLE = 'no bootable device'
 RUNNING_STATES = ('OSBootStarted', 'OSRunning')
 
@@ -237,17 +240,25 @@ class Driver:
         self.phase('Assembling the image')
         extracted = self.stage / 'esp'
         files = metal_image.extract_esp(inputs / 'uefi.img', extracted)
-        files['ramdisk'] = inputs / 'ext2.img'
-        image = self.stage / 'boot.img'
-        facts = metal_image.assemble(image, files)
+        if self.args.ramdisk:
+            files['ramdisk'] = inputs / 'ext2.img'
+        disk = self.stage / 'boot-disk.img'
+        facts = metal_image.assemble(disk, files)
         shutil.rmtree(extracted, ignore_errors=True)
-        for name in ('uefi.img', 'ext2.img'):
+        # The firmware boots only a bare EFI application over HTTP: the stub carries the disk (README, "Delivery").
+        image = self.stage / 'boot.efi'
+        wrapped = metal_image.stub_efi(inputs / 'stub.efi', disk, image)
+        disk.unlink()
+        for name in ('uefi.img', 'ext2.img', 'stub.efi'):
             (inputs / name).unlink(missing_ok=True)
-        self.payload_facts = {'path': image, 'size': facts['size'], 'sha256': facts['sha256'],
-                              'contentType': metal_image.CONTENT_TYPES['img'], 'name': 'boot.img'}
-        self.delivery['image'] = {'name': 'boot.img', 'size': facts['size'], 'sha256': facts['sha256'],
-                                  'contentType': self.payload_facts['contentType'], 'components': facts['components']}
-        self.event('image-assembled', size=facts['size'], sha256=facts['sha256'])
+        self.payload_facts = {'path': image, 'size': wrapped['size'], 'sha256': wrapped['sha256'],
+                              'contentType': metal_image.CONTENT_TYPES['efi'], 'name': 'boot.efi'}
+        self.delivery['image'] = {'name': 'boot.efi', 'size': wrapped['size'], 'sha256': wrapped['sha256'],
+                                  'contentType': self.payload_facts['contentType'], 'stub': wrapped['stub'],
+                                  'disk': {'size': facts['size'], 'sha256': facts['sha256'],
+                                           'components': facts['components']}}
+        self.event('image-assembled', size=wrapped['size'], sha256=wrapped['sha256'], disk=facts['size'],
+                   ramdisk=bool(self.args.ramdisk))
         self.load_definition()
 
     # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
@@ -418,6 +429,13 @@ class Driver:
             self.first_text = True
             self.event('firmware-text', seconds=round(self.since_power(), 1))
             self.phase('Firmware output')
+        if STUB_LINE in line and 'stub' not in self.seen and self.kernel_started is None:
+            self.seen.add('stub')
+            self.event('stub-started', seconds=round(self.since_power(), 1))
+            self.phase('Delivery stub: attaching the boot disk')
+        if STUB_FAILED_LINE in line and self.kernel_started is None:
+            self.event('stub-failed', seconds=round(self.since_power(), 1))
+            raise Finish(m.EXIT_DELIVERY, 'the delivery stub could not start the bootloader')
         if BOOTLOADER_LINE in line and self.kernel_started is not None:
             raise Finish(m.EXIT_SHORT, 'the machine reset after the kernel started')
         if BOOTLOADER_LINE in line and 'bootloader' not in self.seen:
@@ -817,6 +835,7 @@ def main():
         p.add_argument('--task', default='')
         p.add_argument('--no-wait', action='store_true')
         p.add_argument('--inject', choices=('forceoff-fail',))
+        p.add_argument('--ramdisk', action='store_true', help='put the ext2 root on the boot disk as `ramdisk`')
         p.add_argument('--content-type', choices=('application/octet-stream',),
                        help='a test payload served with this type instead of its form\'s own')
         p.add_argument('--serve-as', choices=('boot.iso', 'boot.efi'),

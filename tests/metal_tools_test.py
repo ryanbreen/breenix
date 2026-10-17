@@ -530,6 +530,56 @@ class PayloadTest(unittest.TestCase):
         self.assertIn(b'\xfa\xf4\xeb\xfc', code, 'cli; hlt; jmp back to cli')
         self.assertEqual(len(image) % 0x200, 0)
 
+    def stub(self, directory, code=b'\x90\xc3' + metal_image.STUB_MAGIC + b'\0' * 16):
+        path = Path(directory) / 'stub.efi'
+        path.write_bytes(metal_image.pe32plus(code))
+        return path
+
+    def test_stub_efi_appends_the_disk_as_a_section_and_fills_in_the_record(self):
+        with tempfile.TemporaryDirectory() as directory:
+            stub = self.stub(directory)
+            disk = Path(directory) / 'disk.img'
+            content = bytes(range(256)) * 41 + b'end'
+            disk.write_bytes(content)
+            facts = metal_image.stub_efi(stub, disk, Path(directory) / 'boot.efi')
+            image = (Path(directory) / 'boot.efi').read_bytes()
+        self.assertEqual((facts['size'], facts['disk']['size']), (len(image), len(content)))
+        self.assertEqual(facts['sha256'], hashlib.sha256(image).hexdigest())
+        pe = struct.unpack_from('<I', image, 0x3c)[0]
+        sections, optional_size = struct.unpack_from('<H', image, pe + 6)[0], struct.unpack_from('<H', image, pe + 20)[0]
+        optional = pe + 24
+        section_align, file_align = struct.unpack_from('<II', image, optional + 32)
+        table = [struct.unpack_from(metal_image.SECTION_HEADER, image, optional + optional_size + 40 * index)
+                 for index in range(sections)]
+        self.assertEqual([section[0].rstrip(b'\0') for section in table], [b'.text', b'.reloc', b'.bimg'])
+        name, virtual_size, rva, raw_size, raw, *_, characteristics = table[2]
+        self.assertEqual((virtual_size, characteristics), (len(content), 0x40000040))
+        self.assertEqual((rva % section_align, raw % file_align, raw_size % file_align), (0, 0, 0))
+        self.assertGreaterEqual(rva, table[1][2] + table[1][1])
+        self.assertEqual(struct.unpack_from('<I', image, optional + 56)[0], rva + metal_image.align(len(content), section_align))
+        self.assertEqual(image[raw:raw + len(content)], content)
+        self.assertEqual(len(image), raw + raw_size)
+        record = image.find(metal_image.STUB_MAGIC)
+        text = table[0]
+        record_rva = text[2] + record - text[4]
+        offset, size = struct.unpack_from('<qQ', image, record + len(metal_image.STUB_MAGIC))
+        self.assertEqual((record_rva + offset, size), (rva, len(content)))
+
+    def test_stub_efi_refuses_a_stub_without_its_record_or_already_wrapped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            disk = Path(directory) / 'disk.img'
+            disk.write_bytes(b'\0' * 1024)
+            with self.assertRaisesRegex(ValueError, 'payload record'):
+                metal_image.stub_efi(self.stub(directory, b'\x90\xc3'), disk, Path(directory) / 'out.efi')
+            metal_image.stub_efi(self.stub(directory), disk, Path(directory) / 'once.efi')
+            with self.assertRaisesRegex(ValueError, 'already carries'):
+                metal_image.stub_efi(Path(directory) / 'once.efi', disk, Path(directory) / 'twice.efi')
+
+    def test_the_stub_source_carries_the_record_magic_the_image_step_looks_for(self):
+        source = (TOOLS / 'efi-stub/src/main.rs').read_text()
+        literal = re.search(r'magic: \*b"([^"]*)"', source).group(1).replace('\\0', '\0').encode()
+        self.assertEqual(literal, metal_image.STUB_MAGIC)
+
     def test_esp_offset_reads_the_gpt(self):
         with tempfile.NamedTemporaryFile() as disk:
             disk.truncate(4 << 20)
