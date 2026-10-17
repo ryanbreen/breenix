@@ -40,6 +40,8 @@ mod textures;
 mod profile;
 #[path = "suite_gpu/pipelines.rs"]
 mod pipelines;
+#[path = "suite_gpu/present.rs"]
+mod present;
 #[path = "suite_gpu/isolation.rs"]
 mod isolation;
 
@@ -204,22 +206,22 @@ static SUITE: Suite = suite("gpu", "GPU rendering", &[
         case("irq-masked-bound", "The longest IRQ-masked interval in the GPU paths stays within 500 us under a full-screen workload", isolation::irq_masked_bound),
     ]),
     category("present", "display modes, HiDPI & present", &[
-        case("modes-listed", "MODES lists 1280x800 at scale 1 and 2560x1600 at scale 2, with the device's maximum", present_modes_listed),
-        case("mode-1280x800", "At 1280x800 a full-screen target presents and reads back exactly", present_mode_1280x800),
-        case("mode-2560x1600", "At 2560x1600 a full-screen target presents and reads back exactly", present_mode_2560x1600),
-        case("scale-reported", "The scale factor is published with the mode", present_scale_reported),
-        case("scanout-bind", "PRESENT binds the drawn target to the scanout, and the record names it", present_scanout_bind),
-        case("flip", "Two targets alternate on the scanout, each reading back exactly while presented", present_flip),
-        case("present-completion", "PRESENT's fence completes when the device has answered", present_present_completion),
-        case("present-owner-only", "PRESENT and SET_MODE are refused to every process but the display owner", present_present_owner_only),
-        case("readback-presented", "The presented target read back on the scanout equals its drawing", present_readback_presented),
-        case("takeover-giveback", "Taking the display and giving it back presents the previous owner's target exactly", present_takeover_giveback),
-        case("ownership-stack", "Four nested display owners restore in order, and a fifth is refused", present_ownership_stack),
-        case("console-restored", "Giving the display back to the kernel redraws its console on the GPU", present_console_restored),
-        case("firmware-handoff", "The firmware framebuffer is written only until the GPU driver presents its first frame", present_firmware_handoff),
-        case("mode-change-content", "After a mode change the scanout reads back exactly as drawn, with no stale pixels", present_mode_change_content),
-        case("fault-skip-flush", "A skipped present flush is detected and refused naming it", present_fault_skip_flush),
-        case("fault-wrong-scanout", "A present of the wrong target is detected by the record", present_fault_wrong_scanout),
+        case("modes-listed", "MODES lists 1280x800 at scale 1 and 2560x1600 at scale 2, with the device's maximum", present::modes_listed),
+        case("mode-1280x800", "At 1280x800 a full-screen target presents and reads back exactly", present::mode_1280x800),
+        case("mode-2560x1600", "At 2560x1600 a full-screen target presents and reads back exactly", present::mode_2560x1600),
+        case("scale-reported", "The scale factor is published with the mode", present::scale_reported),
+        case("scanout-bind", "PRESENT binds the drawn target to the scanout, and the record names it", present::scanout_bind),
+        case("flip", "Two targets alternate on the scanout, each reading back exactly while presented", present::flip),
+        case("present-completion", "PRESENT's fence completes when the device has answered", present::present_completion),
+        case("present-owner-only", "PRESENT and SET_MODE are refused to every process but the display owner", present::present_owner_only),
+        case("readback-presented", "The presented target read back on the scanout equals its drawing", present::readback_presented),
+        case("takeover-giveback", "Taking the display and giving it back presents the previous owner's target exactly", present::takeover_giveback),
+        case("ownership-stack", "Four nested display owners restore in order, and a fifth is refused", present::ownership_stack),
+        case("console-restored", "Giving the display back to the kernel redraws its console on the GPU", present::console_restored),
+        case("firmware-handoff", "The firmware framebuffer is written only until the GPU driver presents its first frame", present::firmware_handoff),
+        case("mode-change-content", "After a mode change the scanout reads back exactly as drawn, with no stale pixels", present::mode_change_content),
+        case("fault-skip-flush", "A skipped present flush is detected and refused naming it", present::fault_skip_flush),
+        case("fault-wrong-scanout", "A present of the wrong target is detected by the record", present::fault_wrong_scanout),
     ]),
     category("performance", "frame rate & latency", &[
         case("clear-rate-2560", "At least 60 full-screen 2560x1600 clears per second, each presented", performance_clear_rate_2560),
@@ -236,11 +238,6 @@ static SUITE: Suite = suite("gpu", "GPU rendering", &[
 
 // The layers cases need, each with the build step that supplies it.
 const CORE: &str = "the kernel GPU core and syscall 416 (G1)";
-const MODES: &str = "display modes and scale (G7)";
-const PRESENT: &str = "two-target present (G7)";
-const OWNER: &str = "the GPU display ownership stack (G7)";
-const CONSOLE: &str = "the kernel console on the GPU (G7)";
-const PRESENT_CHECKS: &str = "the present checks (G7)";
 const PERF: &str = "the 2560x1600 performance work (G8)";
 
 /// Syscall 416, `gpu(op, arg, len)` (`docs/gui/gpu.md` section 1.4).
@@ -289,22 +286,6 @@ fn device_version() -> CaseResult {
 }
 
 needs! {
-    present_modes_listed => MODES;
-    present_mode_1280x800 => MODES;
-    present_mode_2560x1600 => MODES;
-    present_scale_reported => MODES;
-    present_scanout_bind => PRESENT_CHECKS;
-    present_flip => PRESENT;
-    present_present_completion => PRESENT;
-    present_present_owner_only => PRESENT;
-    present_readback_presented => PRESENT;
-    present_takeover_giveback => OWNER;
-    present_ownership_stack => OWNER;
-    present_console_restored => CONSOLE;
-    present_firmware_handoff => CONSOLE;
-    present_mode_change_content => MODES;
-    present_fault_skip_flush => "test-control point 25 skip-present-flush (G7)";
-    present_fault_wrong_scanout => "test-control point 26 wrong-scanout (G7)";
     performance_clear_rate_2560 => PERF;
     performance_rect_throughput => PERF;
     performance_submit_latency => PERF;
