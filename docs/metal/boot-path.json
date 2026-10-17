@@ -98,9 +98,8 @@
     {
       "id": "interrupts-time",
       "title": "Interrupts and time",
-      "summary": "Stub for interrupt bring-up: the producing lane finalizes these proposed markers with its implementation.",
+      "summary": "Interrupts are routed through the I/O APIC from the MADT, with its source overrides, on firmware that is not QEMU's; the local APIC timer ticks at its rate against the TSC on every CPU.",
       "kernel": true,
-      "stub": true,
       "stages": {
         "x86_64": [
           {
@@ -122,15 +121,18 @@
     {
       "id": "smp",
       "title": "Every CPU online",
-      "summary": "Stub for SMP bring-up, including the four-CPU platform census independently of the firmware table.",
+      "summary": "Every processor the MADT reports enabled is started by INIT-SIPI in the firmware's APIC mode, comes online, and takes its own timer ticks.",
       "kernel": true,
-      "stub": true,
       "stages": {
         "x86_64": [
           "All reported CPUs online",
           {
             "name": "Four CPUs online and reported",
             "marker": "[smp] online=4 reported=4"
+          },
+          {
+            "name": "Timer ticks on each CPU",
+            "marker": "[smp] timer ticks on each online CPU"
           }
         ]
       }

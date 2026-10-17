@@ -633,13 +633,13 @@ pub fn arch_halt_while_blocked() {
     {
         if wait_state.1 && per_cpu::preempt_count() == 0 {
             task::scheduler::set_need_resched();
-            // SAFETY: the reschedule vector's gate is the timer entry, which
-            // saves and restores every register; a software interrupt enters
-            // it from here as the tick would from the halt. The thread
-            // resumes after it, with interrupts as they were, masked: once it
-            // is dispatched again after its wake, or at once if the switch
-            // was declined because the process manager is busy on another
-            // CPU. Only a waiter still blocked halts here, as before, and the
+            // SAFETY: the reschedule vector's gate is the reschedule entry,
+            // which saves the 15 general-purpose registers and restores them;
+            // a software interrupt enters it from here as the tick would from
+            // the halt. The thread resumes after it, with interrupts as they
+            // were, masked: once it is dispatched again after its wake, or at
+            // once if the switch was declined because the process manager is
+            // busy on another CPU. Only a waiter still blocked halts here, as before, and the
             // tick that ends that halt switches it out.
             unsafe {
                 core::arch::asm!("int {vector}", vector = const interrupts::RESCHEDULE_VECTOR);

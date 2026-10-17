@@ -216,7 +216,7 @@ pub use shootdown::shootdown_nmi_handler;
 
 #[cfg(target_arch = "x86_64")]
 mod shootdown {
-    use core::sync::atomic::{fence, AtomicU64, AtomicU8, Ordering};
+    use core::sync::atomic::{fence, AtomicU32, AtomicU64, AtomicU8, Ordering};
 
     use x86_64::structures::idt::InterruptStackFrame;
 
@@ -335,6 +335,12 @@ mod shootdown {
     /// NMIs that found no request addressed to their CPU.
     static UNCLAIMED_NMIS: AtomicU64 = AtomicU64::new(0);
 
+    /// Shootdown NMIs sent to each CPU and not yet taken there. Two initiators
+    /// can post to one CPU in turn, and the NMI the first sent can carry out
+    /// both requests, so the second finds nothing pending: it is owed, not an
+    /// NMI from outside the kernel.
+    static NMIS_OWED: [AtomicU32; MAX_CPUS] = [const { AtomicU32::new(0) }; MAX_CPUS];
+
     /// An online CPU that has not acknowledged within this long is not going
     /// to: it is wedged with NMIs blocked, and the kernel stops rather than
     /// free memory that CPU may still translate to.
@@ -418,6 +424,7 @@ mod shootdown {
         for cpu in (0..MAX_CPUS).filter(|cpu| targets & (1 << cpu) != 0) {
             let apic_id = smp::cpu_apic_id(cpu)
                 .unwrap_or_else(|| panic!("TLB shootdown: online CPU {} has no APIC id", cpu));
+            NMIS_OWED[cpu].fetch_add(1, Ordering::AcqRel);
             if let Err(reason) = apic::send_ipi(apic_id, apic::Ipi::Nmi) {
                 panic!("TLB shootdown: NMI to CPU {} failed: {}", cpu, reason);
             }
@@ -445,22 +452,26 @@ mod shootdown {
     /// interrupted any instruction, including an entry stub before its GS
     /// handling. The CPU is found from its local APIC id. A request posted
     /// after the PENDING read is left set; its NMI, held while this handler
-    /// runs, is taken once it returns.
-    pub extern "x86-interrupt" fn shootdown_nmi_handler(_frame: InterruptStackFrame) {
-        let cpu = if apic::active() {
-            smp::cpu_of_apic_id(apic::id())
-        } else {
-            None
-        };
-        let Some(cpu) = cpu else {
+    /// runs, is taken once it returns. An NMI that finds nothing pending is a
+    /// shootdown NMI whose requests an earlier one carried out when one is
+    /// owed here (`NMIS_OWED`); otherwise it came from outside the kernel.
+    pub extern "x86-interrupt" fn shootdown_nmi_handler(frame: InterruptStackFrame) {
+        let apic_id = apic::active().then(apic::id);
+        let cpu = apic_id.and_then(smp::cpu_of_apic_id);
+        let owed = cpu.is_some_and(|cpu| {
+            NMIS_OWED[cpu]
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |owed| owed.checked_sub(1))
+                .is_ok()
+        });
+        let pending = cpu.map_or(0, |cpu| PENDING[cpu].load(Ordering::Acquire));
+        let Some(cpu) = cpu.filter(|_| pending != 0) else {
             UNCLAIMED_NMIS.fetch_add(1, Ordering::Relaxed);
+            if !owed {
+                // Not a shootdown: the NMI came from outside the kernel.
+                crate::arch_impl::x86_64::nmi_report::unclaimed(&frame, cpu, apic_id);
+            }
             return;
         };
-        let pending = PENDING[cpu].load(Ordering::Acquire);
-        if pending == 0 {
-            UNCLAIMED_NMIS.fetch_add(1, Ordering::Relaxed);
-            return;
-        }
 
         for slot in (0..SLOTS).filter(|slot| pending & (1 << slot) != 0) {
             let arg = REQUEST_ARG[slot].load(Ordering::Relaxed);

@@ -835,7 +835,7 @@ fn a_census_that_exits_zero_without_a_summary_line_is_not_a_pass() {
         stub_dir.join("x86-gate-verdict.sh"),
     )
     .expect("copy the verdict script beside the stub");
-    for helper in ["x86-gate-exits.py", "score-softirq-deferral.py"] {
+    for helper in ["x86-gate-exits.py", "score-softirq-deferral.py", "score-sigkill-teardown.py"] {
         fs::copy(
             repo_root().join("scripts").join(helper),
             stub_dir.join(helper),
@@ -1053,4 +1053,29 @@ fn full_accounting_requires_a_publication_count() {
     let text = output_text(&output);
     assert!(!output.status.success(), "{text}");
     assert!(text.contains("published process count is absent"), "{text}");
+}
+
+fn starved_sigkill_log() -> &'static str {
+    "SIGKILL_TEARDOWN_TEST: pid=17 defer=1 reclaim=1 kick_cpu=1 sender_cpu=0 counter_interval=100000 tick_period=1000 counter_ticks_per_ms=1000 interval_us=100000 tick_us=1000 observer_ticks=0 all_ticks=0 online_cpus=4 observer_ms_per_tick=inf all_ms_per_tick=inf starved_ms_per_tick=60 verdict=STARVED\nSIGKILL_TEARDOWN_TEST: STARVED windows=1: host-starved, not evidence; rerun the boot\n"
+}
+
+#[test]
+fn starvation_does_not_hide_an_independent_exit_failure() {
+    let log = green_log()
+        .replace("nonzero=0 failed=[]", "nonzero=2 failed=[sigkill_teardown_test:2,other_test:1]")
+        .replace("🏁 TEST RUNNER: All tests passed", "TEST RUNNER: FAILED");
+    let fixture = SerialFixture::new(&log, starved_sigkill_log());
+    let output = fixture.run(Some("10"));
+    assert_eq!(output.status.code(), Some(1), "{}", output_text(&output));
+    assert!(output_text(&output).contains("other_test"));
+}
+
+#[test]
+fn consistent_starvation_is_inconclusive_after_all_checks() {
+    let log = green_log()
+        .replace("nonzero=0 failed=[]", "nonzero=1 failed=[sigkill_teardown_test:2]")
+        .replace("🏁 TEST RUNNER: All tests passed", "TEST RUNNER: FAILED");
+    let fixture = SerialFixture::new(&log, starved_sigkill_log());
+    let output = fixture.run(Some("10"));
+    assert_eq!(output.status.code(), Some(2), "{}", output_text(&output));
 }

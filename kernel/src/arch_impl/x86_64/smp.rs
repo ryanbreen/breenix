@@ -411,6 +411,9 @@ pub fn report_bring_up() {
             apic_id_of(index).unwrap_or(u32::MAX)
         );
     }
+    if reported > 1 && online == reported {
+        log::info!("[smp] every reported CPU is online ({online} of {reported})");
+    }
     log::info!(
         "[smp] online={} reported={} source={}",
         online,
@@ -421,11 +424,4 @@ pub fn report_bring_up() {
             EnumerationSource::NotRun => "not-run",
         }
     );
-    if reported > 1 && online == reported {
-        log::info!(
-            "[smp] every reported CPU is online ({} of {})",
-            online,
-            reported
-        );
-    }
 }

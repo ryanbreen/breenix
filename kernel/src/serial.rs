@@ -419,7 +419,8 @@ pub fn select_log_port(qemu: bool, spcr: Option<u16>) -> (u16, &'static str) {
     (port, source)
 }
 
-fn log_port() -> u16 {
+/// The kernel log's UART, as the console rule chose it.
+pub fn log_port() -> u16 {
     LOG_PORT.load(core::sync::atomic::Ordering::Relaxed)
 }
 

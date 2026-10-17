@@ -3674,7 +3674,7 @@ fn test_exception_vectors() -> TestResult {
 
 /// Test that exception handlers are registered and point to valid addresses.
 ///
-/// On x86_64: Validates that the timer interrupt handler (vector 32) is
+/// On x86_64: Validates that the timer interrupt handler (vector 48) is
 /// properly configured in the IDT with a valid handler address.
 ///
 /// On ARM64: Validates that exception handlers are linked by checking

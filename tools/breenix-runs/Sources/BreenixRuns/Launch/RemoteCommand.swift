@@ -212,7 +212,7 @@ public enum RemoteCommand {
             + " BREENIX_RUST_FORK=\(paths.rustForkPath)"
             + " BREENIX_GATE_TIMEOUT=\(timeoutSecs)"
             + " BREENIX_FULL_BACKSTOP=\(fullBackstopSecs ?? max(1800, timeoutSecs))"
-            + " CARGO_BUILD_JOBS=6"
+            + " CARGO_BUILD_JOBS=4"
             + (paths.fresh ? " BREENIX_GATE_FRESH=1" : "")
             + featureEnv + quietEnv + profileEnv + policyEnv + suiteEnv + slotIdentity + progressEnv
             + " " + launch

@@ -310,6 +310,10 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // Phase 0: Log kernel layout inventory
     memory::layout::log_kernel_layout();
 
+    // The fixed ACPI tables first: the FADT's PM timer cross-checks the TSC
+    // calibration, and its boot flags say whether MSI may be used.
+    kernel::arch_impl::x86_64::platform::init(rsdp_addr, physical_memory_offset.as_u64());
+
     // Calibrate the TSC before device init: storage drivers measure their
     // command deadlines on it. time::init() keeps this calibration.
     time::tsc::calibrate();
@@ -2330,7 +2334,7 @@ fn kernel_main_continue() -> ! {
     // This is part of the same check as PRECONDITION 1
     if idt_valid {
         log::info!("PRECONDITION 2: Timer handler registered ✓ PASS");
-        log::info!("  The IDT entry for IRQ0 (vector 32) is properly configured");
+        log::info!("  The IDT entry for IRQ0 (vector 48) is properly configured");
     } else {
         log::error!("PRECONDITION 2: Timer handler registered ✗ FAIL");
         log::error!("  IDT entry validation failed (see PRECONDITION 1)");
@@ -2627,6 +2631,8 @@ fn kernel_main_continue() -> ! {
         // the bracket, so the line cannot be stranded the way the census
         // below once was.
         if !drivers::fw_cfg::present() {
+            // The tick census reports after its staggered per-CPU windows.
+            kernel::arch_impl::x86_64::tick_census::start();
             log::info!("[metal] kernel idle");
         }
 

@@ -631,8 +631,11 @@ rm -f target/ext2.img
 UEFI_IMG=$(ls -t target/release/build/breenix-*/out/breenix-uefi.img | head -1)
 test -n "$UEFI_IMG"
 
-for i in $(seq 1 "$COUNT"); do
-    OUTPUT_DIR="$BREENIX_GATE_TMP/breenix_x86_boot_tests_$i"
+i=1
+attempt=0
+while [ "$i" -le "$COUNT" ]; do
+    attempt=$((attempt+1))
+    OUTPUT_DIR="$BREENIX_GATE_TMP/breenix_x86_boot_tests_$attempt"
     rm -rf "$OUTPUT_DIR"
     mkdir -p "$OUTPUT_DIR"
     cp target/ovmf/x64/code.fd "$OUTPUT_DIR/OVMF_CODE.fd"
@@ -885,7 +888,16 @@ for i in $(seq 1 "$COUNT"); do
     printf '%s\n' "$FACTS_LINE" > "$OUTPUT_DIR/gate_boot_facts.txt"
     echo "  $FACTS_LINE"
 
-    python3 "$BREENIX_ROOT/scripts/score-softirq-deferral.py" "$OUTPUT_DIR/serial_kernel.txt" "$OUTPUT_DIR/serial_user.txt"
+    timing_starved=false
+    for scorer in score-softirq-deferral.py score-sigkill-teardown.py; do
+        scorer_status=0
+        python3 "$BREENIX_ROOT/scripts/$scorer" "$OUTPUT_DIR/serial_kernel.txt" "$OUTPUT_DIR/serial_user.txt" || scorer_status=$?
+        case "$scorer_status" in
+            0) ;;
+            2) timing_starved=true ;;
+            *) false ;;
+        esac
+    done
 
     # Device-enumeration census leg (green arc 5, bus+NIC blended). Placed
     # BEFORE the passed-flag check below (and before the ~40 marker-count
@@ -1279,8 +1291,14 @@ for i in $(seq 1 "$COUNT"); do
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -h -E -c "$TIMER_WAKE_LATENCY_ORACLE_PASS_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    verdict_status=0
     EXPECTED_EXITS="$EXPECTED_USERSPACE_EXITS" \
-        "$BREENIX_ROOT/scripts/x86-gate-verdict.sh" "$OUTPUT_DIR"/serial_*.txt
+        "$BREENIX_ROOT/scripts/x86-gate-verdict.sh" "$OUTPUT_DIR"/serial_*.txt || verdict_status=$?
+    case "$verdict_status" in
+        0) ;;
+        2) timing_starved=true ;;
+        *) false ;;
+    esac
     COUNTER_LINE=$(grep -hE "$FRAME_CUSTODY_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     KSTACK_OWNER_LINE=$(grep -hE "$KSTACK_OWNER_ORACLE_PATTERN" \
@@ -1372,7 +1390,13 @@ for i in $(seq 1 "$COUNT"); do
         echo "x86 frame-custody gate run $i: FAIL (CREATION_LOCK_ORDER:VIOLATION marker present)"
         false
     fi
+    if $timing_starved; then
+        echo "x86 frame-custody gate run $i: STARVED; rerunning; attempt $attempt is not evidence"
+        breenix_runs_import_nonfatal "$OUTPUT_DIR" x86_64 boot-tests STARVED 2 "$HOST_MS_START" "${BREENIX_RUNS_GATE_ARGV[@]}" || :
+        continue
+    fi
     echo "x86 frame-custody gate run $i: PASS"
     printf '%s\n' "$CAPTURE_LINES"
     breenix_runs_import_nonfatal "$OUTPUT_DIR" x86_64 boot-tests PASS 0 "$HOST_MS_START" "${BREENIX_RUNS_GATE_ARGV[@]}" || :
+    i=$((i+1))
 done

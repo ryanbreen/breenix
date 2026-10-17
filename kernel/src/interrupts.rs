@@ -14,7 +14,7 @@ use crate::arch_impl::PageTableOps;
 pub(crate) mod context_switch;
 pub mod timer;
 
-pub const PIC_1_OFFSET: u8 = 32;
+pub const PIC_1_OFFSET: u8 = crate::arch_impl::x86_64::constants::PIC_IRQ_OFFSET;
 pub const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
 
 pub static PICS: spin::Mutex<ChainedPics> =
@@ -33,30 +33,24 @@ pub enum InterruptIndex {
     // Skip COM2 (IRQ3)
     Serial = PIC_1_OFFSET + 4, // COM1 is IRQ4
     // IRQ 10 is used by E1000 network and some VirtIO devices (on PIC2)
-    Irq10 = PIC_2_OFFSET + 2, // IRQ 10 = 40 + 2 = 42
+    Irq10 = PIC_2_OFFSET + 2, // IRQ 10
     // IRQ 11 is used by some VirtIO block devices (on PIC2)
-    Irq11 = PIC_2_OFFSET + 3, // IRQ 11 = 40 + 3 = 43
+    Irq11 = PIC_2_OFFSET + 3, // IRQ 11
 }
 
 /// System call interrupt vector (INT 0x80)
 pub const SYSCALL_INTERRUPT_ID: u8 = 0x80;
 
-/// Reschedule IPI vector. Its gate is the timer entry, so a reschedule IPI
-/// returns through `check_need_resched_and_switch`, the interrupt-return path
-/// that performs context switches, exactly as a tick does. The tick handler it
-/// also runs charges this CPU's quantum by elapsed ticks and reads the tick
-/// count from the TSC, so an extra entry changes neither.
+/// Reschedule IPI vector. Its entry shares the timer's register frame and
+/// interrupt-return scheduling path, but identifies itself as an IPI so it
+/// does not increment the delivered timer-tick counter. Quantum and time
+/// accounting still read elapsed time, so an extra entry changes neither.
 pub const RESCHEDULE_VECTOR: u8 = 0xf0;
 
-/// Self-IPI vector for retrying an interrupt-return step deferred because the
-/// process manager was held (`scheduler::retry_after_interrupts_x86`). It is
-/// the timer's own vector, 0x20, the lowest that can be delivered: every
-/// device vector, the keyboard's 0x21 included, ranks above it and is taken
-/// first, and it is taken as soon as the last of them returns, before the
-/// next instruction of the code they return to. An extra timer entry changes
-/// no accounting (see `RESCHEDULE_VECTOR`), and a self-IPI that coincides
-/// with a tick is one entry that does both.
-pub const RETRY_VECTOR: u8 = InterruptIndex::Timer as u8;
+/// Retry self-IPI, below the hardware IRQ range at 0x30..0x3f. Device
+/// interrupts run before a retry, and retries use the reschedule entry so
+/// they cannot merge with or count as a delivered timer interrupt.
+pub const RETRY_VECTOR: u8 = 0x20;
 
 // Assembly entry points
 extern "C" {
@@ -143,37 +137,45 @@ pub fn init_idt() {
         // CRITICAL: Use high-half alias for timer entry so it remains accessible after CR3 switch
         extern "C" {
             fn timer_interrupt_entry();
+            fn reschedule_interrupt_entry();
         }
-        unsafe {
-            // Convert low-half address to high-half alias
-            let timer_entry_low = timer_interrupt_entry as u64;
-
-            // CRITICAL: Validate the address is in expected range before conversion
-            if timer_entry_low < 0x100000 || timer_entry_low > 0x40000000 {
-                log::error!(
-                    "INVALID timer_interrupt_entry address: {:#x}",
-                    timer_entry_low
-                );
+        // CRITICAL: Validate each address is in the expected range before
+        // converting it; one outside it keeps its low-half address.
+        let gate_address = |name: &str, low: u64| {
+            if low < 0x100000 || low > 0x40000000 {
+                log::error!("INVALID {} address: {:#x}", name, low);
                 // For now, use the low address directly - it should work since we preserve PML4[0]
-                log::warn!("Using low-half address for timer entry (temporary workaround)");
-                idt[InterruptIndex::Timer.as_u8()].set_handler_addr(VirtAddr::new(timer_entry_low));
-                idt[RESCHEDULE_VECTOR].set_handler_addr(VirtAddr::new(timer_entry_low));
+                log::warn!("Using low-half address for {} (temporary workaround)", name);
+                low
             } else {
-                let timer_entry_high = crate::memory::layout::high_alias_from_low(timer_entry_low);
-                log::info!(
-                    "Timer entry: low={:#x} -> high={:#x}",
-                    timer_entry_low,
-                    timer_entry_high
-                );
-                idt[InterruptIndex::Timer.as_u8()]
-                    .set_handler_addr(VirtAddr::new(timer_entry_high));
-                idt[RESCHEDULE_VECTOR].set_handler_addr(VirtAddr::new(timer_entry_high));
+                let high = crate::memory::layout::high_alias_from_low(low);
+                log::info!("{}: low={:#x} -> high={:#x}", name, low, high);
+                high
             }
+        };
+        unsafe {
+            idt[InterruptIndex::Timer.as_u8()].set_handler_addr(VirtAddr::new(gate_address(
+                "timer_interrupt_entry",
+                timer_interrupt_entry as u64,
+            )));
+            idt[RESCHEDULE_VECTOR].set_handler_addr(VirtAddr::new(gate_address(
+                "reschedule_interrupt_entry",
+                reschedule_interrupt_entry as u64,
+            )));
+            idt[RETRY_VECTOR].set_handler_addr(VirtAddr::new(gate_address(
+                "reschedule_interrupt_entry",
+                reschedule_interrupt_entry as u64,
+            )));
         }
         idt[InterruptIndex::Keyboard.as_u8()].set_handler_fn(keyboard_interrupt_handler);
         idt[InterruptIndex::Serial.as_u8()].set_handler_fn(serial_interrupt_handler);
         idt[InterruptIndex::Irq10.as_u8()].set_handler_fn(irq10_handler);
         idt[InterruptIndex::Irq11.as_u8()].set_handler_fn(irq11_handler);
+        // Message-signalled device interrupts, one gate per vector.
+        use crate::arch_impl::x86_64::msi;
+        for (index, entry) in msi::ENTRIES.iter().enumerate() {
+            idt[msi::FIRST_VECTOR + index as u8].set_handler_fn(*entry);
+        }
 
         // System call handler (INT 0x80)
         // Use assembly handler for proper syscall dispatching
@@ -236,6 +238,8 @@ pub fn init_idt() {
                 && i != InterruptIndex::Irq11.as_u8()
                 && i != SYSCALL_INTERRUPT_ID
                 && i != RESCHEDULE_VECTOR
+                && !(msi::FIRST_VECTOR..msi::FIRST_VECTOR + msi::VECTORS as u8).contains(&i)
+                && i != RETRY_VECTOR
             {
                 idt[i].set_handler_fn(generic_handler);
             }
@@ -1704,7 +1708,7 @@ extern "x86-interrupt" fn generic_handler(stack_frame: InterruptStackFrame) {
     // CRITICAL: Send EOI to PICs for any hardware interrupt
     // Without this, the PIC will hang and not deliver more interrupts.
     // We send EOI to both PICs (PIC2 cascades through PIC1) to be safe.
-    // This handles any interrupt vector in the range 32-47 (PIC hardware IRQs).
+    // This handles any interrupt vector in the range 48-63 (PIC hardware IRQs).
     crate::arch_impl::x86_64::irq::eoi(PIC_2_OFFSET + 7);
 
     // Exit hardware IRQ context
@@ -2041,7 +2045,7 @@ pub fn get_idt_info() -> (u64, u16) {
 /// Returns (is_valid, handler_address, description)
 #[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
 pub fn validate_timer_idt_entry() -> (bool, u64, &'static str) {
-    // Read the IDT entry for vector 32 (timer interrupt)
+    // Read the IDT entry for vector 48 (timer interrupt)
     if let Some(idt) = IDT.get() {
         let _entry = &idt[InterruptIndex::Timer.as_u8()];
 

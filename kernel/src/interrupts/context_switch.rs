@@ -1681,9 +1681,9 @@ pub fn idle_loop() -> ! {
             || crate::task::scheduler::has_queued_work_here()
         {
             crate::task::scheduler::set_need_resched();
-            // SAFETY: the reschedule vector's gate is the timer entry, which
-            // saves and restores every register; it returns here with
-            // interrupts masked, as they are now.
+            // SAFETY: the reschedule vector's gate is the reschedule entry,
+            // which saves the 15 general-purpose registers and restores them;
+            // it returns here with interrupts masked, as they are now.
             unsafe {
                 core::arch::asm!("int {vector}", vector = const super::RESCHEDULE_VECTOR);
             }

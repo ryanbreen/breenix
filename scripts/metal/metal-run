@@ -2,7 +2,7 @@
 """Starts, follows and stops x86-metal boots from the boot host (docs/metal/README.md, "Running a boot").
 
   # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
-  metal-run boot [--payload image|hang|none] [--sha SHA | --branch NAME] [--no-wait] [--inject forceoff-fail]
+  metal-run boot [--payload image|hang|none] [--sha SHA | --branch NAME] [--no-wait] [--inject forceoff-fail] [--nmi]
                  [--ramdisk]
   metal-run stop ID
   metal-run status
@@ -98,6 +98,8 @@ def boot(args):
         command.append('--no-wait')
     if args.inject:
         command += ['--inject', args.inject]
+    if args.nmi:
+        command.append('--nmi')
     if payload == 'linux' and not args.linux_directory:
         raise SystemExit('Linux payload needs --linux-directory')
     if args.serve_as:
@@ -199,6 +201,7 @@ def main():
     p.add_argument('--branch')
     p.add_argument('--no-wait', action='store_true')
     p.add_argument('--inject', choices=('forceoff-fail',))
+    p.add_argument('--nmi', action='store_true', help='NMI a started kernel before power-off even when it finished')
     p.add_argument('--serve-as', choices=('boot.iso', 'boot.efi'))
     p.add_argument('--content-type', choices=('application/octet-stream',))
     p.add_argument('--ramdisk', action='store_true', default=True, help='a Breenix image also carries the ext2 root as `ramdisk`')

@@ -158,6 +158,13 @@ pub fn advance_ticks_to(tick: u64) -> u64 {
     TICKS.fetch_max(tick, Ordering::Relaxed).max(tick)
 }
 
+/// TSC cycles in one scheduler tick period.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+pub fn tsc_cycles_per_tick() -> u64 {
+    TSC_CYCLES_PER_TICK.load(Ordering::Relaxed)
+}
+
 /// Raw tick counter.
 #[inline]
 pub fn get_ticks() -> u64 {
