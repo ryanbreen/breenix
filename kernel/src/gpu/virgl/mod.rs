@@ -7,12 +7,16 @@
 //! signalled by the transport's interrupt; with MSI-X off the device uses its PCI INTx
 //! pin and the ISR status byte, whose read acknowledges it (section 4.1.4.5).
 //!
-//! The device object lives under the GPU core's lock; nothing here blocks.
+//! A request owns every buffer the device may touch for it, including any resource
+//! backing it reads or writes, until the device returns it or a confirmed reset ends the
+//! device's use of it (sections 2.4 and 2.7.13); a device whose reset is not confirmed
+//! keeps them. The device object lives under the GPU core's lock; nothing here blocks.
 
 pub mod encode;
 pub mod queue;
 pub mod wire;
 
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use crate::drivers::pci;
@@ -31,8 +35,6 @@ pub enum Tag {
     Submit { ctx: u32, serial: u64, last: bool },
     /// Nobody waits; the answer is only counted.
     Background,
-    /// The core keeps memory the command names until the device returns it.
-    Retire(u64),
 }
 
 enum Payload {
@@ -49,6 +51,8 @@ pub struct Request {
     hdr: DmaBox,
     payload: Payload,
     resp: DmaBox,
+    /// Resource backing the device reads or writes for this command.
+    keep: Option<Arc<Pages>>,
 }
 
 /// A request the device has returned.
@@ -72,7 +76,7 @@ impl Request {
             hdr.put_u64(wire::HDR_FENCE, f);
         }
         hdr.put_u32(wire::HDR_CTX, ctx);
-        Request { tag, fence, hdr, payload: Payload::None, resp: DmaBox::new(resp_len) }
+        Request { tag, fence, hdr, payload: Payload::None, resp: DmaBox::new(resp_len), keep: None }
     }
 
     fn field(mut self, at: usize, v: u32) -> Request {
@@ -143,6 +147,15 @@ pub struct Scanout {
     pub enabled: bool,
     pub width: u32,
     pub height: u32,
+}
+
+/// What [`Device::reap`] found in the used ring.
+pub enum Reap {
+    Empty,
+    Done(Done),
+    /// An entry naming no chain the driver made available, or claiming more bytes than
+    /// its writable buffer: a device fault (`docs/gui/gpu.md` section 1.4.1).
+    Fault,
 }
 
 /// The device as initialisation found it.
@@ -293,10 +306,11 @@ impl Device {
     fn exec_polled(&mut self, req: Request) -> Result<Done, &'static str> {
         self.send(req).map_err(|_| "control queue full")?;
         for _ in 0..50_000_000u64 {
-            if let Some(d) = self.reap() {
-                return Ok(d);
+            match self.reap() {
+                Reap::Done(d) => return Ok(d),
+                Reap::Fault => return Err("virtio-gpu returned a buffer it was not given"),
+                Reap::Empty => core::hint::spin_loop(),
             }
-            core::hint::spin_loop();
         }
         Err("virtio-gpu did not answer")
     }
@@ -314,9 +328,9 @@ impl Device {
         Ok(())
     }
 
-    /// Whether this queue can ever hold the request's descriptor chain.
-    pub fn can_fit(&self, segments: usize) -> bool {
-        segments <= self.queue.size() as usize
+    /// The control queue's size in descriptors.
+    pub fn queue_size(&self) -> usize {
+        self.queue.size() as usize
     }
 
     /// Whether a request of `segments` descriptors fits now.
@@ -324,19 +338,31 @@ impl Device {
         segments <= self.queue.free_count()
     }
 
-    /// The next request the device returned.
-    pub fn reap(&mut self) -> Option<Done> {
-        loop {
-            let (head, _len) = self.queue.pop_used()?;
-            let Some(req) = self.inflight.get_mut(head as usize).and_then(Option::take) else {
-                continue;
-            };
-            req.resp.observe();
-            let answer = req.resp.u32_at(wire::HDR_TYPE);
-            let echoed = req.resp.u64_at(wire::HDR_FENCE);
-            let Request { tag, fence, resp, .. } = req;
-            return Some(Done { tag, fence, answer, echoed, resp });
+    /// The next request the device returned. A faulty entry leaves the request it names,
+    /// if any, in the device's hands, so only a confirmed reset releases its buffers.
+    pub fn reap(&mut self) -> Reap {
+        let (head, len) = match self.queue.pop_used() {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return Reap::Empty,
+            Err(()) => return Reap::Fault,
+        };
+        let Some(req) = self.inflight.get_mut(head as usize).and_then(Option::take) else {
+            return Reap::Fault;
+        };
+        if len as usize > req.resp.len() {
+            self.inflight[head as usize] = Some(req);
+            return Reap::Fault;
         }
+        req.resp.observe();
+        let answer = req.resp.u32_at(wire::HDR_TYPE);
+        let echoed = req.resp.u64_at(wire::HDR_FENCE);
+        let Request { tag, fence, resp, .. } = req;
+        Reap::Done(Done { tag, fence, answer, echoed, resp })
+    }
+
+    /// Whether the device has set DEVICE_NEEDS_RESET (section 2.1): a device fault.
+    pub fn needs_reset(&self) -> bool {
+        self.pci.read_status() & wire::STATUS_NEEDS_RESET != 0
     }
 
     /// Requests the device holds.
@@ -344,28 +370,32 @@ impl Device {
         self.inflight.iter().filter(|r| r.is_some()).count()
     }
 
-    /// Reset the device (section 2.4), which ends its use of every request, and bring it
-    /// back. Returns the tags of the requests it held, which the caller fails.
-    pub fn reset(&mut self) -> Result<Vec<Tag>, &'static str> {
+    /// Start a reset (section 2.4): write 0 to the device status.
+    pub fn begin_reset(&mut self) {
         self.pci.reset();
-        let mut cleared = false;
-        for _ in 0..10_000_000u64 {
-            if self.pci.read_status() == 0 {
-                cleared = true;
-                break;
-            }
-            core::hint::spin_loop();
-        }
-        let tags: Vec<Tag> = self.inflight.iter_mut().filter_map(Option::take).map(|r| r.tag).collect();
-        if !cleared {
-            return Err("virtio-gpu reset did not complete");
-        }
-        self.queue.reset();
-        Self::start(&mut self.pci)?;
-        self.enable_queue();
-        Ok(tags)
     }
 
+    /// Whether the device has completed the reset: it reads its status back as 0, which
+    /// ends its use of every buffer it was given (section 2.4.2).
+    pub fn reset_done(&self) -> bool {
+        self.pci.read_status() == 0
+    }
+
+    /// After a confirmed reset: give back every request the device held, whose buffers
+    /// it can no longer use, and bring the device up again with an empty queue.
+    pub fn restart(&mut self) -> (Vec<Request>, Result<(), &'static str>) {
+        let held: Vec<Request> = self.inflight.iter_mut().filter_map(Option::take).collect();
+        self.queue.reset();
+        let up = match Self::start(&mut self.pci) {
+            Ok(size) if size >= self.queue.size() => {
+                self.enable_queue();
+                Ok(())
+            }
+            Ok(_) => Err("virtio-gpu control queue shrank across the reset"),
+            Err(e) => Err(e),
+        };
+        (held, up)
+    }
 }
 
 /// The interrupt handler's view: read the ISR byte at `isr` (acknowledging the level
@@ -376,27 +406,34 @@ pub fn read_isr(isr: u64) -> u8 {
     unsafe { core::ptr::read_volatile(isr as *const u8) }
 }
 
-// Command builders (section 5.7.6.7's layouts). `ctx` is the device context the command
-// runs in, 0 for none.
+// Command builders. Every request starts with the control header (section 5.7.6.7); `ctx`
+// is the header's context, 0 for none. Each builder names where its request data comes
+// from: a section of the specification, or, for the four layouts section 5.7.6.9 names
+// without defining, the virtio-gpu interface header (`docs/gui/gpu.md` section 1.9).
 
+/// CTX_CREATE (section 5.7.6.9): nlen, context_init (0: the device chooses the context
+/// type, here VirGL), debug_name[64].
 pub fn ctx_create(tag: Tag, ctx: u32) -> Request {
-    // virtio_gpu_ctx_create: nlen, context_init (0: the device's default VirGL), name[64].
     let name = b"breenix";
     let mut r = Request::new(tag, cmd::CTX_CREATE, ctx, None, wire::HDR + 72, wire::HDR).field(0, name.len() as u32);
     r.hdr.as_mut()[wire::HDR + 8..wire::HDR + 8 + name.len()].copy_from_slice(name);
     r
 }
 
+/// CTX_DESTROY (section 5.7.6.9): the header alone, whose ctx_id names the context.
 pub fn ctx_destroy(tag: Tag, ctx: u32) -> Request {
     Request::new(tag, cmd::CTX_DESTROY, ctx, None, wire::HDR, wire::HDR)
 }
 
+/// CTX_ATTACH_RESOURCE: resource_id, padding (the interface header's
+/// `virtio_gpu_ctx_resource`).
 pub fn ctx_attach(tag: Tag, ctx: u32, resource: u32) -> Request {
     Request::new(tag, cmd::CTX_ATTACH_RESOURCE, ctx, None, wire::HDR + 8, wire::HDR).field(0, resource)
 }
 
-/// RESOURCE_CREATE_3D: id, target, format, bind, width, height, depth, array size, last
-/// level, samples, flags.
+/// RESOURCE_CREATE_3D: resource_id, target, format, bind, width, height, depth,
+/// array_size, last_level, nr_samples, flags, padding (the interface header's
+/// `virtio_gpu_resource_create_3d`): one single-sample level of a 2D texture or buffer.
 pub fn resource_create(tag: Tag, id: u32, target: u32, format: u32, bind: u32, width: u32, height: u32) -> Request {
     Request::new(tag, cmd::RESOURCE_CREATE_3D, 0, None, wire::HDR + 48, wire::HDR)
         .field(0, id)
@@ -412,12 +449,17 @@ pub fn resource_create(tag: Tag, id: u32, target: u32, format: u32, bind: u32, w
         .field(40, 0)
 }
 
-pub fn resource_unref(tag: Tag, id: u32) -> Request {
-    Request::new(tag, cmd::RESOURCE_UNREF, 0, None, wire::HDR + 8, wire::HDR).field(0, id)
+/// RESOURCE_UNREF (section 5.7.6.8): resource_id, padding. The request keeps `backing`,
+/// which the device may use until it answers.
+pub fn resource_unref(tag: Tag, id: u32, backing: Option<Arc<Pages>>) -> Request {
+    let mut r = Request::new(tag, cmd::RESOURCE_UNREF, 0, None, wire::HDR + 8, wire::HDR).field(0, id);
+    r.keep = backing;
+    r
 }
 
-/// RESOURCE_ATTACH_BACKING with one entry per run of adjacent frames of `backing`.
-pub fn attach_backing(tag: Tag, id: u32, backing: &Pages) -> Option<Request> {
+/// RESOURCE_ATTACH_BACKING (section 5.7.6.8): resource_id, nr_entries, then one
+/// `virtio_gpu_mem_entry` (addr, length, padding) per run of adjacent frames of `backing`.
+pub fn attach_backing(tag: Tag, id: u32, backing: Arc<Pages>) -> Option<Request> {
     let runs = backing.runs();
     let bytes = runs.len() * 16;
     let entries = Pages::new(bytes.div_ceil(crate::gpu::dma::PAGE))?;
@@ -431,14 +473,28 @@ pub fn attach_backing(tag: Tag, id: u32, backing: &Pages) -> Option<Request> {
         .field(0, id)
         .field(4, runs.len() as u32);
     r.payload = Payload::Pages(entries, bytes);
+    r.keep = Some(backing);
     Some(r)
 }
 
-/// TRANSFER_FROM_HOST_3D of a box into the attached backing at `offset`, with `stride`
-/// bytes per row; fenced.
+/// TRANSFER_FROM_HOST_3D of a box into the attached `backing` at `offset`, with `stride`
+/// bytes per row; fenced. Layout: box (x, y, z, w, h, d), offset (u64), resource_id,
+/// level, stride, layer_stride (the interface header's `virtio_gpu_transfer_host_3d`).
 #[allow(clippy::too_many_arguments)]
-pub fn transfer_from_host(tag: Tag, ctx: u32, fence: u64, id: u32, x: u32, y: u32, w: u32, h: u32, offset: u64, stride: u32) -> Request {
-    Request::new(tag, cmd::TRANSFER_FROM_HOST_3D, ctx, Some(fence), wire::HDR + 48, wire::HDR)
+pub fn transfer_from_host(
+    tag: Tag,
+    ctx: u32,
+    fence: u64,
+    id: u32,
+    backing: Arc<Pages>,
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+    offset: u64,
+    stride: u32,
+) -> Request {
+    let mut r = Request::new(tag, cmd::TRANSFER_FROM_HOST_3D, ctx, Some(fence), wire::HDR + 48, wire::HDR)
         .field(0, x)
         .field(4, y)
         .field(8, 0)
@@ -449,7 +505,9 @@ pub fn transfer_from_host(tag: Tag, ctx: u32, fence: u64, id: u32, x: u32, y: u3
         .field(32, id)
         .field(36, 0)
         .field(40, stride)
-        .field(44, 0)
+        .field(44, 0);
+    r.keep = Some(backing);
+    r
 }
 
 /// A fenced command of a type section 5.7.6.7 does not define (the last of the 3D range's
@@ -458,7 +516,8 @@ pub fn undefined_command(tag: Tag, ctx: u32, fence: u64) -> Request {
     Request::new(tag, 0x02FF, ctx, Some(fence), wire::HDR, wire::HDR)
 }
 
-/// SUBMIT_3D of a VirGL command buffer.
+/// SUBMIT_3D of a VirGL command buffer: size in bytes, padding, then the buffer (the
+/// interface header's `virtio_gpu_cmd_submit`).
 pub fn submit(tag: Tag, ctx: u32, fence: Option<u64>, words: WordBuf) -> Request {
     let size = (words.len() * 4) as u32;
     let mut r = Request::new(tag, cmd::SUBMIT_3D, ctx, fence, wire::HDR + 8, wire::HDR).field(0, size);

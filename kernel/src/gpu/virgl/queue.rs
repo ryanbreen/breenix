@@ -137,14 +137,15 @@ impl Queue {
     }
 
     /// The next chain the device returned, as its head and the bytes it wrote; its
-    /// descriptors go back to the free list.
-    pub fn pop_used(&mut self) -> Option<(u16, u32)> {
+    /// descriptors go back to the free list. `Err` when the entry names no chain the
+    /// driver made available: a device fault (`docs/gui/gpu.md` section 1.4.1).
+    pub fn pop_used(&mut self) -> Result<Option<(u16, u32)>, ()> {
         let used = self.used.page_va(0);
         self.used.maintain(0, 4 + 8 * self.size as usize, true);
         // SAFETY: the used ring page is owned.
         let idx = unsafe { core::ptr::read_volatile((used + 2) as *const u16) };
         if idx == self.last_used {
-            return None;
+            return Ok(None);
         }
         // The index before the entry it covers (section 2.7.14).
         fence(Ordering::SeqCst);
@@ -157,12 +158,12 @@ impl Queue {
             )
         };
         self.last_used = self.last_used.wrapping_add(1);
-        let head = id as u16;
-        if head >= self.size {
-            return None;
+        if id >= self.size as u32 || self.chain[id as usize] == 0 {
+            return Err(());
         }
+        let head = id as u16;
         self.release_chain(head);
-        Some((head, len))
+        Ok(Some((head, len)))
     }
 
     /// Return a returned chain's descriptors to the free list by walking its links.

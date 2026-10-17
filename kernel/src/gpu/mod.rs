@@ -2,16 +2,26 @@
 //! 1.4, argument layouts in `docs/gui/gpu-abi.md`).
 //!
 //! Per-process contexts and resources behind opaque handles; every stream validated whole
-//! before anything reaches the device (`gpu_abi::stream`); fences that complete in
-//! submission order; waits that time out, take signals and end on a kill; and a watchdog
-//! that quarantines a context whose submission has not completed 2 s after it was sent and
-//! resets the device when its queue then makes no progress for another 2 s (section
-//! 1.4.1). The device is the VirGL backend (`virgl`), on ARM64 QEMU in this milestone.
+//! before anything reaches the device (`gpu_abi::stream`), against one copy of the buffer
+//! ranges it names taken at `SUBMIT`; fences that complete in submission order; waits that
+//! time out, take signals and end on a kill; and a watchdog over every device wait the
+//! kernel makes, submissions and its own synchronous requests alike, that quarantines the
+//! context of one the device has not answered 2 s after it was sent and resets the device
+//! when its queue then makes no progress for another 2 s, or when the device faults
+//! (section 1.4.1). The device is the VirGL backend (`virgl`), on ARM64 QEMU in this milestone.
+//!
+//! A fence's result reaching its callers and the device's use of the memory behind it
+//! ending are separate events. Every request goes through one queue in order (the backlog,
+//! then the control queue), so nothing is dropped when the control queue is full, and each
+//! request owns the memory the device may use for it. A submission's holds on its resources
+//! end only when the device has returned every request of it, or a reset the device
+//! confirmed has ended them; a reset the device does not confirm leaves everything held.
 //!
 //! Locking: one spin lock over the core, taken with preemption disabled and never by the
 //! interrupt handler, which only reads the device's ISR byte, counts an event and wakes the
-//! waiters. User memory is copied outside the lock; nothing blocks while holding it; no
-//! path here prints (section 1.4: no kernel output on any path).
+//! waiters. User memory is copied outside the lock; nothing blocks or waits on the device
+//! while holding it, and the reset itself runs on `kgpu` outside it; no path here prints
+//! (section 1.4: no kernel output on any path).
 
 mod completion;
 pub mod dma;
@@ -30,7 +40,7 @@ use crate::syscall::SyscallResult;
 use crate::task::thread::ThreadState;
 use crate::task::waitqueue::WaitQueueHead;
 use dma::{Pages, WordBuf, PAGE};
-use virgl::{encode, wire, Device, Done, Request, Tag};
+use virgl::{encode, wire, Device, Done, Reap, Request, Tag};
 
 /// The guest backing one process's resources may hold.
 const MEMORY_QUOTA: u64 = 192 << 20;
@@ -45,6 +55,10 @@ const POISON: u32 = 0x3C5A_A5C3;
 /// VirGL's renderer keeps a target's row 0 as the transfer's row 0, so the viewport keeps
 /// row 0 at the top without a flip.
 const FLIP_Y: bool = false;
+/// R, the reset budget: from the reset decision to the device back up (section 1.4.1).
+const RESET_BUDGET_NS: u64 = 100_000_000;
+/// The watchdog examines outstanding work at least this often (section 1.4.1).
+const EXAMINE_NS: u64 = 250_000_000;
 
 static CORE: spin::Mutex<Option<Core>> = spin::Mutex::new(None);
 /// Counts interrupts and state changes; a waiter sleeps only while it is unchanged.
@@ -70,6 +84,14 @@ fn with_core<R>(f: impl FnOnce(&mut Core) -> R) -> Option<R> {
 fn notify() {
     EVENTS.fetch_add(1, Ordering::AcqRel);
     WAITERS.wake_up();
+}
+
+/// Wake `kgpu` for work only it does: a reset.
+fn wake_reaper() {
+    let tid = REAPER.load(Ordering::Acquire);
+    if tid != 0 {
+        crate::task::scheduler::wake_thread_any_context(tid);
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -109,7 +131,7 @@ struct Ctx {
     ns: u32,
     state: CtxState,
     dropped: bool,
-    /// A submission is being translated and sent.
+    /// A submission is being prepared.
     busy: bool,
     device_alive: bool,
     issued: u32,
@@ -117,26 +139,48 @@ struct Ctx {
     early: BTreeSet<u32>,
     /// Fences that completed other than OK, with their status and the device's answer.
     outcomes: BTreeMap<u32, (u32, u32)>,
+    /// Submissions whose result has not reached callers, in fence order.
     inflight: VecDeque<u64>,
     totals: Totals,
     objects: encode::Objects,
     vb: u32,
     scratch: u32,
     warmed: u32,
-    errors_in_row: u32,
 }
 
 struct Sub {
     ctx: u32,
     n: u32,
     fence: u64,
+    /// When `SUBMIT` handed it to the device's queue; the watchdog's clock.
     sent_ns: u64,
     error: Option<u32>,
     mismatch: bool,
-    injected_error: bool,
+    /// Its requests the device or the backlog still holds.
+    requests: u32,
+    /// Its result has reached callers.
+    published: bool,
+    /// Its holds have ended: the device returned every request, or a confirmed reset
+    /// ended them.
+    retired: bool,
     written: Vec<u32>,
     whole: Vec<u32>,
     held: Vec<u32>,
+}
+
+/// A synchronous request a thread waits on.
+struct SyncReq {
+    /// The device context it runs in, 0 for none.
+    ctx: u32,
+    sent_ns: u64,
+    /// Resources it holds until the device returns it.
+    holds: Vec<u32>,
+    /// A readback's target, whose `reading` mark the request keeps if its waiter leaves.
+    reading: Option<u32>,
+    /// Its waiter has left; its answer is dropped when it comes.
+    abandoned: bool,
+    /// The watchdog or a reset has failed its wait.
+    failed: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -156,6 +200,8 @@ struct Res {
     size: u64,
     pitch: u32,
     backing: Arc<Pages>,
+    /// The reset epoch it was created in.
+    epoch: u64,
     generation: u64,
     last: Option<LastWrite>,
     writers: u32,
@@ -169,6 +215,11 @@ struct Res {
 
 struct Core {
     dev: Option<Device>,
+    /// The control queue's size, kept while the device is out for a reset.
+    queue_size: usize,
+    /// A device whose reset was never confirmed, with every request it was given or that
+    /// was queued for it: none of their memory is ever released.
+    wedged: Option<(Device, Vec<Request>)>,
     status: u32,
     reason: &'static str,
     /// Each profile capability the device has, indexed by capability id.
@@ -178,9 +229,13 @@ struct Core {
     contexts: BTreeMap<u32, Ctx>,
     resources: BTreeMap<u32, Res>,
     subs: BTreeMap<u64, Sub>,
+    syncs: BTreeMap<u64, SyncReq>,
     done: BTreeMap<u64, Done>,
-    abandoned: BTreeSet<u64>,
-    retire: BTreeMap<u64, Arc<Pages>>,
+    /// Requests not yet in the control queue, in order, with the reset epoch they were
+    /// queued in.
+    backlog: VecDeque<(u64, Request)>,
+    /// Counts reset decisions.
+    epoch: u64,
     next_ctx: u32,
     next_res: u32,
     next_serial: u64,
@@ -192,6 +247,7 @@ struct Core {
     quarantined_at: Option<u64>,
     last_progress: u64,
     reset_wanted: bool,
+    resetting: bool,
 }
 
 // ---------------------------------------------------------------------------------------
@@ -229,6 +285,7 @@ pub fn init_qemu() {
             INTID.store(dev.intid, Ordering::Release);
             crate::arch_impl::aarch64::gic::configure_spi_level_triggered(dev.intid);
             crate::arch_impl::aarch64::gic::enable_spi(dev.intid);
+            core.queue_size = dev.queue_size();
             core.dev = Some(dev);
         }
         Err(e) => {
@@ -252,6 +309,8 @@ impl Core {
         caps.catalogue_version = abi::CATALOGUE_VERSION;
         Core {
             dev: None,
+            queue_size: 0,
+            wedged: None,
             status: abi::status::NO_DEVICE,
             reason: "no virtio-gpu device",
             have: [false; capability::LAST as usize + 1],
@@ -260,9 +319,10 @@ impl Core {
             contexts: BTreeMap::new(),
             resources: BTreeMap::new(),
             subs: BTreeMap::new(),
+            syncs: BTreeMap::new(),
             done: BTreeMap::new(),
-            abandoned: BTreeSet::new(),
-            retire: BTreeMap::new(),
+            backlog: VecDeque::new(),
+            epoch: 0,
             next_ctx: 1,
             next_res: 0x100,
             next_serial: 1,
@@ -274,6 +334,7 @@ impl Core {
             quarantined_at: None,
             last_progress: 0,
             reset_wanted: false,
+            resetting: false,
         }
     }
 
@@ -377,7 +438,7 @@ impl Core {
     /// (`device/missing-capability-fails`), and the decision after it sees the device's
     /// real capabilities.
     fn admission(&self) -> Result<(), (u32, u32)> {
-        if self.dev.is_none() {
+        if self.dev.is_none() && !self.resetting {
             return Err((if self.status == abi::status::ADMITTED { abi::status::DEVICE_FAILED } else { self.status }, 0));
         }
         let masked = crate::test_control::take(test_point::MASK_CAPABILITY, 0)
@@ -468,20 +529,92 @@ impl Core {
     }
 
     // -----------------------------------------------------------------------------------
-    // The device.
+    // Requests.
 
-    /// Hand a request to the device, or give it back when the queue has no room.
-    fn send(&mut self, req: Request) -> Result<(), Request> {
-        match self.dev.as_mut() {
-            Some(dev) => dev.send(req),
-            None => Err(req),
+    /// Whether a request can be queued: a device is up or coming back from a reset, and
+    /// the request's chain fits its control queue.
+    fn can_queue(&self, req: &Request) -> bool {
+        (self.dev.is_some() || self.resetting) && req.segment_count() <= self.queue_size
+    }
+
+    /// Queue `req` behind everything already queued and hand the device what fits.
+    fn enqueue(&mut self, req: Request) -> Result<(), Request> {
+        if !self.can_queue(&req) {
+            return Err(req);
+        }
+        self.backlog.push_back((self.epoch, req));
+        self.flush();
+        Ok(())
+    }
+
+    /// Move queued requests into the control queue, in order, while they fit; nothing
+    /// more once a device fault has asked for a reset.
+    fn flush(&mut self) {
+        if self.reset_wanted {
+            return;
+        }
+        let Some(dev) = self.dev.as_mut() else { return };
+        while let Some((_, req)) = self.backlog.front() {
+            if !dev.has_room(req.segment_count()) {
+                break;
+            }
+            let Some((epoch, req)) = self.backlog.pop_front() else { break };
+            if let Err(req) = dev.send(req) {
+                self.backlog.push_front((epoch, req));
+                break;
+            }
         }
     }
+
+    /// Queue a request nobody waits for.
+    fn background(&mut self, req: Request) {
+        if let Err(req) = self.enqueue(req) {
+            self.unsendable(req);
+        }
+    }
+
+    /// A request that can no longer reach a device: kept for ever while a device that may
+    /// still use memory it names was never confirmed reset.
+    fn unsendable(&mut self, req: Request) {
+        match self.wedged.as_mut() {
+            Some((_, keep)) => keep.push(req),
+            None => drop(req),
+        }
+    }
+
+    /// Register synchronous request `serial`, take its holds and queue it.
+    fn start_sync(&mut self, serial: u64, req: Request, ctx: u32, holds: &[u32], reading: Option<u32>) -> Result<(), i64> {
+        if !self.can_queue(&req) {
+            return Err(EIO);
+        }
+        for id in holds {
+            if let Some(r) = self.resources.get_mut(id) {
+                r.holds += 1;
+            }
+        }
+        self.syncs.insert(serial, SyncReq { ctx, sent_ns: now_ns(), holds: holds.to_vec(), reading, abandoned: false, failed: false });
+        self.backlog.push_back((self.epoch, req));
+        self.flush();
+        Ok(())
+    }
+
+    /// The waiter of `serial` left: drop its answer if it came, or when it comes.
+    fn abandon(&mut self, serial: u64) {
+        if self.done.remove(&serial).is_none() {
+            if let Some(s) = self.syncs.get_mut(&serial) {
+                s.abandoned = true;
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------------------
+    // The device's answers.
 
     /// Take every completion the device has returned and the watchdog's decisions.
     fn pump(&mut self) {
         self.reap_all();
         self.watchdog(now_ns());
+        self.flush();
     }
 
     fn reap_all(&mut self) {
@@ -490,116 +623,195 @@ impl Core {
         }
         let mut any = false;
         loop {
-            let Some(d) = self.dev.as_mut().and_then(|dev| dev.reap()) else { break };
-            any = true;
-            self.last_progress = now_ns();
-            match d.tag {
-                Tag::Sync(serial) => {
-                    if !self.abandoned.remove(&serial) {
-                        self.done.insert(serial, d);
-                    }
+            let reaped = match self.dev.as_mut() {
+                Some(dev) => dev.reap(),
+                None => break,
+            };
+            match reaped {
+                Reap::Empty => break,
+                Reap::Fault => {
+                    self.fault();
+                    break;
                 }
-                Tag::Retire(serial) => {
-                    self.retire.remove(&serial);
-                }
-                Tag::Background => {}
-                Tag::Submit { serial, last, .. } => {
-                    self.submit_returned(serial, last, d);
+                Reap::Done(d) => {
+                    any = true;
+                    self.last_progress = now_ns();
+                    self.returned(d);
                     if self.stalled {
                         break;
                     }
                 }
             }
         }
+        if !self.reset_wanted && self.dev.as_ref().is_some_and(|d| d.needs_reset()) {
+            self.fault();
+        }
         if any {
             notify();
         }
     }
 
-    /// One SUBMIT_3D of submission `serial` came back.
-    fn submit_returned(&mut self, serial: u64, last: bool, d: Done) {
-        let Some(sub) = self.subs.get_mut(&serial) else { return };
-        if !virgl::ok(d.answer) {
-            sub.error.get_or_insert(d.answer);
-        }
-        if !last {
-            return;
-        }
-        let mut echoed = d.echoed;
-        // Test point 20, `stale-fence`: the answer claims another submission's fence.
-        if crate::test_control::take(test_point::STALE_FENCE, 0).is_some() {
-            echoed = sub.fence + 1;
-        }
-        if sub.error.is_none() && echoed != sub.fence {
-            sub.mismatch = true;
-        }
-        // Test point 31, `withhold-fence`: ignore this completion, or every completion
-        // from now until the device is reset.
-        if let Some(param) = crate::test_control::take(test_point::WITHHOLD_FENCE, 0) {
-            if param == test_point::WITHHOLD_ALL {
-                self.stalled = true;
-            }
-            return;
-        }
-        let (status, answer) = match (sub.error, sub.mismatch) {
-            (Some(a), _) => (fence_status::DEVICE_ERROR, a),
-            (None, true) => (fence_status::FENCE_MISMATCH, echoed as u32),
-            (None, false) => (fence_status::OK, d.answer),
-        };
-        self.finish_sub(serial, status, answer);
+    /// A device fault (section 1.4.1): the device is reset.
+    fn fault(&mut self) {
+        self.reset_wanted = true;
+        notify();
+        wake_reaper();
     }
 
-    /// Complete submission `serial` with `status`: its fence, its targets and its holds.
-    fn finish_sub(&mut self, serial: u64, status: u32, answer: u32) {
-        let Some(sub) = self.subs.remove(&serial) else { return };
-        let ok = status == fence_status::OK;
-        let mut reset = false;
-        if let Some(ctx) = self.contexts.get_mut(&sub.ctx) {
-            if !ok {
-                ctx.outcomes.insert(sub.n, (status, answer));
+    /// The device returned a request.
+    fn returned(&mut self, d: Done) {
+        match d.tag {
+            Tag::Sync(serial) => self.sync_ended(serial, Some(d)),
+            Tag::Submit { serial, last, .. } => self.submit_returned(serial, last, d.answer, d.echoed),
+            Tag::Background => {}
+        }
+    }
+
+    /// A request the device will never answer: never sent before a confirmed reset, or
+    /// held by the device across one.
+    fn ended(&mut self, req: Request) {
+        match req.tag {
+            Tag::Sync(serial) => self.sync_ended(serial, None),
+            Tag::Submit { serial, .. } => {
+                if let Some(s) = self.subs.get_mut(&serial) {
+                    s.requests = s.requests.saturating_sub(1);
+                }
+                self.publish(serial, fence_status::DEVICE_RESET, 0);
+                self.retire_if_done(serial);
             }
-            ctx.early.insert(sub.n);
+            Tag::Background => {}
+        }
+        drop(req);
+    }
+
+    /// Synchronous request `serial` is over: with the device's answer, or without one
+    /// after a confirmed reset.
+    fn sync_ended(&mut self, serial: u64, d: Option<Done>) {
+        let Some(s) = self.syncs.remove(&serial) else { return };
+        for id in &s.holds {
+            self.unhold(*id);
+        }
+        if s.abandoned {
+            if let Some(id) = s.reading {
+                if let Some(r) = self.resources.get_mut(&id) {
+                    r.reading = false;
+                }
+                self.free_if_unused(id);
+            }
+        } else {
+            let d = d.unwrap_or_else(|| Done { tag: Tag::Sync(serial), fence: None, answer: 0, echoed: 0, resp: dma::DmaBox::new(wire::HDR) });
+            self.done.insert(serial, d);
+        }
+        notify();
+    }
+
+    /// One SUBMIT_3D of submission `serial` came back.
+    fn submit_returned(&mut self, serial: u64, last: bool, answer: u32, echoed: u64) {
+        let Some(sub) = self.subs.get_mut(&serial) else { return };
+        sub.requests = sub.requests.saturating_sub(1);
+        if !virgl::ok(answer) {
+            sub.error.get_or_insert(answer);
+        }
+        if last {
+            let mut echoed = echoed;
+            // Test point 20, `stale-fence`: the answer claims another submission's fence.
+            if crate::test_control::take(test_point::STALE_FENCE, 0).is_some() {
+                echoed = sub.fence + 1;
+            }
+            if sub.error.is_none() && echoed != sub.fence {
+                sub.mismatch = true;
+            }
+            let result = match (sub.error, sub.mismatch) {
+                (Some(a), _) => (fence_status::DEVICE_ERROR, a),
+                (None, true) => (fence_status::FENCE_MISMATCH, echoed as u32),
+                (None, false) => (fence_status::OK, answer),
+            };
+            // Test point 31, `withhold-fence`: ignore this completion, or every completion
+            // from now until the device is reset.
+            match crate::test_control::take(test_point::WITHHOLD_FENCE, 0) {
+                Some(p) => {
+                    if p == test_point::WITHHOLD_ALL {
+                        self.stalled = true;
+                    }
+                }
+                None => self.publish(serial, result.0, result.1),
+            }
+        }
+        self.retire_if_done(serial);
+    }
+
+    /// Give submission `serial`'s result to its callers: its fence, its targets'
+    /// publication or invalidation, and its context's error count. Its holds are not
+    /// touched: they end when the device is done with it.
+    fn publish(&mut self, serial: u64, status: u32, answer: u32) {
+        let Some(sub) = self.subs.get_mut(&serial) else { return };
+        if sub.published {
+            return;
+        }
+        sub.published = true;
+        let (ctx_id, n, fence, retired) = (sub.ctx, sub.n, sub.fence, sub.retired);
+        let written = core::mem::take(&mut sub.written);
+        let whole = core::mem::take(&mut sub.whole);
+        let ok = status == fence_status::OK;
+        if let Some(ctx) = self.contexts.get_mut(&ctx_id) {
+            if !ok {
+                ctx.outcomes.insert(n, (status, answer));
+            }
+            ctx.early.insert(n);
             while ctx.early.remove(&(ctx.done_upto + 1)) {
                 ctx.done_upto += 1;
             }
             ctx.inflight.retain(|&s| s != serial);
             if status == fence_status::DEVICE_ERROR {
                 ctx.totals.device_errors += 1;
-                // Escalation belongs exclusively to the suite's twice-armed fault
-                // injection. Ordinary device errors cannot reset other processes.
-                if sub.injected_error {
-                    ctx.errors_in_row += 1;
-                    reset = ctx.errors_in_row >= 2;
-                } else {
-                    ctx.errors_in_row = 0;
-                }
                 if let Some(p) = self.procs.get_mut(&ctx.owner) {
                     p.totals.device_errors += 1;
                 }
-            } else if ok {
-                ctx.errors_in_row = 0;
             }
         }
-        if reset {
-            self.reset_wanted = true;
-        }
-        for id in &sub.written {
+        for id in &written {
             if let Some(r) = self.resources.get_mut(id) {
                 r.writers = r.writers.saturating_sub(1);
-                completion::finish_write(&mut r.invalid, &mut r.invalidated_by, serial, ok, sub.whole.contains(id));
+                completion::finish_write(&mut r.invalid, &mut r.invalidated_by, serial, ok, whole.contains(id));
                 if ok {
                     r.generation += 1;
-                    r.last = Some(LastWrite { ctx: sub.ctx, fence: sub.fence, serial, answer });
+                    r.last = Some(LastWrite { ctx: ctx_id, fence, serial, answer });
                 }
             }
         }
-        for id in sub.held {
-            if let Some(r) = self.resources.get_mut(&id) {
-                r.holds = r.holds.saturating_sub(1);
-            }
+        for id in written {
             self.free_if_unused(id);
         }
-        self.finalize_if_dropped(sub.ctx);
+        if retired {
+            self.subs.remove(&serial);
+        }
+        self.settle(ctx_id);
+        notify();
+    }
+
+    /// End submission `serial`'s holds once the device holds none of its requests.
+    fn retire_if_done(&mut self, serial: u64) {
+        let Some(sub) = self.subs.get_mut(&serial) else { return };
+        if sub.requests > 0 {
+            return;
+        }
+        if !sub.retired {
+            sub.retired = true;
+            let held = core::mem::take(&mut sub.held);
+            for id in held {
+                self.unhold(id);
+            }
+        }
+        if self.subs.get(&serial).is_some_and(|s| s.published) {
+            self.subs.remove(&serial);
+        }
+    }
+
+    fn unhold(&mut self, id: u32) {
+        if let Some(r) = self.resources.get_mut(&id) {
+            r.holds = r.holds.saturating_sub(1);
+        }
+        self.free_if_unused(id);
     }
 
     /// Free a resource whose handle is gone and that nothing holds.
@@ -612,143 +824,201 @@ impl Core {
         if let Some(p) = self.procs.get_mut(&r.owner) {
             p.bytes = p.bytes.saturating_sub(r.backing.bytes() as u64);
         }
-        if !r.lost {
-            // The device may use the backing until it answers the unref.
-            let serial = self.serial();
-            self.retire.insert(serial, r.backing.clone());
-            if let Err(req) = self.send(virgl::resource_unref(Tag::Retire(serial), id)) {
-                drop(req);
-                self.retire.remove(&serial);
-            }
-        }
-    }
-
-    /// Destroy a dropped context once its work has completed.
-    fn finalize_if_dropped(&mut self, id: u32) {
-        let Some(c) = self.contexts.get(&id) else { return };
-        if !c.dropped || !c.inflight.is_empty() || c.busy || c.state == CtxState::Creating {
+        if r.lost {
+            // A confirmed reset ended the device's use of it.
             return;
         }
-        let Some(c) = self.contexts.remove(&id) else { return };
-        if c.device_alive {
-            let _ = self.send(virgl::ctx_destroy(Tag::Background, c.id));
+        // The device may use the backing until it answers the unref, which keeps it.
+        let req = virgl::resource_unref(Tag::Background, id, Some(r.backing));
+        self.background(req);
+    }
+
+    /// Destroy the device context of a context that is dropped or quarantined once none of
+    /// its submissions awaits its result, and forget a dropped context then.
+    fn settle(&mut self, id: u32) {
+        let Some(c) = self.contexts.get_mut(&id) else { return };
+        if c.busy || !c.inflight.is_empty() || c.state == CtxState::Creating {
+            return;
         }
-        for internal in [c.vb, c.scratch] {
-            if let Some(r) = self.resources.get_mut(&internal) {
-                r.dropped = true;
+        let destroy = c.device_alive && (c.dropped || c.state == CtxState::Quarantined);
+        if destroy {
+            c.device_alive = false;
+        }
+        let dropped = c.dropped;
+        if destroy {
+            let req = virgl::ctx_destroy(Tag::Background, id);
+            self.background(req);
+        }
+        if dropped {
+            if let Some(c) = self.contexts.remove(&id) {
+                for internal in [c.vb, c.scratch] {
+                    if let Some(r) = self.resources.get_mut(&internal) {
+                        r.dropped = true;
+                    }
+                    self.free_if_unused(internal);
+                }
             }
-            self.free_if_unused(internal);
         }
     }
 
-    /// The watchdog (section 1.4.1): quarantine a context whose submission is 2 s old,
-    /// and reset a device that then makes no progress for 2 s.
+    // -----------------------------------------------------------------------------------
+    // The watchdog and the reset.
+
+    /// The watchdog (section 1.4.1): quarantine the context of a submission or a
+    /// synchronous request the device has not answered 2 s after it was sent, and have the
+    /// device reset when it then makes no progress for 2 s.
     fn watchdog(&mut self, now: u64) {
-        if self.dev.is_none() {
+        if self.dev.is_none() || self.reset_wanted {
             return;
         }
-        // A device that has made no progress for 2 s since a quarantine is reset first,
-        // so the work it holds completes as reset rather than being found hung.
         if let Some(at) = self.quarantined_at {
-            let busy = self.stalled || self.dev.as_ref().is_some_and(|d| d.outstanding() > 0);
+            let busy = self.stalled || !self.backlog.is_empty() || self.dev.as_ref().is_some_and(|d| d.outstanding() > 0);
             if !busy {
                 self.quarantined_at = None;
             } else if now.saturating_sub(at.max(self.last_progress)) >= limits::WATCHDOG_NS {
                 self.reset_wanted = true;
+                notify();
+                wake_reaper();
+                return;
             }
-        }
-        if self.reset_wanted {
-            self.reset(now);
-            return;
         }
         let hung: Vec<u32> = self
             .subs
             .values()
-            .filter(|s| s.sent_ns != 0 && now.saturating_sub(s.sent_ns) >= limits::WATCHDOG_NS)
+            .filter(|s| !s.published && now.saturating_sub(s.sent_ns) >= limits::WATCHDOG_NS)
             .map(|s| s.ctx)
             .collect();
         for ctx in hung {
             self.quarantine(ctx, now);
         }
-        if self.reset_wanted {
-            self.reset(now);
+        let late: Vec<u64> = self
+            .syncs
+            .iter()
+            .filter(|(_, s)| !s.failed && now.saturating_sub(s.sent_ns) >= limits::WATCHDOG_NS)
+            .map(|(&serial, _)| serial)
+            .collect();
+        for serial in late {
+            let Some(s) = self.syncs.get_mut(&serial) else { continue };
+            s.failed = true;
+            let ctx = s.ctx;
+            if ctx != 0 {
+                self.quarantine(ctx, now);
+            } else {
+                self.quarantined_at.get_or_insert(now);
+                notify();
+            }
         }
     }
 
     /// Quarantine context `id`: its pending fences fail with `DEVICE_HUNG`, its targets
-    /// become invalid, its device context is destroyed and further submissions refused.
+    /// become invalid, further submissions are refused and its device context is
+    /// destroyed. Its work keeps its holds until the device returns it.
     fn quarantine(&mut self, id: u32, now: u64) {
-        let Some(c) = self.contexts.get_mut(&id) else { return };
-        if c.state == CtxState::Live {
-            c.state = CtxState::Quarantined;
-        }
-        let pending: Vec<u64> = c.inflight.iter().copied().collect();
-        let alive = core::mem::replace(&mut c.device_alive, false);
-        for serial in pending {
-            self.finish_sub(serial, fence_status::DEVICE_HUNG, 0);
-        }
-        if alive {
-            let _ = self.send(virgl::ctx_destroy(Tag::Background, id));
+        if let Some(c) = self.contexts.get_mut(&id) {
+            if c.state != CtxState::Reset {
+                c.state = CtxState::Quarantined;
+            }
+            let pending: Vec<u64> = c.inflight.iter().copied().collect();
+            for serial in pending {
+                self.publish(serial, fence_status::DEVICE_HUNG, 0);
+            }
+            self.settle(id);
         }
         // No progress is measured from the first quarantine.
         self.quarantined_at.get_or_insert(now);
         notify();
     }
 
-    /// Reset the device: every outstanding request ends, every context fails with
-    /// `DEVICE_RESET`, every resource is lost, and the device comes back empty.
-    fn reset(&mut self, now: u64) {
-        self.reset_wanted = false;
+    /// The earliest time the watchdog has something to decide.
+    fn next_deadline(&self, now: u64) -> Option<u64> {
+        let hangs = self.subs.values().filter(|s| !s.published).map(|s| s.sent_ns);
+        let waits = self.syncs.values().filter(|s| !s.failed).map(|s| s.sent_ns);
+        let progress = self.quarantined_at.map(|q| q.max(self.last_progress));
+        let at = hangs.chain(waits).chain(progress).min()?;
+        Some((at + limits::WATCHDOG_NS).min(now + EXAMINE_NS))
+    }
+
+    /// The reset decision, on `kgpu`: every context fails with `DEVICE_RESET` and every
+    /// synchronous wait with EIO, and the device is taken out to be reset outside the lock.
+    fn begin_reset(&mut self) -> Option<Device> {
+        if !core::mem::replace(&mut self.reset_wanted, false) || self.dev.is_none() {
+            return None;
+        }
         self.quarantined_at = None;
         self.stalled = false;
-        let tags = match self.dev.as_mut().map(|d| d.reset()) {
-            Some(Ok(tags)) => tags,
-            _ => {
-                self.dev = None;
-                self.status = abi::status::DEVICE_FAILED;
-                self.reason = "virtio-gpu reset failed";
-                Vec::new()
-            }
-        };
-        for tag in tags {
-            if let Tag::Sync(serial) = tag {
-                if !self.abandoned.remove(&serial) {
-                    self.done.insert(serial, Done { tag, fence: None, answer: 0, echoed: 0, resp: dma::DmaBox::new(wire::HDR) });
-                }
-            }
-        }
-        self.retire.clear();
-        let serials: Vec<u64> = self.subs.keys().copied().collect();
-        for serial in serials {
-            self.finish_sub(serial, fence_status::DEVICE_RESET, 0);
-        }
+        self.resetting = true;
+        self.epoch += 1;
         for c in self.contexts.values_mut() {
             c.state = CtxState::Reset;
             c.device_alive = false;
         }
-        let ids: Vec<u32> = self.resources.keys().copied().collect();
-        for id in ids {
+        let pending: Vec<u64> = self.subs.iter().filter(|(_, s)| !s.published).map(|(&k, _)| k).collect();
+        for serial in pending {
+            self.publish(serial, fence_status::DEVICE_RESET, 0);
+        }
+        for s in self.syncs.values_mut() {
+            s.failed = true;
+        }
+        notify();
+        self.dev.take()
+    }
+
+    /// The device confirmed the reset: nothing it was given, and nothing queued for it
+    /// before the decision, is in use any more. Every resource from before is lost.
+    fn finish_reset(&mut self, dev: Device, held: Vec<Request>, up: Result<(), &'static str>) {
+        for req in held {
+            self.ended(req);
+        }
+        let epoch = self.epoch;
+        let queued: Vec<(u64, Request)> = self.backlog.drain(..).collect();
+        for (at, req) in queued {
+            if at < epoch {
+                self.ended(req);
+            } else {
+                self.backlog.push_back((at, req));
+            }
+        }
+        let old: Vec<u32> = self.resources.iter().filter(|(_, r)| r.epoch < epoch).map(|(&id, _)| id).collect();
+        for id in old {
             if let Some(r) = self.resources.get_mut(&id) {
                 r.lost = true;
             }
             self.free_if_unused(id);
         }
-        let ctxs: Vec<u32> = self.contexts.keys().copied().collect();
-        for id in ctxs {
-            self.finalize_if_dropped(id);
+        self.resetting = false;
+        match up {
+            Ok(()) => self.dev = Some(dev),
+            Err(e) => {
+                drop(dev);
+                self.status = abi::status::DEVICE_FAILED;
+                self.reason = e;
+                let queued: Vec<(u64, Request)> = self.backlog.drain(..).collect();
+                for (_, req) in queued {
+                    self.ended(req);
+                }
+            }
         }
-        self.last_progress = now;
+        self.last_progress = now_ns();
+        self.flush();
+        let ids: Vec<u32> = self.contexts.keys().copied().collect();
+        for id in ids {
+            self.settle(id);
+        }
         notify();
     }
 
-    /// The earliest time the watchdog has something to decide.
-    fn next_deadline(&self) -> Option<u64> {
-        let hang = self.subs.values().filter(|s| s.sent_ns != 0).map(|s| s.sent_ns + limits::WATCHDOG_NS).min();
-        let reset = self.quarantined_at.map(|at| at.max(self.last_progress) + limits::WATCHDOG_NS);
-        match (hang, reset) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
+    /// The device did not complete the reset: it may still use everything it was given,
+    /// so nothing is released, and the core refuses further work.
+    fn reset_failed(&mut self, dev: Device) {
+        let queued: Vec<Request> = self.backlog.drain(..).map(|(_, r)| r).collect();
+        self.wedged = Some((dev, queued));
+        self.resetting = false;
+        self.status = abi::status::DEVICE_FAILED;
+        self.reason = "virtio-gpu reset did not complete";
+        for s in self.syncs.values_mut() {
+            s.failed = true;
         }
+        notify();
     }
 
     // -----------------------------------------------------------------------------------
@@ -762,7 +1032,7 @@ impl Core {
             if let Some(c) = self.contexts.get_mut(&id) {
                 c.dropped = true;
             }
-            self.finalize_if_dropped(id);
+            self.settle(id);
         }
         for (_, id) in p.resources {
             if let Some(r) = self.resources.get_mut(&id) {
@@ -809,83 +1079,36 @@ fn wait_for<T>(deadline: Option<u64>, interruptible: bool, mut f: impl FnMut(&mu
     }
 }
 
-/// Hand `req` to the device, waiting while its queue has no room. Calls `sent` under
-/// the lock once it is in the device's hands.
-fn send_blocking(mut req: Request, mut sent: impl FnMut(&mut Core)) -> Result<(), i64> {
-    let deadline = now_ns() + limits::WATCHDOG_NS;
-    loop {
-        if crate::syscall::check_signals_for_wait().is_some() {
-            return Err(EINTR);
+/// Send synchronous request `serial` (built with `Tag::Sync(serial)`) in device context
+/// `ctx` (0 for none), holding `holds` until the device returns it, and wait for its
+/// answer. The watchdog fails the wait 2 s after the request was sent (EIO), and a signal
+/// or a kill ends it (EINTR); either way the request keeps its holds, and `reading`'s
+/// mark, until the device returns it or a confirmed reset ends it.
+fn exec_req(serial: u64, req: Request, ctx: u32, holds: &[u32], reading: Option<u32>) -> Result<Done, i64> {
+    with_core(|c| c.start_sync(serial, req, ctx, holds, reading)).unwrap_or(Err(ENODEV))?;
+    let outcome = wait_for(None, true, |c| {
+        if let Some(d) = c.done.remove(&serial) {
+            return Some(Ok(d));
         }
-        if now_ns() >= deadline {
-            return Err(EIO);
-        }
-        let segments = req.segment_count();
-        let back = with_core(|c| {
-            let Some(dev) = c.dev.as_ref() else { return Some(Err(EIO)) };
-            if !dev.can_fit(segments) {
-                return Some(Err(EINVAL));
-            }
-            if let Tag::Submit { ctx, serial, .. } = req.tag {
-                if !c.contexts.get(&ctx).is_some_and(|x| x.state == CtxState::Live && x.device_alive)
-                    || !c.subs.contains_key(&serial)
-                {
-                    return Some(Err(EIO));
-                }
-            }
-            match c.send(req) {
-                Ok(()) => {
-                    sent(c);
-                    None
-                }
-                Err(r) => Some(Ok(r)),
-            }
-        })
-        .unwrap_or(Some(Err(EIO)));
-        match back {
-            None => return Ok(()),
-            Some(Err(e)) => return Err(e),
-            Some(Ok(r)) => req = r,
-        }
-        // The device returns requests as it finishes them; the wait ends when it has.
-        if matches!(wait_for(Some(deadline.min(now_ns() + 10_000_000)), true, |c| {
-            c.dev.as_ref().map(|d| d.has_room(segments)).filter(|&room| room)
-        }), Err(Stop::Interrupted)) {
-            return Err(EINTR);
-        }
-    }
-}
-
-/// Send a synchronous request (built with `Tag::Sync(serial)`) and wait for its answer.
-/// A kill abandons the wait; the request's answer is then dropped when it comes.
-fn exec(serial: u64, req: Request, deadline: Option<u64>) -> Result<Done, i64> {
-    send_blocking(req, |_| {})?;
-    match wait_for(deadline, true, |c| c.done.remove(&serial)) {
-        Ok(d) => Ok(d),
-        Err(stop) => {
-            with_core(|c| {
-                if c.done.remove(&serial).is_none() {
-                    c.abandoned.insert(serial);
-                }
-            });
-            Err(match stop {
-                Stop::Timeout => EIO,
-                Stop::Interrupted => EINTR,
+        c.syncs.get(&serial).filter(|s| s.failed).map(|_| Err(EIO))
+    });
+    match outcome {
+        Ok(Ok(d)) => Ok(d),
+        other => {
+            with_core(|c| c.abandon(serial));
+            Err(match other {
+                Ok(Err(e)) => e,
+                _ => EINTR,
             })
         }
     }
 }
 
 /// Build and run one synchronous command, requiring a success answer.
-fn exec_ok(build: impl FnOnce(Tag) -> Request) -> Result<Done, i64> {
-    exec_opt(|t| Some(build(t)))
-}
-
-/// `exec_ok` for a command whose building can run out of memory.
-fn exec_opt(build: impl FnOnce(Tag) -> Option<Request>) -> Result<Done, i64> {
+fn exec_ok(build: impl FnOnce(Tag) -> Option<Request>, ctx: u32, holds: &[u32]) -> Result<Done, i64> {
     let serial = with_core(|c| c.serial()).ok_or(ENODEV)?;
     let req = build(Tag::Sync(serial)).ok_or(ENOMEM)?;
-    let d = exec(serial, req, None)?;
+    let d = exec_req(serial, req, ctx, holds, None)?;
     if virgl::ok(d.answer) {
         Ok(d)
     } else {
@@ -919,32 +1142,63 @@ pub fn handle_interrupt() {
     }
 }
 
-fn ensure_reaper() {
-    if REAPER.load(Ordering::Acquire) != 0 {
-        return;
-    }
-    if REAPER_STARTING.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok() {
-        if let Ok(handle) = crate::task::kthread::kthread_run(reaper, "kgpu") {
-            REAPER.store(handle.tid(), Ordering::Release);
+/// Start `kgpu` if it is not running; false when it cannot be started.
+fn ensure_reaper() -> bool {
+    loop {
+        if REAPER.load(Ordering::Acquire) != 0 {
+            return true;
         }
-        REAPER_STARTING.store(false, Ordering::Release);
+        if REAPER_STARTING.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+            let started = match crate::task::kthread::kthread_run(reaper, "kgpu") {
+                Ok(handle) => {
+                    REAPER.store(handle.tid(), Ordering::Release);
+                    true
+                }
+                Err(_) => false,
+            };
+            REAPER_STARTING.store(false, Ordering::Release);
+            return started;
+        }
+        crate::task::scheduler::yield_current();
     }
 }
 
+/// Block `kgpu` until `wake` (or indefinitely) or until a GPU event after `seen`.
+fn reaper_block(tid: u64, seen: u64, wake: Option<u64>) {
+    crate::arch_without_interrupts(|| {
+        crate::task::scheduler::with_scheduler(|sched| match wake {
+            Some(at) => sched.block_current_for_timer(at),
+            None => sched.block_current(),
+        });
+        if EVENTS.load(Ordering::Acquire) != seen {
+            crate::task::scheduler::with_scheduler(|sched| {
+                sched.unblock(tid);
+            });
+        }
+    });
+    crate::task::scheduler::yield_current();
+    crate::arch_halt_with_interrupts();
+}
+
 /// `kgpu`: takes completions nobody is waiting for, runs the watchdog at its deadlines
-/// and reclaims what exited processes left, once a second while any process holds GPU
-/// state.
+/// and at least every 250 ms while work is outstanding, resets the device when the
+/// watchdog or a device fault asks for it, and reclaims what exited processes left, once
+/// a second while any process holds GPU state.
 fn reaper() {
     let Some(tid) = crate::task::scheduler::current_thread_id() else { return };
     let mut next_sweep = now_ns();
     loop {
         let seen = EVENTS.load(Ordering::Acquire);
-        let (deadline, busy) = with_core(|c| {
-            c.pump();
-            (c.next_deadline(), !c.procs.is_empty())
-        })
-        .unwrap_or((None, false));
         let now = now_ns();
+        let (deadline, busy, reset) = with_core(|c| {
+            c.pump();
+            (c.next_deadline(now), !c.procs.is_empty(), c.reset_wanted)
+        })
+        .unwrap_or((None, false, false));
+        if reset {
+            reset_device(tid);
+            continue;
+        }
         if busy && now >= next_sweep {
             sweep();
             next_sweep = now + 1_000_000_000;
@@ -955,19 +1209,26 @@ fn reaper() {
             (None, true) => Some(next_sweep),
             (None, false) => None,
         };
-        crate::arch_without_interrupts(|| {
-            crate::task::scheduler::with_scheduler(|sched| match wake {
-                Some(at) => sched.block_current_for_timer(at),
-                None => sched.block_current(),
-            });
-            if EVENTS.load(Ordering::Acquire) != seen {
-                crate::task::scheduler::with_scheduler(|sched| {
-                    sched.unblock(tid);
-                });
-            }
-        });
-        crate::task::scheduler::yield_current();
-        crate::arch_halt_with_interrupts();
+        reaper_block(tid, seen, wake);
+    }
+}
+
+/// Reset the device (VirtIO 1.3 section 2.4) outside the core's lock: write status 0 and
+/// wait, within the reset budget, for the device to read it back as 0. Only that
+/// confirmation releases what the device was given; without it the device is kept with
+/// everything it holds.
+fn reset_device(tid: u64) {
+    let Some(mut dev) = with_core(|c| c.begin_reset()).flatten() else { return };
+    dev.begin_reset();
+    let start = now_ns();
+    while !dev.reset_done() && now_ns().saturating_sub(start) < RESET_BUDGET_NS {
+        reaper_block(tid, EVENTS.load(Ordering::Acquire), Some(now_ns() + 1_000_000));
+    }
+    if dev.reset_done() {
+        let (held, up) = dev.restart();
+        with_core(move |c| c.finish_reset(dev, held, up));
+    } else {
+        with_core(move |c| c.reset_failed(dev));
     }
 }
 
@@ -1092,6 +1353,31 @@ impl Drop for CreationGuard {
     }
 }
 
+/// A new resource record: no handle yet, nothing written.
+#[allow(clippy::too_many_arguments)]
+fn new_res(owner: u64, kind_: u32, format_: u32, width: u32, height: u32, size: u64, pitch: u32, backing: Arc<Pages>, epoch: u64) -> Res {
+    Res {
+        owner,
+        kind: kind_,
+        format: format_,
+        width,
+        height,
+        size,
+        pitch,
+        backing,
+        epoch,
+        generation: 0,
+        last: None,
+        writers: 0,
+        invalid: false,
+        invalidated_by: 0,
+        dropped: false,
+        holds: 0,
+        lost: false,
+        reading: false,
+    }
+}
+
 fn op_context_create(arg: u64, len: u64) -> Result<u64, i64> {
     let mut a: abi::ContextCreate = read_arg(arg, len)?;
     if a.flags != 0 || a.handle != 0 || a.warmed != 0 || a.reserved != [0; 2] {
@@ -1100,7 +1386,9 @@ fn op_context_create(arg: u64, len: u64) -> Result<u64, i64> {
     let tgid = caller()?;
     let _creation = CreationGuard::acquire(tgid)?;
     sweep();
-    ensure_reaper();
+    if !ensure_reaper() {
+        return Err(ENOMEM);
+    }
     // Reserve the context and its internal resources.
     let vb_pages = Arc::new(Pages::new(encode::VERTEX_BUFFER_BYTES as usize / PAGE).ok_or(ENOMEM)?);
     let scratch_pages = Arc::new(Pages::new(1).ok_or(ENOMEM)?);
@@ -1116,30 +1404,9 @@ fn op_context_create(arg: u64, len: u64) -> Result<u64, i64> {
         let vb = c.next_res;
         let scratch = c.next_res + 1;
         c.next_res += 2;
-        for (rid, kind_, pages, w, h, size) in [
-            (vb, kind::BUFFER, vb_pages.clone(), 0, 0, encode::VERTEX_BUFFER_BYTES as u64),
-            (scratch, kind::TARGET, scratch_pages.clone(), 1, 1, 0),
-        ] {
-            c.resources.insert(rid, Res {
-                owner: 0,
-                kind: kind_,
-                format: format::B8G8R8A8,
-                width: w,
-                height: h,
-                size,
-                pitch: 256,
-                backing: pages,
-                generation: 0,
-                last: None,
-                writers: 0,
-                invalid: false,
-                invalidated_by: 0,
-                dropped: false,
-                holds: 0,
-                lost: false,
-                reading: false,
-            });
-        }
+        let epoch = c.epoch;
+        c.resources.insert(vb, new_res(0, kind::BUFFER, format::B8G8R8A8, 0, 0, encode::VERTEX_BUFFER_BYTES as u64, 256, vb_pages.clone(), epoch));
+        c.resources.insert(scratch, new_res(0, kind::TARGET, format::B8G8R8A8, 1, 1, 0, 256, scratch_pages.clone(), epoch));
         c.contexts.insert(id, Ctx {
             id,
             owner: tgid,
@@ -1158,34 +1425,41 @@ fn op_context_create(arg: u64, len: u64) -> Result<u64, i64> {
             vb,
             scratch,
             warmed: 0,
-            errors_in_row: 0,
         });
         Ok((id, vb, scratch))
     })
     .ok_or(ENODEV)??;
-    match create_device_context(tgid, id, vb, scratch, &vb_pages, &scratch_pages) {
-        Ok(()) => {}
+    let created = create_device_context(tgid, id, vb, scratch, &vb_pages, &scratch_pages).and_then(|()| {
+        with_core(|c| {
+            // The watchdog or a reset may have ended the context while it was created.
+            if !c.contexts.get(&id).is_some_and(|x| x.state == CtxState::Creating && x.device_alive) {
+                return Err(EIO);
+            }
+            let h = c.handle(tgid);
+            c.proc_mut(tgid).contexts.insert(h, id);
+            if let Some(ctx) = c.contexts.get_mut(&id) {
+                ctx.state = CtxState::Live;
+                ctx.warmed = encode::CATALOGUE_PROGRAMS;
+            }
+            Ok(h)
+        })
+        .unwrap_or(Err(ENODEV))
+    });
+    let handle = match created {
+        Ok(h) => h,
         Err(e) => {
             with_core(|c| {
                 if let Some(ctx) = c.contexts.get_mut(&id) {
-                    ctx.state = CtxState::Live;
+                    if ctx.state == CtxState::Creating {
+                        ctx.state = CtxState::Live;
+                    }
                     ctx.dropped = true;
                 }
-                c.finalize_if_dropped(id);
+                c.settle(id);
             });
             return Err(e);
         }
-    }
-    let handle = with_core(|c| {
-        let h = c.handle(tgid);
-        c.proc_mut(tgid).contexts.insert(h, id);
-        if let Some(ctx) = c.contexts.get_mut(&id) {
-            ctx.state = CtxState::Live;
-            ctx.warmed = encode::CATALOGUE_PROGRAMS;
-        }
-        h
-    })
-    .ok_or(ENODEV)?;
+    };
     a.handle = handle;
     a.warmed = encode::CATALOGUE_PROGRAMS;
     if let Err(e) = write_arg(arg, &a) {
@@ -1196,39 +1470,47 @@ fn op_context_create(arg: u64, len: u64) -> Result<u64, i64> {
 }
 
 /// Create device context `id` with its internal resources and the process's resources
-/// attached, then compile and warm the catalogue's programs, waiting for the warm-up's
-/// fence with a 2 s wait deadline. Watchdog enrollment for warm-up is still required.
-fn create_device_context(tgid: u64, id: u32, vb: u32, scratch: u32, vb_pages: &Pages, scratch_pages: &Pages) -> Result<(), i64> {
-    exec_ok(|t| virgl::ctx_create(t, id))?;
+/// attached, then compile and warm the catalogue's programs and wait for the warm-up's
+/// fence. Every wait here is a synchronous device request under the watchdog, ended by a
+/// kill (section 1.4.1, program warm-up).
+fn create_device_context(tgid: u64, id: u32, vb: u32, scratch: u32, vb_pages: &Arc<Pages>, scratch_pages: &Arc<Pages>) -> Result<(), i64> {
+    // Counted as alive from the request on, so a failed creation queues CTX_DESTROY
+    // behind it whatever the device made of it.
     with_core(|c| {
         if let Some(ctx) = c.contexts.get_mut(&id) {
             ctx.device_alive = true;
         }
     });
-    exec_ok(|t| {
-        virgl::resource_create(t, vb, wire::target::BUFFER, wire::format::R8_UNORM, wire::bind::VERTEX_BUFFER, encode::VERTEX_BUFFER_BYTES, 1)
-    })?;
-    exec_opt(|t| virgl::attach_backing(t, vb, vb_pages))?;
-    exec_ok(|t| virgl::ctx_attach(t, id, vb))?;
-    exec_ok(|t| {
-        virgl::resource_create(
-            t,
-            scratch,
-            wire::target::TEXTURE_2D,
-            wire::format::B8G8R8A8_UNORM,
-            wire::bind::RENDER_TARGET | wire::bind::SAMPLER_VIEW,
-            1,
-            1,
-        )
-    })?;
-    exec_opt(|t| virgl::attach_backing(t, scratch, scratch_pages))?;
-    exec_ok(|t| virgl::ctx_attach(t, id, scratch))?;
+    exec_ok(|t| Some(virgl::ctx_create(t, id)), id, &[])?;
+    exec_ok(
+        |t| Some(virgl::resource_create(t, vb, wire::target::BUFFER, wire::format::R8_UNORM, wire::bind::VERTEX_BUFFER, encode::VERTEX_BUFFER_BYTES, 1)),
+        0,
+        &[],
+    )?;
+    exec_ok(|t| virgl::attach_backing(t, vb, vb_pages.clone()), 0, &[])?;
+    exec_ok(|t| Some(virgl::ctx_attach(t, id, vb)), id, &[])?;
+    exec_ok(
+        |t| {
+            Some(virgl::resource_create(
+                t,
+                scratch,
+                wire::target::TEXTURE_2D,
+                wire::format::B8G8R8A8_UNORM,
+                wire::bind::RENDER_TARGET | wire::bind::SAMPLER_VIEW,
+                1,
+                1,
+            ))
+        },
+        0,
+        &[],
+    )?;
+    exec_ok(|t| virgl::attach_backing(t, scratch, scratch_pages.clone()), 0, &[])?;
+    exec_ok(|t| Some(virgl::ctx_attach(t, id, scratch)), id, &[])?;
     let theirs: Vec<u32> = with_core(|c| c.procs.get(&tgid).map(|p| p.resources.values().copied().collect()).unwrap_or_default())
         .unwrap_or_default();
     for rid in theirs {
-        exec_ok(|t| virgl::ctx_attach(t, id, rid))?;
+        exec_ok(|t| Some(virgl::ctx_attach(t, id, rid)), id, &[])?;
     }
-    // The warm-up has a bounded wait; it still needs watchdog recovery enrollment.
     let (serial, fence, req) = with_core(|c| {
         let mut enc = encode::Enc::new();
         let ctx = c.contexts.get_mut(&id)?;
@@ -1243,7 +1525,7 @@ fn create_device_context(tgid: u64, id: u32, vb: u32, scratch: u32, vb_pages: &P
     })
     .flatten()
     .ok_or(ENOMEM)?;
-    let d = exec(serial, req, Some(now_ns() + limits::WATCHDOG_NS))?;
+    let d = exec_req(serial, req, id, &[vb, scratch], None)?;
     if !virgl::ok(d.answer) || d.echoed != fence {
         return Err(EIO);
     }
@@ -1270,7 +1552,7 @@ fn destroy_context(tgid: u64, handle: u64) -> bool {
         if let Some(ctx) = c.contexts.get_mut(&id) {
             ctx.dropped = true;
         }
-        c.finalize_if_dropped(id);
+        c.settle(id);
         true
     })
     .unwrap_or(false)
@@ -1313,82 +1595,81 @@ fn op_resource_create(arg: u64, len: u64) -> Result<u64, i64> {
         _ => return Err(EINVAL),
     };
     let frames = (bytes as usize).div_ceil(PAGE);
+    let charge = (frames * PAGE) as u64;
     sweep();
     let id = with_core(|c| {
         let p = c.proc_mut(tgid);
         if p.resources.len() >= RESOURCE_QUOTA {
             return Err(EAGAIN);
         }
-        if p.bytes + (frames * PAGE) as u64 > MEMORY_QUOTA {
+        if p.bytes + charge > MEMORY_QUOTA {
             return Err(ENOMEM);
         }
-        p.bytes += (frames * PAGE) as u64;
+        p.bytes += charge;
         let id = c.next_res;
         c.next_res += 1;
         Ok(id)
     })
     .ok_or(ENODEV)??;
-    let unreserve = |c: &mut Core| {
-        if let Some(p) = c.procs.get_mut(&tgid) {
-            p.bytes = p.bytes.saturating_sub((frames * PAGE) as u64);
-        }
-    };
     let Some(pages) = Pages::new(frames) else {
-        with_core(unreserve);
+        with_core(|c| {
+            if let Some(p) = c.procs.get_mut(&tgid) {
+                p.bytes = p.bytes.saturating_sub(charge);
+            }
+        });
         return Err(ENOMEM);
     };
     let pages = Arc::new(pages);
     let width = if a.kind == kind::BUFFER { a.size as u32 } else { a.width };
     let height = if a.kind == kind::BUFFER { 1 } else { a.height };
-    let made = exec_ok(|t| virgl::resource_create(t, id, vtarget, vformat, bind, width, height));
-    if let Err(e) = made {
-        with_core(unreserve);
-        return Err(if e == EIO { EINVAL } else { e });
+    // The record exists, held by its creation and without a handle, from before the
+    // device is asked to create it, so whatever happens the device's resource is unref'd.
+    with_core(|c| {
+        let mut r = new_res(tgid, a.kind, a.format, a.width, a.height, a.size, pitch, pages.clone(), c.epoch);
+        r.holds = 1;
+        c.resources.insert(id, r);
+    });
+    let mut outcome = exec_ok(|t| Some(virgl::resource_create(t, id, vtarget, vformat, bind, width, height)), 0, &[])
+        .map(drop)
+        .map_err(|e| if e == EIO { EINVAL } else { e });
+    if outcome.is_ok() {
+        outcome = exec_ok(|t| virgl::attach_backing(t, id, pages.clone()), 0, &[]).map(drop);
     }
-    let attached = exec_opt(|t| virgl::attach_backing(t, id, &pages));
     let ctxs: Vec<u32> = with_core(|c| {
         c.procs.get(&tgid).map(|p| p.contexts.values().copied().collect()).unwrap_or_default()
     })
     .unwrap_or_default();
-    let mut outcome = attached.map(|_| ());
     for ctx in ctxs {
         if outcome.is_ok() {
-            outcome = exec_ok(|t| virgl::ctx_attach(t, ctx, id)).map(|_| ());
+            if let Err(e) = exec_ok(|t| Some(virgl::ctx_attach(t, ctx, id)), ctx, &[]) {
+                // A context that ended meanwhile needs no attachment.
+                let ended = with_core(|c| !c.contexts.get(&ctx).is_some_and(|x| x.state == CtxState::Live && x.device_alive && !x.dropped))
+                    .unwrap_or(true);
+                if !ended {
+                    outcome = Err(e);
+                }
+            }
         }
     }
     let handle = with_core(|c| {
-        let h = c.handle(tgid);
-        c.resources.insert(id, Res {
-            owner: tgid,
-            kind: a.kind,
-            format: a.format,
-            width: a.width,
-            height: a.height,
-            size: a.size,
-            pitch,
-            backing: pages,
-            generation: 0,
-            last: None,
-            writers: 0,
-            invalid: false,
-            invalidated_by: 0,
-            dropped: outcome.is_err(),
-            holds: 0,
-            lost: false,
-            reading: false,
-        });
+        if let Some(r) = c.resources.get_mut(&id) {
+            r.holds -= 1;
+            r.dropped = outcome.is_err();
+        }
         if outcome.is_ok() {
+            let h = c.handle(tgid);
             c.proc_mut(tgid).resources.insert(h, id);
+            Some(h)
         } else {
             c.free_if_unused(id);
+            None
         }
-        h
     })
-    .ok_or(ENODEV)?;
+    .flatten();
     outcome?;
-    a.handle = handle;
+    a.handle = handle.ok_or(ENODEV)?;
     if let Err(e) = write_arg(arg, &a) {
-        destroy_resource(tgid, handle);
+        destroy_resource(tgid, a.handle);
         return Err(e);
     }
     Ok(0)
@@ -1548,18 +1829,19 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             return refuse(&mut a, r.index, r.error, errno);
         }
     };
-    let (written, held, whole) = named(&words, &view);
+    let (written, named_ids, whole) = named(&words, &view);
     // Take the context's submission slot: one sender at a time, at most four in flight.
     let mut waited = false;
     let admitted = wait_for(None, true, |c| {
-        let ctx = c.contexts.get_mut(&id)?;
+        let Some(ctx) = c.contexts.get_mut(&id) else { return Some(Err(EIO)) };
         if ctx.state != CtxState::Live || ctx.dropped {
             return Some(Err(EIO));
         }
-        if ctx.busy || ctx.inflight.len() >= limits::IN_FLIGHT {
-            if ctx.inflight.len() >= limits::IN_FLIGHT {
-                waited = true;
-            }
+        if ctx.inflight.len() >= limits::IN_FLIGHT {
+            waited = true;
+            return None;
+        }
+        if ctx.busy {
             return None;
         }
         ctx.busy = true;
@@ -1575,12 +1857,12 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             if let Some(ctx) = c.contexts.get_mut(&id) {
                 ctx.busy = false;
             }
-            c.finalize_if_dropped(id);
+            c.settle(id);
         });
         notify();
     };
     // The submission's own vertex buffer: no other submission writes it, and it is
-    // freed when the submission completes.
+    // freed when the submission no longer holds it.
     let vertex_buffer = match vertex_buffer_for(id, encode::vertex_bytes(plan.drawn)) {
         Ok(vb) => vb,
         Err(e) => {
@@ -1588,24 +1870,30 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             return Err(e);
         }
     };
-    let named_ids = held.clone();
-    let mut held = held;
-    if let Some(vb) = vertex_buffer {
-        held.push(vb);
-    }
+    let drop_vertex_buffer = || {
+        if let Some(vb) = vertex_buffer {
+            with_core(|c| c.unhold(vb));
+        }
+    };
     // The context's busy slot serializes object allocation; translation can allocate
     // and process a large stream without holding the global core lock.
     let state = with_core(|c| c.contexts.get(&id).map(|ctx| (ctx.objects.clone(), ctx.vb))).flatten();
     let Some((mut objects, default_vb)) = state else {
+        drop_vertex_buffer();
         release_slot();
         return Err(EIO);
     };
     let mut enc = encode::Enc::new();
     encode::translate(&mut enc, &mut objects, &words, &view, vertex_buffer.unwrap_or(default_vb), FLIP_Y);
     let chunks = enc.finish();
-    let forced = crate::test_control::take(test_point::DEVICE_ERROR, 0).is_some();
-    // Recheck context and resource lifetime after translation and before publication.
-    let prepared = with_core(|c| -> Result<(u64, u64, Vec<WordBuf>), i64> {
+    let mut held = named_ids.clone();
+    if let Some(vb) = vertex_buffer {
+        held.push(vb);
+    }
+    // Recheck the context and the resources after translation, then hand the whole
+    // submission to the device's queue at once: nothing of a refused submission is sent,
+    // and nothing of an accepted one is left unsent.
+    let prepared = with_core(|c| -> Result<u64, i64> {
         let ctx = c.contexts.get(&id).ok_or(EINVAL)?;
         if ctx.state != CtxState::Live || !ctx.device_alive || ctx.dropped {
             return Err(EIO);
@@ -1617,34 +1905,48 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             }
         }
         let chunks = chunks.ok_or(ENOMEM)?;
+        // Every chunk's chain, and test point 27's two-buffer command, fits the queue.
+        if chunks.iter().any(|w| w.page_count() + 2 > c.queue_size) || c.queue_size < 2 {
+            return Err(ENOMEM);
+        }
+        // Test point 27, `device-error`: the chunks are followed by a fenced command of a
+        // type VirtIO does not define, which the device can only refuse, and that command
+        // carries the fence. Taken only once the submission is certain to be sent.
+        let forced = crate::test_control::take(test_point::DEVICE_ERROR, 0).is_some();
+        let serial = c.serial();
+        let fence = c.device_fence();
         let ctx = c.contexts.get_mut(&id).ok_or(EINVAL)?;
         ctx.objects = objects;
         ctx.issued += 1;
         let n = ctx.issued;
         let ns = ctx.ns;
-        ctx.totals.submissions += 1;
-        ctx.totals.draws += plan.draws;
-        ctx.totals.instances += plan.instances;
-        ctx.totals.area += plan.area;
-        ctx.totals.estimate += plan.estimate;
-        if waited {
-            ctx.totals.ring_waits += 1;
+        ctx.inflight.push_back(serial);
+        let count_in = |t: &mut Totals| {
+            t.submissions += 1;
+            t.draws += plan.draws;
+            t.instances += plan.instances;
+            t.area += plan.area;
+            t.estimate += plan.estimate;
+            if waited {
+                t.ring_waits += 1;
+            }
+        };
+        count_in(&mut ctx.totals);
+        count_in(&mut c.proc_mut(tgid).totals);
+        let mut reqs: Vec<Request> = Vec::new();
+        let count = chunks.len();
+        for (i, words) in chunks.into_iter().enumerate() {
+            let last = i + 1 == count && !forced;
+            reqs.push(virgl::submit(Tag::Submit { ctx: id, serial, last }, id, last.then_some(fence), words));
         }
-        let serial = c.serial();
-        let fence = c.device_fence();
-        if let Some(ctx) = c.contexts.get_mut(&id) {
-            ctx.inflight.push_back(serial);
+        if reqs.is_empty() && !forced {
+            // An empty translation still needs a fenced command to complete in order.
+            reqs.push(virgl::submit(Tag::Submit { ctx: id, serial, last: true }, id, Some(fence), WordBuf::new()));
         }
-        let p = c.proc_mut(tgid);
-        p.totals.submissions += 1;
-        p.totals.draws += plan.draws;
-        p.totals.instances += plan.instances;
-        p.totals.area += plan.area;
-        p.totals.estimate += plan.estimate;
-        if waited {
-            p.totals.ring_waits += 1;
+        if forced {
+            reqs.push(virgl::undefined_command(Tag::Submit { ctx: id, serial, last: true }, id, fence));
         }
-        for rid in &held {
+        for rid in &named_ids {
             if let Some(r) = c.resources.get_mut(rid) {
                 r.holds += 1;
             }
@@ -1658,74 +1960,40 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             ctx: id,
             n,
             fence,
-            sent_ns: 0,
+            sent_ns: now_ns(),
             error: None,
             mismatch: false,
-            injected_error: forced,
+            requests: reqs.len() as u32,
+            published: false,
+            retired: false,
             written: written.clone(),
             whole,
-            held: held.clone(),
+            held,
         });
-        Ok((serial, (ns as u64) << 32 | n as u64, chunks))
+        let epoch = c.epoch;
+        c.backlog.extend(reqs.into_iter().map(|r| (epoch, r)));
+        c.flush();
+        Ok((ns as u64) << 32 | n as u64)
     })
-    .ok_or(ENODEV);
-    let (serial, bgl_fence, chunks) = match prepared {
-        Ok(Ok(p)) => p,
-        Ok(Err(e)) | Err(e) => {
-            if let Some(vb) = vertex_buffer {
-                with_core(|c| c.free_if_unused(vb));
-            }
-            release_slot();
+    .unwrap_or(Err(ENODEV));
+    release_slot();
+    let bgl_fence = match prepared {
+        Ok(f) => f,
+        Err(e) => {
+            drop_vertex_buffer();
             return Err(e);
         }
     };
-    // Send the chunks in order; only the last command carries the fence. Test point 27,
-    // `device-error`, follows the chunks with a fenced command of a type VirtIO does not
-    // define, which the device can only refuse, and makes that the last. A reset or
-    // quarantine while sending ends the submission, which has then already completed
-    // with its error.
-    let mut chunks: VecDeque<WordBuf> = chunks.into_iter().collect();
-    if chunks.is_empty() && !forced {
-        // An empty translation still needs a fenced command to complete in order.
-        chunks.push_back(WordBuf::new());
-    }
-    let mut sending = Ok(());
-    while let Some(words) = chunks.pop_front() {
-        let last = chunks.is_empty() && !forced;
-        let Some(fence) = with_core(|c| c.subs.get(&serial).map(|s| s.fence)).flatten() else { break };
-        let req = virgl::submit(Tag::Submit { ctx: id, serial, last }, id, last.then_some(fence), words);
-        sending = send_blocking(req, |c| {
-            if let Some(sub) = c.subs.get_mut(&serial) {
-                if sub.sent_ns == 0 {
-                    sub.sent_ns = now_ns();
-                }
-            }
-        });
-        if sending.is_err() {
-            break;
-        }
-    }
-    if forced && sending.is_ok() {
-        if let Some(fence) = with_core(|c| c.subs.get(&serial).map(|s| s.fence)).flatten() {
-            let req = virgl::undefined_command(Tag::Submit { ctx: id, serial, last: true }, id, fence);
-            sending = send_blocking(req, |c| {
-                if let Some(sub) = c.subs.get_mut(&serial) {
-                    sub.sent_ns = now_ns();
-                }
-            });
-        }
-    }
-    release_slot();
-    sending?;
     a.fence = bgl_fence;
     a.estimate = plan.estimate;
     write_arg(arg, &a)?;
     Ok(0)
 }
 
-/// A device buffer of `bytes` for one submission's vertices, attached to context `ctx`;
-/// `None` when the submission draws nothing. It has no guest backing (the vertices
-/// reach it by inline writes) and is freed once the submission no longer holds it.
+/// A device buffer of `bytes` for one submission's vertices, attached to context `ctx`
+/// and held for the submission; `None` when the submission draws nothing. It has no guest
+/// backing (the vertices reach it by inline writes) and is freed once the submission no
+/// longer holds it.
 fn vertex_buffer_for(ctx: u32, bytes: u64) -> Result<Option<u32>, i64> {
     if bytes == 0 {
         return Ok(None);
@@ -1734,43 +2002,23 @@ fn vertex_buffer_for(ctx: u32, bytes: u64) -> Result<Option<u32>, i64> {
     let id = with_core(|c| {
         let id = c.next_res;
         c.next_res += 1;
-        c.resources.insert(id, Res {
-            owner: 0,
-            kind: kind::BUFFER,
-            format: format::B8G8R8A8,
-            width: 0,
-            height: 0,
-            size: bytes,
-            pitch: 0,
-            backing: Arc::new(Pages::none()),
-            generation: 0,
-            last: None,
-            writers: 0,
-            invalid: false,
-            invalidated_by: 0,
-            dropped: true,
-            holds: 1,
-            lost: false,
-            reading: false,
-        });
+        let mut r = new_res(0, kind::BUFFER, format::B8G8R8A8, 0, 0, bytes, 0, Arc::new(Pages::none()), c.epoch);
+        r.dropped = true;
+        r.holds = 1;
+        c.resources.insert(id, r);
         id
     })
     .ok_or(ENODEV)?;
-    let made = exec_ok(|t| virgl::resource_create(t, id, wire::target::BUFFER, wire::format::R8_UNORM, wire::bind::VERTEX_BUFFER, size, 1))
-        .and_then(|_| exec_ok(|t| virgl::ctx_attach(t, ctx, id)));
-    // The submission takes over the hold made above.
-    with_core(|c| {
-        if let Some(r) = c.resources.get_mut(&id) {
-            r.holds -= 1;
-            if made.is_err() {
-                r.lost = true;
-            }
-        }
-    });
+    let made = exec_ok(
+        |t| Some(virgl::resource_create(t, id, wire::target::BUFFER, wire::format::R8_UNORM, wire::bind::VERTEX_BUFFER, size, 1)),
+        0,
+        &[],
+    )
+    .and_then(|_| exec_ok(|t| Some(virgl::ctx_attach(t, ctx, id)), ctx, &[]));
     match made {
         Ok(_) => Ok(Some(id)),
         Err(e) => {
-            with_core(|c| c.free_if_unused(id));
+            with_core(|c| c.unhold(id));
             Err(e)
         }
     }
@@ -1793,17 +2041,18 @@ fn op_wait(arg: u64, len: u64) -> Result<u64, i64> {
     .ok_or(EINVAL)?;
     let deadline = now_ns().saturating_add(a.timeout_ns);
     let outcome = wait_for(Some(deadline), true, |c| {
-        let ctx = c.contexts.get(&id)?;
-        (n <= ctx.done_upto).then(|| ctx.outcomes.get(&n).copied().unwrap_or((fence_status::OK, 0)))
+        let Some(ctx) = c.contexts.get(&id) else { return Some(Err(EINVAL)) };
+        (n <= ctx.done_upto).then(|| Ok(ctx.outcomes.get(&n).copied().unwrap_or((fence_status::OK, 0))))
     });
     match outcome {
-        Ok((fence_status::OK, _)) => Ok(0),
-        Ok((status, answer)) => {
+        Ok(Ok((fence_status::OK, _))) => Ok(0),
+        Ok(Ok((status, answer))) => {
             a.status = status;
             a.answer = answer;
             write_arg(arg, &a)?;
             Err(EIO)
         }
+        Ok(Err(e)) => Err(e),
         Err(Stop::Timeout) => Err(ETIMEDOUT),
         Err(Stop::Interrupted) => Err(EINTR),
     }
@@ -1852,12 +2101,16 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
         Ok(Err(e)) => return Err(e),
         Err(_) => return Err(EINTR),
     };
+    // The target is ours to poison and read until every transfer into it has ended; a
+    // transfer whose waiter left keeps the mark until the device returns it.
     let release = || {
         with_core(|c| {
-            if let Some(r) = c.resources.get_mut(&id) {
-                r.reading = false;
+            if !c.syncs.values().any(|s| s.reading == Some(id)) {
+                if let Some(r) = c.resources.get_mut(&id) {
+                    r.reading = false;
+                }
+                c.free_if_unused(id);
             }
-            c.free_if_unused(id);
         });
         notify();
     };
@@ -1923,9 +2176,11 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
 
 /// Read a rectangle of target `id` into the caller's pixels, band by band: each band is
 /// transferred twice, into the poison and into its complement, and the bytes that differ
-/// between the two are counted as unwritten (section 1.8). Returns that count and the
-/// first transfer's fence and answer.
-fn observe(tgid: u64, id: u32, last: Option<LastWrite>, backing: &Pages, pitch: u32, fmt: u32, a: abi::Readback) -> Result<(u32, u64, u32), i64> {
+/// between the two are counted as unwritten (section 1.8). Every transfer is a
+/// synchronous request under the watchdog that holds the target, and its backing, until
+/// the device returns it. Returns that count and the first transfer's fence and answer.
+#[allow(clippy::too_many_arguments)]
+fn observe(tgid: u64, id: u32, last: Option<LastWrite>, backing: &Arc<Pages>, pitch: u32, fmt: u32, a: abi::Readback) -> Result<(u32, u64, u32), i64> {
     let ctx = with_core(|c| {
         let mine = |cid: &u32| c.contexts.get(cid).is_some_and(|x| x.owner == tgid && x.state == CtxState::Live && x.device_alive);
         last.map(|l| l.ctx)
@@ -1937,6 +2192,7 @@ fn observe(tgid: u64, id: u32, last: Option<LastWrite>, backing: &Pages, pitch: 
     let row = a.width as usize * 4;
     let band_rows = (READBACK_BAND / row).max(1).min(a.height as usize);
     let mut temp = alloc::vec![0u8; band_rows * row];
+    let mut second = alloc::vec![0u8; row];
     let mut unwritten = 0u32;
     let mut first: Option<(u64, u32)> = None;
     let mut by = 0usize;
@@ -1950,8 +2206,20 @@ fn observe(tgid: u64, id: u32, last: Option<LastWrite>, backing: &Pages, pitch: 
             }
             backing.maintain(offset, (rows - 1) * pitch as usize + row, false);
             let (serial, fence) = with_core(|c| (c.serial(), c.device_fence())).ok_or(ENODEV)?;
-            let req = virgl::transfer_from_host(Tag::Sync(serial), ctx, fence, id, a.x, ty as u32, a.width, rows as u32, offset as u64, pitch);
-            let d = exec(serial, req, None)?;
+            let req = virgl::transfer_from_host(
+                Tag::Sync(serial),
+                ctx,
+                fence,
+                id,
+                backing.clone(),
+                a.x,
+                ty as u32,
+                a.width,
+                rows as u32,
+                offset as u64,
+                pitch,
+            );
+            let d = exec_req(serial, req, ctx, &[id], Some(id))?;
             if !virgl::ok(d.answer) || d.echoed != fence {
                 return Err(EIO);
             }
@@ -1962,7 +2230,6 @@ fn observe(tgid: u64, id: u32, last: Option<LastWrite>, backing: &Pages, pitch: 
                 if pass == 0 {
                     backing.read(offset + r * pitch as usize, dst);
                 } else {
-                    let mut second = alloc::vec![0u8; row];
                     backing.read(offset + r * pitch as usize, &mut second);
                     unwritten += dst.iter().zip(second.iter()).filter(|(p, q)| p != q).count() as u32;
                 }

@@ -1,11 +1,14 @@
-//! Wire numbers and layouts: virtio-gpu (VirtIO 1.3 CSD01 section 5.7, with the
-//! virtio-gpu interface header as the field-layout reference) and VirGL (the VirGL
-//! protocol header `virgl_protocol.h` and capability header `virgl_hw.h`, with the
-//! Gallium enumerants they carry on the wire). These are interface facts only.
+//! Wire numbers and layouts: virtio-gpu (VirtIO 1.3 CSD01: the transport and section 5.7)
+//! and VirGL (the protocol header `virgl_protocol.h`, the capability header `virgl_hw.h`,
+//! and the Gallium enumerants `p_defines.h` carries on the wire). These are interface
+//! facts only; each value's source and line is in `docs/gui/provenance/gpu-core.md`.
 
 /// Device feature bits (section 5.7.3) and the transport's VERSION_1 (section 6).
 pub const F_VIRGL: u64 = 1 << 0;
 pub const F_VERSION_1: u64 = 1 << 32;
+
+/// DEVICE_NEEDS_RESET in the device status (section 2.1).
+pub const STATUS_NEEDS_RESET: u8 = 64;
 
 /// Device configuration offsets (section 5.7.4).
 pub const CFG_NUM_SCANOUTS: usize = 8;
@@ -36,7 +39,7 @@ pub mod resp {
     pub const ERR_UNSPEC: u32 = 0x1200;
 }
 
-/// `virtio_gpu_ctrl_hdr.flags`.
+/// `virtio_gpu_ctrl_hdr.flags` (section 5.7.6.7).
 pub const FLAG_FENCE: u32 = 1 << 0;
 /// `sizeof(virtio_gpu_ctrl_hdr)`.
 pub const HDR: usize = 24;
@@ -46,11 +49,12 @@ pub const HDR_FLAGS: usize = 4;
 pub const HDR_FENCE: usize = 8;
 pub const HDR_CTX: usize = 16;
 
-/// Capability set ids (section 5.7.6.7, GET_CAPSET_INFO).
+/// Capability set ids (section 5.7.6.8, GET_CAPSET_INFO).
 pub const CAPSET_VIRGL: u32 = 1;
 pub const CAPSET_VIRGL2: u32 = 2;
 
-/// `virtio_gpu_resp_display_info`: 16 entries of `{ rect, enabled, flags }` after the header.
+/// `virtio_gpu_resp_display_info` (section 5.7.6.8): 16 entries of `{ rect, enabled,
+/// flags }` after the header.
 pub const MAX_SCANOUTS: usize = 16;
 pub const DISPLAY_ONE: usize = 24;
 
