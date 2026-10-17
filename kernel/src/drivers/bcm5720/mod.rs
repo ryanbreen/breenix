@@ -914,7 +914,8 @@ impl Port {
             log::info!("[dhcp] lease acquired");
             let counters = {
                 let _guard = crate::net::net_lock_guard();
-                ATTACHED.lock().iter().find(|p| p.mac == mac).map(|port|
+                let ports = ATTACHED.lock();
+                ports.iter().find(|p| p.mac == mac).map(|port|
                     (INTERRUPTS[port.slot].load(Ordering::Acquire), port.rx_errored, port.rx_last_error_flags))
             };
             if let Some((interrupts, errors, flags)) = counters {
@@ -929,7 +930,8 @@ impl Port {
         loop {
             let carrier = {
                 let _guard = crate::net::net_lock_guard();
-                ATTACHED.lock().iter().find(|p| p.mac == mac)
+                let ports = ATTACHED.lock();
+                ports.iter().find(|p| p.mac == mac)
                     .is_some_and(|p| p.f.phy_link().unwrap_or(false))
             };
             dhcp::maintain(mac, carrier);
@@ -938,20 +940,25 @@ impl Port {
     }
 }
 
+// Name the mutex guard after the BH guard: Rust 2021 tail temporaries
+// otherwise outlive locals, allowing BH exit to dispatch NetRx into this lock.
 pub fn is_initialized() -> bool {
     let _guard = crate::net::net_lock_guard();
-    !ATTACHED.lock().is_empty() || READY.load(Ordering::Acquire)
+    let ports = ATTACHED.lock();
+    !ports.is_empty() || READY.load(Ordering::Acquire)
 }
 
 pub fn mac_address() -> Option<[u8; 6]> {
     let _guard = crate::net::net_lock_guard();
-    ATTACHED.lock().first().map(|port| port.mac)
+    let ports = ATTACHED.lock();
+    ports.first().map(|port| port.mac)
 }
 
 pub fn transmit(frame: &[u8]) -> Result<(), &'static str> {
     if !READY.load(Ordering::Acquire) { return Err("link not ready"); }
     let _guard = crate::net::net_lock_guard();
-    ATTACHED.lock().first_mut().ok_or("no port")?.send(frame)
+    let mut ports = ATTACHED.lock();
+    ports.first_mut().ok_or("no port")?.send(frame)
 }
 
 pub fn receive(output: &mut [u8]) -> Option<usize> {
