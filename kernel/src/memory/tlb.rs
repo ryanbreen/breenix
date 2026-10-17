@@ -335,14 +335,13 @@ mod shootdown {
     /// No lock, no allocation, no GS-relative access: the NMI may have
     /// interrupted any instruction, including an entry stub before its GS
     /// handling. The CPU is found from its local APIC id.
-    pub extern "x86-interrupt" fn shootdown_nmi_handler(_frame: InterruptStackFrame) {
-        let cpu = if apic::active() {
-            smp::cpu_of_apic_id(apic::id())
-        } else {
-            None
-        };
+    pub extern "x86-interrupt" fn shootdown_nmi_handler(frame: InterruptStackFrame) {
+        let apic_id = apic::active().then(apic::id);
+        let cpu = apic_id.and_then(smp::cpu_of_apic_id);
         let Some(cpu) = cpu.filter(|&cpu| PENDING[cpu].load(Ordering::Acquire)) else {
+            // Not a shootdown: the NMI came from outside the kernel.
             UNCLAIMED_NMIS.fetch_add(1, Ordering::Relaxed);
+            crate::arch_impl::x86_64::nmi_report::unclaimed(&frame, cpu, apic_id);
             return;
         };
 

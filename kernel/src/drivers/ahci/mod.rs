@@ -947,6 +947,11 @@ impl AhciController {
             if crate::time::tsc::frequency_hz() == 0 {
                 return Err("AHCI: clock not calibrated");
             }
+            // The driver completes on the INTx line the config space names,
+            // which is the line it drives only where that wiring is known.
+            if !crate::arch_impl::x86_64::irq::pci_intx_routing_known() {
+                return Err("AHCI: PCI INTx routing unknown on this firmware");
+            }
             if !matches!(pci_dev.interrupt_line, 10 | 11) {
                 return Err("AHCI: unsupported PCI interrupt line");
             }
