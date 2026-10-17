@@ -1299,7 +1299,7 @@ fn x86_boot_target() -> Option<X86BootTarget> {
                 None
             }
         },
-        Some("default" | "shell" | "probe") => None,
+        Some("default" | "shell") => None,
         Some("suite") => match fw_cfg::read_string("opt/breenix/suite") {
             Some(id) if target::is_suite_id(&id) => {
                 match target::SuiteTarget::new(id, fw_cfg::read_string("opt/breenix/case")) {
