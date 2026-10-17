@@ -137,6 +137,8 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         }),
     );
 
+    kernel::block::init_hardware_policy(drivers::fw_cfg::present());
+
     // Initialize serial port
     log::info!("Initializing serial port...");
     serial::init();
@@ -215,6 +217,10 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     let rsdp_addr = boot_info.rsdp_addr.into_option();
     let memory_regions = &boot_info.memory_regions;
     memory::init(physical_memory_offset, memory_regions);
+
+    // BootInfo owns this writable mapping for the kernel lifetime.
+    unsafe { kernel::block::ramdisk::init(boot_info.ramdisk_addr.into_option(), boot_info.ramdisk_len) }
+        .expect("valid bootloader RAM disk");
 
     // #814 PR-1 / #629: enumerate the processors the firmware reports and
     // answer the CPU-count question from that enumeration instead of from a
@@ -651,6 +657,12 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     match kernel::fs::ext2::init_root_fs() {
         Ok(()) => {
             log::info!("ext2 root filesystem mounted");
+            if kernel::block::ramdisk::device().is_some() {
+                log::info!("[fs] root mounted from the RAM disk");
+            }
+            if kernel::block::hardware_read_only() {
+                log::info!("[block] hardware disks read-only");
+            }
             #[cfg(feature = "btrt")]
             kernel::test_framework::btrt::pass(kernel::test_framework::catalog::EXT2_MOUNT);
         }
@@ -671,7 +683,7 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     #[cfg(feature = "fs_fault_inject")]
     kernel::fs::fault_inject::run_fs_fault_leg();
     // Initialize ext2 home filesystem only when the x86 home disk is attached.
-    if kernel::block::disk(3).is_some() {
+    if !kernel::block::hardware_read_only() && kernel::block::disk(3).is_some() {
         match kernel::fs::ext2::init_home_fs() {
             Ok(()) => log::info!("ext2 home filesystem mounted at /home"),
             Err(e) => log::warn!("No home filesystem: {}", e),
@@ -1191,6 +1203,7 @@ fn launch_x86_production_init(
     exe_path: &[u8],
     elf_data: &[u8],
     only: Option<&str>,
+    shell: bool,
 ) -> Result<(), &'static str> {
     use alloc::string::String;
 
@@ -1202,6 +1215,9 @@ fn launch_x86_production_init(
 
         let path = alloc::format!("/sbin/{}", name);
         let mut argv: alloc::vec::Vec<&[u8]> = alloc::vec![path.as_bytes()];
+        if shell {
+            argv.push(b"shell");
+        }
         if let Some(case) = only {
             argv.extend_from_slice(&[b"--case", case.as_bytes()]);
         }
@@ -1250,8 +1266,9 @@ fn x86_boot_suite() -> Option<kernel::boot::target::SuiteTarget> {
     match fw_cfg::read_string("opt/breenix/mode").as_deref() {
         None | Some("") => match target::read() {
             Ok(Some(target::Target::Suite(suite))) => Some(suite),
+            Ok(Some(target::Target::Default | target::Target::Shell)) => None,
             Ok(Some(target::Target::Probe)) => {
-                log::warn!("[boot] Ignoring probe boot target: x86-64 runs only default and suite");
+                log::warn!("[boot] Ignoring probe boot target: x86-64 runs default, shell and suite");
                 None
             }
             Ok(None) => None,
@@ -1260,7 +1277,7 @@ fn x86_boot_suite() -> Option<kernel::boot::target::SuiteTarget> {
                 None
             }
         },
-        Some("default") => None,
+        Some("default" | "shell") => None,
         Some("suite") => match fw_cfg::read_string("opt/breenix/suite") {
             Some(id) if target::is_suite_id(&id) => {
                 match target::SuiteTarget::new(id, fw_cfg::read_string("opt/breenix/case")) {
@@ -1295,6 +1312,16 @@ fn x86_boot_suite() -> Option<kernel::boot::target::SuiteTarget> {
     }
 }
 
+/// Select init's shell argument through the same fw_cfg-before-file rule.
+#[cfg(all(target_arch = "x86_64", not(any(feature = "testing", feature = "interactive", feature = "disable_x86_prod_init"))))]
+fn x86_boot_shell() -> bool {
+    match drivers::fw_cfg::read_string("opt/breenix/mode").as_deref() {
+        Some("shell") => true,
+        None | Some("") => matches!(kernel::boot::target::read(), Ok(Some(kernel::boot::target::Target::Shell))),
+        _ => false,
+    }
+}
+
 /// Read the program the production kernel runs as PID 1 from the ext2 root:
 /// `/sbin/suite-<id>` when `x86_boot_suite` names a suite whose binary reads
 /// and is a loadable ELF, otherwise `/sbin/init`. Returns its process name,
@@ -1309,7 +1336,7 @@ fn x86_boot_suite() -> Option<kernel::boot::target::SuiteTarget> {
     ))
 ))]
 fn read_x86_production_init(
-) -> Result<(alloc::string::String, alloc::vec::Vec<u8>, alloc::vec::Vec<u8>, Option<alloc::string::String>), &'static str> {
+) -> Result<(alloc::string::String, alloc::vec::Vec<u8>, alloc::vec::Vec<u8>, Option<alloc::string::String>, bool), &'static str> {
     use kernel::boot::{init_image::read_init_from_ext2, target};
 
     if let Some(suite) = x86_boot_suite() {
@@ -1324,7 +1351,7 @@ fn read_x86_production_init(
                 } else {
                     log::info!("[boot] Boot mode: suite {}", id);
                 }
-                return Ok((alloc::format!("suite-{}", id), exe_path, elf_data, suite.case));
+                return Ok((alloc::format!("suite-{}", id), exe_path, elf_data, suite.case, false));
             }
             Err(e) => log::warn!(
                 "[boot] Ignoring boot mode \"suite\": {} could not be loaded ({})",
@@ -1346,10 +1373,11 @@ fn read_x86_production_init(
     ))
 ))]
 fn read_default_x86_init(
-) -> Result<(alloc::string::String, alloc::vec::Vec<u8>, alloc::vec::Vec<u8>, Option<alloc::string::String>), &'static str> {
-    log::info!("[boot] Boot mode: default");
+) -> Result<(alloc::string::String, alloc::vec::Vec<u8>, alloc::vec::Vec<u8>, Option<alloc::string::String>, bool), &'static str> {
+    let shell = x86_boot_shell();
+    log::info!("[boot] Boot mode: {}", if shell { "shell" } else { "default" });
     kernel::boot::init_image::read_init_from_ext2("/sbin/init")
-        .map(|(elf_data, exe_path)| (alloc::string::String::from("init"), exe_path, elf_data, None))
+        .map(|(elf_data, exe_path)| (alloc::string::String::from("init"), exe_path, elf_data, None, shell))
 }
 
 /// Continue kernel initialization after setting up threading
@@ -1954,9 +1982,9 @@ fn kernel_main_continue() -> ! {
         let mut image = read_x86_production_init();
         loop {
             match image {
-                Ok((name, exe_path, elf_data, only)) => {
+                Ok((name, exe_path, elf_data, only, shell)) => {
                     let launched = x86_64::instructions::interrupts::without_interrupts(|| {
-                        launch_x86_production_init(&name, &exe_path, &elf_data, only.as_deref())
+                        launch_x86_production_init(&name, &exe_path, &elf_data, only.as_deref(), shell)
                     });
                     match launched {
                         Ok(()) => {}

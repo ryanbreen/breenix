@@ -31,12 +31,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import metal_lib as m  # noqa: E402
 import metal_image  # noqa: E402
 import metal_census  # noqa: E402
+import metal_root  # noqa: E402
 
 # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
-MODES = ('default',)
+MODES = ('default', 'shell', 'suite')
 PAYLOADS = ('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux')
-CEILING_SECONDS = {'default': 900}
-MODE_DEADLINE_SECONDS = {'default': 300}
+CEILING_SECONDS = {'default': 900, 'shell': 900, 'suite': 1320}
+MODE_DEADLINE_SECONDS = {'default': 300, 'shell': 180, 'suite': 420}
 INPUT_DEADLINE_SECONDS = 2 * 3600
 CONSOLE_BANNER = b'[SOL Session operational'
 CONSOLE_WAIT_SECONDS = 20
@@ -116,6 +117,8 @@ class Driver:
         self.fatal_at = None
         self.fatal_patterns = []
         self.final_marker = None
+        self.shell_ready = False
+        self.shell_sent = False
         self.delivery = {}
         self.payload_facts = None
         self.last_phase_progress = 0.0
@@ -149,7 +152,7 @@ class Driver:
         kind = {'image': 'boot', 'linux': 'platform-census'}.get(self.args.payload, 'fault-test')
         run = {'id': self.id, 'platform': 'metal', 'arch': 'x86_64', 'mode': self.args.mode, 'target': target,
                'taskName': self.args.task or self.id, 'watch': False, 'display': False, 'startedAt': m.now(),
-               'payload': self.args.payload, 'kind': kind, 'inject': self.args.inject or None,
+               'payload': self.args.payload, 'kind': kind, 'suite': getattr(self.args, 'suite', None), 'inject': self.args.inject or None,
                'toolsCommit': tools_commit()}
         m.write_json(self.dir / 'run.json', run)
         m.write_text(self.dir / 'commit', (self.args.commit or 'none') + '\n')
@@ -259,10 +262,18 @@ class Driver:
             self.event('linux-payload-ready', sha256=expected['sha256'], size=expected['size'])
             return
         build = m.read_json(inputs / 'build.json', {})
+        if build.get('commit') != self.args.commit or build.get('profile') != 'production' or build.get('features') != []:
+            raise Finish(m.EXIT_CANCELLED, 'build provenance differs from the requested production commit')
         self.delivery['build'] = build
         self.event('build-delivered', commit=build.get('commit'), guard=build.get('guardTarget'))
         if (inputs / 'definition').is_dir():
             shutil.copytree(inputs / 'definition', self.dir / 'definition')
+        if self.args.mode == 'suite':
+            manifest = self.dir / 'definition/docs/suites' / (self.args.suite + '.json')
+            if not manifest.is_file() or m.read_json(manifest).get('id') != self.args.suite:
+                raise Finish(m.EXIT_CANCELLED, 'the suite manifest is missing or differs')
+        self.delivery['root'] = metal_root.stage_root(inputs / 'ext2.img', self.args.mode,
+                                                       getattr(self.args, 'suite', None), self.site)
         self.phase('Assembling the image')
         extracted = self.stage / 'esp'
         files = metal_image.extract_esp(inputs / 'uefi.img', extracted)
@@ -298,6 +309,8 @@ class Driver:
         if metal:
             self.final_marker = final_marker(metal, self.args.mode,
                                              m.read_json(definition / 'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json', {}))
+        if self.args.mode == 'suite':
+            self.final_marker = ('SUITE ' + self.args.suite + ' DONE ', 'contains')
         self.event('definition', metalPath=bool(metal), fatalPatterns=len(self.fatal_patterns),
                    finalMarker=self.final_marker is not None)
 
@@ -439,13 +452,33 @@ class Driver:
                 self.line += char_line
                 if self.line.endswith('\n'):
                     line, self.line = self.line.rstrip('\n'), ''
-                    if decision is None:
-                        try:
-                            self.on_line(line, observed_at=arrived)
-                        except Finish as finish:
+                    try:
+                        self.on_line(line, observed_at=arrived)
+                    except Finish as finish:
+                        if decision is None or finish.status != m.EXIT_DONE:
                             decision = finish
+        self.challenge_shell(self.line)
+        if self.fatal_at is not None and decision is not None and decision.status == m.EXIT_DONE:
+            return  # The fatal grace interval captures its backtrace before failing.
         if decision is not None:
+            if self.args.mode == 'suite' and decision.status == m.EXIT_DONE:
+                definition = self.dir / 'definition'
+                verdict = subprocess.run([sys.executable, str(definition / 'scripts/suite-verdict.py'),
+                                          str(definition / 'docs/suites' / (self.args.suite + '.json')),
+                                          str(self.dir / 'serial.txt')], capture_output=True, text=True)
+                m.write_text(self.dir / 'suite-verdict.txt', self.redact(verdict.stdout + verdict.stderr))
+                if verdict.returncode != 0:
+                    raise Finish(m.EXIT_SHORT, 'the suite verdict failed')
             raise decision
+
+    def challenge_shell(self, text):
+        if (self.args.mode == 'shell' and self.shell_ready and not self.shell_sent
+                and self.fatal_at is None and 'bsh />' in text):
+            subprocess.run(self.tmux + ['send-keys', '-t', 'sol', '-l', '--',
+                                       'print("metal-console-ok", 6*7)'], check=True)
+            subprocess.run(self.tmux + ['send-keys', '-t', 'sol', 'Enter'], check=True)
+            self.shell_sent = True
+            self.event('shell-challenge-sent')
 
     # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
     def on_line(self, line, *, observed_at=None):
@@ -497,7 +530,11 @@ class Driver:
         if self.kernel_started and self.fatal_at is None and any(p.search(line) for p in self.fatal_patterns):
             self.fatal_at = observed_at
             self.event('fatal', observed_at=observed_at, seconds=seconds)
-        if self.final_marker and marker_matches(self.final_marker, line):
+        if '[init] shell ready' in line:
+            self.shell_ready = True
+        self.challenge_shell(line)
+        if (self.final_marker and marker_matches(self.final_marker, line)
+                and (self.args.mode != 'shell' or self.shell_sent) and self.fatal_at is None):
             self.event('final-marker', observed_at=observed_at, seconds=seconds)
             raise Finish(m.EXIT_DONE, 'the mode finished')
 
@@ -889,6 +926,7 @@ def main():
         p.add_argument('--id')
         p.add_argument('--payload', choices=PAYLOADS, default='image')
         p.add_argument('--mode', choices=MODES, default='default')
+        p.add_argument('--suite')
         p.add_argument('--commit', default='')
         p.add_argument('--target', default='main')
         p.add_argument('--task', default='')
@@ -910,6 +948,14 @@ def main():
     p.add_argument('why')
     sub.add_parser('status')
     args, _ = parser.parse_known_args()
+    if args.command in ('launch', 'run'):
+        if args.mode == 'suite':
+            if not re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*', args.suite or ''):
+                parser.error('suite mode needs --suite ID')
+        elif args.suite:
+            parser.error('--suite needs suite mode')
+        if args.payload != 'image' and args.mode != 'default':
+            parser.error('boot modes need an image payload')
     if args.command == 'launch':
         extra = sys.argv[2:]
         if args.id:

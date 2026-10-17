@@ -130,6 +130,8 @@ fn read_boot_mode() -> (BootMode, Option<alloc::string::String>, Option<alloc::s
     let mut only = None;
     let mode = match requested.as_deref() {
         None | Some("") => match target::read() {
+            Ok(Some(target::Target::Default)) => BootMode::Default,
+            Ok(Some(target::Target::Shell)) => BootMode::Shell,
             Ok(Some(target::Target::Probe)) => BootMode::Probe,
             Ok(Some(target::Target::Suite(suite))) => {
                 target_suite = Some(suite.id);

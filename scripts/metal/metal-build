@@ -168,7 +168,9 @@ def inner(args):
         shutil.copyfile(images[-1], out / 'uefi.img')
         shutil.copyfile(clone / 'testdata/ext2.img', out / 'ext2.img')
         copied = []
-        for name in DEFINITION:
+        definition_files = list(DEFINITION) + ['scripts/suite-verdict.py']
+        definition_files += [str(path.relative_to(clone)) for path in sorted((clone / 'docs/suites').glob('*.json'))]
+        for name in definition_files:
             source = clone / name
             if source.is_file():
                 target = out / 'definition' / name

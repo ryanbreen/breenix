@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import socket
+import shutil
 import socketserver
 import struct
 import subprocess
@@ -699,6 +700,38 @@ class DefinitionTest(unittest.TestCase):
                          ('OEM', 'No bootable devices.', None))
 
 
+class RootStagingTest(unittest.TestCase):
+    def test_modes_and_guest_site_are_read_back_from_the_staged_image(self):
+        import metal_root
+        prefix = Path('/opt/homebrew/opt/e2fsprogs/sbin')
+        mke2fs = shutil.which('mke2fs') or str(prefix / 'mke2fs')
+        debugfs = shutil.which('debugfs') or str(prefix / 'debugfs')
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            tree = root / 'tree'
+            (tree / 'sbin').mkdir(parents=True)
+            (tree / 'etc/breenix').mkdir(parents=True)
+            (tree / 'sbin/init').write_bytes(b'\x7fELFfixture')
+            (tree / 'sbin/suite-smoke').write_bytes(b'\x7fELFsuite')
+            image = root / 'root.img'
+            subprocess.run([mke2fs, '-q', '-t', 'ext2', '-d', str(tree), '-F', str(image), '4096'],
+                           check=True, capture_output=True)
+            site = {'GUEST_FETCH_URL': 'fixture-value', 'IDRAC_PASSWORD': 'private-fixture'}
+            for mode, suite, expected in [('default', None, 'default'), ('shell', None, 'shell'),
+                                          ('suite', 'smoke', 'suite smoke')]:
+                facts = metal_root.stage_root(image, mode, suite, site)
+                self.assertEqual(facts['siteFields'], 1)
+                def read(name):
+                    return subprocess.run([debugfs, '-R', 'cat /etc/breenix/' + name, str(image)],
+                                          check=True, capture_output=True).stdout.decode()
+                self.assertEqual(read('boot-target'), expected + '\n')
+                self.assertEqual(read('site.env'), 'FETCH_URL=fixture-value\n')
+            with self.assertRaises(ValueError):
+                metal_root.stage_root(image, 'suite', 'absent', site)
+            with self.assertRaises(ValueError):
+                metal_root.stage_root(image, 'default', None, {'GUEST_PASSWORD': 'fixture'})
+
+
 class DriverTest(StateTest):
     def setUp(self):
         super().setUp()
@@ -716,6 +749,35 @@ class DriverTest(StateTest):
             call()
         self.assertEqual(raised.exception.status, status)
         return raised.exception
+
+    def test_shell_sends_challenge_once_at_partial_prompt_and_requires_whole_answer(self):
+        d = self.driver
+        d.args.mode = 'shell'
+        d.final_marker = ('metal-console-ok 42', 'line')
+        d.on_line('metal-console-ok 42')  # unsolicited text is not an answer
+        raw = d.dir / 'serial.raw'
+        d.on_line('[init] shell ready')
+        raw.write_bytes(b'bsh /> ')
+        with patch.object(boot.subprocess, 'run') as send:
+            d.pump_serial()
+            self.assertTrue(d.shell_sent)
+            self.assertEqual(send.call_count, 2)
+            self.assertIn('print("metal-console-ok", 6*7)', send.call_args_list[0].args[0])
+            d.pump_serial()
+            self.assertEqual(send.call_count, 2)
+        d.on_line('print("metal-console-ok", 6*7)')
+        d.on_line('bsh /> metal-console-ok 42')
+        self.finish(lambda: d.on_line('metal-console-ok 42'), m.EXIT_DONE)
+
+    def test_final_marker_cannot_override_a_fatal(self):
+        d = self.driver
+        d.final_marker = ('done', 'line')
+        d.fatal_patterns = [re.compile('fatal')]
+        d.kernel_started = 120
+        d.on_line('fatal')
+        d.on_line('done')
+        with patch.object(m, 'now', return_value=d.fatal_at + boot.FATAL_GRACE_SECONDS):
+            self.finish(d.check_deadlines, m.EXIT_SHORT)
 
     def test_linux_completion_requires_checked_census(self):
         import metal_census

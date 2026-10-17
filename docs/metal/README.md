@@ -255,11 +255,30 @@ numbers, written after `ended` by whichever of the driver, the reaper or reconci
 importer that asks for the entries above the lowest sequence it lacks catches up without gaps. Fault tests (`kind: fault-test`)
 have no definition and are not scored.
 
+## RAM-disk userspace
+
+At staging, `metal_root.stage_root` writes `/etc/breenix/boot-target` as `default`, `shell`, or `suite <id>` onto
+the boot's ext2 image, removes a stale suite sequence, and verifies the configuration bytes and selected PID 1 ELF
+with debugfs. Site fields prefixed `GUEST_` become lines in `/etc/breenix/site.env` without that prefix; management
+credentials are not guest fields. The staging helper refuses guest field names containing secret-related words.
+The delivered image records the resulting component checksums; the cached base root is not edited.
+
+Shell mode starts `/sbin/init shell`. When the prompt arrives, the driver sends `print("metal-console-ok", 6*7)`
+through SOL and requires the whole answer line `metal-console-ok 42` after sending it. Suite mode copies the commit's
+manifest and verdict tool into the boot record, waits for that suite's DONE line, then runs the manifest verdict
+against the captured serial. A DONE with failed, missing, out-of-order or skipped cases fails the boot. Shell has a
+180-second handoff deadline; suite mode uses the 420-second suite deadline and a further 900-second absolute budget
+for firmware and delivery. The console-gap and fatal-output vetoes apply (issue #1702).
+
 ## The disks
 
 Embedded SATA stays enabled in **AHCI mode**, not RAID. The stream owns the disk; `metal-storage` is scheduled
 after `metal-userspace`, in parallel with `metal-network`, to implement SATA/AHCI and the Breenix filesystem on it.
-Boot delivery and the planned root arrive in RAM and do not depend on that disk before the storage effort needs it.
+Boot delivery and root arrive in RAM. The kernel installs the bootloader RAM disk as a writable, 512-byte-sector
+block device; ext2 uses that device for root. On physical x86 boots (no QEMU fw_cfg signature), root candidates
+contain only that RAM device, and the home-disk-by-index rule is disabled. Hardware write entry points in VirtIO,
+AHCI and NVMe refuse writes; flushes on these read-only devices submit no command. QEMU and ARM64 retain their
+hardware-disk write policy. The storage lane will add its explicit disk-writing mode separately (issue #1702).
 Controller, port and drive observations belong in the private recon and platform facts; site identifiers stay
 out of this repository.
 
@@ -337,6 +356,9 @@ On the boot host:
 ```
 python3 ~/.local/share/breenix-metal/metal-run boot                      # origin/main's kernel as boot.efi
 python3 ~/.local/share/breenix-metal/metal-run boot --ramdisk            # explicit spelling of the default RAM-disk root
+python3 ~/.local/share/breenix-metal/metal-run boot --mode shell
+python3 ~/.local/share/breenix-metal/metal-run boot --mode suite --suite smoke
+python3 ~/.local/share/breenix-metal/metal-run boot --mode suite --suite time
 python3 ~/.local/share/breenix-metal/metal-run boot --branch NAME        # a pushed branch (in-progress evidence)
 python3 ~/.local/share/breenix-metal/metal-run boot --branch NAME --nmi  # NMI before power-off even when it finished
 python3 ~/.local/share/breenix-metal/metal-run boot --payload hang       # metal-hang.efi

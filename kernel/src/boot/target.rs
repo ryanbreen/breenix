@@ -60,6 +60,8 @@ impl SuiteTarget {
 
 /// A production PID 1 selected by the boot-target file.
 pub enum Target {
+    Default,
+    Shell,
     Probe,
     Suite(SuiteTarget),
 }
@@ -71,6 +73,8 @@ pub fn parse(text: &str) -> Result<Target, String> {
     if line.contains(['\n', '\r']) {
         return Err(String::from("it has more than one line"));
     }
+    if line.trim() == "default" { return Ok(Target::Default); }
+    if line.trim() == "shell" { return Ok(Target::Shell); }
     if line.trim() == "probe" {
         return Ok(Target::Probe);
     }
