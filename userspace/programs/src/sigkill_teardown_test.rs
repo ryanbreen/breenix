@@ -174,7 +174,37 @@ fn counter(name: &str) -> u64 {
     parse_value(&contents, name)
 }
 
+/// Reclaim-pipeline counters an evidence timeout prints as deltas over its
+/// wait, so a receipt that never retires shows what held it.
+const RECLAIM_COUNTERS: [&str; 12] = [
+    "ROOT_PROOF_BLOCKED_EPOCH",
+    "ROOT_PROOF_BLOCKED_HW",
+    "ROOT_PROOF_BLOCKED_SHADOW",
+    "ROOT_PROOF_BLOCKED_CACHED",
+    "ROOT_PROOF_BLOCKED_LIVE_ROW",
+    "RECLAIM_PASS_SKIPPED",
+    "RECLAIM_DRAIN_NESTED_REFUSED",
+    "RECLAIM_CONTEXT_VIOLATIONS",
+    "RECLAIM_PARKED",
+    "RECLAIM_PARK_RESIDENT",
+    "PT_RETIRE_BUDGET_REQUEUED",
+    "RECLAIM_ABANDONED_UNQUEUED",
+];
+
+/// The reclaim counters, or `None` where one cannot be read; reporting a
+/// timeout must not itself fail on a missing field.
+fn reclaim_counters() -> [Option<u64>; 12] {
+    let contents = std::fs::read_to_string("/proc/trace/counters").unwrap_or_default();
+    RECLAIM_COUNTERS.map(|name| {
+        contents.lines().find_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            (key.trim() == name).then(|| value.split_whitespace().next()?.parse().ok()).flatten()
+        })
+    })
+}
+
 fn wait_for_evidence(pid: i32) -> Evidence {
+    let reclaim_before = reclaim_counters();
     let mut current = Evidence::default();
     for _ in 0..20_000 {
         current = evidence(pid);
@@ -203,6 +233,16 @@ fn wait_for_evidence(pid: i32) -> Evidence {
         current.kick_cpu,
         current.kick_sender_cpu
     );
+    let reclaim_after = reclaim_counters();
+    let deltas: Vec<String> = RECLAIM_COUNTERS
+        .iter()
+        .zip(reclaim_before.iter().zip(reclaim_after.iter()))
+        .map(|(name, pair)| match pair {
+            (Some(before), Some(after)) => format!("{name}={}+{}", before, after.wrapping_sub(*before)),
+            _ => format!("{name}=unread"),
+        })
+        .collect();
+    eprintln!("SIGKILL_TEARDOWN_TEST: reclaim counters over the wait (total+delta): {}", deltas.join(" "));
     fail("timed out waiting for per-PID teardown pairing")
 }
 
