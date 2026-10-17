@@ -61,8 +61,9 @@ pub use point::Reservation;
 static POINT_TABLE: [Point; POINTS] = [const { Point::new() }; POINTS];
 
 /// Reserve a one-shot while fallible preparation runs. Dropping it leaves it armed;
-/// `fire` commits the firing once the device work has been queued. Only points 22 and
-/// 28 reserve across preparation, in that order and outside the core lock.
+/// `fire` commits the firing at the point's effect: validator refusal for point 24,
+/// queued device work for points 22 and 28. These reserve across fallible preparation;
+/// device points reserve in that order and outside the core lock.
 pub fn reserve(point: u32, target: u64) -> Option<Reservation<'static>> {
     if !enabled() { return None; }
     POINT_TABLE.get(point as usize)?.reserve(target, |_| true)

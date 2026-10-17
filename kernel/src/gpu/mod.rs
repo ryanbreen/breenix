@@ -1661,7 +1661,17 @@ fn create_device_context(tgid: u64, id: u32, internal: [u32; 3], vb_pages: &Arc<
     });
     exec_ok(|t| Some(virgl::ctx_create(t, id)), id, &[])?;
     exec_ok(
-        |t| Some(virgl::resource_create(t, vb, wire::target::BUFFER, wire::format::R8_UNORM, wire::bind::VERTEX_BUFFER, encode::VERTEX_BUFFER_BYTES, 1)),
+        |t| {
+            Some(virgl::resource_create(
+                t,
+                vb,
+                wire::target::BUFFER,
+                wire::format::R8_UNORM,
+                wire::bind::VERTEX_BUFFER,
+                encode::VERTEX_BUFFER_BYTES,
+                1,
+            ))
+        },
         0,
         &[],
     )?;
@@ -1685,7 +1695,17 @@ fn create_device_context(tgid: u64, id: u32, internal: [u32; 3], vb_pages: &Arc<
     exec_ok(|t| virgl::attach_backing(t, scratch, scratch_pages.clone()), 0, &[])?;
     exec_ok(|t| Some(virgl::ctx_attach(t, id, scratch)), id, &[])?;
     exec_ok(
-        |t| Some(virgl::resource_create(t, scratch_texture, wire::target::TEXTURE_2D, wire::format::B8G8R8A8_UNORM, wire::bind::SAMPLER_VIEW, 1, 1)),
+        |t| {
+            Some(virgl::resource_create(
+                t,
+                scratch_texture,
+                wire::target::TEXTURE_2D,
+                wire::format::B8G8R8A8_UNORM,
+                wire::bind::SAMPLER_VIEW,
+                1,
+                1,
+            ))
+        },
         0,
         &[],
     )?;
@@ -1695,7 +1715,13 @@ fn create_device_context(tgid: u64, id: u32, internal: [u32; 3], vb_pages: &Arc<
         let ids: Vec<u32> = c
             .procs
             .get(&tgid)
-            .map(|p| p.resources.values().copied().filter(|rid| c.resources.get(rid).is_some_and(|r| !r.lost && !r.dropped)).collect())
+            .map(|p| {
+                p.resources
+                    .values()
+                    .copied()
+                    .filter(|rid| c.resources.get(rid).is_some_and(|r| !r.lost && !r.dropped))
+                    .collect()
+            })
             .unwrap_or_default();
         for rid in &ids {
             if let Some(r) = c.resources.get_mut(rid) {
@@ -1720,16 +1746,31 @@ fn create_device_context(tgid: u64, id: u32, internal: [u32; 3], vb_pages: &Arc<
     let chunks = with_core(|c| {
         let mut enc = encode::Enc::new();
         let ctx = c.contexts.get_mut(&id)?;
-        encode::warm_up(&mut enc, &mut ctx.objects, vb, scratch, scratch_texture, wire::format::B8G8R8A8_UNORM, FLIP_Y);
+        encode::warm_up(
+            &mut enc,
+            &mut ctx.objects,
+            vb,
+            scratch,
+            scratch_texture,
+            wire::format::B8G8R8A8_UNORM,
+            FLIP_Y,
+        );
         enc.finish().filter(|chunks| !chunks.is_empty())
-    }).flatten().ok_or(ENOMEM)?;
+    })
+    .flatten()
+    .ok_or(ENOMEM)?;
     for chunk in chunks {
         let (serial, fence) = with_core(|c| {
-            if !c.contexts.get(&id).is_some_and(|ctx| ctx.state == CtxState::Creating && ctx.device_alive) {
+            if !c
+                .contexts
+                .get(&id)
+                .is_some_and(|ctx| ctx.state == CtxState::Creating && ctx.device_alive)
+            {
                 return Err(EIO);
             }
             Ok((c.serial(), c.device_fence()))
-        }).ok_or(ENODEV)??;
+        })
+        .ok_or(ENODEV)??;
         let req = virgl::submit(Tag::Sync(serial), id, Some(fence), chunk);
         let d = exec_req(serial, req, id, &[vb, scratch, scratch_texture], &[])?;
         if !virgl::ok(d.answer) || d.echoed != fence {
@@ -2114,7 +2155,7 @@ fn named(words: &WordBuf, view: &View) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
     let mut whole = Vec::new();
     let mut target = None;
     let mut whole_clip = true;
-    let mut size = [0u32;2];
+    let mut size = [0u32; 2];
     let mut at = 0;
     while at < words.len() {
         let code = words.word(at);
@@ -2135,10 +2176,17 @@ fn named(words: &WordBuf, view: &View) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
         if code == stream::cmd::BEGIN {
             target = found;
             whole_clip = true;
-            if let Some(e)=view.get(handle(2)) {size=[e.width,e.height];}
+            if let Some(e) = view.get(handle(2)) {
+                size = [e.width, e.height];
+            }
         } else if code == stream::cmd::SCISSOR {
-            let r=[2,3,4,5].map(|k|words.word(at+k) as i32);
-            whole_clip=stream::clipped([0,0,size[0] as i32,size[1] as i32],size[0],size[1],Some(r)) == Some([0,0,size[0],size[1]]);
+            let r = [2, 3, 4, 5].map(|k| words.word(at + k) as i32);
+            whole_clip = stream::clipped(
+                [0, 0, size[0] as i32, size[1] as i32],
+                size[0],
+                size[1],
+                Some(r),
+            ) == Some([0, 0, size[0], size[1]]);
         } else if code == stream::cmd::CLEAR && whole_clip {
             if let Some(id) = target {
                 add(&mut whole, id);
@@ -2156,7 +2204,8 @@ fn named(words: &WordBuf, view: &View) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
                 }
             }
         }
-        let writes = code == stream::cmd::CLEAR || code == stream::cmd::PROBE
+        let writes = code == stream::cmd::CLEAR
+            || code == stream::cmd::PROBE
             || (code == stream::cmd::DRAW && words.word(at + 4) > 0)
             || (code == stream::cmd::DRAW_BUFFER && words.word(at + 7) > 0)
             || (code == stream::cmd::DRAW_SAMPLED && words.word(at + 5) > 0);
@@ -2192,18 +2241,25 @@ impl stream::Words for ProfileWords<'_> {
     }
 }
 
-fn reserve_profile_violation(words: &WordBuf) -> Option<(usize, u32, crate::test_control::Reservation<'static>)> {
-    if !crate::test_control::enabled() { return None; }
-    let (mut at, mut index, mut target) = (0usize, 0u32, 0u64);
+fn reserve_profile_violation(
+    words: &WordBuf,
+) -> Option<(usize, u32, crate::test_control::Reservation<'static>)> {
+    if !crate::test_control::enabled() {
+        return None;
+    }
+    let (mut at, mut index) = (0usize, 0u32);
     while words.len() - at >= 2 {
         let code = words.word(at);
         let len = words.word(at + 1) as usize;
-        if len < 2 || len > words.len() - at { return None; }
-        if code == stream::cmd::BEGIN && len == 4 {
-            target = words.word(at + 2) as u64 | (words.word(at + 3) as u64) << 32;
+        if len < 2 || len > words.len() - at {
+            return None;
         }
-        if matches!(code, stream::cmd::DRAW | stream::cmd::DRAW_BUFFER | stream::cmd::DRAW_SAMPLED) && len >= 3 {
-            if let Some(point) = crate::test_control::reserve(test_point::PROFILE_VIOLATION, target) {
+        if matches!(
+            code,
+            stream::cmd::DRAW | stream::cmd::DRAW_BUFFER | stream::cmd::DRAW_SAMPLED
+        ) && len >= 3
+        {
+            if let Some(point) = crate::test_control::reserve(test_point::PROFILE_VIOLATION, 0) {
                 return Some((at + 2, index, point));
             }
         }
@@ -2237,14 +2293,22 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
     let words = WordBuf::from_user(a.stream, a.length as usize)?;
     let view = with_core(|c| View::of(c, tgid)).ok_or(ENODEV)?;
     let snap = Snapshot::take(&words, &view)?;
-    let resolved = Resolved { view: &view, snap: &snap };
+    let resolved = Resolved {
+        view: &view,
+        snap: &snap,
+    };
     let injection = reserve_profile_violation(&words);
-    let validation = ProfileWords {words:&words, filtered:injection.as_ref().map(|(word,_,_)|*word)};
+    let validation = ProfileWords {
+        words: &words,
+        filtered: injection.as_ref().map(|(word, _, _)| *word),
+    };
     let plan = match stream::validate(&validation, &resolved) {
         Ok(plan) => plan,
         Err(r) => {
-            if let Some((_,index,point))=injection {
-                if index==r.index && r.error==stream::error::FILTERED_SAMPLER {point.fire();}
+            if let Some((_, index, point)) = injection {
+                if index == r.index && r.error == stream::error::FILTERED_SAMPLER {
+                    point.fire();
+                }
             }
             let errno = if r.is_work_limit() { EDQUOT } else { EINVAL };
             return refuse(&mut a, r.index, r.error, errno);
@@ -2254,7 +2318,9 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
     // Take the context's submission slot: one sender at a time, at most four in flight.
     let mut waited = false;
     let admitted = wait_for(None, true, |c| {
-        let Some(ctx) = c.contexts.get_mut(&id) else { return Some(Err(EIO)) };
+        let Some(ctx) = c.contexts.get_mut(&id) else {
+            return Some(Err(EIO));
+        };
         if ctx.state != CtxState::Live || ctx.dropped {
             return Some(Err(EIO));
         }
@@ -2350,7 +2416,17 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
     };
     // The context's busy slot serializes object allocation; translation can allocate
     // and process a large stream without holding the global core lock.
-    let state = with_core(|c| c.contexts.get(&id).map(|ctx| (ctx.objects.clone(), ctx.vb, ctx.scratch, ctx.scratch_texture))).flatten();
+    let state = with_core(|c| {
+        c.contexts.get(&id).map(|ctx| {
+            (
+                ctx.objects.clone(),
+                ctx.vb,
+                ctx.scratch,
+                ctx.scratch_texture,
+            )
+        })
+    })
+    .flatten();
     let Some((mut objects, default_vb, scratch, scratch_texture)) = state else {
         drop_vertex_buffer();
         release_slot(false);
@@ -2367,7 +2443,9 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
     let mut at = 0;
     while at < words.len() {
         match words.word(at) {
-            stream::cmd::BEGIN => target = Some(words.word(at + 2) as u64 | (words.word(at + 3) as u64) << 32),
+            stream::cmd::BEGIN => {
+                target = Some(words.word(at + 2) as u64 | (words.word(at + 3) as u64) << 32)
+            }
             stream::cmd::DRAW | stream::cmd::DRAW_BUFFER if suppression.is_none() => {
                 if let Some(handle) = target {
                     suppression = crate::test_control::reserve(test_point::SUPPRESS_DRAW, handle);
@@ -2439,7 +2517,10 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         let ctx = c.contexts.get_mut(&id).ok_or(EINVAL)?;
         // Test point 31's fence-depth mode: this context's next four answers are kept.
         if ctx.depth.is_none()
-            && crate::test_control::take_if(test_point::WITHHOLD_FENCE, 0, |p| p == test_point::WITHHOLD_DEPTH).is_some()
+            && crate::test_control::take_if(test_point::WITHHOLD_FENCE, 0, |p| {
+                p == test_point::WITHHOLD_DEPTH
+            })
+            .is_some()
         {
             ctx.depth = Some(Depth { left: limits::IN_FLIGHT as u32, kept: Vec::new() });
         }

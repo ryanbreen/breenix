@@ -254,7 +254,10 @@ pub fn validate(words: &(impl Words + ?Sized), resolver: &impl Resolver) -> Resu
                 }
                 target_handle = handle_at(words, at + 2);
                 match resolver.target(target_handle) {
-                    Some(t) => { target = Some(t); scissor = None; },
+                    Some(t) => {
+                        target = Some(t);
+                        scissor = None;
+                    }
                     None => return refuse(error::BAD_HANDLE),
                 }
             }
@@ -262,22 +265,40 @@ pub fn validate(words: &(impl Words + ?Sized), resolver: &impl Resolver) -> Resu
                 if len != 3 {
                     return refuse(error::BAD_LENGTH);
                 }
-                let Some(t) = target else { return refuse(error::NO_TARGET) };
-                let clipped = clipped([0, 0, t.width as i32, t.height as i32], t.width, t.height, scissor);
-                let area = clipped.map_or(0, |[x0,y0,x1,y1]| (x1-x0) as u64 * (y1-y0) as u64);
-                if scissor.is_some() && area > 0 { plan.drawn += 1; }
+                let Some(t) = target else {
+                    return refuse(error::NO_TARGET);
+                };
+                let clipped = clipped(
+                    [0, 0, t.width as i32, t.height as i32],
+                    t.width,
+                    t.height,
+                    scissor,
+                );
+                let area =
+                    clipped.map_or(0, |[x0, y0, x1, y1]| (x1 - x0) as u64 * (y1 - y0) as u64);
+                if scissor.is_some() && area > 0 {
+                    plan.drawn += 1;
+                }
                 count_draw(&mut plan, index, 1, area, 1)?;
             }
             cmd::DRAW | cmd::DRAW_BUFFER => {
                 if len < 5 {
                     return refuse(error::TRUNCATED);
                 }
-                let Some(t) = target else { return refuse(error::NO_TARGET) };
+                let Some(t) = target else {
+                    return refuse(error::NO_TARGET);
+                };
                 let raw = words.word(at + 2);
                 let pipe = raw & 0x7FFF_FFFF;
-                let Some(steps) = pipeline::steps(pipe) else { return refuse(error::BAD_PIPELINE) };
-                if raw & 0x8000_0000 != 0 { return refuse(error::FILTERED_SAMPLER); }
-                if pipe == pipeline::PROBE_INT { return refuse(error::WRONG_COMMAND); }
+                let Some(steps) = pipeline::steps(pipe) else {
+                    return refuse(error::BAD_PIPELINE);
+                };
+                if raw & 0x8000_0000 != 0 {
+                    return refuse(error::FILTERED_SAMPLER);
+                }
+                if pipe == pipeline::PROBE_INT {
+                    return refuse(error::WRONG_COMMAND);
+                }
                 if pipeline::samples(pipe) {
                     return refuse(error::WRONG_COMMAND);
                 }
@@ -311,7 +332,9 @@ pub fn validate(words: &(impl Words + ?Sized), resolver: &impl Resolver) -> Resu
                     let buffer = handle_at(words, at + 4);
                     let offset = words.word(at + 6) as u64;
                     count = words.word(at + 7) as usize;
-                    let Some(size) = resolver.buffer_size(buffer) else { return refuse(error::BAD_HANDLE) };
+                    let Some(size) = resolver.buffer_size(buffer) else {
+                        return refuse(error::BAD_HANDLE);
+                    };
                     let end = offset + 16 * count as u64;
                     if offset % 16 != 0 || end > size {
                         return refuse(error::BAD_RANGE);
@@ -350,8 +373,12 @@ pub fn validate(words: &(impl Words + ?Sized), resolver: &impl Resolver) -> Resu
                 }
                 let source = handle_at(words, at + 2);
                 let destination = handle_at(words, at + 8);
-                let Some(s) = resolver.source(source) else { return refuse(error::BAD_HANDLE) };
-                let Some(d) = resolver.target(destination) else { return refuse(error::BAD_HANDLE) };
+                let Some(s) = resolver.source(source) else {
+                    return refuse(error::BAD_HANDLE);
+                };
+                let Some(d) = resolver.target(destination) else {
+                    return refuse(error::BAD_HANDLE);
+                };
                 if s.format != d.format {
                     return refuse(error::FORMAT_MISMATCH);
                 }
@@ -377,12 +404,20 @@ pub fn validate(words: &(impl Words + ?Sized), resolver: &impl Resolver) -> Resu
                 if len < 6 {
                     return refuse(error::TRUNCATED);
                 }
-                let Some(t) = target else { return refuse(error::NO_TARGET) };
+                let Some(t) = target else {
+                    return refuse(error::NO_TARGET);
+                };
                 let raw = words.word(at + 2);
                 let pipe = raw & 0x7FFF_FFFF;
-                let Some(steps) = pipeline::steps(pipe) else { return refuse(error::BAD_PIPELINE) };
-                if raw & 0x8000_0000 != 0 { return refuse(error::FILTERED_SAMPLER); }
-                if pipe == pipeline::PROBE_INT { return refuse(error::WRONG_COMMAND); }
+                let Some(steps) = pipeline::steps(pipe) else {
+                    return refuse(error::BAD_PIPELINE);
+                };
+                if raw & 0x8000_0000 != 0 {
+                    return refuse(error::FILTERED_SAMPLER);
+                }
+                if pipe == pipeline::PROBE_INT {
+                    return refuse(error::WRONG_COMMAND);
+                }
                 if !pipeline::samples(pipe) {
                     return refuse(error::WRONG_COMMAND);
                 }
@@ -391,7 +426,9 @@ pub fn validate(words: &(impl Words + ?Sized), resolver: &impl Resolver) -> Resu
                     return refuse(error::BAD_LENGTH);
                 }
                 let texture = handle_at(words, at + 3);
-                let Some(src) = resolver.source(texture) else { return refuse(error::BAD_HANDLE) };
+                let Some(src) = resolver.source(texture) else {
+                    return refuse(error::BAD_HANDLE);
+                };
                 if texture == target_handle {
                     return refuse(error::SAMPLES_TARGET);
                 }
@@ -405,7 +442,10 @@ pub fn validate(words: &(impl Words + ?Sized), resolver: &impl Resolver) -> Resu
                     if i[2] < i[0] || i[3] < i[1] {
                         return refuse(error::BAD_RECT);
                     }
-                    if let Some([x0, y0, x1, y1]) = sampled_clip(i, t.width, t.height, src.width, src.height).and_then(|r| clipped(r.map(|v|v as i32), t.width, t.height, scissor)) {
+                    if let Some([x0, y0, x1, y1]) =
+                        sampled_clip(i, t.width, t.height, src.width, src.height)
+                            .and_then(|r| clipped(r.map(|v| v as i32), t.width, t.height, scissor))
+                    {
                         area += (x1 - x0) as u64 * (y1 - y0) as u64;
                         plan.drawn += 1;
                     }
@@ -413,26 +453,38 @@ pub fn validate(words: &(impl Words + ?Sized), resolver: &impl Resolver) -> Resu
                 count_draw(&mut plan, index, count as u64, area, steps)?;
             }
             cmd::SCISSOR => {
-                if len != 6 { return refuse(error::BAD_LENGTH); }
-                if target.is_none() { return refuse(error::NO_TARGET); }
-                let r = [2,3,4,5].map(|k| words.word(at+k) as i32);
-                if r[2]<r[0] || r[3]<r[1] { return refuse(error::BAD_RECT); }
+                if len != 6 {
+                    return refuse(error::BAD_LENGTH);
+                }
+                if target.is_none() {
+                    return refuse(error::NO_TARGET);
+                }
+                let r = [2, 3, 4, 5].map(|k| words.word(at + k) as i32);
+                if r[2] < r[0] || r[3] < r[1] {
+                    return refuse(error::BAD_RECT);
+                }
                 scissor = Some(r);
             }
             cmd::PROBE => {
-                if len != 24 { return refuse(error::BAD_LENGTH); }
-                let Some(t) = target else { return refuse(error::NO_TARGET) };
-                let a = core::array::from_fn(|i| words.word(at+8+i));
-                if !crate::probe::valid(words.word(at+2), words.word(at+3), &a) {
+                if len != 24 {
+                    return refuse(error::BAD_LENGTH);
+                }
+                let Some(t) = target else {
+                    return refuse(error::NO_TARGET);
+                };
+                let a = core::array::from_fn(|i| words.word(at + 8 + i));
+                if !crate::probe::valid(words.word(at + 2), words.word(at + 3), &a) {
                     return refuse(error::BAD_PROBE);
                 }
-                let r = [4,5,6,7].map(|k| words.word(at+k) as i32);
-                if r[2]<r[0] || r[3]<r[1] { return refuse(error::BAD_RECT); }
-                let area = clipped(r,t.width,t.height,scissor).map_or(0, |[x0,y0,x1,y1]| {
+                let r = [4, 5, 6, 7].map(|k| words.word(at + k) as i32);
+                if r[2] < r[0] || r[3] < r[1] {
+                    return refuse(error::BAD_RECT);
+                }
+                let area = clipped(r, t.width, t.height, scissor).map_or(0, |[x0, y0, x1, y1]| {
                     plan.drawn += 1;
-                    (x1-x0) as u64 * (y1-y0) as u64
+                    (x1 - x0) as u64 * (y1 - y0) as u64
                 });
-                count_draw(&mut plan,index,1,area,crate::probe::STEPS)?;
+                count_draw(&mut plan, index, 1, area, crate::probe::STEPS)?;
             }
             _ => return refuse(error::UNKNOWN_COMMAND),
         }
@@ -498,6 +550,26 @@ pub mod encode {
             out.extend(i.iter().map(|&v| v as u32));
         }
     }
+}
+
+/// Target and scissor intersection, shared by validation and geometry translation.
+pub fn clipped(
+    r: [i32; 4],
+    width: u32,
+    height: u32,
+    scissor: Option<[i32; 4]>,
+) -> Option<[u32; 4]> {
+    let r = if let Some(s) = scissor {
+        [
+            r[0].max(s[0]),
+            r[1].max(s[1]),
+            r[2].min(s[2]),
+            r[3].min(s[3]),
+        ]
+    } else {
+        r
+    };
+    clip(r, width, height)
 }
 
 #[cfg(test)]
@@ -746,26 +818,6 @@ mod tests {
         assert_eq!(clip([4, 0, 9, 9], 4, 4), None);
         assert_eq!(clip([i32::MIN, i32::MIN, i32::MAX, i32::MAX], 7, 3), Some([0, 0, 7, 3]));
     }
-}
-
-/// Target and scissor intersection, shared by validation and geometry translation.
-pub fn clipped(
-    r: [i32; 4],
-    width: u32,
-    height: u32,
-    scissor: Option<[i32; 4]>,
-) -> Option<[u32; 4]> {
-    let r = if let Some(s) = scissor {
-        [
-            r[0].max(s[0]),
-            r[1].max(s[1]),
-            r[2].min(s[2]),
-            r[3].min(s[3]),
-        ]
-    } else {
-        r
-    };
-    clip(r, width, height)
 }
 
 #[cfg(test)]

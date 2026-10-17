@@ -183,6 +183,43 @@ pub fn texel_fetch_exact() -> CaseResult {
     fetch(false)
 }
 pub fn no_srgb() -> CaseResult {
+    // Direct integer results independently expose output encoding. The adjacent
+    // sampled row exposes input decoding, including decode+encode round trips.
+    let _case = begin()?;
+    let mut run = Run::new()?;
+    for fmt in [format::B8G8R8A8, format::R8G8B8A8] {
+        let t = run.target(fmt, 256, 2)?;
+        let tex = run.texture(fmt, 256, 1)?;
+        let mut bytes = Vec::new();
+        let mut want = Canvas::new(256, 2);
+        let mut s = scene(t, BG, &[]);
+        for k in 0..256u32 {
+            let c = bgra(k as u8, (255 - k) as u8, (k ^ 0x55) as u8, 127);
+            let b = c.to_le_bytes();
+            if fmt == format::R8G8B8A8 {
+                bytes.extend_from_slice(&[b[2], b[1], b[0], b[3]]);
+            } else {
+                bytes.extend_from_slice(&b);
+            }
+            probe_command(&mut s, 0, 0, [k as i32, 0, k as i32 + 1, 1], &[c]);
+            want.rect([k as i32, 0, k as i32 + 1, 2], c);
+        }
+        let (r, _) = gpu::upload(
+            run.ctx,
+            tex,
+            [0, 0, 256, 1],
+            &bytes,
+            1024,
+            fmt,
+            abi::purpose::FIXTURE,
+        );
+        ensure(r == 0, || format!("sRGB fixture upload: {}", errno(r)))?;
+        encode::draw_sampled(&mut s, pipeline::COPY, tex, &[[0, 1, 256, 2, 0, 0]]);
+        frame(run.ctx, &s)?;
+        expect(t, &want, "independent linear output and sampled input rows")?;
+        run.show(t)?;
+    }
+    // Retain the original format and texel coverage as well.
     fetch(true)
 }
 
@@ -239,6 +276,19 @@ pub fn int_float_exact() -> CaseResult {
 pub fn fixed_blend_off() -> CaseResult {
     alpha_write()?;
     fetch(false)?;
+    // Transparent and partial-alpha writes replace several different destination
+    // values repeatedly, so destination-dependent blending cannot hide in a clear.
+    rectangles(
+        67,
+        19,
+        &[
+            ([0, 0, 67, 19], 0xffffffff),
+            ([0, 0, 67, 19], 0x00112233),
+            ([0, 0, 34, 19], 0xffabcdef),
+            ([0, 0, 67, 19], 0x7f246891),
+            ([17, 3, 51, 16], 0x00112233),
+        ],
+    )?;
     probes(&[
         (0, 0, &[0x00112233], 0x00112233),
         (0, 0, &[0x7f246891], 0x7f246891),
@@ -361,6 +411,147 @@ pub fn binary32_emulation() -> CaseResult {
 }
 pub fn large_coordinates() -> CaseResult {
     probes(&[
+        // Range ends, radius clamping, empty shapes, winding and edge ties.
+        (
+            20,
+            0,
+            &[0x80000000, 0x80000000, 0x80000000, 0x80000000, 0x00000000],
+            1,
+        ),
+        (
+            20,
+            0,
+            &[0x7fffffff, 0x80000000, 0x80000000, 0x80000000, 0x7fffffff],
+            0,
+        ),
+        (
+            21,
+            0,
+            &[0x80000000, 0x80000000, 0x80000000, 0x80000000, 0x00000000],
+            1,
+        ),
+        (
+            21,
+            0,
+            &[0x80000001, 0x80000000, 0x80000000, 0x80000000, 0x00000000],
+            0,
+        ),
+        (
+            22,
+            0,
+            &[
+                0x80000000, 0x80000000, 0x80000000, 0x80000000, 0x7fffffff, 0x7fffffff, 0x7fffffff,
+            ],
+            0,
+        ),
+        (
+            22,
+            0,
+            &[
+                0x80000000, 0xbfffffff, 0x80000000, 0x80000000, 0x7fffffff, 0x7fffffff, 0x7fffffff,
+            ],
+            1,
+        ),
+        (
+            22,
+            0,
+            &[
+                0x80000000, 0x80000000, 0x80000000, 0x80000000, 0x7fffffff, 0x7fffffff, 0x00000000,
+            ],
+            1,
+        ),
+        (
+            22,
+            0,
+            &[
+                0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x7fffffff, 0x7fffffff,
+            ],
+            0,
+        ),
+        (
+            22,
+            0,
+            &[
+                0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x80000000, 0x0000000a, 0x00000002,
+            ],
+            0,
+        ),
+        (
+            22,
+            0,
+            &[
+                0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x0000000a, 0x00000000, 0x00000002,
+            ],
+            0,
+        ),
+        (
+            22,
+            0,
+            &[
+                0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x0000000a, 0x0000000a, 0xffffffff,
+            ],
+            1,
+        ),
+        (
+            23,
+            0,
+            &[
+                0xfffffffe, 0xfffffffe, 0x80000000, 0x80000000, 0x80000000, 0x7fffffff, 0x7fffffff,
+                0x80000000,
+            ],
+            1,
+        ),
+        (
+            23,
+            0,
+            &[
+                0x00000000, 0x00000000, 0x80000000, 0x80000000, 0x00000000, 0x00000000, 0x7fffffff,
+                0x7fffffff,
+            ],
+            0,
+        ),
+        (
+            23,
+            0,
+            &[
+                0x00000001, 0x00000002, 0x00000000, 0x00000000, 0x00000004, 0x00000000, 0x00000000,
+                0x00000004,
+            ],
+            0,
+        ),
+        (
+            23,
+            0,
+            &[
+                0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000004, 0x00000000, 0x00000000,
+                0x00000004,
+            ],
+            1,
+        ),
+        (
+            24,
+            0,
+            &[
+                0x00000000, 0x00000000, 0x80000000, 0x00000000, 0x7fffffff, 0x00000000,
+            ],
+            1,
+        ),
+        (
+            24,
+            0,
+            &[
+                0x00000000, 0x00000000, 0x00000000, 0x80000000, 0x00000000, 0x7fffffff,
+            ],
+            1,
+        ),
+        (
+            24,
+            0,
+            &[
+                0x7fffffff, 0x7fffffff, 0x7fffffff, 0x7fffffff, 0x7fffffff, 0x7fffffff,
+            ],
+            1,
+        ),
         (20, 0, &[0x7fffffff, 0, 0, 0, 0x7fffffff], 1),
         (20, 0, &[0x7fffffff, 1, 0, 0, 0x7fffffff], 0),
         (
@@ -528,21 +719,18 @@ fn filtered(inject: bool) -> CaseResult {
         &[[1, 1, 7, 5, 0, 0]],
     );
     if inject {
-        let r = gpu::tc_arm(24, t, 0);
-        ensure(r == 0, || format!("targeted profile point: {}", errno(r)))?;
+        let r = gpu::tc_arm(24, 0, 0);
+        ensure(r == 0, || format!("profile point: {}", errno(r)))?;
     }
     let (r, a) = gpu::submit(run.ctx, &s);
-    ensure(
-        r == -EINVAL && a.error_index == if inject { 3 } else { 1 } && a.error == 19,
-        || {
-            format!(
-                "filtered draw: {} index={} error={}",
-                errno(r),
-                a.error_index,
-                a.error
-            )
-        },
-    )?;
+    ensure(r == -EINVAL && a.error_index == 1 && a.error == 19, || {
+        format!(
+            "filtered draw: {} index={} error={}",
+            errno(r),
+            a.error_index,
+            a.error
+        )
+    })?;
     ensure(counters(run.ctx)?.submissions == before.submissions, || {
         "refused filtered draw sent a submission".to_string()
     })?;

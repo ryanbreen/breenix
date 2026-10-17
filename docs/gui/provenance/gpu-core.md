@@ -141,7 +141,8 @@ the target.
 | DSA: 5 words: handle, S0 (depth and alpha tests off), S1 and S2 (stencil off), alpha reference | P:197–214 |
 | Rasterizer: 9 words: handle, S0, point size, sprite coordinate enable, S3, line width, offset units, scale and clamp; half-pixel centre S0 bit 29, every other S0 bit 0 (fill, cull none, no scissor, multisample or smoothing) | P:217–260 |
 | CLEAR: 8 words: buffers, four colour words, depth as two words of a double, stencil | P:262–270 |
-| Shader object: handle, type, offset word (the text's byte length in bits 0–30, continuation bit 31 clear), token count, stream-output count 0, then the text | P:273–282 |
+| Shader object: handle, type, offset word (the text's byte length in bits 0–30 initially; subsequent commands carry byte offset with continuation bit 31 set), token count, stream-output count 0, then text | P:273–282 |
+| Shader fragments occupy at most one 4096-byte DMA page, including the command header and five shader fields, and each fragment ends its submission chunk | O: core sizing choice; P:273–282 supplies continuation framing |
 | SET_VIEWPORT_STATE: start slot, then scale x, y, z and translate x, y, z of one viewport | P:294–301 |
 | SET_FRAMEBUFFER_STATE: colour buffer count, depth surface handle (0, none), colour surface handles | P:304–307 |
 | Vertex elements: handle, then per element source offset, instance divisor, vertex buffer index, source format | P:310–315 |
@@ -573,6 +574,10 @@ normalized to 0 or 1 with AND; final word selection uses integer bit operations 
 The three-word division model unrolls 96 restoring steps; its shader encoder expresses that recurrence as a
 96-iteration loop, retaining the shifted-out remainder bit for a divisor with its high bit set.
 
+The sticky-bit shift is derived here by OR-reducing discarded bits into the low retained bit so
+rounding preserves whether any discarded bit was nonzero; the former name `jam` named that operation,
+not an implementation source. The routine is now named `sticky_shift`.
+
 Binary32 add/subtract align significands with guard, round and sticky bits, normalize, and round ties to
 even; multiplication uses the two-word significand product and the same rounding step. The model's native
 f32 comparisons were run before shader emission: `binary32_model_matches_native_arithmetic` checks 14×14
@@ -606,9 +611,13 @@ replicated swizzle, as B10 establishes. The file is generated with
 `taskpolicy -b "$GENERATOR" "$CHECKOUT/kernel/src/gpu/virgl/profile"`, with CARGO_BUILD_JOBS=4 exported; GENERATOR and CHECKOUT are absolute paths.
 The integer model and generator share operations; the suite's literal expectations share neither.
 
-The current token capacity is 23,233: 13 header/declaration words, 141×5 immediate words,
+At `a66cc5986b0e70f85098572e4565e3eb630460fc`, the token capacity was 23,233: 13 header/declaration words, 141×5 immediate words,
 22,482 instruction/register words, and a 33-word allowance for the control instructions' optional label
-tokens (T:649–688). The text plus terminator is 252,216 bytes, below P:157–158's command payload limit.
+tokens (T:649–688). The text plus terminator was 252,216 bytes, below P:157–158's command payload limit.
+The review revision eliminates repeated expressions and constant operations, and uses low-word UMUL for
+terms discarded above bit 95. The generator prints the revised size and token budget when run; the
+emitted-ISA host tests execute that generated text, including loops and integer rewrites. Shader text now
+uses the continuation framing above rather than requiring one large command. Catalogue warm-up retains section 1.4.1's requirement for each context; startup compilation is still charged to the existing fence and case deadlines.
 The earlier B10 candidate at `09922c96` had capacity 21,940 and 240,200 text bytes including its terminator;
 its rejected 21,257 field omitted 130×5 immediate words and the label allowance. B10 records those original
 inputs; B11 records the integer-only selection program at `41766187`, and B12 the runtime literal construction. These capacities are layout-derived
@@ -646,8 +655,11 @@ The capacity defect was isolated without changing the candidate text: the combin
 21,257 was refused 22, and with capacity 50,000 was accepted 0. Its individual branches 0, 11, 12, 23 and 24,
 with the same declarations and capacity 50,000, were accepted 0. The T-based recount above repaired the
 omitted fields. B7's small-program count variations therefore do not establish that an arbitrarily small
-capacity is accepted. To reproduce these two combined candidates, pass the committed text through the
-harness's `grammar` function once with 21,257 and once with 50,000.
+capacity is accepted. The committed `tools/gpu-experiments/profile-capacity.py` reconstructs those exact candidates from
+`09922c9652d3820b82e1c1cad007180a7f08f25a`. Run it with B10's invocation, replacing
+`profile-grammar.py` with `profile-capacity.py`. Its named outputs are `G4 B10 capacity 21257 REFUSE 22`
+and `G4 B10 capacity 50000 ACCEPT 0`; it also reconstructs the five branch candidates
+with their original declarations and capacity.
 
 ## B11: integer word selection
 
@@ -667,14 +679,26 @@ instructions within one VirGL command, without changing the probe's work limit o
 
 The public renderer harness, pin, environment and invocation are B10's, with CHECKOUT denoting commit `41766187` in this section. `profile-grammar.py` adds one change to the small B10 baseline: replace its UADD opcode with USNE
 (capacity 25). Output: `G4 unsigned inequality ACCEPT 0`. L defines USNE at line 1481; its enumeration is
-T:497 and its instruction and operand layouts are T:649–661 and 752–803. The six other experiments return
-their B10 results; `G4 combined baseline ACCEPT 0` here refers to that commit’s generated text, capacity
+T:497 and its instruction and operand layouts are T:649–661 and 752–803. The complete named output at that commit was:
+
+```text
+G4 replicated scalar baseline ACCEPT 0
+G4 scalar source shorthand REFUSE 22
+G4 integer conditional ACCEPT 0
+G4 bounded loop syntax ACCEPT 0
+G4 unsigned inequality ACCEPT 0
+G4 combined baseline ACCEPT 0
+G4 missing immediate type REFUSE 22
+```
+
+`G4 combined baseline ACCEPT 0` here refers to that commit’s generated text, capacity
 23,165, 44 temporary registers and 251,697 bytes including the NUL. This is grammar acceptance, not a
 substitute for the profile cases' device readback.
 
 
 ## B12: NaN-shaped word literals
 
+CHECKOUT in this section denotes commit `a66cc5986b0e70f85098572e4565e3eb630460fc`.
 A renderer behavior experiment isolated an expression whose inputs are integer immediates:
 `150 XOR 0xffffffff` returned `0x7fc00000`, rather than the integer result `0xffffff69`.
 The public API experiment is `tools/gpu-experiments/profile-words.py`, run with B10's unmodified renderer,
