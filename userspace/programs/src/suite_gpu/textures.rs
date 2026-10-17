@@ -669,18 +669,40 @@ pub fn destroy_deferred() -> CaseResult {
     pass()
 }
 
+/// Textures a case destroys when it ends, however it ends, so a failing case cannot leave
+/// frames held for the cases after it while the reclamation sweep catches up.
+struct Held(Vec<u64>);
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        for t in self.0.drain(..) {
+            let _ = gpu::resource_destroy(t);
+        }
+    }
+}
+
 pub fn quota() -> CaseResult {
     let _case = begin()?;
     let base = counters(0)?.resource_bytes;
     // 4096x4096 B8G8R8A8 rows are 16,384 bytes, already a multiple of 256: 64 MiB each.
     const ONE: u64 = 64 << 20;
     const QUOTA: u64 = 192 << 20;
-    let mut held = Vec::new();
-    while base + (held.len() as u64 + 1) * ONE <= QUOTA {
-        held.push(texture(format::B8G8R8A8, 4096, 4096)?);
+    let mut held = Held(Vec::new());
+    while base + (held.0.len() as u64 + 1) * ONE <= QUOTA {
+        match gpu::texture_create(format::B8G8R8A8, 4096, 4096) {
+            Ok(t) => held.0.push(t),
+            Err(e) => {
+                return Err(fail_msg(format!(
+                    "RESOURCE_CREATE of a 4096x4096 texture returned {} with {} held and {} bytes charged, below the {QUOTA}-byte quota",
+                    errno(e),
+                    held.0.len(),
+                    counters(0).map_or(0, |k| k.resource_bytes)
+                )))
+            }
+        }
     }
     let full = counters(0)?.resource_bytes;
-    ensure(full == base + held.len() as u64 * ONE, || format!("{} textures hold {full} bytes", held.len()))?;
+    ensure(full == base + held.0.len() as u64 * ONE, || format!("{} textures hold {full} bytes", held.0.len()))?;
     let (r, t) = create_raw(abi::kind::TEXTURE, format::B8G8R8A8, 4096, 4096);
     ensure(r == -abi::errno::ENOMEM && t == 0, || format!("a texture past the quota returned {}", errno(r)))?;
     if full + 4096 > QUOTA {
@@ -688,14 +710,14 @@ pub fn quota() -> CaseResult {
         ensure(r == -abi::errno::ENOMEM, || format!("a one-page texture past the quota returned {}", errno(r)))?;
     }
     ensure(counters(0)?.resource_bytes == full, || "a refused texture changed the counter".to_string())?;
-    let last = held.pop().ok_or_else(|| fail_msg("no texture fit the quota".to_string()))?;
+    let last = held.0.pop().ok_or_else(|| fail_msg("no texture fit the quota".to_string()))?;
     ensure(gpu::resource_destroy(last) == 0, || "RESOURCE_DESTROY".to_string())?;
     ensure(counters(0)?.resource_bytes == full - ONE, || "freeing a texture did not restore its bytes".to_string())?;
-    held.push(texture(format::B8G8R8A8, 4096, 4096)?);
-    for t in held {
+    held.0.push(texture(format::B8G8R8A8, 4096, 4096)?);
+    for t in held.0.drain(..) {
         ensure(gpu::resource_destroy(t) == 0, || "RESOURCE_DESTROY".to_string())?;
     }
-    ensure(counters(0)?.resource_bytes == base, || format!("after freeing every texture the counter is {}, expected {base}", counters(0).map_or(0, |k| k.resource_bytes)))
+    ensure(counters(0)?.resource_bytes == base, || format!("after freeing the textures the counter is {}, expected {base}", counters(0).map_or(0, |k| k.resource_bytes)))
 }
 
 pub fn r8_atlas() -> CaseResult {
