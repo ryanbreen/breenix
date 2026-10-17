@@ -24,7 +24,7 @@ different revision records it here first.
 | H | `src/virgl_hw.h` in virglrenderer | as P | the capability-set layout and VirGL format numbers |
 | D | `src/gallium/include/pipe/p_defines.h` in virglrenderer | as P | enumeration values the VirGL wire carries (targets, shader stages, primitives, masks) |
 | T | `src/gallium/include/pipe/p_shader_tokens.h` in virglrenderer | as P | TGSI token layouts, register files and semantic enumerations |
-| L | [TGSI documentation](https://docs.mesa3d.org/gallium/tgsi.html) | the page as read on 2026-10-17 | instruction, register, declaration and semantic definitions, from which programs are written |
+| L | [TGSI documentation](https://docs.mesa3d.org/gallium/tgsi.html) | Mesa revision `7e5b708afd421c1944aeca74d4be6b7996674378`, `docs/gallium/tgsi.rst` ([immutable text](https://chromium.googlesource.com/external/gitlab.freedesktop.org/mesa/mesa/+/7e5b708afd421c1944aeca74d4be6b7996674378/docs/gallium/tgsi.rst)) | instruction, register, declaration and semantic definitions, from which programs are written |
 | B | black-box experiments on the device or the unmodified host renderer | the experiment's date, renderer pin and inputs | shader-text grammar facts, and confirmation of each U layout |
 | O | Breenix's own design: `docs/gui/gpu.md`, `docs/gui/gpu-abi.md`, Breenix's syscall ABI and memory API | the contract section | policies, limits, sizes, bookkeeping and the syscall 416 ABI |
 | A | other published specifications: PCI Local Bus, the Arm Architecture Reference Manual, IEEE 754, Khronos GLSL | the document and section | configuration-header offsets, cache maintenance, float encodings, shading-language levels |
@@ -194,6 +194,16 @@ pass-throughs and match the tree's older text up to its labels and indentation; 
 older text, produced them, and the experiments below establish that the unlabelled, unindented form is
 accepted.
 
+## Experiment evidence limitation
+
+The B1–B4 runs used temporary, uncommitted experiment code on top of
+`c28938bc0ef4b4e5ea8709c3fae13f833bd13905`. Their inputs and observations below do not identify a
+replayable committed harness. They therefore remain an open provenance requirement under section 1.9,
+not completed reproducibility evidence. The shader-grammar host harness also consulted
+`virglrenderer.h` at P's pin for the host API and callback ABI. That header is outside section 1.9's
+allowlist; it supplied no guest wire values, but its use needs an explicit source ruling. The
+uncommitted harness and its historical acceptance results cannot establish that ruling.
+
 ## Shader-grammar facts
 
 The renderer was the unmodified virglrenderer at P's pin, called on 2026-10-17 UTC through its public
@@ -226,12 +236,13 @@ vertex baseline unless it says otherwise; the vertex baseline is `VERT`, `DCL IN
 | Errno values | O: Breenix's syscall ABI (the Linux numbers it follows) |
 | Work limits (65,536 draws, 1,048,576 instances, 64 MiB of named buffers, 2³¹ fragment-steps, 80 MiB stream), four submissions in flight, eight contexts per process, sides up to 16,384 | O: `docs/gui/gpu.md` section 1.4.1, `docs/gui/gpu-abi.md` |
 | W = 2 s (the watchdog's hang and no-progress thresholds), K = 250 ms (the watchdog examines outstanding work at least this often; kills end waits within it), R = 100 ms (the reset budget) | O: `docs/gui/gpu.md` section 1.4.1, timing bounds |
-| A context keeps the answers of at most 256 failed fences while live; one more quarantines it | O: bookkeeping bound of the core; quarantine is section 1.4.1's |
+| Failed fence answers remain recorded until the context is destroyed; their count never quarantines it | O: section 1.4.1, per-context device-error quarantine |
 | 192 MiB of backing per process, 256 resource handles, 128 MiB largest buffer, 1 MiB readback bands, 16-frame command chunks, 1,024 rectangles per inline write, 256 queue descriptors | O: G1 sizing choices |
 | Rows aligned to 256 bytes for transfers | O: `docs/gui/gpu.md` section 1.12 (the pitch probe) |
 | Guest backing counted against RLIMIT_AS with the process's mappings | O: `docs/gui/gpu.md` section 1.4 (RESOURCE_CREATE) and Breenix's resource limits |
 | Poison 0x3C5AA5C3 and its complement; `unwritten` at record offset 164 | O: `docs/gui/gpu.md` section 1.8 |
-| Handle mixing constants 0x9E3779B97F4A7C15, 0xBF58476D1CE4E5B9, 0x94D049BB133111EB; first resource id 0x100; first context, serial, fence, namespace and observation 1 | O: bookkeeping choices of the core |
+| Handle mixing constants 0x9E3779B97F4A7C15, 0xBF58476D1CE4E5B9, 0x94D049BB133111EB | A: [SplitMix64](https://prng.di.unimi.it/splitmix64.c), published increment and finalizer constants; Breenix applies that arithmetic to its handle key, process id and sequence |
+| First resource id 0x100; first context, serial, fence, namespace and observation 1 | O: bookkeeping choices of the core |
 | The context's debug name `breenix` | O: CTX_CREATE's free-form debug name (V §5.7.6.9) |
 | Capability set preference: VIRGL2, then VIRGL; each listed id kept once | O: `docs/gui/gpu.md` section 1.12 |
 | Viewport half-size 8,192 (shift 13): pixel p maps to clip coordinate (p − 8192) / 8192, exact in binary32 across the 16,384 domain; scale and translate z 0.5 | O: geometry of the core; A: IEEE 754 binary32 |
