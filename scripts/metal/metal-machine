@@ -200,6 +200,9 @@ def end_session_side_effects():
     m.unstage()
     with contextlib.suppress(m.BmcError):
         m.sol_deactivate()
+    # An interrupted setup may have left inventory collection enabled for its refresh cycle.
+    with contextlib.suppress(m.BmcError):
+        m.rf('PATCH', m.LC_ATTRIBUTES, {'Attributes': m.EXPECTED_LC})
 
 
 # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
@@ -231,7 +234,8 @@ def reconcile():
                 (m.STATE / m.LEASE).unlink()
         else:
             holder = (lease or {}).get('id', 'reconciliation')
-            m.quarantine_lease(holder, 'power-off failed at startup reconciliation')
+            m.write_json(m.STATE / m.LEASE,
+                         m.quarantined_record(lease, holder, 'power-off failed at startup reconciliation'))
             machine_event('quarantined', id=holder, reason='startup power-off failed')
         machine_event('reconciliation-done', seconds=round(m.now() - started, 1), powerBefore=power, off=off)
         m.RUN.mkdir(parents=True, exist_ok=True)
@@ -285,11 +289,9 @@ class Machine:
                     if not current:
                         end_session_side_effects()
                     if not off:
-                        # The lease lock is already held; publish quarantine without reacquiring it.
-                        quarantine = dict(current or {'id': 'stray-power-on'}, state='quarantined',
-                                          reason='power-off of a stray power-on failed',
-                                          quarantined=m.now(), heartbeat=m.now(), retries=0)
-                        m.write_json(m.STATE / m.LEASE, quarantine)
+                        m.write_json(m.STATE / m.LEASE, m.quarantined_record(
+                            current, (current or {}).get('id', 'stray-power-on'),
+                            'power-off of a stray power-on failed'))
         return None
 
     def end_boot(self, lease, status, why):

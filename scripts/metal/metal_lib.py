@@ -184,11 +184,15 @@ def release_lease(holder_id):
     return False
 
 
+def quarantined_record(lease, holder_id, reason):
+    record = dict(lease or {'id': holder_id})
+    record.update(state='quarantined', reason=reason, quarantined=now(), heartbeat=now(), retries=0)
+    return record
+
+
 def quarantine_lease(holder_id, reason):
     with locked('lease'):
-        lease = read_lease() or {'id': holder_id}
-        lease.update(state='quarantined', reason=reason, quarantined=now(), heartbeat=now(), retries=0)
-        write_json(STATE / LEASE, lease)
+        write_json(STATE / LEASE, quarantined_record(read_lease(), holder_id, reason))
 
 
 # The management controller: Redfish and IPMI requests go through the machine service's queue.

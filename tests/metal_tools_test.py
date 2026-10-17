@@ -434,6 +434,24 @@ class ReaperTest(StateTest):
         self.assertEqual(self.controller.power, 'Off')
         self.assertIsNone(m.read_lease())
 
+    def test_reconciliation_quarantines_failed_power_off_without_relocking(self):
+        with patch.object(m, 'force_off_and_wait', return_value=False):
+            machine.reconcile()
+        self.assertEqual(m.read_lease()['state'], 'quarantined')
+        self.assertTrue(m.machine_ready())
+        with self.assertRaises(m.Quarantined):
+            m.claim_lease({'id': 'next', 'pid': os.getpid()}, wait=False)
+
+    def test_reaper_and_reconciliation_restore_inventory_after_interrupted_setup(self):
+        self.open_boot('20261017T000012Z-metal', pid=self.dead_pid(), mode='setup')
+        self.machine.reap()
+        resets = [r for r in self.controller.requests if r.get('path') == m.LC_ATTRIBUTES]
+        self.assertTrue(any(r.get('body') == {'Attributes': m.EXPECTED_LC} for r in resets))
+        self.controller.requests.clear()
+        machine.reconcile()
+        resets = [r for r in self.controller.requests if r.get('path') == m.LC_ATTRIBUTES]
+        self.assertTrue(any(r.get('body') == {'Attributes': m.EXPECTED_LC} for r in resets))
+
     def test_reconciliation_closes_open_records_and_powers_off_first(self):
         directory = m.boot_dir('20261017T000007Z-metal')
         directory.mkdir(parents=True)
