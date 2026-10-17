@@ -241,9 +241,7 @@ type TickBaseline = ();
 #[cfg(any(feature = "boot_tests", feature = "testing"))]
 #[inline(always)]
 fn tick_baseline() -> TickBaseline {
-    core::array::from_fn(|cpu| {
-        crate::tracing::providers::counters::TIMER_TICK_TOTAL.get_cpu(cpu)
-    })
+    core::array::from_fn(|cpu| crate::tracing::providers::counters::TIMER_TICK_TOTAL.get_cpu(cpu))
 }
 
 #[cfg(not(any(feature = "boot_tests", feature = "testing")))]
@@ -431,8 +429,16 @@ impl KickSlot {
                 #[cfg(not(any(feature = "boot_tests", feature = "testing")))]
                 let (observer_ticks, all_ticks) = (0, 0);
                 (
-                    KickObservation { generation: first_state >> 2, pid, at },
-                    KickWindow { observer_ticks, all_ticks, sender_cpu },
+                    KickObservation {
+                        generation: first_state >> 2,
+                        pid,
+                        at,
+                    },
+                    KickWindow {
+                        observer_ticks,
+                        all_ticks,
+                        sender_cpu,
+                    },
                 )
             })
     }
@@ -1114,7 +1120,11 @@ enum BootTestPidCountKind {
     Reclaim,
     Quarantine,
     SgiSent,
-    KickObserved { interval: u64, window: KickWindow, cpu: u64 },
+    KickObserved {
+        interval: u64,
+        window: KickWindow,
+        cpu: u64,
+    },
     MaskedFramesWalked,
     Report,
     TableFramesRecorded(u64),
@@ -1149,7 +1159,11 @@ fn record_boot_test_pid_count(pid: u64, kind: BootTestPidCountKind) {
                 BootTestPidCountKind::SgiSent => {
                     slot.sgi_sent_count.fetch_add(1, Ordering::Relaxed);
                 }
-                BootTestPidCountKind::KickObserved { interval, window, cpu } => {
+                BootTestPidCountKind::KickObserved {
+                    interval,
+                    window,
+                    cpu,
+                } => {
                     slot.kick_observed_interval
                         .store(interval, Ordering::Relaxed);
                     slot.kick_observed_ticks

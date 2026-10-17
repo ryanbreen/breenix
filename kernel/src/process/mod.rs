@@ -654,8 +654,12 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
         crate::task::process_task::redeem_exit_report(pid, reported_exit_code, report_claimer);
     }
 
-    // The two-phase path finishes the thread's exit; its report claim finds
-    // this one, or a natural exit's that committed first, and does nothing.
+    #[cfg(all(target_arch = "aarch64", feature = "force_exit_report_reap_race"))]
+    force_exit_report_reap_race(pid);
+
+    // The two-phase path finishes the thread's exit. Its report claim finds
+    // the report already claimed, here or by a natural exit that committed
+    // first, and leaves it to that claimer.
     if let Some(thread_id) = thread_id {
         crate::task::process_task::ProcessScheduler::handle_thread_exit(
             thread_id,
@@ -664,6 +668,50 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
     }
 
     outcome
+}
+
+/// Hold the first killed `sigkill_teardown_test` row's exit, after its parent
+/// was woken and before `handle_thread_exit`, until the parent has reaped it.
+/// A row killed by its own parent is skipped: holding that killer holds the
+/// reaper. This changes only when the killer runs; the parent reaps through the
+/// production wait path and the userspace test keeps its report requirement.
+#[cfg(all(target_arch = "aarch64", feature = "force_exit_report_reap_race"))]
+fn force_exit_report_reap_race(pid: ProcessId) {
+    use core::sync::atomic::AtomicBool;
+    static ARMED: AtomicBool = AtomicBool::new(true);
+    fn counter() -> u64 {
+        let value: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, cntvct_el0", out(reg) value, options(nomem, nostack));
+        }
+        value
+    }
+    let killer_thread = crate::task::scheduler::current_thread_id();
+    let victim = with_process_manager(|pm| {
+        let killer = killer_thread
+            .and_then(|thread| pm.find_process_by_thread(thread))
+            .map(|(killer, _)| killer);
+        pm.get_process(pid).is_some_and(|row| {
+            row.name.contains("sigkill_teardown_test") && row.parent != killer
+        })
+    })
+    .unwrap_or(false);
+    if !victim || !ARMED.swap(false, Ordering::AcqRel) {
+        return;
+    }
+    let limit = crate::arch_impl::aarch64::timer::frequency_hz() / 20;
+    let start = counter();
+    while counter().wrapping_sub(start) < limit {
+        if with_process_manager(|pm| pm.get_process(pid).is_none()).unwrap_or(true) {
+            crate::serial_println!(
+                "FORCED_EXIT_REPORT_REAP_RACE: pid={} was reaped while its killer was held",
+                pid.as_u64()
+            );
+            return;
+        }
+        core::hint::spin_loop();
+    }
+    panic!("parent did not reap the held victim within 50 ms");
 }
 
 /// Execute a function with the process manager while interrupts are disabled (ARM64)

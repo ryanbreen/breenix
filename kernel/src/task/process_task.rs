@@ -347,31 +347,22 @@ impl PendingProcessReclaim {
     }
 }
 
+// A hold of these queues runs to its end. `IrqSafeMutex` masks local
+// interrupts for the whole hold, so the holder cannot be preempted or
+// abandoned mid-hold; that is how the plain `spin::Mutex` queues of 6c5be902
+// were left held, and why their non-owning paths try-locked. A holder takes
+// neither PROCESS_MANAGER, a scheduler lock nor the other queue. It may
+// allocate (`try_reserve`), which takes the heap lock, and the heap does not
+// touch these queues. The drain's scan checks each receipt with atomics only,
+// so its hold is O(queue length). Publishers therefore wait for a peer's hold:
+// a failed try-lock used to abandon the receipt, and its row was settled
+// without a reclaim (#1693).
 static PENDING_PROCESS_RECLAIMS: crate::irq_safe_mutex::IrqSafeMutex<
     alloc::vec::Vec<PendingProcessReclaim>,
 > = crate::irq_safe_mutex::IrqSafeMutex::new(alloc::vec::Vec::new());
 static PARKED_PROCESS_RECLAIMS: crate::irq_safe_mutex::IrqSafeMutex<
     alloc::vec::Vec<PendingProcessReclaim>,
 > = crate::irq_safe_mutex::IrqSafeMutex::new(alloc::vec::Vec::new());
-/// A reclaim queue for publishing into or sweeping. x86_64 waits for a holder
-/// on another CPU: every hold is short and masks interrupts, so it always
-/// finishes, and the try-lock's `None` -- park nothing, sweep nothing, abandon
-/// the reclaim and leak its address space -- was the answer for nesting on one
-/// CPU, not for contention between CPUs, which with four CPUs leaked a dead
-/// process's page tables at a time. aarch64 keeps its try-lock.
-fn reclaim_queue<T>(
-    queue: &crate::irq_safe_mutex::IrqSafeMutex<T>,
-) -> Option<crate::irq_safe_mutex::IrqSafeMutexGuard<'_, T>> {
-    #[cfg(target_arch = "x86_64")]
-    {
-        Some(queue.lock())
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        queue.try_lock()
-    }
-}
-
 static RECLAIM_PASS_ID: AtomicU32 = AtomicU32::new(0);
 static ROW_REMOVAL_EPOCH: AtomicU64 = AtomicU64::new(0);
 
@@ -775,9 +766,9 @@ fn boot_forces_reclaim_reserve_failure() -> bool {
 fn push_pending_or_abandon(reclaim: PendingProcessReclaim) {
     let mut reclaim = Some(reclaim);
     let queued = crate::arch_without_interrupts(|| {
-        let Some(mut pending) = reclaim_queue(&PENDING_PROCESS_RECLAIMS) else {
-            return false;
-        };
+        #[cfg(feature = "force_reclaim_queue_contention")]
+        probe_forced_contention(reclaim.as_ref().map(|reclaim| reclaim.pid));
+        let mut pending = PENDING_PROCESS_RECLAIMS.lock();
         #[cfg(feature = "boot_tests")]
         let reservation = if boot_forces_reclaim_reserve_failure() {
             pending.try_reserve(usize::MAX)
@@ -831,7 +822,119 @@ pub(crate) fn enqueue_process_reclaim(reclaim: PendingProcessReclaim) {
     if crate::process::process_manager_held_on_current_cpu() {
         crate::trace_count!(crate::tracing::providers::teardown::RECLAIM_ENQUEUE_UNDER_PM);
     }
+    #[cfg(all(target_arch = "aarch64", feature = "force_reclaim_queue_contention"))]
+    let forced = force_reclaim_queue_contention(&reclaim).then_some(reclaim.pid);
     push_pending_or_abandon(reclaim);
+    #[cfg(all(target_arch = "aarch64", feature = "force_reclaim_queue_contention"))]
+    if let Some(pid) = forced {
+        if FORCED_CONTENTION_PROBE_FAILED.load(Ordering::Acquire) {
+            crate::serial_println!(
+                "FORCED_RECLAIM_QUEUE_CONTENTION: pid={pid}'s publisher found the pending queue held by a peer (try-lock probe failed)"
+            );
+        }
+    }
+}
+
+/// `force_reclaim_queue_contention`: the pid whose publication is forced, and
+/// whether its publisher's probe found the pending queue held.
+#[cfg(feature = "force_reclaim_queue_contention")]
+static FORCED_CONTENTION_PID: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "force_reclaim_queue_contention")]
+static FORCED_CONTENTION_PROBE_FAILED: AtomicBool = AtomicBool::new(false);
+
+/// Called by `push_pending_or_abandon` just before it takes the pending queue.
+/// For the forced pid, a failed try-lock here is the point where the publisher
+/// used to give up its receipt; the guard of a successful one is dropped at
+/// once.
+#[cfg(feature = "force_reclaim_queue_contention")]
+fn probe_forced_contention(pid: Option<u64>) {
+    if pid.is_some_and(|pid| FORCED_CONTENTION_PID.load(Ordering::Acquire) == pid)
+        && PENDING_PROCESS_RECLAIMS.try_lock().is_none()
+    {
+        FORCED_CONTENTION_PROBE_FAILED.store(true, Ordering::Release);
+    }
+}
+
+/// Hold the real publication queue on a peer until the publisher's probe has
+/// found it held. This forces the first `sigkill_teardown_test` victim killed
+/// by its own parent whose receipt carries page tables (the forked V2), and
+/// the first whose receipt carries no page tables (the CLONE_VM victim). V1 is
+/// killed by a helper and is left to `force_exit_report_reap_race`, which
+/// needs its parent free to reap. This changes only scheduling of the holder;
+/// the victim takes the production enqueue path and the userspace test keeps
+/// its ordinary pairing requirement.
+#[cfg(all(target_arch = "aarch64", feature = "force_reclaim_queue_contention"))]
+fn force_reclaim_queue_contention(reclaim: &PendingProcessReclaim) -> bool {
+    static ROOTED_ARMED: AtomicBool = AtomicBool::new(true);
+    static ROOTLESS_ARMED: AtomicBool = AtomicBool::new(true);
+    static HELD: AtomicBool = AtomicBool::new(false);
+    fn counter() -> u64 {
+        let value: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, cntvct_el0", out(reg) value, options(nomem, nostack));
+        }
+        value
+    }
+    let publisher = scheduler::current_thread_id();
+    let victim = crate::process::with_process_manager(|manager| {
+        let killer = publisher
+            .and_then(|thread| manager.find_process_by_thread(thread))
+            .map(|(pid, _)| pid);
+        manager
+            .get_process(ProcessId::new(reclaim.pid))
+            .is_some_and(|row| {
+                row.name.contains("sigkill_teardown_test")
+                    && row.parent.is_some()
+                    && row.parent == killer
+            })
+    })
+    .unwrap_or(false);
+    if !victim {
+        return false;
+    }
+    let rooted = reclaim.page_table.is_some() || !reclaim.old_page_tables.is_empty();
+    let armed = if rooted { &ROOTED_ARMED } else { &ROOTLESS_ARMED };
+    if !armed.swap(false, Ordering::AcqRel) {
+        return false;
+    }
+    let online = crate::arch_impl::aarch64::smp::cpus_online() as usize;
+    assert!(online > 1, "queue contention regression requires a peer CPU");
+    let cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
+    let frequency = crate::arch_impl::aarch64::timer::frequency_hz();
+    HELD.store(false, Ordering::Release);
+    FORCED_CONTENTION_PROBE_FAILED.store(false, Ordering::Release);
+    FORCED_CONTENTION_PID.store(reclaim.pid, Ordering::Release);
+    crate::task::kthread::kthread_run_on_cpu(
+        move || {
+            let _queue = PENDING_PROCESS_RECLAIMS.lock();
+            HELD.store(true, Ordering::Release);
+            let start = counter();
+            while !FORCED_CONTENTION_PROBE_FAILED.load(Ordering::Acquire)
+                && counter().wrapping_sub(start) < frequency
+            {
+                core::hint::spin_loop();
+            }
+            assert!(
+                FORCED_CONTENTION_PROBE_FAILED.load(Ordering::Acquire),
+                "publisher's probe did not find the pending queue held"
+            );
+            // The publisher takes the queue right after its probe, with its
+            // interrupts masked; keep holding so that acquisition waits too.
+            let start = counter();
+            while counter().wrapping_sub(start) < frequency / 1000 {
+                core::hint::spin_loop();
+            }
+        },
+        "reclaim-queue-holder",
+        (cpu + 1) % online,
+    )
+    .expect("queue contention holder");
+    let start = counter();
+    while !HELD.load(Ordering::Acquire) && counter().wrapping_sub(start) < frequency {
+        core::hint::spin_loop();
+    }
+    assert!(HELD.load(Ordering::Acquire), "peer did not hold reclaim queue");
+    true
 }
 
 /// Close extracted file descriptor entries outside the PM lock.
@@ -1406,9 +1509,7 @@ fn park_reclaim(mut reclaim: PendingProcessReclaim) {
     reclaim.parked = Some(park_record);
     let mut reclaim = Some(reclaim);
     let parked = crate::arch_without_interrupts(|| {
-        let Some(mut parked) = reclaim_queue(&PARKED_PROCESS_RECLAIMS) else {
-            return false;
-        };
+        let mut parked = PARKED_PROCESS_RECLAIMS.lock();
         if parked.try_reserve(1).is_err() {
             false
         } else {
@@ -1431,10 +1532,8 @@ fn park_reclaim(mut reclaim: PendingProcessReclaim) {
 
 fn unpark_sweep_with_snapshot(snapshot: scheduler::RetirementSnapshot, row_epoch: u64) {
     let mut ready = alloc::vec::Vec::new();
-    let swept = crate::arch_without_interrupts(|| {
-        let Some(mut parked) = reclaim_queue(&PARKED_PROCESS_RECLAIMS) else {
-            return false;
-        };
+    crate::arch_without_interrupts(|| {
+        let mut parked = PARKED_PROCESS_RECLAIMS.lock();
         let mut index = 0;
         while index < parked.len() {
             let reason = parked[index]
@@ -1455,17 +1554,11 @@ fn unpark_sweep_with_snapshot(snapshot: scheduler::RetirementSnapshot, row_epoch
                 index += 1;
             }
         }
-        true
     });
-    if !swept {
-        return;
-    }
     if !ready.is_empty() {
         let mut ready = Some(ready);
         let queued = crate::arch_without_interrupts(|| {
-            let Some(mut pending) = reclaim_queue(&PENDING_PROCESS_RECLAIMS) else {
-                return false;
-            };
+            let mut pending = PENDING_PROCESS_RECLAIMS.lock();
             let ready_len = ready.as_ref().expect("ready reclaims retained").len();
             if pending.try_reserve(ready_len).is_err() {
                 false
@@ -1475,8 +1568,10 @@ fn unpark_sweep_with_snapshot(snapshot: scheduler::RetirementSnapshot, row_epoch
             }
         });
         if !queued {
+            // One at a time: each receipt the queue still cannot take is
+            // counted and its row's retirement settled, not left a tombstone.
             for reclaim in ready.take().expect("unqueued ready reclaims retained") {
-                abandon_unqueued_reclaim(reclaim);
+                push_pending_or_abandon(reclaim);
             }
         }
     }
