@@ -268,6 +268,23 @@ pub fn generate_counters() -> String {
         core::mem::size_of::<crate::task::thread::CpuAccount>(),
         core::mem::size_of::<crate::process::Process>(),
     ));
+    {
+        use crate::memory::heap::{PROBE_PTR, PROBE_RA, PROBE_SIZE, PROBE_OVERFLOW};
+        use core::sync::atomic::Ordering::Relaxed;
+        let mut groups: alloc::collections::BTreeMap<(usize, [usize; 8]), usize> = alloc::collections::BTreeMap::new();
+        for slot in 0..PROBE_PTR.len() {
+            let p = PROBE_PTR[slot].load(Relaxed);
+            if p == 0 || p == usize::MAX { continue; }
+            let mut ra = [0usize; 8];
+            for d in 0..8 { ra[d] = PROBE_RA[slot][d].load(Relaxed); }
+            *groups.entry((PROBE_SIZE[slot].load(Relaxed), ra)).or_insert(0) += 1;
+        }
+        crate::serial_println!("PROBE_TRACK_BEGIN overflow={}", PROBE_OVERFLOW.load(Relaxed));
+        for ((size, ra), n) in groups.iter() {
+            crate::serial_println!("PROBE_TRACK size={} n={} ra={:x},{:x},{:x},{:x},{:x},{:x},{:x},{:x}", size, n, ra[0], ra[1], ra[2], ra[3], ra[4], ra[5], ra[6], ra[7]);
+        }
+        crate::serial_println!("PROBE_TRACK_END");
+    }
     output.push_str("probe_live:");
     for (class, live) in crate::memory::heap::PROBE_LIVE.iter().enumerate() {
         let live = live.load(core::sync::atomic::Ordering::Relaxed);

@@ -72,17 +72,84 @@ fn probe_class(size: usize) -> usize {
     (size / 16).min(256)
 }
 
+/// Scratch probe (#1712): live allocations of the tracked sizes, with the
+/// return addresses of their frame chain.
+const PROBE_SLOTS: usize = 4096;
+const PROBE_DEPTH: usize = 8;
+pub static PROBE_PTR: [core::sync::atomic::AtomicUsize; PROBE_SLOTS] =
+    [const { core::sync::atomic::AtomicUsize::new(0) }; PROBE_SLOTS];
+pub static PROBE_SIZE: [core::sync::atomic::AtomicUsize; PROBE_SLOTS] =
+    [const { core::sync::atomic::AtomicUsize::new(0) }; PROBE_SLOTS];
+pub static PROBE_RA: [[core::sync::atomic::AtomicUsize; PROBE_DEPTH]; PROBE_SLOTS] =
+    [const { [const { core::sync::atomic::AtomicUsize::new(0) }; PROBE_DEPTH] }; PROBE_SLOTS];
+pub static PROBE_OVERFLOW: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+fn probe_tracked(size: usize) -> bool {
+    size == 1472 || size == 2528 || (80..96).contains(&size)
+}
+
+#[inline(always)]
+fn probe_track_alloc(ptr: usize, size: usize) {
+    use core::sync::atomic::Ordering::Relaxed;
+    #[cfg(target_arch = "aarch64")]
+    let mut fp: usize = {
+        let fp: usize;
+        unsafe { core::arch::asm!("mov {}, x29", out(reg) fp, options(nomem, nostack)) };
+        fp
+    };
+    #[cfg(target_arch = "x86_64")]
+    let mut fp: usize = {
+        let fp: usize;
+        unsafe { core::arch::asm!("mov {}, rbp", out(reg) fp, options(nomem, nostack)) };
+        fp
+    };
+    let start = (ptr >> 4) % PROBE_SLOTS;
+    for i in 0..PROBE_SLOTS {
+        let slot = (start + i) % PROBE_SLOTS;
+        if PROBE_PTR[slot].compare_exchange(0, usize::MAX, core::sync::atomic::Ordering::AcqRel, Relaxed).is_ok() {
+            for depth in 0..PROBE_DEPTH {
+                let valid = fp != 0 && fp % 8 == 0 && fp >= 0xFFFF_0000_0000_0000;
+                let ra = if valid { unsafe { *((fp + 8) as *const usize) } } else { 0 };
+                PROBE_RA[slot][depth].store(ra, Relaxed);
+                fp = if valid { unsafe { *(fp as *const usize) } } else { 0 };
+            }
+            PROBE_SIZE[slot].store(size, Relaxed);
+            PROBE_PTR[slot].store(ptr, core::sync::atomic::Ordering::Release);
+            return;
+        }
+    }
+    PROBE_OVERFLOW.fetch_add(1, Relaxed);
+}
+
+#[inline(always)]
+fn probe_track_free(ptr: usize) {
+    let start = (ptr >> 4) % PROBE_SLOTS;
+    for i in 0..PROBE_SLOTS {
+        let slot = (start + i) % PROBE_SLOTS;
+        if PROBE_PTR[slot].load(core::sync::atomic::Ordering::Acquire) == ptr {
+            PROBE_PTR[slot].store(0, core::sync::atomic::Ordering::Release);
+            return;
+        }
+    }
+}
+
 unsafe impl GlobalAlloc for IrqSafeLockedHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let ptr = self.with_inner(|inner| unsafe { GlobalAlloc::alloc(inner, layout) });
         if !ptr.is_null() {
             PROBE_LIVE[probe_class(layout.size())].fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            if probe_tracked(layout.size()) {
+                probe_track_alloc(ptr as usize, layout.size());
+            }
         }
         ptr
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         PROBE_LIVE[probe_class(layout.size())].fetch_sub(1, core::sync::atomic::Ordering::Relaxed);
+        if probe_tracked(layout.size()) {
+            probe_track_free(ptr as usize);
+        }
         self.with_inner(|inner| unsafe {
             GlobalAlloc::dealloc(inner, ptr, layout);
         });
