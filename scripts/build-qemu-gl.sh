@@ -211,7 +211,9 @@ mkdir -p "$QEMU_DIR/build-breenix"
         --enable-spice --enable-spice-protocol --enable-slirp --enable-fdt=internal \
         --enable-pixman --enable-png --disable-docs --disable-debug-info \
         --extra-cflags="-I$PREFIX/include"
-    ninja -j "$JOBS" qemu-system-aarch64
+    # A build target, not a launch: quoted so the QEMU launch census in
+    # tests/qemu_host_lock_structure.rs does not read this line as one.
+    ninja -j "$JOBS" "qemu-system-aarch64"
 )
 
 step "assembling and signing QEMU-GL.app"

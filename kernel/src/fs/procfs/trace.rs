@@ -272,7 +272,7 @@ pub fn generate_teardown_pid(pid: u64) -> String {
         #[cfg(target_arch = "x86_64")]
         let tick_period = crate::time::tsc::frequency_hz() * crate::time::timer::MS_PER_TICK / 1000;
         return format!(
-            "online_cpus: {}\npid: {}\ndefer: {}\nreclaim: {}\nquarantine: {}\nsgi_sent: {}\nkick_observed: {}\nkick_interval: {}\ntick_period: {}\nmasked_frames_walked: {}\nreport: {}\nbucket_published: {}\nbucket_observed: {}\nbucket_collision: {}\n",
+            "online_cpus: {}\npid: {}\ndefer: {}\nreclaim: {}\nquarantine: {}\nsgi_sent: {}\nkick_observed: {}\nkick_interval: {}\nkick_ticks: {}\nkick_all_ticks: {}\nkick_cpu: {}\nkick_sender_cpu: {}\ncounter_ticks_per_ms: {}\ntick_period: {}\nmasked_frames_walked: {}\nreport: {}\nbucket_published: {}\nbucket_observed: {}\nbucket_collision: {}\n",
             crate::task::scheduler::online_cpus(),
             pid,
             evidence.defer_count,
@@ -281,6 +281,11 @@ pub fn generate_teardown_pid(pid: u64) -> String {
             evidence.sgi_sent_count,
             evidence.kick_observed_count,
             evidence.kick_observed_interval,
+            evidence.kick_observed_ticks,
+            evidence.kick_observed_all_ticks,
+            evidence.kick_observed_cpu,
+            evidence.kick_sender_cpu,
+            tick_period / crate::time::timer::MS_PER_TICK,
             tick_period,
             evidence.masked_frames_walked,
             evidence.report_count,
