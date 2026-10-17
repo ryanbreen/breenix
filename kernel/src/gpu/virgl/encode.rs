@@ -259,7 +259,7 @@ pub trait Bindings {
 /// read from it, so no region is written twice. `flip_y` selects the viewport's vertical
 /// direction so that row 0 is the target's top row on this device. `corrupt` is the target
 /// handle test point 22 fired for, whose pixel (0,0) gets one extra draw after the stream's
-/// commands for it. Test point 28 is taken with the current target's handle. Returns the
+/// commands for it. The reserved `suppress` handle omits one draw; firing is counted only once queued. Returns the
 /// device ids of the targets the stream writes.
 #[allow(clippy::too_many_arguments)]
 pub fn translate(
@@ -270,6 +270,7 @@ pub fn translate(
     vertex_buffer: u32,
     flip_y: bool,
     corrupt: Option<u64>,
+    mut suppress: Option<u64>,
 ) -> Vec<u32> {
     let mut written: Vec<u32> = Vec::new();
     let mut current: Option<TargetRes> = None;
@@ -314,7 +315,8 @@ pub fn translate(
                 enc.cmd(ccmd::CLEAR, 0, &[pipe::CLEAR_COLOR0, f[0], f[1], f[2], f[3], 0, 0, 0]);
             }
             bgl::DRAW | bgl::DRAW_BUFFER => {
-                if current.is_some() && crate::test_control::take(gpu_abi::test_point::SUPPRESS_DRAW, current_handle).is_some() {
+                if current.is_some() && suppress == Some(current_handle) {
+                    suppress = None;
                     at += len;
                     continue;
                 }

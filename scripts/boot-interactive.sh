@@ -145,6 +145,7 @@ if [ "$GPU_GL" -eq 1 ]; then
         SPICE_SOCKET="/tmp/breenix-spice-$$.sock"
         DISPLAY_ARGS=(-display none -spice "unix=on,addr=$SPICE_SOCKET,disable-ticketing=on,gl=es")
     fi
+    # Register this display before MMIO below, so PRESENT updates console 0 in the window.
     GPU_ARGS=(-device virtio-gpu-gl-pci)
 elif [ "$DISPLAY_MODE" = cocoa ] && [ "$(uname -s)" = Darwin ]; then
     # Draw the window at one guest pixel per point, as large as a VMware or Parallels window
@@ -299,8 +300,8 @@ python3 "$ROOT/scripts/watch-qemu.py" --serial "$SERIAL_LOG" --mode "$MODE" \
     "${DISPLAY_ARGS[@]}" -no-reboot \
     ${MODE_ARGS[@]+"${MODE_ARGS[@]}"} \
     ${QMP_ARGS[@]+"${QMP_ARGS[@]}"} \
-    -device virtio-gpu-device \
     ${GPU_ARGS[@]+"${GPU_ARGS[@]}"} \
+    -device virtio-gpu-device \
     -device virtio-keyboard-device \
     -device virtio-tablet-device \
     -device virtio-blk-device,drive=ext2 \

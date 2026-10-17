@@ -11,9 +11,10 @@
 //! code path that asks `take` (or `take_if`) whether its point is armed; both read the
 //! latch first, so outside a suite boot a point costs one load and can never fire. Every
 //! point is one-shot: it affects the next occurrence of its event, counts one firing and
-//! disarms itself.
+//! disarms itself. Fallible submission preparation reserves points 22 and 28, counting
+//! them only when queued and restoring their arm when preparation fails.
 
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use gpu_abi::{test_control as tc_op, test_point, Plain, TcArm, TcFired};
 
@@ -53,61 +54,30 @@ fn defined(point: u32) -> bool {
     (test_point::FIRST..=test_point::LAST).contains(&point)
 }
 
-struct Point {
-    armed: AtomicBool,
-    target: AtomicU64,
-    param: AtomicU64,
-    fired: AtomicU64,
-}
-
-impl Point {
-    const fn new() -> Point {
-        Point {
-            armed: AtomicBool::new(false),
-            target: AtomicU64::new(0),
-            param: AtomicU64::new(0),
-            fired: AtomicU64::new(0),
-        }
-    }
-}
+mod point;
+use point::Point;
+pub use point::Reservation;
 
 static POINT_TABLE: [Point; POINTS] = [const { Point::new() }; POINTS];
 
-/// Fire `point` if it is armed for `target` (or armed with target 0, which matches every
-/// target): disarm it, count the firing and return its parameter. `None` outside a suite
-/// boot and whenever the point is not armed.
+/// Reserve a one-shot while fallible preparation runs. Dropping it leaves it armed;
+/// `fire` commits the firing once the device work has been queued. Only points 22 and
+/// 28 reserve across preparation, always in that order and outside the core lock.
+pub fn reserve(point: u32, target: u64) -> Option<Reservation<'static>> {
+    if !enabled() { return None; }
+    POINT_TABLE.get(point as usize)?.reserve(target, |_| true)
+}
+
+/// Fire a matching one-shot immediately at its event.
 #[inline]
 pub fn take(point: u32, target: u64) -> Option<u64> {
     take_if(point, target, |_| true)
 }
 
-/// [`take`] for a point whose parameter selects which event it affects: fire only when
-/// `wanted` accepts the armed parameter, and otherwise leave the point armed.
 #[inline]
 pub fn take_if(point: u32, target: u64, wanted: impl Fn(u64) -> bool) -> Option<u64> {
-    if !enabled() {
-        return None;
-    }
-    let p = POINT_TABLE.get(point as usize)?;
-    if !p.armed.load(Ordering::Acquire) {
-        return None;
-    }
-    let want = p.target.load(Ordering::Acquire);
-    if want != 0 && want != target {
-        return None;
-    }
-    if !wanted(p.param.load(Ordering::Acquire)) {
-        return None;
-    }
-    if p
-        .armed
-        .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        return None;
-    }
-    p.fired.fetch_add(1, Ordering::AcqRel);
-    Some(p.param.load(Ordering::Acquire))
+    if !enabled() { return None; }
+    Some(POINT_TABLE.get(point as usize)?.reserve(target, wanted)?.fire())
 }
 
 fn caller_is_root() -> bool {
@@ -155,15 +125,12 @@ pub fn sys_test_control(op: u64, arg: u64, len: u64) -> SyscallResult {
                 return err(EINVAL);
             }
             let p = &POINT_TABLE[a.point as usize];
-            p.armed.store(false, Ordering::Release);
-            p.target.store(a.target, Ordering::Release);
-            p.param.store(a.param, Ordering::Release);
-            p.armed.store(true, Ordering::Release);
+            p.arm(a.target, a.param);
             SyscallResult::Ok(0)
         }
         tc_op::DISARM_ALL => {
             for p in POINT_TABLE.iter() {
-                p.armed.store(false, Ordering::Release);
+                p.disarm();
             }
             SyscallResult::Ok(0)
         }
@@ -175,7 +142,7 @@ pub fn sys_test_control(op: u64, arg: u64, len: u64) -> SyscallResult {
             if f.reserved != 0 || !defined(f.point) {
                 return err(EINVAL);
             }
-            f.count = POINT_TABLE[f.point as usize].fired.load(Ordering::Acquire);
+            f.count = POINT_TABLE[f.point as usize].fired();
             match crate::syscall::userptr::copy_to_user(arg as *mut TcFired, &f) {
                 Ok(()) => SyscallResult::Ok(0),
                 Err(_) => err(EFAULT),

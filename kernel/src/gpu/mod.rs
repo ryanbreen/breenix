@@ -25,6 +25,7 @@
 //! (section 1.4: no kernel output on any path).
 
 mod completion;
+mod present_answers;
 mod display;
 mod observation;
 pub mod dma;
@@ -154,8 +155,8 @@ struct Ctx {
     /// Test point 31's fence-depth mode on this context.
     depth: Option<Depth>,
     /// The flush answers of completed `PRESENT`s by fence number, until their callers take
-    /// them; at most `limits::IN_FLIGHT`, the most a context can have outstanding.
-    flushes: BTreeMap<u32, u32>,
+    /// them. Pending callers register before sending; interrupted callers unregister.
+    flushes: present_answers::Answers,
 }
 
 /// Test point 31's fence-depth mode: how many more submissions to keep, and the ones kept.
@@ -854,10 +855,7 @@ impl Core {
                 ctx.state = CtxState::Quarantined;
             }
             if presenting.is_some() && ok {
-                ctx.flushes.insert(n, answer);
-                while ctx.flushes.len() > limits::IN_FLIGHT {
-                    ctx.flushes.pop_first();
-                }
+                ctx.flushes.complete(n, answer);
             }
         }
         if let Some(p) = presenting {
@@ -1559,7 +1557,7 @@ fn op_context_create(arg: u64, len: u64) -> Result<u64, i64> {
             warmed: 0,
             errors_in_row: 0,
             depth: None,
-            flushes: BTreeMap::new(),
+            flushes: present_answers::Answers::new(),
         });
         Ok((id, vb, scratch))
     })
@@ -2164,10 +2162,14 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
     // freed when the submission no longer holds it.
     // Test point 22, `corrupt-pixel`, armed for one of the targets this submission writes
     // (or for any): that target gets one extra draw.
+    let mut corruption = None;
     let corrupt = view.entries.iter()
         .filter(|e| written.contains(&e.id))
         .map(|e| e.handle)
-        .find(|&handle| crate::test_control::take(test_point::CORRUPT_PIXEL, handle).is_some());
+        .find(|&handle| {
+            corruption = crate::test_control::reserve(test_point::CORRUPT_PIXEL, handle);
+            corruption.is_some()
+        });
     let vertex_buffer = match vertex_buffer_for(id, encode::vertex_bytes(plan.drawn + u64::from(corrupt.is_some()))) {
         Ok(vb) => vb,
         Err(e) => {
@@ -2191,7 +2193,24 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
     let stale: Vec<u32> = objects.surfaces.keys().copied().filter(|&rid| rid != scratch && !view.has_id(rid)).collect();
     let mut enc = encode::Enc::new();
     encode::forget_surfaces(&mut enc, &mut objects, &stale);
-    encode::translate(&mut enc, &mut objects, &words, &resolved, vertex_buffer.unwrap_or(default_vb), FLIP_Y, corrupt);
+    let mut suppression = None;
+    let mut suppress = None;
+    let mut target = None;
+    let mut at = 0;
+    while at < words.len() {
+        match words.word(at) {
+            stream::cmd::BEGIN => target = Some(words.word(at + 2) as u64 | (words.word(at + 3) as u64) << 32),
+            stream::cmd::DRAW | stream::cmd::DRAW_BUFFER if suppression.is_none() => {
+                if let Some(handle) = target {
+                    suppression = crate::test_control::reserve(test_point::SUPPRESS_DRAW, handle);
+                    if suppression.is_some() { suppress = Some(handle); }
+                }
+            }
+            _ => {}
+        }
+        at += words.word(at + 1) as usize;
+    }
+    encode::translate(&mut enc, &mut objects, &words, &resolved, vertex_buffer.unwrap_or(default_vb), FLIP_Y, corrupt, suppress);
     let chunks = enc.finish();
     let mut held = named_ids.clone();
     if let Some(vb) = vertex_buffer {
@@ -2291,6 +2310,9 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         });
         let epoch = c.epoch;
         c.backlog.extend(reqs.into_iter().map(|r| (epoch, r)));
+        // No fallible preparation remains: these faults now affect a queued submission.
+        if let Some(fault) = corruption { fault.fire(); }
+        if let Some(fault) = suppression { fault.fire(); }
         c.flush();
         Ok((ns as u64) << 32 | n as u64)
     })

@@ -274,7 +274,9 @@ macro_rules! needs {
 
 fn device_version() -> CaseResult {
     let ret = gpu_version();
-    check(ret == GPU_VERSION, &format!("missing {CORE}: {}", version_answer(ret)))
+    check(ret == GPU_VERSION, &format!("missing {CORE}: {}", version_answer(ret)))?;
+    let _case = common::begin()?;
+    Ok(())
 }
 
 needs! {

@@ -21,10 +21,16 @@ fn observe(t: u64, rect: [u32; 4], px: &mut [u8], stride: u32, rec: &mut [u8; re
 }
 /// Bind a target this case drew to the scanout (section 1.10: each rendering case binds
 /// its target while it owns the display).
-fn present(ctx: u64, t: u64) -> CaseResult {
+fn present_fence(ctx: u64, t: u64) -> Result<u64, libbreenix::suite::CaseError> {
     graphics::take_over_display().map_err(|e| fail_msg(format!("take display: {e:?}")))?;
     let (r, p) = gpu::present(ctx, t);
-    ensure(r == 0 && p.fence != 0 && p.answer == 0x1100, || format!("PRESENT: {} fence={} answer={:#x}", errno(r), p.fence, p.answer))
+    ensure(r == 0 && p.fence != 0 && p.answer == 0x1100, || format!("PRESENT: {} fence={} answer={:#x}", errno(r), p.fence, p.answer))?;
+    let (r, w) = gpu::wait(ctx, p.fence, 2_000_000_000);
+    ensure(r == 0 && w.status == abi::fence_status::OK, || format!("WAIT PRESENT: {} status={}", errno(r), w.status))?;
+    Ok(p.fence)
+}
+fn present(ctx: u64, t: u64) -> CaseResult {
+    present_fence(ctx, t).map(|_| ())
 }
 fn draw(ctx: u64, t: u64, bg: u32) -> Result<u64, libbreenix::suite::CaseError> {
     let f = frame(ctx, &scene(t, bg, &[([1, 1, 4, 3], B), ([3, 2, 7, 5], C)]))?;
@@ -107,8 +113,10 @@ pub fn format_canonical() -> CaseResult {
 pub fn record_fields() -> CaseResult {
     let _case = begin()?;
     let (ctx, t) = setup(format::B8G8R8A8, 17, 9)?;
-    draw(ctx, t, B)?;
+    frame(ctx, &scene(t, B, &[([1, 1, 4, 3], B), ([3, 2, 7, 5], C)]))?;
+    let presented = present_fence(ctx, t)?;
     let (px, rec) = read(t, 17, 9)?;
+    ensure(u64_at(&rec, 184) == presented, || format!("record present fence {} differs from PRESENT {presented}", u64_at(&rec, 184)))?;
     want(17, 9, B).matches(&px, "record's pixels")?;
     for (at, v) in [(0, 2), (4, 1024), (16, 4), (20, 4), (24, 1), (28, 0), (32, 0), (36, 0),
         (40, 17), (44, 9), (48, 17), (52, 9), (56, 68), (60, 0), (112, 0x1100), (116, 0x207),

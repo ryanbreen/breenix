@@ -124,7 +124,6 @@ pub(super) fn present(arg: u64, len: u64) -> Result<u64, i64> {
         if ctx.state != CtxState::Live || !ctx.device_alive || ctx.dropped { return Some(Err(EIO)); }
         if writers > 0 { return None; }
         if ctx.inflight.len() >= limits::IN_FLIGHT {
-            if ctx.depth.is_some() { c.release_depth(ctx_id); }
             return None;
         }
         if ctx.busy { return None; }
@@ -144,6 +143,7 @@ pub(super) fn present(arg: u64, len: u64) -> Result<u64, i64> {
         let n = ctx.issued;
         let bgl_fence = (ctx.ns as u64) << 32 | n as u64;
         ctx.inflight.push_back(serial);
+        ctx.flushes.register(n);
         // The sub holds the target until the device returns both requests; the binding
         // holds it until a later bind's flush completes or a confirmed reset.
         if let Some(r) = c.resources.get_mut(&id) { r.holds += 1; }
@@ -180,13 +180,25 @@ pub(super) fn present(arg: u64, len: u64) -> Result<u64, i64> {
     };
     // The fence is the caller's from here on, even if the wait below is interrupted.
     a.fence = bgl_fence;
-    write_arg(arg, &a)?;
+    let forget = || {
+        with_core(|c| {
+            if let Some(ctx) = c.contexts.get_mut(&ctx_id) { ctx.flushes.take(n); }
+        });
+    };
+    if let Err(e) = write_arg(arg, &a) { forget(); return Err(e); }
     let outcome = wait_for(None, true, |c| {
         let Some(ctx) = c.contexts.get_mut(&ctx_id) else { return Some((fence_status::DEVICE_RESET, 0)) };
         if n > ctx.done_upto { return None; }
-        let answer = ctx.flushes.remove(&n);
-        Some(ctx.outcomes.get(&n).copied().unwrap_or((fence_status::OK, answer.unwrap_or(0))))
-    }).map_err(|_| EINTR)?;
+        let answer = ctx.flushes.take(n);
+        Some(ctx.outcomes.get(&n).copied().unwrap_or_else(|| match answer {
+            Some(answer) => (fence_status::OK, answer),
+            None => (fence_status::DEVICE_ERROR, 0),
+        }))
+    });
+    let outcome = match outcome {
+        Ok(o) => o,
+        Err(_) => { forget(); return Err(EINTR); }
+    };
     a.answer = outcome.1;
     write_arg(arg, &a)?;
     if outcome.0 == fence_status::OK { Ok(0) } else { Err(EIO) }
