@@ -526,7 +526,8 @@ fn queue_log_line(wait: bool) -> Burst {
                     let mut chunk = [0u8; 64];
                     let (mut left, mut first, mut last) = (line, true, b'\n');
                     while left != 0 {
-                        let n = ring.pop(&mut chunk[..left.min(chunk.len())]);
+                        let take = left.min(chunk.len());
+                        let n = ring.pop(&mut chunk[..take]);
                         if n == 0 {
                             break;
                         }
