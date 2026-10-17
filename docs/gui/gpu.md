@@ -201,13 +201,13 @@ ARM64; x86-64's dispatch arrives when x86-64 joins (section 1.6.4).
 | 0 | `VERSION` | returns 1 |
 | 1 | `CAPS` | the profile record: backend, feature bits, formats, maximum sizes, catalogue version, the device's host renderer string where its capability set carries one |
 | 2, 3 | `CONTEXT_CREATE`, `CONTEXT_DESTROY` | per-process; EAGAIN past the quota; creation compiles and warms every catalogue program (section 1.4.1) |
-| 4, 5 | `RESOURCE_CREATE`, `RESOURCE_DESTROY` | targets, textures, buffers; ENOMEM against the GPU memory quota and `RLIMIT_AS` for guest backing; destroy drops the handle, and storage is freed when the resource's hold set is empty (section 1.4.1) |
+| 4, 5 | `RESOURCE_CREATE`, `RESOURCE_DESTROY` | targets, textures, buffers; a scanout flag declares scanout targets at creation (section 1.7); ENOMEM against the GPU memory quota and `RLIMIT_AS` for guest backing; destroy drops the handle, and storage is freed when the resource's hold set is empty (section 1.4.1) |
 | 6 | `UPLOAD` | user bytes to a texture or buffer rectangle, clipped, with its `purpose`; visible to later submissions only |
 | 7 | `SUBMIT` | a BGL command stream, validated whole before anything is sent (EINVAL with the failing command's index), with its work estimate checked (EDQUOT past the cap); returns a fence |
 | 8 | `WAIT` | fence wait with timeout; ETIMEDOUT, EINTR, EIO for an errored or reset fence; killable within 250 ms |
-| 9 | `READBACK` | a target rectangle into user memory, with a 1,024-byte `ObservationRecord` version 2 (section 1.8) |
+| 9 | `READBACK` | a target rectangle into user memory, with a 1,024-byte `ObservationRecord` version 2; ENOMEM if staging cannot be charged to the process's guest-backing quota or `RLIMIT_AS` (section 1.8) |
 | 10, 11 | `MODES`, `SET_MODE` | display owner only for `SET_MODE` |
-| 12 | `PRESENT` | display owner only; returns a fence of the context it names, never a raw device fence number (section 1.7) |
+| 12 | `PRESENT` | display owner only; EINVAL for a never-written target or one created without the scanout flag; returns a fence of the context it names, never a raw device fence number (section 1.7) |
 | 13 | `COUNTERS` | per-context submissions, draws, instances, fragment area, work estimate, uploads by purpose, readbacks |
 
 **Dispatch without a Tier-1 edit.** 416 is not added to `SyscallNumber`; it is dispatched in
@@ -586,7 +586,11 @@ rests on host-side evidence that the gate checks, recorded with every run:
 - **Scale.** The scale factor is published with the mode. BreenGL lays out in logical units and multiplies by
   the scale. UI text is DejaVu Sans (ruling R3), rasterized from outlines at the physical pixel size (a 16 px
   string at scale 2 from the outline at 32 px, never replicated from a 16 px raster).
-- **Present.** Two scanout targets per display owner. `PRESENT` binds the drawn one (`SET_SCANOUT` and
+- **Present.** Two scanout targets per display owner. Scanout targets are declared at creation:
+  `RESOURCE_CREATE` gains a scanout flag (`docs/gui/gpu-abi.md`); only targets created with it get the
+  device's `SCANOUT` bind. `PRESENT` refuses a target created without it with EINVAL. `PRESENT` of a
+  never-written target is refused with EINVAL: after waiting for its accepted writers, the target must
+  have a completed write. `PRESENT` binds the drawn one (`SET_SCANOUT` and
   `RESOURCE_FLUSH` on virtio-gpu; the screen-target update on SVGA3) and returns a fence that completes when
   the device has answered. That fence is a context fence: `PRESENT` names one of the caller's live contexts,
   and its fence is `ns << 32 | n` in that context's fence sequence, shared with its `SUBMIT`s, so `WAIT` on
@@ -604,6 +608,11 @@ rests on host-side evidence that the gate checks, recorded with every run:
 
 `READBACK` and BreenGL's `SCANOUT_READBACK` share one record, `ObservationRecord` version 2: 1,024 bytes,
 little-endian, reserved bytes zero, produced atomically with the pixels it describes.
+
+`READBACK` allocates temporary whole-rectangle staging in guest-backing frames. The staging is charged
+to the process's 192 MiB guest-backing quota and `RLIMIT_AS`, and `COUNTERS` reports the staging under
+`resource_bytes` while it is held. `READBACK` may fail with ENOMEM when staging cannot be charged to
+the process's guest-backing quota or `RLIMIT_AS`. The charge is released when the staging is freed.
 
 | Offset | Field |
 |---|---|
@@ -746,6 +755,11 @@ pass-through, is acceptable when its derivation is recorded that way; no older p
 grammar fact) names its source in `docs/gui/provenance/gpu-core.md`: the specification section, or the
 interface header and its line range at a pinned revision, or the black-box experiment, or Breenix's own
 design. A value with no recorded source is not landed.
+
+Every black-box experiment records the commit, the Vigil run id or harness invocation, and the serial
+or output excerpt that showed the fact. Reproduce commands match the runs they cite: the provenance
+record's commands use exactly the flags the cited runs used, run folders keep `host-renderer.json`, and
+`scripts/vigil-record.sh` records whether the boot had a display window.
 
 `docs/planning/gpu-rendering-attack-plan.md` proposes capturing and porting exact byte sequences; that
 approach is void.
@@ -998,10 +1012,10 @@ conforming to it. The amendment:
 
 ### 1.14 What G2's review changed
 
-G2's review (#1687, #1688) and G1's black-box experiments (#1684) found device behaviour and readback
-semantics the contract did not state. The coordinator ruled on 2026-10-17 (rulings 13 to 15) that they enter
-the contract in this contract PR, before G2's code conforms to it, and never together with code, checks or
-thresholds. The amendment:
+G2's review (#1687, #1688, #1694) and G1's black-box experiments (#1684) found device behaviour and readback
+semantics the contract did not state. The coordinator ruled on 2026-10-17 (rulings 13 to 15 and 17 to 20)
+that they enter the contract in contract PRs, before G2's code conforms to it, and never together with
+code, checks or thresholds. The amendment:
 
 | Rule | Where |
 |---|---|
@@ -1010,6 +1024,10 @@ thresholds. The amendment:
 | Readback names every EIO it returns, including a lost or dropped target, a transfer ended by a device reset (completed or failed), a transfer the watchdog ended and an unknown scanout binding | section 1.8; `docs/gui/gpu-abi.md` |
 | EFAULT is atomic only as far as the kernel can guarantee it; what an EFAULT while writing results leaves behind is stated per op | section 1.4; `docs/gui/gpu-abi.md` |
 | `PRESENT` and record offset 184 carry a context fence, never a raw device-wide fence number | sections 1.4, 1.7, 1.8; `docs/gui/gpu-abi.md` |
+| `PRESENT` of a never-written target is refused with EINVAL | sections 1.4, 1.7; `docs/gui/gpu-abi.md` |
+| `READBACK` may fail with ENOMEM when staging cannot be charged to the process's guest-backing quota or `RLIMIT_AS`; `COUNTERS` reports the staging under `resource_bytes` | sections 1.4, 1.8; `docs/gui/gpu-abi.md` |
+| `RESOURCE_CREATE` declares scanout intent with a flag; only targets created with it get the device's `SCANOUT` bind, and `PRESENT` refuses other targets with EINVAL | sections 1.4, 1.7; `docs/gui/gpu-abi.md` |
+| Reproduce commands use exactly the cited runs' flags, run folders keep `host-renderer.json`, and `scripts/vigil-record.sh` records whether the boot had a display window | section 1.9; `docs/gui/gpu-abi.md` |
 
 ## 2. BreenGL rebuilt on the GPU
 
