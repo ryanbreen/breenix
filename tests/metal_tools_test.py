@@ -211,6 +211,20 @@ class HttpServerTest(StateTest):
         while time.time() < deadline and not any(e['event'] == 'complete' for e in self.log()):
             time.sleep(0.02)
 
+    def test_probe_file_does_not_consume_firmware_transfer(self):
+        from metal_probe import PROBE_PATH, PROBE_SHA256
+        m.stage('20261017T000000Z-metal', self.image, self.digest, self.image.stat().st_size, 'application/efi')
+        url = f'http://127.0.0.1:{self.port}' + PROBE_PATH
+        for _ in range(2):
+            status, _, body = self.request(url=url)
+            self.assertEqual(status, 200)
+            self.assertEqual(len(body), 128 * 1024)
+            self.assertEqual(hashlib.sha256(body).hexdigest(), PROBE_SHA256)
+        self.assertFalse(m.read_json(m.STATE / 'stage/current.json').get('served'))
+        self.assertEqual(self.request()[0], 200)
+        self.wait_complete()
+        self.assertEqual(self.request()[0], 404)
+
     def test_nothing_staged_is_404(self):
         self.assertEqual(self.request()[0], 404)
         self.assertEqual(self.request('HEAD')[0], 404)
@@ -711,6 +725,7 @@ class RootStagingTest(unittest.TestCase):
             tree = root / 'tree'
             (tree / 'sbin').mkdir(parents=True)
             (tree / 'etc/breenix').mkdir(parents=True)
+            (tree / 'sbin/probe').write_bytes(b'\x7fELFprobe')
             (tree / 'sbin/init').write_bytes(b'\x7fELFfixture')
             (tree / 'sbin/suite-smoke').write_bytes(b'\x7fELFsuite')
             image = root / 'root.img'
@@ -726,6 +741,13 @@ class RootStagingTest(unittest.TestCase):
                                           check=True, capture_output=True).stdout.decode()
                 self.assertEqual(read('boot-target'), expected + '\n')
                 self.assertEqual(read('site.env'), 'FETCH_URL=fixture-value\n')
+            probe_site = dict(site, BOOT_URL='http://fixture.invalid/breenix/boot.img')
+            metal_root.stage_root(image, 'probe', None, probe_site)
+            self.assertEqual(read('boot-target'), 'probe\n')
+            self.assertIn('METAL_FETCH_URL=http://fixture.invalid/breenix/probe.bin\n', read('site.env'))
+            config = subprocess.run([debugfs, '-R', 'stat /etc/resolv.conf', str(image)],
+                                    check=True, capture_output=True).stdout.decode()
+            self.assertIn('/proc/net/pnp', config)
             # Exercise the deployed layout, outside the repository's scripts directory.
             package = root / 'deployed'
             package.mkdir()
@@ -790,6 +812,25 @@ class DriverTest(StateTest):
         d.on_line('cpu started')
         self.assertEqual(d.required_stages, [[('timer measured', 'line')]])
         self.finish(lambda: d.on_line('timer measured'), m.EXIT_DONE)
+
+    def test_probe_waits_for_done_and_kernel_stages_and_refuses_failed_report(self):
+        d = self.driver
+        d.args.mode = 'probe'
+        definition = d.dir / 'definition/docs/metal'
+        definition.mkdir(parents=True)
+        m.write_json(definition / 'boot-path.json', {
+            'gateArch': 'x86_64', 'fatal': [], 'milestones': [
+                {'id': 'network', 'kernel': True, 'stages': {'x86_64': [{'marker': 'DNS answer'}]}},
+                {'id': 'fetch', 'stages': {'probe': [{'marker': 'PROBE metal-fetch OK'}]}}
+            ]})
+        d.load_definition()
+        self.assertEqual(d.final_marker, ('PROBE DONE ', 'contains'))
+        d.on_line('PROBE metal-fetch OK')
+        d.on_line('PROBE DONE passed=17 failed=0')
+        self.assertFalse(d.completion_reported)
+        self.finish(lambda: d.on_line('DNS answer'), m.EXIT_DONE)
+        d.completion_reported = False
+        self.finish(lambda: d.on_line('PROBE DONE passed=16 failed=1'), m.EXIT_SHORT)
 
     def test_final_marker_cannot_override_a_fatal(self):
         d = self.driver

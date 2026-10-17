@@ -6,10 +6,12 @@ import os
 import shutil
 import subprocess
 import tempfile
+from urllib.parse import urlsplit, urlunsplit
+from metal_probe import PROBE_PATH, PROBE_SHA256
 
 
 def stage_root(image, mode, suite, site, writer=None):
-    if mode not in ('default', 'shell', 'suite'):
+    if mode not in ('default', 'shell', 'probe', 'suite'):
         raise ValueError('unsupported RAM-disk boot mode')
     if mode == 'suite' and not re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*', suite or ''):
         raise ValueError('suite mode needs a suite id')
@@ -25,6 +27,10 @@ def stage_root(image, mode, suite, site, writer=None):
                 or any(char in value for char in '\r\n\x00')):
             raise ValueError('invalid guest site field')
         lines.append(key.removeprefix('GUEST_') + '=' + value + '\n')
+    if mode == 'probe':
+        url = urlsplit(site['BOOT_URL'])
+        lines += ['METAL_FETCH_URL=' + urlunsplit((url.scheme, url.netloc, PROBE_PATH, '', '')) + '\n',
+                  'METAL_FETCH_SHA256=' + PROBE_SHA256 + '\n']
     debugfs = shutil.which('debugfs')
     if not debugfs:
         raise ValueError('staging needs debugfs')
@@ -47,6 +53,7 @@ def stage_root(image, mode, suite, site, writer=None):
             source = scratch / name
             source.write_text(text)
             commands.extend([f'rm /etc/breenix/{name}', f'write {source} /etc/breenix/{name}'])
+        commands.extend(['rm /etc/resolv.conf', 'symlink /etc/resolv.conf /proc/net/pnp'])
         script = scratch / 'commands'
         script.write_text('\n'.join(commands) + '\n')
         subprocess.run([debugfs, '-w', '-f', str(script), str(image)], check=True, capture_output=True)
@@ -55,7 +62,11 @@ def stage_root(image, mode, suite, site, writer=None):
                                     check=True, capture_output=True)
             if result.stdout != text.encode():
                 raise ValueError('RAM-disk boot configuration readback differs')
-        binary = f'/sbin/suite-{suite}' if mode == 'suite' else '/sbin/init'
+        resolver = subprocess.run([debugfs, '-R', 'stat /etc/resolv.conf', str(image)],
+                                  check=True, capture_output=True).stdout
+        if b'Type: symlink' not in resolver or b'"/proc/net/pnp"' not in resolver:
+            raise ValueError('RAM-disk resolver does not name the live DHCP configuration')
+        binary = f'/sbin/suite-{suite}'  if mode == 'suite' else ('/sbin/probe' if mode == 'probe' else '/sbin/init')
         installed = scratch / 'pid1'
         subprocess.run([debugfs, '-R', f'dump {binary} {installed}', str(image)],
                        check=True, capture_output=True)

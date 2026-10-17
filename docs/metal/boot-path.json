@@ -235,9 +235,8 @@
     {
       "id": "dhcp-gateway",
       "title": "DHCP, gateway and DNS",
-      "summary": "Stub for a lease and reachable network services.",
+      "summary": "A DHCP lease, resolved gateway, echo reply and answer from the lease nameserver.",
       "kernel": true,
-      "stub": true,
       "stages": {
         "x86_64": [
           {
@@ -256,8 +255,7 @@
     {
       "id": "real-host",
       "title": "Fetch from a real host",
-      "summary": "Stub for a checksummed TCP fetch by the probe program.",
-      "stub": true,
+      "summary": "The production probe fetches the site file over TCP and verifies its SHA-256 checksum.",
       "stages": {
         "probe": [
           {

@@ -200,7 +200,7 @@ def main():
     p = sub.add_parser('boot')
     p.add_argument('--payload', choices=('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux'), default='image')
     p.add_argument('--linux-directory', help='prebuilt Linux instrument directory on the boot host')
-    p.add_argument('--mode', choices=('default', 'shell', 'suite'), default='default')
+    p.add_argument('--mode', choices=('default', 'shell', 'probe', 'suite'), default='default')
     p.add_argument('--suite')
     p.add_argument('--sha')
     p.add_argument('--branch')

@@ -35,10 +35,10 @@ import metal_census  # noqa: E402
 import metal_root  # noqa: E402
 
 # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
-MODES = ('default', 'shell', 'suite')
+MODES = ('default', 'shell', 'probe', 'suite')
 PAYLOADS = ('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux')
-CEILING_SECONDS = {'default': 900, 'shell': 900, 'suite': 1320}
-MODE_DEADLINE_SECONDS = {'default': 300, 'shell': 180, 'suite': 420}
+CEILING_SECONDS = {'default': 900, 'probe': 900, 'shell': 900, 'suite': 1320}
+MODE_DEADLINE_SECONDS = {'default': 300, 'probe': 300, 'shell': 180, 'suite': 420}
 INPUT_DEADLINE_SECONDS = 2 * 3600
 CONSOLE_BANNER = b'[SOL Session operational'
 CONSOLE_WAIT_SECONDS = 20
@@ -315,6 +315,8 @@ class Driver:
             catalog = m.read_json(definition / 'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json', {})
             self.final_marker = final_marker(metal, self.args.mode, catalog)
             self.required_stages = measured_stages(metal, self.args.mode, catalog)
+        if self.args.mode == 'probe':
+            self.final_marker = ('PROBE DONE ', 'contains')
         if self.args.mode == 'suite':
             self.final_marker = ('SUITE ' + self.args.suite + ' DONE ', 'contains')
         self.event('definition', metalPath=bool(metal), fatalPatterns=len(self.fatal_patterns),
@@ -567,6 +569,8 @@ class Driver:
         if self.kernel_started and self.fatal_at is None and any(p.search(line) for p in self.fatal_patterns):
             self.fatal_at = observed_at
             self.event('fatal', observed_at=observed_at, seconds=seconds)
+        if self.args.mode == 'probe' and re.fullmatch(r'PROBE DONE passed=\d+ failed=[1-9]\d*', line):
+            raise Finish(m.EXIT_SHORT, 'the production probe reported a failed check')
         if '[init] shell ready' in line:
             self.shell_ready = True
         self.challenge_shell(line)
