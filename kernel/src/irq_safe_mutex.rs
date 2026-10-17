@@ -49,10 +49,10 @@ impl IrqState {
     fn restore(&self) {
         #[cfg(target_arch = "aarch64")]
         {
+            crate::tracing::providers::gpu::masked_end(self.gauge);
             unsafe {
                 core::arch::asm!("msr daif, {}", in(reg) self.daif, options(nomem, nostack));
             }
-            crate::tracing::providers::gpu::masked_end(self.gauge);
         }
         #[cfg(target_arch = "x86_64")]
         if self.interrupts_were_enabled {

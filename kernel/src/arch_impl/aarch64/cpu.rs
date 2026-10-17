@@ -128,8 +128,8 @@ impl CpuOps for Aarch64Cpu {
         let result = f();
 
         // Restore previous DAIF state exactly before returning the result.
-        drop(restore_guard);
         crate::tracing::providers::gpu::masked_end(gauge);
+        drop(restore_guard);
 
         result
     }

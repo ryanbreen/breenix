@@ -96,7 +96,7 @@ fn masked_begin_thread() -> u64 {
     }
 }
 
-/// Called by the masking primitive just after it restores IRQs, with `masked_begin`'s value.
+/// Called by the masking primitive before it restores IRQs, with `masked_begin`'s value.
 #[inline(always)]
 pub fn masked_end(start: u64) {
     if start != 0 {
