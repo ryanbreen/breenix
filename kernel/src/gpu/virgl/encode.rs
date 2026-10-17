@@ -226,6 +226,17 @@ fn bind_target(enc: &mut Enc, surface: u32, flip_y: bool) {
     enc.cmd(ccmd::SET_VIEWPORT_STATE, 0, &[0, half, y_scale, point_five, half, half, point_five]);
 }
 
+/// Destroy the surface objects of target resources in `stale`, which no longer exist, so
+/// a context caches surfaces only for live targets.
+pub fn forget_surfaces(enc: &mut Enc, o: &mut Objects, stale: &[u32]) {
+    for id in stale {
+        if let Some(surface) = o.surfaces.remove(id) {
+            // DESTROY_OBJECT: the object's handle; the header names its type.
+            enc.cmd(ccmd::DESTROY_OBJECT, obj::SURFACE, &[surface]);
+        }
+    }
+}
+
 /// What translation needs of the device's view of a target.
 pub struct TargetRes {
     pub id: u32,

@@ -61,6 +61,8 @@ const FLIP_Y: bool = false;
 const RESET_BUDGET_NS: u64 = 100_000_000;
 /// The watchdog examines outstanding work at least this often (section 1.4.1).
 const EXAMINE_NS: u64 = 250_000_000;
+/// Failed fences a live context keeps answers for; one more quarantines it.
+const OUTCOMES_MAX: usize = 256;
 
 static CORE: spin::Mutex<Option<Core>> = spin::Mutex::new(None);
 /// Counts interrupts and state changes; a waiter sleeps only while it is unchanged.
@@ -802,8 +804,9 @@ impl Core {
                     p.totals.device_errors += 1;
                 }
             }
-            // Two device errors in a row quarantine this context and no other.
-            if ctx.state == CtxState::Live && ctx.errors_in_row >= 2 {
+            // Two device errors in a row quarantine this context and no other; so does
+            // keeping more failed answers than a live context may.
+            if ctx.state == CtxState::Live && (ctx.errors_in_row >= 2 || ctx.outcomes.len() > OUTCOMES_MAX) {
                 ctx.state = CtxState::Quarantined;
             }
         }
@@ -1804,6 +1807,9 @@ impl View {
         self.entries.iter().find(|e| e.handle == handle)
     }
 
+    fn has_id(&self, id: u32) -> bool {
+        self.entries.iter().any(|e| e.id == id)
+    }
 }
 
 /// One buffer range a stream names, copied into the snapshot at word `first`.
@@ -2044,13 +2050,15 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
     };
     // The context's busy slot serializes object allocation; translation can allocate
     // and process a large stream without holding the global core lock.
-    let state = with_core(|c| c.contexts.get(&id).map(|ctx| (ctx.objects.clone(), ctx.vb))).flatten();
-    let Some((mut objects, default_vb)) = state else {
+    let state = with_core(|c| c.contexts.get(&id).map(|ctx| (ctx.objects.clone(), ctx.vb, ctx.scratch))).flatten();
+    let Some((mut objects, default_vb, scratch)) = state else {
         drop_vertex_buffer();
         release_slot();
         return Err(EIO);
     };
+    let stale: Vec<u32> = objects.surfaces.keys().copied().filter(|&rid| rid != scratch && !view.has_id(rid)).collect();
     let mut enc = encode::Enc::new();
+    encode::forget_surfaces(&mut enc, &mut objects, &stale);
     encode::translate(&mut enc, &mut objects, &words, &resolved, vertex_buffer.unwrap_or(default_vb), FLIP_Y);
     let chunks = enc.finish();
     let mut held = named_ids.clone();

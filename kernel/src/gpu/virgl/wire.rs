@@ -97,6 +97,7 @@ pub mod target {
 pub mod ccmd {
     pub const CREATE_OBJECT: u32 = 1;
     pub const BIND_OBJECT: u32 = 2;
+    pub const DESTROY_OBJECT: u32 = 3;
     pub const SET_VIEWPORT_STATE: u32 = 4;
     pub const SET_FRAMEBUFFER_STATE: u32 = 5;
     pub const SET_VERTEX_BUFFERS: u32 = 6;
