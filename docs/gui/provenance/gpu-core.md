@@ -617,7 +617,7 @@ tokens (T:649–688). The text plus terminator was 252,216 bytes, below P:157–
 The review revision eliminates repeated expressions and constant operations, and uses low-word UMUL for
 terms discarded above bit 95. The generator prints the revised size and token budget when run; the
 emitted-ISA host tests execute that generated text, including loops and integer rewrites. Shader text now
-uses the continuation framing above rather than requiring one large command. Context creation warms only the fixed rendering catalogue (section 1.4.1); the probe program's compilation is charged to its context's first PROBE, under the same watchdog and case deadlines.
+uses the continuation framing above rather than requiring one large command. Context creation queues only the fixed rendering catalogue's warm-up (section 1.4.1); the probe program's compilation is charged to its context's first PROBE, under the same watchdog and case deadlines.
 The earlier B10 candidate at `09922c96` had capacity 21,940 and 240,200 text bytes including its terminator;
 its rejected 21,257 field omitted 130×5 immediate words and the label allowance. B10 records those original
 inputs; B11 records the integer-only selection program at `41766187`, and B12 the runtime literal construction. These capacities are layout-derived
@@ -776,14 +776,20 @@ KILL is used for discarded output, not as an assumed early return. L:661–670 d
 that execution may continue. A warm-up span draw puts its fragment outside the glyph's bounds, so that
 body is guarded off while the program is compiled. Shader upload continuation retains G4's one-page
 commands, grouped into the encoder's existing bounded submission chunks. The encoder packs commands from successive programs into bounded chunks; neither program nor continuation boundaries require a separate fence. This keeps the P:273–282 offsets
-and order while avoiding a synchronous device round trip for each page. Warm-up encoding occurs outside the core lock; completion of the bounded chunks warms the catalogue.
+and order while avoiding a synchronous device round trip for each page. Under ruling 33 (#1725) the
+catalogue warms asynchronously on the GPU worker, one pipeline per step: a step creates that pipeline's
+programs, unless a submission already did, and draws once with them; its chunks complete before the next
+step is sent. A submission that draws with a pipeline whose programs no step has created yet creates them
+in its own chunks, ahead of the draw. Encoding happens outside the core lock in both cases.
 
 The suite's coverage expectation uses the frozen `breengel-cpu-393` rasterizer in `libs/libgfx-ref`.
 Its rasterizer, float helpers, work counter and error definitions are byte-identical to that tag's
 `libs/libfont/src/` files. Adapters use the existing LineSegment structure; they add no raster algorithm.
 The rendering input is flattened font geometry and sorted crossings; the expected coverage is consumed
-only by the suite's comparison and is not uploaded. The reference-comment claim-lint conflict is pending
-an operator ruling; the imported files have not been annotated or exempted.
+only by the suite's comparison and is not uploaded. Under ruling 30 (#1719) the four files are listed in
+`scripts/frozen-copies.json` with their source tag and SHA-256. Claim-lint and `git diff --check` skip exactly
+those files, and `scripts/check-frozen-copies.py` fails if their bytes change. The suite's expectation
+modules include them directly (ruling 32); no crate wraps them.
 
 ## B13: G5 shader-text grammar
 
