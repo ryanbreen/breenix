@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+"""Build the pinned Linux measuring instrument on a low-priority Linux build host.
+
+Needs gcc, make, flex, bison, bc, libelf-dev, libssl-dev, xz-utils and busybox-static.
+Run on shared CPUs, outside the gate VM. Sources and artifacts belong outside the checkout.
+Only configuration/build interfaces are used; donor driver sources are not read or adapted.
+"""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import urllib.request
+
+from metal_census import FORBIDDEN_CONFIG, validate_config
+
+VERSION = '6.12.1'
+SHA256 = '0193b1d86dd372ec891bae799f6da20deef16fc199f30080a4ea9de8cef0c619'
+
+ENABLED = ('64BIT', 'SMP', 'HOTPLUG_CPU', 'PCI', 'ACPI', 'ACPI_TABLE_UPGRADE', 'EFI', 'EFI_STUB',
+           'FIRMWARE_MEMMAP', 'EFI_VARS', 'EFI_RUNTIME_MAP', 'DMI', 'X86_LOCAL_APIC', 'X86_IO_APIC',
+           'HPET_TIMER', 'HIGH_RES_TIMERS', 'BINFMT_ELF', 'BINFMT_SCRIPT', 'BLK_DEV_INITRD',
+           'RD_GZIP', 'PROC_FS', 'PROC_SYSCTL', 'SYSFS', 'DEVTMPFS', 'TMPFS',
+           'TTY', 'SERIAL_8250', 'SERIAL_8250_CONSOLE', 'PRINTK', 'X86_X2APIC', 'X86_MSR',
+           'EXPERT', 'FUTEX', 'FILE_LOCKING', 'MULTIUSER')
+
+
+def run(*cmd, cwd, env):
+    subprocess.run(cmd, cwd=cwd, env=env, check=True)
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument('directory', type=Path)
+    p.add_argument('--busybox', type=Path, default=Path('/bin/busybox'))
+    p.add_argument('--jobs', type=int, choices=(1, 2), default=1)
+    a = p.parse_args()
+    root = a.directory.resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    archive = root / f'linux-{VERSION}.tar.xz'
+    if not archive.exists():
+        urllib.request.urlretrieve(f'https://cdn.kernel.org/pub/linux/kernel/v6.x/{archive.name}', archive)
+    if hashlib.sha256(archive.read_bytes()).hexdigest() != SHA256:
+        raise SystemExit('Linux source checksum mismatch')
+    src = root / f'linux-{VERSION}'
+    if not src.exists():
+        subprocess.run(['tar', '-xf', str(archive), '-C', str(root)], check=True)
+    busybox = a.busybox.resolve()
+    check = subprocess.run(['ldd', str(busybox)], capture_output=True, text=True)
+    if 'not a dynamic executable' not in check.stdout + check.stderr and 'statically linked' not in check.stdout:
+        raise SystemExit('busybox must be statically linked')
+    init = root / 'init'
+    shutil.copyfile(Path(__file__).with_name('metal-linux-init'), init)
+    cpuid = root / 'cpuid'
+    subprocess.run(['nice', '-n', '15', 'gcc', '-static', '-O2', '-Wall', '-Wextra', '-Werror',
+                    str(Path(__file__).with_name('metal-linux-cpuid.c')), '-o', str(cpuid)], check=True)
+    spec = root / 'initramfs.list'
+    spec.write_text(''.join(f'dir /{d} 0755 0 0\n' for d in ('bin', 'dev', 'proc', 'sys', 'tmp')) +
+                    f'file /init {init} 0755 0 0\nfile /bin/busybox {busybox} 0755 0 0\nfile /bin/cpuid {cpuid} 0755 0 0\n' +
+                    'slink /bin/sh busybox 0777 0 0\nnod /dev/console 0600 0 0 c 5 1\n' +
+                    'nod /dev/ttyS0 0600 0 0 c 4 64\n')
+    env = dict(os.environ, CARGO_BUILD_JOBS='4', KBUILD_BUILD_USER='builder', KBUILD_BUILD_HOST='builder',
+               KBUILD_BUILD_TIMESTAMP='2024-11-22 00:00:00 UTC', KCONFIG_NOTIMESTAMP='1')
+    run('make', 'tinyconfig', cwd=src, env=env)
+    config = src / 'scripts/config'
+    for symbol in ENABLED:
+        run(str(config), '--enable', symbol, cwd=src, env=env)
+    for symbol in FORBIDDEN_CONFIG:
+        run(str(config), '--disable', symbol, cwd=src, env=env)
+    run(str(config), '--set-str', 'INITRAMFS_SOURCE', str(spec), cwd=src, env=env)
+    run(str(config), '--set-str', 'CMDLINE',
+        'console=ttyS0,115200n8 earlycon=uart8250,io,0x3f8,115200n8 loglevel=3 panic=0', cwd=src, env=env)
+    run(str(config), '--enable', 'CMDLINE_BOOL', '--enable', 'CMDLINE_OVERRIDE', cwd=src, env=env)
+    requested = root / 'requested.config'
+    shutil.copyfile(src / '.config', requested)
+    run('make', 'allnoconfig', 'KCONFIG_ALLCONFIG=' + str(requested), cwd=src, env=env)
+    values = (src / '.config').read_text()
+    validate_config(values)
+    run('nice', '-n', '15', 'make', f'-j{a.jobs}', 'bzImage', cwd=src, env=env)
+    output = root / 'metal-linux.efi'
+    shutil.copyfile(src / 'arch/x86/boot/bzImage', output)
+    shutil.copyfile(src / '.config', root / 'config')
+    files = {'linuxSource': archive, 'efi': output, 'config': root / 'config', 'init': init, 'busybox': busybox, 'cpuid': cpuid}
+    manifest = {'version': VERSION, 'files': {key: {'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+                                                  'size': path.stat().st_size} for key, path in files.items()}}
+    (root / 'build.json').write_text(json.dumps(manifest, indent=2) + '\n')
+    print(json.dumps(manifest))
+
+
+if __name__ == '__main__':
+    main()

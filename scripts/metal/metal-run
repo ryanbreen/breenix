@@ -3,6 +3,7 @@
 
   # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
   metal-run boot [--payload image|hang|none] [--sha SHA | --branch NAME] [--no-wait] [--inject forceoff-fail]
+                 [--ramdisk]
   metal-run stop ID
   metal-run status
   metal-run follow ID
@@ -97,14 +98,29 @@ def boot(args):
         command.append('--no-wait')
     if args.inject:
         command += ['--inject', args.inject]
+    if payload == 'linux' and not args.linux_directory:
+        raise SystemExit('Linux payload needs --linux-directory')
     if args.serve_as:
         command += ['--serve-as', args.serve_as]
     if args.content_type:
         command += ['--content-type', args.content_type]
+    if args.ramdisk:
+        command.append('--ramdisk')
     result = in_metal(env, *command, capture_output=True, text=True)
     print(result.stdout.strip() or result.stderr.strip(), flush=True)
     if result.returncode != 0:
         return result.returncode
+    if payload == 'linux':
+        source = Path(args.linux_directory).resolve()
+        stage = f'{STATE}/stage/{boot_id}/inputs'
+        try:
+            in_metal(env, 'mkdir', '-p', stage, check=True)
+            for name in ('metal-linux.efi', 'config', 'build.json'):
+                incus('file', 'push', str(source / name), f"{env['METAL_INSTANCE']}{stage}/{name}", check=True)
+            in_metal(env, 'python3', f'{TOOLS}/metal-boot', 'inputs-ready', boot_id, check=True)
+        except Exception:
+            in_metal(env, 'python3', f'{TOOLS}/metal-boot', 'inputs-failed', boot_id, 'Linux staging failed')
+            raise
     if payload == 'image':
         logs = Path.home() / '.local/state/breenix-metal'
         logs.mkdir(parents=True, exist_ok=True)
@@ -129,17 +145,26 @@ def build(boot_id, sha):
         in_metal(env, 'python3', f'{TOOLS}/metal-boot', 'inputs-failed', boot_id, why)
         in_build(env, 'rm', '-rf', tools, out)
         return 1
+    in_build(env, 'rm', '-rf', tools, check=True)
     in_build(env, 'mkdir', '-p', tools, check=True)
     incus('file', 'push', str(HERE / 'metal-build'), f"{env['BUILD_INSTANCE']}{tools}/metal-build", check=True)
+    # Push source files only: an old target tree or ignored local files must never reach staging.
+    stub = HERE / 'efi-stub'
+    for name in ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'src/main.rs'):
+        target = f'{tools}/efi-stub/{name}'
+        in_build(env, 'mkdir', '-p', str(Path(target).parent), check=True)
+        incus('file', 'push', str(stub / name), f"{env['BUILD_INSTANCE']}{target}", check=True)
     started = time.time()
     status = in_build(env, 'python3', f'{tools}/metal-build', '--id', boot_id, '--sha', sha,
                       '--repo', env['BUILD_REPO'], '--rust-fork', env['BUILD_RUST_FORK'],
-                      '--cache', env['BUILD_CACHE'], '--root', env['BUILD_ROOT']).returncode
+                      '--cache', env['BUILD_CACHE'], '--root', env['BUILD_ROOT'],
+                      '--stub', f'{tools}/efi-stub').returncode
     print(f'[metal-run] build exit {status} after {time.time() - started:.0f} s', flush=True)
     if status == 3:
         return failed('the effort-target guard refused the commit')
     if status != 0:
         return failed(f'the build failed (exit {status})')
+    in_metal(env, 'rm', '-rf', stage, check=True)
     in_metal(env, 'mkdir', '-p', stage, check=True)
     sender = subprocess.Popen(['sudo', '-n', 'incus', 'exec', env['BUILD_INSTANCE'], '--', 'tar', '-C', out, '-cf',
                                '-', '.'], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE)
@@ -168,13 +193,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest='command', required=True)
     p = sub.add_parser('boot')
-    p.add_argument('--payload', choices=('image', 'hang', 'hang-img', 'hang-iso', 'none'), default='image')
+    p.add_argument('--payload', choices=('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux'), default='image')
+    p.add_argument('--linux-directory', help='prebuilt Linux instrument directory on the boot host')
     p.add_argument('--sha')
     p.add_argument('--branch')
     p.add_argument('--no-wait', action='store_true')
     p.add_argument('--inject', choices=('forceoff-fail',))
     p.add_argument('--serve-as', choices=('boot.iso', 'boot.efi'))
     p.add_argument('--content-type', choices=('application/octet-stream',))
+    p.add_argument('--ramdisk', action='store_true', default=True, help='a Breenix image also carries the ext2 root as `ramdisk`')
     for name in ('stop', 'follow'):
         sub.add_parser(name).add_argument('id')
     sub.add_parser('status')

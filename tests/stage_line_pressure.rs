@@ -216,3 +216,31 @@ fn metal_modes_resolve_only_against_the_gate_arch_catalog() {
     assert!(stage_markers::boot_path_markers(&repo).unwrap_err().contains("longer than 128 bytes"));
     std::fs::remove_dir_all(repo).unwrap();
 }
+
+/// The console writer moves the ring a line at a time (`serial::queue_log_line`):
+/// `line_len` is the oldest line's length through its line end, across the
+/// ring's wrap, and the whole waiting length when no line end is waiting.
+#[test]
+fn line_len_is_the_oldest_lines_length_through_its_end() {
+    let mut ring = Box::new(LogRing::<RING>::new());
+    assert_eq!(ring.line_len(), 0);
+    let mut out = Vec::new();
+    // Push the ring's head near its end so the next lines wrap.
+    while ring.pushed() < (RING - 40) as u64 {
+        log(&mut ring, &mut out, &[], "x");
+        drain(&mut ring, &mut out);
+    }
+    log(&mut ring, &mut out, &[], "first line that wraps the ring's end");
+    log(&mut ring, &mut out, &[], "second");
+    assert_eq!(ring.line_len(), "first line that wraps the ring's end\n".len());
+    let mut first = vec![0u8; ring.line_len()];
+    assert_eq!(ring.pop(&mut first), first.len());
+    assert_eq!(first, b"first line that wraps the ring's end\n");
+    assert_eq!(ring.line_len(), "second\n".len());
+    let mut partial = [0u8; 3];
+    ring.pop(&mut partial);
+    assert_eq!(ring.line_len(), "ond\n".len());
+    let mut rest = [0u8; 3];
+    ring.pop(&mut rest);
+    assert_eq!(ring.line_len(), 1, "the line end alone");
+}

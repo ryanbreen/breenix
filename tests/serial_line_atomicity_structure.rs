@@ -291,3 +291,13 @@ fn tty_validator_rejects_per_byte_serial_writes() {
         Err("TtyDevice::write_bytes calls write_byte")
     );
 }
+
+#[test]
+fn shared_log_transfer_cannot_wait_on_the_ring_or_uart() {
+    let source = repo_text("kernel/src/serial.rs");
+    let body = function_body(&source, "queue_log_line").expect("shared console transfer");
+    assert!(body.contains("LOG_RING.try_lock()"), "panic flush must not wait on a held ring");
+    for blocking in ["LOG_RING.lock()", "queue_byte(", "write_com1_burst(", "drain_com1("] {
+        assert!(!body.contains(blocking), "shared transfer may not call {blocking}");
+    }
+}

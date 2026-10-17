@@ -186,6 +186,7 @@ fi
 case "$SERIAL_LOG" in /*) ;; *) SERIAL_LOG="$PWD/$SERIAL_LOG" ;; esac
 
 cd "$ROOT"
+echo "==> Commit: $(git rev-parse HEAD) dirty=$(test -z "$(git status --porcelain)" && echo 0 || echo 1)"
 KERNEL="$ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
 DISK="$ROOT/target/ext2-aarch64.img"
 
