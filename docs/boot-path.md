@@ -151,19 +151,40 @@ it does not establish that VMware can reach an external network.
 ## Shared host slots
 
 Use `docker/qemu/run-x86-gate.sh` for queued x86 builds and boots: the helper
-provides two build leases and one boot lease. Run Inspector installs its current
+provides `x86-build` leases and one `x86-boot` lease. Run Inspector installs its current
 helper outside the tested checkout, including when testing an older revision.
 Historical gates hold both leases for their whole run. Launchers sourcing
 `docker/qemu/lib/qemu-host-lock.sh` also enroll in the host queue; on Linux they
 hold a build lease until boot admission. Mac builds remain unrestricted.
 
+The gate VM boots; it does not build. When the VM's private host file
+(`~/.config/breenix-gate/build-host.env`) names the x86 build container and the commit
+carries `scripts/x86-gate-build.py`, `scripts/gate-tree.py` runs the gate's build phase
+(`BREENIX_GATE_PHASE=build`) in that container over ssh, then the boot phase in the VM. The
+container's cpuset is the boot host's shared CPUs, outside the cores reserved for the gate
+VM, at the lowest CPU priority and with its own memory limit. It checks the commit out at
+the same path as the VM's tree, because the launcher has absolute paths compiled in, and
+builds there exactly as the VM did: `scripts/gate-artifacts.py` publishes userspace only
+after its candidate and clean-verification builds compare byte-identical, in the
+container's own cache, which holds no metal entries. The launcher, the UEFI image it
+names, the disks and the ELFs come back to the VM's tree (holes kept), with the build's
+logs in the run's `gate-tmp/build-logs-container/` and its result, including the CPUs it
+ran on, in `gate-tmp/x86-build.json`. The kernel ELF stays in the container's tree. The
+container's `x86-build` leases are its own: their count is its CPUs over each build's 4
+Cargo jobs, bounded by its memory limit over 4 GiB a build (`build_slots` in
+`scripts/host-slots.py`), and no boot waits for them or freezes them. Two metal builds
+compiling on the shared cores through a whole time-suite boot left it at 92/92 (run
+`20261017T205020Z-x86_64-gate-4f09`). A commit without the build phase still builds in
+the VM, as below.
+
 A guest's vCPUs are host threads, and a guest charges the time a busy host leaves them
-unscheduled as running, so timing cases fail on a loaded host. An x86 boot therefore first
-holds every build lease (after builds queued before it, ahead of those queued after it),
-then its boot lease, and keeps both until it ends: no build runs in the gate VM during a
-boot. A boot request queues for both in one step, and a session holding a build lease
-(a historical gate) gives it up while it waits for all of them, so two boots never wait on
-each other.
+unscheduled as running, so timing cases fail on a loaded host. A build inside the gate VM
+shares the boot's vCPUs, so an x86 boot first holds every build lease in the VM (after
+builds queued before it, ahead of those queued after it), then its boot lease, and keeps
+both until it ends: no build runs in the gate VM during a boot. A boot request queues for
+both in one step, and a session holding a build lease (a historical gate) gives it up while
+it waits for all of them, so two boots never wait on each other. claim-lint:ok: the lease order is pinned in
+`tests/host_slots_test.py` (`test_boot_holds_every_build_lease_until_it_ends`, `test_two_sessions_holding_build_leases_both_take_the_boot`).
 
 Every launcher calls `host_slot_quiet`, with the manifests of the suites it runs, just
 before it starts its VM: `scripts/boot-interactive.sh`, each VM path of `run.sh`, and

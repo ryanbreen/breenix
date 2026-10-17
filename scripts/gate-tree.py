@@ -15,6 +15,10 @@ import sys
 import time
 
 GIB = 1024 ** 3
+# Private to the gate VM: names the x86 build container where its gate runs build
+# (scripts/x86-gate-build.py). Without it, or for a commit whose tree lacks that
+# builder, the gate builds where it runs.
+BUILD_HOST = Path.home() / '.config/breenix-gate/build-host.env'
 
 
 def phase(name, start, status=0):
@@ -230,31 +234,49 @@ def main():
             prune(root, protected=(tree,))
             with timing('clone-fetch'):
                 checkout(canonical, tree, sha, lane)
-            if os.environ.get('BREENIX_RUST_FORK'):
+            builder = tree / 'scripts/x86-gate-build.py'
+            container = BUILD_HOST.exists() and builder.exists()
+            if os.environ.get('BREENIX_RUST_FORK') and not container:
                 snapshot_fork(os.environ['BREENIX_RUST_FORK'], tree / 'gate-rust-fork')
-            print(f'[gate-tree] tree={tree} fresh={str(fresh).lower()}', flush=True)
+            print(f'[gate-tree] tree={tree} fresh={str(fresh).lower()} build={"container" if container else "here"}', flush=True)
             environment = dict(os.environ, BREENIX_REPO_DIR=str(tree), BREENIX_GATE_CACHE_DIR=str(root), CARGO_BUILD_JOBS='4')
-            if os.environ.get('BREENIX_RUST_FORK'):
+            if os.environ.get('BREENIX_RUST_FORK') and not container:
                 environment.update(BREENIX_RUST_FORK=str(tree / 'gate-rust-fork'))
             if not (tree / 'scripts/host-slots.py').exists():
                 helper = str(Path(output) / 'host-slots.py')
                 run(['python3', helper, 'acquire', 'x86-build'])
                 run(['python3', helper, 'acquire', 'x86-boot'])
-            child = subprocess.Popen([str(tree / 'docker/qemu/run-x86-gate.sh'), boots, mode], env=environment, cwd=tree, pass_fds=(lane_lock.fileno(),))
+            current, cancelled = [], []
             def stop(number, frame):
                 # The host-slot supervisor also signals descendants. Keep this
-                # owner alive until the gate finishes its own cleanup.
-                if child.poll() is None:
-                    child.send_signal(number)
+                # owner alive until the gate finishes its own cleanup, and start
+                # no later step (the boot after a container build).
+                cancelled.append(number)
+                if current and current[-1].poll() is None:
+                    current[-1].send_signal(number)
             for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
                 signal.signal(number, stop)
-            while child.poll() is None:
-                owner(root, name, run_id, tree, started)
-                try:
-                    child.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    pass
-            return child.returncode
+            def supervised(command):
+                if cancelled:
+                    return 128 + cancelled[0]
+                current.append(subprocess.Popen(command, env=environment, cwd=tree, pass_fds=(lane_lock.fileno(),)))
+                while current[-1].poll() is None:
+                    owner(root, name, run_id, tree, started)
+                    try:
+                        current[-1].wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        pass
+                return current[-1].returncode
+            if container:
+                building = time.monotonic()
+                status = supervised([sys.executable, str(builder), 'remote', str(BUILD_HOST), str(root), str(tree),
+                                     lane, sha, run_id, mode, output])
+                phase('container-build', building, status)
+                if status:
+                    return status
+                built = json.loads((Path(output) / 'x86-build.json').read_text())
+                environment.update(BREENIX_GATE_PHASE='boot', BREENIX_GATE_BUILD_SECS=str(built['build_seconds']))
+            return supervised([str(tree / 'docker/qemu/run-x86-gate.sh'), boots, mode])
         finally:
             if fresh and tree.exists():
                 shutil.rmtree(tree)
