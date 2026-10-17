@@ -354,9 +354,10 @@ impl PendingProcessReclaim {
     }
 }
 
-// Queue holders mask local interrupts and never nest these locks or take PM
-// or scheduler locks while holding them. Wait for a peer's short hold: losing
-// a try-lock race must not discard the receipt or its retirement obligation.
+// Each holder of these queues masks local interrupts and takes neither
+// PROCESS_MANAGER, a scheduler lock nor the other queue while it holds one, so
+// a peer's hold is short. Publishers wait for it: a failed try-lock used to
+// abandon the receipt, and its row was settled without a reclaim (#1693).
 static PENDING_PROCESS_RECLAIMS: crate::irq_safe_mutex::IrqSafeMutex<
     alloc::vec::Vec<PendingProcessReclaim>,
 > = crate::irq_safe_mutex::IrqSafeMutex::new(alloc::vec::Vec::new());
