@@ -232,12 +232,13 @@ pub fn wait_timeout() -> CaseResult {
     let t = target(format::B8G8R8A8, 8, 8)?;
     arm(test_point::WITHHOLD_FENCE, test_point::WITHHOLD_ONE)?;
     let f = submit(ctx, &scene(t, RED, &[]))?;
+    // `docs/gui/gpu.md` section 1.4.1, timing bounds: [T, T + K] for T = 50 ms.
     let start = now_ns();
     let (r, _) = gpu::wait(ctx, f, 50_000_000);
     let ms = ms_since(start);
-    value("wait-ms", ms as i64, "ms", Some((50, 100)));
+    value("wait-ms", ms as i64, "ms", Some((50, 300)));
     ensure(r == -ETIMEDOUT, || format!("WAIT on the incomplete fence returned {}", errno(r)))?;
-    ensure((50..=100).contains(&ms), || format!("the 50 ms WAIT returned after {ms} ms"))
+    ensure((50..=300).contains(&ms), || format!("the 50 ms WAIT returned after {ms} ms, outside [50, 300]"))
 }
 
 extern "C" fn on_alarm(_sig: i32) {}
@@ -249,14 +250,16 @@ pub fn wait_eintr() -> CaseResult {
     signal::sigaction(SIGALRM, Some(&Sigaction::new(on_alarm)), None).map_err(|e| fail_msg(format!("sigaction: {e}")))?;
     arm(test_point::WITHHOLD_FENCE, test_point::WITHHOLD_ONE)?;
     let f = submit(ctx, &scene(t, RED, &[]))?;
+    // `docs/gui/gpu.md` section 1.4.1, timing bounds: from arming the timer, [s, s + K]
+    // for s = 30 ms.
     let timer = Itimerval { it_interval: Timeval { tv_sec: 0, tv_usec: 0 }, it_value: Timeval { tv_sec: 0, tv_usec: 30_000 } };
-    signal::setitimer(ITIMER_REAL, &timer, None).map_err(|e| fail_msg(format!("setitimer: {e}")))?;
     let start = now_ns();
+    signal::setitimer(ITIMER_REAL, &timer, None).map_err(|e| fail_msg(format!("setitimer: {e}")))?;
     let (r, _) = gpu::wait(ctx, f, 1_000_000_000);
     let ms = ms_since(start);
-    value("interrupted-ms", ms as i64, "ms", Some((25, 500)));
+    value("interrupted-ms", ms as i64, "ms", Some((30, 280)));
     ensure(r == -EINTR, || format!("WAIT with SIGALRM due at 30 ms returned {} after {ms} ms", errno(r)))?;
-    ensure(ms < 500, || format!("the signal ended WAIT only after {ms} ms"))
+    ensure((30..=280).contains(&ms), || format!("WAIT's EINTR came {ms} ms after the timer was armed, outside [30, 280]"))
 }
 
 pub fn wait_killable() -> CaseResult {
@@ -494,14 +497,19 @@ pub fn watchdog_quarantine() -> CaseResult {
     let t = target(format::B8G8R8A8, 8, 8)?;
     let u = target(format::B8G8R8A8, 8, 8)?;
     arm(test_point::WITHHOLD_FENCE, test_point::WITHHOLD_ONE)?;
+    // `docs/gui/gpu.md` section 1.4.1, timing bounds: [W, W + 2K], the lower bound from
+    // the stalled SUBMIT's start and the upper from its return.
     let start = now_ns();
     let f = submit(hung, &scene(t, RED, &[]))?;
+    let sent = now_ns();
     wait_for(2_000, "quarantined-ms");
     let (r, w) = gpu::wait(hung, f, 3_000_000_000);
-    let ms = ms_since(start);
+    let (ms, after_sent) = (ms_since(start), ms_since(sent));
     value("quarantined-ms", ms as i64, "ms", Some((2_000, 2_500)));
     ensure(r == -EIO && w.status == fence_status::DEVICE_HUNG, || format!("WAIT on the withheld fence returned {} status {}", errno(r), w.status))?;
-    ensure((2_000..=2_500).contains(&ms), || format!("the watchdog fired {ms} ms after the submission, expected 2 s"))?;
+    ensure(ms >= 2_000 && after_sent <= 2_500, || {
+        format!("the watchdog ended the WAIT {ms} ms after SUBMIT began and {after_sent} ms after it returned, outside [2000, 2500]")
+    })?;
     ensure(counters(hung)?.state == context_state::QUARANTINED, || "the hung context is not quarantined".to_string())?;
     let (r, _) = gpu::submit(hung, &scene(t, GREEN, &[]));
     ensure(r == -EIO, || format!("a submission to the quarantined context returned {}", errno(r)))?;
@@ -518,18 +526,23 @@ pub fn device_reset_recovers() -> CaseResult {
     let ta = target(format::B8G8R8A8, 8, 8)?;
     let tb = target(format::B8G8R8A8, 8, 8)?;
     arm(test_point::WITHHOLD_FENCE, test_point::WITHHOLD_ALL)?;
+    // `docs/gui/gpu.md` section 1.4.1, timing bounds: [2W, 2W + 3K + R], the lower bound
+    // from the stalled SUBMIT's start and the upper from its return.
     let start = now_ns();
     let fa = submit(a, &scene(ta, RED, &[]))?;
+    let sent = now_ns();
     wait_for(4_000, "reset-ms");
     let (r, w) = gpu::wait(a, fa, 3_000_000_000);
     ensure(r == -EIO && w.status == fence_status::DEVICE_HUNG, || format!("the stalled submission's WAIT returned {} status {}", errno(r), w.status))?;
     // The device now makes no progress: B's work stays outstanding until the reset.
     let fb = submit(b, &scene(tb, BLUE, &[]))?;
     let (r, w) = gpu::wait(b, fb, 4_000_000_000);
-    let ms = ms_since(start);
-    value("reset-ms", ms as i64, "ms", Some((4_000, 4_600)));
+    let (ms, after_sent) = (ms_since(start), ms_since(sent));
+    value("reset-ms", ms as i64, "ms", Some((4_000, 4_850)));
     ensure(r == -EIO && w.status == fence_status::DEVICE_RESET, || format!("WAIT across the reset returned {} status {}", errno(r), w.status))?;
-    ensure((4_000..=4_600).contains(&ms), || format!("the device was reset {ms} ms after the stall began, expected 4 s"))?;
+    ensure(ms >= 4_000 && after_sent <= 4_850, || {
+        format!("the reset ended the WAIT {ms} ms after the stalled SUBMIT began and {after_sent} ms after it returned, outside [4000, 4850]")
+    })?;
     for (name, ctx) in [("A", a), ("B", b), ("C", c)] {
         let k = counters(ctx)?;
         ensure(k.state == context_state::RESET, || format!("context {name}'s state after the reset is {}", k.state))?;
