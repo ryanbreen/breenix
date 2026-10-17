@@ -1261,6 +1261,10 @@ fn probe_report(tag: &str, base: &std::collections::BTreeMap<i64, i64>) {
             value(&format!("{tag}-{}", key.trim_end_matches('=').replace('_', "-")), v, "", None);
         }
     }
+    for key in ["terminated_unreclaimed=", "pending_reclaims=Some("] {
+        let v = text.lines().find(|l| l.starts_with("probe_1712:")).and_then(|l| l.split_whitespace().find_map(|w| w.strip_prefix(key))).and_then(|v| v.trim_end_matches(')').parse::<i64>().ok()).unwrap_or(-1);
+        value(&format!("{tag}-{}", if key.starts_with("term") { "unreclaimed" } else { "pending" }), v, "", None);
+    }
     value(&format!("{tag}-pids"), std::fs::read_to_string("/proc/pids").map(|t| t.split_whitespace().count() as i64).unwrap_or(-1), "", None);
     let live = probe_live(&text);
     let mut grown: Vec<(i64, i64)> = live.iter().map(|(&k, &v)| (k, v - base.get(&k).copied().unwrap_or(0)))
@@ -1280,13 +1284,16 @@ fn lc_rows_released() -> CaseResult {
         let base = probe_live(&probe_text());
         probe_report("start", &base);
         let mut threads = Vec::with_capacity(BATCH);
-        for round in 1..=4 {
+        for round in 1..=3 {
             for _ in 0..ROUND / BATCH {
                 for _ in 0..BATCH { threads.push(create(rt_nothing, null_mut())?); }
                 for t in threads.drain(..) { rc("pthread_join", pthread_join(t, null_mut())?)?; }
             }
+            probe_report(&format!("r{round}a"), &base);
+            sleep_ms(1000);
+            probe_report(&format!("r{round}b"), &base);
             sleep_ms(2000);
-            probe_report(&format!("r{round}"), &base);
+            probe_report(&format!("r{round}c"), &base);
         }
         err("probe done")
     })

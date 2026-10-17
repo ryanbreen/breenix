@@ -84,8 +84,16 @@ pub static PROBE_RA: [[core::sync::atomic::AtomicUsize; PROBE_DEPTH]; PROBE_SLOT
     [const { [const { core::sync::atomic::AtomicUsize::new(0) }; PROBE_DEPTH] }; PROBE_SLOTS];
 pub static PROBE_OVERFLOW: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
+pub fn probe_thread_size() -> usize {
+    core::mem::size_of::<crate::task::thread::Thread>()
+}
+
+pub fn probe_signals_size() -> usize {
+    core::mem::size_of::<crate::signal::ThreadSignals>() + 16
+}
+
 fn probe_tracked(size: usize) -> bool {
-    size == 1472 || size == 2528 || (80..96).contains(&size)
+    size == probe_thread_size() || size == probe_signals_size()
 }
 
 #[inline(always)]

@@ -289,11 +289,11 @@ pub fn generate_counters() -> String {
             let p = PROBE_PTR[slot].load(Relaxed);
             if p == 0 || p == usize::MAX || shown >= 40 { continue; }
             let size = PROBE_SIZE[slot].load(Relaxed);
-            if size == 1472 {
+            if size == crate::memory::heap::probe_thread_size() {
                 let t = unsafe { &*(p as *const crate::task::thread::Thread) };
                 crate::serial_println!("PROBE_OBJ thread ptr={:x} id={} state={:?} owner={:?} user={} in_sched={:?}", p, t.id(), t.state, t.owner_pid, t.privilege == crate::task::thread::ThreadPrivilege::User, in_sched(p));
                 shown += 1;
-            } else if size == 2528 {
+            } else if size == crate::memory::heap::probe_signals_size() {
                 let words = unsafe { core::slice::from_raw_parts(p as *const usize, 2) };
                 crate::serial_println!("PROBE_OBJ signals ptr={:x} strong={} weak={}", p, words[0], words[1]);
                 shown += 1;
