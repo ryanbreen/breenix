@@ -120,7 +120,7 @@ writes its reason to `reason`, and only that reason:
 | 0 | none | the call did not return EIO |
 | 1 | unwritten | the two complementary-poison observations differ (`unwritten` in the record is the count). This is how an omitted transfer (point 19), a transfer naming another resource (point 21) and a transfer in a context the device disabled (`docs/gui/gpu.md` section 1.4.1) show |
 | 2 | fence-mismatch | a transfer's answer lacks the fence flag or echoes another fence, or a recorded fence belongs to another submission |
-| 3 | resource-mismatch | the device's confirmed scanout binding differs from the observed resource. The transfer answer carries no resource identity, so a transfer the device took from another resource is never reported this way; it is reason 1 |
+| 3 | resource-mismatch | an observation claiming the scanout (record `flags` bit 0 set) names a resource that differs from the device's confirmed scanout binding. An offscreen observation (bit 0 clear) does not require its resource to match the scanout. The transfer answer carries no resource identity, so a transfer the device took from another resource is never reported this way; it is reason 1 |
 | 4 | target-invalid | the target is invalid (`docs/gui/gpu.md` section 1.4.1); `failed_submission` is the serial of the submission that invalidated it, numbered as the record's `render_serial` |
 | 5 | device-error | the device answered a readback transfer with an error |
 | 6 | device-hung | the watchdog ended a transfer the device had not answered 2 s after it was sent; its context is quarantined, as for a submission |

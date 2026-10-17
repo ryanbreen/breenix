@@ -635,8 +635,9 @@ A readback refuses with EIO and a named reason (the codes are in `docs/gui/gpu-a
 complementary-poison observations differ (unwritten), when any recorded fence belongs to another submission
 (fence mismatch), when a composed window's render fence had not completed OK before the composite was sent
 (its code is assigned with composite observations, which come after G2), when
-the device's confirmed scanout binding differs from the observed resource (resource mismatch), when the
-target is invalid (section 1.4.1; the reason names the submission that invalidated it), when the device
+an observation claiming the scanout (record `flags` bit 0 set) names a resource that differs from the
+device's confirmed scanout binding (resource mismatch), when the target is invalid (section 1.4.1; the
+reason names the submission that invalidated it), when the device
 answers a readback transfer with an error, when the watchdog ends a transfer the device has not answered
 (device hung), when a device reset is decided while a transfer is outstanding, whether the reset then
 completes or fails (device reset), when the target was lost to an earlier device reset (target lost), when
