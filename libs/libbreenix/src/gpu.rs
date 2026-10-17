@@ -1,0 +1,165 @@
+//! System call 416, `gpu(op, arg, len)`, and the suite-mode test controls of system call
+//! 415 (`docs/gui/gpu.md` section 1.4 and section 1.8; layouts in `docs/gui/gpu-abi.md`).
+//!
+//! Every function returns what the kernel returned: a value, or a negated errno. The
+//! layouts and the command stream encoders are `gpu_abi`'s, re-exported as [`abi`].
+
+pub use gpu_abi as abi;
+
+use abi::{op, test_control as tc, Plain, TcArm, TcFired, SYS_GPU, SYS_TEST_CONTROL};
+
+use crate::syscall::raw;
+
+/// `gpu(op, arg, len)` as the raw return.
+///
+/// # Safety
+/// `arg` must be null or point to `len` bytes the kernel may read and write.
+pub unsafe fn call(op: u32, arg: *mut u8, len: usize) -> i64 {
+    raw::syscall3(SYS_GPU, op as u64, arg as u64, len as u64) as i64
+}
+
+/// `gpu(op, &mut arg, size_of(arg))`.
+pub fn call_with<T: Plain>(op: u32, arg: &mut T) -> i64 {
+    // SAFETY: `arg` is a live, exclusively borrowed value of its own size.
+    unsafe { call(op, arg as *mut T as *mut u8, core::mem::size_of::<T>()) }
+}
+
+/// `VERSION`.
+pub fn version() -> i64 {
+    // SAFETY: VERSION takes no argument.
+    unsafe { call(op::VERSION, core::ptr::null_mut(), 0) }
+}
+
+/// `CAPS`, with the record.
+pub fn caps() -> (i64, abi::Caps) {
+    let mut c = abi::Caps::ZERO;
+    let r = call_with(op::CAPS, &mut c);
+    (r, c)
+}
+
+/// `CONTEXT_CREATE`: the handle, or the negated errno.
+pub fn context_create() -> Result<u64, i64> {
+    let mut a = abi::ContextCreate::ZERO;
+    match call_with(op::CONTEXT_CREATE, &mut a) {
+        0 => Ok(a.handle),
+        e => Err(e),
+    }
+}
+
+/// `CONTEXT_DESTROY`.
+pub fn context_destroy(handle: u64) -> i64 {
+    let mut a = abi::Handle { handle, reserved: 0 };
+    call_with(op::CONTEXT_DESTROY, &mut a)
+}
+
+/// `RESOURCE_CREATE` of a target or texture.
+pub fn image_create(kind: u32, format: u32, width: u32, height: u32) -> Result<u64, i64> {
+    let mut a = abi::ResourceCreate { kind, format, width, height, size: 0, handle: 0, reserved: [0; 2] };
+    match call_with(op::RESOURCE_CREATE, &mut a) {
+        0 => Ok(a.handle),
+        e => Err(e),
+    }
+}
+
+/// `RESOURCE_CREATE` of a render target.
+pub fn target_create(format: u32, width: u32, height: u32) -> Result<u64, i64> {
+    image_create(abi::kind::TARGET, format, width, height)
+}
+
+/// `RESOURCE_CREATE` of a buffer of `size` bytes.
+pub fn buffer_create(size: u64) -> Result<u64, i64> {
+    let mut a = abi::ResourceCreate { kind: abi::kind::BUFFER, format: 0, width: 0, height: 0, size, handle: 0, reserved: [0; 2] };
+    match call_with(op::RESOURCE_CREATE, &mut a) {
+        0 => Ok(a.handle),
+        e => Err(e),
+    }
+}
+
+/// `RESOURCE_DESTROY`.
+pub fn resource_destroy(handle: u64) -> i64 {
+    let mut a = abi::Handle { handle, reserved: 0 };
+    call_with(op::RESOURCE_DESTROY, &mut a)
+}
+
+/// `SUBMIT` of `stream` on `context`: the return and the argument as the kernel left it
+/// (its fence, or its refusal's index and code).
+pub fn submit(context: u64, stream: &[u32]) -> (i64, abi::Submit) {
+    submit_raw(context, stream.as_ptr() as u64, (stream.len() * 4) as u64)
+}
+
+/// `SUBMIT` of a stream at an arbitrary address and length.
+pub fn submit_raw(context: u64, stream: u64, length: u64) -> (i64, abi::Submit) {
+    let mut a = abi::Submit { context, stream, length, ..abi::Submit::ZERO };
+    let r = call_with(op::SUBMIT, &mut a);
+    (r, a)
+}
+
+/// `WAIT` for `fence` on `context` for at most `timeout_ns`: the return and the
+/// argument (its status and the device's answer when the return is EIO).
+pub fn wait(context: u64, fence: u64, timeout_ns: u64) -> (i64, abi::Wait) {
+    let mut a = abi::Wait { context, fence, timeout_ns, ..abi::Wait::ZERO };
+    let r = call_with(op::WAIT, &mut a);
+    (r, a)
+}
+
+/// `READBACK` of a rectangle into `pixels` at `stride`, with the record.
+pub fn readback(target: u64, rect: [u32; 4], pixels: &mut [u8], stride: u32, record: &mut [u8; abi::record::SIZE]) -> i64 {
+    let mut a = abi::Readback {
+        target,
+        x: rect[0],
+        y: rect[1],
+        width: rect[2],
+        height: rect[3],
+        pixels: pixels.as_mut_ptr() as u64,
+        pixels_len: pixels.len() as u64,
+        stride,
+        reserved0: 0,
+        record: record.as_mut_ptr() as u64,
+        reserved: 0,
+    };
+    call_with(op::READBACK, &mut a)
+}
+
+/// `COUNTERS` for a context, or for the process with `context` 0.
+pub fn counters(context: u64) -> (i64, abi::Counters) {
+    let mut a = abi::Counters { context, ..abi::Counters::ZERO };
+    let r = call_with(op::COUNTERS, &mut a);
+    (r, a)
+}
+
+/// `test_control(op, arg, len)` as the raw return.
+///
+/// # Safety
+/// `arg` must be null or point to `len` bytes the kernel may read and write.
+pub unsafe fn test_control(op: u32, arg: *mut u8, len: usize) -> i64 {
+    raw::syscall3(SYS_TEST_CONTROL, op as u64, arg as u64, len as u64) as i64
+}
+
+/// Test controls' `STATE`: 1 in a suite boot.
+pub fn tc_state() -> i64 {
+    // SAFETY: STATE takes no argument.
+    unsafe { test_control(tc::STATE, core::ptr::null_mut(), 0) }
+}
+
+/// Arm `point` for `target` (0 for any) with `param`.
+pub fn tc_arm(point: u32, target: u64, param: u64) -> i64 {
+    let mut a = TcArm { point, reserved: 0, target, param };
+    // SAFETY: `a` is a live TcArm of its own size.
+    unsafe { test_control(tc::ARM, &mut a as *mut TcArm as *mut u8, core::mem::size_of::<TcArm>()) }
+}
+
+/// Disarm every point.
+pub fn tc_disarm_all() -> i64 {
+    // SAFETY: DISARM_ALL takes no argument.
+    unsafe { test_control(tc::DISARM_ALL, core::ptr::null_mut(), 0) }
+}
+
+/// How many times `point` has fired this boot, or the negated errno.
+pub fn tc_fired(point: u32) -> Result<u64, i64> {
+    let mut f = TcFired { point, reserved: 0, count: 0 };
+    // SAFETY: `f` is a live TcFired of its own size.
+    match unsafe { test_control(tc::FIRED, &mut f as *mut TcFired as *mut u8, core::mem::size_of::<TcFired>()) } {
+        0 => Ok(f.count),
+        e => Err(e),
+    }
+}

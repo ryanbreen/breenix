@@ -1,0 +1,11 @@
+[package]
+name = "gpu-abi"
+version = "0.1.0"
+edition = "2021"
+description = "Syscall 416's binary interface and the BGL command stream (docs/gui/gpu.md and docs/gui/gpu-abi.md)"
+license = "MIT"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
