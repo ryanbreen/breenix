@@ -61,6 +61,7 @@ pub fn init(rsdp: Option<u64>, physical_offset: u64) {
                 .unwrap_or(u64::from(madt.local_apic_address)),
         );
         ioapic::init(&madt, apic::id());
+        super::msi::set_destination(apic::id());
         ioapic::set_enabled(1, true);
         ioapic::set_enabled(4, true);
         log::info!("Interrupt delivery: {} + IOAPIC; 8259 masked", mode);

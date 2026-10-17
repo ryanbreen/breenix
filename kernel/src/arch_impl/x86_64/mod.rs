@@ -26,6 +26,8 @@ pub mod interrupt_frame;
 pub mod ioapic;
 mod ioapic_route;
 pub mod irq;
+pub mod msi;
+mod msi_message;
 pub mod nmi_report;
 pub mod paging;
 pub mod platform;
