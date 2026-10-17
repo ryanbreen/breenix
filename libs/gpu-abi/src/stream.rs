@@ -53,7 +53,9 @@ pub mod error {
     pub const WORK_LIMIT: u32 = 12;
     /// The stream is longer than `limits::STREAM_BYTES`, empty, or not whole words.
     pub const STREAM_LENGTH: u32 = 13;
-    /// A target the device left invalid (`docs/gui/gpu.md` section 1.4.1).
+    /// A command that samples a target the device left invalid (`docs/gui/gpu.md`
+    /// section 1.4.1). Drawing into an invalid target is allowed; no G1 command samples,
+    /// so G1 never reports it.
     pub const INVALID_TARGET: u32 = 14;
 }
 
@@ -77,7 +79,8 @@ impl Words for [u32] {
 pub struct TargetInfo {
     pub width: u32,
     pub height: u32,
-    /// The device left it invalid; drawing to it is refused until a whole write.
+    /// The device left it invalid: it may be drawn into, and sampling it is refused
+    /// until a whole write completes OK.
     pub invalid: bool,
 }
 
@@ -180,8 +183,6 @@ pub fn validate(words: &(impl Words + ?Sized), resolver: &impl Resolver) -> Resu
                 let Some(t) = target else { return refuse(error::NO_TARGET) };
                 let area = t.width as u64 * t.height as u64;
                 count_draw(&mut plan, index, 1, area, 1)?;
-                // A clear writes the whole target, so it makes an invalid target valid.
-                target = Some(TargetInfo { invalid: false, ..t });
             }
             cmd::DRAW | cmd::DRAW_BUFFER => {
                 if len < 5 {
@@ -190,9 +191,6 @@ pub fn validate(words: &(impl Words + ?Sized), resolver: &impl Resolver) -> Resu
                 let Some(t) = target else { return refuse(error::NO_TARGET) };
                 let pipe = words.word(at + 2);
                 let Some(steps) = pipeline::steps(pipe) else { return refuse(error::BAD_PIPELINE) };
-                if t.invalid {
-                    return refuse(error::INVALID_TARGET);
-                }
                 let mut area = 0u64;
                 let count;
                 if code == cmd::DRAW {
@@ -318,12 +316,13 @@ mod tests {
         target: u64,
         width: u32,
         height: u32,
+        invalid: bool,
         buffers: Vec<(u64, u64)>,
     }
 
     impl Resolver for One {
         fn target(&self, handle: u64) -> Option<TargetInfo> {
-            (handle == self.target).then_some(TargetInfo { width: self.width, height: self.height, invalid: false })
+            (handle == self.target).then_some(TargetInfo { width: self.width, height: self.height, invalid: self.invalid })
         }
         fn buffer_size(&self, handle: u64) -> Option<u64> {
             self.buffers.iter().find(|b| b.0 == handle).map(|b| b.1)
@@ -334,7 +333,7 @@ mod tests {
     }
 
     fn one() -> One {
-        One { target: 0x1234_5678_9abc, width: 64, height: 32, buffers: Vec::new() }
+        One { target: 0x1234_5678_9abc, width: 64, height: 32, invalid: false, buffers: Vec::new() }
     }
 
     #[test]
@@ -390,7 +389,7 @@ mod tests {
 
     #[test]
     fn limits_refuse_the_command_that_passes_them() {
-        let r = One { target: 7, width: 16_384, height: 16_384, buffers: std::vec![(9, 40 << 20), (10, 30 << 20)] };
+        let r = One { target: 7, width: 16_384, height: 16_384, invalid: false, buffers: std::vec![(9, 40 << 20), (10, 30 << 20)] };
         let mut s = Vec::new();
         encode::begin(&mut s, 7);
         for _ in 0..limits::DRAWS {
@@ -424,6 +423,19 @@ mod tests {
         encode::begin(&mut s, 7);
         encode::draw_buffer(&mut s, pipeline::SOLID, 0, 9, 8, 1);
         assert_eq!(validate(&s[..], &r), Err(Refusal { index: 1, error: error::BAD_RANGE }));
+    }
+
+    #[test]
+    fn an_invalid_target_may_be_drawn_into() {
+        let r = One { invalid: true, ..one() };
+        let mut s = Vec::new();
+        encode::begin(&mut s, r.target);
+        encode::draw(&mut s, pipeline::SOLID, 1, &[[0, 0, 4, 4]]);
+        encode::clear(&mut s, 0);
+        encode::draw(&mut s, pipeline::SOLID, 1, &[[1, 1, 2, 2]]);
+        let plan = validate(&s[..], &r).unwrap();
+        assert_eq!(plan.draws, 3);
+        assert_eq!(plan.area, 16 + 64 * 32 + 1);
     }
 
     #[test]
