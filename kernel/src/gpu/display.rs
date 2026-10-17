@@ -117,7 +117,7 @@ pub(super) fn present(arg: u64, len: u64) -> Result<u64, i64> {
         let Some(ctx_id) = c.ctx_of(tgid, a.context) else { return Some(Err(EINVAL)) };
         let Some(id) = c.res_of(tgid, a.target) else { return Some(Err(EINVAL)) };
         let Some(r) = c.resources.get(&id) else { return Some(Err(EINVAL)) };
-        if r.kind != kind::TARGET { return Some(Err(EINVAL)); }
+        if r.kind != kind::TARGET || !r.scanout { return Some(Err(EINVAL)); }
         if r.lost || r.dropped { return Some(Err(EIO)); }
         let (width, height, writers) = (r.width, r.height, r.writers);
         let Some(ctx) = c.contexts.get(&ctx_id) else { return Some(Err(EINVAL)) };

@@ -353,7 +353,15 @@ pub struct ResourceCreate {
     pub size: u64,
     /// Out: the new resource's handle.
     pub handle: u64,
-    pub reserved: [u64; 2],
+    /// Creation intent from [`resource_flag`].
+    pub flags: u32,
+    pub reserved: [u32; 3],
+}
+
+/// `RESOURCE_CREATE` flags (`docs/gui/gpu-abi.md`).
+pub mod resource_flag {
+    /// A target that may be presented. Invalid for textures and buffers.
+    pub const SCANOUT: u32 = 1;
 }
 
 /// `SUBMIT` (64 bytes).
@@ -623,6 +631,8 @@ const _: () = {
     assert!(core::mem::size_of::<ContextCreate>() == 32);
     assert!(core::mem::size_of::<Handle>() == 16);
     assert!(core::mem::size_of::<ResourceCreate>() == 48);
+    assert!(core::mem::offset_of!(ResourceCreate, flags) == 32);
+    assert!(core::mem::offset_of!(ResourceCreate, reserved) == 36);
     assert!(core::mem::size_of::<Submit>() == 64);
     assert!(core::mem::size_of::<Wait>() == 48);
     assert!(core::mem::size_of::<Readback>() == 64);

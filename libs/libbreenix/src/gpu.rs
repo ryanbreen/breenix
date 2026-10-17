@@ -54,7 +54,11 @@ pub fn context_destroy(handle: u64) -> i64 {
 
 /// `RESOURCE_CREATE` of a target or texture.
 pub fn image_create(kind: u32, format: u32, width: u32, height: u32) -> Result<u64, i64> {
-    let mut a = abi::ResourceCreate { kind, format, width, height, size: 0, handle: 0, reserved: [0; 2] };
+    image_create_flags(kind, format, width, height, 0)
+}
+
+fn image_create_flags(kind: u32, format: u32, width: u32, height: u32, flags: u32) -> Result<u64, i64> {
+    let mut a = abi::ResourceCreate { kind, format, width, height, flags, ..abi::ResourceCreate::ZERO };
     match call_with(op::RESOURCE_CREATE, &mut a) {
         0 => Ok(a.handle),
         e => Err(e),
@@ -66,9 +70,14 @@ pub fn target_create(format: u32, width: u32, height: u32) -> Result<u64, i64> {
     image_create(abi::kind::TARGET, format, width, height)
 }
 
+/// `RESOURCE_CREATE` of a target with scanout intent, required by `PRESENT`.
+pub fn scanout_target_create(format: u32, width: u32, height: u32) -> Result<u64, i64> {
+    image_create_flags(abi::kind::TARGET, format, width, height, abi::resource_flag::SCANOUT)
+}
+
 /// `RESOURCE_CREATE` of a buffer of `size` bytes.
 pub fn buffer_create(size: u64) -> Result<u64, i64> {
-    let mut a = abi::ResourceCreate { kind: abi::kind::BUFFER, format: 0, width: 0, height: 0, size, handle: 0, reserved: [0; 2] };
+    let mut a = abi::ResourceCreate { kind: abi::kind::BUFFER, size, ..abi::ResourceCreate::ZERO };
     match call_with(op::RESOURCE_CREATE, &mut a) {
         0 => Ok(a.handle),
         e => Err(e),

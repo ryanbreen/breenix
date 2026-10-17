@@ -30,7 +30,7 @@ impl GpuScreen {
         }
         if self.context == 0 {
             self.context = gpu::context_create().map_err(|e| std::format!("context: errno {}", -e))?;
-            match gpu::target_create(abi::format::B8G8R8A8, 2560, 1600) {
+            match gpu::scanout_target_create(abi::format::B8G8R8A8, 2560, 1600) {
                 Ok(t) => self.target = t,
                 Err(e) => {
                     let _ = gpu::context_destroy(self.context);

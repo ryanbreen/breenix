@@ -221,6 +221,8 @@ struct LastWrite {
 struct Res {
     owner: u64,
     kind: u32,
+    /// Creation intent; only these targets have the device's SCANOUT bind.
+    scanout: bool,
     format: u32,
     width: u32,
     height: u32,
@@ -1489,6 +1491,7 @@ fn new_res(owner: u64, kind_: u32, format_: u32, width: u32, height: u32, size: 
     Res {
         owner,
         kind: kind_,
+        scanout: false,
         format: format_,
         width,
         height,
@@ -1715,7 +1718,9 @@ fn destroy_context(tgid: u64, handle: u64) -> bool {
 
 fn op_resource_create(arg: u64, len: u64) -> Result<u64, i64> {
     let mut a: abi::ResourceCreate = read_arg(arg, len)?;
-    if a.handle != 0 || a.reserved != [0; 2] {
+    if a.handle != 0 || a.reserved != [0; 3] || a.flags & !abi::resource_flag::SCANOUT != 0
+        || (a.flags != 0 && a.kind != kind::TARGET)
+    {
         return Err(EINVAL);
     }
     let tgid = caller()?;
@@ -1735,7 +1740,8 @@ fn op_resource_create(arg: u64, len: u64) -> Result<u64, i64> {
             // Transfers use rows aligned to 256 bytes (section 1.3, backing and row pitch).
             let pitch = (a.width * format::bytes(a.format)).next_multiple_of(256);
             let bind = if a.kind == kind::TARGET {
-                wire::bind::RENDER_TARGET | wire::bind::SAMPLER_VIEW | wire::bind::SCANOUT
+                wire::bind::RENDER_TARGET | wire::bind::SAMPLER_VIEW
+                    | if a.flags & abi::resource_flag::SCANOUT != 0 { wire::bind::SCANOUT } else { 0 }
             } else {
                 wire::bind::SAMPLER_VIEW
             };
@@ -1786,6 +1792,7 @@ fn op_resource_create(arg: u64, len: u64) -> Result<u64, i64> {
     // device is asked to create it, so whatever happens the device's resource is unref'd.
     with_core(|c| {
         let mut r = new_res(tgid, a.kind, a.format, a.width, a.height, a.size, pitch, pages.clone(), c.epoch);
+        r.scanout = a.flags & abi::resource_flag::SCANOUT != 0;
         r.holds = 1;
         c.resources.insert(id, r);
     });
