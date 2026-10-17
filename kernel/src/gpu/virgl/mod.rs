@@ -314,6 +314,11 @@ impl Device {
         Ok(())
     }
 
+    /// Whether this queue can ever hold the request's descriptor chain.
+    pub fn can_fit(&self, segments: usize) -> bool {
+        segments <= self.queue.size() as usize
+    }
+
     /// Whether a request of `segments` descriptors fits now.
     pub fn has_room(&self, segments: usize) -> bool {
         segments <= self.queue.free_count()
@@ -459,11 +464,6 @@ pub fn submit(tag: Tag, ctx: u32, fence: Option<u64>, words: WordBuf) -> Request
     let mut r = Request::new(tag, cmd::SUBMIT_3D, ctx, fence, wire::HDR + 8, wire::HDR).field(0, size);
     r.payload = Payload::Words(words);
     r
-}
-
-/// How many descriptors a SUBMIT_3D of `words` uses.
-pub fn submit_segments(words: &WordBuf) -> usize {
-    2 + (words.len() * 4).div_ceil(crate::gpu::dma::PAGE)
 }
 
 /// Whether `answer` is a success.

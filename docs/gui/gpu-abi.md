@@ -156,7 +156,7 @@ defined; the ones G1 builds:
 |---|---|---|
 | 20 | `stale-fence` | the next submission's answer is taken as carrying the next fence; it completes `FENCE_MISMATCH` and no other submission completes by it |
 | 23 | `mask-capability` | holds while armed: the capability id in `param` counts as absent |
-| 27 | `device-error` | the next submission's last command goes to a device context that does not exist, so the device answers it with an error; two device errors in a row on one context reset the device |
+| 27 | `device-error` | the next submission ends with fenced command type `0x02FF`, which is undefined by VirtIO and answered with an error; two consecutive injected errors on one context reset the device; ordinary device errors do not |
 | 31 | `withhold-fence` | `param` 0: the next submission's completion is ignored, so the watchdog finds it hung; `param` 1: no completion is taken from the device until it is reset |
 
 The other points arm and do nothing until their milestone builds them.

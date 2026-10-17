@@ -13,6 +13,7 @@
 //! waiters. User memory is copied outside the lock; nothing blocks while holding it; no
 //! path here prints (section 1.4: no kernel output on any path).
 
+mod completion;
 pub mod dma;
 pub mod virgl;
 
@@ -97,6 +98,7 @@ struct Proc {
     totals: Totals,
     seq: u64,
     bytes: u64,
+    creating: bool,
 }
 
 struct Ctx {
@@ -131,7 +133,9 @@ struct Sub {
     sent_ns: u64,
     error: Option<u32>,
     mismatch: bool,
+    injected_error: bool,
     written: Vec<u32>,
+    whole: Vec<u32>,
     held: Vec<u32>,
 }
 
@@ -156,6 +160,7 @@ struct Res {
     last: Option<LastWrite>,
     writers: u32,
     invalid: bool,
+    invalidated_by: u64,
     dropped: bool,
     holds: u32,
     lost: bool,
@@ -215,7 +220,7 @@ pub fn init_qemu() {
                     "[gpu] capset glsl={} caps={:#x} caps2={:#x} max2d={} renderer={:?}",
                     rd(wire::caps::GLSL_LEVEL),
                     rd(wire::caps::CAPABILITY_BITS),
-                    rd(688),
+                    rd(wire::caps::CAPABILITY_BITS_V2),
                     rd(wire::caps::MAX_TEXTURE_2D_SIZE),
                     core::str::from_utf8(&core.caps.renderer).unwrap_or("").trim_end_matches('\0')
                 );
@@ -453,6 +458,7 @@ impl Core {
             totals: Totals::default(),
             seq: 0,
             bytes: 0,
+            creating: false,
         })
     }
 
@@ -554,10 +560,6 @@ impl Core {
         if let Some(ctx) = self.contexts.get_mut(&sub.ctx) {
             if !ok {
                 ctx.outcomes.insert(sub.n, (status, answer));
-                let floor = ctx.done_upto.saturating_sub(4096);
-                while ctx.outcomes.first_key_value().is_some_and(|(&k, _)| k < floor) {
-                    ctx.outcomes.pop_first();
-                }
             }
             ctx.early.insert(sub.n);
             while ctx.early.remove(&(ctx.done_upto + 1)) {
@@ -566,9 +568,14 @@ impl Core {
             ctx.inflight.retain(|&s| s != serial);
             if status == fence_status::DEVICE_ERROR {
                 ctx.totals.device_errors += 1;
-                ctx.errors_in_row += 1;
-                // A second device error in a row escalates to a device reset.
-                reset = ctx.errors_in_row >= 2;
+                // Escalation belongs exclusively to the suite's twice-armed fault
+                // injection. Ordinary device errors cannot reset other processes.
+                if sub.injected_error {
+                    ctx.errors_in_row += 1;
+                    reset = ctx.errors_in_row >= 2;
+                } else {
+                    ctx.errors_in_row = 0;
+                }
                 if let Some(p) = self.procs.get_mut(&ctx.owner) {
                     p.totals.device_errors += 1;
                 }
@@ -582,12 +589,10 @@ impl Core {
         for id in &sub.written {
             if let Some(r) = self.resources.get_mut(id) {
                 r.writers = r.writers.saturating_sub(1);
+                completion::finish_write(&mut r.invalid, &mut r.invalidated_by, serial, ok, sub.whole.contains(id));
                 if ok {
                     r.generation += 1;
-                    r.invalid = false;
                     r.last = Some(LastWrite { ctx: sub.ctx, fence: sub.fence, serial, answer });
-                } else {
-                    r.invalid = true;
                 }
             }
         }
@@ -810,11 +815,26 @@ fn wait_for<T>(deadline: Option<u64>, interruptible: bool, mut f: impl FnMut(&mu
 /// Hand `req` to the device, waiting while its queue has no room. Calls `sent` under
 /// the lock once it is in the device's hands.
 fn send_blocking(mut req: Request, mut sent: impl FnMut(&mut Core)) -> Result<(), i64> {
+    let deadline = now_ns() + limits::WATCHDOG_NS;
     loop {
+        if crate::syscall::check_signals_for_wait().is_some() {
+            return Err(EINTR);
+        }
+        if now_ns() >= deadline {
+            return Err(EIO);
+        }
         let segments = req.segment_count();
         let back = with_core(|c| {
-            if c.dev.is_none() {
-                return Some(Err(()));
+            let Some(dev) = c.dev.as_ref() else { return Some(Err(EIO)) };
+            if !dev.can_fit(segments) {
+                return Some(Err(EINVAL));
+            }
+            if let Tag::Submit { ctx, serial, .. } = req.tag {
+                if !c.contexts.get(&ctx).is_some_and(|x| x.state == CtxState::Live && x.device_alive)
+                    || !c.subs.contains_key(&serial)
+                {
+                    return Some(Err(EIO));
+                }
             }
             match c.send(req) {
                 Ok(()) => {
@@ -824,16 +844,18 @@ fn send_blocking(mut req: Request, mut sent: impl FnMut(&mut Core)) -> Result<()
                 Err(r) => Some(Ok(r)),
             }
         })
-        .unwrap_or(Some(Err(())));
+        .unwrap_or(Some(Err(EIO)));
         match back {
             None => return Ok(()),
-            Some(Err(())) => return Err(EIO),
+            Some(Err(e)) => return Err(e),
             Some(Ok(r)) => req = r,
         }
         // The device returns requests as it finishes them; the wait ends when it has.
-        let _ = wait_for(Some(now_ns() + 10_000_000), false, |c| {
+        if matches!(wait_for(Some(deadline.min(now_ns() + 10_000_000)), true, |c| {
             c.dev.as_ref().map(|d| d.has_room(segments)).filter(|&room| room)
-        });
+        }), Err(Stop::Interrupted)) {
+            return Err(EINTR);
+        }
     }
 }
 
@@ -930,7 +952,6 @@ fn reaper() {
             sweep();
             next_sweep = now + 1_000_000_000;
         }
-        notify();
         let wake = match (deadline, busy) {
             (Some(d), true) => Some(d.min(next_sweep)),
             (Some(d), false) => Some(d),
@@ -1045,12 +1066,42 @@ fn op_caps(arg: u64, len: u64) -> Result<u64, i64> {
     Ok(0)
 }
 
+/// Serialize a process's context/resource creation through device attachment and
+/// handle publication, so their snapshots cannot both miss each other.
+struct CreationGuard(u64);
+
+impl CreationGuard {
+    fn acquire(tgid: u64) -> Result<Self, i64> {
+        wait_for(None, true, |c| {
+            let p = c.proc_mut(tgid);
+            if p.creating {
+                return None;
+            }
+            p.creating = true;
+            Some(())
+        }).map_err(|_| EINTR)?;
+        Ok(Self(tgid))
+    }
+}
+
+impl Drop for CreationGuard {
+    fn drop(&mut self) {
+        with_core(|c| {
+            if let Some(p) = c.procs.get_mut(&self.0) {
+                p.creating = false;
+            }
+        });
+        notify();
+    }
+}
+
 fn op_context_create(arg: u64, len: u64) -> Result<u64, i64> {
     let mut a: abi::ContextCreate = read_arg(arg, len)?;
     if a.flags != 0 || a.handle != 0 || a.warmed != 0 || a.reserved != [0; 2] {
         return Err(EINVAL);
     }
     let tgid = caller()?;
+    let _creation = CreationGuard::acquire(tgid)?;
     sweep();
     ensure_reaper();
     // Reserve the context and its internal resources.
@@ -1085,6 +1136,7 @@ fn op_context_create(arg: u64, len: u64) -> Result<u64, i64> {
                 last: None,
                 writers: 0,
                 invalid: false,
+                invalidated_by: 0,
                 dropped: false,
                 holds: 0,
                 lost: false,
@@ -1148,7 +1200,7 @@ fn op_context_create(arg: u64, len: u64) -> Result<u64, i64> {
 
 /// Create device context `id` with its internal resources and the process's resources
 /// attached, then compile and warm the catalogue's programs, waiting for the warm-up's
-/// fence under the watchdog's 2 s.
+/// fence with a 2 s wait deadline. Watchdog enrollment for warm-up is still required.
 fn create_device_context(tgid: u64, id: u32, vb: u32, scratch: u32, vb_pages: &Pages, scratch_pages: &Pages) -> Result<(), i64> {
     exec_ok(|t| virgl::ctx_create(t, id))?;
     with_core(|c| {
@@ -1179,7 +1231,7 @@ fn create_device_context(tgid: u64, id: u32, vb: u32, scratch: u32, vb_pages: &P
     for rid in theirs {
         exec_ok(|t| virgl::ctx_attach(t, id, rid))?;
     }
-    // The warm-up: a fenced submission, waited for no longer than the watchdog allows.
+    // The warm-up has a bounded wait; it still needs watchdog recovery enrollment.
     let (serial, fence, req) = with_core(|c| {
         let mut enc = encode::Enc::new();
         let ctx = c.contexts.get_mut(&id)?;
@@ -1233,6 +1285,7 @@ fn op_resource_create(arg: u64, len: u64) -> Result<u64, i64> {
         return Err(EINVAL);
     }
     let tgid = caller()?;
+    let _creation = CreationGuard::acquire(tgid)?;
     let max = with_core(|c| c.caps.max_width).unwrap_or(0);
     let (vtarget, vformat, bind, bytes, pitch) = match a.kind {
         kind::TARGET | kind::TEXTURE => {
@@ -1321,6 +1374,7 @@ fn op_resource_create(arg: u64, len: u64) -> Result<u64, i64> {
             last: None,
             writers: 0,
             invalid: false,
+            invalidated_by: 0,
             dropped: outcome.is_err(),
             holds: 0,
             lost: false,
@@ -1429,10 +1483,12 @@ impl encode::Bindings for View {
     }
 }
 
-/// The resources a validated stream names: (targets it writes, every resource).
-fn named(words: &WordBuf, view: &View) -> (Vec<u32>, Vec<u32>) {
+/// The resources a validated stream names: written targets, every resource, full clears.
+fn named(words: &WordBuf, view: &View) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
     let mut written = Vec::new();
     let mut all = Vec::new();
+    let mut whole = Vec::new();
+    let mut target = None;
     let mut at = 0;
     while at < words.len() {
         let code = words.word(at);
@@ -1443,6 +1499,15 @@ fn named(words: &WordBuf, view: &View) -> (Vec<u32>, Vec<u32>) {
             stream::cmd::DRAW_BUFFER => view.get(handle(4)).map(|e| (e.1, false)),
             _ => None,
         };
+        if code == stream::cmd::BEGIN {
+            target = found.map(|(id, _)| id);
+        } else if code == stream::cmd::CLEAR {
+            if let Some(id) = target {
+                if !whole.contains(&id) {
+                    whole.push(id);
+                }
+            }
+        }
         if let Some((id, write)) = found {
             if write && !written.contains(&id) {
                 written.push(id);
@@ -1453,7 +1518,7 @@ fn named(words: &WordBuf, view: &View) -> (Vec<u32>, Vec<u32>) {
         }
         at += len.max(2);
     }
-    (written, all)
+    (written, all, whole)
 }
 
 fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
@@ -1486,7 +1551,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             return refuse(&mut a, r.index, r.error, errno);
         }
     };
-    let (written, held) = named(&words, &view);
+    let (written, held, whole) = named(&words, &view);
     // Take the context's submission slot: one sender at a time, at most four in flight.
     let mut waited = false;
     let admitted = wait_for(None, true, |c| {
@@ -1531,20 +1596,32 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
     if let Some(vb) = vertex_buffer {
         held.push(vb);
     }
-    // Translate and register the submission; nothing has reached the device yet.
+    // The context's busy slot serializes object allocation; translation can allocate
+    // and process a large stream without holding the global core lock.
+    let state = with_core(|c| c.contexts.get(&id).map(|ctx| (ctx.objects.clone(), ctx.vb))).flatten();
+    let Some((mut objects, default_vb)) = state else {
+        release_slot();
+        return Err(EIO);
+    };
+    let mut enc = encode::Enc::new();
+    encode::translate(&mut enc, &mut objects, &words, &view, vertex_buffer.unwrap_or(default_vb), FLIP_Y);
+    let chunks = enc.finish();
+    let forced = crate::test_control::take(test_point::DEVICE_ERROR, 0).is_some();
+    // Recheck context and resource lifetime after translation and before publication.
     let prepared = with_core(|c| -> Result<(u64, u64, Vec<WordBuf>), i64> {
-        // A resource the stream names may have been destroyed since it was validated.
+        let ctx = c.contexts.get(&id).ok_or(EINVAL)?;
+        if ctx.state != CtxState::Live || !ctx.device_alive || ctx.dropped {
+            return Err(EIO);
+        }
         for rid in &named_ids {
             match c.resources.get(rid) {
                 Some(r) if !r.dropped && !r.lost => {}
                 _ => return Err(EINVAL),
             }
         }
+        let chunks = chunks.ok_or(ENOMEM)?;
         let ctx = c.contexts.get_mut(&id).ok_or(EINVAL)?;
-        let mut enc = encode::Enc::new();
-        let vb = vertex_buffer.unwrap_or(ctx.vb);
-        encode::translate(&mut enc, &mut ctx.objects, &words, &view, vb, FLIP_Y);
-        let chunks = enc.finish().ok_or(ENOMEM)?;
+        ctx.objects = objects;
         ctx.issued += 1;
         let n = ctx.issued;
         let ns = ctx.ns;
@@ -1587,7 +1664,9 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             sent_ns: 0,
             error: None,
             mismatch: false,
+            injected_error: forced,
             written: written.clone(),
+            whole,
             held: held.clone(),
         });
         Ok((serial, (ns as u64) << 32 | n as u64, chunks))
@@ -1608,7 +1687,6 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
     // define, which the device can only refuse, and makes that the last. A reset or
     // quarantine while sending ends the submission, which has then already completed
     // with its error.
-    let forced = with_core(|_| crate::test_control::take(test_point::DEVICE_ERROR, 0).is_some()).unwrap_or(false);
     let mut chunks: VecDeque<WordBuf> = chunks.into_iter().collect();
     if chunks.is_empty() && !forced {
         // An empty translation still needs a fenced command to complete in order.
@@ -1620,8 +1698,8 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         let Some(fence) = with_core(|c| c.subs.get(&serial).map(|s| s.fence)).flatten() else { break };
         let req = virgl::submit(Tag::Submit { ctx: id, serial, last }, id, last.then_some(fence), words);
         sending = send_blocking(req, |c| {
-            if last {
-                if let Some(sub) = c.subs.get_mut(&serial) {
+            if let Some(sub) = c.subs.get_mut(&serial) {
+                if sub.sent_ns == 0 {
                     sub.sent_ns = now_ns();
                 }
             }
@@ -1672,6 +1750,7 @@ fn vertex_buffer_for(ctx: u32, bytes: u64) -> Result<Option<u32>, i64> {
             last: None,
             writers: 0,
             invalid: false,
+            invalidated_by: 0,
             dropped: true,
             holds: 1,
             lost: false,
@@ -1911,6 +1990,11 @@ fn observe(tgid: u64, id: u32, last: Option<LastWrite>, backing: &Pages, pitch: 
 
 fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {
     let mut a: abi::Counters = read_arg(arg, len)?;
+    let mut input = a;
+    input.context = 0;
+    if input != abi::Counters::ZERO {
+        return Err(EINVAL);
+    }
     let tgid = caller()?;
     let filled = with_core(|c| {
         let proc_live = c.procs.get(&tgid);

@@ -16,15 +16,12 @@ pub mod cmd {
     pub const GET_DISPLAY_INFO: u32 = 0x0100;
     pub const RESOURCE_UNREF: u32 = 0x0102;
     pub const RESOURCE_ATTACH_BACKING: u32 = 0x0106;
-    pub const RESOURCE_DETACH_BACKING: u32 = 0x0107;
     pub const GET_CAPSET_INFO: u32 = 0x0108;
     pub const GET_CAPSET: u32 = 0x0109;
     pub const CTX_CREATE: u32 = 0x0200;
     pub const CTX_DESTROY: u32 = 0x0201;
     pub const CTX_ATTACH_RESOURCE: u32 = 0x0202;
-    pub const CTX_DETACH_RESOURCE: u32 = 0x0203;
     pub const RESOURCE_CREATE_3D: u32 = 0x0204;
-    pub const TRANSFER_TO_HOST_3D: u32 = 0x0205;
     pub const TRANSFER_FROM_HOST_3D: u32 = 0x0206;
     pub const SUBMIT_3D: u32 = 0x0207;
 }
@@ -65,6 +62,7 @@ pub mod caps {
     pub const RENDER_MASK: usize = 68;
     pub const GLSL_LEVEL: usize = 264;
     pub const CAPABILITY_BITS: usize = 392;
+    pub const CAPABILITY_BITS_V2: usize = 688;
     pub const MAX_TEXTURE_2D_SIZE: usize = 484;
     pub const RENDERER: usize = 696;
     pub const RENDERER_LEN: usize = 64;

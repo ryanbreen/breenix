@@ -110,6 +110,7 @@ pub const CATALOGUE_PROGRAMS: u32 = 2;
 
 /// The per-context VirGL object handles, from one allocator that never reuses a handle
 /// across object types (`docs/gui/gpu.md` section 1.6, VirGL object handles).
+#[derive(Clone)]
 pub struct Objects {
     next: u32,
     pub blend: u32,
