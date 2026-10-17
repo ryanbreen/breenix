@@ -70,7 +70,10 @@ Pipelines are numbered in the catalogue table's order (`docs/gui/gpu.md` section
 `format` uses the same numbers).
 
 **`CONTEXT_CREATE` (32 bytes):** `handle: u64` out, `flags: u32` (0), `warmed: u32` out (the
-catalogue programs creation compiled and warmed), 16 reserved. EAGAIN past 8 contexts per process.
+fixed rendering-catalogue programs creation compiled and warmed, excluding `probe_int`), 16 reserved.
+EAGAIN past 8 contexts per process. The profile-only `probe_int` program is compiled and warmed on the
+first PROBE in that context; that first PROBE's cost is excluded from performance bounds. The watchdog
+and kill bounds still apply (`docs/gui/gpu.md` section 1.4.1).
 
 **`CONTEXT_DESTROY`, `RESOURCE_DESTROY` (16 bytes):** `handle: u64`, 8 reserved. EINVAL for a handle the
 process does not hold.
@@ -292,8 +295,10 @@ positive (top-left in the top-left coordinate system); negative winding reverses
 Bit 31 of a drawing command's pipeline word requests a filtered sampler. Exact pipelines refuse
 that modifier with EINVAL, code 19, before sending commands. Point 24 injects that modifier into
 the next DRAW, DRAW_BUFFER or DRAW_SAMPLED during validation, consumes one firing and returns
-code 19 with that draw's index. The failed submission sends no commands and changes no counters,
-generations or pixels. The refusal is from the same pipeline check as an explicit modifier.
+code 19 with that draw's index. Arm point 24 with target 0 and parameter 0. Its event target is 0:
+it does not filter by the resource named by BEGIN, and a nonzero armed target does not match the event.
+The failed submission sends no commands and changes no GPU counters, generations or pixels; the
+test-control firing count advances once. The refusal is from the same pipeline check as an explicit modifier.
 
 `colour` is the canonical BGRA bytes as a little-endian word: B in bits 0 to 7, G 8 to 15, R 16 to 23,
 A 24 to 31. Rectangles are clipped to the target; one with `x1 < x0` or `y1 < y0` is refused. Any drawing
