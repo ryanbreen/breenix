@@ -338,6 +338,7 @@ On the boot host:
 python3 ~/.local/share/breenix-metal/metal-run boot                      # origin/main's kernel as boot.efi
 python3 ~/.local/share/breenix-metal/metal-run boot --ramdisk            # explicit spelling of the default RAM-disk root
 python3 ~/.local/share/breenix-metal/metal-run boot --branch NAME        # a pushed branch (in-progress evidence)
+python3 ~/.local/share/breenix-metal/metal-run boot --branch NAME --nmi  # NMI before power-off even when it finished
 python3 ~/.local/share/breenix-metal/metal-run boot --payload hang       # metal-hang.efi
 python3 ~/.local/share/breenix-metal/metal-run boot --payload none       # nothing staged
 python3 ~/.local/share/breenix-metal/metal-run boot --payload none --inject forceoff-fail

@@ -938,6 +938,18 @@ class DriverTest(StateTest):
         self.assertEqual(m.read_lease()['state'], 'quarantined')
         self.assertFalse(m.release_lease(d.id))
 
+    def test_nmi_option_sends_the_nmi_before_powering_off_a_finished_kernel(self):
+        d = self.driver
+        d.kernel_started = 105
+        sent = []
+        with patch.object(m, 'rf', side_effect=lambda method, path, body, **kw: sent.append(body['ResetType'])), \
+             patch.object(m, 'force_off_and_wait', return_value=True), patch.object(boot, 'NMI_CAPTURE_SECONDS', 0):
+            self.assertTrue(d.power_off(False))
+            self.assertEqual(sent, [], 'a finished boot gets no NMI by default')
+            d.args.nmi = True
+            self.assertTrue(d.power_off(False))
+        self.assertEqual(sent, ['Nmi'])
+
     def test_queued_boot_can_stop_before_or_after_waiting(self):
         self.ready()
         m.claim_lease({'id': 'other', 'pid': os.getpid()}, wait=False)
