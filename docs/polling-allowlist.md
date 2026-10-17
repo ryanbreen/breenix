@@ -113,12 +113,12 @@ This document formalizes the **Linux-rigor polling-elimination gate** for cases 
 - **Frequency:** Runtime AHCI interrupt handling.
 - **Status:** ALLOWLISTED — interrupt-context site with deliberately minimal inline comment; not subject to polling-elimination conversion.
 
-## P12-Site-8: AHCI staggered spin-up link wait (x86)
+## P12-Site-8: AHCI link establishment after the HBA reset (x86)
 
 - **File:** `kernel/src/drivers/ahci/mod.rs`, `spin_up_ports()`.
-- **Loop:** After setting `PxCMD.SUD` on each implemented port, poll each implemented port's `PxSSTS.DET` until each reads 3 (Phy communication established) or one second of TSC time passes.
-- **Justification:** A controller that reports `CAP.SSS` leaves each device unspun after the HBA reset until software sets `PxCMD.SUD`, and a device is usable only once `PxSSTS.DET` reads 3 (AHCI 1.3.1, 10.10.1 and 3.3.10). This is a link-establishment handshake during controller initialization, before the port has a command list or any interrupt source, not polling for a future completion.
+- **Loop:** Poll each implemented port's `PxSSTS.DET` until each reads 3 (Phy communication established) or one second of TSC time passes; after a COMRESET of the ports still without a link (`PxSCTL.DET` held at 1 for two milliseconds of TSC time, then 0), poll again for up to one second.
+- **Justification:** The HBA reset makes each implemented port renegotiate its link, a controller that reports `CAP.SSS` also leaves each device unspun until software sets `PxCMD.SUD`, and a device is usable only once `PxSSTS.DET` reads 3; COMRESET needs `PxSCTL.DET` held at 1 for at least a millisecond (AHCI 1.3.1, 10.10.1, 10.4.2, 3.3.10 and 3.3.11). These are link-establishment handshakes during controller initialization, before a port has a command list or any interrupt source, not polling for a future completion.
 - **Precedent:** the AHCI 1.3.1 specification. The x86-metal clean-room rule (`docs/metal/README.md`, "Clean-room rule") applies to this driver, so no donor driver is cited for it.
-- **Bounded:** one second of calibrated TSC time per controller; a port with no device costs the whole second.
-- **Frequency:** Once per controller initialization, only when `CAP.SSS` is set.
+- **Bounded:** two seconds and two milliseconds of calibrated TSC time per controller at most; a port with no device costs the whole of both waits.
+- **Frequency:** Once per controller initialization.
 - **Status:** ALLOWLISTED.

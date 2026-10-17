@@ -513,6 +513,11 @@ const PORT_IRQ_COMPLETE: u32 = PORT_IRQ_D2H_REG_FIS | PORT_IRQ_PIO_FIS | PORT_IR
 
 /// SATA Status (SSTS) - device detection
 const SSTS_DET_MASK: u32 = 0x0F;
+/// PxSCTL.DET: 1 performs interface initialization (COMRESET), 0 ends it (AHCI 1.3.1, 3.3.11).
+#[cfg(target_arch = "x86_64")]
+const SCTL_DET_MASK: u32 = 0x0F;
+#[cfg(target_arch = "x86_64")]
+const SCTL_DET_COMRESET: u32 = 0x01;
 const SSTS_DET_PRESENT: u32 = 0x03; // Device detected, Phy communication established
 
 /// Device signatures
@@ -3080,33 +3085,62 @@ pub fn init() -> Result<usize, &'static str> {
     Ok(sata_count)
 }
 
-/// After the HBA reset, a controller with staggered spin-up (CAP.SSS) holds
-/// each port's device unspun until software sets PxCMD.SUD (AHCI 1.3.1,
-/// 10.10.1). Spin each implemented port up, then wait up to a second for the
-/// implemented ports to establish Phy communication (PxSSTS.DET = 3); ports
-/// with no device stay below 3, so they cost the full wait.
+/// After the HBA reset each implemented port renegotiates its link, and a
+/// controller with staggered spin-up (CAP.SSS) holds each device unspun until
+/// software sets PxCMD.SUD (AHCI 1.3.1, 10.10.1). Spin the ports up where
+/// that applies, wait up to a second for their links (PxSSTS.DET = 3), then
+/// give each port still without one a COMRESET (PxSCTL.DET = 1 for at least
+/// a millisecond, then 0; 10.4.2) and wait up to a second again. Ports with no
+/// device stay below 3, so they cost the full waits. Each implemented port's
+/// SStatus is reported.
 #[cfg(target_arch = "x86_64")]
 fn spin_up_ports(abar: u64, cap: u32, ports_implemented: u32) {
-    if cap & CAP_SSS == 0 {
-        return;
-    }
-    let ports = (0..MAX_PORTS).filter(|&port| ports_implemented & (1 << port) != 0);
-    for port in ports.clone() {
-        let cmd = port_read(abar, port, PORT_CMD);
-        port_write(abar, port, PORT_CMD, cmd | PORT_CMD_SUD | PORT_CMD_POD);
-    }
-    let (start, freq) = read_cntpct_and_freq();
+    let ports = || (0..MAX_PORTS).filter(move |&port| ports_implemented & (1 << port) != 0);
+    let linked = || {
+        ports()
+            .filter(|&port| port_read(abar, port, PORT_SSTS) & SSTS_DET_MASK == SSTS_DET_PRESENT)
+            .fold(0u32, |mask, port| mask | 1 << port)
+    };
     // P12 allowlist: bounded link-establishment wait, one second of TSC time.
-    while read_cntpct().wrapping_sub(start) < freq {
-        if ports.clone().all(|port| port_read(abar, port, PORT_SSTS) & SSTS_DET_MASK == SSTS_DET_PRESENT) {
-            break;
+    let wait_for_links = || {
+        let (start, freq) = read_cntpct_and_freq();
+        while linked() != ports_implemented && read_cntpct().wrapping_sub(start) < freq {
+            core::hint::spin_loop();
         }
-        core::hint::spin_loop();
+    };
+    if cap & CAP_SSS != 0 {
+        for port in ports() {
+            let cmd = port_read(abar, port, PORT_CMD);
+            port_write(abar, port, PORT_CMD, cmd | PORT_CMD_SUD | PORT_CMD_POD);
+        }
     }
-    let linked = ports
-        .filter(|&port| port_read(abar, port, PORT_SSTS) & SSTS_DET_MASK == SSTS_DET_PRESENT)
-        .fold(0u32, |mask, port| mask | 1 << port);
-    crate::serial_println!("[ahci] staggered spin-up: links established on ports {:#010x}", linked);
+    wait_for_links();
+    let before_reset = linked();
+    if before_reset != ports_implemented {
+        let unlinked = || ports().filter(move |&port| before_reset & (1 << port) == 0);
+        for port in unlinked() {
+            let sctl = port_read(abar, port, PORT_SCTL) & !SCTL_DET_MASK;
+            port_write(abar, port, PORT_SCTL, sctl | SCTL_DET_COMRESET);
+        }
+        let (start, freq) = read_cntpct_and_freq();
+        // P12 allowlist: COMRESET hold, two milliseconds of TSC time.
+        while read_cntpct().wrapping_sub(start) < freq / 500 {
+            core::hint::spin_loop();
+        }
+        for port in unlinked() {
+            let sctl = port_read(abar, port, PORT_SCTL) & !SCTL_DET_MASK;
+            port_write(abar, port, PORT_SCTL, sctl);
+        }
+        wait_for_links();
+    }
+    for port in ports() {
+        crate::serial_println!(
+            "[ahci] port {} link: SStatus {:#x}{}",
+            port,
+            port_read(abar, port, PORT_SSTS),
+            if before_reset & (1 << port) != 0 { "" } else { " after COMRESET" }
+        );
+    }
 }
 
 /// Whether this x86 controller takes its completions by MSI: the local APIC
