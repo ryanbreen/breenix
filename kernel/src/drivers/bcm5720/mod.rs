@@ -92,8 +92,6 @@ const REPLY_TIMEOUT_MS: u64 = 15_000;
 /// The DISCOVER is sent again after 4 s and 8 s without an offer.
 const DISCOVER_RETRIES: u64 = 2;
 const DISCOVER_RETRY_MS: u64 = 4_000;
-/// Received frames the probe describes, after the first.
-const FRAMES_DESCRIBED: u64 = 16;
 
 /// Each attached port's register window, for its interrupt handler, which
 /// takes no lock; 0 until the port's rings are live.
@@ -443,14 +441,14 @@ impl Port {
         port.post_receive_buffers();
         IRQ_REGS[slot].store(port.f.regs, Ordering::Release);
         port.enable_interrupts();
-        port.report_receive_state("after initialization");
         log::info!(
-            "[bcm5720] {}: MSI vector {:#x}; send ring {}, standard receive ring {}, return ring {}; autonegotiation started",
+            "[bcm5720] {}: MSI vector {:#x}; send ring {}, standard receive ring {}, return ring {}; receive BD initiator found {:#x}; autonegotiation started",
             port.f.bdf(),
             vector,
             SEND_RING_ENTRIES,
             STD_RING_ENTRIES,
-            RETURN_RING_ENTRIES
+            RETURN_RING_ENTRIES,
+            port.rbdi_at_init
         );
         Ok(port)
     }
@@ -869,9 +867,31 @@ impl Port {
         );
     }
 
+    /// The receive rules as the firmware and initialization left them: each
+    /// enabled rule's control and value/mask words.
+    fn report_receive_rules(&self, when: &str) {
+        let mut enabled = 0;
+        for rule in 0..RX_RULE_COUNT {
+            let control = self.f.read32(RX_RULES + rule * 8);
+            let value = self.f.read32(RX_RULES + rule * 8 + 4);
+            if control & (1 << 31) != 0 {
+                enabled += 1;
+                log::info!(
+                    "[bcm5720] {} receive rule {rule} {when}: control {control:#010x}, value/mask {value:#010x}",
+                    self.f.bdf()
+                );
+            }
+        }
+        log::info!(
+            "[bcm5720] {} receive rules {when}: {enabled} of {RX_RULE_COUNT} enabled",
+            self.f.bdf()
+        );
+    }
+
     /// Controller state worth recording when the probe stops short.
     fn report_state(&self, what: &str) {
         self.report_receive_state("when the probe stopped");
+        self.report_receive_rules("when the probe stopped");
         log::warn!(
             "[bcm5720] {}: {what}; status word {:#x}, send consumer {}, return producer {}, standard consumer {}, MSI interrupts {}, emac status {:#x}, tx mac status {:#x}, read dma status {:#x}, write dma status {:#x}, flow attention {:#x}",
             self.f.bdf(),
@@ -1005,13 +1025,11 @@ impl Port {
                         summary,
                         INTERRUPTS[slot].load(Ordering::Acquire)
                     );
-                } else if frames <= FRAMES_DESCRIBED {
-                    log::info!("[bcm5720] frame {frames} received: {summary}");
                 }
                 if summary.from_dhcp_server() {
                     let offer = is_offer_frame(data, xid, mac);
                     log::info!(
-                        "[bcm5720] frame {frames} is from the DHCP server port; an offer for this transaction: {}",
+                        "[bcm5720] frame {frames} received: {summary}; an offer for this transaction: {}",
                         if offer { "yes" } else { "no" }
                     );
                     answered |= offer;
@@ -1027,8 +1045,9 @@ impl Port {
         }
         if answered {
             log::info!(
-                "[bcm5720] reply received: a DHCP offer answering the discover, frame {frames} of those received, {} ms after it was sent",
-                now_ms() - start
+                "[bcm5720] reply received: a DHCP offer answering the discover, frame {frames} of those received, {} ms after the first of {} transmission(s)",
+                now_ms() - start,
+                resent + 1
             );
         } else {
             self.report_state(if frames == 0 {
@@ -1047,6 +1066,7 @@ impl Port {
 struct FrameSummary {
     length: usize,
     ethertype: u16,
+    from_this_port: bool,
     destination: &'static str,
     protocol: Option<u8>,
     ports: Option<(u16, u16)>,
@@ -1057,6 +1077,7 @@ impl FrameSummary {
         let mut summary = Self {
             length: data.len(),
             ethertype: 0,
+            from_this_port: false,
             destination: "short",
             protocol: None,
             ports: None,
@@ -1065,6 +1086,7 @@ impl FrameSummary {
             return summary;
         };
         summary.ethertype = frame.ethertype;
+        summary.from_this_port = frame.src_mac == mac;
         summary.destination = if frame.dst_mac == ethernet::BROADCAST_MAC {
             "broadcast"
         } else if frame.dst_mac == mac {
@@ -1100,6 +1122,9 @@ impl fmt::Display for FrameSummary {
             "{} bytes, EtherType {:#06x}, {}",
             self.length, self.ethertype, self.destination
         )?;
+        if self.from_this_port {
+            write!(f, ", from this port's address")?;
+        }
         if let Some(protocol) = self.protocol {
             write!(f, ", IPv4 protocol {protocol}")?;
         }

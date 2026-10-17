@@ -122,6 +122,10 @@ pub const TX_MAC_LENGTHS_INIT: u32 = 0x2620;
 pub const RX_MAC_MODE: usize = 0x0468;
 pub const RX_MAC_MODE_ENABLE: u32 = 1 << 1;
 pub const RX_MAC_STATUS: usize = 0x046c;
+/// The receive rules array: 16 rules, each a control word and a value/mask
+/// word (Section 5, "Receive List Placement Rules Array", Table 23, p. 97).
+pub const RX_RULES: usize = 0x0480;
+pub const RX_RULE_COUNT: usize = 16;
 pub const RX_RULES_CONFIG: usize = 0x0500;
 /// No-rules-match default class 1; class 0 discards the frames no rule
 /// matches (Receive Rules Configuration, p. 328).
