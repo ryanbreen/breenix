@@ -63,14 +63,21 @@ fn readback_stages_through_charged_frames_not_heap() {
     // Structural guard on direct pixel staging, excluding transitive allocations.
     let path = readback_path();
     let staging = include_str!("../kernel/src/gpu/staging.rs");
+    let quota = include_str!("../kernel/src/gpu/quota.rs");
+    let charge = quota.split("impl Charge {").nth(1).unwrap().split("impl Drop for Charge").next().unwrap();
+    let quota_charge = quota.split("impl QuotaCharge {").nth(1).unwrap().split("impl Drop for QuotaCharge").next().unwrap();
     for heap in ["Vec", "vec!", "try_reserve", "Box::"] {
         assert!(!path.contains(heap), "the readback path uses {heap}");
         assert!(!staging.contains(heap), "readback staging uses {heap}");
     }
     assert!(path.contains("Staging::new("));
-    assert!(staging.contains("MEMORY_QUOTA"));
-    assert!(staging.contains("reserve_gpu_bytes"));
-    assert!(staging.contains("Pages::new(frames)"));
+    assert!(staging.contains("use super::quota::Charge;"));
+    let charged = staging.find("Charge::new(tgid, (frames * PAGE) as u64, false)?").unwrap();
+    let allocated = staging.find("Pages::new(frames)").unwrap();
+    assert!(charged < allocated, "staging allocates frames before charging them");
+    assert!(charge.contains("QuotaCharge::try_new(&quota, bytes, copy).ok_or(ENOMEM)?"));
+    assert!(quota_charge.contains("held.checked_add(bytes).filter(|&total| total <= MEMORY_QUOTA)"));
+    assert!(charge.contains("if !p.reserve_gpu_bytes(bytes)"));
 }
 
 #[test]
