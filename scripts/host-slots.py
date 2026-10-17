@@ -18,7 +18,30 @@ import time
 
 # Never checkout-relative or configurable by a launcher's environment.
 SLOT_DIR = Path('/tmp/breenix-host-slots')
-RESOURCES = {'x86-build': 2, 'x86-boot': 1, 'mac-boot': 1}
+# A metal build runs in the boot host's build container, outside the x86 gate VM: the
+# container's cpuset is the host's shared CPUs, so its builds leave the gate VM's
+# reserved cores alone and no x86 lease covers them. Each build runs METAL_BUILD_JOBS
+# Cargo jobs and peaks near METAL_BUILD_MEMORY; the container holds as many as both fit.
+METAL_BUILD_JOBS = 4
+METAL_BUILD_MEMORY = 4 * 1024 ** 3
+
+
+def metal_build_slots():
+    try:
+        cpus = len(os.sched_getaffinity(1))  # the container's cpuset, whatever this process is pinned to
+    except (AttributeError, OSError):
+        cpus = os.cpu_count() or 1
+    try:
+        memory = int(Path('/sys/fs/cgroup/memory.max').read_text())
+    except (OSError, ValueError):  # 'max' or no cgroup v2: the whole machine
+        try:
+            memory = os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES')
+        except (AttributeError, OSError, ValueError):
+            memory = METAL_BUILD_MEMORY
+    return max(1, min(cpus // METAL_BUILD_JOBS, memory // METAL_BUILD_MEMORY))
+
+
+RESOURCES = {'x86-build': 2, 'x86-boot': 1, 'mac-boot': 1, 'metal-build': metal_build_slots()}
 # An x86 boot shares its VM with the build leases. Builds there left the gate guest's
 # vCPU threads waiting on the VM's run queue for up to ~100 ms despite the boot's higher
 # priority (#1368), so a boot first holds every build lease, then its boot lease, and
