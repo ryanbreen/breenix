@@ -70,7 +70,6 @@ pub(super) fn present(arg: u64, len: u64) -> Result<u64, i64> {
         if r.lost || r.dropped { return Some(Err(EIO)); }
         if r.writers > 0 || r.reading || c.display.busy { return None; }
         if r.invalid { return Some(Err(EIO)); }
-        if r.last.is_none() { return Some(Err(EINVAL)); }
         let live = |id: &u32| c.contexts.get(id).is_some_and(|x| x.owner == tgid && x.state == CtxState::Live && x.device_alive);
         let ctx = r.last.map(|l| l.ctx).filter(live).or_else(||
             c.procs.get(&tgid).and_then(|p| p.contexts.values().copied().find(live)));
