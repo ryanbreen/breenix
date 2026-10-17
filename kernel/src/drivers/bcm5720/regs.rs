@@ -119,8 +119,6 @@ pub const TX_MAC_LENGTHS: usize = 0x0464;
 pub const TX_MAC_LENGTHS_INIT: u32 = 0x2620;
 pub const RX_MAC_MODE: usize = 0x0468;
 pub const RX_MAC_MODE_ENABLE: u32 = 1 << 1;
-/// The receive rules array: 16 rules, each a control word and a value/mask
-/// word (Section 5, "Receive List Placement Rules Array", Table 23, p. 97).
 pub const RX_RULES_CONFIG: usize = 0x0500;
 /// No-rules-match default class 1; class 0 discards the frames no rule
 /// matches (Receive Rules Configuration, p. 328).
@@ -131,7 +129,6 @@ pub const LOW_WATERMARK_MAX_RX_FRAMES: usize = 0x0504;
 // pp. 341-345).
 pub const STAT_OUT_BROADCAST: usize = 0x0874;
 pub const STAT_IN_OCTETS: usize = 0x0880;
-pub const STAT_IN_DISCARDS: usize = 0x2250;
 
 // Send and receive engines (Section 13): each mode register has Enable in bit
 // 1 and, where it exists, Attention Enable in bit 2.
@@ -150,14 +147,12 @@ pub const RX_LIST_PLACEMENT_CONFIG: usize = 0x2010;
 /// One interrupt distribution list, sixteen active lists, one bad-frames class
 /// (step 28, p. 143).
 pub const RX_LIST_PLACEMENT_CONFIG_INIT: u32 = 0x181;
+/// Receive list placement discard counter (Section 13, p. 345).
+pub const STAT_IN_DISCARDS: usize = 0x2250;
 pub const RX_LIST_PLACEMENT_STATS_CONTROL: usize = 0x2014;
 pub const RX_LIST_PLACEMENT_STATS_MASK: usize = 0x2018;
-/// Receive list placement counters: frames that found no receive BD, frames
-/// discarded and frames in error (Section 13, "Statistics Registers", p. 345).
 pub const RX_DATA_BD_INITIATOR_MODE: usize = 0x2400;
 pub const RDI_MODE_ILLEGAL_RETURN_RING_SIZE: u32 = 1 << 4;
-/// The receive data and BD initiator's local copy of the standard ring
-/// consumer index (p. 370).
 /// The standard receive producer ring's control block, as registers
 /// (Section 13, "Standard Receive BD Ring RCB Registers", p. 368). Its NIC
 /// address, at + 0xc, keeps its default on this family (step 16, p. 142).
@@ -184,7 +179,6 @@ pub const HC_RX_MAX_FRAMES_DURING_INT: usize = 0x3c18;
 pub const HC_TX_MAX_FRAMES_DURING_INT: usize = 0x3c1c;
 pub const HC_STATUS_BLOCK_HIGH: usize = 0x3c38;
 pub const HC_STATUS_BLOCK_LOW: usize = 0x3c3c;
-/// The controller's own ring indices, for diagnosis (pp. 425-427).
 
 pub const MEMORY_ARBITER_MODE: usize = 0x4000;
 pub const BUFFER_MANAGER_MODE: usize = 0x4400;

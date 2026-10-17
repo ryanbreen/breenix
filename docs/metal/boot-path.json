@@ -235,7 +235,7 @@
     {
       "id": "nic",
       "title": "NIC link and first frame",
-      "summary": "The clean-room BCM5720 driver attaches the port with link, resets it through the bootcode handshake, links at 1000 Mb/s full duplex, sends a frame the MAC counts, receives frames by MSI, and receives the DHCP offer answering the frame it sent.",
+      "summary": "The clean-room BCM5720 driver attaches the port with link, resets it through the bootcode handshake, links at 1000 Mb/s full duplex, sends a frame the MAC counts, receives frames by MSI, and receives the DHCP acknowledgement completing the lease exchange.",
       "kernel": true,
       "stages": {
         "x86_64": [

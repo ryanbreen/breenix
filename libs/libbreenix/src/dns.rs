@@ -737,7 +737,11 @@ pub fn dhcp_nameserver() -> Option<[u8; 4]> {
 /// DHCP management remains authoritative while discovery or renewal is pending.
 /// Static virtual-network fallbacks are only for interfaces without DHCP policy.
 fn dhcp_configuration() -> Result<(bool, [Option<[u8; 4]>; 3]), DnsError> {
-    let fd = crate::fs::open("/proc/net/pnp", crate::fs::O_RDONLY).map_err(|_| DnsError::RecvError)?;
+    let fd = match crate::fs::open("/proc/net/pnp", crate::fs::O_RDONLY) {
+        Ok(fd) => fd,
+        Err(crate::error::Error::Os(crate::errno::Errno::ENOENT)) => return Ok((false, [None; 3])),
+        Err(_) => return Err(DnsError::RecvError),
+    };
     let mut buf = [0u8; 256];
     let read = crate::fs::read(fd, &mut buf);
     close_fd(fd);

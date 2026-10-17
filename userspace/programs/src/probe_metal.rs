@@ -13,12 +13,12 @@ pub fn fetch() -> Result<(), &'static str> {
     // Link negotiation, DHCP retransmission and address conflict detection
     // finish independently of userspace startup; wait for the live lease.
     for _ in 0..200 {
-        if libbreenix::dns::dhcp_nameserver().is_some() {
+        if std::fs::read_to_string("/proc/net/pnp").is_ok_and(|text| text.lines().any(|line| line.starts_with("bootserver "))) {
             break;
         }
         time::sleep_ms(100).map_err(|_| "lease wait failed")?;
     }
-    if libbreenix::dns::dhcp_nameserver().is_none() {
+    if !std::fs::read_to_string("/proc/net/pnp").is_ok_and(|text| text.lines().any(|line| line.starts_with("bootserver "))) {
         return Err("no DHCP lease");
     }
     let mut bytes = vec![0; 132 * 1024];

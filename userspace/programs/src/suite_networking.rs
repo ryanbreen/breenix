@@ -3126,7 +3126,7 @@ fn main() {
     for _ in 0..200 {
         let Ok(configuration) = std::fs::read_to_string("/proc/net/pnp") else { break; };
         if !configuration.lines().any(|line| line == "#PROTO: DHCP")
-            || libbreenix::dns::dhcp_nameserver().is_some()
+            || std::fs::read_to_string("/proc/net/pnp").is_ok_and(|text| text.lines().any(|line| line.starts_with("bootserver ")))
         {
             break;
         }

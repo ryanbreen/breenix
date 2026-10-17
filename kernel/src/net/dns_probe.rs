@@ -33,19 +33,14 @@ pub fn run(lease: Lease) {
             if ANSWER.load(Ordering::Acquire) && super::icmp::gateway_echo_received() {
                 break;
             }
-            let until = crate::time::get_monotonic_time_ns();
-            let start = until.0 * 1_000_000_000 + until.1;
-            while {
-                let t = crate::time::get_monotonic_time_ns();
-                t.0 * 1_000_000_000 + t.1 - start < 10_000_000
-            } {
-                crate::arch_halt_with_interrupts();
-            }
+            crate::drivers::bcm5720::sleep_ms(10);
         }
         if ANSWER.load(Ordering::Acquire) && super::icmp::gateway_echo_received() {
-            log::info!("[dns] answer received");
             break;
         }
+    }
+    if ANSWER.load(Ordering::Acquire) {
+        log::info!("[dns] answer received");
     }
     SERVER.store(0, Ordering::Release);
 }

@@ -99,6 +99,7 @@ static INTERRUPTS: [AtomicU64; MAX_PORTS] = [const { AtomicU64::new(0) }; MAX_PO
 const HANDLERS: [fn(); MAX_PORTS] = [interrupt_slot_0, interrupt_slot_1];
 /// Attached ports, from driver initialization until their probes start.
 static ATTACHED: Mutex<Vec<Port>> = Mutex::new(Vec::new());
+static ATTACHMENT_PRESENT: AtomicBool = AtomicBool::new(false);
 static READY: AtomicBool = AtomicBool::new(false);
 
 fn interrupt_slot_0() {
@@ -111,7 +112,7 @@ fn interrupt_slot_1() {
 
 /// Acknowledge the port's interrupt (Section 11, "ISR Flow", step 1,
 /// p. 231): a nonzero interrupt mailbox holds further interrupts until the
-/// probe has serviced the status block and writes 0 to it.
+/// receive drain has serviced the status block and writes 0 to it.
 fn interrupt(slot: usize) {
     let regs = IRQ_REGS[slot].load(Ordering::Acquire);
     if regs == 0 {
@@ -136,10 +137,16 @@ fn delay_us(us: u64) {
     }
 }
 
-/// Wait `ms` milliseconds on a thread with interrupts enabled.
-fn sleep_ms(ms: u64) {
-    let end = now_ms() + ms;
-    while now_ms() < end {
+/// Block the network worker on the scheduler timer.
+pub(crate) fn sleep_ms(ms: u64) {
+    use crate::task::{scheduler, thread::ThreadState};
+    let tid = scheduler::current_thread_id().expect("network worker has a scheduler identity");
+    let (seconds, nanos) = crate::time::get_monotonic_time_ns();
+    let deadline = seconds.saturating_mul(1_000_000_000).saturating_add(nanos)
+        .saturating_add(ms.saturating_mul(1_000_000));
+    scheduler::with_current(|sched| sched.block_current_for_timer(deadline));
+    scheduler::yield_current();
+    while scheduler::thread_state(tid) == Some(ThreadState::BlockedOnTimer) {
         crate::arch_halt_with_interrupts();
     }
 }
@@ -839,6 +846,8 @@ impl Port {
             if good {
                 // Receive length includes Ethernet FCS (guide Section 4,
                 // Table 11); it is not part of the network-layer packet.
+                // SAFETY: the checked length fits the DMA buffer and output; the ring
+                // descriptor owns this buffer until it is reposted below.
                 unsafe { core::ptr::copy_nonoverlapping(
                     self.rx_buffers[buffer].virt as *const u8,
                     output.as_mut_ptr(), length - 4); }
@@ -927,7 +936,9 @@ impl Port {
         }
         crate::net::register_net_softirq();
         crate::task::softirqd::raise_softirq(crate::task::softirqd::SoftirqType::NetRx);
+        let mut connectivity_reported = false;
         if let Some(lease) = dhcp::acquire(mac) {
+            connectivity_reported = true;
             log::info!("[bcm5720] reply received: DHCP server acknowledged the requested lease");
             log::info!("[dhcp] lease acquired");
             let counters = {
@@ -971,19 +982,27 @@ impl Port {
                     .is_some_and(|p| p.f.phy_link().unwrap_or(false))
             };
             dhcp::maintain(mac, carrier);
+            if !connectivity_reported {
+                if let Some(lease) = dhcp::lease() {
+                    connectivity_reported = true;
+                    log::info!("[bcm5720] reply received: DHCP server acknowledged the requested lease");
+                    log::info!("[dhcp] lease acquired");
+                    let _ = crate::net::arp::request(&lease.gateway);
+                    let _ = crate::net::ping(lease.gateway);
+                    crate::net::dns_probe::run(lease);
+                }
+            }
             sleep_ms(1000);
         }
     }
 }
 
-// Name the mutex guard after the BH guard: Rust 2021 tail temporaries
-// otherwise outlive locals, allowing BH exit to dispatch NetRx into this lock.
 pub fn is_initialized() -> bool {
-    let _guard = crate::net::net_lock_guard();
-    let ports = ATTACHED.lock();
-    !ports.is_empty() || READY.load(Ordering::Acquire)
+    ATTACHMENT_PRESENT.load(Ordering::Acquire)
 }
 
+// Name the mutex guard after the BH guard: Rust 2021 tail temporaries
+// otherwise outlive locals, allowing BH exit to dispatch NetRx into this lock.
 pub fn mac_address() -> Option<[u8; 6]> {
     let _guard = crate::net::net_lock_guard();
     let ports = ATTACHED.lock();
@@ -1007,9 +1026,9 @@ pub fn receive(output: &mut [u8]) -> Option<usize> {
     None
 }
 
-/// Attach the BCM5720 functions whose PHY has link at handoff, up to
-/// `MAX_PORTS`. Called at driver initialization, interrupts off. Returns how
-/// many attached.
+/// Attach the first BCM5720 function whose PHY has link at handoff.
+/// The network stack currently owns one interface and one DHCP client.
+/// Called at driver initialization, interrupts off. Returns how many attached.
 pub fn init() -> usize {
     let Some(devices) = pci::get_devices() else {
         return 0;
@@ -1019,8 +1038,8 @@ pub fn init() -> usize {
         device.vendor_id == BROADCOM_VENDOR_ID && device.device_id == BCM5720_DEVICE_ID
     }) {
         let bdf = Bdf(device.bus, device.device, device.function);
-        if attached == MAX_PORTS {
-            log::info!("[bcm5720] {bdf}: not attached: every port slot is in use");
+        if attached != 0 {
+            log::info!("[bcm5720] {bdf}: not attached: the network interface is already selected");
             continue;
         }
         let (function, host_control, command) = match Function::map(device) {
@@ -1047,6 +1066,7 @@ pub fn init() -> usize {
             Ok(port) => {
                 crate::arch_without_interrupts(|| ATTACHED.lock().push(port));
                 attached += 1;
+                ATTACHMENT_PRESENT.store(true, Ordering::Release);
             }
             Err(error) => log::warn!("[bcm5720] {bdf}: attach failed: {error}"),
         }

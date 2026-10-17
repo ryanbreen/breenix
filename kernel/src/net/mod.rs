@@ -817,6 +817,8 @@ pub fn register_net_softirq() {
 /// Initialize the network stack
 #[cfg(target_arch = "x86_64")]
 pub fn init() {
+    DHCP_POLICY.store(!crate::drivers::fw_cfg::present(), core::sync::atomic::Ordering::Release);
+
     // Register NET_RX softirq handler FIRST - before any network operations
     // This ensures the handler is ready before e1000 can raise the softirq
     register_net_softirq();
@@ -1041,10 +1043,13 @@ fn configure_from_dhcp() -> Option<[u8; 4]> {
     Some(lease.gateway)
 }
 
+#[cfg(target_arch = "x86_64")]
+static DHCP_POLICY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
 /// Physical x86 and bridged VMware obtain their addressing from DHCP.
 pub fn uses_dhcp() -> bool {
     #[cfg(target_arch = "x86_64")]
-    { !crate::drivers::fw_cfg::present() }
+    { DHCP_POLICY.load(core::sync::atomic::Ordering::Acquire) }
     #[cfg(target_arch = "aarch64")]
     { active_tx_driver_is_e1000() }
 }
