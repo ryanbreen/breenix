@@ -7,9 +7,9 @@ Started by docker/qemu/run-x86-gate.sh before a boot and stopped after it.
 It writes OUTDIR/host-stall.jsonl. For each QEMU the boot starts (found by its
 serial log, OUTDIR/serial_kernel.log), until that QEMU exits:
 
-* a `guest` line: the QEMU pid, each vCPU thread by its KVM vCPU id (the
-  guest's APIC id), and KVM's TSC offset for each vCPU, so a guest TSC value
-  can be placed among the samples; it is written again if they change;
+* a `guest` line: the QEMU pid, each vCPU's thread and TSC offset by its KVM
+  vCPU id (the guest's APIC id), read from KVM's debugfs, so a guest TSC
+  value can be placed among the samples; it is written again if they change;
 * then one sample line per period: host wall time, the guest's TSC at that
   moment (this host's TSC plus vCPU 0's offset), each host CPU's cumulative
   steal (in clock ticks, `clk_tck` per second), and per vCPU its cumulative
@@ -85,32 +85,24 @@ def guest_qemu(serial, seen):
     return None
 
 
-def vcpu_threads(pid):
-    threads = {}
-    for comm in glob.glob(f"/proc/{pid}/task/*/comm"):
-        try:
-            name = pathlib.Path(comm).read_text().strip()
-        except OSError:
-            continue
-        if name.startswith("CPU ") and name.endswith("/KVM"):
-            threads[name[4:-4]] = comm.split("/")[4]
-    return threads
-
-
-def tsc_offsets(pid):
-    """KVM's TSC offset and scaling ratio for each vCPU of `pid`."""
-    offsets, scaling = {}, {}
+def kvm_vcpus(pid):
+    """Each vCPU of QEMU `pid`, from KVM's debugfs: its thread, TSC offset and
+    TSC scaling ratio. QEMU names its threads only with debug-threads=on, so
+    the thread comes from the vCPU's own `pid` file."""
+    threads, offsets, scaling = {}, {}, {}
     for directory in glob.glob(f"/sys/kernel/debug/kvm/{pid}-*/vcpu*"):
         vcpu = directory.rsplit("vcpu", 1)[1]
         try:
+            threads[vcpu] = pathlib.Path(directory, "pid").read_text().strip()
             offsets[vcpu] = int(pathlib.Path(directory, "tsc-offset").read_text())
         except (OSError, ValueError):
+            threads.pop(vcpu, None)
             continue
         try:
             scaling[vcpu] = pathlib.Path(directory, "tsc-scaling-ratio").read_text().strip()
         except OSError:
             pass
-    return offsets, scaling
+    return threads, offsets, scaling
 
 
 def steal():
@@ -133,11 +125,10 @@ def sample_guest(out, pid, period, rdtsc, stopping):
         # that writes its TSC changes an offset, so they are read again.
         if guest is None or began - checked >= 1.0:
             checked = began
-            threads = vcpu_threads(pid)
-            offsets, scaling = tsc_offsets(pid)
+            threads, offsets, scaling = kvm_vcpus(pid)
             current = {"kind": "guest", "pid": int(pid), "vcpus": threads,
                        "tsc_offsets": offsets, "tsc_scaling": scaling}
-            if current != guest and threads and set(offsets) >= set(threads):
+            if current != guest and threads:
                 out.write(json.dumps(current) + "\n")
                 guest = current
         if guest is None:
@@ -161,7 +152,7 @@ def sample_guest(out, pid, period, rdtsc, stopping):
 def main():
     outdir = os.path.realpath(sys.argv[1])
     period = float(sys.argv[2]) if len(sys.argv) > 2 else 0.02
-    serial = os.path.join(outdir, "serial_kernel.log")
+    serial = os.path.realpath(os.path.join(outdir, "serial_kernel.log"))
     stopping = []
     signal.signal(signal.SIGTERM, lambda *_: stopping.append(True))
     signal.signal(signal.SIGINT, lambda *_: stopping.append(True))
