@@ -299,9 +299,9 @@ pub fn boot_path_markers(repo: &Path) -> Result<Vec<String>, String> {
                         let arch = boot_path
                             .get("gateArch")
                             .as_str()
-                            .ok_or("missing gateArch")?;
+                            .ok_or_else(|| format!("{file}: missing gateArch"))?;
                         if !catalogs.contains_key(arch) {
-                            return Err(format!("unknown gateArch {arch}"));
+                            return Err(format!("{file}: unknown gateArch {arch}"));
                         }
                         vec![arch]
                     }

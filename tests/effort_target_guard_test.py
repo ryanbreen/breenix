@@ -130,7 +130,7 @@ class EffortTargetGuardTest(unittest.TestCase):
         return sha
 
     def merge(self, branch):
-        # Independent paths let these test graphs merge without content conflicts.
+        # The ours strategy preserves the current tree while adding the other ancestry.
         self.git('merge', '-q', '--no-ff', '-s', 'ours', branch, '-m', 'merge test history')
         return self.git('rev-parse', 'HEAD')
 

@@ -202,6 +202,14 @@ fn metal_modes_resolve_only_against_the_gate_arch_catalog() {
     let markers = stage_markers::boot_path_markers(&repo).unwrap();
     assert!(markers.iter().any(|m| m == "arm-only-marker"));
     assert!(markers.iter().any(|m| m == "x86-only-marker"));
+    for (bad, message) in [
+        (definition.replace("\"gateArch\":\"x86_64\",", ""), "missing gateArch"),
+        (definition.replace("\"gateArch\":\"x86_64\"", "\"gateArch\":\"unknown\""), "unknown gateArch unknown"),
+    ] {
+        std::fs::write(&metal, bad).unwrap();
+        assert_eq!(stage_markers::boot_path_markers(&repo).unwrap_err(),
+            format!("docs/metal/boot-path.json: {message}"));
+    }
     std::fs::write(&metal, definition.replace("Shared", "ARM only")).unwrap();
     assert!(stage_markers::boot_path_markers(&repo).unwrap_err().contains("not in the x86_64 catalog"));
     std::fs::write(&metal, definition.replace("metal-inline", &"x".repeat(129))).unwrap();
