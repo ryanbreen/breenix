@@ -3,8 +3,8 @@
 `docs/gui/gpu.md` section 1.4 fixes syscall 416's ops, their errno rules and what each op does. This
 document fixes what that section leaves to the implementation: each op's argument layout, the BGL
 command stream `SUBMIT` carries, and the codes the kernel reports. It adds to the contract and changes
-none of its rules. The single definition in code is the `gpu-abi` crate (`libs/gpu-abi`), which the
-kernel and libbreenix share; the suite checks the layouts at the offsets given here.
+none of its rules. The single definition in code is the `gpu-abi` crate (`libs/gpu-abi`, from G1), which
+the kernel and libbreenix share; the suite checks the layouts at the offsets given here.
 
 Every structure is little-endian with the offsets shown. `len` must equal the structure's size;
 reserved fields and output fields are zero on the way in (EINVAL otherwise) and the kernel writes
@@ -30,9 +30,11 @@ Capability ids, in the order admission checks them (the first missing one is rep
 | 10 | `region-copy` | a VirGL capability set: `RESOURCE_COPY_REGION` is a base command of the protocol the set describes, gated by no capability bit |
 | 11 | `target-size` | a maximum 2D texture size of at least 2560 |
 
-Test-control point 23 (`mask-capability`) holds while armed: the capability its parameter names counts
-as absent, so admission fails naming it, and `DISARM_ALL` restores it. Each refusal it causes counts as
-one firing.
+Test-control point 23 (`mask-capability`) is one-shot: the next admission decision, made by a `CAPS` query
+or by any other op that admission gates, counts the capability its parameter names as absent, so that op
+fails naming it (ENODEV, or `CAPS` status 2 with `missing` set), the point counts one firing and disarms.
+The op after it sees the device's real capabilities without `DISARM_ALL`. A check that needs several ops
+refused arms the point before each.
 
 ## Op arguments
 
@@ -74,9 +76,11 @@ attached to every context of the process, and a new context to every resource.
 
 **`SUBMIT` (64 bytes):** `context: u64`, `stream: u64` (address), `length: u64` (bytes, a multiple of
 4, 1 to 80 MiB), `fence: u64` out, `error_index: u32` out, `error: u32` out, `estimate: u64` out, 16
-reserved. A refused stream returns EINVAL, or EDQUOT for the work cap, with the failing command's index
-and its code written back. A context that is not live (quarantined or reset) returns EIO. With four
-submissions in flight the call waits for one to complete; a signal ends that wait with EINTR.
+reserved. Each buffer range the stream names is copied once, before validation, and validation and
+translation read only that copy (`docs/gui/gpu.md` section 1.4.1). A refused stream returns EINVAL, or
+EDQUOT for the work cap, with the failing command's index and its code written back. A context that is not
+live (quarantined or reset) returns EIO. With four submissions in flight the call waits for one to
+complete; a signal ends that wait with EINTR, and a kill within 250 ms.
 
 **`WAIT` (48 bytes):** `context: u64`, `fence: u64`, `timeout_ns: u64` (0 polls), `status: u32` out,
 `answer: u32` out, 16 reserved. Returns 0 when the fence completed OK; EIO with `status` and `answer`
@@ -88,10 +92,15 @@ context is.
 | `status` | Meaning |
 |---|---|
 | 0 OK | the device completed the submission |
-| 1 DEVICE_ERROR | the device answered with an error; `answer` is its response type |
+| 1 DEVICE_ERROR | the device answered with an error; `answer` is its response type. Two consecutive DEVICE_ERROR completions on one context quarantine that context only (`COUNTERS` state 1); the device is not reset |
 | 2 DEVICE_HUNG | the watchdog found it outstanding 2 s after it was sent and quarantined its context |
-| 3 DEVICE_RESET | the device was reset with it outstanding |
+| 3 DEVICE_RESET | the device was reset with it outstanding; resets happen only for a device fault or the watchdog's no-progress condition (`docs/gui/gpu.md` section 1.4.1) |
 | 4 FENCE_MISMATCH | the device's answer carried another submission's fence |
+
+These statuses describe the caller-visible result, not permission to release DMA backing. In particular,
+DEVICE_HUNG and DEVICE_RESET do not themselves prove that device access has ended. Backing remains held
+until actual device completion or a successfully confirmed reset supplies that proof; a failed reset
+leaves it held, including after a timeout, kill or EIO return (section 1.4.1 of `docs/gui/gpu.md`).
 
 **`READBACK` (64 bytes):** `target: u64`, `x, y, width, height: u32`, `pixels: u64` (address),
 `pixels_len: u64`, `stride: u32`, 4 reserved, `record: u64` (address of 1,024 bytes), 8 reserved. Waits
@@ -120,8 +129,10 @@ its index is its position in the stream.
 | 4 | `DRAW_BUFFER` | `4, 8, pipeline, colour, buffer_lo, buffer_hi, offset, n`: `n` rectangles read from a buffer, 16 bytes each from `offset` |
 
 `colour` is the canonical BGRA bytes as a little-endian word: B in bits 0 to 7, G 8 to 15, R 16 to 23,
-A 24 to 31. Rectangles are clipped to the target; one with `x1 < x0` or `y1 < y0` is refused. `CLEAR`
-writes the whole target, so it is the one command that may draw into a target the device left invalid.
+A 24 to 31. Rectangles are clipped to the target; one with `x1 < x0` or `y1 < y0` is refused. Any drawing
+command may draw into a target the device left invalid; the target becomes valid again only when a
+submission that writes it whole (a `CLEAR`) completes OK. `DRAW_BUFFER` reads its rectangles from the
+submission's snapshot of the buffer, never from the buffer after `SUBMIT`.
 
 Validation walks the whole stream before anything reaches the device. Its codes (`error`):
 
@@ -140,7 +151,7 @@ Validation walks the whole stream before anything reaches the device. Its codes 
 | 11 | more than 64 MiB of distinct buffers named, or more than 64 buffers |
 | 12 | more than 2³¹ estimated fragment-steps (EDQUOT) |
 | 13 | a stream length of 0, not a multiple of 4, or over 80 MiB (index 0) |
-| 14 | a draw into a target the device left invalid |
+| 14 | a command that samples a target the device left invalid; no G1 command samples, so G1 never reports it |
 
 The work estimate is, per draw, the clipped area times the pipeline's per-fragment steps (`solid`: 1).
 
@@ -155,8 +166,9 @@ defined; the ones G1 builds:
 | Point | Name | Effect |
 |---|---|---|
 | 20 | `stale-fence` | the next submission's answer is taken as carrying the next fence; it completes `FENCE_MISMATCH` and no other submission completes by it |
-| 23 | `mask-capability` | holds while armed: the capability id in `param` counts as absent |
-| 27 | `device-error` | the next submission ends with fenced command type `0x02FF`, which is undefined by VirtIO and answered with an error; two consecutive injected errors on one context reset the device; ordinary device errors do not |
-| 31 | `withhold-fence` | `param` 0: the next submission's completion is ignored, so the watchdog finds it hung; `param` 1: no completion is taken from the device until it is reset |
+| 23 | `mask-capability` | the next admission decision counts the capability id in `param` as absent; one-shot (above) |
+| 27 | `device-error` | the next submission ends with fenced command type `0x02FF`, which is undefined by VirtIO and answered with an error. Armed before each of two consecutive submissions of one context, it quarantines that context only, as two ordinary device errors do; it never resets the device |
+| 31 | `withhold-fence` | `param` 0: the next submission's completion is ignored, so the watchdog finds it hung; `param` 1: no completion is taken from the device until it is reset; `param` 2, fence depth: the answers to the next context's first four submissions are taken and kept unpublished, so their fences stay incomplete, until a fifth `SUBMIT` on that context waits at the four-in-flight limit; then the four are published in fence order and the fifth is admitted. No completion is invented and no watchdog deadline changes |
 
-The other points arm and do nothing until their milestone builds them.
+Every point is one-shot: it affects the next occurrence of its event, counts one firing and disarms
+itself. The other points arm and do nothing until their milestone builds them.
