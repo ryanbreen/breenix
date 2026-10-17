@@ -72,10 +72,12 @@ impl Port for Uart {
             core::arch::asm!("mrs {}, daif", out(reg) daif, options(nomem, nostack, preserves_flags));
             core::arch::asm!("msr daifset, #0x3", options(nomem, nostack, preserves_flags));
         }
+        crate::arch_impl::aarch64::irq_mask_account::opened();
         daif
     }
 
     fn restore_interrupts(daif: u64) {
+        crate::arch_impl::aarch64::irq_mask_account::restoring(daif);
         unsafe {
             core::arch::asm!("msr daif, {}", in(reg) daif, options(nomem, nostack, preserves_flags));
         }

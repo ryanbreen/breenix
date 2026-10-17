@@ -6,6 +6,7 @@ production source; the scorer is imported and fed the assertion's own lines.
 """
 from pathlib import Path
 import importlib.util
+import json
 import re
 import subprocess
 import sys
@@ -46,6 +47,17 @@ mod tracing { pub mod providers { pub mod counters {
     }
     pub static TIMER_TICK_TOTAL: Counter = Counter([const { AtomicU64::new(0) }; 8]);
 } } }
+#[cfg(target_arch = "aarch64")]
+mod arch_impl { pub mod aarch64 {
+    pub mod timer_interrupt {
+        pub static TICKS_PER_INTERRUPT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(24_000);
+    }
+    pub mod irq_mask_account {
+        use core::sync::atomic::{AtomicU64, Ordering};
+        pub static SINCE: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+        pub fn masked_since(cpu: usize) -> u64 { SINCE[cpu].load(Ordering::Relaxed) }
+    }
+} }
 fn cpu(cpu: usize) { task::scheduler::CPU.with(|id| id.set(cpu)); }
 #[test]
 fn window_counts_observer_and_all_cpu_ticks_per_generation() {
@@ -64,7 +76,7 @@ fn window_counts_observer_and_all_cpu_ticks_per_generation() {
     timer.set(2, 305);
     let (observation, window) = slot.observe_from_peer(7).unwrap();
     assert_eq!(observation, KickObservation { generation: 1, pid: 7, at: 10 });
-    assert_eq!(window, KickWindow { observer_ticks: 0, all_ticks: 8, sender_cpu: 0 });
+    assert_eq!(window, KickWindow { observer_ticks: 0, all_ticks: 8, masked_cpus: 0, sender_cpu: 0 });
     assert!(slot.is_observed_for(7));
     assert!(slot.observe_from_peer(7).is_none(), "observation remains exactly once");
 
@@ -75,7 +87,7 @@ fn window_counts_observer_and_all_cpu_ticks_per_generation() {
     timer.set(1, 201);
     let (observation, window) = slot.observe_from_peer(71).unwrap();
     assert_eq!(observation.generation, 2);
-    assert_eq!(window, KickWindow { observer_ticks: 1, all_ticks: 1, sender_cpu: 2 });
+    assert_eq!(window, KickWindow { observer_ticks: 1, all_ticks: 1, masked_cpus: 0, sender_cpu: 2 });
 
     // A reserved generation is invisible; its commit carries the baseline
     // taken before the reservation, and delivered-tick arithmetic wraps.
@@ -96,20 +108,51 @@ fn window_counts_observer_and_all_cpu_ticks_per_generation() {
     assert_eq!(window.all_ticks, 1 + 897, "ticks after the baseline count even when taken before commit");
     assert!(!slot.is_observed_for(71));
 }
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn window_names_cpus_masked_from_its_first_tick_on() {
+    use arch_impl::aarch64::irq_mask_account::SINCE;
+    let slot = KickSlot::new();
+    cpu(0);
+    assert!(matches!(slot.publish(9, 100_000), KickPublishResult::Published { .. }));
+    // CPU 1 masked before the window, CPU 2 exactly one tick into it: neither
+    // can have taken a tick. CPU 3 masked after its first tick was due, and
+    // CPU 4 has interrupts enabled.
+    SINCE[1].store(90_000, Ordering::Relaxed);
+    SINCE[2].store(124_000, Ordering::Relaxed);
+    SINCE[3].store(124_001, Ordering::Relaxed);
+    cpu(5);
+    let (_, window) = slot.observe_from_peer(9).unwrap();
+    assert_eq!(window.masked_cpus, 0b110);
+    for since in &SINCE {
+        since.store(0, Ordering::Relaxed);
+    }
+}
 #[derive(Clone, Copy, Debug)]
 struct Evidence {
     online_cpus: u64, defer: u64, reclaim: u64, quarantine: u64,
-    sgi_sent: u64, kick_observed: u64, kick_interval: u64, kick_ticks: u64,
-    kick_all_ticks: u64, kick_cpu: u64, kick_sender_cpu: u64,
+    sgi_sent: u64, kick_observed: u64, kick_interval: u64, kick_at: u64, kick_ticks: u64,
+    kick_all_ticks: u64, masked_accounting: u64, kick_masked_cpus: u64,
+    kick_cpu: u64, kick_sender_cpu: u64, kick_vcpu: u64, kick_sender_vcpu: u64,
     counter_ticks_per_ms: u64, tick_period: u64, masked_frames_walked: u64, report: u64,
 }
 fn fail(message: &str) -> ! { panic!("{}", message) }
-// ARM64 at 24 MHz: one 1 ms tick is 24,000 counter ticks.
+// ARM64 at 24 MHz: one 1 ms tick is 24,000 counter ticks. The kernel
+// accounts masking, so the guest itself judges a starved window.
 fn evidence(kick_interval: u64, kick_ticks: u64, kick_all_ticks: u64) -> Evidence {
     Evidence { online_cpus: 4, defer: 1, reclaim: 1, quarantine: 1,
-        sgi_sent: 1, kick_observed: 1, kick_interval, kick_ticks, kick_all_ticks,
-        kick_cpu: 1, kick_sender_cpu: 0, counter_ticks_per_ms: 24_000, tick_period: 24_000,
+        sgi_sent: 1, kick_observed: 1, kick_interval, kick_at: 48_000_000, kick_ticks, kick_all_ticks,
+        masked_accounting: 1, kick_masked_cpus: 0,
+        kick_cpu: 1, kick_sender_cpu: 0, kick_vcpu: 1, kick_sender_vcpu: 0,
+        counter_ticks_per_ms: 24_000, tick_period: 24_000,
         masked_frames_walked: 0, report: 1 }
+}
+// x86-64 at 2.4 GHz with 5 ms ticks and no masking accounting: the host's
+// record judges a starved window.
+fn host_evidence(kick_interval: u64, kick_ticks: u64, kick_all_ticks: u64) -> Evidence {
+    Evidence { masked_accounting: 0, kick_at: 24_000_000_000, kick_vcpu: 3, kick_sender_vcpu: 2,
+        counter_ticks_per_ms: 2_400_000, tick_period: 12_000_000,
+        ..evidence(kick_interval, kick_ticks, kick_all_ticks) }
 }
 fn fails(current: Evidence) -> bool {
     std::panic::catch_unwind(|| assert_kill_evidence(7, current)).is_err()
@@ -136,12 +179,27 @@ fn one_tick_or_more_unstarved_fails() {
     }
 }
 #[test]
-fn starved_window_is_its_own_verdict() {
-    for (interval, observer, all) in [(24_000 * 14, 0, 0), (24_000 * 70, 1, 4), (24_000 * 61, 1, 4)] {
-        let current = evidence(interval, observer, all);
+fn guest_starved_window_needs_every_cpu_tickless_and_none_masked() {
+    let current = evidence(24_000 * 14, 0, 0);
+    assert_eq!(kick_verdict(&current), KickVerdict::Starved, "{current:?}");
+    assert!(starved_after(current));
+    // Ticks elsewhere, or a CPU masked across the window, mean the guest
+    // itself may have held the observer off.
+    for current in [evidence(24_000 * 70, 1, 4), evidence(24_000 * 61, 0, 4),
+                    Evidence { kick_masked_cpus: 0b100, ..evidence(24_000 * 14, 0, 0) }] {
+        assert_eq!(kick_verdict(&current), KickVerdict::Fail, "{current:?}");
+        assert!(fails(current));
+    }
+}
+#[test]
+fn host_starved_window_is_left_to_the_host_record() {
+    for (interval, observer, all) in [(12_000_000 * 14, 0, 0), (12_000_000 * 70, 1, 4)] {
+        let current = host_evidence(interval, observer, all);
         assert_eq!(kick_verdict(&current), KickVerdict::Starved, "{current:?}");
         assert!(starved_after(current));
     }
+    let current = host_evidence(12_000_000 * 50, 1, 200);
+    assert_eq!(kick_verdict(&current), KickVerdict::Fail, "{current:?}");
 }
 #[test]
 fn masked_or_dead_observer_timer_while_others_tick_fails() {
@@ -167,6 +225,7 @@ fn measurement_and_attribution_preconditions_fail() {
 fn print_windows_for_the_scorer() {
     assert_kill_evidence(7, evidence(426, 0, 0));
     assert_kill_evidence(8, evidence(24_000 * 14, 0, 0));
+    assert_kill_evidence(9, host_evidence(12_000_000 * 20, 0, 0));
 }
 '''
 
@@ -182,20 +241,24 @@ with tempfile.TemporaryDirectory(prefix="breenix-sigkill-ticks-") as tmp:
                              check=True, capture_output=True, text=True).stdout
 
 windows = [line for line in printed.splitlines() if line.startswith("SIGKILL_TEARDOWN_TEST: pid=")]
-assert len(windows) == 2 and windows[0].endswith("verdict=pass") and windows[1].endswith("verdict=STARVED"), printed
+assert len(windows) == 3 and windows[0].endswith("verdict=pass") and windows[1].endswith("verdict=STARVED"), printed
+assert windows[2].endswith("starvation_check=host verdict=STARVED"), windows[2]
 assert " observer_ms_per_tick=unbounded " in windows[1] and " interval_us=14000 " in windows[1], windows[1]
+assert " starvation_check=guest " in windows[1] and " masked_cpus=0 " in windows[1], windows[1]
 run_format = "SIGKILL_TEARDOWN_TEST: STARVED windows={starved}: host-starved, not evidence; rerun the boot"
 assert run_format in user_source
 run_starved = run_format.replace("{starved}", "1")
 assert scorer.score(windows[0] + "\nSIGKILL_TEARDOWN_TEST_PASSED")[0] == 0
-assert scorer.score("\n".join(windows) + "\n" + run_starved)[0] == 2
-assert scorer.score("\n".join(windows) + "\nSIGKILL_TEARDOWN_TEST_PASSED")[0] == 1, "starved window without run verdict"
-assert scorer.score("\n".join(windows) + "\n" + run_starved + "\nSIGKILL_TEARDOWN_TEST_PASSED")[0] == 1
+assert scorer.score("\n".join(windows[:2]) + "\n" + run_starved)[0] == 2
+assert scorer.score("\n".join(windows[:2]) + "\nSIGKILL_TEARDOWN_TEST_PASSED")[0] == 1, "starved window without run verdict"
+assert scorer.score("\n".join(windows[:2]) + "\n" + run_starved + "\nSIGKILL_TEARDOWN_TEST_PASSED")[0] == 1
 assert scorer.score(windows[0] + "\n" + run_starved)[0] == 1, "run verdict without a starved window"
 assert scorer.score(windows[1].replace("verdict=STARVED", "verdict=pass"))[0] == 1, "forged pass"
 assert scorer.score(windows[0].replace("verdict=pass", "verdict=STARVED") + "\n" + run_starved)[0] == 1, "forged starved"
 masked = windows[1].replace(" all_ticks=0 ", " all_ticks=42 ").replace("verdict=STARVED", "verdict=fail")
 assert scorer.score(masked)[0] == 1
+for forged in (windows[1].replace(" all_ticks=0 ", " all_ticks=3 "), windows[1].replace(" masked_cpus=0 ", " masked_cpus=4 ")):
+    assert scorer.score(forged + "\n" + run_starved)[0] == 1, "a guest window with ticks or a masked CPU is not starved"
 assert scorer.score(windows[1] + "\n" + run_starved + "\nSIGKILL_TEARDOWN_TEST: FAIL: x")[0] == 1
 assert scorer.score(windows[0].replace("sender_cpu=0", "sender_cpu=1"))[0] == 1, "observer is sender"
 assert scorer.score(windows[0].replace("starved_ms_per_tick=60", "starved_ms_per_tick=10"))[0] == 1
@@ -208,4 +271,47 @@ assert scorer.score(split.replace(" all_ticks=0 ", " all_ticks=42 ") + "\n" + ru
 lost = windows[1][:cut] + "\n" + "\n".join(["kernel line"] * 6) + "\n" + windows[1][cut:]
 assert scorer.score(lost + "\n" + run_starved)[0] == 1, "a starved run needs every window read"
 assert scorer.score(windows[0][:cut] + "\n" + "\n".join(["kernel line"] * 6) + "\nSIGKILL_TEARDOWN_TEST_PASSED")[0] == 0
+
+# The host-checked window (x86-64: 2.4 GHz, 5 ms ticks) opened at guest TSC
+# 24e9 and lasted 100 ms. It is starved only if the host's record shows vCPUs
+# 3 (observer) and 2 (sender) kept from running for at least 95 ms around it.
+host_window = windows[2]
+assert " kick_at=24000000000 observer_vcpu=3 sender_vcpu=2 " in host_window, host_window
+start, end, step = 24_000_000_000, 24_240_000_000, 48_000_000
+
+
+def record(delay_ms, steal_ticks=0, first=start - step, last=end + step, offsets=None):
+    """Samples every 20 ms from guest TSC `first` to `last`, with vCPU 3's
+    run delay growing by `delay_ms` and its host CPU's steal by
+    `steal_ticks`, spread evenly over the samples inside the window."""
+    lines = [{"kind": "start", "clk_tck": 100, "period": 0.02},
+             {"kind": "guest", "pid": 77, "vcpus": {str(v): str(100 + v) for v in range(4)},
+              "tsc_offsets": offsets or {str(v): -5 for v in range(4)}, "tsc_scaling": {}}]
+    inside = [tsc for tsc in range(first, last + 1, step) if start < tsc <= end]
+    delay = run = steal = 0
+    for tsc in range(first, last + 1, step):
+        if start < tsc <= end:
+            delay += delay_ms * 1_000_000 // len(inside)
+            steal += steal_ticks // len(inside)
+        run += 1_000_000
+        lines.append({"t": tsc / 2.4e9, "tsc": tsc, "steal": [0, steal, 0, 0],
+                      "vcpu": {"2": [0, run, 0, "R"], "3": [delay, run, 1, "R"], "0": [0, run, 2, "S"], "1": [0, run, 3, "S"]}})
+    path = Path(tmp_record.name)
+    path.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
+    return scorer.load_host_record(str(path))
+
+
+with tempfile.NamedTemporaryFile(prefix="breenix-host-stall-", suffix=".jsonl") as tmp_record:
+    host_run = host_window + "\n" + run_starved
+    assert scorer.score(host_run, record(150))[0] == 2, "the host held the observer off for the window"
+    assert scorer.score(host_run, record(40, steal_ticks=10))[0] == 2, "steal on the observer's CPU counts"
+    status, message = scorer.score(host_run, record(20))
+    assert status == 1 and "needs 95000 us" in message, message
+    assert scorer.score(host_run, record(150, first=start + step))[0] == 1, "no sample before the window"
+    assert scorer.score(host_run, record(150, last=end - step))[0] == 1, "no sample after the window"
+    assert scorer.score(host_run, record(150, offsets={"0": -5, "1": -5, "2": -5, "3": 9}))[0] == 1
+    status, message = scorer.score(host_run, None)
+    assert status == 1 and "no host stall record" in message, message
+    assert scorer.score(host_window.replace("observer_vcpu=3", "observer_vcpu=7") + "\n" + run_starved,
+                        record(150))[0] == 1, "a vCPU the record does not name"
 print("sigkill_ticks_host: ok")

@@ -217,13 +217,24 @@ pub fn start_application_processors() {
     let last = smp::cpus_online() as usize - 1;
     if last != 0 {
         if let Some(apic_id) = smp::cpu_apic_id(last) {
-            super::ioapic::set_destination(apic_id);
-            super::msi::set_destination(apic_id);
-            log::info!(
-                "[smp] device interrupts routed to CPU {} (APIC id {})",
-                last,
-                apic_id
-            );
+            // MSI first: if it refuses the id, the I/O APIC routes stay where
+            // the messages are, so both kinds keep landing on one CPU.
+            match super::msi::set_destination(apic_id) {
+                Ok(()) => {
+                    super::ioapic::set_destination(apic_id);
+                    log::info!(
+                        "[smp] device interrupts routed to CPU {} (APIC id {})",
+                        last,
+                        apic_id
+                    );
+                }
+                Err(reason) => log::warn!(
+                    "[smp] device interrupts stay on the boot processor: CPU {} (APIC id {}): {}",
+                    last,
+                    apic_id,
+                    reason
+                ),
+            }
         }
     }
 }

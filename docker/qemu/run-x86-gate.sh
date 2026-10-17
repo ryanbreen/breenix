@@ -210,9 +210,18 @@ SUITE_HOLD_SECS="${BREENIX_SUITE_HOLD:-5}"
 GATE_CARGO_HOME=$(python3 "$HOST_SLOTS_HELPER" cargo-home "${CARGO_HOME:-$HOME/.cargo}" "$REPO_DIR/target") || { echo "GATE: FAIL (private Cargo home creation failed)"; exit 1; }
 export CARGO_HOME="$GATE_CARGO_HOME"
 export HOST_SLOTS_HELPER
+HOST_STALL_PID=""
+# Stop this boot's host stall sampler and wait for its last record.
+host_stall_stop() {
+  [ -n "$HOST_STALL_PID" ] || return 0
+  kill "$HOST_STALL_PID" 2>/dev/null
+  wait "$HOST_STALL_PID" 2>/dev/null
+  HOST_STALL_PID=""
+}
 gate_cleanup() {
   status=$?
   [ -z "${PHASE_NAME:-}" ] || phase_end "$status"
+  host_stall_stop
   rm -rf "$GATE_CARGO_HOME"
 }
 trap gate_cleanup EXIT
@@ -360,6 +369,13 @@ while [ "$i" -le "$COUNT" ]; do
   # runs and is not needed for these boot markers.
   # claim-lint:ok: src/bin/qemu-uefi.rs resolves the hostfwd source.
   INSPECTOR_START_MS="$(date +%s)000" || INSPECTOR_START_MS=""
+  # The host's own record of how long it kept each of this boot's vCPUs from
+  # running, kept with the boot as host-stall.jsonl. The SIGKILL scorer needs
+  # it to call a kick window starved (scripts/score-sigkill-teardown.py).
+  export BREENIX_HOST_STALL_RECORD="$OUTDIR/host-stall.jsonl"
+  nice -n 10 python3 "$REPO_DIR/scripts/x86-gate-host-stall-sampler.py" "$OUTDIR" \
+    > "$OUTDIR/host-stall-sampler.log" 2>&1 &
+  HOST_STALL_PID=$!
   phase_start boot
   BOOT_START=$SECONDS
   boot_completed=true
@@ -396,6 +412,7 @@ while [ "$i" -le "$COUNT" ]; do
   fi
 
   python3 "$HOST_SLOTS_HELPER" quiesce || exit 1
+  host_stall_stop
   phase_end
   BOOT_SECS=$((BOOT_SECS + SECONDS - BOOT_START))
   host_slot_header "$OUTDIR/serial_kernel.log" || exit 1
