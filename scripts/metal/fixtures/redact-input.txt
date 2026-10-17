@@ -1,0 +1,9 @@
+Station IP address is 198.51.100.77 via gateway 192.0.2.1
+URI: http://192.0.2.30:8240/breenix/boot.img
+iDRAC IPV4:  192.0.2.66   iDRAC IPV6: fe80::200:5eff:fe00:5301 and 2001:db8:0:0:0:0:0:5
+Port MAC 00:00:5E:00:53:01, other form 00-00-5e-00-53-02
+logged in using fixtureauto from 192.0.2.30
+password Fx9kQ2mPz7Lr4Wt8Vb3N leaked
+host fixturehost container fixture-container service tag FX12345 model FixtureModel
+paths /Users/someone/code/x /home/someone/y /root/breenix-metal-20261017t000000z-metal /var/lib/breenix-metal/boots/x /etc/breenix-metal/site.env
+kept: at 12:34:56 the kernel printed [timer] 1000 Hz, version 1.2.3, ratio 3:2, code 0x7f

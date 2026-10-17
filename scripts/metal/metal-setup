@@ -1,0 +1,238 @@
+#!/usr/bin/env python3
+"""One-time setup of the x86-metal machine's firmware and management controller (docs/metal/README.md,
+"One-time setup").
+
+  metal-setup account --slot N --name NAME   create the automation account in controller user slot N; reads three
+                                             lines on stdin: the operator account's name and password (used for
+                                             this step only, never stored) and the new account's password
+  metal-setup apply                          under the machine lease: IPMI over LAN on, the Lifecycle Controller's
+                                             inventory-on-restart off, and one BIOS settings job applied on one
+                                             reboot with inventory collection on for that cycle (the controller
+                                             re-reads BIOS values only then); then power off and read back
+  metal-setup readback                       read-only: every setting the boot loop depends on, as JSON; exit 0
+                                             when all of them read as expected
+"""
+import argparse
+import base64
+import contextlib
+import json
+import os
+from pathlib import Path
+import ssl
+import sys
+import threading
+import time
+import urllib.error
+import urllib.request
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import metal_lib as m  # noqa: E402
+
+JOB_SECONDS = 1800
+SETUP_CEILING_SECONDS = 2700
+
+
+def direct(site, user, password, method, path, body=None):
+    """A Redfish request outside the queue, for the account step only (the queue runs as the account it makes)."""
+    time.sleep(2)
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    request = urllib.request.Request('https://' + site['IDRAC_HOST'] + path, method=method,
+                                     data=None if body is None else json.dumps(body).encode())
+    request.add_header('Authorization', 'Basic ' + base64.b64encode(f'{user}:{password}'.encode()).decode())
+    request.add_header('Content-Type', 'application/json')
+    try:
+        with urllib.request.urlopen(request, context=context, timeout=60) as response:
+            raw = response.read()
+            return response.status, json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as error:
+        raw = error.read()
+        try:
+            return error.code, json.loads(raw)
+        except ValueError:
+            return error.code, {}
+
+
+def account(args):
+    site = m.load_site()
+    lines = sys.stdin.read().splitlines()
+    if len(lines) < 3:
+        print('account: need three lines on stdin', file=sys.stderr)
+        return 2
+    user, password, new_password = lines[0], lines[1], lines[2]
+    path = f'/redfish/v1/AccountService/Accounts/{args.slot}'
+    status, current = direct(site, user, password, 'GET', path)
+    if status != 200:
+        print(f'account: reading slot {args.slot} failed (HTTP {status})', file=sys.stderr)
+        return 1
+    if current.get('UserName') not in ('', args.name):
+        print(f'account: slot {args.slot} already holds another account; choose an empty slot', file=sys.stderr)
+        return 1
+    status, _ = direct(site, user, password, 'PATCH', path, {'UserName': args.name, 'Password': new_password,
+                                                             'RoleId': 'Administrator', 'Enabled': True})
+    print(f'account: create -> HTTP {status}')
+    if status not in (200, 202, 204):
+        return 1
+    attributes = {f'Users.{args.slot}.SolEnable': 'Enabled', f'Users.{args.slot}.IpmiLanPrivilege': 'Administrator'}
+    status, _ = direct(site, user, password, 'PATCH', m.MANAGER_ATTRIBUTES, {'Attributes': attributes})
+    print(f'account: SOL and IPMI privilege -> HTTP {status}')
+    if status not in (200, 202, 204):
+        return 1
+    status, own = direct(site, args.name, new_password, 'GET', path)
+    print(f"account: read back as itself -> HTTP {status}, role {own.get('RoleId')}, enabled {own.get('Enabled')}")
+    return 0 if status == 200 and own.get('RoleId') == 'Administrator' and own.get('Enabled') else 1
+
+
+def readback(write=True):
+    site = m.load_site()
+    rows, baseline = m.machine_checks(site, include_lc=True)
+    pending = m.rf_get(m.SYSTEM + '/Bios/Settings').get('Attributes', {})
+    protocol = m.rf_get(m.MANAGER + '/NetworkProtocol').get('IPMI', {})
+    slot = site.get('IDRAC_ACCOUNT_SLOT')
+    if slot:
+        own = m.rf_get(f'/redfish/v1/AccountService/Accounts/{slot}')
+        attributes = m.rf_get(m.MANAGER_ATTRIBUTES).get('Attributes', {})
+        rows += [('account.RoleId', 'Administrator', own.get('RoleId')),
+                 ('account.Enabled', True, own.get('Enabled')),
+                 ('account.SolEnable', 'Enabled', attributes.get(f'Users.{slot}.SolEnable')),
+                 ('account.IpmiLanPrivilege', 'Administrator', attributes.get(f'Users.{slot}.IpmiLanPrivilege'))]
+    rows.append(('redfish.IPMI.ProtocolEnabled', True, protocol.get('ProtocolEnabled')))
+    rows.append(('bios.pendingSettings', {}, pending))
+    failed = m.failed_checks(rows)
+    report = {'t': m.now(), 'rows': [{'name': n, 'expected': e, 'actual': a, 'ok': e == a} for n, e, a in rows],
+              'failed': [n for n, _, _ in failed], 'baseline': baseline}
+    if write:
+        m.write_json(m.STATE / 'setup' / f'readback-{int(m.now())}.json', report)
+    print(json.dumps(report, indent=1))
+    return 0 if not failed else 1
+
+
+def refresh_poll(job, state, expected, started, note):
+    """One poll of the settings job and the controller's BIOS values: (True, state) once the controller reports
+    every expected value with nothing pending, (False, state) when the job failed, (None, state) to keep waiting."""
+    if job:
+        body = m.rf_get(job if job.startswith('/') else '/' + job.split('/', 3)[-1])
+        # A job resource reports JobState; a task resource reports TaskState.
+        reported = body.get('JobState') or body.get('TaskState')
+        if reported != state:
+            state = reported
+            note('job', state=state, message=body.get('Message'), seconds=round(m.now() - started))
+        if state in ('Failed', 'CompletedWithErrors', 'Exception'):
+            return False, state
+        if state != 'Completed':
+            return None, state
+    values = m.rf_get(m.SYSTEM + '/Bios').get('Attributes', {})
+    pending = m.rf_get(m.SYSTEM + '/Bios/Settings').get('Attributes', {})
+    if all(values.get(k) == v for k, v in expected.items()) and not pending:
+        progress = m.rf_get(m.SYSTEM + '?$select=BootProgress').get('BootProgress', {})
+        note('bios-values-refreshed', seconds=round(m.now() - started), progress=progress.get('LastState'))
+        return True, state
+    return None, state
+
+
+def apply(args):
+    site = m.load_site()
+    holder = 'setup-' + time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
+    m.claim_lease({'id': holder, 'pid': os.getpid(), 'mode': 'setup'}, wait=True)
+    stop = threading.Event()
+
+    def beat():
+        while not stop.wait(m.HEARTBEAT_SECONDS):
+            m.update_lease(holder)
+    threading.Thread(target=beat, daemon=True).start()
+    log = m.STATE / 'setup' / (holder + '.jsonl')
+
+    def note(name, **fields):
+        m.append_jsonl(log, dict(fields, t=round(m.now(), 1), event=name))
+        print(name, json.dumps(fields, sort_keys=True), flush=True)
+    csior = 'LCAttributes.1.CollectSystemInventoryOnRestart'
+    try:
+        manager = m.rf_get(m.MANAGER_ATTRIBUTES).get('Attributes', {})
+        if manager.get('IPMILan.1.Enable') != 'Enabled':
+            reply = m.rf('PATCH', m.MANAGER_ATTRIBUTES, {'Attributes': {'IPMILan.1.Enable': 'Enabled'}})
+            note('ipmi-lan-enabled', status=reply.get('status'))
+        current = m.rf_get(m.SYSTEM + '/Bios').get('Attributes', {})
+        pending = m.rf_get(m.SYSTEM + '/Bios/Settings').get('Attributes', {})
+        expected = m.expected_bios(site)
+        wanted = {k: v for k, v in expected.items() if current.get(k) != v}
+        note('bios-diff', attributes=sorted(wanted), pending=sorted(pending))
+        if wanted or pending or args.refresh:
+            # The controller refreshes its copy of the BIOS values only while it collects inventory on restart,
+            # so collection is on for this power cycle and off again afterwards.
+            m.rf('PATCH', m.LC_ATTRIBUTES, {'Attributes': {csior: 'Enabled'}})
+            note('inventory-on-restart', value='Enabled')
+            job = None
+            if wanted and not pending:
+                reply = m.rf('PATCH', m.SYSTEM + '/Bios/Settings',
+                             {'@Redfish.SettingsApplyTime': {'ApplyTime': 'OnReset'}, 'Attributes': wanted})
+                job = reply.get('location')
+                note('bios-job', status=reply.get('status'), job=job.rsplit('/', 1)[-1] if job else None)
+                if not job:
+                    raise SystemExit('no settings job was created')
+            if m.power_state() != 'Off':
+                m.force_off_and_wait()
+            m.rf('POST', m.SYSTEM + '/Actions/ComputerSystem.Reset', {'ResetType': 'On'}, priority=0)
+            started = m.now()
+            m.update_lease(holder, state='powered', powerOnAt=started, ceilingAt=started + SETUP_CEILING_SECONDS)
+            note('power-on')
+            state = None
+            refreshed = False
+            while m.now() - started < JOB_SECONDS:
+                time.sleep(20)
+                try:
+                    done, state = refresh_poll(job, state, expected, started, note)
+                except m.BmcError as error:
+                    # The controller answers 503 while it collects inventory; it asks for a retry.
+                    note('controller-busy', error=str(error)[:120], seconds=round(m.now() - started))
+                    continue
+                if done is not None:
+                    refreshed = done
+                    break
+            off = m.force_off_and_wait()
+            note('power-off', off=off, seconds=round(m.now() - started))
+            m.rf('PATCH', m.LC_ATTRIBUTES, {'Attributes': {csior: 'Disabled'}})
+            note('inventory-on-restart', value='Disabled')
+            if job and state != 'Completed':
+                raise SystemExit(f'the settings job ended {state}')
+            if not refreshed:
+                raise SystemExit('the controller did not report the new BIOS values')
+        else:
+            lc = m.rf_get(m.LC_ATTRIBUTES).get('Attributes', {})
+            if lc.get(csior) != 'Disabled':
+                m.rf('PATCH', m.LC_ATTRIBUTES, {'Attributes': {csior: 'Disabled'}})
+                note('inventory-on-restart', value='Disabled')
+    finally:
+        stop.set()
+        if not m.force_off_and_wait():
+            m.quarantine_lease(holder, 'setup power-off failed')
+        with contextlib.suppress(m.BmcError):
+            lc = m.rf_get(m.LC_ATTRIBUTES).get('Attributes', {})
+            if lc.get(csior) != 'Disabled':
+                m.rf('PATCH', m.LC_ATTRIBUTES, {'Attributes': {csior: 'Disabled'}})
+                note('inventory-on-restart', value='Disabled')
+        m.clear_override()
+        m.release_lease(holder)
+    return readback()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest='command', required=True)
+    p = sub.add_parser('account')
+    p.add_argument('--slot', type=int, required=True)
+    p.add_argument('--name', required=True)
+    p = sub.add_parser('apply')
+    p.add_argument('--refresh', action='store_true', help='power-cycle with inventory collection on even when '
+                   'no setting differs, so the controller re-reads the BIOS values')
+    sub.add_parser('readback')
+    args = parser.parse_args()
+    if args.command == 'account':
+        return account(args)
+    if args.command == 'apply':
+        return apply(args)
+    return readback()
+
+
+if __name__ == '__main__':
+    sys.exit(main())

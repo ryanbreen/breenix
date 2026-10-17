@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+"""Builds one x86-metal boot's inputs in the x86 build host (docs/metal/README.md, "Build").
+
+  metal-build --id ID --sha SHA --repo DIR --rust-fork DIR --cache DIR --root DIR
+
+In a private clone of SHA: the effort-target guard, then userspace and the ext2 root (scripts/gate-artifacts.py,
+content-keyed and shared with the x86 gate), then the production kernel and its UEFI image, built under the host's
+x86-build slot so it never runs beside a gate boot. Writes <root>/breenix-metal-<id>-out/ with uefi.img, ext2.img,
+definition/ and build.json, and removes the clone. Exit 0 on success; 3 when the guard refuses the commit.
+"""
+import argparse
+import glob
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+DEFINITION = ('docs/metal/boot-path.json', 'docs/boot-path.json', 'xtask/src/boot_stages.rs',
+              'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json')
+
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as handle:
+        while chunk := handle.read(1 << 20):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def git(*args, **options):
+    return subprocess.run(['git', *args], check=True, capture_output=True, text=True, **options).stdout.strip()
+
+
+def paths(args):
+    key = args.id.lower()
+    root = Path(args.root)
+    return root / f'breenix-metal-{key}', root / f'breenix-metal-{key}-out', root / f'breenix-metal-{key}-tmp'
+
+
+def outer(args):
+    clone, out, tmp = paths(args)
+    started = time.time()
+    for directory in (clone, out, tmp):
+        shutil.rmtree(directory, ignore_errors=True)
+    git('-C', args.repo, 'fetch', '--no-tags', '--no-write-fetch-head', '--no-auto-gc', 'origin', args.sha)
+    git('clone', '--shared', '--quiet', args.repo, str(clone))
+    git('-C', str(clone), 'checkout', '--quiet', '--detach', args.sha)
+    # The guard reads origin's branches, so the clone's origin is the canonical checkout's remote.
+    git('-C', str(clone), 'remote', 'set-url', 'origin', git('-C', args.repo, 'remote', 'get-url', 'origin'))
+    # The pinned Rust library, as the x86 gate's tree helper materialises it: a snapshot of the pin inside the
+    # tree, linked relatively so the library's libc patch resolves to this checkout.
+    link = clone / 'rust-fork'
+    if link.is_symlink() or link.exists():
+        link.unlink()
+    if (clone / 'rust-fork.toml').exists():
+        subprocess.run([str(clone / 'scripts/rust-fork.sh'), 'snapshot', args.rust_fork, str(clone / 'gate-rust-fork')],
+                       check=True, capture_output=True)
+        link.symlink_to('gate-rust-fork')
+    else:
+        link.symlink_to(args.rust_fork)
+    out.mkdir(parents=True)
+    tmp.mkdir(parents=True)
+    guard = clone / 'scripts/effort-target-guard.py'
+    targets = re.search(r"^TARGETS = \((.*)\)", guard.read_text(), re.M)
+    target = 'x86-metal' if targets and "'x86-metal'" in targets.group(1) else 'x86'
+    check = subprocess.run([sys.executable, str(guard), '--repo', str(clone), '--commit', args.sha,
+                            '--target', target], capture_output=True, text=True)
+    print(f'[metal-build] guard target={target} exit={check.returncode}', flush=True)
+    if check.returncode != 0:
+        print(check.stdout + check.stderr, flush=True)
+        shutil.rmtree(clone, ignore_errors=True)
+        shutil.rmtree(tmp, ignore_errors=True)
+        return 3
+    environment = dict(os.environ, CARGO_BUILD_JOBS='4', BREENIX_GATE_CACHE_DIR=args.cache, TMPDIR=str(tmp),
+                       BREENIX_GATE_TMP=str(tmp), HOST_SLOTS_HELPER=str(clone / 'scripts/host-slots.py'),
+                       BREENIX_SLOT_WORKTREE=str(clone), BREENIX_SLOT_COMMIT=args.sha,
+                       BREENIX_TARGET_POLICY_CHECKED=f'{target}:{args.sha}',
+                       PATH=str(Path.home() / '.cargo/bin') + os.pathsep + os.environ.get('PATH', ''))
+    inner = [sys.executable, str(Path(__file__).resolve()), '--inner', '--id', args.id, '--sha', args.sha,
+             '--repo', args.repo, '--rust-fork', args.rust_fork, '--cache', args.cache, '--root', args.root,
+             '--guard-target', target]
+    status = subprocess.call([sys.executable, str(clone / 'scripts/host-slots.py'), 'supervise', '--'] + inner,
+                             cwd=clone, env=environment)
+    print(f'[metal-build] build exit={status} seconds={time.time() - started:.0f}', flush=True)
+    shutil.rmtree(clone, ignore_errors=True)
+    shutil.rmtree(tmp, ignore_errors=True)
+    return status
+
+
+def keep_logs(logs, out):
+    """A failed build keeps its logs in the output folder and prints the end of each one."""
+    shutil.copytree(logs, out / 'logs', dirs_exist_ok=True)
+    for log in sorted((out / 'logs').glob('*.log')):
+        print(f'[metal-build] --- {log.name} (last 40 lines)', flush=True)
+        print('\n'.join(log.read_text(errors='replace').splitlines()[-40:]), flush=True)
+
+
+def inner(args):
+    clone, out, tmp = paths(args)
+    helper = clone / 'scripts/host-slots.py'
+    logs = tmp / 'logs'
+    logs.mkdir(parents=True, exist_ok=True)
+    home = subprocess.run([sys.executable, str(helper), 'cargo-home', str(Path.home() / '.cargo'),
+                           str(clone / 'target')], check=True, capture_output=True, text=True).stdout.strip()
+    os.environ['CARGO_HOME'] = home
+    timings = {}
+    try:
+        started = time.time()
+        if subprocess.call([sys.executable, str(clone / 'scripts/gate-artifacts.py'), str(clone), str(logs)],
+                           cwd=clone) != 0:
+            keep_logs(logs, out)
+            return 1
+        timings['userspace'] = round(time.time() - started)
+        subprocess.run([sys.executable, str(helper), 'acquire', 'x86-build'], check=True)
+        started = time.time()
+        log = logs / 'kernel-build.log'
+        with log.open('w') as output:
+            status = subprocess.call(['cargo', 'build', '--release', '--bin', 'qemu-uefi'], cwd=clone,
+                                     stdout=output, stderr=subprocess.STDOUT)
+        subprocess.run([sys.executable, str(helper), 'release', 'x86-build'], check=True)
+        timings['kernel'] = round(time.time() - started)
+        text = log.read_text(errors='replace')
+        notices = [line for line in text.splitlines() if re.match(r'^(warning|error)', line)]
+        if status != 0 or notices:
+            keep_logs(logs, out)
+            print(f'[metal-build] kernel build failed: exit {status}, {len(notices)} warning/error lines', flush=True)
+            return 1
+        images = sorted(glob.glob(str(clone / 'target/release/build/breenix-*/out/breenix-uefi.img')),
+                        key=os.path.getmtime)
+        if not images:
+            print('[metal-build] no UEFI image was produced', flush=True)
+            return 1
+        shutil.copyfile(images[-1], out / 'uefi.img')
+        shutil.copyfile(clone / 'testdata/ext2.img', out / 'ext2.img')
+        copied = []
+        for name in DEFINITION:
+            source = clone / name
+            if source.is_file():
+                target = out / 'definition' / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, target)
+                copied.append(name)
+        build = {'commit': args.sha, 'guardTarget': args.guard_target, 'profile': 'production',
+                 'features': [], 'timings': timings, 'definition': copied,
+                 'uefi': {'size': (out / 'uefi.img').stat().st_size, 'sha256': sha256(out / 'uefi.img')},
+                 'ext2': {'size': (out / 'ext2.img').stat().st_size, 'sha256': sha256(out / 'ext2.img')}}
+        (out / 'build.json').write_text(json.dumps(build, indent=1) + '\n')
+        print('[metal-build] inputs ready ' + json.dumps(timings), flush=True)
+        return 0
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--inner', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--guard-target', default='', help=argparse.SUPPRESS)
+    for name in ('--id', '--sha', '--repo', '--rust-fork', '--cache', '--root'):
+        parser.add_argument(name, required=True)
+    args = parser.parse_args()
+    if not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.id) or not re.fullmatch(r'[0-9a-f]{40}', args.sha):
+        parser.error('--id must be a metal boot id and --sha a full commit id')
+    return inner(args) if args.inner else outer(args)
+
+
+if __name__ == '__main__':
+    sys.exit(main())

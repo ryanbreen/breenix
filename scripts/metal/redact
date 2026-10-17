@@ -1,0 +1,37 @@
+#!/usr/bin/env python3
+"""Masks private values in text leaving the x86-metal record (docs/metal/README.md, "Redaction").
+
+  redact [--site FILE] [FILE...]   redacted copy of the files (or stdin) on stdout
+  redact [--site FILE] --list      the identifier list (never a credential), one per line
+
+Masks IPv4 and IPv6 addresses, MAC addresses, every literal value in the site file, its identifier list and
+private paths.
+"""
+import argparse
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import metal_lib as m  # noqa: E402
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--site', default=str(m.SITE_PATH))
+    parser.add_argument('--list', action='store_true')
+    parser.add_argument('files', nargs='*')
+    args = parser.parse_args()
+    site = m.load_site(args.site)
+    if args.list:
+        for name in sorted(m.identifier_list(site)):
+            print(name)
+        return 0
+    redact = m.Redactor(site)
+    sources = [Path(name).read_text(errors='replace') for name in args.files] or [sys.stdin.read()]
+    for text in sources:
+        sys.stdout.write(redact(text))
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

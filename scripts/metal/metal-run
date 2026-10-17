@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+"""Starts, follows and stops x86-metal boots from the boot host (docs/metal/README.md, "Running a boot").
+
+  metal-run boot [--payload image|hang|none] [--sha SHA | --branch NAME] [--no-wait] [--inject forceoff-fail]
+  metal-run stop ID
+  metal-run status
+  metal-run follow ID
+
+`boot` returns as soon as the boot's driver unit holds (or waits for) the machine lease, printing the boot id, so
+the caller's ssh session can end. For a Breenix image (the default payload) it then builds the commit in the x86
+build host, detached, and streams the image inputs into the service container. Instance names and paths come from
+the host file named by BREENIX_METAL_HOST_ENV (default ~/.config/breenix-metal/host.env), never from the repository.
+"""
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import time
+
+TOOLS = '/opt/breenix-metal'
+STATE = '/var/lib/breenix-metal'
+HERE = Path(__file__).resolve().parent
+
+
+def host_env():
+    path = Path(os.environ.get('BREENIX_METAL_HOST_ENV', Path.home() / '.config/breenix-metal/host.env'))
+    values = {}
+    for line in path.read_text().splitlines():
+        if '=' in line and not line.lstrip().startswith('#'):
+            key, _, value = line.partition('=')
+            values[key.strip()] = value.strip().strip('"\'')
+    return values
+
+
+def incus(*arguments, **options):
+    return subprocess.run(['sudo', '-n', 'incus', *arguments], stdin=options.pop('stdin', subprocess.DEVNULL),
+                          **options)
+
+
+def in_metal(env, *command, **options):
+    return incus('exec', env['METAL_INSTANCE'], '--', *command, **options)
+
+
+def in_build(env, *command, **options):
+    return incus('exec', env['BUILD_INSTANCE'], '--', *command, **options)
+
+
+def resolve(env, branch):
+    result = in_build(env, 'git', '-C', env['BUILD_REPO'], 'ls-remote', 'origin', 'refs/heads/' + branch,
+                      capture_output=True, text=True)
+    line = result.stdout.strip().split('\t')[0] if result.returncode == 0 else ''
+    if not re.fullmatch(r'[0-9a-f]{40}', line):
+        raise SystemExit(f'cannot resolve origin/{branch}')
+    return line
+
+
+def boot(args):
+    env = host_env()
+    payload = args.payload
+    sha = target = ''
+    if payload == 'image':
+        if args.sha:
+            sha, target = args.sha, 'branch:' + args.branch if args.branch else 'main'
+        else:
+            branch = args.branch or 'main'
+            sha = resolve(env, branch)
+            target = 'main' if branch == 'main' else 'branch:' + branch
+    boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
+    command = ['python3', f'{TOOLS}/metal-boot', 'launch', '--id', boot_id, '--payload', payload]
+    if sha:
+        command += ['--commit', sha, '--target', target]
+    if args.no_wait:
+        command.append('--no-wait')
+    if args.inject:
+        command += ['--inject', args.inject]
+    result = in_metal(env, *command, capture_output=True, text=True)
+    print(result.stdout.strip() or result.stderr.strip(), flush=True)
+    if result.returncode != 0:
+        return result.returncode
+    if payload == 'image':
+        logs = Path.home() / '.local/state/breenix-metal'
+        logs.mkdir(parents=True, exist_ok=True)
+        with (logs / f'{boot_id}.log').open('w') as log:
+            subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '_build', boot_id, sha],
+                             stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+        print(json.dumps({'id': boot_id, 'build': 'started', 'commit': sha}), flush=True)
+    return 0
+
+
+def build(boot_id, sha):
+    """Detached: build in the x86 build host, stream the inputs into the boot's stage folder, signal the driver."""
+    env = host_env()
+    key = boot_id.lower()
+    tools = f"{env['BUILD_ROOT']}/breenix-metal-{key}-tools"
+    out = f"{env['BUILD_ROOT']}/breenix-metal-{key}-out"
+    stage = f'{STATE}/stage/{boot_id}/inputs'
+
+    def failed(why):
+        print(f'[metal-run] build failed: {why}', flush=True)
+        in_metal(env, 'python3', f'{TOOLS}/metal-boot', 'inputs-failed', boot_id, why)
+        in_build(env, 'rm', '-rf', tools, out)
+        return 1
+    in_build(env, 'mkdir', '-p', tools, check=True)
+    incus('file', 'push', str(HERE / 'metal-build'), f"{env['BUILD_INSTANCE']}{tools}/metal-build", check=True)
+    started = time.time()
+    status = in_build(env, 'python3', f'{tools}/metal-build', '--id', boot_id, '--sha', sha,
+                      '--repo', env['BUILD_REPO'], '--rust-fork', env['BUILD_RUST_FORK'],
+                      '--cache', env['BUILD_CACHE'], '--root', env['BUILD_ROOT']).returncode
+    print(f'[metal-run] build exit {status} after {time.time() - started:.0f} s', flush=True)
+    if status == 3:
+        return failed('the effort-target guard refused the commit')
+    if status != 0:
+        return failed(f'the build failed (exit {status})')
+    in_metal(env, 'mkdir', '-p', stage, check=True)
+    sender = subprocess.Popen(['sudo', '-n', 'incus', 'exec', env['BUILD_INSTANCE'], '--', 'tar', '-C', out, '-cf',
+                               '-', '.'], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE)
+    receiver = subprocess.run(['sudo', '-n', 'incus', 'exec', env['METAL_INSTANCE'], '--', 'tar', '-C', stage,
+                               '-xf', '-'], stdin=sender.stdout)
+    sender.stdout.close()
+    if sender.wait() != 0 or receiver.returncode != 0:
+        return failed('the inputs could not be copied into the service container')
+    in_build(env, 'rm', '-rf', tools, out)
+    in_metal(env, 'python3', f'{TOOLS}/metal-boot', 'inputs-ready', boot_id, check=True)
+    print(f'[metal-run] inputs delivered after {time.time() - started:.0f} s', flush=True)
+    return 0
+
+
+def follow(env, boot_id):
+    directory = f'{STATE}/boots/{boot_id}'
+    script = (f'tail -n +1 -F {directory}/console.log & t=$!; '
+              f'while [ ! -e {directory}/ended ]; do sleep 2; done; sleep 2; kill $t; '
+              f'echo "exit-status $(cat {directory}/exit-status)"')
+    return in_metal(env, 'sh', '-c', script).returncode
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest='command', required=True)
+    p = sub.add_parser('boot')
+    p.add_argument('--payload', choices=('image', 'hang', 'none'), default='image')
+    p.add_argument('--sha')
+    p.add_argument('--branch')
+    p.add_argument('--no-wait', action='store_true')
+    p.add_argument('--inject', choices=('forceoff-fail',))
+    for name in ('stop', 'follow'):
+        sub.add_parser(name).add_argument('id')
+    sub.add_parser('status')
+    p = sub.add_parser('_build')
+    p.add_argument('id')
+    p.add_argument('sha')
+    args = parser.parse_args()
+    if args.command == 'boot':
+        return boot(args)
+    if args.command == '_build':
+        return build(args.id, args.sha)
+    env = host_env()
+    if args.command == 'follow':
+        return follow(env, args.id)
+    if args.command == 'stop':
+        return in_metal(env, 'python3', f'{TOOLS}/metal-boot', 'stop', args.id).returncode
+    return in_metal(env, 'python3', f'{TOOLS}/metal-boot', 'status').returncode
+
+
+if __name__ == '__main__':
+    sys.exit(main())
