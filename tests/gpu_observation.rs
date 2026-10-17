@@ -62,10 +62,12 @@ fn readback_has_no_cpu_read_outside_the_observation_boundary() {
 fn readback_stages_through_charged_frames_not_heap() {
     // Structural guard on direct pixel staging, not a transitive allocator proof.
     let path = readback_path();
+    let staging = include_str!("../kernel/src/gpu/staging.rs");
     for heap in ["Vec", "vec!", "try_reserve", "Box::"] {
         assert!(!path.contains(heap), "the readback path uses {heap}");
+        assert!(!staging.contains(heap), "readback staging uses {heap}");
     }
-    let staging = path.split("impl Staging").nth(1).unwrap().split("impl Drop for Staging").next().unwrap();
+    assert!(path.contains("Staging::new("));
     assert!(staging.contains("MEMORY_QUOTA"));
     assert!(staging.contains("reserve_gpu_bytes"));
     assert!(staging.contains("Pages::new(frames)"));
