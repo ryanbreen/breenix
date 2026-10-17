@@ -955,6 +955,8 @@ mod gpu_screen;
 struct Screen {
     fb: Option<FrameBuf>,
     gpu: Option<gpu_screen::GpuScreen>,
+    /// Why the GPU view was last not drawn, so each failure is reported once.
+    gpu_failure: Option<String>,
     /// Whether the live strip is drawn (see `/etc/breenix/suite-live`).
     live: bool,
     /// Where the last full draw put the live strip.
@@ -966,7 +968,7 @@ impl Screen {
     /// runs and prints its serial lines; on a small one the panel draws what fits.
     fn open(gpu: bool) -> Screen {
         if gpu {
-            return Screen { fb: None, gpu: Some(gpu_screen::GpuScreen::new()), live: false, area: None };
+            return Screen { fb: None, gpu: Some(gpu_screen::GpuScreen::new()), gpu_failure: None, live: false, area: None };
         }
         let fb = (|| {
             let info = graphics::fbinfo().ok()?;
@@ -982,7 +984,7 @@ impl Screen {
             })
         })();
         let off = std::fs::read_to_string("/etc/breenix/suite-live").is_ok_and(|text| text.trim() == "off");
-        Screen { live: fb.is_some() && !off, fb, gpu: None, area: None }
+        Screen { live: fb.is_some() && !off, fb, gpu: None, gpu_failure: None, area: None }
     }
 
     fn live_on(&self) -> bool { self.live }
@@ -1018,8 +1020,14 @@ impl Screen {
     fn draw(&mut self, suite: &Suite, title: &str, subtitle: &str, states: &[Vec<State>], verdict: Verdict<'_>,
         feed: &Feed, only: Option<&str>) {
         if let Some(gpu) = self.gpu.as_mut() {
-            // Failure to show the GPU view is a failed run, never a CPU fallback.
-            gpu.draw(states).unwrap_or_else(|e| panic!("{e}"));
+            // No CPU fallback, and never an abort: without a GPU view every case still
+            // runs and fails naming the layer it needs. A failure is reported once
+            // each time it changes, on a line that is not a suite record.
+            let shown = gpu.draw(states).err();
+            if shown.is_some() && shown != self.gpu_failure {
+                emit(&std::format!("gpu suite view not drawn: {}", shown.as_deref().unwrap_or("")));
+            }
+            self.gpu_failure = shown;
             return;
         }
         let live_on = self.live;
