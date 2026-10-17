@@ -2152,6 +2152,9 @@ pub fn sys_sigtimedwait(set_ptr: u64, info_ptr: u64, timeout_ptr: u64, size: u64
             return SyscallResult::Err(3);
         };
         p.signals.thread.wait_set.store(set, Ordering::Release);
+        // As on the lock-free registration above: a lock-free kill's second
+        // look at the wait sets, or this routing's look at what it posted.
+        core::sync::atomic::fence(Ordering::SeqCst);
         m.route_pending_signals_to(tid);
     }
     let result = loop {
