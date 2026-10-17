@@ -136,3 +136,6 @@ pub mod ramdisk;
 
 #[path = "../../../kernel/src/block/read_only.rs"]
 pub mod read_only;
+
+#[path = "../../../kernel/src/block/install.rs"]
+pub mod install;

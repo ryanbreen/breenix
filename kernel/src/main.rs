@@ -654,12 +654,18 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     x86_64::instructions::interrupts::enable();
     drivers::run_post_init_self_tests();
 
+    // A storage-lane install copies the RAM disk to the hardware disk while the
+    // RAM disk is still unmounted, so the copy is the image as delivered.
+    kernel::block::install_requested_root();
+
     // Initialize ext2 root filesystem once IRQ-driven block completions can arrive.
     match kernel::fs::ext2::init_root_fs() {
         Ok(()) => {
             log::info!("ext2 root filesystem mounted");
             if kernel::block::ramdisk::device().is_some() {
                 log::info!("[fs] root mounted from the RAM disk");
+            } else if kernel::block::root_on_installed_disk() {
+                log::info!("[fs] root mounted from the installed disk");
             }
             if kernel::block::hardware_read_only() {
                 let count = kernel::block::devices().len();
