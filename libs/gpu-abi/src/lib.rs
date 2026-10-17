@@ -488,7 +488,8 @@ pub mod record {
 }
 
 /// Test-control points the effort owns (`docs/gui/gpu.md` section 1.8), with the ops of
-/// system call 415.
+/// system call 415. Every point is one-shot: it affects the next occurrence of its event,
+/// counts one firing and disarms itself.
 pub mod test_point {
     pub const FIRST: u32 = 19;
     pub const SKIP_TRANSFER: u32 = 19;

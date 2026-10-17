@@ -224,10 +224,6 @@ pub fn arm(point: u32, param: u64) -> Result<(), CaseError> {
     ensure(r == 0, || format!("arming test-control point {point} returned {}", errno(r)))
 }
 
-pub fn disarm() {
-    let _ = gpu::tc_disarm_all();
-}
-
 pub fn fired(point: u32) -> u64 {
     gpu::tc_fired(point).unwrap_or(u64::MAX)
 }

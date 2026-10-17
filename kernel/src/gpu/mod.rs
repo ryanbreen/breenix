@@ -371,23 +371,20 @@ impl Core {
         (1..=capability::LAST).find(|&id| !self.have[id as usize] || masked == Some(id))
     }
 
-    /// Whether ops may run, and if not, the status and the missing capability. While test
-    /// point 23 (`mask-capability`) is armed, the capability its parameter names counts
-    /// as absent, so admission fails naming it (`device/missing-capability-fails`).
+    /// Whether ops may run, and if not, the status and the missing capability. Test point
+    /// 23 (`mask-capability`) is one-shot: the next admission decision counts the
+    /// capability its parameter names as absent, so that op fails naming it
+    /// (`device/missing-capability-fails`), and the decision after it sees the device's
+    /// real capabilities.
     fn admission(&self) -> Result<(), (u32, u32)> {
         if self.dev.is_none() {
             return Err((if self.status == abi::status::ADMITTED { abi::status::DEVICE_FAILED } else { self.status }, 0));
         }
-        let masked = crate::test_control::peek(test_point::MASK_CAPABILITY)
+        let masked = crate::test_control::take(test_point::MASK_CAPABILITY, 0)
             .map(|p| p as u32)
             .filter(|&c| (1..=capability::LAST).contains(&c));
         match self.first_missing(masked) {
-            Some(missing) => {
-                if masked.is_some() {
-                    crate::test_control::count_fired(test_point::MASK_CAPABILITY);
-                }
-                Err((abi::status::MISSING_CAPABILITY, missing))
-            }
+            Some(missing) => Err((abi::status::MISSING_CAPABILITY, missing)),
             None => Ok(()),
         }
     }

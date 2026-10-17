@@ -2,7 +2,7 @@
 //! 1.5 item 8 and 1.6; the CAPS record's layout in `docs/gui/gpu-abi.md`).
 
 use libbreenix::gpu::{self, abi};
-use libbreenix::suite::{value, CaseResult};
+use libbreenix::suite::{value, CaseError, CaseResult};
 
 use super::common::*;
 
@@ -122,10 +122,11 @@ pub fn missing_capability_fails() -> CaseResult {
         ensure(c.status == abi::status::MISSING_CAPABILITY, || format!("masking {} left status {}", capability::name(cap), c.status))?;
         ensure(c.missing == cap, || format!("masking {} reports capability {} missing", capability::name(cap), c.missing))?;
         ensure(reason == want, || format!("masking {}: the reason is {reason:?}, expected {want:?}", capability::name(cap)))?;
-        ensure(fired(test_point::MASK_CAPABILITY) > before, || "the mask did not fire".to_string())?;
-        disarm();
+        ensure(fired(test_point::MASK_CAPABILITY) == before + 1, || "the mask did not fire exactly once".to_string())?;
+        // One-shot (`docs/gui/gpu.md` section 1.8): the next decision sees the device's
+        // real capabilities without DISARM_ALL.
         let c = caps()?;
-        ensure(c.status == abi::status::ADMITTED && c.missing == 0, || format!("after disarming {}, status {} missing {}", capability::name(cap), c.status, c.missing))?;
+        ensure(c.status == abi::status::ADMITTED && c.missing == 0, || format!("the CAPS after the one masking {} has status {} missing {}", capability::name(cap), c.status, c.missing))?;
     }
     pass()
 }
@@ -138,20 +139,40 @@ pub fn no_fallback() -> CaseResult {
     frame(ctx, &scene(t, green, &[]))?;
     let (_, rec) = read(t, 16, 16)?;
     let generation = u64_at(&rec, record::GENERATION);
-    arm(test_point::MASK_CAPABILITY, capability::REGION_COPY as u64)?;
+    // Point 23 is one-shot (`docs/gui/gpu.md` section 1.8): armed before each op, it
+    // refuses that op alone, which falls back to nothing.
+    let mask = || -> Result<u64, CaseError> {
+        let before = fired(test_point::MASK_CAPABILITY);
+        arm(test_point::MASK_CAPABILITY, capability::REGION_COPY as u64)?;
+        Ok(before)
+    };
+    let once = |before: u64, what: &str| {
+        let n = fired(test_point::MASK_CAPABILITY);
+        ensure(n == before + 1, || format!("{what}: the mask fired {} times, expected once", n - before))
+    };
     let mut arg = [0u8; 256];
     for op in abi::op::CONTEXT_CREATE..=abi::op::LAST {
+        let before = mask()?;
         // SAFETY: a live 256-byte buffer, at least every op's argument size.
         let r = unsafe { gpu::call(op, arg.as_mut_ptr(), 0) };
         ensure(r == -ENODEV, || format!("with region-copy masked, op {op} returned {}", errno(r)))?;
+        once(before, &format!("op {op}"))?;
     }
+    let before = mask()?;
     let (r, _) = gpu::submit(ctx, &scene(t, bgra(0, 0, 0xFF, 0xFF), &[]));
     ensure(r == -ENODEV, || format!("with region-copy masked, a valid SUBMIT returned {}", errno(r)))?;
+    once(before, "SUBMIT")?;
+    let before = mask()?;
     let (r, _) = gpu::counters(0);
     ensure(r == -ENODEV, || format!("with region-copy masked, COUNTERS returned {}", errno(r)))?;
+    once(before, "COUNTERS")?;
+    let before = mask()?;
     let c = caps()?;
     ensure(c.status == abi::status::MISSING_CAPABILITY && c.missing == capability::REGION_COPY, || format!("CAPS while masked: status {} missing {}", c.status, c.missing))?;
-    disarm();
+    once(before, "CAPS")?;
+    // The mask is spent: the next decision sees the device's real capabilities.
+    let c = caps()?;
+    ensure(c.status == abi::status::ADMITTED && c.missing == 0, || format!("CAPS after the mask was spent: status {} missing {}", c.status, c.missing))?;
     // Nothing rendered another way: the target is as it was, at the same generation.
     let rec = expect(t, &scene_canvas(16, 16, green, &[]), "after the refused submission")?;
     ensure(u64_at(&rec, record::GENERATION) == generation, || format!("generation moved from {generation} to {}", u64_at(&rec, record::GENERATION)))?;

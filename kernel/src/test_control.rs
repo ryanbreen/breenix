@@ -8,10 +8,10 @@
 //! The latch and the caller are checked before an argument is decoded.
 //!
 //! The points defined here are the GPU effort's, 19 to 31. Each is a branch in the real
-//! code path that asks `take` (or, for a mask that holds while armed, `peek`) whether its
-//! point is armed; both read the latch first, so outside a suite boot a point costs one
-//! load and can never fire. Arming is one-shot unless the point's own documentation says
-//! it holds until `DISARM_ALL`.
+//! code path that asks `take` whether its point is armed; it reads the
+//! latch first, so outside a suite boot a point costs one load and can never fire. Every
+//! point is one-shot: it affects the next occurrence of its event, counts one firing and
+//! disarms itself.
 
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -98,27 +98,6 @@ pub fn take(point: u32, target: u64) -> Option<u64> {
     }
     p.fired.fetch_add(1, Ordering::AcqRel);
     Some(p.param.load(Ordering::Acquire))
-}
-
-/// The parameter of `point` while it is armed, without disarming it: for a point that
-/// holds a condition until `DISARM_ALL` (`mask-capability`). The caller counts each
-/// effect with [`count_fired`].
-#[inline]
-pub fn peek(point: u32) -> Option<u64> {
-    if !enabled() {
-        return None;
-    }
-    let p = POINT_TABLE.get(point as usize)?;
-    p.armed
-        .load(Ordering::Acquire)
-        .then(|| p.param.load(Ordering::Acquire))
-}
-
-/// Count one effect of a held point.
-pub fn count_fired(point: u32) {
-    if let Some(p) = POINT_TABLE.get(point as usize) {
-        p.fired.fetch_add(1, Ordering::AcqRel);
-    }
 }
 
 fn caller_is_root() -> bool {
