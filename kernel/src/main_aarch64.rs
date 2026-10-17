@@ -807,8 +807,8 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         kernel::platform_config::FramePoolSource::DeviceTree => {
             serial_println!("[boot] Frame pool from the device tree:")
         }
-        kernel::platform_config::FramePoolSource::FixedWindow(reason) => {
-            serial_println!("[boot] WARNING: {}; frame pool is the fixed window:", reason)
+        kernel::platform_config::FramePoolSource::Unavailable(reason) => {
+            panic!("No safe physical frame pool: {}", reason)
         }
     }
     for range in frame_pool.ranges.as_slice() {

@@ -152,10 +152,8 @@ pub enum FramePoolSource {
     UefiMemoryMap,
     /// The memory nodes of QEMU's device tree.
     DeviceTree,
-    /// No description could be read; the pool is the window between the
-    /// per-CPU stacks and the DMA block, the pool this kernel used before it
-    /// read the firmware's description.
-    FixedWindow(&'static str),
+    /// No trustworthy description could be read; no page may be allocated.
+    Unavailable(&'static str),
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -179,14 +177,12 @@ fn direct_map_ram_window(ram_base_offset: u64) -> PhysRange {
 }
 
 #[cfg(target_arch = "aarch64")]
-fn fixed_window_pool(ram_base_offset: u64, reason: &'static str) -> FramePool {
-    let window = PhysRange::new(
-        KERNEL_FIXED_RANGES[0].end + ram_base_offset,
-        KERNEL_FIXED_RANGES[1].start + ram_base_offset,
-    );
+fn unavailable_pool(reason: &'static str) -> FramePool {
+    // A partial or missing map cannot establish that even the old window is
+    // free of firmware reservations. Keep the pool empty until a valid map exists.
     FramePool {
-        ranges: phys_memory::frame_pool([window], core::iter::empty(), window),
-        source: FramePoolSource::FixedWindow(reason),
+        ranges: RangeSet::new(),
+        source: FramePoolSource::Unavailable(reason),
     }
 }
 
@@ -231,7 +227,7 @@ pub fn frame_pool() -> &'static FramePool {
             ranges,
             source: FramePoolSource::DeviceTree,
         },
-        Err(error) => fixed_window_pool(0, error.as_str()),
+        Err(error) => unavailable_pool(error.as_str()),
     })
 }
 
@@ -771,11 +767,10 @@ pub fn init_from_parallels(config: &HardwareConfig) -> bool {
 
     RAM_BASE_OFFSET.store(config.ram_base_offset, Ordering::Relaxed);
 
-    // The loader's RAM regions are the UEFI map's conventional and boot-services
-    // memory, taken before it loaded the kernel; everything it allocated later
-    // is dead once the kernel runs, except the kernel image, which lies in the
-    // fixed ranges. Runtime-services memory is a different type, and is
-    // subtracted as well so no map can hand it out.
+    // HardwareConfig v5 carries only EfiConventionalMemory from the final
+    // ExitBootServices map (UEFI 2.10 section 7.2, Tables 7.5 and 7.6).
+    // Boot-services and loader pages stay reserved: firmware's in-flight
+    // device DMA may still be active after ExitBootServices.
     let region_count = (config.ram_region_count as usize).min(config.ram_regions.len());
     if region_count > 0 {
         let offset = config.ram_base_offset;
@@ -797,7 +792,7 @@ pub fn init_from_parallels(config: &HardwareConfig) -> bool {
         });
     } else {
         FRAME_POOL.call_once(|| {
-            fixed_window_pool(config.ram_base_offset, "the loader passed no RAM regions")
+            unavailable_pool("the loader passed no conventional RAM regions")
         });
     }
 

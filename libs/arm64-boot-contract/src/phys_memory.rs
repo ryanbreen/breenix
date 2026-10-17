@@ -8,6 +8,24 @@
 //! as normal memory, then the reservations are subtracted from it. When a set
 //! runs out of slots it drops memory and keeps the reservations.
 
+/// Select free pages from the final UEFI memory map. Descriptor tuples are
+/// (type, attributes, physical start, page count), from UEFI 2.10 section 7.2,
+/// Tables 7.5 and 7.6. Type 7 is EfiConventionalMemory; attribute bit 63 is
+/// EFI_MEMORY_RUNTIME. Boot-services and loader pages remain unavailable while
+/// firmware DMA can still own them, even after ExitBootServices.
+pub fn final_uefi_conventional_ranges(
+    descriptors: impl IntoIterator<Item = (u32, u64, u64, u64)>,
+) -> RangeSet {
+    let mut ranges = RangeSet::new();
+    for (kind, attributes, base, pages) in descriptors {
+        if kind == 7 && attributes & (1 << 63) == 0 {
+            ranges.insert(PhysRange::from_base_size(base, pages.saturating_mul(PAGE_SIZE)));
+        }
+    }
+    ranges.align_to_pages();
+    ranges
+}
+
 /// Granule of the frame allocator.
 pub const PAGE_SIZE: u64 = 4096;
 
@@ -532,6 +550,25 @@ mod tests {
 
     fn r(start: u64, end: u64) -> PhysRange {
         PhysRange::new(start, end)
+    }
+
+    #[test]
+    fn final_uefi_map_keeps_dma_loader_and_runtime_pages_unavailable() {
+        let ranges = final_uefi_conventional_ranges([
+            (7, 0, 0x4400_0000, 1),
+            (4, 0, 0x4400_1000, 1), // Boot-services DMA buffer.
+            (3, 0, 0x4400_2000, 1), // Boot-services code.
+            (2, 0, 0x4400_3000, 1), // Loader allocation made after initial map.
+            (1, 0, 0x4400_4000, 1), // Loader code.
+            (6, 1 << 63, 0x4400_5000, 1), // Runtime data.
+            (7, 1 << 63, 0x4400_6000, 1), // Runtime attribute wins over type.
+            (7, 0, 0x4400_7000, 2),
+        ]);
+        assert_eq!(ranges.as_slice(), &[
+            r(0x4400_0000, 0x4400_1000),
+            r(0x4400_7000, 0x4400_9000),
+        ]);
+        assert!(final_uefi_conventional_ranges([]).as_slice().is_empty());
     }
 
     #[test]
