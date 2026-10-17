@@ -11,11 +11,8 @@ source = (ROOT / 'kernel/src/interrupts/timer.rs').read_text()
 handler = source[source.index('#[no_mangle]'):source.index('/// Reset this CPU')]
 quantum = next(line for line in source.splitlines() if line.startswith('const TIME_QUANTUM:'))
 scheduler_source = (ROOT / 'kernel/src/task/scheduler.rs').read_text()
-decision = scheduler_source[scheduler_source.index('/// x86_64: a `RETRY_VECTOR` self-IPI this CPU sent'):
-                            scheduler_source.index('/// x86_64: called first on every entry to `check_need_resched_and_switch`')]
 retry = scheduler_source[scheduler_source.index('pub fn retry_after_interrupts_x86()'):
                          scheduler_source.index('/// x86_64: arrange for this CPU to pick again')]
-decision = decision.replace('#[cfg(target_arch = "x86_64")]\n', '')
 harness = r'''
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 static TICKS: AtomicU64 = AtomicU64::new(0);
@@ -28,8 +25,6 @@ static SENT: AtomicU64 = AtomicU64::new(0);
 mod time {
     pub fn timer_interrupt() {}
     pub fn get_ticks() -> u64 { super::NOW.load(super::Ordering::Relaxed) }
-    pub mod tsc { pub fn read_tsc() -> u64 { crate::TSC.load(crate::Ordering::Relaxed) } }
-    pub mod timer { pub fn tsc_cycles_per_tick() -> u64 { 100 } }
 }
 mod interrupts { pub const RETRY_VECTOR: u8 = 0x20; }
 mod per_cpu {
@@ -42,7 +37,7 @@ mod per_cpu {
     pub fn running_idle_thread() -> bool { false }
 }
 mod scheduler {
-    use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use core::sync::atomic::{AtomicBool, Ordering};
     const MAX_CPUS: usize = 8;
     fn current_cpu_id_raw() -> usize { 0 }
     static RESCHED_REQUESTED: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
@@ -53,7 +48,6 @@ mod scheduler {
     pub fn timer_deadline_due() -> bool { false }
     pub fn set_need_resched() { panic!("unexpected quantum expiry"); }
     pub fn resched_requested() -> bool { RESCHED_REQUESTED[0].load(Ordering::Relaxed) }
-    @@DECISION@@
     @@RETRY@@
 }
 fn trace_timer_tick(_: u64) { TICKS.fetch_add(1, Ordering::Relaxed); }
@@ -77,7 +71,7 @@ fn only_timer_expiries_count_as_delivered_ticks() {
     assert_eq!(SENT.load(Ordering::Relaxed), 1);
     assert!(scheduler::resched_requested());
     at(1_030);
-    timer_interrupt_handler(0, 0);
+    timer_interrupt_handler(0, 1);
     assert_eq!(ticks(), 1, "a retry self-IPI is not a delivered timer tick");
     // The next timer expiry still counts.
     at(1_100);
@@ -85,26 +79,20 @@ fn only_timer_expiries_count_as_delivered_ticks() {
     timer_interrupt_handler(1, 0);
     assert_eq!(ticks(), 2, "real timer delivery must still count");
     assert_eq!(QUANTUM.load(Ordering::Relaxed), 8);
-    // A retry storm: the retries are not ticks, the expiry merged into one of
-    // them a full period after the last counted tick is.
-    for (tsc, expected) in [(1_150, 2), (1_199, 2), (1_205, 3), (1_250, 3), (1_304, 3), (1_305, 4)] {
+    // Arbitrarily delayed retry-only entries never invent timer deliveries.
+    for tsc in [1_150, 1_199, 1_205, 1_250, 1_304, 100_000] {
         scheduler::retry_after_interrupts_x86();
         at(tsc);
-        timer_interrupt_handler(0, 0);
-        assert_eq!(ticks(), expected, "retry entry at {tsc}");
+        timer_interrupt_handler(0, 1);
+        assert_eq!(ticks(), 2, "retry entry at {tsc}");
     }
-    // A reschedule IPI does not consume a pending retry.
-    scheduler::retry_after_interrupts_x86();
-    at(1_320);
-    timer_interrupt_handler(0, 1);
+    // A real expiry immediately after a delayed delivery still counts.
+    timer_interrupt_handler(0, 0);
     timer_interrupt_handler(0, 0);
     assert_eq!(ticks(), 4);
-    at(1_405);
-    timer_interrupt_handler(0, 0);
-    assert_eq!(ticks(), 5, "with no retry pending every timer-vector entry is a tick");
     assert_eq!(IRQ_DEPTH.load(Ordering::Relaxed), 0);
 }
-'''.replace('@@DECISION@@', decision).replace('@@RETRY@@', retry)
+'''.replace('@@RETRY@@', retry)
 with tempfile.TemporaryDirectory(prefix='breenix-x86-timer-') as tmp:
     path = Path(tmp)
     (path / 'test.rs').write_text(harness + quantum + '\n' + handler)

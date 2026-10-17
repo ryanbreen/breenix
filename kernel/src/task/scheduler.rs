@@ -1770,46 +1770,6 @@ static LEAVING_STACK_WAITERS: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0)
 #[cfg(target_arch = "x86_64")]
 static RESCHED_REQUESTED: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
 
-/// x86_64: a `RETRY_VECTOR` self-IPI this CPU sent and has not yet taken.
-/// Set and cleared by its own CPU only, with interrupts masked.
-#[cfg(target_arch = "x86_64")]
-static RETRY_IPI_PENDING: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
-
-/// x86_64: TSC at this CPU's last timer-vector entry counted as a tick.
-#[cfg(target_arch = "x86_64")]
-static LAST_TICK_TSC: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
-
-/// x86_64: whether this entry on the timer's vector delivered a timer tick.
-///
-/// The retry self-IPI shares vector 0x20 with the timer, and the two merge in
-/// the IRR, so the first entry after a retry was sent may also carry a tick.
-/// That entry counts as a tick only when a full tick period of TSC time has
-/// passed since this CPU's last counted tick: the periodic timer expires once
-/// a period, so by then an expiry has merged into it. The LAPIC period is
-/// calibrated against the PIT and the TSC period against the TSC frequency,
-/// so the two periods differ by that calibration error. Called only by the
-/// timer handler, with interrupts masked.
-#[cfg(target_arch = "x86_64")]
-#[inline(always)]
-pub fn timer_vector_entry_was_tick_x86() -> bool {
-    let cpu = current_cpu_id_raw();
-    if cpu >= MAX_CPUS {
-        return true;
-    }
-    let now = crate::time::tsc::read_tsc();
-    let retry = RETRY_IPI_PENDING[cpu].load(Ordering::Relaxed);
-    if retry {
-        RETRY_IPI_PENDING[cpu].store(false, Ordering::Relaxed);
-    }
-    let tick = !retry
-        || now.wrapping_sub(LAST_TICK_TSC[cpu].load(Ordering::Relaxed))
-            >= crate::time::timer::tsc_cycles_per_tick();
-    if tick {
-        LAST_TICK_TSC[cpu].store(now, Ordering::Relaxed);
-    }
-    tick
-}
-
 /// x86_64: called first on every entry to `check_need_resched_and_switch`,
 /// after the scheduling epoch. Credits this CPU's elapsed and idle ticks; this
 /// CPU is no longer on the stack of the thread it last switched away from; and
@@ -1945,7 +1905,6 @@ pub fn retry_after_interrupts_x86() {
     let cpu = current_cpu_id_raw();
     if cpu < MAX_CPUS {
         RESCHED_REQUESTED[cpu].store(true, Ordering::Release);
-        RETRY_IPI_PENDING[cpu].store(true, Ordering::Relaxed);
         send_vector_x86(cpu, crate::interrupts::RETRY_VECTOR);
     }
 }
@@ -1993,7 +1952,7 @@ fn send_reschedule_vector_x86(cpu: usize) {
     send_vector_x86(cpu, crate::interrupts::RESCHEDULE_VECTOR);
 }
 
-/// x86_64: send `vector`, the timer's own or the reschedule vector, to `cpu`.
+/// x86_64: send a retry or reschedule IPI vector to `cpu`.
 /// Both return through `check_need_resched_and_switch`.
 #[cfg(target_arch = "x86_64")]
 fn send_vector_x86(cpu: usize, vector: u8) {

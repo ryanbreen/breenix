@@ -92,8 +92,8 @@ pub const PAGE_TABLE_INDEX_MASK: usize = 0x1FF;
 /// Syscall interrupt vector (INT 0x80).
 pub const SYSCALL_VECTOR: u8 = 0x80;
 
-/// Base vector for PIC IRQs (remapped from 0-15 to 32-47).
-pub const PIC_IRQ_OFFSET: u8 = 32;
+/// Base vector for PIC IRQs (remapped from 0-15 to 48-63; 0x20 is the retry IPI).
+pub const PIC_IRQ_OFFSET: u8 = 0x30;
 
 /// Timer interrupt vector (IRQ0 + offset).
 pub const TIMER_VECTOR: u8 = PIC_IRQ_OFFSET;
