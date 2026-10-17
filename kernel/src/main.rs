@@ -1207,6 +1207,9 @@ fn launch_x86_production_init(
 ) -> Result<(), &'static str> {
     use alloc::string::String;
 
+    if shell {
+        serial::command::use_tty_input();
+    }
     let (thread, designated_pid_raw, reserved_collisions) = {
         let mut manager_guard = process::manager();
         let manager = manager_guard

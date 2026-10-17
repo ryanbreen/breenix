@@ -263,7 +263,8 @@ with debugfs. Site fields prefixed `GUEST_` become lines in `/etc/breenix/site.e
 credentials are not guest fields. The staging helper refuses guest field names containing secret-related words.
 The delivered image records the resulting component checksums; the cached base root is not edited.
 
-Shell mode starts `/sbin/init shell`. When the prompt arrives, the driver sends `print("metal-console-ok", 6*7)`
+Shell mode starts `/sbin/init shell`; the serial input task feeds its bytes into the console TTY instead of the
+kernel debug-command parser. When the prompt arrives, the driver sends `print("metal-console-ok", 6*7)`
 through SOL and requires the whole answer line `metal-console-ok 42` after sending it. Suite mode copies the commit's
 manifest and verdict tool into the boot record, waits for that suite's DONE line, then runs the manifest verdict
 against the captured serial. A DONE with failed, missing, out-of-order or skipped cases fails the boot. Shell has a
