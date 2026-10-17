@@ -1966,7 +1966,7 @@ pub fn notify_parent_of_termination_deferred(notification: &ParentNotification) 
         let child_info = manager.get_process(child_pid).map(child_exit_info);
         // A parent that declines zombies reaps the child now; the row is
         // dropped once the guard is released (condition C8).
-        let auto_reaped = manager.reap_if_parent_declines(child_pid);
+        let auto_reaped = manager.reap_if_unwaited(child_pid);
 
         let signal_wake = manager.queue_process_signal(parent_pid, SIGCHLD, child_info.unwrap_or_else(SigInfo::kernel));
         // Find parent process and wake its child-status wait
@@ -2027,6 +2027,11 @@ pub fn child_exit_info(child: &Process) -> SigInfo {
 /// Internal function called from deliver_default_action
 /// Returns parent notification info if parent should be notified (does NOT acquire lock)
 fn notify_parent_of_termination(process: &Process) -> Option<ParentNotification> {
+    // A thread's row is nobody's child: its exit hook reaps it, and the
+    // process's parent hears when the last thread ends.
+    if process.is_non_leader_thread() {
+        return None;
+    }
     let parent_pid = process.parent?;
 
     log::debug!(

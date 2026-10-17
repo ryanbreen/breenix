@@ -369,6 +369,15 @@ sys.stdin.readline()
             process.stdin.write(b'done\n'); process.stdin.flush()
             self.assertEqual(process.wait(timeout=10), 0)
 
+    def test_metal_build_runs_beside_an_x86_boot_and_its_builds(self):
+        boot = self.launch(self.request('acquire', 'x86-boot') + '; echo BOOTING; read -r done')
+        self.line_matching(boot, 'BOOTING')
+        build = self.launch(self.request('acquire', 'metal-build') + '; echo BUILDING; read -r done')
+        self.line_matching(build, 'BUILDING')
+        for process in (boot, build):
+            process.stdin.write(b'done\n'); process.stdin.flush()
+            self.assertEqual(process.wait(timeout=10), 0)
+
     def test_boot_waits_for_running_build_then_holds_both(self):
         build = self.launch(self.request('acquire', 'x86-build') + '; echo BUILDING; read -r done')
         self.line_matching(build, 'BUILDING')
