@@ -159,11 +159,23 @@ specifications and IEEE 802.3 clauses 22, 28 and 40; its comments cite the guide
   standard receive producer ring (64) and receive return ring 0 (128), each ring, the status block and each
   buffer in a page of its own. Interrupts are MSI through the local APIC (`kernel/src/arch_impl/x86_64/msi.rs`).
   The PHY is reset and autonegotiates 10, 100 and 1000 Mb/s.
-- **The bring-up probe.** A kernel thread waits for link and, where the tick census runs, for the census to
-  report, so its lines follow the `smp` milestone's. It sends one DHCPDISCOVER, checks that the controller consumed
-  the send descriptor and that the MAC counted a broadcast frame, takes received frames by MSI, and stops at the
-  DHCPOFFER that answers its transaction. It requests no lease, and the network stack does not see these frames:
-  the stack's DHCP client, addressing and production rings arrive with the networking lane.
+- **Production rings.** A send-ring slot owns a separate DMA buffer until the
+  controller's send consumer index retires it; a full ring returns backpressure.
+  MSI acknowledges the device and raises NetRx. The bounded bottom half copies
+  a received frame, replenishes its buffer, updates the return consumer and
+  rearms interrupts with a status-block race check. Protocol delivery takes place
+  outside the port lock, so replies can transmit.
+- **Addressing.** On physical x86 the stack starts without an address. A network
+  thread waits for carrier, acquires a DHCP lease, and maintains it across renewal,
+  expiry and carrier loss. An unanswered first DISCOVER is retransmitted after
+  four seconds. Configuration and resolver addresses come from the live lease;
+  the staged RAM disk links `/etc/resolv.conf` to `/proc/net/pnp`.
+- **Connectivity.** After acquiring a lease the thread resolves the gateway by ARP,
+  sends ICMP echo requests, and requests an A record from the lease's nameserver.
+  The `dhcp-gateway` stages report the lease and the actual ARP, echo and DNS replies.
+  Probe mode additionally fetches `/breenix/probe.bin`, a known 128 KiB file served
+  independently of the firmware payload, over TCP and checks its SHA-256. Its URL
+  and expected digest are written into the guest's site file during staging.
 
 The driver implements no driver/APE handshake and never resets or writes APE state. The published guide
 documents the APE register window but supplies no driver/APE handshake protocol; the bootcode reset mailbox
@@ -481,6 +493,7 @@ python3 ~/.local/share/breenix-metal/metal-run follow ID | stop ID | status
 with the machine on; the reaper's retry then powers it off and lifts the quarantine. The default, shell and suite
 modes stage their boot targets as described under "RAM-disk userspace"; probe mode stages `probe`, and its storage
 boots are described under "The disks".
+Probe completion requires `PROBE DONE` and the measured kernel and fetch stages.
 
 ## Redaction
 

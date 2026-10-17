@@ -90,7 +90,6 @@ pub const EMAC_MODE_CLEAR_TX_STATS: u32 = 1 << 15;
 pub const EMAC_MODE_ENABLE_TDE: u32 = 1 << 21;
 pub const EMAC_MODE_ENABLE_RDE: u32 = 1 << 22;
 pub const EMAC_MODE_ENABLE_FHDE: u32 = 1 << 23;
-pub const EMAC_STATUS: usize = 0x0404;
 pub const LED_CONTROL: usize = 0x040c;
 /// The value step 67 gives (p. 146).
 pub const LED_CONTROL_INIT: u32 = 0x800;
@@ -114,18 +113,14 @@ pub const MI_MODE_PORT_POLLING: u32 = 1 << 4;
 pub const TX_MAC_MODE: usize = 0x045c;
 pub const TX_MAC_MODE_ENABLE: u32 = 1 << 1;
 pub const TX_MAC_MODE_MBUF_LOCKUP_FIX: u32 = 1 << 8;
-pub const TX_MAC_STATUS: usize = 0x0460;
 pub const TX_MAC_LENGTHS: usize = 0x0464;
 /// IPG CRS, IPG and slot time (step 26, p. 143); bits 31:16 are the BMC
 /// pass-through fields and are kept.
 pub const TX_MAC_LENGTHS_INIT: u32 = 0x2620;
 pub const RX_MAC_MODE: usize = 0x0468;
 pub const RX_MAC_MODE_ENABLE: u32 = 1 << 1;
-pub const RX_MAC_STATUS: usize = 0x046c;
 /// The receive rules array: 16 rules, each a control word and a value/mask
 /// word (Section 5, "Receive List Placement Rules Array", Table 23, p. 97).
-pub const RX_RULES: usize = 0x0480;
-pub const RX_RULE_COUNT: usize = 16;
 pub const RX_RULES_CONFIG: usize = 0x0500;
 /// No-rules-match default class 1; class 0 discards the frames no rule
 /// matches (Receive Rules Configuration, p. 328).
@@ -134,11 +129,7 @@ pub const LOW_WATERMARK_MAX_RX_FRAMES: usize = 0x0504;
 
 // MAC statistics, clear-on-read (Section 13, "Statistics Registers",
 // pp. 341-345).
-pub const STAT_OUT_OCTETS: usize = 0x0800;
 pub const STAT_OUT_BROADCAST: usize = 0x0874;
-pub const STAT_IN_OCTETS: usize = 0x0880;
-pub const STAT_IN_UNICAST: usize = 0x088c;
-pub const STAT_IN_BROADCAST: usize = 0x0894;
 
 // Send and receive engines (Section 13): each mode register has Enable in bit
 // 1 and, where it exists, Attention Enable in bit 2.
@@ -153,7 +144,6 @@ pub const SEND_BD_SELECTOR_MODE: usize = 0x1400;
 pub const SEND_BD_INITIATOR_MODE: usize = 0x1800;
 pub const SEND_BD_COMPLETION_MODE: usize = 0x1c00;
 pub const RX_LIST_PLACEMENT_MODE: usize = 0x2000;
-pub const RX_LIST_PLACEMENT_STATUS: usize = 0x2004;
 pub const RX_LIST_PLACEMENT_CONFIG: usize = 0x2010;
 /// One interrupt distribution list, sixteen active lists, one bad-frames class
 /// (step 28, p. 143).
@@ -162,15 +152,10 @@ pub const RX_LIST_PLACEMENT_STATS_CONTROL: usize = 0x2014;
 pub const RX_LIST_PLACEMENT_STATS_MASK: usize = 0x2018;
 /// Receive list placement counters: frames that found no receive BD, frames
 /// discarded and frames in error (Section 13, "Statistics Registers", p. 345).
-pub const STAT_NO_MORE_RX_BDS: usize = 0x224c;
-pub const STAT_IN_DISCARDS: usize = 0x2250;
-pub const STAT_IN_ERRORS: usize = 0x2254;
 pub const RX_DATA_BD_INITIATOR_MODE: usize = 0x2400;
 pub const RDI_MODE_ILLEGAL_RETURN_RING_SIZE: u32 = 1 << 4;
-pub const RX_DATA_BD_INITIATOR_STATUS: usize = 0x2404;
 /// The receive data and BD initiator's local copy of the standard ring
 /// consumer index (p. 370).
-pub const RDI_LOCAL_STD_CONSUMER: usize = 0x2474;
 /// The standard receive producer ring's control block, as registers
 /// (Section 13, "Standard Receive BD Ring RCB Registers", p. 368). Its NIC
 /// address, at + 0xc, keeps its default on this family (step 16, p. 142).
@@ -181,7 +166,6 @@ pub const RX_DATA_COMPLETION_MODE: usize = 0x2800;
 /// controller (Section 13, p. 374). The initialization procedure leaves it at
 /// its reset value, Enable; the closing procedure disables it (p. 148).
 pub const RX_BD_INITIATOR_MODE: usize = 0x2c00;
-pub const RX_BD_INITIATOR_STATUS: usize = 0x2c04;
 pub const STD_RING_REPLENISH_THRESHOLD: usize = 0x2c18;
 pub const STD_RING_REPLENISH_WATERMARK: usize = 0x2d00;
 pub const RX_BD_COMPLETION_MODE: usize = 0x3000;
@@ -198,17 +182,13 @@ pub const HC_RX_MAX_FRAMES_DURING_INT: usize = 0x3c18;
 pub const HC_TX_MAX_FRAMES_DURING_INT: usize = 0x3c1c;
 pub const HC_STATUS_BLOCK_HIGH: usize = 0x3c38;
 pub const HC_STATUS_BLOCK_LOW: usize = 0x3c3c;
-pub const HC_FLOW_ATTENTION: usize = 0x3c48;
 /// The controller's own ring indices, for diagnosis (pp. 425-427).
-pub const NIC_STD_CONSUMER: usize = 0x3c54;
-pub const NIC_RETURN_0_PRODUCER: usize = 0x3c80;
 
 pub const MEMORY_ARBITER_MODE: usize = 0x4000;
 pub const BUFFER_MANAGER_MODE: usize = 0x4400;
 pub const MAC_RX_MBUF_LOW_WATERMARK: usize = 0x4414;
 pub const MBUF_HIGH_WATERMARK: usize = 0x4418;
 pub const READ_DMA_MODE: usize = 0x4800;
-pub const READ_DMA_STATUS: usize = 0x4804;
 /// Target abort through local memory write longer than the DMA length:
 /// bits 2-9 of the read and write DMA mode registers (steps 47 and 51, p. 145).
 pub const DMA_MODE_ATTENTIONS: u32 = 0xff << 2;
@@ -219,7 +199,6 @@ pub const READ_DMA_FIFO_OVERRUN_FIX: u32 = 1 << 2;
 pub const READ_DMA_CORRUPTION_CONTROL: usize = 0x4910;
 pub const READ_DMA_NON_LSO_BURST_4K: u32 = 0b11 << 18;
 pub const WRITE_DMA_MODE: usize = 0x4c00;
-pub const WRITE_DMA_STATUS: usize = 0x4c04;
 pub const WRITE_DMA_STATUS_BEFORE_INTERRUPT: u32 = 1 << 29;
 
 pub const MSI_MODE: usize = 0x6000;

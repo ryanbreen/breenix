@@ -1300,6 +1300,7 @@ fn x86_boot_target() -> Option<X86BootTarget> {
             }
         },
         Some("default" | "shell") => None,
+        Some("probe") => Some(X86BootTarget::Probe),
         Some("suite") => match fw_cfg::read_string("opt/breenix/suite") {
             Some(id) if target::is_suite_id(&id) => {
                 match target::SuiteTarget::new(id, fw_cfg::read_string("opt/breenix/case")) {
@@ -1326,7 +1327,7 @@ fn x86_boot_target() -> Option<X86BootTarget> {
         },
         Some(other) => {
             log::warn!(
-                "[boot] Ignoring boot mode {:?}: x86-64 runs only default and suite",
+                "[boot] Ignoring boot mode {:?}: x86-64 runs default, shell, probe and suite",
                 other
             );
             None

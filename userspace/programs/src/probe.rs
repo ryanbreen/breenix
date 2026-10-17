@@ -1,6 +1,7 @@
 //! Production boot probe: one bounded, honest result for each userspace milestone check.
 
 mod probe_signal;
+mod probe_metal;
 
 use libbreenix::fs::{self, DirentIter, O_CREAT, O_DIRECTORY, O_RDONLY, O_TRUNC, O_WRONLY};
 use libbreenix::graphics;
@@ -185,6 +186,7 @@ fn check(index: usize) -> Result<(), &'static str> {
                 .map_err(|_| "framebuffer draw failed")?;
             Ok(())
         }
+        16 => probe_metal::fetch(),
         _ => Err("unknown check"),
     }
 }
@@ -309,7 +311,7 @@ fn supervised_check(index: usize) -> (Result<(), String>, bool) {
         Ok(ForkResult::Parent(pid)) => {
             let pid = pid.raw() as i32;
             if let Some((_, writer)) = channel { let _ = io::close(writer); }
-            let mut deadline = Deadline::new(LIMIT_NS);
+            let mut deadline = Deadline::new(if index == 16 { 30_000_000_000 } else { LIMIT_NS });
             let result = loop {
                 let mut status = 0;
                 match process::waitpid(pid, &mut status, WNOHANG) {
@@ -333,7 +335,7 @@ fn supervised_check(index: usize) -> (Result<(), String>, bool) {
         }
         Err(_) => {
             if let Some((reader, writer)) = channel { let _ = io::close(reader); let _ = io::close(writer); }
-            if INLINE_SAFE[index] {
+            if INLINE_SAFE.get(index).copied().unwrap_or(false) {
                 (check(index).map_err(|reason| format!("fork unavailable; inline {reason}")), true)
             } else {
                 (Err("fork unavailable; not run inline because it could block".to_string()), true)
@@ -451,9 +453,18 @@ fn probe() {
         }
         draw_probe(&mut fb, &states, &details, passed, false);
     }
-    println!("PROBE DONE passed={} failed={}", passed, IDS.len() - passed);
-    println!("\x1b[1mProbe complete: {} passed, {} failed\x1b[0m", passed, IDS.len() - passed);
     draw_probe(&mut fb, &states, &details, passed, true);
+    let metal = std::path::Path::new("/etc/breenix/site.env").exists();
+    let mut count = IDS.len();
+    if metal {
+        count += 1;
+        match supervised_check(16).0 {
+            Ok(()) => { passed += 1; println!("PROBE metal-fetch OK TCP body SHA-256 verified"); }
+            Err(reason) => println!("PROBE metal-fetch FAIL {}", reason),
+        }
+    }
+    println!("PROBE DONE passed={} failed={}", passed, count - passed);
+    println!("\x1b[1mProbe complete: {} passed, {} failed\x1b[0m", passed, count - passed);
     reap_forever();
 }
 

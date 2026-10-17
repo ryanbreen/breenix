@@ -19,11 +19,10 @@
 //! receive return ring in host memory, MSI through the local APIC
 //! (`arch_impl::x86_64::msi`), and the PHY's autonegotiation restarted.
 //!
-//! A bring-up probe thread then waits for the link, and, once the tick census
-//! has reported on firmware that runs it, sends one frame (a DHCPDISCOVER) and
-//! takes received frames by MSI until a DHCPOFFER answers it. It takes no
-//! lease, and the network stack does not see these frames: the stack's DHCP client,
-//! addressing and production rings arrive with the networking lane.
+//! Frames pass through the common network stack. MSI masks the device and
+//! raises NetRx; the bounded bottom half returns receive buffers and rearms
+//! interrupts after checking the status block. Each TX slot owns its buffer
+//! until the controller's send consumer index retires it.
 //!
 //! Management coexistence: this driver implements no driver/APE handshake,
 //! and never resets or writes APE state. The guide documents the APE register
@@ -43,7 +42,7 @@ mod regs;
 use alloc::vec::Vec;
 use core::fmt;
 use core::ptr::{read_volatile, write_volatile};
-use core::sync::atomic::{fence, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{fence, AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
 
 use crate::arch_impl::x86_64::timer;
@@ -52,7 +51,7 @@ use crate::drivers::pci::{
     pci_write_config_word, Device,
 };
 use crate::memory::frame_allocator;
-use crate::net::{dhcp, ethernet, ipv4, udp};
+use crate::net::dhcp;
 use regs::*;
 
 pub const BROADCOM_VENDOR_ID: u16 = 0x14e4;
@@ -91,12 +90,6 @@ const PCI_CAP_EXPRESS: u8 = 0x10;
 const BOOTCODE_TIMEOUT_MS: u64 = 10_000;
 const LINK_TIMEOUT_MS: u64 = 15_000;
 const CENSUS_TIMEOUT_MS: u64 = 60_000;
-const SEND_TIMEOUT_MS: u64 = 1_000;
-const REPLY_TIMEOUT_MS: u64 = 15_000;
-/// The DISCOVER is sent again after 4 s and 8 s without an offer.
-const DISCOVER_RETRIES: u64 = 2;
-const DISCOVER_RETRY_MS: u64 = 4_000;
-
 /// Each attached port's register window, for its interrupt handler, which
 /// takes no lock; 0 until the port's rings are live.
 static IRQ_REGS: [AtomicUsize; MAX_PORTS] = [const { AtomicUsize::new(0) }; MAX_PORTS];
@@ -106,6 +99,7 @@ static INTERRUPTS: [AtomicU64; MAX_PORTS] = [const { AtomicU64::new(0) }; MAX_PO
 const HANDLERS: [fn(); MAX_PORTS] = [interrupt_slot_0, interrupt_slot_1];
 /// Attached ports, from driver initialization until their probes start.
 static ATTACHED: Mutex<Vec<Port>> = Mutex::new(Vec::new());
+static READY: AtomicBool = AtomicBool::new(false);
 
 fn interrupt_slot_0() {
     interrupt(0);
@@ -126,6 +120,7 @@ fn interrupt(slot: usize) {
     // SAFETY: the port's mapped register window, published once it was live.
     unsafe { write_volatile((regs + MBOX_INTERRUPT_0) as *mut u32, 1) };
     INTERRUPTS[slot].fetch_add(1, Ordering::Release);
+    crate::task::softirqd::raise_softirq(crate::task::softirqd::SoftirqType::NetRx);
 }
 
 fn now_ms() -> u64 {
@@ -384,7 +379,9 @@ struct Port {
     std_ring: DmaPage,
     return_ring: DmaPage,
     rx_buffers: Vec<DmaPage>,
-    tx_buffer: DmaPage,
+    tx_buffers: Vec<DmaPage>,
+    tx_reported: bool,
+    rx_reported: bool,
     send_producer: u32,
     std_producer: u32,
     return_consumer: u32,
@@ -419,6 +416,11 @@ impl Port {
         for _ in 0..RX_BUFFERS {
             rx_buffers.push(DmaPage::allocate()?);
         }
+        let mut tx_buffers = Vec::new();
+        tx_buffers.try_reserve_exact(SEND_RING_ENTRIES as usize).map_err(|_| "out of memory")?;
+        for _ in 0..SEND_RING_ENTRIES {
+            tx_buffers.push(DmaPage::allocate()?);
+        }
         let vector = crate::arch_impl::x86_64::msi::enable(&f.device, HANDLERS[slot])?;
         let mut port = Self {
             f,
@@ -430,7 +432,9 @@ impl Port {
             std_ring: DmaPage::allocate()?,
             return_ring: DmaPage::allocate()?,
             rx_buffers,
-            tx_buffer: DmaPage::allocate()?,
+            tx_buffers,
+            tx_reported: false,
+            rx_reported: false,
             send_producer: 0,
             std_producer: 0,
             return_consumer: 0,
@@ -751,17 +755,24 @@ impl Port {
         if frame.is_empty() || frame.len() > PAGE {
             return Err("frame length out of range");
         }
-        // SAFETY: the page this driver owns; the length was checked above.
+        let next = (self.send_producer + 1) % SEND_RING_ENTRIES;
+        // Section 4, p. 71: keep one entry empty. A consumer advance is the
+        // only permission to reuse the corresponding DMA buffer.
+        if next == self.send_consumer() {
+            return Err("send ring full");
+        }
+        let tx_buffer = &self.tx_buffers[self.send_producer as usize];
+        // SAFETY: this slot's page is no longer owned by the controller.
         unsafe {
             core::ptr::copy_nonoverlapping(
                 frame.as_ptr(),
-                self.tx_buffer.virt as *mut u8,
+                tx_buffer.virt as *mut u8,
                 frame.len(),
             );
         }
         let base = self.send_producer as usize * SEND_BD_WORDS;
-        self.send_ring.set_word(base, self.tx_buffer.high());
-        self.send_ring.set_word(base + 1, self.tx_buffer.low());
+        self.send_ring.set_word(base, tx_buffer.high());
+        self.send_ring.set_word(base + 1, tx_buffer.low());
         self.send_ring.set_word(
             base + 2,
             ((frame.len() as u32) << 16) | SEND_BD_PACKET_END | SEND_BD_COAL_NOW,
@@ -779,151 +790,78 @@ impl Port {
         self.status.word(4) >> 16
     }
 
-    /// Service the status block (Section 11, "ISR Flow", p. 231): acknowledge,
-    /// clear the updated bit, take each new return ring entry, return its
-    /// buffer to the standard ring, write the consumer and producer
-    /// mailboxes, and re-enable the interrupt; repeat while the controller
-    /// updated the block meanwhile. `each` sees each good frame.
-    fn service(&mut self, mut each: impl FnMut(&[u8])) {
-        loop {
-            self.f.write32(MBOX_INTERRUPT_0, 1);
-            self.status
-                .set_word(0, self.status.word(0) & !STATUS_WORD_UPDATED);
-            fence(Ordering::SeqCst);
+    /// One bounded return-ring drain (guide Section 11, pp. 231-234).
+    /// Packet delivery happens after releasing the port lock, so replies can TX.
+    fn receive(&mut self, output: &mut [u8]) -> Option<usize> {
+        if INTERRUPTS[self.slot].load(Ordering::Acquire) == 0 { return None; }
+        self.f.write32(MBOX_INTERRUPT_0, 1);
+        self.status.set_word(0, self.status.word(0) & !STATUS_WORD_UPDATED);
+        fence(Ordering::SeqCst);
+        if !self.tx_reported && self.send_consumer() != 0
+            && self.f.read32(STAT_OUT_BROADCAST) != 0 {
+            self.tx_reported = true;
+            static SENT: crate::log_notice::Node = crate::log_notice::Node::new();
+            SENT.post_again("[bcm5720] frame sent: controller consumed and MAC counted the broadcast");
+        }
+        for _ in 0..RETURN_RING_ENTRIES {
             let produced = self.status.word(4) & 0xffff;
-            let mut returned = false;
-            while self.return_consumer != produced % RETURN_RING_ENTRIES {
-                let base = self.return_consumer as usize * RX_BD_WORDS;
-                let buffer = (self.return_ring.word(base + 2) >> 16) as usize;
-                let length = (self.return_ring.word(base + 2) & 0xffff) as usize;
-                let flags = self.return_ring.word(base + 3) & 0xffff;
-                self.return_consumer = (self.return_consumer + 1) % RETURN_RING_ENTRIES;
-                if buffer >= RX_BUFFERS {
-                    continue;
+            fence(Ordering::Acquire);
+            if self.return_consumer == produced % RETURN_RING_ENTRIES {
+                self.f.write32(MBOX_INTERRUPT_0, 0);
+                let _ = self.f.read32(MBOX_INTERRUPT_0);
+                // A status update concurrent with rearm must schedule a drain
+                // even if its interrupt was cleared by the mailbox write.
+                if self.status.word(0) & STATUS_WORD_UPDATED != 0 {
+                    crate::task::softirqd::raise_softirq(crate::task::softirqd::SoftirqType::NetRx);
                 }
-                let good = flags & RX_BD_FRAME_HAS_ERROR == 0
-                    && flags & RX_BD_PACKET_END != 0
-                    && length <= RX_BUFFER_SIZE as usize;
-                if good {
-                    // SAFETY: the buffer's page, `length` bytes of it, written by
-                    // the controller's DMA before it posted this entry.
-                    let frame = unsafe {
-                        core::slice::from_raw_parts(
-                            self.rx_buffers[buffer].virt as *const u8,
-                            length,
-                        )
-                    };
-                    each(frame);
-                } else {
-                    self.rx_errored += 1;
-                    self.rx_last_error_flags =
-                        (self.return_ring.word(base + 5) >> 16) | (flags << 16);
-                }
-                self.describe_receive_buffer(self.std_producer, buffer);
-                self.std_producer = (self.std_producer + 1) % STD_RING_ENTRIES;
-                returned = true;
+                return None;
             }
-            fence(Ordering::SeqCst);
-            if returned {
+            let base = self.return_consumer as usize * RX_BD_WORDS;
+            let buffer = (self.return_ring.word(base + 2) >> 16) as usize;
+            let length = (self.return_ring.word(base + 2) & 0xffff) as usize;
+            let flags = self.return_ring.word(base + 3) & 0xffff;
+            self.return_consumer = (self.return_consumer + 1) % RETURN_RING_ENTRIES;
+            if buffer >= RX_BUFFERS {
+                self.rx_errored += 1;
+                fence(Ordering::SeqCst);
                 self.f.write32(MBOX_RETURN_0_CONSUMER, self.return_consumer);
-                self.f.write32(MBOX_STD_PRODUCER, self.std_producer);
+                continue;
             }
-            self.f.write32(MBOX_INTERRUPT_0, 0);
-            // A read flushes the posted mailbox write (Section 11, Figure 53).
-            let _ = self.f.read32(MBOX_INTERRUPT_0);
-            if self.status.word(0) & STATUS_WORD_UPDATED == 0 {
-                return;
+            let good = flags & RX_BD_FRAME_HAS_ERROR == 0
+                && flags & RX_BD_PACKET_END != 0
+                && length >= 4 && length <= RX_BUFFER_SIZE as usize
+                && length - 4 <= output.len();
+            if good {
+                // Receive length includes Ethernet FCS (guide Section 4,
+                // Table 11); it is not part of the network-layer packet.
+                unsafe { core::ptr::copy_nonoverlapping(
+                    self.rx_buffers[buffer].virt as *const u8,
+                    output.as_mut_ptr(), length - 4); }
+            } else {
+                self.rx_errored += 1;
+                self.rx_last_error_flags = self.return_ring.word(base + 5);
             }
-        }
-    }
-
-    /// The receive path's registers: the standard ring's control block and
-    /// producer mailbox as read back, the controller's own indices, the receive
-    /// engines' status and the receive list placement counters.
-    fn report_receive_state(&self, when: &str) {
-        let f = &self.f;
-        log::info!(
-            "[bcm5720] {} receive state {when}: std rcb {:#x} {:#x} {:#x} {:#x}, std producer mailbox {:#x}, rbdi mode {:#x} (found {:#x}), rbdi status {:#x}, rdi mode {:#x}, rdi status {:#x}, rlp status {:#x}, rx mac mode {:#x}, rx mac status {:#x}",
-            f.bdf(),
-            f.read32(STD_RING_RCB + RCB_HOST_HIGH as usize),
-            f.read32(STD_RING_RCB + RCB_HOST_LOW as usize),
-            f.read32(STD_RING_RCB + RCB_LENGTH_FLAGS as usize),
-            f.read32(STD_RING_RCB + RCB_NIC_ADDRESS as usize),
-            f.read32(MBOX_STD_PRODUCER),
-            f.read32(RX_BD_INITIATOR_MODE),
-            self.rbdi_at_init,
-            f.read32(RX_BD_INITIATOR_STATUS),
-            f.read32(RX_DATA_BD_INITIATOR_MODE),
-            f.read32(RX_DATA_BD_INITIATOR_STATUS),
-            f.read32(RX_LIST_PLACEMENT_STATUS),
-            f.read32(RX_MAC_MODE),
-            f.read32(RX_MAC_STATUS)
-        );
-        log::info!(
-            "[bcm5720] {} receive indices {when}: nic std consumer {}, rdi local std consumer {:#x}, nic return 0 producer {}, no more rx bds {}, discards {}, errors {}",
-            f.bdf(),
-            f.read32(NIC_STD_CONSUMER),
-            f.read32(RDI_LOCAL_STD_CONSUMER),
-            f.read32(NIC_RETURN_0_PRODUCER),
-            f.read32(STAT_NO_MORE_RX_BDS),
-            f.read32(STAT_IN_DISCARDS),
-            f.read32(STAT_IN_ERRORS)
-        );
-    }
-
-    /// The receive rules as the firmware and initialization left them: each
-    /// enabled rule's control and value/mask words.
-    fn report_receive_rules(&self, when: &str) {
-        let mut enabled = 0;
-        for rule in 0..RX_RULE_COUNT {
-            let control = self.f.read32(RX_RULES + rule * 8);
-            let value = self.f.read32(RX_RULES + rule * 8 + 4);
-            if control & (1 << 31) != 0 {
-                enabled += 1;
-                log::info!(
-                    "[bcm5720] {} receive rule {rule} {when}: control {control:#010x}, value/mask {value:#010x}",
-                    self.f.bdf()
-                );
+            self.describe_receive_buffer(self.std_producer, buffer);
+            self.std_producer = (self.std_producer + 1) % STD_RING_ENTRIES;
+            fence(Ordering::SeqCst);
+            self.f.write32(MBOX_RETURN_0_CONSUMER, self.return_consumer);
+            self.f.write32(MBOX_STD_PRODUCER, self.std_producer);
+            if good {
+                if !self.rx_reported && self.tx_reported {
+                    self.rx_reported = true;
+                    static RECEIVED: crate::log_notice::Node = crate::log_notice::Node::new();
+                    RECEIVED.post_again("[bcm5720] first frame received");
+                }
+                return Some(length - 4);
             }
         }
-        log::info!(
-            "[bcm5720] {} receive rules {when}: {enabled} of {RX_RULE_COUNT} enabled",
-            self.f.bdf()
-        );
-    }
-
-    /// Controller state worth recording when the probe stops short.
-    fn report_state(&self, what: &str) {
-        self.report_receive_state("when the probe stopped");
-        self.report_receive_rules("when the probe stopped");
-        log::warn!(
-            "[bcm5720] {}: {what}; status word {:#x}, send consumer {}, return producer {}, standard consumer {}, MSI interrupts {}, emac status {:#x}, tx mac status {:#x}, read dma status {:#x}, write dma status {:#x}, flow attention {:#x}",
-            self.f.bdf(),
-            self.status.word(0),
-            self.send_consumer(),
-            self.status.word(4) & 0xffff,
-            self.status.word(2) >> 16,
-            INTERRUPTS[self.slot].load(Ordering::Acquire),
-            self.f.read32(EMAC_STATUS),
-            self.f.read32(TX_MAC_STATUS),
-            self.f.read32(READ_DMA_STATUS),
-            self.f.read32(WRITE_DMA_STATUS),
-            self.f.read32(HC_FLOW_ATTENTION)
-        );
-        log::warn!(
-            "[bcm5720] {}: the MAC counted {} octets out, {} broadcasts out, {} octets in, {} broadcasts in, {} unicasts in",
-            self.f.bdf(),
-            self.f.read32(STAT_OUT_OCTETS),
-            self.f.read32(STAT_OUT_BROADCAST),
-            self.f.read32(STAT_IN_OCTETS),
-            self.f.read32(STAT_IN_BROADCAST),
-            self.f.read32(STAT_IN_UNICAST)
-        );
+        crate::task::softirqd::raise_softirq(crate::task::softirqd::SoftirqType::NetRx);
+        None
     }
 
     /// The bring-up probe: link, one frame sent, frames received by MSI, and a
     /// reply to the frame sent.
-    fn probe(mut self) {
+    fn run(self) {
         let bdf = self.f.bdf();
         let link = loop {
             match self.f.phy_resolved() {
@@ -962,243 +900,75 @@ impl Port {
             }
         }
 
-        let xid = (timer::rdtsc() as u32)
-            ^ u32::from_be_bytes([self.mac[2], self.mac[3], self.mac[4], self.mac[5]]);
-        let frame = match discover_frame(xid, self.mac) {
-            Ok(frame) => frame,
-            Err(error) => {
-                log::warn!("[bcm5720] {bdf}: no frame to send: {error}");
-                return;
-            }
-        };
-        // The MAC's counters clear on read: read them before the frame.
-        let _ = self.f.read32(STAT_OUT_OCTETS);
-        let _ = self.f.read32(STAT_OUT_BROADCAST);
-        // Only interrupts delivered after this probe baseline may authorize
-        // receive servicing; a DMA status update alone is not MSI evidence.
-        let mut seen_interrupts = INTERRUPTS[self.slot].load(Ordering::Acquire);
-        // Frames that arrived while the probe waited for link and the census
-        // hold the standard ring's buffers, and the controller raises no
-        // further interrupt until the block is serviced. Return them to the
-        // ring, uncounted, so the reply has a buffer to land in.
-        let mut recycled = 0u64;
-        self.service(|_| recycled += 1);
-        if recycled != 0 {
-            log::info!("[bcm5720] {bdf}: {recycled} frame(s) that arrived before the discover recycled, uncounted");
-        }
-        if let Err(error) = self.send(&frame) {
-            log::warn!("[bcm5720] {bdf}: send failed: {error}");
-            return;
-        }
-        let start = now_ms();
-        while self.send_consumer() != self.send_producer {
-            if now_ms() - start > SEND_TIMEOUT_MS {
-                self.report_state("the controller did not consume the send descriptor within 1 s");
-                return;
-            }
-            sleep_ms(1);
-        }
-        let octets = self.f.read32(STAT_OUT_OCTETS);
-        let broadcasts = self.f.read32(STAT_OUT_BROADCAST);
-        if broadcasts == 0 {
-            self.report_state(
-                "the send descriptor was consumed but the MAC counted no broadcast frame",
-            );
-            return;
-        }
-        log::info!(
-            "[bcm5720] frame sent: a {}-byte DHCP discover; the MAC counted {broadcasts} broadcast frame(s), {octets} octets",
-            frame.len()
-        );
-
-        let mut frames = 0u64;
-        let mut answered = false;
         let mac = self.mac;
-        let slot = self.slot;
-        let mut resent = 0;
-        let start = now_ms();
-        while !answered && now_ms() - start < REPLY_TIMEOUT_MS {
-            // RFC 2131 section 4.1: a client retransmits an unanswered DISCOVER.
-            if resent < DISCOVER_RETRIES && now_ms() - start > (resent + 1) * DISCOVER_RETRY_MS {
-                resent += 1;
-                if let Err(error) = self.send(&frame) {
-                    log::warn!("[bcm5720] {bdf}: retransmission failed: {error}");
-                }
+        let _ = self.f.read32(STAT_OUT_BROADCAST);
+        {
+            let _guard = crate::net::net_lock_guard();
+            ATTACHED.lock().push(self);
+            READY.store(true, Ordering::Release);
+        }
+        crate::net::register_net_softirq();
+        crate::task::softirqd::raise_softirq(crate::task::softirqd::SoftirqType::NetRx);
+        if let Some(lease) = dhcp::acquire(mac) {
+            log::info!("[bcm5720] reply received: DHCP server acknowledged the requested lease");
+            log::info!("[dhcp] lease acquired");
+            let counters = {
+                let _guard = crate::net::net_lock_guard();
+                let ports = ATTACHED.lock();
+                ports.iter().find(|p| p.mac == mac).map(|port|
+                    (INTERRUPTS[port.slot].load(Ordering::Acquire), port.rx_errored, port.rx_last_error_flags))
+            };
+            if let Some((interrupts, errors, flags)) = counters {
+                log::info!("[bcm5720] MSI interrupts {interrupts}, receive errors {errors}, last flags {flags:#x}");
             }
-            let interrupts = INTERRUPTS[slot].load(Ordering::Acquire);
-            if interrupts == seen_interrupts {
-                sleep_ms(1);
-                continue;
-            }
-            seen_interrupts = interrupts;
-            self.service(|data| {
-                frames += 1;
-                let summary = FrameSummary::of(data, mac);
-                if frames == 1 {
-                    log::info!(
-                        "[bcm5720] first frame received: {}, after {} MSI interrupt(s)",
-                        summary,
-                        INTERRUPTS[slot].load(Ordering::Acquire)
-                    );
-                }
-                if summary.from_dhcp_server() {
-                    let offer = is_offer_frame(data, xid, mac);
-                    log::info!(
-                        "[bcm5720] frame {frames} received: {summary}; an offer for this transaction: {}",
-                        if offer { "yes" } else { "no" }
-                    );
-                    answered |= offer;
-                }
-            });
-        }
-        if self.rx_errored != 0 {
-            log::info!(
-                "[bcm5720] {bdf}: {} return ring entries flagged in error, the last with flags {:#x}",
-                self.rx_errored,
-                self.rx_last_error_flags
-            );
-        }
-        if answered {
-            log::info!(
-                "[bcm5720] reply received: a DHCP offer answering the discover, frame {frames} of those received, {} ms after the first of {} transmission(s)",
-                now_ms() - start,
-                resent + 1
-            );
+            let _ = crate::net::arp::request(&lease.gateway);
+            let _ = crate::net::ping(lease.gateway);
+            crate::net::dns_probe::run(lease);
         } else {
-            self.report_state(if frames == 0 {
-                "no frame received within 15 s"
-            } else {
-                "no DHCP offer answered the discover within 15 s"
-            });
+            log::warn!("[dhcp] no lease acquired; interface remains unconfigured");
         }
-        crate::arch_without_interrupts(|| ATTACHED.lock().push(self));
+        loop {
+            let carrier = {
+                let _guard = crate::net::net_lock_guard();
+                let ports = ATTACHED.lock();
+                ports.iter().find(|p| p.mac == mac)
+                    .is_some_and(|p| p.f.phy_link().unwrap_or(false))
+            };
+            dhcp::maintain(mac, carrier);
+            sleep_ms(1000);
+        }
     }
 }
 
-/// What a received frame is, without its addresses: length, EtherType,
-/// whether it was broadcast, multicast or sent to this port, and for IPv4
-/// its protocol and UDP ports.
-struct FrameSummary {
-    length: usize,
-    ethertype: u16,
-    from_this_port: bool,
-    destination: &'static str,
-    protocol: Option<u8>,
-    ports: Option<(u16, u16)>,
+// Name the mutex guard after the BH guard: Rust 2021 tail temporaries
+// otherwise outlive locals, allowing BH exit to dispatch NetRx into this lock.
+pub fn is_initialized() -> bool {
+    let _guard = crate::net::net_lock_guard();
+    let ports = ATTACHED.lock();
+    !ports.is_empty() || READY.load(Ordering::Acquire)
 }
 
-impl FrameSummary {
-    fn of(data: &[u8], mac: [u8; 6]) -> Self {
-        let mut summary = Self {
-            length: data.len(),
-            ethertype: 0,
-            from_this_port: false,
-            destination: "short",
-            protocol: None,
-            ports: None,
-        };
-        let Some(frame) = ethernet::EthernetFrame::parse(data) else {
-            return summary;
-        };
-        summary.ethertype = frame.ethertype;
-        summary.from_this_port = frame.src_mac == mac;
-        summary.destination = if frame.dst_mac == ethernet::BROADCAST_MAC {
-            "broadcast"
-        } else if frame.dst_mac == mac {
-            "to this port"
-        } else if frame.dst_mac[0] & 1 != 0 {
-            "multicast"
-        } else {
-            "to another station"
-        };
-        if frame.ethertype != ethernet::ETHERTYPE_IPV4 {
-            return summary;
-        }
-        let Some(ip) = ipv4::Ipv4Packet::parse(frame.payload) else {
-            return summary;
-        };
-        summary.protocol = Some(ip.protocol);
-        if ip.protocol == ipv4::PROTOCOL_UDP {
-            summary.ports = udp::UdpHeader::parse(ip.payload)
-                .map(|(header, _)| (header.src_port, header.dst_port));
-        }
-        summary
-    }
-
-    fn from_dhcp_server(&self) -> bool {
-        self.ports == Some((dhcp::SERVER_PORT, dhcp::CLIENT_PORT))
-    }
+pub fn mac_address() -> Option<[u8; 6]> {
+    let _guard = crate::net::net_lock_guard();
+    let ports = ATTACHED.lock();
+    ports.first().map(|port| port.mac)
 }
 
-impl fmt::Display for FrameSummary {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{} bytes, EtherType {:#06x}, {}",
-            self.length, self.ethertype, self.destination
-        )?;
-        if self.from_this_port {
-            write!(f, ", from this port's address")?;
-        }
-        if let Some(protocol) = self.protocol {
-            write!(f, ", IPv4 protocol {protocol}")?;
-        }
-        if let Some((source, destination)) = self.ports {
-            write!(f, ", UDP {source} to {destination}")?;
-        }
-        Ok(())
-    }
+pub fn transmit(frame: &[u8]) -> Result<(), &'static str> {
+    if !READY.load(Ordering::Acquire) { return Err("link not ready"); }
+    let _guard = crate::net::net_lock_guard();
+    let mut ports = ATTACHED.lock();
+    ports.first_mut().ok_or("no port")?.send(frame)
 }
 
-/// A broadcast DHCPDISCOVER from `mac`: Ethernet, IPv4 from 0.0.0.0 to the
-/// limited broadcast address, and UDP from the client port to the server port
-/// (RFC 2131 section 4.1).
-fn discover_frame(xid: u32, mac: [u8; 6]) -> Result<Vec<u8>, &'static str> {
-    let message = dhcp::discover_message(xid, mac);
-    let datagram = udp::try_build_udp_packet(
-        [0; 4],
-        [255; 4],
-        dhcp::CLIENT_PORT,
-        dhcp::SERVER_PORT,
-        &message,
-    )
-    .map_err(|_| "UDP datagram")?;
-    let packet = ipv4::Ipv4Packet::try_build(
-        [0; 4],
-        [255; 4],
-        ipv4::PROTOCOL_UDP,
-        ipv4::DEFAULT_TTL,
-        &datagram,
-    )
-    .map_err(|_| "IPv4 packet")?;
-    ethernet::EthernetFrame::build(
-        &mac,
-        &ethernet::BROADCAST_MAC,
-        ethernet::ETHERTYPE_IPV4,
-        &packet,
-    )
-}
-
-/// Whether `data` is a DHCPOFFER answering transaction `xid` for `mac`.
-fn is_offer_frame(data: &[u8], xid: u32, mac: [u8; 6]) -> bool {
-    let Some(frame) = ethernet::EthernetFrame::parse(data) else {
-        return false;
-    };
-    if frame.ethertype != ethernet::ETHERTYPE_IPV4 {
-        return false;
+pub fn receive(output: &mut [u8]) -> Option<usize> {
+    if !READY.load(Ordering::Acquire) { return None; }
+    let _guard = crate::net::net_lock_guard();
+    let mut ports = ATTACHED.lock();
+    for port in ports.iter_mut() {
+        if let Some(length) = port.receive(output) { return Some(length); }
     }
-    let Some(ip) = ipv4::Ipv4Packet::parse(frame.payload) else {
-        return false;
-    };
-    if ip.protocol != ipv4::PROTOCOL_UDP {
-        return false;
-    }
-    let Some((header, message)) = udp::UdpHeader::parse(ip.payload) else {
-        return false;
-    };
-    header.src_port == dhcp::SERVER_PORT
-        && header.dst_port == dhcp::CLIENT_PORT
-        && dhcp::is_offer(message, xid, mac)
+    None
 }
 
 /// Attach the BCM5720 functions whose PHY has link at handoff, up to
@@ -1248,14 +1018,14 @@ pub fn init() -> usize {
     attached
 }
 
-/// Start each attached port's bring-up probe. Called once the scheduler runs
+/// Start each attached port's link and DHCP maintenance thread. Called once the scheduler runs
 /// and interrupts are enabled.
-pub fn start_probes() {
+pub fn start_networking() {
     let ports = crate::arch_without_interrupts(|| core::mem::take(&mut *ATTACHED.lock()));
     for port in ports {
         let bdf = port.f.bdf();
-        if let Err(error) = crate::task::kthread::kthread_run(move || port.probe(), "kbcm5720") {
-            log::warn!("[bcm5720] {bdf}: probe not started: {error:?}");
+        if let Err(error) = crate::task::kthread::kthread_run(move || port.run(), "kbcm5720") {
+            log::warn!("[bcm5720] {bdf}: network thread not started: {error:?}");
         }
     }
 }

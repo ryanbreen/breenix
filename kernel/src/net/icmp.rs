@@ -9,6 +9,14 @@ use super::ipv4::{self, Ipv4Packet, PROTOCOL_ICMP};
 /// ICMP type: Echo Reply
 pub const ICMP_ECHO_REPLY: u8 = 0;
 
+#[cfg(target_arch = "x86_64")]
+static GATEWAY_ECHO_RECEIVED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn gateway_echo_received() -> bool {
+    GATEWAY_ECHO_RECEIVED.load(core::sync::atomic::Ordering::Acquire)
+}
+
 /// ICMP type: Destination Unreachable
 pub const ICMP_DEST_UNREACHABLE: u8 = 3;
 
@@ -128,6 +136,8 @@ pub fn handle_icmp(ip: &Ipv4Packet, icmp: &IcmpPacket) {
             // Preserve the networking boot stage without taking the logger's
             // locks in NetRx. The idle/thread writer emits this actual event.
             if ip.src_ip == super::config().gateway && icmp.identifier == 1 && icmp.sequence == 1 {
+                #[cfg(target_arch = "x86_64")]
+                GATEWAY_ECHO_RECEIVED.store(true, core::sync::atomic::Ordering::Release);
                 static ECHO_REPLY_NOTICE: crate::log_notice::Node = crate::log_notice::Node::new();
                 ECHO_REPLY_NOTICE.post_again("NET: ICMP echo reply received from gateway");
             }
