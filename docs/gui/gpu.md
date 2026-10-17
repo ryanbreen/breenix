@@ -426,6 +426,35 @@ The G0 spikes exercised a subset; binary32 emulation remains unproved (section 1
 
 A profile violation is a failing case to fix, never a reason for a tolerance.
 
+#### 1.5.1 Closed forms for G5
+
+<!-- claim-lint:ok: Algebraic derivation of docs/gui/gpu.md section 1.5 item 5; input domain and formula stated here. -->
+For a line, let M be the larger absolute endpoint displacement, m the smaller, and k
+its major-axis step from the first endpoint. For M > 0 the minor displacement is
+`floor((2*k*m + M)/(2*M))`, for `0 <= k <= M`, with each axis following its endpoint's
+sign. M = 0 writes the one endpoint. This is the unclipped walk: clipping intersects
+its pixel set and never restarts its error accumulator.
+
+<!-- claim-lint:ok: Inductive derivation for docs/gui/gpu.md section 1.5 item 5, with base and recurrence stated here. -->
+To prove the formula, write `k*m = q*M + r`, with `0 <= r < M`. The midpoint decision
+chooses q when `2*r < M`, otherwise q+1. The initial step has q=r=0. Advancing k adds m
+to r, subtracts M at a carry and advances q; its midpoint comparison is exactly the
+walk's error comparison, including its equality choice. Induction establishes the
+formula for every step and either choice of major axis. The doubled product fits
+three words even when both displacements approach 2^32; clipping does not narrow
+those operands before the predicate is evaluated.
+
+For the circle outline, reflect the candidate into the first octant, `X >= Y >= 0`.
+For radius r >= 1 its membership is
+`X*X - X + Y*Y <= r*r < (X+1)*(X+1) - (X+1) + Y*Y`.
+At Y=0 the largest satisfying X is r. The expression is strictly increasing in X
+for X >= 1, so there is a unique largest satisfying X. Incrementing Y changes it
+by `2*Y+1`; decrementing X changes it by `-2*X+2`. Those are the outline walk's
+midpoint-error increments, with its equality retained on the lower side. Induction
+therefore gives the same recorded X at each Y until X < Y. Reflection gives exactly
+the walk's eight symmetric pixels. Radius 0 writes the centre; negative radii are
+empty. Both inequalities use two words after bounding |dx| and |dy| by r.
+
 ### 1.6 Per-target backends
 
 | Target | Device | Guest backend | Host renderer | Readback (section 1.8) |
