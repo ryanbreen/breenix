@@ -21,8 +21,9 @@ exists), and those that answer the request for real text and display scale, whic
 **Status.** A plan and a frozen contract. G0's host stack, provenance audit and Parallels and VMware spikes
 have run; the effort's lanes land into `gpu/integration` (section 1.11). Sections 1.3 to 1.10 are the
 contract, frozen after the spikes reported. Section 1.12 records what the spikes changed and why, section
-1.13 the amendment G1's review required, and section 1.14 the amendment G2's review required. A later change to a frozen section is a contract change: it is made
-in its own PR, with its reason, before the lane that needs it, and never in the same change as the code,
+1.13 the amendment G1's review required, section 1.14 the amendment G2's review required, and section 1.15
+the interface G3 needs. A later change to a frozen section is a contract change: it is made
+in its own PR, with its reason, before the lane that needs it, separately from the code,
 checks or thresholds that conform to it. The suite,
 `docs/suites/gpu.json` and `/sbin/suite-gpu`, measures this contract; its 170 cases fail, each naming the
 layer it needs, until that layer exists.
@@ -183,7 +184,15 @@ width 64 uses 64-byte rows on VMware. The kernel copies rows between the backend
 supplies the backend's layout.
 
 **Copies.** A `copy` between two rectangles of one resource that overlap gives the result of copying the
-source as it was before the copy; the kernel stages it through a scratch texture.
+source as it was before the copy; the kernel stages it through a scratch texture. A region copy moves bytes
+unchanged, so its source and destination have the same format; converting between formats is the `copy`
+pipeline's work.
+
+**Sampling.** A pipeline that samples a texture reads each texel by integer fetch at the coordinates its
+rule gives and converts it channel by channel into the target's format: B8G8R8A8 and R8G8B8A8 texels keep
+their four channels, and an R8 texel `r` reads as R `r`, G 0, B 0 and A 255, the value OpenGL ES 3.0 and
+Direct3D 10 both give a one-channel texture's missing channels. A rectangle drawn from a texture is clipped
+to the texels the texture has, so no pixel reads outside it.
 
 ### 1.4 Syscall 416
 
@@ -202,10 +211,10 @@ ARM64; x86-64's dispatch arrives when x86-64 joins (section 1.6.4).
 | 1 | `CAPS` | the profile record: backend, feature bits, formats, maximum sizes, catalogue version, the device's host renderer string where its capability set carries one |
 | 2, 3 | `CONTEXT_CREATE`, `CONTEXT_DESTROY` | per-process; EAGAIN past the quota; creation compiles and warms every catalogue program (section 1.4.1) |
 | 4, 5 | `RESOURCE_CREATE`, `RESOURCE_DESTROY` | targets, textures, buffers; a scanout flag declares scanout targets at creation (section 1.7); ENOMEM against the GPU memory quota and `RLIMIT_AS` for guest backing; destroy drops the handle, and storage is freed when the resource's hold set is empty (section 1.4.1) |
-| 6 | `UPLOAD` | user bytes to a texture or buffer rectangle, clipped, with its `purpose`; visible to later submissions only |
+| 6 | `UPLOAD` | user bytes to a texture or buffer rectangle, clipped, with its `purpose`, sent in a named context; visible to later submissions only; EINTR on an interrupted wait, ENOMEM if staging cannot be allocated or charged to the process's guest-backing quota or `RLIMIT_AS` |
 | 7 | `SUBMIT` | a BGL command stream, validated whole before anything is sent (EINVAL with the failing command's index), with its work estimate checked (EDQUOT past the cap); returns a fence |
 | 8 | `WAIT` | fence wait with timeout; ETIMEDOUT, EINTR, EIO for an errored or reset fence; killable within 250 ms |
-| 9 | `READBACK` | a target rectangle into user memory, with a 1,024-byte `ObservationRecord` version 2; ENOMEM if staging cannot be charged to the process's guest-backing quota or `RLIMIT_AS` (section 1.8) |
+| 9 | `READBACK` | a target or texture rectangle into user memory, with a 1,024-byte `ObservationRecord` version 2; ENOMEM if staging cannot be charged to the process's guest-backing quota or `RLIMIT_AS` (section 1.8) |
 | 10, 11 | `MODES`, `SET_MODE` | display owner only for `SET_MODE` |
 | 12 | `PRESENT` | display owner only; EINVAL for a never-written target or one created without the scanout flag; returns a fence of the context it names, never a raw device fence number (section 1.7) |
 | 13 | `COUNTERS` | per-context submissions, draws, instances, fragment area, work estimate, uploads by purpose, readbacks |
@@ -246,14 +255,26 @@ and 415 (`652a4494`) was reverted (`0f53872e`) and is not reapplied.
   from hang recovery. A kill during creation must end the caller within 250 ms, without waiting for all
   programs to compile (`isolation/killable-wait`); queued work retains its resources until completion or
   reset. The spike measured compilation of only its own programs, not the full catalogue (section 1.12).
-- **Execution and publication.** Every target a submission writes is *pending* until the submission's fence
+- **Execution and publication.** Each target a submission writes is *pending* until the submission's fence
   completes. Completed OK, the target's generation advances and its contents are published. Completed with a
-  device error, or lost to a watchdog reset, every target the submission wrote is marked *invalid*: readback
+  device error, or lost to a watchdog reset, each target the submission wrote is marked *invalid*: readback
   returns EIO naming the submission, sampling it in a later submission is refused, and it becomes valid again
   only when a later submission that writes it whole (a full clear, a full copy or a full upload) completes
   OK. Drawing into an invalid target is allowed: the validator refuses only a command that samples one. A
-  draw that does not write the whole target leaves it invalid. No partial result of a failed submission is
-  ever observed as valid.
+  draw that does not write the whole target leaves it invalid. A partial result of a failed submission is
+  invalid. An `UPLOAD` the device answers with an error, or that the watchdog or a reset
+  ends, leaves its texture invalid the same way, until an upload of the whole texture completes OK.
+  An interrupted upload wait returns EINTR; if its request has been sent, it leaves its texture invalid
+  with the same recovery rule, even if the device later completes that upload OK. Interruption before
+  sending leaves the resource unchanged. Temporary upload staging is charged like `READBACK` staging
+  (section 1.8), including `RLIMIT_AS` and `COUNTERS.resource_bytes`; inability to allocate or charge it
+  returns ENOMEM before device work is sent or the resource is changed.
+- **Uploads are ordered, not blocking.** An `UPLOAD` is sent behind everything its context sent before it, and
+  the device executes one context's commands in the order they were sent (which
+  `textures/immutable-while-pinned` checks), so a submission of that context sent before the upload samples
+  the texture as it was before, and the submissions sent after the upload returns see it. It waits for a
+  readback or upload of the same resource in progress and for submissions of the process's other contexts that
+  name the resource, whose order against it the device does not state.
 - **The work estimate.** For each draw the validator computes fragments × per-fragment steps, where the
   per-fragment steps are a constant of the pipeline, except `coverage_spans`, whose steps for a row are the
   number of crossings on that row's 8 sub-scanlines (read from the buffer's per-sub-scanline offsets in
@@ -322,11 +343,13 @@ and 415 (`652a4494`) was reverted (`0f53872e`) and is not reapplied.
 - **Hold sets.** A resource is freed only when its handle is dropped and its hold set is empty. Holders: each
   submission that reads or writes it (until its fence), a committed window buffer and a remnant (until
   retired), the compositor's sampling submission (until its fence), the scanout binding (until another
-  target is presented and that present's fence completes), a capture or readback (until its transfer fence),
-  and an `ACQUIRE` replay copy (until its fence). For every device-access hold above, "until its fence"
-  means actual device completion, not a caller-visible error synthesized at quarantine or reset. A
-  successfully confirmed reset that proves device access has ended can also retire these holds; merely
-  requesting reset or failing to reset cannot. Reporting EIO never by itself empties a hold set.
+  target is presented and that present's fence completes), a capture, readback or texture upload (until
+  its transfer fence), and an `ACQUIRE` replay copy (until its fence). For each device-access hold above,
+  "until its fence" requires both publication of the fence and the end of device access, by actual device
+  completion or a successfully confirmed reset. Device completion with the fence still unpublished keeps
+  the hold. A caller-visible error synthesized at quarantine or reset does not establish the end of
+  device access; merely requesting reset or failing to reset cannot retire the hold. Reporting EIO or
+  EINTR does not by itself empty a hold set.
 - **The render-completion handoff** (used by BreenGL's windows, section 2.1): each target records the fence of
   the last accepted submission that writes it. `COMMIT` records that fence with the commit and from then on
   refuses submissions that write the committed buffer. The compositor samples a commit only after that fence
@@ -624,7 +647,7 @@ the process's guest-backing quota or `RLIMIT_AS`. The charge is released when th
 | 28 | `format: u32`: the target's format (0 `B8G8R8A8`, 1 `R8G8B8A8`) |
 | 32 | `x, y, width, height: u32`: the rectangle read |
 | 48 | `target_width, target_height: u32` |
-| 56 | `stride: u32`: of the caller's buffer; `canonical: u32`: 0, BGRA bytes |
+| 56 | `stride: u32`: of the caller's buffer; `canonical: u32`: 0, BGRA bytes; 1, one byte per pixel (an R8 texture) |
 | 64 | `context: u64`: the device context that last wrote the target (the compositor's for a composite) |
 | 72 | `target: u64`: the caller's handle; `resource: u64` at 80: the device's resource or surface id |
 | 88 | `generation: u64`: the target's published generation (section 1.4.1) |
@@ -1028,6 +1051,22 @@ code, checks or thresholds. The amendment:
 | `READBACK` may fail with ENOMEM when staging cannot be charged to the process's guest-backing quota or `RLIMIT_AS`; `COUNTERS` reports the staging under `resource_bytes` | sections 1.4, 1.8; `docs/gui/gpu-abi.md` |
 | `RESOURCE_CREATE` declares scanout intent with a flag; only targets created with it get the device's `SCANOUT` bind, and `PRESENT` refuses other targets with EINVAL | sections 1.4, 1.7; `docs/gui/gpu-abi.md` |
 | Reproduce commands use exactly the cited runs' flags, run folders keep `host-renderer.json`, and `scripts/vigil-record.sh` records whether the boot had a display window | section 1.9; `docs/gui/gpu-abi.md` |
+
+### 1.15 What G3 needs
+
+G3 (`textures`) is the first lane to upload, copy and sample. Sections 1.3, 1.4 and 1.8 named those
+operations and left their interface to `docs/gui/gpu-abi.md`, which did not define it yet. This amendment
+defines it, in its own PR before the lane's code (ruling 9):
+
+| Rule | Where |
+|---|---|
+| `UPLOAD` names a live context, a texture or buffer, a clipped rectangle, the caller's stride, one of five source layouts (two 4-byte, two 3-byte with alpha 255, and R8) and a purpose; `COUNTERS` counts the source bytes read per purpose | sections 1.3, 1.4; `docs/gui/gpu-abi.md` |
+| Uploads are ordered behind their own context's earlier commands rather than blocking on them, and wait for other contexts' submissions naming the resource; a failed upload leaves its texture invalid until a whole upload completes OK | section 1.4.1; `docs/gui/gpu-abi.md` |
+| An interrupted upload wait returns EINTR; after sending, it leaves the texture invalid like EIO. Upload staging is charged like readback staging and may return ENOMEM. Device-access holds require fence publication as well as device completion or a successfully confirmed reset (ruling 24) | sections 1.4, 1.4.1; `docs/gui/gpu-abi.md` |
+| `READBACK` reads textures as well as targets; an R8 texture reads back one byte per pixel (`canonical` 1); a texture's record describes its last completed upload | sections 1.4, 1.8; `docs/gui/gpu-abi.md` |
+| The stream gains `COPY`, a region copy between resources of one format into a target, staged when the rectangles overlap in one resource, and `DRAW_SAMPLED`, whose instances name a destination rectangle and a source origin; refusal codes 15 to 17 | section 1.3; `docs/gui/gpu-abi.md` |
+| Sampling converts by channel, with an R8 texel `r` read as (`r`, 0, 0, 255), and clips each rectangle to the texels the texture has | section 1.3; `docs/gui/gpu-abi.md` |
+| Points 29 (`wrong-texture`) and 30 (`skip-upload-visibility`) take a texture handle and are defined in full | section 1.8; `docs/gui/gpu-abi.md` |
 
 ## 2. BreenGL rebuilt on the GPU
 
