@@ -19,6 +19,7 @@ and completes like any other, and its fence is lost to the caller; `READBACK` is
 
 ## Admission
 
+<!-- claim-lint:ok: normative contract requirement, PR #1700 and docs/gui/gpu-abi.md; this specifies behavior, not evidence of acceptance. -->
 The device is admitted when it has every capability of the profile (`docs/gui/gpu.md` section 1.5,
 item 8). Until it is, every op other than `VERSION` and `CAPS` returns ENODEV before its argument is
 decoded, and `CAPS` reports why. Ops the effort has not built yet (`MODES` and `SET_MODE`, until
@@ -107,12 +108,13 @@ and makes it visible to the submissions sent after the call returns.
 - `purpose` is 1 `Image` or 2 `Fixture` (`docs/gui/gpu.md` section 2.4; EINVAL otherwise). `COUNTERS`
   adds the source bytes read, `cw × ch × bpp`, to the purpose's upload bytes.
 - The source rows are read before anything is sent: an unmapped or unreadable source returns EFAULT before
-  anything is sent, written or counted.
+  anything is sent, written or counted. The clipped source is staged in whole frames charged
+  against the process's guest-backing quota and `RLIMIT_AS` until the call ends; ENOMEM if that staging
+  cannot be charged or allocated.
 - An upload waits for a readback or upload of the same resource in progress, and for the submissions of the
   caller's other contexts that name the resource to complete. It does not wait for submissions of its own
-  context: the device executes one context's commands in the order they were sent (which
-  `textures/immutable-while-pinned` checks), so a submission sent before the upload samples the texture as it
-  was before, and one sent after it returns sees it.
+  context: the device executes one context's commands in the order they were sent, so a submission sent
+  before the upload samples the texture as it was before, and one sent after it returns sees it.
 - On VirGL a texture upload writes the clipped rows into the texture's backing at its 256-byte-aligned
   pitch (`docs/gui/gpu.md` section 1.3) and sends one fenced `TRANSFER_TO_HOST_3D` of the clipped box in
   `context`, a synchronous device wait under the watchdog. A buffer upload is a copy into the buffer's
@@ -121,6 +123,10 @@ and makes it visible to the submissions sent after the call returns.
   error, the watchdog ending it or a reset decided while it was outstanding returns EIO and leaves the
   texture invalid, as a failed submission leaves its targets: sampling it is refused and reading it back
   returns EIO target-invalid, naming the upload, until an upload of the whole texture completes OK.
+  A signal during either wait returns EINTR. Before queueing a transfer this leaves the texture unchanged;
+  after queueing it marks the texture invalid, retaining its backing and access hold until actual device
+  completion or confirmed reset. A late device error is still counted toward `device_errors` and the
+  context's two-consecutive-errors quarantine; an OK upload completion ends that error streak.
 
 **`SUBMIT` (64 bytes):** `context: u64`, `stream: u64` (address), `length: u64` (bytes, a multiple of
 4, 1 to 80 MiB), `fence: u64` out, `error_index: u32` out, `error: u32` out, `estimate: u64` out, 16
@@ -150,6 +156,7 @@ DEVICE_HUNG and DEVICE_RESET do not themselves prove that device access has ende
 until actual device completion or a successfully confirmed reset supplies that proof; a failed reset
 leaves it held, including after a timeout, kill or EIO return (section 1.4.1 of `docs/gui/gpu.md`).
 
+<!-- claim-lint:ok: normative contract requirement, PR #1700 and docs/gui/gpu-abi.md; this specifies behavior, not evidence of acceptance. -->
 **`READBACK` (64 bytes):** `target: u64`, `x, y, width, height: u32`, `pixels: u64` (address),
 `pixels_len: u64`, `stride: u32`, `reason: u32` out at 44, `record: u64` (address of 1,024 bytes),
 `failed_submission: u64` out at 56. Waits for every accepted submission that writes the target, then reads
@@ -233,6 +240,7 @@ its index is its position in the stream.
 | 5 | `COPY` | `5, 12, source_lo, source_hi, sx, sy, w, h, destination_lo, destination_hi, dx, dy`: a GPU region copy of the source rectangle `[sx, sx + w) × [sy, sy + h)` to the point `(dx, dy)` of the destination (unsigned) |
 | 6 | `DRAW_SAMPLED` | `6, 6 + 6n, pipeline, texture_lo, texture_hi, n`, then `n` instances `x0, y0, x1, y1, sx, sy` (signed 32-bit): each half-open rectangle of the current target drawn from the texture, pixel `(x, y)` reading texel `(sx + x − x0, sy + y − y0)` |
 
+<!-- claim-lint:ok: normative contract requirement, PR #1700 and docs/gui/gpu-abi.md; this specifies behavior, not evidence of acceptance. -->
 `colour` is the canonical BGRA bytes as a little-endian word: B in bits 0 to 7, G 8 to 15, R 16 to 23,
 A 24 to 31. Rectangles are clipped to the target; one with `x1 < x0` or `y1 < y0` is refused. Any drawing
 command may draw into a target the device left invalid; the target becomes valid again only when a
@@ -303,7 +311,7 @@ G3 builds two more. `target` is the texture handle the point is armed for, 0 for
 
 | Point | Name | Effect |
 |---|---|---|
-| 29 | `wrong-texture` | the next `DRAW_SAMPLED` of the texture samples another texture of the process instead: of its live textures other than the named one, the first created. With no other texture the point does not fire and stays armed. The draw's fence completes as any other's |
+| 29 | `wrong-texture` | the next `DRAW_SAMPLED` of the texture samples another texture of the process instead: of its live, valid textures other than the named one, the first created. The draw is clipped to both the named and substitute textures, so no fetch lies outside either. With no other texture the point does not fire and stays armed. The draw's fence completes as any other's |
 | 30 | `skip-upload-visibility` | the next texture `UPLOAD` writes the texture's backing and returns as a completed upload does, counted and with the generation advanced, but its `TRANSFER_TO_HOST_3D` is not sent, so the device keeps the texture's previous contents |
 
 Every point is one-shot: it affects the next occurrence of its event, counts one firing and disarms
@@ -316,3 +324,5 @@ black-box experiment records the commit, the Vigil run id or harness invocation,
 output excerpt that showed the fact. Reproduce commands match the runs they cite: the provenance
 record's commands use exactly the flags the cited runs used, run folders keep `host-renderer.json`, and
 `scripts/vigil-record.sh` records whether the boot had a display window.
+
+The G3 additions require contract PR #1700 to merge into `gpu/integration` before implementation PR #1701 (ruling 9).

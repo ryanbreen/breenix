@@ -405,7 +405,7 @@ was tracked in #1697; ruling 21 subsequently authorized GL-first ordering in its
 | Record v2 `canonical` 1: one byte per pixel of an R8 texture; a texture's render fields name its last upload, `render_kind` 0x0205 | O: `docs/gui/gpu.md` section 1.8, `docs/gui/gpu-abi.md` `READBACK` (#1700) |
 | Stream commands COPY 5 (12 words) and DRAW_SAMPLED 6 (6 + 6n words); refusal codes 15 format mismatch, 16 wrong command, 17 samples its target; `copy` 1 step per fragment, a COPY 1 step per pixel per device copy | O: `docs/gui/gpu-abi.md`, the BGL command stream (#1700) |
 | Test points 29 (`wrong-texture`, armed by texture handle; the process's other live texture created first) and 30 (`skip-upload-visibility`, armed by texture handle) | O: `docs/gui/gpu-abi.md`, test-control points (#1700) |
-| An R8 texel `r` sampled as (R `r`, G 0, B 0, A 255) | A: the OpenGL ES 3.0 and Direct3D 10 rules for a one-channel texture's missing channels; O: `docs/gui/gpu.md` section 1.3, sampling (#1700); B: B8 and B9 below |
+| An R8 texel `r` sampled as (R `r`, G 0, B 0, A 255) | A: [OpenGL ES 3.0.6](https://registry.khronos.org/OpenGL/specs/es/3.0/es_spec_3.0.pdf), section 3.9.2.1, table 3.24 (RED maps to R, 0, 0, 1); [Direct3D HLSL Texture Object](https://learn.microsoft.com/en-us/windows/win32/direct3dhlsl/dx-graphics-hlsl-to-type), Remarks, paragraph beginning "The default value for missing components"; O: `docs/gui/gpu.md` section 1.3, sampling (#1700); B: B8 and B9 below |
 
 ## G3 VirtIO and VirGL values
 
@@ -428,7 +428,7 @@ was tracked in #1697; ruling 21 subsequently authorized GL-first ordering in its
 
 | Value | Source |
 |---|---|
-| Uploads read the caller's rows 768 bytes at a time through the stack and convert them into the texture's channel order; buffer uploads stage the whole range in frames first, so a fault leaves the buffer as it was | O: G3 sizing choice; `docs/gui/gpu-abi.md` `UPLOAD`, EFAULT |
+| Uploads stage the clipped source rows through 768-byte stack chunks in frames charged to both guest-backing quota and RLIMIT_AS, before converting or writing backing; EFAULT leaves textures and buffers unchanged | O: G3 sizing choice; `docs/gui/gpu-abi.md` `UPLOAD`, EFAULT |
 | One device draw per DRAW_SAMPLED instance, each with its own texel-offset constant; up to 1,024 instances' vertices per inline write | O: G3 geometry choice; the vertex-region rule of G1 |
 | A submission whose copies overlap within one target gets one device-only scratch texture per target format, sized to the largest such copy, created and attached like its vertex buffer and held with it | O: `docs/gui/gpu.md` section 1.3, copies |
 | Each context has a third internal resource, a device-only 1×1 B8G8R8A8 texture that warm-up's `copy` draw samples; contexts warm 4 programs (`solid`'s and `copy`'s pairs) | O: `docs/gui/gpu.md` section 1.4.1, program warm-up |
@@ -451,11 +451,12 @@ pixel, and since the texel the sum names lies inside the texture, the 32-bit wra
 ## G3 shader-grammar facts
 
 The renderer was the unmodified virglrenderer at P's pin, run on 2026-10-17 at 08:22:59 UTC with checkout
-commit `84651e17df7c2e8c31c4c5b0057499462c935abc`, through the same public-API harness pattern as G1's
-(ruling 11): a host-only Python ctypes harness, named `g3-egl.py`, that loads virglrenderer and ANGLE EGL,
+commit `84651e17df7c2e8c31c4c5b0057499462c935abc` (the source tested, not a commit containing the harness), through the same public-API harness pattern as G1's
+(ruling 11): a host-only Python ctypes harness, committed at `tools/gpu-experiments/g3-egl.py`, with `exp-grammar.py`, `exp-render.py` and `copy_fs.txt` in the same directory, that loads virglrenderer and ANGLE EGL,
 creates a 1×1 pbuffer and GLES contexts with the version-1 callbacks, and submits words with
-`virgl_renderer_submit_cmd`. Its invocation, without machine-specific directory prefixes, was
-`DYLD_LIBRARY_PATH="$QEMU_GL_FRAMEWORKS" DYLD_FRAMEWORK_PATH="$QEMU_GL_FRAMEWORKS" QEMU_GL_FRAMEWORKS="$QEMU_GL_FRAMEWORKS" python3 g3-egl.py <experiment>`
+`virgl_renderer_submit_cmd`. To reproduce with the committed harness (experiments `exp-grammar`
+and `exp-render`), without machine-specific directory prefixes, use
+`DYLD_LIBRARY_PATH="$QEMU_GL_FRAMEWORKS" DYLD_FRAMEWORK_PATH="$QEMU_GL_FRAMEWORKS" QEMU_GL_FRAMEWORKS="$QEMU_GL_FRAMEWORKS" python3 tools/gpu-experiments/g3-egl.py tools/gpu-experiments/<experiment>.py`
 with `ANGLE_DEFAULT_PLATFORM=metal`, `QEMU_GL_FRAMEWORKS` denoting the pinned QEMU GL bundle's Frameworks
 directory. Each candidate went to a fresh context as one CREATE_OBJECT SHADER (handle 1, the fragment
 stage, the text's length with its NUL, the stated token count), the text packed into little-endian words
@@ -501,7 +502,7 @@ then
 `BREENIX_QUIET=0 "$CHECKOUT/scripts/boot-interactive.sh" --no-build --mode suite --suite gpu --gpu-gl --display --serial-log "$RUN/serial.txt" --gate-timeout 900 < /dev/null`.
 CHECKOUT is the absolute checkout of the source commit and RUN a fresh absolute output directory. Both
 records report `display:true` and dirty 0, and both run folders keep `host-renderer.json`; the launcher
-accepted the attestation, `ANGLE (Apple, ANGLE Metal Renderer: Apple M5 Max, …)`, with 170 records.
+accepted the attestation, `ANGLE Metal Renderer`, with 170 records.
 
 | Source commit and Vigil run | Producer output |
 |---|---|
@@ -514,8 +515,9 @@ B8G8R8A8 textures 48 wide and R8 textures 64 wide, whose natural rows of 192 and
 of 256 (`upload-full`,
 `upload-subrect`, `upload-clip`, `upload-stride`, `unaligned-pitch`, `readback-uploaded`); TRANSFER_FROM_HOST_3D
 reads textures as it reads targets; RESOURCE_COPY_REGION between and within targets, and through a scratch
-texture for overlapping rectangles (`copy-region`, `copy-overlap`); a submission sent before an upload in the
-same context samples the earlier texels (`immutable-while-pinned`); points 29 and 30 are caught only by the
+texture for overlapping rectangles (`copy-region`, `copy-overlap`); a submission whose fence is retained unpublished samples earlier texels and buffer snapshots
+(`immutable-while-pinned`); because the depth point may hold an already completed answer, this is not
+evidence that commands execute in context order; points 29 and 30 are caught only by the
 exact comparison and by reading the texture back (`fault-wrong-texture`, `fault-skip-upload`).
 
 Both failures come from one platform limit, recorded as an open finding: ARM64's frame allocator spans

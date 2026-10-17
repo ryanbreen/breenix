@@ -18,6 +18,7 @@ two kinds, kept apart throughout: those the GPU-only rule forces (a CPU mechanis
 exists), and those that answer the request for real text and display scale, which are separate rulings
 (section 5, R3 and R4, both granted).
 
+<!-- claim-lint:ok: normative contract requirement, PR #1700 and docs/gui/gpu.md; this specifies behavior, not evidence of acceptance. -->
 **Status.** A plan and a frozen contract. G0's host stack, provenance audit and Parallels and VMware spikes
 have run; the effort's lanes land into `gpu/integration` (section 1.11). Sections 1.3 to 1.10 are the
 contract, frozen after the spikes reported. Section 1.12 records what the spikes changed and why, section
@@ -255,6 +256,7 @@ and 415 (`652a4494`) was reverted (`0f53872e`) and is not reapplied.
   from hang recovery. A kill during creation must end the caller within 250 ms, without waiting for all
   programs to compile (`isolation/killable-wait`); queued work retains its resources until completion or
   reset. The spike measured compilation of only its own programs, not the full catalogue (section 1.12).
+<!-- claim-lint:ok: normative contract requirement, PR #1700 and docs/gui/gpu.md; this specifies behavior, not evidence of acceptance. -->
 - **Execution and publication.** Every target a submission writes is *pending* until the submission's fence
   completes. Completed OK, the target's generation advances and its contents are published. Completed with a
   device error, or lost to a watchdog reset, every target the submission wrote is marked *invalid*: readback
@@ -263,13 +265,18 @@ and 415 (`652a4494`) was reverted (`0f53872e`) and is not reapplied.
   OK. Drawing into an invalid target is allowed: the validator refuses only a command that samples one. A
   draw that does not write the whole target leaves it invalid. No partial result of a failed submission is
   ever observed as valid. An `UPLOAD` the device answers with an error, or that the watchdog or a reset
-  ends, leaves its texture invalid the same way, until an upload of the whole texture completes OK.
+  ends, or whose waiter is interrupted after queueing the transfer, leaves its texture invalid the same
+  way, until an upload of the whole texture completes OK.
 - **Uploads are ordered, not blocking.** An `UPLOAD` is sent behind everything its context sent before it, and
-  the device executes one context's commands in the order they were sent (which
-  `textures/immutable-while-pinned` checks), so a submission of that context sent before the upload samples
-  the texture as it was before, and the submissions sent after the upload returns see it. It waits for a
+  the device executes one context's commands in the order they were sent, so a submission of that context
+  sent before the upload samples the texture as it was before, and the submissions sent after the upload returns see it. It waits for a
   readback or upload of the same resource in progress and for submissions of the process's other contexts that
-  name the resource, whose order against it the device does not state.
+  name the resource, whose order against it the device does not state. Source staging is charged to the
+  process's guest-backing quota and `RLIMIT_AS`; UPLOAD returns ENOMEM if that staging cannot be charged
+  or allocated, and EINTR if a signal interrupts either wait. Buffer uploads take the same exclusive
+  resource mark while copying their staged bytes; SUBMIT keeps its earlier buffer snapshot.
+  `textures/immutable-while-pinned` checks snapshots and unpublished fence holds; point 31's depth mode
+  retains answers after device completion, so this case alone does not establish device command ordering.
 - **The work estimate.** For each draw the validator computes fragments × per-fragment steps, where the
   per-fragment steps are a constant of the pipeline, except `coverage_spans`, whose steps for a row are the
   number of crossings on that row's 8 sub-scanlines (read from the buffer's per-sub-scanline offsets in
@@ -335,12 +342,15 @@ and 415 (`652a4494`) was reverted (`0f53872e`) and is not reapplied.
   successfully confirmed reset proves that device access has ended (`isolation/killed-work-drains`).
   Caller-visible fence errors do not drain this work or release its holds; a failed reset leaves them held.
   Resources are freed only when the handle is dropped and all holds have ended.
+<!-- claim-lint:ok: normative contract requirement, PR #1700 and docs/gui/gpu.md; this specifies behavior, not evidence of acceptance. -->
 - **Hold sets.** A resource is freed only when its handle is dropped and its hold set is empty. Holders: each
   submission that reads or writes it (until its fence), a committed window buffer and a remnant (until
   retired), the compositor's sampling submission (until its fence), the scanout binding (until another
   target is presented and that present's fence completes), a capture or readback (until its transfer fence),
   and an `ACQUIRE` replay copy (until its fence). For every device-access hold above, "until its fence"
-  means actual device completion, not a caller-visible error synthesized at quarantine or reset. A
+  requires both actual device completion and publication of the fence result. An unpublished fence
+  therefore retains its resources even after device completion; a caller-visible error synthesized at
+  quarantine or reset does not establish device completion. A
   successfully confirmed reset that proves device access has ended can also retire these holds; merely
   requesting reset or failing to reset cannot. Reporting EIO never by itself empties a hold set.
 - **The render-completion handoff** (used by BreenGL's windows, section 2.1): each target records the fence of
@@ -1049,7 +1059,9 @@ code, checks or thresholds. The amendment:
 
 G3 (`textures`) is the first lane to upload, copy and sample. Sections 1.3, 1.4 and 1.8 named those
 operations and left their interface to `docs/gui/gpu-abi.md`, which did not define it yet. This amendment
-defines it, in its own PR before the lane's code (ruling 9):
+defines it, in its own PR before the lane's code (ruling 9). Contract PR #1700 must merge into
+`gpu/integration` before implementation PR #1701; including its commits in the lane does not satisfy
+that landing order:
 
 | Rule | Where |
 |---|---|
