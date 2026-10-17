@@ -28,16 +28,20 @@ pub struct Com1 {
     queue: TxQueue,
 }
 
-/// COM2 (0x2F8) - Used exclusively for kernel log output.
-/// This separates kernel logs from user I/O (COM1), enabling interactive shell use.
+/// COM2 (0x2F8): the kernel log's UART under QEMU, where the gates read the
+/// log and the user console (COM1) from separate files (`select_log_port`).
 pub static SERIAL2: Mutex<SerialPort> = Mutex::new(unsafe { SerialPort::new(COM2_PORT) });
+
+/// The UART the kernel log goes to, chosen once before the first log line is
+/// written (`select_log_port`). COM2 until then, as under QEMU.
+static LOG_PORT: core::sync::atomic::AtomicU16 = core::sync::atomic::AtomicU16::new(COM2_PORT);
 
 // Serial input queue and waker (similar to keyboard)
 static SERIAL_INPUT_QUEUE: OnceCell<ArrayQueue<u8>> = OnceCell::uninit();
 static SERIAL_WAKER: AtomicWaker = AtomicWaker::new();
 
 static SERIAL1_FIFO: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-static SERIAL2_FIFO: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static LOG_FIFO: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// COM1 output accepted from its writers and not yet given to the UART, kept
 /// under SERIAL1 with the port.
@@ -55,7 +59,9 @@ static SERIAL2_FIFO: core::sync::atomic::AtomicBool = core::sync::atomic::Atomic
 /// it the same way, with one port write. A writer gives the UART its output
 /// itself only when the queue is full, and before the thread exists
 /// (`start_transmitter`).
-const TX_QUEUE_BYTES: usize = 16 * 1024;
+// A complete ring line, its extra CR and a possible leading CR LF must fit.
+// Ring bytes already include the backspace/delete wire expansion.
+const TX_QUEUE_BYTES: usize = LOG_RING_BYTES + 3;
 
 struct TxQueue {
     bytes: [u8; TX_QUEUE_BYTES],
@@ -362,7 +368,7 @@ fn flush_com1(attempts: u32) {
     }
 }
 
-/// Kernel log bytes not yet written to COM2.
+/// Kernel log bytes not yet written to the log UART (COM2 under QEMU).
 ///
 /// At 115200 baud the UART takes 87 us a byte, so the strand census's
 /// 330-byte line keeps COM2 busy for 29 ms, and the x86 gate's emulation
@@ -382,12 +388,12 @@ const LOG_RING_BYTES: usize = 64 * 1024;
 static LOG_RING: Mutex<LogRing<LOG_RING_BYTES>> = Mutex::new(LogRing::new());
 
 /// Held by the one context taking a burst from the ring and writing it to
-/// COM2, so bursts reach the UART in the order they left the ring. It is held
-/// with interrupts masked and never across a UART wait, so its holder cannot
+/// the log UART, so bursts reach the UART in the order they left the ring. It is held
+/// with interrupts masked and not across a UART wait, so its holder cannot
 /// be switched out, or have its continuation discarded, while it holds it.
 static LOG_PRINTER: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
-/// Ring bytes written to COM2 so far, counted under `LOG_PRINTER` once the
+/// Ring bytes written to the log UART (or COM1's queue) so far, counted under `LOG_PRINTER` once the
 /// burst is in the UART.
 static LOG_SENT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
@@ -397,8 +403,34 @@ static LOG_SENT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::
 /// CPU's early, interrupts-masked initialisation does.
 static LOG_IDLE_DRAIN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
+/// The console rule (docs/metal/README.md, "The console"), decided before the
+/// first log line is written: the firmware's SPCR UART (`spcr`) first;
+/// otherwise COM2 under QEMU (`qemu`, fw_cfg present), keeping the gates'
+/// split serial files, or COM1 without fw_cfg, the port
+/// the firmware and the bootloader already print on. Returns the port and
+/// where the choice came from, for the `[console]` line.
+pub fn select_log_port(qemu: bool, spcr: Option<u16>) -> (u16, &'static str) {
+    let (port, source) = match (qemu, spcr) {
+        (_, Some(port)) => (port, "spcr"),
+        (true, None) => (COM2_PORT, "fw_cfg"),
+        (false, None) => (COM1_PORT, "default"),
+    };
+    LOG_PORT.store(port, core::sync::atomic::Ordering::Relaxed);
+    (port, source)
+}
+
+fn log_port() -> u16 {
+    LOG_PORT.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// The log shares COM1 with the user console. Its lines then reach the UART
+/// through COM1's queue (`queue_log_line`), so the port has one writer.
+fn log_on_console() -> bool {
+    log_port() == COM1_PORT
+}
+
 fn log_burst() -> usize {
-    if SERIAL2_FIFO.load(core::sync::atomic::Ordering::Relaxed) { 16 } else { 1 }
+    if LOG_FIFO.load(core::sync::atomic::Ordering::Relaxed) { 16 } else { 1 }
 }
 
 /// The burst for a context other CPUs may be waiting on: an idle CPU, which
@@ -408,15 +440,17 @@ fn log_burst() -> usize {
 const SHORT_BURST: usize = 1;
 
 fn log_uart_status() -> u8 {
-    // SAFETY: COM2's line status register.
-    unsafe { x86_64::instructions::port::Port::<u8>::new(COM2_PORT + 5).read() }
+    // SAFETY: the log UART's line status register.
+    unsafe { x86_64::instructions::port::Port::<u8>::new(log_port() + 5).read() }
 }
 
-/// Write `bytes`, at most one FIFO, to COM2's transmitter, which is empty.
+/// Write `bytes`, at most one FIFO, to the log UART's transmitter, which is
+/// empty.
 fn write_log_uart(bytes: &[u8]) {
-    let mut data = x86_64::instructions::port::Port::<u8>::new(COM2_PORT);
+    let mut data = x86_64::instructions::port::Port::<u8>::new(log_port());
     for &byte in bytes {
-        // SAFETY: COM2's data port; only the `LOG_PRINTER` holder writes COM2.
+        // SAFETY: the log UART's data port; only the `LOG_PRINTER` holder
+        // writes it, and a panic's `flush_log` after COM1's queue is out.
         unsafe { data.write(byte) };
     }
 }
@@ -432,11 +466,16 @@ enum Burst {
 }
 
 /// Write at most `limit` bytes of the ring, and at most one FIFO's worth, to
-/// COM2 if the UART can take them now. Never waits: the printer role is held,
-/// with interrupts masked, for one status read, the take from the ring and at
-/// most `limit` port writes.
+/// the log UART if it can take them now, or with the log on the console, one
+/// whole line to COM1's queue if it has room (`queue_log_line`, which writes
+/// no more than one byte to the port). It does not wait: the printer role is
+/// held, with interrupts masked, for one status read, the take from the ring
+/// and at most `limit` port writes, or for the move of one line.
 fn write_burst(limit: usize) -> Burst {
     use core::sync::atomic::Ordering;
+    if log_on_console() {
+        return queue_log_line();
+    }
     crate::arch_without_interrupts(|| {
         if LOG_PRINTER
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -458,16 +497,113 @@ fn write_burst(limit: usize) -> Burst {
     })
 }
 
-/// Write the ring out until `target` bytes have gone to COM2 in all, waiting
-/// on the UART between bursts with interrupts as the caller has them.
+/// A waiting caller retries with interrupts as it found them. When COM1's
+/// queue is full it gives the UART at most one ready byte, then releases the
+/// port. No logging role or ring lock crosses a UART wait, even before the
+/// transmit thread exists.
+fn write_burst_waiting() -> Burst {
+    let burst = write_burst(log_burst());
+    if log_on_console() && matches!(burst, Burst::Busy) {
+        crate::arch_without_interrupts(|| {
+            if let Some(mut serial) = SERIAL1.try_lock() {
+                let _ = send_byte(&mut serial.queue);
+            }
+        });
+    }
+    burst
+}
+
+/// Move one whole ring line into COM1's queue without waiting on hardware.
+/// Ring bytes are already wire-expanded; only LF needs its preceding CR.
+/// The queue can hold any complete ring line and its lead, so a full queue
+/// is drained between retries rather than under LOG_PRINTER or LOG_RING.
+fn queue_log_line() -> Burst {
+    use core::sync::atomic::Ordering;
+    crate::arch_without_interrupts(|| {
+        if LOG_PRINTER
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            return Burst::Busy;
+        }
+        let burst = match SERIAL1.try_lock() {
+            None => Burst::Busy,
+            Some(mut serial) => {
+                let queue = &mut serial.queue;
+                let Some(mut ring) = LOG_RING.try_lock() else {
+                    LOG_PRINTER.store(false, Ordering::Release);
+                    return Burst::Busy;
+                };
+                let line = ring.line_len();
+                if line == 0 {
+                    drop(ring);
+                    if queue.len != 0 {
+                        let _ = send_byte(queue);
+                        Burst::Busy
+                    } else { Burst::Empty }
+                } else if TX_QUEUE_BYTES - queue.len < line + 3 {
+                    // Poll once, without waiting, so the early boot and idle
+                    // drainer also make progress without a transmit thread.
+                    drop(ring);
+                    let _ = send_byte(queue);
+                    Burst::Busy
+                } else {
+                    let mut chunk = [0u8; 64];
+                    let (mut left, mut first, mut last) = (line, true, b'\n');
+                    while left != 0 {
+                        let take = left.min(chunk.len());
+                        let n = ring.pop(&mut chunk[..take]);
+                        if first {
+                            for &byte in crate::serial_writer::lead(Writer::Kernel, &chunk[..n]) {
+                                queue.push(byte);
+                            }
+                            first = false;
+                        }
+                        for &byte in &chunk[..n] {
+                            if byte == b'\n' {
+                                queue.push(b'\r');
+                            }
+                            queue.push(byte);
+                        }
+                        last = chunk[n - 1];
+                        left -= n;
+                    }
+                    crate::serial_writer::wrote(Writer::Kernel, last);
+                    LOG_SENT.fetch_add(line as u64, Ordering::Release);
+                    drop(ring);
+                    // start_queued drains synchronously before TX_THREAD;
+                    // arm only once it exists, otherwise send one ready byte.
+                    if TX_THREAD.get().is_some() {
+                        start_queued(queue);
+                    } else {
+                        let _ = send_byte(queue);
+                    }
+                    Burst::Wrote
+                }
+            }
+        };
+        LOG_PRINTER.store(false, Ordering::Release);
+        burst
+    })
+}
+
+/// Write the ring out until `target` bytes have gone to the log UART (with
+/// the log on the console, into COM1's queue) in total, waiting on the UART
+/// between bursts with interrupts as the caller has them.
 fn drain_until(target: u64) {
     use core::sync::atomic::Ordering;
     while LOG_SENT.load(Ordering::Acquire) < target {
-        match write_burst(log_burst()) {
-            Burst::Empty => return,
+        match write_burst_waiting() {
+            Burst::Empty => break,
             Burst::Wrote => {}
             Burst::Busy => core::hint::spin_loop(),
         }
+    }
+    // Before the transmit thread exists, early log lines still reach the
+    // wire before returning. The wait owns neither logging lock and masks
+    // interrupts for each ready byte only, as drain_output documents.
+    if log_on_console() && TX_THREAD.get().is_none() {
+        drain_output();
     }
 }
 
@@ -502,6 +638,19 @@ pub fn flush_log() {
     const ATTEMPTS: u32 = 1 << 20;
     crate::arch_without_interrupts(|| {
         flush_com1(ATTEMPTS);
+        if log_on_console() {
+            // The shared-console path preserves writer leads and CR LF just
+            // like normal delivery, then flushes the final queued line.
+            for _ in 0..ATTEMPTS {
+                match queue_log_line() {
+                    Burst::Empty => break,
+                    Burst::Wrote => flush_com1(ATTEMPTS),
+                    Burst::Busy => core::hint::spin_loop(),
+                }
+            }
+            flush_com1(ATTEMPTS);
+            return;
+        }
         let mut printer = false;
         for _ in 0..ATTEMPTS {
             if LOG_PRINTER
@@ -553,13 +702,22 @@ pub fn init() {
     };
     SERIAL1_FIFO.store(fifo, core::sync::atomic::Ordering::Relaxed);
 
-    // Initialize COM2 for kernel log output
-    init_port(&mut SERIAL2.lock(), COM2_PORT);
+    // The kernel log's own UART, unless it shares COM1 (`select_log_port`).
+    let port = log_port();
+    if port != COM1_PORT {
+        if port == COM2_PORT {
+            init_port(&mut SERIAL2.lock(), COM2_PORT);
+        } else {
+            // SAFETY: the 16550 the firmware's SPCR names, written only by
+            // the log printer once initialised.
+            init_port(&mut unsafe { SerialPort::new(port) }, port);
+        }
+    }
     let fifo = unsafe {
         use x86_64::instructions::port::Port;
-        Port::<u8>::new(COM2_PORT + 2).read() & 0xc0 == 0xc0
+        Port::<u8>::new(port + 2).read() & 0xc0 == 0xc0
     };
-    SERIAL2_FIFO.store(fifo, core::sync::atomic::Ordering::Relaxed);
+    LOG_FIFO.store(fifo, core::sync::atomic::Ordering::Relaxed);
 
     // Don't enable interrupts here - wait until after IDT is set up
 }
@@ -946,8 +1104,8 @@ macro_rules! serial_println {
     ($($arg:tt)*) => ($crate::serial_print!("{}\n", format_args!($($arg)*)));
 }
 
-/// Print to the log serial port (COM2).
-/// This is used for kernel log output to separate it from user I/O on COM1.
+/// Print to the kernel log: COM2 under QEMU, separate from user I/O on COM1;
+/// on other firmware the console rule's UART (`select_log_port`).
 ///
 /// The line goes into the log ring whole. A caller that may wait on the UART,
 /// one that can be preempted, then writes the ring out up to the end of its
@@ -983,7 +1141,7 @@ pub fn _log_print(args: fmt::Arguments) {
     }
 }
 
-/// Append a COM2 line without waiting for the UART: an ordinary line that
+/// Append a log line without waiting for the UART: an ordinary line that
 /// does not fit is dropped whole, and the caller arranges delivery via the
 /// drainers. Interrupts are masked while formatting into the fixed ring.
 ///
@@ -1031,7 +1189,7 @@ fn write_notices_from_thread() {
 /// Write the ring out until it has `needed` free bytes.
 fn make_room(needed: usize) {
     while crate::arch_without_interrupts(|| LOG_RING_BYTES - LOG_RING.lock().len() < needed) {
-        match write_burst(log_burst()) {
+        match write_burst_waiting() {
             Burst::Empty | Burst::Wrote => {}
             Burst::Busy => core::hint::spin_loop(),
         }
@@ -1045,7 +1203,7 @@ pub(crate) fn drain_log_once() -> bool {
     crate::arch_without_interrupts(|| LOG_RING.lock().len() != 0)
 }
 
-/// Macros for writing to the log serial port (COM2).
+/// Macros for writing to the kernel log (`_log_print`).
 /// Use these for kernel debug/info output that should not appear on user console.
 #[macro_export]
 macro_rules! log_serial_print {
@@ -1081,7 +1239,7 @@ impl log::Log for SerialLogger {
 
     fn log(&self, record: &log::Record) {
         if self.enabled(record.metadata()) {
-            // Use COM2 for log output to separate from user I/O on COM1
+            // The kernel log, apart from user I/O under QEMU (`select_log_port`).
             log_serial_println!(
                 "[{}] {}: {}",
                 record.level(),

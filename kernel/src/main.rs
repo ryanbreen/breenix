@@ -116,12 +116,26 @@ extern "C" fn fault_test_thread(_arg: u64) -> ! {
 
 #[cfg(target_arch = "x86_64")]
 fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
+    // The local APIC as firmware left it, before anything here writes it.
+    let apic_handoff = kernel::arch_impl::x86_64::apic::Handoff::read();
+
     // Initialize logger early so all log messages work
     logger::init_early();
 
     // Now we can use log! macros immediately - they'll be buffered
     log::info!("Kernel entry point reached");
     log::debug!("Boot info address: {:p}", boot_info);
+
+    // The console rule picks the log's UART before the buffered lines are
+    // written out (docs/metal/README.md, "The console"). The SPCR is read
+    // through the bootloader's physical-memory window, which is mapped from
+    // entry.
+    let (log_port, log_port_source) = serial::select_log_port(
+        drivers::fw_cfg::present(),
+        boot_info.physical_memory_offset.into_option().and_then(|offset| {
+            kernel::arch_impl::x86_64::acpi::read_spcr_port(boot_info.rsdp_addr.into_option(), offset)
+        }),
+    );
 
     // Initialize serial port
     log::info!("Initializing serial port...");
@@ -133,7 +147,23 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // Tell logger that serial is ready - this will flush buffered messages
     logger::serial_ready();
 
+    log::info!("[console] uart {:#x} source={}", log_port, log_port_source);
+    log::info!(
+        "[apic] handoff base={:#x} mode={} msr={:#x}",
+        apic_handoff.base(),
+        apic_handoff.mode(),
+        apic_handoff.msr
+    );
     log::info!("Serial port initialized and buffer flushed");
+    if !drivers::fw_cfg::present() {
+        let mcfg = boot_info.physical_memory_offset.into_option().and_then(|offset| {
+            kernel::arch_impl::x86_64::acpi::read_mcfg(boot_info.rsdp_addr.into_option(), offset, |entry| {
+                log::info!("[acpi] MCFG base={:#x} segment={} buses={:02x}-{:02x}",
+                    entry.base, entry.segment, entry.first_bus, entry.last_bus);
+            })
+        });
+        if mcfg.is_none() { log::info!("[acpi] MCFG absent or invalid"); }
+    }
 
     // Get framebuffer and complete logger initialization
     log::info!("Setting up framebuffer...");
@@ -2590,6 +2620,14 @@ fn kernel_main_continue() -> ! {
                 "PRODUCTION INIT: failed to start console executor kthread: {:?}",
                 e
             );
+        }
+
+        // Boot's sequential work is done; from the release below it is the
+        // halt loop (docs/metal/boot-path.json, first-light). Logged inside
+        // the bracket, so the line cannot be stranded the way the census
+        // below once was.
+        if !drivers::fw_cfg::present() {
+            log::info!("[metal] kernel idle");
         }
 
         kernel::per_cpu::preempt_enable();

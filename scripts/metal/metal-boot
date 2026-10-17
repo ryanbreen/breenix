@@ -11,8 +11,9 @@
 
 # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
 Run options: --payload image|hang|none, --mode default, --commit SHA, --target main|branch:NAME, --task NAME,
---no-wait, --inject forceoff-fail. A Breenix boot (payload image) waits for its inputs (the kernel build's UEFI
-image, the ext2 root and the commit's definition files) in its stage folder.
+--no-wait, --inject forceoff-fail, --ramdisk. A Breenix boot (payload image) waits for its inputs (the kernel
+build's UEFI image, the ext2 root, the delivery stub and the commit's definition files) in its stage folder, and
+serves boot.efi: the stub with the boot disk appended (the ext2 root joins the disk as `ramdisk` by default).
 """
 import argparse
 import contextlib
@@ -29,10 +30,11 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import metal_lib as m  # noqa: E402
 import metal_image  # noqa: E402
+import metal_census  # noqa: E402
 
 # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
 MODES = ('default',)
-PAYLOADS = ('image', 'hang', 'hang-img', 'hang-iso', 'none')
+PAYLOADS = ('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux')
 CEILING_SECONDS = {'default': 900}
 MODE_DEADLINE_SECONDS = {'default': 300}
 INPUT_DEADLINE_SECONDS = 2 * 3600
@@ -50,6 +52,8 @@ RUNNING_POLL_SECONDS = 30
 BOOTLOADER_LINE = 'UEFI bootloader started'
 HANDOFF_LINE = 'Jumping to kernel entry point at'
 HANG_LINE = 'metal-hang: interrupts masked, halting'
+STUB_LINE = 'metal-stub: started'
+STUB_FAILED_LINE = 'metal-stub: FAILED'
 NO_BOOTABLE = 'no bootable device'
 RUNNING_STATES = ('OSBootStarted', 'OSRunning')
 
@@ -121,11 +125,12 @@ class Driver:
         self.lease_ceiling = None
         self.post_budget = m.DEFAULT_POST_BUDGET
         self.stopping = threading.Event()
+        self.census = metal_census.Census() if args.payload == 'linux' else None
 
     # claim-lint:ok: #1680 Reviewed tool contract against this function and the host tests in tests/metal_tools_test.py.
     # Record helpers: event text is always a fixed template or redacted.
-    def event(self, kind, **fields):
-        m.event(self.dir, kind, **{k: (self.redact(v) if isinstance(v, str) else v) for k, v in fields.items()})
+    def event(self, kind, *, observed_at=None, **fields):
+        m.event(self.dir, kind, observed_at=observed_at, **{k: (self.redact(v) if isinstance(v, str) else v) for k, v in fields.items()})
 
     def phase(self, text):
         m.phase(self.dir, self.redact(text))
@@ -141,7 +146,7 @@ class Driver:
         target = {'main': {}}
         if self.args.target.startswith('branch:'):
             target = {'branch': {'name': self.args.target.split(':', 1)[1]}}
-        kind = 'boot' if self.args.payload == 'image' else 'fault-test'
+        kind = {'image': 'boot', 'linux': 'platform-census'}.get(self.args.payload, 'fault-test')
         run = {'id': self.id, 'platform': 'metal', 'arch': 'x86_64', 'mode': self.args.mode, 'target': target,
                'taskName': self.args.task or self.id, 'watch': False, 'display': False, 'startedAt': m.now(),
                'payload': self.args.payload, 'kind': kind, 'inject': self.args.inject or None,
@@ -229,6 +234,29 @@ class Driver:
             if m.now() > deadline:
                 raise Finish(m.EXIT_CANCELLED, 'the image build did not deliver its inputs in time')
             time.sleep(2)
+        if self.args.payload == 'linux':
+            manifest = m.read_json(inputs / 'build.json', {})
+            image = inputs / 'metal-linux.efi'
+            expected = manifest.get('files', {}).get('efi', {})
+            if (image.stat().st_size != expected.get('size') or
+                    metal_image.sha256(image) != expected.get('sha256')):
+                raise Finish(m.EXIT_CANCELLED, 'Linux payload checksum mismatch')
+            config = inputs / 'config'
+            config_facts = manifest.get('files', {}).get('config', {})
+            if (config.stat().st_size != config_facts.get('size') or
+                    metal_image.sha256(config) != config_facts.get('sha256')):
+                raise Finish(m.EXIT_CANCELLED, 'Linux configuration checksum mismatch')
+            try:
+                metal_census.validate_config(config.read_text())
+            except ValueError:
+                raise Finish(m.EXIT_CANCELLED, 'Linux configuration violates instrument constraints')
+            shutil.copyfile(inputs / 'build.json', self.dir / 'linux-build.json')
+            shutil.copyfile(inputs / 'config', self.dir / 'linux-config')
+            self.payload_facts = {'path': image, 'size': expected['size'], 'sha256': expected['sha256'],
+                                  'contentType': metal_image.CONTENT_TYPES['efi'], 'name': 'metal-linux.efi'}
+            self.delivery['image'] = {k: v for k, v in self.payload_facts.items() if k != 'path'}
+            self.event('linux-payload-ready', sha256=expected['sha256'], size=expected['size'])
+            return
         build = m.read_json(inputs / 'build.json', {})
         self.delivery['build'] = build
         self.event('build-delivered', commit=build.get('commit'), guard=build.get('guardTarget'))
@@ -237,17 +265,25 @@ class Driver:
         self.phase('Assembling the image')
         extracted = self.stage / 'esp'
         files = metal_image.extract_esp(inputs / 'uefi.img', extracted)
-        files['ramdisk'] = inputs / 'ext2.img'
-        image = self.stage / 'boot.img'
-        facts = metal_image.assemble(image, files)
+        if self.args.ramdisk:
+            files['ramdisk'] = inputs / 'ext2.img'
+        disk = self.stage / 'boot-disk.img'
+        facts = metal_image.assemble(disk, files)
         shutil.rmtree(extracted, ignore_errors=True)
-        for name in ('uefi.img', 'ext2.img'):
+        # The firmware boots only a bare EFI application over HTTP: the stub carries the disk (README, "Delivery").
+        image = self.stage / 'boot.efi'
+        wrapped = metal_image.stub_efi(inputs / 'stub.efi', disk, image)
+        disk.unlink()
+        for name in ('uefi.img', 'ext2.img', 'stub.efi'):
             (inputs / name).unlink(missing_ok=True)
-        self.payload_facts = {'path': image, 'size': facts['size'], 'sha256': facts['sha256'],
-                              'contentType': metal_image.CONTENT_TYPES['img'], 'name': 'boot.img'}
-        self.delivery['image'] = {'name': 'boot.img', 'size': facts['size'], 'sha256': facts['sha256'],
-                                  'contentType': self.payload_facts['contentType'], 'components': facts['components']}
-        self.event('image-assembled', size=facts['size'], sha256=facts['sha256'])
+        self.payload_facts = {'path': image, 'size': wrapped['size'], 'sha256': wrapped['sha256'],
+                              'contentType': metal_image.CONTENT_TYPES['efi'], 'name': 'boot.efi'}
+        self.delivery['image'] = {'name': 'boot.efi', 'size': wrapped['size'], 'sha256': wrapped['sha256'],
+                                  'contentType': self.payload_facts['contentType'], 'stub': wrapped['stub'],
+                                  'disk': {'size': facts['size'], 'sha256': facts['sha256'],
+                                           'components': facts['components']}}
+        self.event('image-assembled', size=wrapped['size'], sha256=wrapped['sha256'], disk=facts['size'],
+                   ramdisk=bool(self.args.ramdisk))
         self.load_definition()
 
     # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
@@ -404,42 +440,64 @@ class Driver:
                     line, self.line = self.line.rstrip('\n'), ''
                     if decision is None:
                         try:
-                            self.on_line(line)
+                            self.on_line(line, observed_at=arrived)
                         except Finish as finish:
                             decision = finish
         if decision is not None:
             raise decision
 
     # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
-    def on_line(self, line):
+    def on_line(self, line, *, observed_at=None):
+        observed_at = m.now() if observed_at is None else observed_at
+        seconds = round(observed_at - self.t0, 1) if self.t0 is not None else 0
         if self.t0 is None or not line.strip() or line.startswith('[SOL Session'):
             return
         if not self.first_text:
             self.first_text = True
-            self.event('firmware-text', seconds=round(self.since_power(), 1))
+            self.event('firmware-text', observed_at=observed_at, seconds=seconds)
             self.phase('Firmware output')
+        if STUB_LINE in line and 'stub' not in self.seen and self.kernel_started is None:
+            self.seen.add('stub')
+            self.event('stub-started', observed_at=observed_at, seconds=seconds)
+            self.phase('Delivery stub: attaching the boot disk')
+        if STUB_FAILED_LINE in line and self.kernel_started is None:
+            self.event('stub-failed', observed_at=observed_at, seconds=seconds)
+            raise Finish(m.EXIT_DELIVERY, 'the delivery stub could not start the bootloader')
+
+        if self.census:
+            if line == 'metal-linux-start' and self.kernel_started is None:
+                self.kernel_started = observed_at
+                self.last_stage = 'Linux census started'
+                self.event('linux-started', observed_at=observed_at, seconds=seconds)
+            try:
+                done = self.census.feed(line)
+            except ValueError:
+                raise Finish(m.EXIT_SHORT, 'platform facts failed validation')
+            if done:
+                self.event('linux-census-validated', observed_at=observed_at, files=len(self.census.files))
+                raise Finish(m.EXIT_DONE, 'platform facts validated')
         if BOOTLOADER_LINE in line and self.kernel_started is not None:
             raise Finish(m.EXIT_SHORT, 'the machine reset after the kernel started')
         if BOOTLOADER_LINE in line and 'bootloader' not in self.seen:
             self.seen.add('bootloader')
-            self.event('bootloader', seconds=round(self.since_power(), 1))
+            self.event('bootloader', observed_at=observed_at, seconds=seconds)
             self.phase('Bootloader')
             self.last_stage = 'UEFI bootloader started'
         if HANDOFF_LINE in line and self.kernel_started is None:
-            self.kernel_started = m.now()
-            self.event('handoff', seconds=round(self.since_power(), 1))
+            self.kernel_started = observed_at
+            self.event('handoff', observed_at=observed_at, seconds=seconds)
             self.phase('Handoff: the kernel is starting')
             self.last_stage = 'Bootloader handoff'
         if self.args.payload.startswith('hang') and HANG_LINE in line and self.kernel_started is None:
-            self.kernel_started = m.now()
-            self.event('payload-started', seconds=round(self.since_power(), 1))
+            self.kernel_started = observed_at
+            self.event('payload-started', observed_at=observed_at, seconds=seconds)
             self.phase('Test payload running: interrupts masked, halted')
             self.last_stage = 'metal-hang started'
         if self.kernel_started and self.fatal_at is None and any(p.search(line) for p in self.fatal_patterns):
-            self.fatal_at = m.now()
-            self.event('fatal', seconds=round(self.since_power(), 1))
+            self.fatal_at = observed_at
+            self.event('fatal', observed_at=observed_at, seconds=seconds)
         if self.final_marker and marker_matches(self.final_marker, line):
-            self.event('final-marker', seconds=round(self.since_power(), 1))
+            self.event('final-marker', observed_at=observed_at, seconds=seconds)
             raise Finish(m.EXIT_DONE, 'the mode finished')
 
     # The HTTP server's log.
@@ -459,6 +517,8 @@ class Driver:
     def on_http(self, entry):
         if self.t0 is None or entry.get('t', 0) < self.t0:
             return
+        observed_at = entry['t']
+        elapsed = round(observed_at - self.t0, 1)
         kind = entry.get('event')
         if kind not in ('redirect', 'head', 'start', 'progress', 'range-done', 'complete', 'short', 'broken', '404',
                         'range-invalid'):
@@ -470,45 +530,45 @@ class Driver:
             seconds = self.request_at - self.t0
             self.delivery['postSeconds'] = round(seconds, 1)
             m.record_post_time(self.id, seconds)
-            self.event('image-request', seconds=round(seconds, 1))
+            self.event('image-request', observed_at=observed_at, seconds=round(seconds, 1))
             self.phase(f'Image requested · {seconds:.0f} s after power-on')
         if kind == '404':
             if self.complete_at is None and self.not_found_at is None:
                 self.not_found_at = entry['t']
-                self.event('image-not-found', seconds=round(self.since_power(), 1))
+                self.event('image-not-found', observed_at=observed_at, seconds=elapsed)
                 self.phase('No image staged: the request was refused')
             elif self.complete_at is not None:
-                self.event('image-refused-again', seconds=round(self.since_power(), 1))
+                self.event('image-refused-again', observed_at=observed_at, seconds=elapsed)
                 if self.kernel_started is not None:
                     raise Finish(m.EXIT_SHORT, 'the machine reset after the kernel started')
             return
         if entry.get('id') != self.id:
             return
         if kind == 'redirect':
-            self.event('image-redirect', method=entry.get('method'))
+            self.event('image-redirect', observed_at=observed_at, method=entry.get('method'))
         elif kind == 'start':
             self.first_byte_at = self.first_byte_at or entry['t']
             self.last_progress = entry['t']
             self.broken_at = None
-            self.event('image-start', total=entry.get('total'))
+            self.event('image-start', observed_at=observed_at, total=entry.get('total'))
         elif kind in ('progress', 'range-done'):
             self.last_progress = entry['t']
             if m.now() - self.last_phase_progress >= 5:
                 self.last_phase_progress = m.now()
                 self.phase(f"Fetching boot image · {entry['bytes'] >> 20} of {entry['total'] >> 20} MB")
         elif kind == 'range-invalid':
-            self.event('image-range-invalid', range=entry.get('range'))
+            self.event('image-range-invalid', observed_at=observed_at, range=entry.get('range'))
         elif kind == 'broken':
             self.broken_at = entry['t']
-            self.event('image-broken', bytes=entry.get('bytes'))
+            self.event('image-broken', observed_at=observed_at, bytes=entry.get('bytes'))
         elif kind in ('complete', 'short'):
             if kind == 'short' or not entry.get('matches'):
-                self.event('image-mismatch', bytes=entry.get('bytes'))
+                self.event('image-mismatch', observed_at=observed_at, bytes=entry.get('bytes'))
                 raise Finish(m.EXIT_DELIVERY, 'the image arrived incomplete or with the wrong checksum')
             self.complete_at = entry['t']
             seconds = entry['t'] - (self.first_byte_at or entry['t'])
             self.delivery['transferSeconds'] = round(seconds, 2)
-            self.event('image-complete', seconds=round(self.since_power(), 1), transfer=round(seconds, 2),
+            self.event('image-complete', observed_at=observed_at, seconds=elapsed, transfer=round(seconds, 2),
                        sha256=entry.get('sha256'))
             self.phase(f'Image fetched in {seconds:.1f} s')
 
@@ -532,8 +592,10 @@ class Driver:
         with self.bmc_lock:
             readings, self.bmc_events = self.bmc_events, []
         for reading in readings:
+            observed_at = reading['t']
+            elapsed = round(observed_at - self.t0, 1)
             if 'error' in reading:
-                self.event('bmc-read-error', error=reading['error'])
+                self.event('bmc-read-error', observed_at=observed_at, error=reading['error'])
                 continue
             code = reading.get('postCode')
             progress = reading.get('progress') or {}
@@ -541,9 +603,9 @@ class Driver:
                 previous, self.post_code = self.post_code, code
                 if not self.post_seen:
                     self.post_seen = True
-                    self.event('post', code=code, previous=previous, seconds=round(self.since_power(), 1))
+                    self.event('post', observed_at=observed_at, code=code, previous=previous, seconds=elapsed)
                 else:
-                    self.event('post-code', code=code, seconds=round(self.since_power(), 1))
+                    self.event('post-code', observed_at=observed_at, code=code, seconds=elapsed)
                 if self.kernel_started is None and self.request_at is None:
                     self.phase(f'POST code 0x{int(code):02x} · {self.since_power():.0f} s')
             key = progress_key(progress)
@@ -551,7 +613,7 @@ class Driver:
                 # Only a state new since power-on counts: the baseline may be left from an earlier power cycle.
                 self.progress_key = key
                 self.progress_changed = True
-                self.event('boot-progress', state=key[0], oem=key[1], seconds=round(self.since_power(), 1))
+                self.event('boot-progress', observed_at=observed_at, state=key[0], oem=key[1], seconds=elapsed)
                 # Once a boot option runs, the firmware reports OSBootStarted or OSRunning; any other state after
                 # that is POST again, so the machine reset.
                 if self.kernel_started is not None and key[0] not in RUNNING_STATES:
@@ -618,13 +680,16 @@ class Driver:
         self.lease_ceiling = self.t0 + CEILING_SECONDS[self.args.mode]
         m.update_lease(self.id, state='powered', powerOnAt=self.t0, ceilingAt=self.lease_ceiling)
         try:
-            m.rf('POST', m.SYSTEM + '/Actions/ComputerSystem.Reset', {'ResetType': 'On'}, priority=0)
+            reply = m.rf('POST', m.SYSTEM + '/Actions/ComputerSystem.Reset', {'ResetType': 'On'}, priority=0)
+            self.t0 = reply['startedAt']
+            self.lease_ceiling = self.t0 + CEILING_SECONDS[self.args.mode]
+            m.update_lease(self.id, powerOnAt=self.t0, ceilingAt=self.lease_ceiling)
         except m.BmcError as error:
             m.quarantine_lease(self.id, 'power-on outcome uncertain')
             self.event('power-on-error', error=str(error))
             raise Finish(m.EXIT_DELIVERY, 'power-on was refused')
         self.post_budget = m.post_budget()
-        self.event('power-on', postBudget=self.post_budget, ceiling=CEILING_SECONDS[self.args.mode])
+        self.event('power-on', observed_at=self.t0, postBudget=self.post_budget, ceiling=CEILING_SECONDS[self.args.mode])
         self.phase('Power on')
         self.phase_name = 'post'
 
@@ -714,7 +779,16 @@ class Driver:
             self.event('decided', status=status, reason=finish.reason)
             self.phase(('Stopped: ' if status else 'Done: ') + finish.reason)
             if self.t0 is not None:
-                self.power_off(finish.hung)
+                off = self.power_off(finish.hung)
+                if self.census and status == m.EXIT_DONE:
+                    if off and not self.gap:
+                        try:
+                            self.census.write(self.dir / 'platform-facts')
+                        except (ValueError, OSError):
+                            self.event('linux-evidence-write-failed')
+                            status = m.EXIT_INCOMPLETE
+                    else:
+                        status = m.EXIT_INCOMPLETE
             if self.gap and status != m.EXIT_BUSY:
                 status = m.EXIT_INCOMPLETE
                 self.event('capture-incomplete', why='console gap')
@@ -745,9 +819,10 @@ def marker_matches(spec, line):
 
 # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
 def final_marker(metal, mode, catalog):
-    """Resolve the final measured serial stage and preserve its matching contract."""
+    """Resolve the final measured serial stage and preserve its matching contract. A stub milestone's markers are
+    proposals its producing lane has not landed (docs/metal/boot-path.json), so no boot measures it yet."""
     markers = {stage['name']: stage for stage in catalog.get('stages', []) if 'marker' in stage}
-    milestones = list(reversed(metal.get('milestones', [])))
+    milestones = [milestone for milestone in reversed(metal.get('milestones', [])) if not milestone.get('stub')]
     scoped = [milestone.get('stages', {}).get(mode) for milestone in milestones]
     scoped = [listed for listed in scoped if listed]
     if not scoped:
@@ -817,6 +892,7 @@ def main():
         p.add_argument('--task', default='')
         p.add_argument('--no-wait', action='store_true')
         p.add_argument('--inject', choices=('forceoff-fail',))
+        p.add_argument('--ramdisk', action='store_true', default=True, help='put the ext2 root on the boot disk as `ramdisk`')
         p.add_argument('--content-type', choices=('application/octet-stream',),
                        help='a test payload served with this type instead of its form\'s own')
         p.add_argument('--serve-as', choices=('boot.iso', 'boot.efi'),

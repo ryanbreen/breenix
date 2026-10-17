@@ -19,6 +19,34 @@ pub fn active() -> bool {
     MODE.load(Ordering::Acquire) != 0
 }
 
+/// The local APIC as firmware handed it over: IA32_APIC_BASE, read before
+/// this kernel writes any APIC register. Its base field and its mode: the
+/// global enable bit (11) clear is `disabled`; set, with the x2APIC enable
+/// bit (10) `x2apic`, else `xapic`.
+pub struct Handoff {
+    pub msr: u64,
+}
+
+impl Handoff {
+    pub fn read() -> Self {
+        // SAFETY: IA32_APIC_BASE is an architectural MSR on x86-64 (Intel SDM
+        // vol. 3, "Local APIC"), and a read of it has no side effect.
+        Self { msr: unsafe { Msr::new(0x1b).read() } }
+    }
+
+    pub fn base(&self) -> u64 {
+        self.msr & 0x000f_ffff_ffff_f000
+    }
+
+    pub fn mode(&self) -> &'static str {
+        match (self.msr & (1 << 11) != 0, self.msr & (1 << 10) != 0) {
+            (false, _) => "disabled",
+            (true, true) => "x2apic",
+            (true, false) => "xapic",
+        }
+    }
+}
+
 #[inline]
 fn read(register: u32) -> u32 {
     unsafe {
