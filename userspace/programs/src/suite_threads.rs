@@ -1247,10 +1247,16 @@ fn lc_rows_released() -> CaseResult {
         let before = kernel_heap_free_kb()?;
         let mut after = before;
         let mut threads = Vec::with_capacity(BATCH);
-        for round in 1..=N / ROUND {
-            for _ in 0..ROUND / BATCH {
-                for _ in 0..BATCH { threads.push(create(rt_nothing, null_mut())?); }
-                for t in threads.drain(..) { rc("pthread_join", pthread_join(t, null_mut())?)?; }
+        let mut completed = 0;
+        while completed < N {
+            let round_end = (completed + ROUND).min(N);
+            while completed < round_end {
+                let batch = BATCH.min(round_end - completed);
+                for _ in 0..batch { threads.push(create(rt_nothing, null_mut())?); }
+                for t in threads.drain(..) {
+                    rc("pthread_join", pthread_join(t, null_mut())?)?;
+                    completed += 1;
+                }
             }
             // A joined thread's row is retired a little after the join returns.
             let start = now_ms();
@@ -1258,12 +1264,12 @@ fn lc_rows_released() -> CaseResult {
                 after = kernel_heap_free_kb()?;
                 if after + SLACK_KB >= before { break; }
                 if now_ms().saturating_sub(start) >= bounded(1000, CLEANUP_MS) {
-                    return err(format!("after {} threads were joined the kernel heap had {after} kB free, {before} kB before", round * ROUND));
+                    return err(format!("after {completed} threads were joined the kernel heap had {after} kB free, {before} kB before"));
                 }
                 nap();
             }
         }
-        value("threads", N as i64, "", Some((N as i64, N as i64)));
+        value("threads", completed as i64, "", Some((N as i64, N as i64)));
         value("heap-free-before", before, "kb", None);
         value("heap-free-after", after, "kb", None);
         Ok(())
