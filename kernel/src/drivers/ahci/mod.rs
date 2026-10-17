@@ -3084,7 +3084,7 @@ pub fn init() -> Result<usize, &'static str> {
 /// each port's device unspun until software sets PxCMD.SUD (AHCI 1.3.1,
 /// 10.10.1). Spin each implemented port up, then wait up to a second for the
 /// implemented ports to establish Phy communication (PxSSTS.DET = 3); ports
-/// with no device never do, so they cost the full wait.
+/// with no device stay below 3, so they cost the full wait.
 #[cfg(target_arch = "x86_64")]
 fn spin_up_ports(abar: u64, cap: u32, ports_implemented: u32) {
     if cap & CAP_SSS == 0 {

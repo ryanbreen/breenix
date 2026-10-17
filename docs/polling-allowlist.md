@@ -116,7 +116,7 @@ This document formalizes the **Linux-rigor polling-elimination gate** for cases 
 ## P12-Site-8: AHCI staggered spin-up link wait (x86)
 
 - **File:** `kernel/src/drivers/ahci/mod.rs`, `spin_up_ports()`.
-- **Loop:** After setting `PxCMD.SUD` on each implemented port, poll each implemented port's `PxSSTS.DET` until all read 3 (Phy communication established) or one second of TSC time passes.
+- **Loop:** After setting `PxCMD.SUD` on each implemented port, poll each implemented port's `PxSSTS.DET` until each reads 3 (Phy communication established) or one second of TSC time passes.
 - **Justification:** A controller that reports `CAP.SSS` leaves each device unspun after the HBA reset until software sets `PxCMD.SUD`, and a device is usable only once `PxSSTS.DET` reads 3 (AHCI 1.3.1, 10.10.1 and 3.3.10). This is a link-establishment handshake during controller initialization, before the port has a command list or any interrupt source, not polling for a future completion.
 - **Precedent:** the AHCI 1.3.1 specification. The x86-metal clean-room rule (`docs/metal/README.md`, "Clean-room rule") applies to this driver, so no donor driver is cited for it.
 - **Bounded:** one second of calibrated TSC time per controller; a port with no device costs the whole second.
