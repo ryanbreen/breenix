@@ -197,23 +197,30 @@ pub fn box_filter() -> CaseResult {
 }
 fn scale(p: u32) -> CaseResult {
     let _case = begin()?;
+    scale_at(p,0,0,13,11)?;
+    scale_at(p,2,3,13,11)?;
+    if p == pipeline::BOX_FILTER { scale_at(p,1,2,7,5)?; }
+    pass()
+}
+fn scale_at(p: u32, sx: u32, sy: u32, sw: u32, sh: u32) -> CaseResult {
     let ctx = context()?;
-    let source: Vec<u8> = (0..13 * 11)
-        .flat_map(|i| [(i * 13) as u8, (i * 37) as u8, (i * 71) as u8, 255])
+    let tw = sw+sx;
+    let source: Vec<u8> = (0..tw * (sh+sy))
+        .flat_map(|i| [(i * 13) as u8, (i * 37) as u8, (i * 71) as u8, if sx==0 {255} else {(i*19) as u8}])
         .collect();
-    let texture = tex(ctx, format::B8G8R8A8, 13, 11, &source)?;
+    let texture = tex(ctx, format::B8G8R8A8, tw, sh+sy, &source)?;
     let t = scanout_target(format::R8G8B8A8, 43, 37)?;
     let (w, h) = if p == pipeline::COPY_SCALED {
-        (39, 33)
+        (sw as i32*3, sh as i32*3)
     } else if p == pipeline::BOX_FILTER {
         (5, 4)
     } else {
         (29, 23)
     };
     let params = if p == pipeline::COPY_SCALED {
-        vec![2, 3, 0, 0, 3]
+        vec![2, 3, sx as i32, sy as i32, 3]
     } else {
-        vec![2, 3, w, h, 0, 0, 13, 11]
+        vec![2, 3, w, h, sx as i32, sy as i32, sw as i32, sh as i32]
     };
     draw_frame(
         ctx,
@@ -234,26 +241,26 @@ fn scale(p: u32) -> CaseResult {
             }
             let (x, y) = (x - 2, y - 3);
             if p == pipeline::COPY_SCALED {
-                return u32_at(&source, ((y / 3 * 13 + x / 3) * 4) as usize);
+                return u32_at(&source, (((sy+y / 3) * tw + sx+x / 3) * 4) as usize);
             }
             if p == pipeline::NEAREST_SCALED {
                 return u32_at(
                     &source,
-                    ((y * 11 / h as u32 * 13 + x * 13 / w as u32) * 4) as usize,
+                    (((sy+y * sh / h as u32) * tw + sx+x * sw / w as u32) * 4) as usize,
                 );
             }
             let (x0, x1, y0, y1) = (
-                x * 13 / w as u32,
-                (x + 1) * 13 / w as u32,
-                y * 11 / h as u32,
-                (y + 1) * 11 / h as u32,
+                sx + x * sw / w as u32,
+                sx + (x + 1) * sw / w as u32,
+                sy + y * sh / h as u32,
+                sy + (y + 1) * sh / h as u32,
             );
             let n = (x1 - x0) * (y1 - y0);
             let mut sum = [0; 4];
             for yy in y0..y1 {
                 for xx in x0..x1 {
                     for k in 0..4 {
-                        sum[k] += source[((yy * 13 + xx) * 4) as usize + k] as u32;
+                        sum[k] += source[((yy * tw + xx) * 4) as usize + k] as u32;
                     }
                 }
             }
@@ -617,6 +624,7 @@ pub fn line_extreme() -> CaseResult {
         ([i32::MIN, 5, i32::MAX, 5], 1),
         ([7, i32::MAX, 7, i32::MIN], 2),
         ([i32::MIN, i32::MAX, i32::MAX, i32::MIN], 3),
+        ([i32::MIN, i32::MAX, i32::MAX, i32::MIN+2], 4),
     ] {
         draw_frame(
             ctx,
@@ -636,6 +644,7 @@ pub fn line_extreme() -> CaseResult {
                     0 => x == y,
                     1 => y == 5,
                     2 => x == 7,
+                    4 => x == 0 && y == 0,
                     _ => false,
                 } {
                     FG
@@ -1006,6 +1015,26 @@ pub fn bitmap_text() -> CaseResult {
             "16 px bitmap cells at integer scales",
         )?;
     }
+    let mut atlas = vec![0u8; ((rw+3)*(rh+2)) as usize];
+    for y in 0..rh as usize {
+        atlas[(y+2)*(rw as usize+3)+3..(y+2)*(rw as usize+3)+3+rw as usize]
+            .copy_from_slice(&cells[y*rw as usize..(y+1)*rw as usize]);
+    }
+    let atlas = tex(ctx,format::R8,rw+3,rh+2,&atlas)?;
+    draw_frame(ctx,t,pipeline::BITMAP_TEXT,FG,atlas,&[instance(
+        [2,3,2+rw as i32,3+rh as i32], &[2,3,3,2,rw as i32,rh as i32,1,1])])?;
+    expect_draw(ctx,t,67,61,|x,y| {
+        if x>=2 && x<2+rw && y>=3 && y<3+rh {
+            coverage(FG,BG,[cells[((y-3)*rw+x-2) as usize];3])
+        } else {BG}
+    },"nonzero bitmap atlas origin")?;
+    let mut bits=vec![0u8;27];
+    for y in 0..7 {bits[(y+2)*3+1]=rows[y];}
+    let bits=tex(ctx,format::R8,3,9,&bits)?;
+    draw_frame(ctx,t,pipeline::BITMAP_TEXT,FG,bits,&[instance([2,3,7,10],&[2,3,1,2,5,7,1,0])])?;
+    expect_draw(ctx,t,67,61,|x,y| {
+        if (2..7).contains(&x) && (3..10).contains(&y) && rows[(y-3) as usize] & (0x10>>(x-2)) != 0 {FG} else {BG}
+    },"nonzero bit-row atlas origin")?;
     pass()
 }
 use libfont::outline::LineSegment;
@@ -1125,7 +1154,26 @@ pub fn coverage_spans_square() -> CaseResult {
         4,
         |x, y| coverage(FG, BG, [table[y as usize][x as usize]; 3]),
         "literal fractional-square coverage table",
-    )
+    )?;
+    let t=scanout_target(format::B8G8R8A8,12,4)?;
+    let second=gpu::buffer_create(4096).map_err(|e| fail_msg(errno(e)))?;
+    let whole=edges(&[(0.0,0.0),(4.0,0.0),(4.0,4.0),(0.0,4.0)]);
+    let data=[crossings(&segments,4),crossings(&whole,4)];
+    for (h,bytes) in [(buffer,&data[0]),(second,&data[1])] {
+        let (r,_)=gpu::upload(ctx,h,[0,0,bytes.len() as u32,1],bytes,bytes.len() as u32,
+            gpu::abi::upload_source::R8,gpu::abi::purpose::FIXTURE);
+        ensure(r==0,||format!("packed crossing upload: {}",errno(r)))?;
+    }
+    let mut s=scene(t,BG,&[]);
+    for (x,h,bytes) in [(0,buffer,&data[0]),(4,second,&data[1]),(8,buffer,&data[0])] {
+        draw::encode(&mut s,pipeline::COVERAGE_SPANS,FG,0,h,bytes.len() as u32,
+            &[instance([x,0,x+4,4],&[x,0,4,4,0])]);
+    }
+    frame(ctx,&s)?;
+    expect_draw(ctx,t,12,4,|x,y| {
+        if (4..8).contains(&x) {FG}
+        else {coverage(FG,BG,[table[y as usize][(x%4) as usize];3])}
+    },"distinct and repeated crossing buffers share one data texture")
 }
 pub fn coverage_spans_winding() -> CaseResult {
     let _case = begin()?;
@@ -1192,6 +1240,9 @@ pub fn coverage_spans_corpus() -> CaseResult {
                         }
                     }
                     observe(ctx, t, &want, &format!("{name} {size} U+{cp:04x}"))?;
+                } else {
+                    frame(ctx, &scene(t, BG, &[]))?;
+                    expect_draw(ctx,t,72,72,|_,_| BG,&format!("{name} {size} U+{cp:04x} empty glyph"))?;
                 }
                 glyphs += 1;
             }

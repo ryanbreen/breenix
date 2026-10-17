@@ -161,3 +161,30 @@ fn intersect(a: [i32; 4], b: [i32; 4]) -> [i32; 4] {
     let y = a[1].max(b[1]);
     [x, y, a[2].min(b[2]).max(x), a[3].min(b[3]).max(y)]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::mem::ManuallyDrop;
+    #[test]
+    fn split_preserves_overlap_order_and_half_open_edges() {
+        let mut c=ManuallyDrop::new(Context { handle:0,words:Vec::new(),clips:Vec::new(),bounds:[0,0,16,16] });
+        let instances:Vec<_>=[[0,0,4,4],[4,0,8,4],[3,0,5,4],[8,0,10,4]].into_iter()
+            .map(|rect|Instance {rect,params:[0;16]}).collect();
+        c.draw(pipeline::OVER,0,1,0,0,&instances);
+        let len=c.words[1] as usize;
+        assert_eq!(c.words[9],2);
+        assert_eq!(c.words[len+9],2);
+        assert_eq!(c.words.len(),len+c.words[len+1] as usize);
+        assert_eq!(&c.words[draw::HEADER..draw::HEADER+4],&[0,0,4,4]);
+        assert_eq!(&c.words[len+draw::HEADER..len+draw::HEADER+4],&[3,0,5,4]);
+    }
+    #[test]
+    fn text_sized_disjoint_batch_remains_one_draw() {
+        let mut c=ManuallyDrop::new(Context {handle:0,words:Vec::new(),clips:Vec::new(),bounds:[0,0,16384,4]});
+        let instances:Vec<_>=(0..65536).map(|n|Instance {rect:[n%16384,n/16384,n%16384+1,n/16384+1],params:[0;16]}).collect();
+        c.draw(pipeline::OVER,0,1,0,0,&instances);
+        assert_eq!(c.words[9],65536);
+        assert_eq!(c.words.len(),c.words[1] as usize);
+    }
+}
