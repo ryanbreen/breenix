@@ -644,6 +644,11 @@ pub mod record {
 /// system call 415. Every point is one-shot: it affects the next occurrence of its event,
 /// counts one firing and disarms itself.
 pub mod test_point {
+    /// BreenGL's points the GPU core builds (`docs/gui/gpu-abi.md`, test-control points): the
+    /// next `SUBMIT` holds IRQs masked for 2 ms during validation, and the next syscall 416
+    /// call writes the 33-byte diagnostic through `serial_println!`.
+    pub const IRQ_HOLD: u32 = 2;
+    pub const EMIT_DIAGNOSTIC: u32 = 3;
     pub const FIRST: u32 = 19;
     pub const SKIP_TRANSFER: u32 = 19;
     pub const STALE_FENCE: u32 = 20;
@@ -674,7 +679,7 @@ pub mod test_point {
     pub const fn built(point: u32) -> bool {
         matches!(
             point,
-            SKIP_TRANSFER | STALE_FENCE | WRONG_RESOURCE | CORRUPT_PIXEL | MASK_CAPABILITY | DEVICE_ERROR | SUPPRESS_DRAW
+            IRQ_HOLD | EMIT_DIAGNOSTIC | SKIP_TRANSFER | STALE_FENCE | WRONG_RESOURCE | CORRUPT_PIXEL | MASK_CAPABILITY | DEVICE_ERROR | SUPPRESS_DRAW
                 | WRONG_TEXTURE | SKIP_UPLOAD_VISIBILITY | WITHHOLD_FENCE
         )
     }

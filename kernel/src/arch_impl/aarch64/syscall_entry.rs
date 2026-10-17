@@ -1569,6 +1569,11 @@ fn sys_exec_aarch64(
         0
     });
 
+    // The new image holds no GPU handles (docs/gui/gpu.md section 1.16); with no lock held.
+    if result == 0 {
+        crate::gpu::exec_committed(current_pid);
+    }
+
     // The exec lock-order counters are only live after an exec has actually run. This is the only
     // site on the aarch64 boot path where a gate can observe `commits >= 1`; it sits OUTSIDE the
     // masked window and outside the manager/scheduler critical sections, and exists only in

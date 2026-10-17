@@ -165,6 +165,7 @@ pub(super) fn present(arg: u64, len: u64) -> Result<u64, i64> {
             whole: Vec::new(),
             held: alloc::vec![id],
             present: Some(Presenting { id, seq }),
+            _charge: None,
         });
         let epoch = c.epoch;
         c.backlog.push_back((epoch, virgl::set_scanout(Tag::Submit { ctx: ctx_id, serial, last: false }, ctx_id, id, width, height)));

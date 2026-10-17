@@ -34,7 +34,9 @@ mod completion;
 mod present_answers;
 mod display;
 mod observation;
+mod quota;
 mod staging;
+use quota::{Charge, Quota, QuotaCharge};
 use staging::Staging;
 pub mod dma;
 pub mod virgl;
@@ -50,6 +52,7 @@ use gpu_abi::stream::{self, Resolver, TargetInfo};
 use gpu_abi::{self as abi, readback_reason, capability, fence_status, format, kind, limits, record, test_point, Plain};
 
 use crate::syscall::SyscallResult;
+use crate::tracing::providers::gpu::{gauge, GpuPath, GPU_CONTEXTS, GPU_RESOURCES};
 use crate::task::thread::ThreadState;
 use crate::task::waitqueue::WaitQueueHead;
 use dma::{Pages, WordBuf, PAGE};
@@ -134,7 +137,9 @@ struct Proc {
     resources: BTreeMap<u64, u32>,
     totals: Totals,
     seq: u64,
-    bytes: u64,
+    /// Bytes charged to the process's GPU memory quota (`quota`): resource backing,
+    /// staging, and `SUBMIT`'s copies and vertex storage while they are held.
+    quota: Quota,
     creating: bool,
 }
 
@@ -223,6 +228,8 @@ struct Sub {
     held: Vec<u32>,
     /// A `PRESENT`'s bind and flush rather than a `SUBMIT`.
     present: Option<display::Presenting>,
+    /// The charge for its translated device chunks, released when it retires.
+    _charge: Option<Charge>,
 }
 
 /// A synchronous request a thread waits on.
@@ -280,6 +287,10 @@ struct Res {
     holds: u32,
     lost: bool,
     reading: bool,
+    /// What it costs its owner's GPU memory quota: its guest backing, or a submission's
+    /// device vertex storage; released when the record goes.
+    charge: Option<Charge>,
+    quota_charge: Option<QuotaCharge>,
 }
 
 struct Core {
@@ -567,7 +578,8 @@ impl Core {
         f
     }
 
-    /// A new handle for process `tgid`, unique among its handles and never 0.
+    /// A new handle for process `tgid`, unique among its handles, whose top byte is neither
+    /// 0x00 nor 0xFF: no handle has the form of an address (section 1.16).
     fn handle(&mut self, tgid: u64) -> u64 {
         let key = self.key;
         let p = self.proc_mut(tgid);
@@ -577,9 +589,22 @@ impl Core {
             z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
             z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
             z ^= z >> 31;
-            if z != 0 && !p.contexts.contains_key(&z) && !p.resources.contains_key(&z) {
+            let top = z >> 56;
+            if top != 0 && top != 0xFF && !p.contexts.contains_key(&z) && !p.resources.contains_key(&z) {
                 return z;
             }
+        }
+    }
+
+    fn insert_res(&mut self, id: u32, r: Res) {
+        if self.resources.insert(id, r).is_none() {
+            gauge(&GPU_RESOURCES, 1);
+        }
+    }
+
+    fn insert_ctx(&mut self, id: u32, x: Ctx) {
+        if self.contexts.insert(id, x).is_none() {
+            gauge(&GPU_CONTEXTS, 1);
         }
     }
 
@@ -589,7 +614,7 @@ impl Core {
             resources: BTreeMap::new(),
             totals: Totals::default(),
             seq: 0,
-            bytes: 0,
+            quota: Quota::default(),
             creating: false,
         })
     }
@@ -1035,9 +1060,8 @@ impl Core {
             return;
         }
         let Some(r) = self.resources.remove(&id) else { return };
-        if let Some(p) = self.procs.get_mut(&r.owner) {
-            p.bytes = p.bytes.saturating_sub(r.backing.bytes() as u64);
-        }
+        gauge(&GPU_RESOURCES, -1);
+        // Its quota charge goes with the record.
         if r.lost {
             // A confirmed reset ended the device's use of it.
             return;
@@ -1065,6 +1089,7 @@ impl Core {
         }
         if dropped {
             if let Some(c) = self.contexts.remove(&id) {
+                gauge(&GPU_CONTEXTS, -1);
                 for internal in [c.vb, c.scratch, c.scratch_texture] {
                     if let Some(r) = self.resources.get_mut(&internal) {
                         r.dropped = true;
@@ -1367,16 +1392,18 @@ pub fn irq() -> Option<u32> {
 /// The GPU interrupt: acknowledge it through the ISR byte, count it and wake whoever
 /// waits. No lock, no allocation, no output.
 pub fn handle_interrupt() {
+    // The handler's whole run counts toward gpu_irq_masked_max_us (section 1.16).
+    let start = crate::tracing::providers::gpu::interrupt_begin();
     let isr = ISR.load(Ordering::Acquire);
-    if isr == 0 || virgl::read_isr(isr) == 0 {
-        return;
+    if isr != 0 && virgl::read_isr(isr) != 0 {
+        EVENTS.fetch_add(1, Ordering::AcqRel);
+        WAITERS.wake_up();
+        let tid = REAPER.load(Ordering::Acquire);
+        if tid != 0 {
+            crate::task::scheduler::wake_thread_any_context(tid);
+        }
     }
-    EVENTS.fetch_add(1, Ordering::AcqRel);
-    WAITERS.wake_up();
-    let tid = REAPER.load(Ordering::Acquire);
-    if tid != 0 {
-        crate::task::scheduler::wake_thread_any_context(tid);
-    }
+    crate::tracing::providers::gpu::interrupt_end(start);
 }
 
 /// Start `kgpu` if it is not running; false when it cannot be started.
@@ -1425,6 +1452,8 @@ fn reaper_block(tid: u64, seen: u64, wake: Option<u64>) {
 /// watchdog or a device fault asks for it, sends the fixed catalogue's warm-up steps, and
 /// reclaims what exited processes left, once a second while any process holds GPU state.
 fn reaper() {
+    // kgpu is a GPU path for its whole life (section 1.16).
+    let _path = GpuPath::enter();
     let Some(tid) = crate::task::scheduler::current_thread_id() else { return };
     let mut next_sweep = now_ns();
     loop {
@@ -1548,24 +1577,94 @@ fn warm_next() {
     notify();
 }
 
-/// Reclaim the GPU state of processes that have exited (PIDs are never reused).
+/// Whether thread group `tgid` has a row, other than `except`, that has not terminated.
+fn group_live(m: &crate::process::ProcessManager, tgid: u64, except: Option<crate::process::ProcessId>) -> bool {
+    m.iter_processes().any(|(row, p)| {
+        Some(row) != except && p.thread_group_id.unwrap_or(row.as_u64()) == tgid && !p.is_terminated()
+    })
+}
+
+/// Reclaim the GPU state of processes whose threads have exited (PIDs are not reused): a
+/// backstop for the exit hooks below.
 fn sweep() {
     let tgids: Vec<u64> = with_core(|c| c.procs.keys().copied().collect()).unwrap_or_default();
-    let dead: Vec<u64> = tgids
-        .into_iter()
-        .filter(|&tgid| {
-            !crate::process::with_process_manager(|m| {
-                m.get_process(crate::process::ProcessId::new(tgid)).is_some_and(|p| !p.is_terminated())
-            })
-            .unwrap_or(true)
-        })
-        .collect();
+    if tgids.is_empty() {
+        return;
+    }
+    let dead: Vec<u64> = crate::process::with_process_manager(|m| {
+        tgids.into_iter().filter(|&tgid| !group_live(m, tgid, None)).collect()
+    })
+    .unwrap_or_default();
     if !dead.is_empty() {
         with_core(|c| {
             for tgid in dead {
                 c.reclaim(tgid);
             }
         });
+    }
+}
+
+/// Drop the GPU handles process `tgid` holds, without cancelling its work (section 1.16).
+fn reclaim_process(tgid: u64) {
+    let _path = GpuPath::enter();
+    if with_core(|c| {
+        let held = c.procs.contains_key(&tgid);
+        c.reclaim(tgid);
+        held
+    })
+    .unwrap_or(false)
+    {
+        notify();
+    }
+}
+
+/// Whether any process holds GPU state, without the process manager.
+fn any_process() -> bool {
+    with_core(|c| !c.procs.is_empty()).unwrap_or(false)
+}
+
+/// Thread `thread_id` is exiting, with no lock held: if it is its process's last thread, the
+/// process's GPU handles are dropped (section 1.16, reclamation).
+pub fn thread_exiting(thread_id: u64) {
+    if !any_process() {
+        return;
+    }
+    let last = crate::process::with_process_manager(|m| {
+        let (row, p) = m.find_process_by_thread(thread_id)?;
+        let tgid = p.thread_group_id.unwrap_or(row.as_u64());
+        (!group_live(m, tgid, Some(row))).then_some(tgid)
+    })
+    .flatten();
+    if let Some(tgid) = last {
+        reclaim_process(tgid);
+    }
+}
+
+/// Row `pid` is about to exit, killed or faulted, with no lock held: as [`thread_exiting`].
+pub fn row_exiting(pid: crate::process::ProcessId) {
+    if !any_process() {
+        return;
+    }
+    let last = crate::process::with_process_manager(|m| {
+        let p = m.get_process(pid)?;
+        let tgid = p.thread_group_id.unwrap_or(pid.as_u64());
+        (!group_live(m, tgid, Some(pid))).then_some(tgid)
+    })
+    .flatten();
+    if let Some(tgid) = last {
+        reclaim_process(tgid);
+    }
+}
+
+/// Row `pid`'s process has exec'd, with no lock held: its new image holds no GPU handles.
+pub fn exec_committed(pid: crate::process::ProcessId) {
+    if !any_process() {
+        return;
+    }
+    let tgid = crate::process::with_process_manager(|m| m.get_process(pid).map(|p| p.thread_group_id.unwrap_or(pid.as_u64())))
+        .flatten();
+    if let Some(tgid) = tgid {
+        reclaim_process(tgid);
     }
 }
 
@@ -1599,8 +1698,25 @@ fn result(r: Result<u64, i64>) -> SyscallResult {
     }
 }
 
+/// Test point 2's hold: IRQs masked for `ns` nanoseconds, through the primitive the IRQ
+/// gauge times.
+fn hold_irqs_masked(ns: u64) {
+    crate::arch_without_interrupts(|| {
+        let start = now_ns();
+        while now_ns().saturating_sub(start) < ns {
+            core::hint::spin_loop();
+        }
+    });
+}
+
 /// `gpu(op, arg, len)`.
 pub fn sys_gpu(op: u64, arg: u64, len: u64) -> SyscallResult {
+    let _path = GpuPath::enter();
+    // Test point 3, `emit-diagnostic`: this call writes BreenGL's diagnostic payload, the
+    // only kernel output any syscall 416 path makes (section 1.16).
+    if crate::test_control::take(test_point::EMIT_DIAGNOSTIC, 0).is_some() {
+        crate::serial_println!("BREENGEL-EMIT-DIAGNOSTIC-PAYLOAD");
+    }
     let Ok(op) = u32::try_from(op) else { return result(Err(EINVAL)) };
     result(match op {
         abi::op::VERSION => {
@@ -1626,7 +1742,14 @@ pub fn sys_gpu(op: u64, arg: u64, len: u64) -> SyscallResult {
                 abi::op::READBACK => op_readback(arg, len),
                 abi::op::PRESENT => display::present(arg, len),
                 abi::op::COUNTERS => op_counters(arg, len),
-                // MODES and SET_MODE (G7) are not built yet.
+                // SET_MODE (G7) is not built yet; before its argument it refuses a caller
+                // that is not the display owner (section 1.16).
+                abi::op::SET_MODE => match caller() {
+                    Ok(tgid) if display::owner(tgid) => Err(ENOSYS),
+                    Ok(_) => Err(abi::errno::EPERM),
+                    Err(e) => Err(e),
+                },
+                // MODES (G7) is not built yet.
                 _ => Err(ENOSYS),
             },
         },
@@ -1694,6 +1817,8 @@ fn new_res(owner: u64, kind_: u32, format_: u32, width: u32, height: u32, size: 
         holds: 0,
         lost: false,
         reading: false,
+        charge: None,
+        quota_charge: None,
     }
 }
 
@@ -1725,11 +1850,11 @@ fn op_context_create(arg: u64, len: u64) -> Result<u64, i64> {
         let scratch_texture = c.next_res + 2;
         c.next_res += 3;
         let epoch = c.epoch;
-        c.resources.insert(vb, new_res(0, kind::BUFFER, format::B8G8R8A8, 0, 0, encode::VERTEX_BUFFER_BYTES as u64, 256, vb_pages.clone(), epoch));
-        c.resources.insert(scratch, new_res(0, kind::TARGET, format::B8G8R8A8, 1, 1, 0, 256, scratch_pages.clone(), epoch));
+        c.insert_res(vb, new_res(0, kind::BUFFER, format::B8G8R8A8, 0, 0, encode::VERTEX_BUFFER_BYTES as u64, 256, vb_pages.clone(), epoch));
+        c.insert_res(scratch, new_res(0, kind::TARGET, format::B8G8R8A8, 1, 1, 0, 256, scratch_pages.clone(), epoch));
         // Device-only: no transfer names it, so it has no guest backing.
-        c.resources.insert(scratch_texture, new_res(0, kind::TEXTURE, format::B8G8R8A8, 1, 1, 0, 256, Arc::new(Pages::none()), epoch));
-        c.contexts.insert(id, Ctx {
+        c.insert_res(scratch_texture, new_res(0, kind::TEXTURE, format::B8G8R8A8, 1, 1, 0, 256, Arc::new(Pages::none()), epoch));
+        c.insert_ctx(id, Ctx {
             id,
             owner: tgid,
             ns,
@@ -2001,18 +2126,15 @@ fn op_resource_create(arg: u64, len: u64) -> Result<u64, i64> {
     };
     pages.charge_to(charged_limits);
     let pages = Arc::new(pages);
-    let id = with_core(|c| {
+    let (id, quota_charge) = with_core(|c| {
         let p = c.proc_mut(tgid);
         if p.resources.len() >= RESOURCE_QUOTA {
             return Err(EAGAIN);
         }
-        if p.bytes.saturating_add(charge) > MEMORY_QUOTA {
-            return Err(ENOMEM);
-        }
-        p.bytes += charge;
+        let q = QuotaCharge::try_new(&p.quota, charge).ok_or(ENOMEM)?;
         let id = c.next_res;
         c.next_res += 1;
-        Ok(id)
+        Ok((id, q))
     }).ok_or(ENODEV)??;
     let width = if a.kind == kind::BUFFER { a.size as u32 } else { a.width };
     let height = if a.kind == kind::BUFFER { 1 } else { a.height };
@@ -2022,7 +2144,8 @@ fn op_resource_create(arg: u64, len: u64) -> Result<u64, i64> {
         let mut r = new_res(tgid, a.kind, a.format, a.width, a.height, a.size, pitch, pages.clone(), c.epoch);
         r.scanout = a.flags & abi::resource_flag::SCANOUT != 0;
         r.holds = 1;
-        c.resources.insert(id, r);
+        r.quota_charge = Some(quota_charge);
+        c.insert_res(id, r);
     });
     let mut outcome = exec_ok(|t| Some(virgl::resource_create(t, id, vtarget, vformat, bind, width, height)), 0, &[])
         .map(drop);
@@ -2139,8 +2262,9 @@ impl View {
         View { entries }
     }
 
+    /// The entries are in handle order (the process's map is), so a lookup is a binary search.
     fn get(&self, handle: u64) -> Option<&Entry> {
-        self.entries.iter().find(|e| e.handle == handle)
+        self.entries.binary_search_by_key(&handle, |e| e.handle).ok().map(|i| &self.entries[i])
     }
 
     fn has_id(&self, id: u32) -> bool {
@@ -2162,6 +2286,8 @@ struct Range {
 struct Snapshot {
     ranges: Vec<Range>,
     words: WordBuf,
+    /// The copy's charge to the process (section 1.16).
+    _charge: Option<Charge>,
     /// The range the last lookup found: commands read their ranges in stream order.
     hint: Cell<usize>,
 }
@@ -2171,8 +2297,8 @@ impl Snapshot {
     /// owns. The copy stops at the first malformed command, where validation refuses the
     /// stream, and takes at most the instance limit's rectangles, which bounds every range
     /// validation reads.
-    fn take(stream: &WordBuf, view: &View) -> Result<Snapshot, i64> {
-        let mut snap = Snapshot { ranges: Vec::new(), words: WordBuf::new(), hint: Cell::new(0) };
+    fn take(stream: &WordBuf, view: &View, tgid: u64) -> Result<Snapshot, i64> {
+        let mut snap = Snapshot { ranges: Vec::new(), words: WordBuf::new(), _charge: None, hint: Cell::new(0) };
         let total = stream.len();
         let mut rects = 0u64;
         let mut at = 0usize;
@@ -2214,6 +2340,10 @@ impl Snapshot {
             }
         }
         snap.ranges.truncate(used);
+        let total: u64 = snap.ranges.iter().map(|r| r.bytes).sum();
+        if total > 0 {
+            snap._charge = Some(Charge::new(tgid, total.div_ceil(PAGE as u64) * PAGE as u64)?);
+        }
         let mut copied = 0u64;
         for r in &mut snap.ranges {
             copied = copied.checked_add(r.bytes).ok_or(EINVAL)?;
@@ -2234,11 +2364,17 @@ impl Snapshot {
         Ok(snap)
     }
 
+    /// The range that may hold `offset` of buffer `handle`: the ranges are sorted by buffer
+    /// and offset and do not overlap, so it is the last one starting at or before it.
+    fn search(&self, handle: u64, offset: u64) -> Option<usize> {
+        self.ranges.partition_point(|r| (r.handle, r.offset) <= (handle, offset)).checked_sub(1)
+    }
+
     fn word(&self, handle: u64, offset: u64) -> u32 {
         let inside = |r: &Range| r.handle == handle && offset >= r.offset && offset+4 <= r.offset+r.bytes;
         let hint = self.hint.get();
         let found = self.ranges.get(hint).filter(|r| inside(r)).map(|_| hint)
-            .or_else(|| self.ranges.iter().position(inside));
+            .or_else(|| self.search(handle, offset).filter(|&i| inside(&self.ranges[i])));
         let Some(i) = found else { return 0; };
         self.hint.set(i);
         let r = &self.ranges[i];
@@ -2252,7 +2388,7 @@ impl Snapshot {
         let found = [hint, hint + 1]
             .into_iter()
             .find(|&i| self.ranges.get(i).is_some_and(inside))
-            .or_else(|| self.ranges.iter().position(inside));
+            .or_else(|| self.search(handle, offset).filter(|&i| inside(&self.ranges[i])));
         let Some(i) = found else { return [0; 4] };
         self.hint.set(i);
         let r = &self.ranges[i];
@@ -2471,13 +2607,30 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         Some(ctx) => Ok(ctx.id),
     })
     .ok_or(ENODEV)??;
+    // The stream's copy and the buffer snapshot are charged to the process while the call
+    // holds them (section 1.16); a charge that cannot be made is ENOMEM, code 22 at 0.
+    let pages = |bytes: u64| bytes.div_ceil(PAGE as u64) * PAGE as u64;
+    let _stream_charge = match Charge::new(tgid, pages(a.length)) {
+        Ok(c) => c,
+        Err(ENOMEM) => return refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM),
+        Err(e) => return Err(e),
+    };
     let words = WordBuf::from_user(a.stream, a.length as usize)?;
     let view = with_core(|c| View::of(c, tgid)).ok_or(ENODEV)?;
-    let snap = Snapshot::take(&words, &view)?;
+    let snap = match Snapshot::take(&words, &view, tgid) {
+        Ok(snap) => snap,
+        Err(ENOMEM) => return refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM),
+        Err(e) => return Err(e),
+    };
     let resolved = Resolved {
         view: &view,
         snap: &snap,
     };
+    // Test point 2, `irq-hold`: this validation holds IRQs masked for 2 ms, through the
+    // primitive the gauge times (section 1.16).
+    if crate::test_control::take(test_point::IRQ_HOLD, 0).is_some() {
+        hold_irqs_masked(2_000_000);
+    }
     let injection = reserve_profile_violation(&words);
     let validation = ProfileWords {
         words: &words,
@@ -2560,11 +2713,11 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             corruption = crate::test_control::reserve(test_point::CORRUPT_PIXEL, handle);
             corruption.is_some()
         });
-    let vertex_buffer = match vertex_buffer_for(id, encode::vertex_bytes(plan.drawn + u64::from(corrupt.is_some()))) {
+    let vertex_buffer = match vertex_buffer_for(tgid, id, encode::vertex_bytes(plan.drawn + u64::from(corrupt.is_some()))) {
         Ok(vb) => vb,
         Err(e) => {
             release_slot(false);
-            return Err(e);
+            return if e == ENOMEM { refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM) } else { Err(e) };
         }
     };
     // The submission's scratch textures for copies within one target that overlap
@@ -2675,6 +2828,21 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         swap,
     });
     let chunks = enc.finish();
+    // The translated chunks are charged to the process until the submission retires, after
+    // the device has returned them (section 1.16).
+    let chunk_bytes: u64 = chunks.as_ref().map_or(0, |v| v.iter().map(|w| (w.page_count() * PAGE) as u64).sum());
+    let chunk_charge = if chunk_bytes == 0 {
+        None
+    } else {
+        match Charge::new(tgid, chunk_bytes) {
+            Ok(c) => Some(c),
+            Err(e) => {
+                drop_vertex_buffer();
+                release_slot(false);
+                return if e == ENOMEM { refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM) } else { Err(e) };
+            }
+        }
+    };
     // Point 29's texture is named, held and rechecked like the stream's own resources.
     if let Some((_, other)) = swap {
         if !named_ids.contains(&other.id) {
@@ -2776,6 +2944,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             whole,
             held,
             present: None,
+            _charge: chunk_charge,
         });
         let epoch = c.epoch;
         c.backlog.extend(reqs.into_iter().map(|r| (epoch, r)));
@@ -2805,18 +2974,21 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
 /// and held for the submission; `None` when the submission draws nothing. It has no guest
 /// backing (the vertices reach it by inline writes) and is freed once the submission no
 /// longer holds it.
-fn vertex_buffer_for(ctx: u32, bytes: u64) -> Result<Option<u32>, i64> {
+fn vertex_buffer_for(tgid: u64, ctx: u32, bytes: u64) -> Result<Option<u32>, i64> {
     if bytes == 0 {
         return Ok(None);
     }
     let size = u32::try_from(bytes).map_err(|_| ENOMEM)?;
+    // The device's vertex storage is charged to the process until the buffer is freed.
+    let charge = Charge::new(tgid, bytes)?;
     let id = with_core(|c| {
         let id = c.next_res;
         c.next_res += 1;
         let mut r = new_res(0, kind::BUFFER, format::B8G8R8A8, 0, 0, bytes, 0, Arc::new(Pages::none()), c.epoch);
         r.dropped = true;
         r.holds = 1;
-        c.resources.insert(id, r);
+        r.charge = Some(charge);
+        c.insert_res(id, r);
         id
     })
     .ok_or(ENODEV)?;
@@ -2846,7 +3018,7 @@ fn scratch_for(ctx: u32, vformat: u32, w: u32, h: u32) -> Result<u32, i64> {
         let mut r = new_res(0, kind::TEXTURE, format::B8G8R8A8, w, h, 0, 0, Arc::new(Pages::none()), c.epoch);
         r.dropped = true;
         r.holds = 1;
-        c.resources.insert(id, r);
+        c.insert_res(id, r);
         id
     })
     .ok_or(ENODEV)?;
@@ -3486,7 +3658,7 @@ fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {
                 fill(&mut out, &p.totals);
                 out.contexts = p.contexts.len() as u64;
                 out.resources = p.resources.len() as u64;
-                out.resource_bytes = p.bytes;
+                out.resource_bytes = p.quota.load(Ordering::Acquire);
             }
         } else {
             let id = c.ctx_of(tgid, a.context)?;
@@ -3502,7 +3674,7 @@ fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {
             if let Some(p) = proc_live {
                 out.contexts = p.contexts.len() as u64;
                 out.resources = p.resources.len() as u64;
-                out.resource_bytes = p.bytes;
+                out.resource_bytes = p.quota.load(Ordering::Acquire);
             }
         }
         out.device_contexts = c.contexts.values().filter(|x| x.owner == tgid && x.device_alive).count() as u64;

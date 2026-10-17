@@ -923,6 +923,9 @@ impl ProcessScheduler {
         // The last thread of a process applies its SEM_UNDO adjustments
         // before Phase 1 makes the row a zombie its parent can reap.
         crate::ipc::sysv::thread_exit(thread_id);
+        // The last thread of a process drops its GPU handles (docs/gui/gpu.md section 1.16).
+        #[cfg(target_arch = "aarch64")]
+        crate::gpu::thread_exiting(thread_id);
         // So is the working directory released: rmdir refuses a directory
         // that is anyone's working directory, and a reaped row stays resident
         // until its address space retires (on x86-64, at the next idle pass or

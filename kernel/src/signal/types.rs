@@ -329,6 +329,9 @@ pub struct ThreadSignals {
     /// Bytes of kernel output this thread has committed (`crate::output_accounting`),
     /// read as /proc/<pid>/task/<tid>/kernel_output.
     pub kernel_output_bytes: AtomicU64,
+    /// Nonzero while the thread is in a GPU path (`tracing::providers::gpu::GpuPath`): the
+    /// IRQ-masking primitives time the intervals they open for `gpu_irq_masked_max_us`.
+    pub gpu_path: core::sync::atomic::AtomicU32,
     /// Signals of POSIX timers the scheduler expired with this thread as the
     /// recipient, not yet queued (`SignalState::collect_timer_signals`).
     pub posix_pending: AtomicU64,

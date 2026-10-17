@@ -487,6 +487,9 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
     // SEM_UNDO adjustments are applied, and the working directory released,
     // before the commit below makes the row a zombie its parent can reap.
     crate::ipc::sysv::row_exit(pid);
+    // A killed or faulted process's GPU handles are dropped (docs/gui/gpu.md section 1.16).
+    #[cfg(target_arch = "aarch64")]
+    crate::gpu::row_exiting(pid);
     let released = with_process_manager(|pm| pm.get_process_mut(pid).map(|process| process.cwd.release()));
     drop(released);
     let mut fifo_opens = alloc::vec::Vec::new();

@@ -121,12 +121,15 @@ impl CpuOps for Aarch64Cpu {
         }
 
         let restore_guard = DaifRestoreGuard(daif);
+        // An interval opened on a thread in a GPU path is timed for gpu_irq_masked_max_us.
+        let gauge = crate::tracing::providers::gpu::masked_begin(daif);
 
         // Execute the closure
         let result = f();
 
         // Restore previous DAIF state exactly before returning the result.
         drop(restore_guard);
+        crate::tracing::providers::gpu::masked_end(gauge);
 
         result
     }
