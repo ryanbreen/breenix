@@ -269,7 +269,7 @@ DRAW, DRAW_BUFFER, DRAW_SAMPLED and PROBE. COPY remains independent of drawing s
 | 10 multiply three words | a0, a1 (one u64), a2 (u32) | exact unsigned 96-bit product (3 words) |
 | 11 divide three words | a0–a2 dividend, a3–a5 nonzero divisor | unsigned quotient (words 0–2), remainder (3–5), restoring division in exactly 96 iterations |
 | 12 binary32 add, 13 subtract, 14 multiply | a0, a1 | IEEE-754 binary32 result bits, round to nearest, ties to even |
-| 15 binary32 truncate | a0 | signed i32, toward zero; only finite inputs whose truncated value fits i32 |
+| 15 binary32 truncate | a0 | signed i32, toward 0; only finite inputs whose truncated value fits i32 |
 | 16 binary32 ceil | a0 | binary32 bits of the least integral value not below the input |
 | 17 binary32 less | a0, a1 | 1 when less, otherwise 0 |
 | 18 fragment x, 19 fragment y | no inputs | floor of the fragment's window coordinate |
