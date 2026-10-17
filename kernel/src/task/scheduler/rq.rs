@@ -1928,6 +1928,10 @@ pub(super) fn block_current(local: &mut Held, block: Block) -> bool {
         return false;
     };
     let mut push_deadline = None;
+    let entry_here = match block {
+        Block::Timer { wake_time_ns } => local.heap().iter().any(|&Reverse(entry)| entry == (wake_time_ns, tid)),
+        _ => false,
+    };
     {
         let Some(thread) = local.thread(tid) else {
             return false;
@@ -1945,8 +1949,13 @@ pub(super) fn block_current(local: &mut Held, block: Block) -> bool {
                 }
             }
             Block::Timer { wake_time_ns } => {
+                // The entry an earlier block pushed counts only if it is in
+                // this CPU's heap: a sleep stopped and continued before its
+                // deadline can resume on another CPU, whose expiry would
+                // never reach the entry the old CPU's heap keeps.
                 let already_armed = thread.timer_pop.is_some_and(|record| {
-                    record.deadline_ns == wake_time_ns
+                    entry_here
+                        && record.deadline_ns == wake_time_ns
                         && record.own_entry == crate::task::thread::TimerPop::NotPopped
                 });
                 thread.stop_timer_cpu();
