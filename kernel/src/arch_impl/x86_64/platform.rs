@@ -72,7 +72,7 @@ pub fn init(rsdp: Option<u64>, physical_memory_offset: u64) {
             "????"
         };
         let before = line.len;
-        if write!(line, " {}", text).is_err() {
+        if write!(line, " {text}").is_err() {
             line.len = before;
             cut = true;
         }

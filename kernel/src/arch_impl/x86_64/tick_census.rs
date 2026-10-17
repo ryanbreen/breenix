@@ -64,7 +64,7 @@ pub fn record_local_rate(cpu: usize) {
 /// Start the census thread. Its report arrives about a second later.
 pub fn start() {
     if let Err(error) = crate::task::kthread::kthread_run(run, "ktickcensus") {
-        log::warn!("[timer] tick census not started: {:?}", error);
+        log::warn!("[timer] tick census not started: {error:?}");
     }
 }
 
@@ -93,7 +93,7 @@ fn run() {
     for cpu in 0..online {
         let pinned = crate::task::kthread::kthread_run_on_cpu(move || window(cpu), "ktickwindow", cpu);
         if let Err(error) = pinned {
-            log::warn!("[timer] cpu{} tick window not started: {:?}", cpu, error);
+            log::warn!("[timer] cpu{cpu} tick window not started: {error:?}");
         }
     }
     let deadline = super::timer::rdtsc() + tsc_hz * COLLECT_MS / 1000;
@@ -137,17 +137,12 @@ fn run() {
         );
     }
     if rates_agree && every_cpu_ticked {
-        log::info!(
-            "[timer] tick rate agrees with the TSC: {} CPU(s) at {} Hz within {} ppm",
-            online,
-            TICK_HZ,
-            RATE_PPM
-        );
+        log::info!("[timer] tick rate agrees with the TSC: {online} CPU(s) at {TICK_HZ} Hz within {RATE_PPM} ppm");
     } else {
         log::warn!("[timer] tick rate disagrees with the TSC on at least one CPU");
     }
     if every_cpu_ticked {
-        log::info!("[smp] timer ticks on each online CPU ({} of {})", online, online);
+        log::info!("[smp] timer ticks on each online CPU ({online} of {online})");
     } else {
         log::warn!("[smp] at least one online CPU missed timer ticks");
     }
