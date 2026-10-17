@@ -35,17 +35,42 @@ def verdict(interval, tick_period, rate, observer_ticks, all_ticks, online_cpus)
     return "STARVED" if observer_starved and all_starved else "fail"
 
 
+def rejoin(text):
+    """Kernel output on the same serial can split a test line in two. Join a
+    window or run line with the continuation that completes it, if one
+    follows within a few lines."""
+    lines = text.splitlines()
+    joined = []
+    for index, line in enumerate(lines):
+        if "SIGKILL_TEARDOWN_TEST" not in line:
+            continue
+        pattern = WINDOW if "SIGKILL_TEARDOWN_TEST: pid=" in line else RUN_STARVED
+        if ("SIGKILL_TEARDOWN_TEST: pid=" in line or "SIGKILL_TEARDOWN_TEST: STARVED" in line) \
+                and not pattern.search(line.rstrip()):
+            for continuation in lines[index + 1:index + 6]:
+                if "SIGKILL_TEARDOWN_TEST" not in continuation \
+                        and pattern.search(line.rstrip() + continuation.rstrip()):
+                    line = line.rstrip() + continuation.rstrip()
+                    break
+        joined.append(line)
+    return joined
+
+
 def score(text):
-    lines = [line for line in text.splitlines() if "SIGKILL_TEARDOWN_TEST" in line]
+    lines = rejoin(text)
     if any("SIGKILL_TEARDOWN_TEST: FAIL" in line for line in lines):
         return 1, "sigkill teardown: FAIL: the test reported a failure"
     starved = 0
+    unreadable = 0
     for line in lines:
-        if " verdict=" not in line:
+        if "SIGKILL_TEARDOWN_TEST: pid=" not in line:
             continue
         match = WINDOW.search(line.rstrip())
         if not match:
-            return 1, f"sigkill teardown: FAIL: malformed window line: {line.strip()}"
+            # The test asserted this window itself; only a starved run needs
+            # each of its windows read back.
+            unreadable += 1
+            continue
         _, kick_cpu, sender_cpu, interval, tick_period, rate, observer, all_ticks, cpus, limit, printed = match.groups()
         if int(limit) * 1_000_000 != STARVED_NS_PER_TICK:
             return 1, "sigkill teardown: FAIL: unexpected starvation threshold"
@@ -63,8 +88,8 @@ def score(text):
         if starved:
             return 1, "sigkill teardown: FAIL: starved window without the run's STARVED verdict"
         return 0, "sigkill teardown: no starved window"
-    if len(runs) != 1 or int(runs[0].group(1)) != starved or starved == 0:
-        return 1, "sigkill teardown: FAIL: STARVED verdict does not match its windows"
+    if len(runs) != 1 or unreadable or int(runs[0].group(1)) != starved or starved == 0:
+        return 1, "sigkill teardown: FAIL: STARVED verdict does not match its readable windows"
     if any(line.strip().endswith("SIGKILL_TEARDOWN_TEST_PASSED") for line in lines):
         return 1, "sigkill teardown: FAIL: a starved run also reported a pass"
     return 2, f"sigkill teardown: STARVED: {starved} host-starved window(s); not evidence, rerun the boot"

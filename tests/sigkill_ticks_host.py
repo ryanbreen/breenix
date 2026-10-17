@@ -200,4 +200,12 @@ assert scorer.score(windows[1] + "\n" + run_starved + "\nSIGKILL_TEARDOWN_TEST: 
 assert scorer.score(windows[0].replace("sender_cpu=0", "sender_cpu=1"))[0] == 1, "observer is sender"
 assert scorer.score(windows[0].replace("starved_ms_per_tick=60", "starved_ms_per_tick=10"))[0] == 1
 assert scorer.score("")[0] == 0
+# Kernel output on the shared ARM64 serial can split a window line.
+cut = windows[1].index(" all_ms_per_tick=")
+split = windows[1][:cut] + "\ncreate_user_process: ENTRY - Creating 'next' (ARM64)\n" + windows[1][cut:]
+assert scorer.score(split + "\n" + run_starved)[0] == 2, "a rejoined window is read"
+assert scorer.score(split.replace(" all_ticks=0 ", " all_ticks=42 ") + "\n" + run_starved)[0] == 1
+lost = windows[1][:cut] + "\n" + "\n".join(["kernel line"] * 6) + "\n" + windows[1][cut:]
+assert scorer.score(lost + "\n" + run_starved)[0] == 1, "a starved run needs every window read"
+assert scorer.score(windows[0][:cut] + "\n" + "\n".join(["kernel line"] * 6) + "\nSIGKILL_TEARDOWN_TEST_PASSED")[0] == 0
 print("sigkill_ticks_host: ok")
