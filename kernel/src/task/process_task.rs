@@ -782,6 +782,8 @@ fn boot_forces_reclaim_reserve_failure() -> bool {
 fn push_pending_or_abandon(reclaim: PendingProcessReclaim) {
     let mut reclaim = Some(reclaim);
     let queued = crate::arch_without_interrupts(|| {
+        #[cfg(feature = "force_reclaim_queue_contention")]
+        probe_forced_contention(reclaim.as_ref().map(|reclaim| reclaim.pid));
         let Some(mut pending) = reclaim_queue(&PENDING_PROCESS_RECLAIMS) else {
             return false;
         };
@@ -838,8 +840,121 @@ pub(crate) fn enqueue_process_reclaim(reclaim: PendingProcessReclaim) {
     if crate::process::process_manager_held_on_current_cpu() {
         crate::trace_count!(crate::tracing::providers::teardown::RECLAIM_ENQUEUE_UNDER_PM);
     }
+    #[cfg(all(target_arch = "aarch64", feature = "force_reclaim_queue_contention"))]
+    let forced = force_reclaim_queue_contention(&reclaim).then_some(reclaim.pid);
     push_pending_or_abandon(reclaim);
+    #[cfg(all(target_arch = "aarch64", feature = "force_reclaim_queue_contention"))]
+    if let Some(pid) = forced {
+        if FORCED_CONTENTION_PROBE_FAILED.load(Ordering::Acquire) {
+            crate::serial_println!(
+                "FORCED_RECLAIM_QUEUE_CONTENTION: pid={pid}'s publisher found the pending queue held by a peer (try-lock probe failed)"
+            );
+        }
+    }
 }
+
+/// `force_reclaim_queue_contention`: the pid whose publication is forced, and
+/// whether its publisher's probe found the pending queue held.
+#[cfg(feature = "force_reclaim_queue_contention")]
+static FORCED_CONTENTION_PID: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "force_reclaim_queue_contention")]
+static FORCED_CONTENTION_PROBE_FAILED: AtomicBool = AtomicBool::new(false);
+
+/// Called by `push_pending_or_abandon` just before it takes the pending queue.
+/// For the forced pid, a failed try-lock here is the point where the publisher
+/// used to give up its receipt; the guard of a successful one is dropped at
+/// once.
+#[cfg(feature = "force_reclaim_queue_contention")]
+fn probe_forced_contention(pid: Option<u64>) {
+    if pid.is_some_and(|pid| FORCED_CONTENTION_PID.load(Ordering::Acquire) == pid)
+        && PENDING_PROCESS_RECLAIMS.try_lock().is_none()
+    {
+        FORCED_CONTENTION_PROBE_FAILED.store(true, Ordering::Release);
+    }
+}
+
+/// Hold the real publication queue on a peer until the publisher's probe has
+/// found it held. This forces the first `sigkill_teardown_test` victim killed
+/// by its own parent whose receipt carries page tables (the forked V2), and
+/// the first whose receipt carries no page tables (the CLONE_VM victim). V1 is
+/// killed by a helper and is left to `force_exit_report_reap_race`, which
+/// needs its parent free to reap. This changes only scheduling of the holder;
+/// the victim takes the production enqueue path and the userspace test keeps
+/// its ordinary pairing requirement.
+#[cfg(all(target_arch = "aarch64", feature = "force_reclaim_queue_contention"))]
+fn force_reclaim_queue_contention(reclaim: &PendingProcessReclaim) -> bool {
+    static ROOTED_ARMED: AtomicBool = AtomicBool::new(true);
+    static ROOTLESS_ARMED: AtomicBool = AtomicBool::new(true);
+    static HELD: AtomicBool = AtomicBool::new(false);
+    fn counter() -> u64 {
+        let value: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, cntvct_el0", out(reg) value, options(nomem, nostack));
+        }
+        value
+    }
+    let publisher = scheduler::current_thread_id();
+    let victim = crate::process::with_process_manager(|manager| {
+        let killer = publisher
+            .and_then(|thread| manager.find_process_by_thread(thread))
+            .map(|(pid, _)| pid);
+        manager
+            .get_process(ProcessId::new(reclaim.pid))
+            .is_some_and(|row| {
+                row.name.contains("sigkill_teardown_test")
+                    && row.parent.is_some()
+                    && row.parent == killer
+            })
+    })
+    .unwrap_or(false);
+    if !victim {
+        return false;
+    }
+    let rooted = reclaim.page_table.is_some() || !reclaim.old_page_tables.is_empty();
+    let armed = if rooted { &ROOTED_ARMED } else { &ROOTLESS_ARMED };
+    if !armed.swap(false, Ordering::AcqRel) {
+        return false;
+    }
+    let online = crate::arch_impl::aarch64::smp::cpus_online() as usize;
+    assert!(online > 1, "queue contention regression requires a peer CPU");
+    let cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
+    let frequency = crate::arch_impl::aarch64::timer::frequency_hz();
+    HELD.store(false, Ordering::Release);
+    FORCED_CONTENTION_PROBE_FAILED.store(false, Ordering::Release);
+    FORCED_CONTENTION_PID.store(reclaim.pid, Ordering::Release);
+    crate::task::kthread::kthread_run_on_cpu(
+        move || {
+            let _queue = PENDING_PROCESS_RECLAIMS.lock();
+            HELD.store(true, Ordering::Release);
+            let start = counter();
+            while !FORCED_CONTENTION_PROBE_FAILED.load(Ordering::Acquire)
+                && counter().wrapping_sub(start) < frequency
+            {
+                core::hint::spin_loop();
+            }
+            assert!(
+                FORCED_CONTENTION_PROBE_FAILED.load(Ordering::Acquire),
+                "publisher's probe did not find the pending queue held"
+            );
+            // The publisher takes the queue right after its probe, with its
+            // interrupts masked; keep holding so that acquisition waits too.
+            let start = counter();
+            while counter().wrapping_sub(start) < frequency / 1000 {
+                core::hint::spin_loop();
+            }
+        },
+        "reclaim-queue-holder",
+        (cpu + 1) % online,
+    )
+    .expect("queue contention holder");
+    let start = counter();
+    while !HELD.load(Ordering::Acquire) && counter().wrapping_sub(start) < frequency {
+        core::hint::spin_loop();
+    }
+    assert!(HELD.load(Ordering::Acquire), "peer did not hold reclaim queue");
+    true
+}
+
 
 /// Close extracted file descriptor entries outside the PM lock.
 ///
