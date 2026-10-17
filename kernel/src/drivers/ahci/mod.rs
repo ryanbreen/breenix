@@ -947,13 +947,17 @@ impl AhciController {
             if crate::time::tsc::frequency_hz() == 0 {
                 return Err("AHCI: clock not calibrated");
             }
-            // The driver completes on the INTx line the config space names,
-            // which is the line it drives only where that wiring is known.
-            if !crate::arch_impl::x86_64::irq::pci_intx_routing_known() {
-                return Err("AHCI: PCI INTx routing unknown on this firmware");
-            }
-            if !matches!(pci_dev.interrupt_line, 10 | 11) {
-                return Err("AHCI: unsupported PCI interrupt line");
+            // Completions arrive by MSI wherever the local APIC takes them, which
+            // needs no knowledge of the platform's INTx wiring. Otherwise the
+            // driver completes on the INTx line the config space names, which is
+            // the line it drives only where that wiring is known.
+            if !uses_msi(pci_dev) {
+                if !crate::arch_impl::x86_64::irq::pci_intx_routing_known() {
+                    return Err("AHCI: no MSI, and PCI INTx routing unknown on this firmware");
+                }
+                if !matches!(pci_dev.interrupt_line, 10 | 11) {
+                    return Err("AHCI: unsupported PCI interrupt line");
+                }
             }
             let offset = (bar5.address & 0xfff) as usize;
             crate::memory::map_mmio(bar5.address & !0xfff, bar5.size as usize + offset)? as u64
@@ -1001,9 +1005,27 @@ impl AhciController {
         setup_ahci_msi(pci_dev);
         #[cfg(target_arch = "x86_64")]
         {
-            AHCI_IRQ_EDGE.store(false, Ordering::Relaxed);
-            AHCI_IRQ.store(pci_dev.interrupt_line as u32, Ordering::Release);
-            pci_dev.enable_intx();
+            if uses_msi(pci_dev) {
+                // A failure leaves AHCI_IRQ at 0: commands then poll PORT_CI.
+                match crate::arch_impl::x86_64::msi::enable(pci_dev, handle_interrupt) {
+                    Ok(vector) => {
+                        AHCI_IRQ_EDGE.store(true, Ordering::Relaxed);
+                        AHCI_IRQ.store(u32::from(vector), Ordering::Release);
+                        log::info!(
+                            "[ahci] attached by MSI: {:02x}:{:02x}.{} vector {:#x}",
+                            pci_dev.bus,
+                            pci_dev.device,
+                            pci_dev.function,
+                            vector
+                        );
+                    }
+                    Err(e) => log::warn!("[ahci] MSI not enabled, completions are polled: {}", e),
+                }
+            } else {
+                AHCI_IRQ_EDGE.store(false, Ordering::Relaxed);
+                AHCI_IRQ.store(pci_dev.interrupt_line as u32, Ordering::Release);
+                pci_dev.enable_intx();
+            }
             let ghc = hba_read(abar_virt, HBA_GHC);
             hba_write(abar_virt, HBA_GHC, ghc | GHC_IE);
         }
@@ -2043,17 +2065,21 @@ impl AhciController {
         Ok((token, byte_count))
     }
 
-    /// Set up a single-sector write DMA command and issue PORT_CI.
+    /// Set up a write DMA command of 1 to 128 whole sectors and issue PORT_CI.
     ///
     /// Returns a `CmdToken`; caller waits with `wait_cmd_slot0()` after
     /// releasing the `AHCI_CONTROLLER` lock.
-    fn setup_write_sector(
+    fn setup_write_sectors(
         &self,
         port: usize,
         dma_index: usize,
         lba: u64,
-        buffer: &[u8; SECTOR_SIZE],
+        buffer: &[u8],
     ) -> Result<CmdToken, &'static str> {
+        let count = buffer.len() / SECTOR_SIZE;
+        if count == 0 || count > 128 || buffer.len() % SECTOR_SIZE != 0 {
+            return Err("AHCI: invalid sector count");
+        }
         self.wait_ready(port)?;
 
         {
@@ -2064,7 +2090,7 @@ impl AhciController {
             let dma_buf_phys = virt_to_phys(dma.dma_bufs[0].as_ptr() as u64);
 
             // Copy data to DMA buffer slot 0.
-            dma.dma_bufs[0][..SECTOR_SIZE].copy_from_slice(buffer);
+            dma.dma_bufs[0][..buffer.len()].copy_from_slice(buffer);
 
             // Command header: CFL=5, PRDTL=1, Write bit set (bit 6)
             dma.cmd_list[0].dw0 = (1 << 16) | (1 << 6) | 5;
@@ -2084,13 +2110,13 @@ impl AhciController {
             dma.cmd_tables[0].cfis[8] = (lba >> 24) as u8;
             dma.cmd_tables[0].cfis[9] = (lba >> 32) as u8;
             dma.cmd_tables[0].cfis[10] = (lba >> 40) as u8;
-            dma.cmd_tables[0].cfis[12] = 1;
-            dma.cmd_tables[0].cfis[13] = 0;
+            dma.cmd_tables[0].cfis[12] = count as u8;
+            dma.cmd_tables[0].cfis[13] = (count >> 8) as u8;
 
             dma.cmd_tables[0].prdt[0].dba = dma_buf_phys as u32;
             dma.cmd_tables[0].prdt[0].dbau = (dma_buf_phys >> 32) as u32;
             dma.cmd_tables[0].prdt[0]._reserved = 0;
-            dma.cmd_tables[0].prdt[0].dbc = (SECTOR_SIZE as u32 - 1) | (1 << 31);
+            dma.cmd_tables[0].prdt[0].dbc = (buffer.len() as u32 - 1) | (1 << 31);
 
             core::sync::atomic::fence(Ordering::SeqCst);
             let dma_ptr = &**dma as *const PortDmaMem as *const u8;
@@ -2879,44 +2905,61 @@ impl BlockDevice for AhciBlockDevice {
     }
 
     fn write_block(&self, block_num: u64, buf: &[u8]) -> Result<(), BlockError> {
+        self.write_blocks(block_num, 1, buf)
+    }
+
+    fn write_blocks(&self, start_block: u64, block_count: usize, buf: &[u8]) -> Result<(), BlockError> {
         if crate::block::hardware_read_only() { return Err(BlockError::IoError); }
-        if block_num >= self.sector_count {
+        if block_count == 0 {
+            return Ok(());
+        }
+        if start_block >= self.sector_count
+            || start_block.saturating_add(block_count as u64) > self.sector_count
+        {
             return Err(BlockError::OutOfBounds);
         }
-        if buf.len() < SECTOR_SIZE {
+        let total_bytes = block_count.checked_mul(SECTOR_SIZE).ok_or(BlockError::IoError)?;
+        if buf.len() < total_bytes {
             return Err(BlockError::IoError);
         }
 
-        let mut sector_buf = [0u8; SECTOR_SIZE];
-        sector_buf.copy_from_slice(&buf[..SECTOR_SIZE]);
+        let mut current_block = start_block;
+        let mut offset = 0usize;
+        while offset < total_bytes {
+            let byte_count = (total_bytes - offset).min(128 * SECTOR_SIZE);
+            let chunk = &buf[offset..offset + byte_count];
 
-        // ── PHASE 1: lock + setup (PORT_IO_IN_PROGRESS=true) ─────────────────
-        let port_guard = begin_port_io(self.port_num)?;
-        let setup_result: Result<CmdToken, BlockError> = {
-            let ctrl = AHCI_CONTROLLER.lock();
-            match ctrl.as_ref() {
-                Some(ctrl) => ctrl
-                    .setup_write_sector(self.port_num, self.dma_index, block_num, &sector_buf)
-                    .map_err(|_| BlockError::IoError),
-                None => Err(BlockError::DeviceNotReady),
-            }
-        }; // AHCI_CONTROLLER lock released
-        let token = match setup_result {
-            Ok(token) => token,
-            Err(err) => {
-                end_port_io(self.port_num, port_guard);
-                return Err(err);
-            }
-        };
-        drop(port_guard);
+            // ── PHASE 1: lock + setup (PORT_IO_IN_PROGRESS=true) ─────────────
+            let port_guard = begin_port_io(self.port_num)?;
+            let setup_result: Result<CmdToken, BlockError> = {
+                let ctrl = AHCI_CONTROLLER.lock();
+                match ctrl.as_ref() {
+                    Some(ctrl) => ctrl
+                        .setup_write_sectors(self.port_num, self.dma_index, current_block, chunk)
+                        .map_err(|_| BlockError::IoError),
+                    None => Err(BlockError::DeviceNotReady),
+                }
+            }; // AHCI_CONTROLLER lock released
+            let token = match setup_result {
+                Ok(token) => token,
+                Err(err) => {
+                    end_port_io(self.port_num, port_guard);
+                    return Err(err);
+                }
+            };
+            drop(port_guard);
 
-        // ── PHASE 2: wait (NO locks held) ────────────────────────────────────
-        let wait_result = wait_cmd_slot0(token).map_err(|_| BlockError::IoError);
+            // ── PHASE 2: wait (NO locks held) ────────────────────────────────
+            let wait_result = wait_cmd_slot0(token).map_err(|_| BlockError::IoError);
 
-        // ── PHASE 3: re-lock + retire ownership ──────────────────────────────
-        let port_guard = PORT_IO_LOCK[self.port_num].lock();
-        end_port_io(self.port_num, port_guard);
-        wait_result
+            // ── PHASE 3: re-lock + retire ownership ──────────────────────────
+            let port_guard = PORT_IO_LOCK[self.port_num].lock();
+            end_port_io(self.port_num, port_guard);
+            wait_result?;
+            current_block += (byte_count / SECTOR_SIZE) as u64;
+            offset += byte_count;
+        }
+        Ok(())
     }
 
     fn block_size(&self) -> usize {
@@ -2998,7 +3041,70 @@ pub fn init() -> Result<usize, &'static str> {
     *AHCI_CONTROLLER.lock() = Some(controller);
     AHCI_INITIALIZED.store(true, Ordering::Release);
 
+    #[cfg(target_arch = "x86_64")]
+    for index in 0..sata_count {
+        if let Some(disk) = get_block_device_by_index(index) {
+            log::info!(
+                "[ahci] drive identified: port {}, {} sectors of {} bytes",
+                disk.port_num,
+                disk.sector_count,
+                SECTOR_SIZE
+            );
+            report_first_sectors(&disk);
+        }
+    }
+
     Ok(sata_count)
+}
+
+/// Whether this x86 controller takes its completions by MSI: the local APIC
+/// is active, the FADT allows MSI, and the function has an MSI capability.
+#[cfg(target_arch = "x86_64")]
+fn uses_msi(pci_dev: &pci::Device) -> bool {
+    crate::arch_impl::x86_64::msi::available() && pci_dev.find_msi_capability().is_some()
+}
+
+/// The sectors the first-sectors read covers: the protective MBR, the GPT
+/// header and its 32 sectors of partition entries (UEFI 2.10, 5.3).
+#[cfg(target_arch = "x86_64")]
+const FIRST_SECTORS: usize = 34;
+
+/// Read a disk's first sectors once interrupts and the scheduler run, and say
+/// whether the read completed by MSI and what the sectors hold. Only the kind
+/// of content is reported, not its bytes.
+#[cfg(target_arch = "x86_64")]
+fn report_first_sectors(disk: &AhciBlockDevice) {
+    let mut sectors = alloc::vec![0u8; FIRST_SECTORS * SECTOR_SIZE];
+    let completed = AHCI_ISR_COMPLETE_HIT[disk.port_num].load(Ordering::Acquire);
+    let polled = AHCI_POLLED_COMPLETION_COUNT.load(Ordering::Acquire);
+    if let Err(e) = disk.read_blocks(0, FIRST_SECTORS, &mut sectors) {
+        log::warn!("[ahci] first sectors of port {} unreadable: {}", disk.port_num, e);
+        return;
+    }
+    let by_msi = AHCI_IRQ_EDGE.load(Ordering::Acquire)
+        && AHCI_IRQ.load(Ordering::Acquire) != 0
+        && AHCI_ISR_COMPLETE_HIT[disk.port_num].load(Ordering::Acquire) != completed
+        && AHCI_POLLED_COMPLETION_COUNT.load(Ordering::Acquire) == polled;
+    let table = if &sectors[SECTOR_SIZE..SECTOR_SIZE + 8] == b"EFI PART" {
+        "GPT"
+    } else if sectors[510..512] == [0x55, 0xaa] {
+        "MBR"
+    } else {
+        "none"
+    };
+    let record = if crate::block::install::Record::parse(&sectors[..SECTOR_SIZE]).is_some() {
+        "present"
+    } else {
+        "absent"
+    };
+    log::info!(
+        "[ahci] first sectors read by {}: port {}, LBA 0-{}; partition table {}; Breenix storage record {}",
+        if by_msi { "MSI" } else { "polling" },
+        disk.port_num,
+        FIRST_SECTORS - 1,
+        table,
+        record
+    );
 }
 
 /// Initialize the AHCI driver from a known platform MMIO base address.
