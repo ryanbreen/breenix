@@ -351,6 +351,60 @@ The work estimate is, per draw, the clipped area times the pipeline's per-fragme
 `copy`: 1). A `COPY` counts as one draw of one instance writing its clipped rectangle, at one step per pixel
 for each device copy it makes: one, or two when it goes through a scratch texture.
 
+## G5 parameterized draws
+
+<!-- claim-lint:ok: Proposed requirements implementing docs/gui/gpu.md sections 1.3 and 1.5. -->
+Command 9, `DRAW_PIPELINE`, is
+`9, 10+20*n, pipeline, colour, texture_lo, texture_hi, buffer_lo, buffer_hi, data_bytes, n`,
+then n instances of four signed rectangle corners followed by sixteen parameter words.
+The rectangle bounds fragment execution; the shader evaluates the named pipeline at each
+pixel. BEGIN and SCISSOR apply as for DRAW. Unused parameters and unused handles are zero.
+SOLID, COPY and PROBE retain their existing commands; command 9 serves pipelines 2–15.
+All sampled fetches are integer-addressed and outside-source pixels are discarded.
+
+| Pipeline | Parameters, starting at p0 |
+|---|---|
+| copy_scaled | destination origin x,y; source origin x,y; positive integer scale |
+| nearest_scaled, box_filter | destination origin x,y; destination width,height; source origin x,y; source width,height; box_filter requires source dimensions at least destination dimensions |
+| over, over_straight | destination origin x,y; source origin x,y |
+| coverage | destination origin x,y; source origin x,y; LCD flag 0 or 1 (LCD uses a four-channel mask, scalar uses R8) |
+| coverage_spans | destination origin x,y; width,height; crossing-buffer byte offset |
+| bitmap_text | destination origin x,y; source origin x,y; glyph width,height; positive integer scale; table format 0 (one byte bit-row) or 1 (one byte coverage per cell) |
+| line | start x,y; end x,y |
+| circle_fill, circle_outline | centre x,y; radius |
+| rounded_rect | origin x,y; width,height; radius |
+| gradient_v | origin y; height; bottom BGRA colour (top is colour) |
+| triangle | three signed x,y vertices |
+
+<!-- claim-lint:ok: Proposed buffer layout implementing docs/gui/gpu.md sections 1.4.1 and 2.1. -->
+coverage_spans names a buffer, and no texture; sampled pipelines name a texture and no
+buffer. Shapes and gradient name neither. data_bytes is zero without a buffer; otherwise
+it names the prefix snapshotted once before validation, no more than the existing buffer
+and submission quotas. The crossing buffer contains, from the parameter's aligned byte
+offset, `8*height+1` u32 offsets into the following crossing entries. Each entry is two
+u32s: finite binary32 x bits and signed winding (+1 or -1). Offsets start at zero, are
+monotonic and end at the entry count; entries on each sub-scanline are sorted by x.
+The validator reads those offsets in O(rows*8) for the estimate and validates the bounded
+crossing entries. The shader visits crossings in order on each of the eight sub-scanlines,
+using section 2.1's fill_start, winding, binary32 accumulation, span and to_byte order.
+No coverage pixel is computed or uploaded by the CPU.
+
+A blended command's clipped write rectangles must be pairwise disjoint; overlap is EINVAL
+at its command index, code 20. BGL splits before the first overlapping instance, preserving
+primitive order and giving each new draw a fresh GPU destination snapshot. Invalid or
+nonzero unused parameters are EINVAL, code 21. Each blended draw reserves scratch for its
+write rectangle union in the target's format, and copies that union before drawing.
+The copy sees earlier draws in the same context. The estimate includes its copied pixels,
+in addition to the pipeline's fragment work. No blend uses fixed-function blending.
+
+<!-- claim-lint:ok: Proposed budgets implementing docs/gui/gpu.md section 1.4.1. -->
+Per-fragment weights are: copy_scaled and nearest_scaled 8192; over and over_straight 128;
+coverage and bitmap_text 256; circle_fill and circle_outline 2048; rounded_rect and
+triangle 4096; line 8192; gradient_v 32768. box_filter budgets 512 steps per texel in its
+bin plus 16384 for mapping and division. coverage_spans budgets 8192 steps per crossing
+on that row's eight sub-scanlines plus 8192 per pixel for accumulation and conversion.
+The existing 2^31 work cap and all deadlines are unchanged.
+
 ## Test-control points
 
 System call 415 takes its latch and ops from BreenGL's contract, section 21: enabled only in a boot
@@ -383,3 +437,19 @@ black-box experiment records the commit, the Vigil run id or harness invocation,
 output excerpt that showed the fact. Reproduce commands match the runs they cite: the provenance
 record's commands use exactly the flags the cited runs used, run folders keep `host-renderer.json`, and
 `scripts/vigil-record.sh` records whether the boot had a display window.
+
+### G5 fractional-square literal
+
+<!-- claim-lint:ok: Normative input and expected bytes implementing docs/gui/gpu.md section 2.1; not a measured result. -->
+For the closed square with corners (0.25,0.25), (3.75,0.25), (3.75,3.75),
+(0.25,3.75), the four-by-four coverage bytes, after eight sub-scanlines and
+section 2.1's binary32 to_byte order, are:
+
+```text
+143 191 191 143
+191 255 255 191
+191 255 255 191
+143 191 191 143
+```
+
+`pipelines/coverage-spans-square` compares the coverage blend of these literal bytes.
