@@ -286,7 +286,8 @@ userspace handles until their stack entry is replaced or removed.
 
 <!-- claim-lint:ok: Proposed G7 observation requirements implementing gpu.md sections 1.7 and 1.8. -->
 READBACK with target 0 means the current scanout, available only to the current display
-owner. It uses the completed binding's actual resource and rendering context, including the
+owner. Outside display ownership, 0 remains an unknown resource handle (EINVAL).
+It uses the completed binding's actual resource and rendering context, including the
 kernel console's; no foreign resource handle is exposed. Unknown binding returns EIO,
 reason 10. Its record has target 0 and the actual device resource id; its pixels pass the
 same two-poison observation as an ordinary target. This allows a new owner to observe the
