@@ -154,6 +154,7 @@ fn idle_thread_fn() {
             // SAFETY: This is the idle thread - we want to halt until an interrupt
             unsafe {
                 // Clear DAIF.I to enable IRQs, then wait for interrupt
+                crate::arch_impl::aarch64::irq_mask_account::closing();
                 core::arch::asm!(
                     "msr daifclr, #3", // Clear IRQ+FIQ mask (enable interrupts)
                     "wfi",             // Wait For Interrupt

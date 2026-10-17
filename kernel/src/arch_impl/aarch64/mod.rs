@@ -21,6 +21,7 @@ pub mod exception;
 pub mod exception_frame;
 pub mod fpsimd;
 pub mod gic;
+pub mod irq_mask_account;
 pub mod mmu;
 pub mod mmio;
 pub mod paging;

@@ -57,6 +57,10 @@ impl VirtioBlockWrapper {
 
 #[cfg(target_arch = "x86_64")]
 impl BlockDevice for VirtioBlockWrapper {
+    fn hardware_disk(&self) -> Option<super::HardwareDisk> {
+        Some(super::HardwareDisk::Virtio(Arc::as_ptr(&self.device) as usize))
+    }
+
     fn read_block(&self, block_num: u64, buf: &mut [u8]) -> Result<(), BlockError> {
         // Validate buffer size
         if buf.len() < self.block_size {

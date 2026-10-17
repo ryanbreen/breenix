@@ -661,6 +661,7 @@ pub fn arch_halt_while_blocked() {
     // SAFETY: a non-preemptible caller keeps its CPU. A pending IRQ wakes
     // the masked WFI and is taken by the following unmask.
     unsafe {
+        crate::arch_impl::aarch64::irq_mask_account::closing();
         core::arch::asm!("wfi", "msr daifclr, #3", options(nomem, nostack));
     }
 }

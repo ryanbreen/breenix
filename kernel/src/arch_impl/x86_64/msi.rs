@@ -27,8 +27,10 @@ static HANDLERS: [AtomicUsize; VECTORS] = [const { AtomicUsize::new(0) }; VECTOR
 /// function << 8 | capability offset`, or `NO_DEVICE`.
 static DEVICES: [AtomicU32; VECTORS] = [const { AtomicU32::new(NO_DEVICE) }; VECTORS];
 const NO_DEVICE: u32 = u32::MAX;
-/// The APIC id messages are addressed to.
-static DESTINATION: AtomicU32 = AtomicU32::new(0);
+/// The APIC id messages are addressed to; `NO_DESTINATION` until
+/// `set_destination` accepts one, so no message is enabled before then.
+static DESTINATION: AtomicU32 = AtomicU32::new(NO_DESTINATION);
+const NO_DESTINATION: u32 = u32::MAX;
 
 // MSI capability layout (PCI Local Bus 3.0, 6.8.1).
 const CONTROL: u8 = 2;
@@ -61,11 +63,14 @@ pub fn enable(device: &Device, handler: fn()) -> Result<u8, &'static str> {
         })
         .ok_or("no free MSI vector")?;
     let vector = FIRST_VECTOR + index as u8;
-    let Some((address, data)) =
-        super::msi_message::compose(vector, DESTINATION.load(Ordering::Acquire))
-    else {
+    let destination = DESTINATION.load(Ordering::Acquire);
+    let Some((address, data)) = super::msi_message::compose(vector, destination) else {
         HANDLERS[index].store(0, Ordering::Release);
-        return Err("MSI destination APIC id does not fit the message");
+        return Err(if destination == NO_DESTINATION {
+            "MSI has no destination processor"
+        } else {
+            "MSI destination APIC id does not fit the message"
+        });
     };
     let (bus, slot, function) = (device.bus, device.device, device.function);
     let control = pci_read_config_word(bus, slot, function, capability + CONTROL);
@@ -94,10 +99,12 @@ pub fn enable(device: &Device, handler: fn()) -> Result<u8, &'static str> {
 
 /// Address each programmed message, and later ones, to the processor with
 /// APIC id `destination`. The message address is one 32-bit configuration
-/// write, so a device cannot see half of it.
-pub fn set_destination(destination: u32) {
+/// write, so a device cannot see half of it. An id the message cannot carry
+/// is refused, and the messages already programmed, and those enabled later,
+/// keep the destination they had.
+pub fn set_destination(destination: u32) -> Result<(), &'static str> {
     let Some((address, _)) = super::msi_message::compose(FIRST_VECTOR, destination) else {
-        return;
+        return Err("MSI destination APIC id does not fit the message");
     };
     DESTINATION.store(destination, Ordering::Release);
     for device in DEVICES.iter().map(|device| device.load(Ordering::Acquire)) {
@@ -107,6 +114,7 @@ pub fn set_destination(destination: u32) {
         let (bus, slot, function) = ((device >> 16) as u8, ((device >> 11) & 0x1f) as u8, ((device >> 8) & 7) as u8);
         pci_write_config_dword(bus, slot, function, device as u8 + ADDRESS, address);
     }
+    Ok(())
 }
 
 #[inline(always)]

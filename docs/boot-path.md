@@ -72,7 +72,9 @@ instructions cannot be emulated by this QEMU version.
   from a boot-target file containing `probe` on a copy of the ext2 disk. These
   runners request Vigil mode `probe` ([vigil#2](https://github.com/ryanbreen/vigil/issues/2)
   tracks the constructor overriding it to `default`), wait for `PROBE DONE`, stop
-  the VM, and exit nonzero for a missing completion or `failed>0`.
+  the VM, and exit nonzero for a missing completion or `failed>0`. The x86-64
+  production kernel runs `/sbin/probe` for the same boot-target file (the x86-metal
+  storage boots use it; `docs/metal/README.md`, "The disks").
 - `shell`: the production kernel runs `/sbin/init shell`, a bsh prompt on the serial
   console you can type into.
 - `desktop`: the production kernel runs `/sbin/init desktop`, the window manager and a
@@ -181,6 +183,13 @@ acquisition, at the VM's start, at the verdict (the serial's first `SUITE <id> D
 ones) and at release, and whether a quiet host was required and found. On Linux it also
 carries the vCPU gap at the start and the steal time from the start to the verdict: the
 physical host's contention as the gate VM saw it.
+
+Each x86 gate boot also keeps `host-stall.jsonl` beside its serials, written by
+`scripts/x86-gate-host-stall-sampler.py` while the boot runs, sampled at a 20 ms period: the guest's TSC
+(this host's TSC plus KVM's offset for the guest), each gate VM CPU's steal, and each of the
+guest's vCPU threads' run delay, run time, host CPU and state. The guest cannot write it.
+`scripts/score-sigkill-teardown.py` reads it to decide whether a SIGKILL kick window the
+guest calls starved was starved by the host.
 
 Use `scripts/boot-interactive.sh` or `run.sh` for a Mac boot. The shared helper
 queues QEMU, Parallels and VMware behind one Mac lease. VM deployment and the
