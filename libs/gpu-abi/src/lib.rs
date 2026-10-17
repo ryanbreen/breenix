@@ -510,10 +510,13 @@ pub mod test_point {
     pub const WITHHOLD_FENCE: u32 = 31;
     pub const LAST: u32 = 31;
 
-    /// `WITHHOLD_FENCE`'s parameter: ignore one fence's completion (the default), or
-    /// stop taking any completion from the device until it is reset.
+    /// `WITHHOLD_FENCE`'s parameter: ignore one fence's completion (the default); stop
+    /// taking any completion from the device until it is reset; or fence depth: keep the
+    /// answers to the next context's first four submissions unpublished until a fifth
+    /// `SUBMIT` on that context waits at the four-in-flight limit.
     pub const WITHHOLD_ONE: u64 = 0;
     pub const WITHHOLD_ALL: u64 = 1;
+    pub const WITHHOLD_DEPTH: u64 = 2;
 
     /// Whether the effort has built the point. The rest of 19 to 31 are reserved: they
     /// arm (behind the same latch and caller checks) and do nothing until their layer

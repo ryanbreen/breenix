@@ -345,44 +345,39 @@ pub fn multi_context() -> CaseResult {
     pass()
 }
 
-/// Heavy frame `frame`: 512 draws over the whole 2048x2048 target, each in its own
-/// colour, together the 2^31 fragment-steps the work cap allows.
-fn heavy(t: u64, frame: u32) -> (Vec<u32>, u32) {
-    let mut s = Vec::new();
-    encode::begin(&mut s, t);
-    let mut last = 0;
-    for i in 0..512u32 {
-        last = bgra(i as u8, (i >> 8) as u8, frame as u8 * 40, 0xFF);
-        encode::draw(&mut s, pipeline::SOLID, last, &[[0, 0, 2048, 2048]]);
-    }
-    (s, last)
-}
-
 pub fn ring_backpressure() -> CaseResult {
     let _case = begin()?;
     let ctx = context()?;
-    let t = target(format::B8G8R8A8, 2048, 2048)?;
-    let frames: Vec<(Vec<u32>, u32)> = (0..5).map(|f| heavy(t, f)).collect();
-    let start = now_ns();
+    let t = target(format::B8G8R8A8, 64, 64)?;
+    let rects = [([3, 5, 40, 30], GREY)];
+    let colours: Vec<u32> = (0..5u8).map(|i| bgra(i * 50, 0x30, 0xFF - i * 50, 0xFF)).collect();
+    // Four in flight, proved by their fences rather than by host GPU speed
+    // (`docs/gui/gpu.md` section 1.4.1): point 31's fence-depth mode keeps the answers to
+    // the context's first four submissions unpublished until a fifth SUBMIT waits for room.
+    arm(test_point::WITHHOLD_FENCE, test_point::WITHHOLD_DEPTH)?;
     let mut fences = Vec::new();
-    for (f, _) in &frames[..4] {
-        fences.push(submit(ctx, f)?);
+    for &c in &colours[..4] {
+        fences.push(submit(ctx, &scene(t, c, &rects))?);
     }
-    // Four in flight: the first has not completed when the fifth is submitted.
-    let (r, _) = gpu::wait(ctx, fences[0], 0);
-    ensure(r == -ETIMEDOUT, || format!("the first frame had completed ({}) before the fifth was submitted: the frames do not keep four in flight", errno(r)))?;
-    fences.push(submit(ctx, &frames[4].0)?);
-    let submit_ms = ms_since(start);
-    for &f in &fences {
-        wait_ok(ctx, f, 3_000)?;
+    for (i, &f) in fences.iter().enumerate() {
+        let (r, _) = gpu::wait(ctx, f, 0);
+        ensure(r == -ETIMEDOUT, || format!("with four in flight, submission {i}'s fence answered {}", errno(r)))?;
     }
-    value("five-frames-ms", ms_since(start) as i64, "ms", None);
-    value("submit-ms", submit_ms as i64, "ms", None);
+    ensure(counters(ctx)?.ring_waits == 0, || "a ring wait was counted before the fifth submission".to_string())?;
+    fences.push(submit(ctx, &scene(t, colours[4], &rects))?);
     let k = counters(ctx)?;
-    ensure(k.ring_waits >= 1, || "the fifth submission did not wait for room: no ring wait counted".to_string())?;
-    ensure(k.submissions == 5 && k.draws == 5 * 512, || format!("{} submissions and {} draws counted, expected 5 and {}", k.submissions, k.draws, 5 * 512))?;
-    // None is lost: the target shows the fifth frame's last draw.
-    expect(t, &scene_canvas(2048, 2048, frames[4].1, &[]), "the fifth frame")?;
+    ensure(k.ring_waits == 1, || format!("{} ring waits counted, expected the fifth submission's one", k.ring_waits))?;
+    // All five complete OK, in order.
+    ensure(fences.windows(2).all(|w| w[0] < w[1]), || format!("fences are not increasing: {fences:x?}"))?;
+    wait_ok(ctx, fences[4], 2_000)?;
+    for (i, &f) in fences.iter().enumerate() {
+        let (r, _) = gpu::wait(ctx, f, 0);
+        ensure(r == 0, || format!("the fifth fence completed but fence {i} answers {}", errno(r)))?;
+    }
+    let k = counters(ctx)?;
+    ensure(k.submissions == 5 && k.draws == 10, || format!("{} submissions and {} draws counted, expected 5 and 10", k.submissions, k.draws))?;
+    // None is lost: the target shows the fifth frame.
+    expect(t, &scene_canvas(64, 64, colours[4], &rects), "the fifth frame")?;
     pass()
 }
 

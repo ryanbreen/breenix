@@ -8,7 +8,7 @@
 //! The latch and the caller are checked before an argument is decoded.
 //!
 //! The points defined here are the GPU effort's, 19 to 31. Each is a branch in the real
-//! code path that asks `take` whether its point is armed; it reads the
+//! code path that asks `take` (or `take_if`) whether its point is armed; both read the
 //! latch first, so outside a suite boot a point costs one load and can never fire. Every
 //! point is one-shot: it affects the next occurrence of its event, counts one firing and
 //! disarms itself.
@@ -78,6 +78,13 @@ static POINT_TABLE: [Point; POINTS] = [const { Point::new() }; POINTS];
 /// boot and whenever the point is not armed.
 #[inline]
 pub fn take(point: u32, target: u64) -> Option<u64> {
+    take_if(point, target, |_| true)
+}
+
+/// [`take`] for a point whose parameter selects which event it affects: fire only when
+/// `wanted` accepts the armed parameter, and otherwise leave the point armed.
+#[inline]
+pub fn take_if(point: u32, target: u64, wanted: impl Fn(u64) -> bool) -> Option<u64> {
     if !enabled() {
         return None;
     }
@@ -87,6 +94,9 @@ pub fn take(point: u32, target: u64) -> Option<u64> {
     }
     let want = p.target.load(Ordering::Acquire);
     if want != 0 && want != target {
+        return None;
+    }
+    if !wanted(p.param.load(Ordering::Acquire)) {
         return None;
     }
     if p

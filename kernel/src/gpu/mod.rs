@@ -150,6 +150,14 @@ struct Ctx {
     warmed: u32,
     /// Device errors in a row, in fence order.
     errors_in_row: u32,
+    /// Test point 31's fence-depth mode on this context.
+    depth: Option<Depth>,
+}
+
+/// Test point 31's fence-depth mode: how many more submissions to keep, and the ones kept.
+struct Depth {
+    left: u32,
+    kept: Vec<u64>,
 }
 
 struct Sub {
@@ -167,6 +175,10 @@ struct Sub {
     /// Its holds have ended: the device returned every request, or a confirmed reset
     /// ended them.
     retired: bool,
+    /// Kept by test point 31's fence-depth mode.
+    kept: bool,
+    /// A kept submission's result, until it is published.
+    result: Option<(u32, u32)>,
     written: Vec<u32>,
     whole: Vec<u32>,
     held: Vec<u32>,
@@ -730,15 +742,27 @@ impl Core {
                 (None, true) => (fence_status::FENCE_MISMATCH, echoed as u32),
                 (None, false) => (fence_status::OK, answer),
             };
-            // Test point 31, `withhold-fence`: ignore this completion, or every completion
-            // from now until the device is reset.
-            match crate::test_control::take(test_point::WITHHOLD_FENCE, 0) {
+            let (ctx, kept) = (sub.ctx, sub.kept);
+            // Test point 31, `withhold-fence`, parameters 0 and 1: ignore this completion,
+            // or every completion from now until the device is reset.
+            let withheld = crate::test_control::take_if(test_point::WITHHOLD_FENCE, 0, |p| p != test_point::WITHHOLD_DEPTH);
+            match withheld {
                 Some(p) => {
                     if p == test_point::WITHHOLD_ALL {
                         self.stalled = true;
                     }
                 }
-                None => self.publish(serial, result.0, result.1),
+                None => {
+                    // Fence depth keeps the answer until a fifth SUBMIT waits for room.
+                    let keep = kept && self.contexts.get(&ctx).is_some_and(|c| c.depth.is_some());
+                    if keep {
+                        if let Some(sub) = self.subs.get_mut(&serial) {
+                            sub.result = Some(result);
+                        }
+                    } else {
+                        self.publish(serial, result.0, result.1);
+                    }
+                }
             }
         }
         self.retire_if_done(serial);
@@ -818,6 +842,19 @@ impl Core {
         }
         if self.subs.get(&serial).is_some_and(|s| s.published) {
             self.subs.remove(&serial);
+        }
+    }
+
+    /// Test point 31's fence-depth mode ends: a fifth SUBMIT waits at the four-in-flight
+    /// limit, so the kept answers are published, in fence order.
+    fn release_depth(&mut self, id: u32) {
+        let Some(depth) = self.contexts.get_mut(&id).and_then(|c| c.depth.take()) else { return };
+        let mut kept: Vec<(u32, u64)> = depth.kept.iter().filter_map(|s| self.subs.get(s).map(|x| (x.n, *s))).collect();
+        kept.sort_unstable();
+        for (_, serial) in kept {
+            if let Some((status, answer)) = self.subs.get_mut(&serial).and_then(|s| s.result.take()) {
+                self.publish(serial, status, answer);
+            }
         }
     }
 
@@ -932,6 +969,7 @@ impl Core {
             if c.state != CtxState::Reset {
                 c.state = CtxState::Quarantined;
             }
+            c.depth = None;
             let pending: Vec<u64> = c.inflight.iter().copied().collect();
             for serial in pending {
                 self.publish(serial, fence_status::DEVICE_HUNG, 0);
@@ -965,6 +1003,7 @@ impl Core {
         for c in self.contexts.values_mut() {
             c.state = CtxState::Reset;
             c.device_alive = false;
+            c.depth = None;
         }
         let pending: Vec<u64> = self.subs.iter().filter(|(_, s)| !s.published).map(|(&k, _)| k).collect();
         for serial in pending {
@@ -1440,6 +1479,7 @@ fn op_context_create(arg: u64, len: u64) -> Result<u64, i64> {
             scratch,
             warmed: 0,
             errors_in_row: 0,
+            depth: None,
         });
         Ok((id, vb, scratch))
     })
@@ -1963,6 +2003,9 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         }
         if ctx.inflight.len() >= limits::IN_FLIGHT {
             waited = true;
+            if ctx.depth.is_some() {
+                c.release_depth(id);
+            }
             return None;
         }
         if ctx.busy {
@@ -2040,6 +2083,20 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         let serial = c.serial();
         let fence = c.device_fence();
         let ctx = c.contexts.get_mut(&id).ok_or(EINVAL)?;
+        // Test point 31's fence-depth mode: this context's next four answers are kept.
+        if ctx.depth.is_none()
+            && crate::test_control::take_if(test_point::WITHHOLD_FENCE, 0, |p| p == test_point::WITHHOLD_DEPTH).is_some()
+        {
+            ctx.depth = Some(Depth { left: limits::IN_FLIGHT as u32, kept: Vec::new() });
+        }
+        let kept = match ctx.depth.as_mut() {
+            Some(d) if d.left > 0 => {
+                d.left -= 1;
+                d.kept.push(serial);
+                true
+            }
+            _ => false,
+        };
         ctx.objects = objects;
         ctx.issued += 1;
         let n = ctx.issued;
@@ -2090,6 +2147,8 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             requests: reqs.len() as u32,
             published: false,
             retired: false,
+            kept,
+            result: None,
             written: written.clone(),
             whole,
             held,
