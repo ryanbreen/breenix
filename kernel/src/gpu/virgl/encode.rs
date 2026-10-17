@@ -46,11 +46,25 @@ pub struct Enc {
     chunks: Vec<WordBuf>,
     cur: WordBuf,
     oom: bool,
+    sizing: Option<(usize, u64)>,
 }
 
 impl Enc {
     pub fn new() -> Enc {
-        Enc { chunks: Vec::new(), cur: WordBuf::new(), oom: false }
+        Enc { chunks: Vec::new(), cur: WordBuf::new(), oom: false, sizing: None }
+    }
+
+    /// Count the same command boundaries without allocating command frames.
+    pub fn size_only() -> Enc {
+        let mut enc = Self::new();
+        enc.sizing = Some((0, 0));
+        enc
+    }
+
+    /// Rounded frame bytes for a sizing pass, or failure for an unencodable command.
+    pub fn backing_bytes(&self) -> Option<u64> {
+        let (words, bytes) = self.sizing?;
+        (!self.oom).then_some(bytes + (words * 4).div_ceil(super::super::PAGE) as u64 * super::super::PAGE as u64)
     }
 
     /// Append one command: its header and `payload` (at most `CMD0_MAX_LEN` words).
@@ -66,6 +80,14 @@ impl Enc {
         };
         if 1 + len > CHUNK_WORDS {
             self.oom = true;
+            return;
+        }
+        if let Some((words, bytes)) = self.sizing.as_mut() {
+            if *words > 0 && *words + 1 + len > CHUNK_WORDS {
+                *bytes += (*words * 4).div_ceil(super::super::PAGE) as u64 * super::super::PAGE as u64;
+                *words = 0;
+            }
+            *words += 1 + len;
             return;
         }
         if self.cur.len() > 0 && self.cur.len() + 1 + len > CHUNK_WORDS {

@@ -54,6 +54,8 @@ pub mod userspace_test;
 // Syscall module - enabled for both architectures
 // Individual submodules have cfg guards for arch-specific code
 pub mod syscall;
+// Kernel output accounting per thread (docs/gui/breengel.md section 22)
+pub mod output_accounting;
 // Socket module - enabled for both architectures
 // Unix domain sockets are fully arch-independent
 pub mod net;

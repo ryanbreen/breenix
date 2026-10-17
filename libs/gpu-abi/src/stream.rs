@@ -283,6 +283,10 @@ pub fn validate(words: &(impl Words + ?Sized), resolver: &impl Resolver) -> Resu
     let mut data_buffers = [(0u64, 0u32); MAX_NAMED_BUFFERS];
     #[cfg(any(feature = "alloc", test))]
     let mut data_count = 0usize;
+    // The bytes of the distinct coverage tables named in each data buffer: together at most
+    // its data_bytes (`docs/gui/gpu-abi.md`, G5), so tables cannot reread the snapshot.
+    #[cfg(any(feature = "alloc", test))]
+    let mut table_bytes = [0u64; MAX_NAMED_BUFFERS];
     let mut at = 0usize;
     let mut index: u32 = 0;
     if total == 0 {
@@ -322,7 +326,8 @@ pub fn validate(words: &(impl Words + ?Sized), resolver: &impl Resolver) -> Resu
                     if texture != 0 { return refuse(d::PARAMETERS); }
                     None
                 };
-                if pipe == pipeline::COVERAGE_SPANS {
+                // The data buffer's slot, for a coverage_spans draw.
+                let data_slot = if pipe == pipeline::COVERAGE_SPANS {
                     let Some(size) = resolver.buffer_size(buffer) else { return refuse(error::BAD_HANDLE); };
                     if bytes == 0 || bytes % 4 != 0 || bytes as u64 > size { return refuse(error::BAD_RANGE); }
                     if !named[..named_count].contains(&buffer) {
@@ -337,7 +342,8 @@ pub fn validate(words: &(impl Words + ?Sized), resolver: &impl Resolver) -> Resu
                     let previous = data_buffers[i].1;
                     data_buffers[i].1 = previous.max(bytes);
                     plan.data_bytes += data_buffers[i].1 - previous;
-                } else if buffer != 0 || bytes != 0 { return refuse(d::PARAMETERS); }
+                    i
+                } else if buffer != 0 || bytes != 0 { return refuse(d::PARAMETERS); } else { 0 };
                 let mut area = 0u64;
                 let mut work = 0u64;
                 let mut union: Option<[u32; 4]> = None;
@@ -363,6 +369,8 @@ pub fn validate(words: &(impl Words + ?Sized), resolver: &impl Resolver) -> Resu
                         let read = |i| resolver.buffer_word(buffer, start + 4*i);
                         let end = read(rows) as u64;
                         if read(0) != 0 || start + 4*(rows+1) + 8*end > bytes as u64 { return refuse(error::BAD_RANGE); }
+                        table_bytes[data_slot] += 4*(rows+1) + 8*end;
+                        if table_bytes[data_slot] > data_buffers[data_slot].1 as u64 { return refuse(error::BAD_RANGE); }
                         for row in 0..rows {
                             let (lo, hi) = (read(row), read(row+1));
                             if lo > hi || hi as u64 > end { return refuse(d::PARAMETERS); }

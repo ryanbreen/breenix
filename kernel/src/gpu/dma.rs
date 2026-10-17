@@ -155,13 +155,16 @@ pub struct Pages {
     frames: Vec<PhysFrame>,
     /// RLIMIT_AS charge follows the backing through requests and confirmed reset.
     charge: Option<Arc<crate::process::limits::Limits>>,
+    // Backing and its charge guards share a lifetime, through unref or reset.
+    _quota_charge: Option<super::quota::QuotaCharge>,
+    _copy_charge: Option<super::quota::Charge>,
 }
 
 impl Pages {
     /// `count` zeroed frames, or `None` (with every frame taken returned) when the
     /// allocator runs out.
     pub fn new(count: usize) -> Option<Pages> {
-        let mut pages = Pages { frames: Vec::new(), charge: None };
+        let mut pages = Pages { frames: Vec::new(), charge: None, _quota_charge: None, _copy_charge: None };
         if pages.frames.try_reserve_exact(count).is_err() {
             return None;
         }
@@ -176,12 +179,22 @@ impl Pages {
 
     /// No frames: for a resource the device keeps without guest backing.
     pub fn none() -> Pages {
-        Pages { frames: Vec::new(), charge: None }
+        Pages { frames: Vec::new(), charge: None, _quota_charge: None, _copy_charge: None }
     }
 
     /// Adopt a reservation already made under PROCESS_MANAGER.
     pub fn charge_to(&mut self, limits: Arc<crate::process::limits::Limits>) {
         self.charge = Some(limits);
+    }
+
+    /// Adopt a resource's quota reservation before publishing its backing.
+    pub(super) fn charge_quota(&mut self, charge: super::quota::QuotaCharge) {
+        self._quota_charge = Some(charge);
+    }
+
+    /// Adopt a submission's device-storage reservation (including backing-free storage).
+    pub(super) fn charge_copy(&mut self, charge: super::quota::Charge) {
+        self._copy_charge = Some(charge);
     }
 
     pub fn count(&self) -> usize {

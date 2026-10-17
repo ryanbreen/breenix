@@ -872,3 +872,17 @@ the clear colour intact:
 G5 box baseline submit=0 transfer=0 pixel=ff22170b
 G5 box bounded submit=0 transfer=0 pixel=ff312719
 ```
+
+## G6 Breenix values
+
+| Value | Source |
+|---|---|
+| A handle is SplitMix64's finalizer over the handle key, the process id and a sequence; values whose top byte is 0x00 or 0xFF are skipped, and the sequence is the core's rather than the process's, so an exec'd image draws handles its earlier image did not hold | O: `docs/gui/gpu.md` section 1.16, no addresses; A: SplitMix64, as above |
+| Reclamation runs at the top of `handle_thread_exit` when no other row of the thread group is live, at the top of `exit_process_and_retire` under the same test, and after a successful exec returns from the process manager; the once-a-second sweep reclaims a thread group only when no row of it is live | O: `docs/gui/gpu.md` section 1.16, reclamation |
+| `gpu_contexts`, `gpu_resources` and `gpu_resource_bytes` are signed deltas added to CPU 0's slot of their trace counters, at each insertion into and removal from the core's tables and at each charge and release | O: `docs/gui/gpu.md` section 1.16, global GPU counters |
+| A process's quota keeps two counts: the bytes charged, which the 192 MiB limit applies to, and the share of them that is `SUBMIT`'s copies; resource backing is released with its record, staging with its call, the stream copy and snapshot when `SUBMIT` returns, the translated chunks when the submission retires, and vertex storage with its buffer; frames are charged whole, vertex storage by its byte size | O: `docs/gui/gpu.md` section 1.16 and `docs/gui/gpu-abi.md` `SUBMIT` and `COUNTERS` (`copy_bytes` at offset 136) |
+| `gpu_irq_masked_max_us`: `without_interrupts` and `IrqSafeMutex` read CNTVCT_EL0 after masking and after restoring when the saved DAIF.I (bit 7) was clear and the current thread carries the GPU-path mark; the GPU interrupt handler reads it at entry and before return; ticks become microseconds by CNTFRQ_EL0, raised into CPU 0's slot with `fetch_max`; `DISARM_ALL` stores 0 | O: `docs/gui/gpu.md` section 1.16; A: Arm Architecture Reference Manual, DAIF, CNTVCT_EL0 and CNTFRQ_EL0 |
+| Point 2 holds IRQs masked for 2,000,000 ns in `SUBMIT`, after the snapshot and before validation; point 3 writes `BREENGEL-EMIT-DIAGNOSTIC-PAYLOAD` and a newline through `serial_println!` at the start of syscall 416 | O: `docs/gui/gpu-abi.md`, test-control points; BreenGL's contract, section 21 |
+| A request nobody waits for that names objects of an earlier reset epoch is queued in that epoch, so the confirmed reset retires it | O: `docs/gui/gpu.md` section 1.4.1, the device reset |
+| Coverage tables: per data buffer, the bytes of each distinct table, `4*(8*height+1) + 8*entries`, are summed and compared with the largest `data_bytes` named for that buffer | O: `docs/gui/gpu-abi.md`, G5 parameterized draws, as G6 amends it |
+| Snapshot ranges, sorted by buffer and offset and disjoint, and a submission's view of the process's resources, in handle order, are searched by bisection | O: `docs/gui/gpu.md` section 1.16, bounded validation |

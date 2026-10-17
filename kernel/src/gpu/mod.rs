@@ -34,7 +34,9 @@ mod completion;
 mod present_answers;
 mod display;
 mod observation;
+mod quota;
 mod staging;
+use quota::{Charge, Quota, QuotaCharge};
 use staging::Staging;
 pub mod dma;
 pub mod virgl;
@@ -50,6 +52,7 @@ use gpu_abi::stream::{self, Resolver, TargetInfo};
 use gpu_abi::{self as abi, readback_reason, capability, fence_status, format, kind, limits, record, test_point, Plain};
 
 use crate::syscall::SyscallResult;
+use crate::tracing::providers::gpu::{gauge, GpuPath, GPU_CONTEXTS, GPU_RESOURCES};
 use crate::task::thread::ThreadState;
 use crate::task::waitqueue::WaitQueueHead;
 use dma::{Pages, WordBuf, PAGE};
@@ -133,8 +136,9 @@ struct Proc {
     contexts: BTreeMap<u64, u32>,
     resources: BTreeMap<u64, u32>,
     totals: Totals,
-    seq: u64,
-    bytes: u64,
+    /// Bytes charged to the process's GPU memory quota (`quota`): resource backing,
+    /// staging, and `SUBMIT`'s copies and vertex storage while they are held.
+    quota: Quota,
     creating: bool,
 }
 
@@ -223,6 +227,8 @@ struct Sub {
     held: Vec<u32>,
     /// A `PRESENT`'s bind and flush rather than a `SUBMIT`.
     present: Option<display::Presenting>,
+    /// The charge for its translated device chunks, released when it retires.
+    _charge: Option<Charge>,
 }
 
 /// A synchronous request a thread waits on.
@@ -312,6 +318,8 @@ struct Core {
     next_fence: u64,
     next_ns: u32,
     next_obs: u64,
+    /// The sequence handles are drawn from (`handle`).
+    handle_seq: u64,
     key: u64,
     stalled: bool,
     quarantined_at: Option<u64>,
@@ -402,6 +410,7 @@ impl Core {
             next_fence: 1,
             next_ns: 1,
             next_obs: 1,
+            handle_seq: 0,
             key: 0,
             stalled: false,
             quarantined_at: None,
@@ -567,19 +576,36 @@ impl Core {
         f
     }
 
-    /// A new handle for process `tgid`, unique among its handles and never 0.
+    /// A new handle for process `tgid`, unique among its handles, whose top byte is neither
+    /// 0x00 nor 0xFF: no handle has the form of an address (section 1.16). The sequence it is
+    /// drawn from is the core's, so a process's handles after an exec, which starts its GPU
+    /// state again, are not the ones it held before.
     fn handle(&mut self, tgid: u64) -> u64 {
         let key = self.key;
-        let p = self.proc_mut(tgid);
         loop {
-            p.seq += 1;
-            let mut z = key ^ tgid.rotate_left(29) ^ p.seq.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            self.handle_seq += 1;
+            let seq = self.handle_seq;
+            let p = self.proc_mut(tgid);
+            let mut z = key ^ tgid.rotate_left(29) ^ seq.wrapping_mul(0x9E37_79B9_7F4A_7C15);
             z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
             z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
             z ^= z >> 31;
-            if z != 0 && !p.contexts.contains_key(&z) && !p.resources.contains_key(&z) {
+            let top = z >> 56;
+            if top != 0 && top != 0xFF && !p.contexts.contains_key(&z) && !p.resources.contains_key(&z) {
                 return z;
             }
+        }
+    }
+
+    fn insert_res(&mut self, id: u32, r: Res) {
+        if self.resources.insert(id, r).is_none() {
+            gauge(&GPU_RESOURCES, 1);
+        }
+    }
+
+    fn insert_ctx(&mut self, id: u32, x: Ctx) {
+        if self.contexts.insert(id, x).is_none() {
+            gauge(&GPU_CONTEXTS, 1);
         }
     }
 
@@ -588,8 +614,7 @@ impl Core {
             contexts: BTreeMap::new(),
             resources: BTreeMap::new(),
             totals: Totals::default(),
-            seq: 0,
-            bytes: 0,
+            quota: Quota::default(),
             creating: false,
         })
     }
@@ -651,10 +676,18 @@ impl Core {
     }
 
     /// Queue a request nobody waits for.
-    fn background(&mut self, mut req: Request) {
+    fn background(&mut self, req: Request) {
+        let _ = self.background_in(self.epoch, req);
+    }
+
+    /// Queue a request nobody waits for that names objects of reset epoch `epoch`. A request
+    /// for objects from before a reset decision is queued in their epoch, so the confirmed
+    /// reset retires it with them instead of sending it to the restarted device, which no
+    /// longer has them and would refuse it as a fault; a failed reset keeps it held.
+    fn background_in(&mut self, epoch: u64, mut req: Request) -> Option<u64> {
         if !self.can_queue(&req) {
             self.unsendable(req);
-            return;
+            return None;
         }
         let serial = self.serial();
         req.tag = Tag::Sync(serial);
@@ -662,8 +695,9 @@ impl Core {
             ctx: 0, sent_ns: None, upload: None, holds: Vec::new(), reading: Vec::new(),
             abandoned: true, failed: false, why: 0, warm: None,
         });
-        self.backlog.push_back((self.epoch, req));
+        self.backlog.push_back((epoch.min(self.epoch), req));
         self.flush();
+        Some(serial)
     }
 
     /// A request that can no longer reach a device: kept for ever while a device that may
@@ -678,6 +712,10 @@ impl Core {
     /// Register synchronous request `serial`, take its holds and queue it.
     fn start_sync(&mut self, serial: u64, req: Request, ctx: u32, holds: &[u32], reading: &[u32]) -> Result<(), i64> {
         if !self.can_queue(&req) {
+            return Err(EIO);
+        }
+        // A reset between preparation and queueing invalidates resource identities.
+        if holds.iter().any(|id| self.resources.get(id).is_none_or(|r| r.epoch != self.epoch || r.lost)) {
             return Err(EIO);
         }
         for id in holds {
@@ -1030,21 +1068,26 @@ impl Core {
 
     /// Free a resource whose handle is gone and that nothing holds.
     fn free_if_unused(&mut self, id: u32) {
-        let Some(r) = self.resources.get(&id) else { return };
+        let _ = self.retire_if_unused(id);
+    }
+
+    /// Return an unref receipt when removing an unused resource from the core.
+    fn retire_if_unused(&mut self, id: u32) -> Option<u64> {
+        let r = self.resources.get(&id)?;
         if !r.dropped || r.holds > 0 || r.writers > 0 || r.reading {
-            return;
+            return None;
         }
-        let Some(r) = self.resources.remove(&id) else { return };
-        if let Some(p) = self.procs.get_mut(&r.owner) {
-            p.bytes = p.bytes.saturating_sub(r.backing.bytes() as u64);
-        }
+        let r = self.resources.remove(&id)?;
+        gauge(&GPU_RESOURCES, -1);
+        // Backing owns its charges, including through other CPU or device holds.
         if r.lost {
             // A confirmed reset ended the device's use of it.
-            return;
+            return None;
         }
         // The device may use the backing until it answers the unref, which keeps it.
+        let epoch = r.epoch;
         let req = virgl::resource_unref(Tag::Background, id, Some(r.backing));
-        self.background(req);
+        self.background_in(epoch, req)
     }
 
     /// Destroy the device context of a context that is dropped or quarantined once none of
@@ -1065,6 +1108,7 @@ impl Core {
         }
         if dropped {
             if let Some(c) = self.contexts.remove(&id) {
+                gauge(&GPU_CONTEXTS, -1);
                 for internal in [c.vb, c.scratch, c.scratch_texture] {
                     if let Some(r) = self.resources.get_mut(&internal) {
                         r.dropped = true;
@@ -1367,16 +1411,18 @@ pub fn irq() -> Option<u32> {
 /// The GPU interrupt: acknowledge it through the ISR byte, count it and wake whoever
 /// waits. No lock, no allocation, no output.
 pub fn handle_interrupt() {
+    // The handler's whole run counts toward gpu_irq_masked_max_us (section 1.16).
+    let start = crate::tracing::providers::gpu::interrupt_begin();
     let isr = ISR.load(Ordering::Acquire);
-    if isr == 0 || virgl::read_isr(isr) == 0 {
-        return;
+    if isr != 0 && virgl::read_isr(isr) != 0 {
+        EVENTS.fetch_add(1, Ordering::AcqRel);
+        WAITERS.wake_up();
+        let tid = REAPER.load(Ordering::Acquire);
+        if tid != 0 {
+            crate::task::scheduler::wake_thread_any_context(tid);
+        }
     }
-    EVENTS.fetch_add(1, Ordering::AcqRel);
-    WAITERS.wake_up();
-    let tid = REAPER.load(Ordering::Acquire);
-    if tid != 0 {
-        crate::task::scheduler::wake_thread_any_context(tid);
-    }
+    crate::tracing::providers::gpu::interrupt_end(start);
 }
 
 /// Start `kgpu` if it is not running; false when it cannot be started.
@@ -1425,6 +1471,8 @@ fn reaper_block(tid: u64, seen: u64, wake: Option<u64>) {
 /// watchdog or a device fault asks for it, sends the fixed catalogue's warm-up steps, and
 /// reclaims what exited processes left, once a second while any process holds GPU state.
 fn reaper() {
+    // kgpu is a GPU path for its whole life (section 1.16).
+    let _path = GpuPath::enter();
     let Some(tid) = crate::task::scheduler::current_thread_id() else { return };
     let mut next_sweep = now_ns();
     loop {
@@ -1548,18 +1596,24 @@ fn warm_next() {
     notify();
 }
 
-/// Reclaim the GPU state of processes that have exited (PIDs are never reused).
+/// Whether thread group `tgid` has a row, other than `except`, that has not terminated.
+fn group_live(m: &crate::process::ProcessManager, tgid: u64, except: Option<crate::process::ProcessId>) -> bool {
+    m.iter_processes().any(|(row, p)| {
+        Some(row) != except && p.thread_group_id.unwrap_or(row.as_u64()) == tgid && !p.is_terminated()
+    })
+}
+
+/// Reclaim the GPU state of processes whose threads have exited (PIDs are not reused): a
+/// backstop for the exit hooks below.
 fn sweep() {
     let tgids: Vec<u64> = with_core(|c| c.procs.keys().copied().collect()).unwrap_or_default();
-    let dead: Vec<u64> = tgids
-        .into_iter()
-        .filter(|&tgid| {
-            !crate::process::with_process_manager(|m| {
-                m.get_process(crate::process::ProcessId::new(tgid)).is_some_and(|p| !p.is_terminated())
-            })
-            .unwrap_or(true)
-        })
-        .collect();
+    if tgids.is_empty() {
+        return;
+    }
+    let dead: Vec<u64> = crate::process::with_process_manager(|m| {
+        tgids.into_iter().filter(|&tgid| !group_live(m, tgid, None)).collect()
+    })
+    .unwrap_or_default();
     if !dead.is_empty() {
         with_core(|c| {
             for tgid in dead {
@@ -1567,6 +1621,33 @@ fn sweep() {
             }
         });
     }
+}
+
+/// Drop the GPU handles process `tgid` holds, without cancelling its work (section 1.16).
+fn reclaim_process(tgid: u64) {
+    let _path = GpuPath::enter();
+    if with_core(|c| {
+        let held = c.procs.contains_key(&tgid);
+        c.reclaim(tgid);
+        held
+    })
+    .unwrap_or(false)
+    {
+        notify();
+    }
+}
+
+/// Decide reclamation while the process-manager lock still protects the exit commit.
+/// The row has already terminated and has not yet been reaped.
+pub fn exited_locked(m: &crate::process::ProcessManager, pid: crate::process::ProcessId) -> Option<u64> {
+    let p = m.get_process(pid)?;
+    let tgid = p.thread_group_id.unwrap_or(pid.as_u64());
+    (!group_live(m, tgid, None)).then_some(tgid)
+}
+
+/// Redeem an exit or exec's captured GPU owner after releasing the process-manager lock.
+pub fn owner_ended(tgid: u64) {
+    reclaim_process(tgid);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1599,8 +1680,25 @@ fn result(r: Result<u64, i64>) -> SyscallResult {
     }
 }
 
+/// Test point 2's hold: IRQs masked for `ns` nanoseconds, through the primitive the IRQ
+/// gauge times.
+fn hold_irqs_masked(ns: u64) {
+    crate::arch_without_interrupts(|| {
+        let start = now_ns();
+        while now_ns().saturating_sub(start) < ns {
+            core::hint::spin_loop();
+        }
+    });
+}
+
 /// `gpu(op, arg, len)`.
 pub fn sys_gpu(op: u64, arg: u64, len: u64) -> SyscallResult {
+    let _path = GpuPath::enter();
+    // Test point 3, `emit-diagnostic`: this call writes BreenGL's diagnostic payload, the
+    // only kernel output any syscall 416 path makes (section 1.16).
+    if crate::test_control::take(test_point::EMIT_DIAGNOSTIC, 0).is_some() {
+        crate::serial_println!("BREENGEL-EMIT-DIAGNOSTIC-PAYLOAD");
+    }
     let Ok(op) = u32::try_from(op) else { return result(Err(EINVAL)) };
     result(match op {
         abi::op::VERSION => {
@@ -1626,7 +1724,14 @@ pub fn sys_gpu(op: u64, arg: u64, len: u64) -> SyscallResult {
                 abi::op::READBACK => op_readback(arg, len),
                 abi::op::PRESENT => display::present(arg, len),
                 abi::op::COUNTERS => op_counters(arg, len),
-                // MODES and SET_MODE (G7) are not built yet.
+                // SET_MODE (G7) is not built yet; before its argument it refuses a caller
+                // that is not the display owner (section 1.16).
+                abi::op::SET_MODE => match caller() {
+                    Ok(tgid) if display::owner(tgid) => Err(ENOSYS),
+                    Ok(_) => Err(abi::errno::EPERM),
+                    Err(e) => Err(e),
+                },
+                // MODES (G7) is not built yet.
                 _ => Err(ENOSYS),
             },
         },
@@ -1725,11 +1830,11 @@ fn op_context_create(arg: u64, len: u64) -> Result<u64, i64> {
         let scratch_texture = c.next_res + 2;
         c.next_res += 3;
         let epoch = c.epoch;
-        c.resources.insert(vb, new_res(0, kind::BUFFER, format::B8G8R8A8, 0, 0, encode::VERTEX_BUFFER_BYTES as u64, 256, vb_pages.clone(), epoch));
-        c.resources.insert(scratch, new_res(0, kind::TARGET, format::B8G8R8A8, 1, 1, 0, 256, scratch_pages.clone(), epoch));
+        c.insert_res(vb, new_res(0, kind::BUFFER, format::B8G8R8A8, 0, 0, encode::VERTEX_BUFFER_BYTES as u64, 256, vb_pages.clone(), epoch));
+        c.insert_res(scratch, new_res(0, kind::TARGET, format::B8G8R8A8, 1, 1, 0, 256, scratch_pages.clone(), epoch));
         // Device-only: no transfer names it, so it has no guest backing.
-        c.resources.insert(scratch_texture, new_res(0, kind::TEXTURE, format::B8G8R8A8, 1, 1, 0, 256, Arc::new(Pages::none()), epoch));
-        c.contexts.insert(id, Ctx {
+        c.insert_res(scratch_texture, new_res(0, kind::TEXTURE, format::B8G8R8A8, 1, 1, 0, 256, Arc::new(Pages::none()), epoch));
+        c.insert_ctx(id, Ctx {
             id,
             owner: tgid,
             ns,
@@ -2000,20 +2105,18 @@ fn op_resource_create(arg: u64, len: u64) -> Result<u64, i64> {
         return Err(ENOMEM);
     };
     pages.charge_to(charged_limits);
-    let pages = Arc::new(pages);
-    let id = with_core(|c| {
+    let (id, quota_charge) = with_core(|c| {
         let p = c.proc_mut(tgid);
         if p.resources.len() >= RESOURCE_QUOTA {
             return Err(EAGAIN);
         }
-        if p.bytes.saturating_add(charge) > MEMORY_QUOTA {
-            return Err(ENOMEM);
-        }
-        p.bytes += charge;
+        let q = QuotaCharge::try_new(&p.quota, charge, false).ok_or(ENOMEM)?;
         let id = c.next_res;
         c.next_res += 1;
-        Ok(id)
+        Ok((id, q))
     }).ok_or(ENODEV)??;
+    pages.charge_quota(quota_charge);
+    let pages = Arc::new(pages);
     let width = if a.kind == kind::BUFFER { a.size as u32 } else { a.width };
     let height = if a.kind == kind::BUFFER { 1 } else { a.height };
     // The record exists, held by its creation and without a handle, from before the
@@ -2022,7 +2125,7 @@ fn op_resource_create(arg: u64, len: u64) -> Result<u64, i64> {
         let mut r = new_res(tgid, a.kind, a.format, a.width, a.height, a.size, pitch, pages.clone(), c.epoch);
         r.scanout = a.flags & abi::resource_flag::SCANOUT != 0;
         r.holds = 1;
-        c.resources.insert(id, r);
+        c.insert_res(id, r);
     });
     let mut outcome = exec_ok(|t| Some(virgl::resource_create(t, id, vtarget, vformat, bind, width, height)), 0, &[])
         .map(drop);
@@ -2063,7 +2166,7 @@ fn op_resource_create(arg: u64, len: u64) -> Result<u64, i64> {
     outcome?;
     a.handle = handle.ok_or(ENODEV)?;
     if let Err(e) = write_arg(arg, &a) {
-        destroy_resource(tgid, a.handle);
+        let _ = destroy_resource(tgid, a.handle);
         return Err(e);
     }
     Ok(0)
@@ -2075,24 +2178,34 @@ fn op_resource_destroy(arg: u64, len: u64) -> Result<u64, i64> {
         return Err(EINVAL);
     }
     let tgid = caller()?;
-    if destroy_resource(tgid, a.handle) {
-        Ok(0)
-    } else {
-        Err(EINVAL)
+    let retiring = destroy_resource(tgid, a.handle).ok_or(EINVAL)?;
+    // With no work holding the resource, completion of DESTROY includes its unref:
+    // the next allocation can reuse the released quota without undercounting DMA backing.
+    // A handle destroyed while work holds it still returns immediately.
+    if let Some(serial) = retiring {
+        match wait_for(None, true, |c| match c.syncs.get(&serial) {
+            None => Some(Ok(())),
+            Some(s) if s.failed => Some(Err(EIO)),
+            Some(_) => None,
+        }) {
+            Ok(result) => result?,
+            Err(_) => return Err(EINTR),
+        }
     }
+    Ok(0)
 }
 
-/// Drop a resource handle; storage goes when nothing holds it (section 1.4.1, hold sets).
-fn destroy_resource(tgid: u64, handle: u64) -> bool {
+/// Remove a resource handle and retire storage after its hold set drains (section 1.4.1).
+/// An unused resource returns the unref receipt; a held resource has no receipt yet.
+fn destroy_resource(tgid: u64, handle: u64) -> Option<Option<u64>> {
     with_core(|c| {
-        let Some(id) = c.procs.get_mut(&tgid).and_then(|p| p.resources.remove(&handle)) else { return false };
+        let id = c.procs.get_mut(&tgid)?.resources.remove(&handle)?;
         if let Some(r) = c.resources.get_mut(&id) {
             r.dropped = true;
         }
-        c.free_if_unused(id);
-        true
+        Some(c.retire_if_unused(id))
     })
-    .unwrap_or(false)
+    .flatten()
 }
 
 /// One of the process's resources as `SUBMIT` sees it.
@@ -2139,8 +2252,9 @@ impl View {
         View { entries }
     }
 
+    /// The entries are in handle order (the process's map is), so a lookup is a binary search.
     fn get(&self, handle: u64) -> Option<&Entry> {
-        self.entries.iter().find(|e| e.handle == handle)
+        self.entries.binary_search_by_key(&handle, |e| e.handle).ok().map(|i| &self.entries[i])
     }
 
     fn has_id(&self, id: u32) -> bool {
@@ -2162,6 +2276,8 @@ struct Range {
 struct Snapshot {
     ranges: Vec<Range>,
     words: WordBuf,
+    /// The copy's charge to the process (section 1.16).
+    _charge: Option<Charge>,
     /// The range the last lookup found: commands read their ranges in stream order.
     hint: Cell<usize>,
 }
@@ -2171,8 +2287,8 @@ impl Snapshot {
     /// owns. The copy stops at the first malformed command, where validation refuses the
     /// stream, and takes at most the instance limit's rectangles, which bounds every range
     /// validation reads.
-    fn take(stream: &WordBuf, view: &View) -> Result<Snapshot, i64> {
-        let mut snap = Snapshot { ranges: Vec::new(), words: WordBuf::new(), hint: Cell::new(0) };
+    fn take(stream: &WordBuf, view: &View, tgid: u64) -> Result<Snapshot, i64> {
+        let mut snap = Snapshot { ranges: Vec::new(), words: WordBuf::new(), _charge: None, hint: Cell::new(0) };
         let total = stream.len();
         let mut rects = 0u64;
         let mut at = 0usize;
@@ -2214,6 +2330,10 @@ impl Snapshot {
             }
         }
         snap.ranges.truncate(used);
+        let total: u64 = snap.ranges.iter().map(|r| r.bytes).sum();
+        if total > 0 {
+            snap._charge = Some(Charge::new(tgid, total.div_ceil(PAGE as u64) * PAGE as u64, true)?);
+        }
         let mut copied = 0u64;
         for r in &mut snap.ranges {
             copied = copied.checked_add(r.bytes).ok_or(EINVAL)?;
@@ -2234,11 +2354,17 @@ impl Snapshot {
         Ok(snap)
     }
 
+    /// The range that may hold `offset` of buffer `handle`: the ranges are sorted by buffer
+    /// and offset and do not overlap, so it is the last one starting at or before it.
+    fn search(&self, handle: u64, offset: u64) -> Option<usize> {
+        self.ranges.partition_point(|r| (r.handle, r.offset) <= (handle, offset)).checked_sub(1)
+    }
+
     fn word(&self, handle: u64, offset: u64) -> u32 {
         let inside = |r: &Range| r.handle == handle && offset >= r.offset && offset+4 <= r.offset+r.bytes;
         let hint = self.hint.get();
         let found = self.ranges.get(hint).filter(|r| inside(r)).map(|_| hint)
-            .or_else(|| self.ranges.iter().position(inside));
+            .or_else(|| self.search(handle, offset).filter(|&i| inside(&self.ranges[i])));
         let Some(i) = found else { return 0; };
         self.hint.set(i);
         let r = &self.ranges[i];
@@ -2252,7 +2378,7 @@ impl Snapshot {
         let found = [hint, hint + 1]
             .into_iter()
             .find(|&i| self.ranges.get(i).is_some_and(inside))
-            .or_else(|| self.ranges.iter().position(inside));
+            .or_else(|| self.search(handle, offset).filter(|&i| inside(&self.ranges[i])));
         let Some(i) = found else { return [0; 4] };
         self.hint.set(i);
         let r = &self.ranges[i];
@@ -2471,13 +2597,30 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         Some(ctx) => Ok(ctx.id),
     })
     .ok_or(ENODEV)??;
+    // The stream's copy and the buffer snapshot are charged to the process while the call
+    // holds them (section 1.16); a charge that cannot be made is ENOMEM, code 22 at 0.
+    let pages = |bytes: u64| bytes.div_ceil(PAGE as u64) * PAGE as u64;
+    let _stream_charge = match Charge::new(tgid, pages(a.length), true) {
+        Ok(c) => c,
+        Err(ENOMEM) => return refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM),
+        Err(e) => return Err(e),
+    };
     let words = WordBuf::from_user(a.stream, a.length as usize)?;
     let view = with_core(|c| View::of(c, tgid)).ok_or(ENODEV)?;
-    let snap = Snapshot::take(&words, &view)?;
+    let snap = match Snapshot::take(&words, &view, tgid) {
+        Ok(snap) => snap,
+        Err(ENOMEM) => return refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM),
+        Err(e) => return Err(e),
+    };
     let resolved = Resolved {
         view: &view,
         snap: &snap,
     };
+    // Test point 2, `irq-hold`: this validation holds IRQs masked for 2 ms, through the
+    // primitive the gauge times (section 1.16).
+    if crate::test_control::take(test_point::IRQ_HOLD, 0).is_some() {
+        hold_irqs_masked(2_000_000);
+    }
     let injection = reserve_profile_violation(&words);
     let validation = ProfileWords {
         words: &words,
@@ -2560,21 +2703,21 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             corruption = crate::test_control::reserve(test_point::CORRUPT_PIXEL, handle);
             corruption.is_some()
         });
-    let vertex_buffer = match vertex_buffer_for(id, encode::vertex_bytes(plan.drawn + u64::from(corrupt.is_some()))) {
+    let vertex_buffer = match vertex_buffer_for(tgid, encode::vertex_bytes(plan.drawn + u64::from(corrupt.is_some()))) {
         Ok(vb) => vb,
         Err(e) => {
             release_slot(false);
-            return Err(e);
+            return if e == ENOMEM { refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM) } else { Err(e) };
         }
     };
     // The submission's scratch textures for copies within one target that overlap
     // (`docs/gui/gpu.md` section 1.3), one per target format, sized for its largest.
     let mut copy_scratch = [0u32; 2];
-    for (slot, (f, [w, h])) in [format::B8G8R8A8, format::R8G8B8A8].into_iter().zip(plan.scratch).enumerate() {
+    for (slot, [w, h]) in plan.scratch.into_iter().enumerate() {
         if w == 0 || h == 0 {
             continue;
         }
-        match scratch_for(id, virgl_format(f), w, h) {
+        match scratch_for(w, h) {
             Ok(rid) => copy_scratch[slot] = rid,
             Err(e) => {
                 with_core(|c| {
@@ -2590,7 +2733,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
     let data_width = with_core(|c| c.caps.max_width).unwrap_or(0).min(16384);
     let data_width = 1u32 << (31-data_width.leading_zeros());
     let data_texture = if plan.data_bytes > 0 {
-        match scratch_for(id, wire::format::R8G8B8A8_UNORM, data_width, (plan.data_bytes/4).div_ceil(data_width)) {
+        match scratch_for(data_width, (plan.data_bytes/4).div_ceil(data_width)) {
             Ok(rid)=>rid,
             Err(e)=>{
                 with_core(|c|for rid in vertex_buffer.into_iter().chain(copy_scratch.into_iter().filter(|&r|r!=0)){c.unhold(rid);});
@@ -2625,8 +2768,6 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         return Err(EIO);
     };
     let stale: Vec<u32> = objects.resources().filter(|&rid| rid != scratch && rid != scratch_texture && !view.has_id(rid)).collect();
-    let mut enc = encode::Enc::new();
-    encode::forget_surfaces(&mut enc, &mut objects, &stale);
     let mut suppression = None;
     let mut suppress = None;
     let mut swapping = None;
@@ -2664,17 +2805,63 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         }
         at += words.word(at + 1) as usize;
     }
-    encode::translate(&mut enc, &mut objects, &words, &resolved, encode::Extras {
-        vertex_buffer: vertex_buffer.unwrap_or(default_vb),
-        scratch: copy_scratch,
-        data: data_texture,
-        data_width,
-        flip_y: FLIP_Y,
-        corrupt,
-        suppress,
-        swap,
-    });
-    let chunks = enc.finish();
+    let translate = |enc: &mut encode::Enc, objects: &mut encode::Objects| {
+        encode::forget_surfaces(enc, objects, &stale);
+        encode::translate(enc, objects, &words, &resolved, encode::Extras {
+            vertex_buffer: vertex_buffer.unwrap_or(default_vb),
+            scratch: copy_scratch,
+            data: data_texture,
+            data_width,
+            flip_y: FLIP_Y,
+            corrupt,
+            suppress,
+            swap,
+        });
+    };
+    let mut sizing = encode::Enc::size_only();
+    translate(&mut sizing, &mut objects.clone());
+    let chunk_charge = match sizing.backing_bytes().ok_or(ENOMEM)
+        .and_then(|bytes| Charge::new(tgid, bytes, true)) {
+        Ok(charge) => Some(charge),
+        Err(e) => {
+            drop_vertex_buffer();
+            release_slot(false);
+            return if e == ENOMEM { refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM) } else { Err(e) };
+        }
+    };
+    // Command frames and device requests come only after the quota reservation.
+    let mut enc = encode::Enc::new();
+    translate(&mut enc, &mut objects);
+    let chunks = match enc.finish() {
+        Some(chunks) => Some(chunks),
+        None => {
+            drop_vertex_buffer();
+            release_slot(false);
+            return refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM);
+        }
+    };
+    let made = (|| {
+        if let Some(rid) = vertex_buffer {
+            create_private(id, rid, wire::target::BUFFER, wire::format::R8_UNORM,
+                wire::bind::VERTEX_BUFFER, encode::vertex_bytes(plan.drawn + u64::from(corrupt.is_some())) as u32, 1)?;
+        }
+        for ((rid, f), [w, h]) in copy_scratch.into_iter().zip([format::B8G8R8A8, format::R8G8B8A8]).zip(plan.scratch) {
+            if rid != 0 {
+                create_private(id, rid, wire::target::TEXTURE_2D, virgl_format(f),
+                    wire::bind::RENDER_TARGET | wire::bind::SAMPLER_VIEW, w, h)?;
+            }
+        }
+        if data_texture != 0 {
+            create_private(id, data_texture, wire::target::TEXTURE_2D, wire::format::R8G8B8A8_UNORM,
+                wire::bind::RENDER_TARGET | wire::bind::SAMPLER_VIEW, data_width, (plan.data_bytes / 4).div_ceil(data_width))?;
+        }
+        Ok::<(), i64>(())
+    })();
+    if let Err(e) = made {
+        drop_vertex_buffer();
+        release_slot(false);
+        return Err(e);
+    }
     // Point 29's texture is named, held and rechecked like the stream's own resources.
     if let Some((_, other)) = swap {
         if !named_ids.contains(&other.id) {
@@ -2776,6 +2963,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             whole,
             held,
             present: None,
+            _charge: chunk_charge,
         });
         let epoch = c.epoch;
         c.backlog.extend(reqs.into_iter().map(|r| (epoch, r)));
@@ -2805,61 +2993,52 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
 /// and held for the submission; `None` when the submission draws nothing. It has no guest
 /// backing (the vertices reach it by inline writes) and is freed once the submission no
 /// longer holds it.
-fn vertex_buffer_for(ctx: u32, bytes: u64) -> Result<Option<u32>, i64> {
+fn vertex_buffer_for(tgid: u64, bytes: u64) -> Result<Option<u32>, i64> {
     if bytes == 0 {
         return Ok(None);
     }
-    let size = u32::try_from(bytes).map_err(|_| ENOMEM)?;
+    u32::try_from(bytes).map_err(|_| ENOMEM)?;
+    // The device's vertex storage is charged to the process until the buffer is freed.
+    let charge = Charge::new(tgid, bytes, true)?;
+    let mut backing = Pages::none();
+    backing.charge_copy(charge);
     let id = with_core(|c| {
         let id = c.next_res;
         c.next_res += 1;
-        let mut r = new_res(0, kind::BUFFER, format::B8G8R8A8, 0, 0, bytes, 0, Arc::new(Pages::none()), c.epoch);
+        let mut r = new_res(0, kind::BUFFER, format::B8G8R8A8, 0, 0, bytes, 0, Arc::new(backing), c.epoch);
         r.dropped = true;
+        r.lost = true;
         r.holds = 1;
-        c.resources.insert(id, r);
+        c.insert_res(id, r);
         id
     })
     .ok_or(ENODEV)?;
-    let made = exec_ok(
-        |t| Some(virgl::resource_create(t, id, wire::target::BUFFER, wire::format::R8_UNORM, wire::bind::VERTEX_BUFFER, size, 1)),
-        0,
-        &[],
-    )
-    .and_then(|_| exec_ok(|t| Some(virgl::ctx_attach(t, ctx, id)), ctx, &[]));
-    match made {
-        Ok(_) => Ok(Some(id)),
-        Err(e) => {
-            with_core(|c| c.unhold(id));
-            Err(e)
-        }
-    }
+    Ok(Some(id))
 }
 
-/// A device texture of `w` by `h` pixels in VirGL format `vformat` for one submission's
-/// staged copies, attached to the context and held for the submission. Like the vertex
-/// buffer it has no guest backing (no transfer names it) and is freed once the submission no
-/// longer holds it.
-fn scratch_for(ctx: u32, vformat: u32, w: u32, h: u32) -> Result<u32, i64> {
+/// Reserve a private scratch-texture record; device creation follows quota admission.
+/// It has no guest backing and remains held until the submission retires.
+fn scratch_for(w: u32, h: u32) -> Result<u32, i64> {
     let id = with_core(|c| {
         let id = c.next_res;
         c.next_res += 1;
         let mut r = new_res(0, kind::TEXTURE, format::B8G8R8A8, w, h, 0, 0, Arc::new(Pages::none()), c.epoch);
         r.dropped = true;
+        r.lost = true;
         r.holds = 1;
-        c.resources.insert(id, r);
+        c.insert_res(id, r);
         id
     })
     .ok_or(ENODEV)?;
-    let bind = wire::bind::RENDER_TARGET | wire::bind::SAMPLER_VIEW;
-    let made = exec_ok(|t| Some(virgl::resource_create(t, id, wire::target::TEXTURE_2D, vformat, bind, w, h)), 0, &[])
-        .and_then(|_| exec_ok(|t| Some(virgl::ctx_attach(t, ctx, id)), ctx, &[]));
-    match made {
-        Ok(_) => Ok(id),
-        Err(e) => {
-            with_core(|c| c.unhold(id));
-            Err(e)
-        }
-    }
+    Ok(id)
+}
+
+/// Start a private resource only after the submission's full quota is reserved.
+fn create_private(ctx: u32, id: u32, target: u32, vformat: u32, bind: u32, w: u32, h: u32) -> Result<(), i64> {
+    with_core(|c| { if let Some(r) = c.resources.get_mut(&id) { r.lost = false; } });
+    exec_ok(|t| Some(virgl::resource_create(t, id, target, vformat, bind, w, h)), 0, &[id])?;
+    exec_ok(|t| Some(virgl::ctx_attach(t, ctx, id)), ctx, &[id])?;
+    Ok(())
 }
 
 fn op_wait(arg: u64, len: u64) -> Result<u64, i64> {
@@ -3486,7 +3665,9 @@ fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {
                 fill(&mut out, &p.totals);
                 out.contexts = p.contexts.len() as u64;
                 out.resources = p.resources.len() as u64;
-                out.resource_bytes = p.bytes;
+                let (held, copies) = (p.quota.held.load(Ordering::Acquire), p.quota.copies.load(Ordering::Acquire));
+                out.resource_bytes = held.saturating_sub(copies);
+                out.copy_bytes = copies;
             }
         } else {
             let id = c.ctx_of(tgid, a.context)?;
@@ -3502,7 +3683,9 @@ fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {
             if let Some(p) = proc_live {
                 out.contexts = p.contexts.len() as u64;
                 out.resources = p.resources.len() as u64;
-                out.resource_bytes = p.bytes;
+                let (held, copies) = (p.quota.held.load(Ordering::Acquire), p.quota.copies.load(Ordering::Acquire));
+                out.resource_bytes = held.saturating_sub(copies);
+                out.copy_bytes = copies;
             }
         }
         out.device_contexts = c.contexts.values().filter(|x| x.owner == tgid && x.device_alive).count() as u64;

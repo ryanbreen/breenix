@@ -119,3 +119,18 @@ fn a_busy_port_posts_lines_whole_and_keeps_room_for_stage_lines() {
     assert!(wrote);
     assert_eq!(written(), vec!["ordinary 4\n"]);
 }
+
+#[test]
+fn posted_output_is_counted_at_the_producer_once_including_its_newline() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static COUNTED: AtomicUsize = AtomicUsize::new(0);
+    let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    written();
+    log_notice::set_on_post(|bytes| { COUNTED.fetch_add(bytes, Ordering::Relaxed); });
+    let before = COUNTED.load(Ordering::Relaxed);
+    let notice = Notice::new();
+    notice.post("producer ", 42);
+    assert_eq!(COUNTED.load(Ordering::Relaxed) - before, "producer 42\n".len());
+    assert_eq!(written(), vec!["producer 42\n"]);
+    assert_eq!(COUNTED.load(Ordering::Relaxed) - before, "producer 42\n".len());
+}

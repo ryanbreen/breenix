@@ -15,7 +15,8 @@
 //! `device/version` was the first real check; the `device` and `submit` categories' checks
 //! (G1) are in `suite_gpu/device.rs` and `suite_gpu/submit.rs`, `readback`'s (G2) in
 //! `suite_gpu/readback.rs`, and `textures`' with `pipelines/copy` (G3) in
-//! `suite_gpu/textures.rs`.
+//! `suite_gpu/textures.rs`, `profile`'s (G4) in `suite_gpu/profile.rs`, `pipelines`' (G5) in
+//! `suite_gpu/pipelines.rs` and `isolation`'s (G6) in `suite_gpu/isolation.rs`.
 
 extern crate alloc;
 #[path = "suite_gpu/expectations.rs"]
@@ -39,6 +40,8 @@ mod textures;
 mod profile;
 #[path = "suite_gpu/pipelines.rs"]
 mod pipelines;
+#[path = "suite_gpu/isolation.rs"]
+mod isolation;
 
 static SUITE: Suite = suite("gpu", "GPU rendering", &[
     category("device", "3D device & capability profile", &[
@@ -174,31 +177,31 @@ static SUITE: Suite = suite("gpu", "GPU rendering", &[
         case("order", "Overlapping unblended primitives land in submission order", pipelines::order),
     ]),
     category("isolation", "per-process GPU isolation", &[
-        case("handle-private", "Handles are per process: another process's handle numbers name nothing here", isolation_handle_private),
-        case("handle-guess", "Guessed handle values are refused with EINVAL", isolation_handle_guess),
-        case("fork-no-handles", "A forked child inherits no GPU handles", isolation_fork_no_handles),
-        case("exec-reclaims", "exec releases every context and resource of the process", isolation_exec_reclaims),
-        case("exit-reclaims", "exit releases every context and resource, and the GPU memory counter returns to its baseline", isolation_exit_reclaims),
-        case("kill-mid-submit", "Killing a process mid-submit leaves the device and other contexts working", isolation_kill_mid_submit),
-        case("killed-work-drains", "A killed process's queued work drains, and its resources are freed when their fences complete", isolation_killed_work_drains),
-        case("quota-memory", "GPU memory past the per-process quota returns ENOMEM", isolation_quota_memory),
-        case("quota-handles", "Handles past the per-process quota are refused", isolation_quota_handles),
-        case("quota-contexts", "One process at its context quota does not limit another's", isolation_quota_contexts),
-        case("work-estimate-refused", "A stream one fragment-step over the work cap returns EDQUOT", isolation_work_estimate_refused),
-        case("foreign-target-draw", "Drawing to another process's target returns EINVAL from the validator, and nothing reaches the device", isolation_foreign_target_draw),
-        case("foreign-readback", "Reading back another process's target is refused", isolation_foreign_readback),
-        case("display-context-unreachable", "No client stream can name the display owner's context or targets", isolation_display_context_unreachable),
-        case("no-addresses", "No op returns a kernel or device address", isolation_no_addresses),
-        case("fuzz-streams", "10000 seeded malformed streams each return EINVAL and their index, and the next frame reads back exactly", isolation_fuzz_streams),
-        case("bounded-validation", "Validation time is bounded by the stream's length", isolation_bounded_validation),
-        case("efault-submit", "A stream at an unmapped address returns EFAULT with no side effect", isolation_efault_submit),
-        case("efault-readonly", "A readback record into read-only memory returns EFAULT with no side effect", isolation_efault_readonly),
-        case("quiet-errors", "No GPU error path prints kernel output", isolation_quiet_errors),
-        case("unknown-op", "An unknown op returns EINVAL", isolation_unknown_op),
-        case("test-hooks-absent", "Test-control points 19 to 31 are refused to every non-root process", isolation_test_hooks_absent),
-        case("killable-wait", "SIGKILL ends a process blocked in CONTEXT_CREATE warm-up, WAIT, READBACK or PRESENT within 250 ms", isolation_killable_wait),
-        case("client-cannot-scanout", "A process that is not the display owner can neither present nor set a mode", isolation_client_cannot_scanout),
-        case("irq-masked-bound", "The longest IRQ-masked interval in the GPU paths stays within 500 us under a full-screen workload", isolation_irq_masked_bound),
+        case("handle-private", "Handles are per process: another process's handle numbers name nothing here", isolation::handle_private),
+        case("handle-guess", "Guessed handle values are refused with EINVAL", isolation::handle_guess),
+        case("fork-no-handles", "A forked child inherits no GPU handles", isolation::fork_no_handles),
+        case("exec-reclaims", "exec releases every context and resource of the process", isolation::exec_reclaims),
+        case("exit-reclaims", "exit releases every context and resource, and the GPU memory counter returns to its baseline", isolation::exit_reclaims),
+        case("kill-mid-submit", "Killing a process mid-submit leaves the device and other contexts working", isolation::kill_mid_submit),
+        case("killed-work-drains", "A killed process's queued work drains, and its resources are freed when their fences complete", isolation::killed_work_drains),
+        case("quota-memory", "GPU memory past the per-process quota returns ENOMEM", isolation::quota_memory),
+        case("quota-handles", "Handles past the per-process quota are refused", isolation::quota_handles),
+        case("quota-contexts", "One process at its context quota does not limit another's", isolation::quota_contexts),
+        case("work-estimate-refused", "A stream one fragment-step over the work cap returns EDQUOT", isolation::work_estimate_refused),
+        case("foreign-target-draw", "Drawing to another process's target returns EINVAL from the validator, and nothing reaches the device", isolation::foreign_target_draw),
+        case("foreign-readback", "Reading back another process's target is refused", isolation::foreign_readback),
+        case("display-context-unreachable", "No client stream can name the display owner's context or targets", isolation::display_context_unreachable),
+        case("no-addresses", "No op returns a kernel or device address", isolation::no_addresses),
+        case("fuzz-streams", "10000 seeded malformed streams each return EINVAL and their index, and the next frame reads back exactly", isolation::fuzz_streams),
+        case("bounded-validation", "Validation time is bounded by the stream's length", isolation::bounded_validation),
+        case("efault-submit", "A stream at an unmapped address returns EFAULT with no side effect", isolation::efault_submit),
+        case("efault-readonly", "A readback record into read-only memory returns EFAULT with no side effect", isolation::efault_readonly),
+        case("quiet-errors", "No GPU error path prints kernel output", isolation::quiet_errors),
+        case("unknown-op", "An unknown op returns EINVAL", isolation::unknown_op),
+        case("test-hooks-absent", "Test-control points 19 to 31 are refused to every non-root process", isolation::test_hooks_absent),
+        case("killable-wait", "SIGKILL ends a process blocked in CONTEXT_CREATE warm-up, WAIT, READBACK or PRESENT within 250 ms", isolation::killable_wait),
+        case("client-cannot-scanout", "A process that is not the display owner can neither present nor set a mode", isolation::client_cannot_scanout),
+        case("irq-masked-bound", "The longest IRQ-masked interval in the GPU paths stays within 500 us under a full-screen workload", isolation::irq_masked_bound),
     ]),
     category("present", "display modes, HiDPI & present", &[
         case("modes-listed", "MODES lists 1280x800 at scale 1 and 2560x1600 at scale 2, with the device's maximum", present_modes_listed),
@@ -233,11 +236,6 @@ static SUITE: Suite = suite("gpu", "GPU rendering", &[
 
 // The layers cases need, each with the build step that supplies it.
 const CORE: &str = "the kernel GPU core and syscall 416 (G1)";
-const ISOLATION: &str = "the isolation checks (G6)";
-const QUOTA: &str = "GPU quotas and reclamation (G6)";
-const ISOL: &str = "per-process GPU handles (G6)";
-const FUZZ: &str = "the stream fuzzer (G6)";
-const IRQ: &str = "the IRQ gauge over the GPU paths (G6)";
 const MODES: &str = "display modes and scale (G7)";
 const PRESENT: &str = "two-target present (G7)";
 const OWNER: &str = "the GPU display ownership stack (G7)";
@@ -291,31 +289,6 @@ fn device_version() -> CaseResult {
 }
 
 needs! {
-    isolation_handle_private => ISOL;
-    isolation_handle_guess => ISOL;
-    isolation_fork_no_handles => ISOL;
-    isolation_exec_reclaims => QUOTA;
-    isolation_exit_reclaims => QUOTA;
-    isolation_kill_mid_submit => QUOTA;
-    isolation_killed_work_drains => QUOTA;
-    isolation_quota_memory => QUOTA;
-    isolation_quota_handles => QUOTA;
-    isolation_quota_contexts => QUOTA;
-    isolation_work_estimate_refused => QUOTA;
-    isolation_foreign_target_draw => ISOL;
-    isolation_foreign_readback => ISOL;
-    isolation_display_context_unreachable => ISOL;
-    isolation_no_addresses => ISOL;
-    isolation_fuzz_streams => FUZZ;
-    isolation_bounded_validation => FUZZ;
-    isolation_efault_submit => ISOL;
-    isolation_efault_readonly => ISOL;
-    isolation_quiet_errors => ISOL;
-    isolation_unknown_op => ISOLATION;
-    isolation_test_hooks_absent => ISOLATION;
-    isolation_killable_wait => ISOLATION;
-    isolation_client_cannot_scanout => ISOL;
-    isolation_irq_masked_bound => IRQ;
     present_modes_listed => MODES;
     present_mode_1280x800 => MODES;
     present_mode_2560x1600 => MODES;
