@@ -133,7 +133,12 @@ pub fn validation_atomic() -> CaseResult {
     ensure(counters(ctx)?.submissions == 1, || "the refused stream reached the device's count".to_string())?;
     let rec = expect(t, &scene_canvas(32, 32, GREEN, &[]), "after the refused stream")?;
     let g = u64_at(&rec, record::GENERATION);
-    ensure(g == generation, || format!("the target's generation moved from {generation} to {g}"))
+    ensure(g == generation, || format!("the target's generation moved from {generation} to {g}"))?;
+    let mut bound = Vec::new();
+    encode::begin(&mut bound, t);
+    frame(ctx, &bound)?;
+    let rec = expect(t, &scene_canvas(32, 32, GREEN, &[]), "after binding without writing")?;
+    ensure(u64_at(&rec, record::GENERATION) == generation, || "BEGIN advanced the target's generation".to_string())
 }
 
 pub fn stream_overflow() -> CaseResult {
@@ -384,13 +389,36 @@ pub fn ring_backpressure() -> CaseResult {
 pub fn device_error_eio() -> CaseResult {
     let _case = begin()?;
     let ctx = context()?;
+    let peer = context()?;
     let t = target(format::B8G8R8A8, 8, 8)?;
-    arm(test_point::DEVICE_ERROR, 0)?;
-    let f = submit(ctx, &scene(t, RED, &[]))?;
-    let (r, w) = gpu::wait(ctx, f, 2_000_000_000);
-    ensure(r == -EIO && w.status == fence_status::DEVICE_ERROR, || format!("WAIT returned {} status {}", errno(r), w.status))?;
-    let k = counters(ctx)?;
-    ensure(k.device_errors == 1, || format!("{} device errors counted", k.device_errors))
+    let peer_target = target(format::B8G8R8A8, 8, 8)?;
+    frame(peer, &scene(peer_target, GREEN, &[]))?;
+    let before = fired(test_point::DEVICE_ERROR);
+    let mut fences = Vec::new();
+    for n in 1..=2 {
+        arm(test_point::DEVICE_ERROR, 0)?;
+        let f = submit(ctx, &scene(t, RED, &[]))?;
+        fences.push(f);
+        let (r, w) = gpu::wait(ctx, f, 2_000_000_000);
+        ensure(r == -EIO && w.status == fence_status::DEVICE_ERROR, || format!("error {n}: WAIT returned {} status {}", errno(r), w.status))?;
+        let k = counters(ctx)?;
+        ensure(k.device_errors == n, || format!("{} device errors counted, expected {n}", k.device_errors))?;
+        let state = if n == 1 { context_state::LIVE } else { context_state::QUARANTINED };
+        ensure(k.state == state, || format!("after error {n}: state {}, expected {state}", k.state))?;
+    }
+    ensure(fired(test_point::DEVICE_ERROR) == before + 2, || "point 27 did not fire twice".to_string())?;
+    let (r, _) = gpu::submit(ctx, &scene(t, BLUE, &[]));
+    ensure(r == -EIO, || format!("SUBMIT on the quarantined context returned {}", errno(r)))?;
+    for f in fences {
+        let (r, w) = gpu::wait(ctx, f, 0);
+        ensure(r == -EIO && w.status == fence_status::DEVICE_ERROR, || "a device error's recorded answer changed".to_string())?;
+    }
+    // A reset would invalidate this pre-existing context and target.
+    ensure(counters(peer)?.state == context_state::LIVE, || "the peer context was reset or quarantined".to_string())?;
+    expect(peer_target, &scene_canvas(8, 8, GREEN, &[]), "the peer's pre-error pixels")?;
+    frame(peer, &scene(peer_target, BLUE, &[]))?;
+    expect(peer_target, &scene_canvas(8, 8, BLUE, &[]), "the peer's post-error draw")?;
+    pass()
 }
 
 pub fn recovery_after_error() -> CaseResult {
