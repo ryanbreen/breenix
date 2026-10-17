@@ -487,8 +487,10 @@ fn last_interrupt_return_tick(_cpu: usize) -> u64 {
 
 /// x86_64: the tick at which each CPU last returned from an interrupt with
 /// preemption on, a return through which it could switch to a queued thread.
-/// Returns taken with preemption held off, as through the idle loop's
-/// housekeeping, show the CPU running but not that it can dispatch.
+/// Returns taken with preemption held off show the CPU running but not that
+/// it can dispatch: CPU 0's boot thread, its idle thread, returns that way
+/// through its scheduling brake and the completion waits inside it, as the
+/// idle loop's housekeeping does.
 #[cfg(target_arch = "x86_64")]
 static DISPATCHABLE_RETURN_TICK: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 

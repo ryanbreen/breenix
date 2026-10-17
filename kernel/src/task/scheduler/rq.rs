@@ -653,11 +653,12 @@ pub(super) fn accepts_wakeups(cpu: usize) -> bool {
 /// Whether `cpu` can dispatch a thread queued on it now: it accepts wakeups,
 /// and it has entered the scheduler, or returned from an interrupt with
 /// preemption on, within `CPU_STALL_TICKS`. A CPU whose interrupts return with
-/// preemption held off, as through its idle housekeeping, still runs and
-/// still takes the threads pinned to it, but its queue waits for the section
-/// to end: under the x86 gate an idle CPU in its housekeeping went 1.6 s
-/// without entering the scheduler, interrupts returning all the while, with a
-/// woken unpinned thread on its queue. Placement passes that CPU over for
+/// preemption held off still runs and still takes the threads pinned to it,
+/// but its queue waits for the section to end. In a testing boot under the x86
+/// gate, CPU 0's boot thread, which is its idle thread, held preemption off
+/// for 11.6 s while it created the boot's processes and waited for their
+/// reads, and looked idle throughout; woken threads placed there waited up to
+/// 1.5 s for a peer to take them. Placement passes such a CPU over for
 /// unpinned threads, and peers take its unpinned queued ones.
 pub(super) fn dispatching(cpu: usize) -> bool {
     if !accepts_wakeups(cpu) {
