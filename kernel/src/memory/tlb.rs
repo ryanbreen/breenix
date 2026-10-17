@@ -216,7 +216,7 @@ pub use shootdown::shootdown_nmi_handler;
 
 #[cfg(target_arch = "x86_64")]
 mod shootdown {
-    use core::sync::atomic::{fence, AtomicU32, AtomicU64, AtomicU8, Ordering};
+    use core::sync::atomic::{fence, AtomicBool, AtomicU64, AtomicU8, Ordering};
 
     use x86_64::structures::idt::InterruptStackFrame;
 
@@ -335,11 +335,16 @@ mod shootdown {
     /// NMIs that found no request addressed to their CPU.
     static UNCLAIMED_NMIS: AtomicU64 = AtomicU64::new(0);
 
-    /// Shootdown NMIs sent to each CPU and not yet taken there. Two initiators
-    /// can post to one CPU in turn, and the NMI the first sent can carry out
-    /// both requests, so the second finds nothing pending: it is owed, not an
-    /// NMI from outside the kernel.
-    static NMIS_OWED: [AtomicU32; MAX_CPUS] = [const { AtomicU32::new(0) }; MAX_CPUS];
+    /// Per target CPU, set while a shootdown NMI sent to it has not finished
+    /// being handled there. An initiator sends an NMI only when it is the one
+    /// to set this, so at most one shootdown NMI is in flight to a CPU, and
+    /// two of them never coalesce into one delivery: each is taken exactly
+    /// once. An initiator that finds it set sends nothing; the delivery that
+    /// clears it services every request posted before the clear
+    /// (`shootdown_nmi_handler`).
+    /// claim-lint:ok: the protocol is this flag's swap in `post_and_wait` and
+    /// the clear-and-recheck in `shootdown_nmi_handler`, in this file (#1715).
+    static NMI_IN_FLIGHT: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
 
     /// An online CPU that has not acknowledged within this long is not going
     /// to: it is wedged with NMIs blocked, and the kernel stops rather than
@@ -424,7 +429,11 @@ mod shootdown {
         for cpu in (0..MAX_CPUS).filter(|cpu| targets & (1 << cpu) != 0) {
             let apic_id = smp::cpu_apic_id(cpu)
                 .unwrap_or_else(|| panic!("TLB shootdown: online CPU {} has no APIC id", cpu));
-            NMIS_OWED[cpu].fetch_add(1, Ordering::AcqRel);
+            // Ordered after this slot's PENDING bit: a delivery that is in
+            // flight, or that later clears the flag, reads that bit.
+            if NMI_IN_FLIGHT[cpu].swap(true, Ordering::SeqCst) {
+                continue;
+            }
             if let Err(reason) = apic::send_ipi(apic_id, apic::Ipi::Nmi) {
                 panic!("TLB shootdown: NMI to CPU {} failed: {}", cpu, reason);
             }
@@ -450,29 +459,57 @@ mod shootdown {
     ///
     /// No lock, no allocation, no GS-relative access: the NMI may have
     /// interrupted any instruction, including an entry stub before its GS
-    /// handling. The CPU is found from its local APIC id. A request posted
-    /// after the PENDING read is left set; its NMI, held while this handler
-    /// runs, is taken once it returns. An NMI that finds nothing pending is a
-    /// shootdown NMI whose requests an earlier one carried out when one is
-    /// owed here (`NMIS_OWED`); otherwise it came from outside the kernel.
+    /// handling. The CPU is found from its local APIC id.
+    ///
+    /// The delivery that finds `NMI_IN_FLIGHT` set takes the one shootdown
+    /// NMI in flight here as its own, and clears the flag on its way out.
+    /// After the clear it reads PENDING again: an initiator that found the
+    /// flag set and sent nothing posted its request before this clear, so the
+    /// read sees it. A delivery that finds the flag clear is not a shootdown
+    /// NMI and is reported, whatever it finds pending. When an external NMI
+    /// arrives while a shootdown NMI is in flight, the first delivery takes
+    /// the shootdown's place and the second is reported, so each NMI from
+    /// outside is reported once unless the hardware merges it with a
+    /// shootdown NMI into one delivery.
+    /// claim-lint:ok: the protocol is `NMI_IN_FLIGHT`'s swap in `post_and_wait`
+    /// and the loop below, in this file (#1715).
     pub extern "x86-interrupt" fn shootdown_nmi_handler(frame: InterruptStackFrame) {
         let apic_id = apic::active().then(apic::id);
-        let cpu = apic_id.and_then(smp::cpu_of_apic_id);
-        let owed = cpu.is_some_and(|cpu| {
-            NMIS_OWED[cpu]
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |owed| owed.checked_sub(1))
-                .is_ok()
-        });
-        let pending = cpu.map_or(0, |cpu| PENDING[cpu].load(Ordering::Acquire));
-        let Some(cpu) = cpu.filter(|_| pending != 0) else {
+        let Some(cpu) = apic_id.and_then(smp::cpu_of_apic_id) else {
             UNCLAIMED_NMIS.fetch_add(1, Ordering::Relaxed);
-            if !owed {
-                // Not a shootdown: the NMI came from outside the kernel.
-                crate::arch_impl::x86_64::nmi_report::unclaimed(&frame, cpu, apic_id);
-            }
+            crate::arch_impl::x86_64::nmi_report::unclaimed(&frame, None, apic_id);
             return;
         };
+        let shootdown = NMI_IN_FLIGHT[cpu].load(Ordering::SeqCst);
+        if !shootdown {
+            // Not a shootdown: the NMI came from outside the kernel.
+            UNCLAIMED_NMIS.fetch_add(1, Ordering::Relaxed);
+            crate::arch_impl::x86_64::nmi_report::unclaimed(&frame, Some(cpu), apic_id);
+        }
 
+        service(cpu);
+        if !shootdown {
+            return;
+        }
+        loop {
+            NMI_IN_FLIGHT[cpu].store(false, Ordering::SeqCst);
+            if PENDING[cpu].load(Ordering::SeqCst) == 0 {
+                return;
+            }
+            // A request posted before the clear. If another initiator has
+            // set the flag since, its NMI is held until this handler returns
+            // and services it then.
+            if NMI_IN_FLIGHT[cpu].swap(true, Ordering::SeqCst) {
+                return;
+            }
+            service(cpu);
+        }
+    }
+
+    /// Carry out and acknowledge the requests pending on `cpu`, which is
+    /// this CPU.
+    fn service(cpu: usize) {
+        let pending = PENDING[cpu].load(Ordering::SeqCst);
         for slot in (0..SLOTS).filter(|slot| pending & (1 << slot) != 0) {
             let arg = REQUEST_ARG[slot].load(Ordering::Relaxed);
             match REQUEST_KIND[slot].load(Ordering::Relaxed) {
@@ -482,7 +519,6 @@ mod shootdown {
                 _ => {}
             }
         }
-
         PENDING[cpu].fetch_and(!pending, Ordering::Release);
     }
 
