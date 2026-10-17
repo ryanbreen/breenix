@@ -275,9 +275,9 @@ reinterprets nor destroys a previously drawn target.
 
 <!-- claim-lint:ok: Proposed G7 requirements implementing the ownership stack in gpu.md section 1.7. -->
 Syscalls 431 and 432 retain their argument-free interface. TAKE_DISPLAY of the current owner
-is idempotent; taking again as an owner already lower in the stack discards owners above it
-and restores its target. A new owner pushes, up to four userspace owners; a fifth returns
-EAGAIN without a change. GIVE_DISPLAY from anyone other than the current owner returns
+is idempotent; taking again as an owner already lower in the stack is a cycle and returns
+EBUSY. Direct take-over requires uid 0. A new owner pushes, up to four userspace owners; a
+fifth returns EBUSY without a change. GIVE_DISPLAY from anyone other than the current owner returns
 EPERM. Giving back pops, restores the previous owner's mode and last presented target, and
 waits for that restore's device flush. Giving back the last user owner redraws and presents
 the kernel console. Exit or exec removes that owner's entry; removing the top restores the
