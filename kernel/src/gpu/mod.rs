@@ -76,6 +76,10 @@ const FLIP_Y: bool = false;
 const RESET_BUDGET_NS: u64 = 100_000_000;
 /// The watchdog examines outstanding work at least this often (section 1.4.1).
 const EXAMINE_NS: u64 = 250_000_000;
+/// How long after a process's last context or resource creation the catalogue's warm-up
+/// waits before sending its next step. One control queue carries both, and a step's
+/// compilation can hold it for most of a second, so a burst of creations is not split by one.
+const WARM_GRACE_NS: u64 = 20_000_000;
 static CORE: spin::Mutex<Option<Core>> = spin::Mutex::new(None);
 /// Counts interrupts and the state changes waiters wait for; a waiter sleeps only while it
 /// is unchanged.
@@ -361,6 +365,8 @@ struct Core {
     resetting: bool,
     /// The one catalogue warm-up step the device has, if any.
     warm_step: Option<WarmStep>,
+    /// When a process last finished creating a context or resource.
+    creation_ended: u64,
 }
 
 // ---------------------------------------------------------------------------------------
@@ -468,6 +474,7 @@ impl Core {
             reset_wanted: false,
             resetting: false,
             warm_step: None,
+            creation_ended: 0,
         }
     }
 
@@ -1268,8 +1275,10 @@ impl Core {
         let hangs = self.subs.values().filter(|s| !s.published).filter_map(|s| s.sent_ns);
         let waits = self.syncs.values().filter(|s| !s.failed).filter_map(|s| s.sent_ns);
         let progress = self.quarantined_at.map(|q| q.max(self.last_progress));
-        let at = hangs.chain(waits).chain(progress).min()?;
-        Some((at + limits::WATCHDOG_NS).min(now + EXAMINE_NS))
+        // The end of the warm-up's grace after a creation, when a step may then be due.
+        let grace = Some(self.creation_ended + WARM_GRACE_NS).filter(|&g| g > now);
+        let watchdog = hangs.chain(waits).chain(progress).min().map(|at| (at + limits::WATCHDOG_NS).min(now + EXAMINE_NS));
+        watchdog.into_iter().chain(grace).min()
     }
 
     /// The reset decision, on `kgpu`: every context fails with `DEVICE_RESET` and every
@@ -1643,6 +1652,7 @@ fn warm_next() {
             && !c.stalled
             && c.quarantined_at.is_none()
             && !c.procs.values().any(|p| p.creating)
+            && now_ns().saturating_sub(c.creation_ended) >= WARM_GRACE_NS
     };
     let warming = |x: &Ctx| x.owner != 0 && x.state == CtxState::Live && x.device_alive && !x.dropped && x.warm != encode::ALL_WARM;
     if !with_core(|c| ready(c) && c.contexts.values().any(warming)).unwrap_or(false) {
@@ -1870,6 +1880,7 @@ impl Drop for CreationGuard {
             if let Some(p) = c.procs.get_mut(&self.0) {
                 p.creating = false;
             }
+            c.creation_ended = now_ns();
         });
         notify();
     }
