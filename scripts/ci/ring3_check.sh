@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../x86-qemu-policy.sh"
 set -euo pipefail
 
 # CI Ring3 smoke test with streaming detection

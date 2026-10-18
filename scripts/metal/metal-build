@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Builds one x86-metal boot's inputs in the metal build container (docs/metal/README.md, "Build").
 
-  metal-build --id ID --sha SHA --repo DIR --rust-fork DIR --cache DIR --root DIR --stub DIR
+  metal-build --id ID --sha SHA --repo DIR --rust-fork DIR --cache DIR --root DIR --stub DIR [--features xhci_fault_inject]
 
 # claim-lint:ok: #1680 Reviewed tool contract against this function and the host tests in tests/metal_tools_test.py.
 In a private clone of SHA: the effort-target guard, then userspace and the ext2 root, built once
 (gate-artifacts.py --metal, exact artifacts over leased incremental targets in the container's cache), then the production kernel and its UEFI
-image, and the delivery stub (metal-efi-stub, from the deployed tools' efi-stub folder given as --stub, so any
+image (a fault-test kernel with --features), and the delivery stub (metal-efi-stub, from the deployed tools' efi-stub folder given as --stub, so any
 commit's kernel is delivered the same way), all under one lease of the container's metal-build slots. The slot and
 artifact helpers are the deployed tools' copies beside this file, not the commit's, so every commit builds the same
 way. The container runs on the host's shared CPUs, outside the x86 gate VM, so no x86 lease covers it. Writes
@@ -103,7 +103,7 @@ def outer(args):
                        PATH=str(Path.home() / '.cargo/bin') + os.pathsep + os.environ.get('PATH', ''))
     inner = [sys.executable, str(Path(__file__).resolve()), '--inner', '--id', args.id, '--sha', args.sha,
              '--repo', args.repo, '--rust-fork', args.rust_fork, '--cache', args.cache, '--root', args.root,
-             '--stub', args.stub, '--guard-target', target]
+             '--stub', args.stub, '--guard-target', target, '--features', args.features]
     status = subprocess.call([sys.executable, str(HELPER), 'supervise', '--'] + inner,
                              cwd=clone, env=environment)
     print(f'[metal-build] build exit={status} seconds={time.time() - started:.0f}', flush=True)
@@ -160,8 +160,9 @@ def inner(args):
 
             started = time.time()
             log = logs / 'kernel-build.log'
+            features = ['--features', args.features] if args.features else []
             with log.open('w') as output:
-                status = subprocess.call(['cargo', 'build', '--release', '--bin', 'qemu-uefi'], cwd=clone,
+                status = subprocess.call(['cargo', 'build', '--release', '--bin', 'qemu-uefi'] + features, cwd=clone,
                                          stdout=output, stderr=subprocess.STDOUT)
             timings['kernel'] = round(time.time() - started)
             if not clean_build(status, log, 'kernel', logs, out):
@@ -198,8 +199,9 @@ def inner(args):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(source, target)
                 copied.append(name)
-        build = {'commit': args.sha, 'guardTarget': args.guard_target, 'profile': 'production',
-                 'features': [], 'timings': timings, 'definition': copied,
+        build = {'commit': args.sha, 'guardTarget': args.guard_target,
+                 'profile': 'fault-test' if args.features else 'production',
+                 'features': [args.features] if args.features else [], 'timings': timings, 'definition': copied,
                  'cpus': sorted(getattr(os, 'sched_getaffinity', lambda pid: ())(0)),
                  'cargoJobs': int(os.environ['CARGO_BUILD_JOBS']),
                  'uefi': {'size': (out / 'uefi.img').stat().st_size, 'sha256': sha256(out / 'uefi.img')},
@@ -219,6 +221,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--inner', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--guard-target', default='', help=argparse.SUPPRESS)
+    parser.add_argument('--features', choices=('', 'xhci_fault_inject'), default='',
+                        help='build a fault-test kernel; never set for a production boot')
     for name in ('--id', '--sha', '--repo', '--rust-fork', '--cache', '--root', '--stub'):
         parser.add_argument(name, required=True)
     args = parser.parse_args()

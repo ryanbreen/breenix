@@ -82,7 +82,7 @@ fi
 # the check above and stops if the other build installed this pin.
 if [ -z "${BREENIX_QEMU_GL_LOCKED:-}" ]; then
     export BREENIX_QEMU_GL_LOCKED=1
-    exec taskpolicy -b lockf -k /tmp/breenix-qemu-gl-build.lock "$0" "$@"
+    exec "$(dirname "$0")/build-background.sh" lockf -k /tmp/breenix-qemu-gl-build.lock "$0" "$@"
 fi
 
 JOBS="${BREENIX_QEMU_GL_JOBS:-4}"

@@ -32,7 +32,7 @@ For normal development, use the boot stages test to verify kernel health:
 
 ```bash
 # Run boot stages test - verifies kernel progresses through all checkpoints
-cargo run -p xtask -- boot-stages
+cargo run -p xtask -- arm64-boot-stages
 
 # Build only (no execution)
 cargo build --release --features testing,external_test_bins --bin qemu-uefi
@@ -504,7 +504,7 @@ info address kernel::kernel_main
 
 ### When to Use GDB vs Boot Stages
 
-**Use boot stages** (`cargo run -p xtask -- boot-stages`) for:
+**Use boot stages** (`cargo run -p xtask -- arm64-boot-stages`) for:
 - Verifying a fix works
 - Checking that all subsystems initialize
 - CI/continuous testing
@@ -542,36 +542,16 @@ log::debug!("clock_gettime called");  # This changes timing!
 ./tools/gdb-chat/scripts/gdb_session.sh stop
 ```
 
-## QEMU Process Cleanup - MANDATORY
+## Execution and process cleanup policy
 
-**Agents MUST clean up stray QEMU processes.** This is non-negotiable.
+As of 2026-10-18 (S23), the main path measures ARM64 QEMU, Parallels and VMware.
+x86-64 requires evidence from x86-metal using the [metal boot loop](docs/metal/README.md).
+Earlier x86 QEMU landing or gate requirements are superseded by
+[the execution policy](docs/x86-execution-policy.md). x86 builds remain available;
+an exceptional x86 QEMU boot requires the operator's `BREENIX_ALLOW_X86_QEMU=1`.
 
-QEMU processes frequently get orphaned during testing, debugging, or when agents are interrupted. These orphaned processes:
-- Hold locks on disk images, preventing new QEMU instances from starting
-- Consume system resources
-- Cause confusing errors like "Failed to get write lock"
-
-### Cleanup Requirements
-
-1. **Before handing control back to the user**: Always run QEMU cleanup
-2. **Before running any QEMU command**: Kill any existing QEMU processes first
-3. **When debugging fails or times out**: Clean up QEMU before reporting results
-
-### Cleanup Command
-
-```bash
-pkill -9 qemu-system-x86 2>/dev/null; killall -9 qemu-system-x86_64 2>/dev/null; pgrep -l qemu || echo "All QEMU processes killed"
-```
-
-### When to Clean Up
-
-- After any `xtask boot-stages` or `xtask interactive` run
-- After GDB debugging sessions
-- When the user reports "cannot acquire lock" errors
-- Before starting any new QEMU-based test
-- When handing results back to the user after kernel work
-
-This is the agent's responsibility - do not wait for the user to ask.
+Stop only processes this run started, by their recorded PIDs. Do not use `pkill`,
+`killall`, or a kill by process name or pattern.
 
 ## Work Tracking
 

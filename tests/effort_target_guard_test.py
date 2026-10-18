@@ -57,7 +57,7 @@ class EffortTargetGuardTest(unittest.TestCase):
         shutil.copy(ROOT / 'docs/boot-path.json', self.repo / 'docs/boot-path.json')
         self.binary = Path(os.environ.get('BREENIX_RUNS_BIN',
             ROOT / 'tools/breenix-runs/.build/debug/breenix-runs'))
-        self.env = dict(os.environ, BREENIX_RUNS_STORE=str(self.base / 'store'))
+        self.env = dict(os.environ, BREENIX_ALLOW_X86_QEMU="1", BREENIX_RUNS_STORE=str(self.base / 'store'))
         for key in ('BREENIX_CATCHUP', 'BREENIX_SLOT_SESSION', 'BREENIX_TARGET_POLICY_CHECKED',
                     'BREENIX_HOST_ENTRY'):
             self.env.pop(key, None)

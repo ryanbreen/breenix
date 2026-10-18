@@ -28,7 +28,7 @@ class DirectHandoffTests(unittest.TestCase):
         self.git(self.canonical, 'config', 'core.hooksPath', '/dev/null')
         self.git(self.canonical, 'config', 'commit.gpgsign', 'false')
         for name in ('docs/efforts/path.json', 'docs/efforts/metal.json',
-                     'scripts/effort-target-guard.py', 'scripts/host-slots.sh',
+                     'scripts/effort-target-guard.py', 'scripts/host-slots.sh', 'scripts/x86-qemu-policy.sh',
                      'docker/qemu/run-x86-gate.sh', 'docker/qemu/lib/run-inspector-import.sh'):
             dest = self.canonical / name
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -48,7 +48,7 @@ class DirectHandoffTests(unittest.TestCase):
         for key in ('user.name', 'user.email', 'core.hooksPath', 'commit.gpgsign'):
             self.git(self.repo, 'config', key, self.git(self.canonical, 'config', key))
         self.env = {k: v for k, v in os.environ.items() if not k.startswith('BREENIX_')}
-        self.env.update(HOME=str(self.home), BREENIX_REPO_DIR=str(self.repo),
+        self.env.update(BREENIX_ALLOW_X86_QEMU="1", HOME=str(self.home), BREENIX_REPO_DIR=str(self.repo),
                         BREENIX_SLOT_SESSION='handoff-test', BREENIX_GATE_TMP=str(self.base / 'output'))
 
     @staticmethod

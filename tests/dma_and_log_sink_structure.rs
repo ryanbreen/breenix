@@ -377,7 +377,7 @@ fn virtqueue_validator_rejects_log_and_continue_shape() {
 #[test]
 fn framebuffer_log_sink_is_nonblocking_and_bounded() {
     let logger = repo_text("kernel/src/logger.rs");
-    let fbcon = repo_text("kernel/src/console/mod.rs");
+    let fbcon = format!("{}\n{}", repo_text("kernel/src/console/mod.rs"), repo_text("kernel/src/console/records.rs"));
     assert_eq!(validate_logger_source(&logger, &fbcon), Ok(()));
 }
 
@@ -427,7 +427,7 @@ fn logger_validator_rejects_blocking_framebuffer_lock() {
 #[test]
 fn logger_validator_rejects_framebuffer_clear_in_shared_grid_writer() {
     let logger = repo_text("kernel/src/logger.rs");
-    let fbcon = repo_text("kernel/src/console/mod.rs");
+    let fbcon = format!("{}\n{}", repo_text("kernel/src/console/mod.rs"), repo_text("kernel/src/console/records.rs"));
     let anchor = "fn with_grid<R>(f: impl FnOnce(&mut Console) -> R) -> Option<R> {";
     for clear in ["framebuffer.fill(0);", "core::ptr::write_bytes(buffer, 0, buffer_len);"] {
         let mutated = fbcon.replacen(anchor, &format!("{anchor}\n    {clear}"), 1);

@@ -1,5 +1,10 @@
 # The boot path
 
+As of 2026-10-18 (S23), x86-64 requires evidence from x86-metal using the metal boot loop.
+The main path measures ARM64 QEMU, Parallels and VMware. Earlier x86 QEMU gate
+and landing requirements below are superseded by [the execution policy](x86-execution-policy.md);
+legacy QEMU commands require the operator's `BREENIX_ALLOW_X86_QEMU=1`.
+
 Breenix is brought up one milestone at a time, in the order a boot exercises it: arch
 bring-up, interrupts and time, devices, filesystems, the scheduler, the first userspace
 process, then process lifecycle, signals and IPC, userspace filesystem work, the TTY and
@@ -23,7 +28,7 @@ It builds userspace, the ext2 disk and the testing kernel, then boots once with 
 console on the terminal and in the log file (Ctrl-A X quits; `--idle-exit` stops a boot that
 has gone quiet; `--display` also opens the VM's screen). From a fresh worktree that is about a
 minute and a half. Run from a terminal, the same script is an interactive boot you can type into. x86-64 is scored against its own
-stage list and shown alongside, but does not block moving on.
+stage list on the x86-metal path; it is not measured on the main path.
 
 ## Boot modes
 
@@ -165,6 +170,12 @@ This also exercises DNS on VMware while its host NAT repair (#1202) is pending;
 it does not establish that VMware can reach an external network.
 
 ## Shared host slots
+
+The x86 gate details below describe the retired QEMU path, available only with an
+operator override. They are not a landing checklist. Use the x86-metal boot loop
+for x86-64 evidence. ARM64 boots use the Mac boot slot; builds use four Cargo jobs
+and background priority, and boots run at normal priority with their windows open.
+Do not wait for a quiet host.
 
 Use `docker/qemu/run-x86-gate.sh` for queued x86 builds and boots: the helper
 provides `x86-build` leases and one `x86-boot` lease. Run Inspector installs its current
