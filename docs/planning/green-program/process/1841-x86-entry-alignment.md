@@ -1,6 +1,6 @@
 # X86 Rust entry alignment: PR 1841 review evidence
 
-Code tree: `c161319d9c69dd66059883389845c9b03ab105d6`, clean at build and boot.
+Code tree: `c161319d9c69dd66059883389845c9b03ab105d6`, clean at boot.
 The build preceded the three review commits; those commits contain exactly the
 built source edits. The later evidence/roadmap commit changes documentation only.
 
@@ -83,3 +83,16 @@ The conditional idle hit supplies boot evidence for both commits.
 No host suite targets these kernel entry constructors. The unchanged host
 structure checks and ARM64 gates were not rerun. No check was weakened and no
 boot was repeated on this code state.
+
+## Claim-lint round notes
+
+The initial changed-hunk lint exited 0. The context and constructor messages
+initially exited 1 on the null-value wording; their revised wording exited 0.
+The AP and evidence commit messages exited 0. The first whole-file check of
+this note and the roadmap exited 1 with 51 findings; two note paragraphs were
+corrected, and the 49 unchanged roadmap findings are tracked in #1855.
+The subsequent changed-hunk invocation exited 0.
+The #1854 issue draft exited 0. The #1855 issue draft initially exited 1 on
+literal auto-close examples, then exited 0 after rephrasing those examples.
+Final PR-body, review-comment and source-state-message invocations are recorded
+in the PR comment with their exit statuses.
