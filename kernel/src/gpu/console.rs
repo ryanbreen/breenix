@@ -57,7 +57,8 @@ pub(super) fn restored_pending() {
 }
 
 pub(super) fn describe(a: &mut abi::Modes) {
-    a.console_resource = RESOURCE.load(Ordering::Acquire);
+    let resource = RESOURCE.load(Ordering::Acquire) as u32;
+    a.console_resource = dev::resource_id(resource).map_or(0, u64::from);
     a.console_draws = DRAWN.load(Ordering::Acquire);
     a.console_fixture_bytes = FIXTURE.load(Ordering::Acquire);
     a.handoff = HANDOFF.load(Ordering::Acquire) as u64;
@@ -337,9 +338,9 @@ impl Console {
                 suppress: None,
                 swap: None,
             };
-            let (sized, _) = svga::encode::translate(&mut o.clone(), &[], s.as_slice(), self, extras(), None).ok_or(ENOMEM)?;
+            let (sized, _) = svga::encode::translate(&mut o.clone(), &[], s.as_slice(), self, extras(), None, None).ok_or(ENOMEM)?;
             let backing = svga::encode::Backing::allocate(&sized.sizes).ok_or(ENOMEM)?;
-            let (out, _) = svga::encode::translate(&mut o, &[], s.as_slice(), self, extras(), Some(backing)).ok_or(ENOMEM)?;
+            let (out, _) = svga::encode::translate(&mut o, &[], s.as_slice(), self, extras(), Some(backing), None).ok_or(ENOMEM)?;
             with_core(|c| {
                 if let Some(ctx) = c.contexts.get_mut(&self.context) {
                     ctx.dx = o;

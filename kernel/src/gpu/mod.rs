@@ -3751,7 +3751,7 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
         let binding = display::binding(c, tgid, id)?;
         let s = c.next_obs;
         c.next_obs += 1;
-        let resource = if dev::is_svga() { svga::sid_of(id).ok_or(EIO)? } else { id };
+        let resource = dev::resource_id(id).ok_or(EIO)?;
         let context = last.map_or(Some(0), |l| l.device_ctx).ok_or(EIO)?;
         Ok((s, c.caps.renderer, binding, resource, context))
     })

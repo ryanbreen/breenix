@@ -412,7 +412,8 @@ pub(super) fn modes(arg: u64, len: u64) -> Result<u64, i64> {
             .display
             .binding
             .filter(|_| c.display.known)
-            .map_or(0, |b| b.id as u64);
+            .and_then(|b| dev::resource_id(b.id))
+            .map_or(0, u64::from);
         a
     })
     .ok_or(ENODEV)?;

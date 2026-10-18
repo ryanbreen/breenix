@@ -34,6 +34,11 @@ pub fn context_id(ctx: u32) -> Option<u32> {
     if is_svga() { svga::cid_of(ctx) } else { Some(ctx) }
 }
 
+/// Native resource identity for observations and display descriptions.
+pub fn resource_id(id: u32) -> Option<u32> {
+    if is_svga() { svga::sid_of(id) } else { Some(id) }
+}
+
 /// The device's native success answer.
 pub fn success() -> u32 {
     if is_svga() { svga::wire::status::COMPLETED } else { virgl::wire::resp::OK_NODATA }
