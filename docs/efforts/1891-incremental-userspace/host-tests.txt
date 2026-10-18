@@ -1,0 +1,57 @@
+..
+----------------------------------------------------------------------
+Ran 2 tests in 46.279s
+
+OK
+
+Initial cache test run:
+.
+----------------------------------------------------------------------
+Ran 21 tests in 0.145s
+
+OK
+
+Historical retirement and affected integrations:
+.[gate-phase] phase=dependency-resolution started=1792329554.616
+[gate-phase] phase=dependency-resolution ended=1792329554.617 seconds=0.001 status=0
+[gate-phase] phase=userspace-input-key started=1792329554.617
+[gate-phase] phase=userspace-input-key ended=1792329554.617 seconds=0.000 status=0
+[gate-cache] MISS key=af5d3e5fac8c32be925088583ee8b7ed1b1f0f829333680612f137e32c29afd3 metal
+[gate-cache] incremental targets=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+[gate-cache] BUILT-ONCE key=af5d3e5fac8c32be925088583ee8b7ed1b1f0f829333680612f137e32c29afd3 files=4
+[gate-phase] phase=userspace-build-once ended=1792329554.621 seconds=0.003 status=0
+[gate-phase] phase=dependency-resolution started=1792329554.622
+[gate-phase] phase=dependency-resolution ended=1792329554.622 seconds=0.000 status=0
+[gate-phase] phase=userspace-input-key started=1792329554.622
+[gate-phase] phase=userspace-input-key ended=1792329554.623 seconds=0.000 status=0
+[gate-cache] MISS key=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc metal
+[gate-cache] incremental targets=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+.[gate-phase] phase=dependency-resolution started=1792329554.630
+[gate-phase] phase=dependency-resolution ended=1792329554.630 seconds=0.000 status=0
+[gate-phase] phase=userspace-input-key started=1792329554.630
+[gate-phase] phase=userspace-input-key ended=1792329554.630 seconds=0.000 status=0
+[gate-cache] MISS key=af5d3e5fac8c32be925088583ee8b7ed1b1f0f829333680612f137e32c29afd3 metal
+[gate-cache] incremental targets=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+[gate-cache] BUILT-ONCE key=af5d3e5fac8c32be925088583ee8b7ed1b1f0f829333680612f137e32c29afd3 files=4
+[gate-phase] phase=userspace-build-once ended=1792329554.633 seconds=0.003 status=0
+[gate-phase] phase=dependency-resolution started=1792329554.635
+[gate-phase] phase=dependency-resolution ended=1792329554.635 seconds=0.000 status=0
+[gate-phase] phase=userspace-input-key started=1792329554.635
+[gate-phase] phase=userspace-input-key ended=1792329554.635 seconds=0.000 status=0
+[gate-cache] HIT key=af5d3e5fac8c32be925088583ee8b7ed1b1f0f829333680612f137e32c29afd3 built-once=true
+[gate-phase] phase=userspace-cache ended=1792329554.636 seconds=0.001 status=0
+[gate-phase] phase=dependency-resolution started=1792329554.637
+[gate-phase] phase=dependency-resolution ended=1792329554.637 seconds=0.000 status=0
+[gate-phase] phase=userspace-input-key started=1792329554.637
+[gate-phase] phase=userspace-input-key ended=1792329554.637 seconds=0.000 status=0
+[gate-phase] phase=artifact-slot-wait ended=1792329554.637 seconds=0.000 status=0
+[gate-cache] MISS key=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+[gate-cache] VERIFIED key=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa files=4 byte-identical=true
+[gate-phase] phase=cache-verification ended=1792329554.646 seconds=0.009 status=0
+.
+----------------------------------------------------------------------
+Ran 3 tests in 0.046s
+
+OK
+
+Additional focused passes: historical-key case; linker-content invalidation and affected source-time case; installation case after moving metadata from argv to stdin.

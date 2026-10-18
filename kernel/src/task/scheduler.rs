@@ -9466,6 +9466,20 @@ pub fn thread_state(tid: u64) -> Option<ThreadState> {
     with_scheduler(|sched| sched.get_thread(tid).map(|thread| thread.state)).flatten()
 }
 
+/// Thread `tid`'s state and deadline in one nonblocking lock hold. A busy
+/// owner or concurrent migration leaves the census sample unavailable.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn thread_wait(tid: u64) -> Option<(ThreadState, Option<u64>)> {
+    without_interrupts(|| {
+        if rq_live() {
+            return rq::thread_wait(tid);
+        }
+        let mut scheduler = try_lock_scheduler()?;
+        let thread = scheduler.as_mut()?.get_thread(tid)?;
+        Some((thread.state, thread.wake_time_ns))
+    })
+}
+
 /// Whether a user thread has not terminated. x86_64: read from the thread
 /// index without a lock.
 pub fn has_live_user_threads() -> bool {

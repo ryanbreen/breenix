@@ -66,14 +66,14 @@ impl Mount {
         match self {
             Mount::Root => ext2::root_fs_read(),
             Mount::Home => ext2::home_fs_read(),
-        }.map_err(|_| crate::syscall::errno::EINTR as u64)
+        }.map_err(fs_errno)
     }
 
     pub fn write(self) -> Result<ext2::Ext2WriteGuard, u64> {
         match self {
             Mount::Root => ext2::root_fs_write(),
             Mount::Home => ext2::home_fs_write(),
-        }.map_err(|_| crate::syscall::errno::EINTR as u64)
+        }.map_err(fs_errno)
     }
 }
 
@@ -226,7 +226,11 @@ fn copy_frames(frames: &[Frame]) -> Result<Vec<Frame>, u64> {
 }
 
 pub(crate) fn fs_errno(error: &'static str) -> u64 {
-    if error.contains("memory") {
+    if error == crate::fs::ext2::EXT2_READ_ONLY {
+        crate::syscall::errno::EROFS as u64
+    } else if error == crate::fs::ext2::EXT2_ACQUIRE_KILLED {
+        crate::syscall::errno::EINTR as u64
+    } else if error.contains("memory") {
         12
     } else {
         EIO as u64

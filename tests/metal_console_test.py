@@ -146,6 +146,59 @@ class ConsoleTest(unittest.TestCase):
         finally:
             fixture.tearDown()
 
+    def test_disk_root_console_carries_per_boot_intent_without_restaging_root(self):
+        fixture = existing.DriverTest()
+        fixture.setUp()
+        try:
+            d = fixture.driver
+            d.args.mode, d.args.disk, d.args.commit = 'console', 'root', 'a' * 40
+            d.args.ramdisk = False
+            d.site = self.driver().site
+            inputs = d.stage / 'inputs'
+            inputs.mkdir(parents=True)
+            (inputs / 'ready').touch()
+            existing.m.write_json(inputs / 'build.json', {'commit': d.args.commit,
+                                  'profile': 'production', 'features': []})
+            existing.m.write_json(existing.m.STATE / 'disk.json', {'commit': d.args.commit,
+                                  'mode': 'console', 'consoleIdentity': metal_root.console_identity(d.site)})
+            for is_session, expected in [(True, b'BREENIX-CONSOLE 1\nsession\n'),
+                                         (False, b'BREENIX-CONSOLE 1\nmeasure\n')]:
+                d.args.session = is_session
+                with patch.object(boot.metal_root, 'stage_root') as stage, \
+                     patch.object(boot.metal_image, 'extract_esp', return_value={}), \
+                     patch.object(boot.metal_image, 'assemble', side_effect=RuntimeError('assembly captured')) as assemble:
+                    with self.assertRaisesRegex(RuntimeError, 'assembly captured'):
+                        d.prepare_payload()
+                stage.assert_not_called()
+                files = assemble.call_args.args[1]
+                self.assertEqual(files['ramdisk'].read_bytes(), expected)
+        finally:
+            fixture.tearDown()
+
+    def test_only_measured_boots_stage_the_replug_exercise(self):
+        fixture = existing.DriverTest()
+        fixture.setUp()
+        try:
+            d = fixture.driver
+            d.args.mode, d.args.commit = 'console', 'a' * 40
+            d.site = self.driver().site
+            inputs = d.stage / 'inputs'
+            inputs.mkdir(parents=True)
+            (inputs / 'ready').touch()
+            existing.m.write_json(inputs / 'build.json', {'commit': d.args.commit,
+                                  'profile': 'production', 'features': []})
+            for is_session, is_attended, input_kind in [(False, False, 'sol'), (False, True, None),
+                                                        (True, False, None)]:
+                d.args.session, d.args.attended, d.args.input = is_session, is_attended, input_kind
+                d.args.idle_minutes = 30
+                with patch.object(boot.metal_root, 'stage_root', side_effect=RuntimeError('staging captured')) as stage:
+                    with self.assertRaisesRegex(RuntimeError, 'staging captured'):
+                        d.prepare_payload()
+                self.assertEqual(stage.call_args.kwargs['replug'], not is_session)
+                self.assertEqual(stage.call_args.kwargs['idle_minutes'], 30 if is_session else None)
+        finally:
+            fixture.tearDown()
+
     def test_staged_shadow_permissions_and_target_and_malformed_hash_refusal(self):
         hasher = Path(os.environ['CONSOLE_HASH_HELPER'])
         prefix = Path('/opt/homebrew/opt/e2fsprogs/sbin')
@@ -164,6 +217,13 @@ class ConsoleTest(unittest.TestCase):
             def read(command):
                 return subprocess.run([debugfs, '-R', command, str(image)], check=True, capture_output=True).stdout
             self.assertEqual(read('cat /etc/breenix/boot-target'), b'console\n')
+            metal_root.stage_root(image, 'console', None, site, hasher=hasher, replug=True)
+            self.assertEqual(read('cat /etc/breenix/boot-target'), b'console replug\n')
+            metal_root.stage_root(image, 'console', None, site, hasher=hasher, idle_minutes=2)
+            self.assertEqual(read('cat /etc/breenix/boot-target'), b'console idle=2\n')
+            with self.assertRaisesRegex(ValueError, 'measured console'):
+                metal_root.stage_root(image, 'console', None, site, hasher=hasher, idle_minutes=2, replug=True)
+
             shadow = read('cat /etc/shadow')
             self.assertRegex(shadow, rb'^root:\$6\$[./A-Za-z0-9]{16}\$[./A-Za-z0-9]{86}:')
             self.assertNotIn(site['CONSOLE_PASSWORD'].encode(), shadow)
