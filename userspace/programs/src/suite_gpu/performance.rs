@@ -58,7 +58,7 @@ fn take_display_2560() -> R<()> {
 
 fn present(ctx: u64, t: u64) -> R<()> {
     let (r, p) = gpu::present(ctx, t);
-    ensure(r == 0 && p.answer == 0x1100, || format!("PRESENT: {} answer {:#x}", errno(r), p.answer))
+    ensure(r == 0 && p.answer == native_success()?, || format!("PRESENT: {} answer {:#x}", errno(r), p.answer))
 }
 
 /// Colour `n` of a sequence, so consecutive frames of a timed run differ.
