@@ -16,14 +16,15 @@
 //! (G1) are in `suite_gpu/device.rs` and `suite_gpu/submit.rs`, `readback`'s (G2) in
 //! `suite_gpu/readback.rs`, and `textures`' with `pipelines/copy` (G3) in
 //! `suite_gpu/textures.rs`, `profile`'s (G4) in `suite_gpu/profile.rs`, `pipelines`' (G5) in
-//! `suite_gpu/pipelines.rs` and `isolation`'s (G6) in `suite_gpu/isolation.rs`.
+//! `suite_gpu/pipelines.rs`, `isolation`'s (G6) in `suite_gpu/isolation.rs`, `present`'s (G7)
+//! in `suite_gpu/present.rs` and `performance`'s (G8) in `suite_gpu/performance.rs`.
 
 extern crate alloc;
 #[path = "suite_gpu/expectations.rs"]
 pub mod expectations;
 pub use expectations::{error, float, outline, work};
 
-use libbreenix::suite::{case, category, check, fail, suite, CaseResult, Suite};
+use libbreenix::suite::{case, category, check, suite, CaseResult, Suite};
 use libbreenix::syscall::raw;
 
 #[path = "suite_gpu/common.rs"]
@@ -44,6 +45,8 @@ mod pipelines;
 mod present;
 #[path = "suite_gpu/isolation.rs"]
 mod isolation;
+#[path = "suite_gpu/performance.rs"]
+mod performance;
 
 static SUITE: Suite = suite("gpu", "GPU rendering", &[
     category("device", "3D device & capability profile", &[
@@ -224,21 +227,20 @@ static SUITE: Suite = suite("gpu", "GPU rendering", &[
         case("fault-wrong-scanout", "A present of the wrong target is detected by the record", present::fault_wrong_scanout),
     ]),
     category("performance", "frame rate & latency", &[
-        case("clear-rate-2560", "At least 60 full-screen 2560x1600 clears per second, each presented", performance_clear_rate_2560),
-        case("rect-throughput", "10000 solid 16x16 rectangles in one submission complete within 50 ms", performance_rect_throughput),
-        case("submit-latency", "An empty submission's fence: median at most 2 ms and maximum at most 10 ms over 1000", performance_submit_latency),
-        case("first-draw-latency", "A new context's first draw with each fixed rendering-catalogue pipeline (excluding probe_int) completes within 10 ms", performance_first_draw_latency),
-        case("readback-time-2560", "A full 2560x1600 readback completes within 100 ms", performance_readback_time_2560),
-        case("upload-bandwidth", "A 16 MiB upload is visible to the next submission within 100 ms", performance_upload_bandwidth),
-        case("coverage-throughput", "A full-screen 2560x1600 coverage blend from an R8 mask completes within 16.7 ms", performance_coverage_throughput),
-        case("wait-no-spin", "CPU time while waiting on a fence is at most 5% of the wait", performance_wait_no_spin),
-        case("present-rate-2560", "At least 60 presents per second alternating two full-screen 2560x1600 targets", performance_present_rate_2560),
+        case("clear-rate-2560", "At least 60 full-screen 2560x1600 clears per second, each presented", performance::clear_rate_2560),
+        case("rect-throughput", "10000 solid 16x16 rectangles in one submission complete within 50 ms", performance::rect_throughput),
+        case("submit-latency", "An empty submission's fence: median at most 2 ms and maximum at most 10 ms over 1000", performance::submit_latency),
+        case("first-draw-latency", "A new context's first draw with each fixed rendering-catalogue pipeline (excluding probe_int) completes within 10 ms", performance::first_draw_latency),
+        case("readback-time-2560", "A full 2560x1600 readback completes within 100 ms", performance::readback_time_2560),
+        case("upload-bandwidth", "A 16 MiB upload is visible to the next submission within 100 ms", performance::upload_bandwidth),
+        case("coverage-throughput", "A full-screen 2560x1600 coverage blend from an R8 mask completes within 16.7 ms", performance::coverage_throughput),
+        case("wait-no-spin", "CPU time while waiting on a fence is at most 5% of the wait", performance::wait_no_spin),
+        case("present-rate-2560", "At least 60 presents per second alternating two full-screen 2560x1600 targets", performance::present_rate_2560),
     ]),
 ]);
 
 // The layers cases need, each with the build step that supplies it.
 const CORE: &str = "the kernel GPU core and syscall 416 (G1)";
-const PERF: &str = "the 2560x1600 performance work (G8)";
 
 /// Syscall 416, `gpu(op, arg, len)` (`docs/gui/gpu.md` section 1.4).
 const GPU: u64 = 416;
@@ -263,38 +265,11 @@ fn version_answer(ret: i64) -> String {
     }
 }
 
-/// Fail a case whose layer is not there yet, naming the layer and what the kernel answered.
-fn missing(need: &str) -> CaseResult {
-    match gpu_version() {
-        GPU_VERSION => fail(format!("missing {need}: this case's check is not written yet")),
-        ret => fail(format!("missing {need}: {}", version_answer(ret))),
-    }
-}
-
-/// One function per case that has no check yet, each failing with the layer it needs.
-macro_rules! needs {
-    ($($name:ident => $need:expr;)*) => {
-        $(fn $name() -> CaseResult { missing($need) })*
-    };
-}
-
 fn device_version() -> CaseResult {
     let ret = gpu_version();
     check(ret == GPU_VERSION, &format!("missing {CORE}: {}", version_answer(ret)))?;
     let _case = common::begin()?;
     Ok(())
-}
-
-needs! {
-    performance_clear_rate_2560 => PERF;
-    performance_rect_throughput => PERF;
-    performance_submit_latency => PERF;
-    performance_first_draw_latency => PERF;
-    performance_readback_time_2560 => PERF;
-    performance_upload_bandwidth => PERF;
-    performance_coverage_throughput => PERF;
-    performance_wait_no_spin => PERF;
-    performance_present_rate_2560 => PERF;
 }
 
 fn main() {

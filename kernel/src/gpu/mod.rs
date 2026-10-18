@@ -66,7 +66,7 @@ const RESOURCE_QUOTA: usize = 256;
 /// The largest buffer.
 const BUFFER_MAX: u64 = 128 << 20;
 /// Rows per readback transfer are chosen so a band is at most this many bytes.
-const READBACK_BAND: usize = 1 << 20;
+const READBACK_BAND: usize = 8 << 20;
 /// The first observation's poison; the second's is its complement (section 1.8).
 const POISON: u32 = 0x3C5A_A5C3;
 /// VirGL's renderer keeps a target's row 0 as the transfer's row 0, so the viewport keeps
@@ -77,10 +77,17 @@ const RESET_BUDGET_NS: u64 = 100_000_000;
 /// The watchdog examines outstanding work at least this often (section 1.4.1).
 const EXAMINE_NS: u64 = 250_000_000;
 static CORE: spin::Mutex<Option<Core>> = spin::Mutex::new(None);
-/// Counts interrupts and state changes; a waiter sleeps only while it is unchanged.
+/// Counts interrupts and the state changes waiters wait for; a waiter sleeps only while it
+/// is unchanged.
 static EVENTS: AtomicU64 = AtomicU64::new(0);
 static WAITERS: WaitQueueHead = WaitQueueHead::new();
 static ISR: AtomicU64 = AtomicU64::new(0);
+/// The control queue's notification address, and whether requests were queued since it
+/// was last written: see [`ring_doorbell`].
+static DOORBELL: AtomicU64 = AtomicU64::new(0);
+static KICK: AtomicBool = AtomicBool::new(false);
+/// The ISR's configuration-change bit was seen: the device may have set DEVICE_NEEDS_RESET.
+static CONFIG_CHANGED: AtomicBool = AtomicBool::new(false);
 static INTID: AtomicU32 = AtomicU32::new(0);
 static REAPER: AtomicU64 = AtomicU64::new(0);
 static REAPER_STARTING: AtomicBool = AtomicBool::new(false);
@@ -91,9 +98,30 @@ fn now_ns() -> u64 {
 
 fn with_core<R>(f: impl FnOnce(&mut Core) -> R) -> Option<R> {
     crate::per_cpu::preempt_disable();
-    let r = CORE.lock().as_mut().map(f);
+    let (r, kick) = {
+        let mut core = CORE.lock();
+        let r = core.as_mut().map(f);
+        // Claim this operation's notification before another CPU can enter the core.
+        (r, KICK.swap(false, Ordering::AcqRel))
+    };
+    if kick {
+        ring_doorbell();
+    }
     crate::per_cpu::preempt_enable();
     r
+}
+
+/// Notify the device of the requests [`Core::flush`] made available, after the core's lock
+/// is released. The notification is an MMIO write, and a hypervisor may hold the writing
+/// CPU until its device model accepts it; no thread waits for the lock meanwhile. The
+/// requests' descriptors and ring index were published before `KICK` was set, and the
+/// caller claimed that kick while still holding the core's lock.
+fn ring_doorbell() {
+    let at = DOORBELL.load(Ordering::Acquire);
+    if at != 0 {
+        // SAFETY: the control queue's mapped notification address; queue 0.
+        unsafe { core::ptr::write_volatile(at as *mut u16, 0) };
+    }
 }
 
 /// Tell the waiters and `kgpu` that something changed.
@@ -103,7 +131,8 @@ fn notify() {
     wake_reaper();
 }
 
-/// Wake `kgpu` for work only it does: a reset, or the catalogue's next warm-up step.
+/// Wake `kgpu` for work only it does: a reset, the catalogue's next warm-up step, or
+/// sending the requests the device's answers made room for.
 fn wake_reaper() {
     let tid = REAPER.load(Ordering::Acquire);
     if tid != 0 {
@@ -363,6 +392,7 @@ pub fn init_qemu() {
                 );
             }
             ISR.store(dev.isr, Ordering::Release);
+            DOORBELL.store(dev.doorbell(), Ordering::Release);
             INTID.store(dev.intid, Ordering::Release);
             crate::arch_impl::aarch64::gic::configure_spi_level_triggered(dev.intid);
             crate::arch_impl::aarch64::gic::enable_spi(dev.intid);
@@ -672,6 +702,7 @@ impl Core {
             sent = true;
         }
         if sent {
+            KICK.store(true, Ordering::Release);
             wake_reaper();
         }
     }
@@ -779,11 +810,23 @@ impl Core {
     // -----------------------------------------------------------------------------------
     // The device's answers.
 
-    /// Take every completion the device has returned and the watchdog's decisions.
+    /// `kgpu`'s turn: take the completions the device has returned and the watchdog's
+    /// decisions, and send the queued requests that now fit.
     fn pump(&mut self) {
         self.reap_all();
         self.watchdog(now_ns());
         self.flush();
+    }
+
+    /// A waiter's turn: take the device's completions and the watchdog's decisions. Queued
+    /// requests are left to `kgpu`, which sends them (`pump`) and notifies the device; only
+    /// before `kgpu` starts does a waiter send them.
+    fn poll(&mut self) {
+        self.reap_all();
+        self.watchdog(now_ns());
+        if REAPER.load(Ordering::Acquire) == 0 {
+            self.flush();
+        }
     }
 
     fn reap_all(&mut self) {
@@ -812,11 +855,21 @@ impl Core {
                 }
             }
         }
-        if !self.reset_wanted && self.dev.as_ref().is_some_and(|d| d.needs_reset()) {
+        // The device signals DEVICE_NEEDS_RESET with a configuration change notification
+        // (VirtIO 1.3 section 2.1.2), so the status register, an MMIO read, is read only
+        // after one. A device that stops answering without it meets the watchdog.
+        if !self.reset_wanted
+            && CONFIG_CHANGED.swap(false, Ordering::AcqRel)
+            && self.dev.as_ref().is_some_and(|d| d.needs_reset())
+        {
             self.fault();
         }
+        // The interrupt woke the waiters, and the answers' handlers notify them of what they
+        // wait for: a fence published, a synchronous answer, a retired submission's holds, a
+        // fault. A chunk of a submission still in progress wakes nobody else. `kgpu` sends
+        // what the answers made room for.
         if any {
-            notify();
+            wake_reaper();
         }
     }
 
@@ -1045,6 +1098,7 @@ impl Core {
         for id in held {
             self.unhold(id);
         }
+        notify();
     }
 
     /// Test point 31's fence-depth mode ends: a fifth SUBMIT waits at the four-in-flight
@@ -1253,7 +1307,10 @@ impl Core {
         self.display_reset();
         self.resetting = false;
         match up {
-            Ok(()) => self.dev = Some(dev),
+            Ok(()) => {
+                DOORBELL.store(dev.doorbell(), Ordering::Release);
+                self.dev = Some(dev);
+            }
             Err(e) => {
                 drop(dev);
                 self.status = abi::status::DEVICE_FAILED;
@@ -1327,7 +1384,7 @@ fn wait_for<T>(deadline: Option<u64>, interruptible: bool, mut f: impl FnMut(&mu
     loop {
         let seen = EVENTS.load(Ordering::Acquire);
         if let Some(v) = with_core(|c| {
-            c.pump();
+            c.poll();
             f(c)
         })
         .flatten()
@@ -1416,7 +1473,12 @@ pub fn handle_interrupt() {
     // The handler's whole run counts toward gpu_irq_masked_max_us (section 1.16).
     let start = crate::tracing::providers::gpu::interrupt_begin();
     let isr = ISR.load(Ordering::Acquire);
-    if isr != 0 && virgl::read_isr(isr) != 0 {
+    let status = if isr != 0 { virgl::read_isr(isr) } else { 0 };
+    if status != 0 {
+        // Bit 1 is a configuration change (VirtIO 1.3 section 4.1.4.5).
+        if status & 2 != 0 {
+            CONFIG_CHANGED.store(true, Ordering::Release);
+        }
         EVENTS.fetch_add(1, Ordering::AcqRel);
         WAITERS.wake_up();
         let tid = REAPER.load(Ordering::Acquire);
@@ -3547,17 +3609,12 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
     let output = (|| {
         if unwritten == 0 {
             let row = row as usize;
-            let mut chunk = [0u8; STAGING_CHUNK];
             for ry in 0..h as usize {
-                let mut done = 0;
-                while done < row {
-                    let n = (row - done).min(STAGING_CHUNK);
-                    staging.pages.read(ry * row + done, &mut chunk[..n]);
-                    let dst = a.pixels + ry as u64 * a.stride as u64 + done as u64;
-                    crate::syscall::userptr::write_user_bytes(dst, chunk.as_ptr(), n)
-                        .map_err(|_| EFAULT)?;
-                    done += n;
-                }
+                let dst = a.pixels + ry as u64 * a.stride as u64;
+                staging.pages.try_spans(ry * row, row, |done, ptr, n| {
+                    crate::syscall::userptr::write_user_bytes(dst + done as u64, ptr, n)
+                        .map_err(|_| EFAULT)
+                })?;
             }
         }
         crate::syscall::userptr::write_user_bytes(a.record, rec.as_ptr(), record::SIZE)
@@ -3612,6 +3669,20 @@ fn probe_writable(addr: u64, len: usize) -> Result<(), i64> {
 /// Bytes moved through the stack at a time between staging, device backing and the caller.
 const STAGING_CHUNK: usize = 512;
 
+
+/// The bytes that differ between two observations of the same span.
+fn differing(a: &[u8], b: &[u8]) -> u32 {
+    let (wa, wb) = (a.chunks_exact(8), b.chunks_exact(8));
+    let tail = wa.remainder().iter().zip(wb.remainder()).filter(|(p, q)| p != q).count() as u32;
+    wa.zip(wb)
+        .map(|(x, y)| {
+            let d = u64::from_le_bytes(x.try_into().unwrap_or_default())
+                ^ u64::from_le_bytes(y.try_into().unwrap_or_default());
+            d.to_le_bytes().iter().filter(|&&b| b != 0).count() as u32
+        })
+        .sum::<u32>()
+        + tail
+}
 
 struct Observation {
     unwritten: u32,
@@ -3683,8 +3754,8 @@ fn observe(
     let band_rows = (READBACK_BAND / pitch as usize)
         .max(1)
         .min(a.height as usize);
+    let mut seen = [0u8; PAGE];
     let mut chunk = [0u8; STAGING_CHUNK];
-    let mut kept = [0u8; STAGING_CHUNK];
     let mut unwritten = 0u32;
     let mut first: Option<(u64, u32)> = None;
     let mut by = 0usize;
@@ -3758,33 +3829,22 @@ fn observe(
                 }
                 first.get_or_insert((fence, d.answer));
             }
+            // The first observation lands straight in the staging; the second is compared
+            // with it a frame at a time.
             for r in 0..rows {
-                let mut done = 0;
-                while done < row {
-                    let n = (row - done).min(STAGING_CHUNK);
-                    let at = (by + r) * row + done;
+                let src = offset + r * pitch as usize;
+                let _ = staging.try_spans((by + r) * row, row, |done, ptr, n| {
+                    // SAFETY: the span lies inside one of the staging's frames, which only
+                    // this call uses.
+                    let kept = unsafe { core::slice::from_raw_parts_mut(ptr, n) };
                     if pass == 0 {
-                        observation::read(
-                            backing.as_ref(),
-                            offset + r * pitch as usize + done,
-                            &mut chunk[..n],
-                        );
-                        staging.write(at, &chunk[..n]);
+                        observation::read(backing.as_ref(), src + done, kept);
                     } else {
-                        observation::read(
-                            backing.as_ref(),
-                            offset + r * pitch as usize + done,
-                            &mut chunk[..n],
-                        );
-                        staging.read(at, &mut kept[..n]);
-                        unwritten += chunk[..n]
-                            .iter()
-                            .zip(kept[..n].iter())
-                            .filter(|(p, q)| p != q)
-                            .count() as u32;
+                        observation::read(backing.as_ref(), src + done, &mut seen[..n]);
+                        unwritten += differing(&seen[..n], kept);
                     }
-                    done += n;
-                }
+                    Ok::<(), ()>(())
+                });
             }
         }
         if fmt == format::R8G8B8A8 {
