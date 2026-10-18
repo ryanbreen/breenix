@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/x86-qemu-policy.sh"
 # One full-profile x86 boot for the #772 dispatch census.
 #
 # Free-runs the gate kernel with the QEMU gdbstub open, polls for the gate's own

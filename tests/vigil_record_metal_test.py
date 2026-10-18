@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from vigil_record_fixture import isolated_commands
 import platform
 import subprocess
 import tempfile
@@ -33,7 +34,7 @@ class VigilRecordMetalTest(unittest.TestCase):
                         result = subprocess.run(
                             [str(ROOT / 'scripts/vigil-record.sh'), 'start', 'metal', mode, suite,
                              str(root / 'serial.txt'), '', '', '', '0' * 40],
-                            env=env, capture_output=True, text=True, check=True)
+                            env=isolated_commands(env, tmp), capture_output=True, text=True, check=True)
                         self.assertEqual(result.stdout.strip(), '' if reject == '1' else 'metal-test-boot')
                         forwarded = args.read_text().splitlines()
                         self.assertEqual(forwarded[forwarded.index('--platform') + 1], 'metal')

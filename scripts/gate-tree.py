@@ -69,7 +69,7 @@ def prune(root, protected=(), reserve=0, required=True):
     free_floor = int(os.environ.get('BREENIX_GATE_FREE_GB', '15')) * GIB + reserve
     with lease(root, 'eviction'):
         entries = []
-        for kind in ('trees', 'artifacts', 'metal-artifacts', 'fresh'):
+        for kind in ('trees', 'artifacts', 'metal-artifacts', 'metal-targets', 'fresh'):
             parent = root / kind
             if parent.exists():
                 entries.extend(parent.iterdir())
@@ -216,6 +216,9 @@ def remove_evidence(path):
 
 
 def main():
+    if os.environ.get("BREENIX_ALLOW_X86_QEMU") != "1":
+        print("x86 QEMU refused by the 2026-10-18 bare-metal-only policy (S23); use the x86-metal boot loop (scripts/metal/metal-run); operator override: BREENIX_ALLOW_X86_QEMU=1.", file=sys.stderr)
+        return 1
     canonical, lane, sha, output, boots, mode = sys.argv[1:]
     if not re.fullmatch('[0-9a-f]{64}', lane) or not re.fullmatch('[0-9a-f]{40}', sha):
         raise ValueError('invalid lane key or commit')

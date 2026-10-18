@@ -290,6 +290,7 @@ qemu_host_lock_acquire() {
     # Every x86-64 QEMU boot passes here: refuse effort work that has not reached its catch-up
     # (scripts/effort-target-guard.py; a launcher that already checked this commit stamps it).
     if [ "$qemu_bin" = qemu-system-x86_64 ]; then
+        source "$_QHL_REPO/scripts/x86-qemu-policy.sh"
         python3 "$_QHL_REPO/scripts/effort-target-guard.py" --repo "$_QHL_REPO" --target x86 >/dev/null || exit 1
     fi
     if [ "$_QHL_SLOT_ENROLLED" = 1 ]; then

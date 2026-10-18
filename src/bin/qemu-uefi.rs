@@ -10,7 +10,15 @@ use ovmf_prebuilt::{Arch, FileType, Prebuilt, Source};
 mod profile;
 use profile::Profile;
 
+#[path = "../x86_qemu_policy.rs"]
+mod x86_qemu_policy;
+
 fn main() {
+    if !["BREENIX_PRINT_QEMU_CENSUS", "BREENIX_PRINT_QEMU_PCI", "BREENIX_PRINT_QEMU_CPUS",
+        "BREENIX_FETCH_OVMF", "BREENIX_PRINT_UEFI_IMAGE"].iter()
+        .any(|name| env::var(name).ok().as_deref() == Some("1")) {
+        x86_qemu_policy::require_operator_override();
+    }
     let profile_name = env::var("BREENIX_QEMU_PROFILE").unwrap_or_else(|_| "default".into());
     let profile = Profile::parse(&profile_name).unwrap_or_else(|error| {
         eprintln!("[qemu-uefi] {error}");

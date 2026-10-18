@@ -133,13 +133,15 @@ fn contender_fn(is_home: bool, index: usize) {
     preempt_disable();
     let prefix = if is_home { "home" } else { "root" };
     let path = alloc::format!("/lockrace_{}_{}", prefix, index);
+    // This leg exercises lock exclusion, including on read-only gate disks.
+    // mkdir still enforces the mount permission after the contender acquires.
     if is_home {
-        let mut guard = crate::fs::ext2::home_fs_write().expect("unkilled ext2 lock test worker");
+        let mut guard = crate::fs::ext2::fs_write_raw(true).expect("unkilled ext2 lock test worker");
         if let Some(fs) = guard.as_mut() {
             let _ = fs.create_directory(&path, 0o755);
         }
     } else {
-        let mut guard = crate::fs::ext2::root_fs_write().expect("unkilled ext2 lock test worker");
+        let mut guard = crate::fs::ext2::fs_write_raw(false).expect("unkilled ext2 lock test worker");
         if let Some(fs) = guard.as_mut() {
             let _ = fs.create_directory(&path, 0o755);
         }

@@ -87,6 +87,9 @@ pub const ENOSPC: i32 = 28;
 /// Illegal seek (not a seekable fd)
 pub const ESPIPE: i32 = 29;
 
+/// Read-only filesystem
+pub const EROFS: i32 = 30;
+
 /// Too many links
 pub const EMLINK: i32 = 31;
 

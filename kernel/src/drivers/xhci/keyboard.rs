@@ -9,16 +9,14 @@
 //! and Appendices B and F. A refused configuration is retried on a reset
 //! device (4.10.2.1.2). Devices behind hubs are not driven: the machine's
 //! port census found its keyboard on a root port.
-use super::{delay, now, spec, wr, Controller, Device, Dma, Ring, Trb, LEDS, PORT_CHANGES, REPLUG, SECOND};
+use super::recovery::{self, Attach, DEVICE_RESETS};
+use super::{delay, now, spec, wr, Controller, Device, Dma, Ring, Trb, CONSOLE_START, CONSOLE_READY, LEDS, PORT_CHANGES, REPLUG, SECOND};
 use crate::drivers::hid_boot::{interface, report};
 use alloc::vec::Vec;
 use core::sync::atomic::{fence, Ordering};
 
 /// Interrupt-IN errors in a row after which the keyboard is torn down.
 const ERRORS_BEFORE_TEARDOWN: u32 = 3;
-/// Device resets one attach may use when configuration is still refused
-/// after EP0 recovery.
-const DEVICE_RESETS: u32 = 2;
 /// Detach and reattach rounds in a console boot's replug exercise.
 const REPLUG_ROUNDS: u32 = 10;
 const CCS: u32 = 1;
@@ -28,16 +26,17 @@ const CSC: u32 = 1 << 17;
 
 /// A configured boot keyboard's interrupt-IN pipe and key state.
 pub(super) struct Pipe {
-    interface: u8,
+    pub(super) interface: u8,
     endpoint: u8,
-    dci: u8,
+    pub(super) dci: u8,
     ring: Ring,
     buffer: Dma,
     request: u32,
-    outstanding: Option<u64>,
+    pub(super) outstanding: Option<u64>,
     state: report::Keyboard,
     errors: u32,
     bad_reports: u64,
+    pub(super) reports: u64,
 }
 
 impl Controller {
@@ -48,7 +47,8 @@ impl Controller {
         let ports: Vec<u8> = self.devices.iter().map(|d| d.port).collect();
         for port in ports {
             if let Some(index) = self.devices.iter().position(|d| d.port == port) {
-                self.attach_keyboard(index, 0);
+                let first = self.attach_keyboard(index, 0);
+                recovery::reset_while_refused(&mut Reattach { controller: self, port }, first);
             }
         }
         loop {
@@ -58,9 +58,17 @@ impl Controller {
             }
             self.dispatch();
             self.tick_keyboards();
-            if REPLUG.swap(false, Ordering::SeqCst) {
-                self.replug_exercise();
+            if CONSOLE_START.swap(false, Ordering::SeqCst) {
+                // A fault-test kernel's recovery exercise replaces the replug exercise.
+                #[cfg(feature = "xhci_fault_inject")]
+                let exercised = self.fault_exercise()?;
+                #[cfg(not(feature = "xhci_fault_inject"))]
+                let exercised = false;
+                if REPLUG.swap(false, Ordering::Relaxed) && !exercised {
+                    self.replug_exercise();
+                }
                 self.console.arm();
+                CONSOLE_READY.complete(1);
             }
             if LEDS.swap(false, Ordering::SeqCst) {
                 self.sync_leds();
@@ -93,7 +101,7 @@ impl Controller {
             .min()
     }
 
-    fn dispatch(&mut self) {
+    pub(super) fn dispatch(&mut self) {
         while let Some(port) = self.port_events.pop_front() {
             self.port_changed(port);
         }
@@ -119,44 +127,36 @@ impl Controller {
 
     /// Configure an enumerated device's boot keyboard, if it has one. A
     /// device that still refuses after EP0 recovery has a control endpoint
-    /// the next SETUP did not clear, so it is reset and enumerated again
-    /// (4.10.2.1.2), as is one whose enumeration failed (`attach`); `resets`
-    /// counts the resets this attach has used.
-    fn attach_keyboard(&mut self, index: usize, resets: u32) {
+    /// the next SETUP did not clear, so its slot is given back and the
+    /// result is `Refused`: the caller resets and enumerates it again
+    /// (4.10.2.1.2, `recovery::reset_while_refused`). `resets` counts the
+    /// resets this attach has used.
+    fn attach_keyboard(&mut self, index: usize, resets: u32) -> Attach {
         let port = self.devices[index].port;
         let boot = match interface::find(&self.devices[index].config) {
             Ok(Some(boot)) => boot,
-            Ok(None) => return,
+            Ok(None) => return Attach::Settled,
             Err(error) => {
                 log::error!("[usb] port {port}: configuration descriptor unusable: {error}");
-                return;
+                return Attach::Settled;
             }
         };
         let Err(error) = self.configure_keyboard(index, boot, resets) else {
-            return;
+            return Attach::Settled;
         };
         log::error!("[usb] port {port}: boot keyboard configuration FAILED: {error}");
         // Give the slot back; the device is not driven in this state.
         let device = self.devices.remove(index);
         let slot = device.slot;
         match self.reclaim(device) {
-            Some(pages) => log::info!(
-                "[usb] port {port}: unconfigured keyboard's slot {slot} disabled, {pages} pages returned"
-            ),
+            Some(pages) => {
+                log::info!("[usb] port {port}: unconfigured keyboard's slot {slot} disabled, {pages} pages returned");
+                Attach::Refused
+            }
             None => {
                 log::error!("[usb] port {port}: slot {slot} not reclaimed; its memory stays with the controller");
-                return;
+                Attach::Settled
             }
-        }
-        self.reset_device(port, resets);
-    }
-
-    /// Reset and enumerate the device on `port` again, while it is connected
-    /// and this attach has resets left.
-    fn reset_device(&mut self, port: u8, resets: u32) {
-        if resets < DEVICE_RESETS && self.portsc(port) & CCS != 0 {
-            log::warn!("[usb] port {port}: resetting the device ({} of {DEVICE_RESETS})", resets + 1);
-            self.attach(port, resets + 1);
         }
     }
 
@@ -229,6 +229,7 @@ impl Controller {
             state: report::Keyboard::new(),
             errors: 0,
             bad_reports: 0,
+            reports: 0,
         });
         // USB 2.0 9.4.7, then HID 1.11 F.5: boot protocol after configuration;
         // Set_Idle(0) so reports come only on change (7.2.4, F.4).
@@ -242,6 +243,14 @@ impl Controller {
                 log::error!("[usb] port {port}: {what} completion code={code}");
                 return Err("boot keyboard request refused");
             }
+        }
+        // A deterministic driver fault: some keyboards accept even invalid
+        // configuration values. Fail at the configuration boundary after the
+        // real requests completed, then use the ordinary reclaim/reset path.
+        #[cfg(feature = "xhci_fault_inject")]
+        if self.fault.refuse_configuration(port) {
+            log::info!("[xhci-fault] configuration refusal injected: reset-attempt={resets}");
+            return Err("fault-test configuration refusal");
         }
         let leds = self.send_leds(index);
         self.queue_report(index)?;
@@ -261,7 +270,7 @@ impl Controller {
     /// A control transfer on EP0 with no data stage or one OUT byte. Returns
     /// its completion code; a request that halted EP0 is recovered and resent
     /// (`Controller::ep0_transfer`).
-    fn control(&mut self, index: usize, setup: u64, out: Option<u8>) -> Result<u8, &'static str> {
+    pub(super) fn control(&mut self, index: usize, setup: u64, out: Option<u8>) -> Result<u8, &'static str> {
         // The device leaves the list for the transfer so the controller can
         // wait for it. The list is read by `dispatch`, between transfers.
         let mut device = self.devices.remove(index);
@@ -350,7 +359,10 @@ impl Controller {
                     return;
                 };
                 match pipe.state.report(&report, now, &mut |code, value| console.event(port, code, value)) {
-                    Ok(summary) => console.note_report(&summary),
+                    Ok(summary) => {
+                        pipe.reports += 1;
+                        console.note_report(&summary);
+                    }
                     Err(report::ReportError::Length(length)) => {
                         pipe.bad_reports += 1;
                         if pipe.bad_reports == 1 {
@@ -419,25 +431,32 @@ impl Controller {
         // Only a connect change attaches: our own port resets also post
         // events, and a device whose attach used its resets is not retried.
         if connected && status & CSC != 0 {
-            self.attach(port, 0);
+            self.attach(port);
         }
     }
 
-    fn attach(&mut self, port: u8, resets: u32) {
+    /// Enumerate and configure the device on `port`, resetting it while
+    /// it is refused and resets are left.
+    pub(super) fn attach(&mut self, port: u8) {
+        let first = self.attach_once(port, 0);
+        recovery::reset_while_refused(&mut Reattach { controller: self, port }, first);
+    }
+
+    fn attach_once(&mut self, port: u8, resets: u32) -> Attach {
         match self.enumerate(port) {
             Ok(()) => {
                 let index = self.devices.len() - 1;
-                self.attach_keyboard(index, resets);
+                self.attach_keyboard(index, resets)
             }
             Err(error) => {
                 // `enumerate` has given the slot back.
                 log::error!("[usb] port {port}: attach FAILED: {error}");
-                self.reset_device(port, resets);
+                Attach::Refused
             }
         }
     }
 
-    fn teardown(&mut self, index: usize, why: &str) {
+    pub(super) fn teardown(&mut self, index: usize, why: &str) {
         let mut device = self.devices.remove(index);
         if let Some(pipe) = device.keyboard.as_mut() {
             pipe.state.release_all(&mut |code, value| self.console.event(device.port, code, value));
@@ -568,8 +587,23 @@ impl Controller {
             }
             self.port_changed(port);
             if self.portsc(port) & CCS != 0 {
-                self.attach(port, 0);
+                self.attach(port);
             }
         }
+    }
+}
+
+/// The hardware side of `recovery::reset_while_refused` for one root port.
+struct Reattach<'a> {
+    controller: &'a mut Controller,
+    port: u8,
+}
+impl recovery::Port for Reattach<'_> {
+    fn connected(&self) -> bool {
+        self.controller.portsc(self.port) & CCS != 0
+    }
+    fn reset(&mut self, reset: u32) -> Attach {
+        log::warn!("[usb] port {}: resetting the device ({reset} of {DEVICE_RESETS})", self.port);
+        self.controller.attach_once(self.port, reset)
     }
 }

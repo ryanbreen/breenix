@@ -4,6 +4,8 @@ fn main() {
     let root = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("manifest directory"))
         .join("../..");
     println!("cargo:rerun-if-changed={}", root.join("rust-fork.toml").display());
+    // The linker argument names a stable path even when its contents change.
+    println!("cargo:rerun-if-changed=linker.ld");
     println!("cargo:rerun-if-env-changed=BREENIX_RUST_FORK_LIBRARY");
     println!("cargo:rerun-if-env-changed=BREENIX_RUST_FORK_DEV");
     let status = std::process::Command::new(root.join("scripts/rust-fork.sh"))

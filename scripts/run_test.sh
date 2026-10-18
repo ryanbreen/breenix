@@ -1,4 +1,5 @@
 #!/bin/bash
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/x86-qemu-policy.sh"
 
 # Run Breenix test commands with logging
 

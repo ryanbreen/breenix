@@ -1,4 +1,7 @@
 #!/bin/bash
+if [ "${BREENIX_GATE_PHASE:-all}" != build ]; then
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../../scripts/x86-qemu-policy.sh"
+fi
 #
 # x86_64 build + boot gate, in the repository.
 #

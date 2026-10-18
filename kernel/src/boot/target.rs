@@ -63,7 +63,7 @@ impl SuiteTarget {
 pub enum Target {
     Default,
     Shell,
-    Console { idle_minutes: u16 },
+    Console { idle_minutes: u16, replug: bool },
     Probe,
     Suite(SuiteTarget),
 }
@@ -77,7 +77,7 @@ pub fn parse(text: &str) -> Result<Target, String> {
     }
     if line.trim() == "default" { return Ok(Target::Default); }
     if line.trim() == "shell" { return Ok(Target::Shell); }
-    if line.trim() == "console" { return Ok(Target::Console { idle_minutes: 30 }); }
+    if line.trim() == "console" { return Ok(Target::Console { idle_minutes: 30, replug: false }); }
     if line.trim() == "probe" {
         return Ok(Target::Probe);
     }
@@ -96,10 +96,11 @@ pub fn parse(text: &str) -> Result<Target, String> {
     }
     let words: alloc::vec::Vec<&str> = line.trim().split(' ').collect();
     match words.as_slice() {
+        ["console", "replug"] => Ok(Target::Console { idle_minutes: 30, replug: true }),
         ["console", idle] if idle.starts_with("idle=") => {
             match idle[5..].parse::<u16>() {
                 Ok(idle_minutes @ 1..=240) if idle[5..].bytes().all(|b| b.is_ascii_digit()) =>
-                    Ok(Target::Console { idle_minutes }),
+                    Ok(Target::Console { idle_minutes, replug: false }),
                 _ => Err(String::from("console idle must be 1 through 240 minutes")),
             }
         }
