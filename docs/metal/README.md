@@ -334,7 +334,8 @@ soon as the unit holds, or waits for, the machine lease, so the caller's ssh ses
    the effort-target guard from a freshly fetched origin/main (`--target x86-metal` once origin/main's guard knows that target; until then
    `--target x86`, recorded as the stand-in), the pinned Rust library snapshotted into the tree as the x86 gate does,
    then, under one `metal-build` lease, userspace and the ext2 root through `scripts/gate-artifacts.py --metal`, the
-   production kernel (no features) and its UEFI image, and the delivery stub from the deployed tools, each refused on
+   production kernel (no features; an xHCI fault boot's kernel adds only `xhci_fault_inject`) and its UEFI image,
+   and the delivery stub from the deployed tools, each refused on
    any warning. The metal mode builds userspace once on an exact artifact miss, using persistent Cargo targets. It is
    content-keyed, including the deployed artifact builder's contents, in the container's own cache under
    `metal-artifacts/` with `built-once.json`. On a miss, `metal-targets/<toolchain-key>/` holds separate
@@ -1000,96 +1001,88 @@ input or a disk action. The boot record is `fault-test`, evidence-ineligible;
 the milestone scorer refuses it and no milestone verdict is written.
 The boot still uses the machine lease, normal capture and power-off cleanup.
 
-The driver reads the staged `xhci-fault` intent only when console startup asks
-it to run. An ordinary boot replaces that file with an empty, disarmed intent.
+The exercise is compiled only into fault-test kernels. For an xHCI fault boot
+`metal-run` asks `metal-build` for `--features xhci_fault_inject`, and
+`build.json` records profile `fault-test` with that feature; any other boot
+gets the production kernel (profile `production`, no features). The driver
+refuses an xHCI fault boot whose build is not the fault-test kernel, and any
+other boot whose build is. A production kernel therefore has no code that reads
+`/etc/breenix/xhci-fault`, so no file on a root disk can start the exercise.
+`scripts/check-xhci-fault-production-clean.sh` (run by
+`tests/xhci_fault_production_clean.rs`) builds the metal kernel as `metal-build`
+does and fails on any symbol from the exercise's module or any `xhci-fault`
+bytes in the UEFI image. Its anti-vacuity mode requires a fault-test build to
+redden both checks.
+
+A fault-test kernel reads the staged `xhci-fault` intent when console startup
+asks it to run. An ordinary boot replaces that file with an empty, disarmed
+intent. An unreadable or malformed intent is reported as
+`[xhci-fault] request unusable` and the console starts without an exercise.
 Reset-device injects a configuration failure after the real configuration
 requests complete on two attach attempts. Each refusal takes the ordinary
-slot reclamation and device reset/re-enumeration path; the third attach
-succeeds. The reset budget stays two and the EP0 attempt budget stays three.
+slot reclamation and device reset/re-enumeration path; the attach after the
+second reset succeeds. The reset budget stays two and the EP0 attempt budget
+stays three. `recovery::reset_while_refused` holds the reset loop, and the host
+tests in `tests/xhci_recovery.rs` run it to show a third reset is refused.
 The driver injects the refusal itself because a keyboard can accept an invalid
 configuration value, making that on-wire stimulus unsuitable as a deterministic fault.
 Short-read requests 19 bytes of the 18-byte device descriptor once, waits for
 the real Short Packet and Status completions, then resends for 18 bytes.
+A Status stage that fails after a short read is that attempt's outcome: a
+halting code (including a transaction error) is recovered and the request sent
+again within the three attempts, and the Status completion, not the short read,
+is reported once the attempts are used up (xHCI 1.2 4.10.1, 4.10.2, 4.8.3 and 4.6.8).
 
-HID Set_Idle requests periodic reports during the exercise. The short-read
-check looks for a real interrupt-IN completion after the EP0 waits;
-both exercises require a valid report decoded and the next input TD queued,
-then restore change-only reports. These unchanged reports exercise delivery
-without manufacturing key presses or claiming a human login. A distinct
+HID Set_Idle requests periodic reports during the exercise. The exercise reads
+the event ring only after the MSI handler has published work, as the rest of the
+driver does, so a PASS also shows interrupt delivery; the PASS line counts the
+interrupts taken during the exercise. The short-read check requires the
+interrupt-IN completion to have been queued during the EP0 waits, before any
+further event-ring read: a periodic report completes within the 50 ms resend
+delay. Both exercises require a valid report decoded and the next input TD
+queued, then restore change-only reports. These unchanged reports exercise
+delivery without manufacturing key presses or claiming a human login. A distinct
 `[xhci-fault] <path> PASS:` line ends the boot only after those checks succeed.
 
 Source authority: [USB 2.0](https://www.usb.org/document-library/usb-20-specification)
 9.4.3, 9.4.7 and 9.6.1, [HID 1.11](https://www.usb.org/sites/default/files/hid1_11.pdf)
 7.2.4, and [xHCI 1.2](https://www.intel.com/content/dam/www/public/us/en/documents/technical-specifications/extensible-host-controler-interface-usb-xhci.pdf)
-4.6.8 and 4.10.1.1. No other implementation is a reference.
+4.6.8, 4.8.3, 4.10.1 and 4.10.2. No other implementation is a reference.
 
 ### Recovery validation
 
-The following boots ran kernel commit `f5209138`. Each ended with exit 0,
-a complete capture and confirmed power Off. Raw captures and machine facts
-remain in the private boot store.
+The following boots ran commit `057cafee` with the tools deployed from that
+commit. Each ended with exit 0, a complete capture and confirmed power Off.
+Raw captures and machine facts remain in the private boot store.
 
-| Boot | Kind | Result |
+| Boot | Kind and build | Result |
 |---|---|---|
-| `20261018T163435Z-metal` | Reset-device fault test | Two injected configuration refusals, both failed slots reclaimed, resets 1 and 2, successful re-enumeration with `device-resets=2`, then a real HID report decoded and requeued |
-| `20261018T163951Z-metal` | Short-read fault test | Real completion code 13, Status retired, full descriptor resend, HID completion decoded and requeued |
-| `20261018T164449Z-metal` | Ordinary SOL console | Replug and refusal/login/computation/screen/logout challenge completed; 11/11 RAM-disk console milestones scored |
+| `20261018T173538Z-metal` | Reset-device fault test, profile `fault-test` with `xhci_fault_inject` | Two injected configuration refusals, both failed slots reclaimed, resets 1 and 2 of 2, re-enumeration with `device-resets=2`, then a real HID report decoded and requeued; 46 interrupts during the exercise |
+| `20261018T174648Z-metal` | Short-read fault test, profile `fault-test` with `xhci_fault_inject` | Real completion code 13 on attempt 1, Status retired, full descriptor resent, the HID completion already queued from the EP0 waits, decoded and requeued; 5 interrupts during the exercise |
+| `20261018T175611Z-metal` | Ordinary SOL console, profile `production`, no features | Replug 10 of 10 rounds; refusal, login, computation and logout completed; no `xhci-fault` bytes in the serial capture |
 
 Both fault records are evidence-ineligible and have no milestone verdict.
-The ordinary SOL record is also evidence-ineligible for physical-keyboard
-firsts. Its retained verdict has delivery 7/7, first-light 11/11,
-interrupts-time 4/4, smp 3/3, ramdisk-root 3/3, nic 6/6,
-dhcp-gateway 4/4, fb-console 4/4 and xhci 5/5. USB-keyboard is 3/5
-with two input-unmeasured stages; console-login is 6/7 with one
-input-unmeasured stage. Their stage lists and attended challenge remain intact.
-Other modes and disk shapes remain outside this console boot's measurement.
+The ordinary SOL record's verdict has delivery 7/7, first-light 11/11,
+interrupts-time 4/4, smp 3/3, ramdisk-root 3/3, nic 6/6, dhcp-gateway 4/4,
+fb-console 4/4 and xhci 5/5. USB-keyboard is 3/5 with two input-unmeasured
+stages and console-login is 6/7 with one: a SOL boot cannot type on the
+physical keyboard. That record is evidence-ineligible for physical-keyboard firsts.
 
-An earlier reset stimulus (`20261018T162709Z-metal`, commit `37833158`)
-did not produce a configuration refusal: the keyboard accepted the invalid
-value. The oracle reported the missing fault, and that run was stopped
-(exit 143, power Off confirmed). It is retained as a failed fault test,
-not counted as recovery or milestone evidence. The deterministic driver
-refusal above replaced that stimulus.
-
-Scoped host validation passed: the 12 Rust recovery/spec tests, the metal
-stream definition contract, the console staging/protocol tests, the affected
-metal-tool scoring/driver tests and the fault-record tests. Production image
-builds added no warnings. No kernel boot was repeated after a documentation-only
-change, commit or push.
-
-Sanitized serial excerpts from those retained fault captures:
+Sanitized serial excerpts from the fault captures:
 
 ```text
-20261018T163435Z-metal:
-device-resets=2
-[xhci-fault] reset-device PASS: refusals=2 shorts=0 input-report-decoded-and-requeued
-20261018T163951Z-metal:
-[xhci-fault] short-read PASS: refusals=0 shorts=1 input-report-decoded-and-requeued
+20261018T173538Z-metal:
+[usb] port 2: resetting the device (2 of 2)
+[usb] boot keyboard attached: ... ep0-retries=0 device-resets=2
+[xhci-fault] reset-device PASS: refusals=2 shorts=0 interrupts=46 input-report-decoded-and-requeued
+20261018T174648Z-metal:
+[usb] slot 1: EP0 request 0x0012000001000680 completed with code=13 on attempt 1; sending it again
+[xhci-fault] short-read PASS: refusals=0 shorts=1 interrupts=5 input-report-decoded-and-requeued
 ```
 
-The exercise calls `service()` directly after the control transfer and while
-waiting for input. These checks establish descriptor recovery and subsequent
-report decoding/requeueing, but do not establish interrupt delivery or whether
-the input completion was already queued during the EP0 waits.
-The reset exercise demonstrates two successful resets and re-enumeration;
-it does not test refusal of a third reset. Issue #1797 retains that coverage gap.
+The logged request is the exercise's 18-byte setup packet; the injected
+attempt sends the same request with a 19-byte length.
 
-A failed Status stage following a short read is recovered if halted, then
-returned immediately rather than retried, including transient completion code 4.
-That can abandon enumeration and consume a device reset. The existing host
-Status-failure test checks this terminal behavior.
-
-Fault injection currently ships in production metal kernels, enabled by a
-separate root-file intent alongside the replug intent. Retain that opt-in design
-for this landing; feature gating and intent unification need a separate change.
-An unreadable or malformed nonempty fault intent currently propagates an error
-out of the USB worker and can leave the boot without its USB keyboard. Ordinary
-staging writes an empty intent; handling bad intent without ending service remains
-follow-up work in issue #1931.
-
-Landing validation: `python3 tests/metal_xhci_fault_test.py FaultTest` passed
-3/3 fault-record checks after the conflict-free main merge. Runtime tests and
-boots were not repeated for the comment, usage-string and documentation edits.
-Claim-lint on the branch diff against `origin/main` checked 10 files with zero
-findings; it reported three unsupported extensions (the JSON definition and the
-two extensionless launchers). The revised PR body also had zero findings.
+A Status stage failing after a short read did not occur on these boots;
+that path is covered by the host tests in `tests/xhci_recovery.rs`, which also
+drive the reset loop to its refused third reset.
