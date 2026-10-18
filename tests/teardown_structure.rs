@@ -4434,6 +4434,7 @@ const PROCESS_PAGE_TABLE_RETIRE_SITES: &[(&str, &str, usize)] = &[
 #[rustfmt::skip]
 const PENDING_RECLAIM_BOUNDED_SITES: &[(&str, &str, usize)] = &[
     ("kernel/src/task/process_task.rs", "fn reclaim_deferred_process_resources_for_pass", 1),
+    ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn reclaim_progress_gate_test", 1),
 ];
 #[rustfmt::skip]
 const FRAME_LEDGER_INIT_CALLS: &[(&str, &str, usize)] = &[
