@@ -305,7 +305,7 @@ fn the_facts_reach_the_census_line() {
     let census = read(CENSUS);
     assert!(
         census.contains(
-            "\"[DISPATCH_STRAND_CENSUS:seq={}:tick={}:ms={}:saved={}:stranded={}:tids={}:tid_overflow={}:ledger_overflow={}{}]\""
+            "\"[DISPATCH_STRAND_CENSUS:seq={}:tick={}:ms={}:saved={}:stranded={}:tids={}:tid_overflow={}:ledger_overflow={}{}:waiting={}]\""
         ),
         "the census line no longer appends the fact fields after ledger_overflow"
     );
