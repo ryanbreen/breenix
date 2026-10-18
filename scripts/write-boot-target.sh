@@ -2,7 +2,7 @@
 # Write the boot-target file onto an ext2 disk image, so a production kernel booted
 # from it selects a suite or probe as PID 1 (docs/boot-path.md, "Boot modes"):
 #
-#   scripts/write-boot-target.sh IMAGE SUITE_ID|--probe|--default|--shell [PID1_ELF] [SEQUENCE] [CATEGORY/CASE]
+#   scripts/write-boot-target.sh IMAGE SUITE_ID|--probe|--default|--shell|--console [PID1_ELF] [SEQUENCE] [CATEGORY/CASE]
 #
 # IMAGE gets /etc/breenix/boot-target containing "suite SUITE_ID" or "probe",
 # replacing the prior target. Use a copy so ordinary boots keep their disk.
@@ -26,7 +26,7 @@ SEQUENCE="${4:-}"
 ONLY="${5:-}"
 BOOT_TARGET="suite $SUITE"
 BINARY="/sbin/suite-$SUITE"
-if [ "$SUITE" = --default ] || [ "$SUITE" = --shell ]; then
+if [ "$SUITE" = --default ] || [ "$SUITE" = --shell ] || [ "$SUITE" = --console ]; then
     BOOT_TARGET="${SUITE#--}"
     BINARY=/sbin/init
 elif [ "$SUITE" = --probe ]; then

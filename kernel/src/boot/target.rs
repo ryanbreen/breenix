@@ -62,6 +62,7 @@ impl SuiteTarget {
 pub enum Target {
     Default,
     Shell,
+    Console,
     Probe,
     Suite(SuiteTarget),
 }
@@ -75,6 +76,7 @@ pub fn parse(text: &str) -> Result<Target, String> {
     }
     if line.trim() == "default" { return Ok(Target::Default); }
     if line.trim() == "shell" { return Ok(Target::Shell); }
+    if line.trim() == "console" { return Ok(Target::Console); }
     if line.trim() == "probe" {
         return Ok(Target::Probe);
     }

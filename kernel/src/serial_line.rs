@@ -12,7 +12,7 @@
 //! paths that must not wait.
 //!
 //! Lines posted on paths that may not log (`log_notice`) are written here from
-//! thread context only: by the next record a thread writes, and by the idle
+//! thread context only: by the next logged record a thread writes, and by the idle
 //! loop ([`write_notices_from_thread`]). Each is a whole line of its own.
 use crate::serial_writer::Writer;
 use crate::uart_owner::{self, Kind, Port};
@@ -119,7 +119,14 @@ fn emit<const TEE: bool>(writer: Writer, bytes: &[u8]) {
     if bytes.is_empty() {
         return;
     }
-    write_notices_from_thread();
+    // Raw diagnostics (including the timer's lockup capture) must stay on
+    // their fixed-width writer path. Notice draining tees into the log rings
+    // and can reach bounds-panic formatting, even though its runtime context
+    // check refuses to drain from an IRQ. Keep that call out of raw records'
+    // linked call graph; logged records and the idle loop drain the list.
+    if TEE {
+        write_notices_from_thread();
+    }
     uart_owner::write::<Uart, TEE>(writer, bytes, Kind::Plain, &mut Ownership::acquire());
 }
 
@@ -164,8 +171,10 @@ pub fn try_write(bytes: &[u8]) -> bool {
 
 /// A record assembled on the stack. A newline completes the record and writes
 /// it; dropping the buffer writes any unterminated remainder.
+/// Raw records do not drain deferred log notices.
 pub type Line = Buffer<false>;
-/// A [`Line`] whose bytes also go to the kernel log capture rings.
+/// A [`Line`] whose bytes also go to the kernel log capture rings, draining
+/// deferred notices first when written from thread context.
 pub type TeeLine = Buffer<true>;
 
 pub struct Buffer<const TEE: bool> {

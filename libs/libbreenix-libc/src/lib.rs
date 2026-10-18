@@ -30,6 +30,7 @@
 // functions (math/long_double.rs); their C entry points take and return f16 and f128.
 #![feature(f16, f128)]
 
+mod crypt;
 mod crt;
 mod setjmp;
 mod grp;

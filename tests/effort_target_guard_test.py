@@ -252,6 +252,30 @@ class EffortTargetGuardTest(unittest.TestCase):
         for sha in (self.effort, self.descendant):
             self.assertEqual(self.policy(sha).returncode, 0)
 
+    def test_gate_tree_reads_the_projects_origin_not_the_canonical_cache(self):
+        # The gate VM's canonical clone keeps a stale local main and an old lane branch;
+        # its gate trees are shared clones of it, and their boots run this guard.
+        canonical = self.base / 'canonical'
+        subprocess.run(['git', 'clone', '-q', str(self.origin), str(canonical)], check=True)
+        subprocess.run(['git', '-C', str(canonical), 'branch', '-q', 'breengel/suite', 'origin/breengel/suite'],
+                       check=True)
+        self.git('switch', '-q', 'main')
+        merged = self.merge('breengel/suite')
+        self.git('push', '-q', 'origin', 'main')
+        spec = importlib.util.spec_from_file_location('trees', ROOT / 'scripts/gate-tree.py')
+        trees = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(trees)
+        tree = self.base / 'cache/trees' / ('a' * 64)
+        for sha in (merged, self.descendant):
+            trees.checkout(str(canonical), tree, sha, 'a' * 64)
+            shutil.copytree(self.repo / 'docs/efforts', tree / 'docs/efforts', dirs_exist_ok=True)
+            result = self.invoke('python3', str(GUARD), '--repo', str(tree), '--target', 'x86')
+            if sha == merged:
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), merged)
+            else:
+                self.assert_refused(result, 'origin/breengel/window')
+
     def test_unpushed_local_lane_commit_is_refused(self):
         self.git('switch', '-qc', 'breengel/local', 'main')
         local = self.commit('unpushed lane work')
