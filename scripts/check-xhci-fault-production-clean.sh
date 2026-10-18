@@ -14,7 +14,7 @@
 #                    its request file.
 #   claim-lint:ok: #1931 these define the pass condition leg1_symbols/leg2_strings measure.
 #
-# Exit code: 0 = both legs found zero matches; 1 = a leg found one, or a build failed.
+# Exit code: 0 = both legs found zero matches; 1 = a leg found one, or a build or scan failed.
 # claim-lint:ok: #1931 the exit contract of this script, not an observation.
 #
 # Usage:
@@ -87,12 +87,30 @@ EOF
     return $status
 }
 
+# grep status 1 is a no-match result; status above 1 is a scan error.
+# Validate counts before use.
+count_matches() {
+    local count status
+    count="$(grep -c "$@")"
+    status=$?
+    if [ "$status" -gt 1 ] || [[ ! "$count" =~ ^(0|[1-9][0-9]*)$ ]]; then
+        echo "ERROR: scan failed or returned an invalid count" >&2
+        return 1
+    fi
+    printf '%s\n' "$count"
+}
+
 leg1_symbols() {
-    "$NM" --defined-only "$1" 2>/dev/null | grep -cE "$SYMBOL_NEEDLE" || true
+    local symbols
+    if ! symbols="$("$NM" --defined-only "$1")"; then
+        echo "ERROR: kernel symbol scan failed" >&2
+        return 1
+    fi
+    count_matches -E "$SYMBOL_NEEDLE" <<< "$symbols"
 }
 
 leg2_strings() {
-    grep -c -aF "$MARKER_NEEDLE" "$1" 2>/dev/null || true
+    count_matches -aF "$MARKER_NEEDLE" "$1"
 }
 
 if [ "$MODE" = "prove" ]; then
@@ -102,10 +120,12 @@ if [ "$MODE" = "prove" ]; then
         exit 1
     fi
     read -r ELF IMAGE <<< "$OUTPUT"
-    S="$(leg1_symbols "$ELF")"
-    M="$(leg2_strings "$IMAGE")"
+    if ! S="$(leg1_symbols "$ELF")" || ! M="$(leg2_strings "$IMAGE")"; then
+        echo "XHCI-FAULT PRODUCTION RATCHET ANTI-VACUITY: FAILED (scan error)"
+        exit 1
+    fi
     echo "  xhci_fault_inject build: symbols=$S image-markers=$M"
-    if [ "$S" -eq 0 ] || [ "$M" -eq 0 ]; then
+    if [ "$S" = 0 ] || [ "$M" = 0 ]; then
         echo "XHCI-FAULT PRODUCTION RATCHET ANTI-VACUITY: FAILED"
         echo "A build that does carry the exercise was not detected (symbols=$S image-markers=$M)."
         exit 1
@@ -120,11 +140,13 @@ if ! OUTPUT="$(build)"; then
     exit 1
 fi
 read -r ELF IMAGE <<< "$OUTPUT"
-SYMBOLS="$(leg1_symbols "$ELF")"
-MARKERS="$(leg2_strings "$IMAGE")"
+if ! SYMBOLS="$(leg1_symbols "$ELF")" || ! MARKERS="$(leg2_strings "$IMAGE")"; then
+    echo "XHCI-FAULT PRODUCTION RATCHET: FAILED (scan error)"
+    exit 1
+fi
 echo "LEG 1 (kernel symbols matching '$SYMBOL_NEEDLE'): $SYMBOLS"
 echo "LEG 2 (occurrences of '$MARKER_NEEDLE' in the UEFI image): $MARKERS"
-if [ "$SYMBOLS" -ne 0 ] || [ "$MARKERS" -ne 0 ]; then
+if [ "$SYMBOLS" != 0 ] || [ "$MARKERS" != 0 ]; then
     echo "XHCI-FAULT PRODUCTION RATCHET: FAILED"
     "$NM" --defined-only "$ELF" 2>/dev/null | grep -E "$SYMBOL_NEEDLE" | head -20
     exit 1
