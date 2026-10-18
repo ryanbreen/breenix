@@ -262,7 +262,9 @@ def metal_toolchain_key(repo):
         result.update(digest(compiler).encode())
         result.update(subprocess.check_output(['cargo', '-V'], cwd=workspace))
     for name in ('rust-fork.toml', 'x86_64-breenix.json', 'x86_64-breenix-c.json'):
-        result.update((repo / name).read_bytes())
+        path = repo / name
+        result.update(name.encode() + b'\0')
+        result.update(path.read_bytes() if path.exists() else b'<absent>')
     return result.hexdigest()
 
 
@@ -304,7 +306,6 @@ def metal_incremental_build(repo, logs, root):
     cache_key = metal_toolchain_key(repo)
     targets = root / 'metal-targets' / cache_key
     with tree_cache.lease(root, 'metal-targets-' + cache_key):
-        tree_cache.prune(root, protected=(repo, targets), reserve=0)
         for name in ('programs', 'libc'):
             (targets / name).mkdir(parents=True, exist_ok=True)
         metal_source_times(repo, targets)
@@ -390,7 +391,10 @@ def main():
         finally:
             # Bound targets and artifacts even after failure. Active leases are
             # retained; the last finisher evicts the temporary budget overrun.
-            tree_cache.prune(root, protected=(repo,), reserve=0, required=False)
+            try:
+                tree_cache.prune(root, protected=(repo,), reserve=0, required=False)
+            except Exception as error:
+                print(f'[gate-cache] cleanup prune failed: {error}', file=sys.stderr, flush=True)
     entry = root / 'artifacts' / cache_key
     wait = time.monotonic()
     with tree_cache.lease(root, 'artifacts-' + cache_key):

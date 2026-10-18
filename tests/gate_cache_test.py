@@ -310,6 +310,37 @@ class CacheTests(unittest.TestCase):
                 self.call('--metal')
         self.assertFalse((self.cache / 'metal-targets' / ('b' * 64)).exists())
 
+    def test_metal_toolchain_key_handles_missing_historical_pin_and_c_target(self):
+        compiler = self.root / 'rustc'
+        compiler.write_bytes(b'compiler')
+        def output(command, **kwargs):
+            return str(compiler) if command[:2] == ['rustup', 'which'] else b'version'
+        with patch.object(artifacts.subprocess, 'check_output', side_effect=output):
+            absent = artifacts.metal_toolchain_key(self.repo)
+            (self.repo / 'x86_64-breenix.json').write_text('target')
+            target_only = artifacts.metal_toolchain_key(self.repo)
+            (self.repo / 'rust-fork.toml').write_text('pin')
+            self.assertNotEqual(absent, target_only)
+            self.assertNotEqual(target_only, artifacts.metal_toolchain_key(self.repo))
+
+    def test_cleanup_error_does_not_replace_build_result(self):
+        for failed in (False, True):
+            def build(*args, **kwargs):
+                if failed:
+                    raise RuntimeError('original compiler error')
+                self.build(*args, **kwargs)
+            def prune(*args, **kwargs):
+                if kwargs.get('required') is False:
+                    raise OSError('cleanup filesystem error')
+            with self.subTest(failed=failed), patch.object(trees, 'prune', side_effect=prune), \
+                    patch.object(artifacts, 'build', side_effect=build):
+                if failed:
+                    with patch.object(artifacts, 'metal_cache_key', return_value='d' * 64):
+                        with self.assertRaisesRegex(RuntimeError, 'original compiler error'):
+                            self.call('--metal')
+                else:
+                    self.call('--metal')
+
     def test_fresh_without_verified_entry_fails_explicitly(self):
         with patch.object(artifacts, 'build', side_effect=self.build), patch.dict(os.environ, BREENIX_GATE_FRESH='1'):
             with self.assertRaisesRegex(RuntimeError, 'requires a verified cache entry'):

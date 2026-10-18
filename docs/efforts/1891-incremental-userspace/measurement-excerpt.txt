@@ -1,0 +1,8 @@
+fixed-baseline
+  Finished `release` profile [optimized] target(s) in 39.87s
+  Finished `release` profile [optimized] target(s) in 33.60s
+  Finished `release` profile [optimized] target(s) in 4m 18s
+fixed-incremental
+  Finished `release` profile [optimized] target(s) in 1.43s
+  Finished `release` profile [optimized] target(s) in 0.37s
+  Finished `release` profile [optimized] target(s) in 2.09s

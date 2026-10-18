@@ -78,7 +78,7 @@ def clean(archive, tool_dir):
         subprocess.run([str(ar), 's', str(archive)], check=True)
     # Cargo can republish its original staticlib even on a fresh build. Remember
     # the *cleaned* bytes across invocations, not just the bytes before this call,
-    # so republishing then cleaning identical libc does not relink every program.
+    # so republishing then cleaning identical libc preserves dependent link freshness.
     after = hashlib.sha256(archive.read_bytes()).digest()
     if previous and previous['sha256'] == after.hex():
         os.utime(archive, ns=(timestamps.st_atime_ns, previous['mtime_ns']))
